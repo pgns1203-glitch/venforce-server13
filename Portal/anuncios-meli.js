@@ -852,20 +852,32 @@
     html += "</div></div>"; // fim painel desc
 
     // ---- aba: otimização IA (SEO)
+    var tituloAtual = String(a.titulo || "").trim();
+    var tituloAtualChars = tituloAtual ? tituloAtual.length : 0;
     html += '<div class="am-tab-panel" data-panel="otimizacao">';
     html +=
       '<div class="am-ai-panel" id="am-ai-panel">' +
-      '<div class="am-ai-card">' +
+      '<div class="am-ai-card am-ai-header">' +
+      '<div class="am-ai-header-top">' +
       "<h4>SEO do anúncio</h4>" +
-      '<div class="am-ai-current-title"><b>Título atual:</b> ' +
-      escapeHtml(a.titulo || "(sem título)") +
+      '<button class="am-btn am-btn--sm am-ai-generate" id="am-ai-gerar">Gerar SEO</button>' +
       "</div>" +
-      '<div class="am-ai-actions">' +
-      '<button class="am-btn am-btn--sm am-btn--primary" id="am-ai-gerar">Gerar SEO</button>' +
+      '<div class="am-ai-current">' +
+      '<div class="am-ai-current-label">Título atual</div>' +
+      '<div class="am-ai-current-title">' +
+      escapeHtml(tituloAtual || "(sem título)") +
+      "</div>" +
+      '<div class="am-ai-title-meta">' +
+      '<span class="am-ai-chars">' +
+      tituloAtualChars +
+      "/60</span>" +
+      "</div>" +
       "</div>" +
       '<div class="am-ai-status" id="am-ai-status"></div>' +
       '<div class="am-ai-error am-hidden" id="am-ai-error"></div>' +
-      '<div class="am-ai-resultados" id="am-ai-resultados"></div>' +
+      "</div>" +
+      '<div class="am-ai-results am-ai-resultados" id="am-ai-resultados">' +
+      '<div class="am-ai-empty">Clique em "Gerar SEO" para criar 3 opções de título.</div>' +
       "</div>" +
       "</div>";
     html += "</div>"; // fim painel otimização
@@ -986,13 +998,15 @@
 
     function renderResultados() {
       if (!estado.otimizacao) {
-        boxResultados.innerHTML = "";
+        boxResultados.innerHTML =
+          '<div class="am-ai-empty">Clique em "Gerar SEO" para criar 3 opções de título.</div>';
         return;
       }
 
       var ot = estado.otimizacao;
       estado.titulos = obterTitulosAlternativos(ot);
       var recomendado = String(ot.titulo_sugerido || "").trim();
+      var tituloAprovado = String(ot.titulo_aprovado || "").trim();
       var score =
         ot.score_seo === null || ot.score_seo === undefined ? "—" : ot.score_seo;
       var alertasRaw = safeParseJson(ot.alertas_json, []);
@@ -1001,13 +1015,13 @@
       var status = String(ot.status || "rascunho");
 
       var html =
-        '<div class="am-ai-card">' +
-        '<div class="am-ai-meta">' +
-        "<span><b>Status:</b> " +
+        '<div class="am-ai-card am-ai-score">' +
+        '<div class="am-ai-title-meta">' +
+        '<span class="am-ai-badge">Status: ' +
         escapeHtml(status) +
         "</span>" +
-        "<span><b>Score SEO:</b> " +
-        escapeHtml(score) +
+        '<span class="am-ai-badge">Score SEO: ' +
+        escapeHtml(String(score)) +
         "</span>" +
         "</div>" +
         '<div class="am-ai-line"><b>Motivo:</b> ' +
@@ -1015,7 +1029,7 @@
         "</div>";
 
       if (alertas.length) {
-        html += '<div class="am-ai-alert"><b>Alertas:</b><ul>';
+        html += '<div class="am-ai-alerts"><b>Alertas:</b><ul>';
         for (var i = 0; i < alertas.length; i++) {
           html += "<li>" + escapeHtml(alertas[i]) + "</li>";
         }
@@ -1023,6 +1037,8 @@
       }
 
       html +=
+        "</div>" +
+        '<div class="am-ai-card am-ai-model">' +
         '<div class="am-ai-line"><b>Modelo sugerido:</b> ' +
         escapeHtml(modelo || "—") +
         "</div>" +
@@ -1031,24 +1047,28 @@
         "</div>" +
         "</div>";
 
-      html += '<div class="am-ai-titles">';
+      html += '<div class="am-ai-title-list">';
       for (var j = 0; j < estado.titulos.length; j++) {
         var titulo = estado.titulos[j];
         var isRecomendado = recomendado && recomendado === titulo;
+        var isAprovado = tituloAprovado && tituloAprovado === titulo;
         html +=
           '<div class="am-ai-title-option ' +
           (isRecomendado ? "is-recommended" : "") +
+          " " +
+          (isAprovado ? "is-approved" : "") +
           '">' +
           '<div class="am-ai-title-text">' +
           escapeHtml(titulo) +
           "</div>" +
-          '<div class="am-ai-meta">' +
+          '<div class="am-ai-title-meta">' +
           '<span class="am-ai-chars">' +
           titulo.length +
           "/60</span>" +
           (isRecomendado
             ? '<span class="am-ai-badge">Recomendado</span>'
             : "") +
+          (isAprovado ? '<span class="am-ai-badge">Aprovado</span>' : "") +
           "</div>" +
           '<div class="am-ai-actions">' +
           '<button class="am-btn am-btn--sm am-ai-copy" data-ai-copy="' +
@@ -1136,6 +1156,7 @@
     btnGerar.addEventListener("click", function () {
       btnGerar.disabled = true;
       btnGerar.textContent = "Gerando...";
+      btnGerar.classList.add("is-loading");
       setErro("");
       setStatus("Gerando sugestões de SEO com IA...", "");
 
@@ -1148,6 +1169,7 @@
       }).then(function (r) {
         btnGerar.disabled = false;
         btnGerar.textContent = "Gerar SEO";
+        btnGerar.classList.remove("is-loading");
 
         if (!r.data || !r.data.ok || !r.data.otimizacao) {
           setStatus("", "");

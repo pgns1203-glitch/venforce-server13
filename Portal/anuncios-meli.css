@@ -634,26 +634,79 @@
 .am-ai-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .am-ai-card {
-  background: #fff;
+  background: #ffffff;
   border: 1px solid var(--am-border);
-  border-radius: var(--am-radius-sm);
-  padding: 13px 14px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  border-radius: 12px;
+  padding: 14px 15px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
 }
 
-.am-ai-current-title {
-  font-size: 13px;
-  color: var(--am-text);
-  line-height: 1.45;
+.am-ai-header {
+  border-color: #dae2f3;
+}
+
+.am-ai-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 10px;
 }
 
+.am-ai-header h4 {
+  margin: 0;
+}
+
+.am-ai-generate {
+  border: none;
+  border-radius: 10px;
+  padding: 7px 14px;
+  background: linear-gradient(135deg, #635bff 0%, #7a4dff 100%);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 8px 16px rgba(98, 91, 255, 0.28);
+}
+
+.am-ai-generate:hover {
+  filter: brightness(1.04);
+}
+
+.am-ai-generate.is-loading,
+.am-ai-generate:disabled {
+  background: linear-gradient(135deg, #9da2d4 0%, #979dcf 100%);
+  box-shadow: none;
+  cursor: wait;
+}
+
+.am-ai-current {
+  border: 1px solid #e4e8f1;
+  border-radius: 10px;
+  background: #fbfcff;
+  padding: 10px 11px;
+}
+
+.am-ai-current-label {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--am-text-faint);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.am-ai-current-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--am-text);
+  line-height: 1.5;
+}
+
 .am-ai-status {
-  margin-top: 8px;
+  margin-top: 10px;
   font-size: 12.5px;
   color: var(--am-text-soft);
 }
@@ -664,7 +717,7 @@
 }
 
 .am-ai-error {
-  margin-top: 8px;
+  margin-top: 10px;
   font-size: 12.5px;
   color: var(--am-red);
   background: var(--am-red-soft);
@@ -672,38 +725,69 @@
   padding: 8px 10px;
 }
 
+.am-ai-results,
 .am-ai-resultados {
-  margin-top: 12px;
+  margin-top: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
-.am-ai-titles {
+.am-ai-empty {
+  border: 1px dashed #cfd7e9;
+  background: #fafcff;
+  color: var(--am-text-soft);
+  border-radius: 10px;
+  padding: 13px;
+  font-size: 12.5px;
+}
+
+.am-ai-score {
+  border-left: 4px solid #6f62ff;
+}
+
+.am-ai-model {
+  border-left: 4px solid #51a8ff;
+}
+
+.am-ai-title-list {
   display: grid;
   gap: 10px;
 }
 
 .am-ai-title-option {
-  background: #fff;
-  border: 1px solid var(--am-border);
-  border-radius: var(--am-radius-sm);
-  padding: 11px 12px;
+  background: #ffffff;
+  border: 1px solid #dbe2ef;
+  border-radius: 11px;
+  padding: 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.08s;
+}
+
+.am-ai-title-option:hover {
+  border-color: #c5d1eb;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+  transform: translateY(-1px);
 }
 
 .am-ai-title-option.is-recommended {
-  border-color: #b8c9ff;
-  background: #f5f8ff;
+  border-color: #9cb3ff;
+  background: #f4f7ff;
+}
+
+.am-ai-title-option.is-approved {
+  border-color: #a8dfbd;
+  background: #f2fbf5;
 }
 
 .am-ai-title-text {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 700;
   line-height: 1.4;
   color: var(--am-text);
 }
 
-.am-ai-meta {
+.am-ai-title-meta {
   margin-top: 8px;
   display: flex;
   align-items: center;
@@ -724,6 +808,11 @@
   font-size: 11px;
 }
 
+.am-ai-title-option.is-approved .am-ai-badge {
+  background: #dff5e7;
+  color: #1f7a45;
+}
+
 .am-ai-line {
   margin-top: 9px;
   font-size: 12.5px;
@@ -731,7 +820,7 @@
   color: var(--am-text);
 }
 
-.am-ai-alert {
+.am-ai-alerts {
   margin-top: 9px;
   background: #fff7e8;
   border: 1px solid #f0debd;
@@ -741,7 +830,7 @@
   color: #7b5a14;
 }
 
-.am-ai-alert ul {
+.am-ai-alerts ul {
   margin: 6px 0 0 15px;
   padding: 0;
 }
@@ -758,5 +847,26 @@
 .am-ai-approve {
   min-width: 78px;
   justify-content: center;
+  border-radius: 8px;
+}
+
+.am-ai-copy {
+  background: #ffffff;
+  border-color: #cfd7e9;
+  color: #2a3b66;
+}
+
+.am-ai-copy:hover {
+  background: #f6f8ff;
+}
+
+.am-ai-approve {
+  background: #2f5bea;
+  border-color: #2f5bea;
+  color: #ffffff;
+}
+
+.am-ai-approve:hover {
+  background: #2447c4;
 }
 

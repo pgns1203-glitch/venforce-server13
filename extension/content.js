@@ -272,6 +272,43 @@ console.log("[VenForce] extensão iniciada");
       .filter(Boolean);
   }
 
+  function normalizarMlId(valor) {
+    const raw = String(valor || "").trim().toUpperCase();
+    if (!raw) return "";
+
+    const mMlbu = raw.match(/^MLBU(\d{8,})$/);
+    if (mMlbu?.[1]) return `MLB${mMlbu[1]}`;
+
+    const mMlb = raw.match(/^MLB(\d{8,})$/);
+    if (mMlb?.[1]) return `MLB${mMlb[1]}`;
+
+    const mNum = raw.match(/^(\d{8,})$/);
+    if (mNum?.[1]) return `MLB${mNum[1]}`;
+
+    return raw;
+  }
+
+  function buscarCustoPorId(id) {
+    const raw = String(id || "").trim();
+    if (!raw) return null;
+
+    if (COST_DB[raw]) return COST_DB[raw];
+
+    const normalizado = normalizarMlId(raw);
+    if (COST_DB[normalizado]) return COST_DB[normalizado];
+
+    const semPrefixo = normalizado.replace(/^MLB/i, "");
+    if (semPrefixo && COST_DB[semPrefixo]) return COST_DB[semPrefixo];
+
+    const soNumeros = raw.replace(/^MLB/i, "").trim();
+    if (/^\d{8,}$/.test(soNumeros)) {
+      const comMlb = `MLB${soNumeros}`;
+      if (COST_DB[comMlb]) return COST_DB[comMlb];
+    }
+
+    return null;
+  }
+
   function buscarValorAposBloco(texto, marcadorRegex, limite = 220) {
     const regex = new RegExp(
       `${marcadorRegex.source}[\\s\\S]{0,${limite}}?A pagar\\s*R\\$\\s*([\\d\\.]+,\\d{2}|[\\d\\.]+)`,
@@ -530,7 +567,15 @@ console.log("[VenForce] extensão iniciada");
 
   function extrairIdPainel(row) {
     const t = getTextoLimpo(row);
-    return (t.match(/#(\d{8,})/)?.[1]) || (t.match(/\b(\d{8,})\b/)?.[1]) || null;
+    const idCompleto = t.match(/\b(MLB|MLBU)\s*#?\s*(\d{8,})\b/i);
+    if (idCompleto?.[1] && idCompleto?.[2]) {
+      const merged = `${idCompleto[1].toUpperCase()}${idCompleto[2]}`;
+      return PLATAFORMA === "ml" ? normalizarMlId(merged) : merged;
+    }
+
+    const idNumerico = (t.match(/#(\d{8,})/)?.[1]) || (t.match(/\b(\d{8,})\b/)?.[1]) || null;
+    if (!idNumerico) return null;
+    return PLATAFORMA === "ml" ? normalizarMlId(idNumerico) : idNumerico;
   }
 
   // ==========================
@@ -805,7 +850,11 @@ console.log("[VenForce] extensão iniciada");
     const key = getBoxKey(row, index);
     const box = ensureBox(key);
     const cache = box.__venforceCache;
-    const podeUsarCache = row.dataset?.vfProcessed === "1" && cache?.id && cache?.dados;
+    const podeUsarCache =
+      row.dataset?.vfProcessed === "1" &&
+      cache?.id &&
+      cache?.dados &&
+      cache?.baseId === currentBaseId;
 
     let id, precoInfo, dados;
 
@@ -815,8 +864,16 @@ console.log("[VenForce] extensão iniciada");
       id = extrairIdPainel(row);
       if (!id) { renderErroExtracao(box, null); return { key, box, row }; }
 
-      const custoInfo = COST_DB[id];
-      if (!custoInfo) { renderSemCusto(box, id); return { key, box, row }; }
+      const custoInfo = buscarCustoPorId(id);
+      if (!custoInfo) {
+        console.debug("[VenForce] custo não encontrado", {
+          idExtraido: id,
+          idNormalizado: normalizarMlId(id),
+          base: currentBaseId || "nenhuma"
+        });
+        renderSemCusto(box, id);
+        return { key, box, row };
+      }
 
       precoInfo = extrairPrecoVenda(row);
       if (!precoInfo.precoVenda) { renderErroExtracao(box, id); return { key, box, row }; }
@@ -831,7 +888,7 @@ console.log("[VenForce] extensão iniciada");
 
     renderBox(box, id, dados, { precoCheio: precoInfo.precoCheio, precoPromocional: precoInfo.precoPromocional });
 
-    if (!podeUsarCache) box.__venforceCache = { id, dados, precoInfo };
+    if (!podeUsarCache) box.__venforceCache = { id, dados, precoInfo, baseId: currentBaseId };
     row.dataset.vfProcessed = "1";
 
     return { key, box, row };
@@ -872,9 +929,10 @@ console.log("[VenForce] extensão iniciada");
   function scheduleFullReload() {
     (async () => {
       await loadCosts();
-      if (!Object.keys(COST_DB).length) {
-        getOverlayRoot().querySelectorAll(`.${BOX_CLASS}`).forEach(el => el.remove());
-      }
+      getOverlayRoot().querySelectorAll(`.${BOX_CLASS}`).forEach(el => el.remove());
+      getPainelRows().forEach(row => {
+        if (row?.dataset) delete row.dataset.vfProcessed;
+      });
       scheduleProcess();
     })();
   }

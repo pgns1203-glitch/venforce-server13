@@ -1,0 +1,246 @@
+// server/controllers/meliAnunciosController.js
+// -----------------------------------------------------------------------------
+// Módulo: Anúncios Meli — controller.
+//
+// Orquestra os services e responde os endpoints. Padrão de resposta:
+//   - sucesso .................. { ok: true, ... }
+//   - erro de validação ........ HTTP 400/404 + { ok: false, motivo }
+//   - falha "esperada" de sync . HTTP 200 + { ok: false, codigo, motivo }
+//
+// Não altera anúncios no Mercado Livre. Sincronização e detalhe são read-only.
+// -----------------------------------------------------------------------------
+
+const anunciosService = require("../services/meliAnuncios/meliAnunciosService");
+const syncService = require("../services/meliAnuncios/meliSyncService");
+const { mlFetch } = require("../utils/mlClient");
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/clientes
+// ----------------------------------------------------------------------------
+async function listarClientes(req, res) {
+  try {
+    const clientes = await anunciosService.listarClientes();
+    return res.json({ ok: true, clientes });
+  } catch (err) {
+    console.error("[anuncios-meli] listarClientes:", err.message);
+    return res
+      .status(500)
+      .json({ ok: false, motivo: "Erro ao carregar a lista de clientes." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// POST /anuncios-meli/sync   body: { clienteSlug, modo }
+// ----------------------------------------------------------------------------
+async function sincronizar(req, res) {
+  try {
+    const { clienteSlug, modo } = req.body || {};
+
+    if (!clienteSlug) {
+      return res
+        .status(400)
+        .json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({
+        ok: false,
+        codigo: "NO_CLIENT",
+        motivo: "Cliente não encontrado.",
+      });
+    }
+
+    const resultado = await syncService.sincronizar({
+      clienteId: cliente.id,
+      clienteSlug: cliente.slug,
+      modo,
+    });
+
+    // Falhas esperadas (sem token, erro de API) voltam como 200 + ok:false
+    // para o frontend tratar com mensagem amigável.
+    return res.json(resultado);
+  } catch (err) {
+    console.error("[anuncios-meli] sincronizar:", err.message);
+    return res.status(500).json({
+      ok: false,
+      codigo: "ERRO_INTERNO",
+      motivo: "Erro interno ao sincronizar os anúncios.",
+    });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/resumo?clienteSlug=
+// ----------------------------------------------------------------------------
+async function resumo(req, res) {
+  try {
+    const { clienteSlug } = req.query || {};
+    if (!clienteSlug) {
+      return res
+        .status(400)
+        .json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res
+        .status(404)
+        .json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const dados = await anunciosService.obterResumo(cliente.id);
+    return res.json({
+      ok: true,
+      cliente: { slug: cliente.slug, nome: cliente.nome },
+      resumo: dados,
+    });
+  } catch (err) {
+    console.error("[anuncios-meli] resumo:", err.message);
+    return res
+      .status(500)
+      .json({ ok: false, motivo: "Erro ao montar o resumo." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli?clienteSlug=&q=&status=&filtro=&page=&limit=
+// ----------------------------------------------------------------------------
+async function listar(req, res) {
+  try {
+    const { clienteSlug, q, status, filtro, page, limit } = req.query || {};
+    if (!clienteSlug) {
+      return res
+        .status(400)
+        .json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res
+        .status(404)
+        .json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const resultado = await anunciosService.listarAnuncios({
+      clienteId: cliente.id,
+      q,
+      status,
+      filtro,
+      page,
+      limit,
+    });
+
+    return res.json({
+      ok: true,
+      cliente: { slug: cliente.slug, nome: cliente.nome },
+      anuncios: resultado.anuncios,
+      paginacao: resultado.paginacao,
+    });
+  } catch (err) {
+    console.error("[anuncios-meli] listar:", err.message);
+    return res
+      .status(500)
+      .json({ ok: false, motivo: "Erro ao listar os anúncios." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/:itemId?clienteSlug=
+// Busca o anúncio no banco e enriquece com a descrição ao vivo da API ML.
+// ----------------------------------------------------------------------------
+async function detalhe(req, res) {
+  try {
+    const { itemId } = req.params;
+    const { clienteSlug } = req.query || {};
+
+    if (!clienteSlug) {
+      return res
+        .status(400)
+        .json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res
+        .status(404)
+        .json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo:
+          "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    // Descrição buscada sob demanda (não é salva na sincronização em massa).
+    let descricao = null;
+    try {
+      const resp = await mlFetch(
+        cliente.id,
+        `/items/${encodeURIComponent(itemId)}/description`
+      );
+      if (resp && resp.ok && resp.data) {
+        descricao = resp.data.plain_text || resp.data.text || null;
+      }
+    } catch (e) {
+      // descrição é opcional — segue sem ela
+      descricao = null;
+    }
+
+    return res.json({
+      ok: true,
+      cliente: { slug: cliente.slug, nome: cliente.nome },
+      anuncio,
+      descricao,
+    });
+  } catch (err) {
+    console.error("[anuncios-meli] detalhe:", err.message);
+    return res
+      .status(500)
+      .json({ ok: false, motivo: "Erro ao carregar o detalhe do anúncio." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// PATCH /anuncios-meli/:itemId/revisao   body: { clienteSlug, revisado }
+// ----------------------------------------------------------------------------
+async function marcarRevisado(req, res) {
+  try {
+    const { itemId } = req.params;
+    const { clienteSlug, revisado } = req.body || {};
+
+    if (!clienteSlug) {
+      return res
+        .status(400)
+        .json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res
+        .status(404)
+        .json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    await anunciosService.marcarRevisado(cliente.id, itemId, revisado);
+    return res.json({ ok: true, revisado: !!revisado });
+  } catch (err) {
+    console.error("[anuncios-meli] marcarRevisado:", err.message);
+    return res
+      .status(500)
+      .json({ ok: false, motivo: "Erro ao atualizar a revisão." });
+  }
+}
+
+module.exports = {
+  listarClientes,
+  sincronizar,
+  resumo,
+  listar,
+  detalhe,
+  marcarRevisado,
+};

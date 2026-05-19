@@ -63,6 +63,7 @@ const basesRoutes = require("./routes/basesRoutes");
 const assistenteBaseRoutes = require("./routes/assistenteBaseRoutes");
 const adsRoutes = require("./routes/adsRoutes");
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("./services/activityLogService");
+const meliAnunciosRoutes = require("./routes/meliAnunciosRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 3333;
@@ -415,6 +416,7 @@ app.use("/", entregasClienteRoutes);
 app.use("/", basesRoutes);
 app.use("/bases/assistente", assistenteBaseRoutes);
 app.use("/ads", adsRoutes);
+app.use("/anuncios-meli", meliAnunciosRoutes);
 
 app.post("/scans", authMiddleware, async (req, res) => {
   try {

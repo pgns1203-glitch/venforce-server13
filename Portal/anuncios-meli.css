@@ -543,3 +543,88 @@
   .am-hud-actions { width: 100%; }
   .am-hud-actions .am-btn { flex: 1; justify-content: center; }
 }
+
+/* =============================================================================
+   Correção visual do drawer de detalhe — painel 100% opaco
+   --------------------------------------------------------------------------
+   Motivo: o overlay deve ser translúcido, mas o painel lateral precisa ser
+   branco/opaco para não vazar os cards da tela de fundo.
+   ========================================================================== */
+
+.am-modal-overlay {
+  background: rgba(15, 23, 42, 0.52) !important;
+  backdrop-filter: blur(2px);
+  opacity: 1 !important;
+  align-items: stretch;
+}
+
+.am-drawer {
+  position: relative;
+  z-index: 1;
+  isolation: isolate;
+  width: min(600px, 100vw);
+  height: 100vh;
+  background: #ffffff !important;
+  opacity: 1 !important;
+  box-shadow: -18px 0 48px rgba(15, 23, 42, 0.26);
+  overflow-y: auto;
+}
+
+.am-drawer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: #ffffff;
+}
+
+.am-drawer__head {
+  background: #ffffff !important;
+  opacity: 1 !important;
+  box-shadow: 0 1px 0 rgba(226, 232, 240, 0.95);
+}
+
+.am-drawer__body {
+  min-height: calc(100vh - 58px);
+  background: #ffffff !important;
+  opacity: 1 !important;
+}
+
+.am-tabs {
+  position: sticky;
+  top: 53px;
+  z-index: 1;
+  background: #ffffff !important;
+  padding-top: 4px;
+}
+
+.am-tab-panel,
+.am-tab-panel--ativa,
+.am-bloco,
+.am-kv,
+.am-attr-list,
+.am-desc,
+.am-thumbs,
+.am-score-bar,
+.am-aviso {
+  opacity: 1 !important;
+}
+
+.am-bloco {
+  background: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.am-detalhe-img {
+  background: #ffffff !important;
+  max-height: 340px;
+  object-fit: contain;
+}
+
+@keyframes am-slide {
+  from {
+    transform: translateX(40px);
+    opacity: 1;
+  }
+}
+

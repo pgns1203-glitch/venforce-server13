@@ -171,6 +171,80 @@ function validarFichaTecnica(d) {
 
 function arr(v) { return Array.isArray(v) ? v : []; }
 
+const MODELO_STOPWORDS = new Set([
+  "de", "da", "do", "das", "dos", "para", "com", "sem", "e", "em",
+  "no", "na", "nos", "nas", "ao", "aos", "a", "o", "as", "os",
+]);
+
+function normalizarTextoComparacao(txt) {
+  return String(txt || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function tokenizarModelo(txt) {
+  return String(txt || "")
+    .replace(/[,\|\/\\;:()[\]{}"'`´~^*+=!?@#$%&<>._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+function deduplicarPreservandoOrdem(tokens) {
+  const out = [];
+  const seen = new Set();
+  for (const token of tokens) {
+    const k = normalizarTextoComparacao(token);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(token);
+  }
+  return out;
+}
+
+function limitarPorCharsSemCortar(tokens, maxChars) {
+  const out = [];
+  let total = 0;
+  for (const token of tokens) {
+    const custo = out.length ? token.length + 1 : token.length;
+    if (total + custo > maxChars) break;
+    out.push(token);
+    total += custo;
+  }
+  return out;
+}
+
+function normalizarModeloIndexador(modelo, titulo) {
+  const modeloTokensOrig = tokenizarModelo(modelo);
+  const tituloSet = new Set(
+    tokenizarModelo(titulo).map((t) => normalizarTextoComparacao(t)).filter(Boolean)
+  );
+
+  const filtrados = [];
+  const seen = new Set();
+  for (const token of modeloTokensOrig) {
+    const chave = normalizarTextoComparacao(token);
+    if (!chave) continue;
+    if (MODELO_STOPWORDS.has(chave)) continue;
+    if (tituloSet.has(chave)) continue;
+    if (seen.has(chave)) continue;
+    seen.add(chave);
+    filtrados.push(token);
+  }
+
+  let finalTokens = filtrados;
+  if (finalTokens.length < 2) {
+    finalTokens = deduplicarPreservandoOrdem(modeloTokensOrig);
+  }
+
+  finalTokens = limitarPorCharsSemCortar(finalTokens, 60);
+  return finalTokens.join(" ").trim();
+}
+
 // -----------------------------------------------------------------------------
 // Busca a descrição atual do anúncio via API do ML (read-only).
 // Falha silenciosa: descrição é opcional para o prompt.
@@ -335,7 +409,7 @@ async function otimizar({ clienteSlug, itemId, tipo, userId }) {
     base.titulo_sugerido = titulo;
     base.titulo_sugerido_chars = titulo.length;
     base.modelo_atual = anuncio.modelo || null;
-    base.modelo_sugerido = String(d.modelo_sugerido).trim();
+    base.modelo_sugerido = normalizarModeloIndexador(d.modelo_sugerido, titulo);
     base.score_seo = typeof d.score_seo === "number" ? d.score_seo : null;
     base.motivo = d.motivo ? String(d.motivo) : null;
     // Guarda alternativas dentro de melhorias_json — sem coluna extra no schema

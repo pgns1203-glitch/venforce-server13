@@ -3,41 +3,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VenForce — Relatório público</title>
+  <title>VenForce — Relatório do Cliente</title>
   <meta name="robots" content="noindex, nofollow" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="relatorio-publico-novo.css" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
-  <link rel="stylesheet" href="relatorio-publico.css" />
 </head>
 <body>
-  <div class="rp-bg-blobs" aria-hidden="true">
-    <div class="rp-blob rp-blob-1"></div>
-    <div class="rp-blob rp-blob-2"></div>
-    <div class="rp-blob rp-blob-3"></div>
-  </div>
 
-  <div class="rp-topbar no-print">
-    <div class="rp-topbar-inner">
-      <div class="rp-brand">
-        <div class="rp-mark">VF</div>
-        <div class="rp-brand-text">
-          <div class="rp-brand-title">VenForce</div>
-          <div class="rp-brand-subtitle">Entrega para cliente</div>
-        </div>
-      </div>
-      <div class="rp-topbar-actions">
-        <button id="btn-rp-pdf" class="rp-btn rp-btn-primary" type="button">Baixar PDF</button>
+  <!-- TOPBAR -->
+  <header class="vp-topbar no-print">
+    <div class="vp-brand">
+      <div class="vp-mark">VF</div>
+      <div>
+        <div class="vp-brand-name">VenForce</div>
+        <div class="vp-brand-sub">Entrega para cliente</div>
       </div>
     </div>
-  </div>
+    <button id="btn-pdf" class="vp-btn-pdf" type="button">Baixar PDF</button>
+  </header>
 
-  <main class="rp-page">
-    <div id="rp-root" class="rp-root">
-      <div class="rp-loading" id="rp-loading">Carregando relatório…</div>
+  <!-- MAIN -->
+  <main class="vp-page">
+    <div id="vp-root">
+      <div class="vp-loading">Carregando relatório…</div>
     </div>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="relatorio-publico.js"></script>
+  <script src="relatorio-publico-novo.js"></script>
 </body>
 </html>
-

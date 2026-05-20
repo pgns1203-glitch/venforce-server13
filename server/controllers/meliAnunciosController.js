@@ -313,36 +313,31 @@ async function listarOtimizacoes(req, res) {
   }
 }
 
+// ----------------------------------------------------------------------------
+// PATCH /anuncios-meli/otimizacoes/:id/aprovar
+// body: { tituloAprovado?, modeloAprovado?, descricaoAprovada?,
+//         fichaAprovadaJson?, observacao? }
+// Registra escolha humana sobre a sugestão. NÃO envia nada ao Mercado Livre.
+// ----------------------------------------------------------------------------
 async function aprovarOtimizacao(req, res) {
   try {
     const { id } = req.params;
-    const { tituloAprovado, modeloAprovado, observacao } = req.body || {};
-
-    const resultado = await otimizadorService.aprovarOtimizacao({
-      id: id,
-      tituloAprovado: tituloAprovado,
-      modeloAprovado: modeloAprovado,
-      observacao: observacao,
+    const resultado = await otimizadorService.aprovar({
+      id: parseInt(id, 10),
+      dados: req.body || {},
       userId: req.user && req.user.id,
     });
-
     if (!resultado.ok) {
-      return res.status(resultado.http || 400).json({
-        ok: false,
-        motivo: resultado.motivo,
-      });
+      return res
+        .status(resultado.http || 400)
+        .json({ ok: false, motivo: resultado.motivo });
     }
-
-    return res.json({
-      ok: true,
-      otimizacao: resultado.otimizacao,
-    });
+    return res.json({ ok: true, otimizacao: resultado.otimizacao });
   } catch (err) {
     console.error("[anuncios-meli] aprovarOtimizacao:", err.message);
-    return res.status(500).json({
-      ok: false,
-      motivo: "Erro interno ao aprovar a otimização.",
-    });
+    return res
+      .status(500)
+      .json({ ok: false, motivo: "Erro ao aprovar a otimização." });
   }
 }
 

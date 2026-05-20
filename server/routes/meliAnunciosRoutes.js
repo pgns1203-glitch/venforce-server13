@@ -15,8 +15,9 @@
 //   POST   /anuncios-meli/sync
 //   GET    /anuncios-meli/resumo
 //   GET    /anuncios-meli
-//   POST   /anuncios-meli/:itemId/otimizar      (Otimizador IA — admin-only)
-//   GET    /anuncios-meli/:itemId/otimizacoes   (histórico — admin-only)
+//   POST   /anuncios-meli/:itemId/otimizar        (Otimizador IA — admin-only)
+//   GET    /anuncios-meli/:itemId/otimizacoes     (histórico — admin-only)
+//   PATCH  /anuncios-meli/otimizacoes/:id/aprovar (aprovação — admin-only)
 //   GET    /anuncios-meli/:itemId
 //   PATCH  /anuncios-meli/:itemId/revisao
 // -----------------------------------------------------------------------------
@@ -37,16 +38,19 @@ router.post("/sync", ctrl.sincronizar);
 router.get("/resumo", ctrl.resumo);
 router.get("/", ctrl.listar);
 
+// Rota de aprovação — precisa vir antes de "/:itemId" pra não bater.
+// Admin-only enquanto o otimizador está em validação.
+router.patch("/otimizacoes/:id/aprovar", requireAdmin, ctrl.aprovarOtimizacao);
+
 // Rotas com sub-caminho declaradas ANTES da rota genérica "/:itemId".
 //
 // ETAPA 1 do Otimizador: as rotas que chamam IA ficam ADMIN-ONLY
 // (authMiddleware do router + requireAdmin por rota). É uma trava
 // temporária — quando o otimizador sair da fase de testes, basta
-// remover o requireAdmin destas duas linhas para voltar ao acesso
+// remover o requireAdmin destas linhas para voltar ao acesso
 // padrão do módulo (automações: admin | user | membro).
 router.post("/:itemId/otimizar", requireAdmin, ctrl.otimizar);
 router.get("/:itemId/otimizacoes", requireAdmin, ctrl.listarOtimizacoes);
-router.patch("/otimizacoes/:id/aprovar", requireAdmin, ctrl.aprovarOtimizacao);
 
 router.patch("/:itemId/revisao", ctrl.marcarRevisado);
 

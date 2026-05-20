@@ -730,3 +730,75 @@
     height: 0;
   }
 }
+
+/* =============================================================================
+   Correção de visibilidade — botões da aba Otimização IA (títulos)
+   ========================================================================== */
+.am-otim-opcao__btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.am-otim-opcao__btns .am-btn {
+  min-height: 30px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 1;
+  visibility: visible;
+  text-indent: 0;
+  white-space: nowrap;
+}
+
+.am-otim-opcao__btns .am-btn[data-copy-text] {
+  background: #ffffff !important;
+  border: 1px solid #cfd7e9 !important;
+  color: #2a3b66 !important;
+}
+
+.am-otim-opcao__btns .am-btn[data-copy-text]:hover {
+  background: #f6f8ff !important;
+  border-color: #b9c5dc !important;
+}
+
+.am-otim-opcao__btns .am-btn[data-aprovar-titulo] {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-width: 118px;
+  background: #1f9d57 !important;
+  border: 1px solid #1f9d57 !important;
+  color: #ffffff !important;
+  box-shadow: 0 5px 14px rgba(31, 157, 87, 0.22);
+}
+
+.am-otim-opcao__btns .am-btn[data-aprovar-titulo]:hover {
+  background: #198248 !important;
+  border-color: #198248 !important;
+  color: #ffffff !important;
+}
+
+.am-otim-opcao__btns .am-btn[data-aprovar-titulo]:disabled {
+  background: #9fb9aa !important;
+  border-color: #9fb9aa !important;
+  color: #ffffff !important;
+  opacity: 0.75;
+  box-shadow: none;
+}
+
+.am-otim-opcao--principal .am-otim-opcao__btns .am-btn[data-aprovar-titulo] {
+  background: #2f5bea !important;
+  border-color: #2f5bea !important;
+  color: #ffffff !important;
+  box-shadow: 0 5px 14px rgba(47, 91, 234, 0.22);
+}
+
+.am-otim-opcao--principal .am-otim-opcao__btns .am-btn[data-aprovar-titulo]:hover {
+  background: #2447c4 !important;
+  border-color: #2447c4 !important;
+}

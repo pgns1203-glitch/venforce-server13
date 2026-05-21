@@ -991,6 +991,7 @@ async function processarFechamentoFinanceiro() {
     renderShopeeReconciliacao(json);
     renderFinTabela(json);
     document.getElementById("fc-wrap")?.setAttribute("data-processed", "");
+    initEntregaTabs();
     setStatus("✓ Processado com sucesso.", "success");
 
     if (json.excelBase64) {
@@ -1393,6 +1394,9 @@ function initEntregaTabs() {
   // Encontrar o ponto de inserção: antes do dashboard
   const dashSection = fcWrap.querySelector(".fc-dashboard-panel");
   if (!dashSection) return;
+
+  // Esconder seção antiga de entrega
+  document.getElementById("fin-link-cliente-actions")?.style.setProperty("display", "none", "important");
 
   // Criar o container root das abas
   const tabRoot = document.createElement("div");

@@ -292,4 +292,45 @@ router.get("/relatorio/:relatorioId/itens", requireExternalApiKey, async (req, r
   }
 });
 
+// ─── GET /clientes-ml ────────────────────────────────────────────────────────
+
+router.get("/clientes-ml", requireExternalApiKey, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         c.id        AS cliente_id,
+         c.nome      AS cliente_nome,
+         c.slug      AS cliente_slug,
+         t.ml_user_id,
+         t.expires_at,
+         t.updated_at,
+         t.token_status
+       FROM clientes c
+       INNER JOIN ml_tokens t ON t.cliente_id = c.id
+       WHERE c.ativo = true
+       ORDER BY c.nome ASC`
+    );
+
+    return res.json({
+      success: true,
+      source: "venforce-postgresql",
+      collection: "clientes_ml",
+      count: result.rows.length,
+      data: result.rows.map((row) => ({
+        cliente_id: row.cliente_id,
+        cliente_nome: row.cliente_nome,
+        cliente_slug: row.cliente_slug,
+        ml_user_id: row.ml_user_id,
+        conectado: true,
+        expires_at: row.expires_at,
+        updated_at: row.updated_at,
+        token_status: row.token_status,
+      })),
+    });
+  } catch (error) {
+    console.error("[external/firebase] Erro ao listar clientes-ml:", error);
+    return res.status(500).json({ success: false, error: "Erro interno ao buscar clientes com ML conectado." });
+  }
+});
+
 module.exports = router;

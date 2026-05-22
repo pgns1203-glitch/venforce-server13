@@ -64,17 +64,19 @@ const assistenteBaseRoutes = require("./routes/assistenteBaseRoutes");
 const adsRoutes = require("./routes/adsRoutes");
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("./services/activityLogService");
 const meliAnunciosRoutes = require("./routes/meliAnunciosRoutes");
+const externalFirebaseRoutes = require("./routes/externalFirebaseRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 3333;
 
 // MIDDLEWARES
-app.use(cors({ origin: true, credentials: false, methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"], allowedHeaders: ["Content-Type","Authorization"] }));
+app.use(cors({ origin: true, credentials: false, methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"], allowedHeaders: ["Content-Type","Authorization","x-api-key"] }));
 app.options(/.*/, cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 app.use("/downloads", express.static(path.join(__dirname, "downloads")));
+app.use("/external/firebase", externalFirebaseRoutes);
 
 // UPLOAD (memória)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });

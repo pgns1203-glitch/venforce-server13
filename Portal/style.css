@@ -5024,3 +5024,109 @@ body {
 .vf-page-ads .ads-anuncios-table td.num:nth-child(8) { min-width:  78px; } /* CTR */
 .vf-page-ads .ads-anuncios-table th.num:nth-child(9),
 .vf-page-ads .ads-anuncios-table td.num:nth-child(9) { min-width:  90px; } /* CPC */
+
+/* =========================================================
+   Topbar de áreas + sidebar hierárquica
+   ========================================================= */
+
+/* Logo: texto inline "Go" em roxo */
+.vf-logo-go-inline {
+  color: var(--vf-primary);
+  font-weight: 700;
+}
+
+/* Logo: ícone compacto "V" visível apenas quando sidebar recolhida */
+.vf-sidebar-logo-icon {
+  display: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--vf-primary);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  letter-spacing: -0.02em;
+}
+
+/* Título de seção na sidebar (ex: "OPERAÇÃO") */
+.vf-sidebar-section-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--vf-text-l);
+  padding: 0.75rem 0.875rem 0.35rem;
+  user-select: none;
+}
+
+/* ── Topbar de áreas (dentro de .vf-main-with-sidebar) ── */
+.vf-app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 90;
+  height: 44px;
+  background: var(--vf-surface);
+  border-bottom: 1px solid var(--vf-border);
+  display: flex;
+  align-items: stretch;
+  padding: 0 1.5rem;
+}
+
+.vf-topbar-nav {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  height: 100%;
+}
+
+.vf-topbar-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 1rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--vf-text-m);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  transition: color 0.18s, border-color 0.18s;
+}
+
+.vf-topbar-link:hover {
+  color: var(--vf-text);
+}
+
+.vf-topbar-link.is-active {
+  color: var(--vf-primary);
+  border-bottom-color: var(--vf-primary);
+  font-weight: 600;
+}
+
+/* ── Collapsed sidebar: mostrar ícone, esconder texto ── */
+@media (min-width: 769px) {
+  .vf-sidebar.is-collapsed .vf-sidebar-logo-icon {
+    display: inline-flex;
+  }
+  .vf-sidebar.is-collapsed .vf-sidebar-logo-text {
+    display: none;
+  }
+  .vf-sidebar.is-collapsed .vf-sidebar-section-title {
+    display: none;
+  }
+}
+
+/* ── Mobile: topbar compacta ── */
+@media (max-width: 768px) {
+  .vf-app-topbar {
+    padding: 0 1rem;
+    position: relative;
+    top: auto;
+  }
+  .vf-topbar-link {
+    padding: 0 0.75rem;
+    font-size: 0.8rem;
+  }
+}

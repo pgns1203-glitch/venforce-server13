@@ -61,6 +61,18 @@
     if (name === "chevron-right") {
       return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>`;
     }
+    if (name === "search") {
+      return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`;
+    }
+    if (name === "layers") {
+      return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>`;
+    }
+    if (name === "trending-up") {
+      return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>`;
+    }
+    if (name === "database") {
+      return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>`;
+    }
     return "";
   }
 
@@ -72,9 +84,14 @@
       defaultPage: "dashboard.html",
       links: [
         { label: "Dashboard",     href: "dashboard.html",     icon: "vf-dashboard"  },
-        { label: "Automações",    href: "automacoes.html",    icon: "repeat"        },
-        { label: "Relatórios",    href: "relatorios.html",    icon: "bar-chart"     },
+        { label: "Bases de custo",href: "dashboard.html",     icon: "database"      },
+        { label: "Anúncios ML",   href: "anuncios-meli.html", icon: "activity"      },
+        { label: "Mercado Ads",   href: "ads.html",           icon: "trending-up"   },
+        { label: "Otimizador",    href: "automacoes.html",    icon: "repeat"        },
+        { label: "Design",        href: "design.html",        icon: "layers"        },
+        { label: "Scans",         href: "scans.html",         icon: "search"        },
         { label: "Financeiro",    href: "financeiro.html",    icon: "vf-financeiro" },
+        { label: "Relatórios",    href: "relatorios.html",    icon: "bar-chart"     },
         { label: "Conversão",     href: "fechamento.html",    icon: "vf-fechamento" },
         { label: "Extensão",      href: "extensao.html",      icon: "download"      },
         { label: "Ferramenta OR", href: "ferramenta-or.html", icon: "download"      },
@@ -86,6 +103,7 @@
       adminOnly: true,
       links: [
         { label: "Todos os clientes", href: "clientes.html",  icon: "users"  },
+        { label: "Mercado Livre",     href: "clientes.html",  icon: "shield" },
         { label: "Tokens ML",         href: "ml-tokens.html", icon: "shield" },
         { label: "Callbacks",         href: "callbacks.html", icon: "repeat" },
       ],
@@ -95,18 +113,31 @@
       defaultPage: "usuarios.html",
       adminOnly: true,
       links: [
-        { label: "Usuários",  href: "usuarios.html",  icon: "shield"   },
+        { label: "Usuários",  href: "usuarios.html",  icon: "users"    },
+        { label: "Tokens ML", href: "ml-tokens.html", icon: "shield"   },
+        { label: "Callbacks", href: "callbacks.html", icon: "repeat"   },
         { label: "Atividade", href: "atividade.html", icon: "activity" },
       ],
     },
   };
 
   const PAGE_TO_GROUP = {
-    "clientes.html":  "clientes",
-    "ml-tokens.html": "clientes",
-    "callbacks.html": "clientes",
-    "usuarios.html":  "admin",
-    "atividade.html": "admin",
+    "clientes.html":      "clientes",
+    "ml-tokens.html":     "clientes",
+    "callbacks.html":     "clientes",
+    "usuarios.html":      "admin",
+    "atividade.html":     "admin",
+    "anuncios-meli.html": "operacao",
+    "ads.html":           "operacao",
+    "design.html":        "operacao",
+    "scans.html":         "operacao",
+    "automacoes.html":    "operacao",
+    "financeiro.html":    "operacao",
+    "relatorios.html":    "operacao",
+    "fechamento.html":    "operacao",
+    "extensao.html":      "operacao",
+    "ferramenta-or.html": "operacao",
+    "dashboard.html":     "operacao",
   };
 
   function detectGroup() {

@@ -5150,3 +5150,19 @@ body {
   border-bottom-width: 2.5px;
   font-weight: 700;
 }
+
+/* ── Sidebar section separators ── */
+.vf-sidebar-separator {
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--vf-text-l);
+  padding: 1rem 0.875rem 0.25rem;
+  user-select: none;
+  opacity: 0.6;
+}
+
+.vf-sidebar.is-collapsed .vf-sidebar-separator {
+  display: none;
+}

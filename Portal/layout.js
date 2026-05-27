@@ -73,6 +73,9 @@
     if (name === "database") {
       return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>`;
     }
+    if (name === "book-open") {
+      return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>`;
+    }
     return "";
   }
 
@@ -83,18 +86,33 @@
       label: "Operação",
       defaultPage: "dashboard.html",
       links: [
-        { label: "Dashboard",     href: "dashboard.html",     icon: "vf-dashboard"  },
-        { label: "Bases de custo",href: "dashboard.html",     icon: "database"      },
-        { label: "Anúncios ML",   href: "anuncios-meli.html", icon: "activity",     adminOnly: true },
-        { label: "Mercado Ads",   href: "ads.html",           icon: "trending-up"   },
-        { label: "Otimizador",    href: "automacoes.html",    icon: "repeat"        },
-        { label: "Design",        href: "design.html",        icon: "layers"        },
-        { label: "Scans",         href: "scans.html",         icon: "search"        },
-        { label: "Financeiro",    href: "financeiro.html",    icon: "vf-financeiro" },
-        { label: "Relatórios",    href: "relatorios.html",    icon: "bar-chart"     },
-        { label: "Conversão",     href: "fechamento.html",    icon: "vf-fechamento" },
-        { label: "Extensão",      href: "extensao.html",      icon: "download"      },
-        { label: "Ferramenta OR", href: "ferramenta-or.html", icon: "download"      },
+        { separator: true, label: "INÍCIO" },
+        { label: "Dashboard",    href: "dashboard.html",     icon: "vf-dashboard" },
+
+        { separator: true, label: "MARKETPLACE" },
+        { label: "Bases",        href: "dashboard.html",     icon: "database"     },
+        { label: "Anúncios ML",  href: "anuncios-meli.html", icon: "activity",    adminOnly: true },
+        { label: "Mercado Ads",  href: "ads.html",           icon: "trending-up"  },
+        { label: "Otimizador",   href: "automacoes.html",    icon: "repeat"       },
+        { label: "Automações",   href: "automacoes.html",    icon: "repeat"       },
+        { label: "Design",       href: "design.html",        icon: "layers"       },
+        { label: "Scans",        href: "scans.html",         icon: "search"       },
+
+        { separator: true, label: "ANÁLISES" },
+        { label: "Financeiro",   href: "financeiro.html",    icon: "vf-financeiro" },
+        { label: "Conversão",    href: "fechamento.html",    icon: "vf-fechamento" },
+        { label: "Relatórios",   href: "relatorios.html",    icon: "bar-chart"     },
+
+        { separator: true, label: "FERRAMENTAS" },
+        { label: "Extensão",      href: "extensao.html",      icon: "download" },
+        { label: "Ferramenta OR", href: "ferramenta-or.html", icon: "download" },
+      ],
+    },
+    guia: {
+      label: "Guia - Vendedor",
+      defaultPage: "guia-vendedor.html",
+      links: [
+        { label: "Guia do Vendedor", href: "guia-vendedor.html", icon: "book-open" },
       ],
     },
     clientes: {
@@ -122,22 +140,23 @@
   };
 
   const PAGE_TO_GROUP = {
-    "clientes.html":      "clientes",
-    "ml-tokens.html":     "clientes",
-    "callbacks.html":     "clientes",
-    "usuarios.html":      "admin",
-    "atividade.html":     "admin",
-    "anuncios-meli.html": "operacao",
-    "ads.html":           "operacao",
-    "design.html":        "operacao",
-    "scans.html":         "operacao",
-    "automacoes.html":    "operacao",
-    "financeiro.html":    "operacao",
-    "relatorios.html":    "operacao",
-    "fechamento.html":    "operacao",
-    "extensao.html":      "operacao",
-    "ferramenta-or.html": "operacao",
-    "dashboard.html":     "operacao",
+    "clientes.html":        "clientes",
+    "ml-tokens.html":       "clientes",
+    "callbacks.html":       "clientes",
+    "usuarios.html":        "admin",
+    "atividade.html":       "admin",
+    "guia-vendedor.html":   "guia",
+    "anuncios-meli.html":   "operacao",
+    "ads.html":             "operacao",
+    "design.html":          "operacao",
+    "scans.html":           "operacao",
+    "automacoes.html":      "operacao",
+    "financeiro.html":      "operacao",
+    "relatorios.html":      "operacao",
+    "fechamento.html":      "operacao",
+    "extensao.html":        "operacao",
+    "ferramenta-or.html":   "operacao",
+    "dashboard.html":       "operacao",
   };
 
   function detectGroup() {
@@ -149,8 +168,11 @@
     const group = NAV_GROUPS[groupId];
     if (!group) return "";
     return group.links
-      .filter((l) => !l.adminOnly || isAdmin)
+      .filter((l) => l.separator || !l.adminOnly || isAdmin)
       .map((l) => {
+        if (l.separator) {
+          return `<div class="vf-sidebar-separator">${l.label}</div>`;
+        }
         const cls = isActiveLink(l.href) ? ' class="active"' : "";
         return `<a${cls} href="${l.href}">${svgIcon(l.icon)}<span>${l.label}</span></a>`;
       })

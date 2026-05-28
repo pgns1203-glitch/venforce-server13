@@ -76,6 +76,9 @@
     if (name === "book-open") {
       return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>`;
     }
+    if (name === "media") {
+      return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>`;
+    }
     return "";
   }
 
@@ -104,8 +107,9 @@
         { label: "Relatórios",   href: "relatorios.html",    icon: "bar-chart"     },
 
         { separator: true, label: "FERRAMENTAS" },
-        { label: "Extensão",      href: "extensao.html",      icon: "download" },
-        { label: "Ferramenta OR", href: "ferramenta-or.html", icon: "download" },
+        { label: "Extensão",         href: "extensao.html",       icon: "download" },
+        { label: "Ferramenta OR",    href: "ferramenta-or.html",  icon: "download" },
+        { label: "Baixador de Mídias", href: "baixador-midias.html", icon: "media"  },
       ],
     },
     guia: {
@@ -154,8 +158,9 @@
     "financeiro.html":      "operacao",
     "relatorios.html":      "operacao",
     "fechamento.html":      "operacao",
-    "extensao.html":        "operacao",
-    "ferramenta-or.html":   "operacao",
+    "extensao.html":          "operacao",
+    "ferramenta-or.html":     "operacao",
+    "baixador-midias.html":   "operacao",
     "dashboard.html":       "operacao",
   };
 

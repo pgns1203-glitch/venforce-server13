@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "VenForce Go",
-  "version": "1.1.5",
-  "description": "Gestão de bases e custos da VenForce",
+  "version": "1.2.0",
+  "description": "HUD premium VenForce para análise de custos, margem e precificação em anúncios Mercado Livre.",
   "permissions": [
     "storage",
     "tabs",
@@ -24,7 +24,7 @@
     }
   ],
   "action": {
-    "default_title": "VenForce"
+    "default_title": "VenForce Go — HUD de Margem"
   },
   "background": {
     "service_worker": "background.js"

@@ -5185,6 +5185,12 @@ body {
   border-color: rgba(37, 99, 235, .18);
 }
 
+/* Card de filtros precisa de overflow visible para o popover do calendário
+   não ser cortado pelo overflow:hidden global do .vf-card */
+.vf-page-metricas .ads-filters-card {
+  overflow: visible;
+}
+
 /* ── Filtros ────────────────────────────────────────────────────── */
 .metricas-filters-body {
   display: grid;

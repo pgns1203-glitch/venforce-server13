@@ -70,7 +70,8 @@ async function getResumoExecutivo(options = {}) {
     pageLimit,
   });
 
-  const listTasks = allTasks.filter((task) => isTaskFromTargetList(task, targetListId, targetListName));
+  const listFilter = filterTasksForTargetList(allTasks, targetListId, targetListName);
+  const listTasks = listFilter.tasks;
 
   const deliveries = listTasks
     .filter(isDeliveryTask)
@@ -87,10 +88,13 @@ async function getResumoExecutivo(options = {}) {
     meta: {
       fetched_tasks: allTasks.length,
       filtered_list_tasks: listTasks.length,
+      deliveries_in_period: deliveries.length,
+      filter_mode: listFilter.filterMode,
+      target_list_id: targetListId || null,
+      target_list_name: targetListName,
       page_limit: pageLimit,
       include_comments: includeComments,
-      list_id: targetListId || null,
-      list_name: targetListName,
+      available_lists_sample: buildAvailableListsSample(allTasks),
     },
   });
 
@@ -120,6 +124,57 @@ async function fetchWorkspaceTasks({ config, pageLimit }) {
   }
 
   return tasks;
+}
+
+function filterTasksForTargetList(tasks, targetListId, targetListName) {
+  const expectedName = String(targetListName || DEFAULT_LIST_NAME).trim();
+
+  if (targetListId) {
+    const byId = tasks.filter((task) => getTaskListInfo(task).id === targetListId);
+    if (byId.length > 0) {
+      return { tasks: byId, filterMode: 'list_id' };
+    }
+
+    return {
+      tasks: tasks.filter((task) => getTaskListInfo(task).name === expectedName),
+      filterMode: 'list_name_fallback',
+    };
+  }
+
+  return {
+    tasks: tasks.filter((task) => getTaskListInfo(task).name === expectedName),
+    filterMode: 'list_name',
+  };
+}
+
+function buildAvailableListsSample(tasks) {
+  const lists = new Map();
+
+  for (const task of tasks) {
+    const list = getTaskListInfo(task);
+    const key = list.id || list.name || 'sem_lista';
+
+    if (!lists.has(key)) {
+      lists.set(key, {
+        id: list.id || null,
+        name: list.name || 'sem_lista',
+        count: 0,
+      });
+    }
+
+    lists.get(key).count += 1;
+  }
+
+  return Array.from(lists.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+}
+
+function getTaskListInfo(task) {
+  return {
+    id: String(safeNested(task, ['list', 'id']) || '').trim(),
+    name: String(safeNested(task, ['list', 'name']) || '').trim(),
+  };
 }
 
 async function fetchTaskComments(taskId, config) {
@@ -355,23 +410,12 @@ function mapDelivery(task, comment) {
     tarefa: task.name || '-',
     comentario: comment ? extractCommentText(comment) : 'Sem comentário',
     responsaveis: getAssigneeNames(task),
-    criador: safeNested(task, ['creator', 'username']) || safeNested(task, ['creator', 'email']) || null,
+    criador: safeNested(task, ['creator', 'username']) || safeNested(task, ['creator', 'name']) || null,
     canal: safeNested(task, ['list', 'name']) || 'sem_canal',
     cliente: safeNested(task, ['folder', 'name']) || 'sem_cliente',
     status_final: safeNested(task, ['status', 'status']) || 'sem_status',
     link: task.url || null,
   };
-}
-
-function isTaskFromTargetList(task, targetListId, targetListName) {
-  const taskListId = String(safeNested(task, ['list', 'id']) || '').trim();
-  const taskListName = String(safeNested(task, ['list', 'name']) || '').trim();
-
-  if (targetListId) {
-    return taskListId === String(targetListId).trim();
-  }
-
-  return taskListName === targetListName;
 }
 
 function isDeliveryTask(task) {
@@ -396,7 +440,7 @@ function getAssigneeNames(task) {
   const assignees = Array.isArray(task.assignees) ? task.assignees : [];
 
   const names = assignees
-    .map((assignee) => assignee.username || assignee.name || assignee.email)
+    .map((assignee) => assignee.username || assignee.name)
     .filter(Boolean);
 
   return names.length ? names : ['sem_responsavel'];

@@ -1,6 +1,4 @@
 const ClickUpExecutivo = (() => {
-  const DEFAULT_API_URL = 'https://venforce-server.onrender.com';
-
   const state = {
     data: null,
     filteredDeliveries: [],
@@ -76,14 +74,14 @@ const ClickUpExecutivo = (() => {
         return;
       }
 
-      const apiBase = window.API_URL || window.VF_API_URL || DEFAULT_API_URL;
       const params = new URLSearchParams({
         date_from: els.dateFrom.value,
         date_to: els.dateTo.value,
         include_comments: 'false',
+        page_limit: '120',
       });
 
-      const response = await fetch(`${apiBase}/api/clickup/executivo/resumo?${params.toString()}`, {
+      const response = await fetch(`/api/clickup/executivo/resumo?${params.toString()}`, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -100,8 +98,9 @@ const ClickUpExecutivo = (() => {
       state.data = payload;
       hydrateFilters(payload);
       applyFiltersAndRender();
+      showMetaWarning(payload.meta);
     } catch (error) {
-      showAlert(error.message || 'Erro ao carregar dados do ClickUp.');
+      showAlert(`Erro ao carregar ClickUp: ${error.message || 'Erro desconhecido.'}`);
       renderEmpty();
     } finally {
       setLoading(false);
@@ -110,10 +109,43 @@ const ClickUpExecutivo = (() => {
 
   function hydrateFilters(payload) {
     const entregas = Array.isArray(payload.entregas) ? payload.entregas : [];
+    const people = Array.isArray(payload.por_pessoa) ? payload.por_pessoa : [];
+    const clients = Array.isArray(payload.por_cliente) ? payload.por_cliente : [];
+    const channels = Array.isArray(payload.por_canal) ? payload.por_canal : [];
 
-    fillSelect(els.personFilter, unique(entregas.flatMap((item) => item.responsaveis || [])), 'Todos');
-    fillSelect(els.clientFilter, unique(entregas.map((item) => item.cliente || 'sem_cliente')), 'Todos');
-    fillSelect(els.channelFilter, unique(entregas.map((item) => item.canal || 'sem_canal')), 'Todos');
+    fillSelect(
+      els.personFilter,
+      unique([...entregas.flatMap((item) => item.responsaveis || []), ...people.map((item) => item.responsavel)]),
+      'Todos'
+    );
+    fillSelect(
+      els.clientFilter,
+      unique([...entregas.map((item) => item.cliente || 'sem_cliente'), ...clients.map((item) => item.cliente)]),
+      'Todos'
+    );
+    fillSelect(
+      els.channelFilter,
+      unique([...entregas.map((item) => item.canal || 'sem_canal'), ...channels.map((item) => item.canal)]),
+      'Todos'
+    );
+  }
+
+  function showMetaWarning(meta = {}) {
+    const fetched = Number(meta.fetched_tasks || 0);
+    const filtered = Number(meta.filtered_list_tasks || 0);
+    const deliveries = Number(meta.deliveries_in_period || 0);
+
+    if (fetched === 0 || filtered === 0) {
+      showAlert('Nenhuma tarefa encontrada para a lista configurada. Verifique CLICKUP_NOVA_GESTAO_LIST_ID ou nome da lista.');
+      return;
+    }
+
+    if (deliveries === 0) {
+      showAlert('Existem tarefas na lista, mas nenhuma entrega concluída no período filtrado.');
+      return;
+    }
+
+    hideAlert();
   }
 
   function applyFiltersAndRender() {
@@ -174,6 +206,20 @@ const ClickUpExecutivo = (() => {
   function buildPeopleFromDeliveries(deliveries, backendPeople) {
     const map = new Map();
     const backendMap = new Map(backendPeople.map((item) => [item.responsavel, item]));
+
+    backendPeople.forEach((item) => {
+      if (!item.responsavel) return;
+      map.set(item.responsavel, {
+        responsavel: item.responsavel,
+        total_tarefas: item.total_tarefas || 0,
+        concluidas: 0,
+        abertas: item.abertas || 0,
+        atrasadas_abertas: item.atrasadas_abertas || 0,
+        sem_prazo: item.sem_prazo || 0,
+        com_comentario: 0,
+        score_uso: item.score_uso || 0,
+      });
+    });
 
     for (const delivery of deliveries) {
       const people = delivery.responsaveis?.length ? delivery.responsaveis : ['sem_responsavel'];
@@ -275,7 +321,9 @@ const ClickUpExecutivo = (() => {
   }
 
   function renderEmpty() {
+    state.filteredDeliveries = [];
     renderKpis({ resumo: {} });
+    if (els.tableCount) els.tableCount.textContent = '0 registros';
     els.peopleBody.innerHTML = `<tr><td class="vf-clickup-empty" colspan="8">Sem dados carregados.</td></tr>`;
     els.deliveriesBody.innerHTML = `<tr><td class="vf-clickup-empty" colspan="8">Sem dados carregados.</td></tr>`;
     els.clientRanking.innerHTML = `<div class="vf-clickup-empty">Sem dados.</div>`;

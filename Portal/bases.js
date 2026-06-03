@@ -48,6 +48,11 @@ const basesTbody   = document.getElementById("bases-tbody");
 let TODAS_BASES = [];
 let BASES_FILTRO_MARKETPLACE = "todos";
 let BASES_BUSCA = "";
+let CLIENTES_DISPONIVEIS = [];
+let CLIENTES_CARREGADOS = false;
+let VINCULOS_EDITAVEIS = true;
+let VINCULO_BASE_ATUAL = null;
+let VINCULOS_AVISO_ATIVO = false;
 
 // ─── Estado (exclusão) ───
 let BASE_DELETE_PENDENTE = null; // { slug, nome, btn }
@@ -65,54 +70,70 @@ function setDashboardFeedback(msg, type = "neutral") {
   el.textContent = msg;
 }
 
-function detectarMarketplaceBase(base) {
-  const norm = (v) =>
-    String(v || "")
-      .toLowerCase()
-      .trim()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "");
+function normalizarMarketplaceKey(valor) {
+  const raw = String(valor || "").toLowerCase().trim();
+  if (raw.includes("shopee")) return "shopee";
+  if (raw.includes("meli") || raw.includes("mercado")) return "meli";
+  if (raw === "outro") return "outro";
+  return "outro";
+}
 
-  const rawMarketplace = norm(base?.marketplace);
-  if (rawMarketplace) {
-    if (rawMarketplace.includes("shopee")) return { key: "shopee", label: "Shopee" };
-    if (rawMarketplace.includes("meli") || rawMarketplace.includes("mercado")) return { key: "meli", label: "Mercado Livre" };
+function marketplaceLabel(key) {
+  const k = normalizarMarketplaceKey(key);
+  if (k === "meli") return "Mercado Livre";
+  if (k === "shopee") return "Shopee";
+  return "Outro";
+}
+
+function getMarketplaceDisplay(base) {
+  if (base?.vinculo?.marketplace) {
+    const key = normalizarMarketplaceKey(base.vinculo.marketplace);
+    return { key, label: marketplaceLabel(key), origem: "oficial" };
   }
+  if (base?.sugestao?.marketplace) {
+    const key = normalizarMarketplaceKey(base.sugestao.marketplace);
+    if (key === "outro") return { key: "nao_definido", label: "Não definido", origem: "sugestao" };
+    return { key, label: marketplaceLabel(key), origem: "sugestao" };
+  }
+  return { key: "nao_definido", label: "Não definido", origem: "nenhum" };
+}
 
-  const nome = norm(base?.nome);
-  const slug = norm(base?.slug);
-  const hay = `${nome} ${slug}`;
+function detectarMarketplaceBase(base) {
+  return getMarketplaceDisplay(base);
+}
 
-  // Shopee: detectar se contiver shopee/shop/shp/sp_
-  // Prioridade só quando "shopee" aparece explicitamente e conflita com meli.
-  const hasShopeeExplicit = hay.includes("shopee");
-  const hasShopee = hasShopeeExplicit || hay.includes("shop") || hay.includes("shp") || hay.includes("sp_");
+function formatDateTime(value) {
+  if (!value) return "--";
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return "--";
+  return d.toLocaleString("pt-BR");
+}
 
-  // Mercado Livre: detectar se contiver meli, variações de "mercado livre", ml separado por _/- ou mlb
-  const hasMeli =
-    hay.includes("meli") ||                 // cobre jf_meli1, influencia_meli2, etc.
-    hay.includes("mercado_livre") ||
-    hay.includes("mercado-livre") ||
-    hay.includes("mercadolivre") ||
-    hay.includes("mercado livre") ||
-    hay.includes("mlb") ||
-    /(^|[_\-\s])ml([_\-\s]|$)/i.test(hay) || // _ml, ml_, -ml, ml-, etc.
-    /(^|[_\-\s])mlb([_\-\s]|\d|$)/i.test(hay);
-
-  // Regra: se tiver shopee e meli no mesmo texto, prioriza Shopee apenas se "shopee" explícito.
-  if (hasShopeeExplicit) return { key: "shopee", label: "Shopee" };
-  if (hasMeli) return { key: "meli", label: "Mercado Livre" };
-  if (hasShopee) return { key: "shopee", label: "Shopee" };
-  return { key: "outro", label: "Não identificado" };
+function getClienteTexto(base) {
+  const v = base?.vinculo || null;
+  const s = base?.sugestao || null;
+  return [
+    v?.cliente_nome,
+    v?.cliente_slug,
+    s?.cliente_nome,
+    s?.cliente_slug,
+  ].filter(Boolean).join(" ");
 }
 
 function getBasesFiltradas() {
   const termo = String(BASES_BUSCA || "").toLowerCase().trim();
   return (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).filter((b) => {
-    const mp = detectarMarketplaceBase(b);
-    if (BASES_FILTRO_MARKETPLACE !== "todos" && mp.key !== BASES_FILTRO_MARKETPLACE) return false;
+    const mp = getMarketplaceDisplay(b);
+    const temVinculo = !!b?.vinculo;
+    const temSugestao = !temVinculo && !!b?.sugestao;
+
+    if (BASES_FILTRO_MARKETPLACE === "vinculados" && !temVinculo) return false;
+    if (BASES_FILTRO_MARKETPLACE === "sem_vinculo" && temVinculo) return false;
+    if (BASES_FILTRO_MARKETPLACE === "sugestoes" && !temSugestao) return false;
+    if (["meli", "shopee", "outro"].includes(BASES_FILTRO_MARKETPLACE) && mp.key !== BASES_FILTRO_MARKETPLACE) return false;
+
     if (!termo) return true;
-    const hay = `${b?.nome || ""} ${b?.slug || ""}`.toLowerCase();
+    const hay = `${b?.nome || ""} ${b?.slug || ""} ${getClienteTexto(b)}`.toLowerCase();
     return hay.includes(termo);
   });
 }
@@ -122,9 +143,12 @@ function renderBasesChips() {
   if (!wrap) return;
   const chips = [
     { key: "todos", label: "Todos" },
+    { key: "vinculados", label: "Com vínculo" },
+    { key: "sem_vinculo", label: "Sem vínculo" },
+    { key: "sugestoes", label: "Sugestões" },
     { key: "meli", label: "Mercado Livre" },
     { key: "shopee", label: "Shopee" },
-    { key: "outro", label: "Não identificado" },
+    { key: "outro", label: "Outro" },
   ];
   wrap.innerHTML = chips.map((c) => {
     const active = c.key === BASES_FILTRO_MARKETPLACE ? "active" : "";
@@ -134,6 +158,7 @@ function renderBasesChips() {
     btn.addEventListener("click", () => {
       BASES_FILTRO_MARKETPLACE = btn.getAttribute("data-base-filter") || "todos";
       renderBasesChips();
+      renderBasesSummary();
       renderBases(getBasesFiltradas());
     });
   });
@@ -142,16 +167,16 @@ function renderBasesChips() {
 function renderBasesSummary() {
   const el = document.getElementById("bases-summary");
   if (!el) return;
-  const bases = getBasesFiltradas();
+  const bases = Array.isArray(TODAS_BASES) ? TODAS_BASES : [];
   const total = bases.length;
-  const meli = bases.filter((b) => detectarMarketplaceBase(b).key === "meli").length;
-  const shopee = bases.filter((b) => detectarMarketplaceBase(b).key === "shopee").length;
-  const outro = bases.filter((b) => detectarMarketplaceBase(b).key === "outro").length;
+  const comVinculo = bases.filter((b) => !!b?.vinculo).length;
+  const semVinculo = bases.filter((b) => !b?.vinculo).length;
+  const sugestoes = bases.filter((b) => !b?.vinculo && !!b?.sugestao).length;
   const cards = [
     { label: "Total de bases", value: String(total) },
-    { label: "Mercado Livre", value: String(meli) },
-    { label: "Shopee", value: String(shopee) },
-    { label: "Não identificado", value: String(outro) },
+    { label: "Com vínculo oficial", value: String(comVinculo) },
+    { label: "Sem vínculo", value: String(semVinculo) },
+    { label: "Sugestões pendentes", value: String(sugestoes) },
   ];
   el.innerHTML = cards.map((c) => `
     <div class="vf-relatorios-summary-card">
@@ -221,22 +246,176 @@ function showError(msg) {
   document.getElementById("error-message").textContent = msg;
 }
 
-// ─── Carregar bases ───
+async function carregarClientesParaVinculos(silencioso = false) {
+  if (!TOKEN || CLIENTES_CARREGADOS || !VINCULOS_EDITAVEIS) return CLIENTES_DISPONIVEIS;
+  try {
+    const res = await fetch(`${API_BASE}/base-vinculos/clientes`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    if (res.status === 401) { clearSession(); return []; }
+    if (res.status === 403) {
+      setDashboardFeedback("Não foi possível carregar a lista de clientes para vínculo.", "danger");
+      return [];
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+    CLIENTES_DISPONIVEIS = Array.isArray(data.clientes)
+      ? data.clientes
+        .filter((c) => c.ativo !== false)
+        .map((c) => ({ id: c.id, nome: c.nome, slug: c.slug, ativo: c.ativo }))
+      : [];
+    CLIENTES_CARREGADOS = true;
+    return CLIENTES_DISPONIVEIS;
+  } catch (err) {
+    if (!silencioso) setDashboardFeedback("Não foi possível carregar os clientes para vínculo.", "danger");
+    return CLIENTES_DISPONIVEIS;
+  }
+}
+
+function normalizarBasePrincipal(base) {
+  return {
+    ...base,
+    vinculo: base?.vinculo || null,
+    sugestao: base?.sugestao || null,
+  };
+}
+
+function chaveBasePorId(base) {
+  const id = base?.id;
+  return id == null || id === "" ? "" : String(id);
+}
+
+function chaveBasePorSlug(base) {
+  const slug = String(base?.slug || "").trim().toLowerCase();
+  return slug ? `slug:${slug}` : "";
+}
+
+function aplicarVinculosNasBases(bases, basesComVinculos) {
+  const porId = new Map();
+  const porSlug = new Map();
+  (Array.isArray(basesComVinculos) ? basesComVinculos : []).forEach((b) => {
+    const idKey = chaveBasePorId(b);
+    const slugKey = chaveBasePorSlug(b);
+    if (idKey) porId.set(idKey, b);
+    if (slugKey) porSlug.set(slugKey, b);
+  });
+
+  return (Array.isArray(bases) ? bases : []).map((base) => {
+    const enriquecida = porId.get(chaveBasePorId(base)) || porSlug.get(chaveBasePorSlug(base));
+    if (!enriquecida) return { ...base, vinculo: null, sugestao: null };
+    return {
+      ...base,
+      vinculo: enriquecida.vinculo || null,
+      sugestao: enriquecida.sugestao || null,
+    };
+  });
+}
+
+async function carregarBasesPrincipais() {
+  const res = await fetch(`${API_BASE}/bases`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  if (res.status === 401) { clearSession(); return null; }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+  const bases = Array.isArray(data?.bases) ? data.bases : (Array.isArray(data) ? data : []);
+  return bases.map(normalizarBasePrincipal);
+}
+
+async function carregarVinculosComplementares() {
+  const res = await fetch(`${API_BASE}/base-vinculos`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  if (res.status === 401) { clearSession(); return null; }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+  return Array.isArray(data?.bases) ? data.bases : [];
+}
+
+function renderBasesTela() {
+  renderBasesChips();
+  renderBasesSummary();
+  renderBases(getBasesFiltradas());
+}
+
 async function loadBases() {
   if (!TOKEN) return;
   showLoading();
+
+  let basesPrincipais = [];
   try {
-    const res = await fetch(`${API_BASE}/bases`, { headers: { Authorization: `Bearer ${TOKEN}` } });
-    if (res.status === 401) { clearSession(); return; }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { bases } = await res.json();
-    TODAS_BASES = Array.isArray(bases) ? bases : [];
-    renderBasesChips();
-    renderBasesSummary();
-    renderBases(getBasesFiltradas());
+    basesPrincipais = await carregarBasesPrincipais();
+    if (!basesPrincipais) return;
+    TODAS_BASES = basesPrincipais;
+    renderBasesTela();
   } catch (err) {
     showError("Não foi possível carregar as bases. Tente novamente.");
+    return;
   }
+
+  try {
+    const basesComVinculos = await carregarVinculosComplementares();
+    if (!basesComVinculos) return;
+    TODAS_BASES = aplicarVinculosNasBases(basesPrincipais, basesComVinculos);
+    if (VINCULOS_AVISO_ATIVO) {
+      setDashboardFeedback("");
+      VINCULOS_AVISO_ATIVO = false;
+    }
+    await carregarClientesParaVinculos(true);
+    renderBasesTela();
+  } catch (err) {
+    VINCULOS_AVISO_ATIVO = true;
+    setDashboardFeedback("Vínculos indisponíveis no momento. As bases continuam listadas normalmente.", "neutral");
+  }
+}
+
+function renderClienteCell(base) {
+  const v = base?.vinculo;
+  const s = base?.sugestao;
+  if (v) {
+    return `
+      <div><strong>${escapeHTML(v.cliente_nome || "—")}</strong></div>
+      <div style="color:var(--vf-text-m);font-family:var(--vf-mono);font-size:.78rem;">${escapeHTML(v.cliente_slug || "—")}</div>
+      <div style="margin-top:6px;"><span class="vf-status-pill vf-status-pill-success">Vínculo oficial</span></div>
+    `;
+  }
+  const sugestaoHtml = s ? `
+    <div style="margin-top:6px;color:var(--vf-text-m);font-size:.78rem;line-height:1.35;">
+      Sugestão:
+      <strong>${escapeHTML(s.cliente_nome || s.cliente_slug || "cliente sugerido")}</strong>
+      <span style="font-family:var(--vf-mono);">${escapeHTML(s.cliente_slug ? `(${s.cliente_slug})` : "")}</span> — confirmar para tornar oficial
+    </div>
+  ` : "";
+  return `
+    <div><strong style="color:var(--vf-text-m);">Sem vínculo</strong></div>
+    ${sugestaoHtml}
+  `;
+}
+
+function renderMarketplaceCell(base) {
+  const mp = getMarketplaceDisplay(base);
+  if (mp.origem === "oficial") {
+    const cls = mp.key === "meli" ? "vf-status-pill-success" : (mp.key === "shopee" ? "vf-status-pill-warning" : "vf-status-pill-neutral");
+    return `<span class="vf-status-pill ${cls}">${escapeHTML(mp.label)}</span>`;
+  }
+  if (mp.origem === "sugestao") {
+    return `
+      <span class="vf-status-pill vf-status-pill-neutral">${escapeHTML(mp.label)}</span>
+      <div style="margin-top:6px;color:var(--vf-text-m);font-size:.75rem;">Sugestão automática</div>
+    `;
+  }
+  return `<span class="vf-status-pill vf-status-pill-neutral">Não definido</span>`;
+}
+
+function renderAcoesBase(base) {
+  const id = escapeHTML(String(base.id || ""));
+  const slug = escapeHTML(base.slug || "");
+  const nome = escapeHTML(base.nome || base.slug || "");
+  const vinculoBtns = VINCULOS_EDITAVEIS ? `
+    <button class="vf-action-btn vf-action-btn-secondary vf-btn-vincular-base" data-base-id="${id}">${base.vinculo ? "Alterar vínculo" : "Vincular"}</button>
+    ${base.vinculo ? `<button class="vf-action-btn vf-action-btn-neutral vf-btn-remover-vinculo" data-base-id="${id}">Remover vínculo</button>` : ""}
+  ` : "";
+  return `
+    <div class="vf-table-actions" style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;">
+      ${vinculoBtns}
+      <button class="vf-action-btn vf-action-btn-neutral asst-btn-baixar-base" data-slug="${slug}" data-nome="${nome}">Baixar</button>
+      <button class="vf-action-btn vf-action-btn-danger btn-excluir-base" data-slug="${slug}" data-nome="${nome}">Excluir</button>
+    </div>
+  `;
 }
 
 function renderBases(bases) {
@@ -247,31 +426,24 @@ function renderBases(bases) {
   basesCount.style.display = "inline-block";
 
   bases.forEach((base, i) => {
-    const data = new Date(base.updated_at).toLocaleString();
+    const data = formatDateTime(base.updated_at || base.created_at);
     const ativo = base.ativo !== false;
-    const mp = detectarMarketplaceBase(base);
     const tr    = document.createElement("tr");
     tr.classList.add("animate-fade-up");
     tr.style.animationDelay = `${i * 0.04}s`;
     tr.innerHTML = `
       <td style="color:var(--vf-text-l);font-family:var(--vf-mono);font-size:.8rem;">${String(i+1).padStart(2,"0")}</td>
-      <td><strong>${escapeHTML(base.nome || "—")}</strong></td>
-      <td style="color:var(--vf-text-m);font-size:.875rem;font-family:var(--vf-mono);">${escapeHTML(base.slug || "—")}</td>
-      <td style="font-size:.8rem;color:#888;">
-    ${data || "--"}
-  </td>
-      <td style="text-align:center;">
-        <span class="vf-status-pill ${mp.key === "meli" ? "vf-status-pill-success" : (mp.key === "shopee" ? "vf-status-pill-warning" : "vf-status-pill-neutral")}">${escapeHTML(mp.label)}</span>
+      <td>
+        <strong>${escapeHTML(base.nome || "—")}</strong>
+        <div style="color:var(--vf-text-m);font-size:.78rem;font-family:var(--vf-mono);margin-top:3px;">${escapeHTML(base.slug || "—")}</div>
       </td>
+      <td>${renderClienteCell(base)}</td>
+      <td style="text-align:center;">${renderMarketplaceCell(base)}</td>
+      <td style="font-size:.8rem;color:#888;">${escapeHTML(data)}</td>
       <td style="text-align:center;">
         <span class="vf-status-pill ${ativo ? "vf-status-pill-success" : "vf-status-pill-danger"}">${ativo ? "Ativa" : "Inativa"}</span>
       </td>
-      <td style="text-align:center;">
-        <div class="vf-table-actions">
-          <button class="vf-action-btn vf-action-btn-neutral asst-btn-baixar-base" data-slug="${escapeHTML(base.slug)}" data-nome="${escapeHTML(base.nome || base.slug)}">Baixar</button>
-          <button class="vf-action-btn vf-action-btn-danger" data-slug="${escapeHTML(base.slug)}" data-nome="${escapeHTML(base.nome || base.slug)}">Excluir</button>
-        </div>
-      </td>`;
+      <td style="text-align:center;">${renderAcoesBase(base)}</td>`;
     basesTbody.appendChild(tr);
   });
 
@@ -282,11 +454,19 @@ function renderBases(bases) {
     });
   });
 
-  basesTbody.querySelectorAll("button[data-slug]:not(.asst-btn-baixar-base)").forEach(btn => {
+  basesTbody.querySelectorAll(".btn-excluir-base").forEach(btn => {
     btn.addEventListener("click", () => {
       const { slug, nome } = btn.dataset;
       abrirModalExcluirBase({ slug, nome, btn });
     });
+  });
+
+  basesTbody.querySelectorAll(".vf-btn-vincular-base").forEach(btn => {
+    btn.addEventListener("click", () => abrirModalVinculo(btn.dataset.baseId));
+  });
+
+  basesTbody.querySelectorAll(".vf-btn-remover-vinculo").forEach(btn => {
+    btn.addEventListener("click", () => removerVinculoBase(btn.dataset.baseId, btn));
   });
 
   showTable();
@@ -311,6 +491,174 @@ async function deleteBase(slug, btn) {
     btn.disabled    = false;
     btn.textContent = "Excluir";
     throw err;
+  }
+}
+
+function getBasePorId(baseId) {
+  const id = String(baseId || "");
+  return (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).find((b) => String(b.id) === id) || null;
+}
+
+function setVinculoModalDanger(msg) {
+  const el = document.getElementById("vf-vinculo-base-danger");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.style.display = msg ? "block" : "none";
+}
+
+function setVinculoModalLoading(on) {
+  const save = document.getElementById("vf-vinculo-base-save");
+  const cliente = document.getElementById("vf-vinculo-cliente");
+  const marketplace = document.getElementById("vf-vinculo-marketplace");
+  if (save) {
+    save.disabled = on || !VINCULOS_EDITAVEIS;
+    save.textContent = on ? "Salvando..." : "Salvar vínculo";
+  }
+  if (cliente) cliente.disabled = on || !VINCULOS_EDITAVEIS;
+  if (marketplace) marketplace.disabled = on || !VINCULOS_EDITAVEIS;
+}
+
+function renderClientesOptions(clienteIdSelecionado) {
+  const select = document.getElementById("vf-vinculo-cliente");
+  if (!select) return;
+  const selected = String(clienteIdSelecionado || "");
+  const clientes = Array.isArray(CLIENTES_DISPONIVEIS) ? CLIENTES_DISPONIVEIS : [];
+  if (!clientes.length) {
+    select.innerHTML = `<option value="">Nenhum cliente disponível</option>`;
+    return;
+  }
+  select.innerHTML = `<option value="">Selecione um cliente...</option>` + clientes.map((c) => {
+    const id = String(c.id || "");
+    const nome = c.nome || c.slug || "Cliente";
+    const slug = c.slug ? ` (${c.slug})` : "";
+    const sel = id === selected ? " selected" : "";
+    return `<option value="${escapeHTML(id)}"${sel}>${escapeHTML(nome + slug)}</option>`;
+  }).join("");
+}
+
+function setModalPermissaoVisivel(visivel) {
+  const msg = document.getElementById("vf-vinculo-base-permissao");
+  if (!msg) return;
+  msg.textContent = visivel ? "Não foi possível carregar os dados de vínculo de bases." : "";
+  msg.style.display = visivel ? "block" : "none";
+}
+
+function renderSugestaoModal(base) {
+  const el = document.getElementById("vf-vinculo-base-sugestao");
+  if (!el) return;
+  const s = base?.sugestao;
+  if (!s || base?.vinculo) {
+    el.style.display = "none";
+    el.textContent = "";
+    return;
+  }
+  el.classList.add("show");
+  el.style.display = "flex";
+  el.textContent = `Sugestão: ${s.cliente_nome || s.cliente_slug || "cliente sugerido"} — confirmar para tornar oficial (${marketplaceLabel(s.marketplace)}).`;
+}
+
+async function abrirModalVinculo(baseId) {
+  const base = getBasePorId(baseId);
+  if (!base) return;
+
+  const modal = document.getElementById("vf-vinculo-base-modal");
+  const title = document.getElementById("vf-vinculo-base-title");
+  const sub = document.getElementById("vf-vinculo-base-subtitle");
+  const marketplace = document.getElementById("vf-vinculo-marketplace");
+  if (!modal) return;
+
+  VINCULO_BASE_ATUAL = base;
+  setVinculoModalDanger("");
+  setModalPermissaoVisivel(false);
+  renderSugestaoModal(base);
+
+  if (title) title.textContent = base.vinculo ? "Alterar vínculo" : "Vincular base";
+  if (sub) sub.textContent = `${base.nome || base.slug || "Base"} (${base.slug || "sem slug"})`;
+
+  await carregarClientesParaVinculos(false);
+
+  const clienteSugerido = base.vinculo?.cliente_id || base.sugestao?.cliente_id || "";
+  const marketplaceSugerido = base.vinculo?.marketplace || base.sugestao?.marketplace || "outro";
+  renderClientesOptions(clienteSugerido);
+  if (marketplace) marketplace.value = normalizarMarketplaceKey(marketplaceSugerido);
+
+  setModalPermissaoVisivel(!VINCULOS_EDITAVEIS);
+  setVinculoModalLoading(false);
+  modal.style.display = "flex";
+}
+
+function fecharModalVinculo() {
+  const modal = document.getElementById("vf-vinculo-base-modal");
+  if (modal) modal.style.display = "none";
+  VINCULO_BASE_ATUAL = null;
+  setVinculoModalDanger("");
+}
+
+async function salvarVinculoBase() {
+  if (!VINCULO_BASE_ATUAL || !VINCULOS_EDITAVEIS) return;
+  const clienteId = (document.getElementById("vf-vinculo-cliente") || {}).value || "";
+  const marketplace = (document.getElementById("vf-vinculo-marketplace") || {}).value || "";
+  if (!clienteId) {
+    setVinculoModalDanger("Selecione um cliente.");
+    return;
+  }
+  if (!marketplace) {
+    setVinculoModalDanger("Selecione um marketplace.");
+    return;
+  }
+
+  setVinculoModalLoading(true);
+  setVinculoModalDanger("");
+  try {
+    const res = await fetch(`${API_BASE}/base-vinculos`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        base_id: VINCULO_BASE_ATUAL.id,
+        cliente_id: Number(clienteId),
+        marketplace,
+      }),
+    });
+    if (res.status === 401) { clearSession(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 403) throw new Error("Não foi possível salvar o vínculo desta base.");
+    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+
+    fecharModalVinculo();
+    setDashboardFeedback("Vínculo salvo com sucesso.", "success");
+    await loadBases();
+  } catch (err) {
+    setVinculoModalDanger(err.message || "Não foi possível salvar o vínculo.");
+  } finally {
+    setVinculoModalLoading(false);
+  }
+}
+
+async function removerVinculoBase(baseId, btn) {
+  const base = getBasePorId(baseId);
+  if (!base || !base.vinculo) return;
+  const confirmou = confirm(`Remover o vínculo oficial da base "${base.nome || base.slug}"?`);
+  if (!confirmou) return;
+
+  const textoOriginal = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Removendo..."; }
+  try {
+    const res = await fetch(`${API_BASE}/base-vinculos/${encodeURIComponent(base.id)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    if (res.status === 401) { clearSession(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 403) throw new Error("Não foi possível remover o vínculo desta base.");
+    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+    setDashboardFeedback("Vínculo removido com sucesso.", "success");
+    await loadBases();
+  } catch (err) {
+    setDashboardFeedback("Erro ao remover vínculo: " + (err.message || "tente novamente."), "danger");
+    if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
   }
 }
 
@@ -507,9 +855,18 @@ document.getElementById("vf-excluir-base-confirm")?.addEventListener("click", co
 document.getElementById("vf-excluir-base-modal")?.addEventListener("click", (e) => {
   if (e.target?.id === "vf-excluir-base-modal") fecharModalExcluirBase();
 });
+document.getElementById("vf-vinculo-base-close")?.addEventListener("click", fecharModalVinculo);
+document.getElementById("vf-vinculo-base-cancel")?.addEventListener("click", fecharModalVinculo);
+document.getElementById("vf-vinculo-base-save")?.addEventListener("click", salvarVinculoBase);
+document.getElementById("vf-vinculo-base-modal")?.addEventListener("click", (e) => {
+  if (e.target?.id === "vf-vinculo-base-modal") fecharModalVinculo();
+});
 document.addEventListener("keydown", (e) => {
-  const modal = document.getElementById("vf-excluir-base-modal");
-  if (e.key === "Escape" && modal && modal.style.display !== "none") fecharModalExcluirBase();
+  const modalExcluir = document.getElementById("vf-excluir-base-modal");
+  const modalVinculo = document.getElementById("vf-vinculo-base-modal");
+  if (e.key !== "Escape") return;
+  if (modalVinculo && modalVinculo.style.display !== "none") fecharModalVinculo();
+  if (modalExcluir && modalExcluir.style.display !== "none") fecharModalExcluirBase();
 });
 
 // ─── Init ───

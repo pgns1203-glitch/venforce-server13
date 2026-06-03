@@ -1,5 +1,6 @@
 const {
   listarBasesComVinculos,
+  listarClientesDisponiveis,
   criarVinculoManual,
   desativarVinculoBase,
 } = require("../services/baseVinculosService");
@@ -16,6 +17,15 @@ async function listar(req, res) {
   try {
     const bases = await listarBasesComVinculos();
     return res.json({ ok: true, bases });
+  } catch (err) {
+    return responderErro(res, err);
+  }
+}
+
+async function listarClientes(req, res) {
+  try {
+    const clientes = await listarClientesDisponiveis();
+    return res.json({ ok: true, clientes });
   } catch (err) {
     return responderErro(res, err);
   }
@@ -56,6 +66,7 @@ async function remover(req, res) {
 
 module.exports = {
   listar,
+  listarClientes,
   criar,
   remover,
 };

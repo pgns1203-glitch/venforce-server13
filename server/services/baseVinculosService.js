@@ -163,6 +163,16 @@ async function listarBasesComVinculos() {
   });
 }
 
+async function listarClientesDisponiveis() {
+  const result = await pool.query(`
+    SELECT id, nome, slug, ativo
+    FROM clientes
+    WHERE ativo = true
+    ORDER BY nome ASC
+  `);
+  return result.rows;
+}
+
 async function criarVinculoManual({ baseId, clienteId, marketplace, userId }) {
   const baseIdNum = Number(baseId);
   const clienteIdNum = Number(clienteId);
@@ -266,6 +276,7 @@ async function desativarVinculoBase(baseId) {
 
 module.exports = {
   listarBasesComVinculos,
+  listarClientesDisponiveis,
   criarVinculoManual,
   desativarVinculoBase,
 };

@@ -1,12 +1,13 @@
 const express = require("express");
-const { authMiddleware, requireAdmin } = require("../middlewares/authMiddleware");
+const { authMiddleware } = require("../middlewares/authMiddleware");
 const controller = require("../controllers/baseVinculosController");
 
 const router = express.Router();
 
-router.use(authMiddleware, requireAdmin);
+router.use(authMiddleware);
 
 router.get("/", controller.listar);
+router.get("/clientes", controller.listarClientes);
 router.post("/", controller.criar);
 router.delete("/:baseId", controller.remover);
 

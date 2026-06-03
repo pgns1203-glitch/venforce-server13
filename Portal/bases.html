@@ -181,12 +181,12 @@
             <thead>
               <tr>
                 <th style="width:50px;">#</th>
-                <th>Nome da Base</th>
-                <th style="width:160px;">Slug</th>
-                <th>Atualizado</th>
+                <th>Base</th>
+                <th style="min-width:220px;">Cliente vinculado</th>
                 <th style="width:160px;text-align:center;">Marketplace</th>
+                <th style="width:140px;">Atualização</th>
                 <th style="width:100px;text-align:center;">Status</th>
-                <th style="width:90px;text-align:center;">Ações</th>
+                <th style="width:210px;text-align:center;">Ações</th>
               </tr>
             </thead>
             <tbody id="bases-tbody"></tbody>
@@ -263,6 +263,40 @@
       <div class="vf-modal-footer">
         <button type="button" id="vf-excluir-base-cancel" class="vf-action-btn vf-action-btn-secondary">Cancelar</button>
         <button type="button" id="vf-excluir-base-confirm" class="vf-action-btn vf-action-btn-danger">Excluir base</button>
+      </div>
+    </div>
+  </div>
+
+
+  <div id="vf-vinculo-base-modal" class="vf-modal-overlay" style="display:none;">
+    <div class="vf-modal-shell" role="dialog" aria-modal="true" aria-labelledby="vf-vinculo-base-title">
+      <div class="vf-modal-header">
+        <div>
+          <div id="vf-vinculo-base-title" class="vf-modal-title">Vincular base</div>
+          <div id="vf-vinculo-base-subtitle" class="vf-modal-subtitle"></div>
+        </div>
+        <button type="button" id="vf-vinculo-base-close" class="vf-modal-close" aria-label="Fechar">×</button>
+      </div>
+      <div class="vf-modal-body">
+        <div id="vf-vinculo-base-sugestao" class="vf-alert" style="display:none;margin:0 0 12px;"></div>
+        <div id="vf-vinculo-base-permissao" class="vf-danger-message" style="display:none;margin-bottom:12px;"></div>
+        <div class="vf-form-group" style="margin-bottom:12px;">
+          <label for="vf-vinculo-cliente">Cliente</label>
+          <select id="vf-vinculo-cliente" class="vf-input"></select>
+        </div>
+        <div class="vf-form-group" style="margin-bottom:0;">
+          <label for="vf-vinculo-marketplace">Marketplace</label>
+          <select id="vf-vinculo-marketplace" class="vf-input">
+            <option value="meli">Mercado Livre</option>
+            <option value="shopee">Shopee</option>
+            <option value="outro">Outro</option>
+          </select>
+        </div>
+        <div id="vf-vinculo-base-danger" class="vf-danger-message" style="display:none;margin-top:12px;"></div>
+      </div>
+      <div class="vf-modal-footer">
+        <button type="button" id="vf-vinculo-base-cancel" class="vf-action-btn vf-action-btn-secondary">Cancelar</button>
+        <button type="button" id="vf-vinculo-base-save" class="vf-action-btn">Salvar vínculo</button>
       </div>
     </div>
   </div>

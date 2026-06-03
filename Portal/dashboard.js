@@ -318,7 +318,7 @@ function renderPrioridades(bases, extras = []) {
               : all.some(p => p.nivel === "is-warning") ? "is-warning"
               : "is-info";
     countEl.className = `vf-tag ${cls}`;
-    countEl.textContent = `${all.length} ação${all.length !== 1 ? "ões" : ""}`;
+    countEl.textContent = all.length === 1 ? "1 ação" : `${all.length} ações`;
     countEl.style.display = "";
   }
 }
@@ -465,16 +465,8 @@ async function loadOperationMlStatus() {
     _scoreInput.clientesComToken = conectados;
     _scoreInput.clientesComBase  = comBase;
 
-    // Prioridade técnica: tokens expirados ou expirando em breve (separado dos cards)
-    if (tokensComProblema > 0) {
-      _priML.push({
-        tipo: "ml_token",
-        nivel: "is-danger",
-        titulo: `${tokensComProblema} token${tokensComProblema !== 1 ? "s" : ""} ML expirado${tokensComProblema !== 1 ? "s" : ""} ou expirando`,
-        meta: "Token expirado impede diagnóstico e Ads — reautorização necessária",
-        acao: '<a class="vf-btn vf-btn--sm vf-btn--ghost" href="ml-tokens.html">Reconectar token</a>',
-      });
-    }
+    // Alerta de tokens com problema preservado em _scoreInput para uso futuro,
+    // mas não exibido como prioridade na Faixa 1 (não é ação operacional diária).
 
     // Prioridade: clientes sem base
     if (semBase > 0) {

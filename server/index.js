@@ -60,7 +60,9 @@ const mlRoutes = require("./routes/mlRoutes");
 const automacoesRoutes = require("./routes/automacoesRoutes");
 const entregasClienteRoutes = require("./routes/entregasClienteRoutes");
 const basesRoutes = require("./routes/basesRoutes");
+const baseVinculosRoutes = require("./routes/baseVinculosRoutes");
 const assistenteBaseRoutes = require("./routes/assistenteBaseRoutes");
+const operacaoRoutes = require("./routes/operacaoRoutes");
 const adsRoutes = require("./routes/adsRoutes");
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("./services/activityLogService");
 const meliAnunciosRoutes = require("./routes/meliAnunciosRoutes");
@@ -240,6 +242,20 @@ app.get("/setup", async (req, res) => {
         ativo BOOLEAN NOT NULL DEFAULT true,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+      CREATE TABLE IF NOT EXISTS base_cliente_vinculos (
+        id SERIAL PRIMARY KEY,
+        base_id INTEGER REFERENCES bases(id) ON DELETE CASCADE,
+        cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+        marketplace TEXT,
+        origem TEXT DEFAULT 'manual',
+        ativo BOOLEAN DEFAULT true,
+        confirmado_por INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_base_cliente_vinculos_base_ativo
+        ON base_cliente_vinculos (base_id)
+        WHERE ativo = true;
 CREATE TABLE IF NOT EXISTS callbacks (
         id SERIAL PRIMARY KEY,
         cliente_id INTEGER REFERENCES clientes(id) ON DELETE SET NULL,
@@ -418,7 +434,9 @@ app.use("/", mlRoutes);
 app.use("/", automacoesRoutes);
 app.use("/", entregasClienteRoutes);
 app.use("/", basesRoutes);
+app.use("/base-vinculos", baseVinculosRoutes);
 app.use("/bases/assistente", assistenteBaseRoutes);
+app.use("/operacao", operacaoRoutes);
 app.use("/ads", adsRoutes);
 app.use("/anuncios-meli", meliAnunciosRoutes);
 app.use("/metricas", metricasRoutes);

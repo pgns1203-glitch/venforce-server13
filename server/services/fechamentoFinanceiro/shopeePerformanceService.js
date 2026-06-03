@@ -553,6 +553,7 @@ function parseCostRows(rows) {
       "id anúncio",
     ]);
     const modelIdRaw = findField(row, [
+      "id model",
       "id da variacao",
       "id da variação",
       "id de variacao",

@@ -571,17 +571,47 @@ function renderFinResumo(data) {
   }
 }
 
+function finColumnKey(col) {
+  return String(col || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function finColumnMinWidth(col, numericCols) {
+  const l = finColumnKey(col);
+  if (/(^id$|item_id|produto_id|id_produto|^# de anuncio$|id.*anuncio|anuncio.*id|mlb|sku)/.test(l)) return 140;
+  if (/marketplace|canal/.test(l)) return 128;
+  if (/titulo|title|nome|produto|descri|item_title/.test(l)) return 360;
+  if (/lc.*anuncio|anuncio.*lc/.test(l)) return 150;
+  if (/vendas|pedido/.test(l)) return 145;
+  if (/unidades|unid/.test(l)) return 145;
+  if (/comissao/.test(l)) return 130;
+  if (/taxa/.test(l)) return 125;
+  if (/imposto/.test(l)) return 115;
+  if (/custo/.test(l)) return 135;
+  if (/preco|price/.test(l)) return 130;
+  if (/total|brl|ajuste|frete/.test(l)) return 130;
+  if (/^lc$|^mc$|lucro|margem/.test(l)) return 110;
+  return numericCols.has(col) ? 120 : 150;
+}
+
 function finColumnCellClassAttr(col, numericCols) {
   const parts = [];
   if (numericCols.has(col)) parts.push("fc-td-num");
-  const l = String(col).toLowerCase();
-  if (
-    /(^id$|item_id|produto_id|id_produto|marketplace|canal|mlb|sku)/.test(l)
-  ) {
-    parts.push("fc-col-compact");
+
+  const l = finColumnKey(col);
+  if (/(^id$|item_id|produto_id|id_produto|^# de anuncio$|id.*anuncio|anuncio.*id|mlb|sku)/.test(l)) {
+    parts.push("fc-col-compact", "fc-col-id");
+  } else if (/marketplace|canal/.test(l)) {
+    parts.push("fc-col-compact", "fc-col-marketplace");
   } else if (/titulo|title|nome|produto|descri|item_title/.test(l)) {
     parts.push("fc-col-produto");
   }
+
+  if (/lc.*anuncio|anuncio.*lc/.test(l)) parts.push("fc-col-lc-ad");
+
   return parts.length ? ` class="${parts.join(" ")}"` : "";
 }
 
@@ -809,20 +839,12 @@ function renderFinTabela(data) {
       const start    = (currentPage - 1) * pageSize;
       const pageRows = filtered.slice(start, start + pageSize);
 
-      const COL_WIDTHS = {
-        "# de anúncio": "130px",
-        "Título do anúncio": "220px",
-        "Unidades": "70px",
-        "Preço unitário de venda do anúncio (BRL)": "90px",
-        "Venda Total": "100px",
-        "Total (BRL)": "100px",
-        "Imposto": "70px",
-        "Preço de custo": "90px",
-        "Preço de custo total": "100px",
-        "Ajuste plataforma (BRL)": "90px",
-        "LC": "90px",
-        "MC": "70px",
-      };
+      const detailMinWidth = Math.max(
+        1200,
+        columns.reduce((sum, c) => sum + finColumnMinWidth(c, numericCols), 0)
+      );
+      tableScrollEl.style.setProperty("--fc-detail-table-min-width", `${detailMinWidth}px`);
+
       const COL_ABBREV = {
         "Preço unitário de venda do anúncio (BRL)": "Preço Unit.",
         "Preço de custo total": "Custo Total",
@@ -830,7 +852,9 @@ function renderFinTabela(data) {
         "Título do anúncio": "Título",
       };
       const thHtml = columns.map((c) => {
-        const w = COL_WIDTHS[c] ? ` style="min-width:${COL_WIDTHS[c]};white-space:nowrap;"` : ' style="white-space:nowrap;"';
+        const minWidth = finColumnMinWidth(c, numericCols);
+        const isProductCol = /titulo|title|nome|produto|descri|item_title/.test(finColumnKey(c));
+        const w = ` style="min-width:${minWidth}px;${isProductCol ? "" : "white-space:nowrap;"}"`;
         const label = COL_ABBREV[c] || c;
         return `<th${finColumnCellClassAttr(c, numericCols)}${w}>${escapeHTML(String(label))}</th>`;
       }).join("");
@@ -842,7 +866,7 @@ function renderFinTabela(data) {
         return `<tr>${tds}</tr>`;
       }).join("");
 
-      tableScrollEl.innerHTML = `<table class="fc-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbodyHtml}</tbody></table>`;
+      tableScrollEl.innerHTML = `<table class="fc-table fc-fin-detail-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbodyHtml}</tbody></table>`;
 
       const showing = pageRows.length;
       counterEl.textContent = showing > 0

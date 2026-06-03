@@ -925,12 +925,20 @@
 
         .fc-table {
           width: 100%;
+          min-width: 100%;
           border-collapse: collapse;
         }
 
         .fc-table-scroll .fc-table {
-          table-layout: fixed;
+          table-layout: auto;
           min-width: 100%;
+        }
+
+        .vf-page-financeiro #fc-wrap .fc-table-scroll .fc-fin-detail-table {
+          width: max-content;
+          min-width: var(--fc-detail-table-min-width, 1680px);
+          max-width: none;
+          table-layout: auto;
         }
 
         .fc-table thead {
@@ -948,9 +956,10 @@
           border-bottom: 1px solid rgba(255,255,255,0.08);
           white-space: nowrap;
           font-weight: 800;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.05em;
           text-transform: uppercase;
           text-align: left;
+          line-height: 1.25;
         }
 
         .fc-table td {
@@ -967,6 +976,40 @@
 
         .fc-td-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
         .fc-td-center { text-align: center; white-space: nowrap; }
+
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table th,
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table td {
+          max-width: none;
+        }
+
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table th.fc-td-num,
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table td.fc-td-num {
+          text-align: right;
+        }
+
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table th.fc-col-compact,
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table td.fc-col-compact,
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table th.fc-col-id,
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table td.fc-col-id,
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table th.fc-col-marketplace,
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table td.fc-col-marketplace {
+          width: auto;
+          white-space: nowrap;
+          overflow: visible;
+          text-overflow: clip;
+        }
+
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table th.fc-col-produto,
+        .vf-page-financeiro #fc-wrap .fc-fin-detail-table td.fc-col-produto {
+          width: 360px;
+          min-width: 340px;
+          max-width: 460px;
+          white-space: normal;
+          overflow: visible;
+          text-overflow: clip;
+          word-break: normal;
+          overflow-wrap: anywhere;
+        }
 
         /* Larguras semânticas — classes definidas em financeiro.js */
         .fc-table-scroll th.fc-col-compact,

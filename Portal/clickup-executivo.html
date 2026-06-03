@@ -18,6 +18,7 @@
           <p class="vf-page-head__sub">Entregas concluídas, comentários, canais, clientes e produtividade por responsável.</p>
         </div>
         <div class="vf-page-head__actions">
+          <button id="btn-clickup-comments" class="vf-btn vf-btn--ghost" type="button">Carregar comentários</button>
           <button id="btn-clickup-export" class="vf-btn vf-btn--ghost" type="button">Exportar CSV</button>
           <button id="btn-clickup-refresh" class="vf-btn vf-btn--primary" type="button">Atualizar</button>
         </div>
@@ -29,6 +30,7 @@
             <h5 id="clickup-filters-title">Filtros</h5>
             <p>Período, responsável, cliente, canal e busca textual.</p>
           </div>
+          <span id="clickup-meta" class="vf-muted vf-clickup-meta"></span>
         </div>
         <div class="vf-card-body">
           <div class="vf-clickup-filters">
@@ -99,6 +101,11 @@
           <div class="vf-kpi__value" id="kpi-comentario">0%</div>
           <div class="vf-kpi__foot">Entregas comentadas</div>
         </article>
+        <article class="vf-kpi is-primary">
+          <div class="vf-kpi__top"><span class="vf-kpi__label">Score de uso</span></div>
+          <div class="vf-kpi__value" id="kpi-score">0</div>
+          <div class="vf-kpi__foot">Uso correto do ClickUp</div>
+        </article>
       </section>
 
       <section class="vf-clickup-grid">
@@ -153,6 +160,18 @@
             <div id="clickup-channel-ranking" class="vf-clickup-ranking"></div>
           </div>
         </article>
+      </section>
+
+      <section class="vf-card vf-clickup-panel vf-clickup-alerts-card">
+        <div class="vf-card-h">
+          <div class="vf-card-title-stack">
+            <h5>Alertas executivos</h5>
+            <p>Atrasos, tarefas sem responsável e sem prazo.</p>
+          </div>
+        </div>
+        <div class="vf-card-body">
+          <div id="clickup-alerts" class="vf-clickup-alerts"></div>
+        </div>
       </section>
 
       <section class="vf-card vf-clickup-panel">

@@ -183,6 +183,52 @@
   text-align: center;
 }
 
+/* ---- Adições V2: meta de debug + alertas executivos ---- */
+.vf-clickup-meta {
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.vf-clickup-alerts-card {
+  margin-bottom: 1.5rem;
+}
+
+.vf-clickup-alerts {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.vf-clickup-alert-item {
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--vf-radius-sm);
+  border: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+  color: var(--vf-text);
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.4;
+  border-left-width: 4px;
+}
+
+.vf-clickup-alert-item.is-warning {
+  border-left-color: var(--vf-warning);
+  background: var(--vf-warning-bg);
+  color: var(--vf-warning);
+}
+
+.vf-clickup-alert-item.is-info {
+  border-left-color: var(--vf-primary);
+  background: var(--vf-primary-l);
+  color: var(--vf-primary);
+}
+
+.vf-clickup-alert-item.is-danger {
+  border-left-color: var(--vf-danger);
+  background: var(--vf-danger-bg);
+  color: var(--vf-danger);
+}
+
 @media (max-width: 1200px) {
   .vf-clickup-filters {
     grid-template-columns: repeat(2, minmax(160px, 1fr));

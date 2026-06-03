@@ -416,33 +416,38 @@ async function loadOperationMlStatus() {
     ]);
     if (!clientesData || !tokensData) return;
 
-    const clientes      = extractArray(clientesData, "clientes");
+    const clientes       = extractArray(clientesData, "clientes");
     const clientesAtivos = clientes.filter(c => c.ativo !== false);
     const activeClienteKeys = new Set(clientesAtivos.map(getClienteKey).filter(Boolean));
-    const connectedKeys = new Set();
+
+    // "Grantado" = presença de linha em ml_tokens (mesmo que token expirado).
+    // A existência do vínculo é o que determina Conectado/Desconectado,
+    // igual ao critério de /clientes/:slug/ml-status no backend.
+    const grantadoKeys = new Set();
+
+    // Prioridade técnica separada: tokens expirados ou expirando em < 7 dias.
     const agora = Date.now();
     const SETE_DIAS = 7 * 24 * 60 * 60 * 1000;
-    let tokensProblem = 0;
+    let tokensComProblema = 0;
 
     extractArray(tokensData, "tokens").forEach((row) => {
-      const active = isMlTokenActive(row);
-      const expMs  = new Date(row?.expires_at).getTime();
+      const key   = getClienteKey(row);
+      const expMs = new Date(row?.expires_at).getTime();
 
-      if (!active) {
-        tokensProblem++;
-        return;
-      }
-      // Expirando em menos de 7 dias (ainda válido mas prestes a expirar)
-      if (Number.isFinite(expMs) && expMs - agora < SETE_DIAS) {
-        tokensProblem++;
-      }
-      const key = getClienteKey(row);
+      // Qualquer linha em ml_tokens = cliente grantado (vínculo existe)
       if (key && (!activeClienteKeys.size || activeClienteKeys.has(key))) {
-        connectedKeys.add(key);
+        grantadoKeys.add(key);
+      }
+
+      // Alerta técnico separado: token inválido OU expirando em breve
+      const tokenInvalido = !isMlTokenActive(row);
+      const expirandoBreve = Number.isFinite(expMs) && expMs - agora < SETE_DIAS && expMs > agora;
+      if (tokenInvalido || expirandoBreve) {
+        tokensComProblema++;
       }
     });
 
-    const conectados = connectedKeys.size;
+    const conectados = grantadoKeys.size;
     const pendentes  = Math.max(activeClienteKeys.size - conectados, 0);
 
     // Clientes com base (cruzar com _bases já carregadas)
@@ -460,13 +465,13 @@ async function loadOperationMlStatus() {
     _scoreInput.clientesComToken = conectados;
     _scoreInput.clientesComBase  = comBase;
 
-    // Prioridade: tokens ML com problema
-    if (tokensProblem > 0) {
+    // Prioridade técnica: tokens expirados ou expirando em breve (separado dos cards)
+    if (tokensComProblema > 0) {
       _priML.push({
         tipo: "ml_token",
         nivel: "is-danger",
-        titulo: `${tokensProblem} token${tokensProblem !== 1 ? "s" : ""} ML expirado${tokensProblem !== 1 ? "s" : ""} ou expirando`,
-        meta: "Diagnóstico e Ads não rodam sem token válido",
+        titulo: `${tokensComProblema} token${tokensComProblema !== 1 ? "s" : ""} ML expirado${tokensComProblema !== 1 ? "s" : ""} ou expirando`,
+        meta: "Token expirado impede diagnóstico e Ads — reautorização necessária",
         acao: '<a class="vf-btn vf-btn--sm vf-btn--ghost" href="ml-tokens.html">Reconectar token</a>',
       });
     }
@@ -484,12 +489,18 @@ async function loadOperationMlStatus() {
 
     // Cards da Faixa 2
     setOperationCard("ml-connected", {
+      label: "ML conectados",
       value: conectados,
-      foot: conectados === 0 ? "Nenhum cliente ML com token válido" : "Clientes Mercado Livre com token ativo",
+      foot: conectados === 0
+        ? "Nenhum cliente com autorização Mercado Livre"
+        : "Clientes Mercado Livre com autorização concedida",
     });
     setOperationCard("ml-pending", {
+      label: "Sem ML",
       value: pendentes,
-      foot: pendentes === 0 ? "Nenhum cliente ativo sem token válido" : "Clientes ativos sem token ML válido",
+      foot: pendentes === 0
+        ? "Todos os clientes ativos têm ML autorizado"
+        : "Clientes ativos sem autorização Mercado Livre",
     });
     setOperationCard("base-clients", {
       label: "Clientes com base",

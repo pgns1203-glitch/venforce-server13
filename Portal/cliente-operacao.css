@@ -1054,3 +1054,354 @@ header.topbar {
   text-transform: uppercase;
   color: var(--vfop-soft);
 }
+
+/* ── CANAL CARD v2 (referência) ──────────────────────────── */
+.vfop-canal-card {
+  background: var(--vfop-surface);
+  border: 1px solid var(--vfop-border);
+  border-radius: 7px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 1px 2px rgba(20,16,28,.04),
+              0 10px 26px -18px rgba(20,16,28,.18);
+}
+
+.vfop-canal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--vfop-border-soft);
+}
+
+.vfop-canal-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.vfop-canal-icon--meli {
+  background: rgba(202,164,0,.08);
+  color: #a08600;
+}
+
+.vfop-canal-icon--shopee {
+  background: rgba(238,77,45,.08);
+  color: #cc3a20;
+}
+
+.vfop-canal-icon--outro {
+  background: var(--vfop-primary-dim, #ede8f5);
+  color: var(--vfop-primary);
+}
+
+.vfop-canal-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.vfop-canal-name-main {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--vfop-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  line-height: 1.2;
+}
+
+.vfop-canal-name-sub {
+  font-size: 11px;
+  color: var(--vfop-soft);
+  margin-top: 2px;
+}
+
+/* Grid 2×2 de mini-painéis */
+.vfop-canal-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 14px 16px;
+  flex: 1;
+}
+
+.vfop-canal-field-cell {
+  padding: 10px 12px;
+  border: 1px solid var(--vfop-border);
+  border-radius: 6px;
+  background: var(--vfop-surface-alt, #f8f9fb);
+}
+
+.vfop-canal-field-cell-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--vfop-soft);
+  margin-bottom: 6px;
+}
+
+.vfop-canal-foot {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 0 16px 14px;
+}
+
+/* ── DONUT v2 (conic-gradient) ───────────────────────────── */
+.vfop-conic-ring {
+  position: relative;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.vfop-conic-inner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--vfop-surface);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.vfop-conic-pct {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -.03em;
+  color: var(--vfop-text);
+  line-height: 1;
+}
+
+.vfop-conic-pct sup {
+  font-size: 13px;
+  font-weight: 600;
+  vertical-align: super;
+}
+
+.vfop-conic-sub {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--vfop-soft);
+  margin-top: 3px;
+}
+
+/* ── BADGE v2 (com borda, pill) ──────────────────────────── */
+.vfop-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.vfop-badge-ok {
+  background: var(--vfop-ok-bg, #eef7f2);
+  color: var(--vfop-ok, #1a7a45);
+  border-color: #cce8da;
+}
+
+.vfop-badge-warn {
+  background: var(--vfop-warn-bg, #fdf2e3);
+  color: var(--vfop-warn, #855100);
+  border-color: #ecdcae;
+}
+
+.vfop-badge-crit {
+  background: var(--vfop-err-bg, #fef1f0);
+  color: var(--vfop-err, #9b1c1c);
+  border-color: #f2c8c3;
+}
+
+.vfop-badge-neutral {
+  background: var(--vfop-surface-alt, #f8f9fb);
+  color: var(--vfop-text-muted, #5a6578);
+  border-color: var(--vfop-border);
+}
+
+.vfop-badge-brand {
+  background: var(--vfop-primary-dim, #ede8f5);
+  color: var(--vfop-primary, #4b267a);
+  border-color: #e3d6f3;
+}
+
+/* ── CHECKLIST v2 (caixinhas) ────────────────────────────── */
+.vfop-check-v2 {
+  display: flex;
+  flex-direction: column;
+}
+
+.vfop-check-v2-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--vfop-border-soft);
+  font-size: 13px;
+}
+
+.vfop-check-v2-item:last-child {
+  border-bottom: none;
+}
+
+.vfop-check-v2-box {
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  border: 1.5px solid var(--vfop-border-deep);
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 10px;
+}
+
+.vfop-check-v2-box--done {
+  background: var(--vfop-ok, #1a7a45);
+  border-color: var(--vfop-ok, #1a7a45);
+}
+
+.vfop-check-v2-box--done::after {
+  content: "";
+  display: block;
+  width: 7px;
+  height: 4px;
+  border-left: 1.5px solid #fff;
+  border-bottom: 1.5px solid #fff;
+  transform: rotate(-45deg) translate(1px, -1px);
+}
+
+.vfop-check-v2-box--pend {
+  border-style: dashed;
+}
+
+.vfop-check-v2-text {
+  flex: 1;
+  color: var(--vfop-text);
+}
+
+.vfop-check-v2-item--done .vfop-check-v2-text {
+  color: var(--vfop-text-muted);
+}
+
+.vfop-check-v2-pts {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vfop-soft);
+  white-space: nowrap;
+}
+
+.vfop-check-v2-item--done .vfop-check-v2-pts {
+  color: var(--vfop-ok, #1a7a45);
+}
+
+/* ── ALERTAS / PENDÊNCIAS ────────────────────────────────── */
+.vfop-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vfop-alert {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--vfop-border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--vfop-surface);
+}
+
+.vfop-alert-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.vfop-alert-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vfop-text);
+  line-height: 1.2;
+}
+
+.vfop-alert-desc {
+  font-size: 12px;
+  color: var(--vfop-text-muted);
+  margin-top: 2px;
+  line-height: 1.45;
+}
+
+.vfop-alert-action {
+  margin-left: auto;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.vfop-alert--crit {
+  border-left-color: var(--vfop-err, #9b1c1c);
+}
+.vfop-alert--crit .vfop-alert-icon {
+  background: var(--vfop-err-bg, #fef1f0);
+  color: var(--vfop-err, #9b1c1c);
+}
+
+.vfop-alert--warn {
+  border-left-color: var(--vfop-warn, #855100);
+}
+.vfop-alert--warn .vfop-alert-icon {
+  background: var(--vfop-warn-bg, #fdf2e3);
+  color: var(--vfop-warn, #855100);
+}
+
+.vfop-alert--info {
+  border-left-color: var(--vfop-info, #1e4068);
+}
+.vfop-alert--info .vfop-alert-icon {
+  background: var(--vfop-info-bg, #ebf3fb);
+  color: var(--vfop-info, #1e4068);
+}
+
+.vfop-alert--ok {
+  border-left-color: var(--vfop-ok, #1a7a45);
+}
+.vfop-alert--ok .vfop-alert-icon {
+  background: var(--vfop-ok-bg, #eef7f2);
+  color: var(--vfop-ok, #1a7a45);
+}
+
+/* ── BOTTOM GRID (checklist + pendências) ────────────────── */
+.vfop-bottom-grid {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+@media (max-width: 900px) {
+  .vfop-bottom-grid { grid-template-columns: 1fr; }
+  .vfop-canal-fields { grid-template-columns: 1fr 1fr; }
+}

@@ -508,44 +508,6 @@
     renderOperationalRecord(workspace);
     renderIdentityPanel(workspace.cliente);
     renderClientChip(workspace.cliente, workspace.setup?.score);
-    const actionsEl = document.getElementById("vfop-donut-actions");
-    if (actionsEl && workspace?.cliente) {
-      const c = workspace.cliente;
-      const slug = getClienteSlug(c);
-      const safeSlug = escapeHTML(escapeJsString(slug));
-      const safeName = escapeHTML(escapeJsString(getClienteName(c).replace(/'/g, "")));
-      const temGrant = (state.tokens || []).some(
-        t => t?.cliente_slug === c?.slug || t?.cliente_id === c?.id
-      );
-
-      const btns = [];
-
-      btns.push(
-        `<a href="clientes.html"
-            class="vfop-card-action">
-           Editar cliente
-         </a>`
-      );
-
-      if (!temGrant) {
-        btns.push(
-          `<button class="vfop-card-action vfop-card-action--primary"
-                   onclick="copiarLinkML('${safeSlug}')">
-             Copiar link ML
-           </button>`
-        );
-      }
-
-      btns.push(
-        `<button class="vfop-card-action"
-                 onclick="salvarAtalhoCliente('${safeSlug}',
-                 '${safeName}')">
-           ☆ Salvar atalho
-         </button>`
-      );
-
-      actionsEl.innerHTML = btns.join("");
-    }
     renderMLLinkButton(workspace.cliente);
     renderChannels(workspace);
     renderReadiness(workspace);
@@ -576,6 +538,34 @@
     setText("vfop-client-name", workspace.nome);
     setText("vfop-client-channel", `Canal principal: ${marketplaceLabel(workspace.channel)}`);
     setText("vfop-last-update", `Atualizado: ${formatDateTime(workspace.loadedAt)}`);
+    const titleEl = document.getElementById("vfop-page-title");
+    if (titleEl && workspace.cliente?.nome) {
+      titleEl.textContent = workspace.cliente.nome;
+    }
+    const headActs = document.getElementById("vfop-head-actions");
+    if (headActs && workspace.cliente) {
+      const c = workspace.cliente;
+      const slug = getClienteSlug(c);
+      const safeSlug = escapeHTML(escapeJsString(slug));
+      const safeName = escapeHTML(escapeJsString((getClienteName(c) || "").replace(/'/g, "")));
+      const temGrant = (state.tokens || []).some(
+        t => t?.cliente_slug === c?.slug || t?.cliente_id === c?.id
+      );
+      headActs.innerHTML = `
+        <a href="clientes.html" class="vfop-action">
+          Editar cliente
+        </a>
+        ${!temGrant ? `
+          <button class="vfop-action vfop-action--ghost"
+                  onclick="copiarLinkML('${safeSlug}')">
+            Copiar link ML
+          </button>` : ""}
+        <button class="vfop-action"
+                onclick="salvarAtalhoCliente('${safeSlug}',
+                '${safeName}')">
+          ☆ Salvar atalho
+        </button>`;
+    }
     setStatus("vfop-operational-status", workspace.setup.label, workspace.setup.tone);
   }
 
@@ -649,7 +639,7 @@
 
     el.innerHTML = `
       <div class="vfop-donut-wrap">
-        <svg class="vfop-donut-svg" width="58" height="58"
+        <svg class="vfop-donut-svg" width="54" height="54"
              viewBox="0 0 36 36">
           <circle cx="18" cy="18" r="${r}"
             fill="none" stroke="#eaecf0" stroke-width="2.8"/>
@@ -661,19 +651,16 @@
           <text class="vfop-donut-label"
                 x="18" y="21"
                 text-anchor="middle"
-                font-size="7.5" font-weight="700"
-                fill="${color}">
-            ${pct}%
-          </text>
+                font-size="7" font-weight="700"
+                fill="${color}">${pct}%</text>
         </svg>
         <div class="vfop-donut-info">
-          <div class="vfop-donut-name">
+          <div style="font-size:13px;font-weight:600;
+                      color:var(--vfop-text);">
             ${escapeHTML(cliente.nome || "—")}
           </div>
-          <div class="vfop-donut-meta">
+          <div style="font-size:11.5px;color:var(--vfop-muted);">
             ${label}
-          </div>
-          <div class="vfop-donut-actions" id="vfop-donut-actions">
           </div>
         </div>
       </div>`;

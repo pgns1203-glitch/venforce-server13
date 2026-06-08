@@ -15,6 +15,7 @@
   const state = {
     loading: false,
     selectedCliente: null,
+    selectedKey: "",
     clientes: [],
     bases: [],
     vinculos: [],
@@ -37,6 +38,9 @@
 
     const refresh = document.getElementById("vfop-refresh");
     if (refresh) refresh.addEventListener("click", loadClienteOperacao);
+
+    const select = document.getElementById("vfop-client-select");
+    if (select) select.addEventListener("change", onClienteChange);
 
     loadClienteOperacao();
   }
@@ -68,10 +72,10 @@
 
     // TODO backend futuro: preferir GET /clientes/:id/operacao ou
     // GET /clientes/:id/workspace quando esse contrato existir.
-    const clientes = await loadClientes();
-    state.clientes = clientes;
-    state.selectedCliente = chooseCliente(clientes);
-
+    state.clientes = await loadClientes();
+    state.selectedCliente = chooseCliente(state.clientes, state.selectedKey);
+    state.selectedKey = getClienteOptionKey(state.selectedCliente);
+    renderClienteSelect();
     renderHeaderSkeleton(state.selectedCliente);
 
     const results = await Promise.all([
@@ -80,8 +84,6 @@
       loadVinculoClientes(),
       loadTokens(),
       loadRelatorios(),
-      loadAds(state.selectedCliente),
-      loadClickup(),
       loadBaseCobertura(),
     ]);
 
@@ -90,23 +92,27 @@
     state.vinculoClientes = results[2];
     state.tokens = results[3];
     state.relatorios = results[4];
-    state.ads = results[5];
-    state.clickup = results[6];
-    state.cobertura = results[7];
+    state.cobertura = results[5];
+    state.ads = await loadAds(state.selectedCliente);
+    state.clickup = await loadClickup();
 
-    const workspace = normalizeClienteWorkspace();
-    renderClienteOperacao(workspace);
+    renderClienteOperacao(normalizeClienteWorkspace());
     setLoading(false);
+  }
+
+  async function onClienteChange(event) {
+    const nextKey = event?.target?.value || "";
+    const nextCliente = state.clientes.find((cliente) => getClienteOptionKey(cliente) === nextKey) || state.clientes[0] || FALLBACK_CLIENTE;
+    state.selectedKey = getClienteOptionKey(nextCliente);
+    state.selectedCliente = nextCliente;
+    state.ads = await loadAds(nextCliente);
+    renderClienteOperacao(normalizeClienteWorkspace());
   }
 
   async function loadClientes() {
     const result = await apiGet("/clientes", "clientes", "GET /clientes");
     if (!result.ok) return [FALLBACK_CLIENTE];
-
-    const clientes = extractArray(result.data, ["clientes", "items", "data"])
-      .filter(isPlainObject)
-      .map((cliente) => ({ ...cliente }));
-
+    const clientes = extractArray(result.data, ["clientes", "items", "data"]).filter(isPlainObject);
     return clientes.length ? clientes : [FALLBACK_CLIENTE];
   }
 
@@ -141,11 +147,9 @@
   }
 
   async function loadAds(cliente) {
-    const slug = getClienteSlug(cliente);
-    const mes = getCurrentMonthRef();
     const params = new URLSearchParams({
-      clienteSlug: slug || FALLBACK_CLIENTE.slug,
-      mes,
+      clienteSlug: getClienteSlug(cliente) || FALLBACK_CLIENTE.slug,
+      mes: getCurrentMonthRef(),
       lojaCampanha: "todas",
     });
     const result = await apiGet(`/ads/acompanhamento?${params.toString()}`, "ads", "GET /ads/acompanhamento");
@@ -154,17 +158,7 @@
   }
 
   async function loadClickup() {
-    const today = new Date();
-    const from = new Date(today.getFullYear(), today.getMonth(), 1);
-    const params = new URLSearchParams({
-      date_from: toISODate(from),
-      date_to: toISODate(today),
-      include_comments: "false",
-      page_limit: "10",
-    });
-    const result = await apiGet(`/api/clickup/executivo/resumo?${params.toString()}`, "clickup", "GET /api/clickup/executivo/resumo");
-    if (!result.ok) return null;
-    return result.data || null;
+    return null;
   }
 
   async function loadBaseCobertura() {
@@ -185,17 +179,16 @@
           Authorization: `Bearer ${token}`,
         },
       });
-      const data = await response.json().catch(() => ({}));
-      const safeData = sanitizeSensitiveData(data);
+      const data = sanitizeSensitiveData(await response.json().catch(() => ({})));
 
-      if (!response.ok || safeData?.ok === false) {
-        const message = safeData?.erro || safeData?.error || safeData?.motivo || `HTTP ${response.status}`;
+      if (!response.ok || data?.ok === false) {
+        const message = data?.erro || data?.error || data?.motivo || `HTTP ${response.status}`;
         recordSource(key, label, response.status, false, message);
-        return { ok: false, status: response.status, data: safeData, error: message };
+        return { ok: false, status: response.status, data, error: message };
       }
 
       recordSource(key, label, response.status, true, "");
-      return { ok: true, status: response.status, data: safeData };
+      return { ok: true, status: response.status, data };
     } catch (error) {
       const message = error?.message || "Falha de rede";
       recordSource(key, label, 0, false, message);
@@ -204,37 +197,26 @@
   }
 
   function recordSource(key, label, status, ok, message) {
-    const tone = ok ? "success" : (status === 403 || status === 401 ? "warning" : "danger");
-    state.sources[key] = {
-      label,
-      status,
-      ok,
-      tone,
-      message: message || "",
-    };
-    if (!ok) {
-      state.failures.push({
-        key,
-        label,
-        status,
-        message: message || "Indisponivel",
-      });
-    }
+    const kind = ok ? "real" : (status === 403 || status === 401 ? "preview" : "todo");
+    state.sources[key] = { key, label, status, ok, kind, message: message || "" };
+    if (!ok) state.failures.push({ key, label, status, message: message || "Indisponivel" });
   }
 
-  function chooseCliente(clientes) {
-    const ativos = (Array.isArray(clientes) ? clientes : []).filter((cliente) => {
-      if (!isPlainObject(cliente)) return false;
-      const status = String(cliente.status || cliente.situacao || "").toLowerCase();
-      return cliente.ativo !== false && status !== "inativo" && status !== "inactive";
+  function chooseCliente(clientes, preferredKey) {
+    const list = Array.isArray(clientes) && clientes.length ? clientes : [FALLBACK_CLIENTE];
+    const preferred = preferredKey ? list.find((cliente) => getClienteOptionKey(cliente) === preferredKey) : null;
+    if (preferred) return preferred;
+
+    const active = list.find((cliente) => {
+      const status = String(cliente?.status || cliente?.situacao || "").toLowerCase();
+      return cliente?.ativo !== false && status !== "inativo" && status !== "inactive";
     });
-    return sanitizeSensitiveData(ativos[0] || clientes?.[0] || FALLBACK_CLIENTE);
+    return active || list[0] || FALLBACK_CLIENTE;
   }
 
   function normalizeClienteWorkspace() {
     const cliente = state.selectedCliente || FALLBACK_CLIENTE;
     const allBases = uniqueBy([...state.bases, ...state.vinculos], getBaseStableKey);
-    const clienteKeys = getClienteKeys(cliente);
     const basesDoCliente = allBases.filter((base) => matchesCliente(base, cliente));
     const vinculoClientes = state.vinculoClientes.filter((item) => matchesCliente(item, cliente));
     const tokenRows = state.tokens.filter((token) => matchesCliente(token, cliente));
@@ -248,12 +230,9 @@
     const relatorioPrincipal = relatorios[0] || null;
     const tokenState = getTokenState(tokenPrincipal, state.sources.tokens);
     const channel = inferMarketplace(cliente, basePrincipal, tokenPrincipal);
-    const adsLoaded = Boolean(state.ads);
-    const coverage = normalizeCoverage(state.cobertura);
 
     const workspace = {
       cliente,
-      clienteKeys,
       nome: getClienteName(cliente),
       slug: getClienteSlug(cliente),
       channel,
@@ -267,100 +246,81 @@
       relatorios,
       ads: state.ads,
       clickup: state.clickup,
-      coverage,
+      coverage: normalizeCoverage(state.cobertura),
       hasBase: Boolean(basePrincipal),
       hasGrant: Boolean(tokenPrincipal),
       hasDiagnosis: Boolean(relatorioPrincipal),
-      hasAds: adsLoaded,
+      hasAds: Boolean(state.ads && state.sources.ads?.ok),
       loadedAt: state.loadedAt,
       isFallback: Boolean(cliente.__mock),
     };
 
     workspace.frete = buildFretePreviewMock(workspace);
+    workspace.pricing = buildPricingPreviewMock(workspace);
     workspace.setup = buildSetupScore(workspace);
     workspace.quality = buildDataQuality(workspace);
-    workspace.pricing = buildPricingPreviewMock(workspace);
+    workspace.futureData = buildFutureCalcData(workspace);
+    workspace.record = buildOperationalRecord(workspace);
     workspace.channels = buildChannels(workspace);
-    workspace.metrics = buildMetrics(workspace);
     workspace.actions = buildActions(workspace);
     workspace.history = buildHistory(workspace);
 
     return workspace;
   }
 
+  function buildOperationalRecord(workspace) {
+    const apiKeyStatus = getSensitivePresence(workspace.cliente, ["api_key", "apiKey", "key"]);
+    return [
+      { label: "Nome", value: workspace.nome, hint: sourceHint("clientes") },
+      { label: "Slug", value: workspace.slug || "--", hint: sourceHint("clientes") },
+      { label: "Status", value: workspace.cliente?.ativo === false ? "Inativo" : "Ativo", hint: sourceHint("clientes") },
+      { label: "Canais detectados", value: getDetectedChannels(workspace).join(", "), hint: "real + preview quando canal futuro" },
+      { label: "Base oficial vinculada", value: workspace.hasBase ? getBaseName(workspace.basePrincipal) : "Pendente", hint: workspace.hasBase ? sourceHint("vinculos") : "vincular em Bases de Custo" },
+      { label: "Grant ML", value: workspace.tokenState.label, hint: workspace.tokenState.detail },
+      { label: "API key", value: apiKeyStatus, hint: "valor completo nao e exibido" },
+      { label: "Observacao", value: "Dados sensiveis em clientes.html", hint: "cadastro administrativo separado" },
+    ];
+  }
+
   function buildSetupScore(workspace) {
-    const tokenTone = workspace.tokenState.tone;
     const reportAge = getAgeDays(workspace.relatorioPrincipal?.created_at || workspace.relatorioPrincipal?.createdAt);
     const recentReport = workspace.hasDiagnosis && (reportAge == null || reportAge <= 30);
-    const adsSourceOk = Boolean(state.sources.ads?.ok);
-    const clickupOk = Boolean(state.sources.clickup?.ok);
-
     const checks = [
-      {
-        key: "base",
-        label: "Base vinculada",
-        detail: workspace.hasBase ? getBaseName(workspace.basePrincipal) : "Aguardando vinculo",
-        tone: workspace.hasBase ? "success" : "danger",
-        source: state.sources.bases?.ok || state.sources.vinculos?.ok ? "real" : "parcial",
-        points: workspace.hasBase ? 20 : 0,
-      },
-      {
-        key: "grant",
-        label: "Grant Mercado Livre",
-        detail: workspace.tokenState.detail,
-        tone: tokenTone,
-        source: state.sources.tokens?.ok ? "real" : "parcial",
-        points: tokenTone === "success" ? 20 : (tokenTone === "warning" ? 9 : 0),
-      },
-      {
-        key: "diagnostico",
-        label: "Diagnostico",
-        detail: recentReport ? `Rodado ${formatAgo(workspace.relatorioPrincipal?.created_at || workspace.relatorioPrincipal?.createdAt)}` : "Sem diagnostico recente",
-        tone: recentReport ? "success" : (workspace.hasDiagnosis ? "warning" : "danger"),
-        source: state.sources.relatorios?.ok ? "real" : "parcial",
-        points: recentReport ? 18 : (workspace.hasDiagnosis ? 8 : 0),
-      },
-      {
-        key: "fechamento",
-        label: "Fechamento",
-        detail: "Aguardando contrato por cliente",
-        tone: "warning",
-        source: "TODO",
-        points: 5,
-      },
-      {
-        key: "ads",
-        label: "Ads",
-        detail: adsSourceOk ? "Acompanhamento localizado" : "Sem acompanhamento do periodo",
-        tone: adsSourceOk ? "success" : "warning",
-        source: adsSourceOk ? "real" : "preview",
-        points: adsSourceOk ? 12 : 5,
-      },
-      {
-        key: "frete",
-        label: "Frete historico",
-        detail: "Preview ate existir workspace dedicado",
-        tone: workspace.hasBase ? "warning" : "danger",
-        source: "TODO",
-        points: workspace.hasBase ? 7 : 2,
-      },
-      {
-        key: "gestao",
-        label: "Fila operacional",
-        detail: clickupOk ? "Resumo ClickUp sincronizado" : "ClickUp indisponivel",
-        tone: clickupOk ? "success" : "warning",
-        source: clickupOk ? "real" : "parcial",
-        points: clickupOk ? 8 : 3,
-      },
+      setupItem("cliente", "Cliente cadastrado", Boolean(workspace.cliente), "Cadastro encontrado", sourceKind("clientes"), 12),
+      setupItem("canal", "Canal principal definido", Boolean(workspace.channel), marketplaceLabel(workspace.channel), workspace.channel ? "real" : "preview", 10),
+      setupItem("base", "Base vinculada", workspace.hasBase, workspace.hasBase ? getBaseName(workspace.basePrincipal) : "Aguardando vinculo oficial", sourceKind("vinculos"), 18),
+      setupItem("grant", "Grant ML conectado", workspace.tokenState.tone === "success", workspace.tokenState.detail, sourceKind("tokens"), 18),
+      setupItem("diagnostico", "Primeiro diagnostico", workspace.hasDiagnosis, workspace.hasDiagnosis ? getReportName(workspace.relatorioPrincipal) : "Nao localizado", sourceKind("relatorios"), 14),
+      setupItem("fechamento", "Primeiro fechamento", false, "Aguardando contrato por cliente", "todo", 8),
+      setupItem("ads", "Ads/acompanhamento", workspace.hasAds, workspace.hasAds ? "Acompanhamento salvo no periodo" : "Sem acompanhamento do periodo", sourceKind("ads"), 10),
+      setupItem("frete", "Frete historico", false, "Pendente para backend futuro", "todo", 10),
     ];
 
-    const score = clamp(checks.reduce((sum, item) => sum + item.points, 0), 0, 100);
-    const label = score >= 80 ? "Pronto para operar"
-      : score >= 60 ? "Operacao com pendencias"
-      : "Setup incompleto";
-    const tone = score >= 80 ? "success" : (score >= 60 ? "warning" : "danger");
-
+    const stale = workspace.hasDiagnosis && reportAge != null && reportAge > 30;
+    if (stale) {
+      const item = checks.find((check) => check.key === "diagnostico");
+      if (item) {
+        item.done = false;
+        item.tone = "warning";
+        item.detail = `Relatorio antigo: ${reportAge} dias`;
+      }
+    }
+    const score = clamp(checks.reduce((sum, item) => sum + (item.done ? item.points : 0), 0), 0, 100);
+    const label = score >= 80 ? "Setup completo" : "Setup incompleto";
+    const tone = score >= 80 ? "success" : (score >= 45 ? "warning" : "danger");
     return { score, label, tone, checks };
+  }
+
+  function setupItem(key, label, done, detail, source, points) {
+    return {
+      key,
+      label,
+      done: Boolean(done),
+      detail,
+      source,
+      points,
+      tone: done ? "success" : (source === "todo" ? "warning" : "danger"),
+    };
   }
 
   function buildDataQuality(workspace) {
@@ -374,282 +334,105 @@
     ]);
     const reportAge = getAgeDays(relatorio.created_at || relatorio.createdAt);
     const missingCostValue = semCusto == null ? 18 : semCusto;
-    const tokenProblem = workspace.tokenState.tone !== "success";
-    const coberturaBase = workspace.coverage
-      ? `${workspace.coverage.clientesSemBase} clientes sem base na operacao`
-      : "Bloqueia custo e margem confiavel";
 
     return [
-      {
-        label: "Produtos/anuncios sem custo",
-        value: semCusto == null ? `${missingCostValue} prev.` : String(missingCostValue),
-        detail: semCusto == null ? "Preview ate o relatorio expor esse total" : "Vem do diagnostico mais recente",
-        tone: missingCostValue > 20 ? "danger" : (missingCostValue > 0 ? "warning" : "success"),
-      },
-      {
-        label: "Sem frete confiavel",
-        value: workspace.frete.confidence === "alta" ? "0" : "Amostra parcial",
-        detail: "TODO contrato de frete historico por cliente",
-        tone: workspace.frete.confidence === "alta" ? "success" : "warning",
-      },
-      {
-        label: "Sem base vinculada",
-        value: workspace.hasBase ? "0" : "1",
-        detail: workspace.hasBase ? getBaseName(workspace.basePrincipal) : coberturaBase,
-        tone: workspace.hasBase ? "success" : "danger",
-      },
-      {
-        label: "Sem marketplace identificado",
-        value: workspace.channel ? "0" : "1",
-        detail: workspace.channel ? marketplaceLabel(workspace.channel) : "Canal principal nao veio nos dados",
-        tone: workspace.channel ? "success" : "warning",
-      },
-      {
-        label: "Token vencendo ou ausente",
-        value: tokenProblem ? "Sim" : "Nao",
-        detail: workspace.tokenState.detail,
-        tone: tokenProblem ? workspace.tokenState.tone : "success",
-      },
-      {
-        label: "Relatorios antigos",
-        value: !workspace.hasDiagnosis ? "Sem relatorio" : (reportAge != null && reportAge > 30 ? `${reportAge} dias` : "Atual"),
-        detail: workspace.hasDiagnosis ? "Diagnostico mais recente" : "Rode o primeiro diagnostico",
-        tone: !workspace.hasDiagnosis || (reportAge != null && reportAge > 30) ? "warning" : "success",
-      },
+      futureRow("Produtos/anuncios sem custo", semCusto == null ? `${missingCostValue} prev.` : String(missingCostValue), semCusto == null ? "preview" : "real", semCusto == null ? "Aguardando total no relatorio" : "Diagnostico mais recente"),
+      futureRow("Sem frete confiavel", "Pendente", "todo", "Contrato futuro de frete historico por cliente"),
+      futureRow("Sem marketplace identificado", workspace.channel ? "Nao" : "Sim", workspace.channel ? "real" : "preview", workspace.channel ? marketplaceLabel(workspace.channel) : "Canal principal nao veio nos dados"),
+      futureRow("Token ausente/vencendo", workspace.tokenState.tone === "success" ? "Nao" : "Sim", sourceKind("tokens"), workspace.tokenState.detail),
+      futureRow("Relatorio antigo", !workspace.hasDiagnosis ? "Sem relatorio" : (reportAge != null && reportAge > 30 ? `${reportAge} dias` : "Nao"), sourceKind("relatorios"), workspace.hasDiagnosis ? "Diagnostico localizado" : "Rode o primeiro diagnostico"),
+      futureRow("Precificacao pendente", workspace.pricing.blockers.length ? "Sim" : "Nao", "todo", workspace.pricing.blockers.join(", ") || "Sem bloqueio critico no piloto"),
+      futureRow("Frete historico pendente", "Sim", "todo", "Necessario para calculo fino de margem"),
     ];
+  }
+
+  function buildFutureCalcData(workspace) {
+    return buildDataQuality(workspace);
   }
 
   function buildPricingPreviewMock(workspace) {
     const relatorio = workspace.relatorioPrincipal || {};
     const mcMedia = firstFiniteNumber([relatorio.mc_media, relatorio.margem_media, relatorio.margemAtual]);
-    const currentMargin = mcMedia == null ? 16.8 : normalizePercent(mcMedia);
-    const correctedMargin = Math.min(currentMargin + (workspace.hasBase ? 3.4 : 1.2), 32.5);
     const blockers = [];
-
-    if (!workspace.hasBase) blockers.push("vincular base de custo");
-    if (workspace.tokenState.tone !== "success") blockers.push("regularizar grant Mercado Livre");
-    if (!workspace.hasDiagnosis) blockers.push("rodar diagnostico completo");
-    if (workspace.frete.confidence !== "alta") blockers.push("validar frete historico");
-
+    if (!workspace.hasBase) blockers.push("base vinculada");
+    if (workspace.tokenState.tone !== "success") blockers.push("grant ML valido");
+    if (!workspace.hasDiagnosis) blockers.push("diagnostico");
     return {
-      isMock: true,
-      confidence: blockers.length >= 3 ? "baixa" : (blockers.length ? "media" : "alta"),
+      isMock: mcMedia == null,
+      confidence: blockers.length ? "baixa" : "media",
       blockers,
-      rows: [
-        {
-          label: "Margem atual",
-          value: formatPercent(currentMargin),
-          detail: mcMedia == null ? "Preview realista; aguarda contrato por cliente" : "Estimativa do ultimo relatorio",
-          source: mcMedia == null ? "TODO" : "real",
-        },
-        {
-          label: "Margem corrigida estimada",
-          value: formatPercent(correctedMargin),
-          detail: "Simulacao operacional para o piloto",
-          source: "TODO",
-        },
-        {
-          label: "Preco sugerido",
-          value: formatBRL(workspace.hasBase ? 129.9 : 119.9),
-          detail: "Aguardando GET /clientes/:id/operacao",
-          source: "TODO",
-        },
-        {
-          label: "Confianca do calculo",
-          value: capitalize(blockers.length >= 3 ? "baixa" : (blockers.length ? "media" : "alta")),
-          detail: blockers.length ? blockers.join(", ") : "Sem bloqueios criticos no piloto",
-          source: "preview",
-        },
-      ],
+      currentMargin: mcMedia == null ? null : normalizePercent(mcMedia),
     };
   }
 
   function buildFretePreviewMock(workspace) {
-    const sampleSize = workspace.hasDiagnosis ? 42 : 18;
-    const diff = workspace.hasBase ? 3.7 : 8.9;
-    const confidence = workspace.hasBase && workspace.hasDiagnosis ? "media" : "baixa";
-
     return {
       isMock: true,
-      confidence,
-      rows: [
-        {
-          label: "Frete usado hoje",
-          value: formatBRL(workspace.hasBase ? 28.4 : 31.2),
-          detail: "Preview ate existir historico consolidado",
-          source: "TODO",
-        },
-        {
-          label: "Frete historico real",
-          value: formatBRL(workspace.hasBase ? 27.35 : 0),
-          detail: workspace.hasBase ? "Amostra simulada para validar layout" : "Depende da base vinculada",
-          source: "TODO",
-        },
-        {
-          label: "Amostra de vendas",
-          value: `${sampleSize} pedidos`,
-          detail: "Contrato futuro deve trazer vendas por periodo",
-          source: "TODO",
-        },
-        {
-          label: "Diferenca estimado x real",
-          value: `${formatPercent(diff)} pts`,
-          detail: "Pode indicar vazamento de margem",
-          source: "TODO",
-        },
-        {
-          label: "Confianca da amostra",
-          value: capitalize(confidence),
-          detail: "Sobe quando houver frete historico por SKU/canal",
-          source: "preview",
-        },
-      ],
+      confidence: workspace.hasBase && workspace.hasDiagnosis ? "media" : "baixa",
+      blockers: ["frete historico por SKU/canal"],
     };
   }
 
   function buildChannels(workspace) {
-    const tokenTone = workspace.tokenState.tone;
-    const diagnosisTone = workspace.hasDiagnosis ? "success" : "warning";
-    const baseTone = workspace.hasBase ? "success" : "danger";
-    const pending = [];
-
-    if (!workspace.hasBase) pending.push("base");
-    if (tokenTone !== "success") pending.push("grant");
-    if (!workspace.hasDiagnosis) pending.push("diagnostico");
-
+    const pending = getMainPending(workspace);
     return [
       {
-        name: "Mercado Livre principal",
-        meta: workspace.slug || "cliente selecionado",
-        base: statusSpec(workspace.hasBase ? "Vinculada" : "Pendente", baseTone),
-        grant: statusSpec(workspace.tokenState.label, tokenTone),
-        diagnostico: statusSpec(workspace.hasDiagnosis ? "Recente" : "Pendente", diagnosisTone),
+        canal: "Mercado Livre",
+        marketplace: "Mercado Livre",
+        name: "Loja principal",
+        id: workspace.slug || "cliente selecionado",
+        base: statusSpec(workspace.hasBase ? "Vinculada" : "Pendente", workspace.hasBase ? "success" : "danger"),
+        grant: statusSpec(workspace.tokenState.label, workspace.tokenState.tone),
+        diagnostico: statusSpec(workspace.hasDiagnosis ? "Localizado" : "Pendente", workspace.hasDiagnosis ? "success" : "warning"),
         fechamento: statusSpec("TODO", "warning"),
-        pendencias: pending.length ? pending.join(", ") : "sem bloqueio critico",
+        pending,
         source: "real",
       },
       {
-        name: "Mercado Livre loja 2",
-        meta: "canal preparado",
-        base: statusSpec("Preview", "warning"),
-        grant: statusSpec("Preview", "warning"),
-        diagnostico: statusSpec("TODO", "warning"),
-        fechamento: statusSpec("TODO", "warning"),
-        pendencias: "confirmar existencia da loja",
-        source: "preview",
-      },
-      {
-        name: "Shopee",
-        meta: "canal preparado",
+        canal: "Mercado Livre",
+        marketplace: "Mercado Livre",
+        name: "Loja 2",
+        id: "canal preparado",
         base: statusSpec("Preview", "warning"),
         grant: statusSpec("TODO", "warning"),
         diagnostico: statusSpec("TODO", "warning"),
         fechamento: statusSpec("TODO", "warning"),
-        pendencias: "aguarda contrato de canal",
+        pending: "confirmar existencia da loja",
+        source: "preview",
+      },
+      {
+        canal: "Shopee",
+        marketplace: "Shopee",
+        name: "Loja futura",
+        id: "canal preparado",
+        base: statusSpec("Preview", "warning"),
+        grant: statusSpec("TODO", "warning"),
+        diagnostico: statusSpec("TODO", "warning"),
+        fechamento: statusSpec("TODO", "warning"),
+        pending: "aguarda contrato de canal",
         source: "preview",
       },
     ];
   }
 
   function buildMetrics(workspace) {
-    const resumo = workspace.clickup?.resumo || {};
-    const pendencias = firstFiniteNumber([resumo.abertas, resumo.atrasadas_abertas, resumo.sem_prazo]);
-    const abertas = Number(resumo.abertas || 0);
-    const atrasadas = Number(resumo.atrasadas_abertas || 0);
-    const adsValue = firstFiniteNumber([
-      workspace.ads?.investimentoAds,
-      workspace.ads?.investimento_ads,
-      workspace.ads?.adsSpend,
-      workspace.ads?.spend,
-    ]);
-
     return [
-      {
-        label: "Pedidos",
-        value: "--",
-        foot: "TODO GET /clientes/:id/operacao",
-        tone: "warning",
-      },
-      {
-        label: "Faturamento",
-        value: "--",
-        foot: "TODO contrato financeiro por cliente",
-        tone: "warning",
-      },
-      {
-        label: "Cancelados",
-        value: "--",
-        foot: "TODO fechamento do periodo",
-        tone: "warning",
-      },
-      {
-        label: "Investimento Ads",
-        value: adsValue == null ? formatBRL(1840) : formatBRL(adsValue),
-        foot: adsValue == null ? "Preview; /ads/acompanhamento consultado" : "GET /ads/acompanhamento",
-        tone: adsValue == null ? "warning" : "success",
-      },
-      {
-        label: "Ultimo fechamento",
-        value: "--",
-        foot: "TODO fechamento por cliente",
-        tone: "warning",
-      },
-      {
-        label: "Pendencias periodo",
-        value: state.sources.clickup?.ok ? String(abertas + atrasadas) : (pendencias == null ? "--" : String(pendencias)),
-        foot: state.sources.clickup?.ok ? "Resumo ClickUp real" : "ClickUp parcial/indisponivel",
-        tone: state.sources.clickup?.ok ? (abertas + atrasadas > 0 ? "warning" : "success") : "warning",
-      },
+      futureRow("Pedidos", "--", "todo", "GET /clientes/:id/operacao"),
+      futureRow("Faturamento", "--", "todo", "Contrato financeiro por cliente"),
+      futureRow("Investimento Ads", workspace.hasAds ? "Acompanhamento salvo" : "Sem dado", sourceKind("ads"), "GET /ads/acompanhamento"),
     ];
   }
 
   function buildActions(workspace) {
-    const semCusto = workspace.quality.find((item) => item.label === "Produtos/anuncios sem custo");
-    const needsReport = !workspace.hasDiagnosis || getAgeDays(workspace.relatorioPrincipal?.created_at || workspace.relatorioPrincipal?.createdAt) > 30;
-
+    const semCusto = workspace.futureData.find((item) => item.label === "Produtos/anuncios sem custo");
     return [
-      {
-        title: "Vincular base",
-        detail: workspace.hasBase ? `Base ativa: ${getBaseName(workspace.basePrincipal)}` : "Necessario para calcular custo e margem",
-        priority: workspace.hasBase ? "OK" : "Alta",
-        tone: workspace.hasBase ? "success" : "danger",
-      },
-      {
-        title: "Conectar grant",
-        detail: workspace.tokenState.detail,
-        priority: workspace.tokenState.tone === "success" ? "OK" : "Alta",
-        tone: workspace.tokenState.tone,
-      },
-      {
-        title: "Rodar diagnostico",
-        detail: workspace.hasDiagnosis ? "Usar relatorio mais recente como base" : "Primeira leitura operacional do cliente",
-        priority: needsReport ? "Alta" : "OK",
-        tone: needsReport ? "warning" : "success",
-      },
-      {
-        title: "Revisar anuncios sem custo",
-        detail: semCusto ? `${semCusto.value} itens em atencao` : "Aguardando diagnostico",
-        priority: semCusto && semCusto.tone !== "success" ? "Media" : "OK",
-        tone: semCusto ? semCusto.tone : "warning",
-      },
-      {
-        title: "Atualizar frete historico",
-        detail: "TODO: consolidar frete real por SKU/canal",
-        priority: "Media",
-        tone: "warning",
-      },
-      {
-        title: "Gerar relatorio",
-        detail: needsReport ? "Relatorio recente aumenta confianca do setup" : "Relatorio ja localizado",
-        priority: needsReport ? "Media" : "OK",
-        tone: needsReport ? "warning" : "success",
-      },
-      {
-        title: "Abrir tarefa ClickUp",
-        detail: state.sources.clickup?.ok ? "Usar fila executiva para acompanhamento" : "ClickUp indisponivel nesta sessao",
-        priority: "Baixa",
-        tone: state.sources.clickup?.ok ? "info" : "warning",
-      },
+      actionRow("Vincular base", workspace.hasBase ? "OK" : "Alta", workspace.hasBase ? getBaseName(workspace.basePrincipal) : "Base oficial ausente", sourceKind("vinculos"), workspace.hasBase ? "Concluido" : "Pendente"),
+      actionRow("Conectar grant", workspace.tokenState.tone === "success" ? "OK" : "Alta", workspace.tokenState.detail, sourceKind("tokens"), workspace.tokenState.label),
+      actionRow("Rodar diagnostico", workspace.hasDiagnosis ? "OK" : "Alta", workspace.hasDiagnosis ? getReportName(workspace.relatorioPrincipal) : "Primeiro diagnostico nao localizado", sourceKind("relatorios"), workspace.hasDiagnosis ? "Concluido" : "Pendente"),
+      actionRow("Revisar anuncios sem custo", semCusto?.source === "real" ? "Media" : "Baixa", semCusto?.detail || "Aguardando relatorio", semCusto?.source || "preview", semCusto?.value || "Preview"),
+      actionRow("Atualizar frete historico", "Media", "Necessario para calculo fino de margem", "todo", "TODO backend"),
+      actionRow("Gerar relatorio", workspace.hasDiagnosis ? "Baixa" : "Media", workspace.hasDiagnosis ? "Relatorio localizado" : "Sem diagnostico salvo", sourceKind("relatorios"), workspace.hasDiagnosis ? "Opcional" : "Pendente"),
+      actionRow("Abrir tarefa ClickUp", "Baixa", "Formalizar pendencias do setup", "todo", "TODO integracao"),
     ];
   }
 
@@ -657,60 +440,48 @@
     const baseDate = workspace.basePrincipal?.updated_at || workspace.basePrincipal?.created_at || workspace.basePrincipal?.createdAt;
     const tokenDate = workspace.tokenPrincipal?.updated_at || workspace.tokenPrincipal?.created_at || workspace.tokenPrincipal?.createdAt;
     const reportDate = workspace.relatorioPrincipal?.created_at || workspace.relatorioPrincipal?.createdAt;
-    const adsDate = workspace.ads?.updatedAt || workspace.ads?.updated_at;
-
     return [
-      {
-        title: "Base importada",
-        detail: workspace.hasBase ? getBaseName(workspace.basePrincipal) : "pendente",
-        date: baseDate,
-        tone: workspace.hasBase ? "success" : "warning",
-      },
-      {
-        title: "Grant conectado",
-        detail: workspace.tokenState.detail,
-        date: tokenDate,
-        tone: workspace.tokenState.tone,
-      },
-      {
-        title: "Diagnostico rodado",
-        detail: workspace.hasDiagnosis ? getReportName(workspace.relatorioPrincipal) : "pendente",
-        date: reportDate,
-        tone: workspace.hasDiagnosis ? "success" : "warning",
-      },
-      {
-        title: "Relatorio salvo",
-        detail: workspace.hasDiagnosis ? "Disponivel em relatorios" : "aguarda diagnostico",
-        date: reportDate,
-        tone: workspace.hasDiagnosis ? "success" : "warning",
-      },
-      {
-        title: "Fechamento processado",
-        detail: "TODO contrato por cliente",
-        date: null,
-        tone: "warning",
-      },
-      {
-        title: "Tarefa criada",
-        detail: state.sources.clickup?.ok ? "Resumo ClickUp sincronizado" : "TODO abrir tarefa no fluxo",
-        date: adsDate,
-        tone: state.sources.clickup?.ok ? "info" : "warning",
-      },
+      historyRow("Base importada", workspace.hasBase ? getBaseName(workspace.basePrincipal) : "pendente", baseDate, workspace.hasBase ? "real" : "preview"),
+      historyRow("Grant conectado", workspace.tokenState.detail, tokenDate, sourceKind("tokens")),
+      historyRow("Diagnostico rodado", workspace.hasDiagnosis ? getReportName(workspace.relatorioPrincipal) : "pendente", reportDate, sourceKind("relatorios")),
+      historyRow("Relatorio salvo", workspace.hasDiagnosis ? "Disponivel em relatorios" : "aguarda diagnostico", reportDate, sourceKind("relatorios")),
+      historyRow("Fechamento processado", "TODO contrato por cliente", null, "todo"),
+      historyRow("Tarefa criada", "TODO ClickUp por cliente", null, "todo"),
     ];
+  }
+
+  function futureRow(label, value, source, detail) {
+    return { label, value, source, detail };
+  }
+
+  function actionRow(title, priority, reason, source, status) {
+    return { title, priority, reason, source, status };
+  }
+
+  function historyRow(title, detail, date, source) {
+    return { title, detail, date, source };
   }
 
   function renderClienteOperacao(workspace) {
     renderHeader(workspace);
     renderPilotNote();
-    renderReadiness(workspace);
+    renderOperationalRecord(workspace);
     renderChannels(workspace);
-    renderQuality(workspace);
-    renderMetricRows("vfop-pricing-preview", workspace.pricing.rows);
-    renderMetricRows("vfop-frete-preview", workspace.frete.rows);
-    renderMetrics(workspace);
+    renderReadiness(workspace);
+    renderFutureData(workspace);
     renderActions(workspace);
     renderHistory(workspace);
-    renderSources();
+  }
+
+  function renderClienteSelect() {
+    const select = document.getElementById("vfop-client-select");
+    if (!select) return;
+    select.innerHTML = state.clientes.map((cliente) => {
+      const key = getClienteOptionKey(cliente);
+      const label = `${getClienteName(cliente)}${cliente?.ativo === false ? " (inativo)" : ""}`;
+      return `<option value="${escapeHTML(key)}">${escapeHTML(label)}</option>`;
+    }).join("");
+    select.value = state.selectedKey;
   }
 
   function renderHeaderSkeleton(cliente) {
@@ -720,7 +491,6 @@
   }
 
   function renderHeader(workspace) {
-    setText("vfop-title", workspace.nome);
     setText("vfop-client-name", workspace.nome);
     setText("vfop-client-channel", `Canal principal: ${marketplaceLabel(workspace.channel)}`);
     setText("vfop-last-update", `Atualizado: ${formatDateTime(workspace.loadedAt)}`);
@@ -730,34 +500,23 @@
   function renderPilotNote() {
     const alert = document.getElementById("vfop-source-alert");
     if (!alert) return;
-
     if (!state.failures.length) {
-      alert.textContent = "Tela piloto: dados reais carregados onde ja existe contrato de API; previews/TODO ficam marcados.";
+      alert.textContent = "Ficha piloto: dados reais carregados onde ja existe contrato de API; previews e TODO ficam marcados por linha.";
       return;
     }
-
     const labels = state.failures.slice(0, 3).map((item) => item.label.replace("GET ", "")).join(", ");
     const more = state.failures.length > 3 ? ` +${state.failures.length - 3}` : "";
-    alert.textContent = `Estado parcial: ${labels}${more} indisponivel(is). A tela piloto continua com dados reais parciais e previews marcados.`;
+    alert.textContent = `Estado parcial: ${labels}${more} indisponivel(is). A ficha continua com dados reais parciais e linhas preview/TODO.`;
   }
 
-  function renderReadiness(workspace) {
-    setText("vfop-score-value", `${workspace.setup.score}`);
-    setText("vfop-score-label", workspace.setup.label);
-    setStatus("vfop-score-source", state.failures.length ? "Parcial" : "Real", state.failures.length ? "warning" : "success");
-
-    const bar = document.getElementById("vfop-score-bar");
-    if (bar) bar.style.width = `${workspace.setup.score}%`;
-
-    const list = document.getElementById("vfop-setup-list");
-    if (!list) return;
-    list.innerHTML = workspace.setup.checks.map((item) => `
-      <div class="vfop-readiness-item">
-        <div class="vfop-readiness-item__label">
-          <strong>${escapeHTML(item.label)}</strong>
-          <span>${escapeHTML(item.detail)} · ${escapeHTML(item.source)}</span>
-        </div>
-        ${statusBadge(statusLabelFromTone(item.tone), item.tone)}
+  function renderOperationalRecord(workspace) {
+    const target = document.getElementById("vfop-operational-record");
+    if (!target) return;
+    target.innerHTML = workspace.record.map((item) => `
+      <div class="vfop-record-item">
+        <div class="vfop-record-item__label">${escapeHTML(item.label)}</div>
+        <div class="vfop-record-item__value">${escapeHTML(item.value)}</div>
+        <div class="vfop-record-item__hint">${escapeHTML(item.hint || "")}</div>
       </div>
     `).join("");
   }
@@ -765,78 +524,64 @@
   function renderChannels(workspace) {
     const tbody = document.getElementById("vfop-channels-body");
     if (!tbody) return;
-
     tbody.innerHTML = workspace.channels.map((channel) => `
       <tr>
-        <td>
-          <div class="vfop-channel-name">
-            <strong>${escapeHTML(channel.name)}</strong>
-            <span>${escapeHTML(channel.meta)} · ${escapeHTML(channel.source)}</span>
-          </div>
-        </td>
+        <td><span class="vfop-line-main">${escapeHTML(channel.canal)}</span><span class="vfop-line-sub">${sourceText(channel.source)}</span></td>
+        <td>${escapeHTML(channel.marketplace)}</td>
+        <td><span class="vfop-line-main">${escapeHTML(channel.name)}</span><span class="vfop-line-sub">${escapeHTML(channel.id)}</span></td>
         <td>${statusBadge(channel.base.label, channel.base.tone)}</td>
         <td>${statusBadge(channel.grant.label, channel.grant.tone)}</td>
         <td>${statusBadge(channel.diagnostico.label, channel.diagnostico.tone)}</td>
         <td>${statusBadge(channel.fechamento.label, channel.fechamento.tone)}</td>
-        <td>${escapeHTML(channel.pendencias)}</td>
+        <td>${escapeHTML(channel.pending)}</td>
       </tr>
     `).join("");
   }
 
-  function renderQuality(workspace) {
-    const target = document.getElementById("vfop-quality-list");
-    if (!target) return;
+  function renderReadiness(workspace) {
+    setText("vfop-score-value", `${workspace.setup.score}%`);
+    setText("vfop-score-label", workspace.setup.label);
+    const bar = document.getElementById("vfop-score-bar");
+    if (bar) bar.style.width = `${workspace.setup.score}%`;
 
-    target.innerHTML = workspace.quality.map((item) => `
-      <div class="vfop-quality-item">
-        <div class="vfop-quality-main">
+    const list = document.getElementById("vfop-setup-list");
+    if (!list) return;
+    list.innerHTML = workspace.setup.checks.map((item) => `
+      <div class="vfop-check-item">
+        <span class="vfop-check-dot vfop-check-dot--${escapeHTML(item.tone)}" aria-hidden="true"></span>
+        <div class="vfop-check-main">
           <strong>${escapeHTML(item.label)}</strong>
           <span>${escapeHTML(item.detail)}</span>
         </div>
-        <div class="vfop-quality-value">${escapeHTML(item.value)}</div>
-        ${statusBadge(statusLabelFromTone(item.tone), item.tone)}
+        ${sourceTag(item.source)}
       </div>
     `).join("");
   }
 
-  function renderMetricRows(targetId, rows) {
-    const target = document.getElementById(targetId);
-    if (!target) return;
-    target.innerHTML = rows.map((row) => `
-      <div class="vfop-metric-row">
-        <div class="vfop-metric-main">
-          <strong>${escapeHTML(row.label)}</strong>
-          <span>${escapeHTML(row.detail)}</span>
-        </div>
-        <div class="vfop-metric-value">${escapeHTML(row.value)}</div>
-        ${statusBadge(row.source === "real" ? "Real" : row.source === "TODO" ? "TODO" : "Preview", row.source === "real" ? "success" : "warning")}
-      </div>
-    `).join("");
-  }
-
-  function renderMetrics(workspace) {
-    const target = document.getElementById("vfop-metrics-grid");
-    if (!target) return;
-    target.innerHTML = workspace.metrics.map((item) => `
-      <div class="vfop-metric-tile">
-        <div class="vfop-metric-tile__label">${escapeHTML(item.label)}</div>
-        <div class="vfop-metric-tile__value">${escapeHTML(item.value)}</div>
-        <div class="vfop-metric-tile__foot">${escapeHTML(item.foot)}</div>
-      </div>
+  function renderFutureData(workspace) {
+    const tbody = document.getElementById("vfop-data-body");
+    if (!tbody) return;
+    tbody.innerHTML = workspace.futureData.map((item) => `
+      <tr>
+        <td><span class="vfop-line-main">${escapeHTML(item.label)}</span></td>
+        <td>${escapeHTML(item.value)}</td>
+        <td>${sourceTag(item.source)}</td>
+        <td>${escapeHTML(item.detail)}</td>
+      </tr>
     `).join("");
   }
 
   function renderActions(workspace) {
-    const target = document.getElementById("vfop-action-queue");
-    if (!target) return;
-    target.innerHTML = workspace.actions.map((item) => `
-      <div class="vfop-action-item">
-        <div class="vfop-action-main">
-          <strong>${escapeHTML(item.title)}</strong>
-          <span>${escapeHTML(item.detail)}</span>
-        </div>
-        <div class="vfop-action-priority">${statusBadge(item.priority, item.tone)}</div>
-      </div>
+    const tbody = document.getElementById("vfop-action-body");
+    if (!tbody) return;
+    tbody.innerHTML = workspace.actions.map((item) => `
+      <tr>
+        <td><span class="vfop-line-main">${escapeHTML(item.title)}</span></td>
+        <td>${escapeHTML(item.priority)}</td>
+        <td>${escapeHTML(item.reason)}</td>
+        <td>${sourceTag(item.source)}</td>
+        <td>${escapeHTML(item.status)}</td>
+      </tr>
     `).join("");
   }
 
@@ -845,52 +590,19 @@
     if (!target) return;
     target.innerHTML = workspace.history.map((item) => `
       <div class="vfop-timeline-item">
+        <div class="vfop-timeline-date">${escapeHTML(item.date ? formatDateTime(item.date) : "TODO")}</div>
         <div class="vfop-timeline-main">
           <strong>${escapeHTML(item.title)}</strong>
-          <span>${escapeHTML(item.detail)} · ${escapeHTML(item.date ? formatDateTime(item.date) : "TODO")}</span>
+          <span>${escapeHTML(item.detail)}</span>
         </div>
-        ${statusBadge(statusLabelFromTone(item.tone), item.tone)}
+        ${sourceTag(item.source)}
       </div>
     `).join("");
   }
 
-  function renderSources() {
-    const target = document.getElementById("vfop-source-list");
-    if (!target) return;
-
-    const ordered = [
-      "clientes",
-      "bases",
-      "vinculos",
-      "vinculoClientes",
-      "cobertura",
-      "relatorios",
-      "tokens",
-      "ads",
-      "clickup",
-    ];
-    const rows = ordered
-      .map((key) => state.sources[key])
-      .filter(Boolean);
-
-    rows.push({
-      label: "GET /clientes/:id/operacao ou GET /clientes/:id/workspace",
-      status: "futuro",
-      ok: false,
-      tone: "warning",
-      message: "TODO backend futuro",
-    });
-
-    target.innerHTML = rows.map((source) => `
-      <div class="vfop-source-item">
-        <div class="vfop-source-main">
-          <strong>${escapeHTML(source.label)}</strong>
-          <span>${escapeHTML(source.message || (source.ok ? "Contrato consultado com sucesso" : "Sem dados nesta sessao"))}</span>
-        </div>
-        ${statusBadge(source.ok ? `HTTP ${source.status}` : String(source.status || "TODO"), source.tone)}
-      </div>
-    `).join("");
-  }
+  function renderMetricRows() {}
+  function renderMetrics() {}
+  function renderSources() {}
 
   function setLoading(isLoading) {
     state.loading = isLoading;
@@ -900,6 +612,8 @@
       const label = btn.querySelector("span");
       if (label) label.textContent = isLoading ? "Atualizando" : "Atualizar dados";
     }
+    const select = document.getElementById("vfop-client-select");
+    if (select) select.disabled = isLoading && !state.clientes.length;
   }
 
   function setText(id, value) {
@@ -919,15 +633,37 @@
     return `<span class="vfop-status vfop-status--${safeTone}">${escapeHTML(label || "--")}</span>`;
   }
 
-  function statusSpec(label, tone) {
-    return { label, tone };
+  function sourceTag(source) {
+    const kind = normalizeSourceKind(source);
+    return `<span class="vfop-source-tag vfop-source-tag--${kind}">${escapeHTML(sourceText(kind))}</span>`;
   }
 
-  function statusLabelFromTone(tone) {
-    if (tone === "success") return "OK";
-    if (tone === "danger") return "Critico";
-    if (tone === "info") return "Info";
-    return "Atencao";
+  function sourceText(source) {
+    const kind = normalizeSourceKind(source);
+    if (kind === "real") return "Real";
+    if (kind === "todo") return "TODO backend";
+    return "Preview";
+  }
+
+  function normalizeSourceKind(source) {
+    const value = String(source || "").toLowerCase();
+    if (value === "real" || value === "success") return "real";
+    if (value === "todo" || value === "info") return "todo";
+    return "preview";
+  }
+
+  function sourceKind(key) {
+    const source = state.sources[key];
+    if (!source) return "preview";
+    return source.ok ? "real" : source.kind || "preview";
+  }
+
+  function sourceHint(key) {
+    return sourceText(sourceKind(key));
+  }
+
+  function statusSpec(label, tone) {
+    return { label, tone };
   }
 
   function getTokenState(token, source) {
@@ -938,14 +674,11 @@
         detail: source?.status === 403 ? "Rota admin indisponivel para este usuario" : "Nao foi possivel validar tokens",
       };
     }
-    if (!token) {
-      return { label: "Ausente", tone: "danger", detail: "Nenhum grant localizado para o cliente" };
-    }
+    if (!token) return { label: "Ausente", tone: "danger", detail: "Nenhum grant localizado para o cliente" };
 
     const expiresRaw = token.expires_at || token.expiresAt || token.expira_em || token.expiration;
     const expires = expiresRaw ? new Date(expiresRaw) : null;
     const activeFlag = token.ativo !== false && String(token.status || "").toLowerCase() !== "revogado";
-
     if (!activeFlag) return { label: "Inativo", tone: "danger", detail: "Grant existe, mas esta inativo" };
     if (!expires || Number.isNaN(expires.getTime())) return { label: "Conectado", tone: "success", detail: "Grant localizado sem vencimento no payload" };
 
@@ -953,6 +686,23 @@
     if (days < 0) return { label: "Vencido", tone: "danger", detail: `Token venceu ha ${Math.abs(days)} dias` };
     if (days <= 7) return { label: "Expira breve", tone: "warning", detail: `Token vence em ${days} dias` };
     return { label: "Conectado", tone: "success", detail: `Token valido por ${days} dias` };
+  }
+
+  function getMainPending(workspace) {
+    if (!workspace.hasBase) return "vincular base";
+    if (workspace.tokenState.tone !== "success") return "regularizar grant";
+    if (!workspace.hasDiagnosis) return "rodar diagnostico";
+    return "sem pendencia critica";
+  }
+
+  function getDetectedChannels(workspace) {
+    const channels = new Set();
+    channels.add(marketplaceLabel(workspace.channel));
+    workspace.basesDoCliente.forEach((base) => {
+      const label = marketplaceLabel(base.marketplace || base.canal || "");
+      if (label && label !== "Nao identificado") channels.add(label);
+    });
+    return [...channels].filter(Boolean);
   }
 
   function inferMarketplace(cliente, base, token) {
@@ -1002,7 +752,7 @@
   }
 
   function getClienteKeys(cliente) {
-    const values = [
+    return unique([
       cliente?.id,
       cliente?.cliente_id,
       cliente?.clienteId,
@@ -1012,12 +762,11 @@
       cliente?.nome,
       cliente?.name,
       cliente?.razao_social,
-    ];
-    return unique(values.map(slugKey).filter(Boolean));
+    ].map(slugKey).filter(Boolean));
   }
 
   function getItemClienteKeys(item) {
-    const values = [
+    return unique([
       item?.cliente_id,
       item?.clienteId,
       item?.cliente_slug,
@@ -1043,16 +792,21 @@
       item?.cliente?.id,
       item?.cliente?.slug,
       item?.cliente?.nome,
-    ];
-    return unique(values.map(slugKey).filter(Boolean));
+    ].map(slugKey).filter(Boolean));
   }
 
   function getClienteName(cliente) {
-    return String(cliente?.nome || cliente?.name || cliente?.razao_social || cliente?.slug || "Extra Maquinas");
+    return String(cliente?.nome || cliente?.name || cliente?.razao_social || cliente?.slug || FALLBACK_CLIENTE.nome);
   }
 
   function getClienteSlug(cliente) {
     return String(cliente?.slug || cliente?.cliente_slug || cliente?.clienteSlug || slugify(getClienteName(cliente)));
+  }
+
+  function getClienteOptionKey(cliente) {
+    const id = cliente?.id ?? cliente?.cliente_id ?? cliente?.clienteId;
+    if (id != null && id !== "") return `id:${id}`;
+    return `slug:${getClienteSlug(cliente)}`;
   }
 
   function getBaseName(base) {
@@ -1069,6 +823,17 @@
 
   function getReportName(relatorio) {
     return String(relatorio?.nome || relatorio?.titulo || relatorio?.base_slug || relatorio?.cliente_slug || `Relatorio ${relatorio?.id || ""}`).trim();
+  }
+
+  function getSensitivePresence(row, keys) {
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(row || {}, key)) {
+        const value = row[key];
+        if (value === "[presente]" || value === "[removido]") return "Presente";
+        if (value) return "Presente";
+      }
+    }
+    return "Ausente";
   }
 
   function extractArray(data, keys) {
@@ -1091,14 +856,12 @@
     if (visited.has(value)) return null;
     visited.add(value);
 
-    if (Array.isArray(value)) {
-      return value.map((item) => sanitizeSensitiveData(item, visited));
-    }
+    if (Array.isArray(value)) return value.map((item) => sanitizeSensitiveData(item, visited));
 
     const output = {};
     Object.keys(value).forEach((key) => {
       if (isSensitiveKey(key)) {
-        output[key] = "[removido]";
+        output[key] = value[key] ? "[presente]" : "";
         return;
       }
       output[key] = sanitizeSensitiveData(value[key], visited);
@@ -1195,14 +958,9 @@
     return Math.min(Math.max(value, min), max);
   }
 
-  function formatBRL(value) {
-    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value) || 0);
-  }
-
-  function formatPercent(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return "--";
-    return `${n.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+  function getCurrentMonthRef() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   }
 
   function formatDateTime(value) {
@@ -1215,28 +973,6 @@
       hour: "2-digit",
       minute: "2-digit",
     });
-  }
-
-  function formatAgo(value) {
-    const days = getAgeDays(value);
-    if (days == null) return "recentemente";
-    if (days === 0) return "hoje";
-    if (days === 1) return "ha 1 dia";
-    return `ha ${days} dias`;
-  }
-
-  function getCurrentMonthRef() {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  }
-
-  function toISODate(date) {
-    return date.toISOString().slice(0, 10);
-  }
-
-  function capitalize(value) {
-    const text = String(value || "");
-    return text ? text[0].toUpperCase() + text.slice(1) : text;
   }
 
   function escapeHTML(value) {

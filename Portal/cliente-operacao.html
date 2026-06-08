@@ -14,180 +14,167 @@
     <main class="vfop-page" aria-labelledby="vfop-title">
       <section class="vfop-client-head">
         <div class="vfop-client-head__main">
-          <div class="vfop-kicker">Cliente Operação v1</div>
-          <div class="vfop-title-row">
-            <h1 id="vfop-title">Cliente Operação</h1>
-            <span id="vfop-operational-status" class="vfop-status vfop-status--neutral">Carregando</span>
-          </div>
+          <div class="vfop-kicker">Cliente Operacao v1</div>
+          <h1 id="vfop-title">Ficha operacional do cliente</h1>
           <div class="vfop-meta-strip" aria-label="Resumo do cliente selecionado">
             <span id="vfop-client-name">Selecionando cliente...</span>
             <span id="vfop-client-channel">Canal principal: --</span>
             <span id="vfop-last-update">Atualizacao: --</span>
           </div>
         </div>
-        <div class="vfop-client-head__actions">
-          <button id="vfop-refresh" class="vfop-action vfop-action--primary" type="button">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M21 12a9 9 0 0 1-15.3 6.4"></path>
-              <path d="M3 12a9 9 0 0 1 15.3-6.4"></path>
-              <path d="M18 2v4h-4"></path>
-              <path d="M6 22v-4h4"></path>
-            </svg>
-            <span>Atualizar dados</span>
-          </button>
-          <a id="vfop-control-center-link" class="vfop-action vfop-action--ghost" href="control-center.html">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 17l6-6-6-6"></path>
-              <path d="M12 19h8"></path>
-            </svg>
-            <span>Ver Control Center</span>
-          </a>
+        <div class="vfop-client-tools">
+          <label class="vfop-client-picker" for="vfop-client-select">
+            <span>Cliente</span>
+            <select id="vfop-client-select" class="vfop-select">
+              <option value="">Carregando clientes...</option>
+            </select>
+          </label>
+          <div class="vfop-client-head__actions">
+            <span id="vfop-operational-status" class="vfop-status vfop-status--neutral">Carregando</span>
+            <button id="vfop-refresh" class="vfop-action vfop-action--primary" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21 12a9 9 0 0 1-15.3 6.4"></path>
+                <path d="M3 12a9 9 0 0 1 15.3-6.4"></path>
+                <path d="M18 2v4h-4"></path>
+                <path d="M6 22v-4h4"></path>
+              </svg>
+              <span>Atualizar dados</span>
+            </button>
+            <a id="vfop-control-center-link" class="vfop-action vfop-action--ghost" href="control-center.html">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 17l6-6-6-6"></path>
+                <path d="M12 19h8"></path>
+              </svg>
+              <span>Ver Control Center</span>
+            </a>
+          </div>
         </div>
       </section>
 
       <div id="vfop-source-alert" class="vfop-pilot-note" role="status">
-        Tela piloto: dados reais entram quando existe contrato de API; blocos sem contrato ficam marcados como preview/TODO.
+        Ficha piloto: dados reais entram onde ja existe contrato de API; previews e pendencias futuras ficam marcados na propria linha.
       </div>
 
-      <section class="vfop-section vfop-readiness-section" aria-labelledby="vfop-readiness-title">
-        <div class="vfop-readiness-main">
-          <div class="vfop-section-head">
-            <div>
-              <span class="vfop-section-eyebrow">Prontidao</span>
-              <h2 id="vfop-readiness-title">Setup do cliente</h2>
-            </div>
-            <span id="vfop-score-source" class="vfop-mini-badge">Parcial</span>
-          </div>
-          <div class="vfop-score-panel">
-            <div>
-              <div id="vfop-score-value" class="vfop-score-value">--</div>
-              <div id="vfop-score-label" class="vfop-score-label">Calculando prontidao</div>
-            </div>
-            <div class="vfop-score-meter" aria-hidden="true">
-              <span id="vfop-score-bar"></span>
-            </div>
+      <section class="vfop-section" aria-labelledby="vfop-record-title">
+        <div class="vfop-section-head">
+          <div>
+            <span class="vfop-section-eyebrow">Cadastro</span>
+            <h2 id="vfop-record-title">Cadastro operacional</h2>
           </div>
         </div>
-        <div id="vfop-setup-list" class="vfop-readiness-list" aria-label="Checklist de setup">
-          <div class="vfop-placeholder">Carregando checklist...</div>
+        <div id="vfop-operational-record" class="vfop-record-grid">
+          <div class="vfop-placeholder">Carregando ficha...</div>
+        </div>
+        <div class="vfop-record-note">Dados administrativos sensiveis continuam em clientes.html.</div>
+      </section>
+
+      <section class="vfop-section" aria-labelledby="vfop-channels-title">
+        <div class="vfop-section-head">
+          <div>
+            <span class="vfop-section-eyebrow">Lojas</span>
+            <h2 id="vfop-channels-title">Canais e lojas</h2>
+          </div>
+        </div>
+        <div class="vfop-table-wrap">
+          <table class="vfop-table vfop-table--channels">
+            <thead>
+              <tr>
+                <th>Canal</th>
+                <th>Marketplace</th>
+                <th>Nome/identificacao</th>
+                <th>Base</th>
+                <th>Grant/API</th>
+                <th>Diagnostico</th>
+                <th>Fechamento</th>
+                <th>Pendencia principal</th>
+              </tr>
+            </thead>
+            <tbody id="vfop-channels-body">
+              <tr><td colspan="8" class="vfop-empty-cell">Carregando canais...</td></tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
-      <section class="vfop-grid vfop-grid--balanced" aria-label="Canais e qualidade dos dados">
-        <article class="vfop-section">
+      <section class="vfop-grid vfop-grid--setup">
+        <article class="vfop-section vfop-setup-section" aria-labelledby="vfop-setup-title">
           <div class="vfop-section-head">
             <div>
-              <span class="vfop-section-eyebrow">Canais</span>
-              <h2>Canais do cliente</h2>
+              <span class="vfop-section-eyebrow">Setup</span>
+              <h2 id="vfop-setup-title">Setup operacional</h2>
+            </div>
+            <div class="vfop-score-compact">
+              <strong id="vfop-score-value">--</strong>
+              <span id="vfop-score-label">Calculando</span>
+            </div>
+          </div>
+          <div class="vfop-score-meter" aria-hidden="true">
+            <span id="vfop-score-bar"></span>
+          </div>
+          <div id="vfop-setup-list" class="vfop-checklist" aria-label="Checklist de setup">
+            <div class="vfop-placeholder">Carregando checklist...</div>
+          </div>
+        </article>
+
+        <article class="vfop-section" aria-labelledby="vfop-data-title">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Calculo futuro</span>
+              <h2 id="vfop-data-title">Dados para calculo futuro</h2>
             </div>
           </div>
           <div class="vfop-table-wrap">
             <table class="vfop-table">
               <thead>
                 <tr>
-                  <th>Canal</th>
-                  <th>Base</th>
-                  <th>Grant/API</th>
-                  <th>Diagnostico</th>
-                  <th>Fechamento</th>
-                  <th>Pendencias</th>
+                  <th>Dado</th>
+                  <th>Estado</th>
+                  <th>Fonte</th>
+                  <th>Observacao</th>
                 </tr>
               </thead>
-              <tbody id="vfop-channels-body">
-                <tr><td colspan="6" class="vfop-empty-cell">Carregando canais...</td></tr>
+              <tbody id="vfop-data-body">
+                <tr><td colspan="4" class="vfop-empty-cell">Avaliando dados...</td></tr>
               </tbody>
             </table>
           </div>
         </article>
-
-        <article class="vfop-section">
-          <div class="vfop-section-head">
-            <div>
-              <span class="vfop-section-eyebrow">Dados</span>
-              <h2>Qualidade dos dados</h2>
-            </div>
-          </div>
-          <div id="vfop-quality-list" class="vfop-quality-list">
-            <div class="vfop-placeholder">Avaliando dados incompletos...</div>
-          </div>
-        </article>
       </section>
 
-      <section class="vfop-grid vfop-grid--two" aria-label="Precificacao e frete">
-        <article class="vfop-section">
-          <div class="vfop-section-head">
-            <div>
-              <span class="vfop-section-eyebrow">Precificacao</span>
-              <h2>Preview de margem</h2>
-            </div>
-            <span class="vfop-mini-badge vfop-mini-badge--todo">TODO backend</span>
-          </div>
-          <div id="vfop-pricing-preview" class="vfop-metric-list">
-            <div class="vfop-placeholder">Montando preview...</div>
-          </div>
-        </article>
-
-        <article class="vfop-section">
-          <div class="vfop-section-head">
-            <div>
-              <span class="vfop-section-eyebrow">Frete inteligente</span>
-              <h2>Amostra operacional</h2>
-            </div>
-            <span class="vfop-mini-badge vfop-mini-badge--todo">TODO backend</span>
-          </div>
-          <div id="vfop-frete-preview" class="vfop-metric-list">
-            <div class="vfop-placeholder">Calculando amostra...</div>
-          </div>
-        </article>
-      </section>
-
-      <section class="vfop-section" aria-labelledby="vfop-metrics-title">
+      <section class="vfop-section" aria-labelledby="vfop-actions-title">
         <div class="vfop-section-head">
           <div>
-            <span class="vfop-section-eyebrow">Periodo</span>
-            <h2 id="vfop-metrics-title">Metricas, Ads e fechamento</h2>
+            <span class="vfop-section-eyebrow">Fila</span>
+            <h2 id="vfop-actions-title">Proximas acoes</h2>
           </div>
         </div>
-        <div id="vfop-metrics-grid" class="vfop-metrics-grid">
-          <div class="vfop-placeholder">Carregando metricas...</div>
+        <div class="vfop-table-wrap">
+          <table class="vfop-table">
+            <thead>
+              <tr>
+                <th>Acao</th>
+                <th>Prioridade</th>
+                <th>Motivo</th>
+                <th>Fonte</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="vfop-action-body">
+              <tr><td colspan="5" class="vfop-empty-cell">Priorizando acoes...</td></tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
-      <section class="vfop-grid vfop-grid--queue" aria-label="Acoes e historico">
-        <article class="vfop-section">
-          <div class="vfop-section-head">
-            <div>
-              <span class="vfop-section-eyebrow">Fila</span>
-              <h2>Proximas acoes</h2>
-            </div>
-          </div>
-          <div id="vfop-action-queue" class="vfop-action-list">
-            <div class="vfop-placeholder">Priorizando acoes...</div>
-          </div>
-        </article>
-
-        <article class="vfop-section">
-          <div class="vfop-section-head">
-            <div>
-              <span class="vfop-section-eyebrow">Historico</span>
-              <h2>Linha do tempo</h2>
-            </div>
-          </div>
-          <div id="vfop-history" class="vfop-timeline">
-            <div class="vfop-placeholder">Carregando historico...</div>
-          </div>
-        </article>
-      </section>
-
-      <section class="vfop-section vfop-sources-section" aria-labelledby="vfop-sources-title">
+      <section class="vfop-section vfop-history-section" aria-labelledby="vfop-history-title">
         <div class="vfop-section-head">
           <div>
-            <span class="vfop-section-eyebrow">Fontes</span>
-            <h2 id="vfop-sources-title">Contratos consultados</h2>
+            <span class="vfop-section-eyebrow">Historico</span>
+            <h2 id="vfop-history-title">Historico operacional</h2>
           </div>
         </div>
-        <div id="vfop-source-list" class="vfop-source-list">
-          <div class="vfop-placeholder">Aguardando requisicoes...</div>
+        <div id="vfop-history" class="vfop-timeline">
+          <div class="vfop-placeholder">Carregando historico...</div>
         </div>
       </section>
     </main>

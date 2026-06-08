@@ -8,38 +8,51 @@
   <link rel="stylesheet" href="venforce-ui-v2.css">
   <link rel="stylesheet" href="cliente-operacao.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+  <style>
+    .vfop-phead {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .vfop-phead-left { flex: 1; min-width: 0; }
+    .vfop-phead-right {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+  </style>
 </head>
 <body class="vf-page vfop-body">
   <div class="vf-main-with-sidebar">
-    <main class="vfop-page" aria-labelledby="vfop-title">
+    <main class="vfop-page" aria-labelledby="vfop-page-title">
       <div class="vfop-head-2col">
         <div>
           <section class="vfop-client-head">
             <div class="vfop-client-head__main">
-              <div class="vfop-kicker">Cliente Operacao v1</div>
-              <h1 id="vfop-title">Ficha operacional do cliente</h1>
-              <div style="display:flex;align-items:center;
-                          justify-content:space-between;
-                          gap:10px;margin:8px 0 4px;flex-wrap:wrap;">
-                <div id="vfop-client-chip"></div>
-                <div style="display:flex;gap:6px;align-items:center;">
-                  <a id="vfop-btn-editar"
-                     href="clientes.html"
-                     class="vfop-action">
-                    Editar cliente
-                  </a>
-                  <button id="vfop-btn-copiar-link"
-                          class="vfop-action vfop-action--ghost"
-                          style="display:none;">
-                    Copiar link ML
-                  </button>
+              <div class="vfop-phead">
+                <div class="vfop-phead-left">
+                  <div class="vfop-kicker">Cliente · Setup operacional</div>
+                  <h1 id="vfop-page-title"
+                      style="font-size:22px;font-weight:600;
+                             letter-spacing:-.02em;margin:4px 0 6px;
+                             color:var(--vfop-text);line-height:1.15;">
+                    —
+                  </h1>
+                  <div id="vfop-meta-strip" class="vfop-meta-strip" aria-label="Resumo do cliente selecionado">
+                    <span id="vfop-client-name">Selecionando cliente...</span>
+                    <span id="vfop-client-channel">Canal principal: --</span>
+                    <span id="vfop-last-update">Atualizacao: --</span>
+                  </div>
                 </div>
+                <div class="vfop-phead-right" id="vfop-head-actions"></div>
               </div>
-              <div class="vfop-meta-strip" aria-label="Resumo do cliente selecionado">
-                <span id="vfop-client-name">Selecionando cliente...</span>
-                <span id="vfop-client-channel">Canal principal: --</span>
-                <span id="vfop-last-update">Atualizacao: --</span>
-              </div>
+              <div id="vfop-client-chip"></div>
+              <div id="vfop-quick-access" class="vfop-quick-access"
+                   style="display:none;"></div>
             </div>
             <div class="vfop-client-tools">
               <label class="vfop-client-picker" for="vfop-client-select">

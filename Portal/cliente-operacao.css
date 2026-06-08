@@ -921,6 +921,15 @@ nav.sidebar,
   overflow-y: auto !important;
   overflow-x: hidden !important;
   max-height: 100vh !important;
+  white-space: nowrap;
+}
+
+.vf-sidebar .vf-nav-group-label,
+.vf-sidebar [class*="nav-label"],
+.vf-sidebar [class*="group-label"] {
+  overflow: visible !important;
+  text-overflow: unset !important;
+  white-space: nowrap !important;
 }
 
 /* Topbar fixa */

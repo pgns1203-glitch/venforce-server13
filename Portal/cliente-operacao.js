@@ -572,7 +572,12 @@
       ["Status", cliente.ativo !== false
         ? `<span class="vfop-status vfop-status--success">Ativo</span>`
         : `<span class="vfop-status vfop-status--danger">Inativo</span>`],
-      ["Canais", escapeHTML(String(cliente.canaisCount || "—"))],
+      ["Canais", escapeHTML(String(
+        state.canais?.length ||
+        cliente.canaisCount ||
+        (state.vinculos?.length ? state.vinculos.length : null) ||
+        "—"
+      ))],
       ["API key", `<span class="vfop-status vfop-status--muted">somente admin</span>`],
     ];
 

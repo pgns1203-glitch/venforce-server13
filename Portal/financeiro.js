@@ -65,6 +65,46 @@ function setLinkClienteOutput(url) {
   if (btnAbrir) btnAbrir.disabled = !enable;
 }
 
+function atualizarHintClienteFinanceiro() {
+  const sel = document.getElementById("fin-cliente");
+  const hint = document.getElementById("fin-cliente-hint");
+  if (!sel || !hint) return;
+
+  if (sel.value) {
+    const nome = sel.options?.[sel.selectedIndex]?.textContent || "";
+    hint.textContent = `Fechamento será vinculado a: ${nome}`;
+    hint.style.display = "block";
+  } else {
+    hint.textContent = "";
+    hint.style.display = "none";
+  }
+}
+
+async function carregarClientesFinanceiro() {
+  const sel = document.getElementById("fin-cliente");
+  if (!sel) return;
+  try {
+    const res = await fetch(`${API_BASE}/clientes`, {
+      headers: { Authorization: "Bearer " + TOKEN }
+    });
+    const data = await res.json();
+    const lista = Array.isArray(data)
+      ? data
+      : (data?.clientes || data?.data || []);
+    const ativos = lista.filter((c) => c?.ativo !== false);
+    sel.innerHTML =
+      '<option value="">Selecione o cliente...</option>' +
+      ativos
+        .sort((a, b) => (a.nome || "").localeCompare(b.nome || ""))
+        .map((c) => `<option value="${c.slug}">${c.nome}</option>`)
+        .join("");
+    atualizarHintClienteFinanceiro();
+  } catch {
+    sel.innerHTML = '<option value="">Erro ao carregar clientes</option>';
+    atualizarHintClienteFinanceiro();
+  }
+}
+
 function formatDateTimePtBR(d) {
   try { return new Date(d).toLocaleString("pt-BR"); } catch { return ""; }
 }
@@ -386,6 +426,7 @@ async function gerarLinkClienteFinanceiro() {
         tipo: "fechamento_mensal",
         titulo: payload.titulo || "Relatório de Fechamento Financeiro",
         periodo: payload.periodo || "",
+        cliente_slug: document.getElementById("fin-cliente")?.value || null,
         status: "rascunho",
         payload_json: payload,
         origem_tipo: "fechamento_financeiro",
@@ -1219,6 +1260,13 @@ if (marketplaceSelect && ordersAllWrapper) {
   updateOrdersAllVisibility();
 }
 
+const clienteSelectFinanceiro = document.getElementById("fin-cliente");
+if (clienteSelectFinanceiro) {
+  clienteSelectFinanceiro.addEventListener("change", atualizarHintClienteFinanceiro);
+}
+
+carregarClientesFinanceiro();
+
 initUploadDragDrop("fin-sales");
 initUploadDragDrop("fin-costs");
 initUploadDragDrop("fin-orders-all");
@@ -1643,6 +1691,7 @@ async function _gerarLinkComEntrega() {
         tipo: "fechamento_mensal",
         titulo: payload.titulo || "Fechamento Financeiro",
         periodo: payload.periodo || "",
+        cliente_slug: document.getElementById("fin-cliente")?.value || null,
         status: "rascunho",
         payload_json: payload,
         origem_tipo: "fechamento_financeiro",
@@ -1693,4 +1742,3 @@ async function _gerarLinkComEntrega() {
 // E adicione LOGO ABAIXO:
 //   initEntregaTabs();
 // ─────────────────────────────────────────────────────────────────────────────
-

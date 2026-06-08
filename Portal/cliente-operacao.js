@@ -42,7 +42,9 @@
     const select = document.getElementById("vfop-client-select");
     if (select) select.addEventListener("change", onClienteChange);
 
+    ensureQuickAccessContainer();
     loadClienteOperacao();
+    renderAtalhos();
   }
 
   function getToken() {
@@ -506,12 +508,51 @@
     renderOperationalRecord(workspace);
     renderIdentityPanel(workspace.cliente);
     renderClientChip(workspace.cliente, workspace.setup?.score);
+    const actionsEl = document.getElementById("vfop-donut-actions");
+    if (actionsEl && workspace?.cliente) {
+      const c = workspace.cliente;
+      const slug = getClienteSlug(c);
+      const safeSlug = escapeHTML(escapeJsString(slug));
+      const safeName = escapeHTML(escapeJsString(getClienteName(c).replace(/'/g, "")));
+      const temGrant = (state.tokens || []).some(
+        t => t?.cliente_slug === c?.slug || t?.cliente_id === c?.id
+      );
+
+      const btns = [];
+
+      btns.push(
+        `<a href="clientes.html"
+            class="vfop-card-action">
+           Editar cliente
+         </a>`
+      );
+
+      if (!temGrant) {
+        btns.push(
+          `<button class="vfop-card-action vfop-card-action--primary"
+                   onclick="copiarLinkML('${safeSlug}')">
+             Copiar link ML
+           </button>`
+        );
+      }
+
+      btns.push(
+        `<button class="vfop-card-action"
+                 onclick="salvarAtalhoCliente('${safeSlug}',
+                 '${safeName}')">
+           ☆ Salvar atalho
+         </button>`
+      );
+
+      actionsEl.innerHTML = btns.join("");
+    }
     renderMLLinkButton(workspace.cliente);
     renderChannels(workspace);
     renderReadiness(workspace);
     renderFutureData(workspace);
     renderActions(workspace);
     renderHistory(workspace);
+    renderAtalhos();
   }
 
   function renderClienteSelect() {
@@ -598,19 +639,57 @@
     const el = document.getElementById("vfop-client-chip");
     if (!el || !cliente) return;
 
-    const pct = scorePercent || 0;
-    const isOk = pct >= 80;
+    const pct   = Math.round(scorePercent || 0);
+    const isOk  = pct >= 80;
+    const r     = 15.9;
+    const circ  = 2 * Math.PI * r;
+    const dash  = (pct / 100) * circ;
+    const color = isOk ? "#1a7a45" : (pct >= 45 ? "#855100" : "#9b1c1c");
+    const label = isOk ? "Setup completo" : "Em configuração";
 
     el.innerHTML = `
-      <div class="vfop-client-chip">
-        <span style="font-weight:600;">${escapeHTML(cliente.nome || "—")}</span>
-        <span class="vfop-client-chip-score">${escapeHTML(String(pct))}% setup</span>
-        <span class="vfop-client-chip-badge
-          ${isOk ? "vfop-client-chip-badge--ok"
-                  : "vfop-client-chip-badge--warn"}">
-          ${isOk ? "Completo" : "Em configuração"}
-        </span>
+      <div class="vfop-donut-wrap">
+        <svg class="vfop-donut-svg" width="58" height="58"
+             viewBox="0 0 36 36">
+          <circle cx="18" cy="18" r="${r}"
+            fill="none" stroke="#eaecf0" stroke-width="2.8"/>
+          <circle cx="18" cy="18" r="${r}"
+            fill="none" stroke="${color}" stroke-width="2.8"
+            stroke-dasharray="${dash.toFixed(1)} ${circ.toFixed(1)}"
+            stroke-dashoffset="${(circ * 0.25).toFixed(1)}"
+            stroke-linecap="round"/>
+          <text class="vfop-donut-label"
+                x="18" y="21"
+                text-anchor="middle"
+                font-size="7.5" font-weight="700"
+                fill="${color}">
+            ${pct}%
+          </text>
+        </svg>
+        <div class="vfop-donut-info">
+          <div class="vfop-donut-name">
+            ${escapeHTML(cliente.nome || "—")}
+          </div>
+          <div class="vfop-donut-meta">
+            ${label}
+          </div>
+          <div class="vfop-donut-actions" id="vfop-donut-actions">
+          </div>
+        </div>
       </div>`;
+  }
+
+  function ensureQuickAccessContainer() {
+    if (!document.getElementById("vfop-quick-access")) {
+      const chip = document.getElementById("vfop-client-chip");
+      if (chip) {
+        const qa = document.createElement("div");
+        qa.id = "vfop-quick-access";
+        qa.className = "vfop-quick-access";
+        qa.style.display = "none";
+        chip.parentNode.insertBefore(qa, chip.nextSibling);
+      }
+    }
   }
 
   function renderMLLinkButton(cliente) {
@@ -768,7 +847,87 @@
     });
   }
 
+  function salvarAtalhoCliente(slug, nome) {
+    const KEY = "vfop-atalhos-clientes";
+    let lista = [];
+    try {
+      lista = JSON.parse(localStorage.getItem(KEY) || "[]");
+    } catch {}
+    if (!lista.find(a => a.slug === slug)) {
+      lista.push({ slug, nome });
+      if (lista.length > 5) lista.shift();
+      localStorage.setItem(KEY, JSON.stringify(lista));
+    }
+    renderAtalhos();
+    const btn = document.querySelector(
+      `[onclick*="salvarAtalhoCliente"]`
+    );
+    if (btn) {
+      btn.textContent = "★ Salvo";
+      setTimeout(() => { btn.textContent = "☆ Salvar atalho"; },
+        1500);
+    }
+  }
+
+  function renderAtalhos() {
+    ensureQuickAccessContainer();
+    const wrap = document.getElementById("vfop-quick-access");
+    if (!wrap) return;
+    const KEY = "vfop-atalhos-clientes";
+    let lista = [];
+    try {
+      lista = JSON.parse(localStorage.getItem(KEY) || "[]");
+    } catch {}
+    if (!lista.length) { wrap.style.display = "none"; return; }
+
+    const slugAtual = getClienteSlug(state.selectedCliente || {});
+
+    wrap.style.display = "flex";
+    wrap.innerHTML =
+      `<span class="vfop-quick-label">Atalhos</span>` +
+      lista.map(a => {
+        const safeSlug = escapeHTML(escapeJsString(a.slug));
+        return `
+        <span class="vfop-quick-chip
+          ${slugKey(a.slug) === slugKey(slugAtual) ? " vfop-quick-chip--active" : ""}"
+              onclick="selecionarClienteRapido('${safeSlug}')">
+          ${escapeHTML(a.nome)}
+          <span class="vfop-quick-chip-remove"
+                onclick="event.stopPropagation();
+                         removerAtalho('${safeSlug}')">
+            ×
+          </span>
+        </span>`;
+      }).join("");
+  }
+
+  function removerAtalho(slug) {
+    const KEY = "vfop-atalhos-clientes";
+    let lista = [];
+    try {
+      lista = JSON.parse(localStorage.getItem(KEY) || "[]");
+    } catch {}
+    lista = lista.filter(a => a.slug !== slug);
+    localStorage.setItem(KEY, JSON.stringify(lista));
+    renderAtalhos();
+  }
+
+  function selecionarClienteRapido(slug) {
+    const sel = document.getElementById("vfop-client-select");
+    if (sel) {
+      const cliente = (state.clientes || []).find(
+        item => slugKey(getClienteSlug(item)) === slugKey(slug)
+      );
+      sel.value = cliente ? getClienteOptionKey(cliente) : slug;
+      sel.dispatchEvent(new Event("change"));
+    }
+  }
+
   window.copiarLinkML = copiarLinkML;
+  window.salvarAtalhoCliente = salvarAtalhoCliente;
+  window.renderAtalhos = renderAtalhos;
+  window.removerAtalho = removerAtalho;
+  window.selecionarClienteRapido = selecionarClienteRapido;
 
   function renderReadiness(workspace) {
     setText("vfop-score-value", `${workspace.setup.score}%`);

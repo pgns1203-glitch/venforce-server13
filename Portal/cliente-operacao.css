@@ -1405,3 +1405,39 @@ header.topbar {
   .vfop-bottom-grid { grid-template-columns: 1fr; }
   .vfop-canal-fields { grid-template-columns: 1fr 1fr; }
 }
+
+/* ── SETUP GRID ALINHAMENTO ─────────────────────────────── */
+.vfop-grid--setup {
+  grid-template-columns: 1fr 1.2fr;
+  align-items: start;
+}
+
+.vfop-grid--setup .vfop-section {
+  height: 100%;
+}
+
+/* Checklist — largura dos pontos alinhada */
+.vfop-check-v2-item {
+  padding: 10px 14px;
+}
+
+.vfop-check-v2-pts {
+  min-width: 32px;
+  text-align: right;
+}
+
+/* Checklist pendente — texto mais claro */
+.vfop-check-v2-item:not(.vfop-check-v2-item--done)
+  .vfop-check-v2-text {
+  color: var(--vfop-text);
+}
+
+.vfop-check-v2-item:not(.vfop-check-v2-item--done)
+  .vfop-check-v2-pts {
+  color: var(--vfop-soft);
+}
+
+/* Score header do setup */
+.vfop-section-head .vfop-score-compact {
+  margin-left: auto;
+}

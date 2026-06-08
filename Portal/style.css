@@ -2186,6 +2186,17 @@ body {
   z-index: 200;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #c8cdd8 transparent;
+}
+
+.vf-sidebar::-webkit-scrollbar { width: 5px; }
+
+.vf-sidebar::-webkit-scrollbar-thumb {
+  background: #c8cdd8;
+  border-radius: 9px;
 }
 
 .vf-sidebar-logo {

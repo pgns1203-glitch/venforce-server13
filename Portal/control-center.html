@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Control Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="control-center.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+</head>
+<body class="vf-page vfc-page">
+  <div class="vf-main-with-sidebar">
+    <main class="vfc-control-center" data-vfc-shell>
+      <header class="vfc-header">
+        <div class="vfc-title-block">
+          <p class="vfc-kicker">mock/frontend · memory logs</p>
+          <h1>VenForce Control Center</h1>
+          <p>Requests, respostas e contexto técnico do Portal</p>
+        </div>
+
+        <section class="vfc-env-grid" aria-label="Contexto técnico atual">
+          <div class="vfc-env-item">
+            <span>ambiente</span>
+            <strong>mock/frontend</strong>
+          </div>
+          <div class="vfc-env-item">
+            <span>usuário</span>
+            <strong data-vfc-user-name>Usuário</strong>
+          </div>
+          <div class="vfc-env-item">
+            <span>role</span>
+            <strong data-vfc-user-role>—</strong>
+          </div>
+          <div class="vfc-env-item">
+            <span>token</span>
+            <code data-vfc-token-state>ausente</code>
+          </div>
+          <div class="vfc-env-item vfc-env-item--wide">
+            <span>API base</span>
+            <code data-vfc-api-base>mock/local</code>
+          </div>
+        </section>
+      </header>
+
+      <section class="vfc-summary" aria-label="Resumo de requests mockadas">
+        <div class="vfc-summary-cell">
+          <span>Total</span>
+          <strong data-vfc-summary="total">0</strong>
+        </div>
+        <div class="vfc-summary-cell vfc-summary-cell--ok">
+          <span>OK</span>
+          <strong data-vfc-summary="ok">0</strong>
+        </div>
+        <div class="vfc-summary-cell vfc-summary-cell--warn">
+          <span>4xx</span>
+          <strong data-vfc-summary="4xx">0</strong>
+        </div>
+        <div class="vfc-summary-cell vfc-summary-cell--error">
+          <span>5xx</span>
+          <strong data-vfc-summary="5xx">0</strong>
+        </div>
+        <div class="vfc-summary-cell vfc-summary-cell--slow">
+          <span>Lentas</span>
+          <strong data-vfc-summary="slow">0</strong>
+        </div>
+        <div class="vfc-summary-cell">
+          <span>Tempo médio</span>
+          <strong data-vfc-summary="avg">0ms</strong>
+        </div>
+        <div class="vfc-summary-cell vfc-summary-cell--last">
+          <span>Último erro</span>
+          <strong data-vfc-summary="lastError">none</strong>
+        </div>
+      </section>
+
+      <section class="vfc-toolbar" aria-label="Filtros">
+        <div class="vfc-segment" role="tablist" aria-label="Filtro por status">
+          <button class="vfc-segment-button is-active" type="button" data-vfc-status-filter="all">Todas</button>
+          <button class="vfc-segment-button" type="button" data-vfc-status-filter="ok">OK</button>
+          <button class="vfc-segment-button" type="button" data-vfc-status-filter="4xx">4xx</button>
+          <button class="vfc-segment-button" type="button" data-vfc-status-filter="5xx">5xx</button>
+          <button class="vfc-segment-button" type="button" data-vfc-status-filter="slow">Lentas</button>
+        </div>
+
+        <label class="vfc-select-label">
+          <span>Tela</span>
+          <select class="vfc-select" data-vfc-screen-filter>
+            <option value="all">Todas</option>
+          </select>
+        </label>
+
+        <label class="vfc-search">
+          <span>Busca</span>
+          <input type="search" placeholder="/bases, 401, diagnóstico..." data-vfc-search>
+        </label>
+      </section>
+
+      <section class="vfc-workspace">
+        <div class="vfc-requests-panel">
+          <div class="vfc-panel-head">
+            <h2>Requests</h2>
+            <span data-vfc-visible-count>0 visíveis</span>
+          </div>
+
+          <div class="vfc-table-wrap">
+            <table class="vfc-table">
+              <thead>
+                <tr>
+                  <th>hora</th>
+                  <th>tela</th>
+                  <th>método</th>
+                  <th>endpoint</th>
+                  <th>status</th>
+                  <th>tempo</th>
+                  <th>descrição</th>
+                </tr>
+              </thead>
+              <tbody data-vfc-rows></tbody>
+            </table>
+          </div>
+        </div>
+
+        <aside class="vfc-detail" data-vfc-detail aria-live="polite">
+          <div class="vfc-detail-empty">
+            <span class="vfc-empty-dot"></span>
+            <p>Selecione uma request para inspecionar payload, response e contexto seguro.</p>
+          </div>
+        </aside>
+      </section>
+
+      <footer class="vfc-footer">
+        <div class="vfc-footer-meta">
+          <span>logs apenas em memória</span>
+          <span>mock preview</span>
+          <span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>D</kbd></span>
+        </div>
+        <div class="vfc-footer-actions">
+          <button class="vfc-mini-button" type="button" data-vfc-clear>limpar mock</button>
+          <button class="vfc-mini-button" type="button" data-vfc-debug aria-pressed="true">debug mock: on</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <script src="layout.js"></script>
+  <script src="control-center.js"></script>
+</body>
+</html>

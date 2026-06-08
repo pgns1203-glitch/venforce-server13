@@ -79,6 +79,9 @@
     if (name === "media") {
       return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>`;
     }
+    if (name === "terminal") {
+      return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`;
+    }
     return "";
   }
 
@@ -140,6 +143,7 @@
         { label: "Tokens ML", href: "ml-tokens.html", icon: "shield"   },
         { label: "Callbacks", href: "callbacks.html", icon: "repeat"   },
         { label: "Atividade", href: "atividade.html", icon: "activity" },
+        { label: "Control Center", href: "control-center.html", icon: "terminal" },
       ],
     },
     clickup: {
@@ -158,6 +162,7 @@
     "callbacks.html":       "clientes",
     "usuarios.html":        "admin",
     "atividade.html":       "admin",
+    "control-center.html":   "admin",
     "clickup-executivo.html": "clickup",
     "guia-vendedor.html":   "guia",
     "anuncios-meli.html":   "operacao",

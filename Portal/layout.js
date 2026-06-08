@@ -148,6 +148,7 @@
       links: [
         { separator: true, label: "INÍCIO" },
         { label: "Dashboard",    href: "dashboard.html",     icon: "vf-dashboard" },
+        { label: "Cliente Operação", href: "cliente-operacao.html", icon: "users" },
 
         { separator: true, label: "MARKETPLACE" },
         { label: "Bases de Custo", href: "bases.html",         icon: "database"     },
@@ -231,6 +232,7 @@
     "ferramenta-or.html":     "operacao",
     "baixador-midias.html":   "operacao",
     "metricas.html":          "operacao",
+    "cliente-operacao.html":  "operacao",
     "dashboard.html":       "operacao",
     "bases.html":           "operacao",
   };

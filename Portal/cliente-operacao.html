@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Cliente Operação</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="venforce-ui-v2.css">
+  <link rel="stylesheet" href="cliente-operacao.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+</head>
+<body class="vf-page vfop-body">
+  <div class="vf-main-with-sidebar">
+    <main class="vfop-page" aria-labelledby="vfop-title">
+      <section class="vfop-client-head">
+        <div class="vfop-client-head__main">
+          <div class="vfop-kicker">Cliente Operação v1</div>
+          <div class="vfop-title-row">
+            <h1 id="vfop-title">Cliente Operação</h1>
+            <span id="vfop-operational-status" class="vfop-status vfop-status--neutral">Carregando</span>
+          </div>
+          <div class="vfop-meta-strip" aria-label="Resumo do cliente selecionado">
+            <span id="vfop-client-name">Selecionando cliente...</span>
+            <span id="vfop-client-channel">Canal principal: --</span>
+            <span id="vfop-last-update">Atualizacao: --</span>
+          </div>
+        </div>
+        <div class="vfop-client-head__actions">
+          <button id="vfop-refresh" class="vfop-action vfop-action--primary" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12a9 9 0 0 1-15.3 6.4"></path>
+              <path d="M3 12a9 9 0 0 1 15.3-6.4"></path>
+              <path d="M18 2v4h-4"></path>
+              <path d="M6 22v-4h4"></path>
+            </svg>
+            <span>Atualizar dados</span>
+          </button>
+          <a id="vfop-control-center-link" class="vfop-action vfop-action--ghost" href="control-center.html">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 17l6-6-6-6"></path>
+              <path d="M12 19h8"></path>
+            </svg>
+            <span>Ver Control Center</span>
+          </a>
+        </div>
+      </section>
+
+      <div id="vfop-source-alert" class="vfop-pilot-note" role="status">
+        Tela piloto: dados reais entram quando existe contrato de API; blocos sem contrato ficam marcados como preview/TODO.
+      </div>
+
+      <section class="vfop-section vfop-readiness-section" aria-labelledby="vfop-readiness-title">
+        <div class="vfop-readiness-main">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Prontidao</span>
+              <h2 id="vfop-readiness-title">Setup do cliente</h2>
+            </div>
+            <span id="vfop-score-source" class="vfop-mini-badge">Parcial</span>
+          </div>
+          <div class="vfop-score-panel">
+            <div>
+              <div id="vfop-score-value" class="vfop-score-value">--</div>
+              <div id="vfop-score-label" class="vfop-score-label">Calculando prontidao</div>
+            </div>
+            <div class="vfop-score-meter" aria-hidden="true">
+              <span id="vfop-score-bar"></span>
+            </div>
+          </div>
+        </div>
+        <div id="vfop-setup-list" class="vfop-readiness-list" aria-label="Checklist de setup">
+          <div class="vfop-placeholder">Carregando checklist...</div>
+        </div>
+      </section>
+
+      <section class="vfop-grid vfop-grid--balanced" aria-label="Canais e qualidade dos dados">
+        <article class="vfop-section">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Canais</span>
+              <h2>Canais do cliente</h2>
+            </div>
+          </div>
+          <div class="vfop-table-wrap">
+            <table class="vfop-table">
+              <thead>
+                <tr>
+                  <th>Canal</th>
+                  <th>Base</th>
+                  <th>Grant/API</th>
+                  <th>Diagnostico</th>
+                  <th>Fechamento</th>
+                  <th>Pendencias</th>
+                </tr>
+              </thead>
+              <tbody id="vfop-channels-body">
+                <tr><td colspan="6" class="vfop-empty-cell">Carregando canais...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="vfop-section">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Dados</span>
+              <h2>Qualidade dos dados</h2>
+            </div>
+          </div>
+          <div id="vfop-quality-list" class="vfop-quality-list">
+            <div class="vfop-placeholder">Avaliando dados incompletos...</div>
+          </div>
+        </article>
+      </section>
+
+      <section class="vfop-grid vfop-grid--two" aria-label="Precificacao e frete">
+        <article class="vfop-section">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Precificacao</span>
+              <h2>Preview de margem</h2>
+            </div>
+            <span class="vfop-mini-badge vfop-mini-badge--todo">TODO backend</span>
+          </div>
+          <div id="vfop-pricing-preview" class="vfop-metric-list">
+            <div class="vfop-placeholder">Montando preview...</div>
+          </div>
+        </article>
+
+        <article class="vfop-section">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Frete inteligente</span>
+              <h2>Amostra operacional</h2>
+            </div>
+            <span class="vfop-mini-badge vfop-mini-badge--todo">TODO backend</span>
+          </div>
+          <div id="vfop-frete-preview" class="vfop-metric-list">
+            <div class="vfop-placeholder">Calculando amostra...</div>
+          </div>
+        </article>
+      </section>
+
+      <section class="vfop-section" aria-labelledby="vfop-metrics-title">
+        <div class="vfop-section-head">
+          <div>
+            <span class="vfop-section-eyebrow">Periodo</span>
+            <h2 id="vfop-metrics-title">Metricas, Ads e fechamento</h2>
+          </div>
+        </div>
+        <div id="vfop-metrics-grid" class="vfop-metrics-grid">
+          <div class="vfop-placeholder">Carregando metricas...</div>
+        </div>
+      </section>
+
+      <section class="vfop-grid vfop-grid--queue" aria-label="Acoes e historico">
+        <article class="vfop-section">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Fila</span>
+              <h2>Proximas acoes</h2>
+            </div>
+          </div>
+          <div id="vfop-action-queue" class="vfop-action-list">
+            <div class="vfop-placeholder">Priorizando acoes...</div>
+          </div>
+        </article>
+
+        <article class="vfop-section">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Historico</span>
+              <h2>Linha do tempo</h2>
+            </div>
+          </div>
+          <div id="vfop-history" class="vfop-timeline">
+            <div class="vfop-placeholder">Carregando historico...</div>
+          </div>
+        </article>
+      </section>
+
+      <section class="vfop-section vfop-sources-section" aria-labelledby="vfop-sources-title">
+        <div class="vfop-section-head">
+          <div>
+            <span class="vfop-section-eyebrow">Fontes</span>
+            <h2 id="vfop-sources-title">Contratos consultados</h2>
+          </div>
+        </div>
+        <div id="vfop-source-list" class="vfop-source-list">
+          <div class="vfop-placeholder">Aguardando requisicoes...</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="layout.js"></script>
+  <script src="cliente-operacao.js"></script>
+</body>
+</html>

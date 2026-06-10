@@ -45,9 +45,15 @@ const S = {
   ads:         [],
   adsMensal:   [],
   metricas:    null,
+  metricasLoading: false,
   periodo:     { competencia: null, label: '', dateFrom: null, dateTo: null },
-  resumoMes:   null,   // objeto consolidado (shape do endpoint futuro)
+  resumoMes:   null,   // objeto consolidado (shape do endpoint unificado)
   temGrant:    false,
+  grant:       null,   // { temGrant, status, mlUserIdMascarado, expiresAt }
+  sync:        null,   // { status, precisaSincronizar, ultimaSincronizacao, motivo }
+  diagnosticoAuto: null, // { issues, oportunidades, acoes, ultimo }
+  freteHistorico: null,
+  proximoPasso: null,
   activeTab:   'overview',
   compare:     { a: null, b: null },
   compareData: { a: null, b: null },
@@ -75,6 +81,25 @@ async function apiDelete(path) {
       method: 'DELETE', headers: { Authorization: 'Bearer ' + TOKEN }
     });
     return r.ok;
+  } catch { return false; }
+}
+async function apiPost(path, body) {
+  try {
+    const r = await fetch(API_BASE + path, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : null,
+    });
+    const data = await r.json().catch(() => null);
+    return { ok: r.ok, status: r.status, data };
+  } catch { return { ok: false, status: 0, data: null }; }
+}
+
+/* Papel do usuário (mesma fonte usada pelo layout.js: vf-user no localStorage). */
+function isAdmin360() {
+  try {
+    const u = JSON.parse(localStorage.getItem('vf-user') || '{}');
+    return String(u.role || '').toLowerCase() === 'admin';
   } catch { return false; }
 }
 
@@ -111,7 +136,10 @@ function fmtSync(iso) {
 
 /* ── INIT ────────────────────────────────────────────────── */
 async function init360() {
-  const data = await api('/clientes');
+  // Lista operacional segura (admin/user/membro). Substitui /clientes (admin-only).
+  // Fallback para /clientes apenas se o endpoint novo não existir (deploy antigo).
+  let data = await api('/operacao/cliente-360/clientes');
+  if (!data?.ok) data = await api('/clientes');
   S.clientes = data?.clientes || data || [];
   if (!Array.isArray(S.clientes)) S.clientes = [];
 
@@ -144,8 +172,141 @@ async function init360() {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
 }
 
-/* ── LOAD DADOS DO CLIENTE ───────────────────────────────── */
+/* ── LOAD UNIFICADO (endpoint /operacao/cliente-360/:slug) ──
+   Lê o estado salvo (snapshot). NUNCA dispara sincronização/Orders API.
+   Em falha (404/5xx/deploy antigo), cai no caminho legado. */
 async function loadCliente360(forcado = false) {
+  const slug = S.cliente?.slug;
+  if (!slug) return;
+
+  const pick = document.getElementById('c360-pick');
+  if (pick) pick.style.display = 'none';
+
+  const syncBtn = document.getElementById('c360-sync-btn');
+  if (forcado && syncBtn) syncBtn.classList.add('loading');
+  else {
+    document.getElementById('c360-loading').style.display = 'flex';
+    document.getElementById('c360-content').style.display = 'none';
+  }
+  localStorage.setItem('c360-last-slug', slug);
+  S.diag = { relId: null, loading: false, itens: null, erro: false };
+  S.metricas = null; S.metricasLoading = false;   // métricas ML carregam sob demanda (aba)
+
+  const data = await api(`/operacao/cliente-360/${encodeURIComponent(slug)}`);
+
+  if (!data?.ok) {
+    // Fallback: endpoint novo indisponível → consolida no front (legado).
+    console.warn('[c360] endpoint unificado indisponível, usando fallback legado');
+    return fallbackLoadCliente360Legacy(forcado);
+  }
+
+  normalizeCliente360Response(data);
+
+  renderHeader360();
+  renderSyncBar();
+  renderCockpit();
+  renderReco();
+  updateTabCounts();
+  renderTab360(S.activeTab);
+
+  if (syncBtn) syncBtn.classList.remove('loading');
+  document.getElementById('c360-loading').style.display = 'none';
+  document.getElementById('c360-content').style.display = 'block';
+}
+
+/* Mapeia o payload do backend para os shapes que os renderers já consomem. */
+function normalizeCliente360Response(data) {
+  S.periodo = {
+    competencia: data.periodo?.competencia || null,
+    label: data.periodo?.label || '',
+    dateFrom: data.periodo?.dateFrom || null,
+    dateTo: data.periodo?.dateTo || null,
+  };
+  S.sync = data.sync || null;
+  S.grant = data.grant || null;
+  S.temGrant = !!data.grant?.temGrant;
+  S.diagnosticoAuto = data.diagnostico || null;
+  S.freteHistorico = data.freteHistorico || null;
+  S.proximoPasso = data.proximoPasso || null;
+
+  // Bases → shape com .vinculo (renderBases360)
+  S.bases = (data.bases || []).map(b => ({
+    id: b.id, nome: b.nome, slug: b.slug, updated_at: b.atualizadaEm,
+    vinculo: { marketplace: b.marketplace, origem: b.origem, cliente_slug: data.cliente?.slug },
+  }));
+
+  // Relatórios → snake_case (renderDiag / bucketsFromList / updateTabCounts)
+  S.relatorios = (data.relatorios || []).map(r => ({
+    id: r.id, cliente_slug: data.cliente?.slug, base_slug: r.baseSlug,
+    escopo: r.escopo, status: r.status,
+    total_itens: r.totalItens, itens_com_base: r.itensComBase,
+    itens_sem_base: r.itensSemBase, itens_criticos: r.itensCriticos,
+    itens_atencao: r.itensAtencao, itens_saudaveis: r.itensSaudaveis,
+    mc_media: r.mcMedia, created_at: r.criadoEm, updated_at: r.criadoEm,
+  }));
+
+  // Entregas / histórico
+  S.entregas = (data.historico || []).map(e => ({
+    id: e.id, tipo: e.tipo, titulo: e.titulo, periodo: e.periodo, status: e.status,
+    token_publico: e.tokenPublico, publicado: e.publicado, created_at: e.criadoEm,
+    cliente_slug: data.cliente?.slug, cliente_id: data.cliente?.id,
+  }));
+
+  // Ads mensal
+  const a = data.ads && data.ads.mes ? data.ads : null;
+  S.ads = [];
+  S.adsMensal = a ? [{ mes: a.mes, investimento: a.investimentoAds, tacos: a.tacos, roas: a.roas }] : [];
+
+  // resumoMes no shape do renderCockpit
+  const rm = data.resumoMes || {};
+  const pedidos = rm.pedidos, cancelados = rm.cancelados;
+  const cancelPct = (pedidos && cancelados != null) ? (cancelados / pedidos * 100)
+                   : (cancelados != null ? 0 : null);
+  S.resumoMes = {
+    competencia: S.periodo.competencia, label: S.periodo.label,
+    faturamento: rm.faturamento ?? null,
+    mcMedia: rm.mcMedia ?? null,
+    pedidos: pedidos ?? null,
+    cancelados: cancelados ?? null,
+    cancelPct,
+    unidades: null,
+    ticketMedio: null,
+    valorCancelado: null,
+    adsInvestido: rm.adsInvestido ?? null,
+    adsRef: null,
+    tacos: rm.tacos ?? null,
+    roas: a?.roas ?? null,
+    fechamentos: rm.fechamentosCount ?? 0,
+    diagnosticos: rm.diagnosticosCount ?? 0,
+    temGrant: S.temGrant,
+    temBase: (data.setup?.temBase) ?? (S.bases.length > 0),
+    ultimaSync: data.sync?.ultimaSincronizacao || null,
+  };
+}
+
+/* Sincronização pesada — ADMIN ONLY. POST /sincronizar → recarrega o GET. */
+async function sincronizarResumoMes() {
+  const slug = S.cliente?.slug;
+  if (!slug) return;
+  if (!isAdmin360()) { alert('Apenas administradores podem sincronizar.'); return; }
+  const aviso = 'Essa sincronização pode demorar e consumir chamadas da API do Mercado Livre.\n\n' +
+    'Em clientes grandes, pode levar até 30 segundos ou mais.\n\nDeseja continuar?';
+  if (!confirm(aviso)) return;
+
+  const btn = document.getElementById('c360-sync-btn');
+  if (btn) { btn.classList.add('loading'); btn.disabled = true; }
+
+  const res = await apiPost(`/operacao/cliente-360/${encodeURIComponent(slug)}/sincronizar`, {});
+  if (btn) { btn.classList.remove('loading'); btn.disabled = false; }
+
+  if (res.status === 409) { alert('Já existe uma sincronização em andamento para este cliente.'); return; }
+  if (!res.ok) { alert('Falha na sincronização. Tente novamente.'); return; }
+
+  await loadCliente360();   // recarrega o snapshot recém-gravado
+}
+
+/* ── LOAD LEGADO (fallback) — consolida no front a partir dos endpoints antigos ── */
+async function fallbackLoadCliente360Legacy(forcado = false) {
   const slug = S.cliente?.slug;
   if (!slug) return;
 
@@ -165,11 +326,11 @@ async function loadCliente360(forcado = false) {
   S.periodo = competenciaAtual();
   const { dateFrom, dateTo } = S.periodo;
 
-  const [entregasRes, basesRes, tokensRes, relRes, adsRes, adsMensalRes, metRes] =
+  const [entregasRes, basesRes, grantRes, relRes, adsRes, adsMensalRes, metRes] =
     await Promise.all([
       api(`/entregas-cliente?cliente_slug=${encodeURIComponent(slug)}`),
       api('/base-vinculos'),
-      api('/admin/ml-tokens'),
+      api('/metricas/clientes'),                 // grant via lista ML (NUNCA /admin/ml-tokens)
       api('/automacoes/relatorios'),
       api('/ads/acompanhamento'),
       api('/ads/resumo-mensal'),
@@ -185,8 +346,10 @@ async function loadCliente360(forcado = false) {
   S.bases = (Array.isArray(allBases) ? allBases : []).filter(b =>
     b?.vinculo?.cliente_slug === slug || b?.vinculo?.cliente_id === S.cliente?.id);
 
-  S.tokens = tokensRes?.tokens || tokensRes || [];
-  S.temGrant = S.tokens.some(t => t?.cliente_slug === slug || t?.cliente_id === S.cliente?.id);
+  // Grant detectado pela lista de clientes com ML (sem expor token).
+  const clientesComML = grantRes?.clientes || [];
+  S.tokens = [];
+  S.temGrant = clientesComML.some(c => c?.slug === slug || c?.id === S.cliente?.id);
 
   const allRel = relRes?.relatorios || relRes || [];
   const primeiroNome = (S.cliente?.nome || '').toLowerCase().split(' ')[0];
@@ -352,24 +515,49 @@ function renderHeader360() {
 function renderSyncBar() {
   const el = document.getElementById('c360-syncbar');
   if (!el) return;
-  const sync = fmtSync(S.resumoMes?.ultimaSync);
-  const stateHtml = sync
-    ? `<span class="c360-sync-state ${sync.stale ? 'stale' : ''}">
-         Atualizado <span class="mono">${sync.text}</span>${sync.stale ? ' · atualização recomendada' : ''}
-       </span>`
-    : `<span class="c360-sync-state">Dados ao vivo desta sessão</span>`;
+  const admin = isAdmin360();
+
+  // Estado vindo do backend (S.sync). Fallback ao timestamp local (legado).
+  let stateHtml;
+  if (S.sync) {
+    const when = fmtSync(S.sync.ultimaSincronizacao);
+    if (S.sync.status === 'ausente') {
+      stateHtml = `<span class="c360-sync-state stale">Sem sincronização ainda${admin ? ' · clique em Sincronizar' : ''}</span>`;
+    } else if (S.sync.status === 'stale') {
+      stateHtml = `<span class="c360-sync-state stale">Snapshot de <span class="mono">${when ? when.text : '—'}</span> · ${admin ? 'sincronização recomendada' : 'aguardando atualização'}</span>`;
+    } else {
+      stateHtml = `<span class="c360-sync-state">Atualizado <span class="mono">${when ? when.text : '—'}</span></span>`;
+    }
+  } else {
+    const sync = fmtSync(S.resumoMes?.ultimaSync);
+    stateHtml = sync
+      ? `<span class="c360-sync-state ${sync.stale ? 'stale' : ''}">Atualizado <span class="mono">${sync.text}</span></span>`
+      : `<span class="c360-sync-state">Dados ao vivo desta sessão</span>`;
+  }
+
+  // Botão de ação: só admin sincroniza (fluxo pesado). Demais só leem.
+  const acaoHtml = admin
+    ? `<button id="c360-sync-btn" class="c360-btn c360-btn-primary c360-btn-sync"
+              onclick="sincronizarResumoMes()" title="Consolida o mês via API do Mercado Livre">
+         <span class="c360-spin"></span><span class="c360-sync-ic">↻</span> Sincronizar dados
+       </button>`
+    : `<span class="c360-sync-note">Somente admin pode sincronizar</span>`;
 
   el.className = 'c360-syncbar';
   el.innerHTML = `
     <span class="c360-comp"><span class="c360-comp-dot"></span> Competência ${esc(S.periodo.label)}</span>
     <span class="c360-syncbar-sep"></span>
     ${stateHtml}
-    <span class="c360-syncbar-right">
-      <button id="c360-sync-btn" class="c360-btn c360-btn-ghost c360-btn-sync"
-              onclick="loadCliente360(true)">
-        <span class="c360-spin"></span><span class="c360-sync-ic">↻</span> Atualizar dados
-      </button>
-    </span>`;
+    <span class="c360-syncbar-right">${acaoHtml}</span>`;
+
+  // Aviso obrigatório perto do botão (admin).
+  if (admin) {
+    el.insertAdjacentHTML('afterend',
+      `<div class="c360-sync-warn" id="c360-sync-warn">⚠ Essa sincronização pode demorar e consumir chamadas da API do Mercado Livre. Use apenas quando precisar atualizar os dados do mês. Em clientes grandes, pode levar até 30 segundos ou mais.</div>`);
+    // remove duplicado se re-render
+    const warns = document.querySelectorAll('#c360-sync-warn');
+    warns.forEach((w, i) => { if (i < warns.length - 1) w.remove(); });
+  }
 }
 
 /* ── COCKPIT (2 grupos de 4 cards) ───────────────────────── */
@@ -500,9 +688,28 @@ function updateTabCounts() {
 function renderTab360(tab) {
   const panel = document.getElementById('tab-' + tab);
   if (!panel) return;
+  // Métricas ML são live — carregam só ao abrir a aba (ação do usuário),
+  // nunca no load da página. Não roda no fallback legado (já traz S.metricas).
+  if (tab === 'metricas' && S.metricas === null && S.temGrant && !S.metricasLoading) {
+    ensureMetricas360();
+  }
   ({ overview: renderOverview, bases: renderBases360, diagnostico: renderDiag,
      metricas: renderMetricas360, ads: renderAds360, fechamentos: renderFechamentos,
      historico: renderHistorico }[tab])?.(panel);
+}
+
+/* Carrega métricas ML ao vivo sob demanda (aba Métricas). */
+async function ensureMetricas360() {
+  const slug = S.cliente?.slug;
+  if (!slug || S.metricasLoading) return;
+  S.metricasLoading = true;
+  const panel = document.getElementById('tab-metricas');
+  if (panel) renderMetricas360(panel);
+  const { dateFrom, dateTo } = S.periodo;
+  const res = await api(`/metricas/resumo?clienteSlug=${encodeURIComponent(slug)}&dateFrom=${dateFrom}&dateTo=${dateTo}`);
+  S.metricas = res?.ok ? res : null;
+  S.metricasLoading = false;
+  if (panel && S.activeTab === 'metricas') renderMetricas360(panel);
 }
 
 /* ── ABA: VISÃO GERAL ────────────────────────────────────── */
@@ -815,9 +1022,47 @@ function copiarMLBs(tipo, btn) {
   });
 }
 
+/* ── DIAGNÓSTICO AUTOMÁTICO (prévia read-only do endpoint unificado) ──
+   Renderiza issues/oportunidades determinísticas vindas do backend.
+   Botão de "rodar" é TODO/futuro — sem ação pesada agora. */
+function renderDiagnosticoAutomatico() {
+  const d = S.diagnosticoAuto;
+  if (!d) return '';
+  const issues = d.issues || [], oport = d.oportunidades || [];
+  if (!issues.length && !oport.length) return '';
+
+  const sevCls = s => s === 'critico' ? 'crit' : s === 'atencao' ? 'warn' : 'ok';
+  const linha = it => `
+    <div class="c360-auto-row">
+      <span class="c360-sev-dot ${sevCls(it.severidade)}"></span>
+      <div class="c360-auto-body">
+        <div class="c360-auto-title">${esc(it.titulo)}</div>
+        ${it.descricao ? `<div class="c360-auto-desc">${esc(it.descricao)}</div>` : ''}
+        ${it.acaoRecomendada ? `<div class="c360-auto-acao">→ ${esc(it.acaoRecomendada)}</div>` : ''}
+      </div>
+      ${it.fonte ? `<span class="c360-auto-fonte">${esc(it.fonte)}</span>` : ''}
+    </div>`;
+
+  return `
+    <div class="c360-panel c360-auto">
+      <div class="c360-panel-head">
+        <h2 class="c360-panel-title">Diagnóstico automático</h2>
+        <div class="c360-panel-actions">
+          <span class="c360-panel-meta">${issues.length} problema(s) · ${oport.length} oportunidade(s)</span>
+          <button class="c360-btn c360-btn-ghost" disabled title="Em breve">Rodar diagnóstico automático <span class="c360-tag todo">em breve</span></button>
+        </div>
+      </div>
+      <div class="c360-panel-body c360-panel-body--flush">
+        ${issues.length ? `<div class="c360-auto-group"><div class="c360-auto-group-label">Problemas e riscos</div>${issues.map(linha).join('')}</div>` : ''}
+        ${oport.length ? `<div class="c360-auto-group"><div class="c360-auto-group-label">Oportunidades</div>${oport.map(linha).join('')}</div>` : ''}
+      </div>
+    </div>`;
+}
+
 function renderDiag(el) {
+  const autoHtml = renderDiagnosticoAutomatico();
   if (!S.relatorios.length) {
-    el.innerHTML = panelEmpty('Diagnóstico', '🔍', 'Nenhum diagnóstico ainda',
+    el.innerHTML = autoHtml + panelEmpty('Diagnóstico por anúncio', '🔍', 'Nenhum diagnóstico ainda',
       'Rode o primeiro diagnóstico em <a href="automacoes.html">Automações</a> para mapear margem, custos e problemas por anúncio.');
     return;
   }
@@ -893,7 +1138,7 @@ function renderDiag(el) {
   if (loading || !itens) {
     const skelRows = Array.from({ length: 4 }).map(() =>
       `<div class="c360-diag-mlb"><span class="c360-diag-skel" style="width:90px"></span><span class="c360-diag-skel" style="flex:1"></span></div>`).join('');
-    el.innerHTML = `<div class="c360-diag">${hero}
+    el.innerHTML = autoHtml + `<div class="c360-diag">${hero}
       <div class="c360-diag-row">
         <div class="c360-diag-card"><div class="c360-diag-card-head"><span class="c360-diag-card-title">Sem base de custo</span></div><div class="c360-diag-list">${skelRows}</div></div>
         <div class="c360-diag-card"><div class="c360-diag-card-head"><span class="c360-diag-card-title">Críticos</span></div><div class="c360-diag-list">${skelRows}</div></div>
@@ -972,7 +1217,7 @@ function renderDiag(el) {
       </div>
     </div>`;
 
-  el.innerHTML = `<div class="c360-diag">${hero}
+  el.innerHTML = autoHtml + `<div class="c360-diag">${hero}
     <div class="c360-diag-row">${cardSemBase}${cardCrit}</div>
     ${tabela}</div>`;
 }
@@ -981,9 +1226,14 @@ function renderDiag(el) {
 function renderMetricas360(el) {
   const m = S.metricas;
   if (!m) {
-    el.innerHTML = panelEmpty('Métricas Mercado Livre', '📊', 'Dados não disponíveis',
-      S.temGrant ? 'Nenhum pedido no período ou métricas indisponíveis no momento.'
-                 : 'Conecte o grant Mercado Livre para carregar as métricas.');
+    if (S.metricasLoading) {
+      el.innerHTML = panelEmpty('Métricas Mercado Livre', '⏳', 'Carregando métricas ao vivo…',
+        'Buscando pedidos no Mercado Livre para o período.');
+    } else {
+      el.innerHTML = panelEmpty('Métricas Mercado Livre', '📊', 'Dados não disponíveis',
+        S.temGrant ? 'Nenhum pedido no período ou métricas indisponíveis no momento.'
+                   : 'Conecte o grant Mercado Livre para carregar as métricas.');
+    }
     return;
   }
   const r = m.resumo || {};

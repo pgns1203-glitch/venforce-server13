@@ -980,3 +980,56 @@
 
 /* botão compacto (copiar MLBs, ações em cards densos) */
 .c360-btn-sm { padding: 4px 9px; font-size: 11px; border-radius: 4px; }
+
+/* ── Sincronização: nota (não-admin) + aviso (admin) ─────────────────── */
+.c360-sync-note {
+  font-size: 11.5px;
+  color: var(--vfop-muted, #5a6578);
+  font-style: italic;
+}
+.c360-sync-warn {
+  margin: -8px 0 16px;
+  padding: 8px 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #855100;
+  background: #fff8ec;
+  border: 1px solid #f0d9a8;
+  border-radius: 7px;
+}
+
+/* ── Diagnóstico automático (prévia read-only) ───────────────────────── */
+.c360-auto { margin-bottom: 16px; }
+.c360-auto-group { padding: 4px 0; }
+.c360-auto-group + .c360-auto-group { border-top: 1px solid var(--vfop-border, #eef0f4); }
+.c360-auto-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--vfop-soft, #8a93a3);
+  padding: 10px 14px 4px;
+}
+.c360-auto-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--vfop-border, #f1f3f6);
+}
+.c360-auto-group-label + .c360-auto-row { border-top: none; }
+.c360-auto-row .c360-sev-dot { margin-top: 4px; flex: 0 0 auto; }
+.c360-auto-body { flex: 1 1 auto; min-width: 0; }
+.c360-auto-title { font-size: 13px; font-weight: 600; color: var(--vfop-text, #111827); }
+.c360-auto-desc { font-size: 12px; color: var(--vfop-muted, #5a6578); margin-top: 2px; }
+.c360-auto-acao { font-size: 12px; color: var(--vfop-primary, #4b267a); margin-top: 3px; }
+.c360-auto-fonte {
+  flex: 0 0 auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--vfop-soft, #98a0ae);
+  background: var(--vfop-bg, #f6f7f9);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}

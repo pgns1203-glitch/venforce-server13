@@ -159,6 +159,22 @@ async function findAdsResumoByCliente(clienteSlug, competencia) {
   return rows[0] || null;
 }
 
+// Ads mais recente do cliente (qualquer mês). Usado como referência quando
+// o mês atual ainda não tem linha em ads_resumos_mensais.
+async function findUltimoAdsResumoByCliente(clienteSlug) {
+  const { rows } = await pool.query(
+    `SELECT cliente_slug, mes_ref, loja_campanha,
+            investimento_ads, gmv_ads, roas,
+            faturamento_total, tacos, updated_at
+       FROM ads_resumos_mensais
+      WHERE cliente_slug = $1 AND loja_campanha = 'todas'
+      ORDER BY mes_ref DESC
+      LIMIT 1`,
+    [clienteSlug]
+  ).catch(() => ({ rows: [] }));
+  return rows[0] || null;
+}
+
 // ─── Snapshot mensal (cliente_360_resumos_mensais) ────────────────────────
 
 async function findResumoMensal(clienteId, competencia) {
@@ -339,6 +355,7 @@ module.exports = {
   findRelatorioItensResumo,
   findEntregasByCliente,
   findAdsResumoByCliente,
+  findUltimoAdsResumoByCliente,
   findResumoMensal,
   upsertResumoMensal,
   insertDiagnostico,

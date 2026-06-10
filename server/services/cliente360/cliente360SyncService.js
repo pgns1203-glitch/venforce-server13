@@ -18,6 +18,10 @@ const numOrNull = (v) => (v === null || v === undefined ? null : Number(v));
 
 // TACoS = ads_investido / faturamento * 100. Null se faltar dado.
 function calcularTacos(faturamento, adsInvestido) {
+  // Ausência de Ads NUNCA vira TACoS 0. Number(null) === 0 (finito), por isso
+  // checamos null/undefined explicitamente antes de qualquer cálculo.
+  if (adsInvestido === null || adsInvestido === undefined) return null;
+  if (faturamento === null || faturamento === undefined) return null;
   const f = Number(faturamento);
   const a = Number(adsInvestido);
   if (!Number.isFinite(f) || f <= 0) return null;

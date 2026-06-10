@@ -1033,3 +1033,43 @@
   border-radius: 4px;
   white-space: nowrap;
 }
+
+/* ── Resumo do diagnóstico (contagens + ações agregadas) ─────────────── */
+.c360-diag-resumo { margin-bottom: 16px; }
+.c360-dstats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+}
+.c360-dstat {
+  flex: 1 1 90px;
+  min-width: 90px;
+  padding: 12px 14px;
+  border-right: 1px solid var(--vfop-border, #eef0f4);
+  border-top: 1px solid var(--vfop-border, #eef0f4);
+}
+.c360-dstat:last-child { border-right: none; }
+.c360-dstat-val { font-size: 19px; font-weight: 700; color: var(--vfop-text, #111827); }
+.c360-dstat-val.ok   { color: #1e7a46; }
+.c360-dstat-val.warn { color: #c98a1e; }
+.c360-dstat-val.crit { color: #9b1c1c; }
+.c360-dstat-lbl {
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--vfop-soft, #8a93a3); margin-top: 2px;
+}
+.c360-dacoes { padding: 12px 14px; border-top: 1px solid var(--vfop-border, #eef0f4); }
+.c360-dacoes-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--vfop-soft, #8a93a3); margin-bottom: 8px;
+}
+.c360-dacao-row {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12.5px; color: var(--vfop-text, #111827);
+  padding: 4px 0;
+}
+.c360-dacao-n {
+  flex: 0 0 auto;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+  color: var(--vfop-primary, #4b267a);
+  min-width: 26px;
+}

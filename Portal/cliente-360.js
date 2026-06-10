@@ -23,7 +23,12 @@ const fmt    = (n, d = 0) => (Number(n) || 0).toLocaleString('pt-BR',
   { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmtBRL = n => 'R$ ' + fmt(n, 2);
 const fmtPct = n => fmt(n, 1) + '%';
-const fmtDt  = s => s ? new Date(s).toLocaleDateString('pt-BR') : '—';
+/* Data robusta: null/undefined/''/Invalid Date → '—'. Nunca exibe "Invalid Date". */
+const fmtDt  = s => {
+  if (s === null || s === undefined || s === '') return '—';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('pt-BR');
+};
 /* Mostra '—' quando o dado não foi sincronizado (null/undefined),
    mas exibe 0 real quando o valor sincronizado for de fato zero. */
 const valOr  = (n, f) => (n === null || n === undefined) ? '—' : f(n);
@@ -125,6 +130,7 @@ function lerSync(slug)   { try { return localStorage.getItem(syncKey(slug)); } c
 function fmtSync(iso) {
   if (!iso) return null;
   const d = new Date(iso), now = new Date();
+  if (isNaN(d.getTime())) return null;   // data inválida → trata como sem registro
   const hh = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   const sameDay = d.toDateString() === now.toDateString();
   const yest = new Date(now); yest.setDate(now.getDate() - 1);
@@ -273,7 +279,7 @@ function normalizeCliente360Response(data) {
     ticketMedio: null,
     valorCancelado: null,
     adsInvestido: rm.adsInvestido ?? null,
-    adsRef: null,
+    adsRef: rm.adsRef ?? (a && a.referencia ? a.mes : null),
     tacos: rm.tacos ?? null,
     roas: a?.roas ?? null,
     fechamentos: rm.fechamentosCount ?? 0,
@@ -598,7 +604,7 @@ function renderCockpit() {
   const oper = [
     card('Ads investido', `<div class="c360-card-value">${valOr(m.adsInvestido, fmtBRL)}</div>`, adsSub),
     card('TACoS', `<div class="c360-card-value ${tacosCls}">${valOr(m.tacos, fmtPct)}</div>`,
-         'Ads ÷ faturamento'),
+         m.tacos == null ? 'sem registro de Ads' : 'Ads ÷ faturamento'),
     card('Fechamentos', `<div class="c360-card-value">${fmt(m.fechamentos)}</div>`, 'salvos no total'),
     card('Diagnósticos', `<div class="c360-card-value">${fmt(m.diagnosticos)}</div>`, 'rodados no total'),
   ];
@@ -1059,6 +1065,50 @@ function renderDiagnosticoAutomatico() {
     </div>`;
 }
 
+/* ── RESUMO DO DIAGNÓSTICO (contagens explícitas + ações agregadas) ──
+   Usa os itens já carregados do último relatório. Sem novo endpoint. */
+function renderDiagResumo(buckets, itens, conf) {
+  const total = buckets.total || 0;
+  const semBase = buckets.semBase || 0;
+  const comBase = Math.max(0, total - semBase);
+
+  const stat = (label, val, cls = '') =>
+    `<div class="c360-dstat"><div class="c360-dstat-val ${cls}">${val}</div><div class="c360-dstat-lbl">${label}</div></div>`;
+
+  // Agrega ações recomendadas dos itens (top 5 por frequência).
+  const acoesMap = {};
+  (itens || []).forEach(it => {
+    const a = (itAcao(it) || '').trim();
+    if (a) acoesMap[a] = (acoesMap[a] || 0) + 1;
+  });
+  const topAcoes = Object.entries(acoesMap).sort((x, y) => y[1] - x[1]).slice(0, 5);
+
+  return `
+    <div class="c360-panel c360-diag-resumo">
+      <div class="c360-panel-head">
+        <h2 class="c360-panel-title">Resumo do diagnóstico</h2>
+        <span class="c360-diag-conf-pill ${conf.nivel}">Confiança ${conf.nivel}</span>
+      </div>
+      <div class="c360-panel-body c360-panel-body--flush">
+        <div class="c360-dstats">
+          ${stat('Itens', fmt(total))}
+          ${stat('Com base', fmt(comBase), 'ok')}
+          ${stat('Sem base', fmt(semBase), semBase > 0 ? 'warn' : '')}
+          ${stat('Críticos', valOr(buckets.crit, fmt), 'crit')}
+          ${stat('Atenção', valOr(buckets.warn, fmt), 'warn')}
+          ${stat('Saudáveis', valOr(buckets.ok, fmt), 'ok')}
+          ${stat('MC média', valOr(buckets.mcMedia, fmtPct))}
+        </div>
+        ${topAcoes.length ? `
+          <div class="c360-dacoes">
+            <div class="c360-dacoes-label">Principais ações recomendadas</div>
+            ${topAcoes.map(([a, n]) =>
+              `<div class="c360-dacao-row"><span class="c360-dacao-n">${n}×</span><span>${esc(a)}</span></div>`).join('')}
+          </div>` : ''}
+      </div>
+    </div>`;
+}
+
 function renderDiag(el) {
   const autoHtml = renderDiagnosticoAutomatico();
   if (!S.relatorios.length) {
@@ -1218,6 +1268,7 @@ function renderDiag(el) {
     </div>`;
 
   el.innerHTML = autoHtml + `<div class="c360-diag">${hero}
+    ${renderDiagResumo(buckets, itens, conf)}
     <div class="c360-diag-row">${cardSemBase}${cardCrit}</div>
     ${tabela}</div>`;
 }

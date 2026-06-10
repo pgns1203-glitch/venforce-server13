@@ -83,10 +83,11 @@ function mapEntregas(rows) {
   }));
 }
 
-function mapAds(row) {
+function mapAds(row, referencia = false) {
   if (!row) return null;
   return {
     mes: row.mes_ref,
+    referencia,                              // true = de outro mês (não o atual)
     investimentoAds: numOrNull(row.investimento_ads),
     faturamentoTotal: numOrNull(row.faturamento_total),
     tacos: numOrNull(row.tacos),
@@ -100,18 +101,24 @@ function mapResumoMes(snapshot) {
   if (!snapshot) {
     return {
       faturamento: null, mcMedia: null, pedidos: null, cancelados: null,
-      problemas: null, adsInvestido: null, tacos: null,
+      problemas: null, adsInvestido: null, adsRef: null, tacos: null,
       fechamentosCount: 0, diagnosticosCount: 0, itensSemCusto: null, itensCriticos: null,
     };
   }
+  // TACoS sem Ads é indefinido: defensivo contra snapshots antigos que
+  // gravaram tacos=0 quando ads_investido era ausente.
+  const adsInvestido = numOrNull(snapshot.ads_investido);
+  let tacos = numOrNull(snapshot.tacos);
+  if (adsInvestido === null) tacos = null;
   return {
     faturamento: numOrNull(snapshot.faturamento),
     mcMedia: numOrNull(snapshot.mc_media),
     pedidos: numOrNull(snapshot.pedidos),
     cancelados: numOrNull(snapshot.cancelados),
     problemas: numOrNull(snapshot.problemas),
-    adsInvestido: numOrNull(snapshot.ads_investido),
-    tacos: numOrNull(snapshot.tacos),
+    adsInvestido,
+    adsRef: null,
+    tacos,
     fechamentosCount: snapshot.fechamentos_count ?? 0,
     diagnosticosCount: snapshot.diagnosticos_count ?? 0,
     itensSemCusto: numOrNull(snapshot.itens_sem_custo),
@@ -208,13 +215,14 @@ async function montarContexto(slug, competencia) {
   const cliente = await repo.findClienteBySlug(slug);
   if (!cliente) throw criarErroHttp(404, "Cliente não encontrado.");
 
-  const [basesRows, grantRow, relatoriosRows, entregasRows, adsRow, snapshot, freteHistorico, diagsSalvos] =
+  const [basesRows, grantRow, relatoriosRows, entregasRows, adsRow, adsUltimoRow, snapshot, freteHistorico, diagsSalvos] =
     await Promise.all([
       repo.findBasesVinculadasByCliente(cliente.id),
       repo.findMlGrantByCliente(cliente.id),
       repo.findRelatoriosByCliente(slug, { limit: 20 }),
       repo.findEntregasByCliente(cliente.id, slug, { limit: 50 }),
       repo.findAdsResumoByCliente(slug, competencia),
+      repo.findUltimoAdsResumoByCliente(slug),
       repo.findResumoMensal(cliente.id, competencia),
       freteHistoricoService.getFreteHistoricoCliente(slug, competencia),
       repo.findDiagnosticos(slug, 10),
@@ -230,7 +238,10 @@ async function montarContexto(slug, competencia) {
   const bases = mapBases(basesRows);
   const relatorios = mapRelatorios(relatoriosRows);
   const entregas = mapEntregas(entregasRows);
-  const ads = mapAds(adsRow);
+  // Ads do mês atual; se não houver, o mais recente como referência (outro mês).
+  const ads = adsRow
+    ? mapAds(adsRow, false)
+    : (adsUltimoRow && adsUltimoRow.mes_ref !== competencia ? mapAds(adsUltimoRow, true) : mapAds(adsUltimoRow, false));
 
   return {
     cliente, grant, bases, relatorios, entregas, ads, snapshot, freteHistorico,
@@ -255,6 +266,17 @@ async function getCliente360(slug, options = {}) {
   });
 
   const resumoMes = mapResumoMes(ctx.snapshot);
+
+  // Enriquecimento de Ads: se o snapshot não consolidou Ads, usa a leitura viva
+  // (mês atual ou referência de outro mês). Nunca transforma ausência em 0.
+  if (resumoMes.adsInvestido === null && ctx.ads && ctx.ads.investimentoAds !== null) {
+    resumoMes.adsInvestido = ctx.ads.investimentoAds;
+    resumoMes.adsRef = ctx.ads.referencia ? ctx.ads.mes : null;
+    if (resumoMes.tacos === null) resumoMes.tacos = ctx.ads.tacos; // TACoS do módulo Ads
+  }
+  // Regra de ausência: sem Ads ⇒ TACoS indefinido.
+  if (resumoMes.adsInvestido === null) resumoMes.tacos = null;
+
   const setup = computeSetup({
     bases: ctx.bases, grant: ctx.grant, relatorios: ctx.relatorios,
     entregas: ctx.entregas, ads: ctx.ads, freteHistorico: ctx.freteHistorico,

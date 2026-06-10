@@ -1,24 +1,38 @@
 /* ================================================================
-   cliente-360.js — VenForce
-   Thin client: busca dados → renderiza HTML. Sem cálculos que
-   o backend já faz. Frontend só formata e monta a tela.
+   cliente-360.js — VenForce · Cockpit do Cliente
+   ----------------------------------------------------------------
+   Thin client: busca dados → consolida em `resumoMes` → renderiza.
+   O frontend NÃO recalcula o que o backend já calcula. Ele apenas
+   normaliza, formata e monta a tela.
+
+   SEAM PARA O BACKEND (Etapa 2 do roadmap):
+   `consolidarResumoMes()` produz exatamente o shape que o futuro
+   endpoint `GET /operacao/cliente-360/:slug` deve retornar em
+   `resumoMes`. Quando o endpoint existir, basta trocar o miolo de
+   `loadCliente360()` por uma única chamada e ler `data.resumoMes`,
+   `data.fechamentos`, `data.relatorios`, etc. Nada mais muda.
    ================================================================ */
 
 const API_BASE = "https://venforce-server.onrender.com";
 const TOKEN    = localStorage.getItem("vf-token") || "";
 
 /* ── FORMATADORES ─────────────────────────────────────────── */
-const esc    = s => String(s||"").replace(/[&<>"']/g,
-  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmt    = (n, d=0) => (Number(n)||0).toLocaleString('pt-BR',
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const fmt    = (n, d = 0) => (Number(n) || 0).toLocaleString('pt-BR',
   { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmtBRL = n => 'R$ ' + fmt(n, 2);
-const fmtPct = n => fmt(n, 2) + '%';
+const fmtPct = n => fmt(n, 1) + '%';
 const fmtDt  = s => s ? new Date(s).toLocaleDateString('pt-BR') : '—';
+/* Mostra '—' quando o dado não foi sincronizado (null/undefined),
+   mas exibe 0 real quando o valor sincronizado for de fato zero. */
+const valOr  = (n, f) => (n === null || n === undefined) ? '—' : f(n);
 
 /* ── THRESHOLDS (centralizados, fácil de ajustar) ────────── */
-const MC_OK   = 15;   // MC% boa
-const MC_WARN = 8;    // MC% atenção
+const MC_OK     = 15;   // MC% boa → verde
+const MC_WARN   = 8;    // MC% atenção → âmbar
+const TACOS_WARN = 6;   // TACoS acima disso → revisar Ads
+const SYNC_STALE_H = 18; // horas até "atualização recomendada"
 
 /* ── STATE ───────────────────────────────────────────────── */
 const S = {
@@ -31,6 +45,9 @@ const S = {
   ads:         [],
   adsMensal:   [],
   metricas:    null,
+  periodo:     { competencia: null, label: '', dateFrom: null, dateTo: null },
+  resumoMes:   null,   // objeto consolidado (shape do endpoint futuro)
+  temGrant:    false,
   activeTab:   'overview',
   compare:     { a: null, b: null },
   compareData: { a: null, b: null },
@@ -39,14 +56,11 @@ const S = {
 /* ── API ─────────────────────────────────────────────────── */
 async function api(path) {
   try {
-    const r = await fetch(API_BASE + path, {
-      headers: { Authorization: 'Bearer ' + TOKEN }
-    });
+    const r = await fetch(API_BASE + path, { headers: { Authorization: 'Bearer ' + TOKEN } });
     if (!r.ok) return null;
     return await r.json();
   } catch { return null; }
 }
-
 async function apiPublic(token) {
   try {
     const r = await fetch(API_BASE + '/public/entregas/' + token);
@@ -54,15 +68,44 @@ async function apiPublic(token) {
     return await r.json();
   } catch { return null; }
 }
-
 async function apiDelete(path) {
   try {
     const r = await fetch(API_BASE + path, {
-      method: 'DELETE',
-      headers: { Authorization: 'Bearer ' + TOKEN }
+      method: 'DELETE', headers: { Authorization: 'Bearer ' + TOKEN }
     });
     return r.ok;
   } catch { return false; }
+}
+
+/* ── PERÍODO / COMPETÊNCIA ───────────────────────────────── */
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+function competenciaAtual() {
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth();
+  const first = new Date(y, m, 1);
+  const mesNome = first.toLocaleDateString('pt-BR', { month: 'long' });
+  return {
+    competencia: `${y}-${String(m+1).padStart(2,'0')}`,
+    label: `${mesNome.charAt(0).toUpperCase()}${mesNome.slice(1)}/${y}`,
+    dateFrom: ymd(first),
+    dateTo:   ymd(now),
+  };
+}
+
+/* ── SYNC TIMESTAMP (localStorage por cliente) ───────────── */
+const syncKey = slug => `c360-sync-${slug}`;
+function marcarSync(slug) { try { localStorage.setItem(syncKey(slug), new Date().toISOString()); } catch {} }
+function lerSync(slug)   { try { return localStorage.getItem(syncKey(slug)); } catch { return null; } }
+function fmtSync(iso) {
+  if (!iso) return null;
+  const d = new Date(iso), now = new Date();
+  const hh = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const sameDay = d.toDateString() === now.toDateString();
+  const yest = new Date(now); yest.setDate(now.getDate() - 1);
+  const isYest = d.toDateString() === yest.toDateString();
+  const when = sameDay ? `hoje às ${hh}` : isYest ? `ontem às ${hh}`
+             : `${d.toLocaleDateString('pt-BR')} às ${hh}`;
+  return { text: when, stale: (now - d) / 3.6e6 > SYNC_STALE_H };
 }
 
 /* ── INIT ────────────────────────────────────────────────── */
@@ -73,13 +116,12 @@ async function init360() {
 
   const sel = document.getElementById('c360-client-select');
   if (sel) {
-    sel.innerHTML = '<option value="">Selecione o cliente...</option>' +
+    sel.innerHTML = '<option value="">Selecione o cliente…</option>' +
       S.clientes
         .filter(c => c?.ativo !== false)
-        .sort((a,b) => (a.nome||'').localeCompare(b.nome||''))
-        .map(c => `<option value="${c.slug}">${esc(c.nome)}</option>`)
+        .sort((a, b) => (a.nome || '').localeCompare(b.nome || ''))
+        .map(c => `<option value="${esc(c.slug)}">${esc(c.nome)}</option>`)
         .join('');
-
     sel.addEventListener('change', () => {
       const slug = sel.value;
       if (!slug) return;
@@ -90,35 +132,36 @@ async function init360() {
 
   renderAtalhos360();
 
-  // Restaurar último cliente
-  const saved = localStorage.getItem('c360-last-slug')
-    || localStorage.getItem('vfop-last-slug');
+  const saved = localStorage.getItem('c360-last-slug') || localStorage.getItem('vfop-last-slug');
   if (saved && S.clientes.find(c => c.slug === saved)) {
     if (sel) sel.value = saved;
     S.cliente = S.clientes.find(c => c.slug === saved) || null;
     if (S.cliente) loadCliente360();
   }
 
-  // Tabs
-  document.querySelectorAll('.c360-tab').forEach(btn => {
-    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-  });
+  document.querySelectorAll('.c360-tab').forEach(btn =>
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
 }
 
 /* ── LOAD DADOS DO CLIENTE ───────────────────────────────── */
-async function loadCliente360() {
+async function loadCliente360(forcado = false) {
   const slug = S.cliente?.slug;
   if (!slug) return;
 
-  document.getElementById('c360-loading').style.display = 'flex';
-  document.getElementById('c360-content').style.display = 'none';
+  const pick = document.getElementById('c360-pick');
+  if (pick) pick.style.display = 'none';
+
+  // Botão de atualizar em estado "loading"
+  const syncBtn = document.getElementById('c360-sync-btn');
+  if (forcado && syncBtn) syncBtn.classList.add('loading');
+  else {
+    document.getElementById('c360-loading').style.display = 'flex';
+    document.getElementById('c360-content').style.display = 'none';
+  }
   localStorage.setItem('c360-last-slug', slug);
 
-  // Data range últimos 30 dias
-  const now      = new Date();
-  const from     = new Date(now); from.setDate(from.getDate() - 30);
-  const dateFrom = from.toISOString().slice(0, 10);
-  const dateTo   = now.toISOString().slice(0, 10);
+  S.periodo = competenciaAtual();
+  const { dateFrom, dateTo } = S.periodo;
 
   const [entregasRes, basesRes, tokensRes, relRes, adsRes, adsMensalRes, metRes] =
     await Promise.all([
@@ -131,101 +174,165 @@ async function loadCliente360() {
       api(`/metricas/resumo?clienteSlug=${encodeURIComponent(slug)}&dateFrom=${dateFrom}&dateTo=${dateTo}`),
     ]);
 
-  // Filtrar entregas por cliente
+  // ── Filtragem por cliente (frágil hoje; o endpoint unificado resolve) ──
   const allEntregas = entregasRes?.entregas || [];
   S.entregas = allEntregas.filter(e =>
-    e?.cliente_slug === slug || String(e?.cliente_id) === String(S.cliente?.id)
-  );
+    e?.cliente_slug === slug || String(e?.cliente_id) === String(S.cliente?.id));
 
-  // Filtrar bases por cliente
   const allBases = basesRes?.bases || basesRes?.vinculos || basesRes || [];
   S.bases = (Array.isArray(allBases) ? allBases : []).filter(b =>
-    b?.vinculo?.cliente_slug === slug ||
-    b?.vinculo?.cliente_id   === S.cliente?.id
-  );
+    b?.vinculo?.cliente_slug === slug || b?.vinculo?.cliente_id === S.cliente?.id);
 
-  // Tokens ML
   S.tokens = tokensRes?.tokens || tokensRes || [];
+  S.temGrant = S.tokens.some(t => t?.cliente_slug === slug || t?.cliente_id === S.cliente?.id);
 
-  // Filtrar relatórios por cliente
   const allRel = relRes?.relatorios || relRes || [];
+  const primeiroNome = (S.cliente?.nome || '').toLowerCase().split(' ')[0];
   S.relatorios = (Array.isArray(allRel) ? allRel : []).filter(r =>
-    r?.cliente_slug === slug ||
-    r?.clienteSlug  === slug ||
-    r?.cliente_nome?.toLowerCase()
-      .includes((S.cliente?.nome || '').toLowerCase().split(' ')[0])
-  );
+    r?.cliente_slug === slug || r?.clienteSlug === slug ||
+    (primeiroNome && r?.cliente_nome?.toLowerCase().includes(primeiroNome)));
 
-  // Filtrar Ads por cliente
   const allAds = adsRes?.acompanhamentos || adsRes?.data || adsRes || [];
   S.ads = (Array.isArray(allAds) ? allAds : []).filter(a =>
-    a?.cliente_slug === slug || a?.clienteSlug === slug
-  );
+    a?.cliente_slug === slug || a?.clienteSlug === slug);
   const allMensal = adsMensalRes?.resumos || adsMensalRes || [];
   S.adsMensal = (Array.isArray(allMensal) ? allMensal : []).filter(a =>
-    a?.cliente_slug === slug || a?.clienteSlug === slug
-  );
+    a?.cliente_slug === slug || a?.clienteSlug === slug);
 
   S.metricas = metRes?.ok ? metRes : null;
 
-  // Renderizar
-  const temGrant = S.tokens.some(t =>
-    t?.cliente_slug === slug || t?.cliente_id === S.cliente?.id
-  );
-  renderHeader360(temGrant);
-  renderKPIs360();
+  // ── Consolidação (seam do endpoint futuro) ──
+  S.resumoMes = consolidarResumoMes();
+  marcarSync(slug);
+
+  // ── Render ──
+  renderHeader360();
+  renderSyncBar();
+  renderCockpit();
+  renderReco();
   updateTabCounts();
   renderTab360(S.activeTab);
 
+  if (syncBtn) syncBtn.classList.remove('loading');
   document.getElementById('c360-loading').style.display = 'none';
   document.getElementById('c360-content').style.display = 'block';
 }
 
+/* ── CONSOLIDADOR — shape do endpoint /operacao/cliente-360/:slug ──
+   Produz `resumoMes` com NULL explícito onde o dado não existe,
+   para nunca exibir 0 como se fosse dado sincronizado. */
+function consolidarResumoMes() {
+  const r = S.metricas?.resumo || null;
+  const temML = !!S.metricas;
+
+  // MC média: vem do diagnóstico/base de custo, não do /metricas/resumo (que é orders ML).
+  // Tenta métricas → último relatório → null.
+  const ultimoRel = [...S.relatorios].sort((a, b) =>
+    new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))[0];
+  const mc = r?.mcMedia ?? r?.mc_media
+    ?? ultimoRel?.mc_media ?? ultimoRel?.mcMedia ?? ultimoRel?.mc_medio ?? null;
+
+  const pedidos    = temML ? (r?.quantidadeVendas ?? 0) : null;
+  const cancelados = temML ? (r?.quantidadeCancelada ?? 0) : null;
+  const cancelPct  = (temML && pedidos > 0) ? (cancelados / pedidos * 100) : (temML ? 0 : null);
+
+  // Ads do mês: prioriza a competência atual; senão usa o registro mais recente (marcado como ref.)
+  const comp = S.periodo.competencia;
+  const norm = m => String(m?.mes || '').replace(/[^\d]/g, '');
+  const compNum = comp ? comp.replace('-', '') : '';
+  let adsEntry = S.adsMensal.find(m => m.mes === comp || norm(m).includes(compNum)) || null;
+  let adsRef = null;
+  if (!adsEntry && S.adsMensal.length) {
+    adsEntry = [...S.adsMensal].sort((a, b) => String(b.mes||'').localeCompare(String(a.mes||'')))[0];
+    adsRef = adsEntry?.mes || null;
+  }
+
+  const adsInvest = adsEntry ? (adsEntry.investimento ?? 0) : null;
+  const fat = temML ? (r?.vendasBrutas ?? 0) : null;
+  // TACoS: usa o salvo; senão deriva de ads/faturamento se ambos existirem.
+  let tacos = adsEntry?.tacos ?? null;
+  if (tacos === null && adsInvest !== null && fat) tacos = adsInvest / fat * 100;
+
+  return {
+    competencia:  comp,
+    label:        S.periodo.label,
+    // Performance do mês
+    faturamento:  fat,
+    mcMedia:      mc,
+    pedidos,
+    cancelados,
+    cancelPct,
+    unidades:     temML ? (r?.unidadesVendidas ?? 0) : null,
+    ticketMedio:  temML ? (r?.ticketMedio ?? 0) : null,
+    valorCancelado: temML ? (r?.valorCancelado ?? 0) : null,
+    // Operação e mídia
+    adsInvestido: adsInvest,
+    adsRef,
+    tacos,
+    roas:         adsEntry?.roas ?? null,
+    fechamentos:  S.entregas.filter(e => e.tipo === 'fechamento_mensal').length,
+    diagnosticos: S.relatorios.length,
+    // Estado
+    temGrant:     S.temGrant,
+    temBase:      S.bases.length > 0,
+    ultimaSync:   lerSync(S.cliente?.slug),
+  };
+}
+
+/* ── SETUP SCORE ─────────────────────────────────────────── */
+function computeSetup() {
+  const checks = [
+    S.temGrant,                  // grant ML
+    S.bases.length > 0,          // base vinculada
+    S.relatorios.length > 0,     // diagnóstico
+    S.entregas.some(e => e.tipo === 'fechamento_mensal'), // fechamento
+    S.adsMensal.length > 0,      // acompanhamento ads
+  ];
+  const done = checks.filter(Boolean).length;
+  const pct = Math.round(done / checks.length * 100);
+  const level = pct >= 80 ? 'ok' : pct >= 50 ? 'warn' : 'crit';
+  return { pct, level };
+}
+
 /* ── HEADER ──────────────────────────────────────────────── */
-function renderHeader360(temGrant) {
+function renderHeader360() {
   const c = S.cliente;
   if (!c) return;
+  const setup = computeSetup();
 
-  // Título
-  const titleEl = document.getElementById('c360-page-title');
-  if (titleEl) titleEl.textContent = c.nome || '—';
+  setText('c360-page-title', c.nome || '—');
 
-  // Meta strip
   const metaEl = document.getElementById('c360-meta');
   if (metaEl) {
     metaEl.innerHTML = `
-      <span>${esc(c.slug)}</span>
+      <span class="mono" style="font-family:'JetBrains Mono',monospace;font-size:11.5px;">${esc(c.slug)}</span>
       <span class="c360-meta-sep"></span>
-      <span>Canal principal: Mercado Livre</span>
+      <span>Canal: Mercado Livre</span>
       <span class="c360-meta-sep"></span>
-      <span>Atualizado: ${new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</span>`;
+      <span class="c360-setup-pill ${setup.level}">
+        <span class="c360-setup-dot"></span> Setup <b>${setup.pct}%</b>
+      </span>`;
   }
 
-  // Botões de ação
   const actEl = document.getElementById('c360-head-actions');
   if (actEl) {
     actEl.innerHTML = `
       <a href="cliente-operacao.html" class="c360-btn c360-btn-ghost">← Setup</a>
-      ${!temGrant ? `
-        <button class="c360-btn c360-btn-ghost"
-                onclick="copiarLink360('${c.slug}')">
+      ${!S.temGrant ? `
+        <button class="c360-btn c360-btn-ghost" onclick="copiarLink360('${esc(c.slug)}')">
           Copiar link ML
         </button>` : ''}
       <button class="c360-btn c360-btn-ghost"
-              onclick="salvarAtalho360('${c.slug}', '${(c.nome||'').replace(/'/g,'')}')">
+              onclick="salvarAtalho360('${esc(c.slug)}','${esc((c.nome||'').replace(/'/g,''))}')">
         ☆ Atalho
       </button>
-      <a href="financeiro.html" class="c360-btn c360-btn-primary">
-        + Novo fechamento
-      </a>`;
+      <a href="financeiro.html" class="c360-btn c360-btn-primary">+ Novo fechamento</a>`;
   }
 
-  // Chip do switcher
   const chipEl = document.getElementById('c360-switcher-chip');
   if (chipEl) {
-    const initials = (c.nome||'?').split(/\s+/).slice(0, 2)
-      .map(w => w[0]).join('').toUpperCase();
-    const temDados = S.entregas.length > 0 ? 'tem dados' : 'sem dados';
+    const initials = (c.nome || '?').split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    const temDados = S.entregas.length > 0 ? 'com dados' : 'sem dados';
     chipEl.innerHTML = `
       <div class="vfop-switch-chip">
         <div class="vfop-switch-chip-ic">${initials}</div>
@@ -236,47 +343,143 @@ function renderHeader360(temGrant) {
         <span class="vfop-switch-chip-chev">▾</span>
       </div>`;
   }
+  renderAtalhos360();
 }
 
-/* ── KPIs ────────────────────────────────────────────────── */
-function renderKPIs360() {
-  const mc   = S.metricas?.resumo?.mcMedia || S.metricas?.resumo?.mc_media || 0;
-  const fat  = S.metricas?.resumo?.vendasBrutas || 0;
-  const fech = S.entregas.filter(e => e.tipo === 'fechamento_mensal').length;
-  const rels = S.relatorios.length;
-  const ads30 = S.adsMensal.slice(-1)[0]?.investimento
-    || S.ads.slice(-1)[0]?.ads_valor || 0;
-  const crit = S.relatorios[0]?.sem_custo || S.relatorios[0]?.semCusto || '—';
+/* ── SYNC BAR ────────────────────────────────────────────── */
+function renderSyncBar() {
+  const el = document.getElementById('c360-syncbar');
+  if (!el) return;
+  const sync = fmtSync(S.resumoMes?.ultimaSync);
+  const stateHtml = sync
+    ? `<span class="c360-sync-state ${sync.stale ? 'stale' : ''}">
+         Atualizado <span class="mono">${sync.text}</span>${sync.stale ? ' · atualização recomendada' : ''}
+       </span>`
+    : `<span class="c360-sync-state">Dados ao vivo desta sessão</span>`;
 
-  setText('kpi-mc',   mc   ? fmtPct(mc)  : '—');
-  setText('kpi-fat',  fat  ? fmtBRL(fat) : '—');
-  setText('kpi-fech', String(fech));
-  setText('kpi-rel',  String(rels));
-  setText('kpi-ads',  ads30 ? fmtBRL(ads30) : '—');
-  setText('kpi-crit', String(crit));
+  el.className = 'c360-syncbar';
+  el.innerHTML = `
+    <span class="c360-comp"><span class="c360-comp-dot"></span> Competência ${esc(S.periodo.label)}</span>
+    <span class="c360-syncbar-sep"></span>
+    ${stateHtml}
+    <span class="c360-syncbar-right">
+      <button id="c360-sync-btn" class="c360-btn c360-btn-ghost c360-btn-sync"
+              onclick="loadCliente360(true)">
+        <span class="c360-spin"></span><span class="c360-sync-ic">↻</span> Atualizar dados
+      </button>
+    </span>`;
+}
 
-  // Cor da MC baseada em thresholds
-  const mcEl = document.getElementById('kpi-mc');
-  if (mcEl && mc > 0) {
-    mcEl.className = 'c360-kpi-value ' +
-      (mc >= MC_OK ? 'ok' : mc >= MC_WARN ? 'warn' : 'crit');
+/* ── COCKPIT (2 grupos de 4 cards) ───────────────────────── */
+function card(label, valueHtml, subHtml = '') {
+  return `
+    <div class="c360-card">
+      <div class="c360-card-label">${label}</div>
+      <div class="c360-card-value-wrap">${valueHtml}</div>
+      <div class="c360-card-sub">${subHtml || '&nbsp;'}</div>
+    </div>`;
+}
+function renderCockpit() {
+  const el = document.getElementById('c360-cockpit');
+  if (!el) return;
+  const m = S.resumoMes;
+
+  // Performance do mês
+  const mcCls = m.mcMedia == null ? 'muted'
+    : m.mcMedia >= MC_OK ? 'ok' : m.mcMedia >= MC_WARN ? 'warn' : 'crit';
+  const cancelSub = (m.cancelPct == null) ? ''
+    : `<span class="c360-chip ${m.cancelPct > 5 ? 'warn' : 'flat'}">${fmtPct(m.cancelPct)} dos pedidos</span>`;
+
+  const perf = [
+    card('Faturamento', `<div class="c360-card-value brand">${valOr(m.faturamento, fmtBRL)}</div>`,
+         'Vendas brutas no mês'),
+    card('MC média', `<div class="c360-card-value ${mcCls}">${valOr(m.mcMedia, fmtPct)}</div>`,
+         'Margem de contribuição'),
+    card('Pedidos', `<div class="c360-card-value">${valOr(m.pedidos, n => fmt(n))}</div>`,
+         m.ticketMedio == null ? '' : `Ticket ${fmtBRL(m.ticketMedio)}`),
+    card('Cancelados', `<div class="c360-card-value">${valOr(m.cancelados, n => fmt(n))}</div>`, cancelSub),
+  ];
+
+  // Operação e mídia
+  const tacosCls = m.tacos == null ? 'muted' : m.tacos > TACOS_WARN ? 'crit' : 'ok';
+  const adsSub = m.adsRef ? `<span class="c360-chip flat">ref. ${esc(m.adsRef)}</span>`
+               : (m.adsInvestido == null ? 'sem registro do mês' : 'Investimento no mês');
+
+  const oper = [
+    card('Ads investido', `<div class="c360-card-value">${valOr(m.adsInvestido, fmtBRL)}</div>`, adsSub),
+    card('TACoS', `<div class="c360-card-value ${tacosCls}">${valOr(m.tacos, fmtPct)}</div>`,
+         'Ads ÷ faturamento'),
+    card('Fechamentos', `<div class="c360-card-value">${fmt(m.fechamentos)}</div>`, 'salvos no total'),
+    card('Diagnósticos', `<div class="c360-card-value">${fmt(m.diagnosticos)}</div>`, 'rodados no total'),
+  ];
+
+  el.innerHTML = `
+    <div class="c360-group">
+      <div class="c360-group-label">Performance do mês</div>
+      <div class="c360-cards4">${perf.join('')}</div>
+    </div>
+    <div class="c360-group">
+      <div class="c360-group-label">Operação e mídia</div>
+      <div class="c360-cards4">${oper.join('')}</div>
+    </div>`;
+}
+
+/* ── MOTOR DE PRÓXIMO PASSO RECOMENDADO ──────────────────── */
+function renderReco() {
+  const el = document.getElementById('c360-reco');
+  if (!el) return;
+  const m = S.resumoMes;
+  const slug = S.cliente?.slug;
+  const temFechMes = S.entregas.some(e =>
+    e.tipo === 'fechamento_mensal' &&
+    String(e.periodo || '').includes(S.periodo.competencia.split('-')[1]));
+
+  let reco;
+  if (!m.temGrant) {
+    reco = { lvl: 'crit', ic: '🔗', k: 'Conectar Mercado Livre',
+      t: 'Este cliente ainda não tem grant ML. Copie o link de conexão e envie ao cliente para liberar pedidos e métricas.',
+      act: `<button class="c360-btn c360-btn-primary" onclick="copiarLink360('${esc(slug)}')">Copiar link ML</button>` };
+  } else if (!m.temBase) {
+    reco = { lvl: 'crit', ic: '📦', k: 'Vincular base de custo',
+      t: 'Sem base vinculada não há cálculo de margem. Vincule a base do cliente para habilitar MC e fechamento.',
+      act: `<a href="bases.html" class="c360-btn c360-btn-primary">Ir para Bases</a>` };
+  } else if (m.diagnosticos === 0) {
+    reco = { lvl: 'warn', ic: '🔍', k: 'Rodar primeiro diagnóstico',
+      t: 'Cliente tem grant e base, mas nenhum diagnóstico. Rode um diagnóstico para identificar itens sem custo e oportunidades.',
+      act: `<a href="automacoes.html" class="c360-btn c360-btn-primary">Ir para Automações</a>` };
+  } else if (!temFechMes) {
+    reco = { lvl: 'warn', ic: '🧾', k: 'Próximo passo recomendado',
+      t: `Criar fechamento de <b>${esc(S.periodo.label)}</b>. O cliente já possui base, grant e diagnóstico.`,
+      act: `<a href="financeiro.html" class="c360-btn c360-btn-primary">+ Novo fechamento</a>` };
+  } else if (m.tacos != null && m.tacos > TACOS_WARN) {
+    reco = { lvl: 'warn', ic: '📢', k: 'Atenção em mídia',
+      t: `TACoS em <b>${fmtPct(m.tacos)}</b>, acima do limite de ${TACOS_WARN}%. Vale revisar a estratégia de Ads do mês.`,
+      act: `<a href="ads.html" class="c360-btn c360-btn-ghost">Revisar Ads</a>` };
+  } else {
+    reco = { lvl: 'ok', ic: '✓', k: 'Operação saudável',
+      t: 'Cliente configurado e em dia: grant, base, diagnóstico e fechamento do mês concluídos.',
+      act: `<a href="cliente-operacao.html" class="c360-btn c360-btn-ghost">Ver setup</a>` };
   }
+
+  el.className = `c360-reco ${reco.lvl}`;
+  el.innerHTML = `
+    <div class="c360-reco-ic">${reco.ic}</div>
+    <div class="c360-reco-body">
+      <div class="c360-reco-kicker">${esc(reco.k)}</div>
+      <div class="c360-reco-text">${reco.t}</div>
+    </div>
+    <div class="c360-reco-action">${reco.act}</div>`;
 }
 
 /* ── TABS ────────────────────────────────────────────────── */
 function switchTab(tab) {
   S.activeTab = tab;
-  document.querySelectorAll('.c360-tab').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tab);
-  });
-  document.querySelectorAll('.c360-tab-panel').forEach(p => {
-    p.style.display = 'none';
-  });
+  document.querySelectorAll('.c360-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.c360-tab-panel').forEach(p => p.style.display = 'none');
   const panel = document.getElementById('tab-' + tab);
   if (panel) panel.style.display = 'block';
   renderTab360(tab);
 }
-
 function updateTabCounts() {
   const counts = {
     bases:       S.bases.length,
@@ -286,82 +489,72 @@ function updateTabCounts() {
   };
   document.querySelectorAll('.c360-tab').forEach(btn => {
     const n = counts[btn.dataset.tab];
-    if (!n) return;
     let span = btn.querySelector('.c360-tab-count');
-    if (!span) {
-      span = document.createElement('span');
-      span.className = 'c360-tab-count';
-      btn.appendChild(span);
-    }
+    if (!n) { if (span) span.remove(); return; }
+    if (!span) { span = document.createElement('span'); span.className = 'c360-tab-count'; btn.appendChild(span); }
     span.textContent = n;
   });
 }
-
 function renderTab360(tab) {
   const panel = document.getElementById('tab-' + tab);
   if (!panel) return;
-  const renders = {
-    overview:    renderOverview,
-    bases:       renderBases360,
-    diagnostico: renderDiag,
-    metricas:    renderMetricas360,
-    ads:         renderAds360,
-    fechamentos: renderFechamentos,
-    historico:   renderHistorico,
-  };
-  renders[tab]?.(panel);
+  ({ overview: renderOverview, bases: renderBases360, diagnostico: renderDiag,
+     metricas: renderMetricas360, ads: renderAds360, fechamentos: renderFechamentos,
+     historico: renderHistorico }[tab])?.(panel);
 }
 
 /* ── ABA: VISÃO GERAL ────────────────────────────────────── */
 function renderOverview(el) {
-  const c = S.cliente;
-  const fechs    = S.entregas.filter(e => e.tipo === 'fechamento_mensal');
-  const rels     = S.relatorios;
-  const temBase  = S.bases.length > 0;
-  const temGrant = S.tokens.some(t =>
-    t?.cliente_slug === c?.slug || t?.cliente_id === c?.id
-  );
+  const temBase = S.bases.length > 0;
+  const temGrant = S.temGrant;
+  const fechs = S.entregas.filter(e => e.tipo === 'fechamento_mensal');
+  const rels = S.relatorios;
 
-  const saude = (temBase && temGrant && rels.length > 0) ? 'ok'
-    : (temBase || temGrant) ? 'warn' : 'crit';
+  const saude = (temBase && temGrant && rels.length > 0) ? 'ok' : (temBase || temGrant) ? 'warn' : 'crit';
   const saudeLabel = { ok: 'operável', warn: 'atenção', crit: 'crítico' }[saude];
-  const saudeBadge = `<span class="vfop-badge vfop-badge-${saude}">● ${saudeLabel}</span>`;
 
-  const ultimoFech = [...fechs].sort((a,b) =>
-    new Date(b.created_at) - new Date(a.created_at))[0];
-  const ultimoRel  = [...rels].sort((a,b) =>
-    new Date(b.updated_at||b.created_at) - new Date(a.updated_at||a.created_at))[0];
+  const ultimoFech = [...fechs].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+  const ultimoRel  = [...rels].sort((a, b) =>
+    new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at))[0];
 
-  const mc = S.metricas?.resumo?.mcMedia || S.metricas?.resumo?.mc_media;
+  const eventos = [
+    ultimoFech && { title: 'Fechamento processado', sub: 'Período: ' + (ultimoFech.periodo || '—'),
+      date: ultimoFech.created_at, type: 'ok' },
+    ultimoRel && { title: 'Diagnóstico rodado', sub: ultimoRel.nome || ultimoRel.slug || '—',
+      date: ultimoRel.updated_at || ultimoRel.created_at, type: 'brand' },
+    S.adsMensal.length && { title: 'Acompanhamento de Ads', sub: 'Último resumo mensal salvo',
+      date: null, type: 'warn' },
+  ].filter(Boolean);
+
+  const porDia = S.metricas?.porDia || [];
 
   el.innerHTML = `
-    <div class="c360-grid2">
+    <div class="c360-grid2 c360-grid2--wide">
 
-      <!-- Saúde operacional -->
       <div class="c360-panel">
         <div class="c360-panel-head">
           <h2 class="c360-panel-title">Saúde operacional</h2>
-          ${saudeBadge}
+          <span class="vfop-badge vfop-badge-${saude}">● ${saudeLabel}</span>
         </div>
         <div class="c360-panel-body c360-panel-body--flush">
           <div class="c360-stat-grid">
-            <div class="c360-stat-head c360-stat-row">
+            <div class="c360-stat-head">
               <div>Canal</div><div>Base</div><div>Grant</div>
               <div>Diagnóstico</div><div>Fechamento</div><div>Status</div>
             </div>
             <div class="c360-stat-row">
               <div><strong>ML · Principal</strong></div>
               <div>${temBase
-                ? `<span class="vfop-badge vfop-badge-ok">${esc(S.bases[0]?.nome||'vinculada')}</span>`
+                ? `<span class="vfop-badge vfop-badge-ok">${esc(S.bases[0]?.nome || 'vinculada')}</span>`
                 : `<span class="vfop-badge vfop-badge-warn">pendente</span>`}</div>
               <div>${temGrant
                 ? `<span class="vfop-badge vfop-badge-ok">grantado</span>`
                 : `<span class="vfop-badge vfop-badge-crit">precisa grant</span>`}</div>
-              <div>${rels.length > 0
-                ? `<span class="vfop-badge vfop-badge-ok">feito</span>`
+              <div>${rels.length
+                ? `<span class="vfop-badge vfop-badge-ok">${rels.length} feito(s)</span>`
                 : `<span class="vfop-badge vfop-badge-neutral">pendente</span>`}</div>
-              <div>${fechs.length > 0
-                ? `<span class="vfop-badge vfop-badge-ok">${fechs.length} saved</span>`
+              <div>${fechs.length
+                ? `<span class="vfop-badge vfop-badge-ok">${fechs.length} salvo(s)</span>`
                 : `<span class="vfop-badge vfop-badge-neutral">pendente</span>`}</div>
               <div><span class="vfop-badge vfop-badge-${saude}">${saudeLabel}</span></div>
             </div>
@@ -369,93 +562,128 @@ function renderOverview(el) {
         </div>
       </div>
 
-      <!-- Últimas ações -->
       <div class="c360-panel">
-        <div class="c360-panel-head">
-          <h2 class="c360-panel-title">Últimas ações</h2>
-        </div>
+        <div class="c360-panel-head"><h2 class="c360-panel-title">Últimas ações</h2></div>
         <div class="c360-panel-body">
           <div class="c360-timeline">
-            ${[
-              ultimoFech && {
-                title: 'Fechamento processado',
-                sub:   'Período: ' + (ultimoFech.periodo || '—'),
-                date:  ultimoFech.created_at,
-                type:  'ok',
-              },
-              ultimoRel && {
-                title: 'Diagnóstico rodado',
-                sub:   ultimoRel.nome || ultimoRel.slug || '—',
-                date:  ultimoRel.updated_at || ultimoRel.created_at,
-                type:  'brand',
-              },
-            ].filter(Boolean).map(ev => `
+            ${eventos.length ? eventos.map(ev => `
               <div class="c360-event">
                 <div class="c360-event-dot ${ev.type}"></div>
                 <div>
                   <div class="c360-event-title">${esc(ev.title)}</div>
                   <div class="c360-event-sub">${esc(ev.sub)}</div>
                 </div>
-                <div class="c360-event-date">${fmtDt(ev.date)}</div>
-              </div>`).join('')}
-            ${!ultimoFech && !ultimoRel ? `
-              <div class="c360-empty">
-                <p>Nenhuma ação registrada ainda.</p>
-              </div>` : ''}
+                <div class="c360-event-date">${ev.date ? fmtDt(ev.date) : ''}</div>
+              </div>`).join('')
+            : `<div class="c360-empty" style="padding:18px 0;"><p>Nenhuma ação registrada ainda.</p></div>`}
           </div>
         </div>
       </div>
-
     </div>
 
-    ${mc ? `
     <div class="c360-panel">
       <div class="c360-panel-head">
-        <h2 class="c360-panel-title">Métricas 30 dias</h2>
+        <h2 class="c360-panel-title">Vendas por dia · ${esc(S.periodo.label)}</h2>
         <span class="c360-panel-meta">Mercado Livre</span>
       </div>
-      <div class="c360-panel-body c360-panel-body--flush">
-        <div class="c360-bignum-grid">
-          <div class="c360-bignum">
-            <div class="c360-bignum-label">MC Média</div>
-            <div class="c360-bignum-value ${mc >= MC_OK ? 'ok' : mc >= MC_WARN ? 'warn' : 'crit'}">
-              ${fmtPct(mc)}
-            </div>
-          </div>
-          <div class="c360-bignum">
-            <div class="c360-bignum-label">Faturamento</div>
-            <div class="c360-bignum-value">
-              ${fmtBRL(S.metricas?.resumo?.vendasBrutas || 0)}
-            </div>
-          </div>
-          <div class="c360-bignum">
-            <div class="c360-bignum-label">Pedidos</div>
-            <div class="c360-bignum-value">
-              ${fmt(S.metricas?.resumo?.quantidadeVendas || 0)}
-            </div>
-          </div>
-        </div>
+      ${porDia.length
+        ? `<div class="c360-chart" id="c360-overview-chart"></div>`
+        : `<div class="c360-empty">
+             <div class="c360-empty-icon">📈</div>
+             <b>Sem dados do mês</b>
+             <p>${temGrant ? 'Nenhum pedido no período ou métricas ainda não carregadas.'
+                           : 'Conecte o grant Mercado Livre para ver as vendas diárias.'}</p>
+           </div>`}
+    </div>`;
+
+  if (porDia.length) renderAreaChart(document.getElementById('c360-overview-chart'), porDia);
+}
+
+/* ── GRÁFICO DE ÁREA (SVG, sem dependências, com hover) ──── */
+function renderAreaChart(host, porDia) {
+  if (!host) return;
+  const W = 720, H = 168, padL = 4, padR = 4, padT = 8, padB = 4;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const data = porDia.map(d => ({ v: Number(d.vendasBrutas) || 0, dia: d.data, ped: d.pedidos || 0 }));
+  const max = Math.max(1, ...data.map(d => d.v));
+  const total = data.reduce((s, d) => s + d.v, 0);
+  const n = data.length;
+  const X = i => padL + (n <= 1 ? innerW / 2 : i / (n - 1) * innerW);
+  const Y = v => padT + innerH - (v / max) * innerH;
+
+  let line = '', area = '';
+  data.forEach((d, i) => {
+    const x = X(i).toFixed(1), y = Y(d.v).toFixed(1);
+    line += (i ? 'L' : 'M') + x + ' ' + y + ' ';
+  });
+  area = `M${X(0).toFixed(1)} ${(padT+innerH).toFixed(1)} ` +
+         data.map((d, i) => `L${X(i).toFixed(1)} ${Y(d.v).toFixed(1)}`).join(' ') +
+         ` L${X(n-1).toFixed(1)} ${(padT+innerH).toFixed(1)} Z`;
+
+  // gridlines (3)
+  let grid = '';
+  for (let g = 1; g <= 3; g++) {
+    const gy = (padT + innerH * g / 4).toFixed(1);
+    grid += `<line class="c360-chart-grid" x1="${padL}" y1="${gy}" x2="${W-padR}" y2="${gy}"/>`;
+  }
+
+  const first = data[0]?.dia ? new Date(data[0].dia).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) : '';
+  const last = data[n-1]?.dia ? new Date(data[n-1].dia).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) : '';
+
+  host.innerHTML = `
+    <div class="c360-chart-top">
+      <div class="c360-chart-read">
+        <span class="c360-chart-read-val" id="c360-chart-val">${fmtBRL(total)}</span>
+        <span class="c360-chart-read-day" id="c360-chart-day">total acumulado</span>
       </div>
-    </div>` : ''}`;
+      <div class="c360-chart-legend">Pico diário: ${fmtBRL(max)}</div>
+    </div>
+    <div class="c360-chart-svg-wrap">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Vendas por dia">
+        ${grid}
+        <path class="c360-chart-area" d="${area}"/>
+        <path class="c360-chart-line" d="${line}"/>
+        <line class="c360-chart-cursor" id="c360-chart-cursor" y1="${padT}" y2="${padT+innerH}"/>
+        <circle class="c360-chart-dot" id="c360-chart-dot" r="3.5"/>
+      </svg>
+    </div>
+    <div class="c360-chart-xaxis"><span>${first}</span><span>${last}</span></div>`;
+
+  const svg = host.querySelector('svg');
+  const cursor = host.querySelector('#c360-chart-cursor');
+  const dot = host.querySelector('#c360-chart-dot');
+  const valEl = host.querySelector('#c360-chart-val');
+  const dayEl = host.querySelector('#c360-chart-day');
+
+  function move(clientX) {
+    const rect = svg.getBoundingClientRect();
+    const px = (clientX - rect.left) / rect.width * W;
+    let i = Math.round((px - padL) / innerW * (n - 1));
+    i = Math.max(0, Math.min(n - 1, i));
+    const d = data[i];
+    const x = X(i), y = Y(d.v);
+    cursor.setAttribute('x1', x); cursor.setAttribute('x2', x); cursor.style.opacity = '1';
+    dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.style.opacity = '1';
+    valEl.textContent = fmtBRL(d.v);
+    dayEl.textContent = (d.dia ? new Date(d.dia).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : '') +
+                        ' · ' + fmt(d.ped) + ' pedidos';
+  }
+  function reset() {
+    cursor.style.opacity = '0'; dot.style.opacity = '0';
+    valEl.textContent = fmtBRL(total); dayEl.textContent = 'total acumulado';
+  }
+  svg.addEventListener('mousemove', e => move(e.clientX));
+  svg.addEventListener('mouseleave', reset);
+  svg.addEventListener('touchmove', e => { if (e.touches[0]) move(e.touches[0].clientX); }, { passive: true });
 }
 
 /* ── ABA: BASES ──────────────────────────────────────────── */
 function renderBases360(el) {
   if (!S.bases.length) {
-    el.innerHTML = `
-      <div class="c360-panel">
-        <div class="c360-panel-head">
-          <h2 class="c360-panel-title">Bases vinculadas</h2>
-        </div>
-        <div class="c360-empty">
-          <div class="c360-empty-icon">📦</div>
-          <b>Nenhuma base vinculada</b>
-          <p>Vincule uma base em <a href="bases.html">Bases de Custo</a>.</p>
-        </div>
-      </div>`;
+    el.innerHTML = panelEmpty('Bases vinculadas', '📦', 'Nenhuma base vinculada',
+      'Vincule uma base em <a href="bases.html">Bases de Custo</a>.');
     return;
   }
-
   el.innerHTML = `
     <div class="c360-panel">
       <div class="c360-panel-head">
@@ -464,23 +692,13 @@ function renderBases360(el) {
       </div>
       <div class="c360-panel-body c360-panel-body--flush">
         <table class="c360-table">
-          <thead>
-            <tr>
-              <th>Base</th>
-              <th>Marketplace</th>
-              <th>Origem</th>
-              <th>Atualizado</th>
-              <th></th>
-            </tr>
-          </thead>
+          <thead><tr><th>Base</th><th>Marketplace</th><th>Origem</th><th>Atualizado</th><th></th></tr></thead>
           <tbody>
             ${S.bases.map(b => `
               <tr>
                 <td class="strong">${esc(b.nome || b.slug || '—')}</td>
                 <td>${esc(b.vinculo?.marketplace || '—')}</td>
-                <td><span class="vfop-badge vfop-badge-ok">
-                  ${esc(b.vinculo?.origem || 'manual')}
-                </span></td>
+                <td><span class="vfop-badge vfop-badge-ok">${esc(b.vinculo?.origem || 'manual')}</span></td>
                 <td class="muted">${fmtDt(b.updated_at)}</td>
                 <td><a href="bases.html" class="c360-btn-link">Ver bases →</a></td>
               </tr>`).join('')}
@@ -493,42 +711,27 @@ function renderBases360(el) {
 /* ── ABA: DIAGNÓSTICO ────────────────────────────────────── */
 function renderDiag(el) {
   if (!S.relatorios.length) {
-    el.innerHTML = `
-      <div class="c360-panel">
-        <div class="c360-panel-head">
-          <h2 class="c360-panel-title">Diagnósticos</h2>
-        </div>
-        <div class="c360-empty">
-          <div class="c360-empty-icon">🔍</div>
-          <b>Nenhum diagnóstico encontrado</b>
-          <p>Rode um diagnóstico em <a href="automacoes.html">Automações</a>.</p>
-        </div>
-      </div>`;
+    el.innerHTML = panelEmpty('Diagnósticos', '🔍', 'Nenhum diagnóstico encontrado',
+      'Rode um diagnóstico em <a href="automacoes.html">Automações</a>.');
     return;
   }
-
+  const rels = [...S.relatorios].sort((a, b) =>
+    new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0));
   el.innerHTML = `
     <div class="c360-panel">
       <div class="c360-panel-head">
         <h2 class="c360-panel-title">Diagnósticos</h2>
-        <span class="c360-panel-meta">${S.relatorios.length} relatório(s)</span>
+        <span class="c360-panel-meta">${rels.length} relatório(s)</span>
       </div>
       <div class="c360-panel-body c360-panel-body--flush">
         <table class="c360-table">
-          <thead>
-            <tr>
-              <th>Relatório</th>
-              <th>Sem custo</th>
-              <th>Data</th>
-              <th></th>
-            </tr>
-          </thead>
+          <thead><tr><th>Relatório</th><th>Itens sem custo</th><th>Data</th><th></th></tr></thead>
           <tbody>
-            ${S.relatorios.map(r => {
-              const semCusto = r.sem_custo || r.semCusto;
+            ${rels.map(r => {
+              const semCusto = r.sem_custo ?? r.semCusto;
               return `
                 <tr>
-                  <td class="strong">${esc(r.nome || r.slug || r.id || '—')}</td>
+                  <td class="strong clip">${esc(r.nome || r.slug || r.id || '—')}</td>
                   <td>${semCusto
                     ? `<span class="vfop-badge vfop-badge-warn">${semCusto} itens</span>`
                     : `<span class="vfop-badge vfop-badge-ok">ok</span>`}</td>
@@ -546,221 +749,207 @@ function renderDiag(el) {
 function renderMetricas360(el) {
   const m = S.metricas;
   if (!m) {
-    el.innerHTML = `
-      <div class="c360-panel">
-        <div class="c360-panel-head">
-          <h2 class="c360-panel-title">Métricas Mercado Livre</h2>
-        </div>
-        <div class="c360-empty">
-          <div class="c360-empty-icon">📊</div>
-          <b>Dados não disponíveis</b>
-          <p>Verifique se o grant ML está conectado.</p>
-        </div>
-      </div>`;
+    el.innerHTML = panelEmpty('Métricas Mercado Livre', '📊', 'Dados não disponíveis',
+      S.temGrant ? 'Nenhum pedido no período ou métricas indisponíveis no momento.'
+                 : 'Conecte o grant Mercado Livre para carregar as métricas.');
     return;
   }
-
   const r = m.resumo || {};
-  const snapKey = `c360-snaps-${S.cliente?.slug}`;
-  let snaps = [];
-  try { snaps = JSON.parse(localStorage.getItem(snapKey) || '[]'); } catch {}
+  const top = m.topProdutos || [];
+  const canc = m.cancelamentosPorMotivo || [];
+  const avisos = m.avisos || [];
+  const maxFat = Math.max(1, ...top.map(p => Number(p.faturamento) || 0));
 
-  const rows = [
-    ['Vendas brutas',     fmtBRL(r.vendasBrutas      || 0)],
-    ['Quantidade vendas', fmt(r.quantidadeVendas      || 0)],
-    ['Unidades vendidas', fmt(r.unidadesVendidas      || 0)],
-    ['Ticket médio',      fmtBRL(r.ticketMedio        || 0)],
-    ['Preço médio/unid.', fmtBRL(r.precoMedioUnidade  || 0)],
-    ['Cancelamentos',     fmt(r.quantidadeCancelada   || 0)],
-    ['Valor cancelado',   fmtBRL(r.valorCancelado     || 0)],
-    ['MC Média',          fmtPct(r.mcMedia || r.mc_media || 0)],
+  const snapKey = `c360-snaps-${S.cliente?.slug}`;
+  let snaps = []; try { snaps = JSON.parse(localStorage.getItem(snapKey) || '[]'); } catch {}
+
+  const resumoRows = [
+    ['Vendas brutas',     fmtBRL(r.vendasBrutas || 0)],
+    ['Quantidade vendas', fmt(r.quantidadeVendas || 0)],
+    ['Unidades vendidas', fmt(r.unidadesVendidas || 0)],
+    ['Ticket médio',      fmtBRL(r.ticketMedio || 0)],
+    ['Preço médio/unid.', fmtBRL(r.precoMedioUnidade || 0)],
+    ['Cancelamentos',     fmt(r.quantidadeCancelada || 0)],
+    ['Valor cancelado',   fmtBRL(r.valorCancelado || 0)],
   ];
 
   el.innerHTML = `
     <div class="c360-grid2">
       <div class="c360-panel">
         <div class="c360-panel-head">
-          <h2 class="c360-panel-title">Resumo 30 dias</h2>
+          <h2 class="c360-panel-title">Resumo · ${esc(S.periodo.label)}</h2>
           <span class="c360-panel-meta">Mercado Livre</span>
         </div>
         <div class="c360-panel-body c360-panel-body--flush">
           <table class="c360-table">
-            ${rows.map(([k, v]) => `
-              <tr>
-                <td class="muted">${k}</td>
-                <td class="strong right">${v}</td>
-              </tr>`).join('')}
+            ${resumoRows.map(([k, v]) => `
+              <tr><td class="muted">${k}</td><td class="strong right">${v}</td></tr>`).join('')}
           </table>
         </div>
         <div class="c360-panel-foot">
-          <span>Período: últimos 30 dias</span>
-          <button class="c360-btn c360-btn-ghost"
-                  onclick="salvarSnapshot()">
-            Salvar snapshot
-          </button>
+          <span>Competência atual</span>
+          <button class="c360-btn c360-btn-ghost" onclick="salvarSnapshot()">Salvar snapshot</button>
         </div>
       </div>
 
-      <div class="c360-panel" id="c360-snaps-panel">
+      <div class="c360-panel">
         <div class="c360-panel-head">
           <h2 class="c360-panel-title">Snapshots salvos</h2>
-          <span class="c360-panel-meta">${snaps.length} salvo(s)</span>
+          <span class="c360-panel-meta" id="c360-snaps-meta">${snaps.length} salvo(s)</span>
         </div>
-        <div id="c360-snaps-list">
-          ${renderSnapsList(snaps)}
-        </div>
+        <div id="c360-snaps-list">${renderSnapsList(snaps)}</div>
       </div>
     </div>
 
-    <div class="c360-panel" id="c360-snaps-compare">
-      ${renderSnapsCompare(snaps)}
-    </div>`;
+    <div class="c360-panel">
+      <div class="c360-panel-head">
+        <h2 class="c360-panel-title">Top produtos por faturamento</h2>
+        <span class="c360-panel-meta">${top.length} item(ns)</span>
+      </div>
+      <div class="c360-panel-body c360-panel-body--flush">
+        ${top.length ? `
+          <table class="c360-table">
+            <thead><tr><th>Produto</th><th>MLB</th><th>Unid.</th><th>Faturamento</th><th style="width:120px;"></th></tr></thead>
+            <tbody>
+              ${top.slice(0, 12).map(p => `
+                <tr>
+                  <td class="strong clip">${esc(p.titulo || p.sku || '—')}</td>
+                  <td class="mono muted">${esc(p.mlb || '—')}</td>
+                  <td class="right">${fmt(p.unidades || 0)}</td>
+                  <td class="right strong">${fmtBRL(p.faturamento || 0)}</td>
+                  <td><div class="c360-bar-track"><div class="c360-bar-fill"
+                      style="width:${((Number(p.faturamento)||0)/maxFat*100).toFixed(1)}%"></div></div></td>
+                </tr>`).join('')}
+            </tbody>
+          </table>` : `<div class="c360-empty" style="padding:24px;"><p>Sem produtos no período.</p></div>`}
+      </div>
+    </div>
+
+    <div class="c360-panel">
+      <div class="c360-panel-head">
+        <h2 class="c360-panel-title">Cancelamentos por motivo</h2>
+        <span class="c360-panel-meta">${canc.length} motivo(s)</span>
+      </div>
+      <div class="c360-panel-body c360-panel-body--flush">
+        ${canc.length ? `
+          <table class="c360-table">
+            <thead><tr><th>Motivo</th><th>Responsável</th><th>Pedidos</th><th>Valor</th></tr></thead>
+            <tbody>
+              ${canc.map(c => `
+                <tr>
+                  <td class="strong">${esc(c.code || c.group || '—')}</td>
+                  <td class="muted">${esc(c.requestedBy || c.group || '—')}</td>
+                  <td class="right">${fmt(c.pedidos || 0)}</td>
+                  <td class="right strong">${fmtBRL(c.valor || 0)}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>` : `<div class="c360-empty" style="padding:24px;"><p>Nenhum cancelamento no período.</p></div>`}
+      </div>
+      ${avisos.length ? `<div class="c360-notes"><ul>${avisos.map(a => `<li>${esc(a)}</li>`).join('')}</ul></div>` : ''}
+    </div>
+
+    <div class="c360-panel" id="c360-snaps-compare">${renderSnapsCompare(snaps)}</div>`;
 }
 
+/* ── SNAPSHOTS (localStorage) ────────────────────────────── */
 function salvarSnapshot() {
   const m = S.metricas;
   if (!m || !S.cliente?.slug) return;
-  const snapKey = `c360-snaps-${S.cliente.slug}`;
-  let snaps = [];
-  try { snaps = JSON.parse(localStorage.getItem(snapKey) || '[]'); } catch {}
-
+  const key = `c360-snaps-${S.cliente.slug}`;
+  let snaps = []; try { snaps = JSON.parse(localStorage.getItem(key) || '[]'); } catch {}
   const r = m.resumo || {};
   snaps.unshift({
-    id:               Date.now(),
-    data:             new Date().toLocaleDateString('pt-BR'),
-    vendasBrutas:     r.vendasBrutas      || 0,
-    quantidadeVendas: r.quantidadeVendas  || 0,
-    ticketMedio:      r.ticketMedio       || 0,
-    mc:               r.mcMedia || r.mc_media || 0,
-    valorCancelado:   r.valorCancelado    || 0,
+    id: Date.now(),
+    data: new Date().toLocaleDateString('pt-BR'),
+    competencia: S.periodo.label,
+    vendasBrutas: r.vendasBrutas || 0,
+    quantidadeVendas: r.quantidadeVendas || 0,
+    ticketMedio: r.ticketMedio || 0,
+    mc: S.resumoMes?.mcMedia || 0,
+    valorCancelado: r.valorCancelado || 0,
   });
   if (snaps.length > 12) snaps = snaps.slice(0, 12);
-  localStorage.setItem(snapKey, JSON.stringify(snaps));
+  localStorage.setItem(key, JSON.stringify(snaps));
 
-  const listEl = document.getElementById('c360-snaps-list');
-  if (listEl) listEl.innerHTML = renderSnapsList(snaps);
-  const cmpEl  = document.getElementById('c360-snaps-compare');
-  if (cmpEl)   cmpEl.innerHTML  = renderSnapsCompare(snaps);
+  const list = document.getElementById('c360-snaps-list');
+  if (list) list.innerHTML = renderSnapsList(snaps);
+  const meta = document.getElementById('c360-snaps-meta');
+  if (meta) meta.textContent = `${snaps.length} salvo(s)`;
+  const cmp = document.getElementById('c360-snaps-compare');
+  if (cmp) cmp.innerHTML = renderSnapsCompare(snaps);
 
   const btn = document.querySelector('[onclick="salvarSnapshot()"]');
-  if (btn) {
-    btn.textContent = 'Salvo!';
-    setTimeout(() => { btn.textContent = 'Salvar snapshot'; }, 1500);
-  }
+  if (btn) { btn.textContent = 'Salvo!'; setTimeout(() => btn.textContent = 'Salvar snapshot', 1500); }
 }
-
 function renderSnapsList(snaps) {
   if (!snaps.length) return `
-    <div class="c360-empty">
-      <p>Nenhum snapshot salvo ainda.<br>
-         Clique em "Salvar snapshot" para guardar.</p>
+    <div class="c360-empty" style="padding:24px;">
+      <p>Nenhum snapshot salvo ainda.<br>Guarde o resumo do mês para comparar adiante.</p>
     </div>`;
-
   return `
     <table class="c360-table">
-      <thead><tr>
-        <th>Data</th><th>Faturamento</th><th>Pedidos</th><th>MC%</th><th></th>
-      </tr></thead>
+      <thead><tr><th>Data</th><th>Faturamento</th><th>Pedidos</th><th>MC%</th><th></th></tr></thead>
       <tbody>
         ${snaps.map((s, i) => `
           <tr>
-            <td class="muted mono">${s.data}</td>
+            <td class="muted mono">${esc(s.data)}</td>
             <td class="strong">${fmtBRL(s.vendasBrutas)}</td>
-            <td>${fmt(s.quantidadeVendas)}</td>
-            <td><span class="vfop-badge vfop-badge-${s.mc >= MC_OK ? 'ok' : s.mc >= MC_WARN ? 'warn' : 'crit'}">
-              ${fmtPct(s.mc)}
-            </span></td>
-            <td>
-              <button class="c360-btn c360-btn-danger"
-                      onclick="removerSnapshot(${i})">×</button>
-            </td>
+            <td class="right">${fmt(s.quantidadeVendas)}</td>
+            <td><span class="vfop-badge vfop-badge-${s.mc >= MC_OK ? 'ok' : s.mc >= MC_WARN ? 'warn' : 'crit'}">${fmtPct(s.mc)}</span></td>
+            <td><button class="c360-btn c360-btn-danger" onclick="removerSnapshot(${i})">×</button></td>
           </tr>`).join('')}
       </tbody>
     </table>`;
 }
-
 function renderSnapsCompare(snaps) {
   if (snaps.length < 2) return `
-    <div class="c360-panel-head">
-      <h2 class="c360-panel-title">Comparativo de snapshots</h2>
-    </div>
-    <div class="c360-empty">
-      <p>Salve pelo menos 2 snapshots para comparar.</p>
-    </div>`;
-
-  const a = snaps[0];
-  const b = snaps[1];
-
+    <div class="c360-panel-head"><h2 class="c360-panel-title">Comparativo de snapshots</h2></div>
+    <div class="c360-empty" style="padding:24px;"><p>Salve pelo menos 2 snapshots para comparar.</p></div>`;
+  const [a, b] = snaps;
   const delta = (va, vb, isPct = false) => {
-    const d   = va - vb;
-    const cls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat';
-    const abs = Math.abs(d);
-    const str = isPct ? fmtPct(abs) : fmtBRL(abs);
-    return `<span class="c360-delta-${cls}">${d >= 0 ? '+' : '-'}${str}</span>`;
+    const d = va - vb, cls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat';
+    const str = isPct ? fmtPct(Math.abs(d)) : fmtBRL(Math.abs(d));
+    return `<span class="c360-delta-${cls}">${d >= 0 ? '+' : '−'}${str}</span>`;
   };
-
   const rows = [
-    ['Faturamento',  fmtBRL(a.vendasBrutas),     fmtBRL(b.vendasBrutas),     delta(a.vendasBrutas,     b.vendasBrutas)],
-    ['Pedidos',      fmt(a.quantidadeVendas),     fmt(b.quantidadeVendas),     delta(a.quantidadeVendas, b.quantidadeVendas)],
-    ['Ticket médio', fmtBRL(a.ticketMedio),       fmtBRL(b.ticketMedio),       delta(a.ticketMedio,      b.ticketMedio)],
-    ['MC Média',     fmtPct(a.mc),                fmtPct(b.mc),                delta(a.mc,               b.mc, true)],
-    ['Cancelado',    fmtBRL(a.valorCancelado),    fmtBRL(b.valorCancelado),    delta(a.valorCancelado,   b.valorCancelado)],
+    ['Faturamento', fmtBRL(a.vendasBrutas), fmtBRL(b.vendasBrutas), delta(a.vendasBrutas, b.vendasBrutas)],
+    ['Pedidos', fmt(a.quantidadeVendas), fmt(b.quantidadeVendas), delta(a.quantidadeVendas, b.quantidadeVendas)],
+    ['Ticket médio', fmtBRL(a.ticketMedio), fmtBRL(b.ticketMedio), delta(a.ticketMedio, b.ticketMedio)],
+    ['MC média', fmtPct(a.mc), fmtPct(b.mc), delta(a.mc, b.mc, true)],
+    ['Cancelado', fmtBRL(a.valorCancelado), fmtBRL(b.valorCancelado), delta(a.valorCancelado, b.valorCancelado)],
   ];
-
   return `
     <div class="c360-panel-head">
       <h2 class="c360-panel-title">Comparativo de snapshots</h2>
-      <span class="c360-panel-meta">${a.data} vs ${b.data}</span>
+      <span class="c360-panel-meta">${esc(a.data)} vs ${esc(b.data)}</span>
     </div>
     <div class="c360-panel-body c360-panel-body--flush">
-      <div class="c360-compare-header">
-        <div>Métrica</div>
-        <div>${a.data} (recente)</div>
-        <div>${b.data} (anterior)</div>
-        <div>Δ variação</div>
-      </div>
-      ${rows.map(([label, va, vb, dlt]) => `
-        <div class="c360-compare-row">
-          <div>${label}</div>
-          <div><strong>${va}</strong></div>
-          <div>${vb}</div>
-          <div>${dlt}</div>
-        </div>`).join('')}
+      <div class="c360-compare-header"><div>Métrica</div><div>${esc(a.data)} (recente)</div><div>${esc(b.data)} (anterior)</div><div>Δ</div></div>
+      ${rows.map(([l, va, vb, dl]) => `
+        <div class="c360-compare-row"><div>${l}</div><div><strong>${va}</strong></div><div>${vb}</div><div>${dl}</div></div>`).join('')}
     </div>`;
 }
-
 function removerSnapshot(idx) {
-  const snapKey = `c360-snaps-${S.cliente?.slug}`;
-  let snaps = [];
-  try { snaps = JSON.parse(localStorage.getItem(snapKey) || '[]'); } catch {}
+  const key = `c360-snaps-${S.cliente?.slug}`;
+  let snaps = []; try { snaps = JSON.parse(localStorage.getItem(key) || '[]'); } catch {}
   snaps.splice(idx, 1);
-  localStorage.setItem(snapKey, JSON.stringify(snaps));
-  const listEl = document.getElementById('c360-snaps-list');
-  if (listEl) listEl.innerHTML = renderSnapsList(snaps);
-  const cmpEl  = document.getElementById('c360-snaps-compare');
-  if (cmpEl)   cmpEl.innerHTML  = renderSnapsCompare(snaps);
+  localStorage.setItem(key, JSON.stringify(snaps));
+  const list = document.getElementById('c360-snaps-list');
+  if (list) list.innerHTML = renderSnapsList(snaps);
+  const meta = document.getElementById('c360-snaps-meta');
+  if (meta) meta.textContent = `${snaps.length} salvo(s)`;
+  const cmp = document.getElementById('c360-snaps-compare');
+  if (cmp) cmp.innerHTML = renderSnapsCompare(snaps);
 }
 
 /* ── ABA: ADS ────────────────────────────────────────────── */
 function renderAds360(el) {
   if (!S.ads.length && !S.adsMensal.length) {
-    el.innerHTML = `
-      <div class="c360-panel">
-        <div class="c360-panel-head">
-          <h2 class="c360-panel-title">Ads</h2>
-        </div>
-        <div class="c360-empty">
-          <div class="c360-empty-icon">📢</div>
-          <b>Sem dados de Ads</b>
-          <p>Salve acompanhamento em <a href="ads.html">Ads</a>.</p>
-        </div>
-      </div>`;
+    el.innerHTML = panelEmpty('Ads', '📢', 'Sem dados de Ads',
+      'Salve um acompanhamento em <a href="ads.html">Ads</a>.');
     return;
   }
-
-  const mensal = [...S.adsMensal].sort((a,b) =>
-    (b.mes || '').localeCompare(a.mes || ''));
-
+  const mensal = [...S.adsMensal].sort((a, b) => String(b.mes || '').localeCompare(String(a.mes || '')));
   el.innerHTML = `
     <div class="c360-panel">
       <div class="c360-panel-head">
@@ -770,22 +959,17 @@ function renderAds360(el) {
       <div class="c360-panel-body c360-panel-body--flush">
         ${mensal.length ? `
           <table class="c360-table">
-            <thead><tr>
-              <th>Mês</th><th>Investimento</th><th>TACoS</th><th>ROAS</th>
-            </tr></thead>
+            <thead><tr><th>Mês</th><th>Investimento</th><th>TACoS</th><th>ROAS</th></tr></thead>
             <tbody>
-              ${mensal.slice(0, 12).map(m => `
+              ${mensal.slice(0, 12).map(x => `
                 <tr>
-                  <td class="muted">${m.mes || '—'}</td>
-                  <td class="strong">${fmtBRL(m.investimento || 0)}</td>
-                  <td>${m.tacos ? fmtPct(m.tacos) : '—'}</td>
-                  <td>${m.roas  ? fmt(m.roas, 1) + 'x' : '—'}</td>
+                  <td class="muted mono">${esc(x.mes || '—')}</td>
+                  <td class="strong">${fmtBRL(x.investimento || 0)}</td>
+                  <td>${x.tacos ? `<span class="vfop-badge vfop-badge-${x.tacos > TACOS_WARN ? 'crit' : 'ok'}">${fmtPct(x.tacos)}</span>` : '—'}</td>
+                  <td>${x.roas ? fmt(x.roas, 1) + 'x' : '—'}</td>
                 </tr>`).join('')}
             </tbody>
-          </table>` : `
-          <div class="c360-empty">
-            <p>Sem resumo mensal salvo.</p>
-          </div>`}
+          </table>` : `<div class="c360-empty" style="padding:24px;"><p>Sem resumo mensal salvo.</p></div>`}
       </div>
     </div>`;
 }
@@ -794,223 +978,120 @@ function renderAds360(el) {
 function renderFechamentos(el) {
   const fechs = S.entregas
     .filter(e => e.tipo === 'fechamento_mensal')
-    .sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
-
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   el.innerHTML = `
     <div class="c360-panel">
       <div class="c360-panel-head">
         <h2 class="c360-panel-title">Fechamentos</h2>
         <div class="c360-panel-actions">
           <span class="c360-panel-meta">${fechs.length} salvos</span>
-          <a href="financeiro.html" class="c360-btn c360-btn-primary">
-            + Novo fechamento
-          </a>
+          <a href="financeiro.html" class="c360-btn c360-btn-primary">+ Novo fechamento</a>
         </div>
       </div>
       <div class="c360-fech-list">
-        ${fechs.length
-          ? fechs.map(f => renderFechCard(f)).join('')
-          : `<div class="c360-empty">
-               <div class="c360-empty-icon">📋</div>
-               <b>Nenhum fechamento</b>
-               <p>Processe um fechamento para visualizar aqui.</p>
-             </div>`}
+        ${fechs.length ? fechs.map(renderFechCard).join('')
+          : `<div class="c360-empty"><div class="c360-empty-icon">🧾</div>
+               <b>Nenhum fechamento</b><p>Processe um fechamento para visualizar aqui.</p></div>`}
       </div>
-      ${fechs.length >= 2 ? `
-        <div class="c360-compare-hint">
-          Selecione <strong>dois fechamentos</strong> para comparar lado a lado.
-        </div>` : ''}
+      ${fechs.length >= 2 ? `<div class="c360-compare-hint">Selecione <strong>dois fechamentos</strong> para comparar lado a lado.</div>` : ''}
     </div>
 
-    <div class="c360-panel c360-compare-wrap visible" id="c360-fech-compare">
+    <div class="c360-panel" id="c360-fech-compare">
       <div class="c360-panel-head">
         <h2 class="c360-panel-title">Comparativo</h2>
-        <span class="c360-panel-meta" id="c360-compare-label">
-          Selecione 2 fechamentos
-        </span>
+        <span class="c360-panel-meta" id="c360-compare-label">Selecione 2 fechamentos</span>
       </div>
       <div id="c360-compare-body" class="c360-panel-body">
-        <div class="c360-empty">
-          <p>Selecione dois fechamentos acima.</p>
-        </div>
+        <div class="c360-empty" style="padding:24px;"><p>Selecione dois fechamentos acima.</p></div>
       </div>
     </div>`;
 }
-
 function renderFechCard(f) {
-  const isA = S.compare.a === f.id;
-  const isB = S.compare.b === f.id;
-  const sel = isA || isB;
-
-  const labelTag = isA
-    ? `<span style="font-size:10px;margin-left:6px;color:var(--vfop-primary);">[A]</span>`
-    : isB
-    ? `<span style="font-size:10px;margin-left:6px;color:#855100;">[B]</span>`
-    : '';
-
+  const isA = S.compare.a === f.id, isB = S.compare.b === f.id;
+  const tag = isA ? `<span class="c360-tag a">A</span>` : isB ? `<span class="c360-tag b">B</span>` : '';
   return `
-    <div class="c360-fech-card ${sel ? 'selected' : ''}"
-         id="fech-card-${f.id}"
-         onclick="toggleFechamento(${f.id})">
+    <div class="c360-fech-card ${isA || isB ? 'selected' : ''}" id="fech-card-${f.id}" onclick="toggleFechamento(${f.id})">
       <div class="c360-fech-check"></div>
       <div class="c360-fech-icon">F</div>
       <div class="c360-fech-body">
-        <div class="c360-fech-title">
-          ${esc(f.titulo || 'Fechamento mensal')}${labelTag}
-        </div>
+        <div class="c360-fech-title">${esc(f.titulo || 'Fechamento mensal')}${tag}</div>
         <div class="c360-fech-meta">
           Período: ${esc(f.periodo || '—')} · ${fmtDt(f.created_at)}
-          ${f.publicado ? ' · <span style="color:#1a7a45;">publicado</span>' : ''}
+          ${f.publicado ? ' · <span class="c360-pub">publicado</span>' : ''}
         </div>
       </div>
       <div class="c360-fech-side" onclick="event.stopPropagation();">
-        ${f.token_publico ? `
-          <a href="/relatorio-publico.html?token=${f.token_publico}"
-             target="_blank"
-             class="c360-btn-link">
-            Ver →
-          </a>` : ''}
-        <button class="c360-btn c360-btn-danger"
-                onclick="removerFechamento(${f.id})">
-          Remover
-        </button>
+        ${f.token_publico ? `<a href="/relatorio-publico.html?token=${esc(f.token_publico)}" target="_blank" class="c360-btn-link">Ver →</a>` : ''}
+        <button class="c360-btn c360-btn-danger" onclick="removerFechamento(${f.id})">Remover</button>
       </div>
     </div>`;
 }
-
 async function toggleFechamento(id) {
-  if (S.compare.a === id) {
-    S.compare.a = null;
-    S.compareData.a = null;
-  } else if (S.compare.b === id) {
-    S.compare.b = null;
-    S.compareData.b = null;
-  } else if (!S.compare.a) {
-    S.compare.a = id;
-  } else if (!S.compare.b) {
-    S.compare.b = id;
-  } else {
-    S.compare.a = id;
-    S.compareData.a = null;
-  }
+  if (S.compare.a === id) { S.compare.a = null; S.compareData.a = null; }
+  else if (S.compare.b === id) { S.compare.b = null; S.compareData.b = null; }
+  else if (!S.compare.a) S.compare.a = id;
+  else if (!S.compare.b) S.compare.b = id;
+  else { S.compare.a = id; S.compareData.a = null; }
 
-  // Atualizar visual
-  document.querySelectorAll('.c360-fech-card').forEach(el => {
-    const cid  = parseInt(el.id.replace('fech-card-', ''));
-    const isA  = S.compare.a === cid;
-    const isB  = S.compare.b === cid;
-    const col  = isA ? 'var(--vfop-primary,#4b267a)' : isB ? '#855100' : '';
-    el.classList.toggle('selected', isA || isB);
-    const check = el.querySelector('.c360-fech-check');
-    if (check) {
-      check.style.background  = col;
-      check.style.borderColor = col;
-    }
+  document.querySelectorAll('.c360-fech-card').forEach(elx => {
+    const cid = parseInt(elx.id.replace('fech-card-', ''));
+    elx.classList.toggle('selected', S.compare.a === cid || S.compare.b === cid);
+  });
+  // re-render tags
+  renderTab360('fechamentos');
+  document.querySelectorAll('.c360-fech-card').forEach(elx => {
+    const cid = parseInt(elx.id.replace('fech-card-', ''));
+    elx.classList.toggle('selected', S.compare.a === cid || S.compare.b === cid);
   });
 
-  if (S.compare.a && S.compare.b) {
-    await carregarComparativo();
-  } else {
-    const lbl  = document.getElementById('c360-compare-label');
-    const body = document.getElementById('c360-compare-body');
-    if (lbl)  lbl.textContent = 'Selecione 2 fechamentos';
-    if (body) body.innerHTML = `
-      <div class="c360-empty"><p>Selecione dois fechamentos acima.</p></div>`;
-  }
+  if (S.compare.a && S.compare.b) await carregarComparativo();
 }
-
 async function carregarComparativo() {
-  const lbl  = document.getElementById('c360-compare-label');
+  const lbl = document.getElementById('c360-compare-label');
   const body = document.getElementById('c360-compare-body');
   if (!body) return;
-
-  body.innerHTML = `<div class="c360-loading">Carregando comparativo...</div>`;
-
+  body.innerHTML = `<div class="c360-loading">Carregando comparativo…</div>`;
   const fechA = S.entregas.find(e => e.id === S.compare.a);
   const fechB = S.entregas.find(e => e.id === S.compare.b);
-
   if (!fechA?.token_publico || !fechB?.token_publico) {
-    body.innerHTML = `
-      <div class="c360-empty">
-        <p>Fechamentos sem token público.<br>Publique-os primeiro.</p>
-      </div>`;
+    body.innerHTML = `<div class="c360-empty" style="padding:24px;"><p>Fechamentos sem token público.<br>Publique-os primeiro.</p></div>`;
     return;
   }
-
-  const [dataA, dataB] = await Promise.all([
-    apiPublic(fechA.token_publico),
-    apiPublic(fechB.token_publico),
-  ]);
-
+  const [dataA, dataB] = await Promise.all([apiPublic(fechA.token_publico), apiPublic(fechB.token_publico)]);
   S.compareData.a = dataA?.entrega || dataA;
   S.compareData.b = dataB?.entrega || dataB;
-
-  if (lbl) {
-    const lblA = fechA.periodo || fechA.titulo || 'A';
-    const lblB = fechB.periodo || fechB.titulo || 'B';
-    lbl.textContent = `${lblA} vs ${lblB}`;
-  }
-
+  if (lbl) lbl.textContent = `${fechA.periodo || fechA.titulo || 'A'} vs ${fechB.periodo || fechB.titulo || 'B'}`;
   renderComparativoFechs(body, fechA, fechB, S.compareData.a, S.compareData.b);
 }
-
-function renderComparativoFechs(el, fechA, fechB, dataA, dataB) {
+function renderComparativoFechs(elx, fechA, fechB, dataA, dataB) {
   const cardsA = dataA?.payload_json?.cards || dataA?.cards || [];
   const cardsB = dataB?.payload_json?.cards || dataB?.cards || [];
-
   const mapA = Object.fromEntries(cardsA.map(c => [c.titulo || c.title, c]));
   const mapB = Object.fromEntries(cardsB.map(c => [c.titulo || c.title, c]));
-  const allTitles = [...new Set([...Object.keys(mapA), ...Object.keys(mapB)])];
-
-  if (!allTitles.length) {
-    el.innerHTML = `
-      <div class="c360-empty">
-        <p>Dados detalhados não disponíveis.<br>
-           Os fechamentos precisam estar publicados.</p>
-      </div>`;
+  const titles = [...new Set([...Object.keys(mapA), ...Object.keys(mapB)])];
+  if (!titles.length) {
+    elx.innerHTML = `<div class="c360-empty" style="padding:24px;"><p>Dados detalhados não disponíveis.<br>Os fechamentos precisam estar publicados.</p></div>`;
     return;
   }
-
-  const fmtVal = c => {
-    if (!c) return '—';
-    if (c.valor) return esc(c.valor);
-    if (c.raw !== undefined) return fmtBRL(c.raw);
-    return '—';
-  };
-
-  const rows = allTitles.map(title => {
-    const a  = mapA[title];
-    const b  = mapB[title];
-    const va = a?.raw ?? a?.valor ?? null;
-    const vb = b?.raw ?? b?.valor ?? null;
-
-    let deltaHtml = '—';
+  const fmtVal = c => !c ? '—' : (c.valor ? esc(c.valor) : c.raw !== undefined ? fmtBRL(c.raw) : '—');
+  const rows = titles.map(t => {
+    const a = mapA[t], b = mapB[t];
+    const va = a?.raw ?? a?.valor ?? null, vb = b?.raw ?? b?.valor ?? null;
+    let dl = '—';
     if (va !== null && vb !== null) {
-      const d   = Number(va) - Number(vb);
+      const d = Number(va) - Number(vb);
       const pct = vb !== 0 ? (d / Math.abs(vb) * 100).toFixed(1) : '—';
       const cls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat';
-      deltaHtml = `<span class="c360-delta-${cls}">${d > 0 ? '+' : ''}${pct}%</span>`;
+      dl = `<span class="c360-delta-${cls}">${d > 0 ? '+' : ''}${pct}%</span>`;
     }
-
-    return `
-      <div class="c360-compare-row${a?.destaque ? ' highlight' : ''}">
-        <div>${esc(title)}</div>
-        <div><strong>${fmtVal(a)}</strong></div>
-        <div>${fmtVal(b)}</div>
-        <div>${deltaHtml}</div>
-      </div>`;
+    return `<div class="c360-compare-row${a?.destaque ? ' highlight' : ''}"><div>${esc(t)}</div><div><strong>${fmtVal(a)}</strong></div><div>${fmtVal(b)}</div><div>${dl}</div></div>`;
   });
-
-  el.innerHTML = `
+  elx.innerHTML = `
     <div class="c360-compare-header">
-      <div>Métrica</div>
-      <div>${esc(fechA.periodo || fechA.titulo || 'Fechamento A')}</div>
-      <div>${esc(fechB.periodo || fechB.titulo || 'Fechamento B')}</div>
-      <div>Δ variação</div>
-    </div>
-    ${rows.join('')}`;
+      <div>Métrica</div><div>${esc(fechA.periodo || fechA.titulo || 'A')}</div>
+      <div>${esc(fechB.periodo || fechB.titulo || 'B')}</div><div>Δ</div>
+    </div>${rows.join('')}`;
 }
-
 async function removerFechamento(id) {
   if (!confirm('Remover este fechamento? Essa ação não pode ser desfeita.')) return;
   const ok = await apiDelete('/entregas-cliente/' + id);
@@ -1018,48 +1099,28 @@ async function removerFechamento(id) {
     S.entregas = S.entregas.filter(e => e.id !== id);
     if (S.compare.a === id) { S.compare.a = null; S.compareData.a = null; }
     if (S.compare.b === id) { S.compare.b = null; S.compareData.b = null; }
-    renderFechamentos(document.getElementById('tab-fechamentos'));
-  } else {
-    alert('Erro ao remover. Tente novamente.');
-  }
+    S.resumoMes = consolidarResumoMes();
+    renderCockpit(); updateTabCounts();
+    renderTab360('fechamentos');
+  } else { alert('Não foi possível remover. Tente novamente.'); }
 }
 
 /* ── ABA: HISTÓRICO ──────────────────────────────────────── */
 function renderHistorico(el) {
-  const TIPO_LABEL = {
-    fechamento_mensal: 'Fechamento mensal',
-    relatorio:         'Relatório',
-    diagnostico:       'Diagnóstico',
-  };
-
+  const TIPO = { fechamento_mensal: 'Fechamento mensal', relatorio: 'Relatório', diagnostico: 'Diagnóstico' };
   const eventos = [...S.entregas]
-    .sort((a,b) => new Date(b.created_at) - new Date(a.created_at))
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .map(e => ({
-      title: e.titulo || TIPO_LABEL[e.tipo] || e.tipo || '—',
-      sub:   `${e.tipo} · período: ${e.periodo || '—'}`,
-      date:  e.created_at,
-      type:  e.tipo === 'fechamento_mensal' ? 'ok' : 'brand',
-      link:  e.token_publico
-        ? `<a href="/relatorio-publico.html?token=${e.token_publico}"
-              target="_blank" class="c360-btn-link">Ver →</a>`
-        : '',
+      title: e.titulo || TIPO[e.tipo] || e.tipo || '—',
+      sub: `${e.tipo} · período: ${e.periodo || '—'}`,
+      date: e.created_at,
+      type: e.tipo === 'fechamento_mensal' ? 'ok' : 'brand',
+      link: e.token_publico ? `<a href="/relatorio-publico.html?token=${esc(e.token_publico)}" target="_blank" class="c360-btn-link">Ver →</a>` : '',
     }));
-
   if (!eventos.length) {
-    el.innerHTML = `
-      <div class="c360-panel">
-        <div class="c360-panel-head">
-          <h2 class="c360-panel-title">Histórico operacional</h2>
-        </div>
-        <div class="c360-empty">
-          <div class="c360-empty-icon">📅</div>
-          <b>Sem histórico</b>
-          <p>As ações do cliente aparecerão aqui.</p>
-        </div>
-      </div>`;
+    el.innerHTML = panelEmpty('Histórico operacional', '📅', 'Sem histórico', 'As ações do cliente aparecerão aqui.');
     return;
   }
-
   el.innerHTML = `
     <div class="c360-panel">
       <div class="c360-panel-head">
@@ -1076,8 +1137,7 @@ function renderHistorico(el) {
                 <div class="c360-event-sub">${esc(ev.sub)}</div>
               </div>
               <div style="display:flex;align-items:center;gap:8px;">
-                <span class="c360-event-date">${fmtDt(ev.date)}</span>
-                ${ev.link}
+                <span class="c360-event-date">${fmtDt(ev.date)}</span>${ev.link}
               </div>
             </div>`).join('')}
         </div>
@@ -1085,12 +1145,22 @@ function renderHistorico(el) {
     </div>`;
 }
 
-/* ── ATALHOS ─────────────────────────────────────────────── */
-const ATALHOS_KEY = 'vfop-atalhos-clientes';
+/* ── HELPER: painel vazio ────────────────────────────────── */
+function panelEmpty(title, icon, head, body) {
+  return `
+    <div class="c360-panel">
+      <div class="c360-panel-head"><h2 class="c360-panel-title">${title}</h2></div>
+      <div class="c360-empty">
+        <div class="c360-empty-icon">${icon}</div>
+        <b>${head}</b><p>${body}</p>
+      </div>
+    </div>`;
+}
 
+/* ── ATALHOS (chave compartilhada com cliente-operacao) ──── */
+const ATALHOS_KEY = 'vfop-atalhos-clientes';
 function salvarAtalho360(slug, nome) {
-  let lista = [];
-  try { lista = JSON.parse(localStorage.getItem(ATALHOS_KEY) || '[]'); } catch {}
+  let lista = []; try { lista = JSON.parse(localStorage.getItem(ATALHOS_KEY) || '[]'); } catch {}
   if (!lista.find(a => a.slug === slug)) {
     lista.push({ slug, nome });
     if (lista.length > 5) lista.shift();
@@ -1098,62 +1168,45 @@ function salvarAtalho360(slug, nome) {
   }
   renderAtalhos360();
 }
-
 function renderAtalhos360() {
   const wrap = document.getElementById('c360-quick-chips');
   if (!wrap) return;
-  let lista = [];
-  try { lista = JSON.parse(localStorage.getItem(ATALHOS_KEY) || '[]'); } catch {}
+  let lista = []; try { lista = JSON.parse(localStorage.getItem(ATALHOS_KEY) || '[]'); } catch {}
   if (!lista.length) { wrap.innerHTML = ''; return; }
-
   const slug = S.cliente?.slug || '';
   wrap.innerHTML = lista.map(a => {
-    const initials = (a.nome || '?').split(/\s+/).slice(0, 2)
-      .map(w => w[0]).join('').toUpperCase();
-    const active = a.slug === slug;
+    const initials = (a.nome || '?').split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
     return `
-      <div class="vfop-quick-chip-v2${active ? ' vfop-quick-chip-v2--active' : ''}"
-           onclick="selecionarCliente360('${a.slug}')">
+      <div class="vfop-quick-chip-v2${a.slug === slug ? ' vfop-quick-chip-v2--active' : ''}" onclick="selecionarCliente360('${esc(a.slug)}')">
         <div class="vfop-quick-chip-v2-ic">${initials}</div>
         <span>${esc(a.nome)}</span>
-        <span style="opacity:.4;font-size:10px;margin-left:2px;"
-              onclick="event.stopPropagation();removerAtalho360('${a.slug}')">×</span>
+        <span style="opacity:.4;font-size:10px;margin-left:2px;" onclick="event.stopPropagation();removerAtalho360('${esc(a.slug)}')">×</span>
       </div>`;
   }).join('');
 }
-
 function selecionarCliente360(slug) {
   const sel = document.getElementById('c360-client-select');
-  if (sel) {
-    sel.value = slug;
-    sel.dispatchEvent(new Event('change'));
-  }
+  if (sel) { sel.value = slug; sel.dispatchEvent(new Event('change')); }
 }
-
 function removerAtalho360(slug) {
-  let lista = [];
-  try { lista = JSON.parse(localStorage.getItem(ATALHOS_KEY) || '[]'); } catch {}
+  let lista = []; try { lista = JSON.parse(localStorage.getItem(ATALHOS_KEY) || '[]'); } catch {}
   lista = lista.filter(a => a.slug !== slug);
   localStorage.setItem(ATALHOS_KEY, JSON.stringify(lista));
   renderAtalhos360();
 }
-
 function copiarLink360(slug) {
   const url = API_BASE + '/ml/conectar/' + slug;
   navigator.clipboard.writeText(url).then(() => {
-    const btn = document.querySelector('[onclick*="copiarLink360"]');
-    if (btn) {
+    document.querySelectorAll('[onclick*="copiarLink360"]').forEach(btn => {
+      const orig = btn.textContent;
       btn.textContent = 'Copiado!';
-      setTimeout(() => { btn.textContent = 'Copiar link ML'; }, 2000);
-    }
+      setTimeout(() => { btn.textContent = orig; }, 2000);
+    });
   });
 }
 
 /* ── UTIL ────────────────────────────────────────────────── */
-function setText(id, val) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = val;
-}
+function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
 
 /* ── BOOT ────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', init360);

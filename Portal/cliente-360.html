@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Venforce — Cliente 360</title>
+  <title>VenForce — Cliente 360</title>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="venforce-ui-v2.css">
   <link rel="stylesheet" href="cliente-operacao.css">
@@ -19,13 +19,14 @@
         <div id="c360-quick-chips" class="vfop-quick-chips"></div>
         <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
           <div style="display:grid;gap:3px;">
-            <label style="font-size:9.5px;font-weight:700;letter-spacing:.08em;
+            <label for="c360-client-select"
+                   style="font-size:9.5px;font-weight:700;letter-spacing:.08em;
                           text-transform:uppercase;color:var(--vfop-soft);">
               Trocar cliente
             </label>
             <select id="c360-client-select" class="vfop-select"
-                    style="min-width:200px;min-height:30px;font-size:12.5px;">
-              <option value="">Carregando...</option>
+                    style="min-width:220px;min-height:30px;font-size:12.5px;">
+              <option value="">Carregando…</option>
             </select>
           </div>
         </div>
@@ -35,55 +36,34 @@
       <div class="c360-phead">
         <div class="c360-phead-left">
           <div class="c360-eyebrow">Cliente · 360°</div>
-          <h1 id="c360-page-title" class="c360-page-title">—</h1>
+          <h1 id="c360-page-title" class="c360-page-title">Selecione um cliente</h1>
           <div id="c360-meta" class="c360-meta-strip"></div>
         </div>
-        <div class="c360-phead-right" id="c360-head-actions">
-          <!-- injetado por renderHeader360() -->
+        <div class="c360-phead-right" id="c360-head-actions"></div>
+      </div>
+
+      <!-- ══ ESTADO VAZIO (nenhum cliente) ═════════════════ -->
+      <div id="c360-pick" class="c360-panel">
+        <div class="c360-empty">
+          <div class="c360-empty-icon">🎯</div>
+          <b>Escolha um cliente para abrir o cockpit</b>
+          <p>Use o seletor acima ou um atalho salvo.<br>
+             Tudo sobre o cliente — métricas, fechamentos, diagnósticos e mídia — vive aqui.</p>
         </div>
       </div>
 
       <!-- ══ LOADING ═══════════════════════════════════════ -->
       <div id="c360-loading" class="c360-loading" style="display:none;">
-        <span>Carregando dados do cliente...</span>
+        Carregando dados do cliente…
       </div>
 
       <!-- ══ CONTEÚDO PRINCIPAL ════════════════════════════ -->
       <div id="c360-content" style="display:none;">
 
-        <!-- KPI STRIP -->
-        <div class="c360-kpis" id="c360-kpis">
-          <div class="c360-kpi">
-            <div class="c360-kpi-label">MC Média</div>
-            <div class="c360-kpi-value brand" id="kpi-mc">—</div>
-            <div class="c360-kpi-sub" id="kpi-mc-sub">últimos 30 dias</div>
-          </div>
-          <div class="c360-kpi">
-            <div class="c360-kpi-label">Faturamento 30d</div>
-            <div class="c360-kpi-value" id="kpi-fat">—</div>
-            <div class="c360-kpi-sub" id="kpi-fat-sub">Mercado Livre</div>
-          </div>
-          <div class="c360-kpi">
-            <div class="c360-kpi-label">Fechamentos</div>
-            <div class="c360-kpi-value" id="kpi-fech">—</div>
-            <div class="c360-kpi-sub">salvos</div>
-          </div>
-          <div class="c360-kpi">
-            <div class="c360-kpi-label">Relatórios</div>
-            <div class="c360-kpi-value" id="kpi-rel">—</div>
-            <div class="c360-kpi-sub">diagnósticos</div>
-          </div>
-          <div class="c360-kpi">
-            <div class="c360-kpi-label">ADS 30d</div>
-            <div class="c360-kpi-value" id="kpi-ads">—</div>
-            <div class="c360-kpi-sub">investimento</div>
-          </div>
-          <div class="c360-kpi">
-            <div class="c360-kpi-label">Itens críticos</div>
-            <div class="c360-kpi-value crit" id="kpi-crit">—</div>
-            <div class="c360-kpi-sub">sem custo</div>
-          </div>
-        </div>
+        <!-- SYNC BAR + COCKPIT + RECOMENDAÇÃO (render por JS) -->
+        <div id="c360-syncbar"></div>
+        <div id="c360-cockpit" class="c360-cockpit"></div>
+        <div id="c360-reco"></div>
 
         <!-- ABAS -->
         <div class="c360-tabs" id="c360-tabs">

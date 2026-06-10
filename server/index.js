@@ -70,6 +70,7 @@ const meliAnunciosRoutes = require("./routes/meliAnunciosRoutes");
 const metricasRoutes = require("./routes/metricasRoutes");
 const clickupRoutes = require("./routes/clickupRoutes");
 const externalFirebaseRoutes = require("./routes/externalFirebaseRoutes");
+const tiktokShopRoutes = require("./routes/tiktokShopRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 3333;
@@ -432,6 +433,7 @@ app.use("/auth", authRoutes);
 app.use("/admin/logs", logsRoutes);
 app.use("/fechamentos", fechamentosFinanceiroRoutes);
 app.use("/", mlRoutes);
+app.use("/", tiktokShopRoutes);
 app.use("/", automacoesRoutes);
 app.use("/", entregasClienteRoutes);
 app.use("/", basesRoutes);

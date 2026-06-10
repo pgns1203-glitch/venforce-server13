@@ -51,6 +51,7 @@ const S = {
   activeTab:   'overview',
   compare:     { a: null, b: null },
   compareData: { a: null, b: null },
+  diag:        { relId: null, loading: false, itens: null, erro: false },
 };
 
 /* ── API ─────────────────────────────────────────────────── */
@@ -159,6 +160,7 @@ async function loadCliente360(forcado = false) {
     document.getElementById('c360-content').style.display = 'none';
   }
   localStorage.setItem('c360-last-slug', slug);
+  S.diag = { relId: null, loading: false, itens: null, erro: false };   // limpa detalhe do cliente anterior
 
   S.periodo = competenciaAtual();
   const { dateFrom, dateTo } = S.periodo;
@@ -709,40 +711,270 @@ function renderBases360(el) {
 }
 
 /* ── ABA: DIAGNÓSTICO ────────────────────────────────────── */
+/* ── acesso defensivo a item de relatório (snake/camel) ── */
+const itMlb     = it => it.item_id || it.itemId || it.mlb || it.mlb_id || it.codigo || '';
+const itTit     = it => it.titulo || it.title || it.nome || '';
+const itMc      = it => { const v = it.mc ?? it.mcMedia ?? it.mc_percentual ?? it.margem;
+                          return (v === null || v === undefined || v === '') ? null : Number(v); };
+const itPreco   = it => it.preco_efetivo ?? it.precoEfetivo ?? it.preco ?? it.preco_venda ?? null;
+const itAcao    = it => it.acao_recomendada || it.acaoRecomendada || it.recomendacao || '';
+function itTemBase(it) {
+  const v = it.tem_base ?? it.temBase ?? it.com_base;
+  if (v === true || v === 'true' || v === 1)  return true;
+  if (v === false || v === 'false' || v === 0) return false;
+  const c = it.custo ?? it.cost;                       // fallback: custo > 0 ⇒ tem base
+  if (c !== undefined && c !== null && c !== '') return Number(c) > 0;
+  return null;                                          // desconhecido
+}
+/* classificação: Saudável ≥10% · Atenção 6–10% · Crítico <6% */
+function classifMc(mc) {
+  if (mc === null || mc === undefined) return null;
+  if (mc < 6)  return 'crit';
+  if (mc < 10) return 'warn';
+  return 'ok';
+}
+function classifItem(it) {
+  const ex = String(it.classificacao || it.status_diag || it.saude || '').toLowerCase();
+  if (ex.includes('crit')) return 'crit';
+  if (ex.includes('aten')) return 'warn';
+  if (ex.includes('saud') || ex === 'ok') return 'ok';
+  return classifMc(itMc(it));
+}
+function latestRel() {
+  if (!S.relatorios.length) return null;
+  return [...S.relatorios].sort((a, b) =>
+    new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))[0];
+}
+const relId = r => r?.id ?? r?.relatorio_id ?? r?.relatorioId ?? null;
+
+/* contagem precisa a partir dos itens (preferida) */
+function computeBuckets(itens) {
+  let crit = 0, warn = 0, ok = 0, semBase = 0, mcSum = 0, mcN = 0;
+  itens.forEach(it => {
+    if (itTemBase(it) === false) semBase++;
+    const c = classifItem(it);
+    if (c === 'crit') crit++; else if (c === 'warn') warn++; else if (c === 'ok') ok++;
+    const mc = itMc(it);
+    if (mc !== null && itTemBase(it) !== false) { mcSum += mc; mcN++; }   // MC só de itens com base
+  });
+  return { total: itens.length, semBase, crit, warn, ok, classificados: crit + warn + ok,
+           mcMedia: mcN ? mcSum / mcN : null };
+}
+/* contagem instantânea do item de lista (enquanto o detalhe carrega) */
+function bucketsFromList(r) {
+  const num = v => (v === null || v === undefined || v === '') ? null : Number(v);
+  return {
+    total:   num(r.total_itens ?? r.itens ?? r.qtd_itens ?? r.quantidade),
+    semBase: num(r.sem_custo ?? r.semCusto ?? r.sem_base ?? r.itens_sem_base),
+    crit:    num(r.itens_criticos ?? r.criticos ?? r.qtd_criticos),
+    warn:    num(r.atencao ?? r.itens_atencao),
+    ok:      num(r.saudaveis ?? r.itens_saudaveis),
+    mcMedia: num(r.mc_media ?? r.mcMedia ?? r.mc_medio),
+  };
+}
+/* confiança derivada (heurística — Preview) */
+function confDiag(buckets, r) {
+  const dias = r ? (Date.now() - new Date(r.updated_at || r.created_at || Date.now())) / 864e5 : 0;
+  const tot = buckets.total || 0;
+  const fracSemBase = tot ? (buckets.semBase || 0) / tot : 0;
+  if (fracSemBase > 0.2 || dias > 30) return { nivel: 'baixa', motivo: fracSemBase > 0.2 ? 'muitos itens sem base de custo' : 'diagnóstico com mais de 30 dias' };
+  if (fracSemBase > 0.05 || dias > 14) return { nivel: 'media', motivo: fracSemBase > 0.05 ? 'alguns itens sem base' : 'diagnóstico com mais de 14 dias' };
+  return { nivel: 'alta', motivo: 'base completa e diagnóstico recente' };
+}
+
+/* busca o detalhe (itens) do último relatório — preguiçoso, com cache */
+async function loadDiagDetalhe(force) {
+  const r = latestRel(); const id = relId(r);
+  if (!id) return;
+  if (!force && S.diag.relId === id && Array.isArray(S.diag.itens)) return;   // já em cache
+  S.diag = { relId: id, loading: true, itens: null, erro: false };
+  const panel = document.getElementById('tab-diagnostico');
+  if (panel) renderDiag(panel);
+  const det = await api(`/automacoes/relatorios/${encodeURIComponent(id)}`);
+  const itens = det?.itens || det?.relatorio?.itens || det?.items || det?.data?.itens || det?.data?.items || [];
+  S.diag = { relId: id, loading: false, itens: Array.isArray(itens) ? itens : [], erro: !det };
+  const panel2 = document.getElementById('tab-diagnostico');
+  if (panel2) renderDiag(panel2);
+}
+function atualizarDiagnostico(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Atualizando…'; }
+  loadDiagDetalhe(true).finally(() => {
+    if (btn) { btn.disabled = false; btn.textContent = 'Atualizar diagnóstico'; }
+  });
+}
+function copiarMLBs(tipo, btn) {
+  const itens = S.diag.itens || [];
+  const lista = tipo === 'sembase' ? itens.filter(it => itTemBase(it) === false)
+              : tipo === 'crit'    ? itens.filter(it => classifItem(it) === 'crit')
+              : itens;
+  const txt = lista.map(itMlb).filter(Boolean).join('\n');
+  if (!txt) return;
+  navigator.clipboard.writeText(txt).then(() => {
+    if (!btn) return; const orig = btn.textContent; btn.textContent = 'Copiado!';
+    setTimeout(() => { btn.textContent = orig; }, 1800);
+  });
+}
+
 function renderDiag(el) {
   if (!S.relatorios.length) {
-    el.innerHTML = panelEmpty('Diagnósticos', '🔍', 'Nenhum diagnóstico encontrado',
-      'Rode um diagnóstico em <a href="automacoes.html">Automações</a>.');
+    el.innerHTML = panelEmpty('Diagnóstico', '🔍', 'Nenhum diagnóstico ainda',
+      'Rode o primeiro diagnóstico em <a href="automacoes.html">Automações</a> para mapear margem, custos e problemas por anúncio.');
     return;
   }
-  const rels = [...S.relatorios].sort((a, b) =>
-    new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0));
-  el.innerHTML = `
-    <div class="c360-panel">
-      <div class="c360-panel-head">
-        <h2 class="c360-panel-title">Diagnósticos</h2>
-        <span class="c360-panel-meta">${rels.length} relatório(s)</span>
+  const r = latestRel();
+  // dispara o carregamento do detalhe (uma vez) se ainda não veio
+  if (S.diag.relId !== relId(r) && !S.diag.loading) { loadDiagDetalhe(); }
+
+  const itens   = Array.isArray(S.diag.itens) ? S.diag.itens : null;
+  const loading = S.diag.loading || (itens === null && !S.diag.erro);
+  const buckets = itens ? computeBuckets(itens)
+                        : { ...bucketsFromList(r), classificados: null };
+  const conf = confDiag(buckets, r);
+
+  const nome   = r.nome || r.titulo || r.slug || ('Relatório #' + (relId(r) || ''));
+  const tipo   = r.escopo || r.tipo || r.tipo_relatorio || '';
+  const baseSlug = r.base_slug || r.baseSlug || (S.bases[0]?.base?.slug) || (S.bases[0]?.slug) || null;
+  const mc     = buckets.mcMedia;
+
+  const seg = (n) => Math.max(0, (buckets.total ? (n / buckets.total) * 100 : 0));
+  const bar = (buckets.total)
+    ? `<div class="c360-diag-bar">
+         <span class="seg-crit" style="width:${seg(buckets.crit || 0)}%"></span>
+         <span class="seg-warn" style="width:${seg(buckets.warn || 0)}%"></span>
+         <span class="seg-ok"   style="width:${seg(buckets.ok || 0)}%"></span>
+         <span class="seg-none" style="width:${seg(buckets.semBase || 0)}%"></span>
+       </div>`
+    : `<div class="c360-diag-skel" style="height:10px"></div>`;
+
+  const leg = (cls, label, n) =>
+    `<span class="c360-diag-leg"><span class="dot ${cls}"></span>${label} <b>${valOr(n, v => fmt(v))}</b></span>`;
+
+  // ── HERO ──
+  const hero = `
+    <div class="c360-diag-hero">
+      <div class="c360-diag-hero-top">
+        <div class="c360-diag-id">
+          <div class="c360-diag-name">${esc(nome)}</div>
+          <div class="c360-diag-sub">
+            <span class="c360-diag-status">concluído</span>
+            ${tipo ? `<span class="c360-diag-tipo">${esc(tipo)}</span>` : ''}
+            <span>· ${fmtDt(r.updated_at || r.created_at)}</span>
+            ${baseSlug ? `<span>· base <code>${esc(baseSlug)}</code></span>` : ''}
+          </div>
+        </div>
+        <div class="c360-diag-actions">
+          <button class="c360-btn c360-btn-primary" onclick="atualizarDiagnostico(this)">Atualizar diagnóstico</button>
+          <a class="c360-btn" href="relatorios.html">Abrir relatório completo</a>
+        </div>
       </div>
-      <div class="c360-panel-body c360-panel-body--flush">
-        <table class="c360-table">
-          <thead><tr><th>Relatório</th><th>Itens sem custo</th><th>Data</th><th></th></tr></thead>
-          <tbody>
-            ${rels.map(r => {
-              const semCusto = r.sem_custo ?? r.semCusto;
-              return `
-                <tr>
-                  <td class="strong clip">${esc(r.nome || r.slug || r.id || '—')}</td>
-                  <td>${semCusto
-                    ? `<span class="vfop-badge vfop-badge-warn">${semCusto} itens</span>`
-                    : `<span class="vfop-badge vfop-badge-ok">ok</span>`}</td>
-                  <td class="muted">${fmtDt(r.updated_at || r.created_at)}</td>
-                  <td><a href="relatorios.html" class="c360-btn-link">Ver →</a></td>
-                </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
+      <div class="c360-diag-hero-body">
+        <div class="c360-diag-mc-box">
+          <span class="c360-diag-mc-label">MC média</span>
+          <span class="c360-diag-mc">${valOr(mc, fmtPct)}</span>
+          <span class="c360-diag-mc-note">${itens ? 'itens com base · ' + fmt(buckets.classificados || 0) + ' classificados' : 'carregando itens…'}</span>
+        </div>
+        <div class="c360-diag-dist">
+          ${bar}
+          <div class="c360-diag-legend">
+            ${leg('crit', 'Críticos', buckets.crit)}
+            ${leg('warn', 'Atenção', buckets.warn)}
+            ${leg('ok', 'Saudáveis', buckets.ok)}
+            ${leg('none', 'Sem base', buckets.semBase)}
+          </div>
+        </div>
+        <div class="c360-diag-conf">
+          <span class="c360-diag-conf-pill ${conf.nivel}">Confiança ${conf.nivel}</span>
+          <span class="c360-diag-conf-why">${esc(conf.motivo)}</span>
+        </div>
       </div>
     </div>`;
+
+  // ── enquanto o detalhe carrega: skeletons ──
+  if (loading || !itens) {
+    const skelRows = Array.from({ length: 4 }).map(() =>
+      `<div class="c360-diag-mlb"><span class="c360-diag-skel" style="width:90px"></span><span class="c360-diag-skel" style="flex:1"></span></div>`).join('');
+    el.innerHTML = `<div class="c360-diag">${hero}
+      <div class="c360-diag-row">
+        <div class="c360-diag-card"><div class="c360-diag-card-head"><span class="c360-diag-card-title">Sem base de custo</span></div><div class="c360-diag-list">${skelRows}</div></div>
+        <div class="c360-diag-card"><div class="c360-diag-card-head"><span class="c360-diag-card-title">Críticos</span></div><div class="c360-diag-list">${skelRows}</div></div>
+      </div></div>`;
+    return;
+  }
+
+  // ── conjuntos por item ──
+  const semBase = itens.filter(it => itTemBase(it) === false);
+  const crit    = itens.filter(it => classifItem(it) === 'crit')
+                       .sort((a, b) => (itMc(a) ?? 99) - (itMc(b) ?? 99));
+  const probs   = itens.filter(it => ['crit', 'warn'].includes(classifItem(it)))
+                       .sort((a, b) => (itMc(a) ?? 99) - (itMc(b) ?? 99));
+
+  const mlbRow = (it, showMc) => `
+    <div class="c360-diag-mlb">
+      <span class="c360-diag-mlb-code">${esc(itMlb(it) || '—')}</span>
+      <span class="c360-diag-mlb-title">${esc(itTit(it) || '—')}</span>
+      ${showMc ? `<span class="c360-diag-mlb-mc">${valOr(itMc(it), fmtPct)}</span>` : ''}
+    </div>`;
+
+  // card 1 — sem base (copiar → futura página do cliente)
+  const cardSemBase = semBase.length ? `
+    <div class="c360-diag-card">
+      <div class="c360-diag-card-head">
+        <span class="c360-diag-card-title">Sem base de custo
+          <span class="c360-diag-card-count warn">${semBase.length}</span></span>
+        <button class="c360-btn c360-btn-sm" onclick="copiarMLBs('sembase', this)">Copiar MLBs</button>
+      </div>
+      <div class="c360-diag-list">${semBase.map(it => mlbRow(it, false)).join('')}</div>
+      <div class="c360-diag-card-foot">Estes anúncios precisam de custo cadastrado. <span class="c360-tag todo">em breve</span> página para o cliente preencher.</div>
+    </div>`
+    : `<div class="c360-diag-card"><div class="c360-diag-card-head"><span class="c360-diag-card-title">Sem base de custo</span></div>
+        <div class="c360-diag-okstate"><b>Tudo com base ✓</b><span>Nenhum anúncio sem custo cadastrado.</span></div></div>`;
+
+  // card 2 — críticos (margem real ruim)
+  const cardCrit = crit.length ? `
+    <div class="c360-diag-card">
+      <div class="c360-diag-card-head">
+        <span class="c360-diag-card-title">Críticos <span class="c360-diag-card-count crit">${crit.length}</span></span>
+        <button class="c360-btn c360-btn-sm" onclick="copiarMLBs('crit', this)">Copiar MLBs</button>
+      </div>
+      <div class="c360-diag-list">${crit.map(it => mlbRow(it, true)).join('')}</div>
+      <div class="c360-diag-card-foot">MC abaixo de 6%. Revisar preço, custo ou frete. <span class="c360-tag real">real</span></div>
+    </div>`
+    : `<div class="c360-diag-card"><div class="c360-diag-card-head"><span class="c360-diag-card-title">Críticos</span></div>
+        <div class="c360-diag-okstate"><b>Nenhum crítico ✓</b><span>Nenhum anúncio com MC abaixo de 6%.</span></div></div>`;
+
+  // tabela — atenção + crítico
+  const tabela = `
+    <div class="c360-panel">
+      <div class="c360-panel-head">
+        <h2 class="c360-panel-title">Produtos em atenção e crítico</h2>
+        <span class="c360-panel-meta">${probs.length} de ${itens.length} anúncios</span>
+      </div>
+      <div class="c360-panel-body c360-panel-body--flush">
+        ${probs.length ? `
+        <table class="c360-table">
+          <thead><tr>
+            <th class="c360-diag-sevcell"></th><th>MLB</th><th>Anúncio</th>
+            <th style="text-align:right">MC</th><th style="text-align:right">Preço</th><th>Ação recomendada</th>
+          </tr></thead>
+          <tbody>
+            ${probs.map(it => { const c = classifItem(it); return `
+              <tr>
+                <td class="c360-diag-sevcell"><span class="c360-sev-dot ${c}"></span></td>
+                <td class="c360-diag-mlb-code">${esc(itMlb(it) || '—')}</td>
+                <td class="clip">${esc(itTit(it) || '—')}</td>
+                <td class="c360-diag-mctd ${c}" style="text-align:right">${valOr(itMc(it), fmtPct)}</td>
+                <td style="text-align:right">${valOr(itPreco(it), fmtBRL)}</td>
+                <td class="c360-diag-acao">${esc(itAcao(it) || '—')}</td>
+              </tr>`; }).join('')}
+          </tbody>
+        </table>`
+        : `<div class="c360-diag-okstate" style="padding:36px"><b>Nenhum produto em atenção ✓</b><span>Todos os anúncios classificados estão saudáveis (MC ≥ 10%).</span></div>`}
+      </div>
+    </div>`;
+
+  el.innerHTML = `<div class="c360-diag">${hero}
+    <div class="c360-diag-row">${cardSemBase}${cardCrit}</div>
+    ${tabela}</div>`;
 }
 
 /* ── ABA: MÉTRICAS ML ────────────────────────────────────── */

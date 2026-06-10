@@ -51,6 +51,10 @@ const S = {
   adsMensal:   [],
   metricas:    null,
   metricasLoading: false,
+  adsResumo:   null,    // resumo mensal gerencial (ads_resumos_mensais) — tem faturamentoTotal
+  adsPerformance: null, // performance Mercado Ads ao vivo (/ads/performance)
+  adsPerfLoading: false,
+  diagSimAlvo: null,    // margem alvo simulada localmente (%) — não salva
   periodo:     { competencia: null, label: '', dateFrom: null, dateTo: null },
   resumoMes:   null,   // objeto consolidado (shape do endpoint unificado)
   temGrant:    false,
@@ -197,6 +201,8 @@ async function loadCliente360(forcado = false) {
   localStorage.setItem('c360-last-slug', slug);
   S.diag = { relId: null, loading: false, itens: null, erro: false };
   S.metricas = null; S.metricasLoading = false;   // métricas ML carregam sob demanda (aba)
+  S.adsPerformance = null; S.adsPerfLoading = false; S.adsResumo = null;
+  S.diagSimAlvo = null;                            // limpa simulação ao trocar de cliente
 
   const data = await api(`/operacao/cliente-360/${encodeURIComponent(slug)}`);
 
@@ -218,6 +224,11 @@ async function loadCliente360(forcado = false) {
   if (syncBtn) syncBtn.classList.remove('loading');
   document.getElementById('c360-loading').style.display = 'none';
   document.getElementById('c360-content').style.display = 'block';
+
+  // Enriquecimento de Ads em background: 1 chamada leve à API Mercado Ads
+  // (NÃO é Orders API nem sync pesado). Não bloqueia o render; preenche
+  // "Ads investido"/"TACoS" no cockpit e a aba Ads assim que chegar.
+  if (S.temGrant) ensureAdsPerformance360();
 }
 
 /* Mapeia o payload do backend para os shapes que os renderers já consomem. */
@@ -258,8 +269,9 @@ function normalizeCliente360Response(data) {
     cliente_slug: data.cliente?.slug, cliente_id: data.cliente?.id,
   }));
 
-  // Ads mensal
+  // Ads mensal gerencial (tem faturamentoTotal, usado no TACoS)
   const a = data.ads && data.ads.mes ? data.ads : null;
+  S.adsResumo = a;
   S.ads = [];
   S.adsMensal = a ? [{ mes: a.mes, investimento: a.investimentoAds, tacos: a.tacos, roas: a.roas }] : [];
 
@@ -699,6 +711,9 @@ function renderTab360(tab) {
   if (tab === 'metricas' && S.metricas === null && S.temGrant && !S.metricasLoading) {
     ensureMetricas360();
   }
+  if (tab === 'ads' && S.adsPerformance === null && S.temGrant && !S.adsPerfLoading) {
+    ensureAdsPerformance360();
+  }
   ({ overview: renderOverview, bases: renderBases360, diagnostico: renderDiag,
      metricas: renderMetricas360, ads: renderAds360, fechamentos: renderFechamentos,
      historico: renderHistorico }[tab])?.(panel);
@@ -819,7 +834,13 @@ function renderAreaChart(host, porDia) {
   if (!host) return;
   const W = 720, H = 168, padL = 4, padR = 4, padT = 8, padB = 4;
   const innerW = W - padL - padR, innerH = H - padT - padB;
-  const data = porDia.map(d => ({ v: Number(d.vendasBrutas) || 0, dia: d.data, ped: d.pedidos || 0 }));
+  // Pedidos/dia vêm de quantidadeVendas no /metricas/resumo (agregarPorDia).
+  // Se não houver série diária de pedidos, ped = null → "pedidos indisponíveis" (nunca finge 0).
+  const pedDe = d => {
+    const v = d.quantidadeVendas ?? d.pedidos ?? d.qtd_vendas;
+    return (v === null || v === undefined || v === '') ? null : Number(v);
+  };
+  const data = porDia.map(d => ({ v: Number(d.vendasBrutas) || 0, dia: d.data, ped: pedDe(d) }));
   const max = Math.max(1, ...data.map(d => d.v));
   const total = data.reduce((s, d) => s + d.v, 0);
   const n = data.length;
@@ -880,8 +901,9 @@ function renderAreaChart(host, porDia) {
     cursor.setAttribute('x1', x); cursor.setAttribute('x2', x); cursor.style.opacity = '1';
     dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.style.opacity = '1';
     valEl.textContent = fmtBRL(d.v);
-    dayEl.textContent = (d.dia ? new Date(d.dia).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : '') +
-                        ' · ' + fmt(d.ped) + ' pedidos';
+    const diaTxt = d.dia ? new Date(d.dia).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) : '';
+    const pedTxt = d.ped == null ? 'pedidos indisponíveis' : (fmt(d.ped) + ' pedidos');
+    dayEl.textContent = (diaTxt ? diaTxt + ' · ' : '') + pedTxt;
   }
   function reset() {
     cursor.style.opacity = '0'; dot.style.opacity = '0';
@@ -939,19 +961,50 @@ function itTemBase(it) {
   if (c !== undefined && c !== null && c !== '') return Number(c) > 0;
   return null;                                          // desconhecido
 }
-/* classificação: Saudável ≥10% · Atenção 6–10% · Crítico <6% */
-function classifMc(mc) {
-  if (mc === null || mc === undefined) return null;
-  if (mc < 6)  return 'crit';
-  if (mc < 10) return 'warn';
-  return 'ok';
+/* MC/margem podem vir como fração (0.14) ou percentual (14). Normaliza p/ %. */
+function toPct(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.abs(n) <= 1 ? n * 100 : n;
 }
-function classifItem(it) {
-  const ex = String(it.classificacao || it.status_diag || it.saude || '').toLowerCase();
-  if (ex.includes('crit')) return 'crit';
-  if (ex.includes('aten')) return 'warn';
-  if (ex.includes('saud') || ex === 'ok') return 'ok';
-  return classifMc(itMc(it));
+/* margem alvo do relatório em %, default 10. */
+function relMargemAlvoPct(r) {
+  const v = toPct(r?.margem_alvo ?? r?.margemAlvo);
+  return v == null ? 10 : v;
+}
+/* margem alvo efetiva: simulação local tem prioridade sobre a do relatório. */
+function getDiagAlvoPct() {
+  if (S.diagSimAlvo != null && Number.isFinite(S.diagSimAlvo)) return S.diagSimAlvo;
+  return relMargemAlvoPct(latestRel());
+}
+/* Regra relativa à margem alvo (em %):
+   MC >= alvo → saudável · MC >= alvo-4 → atenção · senão crítico. */
+function classifByAlvo(mcPct, alvoPct) {
+  if (mcPct === null || mcPct === undefined) return null;
+  if (mcPct >= alvoPct) return 'ok';
+  if (mcPct >= alvoPct - 4) return 'warn';
+  return 'crit';
+}
+function classifItem(it, alvoPct) {
+  const alvo = (alvoPct == null) ? getDiagAlvoPct() : alvoPct;
+  return classifByAlvo(toPct(itMc(it)), alvo);
+}
+/* Ação recomendada construtiva — NUNCA sugere reduzir/baixar preço. */
+const REDUCE_PRICE_RX = /(reduz|baix|diminu|abaix).{0,12}pre|pre.{0,12}(reduz|baix|diminu|abaix)/i;
+function acaoFor(it, alvoPct) {
+  const alvo = (alvoPct == null) ? getDiagAlvoPct() : alvoPct;
+  if (itTemBase(it) === false) return 'Cadastrar custo na base';
+  const mcp = toPct(itMc(it));
+  if (mcp === null) return 'Revisar dados do item (sem MC)';
+  if (mcp >= alvo) return 'Manter preço/operação';
+  return 'Subir preço para a margem alvo ou revisar custo/frete';
+}
+/* Sanitiza ação vinda do backend: descarta sugestões de baixar preço. */
+function sanitizeAcao(raw, it, alvoPct) {
+  const r = String(raw || '').trim();
+  if (!r || REDUCE_PRICE_RX.test(r)) return acaoFor(it, alvoPct);
+  return r;
 }
 function latestRel() {
   if (!S.relatorios.length) return null;
@@ -960,20 +1013,23 @@ function latestRel() {
 }
 const relId = r => r?.id ?? r?.relatorio_id ?? r?.relatorioId ?? null;
 
-/* contagem precisa a partir dos itens (preferida) */
-function computeBuckets(itens) {
+/* contagem precisa a partir dos itens (preferida). MC média em %.
+   Itens sem base não entram em crit/warn/ok (não têm custo p/ classificar). */
+function computeBuckets(itens, alvoPct) {
+  const alvo = (alvoPct == null) ? getDiagAlvoPct() : alvoPct;
   let crit = 0, warn = 0, ok = 0, semBase = 0, mcSum = 0, mcN = 0;
   itens.forEach(it => {
-    if (itTemBase(it) === false) semBase++;
-    const c = classifItem(it);
+    const semB = itTemBase(it) === false;
+    if (semB) { semBase++; return; }
+    const c = classifByAlvo(toPct(itMc(it)), alvo);
     if (c === 'crit') crit++; else if (c === 'warn') warn++; else if (c === 'ok') ok++;
-    const mc = itMc(it);
-    if (mc !== null && itTemBase(it) !== false) { mcSum += mc; mcN++; }   // MC só de itens com base
+    const mcp = toPct(itMc(it));
+    if (mcp !== null) { mcSum += mcp; mcN++; }
   });
   return { total: itens.length, semBase, crit, warn, ok, classificados: crit + warn + ok,
            mcMedia: mcN ? mcSum / mcN : null };
 }
-/* contagem instantânea do item de lista (enquanto o detalhe carrega) */
+/* contagem instantânea do item de lista (enquanto o detalhe carrega). MC em %. */
 function bucketsFromList(r) {
   const num = v => (v === null || v === undefined || v === '') ? null : Number(v);
   return {
@@ -982,7 +1038,7 @@ function bucketsFromList(r) {
     crit:    num(r.itens_criticos ?? r.criticos ?? r.qtd_criticos),
     warn:    num(r.atencao ?? r.itens_atencao),
     ok:      num(r.saudaveis ?? r.itens_saudaveis),
-    mcMedia: num(r.mc_media ?? r.mcMedia ?? r.mc_medio),
+    mcMedia: toPct(r.mc_media ?? r.mcMedia ?? r.mc_medio),
   };
 }
 /* confiança derivada (heurística — Preview) */
@@ -1067,7 +1123,7 @@ function renderDiagnosticoAutomatico() {
 
 /* ── RESUMO DO DIAGNÓSTICO (contagens explícitas + ações agregadas) ──
    Usa os itens já carregados do último relatório. Sem novo endpoint. */
-function renderDiagResumo(buckets, itens, conf) {
+function renderDiagResumo(buckets, itens, conf, alvoPct) {
   const total = buckets.total || 0;
   const semBase = buckets.semBase || 0;
   const comBase = Math.max(0, total - semBase);
@@ -1075,10 +1131,10 @@ function renderDiagResumo(buckets, itens, conf) {
   const stat = (label, val, cls = '') =>
     `<div class="c360-dstat"><div class="c360-dstat-val ${cls}">${val}</div><div class="c360-dstat-lbl">${label}</div></div>`;
 
-  // Agrega ações recomendadas dos itens (top 5 por frequência).
+  // Ações recomendadas geradas pela regra (nunca "reduzir preço"), top 5.
   const acoesMap = {};
   (itens || []).forEach(it => {
-    const a = (itAcao(it) || '').trim();
+    const a = acaoFor(it, alvoPct);
     if (a) acoesMap[a] = (acoesMap[a] || 0) + 1;
   });
   const topAcoes = Object.entries(acoesMap).sort((x, y) => y[1] - x[1]).slice(0, 5);
@@ -1120,9 +1176,11 @@ function renderDiag(el) {
   // dispara o carregamento do detalhe (uma vez) se ainda não veio
   if (S.diag.relId !== relId(r) && !S.diag.loading) { loadDiagDetalhe(); }
 
+  const alvoPct = getDiagAlvoPct();
+  const simulando = S.diagSimAlvo != null;
   const itens   = Array.isArray(S.diag.itens) ? S.diag.itens : null;
   const loading = S.diag.loading || (itens === null && !S.diag.erro);
-  const buckets = itens ? computeBuckets(itens)
+  const buckets = itens ? computeBuckets(itens, alvoPct)
                         : { ...bucketsFromList(r), classificados: null };
   const conf = confDiag(buckets, r);
 
@@ -1159,14 +1217,17 @@ function renderDiag(el) {
         </div>
         <div class="c360-diag-actions">
           <button class="c360-btn c360-btn-primary" onclick="atualizarDiagnostico(this)">Atualizar diagnóstico</button>
+          <button class="c360-btn" onclick="simularMargemAlvo()">Simular margem alvo</button>
+          ${simulando ? `<button class="c360-btn c360-btn-ghost" onclick="limparSimulacaoMargem()">Limpar simulação</button>` : ''}
           <a class="c360-btn" href="relatorios.html">Abrir relatório completo</a>
         </div>
       </div>
+      ${simulando ? `<div class="c360-sim-note">Simulação local usando margem alvo de <b>${fmt(alvoPct, 1)}%</b> — não altera o relatório.</div>` : ''}
       <div class="c360-diag-hero-body">
         <div class="c360-diag-mc-box">
           <span class="c360-diag-mc-label">MC média</span>
           <span class="c360-diag-mc">${valOr(mc, fmtPct)}</span>
-          <span class="c360-diag-mc-note">${itens ? 'itens com base · ' + fmt(buckets.classificados || 0) + ' classificados' : 'carregando itens…'}</span>
+          <span class="c360-diag-mc-note">${itens ? 'margem alvo ' + fmt(alvoPct, 1) + '% · ' + fmt(buckets.classificados || 0) + ' classificados' : 'carregando itens…'}</span>
         </div>
         <div class="c360-diag-dist">
           ${bar}
@@ -1196,18 +1257,19 @@ function renderDiag(el) {
     return;
   }
 
-  // ── conjuntos por item ──
+  // ── conjuntos por item (classificados pela margem alvo vigente) ──
+  const mcOrd = it => (toPct(itMc(it)) ?? 999);
   const semBase = itens.filter(it => itTemBase(it) === false);
-  const crit    = itens.filter(it => classifItem(it) === 'crit')
-                       .sort((a, b) => (itMc(a) ?? 99) - (itMc(b) ?? 99));
-  const probs   = itens.filter(it => ['crit', 'warn'].includes(classifItem(it)))
-                       .sort((a, b) => (itMc(a) ?? 99) - (itMc(b) ?? 99));
+  const crit    = itens.filter(it => itTemBase(it) !== false && classifItem(it, alvoPct) === 'crit')
+                       .sort((a, b) => mcOrd(a) - mcOrd(b));
+  const probs   = itens.filter(it => itTemBase(it) !== false && ['crit', 'warn'].includes(classifItem(it, alvoPct)))
+                       .sort((a, b) => mcOrd(a) - mcOrd(b));
 
   const mlbRow = (it, showMc) => `
     <div class="c360-diag-mlb">
       <span class="c360-diag-mlb-code">${esc(itMlb(it) || '—')}</span>
       <span class="c360-diag-mlb-title">${esc(itTit(it) || '—')}</span>
-      ${showMc ? `<span class="c360-diag-mlb-mc">${valOr(itMc(it), fmtPct)}</span>` : ''}
+      ${showMc ? `<span class="c360-diag-mlb-mc">${valOr(toPct(itMc(it)), fmtPct)}</span>` : ''}
     </div>`;
 
   // card 1 — sem base (copiar → futura página do cliente)
@@ -1232,10 +1294,10 @@ function renderDiag(el) {
         <button class="c360-btn c360-btn-sm" onclick="copiarMLBs('crit', this)">Copiar MLBs</button>
       </div>
       <div class="c360-diag-list">${crit.map(it => mlbRow(it, true)).join('')}</div>
-      <div class="c360-diag-card-foot">MC abaixo de 6%. Revisar preço, custo ou frete. <span class="c360-tag real">real</span></div>
+      <div class="c360-diag-card-foot">MC bem abaixo da margem alvo (${fmt(alvoPct, 1)}%). Subir preço ou revisar custo/frete. <span class="c360-tag real">real</span></div>
     </div>`
     : `<div class="c360-diag-card"><div class="c360-diag-card-head"><span class="c360-diag-card-title">Críticos</span></div>
-        <div class="c360-diag-okstate"><b>Nenhum crítico ✓</b><span>Nenhum anúncio com MC abaixo de 6%.</span></div></div>`;
+        <div class="c360-diag-okstate"><b>Nenhum crítico ✓</b><span>Nenhum anúncio muito abaixo da margem alvo.</span></div></div>`;
 
   // tabela — atenção + crítico
   const tabela = `
@@ -1252,25 +1314,40 @@ function renderDiag(el) {
             <th style="text-align:right">MC</th><th style="text-align:right">Preço</th><th>Ação recomendada</th>
           </tr></thead>
           <tbody>
-            ${probs.map(it => { const c = classifItem(it); return `
+            ${probs.map(it => { const c = classifItem(it, alvoPct); return `
               <tr>
                 <td class="c360-diag-sevcell"><span class="c360-sev-dot ${c}"></span></td>
                 <td class="c360-diag-mlb-code">${esc(itMlb(it) || '—')}</td>
                 <td class="clip">${esc(itTit(it) || '—')}</td>
-                <td class="c360-diag-mctd ${c}" style="text-align:right">${valOr(itMc(it), fmtPct)}</td>
+                <td class="c360-diag-mctd ${c}" style="text-align:right">${valOr(toPct(itMc(it)), fmtPct)}</td>
                 <td style="text-align:right">${valOr(itPreco(it), fmtBRL)}</td>
-                <td class="c360-diag-acao">${esc(itAcao(it) || '—')}</td>
+                <td class="c360-diag-acao">${esc(sanitizeAcao(itAcao(it), it, alvoPct))}</td>
               </tr>`; }).join('')}
           </tbody>
         </table>`
-        : `<div class="c360-diag-okstate" style="padding:36px"><b>Nenhum produto em atenção ✓</b><span>Todos os anúncios classificados estão saudáveis (MC ≥ 10%).</span></div>`}
+        : `<div class="c360-diag-okstate" style="padding:36px"><b>Nenhum produto em atenção ✓</b><span>Todos os anúncios com base atingem a margem alvo (${fmt(alvoPct, 1)}%).</span></div>`}
       </div>
     </div>`;
 
   el.innerHTML = autoHtml + `<div class="c360-diag">${hero}
-    ${renderDiagResumo(buckets, itens, conf)}
+    ${renderDiagResumo(buckets, itens, conf, alvoPct)}
     <div class="c360-diag-row">${cardSemBase}${cardCrit}</div>
     ${tabela}</div>`;
+}
+
+/* ── SIMULAÇÃO LOCAL DE MARGEM ALVO (não toca backend/relatório) ── */
+function simularMargemAlvo() {
+  const atual = getDiagAlvoPct();
+  const v = prompt('Simular margem alvo (%) — apenas visual, não salva:', String(Math.round(atual)));
+  if (v === null) return;
+  const n = Number(String(v).replace(',', '.'));
+  if (!Number.isFinite(n) || n < 0 || n > 100) { alert('Informe uma margem entre 0 e 100.'); return; }
+  S.diagSimAlvo = n;
+  renderTab360('diagnostico');
+}
+function limparSimulacaoMargem() {
+  S.diagSimAlvo = null;
+  renderTab360('diagnostico');
 }
 
 /* ── ABA: MÉTRICAS ML ────────────────────────────────────── */
@@ -1296,14 +1373,21 @@ function renderMetricas360(el) {
   const snapKey = `c360-snaps-${S.cliente?.slug}`;
   let snaps = []; try { snaps = JSON.parse(localStorage.getItem(snapKey) || '[]'); } catch {}
 
+  // Cancelados: mesma fonte do card topo (resumoMes.cancelados) p/ consistência.
+  // Fallback aos campos reais do /metricas/resumo. Sem dado real → '—' (nunca 0/R$0,00 falso).
+  const cancelN = (S.resumoMes && S.resumoMes.cancelados != null)
+    ? S.resumoMes.cancelados
+    : (r.quantidadeCanceladasAjustada ?? r.quantidadeCanceladasApi ?? null);
+  const cancelVal = r.valorCanceladoAjustado ?? r.valorCanceladoApi ?? null;
+
   const resumoRows = [
     ['Vendas brutas',     fmtBRL(r.vendasBrutas || 0)],
     ['Quantidade vendas', fmt(r.quantidadeVendas || 0)],
     ['Unidades vendidas', fmt(r.unidadesVendidas || 0)],
     ['Ticket médio',      fmtBRL(r.ticketMedio || 0)],
     ['Preço médio/unid.', fmtBRL(r.precoMedioUnidade || 0)],
-    ['Cancelamentos',     fmt(r.quantidadeCancelada || 0)],
-    ['Valor cancelado',   fmtBRL(r.valorCancelado || 0)],
+    ['Cancelamentos',     valOr(cancelN, v => fmt(v))],
+    ['Valor cancelado',   valOr(cancelVal, fmtBRL)],
   ];
 
   el.innerHTML = `
@@ -1475,18 +1559,92 @@ function removerSnapshot(idx) {
   if (cmp) cmp.innerHTML = renderSnapsCompare(snaps);
 }
 
+/* ── ADS: performance ao vivo (mesma fonte da tela ads.html) ──
+   Carrega /ads/performance sob demanda. Backfill do cockpit ao chegar. */
+async function ensureAdsPerformance360() {
+  const slug = S.cliente?.slug;
+  const mes  = S.periodo?.competencia;
+  if (!slug || !mes || S.adsPerfLoading || S.adsPerformance !== null) return;
+  if (!S.temGrant) return;   // performance Ads exige conta ML conectada
+  S.adsPerfLoading = true;
+  const panel = document.getElementById('tab-ads');
+  if (panel && S.activeTab === 'ads') renderAds360(panel);
+
+  const res = await api(`/ads/performance?clienteSlug=${encodeURIComponent(slug)}&mes=${encodeURIComponent(mes)}`);
+  if (res && res.ok && res.performance) S.adsPerformance = res.performance;
+  else if (res && res.semDados)         S.adsPerformance = { semDados: true, motivo: res.motivo };
+  else                                  S.adsPerformance = { semDados: true, motivo: 'indisponivel' };
+  S.adsPerfLoading = false;
+
+  aplicarAdsNoCockpit();
+  if (panel && S.activeTab === 'ads') renderAds360(panel);
+}
+
+/* Preenche Ads investido + TACoS no cockpit a partir da performance real. */
+function aplicarAdsNoCockpit() {
+  const p = S.adsPerformance;
+  if (!p || p.semDados || !S.resumoMes) return;
+  const invest = (p.investimentoAds == null) ? null : Number(p.investimentoAds);
+  if (invest == null) return;
+  S.resumoMes.adsInvestido = invest;
+  S.resumoMes.adsRef = null;   // performance é do mês selecionado, não referência
+  // TACoS = investimento ÷ faturamentoTotal (gerencial). Sem faturamento real → mantém null.
+  const fat = Number(S.adsResumo?.faturamentoTotal) || 0;
+  S.resumoMes.tacos = fat > 0 ? Math.round((invest / fat) * 10000) / 100 : (S.adsResumo?.tacos ?? null);
+  renderCockpit();
+}
+
 /* ── ABA: ADS ────────────────────────────────────────────── */
 function renderAds360(el) {
-  if (!S.ads.length && !S.adsMensal.length) {
-    el.innerHTML = panelEmpty('Ads', '📢', 'Sem dados de Ads',
-      'Salve um acompanhamento em <a href="ads.html">Ads</a>.');
+  const p = S.adsPerformance;
+  const temPerf = p && !p.semDados;
+  const mensal = [...S.adsMensal].sort((a, b) => String(b.mes || '').localeCompare(String(a.mes || '')));
+
+  // Nada ainda e sem mensal: estado vazio (ou carregando).
+  if (!temPerf && !mensal.length) {
+    if (S.adsPerfLoading) {
+      el.innerHTML = panelEmpty('Ads', '⏳', 'Carregando performance Mercado Ads…',
+        'Buscando investimento, ROAS e ACOS do mês.');
+    } else {
+      el.innerHTML = panelEmpty('Ads', '📢', 'Sem dados de Ads',
+        S.temGrant ? 'Nenhuma campanha Mercado Ads no período, ou dados indisponíveis.'
+                   : 'Conecte o Mercado Livre para ver a performance de Ads.');
+    }
     return;
   }
-  const mensal = [...S.adsMensal].sort((a, b) => String(b.mes || '').localeCompare(String(a.mes || '')));
-  el.innerHTML = `
+
+  // Painel de performance (KPIs reais, mesma fonte da tela Ads).
+  const kpi = (label, val, hint = '') =>
+    `<div class="c360-adskpi"><div class="c360-adskpi-lbl">${label}</div><div class="c360-adskpi-val">${val}</div>${hint ? `<div class="c360-adskpi-hint">${hint}</div>` : ''}</div>`;
+
+  const perfHtml = temPerf ? `
     <div class="c360-panel">
       <div class="c360-panel-head">
-        <h2 class="c360-panel-title">Resumo mensal de Ads</h2>
+        <h2 class="c360-panel-title">Performance Mercado Ads · ${esc(S.periodo.label)}</h2>
+        <a href="ads.html" class="c360-btn-link">Abrir Ads →</a>
+      </div>
+      <div class="c360-panel-body">
+        <div class="c360-adskpis">
+          ${kpi('Investimento', valOr(p.investimentoAds, fmtBRL))}
+          ${kpi('GMV Ads', valOr(p.gmvAds, fmtBRL))}
+          ${kpi('ROAS', valOr(p.roas, v => fmt(v, 2) + 'x'))}
+          ${kpi('ACOS', valOr(p.acos, fmtPct))}
+          ${kpi('TACoS', valOr(S.resumoMes?.tacos, fmtPct), S.adsResumo?.faturamentoTotal ? 'sobre faturamento' : 'sem faturamento gerencial')}
+          ${kpi('Cliques', valOr(p.cliques, v => fmt(v)))}
+          ${kpi('Impressões', valOr(p.impressoes, v => fmt(v)))}
+          ${kpi('Vendas', valOr(p.vendas, v => fmt(v)))}
+        </div>
+      </div>
+    </div>` : (p && p.semDados ? `
+    <div class="c360-panel"><div class="c360-panel-body">
+      <div class="c360-empty" style="padding:18px;"><p>Performance Mercado Ads indisponível para o período (${esc(p.motivo || '—')}).</p></div>
+    </div></div>` : '');
+
+  // Tabela gerencial (resumo mensal salvo manualmente).
+  const mensalHtml = `
+    <div class="c360-panel">
+      <div class="c360-panel-head">
+        <h2 class="c360-panel-title">Resumo mensal (gerencial)</h2>
         <a href="ads.html" class="c360-btn-link">Gerenciar →</a>
       </div>
       <div class="c360-panel-body c360-panel-body--flush">
@@ -1497,14 +1655,16 @@ function renderAds360(el) {
               ${mensal.slice(0, 12).map(x => `
                 <tr>
                   <td class="muted mono">${esc(x.mes || '—')}</td>
-                  <td class="strong">${fmtBRL(x.investimento || 0)}</td>
-                  <td>${x.tacos ? `<span class="vfop-badge vfop-badge-${x.tacos > TACOS_WARN ? 'crit' : 'ok'}">${fmtPct(x.tacos)}</span>` : '—'}</td>
-                  <td>${x.roas ? fmt(x.roas, 1) + 'x' : '—'}</td>
+                  <td class="strong">${valOr(x.investimento, fmtBRL)}</td>
+                  <td>${x.tacos != null ? `<span class="vfop-badge vfop-badge-${x.tacos > TACOS_WARN ? 'crit' : 'ok'}">${fmtPct(x.tacos)}</span>` : '—'}</td>
+                  <td>${x.roas != null ? fmt(x.roas, 1) + 'x' : '—'}</td>
                 </tr>`).join('')}
             </tbody>
-          </table>` : `<div class="c360-empty" style="padding:24px;"><p>Sem resumo mensal salvo.</p></div>`}
+          </table>` : `<div class="c360-empty" style="padding:24px;"><p>Sem resumo mensal gerencial salvo.</p></div>`}
       </div>
     </div>`;
+
+  el.innerHTML = perfHtml + mensalHtml;
 }
 
 /* ── ABA: FECHAMENTOS ────────────────────────────────────── */

@@ -1073,3 +1073,32 @@
   color: var(--vfop-primary, #4b267a);
   min-width: 26px;
 }
+
+/* ── Nota de simulação de margem alvo ────────────────────────────────── */
+.c360-sim-note {
+  margin: 8px 0 0;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  color: #4b267a;
+  background: #f5f0fb;
+  border: 1px solid #e0d3f0;
+  border-radius: 6px;
+}
+
+/* ── KPIs de performance Mercado Ads ─────────────────────────────────── */
+.c360-adskpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 1px;
+  background: var(--vfop-border, #eef0f4);
+  border: 1px solid var(--vfop-border, #eef0f4);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.c360-adskpi { background: var(--vfop-surface, #fff); padding: 11px 13px; }
+.c360-adskpi-lbl {
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--vfop-soft, #8a93a3);
+}
+.c360-adskpi-val { font-size: 17px; font-weight: 700; color: var(--vfop-text, #111827); margin-top: 3px; }
+.c360-adskpi-hint { font-size: 10.5px; color: var(--vfop-muted, #5a6578); margin-top: 1px; }

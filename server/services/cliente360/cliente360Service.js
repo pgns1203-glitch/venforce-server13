@@ -7,8 +7,11 @@ const repo = require("./cliente360Repository");
 const dataQuality = require("./cliente360DataQualityService");
 const diagnosticoEngine = require("./cliente360DiagnosticoEngine");
 const freteHistoricoService = require("./cliente360FreteHistoricoService");
+const coberturaService = require("./cliente360CoberturaService");
 const { calcularTacos } = require("./cliente360SyncService");
-const { competenciaAtual, parseCompetencia } = require("../../utils/periodoUtils");
+const {
+  competenciaAtual, parseCompetencia, periodoMesAnterior, competenciaAnteriorDe,
+} = require("../../utils/periodoUtils");
 
 const SYNC_STALE_H = 18; // horas até considerar snapshot "stale"
 
@@ -41,6 +44,28 @@ function grantStatusDe(grant) {
 // ─── Helpers de número ──────────────────────────────────────────────────
 
 const numOrNull = (v) => (v === null || v === undefined ? null : Number(v));
+
+// Período padrão da Cliente 360 = MÊS ANTERIOR FECHADO (não o mês corrente).
+// O mês corrente continua selecionável via ?competencia=, mas nunca é default.
+function resolverPeriodo(options = {}) {
+  if (options.competencia) {
+    return parseCompetencia(options.competencia) || periodoMesAnterior();
+  }
+  return periodoMesAnterior();
+}
+
+// Classifica uma competência em relação ao mês corrente do sistema.
+function tipoDePeriodo(competencia) {
+  const corrente = competenciaAtual().competencia;
+  if (competencia === corrente) return "mes_atual";
+  if (competencia === competenciaAnteriorDe(corrente)) return "mes_anterior";
+  return "selecionado";
+}
+
+// Competência fechada = anterior à corrente (string YYYY-MM compara em ordem).
+function competenciaFechada(competencia) {
+  return String(competencia || "") < competenciaAtual().competencia;
+}
 
 // ─── Mapeamentos de leitura ───────────────────────────────────────────────
 
@@ -130,13 +155,24 @@ function mapResumoMes(snapshot) {
 
 // ─── Sync state ──────────────────────────────────────────────────────────
 
-function deriveSyncState(snapshot) {
+function deriveSyncState(snapshot, periodo) {
   if (!snapshot || !snapshot.sincronizado_em) {
     return {
       status: "ausente",
       precisaSincronizar: true,
       ultimaSincronizacao: snapshot?.sincronizado_em || null,
-      motivo: "Nenhum snapshot encontrado para a competência atual",
+      motivo: "Nenhum snapshot encontrado para a competência analisada",
+    };
+  }
+  // Mês FECHADO com snapshot não fica "stale": os dados do período não mudam
+  // mais — sincronizar de novo só se o admin quiser regravar.
+  if (periodo && competenciaFechada(periodo.competencia)) {
+    return {
+      status: "sincronizado",
+      precisaSincronizar: false,
+      ultimaSincronizacao: snapshot.sincronizado_em,
+      motivo: null,
+      mesFechado: true,
     };
   }
   const horas = (Date.now() - new Date(snapshot.sincronizado_em).getTime()) / 3.6e6;
@@ -217,7 +253,9 @@ async function montarContexto(slug, competencia) {
   const cliente = await repo.findClienteBySlug(slug);
   if (!cliente) throw criarErroHttp(404, "Cliente não encontrado.");
 
-  const [basesRows, grantRow, relatoriosRows, entregasRows, adsRow, adsUltimoRow, snapshot, freteHistorico, diagsSalvos] =
+  const competenciaAnterior = competenciaAnteriorDe(competencia);
+
+  const [basesRows, grantRow, relatoriosRows, entregasRows, adsRow, adsUltimoRow, snapshot, snapshotAnterior, snapshotsDisponiveis, freteHistorico, diagsSalvos] =
     await Promise.all([
       repo.findBasesVinculadasByCliente(cliente.id),
       repo.findMlGrantByCliente(cliente.id),
@@ -226,6 +264,8 @@ async function montarContexto(slug, competencia) {
       repo.findAdsResumoByCliente(slug, competencia),
       repo.findUltimoAdsResumoByCliente(slug),
       repo.findResumoMensal(cliente.id, competencia),
+      competenciaAnterior ? repo.findResumoMensal(cliente.id, competenciaAnterior) : Promise.resolve(null),
+      repo.findSnapshotsDisponiveis(cliente.id),
       freteHistoricoService.getFreteHistoricoCliente(slug, competencia),
       repo.findDiagnosticos(slug, 10),
     ]);
@@ -248,6 +288,7 @@ async function montarContexto(slug, competencia) {
   return {
     cliente, grant, bases, relatorios, entregas, ads, snapshot, freteHistorico,
     diagsSalvos, relatorioItens,
+    snapshotAnterior, competenciaAnterior, snapshotsDisponiveis,
   };
 }
 
@@ -256,9 +297,8 @@ async function montarContexto(slug, competencia) {
 async function getCliente360(slug, options = {}) {
   await repo.ensureCliente360Tables();
 
-  const periodo = options.competencia
-    ? (parseCompetencia(options.competencia) || competenciaAtual())
-    : competenciaAtual();
+  // Padrão = mês anterior fechado. Mês atual só quando pedido via ?competencia=.
+  const periodo = resolverPeriodo(options);
 
   const ctx = await montarContexto(slug, periodo.competencia);
 
@@ -283,6 +323,19 @@ async function getCliente360(slug, options = {}) {
     resumoMes.tacos = calcularTacos(resumoMes.faturamento, resumoMes.adsInvestido);
   }
 
+  // ── MCs separadas por fonte (nunca o mesmo nome para fontes diferentes) ──
+  // MC do diagnóstico: vem do último relatório salvo (base de custo). É a
+  // mesma origem que o sync copia para o snapshot — exposta com fonte clara.
+  // MC do período: hoje NÃO existe fonte consolidada de MC por vendas do
+  // período (viria de fechamento futuro) ⇒ null, nunca 0 inventado.
+  const ultimoRelMc = ctx.relatorios[0] || null;
+  resumoMes.mcDiagnostico = ultimoRelMc ? ultimoRelMc.mcMedia : (resumoMes.mcMedia ?? null);
+  resumoMes.mcDiagnosticoFonte = ultimoRelMc ? `relatorio_${ultimoRelMc.id}` : null;
+  resumoMes.mcDiagnosticoRelatorioId = ultimoRelMc?.id ?? null;
+  resumoMes.mcDiagnosticoEm = ultimoRelMc?.criadoEm ?? null;
+  resumoMes.mcPeriodo = null;
+  resumoMes.mcPeriodoFonte = null;
+
   const setup = computeSetup({
     bases: ctx.bases, grant: ctx.grant, relatorios: ctx.relatorios,
     entregas: ctx.entregas, ads: ctx.ads, freteHistorico: ctx.freteHistorico,
@@ -297,7 +350,46 @@ async function getCliente360(slug, options = {}) {
 
   const saude = getSaudeOperacional({ setup, scoreSaude: diag.scoreSaude });
   const proximoPasso = getProximoPasso({ setup, resumoMes });
-  const sync = deriveSyncState(ctx.snapshot);
+  const sync = deriveSyncState(ctx.snapshot, periodo);
+
+  // Cobertura da base por faturamento: cruza o detalhe por produto persistido
+  // no snapshot (payload_json.topProdutos) com o tem_base do último relatório.
+  // Leitura pura — nenhuma chamada ML aqui.
+  const periodoAnterior = ctx.competenciaAnterior ? parseCompetencia(ctx.competenciaAnterior) : null;
+  const coberturaBaseFaturamento = coberturaService.montarCoberturaBaseFaturamento({
+    periodo,
+    tipoPeriodo: tipoDePeriodo(periodo.competencia),
+    periodoAnterior,
+    tipoPeriodoAnterior: periodoAnterior ? tipoDePeriodo(periodoAnterior.competencia) : null,
+    filtroManual: !!options.competencia,
+    snapshotAtual: ctx.snapshot,
+    snapshotAnterior: ctx.snapshotAnterior,
+    relatorio: ctx.relatorios[0] || null,
+    relatorioItens: ctx.relatorioItens,
+  });
+
+  // ── Gráfico da Visão Geral: série diária PERSISTIDA no snapshot do período
+  // analisado. Sem série salva ⇒ estado indisponível explícito (nunca série
+  // de outro mês, nunca "0 pedidos" inventado).
+  const serieDiaria = Array.isArray(ctx.snapshot?.payload_json?.porDia)
+    ? ctx.snapshot.payload_json.porDia
+    : null;
+  const grafico = {
+    competencia: periodo.competencia,
+    label: periodo.label,
+    fonte: serieDiaria ? "snapshot" : null,
+    serieDiaria,
+    motivoIndisponivel: serieDiaria ? null : (ctx.snapshot ? "sem_serie_diaria" : "sem_snapshot"),
+  };
+
+  // Snapshots salvos (seletor de período do front — leitura, sem sync).
+  const snapshotsDisponiveis = (ctx.snapshotsDisponiveis || []).map((s) => ({
+    competencia: s.competencia,
+    label: parseCompetencia(s.competencia)?.label || s.competencia,
+    tipo: tipoDePeriodo(s.competencia),
+    sincronizadoEm: s.sincronizado_em,
+    temSerieDiaria: !!s.tem_serie_diaria,
+  }));
 
   const ultimoDiagSalvo = ctx.diagsSalvos[0]
     ? {
@@ -313,9 +405,15 @@ async function getCliente360(slug, options = {}) {
     ok: true,
     fonte: "cliente360_unificado",
     cliente: { id: ctx.cliente.id, nome: ctx.cliente.nome, slug: ctx.cliente.slug, ativo: ctx.cliente.ativo },
-    periodo,
+    periodo: {
+      ...periodo,
+      tipo: tipoDePeriodo(periodo.competencia),       // mes_anterior | mes_atual | selecionado
+      padrao: !options.competencia,                   // true = referência padrão (mês anterior fechado)
+    },
     sync,
     resumoMes,
+    grafico,
+    snapshotsDisponiveis,
     setup,
     saude,
     grant: ctx.grant,
@@ -328,6 +426,7 @@ async function getCliente360(slug, options = {}) {
       acoes: diag.acoes,
     },
     freteHistorico: ctx.freteHistorico,
+    coberturaBaseFaturamento,
     ads: ctx.ads || {},
     fechamentos: ctx.entregas.filter((e) => e.tipo === "fechamento_mensal"),
     relatorios: ctx.relatorios,
@@ -336,7 +435,10 @@ async function getCliente360(slug, options = {}) {
     dataQuality: { score: dq.score, problemas: dq.problemas },
     debug: {
       geradoEm: new Date().toISOString(),
-      fontes: ["relatorios", "entregas_cliente", "ads_resumos_mensais", "cliente_360_resumos_mensais"],
+      fontes: [
+        "relatorios", "entregas_cliente", "ads_resumos_mensais", "cliente_360_resumos_mensais",
+        "cliente_360_resumos_mensais.payload_json.topProdutos", "relatorio_itens.tem_base",
+      ],
     },
   };
 }
@@ -344,9 +446,7 @@ async function getCliente360(slug, options = {}) {
 // Oportunidades isoladas (endpoint dedicado).
 async function getOportunidades(slug, options = {}) {
   await repo.ensureCliente360Tables();
-  const periodo = options.competencia
-    ? (parseCompetencia(options.competencia) || competenciaAtual())
-    : competenciaAtual();
+  const periodo = resolverPeriodo(options);
   const ctx = await montarContexto(slug, periodo.competencia);
   const dq = dataQuality.avaliarQualidadeDados({
     bases: ctx.bases, grant: ctx.grant, relatorios: ctx.relatorios,
@@ -367,9 +467,7 @@ async function getOportunidades(slug, options = {}) {
 // Gera o diagnóstico determinístico e PERSISTE (usado só pelo POST admin-only).
 async function gerarDiagnosticoPersistido(slug, options = {}, userId = null) {
   await repo.ensureCliente360Tables();
-  const periodo = options.competencia
-    ? (parseCompetencia(options.competencia) || competenciaAtual())
-    : competenciaAtual();
+  const periodo = resolverPeriodo(options);
   const ctx = await montarContexto(slug, periodo.competencia);
   const dq = dataQuality.avaliarQualidadeDados({
     bases: ctx.bases, grant: ctx.grant, relatorios: ctx.relatorios,
@@ -407,9 +505,7 @@ async function getFreteHistorico(slug, options = {}) {
   await repo.ensureCliente360Tables();
   const cliente = await repo.findClienteBySlug(slug);
   if (!cliente) throw criarErroHttp(404, "Cliente não encontrado.");
-  const periodo = options.competencia
-    ? (parseCompetencia(options.competencia) || competenciaAtual())
-    : competenciaAtual();
+  const periodo = resolverPeriodo(options);
   const freteHistorico = await freteHistoricoService.getFreteHistoricoCliente(slug, periodo.competencia);
   return { ok: true, competencia: periodo.competencia, freteHistorico };
 }
@@ -417,7 +513,8 @@ async function getFreteHistorico(slug, options = {}) {
 // Lista operacional segura (admin/user/membro). Sem N+1.
 async function getClientesOperacional() {
   await repo.ensureCliente360Tables();
-  const periodo = competenciaAtual();
+  // Mesma referência padrão da tela: mês anterior fechado.
+  const periodo = periodoMesAnterior();
 
   const [clientes, grants, idsComBase, syncs] = await Promise.all([
     repo.findClientesAtivos(),

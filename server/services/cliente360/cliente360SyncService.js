@@ -34,9 +34,31 @@ function calcularTacos(faturamento, adsInvestido) {
 async function consolidarMetricasMes(clienteId, dateFrom, dateTo, clienteSlug) {
   const res = await buscarResumo({ clienteSlug, dateFrom, dateTo, compare: null });
   if (!res || res.semToken || res.notFound || res.tokenInvalido || res.erroApi) {
-    return { ok: false, motivo: res?.tokenInvalido ? "token_invalido" : "sem_metricas", resumo: null };
+    return { ok: false, motivo: res?.tokenInvalido ? "token_invalido" : "sem_metricas", resumo: null, topProdutos: null, porDia: null };
   }
   const r = res.resumo || {};
+  // Faturamento por produto: já vem na MESMA resposta (agregarTopProdutos),
+  // nenhuma chamada extra à Orders API. Persistido no snapshot para a
+  // cobertura da base por faturamento (lida depois sem tocar o ML).
+  const topProdutos = Array.isArray(res.topProdutos)
+    ? res.topProdutos.map((p) => ({
+        mlb: p.itemId || null,
+        sku: p.sku || null,
+        titulo: p.titulo || null,
+        unidades: numOrNull(p.unidades) ?? 0,
+        faturamento: numOrNull(p.faturamento) ?? 0,
+      }))
+    : null;
+  // Série diária: também já vem na mesma resposta (agregarPorDia). Persistida
+  // no snapshot para o gráfico da Visão Geral respeitar o período salvo,
+  // sem chamar Orders API na leitura.
+  const porDia = Array.isArray(res.porDia)
+    ? res.porDia.map((d) => ({
+        data: d.data,
+        vendasBrutas: numOrNull(d.vendasBrutas) ?? 0,
+        quantidadeVendas: numOrNull(d.quantidadeVendas) ?? 0,
+      }))
+    : null;
   return {
     ok: true,
     resumo: {
@@ -44,6 +66,8 @@ async function consolidarMetricasMes(clienteId, dateFrom, dateTo, clienteSlug) {
       pedidos: numOrNull(r.quantidadeVendas),
       cancelados: numOrNull(r.quantidadeCanceladasAjustada),
     },
+    topProdutos,
+    porDia,
   };
 }
 
@@ -128,7 +152,25 @@ async function sincronizarResumoMensal(slug, competenciaRaw, userId) {
       clienteSlug: slug,
       competencia: periodo.competencia,
       ...resumoMes,
-      payloadJson: { metricasOk: metricas.ok, motivoMetricas: metricas.motivo || null },
+      payloadJson: {
+        metricasOk: metricas.ok,
+        motivoMetricas: metricas.motivo || null,
+        // Detalhe por produto só quando as métricas vieram OK; ausência da
+        // chave = snapshot sem detalhamento (nunca lista vazia inventada).
+        ...(metricas.ok && Array.isArray(metricas.topProdutos)
+          ? {
+              topProdutos: metricas.topProdutos,
+              // agregarTopProdutos corta em 50 — lista cheia pode estar truncada.
+              topProdutosTruncado: metricas.topProdutos.length >= 50,
+              topProdutosEm: new Date().toISOString(),
+            }
+          : {}),
+        // Série diária para o gráfico da Visão Geral (mesma regra: ausência
+        // da chave = snapshot antigo sem série, nunca série vazia inventada).
+        ...(metricas.ok && Array.isArray(metricas.porDia)
+          ? { porDia: metricas.porDia }
+          : {}),
+      },
     });
 
     await repo.finalizeSyncJob(jobId, "ok", null, { metricasOk: metricas.ok });

@@ -55,13 +55,17 @@ const S = {
   adsPerformance: null, // performance Mercado Ads ao vivo (/ads/performance)
   adsPerfLoading: false,
   diagSimAlvo: null,    // margem alvo simulada localmente (%) — não salva
-  periodo:     { competencia: null, label: '', dateFrom: null, dateTo: null },
+  periodo:     { competencia: null, label: '', dateFrom: null, dateTo: null, tipo: null },
+  compSelecionada: null, // competência escolhida no seletor (null = padrão: mês anterior)
+  snapshots:   [],       // snapshots disponíveis (payload unificado)
+  grafico:     null,     // { serieDiaria, fonte, motivoIndisponivel, label }
   resumoMes:   null,   // objeto consolidado (shape do endpoint unificado)
   temGrant:    false,
   grant:       null,   // { temGrant, status, mlUserIdMascarado, expiresAt }
   sync:        null,   // { status, precisaSincronizar, ultimaSincronizacao, motivo }
   diagnosticoAuto: null, // { issues, oportunidades, acoes, ultimo }
   freteHistorico: null,
+  coberturaBase: null,  // coberturaBaseFaturamento do payload unificado
   proximoPasso: null,
   activeTab:   'overview',
   compare:     { a: null, b: null },
@@ -114,18 +118,37 @@ function isAdmin360() {
 
 /* ── PERÍODO / COMPETÊNCIA ───────────────────────────────── */
 const ymd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-function competenciaAtual() {
-  const now = new Date();
-  const y = now.getFullYear(), m = now.getMonth();
-  const first = new Date(y, m, 1);
+function periodoDe(ano, mesIndex, ate = null) {
+  const first = new Date(ano, mesIndex, 1);
+  const last  = new Date(ano, mesIndex + 1, 0);
   const mesNome = first.toLocaleDateString('pt-BR', { month: 'long' });
   return {
-    competencia: `${y}-${String(m+1).padStart(2,'0')}`,
-    label: `${mesNome.charAt(0).toUpperCase()}${mesNome.slice(1)}/${y}`,
+    competencia: `${first.getFullYear()}-${String(first.getMonth()+1).padStart(2,'0')}`,
+    label: `${mesNome.charAt(0).toUpperCase()}${mesNome.slice(1)}/${first.getFullYear()}`,
     dateFrom: ymd(first),
-    dateTo:   ymd(now),
+    dateTo:   ymd(ate || last),
   };
 }
+function competenciaAtual() {
+  const now = new Date();
+  return periodoDe(now.getFullYear(), now.getMonth(), now); // dateTo = hoje (parcial)
+}
+/* Mês anterior FECHADO — período padrão da Cliente 360 (vira ano: jan→dez). */
+function mesAnteriorFechado() {
+  const now = new Date();
+  return periodoDe(now.getFullYear(), now.getMonth() - 1);
+}
+/* Label "Maio/2026" a partir de "2026-05" (para snapshots de outros meses). */
+function labelDaCompetencia(comp) {
+  const m = String(comp || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) return String(comp || '—');
+  return periodoDe(parseInt(m[1], 10), parseInt(m[2], 10) - 1).label;
+}
+const TIPO_PERIODO_LBL = {
+  mes_anterior: 'mês anterior fechado',
+  mes_atual: 'mês atual (parcial)',
+  selecionado: 'competência selecionada',
+};
 
 /* ── SYNC TIMESTAMP (localStorage por cliente) ───────────── */
 const syncKey = slug => `c360-sync-${slug}`;
@@ -165,6 +188,7 @@ async function init360() {
       const slug = sel.value;
       if (!slug) return;
       S.cliente = S.clientes.find(c => c.slug === slug) || null;
+      S.compSelecionada = null;   // novo cliente abre no período padrão (mês anterior)
       loadCliente360();
     });
   }
@@ -203,8 +227,12 @@ async function loadCliente360(forcado = false) {
   S.metricas = null; S.metricasLoading = false;   // métricas ML carregam sob demanda (aba)
   S.adsPerformance = null; S.adsPerfLoading = false; S.adsResumo = null;
   S.diagSimAlvo = null;                            // limpa simulação ao trocar de cliente
+  S.coberturaBase = null;                          // cobertura vem do payload unificado
 
-  const data = await api(`/operacao/cliente-360/${encodeURIComponent(slug)}`);
+  // Sem seleção manual o backend usa o padrão: mês anterior fechado.
+  const compQS = S.compSelecionada
+    ? `?competencia=${encodeURIComponent(S.compSelecionada)}` : '';
+  const data = await api(`/operacao/cliente-360/${encodeURIComponent(slug)}${compQS}`);
 
   if (!data?.ok) {
     // Fallback: endpoint novo indisponível → consolida no front (legado).
@@ -238,12 +266,17 @@ function normalizeCliente360Response(data) {
     label: data.periodo?.label || '',
     dateFrom: data.periodo?.dateFrom || null,
     dateTo: data.periodo?.dateTo || null,
+    tipo: data.periodo?.tipo || null,        // mes_anterior | mes_atual | selecionado
+    padrao: data.periodo?.padrao ?? null,
   };
+  S.snapshots = Array.isArray(data.snapshotsDisponiveis) ? data.snapshotsDisponiveis : [];
+  S.grafico = data.grafico || null;          // série diária do snapshot do período
   S.sync = data.sync || null;
   S.grant = data.grant || null;
   S.temGrant = !!data.grant?.temGrant;
   S.diagnosticoAuto = data.diagnostico || null;
   S.freteHistorico = data.freteHistorico || null;
+  S.coberturaBase = data.coberturaBaseFaturamento || null;
   S.proximoPasso = data.proximoPasso || null;
 
   // Bases → shape com .vinculo (renderBases360)
@@ -284,7 +317,13 @@ function normalizeCliente360Response(data) {
   S.resumoMes = {
     competencia: S.periodo.competencia, label: S.periodo.label,
     faturamento: rm.faturamento ?? null,
-    mcMedia: rm.mcMedia ?? null,
+    // MCs separadas por fonte. Sempre normalizadas para % (fração 0.43 → 43).
+    // mcMedia continua existindo para código legado (snapshots locais etc.).
+    mcMedia: toPct(rm.mcDiagnostico ?? rm.mcMedia),
+    mcDiagnostico: toPct(rm.mcDiagnostico ?? rm.mcMedia),
+    mcDiagnosticoRelId: rm.mcDiagnosticoRelatorioId ?? null,
+    mcDiagnosticoEm: rm.mcDiagnosticoEm ?? null,
+    mcPeriodo: toPct(rm.mcPeriodo),            // hoje sem fonte consolidada → null
     pedidos: pedidos ?? null,
     cancelados: cancelados ?? null,
     cancelPct,
@@ -311,14 +350,17 @@ async function sincronizarResumoMes() {
   const slug = S.cliente?.slug;
   if (!slug) return;
   if (!isAdmin360()) { alert('Apenas administradores podem sincronizar.'); return; }
-  const aviso = 'Essa sincronização pode demorar e consumir chamadas da API do Mercado Livre.\n\n' +
+  const aviso = `Essa sincronização vai consolidar ${S.periodo.label || 'o período selecionado'} ` +
+    'e pode demorar e consumir chamadas da API do Mercado Livre.\n\n' +
     'Em clientes grandes, pode levar até 30 segundos ou mais.\n\nDeseja continuar?';
   if (!confirm(aviso)) return;
 
   const btn = document.getElementById('c360-sync-btn');
   if (btn) { btn.classList.add('loading'); btn.disabled = true; }
 
-  const res = await apiPost(`/operacao/cliente-360/${encodeURIComponent(slug)}/sincronizar`, {});
+  // Sincroniza a COMPETÊNCIA analisada (padrão: mês anterior), não o mês corrente.
+  const res = await apiPost(`/operacao/cliente-360/${encodeURIComponent(slug)}/sincronizar`,
+    { competencia: S.periodo.competencia });
   if (btn) { btn.classList.remove('loading'); btn.disabled = false; }
 
   if (res.status === 409) { alert('Já existe uma sincronização em andamento para este cliente.'); return; }
@@ -345,7 +387,12 @@ async function fallbackLoadCliente360Legacy(forcado = false) {
   localStorage.setItem('c360-last-slug', slug);
   S.diag = { relId: null, loading: false, itens: null, erro: false };   // limpa detalhe do cliente anterior
 
-  S.periodo = competenciaAtual();
+  // Mesmo padrão do endpoint unificado: mês anterior fechado (ou seleção manual).
+  S.periodo = S.compSelecionada && /^\d{4}-\d{2}$/.test(S.compSelecionada)
+    ? periodoDe(parseInt(S.compSelecionada.slice(0, 4), 10), parseInt(S.compSelecionada.slice(5, 7), 10) - 1)
+    : mesAnteriorFechado();
+  S.periodo.tipo = S.periodo.competencia === competenciaAtual().competencia ? 'mes_atual'
+    : S.periodo.competencia === mesAnteriorFechado().competencia ? 'mes_anterior' : 'selecionado';
   const { dateFrom, dateTo } = S.periodo;
 
   const [entregasRes, basesRes, grantRes, relRes, adsRes, adsMensalRes, metRes] =
@@ -387,6 +434,13 @@ async function fallbackLoadCliente360Legacy(forcado = false) {
     a?.cliente_slug === slug || a?.clienteSlug === slug);
 
   S.metricas = metRes?.ok ? metRes : null;
+  // Gráfico no legado: série ao vivo do MESMO período carregado acima.
+  S.snapshots = [];
+  S.grafico = S.metricas?.porDia?.length
+    ? { competencia: S.periodo.competencia, label: S.periodo.label, fonte: 'ao_vivo',
+        serieDiaria: S.metricas.porDia, motivoIndisponivel: null }
+    : { competencia: S.periodo.competencia, label: S.periodo.label, fonte: null,
+        serieDiaria: null, motivoIndisponivel: 'sem_serie_diaria' };
 
   // ── Consolidação (seam do endpoint futuro) ──
   S.resumoMes = consolidarResumoMes();
@@ -446,7 +500,12 @@ function consolidarResumoMes() {
     label:        S.periodo.label,
     // Performance do mês
     faturamento:  fat,
-    mcMedia:      mc,
+    // Mesma separação do payload unificado: a MC disponível é a do diagnóstico.
+    mcMedia:      toPct(mc),
+    mcDiagnostico: toPct(mc),
+    mcDiagnosticoRelId: relId(ultimoRel),
+    mcDiagnosticoEm: ultimoRel?.updated_at || ultimoRel?.created_at || null,
+    mcPeriodo:    null,
     pedidos,
     cancelados,
     cancelPct,
@@ -536,6 +595,33 @@ function renderHeader360() {
 }
 
 /* ── SYNC BAR ────────────────────────────────────────────── */
+/* Opções do seletor de período: mês anterior (padrão), mês atual e snapshots
+   salvos. Trocar período só dispara um GET leve — NUNCA sync pesado. */
+function opcoesPeriodo360() {
+  const opts = new Map();
+  const ant = mesAnteriorFechado();
+  const atu = competenciaAtual();
+  opts.set(ant.competencia, { competencia: ant.competencia, label: ant.label, tipo: 'mes_anterior', temSnapshot: false });
+  opts.set(atu.competencia, { competencia: atu.competencia, label: atu.label, tipo: 'mes_atual', temSnapshot: false });
+  (S.snapshots || []).forEach(s => {
+    const existente = opts.get(s.competencia);
+    if (existente) { existente.temSnapshot = true; return; }
+    opts.set(s.competencia, {
+      competencia: s.competencia,
+      label: s.label || labelDaCompetencia(s.competencia),
+      tipo: 'selecionado',
+      temSnapshot: true,
+    });
+  });
+  return [...opts.values()].sort((a, b) => b.competencia.localeCompare(a.competencia));
+}
+
+function trocarPeriodo360(comp) {
+  if (!comp || comp === S.periodo.competencia) return;
+  S.compSelecionada = comp;
+  loadCliente360();   // GET leve do payload salvo — sem sincronização pesada
+}
+
 function renderSyncBar() {
   const el = document.getElementById('c360-syncbar');
   if (!el) return;
@@ -546,9 +632,11 @@ function renderSyncBar() {
   if (S.sync) {
     const when = fmtSync(S.sync.ultimaSincronizacao);
     if (S.sync.status === 'ausente') {
-      stateHtml = `<span class="c360-sync-state stale">Sem sincronização ainda${admin ? ' · clique em Sincronizar' : ''}</span>`;
+      stateHtml = `<span class="c360-sync-state stale">Sem snapshot para este período${admin ? ' · clique em Sincronizar' : ''}</span>`;
     } else if (S.sync.status === 'stale') {
       stateHtml = `<span class="c360-sync-state stale">Snapshot de <span class="mono">${when ? when.text : '—'}</span> · ${admin ? 'sincronização recomendada' : 'aguardando atualização'}</span>`;
+    } else if (S.sync.mesFechado) {
+      stateHtml = `<span class="c360-sync-state">Mês fechado · snapshot salvo <span class="mono">${when ? when.text : '—'}</span></span>`;
     } else {
       stateHtml = `<span class="c360-sync-state">Atualizado <span class="mono">${when ? when.text : '—'}</span></span>`;
     }
@@ -562,14 +650,24 @@ function renderSyncBar() {
   // Botão de ação: só admin sincroniza (fluxo pesado). Demais só leem.
   const acaoHtml = admin
     ? `<button id="c360-sync-btn" class="c360-btn c360-btn-primary c360-btn-sync"
-              onclick="sincronizarResumoMes()" title="Consolida o mês via API do Mercado Livre">
+              onclick="sincronizarResumoMes()" title="Consolida ${esc(S.periodo.label)} via API do Mercado Livre">
          <span class="c360-spin"></span><span class="c360-sync-ic">↻</span> Sincronizar dados
        </button>`
     : `<span class="c360-sync-note">Somente admin pode sincronizar</span>`;
 
+  // Seletor de período (mês anterior = referência padrão).
+  const sufixo = { mes_anterior: ' · mês anterior', mes_atual: ' · mês atual (parcial)' };
+  const optionsHtml = opcoesPeriodo360().map(o => `
+    <option value="${esc(o.competencia)}" ${o.competencia === S.periodo.competencia ? 'selected' : ''}>
+      ${esc(o.label)}${sufixo[o.tipo] || ''}${o.temSnapshot ? ' · snapshot' : ''}
+    </option>`).join('');
+
   el.className = 'c360-syncbar';
   el.innerHTML = `
-    <span class="c360-comp"><span class="c360-comp-dot"></span> Competência ${esc(S.periodo.label)}</span>
+    <span class="c360-comp"><span class="c360-comp-dot"></span> Período analisado</span>
+    <select id="c360-period-select" class="c360-period-select" aria-label="Período analisado"
+            onchange="trocarPeriodo360(this.value)">${optionsHtml}</select>
+    ${S.periodo.tipo ? `<span class="c360-period-tipo">${esc(TIPO_PERIODO_LBL[S.periodo.tipo] || '')}</span>` : ''}
     <span class="c360-syncbar-sep"></span>
     ${stateHtml}
     <span class="c360-syncbar-right">${acaoHtml}</span>`;
@@ -598,17 +696,22 @@ function renderCockpit() {
   if (!el) return;
   const m = S.resumoMes;
 
-  // Performance do mês
-  const mcCls = m.mcMedia == null ? 'muted'
-    : m.mcMedia >= MC_OK ? 'ok' : m.mcMedia >= MC_WARN ? 'warn' : 'crit';
+  // Performance do período analisado
+  const mcDiag = m.mcDiagnostico ?? null;   // já normalizada para % na consolidação
+  const mcCls = mcDiag == null ? 'muted'
+    : mcDiag >= MC_OK ? 'ok' : mcDiag >= MC_WARN ? 'warn' : 'crit';
+  // Fontes explícitas: MC do diagnóstico vem do último relatório salvo;
+  // MC do período (por vendas) ainda não tem fonte consolidada → "—".
+  const mcSub = `${m.mcDiagnosticoRelId ? `fonte: relatório #${esc(String(m.mcDiagnosticoRelId))}` : 'sem diagnóstico salvo'}`
+    + ` · MC do período: ${valOr(m.mcPeriodo, fmtPct)}`;
   const cancelSub = (m.cancelPct == null) ? ''
     : `<span class="c360-chip ${m.cancelPct > 5 ? 'warn' : 'flat'}">${fmtPct(m.cancelPct)} dos pedidos</span>`;
 
   const perf = [
     card('Faturamento', `<div class="c360-card-value brand">${valOr(m.faturamento, fmtBRL)}</div>`,
-         'Vendas brutas no mês'),
-    card('MC média', `<div class="c360-card-value ${mcCls}">${valOr(m.mcMedia, fmtPct)}</div>`,
-         'Margem de contribuição'),
+         `Vendas brutas · ${esc(S.periodo.label)}`),
+    card('MC do diagnóstico', `<div class="c360-card-value ${mcCls}">${valOr(mcDiag, fmtPct)}</div>`,
+         mcSub),
     card('Pedidos', `<div class="c360-card-value">${valOr(m.pedidos, n => fmt(n))}</div>`,
          m.ticketMedio == null ? '' : `Ticket ${fmtBRL(m.ticketMedio)}`),
     card('Cancelados', `<div class="c360-card-value">${valOr(m.cancelados, n => fmt(n))}</div>`, cancelSub),
@@ -636,7 +739,7 @@ function renderCockpit() {
 
   el.innerHTML = `
     <div class="c360-group">
-      <div class="c360-group-label">Performance do mês</div>
+      <div class="c360-group-label">Performance · ${esc(S.periodo.label)}${S.periodo.tipo === 'mes_anterior' ? ' (mês anterior fechado)' : S.periodo.tipo === 'mes_atual' ? ' (mês em andamento)' : ''}</div>
       <div class="c360-cards4">${perf.join('')}</div>
     </div>
     <div class="c360-group">
@@ -746,6 +849,174 @@ async function ensureMetricas360() {
   if (panel && S.activeTab === 'metricas') renderMetricas360(panel);
 }
 
+/* ── COBERTURA DA BASE POR FATURAMENTO ───────────────────────
+   Bloco analítico calculado no backend (coberturaBaseFaturamento):
+   quanto da receita analisada está em produtos com/sem base de custo.
+   Honestidade do dado: ausência vira estado explícito, nunca 0/R$ 0,00. */
+const TIPO_PERIODO_COB = {
+  mes_anterior: 'mês anterior fechado',
+  mes_atual: 'mês corrente (parcial)',
+  selecionado: 'competência selecionada',
+};
+function renderCoberturaBase(detalhado = false) {
+  const c = S.coberturaBase;
+  if (!c) return '';   // payload antigo / fallback legado → sem o bloco
+
+  const periodoTxt = c.periodo
+    ? [c.periodo.label || c.periodo.competencia, TIPO_PERIODO_COB[c.periodo.tipo]].filter(Boolean).join(' · ')
+    : '';
+
+  // ── Estado indisponível: contagem seca preservada, sem número inventado ──
+  if (!c.disponivel) {
+    const d = c.diagnostico;
+    return `
+    <div class="c360-panel c360-cob">
+      <div class="c360-panel-head">
+        <h2 class="c360-panel-title">Cobertura da base por faturamento</h2>
+        <span class="c360-panel-meta">${esc(periodoTxt)}</span>
+      </div>
+      <div class="c360-panel-body">
+        <div class="c360-cob-unavail">
+          <span class="c360-tag todo">faturamento por produto indisponível</span>
+          <p>${esc(c.mensagem || 'Não há dados suficientes para calcular a cobertura da base por faturamento.')}</p>
+          ${d && d.qtdItensSemBase != null ? `
+          <div class="c360-cob-counts">
+            <span><b>${fmt(d.qtdItensSemBase)}</b> item(ns) sem base no diagnóstico</span>
+            ${d.qtdItensComBase != null ? `<span class="c360-cob-sep">·</span><span><b>${fmt(d.qtdItensComBase)}</b> com base</span>` : ''}
+          </div>
+          <p class="c360-cob-note">Sem faturamento por produto não dá para ponderar esses itens por receita — acima é só contagem.</p>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const r = c.resumo || {};
+  const f = c.fonte || {};
+  const top = c.produtosSemBaseMaisRelevantes || [];
+  const obs = c.observacoes || [];
+
+  const stat = (lbl, val, cls = '') =>
+    `<div class="c360-dstat"><div class="c360-dstat-val ${cls}">${val}</div><div class="c360-dstat-lbl">${lbl}</div></div>`;
+  const pctSuf = v => v == null ? '' : ' · ' + fmtPct(v);
+
+  const statsHtml = `
+    <div class="c360-dstats">
+      ${stat('Faturamento analisado' + (r.pctDetalhamento != null && r.pctDetalhamento < 99.5 ? ` · ${fmtPct(r.pctDetalhamento)} do mês` : ''),
+             valOr(r.faturamentoAnalisado, fmtBRL))}
+      ${stat('Receita com base' + pctSuf(r.pctComBase), valOr(r.faturamentoComBase, fmtBRL), 'ok')}
+      ${stat('Receita sem base' + pctSuf(r.pctSemBase), valOr(r.faturamentoSemBase, fmtBRL),
+             (r.faturamentoSemBase || 0) > 0 ? 'warn' : 'ok')}
+      ${(r.faturamentoNaoClassificado || 0) > 0
+        ? stat('Fora do diagnóstico' + pctSuf(r.pctNaoClassificado), fmtBRL(r.faturamentoNaoClassificado))
+        : ''}
+      ${stat('Itens sem base com venda',
+             r.qtdItensSemBase != null
+               ? `${fmt(r.qtdItensSemBaseComVenda)} <span class="c360-cob-of">de ${fmt(r.qtdItensSemBase)}</span>`
+               : valOr(r.qtdItensSemBaseComVenda, fmt),
+             (r.qtdItensSemBaseComVenda || 0) > 0 ? 'warn' : '')}
+    </div>`;
+
+  // ── Barra com base × sem base (% sobre o faturamento analisado) ──
+  const legCob = (cls, label, pct) =>
+    `<span class="c360-diag-leg"><span class="dot ${cls}"></span>${label} <b>${valOr(pct, fmtPct)}</b></span>`;
+  const barra = (r.faturamentoAnalisado || 0) > 0 ? `
+    <div class="c360-cob-barwrap">
+      <div class="c360-diag-bar">
+        <span class="seg-ok"   style="width:${r.pctComBase ?? 0}%"></span>
+        <span class="seg-warn" style="width:${r.pctSemBase ?? 0}%"></span>
+        <span class="seg-none" style="width:${r.pctNaoClassificado ?? 0}%"></span>
+      </div>
+      <div class="c360-diag-legend">
+        ${legCob('ok', 'Com base', r.pctComBase)}
+        ${legCob('warn', 'Sem base', r.pctSemBase)}
+        ${(r.faturamentoNaoClassificado || 0) > 0 ? legCob('none', 'Fora do diagnóstico', r.pctNaoClassificado) : ''}
+      </div>
+    </div>` : `
+    <div class="c360-cob-barwrap"><div class="c360-cob-note">Sem vendas por produto no período analisado (zero real do snapshot).</div></div>`;
+
+  // ── Top produtos sem base por faturamento ──
+  const maxFat = Math.max(1, ...top.map(p => Number(p.faturamento) || 0));
+  const linhas = top.slice(0, detalhado ? 10 : 5);
+  const tabelaTop = top.length ? `
+    <div class="c360-cob-tablelabel">Top produtos sem base por faturamento</div>
+    <table class="c360-table">
+      <thead><tr>
+        <th>Produto</th><th>MLB</th>${detalhado ? '<th>SKU</th>' : ''}
+        <th class="right">Unid.</th><th class="right">Faturamento</th>
+        <th class="right">% rec. s/ base</th><th style="width:110px;"></th>
+      </tr></thead>
+      <tbody>
+        ${linhas.map(p => `
+          <tr>
+            <td class="strong clip">${esc(p.titulo || p.sku || '—')}</td>
+            <td class="mono muted">${esc(p.mlb || '—')}</td>
+            ${detalhado ? `<td class="mono muted">${esc(p.sku || '—')}</td>` : ''}
+            <td class="right">${fmt(p.unidades || 0)}</td>
+            <td class="right strong">${fmtBRL(p.faturamento || 0)}</td>
+            <td class="right">${valOr(p.pctDaReceitaSemBase, fmtPct)}</td>
+            <td><div class="c360-bar-track"><div class="c360-bar-fill"
+                style="width:${((Number(p.faturamento) || 0) / maxFat * 100).toFixed(1)}%"></div></div></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    ${top.length > linhas.length ? `<div class="c360-cob-note c360-cob-note--pad">Mostrando ${linhas.length} de ${top.length} — detalhamento completo na aba Diagnóstico.</div>` : ''}`
+    : ((r.qtdItensSemBase || 0) > 0 ? `
+    <div class="c360-cob-okstate">
+      <b>Nenhum item sem base vendeu no período</b>
+      <span>Os ${fmt(r.qtdItensSemBase)} itens sem base do diagnóstico não aparecem nas vendas analisadas.</span>
+    </div>` : `
+    <div class="c360-cob-okstate">
+      <b>Tudo com base ✓</b>
+      <span>Nenhum item sem base no diagnóstico.</span>
+    </div>`);
+
+  // ── Preparação Matriz Receita x Risco (só no detalhamento) ──
+  const mz = c.matrizPreparacao;
+  const mzChip = (label, n, cls) =>
+    `<span class="vfop-badge vfop-badge-${cls}">${label} · ${fmt(n)}</span>`;
+  const mzHtml = (detalhado && mz) ? `
+    <div class="c360-cob-matriz">
+      <div class="c360-cob-tablelabel">Preparação · Matriz Receita x Risco</div>
+      <div class="c360-cob-mzchips">
+        ${mzChip('Alto faturamento sem base', (mz.altoFaturamentoSemBase || []).length, 'warn')}
+        ${mzChip('Alto faturamento crítico', (mz.altoFaturamentoCritico || []).length, 'crit')}
+        ${mzChip('Alto faturamento saudável', (mz.altoFaturamentoComBaseSaudavel || []).length, 'ok')}
+        ${mzChip('Baixo faturamento crítico', (mz.baixoFaturamentoCritico || []).length, 'neutral')}
+        ${mzChip('Fora do diagnóstico', (mz.naoClassificado || []).length, 'neutral')}
+      </div>
+      <div class="c360-cob-note">Critério de "alto": ${esc(mz.criterioAlto || '—')}.</div>
+    </div>` : '';
+
+  // ── Fonte explícita do dado ──
+  const fonteHtml = `
+    <div class="c360-cob-srcline">
+      <span class="c360-tag real">snapshot</span>
+      <span>faturamento por produto de ${fmtDt(f.faturamentoDetalheEm)}</span>
+      <span class="c360-cob-sep">·</span>
+      <span>diagnóstico <span class="mono">${esc(f.diagnostico || '—')}</span> de ${fmtDt(f.diagnosticoEm)}</span>
+    </div>`;
+
+  const confTitle = (f.motivosConfianca || []).join(' · ');
+  return `
+    <div class="c360-panel c360-cob">
+      <div class="c360-panel-head">
+        <h2 class="c360-panel-title">Cobertura da base por faturamento</h2>
+        <div class="c360-panel-actions">
+          <span class="c360-panel-meta">${esc(periodoTxt)}</span>
+          <span class="c360-diag-conf-pill ${esc(f.confianca || 'media')}" ${confTitle ? `title="${esc(confTitle)}"` : ''}>Confiança ${esc(f.confianca || '—')}</span>
+        </div>
+      </div>
+      <div class="c360-panel-body c360-panel-body--flush">
+        ${statsHtml}
+        ${barra}
+        ${tabelaTop}
+        ${mzHtml}
+        ${fonteHtml}
+      </div>
+      ${obs.length ? `<div class="c360-notes"><ul>${obs.map(o => `<li>${esc(o)}</li>`).join('')}</ul></div>` : ''}
+    </div>`;
+}
+
 /* ── ABA: VISÃO GERAL ────────────────────────────────────── */
 function renderOverview(el) {
   const temBase = S.bases.length > 0;
@@ -769,7 +1040,26 @@ function renderOverview(el) {
       date: null, type: 'warn' },
   ].filter(Boolean);
 
-  const porDia = S.metricas?.porDia || [];
+  // Gráfico: SOMENTE a série diária do período analisado (snapshot salvo no
+  // unificado; ao vivo só no fallback legado). Nunca mostra série de outro mês.
+  const serieDiaria = Array.isArray(S.grafico?.serieDiaria) ? S.grafico.serieDiaria : null;
+  const fonteGrafico = S.grafico?.fonte === 'snapshot' ? 'snapshot salvo'
+    : S.grafico?.fonte === 'ao_vivo' ? 'Mercado Livre (ao vivo)' : null;
+  const admin = isAdmin360();
+  let graficoVazioHtml;
+  if (serieDiaria && !serieDiaria.length) {
+    graficoVazioHtml = `<b>Sem vendas registradas no período</b>
+      <p>O snapshot de ${esc(S.periodo.label)} foi salvo sem pedidos (zero real).</p>`;
+  } else if (S.grafico?.motivoIndisponivel === 'sem_serie_diaria') {
+    graficoVazioHtml = `<b>Snapshot sem série diária</b>
+      <p>O snapshot de ${esc(S.periodo.label)} foi salvo antes do gráfico existir.
+      ${admin ? 'Sincronize novamente para gravar a série diária deste período.' : 'Peça a um admin para sincronizar novamente.'}</p>`;
+  } else {
+    graficoVazioHtml = `<b>Sem snapshot salvo para este período</b>
+      <p>${temGrant
+        ? (admin ? `Sincronize ${esc(S.periodo.label)} para gravar e visualizar o gráfico.` : 'Aguardando sincronização deste período por um admin.')
+        : 'Conecte o grant Mercado Livre para habilitar a sincronização.'}</p>`;
+  }
 
   el.innerHTML = `
     <div class="c360-grid2 c360-grid2--wide">
@@ -824,22 +1114,24 @@ function renderOverview(el) {
       </div>
     </div>
 
+    ${renderCoberturaBase(false)}
+
     <div class="c360-panel">
       <div class="c360-panel-head">
         <h2 class="c360-panel-title">Vendas por dia · ${esc(S.periodo.label)}</h2>
-        <span class="c360-panel-meta">Mercado Livre</span>
+        <span class="c360-panel-meta">${fonteGrafico ? `fonte: ${esc(fonteGrafico)}` : 'sem fonte para o período'}</span>
       </div>
-      ${porDia.length
+      ${serieDiaria && serieDiaria.length
         ? `<div class="c360-chart" id="c360-overview-chart"></div>`
         : `<div class="c360-empty">
              <div class="c360-empty-icon">📈</div>
-             <b>Sem dados do mês</b>
-             <p>${temGrant ? 'Nenhum pedido no período ou métricas ainda não carregadas.'
-                           : 'Conecte o grant Mercado Livre para ver as vendas diárias.'}</p>
+             ${graficoVazioHtml}
            </div>`}
     </div>`;
 
-  if (porDia.length) renderAreaChart(document.getElementById('c360-overview-chart'), porDia);
+  if (serieDiaria && serieDiaria.length) {
+    renderAreaChart(document.getElementById('c360-overview-chart'), serieDiaria);
+  }
 }
 
 /* ── GRÁFICO DE ÁREA (SVG, sem dependências, com hover) ──── */
@@ -1177,7 +1469,7 @@ function renderDiagResumo(buckets, itens, conf, alvoPct) {
           ${stat('Críticos', valOr(buckets.crit, fmt), 'crit')}
           ${stat('Atenção', valOr(buckets.warn, fmt), 'warn')}
           ${stat('Saudáveis', valOr(buckets.ok, fmt), 'ok')}
-          ${stat('MC média', valOr(buckets.mcMedia, fmtPct))}
+          ${stat('MC do diagnóstico', valOr(buckets.mcMedia, fmtPct))}
         </div>
         ${topAcoes.length ? `
           <div class="c360-dacoes">
@@ -1249,7 +1541,7 @@ function renderDiag(el) {
       ${simulando ? `<div class="c360-sim-note">Simulação local usando margem alvo de <b>${fmt(alvoPct, 1)}%</b> — não altera o relatório.</div>` : ''}
       <div class="c360-diag-hero-body">
         <div class="c360-diag-mc-box">
-          <span class="c360-diag-mc-label">MC média</span>
+          <span class="c360-diag-mc-label">MC do diagnóstico</span>
           <span class="c360-diag-mc">${valOr(mc, fmtPct)}</span>
           <span class="c360-diag-mc-note">${itens ? 'margem alvo ' + fmt(alvoPct, 1) + '% · ' + fmt(buckets.classificados || 0) + ' classificados' : 'carregando itens…'}</span>
         </div>
@@ -1355,6 +1647,7 @@ function renderDiag(el) {
 
   el.innerHTML = autoHtml + `<div class="c360-diag">${hero}
     ${renderDiagResumo(buckets, itens, conf, alvoPct)}
+    ${renderCoberturaBase(true)}
     <div class="c360-diag-row">${cardSemBase}${cardCrit}</div>
     ${tabela}</div>`;
 }
@@ -1428,7 +1721,7 @@ function renderMetricas360(el) {
           </table>
         </div>
         <div class="c360-panel-foot">
-          <span>Competência atual</span>
+          <span>Período: ${esc(S.periodo.label)}${S.periodo.tipo ? ` · ${esc(TIPO_PERIODO_LBL[S.periodo.tipo] || '')}` : ''}</span>
           <button class="c360-btn c360-btn-ghost" onclick="salvarSnapshot()">Salvar snapshot</button>
         </div>
       </div>
@@ -1506,7 +1799,7 @@ function salvarSnapshot() {
     vendasBrutas: r.vendasBrutas || 0,
     quantidadeVendas: r.quantidadeVendas || 0,
     ticketMedio: r.ticketMedio || 0,
-    mc: S.resumoMes?.mcMedia || 0,
+    mc: S.resumoMes?.mcMedia ?? null,   // ausente = null, nunca 0 falso
     valorCancelado: r.valorCancelado || 0,
   });
   if (snaps.length > 12) snaps = snaps.slice(0, 12);
@@ -1536,7 +1829,9 @@ function renderSnapsList(snaps) {
             <td class="muted mono">${esc(s.data)}</td>
             <td class="strong">${fmtBRL(s.vendasBrutas)}</td>
             <td class="right">${fmt(s.quantidadeVendas)}</td>
-            <td><span class="vfop-badge vfop-badge-${s.mc >= MC_OK ? 'ok' : s.mc >= MC_WARN ? 'warn' : 'crit'}">${fmtPct(s.mc)}</span></td>
+            <td>${s.mc == null
+              ? '<span class="vfop-badge vfop-badge-neutral">—</span>'
+              : `<span class="vfop-badge vfop-badge-${s.mc >= MC_OK ? 'ok' : s.mc >= MC_WARN ? 'warn' : 'crit'}">${fmtPct(s.mc)}</span>`}</td>
             <td><button class="c360-btn c360-btn-danger" onclick="removerSnapshot(${i})">×</button></td>
           </tr>`).join('')}
       </tbody>
@@ -1556,7 +1851,8 @@ function renderSnapsCompare(snaps) {
     ['Faturamento', fmtBRL(a.vendasBrutas), fmtBRL(b.vendasBrutas), delta(a.vendasBrutas, b.vendasBrutas)],
     ['Pedidos', fmt(a.quantidadeVendas), fmt(b.quantidadeVendas), delta(a.quantidadeVendas, b.quantidadeVendas)],
     ['Ticket médio', fmtBRL(a.ticketMedio), fmtBRL(b.ticketMedio), delta(a.ticketMedio, b.ticketMedio)],
-    ['MC média', fmtPct(a.mc), fmtPct(b.mc), delta(a.mc, b.mc, true)],
+    ['MC média', a.mc == null ? '—' : fmtPct(a.mc), b.mc == null ? '—' : fmtPct(b.mc),
+     (a.mc == null || b.mc == null) ? '—' : delta(a.mc, b.mc, true)],
     ['Cancelado', fmtBRL(a.valorCancelado), fmtBRL(b.valorCancelado), delta(a.valorCancelado, b.valorCancelado)],
   ];
   return `

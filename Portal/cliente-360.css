@@ -1102,3 +1102,86 @@
 }
 .c360-adskpi-val { font-size: 17px; font-weight: 700; color: var(--vfop-text, #111827); margin-top: 3px; }
 .c360-adskpi-hint { font-size: 10.5px; color: var(--vfop-muted, #5a6578); margin-top: 1px; }
+
+/* ── Cobertura da base por faturamento ───────────────────────────────── */
+.c360-cob { margin-bottom: 16px; }
+.c360-cob .c360-dstats { border-bottom: 1px solid var(--vfop-border, #eef0f4); }
+.c360-cob .c360-dstat { border-top: none; }
+.c360-cob-of { font-size: 13px; font-weight: 600; color: var(--vfop-soft, #8c96a6); }
+
+.c360-cob-barwrap {
+  display: grid; gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--vfop-border, #eef0f4);
+}
+.c360-cob-barwrap .c360-diag-bar { max-width: none; }
+
+.c360-cob-tablelabel {
+  padding: 12px 16px 8px;
+  font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--vfop-soft, #8a93a3);
+}
+
+.c360-cob-okstate {
+  display: grid; gap: 3px;
+  padding: 16px;
+  font-size: 12.5px; color: var(--vfop-muted, #5a6578);
+}
+.c360-cob-okstate b { color: #1e7a46; font-size: 13px; }
+
+.c360-cob-note {
+  font-size: 11.5px; color: var(--vfop-soft, #8c96a6); line-height: 1.5;
+}
+.c360-cob-note--pad { padding: 8px 16px 12px; }
+
+.c360-cob-matriz {
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--vfop-border, #eef0f4);
+}
+.c360-cob-mzchips {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 0 16px 8px;
+}
+.c360-cob-matriz .c360-cob-note { padding: 0 16px; }
+
+.c360-cob-srcline {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--vfop-border, #eef0f4);
+  font-size: 11.5px; color: var(--vfop-muted, #5a6578);
+}
+.c360-cob-srcline .mono { font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.c360-cob-sep { color: var(--vfop-soft, #c2c8d2); }
+
+.c360-cob-unavail { display: grid; gap: 9px; justify-items: start; }
+.c360-cob-unavail p { margin: 0; font-size: 12.5px; color: var(--vfop-muted, #5a6578); line-height: 1.55; }
+.c360-cob-counts {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  font-size: 12.5px; color: var(--vfop-text, #111827);
+}
+.c360-cob-counts b { font-size: 15px; }
+
+/* ── Seletor de período (syncbar) ────────────────────────────────────── */
+.c360-period-select {
+  border: 1px solid var(--vfop-border, #dde1e8);
+  border-radius: 7px;
+  background: var(--vfop-surface, #fff);
+  color: var(--vfop-text, #111827);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 9px;
+  cursor: pointer;
+  max-width: 280px;
+}
+.c360-period-select:focus {
+  outline: none;
+  border-color: var(--vfop-primary, #4b267a);
+  box-shadow: 0 0 0 3px #ede8f5;
+}
+.c360-period-tipo {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vfop-soft, #8c96a6);
+  white-space: nowrap;
+}

@@ -121,7 +121,7 @@ async function findRelatoriosByCliente(clienteSlug, options = {}) {
 
 async function findRelatorioItensResumo(relatorioId) {
   const { rows } = await pool.query(
-    `SELECT id, item_id, sku, tem_base, mc, diagnostico, acao_recomendada
+    `SELECT id, item_id, sku, titulo, tem_base, mc, diagnostico, acao_recomendada
        FROM relatorio_itens
       WHERE relatorio_id = $1`,
     [relatorioId]
@@ -185,6 +185,22 @@ async function findResumoMensal(clienteId, competencia) {
     [clienteId, competencia]
   );
   return rows[0] || null;
+}
+
+// Competências com snapshot salvo para o cliente (seletor de período do
+// front). Indica se cada snapshot tem série diária/top produtos no payload.
+async function findSnapshotsDisponiveis(clienteId, limit = 24) {
+  const { rows } = await pool.query(
+    `SELECT competencia, sincronizado_em,
+            jsonb_exists(payload_json, 'porDia')      AS tem_serie_diaria,
+            jsonb_exists(payload_json, 'topProdutos') AS tem_top_produtos
+       FROM cliente_360_resumos_mensais
+      WHERE cliente_id = $1
+      ORDER BY competencia DESC
+      LIMIT $2`,
+    [clienteId, limit]
+  );
+  return rows;
 }
 
 async function upsertResumoMensal(p) {
@@ -357,6 +373,7 @@ module.exports = {
   findAdsResumoByCliente,
   findUltimoAdsResumoByCliente,
   findResumoMensal,
+  findSnapshotsDisponiveis,
   upsertResumoMensal,
   insertDiagnostico,
   insertDiagnosticoItens,

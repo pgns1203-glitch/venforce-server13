@@ -63,6 +63,16 @@ async function listarSubmissoes(req, res) {
   }
 }
 
+// PATCH /seller/custos-submissoes/:id  (admin only)
+async function revisarSubmissao(req, res) {
+  try {
+    const payload = await sellerService.revisarSubmissao(req.user, req.params.id, req.body || {}, extrairIp(req));
+    return res.json(payload);
+  } catch (err) {
+    return responderErro(res, err);
+  }
+}
+
 // ── Gestão de vínculos (admin only — gate nas rotas) ──
 
 // GET /seller/vinculos
@@ -100,6 +110,7 @@ module.exports = {
   produtosSemBase,
   enviarCusto,
   listarSubmissoes,
+  revisarSubmissao,
   listarVinculos,
   criarVinculo,
   removerVinculo,

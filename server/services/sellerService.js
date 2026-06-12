@@ -620,12 +620,122 @@ async function desativarVinculo(admin, vinculoId, ip = null) {
   return { ok: true };
 }
 
+// ─── PATCH /seller/custos-submissoes/:id (ADMIN ONLY) ─────────────────────
+
+async function revisarSubmissao(admin, submissaoId, body = {}, ip = null) {
+  await ensureSellerTables();
+
+  const id = parseInt(submissaoId, 10);
+  if (!Number.isFinite(id)) throw criarErroHttp(400, "ID de submissão inválido.");
+
+  const acao = String(body.acao || "").trim().toLowerCase();
+  if (acao !== "aprovar" && acao !== "rejeitar") {
+    throw criarErroHttp(400, "acao deve ser 'aprovar' ou 'rejeitar'.");
+  }
+
+  const { rows } = await pool.query(
+    `SELECT s.*, c.slug AS cliente_slug
+       FROM seller_custos_submissoes s
+       JOIN clientes c ON c.id = s.cliente_id
+      WHERE s.id = $1`,
+    [id]
+  );
+
+  if (!rows.length) throw criarErroHttp(404, "Submissão não encontrada.");
+  const sub = rows[0];
+
+  if (sub.status !== "pendente") {
+    throw criarErroHttp(409, `Submissão já processada (status: ${sub.status}).`);
+  }
+
+  if (acao === "rejeitar") {
+    const motivo = String(body.motivo || "").trim().slice(0, 500) || null;
+    await pool.query(
+      `UPDATE seller_custos_submissoes
+          SET status = 'rejeitado', revisado_por = $2, revisado_em = NOW(),
+              motivo_rejeicao = $3, updated_at = NOW()
+        WHERE id = $1`,
+      [id, admin.id, motivo]
+    );
+    registrarLog({
+      userId: admin.id, userEmail: admin.email, userNome: admin.nome,
+      acao: "seller.custo_rejeitado",
+      detalhes: { submissao_id: id, item_id: sub.item_id, cliente_slug: sub.cliente_slug, motivo },
+      ip, status: "sucesso",
+    });
+    return { ok: true, acao: "rejeitado", submissaoId: id };
+  }
+
+  // aprovar → aplicar na base oficial quando possível
+  const { normalizarProdutoIdBase, upsertCustoBase } = require("./bases/baseCustosService");
+
+  // Prefere a base_id salva na submissão; cai na base vinculada do cliente.
+  let base = null;
+  if (sub.base_id) {
+    const r = await pool.query(
+      `SELECT id FROM bases WHERE id = $1 AND ativo = true`,
+      [sub.base_id]
+    );
+    base = r.rows[0] || null;
+  }
+  if (!base) base = await findBaseVinculada(sub.cliente_id);
+
+  let statusFinal, resultUpsert = null;
+
+  if (base) {
+    const produtoIdNorm = normalizarProdutoIdBase(sub.item_id);
+    if (!produtoIdNorm) throw criarErroHttp(400, `item_id '${sub.item_id}' não pôde ser normalizado.`);
+
+    resultUpsert = await upsertCustoBase({
+      baseId: base.id,
+      produtoIdNorm,
+      custoProduto: Number(sub.custo_produto),
+      impostoPercentualOpt: sub.imposto_percentual != null
+        ? { tem: true, numero: Number(sub.imposto_percentual) }
+        : { tem: false, numero: null },
+      taxaFixaOpt: sub.taxa_fixa != null
+        ? { tem: true, numero: Number(sub.taxa_fixa) }
+        : { tem: false, numero: null },
+    });
+    statusFinal = "aplicado";
+  } else {
+    // sem base vinculada — marca como aprovado, sem gravar na tabela custos
+    statusFinal = "aprovado";
+  }
+
+  await pool.query(
+    `UPDATE seller_custos_submissoes
+        SET status = $2, revisado_por = $3, revisado_em = NOW(), updated_at = NOW()
+      WHERE id = $1`,
+    [id, statusFinal, admin.id]
+  );
+
+  registrarLog({
+    userId: admin.id, userEmail: admin.email, userNome: admin.nome,
+    acao: `seller.custo_${statusFinal}`,
+    detalhes: {
+      submissao_id: id, item_id: sub.item_id, cliente_slug: sub.cliente_slug,
+      base_id: base?.id || null, upsert: resultUpsert?.acao || null,
+    },
+    ip, status: "sucesso",
+  });
+
+  return {
+    ok: true,
+    acao: statusFinal,
+    submissaoId: id,
+    baseId: base?.id || null,
+    custo: resultUpsert?.custo || null,
+  };
+}
+
 module.exports = {
   ensureSellerTables,
   getMe,
   listarProdutosSemBase,
   salvarSubmissaoCusto,
   listarSubmissoes,
+  revisarSubmissao,
   listarVinculos,
   criarVinculo,
   desativarVinculo,

@@ -1185,3 +1185,69 @@
   color: var(--vfop-soft, #8c96a6);
   white-space: nowrap;
 }
+
+/* ── SELLER CUSTOS BLOCK (aba Bases) ─────────────────────── */
+.c360-sc-wrap { margin-top: 16px; }
+.c360-sc-loading {
+  padding: 14px 20px;
+  font-size: 12.5px;
+  color: var(--vfop-muted, #5a6578);
+}
+.c360-sc-panel { margin-top: 0; }
+.c360-sc-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.c360-sc-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.c360-sc-chip--pendente  { background: #fff8e6; color: #92600a; border-color: #f5d87a; }
+.c360-sc-chip--aplicado  { background: #e8f5f0; color: #0d6b4f; border-color: #7fcfb0; }
+.c360-sc-chip--aprovado  { background: #e8f1fd; color: #1a4a8a; border-color: #96bcf0; }
+.c360-sc-chip--rejeitado { background: #fdf0f0; color: #8a1a1a; border-color: #f0a0a0; }
+.c360-sc-subtxt {
+  font-size: 11px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c360-sc-status {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.c360-sc-st--pendente  { background: #fff8e6; color: #92600a; }
+.c360-sc-st--aplicado  { background: #e8f5f0; color: #0d6b4f; }
+.c360-sc-st--aprovado  { background: #e8f1fd; color: #1a4a8a; }
+.c360-sc-st--rejeitado { background: #fdf0f0; color: #8a1a1a; }
+.c360-sc-row--pendente { background: #fffcf2; }
+.c360-sc-actions { display: flex; gap: 5px; }
+.c360-sc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity .15s;
+}
+.c360-sc-btn:disabled { opacity: .5; cursor: default; }
+.c360-sc-btn--ok     { background: #e8f5f0; color: #0d6b4f; border-color: #7fcfb0; }
+.c360-sc-btn--ok:hover:not(:disabled)     { background: #c9ece0; }
+.c360-sc-btn--danger { background: #fdf0f0; color: #8a1a1a; border-color: #f0a0a0; }
+.c360-sc-btn--danger:hover:not(:disabled) { background: #f8d8d8; }

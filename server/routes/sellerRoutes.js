@@ -28,5 +28,6 @@ router.get("/me", requireSellerAccess, controller.me);
 router.get("/produtos-sem-base", requireSellerAccess, controller.produtosSemBase);
 router.post("/custos", requireSellerAccess, controller.enviarCusto);
 router.get("/custos-submissoes", requireSellerAccess, controller.listarSubmissoes);
+router.patch("/custos-submissoes/:id", requireAdmin, controller.revisarSubmissao);
 
 module.exports = router;

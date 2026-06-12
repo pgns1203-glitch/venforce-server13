@@ -1231,34 +1231,149 @@ function renderAreaChart(host, porDia) {
 }
 
 /* ── ABA: BASES ──────────────────────────────────────────── */
-function renderBases360(el) {
+async function renderBases360(el) {
   if (!S.bases.length) {
     el.innerHTML = panelEmpty('Bases vinculadas', '📦', 'Nenhuma base vinculada',
       'Vincule uma base em <a href="bases.html">Bases de Custo</a>.');
-    return;
+  } else {
+    el.innerHTML = `
+      <div class="c360-panel">
+        <div class="c360-panel-head">
+          <h2 class="c360-panel-title">Bases vinculadas</h2>
+          <span class="c360-panel-meta">${S.bases.length} base(s)</span>
+        </div>
+        <div class="c360-panel-body c360-panel-body--flush">
+          <table class="c360-table">
+            <thead><tr><th>Base</th><th>Marketplace</th><th>Origem</th><th>Atualizado</th><th></th></tr></thead>
+            <tbody>
+              ${S.bases.map(b => `
+                <tr>
+                  <td class="strong">${esc(b.nome || b.slug || '—')}</td>
+                  <td>${esc(b.vinculo?.marketplace || '—')}</td>
+                  <td><span class="vfop-badge vfop-badge-ok">${esc(b.vinculo?.origem || 'manual')}</span></td>
+                  <td class="muted">${fmtDt(b.updated_at)}</td>
+                  <td><a href="bases.html" class="c360-btn-link">Ver bases →</a></td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
   }
-  el.innerHTML = `
-    <div class="c360-panel">
+
+  if (!isAdmin360()) return;
+  const slug = S.cliente?.slug;
+  if (!slug) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'c360-sc-wrap';
+  wrap.innerHTML = '<div class="c360-sc-loading">Verificando custos do seller…</div>';
+  el.appendChild(wrap);
+
+  const data = await api(`/seller/custos-submissoes?cliente_slug=${encodeURIComponent(slug)}`);
+  if (!data?.ok) { wrap.remove(); return; }
+
+  const submissoes = data.submissoes || [];
+  if (!submissoes.length) { wrap.remove(); return; }
+
+  const pendentes  = submissoes.filter(s => s.status === 'pendente').length;
+  const aplicados  = submissoes.filter(s => s.status === 'aplicado').length;
+  const aprovados  = submissoes.filter(s => s.status === 'aprovado').length;
+  const rejeitados = submissoes.filter(s => s.status === 'rejeitado').length;
+
+  wrap.innerHTML = `
+    <div class="c360-panel c360-sc-panel">
       <div class="c360-panel-head">
-        <h2 class="c360-panel-title">Bases vinculadas</h2>
-        <span class="c360-panel-meta">${S.bases.length} base(s)</span>
+        <h2 class="c360-panel-title">Custos enviados pelo Seller</h2>
+        <div class="c360-sc-chips">
+          ${pendentes  ? `<span class="c360-sc-chip c360-sc-chip--pendente">${pendentes} pendente${pendentes > 1 ? 's' : ''}</span>` : ''}
+          ${aplicados  ? `<span class="c360-sc-chip c360-sc-chip--aplicado">${aplicados} aplicado${aplicados > 1 ? 's' : ''}</span>` : ''}
+          ${aprovados  ? `<span class="c360-sc-chip c360-sc-chip--aprovado">${aprovados} aprovado${aprovados > 1 ? 's' : ''}</span>` : ''}
+          ${rejeitados ? `<span class="c360-sc-chip c360-sc-chip--rejeitado">${rejeitados} rejeitado${rejeitados > 1 ? 's' : ''}</span>` : ''}
+        </div>
       </div>
       <div class="c360-panel-body c360-panel-body--flush">
         <table class="c360-table">
-          <thead><tr><th>Base</th><th>Marketplace</th><th>Origem</th><th>Atualizado</th><th></th></tr></thead>
+          <thead>
+            <tr>
+              <th>Item / SKU</th>
+              <th>Custo</th>
+              <th>Imposto %</th>
+              <th>Taxa fixa</th>
+              <th>Status</th>
+              <th>Enviado em</th>
+              <th></th>
+            </tr>
+          </thead>
           <tbody>
-            ${S.bases.map(b => `
-              <tr>
-                <td class="strong">${esc(b.nome || b.slug || '—')}</td>
-                <td>${esc(b.vinculo?.marketplace || '—')}</td>
-                <td><span class="vfop-badge vfop-badge-ok">${esc(b.vinculo?.origem || 'manual')}</span></td>
-                <td class="muted">${fmtDt(b.updated_at)}</td>
-                <td><a href="bases.html" class="c360-btn-link">Ver bases →</a></td>
-              </tr>`).join('')}
+            ${submissoes.map(s => renderSellerCustoRow(s)).join('')}
           </tbody>
         </table>
       </div>
     </div>`;
+
+  wrap.querySelectorAll('[data-sc-aprovar]').forEach(btn => {
+    btn.addEventListener('click', () => acaoSellerCusto(btn.dataset.scAprovar, 'aprovar', el, slug));
+  });
+  wrap.querySelectorAll('[data-sc-rejeitar]').forEach(btn => {
+    btn.addEventListener('click', () => acaoSellerCusto(btn.dataset.scRejeitar, 'rejeitar', el, slug));
+  });
+}
+
+function renderSellerCustoRow(s) {
+  const isPendente = s.status === 'pendente';
+  const labels = { pendente: 'Pendente', aprovado: 'Aprovado', aplicado: 'Aplicado', rejeitado: 'Rejeitado' };
+  const classes = { pendente: 'c360-sc-st--pendente', aprovado: 'c360-sc-st--aprovado', aplicado: 'c360-sc-st--aplicado', rejeitado: 'c360-sc-st--rejeitado' };
+  const fmt2 = n => n != null ? `R$ ${Number(n).toFixed(2)}` : '—';
+  const fmtPct = n => n != null ? `${Number(n).toFixed(1)}%` : '—';
+  return `
+    <tr${isPendente ? ' class="c360-sc-row--pendente"' : ''}>
+      <td>
+        <div class="strong">${esc(s.itemId || '—')}</div>
+        ${s.titulo ? `<div class="muted c360-sc-subtxt" title="${esc(s.titulo)}">${esc(s.titulo)}</div>` : ''}
+        ${s.sku    ? `<div class="muted c360-sc-subtxt">${esc(s.sku)}</div>` : ''}
+      </td>
+      <td class="strong">${fmt2(s.custoProduto)}</td>
+      <td class="muted">${fmtPct(s.impostoPercentual)}</td>
+      <td class="muted">${fmt2(s.taxaFixa)}</td>
+      <td>
+        <span class="c360-sc-status ${classes[s.status] || ''}">${labels[s.status] || s.status}</span>
+        ${s.status === 'rejeitado' && s.motivoRejeicao
+          ? `<div class="muted c360-sc-subtxt">${esc(s.motivoRejeicao)}</div>` : ''}
+      </td>
+      <td class="muted">${fmtDt(s.criadoEm)}</td>
+      <td>
+        ${isPendente ? `
+          <div class="c360-sc-actions">
+            <button class="c360-sc-btn c360-sc-btn--ok" data-sc-aprovar="${s.id}">✓ Aprovar</button>
+            <button class="c360-sc-btn c360-sc-btn--danger" data-sc-rejeitar="${s.id}">✗ Rejeitar</button>
+          </div>` : ''}
+      </td>
+    </tr>`;
+}
+
+async function acaoSellerCusto(submissaoId, acao, tabEl, clienteSlug) {
+  let motivo = undefined;
+  if (acao === 'rejeitar') {
+    const r = prompt('Motivo da rejeição (opcional):');
+    if (r === null) return;
+    motivo = r.trim() || undefined;
+  } else {
+    if (!confirm('Aprovar e aplicar este custo na base oficial?')) return;
+  }
+
+  const res = await fetch(API_BASE + `/seller/custos-submissoes/${submissaoId}`, {
+    method: 'PATCH',
+    headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ acao, motivo }),
+  });
+  const json = await res.json().catch(() => null);
+
+  if (!res.ok || !json?.ok) {
+    alert(json?.erro || 'Erro ao processar ação.');
+    return;
+  }
+
+  await renderBases360(tabEl);
 }
 
 /* ── ABA: DIAGNÓSTICO ────────────────────────────────────── */

@@ -1,9 +1,16 @@
 const STORAGE_KEY = "vf-token";
 const API_BASE = "https://venforce-server.onrender.com";
 
+// ─── Destino pós-login por role (seller tem área própria) ───
+function destinoPorRole(user) {
+  return String(user?.role || "").toLowerCase() === "seller" ? "seller.html" : "dashboard.html";
+}
+
 // ─── Redirect se já logado ───
 if (localStorage.getItem(STORAGE_KEY)) {
-  window.location.replace("dashboard.html");
+  let usuarioSalvo = {};
+  try { usuarioSalvo = JSON.parse(localStorage.getItem("vf-user") || "{}") || {}; } catch {}
+  window.location.replace(destinoPorRole(usuarioSalvo));
 }
 
 document.getElementById("year").textContent = new Date().getFullYear();
@@ -78,7 +85,7 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
         );
       }
     } catch {}
-    window.location.replace("dashboard.html");
+    window.location.replace(destinoPorRole(data.user));
   } catch {
     showAlert("error", "Não foi possível conectar ao servidor.");
   } finally {

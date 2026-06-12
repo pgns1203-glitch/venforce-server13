@@ -71,6 +71,7 @@ const metricasRoutes = require("./routes/metricasRoutes");
 const clickupRoutes = require("./routes/clickupRoutes");
 const externalFirebaseRoutes = require("./routes/externalFirebaseRoutes");
 const tiktokShopRoutes = require("./routes/tiktokShopRoutes");
+const sellerRoutes = require("./routes/sellerRoutes");
 
 const app = express();
 const PORT = process.env.PORT || 3333;
@@ -441,6 +442,7 @@ app.use("/base-vinculos", baseVinculosRoutes);
 app.use("/bases/assistente", assistenteBaseRoutes);
 app.use("/operacao/cliente-360", cliente360Routes);
 app.use("/operacao", operacaoRoutes);
+app.use("/seller", sellerRoutes);
 app.use("/ads", adsRoutes);
 app.use("/anuncios-meli", meliAnunciosRoutes);
 app.use("/metricas", metricasRoutes);

@@ -298,6 +298,11 @@
 
     const user = getUserSafe();
     const role = String(user.role || "").toLowerCase();
+    // Seller não usa o portal interno: tem área própria sem sidebar.
+    if (role === "seller") {
+      window.location.replace("seller.html");
+      return;
+    }
     const isAdmin = role === "admin";
     const activeGroup = detectGroup();
 

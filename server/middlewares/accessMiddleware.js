@@ -48,9 +48,27 @@ function requireDesignAccess(req, res, next) {
   });
 }
 
+// Área Seller (/seller/*): somente role seller (e admin, para inspeção).
+// O isolamento por cliente é feito no sellerService via seller_clientes —
+// este gate só garante que roles internas comuns não usem a área por engano
+// e que o seller tenha um lugar próprio.
+function requireSellerAccess(req, res, next) {
+  const role = String(req.user?.role || "").toLowerCase();
+
+  if (role === "seller" || role === "admin") {
+    return next();
+  }
+
+  return res.status(403).json({
+    ok: false,
+    erro: "Acesso restrito à área do seller."
+  });
+}
+
 module.exports = {
   apiKeyMiddleware,
   requireAutomacoesAccess,
   requireDesignAccess,
+  requireSellerAccess,
 };
 

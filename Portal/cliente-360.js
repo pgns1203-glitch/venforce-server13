@@ -33,6 +33,27 @@ const fmtDt  = s => {
    mas exibe 0 real quando o valor sincronizado for de fato zero. */
 const valOr  = (n, f) => (n === null || n === undefined) ? '—' : f(n);
 
+/* Chip de status compacto para o topo (saúde, grant, base, confiança, sync).
+   level: ok | warn | crit | neutral. value é texto (escapado aqui). */
+function statusChip(label, value, level = 'neutral', title = '') {
+  return `<span class="c360-stat-chip ${level}"${title ? ` title="${esc(title)}"` : ''}>`
+    + `<span class="c360-stat-chip-dot"></span>`
+    + `<span class="c360-stat-chip-k">${esc(label)}</span>`
+    + `<span class="c360-stat-chip-v">${esc(value)}</span></span>`;
+}
+
+/* Empty state padronizado: o que falta · por que importa · próximo passo.
+   `why`/`action` aceitam HTML (links/botões), por isso não são escapados. */
+function emptyState({ icon = '•', title = '', why = '', action = '' }) {
+  return `
+    <div class="c360-empty c360-empty--rich">
+      <div class="c360-empty-icon">${icon}</div>
+      <b>${title}</b>
+      ${why ? `<p>${why}</p>` : ''}
+      ${action ? `<div class="c360-empty-act">${action}</div>` : ''}
+    </div>`;
+}
+
 /* ── THRESHOLDS (centralizados, fácil de ajustar) ────────── */
 const MC_OK     = 15;   // MC% boa → verde
 const MC_WARN   = 8;    // MC% atenção → âmbar
@@ -278,6 +299,9 @@ function normalizeCliente360Response(data) {
   S.freteHistorico = data.freteHistorico || null;
   S.coberturaBase = data.coberturaBaseFaturamento || null;
   S.proximoPasso = data.proximoPasso || null;
+  S.saude = data.saude || null;               // { status, label, score, motivos }
+  S.setupBackend = data.setup || null;         // { score, temBase, temGrant, ... }
+  S.dataQuality = data.dataQuality || null;    // { score, problemas[] }
 
   // Bases → shape com .vinculo (renderBases360)
   S.bases = (data.bases || []).map(b => ({
@@ -386,6 +410,7 @@ async function fallbackLoadCliente360Legacy(forcado = false) {
   }
   localStorage.setItem('c360-last-slug', slug);
   S.diag = { relId: null, loading: false, itens: null, erro: false };   // limpa detalhe do cliente anterior
+  S.saude = null; S.setupBackend = null; S.dataQuality = null;          // só existem no payload unificado
 
   // Mesmo padrão do endpoint unificado: mês anterior fechado (ou seleção manual).
   S.periodo = S.compSelecionada && /^\d{4}-\d{2}$/.test(S.compSelecionada)
@@ -552,14 +577,54 @@ function renderHeader360() {
 
   const metaEl = document.getElementById('c360-meta');
   if (metaEl) {
+    const periodoTxt = [S.periodo?.label, TIPO_PERIODO_LBL[S.periodo?.tipo]].filter(Boolean).join(' · ');
+
+    // Saúde: payload unificado (S.saude) → fallback derivado do setup.
+    const saudeMap = { ok: ['ok', 'Operável'], atencao: ['warn', 'Atenção'], critico: ['crit', 'Crítico'] };
+    const sa = S.saude
+      ? (saudeMap[S.saude.status] || ['neutral', S.saude.label || '—'])
+      : (setup.level === 'ok' ? ['ok', 'Operável'] : setup.level === 'warn' ? ['warn', 'Atenção'] : ['crit', 'Crítico']);
+
+    // Grant ML.
+    const gst = S.grant?.status;
+    const grantChip = gst === 'conectado' ? ['ok', 'conectado']
+      : gst === 'expirado' ? ['warn', 'expirado']
+      : gst === 'ausente' ? ['crit', 'ausente']
+      : (S.temGrant ? ['ok', 'conectado'] : ['crit', 'ausente']);
+
+    // Base de custo.
+    const baseChip = S.bases.length ? ['ok', 'vinculada'] : ['crit', 'ausente'];
+
+    // Confiança dos dados (dataQuality) — só no payload unificado.
+    let confChip = null;
+    const nProblemas = S.dataQuality?.problemas?.length || 0;
+    if (S.dataQuality && typeof S.dataQuality.score === 'number') {
+      const s = S.dataQuality.score;
+      confChip = s >= 80 ? ['ok', 'alta'] : s >= 50 ? ['warn', 'média'] : ['crit', 'baixa'];
+    }
+
+    // Última sincronização.
+    const when = S.sync ? fmtSync(S.sync.ultimaSincronizacao)
+      : (S.resumoMes?.ultimaSync ? fmtSync(S.resumoMes.ultimaSync) : null);
+    const syncTxt = S.sync?.status === 'ausente' ? 'sem snapshot' : (when ? when.text : 'sem registro');
+    const syncLevel = S.sync?.status === 'ausente' ? 'warn' : (when && when.stale ? 'warn' : 'neutral');
+
     metaEl.innerHTML = `
-      <span class="mono" style="font-family:'JetBrains Mono',monospace;font-size:11.5px;">${esc(c.slug)}</span>
-      <span class="c360-meta-sep"></span>
-      <span>Canal: Mercado Livre</span>
-      <span class="c360-meta-sep"></span>
-      <span class="c360-setup-pill ${setup.level}">
-        <span class="c360-setup-dot"></span> Setup <b>${setup.pct}%</b>
-      </span>`;
+      <div class="c360-meta-line">
+        <span class="mono" style="font-family:'JetBrains Mono',monospace;font-size:11.5px;">${esc(c.slug)}</span>
+        <span class="c360-meta-sep"></span>
+        <span>Mercado Livre</span>
+        <span class="c360-meta-sep"></span>
+        <span class="c360-setup-pill ${setup.level}"><span class="c360-setup-dot"></span> Setup <b>${setup.pct}%</b></span>
+      </div>
+      <div class="c360-status-row">
+        ${statusChip('Saúde', sa[1], sa[0])}
+        ${statusChip('Grant', grantChip[1], grantChip[0])}
+        ${statusChip('Base', baseChip[1], baseChip[0])}
+        ${confChip ? statusChip('Dados', confChip[1], confChip[0], nProblemas ? `${nProblemas} ponto(s) de atenção na qualidade dos dados` : '') : ''}
+        ${statusChip('Sync', syncTxt, syncLevel)}
+        ${periodoTxt ? `<span class="c360-status-period">${esc(periodoTxt)}</span>` : ''}
+      </div>`;
   }
 
   const actEl = document.getElementById('c360-head-actions');
@@ -675,17 +740,18 @@ function renderSyncBar() {
   // Aviso obrigatório perto do botão (admin).
   if (admin) {
     el.insertAdjacentHTML('afterend',
-      `<div class="c360-sync-warn" id="c360-sync-warn">⚠ Essa sincronização pode demorar e consumir chamadas da API do Mercado Livre. Use apenas quando precisar atualizar os dados do mês. Em clientes grandes, pode levar até 30 segundos ou mais.</div>`);
+      `<div class="c360-sync-warn" id="c360-sync-warn">Sincronizar consome chamadas da API do Mercado Livre e pode levar alguns segundos — use só para atualizar o mês.</div>`);
     // remove duplicado se re-render
     const warns = document.querySelectorAll('#c360-sync-warn');
     warns.forEach((w, i) => { if (i < warns.length - 1) w.remove(); });
   }
 }
 
-/* ── COCKPIT (2 grupos de 4 cards) ───────────────────────── */
-function card(label, valueHtml, subHtml = '') {
+/* ── COCKPIT (grupos: Performance / Mídia / Operação & setup) ──
+   Hierarquia: o card principal de cada grupo recebe { primary:true }. */
+function card(label, valueHtml, subHtml = '', opts = {}) {
   return `
-    <div class="c360-card">
+    <div class="c360-card${opts.primary ? ' c360-card--primary' : ''}">
       <div class="c360-card-label">${label}</div>
       <div class="c360-card-value-wrap">${valueHtml}</div>
       <div class="c360-card-sub">${subHtml || '&nbsp;'}</div>
@@ -695,8 +761,9 @@ function renderCockpit() {
   const el = document.getElementById('c360-cockpit');
   if (!el) return;
   const m = S.resumoMes;
+  const setup = computeSetup();
 
-  // Performance do período analisado
+  // ── Performance do período analisado ──
   const mcDiag = m.mcDiagnostico ?? null;   // já normalizada para % na consolidação
   const mcCls = mcDiag == null ? 'muted'
     : mcDiag >= MC_OK ? 'ok' : mcDiag >= MC_WARN ? 'warn' : 'crit';
@@ -709,7 +776,7 @@ function renderCockpit() {
 
   const perf = [
     card('Faturamento', `<div class="c360-card-value brand">${valOr(m.faturamento, fmtBRL)}</div>`,
-         `Vendas brutas · ${esc(S.periodo.label)}`),
+         `Vendas brutas · ${esc(S.periodo.label)}`, { primary: true }),
     card('MC do diagnóstico', `<div class="c360-card-value ${mcCls}">${valOr(mcDiag, fmtPct)}</div>`,
          mcSub),
     card('Pedidos', `<div class="c360-card-value">${valOr(m.pedidos, n => fmt(n))}</div>`,
@@ -717,34 +784,52 @@ function renderCockpit() {
     card('Cancelados', `<div class="c360-card-value">${valOr(m.cancelados, n => fmt(n))}</div>`, cancelSub),
   ];
 
-  // Operação e mídia
+  // ── Mídia ──
   const tacosCls = m.tacos == null ? 'muted' : m.tacos > TACOS_WARN ? 'crit' : 'ok';
   // Fonte sempre explícita: Mercado Ads (ao vivo, igual à tela Ads) ou
   // gerencial (ads_resumos_mensais). Mês de referência ganha chip de alerta.
   const adsFonteChip = m.adsFonte === 'mercado_ads'
     ? `<span class="c360-chip flat">fonte: Mercado Ads</span>`
     : `<span class="c360-chip flat">fonte: gerencial</span>`;
-  const adsSub = m.adsInvestido == null ? 'sem registro do mês'
+  // Ads ausente ≠ Ads zero: sem registro mostra "—" + legenda clara.
+  const adsSub = m.adsInvestido == null ? 'sem registro de Ads no mês'
     : `${m.adsRef ? `<span class="c360-chip warn">ref. ${esc(m.adsRef)}</span> ` : ''}${adsFonteChip}`;
 
-  const oper = [
-    card('Ads investido', `<div class="c360-card-value">${valOr(m.adsInvestido, fmtBRL)}</div>`, adsSub),
+  const midia = [
+    card('Ads investido', `<div class="c360-card-value">${valOr(m.adsInvestido, fmtBRL)}</div>`, adsSub,
+         { primary: true }),
     card('TACoS', `<div class="c360-card-value ${tacosCls}">${valOr(m.tacos, fmtPct)}</div>`,
          m.tacos == null
-           ? (m.adsInvestido == null ? 'sem registro de Ads' : 'sem faturamento do mês')
+           ? (m.adsInvestido == null ? 'indisponível · sem Ads' : 'indisponível · sem faturamento')
            : 'Ads ÷ faturamento (Cliente 360)'),
+  ];
+
+  // ── Operação & setup ──
+  const setupCls = setup.level === 'ok' ? 'ok' : setup.level === 'warn' ? 'warn' : 'crit';
+  const oper = [
     card('Fechamentos', `<div class="c360-card-value">${fmt(m.fechamentos)}</div>`, 'salvos no total'),
     card('Diagnósticos', `<div class="c360-card-value">${fmt(m.diagnosticos)}</div>`, 'rodados no total'),
+    card('Setup', `<div class="c360-card-value ${setupCls}">${setup.pct}%</div>`,
+         setup.pct >= 80 ? 'cliente configurado' : 'configuração incompleta'),
   ];
+
+  const tipoSuf = S.periodo.tipo === 'mes_anterior' ? ' · mês anterior fechado'
+    : S.periodo.tipo === 'mes_atual' ? ' · mês em andamento' : '';
 
   el.innerHTML = `
     <div class="c360-group">
-      <div class="c360-group-label">Performance · ${esc(S.periodo.label)}${S.periodo.tipo === 'mes_anterior' ? ' (mês anterior fechado)' : S.periodo.tipo === 'mes_atual' ? ' (mês em andamento)' : ''}</div>
+      <div class="c360-group-label">Performance · ${esc(S.periodo.label)}${tipoSuf}</div>
       <div class="c360-cards4">${perf.join('')}</div>
     </div>
-    <div class="c360-group">
-      <div class="c360-group-label">Operação e mídia</div>
-      <div class="c360-cards4">${oper.join('')}</div>
+    <div class="c360-cockpit-row">
+      <div class="c360-group">
+        <div class="c360-group-label">Mídia</div>
+        <div class="c360-cards-auto">${midia.join('')}</div>
+      </div>
+      <div class="c360-group">
+        <div class="c360-group-label">Operação &amp; setup</div>
+        <div class="c360-cards-auto">${oper.join('')}</div>
+      </div>
     </div>`;
 }
 
@@ -1042,6 +1127,41 @@ function renderOverview(el) {
 
   // Gráfico: SOMENTE a série diária do período analisado (snapshot salvo no
   // unificado; ao vivo só no fallback legado). Nunca mostra série de outro mês.
+  // Alertas e pendências (executivo): prioriza os issues do diagnóstico
+  // automático (têm severidade + ação); sem eles, cai nas pendências de
+  // qualidade de dados. Não duplica a reco do topo (que é o "próximo passo").
+  const issues = S.diagnosticoAuto?.issues || [];
+  const pend = S.dataQuality?.problemas || [];
+  const alertItems = issues.length
+    ? issues.map(i => ({ sev: i.severidade === 'critico' ? 'crit' : 'warn', titulo: i.titulo, acao: i.acaoRecomendada || '' }))
+    : pend.map(p => ({ sev: 'warn', titulo: p.descricao, acao: '' }));
+  const nCrit = alertItems.filter(a => a.sev === 'crit').length;
+  const alertasHtml = alertItems.length ? `
+    <div class="c360-panel">
+      <div class="c360-panel-head">
+        <h2 class="c360-panel-title">Alertas e pendências</h2>
+        <span class="c360-panel-meta">${alertItems.length} item(ns)${nCrit ? ` · ${nCrit} crítico(s)` : ''}</span>
+      </div>
+      <div class="c360-panel-body c360-panel-body--flush">
+        <div class="c360-alert-list">
+          ${alertItems.map(a => `
+            <div class="c360-alert">
+              <span class="c360-sev-dot ${a.sev}"></span>
+              <div class="c360-alert-body">
+                <div class="c360-alert-title">${esc(a.titulo)}</div>
+                ${a.acao ? `<div class="c360-alert-acao">${esc(a.acao)}</div>` : ''}
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>
+    </div>` : `
+    <div class="c360-panel">
+      <div class="c360-panel-head"><h2 class="c360-panel-title">Alertas e pendências</h2></div>
+      <div class="c360-panel-body">
+        <div class="c360-diag-okstate"><b>Sem alertas abertos ✓</b><span>Nenhum problema crítico ou de atenção detectado.</span></div>
+      </div>
+    </div>`;
+
   const serieDiaria = Array.isArray(S.grafico?.serieDiaria) ? S.grafico.serieDiaria : null;
   const fonteGrafico = S.grafico?.fonte === 'snapshot' ? 'snapshot salvo'
     : S.grafico?.fonte === 'ao_vivo' ? 'Mercado Livre (ao vivo)' : null;
@@ -1113,6 +1233,8 @@ function renderOverview(el) {
         </div>
       </div>
     </div>
+
+    ${alertasHtml}
 
     ${renderCoberturaBase(false)}
 
@@ -1234,7 +1356,8 @@ function renderAreaChart(host, porDia) {
 async function renderBases360(el) {
   if (!S.bases.length) {
     el.innerHTML = panelEmpty('Bases vinculadas', '📦', 'Nenhuma base vinculada',
-      'Vincule uma base em <a href="bases.html">Bases de Custo</a>.');
+      'Sem base de custo não há cálculo confiável de margem (MC/LC) nem cobertura por faturamento.',
+      '<a href="bases.html" class="c360-btn c360-btn-primary">Vincular base de custo</a>');
   } else {
     el.innerHTML = `
       <div class="c360-panel">
@@ -1600,7 +1723,8 @@ function renderDiag(el) {
   const autoHtml = renderDiagnosticoAutomatico();
   if (!S.relatorios.length) {
     el.innerHTML = autoHtml + panelEmpty('Diagnóstico por anúncio', '🔍', 'Nenhum diagnóstico ainda',
-      'Rode o primeiro diagnóstico em <a href="automacoes.html">Automações</a> para mapear margem, custos e problemas por anúncio.');
+      'Sem diagnóstico não há margem por anúncio, itens sem custo nem cobertura por faturamento.',
+      '<a href="automacoes.html" class="c360-btn c360-btn-primary">Rodar diagnóstico</a>');
     return;
   }
   const r = latestRel();
@@ -2045,9 +2169,12 @@ function renderAds360(el) {
       el.innerHTML = panelEmpty('Ads', '⏳', 'Carregando performance Mercado Ads…',
         'Buscando investimento, ROAS e ACOS do mês.');
     } else {
-      el.innerHTML = panelEmpty('Ads', '📢', 'Sem dados de Ads',
-        S.temGrant ? 'Nenhuma campanha Mercado Ads no período, ou dados indisponíveis.'
-                   : 'Conecte o Mercado Livre para ver a performance de Ads.');
+      el.innerHTML = S.temGrant
+        ? panelEmpty('Ads', '📢', 'Sem registro de Ads no período',
+            'Ausência de Ads <b>não é o mesmo que investimento zero</b>: pode não haver campanha no período ou os dados ainda não foram consolidados. Por isso TACoS aparece como indisponível, não 0%.')
+        : panelEmpty('Ads', '📢', 'Sem grant Mercado Livre',
+            'Sem grant não há como ler a performance de Ads do cliente.',
+            `<button class="c360-btn c360-btn-primary" onclick="copiarLink360('${esc(S.cliente?.slug || '')}')">Copiar link ML</button>`);
     }
     return;
   }
@@ -2278,13 +2405,14 @@ function renderHistorico(el) {
 }
 
 /* ── HELPER: painel vazio ────────────────────────────────── */
-function panelEmpty(title, icon, head, body) {
+function panelEmpty(title, icon, head, body, action = '') {
   return `
     <div class="c360-panel">
       <div class="c360-panel-head"><h2 class="c360-panel-title">${title}</h2></div>
-      <div class="c360-empty">
+      <div class="c360-empty c360-empty--rich">
         <div class="c360-empty-icon">${icon}</div>
         <b>${head}</b><p>${body}</p>
+        ${action ? `<div class="c360-empty-act">${action}</div>` : ''}
       </div>
     </div>`;
 }

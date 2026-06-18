@@ -1,9 +1,12 @@
 const STORAGE_KEY = "vf-token";
 const API_BASE = "https://venforce-server.onrender.com";
 
-// ─── Destino pós-login por role (seller tem área própria) ───
+// ─── Destino pós-login por role ───
 function destinoPorRole(user) {
-  return String(user?.role || "").toLowerCase() === "seller" ? "seller.html" : "dashboard.html";
+  const role = String(user?.role || "").toLowerCase();
+  if (role === "seller") return "seller.html";
+  if (role === "shopee_reviewer") return "cliente-operacao.html";
+  return "dashboard.html";
 }
 
 // ─── Redirect se já logado ───

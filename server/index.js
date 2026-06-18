@@ -775,8 +775,21 @@ app.get("/admin/ml-tokens", authMiddleware, requireAdmin, async (req, res) => {
   }
 });
 
-app.get("/clientes", authMiddleware, requireAdmin, async (req, res) => {
+app.get("/clientes", authMiddleware, async (req, res) => {
   try {
+    const role = String(req.user?.role || "").toLowerCase();
+
+    if (role === "shopee_reviewer") {
+      const result = await pool.query(
+        "SELECT id, nome, slug, ativo, created_at FROM clientes WHERE slug = 'demo-shopee' AND ativo = true"
+      );
+      return res.json({ ok: true, clientes: result.rows });
+    }
+
+    if (role !== "admin") {
+      return res.status(403).json({ ok: false, erro: "Acesso restrito a administradores." });
+    }
+
     const result = await pool.query(
       "SELECT id, nome, slug, api_key, ativo, created_at FROM clientes ORDER BY created_at DESC"
     );
@@ -1195,7 +1208,7 @@ app.patch("/usuarios/:id", authMiddleware, requireAdmin, async (req, res) => {
     let i = 1;
     if (ativo !== undefined) { campos.push(`ativo = $${i++}`); valores.push(ativo); }
     if (role !== undefined) {
-      const rolesPermitidas = ['admin', 'membro', 'seller'];
+      const rolesPermitidas = ['admin', 'membro', 'seller', 'shopee_reviewer'];
       if (!rolesPermitidas.includes(role)) {
         return res.status(400).json({ ok: false, erro: `Role inválida. Permitidas: ${rolesPermitidas.join(', ')}.` });
       }

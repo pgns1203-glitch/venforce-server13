@@ -1,19 +1,25 @@
 /* ================================================================
-   fechamentos-api.js — VenForce · Painel de vendas por pedido
+   fechamentos-api.js — VenForce · Central de Vendas
    ----------------------------------------------------------------
    FERRAMENTA OPERACIONAL de conciliação por PEDIDO.
    Regra central: o PEDIDO é a fonte da verdade; o PRODUTO é agregação
    dos pedidos; dia/semana/mês são FILTROS sobre os pedidos.
-
-   100% front-only, mock local realista (espelha a lógica do fechamento
-   atual: server/services/fechamentoFinanceiro/meliFinanceiroService.js).
-   SWAP FUTURO: trocar carregarPayload() por fetch do mesmo contrato.
 
    Honestidade do dado:
      null/undefined = AUSENTE (mostra "—")   ·   0 = zero REAL
      status: real | estimado | ausente | parcial | bloqueado
      resultado NUNCA é exibido como confiável se faltar dado.
    ================================================================ */
+
+const STORAGE_KEY = "vf-token";
+const API_BASE    = "https://venforce-server.onrender.com";
+
+function getToken() {
+  const t = localStorage.getItem(STORAGE_KEY);
+  if (!t) { window.location.replace("index.html"); return null; }
+  return t;
+}
+const TOKEN = getToken();
 
 if (typeof window.initLayout === "function") window.initLayout();
 
@@ -454,19 +460,39 @@ function dayScopeClass(data) {
   return '';
 }
 
-/* ── CARREGAMENTO (mock) ──────────────────────────────────── */
-function carregarPayload(slug, competencia) {
+/* ── CARREGAMENTO ─────────────────────────────────────────── */
+async function carregarPayload(slug, competencia) {
   if (!slug) return null;
-  const cli = F.clientes.find(c => c.slug === slug) || mockFechamentoApiPayload.cliente;
-  const comp = MOCK_COMPETENCIAS.find(c => c.competencia === competencia) || MOCK_COMPETENCIAS[0];
-  const p = JSON.parse(JSON.stringify(mockFechamentoApiPayload));
-  p.cliente = { id:cli.id, nome:cli.nome, slug:cli.slug };
-  p.periodo = { competencia:comp.competencia, inicio:comp.inicio, fim:comp.fim, label:comp.label };
-  return p;
+  try {
+    const res = await fetch(
+      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(slug)}?competencia=${encodeURIComponent(competencia)}`,
+      { headers: { Authorization: "Bearer " + TOKEN } }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    // fallback se vier sem pedidos (cliente sem importação)
+    if (!data || !Array.isArray(data.pedidos) || data.pedidos.length === 0) throw new Error("sem_pedidos");
+    return data;
+  } catch (_) {
+    // fallback para mock — motor-status fica "● Mock"
+    const cli = F.clientes.find(c => c.slug === slug) || mockFechamentoApiPayload.cliente;
+    const comp = MOCK_COMPETENCIAS.find(c => c.competencia === competencia) || MOCK_COMPETENCIAS[0];
+    const p = JSON.parse(JSON.stringify(mockFechamentoApiPayload));
+    p.cliente = { id:cli.id, nome:cli.nome, slug:cli.slug };
+    p.periodo = { competencia:comp.competencia, inicio:comp.inicio, fim:comp.fim, label:comp.label };
+    return p;
+  }
 }
 
 /* ── INIT ─────────────────────────────────────────────────── */
 function initFechamentosApi() {
+  // Troca textos visíveis para "Central de Vendas"
+  document.title = document.title.replace('Fechamentos API', 'Central de Vendas');
+  const titleEl = document.querySelector('.fapi-title');
+  if (titleEl && titleEl.textContent.trim() === 'Fechamentos API') titleEl.textContent = 'Central de Vendas';
+  const ariaEl = document.getElementById('fapi-main');
+  if (ariaEl) ariaEl.setAttribute('aria-label', 'Central de Vendas');
+
   F.clientes = MOCK_CLIENTES.slice();
   const sel = document.getElementById('fapi-client-select');
   if (sel) {
@@ -492,7 +518,7 @@ function resetFilters() {
   F.intervaloAviso = null;
 }
 
-function carregarTela() {
+async function carregarTela() {
   const content = document.getElementById('fapi-content');
   if (!content) return;
   if (!F.cliente) {
@@ -501,7 +527,7 @@ function carregarTela() {
       why:'O fechamento por pedido é sempre por cliente e por competência.', next:'Escolha um cliente e a competência acima.' });
     return;
   }
-  F.rawPayload = carregarPayload(F.cliente.slug, F.competencia);
+  F.rawPayload = await carregarPayload(F.cliente.slug, F.competencia);
   if (!F.rawPayload?.ok) {
     renderHeader({ motor:{ status:'indisponivel' } });
     content.innerHTML = emptyState({ icon:'🔌', title:'Motor indisponível', why:'O backend do motor ainda não respondeu.', next:'Quando o endpoint existir, a tela carrega o payload real.' });

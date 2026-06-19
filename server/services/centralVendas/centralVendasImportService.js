@@ -1,5 +1,6 @@
 const {
   processMeliForCentralVendas,
+  parseMeliRows,
 } = require("../fechamentoFinanceiro/meliFinanceiroService");
 const pool = require("../../config/database");
 
@@ -159,6 +160,40 @@ function createCentralVendasImportService(repository = getRepository(), db = poo
 
     const costRowsRaw = await buscarCostRowsDaBase(cliente.id, db);
 
+    // Diagnóstico de parsing: converte antes do motor para poder logar
+    const salesRowsParsed = parseMeliRows(salesRowsRaw);
+    const nLinhasBrutas = salesRowsRaw.length;
+    const nMainRows = salesRowsParsed.filter(r => !r.adId && Math.abs(r.productRevenue) > 0).length;
+    const nItemRows = salesRowsParsed.filter(r => !!r.adId && r.units > 0).length;
+
+    console.log(
+      `[centralVendas] import ${slug} ${competenciaNorm}:` +
+      ` linhasBrutas=${nLinhasBrutas} mainRows=${nMainRows} itemRows=${nItemRows}`
+    );
+
+    if (nLinhasBrutas > 0 && nMainRows === 0 && nItemRows === 0) {
+      // Mostra as chaves e valores das primeiras 3 linhas para diagnóstico
+      const sample = salesRowsRaw.slice(0, 3).map(r => Object.keys(r).join(" | "));
+      console.log("[centralVendas] colunas da planilha (primeiras 3 linhas):", sample);
+      // Também mostra o que parseMeliRows extraiu para a primeira linha
+      if (salesRowsParsed[0]) {
+        const p = salesRowsParsed[0];
+        console.log(
+          `[centralVendas] parseMeliRows linha 0: adId=${JSON.stringify(p.adId)}` +
+          ` productRevenue=${p.productRevenue} units=${p.units} total=${p.total}` +
+          ` saleNumber=${JSON.stringify(p.saleNumber)}`
+        );
+      }
+      const err = new Error(
+        `A planilha foi lida (${nLinhasBrutas} linhas) mas nenhuma linha foi reconhecida ` +
+        `como pedido Meli. Verifique se o cabeçalho da planilha contém as colunas esperadas ` +
+        `("N.º de venda", "Receita por Produtos", "# de Anúncio", "Unidades"). ` +
+        `Colunas encontradas: ${Object.keys(salesRowsRaw[0] || {}).slice(0, 8).join(", ")}`
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
     const motorResult = processMeliForCentralVendas({
       salesRowsRaw,
       costRowsRaw,
@@ -166,6 +201,17 @@ function createCentralVendasImportService(repository = getRepository(), db = poo
       competencia: competenciaNorm,
     });
     const resumo = buildResumoCentralVendas(motorResult);
+
+    if (motorResult.pedidos.length === 0) {
+      const err = new Error(
+        `Parser reconheceu ${nMainRows} linha(s) de cabeçalho e ${nItemRows} item(s), ` +
+        `mas o motor não gerou nenhum pedido. ` +
+        `Verifique se as linhas de item estão logo abaixo das linhas de total na planilha.`
+      );
+      err.statusCode = 400;
+      throw err;
+    }
+
     const motorPayload = {
       ...motorResult,
       resumo,

@@ -83,6 +83,15 @@ async function importarVendas(req, res) {
     if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
 
     const salesRowsRaw = parseSalesRows(req);
+
+    // Log de diagnóstico: cabeçalho da planilha para identificar mismatch de colunas
+    if (salesRowsRaw.length > 0) {
+      const colunas = Object.keys(salesRowsRaw[0]).slice(0, 12).join(" | ");
+      console.log(`[centralVendas] importarVendas ${slug}: ${salesRowsRaw.length} linhas, colunas: ${colunas}`);
+    } else {
+      console.log(`[centralVendas] importarVendas ${slug}: 0 linhas após parseSpreadsheet`);
+    }
+
     const data = await centralVendasImportService.importarVendasMeli({
       salesRowsRaw,
       clienteSlug: slug,

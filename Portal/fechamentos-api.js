@@ -485,7 +485,7 @@ async function carregarPayload(slug, competencia) {
 }
 
 /* ── INIT ─────────────────────────────────────────────────── */
-function initFechamentosApi() {
+async function initFechamentosApi() {
   // Troca textos visíveis para "Central de Vendas"
   document.title = document.title.replace('Fechamentos API', 'Central de Vendas');
   const titleEl = document.querySelector('.fapi-title');
@@ -493,10 +493,29 @@ function initFechamentosApi() {
   const ariaEl = document.getElementById('fapi-main');
   if (ariaEl) ariaEl.setAttribute('aria-label', 'Central de Vendas');
 
-  F.clientes = MOCK_CLIENTES.slice();
+  // Busca lista real de clientes — mesmo endpoint e lógica do cliente-360.js.
+  // Fallback para /clientes (admin-only) se o endpoint operacional não existir.
+  try {
+    let data = await fetch(`${API_BASE}/operacao/cliente-360/clientes`,
+      { headers: { Authorization: 'Bearer ' + TOKEN } }).then(r => r.ok ? r.json() : null);
+    if (!data?.ok) {
+      const r2 = await fetch(`${API_BASE}/clientes`, { headers: { Authorization: 'Bearer ' + TOKEN } });
+      data = r2.ok ? await r2.json() : null;
+    }
+    const lista = Array.isArray(data?.clientes) ? data.clientes
+                : Array.isArray(data)            ? data
+                : [];
+    F.clientes = lista
+      .filter(c => c?.ativo !== false)
+      .sort((a, b) => (a.nome || '').localeCompare(b.nome || ''));
+  } catch (_) {
+    F.clientes = [];
+  }
+
   const sel = document.getElementById('fapi-client-select');
   if (sel) {
-    sel.innerHTML = '<option value="">Selecione o cliente…</option>' + F.clientes.map(c => `<option value="${esc(c.slug)}">${esc(c.nome)}</option>`).join('');
+    sel.innerHTML = '<option value="">Selecione o cliente…</option>' +
+      F.clientes.map(c => `<option value="${esc(c.slug)}">${esc(c.nome)}</option>`).join('');
     // Trocar cliente reseta filtros e seleção.
     sel.addEventListener('change', () => { F.cliente = F.clientes.find(c => c.slug === sel.value) || null; F.selectedOrderId = null; resetFilters(); carregarTela(); });
   }

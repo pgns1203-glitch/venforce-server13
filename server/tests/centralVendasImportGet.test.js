@@ -144,19 +144,28 @@ const salesRowsRaw = [
   },
 ];
 
-const costRowsRaw = [
-  { "# de anuncio": "MLB111", custo: 40, imposto: 10 },
-  { "# de anuncio": "MLB222", custo: 30, imposto: 10 },
-  { "# de anuncio": "MLB333", custo: 50, imposto: 5 },
+// Custos equivalentes agora vêm da base vinculada (formato banco: produto_id/custo_produto/imposto_percentual)
+const custosNaBanco = [
+  { produto_id: "MLB111", custo_produto: "40", imposto_percentual: "10" },
+  { produto_id: "MLB222", custo_produto: "30", imposto_percentual: "10" },
+  { produto_id: "MLB333", custo_produto: "50", imposto_percentual: "5"  },
+  // MLB999 ausente → pedido 1003 deve continuar bloqueado
 ];
 
+const fakeDb = {
+  async query(sql) {
+    if (/base_cliente_vinculos/.test(sql)) return { rows: [{ base_id: 1, base_nome: "Base Teste" }] };
+    if (/FROM custos/.test(sql))           return { rows: custosNaBanco };
+    return { rows: [] };
+  },
+};
+
 async function run() {
-  const importService = createCentralVendasImportService(fakeRepository);
+  const importService = createCentralVendasImportService(fakeRepository, fakeDb);
   const readService = createCentralVendasService(fakeRepository);
 
   const imported = await importService.importarVendasMeli({
     salesRowsRaw,
-    costRowsRaw,
     clienteSlug: cliente.slug,
     competencia: "2026-05",
   });

@@ -72,6 +72,7 @@ const metricasRoutes = require("./routes/metricasRoutes");
 const clickupRoutes = require("./routes/clickupRoutes");
 const externalFirebaseRoutes = require("./routes/externalFirebaseRoutes");
 const tiktokShopRoutes = require("./routes/tiktokShopRoutes");
+const shopeeRoutes = require("./routes/shopeeRoutes");
 const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 
@@ -437,6 +438,7 @@ app.use("/admin/logs", logsRoutes);
 app.use("/fechamentos", fechamentosFinanceiroRoutes);
 app.use("/", mlRoutes);
 app.use("/", tiktokShopRoutes);
+app.use("/shopee", shopeeRoutes);
 app.use("/", automacoesRoutes);
 app.use("/", entregasClienteRoutes);
 app.use("/", basesRoutes);

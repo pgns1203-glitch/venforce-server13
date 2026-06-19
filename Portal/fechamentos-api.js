@@ -184,6 +184,7 @@ const F = {
   selectedOrderId: null,
   productLimit: 10, draftProductLimit: 10, productSort: 'faturamento',
   intervaloAviso: null,   // aviso discreto quando a data inicial > final foi corrigida
+  arquivoImport: null,    // File guardado no change do input — imune a repaint do carregarTela
 };
 
 /* ── DERIVAÇÕES DE PEDIDO (motor por pedido) ──────────────── */
@@ -962,9 +963,13 @@ function montarBlocoImportacao(controls) {
     s.id = 'fapi-import-styles';
     s.textContent = [
       '.fapi-import-block { border-left: 1px solid var(--vfop-border,#dde1e8); padding-left: 14px; margin-left: 2px; }',
-      '.fapi-import-row { display: flex; align-items: center; gap: 6px; }',
-      '.fapi-import-input { font-size: 11.5px; color: var(--vfop-muted,#5a6578); max-width: 200px; }',
-      '.fapi-import-status { font-size: 11.5px; font-weight: 600; margin-top: 4px; padding: 3px 7px; border-radius: 4px; }',
+      '.fapi-import-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }',
+      '.fapi-import-input { width: 0.1px; height: 0.1px; opacity: 0; overflow: hidden; position: absolute; z-index: -1; }',
+      '.fapi-import-label { display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; cursor: pointer; border: 1px solid var(--vfop-border,#dde1e8); color: var(--vfop-muted,#5a6578); background: var(--vfop-surface,#fff); white-space: nowrap; }',
+      '.fapi-import-label:hover { background: var(--vfop-subtle,#f8f9fb); }',
+      '.fapi-import-fname { font-size: 11px; color: var(--vfop-text,#111827); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+      '.fapi-import-fname:empty::before { content: "Nenhum arquivo"; color: var(--vfop-soft,#8c96a6); }',
+      '.fapi-import-status { font-size: 11.5px; font-weight: 600; margin-top: 4px; padding: 3px 7px; border-radius: 4px; width: 100%; box-sizing: border-box; }',
       '.fapi-import-status--info    { color: #2563eb; background: #eff6ff; }',
       '.fapi-import-status--ok      { color: #1a7a45; background: #f4fbf7; }',
       '.fapi-import-status--warn    { color: #855100; background: #fdf9f0; }',
@@ -977,13 +982,25 @@ function montarBlocoImportacao(controls) {
   wrap.id = 'fapi-import-block';
   wrap.className = 'fapi-field fapi-import-block';
   wrap.innerHTML = `
-    <label for="fapi-import-file">Importar vendas</label>
+    <label>Importar vendas</label>
     <div class="fapi-import-row">
       <input type="file" id="fapi-import-file" accept=".xlsx" class="fapi-import-input">
+      <label for="fapi-import-file" class="fapi-import-label">Escolher .xlsx</label>
+      <span id="fapi-import-fname" class="fapi-import-fname"></span>
       <button id="fapi-import-btn" class="fapi-btn fapi-btn-primary fapi-btn-sm" type="button">Importar</button>
     </div>
     <div id="fapi-import-status" class="fapi-import-status" hidden></div>`;
   controls.appendChild(wrap);
+
+  // Guarda o File em F.arquivoImport no momento da seleção — imune a qualquer
+  // repaint ou reescrita de #fapi-content pelo carregarTela.
+  document.getElementById('fapi-import-file').addEventListener('change', function () {
+    const f = this.files?.[0] || null;
+    F.arquivoImport = f;
+    const nome = document.getElementById('fapi-import-fname');
+    if (nome) nome.textContent = f ? f.name : '';
+    setImportStatus('', '');
+  });
 
   document.getElementById('fapi-import-btn').addEventListener('click', executarImportacao);
 }
@@ -999,12 +1016,13 @@ function setImportStatus(msg, tipo) {
 async function executarImportacao() {
   if (!TOKEN) return;
   const btn = document.getElementById('fapi-import-btn');
-  const fileInput = document.getElementById('fapi-import-file');
 
   if (!F.cliente) { setImportStatus('Selecione um cliente antes de importar.', 'warn'); return; }
   if (!F.competencia) { setImportStatus('Selecione a competência antes de importar.', 'warn'); return; }
 
-  const arquivo = fileInput?.files?.[0];
+  // Usa F.arquivoImport (variável de estado) — não depende de input.files[0],
+  // que o browser pode zerar após repaint mesmo sem destruir o elemento.
+  const arquivo = F.arquivoImport;
   if (!arquivo) { setImportStatus('Selecione a planilha de vendas (.xlsx).', 'warn'); return; }
 
   if (btn) { btn.disabled = true; btn.textContent = 'Importando…'; }
@@ -1027,7 +1045,12 @@ async function executarImportacao() {
 
     const pedidos = json.pedidosPersistidos ?? '?';
     setImportStatus(`✓ Importado: ${pedidos} pedido(s). Recarregando…`, 'ok');
+    // Limpa o arquivo após importação bem-sucedida
+    F.arquivoImport = null;
+    const fileInput = document.getElementById('fapi-import-file');
     if (fileInput) fileInput.value = '';
+    const fname = document.getElementById('fapi-import-fname');
+    if (fname) fname.textContent = '';
     await carregarTela();
     setImportStatus(`✓ ${pedidos} pedido(s) importados com sucesso.`, 'ok');
   } catch (err) {

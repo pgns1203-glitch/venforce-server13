@@ -1,6 +1,7 @@
 const {
   processMeliForCentralVendas,
 } = require("../fechamentoFinanceiro/meliFinanceiroService");
+const pool = require("../../config/database");
 
 function getRepository() {
   return require("./centralVendasRepository");
@@ -62,10 +63,65 @@ function buildResumoCentralVendas(motorResult) {
   };
 }
 
-function createCentralVendasImportService(repository = getRepository()) {
+/*
+ * Busca os custos da base vinculada ao cliente (marketplace meli) e monta
+ * costRowsRaw no formato que parseMeliCostRows/buildCentralCostMap esperam:
+ *   [{ mlb: "MLB123", custo: 18.90, imposto: 10 }, ...]
+ *
+ * - produto_id  → chave "mlb"   (findField reconhece "mlb" como alias de "# de anúncio")
+ * - custo_produto → chave "custo"  (alias de "preço de custo")
+ * - imposto_percentual → chave "imposto" (alias direto)
+ *
+ * Erros 422 explícitos:
+ *   "cliente sem base de custo vinculada"
+ *   "base vinculada não possui itens de custo cadastrados"
+ */
+async function buscarCostRowsDaBase(clienteId, db = pool) {
+  const vinculoResult = await db.query(
+    `SELECT b.id AS base_id, b.nome AS base_nome
+       FROM bases b
+       INNER JOIN base_cliente_vinculos v ON v.base_id = b.id
+      WHERE v.cliente_id = $1
+        AND v.ativo = true
+        AND b.ativo = true
+        AND v.marketplace = 'meli'
+      ORDER BY v.updated_at DESC
+      LIMIT 1`,
+    [clienteId]
+  );
+
+  if (!vinculoResult.rows.length) {
+    const err = new Error("cliente sem base de custo vinculada");
+    err.statusCode = 422;
+    throw err;
+  }
+
+  const { base_id } = vinculoResult.rows[0];
+
+  const custosResult = await db.query(
+    `SELECT produto_id, custo_produto, imposto_percentual
+       FROM custos
+      WHERE base_id = $1`,
+    [base_id]
+  );
+
+  if (!custosResult.rows.length) {
+    const err = new Error("base vinculada não possui itens de custo cadastrados");
+    err.statusCode = 422;
+    throw err;
+  }
+
+  // De-para: produto_id → mlb, custo_produto → custo, imposto_percentual → imposto
+  return custosResult.rows.map((row) => ({
+    mlb: String(row.produto_id || "").trim(),
+    custo: Number(row.custo_produto) || 0,
+    imposto: Number(row.imposto_percentual) || 0,
+  }));
+}
+
+function createCentralVendasImportService(repository = getRepository(), db = pool) {
   async function importarVendasMeli({
     salesRowsRaw,
-    costRowsRaw,
     clienteSlug,
     competencia,
     marketplace = "meli",
@@ -86,8 +142,8 @@ function createCentralVendasImportService(repository = getRepository()) {
       throw err;
     }
 
-    if (!Array.isArray(salesRowsRaw) || !Array.isArray(costRowsRaw)) {
-      const err = new Error("Linhas de vendas e custos sao obrigatorias.");
+    if (!Array.isArray(salesRowsRaw)) {
+      const err = new Error("Linhas de vendas sao obrigatorias.");
       err.statusCode = 400;
       throw err;
     }
@@ -100,6 +156,8 @@ function createCentralVendasImportService(repository = getRepository()) {
       err.statusCode = 404;
       throw err;
     }
+
+    const costRowsRaw = await buscarCostRowsDaBase(cliente.id, db);
 
     const motorResult = processMeliForCentralVendas({
       salesRowsRaw,
@@ -143,4 +201,5 @@ module.exports = {
   importarVendasMeli: (params) => createCentralVendasImportService().importarVendasMeli(params),
   createCentralVendasImportService,
   buildResumoCentralVendas,
+  buscarCostRowsDaBase,
 };

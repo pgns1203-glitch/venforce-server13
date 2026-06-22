@@ -404,40 +404,55 @@ function aggByProduct(pedidos) {
     if (!map.has(key)) map.set(key, {
       mlb: o.mlb, prod: o.prod, titulo: o.produto.titulo, sku: o.produto.sku,
       unidades: 0, pedidos: 0, faturamento: 0, receitaBloqueada: 0, freteAcum: 0, taxasAcum: 0,
-      cancelProblema: 0, full: o.full, semProduto: !o.mlb,
+      cancelProblema: 0, full: o.full, fullPedidos: 0, normalPedidos: 0, semProduto: !o.mlb,
     });
     const a = map.get(key);
     const valido = o.status !== 'cancelado';
     a.pedidos += 1;
-    if (valido) { a.unidades += (o.unidades || 0); a.faturamento += (o.valor || 0); }
+    if (valido) { a.unidades += (o.unidades || 0); a.faturamento += (o.valor || 0); a.taxasAcum += (o.taxas || 0); }
     if (o.resultadoStatus === 'bloqueado' && valido) a.receitaBloqueada += (o.valor || 0);
     a.freteAcum += (o.frete || 0);
-    a.taxasAcum += (o.taxas || 0);
     if (o.status === 'cancelado' || o.status === 'com_problema') a.cancelProblema += 1;
-    if (o.full === true) a.full = true;        // qualquer pedido full marca o produto como (também) full
+    if (o.full === true) { a.full = true; a.fullPedidos += 1; } else { a.normalPedidos += 1; }
   }
   for (const a of map.values()) { a.faturamento = round2(a.faturamento); a.receitaBloqueada = round2(a.receitaBloqueada); a.freteAcum = round2(a.freteAcum); a.taxasAcum = round2(a.taxasAcum); }
   return [...map.values()];
 }
 
-function buildProductSalesRanking(view, { sortBy = 'faturamento', limit = 10 } = {}) {
-  const arr = aggByProduct(view.pedidos);
-  const totalFat = arr.reduce((s, a) => s + a.faturamento, 0) || 0;
-  arr.forEach(a => { a.pctFat = totalFat > 0 ? round2(a.faturamento / totalFat * 100) : null; });
-  arr.sort((x, y) => (y[sortBy] || 0) - (x[sortBy] || 0));
-  const limited = (limit == null) ? arr : arr.slice(0, limit);
-  return { rows: limited, totalFat, totalCount: arr.length };
+/* Logística do produto: full / normal / misto (ambos) / null (—). */
+function productLogisticaTipo(a) {
+  const f = a.fullPedidos > 0, n = a.normalPedidos > 0;
+  return f && n ? 'misto' : f ? 'full' : n ? 'normal' : null;
 }
 
-function productPendenciaPrincipal(a, prod) {
-  if (a?.semProduto) return 'financeiro sem produto';
-  if (!prod) return 'produto não encontrado';
-  if (prod.base?.temCusto !== true) return 'sem custo/base';
-  if (prod.diag?.presente !== true) return 'fora do diagnóstico';
-  if (prod.ads?.status === 'parcial') return 'Product Ads parcial';
-  if ((a?.receitaBloqueada || 0) > 0) return 'receita bloqueada';
-  if ((a?.cancelProblema || 0) > 0) return 'cancelado/problema';
-  return '—';
+/* Enriquece a agregação com derivados de leitura e aplica grupo + ordenação.
+   Tudo derivado dos pedidos do período/filtro — sem inventar custo/frete. */
+function buildProductImpactRows(view, { group = 'todos', sortBy = 'faturamento' } = {}) {
+  const all = aggByProduct(view.pedidos).map(a => {
+    const temCusto = !a.semProduto && a.prod?.base?.temCusto === true;
+    return {
+      ...a,
+      temCusto,
+      custoUnit: temCusto ? a.prod.base.custo : null,
+      comissao: a.taxasAcum,
+      ticketMedio: a.pedidos > 0 ? round2(a.faturamento / a.pedidos) : null,
+      logisticaTipo: productLogisticaTipo(a),
+    };
+  });
+  const totalFat = all.reduce((s, a) => s + a.faturamento, 0) || 0;
+  all.forEach(a => { a.pctFat = totalFat > 0 ? round2(a.faturamento / totalFat * 100) : null; });
+
+  let rows = all;
+  if (group === 'sem_custo')            rows = rows.filter(a => !a.semProduto && !a.temCusto);
+  else if (group === 'receita_bloqueada') rows = rows.filter(a => (a.receitaBloqueada || 0) > 0);
+  else if (group === 'full')            rows = rows.filter(a => a.logisticaTipo === 'full' || a.logisticaTipo === 'misto');
+  else if (group === 'normal')          rows = rows.filter(a => a.logisticaTipo === 'normal' || a.logisticaTipo === 'misto');
+  else if (group === 'cancel_problema') rows = rows.filter(a => (a.cancelProblema || 0) > 0);
+  // 'todos' e 'maior_fat' não filtram
+
+  const sortKey = group === 'receita_bloqueada' ? 'receitaBloqueada' : sortBy;
+  rows = rows.slice().sort((x, y) => (y[sortKey] || 0) - (x[sortKey] || 0));
+  return { rows, allRows: all, totalFat };
 }
 function buildDailySales(view) {
   const map = new Map();

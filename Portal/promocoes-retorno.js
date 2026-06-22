@@ -357,9 +357,17 @@ function numCell(value, { money = false, frac = false, raw = false, points = fal
   return `<td class="${cls}">${formatted}</td>`;
 }
 
-function mlUrl(itemId) {
-  const id = String(itemId || "").trim();
-  return id ? `https://produto.mercadolivre.com.br/${encodeURIComponent(id)}` : "#";
+// Página oficial de promoções do ML, filtrada pelo número do anúncio (sem prefixo MLB).
+function getMlPromosUrl(itemId) {
+  const raw = String(itemId || "").trim();
+  const numericId = raw.replace(/^MLB/i, "").replace(/\D/g, "");
+  if (!numericId) return null;
+  return `https://www.mercadolivre.com.br/anuncios/lista/promos?page=1&search=${encodeURIComponent(numericId)}`;
+}
+
+function abrirGerenciarNoMl(itemId) {
+  const url = getMlPromosUrl(itemId);
+  if (url) window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function renderTabela() {
@@ -418,7 +426,9 @@ function renderTabela() {
         <div class="vf-promo-actions">
           <button type="button" class="vf-action-btn" data-act="calc" data-idx="${realIdx}" title="Ver cálculo">Cálculo</button>
           <button type="button" class="vf-action-btn vf-action-btn-secondary" data-act="copy" data-mlb="${escapeHTML(txt(l.itemId))}" title="Copiar MLB">Copiar</button>
-          <a class="vf-action-btn vf-action-btn-neutral" href="${mlUrl(l.itemId)}" target="_blank" rel="noopener" title="Abrir anúncio no Mercado Livre">Abrir</a>
+          ${getMlPromosUrl(l.itemId)
+            ? `<button type="button" class="vf-action-btn vf-action-btn-neutral" data-act="ml" data-mlb="${escapeHTML(txt(l.itemId))}" title="Gerenciar promoção no Mercado Livre">Gerenciar no ML</button>`
+            : `<button type="button" class="vf-action-btn vf-action-btn-neutral" disabled title="MLB inválido">MLB inválido</button>`}
         </div>
       </td>`,
     ].join("");
@@ -430,6 +440,9 @@ function renderTabela() {
   });
   tbody.querySelectorAll('[data-act="copy"]').forEach((b) => {
     b.addEventListener("click", () => copiarMlb(b.getAttribute("data-mlb"), b));
+  });
+  tbody.querySelectorAll('[data-act="ml"]').forEach((b) => {
+    b.addEventListener("click", () => abrirGerenciarNoMl(b.getAttribute("data-mlb")));
   });
 }
 
@@ -508,8 +521,15 @@ function abrirModalCalculo(l) {
       ${badgeDecisao(l.decisao)}
       <span style="font-size:.82rem;color:var(--vf-text-m);">${escapeHTML(txt(l.motivo))}</span>
     </div>
+    ${getMlPromosUrl(l.itemId)
+      ? `<div style="margin-top:1rem;display:flex;justify-content:flex-end;">
+           <button type="button" id="promo-calc-ml-btn" class="vf-btn-secondary" style="margin:0;">Gerenciar promoção no ML</button>
+         </div>`
+      : ""}
   `;
   modal.style.display = "flex";
+
+  document.getElementById("promo-calc-ml-btn")?.addEventListener("click", () => abrirGerenciarNoMl(l.itemId));
 }
 
 function fecharModal() {

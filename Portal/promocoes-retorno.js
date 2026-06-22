@@ -502,8 +502,8 @@ function abrirModalCalculo(l) {
       ${row("Participação ML", pctRaw(l.meliPercentage))}
       ${row("Retorno ML (R$)", brl(l.retornoMl), true)}
       ${row("Retorno equiv. sobre preço final", pctFrac(l.retornoPctSobreFinal))}
-      ${row("Comissão cheia", brl(l.comissaoCheia), false, true)}
-      ${row("Comissão efetiva (− retorno ML)", brl(l.comissaoEfetiva))}
+      ${row("Comissão cheia estimada (efetiva + retorno ML)", brl(l.comissaoCheia), false, true)}
+      ${row("Comissão efetiva (já cobrada pelo ML)", brl(l.comissaoEfetiva))}
       ${row("Frete", brl(l.frete))}
       ${row("Imposto", pctRaw(l.impostoPercentual))}
       ${row("Custo", brl(l.custo))}

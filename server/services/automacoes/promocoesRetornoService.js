@@ -265,8 +265,13 @@ async function enriquecerItem({
   const lpRoot = Array.isArray(lpData)
     ? lpData[0]
     : Array.isArray(lpData?.results) ? lpData.results[0] : lpData;
-  const comissaoCheia =
+  // Comissão crua vinda da API (listing_prices com o PREÇO DA PROMOÇÃO).
+  // IMPORTANTE: esse valor já vem REDUZIDO pelo Mercado Livre — ou seja, já é a
+  // comissão EFETIVA (com o retorno ML embutido). Por isso NÃO se subtrai retornoMl
+  // de novo; senão o benefício do retorno seria contado duas vezes.
+  const comissaoApiOriginal =
     lpRoot?.sale_fee_amount != null ? fin(Number(lpRoot.sale_fee_amount)) : null;
+  const fonteComissao = comissaoApiOriginal !== null ? "listing_prices" : null;
 
   const frete =
     shippingResp && shippingResp.ok && shippingResp.data?.coverage?.all_country?.list_cost != null
@@ -280,11 +285,23 @@ async function enriquecerItem({
   const taxaFixa = temBase ? fin(Number(baseRow.taxaFixa)) : null;
   const impostoAliquota = temBase ? toAliquota(impostoPercentual) : null;
 
-  // comissaoEfetiva = max(0, comissaoCheia - retornoMl)
-  const comissaoEfetiva =
-    comissaoCheia !== null && retornoMl !== null
-      ? Math.max(0, comissaoCheia - retornoMl)
-      : (comissaoCheia !== null ? comissaoCheia : null);
+  // Correção do retorno ML contado em dobro.
+  // Fonte listing_prices já considera a redução do ML → comissaoApiOriginal É a efetiva.
+  // Para essa fonte: comissaoEfetiva = comissaoApiOriginal e comissaoCheia = efetiva + retornoMl.
+  // (Se algum dia vier de fonte que NÃO considera a redução, cair no ramo "else".)
+  const comissaoJaConsideraRetornoMl = comissaoApiOriginal !== null; // fonte: listing_prices
+  const retMl = Number.isFinite(retornoMl) ? retornoMl : 0;
+  let comissaoCheia = null;
+  let comissaoEfetiva = null;
+  if (comissaoApiOriginal !== null) {
+    if (comissaoJaConsideraRetornoMl) {
+      comissaoEfetiva = comissaoApiOriginal;
+      comissaoCheia = comissaoApiOriginal + retMl;
+    } else {
+      comissaoCheia = comissaoApiOriginal;
+      comissaoEfetiva = Math.max(0, comissaoApiOriginal - retMl);
+    }
+  }
 
   // 4) Cálculos de LC/MC (só quando todos os insumos existem).
   const temInsumos =
@@ -292,7 +309,7 @@ async function enriquecerItem({
     custoProduto !== null &&
     impostoAliquota !== null &&
     taxaFixa !== null &&
-    comissaoCheia !== null &&
+    comissaoApiOriginal !== null &&
     frete !== null;
 
   let impostoValor = null;
@@ -337,7 +354,7 @@ async function enriquecerItem({
   } else if (frete === null) {
     decisao = "sem_frete";
     motivo = "Não foi possível estimar o frete deste anúncio.";
-  } else if (comissaoCheia === null) {
+  } else if (comissaoApiOriginal === null) {
     decisao = "sem_comissao";
     motivo = "Não foi possível estimar a comissão deste anúncio.";
   } else if (mcComRetorno === null) {
@@ -398,7 +415,10 @@ async function enriquecerItem({
     motivo,
     temBase,
     debug: {
-      fonteComissao: comissaoCheia !== null ? "listing_prices" : null,
+      fonteComissao,
+      comissaoJaConsideraRetornoMl,
+      comissaoApiOriginal: round2OrNull(comissaoApiOriginal),
+      retornoMlAplicadoUmaVez: true,
       fonteFrete: frete !== null ? "shipping_options/free" : null,
     },
    },

@@ -27,15 +27,24 @@
         </div>
       </header>
 
-      <!-- ══ CONTROLES (cliente / competência) ═════════════ -->
+      <!-- ══ CONTROLES (cliente / período de análise) ══════ -->
       <div class="fapi-controls">
         <div class="fapi-field">
           <label for="fapi-client-select">Cliente</label>
           <select id="fapi-client-select" class="vfop-select"><option value="">Carregando…</option></select>
         </div>
         <div class="fapi-field">
-          <label for="fapi-comp-select">Competência</label>
-          <select id="fapi-comp-select" class="vfop-select"></select>
+          <label for="fapi-period-select">Período de análise</label>
+          <select id="fapi-period-select" class="vfop-select"></select>
+        </div>
+        <div class="fapi-field fapi-field--custom" id="fapi-period-custom" hidden>
+          <label>Datas</label>
+          <div class="fapi-period-range">
+            <input type="date" id="fapi-period-from" class="vfop-select" aria-label="Data inicial">
+            <span class="fapi-period-sep">até</span>
+            <input type="date" id="fapi-period-to" class="vfop-select" aria-label="Data final">
+            <button id="fapi-period-apply" class="fapi-btn fapi-btn-primary fapi-btn-sm" type="button">Aplicar</button>
+          </div>
         </div>
       </div>
 

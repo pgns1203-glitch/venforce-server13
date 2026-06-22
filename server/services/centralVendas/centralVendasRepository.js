@@ -277,9 +277,76 @@ async function getLatestCentralVendasImport({ clienteSlug, competencia, marketpl
   };
 }
 
+// Lê pedidos por INTERVALO de datas (não preso a um mês). Para cada competência
+// que toca o intervalo, usa o ÚLTIMO import (evita duplicar re-sincronizações) e
+// retorna só os pedidos com data_pedido dentro de [dateFrom, dateTo]. Itens e
+// componentes são escopados pelos pedidos em range via pedido_row_id.
+async function getCentralVendasByRange({ clienteSlug, dateFrom, dateTo, marketplace = "meli" }, db = pool) {
+  const slug = normalizeSlug(clienteSlug);
+  const compFrom = String(dateFrom).slice(0, 7);
+  const compTo = String(dateTo).slice(0, 7);
+
+  const importsResult = await db.query(
+    `SELECT DISTINCT ON (competencia)
+            id, competencia, fonte, status, confianca, resumo_json, payload_json, created_at, updated_at
+       FROM central_vendas_imports
+      WHERE cliente_slug = $1
+        AND marketplace = $2
+        AND competencia BETWEEN $3 AND $4
+      ORDER BY competencia, created_at DESC, id DESC`,
+    [slug, marketplace, compFrom, compTo]
+  );
+
+  const imports = importsResult.rows;
+  if (!imports.length) return null;
+
+  const importIds = imports.map((row) => row.id);
+
+  const pedidosResult = await db.query(
+    `SELECT *
+       FROM central_vendas_pedidos
+      WHERE import_id = ANY($1::bigint[])
+        AND data_pedido BETWEEN $2 AND $3
+      ORDER BY data_pedido ASC NULLS LAST, pedido_id ASC, id ASC`,
+    [importIds, dateFrom, dateTo]
+  );
+  const pedidos = pedidosResult.rows;
+
+  const pedidoRowIds = pedidos.map((row) => row.id);
+  if (!pedidoRowIds.length) {
+    return { importacao: imports[0], imports, pedidos: [], itens: [], componentes: [] };
+  }
+
+  const [itensResult, componentesResult] = await Promise.all([
+    db.query(
+      `SELECT *
+         FROM central_vendas_pedido_itens
+        WHERE pedido_row_id = ANY($1::bigint[])
+        ORDER BY pedido_id ASC, id ASC`,
+      [pedidoRowIds]
+    ),
+    db.query(
+      `SELECT *
+         FROM central_vendas_componentes
+        WHERE pedido_row_id = ANY($1::bigint[])
+        ORDER BY pedido_id ASC, item_id ASC NULLS LAST, id ASC`,
+      [pedidoRowIds]
+    ),
+  ]);
+
+  return {
+    importacao: imports[0],
+    imports,
+    pedidos,
+    itens: itensResult.rows,
+    componentes: componentesResult.rows,
+  };
+}
+
 module.exports = {
   ensureCentralVendasTables,
   getClienteBySlug,
   persistCentralVendasImport,
   getLatestCentralVendasImport,
+  getCentralVendasByRange,
 };

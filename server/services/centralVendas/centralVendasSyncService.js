@@ -39,6 +39,10 @@ function normalizeCompetencia(value) {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function isValidIsoDate(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
 function criarErroHttp(statusCode, mensagem) {
   const err = new Error(mensagem);
   err.statusCode = statusCode;
@@ -418,14 +422,29 @@ function buildMotorFromOrders({ orders, costMap, clienteSlug, competencia }) {
 // ---------------------------------------------------------------------------
 
 function createCentralVendasSyncService(repository = getRepository(), db = pool) {
-  async function sincronizarVendasMeli({ clienteSlug, competencia, marketplace = "meli" }) {
+  // Aceita { dateFrom, dateTo } (periodo de analise) OU competencia (legado).
+  // Busca os pedidos do intervalo numa unica paginacao, agrupa por mes
+  // (competencia) e persiste um import por mes — preserva o agrupamento mensal
+  // do banco sem prender a UI a um unico mes.
+  async function sincronizarVendasMeli({ clienteSlug, competencia, dateFrom, dateTo, marketplace = "meli" }) {
     const slug = normalizeSlug(clienteSlug);
-    const competenciaNorm = normalizeCompetencia(competencia);
     const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
 
     if (!slug) throw criarErroHttp(400, "slug e obrigatorio.");
     if (marketplaceNorm !== "meli") {
       throw criarErroHttp(400, "Marketplace invalido para Central de Vendas nesta fase.");
+    }
+
+    // Resolve o intervalo: dateFrom/dateTo tem prioridade; senao deriva da competencia.
+    let from;
+    let to;
+    if (isValidIsoDate(dateFrom) && isValidIsoDate(dateTo)) {
+      from = dateFrom <= dateTo ? dateFrom : dateTo;
+      to = dateFrom <= dateTo ? dateTo : dateFrom;
+    } else {
+      const periodo = periodoFromCompetencia(normalizeCompetencia(competencia));
+      from = periodo.inicio;
+      to = periodo.fim;
     }
 
     await repository.ensureCentralVendasTables();
@@ -441,57 +460,75 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     const sellerId = tokenResult.rows[0]?.ml_user_id;
     if (!sellerId) throw criarErroHttp(422, "Cliente sem Mercado Livre conectado.");
 
-    // Periodo da competencia
-    const periodo = periodoFromCompetencia(competenciaNorm);
-
     // Base vinculada oficial + custos (tolerante: sem base ⇒ tudo bloqueado, mas persiste)
     const { base, custos } = await buscarBaseECustos(cliente.id, db);
     const costMap = buildCostMap(custos);
 
-    // Pedidos via Orders API
-    const orders = await fetchAllOrders(cliente.id, sellerId, periodo.inicio, periodo.fim);
+    // Pedidos via Orders API (intervalo inteiro numa paginacao)
+    const orders = await fetchAllOrders(cliente.id, sellerId, from, to);
 
-    const motorResult = buildMotorFromOrders({
-      orders,
-      costMap,
-      clienteSlug: slug,
-      competencia: competenciaNorm,
-    });
+    // Agrupa por competencia (mes de date_created)
+    const grupos = new Map();
+    for (const order of orders) {
+      const comp = String(order.date_created || "").slice(0, 7);
+      const compKey = /^\d{4}-\d{2}$/.test(comp) ? comp : normalizeCompetencia();
+      if (!grupos.has(compKey)) grupos.set(compKey, []);
+      grupos.get(compKey).push(order);
+    }
 
-    const semCusto = motorResult.itens.filter((i) => i.custoProduto === null).length;
+    let pedidosPersistidos = 0;
+    let itensPersistidos = 0;
+    let componentesPersistidos = 0;
+    const porCompetencia = [];
+
+    for (const [comp, groupOrders] of grupos) {
+      const motorResult = buildMotorFromOrders({
+        orders: groupOrders,
+        costMap,
+        clienteSlug: slug,
+        competencia: comp,
+      });
+      if (!motorResult.pedidos.length) continue;
+
+      const resumo = buildResumoCentralVendas(motorResult);
+      const motorPayload = { ...motorResult, resumo };
+      const persisted = await repository.persistCentralVendasImport({
+        cliente,
+        marketplace: marketplaceNorm,
+        competencia: comp,
+        fonte: "orders_api",
+        motorPayload,
+        resumo,
+      });
+
+      pedidosPersistidos += persisted.pedidosPersistidos;
+      itensPersistidos += persisted.itensPersistidos;
+      componentesPersistidos += persisted.componentesPersistidos;
+      porCompetencia.push({
+        competencia: comp,
+        importId: persisted.importacao.id,
+        pedidos: persisted.pedidosPersistidos,
+      });
+    }
+
     console.log(
-      `[centralVendas] sync ${slug} ${competenciaNorm}:` +
-        ` orders=${orders.length} pedidos=${motorResult.pedidos.length}` +
-        ` itens=${motorResult.itens.length} itensSemCusto=${semCusto}` +
+      `[centralVendas] sync ${slug} ${from}..${to}:` +
+        ` orders=${orders.length} meses=${grupos.size} pedidos=${pedidosPersistidos}` +
         ` baseVinculada=${base ? base.id : "nenhuma"} custosNaBase=${custos.length}`
     );
-
-    const resumo = buildResumoCentralVendas(motorResult);
-    const motorPayload = { ...motorResult, resumo };
-
-    const persisted = await repository.persistCentralVendasImport({
-      cliente,
-      marketplace: marketplaceNorm,
-      competencia: competenciaNorm,
-      fonte: "orders_api",
-      motorPayload,
-      resumo,
-    });
 
     return {
       ok: true,
       fonte: "orders_api",
-      importId: persisted.importacao.id,
       cliente,
       marketplace: marketplaceNorm,
-      competencia: competenciaNorm,
-      periodo,
+      periodo: { dateFrom: from, dateTo: to },
+      porCompetencia,
       baseVinculada: base ? { id: base.id, nome: base.nome, custos: custos.length } : null,
       ordersEncontrados: orders.length,
-      resumo,
-      pedidosPersistidos: persisted.pedidosPersistidos,
-      itensPersistidos: persisted.itensPersistidos,
-      componentesPersistidos: persisted.componentesPersistidos,
+      pedidosPersistidos,
+      itensPersistidos,
+      componentesPersistidos,
     };
   }
 

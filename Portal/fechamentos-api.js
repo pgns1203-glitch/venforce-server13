@@ -32,6 +32,36 @@ const pct   = n => num(n, 1) + '%';
 const round2 = v => { const n = Number(v); return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0; };
 const fmtDt = s => { if (s == null || s === '') return '—'; const d = new Date(s + (String(s).length === 10 ? 'T00:00:00' : '')); return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('pt-BR'); };
 const isoDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+/* Período de análise: converte o modo escolhido em { dateFrom, dateTo }. */
+const PERIOD_OPTS = [
+  ['mes_atual', 'Mês atual'],
+  ['mes_anterior', 'Mês anterior'],
+  ['ultimos7', 'Últimos 7 dias'],
+  ['ultimos30', 'Últimos 30 dias'],
+  ['personalizado', 'Personalizado'],
+];
+function computePeriodo(mode, customFrom, customTo) {
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const y = hoje.getFullYear(), m = hoje.getMonth();
+  if (mode === 'mes_anterior') {
+    return { mode, dateFrom: isoDate(new Date(y, m - 1, 1)), dateTo: isoDate(new Date(y, m, 0)) };
+  }
+  if (mode === 'ultimos7') {
+    const f = new Date(hoje); f.setDate(f.getDate() - 6);
+    return { mode, dateFrom: isoDate(f), dateTo: isoDate(hoje) };
+  }
+  if (mode === 'ultimos30') {
+    const f = new Date(hoje); f.setDate(f.getDate() - 29);
+    return { mode, dateFrom: isoDate(f), dateTo: isoDate(hoje) };
+  }
+  if (mode === 'personalizado') {
+    const from = customFrom || isoDate(new Date(y, m, 1));
+    const to = customTo || isoDate(hoje);
+    return { mode: 'personalizado', dateFrom: from <= to ? from : to, dateTo: from <= to ? to : from };
+  }
+  // mes_atual (default): 1º dia do mês até hoje
+  return { mode: 'mes_atual', dateFrom: isoDate(new Date(y, m, 1)), dateTo: isoDate(hoje) };
+}
 const shortMoney = n => {
   const v = Number(n) || 0;
   const abs = Math.abs(v);
@@ -177,7 +207,8 @@ const mockFechamentoApiPayload = {
 function defaultFilters() { return { modo:'mes', dia:null, semana:null, de:null, ate:null, logistica:'todos', midia:'todos', diagbase:'todos', status:'todos' }; }
 function cloneFilters(filters) { return { ...defaultFilters(), ...(filters || {}) }; }
 const F = {
-  clientes: [], cliente: null, competencia: null,
+  clientes: [], cliente: null,
+  periodo: null,          // { mode, dateFrom, dateTo } — período de análise (substitui competência)
   rawPayload: null, viewPayload: null, visiblePayload: null,
   filters: defaultFilters(),
   draftFilters: defaultFilters(),
@@ -205,13 +236,13 @@ function normalizeLimit(value) {
   return Number.isFinite(n) && n > 0 ? n : 10;
 }
 function isDateInPeriod(iso, period) {
-  return !!iso && iso >= period.inicio && iso <= period.fim && String(iso).startsWith(period.competencia);
+  return !!iso && iso >= period.inicio && iso <= period.fim;
 }
 function clampDateToPeriod(iso, period) {
   if (!iso) return null;
   if (iso < period.inicio) return period.inicio;
   if (iso > period.fim) return period.fim;
-  return String(iso).startsWith(period.competencia) ? iso : null;
+  return iso;
 }
 function getCompetenceDays(period) {
   const days = [];
@@ -316,8 +347,8 @@ function applyFilters(payload, filters) {
   filters = sanitizeFilters(filters, payload);
   let pedidos = (payload.pedidos || []).map(o => computeOrder(o, payload));
 
-  // período
-  pedidos = pedidos.filter(o => String(o.data).startsWith(payload.periodo.competencia));
+  // período de análise (intervalo de datas — pode cruzar meses)
+  pedidos = pedidos.filter(o => o.data && o.data >= payload.periodo.inicio && o.data <= payload.periodo.fim);
   if (filters.modo === 'dia' && filters.dia) pedidos = pedidos.filter(o => o.data === filters.dia);
   if (filters.modo === 'semana' && filters.semana) pedidos = pedidos.filter(o => getWeekOfMonth(o) === Number(filters.semana));
   if (filters.modo === 'intervalo' && (filters.de || filters.ate)) {
@@ -468,22 +499,23 @@ function dayScopeClass(data) {
 }
 
 /* ── CARREGAMENTO ─────────────────────────────────────────── */
-async function carregarPayload(slug, competencia, signal) {
+async function carregarPayload(slug, dateFrom, dateTo, signal) {
   if (!slug) return null;
   try {
     const res = await fetch(
-      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(slug)}?competencia=${encodeURIComponent(competencia)}`,
+      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(slug)}?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`,
       { headers: { Authorization: "Bearer " + TOKEN }, signal }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    // fallback se vier sem pedidos (cliente sem importação)
-    if (!data || !Array.isArray(data.pedidos) || data.pedidos.length === 0) throw new Error("sem_pedidos");
+    if (!data || data.ok !== true) throw new Error("payload_invalido");
+    // Período sem pedidos é resposta VÁLIDA (mostra estado vazio honesto, não mock).
     return data;
-  } catch (_) {
-    // fallback para mock — motor-status fica "● Mock"
+  } catch (err) {
+    if (err?.name === 'AbortError') return null; // cancelado por troca de cliente/período
+    // fallback para mock só quando o backend está inacessível — motor fica "● Mock"
     const cli = F.clientes.find(c => c.slug === slug) || mockFechamentoApiPayload.cliente;
-    const comp = MOCK_COMPETENCIAS.find(c => c.competencia === competencia) || MOCK_COMPETENCIAS[0];
+    const comp = MOCK_COMPETENCIAS[0];
     const p = JSON.parse(JSON.stringify(mockFechamentoApiPayload));
     p.cliente = { id:cli.id, nome:cli.nome, slug:cli.slug };
     p.periodo = { competencia:comp.competencia, inicio:comp.inicio, fim:comp.fim, label:comp.label };
@@ -526,15 +558,48 @@ async function initFechamentosApi() {
     // Trocar cliente reseta filtros e seleção.
     sel.addEventListener('change', () => { F.cliente = F.clientes.find(c => c.slug === sel.value) || null; F.selectedOrderId = null; resetFilters(); carregarTela(); });
   }
-  const comp = document.getElementById('fapi-comp-select');
-  if (comp) {
-    comp.innerHTML = MOCK_COMPETENCIAS.map(c => `<option value="${esc(c.competencia)}">${esc(c.label)}</option>`).join('');
-    F.competencia = MOCK_COMPETENCIAS[0].competencia;
-    // Trocar competência reseta filtros e seleção.
-    comp.addEventListener('change', () => { F.competencia = comp.value; F.selectedOrderId = null; resetFilters(); carregarTela(); });
+  // Período de análise (substitui competência fixa). Default: mês atual.
+  const periodSel = document.getElementById('fapi-period-select');
+  if (periodSel) {
+    periodSel.innerHTML = PERIOD_OPTS.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+    F.periodo = computePeriodo('mes_atual');
+    periodSel.value = 'mes_atual';
+    periodSel.addEventListener('change', onPeriodChange);
   }
+  document.getElementById('fapi-period-apply')?.addEventListener('click', aplicarPeriodoCustom);
+
   const controls = document.querySelector('.fapi-controls');
   if (controls) montarBlocoImportacao(controls);
+  carregarTela();
+}
+
+/* Troca de período de análise. "Personalizado" só mostra os inputs; aplica no
+   botão "Aplicar". Os demais modos carregam dados uma vez. */
+function onPeriodChange() {
+  const periodSel = document.getElementById('fapi-period-select');
+  const custom = document.getElementById('fapi-period-custom');
+  const mode = periodSel?.value || 'mes_atual';
+  if (mode === 'personalizado') {
+    if (custom) custom.hidden = false;
+    const from = document.getElementById('fapi-period-from');
+    const to = document.getElementById('fapi-period-to');
+    if (from && !from.value) from.value = F.periodo?.dateFrom || '';
+    if (to && !to.value) to.value = F.periodo?.dateTo || '';
+    return; // espera "Aplicar"
+  }
+  if (custom) custom.hidden = true;
+  F.periodo = computePeriodo(mode);
+  F.selectedOrderId = null;
+  resetFilters();
+  carregarTela();
+}
+function aplicarPeriodoCustom() {
+  const from = document.getElementById('fapi-period-from')?.value;
+  const to = document.getElementById('fapi-period-to')?.value;
+  if (!from || !to) { setImportStatus('Informe data inicial e final.', 'warn'); return; }
+  F.periodo = computePeriodo('personalizado', from, to);
+  F.selectedOrderId = null;
+  resetFilters();
   carregarTela();
 }
 function resetFilters() {
@@ -562,11 +627,12 @@ async function carregarTela() {
     return;
   }
 
+  if (!F.periodo) F.periodo = computePeriodo('mes_atual');
   const seq = ++F.loadSeq;
   if (F.loadAbort) { try { F.loadAbort.abort(); } catch (_) {} }
   F.loadAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
 
-  const payload = await carregarPayload(F.cliente.slug, F.competencia, F.loadAbort?.signal);
+  const payload = await carregarPayload(F.cliente.slug, F.periodo.dateFrom, F.periodo.dateTo, F.loadAbort?.signal);
   if (seq !== F.loadSeq) return; // resposta de um carregamento mais antigo — ignora
 
   F.rawPayload = payload;
@@ -639,7 +705,7 @@ function renderResults() {
 }
 
 /* ── HEADER ───────────────────────────────────────────────── */
-const MOTOR = { mock:['mock','● Mock'], parcial:['parcial','● Parcial'], api:['api','● API conectado'], indisponivel:['indisponivel','● Indisponível'] };
+const MOTOR = { mock:['mock','● Mock'], parcial:['parcial','● Parcial'], api:['api','● API conectado'], indisponivel:['indisponivel','● Indisponível'], persistido:['api','● API conectado'], sem_dados:['indisponivel','● Sem dados no período'] };
 function renderHeader(p) {
   const st = document.getElementById('fapi-motor-status');
   if (st) { const [cls, label] = MOTOR[p?.motor?.status] || MOTOR.mock; st.className = `fapi-motor fapi-motor--${cls}`; st.textContent = label; }
@@ -673,7 +739,7 @@ function periodText(filters = F.filters, payload = F.rawPayload) {
     const r = getLast7Range(payload.periodo);
     return `${fmtDt(r.de)} até ${fmtDt(r.ate)}`;
   }
-  return `${payload.periodo.label} · mês inteiro`;
+  return `${payload.periodo.label} · todo o período`;
 }
 function filterSummaryText() {
   const totalFiltrado = F.viewPayload?.pedidos?.length || 0;
@@ -697,36 +763,17 @@ function filterSummaryText() {
   return parts.filter(Boolean).join(' · ') + '.';
 }
 function renderFilters() {
-  const raw = F.rawPayload, fl = F.draftFilters;
-  const semanas = getWeekRanges(raw.periodo);
+  const fl = F.draftFilters;
   const opt = (v, label, sel) => `<option value="${esc(v)}"${sel === v ? ' selected' : ''}>${esc(label)}</option>`;
   const sel = (id, val, opts) => `<select class="fapi-fsel" data-filter="${id}">${opts}</select>`;
   const pending = hasPendingFilterChanges();
-  // Modo de UI: 'dia' (legado) é tratado como 'intervalo' no seletor.
-  const modoUI = fl.modo === 'dia' ? 'intervalo' : fl.modo;
-  /* Período principal (espelha a tela Métricas): Mês inteiro · Data
-     personalizada · Últimos 7 dias · Semana do mês. Sem "Dia específico". */
-  const periodoSel = sel('modo', modoUI, [
-    opt('mes', 'Mês inteiro', modoUI),
-    opt('intervalo', 'Data personalizada', modoUI),
-    opt('ultimos7', 'Últimos 7 dias', modoUI),
-    opt('semana', 'Semana do mês', modoUI),
-  ].join(''));
-  // Campo visual de intervalo (Métricas-like): dois inputs de data limpos.
-  const intervaloUI = (modoUI === 'intervalo') ? `
-      <label class="fapi-fitem fapi-fitem--date"><span>Data inicial</span>
-        <input type="date" class="fapi-fdate" data-filter="de" value="${esc(fl.de || '')}" min="${esc(raw.periodo.inicio)}" max="${esc(raw.periodo.fim)}"></label>
-      <span class="fapi-date-sep" aria-hidden="true">até</span>
-      <label class="fapi-fitem fapi-fitem--date"><span>Data final</span>
-        <input type="date" class="fapi-fdate" data-filter="ate" value="${esc(fl.ate || '')}" min="${esc(raw.periodo.inicio)}" max="${esc(raw.periodo.fim)}"></label>` : '';
-  const semanaUI = (modoUI === 'semana') ? `<label class="fapi-fitem"><span>Semana</span>${sel('semana', String(fl.semana || ''), ['<option value="">—</option>', ...semanas.map(w => opt(String(w.semana), `Semana ${w.semana} · ${fmtDt(w.de)} a ${fmtDt(w.ate)}`, String(fl.semana || '')))].join(''))}</label>` : '';
   const aviso = F.intervaloAviso ? `<div class="fapi-filter-aviso" role="status">${esc(F.intervaloAviso)}</div>` : '';
+  /* O período de análise (datas) é controlado no topo (select "Período de
+     análise"). Aqui ficam só os refinamentos locais: busca + filtros. O
+     recorte por dia é feito clicando na régua de dias. */
   return `
   <section class="fapi-filters">
     <div class="fapi-filters-row fapi-filters-main">
-      <label class="fapi-fitem"><span>Período principal</span>${periodoSel}</label>
-      ${intervaloUI}
-      ${semanaUI}
       <label class="fapi-fitem fapi-fitem--search"><span>Buscar</span>
         <input type="search" id="fapi-search" class="fapi-fsearch" placeholder="pedido, MLB, SKU ou título" value="${esc(F.searchTerm || '')}" autocomplete="off"></label>
       <div class="fapi-filter-actions">
@@ -1147,7 +1194,7 @@ async function executarImportacao() {
   const btn = document.getElementById('fapi-import-btn');
 
   if (!F.cliente) { setImportStatus('Selecione um cliente antes de importar.', 'warn'); return; }
-  if (!F.competencia) { setImportStatus('Selecione a competência antes de importar.', 'warn'); return; }
+  if (!F.periodo) { setImportStatus('Selecione o período antes de importar.', 'warn'); return; }
 
   // Usa F.arquivoImport (variável de estado) — não depende de input.files[0],
   // que o browser pode zerar após repaint mesmo sem destruir o elemento.
@@ -1160,7 +1207,8 @@ async function executarImportacao() {
   try {
     const form = new FormData();
     form.append('sales', arquivo);
-    form.append('competencia', F.competencia);
+    // Import (planilha) ainda agrupa por competência: deriva do mês do início do período.
+    form.append('competencia', String(F.periodo.dateFrom).slice(0, 7));
 
     const res = await fetch(
       `${API_BASE}/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/importar-vendas`,
@@ -1196,7 +1244,7 @@ async function executarSincronizacao() {
   const btn = document.getElementById('fapi-sync-btn');
 
   if (!F.cliente) { setImportStatus('Selecione um cliente antes de sincronizar.', 'warn'); return; }
-  if (!F.competencia) { setImportStatus('Selecione a competência antes de sincronizar.', 'warn'); return; }
+  if (!F.periodo) { setImportStatus('Selecione o período antes de sincronizar.', 'warn'); return; }
 
   if (btn) { btn.disabled = true; btn.textContent = 'Sincronizando…'; }
   setImportStatus('Sincronizando pedidos via API do Mercado Livre…', 'info');
@@ -1207,7 +1255,7 @@ async function executarSincronizacao() {
       {
         method: 'POST',
         headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ competencia: F.competencia }),
+        body: JSON.stringify({ dateFrom: F.periodo.dateFrom, dateTo: F.periodo.dateTo }),
       }
     );
 

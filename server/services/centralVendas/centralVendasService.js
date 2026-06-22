@@ -31,6 +31,24 @@ function periodoFromCompetencia(competencia) {
   };
 }
 
+function isValidIsoDate(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function formatBrDate(iso) {
+  const [y, m, d] = String(iso).split("-");
+  return d && m && y ? `${d}/${m}/${y}` : iso;
+}
+
+function periodoFromRange(dateFrom, dateTo) {
+  return {
+    competencia: String(dateFrom).slice(0, 7), // legado: só p/ agrupamento mensal
+    inicio: dateFrom,
+    fim: dateTo,
+    label: `${formatBrDate(dateFrom)} – ${formatBrDate(dateTo)}`,
+  };
+}
+
 function numberOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
@@ -281,10 +299,72 @@ function buildPedidos(snapshot) {
   return (snapshot.pedidos || []).map((pedido) => buildPedidoContrato(pedido, itens, componentes));
 }
 
+// Payload por INTERVALO de datas (período de análise). Pode unir vários meses.
+function buildPayloadFromRange(cliente, range, snapshot) {
+  const periodo = periodoFromRange(range.dateFrom, range.dateTo);
+
+  if (!snapshot || !(snapshot.pedidos || []).length) {
+    return {
+      ok: true,
+      fonte: "central_vendas_db",
+      cliente,
+      periodo,
+      motor: {
+        status: "sem_dados",
+        etapaAtual: "aguardando_sincronizacao",
+        progresso: 0,
+        confianca: "ausente",
+        podeConcluir: false,
+        motivoBloqueio: "Nenhum pedido sincronizado para este periodo.",
+        geradoEm: null,
+        origemPrincipal: "orders_api",
+      },
+      adsPorProdutoDisponivel: false,
+      adsMensal: { investimento: null, status: "ausente" },
+      resumo: {
+        pedidosTotal: 0,
+        faturamento: 0,
+        receitaBloqueada: 0,
+        lucroContribuicao: null,
+        margemContribuicaoPercentual: null,
+        totaisPorTipo: {},
+      },
+      produtos: {},
+      pedidos: [],
+    };
+  }
+
+  const pedidos = buildPedidos(snapshot);
+  const temBloqueado = pedidos.some((pedido) => pedido.confianca === "bloqueado");
+  const geradoEm = snapshot.importacao?.created_at || null;
+
+  return {
+    ok: true,
+    fonte: "central_vendas_db",
+    cliente,
+    periodo,
+    motor: {
+      status: "persistido",
+      etapaAtual: "importacao_persistida",
+      progresso: 100,
+      confianca: temBloqueado ? "parcial" : pedidos.length ? "confiavel" : "ausente",
+      podeConcluir: !temBloqueado,
+      motivoBloqueio: temBloqueado ? "Ha pedidos bloqueados por custo/produto ausente." : null,
+      geradoEm: geradoEm instanceof Date ? geradoEm.toISOString() : geradoEm,
+      origemPrincipal: snapshot.importacao?.fonte || "orders_api",
+      importId: snapshot.importacao?.id,
+    },
+    adsPorProdutoDisponivel: false,
+    adsMensal: { investimento: null, status: "ausente" },
+    resumo: jsonValue(snapshot.importacao?.resumo_json, {}),
+    produtos: buildProdutos(snapshot.itens || []),
+    pedidos,
+  };
+}
+
 function createCentralVendasService(repository = getRepository()) {
-  async function getCentralVendas(clienteSlug, { competencia, marketplace = "meli" } = {}) {
+  async function getCentralVendas(clienteSlug, { competencia, dateFrom, dateTo, marketplace = "meli" } = {}) {
     const slug = normalizeSlug(clienteSlug);
-    const competenciaNorm = normalizeCompetencia(competencia);
     const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
 
     if (!slug) {
@@ -300,6 +380,21 @@ function createCentralVendasService(repository = getRepository()) {
       throw err;
     }
 
+    // Novo: periodo de analise por intervalo de datas (pode cruzar meses).
+    if (isValidIsoDate(dateFrom) && isValidIsoDate(dateTo)) {
+      const from = dateFrom <= dateTo ? dateFrom : dateTo;
+      const to = dateFrom <= dateTo ? dateTo : dateFrom;
+      const snapshot = await repository.getCentralVendasByRange({
+        clienteSlug: slug,
+        dateFrom: from,
+        dateTo: to,
+        marketplace: marketplaceNorm,
+      });
+      return buildPayloadFromRange(cliente, { dateFrom: from, dateTo: to }, snapshot);
+    }
+
+    // Legado: por competencia (mes unico).
+    const competenciaNorm = normalizeCompetencia(competencia);
     const snapshot = await repository.getLatestCentralVendasImport({
       clienteSlug: slug,
       competencia: competenciaNorm,

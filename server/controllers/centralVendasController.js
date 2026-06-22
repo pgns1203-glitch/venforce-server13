@@ -70,6 +70,8 @@ async function obterCentralVendas(req, res) {
 
     const data = await centralVendasService.getCentralVendas(slug, {
       competencia: req.query.competencia,
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
       marketplace: req.query.marketplace || "meli",
     });
     return responder(res, 200, data);
@@ -110,11 +112,11 @@ async function sincronizarVendas(req, res) {
     const slug = slugParam(req);
     if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
 
-    const competencia = req.body?.competencia || req.query?.competencia;
-
     const data = await centralVendasSyncService.sincronizarVendasMeli({
       clienteSlug: slug,
-      competencia,
+      dateFrom: req.body?.dateFrom || req.query?.dateFrom,
+      dateTo: req.body?.dateTo || req.query?.dateTo,
+      competencia: req.body?.competencia || req.query?.competencia, // legado
       marketplace: req.body?.marketplace || "meli",
     });
     return responder(res, 201, data);

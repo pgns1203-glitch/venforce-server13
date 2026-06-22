@@ -93,6 +93,7 @@ async function previewPromocoesRetornoController(req, res) {
       limitRaw: req.query.limit,
       campanhaRaw: req.query.campanha,
       statusRaw: req.query.status,
+      apenasComRetornoRaw: req.query.apenasComRetorno,
     });
 
     return res.json(resultado);

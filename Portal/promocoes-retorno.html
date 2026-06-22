@@ -89,6 +89,16 @@
               <label for="promo-campanha">Filtro de campanha (opcional)</label>
               <input id="promo-campanha" class="vf-input" type="search" placeholder="Ex: Top Oferta" autocomplete="off" />
             </div>
+            <div class="vf-form-group" style="margin:0;">
+              <label for="promo-tipo">Tipo de promoção</label>
+              <select id="promo-tipo" class="vf-input">
+                <option value="true" selected>Apenas com retorno ML</option>
+                <option value="false">Todas as promoções</option>
+              </select>
+              <small style="display:block;margin-top:6px;color:var(--vf-text-m);font-size:.75rem;line-height:1.4;">
+                Promoções com retorno ML são aquelas em que o Mercado Livre participa do desconto via <code>meli_percentage</code>.
+              </small>
+            </div>
           </div>
           <div id="promo-status" style="margin-top:8px;font-size:.875rem;display:none;"></div>
           <div class="vf-auto-actions">
@@ -117,6 +127,7 @@
             <p>Selecione cliente e base e clique em "Analisar promoções disponíveis".</p>
           </div>
           <div id="promo-resumo-bar" class="vf-resumo-bar" style="display:none;"></div>
+          <div id="promo-resumo-nota" style="display:none;margin-top:10px;font-size:.82rem;font-weight:700;color:var(--vf-primary);"></div>
         </div>
       </div>
 

@@ -212,6 +212,8 @@ async function analisar() {
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Math.trunc(limitRaw)), 50) : 20;
   const page = Number.isFinite(pageRaw) ? Math.max(1, Math.trunc(pageRaw)) : 1;
   const campanha = (document.getElementById("promo-campanha")?.value || "").trim();
+  // "Apenas com retorno ML" (default) vs "Todas as promoções".
+  const apenasComRetorno = (document.getElementById("promo-tipo")?.value ?? "true") !== "false";
 
   const qs = new URLSearchParams();
   qs.set("clienteSlug", clienteSlug);
@@ -221,6 +223,7 @@ async function analisar() {
   qs.set("page", String(page));
   qs.set("limit", String(limit));
   if (campanha) qs.set("campanha", campanha);
+  qs.set("apenasComRetorno", apenasComRetorno ? "true" : "false");
 
   const btn = document.getElementById("btn-promo-analisar");
   if (btn) { btn.disabled = true; btn.textContent = "Analisando…"; }
@@ -277,6 +280,8 @@ function renderResumo(data) {
 
   bar.innerHTML = [
     pill("Promoções encontradas", n(r.ofertasEncontradas)),
+    pill("Ofertas com retorno ML", n(r.ofertasComRetornoMl), "vf-resumo-success"),
+    pill("Ofertas encontradas (total)", n(r.ofertasEncontradasTotal)),
     pill("Produtos com base", n(r.produtosComBase)),
     pill("Entrar seguro", n(r.entrarSeguro), "vf-resumo-success"),
     pill("Entrar com tolerância", n(r.entrarComTolerancia), "vf-resumo-success"),
@@ -289,6 +294,16 @@ function renderResumo(data) {
     pill("MC média em promoção", pctFrac(r.mcMediaPromocao)),
   ].join("");
   bar.style.display = "flex";
+
+  const nota = document.getElementById("promo-resumo-nota");
+  if (nota) {
+    if (r.filtroApenasComRetorno) {
+      nota.textContent = "Exibindo apenas promoções com retorno ML.";
+      nota.style.display = "block";
+    } else {
+      nota.style.display = "none";
+    }
+  }
 }
 
 // ─── Render: filtros rápidos ──────────────────────────────────────────────

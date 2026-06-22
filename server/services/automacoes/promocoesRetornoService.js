@@ -40,6 +40,11 @@ function toAliquota(v) {
   return n;
 }
 
+// Interpreta valores "verdadeiros" vindos da query string.
+function isTrueLike(value) {
+  return value === true || value === "true" || value === "1" || value === 1;
+}
+
 // Retorna o número se for finito; caso contrário null (nunca NaN no JSON).
 function fin(n) {
   return Number.isFinite(n) ? n : null;
@@ -168,7 +173,7 @@ async function enriquecerItem({
   const titulo = body?.title || null;
 
   // 1) Promoções oficiais do item (somente leitura).
-  let promo = null;
+  let lista = [];
   try {
     if (itemId) {
       const resp = await mlFetch(
@@ -176,25 +181,39 @@ async function enriquecerItem({
         `/seller-promotions/items/${encodeURIComponent(itemId)}?app_version=v2`
       );
       if (resp?.ok) {
-        const lista = Array.isArray(resp.data)
+        lista = Array.isArray(resp.data)
           ? resp.data
           : Array.isArray(resp.data?.results)
             ? resp.data.results
             : [];
-        promo = escolherPromocao(lista, filtros);
       }
     }
   } catch (err) {
     console.warn(`[promocoes-retorno] item ${itemId} — falha ao buscar promoções: ${err.message}`);
-    promo = null;
+    lista = [];
   }
 
-  // Sem promoção disponível → não vira oferta nesta tela.
-  if (!promo) return null;
+  // Contadores por item (independentes do filtro), para o resumo agregado.
+  // Retorno ML = oferta com meli_percentage numérico maior que zero.
+  // meli_percentage ausente NÃO conta como retorno (não vira zero forçado).
+  const ofertasTotalItem = lista.filter((o) => o && typeof o === "object").length;
+  const ofertasComRetornoItem = lista.filter((o) => Number(o?.meli_percentage) > 0).length;
+
+  // Filtro "apenas com retorno ML": só ofertas com meli_percentage > 0.
+  const ofertasFiltradas = filtros.apenasComRetorno
+    ? lista.filter((o) => Number(o?.meli_percentage) > 0)
+    : lista;
+
+  const promo = escolherPromocao(ofertasFiltradas, filtros);
+
+  // Sem promoção elegível → não vira linha, mas mantém os contadores do item.
+  if (!promo) return { linha: null, ofertasTotalItem, ofertasComRetornoItem };
 
   const precoOriginal = fin(Number(promo?.original_price));
   const precoPromocao = fin(Number(promo?.price));
-  if (precoPromocao === null || precoPromocao <= 0) return null;
+  if (precoPromocao === null || precoPromocao <= 0) {
+    return { linha: null, ofertasTotalItem, ofertasComRetornoItem };
+  }
 
   const meliPercentage = fin(Number(promo?.meli_percentage));
   const sellerPercentage = fin(Number(promo?.seller_percentage));
@@ -343,6 +362,9 @@ async function enriquecerItem({
   }
 
   return {
+   ofertasTotalItem,
+   ofertasComRetornoItem,
+   linha: {
     itemId: itemId || null,
     sku: sku || null,
     titulo,
@@ -379,6 +401,7 @@ async function enriquecerItem({
       fonteComissao: comissaoCheia !== null ? "listing_prices" : null,
       fonteFrete: frete !== null ? "shipping_options/free" : null,
     },
+   },
   };
 }
 
@@ -393,6 +416,7 @@ async function gerarPreviewPromocoesRetorno({
   limitRaw,
   campanhaRaw,
   statusRaw,
+  apenasComRetornoRaw,
 }) {
   const clienteSlugRawStr = String(clienteSlugRaw || "").trim();
   const baseSlugRawStr = String(baseSlugRaw || "").trim();
@@ -410,9 +434,14 @@ async function gerarPreviewPromocoesRetorno({
   const margemAlvo = toAliquota(margemAlvoRaw);
   const tolerancia = toAliquota(toleranciaRaw);
 
+  // Padrão recomendado: true (focar em promoções com retorno do ML).
+  const apenasComRetorno =
+    apenasComRetornoRaw === undefined ? true : isTrueLike(apenasComRetornoRaw);
+
   const filtros = {
     campanha: String(campanhaRaw || "").trim() || null,
     status: String(statusRaw || "").trim() || null,
+    apenasComRetorno,
   };
 
   // 1) Cliente
@@ -532,10 +561,24 @@ async function gerarPreviewPromocoesRetorno({
     })
   );
 
-  const linhas = (await Promise.all(tarefas)).filter(Boolean);
+  const resultados = (await Promise.all(tarefas)).filter(Boolean);
+  const linhas = resultados.map((r) => r.linha).filter(Boolean);
+
+  // Contadores agregados de ofertas (independentes de qual virou linha).
+  const ofertasEncontradasTotal = resultados.reduce(
+    (acc, r) => acc + (Number.isFinite(r.ofertasTotalItem) ? r.ofertasTotalItem : 0),
+    0
+  );
+  const ofertasComRetornoMl = resultados.reduce(
+    (acc, r) => acc + (Number.isFinite(r.ofertasComRetornoItem) ? r.ofertasComRetornoItem : 0),
+    0
+  );
 
   // 8) Resumo agregado (sobre as ofertas da página atual)
   const resumo = {
+    ofertasEncontradasTotal,
+    ofertasComRetornoMl,
+    filtroApenasComRetorno: apenasComRetorno,
     ofertasEncontradas: linhas.length,
     produtosComBase: linhas.filter((l) => l.temBase).length,
     entrarSeguro: linhas.filter((l) => l.decisao === "entrar_seguro").length,

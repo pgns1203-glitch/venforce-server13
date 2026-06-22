@@ -161,6 +161,10 @@ async function enriquecerItem({
   clienteId,
   body,
   baseRow,
+  matchedBy = null,
+  snapshot = null,
+  snapshotMatchedBy = null,
+  skuExtraido = null,
   margemAlvo,
   tolerancia,
   filtros,
@@ -236,87 +240,68 @@ async function enriquecerItem({
   const retornoPctSobreFinal =
     retornoMl !== null && precoPromocao ? retornoMl / precoPromocao : null;
 
-  // 2) Comissão cheia e frete usando o PREÇO DA PROMOÇÃO.
-  const [listingPricesResp, shippingResp] = await Promise.all([
-    (async () => {
-      if (!listingTypeId || !categoryId) return null;
-      try {
-        return await mlFetch(
-          clienteId,
-          `/sites/MLB/listing_prices?price=${encodeURIComponent(precoPromocao)}&listing_type_id=${encodeURIComponent(listingTypeId)}&category_id=${encodeURIComponent(categoryId)}`
-        );
-      } catch (_) { return null; }
-    })(),
-    (async () => {
-      const logisticType = body?.shipping?.logistic_type || "";
-      const isCombinable = ["not_specified", "custom", ""].includes(logisticType);
-      if (isCombinable) return null;
-      if (!sellerId || !listingTypeId || !itemId) return null;
-      try {
-        return await mlFetch(
-          clienteId,
-          `/users/${encodeURIComponent(sellerId)}/shipping_options/free?item_id=${encodeURIComponent(itemId)}&verbose=true&item_price=${encodeURIComponent(precoPromocao)}&listing_type_id=${encodeURIComponent(listingTypeId)}&mode=me2`
-        );
-      } catch (_) { return null; }
-    })(),
-  ]);
-
-  const lpData = listingPricesResp && listingPricesResp.ok ? listingPricesResp.data : null;
-  const lpRoot = Array.isArray(lpData)
-    ? lpData[0]
-    : Array.isArray(lpData?.results) ? lpData.results[0] : lpData;
-  // Comissão crua vinda da API (listing_prices com o PREÇO DA PROMOÇÃO).
-  // IMPORTANTE: esse valor já vem REDUZIDO pelo Mercado Livre — ou seja, já é a
-  // comissão EFETIVA (com o retorno ML embutido). Por isso NÃO se subtrai retornoMl
-  // de novo; senão o benefício do retorno seria contado duas vezes.
-  const comissaoApiOriginal =
-    lpRoot?.sale_fee_amount != null ? fin(Number(lpRoot.sale_fee_amount)) : null;
-  const fonteComissao = comissaoApiOriginal !== null ? "listing_prices" : null;
-
-  const frete =
-    shippingResp && shippingResp.ok && shippingResp.data?.coverage?.all_country?.list_cost != null
-      ? fin(Number(shippingResp.data.coverage.all_country.list_cost))
-      : null;
-
-  // 3) Dados de custo da base.
-  const temBase = !!baseRow;
-  const custoProduto = temBase ? fin(Number(baseRow.custoProduto)) : null;
-  const impostoPercentual = temBase ? fin(Number(baseRow.impostoPercentual)) : null;
-  const taxaFixa = temBase ? fin(Number(baseRow.taxaFixa)) : null;
-  const impostoAliquota = temBase ? toAliquota(impostoPercentual) : null;
-
-  // Correção do retorno ML contado em dobro.
-  // Fonte listing_prices já considera a redução do ML → comissaoApiOriginal É a efetiva.
-  // Para essa fonte: comissaoEfetiva = comissaoApiOriginal e comissaoCheia = efetiva + retornoMl.
-  // (Se algum dia vier de fonte que NÃO considera a redução, cair no ramo "else".)
-  const comissaoJaConsideraRetornoMl = comissaoApiOriginal !== null; // fonte: listing_prices
+  // retornoMl como número seguro para somar (somado UMA vez no rebate).
   const retMl = Number.isFinite(retornoMl) ? retornoMl : 0;
-  let comissaoCheia = null;
-  let comissaoEfetiva = null;
-  if (comissaoApiOriginal !== null) {
-    if (comissaoJaConsideraRetornoMl) {
-      comissaoEfetiva = comissaoApiOriginal;
-      comissaoCheia = comissaoApiOriginal + retMl;
-    } else {
-      comissaoCheia = comissaoApiOriginal;
-      comissaoEfetiva = Math.max(0, comissaoApiOriginal - retMl);
+
+  // 2) FONTE FINANCEIRA PRINCIPAL: snapshot do último relatorio_itens salvo.
+  // custos (baseRow) é fallback APENAS para custo/imposto/taxa_fixa.
+  const temSnapshot = !!snapshot;
+  const temBase = !!baseRow;
+
+  const precoEfetivoRelatorio = temSnapshot ? snapshot.precoEfetivo : null;
+
+  const custoProduto =
+    temSnapshot && snapshot.custo != null
+      ? snapshot.custo
+      : (temBase ? fin(Number(baseRow.custoProduto)) : null);
+
+  const impostoPercentual =
+    temSnapshot && snapshot.impostoPercentual != null
+      ? snapshot.impostoPercentual
+      : (temBase ? fin(Number(baseRow.impostoPercentual)) : null);
+  const impostoAliquota = impostoPercentual != null ? toAliquota(impostoPercentual) : null;
+
+  // Taxa fixa: snapshot → base → 0 (taxa ausente é tratada como zero).
+  const taxaFixa =
+    temSnapshot && snapshot.taxaFixa != null
+      ? snapshot.taxaFixa
+      : (temBase && baseRow.taxaFixa != null ? fin(Number(baseRow.taxaFixa)) : 0);
+
+  // Frete: SOMENTE do snapshot (não inventar, não usar API/custos).
+  const frete = temSnapshot ? snapshot.frete : null;
+
+  // Comissão: preferir comissao_percentual do snapshot; senão derivar de comissao/preco_efetivo.
+  let comissaoAliquota = null;
+  let comissaoDerivadaDeValor = false;
+  if (temSnapshot) {
+    if (snapshot.comissaoPercentual != null) {
+      comissaoAliquota = toAliquota(snapshot.comissaoPercentual);
+    } else if (snapshot.comissao != null && snapshot.precoEfetivo) {
+      comissaoAliquota = snapshot.comissao / snapshot.precoEfetivo;
+      comissaoDerivadaDeValor = true;
     }
   }
+  const comissaoPercentual =
+    comissaoAliquota != null ? Number((comissaoAliquota * 100).toFixed(4)) : null;
+  const fonteComissao =
+    comissaoAliquota == null ? null : (comissaoDerivadaDeValor ? "relatorio_itens(derivada)" : "relatorio_itens");
 
-  // 4) Cálculos de LC/MC (só quando todos os insumos existem).
+  // 3) MARGEM PRINCIPAL — fórmula da planilha sobre o PREÇO DA PROMOÇÃO:
+  // LC = preço - preço*imposto% - preço*comissão% - frete - taxaFixa - custo + retornoMl
   const temInsumos =
-    temBase &&
+    temSnapshot &&
     custoProduto !== null &&
     impostoAliquota !== null &&
-    taxaFixa !== null &&
-    comissaoApiOriginal !== null &&
-    frete !== null;
+    comissaoAliquota !== null &&
+    frete !== null &&
+    taxaFixa !== null;
 
   let impostoValor = null;
-  let lcSemRetorno = null;
-  let mcSemRetorno = null;
-  let lcComRetorno = null;
-  let mcComRetorno = null;
+  let comissaoValor = null;
+  let lcSemRebate = null;
+  let mcSemRebate = null;
+  let lcComRebate = null;
+  let mcComRebate = null;
   let lucroAlvo = null;
   let retornoNecessario = null;
   let faltaRetorno = null;
@@ -324,58 +309,55 @@ async function enriquecerItem({
 
   if (temInsumos) {
     impostoValor = precoPromocao * impostoAliquota;
+    comissaoValor = precoPromocao * comissaoAliquota;
 
-    lcSemRetorno =
-      precoPromocao - impostoValor - comissaoCheia - frete - taxaFixa - custoProduto;
-    mcSemRetorno = precoPromocao ? lcSemRetorno / precoPromocao : null;
+    lcSemRebate =
+      precoPromocao - impostoValor - comissaoValor - frete - taxaFixa - custoProduto;
+    mcSemRebate = precoPromocao ? lcSemRebate / precoPromocao : null;
 
-    const comEf = comissaoEfetiva !== null ? comissaoEfetiva : comissaoCheia;
-    lcComRetorno =
-      precoPromocao - impostoValor - comEf - frete - taxaFixa - custoProduto;
-    mcComRetorno = precoPromocao ? lcComRetorno / precoPromocao : null;
+    // Com rebate: soma o retorno ML UMA única vez. Denominador = preço promocional.
+    lcComRebate = lcSemRebate + retMl;
+    mcComRebate = precoPromocao ? lcComRebate / precoPromocao : null;
 
     if (margemAlvo !== null) {
       lucroAlvo = precoPromocao * margemAlvo;
-      retornoNecessario = lucroAlvo - lcSemRetorno;
-      faltaRetorno =
-        retornoNecessario !== null && retornoMl !== null
-          ? retornoNecessario - retornoMl
-          : null;
-      diferencaPp = mcComRetorno !== null ? mcComRetorno - margemAlvo : null;
+      retornoNecessario = lucroAlvo - lcSemRebate;
+      faltaRetorno = retornoNecessario - retMl;
+      diferencaPp = mcComRebate !== null ? mcComRebate - margemAlvo : null;
     }
   }
 
-  // 5) Classificação / decisão.
+  // 4) Classificação / decisão — usa a margem de rebate (mcComRebate).
   let decisao;
   let motivo;
-  if (!temBase) {
-    decisao = "sem_base";
-    motivo = "Produto não encontrado na base de custo.";
-  } else if (frete === null) {
-    decisao = "sem_frete";
-    motivo = "Não foi possível estimar o frete deste anúncio.";
-  } else if (comissaoApiOriginal === null) {
-    decisao = "sem_comissao";
-    motivo = "Não foi possível estimar a comissão deste anúncio.";
-  } else if (mcComRetorno === null) {
-    decisao = "depende";
-    motivo = "Faltam dados para calcular a margem com segurança.";
-  } else if (margemAlvo !== null && mcComRetorno >= margemAlvo) {
+  if (!temSnapshot) {
+    decisao = "sem_relatorio";
+    motivo = "Produto sem relatório financeiro salvo. Rode um diagnóstico/relatório antes de decidir esta promoção.";
+  } else if (
+    custoProduto === null || impostoAliquota === null ||
+    frete === null || comissaoAliquota === null
+  ) {
+    decisao = "dados_incompletos";
+    motivo = "Relatório encontrado, mas faltou custo, imposto, frete ou comissão para calcular a margem de rebate.";
+  } else if (mcComRebate === null) {
+    decisao = "dados_incompletos";
+    motivo = "Relatório sem dados suficientes para calcular a margem de rebate.";
+  } else if (margemAlvo !== null && mcComRebate >= margemAlvo) {
     decisao = "entrar_seguro";
-    motivo = "Com o retorno do ML, a margem fica igual ou acima do alvo.";
+    motivo = "Margem de rebate (com retorno ML) igual ou acima do alvo.";
   } else if (
     margemAlvo !== null &&
     tolerancia !== null &&
-    mcComRetorno >= margemAlvo - tolerancia
+    mcComRebate >= margemAlvo - tolerancia
   ) {
     decisao = "entrar_com_tolerancia";
-    motivo = "Com o retorno do ML, a margem fica dentro da tolerância do alvo.";
-  } else if (mcComRetorno >= 0) {
-    decisao = "depende";
-    motivo = "Margem positiva, porém abaixo do alvo mesmo com o retorno do ML.";
+    motivo = "Margem de rebate (com retorno ML) dentro da tolerância do alvo.";
+  } else if (mcComRebate >= 0) {
+    decisao = "baixo_mesmo_com_rebate";
+    motivo = "Margem positiva, porém baixa mesmo com o rebate do ML.";
   } else {
     decisao = "nao_entrar";
-    motivo = "Mesmo com retorno ML, a margem fica negativa.";
+    motivo = "Mesmo com o rebate do ML, a margem fica negativa.";
   }
 
   return {
@@ -397,16 +379,23 @@ async function enriquecerItem({
     sellerPercentage,
     retornoMl: round2OrNull(retornoMl),
     retornoPctSobreFinal: round4OrNull(retornoPctSobreFinal),
-    comissaoCheia: round2OrNull(comissaoCheia),
-    comissaoEfetiva: round2OrNull(comissaoEfetiva),
+    comissaoPercentual,
+    comissaoValor: round2OrNull(comissaoValor),
+    impostoValor: round2OrNull(impostoValor),
     frete: round2OrNull(frete),
     custo: round2OrNull(custoProduto),
     impostoPercentual,
     taxaFixa: round2OrNull(taxaFixa),
-    lcSemRetorno: round2OrNull(lcSemRetorno),
-    mcSemRetorno: round4OrNull(mcSemRetorno),
-    lcComRetorno: round2OrNull(lcComRetorno),
-    mcComRetorno: round4OrNull(mcComRetorno),
+    // Margem de rebate (nomes novos da planilha)
+    lcSemRebate: round2OrNull(lcSemRebate),
+    mcSemRebate: round4OrNull(mcSemRebate),
+    lcComRebate: round2OrNull(lcComRebate),
+    mcComRebate: round4OrNull(mcComRebate),
+    // Compatibilidade com o frontend atual (apontam para os mesmos valores)
+    lcSemRetorno: round2OrNull(lcSemRebate),
+    mcSemRetorno: round4OrNull(mcSemRebate),
+    lcComRetorno: round2OrNull(lcComRebate),
+    mcComRetorno: round4OrNull(mcComRebate),
     margemAlvo,
     diferencaPp: round4OrNull(diferencaPp),
     retornoNecessario: round2OrNull(retornoNecessario),
@@ -414,12 +403,36 @@ async function enriquecerItem({
     decisao,
     motivo,
     temBase,
+    temSnapshot,
+    relatorioId: temSnapshot ? snapshot.relatorioId : null,
+    relatorioCreatedAt: temSnapshot ? snapshot.relatorioCreatedAt : null,
     debug: {
-      fonteComissao,
-      comissaoJaConsideraRetornoMl,
-      comissaoApiOriginal: round2OrNull(comissaoApiOriginal),
-      retornoMlAplicadoUmaVez: true,
-      fonteFrete: frete !== null ? "shipping_options/free" : null,
+      fonteFinanceira: temSnapshot ? "relatorio_itens" : null,
+      relatorioId: temSnapshot ? snapshot.relatorioId : null,
+      relatorioCreatedAt: temSnapshot ? snapshot.relatorioCreatedAt : null,
+      itemIdUsadoNoMatch: temSnapshot ? (snapshot.itemId || null) : null,
+      skuUsadoNoMatch: snapshotMatchedBy === "sku" ? (snapshot?.sku || skuExtraido || null) : null,
+      snapshotMatchedBy,
+      custoFonte: temSnapshot && snapshot.custo != null ? "relatorio_itens" : (temBase ? "custos(fallback)" : null),
+      custo: round2OrNull(custoProduto),
+      frete: round2OrNull(frete),
+      taxaFixa: round2OrNull(taxaFixa),
+      impostoPercentual,
+      comissaoPercentual,
+      comissaoFonte: fonteComissao,
+      comissaoDerivadaDeValor,
+      precoEfetivoRelatorio: round2OrNull(precoEfetivoRelatorio),
+      precoPromocao: round2OrNull(precoPromocao),
+      retornoMl: round2OrNull(retornoMl),
+      impostoValor: round2OrNull(impostoValor),
+      comissaoValor: round2OrNull(comissaoValor),
+      lcSemRebate: round2OrNull(lcSemRebate),
+      lcComRebate: round2OrNull(lcComRebate),
+      mcComRebate: round4OrNull(mcComRebate),
+      formula: "precoPromo - precoPromo*imposto - precoPromo*comissao - frete - taxaFixa - custo + retornoMl",
+      // auditoria do casamento de custo na base (fallback):
+      baseProdutoIdMatch: temBase ? (baseRow.produtoId || null) : null,
+      baseMatchedBy: matchedBy,
     },
    },
   };
@@ -501,31 +514,113 @@ async function gerarPreviewPromocoesRetorno({
   custosRes.rows.forEach((row) => {
     const key = String(row.produto_id || "").trim();
     if (!key) return;
+    // comissão/frete: lidos de forma defensiva (a tabela `custos` atual não tem
+    // essas colunas → ficam null; se a base passar a fornecê-las, são aproveitadas).
+    const comissaoRaw = row.comissao_percentual ?? row.comissao_marketplace ?? row.comissao;
+    const freteRaw = row.frete ?? row.frete_valor;
+    const numOrNull = (v) =>
+      v != null && Number.isFinite(Number(v)) ? Number(v) : null;
     const payload = {
+      produtoId: key,
       custoProduto: Number(row.custo_produto),
       impostoPercentual: Number(row.imposto_percentual),
       taxaFixa: Number(row.taxa_fixa),
+      comissaoPercentual: numOrNull(comissaoRaw),
+      frete: numOrNull(freteRaw),
     };
     custosMapExact.set(key, payload);
     custosMapNorm.set(key.toUpperCase(), payload);
     if (/^\d+$/.test(key)) custosMapNumeric.set(key, payload);
   });
 
+  // Retorna { row, matchedBy } expondo COMO o custo foi casado (para auditoria/debug).
   function matchBase(itemId, sku) {
-    // Tenta por MLB (exato / normalizado / número do MLB).
     const id = String(itemId || "").trim();
     const upper = id.toUpperCase();
-    let baseRow = custosMapExact.get(id) || custosMapNorm.get(upper) || null;
-    if (!baseRow && upper.startsWith("MLB") && !upper.startsWith("MLBU")) {
+    let row = custosMapExact.get(id) || custosMapNorm.get(upper) || null;
+    if (row) return { row, matchedBy: "mlb_exato" };
+
+    if (upper.startsWith("MLB") && !upper.startsWith("MLBU")) {
       const num = upper.slice(3).match(/^\d+/)?.[0] || "";
-      if (num && custosMapNumeric.has(num)) baseRow = custosMapNumeric.get(num);
+      if (num && custosMapNumeric.has(num)) {
+        return { row: custosMapNumeric.get(num), matchedBy: "mlb_numero" };
+      }
     }
-    // Tenta por SKU (exato / normalizado), se houver.
-    if (!baseRow && sku) {
+    if (sku) {
       const sk = String(sku).trim();
-      baseRow = custosMapExact.get(sk) || custosMapNorm.get(sk.toUpperCase()) || null;
+      row = custosMapExact.get(sk) || custosMapNorm.get(sk.toUpperCase()) || null;
+      if (row) return { row, matchedBy: "sku" };
     }
-    return baseRow;
+    return { row: null, matchedBy: null };
+  }
+
+  // 4b) FONTE PRINCIPAL DA MARGEM: último snapshot financeiro salvo em relatorio_itens.
+  // Prefetch único (último relatório concluído por item, deste cliente+base).
+  const numOrNull = (v) =>
+    v != null && Number.isFinite(Number(v)) ? Number(v) : null;
+  const snapExact = new Map();   // item_id (e UPPER) -> snapshot
+  const snapNumeric = new Map(); // número do MLB -> snapshot
+  const snapSku = new Map();     // sku -> snapshot
+  try {
+    const snapRes = await pool.query(
+      `SELECT DISTINCT ON (ri.item_id)
+              ri.item_id, ri.sku, ri.preco_efetivo, ri.custo, ri.imposto_percentual,
+              ri.taxa_fixa, ri.frete, ri.comissao, ri.comissao_percentual,
+              r.id AS relatorio_id, r.created_at AS relatorio_created_at
+         FROM relatorio_itens ri
+         JOIN relatorios r ON r.id = ri.relatorio_id
+        WHERE r.status = 'concluido'
+          AND r.cliente_id = $1
+          AND r.base_id = $2
+        ORDER BY ri.item_id, r.created_at DESC, ri.id DESC`,
+      [cliente.id, base.id]
+    );
+    snapRes.rows.forEach((row) => {
+      const itemId = String(row.item_id || "").trim();
+      const snap = {
+        itemId,
+        sku: row.sku ? String(row.sku).trim() : null,
+        precoEfetivo: numOrNull(row.preco_efetivo),
+        custo: numOrNull(row.custo),
+        impostoPercentual: numOrNull(row.imposto_percentual),
+        taxaFixa: numOrNull(row.taxa_fixa),
+        frete: numOrNull(row.frete),
+        comissao: numOrNull(row.comissao),
+        comissaoPercentual: numOrNull(row.comissao_percentual),
+        relatorioId: row.relatorio_id,
+        relatorioCreatedAt: row.relatorio_created_at,
+      };
+      if (itemId) {
+        snapExact.set(itemId, snap);
+        const up = itemId.toUpperCase();
+        snapExact.set(up, snap);
+        if (up.startsWith("MLB") && !up.startsWith("MLBU")) {
+          const num = up.slice(3).match(/^\d+/)?.[0];
+          if (num) snapNumeric.set(num, snap);
+        } else if (/^\d+$/.test(itemId)) {
+          snapNumeric.set(itemId, snap);
+        }
+      }
+      if (snap.sku) snapSku.set(snap.sku, snap);
+    });
+  } catch (err) {
+    console.warn(`[promocoes-retorno] falha ao carregar snapshots de relatorio_itens: ${err.message}`);
+  }
+
+  function matchSnapshot(itemId, sku) {
+    const id = String(itemId || "").trim();
+    const up = id.toUpperCase();
+    let snap = snapExact.get(id) || snapExact.get(up) || null;
+    if (snap) return { snap, by: "item_id" };
+    if (up.startsWith("MLB") && !up.startsWith("MLBU")) {
+      const num = up.slice(3).match(/^\d+/)?.[0];
+      if (num && snapNumeric.has(num)) return { snap: snapNumeric.get(num), by: "item_id_numerico" };
+    }
+    if (sku) {
+      const sk = String(sku).trim();
+      if (snapSku.has(sk)) return { snap: snapSku.get(sk), by: "sku" };
+    }
+    return { snap: null, by: null };
   }
 
   // 5) Anúncios ativos do seller (paginado)
@@ -565,11 +660,16 @@ async function gerarPreviewPromocoesRetorno({
       if (!body?.id) return null;
       try {
         const sku = extrairSkuMl(body);
-        const baseRow = matchBase(body.id, sku);
+        const match = matchBase(body.id, sku);
+        const snapMatch = matchSnapshot(body.id, sku);
         return await enriquecerItem({
           clienteId: cliente.id,
           body,
-          baseRow,
+          baseRow: match.row,
+          matchedBy: match.matchedBy,
+          snapshot: snapMatch.snap,
+          snapshotMatchedBy: snapMatch.by,
+          skuExtraido: sku,
           margemAlvo,
           tolerancia,
           filtros,
@@ -603,11 +703,11 @@ async function gerarPreviewPromocoesRetorno({
     produtosComBase: linhas.filter((l) => l.temBase).length,
     entrarSeguro: linhas.filter((l) => l.decisao === "entrar_seguro").length,
     entrarComTolerancia: linhas.filter((l) => l.decisao === "entrar_com_tolerancia").length,
-    depende: linhas.filter((l) => l.decisao === "depende").length,
+    baixoMesmoComRebate: linhas.filter((l) => l.decisao === "baixo_mesmo_com_rebate").length,
     naoEntrar: linhas.filter((l) => l.decisao === "nao_entrar").length,
-    semBase: linhas.filter((l) => l.decisao === "sem_base").length,
-    semFrete: linhas.filter((l) => l.decisao === "sem_frete").length,
-    semComissao: linhas.filter((l) => l.decisao === "sem_comissao").length,
+    semRelatorio: linhas.filter((l) => l.decisao === "sem_relatorio").length,
+    dadosIncompletos: linhas.filter((l) => l.decisao === "dados_incompletos").length,
+    produtosComSnapshot: linhas.filter((l) => l.temSnapshot).length,
     retornoMlTotal: round2OrNull(
       linhas.reduce((acc, l) => acc + (Number.isFinite(l.retornoMl) ? l.retornoMl : 0), 0)
     ),

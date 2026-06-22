@@ -29,21 +29,19 @@ const PROMO_FILTERS = [
   { key: "todos", label: "Todos" },
   { key: "entrar_seguro", label: "Entrar seguro" },
   { key: "entrar_com_tolerancia", label: "Entrar com tolerância" },
-  { key: "depende", label: "Depende" },
+  { key: "baixo_mesmo_com_rebate", label: "Baixo mesmo com rebate" },
   { key: "nao_entrar", label: "Não entrar" },
-  { key: "sem_base", label: "Sem base" },
-  { key: "sem_frete", label: "Sem frete" },
-  { key: "sem_comissao", label: "Sem comissão" },
+  { key: "sem_relatorio", label: "Sem relatório" },
+  { key: "dados_incompletos", label: "Dados incompletos" },
 ];
 
 const DECISAO_BADGE = {
-  entrar_seguro:         { label: "Entrar seguro",         cls: "vf-mini-badge-success" },
-  entrar_com_tolerancia: { label: "Entrar com tolerância", cls: "vf-mini-badge-tolerancia" },
-  depende:               { label: "Depende",               cls: "vf-mini-badge-warning" },
-  nao_entrar:            { label: "Não entrar",            cls: "vf-mini-badge-danger" },
-  sem_base:              { label: "Sem base",              cls: "vf-mini-badge-neutral" },
-  sem_frete:             { label: "Sem frete",             cls: "vf-mini-badge-warning" },
-  sem_comissao:          { label: "Sem comissão",          cls: "vf-mini-badge-warning" },
+  entrar_seguro:          { label: "Entrar seguro",          cls: "vf-mini-badge-success" },
+  entrar_com_tolerancia:  { label: "Entrar com tolerância",  cls: "vf-mini-badge-tolerancia" },
+  baixo_mesmo_com_rebate: { label: "Baixo mesmo com rebate", cls: "vf-mini-badge-warning" },
+  nao_entrar:             { label: "Não entrar",             cls: "vf-mini-badge-danger" },
+  sem_relatorio:          { label: "Sem relatório",          cls: "vf-mini-badge-neutral" },
+  dados_incompletos:      { label: "Dados incompletos",      cls: "vf-mini-badge-neutral" },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -282,12 +280,13 @@ function renderResumo(data) {
     pill("Promoções encontradas", n(r.ofertasEncontradas)),
     pill("Ofertas com retorno ML", n(r.ofertasComRetornoMl), "vf-resumo-success"),
     pill("Ofertas encontradas (total)", n(r.ofertasEncontradasTotal)),
-    pill("Produtos com base", n(r.produtosComBase)),
+    pill("Produtos com relatório", n(r.produtosComSnapshot), "vf-resumo-success"),
     pill("Entrar seguro", n(r.entrarSeguro), "vf-resumo-success"),
     pill("Entrar com tolerância", n(r.entrarComTolerancia), "vf-resumo-success"),
-    pill("Depende", n(r.depende), "vf-resumo-warning"),
+    pill("Baixo mesmo com rebate", n(r.baixoMesmoComRebate), "vf-resumo-warning"),
     pill("Não entrar", n(r.naoEntrar), "vf-resumo-danger"),
-    pill("Sem base", n(r.semBase)),
+    pill("Sem relatório", n(r.semRelatorio)),
+    pill("Dados incompletos", n(r.dadosIncompletos)),
     pill("Retorno ML total", brl(r.retornoMlTotal)),
     pill("Lucro total estimado", brl(r.lucroTotalEstimado),
       Number(r.lucroTotalEstimado) < 0 ? "vf-resumo-danger" : "vf-resumo-success"),
@@ -411,8 +410,8 @@ function renderTabela() {
       numCell(l.sellerPercentage, { raw: true }),
       numCell(l.meliPercentage, { raw: true }),
       numCell(l.retornoMl, { money: true }),
-      numCell(l.comissaoCheia, { money: true }),
-      numCell(l.comissaoEfetiva, { money: true }),
+      numCell(l.comissaoPercentual, { raw: true }),
+      numCell(l.comissaoValor, { money: true }),
       numCell(l.frete, { money: true }),
       numCell(l.custo, { money: true }),
       numCell(l.impostoPercentual, { raw: true }),
@@ -489,32 +488,44 @@ function abrirModalCalculo(l) {
     `<div class="${strong ? "vf-promo-calc-strong" : ""}">${escapeHTML(label)}</div>` +
     `<div class="vf-promo-calc-val ${strong ? "vf-promo-calc-strong" : ""}">${value}</div>`;
 
+  // Valores de rebate (com fallback aos nomes de compatibilidade).
+  const lcSemR = l.lcSemRebate != null ? l.lcSemRebate : l.lcSemRetorno;
+  const mcSemR = l.mcSemRebate != null ? l.mcSemRebate : l.mcSemRetorno;
+  const lcComR = l.lcComRebate != null ? l.lcComRebate : l.lcComRetorno;
+  const mcComR = l.mcComRebate != null ? l.mcComRebate : l.mcComRetorno;
+
+  const relId = l.relatorioId ?? l.debug?.relatorioId ?? null;
+  const relData = l.relatorioCreatedAt ?? l.debug?.relatorioCreatedAt ?? null;
+  const relDataFmt = relData ? new Date(relData).toLocaleString("pt-BR") : "—";
+
   body.innerHTML = `
     <div style="margin-bottom:.75rem;font-size:.85rem;color:var(--vf-text-m);">
       <strong style="font-family:var(--vf-mono);">${escapeHTML(txt(l.itemId))}</strong>
       ${l.campanha ? `· ${escapeHTML(l.campanha)}` : ""}
     </div>
+    <div style="margin-bottom:.9rem;padding:.6rem .75rem;background:var(--vf-bg);border:1px solid var(--vf-border);border-radius:8px;font-size:.78rem;color:var(--vf-text-m);line-height:1.5;">
+      <strong>Fonte financeira:</strong> último relatório salvo
+      ${relId ? `(Relatório #${escapeHTML(String(relId))} · ${escapeHTML(relDataFmt)})` : "— nenhum relatório encontrado"}<br>
+      <strong>Fórmula (planilha):</strong>
+      LC com rebate = preço − preço×imposto − preço×comissão − frete − taxa fixa − custo + retorno ML
+    </div>
     <div class="vf-promo-calc-grid">
-      ${row("Preço original", brl(l.precoOriginal))}
-      ${row("Preço final (promoção)", brl(l.precoPromocao))}
-      ${row("Desconto total", brl(l.descontoTotal))}
-      ${row("Participação seller", pctRaw(l.sellerPercentage), false, true)}
-      ${row("Participação ML", pctRaw(l.meliPercentage))}
-      ${row("Retorno ML (R$)", brl(l.retornoMl), true)}
-      ${row("Retorno equiv. sobre preço final", pctFrac(l.retornoPctSobreFinal))}
-      ${row("Comissão cheia estimada (efetiva + retorno ML)", brl(l.comissaoCheia), false, true)}
-      ${row("Comissão efetiva (já cobrada pelo ML)", brl(l.comissaoEfetiva))}
-      ${row("Frete", brl(l.frete))}
-      ${row("Imposto", pctRaw(l.impostoPercentual))}
-      ${row("Custo", brl(l.custo))}
-      ${row("Taxa fixa", brl(l.taxaFixa))}
-      ${row("LC sem retorno", brl(l.lcSemRetorno), true, true)}
-      ${row("MC sem retorno", pctFrac(l.mcSemRetorno))}
-      ${row("LC com retorno", brl(l.lcComRetorno), true)}
-      ${row("MC com retorno", pctFrac(l.mcComRetorno), true)}
+      ${row("Relatório usado", relId ? `#${escapeHTML(String(relId))}` : "—", true)}
+      ${row("Data do relatório", escapeHTML(relDataFmt))}
+      ${row("Preço promoção", brl(l.precoPromocao), true, true)}
+      ${row("Custo (relatório)", brl(l.custo))}
+      ${row("Frete (relatório)", brl(l.frete))}
+      ${row("Imposto % (relatório)", pctRaw(l.impostoPercentual))}
+      ${row("Imposto R$", brl(l.impostoValor))}
+      ${row("Comissão % (relatório)", pctRaw(l.comissaoPercentual))}
+      ${row("Comissão R$", brl(l.comissaoValor))}
+      ${row("Taxa fixa (relatório)", brl(l.taxaFixa))}
+      ${row("Retorno ML", brl(l.retornoMl), true)}
+      ${row("LC sem rebate", brl(lcSemR), true, true)}
+      ${row("MC sem rebate", pctFrac(mcSemR))}
+      ${row("LC com rebate", brl(lcComR), true)}
+      ${row("MC com rebate", pctFrac(mcComR), true)}
       ${row("Margem alvo", pctFrac(l.margemAlvo), false, true)}
-      ${row("Retorno necessário p/ bater alvo", brl(l.retornoNecessario))}
-      ${row("Falta de retorno", brl(l.faltaRetorno))}
       ${row("Diferença p.p. vs alvo", pp(l.diferencaPp))}
     </div>
     <div style="margin-top:1rem;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">

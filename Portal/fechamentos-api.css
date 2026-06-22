@@ -156,6 +156,17 @@
 .fapi-date-sep { align-self: center; padding-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--vfop-soft, #8c96a6); }
 .fapi-filter-aviso { margin-top: 10px; padding: 7px 11px; font-size: 11.5px; color: #855100; background: #fdf8ec; border: 1px solid #ecdcb4; border-radius: 6px; }
 
+/* ── Busca local ─────────────────────────────────────────── */
+.fapi-fitem--search { min-width: 220px; }
+.fapi-fsearch { border: 1px solid var(--vfop-border, #dde1e8); border-radius: 6px; background: var(--vfop-surface, #fff); color: var(--vfop-text, #111827); font: inherit; font-size: 12px; font-weight: 600; padding: 5px 8px; min-width: 220px; }
+.fapi-fsearch:focus { outline: none; border-color: var(--vfop-primary, #4b267a); box-shadow: 0 0 0 3px #ede8f5; }
+.fapi-fsearch::placeholder { color: var(--vfop-soft, #8c96a6); font-weight: 500; }
+
+/* ── Paginação da tabela de pedidos ──────────────────────── */
+.fapi-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 14px; border-top: 1px solid #eef0f4; flex-wrap: wrap; }
+.fapi-pager-info { font-size: 12px; font-weight: 600; color: var(--vfop-muted, #5a6578); font-variant-numeric: tabular-nums; }
+.fapi-pager .fapi-btn[disabled] { opacity: .45; cursor: not-allowed; pointer-events: none; }
+
 /* ── Wrap de tabela densa (scroll horizontal) ────────────── */
 .fapi-tablewrap { overflow-x: auto; }
 .fapi-table .center { text-align: center; }

@@ -178,13 +178,19 @@ function defaultFilters() { return { modo:'mes', dia:null, semana:null, de:null,
 function cloneFilters(filters) { return { ...defaultFilters(), ...(filters || {}) }; }
 const F = {
   clientes: [], cliente: null, competencia: null,
-  rawPayload: null, viewPayload: null,
+  rawPayload: null, viewPayload: null, visiblePayload: null,
   filters: defaultFilters(),
   draftFilters: defaultFilters(),
   selectedOrderId: null,
   productLimit: 10, draftProductLimit: 10, productSort: 'faturamento',
   intervaloAviso: null,   // aviso discreto quando a data inicial > final foi corrigida
   arquivoImport: null,    // File guardado no change do input — imune a repaint do carregarTela
+  // ── performance: fetch só em troca de cliente/comp; filtros/busca em memória ──
+  page: 1, pageSize: 100, // tabela paginada (100 pedidos/página)
+  searchTerm: '',         // busca local por pedido/MLB/SKU/título
+  searchTimer: null,      // debounce da busca
+  loadSeq: 0,             // guard de concorrência: ignora resposta de fetch antigo
+  loadAbort: null,        // AbortController do fetch em voo
 };
 
 /* ── DERIVAÇÕES DE PEDIDO (motor por pedido) ──────────────── */
@@ -462,12 +468,12 @@ function dayScopeClass(data) {
 }
 
 /* ── CARREGAMENTO ─────────────────────────────────────────── */
-async function carregarPayload(slug, competencia) {
+async function carregarPayload(slug, competencia, signal) {
   if (!slug) return null;
   try {
     const res = await fetch(
       `${API_BASE}/operacao/central-vendas/${encodeURIComponent(slug)}?competencia=${encodeURIComponent(competencia)}`,
-      { headers: { Authorization: "Bearer " + TOKEN } }
+      { headers: { Authorization: "Bearer " + TOKEN }, signal }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -538,37 +544,98 @@ function resetFilters() {
   F.draftProductLimit = 10;
   F.productSort = 'faturamento';
   F.intervaloAviso = null;
+  F.searchTerm = '';
+  F.page = 1;
 }
 
+/* ÚNICO ponto de fetch. Só deve ser chamado em: init, troca de cliente/
+   competência, e depois de importar/sincronizar. Filtros/busca/paginação
+   NÃO passam por aqui — usam renderTela()/renderResults() em memória.
+   Guard de concorrência (loadSeq) + AbortController ignoram resposta antiga. */
 async function carregarTela() {
   const content = document.getElementById('fapi-content');
   if (!content) return;
   if (!F.cliente) {
-    F.rawPayload = null; F.viewPayload = null; renderHeader(null);
+    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null; renderHeader(null);
     content.innerHTML = emptyState({ icon:'🎯', title:'Selecione um cliente para abrir o motor',
       why:'O fechamento por pedido é sempre por cliente e por competência.', next:'Escolha um cliente e a competência acima.' });
     return;
   }
-  F.rawPayload = await carregarPayload(F.cliente.slug, F.competencia);
+
+  const seq = ++F.loadSeq;
+  if (F.loadAbort) { try { F.loadAbort.abort(); } catch (_) {} }
+  F.loadAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+
+  const payload = await carregarPayload(F.cliente.slug, F.competencia, F.loadAbort?.signal);
+  if (seq !== F.loadSeq) return; // resposta de um carregamento mais antigo — ignora
+
+  F.rawPayload = payload;
   if (!F.rawPayload?.ok) {
     renderHeader({ motor:{ status:'indisponivel' } });
     content.innerHTML = emptyState({ icon:'🔌', title:'Motor indisponível', why:'O backend do motor ainda não respondeu.', next:'Quando o endpoint existir, a tela carrega o payload real.' });
     return;
   }
-  F.viewPayload = applyFilters(F.rawPayload, F.filters);
+
   F.filters = sanitizeFilters(F.filters, F.rawPayload);
   F.draftFilters = sanitizeFilters(F.draftFilters, F.rawPayload);
+  F.page = 1;
+  recomputeView();
+  renderTela();
+}
+
+/* Aplica filtros sobre F.rawPayload em memória — SEM fetch. Recalcula uma vez. */
+function recomputeView() {
+  F.viewPayload = F.rawPayload ? applyFilters(F.rawPayload, F.filters) : null;
+}
+
+/* Pedidos visíveis = filtrados + termo de busca (local). Não pagina ainda. */
+function getVisiblePedidos() {
+  let pedidos = F.viewPayload?.pedidos || [];
+  const term = String(F.searchTerm || '').trim().toLowerCase();
+  if (term) {
+    pedidos = pedidos.filter(o =>
+      String(o.id || '').toLowerCase().includes(term) ||
+      String(o.produto?.mlb || o.mlb || '').toLowerCase().includes(term) ||
+      String(o.produto?.sku || o.sku || '').toLowerCase().includes(term) ||
+      String(o.produto?.titulo || '').toLowerCase().includes(term)
+    );
+  }
+  return pedidos;
+}
+
+/* Render completo SEM fetch: separa filtros (host próprio, mantém foco da
+   busca) do bloco de resultados (cards/régua/tabela/ranking). */
+function renderTela() {
+  const content = document.getElementById('fapi-content');
+  if (!content || !F.rawPayload?.ok) return;
   renderHeader(F.rawPayload);
-  /* Ordem da tela: filtros → cards → régua de dias → tabela de pedidos →
-     detalhe/extrato do pedido (sob demanda) → ranking de produtos. */
-  content.innerHTML =
-    renderFilters() +
+  content.innerHTML = '<div id="fapi-filters-host"></div><div id="fapi-results"></div>';
+  renderFiltersSection();
+  renderResults();
+}
+
+/* Re-render só da seção de filtros (toggle data/semana ao trocar modo, sem
+   tocar na tabela). */
+function renderFiltersSection() {
+  const host = document.getElementById('fapi-filters-host');
+  if (!host) return;
+  host.innerHTML = renderFilters();
+  wireFilters();
+}
+
+/* Re-render só do bloco de resultados (busca/paginação/sort/dia). */
+function renderResults() {
+  const host = document.getElementById('fapi-results');
+  if (!host || !F.viewPayload) return;
+  F.visiblePayload = { ...F.viewPayload, pedidos: getVisiblePedidos() };
+  /* Ordem: cards → régua de dias → tabela paginada → detalhe → ranking. */
+  host.innerHTML =
     renderOrderSummary() +
     renderDailySales() +
     renderOrdersTable() +
     '<div id="fapi-pedido-detalhe"></div>' +
     renderTopProducts();
-  wireInteractions();
+  wireResults();
 }
 
 /* ── HEADER ───────────────────────────────────────────────── */
@@ -609,7 +676,10 @@ function periodText(filters = F.filters, payload = F.rawPayload) {
   return `${payload.periodo.label} · mês inteiro`;
 }
 function filterSummaryText() {
-  const parts = [`Mostrando ${F.viewPayload?.pedidos?.length || 0} pedidos`, periodText(F.filters, F.rawPayload)];
+  const totalFiltrado = F.viewPayload?.pedidos?.length || 0;
+  const visiveis = (F.searchTerm || '').trim() ? getVisiblePedidos().length : totalFiltrado;
+  const contagem = visiveis === totalFiltrado ? `${num(totalFiltrado)} pedidos` : `${num(visiveis)} de ${num(totalFiltrado)} pedidos`;
+  const parts = [`Mostrando ${contagem}`, periodText(F.filters, F.rawPayload)];
   const fl = F.filters;
   if (fl.logistica === 'full') parts.push('Full');
   if (fl.logistica === 'nao_full') parts.push('não Full');
@@ -657,6 +727,8 @@ function renderFilters() {
       <label class="fapi-fitem"><span>Período principal</span>${periodoSel}</label>
       ${intervaloUI}
       ${semanaUI}
+      <label class="fapi-fitem fapi-fitem--search"><span>Buscar</span>
+        <input type="search" id="fapi-search" class="fapi-fsearch" placeholder="pedido, MLB, SKU ou título" value="${esc(F.searchTerm || '')}" autocomplete="off"></label>
       <div class="fapi-filter-actions">
         <button class="fapi-btn fapi-btn-primary fapi-btn-sm" id="fapi-filter-apply" type="button">Filtrar</button>
         <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-filter-clear" type="button">Limpar</button>
@@ -676,7 +748,7 @@ function renderFilters() {
 
 /* ── 2. RESUMO PEDIDO-FIRST ───────────────────────────────── */
 function renderOrderSummary() {
-  const m = buildOrderMetrics(F.viewPayload);
+  const m = buildOrderMetrics(F.visiblePayload || F.viewPayload);
   const card = (lbl, val, sub, cls) => `<div class="fapi-card"><div class="fapi-card-lbl">${esc(lbl)}</div><div class="fapi-card-val${cls ? ' ' + cls : ''}">${val}</div><div class="fapi-card-sub">${sub || '&nbsp;'}</div></div>`;
   return `
   <section class="fapi-panel">
@@ -727,10 +799,20 @@ function renderDailySales() {
 /* ── 3. TABELA DE PEDIDOS ─────────────────────────────────── */
 const STATUS_PEDIDO = { pago:['ok','Pago'], cancelado:['crit','Cancelado'], com_problema:['warn','Problema'], pendente:['warn','Pendente'] };
 function renderOrdersTable() {
-  const rows = F.viewPayload.pedidos;
-  if (!rows.length) {
-    return `<section class="fapi-panel"><div class="fapi-panel-body">${emptyState({ icon:'📦', title:'Nenhum pedido neste filtro', why:'Os filtros atuais não retornaram pedidos.', next:'Ajuste o período/logística/status acima.' })}</div></section>`;
+  const all = getVisiblePedidos();
+  const total = all.length;
+  if (!total) {
+    const buscando = String(F.searchTerm || '').trim();
+    return `<section class="fapi-panel"><div class="fapi-panel-body">${emptyState({ icon:'📦', title: buscando ? 'Nenhum pedido para a busca' : 'Nenhum pedido neste filtro', why: buscando ? `Nada encontrado para "${esc(buscando)}".` : 'Os filtros atuais não retornaram pedidos.', next: buscando ? 'Limpe a busca ou ajuste os filtros.' : 'Ajuste o período/logística/status acima.' })}</div></section>`;
   }
+  // Paginação: tabela renderiza só a página atual (cards/régua usam o total filtrado).
+  const pageSize = F.pageSize;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (F.page > pages) F.page = pages;
+  if (F.page < 1) F.page = 1;
+  const start = (F.page - 1) * pageSize;
+  const end = Math.min(start + pageSize, total);
+  const rows = all.slice(start, end);
   const tr = rows.map(o => {
     const [scls, slbl] = STATUS_PEDIDO[o.status] || ['muted', o.status];
     const res = o.resultado == null ? '<span class="muted">—</span>' : `<span class="fapi-est">${money(o.resultado)}</span>`;
@@ -763,6 +845,11 @@ function renderOrdersTable() {
           <thead><tr><th>Pedido</th><th>Data</th><th>Status</th><th>Produto</th><th>MLB</th><th>SKU</th><th>Full</th><th>Ads</th><th class="right">Valor</th><th class="right">Frete</th><th class="right">Taxas</th><th class="right">Custo</th><th class="right">Resultado</th><th>Confiança</th><th>Pendência</th></tr></thead>
           <tbody>${tr}</tbody>
         </table>
+      </div>
+      <div class="fapi-pager">
+        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-page-prev" type="button"${F.page <= 1 ? ' disabled' : ''}>← Anterior</button>
+        <span class="fapi-pager-info">Mostrando ${num(start + 1)}–${num(end)} de ${num(total)} pedidos${pages > 1 ? ` · página ${num(F.page)}/${num(pages)}` : ''}</span>
+        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-page-next" type="button"${F.page >= pages ? ' disabled' : ''}>Próxima →</button>
       </div>
       <div class="fapi-table-note">Resultado é sempre <b>estimado</b> e fica <b>—</b> quando o pedido está bloqueado (custo/produto ausente). Ausência nunca vira R$ 0,00.</div>
     </div>
@@ -865,7 +952,7 @@ const SORTS = [['faturamento','Faturamento'], ['unidades','Unidades'], ['pedidos
 /* Ranking simples de produtos (agregação dos pedidos do filtro).
    Sem produto acompanhado e sem painel de detalhe — apenas a tabela. */
 function renderTopProducts() {
-  const { rows, totalCount } = buildProductSalesRanking(F.viewPayload, { sortBy: F.productSort, limit: F.productLimit });
+  const { rows, totalCount } = buildProductSalesRanking(F.visiblePayload || F.viewPayload, { sortBy: F.productSort, limit: F.productLimit });
   const sortBtns = SORTS.map(([k, l]) => `<button class="fapi-sortbtn${F.productSort === k ? ' active' : ''}" data-sort="${k}">${esc(l)}</button>`).join('');
   if (!rows.length) return `<section class="fapi-panel"><div class="fapi-panel-head"><h2 class="fapi-panel-title">Ranking de produtos</h2></div><div class="fapi-panel-body">${emptyState({ icon:'•', title:'Sem produtos no filtro', why:'Nenhum pedido com produto no recorte atual.', next:'Ajuste os filtros.' })}</div></section>`;
   const body = rows.map((a, i) => {
@@ -912,6 +999,8 @@ function setDraftFilter(key, value) {
   if (key === 'modo') { F.draftFilters.dia = null; F.draftFilters.semana = null; F.draftFilters.de = null; F.draftFilters.ate = null; }
   F.draftFilters = sanitizeFilters(F.draftFilters, F.rawPayload);
 }
+/* "Filtrar": aplica draft → F.filters, recalcula a view em memória (sem fetch),
+   volta à página 1 e re-renderiza uma vez. */
 function applyDraftFilters() {
   // Aviso discreto quando data inicial > final foi corrigida automaticamente.
   const d = F.draftFilters;
@@ -921,31 +1010,69 @@ function applyDraftFilters() {
   F.productLimit = normalizeLimit(F.draftProductLimit);
   F.draftProductLimit = F.productLimit;
   F.selectedOrderId = null;
+  F.page = 1;
   F.intervaloAviso = invertido ? 'A data inicial era maior que a final — invertemos o intervalo.' : null;
-  carregarTela();
+  recomputeView();
+  renderFiltersSection();
+  renderResults();
 }
 function clearFilters() {
-  // Limpar: volta para mês inteiro, todos os filtros, Top 10, sem datas/semana.
+  // Limpar: volta para mês inteiro, todos os filtros, Top 10, sem datas/semana/busca.
   resetFilters();
   F.selectedOrderId = null;
-  carregarTela();
+  F.searchTerm = '';
+  F.page = 1;
+  recomputeView();
+  renderFiltersSection();
+  renderResults();
 }
 function applyDayFilter(day) {
-  // Clique na régua: vira Data personalizada com intervalo de 1 dia e aplica já.
+  // Clique na régua: vira Data personalizada com intervalo de 1 dia e aplica já (1 render).
   if (!isDateInPeriod(day, F.rawPayload.periodo)) return;
   F.filters = { ...cloneFilters(F.filters), modo:'intervalo', dia:null, semana:null, de:day, ate:day };
   F.draftFilters = cloneFilters(F.filters);
   F.selectedOrderId = null;
   F.intervaloAviso = null;
-  carregarTela();
+  F.page = 1;
+  recomputeView();
+  renderFiltersSection();
+  renderResults();
 }
-function wireInteractions() {
-  document.querySelectorAll('.fapi-fsel').forEach(s => s.addEventListener('change', () => { setDraftFilter(s.dataset.filter, s.value); carregarTela(); }));
-  document.querySelectorAll('.fapi-fdate').forEach(s => s.addEventListener('change', () => { setDraftFilter(s.dataset.filter, s.value); carregarTela(); }));
+/* Busca local com debounce de 300ms — re-renderiza só os resultados; o input
+   fica em #fapi-filters-host (não é recriado), então o foco é preservado. */
+function onSearchInput(value) {
+  if (F.searchTimer) clearTimeout(F.searchTimer);
+  F.searchTimer = setTimeout(() => {
+    F.searchTerm = value;
+    F.page = 1;
+    F.selectedOrderId = null;
+    renderResults();
+    // atualiza o contador "Mostrando X de N" sem recriar o input de busca
+    const summary = document.querySelector('.fapi-filter-summary');
+    if (summary) summary.innerHTML = esc(filterSummaryText()) + (hasPendingFilterChanges() ? ' <span class="fapi-filter-pending">aplique para atualizar</span>' : '');
+  }, 300);
+}
+function goToPage(delta) {
+  F.page = Math.max(1, F.page + delta);
+  renderResults();
+  const host = document.getElementById('fapi-results');
+  if (host) host.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+/* Filtros: selects/datas/apply/clear/busca. Re-render só da seção de filtros. */
+function wireFilters() {
+  document.querySelectorAll('.fapi-fsel').forEach(s => s.addEventListener('change', () => { setDraftFilter(s.dataset.filter, s.value); renderFiltersSection(); }));
+  document.querySelectorAll('.fapi-fdate').forEach(s => s.addEventListener('change', () => { setDraftFilter(s.dataset.filter, s.value); renderFiltersSection(); }));
   document.getElementById('fapi-filter-apply')?.addEventListener('click', applyDraftFilters);
   document.getElementById('fapi-filter-clear')?.addEventListener('click', clearFilters);
-  document.querySelectorAll('#fapi-sortbar .fapi-sortbtn').forEach(b => b.addEventListener('click', () => { F.productSort = b.dataset.sort; carregarTela(); }));
+  const search = document.getElementById('fapi-search');
+  if (search) search.addEventListener('input', e => onSearchInput(e.target.value));
+}
+/* Resultados: sort, régua de dias, linhas de pedido e paginação. */
+function wireResults() {
+  document.querySelectorAll('#fapi-sortbar .fapi-sortbtn').forEach(b => b.addEventListener('click', () => { F.productSort = b.dataset.sort; renderResults(); }));
   document.querySelectorAll('.fapi-day').forEach(d => d.addEventListener('click', () => applyDayFilter(d.dataset.day)));
+  document.getElementById('fapi-page-prev')?.addEventListener('click', () => goToPage(-1));
+  document.getElementById('fapi-page-next')?.addEventListener('click', () => goToPage(1));
   document.querySelectorAll('.fapi-prow').forEach(row => {
     row.addEventListener('click', () => abrirPedido(row.dataset.pedido));
     row.addEventListener('keydown', e => { if (e.key === 'Enter') abrirPedido(row.dataset.pedido); });

@@ -51,11 +51,6 @@ const CANDIDATOS_IMPOSTO = [
   "imposto", "aliquota", "tributo", "icms", "taxa imposto", "percentual imposto",
 ];
 
-const CANDIDATOS_ID_MODEL = [
-  "id model", "id_model", "id do modelo", "id da variacao",
-  "id da variação", "variante identificador", "variation id", "model id",
-];
-
 // ─── Pontuação de coluna ─────────────────────────────────────────────────────
 
 function pontuarColuna(header, candidatos, exclusoes) {
@@ -129,7 +124,6 @@ function detectarColunas(headerRow) {
   const scoresId = [];
   const scoresCusto = [];
   const scoresImposto = [];
-  const scoresIdModel = [];
 
   headerRow.forEach((cell, idx) => {
     const letra = indicePraLetra(idx);
@@ -139,7 +133,6 @@ function detectarColunas(headerRow) {
     scoresId.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_ID) });
     scoresCusto.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_CUSTO, EXCLUIR_CUSTO) });
     scoresImposto.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_IMPOSTO) });
-    scoresIdModel.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_ID_MODEL) });
   });
 
   function melhorCandidato(scores) {
@@ -152,10 +145,9 @@ function detectarColunas(headerRow) {
 
   return {
     detectadas: {
-      id:       melhorCandidato(scoresId),
-      custo:    melhorCandidato(scoresCusto),
-      imposto:  melhorCandidato(scoresImposto),
-      id_model: melhorCandidato(scoresIdModel),
+      id:      melhorCandidato(scoresId),
+      custo:   melhorCandidato(scoresCusto),
+      imposto: melhorCandidato(scoresImposto),
     },
     disponiveis,
   };
@@ -191,19 +183,6 @@ function normalizarIdBase(value) {
   return text;
 }
 
-function normalizarIdShopee(value) {
-  if (value === null || value === undefined) return null;
-  let text = String(value).replace(/^﻿/, "").trim().replace(/^['"]+|['"]+$/g, "").trim();
-  if (!text) return null;
-  if (/^\d+\.0+$/.test(text)) text = text.replace(/\.0+$/, "");
-  const sci = text.replace(",", ".");
-  if (/^\d+(\.\d+)?[eE]\+?\d+$/.test(sci)) {
-    const n = Number(sci);
-    if (Number.isFinite(n)) text = Math.trunc(n).toString();
-  }
-  return text;  // retorna numérico puro, sem prefixo MLB
-}
-
 function normalizarCustoBase(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
@@ -224,11 +203,10 @@ function normalizarImpostoBase(value) {
 
 // ─── Processamento de linhas ──────────────────────────────────────────────────
 
-function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
+function processarLinhas(rowsAsArrays, linhaHeader, mapeamento) {
   const idxId      = mapeamento.id      ? letraParaIndice(mapeamento.id)      : -1;
   const idxCusto   = mapeamento.custo   ? letraParaIndice(mapeamento.custo)   : -1;
   const idxImposto = mapeamento.imposto ? letraParaIndice(mapeamento.imposto) : -1;
-  const idxIdModel = mapeamento.id_model ? letraParaIndice(mapeamento.id_model) : -1;
 
   const todas = [];
   const dataRows = rowsAsArrays.slice(linhaHeader + 1);
@@ -242,14 +220,9 @@ function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
 
     todas.push({
       linha_original: linhaOriginal,
-      id: marketplace === "shopee"
-        ? normalizarIdShopee(idxId >= 0 ? row[idxId] : "")
-        : normalizarIdBase(idxId >= 0 ? row[idxId] : ""),
+      id:      normalizarIdBase(idxId      >= 0 ? row[idxId]      : ""),
       custo:   normalizarCustoBase(idxCusto   >= 0 ? row[idxCusto]   : ""),
       imposto: normalizarImpostoBase(idxImposto >= 0 ? row[idxImposto] : ""),
-      id_model: (marketplace === "shopee" && idxIdModel >= 0)
-        ? normalizarIdShopee(row[idxIdModel])
-        : null,
     });
   }
 
@@ -341,10 +314,6 @@ function gerarAlertas(linhas, mapeamento, resumo) {
 async function analisarPlanilhaBase(buffer, originalname, config) {
   config = config || {};
 
-  const marketplace = ["meli", "shopee"].includes(config.marketplace)
-    ? config.marketplace
-    : "meli";
-
   const ext = path.extname(String(originalname || "")).toLowerCase();
   if (![".xlsx", ".xls", ".csv"].includes(ext)) {
     throw criarErro(400, "Formato inválido. Envie .xlsx, .xls ou .csv.");
@@ -375,14 +344,13 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
 
   // Aplica overrides manuais de coluna
   const colunasFinais = {
-    id:       detectadas.id,
-    custo:    detectadas.custo,
-    imposto:  detectadas.imposto,
-    id_model: detectadas.id_model,
+    id:      detectadas.id,
+    custo:   detectadas.custo,
+    imposto: detectadas.imposto,
   };
 
   if (config.colunas) {
-    for (const tipo of ["id", "custo", "imposto", "id_model"]) {
+    for (const tipo of ["id", "custo", "imposto"]) {
       const letraOverride = config.colunas[tipo];
       if (letraOverride) {
         const letra    = String(letraOverride).toUpperCase().trim();
@@ -394,23 +362,17 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
   }
 
   const mapeamento = {
-    id:       colunasFinais.id       ? colunasFinais.id.coluna       : null,
-    custo:    colunasFinais.custo    ? colunasFinais.custo.coluna    : null,
-    imposto:  colunasFinais.imposto  ? colunasFinais.imposto.coluna  : null,
-    id_model: colunasFinais.id_model ? colunasFinais.id_model.coluna : null,
+    id:      colunasFinais.id      ? colunasFinais.id.coluna      : null,
+    custo:   colunasFinais.custo   ? colunasFinais.custo.coluna   : null,
+    imposto: colunasFinais.imposto ? colunasFinais.imposto.coluna : null,
   };
 
-  const todasLinhas     = processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace);
+  const todasLinhas     = processarLinhas(rowsAsArrays, linhaHeader, mapeamento);
   const resumo          = calcularResumo(todasLinhas);
   const alertas         = gerarAlertas(todasLinhas, mapeamento, resumo);
   const dadosImportacao = todasLinhas
     .filter((l) => l.id && l.custo !== null)
-    .map((l) => ({
-      id:       l.id,
-      custo:    l.custo,
-      imposto:  l.imposto,
-      id_model: marketplace === "shopee" ? (l.id_model || null) : null,
-    }));
+    .map((l) => ({ id: l.id, custo: l.custo, imposto: l.imposto }));
 
   // Confiança geral = média das colunas detectadas
   const scoresParciais = ["id", "custo", "imposto"]
@@ -430,7 +392,6 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
 
   return {
     ok: true,
-    marketplace,
     arquivo:            originalname,
     abas_disponiveis:   abas,
     aba_detectada:      nomeAba,
@@ -451,7 +412,6 @@ module.exports = {
   detectarCabecalho,
   detectarColunas,
   normalizarIdBase,
-  normalizarIdShopee,
   normalizarCustoBase,
   normalizarImpostoBase,
   calcularResumo,

@@ -661,6 +661,7 @@ function calculateShopeeItem(sale, costRow) {
   if (averageTicket <= 0) {
     return {
       id: sale.id,
+      modelId: costRow.modelId || null,
       product: sale.product,
       paidRevenue: sale.paidRevenue,
       paidUnits: sale.paidUnits,
@@ -695,6 +696,7 @@ function calculateShopeeItem(sale, costRow) {
   return {
     id: sale.id,
     product: sale.product,
+    modelId: costRow.modelId || null,
     paidRevenue: sale.paidRevenue,
     paidUnits: sale.paidUnits,
     contributionProfit,
@@ -792,6 +794,7 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
       Marketplace: "Shopee",
       Produto: calculated.product,
       ID: calculated.id,
+      "ID Model": calculated.modelId || "",
       "Vendas (Pedido pago) (BRL)": Number(calculated.paidRevenue.toFixed(2)),
       "Unidades (Pedido pago)": Number(calculated.paidUnits.toFixed(0)),
       Ticket: Number(calculated.averageTicket.toFixed(2)),

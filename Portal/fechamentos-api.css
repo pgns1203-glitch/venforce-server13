@@ -212,6 +212,17 @@
 .fapi-fech-q--click { text-align: left; cursor: pointer; font: inherit; }
 .fapi-fech-q--click:hover { border-color: var(--vfop-primary, #4b267a); background: #f5f0fb; }
 
+/* ── Ações de API à direita no topo (Importar / Sincronizar) ── */
+.fapi-import-block { margin-left: auto; }
+
+/* ── Toolbar de filtros do bloco Pedidos (busca + selects + sort) ── */
+.fapi-toolbar--ped { align-items: flex-end; gap: 10px; }
+.fapi-toolbar--ped .fapi-fitem--search { flex: 1 1 220px; }
+.fapi-chipbar--ped { padding: 0 14px 10px; }
+
+/* Linha do dia em destaque quando é o recorte ativo da tabela de pedidos */
+.fapi-dayrow--scope td { background: #f5f0fb; }
+
 /* ── Produtos por impacto: barra de grupos + ações ───────── */
 .fapi-prodbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px 0; }
 .fapi-prodgroups { flex: 1 1 auto; }

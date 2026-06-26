@@ -220,7 +220,8 @@ const F = {
   // ── recortes rápidos / ordenação da tabela de pedidos (tudo local) ──
   quickFilter: 'todos',   // chip de recorte rápido aplicado sobre F.viewPayload
   orderSort: 'data_desc', // ordenação local da tabela de pedidos
-  fechDailySort: 'data',  // ordenação do "Resumo por dia"
+  fechQuick: 'todos',     // recorte do bloco Fechamento (todos/sem_custo/sem_frete/bloqueados/calculavel)
+  fechDailySort: 'data',  // ordenação do bloco "Vendas por dia"
   // ── performance: fetch só em troca de cliente/comp; filtros/busca em memória ──
   page: 1, pageSize: 100, // tabela paginada (100 pedidos/página)
   searchTerm: '',         // busca local por pedido/MLB/SKU/título/status/logística
@@ -379,24 +380,6 @@ function applyFilters(payload, filters) {
 }
 
 /* ── BUILDERS ─────────────────────────────────────────────── */
-function buildOrderMetrics(view) {
-  const ps = view.pedidos;
-  const validos = ps.filter(o => o.status === 'pago' || o.status === 'com_problema');
-  const cancelProblema = ps.filter(o => o.status === 'cancelado' || o.status === 'com_problema');
-  const faturamento = round2(validos.reduce((s, o) => s + (o.valor || 0), 0));
-  const bloqueada = round2(ps.filter(o => o.resultadoStatus === 'bloqueado' && o.status !== 'cancelado').reduce((s, o) => s + (o.valor || 0), 0));
-  return {
-    totalPedidos: ps.length,
-    faturamento,
-    validos: validos.length,
-    cancelProblema: cancelProblema.length,
-    ticketMedio: validos.length ? round2(faturamento / validos.length) : null,
-    receitaBloqueada: bloqueada,
-    pedidosFreteAusente: ps.filter(o => o.frete == null && o.status !== 'cancelado').length,
-    pedidosCustoAusente: ps.filter(o => o.custoStatus === 'ausente' && o.mlb && o.status !== 'cancelado').length,
-  };
-}
-
 /* ── FECHAMENTO API (helpers puros) ───────────────────────────
    Fecham o PERÍODO inteiro (payload já escopado pelo GET por range) usando
    só pedidos/itens/componentes sincronizados + base vinculada. Não chamam ML.
@@ -404,10 +387,15 @@ function buildOrderMetrics(view) {
 function fechamentoOrders(payload) {
   return (payload?.pedidos || []).map(o => (o.prod !== undefined ? o : computeOrder(o, payload)));
 }
+/* Recorte do Fechamento (reaproveita o predicado dos chips de pedido). */
+function fechamentoOrdersFiltered(payload, quick) {
+  const orders = fechamentoOrders(payload);
+  return (quick && quick !== 'todos') ? orders.filter(o => pedidoMatchesQuick(o, quick)) : orders;
+}
 function fechSum(arr, f) { return round2(arr.reduce((s, o) => s + (Number(f(o)) || 0), 0)); }
 
-function buildFechamentoResumo(payload) {
-  const orders = fechamentoOrders(payload);
+function buildFechamentoResumo(payload, quick = 'todos') {
+  const orders = fechamentoOrdersFiltered(payload, quick);
   const validos = orders.filter(o => o.status !== 'cancelado');
   const cancelProblema = orders.filter(o => o.status === 'cancelado' || o.status === 'com_problema');
   const faturamento = fechSum(validos, o => o.valor);
@@ -441,9 +429,9 @@ function buildFechamentoResumo(payload) {
   };
 }
 
-function buildFechamentoComponentes(payload) {
-  const r = buildFechamentoResumo(payload);
-  const orders = fechamentoOrders(payload);
+function buildFechamentoComponentes(payload, quick = 'todos') {
+  const r = buildFechamentoResumo(payload, quick);
+  const orders = fechamentoOrdersFiltered(payload, quick);
   const validos = orders.filter(o => o.status !== 'cancelado');
   const semCusto = validos.filter(o => o.mlb && o.custoStatus === 'ausente').length;
   const semFrete = validos.filter(o => o.frete == null).length;
@@ -470,8 +458,8 @@ function buildFechamentoComponentes(payload) {
   ];
 }
 
-function buildFechamentoQualidade(payload) {
-  const orders = fechamentoOrders(payload);
+function buildFechamentoQualidade(payload, quick = 'todos') {
+  const orders = fechamentoOrdersFiltered(payload, quick);
   const validos = orders.filter(o => o.status !== 'cancelado');
   const faturamento = fechSum(validos, o => o.valor);
   const fatComCusto = fechSum(validos.filter(o => o.custo != null), o => o.valor);
@@ -489,8 +477,8 @@ function buildFechamentoQualidade(payload) {
   };
 }
 
-function buildFechamentoPorDia(payload) {
-  const orders = fechamentoOrders(payload);
+function buildFechamentoPorDia(payload, quick = 'todos') {
+  const orders = fechamentoOrdersFiltered(payload, quick);
   const map = new Map();
   for (const o of orders) {
     if (!o.data) continue;
@@ -578,13 +566,27 @@ function buildProductImpactRows(view, { group = 'todos', sortBy = 'faturamento' 
   const totalFat = all.reduce((s, a) => s + a.faturamento, 0) || 0;
   all.forEach(a => { a.pctFat = totalFat > 0 ? round2(a.faturamento / totalFat * 100) : null; });
 
+  // Curva ABC: ordena por faturamento desc, acumula % e classifica.
+  // A: acumulado até 80% · B: 80%–95% · C: o restante. (item que cruza fica na faixa anterior)
+  const byFat = all.slice().sort((x, y) => y.faturamento - x.faturamento);
+  let acc = 0;
+  for (const a of byFat) {
+    const prev = acc;
+    acc = round2(acc + (a.pctFat || 0));
+    a.acumPctFat = acc;
+    a.curva = (a.faturamento <= 0) ? null : (prev < 80 ? 'A' : prev < 95 ? 'B' : 'C');
+  }
+
   let rows = all;
   if (group === 'sem_custo')            rows = rows.filter(a => !a.semProduto && !a.temCusto);
   else if (group === 'receita_bloqueada') rows = rows.filter(a => (a.receitaBloqueada || 0) > 0);
   else if (group === 'full')            rows = rows.filter(a => a.logisticaTipo === 'full' || a.logisticaTipo === 'misto');
   else if (group === 'normal')          rows = rows.filter(a => a.logisticaTipo === 'normal' || a.logisticaTipo === 'misto');
-  else if (group === 'cancel_problema') rows = rows.filter(a => (a.cancelProblema || 0) > 0);
-  // 'todos' e 'maior_fat' não filtram
+  else if (group === 'misto')           rows = rows.filter(a => a.logisticaTipo === 'misto');
+  else if (group === 'curva_a')         rows = rows.filter(a => a.curva === 'A');
+  else if (group === 'curva_b')         rows = rows.filter(a => a.curva === 'B');
+  else if (group === 'curva_c')         rows = rows.filter(a => a.curva === 'C');
+  // 'todos' não filtra
 
   const sortKey = group === 'receita_bloqueada' ? 'receitaBloqueada' : sortBy;
   rows = rows.slice().sort((x, y) => (y[sortKey] || 0) - (x[sortKey] || 0));
@@ -884,56 +886,71 @@ function getVisiblePedidos() {
   return pedidos;
 }
 
-/* Render completo SEM fetch: separa filtros (host próprio, mantém foco da
-   busca) do bloco de resultados (cards/régua/tabela/ranking). */
+/* Render completo SEM fetch. Blocos: Fechamento → Vendas por dia → Curva ABC →
+   Pedidos (com sua toolbar de filtros) → detalhe. */
 function renderTela() {
   const content = document.getElementById('fapi-content');
   if (!content || !F.rawPayload?.ok) return;
   renderHeader(F.rawPayload);
-  content.innerHTML = '<div id="fapi-filters-host"></div><div id="fapi-results"></div>';
-  renderFiltersSection();
+  content.innerHTML = '<div id="fapi-results"></div>';
   renderResults();
 }
 
-/* Re-render só da seção de filtros (toggle data/semana ao trocar modo, sem
-   tocar na tabela). */
-function renderFiltersSection() {
-  const host = document.getElementById('fapi-filters-host');
-  if (!host) return;
-  host.innerHTML = renderFilters();
-  wireFilters();
-}
-
-/* Re-render só do bloco de resultados (busca/paginação/sort/dia). */
 function renderResults() {
   const host = document.getElementById('fapi-results');
   if (!host || !F.viewPayload) return;
   F.visiblePayload = { ...F.viewPayload, pedidos: getVisiblePedidos() };
-  /* Ordem: fechamento (período) → cards → régua → tabela → detalhe → ranking. */
   host.innerHTML =
     renderFechamento() +
-    renderOrderSummary() +
     renderDailySales() +
-    renderOrdersTable() +
-    '<div id="fapi-pedido-detalhe"></div>' +
-    renderTopProducts();
+    renderTopProducts() +
+    renderPedidos() +
+    '<div id="fapi-pedido-detalhe"></div>';
   wireResults();
 }
 
-/* ── 0. FECHAMENTO API ────────────────────────────────────────
-   Fecha o PERÍODO inteiro (independe dos filtros locais da tabela). */
+/* Re-render só da tabela de pedidos (busca/recorte/ordenação/página) — preserva
+   o foco do campo de busca, que fica na toolbar (fora de #fapi-ped-table). */
+function renderPedTable() {
+  const host = document.getElementById('fapi-ped-table');
+  if (!host) return;
+  host.innerHTML = renderPedTableInner();
+  wirePedTable();
+}
+
+/* ── 2. FECHAMENTO API ────────────────────────────────────────
+   Fecha o PERÍODO inteiro. Tem recorte próprio (F.fechQuick) que filtra só
+   este bloco (KPIs/composição/qualidade) — não toca a tabela de pedidos. */
+const FECH_QUICKS = [
+  ['todos', 'Todos'], ['sem_custo', 'Sem custo'], ['sem_frete', 'Sem frete'],
+  ['bloqueados', 'Bloqueados'], ['calculavel', 'Calculáveis'],
+];
 function renderFechamento() {
   const payload = F.rawPayload;
   if (!payload?.ok) return '';
-  const r = buildFechamentoResumo(payload);
-  const fonteTxt = (r.fonte === 'orders_api') ? 'orders_api · central_vendas_db' : esc(r.fonte);
+  const rAll = buildFechamentoResumo(payload, 'todos');
+  const fonteTxt = (rAll.fonte === 'orders_api') ? 'orders_api · central_vendas_db' : esc(rAll.fonte);
 
-  if (!r.totalPedidos) {
+  if (!rAll.totalPedidos) {
     return `
     <section class="fapi-panel">
       <div class="fapi-panel-head"><h2 class="fapi-panel-title">Fechamento API</h2>
         <span class="fapi-panel-meta">${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')}</span></div>
       <div class="fapi-panel-body">${emptyState({ icon:'🧾', title:'Sem pedidos no período', why:'Nada sincronizado para fechar neste intervalo.', next:'Use “Sincronizar via API” para trazer os pedidos do ML.' })}</div>
+    </section>`;
+  }
+
+  const r = buildFechamentoResumo(payload, F.fechQuick);
+  const chips = FECH_QUICKS.map(([k, l]) => `<button class="fapi-chip${F.fechQuick === k ? ' active' : ''}" data-fechq="${k}" type="button">${esc(l)}</button>`).join('');
+  const recorteBar = `<div class="fapi-toolbar"><div class="fapi-chipbar">${chips}</div>${F.fechQuick !== 'todos' ? `<span class="fapi-panel-meta">recorte: ${esc((FECH_QUICKS.find(x => x[0] === F.fechQuick) || [])[1] || '')} · ${num(r.totalPedidos)} pedido(s)</span>` : ''}</div>`;
+
+  if (!r.totalPedidos) {
+    return `
+    <section class="fapi-panel">
+      <div class="fapi-panel-head"><h2 class="fapi-panel-title">Fechamento API</h2>
+        <div class="fapi-panel-actions"><span class="fapi-panel-meta">${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')}</span></div></div>
+      <div class="fapi-panel-body fapi-panel-body--flush">${recorteBar}
+        <div class="fapi-panel-body">${emptyState({ icon:'•', title:'Nenhum pedido neste recorte', why:'O recorte selecionado não tem pedidos.', next:'Volte para “Todos”.' })}</div></div>
     </section>`;
   }
 
@@ -954,7 +971,7 @@ function renderFechamento() {
   </div>`;
 
   // Composição do resultado
-  const comps = buildFechamentoComponentes(payload);
+  const comps = buildFechamentoComponentes(payload, F.fechQuick);
   const compRows = comps.map(c => `
     <tr${c.comp === 'Resultado parcial' ? ' class="fapi-ext-total"' : ''}>
       <td class="fapi-ext-comp${c.comp === 'Resultado parcial' ? ' strong' : ''}">${esc(c.comp)}</td>
@@ -973,49 +990,20 @@ function renderFechamento() {
       </table>
     </div>`;
 
-  // Qualidade do fechamento — itens com recorte viram botões (filtram a tabela)
-  const q = buildFechamentoQualidade(payload);
-  const qItem = (lbl, val, cls, quick) => quick
-    ? `<button class="fapi-fech-q fapi-fech-q--click" type="button" data-fechquick="${quick}" title="Filtrar a tabela de pedidos por: ${esc(lbl)}"><span class="fapi-fech-q-v${cls ? ' ' + cls : ''}">${val}</span><span class="fapi-fech-q-l">${esc(lbl)} ›</span></button>`
-    : `<div class="fapi-fech-q"><span class="fapi-fech-q-v${cls ? ' ' + cls : ''}">${val}</span><span class="fapi-fech-q-l">${esc(lbl)}</span></div>`;
+  // Qualidade do fechamento — somente leitura (recorte fica nos chips acima)
+  const q = buildFechamentoQualidade(payload, F.fechQuick);
+  const qItem = (lbl, val, cls) => `<div class="fapi-fech-q"><span class="fapi-fech-q-v${cls ? ' ' + cls : ''}">${val}</span><span class="fapi-fech-q-l">${esc(lbl)}</span></div>`;
   const qualidade = `
-    <div class="fapi-fech-sub"><b>Qualidade do fechamento</b> <span class="muted">— clique num card para filtrar os pedidos</span></div>
+    <div class="fapi-fech-sub"><b>Qualidade do fechamento</b></div>
     <div class="fapi-fech-qgrid">
-      ${qItem('pedidos sem custo', valOr(q.semCusto), q.semCusto ? 'crit' : '', 'sem_custo')}
-      ${qItem('pedidos sem frete', valOr(q.semFrete), q.semFrete ? 'warn' : '', 'sem_frete')}
-      ${qItem('cancelados/problema', valOr(q.cancelProblema), '', 'cancel_problema')}
-      ${qItem('com resultado calculável', valOr(q.comResultado), '', 'calculavel')}
-      ${qItem('pedidos bloqueados', valOr(q.bloqueados), q.bloqueados ? 'crit' : '', 'bloqueados')}
+      ${qItem('pedidos sem custo', valOr(q.semCusto), q.semCusto ? 'crit' : '')}
+      ${qItem('pedidos sem frete', valOr(q.semFrete), q.semFrete ? 'warn' : '')}
+      ${qItem('com resultado calculável', valOr(q.comResultado))}
+      ${qItem('pedidos bloqueados', valOr(q.bloqueados), q.bloqueados ? 'crit' : '')}
+      ${qItem('cancelados/problema', valOr(q.cancelProblema))}
       ${qItem('% faturamento com custo', valOr(q.pctFatComCusto, pct))}
       ${qItem('% faturamento com frete real', valOr(q.pctFatComFrete, pct), (q.pctFatComFrete || 0) > 0 ? 'ok' : '')}
       ${qItem('% faturamento bloqueado', valOr(q.pctFatBloqueado, pct), (q.pctFatBloqueado || 0) > 0 ? 'warn' : '')}
-    </div>`;
-
-  // Resumo por dia — ordenável; cada linha filtra a tabela de pedidos do dia
-  const dias = sortDias(buildFechamentoPorDia(payload), F.fechDailySort);
-  const dailySortOpts = FECH_DAILY_SORTS.map(([k, l]) => `<option value="${k}"${F.fechDailySort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
-  const diaRows = dias.map(d => `
-    <tr class="fapi-dayrow" data-fechday="${esc(d.data)}" title="Filtrar pedidos de ${fmtDt(d.data)}" tabindex="0">
-      <td class="nowrap">${fmtDt(d.data)}</td>
-      <td class="right">${valOr(d.pedidos)}</td>
-      <td class="right strong">${money(d.faturamento)}</td>
-      <td class="right">${valOr(d.comissao, money)}</td>
-      <td class="right">${valOr(d.custo, money)}</td>
-      <td class="right">${valOr(d.imposto, money)}</td>
-      <td class="right">${d.receitaBloqueada > 0 ? `<span class="fapi-est">${money(d.receitaBloqueada)}</span>` : '—'}</td>
-      <td class="right">${d.semFrete > 0 ? num(d.semFrete) : '—'}</td>
-      <td class="right">${d.semCusto > 0 ? num(d.semCusto) : '—'}</td>
-      <td class="right">${d.cancelProblema > 0 ? num(d.cancelProblema) : '—'}</td>
-    </tr>`).join('');
-  const porDia = `
-    <div class="fapi-fech-sub fapi-fech-sub--row"><b>Resumo por dia</b>
-      <label class="fapi-fitem fapi-toolbar-sort"><span>Ordenar por</span>
-        <select class="fapi-fsel" id="fapi-daily-sort">${dailySortOpts}</select></label></div>
-    <div class="fapi-tablewrap">
-      <table class="fapi-table fapi-table--click">
-        <thead><tr><th>Data</th><th class="right">Ped.</th><th class="right">Faturamento</th><th class="right">Comissão</th><th class="right">Custo</th><th class="right">Imposto</th><th class="right">Receita bloq.</th><th class="right">S/frete</th><th class="right">S/custo</th><th class="right">Canc/Prob</th></tr></thead>
-        <tbody>${diaRows}</tbody>
-      </table>
     </div>`;
 
   return `
@@ -1025,15 +1013,15 @@ function renderFechamento() {
       <div class="fapi-panel-actions">
         <span class="fapi-panel-meta">${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')} · fonte: ${fonteTxt}</span>
         Confiança ${confPill(r.confianca)}
-        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-fech-refresh" type="button" title="Recalcula do período já carregado — não chama a API do ML">Atualizar fechamento</button>
+        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-fech-refresh" type="button" title="Recalcula do período já carregado — não chama a API do ML">Atualizar</button>
       </div>
     </div>
     <div class="fapi-panel-body fapi-panel-body--flush">
+      ${recorteBar}
       ${cards}
       ${composicao}
       ${qualidade}
-      ${porDia}
-      <div class="fapi-table-note">Fechamento do <b>período inteiro</b> (independe dos filtros da tabela). O <b>frete seller</b> vem da Shipments API por pedido quando disponível; pedidos sem frete real mantêm o fechamento <b>parcial</b>. Ausência aparece como <b>—</b>, nunca R$ 0,00.</div>
+      <div class="fapi-table-note">Fechamento do <b>período inteiro</b> (independe dos filtros da tabela de pedidos). O <b>frete seller</b> vem da Shipments API por pedido quando disponível; pedidos sem frete real mantêm o fechamento <b>parcial</b>. Ausência aparece como <b>—</b>, nunca R$ 0,00.</div>
     </div>
   </section>`;
 }
@@ -1047,108 +1035,7 @@ function renderHeader(p) {
   if (cf) { if (p?.motor?.confianca) { cf.hidden = false; cf.innerHTML = `Confiança ${confPill(p.motor.confianca)}`; } else cf.hidden = true; }
 }
 
-/* ── 1. FILTROS ───────────────────────────────────────────── */
-function filterStatesEqual(a, b) {
-  const fa = cloneFilters(a), fb = cloneFilters(b);
-  return ['modo', 'dia', 'semana', 'de', 'ate', 'logistica', 'midia', 'diagbase', 'status'].every(k => String(fa[k] ?? '') === String(fb[k] ?? ''));
-}
-function hasPendingFilterChanges() {
-  return !filterStatesEqual(F.filters, F.draftFilters);
-}
-function periodText(filters = F.filters, payload = F.rawPayload) {
-  if (!payload) return '';
-  // Modo legado 'dia' (clique na régua): mostra o intervalo de 1 dia.
-  if (filters.modo === 'dia') return filters.dia ? fmtDt(filters.dia) : payload.periodo.label;
-  if (filters.modo === 'semana') {
-    const range = getWeekRanges(payload.periodo).find(w => String(w.semana) === String(filters.semana || ''));
-    return range ? `semana ${range.semana} · ${fmtDt(range.de)} até ${fmtDt(range.ate)}` : 'semana do mês';
-  }
-  if (filters.modo === 'intervalo') {
-    if (filters.de && filters.ate) return `${fmtDt(filters.de)} até ${fmtDt(filters.ate)}`;
-    if (filters.de) return `a partir de ${fmtDt(filters.de)}`;
-    if (filters.ate) return `até ${fmtDt(filters.ate)}`;
-    return 'data personalizada';
-  }
-  if (filters.modo === 'ultimos7') {
-    const r = getLast7Range(payload.periodo);
-    return `${fmtDt(r.de)} até ${fmtDt(r.ate)}`;
-  }
-  return `${payload.periodo.label} · todo o período`;
-}
-function filterSummaryText() {
-  const totalFiltrado = F.viewPayload?.pedidos?.length || 0;
-  const visiveis = (F.searchTerm || '').trim() ? getVisiblePedidos().length : totalFiltrado;
-  const contagem = visiveis === totalFiltrado ? `${num(totalFiltrado)} pedidos` : `${num(visiveis)} de ${num(totalFiltrado)} pedidos`;
-  const parts = [`Mostrando ${contagem}`, periodText(F.filters, F.rawPayload)];
-  const fl = F.filters;
-  if (fl.logistica === 'full') parts.push('Full');
-  if (fl.logistica === 'nao_full') parts.push('não Full');
-  if (fl.midia === 'com_ads') parts.push('com Product Ads');
-  if (fl.midia === 'sem_ads') parts.push('sem Product Ads');
-  if (fl.diagbase === 'com_custo') parts.push('com custo/base');
-  if (fl.diagbase === 'sem_custo') parts.push('sem custo/base');
-  if (fl.diagbase === 'no_diag') parts.push('no diagnóstico');
-  if (fl.diagbase === 'fora_diag') parts.push('fora do diagnóstico');
-  if (fl.status === 'valido') parts.push('pedidos válidos');
-  if (fl.status === 'cancelado') parts.push('cancelados');
-  if (fl.status === 'problema') parts.push('com problema');
-  if (fl.status === 'bloqueado') parts.push('bloqueados por dado');
-  return parts.filter(Boolean).join(' · ') + '.';
-}
-function renderFilters() {
-  const fl = F.draftFilters;
-  const opt = (v, label, sel) => `<option value="${esc(v)}"${sel === v ? ' selected' : ''}>${esc(label)}</option>`;
-  const sel = (id, val, opts) => `<select class="fapi-fsel" data-filter="${id}">${opts}</select>`;
-  const pending = hasPendingFilterChanges();
-  const aviso = F.intervaloAviso ? `<div class="fapi-filter-aviso" role="status">${esc(F.intervaloAviso)}</div>` : '';
-  /* O período de análise (datas) é controlado no topo (select "Período de
-     análise"). Aqui ficam só os refinamentos locais: busca + filtros. O
-     recorte por dia é feito clicando na régua de dias. */
-  return `
-  <section class="fapi-filters">
-    <div class="fapi-filters-row fapi-filters-main">
-      <label class="fapi-fitem fapi-fitem--search"><span>Buscar</span>
-        <input type="search" id="fapi-search" class="fapi-fsearch" placeholder="pedido, MLB, SKU ou título" value="${esc(F.searchTerm || '')}" autocomplete="off"></label>
-      <div class="fapi-filter-actions">
-        <button class="fapi-btn fapi-btn-primary fapi-btn-sm" id="fapi-filter-apply" type="button">Filtrar</button>
-        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-filter-clear" type="button">Limpar</button>
-      </div>
-    </div>
-    <div class="fapi-filters-row fapi-filters-secondary">
-      <label class="fapi-fitem"><span>Logística</span>${sel('logistica', fl.logistica, [opt('todos','Todos',fl.logistica), opt('full','Full',fl.logistica), opt('nao_full','Não Full',fl.logistica)].join(''))}</label>
-      <label class="fapi-fitem"><span>Mídia</span>${sel('midia', fl.midia, [opt('todos','Todos',fl.midia), opt('com_ads','Com Product Ads',fl.midia), opt('sem_ads','Sem Product Ads',fl.midia)].join(''))}</label>
-      <label class="fapi-fitem"><span>Diagnóstico/base</span>${sel('diagbase', fl.diagbase, [opt('todos','Todos',fl.diagbase), opt('com_custo','Com custo/base',fl.diagbase), opt('sem_custo','Sem custo/base',fl.diagbase), opt('no_diag','No diagnóstico',fl.diagbase), opt('fora_diag','Fora do diagnóstico',fl.diagbase)].join(''))}</label>
-      <label class="fapi-fitem"><span>Status</span>${sel('status', fl.status, [opt('todos','Todos',fl.status), opt('valido','Válido',fl.status), opt('cancelado','Cancelado',fl.status), opt('problema','Problema',fl.status), opt('bloqueado','Bloqueado por dado',fl.status)].join(''))}</label>
-    </div>
-    ${aviso}
-    <div class="fapi-filter-summary">${esc(filterSummaryText())}${pending ? ' <span class="fapi-filter-pending">aplique para atualizar</span>' : ''}</div>
-  </section>`;
-}
-
-/* ── 2. RESUMO PEDIDO-FIRST ───────────────────────────────── */
-function renderOrderSummary() {
-  const m = buildOrderMetrics(F.visiblePayload || F.viewPayload);
-  const card = (lbl, val, sub, cls) => `<div class="fapi-card"><div class="fapi-card-lbl">${esc(lbl)}</div><div class="fapi-card-val${cls ? ' ' + cls : ''}">${val}</div><div class="fapi-card-sub">${sub || '&nbsp;'}</div></div>`;
-  return `
-  <section class="fapi-panel">
-    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Pedidos do período</h2>
-      <span class="fapi-panel-meta">o que aconteceu nos pedidos deste filtro</span></div>
-    <div class="fapi-panel-body fapi-panel-body--flush">
-      <div class="fapi-cards">
-        ${card('Total de pedidos', valOr(m.totalPedidos), 'no filtro')}
-        ${card('Faturamento', money(m.faturamento), 'pedidos válidos', 'brand')}
-        ${card('Pedidos válidos', valOr(m.validos), 'pagos + problema')}
-        ${card('Cancelados / problema', valOr(m.cancelProblema), 'fora da venda boa', 'crit')}
-        ${card('Ticket médio', valOr(m.ticketMedio, money), 'por pedido válido')}
-        ${card('Receita bloqueada', money(m.receitaBloqueada), 'falta dado p/ calcular', 'warn')}
-        ${card('Frete ausente', valOr(m.pedidosFreteAusente), 'pedidos sem frete')}
-        ${card('Custo ausente', valOr(m.pedidosCustoAusente), 'pedidos s/ custo na base')}
-      </div>
-    </div>
-  </section>`;
-}
-
-/* ── 10. VENDAS POR DIA ───────────────────────────────────── */
+/* ── 3. VENDAS POR DIA (régua visual + tabela ordenável) ─────── */
 function renderDailySales() {
   const dias = buildDailyRulerRows();
   if (!dias.length) return '';
@@ -1167,11 +1054,37 @@ function renderDailySales() {
       <span class="fapi-day-markers">${markers}</span>
     </button>`;
   }).join('');
+
+  // Tabela ordenável por dia (período inteiro)
+  const tdias = sortDias(buildFechamentoPorDia(F.rawPayload, 'todos'), F.fechDailySort);
+  const dailySortOpts = FECH_DAILY_SORTS.map(([k, l]) => `<option value="${k}"${F.fechDailySort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  const diaRows = tdias.map(d => `
+    <tr class="fapi-dayrow${dayScopeClass(d.data) ? ' fapi-dayrow--scope' : ''}" data-fechday="${esc(d.data)}" title="Filtrar pedidos de ${fmtDt(d.data)}" tabindex="0">
+      <td class="nowrap">${fmtDt(d.data)}</td>
+      <td class="right">${valOr(d.pedidos)}</td>
+      <td class="right strong">${money(d.faturamento)}</td>
+      <td class="right">${valOr(d.comissao, money)}</td>
+      <td class="right">${valOr(d.custo, money)}</td>
+      <td class="right">${valOr(d.imposto, money)}</td>
+      <td class="right">${d.receitaBloqueada > 0 ? `<span class="fapi-est">${money(d.receitaBloqueada)}</span>` : '—'}</td>
+      <td class="right">${d.semFrete > 0 ? num(d.semFrete) : '—'}</td>
+      <td class="right">${d.semCusto > 0 ? num(d.semCusto) : '—'}</td>
+      <td class="right">${d.cancelProblema > 0 ? num(d.cancelProblema) : '—'}</td>
+    </tr>`).join('');
+
   return `
   <section class="fapi-panel">
     <div class="fapi-panel-head"><h2 class="fapi-panel-title">Vendas por dia</h2>
-      <span class="fapi-panel-meta">clique num dia para aplicar · amarelo = problema · vermelho = receita bloqueada</span></div>
+      <span class="fapi-panel-meta">clique num dia para filtrar os pedidos · amarelo = problema · vermelho = receita bloqueada</span></div>
     <div class="fapi-panel-body"><div class="fapi-days">${cells}</div></div>
+    <div class="fapi-fech-sub fapi-fech-sub--row"><b>Resumo por dia</b>
+      <label class="fapi-fitem fapi-toolbar-sort"><span>Ordenar por</span>
+        <select class="fapi-fsel" id="fapi-daily-sort">${dailySortOpts}</select></label></div>
+    <div class="fapi-panel-body fapi-panel-body--flush"><div class="fapi-tablewrap">
+      <table class="fapi-table fapi-table--click">
+        <thead><tr><th>Data</th><th class="right">Ped.</th><th class="right">Faturamento</th><th class="right">Comissão</th><th class="right">Custo</th><th class="right">Imposto</th><th class="right">Receita bloq.</th><th class="right">S/frete</th><th class="right">S/custo</th><th class="right">Canc/Prob</th></tr></thead>
+        <tbody>${diaRows}</tbody>
+      </table></div></div>
   </section>`;
 }
 
@@ -1197,19 +1110,43 @@ function activeFiltersText() {
   return { recortes: parts, ordenacao: s ? s[1] : '' };
 }
 
-function renderOrdersTable() {
+/* Bloco Pedidos: toolbar (busca + selects + chips + ordenação) colada à tabela.
+   A toolbar é renderizada uma vez; a tabela vive em #fapi-ped-table e re-renderiza
+   sozinha (busca/recorte/ordenação/página) preservando o foco da busca. */
+function renderPedidos() {
+  const fl = F.filters;
+  const opt = (v, label, cur) => `<option value="${esc(v)}"${cur === v ? ' selected' : ''}>${esc(label)}</option>`;
+  const selF = (key, cur, opts) => `<select class="fapi-fsel" data-pedfilter="${key}">${opts}</select>`;
+  const chips = QUICK_FILTERS.map(([k, l]) =>
+    `<button class="fapi-chip${F.quickFilter === k ? ' active' : ''}" data-quick="${k}" type="button">${esc(l)}</button>`).join('');
+  const sortOpts = ORDER_SORTS.map(([k, l]) => `<option value="${k}"${F.orderSort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
+
+  return `
+  <section class="fapi-panel">
+    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Pedidos</h2>
+      <span class="fapi-panel-meta">clique para abrir o extrato · todos os filtros são locais (sem nova busca no servidor)</span></div>
+    <div class="fapi-panel-body fapi-panel-body--flush">
+      <div class="fapi-toolbar fapi-toolbar--ped">
+        <label class="fapi-fitem fapi-fitem--search"><span>Buscar</span>
+          <input type="search" id="fapi-search" class="fapi-fsearch" placeholder="pedido, MLB, SKU, título, status…" value="${esc(F.searchTerm || '')}" autocomplete="off"></label>
+        <label class="fapi-fitem"><span>Logística</span>${selF('logistica', fl.logistica, [opt('todos','Todos',fl.logistica), opt('full','Full',fl.logistica), opt('nao_full','Não Full',fl.logistica)].join(''))}</label>
+        <label class="fapi-fitem"><span>Mídia</span>${selF('midia', fl.midia, [opt('todos','Todos',fl.midia), opt('com_ads','Com Ads',fl.midia), opt('sem_ads','Sem Ads',fl.midia)].join(''))}</label>
+        <label class="fapi-fitem"><span>Diag./base</span>${selF('diagbase', fl.diagbase, [opt('todos','Todos',fl.diagbase), opt('com_custo','Com custo',fl.diagbase), opt('sem_custo','Sem custo',fl.diagbase), opt('no_diag','No diagnóstico',fl.diagbase), opt('fora_diag','Fora do diag.',fl.diagbase)].join(''))}</label>
+        <label class="fapi-fitem"><span>Status</span>${selF('status', fl.status, [opt('todos','Todos',fl.status), opt('valido','Válido',fl.status), opt('cancelado','Cancelado',fl.status), opt('problema','Problema',fl.status), opt('bloqueado','Bloqueado',fl.status)].join(''))}</label>
+        <label class="fapi-fitem fapi-toolbar-sort"><span>Ordenar por</span><select class="fapi-fsel" id="fapi-order-sort">${sortOpts}</select></label>
+      </div>
+      <div class="fapi-chipbar fapi-chipbar--ped">${chips}</div>
+      <div id="fapi-ped-table">${renderPedTableInner()}</div>
+    </div>
+  </section>`;
+}
+
+/* Tabela + paginação + linha de filtros ativos (re-renderável isoladamente). */
+function renderPedTableInner() {
   const all = getVisiblePedidos();
   const sorted = sortPedidos(all, F.orderSort);
   const total = sorted.length;
 
-  // Barra de recortes rápidos (chips)
-  const chips = QUICK_FILTERS.map(([k, l]) =>
-    `<button class="fapi-chip${F.quickFilter === k ? ' active' : ''}" data-quick="${k}" type="button">${esc(l)}</button>`).join('');
-
-  // Ordenação
-  const sortOpts = ORDER_SORTS.map(([k, l]) => `<option value="${k}"${F.orderSort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
-
-  // Linha de filtros ativos
   const af = activeFiltersText();
   const ativosTxt = af.recortes.length ? af.recortes.join(' · ') : 'nenhum recorte';
   const activeLine = `<div class="fapi-active-filters">
@@ -1217,23 +1154,11 @@ function renderOrdersTable() {
     <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-clear-local" type="button">Limpar tudo</button>
   </div>`;
 
-  const head = `
-    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Pedidos</h2>
-      <span class="fapi-panel-meta">clique para abrir o extrato · recortes e ordenação são locais (sem nova busca)</span></div>
-    <div class="fapi-toolbar">
-      <div class="fapi-chipbar">${chips}</div>
-      <label class="fapi-fitem fapi-toolbar-sort"><span>Ordenar por</span>
-        <select class="fapi-fsel" id="fapi-order-sort">${sortOpts}</select></label>
-    </div>
-    ${activeLine}`;
-
   if (!total) {
     const buscando = String(F.searchTerm || '').trim();
-    return `<section class="fapi-panel">${head}
-      <div class="fapi-panel-body">${emptyState({ icon:'📦', title: buscando ? 'Nenhum pedido para a busca' : 'Nenhum pedido neste recorte', why: buscando ? `Nada encontrado para "${esc(buscando)}".` : 'O recorte/filtros atuais não retornaram pedidos.', next:'Use “Limpar tudo” ou escolha “Todos” nos chips acima.' })}</div></section>`;
+    return `${activeLine}<div class="fapi-panel-body">${emptyState({ icon:'📦', title: buscando ? 'Nenhum pedido para a busca' : 'Nenhum pedido neste recorte', why: buscando ? `Nada encontrado para "${esc(buscando)}".` : 'O recorte/filtros atuais não retornaram pedidos.', next:'Use “Limpar tudo” ou escolha “Todos” nos chips acima.' })}</div>`;
   }
 
-  // Paginação: tabela renderiza só a página atual (cards/régua usam o total filtrado).
   const pageSize = F.pageSize;
   const pages = Math.max(1, Math.ceil(total / pageSize));
   if (F.page > pages) F.page = pages;
@@ -1263,10 +1188,7 @@ function renderOrdersTable() {
         <td class="muted clip">${o.pendencias.length ? esc(o.pendencias[0]) : '—'}</td>
       </tr>`;
   }).join('');
-  return `
-  <section class="fapi-panel">
-    ${head}
-    <div class="fapi-panel-body fapi-panel-body--flush">
+  return `${activeLine}
       <div class="fapi-tablewrap">
         <table class="fapi-table fapi-table--click">
           <thead><tr><th>Pedido</th><th>Data</th><th>Status</th><th>Produto</th><th>MLB</th><th>SKU</th><th>Full</th><th>Ads</th><th class="right">Valor</th><th class="right">Frete</th><th class="right">Taxas</th><th class="right">Custo</th><th class="right">Resultado</th><th>Confiança</th><th>Pendência</th></tr></thead>
@@ -1278,9 +1200,7 @@ function renderOrdersTable() {
         <span class="fapi-pager-info">Mostrando ${num(start + 1)}–${num(end)} de ${num(total)} pedidos${pages > 1 ? ` · página ${num(F.page)}/${num(pages)}` : ''}</span>
         <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-page-next" type="button"${F.page >= pages ? ' disabled' : ''}>Próxima →</button>
       </div>
-      <div class="fapi-table-note">Linhas destacadas: <b>vermelho</b> cancelado/bloqueado · <b>amarelo</b> problema · <b>laranja</b> sem custo · <b>cinza</b> sem frete. Ausência é <b>—</b>, nunca R$ 0,00.</div>
-    </div>
-  </section>`;
+      <div class="fapi-table-note">Linhas destacadas: <b>vermelho</b> cancelado/bloqueado · <b>amarelo</b> problema · <b>laranja</b> sem custo · <b>cinza</b> sem frete. Ausência é <b>—</b>, nunca R$ 0,00.</div>`;
 }
 
 /* ── 4. DETALHE DO PEDIDO ─────────────────────────────────── */
@@ -1377,10 +1297,13 @@ function fecharPedido() { F.selectedOrderId = null; const h = document.getElemen
 /* ── 5. PRODUTOS POR IMPACTO ───────────────────────────────── */
 /* Ferramenta de LEITURA/ANÁLISE (sem recomendação automática): agrega os
    pedidos do período por produto/MLB, com grupos, ordenação e paginação. */
-const PROD_SORTS = [['faturamento','Faturamento'], ['unidades','Unidades'], ['pedidos','Pedidos'], ['receitaBloqueada','Receita bloqueada']];
+const PROD_SORTS = [
+  ['faturamento','Faturamento'], ['unidades','Unidades'], ['pedidos','Pedidos'],
+  ['ticketMedio','Ticket médio'], ['comissao','Comissão'], ['receitaBloqueada','Receita bloqueada'],
+];
 const PROD_GROUPS = [
-  ['todos','Todos'], ['sem_custo','Sem custo'], ['maior_fat','Maior faturamento'],
-  ['receita_bloqueada','Receita bloqueada'], ['full','Full'], ['normal','Normal'], ['cancel_problema','Cancelados/problema'],
+  ['todos','Todos'], ['curva_a','Curva A'], ['curva_b','Curva B'], ['curva_c','Curva C'],
+  ['sem_custo','Sem custo'], ['full','Full'], ['normal','Normal'], ['misto','Misto'],
 ];
 function prodBaseTag(a) {
   if (a.semProduto) return '<span class="fapi-tag fapi-tag--ausente">—</span>';
@@ -1392,28 +1315,30 @@ function prodLogTag(t) {
   if (t === 'misto') return '<span class="fapi-tag fapi-tag--warn">Misto</span>';
   return '<span class="fapi-tag fapi-tag--ausente">—</span>';
 }
+const CURVA_TAG = { A: '<span class="fapi-tag fapi-tag--ok">A</span>', B: '<span class="fapi-tag fapi-tag--warn">B</span>', C: '<span class="fapi-tag fapi-tag--muted">C</span>' };
 function renderTopProducts() {
-  const view = F.visiblePayload || F.viewPayload;
+  // Curva ABC sobre o PERÍODO inteiro (independe dos filtros da tabela de pedidos).
+  const view = { pedidos: fechamentoOrders(F.rawPayload) };
   const { rows, allRows, totalFat } = buildProductImpactRows(view, { group: F.productGroup, sortBy: F.productSort });
 
-  // Cards (sobre o conjunto inteiro do período, não só do grupo)
   const vendidos = allRows.filter(a => !a.semProduto);
+  const curvaA = vendidos.filter(a => a.curva === 'A');
   const semCusto = vendidos.filter(a => !a.temCusto);
   const fatSemCusto = round2(semCusto.reduce((s, a) => s + a.faturamento, 0));
   const top10 = vendidos.slice().sort((x, y) => y.faturamento - x.faturamento).slice(0, 10);
   const top10Pct = totalFat > 0 ? round2(top10.reduce((s, a) => s + a.faturamento, 0) / totalFat * 100) : null;
   const card = (lbl, val, sub, cls) => `<div class="fapi-card"><div class="fapi-card-lbl">${esc(lbl)}</div><div class="fapi-card-val${cls ? ' ' + cls : ''}">${val}</div><div class="fapi-card-sub">${sub || '&nbsp;'}</div></div>`;
   const cards = `<div class="fapi-cards">
-    ${card('Produtos vendidos', valOr(vendidos.length), 'no período/filtro')}
+    ${card('Produtos vendidos', valOr(vendidos.length), 'com faturamento no período')}
+    ${card('Curva A', valOr(curvaA.length), 'concentram até 80%', 'brand')}
+    ${card('Top 10 produtos', valOr(top10Pct, pct), 'do faturamento do período')}
     ${card('Produtos sem custo', valOr(semCusto.length), 'sem custo na base', semCusto.length ? 'crit' : '')}
     ${card('Faturamento sem custo', money(fatSemCusto), 'receita sem custo p/ calcular', fatSemCusto > 0 ? 'warn' : '')}
-    ${card('Top 10 produtos', valOr(top10Pct, pct), 'do faturamento do período', 'brand')}
   </div>`;
 
   const groupChips = PROD_GROUPS.map(([k, l]) => `<button class="fapi-sortbtn${F.productGroup === k ? ' active' : ''}" data-prodgroup="${k}">${esc(l)}</button>`).join('');
   const sortBtns = PROD_SORTS.map(([k, l]) => `<button class="fapi-sortbtn${F.productSort === k ? ' active' : ''}" data-prodsort="${k}">${esc(l)}</button>`).join('');
 
-  // Paginação
   const total = rows.length;
   const pageSize = F.productPageSize;
   const pages = Math.max(1, Math.ceil(total / pageSize));
@@ -1423,27 +1348,29 @@ function renderTopProducts() {
   const end = Math.min(start + pageSize, total);
   const pageRows = rows.slice(start, end);
 
-  const tableOrEmpty = total === 0
-    ? emptyState({ icon:'•', title:'Sem produtos neste grupo', why:'Nenhum produto no recorte atual.', next:'Troque o grupo ou ajuste os filtros.' })
+  const semFaturamento = totalFat <= 0;
+  const tableOrEmpty = (semFaturamento || total === 0)
+    ? emptyState({ icon:'•', title: semFaturamento ? 'Sem faturamento no período' : 'Sem produtos neste grupo', why: semFaturamento ? 'Não há receita para montar a curva ABC.' : 'Nenhum produto no recorte atual.', next: semFaturamento ? 'Sincronize pedidos ou amplie o período.' : 'Troque o grupo.' })
     : `<div class="fapi-tablewrap">
       <table class="fapi-table">
-        <thead><tr><th>#</th><th>Produto</th><th>MLB</th><th>SKU</th><th class="right">Un.</th><th class="right">Ped.</th><th class="right">Faturamento</th><th class="right">%</th><th class="right">Ticket</th><th class="right">Comissão</th><th class="right">Custo un.</th><th>Base</th><th>Logística</th><th class="right">Canc/Prob</th><th class="right">Receita bloq.</th></tr></thead>
+        <thead><tr><th>#</th><th>Curva</th><th>Produto</th><th>MLB</th><th>SKU</th><th class="right">Faturamento</th><th class="right">%</th><th class="right">Acum.%</th><th class="right">Un.</th><th class="right">Ped.</th><th class="right">Ticket</th><th class="right">Comissão</th><th class="right">Custo un.</th><th>Base</th><th>Logística</th><th class="right">Receita bloq.</th></tr></thead>
         <tbody>${pageRows.map((a, i) => `
           <tr class="${!a.semProduto && !a.temCusto ? 'fapi-prow--missing-base' : ''}">
             <td class="fapi-rank">${num(start + i + 1)}</td>
+            <td>${a.curva ? CURVA_TAG[a.curva] : '<span class="fapi-tag fapi-tag--ausente">—</span>'}</td>
             <td class="strong clip">${esc(a.titulo || '—')}</td>
             <td class="mono">${esc(a.mlb || '—')}</td>
             <td class="mono muted">${esc(a.sku || '—')}</td>
-            <td class="right">${valOr(a.unidades)}</td>
-            <td class="right">${valOr(a.pedidos)}</td>
             <td class="right strong">${money(a.faturamento)}</td>
             <td class="right">${valOr(a.pctFat, pct)}</td>
+            <td class="right muted">${valOr(a.acumPctFat, pct)}</td>
+            <td class="right">${valOr(a.unidades)}</td>
+            <td class="right">${valOr(a.pedidos)}</td>
             <td class="right">${valOr(a.ticketMedio, money)}</td>
             <td class="right">${money(a.comissao)}</td>
             <td class="right">${valOr(a.custoUnit, money)}</td>
             <td>${prodBaseTag(a)}</td>
             <td>${prodLogTag(a.logisticaTipo)}</td>
-            <td class="right">${a.cancelProblema > 0 ? num(a.cancelProblema) : '—'}</td>
             <td class="right">${a.receitaBloqueada > 0 ? `<span class="fapi-est">${money(a.receitaBloqueada)}</span>` : '—'}</td>
           </tr>`).join('')}</tbody>
       </table></div>
@@ -1455,8 +1382,8 @@ function renderTopProducts() {
 
   return `
   <section class="fapi-panel">
-    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Produtos por impacto</h2>
-      <span class="fapi-panel-meta">agregação dos pedidos do período · leitura/análise (sem recomendação)</span></div>
+    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Curva ABC de Produtos</h2>
+      <span class="fapi-panel-meta">A ≤80% · B ≤95% · C resto do faturamento do período · leitura/análise</span></div>
     <div class="fapi-panel-body fapi-panel-body--flush">
       ${cards}
       <div class="fapi-prodbar">
@@ -1482,7 +1409,7 @@ function fallbackCopy(texto, cb) {
   if (cb) cb();
 }
 function copiarMlbsSemCusto() {
-  const view = F.visiblePayload || F.viewPayload;
+  const view = { pedidos: fechamentoOrders(F.rawPayload) };
   const { allRows } = buildProductImpactRows(view, { group: 'todos', sortBy: 'faturamento' });
   const mlbs = allRows.filter(a => !a.semProduto && !a.temCusto && a.mlb).map(a => a.mlb);
   const btn = document.getElementById('fapi-prod-copysemcusto');
@@ -1495,139 +1422,102 @@ function copiarMlbsSemCusto() {
 }
 
 /* ── INTERAÇÕES ───────────────────────────────────────────── */
-function setDraftFilter(key, value) {
-  F.intervaloAviso = null;
-  // 'modo' vem da UI com os valores internos (mes | intervalo | ultimos7 | semana).
-  F.draftFilters[key] = value || null;
-  if (key === 'modo') { F.draftFilters.dia = null; F.draftFilters.semana = null; F.draftFilters.de = null; F.draftFilters.ate = null; }
-  F.draftFilters = sanitizeFilters(F.draftFilters, F.rawPayload);
-}
-/* "Filtrar": aplica draft → F.filters, recalcula a view em memória (sem fetch),
-   volta à página 1 e re-renderiza uma vez. */
-function applyDraftFilters() {
-  // Aviso discreto quando data inicial > final foi corrigida automaticamente.
-  const d = F.draftFilters;
-  const invertido = d.modo === 'intervalo' && d.de && d.ate && d.de > d.ate;
-  F.filters = sanitizeFilters(F.draftFilters, F.rawPayload);
-  F.draftFilters = cloneFilters(F.filters);
+/* Filtro de pedido (select da toolbar) — aplica instantâneo, sem fetch. */
+function setPedFilter(key, value) {
+  F.filters[key] = value || (key === 'logistica' || key === 'midia' || key === 'diagbase' || key === 'status' ? 'todos' : null);
+  F.filters = sanitizeFilters(F.filters, F.rawPayload);
   F.selectedOrderId = null;
   F.page = 1;
-  F.productPage = 1;
-  F.intervaloAviso = invertido ? 'A data inicial era maior que a final — invertemos o intervalo.' : null;
   recomputeView();
-  renderFiltersSection();
-  renderResults();
-}
-function clearFilters() {
-  // Limpar: volta para mês inteiro, todos os filtros, Top 10, sem datas/semana/busca.
-  resetFilters();
-  F.selectedOrderId = null;
-  F.searchTerm = '';
-  F.page = 1;
-  recomputeView();
-  renderFiltersSection();
-  renderResults();
+  renderPedTable();
 }
 function applyDayFilter(day) {
-  // Clique na régua: vira Data personalizada com intervalo de 1 dia e aplica já (1 render).
+  // Clique num dia (régua ou tabela) → filtra SÓ a tabela de pedidos daquele dia.
   if (!isDateInPeriod(day, F.rawPayload.periodo)) return;
   F.filters = { ...cloneFilters(F.filters), modo:'intervalo', dia:null, semana:null, de:day, ate:day };
-  F.draftFilters = cloneFilters(F.filters);
   F.selectedOrderId = null;
-  F.intervaloAviso = null;
   F.page = 1;
   recomputeView();
-  renderFiltersSection();
-  renderResults();
+  renderResults(); // re-render geral p/ refletir o destaque do dia na régua + tabela filtrada
 }
-/* Recorte rápido (chip / card de qualidade). Toggle: reclicar o ativo volta a "Todos". */
-function applyQuickFilter(q, scroll) {
+/* Recorte rápido (chip). Toggle: reclicar o ativo volta a "Todos". */
+function applyQuickFilter(q) {
   F.quickFilter = (q !== 'todos' && q === F.quickFilter) ? 'todos' : q;
   F.page = 1;
   F.selectedOrderId = null;
-  renderResults();
-  if (scroll) {
-    const panel = document.querySelector('.fapi-table--click')?.closest('.fapi-panel');
-    if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
+  renderPedTable();
+  document.querySelectorAll('.fapi-chipbar--ped .fapi-chip').forEach(b => b.classList.toggle('active', b.dataset.quick === F.quickFilter));
 }
 function setOrderSort(value) {
   F.orderSort = value || 'data_desc';
   F.page = 1;
-  renderResults();
+  renderPedTable();
 }
-/* "Limpar tudo": zera recorte rápido, ordenação, busca e filtros (mantém o período). */
+/* "Limpar tudo": zera recorte, ordenação, busca e selects (mantém o período). */
 function limparTudoLocal() {
   F.quickFilter = 'todos';
   F.orderSort = 'data_desc';
   resetFilters();
   F.selectedOrderId = null;
   recomputeView();
-  renderFiltersSection();
-  renderResults();
+  renderResults(); // rebuild toolbar (selects/busca/chips) + tabela
 }
-
-/* Busca local com debounce de 300ms — re-renderiza só os resultados; o input
-   fica em #fapi-filters-host (não é recriado), então o foco é preservado. */
+/* Busca local com debounce de 300ms — re-renderiza só #fapi-ped-table; o input
+   está na toolbar (fora desse host), então o foco é preservado. */
 function onSearchInput(value) {
   if (F.searchTimer) clearTimeout(F.searchTimer);
   F.searchTimer = setTimeout(() => {
     F.searchTerm = value;
     F.page = 1;
-    F.productPage = 1;
     F.selectedOrderId = null;
-    renderResults();
-    // atualiza o contador "Mostrando X de N" sem recriar o input de busca
-    const summary = document.querySelector('.fapi-filter-summary');
-    if (summary) summary.innerHTML = esc(filterSummaryText()) + (hasPendingFilterChanges() ? ' <span class="fapi-filter-pending">aplique para atualizar</span>' : '');
+    renderPedTable();
   }, 300);
 }
 function goToPage(delta) {
   F.page = Math.max(1, F.page + delta);
-  renderResults();
-  const host = document.getElementById('fapi-results');
-  if (host) host.scrollIntoView({ behavior:'smooth', block:'start' });
+  renderPedTable();
 }
-/* Filtros: selects/datas/apply/clear/busca. Escopado ao host de filtros para
-   não capturar os selects de ordenação (que também são .fapi-fsel) do results. */
-function wireFilters() {
-  const host = document.getElementById('fapi-filters-host');
+/* Recortes do Fechamento (chips próprios) — re-render só do bloco Fechamento. */
+function setFechQuick(q) {
+  F.fechQuick = (q !== 'todos' && q === F.fechQuick) ? 'todos' : q;
+  renderResults(); // bloco Fechamento depende de F.fechQuick; demais blocos não mudam
+}
+
+/* Handlers da tabela de pedidos (re-bind a cada renderPedTable). */
+function wirePedTable() {
+  const host = document.getElementById('fapi-ped-table');
   if (!host) return;
-  host.querySelectorAll('.fapi-fsel').forEach(s => s.addEventListener('change', () => { setDraftFilter(s.dataset.filter, s.value); renderFiltersSection(); }));
-  host.querySelectorAll('.fapi-fdate').forEach(s => s.addEventListener('change', () => { setDraftFilter(s.dataset.filter, s.value); renderFiltersSection(); }));
-  host.querySelector('#fapi-filter-apply')?.addEventListener('click', applyDraftFilters);
-  host.querySelector('#fapi-filter-clear')?.addEventListener('click', clearFilters);
-  const search = host.querySelector('#fapi-search');
-  if (search) search.addEventListener('input', e => onSearchInput(e.target.value));
-}
-/* Resultados: régua de dias, linhas/paginação de pedidos e seção de produtos. */
-function wireResults() {
-  // "Atualizar fechamento": recalcula do payload já carregado — NÃO chama ML.
-  document.getElementById('fapi-fech-refresh')?.addEventListener('click', () => renderResults());
-  // Recortes rápidos (chips) + ordenação + limpar tudo (tabela de pedidos)
-  document.querySelectorAll('.fapi-chip').forEach(b => b.addEventListener('click', () => applyQuickFilter(b.dataset.quick)));
-  document.getElementById('fapi-order-sort')?.addEventListener('change', e => setOrderSort(e.target.value));
-  document.getElementById('fapi-clear-local')?.addEventListener('click', limparTudoLocal);
-  // Qualidade do fechamento: cards viram recortes da tabela (com scroll até ela)
-  document.querySelectorAll('[data-fechquick]').forEach(b => b.addEventListener('click', () => applyQuickFilter(b.dataset.fechquick, true)));
-  // Resumo por dia: ordenação + clique no dia aplica filtro local de 1 dia
-  document.getElementById('fapi-daily-sort')?.addEventListener('change', e => { F.fechDailySort = e.target.value; renderResults(); });
-  document.querySelectorAll('[data-fechday]').forEach(r => r.addEventListener('click', () => applyDayFilter(r.dataset.fechday)));
-  document.querySelectorAll('.fapi-day').forEach(d => d.addEventListener('click', () => applyDayFilter(d.dataset.day)));
-  document.getElementById('fapi-page-prev')?.addEventListener('click', () => goToPage(-1));
-  document.getElementById('fapi-page-next')?.addEventListener('click', () => goToPage(1));
-  document.querySelectorAll('.fapi-prow').forEach(row => {
+  host.querySelector('#fapi-clear-local')?.addEventListener('click', limparTudoLocal);
+  host.querySelector('#fapi-page-prev')?.addEventListener('click', () => goToPage(-1));
+  host.querySelector('#fapi-page-next')?.addEventListener('click', () => goToPage(1));
+  host.querySelectorAll('.fapi-prow').forEach(row => {
     row.addEventListener('click', () => abrirPedido(row.dataset.pedido));
     row.addEventListener('keydown', e => { if (e.key === 'Enter') abrirPedido(row.dataset.pedido); });
   });
-  // Produtos por impacto: grupos, ordenação, paginação e ações.
+  if (F.selectedOrderId) abrirPedido(F.selectedOrderId);
+}
+function wireResults() {
+  // Fechamento: recortes próprios + "Atualizar" (recalcula do payload, sem ML)
+  document.getElementById('fapi-fech-refresh')?.addEventListener('click', () => renderResults());
+  document.querySelectorAll('[data-fechq]').forEach(b => b.addEventListener('click', () => setFechQuick(b.dataset.fechq)));
+  // Vendas por dia: ordenação da tabela + clique no dia (régua/linha)
+  document.getElementById('fapi-daily-sort')?.addEventListener('change', e => { F.fechDailySort = e.target.value; renderResults(); });
+  document.querySelectorAll('[data-fechday]').forEach(r => r.addEventListener('click', () => applyDayFilter(r.dataset.fechday)));
+  document.querySelectorAll('.fapi-day').forEach(d => d.addEventListener('click', () => applyDayFilter(d.dataset.day)));
+  // Curva ABC: grupos, ordenação, paginação e ações
   document.querySelectorAll('#fapi-prodgroups .fapi-sortbtn').forEach(b => b.addEventListener('click', () => { F.productGroup = b.dataset.prodgroup; F.productPage = 1; renderResults(); }));
   document.querySelectorAll('#fapi-prodsortbar .fapi-sortbtn').forEach(b => b.addEventListener('click', () => { F.productSort = b.dataset.prodsort; F.productPage = 1; renderResults(); }));
   document.getElementById('fapi-prod-prev')?.addEventListener('click', () => { F.productPage = Math.max(1, F.productPage - 1); renderResults(); });
   document.getElementById('fapi-prod-next')?.addEventListener('click', () => { F.productPage = F.productPage + 1; renderResults(); });
   document.getElementById('fapi-prod-onlysemcusto')?.addEventListener('click', () => { F.productGroup = 'sem_custo'; F.productPage = 1; renderResults(); });
   document.getElementById('fapi-prod-copysemcusto')?.addEventListener('click', copiarMlbsSemCusto);
-  if (F.selectedOrderId) abrirPedido(F.selectedOrderId);
+  // Pedidos: toolbar (busca + selects + chips + ordenação) — filtros instantâneos
+  const search = document.getElementById('fapi-search');
+  if (search) search.addEventListener('input', e => onSearchInput(e.target.value));
+  document.querySelectorAll('[data-pedfilter]').forEach(s => s.addEventListener('change', () => setPedFilter(s.dataset.pedfilter, s.value)));
+  document.querySelectorAll('.fapi-chipbar--ped .fapi-chip').forEach(b => b.addEventListener('click', () => applyQuickFilter(b.dataset.quick)));
+  document.getElementById('fapi-order-sort')?.addEventListener('change', e => setOrderSort(e.target.value));
+  wirePedTable();
 }
 
 /* ── IMPORTAÇÃO DE VENDAS (admin only) ───────────────────── */

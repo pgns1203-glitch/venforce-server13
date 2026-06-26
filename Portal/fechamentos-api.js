@@ -421,10 +421,12 @@ function buildFechamentoResumo(payload) {
   const receitaBloqueada = fechSum(validos.filter(o => o.resultadoStatus === 'bloqueado'), o => o.valor);
   const ticket = validos.length ? round2(faturamento / validos.length) : null;
 
+  // Confiável só quando TODO pedido válido tem resultado real (custo + tarifa +
+  // frete real). Qualquer ausência (inclusive frete) mantém o fechamento parcial.
   let confianca;
   if (!validos.length || !comResultado.length) confianca = 'insuficiente';
-  else if (receitaBloqueada > 0 || freteTotal == null || comResultado.length < validos.length) confianca = 'parcial';
-  else confianca = 'confiavel';
+  else if (validos.every(o => o.resultadoStatus === 'real')) confianca = 'confiavel';
+  else confianca = 'parcial';
 
   return {
     periodo: payload.periodo, cliente: payload.cliente,
@@ -440,6 +442,7 @@ function buildFechamentoComponentes(payload) {
   const orders = fechamentoOrders(payload);
   const validos = orders.filter(o => o.status !== 'cancelado');
   const semCusto = validos.filter(o => o.mlb && o.custoStatus === 'ausente').length;
+  const semFrete = validos.filter(o => o.frete == null).length;
   return [
     { comp:'Receita de produtos', op:'+', valor: r.faturamento,
       status: r.faturamento > 0 ? 'real' : 'ausente', fonte:'orders_api', obs:'soma do valor dos pedidos válidos' },
@@ -451,12 +454,15 @@ function buildFechamentoComponentes(payload) {
     { comp:'Imposto interno', op:'−', valor: r.impostoTotal == null ? null : -r.impostoTotal,
       status: r.impostoTotal == null ? 'ausente' : (semCusto > 0 ? 'parcial' : 'real'), fonte:'cálculo interno',
       obs:'imposto % da base × receita' },
-    { comp:'Frete seller', op:'−', valor: r.freteTotal,
-      status: r.freteTotal == null ? 'ausente' : 'real', fonte:'pendente',
-      obs:'frete real por pedido requer Shipping API (fase futura)' },
+    { comp:'Frete seller', op:'−', valor: r.freteTotal == null ? null : -r.freteTotal,
+      status: r.freteTotal == null ? 'ausente' : (semFrete > 0 ? 'parcial' : 'real'),
+      fonte: r.freteTotal == null ? 'pendente' : 'shipments_api',
+      obs: r.freteTotal == null
+        ? 'nenhum envio retornou custo (shipments API)'
+        : (semFrete > 0 ? `${num(semFrete)} pedido(s) sem frete real` : 'custo do envio (base_cost)') },
     { comp:'Resultado parcial', op:'=', valor: r.resultadoParcial,
-      status: r.resultadoParcial == null ? 'ausente' : 'parcial', fonte:'cálculo interno',
-      obs: r.freteTotal == null ? 'parcial — sem frete real' : 'derivado dos componentes' },
+      status: r.resultadoParcial == null ? 'ausente' : (r.confianca === 'confiavel' ? 'real' : 'parcial'), fonte:'cálculo interno',
+      obs: r.confianca === 'confiavel' ? 'todos os componentes reais' : (semFrete > 0 || r.freteTotal == null ? 'parcial — frete incompleto' : 'parcial — falta custo em parte') },
   ];
 }
 
@@ -465,6 +471,7 @@ function buildFechamentoQualidade(payload) {
   const validos = orders.filter(o => o.status !== 'cancelado');
   const faturamento = fechSum(validos, o => o.valor);
   const fatComCusto = fechSum(validos.filter(o => o.custo != null), o => o.valor);
+  const fatComFrete = fechSum(validos.filter(o => o.frete != null), o => o.valor);
   const fatBloqueado = fechSum(validos.filter(o => o.resultadoStatus === 'bloqueado'), o => o.valor);
   return {
     semCusto: validos.filter(o => o.mlb && o.custoStatus === 'ausente').length,
@@ -473,6 +480,7 @@ function buildFechamentoQualidade(payload) {
     comResultado: validos.filter(o => o.resultado != null).length,
     bloqueados: validos.filter(o => o.resultadoStatus === 'bloqueado').length,
     pctFatComCusto: faturamento > 0 ? round2(fatComCusto / faturamento * 100) : null,
+    pctFatComFrete: faturamento > 0 ? round2(fatComFrete / faturamento * 100) : null,
     pctFatBloqueado: faturamento > 0 ? round2(fatBloqueado / faturamento * 100) : null,
   };
 }
@@ -857,8 +865,8 @@ function renderFechamento() {
     ${card('Comissão marketplace', valOr(r.comissao, money), 'tarifa ML (sale_fee)')}
     ${card('Custo dos produtos', valOr(r.custoTotal, money), 'base vinculada')}
     ${card('Imposto interno', valOr(r.impostoTotal, money), 'cálculo interno')}
-    ${card('Frete seller', valOr(r.freteTotal, money), 'pendente (sem Shipping API)', 'muted')}
-    ${card('Resultado parcial', valOr(r.resultadoParcial, money), 'sem frete real', 'warn')}
+    ${card('Frete seller', valOr(r.freteTotal, money), r.freteTotal == null ? 'ausente (shipments)' : 'real (shipments API)', r.freteTotal == null ? 'muted' : '')}
+    ${card('Resultado parcial', valOr(r.resultadoParcial, money), r.confianca === 'confiavel' ? 'todos componentes reais' : 'parcial', r.confianca === 'confiavel' ? '' : 'warn')}
     ${card('Receita bloqueada', money(r.receitaBloqueada), 'falta custo/frete p/ calcular', 'warn')}
   </div>`;
 
@@ -894,6 +902,7 @@ function renderFechamento() {
       ${qItem('com resultado calculável', valOr(q.comResultado))}
       ${qItem('pedidos bloqueados', valOr(q.bloqueados), q.bloqueados ? 'crit' : '')}
       ${qItem('% faturamento com custo', valOr(q.pctFatComCusto, pct))}
+      ${qItem('% faturamento com frete real', valOr(q.pctFatComFrete, pct), (q.pctFatComFrete || 0) > 0 ? 'ok' : '')}
       ${qItem('% faturamento bloqueado', valOr(q.pctFatBloqueado, pct), (q.pctFatBloqueado || 0) > 0 ? 'warn' : '')}
     </div>`;
 
@@ -934,7 +943,7 @@ function renderFechamento() {
       ${composicao}
       ${qualidade}
       ${porDia}
-      <div class="fapi-table-note">Fechamento do <b>período inteiro</b> (independe dos filtros da tabela). Frete real ainda não coletado (sem Shipping API) — por isso o resultado é <b>parcial</b>. Ausência aparece como <b>—</b>, nunca R$ 0,00.</div>
+      <div class="fapi-table-note">Fechamento do <b>período inteiro</b> (independe dos filtros da tabela). O <b>frete seller</b> vem da Shipments API por pedido quando disponível; pedidos sem frete real mantêm o fechamento <b>parcial</b>. Ausência aparece como <b>—</b>, nunca R$ 0,00.</div>
     </div>
   </section>`;
 }

@@ -20,6 +20,7 @@ const { toNumber, round2 } = require("../../utils/numberUtils");
 const { normalizeId } = require("../../utils/textUtils");
 const { periodoFromCompetencia } = require("./centralVendasService");
 const { buildResumoCentralVendas } = require("./centralVendasImportService");
+const { buscarFretesEmLote } = require("./centralVendasFreteService");
 
 const MAX_PAGINAS = 100; // 100 * 50 = 5.000 pedidos — teto de seguranca (Render)
 const PAGE_LIMIT = 50;
@@ -185,7 +186,27 @@ function buildComponent({ pedidoId, itemId, tipo, valor, fonte, confianca, obs }
   };
 }
 
-function buildMotorFromOrders({ orders, costMap, clienteSlug, competencia }) {
+// Rateia o frete do pedido entre os itens por unidades (último leva o resto).
+// total null ⇒ todos null (ausente). Nunca inventa 0.
+function allocateFrete(total, unitsArr) {
+  if (total == null) return unitsArr.map(() => null);
+  const totalUnits = unitsArr.reduce((s, u) => s + (u || 0), 0);
+  if (totalUnits <= 0) return unitsArr.map((_, i) => (i === 0 ? round2(total) : 0));
+  const out = [];
+  let acc = 0;
+  for (let i = 0; i < unitsArr.length; i++) {
+    if (i === unitsArr.length - 1) {
+      out.push(round2(total - acc));
+    } else {
+      const v = round2((total / totalUnits) * (unitsArr[i] || 0));
+      out.push(v);
+      acc = round2(acc + v);
+    }
+  }
+  return out;
+}
+
+function buildMotorFromOrders({ orders, costMap, freteMap = new Map(), clienteSlug, competencia }) {
   const pedidos = [];
   const itens = [];
   const componentes = [];
@@ -217,6 +238,11 @@ function buildMotorFromOrders({ orders, costMap, clienteSlug, competencia }) {
       _temResultado: false,
     };
 
+    // Frete real do pedido (shipments API), rateado por unidades entre os itens.
+    const freteEntry = pedido.shipmentId ? freteMap.get(pedido.shipmentId) : null;
+    const orderFrete = freteEntry && freteEntry.status === "real" ? freteEntry.valor : null;
+    const freteAlloc = allocateFrete(orderFrete, orderItems.map((oi) => toNumber(oi.quantity)));
+
     orderItems.forEach((oi, idx) => {
       const mlb = normalizeId(oi.item?.id);
       const sku = String(oi.item?.seller_sku || "").trim() || null;
@@ -245,25 +271,27 @@ function buildMotorFromOrders({ orders, costMap, clienteSlug, competencia }) {
       const impostoInterno =
         hasTax && receitaProduto != null ? round2(receitaProduto * impostoDec) : null;
 
-      // Frete real por pedido ainda nao coletado (sem Shipping API nesta fase).
-      const freteAusente = true;
+      // Frete real do item (rateado do pedido). null = ausente; usa no LC só se real.
+      const freteItem = freteAlloc[idx];
+      const hasFrete = freteItem != null;
 
       const pendencias = [];
       if (!hasProduct) pendencias.push("produto_ausente");
       if (!hasCost) pendencias.push("custo_produto_ausente");
       if (!hasTarifa) pendencias.push("tarifa_venda_ausente");
       if (!hasTax) pendencias.push("imposto_interno_ausente");
-      if (freteAusente) pendencias.push("frete_seller_ausente");
+      if (!hasFrete) pendencias.push("frete_seller_ausente");
 
       const bloqueado = !hasProduct || !hasCost;
-      const parcial = !bloqueado && (!hasTax || !hasTarifa || freteAusente);
+      const parcial = !bloqueado && (!hasTax || !hasTarifa || !hasFrete);
       const confianca = bloqueado ? "bloqueado" : parcial ? "parcial" : "confiavel";
 
       let lucroContribuicao = null;
       let margemContribuicaoPercentual = null;
       if (!bloqueado) {
+        // Resultado/LC só desconta frete quando ele for real.
         lucroContribuicao = round2(
-          receitaProduto - (tarifaVendaTotal || 0) - (custoProduto || 0) - (impostoInterno || 0)
+          receitaProduto - (tarifaVendaTotal || 0) - (custoProduto || 0) - (impostoInterno || 0) - (hasFrete ? freteItem : 0)
         );
         margemContribuicaoPercentual =
           receitaProduto > 0 ? round2((lucroContribuicao / receitaProduto) * 100) : 0;
@@ -329,10 +357,10 @@ function buildMotorFromOrders({ orders, costMap, clienteSlug, competencia }) {
           pedidoId,
           itemId,
           tipo: "frete_seller",
-          valor: null,
-          fonte: "ausente",
-          confianca: "ausente",
-          obs: "Frete real por pedido requer Shipping API (fase futura).",
+          valor: hasFrete ? -freteItem : null,
+          fonte: hasFrete ? "shipments_api" : "ausente",
+          confianca: hasFrete ? "real" : "ausente",
+          obs: hasFrete ? null : "Frete real indisponível para este envio (shipment).",
         })
       );
 
@@ -467,6 +495,12 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // Pedidos via Orders API (intervalo inteiro numa paginacao)
     const orders = await fetchAllOrders(cliente.id, sellerId, from, to);
 
+    // Frete real por pedido (shipments API): busca em lote, cache + concorrencia
+    // baixa + cap de seguranca. Falha por shipment NAO trava o sync.
+    const shipmentIds = orders.map((o) => o.shipping?.id).filter((v) => v != null);
+    const freteLote = await buscarFretesEmLote({ clienteId: cliente.id, shipmentIds });
+    const freteMap = freteLote.freteMap;
+
     // Agrupa por competencia (mes de date_created)
     const grupos = new Map();
     for (const order of orders) {
@@ -485,6 +519,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       const motorResult = buildMotorFromOrders({
         orders: groupOrders,
         costMap,
+        freteMap,
         clienteSlug: slug,
         competencia: comp,
       });
@@ -514,7 +549,8 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     console.log(
       `[centralVendas] sync ${slug} ${from}..${to}:` +
         ` orders=${orders.length} meses=${grupos.size} pedidos=${pedidosPersistidos}` +
-        ` baseVinculada=${base ? base.id : "nenhuma"} custosNaBase=${custos.length}`
+        ` baseVinculada=${base ? base.id : "nenhuma"} custosNaBase=${custos.length}` +
+        ` shipments=${freteLote.buscados}/${freteLote.total} comFrete=${freteLote.comFrete}`
     );
 
     return {
@@ -526,6 +562,12 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       porCompetencia,
       baseVinculada: base ? { id: base.id, nome: base.nome, custos: custos.length } : null,
       ordersEncontrados: orders.length,
+      frete: {
+        shipmentsUnicos: freteLote.total,
+        shipmentsBuscados: freteLote.buscados,
+        comFreteReal: freteLote.comFrete,
+        capExcedido: freteLote.capExcedido,
+      },
       pedidosPersistidos,
       itensPersistidos,
       componentesPersistidos,

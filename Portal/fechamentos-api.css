@@ -180,6 +180,7 @@
 .fapi-fech-q-v { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--vfop-text, #111827); }
 .fapi-fech-q-v.crit { color: #9b1c1c; }
 .fapi-fech-q-v.warn { color: #855100; }
+.fapi-fech-q-v.ok { color: #1a7a45; }
 .fapi-fech-q-l { font-size: 10.5px; color: var(--vfop-soft, #8c96a6); text-transform: uppercase; letter-spacing: .04em; }
 
 /* ── Produtos por impacto: barra de grupos + ações ───────── */

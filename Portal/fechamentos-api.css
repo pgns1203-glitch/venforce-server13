@@ -172,6 +172,21 @@
 .fapi-pager-info { font-size: 12px; font-weight: 600; color: var(--vfop-muted, #5a6578); font-variant-numeric: tabular-nums; }
 .fapi-pager .fapi-btn[disabled] { opacity: .45; cursor: not-allowed; pointer-events: none; }
 
+/* ── Fechamento API: sub-blocos + qualidade ──────────────── */
+.fapi-fech-sub { padding: 14px 14px 6px; font-size: 12px; color: var(--vfop-muted, #5a6578); }
+.fapi-fech-sub b { color: var(--vfop-text, #111827); font-size: 12.5px; }
+.fapi-fech-qgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; padding: 0 14px 12px; }
+.fapi-fech-q { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--vfop-border, #dde1e8); border-radius: 6px; background: var(--vfop-subtle, #fafbfc); }
+.fapi-fech-q-v { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--vfop-text, #111827); }
+.fapi-fech-q-v.crit { color: #9b1c1c; }
+.fapi-fech-q-v.warn { color: #855100; }
+.fapi-fech-q-l { font-size: 10.5px; color: var(--vfop-soft, #8c96a6); text-transform: uppercase; letter-spacing: .04em; }
+
+/* ── Produtos por impacto: barra de grupos + ações ───────── */
+.fapi-prodbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px 0; }
+.fapi-prodgroups { flex: 1 1 auto; }
+.fapi-prodactions { display: flex; gap: 8px; flex-wrap: wrap; }
+
 /* ── Wrap de tabela densa (scroll horizontal) ────────────── */
 .fapi-tablewrap { overflow-x: auto; }
 .fapi-table .center { text-align: center; }

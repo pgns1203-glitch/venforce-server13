@@ -213,7 +213,8 @@ const F = {
   filters: defaultFilters(),
   draftFilters: defaultFilters(),
   selectedOrderId: null,
-  productLimit: 10, draftProductLimit: 10, productSort: 'faturamento',
+  // ── seção "Produtos por impacto" ──
+  productSort: 'faturamento', productGroup: 'todos', productPage: 1, productPageSize: 50,
   intervaloAviso: null,   // aviso discreto quando a data inicial > final foi corrigida
   arquivoImport: null,    // File guardado no change do input — imune a repaint do carregarTela
   // ── performance: fetch só em troca de cliente/comp; filtros/busca em memória ──
@@ -230,11 +231,6 @@ function getWeekOfMonth(o) { const d = getOrderDate(o); return d ? Math.ceil(d.g
 function isOrderFull(o) { return o.logistica === 'full'; }
 function getProduto(payload, mlb) { return mlb ? (payload.produtos || {})[mlb] || null : null; }
 function hasProductAds(prod) { const s = prod?.ads?.status; return s === 'real' || s === 'parcial'; }
-function normalizeLimit(value) {
-  if (value === null || value === undefined || value === 'todos') return null;
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : 10;
-}
 function isDateInPeriod(iso, period) {
   return !!iso && iso >= period.inicio && iso <= period.fim;
 }
@@ -395,6 +391,119 @@ function buildOrderMetrics(view) {
     pedidosFreteAusente: ps.filter(o => o.frete == null && o.status !== 'cancelado').length,
     pedidosCustoAusente: ps.filter(o => o.custoStatus === 'ausente' && o.mlb && o.status !== 'cancelado').length,
   };
+}
+
+/* ── FECHAMENTO API (helpers puros) ───────────────────────────
+   Fecham o PERÍODO inteiro (payload já escopado pelo GET por range) usando
+   só pedidos/itens/componentes sincronizados + base vinculada. Não chamam ML.
+   null = ausente ("—") · 0 = zero real · ausência nunca vira R$ 0,00. */
+function fechamentoOrders(payload) {
+  return (payload?.pedidos || []).map(o => (o.prod !== undefined ? o : computeOrder(o, payload)));
+}
+function fechSum(arr, f) { return round2(arr.reduce((s, o) => s + (Number(f(o)) || 0), 0)); }
+
+function buildFechamentoResumo(payload) {
+  const orders = fechamentoOrders(payload);
+  const validos = orders.filter(o => o.status !== 'cancelado');
+  const cancelProblema = orders.filter(o => o.status === 'cancelado' || o.status === 'com_problema');
+  const faturamento = fechSum(validos, o => o.valor);
+  const unidades = validos.reduce((s, o) => s + (o.unidades || 0), 0);
+  const comComissao = validos.filter(o => o.taxas != null);
+  const comissao = comComissao.length ? fechSum(comComissao, o => o.taxas) : null;
+  const comCusto = validos.filter(o => o.custo != null);
+  const custoTotal = comCusto.length ? fechSum(comCusto, o => o.custo) : null;
+  const comImposto = validos.filter(o => o.imposto != null);
+  const impostoTotal = comImposto.length ? fechSum(comImposto, o => o.imposto) : null;
+  const comFrete = validos.filter(o => o.frete != null);
+  const freteTotal = comFrete.length ? fechSum(comFrete, o => o.frete) : null; // null = ausente (sem Shipping API)
+  const comResultado = validos.filter(o => o.resultado != null);
+  const resultadoParcial = comResultado.length ? fechSum(comResultado, o => o.resultado) : null;
+  const receitaBloqueada = fechSum(validos.filter(o => o.resultadoStatus === 'bloqueado'), o => o.valor);
+  const ticket = validos.length ? round2(faturamento / validos.length) : null;
+
+  let confianca;
+  if (!validos.length || !comResultado.length) confianca = 'insuficiente';
+  else if (receitaBloqueada > 0 || freteTotal == null || comResultado.length < validos.length) confianca = 'parcial';
+  else confianca = 'confiavel';
+
+  return {
+    periodo: payload.periodo, cliente: payload.cliente,
+    fonte: payload.motor?.origemPrincipal || payload.fonte || 'central_vendas_db',
+    totalPedidos: orders.length, validos: validos.length, cancelProblema: cancelProblema.length,
+    unidades, faturamento, ticket, comissao, custoTotal, impostoTotal, freteTotal,
+    resultadoParcial, receitaBloqueada, confianca,
+  };
+}
+
+function buildFechamentoComponentes(payload) {
+  const r = buildFechamentoResumo(payload);
+  const orders = fechamentoOrders(payload);
+  const validos = orders.filter(o => o.status !== 'cancelado');
+  const semCusto = validos.filter(o => o.mlb && o.custoStatus === 'ausente').length;
+  return [
+    { comp:'Receita de produtos', op:'+', valor: r.faturamento,
+      status: r.faturamento > 0 ? 'real' : 'ausente', fonte:'orders_api', obs:'soma do valor dos pedidos válidos' },
+    { comp:'Tarifa marketplace', op:'−', valor: r.comissao == null ? null : -r.comissao,
+      status: r.comissao == null ? 'ausente' : 'real', fonte:'orders_api', obs:'comissão (sale_fee) dos pedidos' },
+    { comp:'Custo dos produtos', op:'−', valor: r.custoTotal == null ? null : -r.custoTotal,
+      status: r.custoTotal == null ? 'ausente' : (semCusto > 0 ? 'parcial' : 'real'), fonte:'base vinculada',
+      obs: semCusto > 0 ? `${num(semCusto)} pedido(s) sem custo na base` : 'custo unitário × unidades' },
+    { comp:'Imposto interno', op:'−', valor: r.impostoTotal == null ? null : -r.impostoTotal,
+      status: r.impostoTotal == null ? 'ausente' : (semCusto > 0 ? 'parcial' : 'real'), fonte:'cálculo interno',
+      obs:'imposto % da base × receita' },
+    { comp:'Frete seller', op:'−', valor: r.freteTotal,
+      status: r.freteTotal == null ? 'ausente' : 'real', fonte:'pendente',
+      obs:'frete real por pedido requer Shipping API (fase futura)' },
+    { comp:'Resultado parcial', op:'=', valor: r.resultadoParcial,
+      status: r.resultadoParcial == null ? 'ausente' : 'parcial', fonte:'cálculo interno',
+      obs: r.freteTotal == null ? 'parcial — sem frete real' : 'derivado dos componentes' },
+  ];
+}
+
+function buildFechamentoQualidade(payload) {
+  const orders = fechamentoOrders(payload);
+  const validos = orders.filter(o => o.status !== 'cancelado');
+  const faturamento = fechSum(validos, o => o.valor);
+  const fatComCusto = fechSum(validos.filter(o => o.custo != null), o => o.valor);
+  const fatBloqueado = fechSum(validos.filter(o => o.resultadoStatus === 'bloqueado'), o => o.valor);
+  return {
+    semCusto: validos.filter(o => o.mlb && o.custoStatus === 'ausente').length,
+    semFrete: validos.filter(o => o.frete == null).length,
+    cancelProblema: orders.filter(o => o.status === 'cancelado' || o.status === 'com_problema').length,
+    comResultado: validos.filter(o => o.resultado != null).length,
+    bloqueados: validos.filter(o => o.resultadoStatus === 'bloqueado').length,
+    pctFatComCusto: faturamento > 0 ? round2(fatComCusto / faturamento * 100) : null,
+    pctFatBloqueado: faturamento > 0 ? round2(fatBloqueado / faturamento * 100) : null,
+  };
+}
+
+function buildFechamentoPorDia(payload) {
+  const orders = fechamentoOrders(payload);
+  const map = new Map();
+  for (const o of orders) {
+    if (!o.data) continue;
+    if (!map.has(o.data)) map.set(o.data, { data:o.data, pedidos:0, faturamento:0, comissao:0, custo:0, imposto:0, receitaBloqueada:0, cancelProblema:0, _comissao:false, _custo:false, _imposto:false });
+    const d = map.get(o.data);
+    const valido = o.status !== 'cancelado';
+    d.pedidos += 1;
+    if (valido) {
+      d.faturamento += (o.valor || 0);
+      if (o.taxas != null) { d.comissao += o.taxas; d._comissao = true; }
+      if (o.custo != null) { d.custo += o.custo; d._custo = true; }
+      if (o.imposto != null) { d.imposto += o.imposto; d._imposto = true; }
+    }
+    if (o.resultadoStatus === 'bloqueado' && valido) d.receitaBloqueada += (o.valor || 0);
+    if (o.status === 'cancelado' || o.status === 'com_problema') d.cancelProblema += 1;
+  }
+  return [...map.values()].map(d => ({
+    data: d.data, pedidos: d.pedidos,
+    faturamento: round2(d.faturamento),
+    comissao: d._comissao ? round2(d.comissao) : null,
+    custo: d._custo ? round2(d.custo) : null,
+    imposto: d._imposto ? round2(d.imposto) : null,
+    receitaBloqueada: round2(d.receitaBloqueada),
+    cancelProblema: d.cancelProblema,
+  })).sort((a, b) => a.data.localeCompare(b.data));
 }
 
 function aggByProduct(pedidos) {
@@ -620,9 +729,9 @@ function aplicarPeriodoCustom() {
 function resetFilters() {
   F.filters = defaultFilters();
   F.draftFilters = defaultFilters();
-  F.productLimit = 10;
-  F.draftProductLimit = 10;
   F.productSort = 'faturamento';
+  F.productGroup = 'todos';
+  F.productPage = 1;
   F.intervaloAviso = null;
   F.searchTerm = '';
   F.page = 1;
@@ -709,14 +818,125 @@ function renderResults() {
   const host = document.getElementById('fapi-results');
   if (!host || !F.viewPayload) return;
   F.visiblePayload = { ...F.viewPayload, pedidos: getVisiblePedidos() };
-  /* Ordem: cards → régua de dias → tabela paginada → detalhe → ranking. */
+  /* Ordem: fechamento (período) → cards → régua → tabela → detalhe → ranking. */
   host.innerHTML =
+    renderFechamento() +
     renderOrderSummary() +
     renderDailySales() +
     renderOrdersTable() +
     '<div id="fapi-pedido-detalhe"></div>' +
     renderTopProducts();
   wireResults();
+}
+
+/* ── 0. FECHAMENTO API ────────────────────────────────────────
+   Fecha o PERÍODO inteiro (independe dos filtros locais da tabela). */
+function renderFechamento() {
+  const payload = F.rawPayload;
+  if (!payload?.ok) return '';
+  const r = buildFechamentoResumo(payload);
+  const fonteTxt = (r.fonte === 'orders_api') ? 'orders_api · central_vendas_db' : esc(r.fonte);
+
+  if (!r.totalPedidos) {
+    return `
+    <section class="fapi-panel">
+      <div class="fapi-panel-head"><h2 class="fapi-panel-title">Fechamento API</h2>
+        <span class="fapi-panel-meta">${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')}</span></div>
+      <div class="fapi-panel-body">${emptyState({ icon:'🧾', title:'Sem pedidos no período', why:'Nada sincronizado para fechar neste intervalo.', next:'Use “Sincronizar via API” para trazer os pedidos do ML.' })}</div>
+    </section>`;
+  }
+
+  const card = (lbl, val, sub, cls) => `<div class="fapi-card"><div class="fapi-card-lbl">${esc(lbl)}</div><div class="fapi-card-val${cls ? ' ' + cls : ''}">${val}</div><div class="fapi-card-sub">${sub || '&nbsp;'}</div></div>`;
+  const cards = `<div class="fapi-cards">
+    ${card('Total de pedidos', valOr(r.totalPedidos), 'no período')}
+    ${card('Pedidos válidos', valOr(r.validos), 'pagos + problema')}
+    ${card('Cancelados / problema', valOr(r.cancelProblema), 'fora da venda boa', 'crit')}
+    ${card('Unidades vendidas', valOr(r.unidades), 'itens válidos')}
+    ${card('Faturamento bruto', money(r.faturamento), 'pedidos válidos', 'brand')}
+    ${card('Ticket médio', valOr(r.ticket, money), 'por pedido válido')}
+    ${card('Comissão marketplace', valOr(r.comissao, money), 'tarifa ML (sale_fee)')}
+    ${card('Custo dos produtos', valOr(r.custoTotal, money), 'base vinculada')}
+    ${card('Imposto interno', valOr(r.impostoTotal, money), 'cálculo interno')}
+    ${card('Frete seller', valOr(r.freteTotal, money), 'pendente (sem Shipping API)', 'muted')}
+    ${card('Resultado parcial', valOr(r.resultadoParcial, money), 'sem frete real', 'warn')}
+    ${card('Receita bloqueada', money(r.receitaBloqueada), 'falta custo/frete p/ calcular', 'warn')}
+  </div>`;
+
+  // Composição do resultado
+  const comps = buildFechamentoComponentes(payload);
+  const compRows = comps.map(c => `
+    <tr${c.comp === 'Resultado parcial' ? ' class="fapi-ext-total"' : ''}>
+      <td class="fapi-ext-comp${c.comp === 'Resultado parcial' ? ' strong' : ''}">${esc(c.comp)}</td>
+      <td class="center fapi-ext-op">${esc(c.op)}</td>
+      <td class="right fapi-ext-val">${c.valor == null ? '<span class="muted">—</span>' : (c.comp === 'Resultado parcial' ? `<span class="fapi-est">${money(c.valor)}</span>` : money(c.valor))}</td>
+      <td>${statusBadge(c.status)}</td>
+      <td class="fapi-ext-fonte muted">${esc(c.fonte)}</td>
+      <td class="fapi-ext-obs muted clip">${esc(c.obs)}</td>
+    </tr>`).join('');
+  const composicao = `
+    <div class="fapi-fech-sub"><b>Composição do resultado</b></div>
+    <div class="fapi-tablewrap">
+      <table class="fapi-table fapi-ext-table">
+        <thead><tr><th>Componente</th><th class="center">Op.</th><th class="right">Valor</th><th>Status</th><th>Fonte</th><th>Observação</th></tr></thead>
+        <tbody>${compRows}</tbody>
+      </table>
+    </div>`;
+
+  // Qualidade do fechamento
+  const q = buildFechamentoQualidade(payload);
+  const qItem = (lbl, val, cls) => `<div class="fapi-fech-q"><span class="fapi-fech-q-v${cls ? ' ' + cls : ''}">${val}</span><span class="fapi-fech-q-l">${esc(lbl)}</span></div>`;
+  const qualidade = `
+    <div class="fapi-fech-sub"><b>Qualidade do fechamento</b></div>
+    <div class="fapi-fech-qgrid">
+      ${qItem('pedidos sem custo', valOr(q.semCusto), q.semCusto ? 'crit' : '')}
+      ${qItem('pedidos sem frete', valOr(q.semFrete), q.semFrete ? 'warn' : '')}
+      ${qItem('cancelados/problema', valOr(q.cancelProblema))}
+      ${qItem('com resultado calculável', valOr(q.comResultado))}
+      ${qItem('pedidos bloqueados', valOr(q.bloqueados), q.bloqueados ? 'crit' : '')}
+      ${qItem('% faturamento com custo', valOr(q.pctFatComCusto, pct))}
+      ${qItem('% faturamento bloqueado', valOr(q.pctFatBloqueado, pct), (q.pctFatBloqueado || 0) > 0 ? 'warn' : '')}
+    </div>`;
+
+  // Resumo por dia
+  const dias = buildFechamentoPorDia(payload);
+  const diaRows = dias.map(d => `
+    <tr>
+      <td class="nowrap">${fmtDt(d.data)}</td>
+      <td class="right">${valOr(d.pedidos)}</td>
+      <td class="right strong">${money(d.faturamento)}</td>
+      <td class="right">${valOr(d.comissao, money)}</td>
+      <td class="right">${valOr(d.custo, money)}</td>
+      <td class="right">${valOr(d.imposto, money)}</td>
+      <td class="right">${d.receitaBloqueada > 0 ? `<span class="fapi-est">${money(d.receitaBloqueada)}</span>` : '—'}</td>
+      <td class="right">${d.cancelProblema > 0 ? num(d.cancelProblema) : '—'}</td>
+    </tr>`).join('');
+  const porDia = `
+    <div class="fapi-fech-sub"><b>Resumo por dia</b></div>
+    <div class="fapi-tablewrap">
+      <table class="fapi-table">
+        <thead><tr><th>Data</th><th class="right">Ped.</th><th class="right">Faturamento</th><th class="right">Comissão</th><th class="right">Custo</th><th class="right">Imposto</th><th class="right">Receita bloq.</th><th class="right">Canc/Prob</th></tr></thead>
+        <tbody>${diaRows}</tbody>
+      </table>
+    </div>`;
+
+  return `
+  <section class="fapi-panel">
+    <div class="fapi-panel-head">
+      <h2 class="fapi-panel-title">Fechamento API</h2>
+      <div class="fapi-panel-actions">
+        <span class="fapi-panel-meta">${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')} · fonte: ${fonteTxt}</span>
+        Confiança ${confPill(r.confianca)}
+        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-fech-refresh" type="button" title="Recalcula do período já carregado — não chama a API do ML">Atualizar fechamento</button>
+      </div>
+    </div>
+    <div class="fapi-panel-body fapi-panel-body--flush">
+      ${cards}
+      ${composicao}
+      ${qualidade}
+      ${porDia}
+      <div class="fapi-table-note">Fechamento do <b>período inteiro</b> (independe dos filtros da tabela). Frete real ainda não coletado (sem Shipping API) — por isso o resultado é <b>parcial</b>. Ausência aparece como <b>—</b>, nunca R$ 0,00.</div>
+    </div>
+  </section>`;
 }
 
 /* ── HEADER ───────────────────────────────────────────────── */
@@ -734,7 +954,7 @@ function filterStatesEqual(a, b) {
   return ['modo', 'dia', 'semana', 'de', 'ate', 'logistica', 'midia', 'diagbase', 'status'].every(k => String(fa[k] ?? '') === String(fb[k] ?? ''));
 }
 function hasPendingFilterChanges() {
-  return !filterStatesEqual(F.filters, F.draftFilters) || String(F.productLimit ?? 'todos') !== String(F.draftProductLimit ?? 'todos');
+  return !filterStatesEqual(F.filters, F.draftFilters);
 }
 function periodText(filters = F.filters, payload = F.rawPayload) {
   if (!payload) return '';
@@ -774,7 +994,6 @@ function filterSummaryText() {
   if (fl.status === 'cancelado') parts.push('cancelados');
   if (fl.status === 'problema') parts.push('com problema');
   if (fl.status === 'bloqueado') parts.push('bloqueados por dado');
-  parts.push(F.productLimit == null ? 'todos os produtos' : `Top ${F.productLimit} produtos`);
   return parts.filter(Boolean).join(' · ') + '.';
 }
 function renderFilters() {
@@ -801,7 +1020,6 @@ function renderFilters() {
       <label class="fapi-fitem"><span>Mídia</span>${sel('midia', fl.midia, [opt('todos','Todos',fl.midia), opt('com_ads','Com Product Ads',fl.midia), opt('sem_ads','Sem Product Ads',fl.midia)].join(''))}</label>
       <label class="fapi-fitem"><span>Diagnóstico/base</span>${sel('diagbase', fl.diagbase, [opt('todos','Todos',fl.diagbase), opt('com_custo','Com custo/base',fl.diagbase), opt('sem_custo','Sem custo/base',fl.diagbase), opt('no_diag','No diagnóstico',fl.diagbase), opt('fora_diag','Fora do diagnóstico',fl.diagbase)].join(''))}</label>
       <label class="fapi-fitem"><span>Status</span>${sel('status', fl.status, [opt('todos','Todos',fl.status), opt('valido','Válido',fl.status), opt('cancelado','Cancelado',fl.status), opt('problema','Problema',fl.status), opt('bloqueado','Bloqueado por dado',fl.status)].join(''))}</label>
-      <label class="fapi-fitem"><span>Top produtos</span>${sel('limit', String(F.draftProductLimit ?? 'todos'), [opt('10','Top 10',String(F.draftProductLimit ?? 'todos')), opt('20','Top 20',String(F.draftProductLimit ?? 'todos')), opt('todos','Todos',String(F.draftProductLimit ?? 'todos'))].join(''))}</label>
     </div>
     ${aviso}
     <div class="fapi-filter-summary">${esc(filterSummaryText())}${pending ? ' <span class="fapi-filter-pending">aplique para atualizar</span>' : ''}</div>
@@ -1009,52 +1227,128 @@ function abrirPedido(id) {
 }
 function fecharPedido() { F.selectedOrderId = null; const h = document.getElementById('fapi-pedido-detalhe'); if (h) h.innerHTML = ''; document.querySelectorAll('.fapi-prow--sel').forEach(r => r.classList.remove('fapi-prow--sel')); }
 
-/* ── 5. PRODUTOS MAIS VENDIDOS ────────────────────────────── */
-const SORTS = [['faturamento','Faturamento'], ['unidades','Unidades'], ['pedidos','Pedidos'], ['receitaBloqueada','Receita bloqueada']];
-/* Ranking simples de produtos (agregação dos pedidos do filtro).
-   Sem produto acompanhado e sem painel de detalhe — apenas a tabela. */
+/* ── 5. PRODUTOS POR IMPACTO ───────────────────────────────── */
+/* Ferramenta de LEITURA/ANÁLISE (sem recomendação automática): agrega os
+   pedidos do período por produto/MLB, com grupos, ordenação e paginação. */
+const PROD_SORTS = [['faturamento','Faturamento'], ['unidades','Unidades'], ['pedidos','Pedidos'], ['receitaBloqueada','Receita bloqueada']];
+const PROD_GROUPS = [
+  ['todos','Todos'], ['sem_custo','Sem custo'], ['maior_fat','Maior faturamento'],
+  ['receita_bloqueada','Receita bloqueada'], ['full','Full'], ['normal','Normal'], ['cancel_problema','Cancelados/problema'],
+];
+function prodBaseTag(a) {
+  if (a.semProduto) return '<span class="fapi-tag fapi-tag--ausente">—</span>';
+  return a.temCusto ? '<span class="fapi-tag fapi-tag--ok">com custo</span>' : '<span class="fapi-tag fapi-tag--crit">sem custo</span>';
+}
+function prodLogTag(t) {
+  if (t === 'full')  return '<span class="fapi-tag fapi-tag--full">Full</span>';
+  if (t === 'normal')return '<span class="fapi-tag fapi-tag--muted">Normal</span>';
+  if (t === 'misto') return '<span class="fapi-tag fapi-tag--warn">Misto</span>';
+  return '<span class="fapi-tag fapi-tag--ausente">—</span>';
+}
 function renderTopProducts() {
-  const { rows, totalCount } = buildProductSalesRanking(F.visiblePayload || F.viewPayload, { sortBy: F.productSort, limit: F.productLimit });
-  const sortBtns = SORTS.map(([k, l]) => `<button class="fapi-sortbtn${F.productSort === k ? ' active' : ''}" data-sort="${k}">${esc(l)}</button>`).join('');
-  if (!rows.length) return `<section class="fapi-panel"><div class="fapi-panel-head"><h2 class="fapi-panel-title">Ranking de produtos</h2></div><div class="fapi-panel-body">${emptyState({ icon:'•', title:'Sem produtos no filtro', why:'Nenhum pedido com produto no recorte atual.', next:'Ajuste os filtros.' })}</div></section>`;
-  const body = rows.map((a, i) => {
-    const pend = productPendenciaPrincipal(a, a.prod);
-    const missingBase = !a.semProduto && a.prod?.base?.temCusto !== true;
-    return `
-    <tr class="${missingBase ? 'fapi-prow--missing-base' : ''}">
-      <td class="fapi-rank">${i + 1}</td>
-      <td class="strong clip">${esc(a.titulo)}</td>
-      <td class="mono">${esc(a.mlb || '—')}</td>
-      <td class="mono muted">${esc(a.sku || '—')}</td>
-      <td class="right">${valOr(a.unidades)}</td>
-      <td class="right">${valOr(a.pedidos)}</td>
-      <td class="right strong">${money(a.faturamento)}</td>
-      <td class="right">${valOr(a.pctFat, pct)}</td>
-      <td>${tagFull(a.semProduto ? null : (a.prod ? a.prod.full : a.full))}</td>
-      <td>${tagAds(a.prod?.ads?.status ?? 'ausente')}</td>
-      <td>${tagDiag(a.prod)}</td>
-      <td class="muted clip">${esc(pend)}</td>
-    </tr>`;
-  }).join('');
+  const view = F.visiblePayload || F.viewPayload;
+  const { rows, allRows, totalFat } = buildProductImpactRows(view, { group: F.productGroup, sortBy: F.productSort });
+
+  // Cards (sobre o conjunto inteiro do período, não só do grupo)
+  const vendidos = allRows.filter(a => !a.semProduto);
+  const semCusto = vendidos.filter(a => !a.temCusto);
+  const fatSemCusto = round2(semCusto.reduce((s, a) => s + a.faturamento, 0));
+  const top10 = vendidos.slice().sort((x, y) => y.faturamento - x.faturamento).slice(0, 10);
+  const top10Pct = totalFat > 0 ? round2(top10.reduce((s, a) => s + a.faturamento, 0) / totalFat * 100) : null;
+  const card = (lbl, val, sub, cls) => `<div class="fapi-card"><div class="fapi-card-lbl">${esc(lbl)}</div><div class="fapi-card-val${cls ? ' ' + cls : ''}">${val}</div><div class="fapi-card-sub">${sub || '&nbsp;'}</div></div>`;
+  const cards = `<div class="fapi-cards">
+    ${card('Produtos vendidos', valOr(vendidos.length), 'no período/filtro')}
+    ${card('Produtos sem custo', valOr(semCusto.length), 'sem custo na base', semCusto.length ? 'crit' : '')}
+    ${card('Faturamento sem custo', money(fatSemCusto), 'receita sem custo p/ calcular', fatSemCusto > 0 ? 'warn' : '')}
+    ${card('Top 10 produtos', valOr(top10Pct, pct), 'do faturamento do período', 'brand')}
+  </div>`;
+
+  const groupChips = PROD_GROUPS.map(([k, l]) => `<button class="fapi-sortbtn${F.productGroup === k ? ' active' : ''}" data-prodgroup="${k}">${esc(l)}</button>`).join('');
+  const sortBtns = PROD_SORTS.map(([k, l]) => `<button class="fapi-sortbtn${F.productSort === k ? ' active' : ''}" data-prodsort="${k}">${esc(l)}</button>`).join('');
+
+  // Paginação
+  const total = rows.length;
+  const pageSize = F.productPageSize;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (F.productPage > pages) F.productPage = pages;
+  if (F.productPage < 1) F.productPage = 1;
+  const start = (F.productPage - 1) * pageSize;
+  const end = Math.min(start + pageSize, total);
+  const pageRows = rows.slice(start, end);
+
+  const tableOrEmpty = total === 0
+    ? emptyState({ icon:'•', title:'Sem produtos neste grupo', why:'Nenhum produto no recorte atual.', next:'Troque o grupo ou ajuste os filtros.' })
+    : `<div class="fapi-tablewrap">
+      <table class="fapi-table">
+        <thead><tr><th>#</th><th>Produto</th><th>MLB</th><th>SKU</th><th class="right">Un.</th><th class="right">Ped.</th><th class="right">Faturamento</th><th class="right">%</th><th class="right">Ticket</th><th class="right">Comissão</th><th class="right">Custo un.</th><th>Base</th><th>Logística</th><th class="right">Canc/Prob</th><th class="right">Receita bloq.</th></tr></thead>
+        <tbody>${pageRows.map((a, i) => `
+          <tr class="${!a.semProduto && !a.temCusto ? 'fapi-prow--missing-base' : ''}">
+            <td class="fapi-rank">${num(start + i + 1)}</td>
+            <td class="strong clip">${esc(a.titulo || '—')}</td>
+            <td class="mono">${esc(a.mlb || '—')}</td>
+            <td class="mono muted">${esc(a.sku || '—')}</td>
+            <td class="right">${valOr(a.unidades)}</td>
+            <td class="right">${valOr(a.pedidos)}</td>
+            <td class="right strong">${money(a.faturamento)}</td>
+            <td class="right">${valOr(a.pctFat, pct)}</td>
+            <td class="right">${valOr(a.ticketMedio, money)}</td>
+            <td class="right">${money(a.comissao)}</td>
+            <td class="right">${valOr(a.custoUnit, money)}</td>
+            <td>${prodBaseTag(a)}</td>
+            <td>${prodLogTag(a.logisticaTipo)}</td>
+            <td class="right">${a.cancelProblema > 0 ? num(a.cancelProblema) : '—'}</td>
+            <td class="right">${a.receitaBloqueada > 0 ? `<span class="fapi-est">${money(a.receitaBloqueada)}</span>` : '—'}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+      <div class="fapi-pager">
+        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-prod-prev" type="button"${F.productPage <= 1 ? ' disabled' : ''}>← Anterior</button>
+        <span class="fapi-pager-info">Mostrando ${num(start + 1)}–${num(end)} de ${num(total)} produtos${pages > 1 ? ` · página ${num(F.productPage)}/${num(pages)}` : ''}</span>
+        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-prod-next" type="button"${F.productPage >= pages ? ' disabled' : ''}>Próxima →</button>
+      </div>`;
+
   return `
   <section class="fapi-panel">
-    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Ranking de produtos</h2>
-      <span class="fapi-panel-meta">${rows.length}/${totalCount} · agregação dos pedidos do filtro</span></div>
-    <div class="fapi-sortbar" id="fapi-sortbar"><span class="fapi-sortbar-lbl">Ordenar por</span>${sortBtns}</div>
-    <div class="fapi-panel-body fapi-panel-body--flush"><div class="fapi-tablewrap">
-      <table class="fapi-table">
-        <thead><tr><th>#</th><th>Produto</th><th>MLB</th><th>SKU</th><th class="right">Un.</th><th class="right">Ped.</th><th class="right">Faturamento</th><th class="right">% filtro</th><th>Full</th><th>Ads</th><th>Base/diag</th><th>Pendência</th></tr></thead>
-        <tbody>${body}</tbody>
-      </table></div></div>
+    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Produtos por impacto</h2>
+      <span class="fapi-panel-meta">agregação dos pedidos do período · leitura/análise (sem recomendação)</span></div>
+    <div class="fapi-panel-body fapi-panel-body--flush">
+      ${cards}
+      <div class="fapi-prodbar">
+        <div class="fapi-sortbar fapi-prodgroups" id="fapi-prodgroups"><span class="fapi-sortbar-lbl">Grupo</span>${groupChips}</div>
+        <div class="fapi-prodactions">
+          <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-prod-onlysemcusto" type="button">Ver apenas sem custo</button>
+          <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-prod-copysemcusto" type="button">Copiar MLBs sem custo</button>
+        </div>
+      </div>
+      <div class="fapi-sortbar" id="fapi-prodsortbar"><span class="fapi-sortbar-lbl">Ordenar por</span>${sortBtns}</div>
+      ${tableOrEmpty}
+    </div>
   </section>`;
+}
+
+/* Copia para a área de transferência os MLBs sem custo na base (todo o período). */
+function fallbackCopy(texto, cb) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = texto; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+  } catch (_) { /* ignora */ }
+  if (cb) cb();
+}
+function copiarMlbsSemCusto() {
+  const view = F.visiblePayload || F.viewPayload;
+  const { allRows } = buildProductImpactRows(view, { group: 'todos', sortBy: 'faturamento' });
+  const mlbs = allRows.filter(a => !a.semProduto && !a.temCusto && a.mlb).map(a => a.mlb);
+  const btn = document.getElementById('fapi-prod-copysemcusto');
+  const flash = msg => { if (btn) { const t = btn.dataset.label || btn.textContent; btn.dataset.label = t; btn.textContent = msg; setTimeout(() => { btn.textContent = t; }, 1600); } };
+  if (!mlbs.length) { flash('Nenhum sem custo'); return; }
+  const texto = mlbs.join('\n');
+  const ok = () => flash(`Copiado ${mlbs.length} MLB(s)`);
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(texto).then(ok).catch(() => fallbackCopy(texto, ok));
+  else fallbackCopy(texto, ok);
 }
 
 /* ── INTERAÇÕES ───────────────────────────────────────────── */
 function setDraftFilter(key, value) {
-  if (key === 'limit') {
-    F.draftProductLimit = normalizeLimit(value);
-    return;
-  }
   F.intervaloAviso = null;
   // 'modo' vem da UI com os valores internos (mes | intervalo | ultimos7 | semana).
   F.draftFilters[key] = value || null;
@@ -1069,10 +1363,9 @@ function applyDraftFilters() {
   const invertido = d.modo === 'intervalo' && d.de && d.ate && d.de > d.ate;
   F.filters = sanitizeFilters(F.draftFilters, F.rawPayload);
   F.draftFilters = cloneFilters(F.filters);
-  F.productLimit = normalizeLimit(F.draftProductLimit);
-  F.draftProductLimit = F.productLimit;
   F.selectedOrderId = null;
   F.page = 1;
+  F.productPage = 1;
   F.intervaloAviso = invertido ? 'A data inicial era maior que a final — invertemos o intervalo.' : null;
   recomputeView();
   renderFiltersSection();
@@ -1107,6 +1400,7 @@ function onSearchInput(value) {
   F.searchTimer = setTimeout(() => {
     F.searchTerm = value;
     F.page = 1;
+    F.productPage = 1;
     F.selectedOrderId = null;
     renderResults();
     // atualiza o contador "Mostrando X de N" sem recriar o input de busca
@@ -1129,9 +1423,10 @@ function wireFilters() {
   const search = document.getElementById('fapi-search');
   if (search) search.addEventListener('input', e => onSearchInput(e.target.value));
 }
-/* Resultados: sort, régua de dias, linhas de pedido e paginação. */
+/* Resultados: régua de dias, linhas/paginação de pedidos e seção de produtos. */
 function wireResults() {
-  document.querySelectorAll('#fapi-sortbar .fapi-sortbtn').forEach(b => b.addEventListener('click', () => { F.productSort = b.dataset.sort; renderResults(); }));
+  // "Atualizar fechamento": recalcula do payload já carregado — NÃO chama ML.
+  document.getElementById('fapi-fech-refresh')?.addEventListener('click', () => renderResults());
   document.querySelectorAll('.fapi-day').forEach(d => d.addEventListener('click', () => applyDayFilter(d.dataset.day)));
   document.getElementById('fapi-page-prev')?.addEventListener('click', () => goToPage(-1));
   document.getElementById('fapi-page-next')?.addEventListener('click', () => goToPage(1));
@@ -1139,6 +1434,13 @@ function wireResults() {
     row.addEventListener('click', () => abrirPedido(row.dataset.pedido));
     row.addEventListener('keydown', e => { if (e.key === 'Enter') abrirPedido(row.dataset.pedido); });
   });
+  // Produtos por impacto: grupos, ordenação, paginação e ações.
+  document.querySelectorAll('#fapi-prodgroups .fapi-sortbtn').forEach(b => b.addEventListener('click', () => { F.productGroup = b.dataset.prodgroup; F.productPage = 1; renderResults(); }));
+  document.querySelectorAll('#fapi-prodsortbar .fapi-sortbtn').forEach(b => b.addEventListener('click', () => { F.productSort = b.dataset.prodsort; F.productPage = 1; renderResults(); }));
+  document.getElementById('fapi-prod-prev')?.addEventListener('click', () => { F.productPage = Math.max(1, F.productPage - 1); renderResults(); });
+  document.getElementById('fapi-prod-next')?.addEventListener('click', () => { F.productPage = F.productPage + 1; renderResults(); });
+  document.getElementById('fapi-prod-onlysemcusto')?.addEventListener('click', () => { F.productGroup = 'sem_custo'; F.productPage = 1; renderResults(); });
+  document.getElementById('fapi-prod-copysemcusto')?.addEventListener('click', copiarMlbsSemCusto);
   if (F.selectedOrderId) abrirPedido(F.selectedOrderId);
 }
 

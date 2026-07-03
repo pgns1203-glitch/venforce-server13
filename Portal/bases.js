@@ -35,22 +35,13 @@ function getImportMarketplace() {
   return el ? el.value : "";
 }
 
-function getImportClienteId() {
-  const el = document.getElementById("import-cliente");
-  return el ? el.value : "";
-}
-
 function atualizarBotaoImportarDisabled() {
   const btn = document.getElementById("btn-importar");
-  const marketplace = getImportMarketplace();
-  const exigeCliente = marketplace === "meli";
-  if (btn) btn.disabled = !marketplace || (exigeCliente && !getImportClienteId());
+  if (btn) btn.disabled = !getImportMarketplace();
 }
 
 function setImportLoading(on) {
-  const marketplace = getImportMarketplace();
-  const exigeCliente = marketplace === "meli";
-  document.getElementById("btn-importar").disabled             = on ? true : !marketplace || (exigeCliente && !getImportClienteId());
+  document.getElementById("btn-importar").disabled             = on ? true : !getImportMarketplace();
   document.getElementById("btn-importar-text").textContent     = on ? "Processando…" : "Pré-visualizar";
   document.getElementById("btn-importar-spinner").style.display = on ? "inline-block" : "none";
 }
@@ -72,24 +63,6 @@ let CLIENTES_CARREGADOS = false;
 let VINCULOS_EDITAVEIS = true;
 let VINCULO_BASE_ATUAL = null;
 let VINCULOS_AVISO_ATIVO = false;
-const BASES_FILTROS = {
-  marketplace: "todos",
-  vinculo: "todos",
-  atualizacao: "todos",
-};
-const TRINTA_DIAS_MS = 30 * 24 * 60 * 60 * 1000;
-
-// ─── Estado (conferência / atualização / ajuste manual) ───
-let BASE_CONSULTA_ATUAL = null;
-let BASE_CUSTOS_ATUAL = [];
-let BASE_UPDATE_ATUAL = null;
-let BASE_MANUAL_ATUAL = null;
-let COSTS_FILTROS = {
-  produto: "",
-  custoZero: false,
-  impostoZero: false,
-  taxaZero: false,
-};
 
 // ─── Estado (exclusão) ───
 let BASE_DELETE_PENDENTE = null; // { slug, nome, btn }
@@ -146,46 +119,6 @@ function formatDateTime(value) {
   return d.toLocaleString("pt-BR");
 }
 
-function dataBase(base) {
-  const value = base?.updated_at || base?.created_at;
-  const d = value ? new Date(value) : null;
-  return d && Number.isFinite(d.getTime()) ? d : null;
-}
-
-function isBaseDesatualizada(base) {
-  const d = dataBase(base);
-  if (!d) return false;
-  return Date.now() - d.getTime() > TRINTA_DIAS_MS;
-}
-
-function isMeliSemVinculo(base) {
-  return getBaseMarketplaceKey(base) === "meli" && !base?.vinculo;
-}
-
-function formatMoney(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "R$ 0,00";
-  return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function formatPercent(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "0,00%";
-  return (n * 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%";
-}
-
-function numberFromInput(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return null;
-  const n = Number(raw.replace(",", "."));
-  return Number.isFinite(n) ? n : null;
-}
-
-function parsePercentualInput(value) {
-  const n = numberFromInput(value);
-  return n == null ? null : n / 100;
-}
-
 function getClienteTexto(base) {
   const v = base?.vinculo || null;
   const s = base?.sugestao || null;
@@ -206,13 +139,9 @@ function getBaseMarketplaceKey(base) {
 function getBasesFiltradas() {
   const termo = String(BASES_BUSCA || "").toLowerCase().trim();
   return (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).filter((b) => {
+    if (!termo) return true;
     const hay = `${b?.nome || ""} ${b?.slug || ""} ${getClienteTexto(b)}`.toLowerCase();
-    if (termo && !hay.includes(termo)) return false;
-    if (BASES_FILTROS.marketplace !== "todos" && getBaseMarketplaceKey(b) !== BASES_FILTROS.marketplace) return false;
-    if (BASES_FILTROS.vinculo === "com" && !b?.vinculo) return false;
-    if (BASES_FILTROS.vinculo === "sem" && b?.vinculo) return false;
-    if (BASES_FILTROS.atualizacao === "desatualizadas" && !isBaseDesatualizada(b)) return false;
-    return true;
+    return hay.includes(termo);
   });
 }
 
@@ -221,80 +150,21 @@ function renderBasesSummary() {
   if (!el) return;
   const bases = Array.isArray(TODAS_BASES) ? TODAS_BASES : [];
   const total = bases.length;
-  const meli = bases.filter((b) => getBaseMarketplaceKey(b) === "meli").length;
-  const shopee = bases.filter((b) => getBaseMarketplaceKey(b) === "shopee").length;
+  const comVinculo = bases.filter((b) => !!b?.vinculo).length;
   const semVinculo = bases.filter((b) => !b?.vinculo).length;
-  const desatualizadas = bases.filter(isBaseDesatualizada).length;
+  const sugestoes = bases.filter((b) => !b?.vinculo && !!b?.sugestao).length;
   const cards = [
-    { label: "Total de bases", value: String(total), filter: "" },
-    { label: "Mercado Livre", value: String(meli), filter: "marketplace:meli" },
-    { label: "Shopee", value: String(shopee), filter: "marketplace:shopee" },
-    { label: "Sem vínculo", value: String(semVinculo), filter: "vinculo:sem" },
-    { label: "Desatualizadas +30 dias", value: String(desatualizadas), filter: "atualizacao:desatualizadas" },
+    { label: "Total de bases", value: String(total) },
+    { label: "Com vínculo oficial", value: String(comVinculo) },
+    { label: "Sem vínculo", value: String(semVinculo) },
+    { label: "Sugestões pendentes", value: String(sugestoes) },
   ];
   el.innerHTML = cards.map((c) => `
-    <button type="button" class="vf-bases-summary-card" data-summary-filter="${escapeHTML(c.filter)}">
-      <div class="vf-bases-summary-label">${escapeHTML(c.label)}</div>
-      <div class="vf-bases-summary-value">${escapeHTML(c.value)}</div>
-    </button>
+    <div class="vf-relatorios-summary-card">
+      <div class="vf-relatorios-summary-label">${escapeHTML(c.label)}</div>
+      <div class="vf-relatorios-summary-value">${escapeHTML(c.value)}</div>
+    </div>
   `).join("");
-}
-
-function renderBasesAlerts() {
-  const el = document.getElementById("bases-alerts");
-  if (!el) return;
-  const bases = Array.isArray(TODAS_BASES) ? TODAS_BASES : [];
-  const desatualizadas = bases.filter(isBaseDesatualizada);
-  const meliSemVinculo = bases.filter(isMeliSemVinculo);
-  const alerts = [];
-
-  if (desatualizadas.length) {
-    alerts.push(`
-      <div class="vf-bases-alert vf-bases-alert-warning">
-        <div><strong>${desatualizadas.length} base(s) desatualizada(s)</strong><span>Sem atualização há mais de 30 dias.</span></div>
-        <button type="button" class="vf-action-btn vf-action-btn-secondary" data-apply-filter="atualizacao:desatualizadas">Ver bases</button>
-      </div>
-    `);
-  }
-
-  if (meliSemVinculo.length) {
-    alerts.push(`
-      <div class="vf-bases-alert vf-bases-alert-danger">
-        <div><strong>${meliSemVinculo.length} base(s) Mercado Livre sem vínculo</strong><span>Vincule a um cliente antes de usar na operação.</span></div>
-        <button type="button" class="vf-action-btn vf-action-btn-secondary" data-apply-filter="meli-sem-vinculo">Ver pendências</button>
-      </div>
-    `);
-  }
-
-  el.innerHTML = alerts.join("");
-}
-
-function aplicarFiltroRapido(filter) {
-  BASES_FILTROS.marketplace = "todos";
-  BASES_FILTROS.vinculo = "todos";
-  BASES_FILTROS.atualizacao = "todos";
-  if (!filter) {
-    BASES_BUSCA = "";
-    const busca = document.getElementById("bases-busca");
-    if (busca) busca.value = "";
-  } else if (filter === "meli-sem-vinculo") {
-    BASES_FILTROS.marketplace = "meli";
-    BASES_FILTROS.vinculo = "sem";
-    BASES_FILTROS.atualizacao = "todos";
-  } else {
-    const [tipo, valor] = String(filter).split(":");
-    if (tipo === "marketplace") BASES_FILTROS.marketplace = valor || "todos";
-    if (tipo === "vinculo") BASES_FILTROS.vinculo = valor || "todos";
-    if (tipo === "atualizacao") BASES_FILTROS.atualizacao = valor || "todos";
-  }
-
-  const mp = document.getElementById("bases-filter-marketplace");
-  const vinc = document.getElementById("bases-filter-vinculo");
-  const atual = document.getElementById("bases-filter-atualizacao");
-  if (mp) mp.value = BASES_FILTROS.marketplace;
-  if (vinc) vinc.value = BASES_FILTROS.vinculo;
-  if (atual) atual.value = BASES_FILTROS.atualizacao;
-  renderBasesTela();
 }
 
 function abrirModalExcluirBase({ slug, nome, btn }) {
@@ -381,29 +251,6 @@ async function carregarClientesParaVinculos(silencioso = false) {
   }
 }
 
-function renderImportClientesOptions() {
-  const select = document.getElementById("import-cliente");
-  if (!select) return;
-  const clientes = Array.isArray(CLIENTES_DISPONIVEIS) ? CLIENTES_DISPONIVEIS : [];
-  select.innerHTML = `<option value="">Selecione um cliente...</option>` + clientes.map((c) => {
-    const id = String(c.id || "");
-    const nome = c.nome || c.slug || "Cliente";
-    const slug = c.slug ? ` (${c.slug})` : "";
-    return `<option value="${escapeHTML(id)}">${escapeHTML(nome + slug)}</option>`;
-  }).join("");
-}
-
-async function atualizarImportClienteVisibilidade() {
-  const marketplace = getImportMarketplace();
-  const wrap = document.getElementById("import-cliente-wrap");
-  if (wrap) wrap.style.display = marketplace === "meli" ? "block" : "none";
-  if (marketplace === "meli") {
-    await carregarClientesParaVinculos(true);
-    renderImportClientesOptions();
-  }
-  atualizarBotaoImportarDisabled();
-}
-
 function normalizarBasePrincipal(base) {
   return {
     ...base,
@@ -462,7 +309,6 @@ async function carregarVinculosComplementares() {
 
 function renderBasesTela() {
   renderBasesSummary();
-  renderBasesAlerts();
   renderBases(getBasesFiltradas());
 }
 
@@ -521,21 +367,18 @@ function renderClienteCell(base) {
 }
 
 function renderMarketplaceCell(base) {
-  const key = getBaseMarketplaceKey(base);
-  const cls = key === "meli" ? "vf-status-pill-success" : "vf-status-pill-warning";
-  return `<span class="vf-status-pill ${cls}">${escapeHTML(marketplaceLabel(key))}</span>`;
-}
-
-function renderAlertasBase(base) {
-  const badges = [];
-  if (isBaseDesatualizada(base)) {
-    badges.push(`<span class="vf-bases-mini-badge is-warning">+30 dias</span>`);
+  const mp = getMarketplaceDisplay(base);
+  if (mp.origem === "oficial") {
+    const cls = mp.key === "meli" ? "vf-status-pill-success" : (mp.key === "shopee" ? "vf-status-pill-warning" : "vf-status-pill-neutral");
+    return `<span class="vf-status-pill ${cls}">${escapeHTML(mp.label)}</span>`;
   }
-  if (isMeliSemVinculo(base)) {
-    badges.push(`<span class="vf-bases-mini-badge is-danger">Sem vínculo</span>`);
+  if (mp.origem === "sugestao") {
+    return `
+      <span class="vf-status-pill vf-status-pill-neutral">${escapeHTML(mp.label)}</span>
+      <div style="margin-top:6px;color:var(--vf-text-m);font-size:.75rem;">Sugestão automática</div>
+    `;
   }
-  if (!badges.length) return `<span class="vf-bases-mini-badge is-ok">OK</span>`;
-  return `<div class="vf-bases-alert-cell">${badges.join("")}</div>`;
+  return `<span class="vf-status-pill vf-status-pill-neutral">Não definido</span>`;
 }
 
 function renderAcoesBase(base) {
@@ -543,13 +386,11 @@ function renderAcoesBase(base) {
   const slug = escapeHTML(base.slug || "");
   const nome = escapeHTML(base.nome || base.slug || "");
   const vinculoBtns = VINCULOS_EDITAVEIS ? `
-    <button class="vf-action-btn vf-action-btn-secondary vf-btn-vincular-base" data-base-id="${id}">${base.vinculo ? "Alterar vínculo" : "Vincular cliente"}</button>
+    <button class="vf-action-btn vf-action-btn-secondary vf-btn-vincular-base" data-base-id="${id}">${base.vinculo ? "Alterar vínculo" : "Vincular"}</button>
+    ${base.vinculo ? `<button class="vf-action-btn vf-action-btn-neutral vf-btn-remover-vinculo" data-base-id="${id}">Remover vínculo</button>` : ""}
   ` : "";
   return `
     <div class="vf-table-actions" style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;">
-      <button class="vf-action-btn vf-action-btn-secondary vf-btn-conferir-custos" data-base-id="${id}">Conferir custos</button>
-      <button class="vf-action-btn vf-action-btn-secondary vf-btn-atualizar-planilha" data-base-id="${id}">Atualizar por planilha</button>
-      <button class="vf-action-btn vf-action-btn-neutral vf-btn-ajuste-manual" data-base-id="${id}">Ajuste manual</button>
       ${vinculoBtns}
       <button class="vf-action-btn vf-action-btn-neutral asst-btn-baixar-base" data-slug="${slug}" data-nome="${nome}">Baixar</button>
       <button class="vf-action-btn vf-action-btn-danger btn-excluir-base" data-slug="${slug}" data-nome="${nome}">Excluir</button>
@@ -562,7 +403,6 @@ function buildBaseRow(base, i) {
   const ativo = base.ativo !== false;
   const tr    = document.createElement("tr");
   tr.classList.add("animate-fade-up");
-  if (isMeliSemVinculo(base)) tr.classList.add("vf-bases-row-warning");
   tr.style.animationDelay = `${i * 0.04}s`;
   tr.innerHTML = `
     <td style="color:var(--vf-text-l);font-family:var(--vf-mono);font-size:.8rem;">${String(i+1).padStart(2,"0")}</td>
@@ -576,21 +416,11 @@ function buildBaseRow(base, i) {
     <td style="text-align:center;">
       <span class="vf-status-pill ${ativo ? "vf-status-pill-success" : "vf-status-pill-danger"}">${ativo ? "Ativa" : "Inativa"}</span>
     </td>
-    <td style="text-align:center;">${renderAlertasBase(base)}</td>
     <td style="text-align:center;">${renderAcoesBase(base)}</td>`;
   return tr;
 }
 
 function bindBaseRowActions(tbody) {
-  tbody.querySelectorAll(".vf-btn-conferir-custos").forEach(btn => {
-    btn.addEventListener("click", () => abrirDrawerCustos(btn.dataset.baseId));
-  });
-  tbody.querySelectorAll(".vf-btn-atualizar-planilha").forEach(btn => {
-    btn.addEventListener("click", () => abrirModalAtualizarBase(btn.dataset.baseId));
-  });
-  tbody.querySelectorAll(".vf-btn-ajuste-manual").forEach(btn => {
-    btn.addEventListener("click", () => abrirModalAjusteManual(btn.dataset.baseId));
-  });
   tbody.querySelectorAll(".asst-btn-baixar-base").forEach(btn => {
     btn.addEventListener("click", () => {
       const { slug, nome } = btn.dataset;
@@ -829,367 +659,6 @@ async function removerVinculoBase(baseId, btn) {
   }
 }
 
-function abrirModalImportarBase() {
-  const modal = document.getElementById("vf-import-base-modal");
-  if (modal) modal.style.display = "flex";
-  atualizarImportClienteVisibilidade();
-}
-
-function fecharModalImportarBase() {
-  const modal = document.getElementById("vf-import-base-modal");
-  if (modal) modal.style.display = "none";
-}
-
-function getBasePorSlug(slug) {
-  const s = String(slug || "").trim();
-  return (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).find((b) => String(b.slug || "") === s) || null;
-}
-
-function setCostsStatus(msg, tipo = "neutral") {
-  const el = document.getElementById("costs-drawer-status");
-  if (!el) return;
-  el.textContent = msg || "";
-  el.className = `vf-bases-status ${tipo ? "is-" + tipo : ""}`;
-  el.style.display = msg ? "block" : "none";
-}
-
-function custosFiltrados() {
-  const termo = String(COSTS_FILTROS.produto || "").toLowerCase().trim();
-  return BASE_CUSTOS_ATUAL.filter((item) => {
-    const hay = `${item.produto_id || ""} ${item.id_model || ""}`.toLowerCase();
-    if (termo && !hay.includes(termo)) return false;
-    if (COSTS_FILTROS.custoZero && Number(item.custo_produto) !== 0) return false;
-    if (COSTS_FILTROS.impostoZero && Number(item.imposto_percentual) !== 0) return false;
-    if (COSTS_FILTROS.taxaZero && Number(item.taxa_fixa) !== 0) return false;
-    return true;
-  });
-}
-
-function renderCustosBase() {
-  const tbody = document.getElementById("costs-tbody");
-  const empty = document.getElementById("costs-empty");
-  const thIdModel = document.getElementById("costs-th-idmodel");
-  if (!tbody) return;
-
-  const mostrarIdModel = BASE_CUSTOS_ATUAL.some((item) => item.id_model);
-  if (thIdModel) thIdModel.style.display = mostrarIdModel ? "" : "none";
-
-  const rows = custosFiltrados();
-  tbody.innerHTML = rows.map((item) => `
-    <tr>
-      <td style="font-family:var(--vf-mono);font-size:.82rem;">${escapeHTML(item.produto_id || "—")}</td>
-      ${mostrarIdModel ? `<td style="font-family:var(--vf-mono);font-size:.82rem;">${escapeHTML(item.id_model || "—")}</td>` : ""}
-      <td style="text-align:right;">${escapeHTML(formatMoney(item.custo_produto))}</td>
-      <td style="text-align:right;">${escapeHTML(formatPercent(item.imposto_percentual))}</td>
-      <td style="text-align:right;">${escapeHTML(formatMoney(item.taxa_fixa))}</td>
-      <td style="text-align:center;">
-        <button type="button" class="vf-action-btn vf-action-btn-secondary btn-edit-custo" data-produto-id="${escapeHTML(item.produto_id || "")}">Editar</button>
-      </td>
-    </tr>
-  `).join("");
-
-  tbody.querySelectorAll(".btn-edit-custo").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const produtoId = btn.dataset.produtoId || "";
-      const item = BASE_CUSTOS_ATUAL.find((c) => c.produto_id === produtoId);
-      if (BASE_CONSULTA_ATUAL) abrirModalAjusteManual(BASE_CONSULTA_ATUAL.id, item);
-    });
-  });
-
-  if (empty) empty.style.display = rows.length ? "none" : "block";
-}
-
-async function carregarCustosBase(base) {
-  if (!base?.slug || !TOKEN) return;
-  setCostsStatus("Carregando custos da base...");
-  try {
-    const res = await fetch(`${API_BASE}/bases/${encodeURIComponent(base.slug)}`, {
-      headers: { Authorization: `Bearer ${TOKEN}` },
-    });
-    if (res.status === 401) { clearSession(); return; }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.erro || `HTTP ${res.status}`);
-
-    const dados = data.dados || {};
-    BASE_CUSTOS_ATUAL = Object.entries(dados).map(([produtoId, v]) => ({
-      produto_id: produtoId,
-      id_model: v?.id_model || null,
-      custo_produto: Number(v?.custo_produto) || 0,
-      imposto_percentual: Number(v?.imposto_percentual) || 0,
-      taxa_fixa: Number(v?.taxa_fixa) || 0,
-    })).sort((a, b) => String(a.produto_id).localeCompare(String(b.produto_id)));
-
-    const meta = document.getElementById("costs-drawer-meta");
-    if (meta) {
-      meta.textContent = `${marketplaceLabel(getBaseMarketplaceKey(base))} · ${BASE_CUSTOS_ATUAL.length} produto(s) · slug ${base.slug}`;
-    }
-    setCostsStatus("");
-    renderCustosBase();
-  } catch (err) {
-    BASE_CUSTOS_ATUAL = [];
-    renderCustosBase();
-    setCostsStatus("Não foi possível carregar os custos: " + (err.message || "tente novamente."), "danger");
-  }
-}
-
-async function abrirDrawerCustos(baseId) {
-  const base = getBasePorId(baseId);
-  if (!base) return;
-  BASE_CONSULTA_ATUAL = base;
-  COSTS_FILTROS = { produto: "", custoZero: false, impostoZero: false, taxaZero: false };
-
-  const drawer = document.getElementById("vf-costs-drawer");
-  const title = document.getElementById("costs-drawer-title");
-  const produto = document.getElementById("costs-filter-produto");
-  const custoZero = document.getElementById("costs-filter-custo-zero");
-  const impostoZero = document.getElementById("costs-filter-imposto-zero");
-  const taxaZero = document.getElementById("costs-filter-taxa-zero");
-  if (title) title.textContent = base.nome || base.slug || "Base";
-  if (produto) produto.value = "";
-  if (custoZero) custoZero.checked = false;
-  if (impostoZero) impostoZero.checked = false;
-  if (taxaZero) taxaZero.checked = false;
-  if (drawer) drawer.style.display = "flex";
-
-  await carregarCustosBase(base);
-}
-
-function fecharDrawerCustos() {
-  const drawer = document.getElementById("vf-costs-drawer");
-  if (drawer) drawer.style.display = "none";
-  BASE_CONSULTA_ATUAL = null;
-  BASE_CUSTOS_ATUAL = [];
-  setCostsStatus("");
-}
-
-function setManualStatus(msg, tipo = "neutral") {
-  const el = document.getElementById("manual-cost-status");
-  if (!el) return;
-  el.textContent = msg || "";
-  el.className = `vf-bases-status ${tipo ? "is-" + tipo : ""}`;
-  el.style.display = msg ? "block" : "none";
-}
-
-function abrirModalAjusteManual(baseId, item = null) {
-  const base = getBasePorId(baseId) || BASE_CONSULTA_ATUAL;
-  if (!base) return;
-  BASE_MANUAL_ATUAL = base;
-
-  const modal = document.getElementById("vf-manual-cost-modal");
-  const sub = document.getElementById("manual-cost-subtitle");
-  const produto = document.getElementById("manual-produto-id");
-  const custo = document.getElementById("manual-custo-produto");
-  const imposto = document.getElementById("manual-imposto-percentual");
-  const taxa = document.getElementById("manual-taxa-fixa");
-  const idModelWrap = document.getElementById("manual-id-model-wrap");
-  const idModel = document.getElementById("manual-id-model");
-  const isShopee = getBaseMarketplaceKey(base) === "shopee";
-
-  if (sub) sub.textContent = `${base.nome || base.slug} · ${marketplaceLabel(getBaseMarketplaceKey(base))}`;
-  if (produto) produto.value = item?.produto_id || "";
-  if (custo) custo.value = item ? String(Number(item.custo_produto) || 0) : "";
-  if (imposto) imposto.value = item ? String((Number(item.imposto_percentual) || 0) * 100) : "";
-  if (taxa) taxa.value = item ? String(Number(item.taxa_fixa) || 0) : "";
-  if (idModelWrap) idModelWrap.style.display = isShopee ? "block" : "none";
-  if (idModel) idModel.value = item?.id_model || "";
-  setManualStatus("");
-  if (modal) modal.style.display = "flex";
-}
-
-function fecharModalAjusteManual() {
-  const modal = document.getElementById("vf-manual-cost-modal");
-  if (modal) modal.style.display = "none";
-  BASE_MANUAL_ATUAL = null;
-  setManualStatus("");
-}
-
-async function salvarAjusteManual() {
-  if (!BASE_MANUAL_ATUAL || !TOKEN) return;
-  const produtoEl = document.getElementById("manual-produto-id");
-  const custoEl = document.getElementById("manual-custo-produto");
-  const impostoEl = document.getElementById("manual-imposto-percentual");
-  const taxaEl = document.getElementById("manual-taxa-fixa");
-  const idModelEl = document.getElementById("manual-id-model");
-  const saveBtn = document.getElementById("manual-cost-save");
-
-  const produto_id = String(produtoEl?.value || "").trim();
-  const custoProduto = numberFromInput(custoEl?.value);
-  if (!produto_id) { setManualStatus("Produto ID / MLB / SKU é obrigatório.", "danger"); return; }
-  if (custoProduto == null) { setManualStatus("Custo produto é obrigatório e numérico.", "danger"); return; }
-
-  const payload = { produto_id, custo_produto: custoProduto };
-  const imposto = parsePercentualInput(impostoEl?.value);
-  const taxa = numberFromInput(taxaEl?.value);
-  if (String(impostoEl?.value || "").trim() && imposto == null) {
-    setManualStatus("Imposto deve ser numérico.", "danger");
-    return;
-  }
-  if (String(taxaEl?.value || "").trim() && taxa == null) {
-    setManualStatus("Taxa fixa deve ser numérica.", "danger");
-    return;
-  }
-  if (imposto != null) payload.imposto_percentual = imposto;
-  if (taxa != null) payload.taxa_fixa = taxa;
-  if (getBaseMarketplaceKey(BASE_MANUAL_ATUAL) === "shopee") {
-    payload.id_model = String(idModelEl?.value || "").trim() || null;
-  }
-
-  try {
-    setManualStatus("");
-    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Salvando..."; }
-    const res = await fetch(`${API_BASE}/bases/${encodeURIComponent(BASE_MANUAL_ATUAL.slug)}/custos/upsert`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    if (res.status === 401) { clearSession(); return; }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.erro || `HTTP ${res.status}`);
-    const baseSalva = BASE_MANUAL_ATUAL;
-    fecharModalAjusteManual();
-    setDashboardFeedback(`Custo ${data.acao === "criado" ? "adicionado" : "atualizado"} com sucesso.`, "success");
-    if (BASE_CONSULTA_ATUAL && BASE_CONSULTA_ATUAL.slug === baseSalva.slug) {
-      await carregarCustosBase(BASE_CONSULTA_ATUAL);
-    }
-  } catch (err) {
-    setManualStatus("Erro ao salvar ajuste: " + (err.message || "tente novamente."), "danger");
-  } finally {
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = "Salvar ajuste"; }
-  }
-}
-
-function setUpdateStatus(msg, tipo = "neutral") {
-  const el = document.getElementById("update-status");
-  if (!el) return;
-  el.textContent = msg || "";
-  el.className = `vf-bases-status ${tipo ? "is-" + tipo : ""}`;
-  el.style.display = msg ? "block" : "none";
-}
-
-function abrirModalAtualizarBase(baseId) {
-  const base = getBasePorId(baseId);
-  if (!base) return;
-  BASE_UPDATE_ATUAL = base;
-  const modal = document.getElementById("vf-update-base-modal");
-  const title = document.getElementById("update-base-title");
-  const meta = document.getElementById("update-base-meta");
-  const cliente = document.getElementById("update-base-client");
-  const input = document.getElementById("update-arquivo");
-  const label = document.getElementById("update-file-label");
-  const labelText = document.getElementById("update-file-label-text");
-  const result = document.getElementById("update-result");
-  if (title) title.textContent = `Atualizar ${base.nome || base.slug}`;
-  if (meta) meta.textContent = `${marketplaceLabel(getBaseMarketplaceKey(base))} · slug ${base.slug}`;
-  if (cliente) cliente.textContent = base.vinculo ? `Cliente vinculado: ${base.vinculo.cliente_nome || base.vinculo.cliente_slug}` : "Sem cliente vinculado.";
-  if (input) input.value = "";
-  if (label) label.classList.remove("has-file");
-  if (labelText) labelText.textContent = "Escolher planilha…";
-  if (result) { result.innerHTML = ""; result.style.display = "none"; }
-  setUpdateStatus("");
-  if (modal) modal.style.display = "flex";
-}
-
-function fecharModalAtualizarBase() {
-  const modal = document.getElementById("vf-update-base-modal");
-  if (modal) modal.style.display = "none";
-  BASE_UPDATE_ATUAL = null;
-  setUpdateStatus("");
-}
-
-function renderUpdateResult(data) {
-  const el = document.getElementById("update-result");
-  if (!el) return;
-  const erros = Array.isArray(data?.amostra_erros) && data.amostra_erros.length
-    ? `<div class="vf-bases-update-errors">${data.amostra_erros.map((e) => `<div>Linha ${escapeHTML(String(e.linha || "—"))}: ${escapeHTML(e.motivo || "erro")}</div>`).join("")}</div>`
-    : "";
-  el.innerHTML = `
-    <div class="vf-bases-update-grid">
-      <div><span>Adicionados</span><strong>${escapeHTML(String(data?.adicionados ?? 0))}</strong></div>
-      <div><span>Atualizados</span><strong>${escapeHTML(String(data?.atualizados ?? 0))}</strong></div>
-      <div><span>Ignorados</span><strong>${escapeHTML(String(data?.ignorados ?? 0))}</strong></div>
-      <div><span>Erros</span><strong>${escapeHTML(String(data?.erros ?? 0))}</strong></div>
-    </div>
-    ${erros}
-  `;
-  el.style.display = "block";
-}
-
-async function confirmarAtualizacaoIncremental() {
-  if (!BASE_UPDATE_ATUAL || !TOKEN) return;
-  const input = document.getElementById("update-arquivo");
-  const btn = document.getElementById("update-base-confirm");
-  const arquivo = input?.files?.[0];
-  if (!arquivo) {
-    setUpdateStatus("Selecione uma planilha .xlsx, .xls ou .csv.", "danger");
-    return;
-  }
-  if (!validarArquivoImportacao(arquivo)) {
-    setUpdateStatus("Arquivo inválido. Envie .xlsx, .xls ou .csv.", "danger");
-    return;
-  }
-
-  try {
-    setUpdateStatus("");
-    if (btn) { btn.disabled = true; btn.textContent = "Atualizando..."; }
-    const fd = new FormData();
-    fd.append("arquivo", arquivo);
-    const res = await fetch(`${API_BASE}/bases/${encodeURIComponent(BASE_UPDATE_ATUAL.slug)}/importar-incremental`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TOKEN}` },
-      body: fd,
-    });
-    if (res.status === 401) { clearSession(); return; }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.erro || `HTTP ${res.status}`);
-    renderUpdateResult(data);
-    setUpdateStatus("Atualização incremental concluída.", "success");
-    await loadBases();
-    const baseAtualizada = getBasePorSlug(BASE_UPDATE_ATUAL.slug);
-    if (BASE_CONSULTA_ATUAL && BASE_CONSULTA_ATUAL.slug === BASE_UPDATE_ATUAL.slug && baseAtualizada) {
-      BASE_CONSULTA_ATUAL = baseAtualizada;
-      await carregarCustosBase(baseAtualizada);
-    }
-  } catch (err) {
-    setUpdateStatus("Erro na atualização incremental: " + (err.message || "tente novamente."), "danger");
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Atualizar incremental"; }
-  }
-}
-
-async function vincularBaseImportadaSeNecessario(baseSlug, marketplace, clienteId) {
-  if (marketplace !== "meli" || !clienteId || !baseSlug) return;
-  await loadBases();
-  const base = getBasePorSlug(baseSlug);
-  if (!base?.id) {
-    setDashboardFeedback("Base importada, mas não foi possível localizar o registro para vincular ao cliente.", "danger");
-    return;
-  }
-  try {
-    const res = await fetch(`${API_BASE}/base-vinculos`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        base_id: base.id,
-        cliente_id: Number(clienteId),
-        marketplace: "meli",
-      }),
-    });
-    if (res.status === 401) { clearSession(); return; }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.erro || `HTTP ${res.status}`);
-    setDashboardFeedback("Base importada e vinculada ao cliente com sucesso.", "success");
-    await loadBases();
-  } catch (err) {
-    setDashboardFeedback("Base importada, mas o vínculo com cliente falhou: " + (err.message || "tente novamente."), "danger");
-  }
-}
-
 // ─── File input label ───
 document.getElementById("import-arquivo").addEventListener("change", (e) => {
   const f = e.target.files?.[0];
@@ -1198,8 +667,7 @@ document.getElementById("import-arquivo").addEventListener("change", (e) => {
 });
 
 // ─── Marketplace obrigatório: habilita "Pré-visualizar" só após seleção ───
-document.getElementById("import-marketplace")?.addEventListener("change", atualizarImportClienteVisibilidade);
-document.getElementById("import-cliente")?.addEventListener("change", atualizarBotaoImportarDisabled);
+document.getElementById("import-marketplace")?.addEventListener("change", atualizarBotaoImportarDisabled);
 atualizarBotaoImportarDisabled();
 
 function validarArquivoImportacao(file) {
@@ -1301,9 +769,7 @@ document.getElementById("preview-confirm").addEventListener("click", async () =>
   const arquivo = document.getElementById("import-arquivo").files?.[0];
   const nome    = document.getElementById("import-nome").value.trim();
   const marketplace = getImportMarketplace();
-  const clienteId = getImportClienteId();
   if (!arquivo || !nome || !marketplace) { closePreview(); return; }
-  if (marketplace === "meli" && !clienteId) { closePreview(); setImportStatus("Selecione o cliente vinculado para Mercado Livre.", "var(--vf-danger)"); return; }
 
   document.getElementById("preview-confirm").disabled                 = true;
   document.getElementById("preview-confirm-text").textContent        = "Importando…";
@@ -1327,7 +793,6 @@ document.getElementById("preview-confirm").addEventListener("click", async () =>
     if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
 
     closePreview();
-    fecharModalImportarBase();
     setImportStatus(`✓ ${data.mensagem || "Importado com sucesso!"} (${data.total ?? 0} produtos)`, "var(--vf-success)");
     document.getElementById("import-nome").value    = "";
     document.getElementById("import-arquivo").value = "";
@@ -1335,17 +800,8 @@ document.getElementById("preview-confirm").addEventListener("click", async () =>
     document.getElementById("file-label").classList.remove("has-file");
     const mpSel = document.getElementById("import-marketplace");
     if (mpSel) mpSel.value = "";
-    const cliSel = document.getElementById("import-cliente");
-    if (cliSel) cliSel.value = "";
-    const cliWrap = document.getElementById("import-cliente-wrap");
-    if (cliWrap) cliWrap.style.display = "none";
     atualizarBotaoImportarDisabled();
-    if (marketplace === "meli") {
-      await vincularBaseImportadaSeNecessario(data.base, marketplace, clienteId);
-    } else {
-      setDashboardFeedback("Base importada com sucesso.", "success");
-      loadBases();
-    }
+    loadBases();
 
   } catch (err) {
     closePreview();
@@ -1365,7 +821,6 @@ document.getElementById("btn-importar").addEventListener("click", async () => {
 
   setImportStatus("", "");
   if (!marketplace) { setImportStatus("Selecione o marketplace.", "var(--vf-danger)"); return; }
-  if (marketplace === "meli" && !getImportClienteId()) { setImportStatus("Selecione o cliente vinculado para Mercado Livre.", "var(--vf-danger)"); return; }
   if (!nome)    { setImportStatus("Informe o nome da base.", "var(--vf-danger)"); return; }
   if (!arquivo) { setImportStatus("Selecione um arquivo .xlsx ou .csv.", "var(--vf-danger)"); return; }
 
@@ -1397,90 +852,15 @@ document.getElementById("btn-importar").addEventListener("click", async () => {
   }
 });
 
-// Filtros e ações globais
+// Busca + chips
 const basesBuscaInput = document.getElementById("bases-busca");
 if (basesBuscaInput) {
   basesBuscaInput.addEventListener("input", (e) => {
     BASES_BUSCA = e.target.value || "";
-    renderBasesTela();
+    renderBasesSummary();
+    renderBases(getBasesFiltradas());
   });
 }
-document.getElementById("bases-filter-marketplace")?.addEventListener("change", (e) => {
-  BASES_FILTROS.marketplace = e.target.value || "todos";
-  renderBasesTela();
-});
-document.getElementById("bases-filter-vinculo")?.addEventListener("change", (e) => {
-  BASES_FILTROS.vinculo = e.target.value || "todos";
-  renderBasesTela();
-});
-document.getElementById("bases-filter-atualizacao")?.addEventListener("change", (e) => {
-  BASES_FILTROS.atualizacao = e.target.value || "todos";
-  renderBasesTela();
-});
-document.getElementById("bases-summary")?.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-summary-filter]");
-  if (!btn) return;
-  aplicarFiltroRapido(btn.dataset.summaryFilter || "");
-});
-document.getElementById("bases-alerts")?.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-apply-filter]");
-  if (!btn) return;
-  aplicarFiltroRapido(btn.dataset.applyFilter || "");
-});
-document.getElementById("btn-open-import-base")?.addEventListener("click", abrirModalImportarBase);
-document.getElementById("btn-refresh-bases")?.addEventListener("click", loadBases);
-
-document.getElementById("vf-import-base-close")?.addEventListener("click", fecharModalImportarBase);
-document.getElementById("vf-import-base-cancel")?.addEventListener("click", fecharModalImportarBase);
-document.getElementById("vf-import-base-modal")?.addEventListener("click", (e) => {
-  if (e.target?.id === "vf-import-base-modal") fecharModalImportarBase();
-});
-
-document.getElementById("costs-drawer-close")?.addEventListener("click", fecharDrawerCustos);
-document.getElementById("vf-costs-drawer")?.addEventListener("click", (e) => {
-  if (e.target?.id === "vf-costs-drawer") fecharDrawerCustos();
-});
-document.getElementById("btn-costs-manual-add")?.addEventListener("click", () => {
-  if (BASE_CONSULTA_ATUAL) abrirModalAjusteManual(BASE_CONSULTA_ATUAL.id);
-});
-document.getElementById("costs-filter-produto")?.addEventListener("input", (e) => {
-  COSTS_FILTROS.produto = e.target.value || "";
-  renderCustosBase();
-});
-document.getElementById("costs-filter-custo-zero")?.addEventListener("change", (e) => {
-  COSTS_FILTROS.custoZero = !!e.target.checked;
-  renderCustosBase();
-});
-document.getElementById("costs-filter-imposto-zero")?.addEventListener("change", (e) => {
-  COSTS_FILTROS.impostoZero = !!e.target.checked;
-  renderCustosBase();
-});
-document.getElementById("costs-filter-taxa-zero")?.addEventListener("change", (e) => {
-  COSTS_FILTROS.taxaZero = !!e.target.checked;
-  renderCustosBase();
-});
-
-document.getElementById("manual-cost-close")?.addEventListener("click", fecharModalAjusteManual);
-document.getElementById("manual-cost-cancel")?.addEventListener("click", fecharModalAjusteManual);
-document.getElementById("manual-cost-save")?.addEventListener("click", salvarAjusteManual);
-document.getElementById("vf-manual-cost-modal")?.addEventListener("click", (e) => {
-  if (e.target?.id === "vf-manual-cost-modal") fecharModalAjusteManual();
-});
-
-document.getElementById("update-file-label")?.addEventListener("click", () => {
-  document.getElementById("update-arquivo")?.click();
-});
-document.getElementById("update-arquivo")?.addEventListener("change", (e) => {
-  const f = e.target.files?.[0];
-  document.getElementById("update-file-label-text").textContent = f ? f.name : "Escolher planilha…";
-  document.getElementById("update-file-label").classList.toggle("has-file", !!f);
-});
-document.getElementById("update-base-close")?.addEventListener("click", fecharModalAtualizarBase);
-document.getElementById("update-base-cancel")?.addEventListener("click", fecharModalAtualizarBase);
-document.getElementById("update-base-confirm")?.addEventListener("click", confirmarAtualizacaoIncremental);
-document.getElementById("vf-update-base-modal")?.addEventListener("click", (e) => {
-  if (e.target?.id === "vf-update-base-modal") fecharModalAtualizarBase();
-});
 
 // ─── Logout + Retry ───
 document.getElementById("btn-retry").addEventListener("click", loadBases);
@@ -1501,15 +881,7 @@ document.getElementById("vf-vinculo-base-modal")?.addEventListener("click", (e) 
 document.addEventListener("keydown", (e) => {
   const modalExcluir = document.getElementById("vf-excluir-base-modal");
   const modalVinculo = document.getElementById("vf-vinculo-base-modal");
-  const modalImport = document.getElementById("vf-import-base-modal");
-  const modalManual = document.getElementById("vf-manual-cost-modal");
-  const modalUpdate = document.getElementById("vf-update-base-modal");
-  const drawerCustos = document.getElementById("vf-costs-drawer");
   if (e.key !== "Escape") return;
-  if (modalUpdate && modalUpdate.style.display !== "none") fecharModalAtualizarBase();
-  if (modalManual && modalManual.style.display !== "none") fecharModalAjusteManual();
-  if (drawerCustos && drawerCustos.style.display !== "none") fecharDrawerCustos();
-  if (modalImport && modalImport.style.display !== "none") fecharModalImportarBase();
   if (modalVinculo && modalVinculo.style.display !== "none") fecharModalVinculo();
   if (modalExcluir && modalExcluir.style.display !== "none") fecharModalExcluirBase();
 });

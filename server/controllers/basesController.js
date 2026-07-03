@@ -4,7 +4,6 @@
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("../services/activityLogService");
 
 const {
-  importarBaseIncremental,
   normalizarProdutoIdBase,
   normalizarProdutoIdShopee,
   obterBaseAtivaPorSlug,
@@ -19,43 +18,6 @@ function responderErroService(res, err) {
     return res.status(err.statusCode).json(err.payload);
   }
   return res.status(500).json({ ok: false, erro: err?.message || "Erro interno." });
-}
-
-async function importarBaseIncrementalController(req, res) {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ ok: false, erro: "Nenhum arquivo enviado." });
-    }
-
-    const resultado = await importarBaseIncremental({
-      baseSlugRaw: req.params.baseSlug,
-      buffer: req.file.buffer,
-      originalname: req.file.originalname,
-    });
-
-    try {
-      registrarLog({
-        ...dadosUsuarioDeReq(req),
-        acao: "base.importar.incremental",
-        detalhes: {
-          base_slug: resultado.base,
-          total_linhas: resultado.total_linhas,
-          adicionados: resultado.adicionados,
-          atualizados: resultado.atualizados,
-          ignorados: resultado.ignorados,
-          erros: resultado.erros,
-        },
-        ip: extrairIp(req),
-        status: "sucesso",
-      });
-    } catch (_) {
-      // falha de log não derruba a rota
-    }
-
-    return res.json({ ok: true, ...resultado });
-  } catch (err) {
-    return responderErroService(res, err);
-  }
 }
 
 async function obterPadraoCustoBaseController(req, res) {
@@ -144,7 +106,7 @@ async function upsertCustoBaseController(req, res) {
 }
 
 module.exports = {
-  importarBaseIncrementalController,
   obterPadraoCustoBaseController,
   upsertCustoBaseController,
 };
+

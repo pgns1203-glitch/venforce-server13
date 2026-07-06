@@ -501,8 +501,9 @@ async function loadBases() {
 }
 
 // ─── Status de atualização (idade + alerta) ───
-const B_EYE_SVG = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const B_EDIT_SVG = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+// Lápis compacto para editar item dentro do drawer de custos
+const B_EDIT_SM_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
 
 function renderStatusTag(base) {
   const idade = escapeHTML(formatarIdadeBase(base));
@@ -546,20 +547,6 @@ function renderMenuBase(base) {
     </div>`;
 }
 
-// ─── Menu "Atualizar base" (placeholder seguro — sem API neste commit) ───
-function renderUpdateMenu(base) {
-  const slug = escapeHTML(base.slug || "");
-  const nome = escapeHTML(base.nome || base.slug || "");
-  return `
-    <div class="b-update-menu">
-      <button type="button" class="b-icon-btn b-icon-btn--ghost b-update-trigger" aria-haspopup="true" aria-expanded="false" title="Atualizar base" aria-label="Atualizar base">${B_EDIT_SVG}</button>
-      <div class="b-update-pop">
-        <button class="b-update-item b-update-manual" data-slug="${slug}" data-nome="${nome}">Atualizar manualmente</button>
-        <button class="b-update-item b-update-planilha" data-slug="${slug}" data-nome="${nome}">Atualizar por planilha</button>
-      </div>
-    </div>`;
-}
-
 // ─── Linha: Mercado Livre (Cliente/Grant ML → Base oficial) ───
 function buildMeliRow(base) {
   const tr = document.createElement("tr");
@@ -575,8 +562,7 @@ function buildMeliRow(base) {
     <td>${renderStatusTag(base)}</td>
     <td>
       <div class="b-row-actions">
-        <button class="b-icon-btn b-icon-btn--ghost b-btn-conferir" data-slug="${escapeHTML(base.slug || "")}" data-mp="meli" title="Conferir custos" aria-label="Conferir custos">${B_EYE_SVG}</button>
-        ${renderUpdateMenu(base)}
+        <button class="b-icon-btn b-icon-btn--ghost b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="meli" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
         ${renderMenuBase(base)}
       </div>
     </td>`;
@@ -599,18 +585,17 @@ function buildShopeeRow(base) {
     <td>${renderStatusTag(base)}</td>
     <td>
       <div class="b-row-actions">
-        <button class="b-icon-btn b-icon-btn--ghost b-btn-conferir" data-slug="${escapeHTML(base.slug || "")}" data-mp="shopee" title="Conferir custos" aria-label="Conferir custos">${B_EYE_SVG}</button>
-        ${renderUpdateMenu(base)}
+        <button class="b-icon-btn b-icon-btn--ghost b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="shopee" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
         ${renderMenuBase(base)}
       </div>
     </td>`;
   return tr;
 }
 
-// ─── Menu dropdown (⋯ e Atualizar base) ───
+// ─── Menu dropdown "⋯" (ações secundárias) ───
 function fecharTodosMenus() {
-  document.querySelectorAll(".vf-page-bases .b-menu-pop.is-open, .vf-page-bases .b-update-pop.is-open").forEach((p) => p.classList.remove("is-open"));
-  document.querySelectorAll(".vf-page-bases .b-menu-trigger[aria-expanded='true'], .vf-page-bases .b-update-trigger[aria-expanded='true']").forEach((t) => t.setAttribute("aria-expanded", "false"));
+  document.querySelectorAll(".vf-page-bases .b-menu-pop.is-open").forEach((p) => p.classList.remove("is-open"));
+  document.querySelectorAll(".vf-page-bases .b-menu-trigger[aria-expanded='true']").forEach((t) => t.setAttribute("aria-expanded", "false"));
 }
 function togglePop(trigger, popSelector) {
   const pop = trigger.parentElement.querySelector(popSelector);
@@ -620,7 +605,6 @@ function togglePop(trigger, popSelector) {
   if (!aberto) { pop.classList.add("is-open"); trigger.setAttribute("aria-expanded", "true"); }
 }
 function toggleRowMenu(trigger) { togglePop(trigger, ".b-menu-pop"); }
-function toggleUpdateMenu(trigger) { togglePop(trigger, ".b-update-pop"); }
 
 function bindBaseRowActions(tbody) {
   tbody.querySelectorAll(".asst-btn-baixar-base").forEach(btn => {
@@ -635,7 +619,7 @@ function bindBaseRowActions(tbody) {
   tbody.querySelectorAll(".vf-btn-remover-vinculo").forEach(btn => {
     btn.addEventListener("click", () => removerVinculoBase(btn.dataset.baseId, btn));
   });
-  tbody.querySelectorAll(".b-btn-conferir").forEach(btn => {
+  tbody.querySelectorAll(".b-btn-editar-base").forEach(btn => {
     btn.addEventListener("click", () => abrirDrawerCustos(btn.dataset.slug, btn.dataset.mp, btn));
   });
   tbody.querySelectorAll(".b-menu-trigger").forEach(btn => {
@@ -643,18 +627,6 @@ function bindBaseRowActions(tbody) {
   });
   tbody.querySelectorAll(".b-menu-item").forEach(item => {
     item.addEventListener("click", () => fecharTodosMenus());
-  });
-  tbody.querySelectorAll(".b-update-trigger").forEach(btn => {
-    btn.addEventListener("click", (e) => { e.stopPropagation(); toggleUpdateMenu(btn); });
-  });
-  tbody.querySelectorAll(".b-update-item").forEach(item => {
-    item.addEventListener("click", () => fecharTodosMenus());
-  });
-  tbody.querySelectorAll(".b-update-manual").forEach(btn => {
-    btn.addEventListener("click", () => abrirModalAtualizarBase(btn.dataset.slug, "manual"));
-  });
-  tbody.querySelectorAll(".b-update-planilha").forEach(btn => {
-    btn.addEventListener("click", () => abrirModalAtualizarBase(btn.dataset.slug, "planilha"));
   });
   tbody.querySelectorAll(".b-ignore-alert").forEach((input) => {
     input.addEventListener("change", () => {
@@ -1185,14 +1157,19 @@ document.getElementById("btn-importar").addEventListener("click", async () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ─── DRAWER "CONFERIR CUSTOS" (somente leitura · GET /bases/:slug) ─────────────
+// ─── DRAWER "BASE DE CUSTOS" (visualizar + editar/adicionar/planilha) ──────────
+//  Central única de custos da base: lista (GET /bases/:slug), edição/adição de
+//  item via upsert (POST /bases/:slug/custos/upsert) e atualização por planilha
+//  (preview seguro — Opção B, sem fluxo destrutivo).
 // ══════════════════════════════════════════════════════════════════════════════
 let DRAWER_ITENS = [];
-let DRAWER_FILTRO = "todos";        // "todos" | "custo" | "imposto"
+let DRAWER_FILTRO = "todos";        // "todos" | "custo" | "imposto" | "taxa"
 let DRAWER_BUSCA = "";
 let DRAWER_IS_SHOPEE = false;
 let DRAWER_BTN_ORIGEM = null;
 let DRAWER_SLUG = "";
+let DRAWER_BASE_ATUAL = null;       // objeto da base aberta no drawer
+let DRAWER_ITEM_EDITANDO = null;    // item em edição (null = adicionar/planilha)
 const DRAWER_LIMITE = 500;
 
 function abrirDrawer() {
@@ -1200,10 +1177,19 @@ function abrirDrawer() {
   document.getElementById("bases-drawer")?.classList.add("is-open");
 }
 function fecharDrawer() {
+  fecharPainelCusto();
   document.getElementById("bases-drawer-backdrop")?.classList.remove("is-open");
   document.getElementById("bases-drawer")?.classList.remove("is-open");
   if (DRAWER_BTN_ORIGEM && typeof DRAWER_BTN_ORIGEM.focus === "function") DRAWER_BTN_ORIGEM.focus();
   DRAWER_BTN_ORIGEM = null;
+}
+
+function setDrawerHint(msg, tipo) {
+  const el = document.getElementById("bases-drawer-hint");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.style.color = tipo === "success" ? "var(--b-success)"
+    : tipo === "danger" ? "var(--b-danger)" : "";
 }
 
 function abrirDrawerCustos(slug, mp, btnOrigem) {
@@ -1213,12 +1199,15 @@ function abrirDrawerCustos(slug, mp, btnOrigem) {
   DRAWER_ITENS = [];
   DRAWER_FILTRO = "todos";
   DRAWER_BUSCA = "";
+  fecharPainelCusto();
+  setDrawerHint("Clique no lápis de um item para editar, ou use “Adicionar item”.");
   const buscaEl = document.getElementById("bases-drawer-busca");
   if (buscaEl) buscaEl.value = "";
   document.querySelectorAll("#bases-drawer .b-filter-chip").forEach((c) =>
     c.classList.toggle("active", c.dataset.drawerFilter === "todos"));
 
   const base = (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).find((b) => String(b.slug) === String(slug));
+  DRAWER_BASE_ATUAL = base || null;
   document.getElementById("bases-drawer-title").textContent = base?.nome || slug || "Base";
   const meta = document.getElementById("bases-drawer-meta");
   const mpLabel = DRAWER_IS_SHOPEE ? "Shopee" : "Mercado Livre";
@@ -1227,7 +1216,7 @@ function abrirDrawerCustos(slug, mp, btnOrigem) {
   if (meta) meta.innerHTML = `
     <span>Marketplace: <b>${escapeHTML(mpLabel)}</b></span>
     <span>${escapeHTML(donoLabel)}: <b>${escapeHTML(dono)}</b></span>
-    <span>Atualizada: <b>${escapeHTML(formatDateTime(base?.updated_at || base?.created_at))}</b></span>`;
+    <span>Idade: <b>${escapeHTML(base ? formatarIdadeBase(base) : "—")}</b></span>`;
 
   abrirDrawer();
   carregarCustosDrawer(slug);
@@ -1273,6 +1262,7 @@ function drawerFiltrarItens() {
   return DRAWER_ITENS.filter((it) => {
     if (DRAWER_FILTRO === "custo" && Number(it.custo) !== 0) return false;
     if (DRAWER_FILTRO === "imposto" && Number(it.imposto) !== 0) return false;
+    if (DRAWER_FILTRO === "taxa" && Number(it.taxa) !== 0) return false;
     if (termo) {
       const hay = `${it.id ?? ""} ${it.id_model ?? ""}`.toLowerCase();
       if (!hay.includes(termo)) return false;
@@ -1285,9 +1275,11 @@ function fmtMoedaDrawer(v) {
   if (v == null || v === "" || !Number.isFinite(Number(v))) return "—";
   return "R$ " + Number(v).toFixed(2).replace(".", ",");
 }
-function fmtNumDrawer(v) {
+// Imposto é guardado como decimal (0.05 = 5%) — exibe em percentual.
+function fmtPercentDrawer(v) {
   if (v == null || v === "" || !Number.isFinite(Number(v))) return "—";
-  return String(v);
+  const pct = Math.round(Number(v) * 100 * 100) / 100;
+  return String(pct).replace(".", ",") + "%";
 }
 
 function renderDrawerItens() {
@@ -1296,16 +1288,20 @@ function renderDrawerItens() {
   const exibidos = filtrados.slice(0, DRAWER_LIMITE);
   const idModelTh = DRAWER_IS_SHOPEE ? `<th>ID Model</th>` : "";
 
-  const rows = exibidos.map((it) => {
+  const rows = exibidos.map((it, idx) => {
     const custoZero = Number(it.custo) === 0;
     const impostoZero = Number(it.imposto) === 0;
+    const taxaZero = Number(it.taxa) === 0;
     const idModelTd = DRAWER_IS_SHOPEE ? `<td class="b-mono">${escapeHTML(String(it.id_model ?? "—"))}</td>` : "";
-    return `<tr>
+    return `<tr class="b-cost-row" data-cost-idx="${idx}" tabindex="0">
       <td class="b-mono">${escapeHTML(String(it.id ?? "—"))}</td>
       ${idModelTd}
       <td class="num b-mono ${custoZero ? "zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.custo))}</td>
-      <td class="num b-mono ${impostoZero ? "zero" : ""}">${escapeHTML(fmtNumDrawer(it.imposto))}</td>
-      <td class="num b-mono">${escapeHTML(fmtMoedaDrawer(it.taxa))}</td>
+      <td class="num b-mono ${impostoZero ? "zero" : ""}">${escapeHTML(fmtPercentDrawer(it.imposto))}</td>
+      <td class="num b-mono ${taxaZero ? "zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.taxa))}</td>
+      <td class="b-cost-actions-cell">
+        <button type="button" class="b-icon-btn b-icon-btn--ghost b-cost-edit" data-cost-idx="${idx}" title="Editar item" aria-label="Editar item">${B_EDIT_SM_SVG}</button>
+      </td>
     </tr>`;
   }).join("");
 
@@ -1313,7 +1309,7 @@ function renderDrawerItens() {
     drawerBodyHtml(`<div class="b-state" style="border:none;"><p>Nenhum item para os filtros atuais.</p></div>`);
   } else {
     drawerBodyHtml(`
-      <table class="b-table">
+      <table class="b-table b-costs-table">
         <thead>
           <tr>
             <th>Produto</th>
@@ -1321,10 +1317,34 @@ function renderDrawerItens() {
             <th class="num">Custo</th>
             <th class="num">Imposto</th>
             <th class="num">Taxa fixa</th>
+            <th class="b-cost-actions-th"></th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>`);
+
+    const body = document.getElementById("bases-drawer-body");
+    body?.querySelectorAll(".b-cost-edit").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const idx = Number(btn.dataset.costIdx);
+        if (Number.isFinite(idx) && exibidos[idx]) abrirFormularioItem(exibidos[idx]);
+      });
+    });
+    body?.querySelectorAll(".b-cost-row").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        // Não dispara se o usuário está apenas selecionando texto da linha.
+        const sel = window.getSelection && window.getSelection().toString();
+        if (sel) return;
+        const idx = Number(tr.dataset.costIdx);
+        if (Number.isFinite(idx) && exibidos[idx]) abrirFormularioItem(exibidos[idx]);
+      });
+      tr.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        const idx = Number(tr.dataset.costIdx);
+        if (Number.isFinite(idx) && exibidos[idx]) abrirFormularioItem(exibidos[idx]);
+      });
+    });
   }
 
   const totalBase = DRAWER_ITENS.length;
@@ -1338,104 +1358,12 @@ function renderDrawerItens() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ─── MODAL "ATUALIZAR BASE" ────────────────────────────────────────────────────
-//  · Manual   → upsert incremental REAL (POST /bases/:slug/custos/upsert).
-//               Atualiza item existente OU adiciona novo. Nunca apaga ausentes.
-//  · Planilha → preview seguro (Opção B). NÃO chama /importar-base, NÃO substitui
-//               base, NÃO usa confirmar=true. Fluxo destrutivo antigo não é tocado.
+// ─── EDIÇÃO DE CUSTOS DENTRO DO DRAWER ─────────────────────────────────────────
+//  · Editar item / Adicionar item → upsert REAL (POST /bases/:slug/custos/upsert).
+//    Atualiza se o produto existe, adiciona se não. Nunca apaga itens ausentes.
+//  · Atualizar por planilha → preview seguro (Opção B). NÃO chama /importar-base,
+//    NÃO usa confirmar=true, NÃO substitui a base, NÃO apaga ausentes.
 // ══════════════════════════════════════════════════════════════════════════════
-let BASE_UPDATE_ATUAL = null; // { slug, nome, marketplace, clienteNome, updated_at, created_at }
-
-function setUpdateFeedback(msg, tipo) {
-  const el = document.getElementById("bases-update-feedback");
-  if (!el) return;
-  el.className = "b-update-feedback" + (tipo ? ` is-${tipo}` : "");
-  el.textContent = msg || "";
-  el.style.display = msg ? "block" : "none";
-}
-
-function trocarUpdateTab(tab) {
-  const alvo = tab === "planilha" ? "planilha" : "manual";
-  document.querySelectorAll("#bases-update-modal .b-update-tab").forEach((t) => {
-    const ativo = t.dataset.updateTab === alvo;
-    t.classList.toggle("is-active", ativo);
-    t.setAttribute("aria-selected", ativo ? "true" : "false");
-  });
-  const manual = document.getElementById("bases-update-panel-manual");
-  const planilha = document.getElementById("bases-update-panel-planilha");
-  if (manual) manual.style.display = alvo === "manual" ? "" : "none";
-  if (planilha) planilha.style.display = alvo === "planilha" ? "" : "none";
-}
-
-function resetUpdatePlanilha() {
-  const fileInput = document.getElementById("update-planilha-arquivo");
-  if (fileInput) { try { fileInput.value = ""; } catch (_) {} }
-  const fileText = document.getElementById("update-planilha-label-text");
-  if (fileText) fileText.textContent = "Escolher arquivo…";
-  const fileLabel = document.getElementById("update-planilha-label");
-  if (fileLabel) fileLabel.classList.remove("has-file");
-  const box = document.getElementById("update-planilha-preview-box");
-  if (box) { box.style.display = "none"; box.innerHTML = ""; }
-}
-
-function abrirModalAtualizarBase(slug, tab) {
-  const base = (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).find((b) => String(b.slug) === String(slug));
-  if (!base) return;
-
-  const marketplace = getBaseMarketplaceKey(base);
-  const clienteNome = base?.vinculo ? (base.vinculo.cliente_nome || base.vinculo.cliente_slug || "") : "";
-
-  BASE_UPDATE_ATUAL = {
-    slug: base.slug || "",
-    nome: base.nome || base.slug || "",
-    marketplace,
-    clienteNome,
-    updated_at: base.updated_at || null,
-    created_at: base.created_at || null,
-  };
-
-  const titleEl = document.getElementById("bases-update-title");
-  const subEl = document.getElementById("bases-update-subtitle");
-  const metaEl = document.getElementById("bases-update-meta");
-  if (titleEl) titleEl.textContent = "Atualizar base";
-  if (subEl) subEl.textContent = `Base: ${BASE_UPDATE_ATUAL.nome}`;
-
-  const mpLabel = marketplace === "shopee" ? "Shopee" : "Mercado Livre";
-  const donoLabel = marketplace === "shopee" ? "Loja / apelido" : "Cliente / Grant ML";
-  const dono = clienteNome || "—";
-  if (metaEl) metaEl.innerHTML = `
-    <span>Marketplace: <b>${escapeHTML(mpLabel)}</b></span>
-    <span>${escapeHTML(donoLabel)}: <b>${escapeHTML(dono)}</b></span>
-    <span>Idade: <b>${escapeHTML(formatarIdadeBase(base))}</b></span>`;
-
-  // ID Model só é aplicado pelo backend para Shopee — oculta em Mercado Livre.
-  const idModelField = document.getElementById("update-manual-id-model-field");
-  if (idModelField) idModelField.style.display = marketplace === "shopee" ? "" : "none";
-
-  // Reset dos campos
-  ["update-manual-produto-id", "update-manual-id-model", "update-manual-custo",
-   "update-manual-imposto", "update-manual-taxa"].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.value = "";
-  });
-  resetUpdatePlanilha();
-  setUpdateFeedback("", "");
-  trocarUpdateTab(tab);
-
-  const backdrop = document.getElementById("bases-update-backdrop");
-  if (backdrop) backdrop.classList.add("is-open");
-
-  const alvo = tab === "planilha" ? "planilha" : "manual";
-  setTimeout(() => {
-    if (alvo === "manual") document.getElementById("update-manual-produto-id")?.focus();
-  }, 40);
-}
-
-function fecharModalAtualizarBase() {
-  const backdrop = document.getElementById("bases-update-backdrop");
-  if (backdrop) backdrop.classList.remove("is-open");
-  BASE_UPDATE_ATUAL = null;
-}
 
 // Imposto é digitado em % e persistido como decimal (5 → 0.05), igual ao editor
 // rápido de relatorios.js. Mantém o contrato real do endpoint de upsert.
@@ -1455,101 +1383,240 @@ function parseNumeroUpdate(valorUsuario) {
   return { tem: true, valor: n, invalido: false };
 }
 
-async function salvarUpdateManual() {
-  const base = BASE_UPDATE_ATUAL;
-  if (!base || !base.slug) return;
-
-  const produtoEl = document.getElementById("update-manual-produto-id");
-  const idModelEl = document.getElementById("update-manual-id-model");
-  const custoEl = document.getElementById("update-manual-custo");
-  const impostoEl = document.getElementById("update-manual-imposto");
-  const taxaEl = document.getElementById("update-manual-taxa");
-  const saveBtn = document.getElementById("update-manual-save");
-
-  const produto = String(produtoEl?.value || "").trim();
-  if (!produto) { setUpdateFeedback("Informe o produto / MLB / SKU.", "danger"); produtoEl?.focus(); return; }
-
-  const custo = parseNumeroUpdate(custoEl?.value);
-  if (!custo.tem) { setUpdateFeedback("Informe o custo (pode ser 0).", "danger"); custoEl?.focus(); return; }
-  if (custo.invalido) { setUpdateFeedback("Custo inválido — use apenas números.", "danger"); custoEl?.focus(); return; }
-
-  const imposto = parsePercentualUpdate(impostoEl?.value);
-  if (imposto.invalido) { setUpdateFeedback("Imposto % deve ser numérico.", "danger"); impostoEl?.focus(); return; }
-
-  const taxa = parseNumeroUpdate(taxaEl?.value);
-  if (taxa.invalido) { setUpdateFeedback("Taxa fixa deve ser numérica.", "danger"); taxaEl?.focus(); return; }
-
-  const payload = { produto_id: produto, custo_produto: custo.valor };
-  if (imposto.tem) payload.imposto_percentual = imposto.valor;
-  if (taxa.tem) payload.taxa_fixa = taxa.valor;
-  if (base.marketplace === "shopee") {
-    const idModel = String(idModelEl?.value || "").trim();
-    if (idModel) payload.id_model = idModel;
-  }
-
-  const textoOriginal = saveBtn ? saveBtn.textContent : "Salvar item";
-  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Salvando..."; }
-  setUpdateFeedback("", "");
-
-  try {
-    const res = await fetch(`${API_BASE}/bases/${encodeURIComponent(base.slug)}/custos/upsert`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { setUpdateFeedback("Você não tem permissão para ajustar esta base.", "danger"); return; }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.erro || `HTTP ${res.status}`);
-
-    setUpdateFeedback("Item salvo na base. Se ele já existia, foi atualizado; se não existia, foi adicionado.", "success");
-
-    // Limpa os campos do item para permitir salvar outro (modal permanece aberto).
-    if (produtoEl) produtoEl.value = "";
-    if (idModelEl) idModelEl.value = "";
-    if (custoEl) custoEl.value = "";
-    if (impostoEl) impostoEl.value = "";
-    if (taxaEl) taxaEl.value = "";
-    produtoEl?.focus();
-
-    // Recarrega o drawer de conferência, se estiver aberto para a mesma base.
-    // (O upsert altera só a tabela `custos`, não `bases.updated_at`, então a
-    //  lista de bases não precisa ser recarregada — evita flash de loading.)
-    const drawer = document.getElementById("bases-drawer");
-    if (drawer && drawer.classList.contains("is-open") && String(DRAWER_SLUG) === String(base.slug)) {
-      carregarCustosDrawer(base.slug);
-    }
-  } catch (err) {
-    setUpdateFeedback("Erro ao salvar item: " + (err?.message || "tente novamente."), "danger");
-  } finally {
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = textoOriginal; }
-  }
-}
-
 function validarArquivoUpdate(file) {
   const name = String(file?.name || "").toLowerCase();
   return name.endsWith(".xlsx") || name.endsWith(".xls") || name.endsWith(".csv");
 }
 
+// Feedback dentro do painel de edição/planilha (só há um painel aberto por vez).
+function setCostFeedback(msg, tipo) {
+  const el = document.querySelector("#bases-cost-panel .b-cost-feedback");
+  if (!el) return;
+  el.className = "b-cost-feedback" + (tipo ? ` is-${tipo}` : "");
+  el.textContent = msg || "";
+  el.style.display = msg ? "block" : "none";
+}
+
+function fecharPainelCusto() {
+  const panel = document.getElementById("bases-cost-panel");
+  if (panel) { panel.style.display = "none"; panel.innerHTML = ""; }
+  DRAWER_ITEM_EDITANDO = null;
+}
+
+const B_FILE_SVG = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+
+// ─── Formulário de item (editar existente ou adicionar novo) ───
+function abrirFormularioItem(item = null) {
+  const panel = document.getElementById("bases-cost-panel");
+  if (!panel || !DRAWER_SLUG) return;
+
+  DRAWER_ITEM_EDITANDO = item || null;
+  const editando = !!item;
+  const isShopee = DRAWER_IS_SHOPEE;
+  const titulo = editando ? "Editar item da base" : "Adicionar item à base";
+  const btnLabel = editando ? "Salvar alterações" : "Adicionar item";
+  const microcopy = editando
+    ? "As alterações sobrescrevem custo, imposto e taxa deste item."
+    : "Se o produto já existir na base, os valores serão atualizados.";
+
+  const produtoVal = editando ? escapeHTML(String(item.id ?? "")) : "";
+  const idModelVal = editando ? escapeHTML(String(item.id_model ?? "")) : "";
+  const custoVal = editando && Number.isFinite(Number(item.custo)) ? Number(item.custo) : "";
+  const impostoVal = editando && Number.isFinite(Number(item.imposto))
+    ? (Math.round(Number(item.imposto) * 100 * 1e6) / 1e6) : "";
+  const taxaVal = editando && Number.isFinite(Number(item.taxa)) ? Number(item.taxa) : "";
+
+  const idModelField = isShopee ? `
+    <div class="b-field b-cost-col-2">
+      <label for="cost-form-id-model">ID Model</label>
+      <input type="text" id="cost-form-id-model" value="${idModelVal}" placeholder="Opcional — usado principalmente para Shopee" autocomplete="off">
+    </div>` : "";
+
+  panel.innerHTML = `
+    <div class="b-cost-form">
+      <div class="b-cost-form-head">
+        <strong>${escapeHTML(titulo)}</strong>
+        <button type="button" class="b-btn b-btn--ghost b-btn--sm" id="cost-form-close" aria-label="Fechar">✕</button>
+      </div>
+      <div class="b-cost-form-grid">
+        <div class="b-field b-cost-col-2">
+          <label for="cost-form-produto">Produto / MLB / SKU <span class="req">*</span></label>
+          <input type="text" id="cost-form-produto" value="${produtoVal}" placeholder="Ex.: MLB123456789 ou SKU" autocomplete="off"${editando ? " readonly" : ""}>
+        </div>
+        ${idModelField}
+        <div class="b-field">
+          <label for="cost-form-custo">Custo <span class="req">*</span></label>
+          <input type="number" id="cost-form-custo" step="0.01" min="0" value="${custoVal}" placeholder="0.00">
+        </div>
+        <div class="b-field">
+          <label for="cost-form-imposto">Imposto %</label>
+          <input type="number" id="cost-form-imposto" step="0.01" min="0" value="${impostoVal}" placeholder="0">
+        </div>
+        <div class="b-field">
+          <label for="cost-form-taxa">Taxa fixa</label>
+          <input type="number" id="cost-form-taxa" step="0.01" min="0" value="${taxaVal}" placeholder="0.00">
+        </div>
+      </div>
+      <p class="b-cost-microcopy">${escapeHTML(microcopy)}</p>
+      <div class="b-cost-feedback" id="cost-form-feedback" style="display:none;" aria-live="polite"></div>
+      <div class="b-cost-form-actions">
+        <button type="button" class="b-btn b-btn--sm" id="cost-form-cancel">Cancelar</button>
+        <button type="button" class="b-btn b-btn--primary b-btn--sm" id="cost-form-save">${escapeHTML(btnLabel)}</button>
+      </div>
+    </div>`;
+  panel.style.display = "block";
+
+  document.getElementById("cost-form-close")?.addEventListener("click", fecharPainelCusto);
+  document.getElementById("cost-form-cancel")?.addEventListener("click", fecharPainelCusto);
+  document.getElementById("cost-form-save")?.addEventListener("click", salvarItemManual);
+  ["cost-form-produto", "cost-form-id-model", "cost-form-custo", "cost-form-imposto", "cost-form-taxa"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); salvarItemManual(); }
+    });
+  });
+
+  setTimeout(() => {
+    const first = editando ? document.getElementById("cost-form-custo") : document.getElementById("cost-form-produto");
+    first?.focus();
+  }, 30);
+  panel.scrollIntoView({ block: "nearest" });
+}
+
+async function salvarItemManual() {
+  const slug = String(DRAWER_SLUG || "").trim();
+  if (!slug) return;
+
+  const produtoEl = document.getElementById("cost-form-produto");
+  const idModelEl = document.getElementById("cost-form-id-model");
+  const custoEl = document.getElementById("cost-form-custo");
+  const impostoEl = document.getElementById("cost-form-imposto");
+  const taxaEl = document.getElementById("cost-form-taxa");
+  const saveBtn = document.getElementById("cost-form-save");
+
+  const produto = String(produtoEl?.value || "").trim();
+  if (!produto) { setCostFeedback("Informe o produto / MLB / SKU.", "danger"); produtoEl?.focus(); return; }
+
+  const custo = parseNumeroUpdate(custoEl?.value);
+  if (!custo.tem) { setCostFeedback("Informe o custo (pode ser 0).", "danger"); custoEl?.focus(); return; }
+  if (custo.invalido) { setCostFeedback("Custo inválido — use apenas números.", "danger"); custoEl?.focus(); return; }
+
+  const imposto = parsePercentualUpdate(impostoEl?.value);
+  if (imposto.invalido) { setCostFeedback("Imposto % deve ser numérico.", "danger"); impostoEl?.focus(); return; }
+
+  const taxa = parseNumeroUpdate(taxaEl?.value);
+  if (taxa.invalido) { setCostFeedback("Taxa fixa deve ser numérica.", "danger"); taxaEl?.focus(); return; }
+
+  const payload = { produto_id: produto, custo_produto: custo.valor };
+  if (imposto.tem) payload.imposto_percentual = imposto.valor;
+  if (taxa.tem) payload.taxa_fixa = taxa.valor;
+  if (DRAWER_IS_SHOPEE) {
+    const idModel = String(idModelEl?.value || "").trim();
+    if (idModel) payload.id_model = idModel;
+  }
+
+  const editando = !!DRAWER_ITEM_EDITANDO;
+  const textoOriginal = saveBtn ? saveBtn.textContent : "Salvar";
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "Salvando..."; }
+  setCostFeedback("", "");
+
+  try {
+    const res = await fetch(`${API_BASE}/bases/${encodeURIComponent(slug)}/custos/upsert`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 401) { clearSession(); return; }
+    if (res.status === 403) { setCostFeedback("Você não tem permissão para ajustar esta base.", "danger"); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.erro || `HTTP ${res.status}`);
+
+    // Recarrega os custos do drawer (drawer permanece aberto).
+    await carregarCustosDrawer(slug);
+
+    if (editando) {
+      fecharPainelCusto();
+      setDrawerHint("Item atualizado com sucesso.", "success");
+    } else {
+      // Mantém o formulário aberto p/ adicionar outro item; limpa os campos.
+      if (produtoEl) produtoEl.value = "";
+      if (idModelEl) idModelEl.value = "";
+      if (custoEl) custoEl.value = "";
+      if (impostoEl) impostoEl.value = "";
+      if (taxaEl) taxaEl.value = "";
+      setCostFeedback("Item adicionado. Se o produto já existia, os valores foram atualizados.", "success");
+      produtoEl?.focus();
+    }
+  } catch (err) {
+    setCostFeedback("Erro ao salvar item: " + (err?.message || "tente novamente."), "danger");
+  } finally {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = textoOriginal; }
+  }
+}
+
+// ─── Painel "Atualizar por planilha" (preview seguro — Opção B) ───
+function abrirPainelPlanilha() {
+  const panel = document.getElementById("bases-cost-panel");
+  if (!panel || !DRAWER_SLUG) return;
+  DRAWER_ITEM_EDITANDO = null;
+
+  panel.innerHTML = `
+    <div class="b-planilha-panel">
+      <div class="b-cost-form-head">
+        <strong>Atualizar por planilha</strong>
+        <button type="button" class="b-btn b-btn--ghost b-btn--sm" id="cost-planilha-close" aria-label="Fechar">✕</button>
+      </div>
+      <p class="b-cost-note b-cost-note--info">A atualização por planilha deve atualizar produtos existentes e adicionar novos, sem apagar itens ausentes da planilha.</p>
+      <div class="b-field">
+        <label>Planilha (.xlsx, .xls, .csv)</label>
+        <label class="b-file-label" id="cost-planilha-label">
+          ${B_FILE_SVG}
+          <span id="cost-planilha-label-text">Escolher arquivo…</span>
+          <input type="file" id="cost-planilha-arquivo" accept=".xlsx,.xls,.csv" style="display:none;">
+        </label>
+      </div>
+      <p class="b-cost-note b-cost-note--safe">Nenhum item será apagado neste fluxo.</p>
+      <div class="b-cost-feedback" id="cost-planilha-feedback" style="display:none;" aria-live="polite"></div>
+      <div class="b-cost-form-actions">
+        <button type="button" class="b-btn b-btn--sm" id="cost-planilha-cancel">Cancelar</button>
+        <button type="button" class="b-btn b-btn--primary b-btn--sm" id="cost-planilha-preview">Pré-visualizar atualização</button>
+      </div>
+      <div class="b-cost-preview" id="cost-planilha-preview-box" style="display:none;"></div>
+    </div>`;
+  panel.style.display = "block";
+
+  document.getElementById("cost-planilha-close")?.addEventListener("click", fecharPainelCusto);
+  document.getElementById("cost-planilha-cancel")?.addEventListener("click", fecharPainelCusto);
+  document.getElementById("cost-planilha-preview")?.addEventListener("click", previewPlanilhaDrawer);
+  document.getElementById("cost-planilha-arquivo")?.addEventListener("change", (e) => {
+    const f = e.target.files?.[0];
+    const text = document.getElementById("cost-planilha-label-text");
+    const label = document.getElementById("cost-planilha-label");
+    if (text) text.textContent = f ? f.name : "Escolher arquivo…";
+    if (label) label.classList.toggle("has-file", !!f);
+    const box = document.getElementById("cost-planilha-preview-box");
+    if (box) { box.style.display = "none"; box.innerHTML = ""; }
+  });
+  panel.scrollIntoView({ block: "nearest" });
+}
+
 // Preview seguro (Opção B): valida o arquivo e mostra estado informativo.
-// Não chama API, não reimporta, não apaga nada. O commit incremental fica p/ etapa futura.
-function previewUpdatePlanilha() {
-  const fileInput = document.getElementById("update-planilha-arquivo");
+// Não chama API, não reimporta, não apaga nada — commit incremental fica p/ etapa futura.
+function previewPlanilhaDrawer() {
+  const fileInput = document.getElementById("cost-planilha-arquivo");
   const file = fileInput?.files?.[0];
-  const box = document.getElementById("update-planilha-preview-box");
+  const box = document.getElementById("cost-planilha-preview-box");
 
-  if (!file) { setUpdateFeedback("Selecione um arquivo .xlsx, .xls ou .csv.", "danger"); return; }
-  if (!validarArquivoUpdate(file)) { setUpdateFeedback("Arquivo inválido. Envie .xlsx, .xls ou .csv.", "danger"); return; }
+  if (!file) { setCostFeedback("Selecione um arquivo .xlsx, .xls ou .csv.", "danger"); return; }
+  if (!validarArquivoUpdate(file)) { setCostFeedback("Arquivo inválido. Envie .xlsx, .xls ou .csv.", "danger"); return; }
 
-  setUpdateFeedback("", "");
+  setCostFeedback("Atualização incremental por planilha será finalizada na próxima etapa. O fluxo antigo de reimportação não será usado para evitar apagar itens ausentes.", "neutral");
   if (!box) return;
   box.innerHTML = `
-    <div class="b-update-preview-title">Preview incremental — próxima etapa</div>
+    <div class="b-cost-preview-title">Preview incremental — próxima etapa</div>
     <p style="margin:0 0 8px;">Arquivo pronto: <b>${escapeHTML(file.name)}</b>.</p>
-    <p style="margin:0 0 10px;">Preview incremental por planilha entra na próxima etapa. Não será usado o fluxo antigo de reimportação para evitar apagar itens ausentes.</p>
     <p style="margin:0;color:var(--b-text-l);">A classificação adicionar/atualizar será confirmada na etapa de commit incremental.</p>
-    <div class="b-update-actions" style="margin-top:12px;">
-      <button type="button" class="b-btn" disabled>Confirmar atualização incremental — próxima etapa</button>
+    <div class="b-cost-form-actions" style="margin-top:12px;">
+      <button type="button" class="b-btn b-btn--sm" disabled>Confirmar atualização incremental — próxima etapa</button>
     </div>`;
   box.style.display = "block";
 }
@@ -1607,7 +1674,7 @@ document.getElementById("bases-assist-toggle")?.addEventListener("click", () => 
   if (c) c.classList.toggle("is-open");
 });
 
-// Drawer
+// Drawer "Base de custos"
 document.getElementById("bases-drawer-close")?.addEventListener("click", fecharDrawer);
 document.getElementById("bases-drawer-backdrop")?.addEventListener("click", fecharDrawer);
 document.getElementById("bases-drawer-busca")?.addEventListener("input", (e) => { DRAWER_BUSCA = e.target.value || ""; renderDrawerItens(); });
@@ -1618,46 +1685,23 @@ document.querySelectorAll("#bases-drawer .b-filter-chip").forEach((chip) => {
     renderDrawerItens();
   });
 });
+// Ações do drawer: adicionar item / atualizar por planilha (dentro do drawer)
+document.getElementById("bases-drawer-add")?.addEventListener("click", () => abrirFormularioItem(null));
+document.getElementById("bases-drawer-planilha")?.addEventListener("click", abrirPainelPlanilha);
 
-// Modal "Atualizar base"
-document.getElementById("bases-update-close")?.addEventListener("click", fecharModalAtualizarBase);
-document.getElementById("bases-update-backdrop")?.addEventListener("click", (e) => {
-  if (e.target?.id === "bases-update-backdrop") fecharModalAtualizarBase();
-});
-document.querySelectorAll("#bases-update-modal .b-update-tab").forEach((t) => {
-  t.addEventListener("click", () => trocarUpdateTab(t.dataset.updateTab));
-});
-document.getElementById("update-manual-save")?.addEventListener("click", salvarUpdateManual);
-document.getElementById("update-planilha-preview")?.addEventListener("click", previewUpdatePlanilha);
-document.getElementById("update-planilha-arquivo")?.addEventListener("change", (e) => {
-  const f = e.target.files?.[0];
-  const text = document.getElementById("update-planilha-label-text");
-  const label = document.getElementById("update-planilha-label");
-  if (text) text.textContent = f ? f.name : "Escolher arquivo…";
-  if (label) label.classList.toggle("has-file", !!f);
-  const box = document.getElementById("update-planilha-preview-box");
-  if (box) { box.style.display = "none"; box.innerHTML = ""; }
-});
-// Enter salva o item na aba Manual
-["update-manual-produto-id", "update-manual-id-model", "update-manual-custo",
- "update-manual-imposto", "update-manual-taxa"].forEach((id) => {
-  document.getElementById(id)?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); salvarUpdateManual(); }
-  });
-});
-
-// Fechar menus "⋯" e "Atualizar base" ao clicar fora
+// Fechar menus "⋯" ao clicar fora
 document.addEventListener("click", (e) => {
-  if (!e.target.closest(".b-menu") && !e.target.closest(".b-update-menu")) fecharTodosMenus();
+  if (!e.target.closest(".b-menu")) fecharTodosMenus();
 });
-// Esc fecha menus, drawer e modal de importação
+// Esc fecha menus, painel de custo, drawer e modal de importação
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   fecharTodosMenus();
-  const updateBackdrop = document.getElementById("bases-update-backdrop");
-  if (updateBackdrop && updateBackdrop.classList.contains("is-open")) { fecharModalAtualizarBase(); return; }
+  // Se um painel de edição/planilha está aberto no drawer, Esc fecha só o painel.
+  const panel = document.getElementById("bases-cost-panel");
+  if (panel && panel.style.display !== "none" && panel.innerHTML.trim()) { fecharPainelCusto(); return; }
   const drawer = document.getElementById("bases-drawer");
-  if (drawer && drawer.classList.contains("is-open")) fecharDrawer();
+  if (drawer && drawer.classList.contains("is-open")) { fecharDrawer(); return; }
   const importBackdrop = document.getElementById("bases-import-backdrop");
   if (importBackdrop && importBackdrop.classList.contains("is-open")) fecharModalImportar();
 });

@@ -284,30 +284,41 @@
     </div>
   </div>
 
-  <!-- ── DRAWER "CONFERIR CUSTOS" ── -->
+  <!-- ── DRAWER "BASE DE CUSTOS" (visualizar + editar/adicionar/planilha) ── -->
   <div class="b-drawer-backdrop" id="bases-drawer-backdrop"></div>
-  <aside class="b-drawer" id="bases-drawer" role="dialog" aria-modal="true" aria-label="Conferir custos da base">
+  <aside class="b-drawer" id="bases-drawer" role="dialog" aria-modal="true" aria-label="Base de custos">
     <div class="b-drawer-header">
       <div>
-        <div class="b-kicker">Conferir custos</div>
+        <div class="b-kicker">Base de custos</div>
         <h3 id="bases-drawer-title">—</h3>
         <div class="b-drawer-meta" id="bases-drawer-meta"></div>
       </div>
       <button type="button" class="b-btn b-btn--ghost b-btn--sm" id="bases-drawer-close" aria-label="Fechar">✕</button>
     </div>
-    <div class="b-drawer-toolbar">
-      <div class="b-search" style="max-width:none;flex:1;min-width:180px;">
-        <input type="text" id="bases-drawer-busca" placeholder="Buscar produto, MLB, SKU ou id_model…" autocomplete="off">
+    <div class="b-drawer-toolbar b-costs-toolbar">
+      <div class="b-costs-toolbar__filters">
+        <div class="b-search" style="max-width:none;flex:1;min-width:180px;">
+          <input type="text" id="bases-drawer-busca" placeholder="Buscar produto, MLB, SKU ou id_model…" autocomplete="off">
+        </div>
+        <button type="button" class="b-filter-chip active" data-drawer-filter="todos">Todos</button>
+        <button type="button" class="b-filter-chip" data-drawer-filter="custo">Custo zerado</button>
+        <button type="button" class="b-filter-chip" data-drawer-filter="imposto">Imposto zerado</button>
+        <button type="button" class="b-filter-chip" data-drawer-filter="taxa">Taxa zerada</button>
       </div>
-      <button type="button" class="b-filter-chip active" data-drawer-filter="todos">Todos</button>
-      <button type="button" class="b-filter-chip" data-drawer-filter="custo">Custo zerado</button>
-      <button type="button" class="b-filter-chip" data-drawer-filter="imposto">Imposto zerado</button>
+      <div class="b-drawer-actions">
+        <button type="button" class="b-btn b-btn--sm b-btn--primary" id="bases-drawer-add">+ Adicionar item</button>
+        <button type="button" class="b-btn b-btn--sm" id="bases-drawer-planilha">Atualizar por planilha</button>
+      </div>
     </div>
+
+    <!-- Painel de edição/adição de item ou atualização por planilha (render via JS) -->
+    <div class="b-cost-panel" id="bases-cost-panel" style="display:none;"></div>
+
     <div class="b-drawer-body" id="bases-drawer-body"></div>
     <div class="b-drawer-footer">
       <span id="bases-drawer-count">—</span>
       <div class="right">
-        <span class="b-hint">Para ajustar custos, use “Atualizar base” na linha da base</span>
+        <span class="b-hint" id="bases-drawer-hint">Clique no lápis de um item para editar, ou use “Adicionar item”.</span>
       </div>
     </div>
   </aside>
@@ -401,87 +412,6 @@
       <div class="vf-modal-footer">
         <button type="button" id="vf-vinculo-base-cancel" class="vf-action-btn vf-action-btn-secondary">Cancelar</button>
         <button type="button" id="vf-vinculo-base-save" class="vf-action-btn">Salvar vínculo</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ── MODAL "ATUALIZAR BASE" (manual = upsert incremental · planilha = preview seguro) ── -->
-  <div class="b-modal-backdrop" id="bases-update-backdrop">
-    <div class="b-modal b-update-modal" id="bases-update-modal" role="dialog" aria-modal="true" aria-labelledby="bases-update-title">
-      <div class="b-modal-header">
-        <div>
-          <h3 id="bases-update-title">Atualizar base</h3>
-          <p class="b-desc" id="bases-update-subtitle">Base: —</p>
-          <div class="b-update-meta" id="bases-update-meta"></div>
-        </div>
-        <button type="button" class="b-btn b-btn--ghost b-btn--sm" id="bases-update-close" aria-label="Fechar">✕</button>
-      </div>
-
-      <div class="b-update-tabs" id="bases-update-tabs" role="tablist">
-        <button type="button" class="b-update-tab is-active" id="bases-update-tab-manual"
-                data-update-tab="manual" role="tab" aria-selected="true">Manual</button>
-        <button type="button" class="b-update-tab" id="bases-update-tab-planilha"
-                data-update-tab="planilha" role="tab" aria-selected="false">Por planilha</button>
-      </div>
-
-      <div class="b-modal-body" id="bases-update-body">
-        <!-- ── Aba Manual ── -->
-        <div class="b-update-panel" id="bases-update-panel-manual" role="tabpanel" aria-labelledby="bases-update-tab-manual">
-          <p class="b-update-hint">
-            Atualize um item existente ou adicione um novo. Se o produto já existir, custo, imposto e taxa são
-            atualizados; se não existir, ele é adicionado. Nenhum item ausente é apagado.
-          </p>
-          <div class="b-update-grid">
-            <div class="b-field b-update-col-2">
-              <label for="update-manual-produto-id">Produto / MLB / SKU <span class="req">*</span></label>
-              <input type="text" id="update-manual-produto-id" placeholder="Ex.: MLB123456789 ou SKU" autocomplete="off">
-            </div>
-            <div class="b-field b-update-col-2" id="update-manual-id-model-field">
-              <label for="update-manual-id-model">ID Model</label>
-              <input type="text" id="update-manual-id-model" placeholder="Opcional — usado principalmente para Shopee" autocomplete="off">
-            </div>
-            <div class="b-field">
-              <label for="update-manual-custo">Custo <span class="req">*</span></label>
-              <input type="number" id="update-manual-custo" step="0.01" min="0" placeholder="0.00">
-            </div>
-            <div class="b-field">
-              <label for="update-manual-imposto">Imposto %</label>
-              <input type="number" id="update-manual-imposto" step="0.01" min="0" placeholder="0">
-            </div>
-            <div class="b-field">
-              <label for="update-manual-taxa">Taxa fixa</label>
-              <input type="number" id="update-manual-taxa" step="0.01" min="0" placeholder="0.00">
-            </div>
-          </div>
-          <div class="b-update-actions">
-            <button type="button" class="b-btn b-btn--primary" id="update-manual-save">Salvar item</button>
-          </div>
-        </div>
-
-        <!-- ── Aba Por planilha ── -->
-        <div class="b-update-panel" id="bases-update-panel-planilha" role="tabpanel" aria-labelledby="bases-update-tab-planilha" style="display:none;">
-          <p class="b-update-note b-update-note--info">
-            Esta atualização deve adicionar novos produtos e atualizar produtos existentes sem apagar itens ausentes da planilha.
-          </p>
-          <div class="b-field">
-            <label>Planilha (.xlsx, .xls, .csv)</label>
-            <label class="b-file-label" id="update-planilha-label">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                <polyline points="14 2 14 8 20 8"/>
-              </svg>
-              <span id="update-planilha-label-text">Escolher arquivo…</span>
-              <input type="file" id="update-planilha-arquivo" accept=".xlsx,.xls,.csv" style="display:none;">
-            </label>
-          </div>
-          <p class="b-update-note b-update-note--safe">Nenhum item será apagado neste fluxo.</p>
-          <div class="b-update-actions">
-            <button type="button" class="b-btn b-btn--primary" id="update-planilha-preview">Pré-visualizar atualização</button>
-          </div>
-          <div class="b-update-preview" id="update-planilha-preview-box" style="display:none;"></div>
-        </div>
-
-        <div class="b-update-feedback" id="bases-update-feedback" style="display:none;" aria-live="polite"></div>
       </div>
     </div>
   </div>

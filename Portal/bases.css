@@ -292,22 +292,6 @@
 .vf-page-bases .b-menu-item--danger { color: var(--b-danger); }
 .vf-page-bases .b-menu-item--danger:hover { background: var(--b-danger-bg); }
 
-/* ---------- Menu "Atualizar base" (placeholder — mesmo padrão do "⋯") ---------- */
-.vf-page-bases .b-update-menu { position: relative; }
-.vf-page-bases .b-update-pop {
-  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20;
-  min-width: 210px; background: var(--b-surface);
-  border: 1px solid var(--b-border-strong); border-radius: var(--b-radius-sm);
-  box-shadow: var(--b-shadow-pop); padding: 4px; display: none;
-}
-.vf-page-bases .b-update-pop.is-open { display: block; }
-.vf-page-bases .b-update-item {
-  display: block; width: 100%; text-align: left; font: inherit; font-family: var(--b-font);
-  font-size: var(--b-fs-sm); color: var(--b-text); background: none; border: none;
-  padding: 7px 10px; border-radius: var(--b-radius-sm); cursor: pointer;
-}
-.vf-page-bases .b-update-item:hover { background: var(--b-bg-2); }
-
 /* ---------- Estados (loading / empty / error) ---------- */
 .vf-page-bases .b-state {
   padding: 48px 24px; text-align: center; color: var(--b-text-m);
@@ -433,36 +417,16 @@
 /* Preview de importação abre POR CIMA do modal de importação */
 .vf-page-bases #preview-overlay { z-index: 1140 !important; }
 
-/* ---------- Modal "Atualizar base" (Manual + Por planilha) ---------- */
-.vf-page-bases .b-update-modal { width: min(640px, 100%); }
-/* Cabeçalho encosta nas abas: uma linha divisória só (a das abas) */
-.vf-page-bases .b-update-modal .b-modal-header { border-bottom: none; padding-bottom: var(--b-sp-4); }
-.vf-page-bases .b-update-meta {
-  display: flex; gap: var(--b-sp-4); flex-wrap: wrap; margin-top: var(--b-sp-2);
-  font-size: var(--b-fs-2xs); color: var(--b-text-m);
-}
-.vf-page-bases .b-update-meta b { color: var(--b-text); font-weight: 600; }
+/* ══════════════════════════════════════════════════════════════════════════
+   DRAWER "BASE DE CUSTOS" — toolbar de ações + edição/adição/planilha inline
+   ══════════════════════════════════════════════════════════════════════════ */
 
-/* Abas discretas */
-.vf-page-bases .b-update-tabs {
-  display: flex; gap: 18px; padding: 0 var(--b-sp-6);
-  border-bottom: 1px solid var(--b-border); background: var(--b-surface);
+/* Toolbar do drawer: filtros à esquerda, ações à direita */
+.vf-page-bases .b-costs-toolbar { justify-content: space-between; }
+.vf-page-bases .b-costs-toolbar__filters {
+  display: flex; gap: var(--b-sp-2); align-items: center; flex-wrap: wrap; flex: 1; min-width: 220px;
 }
-.vf-page-bases .b-update-tab {
-  font: inherit; font-family: var(--b-font); font-size: var(--b-fs-sm); font-weight: 600;
-  color: var(--b-text-m); background: none; border: none; padding: 10px 2px; cursor: pointer;
-  border-bottom: 2px solid transparent; margin-bottom: -1px;
-}
-.vf-page-bases .b-update-tab:hover { color: var(--b-text); }
-.vf-page-bases .b-update-tab:focus-visible { outline: 2px solid var(--b-primary); outline-offset: 2px; border-radius: 3px; }
-.vf-page-bases .b-update-tab.is-active { color: var(--b-primary); border-bottom-color: var(--b-primary); }
-
-/* Painéis */
-.vf-page-bases .b-update-panel { display: flex; flex-direction: column; gap: var(--b-sp-4); }
-.vf-page-bases .b-update-hint { font-size: var(--b-fs-xs); color: var(--b-text-m); margin: 0; }
-
-.vf-page-bases .b-update-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--b-sp-3); }
-.vf-page-bases .b-update-col-2 { grid-column: 1 / -1; }
+.vf-page-bases .b-drawer-actions { display: flex; gap: var(--b-sp-2); align-items: center; flex-wrap: wrap; }
 
 /* Inputs numéricos seguem o mesmo desenho dos inputs de texto */
 .vf-page-bases .b-field input[type="number"] {
@@ -471,34 +435,60 @@
   background: var(--b-surface); color: var(--b-text); width: 100%;
 }
 .vf-page-bases .b-field input[type="number"]:focus { outline: none; border-color: var(--b-primary); box-shadow: 0 0 0 3px var(--b-primary-soft); }
+.vf-page-bases .b-field input[readonly] { background: var(--b-bg-2); color: var(--b-text-m); cursor: default; }
 
-.vf-page-bases .b-update-actions { display: flex; justify-content: flex-end; gap: var(--b-sp-2); }
+/* Tabela de custos: coluna de ação compacta + linha clicável */
+.vf-page-bases .b-costs-table th.b-cost-actions-th,
+.vf-page-bases .b-costs-table td.b-cost-actions-cell { width: 44px; text-align: right; padding-left: 4px; padding-right: 10px; }
+.vf-page-bases .b-cost-row { cursor: pointer; }
+.vf-page-bases .b-cost-row:hover { background: var(--b-bg); }
+.vf-page-bases .b-cost-row:focus-visible { outline: 2px solid var(--b-primary); outline-offset: -2px; }
+.vf-page-bases .b-cost-edit { width: 28px; height: 28px; }
+
+/* Painel de edição/planilha dentro do drawer */
+.vf-page-bases .b-cost-panel {
+  border-bottom: 1px solid var(--b-border); background: var(--b-surface-2);
+  padding: var(--b-sp-4) var(--b-sp-6);
+  max-height: 60vh; overflow-y: auto;
+}
+.vf-page-bases .b-cost-form,
+.vf-page-bases .b-planilha-panel { display: flex; flex-direction: column; gap: var(--b-sp-3); }
+.vf-page-bases .b-cost-form-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--b-sp-2);
+}
+.vf-page-bases .b-cost-form-head strong { font-size: var(--b-fs-md); font-weight: 650; color: var(--b-text); }
+
+.vf-page-bases .b-cost-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--b-sp-3); }
+.vf-page-bases .b-cost-col-2 { grid-column: 1 / -1; }
+.vf-page-bases .b-cost-microcopy { font-size: var(--b-fs-2xs); color: var(--b-text-l); margin: 0; }
+.vf-page-bases .b-cost-form-actions { display: flex; justify-content: flex-end; gap: var(--b-sp-2); }
 
 /* Avisos (incremental / segurança) */
-.vf-page-bases .b-update-note {
+.vf-page-bases .b-cost-note {
   font-size: var(--b-fs-xs); margin: 0; padding: 10px 12px;
   border-radius: var(--b-radius-sm); border: 1px solid var(--b-border);
 }
-.vf-page-bases .b-update-note--info { background: var(--b-info-bg); border-color: rgba(29,95,184,.18); color: var(--b-info); }
-.vf-page-bases .b-update-note--safe { background: var(--b-success-bg); border-color: rgba(15,122,82,.18); color: var(--b-success); }
+.vf-page-bases .b-cost-note--info { background: var(--b-info-bg); border-color: rgba(29,95,184,.18); color: var(--b-info); }
+.vf-page-bases .b-cost-note--safe { background: var(--b-success-bg); border-color: rgba(15,122,82,.18); color: var(--b-success); }
 
 /* Caixa de preview seguro (planilha) */
-.vf-page-bases .b-update-preview {
+.vf-page-bases .b-cost-preview {
   border: 1px solid var(--b-border); border-radius: var(--b-radius-sm);
-  background: var(--b-surface-2); padding: var(--b-sp-4);
+  background: var(--b-surface); padding: var(--b-sp-4);
   font-size: var(--b-fs-xs); color: var(--b-text-m);
 }
-.vf-page-bases .b-update-preview-title { font-weight: 650; color: var(--b-text); margin-bottom: 6px; font-size: var(--b-fs-sm); }
+.vf-page-bases .b-cost-preview-title { font-weight: 650; color: var(--b-text); margin-bottom: 6px; font-size: var(--b-fs-sm); }
 
-/* Feedback do modal */
-.vf-page-bases .b-update-feedback { font-size: var(--b-fs-sm); padding: 10px 12px; border-radius: var(--b-radius-sm); }
-.vf-page-bases .b-update-feedback.is-success { background: var(--b-success-bg); color: var(--b-success); }
-.vf-page-bases .b-update-feedback.is-danger { background: var(--b-danger-bg); color: var(--b-danger); }
-.vf-page-bases .b-update-feedback.is-neutral { background: var(--b-bg-2); color: var(--b-text-m); }
+/* Feedback dentro do painel */
+.vf-page-bases .b-cost-feedback { font-size: var(--b-fs-sm); padding: 10px 12px; border-radius: var(--b-radius-sm); }
+.vf-page-bases .b-cost-feedback.is-success { background: var(--b-success-bg); color: var(--b-success); }
+.vf-page-bases .b-cost-feedback.is-danger { background: var(--b-danger-bg); color: var(--b-danger); }
+.vf-page-bases .b-cost-feedback.is-neutral { background: var(--b-bg-2); color: var(--b-text-m); }
 
-@media (max-width: 520px) {
-  .vf-page-bases .b-update-grid { grid-template-columns: 1fr; }
-  .vf-page-bases .b-update-tabs { padding: 0 var(--b-sp-4); }
+@media (max-width: 560px) {
+  .vf-page-bases .b-cost-form-grid { grid-template-columns: 1fr; }
+  .vf-page-bases .b-costs-toolbar { flex-direction: column; align-items: stretch; }
+  .vf-page-bases .b-drawer-actions { justify-content: flex-end; }
 }
 
 /* ---------- Responsivo / a11y ---------- */

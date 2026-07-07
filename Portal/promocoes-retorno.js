@@ -37,10 +37,19 @@ let PROMO_SNAPSHOT_EXISTE = false;
 let PROMO_ORIGEM_FILTER = "todas";
 let PROMO_SNAPSHOT_CHECK_KEY = "";
 // Job assíncrono em andamento (polling).
+// Polling: 3s no início; se o job passar de 2 minutos, relaxa para 5s.
 let PROMO_JOB_ID = null;
 let PROMO_POLL_TIMER = null;
-const PROMO_POLL_INTERVAL = 2500;
+let PROMO_POLL_STARTED_AT = 0;
+const PROMO_POLL_INTERVAL_MS = 3000;
+const PROMO_POLL_SLOW_MS = 5000;
+const PROMO_POLL_SLOW_AFTER_MS = 2 * 60 * 1000;
 const PROMO_RENDER_LIMIT = 50;
+
+function intervaloPolling() {
+  const decorrido = Date.now() - PROMO_POLL_STARTED_AT;
+  return decorrido > PROMO_POLL_SLOW_AFTER_MS ? PROMO_POLL_SLOW_MS : PROMO_POLL_INTERVAL_MS;
+}
 
 const PROMO_FILTERS = [
   { key: "todos", label: "Todos" },
@@ -659,13 +668,33 @@ function renderDiagnosticoInfo() {
     : `<strong>🔄 Dados recém-varridos no Mercado Livre</strong>`;
   const seller = m.sellerId ? ` · seller ${escapeHTML(String(m.sellerId))}` : "";
   const parcial = m.parcial
-    ? ` · <span style="color:#92400e;font-weight:700;">parcial — varredura limitada a ${escapeHTML(String(m.itensScaneados || 0))} anúncios</span>`
+    ? ` · <span style="color:#92400e;font-weight:700;">parcial — varredura interrompida com ${escapeHTML(String(m.itensScaneados || 0))} anúncios</span>`
     : "";
   const avisos = Array.isArray(m.avisos) && m.avisos.length
     ? `<br><span style="color:#92400e;">${m.avisos.map(escapeHTML).join(" · ")}</span>`
     : "";
-  el.style.background = ehSnapshot ? "var(--vf-bg)" : "#ecfdf5";
-  el.innerHTML = `${tag} · gerado em ${escapeHTML(dataFmt)}${seller}${parcial}${avisos}`;
+
+  // Frescor (só faz sentido para snapshot reaberto): atual ≤6h · atenção 6–24h · antigo >24h.
+  let frescorHtml = "";
+  let bg = ehSnapshot ? "var(--vf-bg)" : "#ecfdf5";
+  if (ehSnapshot && m.frescor) {
+    const idadeMin = Number(m.idadeMinutos);
+    const idadeFmt = Number.isFinite(idadeMin)
+      ? (idadeMin < 60 ? `${idadeMin} min` : `${Math.floor(idadeMin / 60)}h${idadeMin % 60 ? ` ${idadeMin % 60}min` : ""}`)
+      : "—";
+    if (m.frescor === "atual") {
+      frescorHtml = ` · <span style="color:#047857;font-weight:700;">✓ snapshot atual (há ${escapeHTML(idadeFmt)})</span>`;
+    } else if (m.frescor === "atencao") {
+      frescorHtml = ` · <span style="color:#92400e;font-weight:700;">⚠️ snapshot com mais de 6h (há ${escapeHTML(idadeFmt)}) — considere atualizar</span>`;
+      bg = "#fef3c7";
+    } else if (m.frescor === "antigo") {
+      frescorHtml = `<br><span style="color:#b91c1c;font-weight:700;">⛔ Snapshot antigo (há ${escapeHTML(idadeFmt)}, mais de 24h) — recomendado revarrer o Mercado Livre com "Atualizar snapshot".</span>`;
+      bg = "#fee2e2";
+    }
+  }
+
+  el.style.background = bg;
+  el.innerHTML = `${tag} · gerado em ${escapeHTML(dataFmt)}${seller}${frescorHtml}${parcial}${avisos}`;
   el.style.display = "block";
 }
 
@@ -885,14 +914,26 @@ async function iniciarDiagnosticoJob() {
     if (res.status === 401) { clearSession(); return; }
     if (res.status === 403) { window.location.replace("dashboard.html"); return; }
     const data = await res.json().catch(() => ({}));
+
+    // Cooldown: conta varrida há menos de 15 min — usar o snapshot existente.
+    if (res.status === 429 && data?.cooldown) {
+      if (data.snapshot_id) PROMO_SNAPSHOT_EXISTE = true;
+      updateSnapshotButtons();
+      setStatus(data.erro || "Conta varrida recentemente. Use o último snapshot.", "var(--vf-danger)");
+      return;
+    }
+
     if (!res.ok || !data?.ok) {
       setStatus(data?.erro || `Erro ao iniciar diagnóstico (HTTP ${res.status}).`, "var(--vf-danger)");
       return;
     }
     PROMO_JOB_ID = data.diagnostico_id;
+    PROMO_POLL_STARTED_AT = Date.now();
     updateSnapshotButtons();
     if (data.jaEmAndamento) {
-      setStatus("Já havia um diagnóstico em andamento para este cliente/base — acompanhando o progresso…", "var(--vf-text-m)");
+      setStatus("Já havia um diagnóstico em andamento para este cliente — acompanhando o progresso…", "var(--vf-text-m)");
+    } else {
+      setStatus("Diagnóstico na fila de processamento…", "var(--vf-text-m)");
     }
     pollDiagnosticoStatus();
   } catch (_) {
@@ -922,12 +963,20 @@ async function pollDiagnosticoStatus() {
 
     const d = data.diagnostico || {};
 
+    if (d.status === "aguardando") {
+      const pos = Number(d.posicaoFila);
+      const fila = Number.isFinite(pos) && pos > 0 ? ` (posição ${pos} na fila)` : "";
+      setStatus(`Aguardando na fila de diagnósticos${fila}… o servidor processa um por vez.`, "var(--vf-text-m)");
+      PROMO_POLL_TIMER = setTimeout(pollDiagnosticoStatus, intervaloPolling());
+      return;
+    }
+
     if (d.status === "processando") {
       const proc = Number(d.itensProcessados) || 0;
       const tot = Number(d.totalEstimado);
       const prog = Number.isFinite(tot) && tot > 0 ? `${proc}/${tot}` : `${proc}`;
       setStatus(`Processando diagnóstico… ${prog} anúncios varridos.`, "var(--vf-text-m)");
-      PROMO_POLL_TIMER = setTimeout(pollDiagnosticoStatus, PROMO_POLL_INTERVAL);
+      PROMO_POLL_TIMER = setTimeout(pollDiagnosticoStatus, intervaloPolling());
       return;
     }
 
@@ -955,7 +1004,7 @@ async function pollDiagnosticoStatus() {
     }
   } catch (_) {
     // Erro de rede transitório: reagenda mais devagar sem perder o job.
-    if (PROMO_JOB_ID === jobId) PROMO_POLL_TIMER = setTimeout(pollDiagnosticoStatus, PROMO_POLL_INTERVAL * 2);
+    if (PROMO_JOB_ID === jobId) PROMO_POLL_TIMER = setTimeout(pollDiagnosticoStatus, PROMO_POLL_SLOW_MS);
   }
 }
 

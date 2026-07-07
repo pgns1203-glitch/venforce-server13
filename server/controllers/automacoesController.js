@@ -34,7 +34,7 @@ const {
 
 const {
   criarJobDiagnostico,
-  executarDiagnosticoPromocoes,
+  enfileirarDiagnostico,
   buscarStatusDiagnostico,
   buscarUltimoSnapshotPromocoes,
 } = require("../services/automacoes/promocoesDiagnosticoService");
@@ -114,12 +114,15 @@ async function iniciarDiagnosticoPromocoesController(req, res) {
   try {
     const resultado = await criarJobDiagnostico({ userId: req.user?.id, body: req.body });
 
-    // Se já havia um job em andamento, apenas devolve-o para polling (200).
+    // Se já havia um job em andamento para este CLIENTE, devolve-o para polling.
     if (resultado.jaEmAndamento) {
+      // Defensivo: se o job existente está 'aguardando' mas caiu da fila em
+      // memória (restart), reenfileira — enfileirar é idempotente.
+      if (resultado.status === "aguardando") enfileirarDiagnostico(resultado.id);
       return res.status(200).json({
         ok: true,
         diagnostico_id: resultado.id,
-        status: "processando",
+        status: resultado.status,
         jaEmAndamento: true,
         cliente: resultado.cliente,
         base: resultado.base,
@@ -138,17 +141,13 @@ async function iniciarDiagnosticoPromocoesController(req, res) {
       status: "sucesso",
     });
 
-    // Dispara o worker em background (mesmo padrão do diagnóstico completo).
-    setImmediate(() => {
-      executarDiagnosticoPromocoes(resultado.id).catch((err) => {
-        console.error(`[promo-diag ${resultado.id}] falha não tratada:`, err);
-      });
-    });
+    // Entra na FILA (no máximo 1 diagnóstico pesado por vez no servidor).
+    enfileirarDiagnostico(resultado.id);
 
     return res.status(202).json({
       ok: true,
       diagnostico_id: resultado.id,
-      status: "processando",
+      status: "aguardando",
       created_at: resultado.created_at,
       cliente: resultado.cliente,
       base: resultado.base,

@@ -32,10 +32,28 @@ const {
 
 const schemaPath = path.join(__dirname, "..", "..", "sql", "promocoes_diagnostico_schema.sql");
 
+// ─── Configuração (fallback por env) ─────────────────────────────────────────
+// Regras de operação da equipe: no máximo 1 diagnóstico pesado por vez no
+// servidor, lotes pequenos, poucas requests simultâneas ao ML e pausa entre
+// lotes para não estourar rate limit nem o Render.
+const PROMO_QUEUE_CONCURRENCY = Number(process.env.PROMO_QUEUE_CONCURRENCY || 1);
+const PROMO_JOB_ITEM_CONCURRENCY = Number(process.env.PROMO_JOB_ITEM_CONCURRENCY || 3);
+const PROMO_JOB_BATCH_DELAY_MS = Number(process.env.PROMO_JOB_BATCH_DELAY_MS || 700);
+const PROMO_SAME_CLIENT_COOLDOWN_MINUTES = Number(process.env.PROMO_SAME_CLIENT_COOLDOWN_MINUTES || 15);
+const PROMO_SNAPSHOT_FRESH_MINUTES = Number(process.env.PROMO_SNAPSHOT_FRESH_MINUTES || 360);    // 6h
+const PROMO_SNAPSHOT_WARNING_MINUTES = Number(process.env.PROMO_SNAPSHOT_WARNING_MINUTES || 1440); // 24h
+const PROMO_RENDER_LIMIT = Number(process.env.PROMO_RENDER_LIMIT || 50);
+// Jobs 'aguardando'/'processando' sem progresso há mais que isso são considerados
+// órfãos (ex.: deploy/restart no meio) e liberam a trava do cliente.
+const PROMO_JOB_STALE_MINUTES = Number(process.env.PROMO_JOB_STALE_MINUTES || 15);
+
 const DIAG_PROMO_SCROLL_LIMIT = 100;     // máximo por scroll do ML
 const DIAG_PROMO_BATCH_DETAILS = 20;     // lote de GET /items?ids=
-const DIAG_PROMO_ENRICH_CONCURRENCY = 4; // enriquecimentos paralelos
 const SNAPSHOT_INSERT_CHUNK = 400;       // linhas por INSERT em lote
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 let tabelasProntas = false;
 async function ensurePromocoesDiagnosticoTables(db = pool) {
@@ -47,6 +65,64 @@ async function ensurePromocoesDiagnosticoTables(db = pool) {
 
 function numOrNull(v) {
   return v != null && Number.isFinite(Number(v)) ? Number(v) : null;
+}
+
+// ─── Fila de jobs (em processo) ──────────────────────────────────────────────
+// FIFO simples: no máximo PROMO_QUEUE_CONCURRENCY (default 1) diagnóstico
+// pesado rodando por vez. Jobs entram como 'aguardando' e o loop da fila os
+// promove para 'processando' um a um. A fila vive na memória do processo; se o
+// servidor reiniciar, jobs presos são recolhidos pela limpeza de órfãos no
+// próximo start (PROMO_JOB_STALE_MINUTES).
+const filaJobs = [];
+let jobsAtivos = 0;
+
+function posicaoNaFila(diagnosticoId) {
+  const i = filaJobs.indexOf(Number(diagnosticoId));
+  return i >= 0 ? i + 1 : null;
+}
+
+function enfileirarDiagnostico(diagnosticoId) {
+  const id = Number(diagnosticoId);
+  if (!filaJobs.includes(id)) filaJobs.push(id);
+  setImmediate(processarFilaDiagnosticos);
+}
+
+async function processarFilaDiagnosticos() {
+  if (jobsAtivos >= PROMO_QUEUE_CONCURRENCY) return;
+  const proximoId = filaJobs.shift();
+  if (proximoId == null) return;
+
+  jobsAtivos++;
+  try {
+    // Promove só se ainda estiver aguardando (evita reprocessar cancelados/órfãos).
+    const upd = await pool.query(
+      `UPDATE promocoes_diagnosticos
+          SET status = 'processando', updated_at = NOW()
+        WHERE id = $1 AND status = 'aguardando'
+        RETURNING id`,
+      [proximoId]
+    );
+    if (upd.rows.length) {
+      await executarDiagnosticoPromocoes(proximoId);
+    }
+  } catch (err) {
+    console.error(`[promo-diag ${proximoId}] falha na fila:`, err.message);
+    await marcarErroDiagnostico(proximoId, err.message).catch(() => {});
+  } finally {
+    jobsAtivos--;
+    setImmediate(processarFilaDiagnosticos); // próximo da fila
+  }
+}
+
+// Frescor do snapshot: atual (≤6h) | atencao (6–24h) | antigo (>24h).
+function classificarFrescorSnapshot(createdAt) {
+  const ts = new Date(createdAt).getTime();
+  if (!Number.isFinite(ts)) return { idadeMinutos: null, frescor: null };
+  const idadeMinutos = Math.floor((Date.now() - ts) / 60000);
+  let frescor = "atual";
+  if (idadeMinutos > PROMO_SNAPSHOT_WARNING_MINUTES) frescor = "antigo";
+  else if (idadeMinutos > PROMO_SNAPSHOT_FRESH_MINUTES) frescor = "atencao";
+  return { idadeMinutos, frescor };
 }
 
 // Resolve cliente + base + ml_user_id (mesmas validações do preview).
@@ -82,32 +158,68 @@ async function criarJobDiagnostico({ userId, body }) {
   await ensurePromocoesDiagnosticoTables();
   const { cliente, base, mlUserId } = await resolverClienteBase(b.clienteSlug, b.baseSlug);
 
-  // Evita jobs duplicados: se já há um 'processando' p/ este cliente+base,
-  // devolve-o para o front apenas fazer polling (start idempotente).
+  // Limpeza de órfãos: jobs presos em 'aguardando'/'processando' sem progresso
+  // (ex.: restart/deploy no meio) não podem travar o cliente para sempre.
+  await pool.query(
+    `UPDATE promocoes_diagnosticos
+        SET status = 'erro',
+            aviso = 'Job abandonado sem progresso (provável reinício do servidor).',
+            updated_at = NOW()
+      WHERE cliente_id = $1
+        AND status IN ('aguardando','processando')
+        AND updated_at < NOW() - ($2 * INTERVAL '1 minute')`,
+    [cliente.id, PROMO_JOB_STALE_MINUTES]
+  );
+
+  // Regra 2: nunca 2 jobs simultâneos para o MESMO CLIENTE (qualquer base).
   const emAndamento = await pool.query(
-    `SELECT id FROM promocoes_diagnosticos
-      WHERE cliente_id = $1 AND base_slug = $2 AND status = 'processando'
+    `SELECT id, status FROM promocoes_diagnosticos
+      WHERE cliente_id = $1 AND status IN ('aguardando','processando')
       ORDER BY id DESC LIMIT 1`,
-    [cliente.id, base.slug]
+    [cliente.id]
   );
   if (emAndamento.rows.length) {
+    const job = emAndamento.rows[0];
     return {
-      id: emAndamento.rows[0].id,
-      status: "processando",
+      id: job.id,
+      status: job.status,
       jaEmAndamento: true,
       cliente: { id: cliente.id, slug: cliente.slug, nome: cliente.nome },
       base: { id: base.id, slug: base.slug, nome: base.nome },
     };
   }
 
+  // Regra 12: cooldown de 15 min para revarrer a mesma conta.
+  const cd = await pool.query(
+    `SELECT id, created_at,
+            CEIL(EXTRACT(EPOCH FROM (created_at + ($2 * INTERVAL '1 minute') - NOW())) / 60)::int AS restante_min
+       FROM promocoes_diagnosticos
+      WHERE cliente_id = $1
+        AND status = 'concluido'
+        AND created_at > NOW() - ($2 * INTERVAL '1 minute')
+      ORDER BY created_at DESC LIMIT 1`,
+    [cliente.id, PROMO_SAME_CLIENT_COOLDOWN_MINUTES]
+  );
+  if (cd.rows.length) {
+    const restante = Math.max(1, Number(cd.rows[0].restante_min) || 1);
+    throw criarErroHttp(429, {
+      ok: false,
+      erro: `Esta conta foi varrida há menos de ${PROMO_SAME_CLIENT_COOLDOWN_MINUTES} minutos. Aguarde ~${restante} min ou use o último snapshot.`,
+      cooldown: true,
+      cooldownRestanteMinutos: restante,
+      snapshot_id: cd.rows[0].id,
+    });
+  }
+
   const margemAlvo = b.margemAlvo != null ? toAliquota(b.margemAlvo) : null;
   const tolerancia = b.tolerancia != null ? toAliquota(b.tolerancia) : null;
 
+  // Entra na FILA como 'aguardando'; o loop da fila promove para 'processando'.
   const ins = await pool.query(
     `INSERT INTO promocoes_diagnosticos
        (user_id, cliente_id, cliente_slug, base_id, base_slug, seller_id,
         margem_alvo, tolerancia, status, origem)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'processando','scan')
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'aguardando','scan')
      RETURNING id, created_at`,
     [
       userId ?? null,
@@ -123,7 +235,7 @@ async function criarJobDiagnostico({ userId, body }) {
 
   return {
     id: ins.rows[0].id,
-    status: "processando",
+    status: "aguardando",
     jaEmAndamento: false,
     created_at: ins.rows[0].created_at,
     cliente: { id: cliente.id, slug: cliente.slug, nome: cliente.nome },
@@ -321,7 +433,7 @@ async function executarDiagnosticoPromocoes(diagnosticoId) {
     return;
   }
 
-  const limitar = pLimit(DIAG_PROMO_ENRICH_CONCURRENCY);
+  const limitar = pLimit(PROMO_JOB_ITEM_CONCURRENCY);
   let itensProcessados = 0;
   let totalEstimado = null;
   let scrollId = null;
@@ -385,6 +497,9 @@ async function executarDiagnosticoPromocoes(diagnosticoId) {
         const linhas = resultados.map((r) => r.linha).filter(Boolean);
         if (linhas.length) await inserirItensLote(diagnosticoId, linhas);
         await atualizarProgresso(diagnosticoId, itensProcessados, totalEstimado);
+
+        // Pausa entre lotes para não estourar rate limit do ML nem o Render.
+        if (PROMO_JOB_BATCH_DELAY_MS > 0) await sleep(PROMO_JOB_BATCH_DELAY_MS);
       }
 
       if (!scan.data?.scroll_id) break;
@@ -429,6 +544,7 @@ async function buscarStatusDiagnostico({ idRaw }) {
     diagnostico: {
       id: d.id,
       status: d.status,
+      posicaoFila: d.status === "aguardando" ? posicaoNaFila(d.id) : null,
       clienteSlug: d.cliente_slug,
       baseSlug: d.base_slug,
       sellerId: d.seller_id,
@@ -470,6 +586,8 @@ async function buscarUltimoSnapshotPromocoes({ clienteSlugRaw, baseSlugRaw }) {
   );
   const linhas = itensRes.rows.map((r) => r.payload_raw).filter(Boolean);
 
+  const { idadeMinutos, frescor } = classificarFrescorSnapshot(snap.created_at);
+
   return {
     ok: true,
     existe: true,
@@ -488,6 +606,10 @@ async function buscarUltimoSnapshotPromocoes({ clienteSlugRaw, baseSlugRaw }) {
       geradoEm: snap.created_at,
       atualizadoEm: snap.updated_at,
       avisos: snap.aviso ? [snap.aviso] : [],
+      // Frescor: atual (≤6h) | atencao (6–24h) | antigo (>24h → recomendar revarrer).
+      idadeMinutos,
+      frescor,
+      renderLimit: PROMO_RENDER_LIMIT,
     },
     resumo: (snap.payload_resumo && typeof snap.payload_resumo === "object")
       ? snap.payload_resumo
@@ -499,6 +621,7 @@ async function buscarUltimoSnapshotPromocoes({ clienteSlugRaw, baseSlugRaw }) {
 module.exports = {
   ensurePromocoesDiagnosticoTables,
   criarJobDiagnostico,
+  enfileirarDiagnostico,
   executarDiagnosticoPromocoes,
   buscarStatusDiagnostico,
   buscarUltimoSnapshotPromocoes,

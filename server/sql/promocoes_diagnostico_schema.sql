@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS promocoes_diagnosticos (
   seller_id                 TEXT,
   margem_alvo               NUMERIC,
   tolerancia                NUMERIC,
-  -- Estado do job: processando | concluido | erro.
+  -- Estado do job: aguardando (na fila) | processando | concluido | erro.
   status                    TEXT NOT NULL DEFAULT 'processando',
   -- Progresso da varredura (para o polling do front).
   itens_processados         INTEGER NOT NULL DEFAULT 0,

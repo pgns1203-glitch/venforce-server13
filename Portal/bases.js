@@ -1170,7 +1170,11 @@ let DRAWER_BTN_ORIGEM = null;
 let DRAWER_SLUG = "";
 let DRAWER_BASE_ATUAL = null;       // objeto da base aberta no drawer
 let DRAWER_ITEM_EDITANDO = null;    // item em edição (null = adicionar/planilha)
+// Lote de linhas já classificadas do preview da planilha, aguardando confirmação.
+// Formato: { marketplace, linhas: [{ id, id_model, custo, imposto, acao }] }.
+let PLANILHA_STATE = null;
 const DRAWER_LIMITE = 500;
+const PLANILHA_PREVIEW_LIMITE = 300;
 
 function abrirDrawer() {
   document.getElementById("bases-drawer-backdrop")?.classList.add("is-open");
@@ -1647,26 +1651,245 @@ function abrirPainelPlanilha() {
   panel.scrollIntoView({ block: "nearest" });
 }
 
-// Preview seguro (Opção B): valida o arquivo e mostra estado informativo.
-// Não chama API, não reimporta, não apaga nada — commit incremental fica p/ etapa futura.
-function previewPlanilhaDrawer() {
+// Deduplica as linhas normalizadas do preview (mantém a ÚLTIMA ocorrência por ID,
+// contando quantas foram sobrescritas) e classifica cada uma contra DRAWER_ITENS.
+// A classificação usa apenas o produto_id — mesma chave do upsert no backend
+// (base_id + produto_id), então "Atualizar/Adicionar" reflete o que de fato ocorre.
+function dedupEClassificarPlanilha(rows) {
+  const existentes = new Set(DRAWER_ITENS.map((it) => String(it.id)));
+  const porId = new Map();
+  let duplicadosSobrescritos = 0;
+
+  for (const r of rows) {
+    if (!r || r.id == null) continue;
+    const id = String(r.id);
+    if (porId.has(id)) duplicadosSobrescritos++;
+    porId.set(id, r); // última ocorrência vence
+  }
+
+  const linhas = [];
+  let nAtualizar = 0;
+  let nAdicionar = 0;
+  for (const r of porId.values()) {
+    const existe = existentes.has(String(r.id));
+    if (existe) nAtualizar++; else nAdicionar++;
+    linhas.push({
+      id: String(r.id),
+      id_model: r.id_model ?? null,
+      custo: r.custo,
+      imposto: r.imposto,
+      acao: existe ? "atualizar" : "adicionar",
+    });
+  }
+
+  return { linhas, nAtualizar, nAdicionar, duplicadosSobrescritos };
+}
+
+function badgeAcaoPlanilha(acao) {
+  if (acao === "atualizar") return `<span class="b-cost-badge is-atualizar">Atualizar</span>`;
+  if (acao === "adicionar") return `<span class="b-cost-badge is-adicionar">Adicionar</span>`;
+  return `<span class="b-cost-badge is-ignorar">Ignorar</span>`;
+}
+
+// Preview REAL: parseia a planilha via endpoint seguro (não salva nada), classifica
+// e mostra o resumo + tabela. Não chama /importar-base, não reimporta, não apaga.
+async function previewPlanilhaDrawer() {
   const fileInput = document.getElementById("cost-planilha-arquivo");
   const file = fileInput?.files?.[0];
   const box = document.getElementById("cost-planilha-preview-box");
+  const previewBtn = document.getElementById("cost-planilha-preview");
 
+  PLANILHA_STATE = null;
   if (!file) { setCostFeedback("Selecione um arquivo .xlsx, .xls ou .csv.", "danger"); return; }
   if (!validarArquivoUpdate(file)) { setCostFeedback("Arquivo inválido. Envie .xlsx, .xls ou .csv.", "danger"); return; }
 
-  setCostFeedback("Atualização incremental por planilha será finalizada na próxima etapa. O fluxo antigo de reimportação não será usado para evitar apagar itens ausentes.", "neutral");
+  const textoBtn = previewBtn ? previewBtn.textContent : "Pré-visualizar atualização";
+  if (previewBtn) { previewBtn.disabled = true; previewBtn.textContent = "Processando…"; }
+  setCostFeedback("Lendo e classificando a planilha…", "neutral");
+  if (box) { box.style.display = "none"; box.innerHTML = ""; }
+
+  try {
+    const marketplace = DRAWER_IS_SHOPEE ? "shopee" : "meli";
+    const fd = new FormData();
+    fd.append("arquivo", file);
+    // Preview seguro: o servidor apenas parseia/normaliza e devolve dados_importacao.
+    // NÃO usa /importar-base e NÃO envia confirmar=true — nada é gravado aqui.
+    fd.append("config", JSON.stringify({ marketplace }));
+
+    const res = await fetch(`${API_BASE}/bases/assistente/preview`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: fd,
+    });
+    if (res.status === 401) { clearSession(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.erro || `HTTP ${res.status}`);
+
+    const dados = Array.isArray(data.dados_importacao) ? data.dados_importacao : [];
+    const resumo = data.resumo || {};
+    const { linhas, nAtualizar, nAdicionar, duplicadosSobrescritos } = dedupEClassificarPlanilha(dados);
+
+    const idsPlanilha = new Set(linhas.map((l) => String(l.id)));
+    const preservados = DRAWER_ITENS.filter((it) => !idsPlanilha.has(String(it.id))).length;
+    const ignoradas = Number(resumo.linhas_ignoradas || 0);
+    const lidas = Number(resumo.linhas_lidas || dados.length);
+
+    PLANILHA_STATE = { marketplace, linhas };
+
+    renderPreviewPlanilha({
+      lidas, nAtualizar, nAdicionar, ignoradas, duplicadosSobrescritos, preservados,
+    });
+    setCostFeedback("", "");
+  } catch (err) {
+    PLANILHA_STATE = null;
+    setCostFeedback("Erro ao processar a planilha: " + (err?.message || "tente novamente."), "danger");
+  } finally {
+    if (previewBtn) { previewBtn.disabled = false; previewBtn.textContent = textoBtn; }
+  }
+}
+
+function renderPreviewPlanilha({ lidas, nAtualizar, nAdicionar, ignoradas, duplicadosSobrescritos, preservados }) {
+  const box = document.getElementById("cost-planilha-preview-box");
   if (!box) return;
+
+  const linhas = (PLANILHA_STATE && PLANILHA_STATE.linhas) || [];
+  const validos = linhas.length;
+  const isShopee = DRAWER_IS_SHOPEE;
+
+  const resumoLinhas = [
+    `${lidas} linha(s) lida(s)`,
+    `${validos} item(ns) válido(s)`,
+    `${nAtualizar} será(ão) atualizado(s)`,
+    `${nAdicionar} será(ão) adicionado(s)`,
+    ignoradas ? `${ignoradas} linha(s) ignorada(s)` : null,
+    duplicadosSobrescritos ? `${duplicadosSobrescritos} duplicado(s) na planilha (mantida a última ocorrência)` : null,
+    `${preservados} item(ns) atual(is) da base será(ão) preservado(s) se não vieram na planilha`,
+  ].filter(Boolean);
+
+  const exibidos = linhas.slice(0, PLANILHA_PREVIEW_LIMITE);
+  const thIdModel = isShopee ? `<th>ID Model</th>` : "";
+  const corpo = exibidos.map((l) => {
+    const obs = l.acao === "adicionar"
+      ? "Novo item"
+      : (Number.isFinite(Number(l.imposto)) ? "Sobrescreve custo e imposto" : "Sobrescreve custo · imposto atual mantido");
+    const idModelTd = isShopee ? `<td class="b-mono">${escapeHTML(String(l.id_model ?? "—"))}</td>` : "";
+    return `<tr>
+      <td class="b-mono">${escapeHTML(String(l.id))}</td>
+      ${idModelTd}
+      <td class="num b-mono">${escapeHTML(fmtMoedaDrawer(l.custo))}</td>
+      <td class="num b-mono">${escapeHTML(fmtPercentDrawer(l.imposto))}</td>
+      <td class="num b-mono">—</td>
+      <td>${badgeAcaoPlanilha(l.acao)}</td>
+      <td>${escapeHTML(obs)}</td>
+    </tr>`;
+  }).join("");
+
+  const truncado = linhas.length > exibidos.length
+    ? `<p class="b-cost-microcopy" style="margin-top:6px;">Mostrando ${exibidos.length} de ${linhas.length} itens válidos. Todos serão salvos ao confirmar.</p>`
+    : "";
+
   box.innerHTML = `
-    <div class="b-cost-preview-title">Preview incremental — próxima etapa</div>
-    <p style="margin:0 0 8px;">Arquivo pronto: <b>${escapeHTML(file.name)}</b>.</p>
-    <p style="margin:0;color:var(--b-text-l);">A classificação adicionar/atualizar será confirmada na etapa de commit incremental.</p>
+    <div class="b-cost-preview-title">Preview da atualização incremental</div>
+    <ul class="b-planilha-resumo">${resumoLinhas.map((t) => `<li>${escapeHTML(t)}</li>`).join("")}</ul>
+    <p class="b-cost-microcopy" style="margin:0 0 8px;">Taxa fixa não vem nesta planilha: o valor atual de cada item é preservado.</p>
+    <div class="b-planilha-table-wrap">
+      <table class="b-planilha-table">
+        <thead><tr>
+          <th>Produto / MLB / SKU</th>${thIdModel}
+          <th class="num">Custo</th><th class="num">Imposto</th><th class="num">Taxa fixa</th>
+          <th>Ação</th><th>Observação</th>
+        </tr></thead>
+        <tbody>${corpo || `<tr><td colspan="${isShopee ? 7 : 6}" class="b-table-empty">Nenhum item válido para salvar.</td></tr>`}</tbody>
+      </table>
+    </div>
+    ${truncado}
+    <div class="b-cost-feedback" id="cost-planilha-result" style="display:none;" aria-live="polite"></div>
     <div class="b-cost-form-actions" style="margin-top:12px;">
-      <button type="button" class="b-btn b-btn--sm" disabled>Confirmar atualização incremental — próxima etapa</button>
+      <button type="button" class="b-btn b-btn--primary b-btn--sm" id="cost-planilha-confirm"${validos ? "" : " disabled"}>Confirmar atualização incremental</button>
     </div>`;
   box.style.display = "block";
+  document.getElementById("cost-planilha-confirm")?.addEventListener("click", confirmarPlanilhaDrawer);
+  box.scrollIntoView({ block: "nearest" });
+}
+
+function setPlanilhaResult(msg, tipo) {
+  const el = document.getElementById("cost-planilha-result");
+  if (!el) return;
+  el.className = "b-cost-feedback" + (tipo ? ` is-${tipo}` : "");
+  el.textContent = msg || "";
+  el.style.display = msg ? "block" : "none";
+}
+
+// Atualização incremental: usa upsert por item para preservar produtos ausentes.
+// Nunca chama /importar-base, nunca envia confirmar=true, nunca faz DELETE.
+async function confirmarPlanilhaDrawer() {
+  const slug = String(DRAWER_SLUG || "").trim();
+  if (!slug || !PLANILHA_STATE || !Array.isArray(PLANILHA_STATE.linhas) || !PLANILHA_STATE.linhas.length) return;
+
+  const linhas = PLANILHA_STATE.linhas;
+  const marketplace = PLANILHA_STATE.marketplace;
+  const confirmBtn = document.getElementById("cost-planilha-confirm");
+  const previewBtn = document.getElementById("cost-planilha-preview");
+
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = "Atualizando…"; }
+  if (previewBtn) previewBtn.disabled = true;
+  setCostFeedback("Atualizando itens… não feche o painel.", "neutral");
+  setPlanilhaResult("", "");
+
+  let atualizados = 0;
+  let adicionados = 0;
+  let falhas = 0;
+  const errosDetalhe = [];
+
+  for (const linha of linhas) {
+    const payload = { produto_id: linha.id, custo_produto: linha.custo };
+    // Imposto só é enviado quando veio na planilha; ausente preserva o valor atual
+    // (item existente) ou usa o padrão da base (item novo). Nunca zera à força.
+    if (Number.isFinite(Number(linha.imposto))) payload.imposto_percentual = Number(linha.imposto);
+    // Taxa fixa não é extraída deste preview → omitida → preservada.
+    if (marketplace === "shopee" && linha.id_model) payload.id_model = linha.id_model;
+
+    try {
+      const res = await fetch(`${API_BASE}/bases/${encodeURIComponent(slug)}/custos/upsert`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.status === 401) { clearSession(); return; }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        falhas++;
+        if (errosDetalhe.length < 10) errosDetalhe.push(`${linha.id}: ${data.erro || `HTTP ${res.status}`}`);
+        continue;
+      }
+      if (data.acao === "criado") adicionados++; else atualizados++;
+    } catch (err) {
+      falhas++;
+      if (errosDetalhe.length < 10) errosDetalhe.push(`${linha.id}: ${err?.message || "erro de conexão"}`);
+    }
+  }
+
+  // Recarrega os custos do drawer e a lista de bases (contagens/KPIs).
+  await carregarCustosDrawer(slug);
+  await loadBases();
+
+  const houveSucesso = (atualizados + adicionados) > 0;
+  const tipoFinal = falhas ? (houveSucesso ? "neutral" : "danger") : "success";
+  const msgFinal = `Atualização concluída: ${atualizados} atualizados, ${adicionados} adicionados, ${falhas} falhas. Nenhum item ausente foi apagado.`;
+  setCostFeedback(msgFinal, tipoFinal);
+
+  const detalhe = falhas && errosDetalhe.length
+    ? `<p class="b-cost-microcopy" style="margin:6px 0 0;">Falhas (até 10): ${escapeHTML(errosDetalhe.join(" · "))}</p>`
+    : "";
+  const resultTipo = falhas ? (houveSucesso ? "neutral" : "danger") : "success";
+  setPlanilhaResult(msgFinal, resultTipo);
+  const resultEl = document.getElementById("cost-planilha-result");
+  if (resultEl && detalhe) resultEl.insertAdjacentHTML("beforeend", detalhe);
+
+  // Evita reconfirmar o mesmo lote; painel permanece aberto com o resultado final.
+  PLANILHA_STATE = null;
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = "Atualização concluída"; }
+  if (previewBtn) previewBtn.disabled = false;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

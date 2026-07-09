@@ -497,6 +497,35 @@
 }
 .vf-page-bases .b-cost-preview-title { font-weight: 650; color: var(--b-text); margin-bottom: 6px; font-size: var(--b-fs-sm); }
 
+/* Resumo do preview incremental da planilha */
+.vf-page-bases .b-planilha-resumo {
+  list-style: none; margin: 0 0 8px; padding: 0;
+  display: grid; gap: 3px; font-size: var(--b-fs-xs); color: var(--b-text-m);
+}
+.vf-page-bases .b-planilha-resumo li { padding-left: 14px; position: relative; }
+.vf-page-bases .b-planilha-resumo li::before {
+  content: "•"; position: absolute; left: 2px; color: var(--b-text-l);
+}
+
+/* Tabela do preview (rolagem horizontal própria para não estourar o painel) */
+.vf-page-bases .b-planilha-table-wrap { overflow-x: auto; border: 1px solid var(--b-border); border-radius: var(--b-radius-sm); }
+.vf-page-bases .b-planilha-table { width: 100%; border-collapse: collapse; font-size: var(--b-fs-2xs); }
+.vf-page-bases .b-planilha-table th,
+.vf-page-bases .b-planilha-table td { padding: 6px 8px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--b-border); }
+.vf-page-bases .b-planilha-table th { background: var(--b-bg-2); color: var(--b-text-m); font-weight: 600; }
+.vf-page-bases .b-planilha-table th.num,
+.vf-page-bases .b-planilha-table td.num { text-align: right; }
+.vf-page-bases .b-planilha-table tbody tr:last-child td { border-bottom: 0; }
+
+/* Badges de ação (Atualizar / Adicionar / Ignorar) */
+.vf-page-bases .b-cost-badge {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: var(--b-fs-2xs); font-weight: 600; border: 1px solid transparent;
+}
+.vf-page-bases .b-cost-badge.is-atualizar { background: var(--b-info-bg); color: var(--b-info); border-color: rgba(29,95,184,.18); }
+.vf-page-bases .b-cost-badge.is-adicionar { background: var(--b-success-bg); color: var(--b-success); border-color: rgba(15,122,82,.18); }
+.vf-page-bases .b-cost-badge.is-ignorar { background: var(--b-bg-2); color: var(--b-text-m); border-color: var(--b-border); }
+
 /* Feedback dentro do painel */
 .vf-page-bases .b-cost-feedback { font-size: var(--b-fs-sm); padding: 10px 12px; border-radius: var(--b-radius-sm); }
 .vf-page-bases .b-cost-feedback.is-success { background: var(--b-success-bg); color: var(--b-success); }

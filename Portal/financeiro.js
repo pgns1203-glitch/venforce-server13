@@ -443,15 +443,25 @@ function montarPayloadFechamentoCliente(data) {
   const refundsTotal = safeNumber(summaryNormalized.refundsTotal);
   const refundsCount = safeNumber(summaryNormalized.refundsCount);
   const finalResult = safeNumber(summaryNormalized.finalResult);
+  // MC Final = LC Total (summary.finalResult) já descontado de Ads/Venforce/Afiliados, sobre o faturamento considerado.
+  const mcFinal = net > 0 ? finalResult / net : 0;
+
+  const isShopee = summaryNormalized.marketplace === "shopee" || !!summaryNormalized.hasShopeeStatusData;
 
   const lostRevenueTotal = safeNumber(summaryNormalized.lostRevenueTotal);
   const faturamentoPerdido = lostRevenueTotal > 0 ? -lostRevenueTotal : 0;
 
-  const resumoExecutivo = [
-    `Fechamento financeiro processado para ${String(meta.marketplace || "").toUpperCase()} em ${formatDateTimePtBR(meta.dataGeracao)}.`,
-    `Receita bruta: ${brl(gross)} · Receita líquida: ${brl(net)} · LC total: ${brl(lcTotal)} · MC média: ${pct(mcMedia)}.`,
-    `Resultado final (após ADS/Venforce/Afiliados): ${brl(finalResult)} · TACoS: ${pct(tacos)}.`,
-  ].join(" ");
+  const resumoExecutivo = isShopee
+    ? [
+        `Fechamento financeiro processado para ${String(meta.marketplace || "").toUpperCase()} em ${formatDateTimePtBR(meta.dataGeracao)}.`,
+        `Receita bruta: ${brl(gross)} · Receita líquida: ${brl(net)}.`,
+        `LC Total após Ads, Venforce e afiliados: ${brl(finalResult)} · MC Final: ${pct(mcFinal)} · TACoS: ${pct(tacos)}.`,
+      ].join(" ")
+    : [
+        `Fechamento financeiro processado para ${String(meta.marketplace || "").toUpperCase()} em ${formatDateTimePtBR(meta.dataGeracao)}.`,
+        `Receita bruta: ${brl(gross)} · Receita líquida: ${brl(net)} · LC total: ${brl(lcTotal)} · MC média: ${pct(mcMedia)}.`,
+        `Resultado final (após ADS/Venforce/Afiliados): ${brl(finalResult)} · TACoS: ${pct(tacos)}.`,
+      ].join(" ");
 
   const unmatched = Array.isArray(data?.unmatchedIds) ? data.unmatchedIds : [];
   const unmatchedCancelled = Array.isArray(data?.unmatchedCancelled) ? data.unmatchedCancelled : [];
@@ -465,22 +475,19 @@ function montarPayloadFechamentoCliente(data) {
     return "positivo";
   })();
 
-  const isShopee = summaryNormalized.marketplace === "shopee" || !!summaryNormalized.hasShopeeStatusData;
-
   const cards = isShopee
     ? [
+        { titulo: "Receita Bruta", valor: brl(gross), subtitulo: "Total vendido no período.", raw: gross, status: "neutro" },
+        { titulo: "Receita Líquida", valor: brl(net), subtitulo: "Receita recebida no período.", raw: net, status: "neutro" },
         {
-          titulo: "Resultado Final",
+          titulo: "LC Total",
           valor: brl(finalResult),
-          subtitulo: "Resultado após despesas (ADS/Venforce/Afiliados).",
+          subtitulo: "LC Total após Ads, Venforce e afiliados.",
           destaque: true,
           raw: finalResult,
           status: finalResult > 0 ? "positivo" : (finalResult < 0 ? "critico" : "neutro"),
         },
-        { titulo: "Receita Bruta", valor: brl(gross), subtitulo: "Total vendido no período.", raw: gross, status: "neutro" },
-        { titulo: "Receita Líquida", valor: brl(net), subtitulo: "Receita recebida no período.", raw: net, status: "neutro" },
-        { titulo: "LC Total", valor: brl(lcTotal), subtitulo: "Lucro de contribuição total.", raw: lcTotal, status: lcTotal > 0 ? "positivo" : (lcTotal < 0 ? "critico" : "neutro") },
-        { titulo: "MC Média", valor: pct(mcMedia), subtitulo: "Margem de contribuição média.", raw: mcMedia, tipoValor: "pct", status: mcMedia >= 0.15 ? "positivo" : (mcMedia < 0 ? "critico" : "atencao") },
+        { titulo: "MC Final", valor: pct(mcFinal), subtitulo: "Margem de contribuição final.", raw: mcFinal, tipoValor: "pct", status: mcFinal >= 0.15 ? "positivo" : (mcFinal < 0 ? "critico" : "atencao") },
         { titulo: "TACoS", valor: pct(tacos), subtitulo: "ADS como % da receita.", raw: tacos, tipoValor: "pct", status: "neutro" },
         { titulo: "Pedidos cancelados (Shopee)", valor: num(summaryNormalized.cancelledCount || 0), subtitulo: "Cancelados confirmados via Order.all (excluídos: não pagos, devoluções e reembolsos).", raw: summaryNormalized.cancelledCount || 0, status: (summaryNormalized.cancelledCount || 0) > 0 ? "atencao" : "neutro" },
         { titulo: "Faturamento perdido (Shopee)", valor: brl(-(summaryNormalized.cancelledLostRevenue || 0)), subtitulo: "Receita estimada apenas de pedidos cancelados confirmados.", raw: summaryNormalized.cancelledLostRevenue || 0, status: (summaryNormalized.cancelledLostRevenue || 0) > 0 ? "atencao" : "neutro" },
@@ -785,6 +792,7 @@ function limparFinResumoExecutivo() {
 
 function renderFinResumoExecutivo(data) {
   const s = data?.summary || {};
+  const isShopee = String(data?._vf_meta?.marketplace || "").toLowerCase() === "shopee";
   const ads = Number(document.getElementById("fin-ads")?.value || 0);
   const venforce = Number(document.getElementById("fin-venforce")?.value || 0);
   const afiliados = Number(document.getElementById("fin-affiliates")?.value || 0);
@@ -796,6 +804,8 @@ function renderFinResumoExecutivo(data) {
   const finalResult = Number(s.finalResult || 0);
   const lcTotal = Number(s.contributionProfitTotal || 0);
   const mcMedia = Number(s.averageContributionMargin || 0);
+  // MC Final (Shopee) = LC Total (summary.finalResult) já pós Ads/Venforce/Afiliados, sobre o faturamento considerado.
+  const mcFinal = net > 0 ? finalResult / net : 0;
   const tacosValue = Number(s.tacos || 0);
 
   setExecValue("fin-exec-receita-bruta", gross, brl, gross > 0 ? "positive" : "neutral");
@@ -807,14 +817,28 @@ function renderFinResumoExecutivo(data) {
   setExecValue("fin-exec-venforce", venforce, brl, venforce > 0 ? "negative" : "muted");
   setExecValue("fin-exec-afiliados", afiliados, brl, afiliados > 0 ? "negative" : "muted");
 
-  setExecValue("fin-exec-resultado-final", finalResult, brl, finalResult > 0 ? "positive" : (finalResult < 0 ? "negative" : "neutral"));
-  setExecValue("fin-exec-lc-total", lcTotal, brl, lcTotal > 0 ? "positive" : (lcTotal < 0 ? "negative" : "neutral"));
-  setExecValue("fin-exec-mc-media", mcMedia, pct, mcMedia > 0 ? "positive" : (mcMedia < 0 ? "negative" : "neutral"));
+  // Shopee: evita mostrar "Resultado Final" e "LC Total" como dois números concorrentes.
+  const resultadoFinalRow = document.getElementById("fin-exec-resultado-final")?.closest(".fc-exec-row");
+  const mcMediaLabelEl = document.getElementById("fin-exec-mc-media")?.previousElementSibling;
+
+  if (isShopee) {
+    if (resultadoFinalRow) resultadoFinalRow.style.display = "none";
+    setExecValue("fin-exec-lc-total", finalResult, brl, finalResult > 0 ? "positive" : (finalResult < 0 ? "negative" : "neutral"));
+    if (mcMediaLabelEl) mcMediaLabelEl.textContent = "MC Final";
+    setExecValue("fin-exec-mc-media", mcFinal, pct, mcFinal > 0 ? "positive" : (mcFinal < 0 ? "negative" : "neutral"));
+  } else {
+    if (resultadoFinalRow) resultadoFinalRow.style.display = "";
+    setExecValue("fin-exec-resultado-final", finalResult, brl, finalResult > 0 ? "positive" : (finalResult < 0 ? "negative" : "neutral"));
+    setExecValue("fin-exec-lc-total", lcTotal, brl, lcTotal > 0 ? "positive" : (lcTotal < 0 ? "negative" : "neutral"));
+    if (mcMediaLabelEl) mcMediaLabelEl.textContent = "MC Média";
+    setExecValue("fin-exec-mc-media", mcMedia, pct, mcMedia > 0 ? "positive" : (mcMedia < 0 ? "negative" : "neutral"));
+  }
   setExecValue("fin-exec-tacos", tacosValue, pct, "muted");
 }
 
 function renderFinResumo(data) {
   const s = data?.summary || {};
+  const isShopee = String(data?._vf_meta?.marketplace || "").toLowerCase() === "shopee";
 
   function setCard(id, rawValue, formattedValue) {
     const el = document.getElementById(id)?.querySelector(".fc-stat-value");
@@ -828,9 +852,26 @@ function renderFinResumo(data) {
 
   setCard("fin-bruto", s.grossRevenueTotal, brl(s.grossRevenueTotal));
   setCard("fin-liquido", s.paidRevenueTotal, brl(s.paidRevenueTotal));
-  setCard("fin-lc", s.contributionProfitTotal, brl(s.contributionProfitTotal));
-  setCard("fin-mc", s.averageContributionMargin, pct(s.averageContributionMargin));
-  setCard("fin-resultado", s.finalResult, brl(s.finalResult));
+
+  // Shopee: "LC Total" passa a ser summary.finalResult (já pós Ads/Venforce/Afiliados);
+  // o card "Resultado Final" fica escondido por ser o mesmo valor, e "MC Média" vira "MC Final".
+  const finResultadoEl = document.getElementById("fin-resultado");
+  const mcTitleEl = document.getElementById("fin-mc")?.querySelector(".fc-stat-title");
+  if (isShopee) {
+    if (finResultadoEl) finResultadoEl.style.display = "none";
+    const finalResult = Number(s.finalResult || 0);
+    const net = Number(s.paidRevenueTotal || 0);
+    const mcFinal = net > 0 ? finalResult / net : 0;
+    setCard("fin-lc", finalResult, brl(finalResult));
+    if (mcTitleEl) mcTitleEl.textContent = "MC Final";
+    setCard("fin-mc", mcFinal, pct(mcFinal));
+  } else {
+    if (finResultadoEl) finResultadoEl.style.display = "";
+    if (mcTitleEl) mcTitleEl.textContent = "MC Média";
+    setCard("fin-lc", s.contributionProfitTotal, brl(s.contributionProfitTotal));
+    setCard("fin-mc", s.averageContributionMargin, pct(s.averageContributionMargin));
+    setCard("fin-resultado", s.finalResult, brl(s.finalResult));
+  }
   setCard("fin-tacos", s.tacos, pct(s.tacos));
 
   // Cancelamentos: setCard já pinta vermelho quando valor < 0
@@ -891,24 +932,33 @@ function renderLeituraFechamento(data) {
   const host = document.getElementById("fin-leitura");
   if (!host) return;
   const s = data?.summary || {};
+  const isShopee = String(data?._vf_meta?.marketplace || "").toLowerCase() === "shopee";
   const finalResult = Number(s.finalResult || 0);
   const lcTotal = Number(s.contributionProfitTotal || 0);
   const mcMedia = Number(s.averageContributionMargin || 0);
+  const net = Number(s.paidRevenueTotal || 0);
+  const mcFinal = net > 0 ? finalResult / net : 0;
   const tacos = Number(s.tacos || 0);
   const unmatched = Array.isArray(data?.unmatchedIds) ? data.unmatchedIds.length : 0;
   const refundsCount = Number(s.refundsCount || 0);
   const lost = Number(s.lostRevenueTotal || 0);
 
   const positivo = finalResult >= 0;
+  // Shopee: não repetir o mesmo valor sob dois rótulos concorrentes (LC total / Resultado final).
+  const mcReferencia = isShopee ? mcFinal : mcMedia;
   const bullets = [];
-  bullets.push(`Resultado final ${positivo ? "positivo" : "negativo"} de <b>${brl(finalResult)}</b> (LC total ${brl(lcTotal)}, MC média ${pct(mcMedia)}).`);
+  if (isShopee) {
+    bullets.push(`LC Total após Ads, Venforce e afiliados ${positivo ? "positivo" : "negativo"} de <b>${brl(finalResult)}</b> (MC Final ${pct(mcFinal)}).`);
+  } else {
+    bullets.push(`Resultado final ${positivo ? "positivo" : "negativo"} de <b>${brl(finalResult)}</b> (LC total ${brl(lcTotal)}, MC média ${pct(mcMedia)}).`);
+  }
   if (tacos > 0) bullets.push(`TACoS de <b>${pct(tacos)}</b> — ADS como percentual da receita.`);
-  if (mcMedia < 0.15) bullets.push(`Margem de contribuição média <b>abaixo de 15%</b> — atenção a custos, comissões e frete.`);
+  if (mcReferencia < 0.15) bullets.push(`Margem de contribuição ${isShopee ? "final" : "média"} <b>abaixo de 15%</b> — atenção a custos, comissões e frete.`);
   if (unmatched > 0) bullets.push(`<b>${num(unmatched)}</b> produto(s) sem custo/base cadastrado — os cálculos podem estar incompletos.`);
   if (refundsCount > 0) bullets.push(`<b>${num(refundsCount)}</b> cancelamento(s)/reembolso(s) no período.`);
   if (lost > 0) bullets.push(`Faturamento perdido estimado de <b>${brl(lost)}</b> em pedidos cancelados.`);
 
-  const tone = !positivo || mcMedia < 0 ? "danger" : (mcMedia < 0.15 || unmatched > 0 ? "warn" : "success");
+  const tone = !positivo || mcReferencia < 0 ? "danger" : (mcReferencia < 0.15 || unmatched > 0 ? "warn" : "success");
   const toneClass = tone === "danger" ? "is-danger" : tone === "warn" ? "is-warn" : "is-success";
 
   host.innerHTML = `

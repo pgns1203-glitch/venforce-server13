@@ -150,6 +150,8 @@ async function upsertCustoBase({ baseId, produtoIdNorm, custoProduto, impostoPer
       [baseId, produtoIdNorm, custoProduto, impostoFinal, taxaFinal, idModelFinal]
     );
 
+    await tocarUpdatedAtBase(baseId);
+
     return { acao: "atualizado", custo: upd.rows[0] };
   }
 
@@ -164,7 +166,14 @@ async function upsertCustoBase({ baseId, produtoIdNorm, custoProduto, impostoPer
     [baseId, produtoIdNorm, custoProduto, impostoFinal, taxaFinal, idModel || null]
   );
 
+  await tocarUpdatedAtBase(baseId);
+
   return { acao: "criado", custo: ins.rows[0] };
+}
+
+// Marca a base como atualizada agora sempre que um custo é criado/alterado.
+async function tocarUpdatedAtBase(baseId) {
+  await pool.query(`UPDATE bases SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [baseId]);
 }
 
 // ---------------------------------------------------------------------------

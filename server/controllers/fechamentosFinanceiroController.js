@@ -31,6 +31,9 @@ async function processarFechamentoFinanceiroController(req, res) {
     const ads = toNumber(req.body.ads);
     const venforce = toNumber(req.body.venforce);
     const affiliates = toNumber(req.body.affiliates);
+    // Opcionais, só Mercado Livre. Campo vazio/ausente vale zero.
+    const fullCost = toNumber(req.body.fullCost);
+    const additionalCosts = toNumber(req.body.additionalCosts);
 
     // Origem alternativa dos custos: base vinculada ao cliente (sem upload).
     const costsBaseId = req.body.costsBaseId || req.body.baseId || null;
@@ -94,6 +97,8 @@ async function processarFechamentoFinanceiroController(req, res) {
       ads,
       venforce,
       affiliates,
+      fullCost,
+      additionalCosts,
       ordersAllRowsRaw,
     });
 

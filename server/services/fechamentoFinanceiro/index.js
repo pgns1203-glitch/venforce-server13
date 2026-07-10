@@ -13,12 +13,14 @@ function processFechamentoFinanceiro({
   ads,
   venforce,
   affiliates,
+  fullCost,
+  additionalCosts,
   ordersAllRowsRaw,
 }) {
   const marketplaceNorm = String(marketplace || "").trim().toLowerCase();
 
   if (marketplaceNorm === "meli") {
-    return processMeli(salesRowsRaw, costRowsRaw, ads, venforce, affiliates);
+    return processMeli(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, fullCost, additionalCosts);
   }
 
   if (marketplaceNorm === "shopee") {

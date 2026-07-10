@@ -302,7 +302,13 @@ function atualizarMiniResumo() {
   set("fin-res-marketplace", marketplaceLabel(marketplace));
   set("fin-res-base", usandoBase ? `Vinculada (${baseVinculadaState.baseNome})` : (marketplace ? "Upload manual" : "—"));
   set("fin-res-arquivos", arquivos.length ? arquivos.join(", ") : "nenhum selecionado");
-  set("fin-res-ajustes", `ADS ${brl(ads)} · Venforce ${brl(venforce)} · Afiliados ${brl(afiliados)}`);
+  if (marketplace === "meli") {
+    const fullCost = parseMoneyInput(document.getElementById("fin-full-cost")?.value);
+    const additionalCosts = parseMoneyInput(document.getElementById("fin-additional-costs")?.value);
+    set("fin-res-ajustes", `ADS ${brl(ads)} · Venforce ${brl(venforce)} · Afiliados ${brl(afiliados)} · Full ${brl(fullCost)} · Custos adicionais ${brl(additionalCosts)}`);
+  } else {
+    set("fin-res-ajustes", `ADS ${brl(ads)} · Venforce ${brl(venforce)} · Afiliados ${brl(afiliados)}`);
+  }
 }
 
 // Aceita "1.234,56" e "1234.56"
@@ -1486,6 +1492,14 @@ async function processarFechamentoFinanceiro() {
     formData.append("venforce", String(venforce));
     formData.append("affiliates", String(affiliates));
 
+    // FULL e Custos adicionais: opcionais, só Mercado Livre.
+    if (marketplace === "meli") {
+      const fullCost = parseMoneyInput(document.getElementById("fin-full-cost")?.value);
+      const additionalCosts = parseMoneyInput(document.getElementById("fin-additional-costs")?.value);
+      formData.append("fullCost", String(fullCost));
+      formData.append("additionalCosts", String(additionalCosts));
+    }
+
     const res = await fetch(`${API_BASE}/fechamentos/financeiro`, {
       method: "POST",
       headers: { Authorization: "Bearer " + TOKEN },
@@ -1746,9 +1760,13 @@ if (btnFinLimpar) {
     const finAds = document.getElementById("fin-ads");
     const finVenforce = document.getElementById("fin-venforce");
     const finAffiliates = document.getElementById("fin-affiliates");
+    const finFullCost = document.getElementById("fin-full-cost");
+    const finAdditionalCosts = document.getElementById("fin-additional-costs");
     if (finAds) finAds.value = "0";
     if (finVenforce) finVenforce.value = "0";
     if (finAffiliates) finAffiliates.value = "0";
+    if (finFullCost) finFullCost.value = "0";
+    if (finAdditionalCosts) finAdditionalCosts.value = "0";
 
     const marketplace = document.getElementById("fin-marketplace");
     if (marketplace) marketplace.value = "";
@@ -1785,6 +1803,7 @@ if (btnFinLimpar) {
     baseVinculadaState.clienteSlug = "";
     baseVinculadaState.marketplace = "";
     updateOrdersAllVisibility();
+    updateMeliExtraCostsVisibility();
     aplicarEstadoBase();
     setChipProcessamento("não iniciado", null);
     setChipSalvo("", null);
@@ -1863,9 +1882,16 @@ function updateOrdersAllVisibility() {
   if (ordersAllBlock) ordersAllBlock.style.display = marketplaceSelect?.value === "shopee" ? "" : "none";
 }
 
+// Bloco FULL / Custos adicionais — visível só para Mercado Livre.
+const meliExtraCostsBlock = document.getElementById("fin-meli-extra-costs");
+function updateMeliExtraCostsVisibility() {
+  if (meliExtraCostsBlock) meliExtraCostsBlock.style.display = marketplaceSelect?.value === "meli" ? "" : "none";
+}
+
 // Alteração de cliente/marketplace redetecta base vinculada e atualiza a UI.
 function onClienteOuMarketplaceChange() {
   updateOrdersAllVisibility();
+  updateMeliExtraCostsVisibility();
   detectarBaseVinculada();
 }
 if (marketplaceSelect) marketplaceSelect.addEventListener("change", onClienteOuMarketplaceChange);
@@ -1883,12 +1909,13 @@ const btnFinSalvar = document.getElementById("btn-fin-salvar");
 if (btnFinSalvar) btnFinSalvar.addEventListener("click", salvarFechamentoFinanceiro);
 
 // Ajustes financeiros e período atualizam o mini-resumo ao vivo.
-["fin-ads", "fin-venforce", "fin-affiliates", "fin-periodo"].forEach((id) => {
+["fin-ads", "fin-venforce", "fin-affiliates", "fin-full-cost", "fin-additional-costs", "fin-periodo"].forEach((id) => {
   const el = document.getElementById(id);
   if (el) el.addEventListener("input", atualizarMiniResumo);
 });
 
 updateOrdersAllVisibility();
+updateMeliExtraCostsVisibility();
 carregarClientesFinanceiro();
 
 initUploadDragDrop("fin-sales");

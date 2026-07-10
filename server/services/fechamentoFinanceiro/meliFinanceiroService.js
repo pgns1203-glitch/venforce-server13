@@ -321,7 +321,15 @@ function buildMeliBaseSheetRows(finalRows) {
 
 
 
-function processMeli(salesRowsRaw, costRowsRaw, ads, venforce, affiliates) {
+function processMeli(
+  salesRowsRaw,
+  costRowsRaw,
+  ads,
+  venforce,
+  affiliates,
+  fullCost = 0,
+  additionalCosts = 0
+) {
   const salesRows = parseMeliRows(salesRowsRaw);
   const costMap = buildMeliCostMap(costRowsRaw);
 
@@ -535,7 +543,8 @@ function processMeli(salesRowsRaw, costRowsRaw, ads, venforce, affiliates) {
   const averageContributionMargin =
     grossRevenueTotal > 0 ? contributionProfitTotal / grossRevenueTotal : 0;
 
-  const finalResult = contributionProfitTotal - ads - venforce - affiliates;
+  const finalResult =
+    contributionProfitTotal - ads - venforce - affiliates - fullCost - additionalCosts;
   const tacos = grossRevenueTotal > 0 ? ads / grossRevenueTotal : 0;
   const tacox =
     grossRevenueTotal > 0 ? (ads + venforce + affiliates) / grossRevenueTotal : 0;
@@ -551,6 +560,8 @@ function processMeli(salesRowsRaw, costRowsRaw, ads, venforce, affiliates) {
       contributionProfitTotal,
       averageContributionMargin,
       finalResult,
+      fullCostTotal: round2(fullCost),
+      additionalCostsTotal: round2(additionalCosts),
       tacos,
       tacox,
       platformAdjustmentTotal,

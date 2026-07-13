@@ -83,12 +83,13 @@ let BASE_DELETE_PENDENTE = null; // { slug, nome, btn }
 function setDashboardFeedback(msg, type = "neutral") {
   const el = document.getElementById("bases-feedback");
   if (!el) return;
-  el.classList.remove("show", "vf-alert-success", "vf-alert-danger");
+  el.classList.remove("is-success", "is-danger", "is-warning", "is-info");
   el.textContent = "";
   if (!msg) { el.style.display = "none"; return; }
-  const cls = type === "success" ? "vf-alert-success" : (type === "danger" ? "vf-alert-danger" : "");
-  if (cls) el.classList.add(cls);
-  el.classList.add("show");
+  if (type === "success") el.classList.add("is-success");
+  else if (type === "danger") el.classList.add("is-danger");
+  else if (type === "warning") el.classList.add("is-warning");
+  else if (type === "info") el.classList.add("is-info");
   el.style.display = "flex";
   el.textContent = msg;
 }
@@ -244,19 +245,19 @@ function renderBasesSummary() {
       (c.filtro.tipo === "mp" && BASES_FILTRO_MP === c.filtro.valor) ||
       (c.filtro.tipo === "at" && BASES_FILTRO_ATUAL === c.filtro.valor)
     );
-    const cls = ["b-kpi"];
-    if (c.warning) cls.push("is-warning");
-    if (isAction) cls.push("b-kpi--action");
+    const cls = ["vf-kpi"];
+    if (c.warning) cls.push("vf-kpi--warning");
+    if (isAction) cls.push("vf-kpi--interactive");
     if (active) cls.push("is-active");
-    const attrs = isAction
-      ? ` role="button" tabindex="0" data-kpi-tipo="${c.filtro.tipo}" data-kpi-valor="${c.filtro.valor}"`
-      : "";
-    const foot = c.foot ? `<div class="b-kpi__foot">${escapeHTML(c.foot)}</div>` : "";
-    return `<div class="${cls.join(" ")}"${attrs}>
-      <div class="b-kpi__label">${escapeHTML(c.label)}</div>
-      <div class="b-kpi__value">${escapeHTML(c.value)}</div>
-      ${foot}
-    </div>`;
+    const foot = c.foot ? `<span class="vf-kpi__foot">${escapeHTML(c.foot)}</span>` : "";
+    const inner = `
+      <span class="vf-kpi__label">${escapeHTML(c.label)}</span>
+      <span class="vf-kpi__value">${escapeHTML(c.value)}</span>
+      ${foot}`;
+    // KPIs clicáveis são <button> reais (teclado nativo); os demais, <div>.
+    return isAction
+      ? `<button type="button" class="${cls.join(" ")}" data-kpi-tipo="${c.filtro.tipo}" data-kpi-valor="${c.filtro.valor}">${inner}</button>`
+      : `<div class="${cls.join(" ")}">${inner}</div>`;
   }).join("");
 }
 
@@ -270,7 +271,7 @@ function renderChipsFiltros() {
   if (termo) chips.push({ label: `Busca: "${termo}"`, tipo: "busca" });
 
   el.innerHTML = chips.map((c) =>
-    `<span class="b-chip">${escapeHTML(c.label)} <button type="button" data-chip-remove="${c.tipo}" aria-label="Remover filtro">✕</button></span>`
+    `<span class="vf-active-filter">${escapeHTML(c.label)} <button type="button" class="vf-active-filter__remove" data-chip-remove="${c.tipo}" aria-label="Remover filtro">✕</button></span>`
   ).join("");
 
   el.querySelectorAll("[data-chip-remove]").forEach((btn) => {

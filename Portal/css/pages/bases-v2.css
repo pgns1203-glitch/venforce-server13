@@ -35,6 +35,15 @@
 
 .vf-page-bases .vf-page-container {
   max-width: 1320px; /* tela densa de operação (2 colunas de tabela) */
+  --vf-section-gap: var(--vf-sp-6);
+}
+
+/* A página herda a classe .vf-page-dashboard, e o style.css força
+   min-width:1120px em .vf-page-dashboard .vf-table (tabelas largas do
+   dashboard). Aqui as tabelas são fluidas/compactas: zeramos esse mínimo
+   para que caibam no container e no drawer sem rolagem horizontal. */
+.vf-page-bases .vf-table {
+  min-width: 0;
 }
 
 /* Larguras de drawer e modal específicas desta tela (a tabela de
@@ -58,7 +67,8 @@
  * ------------------------------------------------------------ */
 .vf-page-bases .vf-bases-market-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr);
+  /* Mercado Livre recebe o dobro do espaço da coluna Shopee */
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
   gap: var(--vf-sp-5);
   align-items: start;
 }
@@ -95,9 +105,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Rolagem interna das listas + layout fixo de colunas */
+/* Rolagem interna das listas + layout fixo de colunas.
+   table-layout:fixed + width:100% garante que as 4 colunas caibam
+   sempre no wrapper — nunca há rolagem horizontal. A rolagem é só
+   vertical (overflow-x oculto), então a barra horizontal some quando
+   a tabela cabe. */
 .vf-page-bases .vf-bases-mp .vf-table-wrap {
   max-height: 520px;
+  overflow: hidden auto;
 }
 
 .vf-page-bases .vf-bases-mp .vf-table {
@@ -109,14 +124,16 @@
   overflow: hidden;
 }
 
+/* Colunas 1 (cliente/base) e 2 (base/loja) compartilham o espaço
+   restante; status e ações têm largura compacta e fixa. */
 .vf-page-bases .vf-bases-mp .vf-table th:nth-child(3),
 .vf-page-bases .vf-bases-mp .vf-table td:nth-child(3) {
-  width: 190px;
+  width: 128px;
 }
 
 .vf-page-bases .vf-bases-mp .vf-table th:last-child,
 .vf-page-bases .vf-bases-mp .vf-table td:last-child {
-  width: 122px;
+  width: 88px;
   overflow: visible; /* deixa o menu "⋯" escapar da célula */
 }
 
@@ -142,6 +159,15 @@
  * ------------------------------------------------------------ */
 .vf-page-bases .vf-bases-basename {
   font-weight: var(--vf-fw-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-basename .name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .vf-page-bases .vf-bases-cliente {

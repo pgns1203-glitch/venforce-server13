@@ -511,19 +511,19 @@ function renderStatusTag(base) {
   const slug = escapeHTML(base.slug || "");
 
   if (!isBaseDesatualizada(base)) {
-    return `<div class="b-status">
-      <span class="b-age-line is-ok"><span class="b-age-dot"></span>${idade}</span>
+    return `<div class="vf-bases-status">
+      <span class="vf-status is-success">${idade}</span>
     </div>`;
   }
 
   const ignorada = BASES_ALERTAS_IGNORADOS.has(base.slug || "");
-  const cls = ignorada ? "is-ignored" : "is-attention";
+  const statusCls = ignorada ? "is-neutral" : "is-warning";
   const checked = ignorada ? "checked" : "";
-  return `<div class="b-status">
-    <span class="b-age-line ${cls}"><span class="b-age-dot"></span>${idade}</span>
-    <label class="b-ignore">
+  return `<div class="vf-bases-status">
+    <span class="vf-status ${statusCls}">${idade}</span>
+    <label class="vf-check vf-bases-ignore">
       <input type="checkbox" class="b-ignore-alert" data-slug="${slug}" ${checked}>
-      Ignorar
+      <span>Ignorar</span>
     </label>
   </div>`;
 }
@@ -534,16 +534,16 @@ function renderMenuBase(base) {
   const slug = escapeHTML(base.slug || "");
   const nome = escapeHTML(base.nome || base.slug || "");
   const vinculoItens = VINCULOS_EDITAVEIS ? `
-    <button class="b-menu-item vf-btn-vincular-base" data-base-id="${id}">${base.vinculo ? "Alterar cliente/vínculo" : "Definir cliente/vínculo"}</button>
-    ${base.vinculo ? `<button class="b-menu-item vf-btn-remover-vinculo" data-base-id="${id}">Remover vínculo</button>` : ""}
+    <button class="vf-menu__item vf-btn-vincular-base" data-base-id="${id}">${base.vinculo ? "Alterar cliente/vínculo" : "Definir cliente/vínculo"}</button>
+    ${base.vinculo ? `<button class="vf-menu__item vf-btn-remover-vinculo" data-base-id="${id}">Remover vínculo</button>` : ""}
   ` : "";
   return `
     <div class="b-menu">
-      <button type="button" class="b-icon-btn b-icon-btn--ghost b-menu-trigger" aria-haspopup="true" aria-expanded="false" title="Mais ações" aria-label="Mais ações">⋯</button>
-      <div class="b-menu-pop">
+      <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-menu-trigger" aria-haspopup="true" aria-expanded="false" title="Mais ações" aria-label="Mais ações">⋯</button>
+      <div class="b-menu-pop vf-menu">
         ${vinculoItens}
-        <button class="b-menu-item asst-btn-baixar-base" data-slug="${slug}" data-nome="${nome}">Baixar CSV</button>
-        <button class="b-menu-item b-menu-item--danger btn-excluir-base" data-slug="${slug}" data-nome="${nome}">Excluir base</button>
+        <button class="vf-menu__item asst-btn-baixar-base" data-slug="${slug}" data-nome="${nome}">Baixar CSV</button>
+        <button class="vf-menu__item is-danger btn-excluir-base" data-slug="${slug}" data-nome="${nome}">Excluir base</button>
       </div>
     </div>`;
 }
@@ -553,17 +553,17 @@ function buildMeliRow(base) {
   const tr = document.createElement("tr");
   const v = base?.vinculo;
   const clienteCell = v
-    ? `<div class="b-cliente"><strong>${escapeHTML(v.cliente_nome || v.cliente_slug || "—")}</strong></div>`
-    : `<div class="b-muted">Sem cliente vinculado</div>`;
+    ? `<div class="vf-bases-cliente"><strong>${escapeHTML(v.cliente_nome || v.cliente_slug || "—")}</strong></div>`
+    : `<div class="vf-bases-muted">Sem cliente vinculado</div>`;
   tr.innerHTML = `
     <td>${clienteCell}</td>
     <td>
-      <div class="b-base-name"><span class="name-text">${escapeHTML(base.nome || "—")}</span></div>
+      <div class="vf-bases-basename"><span class="name-text">${escapeHTML(base.nome || "—")}</span></div>
     </td>
     <td>${renderStatusTag(base)}</td>
     <td>
-      <div class="b-row-actions">
-        <button class="b-icon-btn b-icon-btn--ghost b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="meli" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
+      <div class="vf-bases-row-actions">
+        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="meli" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
         ${renderMenuBase(base)}
       </div>
     </td>`;
@@ -576,17 +576,17 @@ function buildShopeeRow(base) {
   const v = base?.vinculo;
   const loja = v ? (v.cliente_nome || v.cliente_slug) : "";
   const lojaCell = loja
-    ? `<span class="b-cliente"><strong>${escapeHTML(loja)}</strong></span>`
-    : `<span class="b-muted">—</span>`;
+    ? `<span class="vf-bases-cliente"><strong>${escapeHTML(loja)}</strong></span>`
+    : `<span class="vf-bases-muted">—</span>`;
   tr.innerHTML = `
     <td>
-      <div class="b-base-name"><span class="name-text">${escapeHTML(base.nome || "—")}</span></div>
+      <div class="vf-bases-basename"><span class="name-text">${escapeHTML(base.nome || "—")}</span></div>
     </td>
     <td>${lojaCell}</td>
     <td>${renderStatusTag(base)}</td>
     <td>
-      <div class="b-row-actions">
-        <button class="b-icon-btn b-icon-btn--ghost b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="shopee" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
+      <div class="vf-bases-row-actions">
+        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="shopee" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
         ${renderMenuBase(base)}
       </div>
     </td>`;
@@ -626,7 +626,7 @@ function bindBaseRowActions(tbody) {
   tbody.querySelectorAll(".b-menu-trigger").forEach(btn => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); toggleRowMenu(btn); });
   });
-  tbody.querySelectorAll(".b-menu-item").forEach(item => {
+  tbody.querySelectorAll(".vf-menu__item").forEach(item => {
     item.addEventListener("click", () => fecharTodosMenus());
   });
   tbody.querySelectorAll(".b-ignore-alert").forEach((input) => {
@@ -984,14 +984,14 @@ if (dropLabel) {
     dropLabel.addEventListener(evt, (e) => {
       e.preventDefault();
       e.stopPropagation();
-      dropLabel.classList.add("vf-dropzone-dragover");
+      dropLabel.classList.add("is-dragging");
     });
   });
   ["dragleave", "drop"].forEach((evt) => {
     dropLabel.addEventListener(evt, (e) => {
       e.preventDefault();
       e.stopPropagation();
-      dropLabel.classList.remove("vf-dropzone-dragover");
+      dropLabel.classList.remove("is-dragging");
     });
   });
   dropLabel.addEventListener("drop", (e) => {
@@ -1193,8 +1193,8 @@ function setDrawerHint(msg, tipo) {
   const el = document.getElementById("bases-drawer-hint");
   if (!el) return;
   el.textContent = msg || "";
-  el.style.color = tipo === "success" ? "var(--b-success)"
-    : tipo === "danger" ? "var(--b-danger)" : "";
+  el.style.color = tipo === "success" ? "var(--vf-success)"
+    : tipo === "danger" ? "var(--vf-danger)" : "";
 }
 
 function abrirDrawerCustos(slug, mp, btnOrigem) {
@@ -1258,7 +1258,7 @@ async function carregarCustosDrawer(slug) {
     renderDrawerItens();
   } catch (err) {
     mostrarEstadoDrawer(`<p>Não foi possível carregar os custos desta base.</p>
-      <button type="button" class="b-btn b-drawer-retry">Tentar novamente</button>`);
+      <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm b-drawer-retry">Tentar novamente</button>`);
     if (countEl) countEl.textContent = "—";
     const retry = document.querySelector("#bases-drawer-state .b-drawer-retry");
     if (retry) retry.addEventListener("click", () => carregarCustosDrawer(slug));
@@ -1339,15 +1339,15 @@ function renderDrawerItens() {
     const custoZero = Number(it.custo) === 0;
     const impostoZero = Number(it.imposto) === 0;
     const taxaZero = Number(it.taxa) === 0;
-    const idModelTd = DRAWER_IS_SHOPEE ? `<td class="b-mono">${escapeHTML(String(it.id_model ?? "—"))}</td>` : "";
+    const idModelTd = DRAWER_IS_SHOPEE ? `<td class="vf-mono">${escapeHTML(String(it.id_model ?? "—"))}</td>` : "";
     return `<tr class="b-cost-row" data-cost-idx="${idx}" tabindex="0">
-      <td class="b-mono">${escapeHTML(String(it.id ?? "—"))}</td>
+      <td class="vf-mono">${escapeHTML(String(it.id ?? "—"))}</td>
       ${idModelTd}
-      <td class="num b-mono ${custoZero ? "zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.custo))}</td>
-      <td class="num b-mono ${impostoZero ? "zero" : ""}">${escapeHTML(fmtPercentDrawer(it.imposto))}</td>
-      <td class="num b-mono ${taxaZero ? "zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.taxa))}</td>
-      <td class="b-cost-actions-cell">
-        <button type="button" class="b-icon-btn b-icon-btn--ghost b-cost-edit" data-cost-idx="${idx}" title="Editar item" aria-label="Editar item">${B_EDIT_SM_SVG}</button>
+      <td class="num vf-mono ${custoZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.custo))}</td>
+      <td class="num vf-mono ${impostoZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtPercentDrawer(it.imposto))}</td>
+      <td class="num vf-mono ${taxaZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.taxa))}</td>
+      <td class="vf-bases-cost-actions">
+        <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-cost-edit" data-cost-idx="${idx}" title="Editar item" aria-label="Editar item">${B_EDIT_SM_SVG}</button>
       </td>
     </tr>`;
   }).join("");
@@ -1357,7 +1357,7 @@ function renderDrawerItens() {
   const colspan = (DRAWER_IS_SHOPEE ? 6 : 5);
   const rowsOuVazio = totalFiltrado
     ? rows
-    : `<tr><td colspan="${colspan}" class="b-table-empty">Nenhum item para os filtros atuais.</td></tr>`;
+    : `<tr class="vf-table__empty"><td colspan="${colspan}">Nenhum item para os filtros atuais.</td></tr>`;
 
   const tbody = document.getElementById("bases-costs-tbody");
   if (tbody) tbody.innerHTML = rowsOuVazio;
@@ -1443,11 +1443,11 @@ function validarArquivoUpdate(file) {
 
 // Feedback dentro do painel de edição/planilha (só há um painel aberto por vez).
 function setCostFeedback(msg, tipo) {
-  const el = document.querySelector("#bases-cost-panel .b-cost-feedback");
+  const el = document.querySelector("#bases-cost-panel .vf-bases-cost-feedback");
   if (!el) return;
-  el.className = "b-cost-feedback" + (tipo ? ` is-${tipo}` : "");
+  el.className = "vf-alert vf-bases-cost-feedback" + (tipo ? ` is-${tipo}` : "");
   el.textContent = msg || "";
-  el.style.display = msg ? "block" : "none";
+  el.style.display = msg ? "flex" : "none";
 }
 
 function fecharPainelCusto() {
@@ -1480,41 +1480,41 @@ function abrirFormularioItem(item = null) {
   const taxaVal = editando && Number.isFinite(Number(item.taxa)) ? Number(item.taxa) : "";
 
   const idModelField = isShopee ? `
-    <div class="b-field b-cost-col-2">
-      <label for="cost-form-id-model">ID Model</label>
-      <input type="text" id="cost-form-id-model" value="${idModelVal}" placeholder="Opcional — usado principalmente para Shopee" autocomplete="off">
+    <div class="vf-field vf-field--full">
+      <label class="vf-field__label" for="cost-form-id-model">ID Model</label>
+      <input type="text" class="vf-input" id="cost-form-id-model" value="${idModelVal}" placeholder="Opcional — usado principalmente para Shopee" autocomplete="off">
     </div>` : "";
 
   panel.innerHTML = `
-    <div class="b-cost-form">
-      <div class="b-cost-form-head">
+    <div class="vf-bases-cost-form">
+      <div class="vf-bases-cost-form-head">
         <strong>${escapeHTML(titulo)}</strong>
-        <button type="button" class="b-btn b-btn--ghost b-btn--sm" id="cost-form-close" aria-label="Fechar">✕</button>
+        <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" id="cost-form-close" aria-label="Fechar">✕</button>
       </div>
-      <div class="b-cost-form-grid">
-        <div class="b-field b-cost-col-2">
-          <label for="cost-form-produto">Produto / MLB / SKU <span class="req">*</span></label>
-          <input type="text" id="cost-form-produto" value="${produtoVal}" placeholder="Ex.: MLB123456789 ou SKU" autocomplete="off"${editando ? " readonly" : ""}>
+      <div class="vf-form-grid vf-bases-cost-grid">
+        <div class="vf-field vf-field--full">
+          <label class="vf-field__label" for="cost-form-produto">Produto / MLB / SKU <span class="vf-field__required">*</span></label>
+          <input type="text" class="vf-input" id="cost-form-produto" value="${produtoVal}" placeholder="Ex.: MLB123456789 ou SKU" autocomplete="off"${editando ? " readonly" : ""}>
         </div>
         ${idModelField}
-        <div class="b-field">
-          <label for="cost-form-custo">Custo <span class="req">*</span></label>
-          <input type="number" id="cost-form-custo" step="0.01" min="0" value="${custoVal}" placeholder="0.00">
+        <div class="vf-field">
+          <label class="vf-field__label" for="cost-form-custo">Custo <span class="vf-field__required">*</span></label>
+          <input type="number" class="vf-input" id="cost-form-custo" step="0.01" min="0" value="${custoVal}" placeholder="0.00">
         </div>
-        <div class="b-field">
-          <label for="cost-form-imposto">Imposto %</label>
-          <input type="number" id="cost-form-imposto" step="0.01" min="0" value="${impostoVal}" placeholder="0">
+        <div class="vf-field">
+          <label class="vf-field__label" for="cost-form-imposto">Imposto %</label>
+          <input type="number" class="vf-input" id="cost-form-imposto" step="0.01" min="0" value="${impostoVal}" placeholder="0">
         </div>
-        <div class="b-field">
-          <label for="cost-form-taxa">Taxa fixa</label>
-          <input type="number" id="cost-form-taxa" step="0.01" min="0" value="${taxaVal}" placeholder="0.00">
+        <div class="vf-field">
+          <label class="vf-field__label" for="cost-form-taxa">Taxa fixa</label>
+          <input type="number" class="vf-input" id="cost-form-taxa" step="0.01" min="0" value="${taxaVal}" placeholder="0.00">
         </div>
       </div>
-      <p class="b-cost-microcopy">${escapeHTML(microcopy)}</p>
-      <div class="b-cost-feedback" id="cost-form-feedback" style="display:none;" aria-live="polite"></div>
-      <div class="b-cost-form-actions">
-        <button type="button" class="b-btn b-btn--sm" id="cost-form-cancel">Cancelar</button>
-        <button type="button" class="b-btn b-btn--primary b-btn--sm" id="cost-form-save">${escapeHTML(btnLabel)}</button>
+      <p class="vf-field__hint vf-bases-microcopy">${escapeHTML(microcopy)}</p>
+      <div class="vf-alert vf-bases-cost-feedback" id="cost-form-feedback" style="display:none;" aria-live="polite"></div>
+      <div class="vf-form-actions">
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="cost-form-cancel">Cancelar</button>
+        <button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="cost-form-save">${escapeHTML(btnLabel)}</button>
       </div>
     </div>`;
   panel.style.display = "block";
@@ -1613,27 +1613,28 @@ function abrirPainelPlanilha() {
   DRAWER_ITEM_EDITANDO = null;
 
   panel.innerHTML = `
-    <div class="b-planilha-panel">
-      <div class="b-cost-form-head">
+    <div class="vf-bases-planilha-panel">
+      <div class="vf-bases-cost-form-head">
         <strong>Atualizar por planilha</strong>
-        <button type="button" class="b-btn b-btn--ghost b-btn--sm" id="cost-planilha-close" aria-label="Fechar">✕</button>
+        <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" id="cost-planilha-close" aria-label="Fechar">✕</button>
       </div>
-      <p class="b-cost-note b-cost-note--info">A atualização por planilha deve atualizar produtos existentes e adicionar novos, sem apagar itens ausentes da planilha.</p>
-      <div class="b-field">
-        <label>Planilha (.xlsx, .xls, .csv)</label>
-        <label class="b-file-label" id="cost-planilha-label">
-          ${B_FILE_SVG}
-          <span id="cost-planilha-label-text">Escolher arquivo…</span>
-          <input type="file" id="cost-planilha-arquivo" accept=".xlsx,.xls,.csv" style="display:none;">
+      <div class="vf-banner vf-banner--compact is-info">A atualização por planilha atualiza produtos existentes e adiciona novos, sem apagar itens ausentes da planilha.</div>
+      <div class="vf-field">
+        <label class="vf-field__label">Planilha (.xlsx, .xls, .csv)</label>
+        <input class="vf-visually-hidden" type="file" id="cost-planilha-arquivo" accept=".xlsx,.xls,.csv">
+        <label class="vf-dropzone" id="cost-planilha-label" for="cost-planilha-arquivo">
+          <span class="vf-dropzone__icon" aria-hidden="true">${B_FILE_SVG}</span>
+          <span class="vf-dropzone__title" id="cost-planilha-label-text">Escolher arquivo…</span>
+          <span class="vf-dropzone__hint">.xlsx · .xls · .csv · clique para selecionar</span>
         </label>
       </div>
-      <p class="b-cost-note b-cost-note--safe">Nenhum item será apagado neste fluxo.</p>
-      <div class="b-cost-feedback" id="cost-planilha-feedback" style="display:none;" aria-live="polite"></div>
-      <div class="b-cost-form-actions">
-        <button type="button" class="b-btn b-btn--sm" id="cost-planilha-cancel">Cancelar</button>
-        <button type="button" class="b-btn b-btn--primary b-btn--sm" id="cost-planilha-preview">Pré-visualizar atualização</button>
+      <div class="vf-banner vf-banner--compact is-success">Nenhum item será apagado neste fluxo.</div>
+      <div class="vf-alert vf-bases-cost-feedback" id="cost-planilha-feedback" style="display:none;" aria-live="polite"></div>
+      <div class="vf-form-actions">
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="cost-planilha-cancel">Cancelar</button>
+        <button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="cost-planilha-preview">Pré-visualizar atualização</button>
       </div>
-      <div class="b-cost-preview" id="cost-planilha-preview-box" style="display:none;"></div>
+      <div class="vf-bases-cost-preview" id="cost-planilha-preview-box" style="display:none;"></div>
     </div>`;
   panel.style.display = "block";
 
@@ -1687,9 +1688,9 @@ function dedupEClassificarPlanilha(rows) {
 }
 
 function badgeAcaoPlanilha(acao) {
-  if (acao === "atualizar") return `<span class="b-cost-badge is-atualizar">Atualizar</span>`;
-  if (acao === "adicionar") return `<span class="b-cost-badge is-adicionar">Adicionar</span>`;
-  return `<span class="b-cost-badge is-ignorar">Ignorar</span>`;
+  if (acao === "atualizar") return `<span class="vf-tag is-info">Atualizar</span>`;
+  if (acao === "adicionar") return `<span class="vf-tag is-success">Adicionar</span>`;
+  return `<span class="vf-tag is-neutral">Ignorar</span>`;
 }
 
 // Preview REAL: parseia a planilha via endpoint seguro (não salva nada), classifica
@@ -1773,40 +1774,40 @@ function renderPreviewPlanilha({ lidas, nAtualizar, nAdicionar, ignoradas, dupli
     const obs = l.acao === "adicionar"
       ? "Novo item"
       : (Number.isFinite(Number(l.imposto)) ? "Sobrescreve custo e imposto" : "Sobrescreve custo · imposto atual mantido");
-    const idModelTd = isShopee ? `<td class="b-mono">${escapeHTML(String(l.id_model ?? "—"))}</td>` : "";
+    const idModelTd = isShopee ? `<td class="vf-mono">${escapeHTML(String(l.id_model ?? "—"))}</td>` : "";
     return `<tr>
-      <td class="b-mono">${escapeHTML(String(l.id))}</td>
+      <td class="vf-mono">${escapeHTML(String(l.id))}</td>
       ${idModelTd}
-      <td class="num b-mono">${escapeHTML(fmtMoedaDrawer(l.custo))}</td>
-      <td class="num b-mono">${escapeHTML(fmtPercentDrawer(l.imposto))}</td>
-      <td class="num b-mono">—</td>
+      <td class="num vf-mono">${escapeHTML(fmtMoedaDrawer(l.custo))}</td>
+      <td class="num vf-mono">${escapeHTML(fmtPercentDrawer(l.imposto))}</td>
+      <td class="num vf-mono">—</td>
       <td>${badgeAcaoPlanilha(l.acao)}</td>
       <td>${escapeHTML(obs)}</td>
     </tr>`;
   }).join("");
 
   const truncado = linhas.length > exibidos.length
-    ? `<p class="b-cost-microcopy" style="margin-top:6px;">Mostrando ${exibidos.length} de ${linhas.length} itens válidos. Todos serão salvos ao confirmar.</p>`
+    ? `<p class="vf-field__hint" style="margin-top:6px;">Mostrando ${exibidos.length} de ${linhas.length} itens válidos. Todos serão salvos ao confirmar.</p>`
     : "";
 
   box.innerHTML = `
-    <div class="b-cost-preview-title">Preview da atualização incremental</div>
-    <ul class="b-planilha-resumo">${resumoLinhas.map((t) => `<li>${escapeHTML(t)}</li>`).join("")}</ul>
-    <p class="b-cost-microcopy" style="margin:0 0 8px;">Taxa fixa não vem nesta planilha: o valor atual de cada item é preservado.</p>
-    <div class="b-planilha-table-wrap">
-      <table class="b-planilha-table">
+    <div class="vf-bases-preview-title">Preview da atualização incremental</div>
+    <ul class="vf-bases-resumo">${resumoLinhas.map((t) => `<li>${escapeHTML(t)}</li>`).join("")}</ul>
+    <p class="vf-field__hint" style="margin:0 0 8px;">Taxa fixa não vem nesta planilha: o valor atual de cada item é preservado.</p>
+    <div class="vf-table-wrap vf-bases-planilha-wrap">
+      <table class="vf-table vf-table--compact">
         <thead><tr>
           <th>Produto / MLB / SKU</th>${thIdModel}
           <th class="num">Custo</th><th class="num">Imposto</th><th class="num">Taxa fixa</th>
           <th>Ação</th><th>Observação</th>
         </tr></thead>
-        <tbody>${corpo || `<tr><td colspan="${isShopee ? 7 : 6}" class="b-table-empty">Nenhum item válido para salvar.</td></tr>`}</tbody>
+        <tbody>${corpo || `<tr class="vf-table__empty"><td colspan="${isShopee ? 7 : 6}">Nenhum item válido para salvar.</td></tr>`}</tbody>
       </table>
     </div>
     ${truncado}
-    <div class="b-cost-feedback" id="cost-planilha-result" style="display:none;" aria-live="polite"></div>
-    <div class="b-cost-form-actions" style="margin-top:12px;">
-      <button type="button" class="b-btn b-btn--primary b-btn--sm" id="cost-planilha-confirm"${validos ? "" : " disabled"}>Confirmar atualização incremental</button>
+    <div class="vf-alert vf-bases-cost-feedback" id="cost-planilha-result" style="display:none;" aria-live="polite"></div>
+    <div class="vf-form-actions" style="margin-top:12px;">
+      <button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="cost-planilha-confirm"${validos ? "" : " disabled"}>Confirmar atualização incremental</button>
     </div>`;
   box.style.display = "block";
   document.getElementById("cost-planilha-confirm")?.addEventListener("click", confirmarPlanilhaDrawer);
@@ -1816,9 +1817,9 @@ function renderPreviewPlanilha({ lidas, nAtualizar, nAdicionar, ignoradas, dupli
 function setPlanilhaResult(msg, tipo) {
   const el = document.getElementById("cost-planilha-result");
   if (!el) return;
-  el.className = "b-cost-feedback" + (tipo ? ` is-${tipo}` : "");
+  el.className = "vf-alert vf-bases-cost-feedback" + (tipo ? ` is-${tipo}` : "");
   el.textContent = msg || "";
-  el.style.display = msg ? "block" : "none";
+  el.style.display = msg ? "flex" : "none";
 }
 
 // Atualização incremental: usa upsert por item para preservar produtos ausentes.
@@ -1880,7 +1881,7 @@ async function confirmarPlanilhaDrawer() {
   setCostFeedback(msgFinal, tipoFinal);
 
   const detalhe = falhas && errosDetalhe.length
-    ? `<p class="b-cost-microcopy" style="margin:6px 0 0;">Falhas (até 10): ${escapeHTML(errosDetalhe.join(" · "))}</p>`
+    ? `<p class="vf-field__hint" style="margin:6px 0 0;">Falhas (até 10): ${escapeHTML(errosDetalhe.join(" · "))}</p>`
     : "";
   const resultTipo = falhas ? (houveSucesso ? "neutral" : "danger") : "success";
   setPlanilhaResult(msgFinal, resultTipo);

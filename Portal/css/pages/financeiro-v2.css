@@ -1,0 +1,768 @@
+/* ============================================================
+ * VenForce — Fechamento Financeiro · CSS específico da página (V2)
+ *
+ * Ordem de carga (em financeiro.html):
+ *   style.css (layout/sidebar/topbar) →
+ *   css/vf-tokens-v2.css → css/vf-components-v2.css →
+ *   css/pages/financeiro-v2.css (este arquivo, sempre por último)
+ *
+ * REGRAS DESTE ARQUIVO
+ *  - Só o que é REALMENTE específico da tela de fechamento:
+ *    numeração de etapas, grade de uploads, grade executiva,
+ *    reconciliação Shopee, larguras da tabela de detalhe, grade
+ *    de prioridades da entrega e responsividade própria.
+ *  - Componentes globais (botão, campo, card, KPI, tabela, tag,
+ *    status, banner, dropzone, file-item, tabs…) vêm de
+ *    vf-components-v2.css e NÃO são recriados aqui.
+ *  - Só tokens --vf-*. Sem --fc-*, sem hexadecimais soltos, sem
+ *    !important, sem sombras/radius/gradientes próprios.
+ *  - Todo seletor é escopado por .vf-page-financeiro.
+ * ============================================================ */
+
+/* ------------------------------------------------------------
+ * 1. Shell da página
+ * A tela vive dentro do layout existente (.vf-main-with-sidebar >
+ * .vf-content). Neutralizamos largura/padding herdados do
+ * style.css (inclusive .vf-page-dashboard .vf-content) e deixamos
+ * vf-page-shell + vf-page-container cuidarem do enquadramento V2.
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-content {
+  max-width: none;
+  padding: 0;
+}
+
+.vf-page-financeiro .vf-page-container {
+  --vf-content-wide: 1480px;
+}
+
+/* ------------------------------------------------------------
+ * 2. Contexto (chips de estado abaixo do header)
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-context {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-4);
+  flex-wrap: wrap;
+  row-gap: var(--vf-sp-2);
+}
+
+.vf-page-financeiro .vf-fin-context .vf-status b {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+/* ------------------------------------------------------------
+ * 3. Etapas numeradas do formulário de processamento
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--vf-sp-3);
+  align-items: start;
+}
+
+.vf-page-financeiro .vf-fin-step__number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-primary-soft);
+  border: 1px solid var(--vf-primary-border);
+  color: var(--vf-primary-strong);
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-bold);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.vf-page-financeiro .vf-fin-step__body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-financeiro .vf-fin-step__title {
+  margin: 0;
+  padding-top: 3px;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-financeiro .vf-fin-step__hint {
+  font-weight: var(--vf-fw-regular);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+/* Marcador de ajuda "?" ao lado dos labels monetários */
+.vf-page-financeiro .vf-fin-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: 4px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-bg-2);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-bold);
+  cursor: help;
+}
+
+/* Valor monetário digitado: Manrope + dígitos tabulares */
+.vf-page-financeiro .vf-input.num {
+  text-align: left;
+}
+
+/* ------------------------------------------------------------
+ * 4. Uploads (dropzone + file-item por arquivo)
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--vf-sp-4);
+}
+
+.vf-page-financeiro .vf-fin-upload {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  min-width: 0;
+}
+
+.vf-page-financeiro .vf-fin-upload__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-financeiro .vf-fin-upload__label {
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-financeiro .vf-fin-upload .vf-dropzone {
+  padding: var(--vf-sp-5) var(--vf-sp-4);
+}
+
+.vf-page-financeiro .vf-fin-upload--single {
+  max-width: 420px;
+}
+
+.vf-page-financeiro .vf-fin-orders-label {
+  margin: 0 0 var(--vf-sp-2);
+}
+
+/* Quando há arquivo selecionado, o dropzone dá lugar ao file-item */
+.vf-page-financeiro .vf-fin-upload.has-file .vf-dropzone {
+  display: none;
+}
+
+/* Arrastando sobre o cartão inteiro realça o dropzone */
+.vf-page-financeiro .vf-fin-upload.is-dragging .vf-dropzone {
+  border-color: var(--vf-primary);
+  background: var(--vf-primary-soft);
+}
+
+/* Custos resolvidos por base vinculada: dropzone desabilitado/informativo */
+.vf-page-financeiro .vf-fin-upload.is-linked .vf-dropzone {
+  border-style: solid;
+  border-color: var(--vf-info-border);
+  background: var(--vf-info-bg);
+  pointer-events: none;
+}
+
+.vf-page-financeiro .vf-fin-upload.is-linked .vf-dropzone__title {
+  color: var(--vf-info-strong);
+}
+
+.vf-page-financeiro .vf-fin-upload__note {
+  margin: 0;
+  font-size: var(--vf-fs-2xs);
+  line-height: var(--vf-lh-snug);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-financeiro .vf-fin-upload__note.is-error {
+  color: var(--vf-danger);
+  font-weight: var(--vf-fw-medium);
+}
+
+/* ------------------------------------------------------------
+ * 5. Mini-resumo antes de processar
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-review {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--vf-sp-3) var(--vf-sp-5);
+}
+
+.vf-page-financeiro .vf-fin-review__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vf-page-financeiro .vf-fin-review__k {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-financeiro .vf-fin-review__v {
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text);
+  overflow-wrap: anywhere;
+}
+
+.vf-page-financeiro .vf-fin-review__v--money {
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------
+ * 6. Ações do formulário
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+}
+
+.vf-page-financeiro .vf-fin-actions--bar {
+  width: 100%;
+}
+
+.vf-page-financeiro .vf-fin-actions__spacer {
+  flex: 1 1 auto;
+}
+
+/* Corpo do card logo abaixo do rodapé de ações (status + legado) */
+.vf-page-financeiro .vf-fin-postbody {
+  padding-top: 0;
+}
+
+/* Rodapé do formulário de entrega: empilhado à esquerda */
+.vf-page-financeiro .vf-fin-entrega__footer {
+  justify-content: flex-start;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--vf-sp-3);
+}
+
+/* Painel legado de entrega (mantido oculto após o sistema de abas) */
+.vf-page-financeiro .vf-fin-legacy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-financeiro .vf-fin-legacy__row {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+}
+
+.vf-page-financeiro .vf-fin-legacy__row .vf-input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.vf-page-financeiro .vf-fin-status-msg {
+  font-size: var(--vf-fs-xs);
+}
+
+/* ------------------------------------------------------------
+ * 7. Dashboard: estados e KPIs
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-dashboard[data-processed] .vf-fin-dashboard-empty {
+  display: none;
+}
+
+.vf-page-financeiro .vf-fin-dashboard:not([data-processed]) .vf-fin-dashboard-data {
+  display: none;
+}
+
+.vf-page-financeiro .vf-fin-dashboard-data {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-6);
+}
+
+/* Valores de KPI desta tela ficam em uma linha (R$ + número juntos) */
+.vf-page-financeiro .vf-fin-kpi-grid .vf-kpi__value {
+  white-space: nowrap;
+}
+
+/* Coloração semântica de valores de KPI (só resultado/risco/exceção) */
+.vf-page-financeiro .vf-kpi__value.is-pos {
+  color: var(--vf-success-strong);
+}
+
+.vf-page-financeiro .vf-kpi__value.is-neg {
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-financeiro .vf-kpi__value.is-warn {
+  color: var(--vf-warning-strong);
+}
+
+/* KPIs secundários: mesmo componente, menor presença visual */
+.vf-page-financeiro .vf-fin-kpi-grid--secondary {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+
+.vf-page-financeiro .vf-fin-kpi-grid--secondary .vf-kpi__value {
+  font-size: var(--vf-fs-lg);
+}
+
+/* ------------------------------------------------------------
+ * 8. Grade executiva (detalhamento compacto)
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-exec-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-financeiro .vf-fin-exec__title {
+  margin: 0 0 var(--vf-sp-2);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-financeiro .vf-fin-exec__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-1) 0;
+}
+
+.vf-page-financeiro .vf-fin-exec__row + .vf-fin-exec__row {
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-page-financeiro .vf-fin-exec__label {
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-financeiro .vf-fin-exec__value {
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+  white-space: nowrap;
+}
+
+.vf-page-financeiro .vf-fin-exec__value--pos {
+  color: var(--vf-success-strong);
+}
+
+.vf-page-financeiro .vf-fin-exec__value--neg {
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-financeiro .vf-fin-exec__value--muted {
+  color: var(--vf-text-muted);
+}
+
+/* ------------------------------------------------------------
+ * 9. Leitura do fechamento (banner com lista)
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-leitura__list {
+  margin: var(--vf-sp-1) 0 0;
+  padding-left: 18px;
+  line-height: var(--vf-lh-relaxed);
+}
+
+.vf-page-financeiro .vf-fin-leitura__list li + li {
+  margin-top: 2px;
+}
+
+.vf-page-financeiro .vf-fin-leitura__list b {
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--vf-fw-bold);
+}
+
+/* ------------------------------------------------------------
+ * 10. Reconciliação Shopee
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-reconciliation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-4);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--vf-sp-4);
+  flex-wrap: wrap;
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__source {
+  margin: 2px 0 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__compare {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  flex-wrap: wrap;
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__compare-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__compare-label {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__compare-value {
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--vf-fs-lg);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text);
+  white-space: nowrap;
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__compare-value.is-pos {
+  color: var(--vf-success-strong);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__sep {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-lg);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--vf-sp-3);
+  border: 1px solid var(--vf-border);
+  border-left-width: 3px;
+  border-left-color: var(--vf-neutral);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__item.is-positive {
+  border-left-color: var(--vf-success);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__item.is-warning {
+  border-left-color: var(--vf-warning);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__item.is-danger {
+  border-left-color: var(--vf-danger);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__item-label {
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__item-support {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  line-height: var(--vf-lh-snug);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__item-value {
+  margin-top: 2px;
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__item-count {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-secondary);
+  line-height: var(--vf-lh-relaxed);
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__text p {
+  margin: 0;
+}
+
+.vf-page-financeiro .vf-fin-reconciliation__note {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs);
+}
+
+/* ------------------------------------------------------------
+ * 11. Tabela de detalhe por produto
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-table-wrap {
+  max-height: 62vh;
+}
+
+/* A largura mínima é calculada dinamicamente pelo JS a partir das
+   colunas detectadas (única exceção de estilo dinâmico permitida). */
+.vf-page-financeiro .vf-fin-detail {
+  min-width: var(--vf-fin-detail-min-width, 1200px);
+}
+
+/* Colunas não-textuais não quebram linha */
+.vf-page-financeiro .vf-fin-detail th,
+.vf-page-financeiro .vf-fin-detail td {
+  white-space: nowrap;
+}
+
+.vf-page-financeiro .vf-fin-detail th.vf-fin-col--produto,
+.vf-page-financeiro .vf-fin-detail td.vf-fin-col--produto {
+  white-space: normal;
+  min-width: 320px;
+}
+
+.vf-page-financeiro .vf-fin-detail td.vf-fin-col--id {
+  color: var(--vf-text-secondary);
+}
+
+/* Coloração de LC/MC por linha (positivo/negativo) */
+.vf-page-financeiro .vf-fin-detail td.vf-fin-num--pos {
+  color: var(--vf-success-strong);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-financeiro .vf-fin-detail td.vf-fin-num--neg {
+  color: var(--vf-danger-strong);
+  font-weight: var(--vf-fw-semibold);
+}
+
+/* Lista de IDs sem custo dentro dos banners de fidelidade */
+.vf-page-financeiro .vf-fin-idlist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2);
+  margin-top: var(--vf-sp-2);
+}
+
+.vf-page-financeiro .vf-fin-idlist__item {
+  padding: 2px var(--vf-sp-2);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-financeiro .vf-fin-idlist__item .vf-fin-muted {
+  color: var(--vf-text-muted);
+}
+
+/* ------------------------------------------------------------
+ * 12. Sistema de abas (Dashboard / Entrega)
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-tabs-root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-6);
+}
+
+.vf-page-financeiro .vf-fin-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-6);
+}
+
+/* ------------------------------------------------------------
+ * 13. Formulário de entrega para o cliente
+ * ------------------------------------------------------------ */
+.vf-page-financeiro .vf-fin-entrega {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-4);
+}
+
+.vf-page-financeiro .vf-fin-priority-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-financeiro .vf-fin-priority {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--vf-border);
+  border-top-width: 3px;
+  border-top-color: var(--vf-neutral);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  overflow: hidden;
+}
+
+.vf-page-financeiro .vf-fin-priority.is-high {
+  border-top-color: var(--vf-danger);
+}
+
+.vf-page-financeiro .vf-fin-priority.is-medium {
+  border-top-color: var(--vf-warning);
+}
+
+.vf-page-financeiro .vf-fin-priority.is-low {
+  border-top-color: var(--vf-info);
+}
+
+.vf-page-financeiro .vf-fin-priority__head {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-3) var(--vf-sp-3);
+  background: var(--vf-surface-2);
+  border-bottom: 1px solid var(--vf-border);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-financeiro .vf-fin-priority__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--vf-radius-pill);
+  flex: 0 0 auto;
+  background: var(--vf-neutral);
+}
+
+.vf-page-financeiro .vf-fin-priority.is-high .vf-fin-priority__dot {
+  background: var(--vf-danger);
+}
+
+.vf-page-financeiro .vf-fin-priority.is-medium .vf-fin-priority__dot {
+  background: var(--vf-warning);
+}
+
+.vf-page-financeiro .vf-fin-priority.is-low .vf-fin-priority__dot {
+  background: var(--vf-info);
+}
+
+.vf-page-financeiro .vf-fin-action {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-3);
+}
+
+.vf-page-financeiro .vf-fin-action + .vf-fin-action {
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-page-financeiro .vf-fin-action__title {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-bold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+
+/* Link público em mono */
+.vf-page-financeiro .vf-fin-link-input {
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-page-financeiro .vf-fin-link-row {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+}
+
+.vf-page-financeiro .vf-fin-link-row .vf-fin-link-input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------
+ * 14. Responsividade específica da tela
+ * ------------------------------------------------------------ */
+@media (max-width: 860px) {
+  .vf-page-financeiro .vf-fin-priority-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ------------------------------------------------------------
+ * 15. Atributo [hidden] deve vencer as classes de componente que
+ * definem display (.vf-banner/.vf-file-item/.vf-form-grid/.vf-btn/
+ * .vf-status/.vf-alert/.vf-fin-*). Sem !important — só especificidade
+ * (0,2,0) e posição (última regra do arquivo).
+ * ------------------------------------------------------------ */
+.vf-page-financeiro [hidden] {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .vf-page-financeiro .vf-fin-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .vf-page-financeiro .vf-fin-actions__spacer {
+    display: none;
+  }
+
+  .vf-page-financeiro .vf-fin-actions .vf-btn {
+    width: 100%;
+  }
+
+  .vf-page-financeiro .vf-fin-step {
+    grid-template-columns: 1fr;
+  }
+
+  .vf-page-financeiro .vf-fin-step__number {
+    display: none;
+  }
+}

@@ -40,36 +40,48 @@ function escapeHTML(s) {
   return d.innerHTML;
 }
 
+// Feedback de status → vf-banner (is-success/is-danger/is-warning/is-info)
 function setStatus(msg, tipo) {
   const el = document.getElementById("fin-status");
   if (!el) return;
-  el.classList.remove("is-success", "is-danger", "is-info", "is-warn");
-  if (!msg) { el.style.display = "none"; el.textContent = ""; return; }
+  el.classList.remove("is-success", "is-danger", "is-info", "is-warning");
+  if (!msg) { el.hidden = true; el.textContent = ""; return; }
   el.textContent = msg;
-  el.style.display = "block";
+  el.hidden = false;
   if (tipo === "success") el.classList.add("is-success");
   else if (tipo === "danger") el.classList.add("is-danger");
-  else if (tipo === "warn") el.classList.add("is-warn");
+  else if (tipo === "warn") el.classList.add("is-warning");
   else el.classList.add("is-info");
 }
 
+// Feedback do link (legado) → vf-alert (cor por classe, nunca inline)
 function setStatusLinkCliente(msg, tipo) {
   const el = document.getElementById("fin-link-cliente-status");
   if (!el) return;
-  if (!msg) { el.style.display = "none"; return; }
+  el.classList.remove("is-success", "is-danger", "is-info");
+  if (!msg) { el.hidden = true; el.textContent = ""; return; }
   el.textContent = msg;
-  el.style.display = "block";
-  if (tipo === "success") el.style.color = "var(--vf-success, #0f7a52)";
-  else if (tipo === "danger") el.style.color = "var(--vf-danger, #c62828)";
-  else el.style.color = "var(--vf-text-m, #5a6072)";
+  el.hidden = false;
+  if (tipo === "success") el.classList.add("is-success");
+  else if (tipo === "danger") el.classList.add("is-danger");
+  else el.classList.add("is-info");
 }
 
-// ── Chips informativos do cabeçalho ────────────────────────────────────────
+// Mapeia as variantes legadas para os estados semânticos da Fundação V2.
+function chipVariantClass(variant) {
+  if (variant === "ok") return "is-success";
+  if (variant === "warn") return "is-warning";
+  if (variant === "bad") return "is-danger";
+  if (variant === "info") return "is-info";
+  return "is-neutral";
+}
+
+// ── Chips informativos do cabeçalho → vf-status ────────────────────────────
 function setChip(id, label, value, variant) {
   const el = document.getElementById(id);
   if (!el) return;
-  el.className = "fc-chip" + (variant ? " fc-chip-" + variant : "");
-  el.style.display = "";
+  el.className = "vf-status " + chipVariantClass(variant);
+  el.hidden = false;
   el.innerHTML = `${escapeHTML(label)}: <b>${escapeHTML(value)}</b>`;
 }
 
@@ -108,16 +120,16 @@ function setChipProcessamento(texto, variant) {
 function setChipSalvo(texto, variant) {
   const el = document.getElementById("fin-chip-salvo");
   if (!el) return;
-  if (!texto) { el.style.display = "none"; return; }
-  el.className = "fc-chip" + (variant ? " fc-chip-" + variant : "");
-  el.style.display = "";
+  if (!texto) { el.hidden = true; return; }
+  el.className = "vf-status " + chipVariantClass(variant);
+  el.hidden = false;
   el.innerHTML = `Fechamento: <b>${escapeHTML(texto)}</b>`;
 }
 
 function showLinkClienteActions(show) {
   const host = document.getElementById("fin-link-cliente-actions");
   if (!host) return;
-  host.style.display = show ? "" : "none";
+  host.hidden = !show;
 }
 
 function setLinkClienteOutput(url) {
@@ -138,10 +150,10 @@ function atualizarHintClienteFinanceiro() {
   if (sel.value) {
     const nome = sel.options?.[sel.selectedIndex]?.textContent || "";
     hint.textContent = `Fechamento será vinculado a: ${nome}`;
-    hint.style.display = "block";
+    hint.hidden = false;
   } else {
     hint.textContent = "";
-    hint.style.display = "none";
+    hint.hidden = true;
   }
 }
 
@@ -209,16 +221,17 @@ function aplicarEstadoBase() {
   const costsTitle = document.getElementById("fin-costs-title");
   const costsHint = document.getElementById("fin-costs-hint");
   const costsInput = document.getElementById("fin-costs");
+  const costsNote = costsCard?.querySelector(".vf-fin-upload__note");
   const arquivosHint = document.getElementById("fin-arquivos-hint");
 
   const usandoBase = marketplace === "meli" && baseVinculadaState.hasLink;
 
-  // Card de custos
+  // Card de custos: base vinculada resolve os custos no servidor
   if (costsInput) costsInput.disabled = usandoBase;
   if (costsCard) {
     costsCard.classList.toggle("is-linked", usandoBase);
     if (usandoBase) {
-      if (costsBadge) { costsBadge.textContent = "Base vinculada"; costsBadge.className = "fc-upload-badge fc-upload-badge-linked"; }
+      if (costsBadge) { costsBadge.textContent = "Base vinculada"; costsBadge.className = "vf-tag is-info"; }
       if (costsTitle) costsTitle.textContent = "Usando base vinculada do cliente";
       if (costsHint) costsHint.textContent = baseVinculadaState.baseNome || "Custos resolvidos automaticamente";
       // Limpa qualquer upload manual anterior para não conflitar
@@ -227,43 +240,40 @@ function aplicarEstadoBase() {
         costsInput.dispatchEvent(new Event("change"));
       }
       costsCard.classList.remove("has-file");
-      // Nota explicativa
-      let note = costsCard.querySelector(".fc-linked-note");
-      if (!note) {
-        note = document.createElement("div");
-        note.className = "fc-linked-note";
-        costsCard.appendChild(note);
+      if (costsNote) {
+        costsNote.classList.remove("is-error");
+        costsNote.textContent = "Os custos serão resolvidos no servidor a partir da base vinculada. Não é preciso enviar planilha de custos.";
+        costsNote.hidden = false;
       }
-      note.textContent = "Os custos serão resolvidos no servidor a partir da base vinculada. Não é preciso enviar planilha de custos.";
     } else {
-      if (costsBadge) { costsBadge.textContent = "Obrigatório"; costsBadge.className = "fc-upload-badge fc-upload-badge-req"; }
-      if (costsTitle) costsTitle.textContent = "Planilha de custos";
-      if (costsHint) costsHint.textContent = ".xlsx · Clique ou arraste o arquivo";
-      costsCard.querySelector(".fc-linked-note")?.remove();
+      if (costsBadge) { costsBadge.textContent = "Obrigatório"; costsBadge.className = "vf-tag is-danger"; }
+      if (costsTitle) costsTitle.textContent = "Clique ou arraste o arquivo";
+      if (costsHint) costsHint.textContent = ".xlsx";
+      if (costsNote) { costsNote.textContent = ""; costsNote.hidden = true; }
     }
   }
 
-  // Status da base
+  // Status da base → vf-banner
   if (statusEl) {
-    statusEl.classList.remove("is-info", "is-success", "is-warn", "is-danger");
+    statusEl.classList.remove("is-info", "is-success", "is-warning", "is-danger");
     if (!clienteSlug || !marketplace) {
-      statusEl.style.display = "none";
+      statusEl.hidden = true;
     } else if (baseVinculadaState.loading) {
-      statusEl.style.display = "block";
+      statusEl.hidden = false;
       statusEl.classList.add("is-info");
       statusEl.textContent = "Verificando base vinculada do cliente…";
     } else if (baseVinculadaState.hasLink) {
-      statusEl.style.display = "block";
+      statusEl.hidden = false;
       statusEl.classList.add("is-success");
       statusEl.textContent = marketplace === "meli"
         ? `Base vinculada encontrada: "${baseVinculadaState.baseNome}". O upload de custos não é necessário.`
         : `Base vinculada encontrada: "${baseVinculadaState.baseNome}".`;
     } else if (marketplace === "meli") {
-      statusEl.style.display = "block";
-      statusEl.classList.add("is-warn");
+      statusEl.hidden = false;
+      statusEl.classList.add("is-warning");
       statusEl.textContent = "Nenhuma base vinculada para este cliente/marketplace. Envie a planilha de custos manualmente.";
     } else {
-      statusEl.style.display = "none";
+      statusEl.hidden = true;
     }
   }
 
@@ -757,10 +767,10 @@ function limparFinStats() {
     "fin-shopee-nao-pagos",
   ].forEach((id) => {
     const card = document.getElementById(id);
-    const v = card?.querySelector?.(".fc-stat-value");
+    const v = card?.querySelector?.(".vf-kpi__value");
     if (v) {
       v.textContent = "—";
-      v.style.color = "";
+      v.classList.remove("is-pos", "is-neg", "is-warn");
     }
   });
 }
@@ -769,10 +779,10 @@ function setExecValue(id, value, formatter, mode = "neutral") {
   const el = document.getElementById(id);
   if (!el) return;
   el.textContent = formatter(value);
-  el.classList.remove("fc-exec-value-positive", "fc-exec-value-negative", "fc-exec-muted");
-  if (mode === "positive") el.classList.add("fc-exec-value-positive");
-  else if (mode === "negative") el.classList.add("fc-exec-value-negative");
-  else if (mode === "muted") el.classList.add("fc-exec-muted");
+  el.classList.remove("vf-fin-exec__value--pos", "vf-fin-exec__value--neg", "vf-fin-exec__value--muted");
+  if (mode === "positive") el.classList.add("vf-fin-exec__value--pos");
+  else if (mode === "negative") el.classList.add("vf-fin-exec__value--neg");
+  else if (mode === "muted") el.classList.add("vf-fin-exec__value--muted");
 }
 
 function limparFinResumoExecutivo() {
@@ -792,7 +802,7 @@ function limparFinResumoExecutivo() {
     const el = document.getElementById(id);
     if (!el) return;
     el.textContent = "—";
-    el.classList.remove("fc-exec-value-positive", "fc-exec-value-negative", "fc-exec-muted");
+    el.classList.remove("vf-fin-exec__value--pos", "vf-fin-exec__value--neg", "vf-fin-exec__value--muted");
   });
 }
 
@@ -824,16 +834,16 @@ function renderFinResumoExecutivo(data) {
   setExecValue("fin-exec-afiliados", afiliados, brl, afiliados > 0 ? "negative" : "muted");
 
   // Shopee: evita mostrar "Resultado Final" e "LC Total" como dois números concorrentes.
-  const resultadoFinalRow = document.getElementById("fin-exec-resultado-final")?.closest(".fc-exec-row");
+  const resultadoFinalRow = document.getElementById("fin-exec-resultado-final")?.closest(".vf-fin-exec__row");
   const mcMediaLabelEl = document.getElementById("fin-exec-mc-media")?.previousElementSibling;
 
   if (isShopee) {
-    if (resultadoFinalRow) resultadoFinalRow.style.display = "none";
+    if (resultadoFinalRow) resultadoFinalRow.hidden = true;
     setExecValue("fin-exec-lc-total", finalResult, brl, finalResult > 0 ? "positive" : (finalResult < 0 ? "negative" : "neutral"));
     if (mcMediaLabelEl) mcMediaLabelEl.textContent = "MC Final";
     setExecValue("fin-exec-mc-media", mcFinal, pct, mcFinal > 0 ? "positive" : (mcFinal < 0 ? "negative" : "neutral"));
   } else {
-    if (resultadoFinalRow) resultadoFinalRow.style.display = "";
+    if (resultadoFinalRow) resultadoFinalRow.hidden = false;
     setExecValue("fin-exec-resultado-final", finalResult, brl, finalResult > 0 ? "positive" : (finalResult < 0 ? "negative" : "neutral"));
     setExecValue("fin-exec-lc-total", lcTotal, brl, lcTotal > 0 ? "positive" : (lcTotal < 0 ? "negative" : "neutral"));
     if (mcMediaLabelEl) mcMediaLabelEl.textContent = "MC Média";
@@ -847,13 +857,13 @@ function renderFinResumo(data) {
   const isShopee = String(data?._vf_meta?.marketplace || "").toLowerCase() === "shopee";
 
   function setCard(id, rawValue, formattedValue) {
-    const el = document.getElementById(id)?.querySelector(".fc-stat-value");
+    const el = document.getElementById(id)?.querySelector(".vf-kpi__value");
     if (!el) return;
     el.textContent = formattedValue;
-    el.classList.remove("fc-val-pos", "fc-val-neg", "fc-val-warn");
+    el.classList.remove("is-pos", "is-neg", "is-warn");
     const n = Number(rawValue);
     if (!Number.isFinite(n) || n === 0) return;
-    el.classList.add(n > 0 ? "fc-val-pos" : "fc-val-neg");
+    el.classList.add(n > 0 ? "is-pos" : "is-neg");
   }
 
   setCard("fin-bruto", s.grossRevenueTotal, brl(s.grossRevenueTotal));
@@ -862,9 +872,9 @@ function renderFinResumo(data) {
   // Shopee: "LC Total" passa a ser summary.finalResult (já pós Ads/Venforce/Afiliados);
   // o card "Resultado Final" fica escondido por ser o mesmo valor, e "MC Média" vira "MC Final".
   const finResultadoEl = document.getElementById("fin-resultado");
-  const mcTitleEl = document.getElementById("fin-mc")?.querySelector(".fc-stat-title");
+  const mcTitleEl = document.getElementById("fin-mc")?.querySelector(".vf-kpi__label");
   if (isShopee) {
-    if (finResultadoEl) finResultadoEl.style.display = "none";
+    if (finResultadoEl) finResultadoEl.hidden = true;
     const finalResult = Number(s.finalResult || 0);
     const net = Number(s.paidRevenueTotal || 0);
     const mcFinal = net > 0 ? finalResult / net : 0;
@@ -872,7 +882,7 @@ function renderFinResumo(data) {
     if (mcTitleEl) mcTitleEl.textContent = "MC Final";
     setCard("fin-mc", mcFinal, pct(mcFinal));
   } else {
-    if (finResultadoEl) finResultadoEl.style.display = "";
+    if (finResultadoEl) finResultadoEl.hidden = false;
     if (mcTitleEl) mcTitleEl.textContent = "MC Média";
     setCard("fin-lc", s.contributionProfitTotal, brl(s.contributionProfitTotal));
     setCard("fin-mc", s.averageContributionMargin, pct(s.averageContributionMargin));
@@ -891,17 +901,17 @@ function renderFinResumo(data) {
   // Cards Shopee — só populam se vieram no summary.
   const setCountColor = (el, on, cls) => {
     if (!el) return;
-    el.classList.remove("fc-val-pos", "fc-val-neg", "fc-val-warn");
+    el.classList.remove("is-pos", "is-neg", "is-warn");
     if (on) el.classList.add(cls);
   };
 
   const shopeeCancCount = Number(s.cancelledCount || 0);
   const elShopeeCancCount = document
     .getElementById("fin-shopee-cancelados-count")
-    ?.querySelector(".fc-stat-value");
+    ?.querySelector(".vf-kpi__value");
   if (elShopeeCancCount) {
     elShopeeCancCount.textContent = num(shopeeCancCount);
-    setCountColor(elShopeeCancCount, shopeeCancCount > 0, "fc-val-neg");
+    setCountColor(elShopeeCancCount, shopeeCancCount > 0, "is-neg");
   }
 
   const shopeeLost = -Number(s.cancelledLostRevenue || 0);
@@ -910,23 +920,23 @@ function renderFinResumo(data) {
   const unpaidCount = Number(s.unpaidCount || 0);
   const elUnpaid = document
     .getElementById("fin-shopee-nao-pagos")
-    ?.querySelector(".fc-stat-value");
+    ?.querySelector(".vf-kpi__value");
   if (elUnpaid) {
     const unpaidVal = Number(s.unpaidLostRevenue || 0);
     elUnpaid.textContent = unpaidCount > 0
       ? `${num(unpaidCount)} (${brl(unpaidVal)})`
       : "—";
-    setCountColor(elUnpaid, unpaidCount > 0, "fc-val-warn");
+    setCountColor(elUnpaid, unpaidCount > 0, "is-warn");
   }
 
   // Pedidos cancelados: contagem; coloração semântica (não é financeiro)
   const elCount = document
     .getElementById("fin-cancelados-count")
-    ?.querySelector(".fc-stat-value");
+    ?.querySelector(".vf-kpi__value");
   if (elCount) {
     const count = Number(s.refundsCount || 0);
     elCount.textContent = num(count);
-    setCountColor(elCount, count > 0, "fc-val-neg");
+    setCountColor(elCount, count > 0, "is-neg");
   }
 
   // Leitura executiva do fechamento
@@ -965,16 +975,18 @@ function renderLeituraFechamento(data) {
   if (lost > 0) bullets.push(`Faturamento perdido estimado de <b>${brl(lost)}</b> em pedidos cancelados.`);
 
   const tone = !positivo || mcReferencia < 0 ? "danger" : (mcReferencia < 0.15 || unmatched > 0 ? "warn" : "success");
-  const toneClass = tone === "danger" ? "is-danger" : tone === "warn" ? "is-warn" : "is-success";
+  const toneClass = tone === "danger" ? "is-danger" : tone === "warn" ? "is-warning" : "is-success";
 
   host.innerHTML = `
-    <div class="fc-status ${toneClass}" style="margin:0 0 20px;">
-      <div style="font-weight:800;margin-bottom:6px;">Leitura do fechamento</div>
-      <ul style="margin:0;padding-left:18px;line-height:1.65;">
-        ${bullets.map((b) => `<li>${b}</li>`).join("")}
-      </ul>
+    <div class="vf-banner ${toneClass}" role="status">
+      <div class="vf-banner__content">
+        <p class="vf-banner__title">Leitura do fechamento</p>
+        <ul class="vf-fin-leitura__list">
+          ${bullets.map((b) => `<li>${b}</li>`).join("")}
+        </ul>
+      </div>
     </div>`;
-  host.style.display = "block";
+  host.hidden = false;
 }
 
 function finColumnKey(col) {
@@ -1005,18 +1017,14 @@ function finColumnMinWidth(col, numericCols) {
 
 function finColumnCellClassAttr(col, numericCols) {
   const parts = [];
-  if (numericCols.has(col)) parts.push("fc-td-num");
+  if (numericCols.has(col)) parts.push("num");
 
   const l = finColumnKey(col);
   if (/(^id$|item_id|produto_id|id_produto|^# de anuncio$|id.*anuncio|anuncio.*id|mlb|sku)/.test(l)) {
-    parts.push("fc-col-compact", "fc-col-id");
-  } else if (/marketplace|canal/.test(l)) {
-    parts.push("fc-col-compact", "fc-col-marketplace");
+    parts.push("vf-mono", "vf-fin-col--id");
   } else if (/titulo|title|nome|produto|descri|item_title/.test(l)) {
-    parts.push("fc-col-produto");
+    parts.push("vf-fin-col--produto");
   }
-
-  if (/lc.*anuncio|anuncio.*lc/.test(l)) parts.push("fc-col-lc-ad");
 
   return parts.length ? ` class="${parts.join(" ")}"` : "";
 }
@@ -1024,7 +1032,7 @@ function finColumnCellClassAttr(col, numericCols) {
 function limparShopeeReconciliacao() {
   const el = document.getElementById("fin-shopee-reconciliacao");
   if (!el) return;
-  el.style.display = "none";
+  el.hidden = true;
   el.innerHTML = "";
 }
 
@@ -1097,11 +1105,11 @@ function renderShopeeReconciliacao(data) {
   ].filter((item) => item.count > 0);
 
   const cardsHtml = statusItems.map((item) => {
-    return `<div class="fc-recon-card tone-${item.tone}">
-      <div class="fc-recon-card-label">${escapeHTML(item.label)}</div>
-      <div class="fc-recon-card-support">${escapeHTML(item.support)}</div>
-      <div class="fc-recon-card-value">${brl(item.revenue)}</div>
-      <div class="fc-recon-card-count">${num(item.count)} pedido${item.count !== 1 ? "s" : ""}</div>
+    return `<div class="vf-fin-reconciliation__item is-${item.tone}">
+      <div class="vf-fin-reconciliation__item-label">${escapeHTML(item.label)}</div>
+      <div class="vf-fin-reconciliation__item-support">${escapeHTML(item.support)}</div>
+      <div class="vf-fin-reconciliation__item-value">${brl(item.revenue)}</div>
+      <div class="vf-fin-reconciliation__item-count">${num(item.count)} pedido${item.count !== 1 ? "s" : ""}</div>
     </div>`;
   }).join("");
 
@@ -1128,42 +1136,46 @@ function renderShopeeReconciliacao(data) {
       : "");
 
   const diffHtml = reconcRevenue > perfRevenue
-    ? `<p class="fc-recon-text-note">A diferença entre Performance e Reconciliação acontece porque a Performance considera apenas pedidos pagos usados no cálculo financeiro. A Reconciliação inclui também cancelados, não pagos, devoluções e status operacionais.</p>`
+    ? `<p class="vf-fin-reconciliation__note">A diferença entre Performance e Reconciliação acontece porque a Performance considera apenas pedidos pagos usados no cálculo financeiro. A Reconciliação inclui também cancelados, não pagos, devoluções e status operacionais.</p>`
     : "";
 
   const topCancelled = Array.isArray(s.orderAllTopCancelledItems) ? s.orderAllTopCancelledItems : [];
   const topNames = topCancelled.map((i) => i.productName).filter(Boolean);
   const topHtml = topNames.length
-    ? `<p class="fc-recon-text-top">Os maiores impactos de cancelamento confirmado estão concentrados em: ${escapeHTML(topNames.join(", "))}.</p>`
+    ? `<p>Os maiores impactos de cancelamento confirmado estão concentrados em: ${escapeHTML(topNames.join(", "))}.</p>`
     : "";
 
-  el.innerHTML = `<div class="fc-recon-panel">
-    <div class="fc-recon-header">
+  el.innerHTML = `<section class="vf-card">
+    <div class="vf-card__header">
       <div>
-        <div class="fc-recon-badge">Reconciliação Shopee</div>
-        <p class="fc-recon-subtitle">Visão operacional dos pedidos do período, baseada no arquivo completo de pedidos da Shopee.</p>
-        <p class="fc-recon-source">Fonte: arquivo completo de pedidos da Shopee.</p>
-      </div>
-      <div class="fc-recon-compare">
-        <div class="fc-recon-compare-item">
-          <span class="fc-recon-compare-label">Performance (pedidos pagos)</span>
-          <span class="fc-recon-compare-value fc-recon-value-positive">${brl(perfRevenue)}</span>
-        </div>
-        <div class="fc-recon-compare-sep">→</div>
-        <div class="fc-recon-compare-item">
-          <span class="fc-recon-compare-label">Reconciliação (visão completa)</span>
-          <span class="fc-recon-compare-value">${brl(reconcRevenue)}</span>
-        </div>
+        <h2 class="vf-card__title">Reconciliação Shopee</h2>
+        <p class="vf-card__description">Visão operacional dos pedidos do período, baseada no arquivo completo de pedidos da Shopee.</p>
+        <p class="vf-fin-reconciliation__source">Fonte: arquivo completo de pedidos da Shopee.</p>
       </div>
     </div>
-    <div class="fc-recon-cards">${cardsHtml}</div>
-    <div class="fc-recon-text">
-      <p>${mainText}</p>
-      ${diffHtml}
-      ${topHtml}
+    <div class="vf-card__body vf-fin-reconciliation">
+      <div class="vf-fin-reconciliation__header">
+        <div class="vf-fin-reconciliation__compare">
+          <div class="vf-fin-reconciliation__compare-item">
+            <span class="vf-fin-reconciliation__compare-label">Performance (pedidos pagos)</span>
+            <span class="vf-fin-reconciliation__compare-value is-pos">${brl(perfRevenue)}</span>
+          </div>
+          <div class="vf-fin-reconciliation__sep" aria-hidden="true">→</div>
+          <div class="vf-fin-reconciliation__compare-item">
+            <span class="vf-fin-reconciliation__compare-label">Reconciliação (visão completa)</span>
+            <span class="vf-fin-reconciliation__compare-value">${brl(reconcRevenue)}</span>
+          </div>
+        </div>
+      </div>
+      <div class="vf-fin-reconciliation__grid">${cardsHtml}</div>
+      <div class="vf-fin-reconciliation__text">
+        <p>${mainText}</p>
+        ${diffHtml}
+        ${topHtml}
+      </div>
     </div>
-  </div>`;
-  el.style.display = "block";
+  </section>`;
+  el.hidden = false;
 }
 
 function renderFinTabela(data) {
@@ -1175,8 +1187,8 @@ function renderFinTabela(data) {
 
   if (!rows.length) {
     const emptyPanel = document.createElement("div");
-    emptyPanel.className = "fc-content-panel";
-    emptyPanel.innerHTML = `<div class="fc-empty">Nenhum dado para exibir.</div>`;
+    emptyPanel.className = "vf-card";
+    emptyPanel.innerHTML = `<div class="vf-empty"><p class="vf-empty__title">Nenhum dado para exibir</p></div>`;
     host.appendChild(emptyPanel);
   } else {
     const columns = Object.keys(rows[0] || {});
@@ -1254,43 +1266,55 @@ function renderFinTabela(data) {
     }
 
     const panelEl = document.createElement("div");
-    panelEl.className = "fc-content-panel";
+    panelEl.className = "vf-card";
     panelEl.innerHTML = `
-      <h2 class="fc-section-title" style="margin-bottom:14px;">Detalhamento por produto</h2>
-      <div class="fc-table-toolbar">
-        <input type="text" class="fc-table-search" placeholder="Buscar por ID ou título…" autocomplete="off">
-        <select class="fc-table-page-select">
-          <option value="25">25 por página</option>
-          <option value="50">50 por página</option>
-          <option value="100">100 por página</option>
-        </select>
-        <span class="fc-table-counter"></span>
-      </div>
-      <div class="fc-filter-chips"></div>
-      <div class="fc-table-scroll"></div>
-      <div class="fc-pagination">
-        <span class="fc-pagination-info"></span>
-        <button class="fc-pagination-btn fc-pagination-prev" type="button">← Anterior</button>
-        <button class="fc-pagination-btn fc-pagination-next" type="button">Próxima →</button>
+      <div class="vf-card__body vf-stack">
+        <div class="vf-section__header">
+          <h2 class="vf-section__title">Detalhamento por produto</h2>
+        </div>
+        <div class="vf-toolbar">
+          <div class="vf-toolbar__filters">
+            <input type="text" class="vf-input vf-search vf-fin-search" placeholder="Buscar por ID ou título…" autocomplete="off" aria-label="Buscar produtos">
+            <span class="vf-fin-counter"></span>
+          </div>
+          <div class="vf-toolbar__actions">
+            <label class="vf-page-size">Por página
+              <select class="vf-select vf-fin-page-select" aria-label="Itens por página">
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="vf-cluster vf-fin-filter-chips"></div>
+        <div class="vf-table-wrap vf-fin-table-wrap"></div>
+        <nav class="vf-pagination" aria-label="Paginação de produtos">
+          <span class="vf-pagination__info vf-fin-page-info"></span>
+          <div class="vf-pagination__actions">
+            <button class="vf-btn vf-btn--secondary vf-btn--sm vf-fin-prev" type="button">Anterior</button>
+            <button class="vf-btn vf-btn--secondary vf-btn--sm vf-fin-next" type="button">Próxima</button>
+          </div>
+        </nav>
       </div>
     `;
 
-    const searchInputEl  = panelEl.querySelector(".fc-table-search");
-    const pageSelectEl   = panelEl.querySelector(".fc-table-page-select");
-    const counterEl      = panelEl.querySelector(".fc-table-counter");
-    const filterChipsEl  = panelEl.querySelector(".fc-filter-chips");
-    const tableScrollEl  = panelEl.querySelector(".fc-table-scroll");
-    const prevBtn        = panelEl.querySelector(".fc-pagination-prev");
-    const nextBtn        = panelEl.querySelector(".fc-pagination-next");
-    const pageInfoEl     = panelEl.querySelector(".fc-pagination-info");
+    const searchInputEl  = panelEl.querySelector(".vf-fin-search");
+    const pageSelectEl   = panelEl.querySelector(".vf-fin-page-select");
+    const counterEl      = panelEl.querySelector(".vf-fin-counter");
+    const filterChipsEl  = panelEl.querySelector(".vf-fin-filter-chips");
+    const tableScrollEl  = panelEl.querySelector(".vf-fin-table-wrap");
+    const prevBtn        = panelEl.querySelector(".vf-fin-prev");
+    const nextBtn        = panelEl.querySelector(".vf-fin-next");
+    const pageInfoEl     = panelEl.querySelector(".vf-fin-page-info");
 
     function renderFilterChips() {
       if (!filterChipsEl) return;
-      if (!FILTERS.length) { filterChipsEl.style.display = "none"; return; }
+      if (!FILTERS.length) { filterChipsEl.hidden = true; return; }
       filterChipsEl.innerHTML = FILTERS.map((f) =>
-        `<button type="button" class="fc-filter-chip${activeFilter === f.key ? " active" : ""}" data-filter="${escapeHTML(f.key)}">${escapeHTML(f.label)}</button>`
+        `<button type="button" class="vf-filter-chip${activeFilter === f.key ? " is-active" : ""}" data-filter="${escapeHTML(f.key)}" aria-pressed="${activeFilter === f.key ? "true" : "false"}">${escapeHTML(f.label)}</button>`
       ).join("");
-      filterChipsEl.querySelectorAll(".fc-filter-chip").forEach((btn) => {
+      filterChipsEl.querySelectorAll(".vf-filter-chip").forEach((btn) => {
         btn.addEventListener("click", () => {
           const k = btn.getAttribute("data-filter");
           activeFilter = activeFilter === k ? "" : k;
@@ -1313,7 +1337,8 @@ function renderFinTabela(data) {
         1200,
         columns.reduce((sum, c) => sum + finColumnMinWidth(c, numericCols), 0)
       );
-      tableScrollEl.style.setProperty("--fc-detail-table-min-width", `${detailMinWidth}px`);
+      // Largura mínima calculada dinamicamente a partir das colunas detectadas
+      tableScrollEl.style.setProperty("--vf-fin-detail-min-width", `${detailMinWidth}px`);
 
       const COL_ABBREV = {
         "Preço unitário de venda do anúncio (BRL)": "Preço Unit.",
@@ -1323,8 +1348,7 @@ function renderFinTabela(data) {
       };
       const thHtml = columns.map((c) => {
         const minWidth = finColumnMinWidth(c, numericCols);
-        const isProductCol = /titulo|title|nome|produto|descri|item_title/.test(finColumnKey(c));
-        const w = ` style="min-width:${minWidth}px;${isProductCol ? "" : "white-space:nowrap;"}"`;
+        const w = ` style="min-width:${minWidth}px"`;
         const label = COL_ABBREV[c] || c;
         return `<th${finColumnCellClassAttr(c, numericCols)}${w}>${escapeHTML(String(label))}</th>`;
       }).join("");
@@ -1335,7 +1359,7 @@ function renderFinTabela(data) {
           if (c === colLc || c === colMc) {
             const n = cellNum(r?.[c]);
             if (Number.isFinite(n) && n !== 0) {
-              const cls = n > 0 ? "fc-td-pos" : "fc-td-neg";
+              const cls = n > 0 ? "vf-fin-num--pos" : "vf-fin-num--neg";
               attr = attr ? attr.replace('class="', `class="${cls} `) : ` class="${cls}"`;
             }
           }
@@ -1344,7 +1368,7 @@ function renderFinTabela(data) {
         return `<tr>${tds}</tr>`;
       }).join("");
 
-      tableScrollEl.innerHTML = `<table class="fc-table fc-fin-detail-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbodyHtml}</tbody></table>`;
+      tableScrollEl.innerHTML = `<table class="vf-table vf-table--compact vf-fin-detail"><thead><tr>${thHtml}</tr></thead><tbody>${tbodyHtml}</tbody></table>`;
 
       const showing = pageRows.length;
       counterEl.textContent = showing > 0
@@ -1372,17 +1396,19 @@ function renderFinTabela(data) {
   const unmatched = Array.isArray(data?.unmatchedIds) ? data.unmatchedIds : [];
   if (unmatched.length > 0) {
     const panel = document.createElement("div");
-    panel.className = "fc-alert-panel fc-alert-danger";
+    panel.className = "vf-banner is-danger";
+    panel.setAttribute("role", "alert");
 
     const idsHtml = unmatched
-      .map((id) => `<div>${escapeHTML(String(id))}</div>`)
+      .map((id) => `<span class="vf-fin-idlist__item vf-mono">${escapeHTML(String(id))}</span>`)
       .join("");
 
     panel.innerHTML = `
-      <p class="fc-alert-title">⚠ ${unmatched.length} ID(s) não encontrados na planilha de custos</p>
-      <p class="fc-alert-sub">Receita ignorada: ${escapeHTML(brl(data?.ignoredRevenue || 0))}</p>
-      <div class="fc-alert-chips">${idsHtml}</div>
-      <p class="fc-alert-foot">Cadastre esses IDs na base de custos e processe novamente.</p>
+      <div class="vf-banner__content">
+        <p class="vf-banner__title">${unmatched.length} ID(s) não encontrados na planilha de custos</p>
+        <p class="vf-banner__description">Receita ignorada: ${escapeHTML(brl(data?.ignoredRevenue || 0))}. Cadastre esses IDs na base de custos e processe novamente.</p>
+        <div class="vf-fin-idlist">${idsHtml}</div>
+      </div>
     `;
     host.appendChild(panel);
   }
@@ -1391,16 +1417,19 @@ function renderFinTabela(data) {
   const unmatchedCancelled = Array.isArray(data?.unmatchedCancelled) ? data.unmatchedCancelled : [];
   if (unmatchedCancelled.length > 0) {
     const panel = document.createElement("div");
-    panel.className = "fc-alert-panel fc-alert-warn";
+    panel.className = "vf-banner is-warning";
+    panel.setAttribute("role", "status");
 
     const itemsHtml = unmatchedCancelled
-      .map((c) => `<div>${escapeHTML(c.productName || "—")} <span class="muted">| SKU: ${escapeHTML(c.skuPrincipal || "—")} | ${escapeHTML(brl(c.subtotal || 0))}</span></div>`)
+      .map((c) => `<span class="vf-fin-idlist__item">${escapeHTML(c.productName || "—")} <span class="vf-fin-muted">· SKU: ${escapeHTML(c.skuPrincipal || "—")} · ${escapeHTML(brl(c.subtotal || 0))}</span></span>`)
       .join("");
 
     panel.innerHTML = `
-      <p class="fc-alert-title">⚠ ${unmatchedCancelled.length} pedido(s) cancelado(s) sem custo identificado</p>
-      <p class="fc-alert-sub">Esses pedidos cancelados não foram encontrados na base de custos via SKU. Cadastre o produto na base e processe novamente para incluir nos cálculos.</p>
-      <div class="fc-alert-chips">${itemsHtml}</div>
+      <div class="vf-banner__content">
+        <p class="vf-banner__title">${unmatchedCancelled.length} pedido(s) cancelado(s) sem custo identificado</p>
+        <p class="vf-banner__description">Esses pedidos cancelados não foram encontrados na base de custos via SKU. Cadastre o produto na base e processe novamente para incluir nos cálculos.</p>
+        <div class="vf-fin-idlist">${itemsHtml}</div>
+      </div>
     `;
     host.appendChild(panel);
   }
@@ -1417,14 +1446,14 @@ function limparXlsBlob() {
   if (_xlsBlobUrl) { URL.revokeObjectURL(_xlsBlobUrl); _xlsBlobUrl = null; }
   _xlsFilename = null;
   const btn = document.getElementById("btn-fin-download");
-  if (btn) btn.style.display = "none";
+  if (btn) btn.hidden = true;
 }
 function setXlsBlob(blob, filename) {
   limparXlsBlob();
   _xlsBlobUrl = URL.createObjectURL(blob);
   _xlsFilename = filename || "fechamento-resultado.xlsx";
   const btn = document.getElementById("btn-fin-download");
-  if (btn) btn.style.display = "";
+  if (btn) btn.hidden = false;
 }
 
 function todayISO() {
@@ -1529,20 +1558,20 @@ async function processarFechamentoFinanceiro() {
     _entregaIdSalvo = null;
     _entregaPublicada = false;
 
-    showLinkClienteActions(true);
-    setStatusLinkCliente("Pronto para gerar a entrega do cliente.", "info");
+    // Painel legado permanece oculto — a entrega é feita pela aba "Entrega para o cliente".
+    showLinkClienteActions(false);
     setLinkClienteOutput("");
 
     renderFinResumo(json);
     renderFinResumoExecutivo(json);
     renderShopeeReconciliacao(json);
     renderFinTabela(json);
-    document.getElementById("fc-wrap")?.setAttribute("data-processed", "");
+    document.querySelector(".vf-fin-dashboard")?.setAttribute("data-processed", "");
     initEntregaTabs();
 
     // Ações pós-processamento
     const btnSalvar = document.getElementById("btn-fin-salvar");
-    if (btnSalvar) { btnSalvar.style.display = ""; btnSalvar.disabled = false; btnSalvar.textContent = "Salvar fechamento"; }
+    if (btnSalvar) { btnSalvar.hidden = false; btnSalvar.disabled = false; btnSalvar.textContent = "Salvar fechamento"; }
     setChipProcessamento("processado", "ok");
     setChipSalvo("processado, ainda não salvo", "warn");
 
@@ -1563,19 +1592,18 @@ async function processarFechamentoFinanceiro() {
   }
 }
 
-// Helper: estado de loading em botões (mantém rótulo original).
+// Helper: estado de loading em botões. O spinner é do componente V2
+// (.vf-btn.is-loading exibe um spinner absoluto sem alterar a largura),
+// então preservamos o rótulo original — nada de HTML injetado.
 function setBtnLoading(btn, loading, labelWhileLoading) {
   if (!btn) return;
   if (loading) {
-    if (!btn.dataset.originalHtml) btn.dataset.originalHtml = btn.innerHTML;
     btn.disabled = true;
     btn.classList.add("is-loading");
-    btn.innerHTML = `<span class="fc-spinner"></span>${escapeHTML(labelWhileLoading || "Aguarde…")}`;
   } else {
     btn.disabled = false;
     btn.classList.remove("is-loading");
-    if (btn.dataset.originalHtml) { btn.innerHTML = btn.dataset.originalHtml; delete btn.dataset.originalHtml; }
-    else if (labelWhileLoading) { btn.textContent = labelWhileLoading; }
+    if (labelWhileLoading) btn.textContent = labelWhileLoading;
   }
 }
 
@@ -1636,21 +1664,6 @@ async function salvarFechamentoFinanceiro() {
   }
 }
 
-function ensureFileLabelSpan(inputEl) {
-  if (!inputEl) return null;
-  const root = inputEl.closest(".fc-upload-card") || inputEl.parentElement;
-  if (!root) return null;
-
-  let span = root.querySelector(".fc-file-name");
-  if (!span) {
-    span = document.createElement("div");
-    span.className = "fc-file-name";
-    span.style.display = "none";
-    inputEl.insertAdjacentElement("afterend", span);
-  }
-  return span;
-}
-
 function formatFileSize(bytes) {
   const b = Number(bytes) || 0;
   if (b < 1024) return `${b} B`;
@@ -1658,27 +1671,26 @@ function formatFileSize(bytes) {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// Atualiza o card de upload: nome + tamanho + botão remover, e estado has-file.
-function updateFileCard(inputEl, labelSpan) {
-  if (!inputEl || !labelSpan) return;
-  const card = inputEl.closest(".fc-upload-card");
+// Atualiza o cartão de upload: alterna dropzone/file-item e estado has-file.
+// O markup do file-item é estático (vf-file-item) — só preenchemos nome/tamanho.
+function updateFileCard(inputEl) {
+  if (!inputEl) return;
+  const card = inputEl.closest(".vf-fin-upload");
+  if (!card) return;
+  const fileItem = card.querySelector(".vf-file-item");
+  const nameEl = fileItem?.querySelector(".vf-file-item__name");
+  const infoEl = fileItem?.querySelector(".vf-file-item__info");
   const f = inputEl.files?.[0];
   if (f) {
-    labelSpan.style.display = "flex";
-    labelSpan.innerHTML =
-      `<span style="overflow:hidden;text-overflow:ellipsis;">${escapeHTML(f.name)} · ${escapeHTML(formatFileSize(f.size))}</span>` +
-      `<button type="button" class="fc-file-remove" title="Remover" aria-label="Remover arquivo">&times;</button>`;
-    card?.classList.add("has-file");
-    labelSpan.querySelector(".fc-file-remove")?.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      inputEl.value = "";
-      inputEl.dispatchEvent(new Event("change"));
-    });
+    if (nameEl) nameEl.textContent = f.name;
+    if (infoEl) infoEl.textContent = formatFileSize(f.size);
+    if (fileItem) fileItem.hidden = false;
+    card.classList.add("has-file");
   } else {
-    labelSpan.style.display = "none";
-    labelSpan.innerHTML = "";
-    card?.classList.remove("has-file");
+    if (nameEl) nameEl.textContent = "";
+    if (infoEl) infoEl.textContent = "";
+    if (fileItem) fileItem.hidden = true;
+    card.classList.remove("has-file");
   }
   atualizarMiniResumo();
 }
@@ -1686,36 +1698,37 @@ function updateFileCard(inputEl, labelSpan) {
 function initUploadDragDrop(inputId) {
   const input = document.getElementById(inputId);
   if (!input) return;
-  const card = input.closest(".fc-upload-card");
+  const card = input.closest(".vf-fin-upload");
   if (!card) return;
+  const note = card.querySelector(".vf-fin-upload__note");
 
   card.addEventListener("dragover", (e) => {
+    if (input.disabled) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
-    card.classList.add("drag-over");
+    card.classList.add("is-dragging");
   });
 
   card.addEventListener("dragleave", (e) => {
-    if (!card.contains(e.relatedTarget)) card.classList.remove("drag-over");
+    if (!card.contains(e.relatedTarget)) card.classList.remove("is-dragging");
   });
 
   card.addEventListener("drop", (e) => {
     e.preventDefault();
-    card.classList.remove("drag-over");
+    card.classList.remove("is-dragging");
+    if (input.disabled) return;
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".xlsx")) {
-      let msg = card.querySelector(".fc-upload-reject-msg");
-      if (!msg) {
-        msg = document.createElement("div");
-        msg.className = "fc-upload-reject-msg";
-        card.appendChild(msg);
+      if (note) {
+        note.textContent = "Apenas arquivos .xlsx são aceitos.";
+        note.classList.add("is-error");
+        note.hidden = false;
+        setTimeout(() => { note.textContent = ""; note.classList.remove("is-error"); note.hidden = true; }, 3000);
       }
-      msg.textContent = "Apenas arquivos .xlsx são aceitos.";
-      setTimeout(() => msg?.remove(), 3000);
       return;
     }
-    card.querySelector(".fc-upload-reject-msg")?.remove();
+    if (note && !card.classList.contains("is-linked")) { note.textContent = ""; note.classList.remove("is-error"); note.hidden = true; }
     try {
       const dt = new DataTransfer();
       dt.items.add(file);
@@ -1754,7 +1767,7 @@ if (btnFinLimpar) {
       if (!inp) return;
       inp.value = "";
       inp.dispatchEvent(new Event("change"));
-      inp.closest(".fc-upload-card")?.classList.remove("has-file", "drag-over");
+      inp.closest(".vf-fin-upload")?.classList.remove("has-file", "is-dragging");
     });
 
     const finAds = document.getElementById("fin-ads");
@@ -1777,19 +1790,20 @@ if (btnFinLimpar) {
     limparFinStats();
     limparFinResumoExecutivo();
     limparShopeeReconciliacao();
-    document.getElementById("fc-wrap")?.removeAttribute("data-processed");
+    document.querySelector(".vf-fin-dashboard")?.removeAttribute("data-processed");
+    resetEntregaTabs();
 
     const tabela = document.getElementById("fin-tabela");
     if (tabela) tabela.innerHTML = "";
     const leitura = document.getElementById("fin-leitura");
-    if (leitura) { leitura.innerHTML = ""; leitura.style.display = "none"; }
+    if (leitura) { leitura.innerHTML = ""; leitura.hidden = true; }
 
     ultimoFechamentoFinanceiro = null;
     _entregaIdSalvo = null;
     _entregaPublicada = false;
 
     const btnSalvar = document.getElementById("btn-fin-salvar");
-    if (btnSalvar) btnSalvar.style.display = "none";
+    if (btnSalvar) btnSalvar.hidden = true;
 
     showLinkClienteActions(false);
     setLinkClienteOutput("");
@@ -1857,35 +1871,34 @@ if (btnAbrirLinkCliente) {
   });
 }
 
-const finSalesInput = document.getElementById("fin-sales");
-const finSalesLabel = ensureFileLabelSpan(finSalesInput);
-if (finSalesInput) {
-  finSalesInput.addEventListener("change", () => updateFileCard(finSalesInput, finSalesLabel));
-}
+["fin-sales", "fin-costs", "fin-orders-all"].forEach((id) => {
+  const input = document.getElementById(id);
+  if (input) input.addEventListener("change", () => updateFileCard(input));
+});
 
-const finCostsInput = document.getElementById("fin-costs");
-const finCostsLabel = ensureFileLabelSpan(finCostsInput);
-if (finCostsInput) {
-  finCostsInput.addEventListener("change", () => updateFileCard(finCostsInput, finCostsLabel));
-}
-
-const finOrdersAllInput = document.getElementById("fin-orders-all");
-const finOrdersAllLabel = ensureFileLabelSpan(finOrdersAllInput);
-if (finOrdersAllInput) {
-  finOrdersAllInput.addEventListener("change", () => updateFileCard(finOrdersAllInput, finOrdersAllLabel));
-}
+// Botões "remover arquivo" (markup estático do file-item)
+document.querySelectorAll(".vf-fin-file-remove").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const input = btn.closest(".vf-fin-upload")?.querySelector('input[type="file"]');
+    if (!input) return;
+    input.value = "";
+    input.dispatchEvent(new Event("change"));
+  });
+});
 
 // Bloco Order.all (Reconciliação Shopee) — visível só para Shopee.
 const marketplaceSelect = document.getElementById("fin-marketplace");
 const ordersAllBlock = document.getElementById("fin-orders-all-block");
 function updateOrdersAllVisibility() {
-  if (ordersAllBlock) ordersAllBlock.style.display = marketplaceSelect?.value === "shopee" ? "" : "none";
+  if (ordersAllBlock) ordersAllBlock.hidden = marketplaceSelect?.value !== "shopee";
 }
 
 // Bloco FULL / Custos adicionais — visível só para Mercado Livre.
 const meliExtraCostsBlock = document.getElementById("fin-meli-extra-costs");
 function updateMeliExtraCostsVisibility() {
-  if (meliExtraCostsBlock) meliExtraCostsBlock.style.display = marketplaceSelect?.value === "meli" ? "" : "none";
+  if (meliExtraCostsBlock) meliExtraCostsBlock.hidden = marketplaceSelect?.value !== "meli";
 }
 
 // Alteração de cliente/marketplace redetecta base vinculada e atualiza a UI.
@@ -1977,334 +1990,82 @@ function _applyEntregaStateToDOM() {
   });
 }
 
-// Troca entre abas
+// Troca entre abas (Dashboard / Entrega) — vf-tabs + aria
 function _switchTab(tab) {
   const dash = document.getElementById("vft-dashboard");
   const ent  = document.getElementById("vft-entrega");
   const btnD = document.getElementById("vft-btn-dashboard");
   const btnE = document.getElementById("vft-btn-entrega");
-  if (!dash || !ent) return;
+  if (!dash || !ent || !btnD || !btnE) return;
 
-  if (tab === "dashboard") {
-    dash.style.display = ""; ent.style.display = "none";
-    btnD.classList.add("vft-active"); btnE.classList.remove("vft-active");
-  } else {
-    // Antes de mostrar a aba de entrega, aplica o estado salvo
-    _applyEntregaStateToDOM();
-    dash.style.display = "none"; ent.style.display = "";
-    btnD.classList.remove("vft-active"); btnE.classList.add("vft-active");
-    // Scroll suave para o topo da área
+  const toEntrega = tab === "entrega";
+  // Antes de mostrar a aba de entrega, aplica o estado salvo
+  if (toEntrega) _applyEntregaStateToDOM();
+
+  dash.hidden = toEntrega;
+  ent.hidden = !toEntrega;
+  btnD.classList.toggle("is-active", !toEntrega);
+  btnE.classList.toggle("is-active", toEntrega);
+  btnD.setAttribute("aria-selected", String(!toEntrega));
+  btnE.setAttribute("aria-selected", String(toEntrega));
+
+  if (toEntrega) {
     document.getElementById("vft-root")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }
 
-// Constrói o HTML do formulário de entrega
-function _buildEntregaFormHTML() {
-  const inputCls = "vft-input";
-  const textareaCls = "vft-input vft-textarea";
-
-  const destaque = (id, placeholder) =>
-    `<input id="${id}" class="${inputCls}" type="text" placeholder="${placeholder}" />`;
-
-  const acao = (nv, n) => `
-    <div class="vft-action-group">
-      <div class="vft-action-title">Ação ${n}</div>
-      <label class="vft-label">Título</label>
-      <input id="ent-${nv}-${n}-t" class="${inputCls}" type="text" placeholder="ex: Reestruturar campanhas ADS" />
-      <label class="vft-label">O que será feito</label>
-      <input id="ent-${nv}-${n}-d" class="${inputCls}" type="text" placeholder="Descreva a ação" />
-      <label class="vft-label">Data prevista</label>
-      <input id="ent-${nv}-${n}-dt" class="${inputCls}" type="text" placeholder="ex: 15/06" />
-    </div>`;
-
-  return `
-  <div id="vft-entrega" style="display:none;" class="vft-entrega-panel">
-
-    <!-- Identificação -->
-    <div class="vft-form-section">
-      <div class="vft-form-section-label">Identificação</div>
-      <div class="vft-row-2">
-        <div>
-          <label class="vft-label">Período</label>
-          <input id="ent-periodo" class="${inputCls}" type="text" placeholder="ex: Maio 2026" />
-        </div>
-        <div>
-          <label class="vft-label">Nome do cliente</label>
-          <input id="ent-cliente" class="${inputCls}" type="text" placeholder="ex: Maximus Ferramentas" />
-        </div>
-      </div>
-    </div>
-
-    <!-- Destaques -->
-    <div class="vft-form-section">
-      <div class="vft-form-section-label">Destaques do Mês</div>
-      <div class="vft-form-section-sub">Estes itens serão exibidos no relatório do cliente como checkmarks positivos e pontos de atenção.</div>
-
-      <label class="vft-label" style="margin-top:14px;">✅ Destaques positivos</label>
-      ${destaque("ent-d1", "ex: Crescimento de receita acima da meta")}
-      ${destaque("ent-d2", "ex: ROAS acima da meta")}
-      ${destaque("ent-d3", "ex: Full indo bem pelo 2º mês seguido")}
-
-      <label class="vft-label" style="margin-top:14px;">⚠️ Pontos de atenção</label>
-      ${destaque("ent-a1", "ex: Ruptura de estoque no produto X")}
-      ${destaque("ent-a2", "ex: ACOS acima do ideal em campanhas brand")}
-    </div>
-
-    <!-- Plano de Prioridades -->
-    <div class="vft-form-section">
-      <div class="vft-form-section-label">Plano de Prioridades — Próximo Mês</div>
-      <div class="vft-form-section-sub">Preencha as ações planejadas. Deixe em branco o que não se aplica.</div>
-      <div class="vft-prio-grid">
-
-        <div class="vft-prio-col vft-prio-alta">
-          <div class="vft-prio-head">
-            <span class="vft-prio-dot" style="background:#f87171;"></span>
-            Alta Prioridade
-          </div>
-          ${acao("alta", 1)}${acao("alta", 2)}${acao("alta", 3)}
-        </div>
-
-        <div class="vft-prio-col vft-prio-media">
-          <div class="vft-prio-head">
-            <span class="vft-prio-dot" style="background:#fbbf24;"></span>
-            Média Prioridade
-          </div>
-          ${acao("media", 1)}${acao("media", 2)}${acao("media", 3)}
-        </div>
-
-        <div class="vft-prio-col vft-prio-baixa">
-          <div class="vft-prio-head">
-            <span class="vft-prio-dot" style="background:#60a5fa;"></span>
-            Baixa Prioridade
-          </div>
-          ${acao("baixa", 1)}${acao("baixa", 2)}${acao("baixa", 3)}
-        </div>
-
-      </div>
-    </div>
-
-    <!-- Ações -->
-    <div class="vft-form-actions">
-      <div id="vft-ent-status" class="vft-ent-status" style="display:none;"></div>
-      <button id="btn-vft-gerar" class="fc-btn fc-btn-primary fc-btn-lg" type="button">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-        </svg>
-        Gerar link para o cliente
-      </button>
-
-      <div class="vft-link-row" id="vft-link-row" style="display:none;">
-        <input id="vft-link-output" class="vft-link-input" type="text" readonly />
-        <div class="vft-link-btns">
-          <button id="btn-vft-copiar" class="fc-btn fc-btn-secondary" type="button">Copiar</button>
-          <button id="btn-vft-abrir"  class="fc-btn fc-btn-secondary" type="button">Abrir</button>
-        </div>
-      </div>
-    </div>
-
-  </div>`;
+// Habilita a aba "Entrega para o cliente" após um processamento bem-sucedido.
+// O markup das abas e do formulário é estático (financeiro.html) — aqui só
+// alteramos o estado; nada de HTML/CSS injetado em runtime.
+function initEntregaTabs() {
+  const btnE = document.getElementById("vft-btn-entrega");
+  if (btnE) { btnE.disabled = false; btnE.removeAttribute("aria-disabled"); }
 }
 
-// Inicia o sistema de abas após processamento bem-sucedido
-function initEntregaTabs() {
-  // Evita criar duas vezes
-  if (document.getElementById("vft-root")) return;
+// Reverte para o estado inicial (aba Entrega desabilitada, Dashboard ativo).
+function resetEntregaTabs() {
+  const btnE = document.getElementById("vft-btn-entrega");
+  if (btnE) btnE.disabled = true;
+  _switchTab("dashboard");
+}
 
-  const fcWrap = document.getElementById("fc-wrap");
-  if (!fcWrap) return;
+// Liga os controles das abas e do formulário de entrega (markup estático).
+(function bindEntregaTabs() {
+  document.getElementById("vft-btn-dashboard")?.addEventListener("click", () => _switchTab("dashboard"));
+  document.getElementById("vft-btn-entrega")?.addEventListener("click", () => _switchTab("entrega"));
 
-  // Encontrar o ponto de inserção: antes do dashboard
-  const dashSection = fcWrap.querySelector(".fc-dashboard-panel");
-  if (!dashSection) return;
-
-  // Esconder seção antiga de entrega
-  document.getElementById("fin-link-cliente-actions")?.style.setProperty("display", "none", "important");
-
-  // Criar o container root das abas
-  const tabRoot = document.createElement("div");
-  tabRoot.id = "vft-root";
-
-  // CSS inline das abas (não depende de style.css)
-  const style = document.createElement("style");
-  style.textContent = `
-    #vft-root { margin-bottom: 0; }
-
-    /* Tab bar */
-    .vft-bar {
-      display: flex;
-      border-bottom: 1.5px solid var(--vf-border, #e7e9f0);
-      margin-bottom: 20px;
-    }
-    .vft-tab-btn {
-      padding: 12px 26px;
-      background: none; border: none; cursor: pointer;
-      font-size: 13px; font-weight: 600; color: var(--vf-text-m, #5a6072);
-      border-bottom: 2px solid transparent;
-      margin-bottom: -1.5px;
-      transition: color .15s, border-color .15s;
-      display: flex; align-items: center; gap: 6px;
-    }
-    .vft-tab-btn:hover { color: var(--vf-primary, #5a2a8f); }
-    .vft-tab-btn.vft-active { color: var(--vf-primary, #5a2a8f); border-bottom-color: var(--vf-primary, #5a2a8f); }
-    .vft-tab-btn .vft-tab-icon { font-size: 15px; }
-
-    /* Entrega panel */
-    .vft-entrega-panel { padding-bottom: 40px; }
-
-    /* Seções do form */
-    .vft-form-section {
-      background: var(--vf-surface, #fff);
-      border: 1px solid var(--vf-border, #e7e9f0);
-      border-radius: 16px;
-      padding: 22px 24px;
-      margin-bottom: 14px;
-    }
-    .vft-form-section-label {
-      font-size: 10px; font-weight: 800;
-      letter-spacing: .08em; text-transform: uppercase;
-      color: var(--vf-primary-strong, #4a2178); margin-bottom: 6px;
-    }
-    .vft-form-section-sub {
-      font-size: 12.5px; color: var(--vf-text-m, #5a6072); margin-bottom: 14px; line-height: 1.6;
-    }
-    .vft-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    @media (max-width: 640px) { .vft-row-2 { grid-template-columns: 1fr; } }
-
-    /* Inputs */
-    .vft-label {
-      display: block; font-size: 11px; font-weight: 700;
-      color: var(--vf-text-m, #5a6072); margin: 6px 0 4px; text-transform: uppercase; letter-spacing: .04em;
-    }
-    .vft-input {
-      display: block; width: 100%;
-      background: var(--vf-surface, #fff);
-      border: 1px solid var(--vf-border-strong, #d6d9e4);
-      border-radius: 9px; padding: 9px 13px;
-      font-size: 13px; color: var(--vf-text, #1b1d28);
-      margin-bottom: 6px;
-      transition: border-color .15s, box-shadow .15s;
-      box-sizing: border-box;
-    }
-    .vft-input:focus { outline: none; border-color: var(--vf-primary, #5a2a8f); box-shadow: 0 0 0 3px var(--vf-primary-l, #f3eefb); }
-    .vft-input::placeholder { color: var(--vf-text-l, #969cad); }
-    .vft-textarea { resize: vertical; min-height: 72px; }
-
-    /* Prioridades */
-    .vft-prio-grid {
-      display: grid; grid-template-columns: 1fr 1fr 1fr;
-      gap: 12px; margin-top: 14px;
-    }
-    @media (max-width: 860px) { .vft-prio-grid { grid-template-columns: 1fr; } }
-    .vft-prio-col {
-      border-radius: 12px; overflow: hidden;
-      border: 1px solid var(--vf-border, #e7e9f0);
-      background: var(--vf-surface, #fff);
-    }
-    .vft-prio-alta  { border-top: 3px solid var(--vf-danger, #c62828); }
-    .vft-prio-media { border-top: 3px solid var(--vf-warning, #b25e00); }
-    .vft-prio-baixa { border-top: 3px solid var(--vf-info, #1d5fb8); }
-    .vft-prio-head {
-      display: flex; align-items: center; gap: 7px;
-      padding: 12px 14px;
-      font-size: 12px; font-weight: 700; color: var(--vf-text-m, #5a6072);
-      background: var(--vf-bg, #f7f8fb);
-      border-bottom: 1px solid var(--vf-border, #e7e9f0);
-    }
-    .vft-prio-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-    .vft-action-group {
-      padding: 12px 12px 6px;
-      border-bottom: 1px solid var(--vf-border, #e7e9f0);
-    }
-    .vft-action-group:last-child { border-bottom: none; }
-    .vft-action-title {
-      font-size: 11px; font-weight: 700; color: var(--vf-text-l, #969cad);
-      text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px;
-    }
-
-    /* Ações finais */
-    .vft-form-actions {
-      padding: 8px 0; display: flex; flex-direction: column; gap: 12px; align-items: flex-start;
-    }
-    .vft-ent-status { font-size: 13px; }
-    .vft-link-row {
-      display: flex; align-items: center; gap: 10px; width: 100%; flex-wrap: wrap;
-    }
-    .vft-link-input {
-      flex: 1; min-width: 200px;
-      background: var(--vf-surface, #fff); border: 1px solid var(--vf-border-strong, #d6d9e4);
-      border-radius: 9px; padding: 9px 13px; font-size: 13px; color: var(--vf-text-m, #5a6072);
-      font-family: var(--vf-mono, ui-monospace, monospace);
-    }
-    .vft-link-btns { display: flex; gap: 8px; }
-  `;
-  document.head.appendChild(style);
-
-  // Tab bar
-  tabRoot.innerHTML = `
-    <div class="vft-bar">
-      <button id="vft-btn-dashboard" class="vft-tab-btn vft-active" type="button">
-        <span class="vft-tab-icon">📊</span> Dashboard Financeiro
-      </button>
-      <button id="vft-btn-entrega" class="vft-tab-btn" type="button">
-        <span class="vft-tab-icon">📤</span> Entrega para o Cliente
-      </button>
-    </div>
-    ${_buildEntregaFormHTML()}
-  `;
-
-  // Inserir antes do dashboard
-  fcWrap.insertBefore(tabRoot, dashSection);
-
-  // Envolver o dashboard + tabela em um wrapper de aba
-  const dashWrapper = document.createElement("div");
-  dashWrapper.id = "vft-dashboard";
-
-  // Mover dashboard, shopee recon e tabela para dentro do wrapper
-  const shopeeRecon = document.getElementById("fin-shopee-reconciliacao");
-  const tabelaEl    = document.getElementById("fin-tabela");
-
-  dashSection.parentNode.insertBefore(dashWrapper, dashSection);
-  dashWrapper.appendChild(dashSection);
-  if (shopeeRecon) dashWrapper.appendChild(shopeeRecon);
-  if (tabelaEl)    dashWrapper.appendChild(tabelaEl);
-
-  // Eventos das abas
-  document.getElementById("vft-btn-dashboard").addEventListener("click", () => _switchTab("dashboard"));
-  document.getElementById("vft-btn-entrega").addEventListener("click", () => _switchTab("entrega"));
-
-  // Evento do botão de gerar link na aba entrega
   document.getElementById("btn-vft-gerar")?.addEventListener("click", _gerarLinkComEntrega);
 
-  // Copiar
   document.getElementById("btn-vft-copiar")?.addEventListener("click", async () => {
     const url = document.getElementById("vft-link-output")?.value;
     if (!url) return;
     try {
       await navigator.clipboard.writeText(url);
-      _setEntStatus("✓ Link copiado.", "ok");
+      _setEntStatus("Link copiado.", "ok");
     } catch { _setEntStatus("Copie manualmente o link acima.", "warn"); }
   });
 
-  // Abrir
   document.getElementById("btn-vft-abrir")?.addEventListener("click", () => {
     const url = document.getElementById("vft-link-output")?.value;
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   });
 
   // Auto-save ao digitar (mantém estado mesmo sem mudar de aba)
-  document.getElementById("vft-entrega")?.querySelectorAll("input, textarea").forEach(el => {
+  document.getElementById("vft-entrega")?.querySelectorAll("input, textarea").forEach((el) => {
     el.addEventListener("input", () => _syncEntregaStateFromDOM());
   });
-}
+})();
 
 function _setEntStatus(msg, type) {
   const el = document.getElementById("vft-ent-status");
   if (!el) return;
-  if (!msg) { el.style.display = "none"; return; }
+  el.classList.remove("is-success", "is-danger", "is-warning");
+  if (!msg) { el.hidden = true; el.textContent = ""; return; }
   el.textContent = msg;
-  el.style.display = "block";
-  el.style.color = type === "ok" ? "var(--vf-success, #0f7a52)" : type === "err" ? "var(--vf-danger, #c62828)" : "var(--vf-warning, #b25e00)";
+  el.hidden = false;
+  if (type === "ok") el.classList.add("is-success");
+  else if (type === "err") el.classList.add("is-danger");
+  else el.classList.add("is-warning");
 }
 
 // Gerar link incluindo os dados do formulário de entrega
@@ -2319,9 +2080,10 @@ async function _gerarLinkComEntrega() {
   _syncEntregaStateFromDOM();
 
   const btn = document.getElementById("btn-vft-gerar");
-  if (btn) { btn.disabled = true; btn.textContent = "Gerando…"; }
+  setBtnLoading(btn, true);
   _setEntStatus("Gerando e publicando…", "warn");
-  document.getElementById("vft-link-row").style.display = "none";
+  const linkRow = document.getElementById("vft-link-row");
+  if (linkRow) linkRow.hidden = true;
 
   try {
     const data = ultimoFechamentoFinanceiro.data;
@@ -2342,23 +2104,12 @@ async function _gerarLinkComEntrega() {
 
     const outputEl = document.getElementById("vft-link-output");
     if (outputEl) outputEl.value = publicUrl;
-    document.getElementById("vft-link-row").style.display = "flex";
-    _setEntStatus("✓ Link gerado com sucesso. Copie e envie ao cliente.", "ok");
+    if (linkRow) linkRow.hidden = false;
+    _setEntStatus("Link gerado com sucesso. Copie e envie ao cliente.", "ok");
 
   } catch (err) {
     _setEntStatus("Erro: " + (err?.message || "Falha ao gerar link."), "err");
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Gerar link para o cliente"; }
+    setBtnLoading(btn, false, "Gerar link para o cliente");
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PATCH na função processarFechamentoFinanceiro:
-// Chamar initEntregaTabs() após processamento bem-sucedido.
-//
-// Localize a linha:
-//   document.getElementById("fc-wrap")?.setAttribute("data-processed", "");
-//
-// E adicione LOGO ABAIXO:
-//   initEntregaTabs();
-// ─────────────────────────────────────────────────────────────────────────────

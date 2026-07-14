@@ -4,345 +4,547 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Venforce — Fechamento financeiro</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (códigos) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 1. Layout compartilhado (sidebar/topbar/estados globais indispensáveis) -->
   <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="venforce-ui-v2.css">
-  <link rel="stylesheet" href="financeiro.css">
+  <!-- 2. Fundação Global V2 (tokens → componentes → página) -->
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
+  <link rel="stylesheet" href="css/pages/financeiro-v2.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
 <body class="vf-page vf-page-dashboard vf-page-financeiro">
 
   <div class="vf-main-with-sidebar">
-    <main class="vf-content fc-page">
+    <main class="vf-content">
+      <div class="vf-page-shell">
+        <div id="fin-shell" class="vf-page-container vf-page-container--wide">
 
-      <div id="fc-wrap" class="fc-wrap">
-
-        <!-- ────────────────── CABEÇALHO ────────────────── -->
-        <section class="fc-hero">
-          <div class="fc-badge">Financeiro · Fechamento</div>
-          <h1 class="fc-title">Fechamento financeiro</h1>
-          <p class="fc-subtitle">
-            Calcule LC, MC, resultado final e gere a entrega mensal do cliente.
-          </p>
-
-          <div class="fc-chips" id="fin-chips" aria-live="polite">
-            <span class="fc-chip" id="fin-chip-cliente">Cliente: <b>—</b></span>
-            <span class="fc-chip" id="fin-chip-marketplace">Marketplace: <b>—</b></span>
-            <span class="fc-chip" id="fin-chip-base">Base: <b>—</b></span>
-            <span class="fc-chip" id="fin-chip-processamento">Processamento: <b>não iniciado</b></span>
-            <span class="fc-chip" id="fin-chip-salvo" style="display:none;">Fechamento: <b>—</b></span>
-          </div>
-        </section>
-
-        <!-- ────────────────── FORMULÁRIO ────────────────── -->
-        <section class="fc-operation-panel">
-          <div class="fc-operation-header">
-            <div>
-              <h2>Processar fechamento</h2>
-              <p>Siga as etapas abaixo. O que estiver pendente aparece destacado.</p>
+          <!-- ────────────────── CABEÇALHO ────────────────── -->
+          <header class="vf-page-header">
+            <div class="vf-page-header__main">
+              <p class="vf-page-header__eyebrow">Financeiro</p>
+              <h1 class="vf-page-header__title">Fechamento financeiro</h1>
+              <p class="vf-page-header__description">
+                Calcule LC, MC, resultado final e gere a entrega mensal do cliente.
+              </p>
             </div>
+          </header>
+
+          <!-- ────────────────── CONTEXTO / STATUS ────────────────── -->
+          <div class="vf-fin-context" id="fin-chips" aria-live="polite">
+            <span class="vf-status is-neutral" id="fin-chip-cliente">Cliente: <b>—</b></span>
+            <span class="vf-status is-neutral" id="fin-chip-marketplace">Marketplace: <b>—</b></span>
+            <span class="vf-status is-neutral" id="fin-chip-base">Base: <b>—</b></span>
+            <span class="vf-status is-neutral" id="fin-chip-processamento">Processamento: <b>não iniciado</b></span>
+            <span class="vf-status is-neutral" id="fin-chip-salvo" hidden>Fechamento: <b>—</b></span>
           </div>
 
-          <!-- ── Etapa 1 · Cliente e marketplace ── -->
-          <div class="fc-form-block">
-            <div class="fc-form-block-label"><span class="fc-step-num">1</span> Cliente e marketplace</div>
-            <div class="fc-marketplace-row">
-              <div class="fc-operation-item">
-                <label for="fin-cliente">Cliente</label>
-                <select id="fin-cliente" class="fc-select">
-                  <option value="">Carregando clientes...</option>
-                </select>
-                <div id="fin-cliente-hint" class="fc-field-hint" style="display:none;"></div>
+          <!-- ────────────────── FORMULÁRIO DE PROCESSAMENTO ────────────────── -->
+          <section class="vf-card" aria-labelledby="fin-proc-title">
+            <div class="vf-card__header">
+              <div>
+                <h2 class="vf-card__title" id="fin-proc-title">Processar fechamento</h2>
+                <p class="vf-card__description">Siga as etapas abaixo. O que estiver pendente aparece destacado.</p>
+              </div>
+            </div>
+            <div class="vf-card__body vf-stack vf-stack--lg">
+
+              <!-- ── Etapa 1 · Cliente e marketplace ── -->
+              <div class="vf-fin-step">
+                <div class="vf-fin-step__number" aria-hidden="true">1</div>
+                <div class="vf-fin-step__body">
+                  <p class="vf-fin-step__title">Cliente e marketplace</p>
+                  <div class="vf-form-grid">
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="fin-cliente">Cliente</label>
+                      <select id="fin-cliente" class="vf-select">
+                        <option value="">Carregando clientes...</option>
+                      </select>
+                      <span class="vf-field__hint" id="fin-cliente-hint" hidden></span>
+                    </div>
+
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="fin-marketplace">Marketplace</label>
+                      <select id="fin-marketplace" class="vf-select">
+                        <option value="">Selecione o marketplace...</option>
+                        <option value="meli">Mercado Livre (MELI)</option>
+                        <option value="shopee">Shopee</option>
+                      </select>
+                    </div>
+
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="fin-periodo">Período de referência</label>
+                      <input type="text" id="fin-periodo" class="vf-input" placeholder="ex: Maio 2026" autocomplete="off">
+                      <span class="vf-field__hint">Usado para nomear e rastrear o fechamento salvo.</span>
+                    </div>
+                  </div>
+
+                  <!-- Status da base vinculada -->
+                  <div id="fin-base-status" class="vf-banner is-info" role="status" hidden aria-live="polite"></div>
+                </div>
               </div>
 
-              <div class="fc-operation-item">
-                <label for="fin-marketplace">Marketplace</label>
-                <select id="fin-marketplace" class="fc-select">
-                  <option value="">Selecione o marketplace...</option>
-                  <option value="meli">Mercado Livre (MELI)</option>
-                  <option value="shopee">Shopee</option>
-                </select>
+              <hr class="vf-divider">
+
+              <!-- ── Etapa 2 · Arquivos necessários ── -->
+              <div class="vf-fin-step">
+                <div class="vf-fin-step__number" aria-hidden="true">2</div>
+                <div class="vf-fin-step__body">
+                  <p class="vf-fin-step__title">Arquivos necessários
+                    <span class="vf-fin-step__hint" id="fin-arquivos-hint">Envie a planilha de vendas do período.</span>
+                  </p>
+
+                  <div class="vf-fin-upload-grid">
+                    <!-- Vendas -->
+                    <div class="vf-fin-upload" id="fin-sales-card">
+                      <div class="vf-fin-upload__head">
+                        <span class="vf-fin-upload__label">Planilha de vendas</span>
+                        <span class="vf-tag is-danger">Obrigatório</span>
+                      </div>
+                      <input class="vf-visually-hidden" type="file" id="fin-sales" accept=".xlsx">
+                      <label class="vf-dropzone" for="fin-sales">
+                        <span class="vf-dropzone__icon" aria-hidden="true">
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+                          </svg>
+                        </span>
+                        <span class="vf-dropzone__title">Clique ou arraste o arquivo</span>
+                        <span class="vf-dropzone__hint">.xlsx</span>
+                      </label>
+                      <div class="vf-file-item" hidden>
+                        <span class="vf-file-item__icon" aria-hidden="true">XLSX</span>
+                        <div class="vf-file-item__meta">
+                          <p class="vf-file-item__name"></p>
+                          <p class="vf-file-item__info"></p>
+                        </div>
+                        <div class="vf-file-item__actions">
+                          <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm vf-fin-file-remove" aria-label="Remover arquivo">✕</button>
+                        </div>
+                      </div>
+                      <p class="vf-fin-upload__note" hidden></p>
+                    </div>
+
+                    <!-- Custos -->
+                    <div class="vf-fin-upload" id="fin-costs-card">
+                      <div class="vf-fin-upload__head">
+                        <span class="vf-fin-upload__label">Planilha de custos</span>
+                        <span class="vf-tag is-danger" id="fin-costs-badge">Obrigatório</span>
+                      </div>
+                      <input class="vf-visually-hidden" type="file" id="fin-costs" accept=".xlsx">
+                      <label class="vf-dropzone" for="fin-costs">
+                        <span class="vf-dropzone__icon" aria-hidden="true">
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+                          </svg>
+                        </span>
+                        <span class="vf-dropzone__title" id="fin-costs-title">Clique ou arraste o arquivo</span>
+                        <span class="vf-dropzone__hint" id="fin-costs-hint">.xlsx</span>
+                      </label>
+                      <div class="vf-file-item" hidden>
+                        <span class="vf-file-item__icon" aria-hidden="true">XLSX</span>
+                        <div class="vf-file-item__meta">
+                          <p class="vf-file-item__name"></p>
+                          <p class="vf-file-item__info"></p>
+                        </div>
+                        <div class="vf-file-item__actions">
+                          <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm vf-fin-file-remove" aria-label="Remover arquivo">✕</button>
+                        </div>
+                      </div>
+                      <p class="vf-fin-upload__note" hidden></p>
+                    </div>
+                  </div>
+
+                  <!-- Reconciliação e cancelamentos (Shopee) -->
+                  <div id="fin-orders-all-block" hidden>
+                    <p class="vf-field__label vf-fin-orders-label">Reconciliação e cancelamentos
+                      <span class="vf-fin-step__hint">Opcional — melhora a leitura de cancelados e não pagos.</span>
+                    </p>
+                    <div class="vf-fin-upload vf-fin-upload--single" id="fin-orders-all-wrapper">
+                      <div class="vf-fin-upload__head">
+                        <span class="vf-fin-upload__label">Order.all Shopee</span>
+                        <span class="vf-tag is-warning">Opcional · Shopee</span>
+                      </div>
+                      <input class="vf-visually-hidden" type="file" id="fin-orders-all" accept=".xlsx">
+                      <label class="vf-dropzone" for="fin-orders-all">
+                        <span class="vf-dropzone__icon" aria-hidden="true">
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/><path d="M10 17l-2-2 2-2"/><path d="M14 17l2-2-2-2"/>
+                          </svg>
+                        </span>
+                        <span class="vf-dropzone__title">Clique ou arraste o arquivo</span>
+                        <span class="vf-dropzone__hint">.xlsx · Cancelamentos e não pagos</span>
+                      </label>
+                      <div class="vf-file-item" hidden>
+                        <span class="vf-file-item__icon" aria-hidden="true">XLSX</span>
+                        <div class="vf-file-item__meta">
+                          <p class="vf-file-item__name"></p>
+                          <p class="vf-file-item__info"></p>
+                        </div>
+                        <div class="vf-file-item__actions">
+                          <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm vf-fin-file-remove" aria-label="Remover arquivo">✕</button>
+                        </div>
+                      </div>
+                      <p class="vf-fin-upload__note" hidden></p>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <div class="fc-operation-item">
-                <label for="fin-periodo">Período de referência</label>
-                <input type="text" id="fin-periodo" class="fc-field-input" placeholder="ex: Maio 2026" autocomplete="off">
-                <div class="fc-field-hint">Usado para nomear e rastrear o fechamento salvo.</div>
+              <hr class="vf-divider">
+
+              <!-- ── Etapa 3 · Ajustes financeiros ── -->
+              <div class="vf-fin-step">
+                <div class="vf-fin-step__number" aria-hidden="true">3</div>
+                <div class="vf-fin-step__body">
+                  <p class="vf-fin-step__title">Ajustes financeiros</p>
+                  <div class="vf-form-grid">
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="fin-ads">ADS (R$)<span class="vf-fin-help" title="Investimento total em anúncios/ADS no período. Entra no cálculo do resultado final e do TACoS.">?</span></label>
+                      <div class="vf-input-group"><span class="vf-input-prefix">R$</span><input type="number" id="fin-ads" class="vf-input num" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
+                    </div>
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="fin-venforce">Venforce (R$)<span class="vf-fin-help" title="Valor cobrado pela Venforce no período. Deduzido no resultado final.">?</span></label>
+                      <div class="vf-input-group"><span class="vf-input-prefix">R$</span><input type="number" id="fin-venforce" class="vf-input num" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
+                    </div>
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="fin-affiliates">Afiliados (R$)<span class="vf-fin-help" title="Custos com afiliados no período. Deduzido no resultado final.">?</span></label>
+                      <div class="vf-input-group"><span class="vf-input-prefix">R$</span><input type="number" id="fin-affiliates" class="vf-input num" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
+                    </div>
+                  </div>
+                  <div class="vf-form-grid" id="fin-meli-extra-costs" hidden>
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="fin-full-cost">FULL (R$)<span class="vf-fin-help" title="Custo de armazenagem/logística FULL no período (Mercado Livre). Deduzido no resultado final.">?</span></label>
+                      <div class="vf-input-group"><span class="vf-input-prefix">R$</span><input type="number" id="fin-full-cost" class="vf-input num" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
+                    </div>
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="fin-additional-costs">Custos adicionais (R$)<span class="vf-fin-help" title="Outros custos adicionais do período (Mercado Livre). Deduzido no resultado final.">?</span></label>
+                      <div class="vf-input-group"><span class="vf-input-prefix">R$</span><input type="number" id="fin-additional-costs" class="vf-input num" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <hr class="vf-divider">
+
+              <!-- ── Etapa 4 · Conferência antes de processar ── -->
+              <div class="vf-fin-step">
+                <div class="vf-fin-step__number" aria-hidden="true">4</div>
+                <div class="vf-fin-step__body">
+                  <p class="vf-fin-step__title">Conferência antes de processar</p>
+                  <div class="vf-card vf-card--compact">
+                    <div class="vf-card__body">
+                      <div class="vf-fin-review" id="fin-mini-resumo-grid">
+                        <div class="vf-fin-review__item"><span class="vf-fin-review__k">Cliente</span><span class="vf-fin-review__v" id="fin-res-cliente">—</span></div>
+                        <div class="vf-fin-review__item"><span class="vf-fin-review__k">Marketplace</span><span class="vf-fin-review__v" id="fin-res-marketplace">—</span></div>
+                        <div class="vf-fin-review__item"><span class="vf-fin-review__k">Base usada</span><span class="vf-fin-review__v" id="fin-res-base">—</span></div>
+                        <div class="vf-fin-review__item"><span class="vf-fin-review__k">Arquivos</span><span class="vf-fin-review__v" id="fin-res-arquivos">—</span></div>
+                        <div class="vf-fin-review__item"><span class="vf-fin-review__k">Ajustes</span><span class="vf-fin-review__v vf-fin-review__v--money" id="fin-res-ajustes">—</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div><!-- /.vf-card__body -->
+
+            <div class="vf-card__footer">
+              <div class="vf-fin-actions vf-fin-actions--bar">
+                <button id="btn-fin-limpar" class="vf-btn vf-btn--secondary" type="button">Limpar</button>
+                <span class="vf-fin-actions__spacer"></span>
+                <button id="btn-fin-download" class="vf-btn vf-btn--ghost" type="button" hidden>Baixar planilha</button>
+                <button id="btn-fin-salvar" class="vf-btn vf-btn--secondary" type="button" hidden>Salvar fechamento</button>
+                <button id="btn-fin-processar" class="vf-btn vf-btn--primary vf-btn--lg" type="button">Processar fechamento</button>
               </div>
             </div>
 
-            <!-- Status da base vinculada -->
-            <div id="fin-base-status" class="fc-status is-info" style="display:none;margin-top:12px;" aria-live="polite"></div>
-          </div>
+            <div class="vf-card__body vf-fin-postbody">
+              <div id="fin-status" class="vf-banner" role="status" hidden aria-live="polite"></div>
 
-          <div class="fc-form-divider"></div>
-
-          <!-- ── Etapa 2 · Arquivos necessários ── -->
-          <div class="fc-form-block">
-            <div class="fc-form-block-label">
-              <span class="fc-step-num">2</span> Arquivos necessários
-              <span class="fc-form-block-hint" id="fin-arquivos-hint">Envie a planilha de vendas do período.</span>
-            </div>
-
-            <div class="fc-upload-grid-main">
-
-              <!-- Vendas -->
-              <div class="fc-upload-card" id="fin-sales-card">
-                <span class="fc-upload-badge fc-upload-badge-req">Obrigatório</span>
-                <label class="fc-upload-trigger" for="fin-sales">
-                  <svg class="fc-upload-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                    <line x1="12" y1="18" x2="12" y2="12"/>
-                    <line x1="9" y1="15" x2="15" y2="15"/>
-                  </svg>
-                  <span class="fc-upload-text-block">
-                    <span class="fc-upload-text">Planilha de vendas</span>
-                    <span class="fc-upload-hint">.xlsx · Clique ou arraste o arquivo</span>
-                  </span>
-                </label>
-                <input type="file" id="fin-sales" accept=".xlsx" class="fc-upload-input">
-              </div>
-
-              <!-- Custos -->
-              <div class="fc-upload-card" id="fin-costs-card">
-                <span class="fc-upload-badge fc-upload-badge-req" id="fin-costs-badge">Obrigatório</span>
-                <label class="fc-upload-trigger" for="fin-costs">
-                  <svg class="fc-upload-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                    <line x1="16" y1="13" x2="8" y2="13"/>
-                    <line x1="16" y1="17" x2="8" y2="17"/>
-                    <polyline points="10 9 9 9 8 9"/>
-                  </svg>
-                  <span class="fc-upload-text-block">
-                    <span class="fc-upload-text" id="fin-costs-title">Planilha de custos</span>
-                    <span class="fc-upload-hint" id="fin-costs-hint">.xlsx · Clique ou arraste o arquivo</span>
-                  </span>
-                </label>
-                <input type="file" id="fin-costs" accept=".xlsx" class="fc-upload-input">
-              </div>
-            </div>
-
-            <!-- Reconciliação e cancelamentos (Shopee) -->
-            <div id="fin-orders-all-block" style="display:none;">
-              <div class="fc-form-block-label" style="margin-top:14px;">Reconciliação e cancelamentos <span class="fc-form-block-hint">Opcional — melhora a leitura de cancelados e não pagos.</span></div>
-              <div class="fc-upload-card fc-upload-card-optional" id="fin-orders-all-wrapper">
-                <span class="fc-upload-badge fc-upload-badge-optional">Opcional · Shopee</span>
-                <label class="fc-upload-trigger" for="fin-orders-all">
-                  <svg class="fc-upload-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="color:var(--fc-warn);opacity:.85;">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                    <path d="M10 17l-2-2 2-2"/>
-                    <path d="M14 17l2-2-2-2"/>
-                  </svg>
-                  <span class="fc-upload-text-block">
-                    <span class="fc-upload-text">Order.all Shopee</span>
-                    <span class="fc-upload-hint">.xlsx · Cancelamentos e não pagos</span>
-                  </span>
-                </label>
-                <input type="file" id="fin-orders-all" accept=".xlsx" class="fc-upload-input">
-              </div>
-            </div>
-          </div>
-
-          <div class="fc-form-divider"></div>
-
-          <!-- ── Etapa 3 · Ajustes financeiros ── -->
-          <div class="fc-form-block">
-            <div class="fc-form-block-label"><span class="fc-step-num">3</span> Ajustes financeiros</div>
-            <div class="fc-adjusts-grid">
-              <div class="fc-operation-item">
-                <label for="fin-ads">ADS (R$)<span class="fc-help" title="Investimento total em anúncios/ADS no período. Entra no cálculo do resultado final e do TACoS.">?</span></label>
-                <div class="fc-money-field"><span class="fc-money-prefix">R$</span><input type="number" id="fin-ads" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
-              </div>
-              <div class="fc-operation-item">
-                <label for="fin-venforce">Venforce (R$)<span class="fc-help" title="Valor cobrado pela Venforce no período. Deduzido no resultado final.">?</span></label>
-                <div class="fc-money-field"><span class="fc-money-prefix">R$</span><input type="number" id="fin-venforce" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
-              </div>
-              <div class="fc-operation-item">
-                <label for="fin-affiliates">Afiliados (R$)<span class="fc-help" title="Custos com afiliados no período. Deduzido no resultado final.">?</span></label>
-                <div class="fc-money-field"><span class="fc-money-prefix">R$</span><input type="number" id="fin-affiliates" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
-              </div>
-            </div>
-            <div class="fc-adjusts-grid" id="fin-meli-extra-costs" style="display:none;">
-              <div class="fc-operation-item">
-                <label for="fin-full-cost">FULL (R$)<span class="fc-help" title="Custo de armazenagem/logística FULL no período (Mercado Livre). Deduzido no resultado final.">?</span></label>
-                <div class="fc-money-field"><span class="fc-money-prefix">R$</span><input type="number" id="fin-full-cost" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
-              </div>
-              <div class="fc-operation-item">
-                <label for="fin-additional-costs">CUSTOS ADICIONAIS (R$)<span class="fc-help" title="Outros custos adicionais do período (Mercado Livre). Deduzido no resultado final.">?</span></label>
-                <div class="fc-money-field"><span class="fc-money-prefix">R$</span><input type="number" id="fin-additional-costs" min="0" step="0.01" value="0" placeholder="0,00" inputmode="decimal"></div>
-              </div>
-            </div>
-          </div>
-
-          <div class="fc-form-divider"></div>
-
-          <!-- ── Mini resumo antes de processar ── -->
-          <div class="fc-form-block">
-            <div class="fc-mini-resumo" id="fin-mini-resumo">
-              <p class="fc-mini-resumo-title">Antes de processar</p>
-              <div class="fc-mini-resumo-grid" id="fin-mini-resumo-grid">
-                <div class="fc-mini-resumo-item"><span class="k">Cliente</span><span class="v" id="fin-res-cliente">—</span></div>
-                <div class="fc-mini-resumo-item"><span class="k">Marketplace</span><span class="v" id="fin-res-marketplace">—</span></div>
-                <div class="fc-mini-resumo-item"><span class="k">Base usada</span><span class="v" id="fin-res-base">—</span></div>
-                <div class="fc-mini-resumo-item"><span class="k">Arquivos</span><span class="v" id="fin-res-arquivos">—</span></div>
-                <div class="fc-mini-resumo-item"><span class="k">Ajustes</span><span class="v" id="fin-res-ajustes">—</span></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- ── Ações ── -->
-          <div class="fc-operation-actions fc-operation-actions-final">
-            <button id="btn-fin-limpar" class="fc-btn fc-btn-secondary fc-actions-left" type="button">Limpar</button>
-            <button id="btn-fin-processar" class="fc-btn fc-btn-primary fc-btn-lg" type="button">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0;">
-                <polygon points="5 3 19 12 5 21 5 3"/>
-              </svg>
-              Processar fechamento
-            </button>
-            <button id="btn-fin-salvar" class="fc-btn fc-btn-success" type="button" style="display:none;">Salvar fechamento</button>
-            <button id="btn-fin-download" class="fc-btn fc-btn-ghost" type="button" style="display:none;">&#x2B07; Baixar planilha</button>
-          </div>
-
-          <div id="fin-status" class="fc-status" style="display:none;" aria-live="polite"></div>
-
-          <!-- Entrega para cliente (legado — JS mostra/gerencia; substituído pelas abas após processar) -->
-          <div id="fin-link-cliente-actions" style="display:none;margin-top:20px;">
-            <div class="fc-link-cliente-panel">
-              <div class="fc-link-cliente-header">
+              <!-- Entrega para cliente (legado — substituído pelas abas após processar) -->
+              <div id="fin-link-cliente-actions" class="vf-fin-legacy" hidden>
                 <div>
-                  <div class="fc-link-cliente-title">Entrega para cliente</div>
-                  <div class="fc-link-cliente-subtitle">Gere um link público com uma apresentação limpa deste fechamento.</div>
+                  <p class="vf-card__title">Entrega para cliente</p>
+                  <p class="vf-card__description">Gere um link público com uma apresentação limpa deste fechamento.</p>
                 </div>
-                <button id="btn-fin-gerar-link-cliente" class="fc-btn fc-btn-primary" type="button">Gerar link</button>
-              </div>
-              <div class="fc-link-cliente-row">
-                <input id="fin-link-cliente-output" class="fc-link-cliente-input" type="text" readonly value="" placeholder="Clique em &quot;Gerar link&quot; para criar o link público." />
-                <div class="fc-link-cliente-actions">
-                  <button id="btn-fin-copiar-link-cliente" class="fc-btn fc-btn-secondary" type="button" disabled>Copiar</button>
-                  <button id="btn-fin-abrir-link-cliente" class="fc-btn fc-btn-secondary" type="button" disabled>Abrir</button>
+                <div class="vf-fin-legacy__row">
+                  <input id="fin-link-cliente-output" class="vf-input vf-fin-link-input" type="text" readonly value="" placeholder="Clique em &quot;Gerar link&quot; para criar o link público.">
+                  <button id="btn-fin-gerar-link-cliente" class="vf-btn vf-btn--primary" type="button">Gerar link</button>
+                  <button id="btn-fin-copiar-link-cliente" class="vf-btn vf-btn--secondary" type="button" disabled>Copiar</button>
+                  <button id="btn-fin-abrir-link-cliente" class="vf-btn vf-btn--secondary" type="button" disabled>Abrir</button>
                 </div>
-              </div>
-              <div id="fin-link-cliente-status" class="fc-link-cliente-status" style="display:none;"></div>
-            </div>
-          </div>
-        </section>
-
-        <!-- ────────────────── DASHBOARD ────────────────── -->
-        <section class="fc-dashboard-panel">
-          <div class="fc-dashboard-header">
-            <div>
-              <h2 class="fc-dashboard-title">Dashboard financeiro</h2>
-              <p class="fc-dashboard-subtitle">Visão consolidada dos indicadores do fechamento.</p>
-            </div>
-          </div>
-
-          <!-- Estado vazio -->
-          <div class="fc-dashboard-empty-state">
-            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3">
-              <rect x="3" y="3" width="18" height="18" rx="3"/>
-              <path d="M3 9h18"/>
-              <path d="M9 21V9"/>
-              <path d="M15 13h-2m0 0h-2m2 0v2m0-2v-2"/>
-            </svg>
-            <p class="fc-dashboard-empty-title">Nenhum dado processado ainda</p>
-            <p class="fc-dashboard-empty-sub">Processe uma planilha para visualizar o resumo financeiro completo.</p>
-          </div>
-
-          <!-- Conteúdo real -->
-          <div class="fc-dashboard-data">
-
-            <!-- Grid executivo -->
-            <div class="fc-executive-grid">
-              <div class="fc-exec-card" id="fin-exec-receitas">
-                <p class="fc-exec-card-title">Receitas</p>
-                <div class="fc-exec-row"><span class="fc-exec-label">Receita Bruta</span><span class="fc-exec-value" id="fin-exec-receita-bruta">—</span></div>
-                <div class="fc-exec-row"><span class="fc-exec-label">Receita Líquida</span><span class="fc-exec-value" id="fin-exec-receita-liquida">—</span></div>
-              </div>
-
-              <div class="fc-exec-card" id="fin-exec-deducoes">
-                <p class="fc-exec-card-title">Deduções</p>
-                <div class="fc-exec-row"><span class="fc-exec-label">Cancelamentos</span><span class="fc-exec-value" id="fin-exec-cancelamentos">—</span></div>
-                <div class="fc-exec-row"><span class="fc-exec-label">Pedidos cancelados</span><span class="fc-exec-value" id="fin-exec-pedidos-cancelados">—</span></div>
-              </div>
-
-              <div class="fc-exec-card" id="fin-exec-custos">
-                <p class="fc-exec-card-title">Custos / Investimentos</p>
-                <div class="fc-exec-row"><span class="fc-exec-label">ADS</span><span class="fc-exec-value" id="fin-exec-ads">—</span></div>
-                <div class="fc-exec-row"><span class="fc-exec-label">Venforce</span><span class="fc-exec-value" id="fin-exec-venforce">—</span></div>
-                <div class="fc-exec-row"><span class="fc-exec-label">Afiliados</span><span class="fc-exec-value" id="fin-exec-afiliados">—</span></div>
-              </div>
-
-              <div class="fc-exec-card" id="fin-exec-resultado">
-                <p class="fc-exec-card-title">Resultado</p>
-                <div class="fc-exec-row"><span class="fc-exec-label">Resultado Final</span><span class="fc-exec-value" id="fin-exec-resultado-final">—</span></div>
-                <div class="fc-exec-row"><span class="fc-exec-label">LC Total</span><span class="fc-exec-value" id="fin-exec-lc-total">—</span></div>
-                <div class="fc-exec-row"><span class="fc-exec-label">MC Média</span><span class="fc-exec-value" id="fin-exec-mc-media">—</span></div>
-                <div class="fc-exec-row"><span class="fc-exec-label">TACoS</span><span class="fc-exec-value" id="fin-exec-tacos">—</span></div>
+                <div id="fin-link-cliente-status" class="vf-alert vf-fin-status-msg" hidden></div>
               </div>
             </div>
+          </section>
 
-            <div class="fc-dashboard-data-divider"></div>
-
-            <!-- Leitura do fechamento -->
-            <div id="fin-leitura" style="display:none;"></div>
-
-            <!-- Stat cards -->
-            <div class="fc-stats-grid-dashboard">
-              <div class="fc-stat fc-stat-card fc-stat-featured" id="fin-resultado">
-                <p class="fc-stat-title">Resultado Final</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card fc-stat-highlight" id="fin-bruto">
-                <p class="fc-stat-title">Receita Bruta</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card fc-stat-highlight" id="fin-liquido">
-                <p class="fc-stat-title">Receita Líquida</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card fc-stat-highlight" id="fin-lc">
-                <p class="fc-stat-title">LC Total</p><p class="fc-stat-value">—</p>
-              </div>
-
-              <div class="fc-stat fc-stat-card fc-stat-highlight" id="fin-mc">
-                <p class="fc-stat-title">MC Média</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card" id="fin-tacos">
-                <p class="fc-stat-title">TACoS</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card" id="fin-cancelamentos">
-                <p class="fc-stat-title">Reembolsos pagos</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card" id="fin-faturamento-perdido">
-                <p class="fc-stat-title">Faturamento perdido</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card" id="fin-cancelados-count">
-                <p class="fc-stat-title">Pedidos cancelados</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card" id="fin-shopee-cancelados-count">
-                <p class="fc-stat-title">Pedidos cancelados (Shopee)</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card" id="fin-shopee-faturamento-perdido">
-                <p class="fc-stat-title">Faturamento perdido (Shopee)</p><p class="fc-stat-value">—</p>
-              </div>
-              <div class="fc-stat fc-stat-card" id="fin-shopee-nao-pagos">
-                <p class="fc-stat-title">Não pagos (Shopee)</p><p class="fc-stat-value">—</p>
-              </div>
+          <!-- ────────────────── ABAS (Dashboard / Entrega) ────────────────── -->
+          <div id="vft-root" class="vf-fin-tabs-root">
+            <div class="vf-tabs" role="tablist" aria-label="Visões do fechamento">
+              <button id="vft-btn-dashboard" class="vf-tab is-active" role="tab" aria-selected="true" aria-controls="vft-dashboard" type="button">Dashboard financeiro</button>
+              <button id="vft-btn-entrega" class="vf-tab" role="tab" aria-selected="false" aria-controls="vft-entrega" type="button" disabled>Entrega para o cliente</button>
             </div>
 
-          </div><!-- /.fc-dashboard-data -->
-        </section>
+            <!-- Painel: Dashboard -->
+            <div id="vft-dashboard" class="vf-fin-tabpanel" role="tabpanel" aria-labelledby="vft-btn-dashboard" tabindex="0">
 
-        <!-- Reconciliação Shopee (JS injeta) -->
-        <div id="fin-shopee-reconciliacao" style="display:none;margin-top:16px;"></div>
+              <section class="vf-section vf-fin-dashboard" aria-label="Dashboard financeiro">
+                <div class="vf-section__header">
+                  <div>
+                    <h2 class="vf-section__title">Dashboard financeiro</h2>
+                    <p class="vf-section__description">Visão consolidada dos indicadores do fechamento.</p>
+                  </div>
+                </div>
 
-        <!-- Tabela de resultados (JS injeta) -->
-        <div id="fin-tabela" class="fc-result"></div>
+                <!-- Estado vazio -->
+                <div class="vf-card vf-fin-dashboard-empty">
+                  <div class="vf-empty">
+                    <div class="vf-empty__icon" aria-hidden="true">
+                      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+                        <rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18"/><path d="M9 21V9"/>
+                      </svg>
+                    </div>
+                    <p class="vf-empty__title">Nenhum dado processado ainda</p>
+                    <p class="vf-empty__description">Processe uma planilha para visualizar o resumo financeiro completo.</p>
+                  </div>
+                </div>
 
-      </div><!-- /#fc-wrap -->
+                <!-- Conteúdo real -->
+                <div class="vf-fin-dashboard-data">
 
+                  <!-- KPIs principais -->
+                  <div class="vf-kpi-grid vf-fin-kpi-grid">
+                    <div class="vf-kpi vf-kpi--featured" id="fin-resultado">
+                      <span class="vf-kpi__label">Resultado Final</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-bruto">
+                      <span class="vf-kpi__label">Receita Bruta</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-liquido">
+                      <span class="vf-kpi__label">Receita Líquida</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-lc">
+                      <span class="vf-kpi__label">LC Total</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-mc">
+                      <span class="vf-kpi__label">MC Média</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-tacos">
+                      <span class="vf-kpi__label">TACoS</span><span class="vf-kpi__value">—</span>
+                    </div>
+                  </div>
+
+                  <!-- Leitura do fechamento -->
+                  <div id="fin-leitura" hidden></div>
+
+                  <!-- Detalhamento executivo (compacto) -->
+                  <div class="vf-fin-exec-grid">
+                    <div class="vf-card vf-card--compact vf-fin-exec" id="fin-exec-receitas">
+                      <div class="vf-card__body">
+                        <p class="vf-fin-exec__title">Receitas</p>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Receita Bruta</span><span class="vf-fin-exec__value" id="fin-exec-receita-bruta">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Receita Líquida</span><span class="vf-fin-exec__value" id="fin-exec-receita-liquida">—</span></div>
+                      </div>
+                    </div>
+                    <div class="vf-card vf-card--compact vf-fin-exec" id="fin-exec-deducoes">
+                      <div class="vf-card__body">
+                        <p class="vf-fin-exec__title">Deduções</p>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Cancelamentos</span><span class="vf-fin-exec__value" id="fin-exec-cancelamentos">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Pedidos cancelados</span><span class="vf-fin-exec__value" id="fin-exec-pedidos-cancelados">—</span></div>
+                      </div>
+                    </div>
+                    <div class="vf-card vf-card--compact vf-fin-exec" id="fin-exec-custos">
+                      <div class="vf-card__body">
+                        <p class="vf-fin-exec__title">Custos / Investimentos</p>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">ADS</span><span class="vf-fin-exec__value" id="fin-exec-ads">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Venforce</span><span class="vf-fin-exec__value" id="fin-exec-venforce">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Afiliados</span><span class="vf-fin-exec__value" id="fin-exec-afiliados">—</span></div>
+                      </div>
+                    </div>
+                    <div class="vf-card vf-card--compact vf-fin-exec" id="fin-exec-resultado">
+                      <div class="vf-card__body">
+                        <p class="vf-fin-exec__title">Resultado</p>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Resultado Final</span><span class="vf-fin-exec__value" id="fin-exec-resultado-final">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">LC Total</span><span class="vf-fin-exec__value" id="fin-exec-lc-total">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">MC Média</span><span class="vf-fin-exec__value" id="fin-exec-mc-media">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">TACoS</span><span class="vf-fin-exec__value" id="fin-exec-tacos">—</span></div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Métricas secundárias -->
+                  <div class="vf-kpi-grid vf-fin-kpi-grid vf-fin-kpi-grid--secondary">
+                    <div class="vf-kpi" id="fin-cancelamentos">
+                      <span class="vf-kpi__label">Reembolsos pagos</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-faturamento-perdido">
+                      <span class="vf-kpi__label">Faturamento perdido</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-cancelados-count">
+                      <span class="vf-kpi__label">Pedidos cancelados</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-shopee-cancelados-count">
+                      <span class="vf-kpi__label">Pedidos cancelados (Shopee)</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-shopee-faturamento-perdido">
+                      <span class="vf-kpi__label">Faturamento perdido (Shopee)</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-shopee-nao-pagos">
+                      <span class="vf-kpi__label">Não pagos (Shopee)</span><span class="vf-kpi__value">—</span>
+                    </div>
+                  </div>
+
+                </div><!-- /.vf-fin-dashboard-data -->
+              </section>
+
+              <!-- Reconciliação Shopee (JS injeta) -->
+              <div id="fin-shopee-reconciliacao" hidden></div>
+
+              <!-- Tabela de resultados (JS injeta) -->
+              <div id="fin-tabela"></div>
+            </div><!-- /#vft-dashboard -->
+
+            <!-- Painel: Entrega para o cliente -->
+            <div id="vft-entrega" class="vf-fin-tabpanel" role="tabpanel" aria-labelledby="vft-btn-entrega" tabindex="0" hidden>
+              <section class="vf-card vf-fin-entrega" aria-label="Entrega para o cliente">
+                <div class="vf-card__body vf-stack vf-stack--lg">
+
+                  <!-- Identificação -->
+                  <div class="vf-stack vf-stack--sm">
+                    <p class="vf-fin-exec__title">Identificação</p>
+                    <div class="vf-form-grid">
+                      <div class="vf-field">
+                        <label class="vf-field__label" for="ent-periodo">Período</label>
+                        <input id="ent-periodo" class="vf-input" type="text" placeholder="ex: Maio 2026">
+                      </div>
+                      <div class="vf-field">
+                        <label class="vf-field__label" for="ent-cliente">Nome do cliente</label>
+                        <input id="ent-cliente" class="vf-input" type="text" placeholder="ex: Maximus Ferramentas">
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Destaques do mês -->
+                  <div class="vf-stack vf-stack--sm">
+                    <div>
+                      <p class="vf-fin-exec__title">Destaques do mês</p>
+                      <p class="vf-field__hint">Estes itens aparecem no relatório do cliente como destaques positivos e pontos de atenção.</p>
+                    </div>
+                    <div class="vf-stack vf-stack--sm">
+                      <label class="vf-field__label" for="ent-d1">Destaques positivos</label>
+                      <input id="ent-d1" class="vf-input" type="text" placeholder="ex: Crescimento de receita acima da meta">
+                      <input id="ent-d2" class="vf-input" type="text" placeholder="ex: ROAS acima da meta">
+                      <input id="ent-d3" class="vf-input" type="text" placeholder="ex: Full indo bem pelo 2º mês seguido">
+                    </div>
+                    <div class="vf-stack vf-stack--sm">
+                      <label class="vf-field__label" for="ent-a1">Pontos de atenção</label>
+                      <input id="ent-a1" class="vf-input" type="text" placeholder="ex: Ruptura de estoque no produto X">
+                      <input id="ent-a2" class="vf-input" type="text" placeholder="ex: ACOS acima do ideal em campanhas brand">
+                    </div>
+                  </div>
+
+                  <!-- Plano de prioridades -->
+                  <div class="vf-stack vf-stack--sm">
+                    <div>
+                      <p class="vf-fin-exec__title">Plano de prioridades — próximo mês</p>
+                      <p class="vf-field__hint">Preencha as ações planejadas. Deixe em branco o que não se aplica.</p>
+                    </div>
+                    <div class="vf-fin-priority-grid">
+
+                      <div class="vf-fin-priority is-high">
+                        <div class="vf-fin-priority__head"><span class="vf-fin-priority__dot" aria-hidden="true"></span> Alta prioridade</div>
+                        <div class="vf-fin-action">
+                          <span class="vf-fin-action__title">Ação 1</span>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-alta-1-t">Título</label><input id="ent-alta-1-t" class="vf-input" type="text" placeholder="ex: Reestruturar campanhas ADS"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-alta-1-d">O que será feito</label><input id="ent-alta-1-d" class="vf-input" type="text" placeholder="Descreva a ação"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-alta-1-dt">Data prevista</label><input id="ent-alta-1-dt" class="vf-input" type="text" placeholder="ex: 15/06"></div>
+                        </div>
+                        <div class="vf-fin-action">
+                          <span class="vf-fin-action__title">Ação 2</span>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-alta-2-t">Título</label><input id="ent-alta-2-t" class="vf-input" type="text" placeholder="ex: Reestruturar campanhas ADS"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-alta-2-d">O que será feito</label><input id="ent-alta-2-d" class="vf-input" type="text" placeholder="Descreva a ação"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-alta-2-dt">Data prevista</label><input id="ent-alta-2-dt" class="vf-input" type="text" placeholder="ex: 15/06"></div>
+                        </div>
+                        <div class="vf-fin-action">
+                          <span class="vf-fin-action__title">Ação 3</span>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-alta-3-t">Título</label><input id="ent-alta-3-t" class="vf-input" type="text" placeholder="ex: Reestruturar campanhas ADS"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-alta-3-d">O que será feito</label><input id="ent-alta-3-d" class="vf-input" type="text" placeholder="Descreva a ação"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-alta-3-dt">Data prevista</label><input id="ent-alta-3-dt" class="vf-input" type="text" placeholder="ex: 15/06"></div>
+                        </div>
+                      </div>
+
+                      <div class="vf-fin-priority is-medium">
+                        <div class="vf-fin-priority__head"><span class="vf-fin-priority__dot" aria-hidden="true"></span> Média prioridade</div>
+                        <div class="vf-fin-action">
+                          <span class="vf-fin-action__title">Ação 1</span>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-media-1-t">Título</label><input id="ent-media-1-t" class="vf-input" type="text" placeholder="ex: Reestruturar campanhas ADS"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-media-1-d">O que será feito</label><input id="ent-media-1-d" class="vf-input" type="text" placeholder="Descreva a ação"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-media-1-dt">Data prevista</label><input id="ent-media-1-dt" class="vf-input" type="text" placeholder="ex: 15/06"></div>
+                        </div>
+                        <div class="vf-fin-action">
+                          <span class="vf-fin-action__title">Ação 2</span>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-media-2-t">Título</label><input id="ent-media-2-t" class="vf-input" type="text" placeholder="ex: Reestruturar campanhas ADS"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-media-2-d">O que será feito</label><input id="ent-media-2-d" class="vf-input" type="text" placeholder="Descreva a ação"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-media-2-dt">Data prevista</label><input id="ent-media-2-dt" class="vf-input" type="text" placeholder="ex: 15/06"></div>
+                        </div>
+                        <div class="vf-fin-action">
+                          <span class="vf-fin-action__title">Ação 3</span>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-media-3-t">Título</label><input id="ent-media-3-t" class="vf-input" type="text" placeholder="ex: Reestruturar campanhas ADS"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-media-3-d">O que será feito</label><input id="ent-media-3-d" class="vf-input" type="text" placeholder="Descreva a ação"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-media-3-dt">Data prevista</label><input id="ent-media-3-dt" class="vf-input" type="text" placeholder="ex: 15/06"></div>
+                        </div>
+                      </div>
+
+                      <div class="vf-fin-priority is-low">
+                        <div class="vf-fin-priority__head"><span class="vf-fin-priority__dot" aria-hidden="true"></span> Baixa prioridade</div>
+                        <div class="vf-fin-action">
+                          <span class="vf-fin-action__title">Ação 1</span>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-baixa-1-t">Título</label><input id="ent-baixa-1-t" class="vf-input" type="text" placeholder="ex: Reestruturar campanhas ADS"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-baixa-1-d">O que será feito</label><input id="ent-baixa-1-d" class="vf-input" type="text" placeholder="Descreva a ação"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-baixa-1-dt">Data prevista</label><input id="ent-baixa-1-dt" class="vf-input" type="text" placeholder="ex: 15/06"></div>
+                        </div>
+                        <div class="vf-fin-action">
+                          <span class="vf-fin-action__title">Ação 2</span>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-baixa-2-t">Título</label><input id="ent-baixa-2-t" class="vf-input" type="text" placeholder="ex: Reestruturar campanhas ADS"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-baixa-2-d">O que será feito</label><input id="ent-baixa-2-d" class="vf-input" type="text" placeholder="Descreva a ação"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-baixa-2-dt">Data prevista</label><input id="ent-baixa-2-dt" class="vf-input" type="text" placeholder="ex: 15/06"></div>
+                        </div>
+                        <div class="vf-fin-action">
+                          <span class="vf-fin-action__title">Ação 3</span>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-baixa-3-t">Título</label><input id="ent-baixa-3-t" class="vf-input" type="text" placeholder="ex: Reestruturar campanhas ADS"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-baixa-3-d">O que será feito</label><input id="ent-baixa-3-d" class="vf-input" type="text" placeholder="Descreva a ação"></div>
+                          <div class="vf-field"><label class="vf-field__label" for="ent-baixa-3-dt">Data prevista</label><input id="ent-baixa-3-dt" class="vf-input" type="text" placeholder="ex: 15/06"></div>
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+
+                </div><!-- /.vf-card__body -->
+
+                <div class="vf-card__footer vf-fin-entrega__footer">
+                  <div id="vft-ent-status" class="vf-alert vf-fin-status-msg" hidden></div>
+                  <div class="vf-fin-actions">
+                    <button id="btn-vft-gerar" class="vf-btn vf-btn--primary vf-btn--lg" type="button">Gerar link para o cliente</button>
+                  </div>
+                  <div class="vf-fin-link-row" id="vft-link-row" hidden>
+                    <input id="vft-link-output" class="vf-input vf-fin-link-input" type="text" readonly>
+                    <button id="btn-vft-copiar" class="vf-btn vf-btn--secondary" type="button">Copiar</button>
+                    <button id="btn-vft-abrir" class="vf-btn vf-btn--secondary" type="button">Abrir</button>
+                  </div>
+                </div>
+              </section>
+            </div><!-- /#vft-entrega -->
+          </div><!-- /#vft-root -->
+
+        </div><!-- /#fin-shell -->
+      </div>
     </main>
   </div>
 

@@ -1,5 +1,5 @@
 /* ================================================================
-   fechamentos-api.js — VenForce · Central de Vendas
+   fechamentos-api.js — VenForce · Central de Vendas (Fundação V2)
    ----------------------------------------------------------------
    FERRAMENTA OPERACIONAL de conciliação por PEDIDO.
    Regra central: o PEDIDO é a fonte da verdade; o PRODUTO é agregação
@@ -9,6 +9,16 @@
      null/undefined = AUSENTE (mostra "—")   ·   0 = zero REAL
      status: real | estimado | ausente | parcial | bloqueado
      resultado NUNCA é exibido como confiável se faltar dado.
+
+   Arquitetura da tela (V2):
+     - Barra global de contexto (cliente/período/motor/ações admin);
+     - Abas: Visão geral · Pedidos · Produtos/Curva ABC;
+     - UM único fetch por carregamento (init, troca de cliente/período,
+       pós-importação, pós-sincronização); filtros/busca/paginação e
+       troca de aba são 100% locais;
+     - Detalhe do pedido em drawer lateral;
+     - Curva ABC isolada em módulo próprio (ver seção "MÓDULO CURVA ABC")
+       para futura extração em página dedicada.
    ================================================================ */
 
 const STORAGE_KEY = "vf-token";
@@ -31,6 +41,7 @@ const money = n => 'R$ ' + num(n, 2);
 const pct   = n => num(n, 1) + '%';
 const round2 = v => { const n = Number(v); return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0; };
 const fmtDt = s => { if (s == null || s === '') return '—'; const d = new Date(s + (String(s).length === 10 ? 'T00:00:00' : '')); return isNaN(d.getTime()) ? '—' : d.toLocaleDateString('pt-BR'); };
+const fmtDtHr = s => { if (!s) return '—'; const d = new Date(s); return isNaN(d.getTime()) ? '—' : d.toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }); };
 const isoDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 /* Período de análise: converte o modo escolhido em { dateFrom, dateTo }. */
 const PERIOD_OPTS = [
@@ -72,44 +83,63 @@ const shortMoney = n => {
 /* '—' para ausente; valor para 0 real. */
 const valOr = (v, f = num) => (v === null || v === undefined) ? '—' : f(v);
 
-/* ── STATUS / CONFIANÇA / CHIPS ───────────────────────────── */
+/* ── STATUS / CONFIANÇA / TAGS SEMÂNTICAS (Fundação V2) ──────
+   real → sucesso · estimado → info · ausente → perigo ·
+   parcial → alerta · bloqueado → neutro (mesmo mapa da V1). */
 const STATUS_LBL = { real:'Real', estimado:'Estimado', ausente:'Ausente', parcial:'Parcial', bloqueado:'Bloqueado' };
-const STATUS_CLS = { real:'ok', estimado:'info', ausente:'crit', parcial:'warn', bloqueado:'muted' };
-function statusBadge(s) { return `<span class="fapi-badge fapi-badge--${STATUS_CLS[s] || 'muted'}">${esc(STATUS_LBL[s] || s || '—')}</span>`; }
-const CONF = { confiavel:['ok','Confiável'], parcial:['warn','Parcial'], insuficiente:['crit','Insuficiente'], bloqueado:['crit','Bloqueado'] };
+const STATUS_CLS = { real:'is-success', estimado:'is-info', ausente:'is-danger', parcial:'is-warning', bloqueado:'is-neutral' };
+function statusTag(s) { return `<span class="vf-tag ${STATUS_CLS[s] || 'is-neutral'}">${esc(STATUS_LBL[s] || s || '—')}</span>`; }
+const CONF = { confiavel:['is-success','Confiável'], parcial:['is-warning','Parcial'], insuficiente:['is-danger','Insuficiente'], bloqueado:['is-danger','Bloqueado'] };
 function confidenceClass(c) { return (CONF[c] || CONF.bloqueado)[0]; }
 function confidenceLabel(c) { return (CONF[c] || CONF.bloqueado)[1]; }
-function confPill(c) { return `<span class="fapi-conf-pill fapi-conf-pill--${confidenceClass(c)}">${esc(confidenceLabel(c))}</span>`; }
+/* Estado operacional: dot + texto (nunca só cor). */
+function confStatus(c) { return `<span class="vf-status ${confidenceClass(c)}">${esc(confidenceLabel(c))}</span>`; }
 
-/* chips discretos de logística / ads / diagnóstico */
+/* tags discretas de logística / ads / diagnóstico (textos preservados) */
 function tagFull(full) {
-  if (full === true)  return `<span class="fapi-tag fapi-tag--full">Full</span>`;
-  if (full === false) return `<span class="fapi-tag fapi-tag--muted">Normal</span>`;
-  return `<span class="fapi-tag fapi-tag--ausente">logística —</span>`;
+  if (full === true)  return `<span class="vf-tag is-primary">Full</span>`;
+  if (full === false) return `<span class="vf-tag is-neutral">Normal</span>`;
+  return `<span class="vf-tag is-neutral">logística —</span>`;
 }
 function tagAds(status) {
-  if (status === 'real')    return `<span class="fapi-tag fapi-tag--ads">Ads</span>`;
-  if (status === 'parcial') return `<span class="fapi-tag fapi-tag--warn">Ads parcial</span>`;
-  if (status === 'nao')     return `<span class="fapi-tag fapi-tag--muted">sem Ads</span>`;
-  return `<span class="fapi-tag fapi-tag--ausente">Ads —</span>`;
+  if (status === 'real')    return `<span class="vf-tag is-info">Ads</span>`;
+  if (status === 'parcial') return `<span class="vf-tag is-warning">Ads parcial</span>`;
+  if (status === 'nao')     return `<span class="vf-tag is-neutral">sem Ads</span>`;
+  return `<span class="vf-tag is-neutral">Ads —</span>`;
 }
 function tagDiag(prod) {
-  if (!prod) return `<span class="fapi-tag fapi-tag--ausente">—</span>`;
+  if (!prod) return `<span class="vf-tag is-neutral">—</span>`;
   const temCusto = prod.base?.temCusto === true;
   const noDiag = prod.diag?.presente === true;
-  if (temCusto && noDiag)  return `<span class="fapi-tag fapi-tag--ok">base + diag</span>`;
-  if (temCusto && !noDiag) return `<span class="fapi-tag fapi-tag--warn">base · fora diag</span>`;
-  if (!temCusto && noDiag) return `<span class="fapi-tag fapi-tag--warn">diag · sem custo</span>`;
-  return `<span class="fapi-tag fapi-tag--crit">sem base/diag</span>`;
+  if (temCusto && noDiag)  return `<span class="vf-tag is-success">base + diag</span>`;
+  if (temCusto && !noDiag) return `<span class="vf-tag is-warning">base · fora diag</span>`;
+  if (!temCusto && noDiag) return `<span class="vf-tag is-warning">diag · sem custo</span>`;
+  return `<span class="vf-tag is-danger">sem base/diag</span>`;
 }
 function thumb(p) {
   const ini = String(p?.titulo || p?.sku || p?.mlb || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '—';
-  return `<span class="fapi-thumb" title="Foto via API (futuro)">${esc(ini)}</span>`;
+  return `<span class="vf-fapi-thumb" aria-hidden="true">${esc(ini)}</span>`;
 }
-function emptyState({ icon='•', title='', why='', next='', action='' }) {
-  return `<div class="fapi-empty"><div class="fapi-empty-ic">${icon}</div><b>${esc(title)}</b>
-    ${why ? `<p class="fapi-empty-why"><span>Por que importa:</span> ${esc(why)}</p>` : ''}
-    ${next ? `<p class="fapi-empty-next"><span>Próximo passo:</span> ${esc(next)}</p>` : ''}${action || ''}</div>`;
+
+/* Ícones SVG neutros para estados (sem emoji como único significado) */
+const EMPTY_ICONS = {
+  target: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle><circle cx="12" cy="12" r="0.5"></circle></svg>',
+  plug: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V3"></path><path d="M15 7V3"></path><path d="M6 7h12v4a6 6 0 0 1-12 0z"></path><path d="M12 17v4"></path></svg>',
+  doc: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="13" y2="17"></line></svg>',
+  box: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8l-9-5-9 5v8l9 5 9-5z"></path><path d="M3 8l9 5 9-5"></path><path d="M12 13v8"></path></svg>',
+  dot: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="2.5"></circle></svg>',
+};
+function emptyState({ icon = 'dot', tone = '', title = '', why = '', next = '', action = '' }) {
+  return `<div class="vf-empty">
+    <div class="vf-empty__icon${tone ? ' ' + tone : ''}">${EMPTY_ICONS[icon] || EMPTY_ICONS.dot}</div>
+    <p class="vf-empty__title">${esc(title)}</p>
+    ${why ? `<p class="vf-empty__description">${esc(why)}</p>` : ''}
+    ${next ? `<p class="vf-empty__description">${esc(next)}</p>` : ''}
+    ${action ? `<div class="vf-empty__actions">${action}</div>` : ''}
+  </div>`;
+}
+function loadingState(msg) {
+  return `<div class="vf-loading-state"><span class="vf-spinner vf-spinner--lg" aria-hidden="true"></span><span>${esc(msg || 'Carregando dados do período…')}</span></div>`;
 }
 
 /* ── SELETORES MOCK ───────────────────────────────────────── */
@@ -182,9 +212,10 @@ const mockFechamentoApiPayload = {
 
 /* ────────────────────────────────────────────────────────────────
    CONTRATO FUTURO (não implementar agora) — Curva ABC e Full real.
-   Nesta V1 NÃO há Curva ABC real, NÃO há Full API real, e não se inventa
-   estoque parado / retirada Full / quantidade parada. Quando o backend/Drive
-   existir, deve preencher estes campos; sem dado, mostrar "sem dado" ou ocultar.
+   Nesta versão NÃO há Curva ABC do backend nem Full API real, e não se
+   inventa estoque parado / retirada Full / quantidade parada. Quando o
+   backend/Drive existir, deve preencher estes campos; sem dado, mostrar
+   "sem dado" ou ocultar.
 
    abc: {
      fonte,
@@ -200,34 +231,59 @@ const mockFechamentoApiPayload = {
    }
    ──────────────────────────────────────────────────────────────── */
 
-/* ── ESTADO ───────────────────────────────────────────────── */
-/* Modos de período expostos na UI: mes | intervalo (Data personalizada) |
-   ultimos7 | semana.  O modo 'dia' é LEGADO: não aparece no seletor, mas a
-   régua de dias ainda pode aplicar um intervalo de 1 dia (de == ate). */
+/* ── ESTADO ───────────────────────────────────────────────────
+   Um único objeto F, com sub-estados por módulo:
+     F.ui      → aba ativa, drawer, painéis abertos (só interface)
+     F.orders  → tudo da tabela de Pedidos (filtros locais)
+     F.summary → recorte e ordenação do bloco de fechamento/dias
+     F.abc     → estado EXCLUSIVO do módulo Curva ABC
+   Os pedidos nunca são duplicados: viewPayload/visiblePayload são
+   derivados de rawPayload em memória.
+
+   Modos de período expostos na UI: mes | intervalo (via clique num dia).
+   'dia'/'semana'/'ultimos7' são LEGADOS aceitos pelo sanitizador. */
 function defaultFilters() { return { modo:'mes', dia:null, semana:null, de:null, ate:null, logistica:'todos', midia:'todos', diagbase:'todos', status:'todos' }; }
 function cloneFilters(filters) { return { ...defaultFilters(), ...(filters || {}) }; }
 const F = {
   clientes: [], cliente: null,
-  periodo: null,          // { mode, dateFrom, dateTo } — período de análise (substitui competência)
+  periodo: null,          // { mode, dateFrom, dateTo } — período de análise
   rawPayload: null, viewPayload: null, visiblePayload: null,
-  filters: defaultFilters(),
-  draftFilters: defaultFilters(),
-  selectedOrderId: null,
-  // ── seção "Produtos por impacto" ──
-  productSort: 'faturamento', productGroup: 'todos', productPage: 1, productPageSize: 50,
-  intervaloAviso: null,   // aviso discreto quando a data inicial > final foi corrigida
-  arquivoImport: null,    // File guardado no change do input — imune a repaint do carregarTela
-  // ── recortes rápidos / ordenação da tabela de pedidos (tudo local) ──
-  quickFilter: 'todos',   // chip de recorte rápido aplicado sobre F.viewPayload
-  orderSort: 'data_desc', // ordenação local da tabela de pedidos
-  fechQuick: 'todos',     // recorte do bloco Fechamento (todos/sem_custo/sem_frete/bloqueados/calculavel)
-  fechDailySort: 'data',  // ordenação do bloco "Vendas por dia"
-  // ── performance: fetch só em troca de cliente/comp; filtros/busca em memória ──
-  page: 1, pageSize: 100, // tabela paginada (100 pedidos/página)
-  searchTerm: '',         // busca local por pedido/MLB/SKU/título/status/logística
-  searchTimer: null,      // debounce da busca
+  lastSyncBase: null,     // base vinculada informada pela última sincronização da sessão
   loadSeq: 0,             // guard de concorrência: ignora resposta de fetch antigo
   loadAbort: null,        // AbortController do fetch em voo
+  loading: false,
+  arquivoImport: null,    // File guardado no change do input — imune a re-render
+
+  ui: {
+    activeTab: 'visao',   // visao | pedidos | produtos
+    drawerOrderId: null,
+    drawerReturnFocusId: null,
+    filtersPanelOpen: false,
+    importPanelOpen: false,
+  },
+
+  orders: {
+    filters: defaultFilters(), // selects locais (logística/mídia/diag.base/status) + dia
+    quickFilter: 'todos',      // recorte rápido (chips)
+    search: '',                // busca local por pedido/MLB/SKU/título/status/logística
+    searchTimer: null,         // debounce da busca
+    sort: 'data_desc',         // ordenação local
+    page: 1, pageSize: 100,    // paginação local (100 pedidos/página)
+  },
+
+  summary: {
+    quickFilter: 'todos',      // recorte do bloco Fechamento (não toca Pedidos/ABC)
+    dailySort: 'data',         // ordenação da tabela "Resumo por dia"
+  },
+
+  abc: {                       // estado EXCLUSIVO do módulo Curva ABC
+    group: 'todos',
+    sort: 'faturamento',
+    search: '',
+    searchTimer: null,
+    page: 1, pageSize: 50,
+    selectedProduct: null,     // reservado p/ futura extração (sem uso hoje)
+  },
 };
 
 /* ── DERIVAÇÕES DE PEDIDO (motor por pedido) ──────────────── */
@@ -379,7 +435,6 @@ function applyFilters(payload, filters) {
   return { ...payload, pedidos };
 }
 
-/* ── BUILDERS ─────────────────────────────────────────────── */
 /* ── FECHAMENTO API (helpers puros) ───────────────────────────
    Fecham o PERÍODO inteiro (payload já escopado pelo GET por range) usando
    só pedidos/itens/componentes sincronizados + base vinculada. Não chamam ML.
@@ -521,77 +576,6 @@ function sortDias(dias, key) {
   return a;
 }
 
-function aggByProduct(pedidos) {
-  const map = new Map();
-  for (const o of pedidos) {
-    const key = o.mlb || '__SEM_PRODUTO__';
-    if (!map.has(key)) map.set(key, {
-      mlb: o.mlb, prod: o.prod, titulo: o.produto.titulo, sku: o.produto.sku,
-      unidades: 0, pedidos: 0, faturamento: 0, receitaBloqueada: 0, freteAcum: 0, taxasAcum: 0,
-      cancelProblema: 0, full: o.full, fullPedidos: 0, normalPedidos: 0, semProduto: !o.mlb,
-    });
-    const a = map.get(key);
-    const valido = o.status !== 'cancelado';
-    a.pedidos += 1;
-    if (valido) { a.unidades += (o.unidades || 0); a.faturamento += (o.valor || 0); a.taxasAcum += (o.taxas || 0); }
-    if (o.resultadoStatus === 'bloqueado' && valido) a.receitaBloqueada += (o.valor || 0);
-    a.freteAcum += (o.frete || 0);
-    if (o.status === 'cancelado' || o.status === 'com_problema') a.cancelProblema += 1;
-    if (o.full === true) { a.full = true; a.fullPedidos += 1; } else { a.normalPedidos += 1; }
-  }
-  for (const a of map.values()) { a.faturamento = round2(a.faturamento); a.receitaBloqueada = round2(a.receitaBloqueada); a.freteAcum = round2(a.freteAcum); a.taxasAcum = round2(a.taxasAcum); }
-  return [...map.values()];
-}
-
-/* Logística do produto: full / normal / misto (ambos) / null (—). */
-function productLogisticaTipo(a) {
-  const f = a.fullPedidos > 0, n = a.normalPedidos > 0;
-  return f && n ? 'misto' : f ? 'full' : n ? 'normal' : null;
-}
-
-/* Enriquece a agregação com derivados de leitura e aplica grupo + ordenação.
-   Tudo derivado dos pedidos do período/filtro — sem inventar custo/frete. */
-function buildProductImpactRows(view, { group = 'todos', sortBy = 'faturamento' } = {}) {
-  const all = aggByProduct(view.pedidos).map(a => {
-    const temCusto = !a.semProduto && a.prod?.base?.temCusto === true;
-    return {
-      ...a,
-      temCusto,
-      custoUnit: temCusto ? a.prod.base.custo : null,
-      comissao: a.taxasAcum,
-      ticketMedio: a.pedidos > 0 ? round2(a.faturamento / a.pedidos) : null,
-      logisticaTipo: productLogisticaTipo(a),
-    };
-  });
-  const totalFat = all.reduce((s, a) => s + a.faturamento, 0) || 0;
-  all.forEach(a => { a.pctFat = totalFat > 0 ? round2(a.faturamento / totalFat * 100) : null; });
-
-  // Curva ABC: ordena por faturamento desc, acumula % e classifica.
-  // A: acumulado até 80% · B: 80%–95% · C: o restante. (item que cruza fica na faixa anterior)
-  const byFat = all.slice().sort((x, y) => y.faturamento - x.faturamento);
-  let acc = 0;
-  for (const a of byFat) {
-    const prev = acc;
-    acc = round2(acc + (a.pctFat || 0));
-    a.acumPctFat = acc;
-    a.curva = (a.faturamento <= 0) ? null : (prev < 80 ? 'A' : prev < 95 ? 'B' : 'C');
-  }
-
-  let rows = all;
-  if (group === 'sem_custo')            rows = rows.filter(a => !a.semProduto && !a.temCusto);
-  else if (group === 'receita_bloqueada') rows = rows.filter(a => (a.receitaBloqueada || 0) > 0);
-  else if (group === 'full')            rows = rows.filter(a => a.logisticaTipo === 'full' || a.logisticaTipo === 'misto');
-  else if (group === 'normal')          rows = rows.filter(a => a.logisticaTipo === 'normal' || a.logisticaTipo === 'misto');
-  else if (group === 'misto')           rows = rows.filter(a => a.logisticaTipo === 'misto');
-  else if (group === 'curva_a')         rows = rows.filter(a => a.curva === 'A');
-  else if (group === 'curva_b')         rows = rows.filter(a => a.curva === 'B');
-  else if (group === 'curva_c')         rows = rows.filter(a => a.curva === 'C');
-  // 'todos' não filtra
-
-  const sortKey = group === 'receita_bloqueada' ? 'receitaBloqueada' : sortBy;
-  rows = rows.slice().sort((x, y) => (y[sortKey] || 0) - (x[sortKey] || 0));
-  return { rows, allRows: all, totalFat };
-}
 function buildDailySales(view) {
   const map = new Map();
   for (const o of view.pedidos) {
@@ -607,7 +591,9 @@ function buildDailySales(view) {
   const arr = [...map.values()].map(d => {
     let top = null; let topV = -1;
     for (const [mlb, v] of d._topMap) if (v > topV) { topV = v; top = mlb; }
-    const prod = top ? MOCK_PRODUTOS[top] : null;
+    // Catálogo do payload carregado (a V1 lia direto de MOCK_PRODUTOS e o
+    // "top do dia" sumia com dados reais; no mock o objeto é o mesmo).
+    const prod = top ? (F.rawPayload?.produtos || {})[top] || null : null;
     return { data:d.data, faturamento:round2(d.faturamento), pedidos:d.pedidos, unidades:d.unidades,
              cancelProblema:d.cancelProblema, produtos:d.produtosSet.size, receitaBloqueada:round2(d.receitaBloqueada),
              topProduto: prod ? { titulo:prod.titulo, faturamento:round2(topV) } : null };
@@ -619,7 +605,7 @@ function buildDailySales(view) {
 function buildDailyRulerRows() {
   if (!F.rawPayload) return [];
   const secondaryFilters = {
-    ...F.filters,
+    ...F.orders.filters,
     modo: 'mes',
     dia: null,
     semana: null,
@@ -639,14 +625,16 @@ function buildDailyRulerRows() {
     topProduto: null,
   });
 }
-function dayScopeClass(data) {
-  const fl = F.filters;
-  if (fl.modo === 'dia') return fl.dia === data ? ' fapi-day--sel' : '';
-  if (fl.modo === 'semana' && fl.semana) return getWeekOfMonth({ data }) === Number(fl.semana) ? ' fapi-day--scope' : '';
-  if (fl.modo === 'intervalo' && (fl.de || fl.ate)) return (!fl.de || data >= fl.de) && (!fl.ate || data <= fl.ate) ? ' fapi-day--scope' : '';
+/* 'selected' = dia exato do filtro · 'scope' = dentro do recorte ativo. */
+function dayScope(data) {
+  const fl = F.orders.filters;
+  if (fl.modo === 'dia') return fl.dia === data ? 'selected' : '';
+  if (fl.modo === 'intervalo' && fl.de && fl.de === fl.ate) return fl.de === data ? 'selected' : '';
+  if (fl.modo === 'semana' && fl.semana) return getWeekOfMonth({ data }) === Number(fl.semana) ? 'scope' : '';
+  if (fl.modo === 'intervalo' && (fl.de || fl.ate)) return (!fl.de || data >= fl.de) && (!fl.ate || data <= fl.ate) ? 'scope' : '';
   if (fl.modo === 'ultimos7') {
     const r = getLast7Range(F.rawPayload.periodo);
-    return data >= r.de && data <= r.ate ? ' fapi-day--scope' : '';
+    return data >= r.de && data <= r.ate ? 'scope' : '';
   }
   return '';
 }
@@ -666,7 +654,7 @@ async function carregarPayload(slug, dateFrom, dateTo, signal) {
     return data;
   } catch (err) {
     if (err?.name === 'AbortError') return null; // cancelado por troca de cliente/período
-    // fallback para mock só quando o backend está inacessível — motor fica "● Mock"
+    // fallback para mock só quando o backend está inacessível — motor fica "Mock"
     const cli = F.clientes.find(c => c.slug === slug) || mockFechamentoApiPayload.cliente;
     const comp = MOCK_COMPETENCIAS[0];
     const p = JSON.parse(JSON.stringify(mockFechamentoApiPayload));
@@ -677,14 +665,12 @@ async function carregarPayload(slug, dateFrom, dateTo, signal) {
 }
 
 /* ── INIT ─────────────────────────────────────────────────── */
-async function initFechamentosApi() {
-  // Troca textos visíveis para "Central de Vendas"
-  document.title = document.title.replace('Fechamentos API', 'Central de Vendas');
-  const titleEl = document.querySelector('.fapi-title');
-  if (titleEl && titleEl.textContent.trim() === 'Fechamentos API') titleEl.textContent = 'Central de Vendas';
-  const ariaEl = document.getElementById('fapi-main');
-  if (ariaEl) ariaEl.setAttribute('aria-label', 'Central de Vendas');
+function isAdminUser() {
+  try { return (JSON.parse(localStorage.getItem('vf-user') || '{}').role) === 'admin'; }
+  catch (_) { return false; }
+}
 
+async function initFechamentosApi() {
   // Busca lista real de clientes — mesmo endpoint e lógica do cliente-360.js.
   // Fallback para /clientes (admin-only) se o endpoint operacional não existir.
   try {
@@ -708,21 +694,26 @@ async function initFechamentosApi() {
   if (sel) {
     sel.innerHTML = '<option value="">Selecione o cliente…</option>' +
       F.clientes.map(c => `<option value="${esc(c.slug)}">${esc(c.nome)}</option>`).join('');
-    // Trocar cliente reseta filtros e seleção.
-    sel.addEventListener('change', () => { F.cliente = F.clientes.find(c => c.slug === sel.value) || null; F.selectedOrderId = null; resetFilters(); carregarTela(); });
   }
-  // Período de análise (substitui competência fixa). Default: mês atual.
+  // Período de análise. Default: mês atual.
   const periodSel = document.getElementById('fapi-period-select');
   if (periodSel) {
     periodSel.innerHTML = PERIOD_OPTS.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
     F.periodo = computePeriodo('mes_atual');
     periodSel.value = 'mes_atual';
-    periodSel.addEventListener('change', onPeriodChange);
   }
-  document.getElementById('fapi-period-apply')?.addEventListener('click', aplicarPeriodoCustom);
 
-  const controls = document.querySelector('.fapi-controls');
-  if (controls) montarBlocoImportacao(controls);
+  // Ações administrativas só para admin (leitura fica para todos).
+  if (isAdminUser()) {
+    document.getElementById('fapi-sync-btn')?.removeAttribute('hidden');
+    document.getElementById('fapi-import-toggle')?.removeAttribute('hidden');
+  }
+
+  // Aba inicial via hash opcional (#visao-geral / #pedidos / #produtos).
+  const hashTab = { '#visao-geral':'visao', '#pedidos':'pedidos', '#produtos':'produtos' }[window.location.hash];
+  if (hashTab) F.ui.activeTab = hashTab;
+
+  wireStatic();
   carregarTela();
 }
 
@@ -742,41 +733,40 @@ function onPeriodChange() {
   }
   if (custom) custom.hidden = true;
   F.periodo = computePeriodo(mode);
-  F.selectedOrderId = null;
+  closeOrderDrawer({ restoreFocus: false });
   resetFilters();
   carregarTela();
 }
 function aplicarPeriodoCustom() {
   const from = document.getElementById('fapi-period-from')?.value;
   const to = document.getElementById('fapi-period-to')?.value;
-  if (!from || !to) { setImportStatus('Informe data inicial e final.', 'warn'); return; }
+  if (!from || !to) { setActionStatus('Informe data inicial e final.', 'warning'); return; }
   F.periodo = computePeriodo('personalizado', from, to);
-  F.selectedOrderId = null;
+  closeOrderDrawer({ restoreFocus: false });
   resetFilters();
   carregarTela();
 }
 function resetFilters() {
-  F.filters = defaultFilters();
-  F.draftFilters = defaultFilters();
-  F.productSort = 'faturamento';
-  F.productGroup = 'todos';
-  F.productPage = 1;
-  F.intervaloAviso = null;
-  F.searchTerm = '';
-  F.page = 1;
+  F.orders.filters = defaultFilters();
+  F.orders.quickFilter = 'todos';
+  F.orders.search = '';
+  F.orders.sort = 'data_desc';
+  F.orders.page = 1;
+  F.ui.filtersPanelOpen = false;
+  F.summary.quickFilter = 'todos';
+  F.summary.dailySort = 'data';
+  resetCurvaAbcState();
 }
 
 /* ÚNICO ponto de fetch. Só deve ser chamado em: init, troca de cliente/
-   competência, e depois de importar/sincronizar. Filtros/busca/paginação
-   NÃO passam por aqui — usam renderTela()/renderResults() em memória.
+   período, "Atualizar leitura" e depois de importar/sincronizar.
+   Filtros/busca/paginação/aba NÃO passam por aqui — renders locais.
    Guard de concorrência (loadSeq) + AbortController ignoram resposta antiga. */
 async function carregarTela() {
-  const content = document.getElementById('fapi-content');
-  if (!content) return;
   if (!F.cliente) {
-    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null; renderHeader(null);
-    content.innerHTML = emptyState({ icon:'🎯', title:'Selecione um cliente para abrir o motor',
-      why:'O fechamento por pedido é sempre por cliente e por competência.', next:'Escolha um cliente e a competência acima.' });
+    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null;
+    F.loading = false;
+    renderAll();
     return;
   }
 
@@ -785,36 +775,39 @@ async function carregarTela() {
   if (F.loadAbort) { try { F.loadAbort.abort(); } catch (_) {} }
   F.loadAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
 
+  F.loading = true;
+  renderAll();
+
   const payload = await carregarPayload(F.cliente.slug, F.periodo.dateFrom, F.periodo.dateTo, F.loadAbort?.signal);
   if (seq !== F.loadSeq) return; // resposta de um carregamento mais antigo — ignora
 
+  F.loading = false;
   F.rawPayload = payload;
   if (!F.rawPayload?.ok) {
-    renderHeader({ motor:{ status:'indisponivel' } });
-    content.innerHTML = emptyState({ icon:'🔌', title:'Motor indisponível', why:'O backend do motor ainda não respondeu.', next:'Quando o endpoint existir, a tela carrega o payload real.' });
+    renderAll();
     return;
   }
 
-  F.filters = sanitizeFilters(F.filters, F.rawPayload);
-  F.draftFilters = sanitizeFilters(F.draftFilters, F.rawPayload);
-  F.page = 1;
+  F.orders.filters = sanitizeFilters(F.orders.filters, F.rawPayload);
+  F.orders.page = 1;
   recomputeView();
-  renderTela();
+  renderAll();
 }
 
 /* Aplica filtros sobre F.rawPayload em memória — SEM fetch. Recalcula uma vez. */
 function recomputeView() {
-  F.viewPayload = F.rawPayload ? applyFilters(F.rawPayload, F.filters) : null;
+  F.viewPayload = F.rawPayload ? applyFilters(F.rawPayload, F.orders.filters) : null;
 }
 
-/* Pedidos visíveis = filtrados + termo de busca (local). Não pagina ainda. */
-/* Recortes rápidos (chips + cards de qualidade). Tudo local sobre o pedido. */
+/* Recortes rápidos (chips). Tudo local sobre o pedido. */
 const QUICK_FILTERS = [
   ['todos', 'Todos'], ['sem_custo', 'Sem custo'], ['sem_frete', 'Sem frete'],
   ['frete_real', 'Com frete real'], ['calculavel', 'Resultado calculável'],
   ['bloqueados', 'Bloqueados'], ['receita_bloqueada', 'Receita bloqueada'],
   ['cancel_problema', 'Cancelados/problema'], ['full', 'Full'], ['normal', 'Normal'],
 ];
+/* Chips expostos na linha principal; os demais ficam no painel "Filtros". */
+const QUICK_PRIMARY = ['todos', 'sem_custo', 'sem_frete', 'bloqueados', 'cancel_problema', 'full'];
 function pedidoMatchesQuick(o, q) {
   switch (q) {
     case 'sem_custo':         return !!o.mlb && o.custoStatus === 'ausente';
@@ -857,353 +850,634 @@ function sortPedidos(arr, key) {
   }
   return a;
 }
+/* Estado da linha (filete à esquerda + classes de leitura). */
 function pedidoRowClass(o) {
-  if (o.status === 'cancelado') return ' fapi-prow--cancel';
-  if (o.status === 'com_problema') return ' fapi-prow--prob';
-  if (o.resultadoStatus === 'bloqueado') return ' fapi-prow--bloq';
-  if (o.mlb && o.custoStatus === 'ausente') return ' fapi-prow--nocusto';
-  if (o.frete == null) return ' fapi-prow--nofrete';
+  if (o.status === 'cancelado') return ' is-cancel';
+  if (o.status === 'com_problema') return ' is-problem';
+  if (o.resultadoStatus === 'bloqueado') return ' is-blocked';
+  if (o.mlb && o.custoStatus === 'ausente') return ' is-nocost';
+  if (o.frete == null) return ' is-nofreight';
   return '';
 }
 
+const STATUS_PEDIDO = { pago:['is-success','Pago'], cancelado:['is-danger','Cancelado'], com_problema:['is-warning','Problema'], pendente:['is-warning','Pendente'] };
+
 /* Pedidos filtrados (recorte rápido + busca). Ordenação/paginação ficam na tabela. */
-function getVisiblePedidos() {
+function pedidoMatchesSearch(o, term) {
+  return String(o.id || '').toLowerCase().includes(term) ||
+    String(o.produto?.mlb || o.mlb || '').toLowerCase().includes(term) ||
+    String(o.produto?.sku || o.sku || '').toLowerCase().includes(term) ||
+    String(o.produto?.titulo || '').toLowerCase().includes(term) ||
+    String(o.status || '').toLowerCase().includes(term) ||
+    String((STATUS_PEDIDO[o.status] || [])[1] || '').toLowerCase().includes(term) ||
+    (o.full === true ? 'full' : 'normal').includes(term) ||
+    String(o.logistica || '').toLowerCase().includes(term);
+}
+function getSearchedPedidos() {
   let pedidos = F.viewPayload?.pedidos || [];
-  if (F.quickFilter && F.quickFilter !== 'todos') pedidos = pedidos.filter(o => pedidoMatchesQuick(o, F.quickFilter));
-  const term = String(F.searchTerm || '').trim().toLowerCase();
-  if (term) {
-    pedidos = pedidos.filter(o =>
-      String(o.id || '').toLowerCase().includes(term) ||
-      String(o.produto?.mlb || o.mlb || '').toLowerCase().includes(term) ||
-      String(o.produto?.sku || o.sku || '').toLowerCase().includes(term) ||
-      String(o.produto?.titulo || '').toLowerCase().includes(term) ||
-      String(o.status || '').toLowerCase().includes(term) ||
-      String((STATUS_PEDIDO[o.status] || [])[1] || '').toLowerCase().includes(term) ||
-      (o.full === true ? 'full' : 'normal').includes(term) ||
-      String(o.logistica || '').toLowerCase().includes(term)
-    );
-  }
+  const term = String(F.orders.search || '').trim().toLowerCase();
+  if (term) pedidos = pedidos.filter(o => pedidoMatchesSearch(o, term));
+  return pedidos;
+}
+function getVisiblePedidos() {
+  let pedidos = getSearchedPedidos();
+  if (F.orders.quickFilter && F.orders.quickFilter !== 'todos') pedidos = pedidos.filter(o => pedidoMatchesQuick(o, F.orders.quickFilter));
   return pedidos;
 }
 
-/* Render completo SEM fetch. Blocos: Fechamento → Vendas por dia → Curva ABC →
-   Pedidos (com sua toolbar de filtros) → detalhe. */
-function renderTela() {
-  const content = document.getElementById('fapi-content');
-  if (!content || !F.rawPayload?.ok) return;
-  renderHeader(F.rawPayload);
-  content.innerHTML = '<div id="fapi-results"></div>';
-  renderResults();
-}
+/* ── RENDER GERAL (sem fetch) ─────────────────────────────── */
+const TAB_KEYS = ['visao', 'pedidos', 'produtos'];
+const TAB_HASH = { visao:'#visao-geral', pedidos:'#pedidos', produtos:'#produtos' };
 
-function renderResults() {
-  const host = document.getElementById('fapi-results');
-  if (!host || !F.viewPayload) return;
+function renderAll() {
+  renderContextStatus();
+
+  const stateHost = document.getElementById('fapi-state-host');
+  const tabs = document.getElementById('fapi-tabs');
+  const panels = TAB_KEYS.map(k => document.getElementById(`fapi-panel-${k}`));
+  const showPanels = show => { tabs.hidden = !show; panels.forEach(p => { p.hidden = true; }); if (!show) return; };
+
+  // 1) Sem cliente selecionado
+  if (!F.cliente) {
+    showPanels(false);
+    stateHost.hidden = false;
+    stateHost.innerHTML = emptyState({
+      icon:'target', title:'Selecione um cliente para abrir a Central de Vendas',
+      why:'O fechamento por pedido é sempre por cliente e por período de análise.',
+      next:'Escolha um cliente e o período na barra acima.',
+    });
+    return;
+  }
+
+  // 2) Carregando
+  if (F.loading) {
+    showPanels(false);
+    stateHost.hidden = false;
+    stateHost.innerHTML = loadingState();
+    return;
+  }
+
+  // 3) Backend indisponível (sem payload válido e sem fallback)
+  if (!F.rawPayload?.ok) {
+    showPanels(false);
+    stateHost.hidden = false;
+    stateHost.innerHTML = emptyState({
+      icon:'plug', tone:'is-danger', title:'Motor indisponível',
+      why:'O backend do motor não respondeu para este cliente/período.',
+      next:'Tente novamente em instantes ou use "Atualizar leitura".',
+    });
+    return;
+  }
+
+  // 4) Dados carregados — abas + painéis
+  stateHost.hidden = true;
+  stateHost.innerHTML = '';
+  tabs.hidden = false;
+  renderTabCounts();
   F.visiblePayload = { ...F.viewPayload, pedidos: getVisiblePedidos() };
-  host.innerHTML =
-    renderFechamento() +
-    renderDailySales() +
-    renderTopProducts() +
-    renderPedidos() +
-    '<div id="fapi-pedido-detalhe"></div>';
-  wireResults();
+  renderFechamentoSection();
+  renderDaysSection();
+  renderOrdersPanel();
+  renderAbc();
+  setActiveTab(F.ui.activeTab, { updateHash: false, focus: false });
 }
 
-/* Re-render só da tabela de pedidos (busca/recorte/ordenação/página) — preserva
-   o foco do campo de busca, que fica na toolbar (fora de #fapi-ped-table). */
-function renderPedTable() {
-  const host = document.getElementById('fapi-ped-table');
+/* Estados do motor → componentes semânticos (barra de contexto). */
+const MOTOR = {
+  mock:         ['is-info',    'Mock — dados simulados'],
+  parcial:      ['is-warning', 'Parcial'],
+  api:          ['is-success', 'API conectada'],
+  persistido:   ['is-success', 'API conectada'],
+  indisponivel: ['is-danger',  'Indisponível'],
+  sem_dados:    ['is-neutral', 'Sem dados no período'],
+};
+const ORIGEM_LBL = {
+  orders_api: 'Orders API',
+  planilha_vendas: 'Planilha de vendas',
+  central_vendas_db: 'Banco Central de Vendas',
+  mock_conciliacao_fechamento_api: 'Simulação local',
+};
+function renderContextStatus() {
+  const host = document.getElementById('fapi-context-status');
+  const mockBanner = document.getElementById('fapi-mock-banner');
   if (!host) return;
-  host.innerHTML = renderPedTableInner();
-  wirePedTable();
+
+  const item = (label, html) => `<span class="vf-fapi-context__status-item"><span class="vf-fapi-context__status-label">${esc(label)}</span> ${html}</span>`;
+
+  if (!F.cliente) {
+    if (mockBanner) mockBanner.hidden = true;
+    host.innerHTML = item('Motor', '<span class="vf-status is-neutral">Aguardando cliente</span>');
+    return;
+  }
+  if (F.loading) {
+    if (mockBanner) mockBanner.hidden = true;
+    host.innerHTML = item('Motor', '<span class="vf-status is-neutral">Carregando…</span>');
+    return;
+  }
+
+  const p = F.rawPayload;
+  const motorStatus = p?.ok ? (p.motor?.status || 'indisponivel') : 'indisponivel';
+  const [cls, label] = MOTOR[motorStatus] || MOTOR.indisponivel;
+  const isMock = motorStatus === 'mock';
+  if (mockBanner) mockBanner.hidden = !isMock;
+
+  const parts = [item('Motor', `<span class="vf-status ${cls}">${esc(label)}</span>`)];
+  if (p?.ok) {
+    if (p.motor?.confianca && p.motor.confianca !== 'ausente') parts.push(item('Confiança', confStatus(p.motor.confianca)));
+    const origem = p.motor?.origemPrincipal || p.fonte;
+    if (origem) parts.push(item('Origem', `<b>${esc(ORIGEM_LBL[origem] || origem)}</b>`));
+    if (p.motor?.geradoEm) parts.push(item('Gerado em', `<b>${esc(fmtDtHr(p.motor.geradoEm))}</b>`));
+    if (p.motor?.importId != null) parts.push(item('Import', `<span class="vf-mono">#${esc(p.motor.importId)}</span>`));
+    if (p.periodo?.label) parts.push(item('Intervalo', `<b>${esc(p.periodo.label)}</b>`));
+    if (F.lastSyncBase?.nome) parts.push(item('Base vinculada', `<b>${esc(F.lastSyncBase.nome)}</b>`));
+  }
+  host.innerHTML = parts.join('');
 }
 
-/* ── 2. FECHAMENTO API ────────────────────────────────────────
-   Fecha o PERÍODO inteiro. Tem recorte próprio (F.fechQuick) que filtra só
-   este bloco (KPIs/composição/qualidade) — não toca a tabela de pedidos. */
+function renderTabCounts() {
+  const pedidos = fechamentoOrders(F.rawPayload);
+  const produtos = new Set(pedidos.filter(o => o.mlb).map(o => o.mlb)).size;
+  const pc = document.getElementById('fapi-tab-pedidos-count');
+  const gc = document.getElementById('fapi-tab-produtos-count');
+  if (pc) { pc.hidden = !pedidos.length; pc.textContent = num(pedidos.length); }
+  if (gc) { gc.hidden = !produtos; gc.textContent = num(produtos); }
+}
+
+/* Troca de aba: só visibilidade — NUNCA dispara fetch nem re-render. */
+function setActiveTab(key, { updateHash = true, focus = false } = {}) {
+  if (!TAB_KEYS.includes(key)) key = 'visao';
+  F.ui.activeTab = key;
+  for (const k of TAB_KEYS) {
+    const tab = document.getElementById(`fapi-tab-${k}`);
+    const panel = document.getElementById(`fapi-panel-${k}`);
+    const active = k === key;
+    if (tab) {
+      tab.classList.toggle('is-active', active);
+      tab.setAttribute('aria-selected', active ? 'true' : 'false');
+      tab.setAttribute('tabindex', active ? '0' : '-1');
+      if (active && focus) tab.focus();
+    }
+    if (panel) panel.hidden = !active;
+  }
+  if (updateHash && TAB_HASH[key]) {
+    try { history.replaceState(null, '', TAB_HASH[key]); } catch (_) {}
+  }
+}
+function onTablistKeydown(e) {
+  const idx = TAB_KEYS.indexOf(F.ui.activeTab);
+  let next = null;
+  if (e.key === 'ArrowRight') next = TAB_KEYS[(idx + 1) % TAB_KEYS.length];
+  else if (e.key === 'ArrowLeft') next = TAB_KEYS[(idx - 1 + TAB_KEYS.length) % TAB_KEYS.length];
+  else if (e.key === 'Home') next = TAB_KEYS[0];
+  else if (e.key === 'End') next = TAB_KEYS[TAB_KEYS.length - 1];
+  if (next) { e.preventDefault(); setActiveTab(next, { focus: true }); }
+}
+
+/* ── ABA 1 · VISÃO GERAL — Fechamento (KPIs, composição, qualidade) ──
+   Recorte próprio (F.summary.quickFilter) filtra SÓ este bloco —
+   não toca a tabela de pedidos nem a Curva ABC. */
 const FECH_QUICKS = [
   ['todos', 'Todos'], ['sem_custo', 'Sem custo'], ['sem_frete', 'Sem frete'],
   ['bloqueados', 'Bloqueados'], ['calculavel', 'Calculáveis'],
 ];
-function renderFechamento() {
+
+function kpiValueHtml(v, { currency = false } = {}) {
+  if (v === null || v === undefined) return '<span class="vf-kpi__value">—</span>';
+  if (!currency) return `<span class="vf-kpi__value">${num(v)}</span>`;
+  return `<span class="vf-kpi__value vf-kpi__value--currency"><span class="vf-kpi__currency">R$</span><span>${num(v, 2)}</span></span>`;
+}
+function kpi({ label, valueHtml, foot = '', footTone = '', mod = '' }) {
+  return `<div class="vf-kpi${mod ? ' ' + mod : ''}">
+    <span class="vf-kpi__label">${esc(label)}</span>
+    ${valueHtml}
+    ${foot ? `<span class="vf-kpi__foot${footTone ? ' ' + footTone : ''}">${esc(foot)}</span>` : ''}
+  </div>`;
+}
+function secondaryMetric(label, valueHtml, hint = '', muted = false) {
+  return `<div class="vf-fapi-secondary-metrics__item"${hint ? ` title="${esc(hint)}"` : ''}>
+    <span class="vf-fapi-secondary-metrics__label">${esc(label)}</span>
+    <span class="vf-fapi-secondary-metrics__value${muted ? ' is-muted' : ''}">${valueHtml}</span>
+  </div>`;
+}
+
+function renderFechamentoSection() {
+  const host = document.getElementById('fapi-fech-host');
   const payload = F.rawPayload;
-  if (!payload?.ok) return '';
+  if (!host || !payload?.ok) return;
+
   const rAll = buildFechamentoResumo(payload, 'todos');
   const fonteTxt = (rAll.fonte === 'orders_api') ? 'orders_api · central_vendas_db' : esc(rAll.fonte);
+  const headerMeta = `${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')} · fonte: ${fonteTxt}`;
 
   if (!rAll.totalPedidos) {
-    return `
-    <section class="fapi-panel">
-      <div class="fapi-panel-head"><h2 class="fapi-panel-title">Fechamento API</h2>
-        <span class="fapi-panel-meta">${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')}</span></div>
-      <div class="fapi-panel-body">${emptyState({ icon:'🧾', title:'Sem pedidos no período', why:'Nada sincronizado para fechar neste intervalo.', next:'Use “Sincronizar via API” para trazer os pedidos do ML.' })}</div>
-    </section>`;
+    const syncBtn = isAdminUser()
+      ? '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-action="sync-empty">Sincronizar via API</button>' : '';
+    host.innerHTML = `
+      <section class="vf-section" aria-label="Fechamento do período">
+        <div class="vf-section__header">
+          <div>
+            <h2 class="vf-section__title">Fechamento do período</h2>
+            <p class="vf-section__description">${headerMeta}</p>
+          </div>
+        </div>
+        <div class="vf-card"><div class="vf-card__body">${emptyState({
+          icon:'doc', title:'Sem pedidos no período',
+          why:'Nada sincronizado para fechar neste intervalo.',
+          next:'Use "Sincronizar via API" para trazer os pedidos do Mercado Livre.',
+          action: syncBtn,
+        })}</div></div>
+      </section>`;
+    return;
   }
 
-  const r = buildFechamentoResumo(payload, F.fechQuick);
-  const chips = FECH_QUICKS.map(([k, l]) => `<button class="fapi-chip${F.fechQuick === k ? ' active' : ''}" data-fechq="${k}" type="button">${esc(l)}</button>`).join('');
-  const recorteBar = `<div class="fapi-toolbar"><div class="fapi-chipbar">${chips}</div>${F.fechQuick !== 'todos' ? `<span class="fapi-panel-meta">recorte: ${esc((FECH_QUICKS.find(x => x[0] === F.fechQuick) || [])[1] || '')} · ${num(r.totalPedidos)} pedido(s)</span>` : ''}</div>`;
+  const quick = F.summary.quickFilter;
+  const r = buildFechamentoResumo(payload, quick);
+  const chips = FECH_QUICKS.map(([k, l]) => {
+    const count = k === 'todos' ? rAll.totalPedidos : fechamentoOrdersFiltered(payload, k).length;
+    return `<button type="button" class="vf-filter-chip${quick === k ? ' is-active' : ''}" data-fechq="${k}" aria-pressed="${quick === k}">${esc(l)} <span class="vf-badge">${num(count)}</span></button>`;
+  }).join('');
+  const clearBtn = quick !== 'todos'
+    ? '<button type="button" class="vf-clear-filters" data-fechq="todos">Limpar recorte</button>' : '';
+  const recorteBar = `<div class="vf-fapi-fech-chips" role="group" aria-label="Recorte do fechamento">${chips}${clearBtn}</div>`;
 
+  let corpo;
   if (!r.totalPedidos) {
-    return `
-    <section class="fapi-panel">
-      <div class="fapi-panel-head"><h2 class="fapi-panel-title">Fechamento API</h2>
-        <div class="fapi-panel-actions"><span class="fapi-panel-meta">${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')}</span></div></div>
-      <div class="fapi-panel-body fapi-panel-body--flush">${recorteBar}
-        <div class="fapi-panel-body">${emptyState({ icon:'•', title:'Nenhum pedido neste recorte', why:'O recorte selecionado não tem pedidos.', next:'Volte para “Todos”.' })}</div></div>
-    </section>`;
+    corpo = `<div class="vf-card"><div class="vf-card__body">${emptyState({
+      icon:'dot', title:'Nenhum pedido neste recorte',
+      why:'O recorte selecionado não tem pedidos.',
+      next:'Volte para "Todos".',
+    })}</div></div>`;
+  } else {
+    const parcialFoot = r.confianca === 'confiavel' ? 'todos componentes reais' : 'parcial';
+    const kpis = `<div class="vf-kpi-grid" role="list" aria-label="Indicadores principais do fechamento">
+      ${kpi({ label:'Faturamento bruto', valueHtml: kpiValueHtml(r.faturamento, { currency:true }), foot:'pedidos válidos', mod:'vf-kpi--featured' })}
+      ${kpi({ label:'Resultado parcial', valueHtml: kpiValueHtml(r.resultadoParcial, { currency:true }), foot: parcialFoot, footTone: r.confianca === 'confiavel' ? 'is-success' : 'is-warning', mod: r.confianca === 'confiavel' ? '' : 'vf-kpi--warning' })}
+      ${kpi({ label:'Receita bloqueada', valueHtml: kpiValueHtml(r.receitaBloqueada, { currency:true }), foot:'falta custo/frete p/ calcular', footTone: r.receitaBloqueada > 0 ? 'is-warning' : '', mod: r.receitaBloqueada > 0 ? 'vf-kpi--warning' : '' })}
+      ${kpi({ label:'Pedidos válidos', valueHtml: kpiValueHtml(r.validos), foot:'pagos + problema' })}
+      ${kpi({ label:'Cancelados / problema', valueHtml: kpiValueHtml(r.cancelProblema), foot:'fora da venda boa', footTone: r.cancelProblema > 0 ? 'is-danger' : '', mod: r.cancelProblema > 0 ? 'vf-kpi--danger' : '' })}
+      ${kpi({ label:'Unidades vendidas', valueHtml: kpiValueHtml(r.unidades), foot:'itens válidos' })}
+    </div>`;
+
+    const secundarios = `<div class="vf-fapi-secondary-metrics" aria-label="Métricas secundárias do fechamento">
+      ${secondaryMetric('Total de pedidos', valOr(r.totalPedidos), 'no período')}
+      ${secondaryMetric('Ticket médio', valOr(r.ticket, money), 'por pedido válido')}
+      ${secondaryMetric('Comissão marketplace', valOr(r.comissao, money), 'tarifa ML (sale_fee)')}
+      ${secondaryMetric('Custo dos produtos', valOr(r.custoTotal, money), 'base vinculada')}
+      ${secondaryMetric('Imposto interno', valOr(r.impostoTotal, money), 'cálculo interno')}
+      ${secondaryMetric('Frete seller', valOr(r.freteTotal, money), r.freteTotal == null ? 'ausente (shipments)' : 'real (shipments API)', r.freteTotal == null)}
+    </div>`;
+
+    // Composição do resultado
+    const comps = buildFechamentoComponentes(payload, quick);
+    const compRows = comps.map(c => `
+      <tr${c.comp === 'Resultado parcial' ? ' class="vf-fapi-total-row"' : ''}>
+        <td>${esc(c.comp)}</td>
+        <td class="vf-fapi-op" aria-hidden="true">${esc(c.op)}</td>
+        <td class="num">${c.valor == null ? '<span class="is-absent">—</span>' : (c.comp === 'Resultado parcial' && c.status !== 'real' ? `<span class="vf-fapi-est">${money(c.valor)}</span>` : money(c.valor))}</td>
+        <td>${statusTag(c.status)}</td>
+        <td class="vf-fapi-fonte">${esc(c.fonte)}</td>
+        <td class="vf-fapi-obs vf-truncate" title="${esc(c.obs)}">${esc(c.obs)}</td>
+      </tr>`).join('');
+    const composicao = `
+      <div class="vf-card vf-card--compact vf-fapi-composition">
+        <div class="vf-card__header"><h3 class="vf-card__title">Composição do resultado</h3></div>
+        <div class="vf-table-wrap">
+          <table class="vf-table vf-table--compact">
+            <thead><tr><th scope="col">Componente</th><th scope="col"><span class="vf-visually-hidden">Operação</span></th><th scope="col" class="num">Valor</th><th scope="col">Status</th><th scope="col">Fonte</th><th scope="col">Observação</th></tr></thead>
+            <tbody>${compRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+
+    // Qualidade do fechamento — lista compacta, exceções destacadas
+    const q = buildFechamentoQualidade(payload, quick);
+    const qRow = (lbl, val, cls) => `<div class="vf-fapi-quality__row"><span class="vf-fapi-quality__label">${esc(lbl)}</span><span class="vf-fapi-quality__value${cls ? ' ' + cls : ''}">${val}</span></div>`;
+    const qualidade = `
+      <div class="vf-card vf-card--compact vf-fapi-quality">
+        <div class="vf-card__header"><h3 class="vf-card__title">Qualidade do fechamento</h3></div>
+        <div class="vf-card__body">
+          <div class="vf-fapi-quality__list">
+            ${qRow('Pedidos sem custo', valOr(q.semCusto), q.semCusto ? 'is-danger' : '')}
+            ${qRow('Pedidos sem frete', valOr(q.semFrete), q.semFrete ? 'is-warning' : '')}
+            ${qRow('Com resultado calculável', valOr(q.comResultado))}
+            ${qRow('Pedidos bloqueados', valOr(q.bloqueados), q.bloqueados ? 'is-danger' : '')}
+            ${qRow('Cancelados/problema', valOr(q.cancelProblema))}
+            ${qRow('% faturamento com custo', valOr(q.pctFatComCusto, pct))}
+            ${qRow('% faturamento com frete real', valOr(q.pctFatComFrete, pct), (q.pctFatComFrete || 0) > 0 ? 'is-success' : '')}
+            ${qRow('% faturamento bloqueado', valOr(q.pctFatBloqueado, pct), (q.pctFatBloqueado || 0) > 0 ? 'is-warning' : '')}
+          </div>
+        </div>
+      </div>`;
+
+    const nota = `<div class="vf-banner is-info vf-banner--compact" role="note">
+      <div class="vf-banner__content"><p class="vf-banner__description">Fechamento do <strong>período inteiro</strong> (independe dos filtros da tabela de pedidos). O <strong>frete seller</strong> vem da Shipments API por pedido quando disponível; pedidos sem frete real mantêm o fechamento <strong>parcial</strong>. Ausência aparece como <strong>—</strong>, nunca R$ 0,00.</p></div>
+    </div>`;
+
+    corpo = `${kpis}${secundarios}<div class="vf-fapi-composition-grid">${composicao}${qualidade}</div>${nota}`;
   }
 
-  const card = (lbl, val, sub, cls) => `<div class="fapi-card"><div class="fapi-card-lbl">${esc(lbl)}</div><div class="fapi-card-val${cls ? ' ' + cls : ''}">${val}</div><div class="fapi-card-sub">${sub || '&nbsp;'}</div></div>`;
-  const cards = `<div class="fapi-cards">
-    ${card('Total de pedidos', valOr(r.totalPedidos), 'no período')}
-    ${card('Pedidos válidos', valOr(r.validos), 'pagos + problema')}
-    ${card('Cancelados / problema', valOr(r.cancelProblema), 'fora da venda boa', 'crit')}
-    ${card('Unidades vendidas', valOr(r.unidades), 'itens válidos')}
-    ${card('Faturamento bruto', money(r.faturamento), 'pedidos válidos', 'brand')}
-    ${card('Ticket médio', valOr(r.ticket, money), 'por pedido válido')}
-    ${card('Comissão marketplace', valOr(r.comissao, money), 'tarifa ML (sale_fee)')}
-    ${card('Custo dos produtos', valOr(r.custoTotal, money), 'base vinculada')}
-    ${card('Imposto interno', valOr(r.impostoTotal, money), 'cálculo interno')}
-    ${card('Frete seller', valOr(r.freteTotal, money), r.freteTotal == null ? 'ausente (shipments)' : 'real (shipments API)', r.freteTotal == null ? 'muted' : '')}
-    ${card('Resultado parcial', valOr(r.resultadoParcial, money), r.confianca === 'confiavel' ? 'todos componentes reais' : 'parcial', r.confianca === 'confiavel' ? '' : 'warn')}
-    ${card('Receita bloqueada', money(r.receitaBloqueada), 'falta custo/frete p/ calcular', 'warn')}
-  </div>`;
-
-  // Composição do resultado
-  const comps = buildFechamentoComponentes(payload, F.fechQuick);
-  const compRows = comps.map(c => `
-    <tr${c.comp === 'Resultado parcial' ? ' class="fapi-ext-total"' : ''}>
-      <td class="fapi-ext-comp${c.comp === 'Resultado parcial' ? ' strong' : ''}">${esc(c.comp)}</td>
-      <td class="center fapi-ext-op">${esc(c.op)}</td>
-      <td class="right fapi-ext-val">${c.valor == null ? '<span class="muted">—</span>' : (c.comp === 'Resultado parcial' ? `<span class="fapi-est">${money(c.valor)}</span>` : money(c.valor))}</td>
-      <td>${statusBadge(c.status)}</td>
-      <td class="fapi-ext-fonte muted">${esc(c.fonte)}</td>
-      <td class="fapi-ext-obs muted clip">${esc(c.obs)}</td>
-    </tr>`).join('');
-  const composicao = `
-    <div class="fapi-fech-sub"><b>Composição do resultado</b></div>
-    <div class="fapi-tablewrap">
-      <table class="fapi-table fapi-ext-table">
-        <thead><tr><th>Componente</th><th class="center">Op.</th><th class="right">Valor</th><th>Status</th><th>Fonte</th><th>Observação</th></tr></thead>
-        <tbody>${compRows}</tbody>
-      </table>
-    </div>`;
-
-  // Qualidade do fechamento — somente leitura (recorte fica nos chips acima)
-  const q = buildFechamentoQualidade(payload, F.fechQuick);
-  const qItem = (lbl, val, cls) => `<div class="fapi-fech-q"><span class="fapi-fech-q-v${cls ? ' ' + cls : ''}">${val}</span><span class="fapi-fech-q-l">${esc(lbl)}</span></div>`;
-  const qualidade = `
-    <div class="fapi-fech-sub"><b>Qualidade do fechamento</b></div>
-    <div class="fapi-fech-qgrid">
-      ${qItem('pedidos sem custo', valOr(q.semCusto), q.semCusto ? 'crit' : '')}
-      ${qItem('pedidos sem frete', valOr(q.semFrete), q.semFrete ? 'warn' : '')}
-      ${qItem('com resultado calculável', valOr(q.comResultado))}
-      ${qItem('pedidos bloqueados', valOr(q.bloqueados), q.bloqueados ? 'crit' : '')}
-      ${qItem('cancelados/problema', valOr(q.cancelProblema))}
-      ${qItem('% faturamento com custo', valOr(q.pctFatComCusto, pct))}
-      ${qItem('% faturamento com frete real', valOr(q.pctFatComFrete, pct), (q.pctFatComFrete || 0) > 0 ? 'ok' : '')}
-      ${qItem('% faturamento bloqueado', valOr(q.pctFatBloqueado, pct), (q.pctFatBloqueado || 0) > 0 ? 'warn' : '')}
-    </div>`;
-
-  return `
-  <section class="fapi-panel">
-    <div class="fapi-panel-head">
-      <h2 class="fapi-panel-title">Fechamento API</h2>
-      <div class="fapi-panel-actions">
-        <span class="fapi-panel-meta">${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')} · fonte: ${fonteTxt}</span>
-        Confiança ${confPill(r.confianca)}
-        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-fech-refresh" type="button" title="Recalcula do período já carregado — não chama a API do ML">Atualizar</button>
+  host.innerHTML = `
+    <section class="vf-section vf-fapi-overview" aria-label="Fechamento do período">
+      <div class="vf-section__header">
+        <div>
+          <h2 class="vf-section__title">Fechamento do período</h2>
+          <p class="vf-section__description">${headerMeta}</p>
+        </div>
+        <div class="vf-section__actions">
+          <span class="vf-fapi-context__status-item"><span class="vf-fapi-context__status-label">Confiança</span> ${confStatus(r.totalPedidos ? r.confianca : rAll.confianca)}</span>
+        </div>
       </div>
-    </div>
-    <div class="fapi-panel-body fapi-panel-body--flush">
       ${recorteBar}
-      ${cards}
-      ${composicao}
-      ${qualidade}
-      <div class="fapi-table-note">Fechamento do <b>período inteiro</b> (independe dos filtros da tabela de pedidos). O <b>frete seller</b> vem da Shipments API por pedido quando disponível; pedidos sem frete real mantêm o fechamento <b>parcial</b>. Ausência aparece como <b>—</b>, nunca R$ 0,00.</div>
-    </div>
-  </section>`;
+      ${corpo}
+    </section>`;
 }
 
-/* ── HEADER ───────────────────────────────────────────────── */
-const MOTOR = { mock:['mock','● Mock'], parcial:['parcial','● Parcial'], api:['api','● API conectado'], indisponivel:['indisponivel','● Indisponível'], persistido:['api','● API conectado'], sem_dados:['indisponivel','● Sem dados no período'] };
-function renderHeader(p) {
-  const st = document.getElementById('fapi-motor-status');
-  if (st) { const [cls, label] = MOTOR[p?.motor?.status] || MOTOR.mock; st.className = `fapi-motor fapi-motor--${cls}`; st.textContent = label; }
-  const cf = document.getElementById('fapi-confianca');
-  if (cf) { if (p?.motor?.confianca) { cf.hidden = false; cf.innerHTML = `Confiança ${confPill(p.motor.confianca)}`; } else cf.hidden = true; }
-}
-
-/* ── 3. VENDAS POR DIA (régua visual + tabela ordenável) ─────── */
-function renderDailySales() {
+/* ── ABA 1 · VISÃO GERAL — Vendas por dia (régua + tabela) ── */
+function renderDaysSection() {
+  const host = document.getElementById('fapi-days-host');
+  if (!host || !F.rawPayload?.ok) return;
   const dias = buildDailyRulerRows();
-  if (!dias.length) return '';
+  if (!dias.length) { host.innerHTML = ''; return; }
+
   const cells = dias.map(d => {
-    const scope = dayScopeClass(d.data);
-    const empty = d.pedidos === 0 ? ' fapi-day--empty' : '';
+    const scope = dayScope(d.data);
+    const cls = ['vf-fapi-day'];
+    if (scope === 'selected') cls.push('is-selected');
+    else if (scope === 'scope') cls.push('is-scope');
+    if (d.pedidos === 0) cls.push('is-empty');
     const markers = [
-      d.cancelProblema > 0 ? '<span class="fapi-day-marker fapi-day-marker--problem" title="Cancelamento/problema"></span>' : '',
-      d.receitaBloqueada > 0 ? '<span class="fapi-day-marker fapi-day-marker--blocked" title="Receita bloqueada"></span>' : '',
+      d.cancelProblema > 0 ? '<span class="vf-fapi-day__dot vf-fapi-day__dot--problem" aria-hidden="true"></span>' : '',
+      d.receitaBloqueada > 0 ? '<span class="vf-fapi-day__dot vf-fapi-day__dot--blocked" aria-hidden="true"></span>' : '',
     ].join('');
-    const tip = `${fmtDt(d.data)} · ${money(d.faturamento)} · ${d.pedidos} ped · ${d.unidades} un` + (d.topProduto ? ` · top: ${d.topProduto.titulo}` : '');
-    return `<button class="fapi-day${scope}${empty}" data-day="${esc(d.data)}" title="${esc(tip)}">
-      <span class="fapi-day-d">${esc(String(new Date(d.data + 'T00:00:00').getDate()).padStart(2, '0'))}</span>
-      <span class="fapi-day-v">${esc(shortMoney(d.faturamento))}</span>
-      <span class="fapi-day-p">${esc(String(d.pedidos))} ped.</span>
-      <span class="fapi-day-markers">${markers}</span>
+    const tipParts = [`${fmtDt(d.data)}`, `${money(d.faturamento)}`, `${d.pedidos} pedido(s)`, `${d.unidades} unidade(s)`];
+    if (d.cancelProblema > 0) tipParts.push(`${d.cancelProblema} com cancelamento/problema`);
+    if (d.receitaBloqueada > 0) tipParts.push(`receita bloqueada ${money(d.receitaBloqueada)}`);
+    if (d.topProduto) tipParts.push(`top: ${d.topProduto.titulo}`);
+    const tip = tipParts.join(' · ');
+    return `<button type="button" class="${cls.join(' ')}" data-day="${esc(d.data)}" title="${esc(tip)}" aria-label="Filtrar pedidos de ${esc(tip)}" aria-pressed="${scope === 'selected'}">
+      <span class="vf-fapi-day__num">${esc(String(new Date(d.data + 'T00:00:00').getDate()).padStart(2, '0'))}</span>
+      <span class="vf-fapi-day__value">${esc(shortMoney(d.faturamento))}</span>
+      <span class="vf-fapi-day__orders">${esc(String(d.pedidos))} ped.</span>
+      <span class="vf-fapi-day__markers">${markers}</span>
     </button>`;
   }).join('');
 
-  // Tabela ordenável por dia (período inteiro)
-  const tdias = sortDias(buildFechamentoPorDia(F.rawPayload, 'todos'), F.fechDailySort);
-  const dailySortOpts = FECH_DAILY_SORTS.map(([k, l]) => `<option value="${k}"${F.fechDailySort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  // Tabela ordenável por dia (período inteiro, independe dos recortes)
+  const tdias = sortDias(buildFechamentoPorDia(F.rawPayload, 'todos'), F.summary.dailySort);
+  const dailySortOpts = FECH_DAILY_SORTS.map(([k, l]) => `<option value="${k}"${F.summary.dailySort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  const DAILY_SORT_COL = { data:['data','ascending'], faturamento:['faturamento','descending'], pedidos:['pedidos','descending'], cancelProblema:['cancelProblema','descending'], receitaBloqueada:['receitaBloqueada','descending'], semFrete:['semFrete','descending'], semCusto:['semCusto','descending'] };
+  const dailyTh = (key, label, numCls) => {
+    const s = DAILY_SORT_COL[F.summary.dailySort];
+    const sorted = s && s[0] === key ? ` aria-sort="${s[1]}"` : '';
+    return `<th scope="col"${numCls ? ' class="num"' : ''}${sorted}>${esc(label)}</th>`;
+  };
   const diaRows = tdias.map(d => `
-    <tr class="fapi-dayrow${dayScopeClass(d.data) ? ' fapi-dayrow--scope' : ''}" data-fechday="${esc(d.data)}" title="Filtrar pedidos de ${fmtDt(d.data)}" tabindex="0">
-      <td class="nowrap">${fmtDt(d.data)}</td>
-      <td class="right">${valOr(d.pedidos)}</td>
-      <td class="right strong">${money(d.faturamento)}</td>
-      <td class="right">${valOr(d.comissao, money)}</td>
-      <td class="right">${valOr(d.custo, money)}</td>
-      <td class="right">${valOr(d.imposto, money)}</td>
-      <td class="right">${d.receitaBloqueada > 0 ? `<span class="fapi-est">${money(d.receitaBloqueada)}</span>` : '—'}</td>
-      <td class="right">${d.semFrete > 0 ? num(d.semFrete) : '—'}</td>
-      <td class="right">${d.semCusto > 0 ? num(d.semCusto) : '—'}</td>
-      <td class="right">${d.cancelProblema > 0 ? num(d.cancelProblema) : '—'}</td>
+    <tr${dayScope(d.data) ? ' class="is-scope"' : ''} data-fechday="${esc(d.data)}" title="Filtrar pedidos de ${fmtDt(d.data)}" tabindex="0">
+      <td>${fmtDt(d.data)}</td>
+      <td class="num">${valOr(d.pedidos)}</td>
+      <td class="num">${money(d.faturamento)}</td>
+      <td class="num">${valOr(d.comissao, money)}</td>
+      <td class="num">${valOr(d.custo, money)}</td>
+      <td class="num">${valOr(d.imposto, money)}</td>
+      <td class="num">${d.receitaBloqueada > 0 ? `<span class="vf-fapi-est">${money(d.receitaBloqueada)}</span>` : '—'}</td>
+      <td class="num">${d.semFrete > 0 ? num(d.semFrete) : '—'}</td>
+      <td class="num">${d.semCusto > 0 ? num(d.semCusto) : '—'}</td>
+      <td class="num">${d.cancelProblema > 0 ? num(d.cancelProblema) : '—'}</td>
     </tr>`).join('');
 
-  return `
-  <section class="fapi-panel">
-    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Vendas por dia</h2>
-      <span class="fapi-panel-meta">clique num dia para filtrar os pedidos · amarelo = problema · vermelho = receita bloqueada</span></div>
-    <div class="fapi-panel-body"><div class="fapi-days">${cells}</div></div>
-    <div class="fapi-fech-sub fapi-fech-sub--row"><b>Resumo por dia</b>
-      <label class="fapi-fitem fapi-toolbar-sort"><span>Ordenar por</span>
-        <select class="fapi-fsel" id="fapi-daily-sort">${dailySortOpts}</select></label></div>
-    <div class="fapi-panel-body fapi-panel-body--flush"><div class="fapi-tablewrap">
-      <table class="fapi-table fapi-table--click">
-        <thead><tr><th>Data</th><th class="right">Ped.</th><th class="right">Faturamento</th><th class="right">Comissão</th><th class="right">Custo</th><th class="right">Imposto</th><th class="right">Receita bloq.</th><th class="right">S/frete</th><th class="right">S/custo</th><th class="right">Canc/Prob</th></tr></thead>
-        <tbody>${diaRows}</tbody>
-      </table></div></div>
-  </section>`;
-}
-
-/* ── 3. TABELA DE PEDIDOS ─────────────────────────────────── */
-const STATUS_PEDIDO = { pago:['ok','Pago'], cancelado:['crit','Cancelado'], com_problema:['warn','Problema'], pendente:['warn','Pendente'] };
-
-/* Texto da linha "Filtros ativos" (recorte + selects + busca + ordenação). */
-function activeFiltersText() {
-  const parts = [];
-  if (F.quickFilter && F.quickFilter !== 'todos') {
-    const q = QUICK_FILTERS.find(c => c[0] === F.quickFilter);
-    if (q) parts.push(q[1]);
-  }
-  const fl = F.filters;
-  if (fl.logistica === 'full') parts.push('Full'); else if (fl.logistica === 'nao_full') parts.push('não Full');
-  if (fl.midia === 'com_ads') parts.push('com Ads'); else if (fl.midia === 'sem_ads') parts.push('sem Ads');
-  if (fl.diagbase !== 'todos') parts.push(fl.diagbase.replace('_', ' '));
-  if (fl.status !== 'todos') parts.push(fl.status);
-  if (fl.modo === 'intervalo' && fl.de && fl.de === fl.ate) parts.push(`dia ${fmtDt(fl.de)}`);
-  const termo = String(F.searchTerm || '').trim();
-  if (termo) parts.push(`busca "${termo}"`);
-  const s = ORDER_SORTS.find(x => x[0] === F.orderSort);
-  return { recortes: parts, ordenacao: s ? s[1] : '' };
-}
-
-/* Bloco Pedidos: toolbar (busca + selects + chips + ordenação) colada à tabela.
-   A toolbar é renderizada uma vez; a tabela vive em #fapi-ped-table e re-renderiza
-   sozinha (busca/recorte/ordenação/página) preservando o foco da busca. */
-function renderPedidos() {
-  const fl = F.filters;
-  const opt = (v, label, cur) => `<option value="${esc(v)}"${cur === v ? ' selected' : ''}>${esc(label)}</option>`;
-  const selF = (key, cur, opts) => `<select class="fapi-fsel" data-pedfilter="${key}">${opts}</select>`;
-  const chips = QUICK_FILTERS.map(([k, l]) =>
-    `<button class="fapi-chip${F.quickFilter === k ? ' active' : ''}" data-quick="${k}" type="button">${esc(l)}</button>`).join('');
-  const sortOpts = ORDER_SORTS.map(([k, l]) => `<option value="${k}"${F.orderSort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
-
-  return `
-  <section class="fapi-panel">
-    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Pedidos</h2>
-      <span class="fapi-panel-meta">clique para abrir o extrato · todos os filtros são locais (sem nova busca no servidor)</span></div>
-    <div class="fapi-panel-body fapi-panel-body--flush">
-      <div class="fapi-toolbar fapi-toolbar--ped">
-        <label class="fapi-fitem fapi-fitem--search"><span>Buscar</span>
-          <input type="search" id="fapi-search" class="fapi-fsearch" placeholder="pedido, MLB, SKU, título, status…" value="${esc(F.searchTerm || '')}" autocomplete="off"></label>
-        <label class="fapi-fitem"><span>Logística</span>${selF('logistica', fl.logistica, [opt('todos','Todos',fl.logistica), opt('full','Full',fl.logistica), opt('nao_full','Não Full',fl.logistica)].join(''))}</label>
-        <label class="fapi-fitem"><span>Mídia</span>${selF('midia', fl.midia, [opt('todos','Todos',fl.midia), opt('com_ads','Com Ads',fl.midia), opt('sem_ads','Sem Ads',fl.midia)].join(''))}</label>
-        <label class="fapi-fitem"><span>Diag./base</span>${selF('diagbase', fl.diagbase, [opt('todos','Todos',fl.diagbase), opt('com_custo','Com custo',fl.diagbase), opt('sem_custo','Sem custo',fl.diagbase), opt('no_diag','No diagnóstico',fl.diagbase), opt('fora_diag','Fora do diag.',fl.diagbase)].join(''))}</label>
-        <label class="fapi-fitem"><span>Status</span>${selF('status', fl.status, [opt('todos','Todos',fl.status), opt('valido','Válido',fl.status), opt('cancelado','Cancelado',fl.status), opt('problema','Problema',fl.status), opt('bloqueado','Bloqueado',fl.status)].join(''))}</label>
-        <label class="fapi-fitem fapi-toolbar-sort"><span>Ordenar por</span><select class="fapi-fsel" id="fapi-order-sort">${sortOpts}</select></label>
+  host.innerHTML = `
+    <section class="vf-section vf-fapi-days" aria-label="Vendas por dia">
+      <div class="vf-section__header">
+        <div>
+          <h2 class="vf-section__title">Vendas por dia</h2>
+          <p class="vf-section__description">Clique num dia para filtrar a aba Pedidos · ponto âmbar = cancelamento/problema · ponto vermelho = receita bloqueada.</p>
+        </div>
+        <div class="vf-section__actions">
+          <label class="vf-filter-group">
+            <span class="vf-filter-group__label">Ordenar resumo por</span>
+            <select class="vf-select vf-select--sm" id="fapi-daily-sort">${dailySortOpts}</select>
+          </label>
+        </div>
       </div>
-      <div class="fapi-chipbar fapi-chipbar--ped">${chips}</div>
-      <div id="fapi-ped-table">${renderPedTableInner()}</div>
-    </div>
-  </section>`;
+      <div class="vf-fapi-days__strip-wrap" role="group" aria-label="Régua de dias do período">
+        <div class="vf-fapi-days__strip">${cells}</div>
+      </div>
+      <div class="vf-table-wrap vf-fapi-days__table-wrap">
+        <table class="vf-table vf-table--compact">
+          <thead><tr>
+            ${dailyTh('data', 'Data')}
+            ${dailyTh('pedidos', 'Ped.', true)}
+            ${dailyTh('faturamento', 'Faturamento', true)}
+            <th scope="col" class="num">Comissão</th>
+            <th scope="col" class="num">Custo</th>
+            <th scope="col" class="num">Imposto</th>
+            ${dailyTh('receitaBloqueada', 'Receita bloq.', true)}
+            ${dailyTh('semFrete', 'S/frete', true)}
+            ${dailyTh('semCusto', 'S/custo', true)}
+            ${dailyTh('cancelProblema', 'Canc/Prob', true)}
+          </tr></thead>
+          <tbody>${diaRows}</tbody>
+        </table>
+      </div>
+    </section>`;
+}
+
+/* ── ABA 2 · PEDIDOS — toolbar em duas camadas + tabela ─────
+   A toolbar é renderizada por carga de dados; a tabela vive em
+   #fapi-ped-table e re-renderiza sozinha (busca/recorte/ordenação/
+   página) preservando o foco do campo de busca. */
+function quickChipHtml(k, label, count, active) {
+  return `<button type="button" class="vf-filter-chip${active ? ' is-active' : ''}" data-quick="${k}" aria-pressed="${active}">${esc(label)} <span class="vf-badge">${num(count)}</span></button>`;
+}
+function renderOrdersPanel() {
+  const panel = document.getElementById('fapi-panel-pedidos');
+  if (!panel || !F.rawPayload?.ok) return;
+  const fl = F.orders.filters;
+  const opt = (v, label, cur) => `<option value="${esc(v)}"${cur === v ? ' selected' : ''}>${esc(label)}</option>`;
+  const selF = (id, key, labelTxt, opts) => `
+    <div class="vf-field">
+      <label class="vf-field__label" for="${id}">${esc(labelTxt)}</label>
+      <select id="${id}" class="vf-select vf-select--sm" data-pedfilter="${key}">${opts}</select>
+    </div>`;
+
+  const base = getSearchedPedidos();
+  const countBy = q => q === 'todos' ? base.length : base.filter(o => pedidoMatchesQuick(o, q)).length;
+  const primary = QUICK_FILTERS.filter(([k]) => QUICK_PRIMARY.includes(k))
+    .map(([k, l]) => quickChipHtml(k, l, countBy(k), F.orders.quickFilter === k)).join('');
+  const extra = QUICK_FILTERS.filter(([k]) => !QUICK_PRIMARY.includes(k))
+    .map(([k, l]) => quickChipHtml(k, l, countBy(k), F.orders.quickFilter === k)).join('');
+
+  const sortOpts = ORDER_SORTS.map(([k, l]) => `<option value="${k}"${F.orders.sort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  const advCount = ['logistica', 'midia', 'diagbase', 'status'].filter(k => fl[k] !== 'todos').length;
+
+  panel.innerHTML = `
+    <section class="vf-section" aria-label="Pedidos do período">
+      <div class="vf-section__header">
+        <div>
+          <h2 class="vf-section__title">Pedidos</h2>
+          <p class="vf-section__description">Clique num pedido para abrir o extrato. Todos os filtros são locais — nenhuma nova busca no servidor.</p>
+        </div>
+      </div>
+
+      <div class="vf-fapi-orders-toolbar">
+        <div class="vf-fapi-orders-toolbar__main">
+          <input type="search" id="fapi-search" class="vf-input vf-input--sm vf-search" placeholder="Buscar pedido, MLB, SKU, título, status…" value="${esc(F.orders.search || '')}" autocomplete="off" aria-label="Buscar pedidos">
+          <label class="vf-fapi-orders-toolbar__sort">
+            <span class="vf-filter-group__label">Ordenar por</span>
+            <select class="vf-select vf-select--sm" id="fapi-order-sort">${sortOpts}</select>
+          </label>
+          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-filters-toggle" aria-expanded="${F.ui.filtersPanelOpen}" aria-controls="fapi-filters-panel">Filtros${advCount ? ` <span class="vf-badge is-primary">${num(advCount)}</span>` : ''}</button>
+          <span class="vf-fapi-orders-toolbar__count" id="fapi-orders-count" aria-live="polite"></span>
+        </div>
+        <div class="vf-fapi-orders-toolbar__chips" role="group" aria-label="Recortes rápidos">${primary}</div>
+        <div class="vf-fapi-orders-filters" id="fapi-filters-panel"${F.ui.filtersPanelOpen ? '' : ' hidden'}>
+          <div class="vf-fapi-orders-filters__grid">
+            ${selF('fapi-filter-logistica', 'logistica', 'Logística', [opt('todos','Todas',fl.logistica), opt('full','Full',fl.logistica), opt('nao_full','Não Full',fl.logistica)].join(''))}
+            ${selF('fapi-filter-midia', 'midia', 'Mídia', [opt('todos','Todas',fl.midia), opt('com_ads','Com Ads',fl.midia), opt('sem_ads','Sem Ads',fl.midia)].join(''))}
+            ${selF('fapi-filter-diagbase', 'diagbase', 'Diagnóstico / base', [opt('todos','Todos',fl.diagbase), opt('com_custo','Com custo',fl.diagbase), opt('sem_custo','Sem custo',fl.diagbase), opt('no_diag','No diagnóstico',fl.diagbase), opt('fora_diag','Fora do diag.',fl.diagbase)].join(''))}
+            ${selF('fapi-filter-status', 'status', 'Status do pedido', [opt('todos','Todos',fl.status), opt('valido','Válido',fl.status), opt('cancelado','Cancelado',fl.status), opt('problema','Problema',fl.status), opt('bloqueado','Bloqueado',fl.status)].join(''))}
+          </div>
+          <div class="vf-fapi-orders-toolbar__chips" role="group" aria-label="Recortes adicionais">${extra}</div>
+        </div>
+      </div>
+
+      <div id="fapi-ped-table"></div>
+    </section>`;
+  renderPedTable();
+}
+
+/* Filtros ativos: chips removíveis (recorte + selects + dia + busca). */
+const PEDFILTER_LBL = {
+  logistica: { full:'Full', nao_full:'Não Full' },
+  midia: { com_ads:'Com Ads', sem_ads:'Sem Ads' },
+  diagbase: { com_custo:'Com custo', sem_custo:'Sem custo', no_diag:'No diagnóstico', fora_diag:'Fora do diag.' },
+  status: { valido:'Válido', cancelado:'Cancelado', problema:'Problema', bloqueado:'Bloqueado' },
+};
+function buildActiveFilters() {
+  const fl = F.orders.filters;
+  const items = [];
+  if (F.orders.quickFilter && F.orders.quickFilter !== 'todos') {
+    const q = QUICK_FILTERS.find(c => c[0] === F.orders.quickFilter);
+    if (q) items.push({ type:'quick', label:q[1] });
+  }
+  for (const key of ['logistica', 'midia', 'diagbase', 'status']) {
+    if (fl[key] !== 'todos') items.push({ type:'pedfilter', key, label: PEDFILTER_LBL[key][fl[key]] || fl[key] });
+  }
+  if (fl.modo === 'intervalo' && (fl.de || fl.ate)) {
+    items.push({ type:'dia', label: fl.de === fl.ate ? `Dia ${fmtDt(fl.de)}` : `${fmtDt(fl.de)} até ${fmtDt(fl.ate)}` });
+  }
+  const termo = String(F.orders.search || '').trim();
+  if (termo) items.push({ type:'busca', label:`Busca "${termo}"` });
+  return items;
 }
 
 /* Tabela + paginação + linha de filtros ativos (re-renderável isoladamente). */
-function renderPedTableInner() {
+function renderPedTable() {
+  const host = document.getElementById('fapi-ped-table');
+  if (!host) return;
   const all = getVisiblePedidos();
-  const sorted = sortPedidos(all, F.orderSort);
+  const sorted = sortPedidos(all, F.orders.sort);
   const total = sorted.length;
 
-  const af = activeFiltersText();
-  const ativosTxt = af.recortes.length ? af.recortes.join(' · ') : 'nenhum recorte';
-  const activeLine = `<div class="fapi-active-filters">
-    <span><b>Filtros ativos:</b> ${esc(ativosTxt)} · ordenado por ${esc(af.ordenacao)}</span>
-    <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-clear-local" type="button">Limpar tudo</button>
-  </div>`;
+  const countEl = document.getElementById('fapi-orders-count');
+  if (countEl) countEl.textContent = `${num(total)} pedido(s) encontrados`;
+
+  const ativos = buildActiveFilters();
+  const activeLine = ativos.length ? `
+    <div class="vf-active-filters" aria-label="Filtros ativos">
+      <span class="vf-filter-group__label">Filtros ativos:</span>
+      ${ativos.map(a => `
+        <span class="vf-active-filter">${esc(a.label)}
+          <button type="button" class="vf-active-filter__remove" data-remove-filter="${a.type}"${a.key ? ` data-remove-key="${a.key}"` : ''} aria-label="Remover filtro ${esc(a.label)}">✕</button>
+        </span>`).join('')}
+      <button type="button" class="vf-clear-filters" id="fapi-clear-local">Limpar tudo</button>
+    </div>` : '';
 
   if (!total) {
-    const buscando = String(F.searchTerm || '').trim();
-    return `${activeLine}<div class="fapi-panel-body">${emptyState({ icon:'📦', title: buscando ? 'Nenhum pedido para a busca' : 'Nenhum pedido neste recorte', why: buscando ? `Nada encontrado para "${esc(buscando)}".` : 'O recorte/filtros atuais não retornaram pedidos.', next:'Use “Limpar tudo” ou escolha “Todos” nos chips acima.' })}</div>`;
+    const buscando = String(F.orders.search || '').trim();
+    host.innerHTML = `${activeLine}<div class="vf-card"><div class="vf-card__body">${emptyState({
+      icon:'box',
+      title: buscando ? 'Nenhum pedido para a busca' : 'Nenhum pedido neste recorte',
+      why: buscando ? `Nada encontrado para "${buscando}".` : 'O recorte/filtros atuais não retornaram pedidos.',
+      next:'Use "Limpar tudo" ou escolha "Todos" nos recortes.',
+      action: ativos.length ? '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-clear-local-empty">Limpar tudo</button>' : '',
+    })}</div></div>`;
+    return;
   }
 
-  const pageSize = F.pageSize;
+  const pageSize = F.orders.pageSize;
   const pages = Math.max(1, Math.ceil(total / pageSize));
-  if (F.page > pages) F.page = pages;
-  if (F.page < 1) F.page = 1;
-  const start = (F.page - 1) * pageSize;
+  if (F.orders.page > pages) F.orders.page = pages;
+  if (F.orders.page < 1) F.orders.page = 1;
+  const start = (F.orders.page - 1) * pageSize;
   const end = Math.min(start + pageSize, total);
   const rows = sorted.slice(start, end);
+
   const tr = rows.map(o => {
-    const [scls, slbl] = STATUS_PEDIDO[o.status] || ['muted', o.status];
-    const res = o.resultado == null ? '<span class="muted">—</span>' : `<span class="fapi-est">${money(o.resultado)}</span>`;
+    const [scls, slbl] = STATUS_PEDIDO[o.status] || ['is-neutral', o.status];
+    const res = o.resultado == null ? '—' : `<span class="vf-fapi-est">${money(o.resultado)}</span>`;
+    const selected = F.ui.drawerOrderId === o.id;
     return `
-      <tr class="fapi-prow${pedidoRowClass(o)}${F.selectedOrderId === o.id ? ' fapi-prow--sel' : ''}" data-pedido="${esc(o.id)}" tabindex="0">
-        <td class="mono">${esc(o.id)}</td>
-        <td class="nowrap">${fmtDt(o.data)}</td>
-        <td><span class="fapi-pill fapi-pill--${scls}">${esc(slbl)}</span></td>
-        <td class="clip">${esc(o.produto?.titulo || '—')}</td>
-        <td class="mono">${esc(o.produto?.mlb || '—')}</td>
-        <td class="mono muted">${esc(o.produto?.sku || '—')}</td>
+      <tr class="${(pedidoRowClass(o) + (selected ? ' row--selected' : '')).trim()}" data-pedido="${esc(o.id)}" tabindex="0" aria-label="Abrir extrato do pedido ${esc(o.id)}">
+        <td class="vf-mono">${esc(o.id)}</td>
+        <td>${fmtDt(o.data)}</td>
+        <td><span class="vf-tag ${scls}">${esc(slbl)}</span></td>
+        <td class="vf-truncate" title="${esc(o.produto?.titulo || '—')}">${esc(o.produto?.titulo || '—')}</td>
+        <td class="vf-mono">${esc(o.produto?.mlb || '—')}</td>
+        <td class="vf-mono${o.produto?.sku ? '' : ' is-absent'}">${esc(o.produto?.sku || '—')}</td>
         <td>${tagFull(o.full)}</td>
         <td>${tagAds(o.adsStatus)}</td>
-        <td class="right strong">${valOr(o.valor, money)}</td>
-        <td class="right${o.frete != null ? ' fapi-cell-ok' : ' muted'}">${valOr(o.frete, money)}</td>
-        <td class="right">${valOr(o.taxas, money)}</td>
-        <td class="right${o.custo != null ? ' fapi-cell-ok' : ' muted'}">${valOr(o.custo, money)}</td>
-        <td class="right">${res}</td>
-        <td>${confPill(o.confianca)}</td>
-        <td class="muted clip">${o.pendencias.length ? esc(o.pendencias[0]) : '—'}</td>
+        <td class="num">${valOr(o.valor, money)}</td>
+        <td class="num${o.frete == null ? ' is-absent' : ''}">${valOr(o.frete, money)}</td>
+        <td class="num${o.taxas == null ? ' is-absent' : ''}">${valOr(o.taxas, money)}</td>
+        <td class="num${o.custo == null ? ' is-absent' : ''}">${valOr(o.custo, money)}</td>
+        <td class="num${o.resultado == null ? ' is-absent' : ''}">${res}</td>
+        <td>${confStatus(o.confianca)}</td>
+        <td class="vf-truncate is-absent" title="${esc(o.pendencias.length ? o.pendencias.join(' · ') : '—')}">${o.pendencias.length ? esc(o.pendencias[0]) : '—'}</td>
       </tr>`;
   }).join('');
-  return `${activeLine}
-      <div class="fapi-tablewrap">
-        <table class="fapi-table fapi-table--click">
-          <thead><tr><th>Pedido</th><th>Data</th><th>Status</th><th>Produto</th><th>MLB</th><th>SKU</th><th>Full</th><th>Ads</th><th class="right">Valor</th><th class="right">Frete</th><th class="right">Taxas</th><th class="right">Custo</th><th class="right">Resultado</th><th>Confiança</th><th>Pendência</th></tr></thead>
-          <tbody>${tr}</tbody>
-        </table>
+
+  const SORT_COL = { data_desc:['data','descending'], data_asc:['data','ascending'], fat_desc:['valor','descending'], fat_asc:['valor','ascending'], comissao_desc:['taxas','descending'], frete_desc:['frete','descending'], custo_desc:['custo','descending'], resultado_desc:['resultado','descending'], confianca:['confianca','ascending'] };
+  const th = (key, label, numCls) => {
+    const s = SORT_COL[F.orders.sort];
+    const sorted2 = s && s[0] === key ? ` aria-sort="${s[1]}"` : '';
+    return `<th scope="col"${numCls ? ' class="num"' : ''}${sorted2}>${esc(label)}</th>`;
+  };
+
+  host.innerHTML = `${activeLine}
+    <div class="vf-table-wrap vf-fapi-orders__table-wrap">
+      <table class="vf-table vf-table--compact vf-fapi-orders__table" aria-label="Pedidos do período">
+        <thead><tr>
+          <th scope="col">Pedido</th>
+          ${th('data', 'Data')}
+          <th scope="col">Status</th>
+          <th scope="col">Produto</th>
+          <th scope="col">MLB</th>
+          <th scope="col">SKU</th>
+          <th scope="col">Full</th>
+          <th scope="col">Ads</th>
+          ${th('valor', 'Valor', true)}
+          ${th('frete', 'Frete', true)}
+          ${th('taxas', 'Taxas', true)}
+          ${th('custo', 'Custo', true)}
+          ${th('resultado', 'Resultado', true)}
+          ${th('confianca', 'Confiança')}
+          <th scope="col">Pendência</th>
+        </tr></thead>
+        <tbody>${tr}</tbody>
+      </table>
+    </div>
+    <div class="vf-pager">
+      <span class="vf-pager__info">Mostrando ${num(start + 1)}–${num(end)} de ${num(total)} pedidos${pages > 1 ? ` · página ${num(F.orders.page)}/${num(pages)}` : ''}</span>
+      <div class="vf-pager__nav">
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-page-prev"${F.orders.page <= 1 ? ' disabled' : ''}>← Anterior</button>
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-page-next"${F.orders.page >= pages ? ' disabled' : ''}>Próxima →</button>
       </div>
-      <div class="fapi-pager">
-        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-page-prev" type="button"${F.page <= 1 ? ' disabled' : ''}>← Anterior</button>
-        <span class="fapi-pager-info">Mostrando ${num(start + 1)}–${num(end)} de ${num(total)} pedidos${pages > 1 ? ` · página ${num(F.page)}/${num(pages)}` : ''}</span>
-        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-page-next" type="button"${F.page >= pages ? ' disabled' : ''}>Próxima →</button>
-      </div>
-      <div class="fapi-table-note">Linhas destacadas: <b>vermelho</b> cancelado/bloqueado · <b>amarelo</b> problema · <b>laranja</b> sem custo · <b>cinza</b> sem frete. Ausência é <b>—</b>, nunca R$ 0,00.</div>`;
+    </div>
+    <p class="vf-fapi-legend">Filete à esquerda da linha: <b>vermelho</b> cancelado/bloqueado · <b>âmbar</b> problema/sem custo · <b>cinza</b> sem frete. O estado também está escrito nas colunas Status, Confiança e Pendência. Ausência é <b>—</b>, nunca R$ 0,00.</p>`;
 }
 
-/* ── 4. DETALHE DO PEDIDO ─────────────────────────────────── */
+/* ── DETALHE DO PEDIDO (drawer lateral) ───────────────────── */
 /* Lista o que falta para concluir, com o impacto de cada lacuna. */
 function faltasDoPedido(o, prod) {
   const faltas = [];
@@ -1215,204 +1489,462 @@ function faltasDoPedido(o, prod) {
   if (prod && prod.diag?.presente !== true) faltas.push(['falta vínculo com diagnóstico', 'sem checagem de margem do produto']);
   return faltas;
 }
-function abrirPedido(id) {
-  const o = (F.viewPayload?.pedidos || F.rawPayload?.pedidos || []).map(x => x.prod !== undefined ? x : computeOrder(x, F.rawPayload)).find(x => x.id === id);
-  const host = document.getElementById('fapi-pedido-detalhe');
-  if (!o || !host) return;
-  F.selectedOrderId = id;
-  document.querySelectorAll('.fapi-prow').forEach(r => r.classList.toggle('fapi-prow--sel', r.dataset.pedido === id));
+function findOrderById(id) {
+  return (F.viewPayload?.pedidos || F.rawPayload?.pedidos || [])
+    .map(x => x.prod !== undefined ? x : computeOrder(x, F.rawPayload))
+    .find(x => x.id === id) || null;
+}
 
+function buildOrderDrawerBody(o) {
   const prod = o.prod;
   const faltas = faltasDoPedido(o, prod);
   const bloqueado = o.resultado == null;
   const cancelado = o.status === 'cancelado';
   const precoUnit = (o.valor != null && o.unidades) ? round2(o.valor / o.unidades) : null;
+  const [scls, slbl] = STATUS_PEDIDO[o.status] || ['is-neutral', o.status];
 
-  // Uma linha do extrato: Componente · Operação · Valor · Status · Fonte · Obs.
+  const kv = pairs => `<dl class="vf-fapi-kv">${pairs.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+
+  // Uma linha do extrato: Componente · Valor · Status · Fonte · Obs.
   const linha = (comp, op, valHtml, status, fonte, obs) => `
     <tr>
-      <td class="fapi-ext-comp">${esc(comp)}</td>
-      <td class="center fapi-ext-op">${esc(op || '')}</td>
-      <td class="right fapi-ext-val">${valHtml}</td>
-      <td>${status ? statusBadge(status) : '<span class="muted">—</span>'}</td>
-      <td class="fapi-ext-fonte muted">${esc(fonte || '—')}</td>
-      <td class="fapi-ext-obs muted clip">${esc(obs || '—')}</td>
+      <td>${esc(comp)}</td>
+      <td class="vf-fapi-op" aria-hidden="true">${esc(op || '')}</td>
+      <td class="num">${valHtml}</td>
+      <td>${status ? statusTag(status) : '—'}</td>
+      <td class="vf-fapi-fonte">${esc(fonte || '—')}</td>
+      <td class="vf-fapi-obs vf-truncate" title="${esc(obs || '—')}">${esc(obs || '—')}</td>
     </tr>`;
 
-  // Bloco do produto: quantidade, preço/valor, Full/Normal, Ads, base/diag.
-  const prodKV = [
-    ['MLB', o.produto?.mlb || '—'],
-    ['SKU', o.produto?.sku || '—'],
-    ['Quantidade', valOr(o.unidades, num)],
-    ['Preço unit.', valOr(precoUnit, money)],
-    ['Valor do pedido', valOr(o.valor, money)],
-  ].map(([k, v]) => `<div class="fapi-det-row"><span class="fapi-det-k">${esc(k)}</span><span class="fapi-det-v">${esc(v)}</span></div>`).join('');
-
-  host.innerHTML = `
-    <section class="fapi-panel fapi-detail">
-      <div class="fapi-panel-head"><h2 class="fapi-panel-title">Extrato financeiro do pedido</h2>
-        <div class="fapi-panel-actions">${confPill(o.confianca)}
-          <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" onclick="fecharPedido()">Fechar ✕</button></div></div>
-      <div class="fapi-panel-body">
-        <p class="fapi-det-lede">Valores derivados do pedido e dos cruzamentos disponíveis. Ausência nunca vira zero.</p>
-
-        <div class="fapi-det-head">${thumb(o.produto)}
-          <div><div class="fapi-det-title">${esc(o.produto?.titulo || '—')}</div>
-            <div class="fapi-det-meta">Pedido ${esc(o.id)} · ${fmtDt(o.data)} · ${esc((STATUS_PEDIDO[o.status] || ['', o.status])[1])}</div>
-            <div class="fapi-det-tags">${tagFull(o.full)} ${tagAds(o.adsStatus)} ${tagDiag(prod)}</div></div></div>
-        <div class="fapi-det-grid">${prodKV}</div>
-
-        <div class="fapi-ext-wrap fapi-tablewrap">
-          <table class="fapi-table fapi-ext-table">
-            <thead><tr><th>Componente</th><th class="center">Op.</th><th class="right">Valor</th><th>Status</th><th>Fonte</th><th>Observação</th></tr></thead>
-            <tbody>
-              ${linha('Receita do pedido', '', valOr(o.valor, money), 'real', o.mlb ? 'planilha vendas / futuro Orders API' : 'planilha vendas (sem MLB)', o.mlb ? '' : 'linha financeira sem produto')}
-              ${linha('Frete seller', '−', valOr(o.frete, money), o.frete == null ? 'ausente' : o.freteStatus, o.freteStatus === 'estimado' ? 'estimado / futuro Shipping API' : 'planilha vendas / futuro Shipping API', o.frete == null ? 'sem frete real — parcial' : '')}
-              ${linha('Taxas marketplace', '−', valOr(o.taxas, money), o.taxas == null ? 'ausente' : o.taxasStatus, 'planilha vendas / futuro pagamentos', o.taxas == null ? 'taxa não identificada — parcial' : '')}
-              ${linha('Custo / base', '−', valOr(o.custo, money), o.custoStatus, 'base interna', o.custoStatus === 'ausente' ? (o.mlb ? 'sem custo na base — bloqueia' : 'sem produto vinculado') : '')}
-              ${linha('Imposto / regra interna', '−', valOr(o.imposto, money), o.imposto == null ? 'ausente' : 'real', 'base interna · Imposto %', o.imposto == null ? 'depende do custo/base' : '')}
-              ${cancelado ? linha('Reembolso / cancelamento', '−', valOr(o.valor, money), 'parcial', 'planilha vendas', 'pedido cancelado — impacto, não conclusão') : ''}
-              <tr class="fapi-ext-total">
-                <td class="fapi-ext-comp strong">Resultado estimado</td>
-                <td class="center fapi-ext-op">=</td>
-                <td class="right fapi-ext-val">${o.resultado == null ? '<span class="muted">—</span>' : `<span class="fapi-est">${money(o.resultado)}</span>`}</td>
-                <td>${statusBadge(o.resultadoStatus)}</td>
-                <td class="fapi-ext-fonte muted">derivado</td>
-                <td class="fapi-ext-obs muted">${esc(bloqueado ? 'bloqueado — não vira R$ 0,00' : (o.resultadoStatus === 'real' ? 'todos os componentes presentes' : 'parcial — não confiável'))}</td>
-              </tr>
-            </tbody>
-          </table>
+  return `
+    <section class="vf-fapi-drawer-section" aria-label="Identificação do pedido">
+      <div class="vf-fapi-drawer-ident">
+        ${thumb(o.produto)}
+        <div>
+          <p class="vf-fapi-drawer-ident__title">${esc(o.produto?.titulo || '—')}</p>
+          <p class="vf-fapi-drawer-ident__meta">Pedido <span class="vf-mono">${esc(o.id)}</span> · ${fmtDt(o.data)}</p>
+          <div class="vf-fapi-drawer-ident__tags">
+            <span class="vf-tag ${scls}">${esc(slbl)}</span>
+            ${tagFull(o.full)} ${tagAds(o.adsStatus)} ${tagDiag(prod)}
+          </div>
         </div>
-
-        ${(bloqueado || faltas.length) ? `<div class="fapi-det-block${bloqueado ? '' : ' fapi-det-block--warn'}">
-          <b>${bloqueado ? 'Sem informações suficientes para concluir' : 'Resultado parcial — o que ainda falta'}</b>
-          <ul>${faltas.map(([f, imp]) => `<li><b>${esc(f)}</b> — ${esc(imp)}</li>`).join('')}</ul>
-        </div>` : ''}
       </div>
-    </section>`;
-  host.scrollIntoView({ behavior:'smooth', block:'nearest' });
-}
-function fecharPedido() { F.selectedOrderId = null; const h = document.getElementById('fapi-pedido-detalhe'); if (h) h.innerHTML = ''; document.querySelectorAll('.fapi-prow--sel').forEach(r => r.classList.remove('fapi-prow--sel')); }
+      <p class="vf-fapi-legend">Valores derivados do pedido e dos cruzamentos disponíveis. Ausência nunca vira zero.</p>
+    </section>
 
-/* ── 5. PRODUTOS POR IMPACTO ───────────────────────────────── */
-/* Ferramenta de LEITURA/ANÁLISE (sem recomendação automática): agrega os
-   pedidos do período por produto/MLB, com grupos, ordenação e paginação. */
-const PROD_SORTS = [
+    <section class="vf-fapi-drawer-section" aria-label="Resultado financeiro">
+      <h3 class="vf-fapi-drawer-section__title">Resultado financeiro</h3>
+      <div class="vf-table-wrap">
+        <table class="vf-table vf-table--compact">
+          <thead><tr><th scope="col">Componente</th><th scope="col"><span class="vf-visually-hidden">Operação</span></th><th scope="col" class="num">Valor</th><th scope="col">Status</th><th scope="col">Fonte</th><th scope="col">Observação</th></tr></thead>
+          <tbody>
+            ${linha('Receita do pedido', '', valOr(o.valor, money), 'real', o.mlb ? 'planilha vendas / futuro Orders API' : 'planilha vendas (sem MLB)', o.mlb ? '' : 'linha financeira sem produto')}
+            ${linha('Frete seller', '−', valOr(o.frete, money), o.frete == null ? 'ausente' : o.freteStatus, o.freteStatus === 'estimado' ? 'estimado / futuro Shipping API' : 'planilha vendas / futuro Shipping API', o.frete == null ? 'sem frete real — parcial' : '')}
+            ${linha('Taxas marketplace', '−', valOr(o.taxas, money), o.taxas == null ? 'ausente' : o.taxasStatus, 'planilha vendas / futuro pagamentos', o.taxas == null ? 'taxa não identificada — parcial' : '')}
+            ${linha('Custo / base', '−', valOr(o.custo, money), o.custoStatus, 'base interna', o.custoStatus === 'ausente' ? (o.mlb ? 'sem custo na base — bloqueia' : 'sem produto vinculado') : '')}
+            ${linha('Imposto / regra interna', '−', valOr(o.imposto, money), o.imposto == null ? 'ausente' : 'real', 'base interna · Imposto %', o.imposto == null ? 'depende do custo/base' : '')}
+            ${cancelado ? linha('Reembolso / cancelamento', '−', valOr(o.valor, money), 'parcial', 'planilha vendas', 'pedido cancelado — impacto, não conclusão') : ''}
+            <tr class="vf-fapi-total-row">
+              <td>Resultado estimado</td>
+              <td class="vf-fapi-op" aria-hidden="true">=</td>
+              <td class="num">${o.resultado == null ? '—' : `<span class="vf-fapi-est">${money(o.resultado)}</span>`}</td>
+              <td>${statusTag(o.resultadoStatus)}</td>
+              <td class="vf-fapi-fonte">derivado</td>
+              <td class="vf-fapi-obs">${esc(bloqueado ? 'bloqueado — não vira R$ 0,00' : (o.resultadoStatus === 'real' ? 'todos os componentes presentes' : 'parcial — não confiável'))}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="vf-fapi-drawer-section" aria-label="Produto e base">
+      <h3 class="vf-fapi-drawer-section__title">Produto e base</h3>
+      ${kv([
+        ['MLB', `<span class="vf-mono">${esc(o.produto?.mlb || '—')}</span>`],
+        ['SKU', `<span class="vf-mono">${esc(o.produto?.sku || '—')}</span>`],
+        ['Quantidade', esc(valOr(o.unidades, num))],
+        ['Preço unit.', esc(valOr(precoUnit, money))],
+        ['Valor do pedido', esc(valOr(o.valor, money))],
+        ['Custo unit. (base)', esc(valOr(prod?.base?.temCusto ? prod.base.custo : null, money))],
+        ['Imposto % (base)', prod?.base?.imposto == null ? '—' : esc(pct(prod.base.imposto))],
+      ])}
+    </section>
+
+    <section class="vf-fapi-drawer-section" aria-label="Logística e Ads">
+      <h3 class="vf-fapi-drawer-section__title">Logística e Ads</h3>
+      <div class="vf-cluster">${tagFull(o.full)} ${tagAds(o.adsStatus)} ${tagDiag(prod)}</div>
+    </section>
+
+    ${(bloqueado || faltas.length) ? `
+    <section class="vf-fapi-drawer-section" aria-label="Pendências e confiança">
+      <h3 class="vf-fapi-drawer-section__title">Pendências e confiança</h3>
+      <div class="vf-banner ${bloqueado ? 'is-danger' : 'is-warning'} vf-banner--compact">
+        <div class="vf-banner__content">
+          <p class="vf-banner__title">${bloqueado ? 'Sem informações suficientes para concluir' : 'Resultado parcial — o que ainda falta'}</p>
+          <ul>${faltas.map(([f, imp]) => `<li><strong>${esc(f)}</strong> — ${esc(imp)}</li>`).join('')}</ul>
+        </div>
+      </div>
+    </section>` : ''}`;
+}
+
+function openOrderDrawer(id, triggerRow) {
+  const o = findOrderById(id);
+  const drawer = document.getElementById('fapi-order-drawer');
+  const backdrop = document.getElementById('fapi-drawer-backdrop');
+  const body = document.getElementById('fapi-drawer-body');
+  if (!o || !drawer || !body) return;
+
+  F.ui.drawerOrderId = id;
+  F.ui.drawerReturnFocusId = triggerRow?.dataset?.pedido || id;
+  document.querySelectorAll('#fapi-ped-table tr[data-pedido]').forEach(r =>
+    r.classList.toggle('row--selected', r.dataset.pedido === id));
+
+  const conf = document.getElementById('fapi-drawer-conf');
+  if (conf) conf.innerHTML = confStatus(o.confianca);
+  body.innerHTML = buildOrderDrawerBody(o);
+
+  drawer.classList.add('is-open');
+  if (backdrop) backdrop.classList.add('is-open');
+  document.body.classList.add('vf-no-scroll');
+  // Foco inicial após o estilo aplicar (o drawer sai de visibility:hidden)
+  requestAnimationFrame(() => requestAnimationFrame(() =>
+    document.getElementById('fapi-drawer-close')?.focus()));
+}
+
+function closeOrderDrawer({ restoreFocus = true } = {}) {
+  const drawer = document.getElementById('fapi-order-drawer');
+  const backdrop = document.getElementById('fapi-drawer-backdrop');
+  const wasOpen = drawer?.classList.contains('is-open');
+  drawer?.classList.remove('is-open');
+  backdrop?.classList.remove('is-open');
+  document.body.classList.remove('vf-no-scroll');
+  const returnId = F.ui.drawerReturnFocusId;
+  F.ui.drawerOrderId = null;
+  F.ui.drawerReturnFocusId = null;
+  document.querySelectorAll('#fapi-ped-table tr.row--selected').forEach(r => r.classList.remove('row--selected'));
+  if (wasOpen && restoreFocus && returnId) {
+    const row = document.querySelector(`#fapi-ped-table tr[data-pedido="${CSS.escape(returnId)}"]`);
+    (row || document.getElementById('fapi-search'))?.focus();
+  }
+}
+
+/* Foco preso dentro do drawer enquanto aberto (Tab cíclico). */
+function onDrawerKeydown(e) {
+  if (e.key !== 'Tab') return;
+  const drawer = document.getElementById('fapi-order-drawer');
+  if (!drawer?.classList.contains('is-open')) return;
+  const focusables = drawer.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
+
+/* ================================================================
+   MÓDULO CURVA ABC  (aba Produtos / Curva ABC)
+   ----------------------------------------------------------------
+   FRONTEIRA DE EXTRAÇÃO FUTURA — regras deste bloco:
+     - Estado exclusivo em F.abc (nenhum outro módulo lê/escreve);
+     - Recebe os pedidos DERIVADOS como argumento (não conhece
+       F.viewPayload, filtros de Pedidos nem paginação de Pedidos);
+     - Todo DOM manipulado aqui vive sob o root
+       [data-module="curva-abc"] (#fapi-abc-root) — seletores sempre
+       escopados via root.querySelector;
+     - Nenhuma função daqui toca o DOM de Pedidos, e nenhuma função
+       de Pedidos toca o DOM daqui;
+     - CSS específico usa o prefixo .vf-fapi-abc.
+   Para extrair no futuro: mover este bloco + F.abc + o CSS
+   .vf-fapi-abc* e alimentar renderCurvaAbc(orders) com o payload
+   da nova página.
+   ================================================================ */
+
+function abcRoot() { return document.getElementById('fapi-abc-root'); }
+
+function resetCurvaAbcState() {
+  F.abc.group = 'todos';
+  F.abc.sort = 'faturamento';
+  F.abc.search = '';
+  F.abc.page = 1;
+  F.abc.selectedProduct = null;
+}
+
+/* Agregação por produto a partir dos pedidos (fonte da verdade). */
+function aggByProduct(pedidos) {
+  const map = new Map();
+  for (const o of pedidos) {
+    const key = o.mlb || '__SEM_PRODUTO__';
+    if (!map.has(key)) map.set(key, {
+      mlb: o.mlb, prod: o.prod, titulo: o.produto.titulo, sku: o.produto.sku,
+      unidades: 0, pedidos: 0, faturamento: 0, receitaBloqueada: 0, freteAcum: 0, taxasAcum: 0,
+      cancelProblema: 0, full: o.full, fullPedidos: 0, normalPedidos: 0, semProduto: !o.mlb,
+    });
+    const a = map.get(key);
+    const valido = o.status !== 'cancelado';
+    a.pedidos += 1;
+    if (valido) { a.unidades += (o.unidades || 0); a.faturamento += (o.valor || 0); a.taxasAcum += (o.taxas || 0); }
+    if (o.resultadoStatus === 'bloqueado' && valido) a.receitaBloqueada += (o.valor || 0);
+    a.freteAcum += (o.frete || 0);
+    if (o.status === 'cancelado' || o.status === 'com_problema') a.cancelProblema += 1;
+    if (o.full === true) { a.full = true; a.fullPedidos += 1; } else { a.normalPedidos += 1; }
+  }
+  for (const a of map.values()) { a.faturamento = round2(a.faturamento); a.receitaBloqueada = round2(a.receitaBloqueada); a.freteAcum = round2(a.freteAcum); a.taxasAcum = round2(a.taxasAcum); }
+  return [...map.values()];
+}
+
+/* Logística do produto: full / normal / misto (ambos) / null (—). */
+function productLogisticaTipo(a) {
+  const f = a.fullPedidos > 0, n = a.normalPedidos > 0;
+  return f && n ? 'misto' : f ? 'full' : n ? 'normal' : null;
+}
+
+/* Enriquece a agregação com derivados de leitura e aplica grupo + ordenação
+   + busca local. Tudo derivado dos pedidos recebidos — sem inventar custo/
+   frete. Classificação ABC idêntica à V1:
+   A: acumulado até 80% · B: 80%–95% · C: o restante (item que cruza a
+   fronteira fica na faixa anterior). */
+function buildCurvaAbcRows(orders, { group = 'todos', sortBy = 'faturamento', search = '' } = {}) {
+  const all = aggByProduct(orders).map(a => {
+    const temCusto = !a.semProduto && a.prod?.base?.temCusto === true;
+    return {
+      ...a,
+      temCusto,
+      custoUnit: temCusto ? a.prod.base.custo : null,
+      comissao: a.taxasAcum,
+      ticketMedio: a.pedidos > 0 ? round2(a.faturamento / a.pedidos) : null,
+      logisticaTipo: productLogisticaTipo(a),
+    };
+  });
+  const totalFat = all.reduce((s, a) => s + a.faturamento, 0) || 0;
+  all.forEach(a => { a.pctFat = totalFat > 0 ? round2(a.faturamento / totalFat * 100) : null; });
+
+  // Curva ABC: ordena por faturamento desc, acumula % e classifica.
+  const byFat = all.slice().sort((x, y) => y.faturamento - x.faturamento);
+  let acc = 0;
+  for (const a of byFat) {
+    const prev = acc;
+    acc = round2(acc + (a.pctFat || 0));
+    a.acumPctFat = acc;
+    a.curva = (a.faturamento <= 0) ? null : (prev < 80 ? 'A' : prev < 95 ? 'B' : 'C');
+  }
+
+  let rows = all;
+  if (group === 'sem_custo')            rows = rows.filter(a => !a.semProduto && !a.temCusto);
+  else if (group === 'receita_bloqueada') rows = rows.filter(a => (a.receitaBloqueada || 0) > 0);
+  else if (group === 'full')            rows = rows.filter(a => a.logisticaTipo === 'full' || a.logisticaTipo === 'misto');
+  else if (group === 'normal')          rows = rows.filter(a => a.logisticaTipo === 'normal' || a.logisticaTipo === 'misto');
+  else if (group === 'misto')           rows = rows.filter(a => a.logisticaTipo === 'misto');
+  else if (group === 'curva_a')         rows = rows.filter(a => a.curva === 'A');
+  else if (group === 'curva_b')         rows = rows.filter(a => a.curva === 'B');
+  else if (group === 'curva_c')         rows = rows.filter(a => a.curva === 'C');
+  // 'todos' não filtra
+
+  // Busca local (aplicada APÓS a classificação — não altera curva/acumulado)
+  const term = String(search || '').trim().toLowerCase();
+  if (term) {
+    rows = rows.filter(a =>
+      String(a.mlb || '').toLowerCase().includes(term) ||
+      String(a.sku || '').toLowerCase().includes(term) ||
+      String(a.titulo || '').toLowerCase().includes(term));
+  }
+
+  const sortKey = group === 'receita_bloqueada' ? 'receitaBloqueada' : sortBy;
+  rows = rows.slice().sort((x, y) => (y[sortKey] || 0) - (x[sortKey] || 0));
+  return { rows, allRows: all, totalFat };
+}
+
+const ABC_SORTS = [
   ['faturamento','Faturamento'], ['unidades','Unidades'], ['pedidos','Pedidos'],
   ['ticketMedio','Ticket médio'], ['comissao','Comissão'], ['receitaBloqueada','Receita bloqueada'],
 ];
-const PROD_GROUPS = [
+const ABC_GROUPS = [
   ['todos','Todos'], ['curva_a','Curva A'], ['curva_b','Curva B'], ['curva_c','Curva C'],
   ['sem_custo','Sem custo'], ['full','Full'], ['normal','Normal'], ['misto','Misto'],
 ];
-function prodBaseTag(a) {
-  if (a.semProduto) return '<span class="fapi-tag fapi-tag--ausente">—</span>';
-  return a.temCusto ? '<span class="fapi-tag fapi-tag--ok">com custo</span>' : '<span class="fapi-tag fapi-tag--crit">sem custo</span>';
+function abcBaseTag(a) {
+  if (a.semProduto) return '<span class="vf-tag is-neutral">—</span>';
+  return a.temCusto ? '<span class="vf-tag is-success">com custo</span>' : '<span class="vf-tag is-danger">sem custo</span>';
 }
-function prodLogTag(t) {
-  if (t === 'full')  return '<span class="fapi-tag fapi-tag--full">Full</span>';
-  if (t === 'normal')return '<span class="fapi-tag fapi-tag--muted">Normal</span>';
-  if (t === 'misto') return '<span class="fapi-tag fapi-tag--warn">Misto</span>';
-  return '<span class="fapi-tag fapi-tag--ausente">—</span>';
+function abcLogTag(t) {
+  if (t === 'full')  return '<span class="vf-tag is-primary">Full</span>';
+  if (t === 'normal')return '<span class="vf-tag is-neutral">Normal</span>';
+  if (t === 'misto') return '<span class="vf-tag is-info">Misto</span>';
+  return '<span class="vf-tag is-neutral">—</span>';
 }
-const CURVA_TAG = { A: '<span class="fapi-tag fapi-tag--ok">A</span>', B: '<span class="fapi-tag fapi-tag--warn">B</span>', C: '<span class="fapi-tag fapi-tag--muted">C</span>' };
-function renderTopProducts() {
-  // Curva ABC sobre o PERÍODO inteiro (independe dos filtros da tabela de pedidos).
-  const view = { pedidos: fechamentoOrders(F.rawPayload) };
-  const { rows, allRows, totalFat } = buildProductImpactRows(view, { group: F.productGroup, sortBy: F.productSort });
+function abcDiagTag(a) {
+  if (a.semProduto || !a.prod) return '<span class="vf-tag is-neutral">—</span>';
+  return a.prod.diag?.presente === true
+    ? '<span class="vf-tag is-success">no diagnóstico</span>'
+    : '<span class="vf-tag is-warning">fora do diag.</span>';
+}
+const ABC_CURVA_TAG = {
+  A: '<span class="vf-tag is-primary">A</span>',
+  B: '<span class="vf-tag is-neutral">B</span>',
+  C: '<span class="vf-tag is-neutral">C</span>',
+};
+
+function renderCurvaAbcToolbar(counts) {
+  const groupOpts = ABC_GROUPS.map(([k, l]) => `<option value="${k}"${F.abc.group === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  const sortOpts = ABC_SORTS.map(([k, l]) => `<option value="${k}"${F.abc.sort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  return `
+    <div class="vf-fapi-abc-toolbar">
+      <div class="vf-fapi-abc-toolbar__filters">
+        <input type="search" class="vf-input vf-input--sm vf-search" data-abc-search placeholder="Buscar MLB, SKU ou título…" value="${esc(F.abc.search || '')}" autocomplete="off" aria-label="Buscar produtos na Curva ABC">
+        <label class="vf-filter-group">
+          <span class="vf-filter-group__label">Grupo</span>
+          <select class="vf-select vf-select--sm" data-abc-group>${groupOpts}</select>
+        </label>
+        <label class="vf-filter-group">
+          <span class="vf-filter-group__label">Ordenar por</span>
+          <select class="vf-select vf-select--sm" data-abc-sort>${sortOpts}</select>
+        </label>
+        <span class="vf-fapi-orders-toolbar__count">${num(counts.visiveis)} produto(s)</span>
+      </div>
+      <div class="vf-fapi-abc-toolbar__actions">
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-abc-action="only-nocost">Ver apenas sem custo</button>
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-abc-action="copy-nocost">Copiar MLBs sem custo</button>
+      </div>
+    </div>`;
+}
+
+function renderCurvaAbcTable(rows, totalFat) {
+  const total = rows.length;
+  const pageSize = F.abc.pageSize;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (F.abc.page > pages) F.abc.page = pages;
+  if (F.abc.page < 1) F.abc.page = 1;
+  const start = (F.abc.page - 1) * pageSize;
+  const end = Math.min(start + pageSize, total);
+  const pageRows = rows.slice(start, end);
+
+  const semFaturamento = totalFat <= 0;
+  if (semFaturamento || total === 0) {
+    return `<div class="vf-card"><div class="vf-card__body">${emptyState({
+      icon:'dot',
+      title: semFaturamento ? 'Sem faturamento no período' : 'Sem produtos neste grupo',
+      why: semFaturamento ? 'Não há receita para montar a Curva ABC.' : 'Nenhum produto no recorte atual.',
+      next: semFaturamento ? 'Sincronize pedidos ou amplie o período.' : 'Troque o grupo ou limpe a busca.',
+    })}</div></div>`;
+  }
+
+  const sortDescCol = F.abc.group === 'receita_bloqueada' ? 'receitaBloqueada' : F.abc.sort;
+  const th = (key, label, numCls) => `<th scope="col"${numCls ? ' class="num"' : ''}${key === sortDescCol ? ' aria-sort="descending"' : ''}>${esc(label)}</th>`;
+
+  const body = pageRows.map((a, i) => `
+    <tr class="${!a.semProduto && !a.temCusto ? 'is-nocost' : ''}">
+      <td class="vf-fapi-abc-rank">${num(start + i + 1)}</td>
+      <td>${a.curva ? ABC_CURVA_TAG[a.curva] : '<span class="vf-tag is-neutral">—</span>'}</td>
+      <td class="vf-truncate" title="${esc(a.titulo || '—')}">${esc(a.titulo || '—')}</td>
+      <td class="vf-mono">${esc(a.mlb || '—')}</td>
+      <td class="vf-mono${a.sku ? '' : ' is-absent'}">${esc(a.sku || '—')}</td>
+      <td class="num">${money(a.faturamento)}</td>
+      <td class="num">${valOr(a.pctFat, pct)}</td>
+      <td class="num is-absent">${valOr(a.acumPctFat, pct)}</td>
+      <td class="num">${valOr(a.unidades)}</td>
+      <td class="num">${valOr(a.pedidos)}</td>
+      <td class="num${a.ticketMedio == null ? ' is-absent' : ''}">${valOr(a.ticketMedio, money)}</td>
+      <td class="num">${money(a.comissao)}</td>
+      <td class="num${a.custoUnit == null ? ' is-absent' : ''}">${valOr(a.custoUnit, money)}</td>
+      <td>${abcBaseTag(a)}</td>
+      <td>${abcDiagTag(a)}</td>
+      <td>${abcLogTag(a.logisticaTipo)}</td>
+      <td class="num">${a.receitaBloqueada > 0 ? `<span class="vf-fapi-est">${money(a.receitaBloqueada)}</span>` : '—'}</td>
+    </tr>`).join('');
+
+  return `
+    <div class="vf-table-wrap vf-fapi-abc__table-wrap">
+      <table class="vf-table vf-table--compact vf-fapi-abc-table" aria-label="Curva ABC de produtos">
+        <thead><tr>
+          <th scope="col"><span class="vf-visually-hidden">Posição</span>#</th>
+          <th scope="col">Curva</th>
+          <th scope="col">Produto</th>
+          <th scope="col">MLB</th>
+          <th scope="col">SKU</th>
+          ${th('faturamento', 'Faturamento', true)}
+          <th scope="col" class="num">% fat.</th>
+          <th scope="col" class="num">Acum. %</th>
+          ${th('unidades', 'Un.', true)}
+          ${th('pedidos', 'Ped.', true)}
+          ${th('ticketMedio', 'Ticket', true)}
+          ${th('comissao', 'Comissão', true)}
+          <th scope="col" class="num">Custo un.</th>
+          <th scope="col">Base</th>
+          <th scope="col">Diagnóstico</th>
+          <th scope="col">Logística</th>
+          ${th('receitaBloqueada', 'Receita bloq.', true)}
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+    <div class="vf-pager">
+      <span class="vf-pager__info">Mostrando ${num(start + 1)}–${num(end)} de ${num(total)} produtos${pages > 1 ? ` · página ${num(F.abc.page)}/${num(pages)}` : ''}</span>
+      <div class="vf-pager__nav">
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-abc-page="-1"${F.abc.page <= 1 ? ' disabled' : ''}>← Anterior</button>
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-abc-page="1"${F.abc.page >= pages ? ' disabled' : ''}>Próxima →</button>
+      </div>
+    </div>
+    <p class="vf-fapi-legend">A ≤ 80% · B ≤ 95% · C = resto do faturamento acumulado do período. Curva calculada sobre o período inteiro — a busca e os grupos não alteram a classificação. Filete âmbar = produto sem custo na base.</p>`;
+}
+
+/* Render do módulo. Recebe os pedidos derivados (período inteiro). */
+function renderCurvaAbc(orders) {
+  const root = abcRoot();
+  if (!root) return;
+  const { rows, allRows, totalFat } = buildCurvaAbcRows(orders, { group: F.abc.group, sortBy: F.abc.sort, search: F.abc.search });
 
   const vendidos = allRows.filter(a => !a.semProduto);
   const curvaA = vendidos.filter(a => a.curva === 'A');
   const semCusto = vendidos.filter(a => !a.temCusto);
   const fatSemCusto = round2(semCusto.reduce((s, a) => s + a.faturamento, 0));
-  const top10 = vendidos.slice().sort((x, y) => y.faturamento - x.faturamento).slice(0, 10);
-  const top10Pct = totalFat > 0 ? round2(top10.reduce((s, a) => s + a.faturamento, 0) / totalFat * 100) : null;
-  const card = (lbl, val, sub, cls) => `<div class="fapi-card"><div class="fapi-card-lbl">${esc(lbl)}</div><div class="fapi-card-val${cls ? ' ' + cls : ''}">${val}</div><div class="fapi-card-sub">${sub || '&nbsp;'}</div></div>`;
-  const cards = `<div class="fapi-cards">
-    ${card('Produtos vendidos', valOr(vendidos.length), 'com faturamento no período')}
-    ${card('Curva A', valOr(curvaA.length), 'concentram até 80%', 'brand')}
-    ${card('Top 10 produtos', valOr(top10Pct, pct), 'do faturamento do período')}
-    ${card('Produtos sem custo', valOr(semCusto.length), 'sem custo na base', semCusto.length ? 'crit' : '')}
-    ${card('Faturamento sem custo', money(fatSemCusto), 'receita sem custo p/ calcular', fatSemCusto > 0 ? 'warn' : '')}
-  </div>`;
+  const unidadesTotal = allRows.reduce((s, a) => s + (a.unidades || 0), 0);
+  const receitaBloqTotal = round2(allRows.reduce((s, a) => s + (a.receitaBloqueada || 0), 0));
 
-  const groupChips = PROD_GROUPS.map(([k, l]) => `<button class="fapi-sortbtn${F.productGroup === k ? ' active' : ''}" data-prodgroup="${k}">${esc(l)}</button>`).join('');
-  const sortBtns = PROD_SORTS.map(([k, l]) => `<button class="fapi-sortbtn${F.productSort === k ? ' active' : ''}" data-prodsort="${k}">${esc(l)}</button>`).join('');
+  const sum = (label, val, cls = '', foot = '') => `
+    <div class="vf-fapi-abc-summary__item">
+      <span class="vf-fapi-abc-summary__label">${esc(label)}</span>
+      <span class="vf-fapi-abc-summary__value${cls ? ' ' + cls : ''}">${val}</span>
+      ${foot ? `<span class="vf-fapi-abc-summary__foot">${esc(foot)}</span>` : ''}
+    </div>`;
 
-  const total = rows.length;
-  const pageSize = F.productPageSize;
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  if (F.productPage > pages) F.productPage = pages;
-  if (F.productPage < 1) F.productPage = 1;
-  const start = (F.productPage - 1) * pageSize;
-  const end = Math.min(start + pageSize, total);
-  const pageRows = rows.slice(start, end);
-
-  const semFaturamento = totalFat <= 0;
-  const tableOrEmpty = (semFaturamento || total === 0)
-    ? emptyState({ icon:'•', title: semFaturamento ? 'Sem faturamento no período' : 'Sem produtos neste grupo', why: semFaturamento ? 'Não há receita para montar a curva ABC.' : 'Nenhum produto no recorte atual.', next: semFaturamento ? 'Sincronize pedidos ou amplie o período.' : 'Troque o grupo.' })
-    : `<div class="fapi-tablewrap">
-      <table class="fapi-table">
-        <thead><tr><th>#</th><th>Curva</th><th>Produto</th><th>MLB</th><th>SKU</th><th class="right">Faturamento</th><th class="right">%</th><th class="right">Acum.%</th><th class="right">Un.</th><th class="right">Ped.</th><th class="right">Ticket</th><th class="right">Comissão</th><th class="right">Custo un.</th><th>Base</th><th>Logística</th><th class="right">Receita bloq.</th></tr></thead>
-        <tbody>${pageRows.map((a, i) => `
-          <tr class="${!a.semProduto && !a.temCusto ? 'fapi-prow--missing-base' : ''}">
-            <td class="fapi-rank">${num(start + i + 1)}</td>
-            <td>${a.curva ? CURVA_TAG[a.curva] : '<span class="fapi-tag fapi-tag--ausente">—</span>'}</td>
-            <td class="strong clip">${esc(a.titulo || '—')}</td>
-            <td class="mono">${esc(a.mlb || '—')}</td>
-            <td class="mono muted">${esc(a.sku || '—')}</td>
-            <td class="right strong">${money(a.faturamento)}</td>
-            <td class="right">${valOr(a.pctFat, pct)}</td>
-            <td class="right muted">${valOr(a.acumPctFat, pct)}</td>
-            <td class="right">${valOr(a.unidades)}</td>
-            <td class="right">${valOr(a.pedidos)}</td>
-            <td class="right">${valOr(a.ticketMedio, money)}</td>
-            <td class="right">${money(a.comissao)}</td>
-            <td class="right">${valOr(a.custoUnit, money)}</td>
-            <td>${prodBaseTag(a)}</td>
-            <td>${prodLogTag(a.logisticaTipo)}</td>
-            <td class="right">${a.receitaBloqueada > 0 ? `<span class="fapi-est">${money(a.receitaBloqueada)}</span>` : '—'}</td>
-          </tr>`).join('')}</tbody>
-      </table></div>
-      <div class="fapi-pager">
-        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-prod-prev" type="button"${F.productPage <= 1 ? ' disabled' : ''}>← Anterior</button>
-        <span class="fapi-pager-info">Mostrando ${num(start + 1)}–${num(end)} de ${num(total)} produtos${pages > 1 ? ` · página ${num(F.productPage)}/${num(pages)}` : ''}</span>
-        <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-prod-next" type="button"${F.productPage >= pages ? ' disabled' : ''}>Próxima →</button>
-      </div>`;
-
-  return `
-  <section class="fapi-panel">
-    <div class="fapi-panel-head"><h2 class="fapi-panel-title">Curva ABC de Produtos</h2>
-      <span class="fapi-panel-meta">A ≤80% · B ≤95% · C resto do faturamento do período · leitura/análise</span></div>
-    <div class="fapi-panel-body fapi-panel-body--flush">
-      ${cards}
-      <div class="fapi-prodbar">
-        <div class="fapi-sortbar fapi-prodgroups" id="fapi-prodgroups"><span class="fapi-sortbar-lbl">Grupo</span>${groupChips}</div>
-        <div class="fapi-prodactions">
-          <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-prod-onlysemcusto" type="button">Ver apenas sem custo</button>
-          <button class="fapi-btn fapi-btn-ghost fapi-btn-sm" id="fapi-prod-copysemcusto" type="button">Copiar MLBs sem custo</button>
-        </div>
+  root.innerHTML = `
+    <div class="vf-section__header">
+      <div>
+        <h2 class="vf-section__title">Curva ABC de produtos</h2>
+        <p class="vf-section__description">Agregação dos pedidos do período por produto — leitura/análise, sem recomendação automática.</p>
       </div>
-      <div class="fapi-sortbar" id="fapi-prodsortbar"><span class="fapi-sortbar-lbl">Ordenar por</span>${sortBtns}</div>
-      ${tableOrEmpty}
     </div>
-  </section>`;
+    <div class="vf-fapi-abc-summary" aria-label="Resumo da Curva ABC">
+      ${sum('Produtos vendidos', num(vendidos.length), '', 'com faturamento no período')}
+      ${sum('Faturamento', money(totalFat))}
+      ${sum('Unidades', num(unidadesTotal))}
+      ${sum('Curva A', num(curvaA.length), '', 'concentram até 80%')}
+      ${sum('Produtos sem custo', num(semCusto.length), semCusto.length ? 'is-danger' : '', fatSemCusto > 0 ? `${money(fatSemCusto)} sem custo p/ calcular` : '')}
+      ${sum('Receita bloqueada', receitaBloqTotal > 0 ? money(receitaBloqTotal) : '—', receitaBloqTotal > 0 ? 'is-warning' : '')}
+    </div>
+    ${renderCurvaAbcToolbar({ visiveis: rows.length })}
+    <div data-abc-table>${renderCurvaAbcTable(rows, totalFat)}</div>`;
+}
+
+/* Ponte única entre a página e o módulo: deriva os pedidos e delega. */
+function renderAbc() {
+  if (!F.rawPayload?.ok) return;
+  renderCurvaAbc(fechamentoOrders(F.rawPayload));
 }
 
 /* Copia para a área de transferência os MLBs sem custo na base (todo o período). */
 function fallbackCopy(texto, cb) {
   try {
     const ta = document.createElement('textarea');
-    ta.value = texto; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    ta.value = texto;
+    ta.className = 'vf-visually-hidden';
+    ta.setAttribute('aria-hidden', 'true');
     document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
   } catch (_) { /* ignora */ }
   if (cb) cb();
 }
-function copiarMlbsSemCusto() {
-  const view = { pedidos: fechamentoOrders(F.rawPayload) };
-  const { allRows } = buildProductImpactRows(view, { group: 'todos', sortBy: 'faturamento' });
+function copiarMlbsSemCusto(orders, btn) {
+  const { allRows } = buildCurvaAbcRows(orders, { group: 'todos', sortBy: 'faturamento' });
   const mlbs = allRows.filter(a => !a.semProduto && !a.temCusto && a.mlb).map(a => a.mlb);
-  const btn = document.getElementById('fapi-prod-copysemcusto');
   const flash = msg => { if (btn) { const t = btn.dataset.label || btn.textContent; btn.dataset.label = t; btn.textContent = msg; setTimeout(() => { btn.textContent = t; }, 1600); } };
   if (!mlbs.length) { flash('Nenhum sem custo'); return; }
   const texto = mlbs.join('\n');
@@ -1421,181 +1953,204 @@ function copiarMlbsSemCusto() {
   else fallbackCopy(texto, ok);
 }
 
-/* ── INTERAÇÕES ───────────────────────────────────────────── */
-/* Filtro de pedido (select da toolbar) — aplica instantâneo, sem fetch. */
+/* Interações do módulo — delegação escopada ao root (uma vez, no boot). */
+function wireCurvaAbc() {
+  const root = abcRoot();
+  if (!root) return;
+
+  root.addEventListener('change', e => {
+    const group = e.target.closest('[data-abc-group]');
+    if (group) { F.abc.group = group.value; F.abc.page = 1; renderAbc(); return; }
+    const sort = e.target.closest('[data-abc-sort]');
+    if (sort) { F.abc.sort = sort.value; F.abc.page = 1; renderAbc(); return; }
+  });
+
+  root.addEventListener('input', e => {
+    const search = e.target.closest('[data-abc-search]');
+    if (!search) return;
+    if (F.abc.searchTimer) clearTimeout(F.abc.searchTimer);
+    const value = search.value;
+    F.abc.searchTimer = setTimeout(() => {
+      F.abc.search = value;
+      F.abc.page = 1;
+      // Re-render só da tabela (o campo de busca fica fora e preserva o foco)
+      const tableHost = root.querySelector('[data-abc-table]');
+      if (!tableHost || !F.rawPayload?.ok) return;
+      const orders = fechamentoOrders(F.rawPayload);
+      const { rows, totalFat } = buildCurvaAbcRows(orders, { group: F.abc.group, sortBy: F.abc.sort, search: F.abc.search });
+      const count = root.querySelector('.vf-fapi-abc-toolbar__count');
+      if (count) count.textContent = `${num(rows.length)} produto(s)`;
+      tableHost.innerHTML = renderCurvaAbcTable(rows, totalFat);
+    }, 300);
+  });
+
+  root.addEventListener('click', e => {
+    const pageBtn = e.target.closest('[data-abc-page]');
+    if (pageBtn) { F.abc.page = Math.max(1, F.abc.page + Number(pageBtn.dataset.abcPage)); renderAbc(); return; }
+    const action = e.target.closest('[data-abc-action]');
+    if (!action || !F.rawPayload?.ok) return;
+    if (action.dataset.abcAction === 'only-nocost') { F.abc.group = 'sem_custo'; F.abc.page = 1; renderAbc(); return; }
+    if (action.dataset.abcAction === 'copy-nocost') { copiarMlbsSemCusto(fechamentoOrders(F.rawPayload), action); return; }
+  });
+}
+/* ════════════════ FIM DO MÓDULO CURVA ABC ════════════════ */
+
+/* ── INTERAÇÕES (tudo local, sem fetch) ───────────────────── */
+/* Filtro de pedido (select do painel Filtros) — aplica instantâneo. */
 function setPedFilter(key, value) {
-  F.filters[key] = value || (key === 'logistica' || key === 'midia' || key === 'diagbase' || key === 'status' ? 'todos' : null);
-  F.filters = sanitizeFilters(F.filters, F.rawPayload);
-  F.selectedOrderId = null;
-  F.page = 1;
+  F.orders.filters[key] = value || (key === 'logistica' || key === 'midia' || key === 'diagbase' || key === 'status' ? 'todos' : null);
+  F.orders.filters = sanitizeFilters(F.orders.filters, F.rawPayload);
+  closeOrderDrawer({ restoreFocus: false });
+  F.orders.page = 1;
   recomputeView();
   renderPedTable();
+  updateQuickChips();
+  renderDaysSection(); // a régua de dias respeita logística/mídia/diag/status
 }
+/* Clique num dia (régua ou tabela) → filtra SÓ a tabela de pedidos daquele
+   dia e leva o usuário para a aba Pedidos (sem novo fetch). */
 function applyDayFilter(day) {
-  // Clique num dia (régua ou tabela) → filtra SÓ a tabela de pedidos daquele dia.
   if (!isDateInPeriod(day, F.rawPayload.periodo)) return;
-  F.filters = { ...cloneFilters(F.filters), modo:'intervalo', dia:null, semana:null, de:day, ate:day };
-  F.selectedOrderId = null;
-  F.page = 1;
+  F.orders.filters = { ...cloneFilters(F.orders.filters), modo:'intervalo', dia:null, semana:null, de:day, ate:day };
+  closeOrderDrawer({ restoreFocus: false });
+  F.orders.page = 1;
   recomputeView();
-  renderResults(); // re-render geral p/ refletir o destaque do dia na régua + tabela filtrada
+  renderOrdersPanel();     // rebuild da toolbar (linha de filtros ativos ganha o dia)
+  renderDaysSection();     // destaque do dia selecionado na régua/tabela
+  setActiveTab('pedidos');
 }
 /* Recorte rápido (chip). Toggle: reclicar o ativo volta a "Todos". */
 function applyQuickFilter(q) {
-  F.quickFilter = (q !== 'todos' && q === F.quickFilter) ? 'todos' : q;
-  F.page = 1;
-  F.selectedOrderId = null;
+  F.orders.quickFilter = (q !== 'todos' && q === F.orders.quickFilter) ? 'todos' : q;
+  F.orders.page = 1;
+  closeOrderDrawer({ restoreFocus: false });
   renderPedTable();
-  document.querySelectorAll('.fapi-chipbar--ped .fapi-chip').forEach(b => b.classList.toggle('active', b.dataset.quick === F.quickFilter));
+  updateQuickChips();
+}
+function updateQuickChips() {
+  const panel = document.getElementById('fapi-panel-pedidos');
+  if (!panel) return;
+  const base = getSearchedPedidos();
+  panel.querySelectorAll('[data-quick]').forEach(b => {
+    const k = b.dataset.quick;
+    const active = k === F.orders.quickFilter;
+    b.classList.toggle('is-active', active);
+    b.setAttribute('aria-pressed', String(active));
+    const badge = b.querySelector('.vf-badge');
+    if (badge) badge.textContent = num(k === 'todos' ? base.length : base.filter(o => pedidoMatchesQuick(o, k)).length);
+  });
 }
 function setOrderSort(value) {
-  F.orderSort = value || 'data_desc';
-  F.page = 1;
+  F.orders.sort = value || 'data_desc';
+  F.orders.page = 1;
   renderPedTable();
 }
 /* "Limpar tudo": zera recorte, ordenação, busca e selects (mantém o período). */
 function limparTudoLocal() {
-  F.quickFilter = 'todos';
-  F.orderSort = 'data_desc';
   resetFilters();
-  F.selectedOrderId = null;
+  closeOrderDrawer({ restoreFocus: false });
   recomputeView();
-  renderResults(); // rebuild toolbar (selects/busca/chips) + tabela
+  renderOrdersPanel();  // rebuild toolbar (selects/busca/chips) + tabela
+  renderDaysSection();  // remove destaque de dia/escopo
 }
 /* Busca local com debounce de 300ms — re-renderiza só #fapi-ped-table; o input
    está na toolbar (fora desse host), então o foco é preservado. */
 function onSearchInput(value) {
-  if (F.searchTimer) clearTimeout(F.searchTimer);
-  F.searchTimer = setTimeout(() => {
-    F.searchTerm = value;
-    F.page = 1;
-    F.selectedOrderId = null;
+  if (F.orders.searchTimer) clearTimeout(F.orders.searchTimer);
+  F.orders.searchTimer = setTimeout(() => {
+    F.orders.search = value;
+    F.orders.page = 1;
+    closeOrderDrawer({ restoreFocus: false });
     renderPedTable();
+    updateQuickChips();
   }, 300);
 }
 function goToPage(delta) {
-  F.page = Math.max(1, F.page + delta);
+  F.orders.page = Math.max(1, F.orders.page + delta);
   renderPedTable();
 }
-/* Recortes do Fechamento (chips próprios) — re-render só do bloco Fechamento. */
+/* Recorte do Fechamento (chips próprios) — re-render só do bloco Fechamento. */
 function setFechQuick(q) {
-  F.fechQuick = (q !== 'todos' && q === F.fechQuick) ? 'todos' : q;
-  renderResults(); // bloco Fechamento depende de F.fechQuick; demais blocos não mudam
+  F.summary.quickFilter = (q !== 'todos' && q === F.summary.quickFilter) ? 'todos' : q;
+  renderFechamentoSection();
 }
-
-/* Handlers da tabela de pedidos (re-bind a cada renderPedTable). */
-function wirePedTable() {
-  const host = document.getElementById('fapi-ped-table');
-  if (!host) return;
-  host.querySelector('#fapi-clear-local')?.addEventListener('click', limparTudoLocal);
-  host.querySelector('#fapi-page-prev')?.addEventListener('click', () => goToPage(-1));
-  host.querySelector('#fapi-page-next')?.addEventListener('click', () => goToPage(1));
-  host.querySelectorAll('.fapi-prow').forEach(row => {
-    row.addEventListener('click', () => abrirPedido(row.dataset.pedido));
-    row.addEventListener('keydown', e => { if (e.key === 'Enter') abrirPedido(row.dataset.pedido); });
-  });
-  if (F.selectedOrderId) abrirPedido(F.selectedOrderId);
+function setDailySort(value) {
+  F.summary.dailySort = value || 'data';
+  renderDaysSection();
 }
-function wireResults() {
-  // Fechamento: recortes próprios + "Atualizar" (recalcula do payload, sem ML)
-  document.getElementById('fapi-fech-refresh')?.addEventListener('click', () => renderResults());
-  document.querySelectorAll('[data-fechq]').forEach(b => b.addEventListener('click', () => setFechQuick(b.dataset.fechq)));
-  // Vendas por dia: ordenação da tabela + clique no dia (régua/linha)
-  document.getElementById('fapi-daily-sort')?.addEventListener('change', e => { F.fechDailySort = e.target.value; renderResults(); });
-  document.querySelectorAll('[data-fechday]').forEach(r => r.addEventListener('click', () => applyDayFilter(r.dataset.fechday)));
-  document.querySelectorAll('.fapi-day').forEach(d => d.addEventListener('click', () => applyDayFilter(d.dataset.day)));
-  // Curva ABC: grupos, ordenação, paginação e ações
-  document.querySelectorAll('#fapi-prodgroups .fapi-sortbtn').forEach(b => b.addEventListener('click', () => { F.productGroup = b.dataset.prodgroup; F.productPage = 1; renderResults(); }));
-  document.querySelectorAll('#fapi-prodsortbar .fapi-sortbtn').forEach(b => b.addEventListener('click', () => { F.productSort = b.dataset.prodsort; F.productPage = 1; renderResults(); }));
-  document.getElementById('fapi-prod-prev')?.addEventListener('click', () => { F.productPage = Math.max(1, F.productPage - 1); renderResults(); });
-  document.getElementById('fapi-prod-next')?.addEventListener('click', () => { F.productPage = F.productPage + 1; renderResults(); });
-  document.getElementById('fapi-prod-onlysemcusto')?.addEventListener('click', () => { F.productGroup = 'sem_custo'; F.productPage = 1; renderResults(); });
-  document.getElementById('fapi-prod-copysemcusto')?.addEventListener('click', copiarMlbsSemCusto);
-  // Pedidos: toolbar (busca + selects + chips + ordenação) — filtros instantâneos
-  const search = document.getElementById('fapi-search');
-  if (search) search.addEventListener('input', e => onSearchInput(e.target.value));
-  document.querySelectorAll('[data-pedfilter]').forEach(s => s.addEventListener('change', () => setPedFilter(s.dataset.pedfilter, s.value)));
-  document.querySelectorAll('.fapi-chipbar--ped .fapi-chip').forEach(b => b.addEventListener('click', () => applyQuickFilter(b.dataset.quick)));
-  document.getElementById('fapi-order-sort')?.addEventListener('change', e => setOrderSort(e.target.value));
-  wirePedTable();
-}
-
-/* ── IMPORTAÇÃO DE VENDAS (admin only) ───────────────────── */
-function montarBlocoImportacao(controls) {
-  const user = JSON.parse(localStorage.getItem('vf-user') || '{}');
-  if (user.role !== 'admin') return;
-
-  if (!document.getElementById('fapi-import-styles')) {
-    const s = document.createElement('style');
-    s.id = 'fapi-import-styles';
-    s.textContent = [
-      '.fapi-import-block { border-left: 1px solid var(--vfop-border,#dde1e8); padding-left: 14px; margin-left: 2px; }',
-      '.fapi-import-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }',
-      '.fapi-import-input { width: 0.1px; height: 0.1px; opacity: 0; overflow: hidden; position: absolute; z-index: -1; }',
-      '.fapi-import-label { display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; cursor: pointer; border: 1px solid var(--vfop-border,#dde1e8); color: var(--vfop-muted,#5a6578); background: var(--vfop-surface,#fff); white-space: nowrap; }',
-      '.fapi-import-label:hover { background: var(--vfop-subtle,#f8f9fb); }',
-      '.fapi-import-fname { font-size: 11px; color: var(--vfop-text,#111827); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
-      '.fapi-import-fname:empty::before { content: "Nenhum arquivo"; color: var(--vfop-soft,#8c96a6); }',
-      '.fapi-import-status { font-size: 11.5px; font-weight: 600; margin-top: 4px; padding: 3px 7px; border-radius: 4px; width: 100%; box-sizing: border-box; }',
-      '.fapi-import-status--info    { color: #2563eb; background: #eff6ff; }',
-      '.fapi-import-status--ok      { color: #1a7a45; background: #f4fbf7; }',
-      '.fapi-import-status--warn    { color: #855100; background: #fdf9f0; }',
-      '.fapi-import-status--danger  { color: #9b1c1c; background: #fdf4f3; }',
-    ].join('\n');
-    document.head.appendChild(s);
+/* Remoção de um filtro ativo individual (chips da linha "Filtros ativos"). */
+function removeActiveFilter(type, key) {
+  if (type === 'quick') { F.orders.quickFilter = 'todos'; }
+  else if (type === 'pedfilter' && key) { setPedFilter(key, 'todos'); renderOrdersPanel(); return; }
+  else if (type === 'dia') {
+    F.orders.filters = { ...cloneFilters(F.orders.filters), modo:'mes', dia:null, semana:null, de:null, ate:null };
+    recomputeView();
+    renderOrdersPanel();
+    renderDaysSection();
+    return;
   }
-
-  const wrap = document.createElement('div');
-  wrap.id = 'fapi-import-block';
-  wrap.className = 'fapi-field fapi-import-block';
-  wrap.innerHTML = `
-    <label>Importar vendas</label>
-    <div class="fapi-import-row">
-      <input type="file" id="fapi-import-file" accept=".xlsx" class="fapi-import-input">
-      <label for="fapi-import-file" class="fapi-import-label">Escolher .xlsx</label>
-      <span id="fapi-import-fname" class="fapi-import-fname"></span>
-      <button id="fapi-import-btn" class="fapi-btn fapi-btn-primary fapi-btn-sm" type="button">Importar</button>
-      <button id="fapi-sync-btn" class="fapi-btn fapi-btn-ghost fapi-btn-sm" type="button" title="Busca os pedidos direto da API do Mercado Livre (sem planilha)">Sincronizar via API</button>
-    </div>
-    <div id="fapi-import-status" class="fapi-import-status" hidden></div>`;
-  controls.appendChild(wrap);
-
-  // Guarda o File em F.arquivoImport no momento da seleção — imune a qualquer
-  // repaint ou reescrita de #fapi-content pelo carregarTela.
-  document.getElementById('fapi-import-file').addEventListener('change', function () {
-    const f = this.files?.[0] || null;
-    F.arquivoImport = f;
-    const nome = document.getElementById('fapi-import-fname');
-    if (nome) nome.textContent = f ? f.name : '';
-    setImportStatus('', '');
-  });
-
-  document.getElementById('fapi-import-btn').addEventListener('click', executarImportacao);
-  document.getElementById('fapi-sync-btn').addEventListener('click', executarSincronizacao);
+  else if (type === 'busca') {
+    F.orders.search = '';
+    const input = document.getElementById('fapi-search');
+    if (input) input.value = '';
+  }
+  F.orders.page = 1;
+  renderPedTable();
+  updateQuickChips();
 }
 
-function setImportStatus(msg, tipo) {
-  const el = document.getElementById('fapi-import-status');
+/* ── IMPORTAÇÃO / SINCRONIZAÇÃO (admin only — endpoints preservados) ── */
+function setActionStatus(msg, tipo) {
+  const el = document.getElementById('fapi-action-status');
   if (!el) return;
   el.hidden = !msg;
-  el.textContent = msg || '';
-  el.className = `fapi-import-status fapi-import-status--${tipo || 'info'}`;
+  el.innerHTML = msg
+    ? `<div class="vf-banner is-${tipo || 'info'} vf-banner--compact"><div class="vf-banner__content"><p class="vf-banner__description">${esc(msg)}</p></div></div>`
+    : '';
+}
+const ACTION_TONE = { info:'info', ok:'success', warn:'warning', danger:'danger', warning:'warning', success:'success' };
+
+function setImportFile(file) {
+  F.arquivoImport = file || null;
+  const item = document.getElementById('fapi-import-fileitem');
+  const name = document.getElementById('fapi-import-fname');
+  if (item) item.hidden = !file;
+  if (name) name.textContent = file ? file.name : '';
+  if (!file) {
+    const input = document.getElementById('fapi-import-file');
+    if (input) input.value = '';
+  }
+}
+function toggleImportPanel(force) {
+  const panel = document.getElementById('fapi-import-panel');
+  const toggle = document.getElementById('fapi-import-toggle');
+  if (!panel) return;
+  F.ui.importPanelOpen = typeof force === 'boolean' ? force : !F.ui.importPanelOpen;
+  panel.hidden = !F.ui.importPanelOpen;
+  toggle?.setAttribute('aria-expanded', String(F.ui.importPanelOpen));
+}
+
+function setAdminBusy(busy, activeBtnId) {
+  ['fapi-import-btn', 'fapi-sync-btn', 'fapi-refresh-btn'].forEach(id => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    b.disabled = busy;
+    b.classList.toggle('is-loading', busy && id === activeBtnId);
+  });
 }
 
 async function executarImportacao() {
   if (!TOKEN) return;
-  const btn = document.getElementById('fapi-import-btn');
-
-  if (!F.cliente) { setImportStatus('Selecione um cliente antes de importar.', 'warn'); return; }
-  if (!F.periodo) { setImportStatus('Selecione o período antes de importar.', 'warn'); return; }
+  if (!F.cliente) { setActionStatus('Selecione um cliente antes de importar.', ACTION_TONE.warn); return; }
+  if (!F.periodo) { setActionStatus('Selecione o período antes de importar.', ACTION_TONE.warn); return; }
 
   // Usa F.arquivoImport (variável de estado) — não depende de input.files[0],
   // que o browser pode zerar após repaint mesmo sem destruir o elemento.
   const arquivo = F.arquivoImport;
-  if (!arquivo) { setImportStatus('Selecione a planilha de vendas (.xlsx).', 'warn'); return; }
+  if (!arquivo) { setActionStatus('Selecione a planilha de vendas (.xlsx).', ACTION_TONE.warn); return; }
 
-  if (btn) { btn.disabled = true; btn.textContent = 'Importando…'; }
-  setImportStatus('Importando…', 'info');
+  setAdminBusy(true, 'fapi-import-btn');
+  setActionStatus('Importando…', ACTION_TONE.info);
 
   try {
     const form = new FormData();
@@ -1614,19 +2169,16 @@ async function executarImportacao() {
     if (!res.ok) throw new Error(json.erro || json.error || json.message || `HTTP ${res.status}`);
 
     const pedidos = json.pedidosPersistidos ?? '?';
-    setImportStatus(`✓ Importado: ${pedidos} pedido(s). Recarregando…`, 'ok');
+    setActionStatus(`Importado: ${pedidos} pedido(s). Recarregando…`, ACTION_TONE.ok);
     // Limpa o arquivo após importação bem-sucedida
-    F.arquivoImport = null;
-    const fileInput = document.getElementById('fapi-import-file');
-    if (fileInput) fileInput.value = '';
-    const fname = document.getElementById('fapi-import-fname');
-    if (fname) fname.textContent = '';
+    setImportFile(null);
+    toggleImportPanel(false);
     await carregarTela();
-    setImportStatus(`✓ ${pedidos} pedido(s) importados com sucesso.`, 'ok');
+    setActionStatus(`${pedidos} pedido(s) importados com sucesso.`, ACTION_TONE.ok);
   } catch (err) {
-    setImportStatus(`Erro: ${err?.message || 'Falha na importação.'}`, 'danger');
+    setActionStatus(`Erro: ${err?.message || 'Falha na importação.'}`, ACTION_TONE.danger);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Importar'; }
+    setAdminBusy(false);
   }
 }
 
@@ -1634,13 +2186,11 @@ async function executarImportacao() {
    Custo continua vindo da base vinculada oficial do cliente. */
 async function executarSincronizacao() {
   if (!TOKEN) return;
-  const btn = document.getElementById('fapi-sync-btn');
+  if (!F.cliente) { setActionStatus('Selecione um cliente antes de sincronizar.', ACTION_TONE.warn); return; }
+  if (!F.periodo) { setActionStatus('Selecione o período antes de sincronizar.', ACTION_TONE.warn); return; }
 
-  if (!F.cliente) { setImportStatus('Selecione um cliente antes de sincronizar.', 'warn'); return; }
-  if (!F.periodo) { setImportStatus('Selecione o período antes de sincronizar.', 'warn'); return; }
-
-  if (btn) { btn.disabled = true; btn.textContent = 'Sincronizando…'; }
-  setImportStatus('Sincronizando pedidos via API do Mercado Livre…', 'info');
+  setAdminBusy(true, 'fapi-sync-btn');
+  setActionStatus('Sincronizando pedidos via API do Mercado Livre…', ACTION_TONE.info);
 
   try {
     const res = await fetch(
@@ -1659,15 +2209,121 @@ async function executarSincronizacao() {
 
     const pedidos = json.pedidosPersistidos ?? '?';
     const orders = json.ordersEncontrados ?? '?';
+    F.lastSyncBase = json.baseVinculada || null;
     const baseTxt = json.baseVinculada ? `base "${json.baseVinculada.nome}"` : 'sem base vinculada';
-    setImportStatus(`✓ Sincronizado: ${pedidos} pedido(s) de ${orders} da API · ${baseTxt}. Recarregando…`, 'ok');
+    setActionStatus(`Sincronizado: ${pedidos} pedido(s) de ${orders} da API · ${baseTxt}. Recarregando…`, ACTION_TONE.ok);
     await carregarTela();
-    setImportStatus(`✓ ${pedidos} pedido(s) sincronizados via API (${baseTxt}).`, 'ok');
+    setActionStatus(`${pedidos} pedido(s) sincronizados via API (${baseTxt}).`, ACTION_TONE.ok);
   } catch (err) {
-    setImportStatus(`Erro: ${err?.message || 'Falha na sincronização.'}`, 'danger');
+    setActionStatus(`Erro: ${err?.message || 'Falha na sincronização.'}`, ACTION_TONE.danger);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Sincronizar via API'; }
+    setAdminBusy(false);
   }
+}
+
+/* ── WIRING ESTÁTICO (uma vez, no boot — delegação nos hosts) ── */
+function wireStatic() {
+  // Barra de contexto
+  document.getElementById('fapi-client-select')?.addEventListener('change', e => {
+    F.cliente = F.clientes.find(c => c.slug === e.target.value) || null;
+    closeOrderDrawer({ restoreFocus: false });
+    F.lastSyncBase = null;
+    resetFilters();
+    carregarTela();
+  });
+  document.getElementById('fapi-period-select')?.addEventListener('change', onPeriodChange);
+  document.getElementById('fapi-period-apply')?.addEventListener('click', aplicarPeriodoCustom);
+  document.getElementById('fapi-refresh-btn')?.addEventListener('click', () => {
+    setActionStatus('', '');
+    carregarTela(); // relê o banco (GET) — não chama a API do ML
+  });
+  document.getElementById('fapi-sync-btn')?.addEventListener('click', executarSincronizacao);
+  document.getElementById('fapi-import-toggle')?.addEventListener('click', () => toggleImportPanel());
+  document.getElementById('fapi-import-choose')?.addEventListener('click', () => document.getElementById('fapi-import-file')?.click());
+  document.getElementById('fapi-import-file')?.addEventListener('change', function () {
+    setImportFile(this.files?.[0] || null);
+    setActionStatus('', '');
+  });
+  document.getElementById('fapi-import-clear')?.addEventListener('click', () => setImportFile(null));
+  document.getElementById('fapi-import-btn')?.addEventListener('click', executarImportacao);
+
+  // Abas (tablist com teclado)
+  const tabs = document.getElementById('fapi-tabs');
+  tabs?.addEventListener('click', e => {
+    const tab = e.target.closest('[data-tab]');
+    if (tab) setActiveTab(tab.dataset.tab);
+  });
+  tabs?.addEventListener('keydown', onTablistKeydown);
+
+  // Aba Visão geral: recorte do fechamento, régua de dias, tabela diária, CTA
+  const visao = document.getElementById('fapi-panel-visao');
+  visao?.addEventListener('click', e => {
+    const fechq = e.target.closest('[data-fechq]');
+    if (fechq) { setFechQuick(fechq.dataset.fechq); return; }
+    const syncEmpty = e.target.closest('[data-action="sync-empty"]');
+    if (syncEmpty) { executarSincronizacao(); return; }
+    const day = e.target.closest('[data-day]');
+    if (day) { applyDayFilter(day.dataset.day); return; }
+    const row = e.target.closest('[data-fechday]');
+    if (row) { applyDayFilter(row.dataset.fechday); return; }
+  });
+  visao?.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('[data-fechday]');
+    if (row) { e.preventDefault(); applyDayFilter(row.dataset.fechday); }
+  });
+  visao?.addEventListener('change', e => {
+    if (e.target.id === 'fapi-daily-sort') setDailySort(e.target.value);
+  });
+
+  // Aba Pedidos: busca, ordenação, filtros, chips, tabela, paginação
+  const pedidos = document.getElementById('fapi-panel-pedidos');
+  pedidos?.addEventListener('input', e => {
+    if (e.target.id === 'fapi-search') onSearchInput(e.target.value);
+  });
+  pedidos?.addEventListener('change', e => {
+    const sel = e.target.closest('[data-pedfilter]');
+    if (sel) { setPedFilter(sel.dataset.pedfilter, sel.value); return; }
+    if (e.target.id === 'fapi-order-sort') setOrderSort(e.target.value);
+  });
+  pedidos?.addEventListener('click', e => {
+    const chip = e.target.closest('[data-quick]');
+    if (chip) { applyQuickFilter(chip.dataset.quick); return; }
+    const remove = e.target.closest('[data-remove-filter]');
+    if (remove) { removeActiveFilter(remove.dataset.removeFilter, remove.dataset.removeKey); return; }
+    if (e.target.closest('#fapi-clear-local') || e.target.closest('#fapi-clear-local-empty')) { limparTudoLocal(); return; }
+    if (e.target.closest('#fapi-page-prev')) { goToPage(-1); return; }
+    if (e.target.closest('#fapi-page-next')) { goToPage(1); return; }
+    const toggle = e.target.closest('#fapi-filters-toggle');
+    if (toggle) {
+      F.ui.filtersPanelOpen = !F.ui.filtersPanelOpen;
+      const panel = document.getElementById('fapi-filters-panel');
+      if (panel) panel.hidden = !F.ui.filtersPanelOpen;
+      toggle.setAttribute('aria-expanded', String(F.ui.filtersPanelOpen));
+      return;
+    }
+    const row = e.target.closest('tr[data-pedido]');
+    if (row) { openOrderDrawer(row.dataset.pedido, row); return; }
+  });
+  pedidos?.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('tr[data-pedido]');
+    if (row && e.target === row) { e.preventDefault(); openOrderDrawer(row.dataset.pedido, row); }
+  });
+
+  // Módulo Curva ABC (delegação própria, escopada ao root)
+  wireCurvaAbc();
+
+  // Drawer do pedido
+  document.getElementById('fapi-drawer-close')?.addEventListener('click', () => closeOrderDrawer());
+  document.getElementById('fapi-drawer-close-footer')?.addEventListener('click', () => closeOrderDrawer());
+  document.getElementById('fapi-drawer-backdrop')?.addEventListener('click', () => closeOrderDrawer());
+  document.getElementById('fapi-order-drawer')?.addEventListener('keydown', onDrawerKeydown);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && document.getElementById('fapi-order-drawer')?.classList.contains('is-open')) {
+      closeOrderDrawer();
+    }
+  });
 }
 
 /* ── BOOT ─────────────────────────────────────────────────── */

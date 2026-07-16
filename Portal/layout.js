@@ -169,9 +169,7 @@
         { label: "Métricas",     href: "metricas.html",      icon: "trending-up"   },
 
         { separator: true, label: "FERRAMENTAS" },
-        { label: "Extensão",         href: "extensao.html",       icon: "download" },
-        { label: "Ferramenta OR",    href: "ferramenta-or.html",  icon: "download" },
-        { label: "Baixador de Mídias", href: "baixador-midias.html", icon: "media"  },
+        { label: "Ferramentas", href: "ferramentas.html", icon: "download" },
       ],
     },
     guia: {
@@ -233,6 +231,7 @@
     "fechamentos-api.html": "operacao",
     "relatorios.html":      "operacao",
     "fechamento.html":      "operacao",
+    "ferramentas.html":       "operacao",
     "extensao.html":          "operacao",
     "ferramenta-or.html":     "operacao",
     "baixador-midias.html":   "operacao",

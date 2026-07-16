@@ -1,0 +1,297 @@
+/* ============================================================
+ * VenForce — Central de Ferramentas · CSS específico da página
+ * ============================================================ */
+
+.vf-page-ferramentas .vf-content {
+  max-width: none;
+  padding: 0;
+}
+
+.vf-page-ferramentas {
+  overflow-x: hidden;
+}
+
+.vf-page-ferramentas [hidden] {
+  display: none;
+}
+
+.vf-page-ferramentas .vf-page-header__main {
+  flex-basis: auto;
+}
+
+.vf-page-ferramentas .vf-tools-index {
+  padding: 0;
+  border-top: 0;
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+  margin-top: calc(var(--vf-sp-2) - var(--vf-section-gap));
+  margin-bottom: 0;
+}
+
+.vf-page-ferramentas .vf-tools-index .vf-tab {
+  flex: 0 0 auto;
+  border-radius: 0;
+}
+
+.vf-page-ferramentas .vf-tools-section {
+  scroll-margin-top: calc(var(--vf-topbar-h) + var(--vf-sp-6));
+  padding-top: var(--vf-sp-2);
+}
+
+.vf-page-ferramentas .vf-tools-section + .vf-tools-section {
+  border-top: 1px solid var(--vf-border);
+  padding-top: var(--vf-sp-8);
+}
+
+.vf-page-ferramentas .vf-tools-tags {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-ferramentas .vf-tools-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+  gap: var(--vf-sp-5);
+  align-items: start;
+}
+
+.vf-page-ferramentas .vf-tools-grid--or {
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+}
+
+.vf-page-ferramentas .vf-tools-card-main {
+  align-self: stretch;
+}
+
+.vf-page-ferramentas .vf-tools-card-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--vf-sp-4);
+}
+
+.vf-page-ferramentas .vf-tools-copy {
+  margin: 0;
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-sm);
+  line-height: var(--vf-lh-normal);
+}
+
+.vf-page-ferramentas .vf-tools-subtitle {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-ferramentas .vf-tools-feature-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  width: 100%;
+  padding-top: var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-page-ferramentas .vf-tools-features {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vf-page-ferramentas .vf-tools-feature {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vf-sp-2);
+  color: var(--vf-text);
+  font-size: var(--vf-fs-sm);
+  line-height: var(--vf-lh-snug);
+}
+
+.vf-page-ferramentas .vf-tools-feature__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--vf-sp-5);
+  height: var(--vf-sp-5);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-success-bg);
+  color: var(--vf-success-strong);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-bold);
+}
+
+.vf-page-ferramentas .vf-tools-steps {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vf-page-ferramentas .vf-tools-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--vf-sp-3);
+  align-items: start;
+  padding: var(--vf-sp-3) 0;
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-page-ferramentas .vf-tools-step:first-child {
+  padding-top: 0;
+}
+
+.vf-page-ferramentas .vf-tools-step:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.vf-page-ferramentas .vf-tools-step__number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--vf-sp-6);
+  height: var(--vf-sp-6);
+  padding: 0 var(--vf-sp-2);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-neutral-bg);
+  color: var(--vf-neutral-strong);
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-ferramentas .vf-tools-step__content {
+  min-width: 0;
+  color: var(--vf-text);
+  font-size: var(--vf-fs-sm);
+  line-height: var(--vf-lh-normal);
+}
+
+.vf-page-ferramentas .vf-tools-or {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-4);
+}
+
+.vf-page-ferramentas .vf-tools-or-header,
+.vf-page-ferramentas .vf-tools-or-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(92px, 0.42fr) minmax(120px, 0.58fr) var(--vf-control-h-sm);
+  gap: var(--vf-sp-2);
+  align-items: end;
+}
+
+.vf-page-ferramentas .vf-tools-or-header {
+  align-items: center;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+}
+
+.vf-page-ferramentas .vf-tools-or-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  min-width: 0;
+}
+
+.vf-page-ferramentas .vf-tools-row-label {
+  display: none;
+}
+
+.vf-page-ferramentas .vf-tools-or-row__action {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.vf-page-ferramentas .vf-tools-or-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  flex-wrap: wrap;
+}
+
+.vf-page-ferramentas .vf-tools-or-actions #btn-baixar {
+  min-width: 240px;
+}
+
+@media (max-width: 900px) {
+  .vf-page-ferramentas .vf-tools-grid,
+  .vf-page-ferramentas .vf-tools-grid--or {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .vf-page-ferramentas .vf-page-shell {
+    padding-inline: var(--vf-sp-4);
+  }
+
+  .vf-page-ferramentas .vf-tools-or-header {
+    display: none;
+  }
+
+  .vf-page-ferramentas .vf-tools-row-label {
+    display: inline;
+  }
+
+  .vf-page-ferramentas .vf-tools-or-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) var(--vf-control-h-sm);
+    align-items: end;
+  }
+
+  .vf-page-ferramentas .vf-tools-or-row .vf-field:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .vf-page-ferramentas .vf-tools-or-row__action {
+    grid-column: 3;
+  }
+}
+
+@media (max-width: 480px) {
+  .vf-page-ferramentas .vf-tools-tags {
+    justify-content: flex-start;
+  }
+
+  .vf-page-ferramentas .vf-tools-or-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vf-page-ferramentas .vf-tools-or-row .vf-field:first-child,
+  .vf-page-ferramentas .vf-tools-or-row__action {
+    grid-column: auto;
+  }
+
+  .vf-page-ferramentas .vf-tools-or-row__action {
+    justify-content: flex-start;
+  }
+
+  .vf-page-ferramentas .vf-tools-or-actions {
+    align-items: stretch;
+  }
+
+  .vf-page-ferramentas .vf-tools-or-actions .vf-btn {
+    width: 100%;
+  }
+
+  .vf-page-ferramentas .vf-tools-or-actions #btn-baixar {
+    min-width: 0;
+  }
+}

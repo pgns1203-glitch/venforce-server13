@@ -1445,14 +1445,6 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`VenForce rodando em http://localhost:${PORT}`);
-  ensureCentralVendasTables().catch((err) => {
-    console.error("[centralVendas] erro ao garantir tabelas no boot:", err.message);
-  });
-  startTokenRefreshWorker();
-});
-
-app.listen(PORT, () => {
-  console.log(`VenForce rodando em http://localhost:${PORT}`);
 
   ensureCentralVendasTables().catch((err) => {
     console.error("[centralVendas] erro ao garantir tabelas no boot:", err.message);

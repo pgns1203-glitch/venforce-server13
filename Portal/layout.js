@@ -157,10 +157,8 @@
         { label: "Mercado Ads",  href: "ads.html",           icon: "trending-up"  },
         { label: "Otimizador",   href: "automacoes.html",    icon: "repeat"       },
         { label: "Automações",   href: "automacoes.html",    icon: "repeat"       },
-        { label: "Promoções ML", href: "promocoes-retorno.html", icon: "trending-up" },
-        { label: "Design",       href: "design.html",        icon: "layers"       },
-        { label: "Scans",        href: "scans.html",         icon: "search"       },
-
+        { label: "Promoções ML", href: "promocoes-retorno.html", icon: "trending-up" }
+        
         { separator: true, label: "ANÁLISES" },
         { label: "Financeiro",   href: "financeiro.html",    icon: "vf-financeiro" },
         { label: "Fechamentos API", href: "fechamentos-api.html", icon: "vf-financeiro", adminOnly: true },
@@ -223,8 +221,6 @@
     "guia-vendedor.html":   "guia",
     "anuncios-meli.html":   "operacao",
     "ads.html":             "operacao",
-    "design.html":          "operacao",
-    "scans.html":           "operacao",
     "automacoes.html":      "operacao",
     "promocoes-retorno.html": "operacao",
     "financeiro.html":      "operacao",

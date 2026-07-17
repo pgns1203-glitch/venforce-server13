@@ -150,9 +150,9 @@
         { label: "Dashboard",    href: "dashboard.html",     icon: "vf-dashboard" },
         { label: "Cliente Operação", href: "cliente-operacao.html", icon: "users" },
         { label: "Cliente 360", href: "cliente-360.html", icon: "users" },
+        { label: "Bases de Custo", href: "bases.html",         icon: "database"     },
 
         { separator: true, label: "MARKETPLACE" },
-        { label: "Bases de Custo", href: "bases.html",         icon: "database"     },
         { label: "Anúncios ML",  href: "anuncios-meli.html", icon: "activity",    adminOnly: true },
         { label: "Mercado Ads",  href: "ads.html",           icon: "trending-up"  },
         { label: "Precificação - API",   href: "automacoes.html",    icon: "repeat"       },

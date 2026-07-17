@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VenForce — Bases da loja</title>
+  <link rel="stylesheet" href="seller.css">
+</head>
+<body class="sl-body">
+
+  <!-- ══ TOPO SIMPLES (sem sidebar interna) ══════════════════ -->
+  <header class="sl-topbar">
+    <div class="sl-brand">
+      <span class="sl-brand-icon">VF</span>
+      <span class="sl-brand-text">Venforce<b>Go</b> <span class="sl-brand-area">· Bases da loja</span></span>
+    </div>
+    <div class="sl-topbar-right">
+      <div id="sl-store-wrap" class="sl-store-wrap"></div>
+      <button id="sl-logout" class="sl-btn sl-btn-ghost" type="button">Sair</button>
+    </div>
+  </header>
+
+  <main class="sl-main">
+
+    <!-- ══ LOADING ══ -->
+    <div id="sl-loading" class="sl-loading">Carregando seus produtos…</div>
+
+    <!-- ══ ESTADO: SEM VÍNCULO / ERRO ══ -->
+    <div id="sl-blocked" class="sl-blocked" style="display:none;"></div>
+
+    <!-- ══ CONTEÚDO ══ -->
+    <div id="sl-content" style="display:none;">
+
+      <!-- Hero: loja + resumo -->
+      <section class="sl-hero">
+        <div class="sl-hero-left">
+          <div class="sl-eyebrow">Preenchimento de custos</div>
+          <h1 id="sl-store-name" class="sl-title">—</h1>
+          <p class="sl-sub">Preencha o custo dos produtos abaixo. Cada envio fica
+            <b>pendente</b> até a equipe revisar e aplicar na base oficial.</p>
+        </div>
+        <div id="sl-chips" class="sl-chips"></div>
+      </section>
+
+      <!-- Banner de contexto (sem base vinculada / sem faturamento por produto) -->
+      <div id="sl-banner"></div>
+
+      <!-- Controles -->
+      <section class="sl-controls">
+        <input id="sl-busca" class="sl-input sl-busca" type="search"
+               placeholder="Buscar por título, MLB ou SKU…" autocomplete="off">
+        <div id="sl-filtros" class="sl-filtros"></div>
+      </section>
+
+      <!-- Lista -->
+      <section id="sl-list" class="sl-grid"></section>
+      <div id="sl-empty" class="sl-empty" style="display:none;"></div>
+      <div id="sl-paging" class="sl-paging"></div>
+
+    </div>
+  </main>
+
+  <footer class="sl-footer">VenForce · área do seller — você vê apenas os produtos da sua loja.</footer>
+
+  <script src="seller.js"></script>
+</body>
+</html>

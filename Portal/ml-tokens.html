@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Tokens ML</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+</head>
+<body class="vf-page vf-page-ml-tokens">
+
+  <div class="vf-main-with-sidebar">
+    <main class="vf-content">
+
+      <header class="vf-mlt-head">
+        <p class="vf-mlt-eyebrow">Integrações</p>
+        <h2 class="vf-mlt-title">Tokens ML</h2>
+        <p class="vf-mlt-lead">
+          Monitore conexões Mercado Livre, status dos tokens e clientes vinculados.
+        </p>
+      </header>
+
+      <section class="vf-mlt-summary" aria-label="Resumo">
+        <article class="vf-mlt-stat">
+          <span class="vf-mlt-stat-label">Total de conexões</span>
+          <strong class="vf-mlt-stat-value" id="mlt-sum-total">—</strong>
+        </article>
+        <article class="vf-mlt-stat">
+          <span class="vf-mlt-stat-label">Tokens ativos</span>
+          <strong class="vf-mlt-stat-value vf-mlt-stat-value--ok" id="mlt-sum-active">—</strong>
+          <span class="vf-mlt-stat-hint">Access válido (não expirado)</span>
+        </article>
+        <article class="vf-mlt-stat">
+          <span class="vf-mlt-stat-label">Atenção / expiração</span>
+          <strong class="vf-mlt-stat-value vf-mlt-stat-value--warn" id="mlt-sum-warn">—</strong>
+          <span class="vf-mlt-stat-hint">Expirado ou expira em ≤ 5 min</span>
+        </article>
+        <article class="vf-mlt-stat">
+          <span class="vf-mlt-stat-label">Sem credenciais</span>
+          <strong class="vf-mlt-stat-value vf-mlt-stat-value--err" id="mlt-sum-err">—</strong>
+          <span class="vf-mlt-stat-hint">Sem access nem refresh</span>
+        </article>
+        <article class="vf-mlt-stat">
+          <span class="vf-mlt-stat-label">Clientes conectados</span>
+          <strong class="vf-mlt-stat-value" id="mlt-sum-clients">—</strong>
+          <span class="vf-mlt-stat-hint">Clientes distintos nesta lista</span>
+        </article>
+      </section>
+
+      <section class="vf-card vf-mlt-card">
+        <div class="vf-card-header">
+          <h5>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            Filtros
+          </h5>
+        </div>
+        <div class="vf-mlt-filters-body">
+          <div class="vf-mlt-filters-grid">
+            <div class="vf-form-group vf-mlt-span-2">
+              <label for="mlt-filter-q">Buscar</label>
+              <input type="search" id="mlt-filter-q" class="vf-input" placeholder="Cliente, slug, ML User ID ou status…" autocomplete="off">
+            </div>
+            <div class="vf-form-group">
+              <label for="mlt-filter-status">Status</label>
+              <select id="mlt-filter-status" class="vf-input">
+                <option value="">Todos</option>
+                <option value="ativo">Ativo</option>
+                <option value="expirando">Expirando</option>
+                <option value="expirado">Expirado</option>
+                <option value="erro">Sem credenciais</option>
+                <option value="desconhecido">Indefinido</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="vf-card vf-mlt-card vf-mlt-card-table">
+        <div class="vf-card-header">
+          <h5>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            Conexões Mercado Livre
+          </h5>
+          <div class="vf-mlt-header-actions">
+            <span id="tokens-count" class="vf-badge" style="display:none;">0</span>
+            <button type="button" id="btn-recarregar" class="vf-btn-secondary vf-mlt-reload">Recarregar</button>
+          </div>
+        </div>
+
+        <div id="tokens-content" class="vf-mlt-content">
+          <div id="state-loading" class="vf-mlt-loading" role="status" aria-live="polite">
+            <div class="vf-mlt-loading-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+            <p>Carregando conexões…</p>
+          </div>
+
+          <div id="state-table" class="vf-table-wrapper vf-mlt-table-wrap" style="display:none;">
+            <table class="vf-table vf-mlt-table">
+              <thead>
+                <tr>
+                  <th class="vf-mlt-col-cliente">Cliente</th>
+                  <th class="vf-mlt-col-slug">Slug</th>
+                  <th class="vf-mlt-col-mlid">ML User ID</th>
+                  <th class="vf-mlt-col-status">Status</th>
+                  <th class="vf-mlt-col-exp">Expira em</th>
+                  <th class="vf-mlt-col-upd">Atualizado em</th>
+                  <th class="vf-mlt-col-actions">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="tokens-tbody"></tbody>
+            </table>
+          </div>
+
+          <p id="mlt-filter-empty" class="vf-mlt-filter-empty" style="display:none;">
+            Nenhuma linha corresponde aos filtros. Ajuste a busca ou o status.
+          </p>
+
+          <div id="state-empty" class="vf-mlt-empty" style="display:none;">
+            <div class="vf-mlt-empty-icon" aria-hidden="true">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                <path d="M12 8v4"/><path d="M12 16h.01"/>
+              </svg>
+            </div>
+            <h3 class="vf-mlt-empty-title">Nenhuma conexão Mercado Livre encontrada.</h3>
+            <p class="vf-mlt-empty-text">Quando um cliente autenticar no Mercado Livre, a conexão aparecerá aqui.</p>
+          </div>
+
+          <div id="state-error" class="vf-mlt-error" style="display:none;">
+            <p class="vf-mlt-error-msg" id="error-message">Erro ao carregar dados.</p>
+            <button type="button" id="btn-retry" class="vf-btn-primary vf-mlt-retry">Tentar novamente</button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="layout.js"></script>
+  <script src="ml-tokens.js"></script>
+</body>
+</html>

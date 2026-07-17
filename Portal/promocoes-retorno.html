@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Promoções ML</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (códigos) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 1. Layout compartilhado (sidebar/topbar/estados globais indispensáveis) -->
+  <link rel="stylesheet" href="style.css">
+  <!-- 2. Fundação Global V2 (tokens → componentes → página) -->
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
+  <link rel="stylesheet" href="css/pages/promocoes-retorno-v2.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+</head>
+<body class="vf-page vf-page-promocoes-retorno">
+
+  <div class="vf-main-with-sidebar">
+    <main class="vf-content" aria-label="Promoções ML">
+      <div class="vf-page-shell">
+        <div class="vf-page-container vf-page-container--wide">
+
+          <!-- 1. CABEÇALHO -->
+          <header class="vf-page-header">
+            <div class="vf-page-header__main">
+              <p class="vf-page-header__eyebrow">Mercado Livre</p>
+              <h1 class="vf-page-header__title">Promoções ML</h1>
+              <p class="vf-page-header__description">Avalie promoções disponíveis, retorno do Mercado Livre e impacto real na margem.</p>
+            </div>
+            <div class="vf-page-header__actions">
+              <span class="vf-status is-info">Modo de análise — nenhuma promoção é alterada</span>
+            </div>
+          </header>
+
+          <!-- Feedback global da página -->
+          <div id="promo-feedback" class="vf-banner" role="status" aria-live="polite" hidden></div>
+
+          <!-- 2. CONTEXTO DO CLIENTE -->
+          <section class="vf-card" aria-label="Contexto do cliente">
+            <div class="vf-card__body">
+              <div class="vf-promo-context">
+                <div class="vf-promo-context__row">
+                  <div class="vf-promo-context__cliente">
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="promo-cliente-search">Buscar cliente</label>
+                      <input id="promo-cliente-search" class="vf-input vf-search" type="search" placeholder="Nome ou slug" autocomplete="off">
+                    </div>
+                    <div class="vf-field">
+                      <label class="vf-field__label" for="promo-cliente">Cliente</label>
+                      <select id="promo-cliente" class="vf-select">
+                        <option value="">Carregando…</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="vf-promo-context__status" id="promo-context-status" hidden>
+                    <div class="vf-promo-context__status-item">
+                      <span class="vf-promo-context__status-label">Grant ML</span>
+                      <span class="vf-status" id="promo-ctx-grant">—</span>
+                    </div>
+                    <div class="vf-promo-context__status-item">
+                      <span class="vf-promo-context__status-label">Base vinculada</span>
+                      <span class="vf-promo-context__status-value" id="promo-ctx-base">—</span>
+                    </div>
+                    <div class="vf-promo-context__status-item">
+                      <span class="vf-promo-context__status-label">Atualização da base</span>
+                      <span class="vf-promo-context__status-value" id="promo-ctx-base-updated">—</span>
+                    </div>
+                    <div class="vf-promo-context__status-item">
+                      <span class="vf-promo-context__status-label">Snapshot</span>
+                      <span class="vf-status" id="promo-ctx-snapshot">—</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Banner de bloqueio: sem grant / sem base / múltiplas bases -->
+                <div id="promo-readiness-banner" class="vf-banner" role="status" aria-live="polite" hidden></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 3. CRITÉRIOS DE DECISÃO -->
+          <section class="vf-card" id="promo-criteria-card" aria-label="Critérios de decisão">
+            <div class="vf-card__header">
+              <h2 class="vf-card__title">Critérios de decisão</h2>
+            </div>
+            <div class="vf-card__body">
+              <div class="vf-promo-criteria__grid">
+                <div class="vf-field">
+                  <label class="vf-field__label" for="promo-margem">Margem alvo</label>
+                  <div class="vf-input-group">
+                    <input id="promo-margem" class="vf-input" type="number" min="0" max="99" step="0.5" placeholder="10">
+                    <span class="vf-input-suffix">%</span>
+                  </div>
+                </div>
+                <div class="vf-field">
+                  <label class="vf-field__label" for="promo-tolerancia">Tolerância abaixo do alvo</label>
+                  <div class="vf-input-group">
+                    <input id="promo-tolerancia" class="vf-input" type="number" min="0" max="99" step="0.5" placeholder="2">
+                    <span class="vf-input-suffix">p.p.</span>
+                  </div>
+                </div>
+                <div class="vf-field">
+                  <label class="vf-field__label" for="promo-escopo">Escopo</label>
+                  <select id="promo-escopo" class="vf-select">
+                    <option value="true" selected>Promoções com retorno ML</option>
+                    <option value="false">Todas as promoções</option>
+                  </select>
+                  <p class="vf-field__hint">Promoções com retorno ML são aquelas em que o Mercado Livre participa do desconto (<code>meli_percentage</code>).</p>
+                </div>
+              </div>
+
+              <div class="vf-promo-criteria__advanced">
+                <button type="button" class="vf-promo-criteria__advanced-toggle" id="promo-quickopts-toggle" aria-expanded="false" aria-controls="promo-quickopts-body">
+                  Opções da consulta rápida
+                </button>
+                <div class="vf-promo-criteria__advanced-body" id="promo-quickopts-body" hidden>
+                  <div class="vf-field">
+                    <label class="vf-field__label" for="promo-page">Página</label>
+                    <input id="promo-page" class="vf-input" type="number" min="1" step="1" value="1">
+                  </div>
+                  <div class="vf-field">
+                    <label class="vf-field__label" for="promo-limit">Itens por página</label>
+                    <input id="promo-limit" class="vf-input" type="number" min="1" max="50" step="1" value="20">
+                  </div>
+                  <div class="vf-field vf-field--wide">
+                    <label class="vf-field__label" for="promo-campanha">Filtro textual de campanha</label>
+                    <input id="promo-campanha" class="vf-input" type="search" placeholder="Ex: Top Oferta" autocomplete="off">
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="vf-card__footer">
+              <div class="vf-promo-actions">
+                <div class="vf-promo-actions__primary">
+                  <button type="button" id="btn-promo-diagnostico" class="vf-btn vf-btn--primary" disabled>Gerar diagnóstico</button>
+                  <button type="button" id="btn-promo-snapshot-usar" class="vf-btn vf-btn--secondary" disabled>Usar último snapshot</button>
+                </div>
+              </div>
+              <div class="vf-promo-quick">
+                <button type="button" class="vf-promo-quick__toggle" id="promo-quick-toggle" aria-expanded="false" aria-controls="promo-quick-body">
+                  Consulta rápida
+                </button>
+                <div class="vf-promo-quick__body" id="promo-quick-body" hidden>
+                  <p class="vf-field__hint">A consulta rápida analisa somente a página atual de anúncios (sem varredura completa nem snapshot salvo).</p>
+                  <div class="vf-promo-quick__footer">
+                    <button type="button" id="btn-promo-analisar" class="vf-btn vf-btn--secondary" disabled>Consultar página atual</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 4. ESTADO DOS DADOS -->
+          <section class="vf-card" id="promo-databar-card" hidden aria-label="Estado dos dados">
+            <div class="vf-card__body">
+              <div class="vf-promo-databar">
+                <div class="vf-promo-databar__row">
+                  <span class="vf-status" id="promo-databar-status">—</span>
+                  <span class="vf-promo-databar__meta" id="promo-databar-meta"></span>
+                </div>
+                <div class="vf-progress vf-promo-databar__progress" id="promo-databar-progress" hidden>
+                  <div class="vf-progress__bar" id="promo-databar-progress-bar"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 5. RESUMO EXECUTIVO -->
+          <section class="vf-section" id="promo-resumo-section" hidden aria-label="Resumo executivo">
+            <div class="vf-section__header">
+              <div>
+                <h2 class="vf-section__title">Resumo executivo</h2>
+              </div>
+            </div>
+            <div class="vf-kpi-grid" id="promo-kpis"></div>
+            <div class="vf-promo-kpis-secondary" id="promo-kpis-secondary"></div>
+          </section>
+
+          <div class="vf-empty" id="promo-empty-inicial">
+            <p class="vf-empty__title">Nenhuma análise carregada</p>
+            <p class="vf-empty__description">Selecione um cliente pronto e gere o diagnóstico completo ou use a consulta rápida.</p>
+          </div>
+
+          <!-- 6. WORKSPACE DA TABELA -->
+          <section class="vf-section vf-promo-workspace" id="promo-workspace" hidden aria-label="Promoções analisadas">
+            <div class="vf-section__header">
+              <div>
+                <h2 class="vf-section__title">Promoções</h2>
+              </div>
+              <span class="vf-promo-count" id="promo-count">0 de 0</span>
+            </div>
+
+            <div class="vf-promo-quickchips" id="promo-quickchips"></div>
+            <div class="vf-promo-activefilters" id="promo-activefilters" hidden></div>
+
+            <div class="vf-toolbar">
+              <div class="vf-toolbar__filters">
+                <input id="promo-table-search" class="vf-input vf-search" type="search" placeholder="Buscar por MLB, SKU, título ou campanha" autocomplete="off">
+              </div>
+              <div class="vf-toolbar__actions">
+                <div class="vf-promo-menuwrap">
+                  <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="promo-filters-btn" aria-expanded="false" aria-controls="promo-filters-menu">Filtros</button>
+                  <div class="vf-menu" id="promo-filters-menu" hidden></div>
+                </div>
+                <div class="vf-promo-menuwrap">
+                  <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="promo-columns-btn" aria-expanded="false" aria-controls="promo-columns-menu">Colunas</button>
+                  <div class="vf-menu vf-promo-columns-menu" id="promo-columns-menu" hidden></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="promo-aviso-limite" class="vf-banner is-warning vf-banner--compact" hidden></div>
+
+            <div class="vf-empty" id="promo-tabela-empty" hidden>
+              <p class="vf-empty__title">Nenhuma linha neste filtro</p>
+              <p class="vf-empty__description">Ajuste a busca ou os filtros ativos.</p>
+            </div>
+
+            <div class="vf-table-wrap" id="promo-tabela-wrapper" hidden>
+              <table class="vf-table vf-table--compact">
+                <thead id="promo-thead"></thead>
+                <tbody id="promo-tbody"></tbody>
+              </table>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 7. DRAWER: detalhe do cálculo -->
+  <div class="vf-drawer-backdrop" id="promo-calc-backdrop"></div>
+  <aside class="vf-drawer vf-drawer--lg" id="promo-calc-drawer" role="dialog" aria-modal="true" aria-labelledby="promo-calc-title" tabindex="-1">
+    <header class="vf-drawer__header">
+      <h2 class="vf-drawer__title" id="promo-calc-title">Como o cálculo foi feito</h2>
+      <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon" id="promo-calc-close" aria-label="Fechar detalhe do cálculo">✕</button>
+    </header>
+    <div class="vf-drawer__body" id="promo-calc-body"></div>
+    <footer class="vf-drawer__footer">
+      <!-- Fronteira arquitetural para futura ação PUT (habilitar promoção). Oculta enquanto
+           PROMO_WRITE_CAPABILITY.enabled === false — ver promocoes-retorno.js. -->
+      <div class="vf-promo-write-action" id="promo-write-action" hidden></div>
+      <button type="button" class="vf-btn vf-btn--secondary" id="promo-calc-close-footer">Fechar</button>
+    </footer>
+  </aside>
+
+  <script src="layout.js"></script>
+  <script src="promocoes-retorno.js"></script>
+</body>
+</html>

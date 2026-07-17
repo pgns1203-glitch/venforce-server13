@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "VenForce Go",
+  "version": "1.2.0",
+  "description": "HUD premium VenForce para análise de custos, margem e precificação em anúncios Mercado Livre.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://venforce-server.onrender.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.mercadolivre.com.br/*",
+        "https://mercadolivre.com.br/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "VenForce Go — HUD de Margem"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

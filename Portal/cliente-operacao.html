@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Cliente Operação</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="venforce-ui-v2.css">
+  <link rel="stylesheet" href="cliente-operacao.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+  <style>
+    .vfop-phead {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .vfop-phead-left { flex: 1; min-width: 0; }
+    .vfop-phead-right {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body class="vf-page vfop-body">
+  <div class="vf-main-with-sidebar">
+    <main class="vfop-page" aria-labelledby="vfop-page-title">
+      <section class="vfop-client-head">
+        <div class="vfop-client-head__main">
+          <div class="vfop-switcher-bar">
+            <div id="vfop-switcher-chip"></div>
+            <div id="vfop-quick-chips" class="vfop-quick-chips"></div>
+            <div style="margin-left:auto;display:flex;gap:6px;
+                        align-items:center;">
+              <div class="vfop-client-picker" style="display:grid;
+                   gap:3px;">
+                <label style="font-size:9.5px;font-weight:700;
+                              letter-spacing:.08em;text-transform:uppercase;
+                              color:var(--vfop-soft);">
+                  Trocar cliente
+                </label>
+                <select id="vfop-client-select" class="vfop-select"
+                        style="min-width:180px;min-height:30px;
+                               font-size:12.5px;">
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="vfop-phead">
+            <div class="vfop-phead-left">
+              <div class="vfop-kicker">Cliente · Setup operacional</div>
+              <h1 id="vfop-page-title"
+                  style="font-size:22px;font-weight:600;
+                         letter-spacing:-.02em;margin:4px 0 6px;
+                         color:var(--vfop-text);line-height:1.15;">
+                —
+              </h1>
+              <div id="vfop-meta-strip" class="vfop-meta-strip" aria-label="Resumo do cliente selecionado">
+                <span id="vfop-client-name">Selecionando cliente...</span>
+                <span id="vfop-client-channel">Canal principal: --</span>
+                <span id="vfop-last-update">Atualizacao: --</span>
+              </div>
+            </div>
+            <div class="vfop-phead-right" id="vfop-head-actions"></div>
+          </div>
+          <div id="vfop-client-chip"></div>
+          <div id="vfop-quick-access" class="vfop-quick-access"
+               style="display:none;"></div>
+        </div>
+        <div class="vfop-client-tools">
+          <div class="vfop-client-head__actions">
+            <span id="vfop-operational-status" class="vfop-status vfop-status--neutral">Carregando</span>
+            <button id="vfop-refresh" class="vfop-action vfop-action--primary" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21 12a9 9 0 0 1-15.3 6.4"></path>
+                <path d="M3 12a9 9 0 0 1 15.3-6.4"></path>
+                <path d="M18 2v4h-4"></path>
+                <path d="M6 22v-4h4"></path>
+              </svg>
+              <span>Atualizar dados</span>
+            </button>
+            <a id="vfop-control-center-link" class="vfop-action vfop-action--ghost" href="control-center.html">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 17l6-6-6-6"></path>
+                <path d="M12 19h8"></path>
+              </svg>
+              <span>Ver Control Center</span>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <div id="vfop-source-alert" class="vfop-pilot-note" role="status">
+        Ficha piloto: dados reais entram onde ja existe contrato de API; previews e pendencias futuras ficam marcados na propria linha.
+      </div>
+
+      <div class="vfop-hero-grid" id="vfop-readiness-wrap">
+        <div class="vfop-panel" id="vfop-readiness-panel-wrap">
+          <div class="vfop-section-head">
+            <span class="vfop-section-eyebrow">Prontidão</span>
+            <h2 class="vfop-panel-title">
+              Prontidão operacional
+            </h2>
+          </div>
+          <div class="vfop-readiness-main"
+               id="vfop-readiness-body">
+          </div>
+        </div>
+        <div id="vfop-identity-panel"></div>
+      </div>
+
+      <section class="vfop-section vfop-section--cadastro" aria-labelledby="vfop-record-title">
+        <div class="vfop-section-head">
+          <div>
+            <span class="vfop-section-eyebrow">Cadastro</span>
+            <h2 id="vfop-record-title">Cadastro operacional</h2>
+          </div>
+        </div>
+        <div id="vfop-operational-record" class="vfop-record-grid">
+          <div class="vfop-placeholder">Carregando ficha...</div>
+        </div>
+        <div class="vfop-record-note">Dados administrativos sensiveis continuam em clientes.html.</div>
+      </section>
+
+      <section class="vfop-section" aria-labelledby="vfop-channels-title">
+        <div class="vfop-section-head">
+          <div>
+            <span class="vfop-section-eyebrow">Lojas</span>
+            <h2 id="vfop-channels-title">Canais e lojas</h2>
+          </div>
+        </div>
+        <div class="vfop-table-wrap">
+          <div id="vfop-channels-body" class="vfop-channel-grid"></div>
+        </div>
+      </section>
+
+      <section class="vfop-grid vfop-grid--setup">
+        <article class="vfop-section vfop-setup-section" aria-labelledby="vfop-setup-title">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Setup</span>
+              <h2 id="vfop-setup-title">Setup operacional</h2>
+            </div>
+            <div class="vfop-score-compact">
+              <strong id="vfop-score-value">--</strong>
+              <span id="vfop-score-label">Calculando</span>
+            </div>
+          </div>
+          <div class="vfop-score-meter" aria-hidden="true">
+            <span id="vfop-score-bar"></span>
+          </div>
+          <div id="vfop-setup-list" class="vfop-checklist" aria-label="Checklist de setup">
+            <div class="vfop-placeholder">Carregando checklist...</div>
+          </div>
+        </article>
+
+        <article class="vfop-section" aria-labelledby="vfop-data-title">
+          <div class="vfop-section-head">
+            <div>
+              <span class="vfop-section-eyebrow">Calculo futuro</span>
+              <h2 id="vfop-data-title">Dados para calculo futuro</h2>
+            </div>
+          </div>
+          <div class="vfop-table-wrap">
+            <table class="vfop-table">
+              <thead>
+                <tr>
+                  <th>Dado</th>
+                  <th>Estado</th>
+                  <th>Fonte</th>
+                  <th>Observacao</th>
+                </tr>
+              </thead>
+              <tbody id="vfop-data-body">
+                <tr><td colspan="4" class="vfop-empty-cell">Avaliando dados...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="vfop-section" aria-labelledby="vfop-actions-title">
+        <div class="vfop-section-head">
+          <div>
+            <span class="vfop-section-eyebrow">Fila</span>
+            <h2 id="vfop-actions-title">Proximas acoes</h2>
+          </div>
+        </div>
+        <div class="vfop-table-wrap">
+          <table class="vfop-table">
+            <thead>
+              <tr>
+                <th>Acao</th>
+                <th>Prioridade</th>
+                <th>Motivo</th>
+                <th>Fonte</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="vfop-action-body">
+              <tr><td colspan="5" class="vfop-empty-cell">Priorizando acoes...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="vfop-section vfop-history-section" aria-labelledby="vfop-history-title">
+        <div class="vfop-section-head">
+          <div>
+            <span class="vfop-section-eyebrow">Historico</span>
+            <h2 id="vfop-history-title">Historico operacional</h2>
+          </div>
+        </div>
+        <div id="vfop-history" class="vfop-timeline">
+          <div class="vfop-placeholder">Carregando historico...</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="layout.js"></script>
+  <script src="cliente-operacao.js"></script>
+</body>
+</html>

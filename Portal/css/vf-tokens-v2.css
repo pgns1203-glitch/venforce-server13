@@ -1,0 +1,345 @@
+/*
+ * ============================================================
+ * VenForce — Fundação Global V2
+ * vf-tokens-v2.css
+ * ============================================================
+ *
+ * Fonte única de verdade para: cor, tipografia, espaçamento,
+ * forma, sombra, movimento, camadas, foco, layout e densidade.
+ *
+ * Ordem de carga obrigatória:
+ *   1. vf-tokens-v2.css   (este arquivo)
+ *   2. vf-components-v2.css
+ *
+ * Regras deste arquivo:
+ *  - Só tokens, reset mínimo e foco global. Nenhum componente.
+ *  - Nenhum token novo deve ser criado dentro de componentes;
+ *    se um componente precisa de um valor, ele nasce aqui.
+ *  - Tokens marcados [compat] existem só para não quebrar a V1
+ *    e não devem ser usados em código novo.
+ */
+
+/* ============================================================
+ * 1. MARCA
+ * ============================================================ */
+
+:root {
+  /* Roxo VenForce — identidade fixa */
+  --vf-primary: #5a2a8f;
+  --vf-primary-hover: #4c2379;   /* hover de superfícies primárias */
+  --vf-primary-active: #3f1d64;  /* pressed */
+  --vf-primary-strong: #452073;  /* texto roxo sobre fundos claros/soft */
+  --vf-primary-soft: #f4eef9;    /* fundo suave (selected, hover ghost) */
+  --vf-primary-soft-hover: #ece2f6;
+  --vf-primary-border: #e2d5f2;  /* borda de superfícies soft */
+  --vf-primary-rgb: 90, 42, 143; /* para halos com alpha */
+
+  /* ============================================================
+   * 2. NEUTROS
+   * Escala cinza-azulada. Um papel = um token.
+   * ============================================================ */
+
+  --vf-bg: #f7f8fb;              /* fundo geral da aplicação */
+  --vf-bg-2: #eef0f6;            /* fundo rebaixado: wells, skeleton, track */
+  --vf-surface: #ffffff;         /* superfície padrão: cards, inputs, tabela */
+  --vf-surface-2: #fafbfd;       /* superfície alternativa: thead, footers */
+  --vf-surface-hover: #f3f5f9;   /* hover de linhas e itens de menu */
+  --vf-text: #1b1d28;            /* texto principal */
+  --vf-text-secondary: #545b6e;  /* texto de apoio (AA em 12px+) */
+  --vf-text-muted: #6b7285;      /* texto discreto ainda legível (~4.8:1) */
+  --vf-text-placeholder: #9aa0b3;/* apenas placeholder/decoração */
+  --vf-text-disabled: #a2a7b8;
+  --vf-text-on-primary: #ffffff;
+  --vf-border: #e7e9f0;          /* divisórias e bordas de card */
+  --vf-border-strong: #d6d9e4;   /* bordas de controles interativos */
+  --vf-border-hover: #c2c7d6;    /* hover de controles com borda */
+  --vf-disabled-bg: #eef0f6;
+
+  /* ============================================================
+   * 3. SEMÂNTICAS
+   * Cada cor tem 4 papéis: texto, fundo, borda e versão forte.
+   * ============================================================ */
+
+  --vf-success: #0f7a52;
+  --vf-success-bg: #e7f6ef;
+  --vf-success-border: #bfe6d3;
+  --vf-success-strong: #0a5c3d;
+
+  --vf-warning: #b25e00;
+  --vf-warning-bg: #fdf1e3;
+  --vf-warning-border: #f2dab5;
+  --vf-warning-strong: #8f4c00;
+
+  --vf-danger: #c62828;
+  --vf-danger-bg: #fdecec;
+  --vf-danger-border: #f4c7c7;
+  --vf-danger-strong: #a81f1f;
+
+  --vf-info: #1d5fb8;
+  --vf-info-bg: #e8f1fc;
+  --vf-info-border: #c3daf4;
+  --vf-info-strong: #174d96;
+
+  --vf-neutral: #5a6072;
+  --vf-neutral-bg: #f1f2f6;
+  --vf-neutral-border: #dcdfe8;
+  --vf-neutral-strong: #3f4454;
+
+  /* Hover explícito para linhas de tabela coloridas
+     (substitui o hack filter:brightness da V1) */
+  --vf-success-bg-hover: #dcf0e6;
+  --vf-warning-bg-hover: #f9e7cd;
+  --vf-danger-bg-hover: #f9dcdc;
+  --vf-info-bg-hover: #dbe9f9;
+  --vf-selected-bg-hover: var(--vf-primary-soft-hover);
+
+  /* ============================================================
+   * 4. TIPOGRAFIA
+   * Hanken Grotesk  → corpo, labels, botões, campos, tabelas, nav
+   * Manrope         → títulos, KPIs, números de destaque, moeda
+   * IBM Plex Mono   → IDs, SKUs, MLBs, códigos, logs (nunca “todo número”)
+   * ============================================================ */
+
+  --vf-font-body: "Hanken Grotesk", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --vf-font-display: "Manrope", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --vf-font-mono: "IBM Plex Mono", "SF Mono", Consolas, monospace;
+
+  /* Escala — todos os passos caem em pixel inteiro (base 16px) */
+  --vf-fs-2xs: 0.6875rem;  /* 11px — labels uppercase, notas de rodapé */
+  --vf-fs-xs: 0.75rem;     /* 12px — hints, meta, chips, badges */
+  --vf-fs-sm: 0.875rem;    /* 14px — tabelas, botões, campos */
+  --vf-fs-md: 0.9375rem;   /* 15px — corpo padrão */
+  --vf-fs-lg: 1.125rem;    /* 18px — títulos de seção */
+  --vf-fs-xl: 1.375rem;    /* 22px — título de página */
+  --vf-fs-2xl: 1.625rem;   /* 26px — KPIs, número de destaque */
+  --vf-fs-3xl: 2rem;       /* 32px — uso raro (relatórios, telas cheias) */
+
+  /* Pesos */
+  --vf-fw-regular: 400;
+  --vf-fw-medium: 500;
+  --vf-fw-semibold: 600;
+  --vf-fw-bold: 700;
+  --vf-fw-extrabold: 800;
+
+  /* Line-heights */
+  --vf-lh-tight: 1.15;   /* títulos e KPIs */
+  --vf-lh-snug: 1.35;    /* labels, células, botões multi-linha */
+  --vf-lh-normal: 1.5;   /* corpo */
+  --vf-lh-relaxed: 1.6;  /* parágrafos longos */
+
+  /* Letter-spacing */
+  --vf-ls-caps: 0.05em;    /* labels uppercase pequenos */
+  --vf-ls-tight: -0.015em; /* títulos */
+  --vf-ls-tighter: -0.03em;/* KPIs e números grandes */
+
+  /* [compat] aliases V1 — não usar em código novo */
+  --vf-font: var(--vf-font-body);
+  --vf-mono: var(--vf-font-mono);
+  --vf-fs-kpi: var(--vf-fs-2xl);
+  --vf-text-m: var(--vf-text-secondary);
+  --vf-text-l: var(--vf-text-muted);
+
+  /* ============================================================
+   * 5. ESPAÇAMENTO — múltiplos de 4px
+   * ============================================================ */
+
+  --vf-sp-1: 4px;
+  --vf-sp-2: 8px;
+  --vf-sp-3: 12px;
+  --vf-sp-4: 16px;
+  --vf-sp-5: 20px;
+  --vf-sp-6: 24px;
+  --vf-sp-8: 32px;
+  --vf-sp-10: 40px;
+  --vf-sp-12: 48px;
+  --vf-sp-16: 64px;
+
+  /* ============================================================
+   * 6. FORMA
+   * ============================================================ */
+
+  --vf-radius-sm: 6px;    /* controles: botões, inputs, tags */
+  --vf-radius: 10px;      /* cards, toolbar, tabela */
+  --vf-radius-lg: 12px;   /* overlays: modal, drawer, popover */
+  --vf-radius-pill: 999px;
+
+  /* ============================================================
+   * 7. SOMBRAS — nenhuma sombra permanente pesada
+   * ============================================================ */
+
+  --vf-shadow-xs: 0 1px 2px rgba(18, 22, 45, 0.05);
+  --vf-shadow-hover: 0 4px 14px rgba(27, 29, 40, 0.08);
+  --vf-shadow-popover: 0 6px 20px rgba(27, 29, 40, 0.12);
+  --vf-shadow-modal: 0 12px 32px rgba(27, 29, 40, 0.18);
+
+  /* [compat] alias V1 */
+  --vf-shadow-pop: var(--vf-shadow-modal);
+
+  /* ============================================================
+   * 8. CONTROLES — alturas consumidas pelos componentes.
+   * A densidade compacta redefine estes tokens (ver seção 13).
+   * ============================================================ */
+
+  --vf-control-h-sm: 30px;
+  --vf-control-h: 38px;
+  --vf-control-h-lg: 44px;
+  --vf-control-fs: var(--vf-fs-sm);
+  --vf-control-fs-sm: var(--vf-fs-xs);
+
+  /* Tokens de componente sensíveis à densidade */
+  --vf-card-pad-x: var(--vf-sp-5);
+  --vf-card-pad-y: var(--vf-sp-5);
+  --vf-card-head-py: var(--vf-sp-4);
+  --vf-kpi-pad: var(--vf-sp-4);
+  --vf-kpi-value-fs: clamp(1.35rem, 1.15rem + 0.7vw, 1.625rem);
+  --vf-table-cell-py: 9px;
+  --vf-table-cell-px: var(--vf-sp-3);
+  --vf-table-head-py: var(--vf-sp-2);
+  --vf-toolbar-py: var(--vf-sp-3);
+  --vf-toolbar-px: var(--vf-sp-4);
+  --vf-section-gap: var(--vf-sp-8);
+  --vf-field-gap: var(--vf-sp-1);
+
+  /* ============================================================
+   * 9. LAYOUT — apenas tokens; nenhum layout é aplicado aqui
+   * ============================================================ */
+
+  --vf-content-standard: 1200px;
+  --vf-content-wide: 1560px;
+  --vf-sidebar-w: 240px;
+  --vf-sidebar-w-collapsed: 64px;
+  --vf-topbar-h: 56px;
+
+  --vf-drawer-sm: 360px;
+  --vf-drawer-md: 480px;
+  --vf-drawer-lg: 640px;
+
+  --vf-modal-sm: 400px;
+  --vf-modal-md: 560px;
+  --vf-modal-lg: 760px;
+
+  /* ============================================================
+   * 10. MOVIMENTO
+   * ============================================================ */
+
+  --vf-duration-fast: 0.12s;  /* hover de itens pequenos */
+  --vf-duration: 0.18s;       /* padrão */
+  --vf-duration-slow: 0.28s;  /* drawer, modal */
+  --vf-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  /* ============================================================
+   * 11. CAMADAS
+   * ============================================================ */
+
+  --vf-z-dropdown: 1000;
+  --vf-z-sticky: 1020;
+  --vf-z-drawer: 1040;
+  --vf-z-modal: 1050;
+  --vf-z-toast: 1060;
+  --vf-z-tooltip: 1070;
+
+  /* ============================================================
+   * 12. FOCO
+   * ============================================================ */
+
+  --vf-focus-color: var(--vf-primary);
+  --vf-focus-ring: 0 0 0 3px rgba(var(--vf-primary-rgb), 0.2);
+  --vf-focus-ring-danger: 0 0 0 3px rgba(198, 40, 40, 0.18);
+  --vf-focus-offset: 2px;
+}
+
+/* ============================================================
+ * 13. DENSIDADE
+ * Aplicar data-vf-density="compact" no <html>, <body> ou em
+ * qualquer container. Só tokens mudam — nenhum componente é
+ * duplicado. A escala tipográfica de leitura não é reduzida
+ * abaixo de 12px para preservar legibilidade.
+ * ============================================================ */
+
+[data-vf-density="compact"] {
+  --vf-control-h-sm: 26px;
+  --vf-control-h: 32px;
+  --vf-control-h-lg: 38px;
+  --vf-control-fs: 0.8125rem; /* 13px */
+
+  --vf-card-pad-x: var(--vf-sp-4);
+  --vf-card-pad-y: var(--vf-sp-3);
+  --vf-card-head-py: var(--vf-sp-3);
+  --vf-kpi-pad: var(--vf-sp-3);
+  --vf-kpi-value-fs: clamp(1.2rem, 1.05rem + 0.5vw, 1.375rem);
+  --vf-table-cell-py: 5px;
+  --vf-table-head-py: 6px;
+  --vf-toolbar-py: var(--vf-sp-2);
+  --vf-toolbar-px: var(--vf-sp-3);
+  --vf-section-gap: var(--vf-sp-6);
+}
+
+/* ============================================================
+ * 14. RESET MÍNIMO SEGURO
+ * ============================================================ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-md);
+  line-height: var(--vf-lh-normal);
+  color: var(--vf-text);
+  background: var(--vf-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ============================================================
+ * 15. HELPERS TIPOGRÁFICOS BÁSICOS
+ * ============================================================ */
+
+/* IDs, códigos e valores técnicos — nunca usar em todo número */
+.vf-mono {
+  font-family: var(--vf-font-mono);
+  font-size: 0.92em;
+  letter-spacing: -0.01em;
+}
+
+/* Números em tabelas e KPIs: dígitos tabulares alinhados à direita */
+.num {
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ============================================================
+ * 16. FOCO GLOBAL
+ * Uma única regra, de especificidade zero (:where), sem
+ * border-radius forçado e sem halo duplo. Componentes com
+ * indicador próprio (inputs) desligam o outline localmente.
+ * ============================================================ */
+
+:where(:focus-visible) {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: var(--vf-focus-offset);
+}
+
+/* ============================================================
+ * 17. MOVIMENTO REDUZIDO
+ * Único uso permitido de !important em toda a fundação.
+ * ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

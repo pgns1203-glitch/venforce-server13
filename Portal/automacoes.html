@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Otimizador de Precificação ML</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (códigos) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 1. Layout compartilhado (sidebar/topbar/estados globais indispensáveis) -->
+  <link rel="stylesheet" href="style.css">
+  <!-- 2. Fundação Global V2 (tokens → componentes → página) -->
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
+  <link rel="stylesheet" href="css/pages/automacoes-v2.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+</head>
+<body class="vf-page vf-page-dashboard vf-page-automacoes">
+
+  <div class="vf-main-with-sidebar">
+    <main class="vf-content">
+      <div class="vf-page-shell">
+        <div class="vf-page-container">
+
+          <!-- 1. PAGE HEADER -->
+          <header class="vf-page-header">
+            <div class="vf-page-header__main">
+              <p class="vf-page-header__eyebrow">Automações · Mercado Livre</p>
+              <h1 class="vf-page-header__title">Otimizador de Precificação ML</h1>
+              <p class="vf-page-header__description">Analise margem, custo, frete e preço-alvo dos anúncios ativos do Mercado Livre.</p>
+            </div>
+          </header>
+
+          <!-- Feedback global da página -->
+          <div id="auto-feedback" class="vf-banner" role="status" aria-live="polite" hidden></div>
+
+          <!-- 2. CONFIGURAÇÃO DA ANÁLISE -->
+          <section class="vf-card vf-auto-config" id="auto-config-card">
+            <div class="vf-card__header">
+              <h2 class="vf-card__title">Configuração da análise</h2>
+            </div>
+            <div class="vf-card__body">
+              <div class="vf-form-grid vf-auto-config__grid">
+                <div class="vf-field">
+                  <label class="vf-field__label" for="auto-cliente-search">Buscar cliente</label>
+                  <input id="auto-cliente-search" class="vf-input vf-search" type="search" placeholder="Nome ou slug do cliente" autocomplete="off">
+                </div>
+                <div class="vf-field">
+                  <label class="vf-field__label" for="auto-cliente">Cliente</label>
+                  <select id="auto-cliente" class="vf-select">
+                    <option value="">Carregando…</option>
+                  </select>
+                  <p class="vf-field__hint">Clientes sem grant ML aparecem desabilitados.</p>
+                </div>
+                <div class="vf-field">
+                  <label class="vf-field__label" for="auto-margem">Margem-alvo</label>
+                  <div class="vf-input-group">
+                    <input id="auto-margem" class="vf-input" type="number" min="1" max="99" step="0.5" placeholder="30" autocomplete="off">
+                    <span class="vf-input-suffix">%</span>
+                  </div>
+                  <p class="vf-field__hint">Margem de contribuição desejada para o preço-alvo.</p>
+                </div>
+              </div>
+
+              <!-- Prontidão do cliente (grant + base) -->
+              <div class="vf-auto-readiness" id="auto-readiness" hidden>
+                <div class="vf-auto-readiness__item">
+                  <span class="vf-auto-readiness__label">Grant ML</span>
+                  <span class="vf-status" id="rd-grant">—</span>
+                </div>
+                <div class="vf-auto-readiness__item">
+                  <span class="vf-auto-readiness__label">Base de custos</span>
+                  <span class="vf-auto-readiness__value" id="rd-base">—</span>
+                </div>
+                <div class="vf-auto-readiness__item">
+                  <span class="vf-auto-readiness__label">Atualização</span>
+                  <span class="vf-auto-readiness__value" id="rd-updated">—</span>
+                </div>
+                <div class="vf-auto-readiness__item">
+                  <span class="vf-auto-readiness__label">Status</span>
+                  <span class="vf-status" id="rd-status">—</span>
+                </div>
+              </div>
+
+              <!-- Banner de bloqueio (sem grant / sem base / múltiplas bases / erro) -->
+              <div id="auto-state-banner" class="vf-banner" role="status" aria-live="polite" hidden></div>
+            </div>
+            <div class="vf-card__footer">
+              <button type="button" id="btn-baixar-planilha-precificacao" class="vf-btn vf-btn--secondary" disabled>
+                Baixar planilha de precificação
+              </button>
+              <button type="button" id="btn-otimizador-analisar" class="vf-btn vf-btn--primary" disabled>
+                Analisar loja
+              </button>
+            </div>
+          </section>
+
+          <!-- 3. PROCESSANDO -->
+          <section class="vf-card vf-auto-progress" id="auto-progress-card" hidden aria-live="polite">
+            <div class="vf-card__body">
+              <div class="vf-loading-state">
+                <span class="vf-spinner vf-spinner--lg" aria-hidden="true"></span>
+                <div class="vf-auto-progress__status" id="auto-progress-status">Iniciando análise da loja…</div>
+              </div>
+              <div class="vf-progress vf-auto-progress__bar-track">
+                <div class="vf-progress__bar" id="auto-progress-bar"></div>
+              </div>
+              <div class="vf-auto-progress__meta" id="auto-progress-meta"></div>
+            </div>
+          </section>
+
+          <!-- 4. RESULTADO -->
+          <section class="vf-auto-results" id="auto-results" hidden>
+            <div class="vf-section">
+              <div class="vf-section__header">
+                <div>
+                  <h2 class="vf-section__title">Resultado da análise</h2>
+                  <p class="vf-section__description" id="auto-results-sub">—</p>
+                </div>
+              </div>
+              <div class="vf-kpi-grid" id="auto-kpis"></div>
+            </div>
+
+            <div class="vf-section vf-auto-priorities">
+              <div class="vf-section__header">
+                <div>
+                  <h3 class="vf-section__title">Prioridades encontradas</h3>
+                  <p class="vf-section__description">Até 10 itens que mais exigem atenção. Detalhes completos em Relatórios.</p>
+                </div>
+                <span class="vf-badge" id="auto-priorities-count" hidden>0</span>
+              </div>
+              <div class="vf-table-wrap">
+                <table class="vf-table vf-auto-priorities__table">
+                  <thead>
+                    <tr>
+                      <th>MLB</th>
+                      <th>Título</th>
+                      <th class="num">Preço atual</th>
+                      <th class="num">MC</th>
+                      <th class="num">Preço-alvo</th>
+                      <th>Diagnóstico</th>
+                      <th>Ação recomendada</th>
+                    </tr>
+                  </thead>
+                  <tbody id="auto-priorities-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="vf-auto-actions">
+              <button type="button" id="btn-ver-relatorio-completo" class="vf-btn vf-btn--primary">Ver relatório completo</button>
+              <button type="button" id="btn-baixar-xlsx" class="vf-btn vf-btn--secondary">Baixar XLSX</button>
+              <button type="button" id="btn-nova-analise" class="vf-btn vf-btn--secondary">Nova análise</button>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="layout.js"></script>
+  <script src="automacoes.js"></script>
+</body>
+</html>

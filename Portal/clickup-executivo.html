@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gestão - ClickUp | Venforce</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="venforce-ui-v2.css" />
+  <link rel="stylesheet" href="clickup-executivo.css" />
+</head>
+<body class="vf-page vf-page-clickup">
+  <div class="vf-main-with-sidebar">
+    <main class="vf-content">
+      <div class="vf-page-head">
+        <div class="vf-page-head__main">
+          <span class="vf-kicker">● Gestão - ClickUp</span>
+          <h1>Controle Executivo ClickUp</h1>
+          <p class="vf-page-head__sub">Entregas concluídas, comentários, canais, clientes e produtividade por responsável.</p>
+        </div>
+        <div class="vf-page-head__actions">
+          <button id="btn-clickup-comments" class="vf-btn vf-btn--ghost" type="button">Carregar comentários</button>
+          <button id="btn-clickup-export" class="vf-btn vf-btn--ghost" type="button">Exportar CSV</button>
+          <button id="btn-clickup-refresh" class="vf-btn vf-btn--primary" type="button">Atualizar</button>
+        </div>
+      </div>
+
+      <section class="vf-card vf-clickup-filters-card" aria-labelledby="clickup-filters-title">
+        <div class="vf-card-h">
+          <div class="vf-card-title-stack">
+            <h5 id="clickup-filters-title">Filtros</h5>
+            <p>Período, responsável, cliente, canal e busca textual.</p>
+          </div>
+          <span id="clickup-meta" class="vf-muted vf-clickup-meta"></span>
+        </div>
+        <div class="vf-card-body">
+          <div class="vf-clickup-filters">
+            <label>
+              <span>De</span>
+              <input id="clickup-date-from" type="date" />
+            </label>
+            <label>
+              <span>Até</span>
+              <input id="clickup-date-to" type="date" />
+            </label>
+            <label>
+              <span>Responsável</span>
+              <select id="clickup-person-filter">
+                <option value="">Todos</option>
+              </select>
+            </label>
+            <label>
+              <span>Cliente</span>
+              <select id="clickup-client-filter">
+                <option value="">Todos</option>
+              </select>
+            </label>
+            <label>
+              <span>Canal</span>
+              <select id="clickup-channel-filter">
+                <option value="">Todos</option>
+              </select>
+            </label>
+            <label class="vf-clickup-search">
+              <span>Buscar</span>
+              <input id="clickup-search" type="search" placeholder="Tarefa, comentário, cliente..." />
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <div id="clickup-alert" class="vf-clickup-alert" hidden></div>
+
+      <section class="vf-kpi-grid vf-clickup-kpis" aria-label="Indicadores ClickUp">
+        <article class="vf-kpi is-primary">
+          <div class="vf-kpi__top"><span class="vf-kpi__label">Entregas concluídas</span></div>
+          <div class="vf-kpi__value" id="kpi-concluidas">0</div>
+          <div class="vf-kpi__foot">No período filtrado</div>
+        </article>
+        <article class="vf-kpi is-info">
+          <div class="vf-kpi__top"><span class="vf-kpi__label">Tarefas abertas</span></div>
+          <div class="vf-kpi__value" id="kpi-abertas">0</div>
+          <div class="vf-kpi__foot">Lista Nova Gestão</div>
+        </article>
+        <article class="vf-kpi is-warning">
+          <div class="vf-kpi__top"><span class="vf-kpi__label">Atrasadas abertas</span></div>
+          <div class="vf-kpi__value" id="kpi-atrasadas">0</div>
+          <div class="vf-kpi__foot">Prazo vencido</div>
+        </article>
+        <article class="vf-kpi">
+          <div class="vf-kpi__top"><span class="vf-kpi__label">Sem prazo</span></div>
+          <div class="vf-kpi__value" id="kpi-sem-prazo">0</div>
+          <div class="vf-kpi__foot">Sem due date</div>
+        </article>
+        <article class="vf-kpi is-success">
+          <div class="vf-kpi__top"><span class="vf-kpi__label">Clientes atendidos</span></div>
+          <div class="vf-kpi__value" id="kpi-clientes">0</div>
+          <div class="vf-kpi__foot">Com entrega no período</div>
+        </article>
+        <article class="vf-kpi">
+          <div class="vf-kpi__top"><span class="vf-kpi__label">% com comentário</span></div>
+          <div class="vf-kpi__value" id="kpi-comentario">0%</div>
+          <div class="vf-kpi__foot">Entregas comentadas</div>
+        </article>
+        <article class="vf-kpi is-primary">
+          <div class="vf-kpi__top"><span class="vf-kpi__label">Score de uso</span></div>
+          <div class="vf-kpi__value" id="kpi-score">0</div>
+          <div class="vf-kpi__foot">Uso correto do ClickUp</div>
+        </article>
+      </section>
+
+      <section class="vf-clickup-grid">
+        <article class="vf-card vf-clickup-panel vf-clickup-panel--large">
+          <div class="vf-card-h">
+            <div class="vf-card-title-stack">
+              <h5>Resumo por responsável</h5>
+              <p>Total, entregas, abertas, atrasadas e score de uso.</p>
+            </div>
+          </div>
+          <div class="vf-card-body">
+            <div class="vf-table-wrap">
+              <table class="vf-table" id="clickup-people-table">
+                <thead>
+                  <tr>
+                    <th>Responsável</th>
+                    <th>Total</th>
+                    <th>Concluídas</th>
+                    <th>Abertas</th>
+                    <th>Atrasadas</th>
+                    <th>Sem prazo</th>
+                    <th>Com comentário</th>
+                    <th>Score</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </article>
+
+        <article class="vf-card vf-clickup-panel">
+          <div class="vf-card-h">
+            <div class="vf-card-title-stack">
+              <h5>Clientes</h5>
+              <p>Mais entregas no período.</p>
+            </div>
+          </div>
+          <div class="vf-card-body">
+            <div id="clickup-client-ranking" class="vf-clickup-ranking"></div>
+          </div>
+        </article>
+
+        <article class="vf-card vf-clickup-panel">
+          <div class="vf-card-h">
+            <div class="vf-card-title-stack">
+              <h5>Canais</h5>
+              <p>Listas mais usadas.</p>
+            </div>
+          </div>
+          <div class="vf-card-body">
+            <div id="clickup-channel-ranking" class="vf-clickup-ranking"></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="vf-card vf-clickup-panel vf-clickup-alerts-card">
+        <div class="vf-card-h">
+          <div class="vf-card-title-stack">
+            <h5>Alertas executivos</h5>
+            <p>Atrasos, tarefas sem responsável e sem prazo.</p>
+          </div>
+        </div>
+        <div class="vf-card-body">
+          <div id="clickup-alerts" class="vf-clickup-alerts"></div>
+        </div>
+      </section>
+
+      <section class="vf-card vf-clickup-panel">
+        <div class="vf-card-h">
+          <div class="vf-card-title-stack">
+            <h5>Histórico de entregas</h5>
+            <p>Data de conclusão, tarefa, comentário, responsável, canal, cliente e link.</p>
+          </div>
+          <span id="clickup-table-count" class="vf-muted">0 registros</span>
+        </div>
+        <div class="vf-card-body">
+          <div class="vf-table-wrap">
+            <table class="vf-table vf-clickup-deliveries" id="clickup-deliveries-table">
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Tarefa</th>
+                  <th>Comentário</th>
+                  <th>Responsáveis</th>
+                  <th>Canal</th>
+                  <th>Cliente</th>
+                  <th>Status</th>
+                  <th>Link</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="layout.js"></script>
+  <script src="clickup-executivo.js"></script>
+</body>
+</html>

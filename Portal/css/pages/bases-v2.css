@@ -1,0 +1,509 @@
+/* ============================================================
+ * VenForce — Bases de Custo · CSS específico da página (V2)
+ * Piloto oficial da Fundação Global V2.
+ *
+ * Ordem de carga (em bases.html):
+ *   style.css (layout/sidebar/topbar) →
+ *   css/vf-tokens-v2.css → css/vf-components-v2.css →
+ *   css/pages/bases-v2.css (este arquivo, sempre por último)
+ *
+ * REGRAS DESTE ARQUIVO
+ *  - Só o que é REALMENTE específico da página Bases:
+ *    layout, larguras de coluna, alturas de wrapper, grids
+ *    exclusivos, posicionamento de menu, densidades locais.
+ *  - Componentes globais (botão, input, card, KPI, tabela, tag,
+ *    status, banner, modal, drawer, dropzone…) vêm de
+ *    vf-components-v2.css e NÃO são recriados aqui.
+ *  - Só tokens V2. Sem --b-*, sem hexadecimais soltos, sem
+ *    !important, sem sombras/radius/gradientes próprios.
+ *  - Classes b-* que sobraram são HOOKS de JavaScript sem estilo
+ *    próprio; recebem aqui apenas posicionamento/estado quando o
+ *    posicionamento é responsabilidade da página (ex.: menu "⋯").
+ * ============================================================ */
+
+/* ------------------------------------------------------------
+ * 1. Shell da página
+ * A tela vive dentro do layout existente (.vf-main-with-sidebar >
+ * .vf-content). Neutralizamos a largura/padding herdados do
+ * style.css e deixamos o vf-page-shell + vf-page-container
+ * cuidarem do enquadramento V2.
+ * ------------------------------------------------------------ */
+.vf-page-bases .vf-content {
+  max-width: none;
+  padding: 0;
+}
+
+.vf-page-bases .vf-page-container {
+  max-width: 1320px; /* tela densa de operação (2 colunas de tabela) */
+  --vf-section-gap: var(--vf-sp-6);
+}
+
+/* A página herda a classe .vf-page-dashboard, e o style.css força
+   min-width:1120px em .vf-page-dashboard .vf-table (tabelas largas do
+   dashboard). Aqui as tabelas são fluidas/compactas: zeramos esse mínimo
+   para que caibam no container e no drawer sem rolagem horizontal. */
+.vf-page-bases .vf-table {
+  min-width: 0;
+}
+
+/* Larguras de drawer e modal específicas desta tela (a tabela de
+   custos precisa de mais espaço que o padrão de 480px) */
+.vf-page-bases {
+  --vf-drawer-md: min(820px, 96vw);
+}
+
+/* A trilha de filtros aplicados não deve ocupar gap quando vazia */
+.vf-page-bases .vf-active-filters:empty {
+  display: none;
+}
+
+/* Rótulo de escopo dos KPIs (reusa o eyebrow como texto) */
+.vf-page-bases .vf-bases-kpi-scope {
+  margin: 0 0 var(--vf-sp-1);
+}
+
+/* ------------------------------------------------------------
+ * 2. Grade lado a lado: Mercado Livre + Shopee
+ * ------------------------------------------------------------ */
+.vf-page-bases .vf-bases-market-grid {
+  display: grid;
+  /* Mercado Livre recebe o dobro do espaço da coluna Shopee */
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  gap: var(--vf-sp-5);
+  align-items: start;
+}
+
+.vf-page-bases .vf-bases-mp {
+  gap: var(--vf-sp-3);
+}
+
+/* Cabeçalho da seção de marketplace: dot + título + contagem */
+.vf-page-bases .vf-bases-mp__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-bases .vf-bases-mp__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--vf-radius-pill);
+  flex: 0 0 auto;
+}
+
+.vf-page-bases .vf-bases-mp__dot--meli {
+  background: var(--vf-warning);
+}
+
+.vf-page-bases .vf-bases-mp__dot--shopee {
+  background: var(--vf-danger);
+}
+
+.vf-page-bases .vf-bases-mp__count {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Rolagem interna das listas + layout fixo de colunas.
+   table-layout:fixed + width:100% garante que as 4 colunas caibam
+   sempre no wrapper — nunca há rolagem horizontal. A rolagem é só
+   vertical (overflow-x oculto), então a barra horizontal some quando
+   a tabela cabe. */
+.vf-page-bases .vf-bases-mp .vf-table-wrap {
+  max-height: 520px;
+  overflow: hidden auto;
+}
+
+.vf-page-bases .vf-bases-mp .vf-table {
+  table-layout: fixed;
+}
+
+.vf-page-bases .vf-bases-mp .vf-table th,
+.vf-page-bases .vf-bases-mp .vf-table td {
+  overflow: hidden;
+}
+
+/* Colunas 1 (cliente/base) e 2 (base/loja) compartilham o espaço
+   restante; status e ações têm largura compacta e fixa. */
+.vf-page-bases .vf-bases-mp .vf-table th:nth-child(3),
+.vf-page-bases .vf-bases-mp .vf-table td:nth-child(3) {
+  width: 128px;
+}
+
+.vf-page-bases .vf-bases-mp .vf-table th:last-child,
+.vf-page-bases .vf-bases-mp .vf-table td:last-child {
+  width: 88px;
+  overflow: visible; /* deixa o menu "⋯" escapar da célula */
+}
+
+/* Mensagem "nenhuma base para os filtros" abaixo de cada lista */
+.vf-page-bases .vf-bases-empty-msg {
+  padding: var(--vf-sp-5) var(--vf-sp-4);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-sm);
+}
+
+/* Rodapé com a contagem exibida/total */
+.vf-page-bases .vf-bases-datastate {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+/* ------------------------------------------------------------
+ * 3. Células das linhas (conteúdo gerado por JS)
+ * ------------------------------------------------------------ */
+.vf-page-bases .vf-bases-basename {
+  font-weight: var(--vf-fw-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-basename .name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vf-page-bases .vf-bases-cliente {
+  color: var(--vf-text-secondary);
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-cliente strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vf-text);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-bases .vf-bases-muted {
+  color: var(--vf-text-muted);
+}
+
+/* Status de atualização (idade + ignorar alerta) */
+.vf-page-bases .vf-bases-status {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-ignore {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+/* Ações da linha alinhadas à direita, nunca quebram */
+.vf-page-bases .vf-bases-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--vf-sp-1);
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------
+ * 4. Menu "⋯" (posicionamento é responsabilidade da página).
+ * A superfície visual vem de .vf-menu (fundação); aqui só o
+ * posicionamento e o toggle aberto/fechado sobre o hook b-menu.
+ * ------------------------------------------------------------ */
+.vf-page-bases .b-menu {
+  position: relative;
+}
+
+.vf-page-bases .b-menu-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--vf-sp-1));
+  z-index: var(--vf-z-dropdown);
+  min-width: 190px;
+  display: none;
+}
+
+.vf-page-bases .b-menu-pop.is-open {
+  display: block;
+}
+
+/* ------------------------------------------------------------
+ * 5. Drawer "Base de custos" — regiões específicas da tela
+ * ------------------------------------------------------------ */
+.vf-page-bases .vf-bases-drawer-meta {
+  display: flex;
+  gap: var(--vf-sp-4);
+  flex-wrap: wrap;
+  margin-top: var(--vf-sp-2);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-bases .vf-bases-drawer-meta b {
+  color: var(--vf-text);
+  font-weight: var(--vf-fw-semibold);
+}
+
+/* Barra de ações do drawer (só ações; filtros vivem no thead) */
+.vf-page-bases .vf-bases-drawer-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--vf-sp-3) var(--vf-sp-5);
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-page-bases .vf-bases-drawer-actions {
+  display: flex;
+  gap: var(--vf-sp-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Painel de edição/planilha que desliza sob a toolbar do drawer */
+.vf-page-bases .vf-bases-cost-panel {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+  padding: var(--vf-sp-4) var(--vf-sp-5);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+/* Rodapé do drawer: contagem à esquerda, dica à direita */
+.vf-page-bases .vf-bases-drawer-footer {
+  justify-content: space-between;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-bases .vf-bases-hint {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  text-align: right;
+}
+
+/* Tabela de custos: cabeçalho com filtros nativos (estilo Excel) */
+.vf-page-bases .vf-bases-costs-table thead th {
+  padding: var(--vf-sp-1) var(--vf-sp-2);
+  vertical-align: bottom;
+}
+
+.vf-page-bases .b-th-filter-inline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.vf-page-bases .vf-bases-costs-table th.num .b-th-filter-inline {
+  align-items: flex-end;
+}
+
+.vf-page-bases .b-th-filter-inline > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.vf-page-bases .b-th-filter-inline input,
+.vf-page-bases .b-th-filter-inline select {
+  height: var(--vf-control-h-sm);
+  max-width: 118px;
+  min-width: 0;
+}
+
+.vf-page-bases .b-th-filter-inline input[type="search"] {
+  max-width: 100%;
+}
+
+/* Coluna preenchida sinaliza filtro ativo */
+.vf-page-bases .b-th-filter-inline.is-filtered > span {
+  color: var(--vf-primary-strong);
+}
+
+.vf-page-bases .b-th-filter-inline.is-filtered input,
+.vf-page-bases .b-th-filter-inline.is-filtered select {
+  border-color: var(--vf-primary-border);
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+}
+
+/* Linha de custo clicável + coluna de ação compacta */
+.vf-page-bases .vf-bases-costs-table tbody tr.b-cost-row {
+  cursor: pointer;
+}
+
+.vf-page-bases .vf-bases-cost-actions {
+  width: 44px;
+}
+
+/* Valor zerado destacado (custo/imposto/taxa) */
+.vf-page-bases .vf-bases-zero {
+  color: var(--vf-danger);
+  font-weight: var(--vf-fw-semibold);
+}
+
+/* ------------------------------------------------------------
+ * 6. Formulário de item e painel de planilha (dentro do drawer)
+ * ------------------------------------------------------------ */
+.vf-page-bases .vf-bases-cost-form,
+.vf-page-bases .vf-bases-planilha-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-bases .vf-bases-cost-form-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-bases .vf-bases-cost-form-head strong {
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-bases .vf-bases-cost-grid {
+  grid-template-columns: 1fr 1fr;
+}
+
+.vf-page-bases .vf-bases-microcopy {
+  margin: 0;
+}
+
+/* Preview incremental da planilha */
+.vf-page-bases .vf-bases-cost-preview {
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  padding: var(--vf-sp-4);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-bases .vf-bases-preview-title {
+  font-family: var(--vf-font-display);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+  font-size: var(--vf-fs-sm);
+  margin-bottom: var(--vf-sp-1);
+}
+
+.vf-page-bases .vf-bases-resumo {
+  list-style: none;
+  margin: 0 0 var(--vf-sp-2);
+  padding: 0;
+  display: grid;
+  gap: 3px;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-bases .vf-bases-resumo li {
+  padding-left: 14px;
+  position: relative;
+}
+
+.vf-page-bases .vf-bases-resumo li::before {
+  content: "•";
+  position: absolute;
+  left: 2px;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-bases .vf-bases-planilha-wrap {
+  margin-top: var(--vf-sp-1);
+}
+
+/* ------------------------------------------------------------
+ * 7. Modal de importação — assistente colapsado e link
+ * (o assistente em si continua estilizado por style.css/asst-*)
+ * ------------------------------------------------------------ */
+.vf-page-bases .vf-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-4);
+}
+
+.vf-page-bases .b-assist-link {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+  margin: 0;
+}
+
+.vf-page-bases .b-assist-link button {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary-strong);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.vf-page-bases .b-assist-collapse {
+  display: none;
+  border-top: 1px solid var(--vf-border);
+  padding-top: var(--vf-sp-4);
+}
+
+.vf-page-bases .b-assist-collapse.is-open {
+  display: block;
+}
+
+/* Subtítulos dos modais de confirmação (excluir/vincular) */
+.vf-page-bases .vf-bases-modal-sub {
+  margin: 2px 0 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-bases .vf-bases-import-status {
+  font-size: var(--vf-fs-sm);
+}
+
+/* Preview de importação abre POR CIMA do modal de importação */
+.vf-page-bases #preview-overlay {
+  z-index: calc(var(--vf-z-modal) + 5);
+}
+
+/* ------------------------------------------------------------
+ * 8. Responsivo específico da página
+ * (os componentes globais já respondem sozinhos)
+ * ------------------------------------------------------------ */
+@media (max-width: 1120px) {
+  .vf-page-bases .vf-bases-market-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .vf-page-bases .vf-bases-cost-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vf-page-bases .vf-bases-drawer-actions {
+    width: 100%;
+  }
+
+  .vf-page-bases .vf-bases-drawer-actions .vf-btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+}

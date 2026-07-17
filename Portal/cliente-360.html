@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VenForce — Cliente 360</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="venforce-ui-v2.css">
+  <link rel="stylesheet" href="cliente-operacao.css">
+  <link rel="stylesheet" href="cliente-360.css">
+</head>
+<body class="vf-page vfop-body">
+  <div class="vf-main-with-sidebar">
+    <main class="vfop-page" id="c360-main" aria-label="Cliente 360">
+
+      <!-- ══ SWITCHER BAR ══════════════════════════════════ -->
+      <div class="vfop-switcher-bar">
+        <div id="c360-switcher-chip"></div>
+        <div id="c360-quick-chips" class="vfop-quick-chips"></div>
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+          <div style="display:grid;gap:3px;">
+            <label for="c360-client-select"
+                   style="font-size:9.5px;font-weight:700;letter-spacing:.08em;
+                          text-transform:uppercase;color:var(--vfop-soft);">
+              Trocar cliente
+            </label>
+            <select id="c360-client-select" class="vfop-select"
+                    style="min-width:220px;min-height:30px;font-size:12.5px;">
+              <option value="">Carregando…</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ HEADER ════════════════════════════════════════ -->
+      <div class="c360-phead">
+        <div class="c360-phead-left">
+          <div class="c360-eyebrow">Cliente · 360°</div>
+          <h1 id="c360-page-title" class="c360-page-title">Selecione um cliente</h1>
+          <div id="c360-meta" class="c360-meta-strip"></div>
+        </div>
+        <div class="c360-phead-right" id="c360-head-actions"></div>
+      </div>
+
+      <!-- ══ ESTADO VAZIO (nenhum cliente) ═════════════════ -->
+      <div id="c360-pick" class="c360-panel">
+        <div class="c360-empty">
+          <div class="c360-empty-icon">🎯</div>
+          <b>Escolha um cliente para abrir o cockpit</b>
+          <p>Use o seletor acima ou um atalho salvo.<br>
+             Tudo sobre o cliente — métricas, fechamentos, diagnósticos e mídia — vive aqui.</p>
+        </div>
+      </div>
+
+      <!-- ══ LOADING ═══════════════════════════════════════ -->
+      <div id="c360-loading" class="c360-loading" style="display:none;">
+        Carregando dados do cliente…
+      </div>
+
+      <!-- ══ CONTEÚDO PRINCIPAL ════════════════════════════ -->
+      <div id="c360-content" style="display:none;">
+
+        <!-- SYNC BAR + COCKPIT + RECOMENDAÇÃO (render por JS) -->
+        <div id="c360-syncbar"></div>
+        <div id="c360-cockpit" class="c360-cockpit"></div>
+        <div id="c360-reco"></div>
+
+        <!-- ABAS -->
+        <div class="c360-tabs" id="c360-tabs">
+          <button class="c360-tab active" data-tab="overview">Visão geral</button>
+          <button class="c360-tab" data-tab="bases">Bases</button>
+          <button class="c360-tab" data-tab="diagnostico">Diagnóstico</button>
+          <button class="c360-tab" data-tab="metricas">Métricas ML</button>
+          <button class="c360-tab" data-tab="ads">Ads</button>
+          <button class="c360-tab" data-tab="fechamentos">Fechamentos</button>
+          <button class="c360-tab" data-tab="historico">Histórico</button>
+        </div>
+
+        <!-- PAINÉIS DAS ABAS -->
+        <div id="tab-overview"    class="c360-tab-panel"></div>
+        <div id="tab-bases"       class="c360-tab-panel" style="display:none;"></div>
+        <div id="tab-diagnostico" class="c360-tab-panel" style="display:none;"></div>
+        <div id="tab-metricas"    class="c360-tab-panel" style="display:none;"></div>
+        <div id="tab-ads"         class="c360-tab-panel" style="display:none;"></div>
+        <div id="tab-fechamentos" class="c360-tab-panel" style="display:none;"></div>
+        <div id="tab-historico"   class="c360-tab-panel" style="display:none;"></div>
+
+      </div><!-- /#c360-content -->
+
+    </main>
+  </div>
+
+  <script src="layout.js"></script>
+  <script src="cliente-360.js"></script>
+</body>
+</html>

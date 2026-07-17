@@ -1,0 +1,360 @@
+/* ================================================================
+   diagnostico-inicial-v2.css — VenForce · Diagnóstico Inicial
+   Página específica sobre a Fundação Global V2. Só tokens --vf-*,
+   sem cor hexadecimal, sem gradiente, sem sombra pesada permanente.
+   ================================================================ */
+
+/* ── Layout geral: nav de seções + seção ativa ────────────────── */
+
+.vf-diag-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: var(--vf-sp-6);
+  align-items: start;
+}
+
+.vf-diag-section-select-field {
+  display: none;
+}
+
+.vf-diag-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: var(--vf-sp-4);
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  padding: var(--vf-sp-2);
+}
+
+.vf-diag-nav__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2);
+  width: 100%;
+  border: none;
+  background: transparent;
+  border-radius: var(--vf-radius-sm);
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--vf-duration-fast) var(--vf-ease), color var(--vf-duration-fast) var(--vf-ease);
+}
+
+.vf-diag-nav__item:hover {
+  background: var(--vf-surface-hover);
+  color: var(--vf-text);
+}
+
+.vf-diag-nav__item.is-active {
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-diag-nav__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-neutral-bg);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-diag-nav__item.is-complete .vf-diag-nav__badge {
+  background: var(--vf-success-bg);
+  color: var(--vf-success-strong);
+}
+
+.vf-diag-section-host {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-5);
+  min-width: 0;
+}
+
+/* ── Cartão de seção ───────────────────────────────────────────── */
+
+.vf-diag-section {
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  padding: var(--vf-card-pad-y) var(--vf-card-pad-x);
+}
+
+.vf-diag-section__header {
+  margin-bottom: var(--vf-sp-4);
+}
+
+.vf-diag-section__title {
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-lg);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-diag-section__hint {
+  margin-top: var(--vf-sp-1);
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-muted);
+}
+
+.vf-diag-section__caminho {
+  display: inline-block;
+  margin-top: var(--vf-sp-2);
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  background: var(--vf-bg-2);
+  border-radius: var(--vf-radius-sm);
+  padding: 2px var(--vf-sp-2);
+}
+
+.vf-diag-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--vf-sp-4);
+}
+
+.vf-diag-subgroup {
+  margin-top: var(--vf-sp-5);
+  padding-top: var(--vf-sp-5);
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-diag-subgroup__title {
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+  margin-bottom: var(--vf-sp-3);
+}
+
+/* Bloco de campos dependentes (ex.: seção Full só aparece se utiliza Full) */
+.vf-diag-gate-off {
+  opacity: 0.55;
+}
+
+.vf-diag-gate-hidden {
+  display: none !important;
+}
+
+/* ── Tri-state (Sim / Não / Não avaliado) ─────────────────────── */
+
+.vf-diag-tristate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-2) 0;
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-diag-tristate-row:last-child {
+  border-bottom: none;
+}
+
+.vf-diag-tristate-label {
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text);
+}
+
+.vf-diag-tristate {
+  flex-shrink: 0;
+}
+
+.vf-diag-tristate .vf-segmented__item[data-value="sim"].is-active {
+  background: var(--vf-success-bg);
+  color: var(--vf-success-strong);
+}
+
+.vf-diag-tristate .vf-segmented__item[data-value="nao"].is-active {
+  background: var(--vf-danger-bg);
+  color: var(--vf-danger-strong);
+}
+
+.vf-diag-tristate .vf-segmented__item[data-value="nao_avaliado"].is-active {
+  background: var(--vf-neutral-bg);
+  color: var(--vf-text-secondary);
+}
+
+/* ── Tabelas mensais / produtos editáveis ─────────────────────── */
+
+.vf-diag-table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--vf-sp-2);
+}
+
+.vf-diag-table input {
+  width: 100%;
+  min-width: 88px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--vf-radius-sm);
+  padding: 6px 8px;
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text);
+}
+
+.vf-diag-table input:hover {
+  border-color: var(--vf-border);
+}
+
+.vf-diag-table input:focus-visible {
+  outline: var(--vf-focus-ring);
+  outline-offset: var(--vf-focus-offset);
+  border-color: var(--vf-primary-border);
+  background: var(--vf-surface);
+}
+
+.vf-diag-table td.num input {
+  text-align: right;
+}
+
+.vf-diag-table__remove {
+  border: none;
+  background: transparent;
+  color: var(--vf-text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-diag-table__remove:hover {
+  background: var(--vf-danger-bg);
+  color: var(--vf-danger-strong);
+}
+
+/* ── Diagnóstico gerado (editável) ─────────────────────────────── */
+
+.vf-diag-gerado-lista {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+}
+
+.vf-diag-gerado-lista textarea {
+  min-height: 96px;
+}
+
+.vf-diag-ausentes {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-1);
+  margin: 0;
+  padding: 0;
+}
+
+.vf-diag-ausentes li {
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-muted);
+  padding-left: var(--vf-sp-4);
+  position: relative;
+}
+
+.vf-diag-ausentes li::before {
+  content: "•";
+  position: absolute;
+  left: var(--vf-sp-1);
+  color: var(--vf-warning-strong);
+}
+
+/* ── Resumo / KPIs ──────────────────────────────────────────────── */
+
+#diag-resumo .vf-kpi__value {
+  font-family: var(--vf-font-display);
+}
+
+.vf-diag-kpi-value--compact {
+  font-size: var(--vf-fs-md);
+}
+
+/* ── Responsivo ───────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .vf-diag-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .vf-diag-nav {
+    display: none;
+  }
+
+  .vf-diag-section-select-field {
+    display: flex;
+  }
+}
+
+/* ── Impressão ────────────────────────────────────────────────── */
+
+.vf-diag-print {
+  display: none;
+}
+
+@media print {
+  .vf-sidebar,
+  .vf-app-topbar,
+  #vf-menu-btn,
+  .vf-page-header__actions,
+  #diag-toolbar,
+  #diag-marketplace-switch,
+  #diag-feedback,
+  #diag-resumo,
+  .vf-diag-layout,
+  .vf-overlay {
+    display: none !important;
+  }
+
+  body,
+  .vf-main-with-sidebar,
+  .vf-content,
+  .vf-page-shell,
+  .vf-page-container {
+    background: white !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+  }
+
+  .vf-diag-print {
+    display: block !important;
+  }
+
+  .vf-diag-print__header {
+    margin-bottom: var(--vf-sp-5);
+  }
+
+  .vf-diag-print__meta {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--vf-sp-2) var(--vf-sp-6);
+    margin-bottom: var(--vf-sp-5);
+    font-size: var(--vf-fs-sm);
+  }
+
+  .vf-diag-print__section {
+    break-inside: avoid;
+    margin-bottom: var(--vf-sp-5);
+  }
+
+  .vf-diag-print__section h3 {
+    font-family: var(--vf-font-display);
+    font-size: var(--vf-fs-md);
+    margin-bottom: var(--vf-sp-2);
+  }
+}

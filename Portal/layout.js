@@ -149,6 +149,7 @@
         { separator: true, label: "INÍCIO" },
         { label: "Dashboard",    href: "dashboard.html",     icon: "vf-dashboard" },
         { label: "Cliente Operação", href: "cliente-operacao.html", icon: "users" },
+        { label: "Diagnóstico Inicial", href: "diagnostico-inicial.html", icon: "activity" },
         { label: "Cliente 360", href: "cliente-360.html", icon: "users" },
         { label: "Bases de Custo", href: "bases.html",         icon: "database"     },
 
@@ -231,6 +232,7 @@
     "baixador-midias.html":   "operacao",
     "metricas.html":          "operacao",
     "cliente-operacao.html":  "operacao",
+    "diagnostico-inicial.html": "operacao",
     "cliente-360.html":       "operacao",
     "dashboard.html":       "operacao",
     "bases.html":           "operacao",

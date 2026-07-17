@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Diagnóstico Inicial</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (códigos) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 1. Layout compartilhado (sidebar/topbar/estados globais indispensáveis) -->
+  <link rel="stylesheet" href="style.css">
+  <!-- 2. Fundação Global V2 (tokens → componentes → página) -->
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
+  <link rel="stylesheet" href="css/pages/diagnostico-inicial-v2.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+</head>
+<body class="vf-page vf-page-dashboard vf-page-diagnostico-inicial">
+
+  <div class="vf-main-with-sidebar">
+    <main class="vf-content">
+      <div class="vf-page-shell">
+        <div class="vf-page-container">
+
+          <!-- 1. PAGE HEADER -->
+          <header class="vf-page-header">
+            <div class="vf-page-header__main">
+              <p class="vf-page-header__eyebrow">Clientes</p>
+              <h1 class="vf-page-header__title">Diagnóstico Inicial</h1>
+              <p class="vf-page-header__description">Realize o check-up de entrada do cliente e estruture o plano de ação da primeira etapa da operação.</p>
+            </div>
+            <div class="vf-page-header__actions">
+              <button type="button" id="diag-btn-salvar" class="vf-btn vf-btn--secondary">Salvar rascunho</button>
+              <button type="button" id="diag-btn-gerar" class="vf-btn vf-btn--secondary">Gerar diagnóstico</button>
+              <button type="button" id="diag-btn-concluir" class="vf-btn vf-btn--primary">Concluir diagnóstico</button>
+              <button type="button" id="diag-btn-imprimir" class="vf-btn vf-btn--ghost" disabled>Imprimir</button>
+            </div>
+          </header>
+
+          <!-- Feedback global da página -->
+          <div id="diag-feedback" class="vf-banner" role="status" aria-live="polite" hidden></div>
+
+          <!-- 2. TOOLBAR: cliente / responsável / data / status / último salvamento -->
+          <section class="vf-toolbar" id="diag-toolbar">
+            <div class="vf-toolbar__filters">
+              <div class="vf-field">
+                <label class="vf-field__label" for="diag-cliente">Cliente</label>
+                <select id="diag-cliente" class="vf-select">
+                  <option value="">Selecione um cliente…</option>
+                </select>
+              </div>
+              <div class="vf-field">
+                <label class="vf-field__label" for="diag-responsavel">Responsável</label>
+                <input id="diag-responsavel" class="vf-input" type="text" disabled>
+              </div>
+              <div class="vf-field">
+                <label class="vf-field__label" for="diag-data">Data do diagnóstico</label>
+                <input id="diag-data" class="vf-input" type="date">
+              </div>
+              <div class="vf-field">
+                <span class="vf-field__label">Status</span>
+                <span class="vf-status" id="diag-status">—</span>
+              </div>
+              <div class="vf-field">
+                <span class="vf-field__label">Último salvamento</span>
+                <span id="diag-last-saved" class="vf-field__hint">—</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- 3. RESUMO (progresso do marketplace ativo) -->
+          <section class="vf-kpi-grid" id="diag-resumo" hidden>
+            <div class="vf-kpi">
+              <span class="vf-kpi__label">Progresso</span>
+              <span class="vf-kpi__value" id="diag-kpi-progresso">0%</span>
+              <div class="vf-progress vf-progress--sm"><div class="vf-progress__bar" id="diag-kpi-progresso-bar"></div></div>
+            </div>
+            <div class="vf-kpi">
+              <span class="vf-kpi__label">Seções concluídas</span>
+              <span class="vf-kpi__value" id="diag-kpi-secoes">0/0</span>
+            </div>
+            <div class="vf-kpi vf-kpi--warning">
+              <span class="vf-kpi__label">Campos pendentes</span>
+              <span class="vf-kpi__value" id="diag-kpi-pendentes">0</span>
+            </div>
+            <div class="vf-kpi">
+              <span class="vf-kpi__label">Último salvamento</span>
+              <span class="vf-kpi__value vf-diag-kpi-value--compact" id="diag-kpi-salvamento">—</span>
+            </div>
+          </section>
+
+          <!-- 4. SEGMENTED: Mercado Livre / Shopee -->
+          <div class="vf-segmented" id="diag-marketplace-switch" role="tablist" aria-label="Marketplace" hidden>
+            <button type="button" class="vf-segmented__item is-active" data-marketplace="meli" role="tab" aria-selected="true">Mercado Livre</button>
+            <button type="button" class="vf-segmented__item" data-marketplace="shopee" role="tab" aria-selected="false">Shopee</button>
+          </div>
+
+          <!-- 5. ESTADO VAZIO (sem cliente selecionado) -->
+          <div class="vf-empty" id="diag-empty-state">
+            <div class="vf-empty__icon" aria-hidden="true">◔</div>
+            <h3 class="vf-empty__title">Selecione um cliente</h3>
+            <p class="vf-empty__description">Escolha um cliente no topo da página para iniciar ou continuar o diagnóstico inicial.</p>
+          </div>
+
+          <!-- 6. LAYOUT DO FORMULÁRIO -->
+          <div class="vf-diag-layout" id="diag-layout" hidden>
+            <label class="vf-field vf-diag-section-select-field">
+              <span class="vf-field__label">Seção</span>
+              <select id="diag-section-select" class="vf-select"></select>
+            </label>
+
+            <nav class="vf-diag-nav" id="diag-nav" aria-label="Seções do diagnóstico"></nav>
+
+            <div class="vf-diag-section-host" id="diag-section-host"></div>
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 7. MODAL DE PENDÊNCIAS (antes de concluir) -->
+  <div class="vf-overlay" id="diag-modal-overlay">
+    <div class="vf-modal" role="dialog" aria-modal="true" aria-labelledby="diag-modal-title">
+      <div class="vf-modal__header">
+        <h2 class="vf-modal__title" id="diag-modal-title">Concluir diagnóstico</h2>
+      </div>
+      <div class="vf-modal__body" id="diag-modal-body"></div>
+      <div class="vf-modal__footer">
+        <button type="button" class="vf-btn vf-btn--secondary" id="diag-modal-cancelar">Cancelar</button>
+        <button type="button" class="vf-btn vf-btn--primary" id="diag-modal-confirmar">Concluir mesmo assim</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 8. BLOCO SOMENTE-IMPRESSÃO -->
+  <div class="vf-diag-print" id="diag-print-block"></div>
+
+  <script src="layout.js"></script>
+  <script src="diagnostico-inicial.js"></script>
+</body>
+</html>

@@ -163,7 +163,6 @@
         { label: "Fechamento",   href: "financeiro.html",    icon: "vf-financeiro" },
         { label: "Fechamento - API", href: "fechamentos-api.html", icon: "vf-financeiro", adminOnly: true },
         { label: "Conversão",    href: "fechamento.html",    icon: "vf-fechamento" },
-        { label: "Métricas",     href: "metricas.html",      icon: "trending-up"   },
 
         { separator: true, label: "FERRAMENTAS" },
         { label: "Ferramentas", href: "ferramentas.html", icon: "download" },

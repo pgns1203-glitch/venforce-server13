@@ -109,6 +109,9 @@
             <button type="button" class="vf-tab" id="fapi-tab-pedidos" role="tab" aria-selected="false" aria-controls="fapi-panel-pedidos" data-tab="pedidos" tabindex="-1">
               Pedidos <span class="vf-badge" id="fapi-tab-pedidos-count" hidden>0</span>
             </button>
+            <button type="button" class="vf-tab" id="fapi-tab-produtos" role="tab" aria-selected="false" aria-controls="fapi-panel-produtos" data-tab="produtos" tabindex="-1">
+              Desempenho de produtos <span class="vf-badge" id="fapi-tab-produtos-count" hidden>0</span>
+            </button>
           </nav>
 
           <!-- 5. PAINÉIS -->
@@ -118,6 +121,11 @@
           </div>
 
           <div class="vf-fapi-tabpanel vf-fapi-orders" id="fapi-panel-pedidos" role="tabpanel" aria-labelledby="fapi-tab-pedidos" tabindex="0" hidden></div>
+
+          <div class="vf-fapi-tabpanel" id="fapi-panel-produtos" role="tabpanel" aria-labelledby="fapi-tab-produtos" tabindex="0" hidden>
+            <!-- Módulo Curva ABC: root próprio, preparado p/ futura extração -->
+            <section class="vf-fapi-abc" id="fapi-abc-root" data-module="curva-abc" aria-label="Curva ABC de produtos"></section>
+          </div>
 
         </div>
       </div>

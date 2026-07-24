@@ -50,6 +50,90 @@
       '<p class="vf-empty__description">' + escapeHtml(message) + "</p></div>";
   }
 
+  var HIDDEN_SALE_TERM_NAMES = new Set([
+    "disponibilidade de estoque",
+    "disponibilidad de stock",
+    "faturamento",
+    "facturacion",
+    "aceita compra recorrente",
+    "acepta compra recurrente",
+    "preco por compra recorrente",
+    "precio por compra recurrente",
+    "envio gratis por compra recorrente",
+    "desconto por compra recorrente",
+    "descuento por compra recurrente",
+    "preco por ser nivel 1 do loyalty",
+    "preco por ser nivel 2 do loyalty",
+    "preco por ser nivel 3 do loyalty",
+    "preco por ser nivel 4 do loyalty",
+    "preco por ser nivel 5 do loyalty",
+    "preco por ser nivel 6 do loyalty",
+    "precio por nivel 1 de loyalty",
+    "precio por nivel 2 de loyalty",
+    "precio por nivel 3 de loyalty",
+    "precio por nivel 4 de loyalty",
+    "precio por nivel 5 de loyalty",
+    "precio por nivel 6 de loyalty",
+    "taxa de cambio para checkout",
+    "tasa de cambio para checkout",
+    "quantidade minima de compra",
+    "cantidad minima de compra",
+    "quantidade maxima de compra",
+    "cantidad maxima de compra",
+    "preco do desconto em efetivo",
+    "precio del descuento en efectivo",
+    "valor de desconto meli em efetivo",
+    "valor de desconto meli en efetivo",
+    "valor de descuento meli en efectivo",
+    "preco do desconto em todos os meios de pagamento",
+    "precio del descuento en todos los medios de pago",
+    "valor de desconto meli em todos os meios de pagamento",
+    "valor de desconto meli en todos os meios de pagamento",
+    "valor de descuento meli en todos los medios de pago",
+    "preco global",
+    "precio global",
+    "preco original global",
+    "precio original global",
+    "tipo de compra",
+    "tipo de promocao",
+    "tipo de promocion",
+    "campanha de parcelas",
+    "campana de parcelas",
+    "campana de cuotas",
+    "e 1p motores",
+    "es 1p motores",
+    "preco da reserva 1p",
+    "precio de reserva 1p",
+    "plan intercambio",
+  ]);
+
+  var HIDDEN_SALE_TERM_IDS = new Set([
+    "LOYALTY_LEVEL_1",
+    "LOYALTY_LEVEL_2",
+    "LOYALTY_LEVEL_3",
+    "LOYALTY_LEVEL_4",
+    "LOYALTY_LEVEL_5",
+    "LOYALTY_LEVEL_6",
+  ]);
+
+  function normalizeSaleTermName(value) {
+    return String(value || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function shouldRenderSaleTerm(term) {
+    if (!term) return false;
+    var id = String(term.id || "").trim().toUpperCase();
+    return (
+      !HIDDEN_SALE_TERM_IDS.has(id) &&
+      !HIDDEN_SALE_TERM_NAMES.has(normalizeSaleTermName(term.name))
+    );
+  }
+
   async function api(path, options) {
     var opts = options || {};
     var token = getToken();
@@ -325,16 +409,17 @@
 
     var terms =
       resp.ok && resp.data && resp.data.ok ? resp.data.saleTerms || [] : [];
-    CAM.saleTermsApi = terms;
+    var visibleTerms = terms.filter(shouldRenderSaleTerm);
+    CAM.saleTermsApi = visibleTerms;
 
-    if (!terms.length) {
+    if (!visibleTerms.length) {
       box.innerHTML = emptyState("Nenhum termo comercial específico para esta categoria. Você pode preencher garantia manualmente abaixo.") + renderSaleTermsFallback();
       return;
     }
 
     box.innerHTML =
       '<div class="cam-sale-grid">' +
-      terms
+      visibleTerms
         .map(function (t) {
           var id = "cam-st-" + escapeHtml(t.id);
           var label =

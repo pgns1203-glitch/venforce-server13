@@ -13,6 +13,11 @@ const pool = require("../../config/database");
 
 const PAGE_SIZE = 50;
 const MAX_PAGES = 60; // teto de segurança = 3000 anúncios por consulta
+const ADS_API_OPTIONS = {
+  headers: {
+    "Api-Version": "2",
+  },
+};
 const METRICS_PARAM = [
   "clicks",
   "prints",
@@ -91,7 +96,7 @@ async function resolverAdvertiser(clienteId) {
   const path = "/advertising/advertisers?product_id=PADS";
   let ok, status, data;
   try {
-    ({ ok, status, data } = await mlFetch(clienteId, path));
+    ({ ok, status, data } = await mlFetch(clienteId, path, ADS_API_OPTIONS));
   } catch (err) {
     console.warn(`[mlAds] Erro de rede em ${path}:`, err.message);
     return { advertiser: null, httpStatus: null, erro: err.message };
@@ -139,13 +144,14 @@ async function resolverAdvertiser(clienteId) {
   return { advertiser, httpStatus: status };
 }
 
-// ─── B) Buscar TODOS os itens com métricas (paginação completa) ──────────────
-// GET /advertising/advertisers/{advertiser_id}/product_ads/items
+// ─── B) Buscar TODOS os anúncios com métricas (paginação completa) ───────────
+// GET /advertising/{site_id}/advertisers/{advertiser_id}/product_ads/ads/search
 //     ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
 //     &limit=50&offset=0
 //     &metrics=clicks,prints,cost,cpc,ctr,acos,roas,total_amount,direct_amount,indirect_amount
+//     &aggregation=sum
 
-async function buscarTodosItensComMetricas(clienteId, advertiserId, from, to) {
+async function buscarTodosAnunciosComMetricas(clienteId, siteId, advertiserId, from, to) {
   const todos = [];
   let offset = 0;
   let totalApi = null;
@@ -153,17 +159,24 @@ async function buscarTodosItensComMetricas(clienteId, advertiserId, from, to) {
   let primeiroErro = null;
 
   while (paginas < MAX_PAGES) {
+    const params = new URLSearchParams({
+      date_from: from,
+      date_to: to,
+      limit: String(PAGE_SIZE),
+      offset: String(offset),
+      metrics: METRICS_PARAM,
+      aggregation: "sum",
+    });
     const path =
-      `/advertising/advertisers/${advertiserId}/product_ads/items` +
-      `?date_from=${from}&date_to=${to}` +
-      `&limit=${PAGE_SIZE}&offset=${offset}` +
-      `&metrics=${METRICS_PARAM}`;
+      `/advertising/${encodeURIComponent(siteId)}` +
+      `/advertisers/${encodeURIComponent(advertiserId)}` +
+      `/product_ads/ads/search?${params.toString()}`;
 
     let ok, status, data;
     try {
-      ({ ok, status, data } = await mlFetch(clienteId, path));
+      ({ ok, status, data } = await mlFetch(clienteId, path, ADS_API_OPTIONS));
     } catch (err) {
-      console.warn(`[mlAds] Erro de rede em items offset=${offset}:`, err.message);
+      console.warn(`[mlAds] Erro de rede em ads/search offset=${offset}:`, err.message);
       if (paginas === 0) primeiroErro = { erroRede: err.message };
       break;
     }
@@ -171,7 +184,7 @@ async function buscarTodosItensComMetricas(clienteId, advertiserId, from, to) {
     logMl(path, status, data);
 
     if (!ok) {
-      console.warn(`[mlAds] items HTTP ${status} no offset=${offset}`);
+      console.warn(`[mlAds] ads/search HTTP ${status} no offset=${offset}`);
       if (paginas === 0) {
         primeiroErro = { httpStatus: status, apiData: data };
         if (status === 401 || status === 403) {
@@ -200,7 +213,7 @@ async function buscarTodosItensComMetricas(clienteId, advertiserId, from, to) {
   }
 
   console.log(
-    `[mlAds] items paginação concluída: paginas=${paginas} acumulado=${todos.length} totalApi=${totalApi}`
+    `[mlAds] ads/search concluído: paginas=${paginas} acumulado=${todos.length} totalApi=${totalApi}`
   );
 
   return {
@@ -211,27 +224,132 @@ async function buscarTodosItensComMetricas(clienteId, advertiserId, from, to) {
   };
 }
 
-// ─── C) Cálculo do resumo agregado ────────────────────────────────────────────
+// ─── C) Buscar campanhas com métricas ─────────────────────────────────────────
+// O custo agregado das campanhas é a fonte principal do investimento mensal.
+// Isso evita depender do teto de anúncios para calcular o fechamento financeiro.
 
-function calcularResumoMetricas(itens, mesRef) {
-  let cost = 0,
-      totalAmount = 0,
-      directAmount = 0,
-      indirectAmount = 0,
-      clicks = 0,
-      prints = 0,
-      vendas = 0,
-      anunciosAtivos = 0,
-      anunciosComInvest = 0;
+async function buscarTodasCampanhasComMetricas(clienteId, siteId, advertiserId, from, to) {
+  const todas = [];
+  let offset = 0;
+  let totalApi = null;
+  let paginas = 0;
+  let primeiroErro = null;
+
+  while (paginas < MAX_PAGES) {
+    const params = new URLSearchParams({
+      date_from: from,
+      date_to: to,
+      limit: String(PAGE_SIZE),
+      offset: String(offset),
+      metrics: METRICS_PARAM,
+      aggregation: "sum",
+    });
+    const path =
+      `/advertising/${encodeURIComponent(siteId)}` +
+      `/advertisers/${encodeURIComponent(advertiserId)}` +
+      `/product_ads/campaigns/search?${params.toString()}`;
+
+    let ok, status, data;
+    try {
+      ({ ok, status, data } = await mlFetch(clienteId, path, ADS_API_OPTIONS));
+    } catch (err) {
+      console.warn(`[mlAds] Erro de rede em campaigns/search offset=${offset}:`, err.message);
+      if (paginas === 0) primeiroErro = { erroRede: err.message };
+      break;
+    }
+
+    logMl(path, status, data);
+
+    if (!ok) {
+      console.warn(`[mlAds] campaigns/search HTTP ${status} no offset=${offset}`);
+      if (paginas === 0) {
+        primeiroErro = { httpStatus: status, apiData: data };
+        if (status === 401 || status === 403) {
+          return {
+            permissionDenied: true,
+            httpStatus: status,
+            campanhas: [],
+            totalApi: 0,
+            paginas: 0,
+          };
+        }
+      }
+      break;
+    }
+
+    const lista =
+      Array.isArray(data?.results)   ? data.results :
+      Array.isArray(data?.campaigns) ? data.campaigns :
+      Array.isArray(data)            ? data :
+      [];
+
+    if (totalApi === null && data?.paging?.total != null) {
+      totalApi = Number(data.paging.total);
+    }
+
+    todas.push(...lista);
+    paginas += 1;
+
+    if (lista.length < PAGE_SIZE) break;
+    if (totalApi != null && offset + PAGE_SIZE >= totalApi) break;
+    offset += PAGE_SIZE;
+  }
+
+  console.log(
+    `[mlAds] campaigns/search concluído: paginas=${paginas} acumulado=${todas.length} totalApi=${totalApi}`
+  );
+
+  return {
+    campanhas: todas,
+    totalApi: totalApi ?? todas.length,
+    paginas,
+    primeiroErro,
+  };
+}
+
+// ─── D) Cálculo do resumo agregado ────────────────────────────────────────────
+
+function somarMetricas(registros) {
+  const totais = {
+    cost: 0,
+    totalAmount: 0,
+    directAmount: 0,
+    indirectAmount: 0,
+    clicks: 0,
+    prints: 0,
+  };
+
+  for (const registro of registros) {
+    const m = registro?.metrics || {};
+    totais.cost           += Number(m.cost)            || 0;
+    totais.totalAmount    += Number(m.total_amount)    || 0;
+    totais.directAmount   += Number(m.direct_amount)   || 0;
+    totais.indirectAmount += Number(m.indirect_amount) || 0;
+    totais.clicks         += Number(m.clicks)          || 0;
+    totais.prints         += Number(m.prints)          || 0;
+  }
+
+  return totais;
+}
+
+function calcularResumoMetricas(itens, campanhas, mesRef) {
+  // Campanhas são a fonte principal dos totais; anúncios são fallback.
+  const fonteTotais = campanhas.length ? campanhas : itens;
+  const {
+    cost,
+    totalAmount,
+    directAmount,
+    indirectAmount,
+    clicks,
+    prints,
+  } = somarMetricas(fonteTotais);
+
+  let vendas = 0;
+  let anunciosAtivos = 0;
+  let anunciosComInvest = 0;
 
   for (const it of itens) {
     const m = it.metrics || {};
-    cost           += Number(m.cost)            || 0;
-    totalAmount    += Number(m.total_amount)    || 0;
-    directAmount   += Number(m.direct_amount)   || 0;
-    indirectAmount += Number(m.indirect_amount) || 0;
-    clicks         += Number(m.clicks)          || 0;
-    prints         += Number(m.prints)          || 0;
     if ((Number(m.total_amount) || 0) > 0) vendas += 1;
     if (String(it.status || "").toLowerCase() === "active") anunciosAtivos += 1;
     if ((Number(m.cost) || 0) > 0) anunciosComInvest += 1;
@@ -261,15 +379,15 @@ function calcularResumoMetricas(itens, mesRef) {
   };
 }
 
-// ─── D) Normalização dos anúncios para o frontend ─────────────────────────────
+// ─── E) Normalização dos anúncios para o frontend ─────────────────────────────
 
 function normalizarAnuncios(itens) {
   return itens.map((it) => {
     const m = it.metrics || {};
     return {
-      itemId:           it.item_id,
-      campaignId:       it.campaign_id,
-      adGroupId:        it.ad_group_id,
+      itemId:           it.item_id ?? it.id ?? null,
+      campaignId:       it.campaign_id ?? it.campaignId ?? null,
+      adGroupId:        it.ad_group_id ?? it.adGroupId ?? null,
       title:            it.title || "",
       status:           it.status || "",
       price:            Number(it.price)     || 0,
@@ -309,7 +427,7 @@ function normalizarAnuncios(itens) {
   });
 }
 
-// ─── E) Lista de campanhas únicas (derivada dos itens) ────────────────────────
+// ─── F) Normalização das campanhas ────────────────────────────────────────────
 
 function extrairCampanhasDosItens(itens) {
   const map = new Map();
@@ -341,6 +459,48 @@ function extrairCampanhasDosItens(itens) {
     gmvAds:          round2(c.gmvAds),
     roas:            c.investimentoAds > 0 ? round2(c.gmvAds / c.investimentoAds) : 0,
   }));
+}
+
+function normalizarCampanhas(campanhasApi, itens) {
+  if (!campanhasApi.length) return extrairCampanhasDosItens(itens);
+
+  const totalAnunciosPorCampanha = new Map();
+  for (const item of itens) {
+    const campaignId = item.campaign_id ?? item.campaignId;
+    if (campaignId == null) continue;
+    const key = String(campaignId);
+    totalAnunciosPorCampanha.set(key, (totalAnunciosPorCampanha.get(key) || 0) + 1);
+  }
+
+  return campanhasApi
+    .map((campanha) => {
+      const campaignId =
+        campanha.campaign_id ??
+        campanha.campaignId ??
+        campanha.id;
+      if (campaignId == null) return null;
+
+      const key = String(campaignId);
+      const m = campanha.metrics || {};
+      const investimentoAds = round2(m.cost);
+      const gmvAds = round2(m.total_amount);
+
+      return {
+        campaignId: key,
+        nome: campanha.name || campanha.title || "",
+        status: campanha.status || "",
+        totalAnuncios:
+          Number(campanha.ads_count ?? campanha.items_count) ||
+          totalAnunciosPorCampanha.get(key) ||
+          0,
+        investimentoAds,
+        gmvAds,
+        cliques: Number(m.clicks) || 0,
+        impressoes: Number(m.prints) || 0,
+        roas: investimentoAds > 0 ? round2(gmvAds / investimentoAds) : 0,
+      };
+    })
+    .filter(Boolean);
 }
 
 // ─── Função principal ─────────────────────────────────────────────────────────
@@ -388,34 +548,71 @@ async function buscarPerformanceML(clienteSlug, mesRef) {
 
   const { advertiserId, siteId, advertiserName } = advertiser;
 
-  // 3. Buscar TODOS os itens com métricas (paginação)
-  const itensResp = await buscarTodosItensComMetricas(clienteId, advertiserId, from, to);
+  // 3. Buscar campanhas (fonte principal do investimento) e anúncios (detalhamento)
+  const campanhasResp = await buscarTodasCampanhasComMetricas(
+    clienteId,
+    siteId,
+    advertiserId,
+    from,
+    to
+  );
+
+  if (campanhasResp.permissionDenied) {
+    return {
+      semDados: true,
+      codigo: "NO_ADS_PERMISSION",
+      motivo: `Sem permissão no endpoint campaigns/search (HTTP ${campanhasResp.httpStatus}).`,
+    };
+  }
+
+  const itensResp = await buscarTodosAnunciosComMetricas(
+    clienteId,
+    siteId,
+    advertiserId,
+    from,
+    to
+  );
 
   if (itensResp.permissionDenied) {
     return {
       semDados: true,
       codigo: "NO_ADS_PERMISSION",
-      motivo: `Sem permissão no endpoint de items (HTTP ${itensResp.httpStatus}).`,
+      motivo: `Sem permissão no endpoint ads/search (HTTP ${itensResp.httpStatus}).`,
     };
   }
 
-  // Se erro logo na primeira página, devolver erro estruturado
-  if (itensResp.primeiroErro && !itensResp.itens.length) {
-    const pe = itensResp.primeiroErro;
+  const campanhasApi = campanhasResp.campanhas || [];
+  const itens = itensResp.itens || [];
+
+  // Só interrompe se as duas fontes falharem e nenhuma devolver dados.
+  const campanhasFalharam =
+    !!campanhasResp.primeiroErro && campanhasApi.length === 0;
+  const anunciosFalharam =
+    !!itensResp.primeiroErro && itens.length === 0;
+
+  if (campanhasFalharam && anunciosFalharam) {
+    const pe = campanhasResp.primeiroErro || itensResp.primeiroErro;
     return {
       semDados: true,
       codigo: "ML_ADS_API_ERROR",
       motivo: pe.httpStatus
-        ? `API ML Ads (items) retornou HTTP ${pe.httpStatus}: ${JSON.stringify(pe.apiData).slice(0, 200)}`
-        : `Erro de rede ao chamar items: ${pe.erroRede}`,
+        ? `API ML Ads retornou HTTP ${pe.httpStatus}: ${JSON.stringify(pe.apiData).slice(0, 200)}`
+        : `Erro de rede ao consultar Mercado Ads: ${pe.erroRede}`,
     };
   }
 
   // 4. Calcular agregados e normalizar
-  const itens     = itensResp.itens || [];
-  const resumo    = calcularResumoMetricas(itens, mesRef);
-  const anuncios  = normalizarAnuncios(itens);
-  const campanhas = extrairCampanhasDosItens(itens);
+  const resumo = calcularResumoMetricas(itens, campanhasApi, mesRef);
+  const anuncios = normalizarAnuncios(itens);
+  const campanhas = normalizarCampanhas(campanhasApi, itens);
+  const avisos = [];
+
+  if (campanhasFalharam) {
+    avisos.push("campaigns/search falhou; investimento calculado pelo fallback ads/search.");
+  }
+  if (anunciosFalharam) {
+    avisos.push("ads/search falhou; resumo calculado pelas campanhas, sem detalhamento de anúncios.");
+  }
 
   console.log(
     `[mlAds] OK — advertiser=${advertiserId} mes=${mesRef} anuncios=${anuncios.length} invest=${resumo.investimentoAds} gmv=${resumo.gmvAds} roas=${resumo.roas}`
@@ -430,8 +627,12 @@ async function buscarPerformanceML(clienteSlug, mesRef) {
     ...resumo,
     anuncios,
     campanhas,
+    fonteInvestimento: campanhasApi.length ? "campaigns_search" : "ads_search_fallback",
+    avisos,
     paginas:   itensResp.paginas,
     totalApi:  itensResp.totalApi,
+    paginasCampanhas: campanhasResp.paginas,
+    totalCampanhasApi: campanhasResp.totalApi,
     codigo:    "OK",
   };
 }

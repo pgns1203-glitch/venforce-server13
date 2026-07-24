@@ -1,0 +1,312 @@
+/* ============================================================
+ * VenForce — Mercado Ads · CSS específico da página (V2)
+ *
+ * Ordem de carga (em ads.html):
+ *   style.css (layout/sidebar/topbar) →
+ *   css/vf-tokens-v2.css → css/vf-components-v2.css →
+ *   css/pages/ads-v2.css (este arquivo, sempre por último)
+ *
+ * REGRAS DESTE ARQUIVO
+ *  - Só o que é REALMENTE específico desta página: enquadramento
+ *    do shell, célula de anúncio, grid do checklist, layout das
+ *    semanas, ajustes locais de tabela e responsividade.
+ *  - Componentes globais (botão, input, select, card, KPI, tabela,
+ *    status, badge, banner, toolbar, paginação, empty, spinner)
+ *    vêm de vf-components-v2.css e NÃO são recriados aqui.
+ *  - Só tokens V2. Sem !important, sem hexadecimais soltos, sem
+ *    RGB/RGBA próprios, sem gradientes, sem sombras/radius próprios,
+ *    sem Bootstrap.
+ * ============================================================ */
+
+/* ------------------------------------------------------------
+ * 1. Shell da página
+ * A tela vive dentro do layout existente (.vf-main-with-sidebar >
+ * .vf-content). Neutralizamos a largura/padding herdados do
+ * style.css e deixamos vf-page-shell + vf-page-container--wide
+ * cuidarem do enquadramento V2.
+ * ------------------------------------------------------------ */
+.vf-page-ads .vf-content {
+  max-width: none;
+  padding: 0;
+}
+
+/* O atributo [hidden] precisa vencer o display dos componentes
+   (banner, badges, empty states, alerts). */
+.vf-page-ads [hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------
+ * 2. Toolbar de contexto — campos com largura mínima confortável
+ * ------------------------------------------------------------ */
+.vf-page-ads .vf-toolbar__filters .vf-field {
+  flex: 1 1 200px;
+  min-width: 180px;
+}
+
+/* ------------------------------------------------------------
+ * 3. Realces numéricos — texto sempre acompanha a cor (a célula
+ * de status ao lado já contém o rótulo textual do estado).
+ * ------------------------------------------------------------ */
+.vf-page-ads .ads-num-good {
+  color: var(--vf-success-strong);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-ads .ads-num-warn {
+  color: var(--vf-warning-strong);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-ads .ads-td-inv {
+  font-weight: var(--vf-fw-semibold);
+}
+
+/* ------------------------------------------------------------
+ * 4. Tabela mensal — largura mínima para não espremer colunas
+ * ------------------------------------------------------------ */
+.vf-page-ads .vf-table-wrap table {
+  min-width: 640px;
+}
+
+/* ------------------------------------------------------------
+ * 5. Tabela de anúncios — célula composta (thumb + título + meta)
+ * ------------------------------------------------------------ */
+.vf-page-ads .ads-anuncios-table {
+  min-width: 980px;
+}
+
+.vf-page-ads .ads-col-anuncio {
+  min-width: 320px;
+}
+
+.vf-page-ads .ads-anuncio-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  min-width: 0;
+}
+
+.vf-page-ads .ads-anuncio-thumb {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--vf-radius-sm);
+  border: 1px solid var(--vf-border);
+  object-fit: cover;
+  background: var(--vf-bg-2);
+}
+
+.vf-page-ads .ads-anuncio-thumb--ph {
+  background: var(--vf-bg-2);
+}
+
+.vf-page-ads .ads-anuncio-info {
+  min-width: 0;
+}
+
+.vf-page-ads .ads-anuncio-titulo {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+}
+
+.vf-page-ads .ads-anuncio-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  margin-top: 1px;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-ads .ads-anuncio-mlb {
+  font-family: var(--vf-font-mono);
+}
+
+.vf-page-ads .ads-anuncio-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--vf-radius-sm);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-ads .ads-anuncio-link:hover {
+  background: var(--vf-surface-hover);
+  color: var(--vf-primary-strong);
+}
+
+/* ------------------------------------------------------------
+ * 6. Paginação local dos anúncios — rótulo de página atual
+ * ------------------------------------------------------------ */
+.vf-page-ads .ads-pager-page {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------
+ * 7. Checklist de acompanhamento
+ * ------------------------------------------------------------ */
+.vf-page-ads .ads-checklist-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  flex-wrap: wrap;
+}
+
+.vf-page-ads .ads-checklist-period {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px var(--vf-sp-3);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-bg-2);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+  white-space: nowrap;
+}
+
+.vf-page-ads .ads-checklist-status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  flex-wrap: wrap;
+  min-height: 24px;
+  margin-bottom: var(--vf-sp-3);
+}
+
+.vf-page-ads .ads-checklist-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-ads .ads-week-card {
+  padding: var(--vf-sp-4);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface);
+}
+
+.vf-page-ads .ads-week-card.is-complete {
+  border-color: var(--vf-success-border);
+  background: var(--vf-success-bg);
+}
+
+.vf-page-ads .ads-week-header {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  margin-bottom: var(--vf-sp-3);
+}
+
+.vf-page-ads .ads-week-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.vf-page-ads .ads-week-num {
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text);
+}
+
+.vf-page-ads .ads-week-done-icon {
+  flex-shrink: 0;
+  color: var(--vf-success);
+}
+
+.vf-page-ads .ads-week-progress {
+  flex: 1;
+  height: 4px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-border);
+  overflow: hidden;
+}
+
+.vf-page-ads .ads-week-progress-bar {
+  height: 100%;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-primary);
+  transition: width var(--vf-duration-slow) var(--vf-ease);
+}
+
+.vf-page-ads .ads-week-card.is-complete .ads-week-progress-bar {
+  background: var(--vf-success);
+}
+
+.vf-page-ads .ads-week-progress-label {
+  flex-shrink: 0;
+  min-width: 28px;
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  text-align: right;
+}
+
+.vf-page-ads .ads-week-checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-1);
+}
+
+.vf-page-ads .ads-check-item {
+  padding: var(--vf-sp-1) 0;
+}
+
+/* ------------------------------------------------------------
+ * 8. Resumo para o cliente — textarea mais alta que o padrão
+ * ------------------------------------------------------------ */
+.vf-page-ads .ads-feedback-textarea {
+  min-height: 220px;
+  font-family: var(--vf-font-body);
+  line-height: var(--vf-lh-relaxed);
+}
+
+/* ------------------------------------------------------------
+ * 9. Correção pontual da fundação (header em coluna ≤768px faz o
+ * flex-basis do vf-page-header__main virar altura). Ver também
+ * a mesma correção em fechamentos-api-v2.css.
+ * ------------------------------------------------------------ */
+@media (max-width: 768px) {
+  .vf-page-ads .vf-page-header__main {
+    flex-basis: auto;
+  }
+}
+
+/* ------------------------------------------------------------
+ * 10. Responsivo
+ * Alvos de validação: 1440 / 1280 / 1024 / 768 / 480 / 390.
+ * ------------------------------------------------------------ */
+@media (max-width: 980px) {
+  .vf-page-ads .ads-checklist-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .vf-page-ads .ads-anuncio-titulo {
+    max-width: 200px;
+  }
+}
+
+@media (max-width: 560px) {
+  .vf-page-ads .ads-checklist-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vf-page-ads .ads-checklist-header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

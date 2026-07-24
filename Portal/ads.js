@@ -86,18 +86,28 @@ function adsTruncar(s, max = 70) {
 
 function adsStatusRoas(roas) {
   const r = Number(roas) || 0;
-  if (r >= 20) return { label: "Saudável", cls: "ads-badge-success" };
-  if (r >= 15) return { label: "Atenção",  cls: "ads-badge-warning" };
-  if (r >   0) return { label: "Crítico",  cls: "ads-badge-danger"  };
-  return                  { label: "—",        cls: ""                  };
+  if (r >= 20) return { label: "Saudável", cls: "is-success" };
+  if (r >= 15) return { label: "Atenção",  cls: "is-warning" };
+  if (r >   0) return { label: "Crítico",  cls: "is-danger"  };
+  return                  { label: "—",        cls: ""               };
 }
 
 function adsStatusAnuncio(a) {
   const st = String(a.status || "").toLowerCase();
-  if (st === "active")  return { label: "Ativo",   cls: "ads-badge-success" };
-  if (st === "paused")  return { label: "Pausado", cls: "ads-badge-warning" };
-  if (st === "idle")    return { label: "Inativo", cls: "ads-badge-danger"  };
-  return                       { label: st || "—",  cls: ""                  };
+  if (st === "active")  return { label: "Ativo",   cls: "is-success" };
+  if (st === "paused")  return { label: "Pausado", cls: "is-warning" };
+  if (st === "idle")    return { label: "Inativo", cls: "is-danger"  };
+  return                       { label: st || "—",  cls: ""               };
+}
+
+// Mapeia o accent já calculado (success/warning/danger/neutral) para o
+// modificador do card, a classe do rodapé e o rótulo textual do KPI —
+// nunca comunica estado só por cor.
+function adsAccentMeta(accent) {
+  if (accent === "success") return { modifier: "",                foot: "is-success", label: "Saudável" };
+  if (accent === "warning") return { modifier: "vf-kpi--warning",  foot: "is-warning", label: "Atenção"  };
+  if (accent === "danger")  return { modifier: "vf-kpi--danger",   foot: "is-danger",  label: "Crítico"  };
+  return                           { modifier: "",                foot: "",           label: ""         };
 }
 
 // ─── TACOS — só faz sentido se houver faturamento total da loja ──────────────
@@ -123,9 +133,9 @@ function adsStatusTacos(t) {
     return { label: "Sem dados", cls: "" };
   }
   const v = Number(t);
-  if (v <= 4) return { label: "Saudável", cls: "ads-badge-success" };
-  if (v <= 5) return { label: "Atenção",  cls: "ads-badge-warning" };
-  return            { label: "Crítico",  cls: "ads-badge-danger"  };
+  if (v <= 4) return { label: "Saudável", cls: "is-success" };
+  if (v <= 5) return { label: "Atenção",  cls: "is-warning" };
+  return            { label: "Crítico",  cls: "is-danger"  };
 }
 
 // ─── Leitura dos filtros ──────────────────────────────────────────────────────
@@ -253,27 +263,77 @@ function adsPopularCampanhasSelect(campanhas) {
   }
 }
 
-// ─── Render: banner sem dados ─────────────────────────────────────────────────
+// ─── Render: barra de estado dos dados (ADS_PERFORMANCE_ESTADO) ──────────────
 
 function adsRenderBanner() {
-  const banner = document.getElementById("ads-sem-dados-banner");
-  if (!banner) return;
-  const mostrar = ADS_PERFORMANCE_ESTADO === "sem_dados" || ADS_PERFORMANCE_ESTADO === "error";
-  banner.style.display = mostrar ? "flex" : "none";
+  const banner   = document.getElementById("ads-sem-dados-banner");
+  const titleEl  = document.getElementById("ads-data-status-title");
+  const motivoEl = document.getElementById("ads-sem-dados-motivo");
+  if (!banner || !titleEl) return;
+
+  banner.classList.remove("is-info", "is-success", "is-warning", "is-danger");
+
+  if (ADS_PERFORMANCE_ESTADO === "idle") {
+    banner.classList.add("is-info");
+    banner.setAttribute("role", "status");
+    titleEl.textContent = "Aguardando seleção";
+    if (motivoEl) motivoEl.textContent = "Selecione um cliente e um mês para carregar os dados de Mercado Ads.";
+  } else if (ADS_PERFORMANCE_ESTADO === "loading") {
+    banner.classList.add("is-info");
+    banner.setAttribute("role", "status");
+    titleEl.textContent = "Sincronizando com Mercado Ads";
+    if (motivoEl) motivoEl.textContent = "Carregando performance, resumo e acompanhamento…";
+  } else if (ADS_PERFORMANCE_ESTADO === "loaded") {
+    banner.classList.add("is-success");
+    banner.setAttribute("role", "status");
+    titleEl.textContent = "Dados carregados";
+    if (motivoEl) motivoEl.textContent = "";
+  } else if (ADS_PERFORMANCE_ESTADO === "sem_dados") {
+    banner.classList.add("is-warning");
+    banner.setAttribute("role", "status");
+    titleEl.textContent = "Cliente sem dados de Ads configurados";
+    // ads-sem-dados-motivo já foi preenchido em adsCarregarPerformance() com data.motivo
+  } else if (ADS_PERFORMANCE_ESTADO === "error") {
+    banner.classList.add("is-danger");
+    banner.setAttribute("role", "alert");
+    titleEl.textContent = "Erro ao consultar a API";
+    // ads-sem-dados-motivo já foi preenchido em adsCarregarPerformance() com a mensagem de erro
+  }
 }
 
 // ─── Render: cards de resumo ──────────────────────────────────────────────────
+
+function adsKpiCard({ label, value, foots = [], modifier = "" }) {
+  const footHtml = foots
+    .filter((f) => f && f.text)
+    .map((f) => `<span class="vf-kpi__foot${f.cls ? " " + adsEscape(f.cls) : ""}">${adsEscape(f.text)}</span>`)
+    .join("");
+  return `
+    <div class="vf-kpi${modifier ? " " + modifier : ""}">
+      <span class="vf-kpi__label">${adsEscape(label)}</span>
+      <span class="vf-kpi__value">${adsEscape(value)}</span>
+      ${footHtml}
+    </div>`;
+}
 
 function adsRenderSummary() {
   const grid = document.getElementById("ads-summary-grid");
   if (!grid) return;
 
   if (ADS_PERFORMANCE_ESTADO === "idle") {
-    grid.innerHTML = `<div class="ads-performance-empty">Selecione um <strong>cliente</strong> e um <strong>mês</strong> para carregar a performance.</div>`;
+    grid.innerHTML = `
+      <div class="vf-empty">
+        <p class="vf-empty__title">Selecione cliente e mês</p>
+        <p class="vf-empty__description">Escolha um <strong>cliente</strong> e um <strong>mês</strong> para carregar a performance de Ads.</p>
+      </div>`;
     return;
   }
   if (ADS_PERFORMANCE_ESTADO === "loading") {
-    grid.innerHTML = `<div class="ads-performance-empty">Carregando dados da API Mercado Ads…</div>`;
+    grid.innerHTML = `
+      <div class="vf-loading-state">
+        <span class="vf-spinner" aria-hidden="true"></span>
+        Carregando dados da API Mercado Ads…
+      </div>`;
     return;
   }
   if (ADS_PERFORMANCE_ESTADO === "sem_dados" || ADS_PERFORMANCE_ESTADO === "error") {
@@ -283,85 +343,74 @@ function adsRenderSummary() {
 
   const d = adsPerformanceFiltrada();
 
+  const roasAccent = d.roas >= 20 ? "success" : d.roas >= 15 ? "warning" : (d.roas > 0 ? "danger" : "neutral");
+  const roasMeta   = adsAccentMeta(roasAccent);
+
+  const acosAccent = d.acos > 0 && d.acos <= 5 ? "success" : d.acos <= 8 ? "warning" : (d.acos > 0 ? "danger" : "neutral");
+  const acosMeta   = adsAccentMeta(acosAccent);
+
+  const t = adsTacosCalculado();
+  const tacosAccent = t.semFaturamento ? "neutral" : (t.tacos <= 4 ? "success" : t.tacos <= 5 ? "warning" : "danger");
+  const tacosMeta   = adsAccentMeta(tacosAccent);
+
   const cards = [
-    {
+    adsKpiCard({
       label: "Investimento Ads",
       value: adsFmtBRL(d.investimentoAds),
-      icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`,
-      accent: "ads",
-    },
-    {
+    }),
+    adsKpiCard({
       label: "GMV Ads",
       value: adsFmtBRL(d.gmvAds),
-      icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>`,
-      accent: "ads",
-    },
-    {
+    }),
+    adsKpiCard({
       label: "ROAS",
       value: adsFmtNum(d.roas) + "x",
-      icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>`,
-      accent: d.roas >= 20 ? "success" : d.roas >= 15 ? "warning" : (d.roas > 0 ? "danger" : "neutral"),
-    },
-    {
+      modifier: roasMeta.modifier,
+      foots: [{ text: roasMeta.label, cls: roasMeta.foot }],
+    }),
+    adsKpiCard({
       label: "ACOS",
       value: adsFmtPct(d.acos),
-      icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9 15l6-6"/><circle cx="9.5" cy="9.5" r="1"/><circle cx="14.5" cy="14.5" r="1"/></svg>`,
-      accent: d.acos > 0 && d.acos <= 5 ? "success" : d.acos <= 8 ? "warning" : (d.acos > 0 ? "danger" : "neutral"),
-      hint:   "Investimento Ads ÷ GMV Ads",
-    },
-    (function () {
-      const t = adsTacosCalculado();
-      if (t.semFaturamento) {
-        return {
-          label:  "TACOS",
-          value:  "—",
-          icon:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>`,
-          accent: "neutral",
-          hint:   "Informe o faturamento total em Resumo Mensal",
-        };
-      }
-      return {
-        label:  "TACOS",
-        value:  adsFmtPct(t.tacos),
-        icon:   `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>`,
-        accent: t.tacos <= 4 ? "success" : t.tacos <= 5 ? "warning" : "danger",
-        hint:   `Investimento Ads ÷ Faturamento Total (${adsFmtBRL(t.faturamentoTotal)})`,
-      };
-    })(),
-    {
+      modifier: acosMeta.modifier,
+      foots: [
+        { text: "Investimento Ads ÷ GMV Ads" },
+        { text: acosMeta.label, cls: acosMeta.foot },
+      ],
+    }),
+    t.semFaturamento
+      ? adsKpiCard({
+          label: "TACOS",
+          value: "—",
+          foots: [{ text: "Informe o faturamento total em Resumo Mensal" }],
+        })
+      : adsKpiCard({
+          label: "TACOS",
+          value: adsFmtPct(t.tacos),
+          modifier: tacosMeta.modifier,
+          foots: [
+            { text: `Investimento Ads ÷ Faturamento Total (${adsFmtBRL(t.faturamentoTotal)})` },
+            { text: tacosMeta.label, cls: tacosMeta.foot },
+          ],
+        }),
+    adsKpiCard({
       label: "Cliques",
       value: adsFmtInt(d.cliques),
-      icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 15l-5-5M6.7 6.7A8 8 0 1 0 17.3 17.3"/></svg>`,
-      accent: "neutral",
-    },
-    {
+    }),
+    adsKpiCard({
       label: "Impressões",
       value: adsFmtInt(d.impressoes),
-      icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
-      accent: "neutral",
-    },
-    {
+    }),
+    adsKpiCard({
       label: "CTR",
       value: adsFmtPct(d.ctr),
-      icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>`,
-      accent: "neutral",
-    },
-    {
+    }),
+    adsKpiCard({
       label: "Anúncios c/ venda",
       value: `${adsFmtInt(d.vendas)} / ${adsFmtInt(d.totalAnuncios)}`,
-      icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>`,
-      accent: "purple",
-    },
+    }),
   ];
 
-  grid.innerHTML = cards.map((c) => `
-    <div class="ads-summary-card ads-summary-card--${adsEscape(c.accent)}"${c.hint ? ` title="${adsEscape(c.hint)}"` : ""}>
-      <div class="ads-summary-icon">${c.icon}</div>
-      <div class="ads-summary-body">
-        <div class="ads-summary-value">${adsEscape(c.value)}</div>
-        <div class="ads-summary-label">${adsEscape(c.label)}</div>
-      </div>
-    </div>`).join("");
+  grid.innerHTML = cards.join("");
 }
 
 // ─── Render: tabela mensal ────────────────────────────────────────────────────
@@ -372,18 +421,18 @@ function adsRenderTabela() {
   if (!tbody) return;
 
   if (ADS_PERFORMANCE_ESTADO === "idle") {
-    if (badge) badge.style.display = "none";
-    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--vf-text-m);">Selecione um cliente e mês para ver a performance.</td></tr>`;
+    if (badge) badge.hidden = true;
+    tbody.innerHTML = `<tr class="vf-table__empty"><td colspan="9">Selecione um cliente e mês para ver a performance.</td></tr>`;
     return;
   }
   if (ADS_PERFORMANCE_ESTADO === "loading") {
-    if (badge) badge.style.display = "none";
-    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--vf-text-m);">Carregando…</td></tr>`;
+    if (badge) badge.hidden = true;
+    tbody.innerHTML = `<tr class="vf-table__loading"><td colspan="9"><span class="vf-spinner vf-spinner--sm" aria-hidden="true"></span> Carregando…</td></tr>`;
     return;
   }
   if (ADS_PERFORMANCE_ESTADO === "sem_dados" || ADS_PERFORMANCE_ESTADO === "error") {
-    if (badge) badge.style.display = "none";
-    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--vf-text-m);">Sem dados de Ads para este cliente.</td></tr>`;
+    if (badge) badge.hidden = true;
+    tbody.innerHTML = `<tr class="vf-table__empty"><td colspan="9">Sem dados de Ads para este cliente.</td></tr>`;
     return;
   }
 
@@ -402,10 +451,10 @@ function adsRenderTabela() {
       <td class="num">${adsEscape(adsFmtInt(d.cliques))}</td>
       <td class="num">${adsEscape(adsFmtInt(d.impressoes))}</td>
       <td class="num">${d.vendas > 0 ? adsEscape(adsFmtInt(d.vendas)) : "—"}</td>
-      <td class="center"><span class="ads-badge ${adsEscape(st.cls)}">${adsEscape(st.label)}</span></td>
+      <td class="center"><span class="vf-status ${adsEscape(st.cls)}">${adsEscape(st.label)}</span></td>
     </tr>`;
 
-  if (badge) { badge.textContent = "1"; badge.style.display = "inline-block"; }
+  if (badge) { badge.textContent = "1"; badge.hidden = false; }
   tbody.innerHTML = linha;
 }
 
@@ -520,34 +569,34 @@ function adsRenderAnuncios() {
   if (!tbody) return;
 
   if (ADS_PERFORMANCE_ESTADO === "idle") {
-    if (total) total.style.display = "none";
+    if (total) total.hidden = true;
     if (pager) pager.innerHTML = "";
-    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:2rem;color:var(--vf-text-m);">Selecione um cliente e mês para ver os anúncios.</td></tr>`;
+    tbody.innerHTML = `<tr class="vf-table__empty"><td colspan="11">Selecione um cliente e mês para ver os anúncios.</td></tr>`;
     return;
   }
   if (ADS_PERFORMANCE_ESTADO === "loading") {
-    if (total) total.style.display = "none";
+    if (total) total.hidden = true;
     if (pager) pager.innerHTML = "";
-    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:2rem;color:var(--vf-text-m);">Carregando anúncios da API Mercado Ads…</td></tr>`;
+    tbody.innerHTML = `<tr class="vf-table__loading"><td colspan="11"><span class="vf-spinner vf-spinner--sm" aria-hidden="true"></span> Carregando anúncios da API Mercado Ads…</td></tr>`;
     return;
   }
   if (ADS_PERFORMANCE_ESTADO === "sem_dados" || ADS_PERFORMANCE_ESTADO === "error") {
-    if (total) total.style.display = "none";
+    if (total) total.hidden = true;
     if (pager) pager.innerHTML = "";
-    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:2rem;color:var(--vf-text-m);">Sem anúncios para este cliente/período.</td></tr>`;
+    tbody.innerHTML = `<tr class="vf-table__empty"><td colspan="11">Sem anúncios para este cliente/período.</td></tr>`;
     return;
   }
 
   const lista = adsAnunciosFiltradosOrdenados();
 
   if (total) {
-    total.textContent   = String(lista.length);
-    total.style.display = "inline-block";
+    total.textContent = String(lista.length);
+    total.hidden      = false;
   }
 
   if (!lista.length) {
     if (pager) pager.innerHTML = "";
-    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:2rem;color:var(--vf-text-m);">Nenhum anúncio para o filtro selecionado.</td></tr>`;
+    tbody.innerHTML = `<tr class="vf-table__empty"><td colspan="11">Nenhum anúncio para o filtro selecionado.</td></tr>`;
     return;
   }
 
@@ -565,11 +614,11 @@ function adsRenderAnuncios() {
     const roasCls = (m.roas >= 20) ? "ads-num-good" : (m.roas >= 15 ? "" : (m.roas > 0 ? "ads-num-warn" : ""));
     const acosCls = (m.acos > 0 && m.acos <= 5) ? "ads-num-good" : (m.acos <= 8 && m.acos > 0 ? "" : (m.acos > 0 ? "ads-num-warn" : ""));
     const thumb = a.thumbnail
-      ? `<img class="ads-anuncio-thumb" src="${adsEscape(a.thumbnail.replace(/^http:/i, "https:"))}" alt="" loading="lazy" onerror="this.style.display='none'">`
+      ? `<img class="ads-anuncio-thumb" src="${adsEscape(a.thumbnail.replace(/^http:/i, "https:"))}" alt="" loading="lazy" onerror="this.hidden=true">`
       : `<div class="ads-anuncio-thumb ads-anuncio-thumb--ph"></div>`;
     const linkBtn = a.permalink
-      ? `<a href="${adsEscape(a.permalink)}" target="_blank" rel="noopener" class="ads-anuncio-link" title="Abrir no Mercado Livre">
-           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      ? `<a href="${adsEscape(a.permalink)}" target="_blank" rel="noopener" class="ads-anuncio-link" title="Abrir no Mercado Livre" aria-label="Abrir anúncio no Mercado Livre">
+           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
          </a>`
       : "—";
 
@@ -596,7 +645,7 @@ function adsRenderAnuncios() {
         <td class="num">${adsEscape(adsFmtInt(m.prints))}</td>
         <td class="num">${m.ctr > 0 ? adsEscape(adsFmtPct(m.ctr)) : "—"}</td>
         <td class="num">${m.cpc > 0 ? adsEscape(adsFmtBRL(m.cpc)) : "—"}</td>
-        <td class="center"><span class="ads-badge ${adsEscape(st.cls)}">${adsEscape(st.label)}</span></td>
+        <td class="center"><span class="vf-status ${adsEscape(st.cls)}">${adsEscape(st.label)}</span></td>
         <td class="center">${linkBtn}</td>
       </tr>`;
   }).join("");
@@ -604,16 +653,16 @@ function adsRenderAnuncios() {
   // Pager
   if (pager) {
     if (totalPag <= 1) {
-      pager.innerHTML = `<div class="ads-pager-info">Mostrando ${lista.length} de ${lista.length}</div>`;
+      pager.innerHTML = `<div class="vf-pager__info">Mostrando ${lista.length} de ${lista.length}</div>`;
     } else {
       const inicio = ini + 1;
       const fimReal = Math.min(fim, lista.length);
       pager.innerHTML = `
-        <div class="ads-pager-info">Mostrando ${inicio}–${fimReal} de ${lista.length}</div>
-        <div class="ads-pager-controls">
-          <button type="button" class="vf-btn-secondary ads-pager-btn" data-action="prev" ${ADS_ANUNCIOS_PAGE === 1 ? "disabled" : ""}>‹ Anterior</button>
+        <div class="vf-pager__info">Mostrando ${inicio}–${fimReal} de ${lista.length}</div>
+        <div class="vf-pager__nav">
+          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm ads-pager-btn" data-action="prev" ${ADS_ANUNCIOS_PAGE === 1 ? "disabled" : ""}>‹ Anterior</button>
           <span class="ads-pager-page">Página ${ADS_ANUNCIOS_PAGE} de ${totalPag}</span>
-          <button type="button" class="vf-btn-secondary ads-pager-btn" data-action="next" ${ADS_ANUNCIOS_PAGE === totalPag ? "disabled" : ""}>Próxima ›</button>
+          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm ads-pager-btn" data-action="next" ${ADS_ANUNCIOS_PAGE === totalPag ? "disabled" : ""}>Próxima ›</button>
         </div>`;
       pager.querySelectorAll(".ads-pager-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -683,7 +732,7 @@ async function adsCarregarAcompanhamento() {
   }
 
   const loja = adsGetLojaCampanha();
-  adsSetSaveStatus("Carregando…", "ads-save-loading");
+  adsSetSaveStatus("Carregando…", "is-info");
 
   try {
     const params = new URLSearchParams({ clienteSlug, mes, lojaCampanha: loja });
@@ -703,8 +752,8 @@ async function adsCarregarAcompanhamento() {
     adsAtualizarFeedbackTextarea();
     adsAtualizarUpdatedAt(a.updatedAt);
     adsRenderChecklist();
-    adsSetSaveStatus("Carregado", "ads-save-ok");
-    setTimeout(() => adsLimparSaveStatus("ads-save-ok"), 2500);
+    adsSetSaveStatus("Carregado", "is-success");
+    setTimeout(() => adsLimparSaveStatus("is-success"), 2500);
   } catch (err) {
     console.warn("[ads] falha ao carregar acompanhamento:", err.message);
     ADS_CHECKLIST_ATUAL     = { semana1: {}, semana2: {}, semana3: {}, semana4: {} };
@@ -713,8 +762,8 @@ async function adsCarregarAcompanhamento() {
     adsAtualizarFeedbackTextarea();
     adsAtualizarUpdatedAt(null);
     adsRenderChecklist();
-    adsSetSaveStatus("Erro ao carregar", "ads-save-error");
-    setTimeout(() => adsLimparSaveStatus("ads-save-error"), 3500);
+    adsSetSaveStatus("Erro ao carregar", "is-danger");
+    setTimeout(() => adsLimparSaveStatus("is-danger"), 3500);
   }
 
   adsAtualizarBotaoSalvar();
@@ -728,13 +777,13 @@ function adsAtualizarFeedbackTextarea() {
 function adsAtualizarUpdatedAt(updatedAt) {
   const el = document.getElementById("ads-updated-at");
   if (!el) return;
-  if (!updatedAt) { el.style.display = "none"; el.textContent = ""; return; }
+  if (!updatedAt) { el.hidden = true; el.textContent = ""; return; }
   const str = new Date(updatedAt).toLocaleString("pt-BR", {
     day: "2-digit", month: "2-digit", year: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
-  el.textContent   = `Última atualização: ${str}`;
-  el.style.display = "block";
+  el.textContent = `Última atualização: ${str}`;
+  el.hidden      = false;
 }
 
 // ─── Status de salvamento ─────────────────────────────────────────────────────
@@ -742,23 +791,24 @@ function adsAtualizarUpdatedAt(updatedAt) {
 function adsSetSaveStatus(msg, cls) {
   const el = document.getElementById("ads-save-status");
   if (!el) return;
-  el.textContent   = msg;
-  el.className     = `ads-save-status${cls ? " " + cls : ""}`;
-  el.style.display = "inline";
+  el.textContent = msg;
+  el.className   = `vf-alert${cls ? " " + cls : ""}`;
+  el.setAttribute("role", cls === "is-danger" ? "alert" : "status");
+  el.hidden      = false;
 }
 
 function adsLimparSaveStatus(onlyCls) {
   const el = document.getElementById("ads-save-status");
   if (!el) return;
   if (onlyCls && !el.classList.contains(onlyCls)) return;
-  el.style.display = "none";
-  el.textContent   = "";
-  el.className     = "ads-save-status";
+  el.hidden      = true;
+  el.textContent = "";
+  el.className   = "vf-alert";
 }
 
 function adsAtualizarSaveStatus() {
   if (ADS_HAS_UNSAVED_CHANGES) {
-    adsSetSaveStatus("Alterações não salvas", "ads-unsaved");
+    adsSetSaveStatus("Alterações não salvas", "is-warning");
   } else {
     adsLimparSaveStatus();
   }
@@ -787,7 +837,7 @@ async function adsSalvarAcompanhamento() {
   ADS_SAVING = true;
   const btn  = document.getElementById("ads-btn-salvar");
   if (btn) { btn.disabled = true; btn.textContent = "Salvando…"; }
-  adsSetSaveStatus("Salvando…", "ads-save-loading");
+  adsSetSaveStatus("Salvando…", "is-info");
 
   try {
     const res = await adsFetch("/ads/acompanhamento", {
@@ -806,12 +856,12 @@ async function adsSalvarAcompanhamento() {
     ADS_HAS_UNSAVED_CHANGES  = false;
     ADS_ACOMPANHAMENTO_ATUAL = data.acompanhamento;
     adsAtualizarUpdatedAt(data.acompanhamento?.updatedAt);
-    adsSetSaveStatus("Acompanhamento salvo", "ads-save-ok");
-    setTimeout(() => adsLimparSaveStatus("ads-save-ok"), 2500);
+    adsSetSaveStatus("Acompanhamento salvo", "is-success");
+    setTimeout(() => adsLimparSaveStatus("is-success"), 2500);
   } catch (err) {
     console.warn("[ads] falha ao salvar:", err.message);
-    adsSetSaveStatus(`Erro: ${err.message}`, "ads-save-error");
-    setTimeout(() => adsLimparSaveStatus("ads-save-error"), 4000);
+    adsSetSaveStatus(`Erro: ${err.message}`, "is-danger");
+    setTimeout(() => adsLimparSaveStatus("is-danger"), 4000);
   } finally {
     ADS_SAVING = false;
     if (btn) { btn.textContent = "Salvar acompanhamento"; btn.disabled = !adsCanSave(); }
@@ -849,9 +899,8 @@ function adsRenderChecklist() {
 
   if (!clienteSlug || !mes) {
     grid.innerHTML = `
-      <div class="ads-checklist-empty">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-        Selecione um <strong>cliente</strong> e um <strong>mês</strong> para carregar o checklist.
+      <div class="vf-empty">
+        <p class="vf-empty__description">Selecione um <strong>cliente</strong> e um <strong>mês</strong> para carregar o checklist.</p>
       </div>`;
     adsAtualizarBotaoSalvar();
     return;
@@ -862,12 +911,9 @@ function adsRenderChecklist() {
     const checks = ADS_CHECKLIST_ITEMS.map((item, idx) => {
       const checked = adsGetCheck(sem, idx);
       return `
-        <label class="ads-check-item ${checked ? "is-checked" : ""}">
+        <label class="vf-check ads-check-item">
           <input type="checkbox" class="ads-check-input" data-semana="${sem}" data-idx="${idx}" ${checked ? "checked" : ""}>
-          <span class="ads-check-box" aria-hidden="true">
-            ${checked ? `<svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 6 4.5 9.5 11 2"/></svg>` : ""}
-          </span>
-          <span class="ads-check-label">${adsEscape(item)}</span>
+          <span>${adsEscape(item)}</span>
         </label>`;
     }).join("");
 
@@ -990,7 +1036,7 @@ function adsCopiarFeedback() {
   const ok = document.getElementById("ads-copy-ok");
   if (!ta || !ta.value.trim()) return;
   navigator.clipboard.writeText(ta.value).then(() => {
-    if (ok) { ok.style.display = "inline"; setTimeout(() => { ok.style.display = "none"; }, 2200); }
+    if (ok) { ok.hidden = false; setTimeout(() => { ok.hidden = true; }, 2200); }
   }).catch(() => {
     ta.select();
     document.execCommand("copy");

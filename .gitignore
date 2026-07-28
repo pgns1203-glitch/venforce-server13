@@ -7,6 +7,17 @@ server/google-credentials.json
 server/user_client_access.json
 server/log.txt
 
+# frontend-react: o build é publicado em Portal/ (versionado); aqui só ficam
+# artefatos locais. O .env.example continua versionado.
+frontend-react/node_modules
+frontend-react/dist
+frontend-react/.env.local
+
+# frontend-vue: app Vue da Cliente 360, superseded pela versão React.
+frontend-vue/node_modules
+frontend-vue/dist
+frontend-vue/.env.local
+
 extension_original/
 *.md
 content_funcionando_backup.js

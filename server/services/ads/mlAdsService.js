@@ -505,7 +505,11 @@ function normalizarCampanhas(campanhasApi, itens) {
 
 // ─── Função principal ─────────────────────────────────────────────────────────
 
-async function buscarPerformanceML(clienteSlug, mesRef) {
+// `janela` (opcional) permite consultar um INTERVALO PARCIAL dentro da competência
+// — usado pela Cliente 360 quando o mês corrente ainda está aberto, para não
+// comparar Ads parcial com mês anterior cheio. Sem `janela`, o comportamento é o
+// de sempre: a competência inteira.
+async function buscarPerformanceML(clienteSlug, mesRef, janela = null) {
   // 1. Resolver clienteId do banco
   let clienteId, mlUserId;
   try {
@@ -517,7 +521,9 @@ async function buscarPerformanceML(clienteSlug, mesRef) {
     throw err;
   }
 
-  const { from, to } = mesRefToDateRange(mesRef);
+  const mesInteiro = mesRefToDateRange(mesRef);
+  const from = janela?.from || mesInteiro.from;
+  const to = janela?.to || mesInteiro.to;
   console.log(`[mlAds] cliente=${clienteSlug} clienteId=${clienteId} mlUserId=${mlUserId} período=${from}→${to}`);
 
   // 2. Resolver advertiser_id

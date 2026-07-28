@@ -151,6 +151,7 @@
         { label: "Diagnóstico Inicial", href: "diagnostico-inicial.html", icon: "activity" },
         { label: "Cliente Operação", href: "cliente-operacao.html", icon: "users" },
         { label: "Cliente 360", href: "cliente-360.html", icon: "users" },
+        { label: "Cliente 360 V2", href: "cliente-360-react.html", icon: "users" },
         { label: "Bases de Custo", href: "bases.html",         icon: "database"     },
 
         { separator: true, label: "MARKETPLACE" },
@@ -238,6 +239,7 @@
     "cliente-operacao.html":  "operacao",
     "diagnostico-inicial.html": "operacao",
     "cliente-360.html":       "operacao",
+    "cliente-360-react.html": "operacao",
     "dashboard.html":       "operacao",
     "bases.html":           "operacao",
   };

@@ -64,6 +64,7 @@ const baseVinculosRoutes = require("./routes/baseVinculosRoutes");
 const assistenteBaseRoutes = require("./routes/assistenteBaseRoutes");
 const operacaoRoutes = require("./routes/operacaoRoutes");
 const cliente360Routes = require("./routes/cliente360Routes");
+const cliente360ResultadoRoutes = require("./routes/cliente360ResultadoRoutes");
 const centralVendasRoutes = require("./routes/centralVendasRoutes");
 const diagnosticoInicialRoutes = require("./routes/diagnosticoInicialRoutes");
 const adsRoutes = require("./routes/adsRoutes");
@@ -487,6 +488,9 @@ app.use("/", entregasClienteRoutes);
 app.use("/", basesRoutes);
 app.use("/base-vinculos", baseVinculosRoutes);
 app.use("/bases/assistente", assistenteBaseRoutes);
+// Cockpit de resultado (tela React) antes do router legado da 360: só subcaminhos
+// `/:slug/<sub>`, não colide com o `/:slug` puro do router existente.
+app.use("/operacao/cliente-360", cliente360ResultadoRoutes);
 app.use("/operacao/cliente-360", cliente360Routes);
 app.use("/operacao/central-vendas", centralVendasRoutes);
 app.use("/operacao/diagnosticos-iniciais", diagnosticoInicialRoutes);

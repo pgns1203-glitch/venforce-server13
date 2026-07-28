@@ -413,5 +413,8 @@ module.exports = {
   getCentralVendas: (...args) => createCentralVendasService().getCentralVendas(...args),
   createCentralVendasService,
   buildPayloadFromSnapshot,
+  // Consumido pela Cliente 360 (cliente360FechamentoAdapter) para ler o
+  // fechamento por intervalo de datas sem duplicar o contrato de pedido.
+  buildPayloadFromRange,
   periodoFromCompetencia,
 };

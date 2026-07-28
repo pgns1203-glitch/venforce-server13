@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { formatarMoeda } from "../../utils/currency.js";
 import { rotularCompetencia } from "../../utils/dates.js";
 import { obterPlacar } from "../../services/cliente360Api.js";
+import DataTable from "./DataTable.jsx";
 import EmptyState from "./EmptyState.jsx";
 
 const FATOR_LABEL = {
@@ -19,6 +20,21 @@ const FATOR_LABEL = {
   comissao: "Correção de comissão", imposto: "Correção de imposto",
   mix: "Melhoria de mix", produto: "Pausa/retomada de produto", base: "Correção de base",
 };
+
+const COLUNAS_PLACAR = [
+  { key: "acao", header: "Ação", width: "30%", isRowHeader: true,
+    render: (acao) => FATOR_LABEL[acao.fator] || acao.fator },
+  { key: "competencia", header: "Competência", width: "16%",
+    render: (acao) => rotularCompetencia(acao.competencia) },
+  { key: "medida", header: "Medida em", width: "16%",
+    render: (acao) => rotularCompetencia(acao.competenciaMedida) },
+  { key: "produto", header: "Produto", width: "22%",
+    render: (acao) => acao.titulo || acao.mlb || "conta toda",
+    cellClassName: () => "c360-fraco c360-td--truncar" },
+  { key: "credito", header: "Crédito", width: "16%", align: "right",
+    render: (acao) => formatarMoeda(acao.creditoApurado),
+    cellClassName: (acao) => (acao.creditoApurado > 0 ? "c360-dir--positivo" : "") },
+];
 
 export default function PlacarConsultor({ slug, marketplace }) {
   const [placar, setPlacar] = useState(null);
@@ -53,9 +69,9 @@ export default function PlacarConsultor({ slug, marketplace }) {
   }, [slug, marketplace]);
 
   return (
-    <section className="vf-section c360-placar">
+    <section className="vf-section c360-secao c360-placar">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">Placar do consultor</h2>
           <p className="vf-section__description">
             Quanto de resultado operacional foi recuperado por ação registrada da consultoria.
@@ -104,32 +120,12 @@ export default function PlacarConsultor({ slug, marketplace }) {
               descricao="Registre correções de custo, frete, preço, comissão, imposto, mix ou base para o placar medir o efeito no mês seguinte."
             />
           ) : (
-            <div className="vf-table-wrap">
-              <table className="vf-table vf-table--compact">
-                <thead>
-                  <tr>
-                    <th scope="col">Ação</th>
-                    <th scope="col">Competência</th>
-                    <th scope="col">Medida em</th>
-                    <th scope="col">Produto</th>
-                    <th scope="col" className="c360-num">Crédito</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {placar.acoes.map((acao) => (
-                    <tr key={acao.id}>
-                      <th scope="row">{FATOR_LABEL[acao.fator] || acao.fator}</th>
-                      <td>{rotularCompetencia(acao.competencia)}</td>
-                      <td>{rotularCompetencia(acao.competenciaMedida)}</td>
-                      <td className="c360-fraco">{acao.titulo || acao.mlb || "conta toda"}</td>
-                      <td className={`c360-num${acao.creditoApurado > 0 ? " c360-dir--positivo" : ""}`}>
-                        {formatarMoeda(acao.creditoApurado)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              caption="Ações creditadas no placar"
+              columns={COLUNAS_PLACAR}
+              rows={placar.acoes}
+              getRowKey={(acao) => acao.id}
+            />
           )}
 
           {placar.legado?.length > 0 && (

@@ -4,15 +4,39 @@
 import { formatarMoeda } from "../../utils/currency.js";
 import { formatarNumero } from "../../utils/numbers.js";
 import { formatarPercentual } from "../../utils/percentage.js";
+import DataTable, { CelulaProduto } from "./DataTable.jsx";
 import EmptyState from "./EmptyState.jsx";
+
+const COLUNAS = [
+  {
+    key: "produto", header: "Produto", width: "38%", variant: "produto", isRowHeader: true,
+    render: (item) => (
+      <CelulaProduto
+        titulo={item.titulo || item.mlb}
+        mlb={item.mlb}
+        tags={item.curvaA ? [{ label: "Curva A", tom: "is-primary" }] : []}
+      />
+    ),
+  },
+  { key: "unidades", header: "Unidades", width: "11%", align: "right",
+    render: (item) => formatarNumero(item.unidades) },
+  { key: "faturamento", header: "Faturamento", width: "15%", align: "right",
+    render: (item) => formatarMoeda(item.faturamento) },
+  { key: "margem", header: "Margem", width: "11%", align: "right",
+    render: (item) => formatarPercentual(item.margem) },
+  { key: "gap", header: "Gap p/ alvo", width: "12%", align: "right",
+    render: (item) => `${formatarNumero(item.gapMargemPp, 1)} p.p.` },
+  { key: "recuperavel", header: "Recuperável", width: "13%", align: "right",
+    render: (item) => formatarMoeda(item.recuperavelAteAlvo) },
+];
 
 export default function ProdutosAbaixoMeta({ itens = [], margemAlvo }) {
   const alvoPercent = Math.round((margemAlvo ?? 0.15) * 100);
 
   return (
-    <section className="vf-section">
+    <section className="vf-section c360-secao">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">Produtos abaixo da margem-alvo ({alvoPercent}%)</h2>
           <p className="vf-section__description">
             Margem positiva, porém abaixo do alvo. O recuperável é o gap até o alvo, mantido o faturamento.
@@ -32,36 +56,12 @@ export default function ProdutosAbaixoMeta({ itens = [], margemAlvo }) {
           descricao="Todos os itens com margem positiva já atingem o alvo configurado."
         />
       ) : (
-        <div className="vf-table-wrap">
-          <table className="vf-table vf-table--compact">
-            <thead>
-              <tr>
-                <th scope="col">Produto</th>
-                <th scope="col" className="c360-num">Unidades</th>
-                <th scope="col" className="c360-num">Faturamento</th>
-                <th scope="col" className="c360-num">Margem</th>
-                <th scope="col" className="c360-num">Gap p/ alvo</th>
-                <th scope="col" className="c360-num">Recuperável</th>
-              </tr>
-            </thead>
-            <tbody>
-              {itens.map((item) => (
-                <tr key={item.mlb}>
-                  <th scope="row" className="c360-produto">
-                    <span className="c360-produto__titulo">{item.titulo || item.mlb}</span>
-                    <span className="c360-produto__mlb">{item.mlb}</span>
-                    {item.curvaA && <span className="vf-tag is-primary">Curva A</span>}
-                  </th>
-                  <td className="c360-num">{formatarNumero(item.unidades)}</td>
-                  <td className="c360-num">{formatarMoeda(item.faturamento)}</td>
-                  <td className="c360-num">{formatarPercentual(item.margem)}</td>
-                  <td className="c360-num">{formatarNumero(item.gapMargemPp, 1)} p.p.</td>
-                  <td className="c360-num">{formatarMoeda(item.recuperavelAteAlvo)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          caption="Produtos com margem positiva abaixo do alvo"
+          columns={COLUNAS}
+          rows={itens}
+          getRowKey={(item) => item.mlb}
+        />
       )}
     </section>
   );

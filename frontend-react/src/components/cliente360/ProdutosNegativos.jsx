@@ -9,13 +9,40 @@
 import { formatarMoeda } from "../../utils/currency.js";
 import { formatarNumero } from "../../utils/numbers.js";
 import { formatarPercentual } from "../../utils/percentage.js";
+import DataTable, { CelulaProduto } from "./DataTable.jsx";
 import EmptyState from "./EmptyState.jsx";
+
+const COLUNAS = [
+  {
+    key: "produto", header: "Produto", width: "38%", variant: "produto", isRowHeader: true,
+    render: (item) => (
+      <CelulaProduto
+        titulo={item.titulo || item.mlb}
+        mlb={item.mlb}
+        tags={item.curvaA ? [{ label: "Curva A", tom: "is-primary" }] : []}
+      />
+    ),
+  },
+  { key: "unidades", header: "Unidades", width: "11%", align: "right",
+    render: (item) => formatarNumero(item.unidades) },
+  { key: "preco", header: "Preço médio", width: "13%", align: "right",
+    render: (item) => formatarMoeda(item.precoMedio) },
+  { key: "margemUnitaria", header: "Margem/un.", width: "13%", align: "right",
+    render: (item) => formatarMoeda(item.margemUnitaria),
+    cellClassName: () => "c360-dir--negativo" },
+  { key: "margem", header: "Margem", width: "11%", align: "right",
+    render: (item) => formatarPercentual(item.margem),
+    cellClassName: () => "c360-dir--negativo" },
+  { key: "resultado", header: "Resultado", width: "14%", align: "right",
+    render: (item) => formatarMoeda(item.resultado),
+    cellClassName: () => "c360-dir--negativo" },
+];
 
 export default function ProdutosNegativos({ itens = [] }) {
   return (
-    <section className="vf-section">
+    <section className="vf-section c360-secao">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">Produtos no vermelho</h2>
           <p className="vf-section__description">
             Margem de contribuição negativa: o preço não cobre comissão, frete, custo e imposto.
@@ -36,36 +63,13 @@ export default function ProdutosNegativos({ itens = [] }) {
           descricao="Todos os itens do período cobrem os custos que variam com a venda."
         />
       ) : (
-        <div className="vf-table-wrap">
-          <table className="vf-table vf-table--compact">
-            <thead>
-              <tr>
-                <th scope="col">Produto</th>
-                <th scope="col" className="c360-num">Unidades</th>
-                <th scope="col" className="c360-num">Preço médio</th>
-                <th scope="col" className="c360-num">Margem/un.</th>
-                <th scope="col" className="c360-num">Margem</th>
-                <th scope="col" className="c360-num">Resultado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {itens.map((item) => (
-                <tr key={item.mlb} className="c360-linha-vermelho">
-                  <th scope="row" className="c360-produto">
-                    <span className="c360-produto__titulo">{item.titulo || item.mlb}</span>
-                    <span className="c360-produto__mlb">{item.mlb}</span>
-                    {item.curvaA && <span className="vf-tag is-primary">Curva A</span>}
-                  </th>
-                  <td className="c360-num">{formatarNumero(item.unidades)}</td>
-                  <td className="c360-num">{formatarMoeda(item.precoMedio)}</td>
-                  <td className="c360-num c360-dir--negativo">{formatarMoeda(item.margemUnitaria)}</td>
-                  <td className="c360-num c360-dir--negativo">{formatarPercentual(item.margem)}</td>
-                  <td className="c360-num c360-dir--negativo">{formatarMoeda(item.resultado)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          caption="Produtos com margem de contribuição negativa"
+          columns={COLUNAS}
+          rows={itens}
+          getRowKey={(item) => item.mlb}
+          rowClassName={() => "c360-linha-vermelho"}
+        />
       )}
     </section>
   );

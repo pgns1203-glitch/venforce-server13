@@ -12,6 +12,42 @@ import { useState } from "react";
 import { formatarMoeda, formatarVariacaoMoeda } from "../../utils/currency.js";
 import { formatarNumero } from "../../utils/numbers.js";
 import { rotularCompetencia } from "../../utils/dates.js";
+import DataTable, { CelulaProduto } from "./DataTable.jsx";
+
+const COLUNAS_COMPOSICAO = [
+  { key: "label", header: "Componente agrupado", width: "70%", isRowHeader: true, render: (i) => i.label },
+  { key: "impacto", header: "Impacto", width: "30%", align: "right",
+    render: (i) => formatarVariacaoMoeda(i.impacto),
+    cellClassName: (i) => (i.impacto >= 0 ? "c360-dir--positivo" : "c360-dir--negativo") },
+];
+
+// A tabela de produtos da linha muda de colunas conforme o fator tenha ou não
+// unitário (volume/mix não têm). As larguras somam 100% nos dois casos.
+function colunasProdutosDaLinha(temUnitario) {
+  const produto = {
+    key: "produto", header: "Produto", width: temUnitario ? "34%" : "52%",
+    variant: "produto", isRowHeader: true,
+    render: (p) => <CelulaProduto titulo={p.titulo || p.mlb} mlb={p.mlb} />,
+  };
+  const unidades = [
+    { key: "unidAntes", header: "Unid. antes", width: temUnitario ? "12%" : "16%", align: "right",
+      render: (p) => formatarNumero(p.unidadesAnterior) },
+    { key: "unidDepois", header: "Unid. depois", width: temUnitario ? "12%" : "16%", align: "right",
+      render: (p) => formatarNumero(p.unidadesAtual) },
+  ];
+  const unitarios = temUnitario ? [
+    { key: "unitAntes", header: "Unitário antes", width: "14%", align: "right",
+      render: (p) => formatarMoeda(p.unitario?.anterior) },
+    { key: "unitDepois", header: "Unitário depois", width: "14%", align: "right",
+      render: (p) => formatarMoeda(p.unitario?.atual) },
+  ] : [];
+  const impacto = {
+    key: "impacto", header: "Impacto", width: temUnitario ? "14%" : "16%", align: "right",
+    render: (p) => formatarVariacaoMoeda(p.impacto),
+    cellClassName: (p) => (p.impacto >= 0 ? "c360-dir--positivo" : "c360-dir--negativo"),
+  };
+  return [produto, ...unidades, ...unitarios, impacto];
+}
 
 function LinhaPonte({ linha, maiorImpacto }) {
   const [aberta, setAberta] = useState(false);
@@ -54,62 +90,21 @@ function LinhaPonte({ linha, maiorImpacto }) {
 
           {/* "Outros" nunca é caixa-preta: mostra exatamente o que foi agrupado. */}
           {linha.composicao?.length > 0 && (
-            <table className="vf-table vf-table--compact c360-ponte__tabela">
-              <thead>
-                <tr>
-                  <th scope="col">Componente agrupado</th>
-                  <th scope="col" className="c360-num">Impacto</th>
-                </tr>
-              </thead>
-              <tbody>
-                {linha.composicao.map((item) => (
-                  <tr key={item.chave}>
-                    <th scope="row">{item.label}</th>
-                    <td className="c360-num">{formatarVariacaoMoeda(item.impacto)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataTable
+              caption={`Composição de ${linha.label}`}
+              columns={COLUNAS_COMPOSICAO}
+              rows={linha.composicao}
+              getRowKey={(item) => item.chave}
+            />
           )}
 
           {linha.produtos?.length > 0 && (
-            <table className="vf-table vf-table--compact c360-ponte__tabela">
-              <thead>
-                <tr>
-                  <th scope="col">Produto</th>
-                  <th scope="col" className="c360-num">Unid. antes</th>
-                  <th scope="col" className="c360-num">Unid. depois</th>
-                  {linha.produtos[0]?.unitario && (
-                    <>
-                      <th scope="col" className="c360-num">Unitário antes</th>
-                      <th scope="col" className="c360-num">Unitário depois</th>
-                    </>
-                  )}
-                  <th scope="col" className="c360-num">Impacto</th>
-                </tr>
-              </thead>
-              <tbody>
-                {linha.produtos.map((p) => (
-                  <tr key={p.mlb}>
-                    <th scope="row" className="c360-produto">
-                      <span className="c360-produto__titulo">{p.titulo || p.mlb}</span>
-                      <span className="c360-produto__mlb">{p.mlb}</span>
-                    </th>
-                    <td className="c360-num">{formatarNumero(p.unidadesAnterior)}</td>
-                    <td className="c360-num">{formatarNumero(p.unidadesAtual)}</td>
-                    {linha.produtos[0]?.unitario && (
-                      <>
-                        <td className="c360-num">{formatarMoeda(p.unitario?.anterior)}</td>
-                        <td className="c360-num">{formatarMoeda(p.unitario?.atual)}</td>
-                      </>
-                    )}
-                    <td className={`c360-num c360-dir--${p.impacto >= 0 ? "positivo" : "negativo"}`}>
-                      {formatarVariacaoMoeda(p.impacto)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataTable
+              caption={`Produtos responsáveis por ${linha.label}`}
+              columns={colunasProdutosDaLinha(!!linha.produtos[0]?.unitario)}
+              rows={linha.produtos}
+              getRowKey={(p) => p.mlb}
+            />
           )}
         </div>
       )}
@@ -120,9 +115,9 @@ function LinhaPonte({ linha, maiorImpacto }) {
 export default function PonteResultado({ ponte, confianca, periodo, comparacao }) {
   if (!ponte) {
     return (
-      <section className="vf-section c360-ponte">
+      <section className="vf-section c360-secao c360-ponte">
         <div className="vf-section__header">
-          <div>
+          <div className="vf-section__heading">
             <h2 className="vf-section__title">Ponte do resultado operacional</h2>
           </div>
         </div>
@@ -142,9 +137,9 @@ export default function PonteResultado({ ponte, confianca, periodo, comparacao }
   const maiorImpacto = Math.max(...ponte.linhas.map((l) => Math.abs(l.impacto)), 1);
 
   return (
-    <section className="vf-section c360-ponte">
+    <section className="vf-section c360-secao c360-ponte">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">Ponte do resultado operacional</h2>
           <p className="vf-section__description">
             De {rotularCompetencia(comparacao.competencia)} para {rotularCompetencia(periodo.competencia)} —

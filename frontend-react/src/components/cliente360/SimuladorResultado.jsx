@@ -14,7 +14,14 @@ import { formatarMoeda, formatarVariacaoMoeda } from "../../utils/currency.js";
 import { formatarNumero } from "../../utils/numbers.js";
 import { formatarPercentual } from "../../utils/percentage.js";
 import { useCliente360Simulation } from "../../hooks/useCliente360Simulation.js";
+import DataTable, { CelulaProduto } from "./DataTable.jsx";
 import EmptyState from "./EmptyState.jsx";
+
+const ROTULO_DELTA = {
+  deltaPrecoPct: "Variação de preço",
+  deltaCustoPct: "Variação de custo",
+  deltaFretePct: "Variação de frete",
+};
 
 export default function SimuladorResultado({ simulacao, slug, competencia, marketplace }) {
   const sim = useCliente360Simulation({ slug, competencia, marketplace });
@@ -39,10 +46,59 @@ export default function SimuladorResultado({ simulacao, slug, competencia, marke
 
   const campo = (mlb, chave) => sim.ajustes[mlb]?.[chave] ?? (chave === "pausar" ? false : 0);
 
+  const colunas = [
+    {
+      key: "produto", header: "Produto", width: "30%", variant: "produto", isRowHeader: true,
+      render: (p) => (
+        <CelulaProduto
+          titulo={p.titulo}
+          mlb={p.mlb}
+          tags={p.noVermelho ? [{ label: "no vermelho", tom: "is-danger" }] : []}
+        />
+      ),
+    },
+    { key: "unidades", header: "Unid.", width: "9%", align: "right",
+      render: (p) => formatarNumero(p.unidades) },
+    { key: "preco", header: "Preço", width: "12%", align: "right",
+      render: (p) => formatarMoeda(p.precoMedio) },
+    { key: "margemUnitaria", header: "Margem/un.", width: "12%", align: "right",
+      render: (p) => formatarMoeda(p.margemUnitaria),
+      cellClassName: (p) => (p.margemUnitaria < 0 ? "c360-dir--negativo" : "") },
+    ...["deltaPrecoPct", "deltaCustoPct", "deltaFretePct"].map((chave) => ({
+      key: chave,
+      header: chave === "deltaPrecoPct" ? "Δ% preço" : chave === "deltaCustoPct" ? "Δ% custo" : "Δ% frete",
+      width: "10%", align: "right",
+      render: (p) => (
+        <input
+          className="vf-input vf-input--sm c360-sim-input"
+          type="number"
+          step="1"
+          aria-label={`${ROTULO_DELTA[chave]} de ${p.titulo}`}
+          value={campo(p.mlb, chave)}
+          disabled={campo(p.mlb, "pausar")}
+          onChange={(e) => sim.definir(p.mlb, chave, Number(e.target.value) || 0)}
+        />
+      ),
+    })),
+    {
+      key: "pausar", header: "Pausar", width: "7%",
+      render: (p) => (
+        <label className="vf-switch">
+          <input
+            type="checkbox"
+            aria-label={`Pausar ${p.titulo}`}
+            checked={campo(p.mlb, "pausar")}
+            onChange={(e) => sim.definir(p.mlb, "pausar", e.target.checked)}
+          />
+        </label>
+      ),
+    },
+  ];
+
   return (
-    <section className="vf-section c360-simulador">
+    <section className="vf-section c360-secao c360-simulador">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">Simulador</h2>
           <p className="vf-section__description">
             Ajuste preço, custo e frete por produto — ou pause o que sangra — e veja o resultado
@@ -176,61 +232,14 @@ export default function SimuladorResultado({ simulacao, slug, competencia, marke
           descricao="Ajuste a busca ou sincronize o fechamento desta competência."
         />
       ) : (
-        <div className="vf-table-wrap c360-sim-tabela">
-          <table className="vf-table vf-table--compact">
-            <thead>
-              <tr>
-                <th scope="col">Produto</th>
-                <th scope="col" className="c360-num">Unid.</th>
-                <th scope="col" className="c360-num">Preço</th>
-                <th scope="col" className="c360-num">Margem/un.</th>
-                <th scope="col" className="c360-num">Δ% preço</th>
-                <th scope="col" className="c360-num">Δ% custo</th>
-                <th scope="col" className="c360-num">Δ% frete</th>
-                <th scope="col">Pausar</th>
-              </tr>
-            </thead>
-            <tbody>
-              {produtos.map((p) => (
-                <tr key={p.mlb} className={p.noVermelho ? "c360-linha-vermelho" : undefined}>
-                  <th scope="row" className="c360-produto">
-                    <span className="c360-produto__titulo">{p.titulo}</span>
-                    <span className="c360-produto__mlb">{p.mlb}</span>
-                    {p.noVermelho && <span className="vf-tag is-danger">no vermelho</span>}
-                  </th>
-                  <td className="c360-num">{formatarNumero(p.unidades)}</td>
-                  <td className="c360-num">{formatarMoeda(p.precoMedio)}</td>
-                  <td className={`c360-num${p.margemUnitaria < 0 ? " c360-dir--negativo" : ""}`}>
-                    {formatarMoeda(p.margemUnitaria)}
-                  </td>
-                  {["deltaPrecoPct", "deltaCustoPct", "deltaFretePct"].map((chave) => (
-                    <td key={chave} className="c360-num">
-                      <input
-                        className="vf-input vf-input--sm c360-sim-input"
-                        type="number"
-                        step="1"
-                        aria-label={`${chave === "deltaPrecoPct" ? "Variação de preço" : chave === "deltaCustoPct" ? "Variação de custo" : "Variação de frete"} de ${p.titulo}`}
-                        value={campo(p.mlb, chave)}
-                        disabled={campo(p.mlb, "pausar")}
-                        onChange={(e) => sim.definir(p.mlb, chave, Number(e.target.value) || 0)}
-                      />
-                    </td>
-                  ))}
-                  <td>
-                    <label className="vf-switch">
-                      <input
-                        type="checkbox"
-                        aria-label={`Pausar ${p.titulo}`}
-                        checked={campo(p.mlb, "pausar")}
-                        onChange={(e) => sim.definir(p.mlb, "pausar", e.target.checked)}
-                      />
-                    </label>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          caption="Produtos do período para simulação"
+          columns={colunas}
+          rows={produtos}
+          getRowKey={(p) => p.mlb}
+          rowClassName={(p) => (p.noVermelho ? "c360-linha-vermelho" : undefined)}
+          scroll
+        />
       )}
     </section>
   );

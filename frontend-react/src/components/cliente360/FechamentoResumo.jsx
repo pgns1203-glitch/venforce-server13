@@ -19,19 +19,32 @@ const AVISO_STATUS_ADS = {
   erro: "Falha ao consultar o Mercado Ads.",
 };
 
-function Kpi({ label, valor, destaque = false, negativo = false, rodape = null, vazio = false }) {
+// Card de KPI.
+//   `destaque`  → realce roxo. Reservado ao Resultado operacional: é o ÚNICO
+//                 card colorido da tela, para o olho ter um só ponto de pouso.
+//   `principal` → ênfase neutra (borda mais firme). Usado no Resultado após Ads,
+//                 que é o número-chave do seu grupo mas não pode competir em cor.
+//   `base`      → faixa de largura total do Faturamento, que ancora os demais
+//                 indicadores sem roubar altura da grade.
+function Kpi({
+  label, valor, destaque = false, principal = false,
+  negativo = false, rodape = null, vazio = false, base = false,
+}) {
   const classes = [
     "vf-kpi",
-    destaque ? "vf-kpi--featured" : "",
+    "c360-kpi",
+    base ? "c360-kpi--base" : "",
+    destaque ? "vf-kpi--featured c360-kpi--destaque" : "",
+    principal ? "c360-kpi--principal" : "",
     negativo ? "vf-kpi--danger" : "",
     vazio ? "c360-kpi--vazio" : "",
   ].filter(Boolean).join(" ");
 
   return (
     <article className={classes}>
-      <p className="vf-kpi__label">{label}</p>
-      <p className="vf-kpi__value">{valor}</p>
-      {rodape && <p className="vf-kpi__foot">{rodape}</p>}
+      <p className="vf-kpi__label c360-kpi__label">{label}</p>
+      <p className="vf-kpi__value c360-kpi__value">{valor}</p>
+      {rodape && <p className="vf-kpi__foot c360-kpi__foot">{rodape}</p>}
     </article>
   );
 }
@@ -42,9 +55,9 @@ export default function FechamentoResumo({ fechamento, ads }) {
   const aviso = AVISO_STATUS_ADS[atual.adsStatus] || null;
 
   return (
-    <section className="vf-section c360-fechamento">
+    <section className="vf-section c360-secao c360-fechamento">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">Fechamento do mês</h2>
           <p className="vf-section__description">
             Resultado operacional apurado pela Fechamento API, pedido a pedido.
@@ -52,7 +65,9 @@ export default function FechamentoResumo({ fechamento, ads }) {
         </div>
       </div>
 
-      {/* Grupo 1 — OPERAÇÃO (antes de Ads) */}
+      {/* Grupo 1 — OPERAÇÃO (antes de Ads).
+          Faturamento é a base de tudo: vira uma faixa fina de largura total, e os
+          seis indicadores derivados ocupam UMA linha de seis colunas iguais. */}
       <div className="c360-grupo">
         <p className="c360-grupo__titulo">
           Operação
@@ -60,8 +75,8 @@ export default function FechamentoResumo({ fechamento, ads }) {
             faturamento − comissão − frete − custo do produto − imposto
           </span>
         </p>
-        <div className="vf-kpi-grid c360-kpis">
-          <Kpi label="Faturamento" valor={formatarMoeda(atual.faturamento)} />
+        <div className="c360-kpis c360-kpis--operacao">
+          <Kpi base label="Faturamento" valor={formatarMoeda(atual.faturamento)} />
           <Kpi
             label="Resultado operacional"
             valor={formatarMoeda(atual.resultadoOperacional)}
@@ -100,13 +115,13 @@ export default function FechamentoResumo({ fechamento, ads }) {
           </div>
         )}
 
-        <div className="vf-kpi-grid c360-kpis c360-kpis--ads">
+        <div className="c360-kpis c360-kpis--ads">
           <Kpi label="Ads investido" valor={formatarMoeda(atual.ads)} vazio={adsIndisponivel} />
           <Kpi label="TACoS" valor={formatarPercentual(atual.tacos)} vazio={adsIndisponivel} />
           <Kpi
             label="Resultado após Ads"
             valor={formatarMoeda(atual.resultadoAposAds)}
-            destaque
+            principal
             negativo={(atual.resultadoAposAds ?? 0) < 0}
             vazio={adsIndisponivel}
           />

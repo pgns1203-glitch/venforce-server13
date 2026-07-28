@@ -19,9 +19,9 @@ export default function OportunidadesRecuperacao({ oportunidades }) {
   const alertas = lista.filter((o) => !o.contaNoTotal);
 
   return (
-    <section className="vf-section c360-recuperacao">
+    <section className="vf-section c360-secao c360-recuperacao">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">Oportunidades de recuperação operacional</h2>
           <p className="vf-section__description">
             Cada item nasce de uma perda que já aparece na ponte ou de um produto do período.

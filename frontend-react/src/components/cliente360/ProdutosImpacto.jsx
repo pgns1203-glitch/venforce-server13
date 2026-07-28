@@ -6,6 +6,7 @@
 
 import { formatarMoeda, formatarVariacaoMoeda } from "../../utils/currency.js";
 import { formatarNumero } from "../../utils/numbers.js";
+import DataTable, { CelulaProduto } from "./DataTable.jsx";
 import EmptyState from "./EmptyState.jsx";
 
 const MOTIVO_LABEL = {
@@ -14,11 +15,43 @@ const MOTIVO_LABEL = {
   produto_novo: "produto novo", produto_saiu: "parou de vender",
 };
 
+// Larguras somam 100%: com table-layout fixed, isso trava a coluna "Produto"
+// no mesmo lugar em todas as seções de produto da página.
+const COLUNAS = [
+  {
+    key: "produto", header: "Produto", width: "38%", variant: "produto", isRowHeader: true,
+    render: (item) => (
+      <CelulaProduto
+        titulo={item.titulo || item.mlb}
+        mlb={item.mlb}
+        tags={item.curvaA ? [{ label: "Curva A", tom: "is-primary" }] : []}
+      />
+    ),
+  },
+  {
+    key: "motivo", header: "Motivo", width: "16%",
+    render: (item) => MOTIVO_LABEL[item.motivoDominante] || item.motivoDominante,
+  },
+  {
+    key: "unidades", header: "Unidades", width: "14%", align: "right",
+    render: (item) => formatarNumero(item.unidadesAtual ?? item.unidades),
+  },
+  {
+    key: "faturamento", header: "Faturamento", width: "16%", align: "right",
+    render: (item) => formatarMoeda(item.faturamento),
+  },
+  {
+    key: "contribuicao", header: "Impacto", width: "16%", align: "right",
+    render: (item) => formatarVariacaoMoeda(item.contribuicao),
+    cellClassName: (item) => (item.contribuicao >= 0 ? "c360-dir--positivo" : "c360-dir--negativo"),
+  },
+];
+
 export default function ProdutosImpacto({ titulo, descricao, itens = [], vazioTitulo, vazioDescricao }) {
   return (
-    <section className="vf-section">
+    <section className="vf-section c360-secao">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">{titulo}</h2>
           {descricao && <p className="vf-section__description">{descricao}</p>}
         </div>
@@ -32,36 +65,12 @@ export default function ProdutosImpacto({ titulo, descricao, itens = [], vazioTi
       {itens.length === 0 ? (
         <EmptyState compacto titulo={vazioTitulo} descricao={vazioDescricao} />
       ) : (
-        <div className="vf-table-wrap">
-          <table className="vf-table vf-table--compact">
-            <thead>
-              <tr>
-                <th scope="col">Produto</th>
-                <th scope="col">Motivo</th>
-                <th scope="col" className="c360-num">Unidades</th>
-                <th scope="col" className="c360-num">Faturamento</th>
-                <th scope="col" className="c360-num">Impacto</th>
-              </tr>
-            </thead>
-            <tbody>
-              {itens.map((item) => (
-                <tr key={item.mlb}>
-                  <th scope="row" className="c360-produto">
-                    <span className="c360-produto__titulo">{item.titulo || item.mlb}</span>
-                    <span className="c360-produto__mlb">{item.mlb}</span>
-                    {item.curvaA && <span className="vf-tag is-primary">Curva A</span>}
-                  </th>
-                  <td>{MOTIVO_LABEL[item.motivoDominante] || item.motivoDominante}</td>
-                  <td className="c360-num">{formatarNumero(item.unidadesAtual ?? item.unidades)}</td>
-                  <td className="c360-num">{formatarMoeda(item.faturamento)}</td>
-                  <td className={`c360-num c360-dir--${item.contribuicao >= 0 ? "positivo" : "negativo"}`}>
-                    {formatarVariacaoMoeda(item.contribuicao)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          caption={`${titulo} — contribuição por produto`}
+          columns={COLUNAS}
+          rows={itens}
+          getRowKey={(item) => item.mlb}
+        />
       )}
     </section>
   );

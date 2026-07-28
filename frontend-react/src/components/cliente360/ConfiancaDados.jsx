@@ -12,6 +12,7 @@ import { formatarMoeda } from "../../utils/currency.js";
 import { formatarNumero } from "../../utils/numbers.js";
 import { formatarPercentual } from "../../utils/percentage.js";
 import { formatarData, formatarDataHora } from "../../utils/dates.js";
+import DataTable from "./DataTable.jsx";
 
 const NIVEL = {
   confiavel: { tag: "is-success", label: "Confiável" },
@@ -19,15 +20,63 @@ const NIVEL = {
   insuficiente: { tag: "is-danger", label: "Insuficiente" },
 };
 
+// Tabela de duas colunas: rótulo à esquerda, valor à direita, sem cabeçalho
+// visível (o `caption` cobre o leitor de tela).
+const COLUNAS_RECONCILIACAO = [
+  { key: "label", header: "Componente", width: "70%", isRowHeader: true,
+    render: (linha) => (
+      <>
+        {linha.label}
+        {linha.detalhe && <span className="c360-fraco"> {linha.detalhe}</span>}
+      </>
+    ) },
+  { key: "valor", header: "Valor", width: "30%", align: "right",
+    render: (linha) => formatarMoeda(linha.valor),
+    cellClassName: (linha) => linha.className || "" },
+];
+
+function linhasReconciliacao(reconciliacao) {
+  const linhas = [
+    { chave: "oficial", label: "Faturamento no fechamento (oficial)", valor: reconciliacao.faturamentoFechamento },
+    { chave: "detalhe", label: "Faturamento detalhado por item", valor: reconciliacao.faturamentoDetalhe },
+  ];
+  if (reconciliacao.ajusteIdentificado) {
+    linhas.push({
+      chave: "ajuste",
+      label: "Ajustes de fechamento (origem identificada)",
+      detalhe: reconciliacao.origemAjuste,
+      valor: reconciliacao.ajusteIdentificado,
+    });
+  }
+  linhas.push({
+    chave: "diferenca",
+    label: "Diferença sem origem identificada",
+    valor: reconciliacao.diferenca,
+    destaque: !!reconciliacao.diferenca,
+    className: reconciliacao.diferenca ? "c360-dir--negativo" : "",
+  });
+  return linhas;
+}
+
+const COLUNAS_PEDIDOS = [
+  { key: "pedidoId", header: "Pedido", width: "26%", isRowHeader: true,
+    render: (p) => p.pedidoId, cellClassName: () => "c360-td--truncar" },
+  { key: "data", header: "Data", width: "16%", render: (p) => formatarData(p.data) },
+  { key: "valor", header: "Valor", width: "18%", align: "right", render: (p) => formatarMoeda(p.valor) },
+  { key: "pendencias", header: "Pendências", width: "40%",
+    render: (p) => (p.pendencias || []).join(", ") || "—",
+    cellClassName: () => "c360-fraco c360-td--truncar" },
+];
+
 export default function ConfiancaDados({ confianca, fechamento }) {
   const nivel = NIVEL[confianca.nivel] || NIVEL.insuficiente;
   const reconciliacao = confianca.reconciliacao || fechamento?.reconciliacao?.atual || null;
   const pedidos = (confianca.pedidosDerrubando || []).slice(0, 10);
 
   return (
-    <section className="vf-section c360-confianca">
+    <section className="vf-section c360-secao c360-confianca">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">Confiança dos dados</h2>
           <p className="vf-section__description">
             Cobertura medida em percentual do faturamento — um pedido grande sem custo pesa mais
@@ -83,35 +132,13 @@ export default function ConfiancaDados({ confianca, fechamento }) {
               {reconciliacao.status === "reconciliado" ? "Reconciliado" : "Divergente"}
             </span>
           </p>
-          <div className="vf-table-wrap">
-            <table className="vf-table vf-table--compact">
-              <tbody>
-                <tr>
-                  <th scope="row">Faturamento no fechamento (oficial)</th>
-                  <td className="c360-num">{formatarMoeda(reconciliacao.faturamentoFechamento)}</td>
-                </tr>
-                <tr>
-                  <th scope="row">Faturamento detalhado por item</th>
-                  <td className="c360-num">{formatarMoeda(reconciliacao.faturamentoDetalhe)}</td>
-                </tr>
-                {!!reconciliacao.ajusteIdentificado && (
-                  <tr>
-                    <th scope="row">
-                      Ajustes de fechamento (origem identificada)
-                      <span className="c360-fraco"> {reconciliacao.origemAjuste}</span>
-                    </th>
-                    <td className="c360-num">{formatarMoeda(reconciliacao.ajusteIdentificado)}</td>
-                  </tr>
-                )}
-                <tr className={reconciliacao.diferenca ? "c360-linha-destaque" : undefined}>
-                  <th scope="row">Diferença sem origem identificada</th>
-                  <td className={`c360-num${reconciliacao.diferenca ? " c360-dir--negativo" : ""}`}>
-                    {formatarMoeda(reconciliacao.diferenca)}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            caption="Reconciliação entre o detalhe por item e o total do fechamento"
+            columns={COLUNAS_RECONCILIACAO}
+            rows={linhasReconciliacao(reconciliacao)}
+            getRowKey={(linha) => linha.chave}
+            rowClassName={(linha) => (linha.destaque ? "c360-linha-destaque" : undefined)}
+          />
           {reconciliacao.status === "divergente" && (
             <p className="c360-nota">
               A diferença é mostrada como está. Nenhum número foi forçado a fechar e nenhum ajuste
@@ -124,28 +151,12 @@ export default function ConfiancaDados({ confianca, fechamento }) {
       {pedidos.length > 0 && (
         <details className="c360-detalhe">
           <summary>Pedidos que derrubam a confiança ({pedidos.length})</summary>
-          <div className="vf-table-wrap">
-            <table className="vf-table vf-table--compact">
-              <thead>
-                <tr>
-                  <th scope="col">Pedido</th>
-                  <th scope="col">Data</th>
-                  <th scope="col" className="c360-num">Valor</th>
-                  <th scope="col">Pendências</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pedidos.map((p) => (
-                  <tr key={p.pedidoId}>
-                    <th scope="row">{p.pedidoId}</th>
-                    <td>{formatarData(p.data)}</td>
-                    <td className="c360-num">{formatarMoeda(p.valor)}</td>
-                    <td className="c360-fraco">{(p.pendencias || []).join(", ") || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            caption="Pedidos que derrubam a confiança"
+            columns={COLUNAS_PEDIDOS}
+            rows={pedidos}
+            getRowKey={(p) => p.pedidoId}
+          />
         </details>
       )}
 

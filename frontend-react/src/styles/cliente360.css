@@ -10,8 +10,65 @@
  * NÃO foi alterado em nenhuma linha.
  */
 
+/* ── Container e régua horizontal ────────────────────────────────────────
+   A Fundação V2 entrega `--vf-content-wide: 1560px`, largo demais para esta
+   tela: as tabelas ficavam esticadas e as colunas numéricas longe do rótulo.
+   Reduzimos para 1400px COM ESCOPO, sem tocar o token global.
+
+   Tudo (header, filtros, seções, tabelas) herda a mesma largura e o mesmo
+   padding-inline — é o que garante que nenhuma tabela comece numa régua
+   diferente da seção anterior. */
 .c360 {
-  padding-bottom: var(--vf-sp-16);
+  width: 100%;
+  max-width: 1400px;
+  margin-inline: auto;
+  padding-inline: var(--vf-sp-8);
+  padding-bottom: var(--vf-sp-12);
+  /* espaço entre seções principais: 32px (--vf-sp-8), dentro da faixa 32–40 */
+  gap: var(--vf-sp-8);
+}
+
+/* A shell global aplica seu próprio padding lateral; aqui ele viraria padding
+   duplicado e desalinharia a régua. Zeramos só no escopo desta página. */
+.vf-page-cliente-360-react .vf-page-shell {
+  padding-inline: 0;
+  padding-block: var(--vf-sp-6) var(--vf-sp-10);
+}
+
+@media (max-width: 1024px) {
+  .c360 { padding-inline: var(--vf-sp-5); }
+}
+
+@media (max-width: 640px) {
+  .c360 {
+    padding-inline: var(--vf-sp-4);
+    gap: var(--vf-sp-6);
+  }
+}
+
+/* ── Ritmo vertical das seções ───────────────────────────────────────────
+   Título → subtítulo: 4px (era 2px do global).
+   Subtítulo → conteúdo: 16px, pelo gap da própria seção. */
+.c360-secao {
+  gap: var(--vf-sp-4);
+}
+
+.c360-secao .vf-section__heading {
+  min-width: 0;
+}
+
+.c360-secao .vf-section__description {
+  margin-top: var(--vf-sp-1);
+  max-width: 78ch;
+}
+
+.c360-secao .vf-section__header {
+  align-items: flex-start;
+  gap: var(--vf-sp-4);
+}
+
+.c360-secao .vf-section__actions {
+  flex-shrink: 0;
 }
 
 /* ── Cabeçalho e filtros ─────────────────────────────────────────────── */
@@ -57,7 +114,8 @@
 /* ── Narrativa ───────────────────────────────────────────────────────── */
 
 .c360-narrativa {
-  padding: var(--vf-sp-4) var(--vf-sp-5);
+  margin: 0;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
   background: var(--vf-primary-soft);
   border: 1px solid var(--vf-primary-border);
   color: var(--vf-primary-strong);
@@ -107,8 +165,107 @@
   background: var(--vf-surface);
 }
 
+/* ── Grade de KPIs ───────────────────────────────────────────────────────
+   O grid global (`auto-fill, minmax(200px, 1fr)`) deixava o 7º card
+   (Cancelamentos) órfão numa segunda linha. Aqui a contagem de colunas é
+   explícita por breakpoint.
+
+   Faturamento é a BASE de todos os outros indicadores: vira uma faixa fina de
+   largura total (`--base`), e os seis derivados ocupam UMA linha de seis
+   colunas iguais. Nada foi removido — só reorganizado. */
+.c360-kpis {
+  display: grid;
+  gap: var(--vf-sp-3);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.c360-kpis--ads {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.c360-kpi--base {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: var(--vf-sp-3);
+  min-height: 0;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  background: var(--vf-surface-2);
+}
+
+.c360-kpi--base .c360-kpi__value {
+  font-size: 1.25rem;
+}
+
+/* Card compacto: altura vem do conteúdo, com piso de 112px e teto implícito.
+   Antes o card passava de 170px por causa do valor grande + gap folgado. */
+.c360-kpi {
+  min-height: 112px;
+  gap: 0;
+  padding: 17px var(--vf-sp-4);
+  border-radius: var(--vf-radius-sm);
+  box-shadow: none;
+}
+
+.c360-kpi__label {
+  margin: 0 0 var(--vf-sp-2);
+  font-size: 0.6875rem;   /* 11px */
+  line-height: 1.3;
+}
+
+.c360-kpi__value {
+  margin: 0;
+  font-size: 1.75rem;     /* 28px */
+  font-weight: var(--vf-fw-semibold);
+  line-height: 1.15;
+}
+
+/* Informação secundária (ex.: valor cancelado) fica logo abaixo do valor e
+   não pode empurrar a altura do card. */
+.c360-kpi__foot {
+  margin: var(--vf-sp-2) 0 0;
+  font-size: 0.75rem;     /* 12px */
+  line-height: 1.3;
+}
+
+/* Único realce da tela: Resultado operacional. Os demais permanecem neutros. */
+.c360-kpi--destaque {
+  background: var(--vf-primary-soft);
+  border-color: var(--vf-primary-border);
+}
+
+.c360-kpi--destaque .c360-kpi__value {
+  color: var(--vf-primary-strong);
+}
+
+/* Ênfase NEUTRA: o Resultado após Ads é o número-chave do grupo de Ads, mas o
+   roxo continua exclusivo do Resultado operacional. Aqui a hierarquia vem da
+   borda e do peso, não da cor. */
+.c360-kpi--principal {
+  border-color: var(--vf-border-strong);
+  box-shadow: inset 2px 0 0 var(--vf-border-strong);
+}
+
 .c360-kpi--vazio .vf-kpi__value {
   color: var(--vf-text-placeholder);
+}
+
+@media (max-width: 1279px) {
+  .c360-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .c360-kpis--ads { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .c360-kpi__value { font-size: 1.5rem; }
+}
+
+@media (max-width: 899px) {
+  .c360-kpis,
+  .c360-kpis--ads { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 599px) {
+  .c360-kpis,
+  .c360-kpis--ads { grid-template-columns: minmax(0, 1fr); }
+  .c360-kpi { min-height: 0; }
 }
 
 .c360-ads-ausente {
@@ -138,20 +295,73 @@
   font-size: var(--vf-fs-xs);
 }
 
-/* ── Tabelas ─────────────────────────────────────────────────────────── */
+/* ── Base única das tabelas (componente DataTable) ───────────────────────
+   `table-layout: fixed` + <colgroup> é o que trava a coluna: sem isso o
+   navegador redimensiona por conteúdo e a mesma coluna "Produto" ficava com
+   largura diferente em cada seção. Texto longo trunca em vez de alargar. */
+.c360-tabela .vf-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+}
 
+.c360-tabela .vf-table th,
+.c360-tabela .vf-table td {
+  padding: 10px var(--vf-sp-3);
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.c360-tabela .vf-table thead th {
+  padding-block: var(--vf-sp-2);
+  white-space: nowrap;
+}
+
+/* Zebra discreta + hover: leitura de linha longa sem poluir. */
+.c360-tabela .vf-table tbody tr:nth-child(even) > * {
+  background: var(--vf-surface-2);
+}
+
+.c360-tabela .vf-table tbody tr:hover > * {
+  background: var(--vf-surface-hover);
+}
+
+.c360-tabela .vf-table tbody tr + tr > * {
+  border-top: 1px solid var(--vf-border);
+}
+
+/* Números: alinhados à direita, com dígitos de largura fixa, nunca quebrados. */
+.c360-td--num,
 .c360-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.c360-linha-destaque > * {
-  font-weight: var(--vf-fw-semibold);
-  background: var(--vf-surface-2);
+.c360-td--truncar {
+  white-space: nowrap;
 }
 
-.c360-linha-vermelho > th:first-child {
+.c360-td--vazio {
+  padding-block: var(--vf-sp-6);
+  text-align: center;
+  color: var(--vf-text-muted);
+}
+
+/* Só a tabela longa do simulador rola; as demais crescem naturalmente. */
+.c360-tabela--scroll {
+  max-height: 460px;
+  overflow: auto;
+}
+
+.c360-linha-destaque > * {
+  font-weight: var(--vf-fw-semibold);
+  background: var(--vf-primary-soft) !important;
+}
+
+.c360-linha-vermelho > *:first-child {
   box-shadow: inset 2px 0 0 var(--vf-danger);
 }
 
@@ -160,17 +370,37 @@
 .c360-dir--neutro,
 .c360-dir--ausente { color: var(--vf-text-muted); }
 
+/* Célula de produto: título em UMA linha (trunca com reticências) + meta
+   embaixo. Duas linhas fixas mantêm todas as tabelas com a mesma altura de
+   linha, o que é o que faz as colunas parecerem alinhadas entre seções. */
+.c360-td--produto {
+  overflow: hidden;
+}
+
 .c360-produto {
   display: flex;
   flex-direction: column;
   gap: 2px;
   align-items: flex-start;
+  min-width: 0;
   text-align: left;
 }
 
 .c360-produto__titulo {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: var(--vf-fw-medium);
   color: var(--vf-text);
+}
+
+.c360-produto__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  min-width: 0;
 }
 
 .c360-produto__mlb {
@@ -324,14 +554,14 @@
   margin: 0;
   padding: 0;
   display: grid;
-  gap: var(--vf-sp-4);
+  gap: var(--vf-sp-3);
 }
 
 .c360-oportunidade {
-  padding: var(--vf-sp-5);
+  padding: var(--vf-sp-4) var(--vf-sp-5);
   display: flex;
   flex-direction: column;
-  gap: var(--vf-sp-3);
+  gap: var(--vf-sp-2);
   align-items: flex-start;
 }
 
@@ -395,8 +625,37 @@
 
 .c360-sim-topo {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: var(--vf-sp-4);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--vf-sp-3);
+}
+
+.c360-sim-topo .vf-kpi {
+  min-height: 112px;
+  gap: 0;
+  padding: 17px var(--vf-sp-4);
+  border-radius: var(--vf-radius-sm);
+}
+
+.c360-sim-topo .vf-kpi__label {
+  margin: 0 0 var(--vf-sp-2);
+  font-size: 0.6875rem;
+  line-height: 1.3;
+}
+
+.c360-sim-topo .vf-kpi__value {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: var(--vf-fw-semibold);
+  line-height: 1.15;
+}
+
+.c360-sim-topo .vf-kpi__foot {
+  margin: var(--vf-sp-2) 0 0;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 899px) {
+  .c360-sim-topo { grid-template-columns: minmax(0, 1fr); }
 }
 
 .c360-sim-ads {
@@ -408,8 +667,12 @@
 
 .c360-sim-ads__linhas {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--vf-sp-4);
+}
+
+@media (max-width: 899px) {
+  .c360-sim-ads__linhas { grid-template-columns: minmax(0, 1fr); }
 }
 
 .c360-sim-ads__linhas > div {
@@ -455,7 +718,21 @@
 
 /* ── Confiança / placar ──────────────────────────────────────────────── */
 
-.c360-reconciliacao { margin-top: var(--vf-sp-5); }
+.c360-reconciliacao { margin-top: var(--vf-sp-2); }
+
+/* Os KPIs de confiança seguem a mesma densidade dos demais. */
+.c360-confianca .c360-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.c360-placar .c360-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+@media (max-width: 899px) {
+  .c360-confianca .c360-kpis,
+  .c360-placar .c360-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 599px) {
+  .c360-confianca .c360-kpis,
+  .c360-placar .c360-kpis { grid-template-columns: minmax(0, 1fr); }
+}
 
 .c360-detalhe {
   margin-top: var(--vf-sp-4);
@@ -485,8 +762,8 @@
 
 .c360-loading {
   display: grid;
-  gap: var(--vf-sp-4);
-  padding: var(--vf-sp-8);
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-6);
   background: var(--vf-surface);
   border: 1px solid var(--vf-border);
 }
@@ -510,7 +787,7 @@
   color: var(--vf-text-muted);
 }
 
-.c360-vazio--compacto { padding: var(--vf-sp-6); }
+.c360-vazio--compacto { padding: var(--vf-sp-6) var(--vf-sp-5); }
 
 /* ── Responsivo ──────────────────────────────────────────────────────── */
 

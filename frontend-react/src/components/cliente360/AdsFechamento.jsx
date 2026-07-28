@@ -15,6 +15,7 @@
 import { formatarMoeda, formatarVariacaoMoeda } from "../../utils/currency.js";
 import { formatarPercentual, formatarVariacaoPercentual, formatarPontosPercentuais } from "../../utils/percentage.js";
 import { rotularCompetencia, formatarDataHora } from "../../utils/dates.js";
+import DataTable from "./DataTable.jsx";
 
 const MOTIVO_STATUS = {
   sem_dados: "Nenhum investimento de Ads encontrado para esta competência.",
@@ -28,6 +29,16 @@ const ROTULO_FONTE = { mercado_ads: "Mercado Ads", resumo_mensal: "Resumo mensal
 export default function AdsFechamento({ ads, periodo, comparacao }) {
   const indisponivel = !ads?.disponivel;
   const motivo = ads?.atual?.motivo || MOTIVO_STATUS[ads?.atual?.status] || null;
+
+  // Mesmas larguras da Comparação mensal: as duas tabelas ficam na mesma régua.
+  const colunas = [
+    { key: "label", header: "Indicador", width: "34%", isRowHeader: true, render: (l) => l.label },
+    { key: "a", header: rotularCompetencia(comparacao.competencia), width: "17%", align: "right", render: (l) => l.a },
+    { key: "b", header: rotularCompetencia(periodo.competencia), width: "17%", align: "right", render: (l) => l.b },
+    { key: "delta", header: "Variação", width: "17%", align: "right", render: (l) => l.delta },
+    { key: "pct", header: "%", width: "15%", align: "right",
+      render: (l) => l.pct, cellClassName: () => "c360-fraco" },
+  ];
 
   const linhas = indisponivel ? [] : [
     {
@@ -54,9 +65,9 @@ export default function AdsFechamento({ ads, periodo, comparacao }) {
   ];
 
   return (
-    <section className="vf-section c360-ads">
+    <section className="vf-section c360-secao c360-ads">
       <div className="vf-section__header">
-        <div>
+        <div className="vf-section__heading">
           <h2 className="vf-section__title">Ads no fechamento</h2>
           <p className="vf-section__description">
             Bloco descritivo. Mostra o investimento e o TACoS do período, sem entrar na explicação
@@ -84,30 +95,12 @@ export default function AdsFechamento({ ads, periodo, comparacao }) {
         <>
           {ads.leitura && <p className="c360-ads__leitura">{ads.leitura}</p>}
 
-          <div className="vf-table-wrap">
-            <table className="vf-table vf-table--compact">
-              <thead>
-                <tr>
-                  <th scope="col">Indicador</th>
-                  <th scope="col" className="c360-num">{rotularCompetencia(comparacao.competencia)}</th>
-                  <th scope="col" className="c360-num">{rotularCompetencia(periodo.competencia)}</th>
-                  <th scope="col" className="c360-num">Variação</th>
-                  <th scope="col" className="c360-num">%</th>
-                </tr>
-              </thead>
-              <tbody>
-                {linhas.map((linha) => (
-                  <tr key={linha.label}>
-                    <th scope="row">{linha.label}</th>
-                    <td className="c360-num">{linha.a}</td>
-                    <td className="c360-num">{linha.b}</td>
-                    <td className="c360-num">{linha.delta}</td>
-                    <td className="c360-num c360-fraco">{linha.pct}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            caption="Comparação mensal do investimento em Ads, TACoS e resultado após Ads"
+            columns={colunas}
+            rows={linhas}
+            getRowKey={(l) => l.label}
+          />
 
           <p className="c360-nota c360-nota--fraca">
             Fonte: {ROTULO_FONTE[ads.atual.fonte] || ads.atual.fonte || "—"}

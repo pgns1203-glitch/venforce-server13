@@ -27,3 +27,7 @@ node_modules/
 google-credentials.json
 user_client_access.json
 !.env.example
+
+# Base pessoal de conhecimento
+docs/obsidian-map/
+**/.obsidian/

@@ -19,6 +19,11 @@ frontend-vue/dist
 frontend-vue/.env.local
 
 extension_original/
-*.md
 content_funcionando_backup.js
 xlsx.full.min.js
+node_modules/
+**/node_modules/
+.env.*
+google-credentials.json
+user_client_access.json
+!.env.example

@@ -78,16 +78,40 @@ const shopeeRoutes = require("./routes/shopeeRoutes");
 const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 const { ensureDiagnosticoInicialTables } = require("./services/diagnosticoInicial/diagnosticoInicialRepository");
+const observabilityRoutes = require("./routes/observabilityRoutes");
+const observabilityService = require("./services/observabilityService");
+const {
+  observabilityMiddleware,
+  captureRequestError,
+} = require("./middlewares/observabilityMiddleware");
+const { ensureObservabilityTables } = require("./repositories/observabilityRepository");
 
 const app = express();
 const PORT = process.env.PORT || 3333;
 
 // MIDDLEWARES
-app.use(cors({ origin: true, credentials: false, methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"], allowedHeaders: ["Content-Type","Authorization","x-api-key"] }));
+const CORS_ALLOWED_HEADERS = [
+  "Content-Type",
+  "Authorization",
+  "x-api-key",
+  // Correlação navegador → servidor (Control Center)
+  "X-Request-Id",
+  "X-VF-Debug-Session",
+  "X-VF-Debug-Tab",
+];
+app.use(cors({
+  origin: true,
+  credentials: false,
+  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+  allowedHeaders: CORS_ALLOWED_HEADERS,
+  // Sem exposedHeaders o navegador não consegue LER o id devolvido.
+  exposedHeaders: ["X-Request-Id"],
+}));
 app.options(/.*/, cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
+app.use(observabilityMiddleware);
 app.use("/downloads", express.static(path.join(__dirname, "downloads")));
 app.use("/external/firebase", externalFirebaseRoutes);
 
@@ -479,6 +503,7 @@ END $$;
 
 app.use("/auth", authRoutes);
 app.use("/admin/logs", logsRoutes);
+app.use("/admin/observability", observabilityRoutes);
 app.use("/fechamentos", fechamentosFinanceiroRoutes);
 app.use("/", mlRoutes);
 app.use("/", tiktokShopRoutes);
@@ -1443,11 +1468,16 @@ app.post("/fechamentos/compilar", authMiddleware, upload.array("files", 20), (re
 /* ========================= MELI ========================= */
 // ERRO GLOBAL
 app.use((err, req, res, next) => {
+  // Registra o erro técnico ANTES de responder: o listener de `finish` do
+  // middleware de observabilidade lê req.__vfObsError e grava uma única vez.
+  captureRequestError(req, err);
+
   if (err instanceof multer.MulterError) return res.status(400).json({ ok: false, erro: `Erro no upload: ${err.message}` });
+  // A stack nunca sai para o cliente — ela fica só no histórico admin.
   res.status(500).json({ ok: false, erro: "Erro interno do servidor" });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`VenForce rodando em http://localhost:${PORT}`);
 
   ensureCentralVendasTables().catch((err) => {
@@ -1461,5 +1491,32 @@ app.listen(PORT, () => {
     );
   });
 
+  ensureObservabilityTables()
+    .then(() => observabilityService.runCleanup())
+    .then(() => observabilityService.startRetentionJob())
+    .catch((err) => {
+      console.error("[observability] erro ao preparar tabelas no boot:", err.message);
+    });
+
   startTokenRefreshWorker();
 });
+
+// Encerramento: tenta drenar a fila de observabilidade sem travar o processo.
+let encerrando = false;
+function encerrarComGraca(sinal) {
+  if (encerrando) return;
+  encerrando = true;
+  console.log(`[server] ${sinal} recebido, encerrando…`);
+  const prazo = setTimeout(() => process.exit(0), 5000);
+  if (typeof prazo.unref === "function") prazo.unref();
+
+  observabilityService.shutdown()
+    .catch(() => {})
+    .then(() => {
+      observabilityService.stopRetentionJob();
+      server.close(() => process.exit(0));
+    });
+}
+
+process.on("SIGTERM", () => encerrarComGraca("SIGTERM"));
+process.on("SIGINT", () => encerrarComGraca("SIGINT"));

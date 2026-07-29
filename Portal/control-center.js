@@ -1,1081 +1,960 @@
+/*
+ * Control Center — orquestração: rotas internas por query string, carregamento
+ * com AbortController, auto refresh pausável e delegação de eventos.
+ *
+ * Nenhum dado exibido aqui é inventado: quando o servidor não responde, a tela
+ * diz exatamente o que faltou em vez de preencher com mock.
+ */
 (function () {
   "use strict";
 
-  const STORAGE_KEY = "vf-token";
-  const USER_KEY = "vf-user";
-  const SOURCE_MODE_KEY = "vf-control-center-mode";
-  const DEBUG_ENABLED_KEY = "vf-debug-enabled";
-  const DEBUG_LOG_KEY = "vf-debug-logs";
-  const CONTROL_CENTER_MODE = "mock";
-  const VALID_MODES = ["mock", "browser", "backend"];
-  const API_BASE_HINT = "https://venforce-server.onrender.com";
-  const SLOW_LIMIT_MS = 1000;
-  const SENSITIVE_KEY_PARTS = [
-    "authorization",
-    "accesstoken",
-    "refreshtoken",
-    "apikey",
-    "token",
-    "password",
-    "senha",
-    "xapikey",
-    "clientsecret"
-  ];
+  var S = window.VFCStore;
+  var R = window.VFCRenderers;
+  var API = window.VFCApi;
 
-  initLayout();
+  if (typeof window.initLayout === "function") window.initLayout();
 
-  const state = {
-    entries: [],
-    selectedId: null,
-    statusFilter: "all",
-    screenFilter: "all",
-    search: "",
-    activeTab: "request",
-    mockDebug: true,
-    browserDebug: isBrowserDebugEnabled(),
-    mode: resolveInitialMode(),
-    user: readUserSafe(),
-    token: localStorage.getItem(STORAGE_KEY) || ""
-  };
+  var els = {};
+  var controllers = {};
+  var refreshTimer = null;
+  var buscaTimer = null;
+  var localTimer = null;
+  var ultimoGatilho = null;
+  var desinscreverColetor = null;
 
-  const els = {};
-
-  document.addEventListener("DOMContentLoaded", initControlCenter);
-
-  async function initControlCenter() {
-    cacheElements();
-    bindEvents();
-    renderSessionContext();
-    await reloadEntries();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
   }
 
-  function cacheElements() {
-    els.rows = document.querySelector("[data-vfc-rows]");
-    els.detail = document.querySelector("[data-vfc-detail]");
-    els.visibleCount = document.querySelector("[data-vfc-visible-count]");
-    els.statusButtons = Array.from(document.querySelectorAll("[data-vfc-status-filter]"));
-    els.modeButtons = Array.from(document.querySelectorAll("[data-vfc-mode]"));
-    els.screenFilter = document.querySelector("[data-vfc-screen-filter]");
-    els.search = document.querySelector("[data-vfc-search]");
-    els.clear = document.querySelector("[data-vfc-clear]");
-    els.refresh = document.querySelector("[data-vfc-refresh]");
-    els.debug = document.querySelector("[data-vfc-debug]");
-    els.browserDebug = document.querySelector("[data-vfc-browser-debug]");
-    els.userName = document.querySelector("[data-vfc-user-name]");
-    els.userRole = document.querySelector("[data-vfc-user-role]");
-    els.tokenState = document.querySelector("[data-vfc-token-state]");
-    els.apiBase = document.querySelector("[data-vfc-api-base]");
-    els.envMode = document.querySelector("[data-vfc-env-mode]");
-    els.kicker = document.querySelector("[data-vfc-kicker]");
-    els.browserDebugState = document.querySelector("[data-vfc-browser-debug-state]");
-    els.modeTitle = document.querySelector("[data-vfc-mode-title]");
-    els.modeCopy = document.querySelector("[data-vfc-mode-copy]");
-    els.modeStorage = document.querySelector("[data-vfc-mode-storage]");
-    els.footerSource = document.querySelector("[data-vfc-footer-source]");
-    els.summary = {
-      total: document.querySelector('[data-vfc-summary="total"]'),
-      ok: document.querySelector('[data-vfc-summary="ok"]'),
-      "4xx": document.querySelector('[data-vfc-summary="4xx"]'),
-      "5xx": document.querySelector('[data-vfc-summary="5xx"]'),
-      slow: document.querySelector('[data-vfc-summary="slow"]'),
-      avg: document.querySelector('[data-vfc-summary="avg"]'),
-      lastError: document.querySelector('[data-vfc-summary="lastError"]')
-    };
-  }
+  function init() {
+    els.statusbar = document.getElementById("cc-statusbar");
+    els.aviso = document.getElementById("cc-aviso");
+    els.abas = document.getElementById("cc-abas");
+    els.janela = document.getElementById("cc-janela");
+    els.view = document.getElementById("cc-view");
+    els.drawer = document.getElementById("cc-drawer");
+    els.backdrop = document.getElementById("cc-drawer-backdrop");
+    els.modalPurge = document.getElementById("cc-modal-purge");
+    els.toasts = document.getElementById("cc-toasts");
 
-  function bindEvents() {
-    els.modeButtons.forEach((button) => {
-      button.addEventListener("click", async () => {
-        const nextMode = button.dataset.vfcMode || CONTROL_CENTER_MODE;
-        if (!VALID_MODES.includes(nextMode)) return;
-        state.mode = nextMode;
-        localStorage.setItem(SOURCE_MODE_KEY, nextMode);
-        await reloadEntries();
-      });
-    });
+    if (!els.view) return;
 
-    els.statusButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        state.statusFilter = button.dataset.vfcStatusFilter || "all";
-        els.statusButtons.forEach((item) => item.classList.toggle("is-active", item === button));
-        renderAll();
-      });
-    });
+    S.lerUrl();
+    S.subscribe(render);
+    ligarEventos();
+    ligarColetor();
+    S.escreverUrl(true);
 
-    els.screenFilter.addEventListener("change", () => {
-      state.screenFilter = els.screenFilter.value;
-      renderAll();
-    });
+    render();
+    atualizar("inicial");
+    iniciarAutoRefresh();
 
-    els.search.addEventListener("input", () => {
-      state.search = els.search.value.trim().toLowerCase();
-      renderAll();
-    });
-
-    els.refresh.addEventListener("click", reloadEntries);
-
-    els.clear.addEventListener("click", () => {
-      if (state.mode === "browser") {
-        clearDebugLogs();
-      }
-
-      state.entries = [];
-      state.selectedId = null;
-      hydrateScreenFilter();
-      renderAll();
-      renderModeState();
-    });
-
-    els.debug.addEventListener("click", () => {
-      state.mockDebug = !state.mockDebug;
-
-      if (state.mode === "mock" && state.mockDebug && state.entries.length === 0) {
-        state.entries = loadMockData().map(normalizeEntry);
-        state.selectedId = state.entries[0]?.id || null;
-        hydrateScreenFilter();
-      }
-
-      renderAll();
-      renderModeState();
-    });
-
-    els.browserDebug.addEventListener("click", async () => {
-      const next = !state.browserDebug;
-      setBrowserDebugEnabled(next);
-      state.browserDebug = isBrowserDebugEnabled();
-
-      if (state.browserDebug) {
-        ensureBrowserDebugClientLoaded();
-      }
-
-      if (state.mode === "browser") {
-        await reloadEntries();
-      } else {
-        renderModeState();
-        renderDetail();
-      }
-    });
-
-    window.addEventListener("storage", (event) => {
-      if (event.key === DEBUG_LOG_KEY && state.mode === "browser") {
-        reloadEntries();
-      }
-      if (event.key === DEBUG_ENABLED_KEY) {
-        state.browserDebug = isBrowserDebugEnabled();
-        renderModeState();
-      }
-    });
-
-    window.addEventListener("vf-debug-log", () => {
-      if (state.mode === "browser") reloadEntries();
-    });
-  }
-
-  async function reloadEntries() {
-    const rawEntries = await loadEntriesForMode(state.mode);
-    state.entries = rawEntries.map(normalizeEntry);
-
-    if (!state.entries.some((entry) => entry.id === state.selectedId)) {
-      state.selectedId = state.entries[0]?.id || null;
+    if (S.state.selecionado && S.state.selecionado.requestId) {
+      abrirDetalhe(S.state.selecionado.requestId);
     }
-
-    hydrateScreenFilter();
-    renderAll();
-    renderModeState();
   }
 
-  async function loadEntriesForMode(mode) {
-    if (mode === "browser") return loadBrowserLogs();
-    if (mode === "backend") return loadBackendData();
-    return state.mockDebug ? loadMockData() : [];
-  }
+  /* ============================================================
+   * RENDER
+   * ============================================================ */
 
-  function renderSessionContext() {
-    const userName = state.user.nome || state.user.email || "Usuario";
-    const role = state.user.role || "sem role";
+  var renderAgendado = false;
 
-    els.userName.textContent = sanitizeText(userName);
-    els.userRole.textContent = sanitizeText(role);
-    els.tokenState.textContent = state.token ? maskSensitive(`Bearer ${state.token}`) : "ausente";
-    els.apiBase.textContent = API_BASE_HINT;
-  }
-
-  function renderModeState() {
-    const meta = getModeMeta(state.mode);
-    state.browserDebug = isBrowserDebugEnabled();
-
-    els.modeButtons.forEach((button) => {
-      button.classList.toggle("is-active", button.dataset.vfcMode === state.mode);
-    });
-
-    els.debug.textContent = `debug mock: ${state.mockDebug ? "on" : "off"}`;
-    els.debug.setAttribute("aria-pressed", String(state.mockDebug));
-    els.debug.disabled = state.mode !== "mock";
-
-    els.browserDebug.textContent = `debug navegador: ${state.browserDebug ? "on" : "off"}`;
-    els.browserDebug.setAttribute("aria-pressed", String(state.browserDebug));
-
-    els.clear.textContent = state.mode === "browser" ? "limpar logs" : state.mode === "backend" ? "limpar painel" : "limpar mock";
-    els.refresh.textContent = state.mode === "browser" ? "reler logs" : "recarregar fonte";
-
-    els.envMode.textContent = meta.env;
-    els.kicker.textContent = meta.kicker;
-    els.modeTitle.textContent = meta.title;
-    els.modeCopy.textContent = meta.copy;
-    els.modeStorage.textContent = meta.storage;
-    els.footerSource.textContent = meta.footer;
-    els.browserDebugState.textContent = state.browserDebug ? "on" : "off";
-  }
-
-  function hydrateScreenFilter() {
-    const current = state.screenFilter;
-    const screens = Array.from(new Set(state.entries.map((entry) => entry.screen))).sort();
-    els.screenFilter.innerHTML = '<option value="all">Todas</option>';
-
-    screens.forEach((screen) => {
-      const option = document.createElement("option");
-      option.value = screen;
-      option.textContent = screen;
-      els.screenFilter.appendChild(option);
-    });
-
-    state.screenFilter = current === "all" || screens.includes(current) ? current : "all";
-    els.screenFilter.value = state.screenFilter;
-  }
-
-  function renderAll() {
-    renderSummary();
-    renderRows();
-    renderDetail();
-  }
-
-  function renderSummary() {
-    const total = state.entries.length;
-    const ok = state.entries.filter((entry) => entry.status >= 200 && entry.status < 300).length;
-    const four = state.entries.filter((entry) => entry.status >= 400 && entry.status < 500).length;
-    const five = state.entries.filter((entry) => entry.status >= 500).length;
-    const slow = state.entries.filter((entry) => entry.duration >= SLOW_LIMIT_MS).length;
-    const timed = state.entries.filter((entry) => entry.duration > 0);
-    const avg = timed.length
-      ? Math.round(timed.reduce((sum, entry) => sum + entry.duration, 0) / timed.length)
-      : 0;
-    const lastError = state.entries.filter((entry) => entry.status >= 400 || entry.status === 0).at(-1);
-
-    els.summary.total.textContent = String(total);
-    els.summary.ok.textContent = String(ok);
-    els.summary["4xx"].textContent = String(four);
-    els.summary["5xx"].textContent = String(five);
-    els.summary.slow.textContent = String(slow);
-    els.summary.avg.textContent = `${avg}ms`;
-    els.summary.lastError.textContent = lastError ? `${lastError.status || "NET"} ${lastError.endpoint}` : "none";
-  }
-
-  function getVisibleEntries() {
-    return state.entries.filter((entry) => {
-      if (state.statusFilter === "ok" && !isOk(entry)) return false;
-      if (state.statusFilter === "4xx" && !is4xx(entry)) return false;
-      if (state.statusFilter === "5xx" && !is5xx(entry)) return false;
-      if (state.statusFilter === "slow" && !isSlow(entry)) return false;
-      if (state.screenFilter !== "all" && entry.screen !== state.screenFilter) return false;
-
-      if (state.search) {
-        const haystack = [
-          entry.endpoint,
-          entry.url,
-          entry.method,
-          entry.screen,
-          entry.description,
-          entry.source,
-          String(entry.status),
-          JSON.stringify(entry.payload || {}),
-          JSON.stringify(entry.response || {}),
-          JSON.stringify(entry.error || {})
-        ].join(" ").toLowerCase();
-
-        if (!haystack.includes(state.search)) return false;
-      }
-
-      return true;
+  function render() {
+    if (renderAgendado) return;
+    renderAgendado = true;
+    requestAnimationFrame(function () {
+      renderAgendado = false;
+      renderAgora();
     });
   }
 
-  function renderRows() {
-    const rows = getVisibleEntries();
-    els.visibleCount.textContent = `${rows.length} visiveis`;
+  function renderAgora() {
+    var state = S.state;
 
-    if (!rows.length) {
-      els.rows.innerHTML = '<tr><td class="vfc-empty-table" colspan="7">nenhuma request corresponde aos filtros atuais</td></tr>';
-      return;
-    }
+    els.statusbar.innerHTML = R.statusBar(state);
+    els.abas.innerHTML = R.abas(state);
+    els.janela.innerHTML = R.seletorJanela(state);
+    els.aviso.innerHTML = state.aviso || "";
 
-    els.rows.innerHTML = rows.map((entry) => {
-      const selected = entry.id === state.selectedId ? " is-selected" : "";
-      const timeClass = isSlow(entry) ? " is-slow" : "";
+    var focoAntes = document.activeElement;
+    var seletorFoco = focoAntes && focoAntes.dataset && focoAntes.dataset.ccInput
+      ? '[data-cc-input="' + focoAntes.dataset.ccInput + '"]'
+      : null;
+    var selecaoAntes = seletorFoco && focoAntes.selectionStart !== undefined
+      ? focoAntes.selectionStart : null;
 
-      return `
-        <tr class="${selected}" data-vfc-request-id="${escapeHtml(entry.id)}">
-          <td class="vfc-mono">${escapeHtml(entry.time)}</td>
-          <td>${escapeHtml(entry.screen)}</td>
-          <td><span class="vfc-method">${escapeHtml(entry.method)}</span></td>
-          <td><span class="vfc-endpoint">${escapeHtml(entry.endpoint)}</span></td>
-          <td><span class="vfc-status ${getStatusClass(entry)}">${formatStatus(entry.status)}</span></td>
-          <td><span class="vfc-time${timeClass}">${formatDuration(entry.duration)}</span></td>
-          <td>${escapeHtml(entry.description)}</td>
-        </tr>
-      `;
-    }).join("");
+    els.view.setAttribute("aria-busy", state.carregando[state.view] ? "true" : "false");
+    els.view.innerHTML = conteudoDaView(state);
 
-    els.rows.querySelectorAll("[data-vfc-request-id]").forEach((row) => {
-      row.addEventListener("click", () => {
-        state.selectedId = row.dataset.vfcRequestId;
-        state.activeTab = "request";
-        renderAll();
-      });
-    });
-  }
-
-  function renderDetail() {
-    const selected = state.entries.find((entry) => entry.id === state.selectedId);
-
-    if (!selected) {
-      els.detail.innerHTML = `
-        <div class="vfc-detail-empty">
-          <span class="vfc-empty-dot"></span>
-          <p>Selecione uma request para inspecionar payload, response e contexto seguro.</p>
-        </div>
-      `;
-      return;
-    }
-
-    els.detail.innerHTML = `
-      <div class="vfc-detail-head">
-        <div class="vfc-detail-title">
-          <h2>${escapeHtml(selected.endpoint)}</h2>
-          <span>${escapeHtml(selected.screen)} · ${escapeHtml(selected.time)}</span>
-        </div>
-        <span class="vfc-status ${getStatusClass(selected)}">${formatStatus(selected.status)}</span>
-      </div>
-      <div class="vfc-chip-row">
-        <span class="vfc-chip">${escapeHtml(selected.method)}</span>
-        <span class="vfc-chip ${getChipClass(selected)}">${formatDuration(selected.duration)}</span>
-        <span class="vfc-chip">${escapeHtml(selected.sourceLabel)}</span>
-        <span class="vfc-chip">${state.browserDebug ? "browser debug on" : "browser debug off"}</span>
-      </div>
-      <div class="vfc-tabs" role="tablist" aria-label="Detalhes da request">
-        ${["request", "response", "contexto", "erro"].map((tab) => `
-          <button class="vfc-tab ${state.activeTab === tab ? "is-active" : ""}" type="button" data-vfc-tab="${tab}">
-            ${tab}
-          </button>
-        `).join("")}
-      </div>
-      <div class="vfc-detail-body">
-        ${renderTab(selected)}
-      </div>
-    `;
-
-    els.detail.querySelectorAll("[data-vfc-tab]").forEach((button) => {
-      button.addEventListener("click", () => {
-        state.activeTab = button.dataset.vfcTab || "request";
-        renderDetail();
-      });
-    });
-  }
-
-  function renderTab(entry) {
-    if (state.activeTab === "request") {
-      return `
-        ${renderKv({
-          url: entry.url || `${API_BASE_HINT}${entry.endpoint}`,
-          metodo: entry.method,
-          status: formatStatus(entry.status),
-          duracao: formatDuration(entry.duration),
-          origem: entry.screen,
-          fonte: entry.sourceLabel,
-          authorization: state.token ? maskSensitive(`Bearer ${state.token}`) : "ausente"
-        })}
-        <p class="vfc-code-label">payload enviado</p>
-        <pre class="vfc-code">${escapeHtml(formatJson(sanitizePayload(entry.payload || { empty: true })))}</pre>
-      `;
-    }
-
-    if (state.activeTab === "response") {
-      return `
-        ${renderKv({
-          status: formatStatus(entry.status),
-          tipo: entry.status === 0 ? "network" : entry.contentType || "application/json",
-          cache: entry.cache || "no-store",
-          request_id: entry.id
-        })}
-        <p class="vfc-code-label">response sanitizado</p>
-        <pre class="vfc-code">${escapeHtml(formatJson(sanitizePayload(entry.response || { ok: false, network: "sem resposta HTTP" })))}</pre>
-      `;
-    }
-
-    if (state.activeTab === "contexto") {
-      return `
-        ${renderKv({
-          usuario: state.user.nome || state.user.email || "Usuario",
-          role: state.user.role || "sem role",
-          modo: getModeMeta(state.mode).title,
-          source: entry.sourceLabel,
-          storage: entry.storage || getModeMeta(state.mode).storage,
-          api_base: API_BASE_HINT,
-          token: state.token ? maskSensitive(`Bearer ${state.token}`) : "ausente",
-          origem: entry.screen
-        })}
-        <p class="vfc-code-label">contexto seguro</p>
-        <pre class="vfc-code">${escapeHtml(formatJson(sanitizePayload({
-          user: {
-            id: state.user.id || "mock-user",
-            nome: state.user.nome || state.user.email || "Usuario",
-            role: state.user.role || "sem role"
-          },
-          screen: entry.screen,
-          routeGuard: entry.endpoint.includes("/admin") ? "admin-only" : "authenticated",
-          browserDebug: state.browserDebug ? "enabled" : "disabled",
-          token: state.token ? "presente" : "ausente",
-          tokenMasked: state.token ? maskSensitive(`Bearer ${state.token}`) : "ausente",
-          tokenFull: "nunca exibir token completo"
-        })))}</pre>
-      `;
-    }
-
-    return `
-      ${renderKv({
-        tipo: entry.error?.type || "none",
-        severidade: getErrorSeverity(entry),
-        ultimo_erro: entry.error?.message || "sem erro",
-        acao_sugerida: entry.error?.action || entry.error?.hint || "nenhuma"
-      })}
-      <p class="vfc-code-label">erro formatado</p>
-      <pre class="vfc-code ${entry.error ? "vfc-error-box" : ""}">${escapeHtml(formatJson(sanitizePayload(entry.error || { ok: true, message: "request sem erro" })))}</pre>
-    `;
-  }
-
-  function renderKv(map) {
-    return `<dl class="vfc-kv-grid">${
-      Object.entries(map).map(([key, value]) => `
-        <dt>${escapeHtml(key)}</dt>
-        <dd>${escapeHtml(String(value))}</dd>
-      `).join("")
-    }</dl>`;
-  }
-
-  function loadMockData() {
-    return [
-      {
-        id: "req-001",
-        time: "09:41:03",
-        screen: "bases.html",
-        method: "GET",
-        endpoint: "/bases",
-        status: 200,
-        duration: 84,
-        description: "bases carregadas",
-        payload: null,
-        response: {
-          ok: true,
-          bases: [
-            { id: 41, slug: "loja-meli-principal", nome: "Loja ML Principal", ativo: true, updated_at: "2026-06-08T12:34:01.000Z" },
-            { id: 42, slug: "loja-shopee-outlet", nome: "Loja Shopee Outlet", ativo: true, updated_at: "2026-05-14T18:03:18.000Z" }
-          ]
-        }
-      },
-      {
-        id: "req-002",
-        time: "09:41:04",
-        screen: "bases.html",
-        method: "GET",
-        endpoint: "/base-vinculos",
-        status: 200,
-        duration: 126,
-        description: "vinculos + sugestoes",
-        payload: null,
-        response: {
-          ok: true,
-          bases: [
-            {
-              id: 41,
-              slug: "loja-meli-principal",
-              vinculo: { cliente_slug: "alpha-store", cliente_nome: "Alpha Store", marketplace: "meli", origem: "manual" },
-              sugestao: null
-            },
-            {
-              id: 42,
-              slug: "loja-shopee-outlet",
-              vinculo: null,
-              sugestao: { cliente_slug: "outlet-sp", marketplace: "shopee", confianca: 76 }
-            }
-          ]
-        }
-      },
-      {
-        id: "req-003",
-        time: "09:42:18",
-        screen: "bases.html",
-        method: "POST",
-        endpoint: "/importar-base",
-        status: 201,
-        duration: 612,
-        description: "base importada",
-        payload: {
-          formData: true,
-          arquivo: "custos-junho-alpha.xlsx",
-          baseSlug: "loja-meli-principal",
-          rows: 1842
-        },
-        response: {
-          ok: true,
-          mensagem: "Base importada com sucesso",
-          base: { slug: "loja-meli-principal", custos_importados: 1842, custos_atualizados: 391 }
-        }
-      },
-      {
-        id: "req-004",
-        time: "09:45:50",
-        screen: "relatorios.html",
-        method: "GET",
-        endpoint: "/automacoes/relatorios",
-        status: 200,
-        duration: 173,
-        description: "relatorios recentes",
-        payload: null,
-        response: {
-          ok: true,
-          total: 3,
-          relatorios: [
-            { id: 882, cliente_slug: "alpha-store", status: "concluido", itens_criticos: 12, itens_sem_base: 44, mc_media: 0.183 },
-            { id: 881, cliente_slug: "beta-home", status: "concluido", itens_criticos: 0, itens_sem_base: 3, mc_media: 0.216 }
-          ]
-        }
-      },
-      {
-        id: "req-005",
-        time: "09:47:12",
-        screen: "automacoes.html",
-        method: "POST",
-        endpoint: "/automacoes/diagnostico-completo/start",
-        status: 200,
-        duration: 2400,
-        description: "diagnostico iniciado, lento",
-        payload: {
-          clienteSlug: "alpha-store",
-          baseSlug: "loja-meli-principal",
-          margemAlvo: 0.18,
-          marketplace: "meli"
-        },
-        response: {
-          ok: true,
-          id: 883,
-          status: "processando",
-          estimativa: "2-4 min"
-        }
-      },
-      {
-        id: "req-006",
-        time: "09:48:19",
-        screen: "automacoes.html",
-        method: "GET",
-        endpoint: "/automacoes/diagnostico-completo/883",
-        status: 200,
-        duration: 311,
-        description: "polling diagnostico",
-        payload: null,
-        response: {
-          ok: true,
-          relatorio: {
-            id: 883,
-            status: "processando",
-            progresso: 62,
-            processados: 392,
-            total: 628
-          }
-        }
-      },
-      {
-        id: "req-007",
-        time: "09:49:02",
-        screen: "dashboard.html",
-        method: "GET",
-        endpoint: "/admin/ml-tokens",
-        status: 403,
-        duration: 68,
-        description: "sem permissao admin",
-        payload: {
-          headers: {
-            Authorization: "Bearer mock-token",
-            "x-api-key": "mock-api-key"
-          }
-        },
-        response: {
-          ok: false,
-          erro: "Acesso restrito a administradores."
-        },
-        error: {
-          type: "permission",
-          message: "Usuario membro tentou acessar rota admin-only.",
-          hint: "Ocultar bloco sensivel ou degradar para score parcial."
-        }
-      },
-      {
-        id: "req-008",
-        time: "09:50:44",
-        screen: "dashboard.html",
-        method: "GET",
-        endpoint: "/operacao/base-cobertura",
-        status: 401,
-        duration: 42,
-        description: "token invalido",
-        payload: null,
-        response: {
-          ok: false,
-          erro: "Token invalido ou expirado"
-        },
-        error: {
-          type: "auth",
-          message: "JWT expirado ou ausente no localStorage.",
-          action: "Limpar sessao e redirecionar para index.html."
-        }
-      },
-      {
-        id: "req-009",
-        time: "09:52:11",
-        screen: "clickup-executivo.html",
-        method: "GET",
-        endpoint: "/api/clickup/executivo/resumo",
-        status: 500,
-        duration: 934,
-        description: "erro ClickUp upstream",
-        payload: null,
-        response: {
-          ok: false,
-          motivo: "Erro ao carregar resumo executivo."
-        },
-        error: {
-          type: "server",
-          message: "ClickUp API respondeu 502 durante agregacao.",
-          requestId: "mock-cc-9f7a"
-        }
-      },
-      {
-        id: "req-010",
-        time: "09:53:27",
-        screen: "financeiro.html",
-        method: "POST",
-        endpoint: "/fechamentos/financeiro",
-        status: 200,
-        duration: 1480,
-        description: "fechamento processado",
-        payload: {
-          formData: true,
-          sales: "vendas-ml-maio.xlsx",
-          costs: "custos-maio.xlsx",
-          ordersAll: "orders-all-shopee.xlsx",
-          password: "mock-password"
-        },
-        response: {
-          ok: true,
-          resumo: {
-            meli: { pedidos: 481, divergencias: 7 },
-            shopee: { pedidos: 112, divergencias: 2 },
-            totalLiquido: 94732.18
-          }
-        }
-      },
-      {
-        id: "req-011",
-        time: "09:54:38",
-        screen: "metricas.html",
-        method: "GET",
-        endpoint: "/metricas/resumo?clienteSlug=alpha-store&dateFrom=2026-06-01&dateTo=2026-06-08",
-        status: 0,
-        duration: 0,
-        description: "network error",
-        payload: null,
-        response: null,
-        error: {
-          type: "network",
-          message: "Failed to fetch",
-          hint: "Verificar conexao, CORS, Render cold start ou DNS."
+    if (seletorFoco) {
+      var novoFoco = els.view.querySelector(seletorFoco);
+      if (novoFoco) {
+        novoFoco.focus();
+        if (selecaoAntes !== null && novoFoco.setSelectionRange) {
+          try { novoFoco.setSelectionRange(selecaoAntes, selecaoAntes); } catch (e) { /* input sem seleção */ }
         }
       }
-    ];
+    }
+
+    renderDrawer();
   }
 
-  function loadBrowserLogs() {
-    const fromClient = window.VFDebugClient?.getLogs?.();
-    const clientLogs = Array.isArray(fromClient)
-      ? fromClient.map((entry) => ({ ...entry, storage: entry.storage || "VFDebugClient/sessionStorage" }))
-      : [];
-
-    const sessionLogs = readStoredLogs(sessionStorage, "sessionStorage");
-    const localLogs = readStoredLogs(localStorage, "localStorage");
-    const seen = new Set();
-
-    return clientLogs.concat(sessionLogs, localLogs)
-      .filter((entry) => {
-        const key = String(entry.id || `${entry.timestamp || ""}-${entry.endpoint || ""}-${entry.duration || ""}`);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .sort((a, b) => String(a.timestamp || a.time || "").localeCompare(String(b.timestamp || b.time || "")));
-  }
-
-  async function loadBackendData() {
-    // TODO: integrar futuramente com endpoint interno de observabilidade.
-    // Esta funcao deve receber apenas dados ja sanitizados no backend.
-    // Nao chamar fetch aqui enquanto o endpoint nao existir.
-    return [];
-  }
-
-  function normalizeEntry(entry) {
-    const endpoint = sanitizeUrl(entry.endpoint || endpointFromUrl(entry.url) || "/");
-    const url = sanitizeUrl(entry.url || `${API_BASE_HINT}${endpoint}`);
-    const source = String(entry.source || state.mode || "mock");
-    const status = Number(entry.status || 0);
-    const payload = entry.payload !== undefined ? entry.payload : entry.requestPayload;
-    const response = entry.response !== undefined ? entry.response : entry.responseBody;
-    const error = entry.error || (status >= 400 || status === 0 ? { type: "http", message: entry.description || "request com erro" } : null);
-
-    return {
-      id: String(entry.id || cryptoRandomId()),
-      timestamp: String(entry.timestamp || ""),
-      time: String(entry.time || formatClockFromTimestamp(entry.timestamp) || formatClock(new Date())),
-      screen: String(entry.screen || entry.page || "portal"),
-      method: String(entry.method || "GET").toUpperCase(),
-      endpoint,
-      url,
-      status,
-      duration: Number(entry.duration || entry.durationMs || 0),
-      description: String(entry.description || buildDescription(status, endpoint)),
-      payload: sanitizePayload(payload || null),
-      response: sanitizePayload(response || null),
-      error: sanitizePayload(error || null),
-      source,
-      sourceLabel: getSourceLabel(source),
-      storage: String(entry.storage || ""),
-      contentType: String(entry.contentType || entry.responseContentType || ""),
-      cache: String(entry.cache || "")
-    };
-  }
-
-  function readStoredLogs(storage, label) {
-    try {
-      const parsed = JSON.parse(storage.getItem(DEBUG_LOG_KEY) || "[]");
-      return Array.isArray(parsed)
-        ? parsed.map((entry) => ({ ...entry, storage: entry.storage || label }))
-        : [];
-    } catch {
-      return [];
+  function conteudoDaView(state) {
+    if (!API.isAdmin()) {
+      return R.falha({
+        tipo: "sem-permissao",
+        erro: "Esta área é restrita a administradores."
+      }, "acesso");
+    }
+    switch (state.view) {
+      case "requests": return R.requests(state);
+      case "errors": return R.errors(state);
+      case "browser": return R.browser(state);
+      case "health": return R.health(state);
+      case "routes": return R.routes(state);
+      case "tools": return R.tools(state);
+      default: return R.overview(state);
     }
   }
 
-  function clearDebugLogs() {
-    try {
-      sessionStorage.removeItem(DEBUG_LOG_KEY);
-      localStorage.removeItem(DEBUG_LOG_KEY);
-      window.VFDebugClient?.clearLogs?.();
-    } catch {
-      // A limpeza de logs nunca deve interferir na tela.
-    }
+  function renderDrawer() {
+    var aberto = !!S.state.selecionado;
+    els.drawer.hidden = !aberto;
+    els.backdrop.hidden = !aberto;
+    els.drawer.classList.toggle("is-open", aberto);
+    els.backdrop.classList.toggle("is-open", aberto);
+    els.drawer.setAttribute("aria-modal", aberto ? "true" : "false");
+    els.drawer.innerHTML = aberto ? R.drawer(S.state) : "";
   }
 
-  function ensureBrowserDebugClientLoaded() {
-    if (window.VFDebugClient) return;
-    if (document.querySelector('script[data-vf-debug-client="true"]')) return;
+  /* ============================================================
+   * CARREGAMENTO
+   * ============================================================ */
 
-    try {
-      const script = document.createElement("script");
-      script.src = "vf-debug-client.js";
-      script.async = true;
-      script.dataset.vfDebugClient = "true";
-      document.head.appendChild(script);
-    } catch {
-      // Debug eh auxiliar; falhas de carregamento nao podem quebrar o Portal.
-    }
+  function novoSinal(chave) {
+    if (controllers[chave]) controllers[chave].abort();
+    controllers[chave] = new AbortController();
+    return controllers[chave].signal;
   }
 
-  function setBrowserDebugEnabled(enabled) {
-    if (enabled && !isAdminUser()) {
-      localStorage.setItem(DEBUG_ENABLED_KEY, "false");
-      return;
+  function tratar(chave, resposta) {
+    if (resposta.abortado) return null;
+    if (resposta.ok) {
+      S.state.backendOk = true;
+      S.state.backendErro = null;
+      S.marcarFalha(chave, null);
+      return resposta.dados;
     }
-    localStorage.setItem(DEBUG_ENABLED_KEY, enabled ? "true" : "false");
-    if (enabled) {
-      window.VFDebugClient?.enable?.();
+    if (resposta.tipo === "offline" || resposta.tipo === "banco-indisponivel") {
+      S.state.backendOk = false;
+      S.state.backendErro = resposta.erro;
     } else {
-      window.VFDebugClient?.disable?.();
+      S.state.backendOk = true;
     }
+    S.marcarFalha(chave, resposta);
+    return null;
   }
 
-  function isBrowserDebugEnabled() {
-    return isAdminUser() && localStorage.getItem(DEBUG_ENABLED_KEY) === "true";
+  function carregarResumo() {
+    S.marcarCarregando("resumo", true);
+    return API.summary({ window: S.state.window }, novoSinal("resumo")).then(function (resposta) {
+      var dados = tratar("resumo", resposta);
+      if (dados) S.state.resumo = dados.resumo;
+      S.marcarCarregando("resumo", false);
+    });
   }
 
-  function isAdminUser() {
-    const role = String(readUserSafe().role || "").toLowerCase();
-    return role === "admin";
+  function carregarRequests() {
+    var f = S.state.filtros;
+    S.marcarCarregando("requests", true);
+    return API.requests({
+      window: S.state.window,
+      search: f.search,
+      method: f.method,
+      status: f.status,
+      source: f.source,
+      route: f.route,
+      screen: f.screen,
+      user: f.user,
+      sessionId: f.sessionId,
+      onlyErrors: f.onlyErrors ? "1" : "",
+      onlySlow: f.onlySlow ? "1" : "",
+      sortBy: f.sortBy,
+      sortDir: f.sortDir,
+      limit: f.limit,
+      page: f.page
+    }, novoSinal("requests")).then(function (resposta) {
+      var dados = tratar("requests", resposta);
+      if (dados) {
+        S.state.requests = {
+          linhas: dados.requests || [],
+          total: dados.total || 0,
+          page: dados.page || 1,
+          totalPages: dados.totalPages || 1,
+          slowMs: dados.slowMs || 1000
+        };
+      }
+      S.marcarCarregando("requests", false);
+    });
   }
 
-  function resolveInitialMode() {
-    const stored = localStorage.getItem(SOURCE_MODE_KEY);
-    return VALID_MODES.includes(stored) ? stored : CONTROL_CENTER_MODE;
+  function carregarErros() {
+    S.marcarCarregando("erros", true);
+    return API.errors({ window: S.state.window }, novoSinal("erros")).then(function (resposta) {
+      var dados = tratar("erros", resposta);
+      if (dados) S.state.erros = { grupos: dados.grupos || [], total: dados.total || 0 };
+      S.marcarCarregando("erros", false);
+    });
   }
 
-  function getModeMeta(mode) {
-    if (mode === "browser") {
-      return {
-        env: "browser logs",
-        kicker: "browser logs · sessionStorage",
-        title: "Fonte browser logs",
-        copy: state.browserDebug
-          ? "Lendo requests reais capturadas pelo navegador depois que o debug foi ligado."
-          : "Debug do navegador desligado. Logs antigos ainda podem aparecer ate serem limpos.",
-        storage: "sessionStorage/localStorage",
-        footer: "browser logs reais"
-      };
+  function carregarSaude() {
+    S.marcarCarregando("saude", true);
+    return API.health(novoSinal("saude")).then(function (resposta) {
+      var dados = tratar("saude", resposta);
+      if (dados) S.state.saude = dados.saude;
+      S.marcarCarregando("saude", false);
+    });
+  }
+
+  function carregarRotas() {
+    S.marcarCarregando("rotas", true);
+    return API.routes(novoSinal("rotas")).then(function (resposta) {
+      if (resposta.abortado) return;
+      // O endpoint devolve ok:false quando a introspecção falha — isso é um
+      // resultado legítimo, não um erro de transporte.
+      if (resposta.dados && resposta.dados.rotas !== undefined) {
+        S.state.rotas = resposta.dados;
+        S.marcarFalha("rotas", null);
+        S.state.backendOk = true;
+      } else {
+        tratar("rotas", resposta);
+      }
+      S.marcarCarregando("rotas", false);
+    });
+  }
+
+  function carregarRotasStats() {
+    return API.routeStats({ window: S.state.window }, novoSinal("rotasStats")).then(function (resposta) {
+      if (resposta.ok) S.state.rotasStats = resposta.dados.estatisticas || [];
+      S.emit();
+    });
+  }
+
+  function carregarSessoes() {
+    return API.sessions({ window: S.state.window }, novoSinal("sessoes")).then(function (resposta) {
+      if (resposta.ok) S.state.sessoes = resposta.dados.sessoes || [];
+      S.emit();
+    });
+  }
+
+  /**
+   * @param {"inicial"|"manual"|"auto"|"view"} motivo
+   */
+  function atualizar(motivo) {
+    if (!API.isAdmin()) {
+      render();
+      return Promise.resolve();
     }
 
-    if (mode === "backend") {
-      return {
-        env: "backend futuro",
-        kicker: "backend futuro · TODO",
-        title: "Fonte backend futuro",
-        copy: "Reserva tecnica para observabilidade do backend. Nenhuma chamada real e feita nesta etapa.",
-        storage: "sem endpoint nesta fase",
-        footer: "backend TODO"
-      };
-    }
+    var view = S.state.view;
+    var tarefas = [];
 
-    return {
-      env: "mock/frontend",
-      kicker: "mock/frontend · dados simulados",
-      title: "Fonte mock",
-      copy: "Dados simulados para validar filtros, detalhes e sanitizacao antes das proximas migracoes.",
-      storage: "memoria local da tela",
-      footer: "mock preview"
-    };
+    var precisaSaude = motivo === "inicial" || motivo === "manual" || view === "health" || view === "tools" || !S.state.saude;
+    if (precisaSaude) tarefas.push(carregarSaude());
+
+    if (view === "overview") tarefas.push(carregarResumo(), carregarErros());
+    if (view === "requests") tarefas.push(carregarRequests());
+    if (view === "errors") tarefas.push(carregarErros());
+    if (view === "browser") tarefas.push(S.carregarLocal(), carregarSessoes());
+    if (view === "routes") {
+      if (!S.state.rotas || motivo === "manual") tarefas.push(carregarRotas());
+      tarefas.push(carregarRotasStats());
+    }
+    if (view === "tools" || view === "overview") tarefas.push(S.carregarLocal());
+
+    if (!tarefas.length) tarefas.push(Promise.resolve());
+
+    return Promise.all(tarefas).then(function () {
+      S.set({ ultimaAtualizacao: new Date().toISOString() });
+    });
   }
 
-  function getSourceLabel(source) {
-    if (source === "browser") return "browser log";
-    if (source === "backend") return "backend futuro";
-    return "mock";
+  function iniciarAutoRefresh() {
+    pararAutoRefresh();
+    refreshTimer = setInterval(function () {
+      if (!S.state.autoRefresh) return;
+      if (document.hidden) {
+        if (!S.state.pausadoPorAba) S.set({ pausadoPorAba: true });
+        return;
+      }
+      if (S.state.pausadoPorAba) S.set({ pausadoPorAba: false });
+      atualizar("auto");
+    }, S.state.refreshMs);
   }
 
-  function sanitizePayload(data, seen = new WeakSet()) {
-    if (data === null || data === undefined) return data;
+  function pararAutoRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
 
-    if (typeof data === "string") {
-      return looksSensitiveValue(data) ? maskSensitive(data) : truncateLongText(data);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && S.state.autoRefresh) {
+      S.set({ pausadoPorAba: false });
+      atualizar("auto");
     }
+  });
 
-    if (typeof data === "number" || typeof data === "boolean") return data;
+  /* ============================================================
+   * COLETOR LOCAL
+   * ============================================================ */
 
-    if (typeof FormData !== "undefined" && data instanceof FormData) {
-      const form = {};
-      data.forEach((value, key) => {
-        form[key] = summarizeBodyValue(value);
+  function ligarColetor() {
+    var cliente = S.coletor();
+    if (!cliente) return;
+
+    S.carregarLocal();
+
+    if (desinscreverColetor) desinscreverColetor();
+    desinscreverColetor = cliente.subscribe(function () {
+      // Eventos podem chegar em rajada (uma tela dispara várias requests).
+      if (localTimer) clearTimeout(localTimer);
+      localTimer = setTimeout(function () {
+        localTimer = null;
+        S.carregarLocal();
+      }, 250);
+    });
+  }
+
+  /* ============================================================
+   * EVENTOS
+   * ============================================================ */
+
+  function ligarEventos() {
+    document.addEventListener("click", aoClicar);
+    document.addEventListener("input", aoDigitar);
+    document.addEventListener("change", aoMudar);
+    document.addEventListener("keydown", aoTeclar);
+    window.addEventListener("popstate", function () {
+      S.lerUrl();
+      render();
+      atualizar("view");
+    });
+  }
+
+  function aoClicar(evento) {
+    if (!evento.target || typeof evento.target.closest !== "function") return;
+    var alvo = evento.target.closest("[data-cc-view],[data-cc-window],[data-cc-status],[data-cc-toggle],[data-cc-sort],[data-cc-page],[data-cc-request],[data-cc-detail-tab],[data-cc-mark],[data-cc-health-check],[data-cc-action]");
+    if (!alvo) {
+      if (evento.target === els.backdrop) fecharDetalhe();
+      return;
+    }
+    if (alvo.tagName === "A") return;
+
+    var d = alvo.dataset;
+
+    if (d.ccView) {
+      evento.preventDefault();
+      trocarView(d.ccView);
+      return;
+    }
+    if (d.ccWindow) {
+      S.set({ window: d.ccWindow });
+      S.escreverUrl(true);
+      atualizar("view");
+      return;
+    }
+    if (d.ccStatus !== undefined && !d.ccAction) {
+      S.setFiltros({ status: d.ccStatus });
+      S.escreverUrl(true);
+      carregarRequests();
+      return;
+    }
+    if (d.ccToggle) {
+      var patch = {};
+      patch[d.ccToggle] = !S.state.filtros[d.ccToggle];
+      S.setFiltros(patch);
+      S.escreverUrl(true);
+      carregarRequests();
+      return;
+    }
+    if (d.ccSort) {
+      var mesmaColuna = S.state.filtros.sortBy === d.ccSort;
+      S.setFiltros({
+        sortBy: d.ccSort,
+        sortDir: mesmaColuna && S.state.filtros.sortDir === "desc" ? "asc" : "desc"
       });
-      return sanitizePayload(form, seen);
+      S.escreverUrl(true);
+      carregarRequests();
+      return;
     }
-
-    if (Array.isArray(data)) {
-      return data.map((item) => sanitizePayload(item, seen));
+    if (d.ccPage) {
+      var pagina = parseInt(d.ccPage, 10);
+      if (!Number.isFinite(pagina) || pagina < 1 || pagina > S.state.requests.totalPages) return;
+      S.setFiltros({ page: pagina }, { mantemPagina: true });
+      S.escreverUrl(true);
+      carregarRequests();
+      return;
     }
-
-    if (typeof data === "object") {
-      if (seen.has(data)) return "[Circular]";
-      seen.add(data);
-
-      if (data instanceof Date) return data.toISOString();
-
-      return Object.entries(data).reduce((acc, [key, value]) => {
-        acc[key] = isSensitiveKey(key) ? maskSensitive(value) : sanitizePayload(value, seen);
-        return acc;
-      }, {});
+    if (d.ccRequest) {
+      ultimoGatilho = alvo;
+      abrirDetalhe(d.ccRequest);
+      return;
     }
-
-    return String(data);
+    if (d.ccDetailTab) {
+      S.set({ abaDetalhe: d.ccDetailTab });
+      return;
+    }
+    if (d.ccMark) {
+      var marcas = S.lerMarcacoes();
+      var atual = marcas[d.ccMark];
+      S.marcarErro(d.ccMark, atual && atual.situacao === d.ccMarkState ? null : d.ccMarkState);
+      return;
+    }
+    if (d.ccHealthCheck) {
+      rodarTesteSaude(d.ccHealthCheck);
+      return;
+    }
+    if (d.ccAction) {
+      executarAcao(d.ccAction, d.ccValue, alvo);
+    }
   }
 
-  function isSensitiveKey(key) {
-    const normalized = String(key || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
+  function aoDigitar(evento) {
+    if (!evento.target || typeof evento.target.closest !== "function") return;
+    var campo = evento.target.closest("[data-cc-input]");
+    if (!campo) return;
+    var nome = campo.dataset.ccInput;
+    if (nome !== "search" && nome !== "route" && nome !== "user") return;
+
+    var valor = campo.value;
+    if (buscaTimer) clearTimeout(buscaTimer);
+    buscaTimer = setTimeout(function () {
+      buscaTimer = null;
+      var patch = {};
+      patch[nome] = valor;
+      S.setFiltros(patch);
+      S.escreverUrl(true);
+      if (S.state.view === "requests") carregarRequests();
+    }, 320);
   }
 
-  function maskSensitive(value) {
-    const text = String(value || "");
-    if (!text) return "ausente";
+  function aoMudar(evento) {
+    if (!evento.target || typeof evento.target.closest !== "function") return;
+    var campo = evento.target.closest("[data-cc-input]");
+    if (!campo) return;
+    var nome = campo.dataset.ccInput;
+    var valor = campo.value;
+    var patch = {};
+    patch[nome] = nome === "limit" ? parseInt(valor, 10) || 50 : valor;
+    S.setFiltros(patch);
+    S.escreverUrl(true);
+    if (S.state.view === "requests") carregarRequests();
+  }
 
-    if (/^Bearer\s+/i.test(text)) {
-      const token = text.replace(/^Bearer\s+/i, "");
-      if (!token) return "Bearer ausente";
-      return `Bearer ${token.slice(0, 3)}...****`;
+  function aoTeclar(evento) {
+    if (evento.key === "Escape") {
+      if (!els.modalPurge.hidden) return fecharPurge();
+      if (S.state.selecionado) fecharDetalhe();
+      return;
     }
-
-    if (text.length <= 8) return "****";
-    return `${text.slice(0, 4)}...****`;
+    if (evento.key === "Enter" || evento.key === " ") {
+      if (!evento.target || typeof evento.target.closest !== "function") return;
+      var linha = evento.target.closest("tr[data-cc-request]");
+      if (linha) {
+        evento.preventDefault();
+        ultimoGatilho = linha;
+        abrirDetalhe(linha.dataset.ccRequest);
+      }
+    }
   }
 
-  function looksSensitiveValue(value) {
-    const text = String(value || "").trim();
-    if (/^Bearer\s+/i.test(text)) return true;
-    if (/^eyJ[a-zA-Z0-9_-]+\./.test(text)) return true;
-    if (/^vf_[a-f0-9]{16,}$/i.test(text)) return true;
-    if (/^(sk|pk|ghp|glpat)_[a-zA-Z0-9_-]{16,}$/i.test(text)) return true;
-    return text.length > 80 && /^[a-zA-Z0-9._-]+$/.test(text);
+  function trocarView(view) {
+    if (S.VIEWS.indexOf(view) === -1) return;
+    S.set({ view: view });
+    S.escreverUrl(false);
+    atualizar("view");
+    if (els.view) els.view.focus();
   }
 
-  function sanitizeUrl(value) {
-    const raw = String(value || "");
-    if (!raw) return "";
+  /* ============================================================
+   * DETALHE
+   * ============================================================ */
 
-    try {
-      const url = new URL(raw, window.location.href);
-      url.searchParams.forEach((paramValue, key) => {
-        if (isSensitiveKey(key) || looksSensitiveValue(paramValue)) {
-          url.searchParams.set(key, maskSensitive(paramValue));
+  function abrirDetalhe(requestId) {
+    if (!requestId) return;
+    S.set({
+      selecionado: { requestId: requestId, detalhe: null },
+      abaDetalhe: "resumo",
+      detalheCarregando: true,
+      detalheErro: null
+    });
+    S.escreverUrl(true);
+
+    API.requestDetail(requestId, novoSinal("detalhe")).then(function (resposta) {
+      if (resposta.abortado) return;
+      if (!resposta.ok) {
+        S.set({ detalheCarregando: false, detalheErro: resposta });
+        return;
+      }
+      S.set({
+        selecionado: { requestId: requestId, detalhe: resposta.dados.detalhe },
+        detalheCarregando: false,
+        detalheErro: null
+      });
+      if (els.drawer) els.drawer.focus();
+    });
+  }
+
+  function fecharDetalhe() {
+    S.set({ selecionado: null, detalhe: null, detalheErro: null });
+    S.escreverUrl(true);
+    if (ultimoGatilho && document.contains(ultimoGatilho)) ultimoGatilho.focus();
+  }
+
+  /* ============================================================
+   * AÇÕES
+   * ============================================================ */
+
+  function executarAcao(acao, valor, alvo) {
+    var cliente = S.coletor();
+
+    switch (acao) {
+      case "reload":
+        atualizar("manual").then(function () { toast("Dados atualizados."); });
+        return;
+
+      case "toggle-auto":
+        S.set({ autoRefresh: !S.state.autoRefresh });
+        S.salvarPrefs({ autoRefresh: S.state.autoRefresh });
+        if (alvo) alvo.textContent = S.state.autoRefresh ? "Pausar auto refresh" : "Retomar auto refresh";
+        toast(S.state.autoRefresh ? "Auto refresh ligado." : "Auto refresh pausado.");
+        return;
+
+      case "toggle-debug":
+        if (!cliente) return toast("Coletor não carregado nesta página.", "erro");
+        if (cliente.isActive()) {
+          cliente.disable();
+          toast("Debug do navegador desligado. Os eventos já gravados continuam disponíveis.");
+        } else if (cliente.enable()) {
+          toast("Debug do navegador ligado. Navegue pelo Portal para capturar requests.");
+        } else {
+          toast("Debug exige sessão de admin com token válido.", "erro");
+        }
+        S.carregarLocal();
+        return;
+
+      case "export":
+        toast("Preparando exportação…");
+        API.download({
+          format: valor === "csv" ? "csv" : "json",
+          window: S.state.window,
+          search: S.state.filtros.search,
+          status: S.state.filtros.status,
+          source: S.state.filtros.source,
+          route: S.state.filtros.route,
+          onlyErrors: S.state.filtros.onlyErrors ? "1" : "",
+          onlySlow: S.state.filtros.onlySlow ? "1" : "",
+          limit: 5000
+        }).then(function (resultado) {
+          toast(resultado.ok ? "Exportação sanitizada baixada." : "Falha ao exportar: " + resultado.erro,
+            resultado.ok ? "ok" : "erro");
+        });
+        return;
+
+      case "clear-filters":
+        S.setFiltros({
+          search: "", method: "", status: "", source: "", route: "",
+          screen: "", user: "", sessionId: "", onlyErrors: false, onlySlow: false
+        });
+        S.escreverUrl(true);
+        carregarRequests();
+        return;
+
+      case "filter-route":
+        S.set({ view: "requests" });
+        S.setFiltros({ route: valor || "" });
+        S.escreverUrl(false);
+        fecharDetalheSilencioso();
+        carregarRequests();
+        return;
+
+      case "filter-user":
+        S.set({ view: "requests" });
+        S.setFiltros({ user: valor || "" });
+        S.escreverUrl(false);
+        fecharDetalheSilencioso();
+        carregarRequests();
+        return;
+
+      case "filter-session":
+        S.set({ view: "requests" });
+        S.setFiltros({ sessionId: valor || "" });
+        S.escreverUrl(false);
+        fecharDetalheSilencioso();
+        carregarRequests();
+        return;
+
+      case "close-drawer":
+        fecharDetalhe();
+        return;
+
+      case "copy-request-id":
+        copiarComAviso(S.state.selecionado && S.state.selecionado.requestId, "Request id copiado.");
+        return;
+
+      case "copy-endpoint": {
+        var detalhe = S.state.selecionado && S.state.selecionado.detalhe;
+        var servidor = (detalhe && detalhe.servidor) || {};
+        var evento = (detalhe && detalhe.eventoPrincipal) || {};
+        copiarComAviso(servidor.route || servidor.path || evento.endpoint || "", "Endpoint copiado.");
+        return;
+      }
+
+      case "copy-json": {
+        var detalheJson = S.state.selecionado && S.state.selecionado.detalhe;
+        copiarComAviso(detalheJson ? S.formatarJson(detalheJson) : "", "JSON sanitizado copiado.");
+        return;
+      }
+
+      case "copy-curl":
+        copiarComAviso(S.montarCurl(S.state.selecionado && S.state.selecionado.detalhe), "curl sanitizado copiado (sem token).");
+        return;
+
+      case "test-get":
+        rodarTesteGet(valor);
+        return;
+
+      case "toggle-console":
+        if (!cliente) return;
+        cliente.setConfig({ captureConsole: !cliente.getConfig().captureConsole });
+        S.carregarLocal();
+        toast("Captura de console.error " + (cliente.getConfig().captureConsole ? "ligada" : "desligada") + ".");
+        return;
+
+      case "force-sync":
+        if (!cliente) return;
+        toast("Sincronizando…");
+        cliente.sync({ force: true }).then(function (resultado) {
+          S.carregarLocal();
+          toast(resultado.erro ? "Sync falhou: " + resultado.erro : resultado.enviados + " eventos enviados.",
+            resultado.erro ? "erro" : "ok");
+        });
+        return;
+
+      case "export-local":
+        if (!cliente) return;
+        cliente.exportEvents().then(function (pacote) {
+          baixarJson(pacote, "eventos-locais");
+          toast("Eventos locais exportados (sanitizados).");
+        });
+        return;
+
+      case "clear-local":
+        if (!cliente) return;
+        if (!window.confirm("Limpar apenas o cache local deste navegador?\n\nO histórico do servidor NÃO é afetado.")) return;
+        cliente.clearLocal().then(function () {
+          S.carregarLocal();
+          toast("Cache local limpo. O histórico do servidor permanece intacto.");
+        });
+        return;
+
+      case "test-error":
+        if (!cliente) return;
+        cliente.emitTestError().then(function () {
+          S.carregarLocal();
+          S.state.ferramentas.testes = Object.assign({}, S.state.ferramentas.testes, {
+            browser: { tipo: "erro de teste", registradoEm: new Date().toISOString(), afetaProducao: false }
+          });
+          S.emit();
+          toast("Erro de TESTE registrado. Nenhum sistema foi afetado.");
+        });
+        return;
+
+      case "test-request":
+        if (!cliente) return;
+        cliente.runTestRequest().then(function (resultado) {
+          S.carregarLocal();
+          S.state.ferramentas.testes = Object.assign({}, S.state.ferramentas.testes, { browser: resultado });
+          S.emit();
+          toast("Teste GET /health: " + (resultado.ok ? "ok" : "falhou"), resultado.ok ? "ok" : "erro");
+        });
+        return;
+
+      case "run-tests":
+        rodarTestesRapidos();
+        return;
+
+      case "build-report":
+        montarRelatorio();
+        return;
+
+      case "copy-report":
+        copiarComAviso(S.state.ferramentas.relatorio, "Relatório copiado.");
+        return;
+
+      case "playground-run": {
+        var campo = document.getElementById("cc-playground-path");
+        rodarTesteGet(campo ? campo.value : "/health", "playground");
+        return;
+      }
+
+      case "purge-server":
+        abrirPurge();
+        return;
+
+      case "close-purge":
+        fecharPurge();
+        return;
+
+      case "confirm-purge":
+        confirmarPurge();
+        return;
+
+      default:
+        return;
+    }
+  }
+
+  function fecharDetalheSilencioso() {
+    if (S.state.selecionado) S.set({ selecionado: null, detalheErro: null });
+  }
+
+  function copiarComAviso(texto, mensagem) {
+    if (!texto) return toast("Nada para copiar.", "erro");
+    S.copiar(texto).then(function (ok) {
+      toast(ok ? mensagem : "O navegador bloqueou a cópia.", ok ? "ok" : "erro");
+    });
+  }
+
+  /* ============================================================
+   * TESTES
+   * ============================================================ */
+
+  function rodarTesteSaude(alvo) {
+    var alvos = alvo === "todos" ? null : [alvo];
+    S.marcarCarregando("teste-" + alvo, true);
+    API.healthCheck(alvos).then(function (resposta) {
+      S.marcarCarregando("teste-" + alvo, false);
+      if (!resposta.ok) return toast("Teste falhou: " + resposta.erro, "erro");
+      var anteriores = (S.state.testesSaude && S.state.testesSaude.resultados) || {};
+      S.set({
+        testesSaude: {
+          disponiveis: resposta.dados.disponiveis,
+          resultados: Object.assign({}, anteriores, resposta.dados.resultados)
         }
       });
-
-      url.pathname = url.pathname.split("/").map((segment) => {
-        const decoded = safeDecode(segment);
-        return looksSensitiveValue(decoded) ? encodeURIComponent(maskSensitive(decoded)) : segment;
-      }).join("/");
-
-      if (raw.startsWith("http")) return url.toString();
-      return `${url.pathname}${url.search}`;
-    } catch {
-      return looksSensitiveValue(raw) ? maskSensitive(raw) : raw;
-    }
+      toast("Teste concluído.");
+    });
   }
 
-  function endpointFromUrl(value) {
-    if (!value) return "";
+  function rodarTesteGet(caminho, destino) {
+    var limpo = String(caminho || "").trim();
+    if (!limpo || limpo.charAt(0) !== "/") return toast("Informe um caminho interno começando com /.", "erro");
+    if (limpo.indexOf(":") !== -1) return toast("Rotas com parâmetro (:id) não podem ser reexecutadas às cegas.", "erro");
+
+    toast("Executando GET " + limpo + "…");
+    API.ping(limpo, true).then(function (resultado) {
+      var chave = destino === "playground" ? "playground" : "rota";
+      var testes = Object.assign({}, S.state.ferramentas.testes);
+      testes[chave] = Object.assign({ caminho: limpo, metodo: "GET" }, resultado);
+      S.state.ferramentas.testes = testes;
+      S.state.ferramentas.caminhoTeste = limpo;
+      S.emit();
+      toast("GET " + limpo + " → " + (resultado.status || "sem resposta"), resultado.ok ? "ok" : "erro");
+    });
+  }
+
+  function rodarTestesRapidos() {
+    S.marcarCarregando("testes", true);
+    var cliente = S.coletor();
+
+    var tarefas = [
+      API.ping("/health", false).then(function (r) { return Object.assign({ nome: "GET /health" }, r); }),
+      API.ping("/auth/me", true).then(function (r) { return Object.assign({ nome: "GET /auth/me" }, r); }),
+      API.healthCheck(["postgres"]).then(function (r) {
+        var resultado = r.ok ? r.dados.resultados.postgres : null;
+        return {
+          nome: "PostgreSQL (SELECT 1)",
+          ok: !!(resultado && resultado.resultado === "ok"),
+          status: r.status,
+          duracaoMs: resultado ? resultado.latenciaMs : null,
+          erro: resultado ? resultado.detalhe : r.erro
+        };
+      }),
+      API.healthCheck(["observabilidade"]).then(function (r) {
+        var resultado = r.ok ? r.dados.resultados.observabilidade : null;
+        return {
+          nome: "Tabelas de observabilidade",
+          ok: !!(resultado && resultado.resultado === "ok"),
+          status: r.status,
+          duracaoMs: resultado ? resultado.latenciaMs : null,
+          erro: resultado ? resultado.detalhe : r.erro
+        };
+      }),
+      API.summary({ window: "15m" }).then(function (r) {
+        return { nome: "GET /admin/observability/summary", ok: r.ok, status: r.status, duracaoMs: null, erro: r.erro };
+      })
+    ];
+
+    if (cliente && cliente.isActive()) {
+      tarefas.push(
+        cliente.record({
+          eventType: "test",
+          severity: "info",
+          message: "Escrita e leitura de evento de teste (Ferramentas)",
+          data: { teste: true, afetaProducao: false }
+        }).then(function (evento) {
+          if (!evento) return { nome: "Escrever evento local", ok: false, erro: "coletor não gravou" };
+          return cliente.getEvents({ limit: 50 }).then(function (eventos) {
+            var achou = eventos.some(function (e) { return e.eventId === evento.eventId; });
+            return { nome: "Escrever + ler evento local", ok: achou, status: 0, duracaoMs: null, erro: achou ? null : "evento não relido" };
+          });
+        })
+      );
+    } else {
+      tarefas.push(Promise.resolve({
+        nome: "Escrever + ler evento local",
+        ok: false, status: 0, erro: "coletor desligado"
+      }));
+    }
+
+    Promise.all(tarefas).then(function (resultados) {
+      S.marcarCarregando("testes", false);
+      S.state.ferramentas.testes = Object.assign({}, S.state.ferramentas.testes, { rapidos: resultados });
+      S.emit();
+      var falhas = resultados.filter(function (r) { return !r.ok; }).length;
+      toast(falhas ? falhas + " teste(s) falharam." : "Todos os testes passaram.", falhas ? "erro" : "ok");
+    });
+  }
+
+  function montarRelatorio() {
+    var detalhe = S.state.selecionado && S.state.selecionado.detalhe;
+    var servidor = (detalhe && detalhe.servidor) || null;
+    var evento = (detalhe && detalhe.eventoPrincipal) || null;
+    var saude = S.state.saude;
+    var usuario = API.user();
+
+    var relatorio = {
+      geradoEm: new Date().toISOString(),
+      ambiente: saude && saude.api ? saude.api.ambiente : "desconhecido",
+      apiBase: API.apiBase(),
+      versaoServidor: saude && saude.api ? saude.api.versao : null,
+      paginaDoRelato: window.location.pathname.split("/").pop(),
+      usuario: { nome: usuario.nome || null, role: usuario.role || null },
+      navegador: {
+        userAgent: navigator.userAgent,
+        idioma: navigator.language,
+        viewport: window.innerWidth + "x" + window.innerHeight
+      },
+      request: detalhe ? {
+        requestId: detalhe.requestId,
+        metodo: servidor ? servidor.method : (evento ? evento.method : null),
+        endpoint: servidor ? (servidor.route || servidor.path) : (evento ? evento.endpoint : null),
+        status: servidor ? servidor.status_code : (evento ? evento.status_code : null),
+        duracaoMs: servidor ? servidor.duration_ms : (evento ? evento.duration_ms : null),
+        telaDeOrigem: evento ? evento.page : null,
+        mensagemDeErro: servidor ? servidor.error_message : (evento ? evento.message : null),
+        correlacao: detalhe.correlacao
+      } : "nenhuma request selecionada",
+      eventosRelacionados: detalhe ? detalhe.navegador.map(function (e) {
+        return { em: e.created_at, tipo: e.event_type, severidade: e.severity, mensagem: e.message, pagina: e.page };
+      }) : [],
+      janelaAnalisada: S.state.window,
+      resumoDaJanela: S.state.resumo ? {
+        total: S.state.resumo.total,
+        erros4xx: S.state.resumo.erros4xx,
+        erros5xx: S.state.resumo.erros5xx,
+        p95: S.state.resumo.p95
+      } : null,
+      // Nunca incluído: token, senha, cookie, payload sensível.
+      observacao: "Relatório gerado pelo Control Center. Nenhum token, senha ou payload sensível é incluído."
+    };
+
+    S.state.ferramentas.relatorio = S.formatarJson(relatorio);
+    S.emit();
+    toast("Relatório gerado. Revise antes de compartilhar.");
+  }
+
+  /* ============================================================
+   * PURGE
+   * ============================================================ */
+
+  function abrirPurge() {
+    els.modalPurge.hidden = false;
+    els.modalPurge.classList.add("is-open");
+    document.getElementById("cc-purge-erro").textContent = "";
+    var campo = document.getElementById("cc-purge-confirmacao");
+    campo.value = "";
+    campo.focus();
+  }
+
+  function fecharPurge() {
+    els.modalPurge.hidden = true;
+    els.modalPurge.classList.remove("is-open");
+  }
+
+  function confirmarPurge() {
+    var confirmacao = document.getElementById("cc-purge-confirmacao").value;
+    var antes = document.getElementById("cc-purge-antes").value;
+    var erro = document.getElementById("cc-purge-erro");
+
+    if (confirmacao !== "EXCLUIR HISTORICO") {
+      erro.textContent = "Digite exatamente EXCLUIR HISTORICO para liberar a exclusão.";
+      return;
+    }
+
+    erro.textContent = "";
+    API.purge(confirmacao, antes ? new Date(antes).toISOString() : null).then(function (resposta) {
+      if (!resposta.ok) {
+        erro.textContent = resposta.erro || "falha ao excluir";
+        return;
+      }
+      fecharPurge();
+      toast("Removidos " + resposta.dados.requests + " requests e " + resposta.dados.clientEvents + " eventos do servidor.");
+      atualizar("manual");
+    });
+  }
+
+  /* ============================================================
+   * TOASTS / DOWNLOAD
+   * ============================================================ */
+
+  function toast(mensagem, tipo) {
+    if (!els.toasts) return;
+    var caixa = document.createElement("div");
+    caixa.className = "vf-toast vfc-toast" + (tipo === "erro" ? " is-danger" : tipo === "ok" ? " is-success" : "");
+    caixa.setAttribute("role", "status");
+    caixa.textContent = mensagem;
+    els.toasts.appendChild(caixa);
+    setTimeout(function () {
+      caixa.classList.add("is-saindo");
+      setTimeout(function () {
+        if (caixa.parentNode) caixa.parentNode.removeChild(caixa);
+      }, 300);
+    }, 4200);
+  }
+
+  function baixarJson(dados, nomeBase) {
     try {
-      const url = new URL(String(value), window.location.href);
-      return `${url.pathname}${url.search}`;
-    } catch {
-      return String(value);
+      var blob = new Blob([JSON.stringify(dados, null, 2)], { type: "application/json" });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement("a");
+      link.href = url;
+      link.download = nomeBase + "-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".json";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+    } catch (e) {
+      toast("Falha ao gerar o arquivo.", "erro");
     }
   }
 
-  function safeDecode(value) {
-    try {
-      return decodeURIComponent(value);
-    } catch {
-      return value;
-    }
-  }
-
-  function truncateLongText(value) {
-    const text = String(value || "");
-    return text.length > 4000 ? `${text.slice(0, 4000)}...[truncated]` : text;
-  }
-
-  function summarizeBodyValue(value) {
-    if (typeof File !== "undefined" && value instanceof File) {
-      return { file: value.name, size: value.size, type: value.type || "application/octet-stream" };
-    }
-    return value;
-  }
-
-  function readUserSafe() {
-    try {
-      return JSON.parse(localStorage.getItem(USER_KEY) || "{}") || {};
-    } catch {
-      return {};
-    }
-  }
-
-  function buildDescription(status, endpoint) {
-    if (status === 0) return "network error";
-    if (status >= 500) return "erro servidor";
-    if (status >= 400) return "erro cliente/autorizacao";
-    if (status >= 200 && status < 300) return "request ok";
-    return endpoint || "request";
-  }
-
-  function getStatusClass(entry) {
-    if (entry.status === 0) return "vfc-status--network";
-    if (is5xx(entry)) return "vfc-status--error";
-    if (is4xx(entry)) return "vfc-status--warn";
-    return "vfc-status--ok";
-  }
-
-  function getChipClass(entry) {
-    if (isSlow(entry)) return "vfc-chip--slow";
-    if (is5xx(entry) || entry.status === 0) return "vfc-chip--error";
-    if (is4xx(entry)) return "vfc-chip--warn";
-    return "vfc-chip--ok";
-  }
-
-  function getErrorSeverity(entry) {
-    if (entry.status === 0) return "network";
-    if (is5xx(entry)) return "alta";
-    if (is4xx(entry)) return "media";
-    return "none";
-  }
-
-  function isOk(entry) {
-    return entry.status >= 200 && entry.status < 300;
-  }
-
-  function is4xx(entry) {
-    return entry.status >= 400 && entry.status < 500;
-  }
-
-  function is5xx(entry) {
-    return entry.status >= 500;
-  }
-
-  function isSlow(entry) {
-    return entry.duration >= SLOW_LIMIT_MS;
-  }
-
-  function formatStatus(status) {
-    return status === 0 ? "NETWORK" : String(status);
-  }
-
-  function formatDuration(duration) {
-    return duration ? `${duration}ms` : "n/a";
-  }
-
-  function formatJson(value) {
-    return JSON.stringify(value, null, 2);
-  }
-
-  function formatClockFromTimestamp(timestamp) {
-    if (!timestamp) return "";
-    const date = new Date(timestamp);
-    return Number.isNaN(date.getTime()) ? "" : formatClock(date);
-  }
-
-  function formatClock(date) {
-    return [
-      String(date.getHours()).padStart(2, "0"),
-      String(date.getMinutes()).padStart(2, "0"),
-      String(date.getSeconds()).padStart(2, "0")
-    ].join(":");
-  }
-
-  function cryptoRandomId() {
-    if (window.crypto?.randomUUID) return `req-${window.crypto.randomUUID()}`;
-    return `req-${Math.random().toString(16).slice(2, 10)}`;
-  }
-
-  function sanitizeText(value) {
-    return String(value || "").trim() || "-";
-  }
-
-  function escapeHtml(value) {
-    return String(value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
+  window.addEventListener("beforeunload", function () {
+    pararAutoRefresh();
+    if (desinscreverColetor) desinscreverColetor();
+  });
 })();

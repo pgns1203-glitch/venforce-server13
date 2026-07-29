@@ -1,8 +1,13 @@
 // server/services/fechamentoFinanceiro/shopeePerformanceService.js
-// Lógica de fechamento financeiro da Shopee (performance + cancelados via
-// Order.all opcional). Branch Order.all para CÁLCULO PRINCIPAL continua
-// pausada — só é usada para identificar cancelados/não pagos.
-// Extraído de server/index.js sem alterações de comportamento.
+// MOTOR ESTIMADO da Shopee (planilha de performance por produto/variação).
+//
+// A planilha de performance NÃO tem repasse, frete nem taxas reais: as tarifas
+// são estimadas por faixa de ticket. Por isso este motor é sempre marcado como
+// "estimated_performance" e nunca deve ser apresentado como fechamento
+// financeiro definitivo. O motor real vive em shopeeOrderAllService.js.
+//
+// processShopee() continua sendo a porta de entrada e despacha para o motor
+// financeiro quando a planilha enviada é a de pedidos.
 
 const XLSX = require("xlsx");
 const { toNumber, round2 } = require("../../utils/numberUtils");
@@ -15,7 +20,18 @@ const {
   normalizeIdNoPrefix,
 } = require("../../utils/textUtils");
 const { createBadRequestError } = require("../../utils/excelUtils");
-const { isShopeeFinancialOrderSheet } = require("./shopeeOrderAllService");
+const {
+  isShopeeFinancialOrderSheet,
+  classifyShopeeOrderStatus,
+  processShopeeFinancialOrders,
+} = require("./shopeeOrderAllService");
+const {
+  buildCoverage,
+  computeTacos,
+  computeTacox,
+  legacyRatio,
+  safeRatio,
+} = require("../../utils/fechamento/financeiroShared");
 
 function getShopeeFeesByTicket(avgTicket) {
   if (avgTicket <= 79.99) return { commissionPercent: 20, fixedFeePerUnit: 4 };
@@ -212,71 +228,8 @@ function isShopeePerformanceSheet(rows) {
 
   return requiredSignals.every((group) => hasAnyColumn(cols, group));
 }
-function _classifyOrderAllRow(statusNorm, motivoNorm, devolucaoNorm) {
-  // Verifica se campo de devolução/reembolso tem conteúdo real
-  const devEmpty =
-    !devolucaoNorm ||
-    devolucaoNorm === "-" || devolucaoNorm === "–" || devolucaoNorm === "" ||
-    devolucaoNorm === "65" || devolucaoNorm === "n/a" || devolucaoNorm === "na";
-
-  const devReturnTerms = [
-    "devolucao", "reembolso", "refund", "return", "solicitacao aprovada",
-  ];
-  const devActive =
-    !devEmpty && devReturnTerms.some((t) => devolucaoNorm.includes(t));
-  const devPending =
-    !devEmpty && !devActive &&
-    (devolucaoNorm.includes("aguardando") ||
-      devolucaoNorm.includes("aberta") ||
-      devolucaoNorm.includes("pendente"));
-
-  // 1. Devolução/reembolso ativo — verificar antes de "entregue" para pegar
-  //    casos de entrega com devolução posterior
-  if (devActive) return "returnOrRefund";
-
-  // 2. Concluído
-  if (statusNorm.includes("concluido") || statusNorm.includes("concluído")) {
-    return "completed";
-  }
-
-  // 3. Entregue (sem devolução ativa)
-  if (statusNorm.includes("entregue")) return "delivered";
-
-  // 4. Enviado / em trânsito
-  const shippedTerms = [
-    "enviado", "em transito", "em trânsito", "a caminho",
-    "coletado", "saiu para entrega",
-  ];
-  if (shippedTerms.some((t) => statusNorm.includes(t))) return "shipped";
-
-  // 5. Não pago — verificar antes de cancelledConfirmed porque "cancelado"
-  //    com motivo "pedido não pago" deve cair aqui
-  const isNaoPago =
-    statusNorm.includes("nao pago") || statusNorm.includes("não pago");
-  const isCancelled = statusNorm === "cancelado";
-  const motivoIsUnpaid =
-    motivoNorm.includes("nao pago") ||
-    motivoNorm.includes("pedido nao pago") ||
-    motivoNorm.includes("nao houve pagamento");
-  if (isNaoPago || (isCancelled && motivoIsUnpaid)) return "unpaid";
-
-  // 6. Cancelado confirmado (não é não-pago, não é devolução)
-  if (isCancelled) return "cancelledConfirmed";
-
-  // 7. Intermediário / aguardando
-  const intermediateTerms = [
-    "a enviar", "aguardando", "comprador pode pedir", "comprador pode solicitar",
-  ];
-  if (
-    intermediateTerms.some((t) => statusNorm.includes(t)) ||
-    devPending
-  ) {
-    return "intermediate";
-  }
-
-  // 8. Outros
-  return "other";
-}
+// Classificação de status vive em shopeeOrderAllService (fonte única).
+const _classifyOrderAllRow = classifyShopeeOrderStatus;
 
 function parseShopeeOrderAllForStatus(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return [];
@@ -400,8 +353,12 @@ function buildShopeePerfSkuBridge(rows) {
 
 function buildOrderAllTopCancelledItems(orderAllItems) {
   const map = new Map();
-  for (const item of orderAllItems) {
-    if (item.kind !== "cancelledConfirmed") continue;
+  // Item entra quando o PEDIDO é cancelado confirmado, não a linha isolada.
+  const cancelledItems = groupShopeeOrders(orderAllItems)
+    .filter((order) => order.kind === "cancelledConfirmed")
+    .flatMap((order) => order.items);
+
+  for (const item of cancelledItems) {
     const name = String(item.productName || "").trim() || "Produto sem identificação";
     const entry = map.get(name) || { productName: name, revenue: 0, count: 0 };
     entry.count += 1;
@@ -415,6 +372,44 @@ function buildOrderAllTopCancelledItems(orderAllItems) {
 }
 
 
+
+// Severidade do status quando um pedido tem várias linhas de item: uma
+// devolução em qualquer linha marca o pedido inteiro.
+const ORDER_KIND_PRIORITY = [
+  "cancelledConfirmed",
+  "returnOrRefund",
+  "unpaid",
+  "intermediate",
+  "shipped",
+  "delivered",
+  "completed",
+  "other",
+];
+
+// Agrupa as linhas do Order.all por ID do pedido. Um pedido com três produtos
+// continua sendo UM pedido: a contagem nunca pode virar 3.
+function groupShopeeOrders(orderAllItems) {
+  const orders = new Map();
+
+  for (const item of Array.isArray(orderAllItems) ? orderAllItems : []) {
+    const key = String(item.orderId || "").trim() || `SEM_PEDIDO:${orders.size}`;
+    if (!orders.has(key)) {
+      orders.set(key, { orderId: key, items: [], revenue: 0, kind: "other" });
+    }
+    const order = orders.get(key);
+    order.items.push(item);
+    order.revenue = round2(order.revenue + Number(item.subtotal || 0));
+  }
+
+  for (const order of orders.values()) {
+    order.kind =
+      ORDER_KIND_PRIORITY.find((kind) =>
+        order.items.some((item) => item.kind === kind)
+      ) || "other";
+  }
+
+  return Array.from(orders.values());
+}
 
 function buildShopeeStatusSummary(orderAllItems, perfBridge, costMap) {
   const result = {
@@ -447,12 +442,13 @@ function buildShopeeStatusSummary(orderAllItems, perfBridge, costMap) {
   };
   if (!Array.isArray(orderAllItems)) return result;
 
-  for (const item of orderAllItems) {
-    const subtotal = Number(item.subtotal || 0);
+  // Contagem POR PEDIDO; faturamento somado POR ITEM.
+  for (const order of groupShopeeOrders(orderAllItems)) {
+    const subtotal = order.revenue;
     result.orderAllTotalCount += 1;
     result.orderAllTotalRevenue += subtotal;
 
-    switch (item.kind) {
+    switch (order.kind) {
       case "completed":
         result.orderAllCompletedCount += 1;
         result.orderAllCompletedRevenue += subtotal;
@@ -485,7 +481,9 @@ function buildShopeeStatusSummary(orderAllItems, perfBridge, costMap) {
     }
 
     // Unmatched: apenas cancelados confirmados (exclui não-pagos e devoluções)
-    if (item.kind === "cancelledConfirmed") {
+    if (order.kind !== "cancelledConfirmed") continue;
+
+    for (const item of order.items) {
       let matched = false;
       const tryKeys = [item.skuPrincipal, item.skuRef].filter(Boolean);
       for (const sku of tryKeys) {
@@ -505,7 +503,7 @@ function buildShopeeStatusSummary(orderAllItems, perfBridge, costMap) {
           orderId: item.orderId,
           productName: item.productName,
           skuPrincipal: item.skuPrincipal,
-          subtotal,
+          subtotal: Number(item.subtotal || 0),
         });
       }
     }
@@ -712,6 +710,25 @@ function calculateShopeeItem(sale, costRow) {
 
 
 
+function buildShopeeCostMap(costRowsRaw) {
+  const costRows = parseCostRows(costRowsRaw);
+  if (!costRows.length) {
+    throw createBadRequestError("Não consegui identificar linhas válidas na planilha de custos.");
+  }
+
+  const costMap = new Map();
+  for (const row of costRows) {
+    const keys = Array.isArray(row.matchKeys) ? row.matchKeys : [];
+    for (const key of keys) {
+      const normalized = normalizeMatchKey(key);
+      if (!normalized) continue;
+      if (!costMap.has(normalized)) costMap.set(normalized, row);
+    }
+  }
+
+  return costMap;
+}
+
 function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ordersAllRowsRaw) {
   const detectedColumns =
     salesRowsRaw.length > 0 ? Object.keys(salesRowsRaw[0]) : [];
@@ -719,16 +736,17 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
   const isFinancial = isShopeeFinancialOrderSheet(salesRowsRaw);
   const isPerformance = isShopeePerformanceSheet(salesRowsRaw);
 
-  // Order.all está PAUSADO até existir chave de cruzamento (ID do Item /
-  // ID da Variação) na planilha exportada. As funções
-  // parseShopeeFinancialRows e isShopeeFinancialOrderSheet permanecem no
-  // arquivo para reuso futuro. Não remover.
-  if (isFinancial) {
-    throw createBadRequestError(
-      "A planilha Shopee Order.all ainda não é suportada para fechamento. " +
-      "Ela não contém ID do Item nem ID da Variação, necessários para cruzar " +
-      "com a base de custos. Use a planilha de performance/parentskudetail."
-    );
+  // Planilha financeira de pedidos: motor REAL (repasse + taxas efetivas,
+  // por pedido). Antes era rejeitada — o cruzamento com a base de custos usa
+  // SKU/ID de variação, não só ID do item.
+  if (isFinancial && !isPerformance) {
+    return processShopeeFinancialOrders({
+      salesRowsRaw,
+      costMap: buildShopeeCostMap(costRowsRaw),
+      ads,
+      venforce,
+      affiliates,
+    });
   }
 
   if (!isPerformance) {
@@ -750,26 +768,14 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
     );
   }
 
-  const costRows = parseCostRows(costRowsRaw);
-  if (!costRows.length) {
-    throw createBadRequestError("Não consegui identificar linhas válidas na planilha de custos.");
-  }
-
-  const costMap = new Map();
-  for (const row of costRows) {
-    const keys = Array.isArray(row.matchKeys) ? row.matchKeys : [];
-    for (const key of keys) {
-      const normalized = normalizeMatchKey(key);
-      if (!normalized) continue;
-      if (!costMap.has(normalized)) costMap.set(normalized, row);
-    }
-  }
+  const costMap = buildShopeeCostMap(costRowsRaw);
 
   const unmatchedIdsSet = new Set();
   const excludedVariationIdsSet = new Set();
   const validItems = [];
   const detailedRows = [];
   let ignoredRevenue = 0;
+  let revenueWithoutCost = 0;
 
   for (const sale of salesRows) {
     if (sale.isVariation && sale.variationStatus === "excluido") {
@@ -781,9 +787,29 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
       costMap.get(normalizeMatchKey(sale.id)) ||
       costMap.get(normalizeMatchKey(sale.itemId));
 
+    // Sem custo: a receita CONTINUA no faturamento, apenas sem lucro calculável.
     if (!costRow || costRow.cost <= 0) {
       unmatchedIdsSet.add(sale.id);
       ignoredRevenue += sale.paidRevenue;
+      revenueWithoutCost = round2(revenueWithoutCost + sale.paidRevenue);
+
+      detailedRows.push({
+        Marketplace: "Shopee",
+        Produto: sale.product,
+        ID: sale.id,
+        "ID Model": "",
+        "Vendas (Pedido pago) (BRL)": round2(sale.paidRevenue),
+        "Unidades (Pedido pago)": Number(sale.paidUnits.toFixed(0)),
+        Ticket: sale.paidUnits > 0 ? round2(sale.paidRevenue / sale.paidUnits) : 0,
+        Custo: null,
+        Imposto: null,
+        "Comissão %": null,
+        "Taxa Fixa": null,
+        LC: null,
+        MC: null,
+        "LC POR ANÚNCIO": null,
+        "Cobertura de custo": "sem custo",
+      });
       continue;
     }
 
@@ -805,24 +831,33 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
       LC: Number(calculated.contributionProfitUnit.toFixed(2)),
       MC: Number((calculated.contributionMargin * 100).toFixed(2)),
       "LC POR ANÚNCIO": Number(calculated.contributionProfit.toFixed(2)),
+      "Cobertura de custo": "com custo",
     });
   }
 
-  const paidRevenueTotal = validItems.reduce((acc, item) => acc + item.paidRevenue, 0);
-  const contributionProfitTotal = validItems.reduce(
-    (acc, item) => acc + item.contributionProfit,
-    0
+  const revenueWithCost = round2(
+    validItems.reduce((acc, item) => acc + item.paidRevenue, 0)
   );
 
-  const averageContributionMargin =
-    paidRevenueTotal > 0 ? contributionProfitTotal / paidRevenueTotal : 0;
+  // Faturamento reconhecido = com custo + sem custo. A ausência de custo
+  // nunca apaga faturamento.
+  const paidRevenueTotal = round2(revenueWithCost + revenueWithoutCost);
+  const contributionProfitTotal = round2(
+    validItems.reduce((acc, item) => acc + item.contributionProfit, 0)
+  );
 
-  const tacos = paidRevenueTotal > 0 ? ads / paidRevenueTotal : 0;
-  const tacox = paidRevenueTotal > 0 ? (ads + venforce) / paidRevenueTotal : 0;
-  const finalResult = contributionProfitTotal - ads - venforce - affiliates;
+  const coverage = buildCoverage({ revenueWithCost, revenueWithoutCost });
+
+  // MC calculada sobre o faturamento COM CUSTO (parcela efetivamente calculada).
+  const averageContributionMargin = legacyRatio(contributionProfitTotal, revenueWithCost);
+
+  // TACoS/TACoX sobre o faturamento TOTAL; TACoX inclui afiliados.
+  const tacos = computeTacos(ads, paidRevenueTotal);
+  const tacox = computeTacox(ads, venforce, affiliates, paidRevenueTotal);
+  const finalResult = round2(contributionProfitTotal - ads - venforce - affiliates);
 
   executiveNotes.push(
-    "Planilha Shopee de performance processada com taxas estimadas por regra, não por repasse financeiro real."
+    "Estimativa por performance: taxas calculadas por faixa de tarifa, não por repasse financeiro real. Não é um fechamento financeiro definitivo."
   );
   executiveNotes.push(
     "Frete, devoluções e repasse real não disponíveis nesse modelo de planilha Shopee."
@@ -896,12 +931,31 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
     );
   }
 
+  if (coverage.financialConfidence !== "confiavel") {
+    executiveNotes.push(
+      "Fechamento parcial: existem vendas sem custo cadastrado. O faturamento total está completo; LC e MC cobrem apenas a receita com custo identificado."
+    );
+  }
+
   return {
     summary: {
+      calculationMode: "estimated_performance",
+      engine: "shopee_performance",
       grossRevenueTotal: paidRevenueTotal,
-      refundsTotal: 0,
-      cancelledRevenue: 0,
-      refundsCount: 0,
+      revenueWithCost: coverage.revenueWithCost,
+      revenueWithoutCost: coverage.revenueWithoutCost,
+      calculatedCoveragePercent: coverage.calculatedCoveragePercent,
+      financialConfidence: coverage.financialConfidence,
+      contributionMarginCalculated: safeRatio(contributionProfitTotal, revenueWithCost),
+      finalMarginCalculated: safeRatio(finalResult, revenueWithCost),
+      // Devoluções/reembolsos vêm do Order.all quando enviado — não podem
+      // ficar zerados quando o arquivo contém devoluções.
+      refundsTotal: hasOrderAll
+        ? round2(-shopeeStatusSummary.orderAllReturnRefundRevenue)
+        : 0,
+      refundsCount: shopeeStatusSummary.orderAllReturnRefundCount,
+      cancelledRevenue: shopeeStatusSummary.orderAllCancelledConfirmedRevenue,
+      lostRevenueTotal: shopeeStatusSummary.orderAllCancelledConfirmedRevenue,
       paidRevenueTotal,
       contributionProfitTotal,
       averageContributionMargin,
@@ -910,8 +964,10 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
       tacox,
       platformAdjustmentTotal: 0,
       platformAdjustmentRowsCount: 0,
-      cancellationsTotal: 0,
-      returnsTotal: null,
+      cancellationsTotal: round2(-shopeeStatusSummary.orderAllCancelledConfirmedRevenue),
+      returnsTotal: hasOrderAll
+        ? round2(-shopeeStatusSummary.orderAllReturnRefundRevenue)
+        : null,
       marketplaceFeesTotal,
       shippingFeesTotal: null,
       discountsBonusesTotal: null,
@@ -921,12 +977,14 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
       venforceTotal: round2(venforce),
       affiliatesTotal: round2(affiliates),
       grossProfitTotal: round2(contributionProfitTotal),
-      grossMargin: paidRevenueTotal > 0 ? round2(contributionProfitTotal / paidRevenueTotal) : 0,
+      grossMargin: legacyRatio(contributionProfitTotal, revenueWithCost),
       executiveNotes,
       cancelledCount: shopeeStatusSummary.cancelledCount,
       cancelledLostRevenue: shopeeStatusSummary.cancelledLostRevenue,
       unpaidCount: shopeeStatusSummary.unpaidCount,
       unpaidLostRevenue: shopeeStatusSummary.unpaidLostRevenue,
+      returnRefundCount: shopeeStatusSummary.orderAllReturnRefundCount,
+      returnRefundRevenue: shopeeStatusSummary.orderAllReturnRefundRevenue,
       // Visão operacional detalhada — apenas quando Order.all foi enviado
       orderAllTotalCount: shopeeStatusSummary.orderAllTotalCount,
       orderAllTotalRevenue: shopeeStatusSummary.orderAllTotalRevenue,
@@ -955,8 +1013,8 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
     unmatchedCancelled: shopeeStatusSummary.unmatchedCancelled,
     message:
       unmatchedIdsSet.size > 0
-        ? "Alguns IDs não possuem custo cadastrado e foram removidos do cálculo."
-        : "Processamento concluído com sucesso.",
+        ? "Estimativa por performance. Alguns IDs não possuem custo cadastrado: o faturamento foi preservado e o lucro cobre apenas a receita com custo."
+        : "Estimativa por performance concluída com sucesso.",
   };
 }
 
@@ -971,6 +1029,8 @@ module.exports = {
   parseShopeeOrderAllForStatus,
   buildShopeePerfSkuBridge,
   buildShopeeStatusSummary,
+  groupShopeeOrders,
+  buildShopeeCostMap,
   parseCostRows,
   processShopee,
 };

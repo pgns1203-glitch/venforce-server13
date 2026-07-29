@@ -97,14 +97,32 @@ const centralVendas = processMeliForCentralVendas({
   competencia: "2026-05",
 });
 
+// Os dois fluxos usam a MESMA separação: faturamento total inclui a receita
+// sem custo; o lucro cobre apenas a parcela com custo identificado.
 assert.strictEqual(
-  centralVendas.resumo.faturamento,
+  centralVendas.resumo.faturamentoTotal,
   fechamentoAtual.summary.grossRevenueTotal
+);
+assert.strictEqual(
+  centralVendas.resumo.faturamentoComCusto,
+  fechamentoAtual.summary.revenueWithCost
+);
+assert.strictEqual(
+  centralVendas.resumo.receitaSemCusto,
+  fechamentoAtual.summary.revenueWithoutCost
+);
+assert.strictEqual(
+  centralVendas.resumo.confiancaFechamento,
+  fechamentoAtual.summary.financialConfidence
 );
 assert.strictEqual(
   centralVendas.resumo.lucroContribuicao,
   fechamentoAtual.summary.contributionProfitTotal
 );
+
+// A receita sem custo continua no faturamento dos dois motores.
+assert.strictEqual(fechamentoAtual.summary.revenueWithoutCost, 80);
+assert.strictEqual(fechamentoAtual.summary.financialConfidence, "parcial");
 
 const pedidoBloqueado = centralVendas.pedidos.find(
   (pedido) => pedido.pedidoId === "1003"

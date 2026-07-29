@@ -299,13 +299,16 @@
                 <!-- Conteúdo real -->
                 <div class="vf-fin-dashboard-data">
 
+                  <!-- Cobertura da base / fechamento parcial -->
+                  <div id="fin-cobertura-banner" hidden></div>
+
                   <!-- KPIs principais -->
                   <div class="vf-kpi-grid vf-fin-kpi-grid">
                     <div class="vf-kpi vf-kpi--featured" id="fin-resultado">
                       <span class="vf-kpi__label">Resultado Final</span><span class="vf-kpi__value">—</span>
                     </div>
                     <div class="vf-kpi" id="fin-bruto">
-                      <span class="vf-kpi__label">Receita Bruta</span><span class="vf-kpi__value">—</span>
+                      <span class="vf-kpi__label">Receita Bruta Total</span><span class="vf-kpi__value">—</span>
                     </div>
                     <div class="vf-kpi" id="fin-liquido">
                       <span class="vf-kpi__label">Receita Líquida</span><span class="vf-kpi__value">—</span>
@@ -314,10 +317,16 @@
                       <span class="vf-kpi__label">LC Total</span><span class="vf-kpi__value">—</span>
                     </div>
                     <div class="vf-kpi" id="fin-mc">
-                      <span class="vf-kpi__label">MC Média</span><span class="vf-kpi__value">—</span>
+                      <span class="vf-kpi__label">MC Calculada</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-mc-final">
+                      <span class="vf-kpi__label">MC Final</span><span class="vf-kpi__value">—</span>
                     </div>
                     <div class="vf-kpi" id="fin-tacos">
                       <span class="vf-kpi__label">TACoS</span><span class="vf-kpi__value">—</span>
+                    </div>
+                    <div class="vf-kpi" id="fin-tacox">
+                      <span class="vf-kpi__label">TACoX</span><span class="vf-kpi__value">—</span>
                     </div>
                   </div>
 
@@ -329,8 +338,11 @@
                     <div class="vf-card vf-card--compact vf-fin-exec" id="fin-exec-receitas">
                       <div class="vf-card__body">
                         <p class="vf-fin-exec__title">Receitas</p>
-                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Receita Bruta</span><span class="vf-fin-exec__value" id="fin-exec-receita-bruta">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Receita Bruta Total</span><span class="vf-fin-exec__value" id="fin-exec-receita-bruta">—</span></div>
                         <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Receita Líquida</span><span class="vf-fin-exec__value" id="fin-exec-receita-liquida">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Receita com custo</span><span class="vf-fin-exec__value" id="fin-exec-receita-com-custo">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Receita sem custo</span><span class="vf-fin-exec__value" id="fin-exec-receita-sem-custo">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Cobertura da base</span><span class="vf-fin-exec__value" id="fin-exec-cobertura">—</span></div>
                       </div>
                     </div>
                     <div class="vf-card vf-card--compact vf-fin-exec" id="fin-exec-deducoes">
@@ -351,10 +363,13 @@
                     <div class="vf-card vf-card--compact vf-fin-exec" id="fin-exec-resultado">
                       <div class="vf-card__body">
                         <p class="vf-fin-exec__title">Resultado</p>
-                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Resultado Final</span><span class="vf-fin-exec__value" id="fin-exec-resultado-final">—</span></div>
                         <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">LC Total</span><span class="vf-fin-exec__value" id="fin-exec-lc-total">—</span></div>
-                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">MC Média</span><span class="vf-fin-exec__value" id="fin-exec-mc-media">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">MC Calculada</span><span class="vf-fin-exec__value" id="fin-exec-mc-media">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Resultado Final</span><span class="vf-fin-exec__value" id="fin-exec-resultado-final">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">MC Final</span><span class="vf-fin-exec__value" id="fin-exec-mc-final">—</span></div>
                         <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">TACoS</span><span class="vf-fin-exec__value" id="fin-exec-tacos">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">TACoX</span><span class="vf-fin-exec__value" id="fin-exec-tacox">—</span></div>
+                        <div class="vf-fin-exec__row"><span class="vf-fin-exec__label">Status do fechamento</span><span class="vf-fin-exec__value" id="fin-exec-status-fechamento">—</span></div>
                       </div>
                     </div>
                   </div>

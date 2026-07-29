@@ -7,6 +7,7 @@ const XLSX = require("xlsx");
 const { toNumber } = require("../utils/numberUtils");
 const {
   parseSpreadsheet,
+  detectMeliHeaderRow,
   detectShopeeHeaderRow,
 } = require("../utils/excelUtils");
 const {
@@ -18,6 +19,89 @@ const {
 const {
   buildCostRowsFromBase,
 } = require("../services/bases/baseCustosService");
+
+const CALCULATION_MODE_LABEL = {
+  real_financial: "Fechamento por dados financeiros (repasse e taxas reais)",
+  estimated_performance: "Estimativa por performance (tarifas por faixa de ticket)",
+  real_meli_vendas: "Fechamento pela planilha de vendas do Mercado Livre",
+};
+
+const CONFIDENCE_LABEL = {
+  confiavel: "Confiável — 100% da receita com custo identificado",
+  parcial: "Parcial — existem vendas sem custo cadastrado",
+  insuficiente: "Insuficiente — nenhuma receita com custo identificado",
+};
+
+// null/undefined viram vazio (ausência), nunca 0 falso.
+function formatSummaryValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Number(value.toFixed(6)) : "";
+  }
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(" | ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function buildFechamentoContextRows(summary, marketplace) {
+  const s = summary || {};
+  const mode = String(s.calculationMode || "");
+  const confidence = String(s.financialConfidence || "");
+
+  const rows = [
+    { Item: "Marketplace", Valor: marketplace },
+    { Item: "Modo de cálculo", Valor: CALCULATION_MODE_LABEL[mode] || mode || "—" },
+    { Item: "Status de confiança", Valor: CONFIDENCE_LABEL[confidence] || confidence || "—" },
+    { Item: "Receita bruta total", Valor: formatSummaryValue(s.grossRevenueTotal) },
+    { Item: "Receita com custo", Valor: formatSummaryValue(s.revenueWithCost) },
+    { Item: "Receita sem custo", Valor: formatSummaryValue(s.revenueWithoutCost) },
+    { Item: "Cobertura da base (%)", Valor: formatSummaryValue(s.calculatedCoveragePercent) },
+    { Item: "LC calculado", Valor: formatSummaryValue(s.contributionProfitTotal) },
+    { Item: "MC calculada", Valor: formatSummaryValue(s.contributionMarginCalculated) },
+    { Item: "Resultado Final calculado", Valor: formatSummaryValue(s.finalResult) },
+    { Item: "MC Final calculada", Valor: formatSummaryValue(s.finalMarginCalculated) },
+    { Item: "TACoS", Valor: formatSummaryValue(s.tacos) },
+    { Item: "TACoX", Valor: formatSummaryValue(s.tacox) },
+  ];
+
+  // Componentes financeiros: real quando veio da planilha, estimado no motor
+  // de performance, vazio quando a coluna não existe.
+  const componentes = [
+    ["Taxas do marketplace", s.marketplaceFeesTotal],
+    ["Frete", s.shippingFeesTotal],
+    ["Imposto", s.taxValueTotal],
+    ["CMV", s.cmvTotal],
+    ["Descontos / bônus", s.discountsBonusesTotal],
+  ];
+
+  for (const [label, value] of componentes) {
+    rows.push({
+      Item: `Componente: ${label}`,
+      Valor: formatSummaryValue(value),
+      Origem:
+        value === null || value === undefined
+          ? "ausente na planilha"
+          : mode === "estimated_performance"
+            ? "estimado"
+            : "real",
+    });
+  }
+
+  if (Array.isArray(s.missingColumns) && s.missingColumns.length > 0) {
+    rows.push({ Item: "Colunas ausentes / indeterminadas", Valor: s.missingColumns.join(" | ") });
+  }
+  if (Array.isArray(s.detectedAdjustmentColumns) && s.detectedAdjustmentColumns.length > 0) {
+    rows.push({
+      Item: "Colunas de cupom/rebate detectadas (não reaplicadas)",
+      Valor: s.detectedAdjustmentColumns.join(" | "),
+    });
+  }
+  for (const note of Array.isArray(s.executiveNotes) ? s.executiveNotes : []) {
+    rows.push({ Item: "Observação", Valor: String(note) });
+  }
+
+  return rows;
+}
 
 async function processarFechamentoFinanceiroController(req, res) {
   try {
@@ -58,9 +142,11 @@ async function processarFechamentoFinanceiroController(req, res) {
     const salesBuffer = salesFile.buffer;
     const ordersAllFile = req.files?.ordersAll?.[0];
 
+    // Cabeçalho detectado automaticamente: a exportação do ML nem sempre põe
+    // o cabeçalho na linha 6.
     const salesRowsRaw =
       marketplace === "meli"
-        ? parseSpreadsheet(salesBuffer, 5)
+        ? parseSpreadsheet(salesBuffer, detectMeliHeaderRow(salesBuffer))
         : parseSpreadsheet(salesBuffer, detectShopeeHeaderRow(salesBuffer));
 
     let costRowsRaw;
@@ -110,8 +196,7 @@ async function processarFechamentoFinanceiroController(req, res) {
     } else {
       const summaryRows = Object.entries(result.summary).map(([key, value]) => ({
         Métrica: key,
-        Valor:
-          typeof value === "number" ? Number(value.toFixed(6)) : String(value),
+        Valor: formatSummaryValue(value),
       }));
 
       const summarySheet = XLSX.utils.json_to_sheet(summaryRows);
@@ -120,6 +205,12 @@ async function processarFechamentoFinanceiroController(req, res) {
       XLSX.utils.book_append_sheet(workbook, summarySheet, "Painel");
       XLSX.utils.book_append_sheet(workbook, detailSheet, "Detalhamento");
     }
+
+    // Aba de contexto do fechamento: modo de cálculo, confiança e cobertura.
+    const contextSheet = XLSX.utils.json_to_sheet(
+      buildFechamentoContextRows(result.summary, marketplace)
+    );
+    XLSX.utils.book_append_sheet(workbook, contextSheet, "Fechamento");
 
     if (result.auditRows && result.auditRows.length > 0) {
       const auditSheet = XLSX.utils.json_to_sheet(result.auditRows);
@@ -161,4 +252,6 @@ async function processarFechamentoFinanceiroController(req, res) {
 
 module.exports = {
   processarFechamentoFinanceiroController,
+  buildFechamentoContextRows,
+  formatSummaryValue,
 };

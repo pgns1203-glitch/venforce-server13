@@ -161,7 +161,10 @@
         { label: "Precificação - API",   href: "automacoes.html",    icon: "repeat"       },
         { label: "Relatórios",   href: "relatorios.html",    icon: "bar-chart"     },
         { label: "Promoções ML", href: "promocoes-retorno.html", icon: "trending-up" },
-        
+
+        { separator: true, label: "DESIGN" },
+        { label: "Estúdio de Templates", href: "design-templates.html", icon: "media" },
+
         { separator: true, label: "ANÁLISES" },
         { label: "Fechamento",   href: "financeiro.html",    icon: "vf-financeiro" },
         { label: "Fechamento - API", href: "fechamentos-api.html", icon: "vf-financeiro", adminOnly: true },
@@ -230,6 +233,7 @@
     "financeiro.html":      "operacao",
     "fechamentos-api.html": "operacao",
     "relatorios.html":      "operacao",
+    "design-templates.html": "operacao",
     "fechamento.html":      "operacao",
     "ferramentas.html":       "operacao",
     "extensao.html":          "operacao",

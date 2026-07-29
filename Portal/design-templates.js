@@ -4,8 +4,14 @@
   const STORAGE_KEY = "vf-design-template-studio-v1";
   const TOKEN_KEY = "vf-token";
   const API_BASE = "https://venforce-server.onrender.com";
-  const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
   const SVG_NS = "http://www.w3.org/2000/svg";
+
+  // Módulos do editor de imagem. Sem eles a tela continua funcionando em modo
+  // reduzido (upload local, sem editor) em vez de quebrar por completo.
+  const imageModel = window.VF_DESIGN_IMAGE_MODEL || null;
+  const imageStorageLib = window.VF_DESIGN_IMAGE_STORAGE || null;
+  const imageApiLib = window.VF_DESIGN_IMAGE_API || null;
+  const imageEditorLib = window.VFDesignImageEditor || null;
 
   const TEMPLATE_CATALOG = [
     {
@@ -29,9 +35,33 @@
     { id: "safe", name: "Compra segura" },
   ];
 
+  // Schema V2. A imagem do produto passou a ter três partes independentes:
+  // o arquivo original (nunca é sobrescrito), a versão editada (derivada) e os
+  // parâmetros que geraram essa versão. `placement` é o enquadramento dentro
+  // da peça — continua sendo o que os sliders de escala/posição controlam.
+  function createDefaultProduct() {
+    const base = imageModel ? imageModel.createDefaultProduct() : {
+      originalImage: { id: null, dataUrl: null, url: null, fileName: "", mimeType: "", width: null, height: null },
+      editedImage: { id: null, dataUrl: null, url: null, fileName: "", mimeType: "", width: null, height: null },
+      editing: {},
+      placement: { scale: 100, x: 50, y: 50 },
+    };
+    return {
+      name: "Power Station One",
+      subtitle: "Energia portátil, conexão sem fio e luz para acompanhar sua rotina.",
+      ...base,
+    };
+  }
+
+  function createEmptyImage() {
+    return imageModel
+      ? imageModel.createEmptyImageRef()
+      : { id: null, dataUrl: null, url: null, fileName: "", mimeType: "", width: null, height: null };
+  }
+
   function createDefaultProject() {
     return {
-      version: 1,
+      version: 2,
       templateId: TEMPLATE_CATALOG[0].id,
       clienteId: null,
       clienteNome: "Cliente personalizado",
@@ -42,17 +72,8 @@
         background: "#f4efe5",
         text: "#12202b",
       },
-      product: {
-        name: "Power Station One",
-        subtitle: "Energia portátil, conexão sem fio e luz para acompanhar sua rotina.",
-        imageDataUrl: null,
-        fileName: "",
-        scale: 100,
-        x: 50,
-        y: 50,
-      },
-      logoDataUrl: null,
-      logoFileName: "",
+      product: createDefaultProduct(),
+      logo: createEmptyImage(),
       content: {
         benefit: "Energia para o dia inteiro, onde você estiver.",
         wireless: "Carregue dispositivos compatíveis por indução, sem cabos e com encaixe simples.",
@@ -104,9 +125,51 @@
     return /^#[0-9a-f]{6}$/i.test(String(value || ""));
   }
 
+  // Estado da migração aplicada no boot — a tela avisa o usuário depois que
+  // o DOM está pronto, não durante a leitura do localStorage.
+  let migracaoAplicada = null;
+
+  // Traz as imagens de um projeto salvo para o schema V2.
+  // V1 guardava base64 direto no localStorage; V2 guarda só o id e busca o
+  // blob no IndexedDB. Na migração o base64 antigo ainda está em mãos, então
+  // ele recebe um id novo e é regravado no armazenamento certo.
+  function hydrateImages(stored) {
+    if (!imageModel) {
+      const defaults = createDefaultProject();
+      return { product: defaults.product, logo: defaults.logo, migrado: false };
+    }
+
+    const versao = imageModel.detectSchemaVersion(stored);
+    if (versao === 2) {
+      const normalizado = imageModel.normalizeProductImages(stored.product);
+      return {
+        product: normalizado,
+        logo: imageModel.normalizeImageRef(stored.logo),
+        migrado: false,
+      };
+    }
+
+    const migracao = imageModel.migrateImagesFromV1(stored);
+    return {
+      product: migracao.product,
+      logo: migracao.logo,
+      migrado: true,
+      logoDescartado: migracao.logoDescartado,
+    };
+  }
+
   function hydrateProject(stored) {
     const defaults = createDefaultProject();
-    if (!stored || stored.version !== 1 || stored.templateId !== defaults.templateId) return defaults;
+    if (!stored || typeof stored !== "object" || stored.templateId !== defaults.templateId) {
+      migracaoAplicada = null;
+      return defaults;
+    }
+
+    const imagens = hydrateImages(stored);
+    migracaoAplicada = imagens.migrado
+      ? { logoDescartado: Boolean(imagens.logoDescartado) }
+      : null;
+
     return {
       ...defaults,
       clienteId: stored.clienteId ?? null,
@@ -119,17 +182,11 @@
         text: isHex(stored.palette?.text) ? stored.palette.text : defaults.palette.text,
       },
       product: {
-        ...defaults.product,
+        ...imagens.product,
         name: String(stored.product?.name || defaults.product.name).slice(0, 64),
         subtitle: String(stored.product?.subtitle || defaults.product.subtitle).slice(0, 120),
-        imageDataUrl: typeof stored.product?.imageDataUrl === "string" ? stored.product.imageDataUrl : null,
-        fileName: String(stored.product?.fileName || "").slice(0, 180),
-        scale: clamp(stored.product?.scale ?? defaults.product.scale, 60, 145),
-        x: clamp(stored.product?.x ?? defaults.product.x, 20, 80),
-        y: clamp(stored.product?.y ?? defaults.product.y, 20, 80),
       },
-      logoDataUrl: typeof stored.logoDataUrl === "string" ? stored.logoDataUrl : null,
-      logoFileName: String(stored.logoFileName || "").slice(0, 180),
+      logo: imagens.logo,
       content: {
         benefit: String(stored.content?.benefit || defaults.content.benefit).slice(0, 110),
         wireless: String(stored.content?.wireless || defaults.content.wireless).slice(0, 180),
@@ -162,7 +219,30 @@
   let clients = [];
   let autosaveTimer = null;
   let confirmAction = null;
+  let cancelAction = null;
   let focusBeforeModal = null;
+
+  // Armazenamento de blobs (IndexedDB, com degradação controlada).
+  const imageStorage = imageStorageLib
+    ? imageStorageLib.createImageStorage({
+      indexedDB: typeof window.indexedDB !== "undefined" ? window.indexedDB : null,
+      localStorage: window.localStorage,
+    })
+    : null;
+
+  const imageApi = imageApiLib
+    ? imageApiLib.createDesignImageApi({
+      baseUrl: API_BASE,
+      getToken: () => localStorage.getItem(TOKEN_KEY),
+    })
+    : null;
+
+  // Ids já gravados no armazenamento nesta sessão: evita reescrever o mesmo
+  // base64 a cada autosave (o autosave dispara a cada 350 ms de digitação).
+  const idsPersistidos = new Set();
+  let capacidadesIa = null;
+  let editorImagem = null;
+  let avisoArmazenamentoEmitido = false;
 
   const byId = (id) => document.getElementById(id);
 
@@ -174,21 +254,94 @@
     status.classList.toggle("is-error", mode === "error");
   }
 
+  // Grava no IndexedDB os blobs que ainda não foram para lá e apaga os órfãos.
+  // Roda em segundo plano: uma falha aqui não pode travar a digitação.
+  async function persistImages(leve, blobs) {
+    if (!imageStorage) return;
+    try {
+      for (const blob of blobs) {
+        if (idsPersistidos.has(blob.id)) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await imageStorage.salvar(blob.id, blob.dataUrl);
+        idsPersistidos.add(blob.id);
+      }
+      const vivos = imageModel ? imageModel.collectImageIds(leve) : [];
+      const removidos = await imageStorage.limparOrfaos(vivos);
+      removidos.forEach((id) => idsPersistidos.delete(id));
+    } catch (error) {
+      const codigo = error && error.codigo;
+      if (codigo === "QUOTA_EXCEDIDA") {
+        setSaveStatus("Sem espaço para guardar a imagem", "error");
+        showToast(
+          "danger",
+          "Armazenamento do navegador cheio",
+          "Remova a imagem atual ou libere espaço do site para que o projeto volte a ser salvo."
+        );
+      } else if (!avisoArmazenamentoEmitido) {
+        avisoArmazenamentoEmitido = true;
+        showToast(
+          "warning",
+          "Imagens não serão recuperadas",
+          "Este navegador bloqueou o armazenamento local de imagens. O projeto vale para esta sessão."
+        );
+      }
+    }
+  }
+
   function persistProject(showSuccessToast) {
     if (autosaveTimer) {
       window.clearTimeout(autosaveTimer);
       autosaveTimer = null;
     }
+
+    // O localStorage recebe só o projeto leve: textos, cores e ids de imagem.
+    // O base64 vai para o IndexedDB via persistImages().
+    const separado = imageModel
+      ? imageModel.splitProjectForStorage(project)
+      : { leve: project, blobs: [] };
+
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(separado.leve));
       setSaveStatus("Alterações salvas localmente", "saved");
       if (showSuccessToast) showToast("success", "Projeto salvo", "As alterações foram persistidas neste navegador.");
-      return true;
     } catch (error) {
       setSaveStatus("Não foi possível salvar localmente", "error");
-      showToast("danger", "Armazenamento indisponível", "Remova uma imagem grande ou libere espaço local e tente novamente.");
+      showToast("danger", "Armazenamento indisponível", "Libere espaço do site neste navegador e tente novamente.");
       return false;
     }
+
+    persistImages(separado.leve, separado.blobs);
+    return true;
+  }
+
+  // Depois do boot as imagens ainda são só ids: busca os blobs e redesenha.
+  async function hydrateImagesFromStorage() {
+    if (!imageStorage || !imageModel) return;
+    const referencias = [
+      project.product.originalImage,
+      project.product.editedImage,
+      project.logo,
+    ];
+    let alterou = false;
+    for (const ref of referencias) {
+      // Referência já com base64 em mãos só acontece logo após a migração V1,
+      // e nesse caso o blob AINDA não foi gravado — não pode ser marcado como
+      // persistido aqui, senão o persistImages seguinte pula a gravação.
+      if (!ref || !ref.id || ref.dataUrl) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const dataUrl = await imageStorage.ler(ref.id);
+      if (imageModel.isDataImageUrl(dataUrl)) {
+        ref.dataUrl = dataUrl;
+        idsPersistidos.add(ref.id);
+        alterou = true;
+      } else {
+        // O blob sumiu (limpeza do navegador, outra máquina): a referência
+        // vira vazia em vez de deixar a tela apontando para o nada.
+        ref.id = null;
+      }
+    }
+    if (alterou && project.view === "editor") renderEditor();
+    else if (alterou) syncControls();
   }
 
   function scheduleAutosave() {
@@ -368,9 +521,9 @@
       "dt-color-text": project.palette.text,
       "dt-product-name": project.product.name,
       "dt-product-subtitle": project.product.subtitle,
-      "dt-product-scale": project.product.scale,
-      "dt-product-x": project.product.x,
-      "dt-product-y": project.product.y,
+      "dt-product-scale": project.product.placement.scale,
+      "dt-product-x": project.product.placement.x,
+      "dt-product-y": project.product.placement.y,
       "dt-benefit": project.content.benefit,
       "dt-wireless": project.content.wireless,
       "dt-led": project.content.led,
@@ -388,11 +541,11 @@
       const control = byId(id);
       if (control && control.value !== String(value)) control.value = value;
     });
-    byId("dt-product-scale-value").textContent = `${project.product.scale}%`;
-    byId("dt-product-x-value").textContent = `${project.product.x}%`;
-    byId("dt-product-y-value").textContent = `${project.product.y}%`;
-    syncUploadState("logo", project.logoDataUrl, project.logoFileName);
-    syncUploadState("product", project.product.imageDataUrl, project.product.fileName);
+    byId("dt-product-scale-value").textContent = `${project.product.placement.scale}%`;
+    byId("dt-product-x-value").textContent = `${project.product.placement.x}%`;
+    byId("dt-product-y-value").textContent = `${project.product.placement.y}%`;
+    syncUploadState("logo", project.logo.dataUrl, project.logo.fileName);
+    syncProductUploadState();
     syncClientSelection();
   }
 
@@ -404,6 +557,30 @@
     if (dataUrl) preview.src = dataUrl;
     else preview.removeAttribute("src");
     name.textContent = fileName || "Imagem local";
+  }
+
+  function syncProductUploadState() {
+    const original = project.product.originalImage;
+    // A miniatura mostra o que as peças usam — a editada, quando existe.
+    syncUploadState("product", productImageSource(project), original.fileName);
+
+    const botaoEditar = byId("dt-edit-product");
+    if (botaoEditar) {
+      const podeEditar = Boolean(original.dataUrl) && Boolean(editorImagem) && Boolean(window.fabric);
+      botaoEditar.disabled = !podeEditar;
+      botaoEditar.title = podeEditar
+        ? "Abrir o editor de imagem"
+        : "O editor precisa da imagem carregada e da biblioteca de edição disponível.";
+    }
+
+    const nota = byId("dt-product-edit-note");
+    if (nota) nota.hidden = !project.product.editedImage.dataUrl;
+
+    const aviso = byId("dt-product-lowres");
+    if (aviso) {
+      aviso.hidden = !(imageModel && original.dataUrl
+        && imageModel.isLowResolution(original.width, original.height));
+    }
   }
 
   function syncClientSelection() {
@@ -429,9 +606,9 @@
     "dt-color-text": "palette.text",
     "dt-product-name": "product.name",
     "dt-product-subtitle": "product.subtitle",
-    "dt-product-scale": "product.scale",
-    "dt-product-x": "product.x",
-    "dt-product-y": "product.y",
+    "dt-product-scale": "product.placement.scale",
+    "dt-product-x": "product.placement.x",
+    "dt-product-y": "product.placement.y",
     "dt-benefit": "content.benefit",
     "dt-wireless": "content.wireless",
     "dt-led": "content.led",
@@ -510,13 +687,25 @@
     style.textContent = "text{font-synthesis:none} .dt-fine{font-family:'IBM Plex Mono',monospace;letter-spacing:2px} .dt-body{font-family:'Hanken Grotesk',Arial,sans-serif} .dt-display{font-family:Manrope,Arial,sans-serif}";
   }
 
+  // Fonte da imagem do produto usada nas 7 peças: a versão editada tem
+  // precedência; sem edição aplicada, vale o arquivo original.
+  function productImageSource(state) {
+    if (imageModel) return imageModel.resolveProductImageSource(state.product);
+    return state.product?.editedImage?.dataUrl || state.product?.originalImage?.dataUrl || null;
+  }
+
+  function productPlacement(state) {
+    return state.product?.placement || { scale: 100, x: 50, y: 50 };
+  }
+
   function drawBrand(svg, state, palette, options) {
     const group = svgElement("g", {}, svg);
     const x = options?.x ?? 72;
     const y = options?.y ?? 66;
     const onDark = options?.onDark;
-    if (state.logoDataUrl) {
-      svgElement("image", { href: state.logoDataUrl, x, y, width: 190, height: 72, preserveAspectRatio: "xMinYMid meet" }, group);
+    const logoDataUrl = state.logo?.dataUrl || null;
+    if (logoDataUrl) {
+      svgElement("image", { href: logoDataUrl, x, y, width: 190, height: 72, preserveAspectRatio: "xMinYMid meet" }, group);
     } else {
       svgElement("rect", { x, y, width: 48, height: 48, rx: 9, fill: onDark ? palette.secondary : palette.primary }, group);
       svgText(group, String(state.marcaNome || "N").slice(0, 1).toUpperCase(), { x: x + 24, y: y + 33, "text-anchor": "middle", fill: palette.white, "font-family": "Manrope,Arial,sans-serif", "font-size": 25, "font-weight": 800 });
@@ -530,12 +719,14 @@
   }
 
   function drawProduct(svg, state, palette, centerX, centerY, baseSize) {
-    const scale = (state.product.scale / 100) * (baseSize / 430);
-    const offsetX = (state.product.x - 50) * 4.5;
-    const offsetY = (state.product.y - 50) * 4.5;
+    const placement = productPlacement(state);
+    const scale = (placement.scale / 100) * (baseSize / 430);
+    const offsetX = (placement.x - 50) * 4.5;
+    const offsetY = (placement.y - 50) * 4.5;
     const group = svgElement("g", { transform: `translate(${centerX + offsetX} ${centerY + offsetY}) scale(${scale})` }, svg);
-    if (state.product.imageDataUrl) {
-      svgElement("image", { href: state.product.imageDataUrl, x: -260, y: -260, width: 520, height: 520, preserveAspectRatio: "xMidYMid meet" }, group);
+    const imageDataUrl = productImageSource(state);
+    if (imageDataUrl) {
+      svgElement("image", { href: imageDataUrl, x: -260, y: -260, width: 520, height: 520, preserveAspectRatio: "xMidYMid meet" }, group);
       return group;
     }
     svgElement("ellipse", { cx: 12, cy: 230, rx: 210, ry: 34, fill: palette.primaryDark, opacity: 0.18 }, group);
@@ -683,7 +874,11 @@
 
   function createPageSvg(pageIndex, sourceProject) {
     const safeIndex = clamp(pageIndex, 0, PAGE_DRAWERS.length - 1);
-    const svg = svgElement("svg", { xmlns: SVG_NS, viewBox: "0 0 1200 1200", width: 1200, height: 1200, role: "img", "aria-label": PAGE_DEFINITIONS[safeIndex].name });
+    // Sem `xmlns` explícito: createElementNS já coloca o elemento no namespace
+    // SVG e o XMLSerializer emite a declaração sozinho. Declarar à mão gerava
+    // `xmlns` duplicado no texto serializado — XML inválido, que rasterizadores
+    // estritos recusam na hora de virar PNG.
+    const svg = svgElement("svg", { viewBox: "0 0 1200 1200", width: 1200, height: 1200, role: "img", "aria-label": PAGE_DEFINITIONS[safeIndex].name });
     addSvgStyles(svg);
     PAGE_DRAWERS[safeIndex](svg, sourceProject, derivedPalette(sourceProject.palette));
     return svg;
@@ -749,42 +944,239 @@
     });
   }
 
-  function readLocalImage(file, onSuccess) {
-    if (!file) return;
-    if (!String(file.type || "").startsWith("image/")) {
-      showToast("danger", "Arquivo não suportado", "Selecione um arquivo de imagem válido.");
-      return;
-    }
-    if (file.size > MAX_IMAGE_BYTES) {
-      showToast("danger", "Imagem muito grande", "O limite local é de 2 MB por arquivo.");
-      return;
-    }
-    const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      if (typeof reader.result !== "string" || !reader.result.startsWith("data:image/")) {
-        showToast("danger", "Falha ao ler imagem", "O navegador não conseguiu preparar este arquivo.");
-        return;
-      }
-      onSuccess(reader.result, file.name);
-      renderEditor();
-      scheduleAutosave();
+  /* ── upload de imagem ─────────────────────────────────────────────────── */
+
+  function setUploadBusy(kind, busy) {
+    const drop = document.querySelector(`label[for="dt-${kind}-file"]`);
+    if (drop) drop.classList.toggle("is-loading", busy);
+    const input = byId(`dt-${kind}-file`);
+    if (input) input.disabled = busy;
+  }
+
+  // Caminho degradado: sem servidor, lê o arquivo no próprio navegador com o
+  // limite conservador. Sem correção de EXIF nem redimensionamento.
+  function readLocalImage(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener("load", () => {
+        const resultado = reader.result;
+        if (typeof resultado !== "string" || !imageModel || !imageModel.isDataImageUrl(resultado)) {
+          reject(new Error("Data URL inválida"));
+          return;
+        }
+        // As dimensões vêm do decodificador; se falhar, seguem nulas.
+        const img = new Image();
+        img.onload = () => resolve({
+          dataUrl: resultado,
+          mimeType: imageModel.mimeFromDataUrl(resultado),
+          width: img.naturalWidth || null,
+          height: img.naturalHeight || null,
+        });
+        img.onerror = () => resolve({
+          dataUrl: resultado,
+          mimeType: imageModel.mimeFromDataUrl(resultado),
+          width: null,
+          height: null,
+        });
+        img.src = resultado;
+      });
+      reader.addEventListener("error", () => reject(new Error("Falha na leitura")));
+      reader.readAsDataURL(file);
     });
-    reader.addEventListener("error", () => showToast("danger", "Falha ao ler imagem", "Tente selecionar outro arquivo."));
-    reader.readAsDataURL(file);
+  }
+
+  // Fluxo único de upload: valida no cliente, normaliza no servidor (Sharp) e,
+  // se o servidor não responder, cai para leitura local com limite menor.
+  async function prepararImagem(file, kind) {
+    if (!imageModel) throw new Error("Editor de imagem indisponível.");
+
+    const validacao = imageModel.validateImageFile(file, { mode: "servidor" });
+    if (!validacao.ok) {
+      const erro = new Error(validacao.mensagem);
+      erro.codigo = validacao.codigo;
+      erro.validacao = true;
+      throw erro;
+    }
+
+    if (imageApi) {
+      try {
+        const imagem = await imageApi.normalizar(file, { finalidade: kind });
+        return {
+          dataUrl: imagem.dataUrl,
+          mimeType: imagem.mimeType,
+          width: imagem.width,
+          height: imagem.height,
+          fileName: validacao.fileName,
+          origem: "servidor",
+          baixaResolucao: imagem.baixaResolucao === true,
+        };
+      } catch (error) {
+        // Erro de conteúdo é do arquivo, não da rede: não adianta tentar local.
+        const codigo = error && error.codigo;
+        const problemaDeRede = codigo === "REDE_INDISPONIVEL" || codigo === "TIMEOUT" || codigo === "SEM_FETCH";
+        if (!problemaDeRede) throw error;
+      }
+    }
+
+    const localValidacao = imageModel.validateImageFile(file, { mode: "local" });
+    if (!localValidacao.ok) {
+      const erro = new Error(
+        `${localValidacao.mensagem} O servidor não respondeu, então o limite local menor foi aplicado.`
+      );
+      erro.codigo = localValidacao.codigo;
+      erro.validacao = true;
+      throw erro;
+    }
+
+    const local = await readLocalImage(file);
+    return {
+      ...local,
+      fileName: validacao.fileName,
+      origem: "local",
+      baixaResolucao: imageModel.isLowResolution(local.width, local.height),
+    };
+  }
+
+  async function onProductFileSelected(file) {
+    if (!file) return;
+    setUploadBusy("product", true);
+    setSaveStatus("Preparando imagem…", "saving");
+    try {
+      const imagem = await prepararImagem(file, "produto");
+      // Imagem nova zera qualquer edição anterior — os parâmetros antigos não
+      // fazem sentido para outro arquivo. O enquadramento na peça é mantido.
+      project.product = {
+        ...project.product,
+        originalImage: imageModel.normalizeImageRef({
+          id: imageModel.newImageId("prod"),
+          dataUrl: imagem.dataUrl,
+          fileName: imagem.fileName,
+          mimeType: imagem.mimeType,
+          width: imagem.width,
+          height: imagem.height,
+        }),
+        editedImage: imageModel.createEmptyImageRef(),
+        editing: imageModel.createDefaultEditing(),
+      };
+      renderEditor();
+      persistProject(false);
+      if (imagem.origem === "local") {
+        showToast("warning", "Imagem carregada localmente", "O servidor não respondeu: a imagem não passou pela normalização.");
+      } else if (imagem.baixaResolucao) {
+        showToast("warning", "Resolução baixa", "A imagem tem menos de 600 px de lado. A arte pode sair sem nitidez.");
+      } else {
+        showToast("success", "Imagem pronta", "Use “Editar imagem” para recortar e ajustar antes de gerar as peças.");
+      }
+    } catch (error) {
+      showToast("danger", "Não foi possível usar esta imagem", error?.message || "Tente outro arquivo.");
+      setSaveStatus("Alterações salvas localmente", "saved");
+    } finally {
+      setUploadBusy("product", false);
+      const input = byId("dt-product-file");
+      if (input) input.value = "";
+    }
+  }
+
+  async function onLogoFileSelected(file) {
+    if (!file) return;
+    setUploadBusy("logo", true);
+    try {
+      const imagem = await prepararImagem(file, "logo");
+      project.logo = imageModel.normalizeImageRef({
+        id: imageModel.newImageId("logo"),
+        dataUrl: imagem.dataUrl,
+        fileName: imagem.fileName,
+        mimeType: imagem.mimeType,
+        width: imagem.width,
+        height: imagem.height,
+      });
+      renderEditor();
+      persistProject(false);
+    } catch (error) {
+      showToast("danger", "Não foi possível usar este logo", error?.message || "Tente outro arquivo.");
+    } finally {
+      setUploadBusy("logo", false);
+      const input = byId("dt-logo-file");
+      if (input) input.value = "";
+    }
   }
 
   function removeImage(kind) {
     if (kind === "logo") {
-      project.logoDataUrl = null;
-      project.logoFileName = "";
+      project.logo = createEmptyImage();
       byId("dt-logo-file").value = "";
     } else {
-      project.product.imageDataUrl = null;
-      project.product.fileName = "";
+      project.product = imageModel
+        ? { ...project.product, ...imageModel.clearProductImage(project.product) }
+        : { ...project.product, originalImage: createEmptyImage(), editedImage: createEmptyImage() };
       byId("dt-product-file").value = "";
     }
     renderEditor();
-    scheduleAutosave();
+    persistProject(false);
+  }
+
+  /* ── editor de imagem ─────────────────────────────────────────────────── */
+
+  function pedirConfirmacao(mensagem) {
+    return new Promise((resolve) => {
+      openConfirmation({
+        title: "Descartar alterações?",
+        description: mensagem,
+        confirmLabel: "Descartar",
+        onConfirm: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+  }
+
+  async function abrirEditorDeImagem() {
+    if (!editorImagem || !imageModel) {
+      showToast("danger", "Editor indisponível", "A biblioteca de edição não foi carregada. Recarregue a página.");
+      return;
+    }
+    const original = project.product.originalImage;
+    if (!original.dataUrl) {
+      showToast("warning", "Nenhuma imagem", "Envie a imagem do produto antes de abrir o editor.");
+      return;
+    }
+
+    const resultado = await editorImagem.abrir({
+      dataUrl: original.dataUrl,
+      fileName: original.fileName,
+      width: original.width,
+      height: original.height,
+      editing: project.product.editing,
+      capacidadesIa: capacidadesIa,
+    });
+
+    // Cancelar devolve null: o projeto não é tocado em nenhum ponto.
+    if (!resultado) return;
+
+    const antes = project.product.editedImage.id;
+    project.product = {
+      ...project.product,
+      ...imageModel.applyEditingToProduct(project.product, resultado.editing, resultado.rendered),
+    };
+    if (antes && antes !== project.product.editedImage.id) idsPersistidos.delete(antes);
+
+    renderEditor();
+    persistProject(false);
+    showToast("success", "Edição aplicada", "As 7 peças já estão usando a imagem editada.");
+  }
+
+  function restaurarImagemOriginal() {
+    if (!imageModel) return;
+    const antes = project.product.editedImage.id;
+    project.product = { ...project.product, ...imageModel.restoreOriginalImage(project.product) };
+    if (antes) idsPersistidos.delete(antes);
+    renderEditor();
+    persistProject(false);
+  }
+
+  async function carregarCapacidadesIa() {
+    if (!imageApi) return;
+    const estado = await imageApi.capacidadesIa();
+    capacidadesIa = estado.capacidades;
   }
 
   async function loadClients() {
@@ -860,8 +1252,15 @@
       cliente: { id: project.clienteId, nome: project.clienteNome },
       marcaNome: project.marcaNome,
       palette: { ...project.palette },
-      logoDataUrl: project.logoDataUrl,
-      product: { ...project.product },
+      logo: { ...project.logo },
+      product: {
+        name: project.product.name,
+        subtitle: project.product.subtitle,
+        originalImage: { ...project.product.originalImage },
+        editedImage: { ...project.product.editedImage },
+        editing: { ...project.product.editing },
+        placement: { ...project.product.placement },
+      },
       content: { ...project.content },
       selectedPage: project.selectedPage,
     };
@@ -912,6 +1311,7 @@
     const overlay = byId("dt-confirm-overlay");
     focusBeforeModal = document.activeElement;
     confirmAction = options.onConfirm;
+    cancelAction = options.onCancel;
     byId("dt-confirm-title").textContent = options.title;
     byId("dt-confirm-description").textContent = options.description;
     byId("dt-confirm-accept").textContent = options.confirmLabel || "Confirmar";
@@ -922,13 +1322,21 @@
     byId("dt-confirm-cancel").focus();
   }
 
-  function closeConfirmation() {
+  // `executarCancelamento` diferencia "usuário desistiu" de "usuário confirmou":
+  // o editor de imagem precisa dessa resposta para decidir se fecha ou não.
+  function closeConfirmation(executarCancelamento) {
     const overlay = byId("dt-confirm-overlay");
+    const cancelar = cancelAction;
     overlay.classList.remove("is-open");
     overlay.setAttribute("aria-hidden", "true");
-    document.body.classList.remove("vf-no-scroll");
+    // O editor de imagem também usa a classe; só libera o scroll se ele fechou.
+    if (!byId("die-overlay")?.classList.contains("is-open")) {
+      document.body.classList.remove("vf-no-scroll");
+    }
     confirmAction = null;
+    cancelAction = null;
     if (focusBeforeModal && typeof focusBeforeModal.focus === "function") focusBeforeModal.focus();
+    if (executarCancelamento !== false && typeof cancelar === "function") cancelar();
   }
 
   function resetProject(view) {
@@ -959,16 +1367,12 @@
     ["dt-search", "dt-segment-filter", "dt-marketplace-filter"].forEach((id) => byId(id).addEventListener("input", renderLibrary));
     Object.keys(CONTROL_BINDINGS).forEach((id) => byId(id).addEventListener("input", onBoundControlInput));
     byId("dt-client-select").addEventListener("change", onClientChange);
-    byId("dt-logo-file").addEventListener("change", (event) => readLocalImage(event.target.files?.[0], (dataUrl, name) => {
-      project.logoDataUrl = dataUrl;
-      project.logoFileName = name;
-    }));
-    byId("dt-product-file").addEventListener("change", (event) => readLocalImage(event.target.files?.[0], (dataUrl, name) => {
-      project.product.imageDataUrl = dataUrl;
-      project.product.fileName = name;
-    }));
+    byId("dt-logo-file").addEventListener("change", (event) => onLogoFileSelected(event.target.files?.[0]));
+    byId("dt-product-file").addEventListener("change", (event) => onProductFileSelected(event.target.files?.[0]));
     byId("dt-remove-logo").addEventListener("click", () => removeImage("logo"));
     byId("dt-remove-product").addEventListener("click", () => removeImage("product"));
+    byId("dt-edit-product").addEventListener("click", abrirEditorDeImagem);
+    byId("dt-restore-product").addEventListener("click", restaurarImagemOriginal);
     byId("dt-save").addEventListener("click", () => persistProject(true));
     byId("dt-export-config").addEventListener("click", exportConfiguration);
     byId("dt-download-page").addEventListener("click", exportCurrentPage);
@@ -1002,17 +1406,17 @@
       renderPreviews();
       scheduleAutosave();
     });
-    byId("dt-confirm-cancel").addEventListener("click", closeConfirmation);
+    byId("dt-confirm-cancel").addEventListener("click", () => closeConfirmation(true));
     byId("dt-confirm-accept").addEventListener("click", () => {
       const action = confirmAction;
-      closeConfirmation();
+      closeConfirmation(false);
       if (typeof action === "function") action();
     });
     byId("dt-confirm-overlay").addEventListener("click", (event) => {
-      if (event.target === byId("dt-confirm-overlay")) closeConfirmation();
+      if (event.target === byId("dt-confirm-overlay")) closeConfirmation(true);
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && byId("dt-confirm-overlay").classList.contains("is-open")) closeConfirmation();
+      if (event.key === "Escape" && byId("dt-confirm-overlay").classList.contains("is-open")) closeConfirmation(true);
     });
     window.addEventListener("beforeunload", () => {
       if (autosaveTimer) persistProject(false);
@@ -1020,8 +1424,30 @@
     bindTabs();
   }
 
+  // Projetos salvos antes do editor (V1) guardavam base64 no localStorage.
+  // Depois da migração o projeto é regravado no formato novo e o base64 vai
+  // para o IndexedDB — a partir daí o localStorage só carrega metadados.
+  function finalizarMigracao() {
+    if (!migracaoAplicada) return;
+    persistProject(false);
+    if (migracaoAplicada.logoDescartado) {
+      showToast(
+        "warning",
+        "Logo em SVG removido",
+        "Por segurança o estúdio deixou de aceitar SVG. Envie o logo em PNG, JPG ou WebP."
+      );
+    }
+    migracaoAplicada = null;
+  }
+
   function init() {
     if (typeof window.initLayout === "function") window.initLayout();
+    if (imageEditorLib) {
+      editorImagem = imageEditorLib.createDesignImageEditor({
+        showToast,
+        confirmar: pedirConfirmacao,
+      });
+    }
     populateLibraryFilters();
     bindEvents();
     renderLibrary();
@@ -1029,6 +1455,12 @@
     showView(project.view, { skipSave: true });
     setSaveStatus("Alterações salvas localmente", "saved");
     loadClients();
+
+    // Nada abaixo bloqueia a primeira pintura da tela.
+    hydrateImagesFromStorage()
+      .then(finalizarMigracao)
+      .catch(() => finalizarMigracao());
+    carregarCapacidadesIa();
   }
 
   init();

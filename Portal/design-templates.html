@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/design-templates-v2.css">
+  <link rel="stylesheet" href="css/pages/design-image-editor-v2.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
 <body class="vf-page vf-page-dashboard vf-page-design-templates">
@@ -132,8 +133,8 @@
                       <h3>Logo</h3>
                       <label class="dt-file-drop" for="dt-logo-file">
                         <span class="dt-file-drop__title">Selecionar imagem do logo</span>
-                        <span class="dt-file-drop__hint">PNG, JPG, WebP ou SVG · até 2 MB</span>
-                        <input id="dt-logo-file" type="file" accept="image/*">
+                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
+                        <input id="dt-logo-file" type="file" accept="image/png,image/jpeg,image/webp">
                       </label>
                       <div class="dt-upload-state" id="dt-logo-state" hidden>
                         <img id="dt-logo-preview" alt="Prévia do logo selecionado">
@@ -154,13 +155,23 @@
                       <h3>Imagem principal</h3>
                       <label class="dt-file-drop" for="dt-product-file">
                         <span class="dt-file-drop__title">Selecionar imagem do produto</span>
-                        <span class="dt-file-drop__hint">PNG, JPG, WebP ou SVG · até 2 MB</span>
-                        <input id="dt-product-file" type="file" accept="image/*">
+                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
+                        <input id="dt-product-file" type="file" accept="image/png,image/jpeg,image/webp">
                       </label>
                       <div class="dt-upload-state" id="dt-product-state" hidden>
                         <img id="dt-product-preview" alt="Prévia do produto selecionado">
                         <span id="dt-product-filename"></span>
-                        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dt-remove-product">Remover imagem</button>
+                        <div class="dt-upload-actions">
+                          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dt-edit-product">Editar imagem</button>
+                          <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dt-remove-product">Remover imagem</button>
+                        </div>
+                      </div>
+                      <div class="dt-upload-note" id="dt-product-edit-note" hidden>
+                        <span>Edição aplicada · o arquivo original continua guardado.</span>
+                        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dt-restore-product">Restaurar original</button>
+                      </div>
+                      <div class="vf-banner vf-banner--compact is-warning" id="dt-product-lowres" role="status" hidden>
+                        <div class="vf-banner__content"><p class="vf-banner__description">Resolução baixa para uma arte de 1200 × 1200 px. O resultado pode sair sem nitidez.</p></div>
                       </div>
                     </div>
 
@@ -241,9 +252,141 @@
     </div>
   </div>
 
+  <div class="vf-overlay die-overlay" id="die-overlay" aria-hidden="true">
+    <div class="vf-modal die-modal" id="die-modal" role="dialog" aria-modal="true" aria-labelledby="die-title" aria-describedby="die-file-name">
+      <header class="vf-modal__header die-header">
+        <div class="die-header__info">
+          <h2 class="vf-modal__title" id="die-title">Editar imagem do produto</h2>
+          <p class="die-header__file"><span id="die-file-name">Imagem do produto</span> · <span class="vf-mono" id="die-file-meta">—</span></p>
+        </div>
+        <div class="die-header__actions">
+          <span class="die-dirty" id="die-dirty" role="status" hidden>Alterações não aplicadas</span>
+          <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon" id="die-close" aria-label="Fechar editor de imagem">×</button>
+        </div>
+      </header>
+
+      <div class="die-body">
+        <div class="die-stage-column">
+          <div class="die-toolbar" role="toolbar" aria-label="Ferramentas da imagem">
+            <div class="die-toolbar__group" role="group" aria-label="Girar e espelhar">
+              <button type="button" class="die-tool" id="die-rotate-left" title="Girar 90° à esquerda (tecla [)" aria-label="Girar 90 graus à esquerda">⟲ 90°</button>
+              <button type="button" class="die-tool" id="die-rotate-right" title="Girar 90° à direita (tecla ])" aria-label="Girar 90 graus à direita">⟳ 90°</button>
+              <button type="button" class="die-tool" id="die-flip-x" aria-pressed="false" title="Espelhar horizontalmente">⇄ Horizontal</button>
+              <button type="button" class="die-tool" id="die-flip-y" aria-pressed="false" title="Espelhar verticalmente">⇅ Vertical</button>
+            </div>
+            <div class="die-toolbar__group" role="group" aria-label="Enquadrar">
+              <button type="button" class="die-tool" id="die-center" title="Centralizar na área">Centralizar</button>
+              <button type="button" class="die-tool" id="die-fit" title="Ajustar à área (tecla 0)">Ajustar</button>
+              <button type="button" class="die-tool" id="die-crop" aria-pressed="false" title="Recortar a imagem">Recortar</button>
+            </div>
+            <div class="die-toolbar__group die-toolbar__group--end" role="group" aria-label="Histórico">
+              <button type="button" class="die-tool" id="die-undo" title="Desfazer (Ctrl+Z)" disabled>Desfazer</button>
+              <button type="button" class="die-tool" id="die-redo" title="Refazer (Ctrl+Shift+Z)" disabled>Refazer</button>
+              <button type="button" class="die-tool" id="die-compare" aria-pressed="false" title="Comparar com a original (tecla C)">Comparar</button>
+            </div>
+          </div>
+
+          <div class="die-crop-actions" id="die-crop-actions" hidden>
+            <span class="die-crop-actions__hint">Arraste as alças para escolher a área. A rotação volta depois de aplicar.</span>
+            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="die-crop-square">Quadrado 1:1</button>
+            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="die-crop-clear">Limpar recorte</button>
+            <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="die-crop-cancel">Cancelar recorte</button>
+            <button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="die-crop-confirm">Aplicar recorte</button>
+          </div>
+
+          <div class="die-stage" id="die-stage">
+            <canvas id="die-canvas" aria-label="Área de edição da imagem do produto"></canvas>
+            <div class="die-stage__loading" id="die-loading" hidden>
+              <span class="vf-spinner" aria-hidden="true"></span>
+              <p role="status">Preparando a imagem…</p>
+            </div>
+          </div>
+
+          <div class="die-stage-footer">
+            <p class="die-stage-footer__hint">Arraste a imagem no palco. As alças redimensionam e giram. Setas movem, Shift move mais rápido.</p>
+            <p class="die-compare-hint" id="die-compare-hint" role="status" hidden>Mostrando a imagem original. Os ajustes continuam guardados.</p>
+          </div>
+        </div>
+
+        <aside class="die-panel" id="die-panel" aria-label="Ajustes da imagem">
+          <div class="vf-banner vf-banner--compact is-warning die-lowres" id="die-low-res" role="status" hidden>
+            <div class="vf-banner__content"><p class="vf-banner__description">Resolução baixa para 1200 × 1200 px. Ampliar demais vai deixar a arte macia.</p></div>
+          </div>
+
+          <section class="die-group">
+            <h3 class="die-group__title">Transformação</h3>
+            <label class="dt-range-field" for="die-rotation"><span>Rotação livre</span><output id="die-rotation-value">0°</output><input id="die-rotation" type="range" min="0" max="360" step="1"></label>
+            <label class="dt-range-field" for="die-scale"><span>Tamanho</span><output id="die-scale-value">100%</output><input id="die-scale" type="range" min="10" max="400" step="1"></label>
+          </section>
+
+          <section class="die-group">
+            <h3 class="die-group__title">Cor</h3>
+            <label class="dt-range-field" for="die-brightness"><span>Brilho</span><output id="die-brightness-value">0</output><input id="die-brightness" type="range" min="-100" max="100" step="1"></label>
+            <label class="dt-range-field" for="die-contrast"><span>Contraste</span><output id="die-contrast-value">0</output><input id="die-contrast" type="range" min="-100" max="100" step="1"></label>
+            <label class="dt-range-field" for="die-saturation"><span>Saturação</span><output id="die-saturation-value">0</output><input id="die-saturation" type="range" min="-100" max="100" step="1"></label>
+            <label class="dt-range-field" for="die-sharpen"><span>Nitidez</span><output id="die-sharpen-value">0</output><input id="die-sharpen" type="range" min="0" max="100" step="1"></label>
+          </section>
+
+          <section class="die-group">
+            <h3 class="die-group__title">Fundo</h3>
+            <div class="vf-segmented die-bg-toggle" role="group" aria-label="Tipo de fundo">
+              <button type="button" class="vf-segmented__item is-active" id="die-bg-transparent" aria-pressed="true">Transparente</button>
+              <button type="button" class="vf-segmented__item" id="die-bg-color" aria-pressed="false">Cor sólida</button>
+            </div>
+            <label class="vf-field die-bg-field" for="die-bg-color-input">
+              <span class="vf-field__label">Cor de fundo</span>
+              <input class="dt-color-input" id="die-bg-color-input" type="color" value="#ffffff" disabled>
+            </label>
+          </section>
+
+          <section class="die-group">
+            <h3 class="die-group__title">Sombra</h3>
+            <label class="die-switch-row" for="die-shadow-enabled">
+              <span>Sombra sob o produto</span>
+              <span class="vf-switch"><input type="checkbox" id="die-shadow-enabled"></span>
+            </label>
+            <label class="dt-range-field" for="die-shadow-blur"><span>Desfoque</span><output id="die-shadow-blur-value">0</output><input id="die-shadow-blur" type="range" min="0" max="100" step="1" disabled></label>
+            <label class="dt-range-field" for="die-shadow-x"><span>Deslocamento X</span><output id="die-shadow-x-value">0</output><input id="die-shadow-x" type="range" min="-100" max="100" step="1" disabled></label>
+            <label class="dt-range-field" for="die-shadow-y"><span>Deslocamento Y</span><output id="die-shadow-y-value">0</output><input id="die-shadow-y" type="range" min="-100" max="100" step="1" disabled></label>
+            <label class="dt-range-field" for="die-shadow-opacity"><span>Opacidade</span><output id="die-shadow-opacity-value">0</output><input id="die-shadow-opacity" type="range" min="0" max="100" step="1" disabled></label>
+          </section>
+
+          <section class="die-group" id="die-ai-section" hidden>
+            <h3 class="die-group__title">Inteligência artificial</h3>
+            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm vf-btn--full" id="die-ai-remove-bg" disabled>Remover fundo com IA</button>
+            <p class="die-group__hint">Disponível apenas quando um provedor de IA está configurado no servidor.</p>
+          </section>
+
+          <section class="die-group die-group--restore">
+            <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm vf-btn--full" id="die-restore">Restaurar imagem original</button>
+          </section>
+        </aside>
+      </div>
+
+      <footer class="vf-modal__footer">
+        <button type="button" class="vf-btn vf-btn--secondary" id="die-cancel">Cancelar</button>
+        <button type="button" class="vf-btn vf-btn--primary" id="die-apply">Aplicar edição</button>
+      </footer>
+    </div>
+  </div>
+
   <div class="vf-toast-stack" id="dt-toast-stack" aria-live="polite" aria-atomic="true"></div>
 
   <script src="layout.js"></script>
+  <!--
+    Fabric.js — versão fixada e verificada por SRI (nada de "latest").
+    Build UMD oficial do pacote npm fabric@6.9.1 (dist/index.min.js), servido
+    pelo jsDelivr, byte a byte idêntico ao tarball do registry.
+  -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/fabric@6.9.1/dist/index.min.js"
+    integrity="sha384-tJL5KnyuJRcbkoB4qkFwtd3KVVHDCE4PZOeY/QcwVENg7IVB65tqBKSs0UHUZ+k6"
+    crossorigin="anonymous"
+    referrerpolicy="no-referrer"></script>
+  <script src="design-image-model.js"></script>
+  <script src="design-image-storage.js"></script>
+  <script src="design-image-api.js"></script>
+  <script src="design-image-editor.js"></script>
   <script src="design-templates.js"></script>
 </body>
 </html>

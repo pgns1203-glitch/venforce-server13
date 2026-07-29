@@ -3,6 +3,7 @@
 
 const repo = require("./diagnosticoInicialRepository");
 const gerador = require("./diagnosticoInicialGeradorService");
+const report = require("./diagnosticoInicialReportService");
 
 const MARKETPLACES = ["meli", "shopee"];
 const TRISTATE_VALUES = new Set(["sim", "nao", "nao_avaliado", ""]);
@@ -106,25 +107,26 @@ async function obterOuCriarRascunho({ clienteId, marketplace, responsavelUserId,
   if (!cliente) throw erro(404, "Cliente não encontrado.");
 
   const existente = await repo.findRascunho({ clienteId: clienteIdNum, marketplace: mkt });
-  if (existente) return existente;
+  if (existente) return enriquecerDiagnostico(existente);
 
   if (dataDiagnostico) validarData(dataDiagnostico);
 
   try {
-    return await repo.createDiagnostico({
+    const criado = await repo.createDiagnostico({
       clienteId: clienteIdNum,
       marketplace: mkt,
       responsavelUserId: responsavelUserId || null,
       dataDiagnostico: dataDiagnostico || null,
       respostasJson: {},
     });
+    return enriquecerDiagnostico(criado);
   } catch (err) {
     // Corrida entre requisições concorrentes (ex.: duplo clique): o índice
     // único parcial rejeita o segundo INSERT — nesse caso, devolve o
     // rascunho que já foi criado em vez de propagar erro 500.
     if (err && err.code === "23505") {
       const rascunho = await repo.findRascunho({ clienteId: clienteIdNum, marketplace: mkt });
-      if (rascunho) return rascunho;
+      if (rascunho) return enriquecerDiagnostico(rascunho);
     }
     throw err;
   }
@@ -138,13 +140,37 @@ async function listar({ clienteId, marketplace }) {
     filtro.clienteId = id;
   }
   if (marketplace) filtro.marketplace = normalizeMarketplace(marketplace);
-  return repo.listDiagnosticos(filtro);
+  const diagnosticos = await repo.listDiagnosticos(filtro);
+  return diagnosticos.map(enriquecerDiagnostico);
 }
 
 async function obterPorId(id) {
   const diagnostico = await repo.getDiagnosticoById(id);
   if (!diagnostico) throw erro(404, "Diagnóstico não encontrado.");
-  return diagnostico;
+  return enriquecerDiagnostico(diagnostico);
+}
+
+function enriquecerDiagnostico(diagnostico) {
+  if (!diagnostico) return diagnostico;
+  const detalhes = gerador.calcularCompletudeDetalhada(
+    diagnostico.marketplace,
+    diagnostico.respostas_json || {}
+  );
+  const enriched = {
+    ...diagnostico,
+    completude: detalhes.percentual,
+    completude_detalhes: detalhes,
+  };
+  if (
+    diagnostico.status === "concluido" &&
+    (!diagnostico.relatorio_snapshot_json || typeof diagnostico.relatorio_snapshot_json !== "object")
+  ) {
+    enriched.relatorio_snapshot_json = report.buildSnapshot(enriched, {
+      generatedAt: diagnostico.completed_at || diagnostico.updated_at || diagnostico.created_at,
+    });
+    enriched.relatorio_snapshot_fallback = true;
+  }
+  return enriched;
 }
 
 async function atualizarRespostas(id, { respostasJson, dataDiagnostico, diagnosticoRevisadoJson }) {
@@ -159,7 +185,7 @@ async function atualizarRespostas(id, { respostasJson, dataDiagnostico, diagnost
     if (!isPlainObject(respostasJson)) throw erro(400, "respostas_json deve ser um objeto.");
     validarRespostas(diagnostico.marketplace, respostasJson);
     fields.respostas_json = respostasJson;
-    fields.completude = gerador.calcularCompletude(diagnostico.marketplace, respostasJson);
+    fields.completude = gerador.calcularCompletudeDetalhada(diagnostico.marketplace, respostasJson).percentual;
   }
 
   if (dataDiagnostico !== undefined) {
@@ -174,7 +200,8 @@ async function atualizarRespostas(id, { respostasJson, dataDiagnostico, diagnost
 
   if (!Object.keys(fields).length) throw erro(400, "Nenhum campo para atualizar.");
 
-  return repo.updateDiagnostico(id, fields);
+  const atualizado = await repo.updateDiagnostico(id, fields);
+  return enriquecerDiagnostico(atualizado);
 }
 
 async function gerar(id, { geradoPor } = {}) {
@@ -195,7 +222,8 @@ async function gerar(id, { geradoPor } = {}) {
     fields.diagnostico_revisado_json = geradoJson;
   }
 
-  return repo.updateDiagnostico(id, fields);
+  const atualizado = await repo.updateDiagnostico(id, fields);
+  return enriquecerDiagnostico(atualizado);
 }
 
 async function concluir(id) {
@@ -206,10 +234,42 @@ async function concluir(id) {
   if (!diagnostico.data_diagnostico) throw erro(400, "Data do diagnóstico é obrigatória.");
   if (!diagnostico.diagnostico_gerado_json) throw erro(400, "Gere o diagnóstico antes de concluir.");
 
-  const revisado = diagnostico.diagnostico_revisado_json || diagnostico.diagnostico_gerado_json;
-  const completude = typeof revisado.completude === "number" ? revisado.completude : diagnostico.completude;
+  // A completude é sempre recalculada das respostas atuais. Nunca aceitamos a
+  // cópia histórica existente no JSON gerado/revisado, que era a causa da
+  // queda de 100% para o valor da primeira geração ao concluir.
+  const detalhes = gerador.calcularCompletudeDetalhada(
+    diagnostico.marketplace,
+    diagnostico.respostas_json || {}
+  );
+  const revisadoBase = diagnostico.diagnostico_revisado_json || diagnostico.diagnostico_gerado_json;
+  const revisado = {
+    ...revisadoBase,
+    completude: detalhes.percentual,
+    completudeDetalhes: detalhes,
+    informacoesAusentes: detalhes.camposPendentes.map((item) => ({
+      secaoId: item.sectionId,
+      secao: item.sectionTitle,
+      label: item.label,
+      mensagem: "Não avaliado ou não informado",
+    })),
+  };
+  const completedAt = new Date().toISOString();
+  const snapshot = report.buildSnapshot({
+    ...diagnostico,
+    status: "concluido",
+    completed_at: completedAt,
+    completude: detalhes.percentual,
+    diagnostico_revisado_json: revisado,
+  }, { generatedAt: completedAt });
 
-  return repo.concluirDiagnostico(id, { diagnosticoRevisadoJson: revisado, completude });
+  const concluido = await repo.concluirDiagnostico(id, {
+    diagnosticoRevisadoJson: revisado,
+    relatorioSnapshotJson: snapshot,
+    completude: detalhes.percentual,
+    completedAt,
+  });
+  if (!concluido) throw erro(409, "Diagnóstico já foi concluído por outra operação.");
+  return enriquecerDiagnostico(concluido);
 }
 
 module.exports = {
@@ -219,4 +279,6 @@ module.exports = {
   atualizarRespostas,
   gerar,
   concluir,
+  enriquecerDiagnostico,
+  validarRespostas,
 };

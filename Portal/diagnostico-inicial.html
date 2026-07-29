@@ -34,7 +34,7 @@
               <button type="button" id="diag-btn-salvar" class="vf-btn vf-btn--secondary">Salvar rascunho</button>
               <button type="button" id="diag-btn-gerar" class="vf-btn vf-btn--secondary">Gerar diagnóstico</button>
               <button type="button" id="diag-btn-concluir" class="vf-btn vf-btn--primary">Concluir diagnóstico</button>
-              <button type="button" id="diag-btn-imprimir" class="vf-btn vf-btn--ghost" disabled>Imprimir</button>
+              <button type="button" id="diag-btn-imprimir" class="vf-btn vf-btn--ghost" disabled>Visualizar relatório / Baixar PDF</button>
             </div>
           </header>
 
@@ -96,6 +96,15 @@
             <button type="button" class="vf-segmented__item" data-marketplace="shopee" role="tab" aria-selected="false">Shopee</button>
           </div>
 
+          <!-- Registros do cliente no marketplace ativo -->
+          <section class="vf-diag-records" id="diag-records" hidden aria-label="Diagnósticos do cliente">
+            <label class="vf-field vf-diag-records__select">
+              <span class="vf-field__label">Diagnóstico aberto</span>
+              <select id="diag-record-select" class="vf-select"></select>
+            </label>
+            <button type="button" id="diag-btn-novo" class="vf-btn vf-btn--secondary">Iniciar novo diagnóstico</button>
+          </section>
+
           <!-- 5. ESTADO VAZIO (sem cliente selecionado) -->
           <div class="vf-empty" id="diag-empty-state">
             <div class="vf-empty__icon" aria-hidden="true">◔</div>
@@ -138,6 +147,8 @@
   <div class="vf-diag-print" id="diag-print-block"></div>
 
   <script src="layout.js"></script>
+  <script src="diagnostico-inicial-schema.js"></script>
+  <script src="diagnostico-inicial-report.js"></script>
   <script src="diagnostico-inicial.js"></script>
 </body>
 </html>

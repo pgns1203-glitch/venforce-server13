@@ -10,6 +10,16 @@ const {
   normalizeIdNoPrefix,
   findField,
 } = require("../../utils/textUtils");
+const {
+  allocateByRevenue,
+  buildCoverage,
+  classifyMeliSaleStatus,
+  computeTacos,
+  computeTacox,
+  isMeliStatusOutOfProfit,
+  legacyRatio,
+  safeRatio,
+} = require("../../utils/fechamento/financeiroShared");
 
 function parseMeliRows(rows) {
   return rows.map((row, index) => {
@@ -212,6 +222,9 @@ function buildMeliCostMap(rows) {
 
 
 
+// LEGADO: rateio por quantidade. Mantido apenas por compatibilidade de import
+// (server/index.js). O fechamento usa allocateByRevenue — rateio por valor
+// vendido, ver utils/fechamento/financeiroShared.js.
 function allocateByUnits(totalValue, componentRows) {
   const totalUnits = componentRows.reduce((acc, row) => acc + row.units, 0);
 
@@ -243,6 +256,12 @@ function allocateByUnits(totalValue, componentRows) {
 function buildMeliBaseSheetRows(finalRows) {
   const aoa = [];
 
+  // Célula vazia quando o número é desconhecido — nunca 0 falso.
+  const cell = (value) =>
+    value === null || value === undefined ? "" : value;
+  const percentCell = (value) =>
+    value === null || value === undefined ? "" : value / 100;
+
   aoa.push([
     "# de anúncio",
     "Título do anúncio",
@@ -256,6 +275,7 @@ function buildMeliBaseSheetRows(finalRows) {
     "Ajuste plataforma (BRL)",
     "LC",
     "MC",
+    "Cobertura de custo",
   ]);
 
   for (const row of finalRows) {
@@ -266,12 +286,13 @@ function buildMeliBaseSheetRows(finalRows) {
       row["Preço unitário de venda do anúncio (BRL)"],
       row["Venda Total"],
       row["Total (BRL)"],
-      row["Imposto"] / 100,
-      row["Preço de custo"],
-      row["Preço de custo total"],
+      percentCell(row["Imposto"]),
+      cell(row["Preço de custo"]),
+      cell(row["Preço de custo total"]),
       row["Ajuste plataforma (BRL)"],
-      row.LC,
-      row.MC / 100,
+      cell(row.LC),
+      percentCell(row.MC),
+      row["Cobertura de custo"] || "com custo",
     ]);
   }
 
@@ -312,9 +333,10 @@ function buildMeliBaseSheetRows(finalRows) {
     { wch: 18 },
     { wch: 14 },
     { wch: 10 },
+    { wch: 18 },
   ];
 
-  sheet["!autofilter"] = { ref: "A1:L1" };
+  sheet["!autofilter"] = { ref: "A1:M1" };
 
   return sheet;
 }
@@ -336,6 +358,7 @@ function processMeli(
   const finalRows = [];
   const unmatchedIds = new Set();
   const consumedIndexes = new Set();
+  const excludedStatusRows = [];
   let ignoredRevenue = 0;
 
   const refundsTotal = round2(
@@ -382,21 +405,59 @@ function processMeli(
     );
   }
 
+  // Item cancelado/devolvido/reembolsado/em mediação: sai do LC, mas NÃO
+  // desaparece — vira linha de auditoria com o valor que lhe cabia no pedido.
+  function registerExcludedRow(item, statusKind, totalRateado) {
+    const id = normalizeId(item.adId || item.adIdRaw);
+    const units = round2(item.units);
+    const price = round2(item.unitSalePrice);
+    const vendaTotal =
+      price > 0 ? round2(units * price) : round2(Math.abs(toNumber(totalRateado)));
+
+    excludedStatusRows.push({
+      "# de anúncio": id || item.adIdRaw || "SEM_ID",
+      "Título do anúncio": item.title,
+      Unidades: units,
+      "Venda Total": vendaTotal,
+      "Total rateado (BRL)": round2(toNumber(totalRateado)),
+      "Status da venda": statusKind,
+      Motivo: "Fora do LC por status da venda",
+    });
+  }
+
   function pushCalculatedRow(item, totalRateado, ajustePlataforma = 0) {
     const id = normalizeId(item.adId || item.adIdRaw);
     let cost = item.modelIdRaw ? getCostForAd(item.modelIdRaw) : null;
     if (!cost) cost = getCostForAd(id);
 
-    if (!cost || cost.cost <= 0) {
-      unmatchedIds.add(id || item.adIdRaw || "SEM_ID");
-      ignoredRevenue += round2(totalRateado);
-      return;
-    }
-
     const units = round2(item.units);
     const price = round2(item.unitSalePrice);
     const vendaTotal =
       price > 0 ? round2(units * price) : round2(Math.abs(totalRateado));
+
+    // Custo ausente NÃO apaga faturamento: a linha entra no fechamento com
+    // receita preservada e lucro desconhecido (null, nunca 0).
+    if (!cost || cost.cost <= 0) {
+      unmatchedIds.add(id || item.adIdRaw || "SEM_ID");
+      ignoredRevenue += round2(totalRateado);
+
+      finalRows.push({
+        "# de anúncio": id || item.adIdRaw || "SEM_ID",
+        "Título do anúncio": item.title,
+        Unidades: units,
+        "Preço unitário de venda do anúncio (BRL)": price,
+        "Venda Total": vendaTotal,
+        "Total (BRL)": round2(totalRateado),
+        Imposto: null,
+        "Preço de custo": null,
+        "Preço de custo total": null,
+        "Ajuste plataforma (BRL)": round2(ajustePlataforma),
+        LC: null,
+        MC: null,
+        "Cobertura de custo": "sem custo",
+      });
+      return;
+    }
 
     const impostoPercent = round2(cost.taxPercent || 0);
     const impostoDec = impostoPercent > 1 ? impostoPercent / 100 : impostoPercent;
@@ -441,10 +502,9 @@ function processMeli(
       "Ajuste plataforma (BRL)": round2(ajustePlataforma),
       LC: lc,
       MC: mc,
+      "Cobertura de custo": "com custo",
     });
   }
-
-  const EXCLUIR_ESTADOS = /cancelad|devolu|reembolso|mediacao|mediação|reemb/i;
 
   for (let i = 0; i < salesRows.length; i++) {
     if (consumedIndexes.has(i)) continue;
@@ -452,10 +512,11 @@ function processMeli(
     const current = salesRows[i];
 
     // Exclui do cálculo de LC/MC mas não dos totais de reembolso
-    const estadoAtual = String(
-      findField(salesRowsRaw[i] || {}, ["estado", "descrição do status", "descricao do status"]) ?? ""
-    ).trim();
-    if (EXCLUIR_ESTADOS.test(estadoAtual) && !isMainRow(current)) continue;
+    const statusAtual = classifyMeliSaleStatus(salesRowsRaw[i] || {});
+    if (isMeliStatusOutOfProfit(statusAtual) && !isMainRow(current)) {
+      registerExcludedRow(current, statusAtual, current.total);
+      continue;
+    }
 
     if (isMainRow(current)) {
       const children = [];
@@ -475,12 +536,24 @@ function processMeli(
       }
 
       if (children.length > 0) {
-        const totalRateado = allocateByUnits(current.total, children);
+        // Rateio proporcional ao valor vendido (não por quantidade) sobre
+        // TODOS os filhos: o agregado do pedido não muda, só a distribuição.
+        const totalRateado = allocateByRevenue(current.total, children);
         const ajusteParent = computePlatformAdjustment(current);
-        const ajustesRateados = allocateByUnits(ajusteParent, children);
+        const ajustesRateados = allocateByRevenue(ajusteParent, children);
 
         for (let k = 0; k < children.length; k++) {
-          pushCalculatedRow(children[k], totalRateado[k], ajustesRateados[k]);
+          // Cada filho é classificado ANTES de ser marcado como consumido.
+          const childStatus = classifyMeliSaleStatus(
+            salesRowsRaw[childrenIndexes[k]] || {}
+          );
+
+          if (isMeliStatusOutOfProfit(childStatus)) {
+            registerExcludedRow(children[k], childStatus, totalRateado[k]);
+          } else {
+            pushCalculatedRow(children[k], totalRateado[k], ajustesRateados[k]);
+          }
+
           consumedIndexes.add(childrenIndexes[k]);
         }
 
@@ -498,6 +571,12 @@ function processMeli(
     }
   }
 
+  // Soma que preserva "desconhecido": null + null = null; null + número = número.
+  const sumNullable = (a, b) => {
+    if (a === null && b === null) return null;
+    return round2(Number(a || 0) + Number(b || 0));
+  };
+
   const groupedMap = new Map();
   for (const row of finalRows) {
     const id = row["# de anúncio"];
@@ -508,26 +587,49 @@ function processMeli(
       acc.Unidades              = round2(acc.Unidades + row.Unidades);
       acc["Venda Total"]        = round2(acc["Venda Total"] + row["Venda Total"]);
       acc["Total (BRL)"]        = round2(acc["Total (BRL)"] + row["Total (BRL)"]);
-      acc["Preço de custo total"] = round2(acc["Preço de custo total"] + row["Preço de custo total"]);
+      acc["Preço de custo total"] = sumNullable(acc["Preço de custo total"], row["Preço de custo total"]);
       acc["Ajuste plataforma (BRL)"] = round2(acc["Ajuste plataforma (BRL)"] + row["Ajuste plataforma (BRL)"]);
-      acc.LC                    = round2(acc.LC + row.LC);
+      acc.LC                    = sumNullable(acc.LC, row.LC);
+      if (row["Cobertura de custo"] === "sem custo") {
+        acc["Cobertura de custo"] =
+          acc["Cobertura de custo"] === "com custo" ? "parcial" : "sem custo";
+      } else if (acc["Cobertura de custo"] === "sem custo") {
+        acc["Cobertura de custo"] = "parcial";
+      }
     }
   }
   const aggregatedRows = Array.from(groupedMap.values()).map((row) => ({
     ...row,
-    MC: row["Venda Total"] > 0 ? round2((row.LC / row["Venda Total"]) * 100) : 0,
+    MC:
+      row.LC === null
+        ? null
+        : row["Venda Total"] > 0
+          ? round2((row.LC / row["Venda Total"]) * 100)
+          : 0,
   }));
 
+  const rowsWithCost = finalRows.filter((row) => row.LC !== null);
+  const rowsWithoutCost = finalRows.filter((row) => row.LC === null);
+
+  // Faturamento reconhecido = TODAS as vendas processadas, com ou sem custo.
   const grossRevenueTotal = round2(
     finalRows.reduce((sum, row) => sum + Number(row["Venda Total"] || 0), 0)
+  );
+
+  const revenueWithCost = round2(
+    rowsWithCost.reduce((sum, row) => sum + Number(row["Venda Total"] || 0), 0)
+  );
+  const revenueWithoutCost = round2(
+    rowsWithoutCost.reduce((sum, row) => sum + Number(row["Venda Total"] || 0), 0)
   );
 
   const paidRevenueTotal = round2(
     finalRows.reduce((sum, row) => sum + Number(row["Total (BRL)"] || 0), 0)
   );
 
+  // Lucro calculável: só a parcela com custo identificado.
   const contributionProfitTotal = round2(
-    finalRows.reduce((sum, row) => sum + Number(row["LC"] || 0), 0)
+    rowsWithCost.reduce((sum, row) => sum + Number(row["LC"] || 0), 0)
   );
 
   const platformAdjustmentTotal = round2(
@@ -540,14 +642,39 @@ function processMeli(
     (row) => Math.abs(Number(row["Ajuste plataforma (BRL)"] || 0)) > 0.01
   ).length;
 
-  const averageContributionMargin =
-    grossRevenueTotal > 0 ? contributionProfitTotal / grossRevenueTotal : 0;
+  const coverage = buildCoverage({ revenueWithCost, revenueWithoutCost });
+
+  // MC calculada usa o faturamento COM CUSTO: dividir pelo total mascararia a
+  // margem real da parcela efetivamente calculada.
+  const averageContributionMargin = legacyRatio(
+    contributionProfitTotal,
+    revenueWithCost
+  );
 
   const finalResult =
     contributionProfitTotal - ads - venforce - affiliates - fullCost - additionalCosts;
-  const tacos = grossRevenueTotal > 0 ? ads / grossRevenueTotal : 0;
-  const tacox =
-    grossRevenueTotal > 0 ? (ads + venforce + affiliates) / grossRevenueTotal : 0;
+
+  // TACoS/TACoX sobre o faturamento TOTAL (inclui receita sem custo).
+  const tacos = computeTacos(ads, grossRevenueTotal);
+  const tacox = computeTacox(ads, venforce, affiliates, grossRevenueTotal);
+
+  const excludedStatusRevenue = round2(
+    excludedStatusRows.reduce((sum, row) => sum + Number(row["Venda Total"] || 0), 0)
+  );
+
+  const executiveNotes = [];
+  if (coverage.financialConfidence !== "confiavel") {
+    executiveNotes.push(
+      `Fechamento parcial: ${unmatchedIds.size} anúncio(s) sem custo cadastrado. ` +
+        "O faturamento total está completo; LC, MC e Resultado Final cobrem apenas a receita com custo identificado."
+    );
+  }
+  if (excludedStatusRows.length > 0) {
+    executiveNotes.push(
+      `${excludedStatusRows.length} item(ns) fora do LC por status (cancelado/devolvido/reembolsado/mediação). ` +
+        "Os valores continuam na aba de auditoria."
+    );
+  }
 
   return {
     summary: {
@@ -566,17 +693,32 @@ function processMeli(
       tacox,
       platformAdjustmentTotal,
       platformAdjustmentRowsCount,
+      // ── Separação faturamento × cobertura de custos ──────────────────────
+      calculationMode: "real_meli_vendas",
+      revenueWithCost: coverage.revenueWithCost,
+      revenueWithoutCost: coverage.revenueWithoutCost,
+      calculatedCoveragePercent: coverage.calculatedCoveragePercent,
+      financialConfidence: coverage.financialConfidence,
+      contributionMarginCalculated: safeRatio(contributionProfitTotal, revenueWithCost),
+      finalMarginCalculated: safeRatio(finalResult, revenueWithCost),
+      profitCoversRevenue: coverage.revenueWithCost,
+      excludedStatusRevenue,
+      excludedStatusCount: excludedStatusRows.length,
+      adsTotal: round2(ads),
+      venforceTotal: round2(venforce),
+      affiliatesTotal: round2(affiliates),
+      executiveNotes,
     },
     preparedRows: aggregatedRows,
     detailedRows: aggregatedRows,
-    auditRows: [],
+    auditRows: excludedStatusRows,
     excelFileName: "fechamento-meli.xlsx",
     unmatchedIds: Array.from(unmatchedIds),
     ignoredRowsWithoutCost: unmatchedIds.size,
     ignoredRevenue: round2(ignoredRevenue),
     message:
       unmatchedIds.size > 0
-        ? "Alguns anúncios do MELI não possuem custo cadastrado e foram ignorados."
+        ? "Alguns anúncios do MELI não possuem custo cadastrado. O faturamento foi preservado; LC e MC cobrem apenas a receita com custo."
         : "OK",
   };
 }
@@ -770,17 +912,18 @@ function processMeliForCentralVendas({
     const tarifaEnvioField = findCentralField(sourceRaw, CENTRAL_FIELDS.tarifaEnvio);
     const cancelRefundField = findCentralField(sourceRaw, CENTRAL_FIELDS.cancelRefund);
 
+    // Rateio proporcional ao valor vendido — mesma regra do fechamento legado.
     return {
-      total: allocateByUnits(sourceRow.total, componentRows),
-      ajustePlataforma: allocateByUnits(computePlatformAdjustment(sourceRow), componentRows),
+      total: allocateByRevenue(sourceRow.total, componentRows),
+      ajustePlataforma: allocateByRevenue(computePlatformAdjustment(sourceRow), componentRows),
       tarifaVenda: centralFieldHasValue(tarifaVendaField)
-        ? allocateByUnits(sourceRow.tarifaVenda, componentRows)
+        ? allocateByRevenue(sourceRow.tarifaVenda, componentRows)
         : null,
       tarifaEnvio: centralFieldHasValue(tarifaEnvioField)
-        ? allocateByUnits(sourceRow.tarifaEnvio, componentRows)
+        ? allocateByRevenue(sourceRow.tarifaEnvio, componentRows)
         : null,
       cancelRefund: centralFieldHasValue(cancelRefundField)
-        ? allocateByUnits(sourceRow.cancelRefund, componentRows)
+        ? allocateByRevenue(sourceRow.cancelRefund, componentRows)
         : null,
       hasTarifaVenda: centralFieldHasValue(tarifaVendaField),
       hasTarifaEnvio: centralFieldHasValue(tarifaEnvioField),
@@ -811,6 +954,7 @@ function processMeliForCentralVendas({
       confianca: "confiavel",
       pendencias: [],
       _temResultado: false,
+      _itensRegistrados: 0,
     };
   }
 
@@ -992,6 +1136,7 @@ function processMeliForCentralVendas({
       })
     );
 
+    pedido._itensRegistrados += 1;
     pedido.quantidadeItens = round2(pedido.quantidadeItens + units);
     pedido.faturamento = round2(pedido.faturamento + (vendaTotal || 0));
     if (lucroContribuicao !== null) {
@@ -1007,6 +1152,13 @@ function processMeliForCentralVendas({
   }
 
   function finishPedido(pedido) {
+    // Pedido em que todos os itens saíram por status não vira pedido fantasma.
+    if (pedido._itensRegistrados === 0) {
+      delete pedido._temResultado;
+      delete pedido._itensRegistrados;
+      return;
+    }
+
     if (pedido.confianca === "bloqueado" || !pedido._temResultado) {
       pedido.lucroContribuicao = null;
       pedido.resultado = null;
@@ -1021,21 +1173,29 @@ function processMeliForCentralVendas({
     }
 
     delete pedido._temResultado;
+    delete pedido._itensRegistrados;
     pedidos.push(pedido);
   }
 
-  const EXCLUIR_ESTADOS = /cancelad|devolu|reembolso|mediacao|reemb/i;
+  const itensForaDoLucro = [];
 
   for (let i = 0; i < salesRows.length; i++) {
     if (consumedIndexes.has(i)) continue;
 
     const current = salesRows[i];
     const currentRaw = salesRowsRaw[i] || {};
-    const estadoAtual = String(
-      findField(currentRaw, ["estado", "descricao do status"]) ?? ""
-    ).trim();
+    const statusAtual = classifyMeliSaleStatus(currentRaw);
 
-    if (EXCLUIR_ESTADOS.test(estadoAtual) && !isMainRow(current)) continue;
+    if (isMeliStatusOutOfProfit(statusAtual) && !isMainRow(current)) {
+      itensForaDoLucro.push({
+        mlb: normalizeId(current.adId || current.adIdRaw) || null,
+        titulo: current.title || null,
+        quantidade: round2(current.units),
+        valor: round2(current.total),
+        status: statusAtual,
+      });
+      continue;
+    }
 
     if (isMainRow(current)) {
       const children = [];
@@ -1059,6 +1219,25 @@ function processMeliForCentralVendas({
         const financials = buildSourceFinancials(current, currentRaw, children);
 
         for (let k = 0; k < children.length; k++) {
+          // Filho é classificado ANTES de ser consumido: cancelado/devolvido
+          // não entra no lucro, mas continua registrado.
+          const childStatus = classifyMeliSaleStatus(
+            salesRowsRaw[childrenIndexes[k]] || {}
+          );
+
+          if (isMeliStatusOutOfProfit(childStatus)) {
+            itensForaDoLucro.push({
+              pedidoId: pedido.pedidoId,
+              mlb: normalizeId(children[k].adId || children[k].adIdRaw) || null,
+              titulo: children[k].title || null,
+              quantidade: round2(children[k].units),
+              valor: financials.total[k],
+              status: childStatus,
+            });
+            consumedIndexes.add(childrenIndexes[k]);
+            continue;
+          }
+
           pushCentralItem({
             pedido,
             item: children[k],
@@ -1143,10 +1322,17 @@ function processMeliForCentralVendas({
     );
   }
 
+  // Mesma regra de cobertura/confiança do fechamento legado (ETAPA 5).
+  const cobertura = buildCoverage({
+    revenueWithCost: faturamento,
+    revenueWithoutCost: receitaBloqueada,
+  });
+
   return {
     pedidos,
     itens,
     componentes,
+    itensForaDoLucro,
     resumo: {
       clienteSlug,
       competencia,
@@ -1163,6 +1349,14 @@ function processMeliForCentralVendas({
       receitaConfiavel,
       receitaParcial,
       receitaBloqueada,
+      // Faturamento total = com custo + sem custo. A ausência de custo nunca
+      // apaga faturamento; ela só limita o lucro calculável.
+      faturamentoTotal: cobertura.revenueTotal,
+      faturamentoComCusto: cobertura.revenueWithCost,
+      receitaSemCusto: cobertura.revenueWithoutCost,
+      coberturaCalculadaPercentual: cobertura.calculatedCoveragePercent,
+      confiancaFechamento: cobertura.financialConfidence,
+      itensForaDoLucroCount: itensForaDoLucro.length,
       totaisPorTipo,
     },
   };
@@ -1176,6 +1370,8 @@ module.exports = {
   buildMeliCostMap,
   buildMeliBaseSheetRows,
   allocateByUnits,
+  allocateByRevenue,
+  classifyMeliSaleStatus,
   processMeli,
   processMeliForCentralVendas,
 };

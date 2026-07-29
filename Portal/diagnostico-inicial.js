@@ -17,6 +17,8 @@
   const API_BASE = "https://venforce-server.onrender.com";
   const DIAG_API = "/operacao/diagnosticos-iniciais";
   const LAST_CLIENTE_KEY = "vf-diag-last-cliente";
+  const reportApi = window.VF_DIAGNOSTIC_REPORT;
+  const diagnosticSchema = window.VF_DIAGNOSTIC_SCHEMA;
 
   function getToken() {
     const t = localStorage.getItem(STORAGE_KEY);
@@ -110,12 +112,15 @@
     marketplaceAtivo: "meli",
     secaoAtivaId: null,
     diagnosticos: { meli: null, shopee: null },
+    rascunhos: { meli: null, shopee: null },
     dirty: { meli: false, shopee: false },
+    versions: { meli: 0, shopee: 0 },
     historico: { meli: [], shopee: [] },
     saving: false,
   };
 
   let autosaveTimer = null;
+  const saveInFlight = { meli: null, shopee: null };
 
   function getDiag() { return state.diagnosticos[state.marketplaceAtivo]; }
   function getRespostas() {
@@ -148,6 +153,7 @@
 
   function markDirty() {
     state.dirty[state.marketplaceAtivo] = true;
+    state.versions[state.marketplaceAtivo] += 1;
     updateLastSavedLabel("Alterações não salvas…");
   }
 
@@ -159,32 +165,42 @@
   async function flushAutosave({ force = false } = {}) {
     if (autosaveTimer) { clearTimeout(autosaveTimer); autosaveTimer = null; }
     const mkt = state.marketplaceAtivo;
+    if (saveInFlight[mkt]) await saveInFlight[mkt];
     const diag = state.diagnosticos[mkt];
-    if (!diag || diag.status === "concluido") return;
-    if (!force && !state.dirty[mkt]) return;
+    if (!diag || diag.status === "concluido") return true;
+    if (!force && !state.dirty[mkt]) return true;
 
     updateLastSavedLabel("Salvando…");
     state.saving = true;
+    const saveVersion = state.versions[mkt];
     const body = { respostasJson: diag.respostas_json || {} };
     // Data vazia não é enviada: evita rejeitar o autosave inteiro (respostas
     // inclusas) por causa de uma data momentaneamente em branco no input.
     if (diag.data_diagnostico) body.dataDiagnostico = diag.data_diagnostico;
     if (diag.diagnostico_revisado_json) body.diagnosticoRevisadoJson = diag.diagnostico_revisado_json;
 
-    const result = await apiPatch(`${DIAG_API}/${diag.id}`, body);
+    saveInFlight[mkt] = apiPatch(`${DIAG_API}/${diag.id}`, body);
+    const result = await saveInFlight[mkt];
+    saveInFlight[mkt] = null;
     state.saving = false;
 
     if (result.ok) {
       const updated = result.data.diagnostico;
       diag.completude = updated.completude;
+      diag.completude_detalhes = updated.completude_detalhes;
       diag.updated_at = updated.updated_at;
       diag.status = updated.status;
-      state.dirty[mkt] = false;
-      updateLastSavedLabel(`Salvo às ${formatHora(new Date())}`);
+      state.rascunhos[mkt] = diag;
+      const changedWhileSaving = state.versions[mkt] !== saveVersion;
+      state.dirty[mkt] = changedWhileSaving;
+      updateLastSavedLabel(changedWhileSaving ? "Salvando alterações mais recentes…" : `Salvo às ${formatHora(new Date())}`);
+      if (changedWhileSaving && mkt === state.marketplaceAtivo) scheduleAutosave();
       if (mkt === state.marketplaceAtivo) renderResumo();
+      return true;
     } else {
       updateLastSavedLabel("Erro ao salvar — verifique a conexão.");
       showFeedback(`Não foi possível salvar: ${result.error || "erro desconhecido"}`, "danger");
+      return false;
     }
   }
 
@@ -317,8 +333,17 @@
     return fieldWrap(label, `<textarea class="vf-textarea" data-revfield="${key}" data-revkind="list" rows="4">${esc(arrToText(arr))}</textarea>`, "Um item por linha.");
   }
 
-  function renderDiagnosticoGeradoEditor(gerado) {
-    const ausentes = Array.isArray(gerado.informacoesAusentes) ? gerado.informacoesAusentes : [];
+  function missingItemLabel(item) {
+    if (item && typeof item === "object") {
+      return `${item.secao || item.sectionTitle ? `${item.secao || item.sectionTitle}: ` : ""}${item.label || item.mensagem || "Informação pendente"}`;
+    }
+    return String(item || "Informação pendente");
+  }
+
+  function renderDiagnosticoGeradoEditor(gerado, detalhes) {
+    const ausentes = Array.isArray(detalhes?.camposPendentes)
+      ? detalhes.camposPendentes
+      : (Array.isArray(gerado.informacoesAusentes) ? gerado.informacoesAusentes : []);
     return `<div class="vf-diag-gerado-lista">
       <div class="vf-cluster vf-cluster--between">
         <span class="vf-tag">Completude: ${esc(String(gerado.completude ?? 0))}%</span>
@@ -335,7 +360,7 @@
       ${revField("Conclusão do analista", "conclusaoAnalista", gerado.conclusaoAnalista, { rows: 3 })}
       <div class="vf-diag-subgroup">
         <div class="vf-diag-subgroup__title">Informações ainda não avaliadas ou não informadas (${ausentes.length})</div>
-        ${ausentes.length ? `<ul class="vf-diag-ausentes">${ausentes.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>` : '<p class="vf-field__hint">Nenhuma pendência identificada.</p>'}
+        ${ausentes.length ? `<ul class="vf-diag-ausentes">${ausentes.map((a) => `<li>${esc(missingItemLabel(a))}</li>`).join("")}</ul>` : '<p class="vf-field__hint">Nenhuma pendência identificada.</p>'}
       </div>
     </div>`;
   }
@@ -349,9 +374,9 @@
       </div>
       <div class="vf-table-wrap">
         <table class="vf-table">
-          <thead><tr><th>Data do diagnóstico</th><th>Concluído em</th><th class="num">Completude</th></tr></thead>
+          <thead><tr><th>Data do diagnóstico</th><th>Responsável</th><th>Concluído em</th><th class="num">Completude</th><th></th></tr></thead>
           <tbody>
-            ${lista.map((d) => `<tr><td>${esc(formatData(d.data_diagnostico))}</td><td>${esc(formatDataHora(d.completed_at))}</td><td class="num">${esc(String(d.completude ?? 0))}%</td></tr>`).join("")}
+            ${lista.map((d) => `<tr><td>${esc(formatData(d.data_diagnostico))}</td><td>${esc(d.responsavel_nome || "—")}</td><td>${esc(formatDataHora(d.completed_at))}</td><td class="num">${esc(String(d.completude ?? 0))}%</td><td><button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-open-diagnostic="${d.id}">Abrir</button></td></tr>`).join("")}
           </tbody>
         </table>
       </div>
@@ -371,7 +396,7 @@
 
     const gerado = diagnostico.diagnostico_revisado_json || diagnostico.diagnostico_gerado_json;
     const geradoBody = gerado
-      ? renderDiagnosticoGeradoEditor(gerado)
+      ? renderDiagnosticoGeradoEditor(gerado, diagnostico.completude_detalhes)
       : `<p class="vf-field__hint">Clique em "Gerar diagnóstico" no topo da página para criar a primeira versão automática a partir das respostas preenchidas.</p>`;
 
     return `
@@ -757,6 +782,7 @@
     document.getElementById("diag-empty-state").hidden = !isEmpty;
     document.getElementById("diag-resumo").hidden = isEmpty;
     document.getElementById("diag-marketplace-switch").hidden = isEmpty;
+    document.getElementById("diag-records").hidden = isEmpty;
     document.getElementById("diag-layout").hidden = isEmpty;
     document.getElementById("diag-btn-salvar").disabled = isEmpty;
     document.getElementById("diag-btn-gerar").disabled = isEmpty;
@@ -776,6 +802,7 @@
     const diag = getDiag();
     if (!diag) return;
     document.getElementById("diag-data").value = (diag.data_diagnostico || "").slice(0, 10);
+    document.getElementById("diag-data").disabled = diag.status === "concluido";
     const statusEl = document.getElementById("diag-status");
     statusEl.textContent = diag.status === "concluido" ? "Concluído" : "Rascunho";
     statusEl.className = "vf-status " + (diag.status === "concluido" ? "is-success" : "is-warning");
@@ -788,9 +815,12 @@
   function renderNav() {
     const nav = document.getElementById("diag-nav");
     const secoes = currentSecoes();
+    const detalhes = getDiag()?.completude_detalhes || diagnosticSchema.evaluateCompleteness(state.marketplaceAtivo, getRespostas());
+    const byId = new Map((detalhes.secoes || []).map((section) => [section.id, section]));
     nav.innerHTML = secoes.map((s) => `
-      <button type="button" class="vf-diag-nav__item${s.id === state.secaoAtivaId ? " is-active" : ""}" data-section="${s.id}">
+      <button type="button" class="vf-diag-nav__item${s.id === state.secaoAtivaId ? " is-active" : ""}${byId.get(s.id)?.concluida ? " is-complete" : ""}" data-section="${s.id}">
         <span>${esc(s.label)}</span>
+        <span class="vf-diag-nav__badge">${byId.get(s.id)?.concluida ? "✓" : (byId.get(s.id)?.camposPendentes?.length || 0)}</span>
       </button>`).join("");
   }
 
@@ -820,18 +850,45 @@
     const diag = getDiag();
     if (!diag) { el.hidden = true; return; }
     el.hidden = false;
-    const completude = Number(diag.completude || 0);
+    const detalhes = diag.completude_detalhes || diagnosticSchema.evaluateCompleteness(state.marketplaceAtivo, diag.respostas_json || {});
+    const completude = Number(detalhes.percentual || 0);
     document.getElementById("diag-kpi-progresso").textContent = `${completude}%`;
     document.getElementById("diag-kpi-progresso-bar").style.width = `${Math.min(100, Math.max(0, completude))}%`;
 
-    const gerado = diag.diagnostico_revisado_json || diag.diagnostico_gerado_json;
-    document.getElementById("diag-kpi-pendentes").textContent = gerado ? String((gerado.informacoesAusentes || []).length) : "Gere o diagnóstico";
-
-    const secoes = currentSecoes();
-    const concluidas = completude >= 100 ? secoes.length : Math.round((completude / 100) * secoes.length);
-    document.getElementById("diag-kpi-secoes").textContent = `${concluidas}/${secoes.length}`;
+    document.getElementById("diag-kpi-pendentes").textContent = String(detalhes.camposPendentes?.length || 0);
+    document.getElementById("diag-kpi-secoes").textContent = `${detalhes.secoesConcluidas}/${detalhes.totalSecoes}`;
 
     document.getElementById("diag-kpi-salvamento").textContent = diag.updated_at ? formatDataHora(diag.updated_at) : "—";
+  }
+
+  function renderRecordSelector() {
+    const wrap = document.getElementById("diag-records");
+    const select = document.getElementById("diag-record-select");
+    const button = document.getElementById("diag-btn-novo");
+    const current = getDiag();
+    if (!current) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    const draft = state.rascunhos[state.marketplaceAtivo];
+    const completed = state.historico[state.marketplaceAtivo] || [];
+    const records = [draft, ...completed].filter(Boolean).filter((item, index, list) => list.findIndex((other) => String(other.id) === String(item.id)) === index);
+    if (!records.some((item) => String(item.id) === String(current.id))) records.unshift(current);
+    select.innerHTML = records.map((item) => {
+      const label = item.status === "concluido"
+        ? `Concluído · ${formatData(item.data_diagnostico)} · ${item.responsavel_nome || "Responsável não informado"}`
+        : `Rascunho atual · atualizado ${formatDataHora(item.updated_at)}`;
+      return `<option value="${item.id}">${esc(label)}</option>`;
+    }).join("");
+    select.value = String(current.id);
+    if (current.status !== "concluido") {
+      button.textContent = "Rascunho atual";
+      button.disabled = true;
+    } else if (draft) {
+      button.textContent = "Voltar ao rascunho";
+      button.disabled = false;
+    } else {
+      button.textContent = "Iniciar novo diagnóstico";
+      button.disabled = false;
+    }
   }
 
   function renderAll() {
@@ -842,11 +899,12 @@
     renderSectionSelect();
     renderActiveSection();
     renderResumo();
+    renderRecordSelector();
     updateMarketplaceSwitchUI();
 
     const diag = getDiag();
     const concluido = !!diag && diag.status === "concluido";
-    document.getElementById("diag-btn-imprimir").disabled = !diag || !diag.diagnostico_gerado_json;
+    document.getElementById("diag-btn-imprimir").disabled = !diag || (!diag.diagnostico_gerado_json && !diag.relatorio_snapshot_json);
     document.getElementById("diag-btn-salvar").disabled = concluido;
     document.getElementById("diag-btn-gerar").disabled = concluido;
     document.getElementById("diag-btn-concluir").disabled = concluido;
@@ -877,10 +935,15 @@
 
   async function loadHistorico(mkt) {
     const result = await apiGet(`${DIAG_API}?clienteId=${state.clienteId}&marketplace=${mkt}`);
-    if (!result.ok) return;
+    if (!result.ok) {
+      showFeedback(result.error || "Não foi possível carregar os diagnósticos do cliente.", "danger");
+      return false;
+    }
     const lista = Array.isArray(result.data?.diagnosticos) ? result.data.diagnosticos : [];
+    state.rascunhos[mkt] = lista.find((d) => d.status === "rascunho") || state.rascunhos[mkt] || null;
     state.historico[mkt] = lista.filter((d) => d.status === "concluido");
     if (state.marketplaceAtivo === mkt && state.secaoAtivaId === "diagnostico") renderActiveSection();
+    return true;
   }
 
   async function ensureDraftForMarketplace(mkt) {
@@ -901,9 +964,10 @@
     const diag = result.data.diagnostico;
     if (!diag.respostas_json) diag.respostas_json = {};
     state.diagnosticos[mkt] = diag;
+    state.rascunhos[mkt] = diag;
     state.secaoAtivaId = state.secaoAtivaId || (mkt === "shopee" ? SECOES_SHOPEE[0].id : SECOES_ML[0].id);
 
-    loadHistorico(mkt);
+    await loadHistorico(mkt);
     renderAll();
   }
 
@@ -911,12 +975,18 @@
     const select = document.getElementById("diag-cliente");
     const id = select.value;
 
-    await flushAutosave({ force: false });
+    const saved = await flushAutosave({ force: false });
+    if (!saved) {
+      select.value = state.clienteId || "";
+      return;
+    }
 
     state.clienteId = id || null;
-    state.clienteNome = id ? (select.options[select.selectedIndex]?.text || "") : "";
+    state.clienteNome = id ? (state.clientes.find((cliente) => String(cliente.id) === String(id))?.nome || "") : "";
     state.diagnosticos = { meli: null, shopee: null };
+    state.rascunhos = { meli: null, shopee: null };
     state.dirty = { meli: false, shopee: false };
+    state.versions = { meli: 0, shopee: 0 };
     state.historico = { meli: [], shopee: [] };
     state.secaoAtivaId = null;
     showFeedback("", null);
@@ -937,7 +1007,8 @@
 
   async function switchMarketplace(mkt) {
     if (mkt === state.marketplaceAtivo) return;
-    await flushAutosave({ force: false });
+    const saved = await flushAutosave({ force: false });
+    if (!saved) return;
     state.marketplaceAtivo = mkt;
     state.secaoAtivaId = mkt === "shopee" ? SECOES_SHOPEE[0].id : SECOES_ML[0].id;
     updateMarketplaceSwitchUI();
@@ -946,11 +1017,54 @@
 
   async function selectSection(id) {
     if (state.secaoAtivaId === id) return;
-    await flushAutosave({ force: false });
+    const saved = await flushAutosave({ force: false });
+    if (!saved) return;
     state.secaoAtivaId = id;
     renderNav();
     renderSectionSelect();
     renderActiveSection();
+  }
+
+  async function selectDiagnostic(id) {
+    const mkt = state.marketplaceAtivo;
+    if (String(getDiag()?.id) === String(id)) return;
+    const saved = await flushAutosave({ force: false });
+    if (!saved) return;
+    const known = [state.rascunhos[mkt], ...(state.historico[mkt] || [])].find((item) => item && String(item.id) === String(id));
+    if (!known) return;
+    const result = await apiGet(`${DIAG_API}/${known.id}`);
+    if (!result.ok) {
+      showFeedback(result.error || "Não foi possível abrir o diagnóstico selecionado.", "danger");
+      renderRecordSelector();
+      return;
+    }
+    state.diagnosticos[mkt] = result.data.diagnostico;
+    state.secaoAtivaId = "diagnostico";
+    showFeedback(result.data.diagnostico.status === "concluido" ? "Diagnóstico concluído aberto em modo somente leitura." : "Rascunho recuperado.", "success");
+    renderAll();
+  }
+
+  async function startOrReturnToDraft() {
+    const mkt = state.marketplaceAtivo;
+    const existing = state.rascunhos[mkt];
+    if (existing) {
+      state.diagnosticos[mkt] = existing;
+      state.secaoAtivaId = currentSecoes()[0].id;
+      showFeedback("Rascunho atual aberto.", "success");
+      renderAll();
+      return;
+    }
+    const result = await apiPost(DIAG_API, { clienteId: state.clienteId, marketplace: mkt, dataDiagnostico: isoToday() });
+    if (!result.ok) {
+      showFeedback(result.error || "Não foi possível iniciar um novo diagnóstico.", "danger");
+      return;
+    }
+    state.rascunhos[mkt] = result.data.diagnostico;
+    state.diagnosticos[mkt] = result.data.diagnostico;
+    state.secaoAtivaId = currentSecoes()[0].id;
+    showFeedback("Novo diagnóstico iniciado sem alterar o histórico concluído.", "success");
+    await loadHistorico(mkt);
+    renderAll();
   }
 
   /* ── Gerar / Concluir / Imprimir ──────────────────────────────── */
@@ -958,7 +1072,8 @@
   async function onGerarClick() {
     const diag = getDiag();
     if (!diag) return;
-    await flushAutosave({ force: true });
+    const saved = await flushAutosave({ force: true });
+    if (!saved) return;
     document.getElementById("diag-btn-gerar").disabled = true;
     const result = await apiPost(`${DIAG_API}/${diag.id}/gerar`, {});
     document.getElementById("diag-btn-gerar").disabled = diag.status === "concluido";
@@ -979,17 +1094,18 @@
       showFeedback("Gere o diagnóstico antes de concluir.", "warning");
       return;
     }
-    await flushAutosave({ force: true });
-    openPendenciasModal(diag);
+    const saved = await flushAutosave({ force: true });
+    if (!saved) return;
+    openPendenciasModal(getDiag());
   }
 
   function openPendenciasModal(diag) {
-    const gerado = diag.diagnostico_revisado_json || diag.diagnostico_gerado_json;
-    const ausentes = gerado.informacoesAusentes || [];
+    const detalhes = diag.completude_detalhes || diagnosticSchema.evaluateCompleteness(diag.marketplace, diag.respostas_json || {});
+    const ausentes = detalhes.camposPendentes || [];
     const body = document.getElementById("diag-modal-body");
     body.innerHTML = ausentes.length
       ? `<p>Existem ${ausentes.length} item(ns) ainda não avaliados ou não informados:</p>
-         <ul class="vf-diag-ausentes">${ausentes.slice(0, 20).map((a) => `<li>${esc(a)}</li>`).join("")}</ul>
+         <ul class="vf-diag-ausentes">${ausentes.slice(0, 20).map((a) => `<li>${esc(missingItemLabel(a))}</li>`).join("")}</ul>
          ${ausentes.length > 20 ? `<p class="vf-field__hint">+ ${ausentes.length - 20} item(ns).</p>` : ""}`
       : `<p>Todas as seções aplicáveis foram avaliadas. Deseja concluir o diagnóstico?</p>`;
     document.getElementById("diag-modal-overlay").classList.add("is-open");
@@ -1004,42 +1120,48 @@
       showFeedback(result.error || "Erro ao concluir diagnóstico.", "danger");
       return;
     }
-    state.diagnosticos[state.marketplaceAtivo] = result.data.diagnostico;
+    const concluido = result.data.diagnostico;
+    state.diagnosticos[state.marketplaceAtivo] = concluido;
+    state.rascunhos[state.marketplaceAtivo] = null;
+    state.historico[state.marketplaceAtivo] = [concluido, ...(state.historico[state.marketplaceAtivo] || []).filter((item) => String(item.id) !== String(concluido.id))];
+    state.dirty[state.marketplaceAtivo] = false;
     showFeedback("Diagnóstico concluído.", "success");
     renderAll();
   }
 
-  function renderPrintBlock(diag) {
-    const d = diag.diagnostico_revisado_json || diag.diagnostico_gerado_json;
-    const mktLabel = state.marketplaceAtivo === "shopee" ? "Shopee" : "Mercado Livre";
-    const listBlock = (titulo, arr) => (Array.isArray(arr) && arr.length)
-      ? `<div class="vf-diag-print__section"><h3>${esc(titulo)}</h3><ul>${arr.map((i) => `<li>${esc(i)}</li>`).join("")}</ul></div>`
-      : "";
-    document.getElementById("diag-print-block").innerHTML = `
-      <div class="vf-diag-print__header"><h1>Diagnóstico Inicial — ${esc(mktLabel)}</h1></div>
-      <div class="vf-diag-print__meta">
-        <div><strong>Cliente:</strong> ${esc(state.clienteNome || "—")}</div>
-        <div><strong>Responsável:</strong> ${esc(document.getElementById("diag-responsavel").value || "—")}</div>
-        <div><strong>Data:</strong> ${esc(formatData(document.getElementById("diag-data").value))}</div>
-        <div><strong>Completude:</strong> ${esc(String(d.completude ?? diag.completude ?? 0))}%</div>
-      </div>
-      <div class="vf-diag-print__section"><h3>Resumo executivo</h3><p>${esc(d.resumoExecutivo || "—")}</p></div>
-      <div class="vf-diag-print__section"><h3>Situação atual</h3><p>${esc(d.situacaoAtual || "—")}</p></div>
-      ${listBlock("Pontos positivos", d.pontosPositivos)}
-      ${listBlock("Pontos negativos", d.pontosNegativos)}
-      ${listBlock("Riscos e urgências", d.riscosUrgencias)}
-      ${listBlock("Prioridades da primeira semana", d.prioridadesPrimeiraSemana)}
-      ${listBlock("Plano de 30 dias", d.plano30Dias)}
-      ${listBlock("Ações de médio prazo", d.acoesMedioPrazo)}
-      ${listBlock("Informações ausentes", d.informacoesAusentes)}
-      <div class="vf-diag-print__section"><h3>Conclusão do analista</h3><p>${esc(d.conclusaoAnalista || "—")}</p></div>
-    `;
+  function waitForReportImages(root) {
+    return Promise.all(Array.from(root.querySelectorAll("img")).map((img) => img.complete
+      ? Promise.resolve()
+      : new Promise((resolve) => { img.addEventListener("load", resolve, { once: true }); img.addEventListener("error", resolve, { once: true }); })));
   }
 
-  function onImprimirClick() {
+  async function onImprimirClick() {
     const diag = getDiag();
-    if (!diag || !diag.diagnostico_gerado_json) return;
-    renderPrintBlock(diag);
+    if (!diag || (!diag.diagnostico_gerado_json && !diag.relatorio_snapshot_json)) return;
+    const snapshot = diag.status === "concluido" && diag.relatorio_snapshot_json
+      ? diag.relatorio_snapshot_json
+      : reportApi.buildDraftSnapshot(diag, {
+        clienteNome: state.clienteNome,
+        responsavelNome: document.getElementById("diag-responsavel").value,
+      });
+    const root = document.getElementById("diag-print-block");
+    root.innerHTML = reportApi.renderReportHtml(snapshot);
+    const originalTitle = document.title;
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      document.body.classList.remove("vf-printing-diagnostic-report");
+      root.innerHTML = "";
+      document.title = originalTitle;
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    document.title = reportApi.filename(snapshot);
+    document.body.classList.add("vf-printing-diagnostic-report");
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    if (document.fonts?.ready) await document.fonts.ready.catch(() => {});
+    await waitForReportImages(root);
     window.print();
   }
 
@@ -1146,6 +1268,8 @@
       if (addBtn) { onTableAddRow(addBtn.dataset.tableAdd, Number(addBtn.dataset.max) || 12); return; }
       const rmBtn = e.target.closest("[data-table-remove]");
       if (rmBtn) { onTableRemoveRow(rmBtn.dataset.tableRemove, Number(rmBtn.dataset.row)); return; }
+      const openBtn = e.target.closest("[data-open-diagnostic]");
+      if (openBtn) { selectDiagnostic(openBtn.dataset.openDiagnostic); }
     });
   }
 
@@ -1176,6 +1300,11 @@
       selectSection(e.target.value);
     });
 
+    document.getElementById("diag-record-select").addEventListener("change", (e) => {
+      selectDiagnostic(e.target.value);
+    });
+    document.getElementById("diag-btn-novo").addEventListener("click", startOrReturnToDraft);
+
     document.getElementById("diag-btn-salvar").addEventListener("click", () => flushAutosave({ force: true }));
     document.getElementById("diag-btn-gerar").addEventListener("click", onGerarClick);
     document.getElementById("diag-btn-concluir").addEventListener("click", onConcluirClick);
@@ -1203,6 +1332,10 @@
     bindStaticEvents();
     bindSectionEvents(document.getElementById("diag-section-host"));
     renderEmptyState(true);
+    if (!reportApi || !diagnosticSchema) {
+      showFeedback("Não foi possível carregar o modelo oficial do diagnóstico.", "danger");
+      return;
+    }
     await loadClientes();
     restoreLastCliente();
   }

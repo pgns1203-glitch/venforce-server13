@@ -1,0 +1,419 @@
+/* ============================================================
+ * VenForce · Editor de imagem do produto (Estúdio de Templates)
+ * Fundação Global V2: só tokens --vf-*, cantos pouco arredondados,
+ * roxo discreto (estados ativos e foco), nada de cor solta.
+ * Prefixo: .die-  (design image editor)
+ * ============================================================ */
+
+.die-overlay {
+  padding: var(--vf-sp-4);
+  /* Um degrau ABAIXO do modal padrão: a confirmação "descartar alterações?"
+     da tela (#dt-confirm-overlay) vem antes no DOM e, com z-index igual, o
+     editor a cobriria. Aqui ela continua por cima, que é o esperado. */
+  z-index: calc(var(--vf-z-modal) - 1);
+}
+
+.die-modal {
+  max-width: 1280px;
+  height: min(92vh, 900px);
+  max-height: 92vh;
+}
+
+/* ── cabeçalho ───────────────────────────────────────────── */
+
+.die-header {
+  align-items: flex-start;
+}
+
+.die-header__info {
+  min-width: 0;
+}
+
+.die-header__file {
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.die-header__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--vf-sp-2);
+}
+
+.die-dirty {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px var(--vf-sp-2);
+  border: 1px solid var(--vf-warning-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-warning-bg);
+  color: var(--vf-warning-strong);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+}
+
+/* ── corpo: palco + painel ───────────────────────────────── */
+
+.die-body {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.die-stage-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--vf-bg-2);
+}
+
+.die-panel {
+  min-height: 0;
+  padding: var(--vf-sp-4);
+  overflow-y: auto;
+  border-left: 1px solid var(--vf-border);
+  background: var(--vf-surface);
+}
+
+/* Durante a comparação os ajustes não representam o que está na tela. */
+.die-panel.is-comparing {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* ── barra de ferramentas ────────────────────────────────── */
+
+.die-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2) var(--vf-sp-4);
+  padding: var(--vf-sp-2) var(--vf-sp-4);
+  border-bottom: 1px solid var(--vf-border);
+  background: var(--vf-surface);
+}
+
+.die-toolbar__group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-1);
+}
+
+.die-toolbar__group--end {
+  margin-left: auto;
+}
+
+.die-tool {
+  display: inline-flex;
+  align-items: center;
+  height: var(--vf-control-h-sm);
+  padding: 0 var(--vf-sp-3);
+  border: 1px solid var(--vf-border-strong);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  color: var(--vf-text-secondary);
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--vf-duration-fast) var(--vf-ease),
+    background var(--vf-duration-fast) var(--vf-ease),
+    color var(--vf-duration-fast) var(--vf-ease);
+}
+
+.die-tool:hover:not(:disabled) {
+  border-color: var(--vf-border-hover);
+  background: var(--vf-surface-hover);
+  color: var(--vf-text);
+}
+
+.die-tool:focus-visible {
+  outline: 2px solid var(--vf-primary);
+  outline-offset: 2px;
+}
+
+.die-tool.is-active {
+  border-color: var(--vf-primary-border);
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+}
+
+.die-tool:disabled {
+  color: var(--vf-text-disabled);
+  background: var(--vf-disabled-bg);
+  cursor: not-allowed;
+}
+
+/* ── faixa de ações do recorte ───────────────────────────── */
+
+.die-crop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-2) var(--vf-sp-4);
+  border-bottom: 1px solid var(--vf-primary-border);
+  background: var(--vf-primary-soft);
+}
+
+.die-crop-actions__hint {
+  flex: 1 1 220px;
+  color: var(--vf-primary-strong);
+  font-size: var(--vf-fs-xs);
+}
+
+/* ── palco ───────────────────────────────────────────────── */
+
+.die-stage {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: var(--vf-sp-4);
+}
+
+/* Xadrez discreto: deixa claro o que é fundo transparente. */
+.die-stage .canvas-container {
+  border: 1px solid var(--vf-border-strong);
+  background-color: var(--vf-surface);
+  background-image:
+    linear-gradient(45deg, var(--vf-bg-2) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--vf-bg-2) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--vf-bg-2) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--vf-bg-2) 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+  box-shadow: var(--vf-shadow-hover);
+}
+
+.die-stage__loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  z-index: 2;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--vf-sp-3);
+  background: rgba(247, 248, 251, 0.86);
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-sm);
+}
+
+.die-stage__loading[hidden] {
+  display: none;
+}
+
+.die-stage-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-2) var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
+  background: var(--vf-surface);
+}
+
+.die-stage-footer__hint {
+  margin: 0;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs);
+}
+
+.die-compare-hint {
+  margin: 0;
+  padding: 3px var(--vf-sp-2);
+  border: 1px solid var(--vf-info-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-info-bg);
+  color: var(--vf-info-strong);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.die-compare-hint[hidden] {
+  display: none;
+}
+
+/* ── painel de ajustes ───────────────────────────────────── */
+
+.die-lowres {
+  margin-bottom: var(--vf-sp-4);
+}
+
+.die-group + .die-group {
+  margin-top: var(--vf-sp-5);
+  padding-top: var(--vf-sp-5);
+  border-top: 1px solid var(--vf-border);
+}
+
+.die-group__title {
+  margin: 0 0 var(--vf-sp-3);
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text);
+}
+
+.die-group__hint {
+  margin: var(--vf-sp-2) 0 0;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs);
+}
+
+.die-group .dt-range-field + .dt-range-field {
+  margin-top: var(--vf-sp-3);
+}
+
+.die-group .dt-range-field input:disabled {
+  accent-color: var(--vf-text-disabled);
+  cursor: not-allowed;
+}
+
+.die-bg-toggle {
+  width: 100%;
+}
+
+.die-bg-toggle .vf-segmented__item {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+.die-bg-field {
+  margin-top: var(--vf-sp-3);
+}
+
+.die-bg-field .dt-color-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.die-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  margin-bottom: var(--vf-sp-3);
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  cursor: pointer;
+}
+
+.die-group--restore {
+  margin-top: var(--vf-sp-5);
+}
+
+/* ── estado do upload na tela principal ──────────────────── */
+
+.dt-upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2);
+}
+
+/* Enquanto o servidor normaliza a imagem, o campo fica ocupado e visível. */
+.dt-file-drop.is-loading {
+  border-color: var(--vf-primary-border);
+  background: var(--vf-primary-soft);
+  cursor: progress;
+}
+
+.dt-file-drop.is-loading .dt-file-drop__title::after {
+  content: " · processando…";
+  color: var(--vf-primary-strong);
+  font-weight: var(--vf-fw-medium);
+}
+
+.dt-upload-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2);
+  margin: var(--vf-sp-2) 0 0;
+  padding: var(--vf-sp-2);
+  border: 1px solid var(--vf-success-border);
+  background: var(--vf-success-bg);
+  color: var(--vf-success-strong);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.dt-upload-note[hidden],
+.dt-upload-actions[hidden] {
+  display: none;
+}
+
+#dt-product-lowres {
+  margin-top: var(--vf-sp-3);
+}
+
+/* ── responsivo ──────────────────────────────────────────── */
+
+@media (max-width: 1080px) {
+  .die-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow-y: auto;
+  }
+
+  .die-panel {
+    max-height: 45vh;
+    border-left: 0;
+    border-top: 1px solid var(--vf-border);
+  }
+
+  .die-stage {
+    min-height: 280px;
+  }
+}
+
+@media (max-width: 720px) {
+  .die-overlay {
+    padding: 0;
+  }
+
+  .die-modal {
+    height: 100vh;
+    max-height: 100vh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .die-toolbar {
+    gap: var(--vf-sp-1) var(--vf-sp-2);
+  }
+
+  .die-toolbar__group--end {
+    margin-left: 0;
+  }
+
+  .die-tool {
+    font-size: var(--vf-fs-2xs);
+    padding: 0 var(--vf-sp-2);
+  }
+
+  .die-stage-footer__hint {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .die-tool {
+    transition: none;
+  }
+}

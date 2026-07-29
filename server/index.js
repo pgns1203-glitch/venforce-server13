@@ -68,6 +68,7 @@ const cliente360ResultadoRoutes = require("./routes/cliente360ResultadoRoutes");
 const centralVendasRoutes = require("./routes/centralVendasRoutes");
 const diagnosticoInicialRoutes = require("./routes/diagnosticoInicialRoutes");
 const adsRoutes = require("./routes/adsRoutes");
+const designImageRoutes = require("./routes/designImageRoutes");
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("./services/activityLogService");
 const meliAnunciosRoutes = require("./routes/meliAnunciosRoutes");
 const metricasRoutes = require("./routes/metricasRoutes");
@@ -524,6 +525,9 @@ app.use("/seller", sellerRoutes);
 app.use("/ads", adsRoutes);
 app.use("/anuncios-meli", meliAnunciosRoutes);
 app.use("/metricas", metricasRoutes);
+// Editor de imagem do Estúdio de Templates. Fica sob /design/imagens para não
+// colidir com os endpoints /design/clientes e /design/anuncios declarados abaixo.
+app.use("/design/imagens", designImageRoutes);
 app.use("/api/clickup", clickupRoutes);
 
 app.post("/scans", authMiddleware, async (req, res) => {

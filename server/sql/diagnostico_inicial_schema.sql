@@ -8,11 +8,15 @@ CREATE TABLE IF NOT EXISTS diagnosticos_iniciais (
   respostas_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   diagnostico_gerado_json JSONB,
   diagnostico_revisado_json JSONB,
+  relatorio_snapshot_json JSONB,
   completude NUMERIC(5,2) NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at TIMESTAMPTZ
 );
+
+ALTER TABLE diagnosticos_iniciais
+  ADD COLUMN IF NOT EXISTS relatorio_snapshot_json JSONB;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_diagnosticos_iniciais_rascunho
   ON diagnosticos_iniciais (cliente_id, marketplace)

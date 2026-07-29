@@ -9,7 +9,8 @@ const schemaPath = path.join(__dirname, "..", "..", "sql", "diagnostico_inicial_
 
 const COLUNAS = `
   id, cliente_id, marketplace, responsavel_user_id, data_diagnostico, status,
-  respostas_json, diagnostico_gerado_json, diagnostico_revisado_json, completude,
+  respostas_json, diagnostico_gerado_json, diagnostico_revisado_json,
+  relatorio_snapshot_json, completude,
   created_at, updated_at, completed_at
 `;
 
@@ -17,13 +18,16 @@ const COLUNAS = `
 // SELECTs — INSERT/UPDATE continuam com RETURNING simples (sem join) para não
 // pesar o autosave, que roda a cada poucos segundos.
 const COLUNAS_COM_RESPONSAVEL = `
-  di.id, di.cliente_id, di.marketplace, di.responsavel_user_id, u.nome AS responsavel_nome,
+  di.id, di.cliente_id, c.nome AS cliente_nome, c.slug AS cliente_slug,
+  di.marketplace, di.responsavel_user_id, COALESCE(u.nome, u.email) AS responsavel_nome,
   di.data_diagnostico, di.status, di.respostas_json, di.diagnostico_gerado_json,
-  di.diagnostico_revisado_json, di.completude, di.created_at, di.updated_at, di.completed_at
+  di.diagnostico_revisado_json, di.relatorio_snapshot_json, di.completude,
+  di.created_at, di.updated_at, di.completed_at
 `;
 const FROM_COM_RESPONSAVEL = `
   FROM diagnosticos_iniciais di
   LEFT JOIN users u ON u.id = di.responsavel_user_id
+  LEFT JOIN clientes c ON c.id = di.cliente_id
 `;
 
 function asJson(value, fallback) {
@@ -89,13 +93,13 @@ async function createDiagnostico(
      RETURNING ${COLUNAS}`,
     [clienteId, marketplace, responsavelUserId || null, dataDiagnostico || null, asJson(respostasJson, {})]
   );
-  return result.rows[0];
+  return getDiagnosticoById(result.rows[0].id, db);
 }
 
 // Atualização parcial genérica. `fields` usa nomes de coluna já em snake_case.
 // Colunas *_json recebem valor serializado e viram ::jsonb; demais são literais.
 async function updateDiagnostico(id, fields, db = pool) {
-  const JSON_COLUMNS = new Set(["respostas_json", "diagnostico_gerado_json", "diagnostico_revisado_json"]);
+  const JSON_COLUMNS = new Set(["respostas_json", "diagnostico_gerado_json", "diagnostico_revisado_json", "relatorio_snapshot_json"]);
   const entries = Object.entries(fields).filter(([, v]) => v !== undefined);
   if (!entries.length) return getDiagnosticoById(id, db);
 
@@ -119,22 +123,33 @@ async function updateDiagnostico(id, fields, db = pool) {
     `UPDATE diagnosticos_iniciais SET ${sets.join(", ")} WHERE id = $${i} RETURNING ${COLUNAS}`,
     valores
   );
-  return result.rows[0] || null;
+  return result.rows[0] ? getDiagnosticoById(result.rows[0].id, db) : null;
 }
 
-async function concluirDiagnostico(id, { diagnosticoRevisadoJson, completude }, db = pool) {
+async function concluirDiagnostico(
+  id,
+  { diagnosticoRevisadoJson, relatorioSnapshotJson, completude, completedAt },
+  db = pool
+) {
   const result = await db.query(
     `UPDATE diagnosticos_iniciais
         SET status = 'concluido',
             diagnostico_revisado_json = $2::jsonb,
-            completude = $3,
-            completed_at = NOW(),
+            relatorio_snapshot_json = $3::jsonb,
+            completude = $4,
+            completed_at = $5::timestamptz,
             updated_at = NOW()
-      WHERE id = $1
+      WHERE id = $1 AND status = 'rascunho'
       RETURNING ${COLUNAS}`,
-    [id, asJson(diagnosticoRevisadoJson, {}), completude ?? 0]
+    [
+      id,
+      asJson(diagnosticoRevisadoJson, {}),
+      asJson(relatorioSnapshotJson, {}),
+      completude ?? 0,
+      completedAt || new Date().toISOString(),
+    ]
   );
-  return result.rows[0] || null;
+  return result.rows[0] ? getDiagnosticoById(result.rows[0].id, db) : null;
 }
 
 module.exports = {

@@ -6,172 +6,107 @@
   <title>Venforce — Control Center</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (IDs, endpoints, JSON) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 1. Layout compartilhado (sidebar/topbar) -->
   <link rel="stylesheet" href="style.css">
+  <!-- 2. Fundação Global V2 (tokens → componentes → página) -->
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="control-center.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
-<body class="vf-page vfc-page">
+<body class="vf-page vfc-page" data-vf-density="compact">
+
   <div class="vf-main-with-sidebar">
-    <main class="vfc-control-center" data-vfc-shell>
-      <header class="vfc-header">
-        <div class="vfc-title-block">
-          <p class="vfc-kicker" data-vfc-kicker>mock/frontend · browser logs</p>
-          <h1>VenForce Control Center</h1>
-          <p>Requests, respostas e contexto técnico do Portal</p>
-        </div>
+    <main class="vf-content" id="cc-main" aria-label="Control Center">
+      <div class="vf-page-shell">
+        <div class="vf-page-container vf-page-container--wide">
 
-        <section class="vfc-env-grid" aria-label="Contexto técnico atual">
-          <div class="vfc-env-item">
-            <span>ambiente</span>
-            <strong data-vfc-env-mode>mock/frontend</strong>
-          </div>
-          <div class="vfc-env-item">
-            <span>usuário</span>
-            <strong data-vfc-user-name>Usuário</strong>
-          </div>
-          <div class="vfc-env-item">
-            <span>role</span>
-            <strong data-vfc-user-role>—</strong>
-          </div>
-          <div class="vfc-env-item">
-            <span>debug browser</span>
-            <strong data-vfc-browser-debug-state>off</strong>
-          </div>
-          <div class="vfc-env-item">
-            <span>token</span>
-            <code data-vfc-token-state>ausente</code>
-          </div>
-          <div class="vfc-env-item vfc-env-item--wide">
-            <span>API base</span>
-            <code data-vfc-api-base>mock/local</code>
-          </div>
-        </section>
-      </header>
+          <header class="vf-page-header">
+            <div class="vf-page-header__main">
+              <p class="vf-page-header__eyebrow">Observabilidade técnica</p>
+              <h1 class="vf-page-header__title">Control Center</h1>
+              <p class="vf-page-header__description">
+                Requests do servidor e do navegador correlacionadas por request id, erros agrupados,
+                saúde das dependências e ferramentas de diagnóstico. Auditoria de ações de negócio fica na tela Atividade.
+              </p>
+            </div>
+            <div class="vf-page-header__actions">
+              <button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" data-cc-action="reload">Atualizar</button>
+              <button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" data-cc-action="toggle-auto">Pausar auto refresh</button>
+              <button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" data-cc-action="toggle-debug">Debug navegador</button>
+              <div class="vf-btn-group">
+                <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" data-cc-action="export" data-cc-value="json">Exportar JSON</button>
+                <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" data-cc-action="export" data-cc-value="csv">CSV</button>
+              </div>
+              <a class="vf-btn vf-btn--ghost vf-btn--sm" href="atividade.html">Abrir Atividade</a>
+            </div>
+          </header>
 
-      <section class="vfc-mode-strip" aria-live="polite">
-        <div class="vfc-mode-copy">
-          <span data-vfc-mode-title>Fonte mock</span>
-          <strong data-vfc-mode-copy>Dados simulados para validar a interface antes de conectar logs reais.</strong>
-        </div>
-        <div class="vfc-mode-copy vfc-mode-copy--right">
-          <span>storage</span>
-          <strong data-vfc-mode-storage>memória local da tela</strong>
-        </div>
-      </section>
+          <div id="cc-statusbar"></div>
+          <div id="cc-aviso" role="status" aria-live="polite"></div>
 
-      <section class="vfc-summary" aria-label="Resumo de requests mockadas">
-        <div class="vfc-summary-cell">
-          <span>Total</span>
-          <strong data-vfc-summary="total">0</strong>
-        </div>
-        <div class="vfc-summary-cell vfc-summary-cell--ok">
-          <span>OK</span>
-          <strong data-vfc-summary="ok">0</strong>
-        </div>
-        <div class="vfc-summary-cell vfc-summary-cell--warn">
-          <span>4xx</span>
-          <strong data-vfc-summary="4xx">0</strong>
-        </div>
-        <div class="vfc-summary-cell vfc-summary-cell--error">
-          <span>5xx</span>
-          <strong data-vfc-summary="5xx">0</strong>
-        </div>
-        <div class="vfc-summary-cell vfc-summary-cell--slow">
-          <span>Lentas</span>
-          <strong data-vfc-summary="slow">0</strong>
-        </div>
-        <div class="vfc-summary-cell">
-          <span>Tempo médio</span>
-          <strong data-vfc-summary="avg">0ms</strong>
-        </div>
-        <div class="vfc-summary-cell vfc-summary-cell--last">
-          <span>Último erro</span>
-          <strong data-vfc-summary="lastError">none</strong>
-        </div>
-      </section>
-
-      <section class="vfc-toolbar" aria-label="Filtros">
-        <div class="vfc-mode-control">
-          <span>Fonte</span>
-          <div class="vfc-segment" role="tablist" aria-label="Fonte dos logs">
-            <button class="vfc-segment-button is-active" type="button" data-vfc-mode="mock">mock</button>
-            <button class="vfc-segment-button" type="button" data-vfc-mode="browser">browser logs</button>
-            <button class="vfc-segment-button" type="button" data-vfc-mode="backend">backend futuro</button>
-          </div>
-        </div>
-
-        <div class="vfc-segment" role="tablist" aria-label="Filtro por status">
-          <button class="vfc-segment-button is-active" type="button" data-vfc-status-filter="all">Todas</button>
-          <button class="vfc-segment-button" type="button" data-vfc-status-filter="ok">OK</button>
-          <button class="vfc-segment-button" type="button" data-vfc-status-filter="4xx">4xx</button>
-          <button class="vfc-segment-button" type="button" data-vfc-status-filter="5xx">5xx</button>
-          <button class="vfc-segment-button" type="button" data-vfc-status-filter="slow">Lentas</button>
-        </div>
-
-        <label class="vfc-select-label">
-          <span>Tela</span>
-          <select class="vfc-select" data-vfc-screen-filter>
-            <option value="all">Todas</option>
-          </select>
-        </label>
-
-        <label class="vfc-search">
-          <span>Busca</span>
-          <input type="search" placeholder="/bases, 401, diagnóstico..." data-vfc-search>
-        </label>
-      </section>
-
-      <section class="vfc-workspace">
-        <div class="vfc-requests-panel">
-          <div class="vfc-panel-head">
-            <h2>Requests</h2>
-            <span data-vfc-visible-count>0 visíveis</span>
+          <div class="vfc-navrow">
+            <div id="cc-abas"></div>
+            <div id="cc-janela"></div>
           </div>
 
-          <div class="vfc-table-wrap">
-            <table class="vfc-table">
-              <thead>
-                <tr>
-                  <th>hora</th>
-                  <th>tela</th>
-                  <th>método</th>
-                  <th>endpoint</th>
-                  <th>status</th>
-                  <th>tempo</th>
-                  <th>descrição</th>
-                </tr>
-              </thead>
-              <tbody data-vfc-rows></tbody>
-            </table>
+          <div id="cc-view" class="vfc-view" role="tabpanel" tabindex="-1" aria-live="polite" aria-busy="false">
+            <div class="vf-loading-state" role="status">
+              <span class="vf-spinner" aria-hidden="true"></span>
+              <p>Carregando Control Center…</p>
+            </div>
           </div>
-        </div>
 
-        <aside class="vfc-detail" data-vfc-detail aria-live="polite">
-          <div class="vfc-detail-empty">
-            <span class="vfc-empty-dot"></span>
-            <p>Selecione uma request para inspecionar payload, response e contexto seguro.</p>
-          </div>
-        </aside>
-      </section>
-
-      <footer class="vfc-footer">
-        <div class="vfc-footer-meta">
-          <span data-vfc-footer-source>mock preview</span>
-          <span>dados sensíveis mascarados</span>
-          <span>admin only</span>
         </div>
-        <div class="vfc-footer-actions">
-          <button class="vfc-mini-button" type="button" data-vfc-refresh>reler logs</button>
-          <button class="vfc-mini-button" type="button" data-vfc-clear>limpar mock</button>
-          <button class="vfc-mini-button" type="button" data-vfc-debug aria-pressed="true">debug mock: on</button>
-          <button class="vfc-mini-button" type="button" data-vfc-browser-debug aria-pressed="false">debug navegador: off</button>
-        </div>
-      </footer>
+      </div>
     </main>
   </div>
 
+  <div class="vf-drawer-backdrop" id="cc-drawer-backdrop" hidden></div>
+  <aside class="vf-drawer vf-drawer--lg vfc-drawer" id="cc-drawer" role="dialog" aria-label="Detalhe da request" aria-modal="false" tabindex="-1" hidden></aside>
+
+  <!-- Exclusão do histórico do servidor: nunca em um clique, nunca no mesmo botão do cache local -->
+  <div class="vf-overlay" id="cc-modal-purge" role="dialog" aria-modal="true" aria-labelledby="cc-purge-titulo" hidden>
+    <div class="vf-modal vf-modal--sm">
+      <header class="vf-modal__header">
+        <h2 class="vf-modal__title" id="cc-purge-titulo">Excluir histórico do servidor</h2>
+        <button class="vf-btn vf-btn--ghost vf-btn--icon" type="button" data-cc-action="close-purge" aria-label="Fechar">✕</button>
+      </header>
+      <div class="vf-modal__body">
+        <p>
+          Esta ação apaga registros de observabilidade do PostgreSQL <strong>para todos os administradores</strong> e não tem desfazer.
+          Ela não afeta a tela Atividade nem <code class="vf-mono">/admin/logs</code>.
+        </p>
+        <div class="vf-field">
+          <label class="vf-field__label" for="cc-purge-antes">Excluir registros anteriores a</label>
+          <input class="vf-input vf-input--sm" type="datetime-local" id="cc-purge-antes">
+          <span class="vf-field__hint">Em branco = tudo até agora.</span>
+        </div>
+        <div class="vf-field">
+          <label class="vf-field__label" for="cc-purge-confirmacao">Digite <code class="vf-mono">EXCLUIR HISTORICO</code> para confirmar</label>
+          <input class="vf-input vf-input--sm" type="text" id="cc-purge-confirmacao" autocomplete="off" placeholder="EXCLUIR HISTORICO">
+        </div>
+        <p id="cc-purge-erro" class="vfc-erro-inline" role="alert"></p>
+      </div>
+      <footer class="vf-modal__footer">
+        <button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" data-cc-action="close-purge">Cancelar</button>
+        <button class="vf-btn vf-btn--danger vf-btn--sm" type="button" data-cc-action="confirm-purge">Excluir definitivamente</button>
+      </footer>
+    </div>
+  </div>
+
+  <div class="vf-toast-stack" id="cc-toasts" aria-live="polite"></div>
+
+  <!-- O coletor é carregado explicitamente aqui: mesmo desligado, o Control
+       Center precisa da API de leitura do IndexedDB. O layout.js detecta este
+       script e não carrega de novo. -->
+  <script src="vf-debug-client.js" data-vf-debug-client="true"></script>
   <script src="layout.js"></script>
+  <script src="control-center-api.js"></script>
+  <script src="control-center-store.js"></script>
+  <script src="control-center-renderers.js"></script>
   <script src="control-center.js"></script>
 </body>
 </html>

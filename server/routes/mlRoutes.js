@@ -11,6 +11,9 @@ const {
   iniciarConexaoMlController,
   callbackMlController,
 } = require("../controllers/mlController");
+const {
+  receberNotificacaoMlController,
+} = require("../controllers/mlWebhookController");
 
 const router = express.Router();
 
@@ -41,6 +44,20 @@ router.get(
 router.get(
   "/callback",
   callbackMlController
+);
+
+// Notificações/webhooks do Mercado Livre (topic orders_v2, items, etc.).
+// POST /callback é compatibilidade imediata: o app do ML hoje aponta para lá.
+// POST /webhooks/meli é a rota canônica — o painel do ML será migrado para
+// ela e /callback (POST) deve seguir funcionando durante a transição.
+router.post(
+  "/callback",
+  receberNotificacaoMlController
+);
+
+router.post(
+  "/webhooks/meli",
+  receberNotificacaoMlController
 );
 
 module.exports = router;

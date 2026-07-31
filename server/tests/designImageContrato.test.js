@@ -106,7 +106,9 @@ function idsReferenciados(fonte) {
   const ordem = ["design-image-model.js", "design-image-storage.js",
     "design-image-api.js", "design-image-editor.js", "design-template-engine.js",
     "design-template-presets.js", "design-template-components.js",
-    "design-template-layouts.js", "design-template-renderer.js", "design-templates.js"];
+    "design-template-layouts.js", "design-template-renderer.js",
+    "design-template-builder-model.js", "design-template-builder-storage.js",
+    "design-templates.js", "design-template-builder.js"];
   const posicoes = ordem.map((arquivo) => html.indexOf(`src="${arquivo}"`));
   posicoes.unshift(html.indexOf("cdn.jsdelivr.net/npm/fabric@"));
   ok("12. todos os scripts do editor estão na página", posicoes.every((p) => p > 0));
@@ -114,6 +116,7 @@ function idsReferenciados(fonte) {
     posicoes.every((p, i) => i === 0 || p > posicoes[i - 1]));
 
   ok("14. a folha de estilo do editor é carregada", html.includes("css/pages/design-image-editor-v2.css"));
+  ok("14b. a folha de estilo do construtor é carregada", html.includes("css/pages/design-template-builder-v2.css"));
 
   /* 4. Segurança do upload na tela */
 

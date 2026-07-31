@@ -33,6 +33,30 @@
       .slice(0, limit || MAX_LIST_ITEMS);
   }
 
+  // "Potência: 650 W" -> { label: "Potência", value: "650 W" }.
+  // Linha sem dois pontos NÃO é erro: vira só rótulo, sem valor — a grade
+  // desenha o rótulo sozinho em vez de quebrar ou inventar conteúdo.
+  function parseSpecPairs(value, limit) {
+    return parseListItems(value, limit || 6).map((linha) => {
+      const corte = linha.indexOf(":");
+      if (corte === -1) return { label: linha, value: "" };
+      return { label: linha.slice(0, corte).trim(), value: linha.slice(corte + 1).trim() };
+    }).filter((par) => par.label || par.value);
+  }
+
+  // Só as medidas realmente preenchidas viram cota. Nada de "0", "undefined"
+  // ou rótulo órfão na arte: campo vazio simplesmente não existe na peça.
+  function collectMeasures(content) {
+    const source = content && typeof content === "object" ? content : {};
+    return [
+      { key: "width", label: "LARGURA", short: "L", value: source.width },
+      { key: "height", label: "ALTURA", short: "A", value: source.height },
+      { key: "depth", label: "PROFUNDIDADE", short: "P", value: source.depth },
+    ]
+      .map((medida) => ({ ...medida, value: typeof medida.value === "string" ? medida.value.trim() : "" }))
+      .filter((medida) => medida.value.length > 0);
+  }
+
   // `dependencies`:
   //   svg  -> adaptador { element, text, wrapped } (ver design-template-renderer)
   //   mix  -> mistura de cores (hex, hex, 0..1) -> hex
@@ -257,6 +281,102 @@
       });
     }
 
+    /* ── blocos do construtor modular ───────────────────────────────────── */
+
+    // Cards numerados de benefício. A largura é calculada a partir da
+    // quantidade REAL de itens: um, dois ou três benefícios ocupam a mesma
+    // faixa sem deixar buraco nem card vazio na arte.
+    function benefitCards(parent, items, palette, options) {
+      const total = items.length;
+      if (!total) return;
+      const gap = options.gap == null ? 26 : options.gap;
+      const width = (options.width - gap * (total - 1)) / total;
+      const height = options.height || 300;
+      // Quebra por contagem de caracteres (o SVG não mede texto fora do
+      // navegador). 13,4 px por caractere é a largura média do Hanken
+      // Grotesk 600 em 24 px; os 60 px descontados são o respiro lateral.
+      const maxChars = Math.max(12, Math.floor((width - 60) / 13.4));
+
+      items.forEach((item, index) => {
+        const x = options.x + index * (width + gap);
+        svg.element("rect", {
+          x, y: options.y, width, height, rx: 10,
+          fill: palette.surface, stroke: mix(palette.text, palette.background, 0.82), "stroke-width": 2,
+        }, parent);
+        svg.element("rect", { x, y: options.y, width: 78, height: 8, fill: palette.secondary }, parent);
+        svg.text(parent, String(index + 1).padStart(2, "0"), {
+          x: x + 30, y: options.y + 78, fill: palette.secondaryDark,
+          class: "dt-fine", "font-size": 22, "font-weight": 700,
+        });
+        bodyText(parent, item, x + 30, options.y + 136, {
+          maxChars, maxLines: 4, fontSize: 24, lineHeight: 33, fill: palette.text, fontWeight: 600,
+        });
+      });
+    }
+
+    // Grade de especificações: cada par vira rótulo pequeno em cima e valor
+    // grande embaixo. Par sem valor mostra só o rótulo.
+    function specGrid(parent, pairs, palette, options) {
+      const columns = options.columns || 2;
+      const gapX = options.gapX == null ? 48 : options.gapX;
+      const cellWidth = (options.width - gapX * (columns - 1)) / columns;
+
+      pairs.forEach((pair, index) => {
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        const x = options.x + column * (cellWidth + gapX);
+        const y = options.y + row * options.rowHeight;
+
+        svg.element("line", {
+          x1: x, y1: y - 46, x2: x + cellWidth, y2: y - 46,
+          stroke: mix(palette.text, palette.background, 0.78), "stroke-width": 2,
+        }, parent);
+        svg.element("rect", { x, y: y - 46, width: 54, height: 5, fill: palette.secondary }, parent);
+        svg.text(parent, String(pair.label).slice(0, 26).toUpperCase(), {
+          x, y, fill: palette.muted, class: "dt-fine", "font-size": 17, "font-weight": 700,
+        });
+        if (pair.value) {
+          svg.text(parent, String(pair.value).slice(0, 24), {
+            x, y: y + 46, fill: palette.text, class: "dt-body", "font-size": 31, "font-weight": 700,
+          });
+        }
+      });
+    }
+
+    // Fichas de medida (largura/altura/profundidade). Recebe a lista já
+    // filtrada por collectMeasures — o componente não decide o que é vazio.
+    function measureCards(parent, measures, palette, options) {
+      measures.forEach((medida, index) => {
+        const y = options.y + index * options.step;
+        svg.element("rect", { x: options.x, y, width: options.width, height: 84, rx: 8, fill: palette.surface }, parent);
+        svg.element("rect", { x: options.x, y, width: 7, height: 84, fill: palette.secondary }, parent);
+        svg.text(parent, medida.label, {
+          x: options.x + 30, y: y + 34, fill: palette.muted,
+          class: "dt-fine", "font-size": 15, "font-weight": 700,
+        });
+        svg.text(parent, medida.value, {
+          x: options.x + 30, y: y + 66, fill: palette.text,
+          class: "dt-body", "font-size": 27, "font-weight": 700,
+        });
+      });
+    }
+
+    // Aviso de edição: aparece SÓ na prévia (ctx.mode === "preview"). O PNG
+    // exportado nunca carrega mensagem de erro — a peça sai limpa ou o
+    // usuário corrige o dado antes.
+    function editingNote(parent, message, palette, options) {
+      const width = options.width || 640;
+      svg.element("rect", {
+        x: options.x, y: options.y, width, height: 82, rx: 8,
+        fill: palette.secondaryLight, stroke: palette.secondary,
+        "stroke-width": 2, "stroke-dasharray": "11 8",
+      }, parent);
+      bodyText(parent, message, options.x + 26, options.y + 40, {
+        maxChars: Math.floor(width / 11), maxLines: 2, fontSize: 21, lineHeight: 27,
+        fill: palette.secondaryDark, fontWeight: 600,
+      });
+    }
+
     /* ── blocos decorativos ─────────────────────────────────────────────── */
 
     function backgroundFill(parent, color, canvas) {
@@ -273,6 +393,13 @@
     return {
       MAX_LIST_ITEMS,
       parseListItems,
+      parseSpecPairs,
+      collectMeasures,
+
+      benefitCards,
+      specGrid,
+      measureCards,
+      editingNote,
 
       brand,
       pageNumber,
@@ -290,5 +417,5 @@
     };
   }
 
-  return { createDesignTemplateComponents, MAX_LIST_ITEMS, parseListItems };
+  return { createDesignTemplateComponents, MAX_LIST_ITEMS, parseListItems, parseSpecPairs, collectMeasures };
 });

@@ -101,9 +101,14 @@ function idsReferenciados(fonte) {
 
   /* 3. Ordem de carregamento dos scripts */
 
-  const ordem = ["fabric@", "design-image-model.js", "design-image-storage.js",
-    "design-image-api.js", "design-image-editor.js", "design-templates.js"];
-  const posicoes = ordem.map((trecho) => html.indexOf(trecho));
+  // Casa a tag de script, não o nome solto: os comentários do HTML também
+  // citam os arquivos e falseariam a posição.
+  const ordem = ["design-image-model.js", "design-image-storage.js",
+    "design-image-api.js", "design-image-editor.js", "design-template-engine.js",
+    "design-template-presets.js", "design-template-components.js",
+    "design-template-layouts.js", "design-template-renderer.js", "design-templates.js"];
+  const posicoes = ordem.map((arquivo) => html.indexOf(`src="${arquivo}"`));
+  posicoes.unshift(html.indexOf("cdn.jsdelivr.net/npm/fabric@"));
   ok("12. todos os scripts do editor estão na página", posicoes.every((p) => p > 0));
   ok("13. os scripts carregam na ordem de dependência",
     posicoes.every((p, i) => i === 0 || p > posicoes[i - 1]));

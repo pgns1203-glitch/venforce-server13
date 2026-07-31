@@ -143,7 +143,9 @@ async function paraBuffer(blob) {
   }));
 
   window.eval(fs.readFileSync(FABRIC, "utf8"));
-  ["design-image-model.js", "design-image-storage.js", "design-image-api.js", "design-image-editor.js", "design-templates.js"]
+  ["design-image-model.js", "design-image-storage.js", "design-image-api.js", "design-image-editor.js",
+    "design-template-engine.js", "design-template-presets.js", "design-template-components.js",
+    "design-template-layouts.js", "design-template-renderer.js", "design-templates.js"]
     .forEach((f) => window.eval(fs.readFileSync(path.join(PORTAL, f), "utf8")));
 
   await esperar(400);

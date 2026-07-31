@@ -190,6 +190,11 @@ const portalDir = path.join(__dirname, "..", "..", "Portal");
 globalThis.VF_DESIGN_IMAGE_MODEL = require(path.join(portalDir, "design-image-model"));
 globalThis.VF_DESIGN_IMAGE_STORAGE = require(path.join(portalDir, "design-image-storage"));
 globalThis.VF_DESIGN_IMAGE_API = require(path.join(portalDir, "design-image-api"));
+globalThis.VF_DESIGN_TEMPLATE_ENGINE = require(path.join(portalDir, "design-template-engine"));
+globalThis.VF_DESIGN_TEMPLATE_PRESETS = require(path.join(portalDir, "design-template-presets"));
+globalThis.VF_DESIGN_TEMPLATE_COMPONENTS = require(path.join(portalDir, "design-template-components"));
+globalThis.VF_DESIGN_TEMPLATE_LAYOUTS = require(path.join(portalDir, "design-template-layouts"));
+globalThis.VF_DESIGN_TEMPLATE_RENDERER = require(path.join(portalDir, "design-template-renderer"));
 const model = globalThis.VF_DESIGN_IMAGE_MODEL;
 const storageLib = globalThis.VF_DESIGN_IMAGE_STORAGE;
 

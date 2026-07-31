@@ -109,6 +109,33 @@
   // Ids já gravados no armazenamento nesta sessão: evita reescrever o mesmo
   // base64 a cada autosave (o autosave dispara a cada 350 ms de digitação).
   const idsPersistidos = new Set();
+
+  // O Construtor Modular grava blobs no MESMO IndexedDB deste estúdio. Sem
+  // declarar quais ids ele ainda usa, a limpeza de órfãos abaixo apagaria as
+  // imagens dos templates da equipe a cada autosave do editor antigo.
+  //
+  // Um provedor que falha devolve null e ABORTA a limpeza: perder a resposta
+  // de quem sabe o que está vivo é motivo para não apagar nada, nunca para
+  // apagar tudo.
+  const provedoresDeImagensVivas = new Set();
+  function idsDeImagensVivas(projetoLeve) {
+    const ids = imageModel ? imageModel.collectImageIds(projetoLeve) : [];
+    for (const provedor of provedoresDeImagensVivas) {
+      let extras;
+      try {
+        extras = provedor();
+      } catch {
+        return null;
+      }
+      if (!Array.isArray(extras)) return null;
+      extras.forEach((id) => { if (id) ids.push(String(id)); });
+    }
+    return ids;
+  }
+
+  // Ouvintes de "clientes carregados": o construtor monta o próprio select
+  // com a mesma lista, sem repetir a chamada ao endpoint.
+  const ouvintesDeClientes = new Set();
   let capacidadesIa = null;
   let editorImagem = null;
   let avisoArmazenamentoEmitido = false;
@@ -134,7 +161,8 @@
         await imageStorage.salvar(blob.id, blob.dataUrl);
         idsPersistidos.add(blob.id);
       }
-      const vivos = imageModel ? imageModel.collectImageIds(leve) : [];
+      const vivos = idsDeImagensVivas(leve);
+      if (vivos === null) return;
       const removidos = await imageStorage.limparOrfaos(vivos);
       removidos.forEach((id) => idsPersistidos.delete(id));
     } catch (error) {
@@ -343,21 +371,43 @@
     });
     grid.replaceChildren(...filtered.map(createTemplateCard));
     byId("dt-library-empty").hidden = filtered.length > 0;
+    // Os templates criados pela equipe são desenhados pelo módulo do
+    // construtor, que é dono deles; a biblioteca só reserva o espaço.
+    ouvintesDeBiblioteca.forEach((ouvinte) => ouvinte({ query, segment, marketplace }));
   }
 
+  const ouvintesDeBiblioteca = new Set();
+
+  // Três áreas: Biblioteca, Editor (template do sistema) e Construtor
+  // (carrossel modular). O Construtor tem estado próprio, então a view dele
+  // NÃO é gravada no projeto do editor antigo — só na variável de tela.
+  const VIEWS = ["library", "editor", "builder"];
+  let viewAtual = "library";
+
   function showView(view, options) {
-    const next = view === "editor" ? "editor" : "library";
-    project.view = next;
+    const next = VIEWS.includes(view) ? view : "library";
+    viewAtual = next;
+    if (next !== "builder") project.view = next;
     byId("dt-library-view").hidden = next !== "library";
     byId("dt-editor-view").hidden = next !== "editor";
+    byId("dt-builder-view").hidden = next !== "builder";
     byId("dt-editor-header-actions").hidden = next !== "editor";
-    byId("dt-library-tab").classList.toggle("is-active", next === "library");
-    byId("dt-library-tab").setAttribute("aria-selected", String(next === "library"));
-    byId("dt-editor-tab").classList.toggle("is-active", next === "editor");
-    byId("dt-editor-tab").setAttribute("aria-selected", String(next === "editor"));
+    byId("dt-builder-header-actions").hidden = next !== "builder";
+    [["dt-library-tab", "library"], ["dt-editor-tab", "editor"], ["dt-builder-tab", "builder"]]
+      .forEach(([id, nome]) => {
+        const tab = byId(id);
+        if (!tab) return;
+        tab.classList.toggle("is-active", next === nome);
+        tab.setAttribute("aria-selected", String(next === nome));
+      });
     if (next === "editor") renderEditor();
+    if (next === "builder") ouvintesDeConstrutor.forEach((ouvinte) => ouvinte());
     if (!options?.skipSave) scheduleAutosave();
   }
+
+  // Quem quiser reagir à abertura do Construtor se inscreve aqui (o módulo
+  // do construtor redesenha a prévia ao voltar para a aba).
+  const ouvintesDeConstrutor = new Set();
 
   function openEditor(templateId) {
     project.templateId = templateId;
@@ -870,9 +920,11 @@
       select.append(...options);
       warning.hidden = true;
       syncClientSelection();
+      ouvintesDeClientes.forEach((ouvinte) => ouvinte(clients.slice(), null));
     } catch {
       warning.hidden = false;
       byId("dt-client-warning-text").textContent = "Não foi possível carregar os clientes ativos. O projeto continua disponível com preenchimento manual.";
+      ouvintesDeClientes.forEach((ouvinte) => ouvinte([], "INDISPONIVEL"));
     }
   }
 
@@ -1034,6 +1086,53 @@
     showToast("success", "Template restaurado", "O projeto voltou ao estado original.");
   }
 
+  // Definida pelo módulo do construtor via a integração publicada abaixo.
+  let acaoDeNovoProjeto = null;
+
+  /* ── integração com o Construtor Modular ──────────────────────────────── */
+
+  // Superfície ESTREITA e explícita: o construtor é outro módulo e só pode
+  // usar o que está aqui. Nada de alcançar `project`, `clients` ou o DOM
+  // desta tela por fora. Assim o editor antigo continua sendo o único dono
+  // do próprio estado.
+  function publicarIntegracao() {
+    window.VF_DESIGN_TEMPLATE_STUDIO = {
+      API_BASE,
+      showToast,
+      openConfirmation,
+      showView,
+      getView: () => viewAtual,
+      downloadBlob,
+      sanitizeFilename,
+      timestampForFile,
+      derivedPalette,
+
+      imageModel,
+      imageStorage,
+      // Mesmo pipeline do editor antigo: valida no cliente, normaliza no
+      // servidor e cai para leitura local se o servidor não responder.
+      prepararImagem,
+      // Mesmo editor Fabric — não existe um segundo sistema de upload.
+      abrirEditorDeImagem: (entrada) => {
+        if (!editorImagem) return Promise.resolve(null);
+        return editorImagem.abrir({ ...entrada, capacidadesIa });
+      },
+      editorDeImagemDisponivel: () => Boolean(editorImagem) && Boolean(window.fabric),
+
+      templateEngine,
+      templateRenderer,
+      rendererLib,
+
+      getClients: () => clients.slice(),
+      onClientesCarregados: (ouvinte) => { ouvintesDeClientes.add(ouvinte); },
+      onBibliotecaRenderizada: (ouvinte) => { ouvintesDeBiblioteca.add(ouvinte); },
+      onConstrutorAberto: (ouvinte) => { ouvintesDeConstrutor.add(ouvinte); },
+      registrarImagensVivas: (provedor) => { provedoresDeImagensVivas.add(provedor); },
+      definirAcaoDeNovoProjeto: (acao) => { acaoDeNovoProjeto = acao; },
+      renderLibrary,
+    };
+  }
+
   function bindTabs() {
     const tabs = [...document.querySelectorAll("[data-control-tab]")];
     tabs.forEach((tab, index) => {
@@ -1064,12 +1163,13 @@
     byId("dt-back-library").addEventListener("click", () => showView("library"));
     byId("dt-library-tab").addEventListener("click", () => showView("library"));
     byId("dt-editor-tab").addEventListener("click", () => showView("editor"));
-    byId("dt-new-project").addEventListener("click", () => openConfirmation({
-      title: "Iniciar novo projeto?",
-      description: "O projeto local atual será substituído pelos valores originais deste template.",
-      confirmLabel: "Iniciar projeto",
-      onConfirm: () => resetProject("editor"),
-    }));
+    byId("dt-builder-tab").addEventListener("click", () => showView("builder"));
+    // "Novo projeto" abre o Construtor com um carrossel em branco. O template
+    // do sistema continua sendo aberto pelo botão "Personalizar" do card.
+    byId("dt-new-project").addEventListener("click", () => {
+      if (typeof acaoDeNovoProjeto === "function") acaoDeNovoProjeto();
+      else showView("builder");
+    });
     byId("dt-reset").addEventListener("click", () => openConfirmation({
       title: "Restaurar template?",
       description: "Todos os ajustes locais, textos e imagens deste projeto serão apagados.",
@@ -1146,6 +1246,10 @@
     }
     validarLayoutsDosTemplates();
     populateLibraryFilters();
+    // A integração precisa existir ANTES do construtor subir: ele é o
+    // próximo <script> da página e lê window.VF_DESIGN_TEMPLATE_STUDIO no
+    // próprio boot.
+    publicarIntegracao();
     bindEvents();
     renderLibrary();
     syncControls();

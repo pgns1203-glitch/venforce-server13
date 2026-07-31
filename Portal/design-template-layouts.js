@@ -25,8 +25,13 @@
 
   const CANVAS_FAMILY = "portable-charger";
 
-  // Fábrica dos sete layouts. Recebe a biblioteca de componentes já ligada ao
-  // adaptador de SVG; devolve as definições com render() fechado sobre ela.
+  // Família das páginas combináveis do Construtor Modular: elas não formam um
+  // conjunto fixo, entram em qualquer ordem e só usam o que estiver preenchido.
+  const MODULAR_FAMILY = "modular";
+
+  // Fábrica dos layouts (7 do conjunto do carregador + 5 modulares). Recebe a
+  // biblioteca de componentes já ligada ao adaptador de SVG; devolve as
+  // definições com render() fechado sobre ela.
   function buildLayoutDefinitions(c) {
     return [
       {
@@ -198,6 +203,203 @@
           svg.element("path", { d: "M600 515l112 43v89c0 91-58 154-112 183-54-29-112-92-112-183v-89z", fill: palette.secondary }, root);
           svg.element("path", { d: "M548 652l34 35 74-83", fill: "none", stroke: palette.white, "stroke-width": 16, "stroke-linecap": "round", "stroke-linejoin": "round" }, root);
           c.assuranceCards(root, [project.content.safe, project.content.shipping, project.content.warranty], palette, { x: 72, y: 914, step: 362 });
+        },
+      },
+
+      /* ── páginas modulares do Construtor ──────────────────────────────── */
+      //
+      // Estas cinco entradas são combináveis: cada uma se vira sozinha com o
+      // que o projeto tiver preenchido, sem depender das outras nem de uma
+      // ordem fixa. Campo vazio some da arte — nunca vira "0" ou "undefined".
+
+      {
+        id: "cover-split-v1",
+        label: "Capa dividida",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Capa em duas colunas: texto à esquerda, produto grande à direita.",
+        requiredFields: ["product.name"],
+        optionalFields: ["product.subtitle", "content.mainBenefit", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.background, canvas);
+
+          // Coluna direita: painel claro que isola o produto do texto.
+          svg.element("rect", { x: 600, y: 0, width: 600, height: 1200, fill: palette.primaryLight }, root);
+          svg.element("rect", { x: 600, y: 0, width: 6, height: 1200, fill: palette.secondary }, root);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+
+          c.sectionLabel(root, String(ctx.template.segment || "DESTAQUE").toUpperCase(), { x: 76, y: 232, fill: palette.secondaryDark });
+          c.headline(root, project.product.name, 74, 330, { maxChars: 15, maxLines: 3, fontSize: 74, lineHeight: 80, fill: palette.text });
+          c.bodyText(root, project.product.subtitle, 76, 588, { maxChars: 30, maxLines: 3, fontSize: 27, lineHeight: 36, fill: palette.muted });
+
+          // Benefício principal em bloco marcado: é a promessa da capa.
+          if (String(project.content.mainBenefit || "").trim()) {
+            svg.element("rect", { x: 74, y: 742, width: 452, height: 200, rx: 10, fill: palette.surface }, root);
+            svg.element("rect", { x: 74, y: 742, width: 8, height: 200, fill: palette.secondary }, root);
+            c.bodyText(root, project.content.mainBenefit, 110, 812, {
+              maxChars: 28, maxLines: 4, fontSize: 25, lineHeight: 34, fill: palette.text, fontWeight: 650,
+            });
+          }
+
+          svg.element("line", { x1: 76, y1: 1058, x2: 420, y2: 1058, stroke: palette.secondary, "stroke-width": 7 }, root);
+          c.productPhoto(root, project, palette, 900, 600, 520);
+        },
+      },
+
+      {
+        id: "benefits-three-cards-v1",
+        label: "Benefícios em três cards",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Produto no topo e até três benefícios numerados em cards.",
+        requiredFields: [],
+        optionalFields: ["content.benefit1", "content.benefit2", "content.benefit3", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.background, canvas);
+          svg.element("rect", { x: 0, y: 0, width: 1200, height: 156, fill: palette.primary }, root);
+
+          c.brand(root, project, palette, { x: 72, y: 44, onDark: true });
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, true);
+
+          c.sectionLabel(root, "POR QUE ESCOLHER", { x: 72, y: 252, fill: palette.secondaryDark });
+          c.headline(root, project.product.name, 70, 344, { maxChars: 26, maxLines: 2, fontSize: 62, lineHeight: 70, fill: palette.text });
+
+          c.productPhoto(root, project, palette, 600, 620, 330);
+
+          // Só os benefícios preenchidos viram card, no máximo três.
+          const beneficios = [project.content.benefit1, project.content.benefit2, project.content.benefit3]
+            .map((item) => (typeof item === "string" ? item.trim() : ""))
+            .filter(Boolean)
+            .slice(0, 3);
+          c.benefitCards(root, beneficios, palette, { x: 72, y: 858, width: 1056, height: 268 });
+        },
+      },
+
+      {
+        id: "specifications-grid-v1",
+        label: "Especificações em grade",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Ficha técnica em grade de chave e valor, com até seis linhas.",
+        requiredFields: [],
+        optionalFields: ["content.specs", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.background, canvas);
+          // A faixa começa depois da descida do título (linha de base 296 +
+          // descendente de uma fonte de 60 px). maxChars 26 garante o título
+          // numa linha só, sem invadir a faixa.
+          svg.element("rect", { x: 0, y: 380, width: 1200, height: 820, fill: palette.surface }, root);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+
+          c.sectionLabel(root, "FICHA DO PRODUTO", { x: 72, y: 208, fill: palette.secondaryDark });
+          c.headline(root, "Especificações técnicas", 70, 296, { maxChars: 26, maxLines: 2, fontSize: 60, lineHeight: 68, fill: palette.text });
+
+          const pares = c.parseSpecPairs(project.content.specs, 6);
+          if (pares.length) {
+            c.specGrid(root, pares, palette, { x: 72, y: 522, width: 1056, columns: 2, gapX: 56, rowHeight: 202 });
+          } else if (ctx.mode === "preview") {
+            c.editingNote(root, "Preencha as especificações técnicas — uma por linha, no formato “Potência: 650 W”.",
+              palette, { x: 72, y: 520, width: 1056 });
+          }
+
+          svg.element("line", { x1: 72, y1: 1128, x2: 1128, y2: 1128, stroke: palette.secondary, "stroke-width": 6 }, root);
+        },
+      },
+
+      {
+        id: "package-list-v1",
+        label: "Conteúdo da embalagem",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Lista numerada do que acompanha o produto, com o produto ao lado.",
+        requiredFields: [],
+        optionalFields: ["content.packageItems", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.surface, canvas);
+          svg.element("rect", { x: 700, y: 0, width: 500, height: 1200, fill: palette.primaryLight }, root);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+
+          c.sectionLabel(root, "NA CAIXA", { x: 72, y: 226, fill: palette.secondaryDark });
+          c.headline(root, "Conteúdo da embalagem", 70, 318, { maxChars: 18, maxLines: 3, fontSize: 60, lineHeight: 66, fill: palette.text });
+
+          const itens = c.parseListItems(project.content.packageItems, 6);
+          if (itens.length) {
+            c.numberedList(root, itens, palette, { x: 74, y: 542, step: 82 });
+          } else if (ctx.mode === "preview") {
+            // Aviso de edição: some no PNG exportado (ver componente).
+            c.editingNote(root, "Liste o que acompanha o produto — um item por linha.",
+              palette, { x: 72, y: 508, width: 580 });
+          }
+
+          c.productPhoto(root, project, palette, 950, 600, 400);
+        },
+      },
+
+      {
+        id: "dimensions-technical-v1",
+        label: "Dimensões técnicas",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Produto ao centro com cotas e fichas apenas das medidas preenchidas.",
+        requiredFields: [],
+        optionalFields: ["content.width", "content.height", "content.depth", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.background, canvas);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+
+          c.sectionLabel(root, "MEDIDAS REAIS", { x: 72, y: 214, fill: palette.secondaryDark });
+          c.headline(root, "Dimensões técnicas", 70, 302, { maxChars: 20, maxLines: 2, fontSize: 64, lineHeight: 70, fill: palette.text });
+
+          // Palco técnico: malha discreta atrás do produto, sem inventar cota.
+          svg.element("rect", { x: 72, y: 396, width: 700, height: 700, fill: palette.surface }, root);
+          [0, 1, 2, 3].forEach((linha) => {
+            const y = 396 + linha * 175;
+            svg.element("line", { x1: 72, y1: y, x2: 772, y2: y, stroke: palette.primaryLight, "stroke-width": 2 }, root);
+          });
+          c.productPhoto(root, project, palette, 422, 746, 400);
+
+          const medidas = c.collectMeasures(project.content);
+          if (medidas.length) {
+            c.measureCards(root, medidas, palette, { x: 824, y: 470, width: 304, step: 108 });
+          } else if (ctx.mode === "preview") {
+            c.editingNote(root, "Informe largura, altura ou profundidade para gerar as cotas.",
+              palette, { x: 824, y: 470, width: 304 });
+          }
+
+          // As cotas seguem as medidas: nenhuma linha é desenhada sem valor.
+          medidas.forEach((medida) => {
+            if (medida.key === "width") {
+              c.dimensionLine(root, palette, {
+                x1: 152, y1: 1046, x2: 692, y2: 1046,
+                label: `${medida.short} ${medida.value}`, labelX: 372, labelY: 1026,
+              });
+            }
+            if (medida.key === "height") {
+              c.dimensionLine(root, palette, {
+                x1: 118, y1: 452, x2: 118, y2: 1010,
+                label: `${medida.short} ${medida.value}`, labelX: 96, labelY: 428,
+              });
+            }
+            if (medida.key === "depth") {
+              c.dimensionLine(root, palette, {
+                x1: 700, y1: 512, x2: 772, y2: 440,
+                label: `${medida.short} ${medida.value}`, labelX: 640, labelY: 424,
+              });
+            }
+          });
         },
       },
     ];

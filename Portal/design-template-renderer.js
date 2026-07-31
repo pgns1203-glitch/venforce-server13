@@ -204,6 +204,11 @@
     }
 
     // Devolve o elemento <svg> da página. `project` é lido, nunca alterado.
+    //
+    // `input.mode` distingue a prévia da tela do arquivo final: só a prévia
+    // pode mostrar aviso de campo vazio. O padrão é "export" — quem exporta
+    // não precisa lembrar de pedir arte limpa; quem previa é que pede o
+    // extra. Os layouts do conjunto original ignoram este campo.
     function renderPage(input) {
       const { template, project } = input;
       const { page, index, total } = pageAt(template, input.pageIndex);
@@ -224,6 +229,7 @@
         pageIndex: index,
         totalPages: total,
         canvas: template.canvas,
+        mode: input.mode === "preview" ? "preview" : "export",
       });
 
       return root;
@@ -234,6 +240,7 @@
         template: input.template,
         project: input.project,
         pageIndex: index,
+        mode: input.mode,
       }));
     }
 

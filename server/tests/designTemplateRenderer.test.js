@@ -42,7 +42,12 @@ const PNG_PRODUTO =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 const JPEG_LOGO = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAg=";
 
-const IDS_ESPERADOS = ["cover", "wireless", "led", "package", "dimensions", "features", "safe"];
+// 7 layouts do conjunto do carregador + 5 páginas modulares do Construtor.
+const IDS_ESPERADOS = [
+  "cover", "wireless", "led", "package", "dimensions", "features", "safe",
+  "cover-split-v1", "benefits-three-cards-v1", "specifications-grid-v1",
+  "package-list-v1", "dimensions-technical-v1",
+];
 
 const registry = engine.createTemplateRegistry(presets.TEMPLATE_DEFINITIONS);
 const template = registry.getDefault();
@@ -98,7 +103,7 @@ function contarNos(no) {
   /* ── 2/3/4. Registro de layouts ────────────────────────────────────────── */
 
   const definicoes = renderer.listAvailableLayouts();
-  eq("2. o registro possui exatamente os 7 layouts atuais", definicoes.length, 7);
+  eq("2. o registro possui exatamente os 12 layouts atuais", definicoes.length, IDS_ESPERADOS.length);
   eq("2b. os ids dos layouts são os rendererIds atuais", definicoes.map((d) => d.id), IDS_ESPERADOS);
 
   // O registro é construído a partir de uma lista fixa do próprio módulo;
@@ -120,7 +125,7 @@ function contarNos(no) {
     definicoes.every((d) => typeof d.label === "string" && typeof d.family === "string"
       && typeof d.version === "number" && Array.isArray(d.requiredFields)));
   ok("4c. as definições públicas sobrevivem a JSON.stringify",
-    JSON.parse(JSON.stringify(definicoes)).length === 7);
+    JSON.parse(JSON.stringify(definicoes)).length === IDS_ESPERADOS.length);
   ok("4d. `render` não vaza na listagem pública",
     definicoes.every((d) => !("render" in d)));
 
@@ -278,7 +283,9 @@ function contarNos(no) {
     "layout.js",
     "design-image-model.js", "design-image-storage.js", "design-image-api.js", "design-image-editor.js",
     "design-template-engine.js", "design-template-presets.js", "design-template-components.js",
-    "design-template-layouts.js", "design-template-renderer.js", "design-templates.js",
+    "design-template-layouts.js", "design-template-renderer.js",
+    "design-template-builder-model.js", "design-template-builder-storage.js",
+    "design-templates.js", "design-template-builder.js",
   ];
   const posicoes = ordem.map(posicaoDoScript);
   ok("18. todos os módulos aparecem no HTML como <script src>", posicoes.every((p) => p > -1));
@@ -290,8 +297,12 @@ function contarNos(no) {
   ok("18d. o renderer carrega depois de componentes e layouts",
     posicaoDoScript("design-template-renderer.js") > posicaoDoScript("design-template-layouts.js")
     && posicaoDoScript("design-template-layouts.js") > posicaoDoScript("design-template-components.js"));
-  ok("18e. a tela é o último script da página",
-    posicaoDoScript("design-templates.js") === Math.max(...posicoes));
+  ok("18e. o construtor é o último script da página (consome a integração da tela)",
+    posicaoDoScript("design-template-builder.js") === Math.max(...posicoes)
+    && posicaoDoScript("design-templates.js") < posicaoDoScript("design-template-builder.js"));
+  ok("18f. o núcleo do construtor (model e storage) carrega antes da tela",
+    posicaoDoScript("design-template-builder-model.js") < posicaoDoScript("design-templates.js")
+    && posicaoDoScript("design-template-builder-storage.js") < posicaoDoScript("design-templates.js"));
 
   /* ── 20. Campos ausentes ───────────────────────────────────────────────── */
 

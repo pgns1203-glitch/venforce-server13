@@ -85,6 +85,7 @@
   }
 
   let project = loadProject();
+  let sharedSaveContext = null;
   let clients = [];
   let autosaveTimer = null;
   let confirmAction = null;
@@ -112,7 +113,7 @@
 
   // O Construtor Modular grava blobs no MESMO IndexedDB deste estúdio. Sem
   // declarar quais ids ele ainda usa, a limpeza de órfãos abaixo apagaria as
-  // imagens dos templates da equipe a cada autosave do editor antigo.
+  // imagens dos templates salvos a cada autosave do editor anterior.
   //
   // Um provedor que falha devolve null e ABORTA a limpeza: perder a resposta
   // de quem sabe o que está vivo é motivo para não apagar nada, nunca para
@@ -371,7 +372,7 @@
     });
     grid.replaceChildren(...filtered.map(createTemplateCard));
     byId("dt-library-empty").hidden = filtered.length > 0;
-    // Os templates criados pela equipe são desenhados pelo módulo do
+    // Os templates salvos são desenhados pelo módulo do
     // construtor, que é dono deles; a biblioteca só reserva o espaço.
     ouvintesDeBiblioteca.forEach((ouvinte) => ouvinte({ query, segment, marketplace }));
   }
@@ -410,6 +411,7 @@
   const ouvintesDeConstrutor = new Set();
 
   function openEditor(templateId) {
+    sharedSaveContext = null;
     project.templateId = templateId;
     showView("editor");
   }
@@ -1157,7 +1159,19 @@
     byId("dt-remove-product").addEventListener("click", () => removeImage("product"));
     byId("dt-edit-product").addEventListener("click", abrirEditorDeImagem);
     byId("dt-restore-product").addEventListener("click", restaurarImagemOriginal);
-    byId("dt-save").addEventListener("click", () => persistProject(true));
+    byId("dt-save").addEventListener("click", async () => {
+      const workspace = window.VF_DESIGN_STUDIO_WORKSPACE;
+      if (!workspace) return persistProject(true);
+      try {
+        const template = getActiveTemplate();
+        sharedSaveContext = await workspace.saveDocument({ ...project, name: template.name }, sharedSaveContext);
+        setSaveStatus("Versão salva no Estúdio", "saved");
+        showToast("success", "Template salvo", "O projeto foi adicionado ao espaço compartilhado do cliente.");
+      } catch (error) {
+        setSaveStatus("Não foi possível salvar", "error");
+        showToast("danger", "Não foi possível salvar", error.message);
+      }
+    });
     byId("dt-export-config").addEventListener("click", exportConfiguration);
     byId("dt-download-page").addEventListener("click", exportCurrentPage);
     byId("dt-back-library").addEventListener("click", () => showView("library"));
@@ -1254,7 +1268,7 @@
     renderLibrary();
     syncControls();
     showView(project.view, { skipSave: true });
-    setSaveStatus("Alterações salvas localmente", "saved");
+    setSaveStatus("Rascunho neste navegador", "saved");
     loadClients();
 
     // Nada abaixo bloqueia a primeira pintura da tela.

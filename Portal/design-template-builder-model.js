@@ -360,7 +360,7 @@
   // rendererId, name }. Nunca lança: é o caminho de leitura de dado salvo.
   //
   // Aceita três formatos, porque projetos gravados antes desta fase existem
-  // no navegador da equipe:
+  // no navegador do usuário:
   //   • "cover-split-v1"                 (rendererId solto — formato antigo)
   //   • "cover"                          (id de família)
   //   • { family, rendererId }           (formato atual)

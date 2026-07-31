@@ -471,8 +471,8 @@ function criarLocalStorage() {
   ok("17e. o título e a descrição pedidos estão na tela",
     html.includes("Criar carrossel modular")
     && html.includes("Escolha a identidade, preencha as informações do produto e combine páginas"));
-  ok("17f. a biblioteca separa template do sistema e template da equipe",
-    html.includes("Templates do sistema") && html.includes("Templates criados pela equipe"));
+  ok("17f. a biblioteca separa modelos de partida e templates salvos",
+    html.includes("Modelos de partida") && html.includes("Templates salvos"));
 
   const posicaoDoScript = (arquivo) => html.indexOf(`src="${arquivo}"`);
   const ordem = [
@@ -728,7 +728,7 @@ function criarLocalStorage() {
     byIdFake("dtb-project-name").dispatch("input");
     byIdFake("dtb-save-template").dispatch("click");
 
-    eq("T11. salvar como template cria um card na biblioteca da equipe",
+    eq("T11. salvar como template cria um card na biblioteca",
       byIdFake("dt-local-template-grid").children.length, 1);
     ok("T11b. o card mostra o nome do projeto",
       textosDe(byIdFake("dt-local-template-grid").children[0]).includes("Carrossel da Furadeira"));
@@ -736,7 +736,7 @@ function criarLocalStorage() {
       textosDe(byIdFake("dt-local-template-grid").children[0]).includes("Template criado manualmente"));
     ok("T11d. o card traz segmento, estilo, páginas e data",
       textosDe(byIdFake("dt-local-template-grid").children[0]).join(" ").includes("Páginas:"));
-    ok("T11e. o vazio da biblioteca da equipe sumiu", byIdFake("dt-local-empty").hidden === true);
+    ok("T11e. o vazio da biblioteca sumiu", byIdFake("dt-local-empty").hidden === true);
 
     const registros = builderStorage.createBuilderLibrary({ localStorage: store }).listar();
     eq("T12. o template foi para a chave nova do localStorage", registros.length, 1);

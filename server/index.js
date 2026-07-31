@@ -69,6 +69,8 @@ const centralVendasRoutes = require("./routes/centralVendasRoutes");
 const diagnosticoInicialRoutes = require("./routes/diagnosticoInicialRoutes");
 const adsRoutes = require("./routes/adsRoutes");
 const designImageRoutes = require("./routes/designImageRoutes");
+const designStudioRoutes = require("./routes/designStudioRoutes");
+const designStudioService = require("./services/designStudio/designStudioService");
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("./services/activityLogService");
 const meliAnunciosRoutes = require("./routes/meliAnunciosRoutes");
 const metricasRoutes = require("./routes/metricasRoutes");
@@ -109,7 +111,7 @@ app.use(cors({
   exposedHeaders: ["X-Request-Id"],
 }));
 app.options(/.*/, cors());
-app.use(express.json());
+app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 app.use(observabilityMiddleware);
@@ -528,6 +530,7 @@ app.use("/metricas", metricasRoutes);
 // Editor de imagem do Estúdio de Templates. Fica sob /design/imagens para não
 // colidir com os endpoints /design/clientes e /design/anuncios declarados abaixo.
 app.use("/design/imagens", designImageRoutes);
+app.use("/design/studio", designStudioRoutes);
 app.use("/api/clickup", clickupRoutes);
 
 app.post("/scans", authMiddleware, async (req, res) => {
@@ -1493,6 +1496,10 @@ const server = app.listen(PORT, () => {
       "[diagnosticoInicial] erro ao garantir tabelas no boot:",
       err.message
     );
+  });
+
+  designStudioService.initialize().catch((err) => {
+    console.error("[design-studio] erro ao garantir tabelas no boot:", err.message);
   });
 
   ensureObservabilityTables()

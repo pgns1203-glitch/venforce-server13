@@ -41,6 +41,7 @@ const layoutsLib = require(path.join(portalDir, "design-template-layouts"));
 const rendererLib = require(path.join(portalDir, "design-template-renderer"));
 const builderModel = require(path.join(portalDir, "design-template-builder-model"));
 const builderStorage = require(path.join(portalDir, "design-template-builder-storage"));
+const generator = require(path.join(portalDir, "design-template-proposal-generator"));
 
 const PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
@@ -67,6 +68,11 @@ function criarRenderer() {
 function indiceDaPagina(template, rendererId) {
   return template.pages.findIndex((page) => page.rendererId === rendererId);
 }
+
+// A partir da Fase 4 uma página é { id, family, rendererId, name }. Estes
+// atalhos mantêm as asserções legíveis.
+const familias = (pages) => pages.map((p) => p.family);
+const renderers = (pages) => pages.map((p) => p.rendererId);
 
 function contarNos(no) {
   return 1 + (no.children || []).reduce((total, filho) => total + contarNos(filho), 0);
@@ -102,11 +108,22 @@ function criarLocalStorage() {
   ok("1. o construtor cria um projeto padrão utilizável",
     Boolean(padrao.id) && padrao.version === builderModel.BUILDER_SCHEMA_VERSION
     && typeof padrao.name === "string" && padrao.name.trim().length > 0);
-  eq("1b. o projeto padrão já vem com as cinco páginas modulares",
-    padrao.pages, builderModel.PAGE_TYPE_IDS);
+  eq("1b. o projeto padrão já vem com as cinco famílias de página",
+    familias(padrao.pages), builderModel.FAMILY_IDS);
+  eq("1b2. cada página nasce na variação padrão da família",
+    renderers(padrao.pages),
+    ["cover-split-v1", "benefits-three-cards-v1", "specifications-grid-v1", "package-list-v1", "dimensions-technical-v1"]);
   ok("1c. o projeto padrão tem paleta hexadecimal válida",
     ["primary", "secondary", "background", "text"].every((c) => builderModel.isHexColor(padrao.palette[c])));
-  ok("1d. o projeto padrão passa na validação", builderModel.validateProject(padrao).ok === true);
+  // Fase 4: o projeto padrão nasce VAZIO. Texto de exemplo gravado no projeto
+  // seria dado comercial falso; as sugestões vivem como placeholder na tela.
+  ok("1d. o projeto padrão nasce sem conteúdo comercial inventado",
+    Object.values(padrao.content).every((v) => v === "")
+    && padrao.product.name === "" && padrao.product.subtitle === "");
+  ok("1d2. a validação cobra o que falta em vez de aceitar o vazio", (() => {
+    const resultado = builderModel.validateProject(padrao);
+    return !resultado.ok && resultado.erros.some((e) => e.codigo === "NOME_PRODUTO_AUSENTE");
+  })());
   ok("1e. dois projetos padrão têm ids diferentes",
     builderModel.createDefaultProject({ imageModel }).id !== builderModel.createDefaultProject({ imageModel }).id);
   ok("1f. o projeto padrão não guarda base64 nenhum",
@@ -114,9 +131,17 @@ function criarLocalStorage() {
 
   /* ── 2. Capa obrigatória ───────────────────────────────────────────────── */
 
-  eq("2. a capa é a única página marcada como obrigatória",
-    builderModel.REQUIRED_PAGE_IDS, ["cover-split-v1"]);
+  eq("2. a capa é a única família marcada como obrigatória",
+    builderModel.REQUIRED_FAMILY_IDS, ["cover"]);
   ok("2b. remover a capa é recusado com erro explícito", (() => {
+    try {
+      builderModel.removePage(padrao.pages, "cover");
+      return false;
+    } catch (erro) {
+      return erro.codigo === "PAGINA_OBRIGATORIA";
+    }
+  })());
+  ok("2b2. remover a capa pelo rendererId antigo também é recusado", (() => {
     try {
       builderModel.removePage(padrao.pages, "cover-split-v1");
       return false;
@@ -125,53 +150,55 @@ function criarLocalStorage() {
     }
   })());
   ok("2c. um projeto sem capa é reprovado na validação", (() => {
-    const semCapa = { ...padrao, pages: ["package-list-v1"] };
+    const semCapa = { ...padrao, pages: [{ family: "package", rendererId: "package-list-v1" }] };
     const resultado = builderModel.validateProject(semCapa);
     return !resultado.ok && resultado.erros.some((e) => e.codigo === "CAPA_AUSENTE");
   })());
   ok("2d. sanitizar um projeto sem capa devolve a capa de volta",
-    builderModel.normalizePages(["package-list-v1"]).includes("cover-split-v1"));
+    familias(builderModel.normalizePages(["package-list-v1"])).includes("cover"));
 
   /* ── 3. Adicionar páginas ──────────────────────────────────────────────── */
 
   const soCapa = ["cover-split-v1"];
   eq("3. uma página pode ser adicionada ao carrossel",
-    builderModel.addPage(soCapa, "specifications-grid-v1"),
-    ["cover-split-v1", "specifications-grid-v1"]);
-  eq("3b. adicionar a mesma página duas vezes não duplica",
-    builderModel.addPage(builderModel.addPage(soCapa, "package-list-v1"), "package-list-v1"),
-    ["cover-split-v1", "package-list-v1"]);
+    familias(builderModel.addPage(soCapa, "specifications")), ["cover", "specifications"]);
+  eq("3b. adicionar a mesma família duas vezes não duplica",
+    familias(builderModel.addPage(builderModel.addPage(soCapa, "package"), "package")),
+    ["cover", "package"]);
   eq("3c. addPage não altera a lista recebida", soCapa, ["cover-split-v1"]);
+  eq("3d. adicionar por rendererId escolhe a variação pedida",
+    renderers(builderModel.addPage(soCapa, "specifications-cards-v1")),
+    ["cover-split-v1", "specifications-cards-v1"]);
 
   /* ── 4. Remover páginas ────────────────────────────────────────────────── */
 
-  const cinco = builderModel.PAGE_TYPE_IDS.slice();
+  const cinco = builderModel.FAMILY_IDS.slice();
   eq("4. uma página opcional pode ser removida",
-    builderModel.removePage(cinco, "package-list-v1"),
-    ["cover-split-v1", "benefits-three-cards-v1", "specifications-grid-v1", "dimensions-technical-v1"]);
-  eq("4b. removePage não altera a lista recebida", cinco, builderModel.PAGE_TYPE_IDS);
+    familias(builderModel.removePage(cinco, "package")),
+    ["cover", "benefits", "specifications", "dimensions"]);
+  eq("4b. removePage não altera a lista recebida", cinco, builderModel.FAMILY_IDS);
   eq("4c. togglePage(false) é o mesmo que remover",
-    builderModel.togglePage(cinco, "dimensions-technical-v1", false),
-    builderModel.removePage(cinco, "dimensions-technical-v1"));
+    builderModel.togglePage(cinco, "dimensions", false),
+    builderModel.removePage(cinco, "dimensions"));
 
   /* ── 5. Reordenar páginas ──────────────────────────────────────────────── */
 
   eq("5. uma página pode subir na ordem",
-    builderModel.movePage(cinco, "specifications-grid-v1", -1),
-    ["cover-split-v1", "specifications-grid-v1", "benefits-three-cards-v1", "package-list-v1", "dimensions-technical-v1"]);
+    familias(builderModel.movePage(cinco, "specifications", -1)),
+    ["cover", "specifications", "benefits", "package", "dimensions"]);
   eq("5b. uma página pode descer na ordem",
-    builderModel.movePage(cinco, "benefits-three-cards-v1", 1),
-    ["cover-split-v1", "specifications-grid-v1", "benefits-three-cards-v1", "package-list-v1", "dimensions-technical-v1"]);
+    familias(builderModel.movePage(cinco, "benefits", 1)),
+    ["cover", "specifications", "benefits", "package", "dimensions"]);
   eq("5c. subir a primeira página não circula para o fim",
-    builderModel.movePage(cinco, "cover-split-v1", -1), cinco);
+    familias(builderModel.movePage(cinco, "cover", -1)), cinco);
   eq("5d. descer a última página não circula para o início",
-    builderModel.movePage(cinco, "dimensions-technical-v1", 1), cinco);
+    familias(builderModel.movePage(cinco, "dimensions", 1)), cinco);
   ok("5e. canMovePage reflete as pontas",
-    builderModel.canMovePage(cinco, "cover-split-v1", -1) === false
-    && builderModel.canMovePage(cinco, "cover-split-v1", 1) === true
-    && builderModel.canMovePage(cinco, "dimensions-technical-v1", 1) === false);
+    builderModel.canMovePage(cinco, "cover", -1) === false
+    && builderModel.canMovePage(cinco, "cover", 1) === true
+    && builderModel.canMovePage(cinco, "dimensions", 1) === false);
   eq("5f. a ordem escolhida vira a ordem das páginas do template", (() => {
-    const projeto = { ...padrao, pages: builderModel.movePage(cinco, "dimensions-technical-v1", -1) };
+    const projeto = { ...padrao, pages: builderModel.movePage(cinco, "dimensions", -1) };
     return engine.normalizeTemplateDefinition(builderModel.buildTemplateDefinition(projeto))
       .pages.map((p) => p.rendererId);
   })(), ["cover-split-v1", "benefits-three-cards-v1", "specifications-grid-v1", "dimensions-technical-v1", "package-list-v1"]);
@@ -186,8 +213,12 @@ function criarLocalStorage() {
     try { builderModel.removePage(cinco, "pagina-inventada-v9"); return false; }
     catch (erro) { return erro.codigo === "PAGINA_DESCONHECIDA"; }
   })());
+  ok("6b2. setPageVariant rejeita layout de outra família", (() => {
+    try { builderModel.setPageVariant(cinco, "cover", "package-grid-v1"); return false; }
+    catch (erro) { return erro.codigo === "LAYOUT_DE_OUTRA_FAMILIA"; }
+  })());
   ok("6c. movePage rejeita página que não está no carrossel", (() => {
-    try { builderModel.movePage(soCapa, "package-list-v1", 1); return false; }
+    try { builderModel.movePage(soCapa, "package", 1); return false; }
     catch (erro) { return erro.codigo === "PAGINA_AUSENTE"; }
   })());
   ok("6d. a validação denuncia rendererId desconhecido em vez de aceitar", (() => {
@@ -200,8 +231,8 @@ function criarLocalStorage() {
     try { builderModel.applyStyle(padrao, "estilo-que-nao-existe"); return false; }
     catch (erro) { return erro.codigo === "ESTILO_DESCONHECIDO"; }
   })());
-  ok("6g. ids duplicados na lista são reprovados na validação", (() => {
-    const resultado = builderModel.validateProject({ ...padrao, pages: ["cover-split-v1", "cover-split-v1"] });
+  ok("6g. duas páginas da mesma família são reprovadas na validação", (() => {
+    const resultado = builderModel.validateProject({ ...padrao, pages: ["cover-split-v1", "cover-impact-v1"] });
     return !resultado.ok && resultado.erros.some((e) => e.codigo === "PAGINA_DUPLICADA");
   })());
 
@@ -220,6 +251,7 @@ function criarLocalStorage() {
   };
   projetoComImagem.product = {
     ...projetoComImagem.product,
+    name: "Furadeira de impacto 650 W",
     originalImage: imageModel.normalizeImageRef({ id: "bld-prod-1", dataUrl: PNG, fileName: "p.png", mimeType: "image/png" }),
   };
 
@@ -231,8 +263,8 @@ function criarLocalStorage() {
     store.getItem("vf-design-template-studio-v1") === null);
   eq("7d. o registro guarda o essencial",
     Object.keys(salvo).sort(),
-    ["clienteId", "clienteNome", "content", "createdAt", "id", "logo", "marcaNome", "name",
-      "origin", "pages", "palette", "product", "segment", "style", "updatedAt", "version"]);
+    ["clienteId", "clienteNome", "content", "createdAt", "direction", "id", "logo", "marcaNome",
+      "name", "origin", "pages", "palette", "product", "segment", "style", "updatedAt", "version"]);
   ok("7e. salvar sem nome é recusado com mensagem clara", (() => {
     try { library.salvar({ ...projetoComImagem, id: "", name: "   " }); return false; }
     catch (erro) { return erro.codigo === "NOME_AUSENTE"; }
@@ -241,8 +273,9 @@ function criarLocalStorage() {
   const carregado = library.obter(salvo.id);
   ok("8. um template local pode ser carregado de volta",
     carregado && carregado.name === "Furadeira 650 W" && carregado.segment === "Ferramentas");
-  eq("8b. as páginas e a ordem sobrevivem ao salvar/carregar",
-    carregado.pages, projetoComImagem.pages);
+  eq("8b. as páginas, as variações e a ordem sobrevivem ao salvar/carregar",
+    carregado.pages.map((p) => `${p.family}:${p.rendererId}`),
+    projetoComImagem.pages.map((p) => `${p.family}:${p.rendererId}`));
   eq("8c. a paleta sobrevive ao salvar/carregar", carregado.palette, projetoComImagem.palette);
   ok("8d. as referências de imagem sobrevivem (id preservado, blob fora)",
     carregado.logo.id === "bld-logo-1" && carregado.product.originalImage.id === "bld-prod-1"
@@ -339,7 +372,7 @@ function criarLocalStorage() {
   })());
 
   const projetoVazio = builderModel.sanitizeProject(
-    { id: "vazio", name: "Vazio", pages: builderModel.PAGE_TYPE_IDS, palette: padrao.palette },
+    { id: "vazio", name: "Vazio", pages: builderModel.FAMILY_IDS, palette: padrao.palette },
     { imageModel }
   );
   const svgsVazios = renderer.renderAllPages({
@@ -588,6 +621,7 @@ function criarLocalStorage() {
     contexto.VF_DESIGN_TEMPLATE_RENDERER = rendererLib;
     contexto.VF_DESIGN_TEMPLATE_BUILDER_MODEL = builderModel;
     contexto.VF_DESIGN_TEMPLATE_BUILDER_STORAGE = builderStorage;
+    contexto.VF_DESIGN_TEMPLATE_PROPOSAL_GENERATOR = generator;
     contexto.VFDesignImageEditor = { createDesignImageEditor: () => ({ abrir: () => Promise.resolve(null) }) };
 
     vm.createContext(contexto);
@@ -615,7 +649,17 @@ function criarLocalStorage() {
       byIdFake("dt-builder-header-actions").hidden === false
       && byIdFake("dt-editor-header-actions").hidden === true);
 
-    // 2. a prévia existe, com miniaturas
+    // 2. o modo padrão é "Gerar propostas"
+    ok("T3e. o Construtor abre no modo “Gerar propostas”",
+      byIdFake("dtb-generate-view").hidden === false
+      && byIdFake("dtb-manual-view").hidden === true
+      && byIdFake("dtb-mode-generate").getAttribute("aria-pressed") === "true");
+
+    byIdFake("dtb-mode-manual").dispatch("click");
+    ok("T3f. “Montar manualmente” troca para o editor manual",
+      byIdFake("dtb-manual-view").hidden === false && byIdFake("dtb-generate-view").hidden === true);
+
+    // 3. a prévia existe, com miniaturas
     ok("T4. a prévia principal desenhou uma página",
       byIdFake("dtb-main-preview").children.length === 1
       && byIdFake("dtb-main-preview").children[0].tagName === "svg");
@@ -646,7 +690,7 @@ function criarLocalStorage() {
     // 5. remover uma página remove a miniatura
     const caixaDeEspecificacoes = byIdFake("dtb-pages-list").children
       .map((item) => item.children[0].children[0].children[0])
-      .find((caixa) => caixa.id === "dtb-page-specifications-grid-v1");
+      .find((caixa) => caixa.id === "dtb-page-specifications");
     caixaDeEspecificacoes.checked = false;
     caixaDeEspecificacoes.dispatch("change");
     eq("T7. desmarcar uma página remove a miniatura", byIdFake("dtb-thumbnails").children.length, 4);
@@ -656,7 +700,7 @@ function criarLocalStorage() {
     // 6. incluir de volta
     const caixaDeVolta = byIdFake("dtb-pages-list").children
       .map((item) => item.children[0].children[0].children[0])
-      .find((caixa) => caixa.id === "dtb-page-specifications-grid-v1");
+      .find((caixa) => caixa.id === "dtb-page-specifications");
     caixaDeVolta.checked = true;
     caixaDeVolta.dispatch("change");
     eq("T8. marcar de volta devolve a miniatura", byIdFake("dtb-thumbnails").children.length, 5);
@@ -664,13 +708,15 @@ function criarLocalStorage() {
     // 7. a capa não pode ser desmarcada
     const caixaDaCapa = byIdFake("dtb-pages-list").children
       .map((item) => item.children[0].children[0].children[0])
-      .find((caixa) => caixa.id === "dtb-page-cover-split-v1");
+      .find((caixa) => caixa.id === "dtb-page-cover");
     ok("T9. a caixa da capa vem desabilitada na interface", caixaDaCapa.disabled === true);
 
     // 8. reordenar muda a sequência
     const rotulosAntes = byIdFake("dtb-thumbnails").children.map((b) => b.children[1].textContent);
+    // O rótulo mostra o nome da VARIAÇÃO ("Cotas técnicas"), então a busca é
+    // pelo id da família na caixa de seleção.
     const itemDeDimensoes = byIdFake("dtb-pages-list").children
-      .find((item) => /Dimensões/.test(item.children[0].children[0].children[1].textContent));
+      .find((item) => item.children[0].children[0].children[0].id === "dtb-page-dimensions");
     itemDeDimensoes.children[0].children[1].children[0].dispatch("click"); // Subir
     const rotulosDepois = byIdFake("dtb-thumbnails").children.map((b) => b.children[1].textContent);
     ok("T10. subir uma página muda a sequência da prévia",
@@ -686,8 +732,8 @@ function criarLocalStorage() {
       byIdFake("dt-local-template-grid").children.length, 1);
     ok("T11b. o card mostra o nome do projeto",
       textosDe(byIdFake("dt-local-template-grid").children[0]).includes("Carrossel da Furadeira"));
-    ok("T11c. o card se identifica como criado pela equipe",
-      textosDe(byIdFake("dt-local-template-grid").children[0]).includes("Criado pela equipe"));
+    ok("T11c. o card se identifica como criado manualmente",
+      textosDe(byIdFake("dt-local-template-grid").children[0]).includes("Template criado manualmente"));
     ok("T11d. o card traz segmento, estilo, páginas e data",
       textosDe(byIdFake("dt-local-template-grid").children[0]).join(" ").includes("Páginas:"));
     ok("T11e. o vazio da biblioteca da equipe sumiu", byIdFake("dt-local-empty").hidden === true);

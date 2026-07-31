@@ -24,14 +24,18 @@
   const studio = window.VF_DESIGN_TEMPLATE_STUDIO;
   const model = window.VF_DESIGN_TEMPLATE_BUILDER_MODEL;
   const storageLib = window.VF_DESIGN_TEMPLATE_BUILDER_STORAGE;
+  const generator = window.VF_DESIGN_TEMPLATE_PROPOSAL_GENERATOR;
 
   // Sem a integração ou sem o núcleo, o construtor não sobe — mas a tela
   // antiga continua inteira. Nada aqui pode derrubar o Estúdio.
-  if (!studio || !model || !storageLib) return;
+  if (!studio || !model || !storageLib || !generator) return;
 
   // Rascunho e biblioteca são assuntos separados, com chaves separadas — e
-  // nenhuma delas é a chave do projeto do editor antigo.
+  // nenhuma delas é a chave do projeto do editor antigo. O rascunho guarda
+  // o projeto manual E a entrada do gerador, para que trocar de modo (ou
+  // recarregar a página) não perca o que já foi digitado.
   const DRAFT_KEY = "vf-design-template-builder-draft-v1";
+  const DRAFT_VERSION = 2;
   const DEBOUNCE_MS = 220;
 
   const imageModel = studio.imageModel;
@@ -44,6 +48,12 @@
   /* ── estado ───────────────────────────────────────────────────────────── */
 
   let projeto = null;
+  // Entrada do gerador: objeto SEPARADO do projeto manual. Digitar no
+  // formulário de geração não pode alterar o carrossel aberto no editor.
+  let entrada = null;
+  let propostas = [];
+  let variationIndex = 0;
+  let modo = "gerar";
   // Snapshot do estado em que o carrossel foi aberto: é com ele que o botão
   // "Valores iniciais" compara. Não é o padrão do sistema — é o ponto de
   // partida deste projeto.
@@ -114,9 +124,25 @@
     }
   }
 
+  // A entrada do gerador também é leve: só ids de imagem, nunca base64.
+  function entradaLeve(origem) {
+    const copia = clonar(origem);
+    if (copia.logo) copia.logo.dataUrl = null;
+    if (copia.productImages) {
+      if (copia.productImages.originalImage) copia.productImages.originalImage.dataUrl = null;
+      if (copia.productImages.editedImage) copia.productImages.editedImage.dataUrl = null;
+    }
+    return copia;
+  }
+
   function salvarRascunho(comToast) {
     try {
-      window.localStorage.setItem(DRAFT_KEY, JSON.stringify(projetoLeve(projeto)));
+      window.localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        version: DRAFT_VERSION,
+        modo,
+        projeto: projetoLeve(projeto),
+        entrada: entradaLeve(entrada),
+      }));
       setStatus("Rascunho salvo localmente", "saved");
       if (comToast) studio.showToast("success", "Rascunho salvo", "O carrossel foi guardado neste navegador.");
     } catch {
@@ -125,7 +151,12 @@
       return false;
     }
     persistirImagens(projeto);
+    persistirImagens({ logo: entrada.logo, product: entrada.productImages || {} });
     return true;
+  }
+
+  function salvarRascunhoDaEntrada() {
+    salvarRascunho(false);
   }
 
   function agendarRascunho() {
@@ -134,6 +165,8 @@
     agendarRascunho.timer = window.setTimeout(() => salvarRascunho(false), 500);
   }
 
+  // Rascunho v1 guardava o projeto direto na raiz; v2 guarda projeto + entrada
+  // + modo. Os dois formatos continuam abrindo.
   function carregarRascunho() {
     let bruto = null;
     try {
@@ -141,8 +174,29 @@
     } catch {
       bruto = null;
     }
-    if (!bruto) return model.createDefaultProject({ imageModel });
-    return model.sanitizeProject(bruto, { imageModel });
+    if (!bruto || typeof bruto !== "object") {
+      return { projeto: model.createDefaultProject({ imageModel }), entrada: criarEntradaVazia(), modo: "gerar" };
+    }
+    if (!bruto.version && bruto.pages) {
+      return { projeto: model.sanitizeProject(bruto, { imageModel }), entrada: criarEntradaVazia(), modo: "manual" };
+    }
+    return {
+      projeto: model.sanitizeProject(bruto.projeto, { imageModel }),
+      entrada: normalizarEntradaSalva(bruto.entrada),
+      modo: bruto.modo === "manual" ? "manual" : "gerar",
+    };
+  }
+
+  function normalizarEntradaSalva(bruta) {
+    const vazia = criarEntradaVazia();
+    if (!bruta || typeof bruta !== "object") return vazia;
+    const limpa = generator.normalizeGeneratorInput(bruta);
+    return {
+      ...vazia,
+      ...limpa,
+      logo: imageModel ? imageModel.normalizeImageRef(bruta.logo) : vazia.logo,
+      productImages: imageModel ? imageModel.normalizeProductImages(bruta.productImages) : vazia.productImages,
+    };
   }
 
   // Depois do boot as imagens são só ids: busca os blobs e redesenha.
@@ -227,7 +281,7 @@
   }
 
   function aplicarTokensDaPaleta() {
-    const raiz = byId("dtb-token-root");
+    const raiz = byId("dtb-manual-view");
     if (!raiz) return;
     const palette = studio.derivedPalette(model.normalizePalette(projeto.palette));
     Object.entries({
@@ -496,7 +550,29 @@
         ? `Faltam dados: ${pagina.dataHint}`
         : `Usa: ${pagina.dataHint}`;
 
-      item.append(topo, descricao, dados);
+      // Seletor da VARIAÇÃO visual: é o que torna os quinze layouts
+      // alcançáveis à mão, não só pelo gerador.
+      const variacao = document.createElement("label");
+      variacao.className = "vf-field dtb-page__variant";
+      const rotuloVariacao = document.createElement("span");
+      rotuloVariacao.className = "vf-field__label";
+      rotuloVariacao.textContent = "Composição";
+      const select = document.createElement("select");
+      select.className = "vf-select vf-select--sm";
+      select.id = `dtb-variant-${pagina.id}`;
+      select.disabled = !pagina.incluida;
+      pagina.variants.forEach((variante) => {
+        const opcao = document.createElement("option");
+        opcao.value = variante.rendererId;
+        opcao.textContent = variante.name;
+        if (variante.rendererId === pagina.rendererId) opcao.selected = true;
+        select.appendChild(opcao);
+      });
+      select.value = pagina.rendererId;
+      select.addEventListener("change", () => trocarVariacao(pagina.id, select.value));
+      variacao.append(rotuloVariacao, select);
+
+      item.append(topo, descricao, dados, variacao);
       if (pagina.required) {
         const fixa = document.createElement("p");
         fixa.className = "dtb-page__locked";
@@ -523,6 +599,17 @@
     atualizar({ estrutura: true, paginas: true });
   }
 
+  function trocarVariacao(pageId, rendererId) {
+    try {
+      projeto.pages = model.setPageVariant(projeto.pages, pageId, rendererId);
+    } catch (error) {
+      studio.showToast("warning", "Composição não alterada", error.message);
+      renderPagesList();
+      return;
+    }
+    atualizar({ estrutura: true, paginas: true });
+  }
+
   function moverPagina(pageId, direcao) {
     const antes = projeto.pages.slice();
     try {
@@ -532,8 +619,8 @@
       return;
     }
     // A página que estava selecionada continua selecionada, na nova posição.
-    const selecionadaId = antes[paginaSelecionada];
-    const novaPosicao = projeto.pages.indexOf(selecionadaId);
+    const selecionadaId = antes[paginaSelecionada] && antes[paginaSelecionada].family;
+    const novaPosicao = projeto.pages.findIndex((pagina) => pagina.family === selecionadaId);
     if (novaPosicao >= 0) paginaSelecionada = novaPosicao;
     atualizar({ estrutura: true, paginas: true });
   }
@@ -559,16 +646,82 @@
 
   /* ── upload e edição de imagem ────────────────────────────────────────── */
 
-  function setUploadOcupado(tipo, ocupado) {
-    const drop = document.querySelector(`label[for="dtb-${tipo}-file"]`);
+  function setUploadOcupado(prefixo, tipo, ocupado) {
+    const drop = document.querySelector(`label[for="${prefixo}-${tipo}-file"]`);
     if (drop) drop.classList.toggle("is-loading", ocupado);
-    const input = byId(`dtb-${tipo}-file`);
+    const input = byId(`${prefixo}-${tipo}-file`);
     if (input) input.disabled = ocupado;
+  }
+
+  // Mesmo pipeline para os dois modos. `destino` decide onde a referência
+  // pousa: no projeto manual ou na entrada do gerador.
+  async function aoEscolherImagemDaEntrada(file, tipo) {
+    if (!file || !imageModel) return;
+    setUploadOcupado("dtg", tipo, true);
+    try {
+      const imagem = await studio.prepararImagem(file, tipo === "product" ? "produto" : "logo");
+      const referencia = imageModel.normalizeImageRef({
+        id: imageModel.newImageId(tipo === "product" ? "bld-prod" : "bld-logo"),
+        dataUrl: imagem.dataUrl,
+        fileName: imagem.fileName,
+        mimeType: imagem.mimeType,
+        width: imagem.width,
+        height: imagem.height,
+      });
+      if (tipo === "product") {
+        entrada.productImages = {
+          ...(entrada.productImages || imageModel.createDefaultProduct()),
+          originalImage: referencia,
+          editedImage: imageModel.createEmptyImageRef(),
+          editing: imageModel.createDefaultEditing(),
+        };
+      } else {
+        entrada.logo = referencia;
+      }
+      sincronizarUploadDeGeracao();
+      salvarRascunhoDaEntrada();
+      // Propostas já na tela precisam refletir a imagem nova.
+      if (propostas.length) gerarPropostas({});
+      if (imagem.origem === "local") {
+        studio.showToast("warning", "Imagem carregada localmente", "O servidor não respondeu: a imagem não passou pela normalização.");
+      } else if (imagem.baixaResolucao) {
+        studio.showToast("warning", "Resolução baixa", "A imagem tem menos de 600 px de lado. A arte pode sair sem nitidez.");
+      }
+    } catch (error) {
+      studio.showToast("danger", "Não foi possível usar esta imagem", error?.message || "Tente outro arquivo.");
+    } finally {
+      setUploadOcupado("dtg", tipo, false);
+      const input = byId(`dtg-${tipo}-file`);
+      if (input) input.value = "";
+    }
+  }
+
+  async function abrirEditorDaEntrada() {
+    const original = (entrada.productImages && entrada.productImages.originalImage) || {};
+    if (!original.dataUrl) {
+      studio.showToast("warning", "Nenhuma imagem", "Envie a imagem do produto antes de abrir o editor.");
+      return;
+    }
+    const resultado = await studio.abrirEditorDeImagem({
+      dataUrl: original.dataUrl,
+      fileName: original.fileName,
+      width: original.width,
+      height: original.height,
+      editing: entrada.productImages.editing,
+    });
+    if (!resultado) return;
+    entrada.productImages = {
+      ...entrada.productImages,
+      ...imageModel.applyEditingToProduct(entrada.productImages, resultado.editing, resultado.rendered),
+    };
+    sincronizarUploadDeGeracao();
+    salvarRascunhoDaEntrada();
+    if (propostas.length) gerarPropostas({});
   }
 
   async function aoEscolherImagem(file, tipo) {
     if (!file || !imageModel) return;
-    setUploadOcupado(tipo, true);
+    setUploadOcupado("dtb", tipo, true);
     try {
       const imagem = await studio.prepararImagem(file, tipo === "product" ? "produto" : "logo");
       const referencia = imageModel.normalizeImageRef({
@@ -604,7 +757,7 @@
     } catch (error) {
       studio.showToast("danger", "Não foi possível usar esta imagem", error?.message || "Tente outro arquivo.");
     } finally {
-      setUploadOcupado(tipo, false);
+      setUploadOcupado("dtb", tipo, false);
       const input = byId(`dtb-${tipo}-file`);
       if (input) input.value = "";
     }
@@ -801,9 +954,12 @@
     corpo.className = "dt-template-card__body dtb-card__body";
 
     const info = document.createElement("div");
+    // Três origens distintas na Biblioteca: o template do sistema (na outra
+    // grade), o gerado pelo motor de propostas e o montado à mão.
+    const gerado = registro.origin === "gerado";
     const marca = document.createElement("span");
-    marca.className = "dtb-card__origin";
-    marca.textContent = "Criado pela equipe";
+    marca.className = `dtb-card__origin${gerado ? " is-generated" : ""}`;
+    marca.textContent = gerado ? "Template gerado" : "Template criado manualmente";
     const titulo = document.createElement("h3");
     titulo.className = "dt-template-card__title";
     titulo.textContent = registro.name;
@@ -811,9 +967,10 @@
     const meta = document.createElement("div");
     meta.className = "dt-template-card__meta";
     const estilo = model.getStyle(registro.style);
+    const direcao = generator && registro.direction ? generator.getDirection(registro.direction) : null;
     [
       ["Segmento", registro.segment || "—"],
-      ["Estilo", estilo ? estilo.name : "—"],
+      [gerado ? "Direção" : "Estilo", gerado && direcao ? direcao.name : (estilo ? estilo.name : "—")],
       ["Páginas", String(registro.pages.length)],
       ["Atualizado", formatarData(registro.updatedAt)],
     ].forEach(([rotulo, valor]) => {
@@ -941,6 +1098,365 @@
     }
   }
 
+  /* ── modo de geração de propostas ─────────────────────────────────────── */
+
+  // Campo do formulário de geração -> caminho na ENTRADA do gerador. A
+  // entrada é um objeto separado do projeto manual: preencher o formulário
+  // não mexe no carrossel que está aberto no editor.
+  const CAMPOS_GERACAO = {
+    "dtg-project-name": "name",
+    "dtg-client-name": "clienteNome",
+    "dtg-brand-name": "marcaNome",
+    "dtg-product-name": "product.name",
+    "dtg-product-subtitle": "product.subtitle",
+    "dtg-main-benefit": "content.mainBenefit",
+    "dtg-benefit-1": "content.benefit1",
+    "dtg-benefit-2": "content.benefit2",
+    "dtg-benefit-3": "content.benefit3",
+    "dtg-specs": "content.specs",
+    "dtg-package": "content.packageItems",
+    "dtg-width": "content.width",
+    "dtg-height": "content.height",
+    "dtg-depth": "content.depth",
+    "dtg-warranty": "content.warranty",
+    "dtg-shipping": "content.shipping",
+  };
+
+  function criarEntradaVazia() {
+    return {
+      name: "",
+      clienteId: null,
+      clienteNome: "",
+      marcaNome: "",
+      segment: "Geral",
+      product: { name: "", subtitle: "" },
+      content: model.createEmptyContent(),
+      logo: imageModel ? imageModel.createEmptyImageRef() : null,
+      productImages: imageModel ? imageModel.createDefaultProduct() : null,
+    };
+  }
+
+  function definirNaEntrada(caminho, valor) {
+    const partes = caminho.split(".");
+    let no = entrada;
+    for (let i = 0; i < partes.length - 1; i += 1) no = no[partes[i]];
+    no[partes[partes.length - 1]] = valor;
+  }
+
+  function sincronizarFormularioDeGeracao() {
+    Object.entries(CAMPOS_GERACAO).forEach(([id, caminho]) => {
+      const campo = byId(id);
+      if (!campo) return;
+      const valor = lerCaminho(entrada, caminho);
+      if (campo.value !== String(valor ?? "")) campo.value = valor ?? "";
+    });
+    const segmento = byId("dtg-segment");
+    if (segmento) segmento.value = entrada.segment;
+    sincronizarUploadDeGeracao();
+    const selectCliente = byId("dtg-client-select");
+    if (selectCliente) {
+      const desejado = entrada.clienteId == null ? "" : String(entrada.clienteId);
+      selectCliente.value = [...selectCliente.options].some((o) => o.value === desejado) ? desejado : "";
+    }
+  }
+
+  function fonteDaImagemDaEntrada() {
+    if (!entrada.productImages) return null;
+    if (imageModel) return imageModel.resolveProductImageSource(entrada.productImages);
+    return entrada.productImages.originalImage?.dataUrl || null;
+  }
+
+  function sincronizarUploadDeGeracao() {
+    const logo = entrada.logo || {};
+    const estadoLogo = byId("dtg-logo-state");
+    if (estadoLogo) {
+      estadoLogo.hidden = !logo.dataUrl;
+      const img = byId("dtg-logo-preview");
+      if (logo.dataUrl) img.src = logo.dataUrl;
+      else img.removeAttribute("src");
+      byId("dtg-logo-filename").textContent = logo.fileName || "Imagem local";
+    }
+
+    const fonte = fonteDaImagemDaEntrada();
+    const estadoProduto = byId("dtg-product-state");
+    if (estadoProduto) {
+      estadoProduto.hidden = !fonte;
+      const img = byId("dtg-product-preview");
+      if (fonte) img.src = fonte;
+      else img.removeAttribute("src");
+      const original = (entrada.productImages && entrada.productImages.originalImage) || {};
+      byId("dtg-product-filename").textContent = original.fileName || "Imagem local";
+      const editar = byId("dtg-edit-product");
+      if (editar) editar.disabled = !(original.dataUrl && studio.editorDeImagemDisponivel());
+    }
+  }
+
+  function mostrarAvisosDaGeracao(avisos) {
+    const banner = byId("dtg-warnings");
+    const lista = byId("dtg-warnings-list");
+    if (!banner || !lista) return;
+    lista.replaceChildren(...avisos.map((aviso) => {
+      const item = document.createElement("li");
+      item.textContent = aviso.mensagem;
+      return item;
+    }));
+    banner.hidden = avisos.length === 0;
+  }
+
+  // Miniatura de uma página de proposta. Renderiza com o mesmo renderizador
+  // das peças finais — a miniatura é a arte de verdade, não um ícone.
+  function miniaturaDaProposta(proposta, indice, aoClicar) {
+    const botao = document.createElement("button");
+    botao.type = "button";
+    botao.className = "dtg-thumb";
+    const pagina = proposta.pages[indice];
+    botao.setAttribute("aria-label", `Página ${indice + 1}: ${pagina.name}`);
+    const arte = document.createElement("span");
+    arte.className = "dt-thumb-art";
+    try {
+      arte.appendChild(studio.templateRenderer.renderPage({
+        template: templateDaProposta(proposta),
+        project: model.toRenderProject(proposta.project),
+        pageIndex: indice,
+        mode: "preview",
+      }));
+    } catch {
+      arte.textContent = "—";
+    }
+    botao.appendChild(arte);
+    if (typeof aoClicar === "function") botao.addEventListener("click", () => aoClicar(indice));
+    return botao;
+  }
+
+  // Cada proposta vira um template normalizado uma vez só; renderizar 3 × 5
+  // peças a cada clique sem cache pesaria à toa.
+  const templatesDePropostas = new Map();
+  function templateDaProposta(proposta) {
+    if (!templatesDePropostas.has(proposta.id)) {
+      templatesDePropostas.set(
+        proposta.id,
+        studio.templateEngine.normalizeTemplateDefinition(model.buildTemplateDefinition(proposta.project))
+      );
+    }
+    return templatesDePropostas.get(proposta.id);
+  }
+
+  function criarCardDeProposta(proposta) {
+    const card = document.createElement("article");
+    card.className = "vf-card dtg-card";
+    card.dataset.proposalId = proposta.id;
+
+    const cabecalho = document.createElement("div");
+    cabecalho.className = "dtg-card__head";
+    const titulo = document.createElement("h3");
+    titulo.className = "dtg-card__title";
+    titulo.textContent = proposta.directionName;
+    const contagem = document.createElement("span");
+    contagem.className = "dtg-card__count";
+    contagem.textContent = `${proposta.pages.length} ${proposta.pages.length === 1 ? "página" : "páginas"}`;
+    cabecalho.append(titulo, contagem);
+
+    const descricao = document.createElement("p");
+    descricao.className = "dtg-card__description";
+    descricao.textContent = proposta.description;
+
+    const paleta = document.createElement("div");
+    paleta.className = "dtg-card__palette";
+    paleta.setAttribute("aria-label", "Paleta da proposta");
+    ["primary", "secondary", "background", "text"].forEach((chave) => {
+      const amostra = document.createElement("span");
+      amostra.className = "dtg-card__swatch";
+      amostra.style.background = proposta.palette[chave];
+      amostra.title = `${chave}: ${proposta.palette[chave]}`;
+      paleta.appendChild(amostra);
+    });
+
+    const miniaturas = document.createElement("div");
+    miniaturas.className = "dtg-card__thumbs";
+    proposta.pages.forEach((_, indice) => {
+      miniaturas.appendChild(miniaturaDaProposta(proposta, indice, (i) => abrirPreviaDaProposta(proposta, i)));
+    });
+
+    const layouts = document.createElement("ul");
+    layouts.className = "dtg-card__layouts";
+    proposta.pages.forEach((pagina, indice) => {
+      const item = document.createElement("li");
+      const numero = document.createElement("span");
+      numero.className = "dtg-card__layout-index";
+      numero.textContent = String(indice + 1).padStart(2, "0");
+      const nome = document.createElement("span");
+      nome.textContent = pagina.name;
+      const id = document.createElement("code");
+      id.textContent = pagina.rendererId;
+      item.append(numero, nome, id);
+      layouts.appendChild(item);
+    });
+
+    const acoes = document.createElement("div");
+    acoes.className = "dtg-card__actions";
+    const visualizar = document.createElement("button");
+    visualizar.type = "button";
+    visualizar.className = "vf-btn vf-btn--secondary vf-btn--sm";
+    visualizar.textContent = "Visualizar";
+    visualizar.addEventListener("click", () => abrirPreviaDaProposta(proposta, 0));
+    const usar = document.createElement("button");
+    usar.type = "button";
+    usar.className = "vf-btn vf-btn--primary vf-btn--sm";
+    usar.textContent = "Usar esta proposta";
+    usar.addEventListener("click", () => usarProposta(proposta));
+    acoes.append(visualizar, usar);
+
+    card.append(cabecalho, descricao, paleta, miniaturas, layouts, acoes);
+    return card;
+  }
+
+  function renderPropostas() {
+    const grade = byId("dtg-proposals");
+    if (!grade) return;
+    grade.replaceChildren(...propostas.map(criarCardDeProposta));
+    byId("dtg-empty").hidden = propostas.length > 0;
+    mostrarAvisosDaGeracao(propostas.length ? propostas[0].avisos : []);
+  }
+
+  // `variacao` avança o variationIndex ("Gerar outras opções"); sem ele a
+  // rodada recomeça do índice 0.
+  function gerarPropostas(options) {
+    const config = options || {};
+    const dados = generator.detectAvailableContent(entrada);
+    if (!dados.temNomeDoProduto) {
+      studio.showToast("warning", "Informe o produto", "O nome do produto é necessário para montar as propostas.");
+      byId("dtg-product-name")?.focus();
+      return;
+    }
+
+    variationIndex = config.proximaVariacao ? variationIndex + 1 : 0;
+    templatesDePropostas.clear();
+    try {
+      propostas = generator.generateProposals(entrada, { imageModel, variationIndex });
+    } catch (error) {
+      studio.showToast("danger", "Não foi possível gerar", error.message || "Tente novamente.");
+      return;
+    }
+    renderPropostas();
+    salvarRascunhoDaEntrada();
+    studio.showToast(
+      "success",
+      config.proximaVariacao ? "Novas combinações" : "3 propostas geradas",
+      `${propostas.length} carrosséis com direções visuais diferentes.`
+    );
+  }
+
+  /* ── prévia da proposta (não altera o projeto atual) ──────────────────── */
+
+  let propostaEmPrevia = null;
+  let paginaEmPrevia = 0;
+  let focoAntesDaPrevia = null;
+
+  function renderPreviaDaProposta() {
+    if (!propostaEmPrevia) return;
+    const template = templateDaProposta(propostaEmPrevia);
+    const total = template.pages.length;
+    paginaEmPrevia = Math.min(Math.max(0, paginaEmPrevia), total - 1);
+
+    const palco = byId("dtg-preview-canvas");
+    try {
+      palco.replaceChildren(studio.templateRenderer.renderPage({
+        template,
+        project: model.toRenderProject(propostaEmPrevia.project),
+        pageIndex: paginaEmPrevia,
+        mode: "preview",
+      }));
+    } catch {
+      palco.replaceChildren(svgIndisponivel(template.pages[paginaEmPrevia].name));
+    }
+
+    byId("dtg-preview-page").textContent =
+      `PÁGINA ${String(paginaEmPrevia + 1).padStart(2, "0")} DE ${String(total).padStart(2, "0")} · ${template.pages[paginaEmPrevia].name}`;
+    byId("dtg-preview-prev").disabled = paginaEmPrevia === 0;
+    byId("dtg-preview-next").disabled = paginaEmPrevia >= total - 1;
+
+    byId("dtg-preview-thumbs").replaceChildren(...propostaEmPrevia.pages.map((_, indice) => {
+      const botao = miniaturaDaProposta(propostaEmPrevia, indice, (i) => {
+        paginaEmPrevia = i;
+        renderPreviaDaProposta();
+      });
+      botao.classList.toggle("is-active", indice === paginaEmPrevia);
+      botao.setAttribute("aria-current", indice === paginaEmPrevia ? "true" : "false");
+      return botao;
+    }));
+  }
+
+  // Visualizar é somente leitura: nada aqui toca `projeto`.
+  function abrirPreviaDaProposta(proposta, indice) {
+    propostaEmPrevia = proposta;
+    paginaEmPrevia = Number(indice) || 0;
+    focoAntesDaPrevia = document.activeElement;
+    byId("dtg-preview-title").textContent = proposta.name;
+    byId("dtg-preview-direction").textContent = proposta.directionName;
+    renderPreviaDaProposta();
+    const overlay = byId("dtg-preview-overlay");
+    overlay.classList.add("is-open");
+    overlay.setAttribute("aria-hidden", "false");
+    document.body.classList.add("vf-no-scroll");
+    byId("dtg-preview-close").focus();
+  }
+
+  function fecharPreviaDaProposta() {
+    const overlay = byId("dtg-preview-overlay");
+    overlay.classList.remove("is-open");
+    overlay.setAttribute("aria-hidden", "true");
+    if (!byId("die-overlay")?.classList.contains("is-open")) {
+      document.body.classList.remove("vf-no-scroll");
+    }
+    propostaEmPrevia = null;
+    if (focoAntesDaPrevia && typeof focoAntesDaPrevia.focus === "function") focoAntesDaPrevia.focus();
+  }
+
+  // Copia a proposta para o estado do Construtor e abre o modo manual, com
+  // tudo já preenchido — o usuário não redigita nada.
+  function usarProposta(proposta) {
+    projeto = model.sanitizeProject(proposta.project, { imageModel });
+    // sanitizeProject devolve referências novas: as imagens (com base64 em
+    // memória) precisam voltar do objeto original.
+    projeto.logo = proposta.project.logo;
+    projeto.product = { ...projeto.product, ...proposta.project.product };
+    projeto.name = proposta.project.name;
+    snapshotInicial = clonar(projeto);
+    paginaSelecionada = 0;
+    modoComparacao = "custom";
+    invalidarTemplate();
+    fecharPreviaDaProposta();
+    definirModo("manual");
+    sincronizarCampos();
+    mostrarErros([]);
+    renderPagesList();
+    atualizar({ estrutura: true });
+    salvarRascunho(false);
+    studio.showToast(
+      "success",
+      "Proposta aplicada",
+      `“${proposta.directionName}” está aberta no editor manual. Ajuste o que quiser antes de salvar.`
+    );
+  }
+
+  /* ── alternância de modo ──────────────────────────────────────────────── */
+
+  function definirModo(novoModo) {
+    modo = novoModo === "manual" ? "manual" : "gerar";
+    byId("dtb-generate-view").hidden = modo !== "gerar";
+    byId("dtb-manual-view").hidden = modo !== "manual";
+    byId("dtb-mode-generate").classList.toggle("is-active", modo === "gerar");
+    byId("dtb-mode-generate").setAttribute("aria-pressed", String(modo === "gerar"));
+    byId("dtb-mode-manual").classList.toggle("is-active", modo === "manual");
+    byId("dtb-mode-manual").setAttribute("aria-pressed", String(modo === "manual"));
+    // Ações que só fazem sentido sobre um carrossel montado.
+    ["dtb-generate", "dtb-reset"].forEach((id) => {
+      const botao = byId(id);
+      if (botao) botao.hidden = modo !== "manual";
+    });
+    if (modo === "manual") renderPreview();
+  }
+
   /* ── abas do painel ───────────────────────────────────────────────────── */
 
   function ativarPainel(nome, focar) {
@@ -959,17 +1475,26 @@
 
   /* ── ações ────────────────────────────────────────────────────────────── */
 
+  // "Novo projeto" abre o modo de GERAÇÃO com o formulário em branco: é o
+  // caminho padrão do produto. O modo manual continua a um clique.
   function novoProjeto() {
     projeto = model.createDefaultProject({ imageModel });
+    entrada = criarEntradaVazia();
+    propostas = [];
+    variationIndex = 0;
+    templatesDePropostas.clear();
     snapshotInicial = clonar(projeto);
     paginaSelecionada = 0;
     modoComparacao = "custom";
     invalidarTemplate();
     sincronizarCampos();
+    sincronizarFormularioDeGeracao();
     mostrarErros([]);
     renderPagesList();
+    renderPropostas();
     studio.showView("builder");
-    atualizar({ estrutura: true });
+    definirModo("gerar");
+    agendarRascunho();
   }
 
   function restaurar() {
@@ -997,6 +1522,88 @@
   }
 
   /* ── eventos ──────────────────────────────────────────────────────────── */
+
+  function ligarEventosDeGeracao() {
+    Object.entries(CAMPOS_GERACAO).forEach(([id, caminho]) => {
+      const campo = byId(id);
+      if (!campo) return;
+      campo.addEventListener("input", (evento) => {
+        definirNaEntrada(caminho, evento.target.value);
+        if (id === "dtg-client-name") entrada.clienteId = null;
+        agendarRascunho();
+      });
+    });
+
+    byId("dtg-segment").addEventListener("change", (evento) => {
+      entrada.segment = evento.target.value;
+      agendarRascunho();
+    });
+
+    byId("dtg-client-select").addEventListener("change", (evento) => {
+      const valor = evento.target.value;
+      if (!valor) {
+        entrada.clienteId = null;
+      } else {
+        const cliente = studio.getClients().find((item) => String(item.id) === valor);
+        if (cliente) {
+          entrada.clienteId = cliente.id;
+          entrada.clienteNome = model.sanitizeText(cliente.nome || cliente.slug || "Cliente", 80);
+        }
+      }
+      sincronizarFormularioDeGeracao();
+      agendarRascunho();
+    });
+
+    byId("dtg-logo-file").addEventListener("change", (e) => aoEscolherImagemDaEntrada(e.target.files?.[0], "logo"));
+    byId("dtg-product-file").addEventListener("change", (e) => aoEscolherImagemDaEntrada(e.target.files?.[0], "product"));
+    byId("dtg-remove-logo").addEventListener("click", () => {
+      entrada.logo = imageModel ? imageModel.createEmptyImageRef() : null;
+      sincronizarUploadDeGeracao();
+      if (propostas.length) gerarPropostas({});
+      salvarRascunhoDaEntrada();
+    });
+    byId("dtg-remove-product").addEventListener("click", () => {
+      entrada.productImages = imageModel ? imageModel.createDefaultProduct() : null;
+      sincronizarUploadDeGeracao();
+      if (propostas.length) gerarPropostas({});
+      salvarRascunhoDaEntrada();
+    });
+    byId("dtg-edit-product").addEventListener("click", abrirEditorDaEntrada);
+
+    byId("dtg-generate").addEventListener("click", () => gerarPropostas({}));
+    byId("dtg-regenerate").addEventListener("click", () => {
+      if (!propostas.length) {
+        gerarPropostas({});
+        return;
+      }
+      gerarPropostas({ proximaVariacao: true });
+    });
+
+    byId("dtb-mode-generate").addEventListener("click", () => { definirModo("gerar"); agendarRascunho(); });
+    byId("dtb-mode-manual").addEventListener("click", () => { definirModo("manual"); agendarRascunho(); });
+
+    byId("dtg-preview-close").addEventListener("click", fecharPreviaDaProposta);
+    byId("dtg-preview-cancel").addEventListener("click", fecharPreviaDaProposta);
+    byId("dtg-preview-use").addEventListener("click", () => {
+      if (propostaEmPrevia) usarProposta(propostaEmPrevia);
+    });
+    byId("dtg-preview-prev").addEventListener("click", () => {
+      paginaEmPrevia = Math.max(0, paginaEmPrevia - 1);
+      renderPreviaDaProposta();
+    });
+    byId("dtg-preview-next").addEventListener("click", () => {
+      paginaEmPrevia += 1;
+      renderPreviaDaProposta();
+    });
+    byId("dtg-preview-overlay").addEventListener("click", (evento) => {
+      if (evento.target === byId("dtg-preview-overlay")) fecharPreviaDaProposta();
+    });
+    document.addEventListener("keydown", (evento) => {
+      if (evento.key === "Escape" && byId("dtg-preview-overlay").classList.contains("is-open")) {
+        fecharPreviaDaProposta();
+      }
+    });
+  }
 
   function ligarEventos() {
     Object.entries(CAMPOS_TEXTO).forEach(([id, caminho]) => {
@@ -1113,16 +1720,23 @@
   /* ── boot ─────────────────────────────────────────────────────────────── */
 
   function init() {
-    projeto = carregarRascunho();
+    const rascunho = carregarRascunho();
+    projeto = rascunho.projeto;
+    entrada = rascunho.entrada;
     snapshotInicial = clonar(projeto);
 
     preencherSelects();
     ligarEventos();
+    ligarEventosDeGeracao();
     sincronizarCampos();
+    sincronizarFormularioDeGeracao();
     renderPagesList();
     aplicarTokensDaPaleta();
     renderPreview();
+    renderPropostas();
     renderLocalLibrary();
+    // "Gerar propostas" é o modo padrão do Construtor.
+    definirModo(rascunho.modo);
     setStatus("Rascunho salvo localmente", "saved");
 
     // A biblioteca da equipe segue os mesmos filtros da biblioteca do sistema.
@@ -1143,28 +1757,47 @@
       padrao.value = "";
       padrao.textContent = "Cliente personalizado";
       select.appendChild(padrao);
-      clientes.forEach((cliente) => {
-        const opcao = document.createElement("option");
-        opcao.value = String(cliente.id);
-        opcao.textContent = cliente.nome || cliente.slug || `Cliente ${cliente.id}`;
-        select.appendChild(opcao);
+      // O mesmo conjunto abastece os dois selects de cliente (manual e
+      // geração), sem uma segunda chamada ao endpoint.
+      [select, byId("dtg-client-select")].forEach((alvo) => {
+        if (!alvo) return;
+        alvo.replaceChildren();
+        const padraoDoAlvo = document.createElement("option");
+        padraoDoAlvo.value = "";
+        padraoDoAlvo.textContent = "Cliente personalizado";
+        alvo.appendChild(padraoDoAlvo);
+        clientes.forEach((cliente) => {
+          const opcao = document.createElement("option");
+          opcao.value = String(cliente.id);
+          opcao.textContent = cliente.nome || cliente.slug || `Cliente ${cliente.id}`;
+          alvo.appendChild(opcao);
+        });
       });
       sincronizarCliente();
+      sincronizarFormularioDeGeracao();
     });
 
-    studio.onConstrutorAberto(() => renderPreview());
+    studio.onConstrutorAberto(() => { if (modo === "manual") renderPreview(); });
     studio.definirAcaoDeNovoProjeto(novoProjeto);
     // Declara ao editor antigo quais blobs o construtor ainda usa, para que a
-    // limpeza de órfãos dele não apague as imagens dos templates da equipe.
-    studio.registrarImagensVivas(() => library.listarIdsDeImagens().concat(idsDeImagensDoProjeto(projeto)));
+    // limpeza de órfãos dele não apague as imagens dos templates da equipe —
+    // incluindo as que só existem no formulário de geração.
+    studio.registrarImagensVivas(() => library.listarIdsDeImagens()
+      .concat(idsDeImagensDoProjeto(projeto))
+      .concat(idsDeImagensDoProjeto({ logo: entrada.logo, product: entrada.productImages || {} })));
 
     // As imagens do rascunho chegam depois: nada disso bloqueia a primeira
     // pintura da tela.
-    hidratarImagens(projeto).then((alterou) => {
-      if (!alterou) return;
-      snapshotInicial = clonar(projeto);
-      sincronizarCampos();
-      renderPreview();
+    Promise.all([
+      hidratarImagens(projeto),
+      hidratarImagens({ logo: entrada.logo, product: entrada.productImages || {} }),
+    ]).then(([mudouProjeto, mudouEntrada]) => {
+      if (mudouProjeto) {
+        snapshotInicial = clonar(projeto);
+        sincronizarCampos();
+        renderPreview();
+      }
+      if (mudouEntrada) sincronizarUploadDeGeracao();
     }).catch(() => {});
   }
 

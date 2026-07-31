@@ -42,11 +42,17 @@ const PNG_PRODUTO =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 const JPEG_LOGO = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAg=";
 
-// 7 layouts do conjunto do carregador + 5 páginas modulares do Construtor.
+// 7 layouts do conjunto do carregador + 15 páginas modulares do Construtor
+// (5 famílias × 3 variações visuais).
 const IDS_ESPERADOS = [
   "cover", "wireless", "led", "package", "dimensions", "features", "safe",
   "cover-split-v1", "benefits-three-cards-v1", "specifications-grid-v1",
   "package-list-v1", "dimensions-technical-v1",
+  "cover-centered-v1", "cover-impact-v1",
+  "benefits-side-list-v1", "benefits-orbit-v1",
+  "specifications-table-v1", "specifications-cards-v1",
+  "package-grid-v1", "package-focus-v1",
+  "dimensions-clean-v1", "dimensions-panel-v1",
 ];
 
 const registry = engine.createTemplateRegistry(presets.TEMPLATE_DEFINITIONS);
@@ -103,7 +109,7 @@ function contarNos(no) {
   /* ── 2/3/4. Registro de layouts ────────────────────────────────────────── */
 
   const definicoes = renderer.listAvailableLayouts();
-  eq("2. o registro possui exatamente os 12 layouts atuais", definicoes.length, IDS_ESPERADOS.length);
+  eq("2. o registro possui exatamente os 22 layouts atuais", definicoes.length, IDS_ESPERADOS.length);
   eq("2b. os ids dos layouts são os rendererIds atuais", definicoes.map((d) => d.id), IDS_ESPERADOS);
 
   // O registro é construído a partir de uma lista fixa do próprio módulo;
@@ -285,6 +291,7 @@ function contarNos(no) {
     "design-template-engine.js", "design-template-presets.js", "design-template-components.js",
     "design-template-layouts.js", "design-template-renderer.js",
     "design-template-builder-model.js", "design-template-builder-storage.js",
+    "design-template-proposal-generator.js",
     "design-templates.js", "design-template-builder.js",
   ];
   const posicoes = ordem.map(posicaoDoScript);

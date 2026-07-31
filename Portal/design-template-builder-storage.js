@@ -72,7 +72,10 @@
       name: texto(source.name, 80),
       createdAt: texto(source.createdAt, 40) || agora,
       updatedAt: agora,
-      origin: "equipe",
+      // "gerado" = veio do gerador de propostas; "manual" = montado à mão no
+      // Construtor. A Biblioteca rotula os dois de forma diferente.
+      origin: source.origin === "gerado" ? "gerado" : "manual",
+      direction: texto(source.direction, 40),
 
       segment: texto(source.segment, 40),
       style: texto(source.style, 40),
@@ -83,7 +86,20 @@
         text: texto(source.palette && source.palette.text, 7),
       },
 
-      pages: (Array.isArray(source.pages) ? source.pages : []).map((id) => texto(id, 64)).filter(Boolean),
+      // Cada página guarda família E rendererId: sem o rendererId, reabrir o
+      // template perderia a variação visual escolhida e cairia no layout
+      // padrão da família. Registro antigo (rendererId solto, string) é
+      // aceito e convertido — o model resolve a família na leitura.
+      pages: (Array.isArray(source.pages) ? source.pages : []).map((entrada) => {
+        if (entrada && typeof entrada === "object") {
+          const family = texto(entrada.family || entrada.id, 64);
+          const rendererId = texto(entrada.rendererId, 64);
+          if (!family && !rendererId) return null;
+          return { family: family || rendererId, rendererId: rendererId || family, name: texto(entrada.name, 80) };
+        }
+        const solto = texto(entrada, 64);
+        return solto ? { family: solto, rendererId: solto, name: "" } : null;
+      }).filter(Boolean),
 
       clienteId: source.clienteId == null ? null : source.clienteId,
       clienteNome: texto(source.clienteNome, 80),

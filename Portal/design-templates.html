@@ -269,6 +269,11 @@
 
             <p class="dtb-intro">Escolha a identidade, preencha as informações do produto e combine páginas para gerar um conjunto de artes reutilizável.</p>
 
+            <div class="vf-segmented dtb-mode" role="group" aria-label="Modo do construtor">
+              <button type="button" class="vf-segmented__item is-active" id="dtb-mode-generate" aria-pressed="true">Gerar propostas</button>
+              <button type="button" class="vf-segmented__item" id="dtb-mode-manual" aria-pressed="false">Montar manualmente</button>
+            </div>
+
             <div class="vf-banner is-danger dtb-errors" id="dtb-errors" role="alert" hidden>
               <div class="vf-banner__content">
                 <p class="vf-banner__title">Revise antes de continuar</p>
@@ -276,7 +281,114 @@
               </div>
             </div>
 
-            <div class="dtb-layout" id="dtb-token-root">
+            <div class="dtg-layout" id="dtb-generate-view">
+              <aside class="dtb-config dtg-form" aria-label="Dados do produto">
+                <div class="dtg-form__header">
+                  <h3>Dados do produto</h3>
+                  <p>Preencha o que existir. As páginas são escolhidas conforme os dados informados — nada é inventado.</p>
+                </div>
+
+                <div class="dtb-config__body">
+                  <div class="dtb-panel">
+                    <div class="dtb-section">
+                      <h3>Projeto</h3>
+                      <label class="vf-field" for="dtg-project-name"><span class="vf-field__label">Nome do projeto</span><input class="vf-input" id="dtg-project-name" type="text" maxlength="80" placeholder="Carrossel da lavadora" autocomplete="off"></label>
+                      <label class="vf-field" for="dtg-client-select">
+                        <span class="vf-field__label">Cliente</span>
+                        <select class="vf-select" id="dtg-client-select"><option value="">Cliente personalizado</option></select>
+                      </label>
+                      <label class="vf-field" for="dtg-client-name"><span class="vf-field__label">Nome do cliente</span><input class="vf-input" id="dtg-client-name" type="text" maxlength="80" placeholder="Nome do cliente" autocomplete="organization"></label>
+                      <label class="vf-field" for="dtg-segment"><span class="vf-field__label">Segmento</span><select class="vf-select" id="dtg-segment"></select></label>
+                      <label class="vf-field" for="dtg-brand-name"><span class="vf-field__label">Nome da marca</span><input class="vf-input" id="dtg-brand-name" type="text" maxlength="40" placeholder="Marca exibida nas artes" autocomplete="off"></label>
+                      <label class="dt-file-drop" for="dtg-logo-file">
+                        <span class="dt-file-drop__title">Logo</span>
+                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
+                        <input id="dtg-logo-file" type="file" accept="image/png,image/jpeg,image/webp">
+                      </label>
+                      <div class="dt-upload-state" id="dtg-logo-state" hidden>
+                        <img id="dtg-logo-preview" alt="Prévia do logo selecionado">
+                        <span id="dtg-logo-filename"></span>
+                        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dtg-remove-logo">Remover logo</button>
+                      </div>
+                    </div>
+
+                    <div class="dtb-section">
+                      <h3>Produto</h3>
+                      <label class="vf-field" for="dtg-product-name"><span class="vf-field__label">Nome do produto</span><input class="vf-input" id="dtg-product-name" type="text" maxlength="64" placeholder="Lavadora de alta pressão"></label>
+                      <label class="vf-field" for="dtg-product-subtitle"><span class="vf-field__label">Subtítulo</span><textarea class="vf-textarea" id="dtg-product-subtitle" rows="2" maxlength="140" placeholder="Uma frase com o diferencial do produto"></textarea></label>
+                      <label class="dt-file-drop" for="dtg-product-file">
+                        <span class="dt-file-drop__title">Imagem principal</span>
+                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
+                        <input id="dtg-product-file" type="file" accept="image/png,image/jpeg,image/webp">
+                      </label>
+                      <div class="dt-upload-state" id="dtg-product-state" hidden>
+                        <img id="dtg-product-preview" alt="Prévia do produto selecionado">
+                        <span id="dtg-product-filename"></span>
+                        <div class="dt-upload-actions">
+                          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtg-edit-product">Editar imagem</button>
+                          <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dtg-remove-product">Remover imagem</button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="dtb-section">
+                      <h3>Benefícios</h3>
+                      <label class="vf-field" for="dtg-main-benefit"><span class="vf-field__label">Benefício principal</span><textarea class="vf-textarea" id="dtg-main-benefit" rows="2" maxlength="120" placeholder="A promessa que abre o carrossel"></textarea></label>
+                      <label class="vf-field" for="dtg-benefit-1"><span class="vf-field__label">Benefício 1</span><textarea class="vf-textarea" id="dtg-benefit-1" rows="2" maxlength="90" placeholder="Um ganho concreto para o cliente"></textarea></label>
+                      <label class="vf-field" for="dtg-benefit-2"><span class="vf-field__label">Benefício 2</span><textarea class="vf-textarea" id="dtg-benefit-2" rows="2" maxlength="90"></textarea></label>
+                      <label class="vf-field" for="dtg-benefit-3"><span class="vf-field__label">Benefício 3</span><textarea class="vf-textarea" id="dtg-benefit-3" rows="2" maxlength="90"></textarea></label>
+                    </div>
+
+                    <div class="dtb-section">
+                      <h3>Ficha técnica</h3>
+                      <label class="vf-field" for="dtg-specs">
+                        <span class="vf-field__label">Especificações, uma por linha</span>
+                        <textarea class="vf-textarea" id="dtg-specs" rows="6" maxlength="420" aria-describedby="dtg-specs-hint" placeholder="Potência: 1800 W&#10;Pressão: 2000 PSI"></textarea>
+                        <span class="vf-field__hint" id="dtg-specs-hint">A página de especificações precisa de pelo menos 2 linhas.</span>
+                      </label>
+                      <label class="vf-field" for="dtg-package">
+                        <span class="vf-field__label">Conteúdo da embalagem, um por linha</span>
+                        <textarea class="vf-textarea" id="dtg-package" rows="5" maxlength="360" placeholder="1 lavadora&#10;1 mangueira de 8 m"></textarea>
+                      </label>
+                      <div class="dt-measure-grid">
+                        <label class="vf-field" for="dtg-width"><span class="vf-field__label">Largura</span><input class="vf-input" id="dtg-width" type="text" maxlength="18" placeholder="32 cm"></label>
+                        <label class="vf-field" for="dtg-height"><span class="vf-field__label">Altura</span><input class="vf-input" id="dtg-height" type="text" maxlength="18" placeholder="78 cm"></label>
+                        <label class="vf-field" for="dtg-depth"><span class="vf-field__label">Profundidade</span><input class="vf-input" id="dtg-depth" type="text" maxlength="18" placeholder="29 cm"></label>
+                      </div>
+                    </div>
+
+                    <div class="dtb-section">
+                      <h3>Garantia e envio</h3>
+                      <label class="vf-field" for="dtg-warranty"><span class="vf-field__label">Garantia</span><textarea class="vf-textarea" id="dtg-warranty" rows="2" maxlength="160" placeholder="12 meses contra defeitos de fabricação"></textarea></label>
+                      <label class="vf-field" for="dtg-shipping"><span class="vf-field__label">Envio</span><textarea class="vf-textarea" id="dtg-shipping" rows="2" maxlength="160" placeholder="Envio com acompanhamento do pedido"></textarea></label>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="dtg-form__footer">
+                  <button type="button" class="vf-btn vf-btn--primary vf-btn--full" id="dtg-generate">Gerar 3 propostas</button>
+                  <button type="button" class="vf-btn vf-btn--secondary vf-btn--full" id="dtg-regenerate">Gerar outras opções</button>
+                </div>
+              </aside>
+
+              <section class="dtg-results" aria-label="Propostas geradas" aria-live="polite">
+                <div class="vf-empty dtg-empty" id="dtg-empty">
+                  <h2 class="vf-empty__title">Nenhuma proposta gerada ainda</h2>
+                  <p class="vf-empty__description">Preencha ao menos o nome do produto e clique em “Gerar 3 propostas”. O estúdio monta três carrosséis com direções visuais diferentes.</p>
+                </div>
+
+                <div class="vf-banner is-info dtg-warnings" id="dtg-warnings" role="status" hidden>
+                  <div class="vf-banner__content">
+                    <p class="vf-banner__title">Páginas não criadas</p>
+                    <ul class="dtb-errors__list" id="dtg-warnings-list"></ul>
+                  </div>
+                </div>
+
+                <div class="dtg-cards" id="dtg-proposals"></div>
+              </section>
+            </div>
+
+            <div class="dtb-layout" id="dtb-manual-view" hidden>
               <aside class="dtb-config" aria-label="Configuração do carrossel">
                 <div class="vf-tabs dtb-config__tabs" role="tablist" aria-label="Grupos de configuração do construtor">
                   <button type="button" class="vf-tab is-active" role="tab" aria-selected="true" aria-controls="dtb-panel-identity" data-builder-tab="identity">Identidade</button>
@@ -484,6 +596,37 @@
     </div>
   </div>
 
+  <div class="vf-overlay dtg-preview-overlay" id="dtg-preview-overlay" aria-hidden="true">
+    <div class="vf-modal dtg-preview-modal" role="dialog" aria-modal="true" aria-labelledby="dtg-preview-title">
+      <header class="vf-modal__header dtg-preview-header">
+        <div>
+          <p class="vf-page-header__eyebrow" id="dtg-preview-direction">Direção visual</p>
+          <h2 class="vf-modal__title" id="dtg-preview-title">Proposta</h2>
+        </div>
+        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon" id="dtg-preview-close" aria-label="Fechar prévia da proposta">×</button>
+      </header>
+
+      <div class="vf-modal__body dtg-preview-body">
+        <div class="dtg-preview-toolbar">
+          <span class="dt-page-kicker" id="dtg-preview-page">PÁGINA 01 DE 05</span>
+          <div class="vf-btn-group">
+            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtg-preview-prev">Anterior</button>
+            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtg-preview-next">Próxima</button>
+          </div>
+        </div>
+        <div class="dt-canvas-stage dtg-preview-stage">
+          <div class="dt-canvas-frame" id="dtg-preview-canvas" aria-live="polite"></div>
+        </div>
+        <div class="dtg-preview-thumbs" id="dtg-preview-thumbs" role="group" aria-label="Páginas da proposta"></div>
+      </div>
+
+      <footer class="vf-modal__footer">
+        <button type="button" class="vf-btn vf-btn--secondary" id="dtg-preview-cancel">Fechar</button>
+        <button type="button" class="vf-btn vf-btn--primary" id="dtg-preview-use">Usar esta proposta</button>
+      </footer>
+    </div>
+  </div>
+
   <div class="vf-overlay die-overlay" id="die-overlay" aria-hidden="true">
     <div class="vf-modal die-modal" id="die-modal" role="dialog" aria-modal="true" aria-labelledby="die-title" aria-describedby="die-file-name">
       <header class="vf-modal__header die-header">
@@ -633,6 +776,7 @@
   <script src="design-template-renderer.js"></script>
   <script src="design-template-builder-model.js"></script>
   <script src="design-template-builder-storage.js"></script>
+  <script src="design-template-proposal-generator.js"></script>
   <script src="design-templates.js"></script>
   <script src="design-template-builder.js"></script>
 </body>

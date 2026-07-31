@@ -81,6 +81,229 @@
   margin-top: 3px;
 }
 
+.dtb-mode {
+  margin-bottom: var(--vf-sp-4);
+}
+
+/* ── modo de geração ─────────────────────────────────────── */
+
+.dtg-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  gap: var(--vf-sp-4);
+  align-items: start;
+}
+
+.dtg-form {
+  border: 1px solid var(--vf-border);
+  border-right: 1px solid var(--vf-border);
+}
+
+.dtg-form__header {
+  padding: var(--vf-sp-4);
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.dtg-form__header h3 {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+}
+
+.dtg-form__header p {
+  margin: var(--vf-sp-2) 0 0;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs);
+  line-height: var(--vf-lh-normal);
+}
+
+.dtg-form__footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
+  background: var(--vf-surface);
+}
+
+.dtg-results {
+  min-width: 0;
+}
+
+.dtg-empty {
+  border: 1px dashed var(--vf-border-strong);
+  background: var(--vf-surface);
+}
+
+.dtg-warnings {
+  margin-bottom: var(--vf-sp-4);
+}
+
+.dtg-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--vf-sp-4);
+}
+
+.dtg-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-4);
+}
+
+.dtg-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+}
+
+.dtg-card__title {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+}
+
+.dtg-card__count {
+  flex: 0 0 auto;
+  color: var(--vf-text-muted);
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+}
+
+.dtg-card__description {
+  margin: 0;
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-xs);
+  line-height: var(--vf-lh-normal);
+}
+
+.dtg-card__palette {
+  display: flex;
+  gap: 6px;
+}
+
+.dtg-card__swatch {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+.dtg-card__thumbs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+
+.dtg-thumb {
+  flex: 0 0 auto;
+  width: 74px;
+  padding: 2px;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  cursor: pointer;
+}
+
+.dtg-thumb:hover {
+  border-color: var(--vf-border-hover);
+}
+
+.dtg-thumb.is-active {
+  border-color: var(--vf-primary);
+  box-shadow: var(--vf-focus-ring);
+}
+
+.dtg-card__layouts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dtg-card__layouts li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--vf-sp-2);
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-2xs);
+}
+
+.dtg-card__layout-index {
+  color: var(--vf-text-muted);
+  font-family: var(--vf-font-mono);
+}
+
+.dtg-card__layouts code {
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--vf-text-muted);
+  font-family: var(--vf-font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dtg-card__actions {
+  display: flex;
+  gap: var(--vf-sp-2);
+  margin-top: auto;
+  padding-top: var(--vf-sp-2);
+}
+
+.dtg-card__actions .vf-btn {
+  flex: 1 1 0;
+}
+
+/* ── prévia da proposta ──────────────────────────────────── */
+
+.dtg-preview-overlay {
+  z-index: calc(var(--vf-z-modal) - 1);
+}
+
+.dtg-preview-modal {
+  width: min(920px, 94vw);
+  max-height: 92vh;
+}
+
+.dtg-preview-header {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+}
+
+.dtg-preview-body {
+  overflow-y: auto;
+}
+
+.dtg-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  margin-bottom: var(--vf-sp-3);
+}
+
+.dtg-preview-stage {
+  min-height: 320px;
+  max-height: 52vh;
+}
+
+.dtg-preview-thumbs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  margin-top: var(--vf-sp-3);
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+
 /* ── layout de duas colunas ──────────────────────────────── */
 
 .dtb-layout {
@@ -312,14 +535,30 @@
   display: inline-block;
   margin-bottom: 5px;
   padding: 2px 7px;
-  border: 1px solid var(--vf-primary-border, var(--vf-border));
+  border: 1px solid var(--vf-border);
   border-radius: var(--vf-radius-sm);
-  background: var(--vf-primary-soft);
-  color: var(--vf-primary-strong);
+  background: var(--vf-surface-2);
+  color: var(--vf-text-secondary);
   font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-semibold);
   letter-spacing: var(--vf-ls-caps);
   text-transform: uppercase;
+}
+
+/* Template gerado x criado manualmente: distinção discreta, sem cor
+   chamativa — o roxo da marca já é o suficiente. */
+.dtb-card__origin.is-generated {
+  border-color: var(--vf-primary);
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+}
+
+.dtb-page__variant {
+  margin-top: var(--vf-sp-2);
+}
+
+.dtb-page__variant .vf-field__label {
+  font-size: var(--vf-fs-2xs);
 }
 
 .dtb-card__actions {
@@ -350,8 +589,13 @@
 @media (max-width: 820px) {
   /* Configuração em cima, prévia embaixo. Nada de rolagem horizontal na
      página inteira: só as miniaturas rolam. */
-  .dtb-layout {
+  .dtb-layout,
+  .dtg-layout {
     display: block;
+  }
+
+  .dtg-form {
+    margin-bottom: var(--vf-sp-4);
   }
 
   .dtb-config {

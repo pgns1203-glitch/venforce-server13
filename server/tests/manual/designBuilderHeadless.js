@@ -118,6 +118,7 @@ async function paraBuffer(blob) {
     "design-template-engine.js", "design-template-presets.js", "design-template-components.js",
     "design-template-layouts.js", "design-template-renderer.js",
     "design-template-builder-model.js", "design-template-builder-storage.js",
+    "design-template-proposal-generator.js",
     "design-templates.js", "design-template-builder.js",
   ].forEach((f) => window.eval(fs.readFileSync(path.join(PORTAL, f), "utf8")));
 
@@ -160,6 +161,20 @@ async function paraBuffer(blob) {
     byId("dtb-title").textContent.length > 0);
   ok("2d. a descrição pedida aparece",
     window.document.querySelector(".dtb-intro").textContent.includes("Escolha a identidade"));
+
+  // A partir da Fase 4 o Construtor abre no modo de GERAÇÃO. Este roteiro
+  // exercita o editor manual, então troca de modo antes de continuar.
+  ok("2d2. o modo padrão é “Gerar propostas”",
+    byId("dtb-generate-view").hidden === false && byId("dtb-manual-view").hidden === true);
+  disparar("dtb-mode-manual", "click");
+  await esperar(200);
+  ok("2d3. “Montar manualmente” abre o editor manual", byId("dtb-manual-view").hidden === false);
+
+  // O projeto novo nasce vazio (nada de conteúdo comercial fictício), então
+  // este roteiro preenche o produto antes de conferir a arte.
+  byId("dtb-product-name").value = "Produto de teste";
+  disparar("dtb-product-name", "input");
+  await esperar(400);
   ok("2e. a prévia desenhou uma página", Boolean(byId("dtb-main-preview").querySelector("svg")));
   ok("2f. as cinco miniaturas apareceram", miniaturas().length === 5);
   ok("2g. a lista de seleção de páginas foi montada",
@@ -192,7 +207,7 @@ async function paraBuffer(blob) {
   await capturar("03-nome-alterado");
 
   /* 5. incluir benefícios cria conteúdo na página de benefícios */
-  const paginaDeBeneficios = miniaturas().findIndex((b) => /Benefícios/.test(b.textContent));
+  const paginaDeBeneficios = miniaturas().findIndex((b) => /cards/i.test(b.textContent));
   ok("5pre. a página de benefícios está no carrossel", paginaDeBeneficios >= 0);
   miniaturas()[paginaDeBeneficios].dispatchEvent(new window.Event("click", { bubbles: true }));
   await esperar(80);
@@ -210,7 +225,7 @@ async function paraBuffer(blob) {
 
   /* 6. remover uma página remove a miniatura */
   const antesDeRemover = miniaturas().length;
-  const caixa = byId("dtb-page-specifications-grid-v1");
+  const caixa = byId("dtb-page-specifications");
   caixa.checked = false;
   caixa.dispatchEvent(new window.Event("change", { bubbles: true }));
   await esperar(150);
@@ -221,14 +236,17 @@ async function paraBuffer(blob) {
   caixa.dispatchEvent(new window.Event("change", { bubbles: true }));
   await esperar(150);
   ok("6c. marcar de volta devolve a miniatura", miniaturas().length === antesDeRemover);
+  ok("6c2. a página voltou na mesma composição", rotulos().some((r) => /Grade/.test(r)));
 
   ok("6d. a capa não pode ser desmarcada",
-    byId("dtb-page-cover-split-v1").disabled === true);
+    byId("dtb-page-cover").disabled === true);
 
   /* 7. alterar a ordem muda a sequência */
   const ordemAntes = rotulos().join(" | ");
+  // O rótulo mostra o nome da VARIAÇÃO ("Cotas técnicas"), então a busca é
+  // pelo id da família na caixa de seleção.
   const itemDimensoes = [...byId("dtb-pages-list").querySelectorAll(".dtb-page")]
-    .find((li) => /Dimensões técnicas/.test(li.textContent));
+    .find((li) => li.querySelector("#dtb-page-dimensions"));
   itemDimensoes.querySelectorAll(".dtb-page__moves .vf-btn")[0]
     .dispatchEvent(new window.Event("click", { bubbles: true }));
   await esperar(150);
@@ -244,7 +262,8 @@ async function paraBuffer(blob) {
   const cards = () => [...byId("dt-local-template-grid").querySelectorAll(".dtb-card")];
   ok("8. salvar como template cria um card na Biblioteca", cards().length === 1);
   ok("8b. o card mostra o nome do projeto", cards()[0].textContent.includes("Carrossel Lavadora 2026"));
-  ok("8c. o card se identifica como criado pela equipe", cards()[0].textContent.includes("Criado pela equipe"));
+  ok("8c. o card se identifica como criado manualmente",
+    cards()[0].textContent.includes("Template criado manualmente"));
   ok("8d. o card traz segmento, estilo, páginas e data",
     /Segmento:/.test(cards()[0].textContent) && /Estilo:/.test(cards()[0].textContent)
     && /Páginas:/.test(cards()[0].textContent) && /Atualizado:/.test(cards()[0].textContent));

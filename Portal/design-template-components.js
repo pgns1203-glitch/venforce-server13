@@ -57,6 +57,27 @@
       .filter((medida) => medida.value.length > 0);
   }
 
+  // Largura média de um caractere, em fração do font-size. O SVG é gerado
+  // fora do navegador (testes, export), onde não existe medição de texto —
+  // então a quebra e o corte são feitos por CONTAGEM, com estes fatores
+  // medidos nas três famílias que as peças usam.
+  const CHAR_RATIO = { display: 0.585, body: 0.552, mono: 0.62 };
+
+  // Quantos caracteres cabem em `width` com este corpo de fonte.
+  function charsForWidth(width, fontSize, kind) {
+    const ratio = CHAR_RATIO[kind] || CHAR_RATIO.body;
+    return Math.max(6, Math.floor(width / (fontSize * ratio)));
+  }
+
+  // Corta um texto de UMA linha na largura disponível, com reticências. Usado
+  // onde a quebra automática não cabe (célula de tabela, chip, rótulo).
+  function fitText(value, width, fontSize, kind) {
+    const texto = typeof value === "string" || typeof value === "number" ? String(value) : "";
+    const limite = charsForWidth(width, fontSize, kind);
+    if (texto.length <= limite) return texto;
+    return `${texto.slice(0, Math.max(1, limite - 1)).trimEnd()}…`;
+  }
+
   // `dependencies`:
   //   svg  -> adaptador { element, text, wrapped } (ver design-template-renderer)
   //   mix  -> mistura de cores (hex, hex, 0..1) -> hex
@@ -201,6 +222,8 @@
     }
 
     // Texto corrido de apoio: Hanken Grotesk, peso 500 por padrão.
+    // `textAnchor` só muda o resultado quando informado — o adaptador já
+    // escreve "start" por padrão, então as peças antigas seguem idênticas.
     function bodyText(parent, content, x, y, options) {
       return svg.wrapped(parent, content, x, y, {
         maxChars: options.maxChars,
@@ -210,6 +233,7 @@
         fill: options.fill,
         fontWeight: options.fontWeight || 500,
         fontFamily: "Hanken Grotesk,Arial,sans-serif",
+        textAnchor: options.textAnchor,
       });
     }
 
@@ -377,6 +401,215 @@
       });
     }
 
+    /* ── variações do Construtor (famílias com 3 versões) ───────────────── */
+
+    // Benefícios em lista vertical: número grande à esquerda, texto à direita
+    // e régua separando. Hierarquia oposta à dos cards (leitura em coluna).
+    function benefitSideList(parent, items, palette, options) {
+      items.forEach((item, index) => {
+        const y = options.y + index * options.step;
+        if (index > 0) {
+          // A régua fica no MEIO do intervalo, não logo abaixo do item
+          // anterior: um benefício de duas linhas desce até y+36 e cruzaria
+          // uma régua colada nele.
+          const yRegua = y - options.step / 2;
+          svg.element("line", {
+            x1: options.x, y1: yRegua, x2: options.x + options.width, y2: yRegua,
+            stroke: mix(palette.text, palette.background, options.onDark ? 0.7 : 0.82), "stroke-width": 2,
+          }, parent);
+        }
+        svg.text(parent, String(index + 1).padStart(2, "0"), {
+          x: options.x, y: y + 12, fill: palette.secondary,
+          "font-family": "Manrope,Arial,sans-serif", "font-size": 54, "font-weight": 800,
+        });
+        bodyText(parent, item, options.x + 108, y, {
+          maxChars: charsForWidth(options.width - 108, 27, "body"), maxLines: 2,
+          fontSize: 27, lineHeight: 36, fill: options.textFill || palette.text, fontWeight: 600,
+        });
+      });
+    }
+
+    // Benefícios em órbita: selos numerados distribuídos ao redor do produto,
+    // com o texto ancorado para fora. Composição radial, não em colunas.
+    function benefitOrbit(parent, items, palette, options) {
+      const posicoes = options.slots || [];
+      items.forEach((item, index) => {
+        const slot = posicoes[index];
+        if (!slot) return;
+        // O conector sai da BORDA do anel (fromX/fromY), não do centro: uma
+        // linha partindo do meio atravessaria a foto do produto.
+        svg.element("line", {
+          x1: slot.fromX == null ? options.centerX : slot.fromX,
+          y1: slot.fromY == null ? options.centerY : slot.fromY,
+          x2: slot.x, y2: slot.y,
+          stroke: palette.secondary, "stroke-width": 3, opacity: 0.45,
+        }, parent);
+        svg.element("circle", { cx: slot.x, cy: slot.y, r: 34, fill: palette.secondary }, parent);
+        svg.text(parent, String(index + 1).padStart(2, "0"), {
+          x: slot.x, y: slot.y + 9, "text-anchor": "middle", fill: palette.white,
+          class: "dt-fine", "font-size": 19, "font-weight": 700,
+        });
+        bodyText(parent, item, slot.textX, slot.textY, {
+          maxChars: charsForWidth(slot.width, 25, "body"), maxLines: 3,
+          fontSize: 25, lineHeight: 33, fill: options.textFill || palette.text,
+          fontWeight: 600, textAnchor: slot.anchor,
+        });
+      });
+    }
+
+    // Ficha técnica em tabela: faixas alternadas, rótulo à esquerda e valor
+    // alinhado à direita. É a leitura de "documento", não de grade.
+    function specTable(parent, pairs, palette, options) {
+      pairs.forEach((pair, index) => {
+        const y = options.y + index * options.rowHeight;
+        if (index % 2 === 0) {
+          svg.element("rect", {
+            x: options.x, y, width: options.width, height: options.rowHeight,
+            fill: options.stripeFill || mix(palette.surface, palette.primary, 0.06),
+          }, parent);
+        }
+        const base = y + options.rowHeight / 2 + 10;
+        svg.text(parent, fitText(pair.label, options.width * 0.55, 27, "body"), {
+          x: options.x + 30, y: base, fill: options.labelFill || palette.muted,
+          class: "dt-body", "font-size": 27, "font-weight": 600,
+        });
+        if (pair.value) {
+          svg.text(parent, fitText(pair.value, options.width * 0.4, 29, "body"), {
+            x: options.x + options.width - 30, y: base, "text-anchor": "end",
+            fill: options.valueFill || palette.text, class: "dt-body", "font-size": 29, "font-weight": 700,
+          });
+        }
+      });
+    }
+
+    // Ficha técnica em cartões: cada par vira um bloco fechado com barra de
+    // acento. Formato "destaque", pensado para a direção comercial.
+    function specCards(parent, pairs, palette, options) {
+      const columns = options.columns || 3;
+      const gap = options.gap == null ? 24 : options.gap;
+      const cellWidth = (options.width - gap * (columns - 1)) / columns;
+      pairs.forEach((pair, index) => {
+        const coluna = index % columns;
+        const linha = Math.floor(index / columns);
+        const x = options.x + coluna * (cellWidth + gap);
+        const y = options.y + linha * (options.rowHeight + gap);
+        svg.element("rect", { x, y, width: cellWidth, height: options.rowHeight, rx: 12, fill: palette.surface }, parent);
+        svg.element("rect", { x, y, width: cellWidth, height: 7, fill: palette.secondary }, parent);
+        svg.text(parent, fitText(String(pair.label).toUpperCase(), cellWidth - 44, 16, "mono"), {
+          x: x + 24, y: y + 58, fill: palette.muted, class: "dt-fine", "font-size": 16, "font-weight": 700,
+        });
+        if (pair.value) {
+          svg.text(parent, fitText(pair.value, cellWidth - 44, 32, "display"), {
+            x: x + 24, y: y + 108, fill: palette.text,
+            "font-family": "Manrope,Arial,sans-serif", "font-size": 32, "font-weight": 800,
+          });
+        }
+      });
+    }
+
+    // Conteúdo da embalagem em grade: cada item é uma célula com o número no
+    // canto. Leitura em bloco, não em coluna.
+    function packageGrid(parent, items, palette, options) {
+      const columns = options.columns || 2;
+      const gap = options.gap == null ? 20 : options.gap;
+      const cellWidth = (options.width - gap * (columns - 1)) / columns;
+      items.forEach((item, index) => {
+        const coluna = index % columns;
+        const linha = Math.floor(index / columns);
+        const x = options.x + coluna * (cellWidth + gap);
+        const y = options.y + linha * (options.rowHeight + gap);
+        svg.element("rect", {
+          x, y, width: cellWidth, height: options.rowHeight, rx: 8,
+          fill: options.cellFill || palette.surface,
+          stroke: mix(palette.text, palette.background, 0.84), "stroke-width": 2,
+        }, parent);
+        svg.text(parent, String(index + 1).padStart(2, "0"), {
+          x: x + 22, y: y + 38, fill: palette.secondary, class: "dt-fine", "font-size": 16, "font-weight": 700,
+        });
+        bodyText(parent, item, x + 22, y + 78, {
+          maxChars: charsForWidth(cellWidth - 44, 23, "body"), maxLines: 2,
+          fontSize: 23, lineHeight: 30, fill: options.textFill || palette.text, fontWeight: 600,
+        });
+      });
+    }
+
+    // Conteúdo da embalagem com item principal em destaque e os demais em
+    // linha compacta abaixo. Hierarquia: o primeiro item é o produto.
+    function packageFocus(parent, items, palette, options) {
+      if (!items.length) return;
+      svg.element("rect", { x: options.x, y: options.y, width: options.width, height: 132, rx: 10, fill: palette.secondary }, parent);
+      svg.text(parent, "01", {
+        x: options.x + 30, y: options.y + 50, fill: palette.white, class: "dt-fine", "font-size": 17, "font-weight": 700,
+      });
+      bodyText(parent, items[0], options.x + 30, options.y + 96, {
+        maxChars: charsForWidth(options.width - 60, 30, "body"), maxLines: 1,
+        fontSize: 30, lineHeight: 38, fill: palette.white, fontWeight: 700,
+      });
+
+      items.slice(1).forEach((item, index) => {
+        const y = options.y + 158 + index * 74;
+        svg.element("rect", { x: options.x, y, width: 46, height: 46, rx: 8, fill: palette.primaryLight }, parent);
+        svg.text(parent, String(index + 2).padStart(2, "0"), {
+          x: options.x + 23, y: y + 30, "text-anchor": "middle", fill: palette.primary,
+          class: "dt-fine", "font-size": 14, "font-weight": 700,
+        });
+        svg.text(parent, fitText(item, options.width - 76, 25, "body"), {
+          x: options.x + 68, y: y + 32, fill: options.textFill || palette.text,
+          class: "dt-body", "font-size": 25, "font-weight": 600,
+        });
+      });
+    }
+
+    // Medidas como pílulas horizontais. Recebe a lista JÁ filtrada: medida
+    // ausente não vira pílula vazia.
+    function measureBadges(parent, measures, palette, options) {
+      const gap = options.gap == null ? 18 : options.gap;
+      // 12,6 px por caractere = IBM Plex Mono 17 px + 2 px de letter-spacing.
+      // Os 84 px fixos são o recuo do marcador (56) mais o respiro à direita.
+      const larguraDe = (medida) => Math.max(190, 84 + `${medida.label} ${medida.value}`.length * 12.6);
+      // Com `centerX` o conjunto é centralizado: a largura total depende de
+      // QUANTAS medidas foram preenchidas, e ela varia de peça para peça.
+      let x = options.x;
+      if (options.centerX != null) {
+        const total = measures.reduce((soma, m) => soma + larguraDe(m), 0) + gap * Math.max(0, measures.length - 1);
+        x = options.centerX - total / 2;
+      }
+      measures.forEach((medida) => {
+        const rotulo = `${medida.label} ${medida.value}`;
+        const width = larguraDe(medida);
+        svg.element("rect", { x, y: options.y, width, height: 66, rx: 33, fill: options.fill || palette.surface }, parent);
+        svg.element("circle", { cx: x + 33, cy: options.y + 33, r: 9, fill: palette.secondary }, parent);
+        svg.text(parent, rotulo, {
+          x: x + 56, y: options.y + 42, fill: options.textFill || palette.text,
+          class: "dt-fine", "font-size": 17, "font-weight": 700,
+        });
+        x += width + gap;
+      });
+    }
+
+    // Painel escuro de medidas: coluna com rótulo pequeno e valor grande,
+    // separados por régua. Aparência de ficha técnica.
+    function measurePanel(parent, measures, palette, options) {
+      measures.forEach((medida, index) => {
+        const y = options.y + index * options.step;
+        if (index > 0) {
+          svg.element("line", {
+            x1: options.x, y1: y - 46, x2: options.x + options.width, y2: y - 46,
+            stroke: options.ruleStroke || mix(palette.white, palette.primary, 0.7), "stroke-width": 2,
+          }, parent);
+        }
+        svg.text(parent, medida.label, {
+          x: options.x, y, fill: options.labelFill || palette.secondary,
+          class: "dt-fine", "font-size": 16, "font-weight": 700,
+        });
+        svg.text(parent, medida.value, {
+          x: options.x + options.width, y, "text-anchor": "end",
+          fill: options.valueFill || palette.white,
+          "font-family": "Manrope,Arial,sans-serif", "font-size": 44, "font-weight": 800,
+        });
+      });
+    }
+
     /* ── blocos decorativos ─────────────────────────────────────────────── */
 
     function backgroundFill(parent, color, canvas) {
@@ -395,11 +628,22 @@
       parseListItems,
       parseSpecPairs,
       collectMeasures,
+      charsForWidth,
+      fitText,
 
       benefitCards,
       specGrid,
       measureCards,
       editingNote,
+
+      benefitSideList,
+      benefitOrbit,
+      specTable,
+      specCards,
+      packageGrid,
+      packageFocus,
+      measureBadges,
+      measurePanel,
 
       brand,
       pageNumber,
@@ -417,5 +661,14 @@
     };
   }
 
-  return { createDesignTemplateComponents, MAX_LIST_ITEMS, parseListItems, parseSpecPairs, collectMeasures };
+  return {
+    createDesignTemplateComponents,
+    MAX_LIST_ITEMS,
+    CHAR_RATIO,
+    parseListItems,
+    parseSpecPairs,
+    collectMeasures,
+    charsForWidth,
+    fitText,
+  };
 });

@@ -402,6 +402,394 @@
           });
         },
       },
+
+      /* ── variações: capa ──────────────────────────────────────────────── */
+
+      {
+        id: "cover-centered-v1",
+        label: "Capa centralizada",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Eixo vertical centralizado sobre painel escuro, com faixa de benefício no rodapé.",
+        requiredFields: ["product.name"],
+        optionalFields: ["product.subtitle", "content.mainBenefit", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas, mix } = ctx;
+          c.backgroundFill(root, palette.primaryDark, canvas);
+          svg.element("rect", {
+            x: 48, y: 48, width: 1104, height: 1104, fill: "none",
+            stroke: palette.secondary, "stroke-width": 2, opacity: 0.35,
+          }, root);
+
+          c.brand(root, project, palette, { onDark: true });
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, true);
+
+          c.sectionLabel(root, String(ctx.template.segment || "PRODUTO").toUpperCase(), {
+            x: 600, y: 268, fill: palette.secondary, textAnchor: "middle",
+          });
+          c.headline(root, project.product.name, 600, 358, {
+            maxChars: 19, maxLines: 2, fontSize: 68, lineHeight: 76, fill: palette.white, textAnchor: "middle",
+          });
+          // Subtítulo com 2 linhas termina em ~521; a foto começa em 571
+          // (centro 780, altura do placeholder × escala). O intervalo é a
+          // folga que impede o texto de sumir atrás do produto.
+          c.bodyText(root, project.product.subtitle, 600, 486, {
+            maxChars: 46, maxLines: 2, fontSize: 26, lineHeight: 35,
+            fill: mix(palette.primary, "#ffffff", 0.72), textAnchor: "middle",
+          });
+
+          svg.element("circle", { cx: 600, cy: 780, r: 215, fill: palette.primary, opacity: 0.55 }, root);
+          c.productPhoto(root, project, palette, 600, 780, 360);
+
+          svg.element("rect", { x: 0, y: 1010, width: 1200, height: 190, fill: palette.primary }, root);
+          if (String(project.content.mainBenefit || "").trim()) {
+            c.bodyText(root, project.content.mainBenefit, 600, 1090, {
+              maxChars: 42, maxLines: 2, fontSize: 29, lineHeight: 38,
+              fill: palette.white, fontWeight: 650, textAnchor: "middle",
+            });
+          }
+        },
+      },
+
+      {
+        id: "cover-impact-v1",
+        label: "Capa de impacto",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Título muito grande, faixa diagonal e produto ampliado invadindo a composição.",
+        requiredFields: ["product.name"],
+        optionalFields: ["product.subtitle", "content.mainBenefit", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.background, canvas);
+          svg.element("path", { d: "M0 668L1200 402V1200H0Z", fill: palette.primary }, root);
+          svg.element("circle", { cx: 900, cy: 590, r: 270, fill: palette.secondary, opacity: 0.92 }, root);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+
+          c.sectionLabel(root, "DESTAQUE", { x: 74, y: 202, fill: palette.secondaryDark });
+          // A coluna de texto vai até x≈617 (12 caracteres a 78 px) e a foto
+          // começa em 622. São 3 linhas de título porque nomes de produto
+          // reais raramente cabem em duas nesse corpo.
+          c.headline(root, project.product.name, 70, 300, {
+            maxChars: 12, maxLines: 3, fontSize: 78, lineHeight: 84, fill: palette.text,
+          });
+          c.bodyText(root, project.product.subtitle, 74, 576, {
+            maxChars: 24, maxLines: 2, fontSize: 26, lineHeight: 34, fill: palette.muted,
+          });
+
+          c.productPhoto(root, project, palette, 900, 620, 460);
+
+          if (String(project.content.mainBenefit || "").trim()) {
+            svg.element("rect", { x: 74, y: 852, width: 10, height: 176, fill: palette.secondary }, root);
+            c.bodyText(root, project.content.mainBenefit, 112, 912, {
+              maxChars: 24, maxLines: 3, fontSize: 32, lineHeight: 42, fill: palette.white, fontWeight: 700,
+            });
+          }
+        },
+      },
+
+      /* ── variações: benefícios ────────────────────────────────────────── */
+
+      {
+        id: "benefits-side-list-v1",
+        label: "Benefícios em lista lateral",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Painel escuro com o produto à esquerda e a lista numerada à direita.",
+        requiredFields: [],
+        optionalFields: ["content.benefit1", "content.benefit2", "content.benefit3", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.surface, canvas);
+          svg.element("rect", { x: 0, y: 0, width: 520, height: 1200, fill: palette.primaryDark }, root);
+          svg.element("rect", { x: 514, y: 0, width: 6, height: 1200, fill: palette.secondary }, root);
+
+          c.brand(root, project, palette, { onDark: true });
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+          c.productPhoto(root, project, palette, 258, 660, 400);
+
+          c.sectionLabel(root, "PONTOS FORTES", { x: 588, y: 258, fill: palette.secondaryDark });
+          c.headline(root, project.product.name, 586, 348, {
+            maxChars: 17, maxLines: 2, fontSize: 54, lineHeight: 62, fill: palette.text,
+          });
+
+          const beneficios = [project.content.benefit1, project.content.benefit2, project.content.benefit3]
+            .map((item) => (typeof item === "string" ? item.trim() : ""))
+            .filter(Boolean)
+            .slice(0, 3);
+          c.benefitSideList(root, beneficios, palette, { x: 588, y: 600, width: 540, step: 190 });
+        },
+      },
+
+      {
+        id: "benefits-orbit-v1",
+        label: "Benefícios em órbita",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Produto ao centro com os benefícios distribuídos em torno de um anel técnico.",
+        requiredFields: [],
+        optionalFields: ["content.benefit1", "content.benefit2", "content.benefit3", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.background, canvas);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+          c.sectionLabel(root, "POR QUE ESCOLHER", { x: 600, y: 210, fill: palette.secondaryDark, textAnchor: "middle" });
+
+          svg.element("circle", { cx: 600, cy: 610, r: 250, fill: palette.primaryLight }, root);
+          svg.element("circle", {
+            cx: 600, cy: 610, r: 315, fill: "none",
+            stroke: palette.secondary, "stroke-width": 4, "stroke-dasharray": "16 14", opacity: 0.7,
+          }, root);
+          c.productPhoto(root, project, palette, 600, 610, 340);
+
+          const beneficios = [project.content.benefit1, project.content.benefit2, project.content.benefit3]
+            .map((item) => (typeof item === "string" ? item.trim() : ""))
+            .filter(Boolean)
+            .slice(0, 3);
+          // Slots fixos nos cantos: o conector parte da borda do anel (fromX/
+          // fromY, pré-calculados) para não cruzar a foto do produto.
+          c.benefitOrbit(root, beneficios, palette, {
+            centerX: 600, centerY: 610,
+            slots: [
+              { x: 170, y: 380, fromX: 322, fromY: 461, textX: 170, textY: 476, width: 280, anchor: "middle" },
+              { x: 1030, y: 380, fromX: 878, fromY: 461, textX: 1030, textY: 476, width: 280, anchor: "middle" },
+              { x: 600, y: 1000, fromX: 600, fromY: 925, textX: 600, textY: 1094, width: 520, anchor: "middle" },
+            ],
+          });
+        },
+      },
+
+      /* ── variações: especificações ────────────────────────────────────── */
+
+      {
+        id: "specifications-table-v1",
+        label: "Especificações em tabela",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Cabeçalho escuro e ficha em linhas alternadas, com valor alinhado à direita.",
+        requiredFields: [],
+        optionalFields: ["content.specs", "logo"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas, mix } = ctx;
+          c.backgroundFill(root, palette.surface, canvas);
+          svg.element("rect", { x: 0, y: 0, width: 1200, height: 320, fill: palette.primaryDark }, root);
+          svg.element("rect", { x: 0, y: 314, width: 1200, height: 6, fill: palette.secondary }, root);
+
+          c.brand(root, project, palette, { onDark: true });
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, true);
+          c.sectionLabel(root, "FICHA TÉCNICA", { x: 72, y: 186, fill: palette.secondary });
+          c.headline(root, "Especificações técnicas", 70, 268, {
+            maxChars: 26, maxLines: 1, fontSize: 58, lineHeight: 64, fill: palette.white,
+          });
+
+          const pares = c.parseSpecPairs(project.content.specs, 6);
+          if (pares.length) {
+            c.specTable(root, pares, palette, {
+              x: 72, y: 396, width: 1056, rowHeight: 104,
+              stripeFill: mix(palette.surface, palette.primary, 0.07),
+              labelFill: palette.muted, valueFill: palette.text,
+            });
+          } else if (ctx.mode === "preview") {
+            c.editingNote(root, "Preencha as especificações técnicas — uma por linha, no formato “Potência: 650 W”.",
+              palette, { x: 72, y: 420, width: 1056 });
+          }
+        },
+      },
+
+      {
+        id: "specifications-cards-v1",
+        label: "Especificações em cartões",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Faixa clara com o produto e a ficha distribuída em cartões de destaque.",
+        requiredFields: [],
+        optionalFields: ["content.specs", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.background, canvas);
+          svg.element("rect", { x: 0, y: 0, width: 1200, height: 404, fill: palette.primaryLight }, root);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+          c.sectionLabel(root, "O QUE VEM DENTRO", { x: 72, y: 196, fill: palette.secondaryDark });
+          c.headline(root, "Especificações técnicas", 70, 286, {
+            maxChars: 17, maxLines: 2, fontSize: 58, lineHeight: 64, fill: palette.text,
+          });
+          // Centro em 254 (não 206): a foto subia até 61 e passava por cima
+          // do contador de páginas, que fica na linha de base 84.
+          c.productPhoto(root, project, palette, 1010, 254, 230);
+
+          const pares = c.parseSpecPairs(project.content.specs, 6);
+          if (pares.length) {
+            c.specCards(root, pares, palette, {
+              x: 72, y: 486, width: 1056, columns: 3, gap: 24, rowHeight: 190,
+            });
+          } else if (ctx.mode === "preview") {
+            c.editingNote(root, "Preencha as especificações técnicas — uma por linha, no formato “Potência: 650 W”.",
+              palette, { x: 72, y: 486, width: 1056 });
+          }
+
+          // Rodapé com o nome do produto: fecha a composição e evita a faixa
+          // vazia que sobrava abaixo dos cartões.
+          if (String(project.product.name || "").trim()) {
+            svg.text(root, c.fitText(project.product.name, 1056, 36, "display"), {
+              x: 72, y: 1058, fill: palette.text,
+              "font-family": "Manrope,Arial,sans-serif", "font-size": 36, "font-weight": 800,
+            });
+          }
+          svg.element("rect", { x: 72, y: 1108, width: 220, height: 8, fill: palette.secondary }, root);
+        },
+      },
+
+      /* ── variações: conteúdo da embalagem ─────────────────────────────── */
+
+      {
+        id: "package-grid-v1",
+        label: "Embalagem em grade",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Cabeçalho escuro, produto à esquerda e itens em células empilhadas à direita.",
+        requiredFields: [],
+        optionalFields: ["content.packageItems", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.surface, canvas);
+          svg.element("rect", { x: 0, y: 0, width: 1200, height: 288, fill: palette.primaryDark }, root);
+
+          c.brand(root, project, palette, { onDark: true });
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, true);
+          c.headline(root, "Conteúdo da embalagem", 70, 226, {
+            maxChars: 27, maxLines: 1, fontSize: 54, lineHeight: 60, fill: palette.white,
+          });
+
+          c.productPhoto(root, project, palette, 300, 740, 400);
+
+          const itens = c.parseListItems(project.content.packageItems, 6);
+          if (itens.length) {
+            c.packageGrid(root, itens, palette, {
+              x: 600, y: 372, width: 528, columns: 1, gap: 14, rowHeight: 108,
+              cellFill: palette.background,
+            });
+          } else if (ctx.mode === "preview") {
+            c.editingNote(root, "Liste o que acompanha o produto — um item por linha.",
+              palette, { x: 600, y: 372, width: 528 });
+          }
+        },
+      },
+
+      {
+        id: "package-focus-v1",
+        label: "Embalagem com item principal",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Primeiro item em faixa de destaque e os demais em linha compacta abaixo.",
+        requiredFields: [],
+        optionalFields: ["content.packageItems", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.background, canvas);
+          svg.element("rect", { x: 0, y: 0, width: 1200, height: 556, fill: palette.primaryLight }, root);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+          c.sectionLabel(root, "NA CAIXA", { x: 72, y: 238, fill: palette.secondaryDark });
+          c.headline(root, "Conteúdo da embalagem", 70, 330, {
+            maxChars: 15, maxLines: 2, fontSize: 58, lineHeight: 64, fill: palette.text,
+          });
+          c.productPhoto(root, project, palette, 916, 320, 360);
+
+          const itens = c.parseListItems(project.content.packageItems, 6);
+          if (itens.length) {
+            c.packageFocus(root, itens, palette, { x: 72, y: 618, width: 1056 });
+          } else if (ctx.mode === "preview") {
+            c.editingNote(root, "Liste o que acompanha o produto — um item por linha.",
+              palette, { x: 72, y: 618, width: 1056 });
+          }
+        },
+      },
+
+      /* ── variações: dimensões ─────────────────────────────────────────── */
+
+      {
+        id: "dimensions-clean-v1",
+        label: "Dimensões limpas",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Produto grande ao centro e as medidas em pílulas centralizadas no rodapé.",
+        requiredFields: [],
+        optionalFields: ["content.width", "content.height", "content.depth", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas } = ctx;
+          c.backgroundFill(root, palette.background, canvas);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, false);
+          c.sectionLabel(root, "MEDIDAS REAIS", { x: 600, y: 216, fill: palette.secondaryDark, textAnchor: "middle" });
+          c.headline(root, "Dimensões do produto", 600, 306, {
+            maxChars: 22, maxLines: 1, fontSize: 62, lineHeight: 68, fill: palette.text, textAnchor: "middle",
+          });
+
+          svg.element("circle", { cx: 600, cy: 648, r: 268, fill: palette.surface }, root);
+          c.productPhoto(root, project, palette, 600, 648, 480);
+
+          const medidas = c.collectMeasures(project.content);
+          if (medidas.length) {
+            // Centralizado: a largura total muda conforme quantas medidas
+            // foram preenchidas, então a peça nunca fica torta.
+            c.measureBadges(root, medidas, palette, { centerX: 600, y: 1004, fill: palette.surface });
+          } else if (ctx.mode === "preview") {
+            c.editingNote(root, "Informe largura, altura ou profundidade para gerar as medidas.",
+              palette, { x: 290, y: 990, width: 620 });
+          }
+        },
+      },
+
+      {
+        id: "dimensions-panel-v1",
+        label: "Dimensões em painel",
+        family: MODULAR_FAMILY,
+        version: 1,
+        description: "Produto sobre malha técnica à esquerda e painel escuro de medidas à direita.",
+        requiredFields: [],
+        optionalFields: ["content.width", "content.height", "content.depth", "logo", "product.image"],
+        render(ctx) {
+          const { root, svg, palette, project, canvas, mix } = ctx;
+          c.backgroundFill(root, palette.surface, canvas);
+          svg.element("rect", { x: 620, y: 0, width: 580, height: 1200, fill: palette.primaryDark }, root);
+
+          c.brand(root, project, palette);
+          c.pageNumber(root, ctx.pageIndex, ctx.totalPages, palette, true);
+          c.sectionLabel(root, "MEDIDAS REAIS", { x: 72, y: 212, fill: palette.secondaryDark });
+          c.headline(root, "Dimensões técnicas", 70, 300, {
+            maxChars: 13, maxLines: 2, fontSize: 56, lineHeight: 62, fill: palette.text,
+          });
+
+          [0, 1, 2, 3, 4].forEach((linha) => {
+            const y = 448 + linha * 156;
+            svg.element("line", {
+              x1: 72, y1: y, x2: 548, y2: y,
+              stroke: mix(palette.text, palette.surface, 0.88), "stroke-width": 2,
+            }, root);
+          });
+          c.productPhoto(root, project, palette, 322, 764, 400);
+
+          const medidas = c.collectMeasures(project.content);
+          if (medidas.length) {
+            c.measurePanel(root, medidas, palette, {
+              x: 692, y: 468, width: 436, step: 170,
+              labelFill: palette.secondary, valueFill: palette.white,
+              ruleStroke: mix(palette.white, palette.primaryDark, 0.72),
+            });
+          } else if (ctx.mode === "preview") {
+            c.editingNote(root, "Informe largura, altura ou profundidade.",
+              palette, { x: 692, y: 440, width: 436 });
+          }
+        },
+      },
     ];
   }
 

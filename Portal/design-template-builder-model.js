@@ -36,53 +36,94 @@
 
   /* ── catálogo de páginas modulares ────────────────────────────────────── */
 
-  // `id` é exatamente o rendererId registrado em design-template-layouts.js.
-  // `required: true` marca a capa: pode ser reordenada, nunca removida.
-  const PAGE_TYPES = [
+  // Cinco FAMÍLIAS, três VARIAÇÕES visuais cada — quinze layouts ao todo.
+  //
+  // Uma página do projeto guarda `family` (o assunto) e `rendererId` (o
+  // desenho). Os dois são necessários: a família decide se a página entra no
+  // carrossel; o rendererId decide como ela é desenhada. Representar só pela
+  // família apagaria a variação escolhida.
+  //
+  // A primeira variação de cada família é a que existia antes desta fase e
+  // continua sendo o padrão — projeto salvo com o id antigo reabre igual.
+  const PAGE_FAMILIES = [
     {
-      id: "cover-split-v1",
-      name: "Capa dividida",
-      description: "Produto em destaque com título e benefício principal.",
+      id: "cover",
+      name: "Capa",
+      required: true,
       dataHint: "Nome do produto, benefício principal e imagem",
       fields: ["product.name", "content.mainBenefit"],
-      required: true,
+      variants: [
+        { rendererId: "cover-split-v1", name: "Capa dividida", description: "Texto à esquerda, produto grande à direita." },
+        { rendererId: "cover-centered-v1", name: "Capa centralizada", description: "Eixo vertical centralizado sobre painel escuro." },
+        { rendererId: "cover-impact-v1", name: "Capa de impacto", description: "Título muito grande com faixa diagonal e produto ampliado." },
+      ],
     },
     {
-      id: "benefits-three-cards-v1",
-      name: "Benefícios em três cards",
-      description: "Até três benefícios numerados ao lado do produto.",
+      id: "benefits",
+      name: "Benefícios",
+      required: false,
       dataHint: "Benefício 1, 2 e 3",
       fields: ["content.benefit1", "content.benefit2", "content.benefit3"],
-      required: false,
+      variants: [
+        { rendererId: "benefits-three-cards-v1", name: "Três cards", description: "Produto no topo e até três cards numerados." },
+        { rendererId: "benefits-side-list-v1", name: "Lista lateral", description: "Painel escuro com o produto à esquerda e a lista à direita." },
+        { rendererId: "benefits-orbit-v1", name: "Órbita", description: "Produto ao centro com os benefícios em torno de um anel." },
+      ],
     },
     {
-      id: "specifications-grid-v1",
-      name: "Especificações em grade",
-      description: "Ficha técnica em grade de chave e valor.",
+      id: "specifications",
+      name: "Especificações",
+      required: false,
       dataHint: "Especificações técnicas, uma por linha",
       fields: ["content.specs"],
-      required: false,
+      variants: [
+        { rendererId: "specifications-grid-v1", name: "Grade", description: "Chave e valor em duas colunas." },
+        { rendererId: "specifications-table-v1", name: "Tabela", description: "Cabeçalho escuro e linhas alternadas." },
+        { rendererId: "specifications-cards-v1", name: "Cartões", description: "Cada especificação em um cartão de destaque." },
+      ],
     },
     {
-      id: "package-list-v1",
+      id: "package",
       name: "Conteúdo da embalagem",
-      description: "Lista numerada do que acompanha o produto.",
+      required: false,
       dataHint: "Conteúdo da embalagem, um item por linha",
       fields: ["content.packageItems"],
-      required: false,
+      variants: [
+        { rendererId: "package-list-v1", name: "Lista numerada", description: "Lista à esquerda e produto à direita." },
+        { rendererId: "package-grid-v1", name: "Grade de itens", description: "Cabeçalho escuro e itens em células." },
+        { rendererId: "package-focus-v1", name: "Item principal", description: "Primeiro item em faixa de destaque." },
+      ],
     },
     {
-      id: "dimensions-technical-v1",
-      name: "Dimensões técnicas",
-      description: "Medidas reais com cotas e marcadores técnicos.",
+      id: "dimensions",
+      name: "Dimensões",
+      required: false,
       dataHint: "Largura, altura ou profundidade",
       fields: ["content.width", "content.height", "content.depth"],
-      required: false,
+      variants: [
+        { rendererId: "dimensions-technical-v1", name: "Cotas técnicas", description: "Malha técnica com cotas e fichas de medida." },
+        { rendererId: "dimensions-panel-v1", name: "Painel de medidas", description: "Produto à esquerda e painel escuro à direita." },
+        { rendererId: "dimensions-clean-v1", name: "Medidas limpas", description: "Produto grande ao centro e pílulas no rodapé." },
+      ],
     },
   ];
 
-  const PAGE_TYPE_IDS = PAGE_TYPES.map((page) => page.id);
-  const REQUIRED_PAGE_IDS = PAGE_TYPES.filter((page) => page.required).map((page) => page.id);
+  const FAMILY_IDS = PAGE_FAMILIES.map((familia) => familia.id);
+  const REQUIRED_FAMILY_IDS = PAGE_FAMILIES.filter((familia) => familia.required).map((familia) => familia.id);
+
+  // rendererId -> { family, variant }. É por aqui que um projeto salvo com o
+  // id antigo (que era o próprio rendererId) reencontra a família.
+  const LAYOUT_INDEX = new Map();
+  PAGE_FAMILIES.forEach((familia) => {
+    familia.variants.forEach((variante) => {
+      LAYOUT_INDEX.set(variante.rendererId, { family: familia.id, variant: variante });
+    });
+  });
+
+  const LAYOUT_IDS = [...LAYOUT_INDEX.keys()];
+
+  // Ordem natural de leitura do carrossel.
+  const DEFAULT_FAMILY_ORDER = ["cover", "benefits", "specifications", "package", "dimensions"];
 
   const SEGMENTS = ["Ferramentas", "Moda", "Móveis", "Cosméticos", "Eletrônicos", "Geral"];
 
@@ -185,12 +226,49 @@
     return `crs-${Date.now().toString(36)}-${Math.floor(rnd * 1e9).toString(36)}`;
   }
 
-  function getPageType(id) {
-    return PAGE_TYPES.find((page) => page.id === String(id)) || null;
+  function getFamily(id) {
+    return PAGE_FAMILIES.find((familia) => familia.id === String(id)) || null;
   }
 
-  function isKnownPageId(id) {
-    return PAGE_TYPES.some((page) => page.id === String(id));
+  function isKnownFamily(id) {
+    return PAGE_FAMILIES.some((familia) => familia.id === String(id));
+  }
+
+  function getLayout(rendererId) {
+    return LAYOUT_INDEX.get(String(rendererId)) || null;
+  }
+
+  function isKnownLayout(rendererId) {
+    return LAYOUT_INDEX.has(String(rendererId));
+  }
+
+  // Aceita tanto o id da família ("cover") quanto um rendererId
+  // ("cover-split-v1", o formato salvo antes desta fase).
+  function resolveFamilyId(valor) {
+    const texto = String(valor);
+    if (LAYOUT_INDEX.has(texto)) return LAYOUT_INDEX.get(texto).family;
+    return getFamily(texto) ? texto : null;
+  }
+
+  function defaultVariantOf(familyId) {
+    const familia = getFamily(familyId);
+    return familia ? familia.variants[0] : null;
+  }
+
+  // Página normalizada do projeto: sempre com família, rendererId e nome.
+  function makePage(familyId, rendererId) {
+    const familia = getFamily(familyId);
+    if (!familia) return null;
+    const escolhida = rendererId && LAYOUT_INDEX.has(String(rendererId))
+      && LAYOUT_INDEX.get(String(rendererId)).family === familia.id
+      ? LAYOUT_INDEX.get(String(rendererId)).variant
+      : familia.variants[0];
+    return {
+      id: familia.id,
+      family: familia.id,
+      rendererId: escolhida.rendererId,
+      name: escolhida.name,
+    };
   }
 
   function getStyle(id) {
@@ -227,30 +305,18 @@
 
   /* ── projeto padrão ───────────────────────────────────────────────────── */
 
-  // Conteúdo inicial de exemplo: o construtor abre com um carrossel visível e
-  // coerente, que a designer sobrescreve. Sem isso a primeira tela seria uma
-  // sequência de peças em branco.
-  const DEFAULT_CONTENT = {
-    mainBenefit: "Resolve o trabalho pesado em um único passo.",
-    benefit1: "Motor de alto rendimento para uso contínuo.",
-    benefit2: "Montagem rápida, sem ferramenta extra.",
-    benefit3: "Acabamento resistente para o dia a dia.",
-    specs: "Potência: 650 W\nReservatório: 800 ml\nVazão: 650 ml/min\nTensão: 220 V",
-    packageItems: "1 produto\n1 manual de uso\n1 cabo de energia",
-    width: "28 cm",
-    height: "42 cm",
-    depth: "19 cm",
-    howToUse: "Conecte, selecione a intensidade e comece a usar.",
-    warranty: "Garantia de 12 meses contra defeitos de fabricação.",
-    shipping: "Envio rápido com acompanhamento do pedido.",
-  };
-
-  function createDefaultContent() {
-    return { ...DEFAULT_CONTENT };
+  // Um projeto novo nasce VAZIO. Texto de exemplo gravado no projeto seria
+  // dado comercial falso: o usuário publicaria "Potência: 650 W" num produto
+  // que não tem 650 W. As sugestões vivem como `placeholder` nos campos da
+  // interface, onde não podem virar arte.
+  function createEmptyContent() {
+    const saida = {};
+    Object.keys(CONTENT_SCHEMA).forEach((key) => { saida[key] = ""; });
+    return saida;
   }
 
   // options: { id, name, segment, style, clienteId, clienteNome, marcaNome,
-  //            imageModel, random }
+  //            imageModel, random, pages }
   function createDefaultProject(options) {
     const config = options || {};
     const imageModel = config.imageModel || null;
@@ -263,26 +329,25 @@
       name: sanitizeText(config.name || "Novo carrossel", PROJECT_NAME_MAX),
       createdAt: agora,
       updatedAt: agora,
+      origin: config.origin === "gerado" ? "gerado" : "manual",
+      direction: sanitizeText(config.direction, 40),
 
       clienteId: config.clienteId == null ? null : config.clienteId,
-      clienteNome: sanitizeText(config.clienteNome || "Cliente personalizado", CLIENT_SCHEMA.clienteNome.maxLength),
-      marcaNome: sanitizeText(config.marcaNome || "SUA MARCA", CLIENT_SCHEMA.marcaNome.maxLength),
+      clienteNome: sanitizeText(config.clienteNome, CLIENT_SCHEMA.clienteNome.maxLength),
+      marcaNome: sanitizeText(config.marcaNome, CLIENT_SCHEMA.marcaNome.maxLength),
 
       segment: SEGMENTS.includes(config.segment) ? config.segment : "Geral",
       style: style.id,
       palette: { ...style.palette },
 
       logo: emptyImage(imageModel),
-      product: {
-        ...defaultProduct(imageModel),
-        name: "Produto em destaque",
-        subtitle: "Descreva em uma frase o diferencial do produto.",
-      },
-      content: createDefaultContent(),
+      product: { ...defaultProduct(imageModel), name: "", subtitle: "" },
+      content: createEmptyContent(),
 
-      // Todas as páginas entram marcadas: o construtor abre mostrando o
-      // conjunto inteiro, e a designer remove o que não usar.
-      pages: PAGE_TYPE_IDS.slice(),
+      // Todas as famílias entram marcadas na versão padrão de cada uma: o
+      // construtor manual abre com o conjunto inteiro e a designer remove o
+      // que não usar. O gerador monta a própria lista, por dados disponíveis.
+      pages: normalizePages(config.pages || FAMILY_IDS),
       selectedPage: 0,
       zoom: 100,
       compareMode: "custom",
@@ -291,22 +356,47 @@
 
   /* ── sanitização de projeto ───────────────────────────────────────────── */
 
-  // Ordena e desduplica a lista de páginas, mantendo só ids conhecidos e
-  // garantindo a presença das obrigatórias. Nunca lança: é o caminho de
-  // leitura de dado salvo, que pode vir de uma versão anterior.
+  // Lista de páginas -> lista normalizada de objetos { id, family,
+  // rendererId, name }. Nunca lança: é o caminho de leitura de dado salvo.
+  //
+  // Aceita três formatos, porque projetos gravados antes desta fase existem
+  // no navegador da equipe:
+  //   • "cover-split-v1"                 (rendererId solto — formato antigo)
+  //   • "cover"                          (id de família)
+  //   • { family, rendererId }           (formato atual)
+  //
+  // Uma família só entra uma vez: duas capas no mesmo carrossel não é uma
+  // escolha, é dado corrompido.
   function normalizePages(pages) {
     const vistos = new Set();
     const saida = [];
-    (Array.isArray(pages) ? pages : []).forEach((id) => {
-      const texto = String(id);
-      if (!isKnownPageId(texto) || vistos.has(texto)) return;
-      vistos.add(texto);
-      saida.push(texto);
+
+    (Array.isArray(pages) ? pages : []).forEach((entrada) => {
+      const bruto = entrada && typeof entrada === "object" ? entrada : { family: entrada, rendererId: entrada };
+      const familyId = resolveFamilyId(bruto.family != null ? bruto.family : bruto.id);
+      if (!familyId || vistos.has(familyId)) return;
+      const pagina = makePage(familyId, bruto.rendererId);
+      if (!pagina) return;
+      vistos.add(familyId);
+      saida.push(pagina);
     });
-    REQUIRED_PAGE_IDS.forEach((id) => {
-      if (!vistos.has(id)) saida.unshift(id);
+
+    REQUIRED_FAMILY_IDS.forEach((familyId) => {
+      if (!vistos.has(familyId)) saida.unshift(makePage(familyId));
     });
     return saida;
+  }
+
+  function pageIndexOf(pages, familyId) {
+    return pages.findIndex((pagina) => pagina.family === String(familyId));
+  }
+
+  function familyIdsOf(pages) {
+    return normalizePages(pages).map((pagina) => pagina.family);
+  }
+
+  function rendererIdsOf(pages) {
+    return normalizePages(pages).map((pagina) => pagina.rendererId);
   }
 
   function normalizePalette(palette, fallback) {
@@ -359,6 +449,10 @@
       name: sanitizeText(source.name, PROJECT_NAME_MAX),
       createdAt: sanitizeText(source.createdAt, 40) || padrao.createdAt,
       updatedAt: sanitizeText(source.updatedAt, 40) || padrao.updatedAt,
+      // `origin` distingue o que a Biblioteca precisa rotular; `direction`
+      // guarda a direção visual quando o carrossel veio do gerador.
+      origin: source.origin === "gerado" ? "gerado" : "manual",
+      direction: sanitizeText(source.direction, 40),
 
       clienteId: source.clienteId == null ? null : source.clienteId,
       clienteNome: sanitizeText(source.clienteNome, CLIENT_SCHEMA.clienteNome.maxLength),
@@ -381,53 +475,83 @@
 
   /* ── operações sobre páginas ──────────────────────────────────────────── */
 
-  // Todas devolvem uma NOVA lista; nenhuma altera a recebida. Um id fora do
-  // catálogo é erro explícito — o construtor não inventa página.
-  function addPage(pages, pageId) {
-    const id = String(pageId);
-    if (!isKnownPageId(id)) {
-      throw builderError("PAGINA_DESCONHECIDA", `Não existe página modular com o id "${id}".`);
+  // Todas devolvem uma NOVA lista; nenhuma altera a recebida. `pageId` aceita
+  // família ou rendererId. Um id fora do catálogo é erro explícito — o
+  // construtor não inventa página.
+  function requireFamily(pageId) {
+    const familyId = resolveFamilyId(pageId);
+    if (!familyId) {
+      throw builderError("PAGINA_DESCONHECIDA", `Não existe página modular com o id "${pageId}".`);
     }
+    return familyId;
+  }
+
+  function addPage(pages, pageId, rendererId) {
+    const familyId = requireFamily(pageId);
     const atual = normalizePages(pages);
-    if (atual.includes(id)) return atual;
-    return atual.concat(id);
+    if (pageIndexOf(atual, familyId) >= 0) return atual;
+    // Quando `pageId` já é um rendererId, ele manda na variação escolhida.
+    const variacao = rendererId || (isKnownLayout(pageId) ? pageId : null);
+    return atual.concat(makePage(familyId, variacao));
   }
 
   function removePage(pages, pageId) {
-    const id = String(pageId);
-    if (!isKnownPageId(id)) {
-      throw builderError("PAGINA_DESCONHECIDA", `Não existe página modular com o id "${id}".`);
-    }
-    if (REQUIRED_PAGE_IDS.includes(id)) {
+    const familyId = requireFamily(pageId);
+    if (REQUIRED_FAMILY_IDS.includes(familyId)) {
       throw builderError("PAGINA_OBRIGATORIA", "A capa é obrigatória e não pode ser removida do carrossel.");
     }
-    return normalizePages(pages).filter((atual) => atual !== id);
+    return normalizePages(pages).filter((pagina) => pagina.family !== familyId);
   }
 
-  function togglePage(pages, pageId, incluir) {
-    return incluir ? addPage(pages, pageId) : removePage(pages, pageId);
+  function togglePage(pages, pageId, incluir, rendererId) {
+    return incluir ? addPage(pages, pageId, rendererId) : removePage(pages, pageId);
+  }
+
+  // Troca a VARIAÇÃO visual de uma página já incluída, preservando a posição.
+  function setPageVariant(pages, pageId, rendererId) {
+    const familyId = requireFamily(pageId);
+    const layout = getLayout(rendererId);
+    if (!layout) {
+      throw builderError("LAYOUT_DESCONHECIDO", `Não existe layout com o rendererId "${rendererId}".`);
+    }
+    if (layout.family !== familyId) {
+      throw builderError(
+        "LAYOUT_DE_OUTRA_FAMILIA",
+        `O layout "${rendererId}" pertence à família "${layout.family}", não a "${familyId}".`
+      );
+    }
+    const atual = normalizePages(pages);
+    const indice = pageIndexOf(atual, familyId);
+    if (indice === -1) {
+      throw builderError("PAGINA_AUSENTE", `A página "${familyId}" não está incluída no carrossel.`);
+    }
+    const saida = atual.slice();
+    saida[indice] = makePage(familyId, rendererId);
+    return saida;
   }
 
   // direction: -1 sobe, +1 desce. Nas pontas não faz nada (não circula: a
   // designer clicaria "subir" na primeira e a página iria para o fim).
   function movePage(pages, pageId, direction) {
-    const id = String(pageId);
+    const familyId = requireFamily(pageId);
     const atual = normalizePages(pages);
-    const indice = atual.indexOf(id);
+    const indice = pageIndexOf(atual, familyId);
     if (indice === -1) {
-      throw builderError("PAGINA_AUSENTE", `A página "${id}" não está incluída no carrossel.`);
+      throw builderError("PAGINA_AUSENTE", `A página "${familyId}" não está incluída no carrossel.`);
     }
     const destino = indice + (Number(direction) < 0 ? -1 : 1);
     if (destino < 0 || destino >= atual.length) return atual;
     const saida = atual.slice();
-    saida[indice] = saida[destino];
-    saida[destino] = id;
+    saida[indice] = atual[destino];
+    saida[destino] = atual[indice];
     return saida;
   }
 
   function canMovePage(pages, pageId, direction) {
+    const familyId = resolveFamilyId(pageId);
+    if (!familyId) return false;
     const atual = normalizePages(pages);
-    const indice = atual.indexOf(String(pageId));
+    const indice = pageIndexOf(atual, familyId);
     if (indice === -1) return false;
     const destino = indice + (Number(direction) < 0 ? -1 : 1);
     return destino >= 0 && destino < atual.length;
@@ -467,16 +591,38 @@
       erros.push({ campo: "pages", codigo: "SEM_PAGINAS", mensagem: "Escolha ao menos uma página para o carrossel." });
     }
 
-    const desconhecidas = pages.map(String).filter((id) => !isKnownPageId(id));
+    // Cada entrada é medida por família E por rendererId: um rendererId fora
+    // do catálogo não pode virar página silenciosa nem herdar o layout padrão
+    // sem que o usuário saiba.
+    const descritas = pages.map((entrada) => {
+      const bruto = entrada && typeof entrada === "object" ? entrada : { family: entrada, rendererId: entrada };
+      const rotulo = bruto.rendererId != null ? bruto.rendererId : bruto.family;
+      return { familyId: resolveFamilyId(bruto.family != null ? bruto.family : bruto.id), rotulo: String(rotulo) };
+    });
+
+    const desconhecidas = descritas.filter((item) => !item.familyId).map((item) => item.rotulo);
     if (desconhecidas.length) {
       erros.push({
         campo: "pages",
         codigo: "PAGINA_DESCONHECIDA",
-        mensagem: `Página não reconhecida pelo estúdio: ${desconhecidas.join(", ")}.`,
+        mensagem: `Página não reconhecida pelo estúdio: ${[...new Set(desconhecidas)].join(", ")}.`,
       });
     }
 
-    const duplicadas = pages.map(String).filter((id, indice, lista) => lista.indexOf(id) !== indice);
+    const layoutsInvalidos = pages
+      .filter((entrada) => entrada && typeof entrada === "object" && entrada.rendererId != null)
+      .filter((entrada) => !isKnownLayout(entrada.rendererId))
+      .map((entrada) => String(entrada.rendererId));
+    if (layoutsInvalidos.length) {
+      erros.push({
+        campo: "pages",
+        codigo: "LAYOUT_DESCONHECIDO",
+        mensagem: `Layout não reconhecido pelo estúdio: ${[...new Set(layoutsInvalidos)].join(", ")}.`,
+      });
+    }
+
+    const familias = descritas.map((item) => item.familyId).filter(Boolean);
+    const duplicadas = familias.filter((id, indice, lista) => lista.indexOf(id) !== indice);
     if (duplicadas.length) {
       erros.push({
         campo: "pages",
@@ -485,8 +631,8 @@
       });
     }
 
-    REQUIRED_PAGE_IDS.forEach((id) => {
-      if (!pages.map(String).includes(id)) {
+    REQUIRED_FAMILY_IDS.forEach((familyId) => {
+      if (!familias.includes(familyId)) {
         erros.push({
           campo: "pages",
           codigo: "CAPA_AUSENTE",
@@ -545,10 +691,13 @@
       segment: SEGMENTS.includes(limpo.segment) ? limpo.segment : "Geral",
       marketplace: "Carrossel modular",
       canvas: { ...CANVAS },
-      pages: pages.map((id) => {
-        const tipo = getPageType(id);
-        return { id, name: tipo.name, rendererId: tipo.id };
-      }),
+      // O id da página é a família; o desenho vem do rendererId da variação
+      // escolhida. É o par que o renderizador precisa.
+      pages: pages.map((pagina) => ({
+        id: pagina.family,
+        name: pagina.name,
+        rendererId: pagina.rendererId,
+      })),
       defaults: {
         clienteNome: sanitizeText(limpo.clienteNome, CLIENT_SCHEMA.clienteNome.maxLength).trim() || "Cliente personalizado",
         marcaNome: sanitizeText(limpo.marcaNome, CLIENT_SCHEMA.marcaNome.maxLength).trim() || "MARCA",
@@ -605,20 +754,27 @@
       return content[chave] || "";
     };
 
-    return PAGE_TYPES.map((tipo) => {
-      const posicao = pages.indexOf(tipo.id);
+    return PAGE_FAMILIES.map((familia) => {
+      const posicao = pageIndexOf(pages, familia.id);
       const incluida = posicao >= 0;
+      const atual = incluida ? pages[posicao] : makePage(familia.id);
       return {
-        id: tipo.id,
-        name: tipo.name,
-        description: tipo.description,
-        dataHint: tipo.dataHint,
-        required: tipo.required,
+        id: familia.id,
+        family: familia.id,
+        rendererId: atual.rendererId,
+        // O nome mostrado é o da VARIAÇÃO escolhida ("Capa de impacto"), não
+        // o da família: é ele que distingue um carrossel do outro.
+        name: atual.name,
+        familyName: familia.name,
+        description: (getLayout(atual.rendererId) || { variant: {} }).variant.description || "",
+        dataHint: familia.dataHint,
+        required: familia.required,
+        variants: familia.variants.map((variante) => ({ ...variante })),
         incluida,
         posicao,
-        podeSubir: incluida && canMovePage(pages, tipo.id, -1),
-        podeDescer: incluida && canMovePage(pages, tipo.id, 1),
-        semDados: tipo.fields.every((campo) => !String(valorDe(campo)).trim()),
+        podeSubir: incluida && canMovePage(pages, familia.id, -1),
+        podeDescer: incluida && canMovePage(pages, familia.id, 1),
+        semDados: familia.fields.every((campo) => !String(valorDe(campo)).trim()),
       };
     });
   }
@@ -632,9 +788,11 @@
     MAX_PACKAGE_ITEMS,
     PROJECT_NAME_MAX,
 
-    PAGE_TYPES,
-    PAGE_TYPE_IDS,
-    REQUIRED_PAGE_IDS,
+    PAGE_FAMILIES,
+    FAMILY_IDS,
+    REQUIRED_FAMILY_IDS,
+    LAYOUT_IDS,
+    DEFAULT_FAMILY_ORDER,
     SEGMENTS,
     STYLES,
     STYLE_IDS,
@@ -647,20 +805,28 @@
     sanitizeLines,
     countLines,
     newProjectId,
-    getPageType,
-    isKnownPageId,
+    getFamily,
+    isKnownFamily,
+    getLayout,
+    isKnownLayout,
+    resolveFamilyId,
+    defaultVariantOf,
+    makePage,
     getStyle,
 
     createDefaultProject,
-    createDefaultContent,
+    createEmptyContent,
     sanitizeProject,
     normalizePages,
     normalizePalette,
     normalizeContent,
+    familyIdsOf,
+    rendererIdsOf,
 
     addPage,
     removePage,
     togglePage,
+    setPageVariant,
     movePage,
     canMovePage,
     applyStyle,

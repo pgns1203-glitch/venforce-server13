@@ -4,7 +4,6 @@
   const STORAGE_KEY = "vf-design-template-studio-v1";
   const TOKEN_KEY = "vf-token";
   const API_BASE = "https://venforce-server.onrender.com";
-  const SVG_NS = "http://www.w3.org/2000/svg";
 
   // Módulos do editor de imagem. Sem eles a tela continua funcionando em modo
   // reduzido (upload local, sem editor) em vez de quebrar por completo.
@@ -13,44 +12,40 @@
   const imageApiLib = window.VF_DESIGN_IMAGE_API || null;
   const imageEditorLib = window.VFDesignImageEditor || null;
 
-  const TEMPLATE_CATALOG = [
-    {
-      id: "portable-charger-complete-v1",
-      name: "Carregador portátil — conjunto completo",
-      segment: "Eletrônicos",
-      marketplace: "Mercado Livre",
-      width: 1200,
-      height: 1200,
-      pieces: 7,
-    },
-  ];
+  // Motor de templates: puro, sem DOM, testado à parte em Node. A tela só
+  // consome a API pública — o catálogo de templates vive em
+  // design-template-presets.js, como dado declarativo (sem funções).
+  const templateEngine = window.VF_DESIGN_TEMPLATE_ENGINE;
+  const templatePresets = window.VF_DESIGN_TEMPLATE_PRESETS;
+  const templateRegistry = templateEngine.createTemplateRegistry(templatePresets.TEMPLATE_DEFINITIONS);
 
-  const PAGE_DEFINITIONS = [
-    { id: "cover", name: "Capa principal" },
-    { id: "wireless", name: "Carregamento por indução" },
-    { id: "led", name: "Iluminação LED" },
-    { id: "package", name: "Conteúdo da embalagem" },
-    { id: "dimensions", name: "Dimensões" },
-    { id: "features", name: "Painel e funcionalidades" },
-    { id: "safe", name: "Compra segura" },
-  ];
+  // Fonte da imagem do produto: a versão editada tem precedência; sem edição
+  // aplicada, vale o arquivo original. Serve tanto às peças (via renderer)
+  // quanto à miniatura do painel de upload.
+  function productImageSource(state) {
+    if (imageModel) return imageModel.resolveProductImageSource(state.product);
+    return state.product?.editedImage?.dataUrl || state.product?.originalImage?.dataUrl || null;
+  }
 
-  // Schema V2. A imagem do produto passou a ter três partes independentes:
-  // o arquivo original (nunca é sobrescrito), a versão editada (derivada) e os
-  // parâmetros que geraram essa versão. `placement` é o enquadramento dentro
-  // da peça — continua sendo o que os sliders de escala/posição controlam.
-  function createDefaultProduct() {
-    const base = imageModel ? imageModel.createDefaultProduct() : {
-      originalImage: { id: null, dataUrl: null, url: null, fileName: "", mimeType: "", width: null, height: null },
-      editedImage: { id: null, dataUrl: null, url: null, fileName: "", mimeType: "", width: null, height: null },
-      editing: {},
-      placement: { scale: 100, x: 50, y: 50 },
-    };
-    return {
-      name: "Power Station One",
-      subtitle: "Energia portátil, conexão sem fio e luz para acompanhar sua rotina.",
-      ...base,
-    };
+  // Renderização das peças: adaptador de SVG + biblioteca de componentes +
+  // registro de layouts. A tela não desenha mais nada por conta própria.
+  const rendererLib = window.VF_DESIGN_TEMPLATE_RENDERER;
+  const templateRenderer = rendererLib.createTemplateRenderer({
+    documentLike: document,
+    componentsLib: window.VF_DESIGN_TEMPLATE_COMPONENTS,
+    layoutsLib: window.VF_DESIGN_TEMPLATE_LAYOUTS,
+    resolveProductImageSource: productImageSource,
+  });
+
+  // Template salvo que não existe mais no catálogo cai para o primeiro
+  // preset válido do registro — mesma regra que já valia quando só existia
+  // um template.
+  function resolveTemplate(templateId) {
+    return templateRegistry.getById(templateId) || templateRegistry.getDefault();
+  }
+
+  function getActiveTemplate() {
+    return resolveTemplate(project.templateId);
   }
 
   function createEmptyImage() {
@@ -59,152 +54,26 @@
       : { id: null, dataUrl: null, url: null, fileName: "", mimeType: "", width: null, height: null };
   }
 
-  function createDefaultProject() {
-    return {
-      version: 2,
-      templateId: TEMPLATE_CATALOG[0].id,
-      clienteId: null,
-      clienteNome: "Cliente personalizado",
-      marcaNome: "NOVA",
-      palette: {
-        primary: "#123047",
-        secondary: "#ef6f55",
-        background: "#f4efe5",
-        text: "#12202b",
-      },
-      product: createDefaultProduct(),
-      logo: createEmptyImage(),
-      content: {
-        benefit: "Energia para o dia inteiro, onde você estiver.",
-        wireless: "Carregue dispositivos compatíveis por indução, sem cabos e com encaixe simples.",
-        led: "Iluminação LED integrada com intensidade confortável para emergências e uso diário.",
-        packageItems: "1 carregador portátil\n1 cabo USB-C\n1 manual de uso",
-        width: "8,2 cm",
-        height: "14,6 cm",
-        depth: "2,8 cm",
-        features: "Display digital de carga\nSaídas USB e USB-C\nProteção contra sobrecarga\nBase para apoio do celular",
-        safe: "Pagamento protegido do início ao fim.",
-        shipping: "Envio rápido com acompanhamento do pedido.",
-        warranty: "Garantia de 90 dias contra defeitos de fabricação.",
-      },
-      selectedPage: 0,
-      view: "library",
-      compareMode: "custom",
-      zoom: 100,
-    };
+  function createDefaultProject(templateId) {
+    return templateEngine.createProjectFromTemplate(resolveTemplate(templateId), { imageModel });
   }
 
-  function clamp(value, min, max) {
-    return Math.min(max, Math.max(min, Number(value)));
-  }
-
-  function hexToRgb(hex) {
-    const clean = String(hex || "").replace("#", "");
-    const normalized = clean.length === 3 ? clean.split("").map((part) => part + part).join("") : clean;
-    const value = Number.parseInt(normalized, 16);
-    if (!Number.isFinite(value)) return { r: 0, g: 0, b: 0 };
-    return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 };
-  }
-
-  function rgbToHex(rgb) {
-    const part = (value) => clamp(Math.round(value), 0, 255).toString(16).padStart(2, "0");
-    return `#${part(rgb.r)}${part(rgb.g)}${part(rgb.b)}`;
-  }
-
-  function mix(hex, target, amount) {
-    const source = hexToRgb(hex);
-    const destination = hexToRgb(target);
-    return rgbToHex({
-      r: source.r + (destination.r - source.r) * amount,
-      g: source.g + (destination.g - source.g) * amount,
-      b: source.b + (destination.b - source.b) * amount,
-    });
-  }
-
-  function isHex(value) {
-    return /^#[0-9a-f]{6}$/i.test(String(value || ""));
-  }
+  // A paleta derivada (10 cores a partir das 4 escolhidas) é a mesma usada
+  // pelas peças; vem do renderizador para não existir em duas versões.
+  const derivedPalette = rendererLib.derivedPalette;
 
   // Estado da migração aplicada no boot — a tela avisa o usuário depois que
   // o DOM está pronto, não durante a leitura do localStorage.
   let migracaoAplicada = null;
 
-  // Traz as imagens de um projeto salvo para o schema V2.
-  // V1 guardava base64 direto no localStorage; V2 guarda só o id e busca o
-  // blob no IndexedDB. Na migração o base64 antigo ainda está em mãos, então
-  // ele recebe um id novo e é regravado no armazenamento certo.
-  function hydrateImages(stored) {
-    if (!imageModel) {
-      const defaults = createDefaultProject();
-      return { product: defaults.product, logo: defaults.logo, migrado: false };
-    }
-
-    const versao = imageModel.detectSchemaVersion(stored);
-    if (versao === 2) {
-      const normalizado = imageModel.normalizeProductImages(stored.product);
-      return {
-        product: normalizado,
-        logo: imageModel.normalizeImageRef(stored.logo),
-        migrado: false,
-      };
-    }
-
-    const migracao = imageModel.migrateImagesFromV1(stored);
-    return {
-      product: migracao.product,
-      logo: migracao.logo,
-      migrado: true,
-      logoDescartado: migracao.logoDescartado,
-    };
-  }
-
+  // Hidratação de projeto salvo delegada ao motor de templates: normaliza
+  // paleta/textos/imagens conforme o schema do template resolvido e aplica o
+  // fallback de migração V1 -> V2 das imagens via o modelo de imagem.
   function hydrateProject(stored) {
-    const defaults = createDefaultProject();
-    if (!stored || typeof stored !== "object" || stored.templateId !== defaults.templateId) {
-      migracaoAplicada = null;
-      return defaults;
-    }
-
-    const imagens = hydrateImages(stored);
-    migracaoAplicada = imagens.migrado
-      ? { logoDescartado: Boolean(imagens.logoDescartado) }
-      : null;
-
-    return {
-      ...defaults,
-      clienteId: stored.clienteId ?? null,
-      clienteNome: String(stored.clienteNome || defaults.clienteNome).slice(0, 80),
-      marcaNome: String(stored.marcaNome || defaults.marcaNome).slice(0, 40),
-      palette: {
-        primary: isHex(stored.palette?.primary) ? stored.palette.primary : defaults.palette.primary,
-        secondary: isHex(stored.palette?.secondary) ? stored.palette.secondary : defaults.palette.secondary,
-        background: isHex(stored.palette?.background) ? stored.palette.background : defaults.palette.background,
-        text: isHex(stored.palette?.text) ? stored.palette.text : defaults.palette.text,
-      },
-      product: {
-        ...imagens.product,
-        name: String(stored.product?.name || defaults.product.name).slice(0, 64),
-        subtitle: String(stored.product?.subtitle || defaults.product.subtitle).slice(0, 120),
-      },
-      logo: imagens.logo,
-      content: {
-        benefit: String(stored.content?.benefit || defaults.content.benefit).slice(0, 110),
-        wireless: String(stored.content?.wireless || defaults.content.wireless).slice(0, 180),
-        led: String(stored.content?.led || defaults.content.led).slice(0, 180),
-        packageItems: String(stored.content?.packageItems || defaults.content.packageItems).slice(0, 260),
-        width: String(stored.content?.width || defaults.content.width).slice(0, 18),
-        height: String(stored.content?.height || defaults.content.height).slice(0, 18),
-        depth: String(stored.content?.depth || defaults.content.depth).slice(0, 18),
-        features: String(stored.content?.features || defaults.content.features).slice(0, 300),
-        safe: String(stored.content?.safe || defaults.content.safe).slice(0, 140),
-        shipping: String(stored.content?.shipping || defaults.content.shipping).slice(0, 140),
-        warranty: String(stored.content?.warranty || defaults.content.warranty).slice(0, 140),
-      },
-      selectedPage: clamp(stored.selectedPage ?? 0, 0, PAGE_DEFINITIONS.length - 1),
-      view: stored.view === "editor" ? "editor" : "library",
-      compareMode: stored.compareMode === "original" ? "original" : "custom",
-      zoom: [75, 100, 125].includes(Number(stored.zoom)) ? Number(stored.zoom) : 100,
-    };
+    const definition = resolveTemplate(stored && stored.templateId);
+    const resultado = templateEngine.hydrateProjectFromTemplate(stored, definition, { imageModel });
+    migracaoAplicada = resultado.migration;
+    return resultado.project;
   }
 
   function loadProject() {
@@ -393,28 +262,12 @@
     }).forEach(([name, value]) => root.style.setProperty(name, value));
   }
 
-  function derivedPalette(source) {
-    return {
-      primary: source.primary,
-      primaryDark: mix(source.primary, "#000000", 0.28),
-      primaryLight: mix(source.primary, "#ffffff", 0.88),
-      secondary: source.secondary,
-      secondaryDark: mix(source.secondary, "#000000", 0.2),
-      secondaryLight: mix(source.secondary, "#ffffff", 0.84),
-      background: source.background,
-      text: source.text,
-      muted: mix(source.text, source.background, 0.5),
-      surface: mix(source.background, "#ffffff", 0.72),
-      white: "#ffffff",
-    };
-  }
-
   function normalizeSearch(value) {
     return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
   }
 
   function uniqueValues(key) {
-    return [...new Set(TEMPLATE_CATALOG.map((item) => item[key]))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    return [...new Set(templateRegistry.getAll().map((item) => item[key]))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   }
 
   function populateLibraryFilters() {
@@ -459,8 +312,8 @@
     [
       ["Segmento", template.segment],
       ["Marketplace", template.marketplace],
-      ["Formato", `${template.width} × ${template.height} px`],
-      ["Conjunto", `${template.pieces} peças`],
+      ["Formato", `${template.canvas.width} × ${template.canvas.height} px`],
+      ["Conjunto", `${template.pages.length} peças`],
     ].forEach(([label, value]) => {
       const item = document.createElement("span");
       const strong = document.createElement("strong");
@@ -484,7 +337,7 @@
     const query = normalizeSearch(byId("dt-search")?.value);
     const segment = byId("dt-segment-filter")?.value || "";
     const marketplace = byId("dt-marketplace-filter")?.value || "";
-    const filtered = TEMPLATE_CATALOG.filter((template) => {
+    const filtered = templateRegistry.getAll().filter((template) => {
       const searchable = normalizeSearch(`${template.name} ${template.segment} ${template.marketplace}`);
       return (!query || searchable.includes(query)) && (!segment || template.segment === segment) && (!marketplace || template.marketplace === marketplace);
     });
@@ -634,274 +487,89 @@
     scheduleAutosave();
   }
 
-  function svgElement(name, attributes, parent) {
-    const element = document.createElementNS(SVG_NS, name);
-    Object.entries(attributes || {}).forEach(([key, value]) => element.setAttribute(key, String(value)));
-    if (parent) parent.appendChild(element);
-    return element;
-  }
-
-  function svgText(parent, content, attributes) {
-    const element = svgElement("text", attributes, parent);
-    element.textContent = String(content || "");
-    return element;
-  }
-
-  function wrappedText(parent, content, x, y, options) {
-    const maxChars = options.maxChars || 26;
-    const maxLines = options.maxLines || 3;
-    const words = String(content || "").trim().split(/\s+/).filter(Boolean);
-    const lines = [];
-    let current = "";
-    words.forEach((word) => {
-      const candidate = current ? `${current} ${word}` : word;
-      if (candidate.length > maxChars && current) {
-        lines.push(current);
-        current = word;
-      } else {
-        current = candidate;
-      }
-    });
-    if (current) lines.push(current);
-    const visible = lines.slice(0, maxLines);
-    if (lines.length > maxLines && visible.length) visible[visible.length - 1] = `${visible[visible.length - 1].replace(/[.,;:]$/, "")}…`;
-    const textNode = svgElement("text", {
-      x,
-      y,
-      fill: options.fill,
-      "font-family": options.fontFamily || "Manrope, Arial, sans-serif",
-      "font-size": options.fontSize,
-      "font-weight": options.fontWeight || 600,
-      "letter-spacing": options.letterSpacing || 0,
-      "text-anchor": options.textAnchor || "start",
-    }, parent);
-    visible.forEach((line, index) => {
-      const tspan = svgElement("tspan", { x, dy: index === 0 ? 0 : options.lineHeight || options.fontSize * 1.15 }, textNode);
-      tspan.textContent = line;
-    });
-    return textNode;
-  }
-
-  function addSvgStyles(svg) {
-    const style = svgElement("style", {}, svg);
-    style.textContent = "text{font-synthesis:none} .dt-fine{font-family:'IBM Plex Mono',monospace;letter-spacing:2px} .dt-body{font-family:'Hanken Grotesk',Arial,sans-serif} .dt-display{font-family:Manrope,Arial,sans-serif}";
-  }
-
-  // Fonte da imagem do produto usada nas 7 peças: a versão editada tem
-  // precedência; sem edição aplicada, vale o arquivo original.
-  function productImageSource(state) {
-    if (imageModel) return imageModel.resolveProductImageSource(state.product);
-    return state.product?.editedImage?.dataUrl || state.product?.originalImage?.dataUrl || null;
-  }
-
-  function productPlacement(state) {
-    return state.product?.placement || { scale: 100, x: 50, y: 50 };
-  }
-
-  function drawBrand(svg, state, palette, options) {
-    const group = svgElement("g", {}, svg);
-    const x = options?.x ?? 72;
-    const y = options?.y ?? 66;
-    const onDark = options?.onDark;
-    const logoDataUrl = state.logo?.dataUrl || null;
-    if (logoDataUrl) {
-      svgElement("image", { href: logoDataUrl, x, y, width: 190, height: 72, preserveAspectRatio: "xMinYMid meet" }, group);
-    } else {
-      svgElement("rect", { x, y, width: 48, height: 48, rx: 9, fill: onDark ? palette.secondary : palette.primary }, group);
-      svgText(group, String(state.marcaNome || "N").slice(0, 1).toUpperCase(), { x: x + 24, y: y + 33, "text-anchor": "middle", fill: palette.white, "font-family": "Manrope,Arial,sans-serif", "font-size": 25, "font-weight": 800 });
-      svgText(group, state.marcaNome || "NOVA", { x: x + 62, y: y + 34, fill: onDark ? palette.white : palette.text, "font-family": "Manrope,Arial,sans-serif", "font-size": 25, "font-weight": 800, "letter-spacing": 2 });
-    }
-    return group;
-  }
-
-  function drawPageNumber(svg, index, palette, onDark) {
-    svgText(svg, `${String(index + 1).padStart(2, "0")} / 07`, { x: 1124, y: 84, "text-anchor": "end", fill: onDark ? palette.white : palette.muted, class: "dt-fine", "font-size": 15, "font-weight": 600 });
-  }
-
-  function drawProduct(svg, state, palette, centerX, centerY, baseSize) {
-    const placement = productPlacement(state);
-    const scale = (placement.scale / 100) * (baseSize / 430);
-    const offsetX = (placement.x - 50) * 4.5;
-    const offsetY = (placement.y - 50) * 4.5;
-    const group = svgElement("g", { transform: `translate(${centerX + offsetX} ${centerY + offsetY}) scale(${scale})` }, svg);
-    const imageDataUrl = productImageSource(state);
-    if (imageDataUrl) {
-      svgElement("image", { href: imageDataUrl, x: -260, y: -260, width: 520, height: 520, preserveAspectRatio: "xMidYMid meet" }, group);
-      return group;
-    }
-    svgElement("ellipse", { cx: 12, cy: 230, rx: 210, ry: 34, fill: palette.primaryDark, opacity: 0.18 }, group);
-    svgElement("rect", { x: -174, y: -250, width: 348, height: 494, rx: 52, fill: palette.primaryDark, transform: "rotate(-7)", stroke: palette.surface, "stroke-width": 8 }, group);
-    svgElement("rect", { x: -151, y: -226, width: 302, height: 446, rx: 39, fill: palette.primary, transform: "rotate(-7)" }, group);
-    svgElement("circle", { cx: -6, cy: -36, r: 100, fill: "none", stroke: palette.secondary, "stroke-width": 10, opacity: 0.9 }, group);
-    svgElement("circle", { cx: -6, cy: -36, r: 72, fill: "none", stroke: palette.surface, "stroke-width": 3, opacity: 0.55 }, group);
-    const bolt = svgElement("path", { d: "M 8 -100 L -34 -20 L 8 -20 L -10 40 L 55 -47 L 12 -47 Z", fill: palette.secondary }, group);
-    bolt.setAttribute("transform", "rotate(-7)");
-    svgElement("rect", { x: -82, y: 157, width: 120, height: 32, rx: 9, fill: palette.surface, opacity: 0.94, transform: "rotate(-7)" }, group);
-    svgText(group, "72%", { x: -22, y: 180, "text-anchor": "middle", fill: palette.primaryDark, class: "dt-fine", "font-size": 18, "font-weight": 700, transform: "rotate(-7)" });
-    return group;
-  }
-
-  function drawChip(svg, label, x, y, palette, onDark) {
-    const width = Math.max(112, String(label).length * 11 + 34);
-    svgElement("rect", { x, y, width, height: 42, rx: 21, fill: onDark ? palette.white : palette.primaryLight, opacity: onDark ? 0.14 : 1 }, svg);
-    svgText(svg, label, { x: x + width / 2, y: y + 27, "text-anchor": "middle", fill: onDark ? palette.white : palette.primary, class: "dt-body", "font-size": 15, "font-weight": 700 });
-  }
-
-  function drawCover(svg, state, palette) {
-    svgElement("rect", { width: 1200, height: 1200, fill: palette.background }, svg);
-    svgElement("path", { d: "M760 0H1200V1200H610C790 1010 848 794 784 575C727 378 658 205 760 0Z", fill: palette.primary }, svg);
-    svgElement("circle", { cx: 1075, cy: 180, r: 170, fill: palette.secondary, opacity: 0.92 }, svg);
-    drawBrand(svg, state, palette);
-    drawPageNumber(svg, 0, palette, false);
-    svgText(svg, "ENERGIA PORTÁTIL", { x: 76, y: 194, fill: palette.secondaryDark, class: "dt-fine", "font-size": 17, "font-weight": 700 });
-    wrappedText(svg, state.product.name, 72, 288, { maxChars: 18, maxLines: 3, fontSize: 76, lineHeight: 82, fill: palette.text, fontWeight: 800 });
-    wrappedText(svg, state.content.benefit, 76, 584, { maxChars: 32, maxLines: 3, fontSize: 29, lineHeight: 38, fill: palette.muted, fontWeight: 500, fontFamily: "Hanken Grotesk,Arial,sans-serif" });
-    drawChip(svg, "INDUÇÃO", 74, 756, palette, false);
-    drawChip(svg, "USB-C", 222, 756, palette, false);
-    drawChip(svg, "LED", 350, 756, palette, false);
-    drawProduct(svg, state, palette, 856, 655, 490);
-    svgText(svg, "PRONTO PARA A ROTINA", { x: 76, y: 1096, fill: palette.text, class: "dt-body", "font-size": 18, "font-weight": 700 });
-    svgElement("line", { x1: 76, y1: 1118, x2: 408, y2: 1118, stroke: palette.secondary, "stroke-width": 7 }, svg);
-  }
-
-  function drawWireless(svg, state, palette) {
-    svgElement("rect", { width: 1200, height: 1200, fill: palette.surface }, svg);
-    svgElement("rect", { x: 0, y: 0, width: 1200, height: 170, fill: palette.primary }, svg);
-    drawBrand(svg, state, palette, { x: 72, y: 50, onDark: true });
-    drawPageNumber(svg, 1, palette, true);
-    svgText(svg, "SEM CABOS. SEM PAUSA.", { x: 72, y: 262, fill: palette.secondaryDark, class: "dt-fine", "font-size": 17, "font-weight": 700 });
-    wrappedText(svg, "Carregamento por indução", 70, 355, { maxChars: 23, maxLines: 3, fontSize: 68, lineHeight: 75, fill: palette.text, fontWeight: 800 });
-    wrappedText(svg, state.content.wireless, 74, 650, { maxChars: 44, maxLines: 4, fontSize: 27, lineHeight: 36, fill: palette.muted, fontWeight: 500, fontFamily: "Hanken Grotesk,Arial,sans-serif" });
-    svgElement("circle", { cx: 906, cy: 624, r: 276, fill: palette.primaryLight }, svg);
-    svgElement("circle", { cx: 906, cy: 624, r: 205, fill: "none", stroke: palette.secondary, "stroke-width": 8, "stroke-dasharray": "18 15" }, svg);
-    svgElement("circle", { cx: 906, cy: 624, r: 151, fill: "none", stroke: palette.primary, "stroke-width": 5, opacity: 0.5 }, svg);
-    drawProduct(svg, state, palette, 906, 652, 360);
-    svgText(svg, "APOIE • CONECTE • CONTINUE", { x: 72, y: 1090, fill: palette.primary, class: "dt-fine", "font-size": 18, "font-weight": 700 });
-  }
-
-  function drawLed(svg, state, palette) {
-    svgElement("rect", { width: 1200, height: 1200, fill: palette.primaryDark }, svg);
-    svgElement("circle", { cx: 876, cy: 560, r: 340, fill: palette.secondary, opacity: 0.08 }, svg);
-    svgElement("circle", { cx: 876, cy: 560, r: 270, fill: palette.secondary, opacity: 0.12 }, svg);
-    svgElement("circle", { cx: 876, cy: 560, r: 200, fill: palette.secondary, opacity: 0.18 }, svg);
-    drawBrand(svg, state, palette, { onDark: true });
-    drawPageNumber(svg, 2, palette, true);
-    svgText(svg, "LUZ QUANDO VOCÊ PRECISA", { x: 72, y: 228, fill: palette.secondary, class: "dt-fine", "font-size": 17, "font-weight": 700 });
-    wrappedText(svg, "Iluminação LED integrada", 70, 324, { maxChars: 20, maxLines: 3, fontSize: 70, lineHeight: 76, fill: palette.white, fontWeight: 800 });
-    wrappedText(svg, state.content.led, 74, 642, { maxChars: 40, maxLines: 4, fontSize: 27, lineHeight: 36, fill: mix(palette.primary, "#ffffff", 0.74), fontWeight: 500, fontFamily: "Hanken Grotesk,Arial,sans-serif" });
-    drawProduct(svg, state, palette, 876, 646, 420);
-    [[755, 892], [876, 934], [997, 892]].forEach(([x, y], index) => {
-      svgElement("circle", { cx: x, cy: y, r: 25, fill: index === 1 ? palette.secondary : palette.surface, opacity: index === 1 ? 1 : 0.5 }, svg);
-    });
-    svgText(svg, "3 NÍVEIS DE INTENSIDADE", { x: 876, y: 1028, "text-anchor": "middle", fill: palette.white, class: "dt-fine", "font-size": 16, "font-weight": 700 });
-  }
-
-  function drawPackage(svg, state, palette) {
-    svgElement("rect", { width: 1200, height: 1200, fill: palette.background }, svg);
-    svgElement("rect", { x: 650, y: 0, width: 550, height: 1200, fill: palette.primaryLight }, svg);
-    drawBrand(svg, state, palette);
-    drawPageNumber(svg, 3, palette, false);
-    svgText(svg, "NA CAIXA", { x: 72, y: 230, fill: palette.secondaryDark, class: "dt-fine", "font-size": 17, "font-weight": 700 });
-    wrappedText(svg, "Tudo o que acompanha seu produto", 70, 330, { maxChars: 21, maxLines: 4, fontSize: 63, lineHeight: 69, fill: palette.text, fontWeight: 800 });
-    const items = String(state.content.packageItems || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean).slice(0, 5);
-    items.forEach((item, index) => {
-      const y = 690 + index * 86;
-      svgElement("rect", { x: 74, y: y - 34, width: 46, height: 46, rx: 10, fill: palette.secondary }, svg);
-      svgText(svg, String(index + 1).padStart(2, "0"), { x: 97, y: y - 4, "text-anchor": "middle", fill: palette.white, class: "dt-fine", "font-size": 14, "font-weight": 700 });
-      svgText(svg, item, { x: 144, y, fill: palette.text, class: "dt-body", "font-size": 25, "font-weight": 600 });
-    });
-    drawProduct(svg, state, palette, 888, 570, 400);
-    svgElement("path", { d: "M735 904h310l-36 170H771z", fill: palette.surface, stroke: palette.primary, "stroke-width": 5 }, svg);
-    svgElement("path", { d: "M735 904l155 85 155-85M890 989v85", fill: "none", stroke: palette.primary, "stroke-width": 5 }, svg);
-  }
-
-  function drawDimensions(svg, state, palette) {
-    svgElement("rect", { width: 1200, height: 1200, fill: palette.surface }, svg);
-    drawBrand(svg, state, palette);
-    drawPageNumber(svg, 4, palette, false);
-    svgText(svg, "MEDIDAS REAIS", { x: 72, y: 208, fill: palette.secondaryDark, class: "dt-fine", "font-size": 17, "font-weight": 700 });
-    wrappedText(svg, "Compacto por fora. Potente por dentro.", 70, 300, { maxChars: 23, maxLines: 3, fontSize: 66, lineHeight: 72, fill: palette.text, fontWeight: 800 });
-    svgElement("rect", { x: 72, y: 570, width: 1056, height: 510, fill: palette.primaryLight }, svg);
-    drawProduct(svg, state, palette, 600, 814, 380);
-    const dimensionLine = (x1, y1, x2, y2, label, tx, ty) => {
-      svgElement("line", { x1, y1, x2, y2, stroke: palette.secondaryDark, "stroke-width": 4 }, svg);
-      svgElement("circle", { cx: x1, cy: y1, r: 7, fill: palette.secondary }, svg);
-      svgElement("circle", { cx: x2, cy: y2, r: 7, fill: palette.secondary }, svg);
-      svgText(svg, label, { x: tx, y: ty, fill: palette.text, class: "dt-fine", "font-size": 20, "font-weight": 700 });
-    };
-    dimensionLine(350, 1050, 845, 1050, `L ${state.content.width}`, 520, 1030);
-    dimensionLine(325, 610, 325, 1015, `A ${state.content.height}`, 152, 820);
-    dimensionLine(870, 700, 1020, 632, `P ${state.content.depth}`, 906, 616);
-  }
-
-  function drawFeatures(svg, state, palette) {
-    svgElement("rect", { width: 1200, height: 1200, fill: palette.background }, svg);
-    svgElement("path", { d: "M0 0h480v1200H0z", fill: palette.primary }, svg);
-    drawBrand(svg, state, palette, { onDark: true });
-    drawPageNumber(svg, 5, palette, false);
-    drawProduct(svg, state, palette, 280, 650, 370);
-    svgText(svg, "CONTROLE NA PALMA DA MÃO", { x: 536, y: 210, fill: palette.secondaryDark, class: "dt-fine", "font-size": 17, "font-weight": 700 });
-    wrappedText(svg, "Painel claro. Funções essenciais.", 532, 310, { maxChars: 20, maxLines: 3, fontSize: 63, lineHeight: 69, fill: palette.text, fontWeight: 800 });
-    const features = String(state.content.features || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean).slice(0, 5);
-    features.forEach((item, index) => {
-      const y = 610 + index * 100;
-      svgElement("line", { x1: 536, y1: y - 37, x2: 1128, y2: y - 37, stroke: mix(palette.text, palette.background, 0.8), "stroke-width": 2 }, svg);
-      svgElement("circle", { cx: 558, cy: y, r: 16, fill: palette.secondary }, svg);
-      svgElement("path", { d: `M${550} ${y}l6 6 12-15`, fill: "none", stroke: palette.white, "stroke-width": 4, "stroke-linecap": "round", "stroke-linejoin": "round" }, svg);
-      svgText(svg, item, { x: 594, y: y + 8, fill: palette.text, class: "dt-body", "font-size": 25, "font-weight": 600 });
-    });
-  }
-
-  function drawSafe(svg, state, palette) {
-    svgElement("rect", { width: 1200, height: 1200, fill: palette.primaryDark }, svg);
-    svgElement("path", { d: "M0 890C270 760 470 940 714 820c196-96 305-71 486-5v385H0z", fill: palette.primary }, svg);
-    drawBrand(svg, state, palette, { onDark: true });
-    drawPageNumber(svg, 6, palette, true);
-    svgText(svg, "SUA ESCOLHA, PROTEGIDA", { x: 600, y: 235, "text-anchor": "middle", fill: palette.secondary, class: "dt-fine", "font-size": 17, "font-weight": 700 });
-    wrappedText(svg, "Compre com tranquilidade", 600, 335, { maxChars: 25, maxLines: 2, fontSize: 72, lineHeight: 80, fill: palette.white, fontWeight: 800, textAnchor: "middle" });
-    svgElement("path", { d: "M600 515l112 43v89c0 91-58 154-112 183-54-29-112-92-112-183v-89z", fill: palette.secondary }, svg);
-    svgElement("path", { d: "M548 652l34 35 74-83", fill: "none", stroke: palette.white, "stroke-width": 16, "stroke-linecap": "round", "stroke-linejoin": "round" }, svg);
-    const assurances = [state.content.safe, state.content.shipping, state.content.warranty];
-    assurances.forEach((item, index) => {
-      const x = 72 + index * 362;
-      svgElement("rect", { x, y: 914, width: 330, height: 190, rx: 12, fill: palette.surface }, svg);
-      svgText(svg, String(index + 1).padStart(2, "0"), { x: x + 26, y: 955, fill: palette.secondaryDark, class: "dt-fine", "font-size": 15, "font-weight": 700 });
-      wrappedText(svg, item, x + 26, 1002, { maxChars: 28, maxLines: 3, fontSize: 21, lineHeight: 28, fill: palette.text, fontWeight: 650, fontFamily: "Hanken Grotesk,Arial,sans-serif" });
-    });
-  }
-
-  const PAGE_DRAWERS = [drawCover, drawWireless, drawLed, drawPackage, drawDimensions, drawFeatures, drawSafe];
-
+  // A tela não desenha mais: pede a peça ao renderizador, que resolve o
+  // layout pelo rendererId da página. Um rendererId sem layout é erro
+  // explícito do renderer — tratado aqui, nunca virando arte genérica
+  // silenciosa que passaria por correta.
   function createPageSvg(pageIndex, sourceProject) {
-    const safeIndex = clamp(pageIndex, 0, PAGE_DRAWERS.length - 1);
-    // Sem `xmlns` explícito: createElementNS já coloca o elemento no namespace
-    // SVG e o XMLSerializer emite a declaração sozinho. Declarar à mão gerava
-    // `xmlns` duplicado no texto serializado — XML inválido, que rasterizadores
-    // estritos recusam na hora de virar PNG.
-    const svg = svgElement("svg", { viewBox: "0 0 1200 1200", width: 1200, height: 1200, role: "img", "aria-label": PAGE_DEFINITIONS[safeIndex].name });
-    addSvgStyles(svg);
-    PAGE_DRAWERS[safeIndex](svg, sourceProject, derivedPalette(sourceProject.palette));
-    return svg;
+    return templateRenderer.renderPage({
+      template: resolveTemplate(sourceProject.templateId),
+      project: sourceProject,
+      pageIndex,
+    });
+  }
+
+  // Placeholder de falha: diz que a peça não pôde ser montada, em vez de
+  // fingir uma arte válida. Só aparece se um template declarar um
+  // rendererId sem layout registrado.
+  function createBrokenPageSvg(template, page) {
+    const svg = templateRenderer.svg;
+    const root = svg.element("svg", {
+      viewBox: `0 0 ${template.canvas.width} ${template.canvas.height}`,
+      width: template.canvas.width,
+      height: template.canvas.height,
+      role: "img",
+      "aria-label": `Peça indisponível: ${page ? page.name : "layout desconhecido"}`,
+    });
+    svg.element("rect", { width: template.canvas.width, height: template.canvas.height, fill: "#f4efe5" }, root);
+    svg.text(root, "Peça indisponível", {
+      x: template.canvas.width / 2, y: template.canvas.height / 2 - 10,
+      "text-anchor": "middle", fill: "#12202b", "font-size": 46, "font-weight": 700,
+    });
+    svg.text(root, "Este layout não está disponível nesta versão do estúdio.", {
+      x: template.canvas.width / 2, y: template.canvas.height / 2 + 48,
+      "text-anchor": "middle", fill: "#5c6670", "font-size": 26, "font-weight": 500,
+    });
+    return root;
+  }
+
+  // Envolve a renderização para que uma página quebrada não derrube a tela
+  // inteira: a peça vira placeholder explícito e o usuário é avisado uma vez.
+  let avisoLayoutEmitido = false;
+  function createPageSvgSafely(pageIndex, sourceProject, template) {
+    try {
+      return createPageSvg(pageIndex, sourceProject);
+    } catch (error) {
+      if (!avisoLayoutEmitido) {
+        avisoLayoutEmitido = true;
+        showToast(
+          "danger",
+          "Layout indisponível",
+          "Uma peça deste template usa um layout que o estúdio não conhece. As demais continuam disponíveis."
+        );
+      }
+      return createBrokenPageSvg(template, template.pages[pageIndex]);
+    }
   }
 
   function previewProject() {
-    return project.compareMode === "original" ? createDefaultProject() : project;
+    return project.compareMode === "original" ? createDefaultProject(project.templateId) : project;
+  }
+
+  function updateEditorHeader(template) {
+    const title = byId("dt-editor-view-title");
+    const meta = byId("dt-editor-meta");
+    if (title) title.textContent = template.name;
+    if (meta) meta.textContent = `${template.pages.length} peças · ${template.canvas.width} × ${template.canvas.height} px`;
   }
 
   function renderPreviews() {
+    const template = getActiveTemplate();
+    const pages = template.pages;
     const source = previewProject();
     const main = byId("dt-main-preview");
-    main.replaceChildren(createPageSvg(project.selectedPage, source));
+    main.replaceChildren(createPageSvgSafely(project.selectedPage, source, template));
     main.classList.toggle("is-original", project.compareMode === "original");
     main.style.width = `${project.zoom}%`;
-    byId("dt-page-number").textContent = `PEÇA ${String(project.selectedPage + 1).padStart(2, "0")} DE 07`;
-    byId("dt-page-name").textContent = PAGE_DEFINITIONS[project.selectedPage].name;
+    const totalPaginas = String(pages.length).padStart(2, "0");
+    byId("dt-page-number").textContent = `PEÇA ${String(project.selectedPage + 1).padStart(2, "0")} DE ${totalPaginas}`;
+    byId("dt-page-name").textContent = pages[project.selectedPage].name;
     byId("dt-view-original").classList.toggle("is-active", project.compareMode === "original");
     byId("dt-view-original").setAttribute("aria-pressed", String(project.compareMode === "original"));
     byId("dt-view-custom").classList.toggle("is-active", project.compareMode === "custom");
     byId("dt-view-custom").setAttribute("aria-pressed", String(project.compareMode === "custom"));
 
-    const thumbnails = PAGE_DEFINITIONS.map((page, index) => {
+    const thumbnails = pages.map((page, index) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `dt-thumbnail${project.selectedPage === index ? " is-active" : ""}`;
@@ -909,7 +577,7 @@
       button.setAttribute("aria-current", project.selectedPage === index ? "true" : "false");
       const art = document.createElement("span");
       art.className = "dt-thumb-art";
-      art.appendChild(createPageSvg(index, source));
+      art.appendChild(createPageSvgSafely(index, source, template));
       const label = document.createElement("span");
       label.className = "dt-thumbnail__label";
       label.textContent = `${String(index + 1).padStart(2, "0")} · ${page.name}`;
@@ -925,6 +593,7 @@
   }
 
   function renderEditor() {
+    updateEditorHeader(getActiveTemplate());
     applyTemplateTokens();
     syncControls();
     renderPreviews();
@@ -1244,11 +913,19 @@
   }
 
   function exportConfiguration() {
-    const template = TEMPLATE_CATALOG.find((item) => item.id === project.templateId) || TEMPLATE_CATALOG[0];
+    const template = getActiveTemplate();
     const payload = {
       version: project.version,
       exportedAt: new Date().toISOString(),
-      template: { ...template },
+      template: {
+        id: template.id,
+        name: template.name,
+        segment: template.segment,
+        marketplace: template.marketplace,
+        width: template.canvas.width,
+        height: template.canvas.height,
+        pieces: template.pages.length,
+      },
       cliente: { id: project.clienteId, nome: project.clienteNome },
       marcaNome: project.marcaNome,
       palette: { ...project.palette },
@@ -1272,7 +949,15 @@
 
   function exportCurrentPage() {
     const source = previewProject();
-    const svg = createPageSvg(project.selectedPage, source);
+    // Exportar uma peça que não pôde ser montada geraria um PNG enganoso:
+    // é melhor recusar e dizer o motivo.
+    let svg;
+    try {
+      svg = createPageSvg(project.selectedPage, source);
+    } catch {
+      showToast("danger", "Não foi possível exportar", "Esta peça usa um layout que o estúdio não conhece.");
+      return;
+    }
     const serialized = new XMLSerializer().serializeToString(svg);
     const svgBlob = new Blob([serialized], { type: "image/svg+xml;charset=utf-8" });
     const svgUrl = URL.createObjectURL(svgBlob);
@@ -1292,7 +977,7 @@
             return;
           }
           const clientName = sanitizeFilename(project.clienteNome, "cliente");
-          const templateName = sanitizeFilename(TEMPLATE_CATALOG[0].name, "template");
+          const templateName = sanitizeFilename(getActiveTemplate().name, "template");
           downloadBlob(blob, `${clientName}-${templateName}-pagina-${String(project.selectedPage + 1).padStart(2, "0")}.png`);
           showToast("success", "Página exportada", "PNG gerado em 1200 × 1200 px.");
         }, "image/png");
@@ -1340,7 +1025,7 @@
   }
 
   function resetProject(view) {
-    const fresh = createDefaultProject();
+    const fresh = createDefaultProject(project.templateId);
     fresh.view = view || "editor";
     project = fresh;
     persistProject(false);
@@ -1440,6 +1125,17 @@
     migracaoAplicada = null;
   }
 
+  // Todo template do catálogo precisa ter layout para cada rendererId. Uma
+  // falha aqui é erro de configuração do preset e vale um aviso claro no
+  // boot, em vez de só aparecer quando o usuário abrir a peça.
+  function validarLayoutsDosTemplates() {
+    templateRegistry.getAll().forEach((template) => {
+      const vinculos = templateRenderer.validateRendererBindings(template);
+      if (vinculos.ok) return;
+      showToast("danger", "Template incompleto", vinculos.mensagem);
+    });
+  }
+
   function init() {
     if (typeof window.initLayout === "function") window.initLayout();
     if (imageEditorLib) {
@@ -1448,6 +1144,7 @@
         confirmar: pedirConfirmacao,
       });
     }
+    validarLayoutsDosTemplates();
     populateLibraryFilters();
     bindEvents();
     renderLibrary();

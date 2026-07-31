@@ -387,6 +387,16 @@
   <script src="design-image-storage.js"></script>
   <script src="design-image-api.js"></script>
   <script src="design-image-editor.js"></script>
+  <!--
+    Módulos de template, em ordem de dependência:
+    engine (puro) -> presets (dados) -> components -> layouts -> renderer.
+    A tela (design-templates.js) entra por último e só consome os globals.
+  -->
+  <script src="design-template-engine.js"></script>
+  <script src="design-template-presets.js"></script>
+  <script src="design-template-components.js"></script>
+  <script src="design-template-layouts.js"></script>
+  <script src="design-template-renderer.js"></script>
   <script src="design-templates.js"></script>
 </body>
 </html>

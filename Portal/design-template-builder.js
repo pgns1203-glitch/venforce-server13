@@ -65,6 +65,7 @@
   let debounceTimer = null;
   let idsPersistidos = new Set();
   let avisoDeLayoutEmitido = false;
+  let editingContext = null;
 
   function clonar(valor) {
     return JSON.parse(JSON.stringify(valor));
@@ -899,7 +900,30 @@
 
   /* ── biblioteca local ─────────────────────────────────────────────────── */
 
-  function salvarComoTemplate() {
+  async function salvarComoTemplate() {
+    const workspace = window.VF_DESIGN_STUDIO_WORKSPACE;
+    if (workspace) {
+      if (!String(projeto.name || "").trim()) {
+        studio.showToast("warning", "Informe um nome", "Dê um nome ao projeto antes de salvar.");
+        byId("dtb-project-name")?.focus();
+        return;
+      }
+      const button = byId("dtb-save-template");
+      button.disabled = true;
+      setStatus("Salvando no Estúdio…", "saving");
+      try {
+        editingContext = await workspace.saveDocument(projeto, editingContext);
+        setStatus("Salvo no Estúdio", "saved");
+        button.textContent = editingContext.type === "artwork" ? "Salvar nova versão da arte" : "Salvar nova versão do template";
+        studio.showToast("success", "Versão salva", "O projeto está disponível em outros navegadores e computadores.");
+      } catch (error) {
+        setStatus("Não foi possível salvar", "error");
+        studio.showToast("danger", "Não foi possível salvar", error.message);
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
     if (!exigirProjetoValido("salvar o template")) return;
     let registro;
     try {
@@ -916,7 +940,7 @@
     salvarRascunho(false);
     persistirImagens(projeto);
     renderLocalLibrary();
-    studio.showToast("success", "Template salvo", `“${registro.name}” está na biblioteca da equipe.`);
+    studio.showToast("success", "Template salvo", `“${registro.name}” está na biblioteca.`);
   }
 
   function mosaicoDoRegistro(registro) {
@@ -1475,10 +1499,21 @@
 
   /* ── ações ────────────────────────────────────────────────────────────── */
 
-  // "Novo projeto" abre o modo de GERAÇÃO com o formulário em branco: é o
-  // caminho padrão do produto. O modo manual continua a um clique.
-  function novoProjeto() {
+  // Um projeto novo abre diretamente o editor modular em branco.
+  function novoProjeto(client) {
     projeto = model.createDefaultProject({ imageModel });
+    editingContext = null;
+    if (client) {
+      projeto.clienteId = client.id;
+      projeto.clienteNome = model.sanitizeText(client.nome || client.slug || "Cliente", 80);
+      projeto.name = `Novo template · ${projeto.clienteNome}`;
+      projeto.marcaNome = model.sanitizeText(client.brand_name || client.nome || "", 80);
+      const identity = client.identity && typeof client.identity === "object" ? client.identity : {};
+      ["primary", "secondary", "background", "text"].forEach((key) => {
+        if (model.isHexColor(identity[key])) projeto.palette[key] = identity[key];
+      });
+      if (identity.logo && typeof identity.logo === "object") projeto.logo = clonar(identity.logo);
+    }
     entrada = criarEntradaVazia();
     propostas = [];
     variationIndex = 0;
@@ -1493,8 +1528,28 @@
     renderPagesList();
     renderPropostas();
     studio.showView("builder");
-    definirModo("gerar");
+    definirModo("manual");
     agendarRascunho();
+  }
+
+  function abrirProjetoCompartilhado(documento, context) {
+    projeto = model.sanitizeProject(clonar(documento || {}), { imageModel });
+    projeto.logo = documento?.logo || projeto.logo;
+    projeto.product = { ...projeto.product, ...(documento?.product || {}) };
+    editingContext = context || null;
+    snapshotInicial = clonar(projeto);
+    paginaSelecionada = 0;
+    modoComparacao = "custom";
+    invalidarTemplate();
+    sincronizarCampos();
+    mostrarErros([]);
+    renderPagesList();
+    atualizar({ estrutura: true });
+    studio.showView("builder");
+    definirModo("manual");
+    const button = byId("dtb-save-template");
+    button.textContent = editingContext?.type === "artwork" ? "Salvar nova versão da arte" : "Salvar nova versão do template";
+    setStatus("Projeto compartilhado aberto", "saved");
   }
 
   function restaurar() {
@@ -1735,11 +1790,10 @@
     renderPreview();
     renderPropostas();
     renderLocalLibrary();
-    // "Gerar propostas" é o modo padrão do Construtor.
     definirModo(rascunho.modo);
-    setStatus("Rascunho salvo localmente", "saved");
+    setStatus("Rascunho neste navegador", "saved");
 
-    // A biblioteca da equipe segue os mesmos filtros da biblioteca do sistema.
+    // A biblioteca salva segue os mesmos filtros dos modelos de partida.
     studio.onBibliotecaRenderizada((filtros) => {
       filtroDaBiblioteca = filtros;
       renderLocalLibrary();
@@ -1780,7 +1834,7 @@
     studio.onConstrutorAberto(() => { if (modo === "manual") renderPreview(); });
     studio.definirAcaoDeNovoProjeto(novoProjeto);
     // Declara ao editor antigo quais blobs o construtor ainda usa, para que a
-    // limpeza de órfãos dele não apague as imagens dos templates da equipe —
+    // limpeza de órfãos dele não apague as imagens dos templates salvos —
     // incluindo as que só existem no formulário de geração.
     studio.registrarImagensVivas(() => library.listarIdsDeImagens()
       .concat(idsDeImagensDoProjeto(projeto))
@@ -1799,6 +1853,12 @@
       }
       if (mudouEntrada) sincronizarUploadDeGeracao();
     }).catch(() => {});
+
+    window.VF_DESIGN_BUILDER_API = {
+      openProject: abrirProjetoCompartilhado,
+      newProject: novoProjeto,
+      getProject: () => clonar(projeto),
+    };
   }
 
   init();

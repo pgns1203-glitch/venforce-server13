@@ -24,15 +24,15 @@
             <div class="vf-page-header__main">
               <p class="vf-page-header__eyebrow">Design</p>
               <h1 class="vf-page-header__title">Estúdio de Templates</h1>
-              <p class="vf-page-header__description">Personalize conjuntos de artes com a identidade visual de cada cliente e visualize o resultado em tempo real.</p>
+              <p class="vf-page-header__description">Crie, organize e reutilize templates e artes no espaço compartilhado de cada cliente.</p>
             </div>
             <div class="vf-page-header__actions" id="dt-editor-header-actions" hidden>
-              <span class="dt-save-status" id="dt-save-status" role="status" aria-live="polite">Alterações salvas localmente</span>
-              <button type="button" class="vf-btn vf-btn--secondary" id="dt-save">Salvar localmente</button>
+              <span class="dt-save-status" id="dt-save-status" role="status" aria-live="polite">Pronto para salvar</span>
+              <button type="button" class="vf-btn vf-btn--secondary" id="dt-save">Salvar versão</button>
               <button type="button" class="vf-btn vf-btn--primary" id="dt-download-page">Baixar página atual</button>
             </div>
             <div class="vf-page-header__actions" id="dt-builder-header-actions" hidden>
-              <span class="dt-save-status" id="dtb-save-status" role="status" aria-live="polite">Rascunho salvo localmente</span>
+              <span class="dt-save-status" id="dtb-save-status" role="status" aria-live="polite">Rascunho neste navegador</span>
               <button type="button" class="vf-btn vf-btn--secondary" id="dtb-save-draft">Salvar rascunho</button>
               <button type="button" class="vf-btn vf-btn--primary" id="dtb-save-template">Salvar como template</button>
             </div>
@@ -45,6 +45,43 @@
           </div>
 
           <section id="dt-library-view" aria-labelledby="dt-library-tab">
+            <section class="ds-shell" aria-labelledby="ds-workspace-name">
+              <div class="ds-client-bar">
+                <label class="vf-field ds-client-field" for="ds-client-select"><span class="vf-field__label">Espaço do cliente</span><select class="vf-select" id="ds-client-select"><option value="">Carregando clientes…</option></select></label>
+                <div class="ds-client-title"><span class="vf-page-header__eyebrow">Estúdio do cliente</span><h2 id="ds-workspace-name">Selecione um cliente</h2><span id="ds-workspace-slug" class="vf-mono"></span></div>
+                <div class="ds-primary-actions">
+                  <label class="vf-field ds-account-field" for="ds-art-account"><span class="vf-field__label">Conta para novas artes</span><select class="vf-select" id="ds-art-account"><option value="">Todas / não definida</option></select></label>
+                  <label class="vf-field ds-count-field" for="ds-generate-count"><span class="vf-field__label">Quantidade</span><select class="vf-select" id="ds-generate-count"><option>8</option><option selected>12</option><option>16</option><option>24</option></select></label>
+                  <button type="button" class="vf-btn vf-btn--secondary" id="ds-generate">Gerar opções</button>
+                  <button type="button" class="vf-btn vf-btn--primary" id="ds-create-empty">Criar do zero</button>
+                </div>
+              </div>
+              <div id="ds-loading" class="ds-loading" role="status">Carregando espaço do cliente…</div>
+              <div id="ds-content" hidden>
+                <div class="ds-overview-grid">
+                  <details class="vf-card ds-identity-card">
+                    <summary><span><strong>Identidade visual</strong><small>Cores, marca, fonte e logo aplicáveis aos novos projetos</small></span><span>Editar</span></summary>
+                    <div class="ds-identity-form">
+                      <label class="vf-field"><span class="vf-field__label">Nome da marca</span><input class="vf-input" id="ds-brand-name" maxlength="100"></label>
+                      <label class="vf-field"><span class="vf-field__label">Fonte</span><select class="vf-select" id="ds-font"><option>Manrope</option><option>Hanken Grotesk</option><option>Arial</option><option>Georgia</option></select></label>
+                      <div class="ds-colors"><label>Principal <input type="color" id="ds-primary"></label><label>Secundária <input type="color" id="ds-secondary"></label><label>Fundo <input type="color" id="ds-background"></label><label>Texto <input type="color" id="ds-text"></label></div>
+                      <label class="vf-field"><span class="vf-field__label">Logo</span><input class="vf-input" type="file" id="ds-logo-file" accept="image/png,image/jpeg,image/webp"><img id="ds-logo-preview" class="ds-logo-preview" alt="Logo do cliente" hidden></label>
+                      <label class="vf-field ds-notes"><span class="vf-field__label">Orientações da marca</span><textarea class="vf-textarea" id="ds-identity-notes" rows="2" maxlength="1000"></textarea></label>
+                      <button type="button" class="vf-btn vf-btn--primary" id="ds-save-identity">Salvar identidade</button>
+                    </div>
+                  </details>
+                  <div class="vf-card ds-accounts-card"><div><strong>Contas vinculadas</strong><small>Marketplaces e bases disponíveis para este cliente</small></div><div id="ds-account-list" class="ds-account-list"></div></div>
+                </div>
+                <div class="ds-library-head">
+                  <div class="vf-tabs" role="tablist" aria-label="Acervo do cliente"><button type="button" class="vf-tab is-active" data-ds-tab="templates">Templates</button><button type="button" class="vf-tab" data-ds-tab="artworks">Artes</button><button type="button" class="vf-tab" data-ds-tab="archived">Arquivados</button></div>
+                  <label class="vf-field ds-search-field"><span class="vf-field__label">Buscar no acervo</span><input class="vf-input vf-search" id="ds-search" type="search" placeholder="Nome do item"></label>
+                </div>
+                <div class="ds-section-title"><h2 id="ds-items-title">Templates</h2><span class="vf-badge" id="ds-items-count">0</span></div>
+                <div class="dt-template-grid ds-grid" id="ds-grid"></div>
+                <div class="vf-empty dt-empty" id="ds-empty"><h3 class="vf-empty__title">Nada por aqui ainda</h3><p class="vf-empty__description">Gere opções ou crie um template do zero.</p></div>
+              </div>
+            </section>
+
             <div class="vf-toolbar dt-library-toolbar" aria-label="Filtros da biblioteca">
               <div class="vf-toolbar__filters">
                 <label class="vf-field dt-search-field" for="dt-search">
@@ -61,22 +98,24 @@
                 </label>
               </div>
               <div class="vf-toolbar__actions">
-                <button type="button" class="vf-btn vf-btn--primary" id="dt-new-project">Novo projeto</button>
+                <button type="button" class="vf-btn vf-btn--primary" id="dt-new-project">Criar do zero</button>
               </div>
             </div>
 
-            <h2 class="dt-library-heading" id="dt-system-heading">Templates do sistema</h2>
+            <h2 class="dt-library-heading" id="dt-system-heading">Modelos de partida</h2>
             <div class="dt-template-grid" id="dt-template-grid" aria-live="polite" aria-labelledby="dt-system-heading"></div>
             <div class="vf-empty dt-empty" id="dt-library-empty" hidden>
               <h2 class="vf-empty__title">Nenhum template encontrado</h2>
               <p class="vf-empty__description">Ajuste os filtros ou limpe a busca para ver o catálogo.</p>
             </div>
 
-            <h2 class="dt-library-heading" id="dt-local-heading">Templates criados pela equipe</h2>
+            <div hidden>
+            <h2 class="dt-library-heading" id="dt-local-heading">Templates salvos</h2>
             <div class="dt-template-grid" id="dt-local-template-grid" aria-live="polite" aria-labelledby="dt-local-heading"></div>
             <div class="vf-empty dt-empty" id="dt-local-empty" hidden>
-              <h2 class="vf-empty__title">Nenhum template da equipe ainda</h2>
-              <p class="vf-empty__description">Monte um carrossel no Construtor e use “Salvar como template” para guardá-lo aqui.</p>
+              <h2 class="vf-empty__title">Nenhum template salvo ainda</h2>
+              <p class="vf-empty__description">Crie um template e salve-o no espaço do cliente.</p>
+            </div>
             </div>
           </section>
 
@@ -596,6 +635,13 @@
     </div>
   </div>
 
+  <div class="vf-overlay" id="ds-versions-overlay" aria-hidden="true">
+    <div class="vf-modal vf-modal--sm ds-versions-modal" role="dialog" aria-modal="true" aria-labelledby="ds-versions-title">
+      <div class="vf-modal__header"><h2 class="vf-modal__title" id="ds-versions-title">Versões</h2><button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="ds-versions-close">Fechar</button></div>
+      <div class="vf-modal__body" id="ds-versions-list"></div>
+    </div>
+  </div>
+
   <div class="vf-overlay dtg-preview-overlay" id="dtg-preview-overlay" aria-hidden="true">
     <div class="vf-modal dtg-preview-modal" role="dialog" aria-modal="true" aria-labelledby="dtg-preview-title">
       <header class="vf-modal__header dtg-preview-header">
@@ -779,5 +825,7 @@
   <script src="design-template-proposal-generator.js"></script>
   <script src="design-templates.js"></script>
   <script src="design-template-builder.js"></script>
+  <script src="design-studio-api.js"></script>
+  <script src="design-studio-workspace.js"></script>
 </body>
 </html>

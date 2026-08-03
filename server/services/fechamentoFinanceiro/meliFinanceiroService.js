@@ -22,6 +22,14 @@ const {
   safeRatio,
 } = require("../../utils/fechamento/financeiroShared");
 
+// Presença REAL do campo na planilha. toNumber("") === 0, então sem esta
+// checagem um campo financeiro ainda não publicado pelo Mercado Livre vira
+// zero e passa a valer como "tarifa zero" / "repasse zero" no cálculo.
+// Zero explícito ("0") é presença; vazio/ausente não é.
+function hasFieldValue(row, candidates) {
+  return String(findField(row, candidates) ?? "").trim() !== "";
+}
+
 function parseMeliRows(rows) {
   return rows.map((row, index) => {
     const saleNumber = String(
@@ -40,10 +48,18 @@ function parseMeliRows(rows) {
       findField(row, ["model id", "model_id", "modelid", "modelo"]) ?? ""
     ).trim();
 
+    const skuRaw = String(
+      findField(row, ["sku", "seller sku", "codigo sku", "código sku"]) ?? ""
+    ).trim();
+
     return {
       rowIndex: index,
       saleNumber,
       saleDate,
+      hasProductRevenue: hasFieldValue(row, MELI_HEADER_FIELDS.productRevenue),
+      hasSaleFee: hasFieldValue(row, MELI_HEADER_FIELDS.saleFee),
+      hasShippingFee: hasFieldValue(row, MELI_HEADER_FIELDS.shippingFee),
+      hasFinancialTotal: hasFieldValue(row, MELI_HEADER_FIELDS.total),
       units: toNumber(findField(row, MELI_HEADER_FIELDS.units)),
       total: toNumber(findField(row, MELI_HEADER_FIELDS.total)),
       productRevenue: toNumber(findField(row, MELI_HEADER_FIELDS.productRevenue)),
@@ -71,6 +87,7 @@ function parseMeliRows(rows) {
       ),
       statusKind: classifyMeliSaleStatus(row),
       modelIdRaw,
+      skuRaw,
     };
   });
 }
@@ -210,6 +227,12 @@ function enrichDetailsFromMain(parent, details, diagnostics) {
     descontosBonus: descontosBonus[index],
     platformAdjustment: platformAdjustment[index],
     parentRowIndex: parent.rowIndex,
+    // Os componentes financeiros do filho vêm rateados do pai: a
+    // disponibilidade financeira do filho é a do pai, não a da própria linha.
+    hasProductRevenue: parent.hasProductRevenue,
+    hasSaleFee: parent.hasSaleFee,
+    hasShippingFee: parent.hasShippingFee,
+    hasFinancialTotal: parent.hasFinancialTotal,
   }));
 }
 
@@ -353,9 +376,19 @@ function parseMeliCostRows(rows) {
     ]);
     const modelId = String(modelIdRaw ?? "").trim();
 
+    const skuRaw = findField(row, [
+      "sku",
+      "seller sku",
+      "codigo sku",
+      "código sku",
+      "codigo do sku",
+    ]);
+    const sku = String(skuRaw ?? "").trim();
+
     parsed.push({
       id: normalizedId,
       modelId,
+      sku,
       cost: round2(cost),
       taxPercent: round2(taxPercent),
     });
@@ -364,36 +397,115 @@ function parseMeliCostRows(rows) {
   return parsed;
 }
 
+// Assinatura financeira do custo. Dois registros do mesmo MLB só são
+// equivalentes se custo E imposto coincidirem.
+function costSignature(row) {
+  return `${round2(row.cost || 0)}|${round2(row.taxPercent || 0)}`;
+}
+
+// Identificador de variação: model_id tem precedência sobre SKU.
+function variationKeyOf(row) {
+  const model = String(row?.modelId ?? row?.modelIdRaw ?? "").trim();
+  if (model) return `model:${model.toLowerCase()}`;
+  const sku = String(row?.sku ?? row?.skuRaw ?? "").trim();
+  if (sku) return `sku:${sku.toLowerCase()}`;
+  return "";
+}
+
+function variationLookupKeys(id, row) {
+  const keys = [];
+  const model = String(row?.modelId ?? row?.modelIdRaw ?? "").trim();
+  const sku = String(row?.sku ?? row?.skuRaw ?? "").trim();
+  if (model) keys.push(`${id}::model:${model.toLowerCase()}`);
+  if (sku) keys.push(`${id}::sku:${sku.toLowerCase()}`);
+  return keys;
+}
 
 
-function buildMeliCostMap(rows) {
+
+// Índice de custos com detecção de duplicidade.
+//
+// Regra: o mesmo MLB com custos divergentes NUNCA resolve silenciosamente no
+// primeiro registro. Se os registros divergentes tiverem identificador de
+// variação (model_id/SKU), cada variação fica endereçável por
+// `MLB::model:x` / `MLB::sku:y` e só o acesso pelo MLB "pelado" é ambíguo.
+// Sem identificador de variação, o MLB inteiro é ambíguo e é bloqueado.
+function buildMeliCostIndex(rows) {
   const parsed = parseMeliCostRows(rows);
   const map = new Map();
+  const conflicts = [];
 
+  const byId = new Map();
   for (const row of parsed) {
     if (!row.id) continue;
-
-    if (!map.has(row.id)) {
-      map.set(row.id, row);
-    }
-
-    const noPrefix = row.id.replace(/^MLB/i, "");
-    if (noPrefix && !map.has(noPrefix)) {
-      map.set(noPrefix, row);
-    }
-
-    if (row.modelId) {
-      const mNorm = normalizeId(row.modelId);
-      if (mNorm) {
-        if (!map.has(mNorm)) map.set(mNorm, row);
-        const mNoPrefix = mNorm.replace(/^MLB/i, "");
-        if (mNoPrefix && !map.has(mNoPrefix)) map.set(mNoPrefix, row);
-        if (mNoPrefix && !map.has(`MLB${mNoPrefix}`)) map.set(`MLB${mNoPrefix}`, row);
-      }
-    }
+    if (!byId.has(row.id)) byId.set(row.id, []);
+    byId.get(row.id).push(row);
   }
 
-  return map;
+  const aliasSet = (id, entry) => {
+    const noPrefix = id.replace(/^MLB/i, "");
+    for (const key of [id, noPrefix, `MLB${noPrefix}`]) {
+      if (key && !map.has(key)) map.set(key, entry);
+    }
+  };
+
+  for (const [id, group] of byId) {
+    const signatures = new Set(group.map(costSignature));
+
+    // Caminho normal e inalterado: um único custo para o MLB.
+    if (signatures.size === 1) {
+      const entry = group[0];
+      aliasSet(id, entry);
+      for (const row of group) {
+        for (const key of variationLookupKeys(id, row)) {
+          if (!map.has(key)) map.set(key, entry);
+        }
+      }
+      if (entry.modelId) {
+        const mNorm = normalizeId(entry.modelId);
+        if (mNorm) aliasSet(mNorm, entry);
+      }
+      continue;
+    }
+
+    // Divergência: registra o conflito com os valores em disputa.
+    const conflictingValues = Array.from(signatures).map((signature) => {
+      const [cost, taxPercent] = signature.split("|");
+      return { cost: Number(cost), taxPercent: Number(taxPercent) };
+    });
+
+    const variationKeys = group.map(variationKeyOf);
+    const everyRowHasVariation = variationKeys.every(Boolean);
+    const variationsAreUnique =
+      new Set(variationKeys).size === variationKeys.length;
+    const resolvableByVariation = everyRowHasVariation && variationsAreUnique;
+
+    conflicts.push({
+      id,
+      values: conflictingValues,
+      resolvableByVariation,
+      variations: resolvableByVariation ? variationKeys : [],
+    });
+
+    if (resolvableByVariation) {
+      for (const row of group) {
+        for (const key of variationLookupKeys(id, row)) {
+          if (!map.has(key)) map.set(key, row);
+        }
+      }
+    }
+
+    // Sem variação para desempatar, o MLB "pelado" fica bloqueado.
+    const ambiguous = { id, ambiguous: true, values: conflictingValues, resolvableByVariation };
+    aliasSet(id, ambiguous);
+  }
+
+  return { map, conflicts };
+}
+
+// Compatibilidade: consumidores externos esperam apenas o Map.
+function buildMeliCostMap(rows) {
+  return buildMeliCostIndex(rows).map;
 }
 
 
@@ -461,11 +573,11 @@ function buildMeliBaseSheetRows(finalRows) {
       row.Unidades,
       row["Preço unitário de venda do anúncio (BRL)"],
       row["Venda Total"],
-      row["Total (BRL)"],
+      cell(row["Total (BRL)"]),
       percentCell(row["Imposto"]),
       cell(row["Preço de custo"]),
       cell(row["Preço de custo total"]),
-      row["Ajuste plataforma (BRL)"],
+      cell(row["Ajuste plataforma (BRL)"]),
       cell(row.LC),
       percentCell(row.MC),
       row["Cobertura de custo"] || "com custo",
@@ -530,7 +642,7 @@ function processMeli(
 ) {
   const parsingDiagnostics = analyzeMeliParsing(salesRowsRaw);
   const salesRows = parsingDiagnostics.parsedRows;
-  const costMap = buildMeliCostMap(costRowsRaw);
+  const { map: costMap, conflicts: costConflicts } = buildMeliCostIndex(costRowsRaw);
   const associations = collectMeliAssociations(salesRows);
   const groupByParentIndex = new Map(
     associations.groups.map((group) => [group.parentIndex, group])
@@ -558,9 +670,20 @@ function processMeli(
 
   const finalRows = [];
   const unmatchedIds = new Set();
+  const ambiguousCostIds = new Set();
   const consumedIndexes = new Set();
   const excludedStatusRows = [];
   let ignoredRevenue = 0;
+
+  // Eixos independentes de cobertura, somados na origem porque LC === null
+  // passou a ter duas causas distintas (sem custo OU financeiro pendente).
+  let revenueWithCost = 0;
+  let revenueWithoutCost = 0;
+  let revenueWithFinancialData = 0;
+  let revenuePendingFinancial = 0;
+  let revenueCalculable = 0;
+  let salesWithFinancialDataCount = 0;
+  let salesPendingFinancialCount = 0;
 
   const refundsTotal = round2(
     salesRows.reduce((sum, row) => sum + row.cancelRefund, 0)
@@ -598,6 +721,21 @@ function processMeli(
     );
   }
 
+  // Resolve o custo do item preferindo a variação (model_id/SKU). Só cai no
+  // MLB "pelado" quando a venda não traz identificador de variação — e nesse
+  // caso um MLB com custos divergentes devolve o marcador de ambiguidade.
+  function resolveCostForItem(item, id) {
+    for (const key of variationLookupKeys(id, item)) {
+      const byVariation = costMap.get(key);
+      if (byVariation) return byVariation;
+    }
+    if (item.modelIdRaw) {
+      const byModel = getCostForAd(item.modelIdRaw);
+      if (byModel) return byModel;
+    }
+    return getCostForAd(id);
+  }
+
   // Item cancelado/devolvido/reembolsado/em mediação: sai do LC, mas NÃO
   // desaparece — vira linha de auditoria com o valor que lhe cabia no pedido.
   function registerExcludedRow(item, statusKind, totalRateado) {
@@ -628,8 +766,12 @@ function processMeli(
 
   function pushCalculatedRow(item, totalRateado, ajustePlataforma = 0) {
     const id = normalizeId(item.adId || item.adIdRaw);
-    let cost = item.modelIdRaw ? getCostForAd(item.modelIdRaw) : null;
-    if (!cost) cost = getCostForAd(id);
+    const cost = resolveCostForItem(item, id);
+    const costIsAmbiguous = Boolean(cost && cost.ambiguous);
+    const hasUsableCost = Boolean(cost && !costIsAmbiguous && cost.cost > 0);
+    // Total (BRL) ausente = o Mercado Livre ainda não publicou tarifas e
+    // repasse desta venda. Não é repasse zero.
+    const financialAvailable = item.hasFinancialTotal === true;
 
     const units = round2(item.units);
     const price = round2(item.unitSalePrice);
@@ -644,10 +786,48 @@ function processMeli(
           ? round2(Math.abs(item.productRevenue))
           : round2(Math.abs(totalRateado));
 
-    // Custo ausente NÃO apaga faturamento: a linha entra no fechamento com
-    // receita preservada e lucro desconhecido (null, nunca 0).
-    if (!cost || cost.cost <= 0) {
-      unmatchedIds.add(id || item.adIdRaw || "SEM_ID");
+    if (hasUsableCost) revenueWithCost += vendaTotal;
+    else revenueWithoutCost += vendaTotal;
+
+    if (financialAvailable) {
+      revenueWithFinancialData += vendaTotal;
+      salesWithFinancialDataCount += 1;
+    } else {
+      revenuePendingFinancial += vendaTotal;
+      salesPendingFinancialCount += 1;
+    }
+    if (financialAvailable && hasUsableCost) revenueCalculable += vendaTotal;
+
+    if (costIsAmbiguous) ambiguousCostIds.add(id || item.adIdRaw || "SEM_ID");
+
+    // Financeiro pendente: a venda e o faturamento continuam visíveis, mas
+    // LC/MC ficam desconhecidos (null, nunca 0) — inclusive o ajuste de
+    // plataforma, que é derivado das tarifas ainda não publicadas.
+    if (!financialAvailable) {
+      finalRows.push({
+        "# de anúncio": id || item.adIdRaw || "SEM_ID",
+        "Título do anúncio": item.title,
+        Unidades: units,
+        "Preço unitário de venda do anúncio (BRL)": price,
+        "Venda Total": vendaTotal,
+        "Total (BRL)": null,
+        Imposto: hasUsableCost ? round2(cost.taxPercent || 0) : null,
+        "Preço de custo": hasUsableCost ? round2(cost.cost || 0) : null,
+        "Preço de custo total": hasUsableCost ? round2(units * round2(cost.cost || 0)) : null,
+        "Ajuste plataforma (BRL)": null,
+        LC: null,
+        MC: null,
+        "Cobertura de custo": "financeiro pendente",
+      });
+      return;
+    }
+
+    // Custo ausente ou ambíguo NÃO apaga faturamento: a linha entra no
+    // fechamento com receita preservada e lucro desconhecido (null, nunca 0).
+    if (!hasUsableCost) {
+      if (!costIsAmbiguous) {
+        unmatchedIds.add(id || item.adIdRaw || "SEM_ID");
+      }
       ignoredRevenue += round2(totalRateado);
 
       finalRows.push({
@@ -663,7 +843,7 @@ function processMeli(
         "Ajuste plataforma (BRL)": round2(ajustePlataforma),
         LC: null,
         MC: null,
-        "Cobertura de custo": "sem custo",
+        "Cobertura de custo": costIsAmbiguous ? "custo ambíguo" : "sem custo",
       });
       return;
     }
@@ -773,11 +953,19 @@ function processMeli(
       const acc = groupedMap.get(id);
       acc.Unidades              = round2(acc.Unidades + row.Unidades);
       acc["Venda Total"]        = round2(acc["Venda Total"] + row["Venda Total"]);
-      acc["Total (BRL)"]        = round2(acc["Total (BRL)"] + row["Total (BRL)"]);
+      // sumNullable preserva "desconhecido": um grupo inteiramente pendente
+      // não pode virar Total 0.
+      acc["Total (BRL)"]        = sumNullable(acc["Total (BRL)"], row["Total (BRL)"]);
       acc["Preço de custo total"] = sumNullable(acc["Preço de custo total"], row["Preço de custo total"]);
-      acc["Ajuste plataforma (BRL)"] = round2(acc["Ajuste plataforma (BRL)"] + row["Ajuste plataforma (BRL)"]);
+      acc["Ajuste plataforma (BRL)"] = sumNullable(acc["Ajuste plataforma (BRL)"], row["Ajuste plataforma (BRL)"]);
       acc.LC                    = sumNullable(acc.LC, row.LC);
-      if (row["Cobertura de custo"] === "sem custo") {
+      if (row["Cobertura de custo"] === "financeiro pendente" ||
+          acc["Cobertura de custo"] === "financeiro pendente") {
+        acc["Cobertura de custo"] =
+          row["Cobertura de custo"] === acc["Cobertura de custo"]
+            ? "financeiro pendente"
+            : "parcial";
+      } else if (row["Cobertura de custo"] === "sem custo") {
         acc["Cobertura de custo"] =
           acc["Cobertura de custo"] === "com custo" ? "parcial" : "sem custo";
       } else if (acc["Cobertura de custo"] === "sem custo") {
@@ -795,8 +983,9 @@ function processMeli(
           : 0,
   }));
 
-  const rowsWithCost = finalRows.filter((row) => row.LC !== null);
-  const rowsWithoutCost = finalRows.filter((row) => row.LC === null);
+  // LC !== null passou a significar "calculável": tem custo utilizável E
+  // financeiro publicado. Os eixos de cobertura vêm dos acumuladores.
+  const rowsCalculable = finalRows.filter((row) => row.LC !== null);
 
   // Faturamento reconhecido = TODAS as vendas processadas, com ou sem custo.
   const grossRevenueTotal = round2(
@@ -837,20 +1026,20 @@ function processMeli(
     );
   }
 
-  const revenueWithCost = round2(
-    rowsWithCost.reduce((sum, row) => sum + Number(row["Venda Total"] || 0), 0)
-  );
-  const revenueWithoutCost = round2(
-    rowsWithoutCost.reduce((sum, row) => sum + Number(row["Venda Total"] || 0), 0)
-  );
+  const revenueWithCostTotal = round2(revenueWithCost);
+  const revenueWithoutCostTotal = round2(revenueWithoutCost);
+  const revenueWithFinancialDataTotal = round2(revenueWithFinancialData);
+  const revenuePendingFinancialTotal = round2(revenuePendingFinancial);
+  const revenueCalculableTotal = round2(revenueCalculable);
 
   const paidRevenueTotal = round2(
     finalRows.reduce((sum, row) => sum + Number(row["Total (BRL)"] || 0), 0)
   );
 
-  // Lucro calculável: só a parcela com custo identificado.
+  // Lucro calculável: só a parcela com custo identificado E financeiro
+  // publicado. Vendas com financeiro pendente têm LC null e não entram.
   const contributionProfitTotal = round2(
-    rowsWithCost.reduce((sum, row) => sum + Number(row["LC"] || 0), 0)
+    rowsCalculable.reduce((sum, row) => sum + Number(row["LC"] || 0), 0)
   );
 
   const platformAdjustmentTotal = round2(
@@ -863,13 +1052,30 @@ function processMeli(
     (row) => Math.abs(Number(row["Ajuste plataforma (BRL)"] || 0)) > 0.01
   ).length;
 
-  const coverage = buildCoverage({ revenueWithCost, revenueWithoutCost });
+  const coverage = buildCoverage({
+    revenueWithCost: revenueWithCostTotal,
+    revenueWithoutCost: revenueWithoutCostTotal,
+  });
 
-  // MC calculada usa o faturamento COM CUSTO: dividir pelo total mascararia a
+  // Cobertura financeira: quanto do faturamento já tem tarifas e repasse
+  // publicados pelo Mercado Livre. null = não há faturamento reconhecido.
+  const financialDataCoveragePercent =
+    grossRevenueTotal > 0
+      ? round2((revenueWithFinancialDataTotal / grossRevenueTotal) * 100)
+      : null;
+
+  // Confiança nunca é "confiável" com financeiro pendente, mesmo que todos os
+  // MLBs tenham custo cadastrado.
+  const financialConfidence =
+    revenuePendingFinancialTotal > 0 && coverage.financialConfidence === "confiavel"
+      ? "parcial"
+      : coverage.financialConfidence;
+
+  // MC calculada usa o faturamento CALCULÁVEL: dividir pelo total mascararia a
   // margem real da parcela efetivamente calculada.
   const averageContributionMargin = legacyRatio(
     contributionProfitTotal,
-    revenueWithCost
+    revenueCalculableTotal
   );
 
   const finalResult =
@@ -883,12 +1089,34 @@ function processMeli(
     excludedStatusRows.reduce((sum, row) => sum + Number(row["Venda Total"] || 0), 0)
   );
 
+  const PENDING_FINANCIAL_WARNING =
+    "Parte das vendas ainda não possui tarifas e repasse disponíveis no relatório " +
+    "do Mercado Livre. LC, MC e Resultado Final consideram somente as vendas com " +
+    "dados financeiros completos.";
+
+  const costConflictWarnings = costConflicts.map((conflict) => {
+    const valores = conflict.values
+      .map((value) => `custo R$ ${value.cost.toFixed(2)} / imposto ${value.taxPercent}%`)
+      .join(" vs ");
+    return conflict.resolvableByVariation
+      ? `Base de custos: ${conflict.id} possui custos diferentes por variação (${valores}). ` +
+        "As vendas com model_id/SKU usam o custo da variação; sem identificador de variação o custo é ambíguo."
+      : `Base de custos: ${conflict.id} possui custos divergentes (${valores}) sem identificador de variação. ` +
+        "O cálculo deste anúncio foi bloqueado — corrija a base antes de fechar.";
+  });
+
   const executiveNotes = [];
-  if (coverage.financialConfidence !== "confiavel") {
+  if (unmatchedIds.size > 0) {
     executiveNotes.push(
       `Fechamento parcial: ${unmatchedIds.size} anúncio(s) sem custo cadastrado. ` +
         "O faturamento total está completo; LC, MC e Resultado Final cobrem apenas a receita com custo identificado."
     );
+  }
+  if (revenuePendingFinancialTotal > 0) {
+    executiveNotes.push(PENDING_FINANCIAL_WARNING);
+  }
+  for (const warning of costConflictWarnings) {
+    executiveNotes.push(warning);
   }
   if (excludedStatusRows.length > 0) {
     executiveNotes.push(
@@ -921,10 +1149,22 @@ function processMeli(
       revenueWithCost: coverage.revenueWithCost,
       revenueWithoutCost: coverage.revenueWithoutCost,
       calculatedCoveragePercent: coverage.calculatedCoveragePercent,
-      financialConfidence: coverage.financialConfidence,
-      contributionMarginCalculated: safeRatio(contributionProfitTotal, revenueWithCost),
-      finalMarginCalculated: safeRatio(finalResult, revenueWithCost),
-      profitCoversRevenue: coverage.revenueWithCost,
+      financialConfidence,
+      // ── Separação financeiro disponível × pendente ──────────────────────
+      revenueWithFinancialData: revenueWithFinancialDataTotal,
+      revenuePendingFinancial: revenuePendingFinancialTotal,
+      revenueCalculable: revenueCalculableTotal,
+      financialDataCoveragePercent,
+      salesWithFinancialDataCount,
+      salesPendingFinancialCount,
+      pendingFinancialWarning:
+        revenuePendingFinancialTotal > 0 ? PENDING_FINANCIAL_WARNING : null,
+      costConflicts,
+      costConflictWarnings,
+      ambiguousCostIds: Array.from(ambiguousCostIds),
+      contributionMarginCalculated: safeRatio(contributionProfitTotal, revenueCalculableTotal),
+      finalMarginCalculated: safeRatio(finalResult, revenueCalculableTotal),
+      profitCoversRevenue: revenueCalculableTotal,
       excludedStatusRevenue,
       excludedStatusCount: excludedStatusRows.length,
       adsTotal: round2(ads),
@@ -1599,6 +1839,7 @@ module.exports = {
   enrichDetailsFromMain,
   parseMeliCostRows,
   buildMeliCostMap,
+  buildMeliCostIndex,
   buildMeliBaseSheetRows,
   allocateByUnits,
   allocateByRevenue,

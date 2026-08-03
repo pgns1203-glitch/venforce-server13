@@ -5,7 +5,9 @@
 const express = require("express");
 const multer = require("multer");
 const { authMiddleware } = require("../middlewares/authMiddleware");
+const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
 const {
+  listarClientesFinanceiroController,
   processarFechamentoFinanceiroController,
 } = require("../controllers/fechamentosFinanceiroController");
 
@@ -15,6 +17,13 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
 });
+
+router.get(
+  "/financeiro/clientes",
+  authMiddleware,
+  requireAutomacoesAccess,
+  listarClientesFinanceiroController
+);
 
 router.post(
   "/financeiro",

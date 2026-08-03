@@ -1,0 +1,19 @@
+  backup-antes-ml                        [m b6752c8 [[34morigin/backup-antes-ml[m: ahead 1, behind 6] limpa pasta server duplicada
+  backup-main-pessoal                    [m ffb9174 [[34mgpt/main[m: ahead 17, behind 3] Merge branch 'venforcecompany-sudo:main' into main
+  backup/zorin-shopee-review             [m c81527d feat: adiciona conta limitada para review da shopee
+  chore/dev-environment                  [m 799d0fc [[34morigin/chore/dev-environment[m] chore: remove base pessoal do Obsidian do repositorio
++ [36mchore/dev-workspace                    [m 633875c ([36m/home/user/Documentos/Venforce/worktrees/dev-environment[m) [[34morigin/main[m: behind 50] Merge pull request #45 from venforcecompany-sudo/chore/dev-environment
+  claude/setup-multitenant-saas-DtPIC    [m cbd63f4 [[34morigin/claude/setup-multitenant-saas-DtPIC[m] restore: estrutura completa
+  feat/anuncios-meli-fundacao-v2         [m cf7c065 [[34morigin/feat/anuncios-meli-fundacao-v2[m: behind 17] fix: blinda renderAll() contra painel de aba ausente
+  feat/bases-central-v1                  [m a31a4b4 feat: reorganiza central de vendas com filtros e curva abc
+  feat/design-image-editor-v1            [m 6416aaa [[34morigin/feat/design-image-editor-v1[m] feat:52
+  feat/design-studio-client-workspaces-v1[m bfc4b78 [[34morigin/feat/design-studio-client-workspaces-v1[m] feat:novo-fechamento-api
+  feat/design-templates-poc              [m 104f6bc [[34morigin/feat/design-templates-poc[m] feat: adiciona editor de templates de design
+  feature/monitoramento-atividade        [m 11f30fa [[34morigin/feature/monitoramento-atividade[m] fix style correto
++ [36mfix/central-vendas-frete-lotes         [m c260970 ([36m/tmp/claude-1000/-home-user-Documentos-venforce-scanner-x1/ea495ee2-5189-4c1d-8c81-673733903da5/scratchpad/venforce-server13-frete-fix[m) [[34mgpt/main[m: ahead 17, behind 5] fix: processa todos os fretes da Fechamento API em lotes
+  fix/fechamento-financeiro-conciliacao  [m fff4b13 [[34morigin/fix/fechamento-financeiro-conciliacao[m] feat:Devcontrol/Fechamento
++ [36mfix/fechamentos-api                    [m ae64c22 ([36m/home/user/Documentos/venforce-main-fechamentos[m) [[34morigin/fix/fechamentos-api[m] fix: expor erros reais no Fechamentos API
+  fix/meli-financeiro-pendente           [m 56cf5a7 [[34morigin/fix/meli-financeiro-pendente[m] feat:fechamento-fechamento-api-v2
+  fix/meli-webhook-callback-post         [m 0785790 [[34morigin/fix/meli-webhook-callback-post[m] feat:Diagnostico-inicial
+* [32mmain                                   [m 3cbba99 [[34morigin/main[m] Merge pull request #65 from venforcecompany-sudo/fix/meli-financeiro-pendente
+  manutencao-segura-01                   [m c29f2d6 [[34morigin/manutencao-segura-01[m] refactor(auth): pluga middleware e rotas modulares no index.js

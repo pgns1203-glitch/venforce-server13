@@ -17,6 +17,8 @@
 // Ads não entra na confiança do resultado operacional: a disponibilidade de Ads é
 // reportada em bloco próprio (ads.status) e não degrada a análise operacional.
 
+const { pedidoEntraNoResultado } = require("./cliente360PonteEngine");
+
 const FAIXA_CONFIAVEL = 0.90;
 const FAIXA_PARCIAL = 0.70;
 // Acima disso (fração do faturamento), a divergência não reconciliada é material.
@@ -31,7 +33,7 @@ function round2(v) { return Math.round((Number(v) + Number.EPSILON) * 100) / 100
 function frac4(v) { return Math.round((Number(v) + Number.EPSILON) * 1e4) / 1e4; }
 
 // Calcula a cobertura de UM período a partir dos pedidos (contrato do fechamento).
-// Cancelados não contam no faturamento base (coerente com a ponte).
+// Cancelados e mediações não contam no faturamento base (coerente com a ponte).
 function coberturaPeriodo(pedidos) {
   let fatTotal = 0;
   let fatComResultado = 0; // confianca = confiavel
@@ -43,7 +45,7 @@ function coberturaPeriodo(pedidos) {
   const pendentesTop = [];
 
   for (const p of pedidos || []) {
-    if (p.status === "cancelado") continue;
+    if (!pedidoEntraNoResultado(p)) continue;
     const v = num(p.valor);
     fatTotal += v;
     if (p.confianca === "confiavel") fatComResultado += v;

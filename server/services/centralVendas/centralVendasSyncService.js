@@ -11,8 +11,8 @@
 //   Pedido sem custo na base e PERSISTIDO mesmo assim, com confianca
 //   bloqueada/parcial. Custo vem SEMPRE da base vinculada (nunca planilha).
 //
-// Fluxo completo: Orders API → coleta shipment IDs → Shipments API (GET
-// /shipments/:id, em lotes via centralVendasFreteService) → frete seller
+// Fluxo completo: Orders API → coleta shipment IDs → Shipments Costs API (GET
+// /shipments/:id/costs, em lotes via centralVendasFreteService) → frete seller
 // real por pedido → motor do fechamento (buildMotorFromOrders) → persistencia
 // dos componentes (centralVendasRepository) → Cliente 360 V2. Quando o frete
 // real nao e encontrado, o componente frete_seller fica com valor null e
@@ -504,7 +504,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // shipment e descartado por exceder quantidade. Falha por shipment NAO
     // trava o sync (fica ausente e auditavel em freteLote.erros).
     const shipmentIds = orders.map((o) => o.shipping?.id).filter((v) => v != null);
-    const freteLote = await buscarFretesEmLote({ clienteId: cliente.id, shipmentIds });
+    const freteLote = await buscarFretesEmLote({ clienteId: cliente.id, sellerId, shipmentIds });
     const freteMap = freteLote.freteMap;
 
     // Agrupa por competencia (mes de date_created)

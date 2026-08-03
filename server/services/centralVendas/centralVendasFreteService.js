@@ -1,7 +1,7 @@
 // server/services/centralVendas/centralVendasFreteService.js
 // Frete real por pedido — Mercado Livre Shipments API.
 //
-// Busca o custo de frete do seller via GET /shipments/:id e devolve um valor
+// Busca o custo de frete do seller via GET /shipments/:id/costs e devolve um valor
 // honesto: número quando existir (0 = zero real), null quando ausente.
 // Nunca inventa R$ 0,00, nunca estima e nunca reaproveita tabela de peso.
 // Erros em um shipment NAO travam o sync — ficam ausentes e auditáveis.
@@ -43,21 +43,27 @@ function chunk(arr, size) {
   return out;
 }
 
-// Custo de frete do seller: base_cost do envio. Fallbacks defensivos.
-// Mantem 0 como zero real; campo inexistente vira null (ausente).
-function extrairFreteSeller(shipment) {
-  if (!shipment || typeof shipment !== "object") return null;
-  const candidatos = [
-    shipment.base_cost,
-    shipment.shipping_option && shipment.shipping_option.list_cost,
-    shipment.shipping_option && shipment.shipping_option.cost,
-  ];
-  for (const c of candidatos) {
-    if (c !== null && c !== undefined && Number.isFinite(Number(c))) {
-      return round2(Number(c));
-    }
+// `senders[].cost` já é o custo final do usuário. Nunca usa gross_amount,
+// base_cost, compensation ou save como fallback. Mantém 0 como zero real.
+function extrairFreteSeller(costs, sellerId) {
+  if (!costs || typeof costs !== "object" || !Array.isArray(costs.senders)) return null;
+  if (sellerId === null || sellerId === undefined || String(sellerId).trim() === "") return null;
+
+  const sellerKey = String(sellerId).trim();
+  const sender = costs.senders.find(
+    (entry) => entry && entry.user_id !== null && entry.user_id !== undefined && String(entry.user_id).trim() === sellerKey
+  );
+
+  if (!sender) {
+    console.warn(
+      `[centralVendas] custo de frete sem sender correspondente: sellerId=${sellerKey}` +
+        ` senders=${costs.senders.length}`
+    );
+    return null;
   }
-  return null;
+
+  if (sender.cost === null || sender.cost === undefined || !Number.isFinite(Number(sender.cost))) return null;
+  return round2(Number(sender.cost));
 }
 
 // Pool simples de concorrencia (mesmo padrao do diagnosticoService.diagPLimit).
@@ -87,8 +93,8 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
   // { valor, status, motivo, tentativas, erro }.
   //   valor: number|null · status: "real" | "ausente"
   //   erro: true quando a ausência veio de falha tecnica (429/5xx/fetch),
-  //         false quando é ausência legitima (404/400/401/403/sem_campo_custo).
-  async function buscarFreteShipment({ clienteId, shipmentId, maxRetries = FRETE_MAX_RETRIES }) {
+  //         false quando é ausência legitima (404/400/401/403/sem_custo_seller).
+  async function buscarFreteShipment({ clienteId, sellerId, shipmentId, maxRetries = FRETE_MAX_RETRIES }) {
     const id = String(shipmentId || "").trim();
     if (!id) {
       return { valor: null, status: "ausente", motivo: "sem_shipment_id", tentativas: 0, erro: false };
@@ -98,13 +104,13 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const resp = await mlFetchFn(clienteId, `/shipments/${encodeURIComponent(id)}`);
+        const resp = await mlFetchFn(clienteId, `/shipments/${encodeURIComponent(id)}/costs`);
         const { ok, status, data, retryAfter } = resp || {};
 
         if (ok) {
-          const valor = extrairFreteSeller(data);
+          const valor = extrairFreteSeller(data, sellerId);
           if (valor === null) {
-            return { valor: null, status: "ausente", motivo: "sem_campo_custo", tentativas: attempt, erro: false };
+            return { valor: null, status: "ausente", motivo: "sem_custo_seller", tentativas: attempt, erro: false };
           }
           return { valor, status: "real", motivo: null, tentativas: attempt, erro: false };
         }
@@ -139,6 +145,7 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
   // buscados sempre === total. Falha de um shipment nunca derruba o lote.
   async function buscarFretesEmLote({
     clienteId,
+    sellerId,
     shipmentIds,
     batchSize = FRETE_BATCH_SIZE,
     concorrencia = FRETE_CONCURRENCY,
@@ -164,7 +171,7 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
       await Promise.all(
         lote.map((id) =>
           limit(async () => {
-            const r = await buscarFreteShipment({ clienteId, shipmentId: id, maxRetries });
+            const r = await buscarFreteShipment({ clienteId, sellerId, shipmentId: id, maxRetries });
             freteMap.set(id, { valor: r.valor, status: r.status, motivo: r.motivo });
 
             processados++;

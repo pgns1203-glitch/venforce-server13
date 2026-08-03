@@ -8,6 +8,11 @@ const { createCentralVendasFreteService } = require("../services/centralVendas/c
 
 // sleep instantaneo nos testes — nao precisamos esperar o backoff de verdade.
 const semEspera = async () => {};
+const SELLER_ID = 81387353;
+const costsPayload = (cost) => ({
+  gross_amount: cost + 10,
+  senders: [{ user_id: SELLER_ID, cost, compensation: 0, save: 0 }],
+});
 
 function shipmentIdFromPath(path) {
   const m = String(path || "").match(/\/shipments\/([^/?]+)/);
@@ -23,11 +28,11 @@ async function run() {
       sleepFn: semEspera,
       mlFetchFn: async () => {
         chamadas++;
-        return { ok: true, status: 200, data: { base_cost: 12.5 } };
+        return { ok: true, status: 200, data: costsPayload(12.5) };
       },
     });
 
-    const r = await service.buscarFretesEmLote({ clienteId: 1, shipmentIds: ids });
+    const r = await service.buscarFretesEmLote({ clienteId: 1, sellerId: SELLER_ID, shipmentIds: ids });
 
     assert.strictEqual(r.total, 1001, "total deve contar todos os IDs unicos");
     assert.strictEqual(r.buscados, 1001, "buscados deve ser igual ao total (sem corte)");
@@ -45,12 +50,14 @@ async function run() {
       mlFetchFn: async (_clienteId, path) => {
         const id = shipmentIdFromPath(path);
         chamadasPorId.set(id, (chamadasPorId.get(id) || 0) + 1);
-        return { ok: true, status: 200, data: { base_cost: 5 } };
+        assert.ok(path.endsWith("/costs"), "deve consultar o endpoint de custos do shipment");
+        return { ok: true, status: 200, data: costsPayload(5) };
       },
     });
 
     const r = await service.buscarFretesEmLote({
       clienteId: 1,
+      sellerId: SELLER_ID,
       shipmentIds: ["1", "1", "2", "2", "3"],
     });
 
@@ -63,36 +70,36 @@ async function run() {
     console.log("  ✓ B. IDs duplicados: apenas 3 consultas");
   }
 
-  // C. Zero real — base_cost: 0 e frete real igual a zero, nao ausente.
+  // C. Zero real — senders[].cost: 0 e frete real igual a zero, nao ausente.
   {
     const service = createCentralVendasFreteService({
       sleepFn: semEspera,
-      mlFetchFn: async () => ({ ok: true, status: 200, data: { base_cost: 0 } }),
+      mlFetchFn: async () => ({ ok: true, status: 200, data: costsPayload(0) }),
     });
 
-    const r = await service.buscarFreteShipment({ clienteId: 1, shipmentId: "ZERO" });
+    const r = await service.buscarFreteShipment({ clienteId: 1, sellerId: SELLER_ID, shipmentId: "ZERO" });
 
     assert.strictEqual(r.valor, 0, "zero real deve permanecer 0, nunca null");
     assert.strictEqual(r.status, "real");
     console.log("  ✓ C. zero real: valor=0, status=real");
   }
 
-  // D. Campo inexistente — sem base_cost/list_cost/cost vira ausente honesto.
+  // D. Sender inexistente — sem custo do seller vira ausente honesto.
   {
     const service = createCentralVendasFreteService({
       sleepFn: semEspera,
-      mlFetchFn: async () => ({ ok: true, status: 200, data: { tracking_number: "abc" } }),
+      mlFetchFn: async () => ({ ok: true, status: 200, data: { gross_amount: 99, senders: [] } }),
     });
 
-    const r = await service.buscarFreteShipment({ clienteId: 1, shipmentId: "SEMCUSTO" });
+    const r = await service.buscarFreteShipment({ clienteId: 1, sellerId: SELLER_ID, shipmentId: "SEMCUSTO" });
 
     assert.strictEqual(r.valor, null);
     assert.strictEqual(r.status, "ausente");
-    assert.strictEqual(r.motivo, "sem_campo_custo");
-    console.log("  ✓ D. campo inexistente: valor=null, status=ausente, motivo=sem_campo_custo");
+    assert.strictEqual(r.motivo, "sem_custo_seller");
+    console.log("  ✓ D. sender inexistente: valor=null, status=ausente, motivo=sem_custo_seller");
   }
 
-  // E. Retry — 429, depois 503, depois 200 com base_cost: deve devolver valor
+  // E. Retry — 429, depois 503, depois 200 com senders[].cost: deve devolver valor
   // real sem derrubar a sincronizacao, registrando as tentativas.
   {
     let tentativa = 0;
@@ -102,11 +109,11 @@ async function run() {
         tentativa++;
         if (tentativa === 1) return { ok: false, status: 429, data: null, retryAfter: null };
         if (tentativa === 2) return { ok: false, status: 503, data: null };
-        return { ok: true, status: 200, data: { base_cost: 33.4 } };
+        return { ok: true, status: 200, data: costsPayload(33.4) };
       },
     });
 
-    const r = await service.buscarFreteShipment({ clienteId: 1, shipmentId: "RETRY" });
+    const r = await service.buscarFreteShipment({ clienteId: 1, sellerId: SELLER_ID, shipmentId: "RETRY" });
 
     assert.strictEqual(r.valor, 33.4, "apos 429 e 503, a 3a tentativa com sucesso deve valer");
     assert.strictEqual(r.status, "real");
@@ -123,12 +130,13 @@ async function run() {
       mlFetchFn: async (_clienteId, path) => {
         const id = shipmentIdFromPath(path);
         if (id === "FALHA") return { ok: false, status: 500, data: null };
-        return { ok: true, status: 200, data: { base_cost: 9.9 } };
+        return { ok: true, status: 200, data: costsPayload(9.9) };
       },
     });
 
     const r = await service.buscarFretesEmLote({
       clienteId: 1,
+      sellerId: SELLER_ID,
       shipmentIds: ["OK1", "OK2", "FALHA", "OK3"],
     });
 

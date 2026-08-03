@@ -1,6 +1,6 @@
 // Prova que buildMotorFromOrders (centralVendasSyncService) trata o frete
 // real com a semantica correta: real -> componente real; ausente -> null
-// (nunca 0 inventado); zero real (base_cost:0) continua real, nao vira
+// (nunca 0 inventado); zero real (senders[].cost:0) continua real, nao vira
 // ausente; pedido sem frete cai para "parcial"; pedido com tudo real fica
 // "confiavel".
 

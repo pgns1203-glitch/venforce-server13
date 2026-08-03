@@ -17,7 +17,7 @@
 // Nada aqui força números a fechar. Quando a diferença não tem origem
 // identificável, ela é reportada e a confiança cai para parcial.
 
-const { num, round2 } = require("./cliente360PonteEngine");
+const { num, round2, pedidoEntraNoResultado } = require("./cliente360PonteEngine");
 
 const TOLERANCIA = 0.01; // R$
 
@@ -37,7 +37,7 @@ function reconciliar(pedidos) {
   let pedidosComDivergencia = 0;
 
   for (const pedido of pedidos || []) {
-    if (!pedido || pedido.status === "cancelado") continue;
+    if (!pedidoEntraNoResultado(pedido)) continue;
 
     const valor = num(pedido.valor);
     const itens = itensDoPedido(pedido);
@@ -98,7 +98,10 @@ function totaisOperacionais(pedidos) {
       valorCancelado += num(pedido.valor);
       continue;
     }
-    if (pedido.status === "com_problema") comProblema++;
+    if (pedido.status === "com_problema") {
+      comProblema++;
+      continue;
+    }
     pagos++;
     faturamento += num(pedido.valor);
     unidades += itensDoPedido(pedido).reduce((s, it) => s + num(it.quantidade), 0);

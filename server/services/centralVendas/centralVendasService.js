@@ -86,6 +86,13 @@ function normalizePedidoStatus(status) {
   return "pago";
 }
 
+// Cancelamentos e mediações permanecem no payload para auditoria, mas não
+// compõem faturamento, resultado ou margem — mesma regra do motor por planilha.
+function pedidoEntraNoResultado(pedido) {
+  const status = normalizePedidoStatus(pedido?.status);
+  return !!pedido && status !== "cancelado" && status !== "com_problema";
+}
+
 function rowValue(row, camel, snake) {
   return row?.[camel] ?? row?.[snake];
 }
@@ -184,11 +191,14 @@ function buildPedidoContrato(pedido, itens, componentes) {
   const custo = sumComponents(pedidoComponentes, "custo_produto");
   const imposto = sumComponents(pedidoComponentes, "imposto_interno");
 
+  const status = normalizePedidoStatus(rowValue(pedido, "status", "status"));
+
   return {
     id: pedidoId,
     pedidoId,
     data: toIsoDate(rowValue(pedido, "dataPedido", "data_pedido")),
-    status: normalizePedidoStatus(rowValue(pedido, "status", "status")),
+    status,
+    entraNoResultado: status !== "cancelado" && status !== "com_problema",
     mlb: firstItem ? rowValue(firstItem, "mlb", "mlb") || null : null,
     sku: firstItem ? rowValue(firstItem, "sku", "sku") || null : null,
     produto: firstItem
@@ -314,6 +324,60 @@ function buildPedidos(snapshot) {
   return (snapshot.pedidos || []).map((pedido) => buildPedidoContrato(pedido, itens, componentes));
 }
 
+function buildResumoFromRange(resumoBase, pedidos) {
+  const validos = pedidos.filter(pedidoEntraNoResultado);
+  const comResultado = validos.filter((pedido) => pedido.resultado !== null && pedido.resultado !== undefined);
+  const faturamento = round2(validos.reduce((sum, pedido) => sum + Number(pedido.valor || 0), 0));
+  const lucroContribuicao = comResultado.length
+    ? round2(comResultado.reduce((sum, pedido) => sum + Number(pedido.resultado || 0), 0))
+    : null;
+  const receitaConfiavel = round2(
+    validos.filter((pedido) => pedido.confianca === "confiavel")
+      .reduce((sum, pedido) => sum + Number(pedido.valor || 0), 0)
+  );
+  const receitaParcial = round2(
+    validos.filter((pedido) => pedido.confianca === "parcial")
+      .reduce((sum, pedido) => sum + Number(pedido.valor || 0), 0)
+  );
+  const receitaBloqueada = round2(
+    validos.filter((pedido) => pedido.confianca === "bloqueado")
+      .reduce((sum, pedido) => sum + Number(pedido.valor || 0), 0)
+  );
+
+  const totaisPorTipo = {};
+  for (const tipo of ["receita_produto", "tarifa_venda", "frete_seller", "custo_produto", "imposto_interno"]) {
+    totaisPorTipo[tipo] = round2(
+      validos.flatMap((pedido) => pedido.componentes || [])
+        .filter((component) => component.tipo === tipo && component.valor !== null)
+        .reduce((sum, component) => sum + Number(component.valor || 0), 0)
+    );
+  }
+
+  return {
+    ...resumoBase,
+    pedidosTotal: pedidos.length,
+    pedidosValidos: validos.length,
+    pedidosForaResultado: pedidos.length - validos.length,
+    pedidosConfiaveis: validos.filter((pedido) => pedido.confianca === "confiavel").length,
+    pedidosParciais: validos.filter((pedido) => pedido.confianca === "parcial").length,
+    pedidosBloqueados: validos.filter((pedido) => pedido.confianca === "bloqueado").length,
+    faturamento,
+    faturamentoComCusto: round2(
+      validos.filter((pedido) => pedido.custo !== null)
+        .reduce((sum, pedido) => sum + Number(pedido.valor || 0), 0)
+    ),
+    lucroContribuicao,
+    margemContribuicaoPercentual:
+      lucroContribuicao !== null && faturamento > 0
+        ? round2((lucroContribuicao / faturamento) * 100)
+        : null,
+    receitaConfiavel,
+    receitaParcial,
+    receitaBloqueada,
+    totaisPorTipo,
+  };
+}
+
 // Payload por INTERVALO de datas (período de análise). Pode unir vários meses.
 function buildPayloadFromRange(cliente, range, snapshot) {
   const periodo = periodoFromRange(range.dateFrom, range.dateTo);
@@ -350,8 +414,10 @@ function buildPayloadFromRange(cliente, range, snapshot) {
   }
 
   const pedidos = buildPedidos(snapshot);
-  const temBloqueado = pedidos.some((pedido) => pedido.confianca === "bloqueado");
+  const pedidosValidos = pedidos.filter(pedidoEntraNoResultado);
+  const temBloqueado = pedidosValidos.some((pedido) => pedido.confianca === "bloqueado");
   const geradoEm = snapshot.importacao?.created_at || null;
+  const resumo = buildResumoFromRange(jsonValue(snapshot.importacao?.resumo_json, {}), pedidos);
 
   return {
     ok: true,
@@ -362,7 +428,7 @@ function buildPayloadFromRange(cliente, range, snapshot) {
       status: "persistido",
       etapaAtual: "importacao_persistida",
       progresso: 100,
-      confianca: temBloqueado ? "parcial" : pedidos.length ? "confiavel" : "ausente",
+      confianca: temBloqueado ? "parcial" : pedidosValidos.length ? "confiavel" : "ausente",
       podeConcluir: !temBloqueado,
       motivoBloqueio: temBloqueado ? "Ha pedidos bloqueados por custo/produto ausente." : null,
       geradoEm: geradoEm instanceof Date ? geradoEm.toISOString() : geradoEm,
@@ -371,7 +437,7 @@ function buildPayloadFromRange(cliente, range, snapshot) {
     },
     adsPorProdutoDisponivel: false,
     adsMensal: { investimento: null, status: "ausente" },
-    resumo: jsonValue(snapshot.importacao?.resumo_json, {}),
+    resumo,
     produtos: buildProdutos(snapshot.itens || []),
     pedidos,
   };
@@ -431,5 +497,8 @@ module.exports = {
   // Consumido pela Cliente 360 (cliente360FechamentoAdapter) para ler o
   // fechamento por intervalo de datas sem duplicar o contrato de pedido.
   buildPayloadFromRange,
+  buildPedidos,
+  normalizePedidoStatus,
+  pedidoEntraNoResultado,
   periodoFromCompetencia,
 };

@@ -361,6 +361,12 @@ function sanitizeFilters(filters, payload) {
   return f;
 }
 
+// Cancelados e mediações continuam visíveis, mas não entram nos agregados
+// financeiros — mesma regra do fechamento por planilha.
+function pedidoEntraNoResultado(o) {
+  return !!o && o.status !== 'cancelado' && o.status !== 'com_problema';
+}
+
 /* Calcula o pedido cruzando com o produto/base. Resultado DERIVADO. */
 function computeOrder(o, payload) {
   const prod = getProduto(payload, o.mlb);
@@ -385,6 +391,7 @@ function computeOrder(o, payload) {
   };
 
   if (cancelled) { out.pendencias.push('cancelado/reembolso — fora do resultado'); out.status = 'cancelado'; return out; }
+  if (o.status === 'com_problema') { out.pendencias.push('mediação/problema — fora do resultado'); return out; }
   if (noProduct) { out.pendencias.push('financeiro sem produto conciliado'); return out; }
   if (custoTotal == null) { out.pendencias.push('MLB sem custo na base'); return out; }
 
@@ -394,7 +401,6 @@ function computeOrder(o, payload) {
   else if (o.taxas == null)   { out.resultadoStatus = 'parcial';  out.confianca = 'parcial'; out.pendencias.push('taxa não identificada'); }
   else if (o.freteStatus === 'estimado') { out.resultadoStatus = 'estimado'; out.confianca = 'parcial'; out.pendencias.push('frete estimado'); }
   else                        { out.resultadoStatus = 'real';     out.confianca = 'confiavel'; }
-  if (o.status === 'com_problema') { out.confianca = 'parcial'; out.pendencias.push('pedido com problema'); }
   if (prod && prod.diag?.presente !== true) out.pendencias.push('produto fora do diagnóstico');
   return out;
 }
@@ -430,7 +436,7 @@ function applyFilters(payload, filters) {
   if (filters.status === 'valido')    pedidos = pedidos.filter(o => o.status === 'pago');
   if (filters.status === 'cancelado') pedidos = pedidos.filter(o => o.status === 'cancelado');
   if (filters.status === 'problema')  pedidos = pedidos.filter(o => o.status === 'com_problema');
-  if (filters.status === 'bloqueado') pedidos = pedidos.filter(o => o.resultadoStatus === 'bloqueado' && o.status !== 'cancelado');
+  if (filters.status === 'bloqueado') pedidos = pedidos.filter(o => o.resultadoStatus === 'bloqueado' && pedidoEntraNoResultado(o));
 
   return { ...payload, pedidos };
 }
@@ -451,7 +457,7 @@ function fechSum(arr, f) { return round2(arr.reduce((s, o) => s + (Number(f(o)) 
 
 function buildFechamentoResumo(payload, quick = 'todos') {
   const orders = fechamentoOrdersFiltered(payload, quick);
-  const validos = orders.filter(o => o.status !== 'cancelado');
+  const validos = orders.filter(pedidoEntraNoResultado);
   const cancelProblema = orders.filter(o => o.status === 'cancelado' || o.status === 'com_problema');
   const faturamento = fechSum(validos, o => o.valor);
   const unidades = validos.reduce((s, o) => s + (o.unidades || 0), 0);
@@ -503,7 +509,7 @@ function buildFechamentoResumo(payload, quick = 'todos') {
 function buildFechamentoComponentes(payload, quick = 'todos') {
   const r = buildFechamentoResumo(payload, quick);
   const orders = fechamentoOrdersFiltered(payload, quick);
-  const validos = orders.filter(o => o.status !== 'cancelado');
+  const validos = orders.filter(pedidoEntraNoResultado);
   const semCusto = validos.filter(o => o.mlb && o.custoStatus === 'ausente').length;
   const semFrete = validos.filter(o => o.frete == null).length;
   return [
@@ -522,7 +528,7 @@ function buildFechamentoComponentes(payload, quick = 'todos') {
       fonte: r.freteTotal == null ? 'pendente' : 'shipments_api',
       obs: r.freteTotal == null
         ? 'nenhum envio retornou custo (shipments API)'
-        : (semFrete > 0 ? `${num(semFrete)} pedido(s) sem frete real` : 'custo do envio (base_cost)') },
+        : (semFrete > 0 ? `${num(semFrete)} pedido(s) sem frete real` : 'custo final do seller (shipments costs)') },
     { comp:'Resultado parcial', op:'=', valor: r.resultadoParcial,
       status: r.resultadoParcial == null ? 'ausente' : (r.confianca === 'confiavel' ? 'real' : 'parcial'), fonte:'cálculo interno',
       obs: r.confianca === 'confiavel' ? 'todos os componentes reais' : (semFrete > 0 || r.freteTotal == null ? 'parcial — frete incompleto' : 'parcial — falta custo em parte') },
@@ -531,7 +537,7 @@ function buildFechamentoComponentes(payload, quick = 'todos') {
 
 function buildFechamentoQualidade(payload, quick = 'todos') {
   const orders = fechamentoOrdersFiltered(payload, quick);
-  const validos = orders.filter(o => o.status !== 'cancelado');
+  const validos = orders.filter(pedidoEntraNoResultado);
   const faturamento = fechSum(validos, o => o.valor);
   const fatComCusto = fechSum(validos.filter(o => o.custo != null), o => o.valor);
   const fatComFrete = fechSum(validos.filter(o => o.frete != null), o => o.valor);
@@ -555,7 +561,7 @@ function buildFechamentoPorDia(payload, quick = 'todos') {
     if (!o.data) continue;
     if (!map.has(o.data)) map.set(o.data, { data:o.data, pedidos:0, faturamento:0, comissao:0, custo:0, imposto:0, receitaBloqueada:0, cancelProblema:0, semFrete:0, semCusto:0, _comissao:false, _custo:false, _imposto:false });
     const d = map.get(o.data);
-    const valido = o.status !== 'cancelado';
+    const valido = pedidoEntraNoResultado(o);
     d.pedidos += 1;
     if (valido) {
       d.faturamento += (o.valor || 0);
@@ -597,7 +603,7 @@ function buildDailySales(view) {
   for (const o of view.pedidos) {
     if (!map.has(o.data)) map.set(o.data, { data:o.data, faturamento:0, pedidos:0, unidades:0, cancelProblema:0, produtosSet:new Set(), receitaBloqueada:0, _topMap:new Map() });
     const d = map.get(o.data);
-    const valido = o.status !== 'cancelado';
+    const valido = pedidoEntraNoResultado(o);
     d.pedidos += 1;
     if (valido) { d.faturamento += (o.valor || 0); d.unidades += (o.unidades || 0); if (o.mlb) d.produtosSet.add(o.mlb); }
     if (o.status === 'cancelado' || o.status === 'com_problema') d.cancelProblema += 1;
@@ -872,11 +878,11 @@ const QUICK_PRIMARY = ['todos', 'sem_custo', 'sem_frete', 'bloqueados', 'cancel_
 function pedidoMatchesQuick(o, q) {
   switch (q) {
     case 'sem_custo':         return !!o.mlb && o.custoStatus === 'ausente';
-    case 'sem_frete':         return o.status !== 'cancelado' && o.frete == null;
+    case 'sem_frete':         return pedidoEntraNoResultado(o) && o.frete == null;
     case 'frete_real':        return o.frete != null;
     case 'calculavel':        return o.resultado != null;
-    case 'bloqueados':        return o.resultadoStatus === 'bloqueado' && o.status !== 'cancelado';
-    case 'receita_bloqueada': return o.resultadoStatus === 'bloqueado' && o.status !== 'cancelado';
+    case 'bloqueados':        return o.resultadoStatus === 'bloqueado' && pedidoEntraNoResultado(o);
+    case 'receita_bloqueada': return o.resultadoStatus === 'bloqueado' && pedidoEntraNoResultado(o);
     case 'cancel_problema':   return o.status === 'cancelado' || o.status === 'com_problema';
     case 'full':              return o.full === true;
     case 'normal':            return o.full !== true;
@@ -905,7 +911,7 @@ function sortPedidos(arr, key) {
     case 'frete_desc':     a.sort(desc(o => o.frete)); break;
     case 'custo_desc':     a.sort(desc(o => o.custo)); break;
     case 'resultado_desc': a.sort(desc(o => o.resultado)); break;
-    case 'bloqueada_desc': a.sort(desc(o => (o.resultadoStatus === 'bloqueado' && o.status !== 'cancelado') ? (o.valor || 0) : null)); break;
+    case 'bloqueada_desc': a.sort(desc(o => (o.resultadoStatus === 'bloqueado' && pedidoEntraNoResultado(o)) ? (o.valor || 0) : null)); break;
     case 'confianca':      a.sort((x, y) => (CONF_RANK[x.confianca] ?? 9) - (CONF_RANK[y.confianca] ?? 9)); break;
     default:               a.sort((x, y) => String(y.data || '').localeCompare(String(x.data || '')) || String(y.id).localeCompare(String(x.id))); break;
   }
@@ -1182,7 +1188,7 @@ function renderFechamentoSection() {
       ${kpi({ label:'Faturamento bruto', valueHtml: kpiValueHtml(r.faturamento, { currency:true }), foot:'pedidos válidos', mod:'vf-kpi--featured' })}
       ${kpi({ label:'Resultado parcial', valueHtml: kpiValueHtml(r.resultadoParcial, { currency:true }), foot: parcialFoot, footTone: r.confianca === 'confiavel' ? 'is-success' : 'is-warning', mod: r.confianca === 'confiavel' ? '' : 'vf-kpi--warning' })}
       ${kpi({ label:'Receita bloqueada', valueHtml: kpiValueHtml(r.receitaBloqueada, { currency:true }), foot:'falta custo/frete p/ calcular', footTone: r.receitaBloqueada > 0 ? 'is-warning' : '', mod: r.receitaBloqueada > 0 ? 'vf-kpi--warning' : '' })}
-      ${kpi({ label:'Pedidos válidos', valueHtml: kpiValueHtml(r.validos), foot:'pagos + problema' })}
+      ${kpi({ label:'Pedidos válidos', valueHtml: kpiValueHtml(r.validos), foot:'fora cancelamentos e mediações' })}
       ${kpi({ label:'Cancelados / problema', valueHtml: kpiValueHtml(r.cancelProblema), foot:'fora da venda boa', footTone: r.cancelProblema > 0 ? 'is-danger' : '', mod: r.cancelProblema > 0 ? 'vf-kpi--danger' : '' })}
       ${kpi({ label:'Unidades vendidas', valueHtml: kpiValueHtml(r.unidades), foot:'itens válidos' })}
     </div>`;
@@ -1561,6 +1567,7 @@ function renderPedTable() {
 function faltasDoPedido(o, prod) {
   const faltas = [];
   if (o.status === 'cancelado') faltas.push(['pedido cancelado/reembolso', 'não conclui resultado; impacto fora da venda boa']);
+  if (o.status === 'com_problema') faltas.push(['pedido em mediação/problema', 'não conclui resultado; impacto fora da venda boa']);
   if (!o.mlb) faltas.push(['financeiro sem produto', 'impede atribuir custo/base e calcular resultado do item']);
   if (o.custoStatus === 'ausente' && o.mlb) faltas.push(['falta custo/base', 'impede calcular resultado do item']);
   if (o.frete == null) faltas.push(['falta frete real', 'resultado fica parcial, nunca confiável']);
@@ -1759,7 +1766,7 @@ function aggByProduct(pedidos) {
       cancelProblema: 0, full: o.full, fullPedidos: 0, normalPedidos: 0, semProduto: !o.mlb,
     });
     const a = map.get(key);
-    const valido = o.status !== 'cancelado';
+    const valido = pedidoEntraNoResultado(o);
     a.pedidos += 1;
     if (valido) { a.unidades += (o.unidades || 0); a.faturamento += (o.valor || 0); a.taxasAcum += (o.taxas || 0); }
     if (o.resultadoStatus === 'bloqueado' && valido) a.receitaBloqueada += (o.valor || 0);

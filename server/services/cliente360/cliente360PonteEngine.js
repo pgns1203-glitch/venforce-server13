@@ -36,10 +36,10 @@ function round2(v) {
   return Math.round((Number(v) + Number.EPSILON) * 100) / 100;
 }
 
-// Pedidos que entram no resultado. Cancelados saem dos dois lados da ponte;
-// com_problema e pendente entram (marcados na cobertura, não removidos).
+// Pedidos que entram no resultado. Cancelados e mediações (`com_problema`)
+// saem dos dois lados da ponte; pendentes continuam marcados na cobertura.
 function pedidoEntraNoResultado(pedido) {
-  return pedido && pedido.status !== "cancelado";
+  return !!pedido && pedido.status !== "cancelado" && pedido.status !== "com_problema";
 }
 
 // ── Agregação por produto (chave = MLB) ─────────────────────────────────────

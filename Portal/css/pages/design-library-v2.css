@@ -17,11 +17,30 @@
 
 /* ── toolbar ──────────────────────────────────────────────────────────── */
 
-.dtl-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-top: 1.5rem; }
-.dtl-toolbar .vf-tabs { margin: 0; }
-.dtl-toolbar .vf-toolbar__filters { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
-.dtl-search-field { width: min(240px, 100%); }
-.dtl-filter-field { width: 170px; }
+.dtl-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-start; align-items: flex-end; gap: .75rem 1rem; margin-top: 1.5rem; }
+.dtl-toolbar .vf-tabs { flex: 0 0 auto; margin: 0; }
+.dtl-toolbar .vf-toolbar__filters { display: flex; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-start; gap: .75rem; align-items: flex-end; }
+.dtl-search-field { flex: 0 0 300px; width: 300px; max-width: 100%; }
+.dtl-filter-field { flex: 0 0 175px; width: 175px; }
+.dtl-toolbar .vf-toolbar__filters .vf-search {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: none;
+  height: var(--vf-control-h);
+  min-height: var(--vf-control-h);
+}
+
+@media (max-width: 1100px) {
+  .dtl-toolbar { align-items: stretch; }
+  .dtl-toolbar .vf-toolbar__filters { flex: 0 1 auto; width: 100%; }
+}
+
+@media (max-width: 680px) {
+  .dtl-toolbar .vf-tabs { width: 100%; overflow-x: auto; }
+  .dtl-toolbar .vf-toolbar__filters { width: 100%; }
+  .dtl-search-field,
+  .dtl-filter-field { flex: 1 1 100%; width: 100%; max-width: none; }
+}
 
 /* ── grade ────────────────────────────────────────────────────────────── */
 

@@ -913,7 +913,9 @@
   /* ── Orquestração: cliente / marketplace / seção ────────────── */
 
   async function loadClientes() {
-    const result = await apiGet("/clientes");
+    // Lista operacional segura (admin/user/membro), mesma usada pelo Cliente 360.
+    // /clientes é admin-only e expõe api_key: não pode ser usado aqui.
+    const result = await apiGet("/operacao/cliente-360/clientes");
     const select = document.getElementById("diag-cliente");
     const lista = Array.isArray(result.data?.clientes) ? result.data.clientes : [];
     state.clientes = lista;

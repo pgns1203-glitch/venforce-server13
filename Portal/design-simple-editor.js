@@ -145,6 +145,7 @@
       canvas: null,
       selectedLayerId: null,
       dirty: false,
+      loadingPage: false,
     };
 
 function setStatus(text, kind) {
@@ -183,26 +184,49 @@ function setStatus(text, kind) {
       };
     }
 
-    function loadPageIntoCanvas(page) {
-      const fabric = fabricLib();
-      if (!fabric || !state.canvas) return;
-      state.canvas.clear();
-      state.canvas.setDimensions({ width: page.width, height: page.height });
-      state.canvas.setBackgroundColor(page.background || "#ffffff", () => state.canvas.renderAll());
-      if (page.fabricJson && Array.isArray(page.fabricJson.objects) && page.fabricJson.objects.length) {
-        state.canvas.loadFromJSON(page.fabricJson, () => state.canvas.renderAll());
-      } else {
-        state.canvas.renderAll();
+    async function loadPageIntoCanvas(page) {
+      if (!state.canvas) return;
+
+      state.loadingPage = true;
+      try {
+        state.canvas.clear();
+        state.canvas.setDimensions({ width: page.width, height: page.height });
+        state.canvas.backgroundColor = page.background || "#ffffff";
+
+        const fabricJson = page.fabricJson || { version: "6.9.1", objects: [] };
+        if (Array.isArray(fabricJson.objects) && fabricJson.objects.length) {
+          await state.canvas.loadFromJSON(fabricJson);
+        }
+
+        state.canvas.getObjects().forEach((object) => {
+          if (object.vfLocked) object.set({ selectable: false, evented: false });
+          if (object.vfHidden) object.set("visible", false);
+        });
+
+        state.canvas.requestRenderAll();
+      } finally {
+        state.loadingPage = false;
       }
     }
 
-    function selectPage(pageId) {
-      commitCanvasToDocument();
-      state.activePageId = pageId;
-      loadPageIntoCanvas(activePage());
+    function updateEmptyCanvasMessage() {
+      const message = byId("dse-empty-canvas-message");
+      if (!message || !state.canvas) return;
+      message.hidden = state.canvas.getObjects().length > 0;
+    }
+
+    async function renderLoadedPage() {
+      await loadPageIntoCanvas(activePage());
       renderPagesList();
       renderLayers();
       renderProperties(null);
+      updateEmptyCanvasMessage();
+    }
+
+    async function selectPage(pageId) {
+      commitCanvasToDocument();
+      state.activePageId = pageId;
+      await renderLoadedPage();
     }
 
     function renderPagesList() {
@@ -211,7 +235,9 @@ function setStatus(text, kind) {
       list.replaceChildren(...state.document.pages.map((page, index) => {
         const item = document.createElement("li");
         item.className = `dse-page-item${page.id === state.activePageId ? " is-active" : ""}`;
-        item.addEventListener("click", () => selectPage(page.id));
+        item.addEventListener("click", () => {
+          runEditorTask(() => selectPage(page.id), "Não foi possível abrir a página");
+        });
 
         const nameInput = document.createElement("input");
         nameInput.type = "text";
@@ -234,15 +260,14 @@ function setStatus(text, kind) {
           renderPagesList();
           markDirty();
         }));
-        actions.appendChild(iconButton("×", "Excluir página", (event) => {
+        actions.appendChild(iconButton("×", "Excluir página", async (event) => {
           event.stopPropagation();
           if (state.document.pages.length <= 1) return;
           if (!window.confirm("Excluir esta página?")) return;
           const wasActive = page.id === state.activePageId;
           state.document = documentModel.removePage(state.document, page.id);
           if (wasActive) state.activePageId = state.document.pages[0].id;
-          loadPageIntoCanvas(activePage());
-          renderPagesList();
+          await renderLoadedPage();
           markDirty();
         }));
         item.appendChild(actions);
@@ -257,8 +282,19 @@ function setStatus(text, kind) {
       button.title = title;
       button.setAttribute("aria-label", title);
       button.textContent = label;
-      button.addEventListener("click", handler);
+      button.addEventListener("click", (event) => {
+        runEditorTask(() => handler(event), `Não foi possível ${title.toLowerCase()}`);
+      });
       return button;
+    }
+
+    async function runEditorTask(action, title) {
+      try {
+        await action();
+      } catch (error) {
+        console.error(title, error);
+        config.toast?.("danger", title, error.message || "Tente novamente.");
+      }
     }
 
     /* ── painel de objetos ────────────────────────────────────────────── */
@@ -486,18 +522,22 @@ function actionRow(label, className, handler) {
       const fabric = fabricLib();
       if (!fabric || !state.canvas) return;
       const spec = buildInsertedObject(kind, { ...extra, vfId: documentModel.generateId() });
+      const { type, text, src, ...objectOptions } = spec;
       let object;
-      if (spec.type === "textbox") object = new fabric.Textbox(spec.text, spec);
-      else if (spec.type === "rect") object = new fabric.Rect(spec);
-      else if (spec.type === "circle") object = new fabric.Circle(spec);
-      else if (spec.type === "image" && spec.src) {
-        fabric.Image.fromURL(spec.src).then((img) => {
-          img.set(spec);
+      if (type === "textbox") object = new fabric.Textbox(text, objectOptions);
+      else if (type === "rect") object = new fabric.Rect(objectOptions);
+      else if (type === "circle") object = new fabric.Circle(objectOptions);
+      else if (type === "image" && src) {
+        fabric.Image.fromURL(src).then((img) => {
+          img.set(objectOptions);
           state.canvas.add(img);
           state.canvas.setActiveObject(img);
           state.canvas.requestRenderAll();
           renderLayers();
           markDirty();
+        }).catch((error) => {
+          console.error("Falha ao adicionar imagem ao canvas", error);
+          config.toast?.("danger", "Não foi possível adicionar a imagem", error.message || "Tente novamente.");
         });
         return;
       } else return;
@@ -514,13 +554,27 @@ function actionRow(label, className, handler) {
       if (state.canvas) return state.canvas;
       const fabric = fabricLib();
       if (!fabric) throw new Error("Fabric.js indisponível.");
+      const fabricObjectClass = fabric.FabricObject || fabric.Object;
+      if (fabricObjectClass) {
+        fabricObjectClass.customProperties = [
+          ...new Set([...(fabricObjectClass.customProperties || []), ...VF_PROPS]),
+        ];
+      }
       const canvas = new fabric.Canvas(byId("dse-canvas"), { preserveObjectStacking: true });
       canvas.on("selection:created", (event) => renderProperties(event.selected && event.selected[0]));
       canvas.on("selection:updated", (event) => renderProperties(event.selected && event.selected[0]));
       canvas.on("selection:cleared", () => renderProperties(null));
       canvas.on("object:modified", () => { renderLayers(); markDirty(); });
-      canvas.on("object:added", () => renderLayers());
-      canvas.on("object:removed", () => renderLayers());
+      canvas.on("object:added", () => {
+        if (state.loadingPage) return;
+        renderLayers();
+        updateEmptyCanvasMessage();
+      });
+      canvas.on("object:removed", () => {
+        if (state.loadingPage) return;
+        renderLayers();
+        updateEmptyCanvasMessage();
+      });
       state.canvas = canvas;
       return canvas;
     }
@@ -594,13 +648,14 @@ function showEditorView() {
         });
       });
       byId("dse-add-page")?.addEventListener("click", () => {
-        commitCanvasToDocument();
-        const page = documentModel.createPage({ width: activePage().width, height: activePage().height });
-        state.document = documentModel.addPage(state.document, page);
-        state.activePageId = state.document.pages[state.document.pages.length - 1].id;
-        loadPageIntoCanvas(activePage());
-        renderPagesList();
-        markDirty();
+        runEditorTask(async () => {
+          commitCanvasToDocument();
+          const page = documentModel.createPage({ width: activePage().width, height: activePage().height });
+          state.document = documentModel.addPage(state.document, page);
+          state.activePageId = state.document.pages[state.document.pages.length - 1].id;
+          await renderLoadedPage();
+          markDirty();
+        }, "Não foi possível adicionar a página");
       });
       byId("dse-bring-front")?.addEventListener("click", () => {
         const object = state.canvas?.getActiveObject();
@@ -614,16 +669,18 @@ function showEditorView() {
         layers.sendToBack(state.canvas, object.vfId);
         markDirty();
       });
-      byId("dse-duplicate-object")?.addEventListener("click", async () => {
-        const object = state.canvas?.getActiveObject();
-        if (!object) return;
-        const clone = await object.clone();
-        clone.set({ vfId: documentModel.generateId(), vfName: object.vfName ? `${object.vfName} (cópia)` : undefined, left: (object.left || 0) + 20, top: (object.top || 0) + 20 });
-        state.canvas.add(clone);
-        state.canvas.setActiveObject(clone);
-        state.canvas.requestRenderAll();
-        renderLayers();
-        markDirty();
+      byId("dse-duplicate-object")?.addEventListener("click", () => {
+        runEditorTask(async () => {
+          const object = state.canvas?.getActiveObject();
+          if (!object) return;
+          const clone = await object.clone();
+          clone.set({ vfId: documentModel.generateId(), vfName: object.vfName ? `${object.vfName} (cópia)` : undefined, left: (object.left || 0) + 20, top: (object.top || 0) + 20 });
+          state.canvas.add(clone);
+          state.canvas.setActiveObject(clone);
+          state.canvas.requestRenderAll();
+          renderLayers();
+          markDirty();
+        }, "Não foi possível duplicar o objeto");
       });
       byId("dse-delete-object")?.addEventListener("click", () => {
         const object = state.canvas?.getActiveObject();
@@ -637,8 +694,7 @@ function showEditorView() {
       });
       byId("dse-save-version")?.addEventListener("click", () => save());
       byId("dse-export")?.addEventListener("click", () => {
-        commitCanvasToDocument();
-        exportLib?.exportDocumentAsJson(state.document);
+        runEditorTask(() => exportCanvasAsPng(), "Não foi possível exportar o PNG");
       });
     }
 
@@ -647,6 +703,20 @@ function showEditorView() {
       const page = activePage();
       const scale = Math.min(1, THUMBNAIL_MAX_SIDE / Math.max(page.width, page.height));
       return state.canvas.toDataURL({ format: "png", multiplier: scale, quality: 0.7 });
+    }
+
+    function exportCanvasAsPng() {
+      if (!state.canvas || !state.document) return;
+      const dataUrl = state.canvas.toDataURL({ format: "png", multiplier: 1 });
+      const fileName = `${String(state.document.name || "arte")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9_-]+/gi, "-")
+        .replace(/^-+|-+$/g, "") || "arte"}.png`;
+      const link = document.createElement("a");
+      link.href = dataUrl;
+      link.download = fileName;
+      link.click();
     }
 
     async function save() {
@@ -672,7 +742,15 @@ function showEditorView() {
 
     async function resolveIncomingDocument(rawDocument, context) {
       if (documentModel.isVfDesignDocument(rawDocument)) {
-        return { document: documentModel.sanitizeDocument(rawDocument), warnings: [] };
+        const current = documentModel.sanitizeDocument(rawDocument);
+        return {
+          document: {
+            ...current,
+            clienteId: context?.clienteId ?? current.clienteId,
+            itemType: context?.type === "artwork" ? "artwork" : current.itemType,
+          },
+          warnings: [],
+        };
       }
       if (!rawDocument || Object.keys(rawDocument).length === 0) {
         return { document: documentModel.createDocument({ name: context?.name, clienteId: context?.clienteId }), warnings: [] };
@@ -700,24 +778,45 @@ function showEditorView() {
     }
 
     async function openProject(rawDocument, context) {
-      setupCanvasOnce();
-      bindToolbarOnce();
-      const { document: resolved, warnings } = await resolveIncomingDocument(rawDocument, context);
-      state.document = resolved;
-      state.context = context || null;
-      state.activePageId = resolved.pages[0].id;
-      state.selectedLayerId = null;
-      showEditorView();
-      if (byId("dse-name")) byId("dse-name").value = resolved.name;
-      const banner = byId("dse-legacy-warning");
-      const bannerText = byId("dse-legacy-warning-text");
-      if (banner) banner.hidden = warnings.length === 0;
-      if (bannerText) bannerText.textContent = warnings.join(" ");
-      loadPageIntoCanvas(activePage());
-      renderPagesList();
-      renderLayers();
-      renderProperties(null);
-      setStatus(warnings.length ? "Convertido — revise antes de salvar" : "Pronto para editar", warnings.length ? "dirty" : null);
+      try {
+        setupCanvasOnce();
+        bindToolbarOnce();
+        const { document: resolved, warnings } = await resolveIncomingDocument(rawDocument, context);
+        const onlyEmptyLegacyFallbacks = warnings.length > 0 && resolved.pages.every((page) => (
+          Array.isArray(page.fabricJson?.objects)
+          && page.fabricJson.objects.length === 1
+          && page.fabricJson.objects[0]?.vfType === "legacy-group"
+          && page.fabricJson.objects[0]?.objects?.length === 0
+        ));
+        if (onlyEmptyLegacyFallbacks) {
+          const error = new Error("Template legado com edição limitada. Importe uma prévia PNG para usar como fundo editável.");
+          error.code = "LEGACY_EDIT_LIMITED";
+          throw error;
+        }
+        state.document = resolved;
+        state.context = context || null;
+        state.activePageId = resolved.pages[0].id;
+        state.selectedLayerId = null;
+        if (byId("dse-name")) byId("dse-name").value = resolved.name;
+        const banner = byId("dse-legacy-warning");
+        const bannerText = byId("dse-legacy-warning-text");
+        if (banner) banner.hidden = warnings.length === 0;
+        if (bannerText) bannerText.textContent = warnings.join(" ");
+        await renderLoadedPage();
+        showEditorView();
+        setStatus(warnings.length ? "Convertido — revise antes de salvar" : "Pronto para editar", warnings.length ? "dirty" : null);
+      } catch (error) {
+        hideEditorView();
+        console.error("Falha ao abrir projeto no Editor Reduzido", error);
+        const legacyLimited = error.code === "LEGACY_EDIT_LIMITED";
+        config.toast?.(
+          legacyLimited ? "warning" : "danger",
+          legacyLimited ? "Template legado" : "Não foi possível abrir o editor",
+          legacyLimited ? error.message : "O item não pôde ser carregado. Você voltou para a biblioteca."
+        );
+        error.vfEditorHandled = true;
+        throw error;
+      }
     }
 
     async function newProject(client) {

@@ -190,6 +190,7 @@
 
   function describeOrigin(item) {
     const doc = item.document_json || {};
+    if (!documentModel.isVfDesignDocument(doc)) return "Template legado";
     if (documentModel.isVfDesignDocument(doc) && doc.source?.type) {
       return ORIGIN_LABELS[doc.source.type] || "Criado manualmente";
     }
@@ -204,11 +205,12 @@
 
   async function mutate(action, success) {
     try {
-      await action();
+      const completed = await action();
+      if (completed === false) return;
       toast("success", success, "O acervo compartilhado foi atualizado.");
       await loadWorkspace();
     } catch (error) {
-      toast("danger", "Não foi possível concluir", error.message);
+      if (!error.vfEditorHandled) toast("danger", "Não foi possível concluir", error.message);
     }
   }
 
@@ -218,21 +220,39 @@
       toast("danger", "Editor indisponível", "Recarregue a página e tente novamente.");
       return;
     }
-    await simpleEditor.openProject(item.document_json || {}, {
-      type, id: item.id, clienteId: item.cliente_id, name: item.name,
-    });
+    try {
+      await simpleEditor.openProject(item.document_json || {}, {
+        type, id: item.id, clienteId: item.cliente_id, name: item.name,
+      });
+      return true;
+    } catch (error) {
+      if (error.vfEditorHandled) return false;
+      console.error("Falha ao abrir item no Editor Reduzido", error);
+      toast("danger", "Não foi possível abrir o item", error.message || "Tente novamente.");
+      return false;
+    }
   }
 
   async function createArtwork(item) {
+    const documentCopy = JSON.parse(JSON.stringify(item.document_json || {}));
+    if (documentModel.isVfDesignDocument(documentCopy)) {
+      documentCopy.id = documentModel.generateId();
+      documentCopy.clienteId = state.clientId;
+      documentCopy.itemType = "artwork";
+    }
     await mutate(async () => {
       const response = await api.createItem(state.clientId, "artworks", {
         name: `${item.name} — nova arte`,
         templateId: item.id,
         accountRef: state.accountRef || null,
-        document: {},
+        document: documentCopy,
         preview: {},
       });
-      await openItem({ ...response.item, item_type: "artwork" });
+      return openItem({
+        ...response.item,
+        document_json: response.item.document_json || documentCopy,
+        item_type: "artwork",
+      });
     }, "Arte criada");
   }
 
@@ -350,7 +370,10 @@
     } else {
       const placeholder = document.createElement("span");
       placeholder.className = "dtl-card__thumb-placeholder";
-      placeholder.textContent = "Sem miniatura";
+      const isLegacyTemplate = type === "template" && !documentModel.isVfDesignDocument(item.document_json);
+      placeholder.textContent = isLegacyTemplate
+        ? "Template legado"
+        : "Sem prévia — abra e salve para gerar";
       thumb.appendChild(placeholder);
     }
     const badge = document.createElement("span");
@@ -533,7 +556,7 @@
           toast("success", "Template importado", warnings.length ? warnings.join(" ") : "O item foi salvo no acervo do cliente.");
           await openItem({ ...response.item, item_type: importedDocument.itemType });
         } catch (error) {
-          toast("danger", "Não foi possível importar", error.message);
+          if (!error.vfEditorHandled) toast("danger", "Não foi possível importar", error.message);
         }
       },
       toast,
@@ -587,9 +610,15 @@
       importModal?.open();
     });
     byId("dim-close")?.addEventListener("click", () => importModal?.close());
-    byId("dtl-new-blank")?.addEventListener("click", () => {
+    byId("dtl-new-blank")?.addEventListener("click", async () => {
       if (!state.clientId) { toast("warning", "Selecione um cliente", "Escolha o cliente antes de criar."); return; }
-      simpleEditor?.newProject(selectedClient());
+      try {
+        await simpleEditor?.newProject(selectedClient());
+      } catch (error) {
+        if (error.vfEditorHandled) return;
+        console.error("Falha ao criar template em branco", error);
+        toast("danger", "Não foi possível criar o template", error.message || "Tente novamente.");
+      }
     });
 
     document.addEventListener("click", closeAllCardMenus);

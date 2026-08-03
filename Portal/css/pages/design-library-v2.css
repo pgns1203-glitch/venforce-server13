@@ -102,8 +102,9 @@
 .dse-canvas-column { display: flex; flex-direction: column; gap: .6rem; min-width: 0; }
 .dse-insert-toolbar { display: flex; flex-wrap: wrap; gap: .8rem; justify-content: space-between; padding: .5rem .65rem; border: 1px solid var(--vf-border); border-radius: var(--vf-radius); background: var(--vf-surface); }
 .dse-insert-group { display: flex; gap: .35rem; flex-wrap: wrap; }
-.dse-canvas-stage { display: grid; place-items: center; min-height: 60vh; padding: 1.5rem; border: 1px solid var(--vf-border); border-radius: var(--vf-radius); background: var(--vf-surface-2); overflow: auto; }
-.dse-canvas-stage canvas { box-shadow: var(--vf-shadow-xs); }
+.dse-canvas-stage { position: relative; display: grid; place-items: center; min-height: 60vh; padding: 1.5rem; border: 1px solid var(--vf-border); border-radius: var(--vf-radius); background: var(--vf-surface-2); overflow: auto; }
+.dse-canvas-stage .canvas-container { border: 1px solid var(--vf-border-strong); box-shadow: var(--vf-shadow-sm); }
+.dse-empty-canvas-message { position: absolute; top: 2.25rem; left: 50%; z-index: 2; margin: 0; padding: .35rem .6rem; transform: translateX(-50%); border-radius: var(--vf-radius-sm); background: color-mix(in srgb, var(--vf-surface) 92%, transparent); color: var(--vf-text-muted); font-size: var(--vf-fs-xs); pointer-events: none; }
 
 .dse-properties-panel { flex: 1; padding: .75rem; display: flex; flex-direction: column; gap: .6rem; overflow: auto; }
 .dse-properties-empty { margin: .5rem 0; color: var(--vf-text-muted); font-size: var(--vf-fs-xs); }

@@ -17,7 +17,7 @@
 
   const ACCEPTED_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"];
   const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-  const SINGLE_LAYER_NOTICE = "Este arquivo não contém camadas e será importado como uma imagem única.";
+  const SINGLE_LAYER_NOTICE = "Arquivo sem camadas. A arte original foi adicionada como fundo bloqueado. Você pode adicionar novos elementos por cima.";
 
   function createImageImporter(deps) {
     const config = deps || {};
@@ -62,27 +62,33 @@
     function build(analyzeResult, options) {
       const chosen = options || {};
       const { width, height } = analyzeResult.summary;
+      const pageSize = documentModel.createPage({ name: "Página 1", width, height });
+      const scale = Math.min(pageSize.width / width, pageSize.height / height);
+      const renderedWidth = width * scale;
+      const renderedHeight = height * scale;
 
       const page = documentModel.createPage({
         name: "Página 1",
-        width,
-        height,
+        width: pageSize.width,
+        height: pageSize.height,
         fabricJson: {
           version: "6.9.1",
           objects: [{
             type: "image",
             src: analyzeResult.dataUrl,
             vfId: documentModel.generateId(),
-            vfName: "Imagem importada",
-            vfType: "image",
-            vfLocked: false,
+            vfName: "Arte original",
+            vfType: "background-image",
+            vfLocked: true,
             vfHidden: false,
-            left: 0,
-            top: 0,
+            selectable: false,
+            evented: false,
+            left: (pageSize.width - renderedWidth) / 2,
+            top: (pageSize.height - renderedHeight) / 2,
             width,
             height,
-            scaleX: 1,
-            scaleY: 1,
+            scaleX: scale,
+            scaleY: scale,
             angle: 0,
             opacity: 1,
           }],

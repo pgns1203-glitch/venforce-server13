@@ -9,6 +9,7 @@ const {
   parseSpreadsheet,
   detectMeliHeader,
   detectShopeeHeaderRow,
+  validateMeliHeaderAtRow,
 } = require("../utils/excelUtils");
 const {
   buildMeliBaseSheetRows,
@@ -176,11 +177,25 @@ async function processarFechamentoFinanceiroController(req, res) {
     let salesRowsRaw;
     if (marketplace === "meli") {
       const detectedHeader = detectMeliHeader(salesBuffer);
+      const validatedHeader = validateMeliHeaderAtRow(
+        salesBuffer,
+        detectedHeader.rowIndex
+      );
       meliHeaderDiagnostic = {
-        detectedHeaders: detectedHeader.headers,
+        detectedHeaders: validatedHeader.headers,
         headerRow: detectedHeader.rowIndex + 1,
-        headerRecognized: detectedHeader.found,
+        relativeHeaderRowIndex: detectedHeader.relativeRowIndex,
+        absoluteHeaderRowIndex: detectedHeader.rowIndex,
+        headerRecognized: detectedHeader.found && validatedHeader.valid,
       };
+      if (detectedHeader.found && !validatedHeader.valid) {
+        const error = new Error(
+          "Não foi possível reconhecer as vendas desta planilha do Mercado Livre. " +
+          "Verifique o formato ou os cabeçalhos."
+        );
+        error.statusCode = 422;
+        throw error;
+      }
       salesRowsRaw = parseSpreadsheet(salesBuffer, detectedHeader.rowIndex);
     } else {
       salesRowsRaw = parseSpreadsheet(salesBuffer, detectShopeeHeaderRow(salesBuffer));
@@ -289,7 +304,16 @@ async function processarFechamentoFinanceiroController(req, res) {
       message: result.message,
       emptySales: result.emptySales === true,
       costsSource,
-      costsBase
+      costsBase,
+      ...(marketplace === "meli" ? {
+        diagnostico: {
+          cabecalhosDetectados: meliHeaderDiagnostic.detectedHeaders,
+          linhaCabecalho: meliHeaderDiagnostic.headerRow,
+          totalLinhasLidas: result.parsingDiagnostics?.totalRowsRead ?? 0,
+          totalLinhasReconhecidas: result.parsingDiagnostics?.recognizedRowsCount ?? 0,
+          totalVendasReconhecidas: result.parsingDiagnostics?.recognizedSalesCount ?? 0,
+        },
+      } : {}),
     });
   } catch (error) {
     console.error("Erro em /fechamentos/financeiro:", error);

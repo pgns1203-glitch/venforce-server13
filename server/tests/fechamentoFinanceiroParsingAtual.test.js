@@ -6,7 +6,12 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const XLSX = require("xlsx");
-const { detectMeliHeader, parseSpreadsheet } = require("../utils/excelUtils");
+const {
+  detectMeliHeader,
+  parseSpreadsheet,
+  readSheetRows,
+  validateMeliHeaderAtRow,
+} = require("../utils/excelUtils");
 const { parseMoneyValue } = require("../utils/numberUtils");
 const { processMeli } = require("../services/fechamentoFinanceiro/meliFinanceiroService");
 const {
@@ -29,6 +34,48 @@ function workbookBuffer(rows) {
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, sheet, "Vendas");
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+}
+
+function shiftedRealWorkbookBuffer() {
+  const header = [
+    "N.º de venda",
+    "Data da venda",
+    "Estado",
+    "Unidades",
+    "Receita por produtos (BRL)",
+    "Total (BRL)",
+    "# de anúncio",
+    "Título do anúncio",
+    "Preço unitário de venda do anúncio (BRL)",
+  ];
+  const rows = [
+    ["Relatório de vendas Mercado Livre"],
+    ["Período de referência"],
+    [],
+    ["Vendas", "Publicidade", "Anúncios"],
+    header,
+  ];
+
+  for (let i = 0; i < 3906; i++) {
+    const hasItem = i < 3811;
+    rows.push([
+      `V-REAL-${i + 1}`,
+      "03/08/2026",
+      "Pago",
+      hasItem ? 1 : "",
+      hasItem ? 100 : "",
+      hasItem ? 90 : "",
+      hasItem ? "MLB111" : "",
+      hasItem ? "Produto real" : "",
+      hasItem ? 100 : "",
+    ]);
+  }
+
+  const sheet = {};
+  XLSX.utils.sheet_add_aoa(sheet, rows, { origin: "A2" });
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "Vendas BR");
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 }
 
@@ -134,6 +181,42 @@ async function main() {
   eq("controller calcula o LC do item filho", parentChildRes.body.summary.contributionProfitTotal, 100);
   eq("controller encontra o custo pelo MLB filho", parentChildRes.body.detailedRows[0]["Preço de custo"], 40);
   eq("controller calcula cobertura integral", parentChildRes.body.summary.calculatedCoveragePercent, 100);
+
+  console.log("\n▸ Mercado Livre — !ref em A2 e cabeçalho absoluto na linha 6");
+  const shiftedSalesBuffer = shiftedRealWorkbookBuffer();
+  const shiftedSheet = readSheetRows(shiftedSalesBuffer);
+  const shiftedHeader = detectMeliHeader(shiftedSalesBuffer);
+  const shiftedHeaderValidation = validateMeliHeaderAtRow(
+    shiftedSalesBuffer,
+    shiftedHeader.rowIndex
+  );
+  eq("primeira linha absoluta do !ref é A2", shiftedSheet.firstRowIndex, 1);
+  eq("índice relativo detectado é 4", shiftedHeader.relativeRowIndex, 4);
+  eq("índice absoluto usado pelo parser é 5", shiftedHeader.rowIndex, 5);
+  ok(
+    "linha 5 do Excel com títulos de seção é rejeitada pela proteção",
+    !validateMeliHeaderAtRow(shiftedSalesBuffer, 4).valid
+  );
+  ok("linha absoluta contém os quatro grupos obrigatórios", shiftedHeaderValidation.valid);
+
+  const shiftedReq = {
+    files: {
+      sales: [{ buffer: shiftedSalesBuffer }],
+      costs: [{ buffer: costsBuffer }],
+    },
+    body: { marketplace: "meli", ads: "0", venforce: "0", affiliates: "0" },
+  };
+  const shiftedRes = fakeRes();
+  await processarFechamentoFinanceiroController(shiftedReq, shiftedRes);
+  eq("processamento com !ref deslocado não retorna 422", shiftedRes.statusCode, 200);
+  eq("diagnóstico exibe a linha 6 do Excel", shiftedRes.body.diagnostico.linhaCabecalho, 6);
+  eq("3906 linhas de dados lidas", shiftedRes.body.diagnostico.totalLinhasLidas, 3906);
+  const shiftedParsedRows = parseSpreadsheet(shiftedSalesBuffer, shiftedHeader.rowIndex);
+  const shiftedResult = processMeli(shiftedParsedRows, costsRows, 0, 0, 0);
+  eq("3906 números de venda reconhecidos", shiftedResult.parsingDiagnostics.rowsWithSaleNumber, 3906);
+  eq("3811 linhas possuem MLB", shiftedResult.parsingDiagnostics.rowsWithAd, 3811);
+  eq("3811 linhas possuem unidades", shiftedResult.parsingDiagnostics.rowsWithUnits, 3811);
+  ok("ao menos uma venda foi reconhecida", shiftedResult.parsingDiagnostics.recognizedSalesCount > 0);
 
   console.log("\n▸ Mercado Livre — formato não reconhecido retorna 422");
   const invalidSales = workbookBuffer([

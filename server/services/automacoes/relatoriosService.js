@@ -517,21 +517,28 @@ function construirWorkbookMatrizPrecificacao({ resumoRows, resumoPctCells = [], 
     return n > 1 ? n / 100 : n;
   };
   const numeroOuNulo = (v) => {
+    if (v === null || v === undefined) return null;
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };
 
+  // Layout único: Lucro/MC/Preço Sugerido/Ação são calculados sempre a partir
+  // do preço efetivo (nunca a partir de "preço original" e "preço promocional"
+  // em paralelo) — quando não há promoção, preço efetivo = preço cheio, então
+  // nenhum cálculo fica vazio.
   const matrizRows = [
     [
       "Edite custo, frete, comissão, preço ou margem alvo para simular novas decisões.",
-      ...Array(29).fill(""),
+      ...Array(28).fill(""),
     ],
     [
       "Dados do anúncio", "", "", "",
       "",
-      "Cálculo atual", "", "", "", "", "", "",
+      "Custos", "", "", "", "",
       "",
-      "Promoção", "", "", "",
+      "Preços", "", "",
+      "",
+      "Resultado", "",
       "",
       "Preço sugerido", "", "",
       "",
@@ -540,9 +547,11 @@ function construirWorkbookMatrizPrecificacao({ resumoRows, resumoPctCells = [], 
     [
       "ID", "SKU/Base", "Título", "Marketplace",
       "",
-      "Preço Custo", "Imposto %", "Frete R$", "Comissão %", "", "Preço Original", "Lucro Original", "MC Original",
+      "Preço Custo", "Imposto %", "Frete R$", "Comissão %", "Taxa Fixa R$",
       "",
-      "Preço Promocional", "Lucro Promocional", "MC Promocional", "Preço Efetivo",
+      "Preço Cheio", "Preço Promocional", "Preço Efetivo",
+      "",
+      "Lucro", "MC",
       "",
       "Margem Alvo", "Preço Sugerido", "Lucro no Sugerido",
       "",
@@ -564,15 +573,14 @@ function construirWorkbookMatrizPrecificacao({ resumoRows, resumoPctCells = [], 
       impostoPct,
       freteNum,
       paraDecimalPct(it.comissao_percentual),
+      numeroOuNulo(it.taxa_fixa),
       "",
       numeroOuNulo(it.preco_original),
-      "",
-      "",
-      "",
       numeroOuNulo(it.preco_promocional),
-      "",
-      "",
       numeroOuNulo(it.preco_efetivo),
+      "",
+      "",
+      "",
       "",
       paraDecimalPct(margemAlvoPadrao),
       "",
@@ -611,37 +619,39 @@ function construirWorkbookMatrizPrecificacao({ resumoRows, resumoPctCells = [], 
   };
 
   for (let row = 4; row < 4 + itens.length; row++) {
-    setFormula(matrizSheet, `L${row}`, `IFERROR(K${row}-K${row}*G${row}-K${row}*I${row}-H${row}-F${row},"")`, "R$ #,##0.00");
-    setFormula(matrizSheet, `M${row}`, `IFERROR(L${row}/K${row},"")`, "0.00%");
-    setFormula(matrizSheet, `P${row}`, `IFERROR(O${row}-O${row}*G${row}-O${row}*I${row}-H${row}-F${row},"")`, "R$ #,##0.00");
-    setFormula(matrizSheet, `Q${row}`, `IFERROR(P${row}/O${row},"")`, "0.00%");
-    setFormula(matrizSheet, `U${row}`, `IFERROR((F${row}+H${row})/(1-G${row}-I${row}-T${row}),"")`, "R$ #,##0.00");
-    setFormula(matrizSheet, `V${row}`, `IFERROR(U${row}*T${row},"")`, "R$ #,##0.00");
-    setFormula(matrizSheet, `X${row}`, `IF(AB${row}="sem_base","Revisar custo/base",IF(AB${row}="sem_frete","Revisar frete",IF(AB${row}="sem_comissao","Revisar comissão",IF(R${row}<U${row},"Subir preço",IF(R${row}>U${row},"Avaliar redução","Manter")))))`);
-    setFormula(matrizSheet, `Y${row}`, `IF(X${row}="Subir preço",U${row},R${row})`, "R$ #,##0.00");
-    setFormula(matrizSheet, `Z${row}`, `IFERROR(Y${row}-R${row},"")`, "R$ #,##0.00");
-    setFormula(matrizSheet, `AA${row}`, `IFERROR(Z${row}/R${row},"")`, "0.00%");
+    // Lucro/MC sempre a partir do preço efetivo (N) — nunca ficam vazios
+    // quando não há promoção, pois nesse caso preço efetivo = preço cheio.
+    setFormula(matrizSheet, `P${row}`, `IFERROR(N${row}-N${row}*G${row}-N${row}*I${row}-H${row}-F${row}-J${row},"")`, "R$ #,##0.00");
+    setFormula(matrizSheet, `Q${row}`, `IFERROR(P${row}/N${row},"")`, "0.00%");
+    setFormula(matrizSheet, `T${row}`, `IFERROR((F${row}+H${row}+J${row})/(1-G${row}-I${row}-S${row}),"")`, "R$ #,##0.00");
+    setFormula(matrizSheet, `U${row}`, `IFERROR(T${row}*S${row},"")`, "R$ #,##0.00");
+    setFormula(matrizSheet, `W${row}`, `IF(AA${row}="sem_base","Revisar custo/base",IF(AA${row}="sem_frete","Revisar frete",IF(AA${row}="sem_comissao","Revisar comissão",IF(N${row}<T${row},"Subir preço",IF(N${row}>T${row},"Avaliar redução","Manter")))))`);
+    setFormula(matrizSheet, `X${row}`, `IF(W${row}="Subir preço",T${row},N${row})`, "R$ #,##0.00");
+    setFormula(matrizSheet, `Y${row}`, `IFERROR(X${row}-N${row},"")`, "R$ #,##0.00");
+    setFormula(matrizSheet, `Z${row}`, `IFERROR(Y${row}/N${row},"")`, "0.00%");
 
-    ["F", "H", "K", "L", "O", "P", "R", "U", "V", "Y", "Z"].forEach((col) => setFormat(matrizSheet, `${col}${row}`, "R$ #,##0.00"));
-    ["G", "I", "M", "Q", "T", "AA"].forEach((col) => setFormat(matrizSheet, `${col}${row}`, "0.00%"));
+    ["F", "H", "J", "L", "M", "N", "P", "T", "U", "X", "Y"].forEach((col) => setFormat(matrizSheet, `${col}${row}`, "R$ #,##0.00"));
+    ["G", "I", "Q", "S", "Z"].forEach((col) => setFormat(matrizSheet, `${col}${row}`, "0.00%"));
   }
 
   resumoPctCells.forEach((addr) => setFormat(resumoSheet, addr, "0.00%"));
 
-  matrizSheet["!autofilter"] = { ref: `A3:AD${Math.max(3, 3 + itens.length)}` };
+  matrizSheet["!autofilter"] = { ref: `A3:AC${Math.max(3, 3 + itens.length)}` };
   matrizSheet["!freeze"] = { xSplit: 0, ySplit: 3, topLeftCell: "A4", activePane: "bottomLeft", state: "frozen" };
   matrizSheet["!merges"] = [
-    XLSX.utils.decode_range("A1:AD1"),
+    XLSX.utils.decode_range("A1:AC1"),
     XLSX.utils.decode_range("A2:D2"),
-    XLSX.utils.decode_range("F2:M2"),
-    XLSX.utils.decode_range("O2:R2"),
-    XLSX.utils.decode_range("T2:V2"),
-    XLSX.utils.decode_range("X2:AD2"),
+    XLSX.utils.decode_range("F2:J2"),
+    XLSX.utils.decode_range("L2:N2"),
+    XLSX.utils.decode_range("P2:Q2"),
+    XLSX.utils.decode_range("S2:U2"),
+    XLSX.utils.decode_range("W2:AC2"),
   ];
   matrizSheet["!cols"] = [
     { wch: 14 }, { wch: 12 }, { wch: 48 }, { wch: 12 }, { wch: 3 },
-    { wch: 12 }, { wch: 10 }, { wch: 11 }, { wch: 12 }, { wch: 3 }, { wch: 13 }, { wch: 13 }, { wch: 11 }, { wch: 3 },
-    { wch: 14 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 3 },
+    { wch: 12 }, { wch: 10 }, { wch: 11 }, { wch: 12 }, { wch: 12 }, { wch: 3 },
+    { wch: 13 }, { wch: 14 }, { wch: 13 }, { wch: 3 },
+    { wch: 13 }, { wch: 11 }, { wch: 3 },
     { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 3 },
     { wch: 18 }, { wch: 13 }, { wch: 12 }, { wch: 11 }, { wch: 12 }, { wch: 24 }, { wch: 30 },
   ];
@@ -658,32 +668,35 @@ function construirWorkbookMatrizPrecificacao({ resumoRows, resumoPctCells = [], 
   const styleDados = { ...styleHeaderBase, fill: { patternType: "solid", fgColor: { rgb: "E5E7EB" } } };
   const styleCalc = { ...styleHeaderBase, fill: { patternType: "solid", fgColor: { rgb: "DBEAFE" } } };
   const stylePromo = { ...styleHeaderBase, fill: { patternType: "solid", fgColor: { rgb: "EDE9FE" } } };
+  const styleResultado = { ...styleHeaderBase, fill: { patternType: "solid", fgColor: { rgb: "CCFBF1" } } };
   const styleSug = { ...styleHeaderBase, fill: { patternType: "solid", fgColor: { rgb: "DCFCE7" } } };
   const styleDec = { ...styleHeaderBase, fill: { patternType: "solid", fgColor: { rgb: "FEF3C7" } } };
   const styleSeparador = { fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } } };
 
-  paintRange(matrizSheet, 0, 29, 1, styleInstrucao);
+  paintRange(matrizSheet, 0, 28, 1, styleInstrucao);
   paintRange(matrizSheet, 0, 3, 2, styleDados);
-  paintRange(matrizSheet, 5, 12, 2, styleCalc);
-  paintRange(matrizSheet, 14, 17, 2, stylePromo);
-  paintRange(matrizSheet, 19, 21, 2, styleSug);
-  paintRange(matrizSheet, 23, 29, 2, styleDec);
+  paintRange(matrizSheet, 5, 9, 2, styleCalc);
+  paintRange(matrizSheet, 11, 13, 2, stylePromo);
+  paintRange(matrizSheet, 15, 16, 2, styleResultado);
+  paintRange(matrizSheet, 18, 20, 2, styleSug);
+  paintRange(matrizSheet, 22, 28, 2, styleDec);
   paintRange(matrizSheet, 4, 4, 2, styleSeparador);
-  paintRange(matrizSheet, 9, 9, 2, styleSeparador);
-  paintRange(matrizSheet, 13, 13, 2, styleSeparador);
-  paintRange(matrizSheet, 18, 18, 2, styleSeparador);
-  paintRange(matrizSheet, 22, 22, 2, styleSeparador);
+  paintRange(matrizSheet, 10, 10, 2, styleSeparador);
+  paintRange(matrizSheet, 14, 14, 2, styleSeparador);
+  paintRange(matrizSheet, 17, 17, 2, styleSeparador);
+  paintRange(matrizSheet, 21, 21, 2, styleSeparador);
 
   paintRange(matrizSheet, 0, 3, 3, styleDados);
-  paintRange(matrizSheet, 5, 12, 3, styleCalc);
-  paintRange(matrizSheet, 14, 17, 3, stylePromo);
-  paintRange(matrizSheet, 19, 21, 3, styleSug);
-  paintRange(matrizSheet, 23, 29, 3, styleDec);
+  paintRange(matrizSheet, 5, 9, 3, styleCalc);
+  paintRange(matrizSheet, 11, 13, 3, stylePromo);
+  paintRange(matrizSheet, 15, 16, 3, styleResultado);
+  paintRange(matrizSheet, 18, 20, 3, styleSug);
+  paintRange(matrizSheet, 22, 28, 3, styleDec);
   paintRange(matrizSheet, 4, 4, 3, styleSeparador);
-  paintRange(matrizSheet, 9, 9, 3, styleSeparador);
-  paintRange(matrizSheet, 13, 13, 3, styleSeparador);
-  paintRange(matrizSheet, 18, 18, 3, styleSeparador);
-  paintRange(matrizSheet, 22, 22, 3, styleSeparador);
+  paintRange(matrizSheet, 10, 10, 3, styleSeparador);
+  paintRange(matrizSheet, 14, 14, 3, styleSeparador);
+  paintRange(matrizSheet, 17, 17, 3, styleSeparador);
+  paintRange(matrizSheet, 21, 21, 3, styleSeparador);
   resumoSheet["!cols"] = [{ wch: 22 }, { wch: 28 }];
 
   XLSX.utils.book_append_sheet(workbook, resumoSheet, "Resumo");
@@ -714,6 +727,7 @@ async function gerarExportRelatorioXlsx({ idRaw }) {
     return n > 1 ? n / 100 : n;
   };
   const numeroOuNulo = (v) => {
+    if (v === null || v === undefined) return null;
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };

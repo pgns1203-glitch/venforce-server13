@@ -5,6 +5,7 @@
 const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
 const { exigirContextoPronto } = require("./contextoPrecificacaoService");
+const { resolverPrecosItem } = require("./precoItemService");
 
 function criarErroHttp(statusCode, payload) {
   const err = new Error(payload?.erro || "Erro");
@@ -163,32 +164,16 @@ async function gerarPreviewPrecificacaoMl({
     const categoryId = body?.category_id || null;
     const sellerId = body?.seller_id || null;
 
-    const precoOriginal =
+    const precoListaFallback =
       body?.price != null && Number.isFinite(Number(body.price)) && Number(body.price) > 0
         ? Number(body.price)
         : null;
 
-    let precoPromocionado = null;
-    try {
-      if (itemId) {
-        const pricesResp = await mlFetch(cliente.id, `/items/${encodeURIComponent(itemId)}/prices`);
-        const pricesList = Array.isArray(pricesResp?.data?.prices) ? pricesResp.data.prices : [];
-        const promoEntry = pricesList.find(p => p?.type === "promotion" && Number.isFinite(Number(p?.amount)) && Number(p.amount) > 0);
-        const standardEntry = pricesList.find(p => p?.type === "standard" && Number.isFinite(Number(p?.amount)) && Number(p.amount) > 0);
-        if (promoEntry) {
-          precoPromocionado = Number(promoEntry.amount);
-        } else if (standardEntry) {
-          precoPromocionado = Number(standardEntry.amount);
-        } else {
-          const amounts = pricesList.map(p => Number(p?.amount)).filter(n => Number.isFinite(n) && n > 0);
-          if (amounts.length > 0) precoPromocionado = Math.min(...amounts);
-        }
-      }
-    } catch (_) {
-      precoPromocionado = null;
-    }
-
-    const precoEfetivo = precoPromocionado ?? precoOriginal;
+    const {
+      precoCheio: precoOriginal,
+      precoPromocional: precoPromocionado,
+      precoEfetivo,
+    } = await resolverPrecosItem({ clienteId: cliente.id, itemId, precoListaFallback });
 
     const [listingPricesResp, shippingResp] = await Promise.all([
       (async () => {

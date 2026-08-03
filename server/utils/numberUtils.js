@@ -50,4 +50,39 @@ function round2(value) {
   return Number((Number.isFinite(value) ? value : 0).toFixed(2));
 }
 
-module.exports = { toNumber, positive, round2 };
+// Parser estrito para valores digitados no formulário financeiro. Formatos
+// ambíguos não podem ser reinterpretados silenciosamente como milhares.
+function parseMoneyValue(value) {
+  if (value === null || value === undefined || String(value).trim() === "") {
+    return { valid: true, value: 0 };
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value)
+      ? { valid: true, value }
+      : { valid: false, value: null };
+  }
+
+  const text = String(value)
+    .trim()
+    .replace(/^R\$\s*/i, "")
+    .replace(/\s+/g, "");
+
+  let normalized = null;
+  if (/^\d+$/.test(text)) {
+    normalized = text;
+  } else if (/^\d+[.,]\d{1,2}$/.test(text)) {
+    normalized = text.replace(",", ".");
+  } else if (/^\d{1,3}(?:\.\d{3})+,\d{1,2}$/.test(text)) {
+    normalized = text.replace(/\./g, "").replace(",", ".");
+  } else if (/^\d{1,3}(?:,\d{3})+\.\d{1,2}$/.test(text)) {
+    normalized = text.replace(/,/g, "");
+  }
+
+  if (normalized === null) return { valid: false, value: null };
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed)
+    ? { valid: true, value: parsed }
+    : { valid: false, value: null };
+}
+
+module.exports = { toNumber, positive, round2, parseMoneyValue };

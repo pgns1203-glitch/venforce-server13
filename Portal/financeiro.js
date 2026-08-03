@@ -321,14 +321,43 @@ function atualizarMiniResumo() {
   }
 }
 
-// Aceita "1.234,56" e "1234.56"
+function parseMoneyInputResult(raw) {
+  const text = String(raw ?? "").trim().replace(/^R\$\s*/i, "").replace(/\s+/g, "");
+  if (!text) return { valid: true, value: 0 };
+
+  let normalized = null;
+  if (/^\d+$/.test(text)) normalized = text;
+  else if (/^\d+[.,]\d{1,2}$/.test(text)) normalized = text.replace(",", ".");
+  else if (/^\d{1,3}(?:\.\d{3})+,\d{1,2}$/.test(text)) {
+    normalized = text.replace(/\./g, "").replace(",", ".");
+  } else if (/^\d{1,3}(?:,\d{3})+\.\d{1,2}$/.test(text)) {
+    normalized = text.replace(/,/g, "");
+  }
+
+  if (normalized === null) return { valid: false, value: null };
+  const value = Number(normalized);
+  return Number.isFinite(value)
+    ? { valid: true, value }
+    : { valid: false, value: null };
+}
+
 function parseMoneyInput(raw) {
-  if (raw == null) return 0;
-  let s = String(raw).trim();
-  if (!s) return 0;
-  if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
+  const parsed = parseMoneyInputResult(raw);
+  return parsed.valid ? parsed.value : 0;
+}
+
+function readValidatedMoneyInput(id, label) {
+  const input = document.getElementById(id);
+  const parsed = parseMoneyInputResult(input?.value);
+  const message = parsed.valid
+    ? ""
+    : `${label}: formato inválido ou ambíguo. Use 3011, 3011.00 ou 3.011,00.`;
+  if (input?.setCustomValidity) input.setCustomValidity(message);
+  if (!parsed.valid) {
+    if (input?.reportValidity) input.reportValidity();
+    throw new Error(message);
+  }
+  return parsed.value;
 }
 
 async function carregarClientesFinanceiro() {
@@ -988,9 +1017,9 @@ function finTone(value) {
 function renderFinResumoExecutivo(data) {
   const s = data?.summary || {};
   const m = finMetricas(data);
-  const ads = Number(document.getElementById("fin-ads")?.value || 0);
-  const venforce = Number(document.getElementById("fin-venforce")?.value || 0);
-  const afiliados = Number(document.getElementById("fin-affiliates")?.value || 0);
+  const ads = parseMoneyInput(document.getElementById("fin-ads")?.value);
+  const venforce = parseMoneyInput(document.getElementById("fin-venforce")?.value);
+  const afiliados = parseMoneyInput(document.getElementById("fin-affiliates")?.value);
 
   const refunds = Number(s.refundsTotal || 0);
   const refundsCount = Number(s.refundsCount || 0);
@@ -1778,9 +1807,9 @@ async function processarFechamentoFinanceiro() {
   setStatus("Processando…", "info");
 
   try {
-    const ads = parseMoneyInput(document.getElementById("fin-ads")?.value);
-    const venforce = parseMoneyInput(document.getElementById("fin-venforce")?.value);
-    const affiliates = parseMoneyInput(document.getElementById("fin-affiliates")?.value);
+    const ads = readValidatedMoneyInput("fin-ads", "ADS");
+    const venforce = readValidatedMoneyInput("fin-venforce", "Venforce");
+    const affiliates = readValidatedMoneyInput("fin-affiliates", "Afiliados");
 
     const formData = new FormData();
     formData.append("sales", sales);
@@ -1805,8 +1834,8 @@ async function processarFechamentoFinanceiro() {
 
     // FULL e Custos adicionais: opcionais, só Mercado Livre.
     if (marketplace === "meli") {
-      const fullCost = parseMoneyInput(document.getElementById("fin-full-cost")?.value);
-      const additionalCosts = parseMoneyInput(document.getElementById("fin-additional-costs")?.value);
+      const fullCost = readValidatedMoneyInput("fin-full-cost", "FULL");
+      const additionalCosts = readValidatedMoneyInput("fin-additional-costs", "Custos adicionais");
       formData.append("fullCost", String(fullCost));
       formData.append("additionalCosts", String(additionalCosts));
     }
@@ -1860,7 +1889,12 @@ async function processarFechamentoFinanceiro() {
     const origemTxt = json.costsSource === "base"
       ? ` Custos: base vinculada${json.costsBase?.nome ? ` "${json.costsBase.nome}"` : ""}.`
       : "";
-    setStatus("✓ Processado com sucesso." + origemTxt, "success");
+    if (json.emptySales) {
+      setChipProcessamento("sem vendas", "info");
+      setStatus("Planilha válida sem vendas." + origemTxt, "info");
+    } else {
+      setStatus("✓ Processado com sucesso." + origemTxt, "success");
+    }
 
     if (json.excelBase64) {
       const blob = base64ToBlob(json.excelBase64, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -2205,9 +2239,26 @@ const btnFinSalvar = document.getElementById("btn-fin-salvar");
 if (btnFinSalvar) btnFinSalvar.addEventListener("click", salvarFechamentoFinanceiro);
 
 // Ajustes financeiros e período atualizam o mini-resumo ao vivo.
+const FIN_MONEY_LABELS = {
+  "fin-ads": "ADS",
+  "fin-venforce": "Venforce",
+  "fin-affiliates": "Afiliados",
+  "fin-full-cost": "FULL",
+  "fin-additional-costs": "Custos adicionais",
+};
+
 ["fin-ads", "fin-venforce", "fin-affiliates", "fin-full-cost", "fin-additional-costs", "fin-periodo"].forEach((id) => {
   const el = document.getElementById(id);
-  if (el) el.addEventListener("input", atualizarMiniResumo);
+  if (el) el.addEventListener("input", () => {
+    if (FIN_MONEY_LABELS[id]) {
+      const parsed = parseMoneyInputResult(el.value);
+      const message = parsed.valid
+        ? ""
+        : `${FIN_MONEY_LABELS[id]}: formato inválido ou ambíguo. Use 3011, 3011.00 ou 3.011,00.`;
+      if (el.setCustomValidity) el.setCustomValidity(message);
+    }
+    atualizarMiniResumo();
+  });
 });
 
 updateOrdersAllVisibility();

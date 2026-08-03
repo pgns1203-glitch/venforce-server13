@@ -1,10 +1,68 @@
 // server/utils/excelUtils.js
-// Helpers de leitura/parsing de planilhas XLSX, extraídos de server/index.js.
-// NÃO alterar comportamento. detectMeliHeaderRow / detectShopeeHeaderRow
+// Helpers de leitura/parsing de planilhas XLSX. As detecções de cabeçalho
 // dependem de repairWorksheetRef ter sido aplicado antes.
 
 const XLSX = require("xlsx");
-const { normalizeText } = require("./textUtils");
+const { normalizeHeaderName, normalizeText } = require("./textUtils");
+
+const MELI_HEADER_FIELDS = Object.freeze({
+  saleNumber: [
+    "número de venda", "número da venda", "id de venda", "id da venda",
+    "venda número", "venda id",
+  ],
+  saleDate: [
+    "data da venda", "data de venda", "data e hora da venda",
+    "data e hora de venda", "data/hora da venda", "data",
+  ],
+  units: [
+    "unidades", "unidade", "quantidade", "quantidade de unidades",
+    "quantidade de produtos", "qtd", "qtde",
+  ],
+  total: [
+    "total (brl)", "total", "valor total (brl)", "valor total",
+    "receita líquida", "receita liquida", "valor líquido", "valor liquido",
+  ],
+  productRevenue: [
+    "receita por produtos (brl)", "receita por produtos",
+    "receita dos produtos (brl)", "receita dos produtos",
+    "receita de produtos", "receita por venda", "valor dos produtos", "subtotal dos produtos",
+  ],
+  adId: [
+    "# de anúncio", "# do anúncio", "número do anúncio", "número de anúncio",
+    "id do anúncio", "id de anúncio", "código do anúncio", "anúncio id", "mlb",
+  ],
+  unitPrice: [
+    "preço unitário de venda do anúncio (brl)",
+    "preço unitário de venda do anúncio", "preço unitário (brl)",
+    "preço unitário", "valor unitário (brl)", "valor unitário",
+  ],
+  saleFee: [
+    "tarifa de venda e impostos (brl)", "tarifa de venda e impostos",
+    "tarifas de venda e impostos", "tarifas por venda (brl)",
+    "tarifas por venda", "tarifa por venda", "tarifa de venda",
+  ],
+  shippingFee: [
+    "tarifas de envio (brl)", "tarifas de envio", "tarifa de envio",
+    "custo de envio", "frete (brl)", "frete",
+  ],
+  refund: [
+    "cancelamentos e reembolsos (brl)", "cancelamentos e reembolsos",
+    "cancelamento e reembolso", "devoluções e reembolsos (brl)",
+    "devoluções e reembolsos", "reembolsos (brl)", "reembolsos",
+  ],
+});
+
+const NORMALIZED_MELI_HEADER_FIELDS = Object.fromEntries(
+  Object.entries(MELI_HEADER_FIELDS).map(([field, aliases]) => [
+    field,
+    aliases.map(normalizeHeaderName),
+  ])
+);
+
+function headerMatchesAlias(header, alias) {
+  if (!header || !alias) return false;
+  return header === alias || ` ${header} `.includes(` ${alias} `);
+}
 
 function repairWorksheetRef(sheet) {
   if (!sheet || typeof sheet !== "object") return sheet;
@@ -69,28 +127,45 @@ function parseSpreadsheet(fileBuffer, skipRows = 0) {
   });
 }
 
-function detectMeliHeaderRow(fileBuffer) {
+function detectMeliHeader(fileBuffer) {
   const { rowsAsArrays } = readSheetRows(fileBuffer);
+  let best = null;
 
   for (let i = 0; i < rowsAsArrays.length; i++) {
-    const joined = (rowsAsArrays[i] || [])
-      .map((cell) => normalizeText(cell))
-      .join(" | ");
+    const headers = (rowsAsArrays[i] || [])
+      .map((cell) => String(cell ?? "").trim())
+      .filter(Boolean);
+    const normalizedHeaders = headers.map(normalizeHeaderName);
+    const matchedFields = [];
 
-    if (
-      joined.includes("n.º de venda") ||
-      joined.includes("n.o de venda") ||
-      joined.includes("nº de venda") ||
-      joined.includes("# de anuncio") ||
-      joined.includes("# de anúncio") ||
-      joined.includes("receita por produtos") ||
-      joined.includes("tarifa de venda e impostos")
-    ) {
-      return i;
+    for (const [field, aliases] of Object.entries(NORMALIZED_MELI_HEADER_FIELDS)) {
+      if (normalizedHeaders.some((header) => aliases.some((alias) => headerMatchesAlias(header, alias)))) {
+        matchedFields.push(field);
+      }
+    }
+
+    const score = matchedFields.length;
+    if (!best || score > best.score || (score === best.score && headers.length > best.headers.length)) {
+      best = { rowIndex: i, headers, matchedFields, score };
     }
   }
 
-  return 5;
+  const hasIdentity = best?.matchedFields.some((field) => field === "saleNumber" || field === "adId");
+  const hasQuantity = best?.matchedFields.includes("units");
+  const hasRevenue = best?.matchedFields.some(
+    (field) => field === "total" || field === "productRevenue" || field === "unitPrice"
+  );
+  const found = Boolean(best && best.score >= 3 && hasIdentity && hasQuantity && hasRevenue);
+
+  if (!best) {
+    return { rowIndex: 0, headers: [], matchedFields: [], score: 0, found: false };
+  }
+
+  return { ...best, found };
+}
+
+function detectMeliHeaderRow(fileBuffer) {
+  return detectMeliHeader(fileBuffer).rowIndex;
 }
 
 function detectShopeeHeaderRow(fileBuffer) {
@@ -132,6 +207,8 @@ module.exports = {
   repairWorksheetRef,
   readSheetRows,
   parseSpreadsheet,
+  MELI_HEADER_FIELDS,
+  detectMeliHeader,
   detectMeliHeaderRow,
   detectShopeeHeaderRow,
   createBadRequestError,

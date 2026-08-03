@@ -1,15 +1,16 @@
 // server/services/fechamentoFinanceiro/meliFinanceiroService.js
-// Lógica de fechamento financeiro do Mercado Livre.
-// Extraído de server/index.js sem alterações de comportamento.
-// NÃO mexer em fórmulas, nomes ou regras sem revisar todos os usos.
+// Lógica de fechamento financeiro do Mercado Livre. A extração aceita as
+// variações atuais dos cabeçalhos sem alterar as fórmulas financeiras.
 
 const XLSX = require("xlsx");
 const { toNumber, round2 } = require("../../utils/numberUtils");
 const {
   normalizeId,
   normalizeIdNoPrefix,
+  normalizeHeaderName,
   findField,
 } = require("../../utils/textUtils");
+const { MELI_HEADER_FIELDS } = require("../../utils/excelUtils");
 const {
   allocateByRevenue,
   buildCoverage,
@@ -24,34 +25,15 @@ const {
 function parseMeliRows(rows) {
   return rows.map((row, index) => {
     const saleNumber = String(
-      findField(row, [
-        "n.º de venda",
-        "n.o de venda",
-        "nª de venda",
-        "nº de venda",
-        "n° de venda",
-        "numero de venda",
-        "no de venda",
-      ]) ?? ""
+      findField(row, MELI_HEADER_FIELDS.saleNumber) ?? ""
     ).trim();
 
     const saleDate = String(
-      findField(row, ["data da venda"]) ?? ""
+      findField(row, MELI_HEADER_FIELDS.saleDate) ?? ""
     ).trim();
 
     const adIdRaw = String(
-      findField(row, [
-        "# de anúncio",
-        "# de anuncio",
-        "# do anúncio",
-        "# do anuncio",
-        "id do anúncio",
-        "id do anuncio",
-        "anúncio",
-        "anuncio",
-        "mlb",
-        "id",
-      ]) ?? ""
+      findField(row, MELI_HEADER_FIELDS.adId) ?? ""
     ).trim();
 
     const modelIdRaw = String(
@@ -62,32 +44,12 @@ function parseMeliRows(rows) {
       rowIndex: index,
       saleNumber,
       saleDate,
-      units: toNumber(findField(row, ["unidades"])),
-      total: toNumber(findField(row, ["total (brl)", "total"])),
-      productRevenue: toNumber(
-        findField(row, [
-          "receita por produtos (brl)",
-          "receita por produtos",
-        ])
-      ),
-      cancelRefund: toNumber(
-        findField(row, [
-          "cancelamentos e reembolsos (brl)",
-          "cancelamentos e reembolsos",
-        ])
-      ),
-      tarifaVenda: toNumber(
-        findField(row, [
-          "tarifa de venda e impostos (brl)",
-          "tarifa de venda e impostos",
-        ])
-      ),
-      tarifaEnvio: toNumber(
-        findField(row, [
-          "tarifas de envio (brl)",
-          "tarifas de envio",
-        ])
-      ),
+      units: toNumber(findField(row, MELI_HEADER_FIELDS.units)),
+      total: toNumber(findField(row, MELI_HEADER_FIELDS.total)),
+      productRevenue: toNumber(findField(row, MELI_HEADER_FIELDS.productRevenue)),
+      cancelRefund: toNumber(findField(row, MELI_HEADER_FIELDS.refund)),
+      tarifaVenda: toNumber(findField(row, MELI_HEADER_FIELDS.saleFee)),
+      tarifaEnvio: toNumber(findField(row, MELI_HEADER_FIELDS.shippingFee)),
       descontosBonus: toNumber(
         findField(row, [
           "descontos e bônus",
@@ -105,16 +67,86 @@ function parseMeliRows(rows) {
         ]) ?? ""
       ).trim(),
       unitSalePrice: toNumber(
-        findField(row, [
-          "preço unitário de venda do anúncio (brl)",
-          "preco unitario de venda do anuncio (brl)",
-          "preço unitário de venda do anúncio",
-          "preco unitario de venda do anuncio",
-        ])
+        findField(row, MELI_HEADER_FIELDS.unitPrice)
       ),
       modelIdRaw,
     };
   });
+}
+
+function rowHasData(row) {
+  return Object.values(row || {}).some(
+    (value) => value !== null && value !== undefined && String(value).trim() !== ""
+  );
+}
+
+function analyzeMeliParsing(rows) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  const parsedRows = parseMeliRows(sourceRows);
+  const revenueAliases = [
+    ...MELI_HEADER_FIELDS.total,
+    ...MELI_HEADER_FIELDS.productRevenue,
+    ...MELI_HEADER_FIELDS.unitPrice,
+  ].map(normalizeHeaderName);
+  const revenueHeaders = Array.from(new Set(
+    sourceRows.flatMap((row) => Object.keys(row || {}).filter((key) => {
+      const normalized = normalizeHeaderName(key);
+      return revenueAliases.some(
+        (alias) => normalized === alias || ` ${normalized} `.includes(` ${alias} `)
+      );
+    }))
+  ));
+  let unparsedRevenueCells = 0;
+  for (const row of sourceRows) {
+    for (const header of revenueHeaders) {
+      const raw = row?.[header];
+      const text = String(raw ?? "").trim();
+      if (text && /[1-9]/.test(text) && toNumber(raw) === 0) {
+        unparsedRevenueCells += 1;
+      }
+    }
+  }
+  const mainRows = parsedRows.filter((row) => !row.adId && Math.abs(row.productRevenue) > 0);
+  const itemRows = parsedRows.filter((row) => !!row.adId && row.units > 0);
+  const saleKeys = new Set(
+    itemRows.map((row) => row.saleNumber || `linha:${row.rowIndex + 1}`)
+  );
+  const itemRevenue = itemRows.reduce((sum, row) => {
+    const gross = row.unitSalePrice > 0
+      ? row.units * row.unitSalePrice
+      : Math.abs(row.productRevenue || row.total || 0);
+    return sum + gross;
+  }, 0);
+  const mainRevenue = mainRows.reduce(
+    (sum, row) => sum + Math.abs(row.productRevenue || row.total || 0),
+    0
+  );
+
+  return {
+    parsedRows,
+    totalRowsRead: sourceRows.filter(rowHasData).length,
+    rowsWithSaleNumber: parsedRows.filter((row) => !!row.saleNumber).length,
+    rowsWithAd: parsedRows.filter((row) => !!row.adId).length,
+    rowsWithUnits: parsedRows.filter((row) => row.units > 0).length,
+    mainRowsCount: mainRows.length,
+    itemRowsCount: itemRows.length,
+    recognizedRowsCount: mainRows.length + itemRows.length,
+    recognizedSalesCount: saleKeys.size,
+    sourceRevenueFound: round2(itemRevenue > 0 ? itemRevenue : mainRevenue),
+    detectedRevenueHeaders: revenueHeaders,
+    unparsedRevenueCells,
+    financialRowsCount: 0,
+    revenueFound: 0,
+    validEmpty: sourceRows.filter(rowHasData).length === 0,
+  };
+}
+
+function createMeliParsingError(message, diagnostics) {
+  const error = new Error(message);
+  error.statusCode = 422;
+  error.diagnostics = { ...diagnostics };
+  delete error.diagnostics.parsedRows;
+  return error;
 }
 
 
@@ -352,8 +384,29 @@ function processMeli(
   fullCost = 0,
   additionalCosts = 0
 ) {
-  const salesRows = parseMeliRows(salesRowsRaw);
+  const parsingDiagnostics = analyzeMeliParsing(salesRowsRaw);
+  const salesRows = parsingDiagnostics.parsedRows;
   const costMap = buildMeliCostMap(costRowsRaw);
+
+  if (
+    parsingDiagnostics.totalRowsRead > 0 &&
+    parsingDiagnostics.recognizedRowsCount === 0
+  ) {
+    throw createMeliParsingError(
+      "Não foi possível reconhecer as vendas desta planilha do Mercado Livre. Verifique o formato ou os cabeçalhos.",
+      parsingDiagnostics
+    );
+  }
+  if (
+    parsingDiagnostics.totalRowsRead > 0 &&
+    parsingDiagnostics.itemRowsCount > 0 &&
+    parsingDiagnostics.detectedRevenueHeaders.length === 0
+  ) {
+    throw createMeliParsingError(
+      "Não foi possível reconhecer as colunas de receita desta planilha do Mercado Livre. Verifique o formato ou os cabeçalhos.",
+      parsingDiagnostics
+    );
+  }
 
   const finalRows = [];
   const unmatchedIds = new Set();
@@ -412,7 +465,11 @@ function processMeli(
     const units = round2(item.units);
     const price = round2(item.unitSalePrice);
     const vendaTotal =
-      price > 0 ? round2(units * price) : round2(Math.abs(toNumber(totalRateado)));
+      price > 0
+        ? round2(units * price)
+        : Math.abs(item.productRevenue) > 0
+          ? round2(Math.abs(item.productRevenue))
+          : round2(Math.abs(toNumber(totalRateado)));
 
     excludedStatusRows.push({
       "# de anúncio": id || item.adIdRaw || "SEM_ID",
@@ -433,7 +490,11 @@ function processMeli(
     const units = round2(item.units);
     const price = round2(item.unitSalePrice);
     const vendaTotal =
-      price > 0 ? round2(units * price) : round2(Math.abs(totalRateado));
+      price > 0
+        ? round2(units * price)
+        : Math.abs(item.productRevenue) > 0
+          ? round2(Math.abs(item.productRevenue))
+          : round2(Math.abs(totalRateado));
 
     // Custo ausente NÃO apaga faturamento: a linha entra no fechamento com
     // receita preservada e lucro desconhecido (null, nunca 0).
@@ -616,6 +677,40 @@ function processMeli(
     finalRows.reduce((sum, row) => sum + Number(row["Venda Total"] || 0), 0)
   );
 
+  parsingDiagnostics.financialRowsCount = finalRows.length;
+  parsingDiagnostics.revenueFound = grossRevenueTotal;
+  delete parsingDiagnostics.parsedRows;
+
+  if (
+    parsingDiagnostics.totalRowsRead > 0 &&
+    parsingDiagnostics.recognizedSalesCount === 0
+  ) {
+    throw createMeliParsingError(
+      "Não foi possível reconhecer as vendas desta planilha do Mercado Livre. Verifique o formato ou os cabeçalhos.",
+      parsingDiagnostics
+    );
+  }
+  if (parsingDiagnostics.totalRowsRead > 0 && finalRows.length === 0) {
+    throw createMeliParsingError(
+      "A planilha do Mercado Livre foi lida, mas nenhuma linha financeira de venda foi criada.",
+      parsingDiagnostics
+    );
+  }
+  if (
+    parsingDiagnostics.totalRowsRead > 0 &&
+    grossRevenueTotal === 0 &&
+    (
+      parsingDiagnostics.sourceRevenueFound > 0 ||
+      parsingDiagnostics.unparsedRevenueCells > 0 ||
+      parsingDiagnostics.detectedRevenueHeaders.length === 0
+    )
+  ) {
+    throw createMeliParsingError(
+      "A planilha contém valores de venda, mas a receita não pôde ser reconhecida. Verifique o formato ou os cabeçalhos.",
+      parsingDiagnostics
+    );
+  }
+
   const revenueWithCost = round2(
     rowsWithCost.reduce((sum, row) => sum + Number(row["Venda Total"] || 0), 0)
   );
@@ -677,6 +772,8 @@ function processMeli(
   }
 
   return {
+    emptySales: parsingDiagnostics.validEmpty,
+    parsingDiagnostics,
     summary: {
       grossRevenueTotal,
       refundsTotal,
@@ -717,7 +814,9 @@ function processMeli(
     ignoredRowsWithoutCost: unmatchedIds.size,
     ignoredRevenue: round2(ignoredRevenue),
     message:
-      unmatchedIds.size > 0
+      parsingDiagnostics.validEmpty
+        ? "Planilha válida sem vendas."
+        : unmatchedIds.size > 0
         ? "Alguns anúncios do MELI não possuem custo cadastrado. O faturamento foi preservado; LC e MC cobrem apenas a receita com custo."
         : "OK",
   };
@@ -1366,6 +1465,7 @@ function processMeliForCentralVendas({
 
 module.exports = {
   parseMeliRows,
+  analyzeMeliParsing,
   parseMeliCostRows,
   buildMeliCostMap,
   buildMeliBaseSheetRows,

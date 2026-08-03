@@ -279,37 +279,27 @@ function contarNos(no) {
       !/innerHTML|outerHTML|insertAdjacentHTML|document\.write/.test(texto));
   });
 
-  /* ── 18. Ordem dos scripts no HTML ─────────────────────────────────────── */
+  /* ── 18. Ordem dos scripts no HTML da Biblioteca de Templates ─────────── */
+  //
+  // A refatoração da Biblioteca de Templates (design-templates.html) removeu
+  // as abas Editor/Construtor e os módulos que só existiam para elas
+  // (design-image-editor.js, design-templates.js, design-template-builder.js
+  // e afins deixaram de ser carregados ali). O contrato de ordem de scripts
+  // dessa tela agora vive em server/tests/designSimpleEditor.test.js; aqui
+  // fica só a garantia de que o motor de renderização puro continua sendo
+  // carregado, na ordem certa, por quem hoje depende dele.
 
   const html = fs.readFileSync(path.join(portalDir, "design-templates.html"), "utf8");
-  // Casa a TAG de script (src="..."), não o nome solto: comentários do HTML
-  // também citam os arquivos e falseariam a posição.
   const posicaoDoScript = (arquivo) => html.indexOf(`src="${arquivo}"`);
-  const ordem = [
-    "layout.js",
-    "design-image-model.js", "design-image-storage.js", "design-image-api.js", "design-image-editor.js",
+  const ordemDoRenderer = [
     "design-template-engine.js", "design-template-presets.js", "design-template-components.js",
-    "design-template-layouts.js", "design-template-renderer.js",
-    "design-template-builder-model.js", "design-template-builder-storage.js",
-    "design-template-proposal-generator.js",
-    "design-templates.js", "design-template-builder.js",
+    "design-template-layouts.js", "design-template-renderer.js", "design-template-builder-model.js",
   ];
-  const posicoes = ordem.map(posicaoDoScript);
-  ok("18. todos os módulos aparecem no HTML como <script src>", posicoes.every((p) => p > -1));
-  ok("18b. os scripts carregam em ordem de dependência",
-    posicoes.every((p, i) => i === 0 || p > posicoes[i - 1]));
-  ok("18c. o Fabric entra antes do editor de imagem",
-    html.indexOf("cdn.jsdelivr.net/npm/fabric@") > -1
-    && html.indexOf("cdn.jsdelivr.net/npm/fabric@") < posicaoDoScript("design-image-editor.js"));
-  ok("18d. o renderer carrega depois de componentes e layouts",
-    posicaoDoScript("design-template-renderer.js") > posicaoDoScript("design-template-layouts.js")
-    && posicaoDoScript("design-template-layouts.js") > posicaoDoScript("design-template-components.js"));
-  ok("18e. o construtor é o último script da página (consome a integração da tela)",
-    posicaoDoScript("design-template-builder.js") === Math.max(...posicoes)
-    && posicaoDoScript("design-templates.js") < posicaoDoScript("design-template-builder.js"));
-  ok("18f. o núcleo do construtor (model e storage) carrega antes da tela",
-    posicaoDoScript("design-template-builder-model.js") < posicaoDoScript("design-templates.js")
-    && posicaoDoScript("design-template-builder-storage.js") < posicaoDoScript("design-templates.js"));
+  const posicoesDoRenderer = ordemDoRenderer.map(posicaoDoScript);
+  ok("18. o motor de renderização continua carregado pela Biblioteca de Templates",
+    posicoesDoRenderer.every((p) => p > -1));
+  ok("18b. componentes, layouts e renderer carregam na ordem de dependência",
+    posicoesDoRenderer.every((p, i) => i === 0 || p > posicoesDoRenderer[i - 1]));
 
   /* ── 20. Campos ausentes ───────────────────────────────────────────────── */
 

@@ -104,24 +104,27 @@ async function listAccounts(clienteId, db = pool) {
 }
 
 async function listItems(type, clienteId, { archived = false, search = "" } = {}, db = pool) {
-  const { table } = metaFor(type);
+  const { table, versions, fk } = metaFor(type);
   const values = [clienteId, archived, `%${search}%`];
   const result = await db.query(
-    `SELECT *, $4::text AS item_type
-       FROM ${table}
-      WHERE cliente_id = $1
-        AND (($2::boolean = true AND archived_at IS NOT NULL) OR ($2::boolean = false AND archived_at IS NULL))
-        AND ($3 = '%%' OR name ILIKE $3)
-      ORDER BY updated_at DESC, id DESC`,
+    `SELECT t.*, $4::text AS item_type,
+            (SELECT MAX(version_number) FROM ${versions} v WHERE v.${fk} = t.id) AS current_version
+       FROM ${table} t
+      WHERE t.cliente_id = $1
+        AND (($2::boolean = true AND t.archived_at IS NOT NULL) OR ($2::boolean = false AND t.archived_at IS NULL))
+        AND ($3 = '%%' OR t.name ILIKE $3)
+      ORDER BY t.updated_at DESC, t.id DESC`,
     values.concat(type)
   );
   return result.rows;
 }
 
 async function getItem(type, id, clienteId, db = pool) {
-  const { table } = metaFor(type);
+  const { table, versions, fk } = metaFor(type);
   const result = await db.query(
-    `SELECT *, $3::text AS item_type FROM ${table} WHERE id = $1 AND cliente_id = $2`,
+    `SELECT t.*, $3::text AS item_type,
+            (SELECT MAX(version_number) FROM ${versions} v WHERE v.${fk} = t.id) AS current_version
+       FROM ${table} t WHERE t.id = $1 AND t.cliente_id = $2`,
     [id, clienteId, type]
   );
   return result.rows[0] || null;

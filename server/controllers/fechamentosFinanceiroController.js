@@ -73,6 +73,11 @@ function buildFechamentoContextRows(summary, marketplace) {
     { Item: "Receita com custo", Valor: formatSummaryValue(s.revenueWithCost) },
     { Item: "Receita sem custo", Valor: formatSummaryValue(s.revenueWithoutCost) },
     { Item: "Cobertura da base (%)", Valor: formatSummaryValue(s.calculatedCoveragePercent) },
+    // Eixo financeiro: tarifas e repasse ainda não publicados pelo ML.
+    { Item: "Faturamento com financeiro disponível", Valor: formatSummaryValue(s.revenueWithFinancialData) },
+    { Item: "Faturamento com financeiro pendente", Valor: formatSummaryValue(s.revenuePendingFinancial) },
+    { Item: "Cobertura financeira (%)", Valor: formatSummaryValue(s.financialDataCoveragePercent) },
+    { Item: "Vendas aguardando financeiro", Valor: formatSummaryValue(s.salesPendingFinancialCount) },
     { Item: "LC calculado", Valor: formatSummaryValue(s.contributionProfitTotal) },
     { Item: "MC calculada", Valor: formatSummaryValue(s.contributionMarginCalculated) },
     { Item: "Resultado Final calculado", Valor: formatSummaryValue(s.finalResult) },

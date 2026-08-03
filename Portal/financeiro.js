@@ -478,6 +478,13 @@ function normalizeFinancialSummaryForPublicReport(data) {
     revenueWithCost: finNumOrNull(s.revenueWithCost),
     revenueWithoutCost: finNumOrNull(s.revenueWithoutCost),
     calculatedCoveragePercent: finCobertura(s),
+    // Financeiro ainda não publicado pelo Mercado Livre — eixo independente
+    // da cobertura de custos.
+    revenueWithFinancialData: finNumOrNull(s.revenueWithFinancialData),
+    revenuePendingFinancial: finNumOrNull(s.revenuePendingFinancial),
+    financialDataCoveragePercent: finNumOrNull(s.financialDataCoveragePercent),
+    salesPendingFinancialCount: finNumOrNull(s.salesPendingFinancialCount),
+    pendingFinancialWarning: s.pendingFinancialWarning || null,
     financialConfidence: String(s.financialConfidence || ""),
     calculationMode: String(s.calculationMode || ""),
   };
@@ -871,14 +878,36 @@ function renderCoberturaBanner(data) {
   const modo = finModoLabel(s);
   const semCusto = finNumOrNull(s.revenueWithoutCost);
 
+  const pendenteValor = finNumOrNull(s.revenuePendingFinancial);
+  const pendenteQtd = finNumOrNull(s.salesPendingFinancialCount);
+  const coberturaFin = finNumOrNull(s.financialDataCoveragePercent);
+  const financeiroPendente = (pendenteValor || 0) > 0;
+
   const parcial = cobertura !== null && cobertura < 99.995;
-  if (!parcial && !modo) {
+  if (!parcial && !financeiroPendente && !modo) {
     limparCoberturaBanner();
     return;
   }
 
   const linhas = [];
   if (modo) linhas.push(`<p><b>${escapeHTML(modo)}</b></p>`);
+
+  // Tarifas/repasse ainda não publicados: a venda conta no faturamento, mas
+  // fica fora de LC, MC e Resultado Final.
+  if (financeiroPendente) {
+    linhas.push(
+      `<p>${escapeHTML(
+        s.pendingFinancialWarning ||
+        "Parte das vendas ainda não possui tarifas e repasse disponíveis no relatório " +
+        "do Mercado Livre. LC, MC e Resultado Final consideram somente as vendas com " +
+        "dados financeiros completos."
+      )}</p>`,
+      `<p>Vendas aguardando financeiro: <b>${pendenteQtd ?? 0}</b>` +
+      ` · Faturamento pendente: <b>${brl(pendenteValor)}</b>` +
+      (coberturaFin !== null ? ` · Cobertura financeira: <b>${pct(coberturaFin / 100)}</b>` : "") +
+      `.</p>`
+    );
+  }
 
   if (parcial) {
     linhas.push(
@@ -892,9 +921,15 @@ function renderCoberturaBanner(data) {
   }
 
   host.innerHTML = `
-    <div class="vf-banner ${parcial ? "is-warning" : "is-info"}" role="status">
+    <div class="vf-banner ${parcial || financeiroPendente ? "is-warning" : "is-info"}" role="status">
       <div class="vf-banner__content">
-        <p class="vf-banner__title">${parcial ? "Cobertura parcial da base de custos" : "Modo de cálculo"}</p>
+        <p class="vf-banner__title">${
+          financeiroPendente
+            ? "Financeiro pendente no relatório do Mercado Livre"
+            : parcial
+              ? "Cobertura parcial da base de custos"
+              : "Modo de cálculo"
+        }</p>
         ${linhas.join("")}
       </div>
     </div>`;

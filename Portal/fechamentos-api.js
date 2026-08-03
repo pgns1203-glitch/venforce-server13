@@ -17,8 +17,8 @@
        pós-importação, pós-sincronização); filtros/busca/paginação e
        troca de aba são 100% locais;
      - Detalhe do pedido em drawer lateral;
-     - Curva ABC isolada em módulo próprio (ver seção "MÓDULO CURVA ABC")
-       para futura extração em página dedicada.
+     - Curva ABC integrada permanentemente à Fechamento API e isolada em
+       módulo próprio apenas para organização interna.
    ================================================================ */
 
 const STORAGE_KEY = "vf-token";
@@ -282,7 +282,7 @@ const F = {
     search: '',
     searchTimer: null,
     page: 1, pageSize: 50,
-    selectedProduct: null,     // reservado p/ futura extração (sem uso hoje)
+    selectedProduct: null,     // estado interno do módulo (sem uso hoje)
   },
 };
 
@@ -1693,7 +1693,7 @@ function onDrawerKeydown(e) {
 /* ================================================================
    MÓDULO CURVA ABC  (aba Produtos / Curva ABC)
    ----------------------------------------------------------------
-   FRONTEIRA DE EXTRAÇÃO FUTURA — regras deste bloco:
+   ORGANIZAÇÃO INTERNA DO MÓDULO — regras deste bloco:
      - Estado exclusivo em F.abc (nenhum outro módulo lê/escreve);
      - Recebe os pedidos DERIVADOS como argumento (não conhece
        F.viewPayload, filtros de Pedidos nem paginação de Pedidos);
@@ -1703,9 +1703,9 @@ function onDrawerKeydown(e) {
      - Nenhuma função daqui toca o DOM de Pedidos, e nenhuma função
        de Pedidos toca o DOM daqui;
      - CSS específico usa o prefixo .vf-fapi-abc.
-   Para extrair no futuro: mover este bloco + F.abc + o CSS
-   .vf-fapi-abc* e alimentar renderCurvaAbc(orders) com o payload
-   da nova página.
+   O módulo permanece nesta página. O isolamento de estado, DOM e CSS
+   existe somente para manter a Fechamento API organizada; o módulo não
+   será movido para outra página.
    ================================================================ */
 
 function abcRoot() { return document.getElementById('fapi-abc-root'); }

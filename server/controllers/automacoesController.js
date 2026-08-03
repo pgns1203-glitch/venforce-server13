@@ -41,6 +41,10 @@ const {
 } = require("../services/automacoes/planilhaPrecificacaoSemBaseService");
 
 const {
+  gerarModeloBaseCustos,
+} = require("../services/automacoes/modeloBaseCustosService");
+
+const {
   criarJobDiagnostico,
   enfileirarDiagnostico,
   buscarStatusDiagnostico,
@@ -372,6 +376,19 @@ async function exportPlanilhaPrecificacaoSemBaseController(req, res) {
   }
 }
 
+async function exportModeloBaseCustosController(req, res) {
+  try {
+    const arquivo = await gerarModeloBaseCustos({
+      clienteSlugRaw: req.params.clienteSlug,
+    });
+    res.setHeader("Content-Type", arquivo.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${arquivo.filename}"`);
+    return res.send(arquivo.buffer);
+  } catch (err) {
+    return responderErroService(res, err);
+  }
+}
+
 async function iniciarDiagnosticoCompletoController(req, res) {
   try {
     const { clienteSlug, baseSlug, margemAlvo, observacoes } = req.body || {};
@@ -487,7 +504,7 @@ module.exports = {
   exportRelatorioCsvController,
   exportRelatorioXlsxController,
   exportPlanilhaPrecificacaoSemBaseController,
+  exportModeloBaseCustosController,
   iniciarDiagnosticoCompletoController,
   buscarDiagnosticoCompletoController,
 };
-

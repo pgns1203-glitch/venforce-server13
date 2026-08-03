@@ -26,6 +26,7 @@ const {
   exportRelatorioCsvController,
   exportRelatorioXlsxController,
   exportPlanilhaPrecificacaoSemBaseController,
+  exportModeloBaseCustosController,
   iniciarDiagnosticoCompletoController,
   buscarDiagnosticoCompletoController,
 } = require("../controllers/automacoesController");
@@ -41,6 +42,10 @@ router.get("/automacoes/precificacao/preview-ml", authMiddleware, requireAutomac
 // Planilha de precificação (mesma matriz/fórmulas do XLSX do relatório) gerada
 // direto do grant ML, sem exigir base de custos vinculada. Somente leitura.
 router.get("/automacoes/clientes/:clienteSlug/planilha-precificacao.xlsx", authMiddleware, requireAutomacoesAccess, exportPlanilhaPrecificacaoSemBaseController);
+
+// Modelo simples para criar uma base: somente os IDs MLB dos anúncios ativos,
+// sem enriquecimento financeiro, relatório ou escrita no banco.
+router.get("/automacoes/clientes/:clienteSlug/modelo-base-custos.xlsx", authMiddleware, requireAutomacoesAccess, exportModeloBaseCustosController);
 
 router.get("/automacoes/promocoes-retorno/preview", authMiddleware, requireAutomacoesAccess, previewPromocoesRetornoController);
 
@@ -77,4 +82,3 @@ router.post("/automacoes/diagnostico-completo/start", authMiddleware, requireAut
 router.get("/automacoes/diagnostico-completo/:id", authMiddleware, requireAutomacoesAccess, buscarDiagnosticoCompletoController);
 
 module.exports = router;
-

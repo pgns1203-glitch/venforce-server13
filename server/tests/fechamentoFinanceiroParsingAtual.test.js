@@ -110,6 +110,31 @@ async function main() {
   eq("controller devolve a receita reconhecida", validRes.body.summary.grossRevenueTotal, 350);
   ok("controller não marca planilha com vendas como vazia", !validRes.body.emptySales);
 
+  const parentChildBuffer = workbookBuffer([
+    [
+      "N.º de venda", "Data da venda", "Estado", "Unidades",
+      "Receita por produtos (BRL)", "Tarifa de venda e impostos (BRL)",
+      "Total (BRL)", "# de anúncio", "Título do anúncio",
+      "Preço unitário de venda do anúncio (BRL)",
+    ],
+    ["V-PAI-1", "03/08/2026", "Pago", 2, 200, -20, 180, "", "", ""],
+    ["", "", "", "", "", "", "", "MLB111", "Produto filho", 100],
+  ]);
+  const parentChildReq = {
+    files: {
+      sales: [{ buffer: parentChildBuffer }],
+      costs: [{ buffer: costsBuffer }],
+    },
+    body: { marketplace: "meli", ads: "0", venforce: "0", affiliates: "0" },
+  };
+  const parentChildRes = fakeRes();
+  await processarFechamentoFinanceiroController(parentChildReq, parentChildRes);
+  eq("estrutura pai/filho responde 200, não 422", parentChildRes.statusCode, 200);
+  eq("controller reconhece a receita do pai", parentChildRes.body.summary.grossRevenueTotal, 200);
+  eq("controller calcula o LC do item filho", parentChildRes.body.summary.contributionProfitTotal, 100);
+  eq("controller encontra o custo pelo MLB filho", parentChildRes.body.detailedRows[0]["Preço de custo"], 40);
+  eq("controller calcula cobertura integral", parentChildRes.body.summary.calculatedCoveragePercent, 100);
+
   console.log("\n▸ Mercado Livre — formato não reconhecido retorna 422");
   const invalidSales = workbookBuffer([
     ["Relatório"],

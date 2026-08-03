@@ -686,8 +686,9 @@
 }
 
 /* ------------------------------------------------------------
- * 9. Módulo Curva ABC (fronteira p/ futura extração)
- * Tudo escopado no root [data-module="curva-abc"] = .vf-fapi-abc.
+ * 9. Módulo Curva ABC integrado permanentemente à Fechamento API
+ * O escopo no root [data-module="curva-abc"] = .vf-fapi-abc existe
+ * somente para organização interna; não há plano de outra página.
  * ------------------------------------------------------------ */
 .vf-page-fechamentos-api .vf-fapi-abc {
   display: flex;
@@ -777,7 +778,7 @@
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc__table-wrap {
-  max-height: 64vh;
+  max-height: none;
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-table {
@@ -858,8 +859,7 @@
     flex: 1 1 auto;
   }
 
-  .vf-page-fechamentos-api .vf-fapi-orders__table-wrap,
-  .vf-page-fechamentos-api .vf-fapi-abc__table-wrap {
+  .vf-page-fechamentos-api .vf-fapi-orders__table-wrap {
     max-height: none;
   }
 }
@@ -870,5 +870,18 @@
  * só especificidade (0,2,0) e posição (última regra do arquivo).
  * ------------------------------------------------------------ */
 .vf-page-fechamentos-api [hidden] {
+  display: none;
+}
+
+/* Contrato explícito da aba: quando ativa, o painel participa do fluxo
+   normal e cresce com toda a Curva ABC; quando hidden, não ocupa espaço. */
+.vf-page-fechamentos-api #fapi-panel-produtos:not([hidden]) {
+  display: flex;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+.vf-page-fechamentos-api #fapi-panel-produtos[hidden] {
   display: none;
 }

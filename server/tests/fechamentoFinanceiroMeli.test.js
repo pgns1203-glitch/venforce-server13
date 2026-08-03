@@ -16,6 +16,12 @@ Module._load = function loadWithXlsxStub(request, parent, isMain) {
 
 const {
   processMeli,
+  parseMeliRows,
+  analyzeMeliParsing,
+  isMainRow,
+  isDetailRow,
+  isEffectiveItemRow,
+  enrichDetailsFromMain,
   allocateByRevenue,
   classifyMeliSaleStatus,
 } = require("../services/fechamentoFinanceiro/meliFinanceiroService");
@@ -104,6 +110,105 @@ console.log("\n▸ classifyMeliSaleStatus");
     classifyMeliSaleStatus({ "descricao do status": "Cancelada pelo comprador" }),
     "cancelled"
   );
+}
+
+// ── Estrutura real MELI: venda principal + detalhe sem campos repetidos ────
+console.log("\n▸ Estrutura pai/filho real do Mercado Livre");
+{
+  const salesRowsRaw = [
+    {
+      "N.º de venda": "10001",
+      "Data da venda": "2026-08-01",
+      Estado: "Pago",
+      Unidades: 2,
+      "Receita por produtos (BRL)": 200,
+      "Tarifa de venda e impostos (BRL)": -20,
+      "Tarifas de envio (BRL)": 0,
+      "Cancelamentos e reembolsos (BRL)": 0,
+      "Total (BRL)": 180,
+    },
+    {
+      "# de anúncio": "MLB555",
+      "Título do anúncio": "Produto detalhado",
+      "Preço unitário de venda do anúncio (BRL)": 100,
+      // O export real não repete venda, data, estado nem unidades aqui.
+    },
+  ];
+  const costRowsRaw = [{ "# de anúncio": "MLB555", custo: 40, imposto: 0 }];
+
+  const result = processMeli(salesRowsRaw, costRowsRaw, 0, 0, 0);
+  const item = result.detailedRows[0];
+
+  eq("uma venda principal reconhecida", result.parsingDiagnostics.recognizedSalesCount, 1);
+  eq("um item associado à venda", result.parsingDiagnostics.associatedItemsCount, 1);
+  eq("MLB do detalhe preservado", item["# de anúncio"], "MLB555");
+  eq("unidades herdadas da venda principal", item.Unidades, 2);
+  eq("receita bruta reconhecida", result.summary.grossRevenueTotal, 200);
+  eq("receita líquida rateada", result.summary.paidRevenueTotal, 180);
+  eq("custo unitário encontrado na base", item["Preço de custo"], 40);
+  eq("custo total calculado", item["Preço de custo total"], 80);
+  eq("LC calculado sem mudar a fórmula", result.summary.contributionProfitTotal, 100);
+  eq("MC calculada", item.MC, 50);
+  eq("cobertura calculada", result.summary.calculatedCoveragePercent, 100);
+  eq("confiança integral", result.summary.financialConfidence, "confiavel");
+  eq("nenhum item foi enviado à auditoria", result.auditRows.length, 0);
+}
+
+console.log("\n▸ Pai com múltiplos detalhes sem unidades");
+{
+  const rows = [
+    {
+      "N.º de venda": "10002",
+      "Data da venda": "2026-08-02",
+      Estado: "Pago",
+      Unidades: 3,
+      "Receita por produtos (BRL)": 300,
+      "Total (BRL)": 270,
+    },
+    { "# de anúncio": "MLB556", "Título do anúncio": "Produto A", "Preço unitário": 100 },
+    { "# de anúncio": "MLB557", "Título do anúncio": "Produto B", "Preço unitário": 100 },
+  ];
+  let error = null;
+  try {
+    processMeli(rows, [], 0, 0, 0);
+  } catch (caught) {
+    error = caught;
+  }
+  eq("quantidades ambíguas retornam 422", error?.statusCode, 422);
+  ok("mensagem explica a ambiguidade das unidades", /vários detalhes.*unidades/i.test(error?.message || ""));
+}
+
+console.log("\n▸ Rateio financeiro pai/filhos enriquecidos");
+{
+  const rawRows = [
+    {
+      "N.º de venda": "10003",
+      "Data da venda": "2026-08-03",
+      Estado: "Pago",
+      Unidades: 3,
+      "Receita por produtos (BRL)": 300,
+      "Tarifa de venda e impostos (BRL)": -30,
+      "Tarifas de envio (BRL)": -10,
+      "Cancelamentos e reembolsos (BRL)": -5,
+      "Total (BRL)": 250,
+    },
+    { "# de anúncio": "MLB558", Unidades: 1, "Preço unitário": 100 },
+    { "# de anúncio": "MLB559", Unidades: 2, "Preço unitário": 100 },
+  ];
+  const parsed = parseMeliRows(rawRows);
+  const diagnostics = analyzeMeliParsing(rawRows);
+  const effective = enrichDetailsFromMain(parsed[0], parsed.slice(1), diagnostics);
+
+  ok("predicado separa a linha financeira principal", isMainRow(parsed[0]));
+  ok("predicado aceita detalhe apenas com MLB", isDetailRow(parsed[1]));
+  ok("detalhes enriquecidos tornam-se itens efetivos", effective.every(isEffectiveItemRow));
+  eq("total rateado fecha", round2(effective.reduce((sum, item) => sum + item.total, 0)), 250);
+  eq("tarifa rateada fecha", round2(effective.reduce((sum, item) => sum + item.tarifaVenda, 0)), -30);
+  eq("frete rateado fecha", round2(effective.reduce((sum, item) => sum + item.tarifaEnvio, 0)), -10);
+  eq("cancelamentos rateados fecham", round2(effective.reduce((sum, item) => sum + item.cancelRefund, 0)), -5);
+  eq("ajuste de plataforma rateado fecha", round2(effective.reduce((sum, item) => sum + item.platformAdjustment, 0)), 10);
+  eq("primeiro item recebe 1/3 do total", effective[0].total, 83.33);
+  eq("segundo item absorve arredondamento", effective[1].total, 166.67);
 }
 
 // ── Teste 4 — Filho cancelado dentro de pedido agrupado ────────────────────

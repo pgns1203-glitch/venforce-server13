@@ -69,9 +69,148 @@ function parseMeliRows(rows) {
       unitSalePrice: toNumber(
         findField(row, MELI_HEADER_FIELDS.unitPrice)
       ),
+      statusKind: classifyMeliSaleStatus(row),
       modelIdRaw,
     };
   });
+}
+
+// Linha financeira agregada da venda: carrega receita/taxas/total, mas não o
+// anúncio. Alguns exports preenchem só parte dos componentes financeiros.
+function isMainRow(row) {
+  if (!row || row.adId) return false;
+  return [
+    row.productRevenue,
+    row.total,
+    row.tarifaVenda,
+    row.tarifaEnvio,
+    row.cancelRefund,
+    row.descontosBonus,
+  ].some((value) => Math.abs(Number(value || 0)) > 0);
+}
+
+// Linha de produto bruta. No formato pai/filho real ela pode conter somente
+// MLB, título e preço unitário — unidades, data e venda ficam vazios.
+function isDetailRow(row) {
+  return Boolean(row?.adId);
+}
+
+// Produto pronto para o motor financeiro, depois de herdar o contexto da
+// venda principal ou quando já veio completo em uma linha independente.
+function isEffectiveItemRow(row) {
+  return Boolean(row?.adId) && Number(row?.units || 0) > 0;
+}
+
+function detailStartsAnotherSale(parent, detail) {
+  return Boolean(
+    parent?.saleNumber &&
+    detail?.saleNumber &&
+    String(parent.saleNumber) !== String(detail.saleNumber)
+  );
+}
+
+function collectMeliAssociations(parsedRows) {
+  const groups = [];
+  const associatedIndexes = new Set();
+
+  for (let i = 0; i < parsedRows.length; i++) {
+    const parent = parsedRows[i];
+    if (!isMainRow(parent)) continue;
+
+    const details = [];
+    const detailIndexes = [];
+    let j = i + 1;
+    while (j < parsedRows.length) {
+      const next = parsedRows[j];
+      if (isMainRow(next)) break;
+      if (!isDetailRow(next)) break;
+      if (detailStartsAnotherSale(parent, next)) break;
+      details.push(next);
+      detailIndexes.push(j);
+      j += 1;
+    }
+
+    if (details.length > 0) {
+      groups.push({ parent, parentIndex: i, details, detailIndexes });
+      detailIndexes.forEach((index) => associatedIndexes.add(index));
+    }
+  }
+
+  const standaloneItems = parsedRows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row, index }) =>
+      !associatedIndexes.has(index) && !isMainRow(row) && isEffectiveItemRow(row)
+    );
+
+  return { groups, associatedIndexes, standaloneItems };
+}
+
+function allocateParentValue(value, items) {
+  if (Math.abs(Number(value || 0)) <= 0) return items.map(() => 0);
+  return allocateByRevenue(value, items);
+}
+
+function enrichDetailsFromMain(parent, details, diagnostics) {
+  const missingUnits = details.filter((detail) => !(Number(detail.units) > 0));
+  const saleLabel = parent.saleNumber || `linha ${parent.rowIndex + 1}`;
+
+  if (details.length === 1 && missingUnits.length === 1) {
+    if (!(Number(parent.units) > 0)) {
+      throw createMeliParsingError(
+        `Não foi possível determinar as unidades do produto da venda ${saleLabel}.`,
+        diagnostics
+      );
+    }
+  } else if (details.length > 1 && missingUnits.length > 0) {
+    throw createMeliParsingError(
+      `Não foi possível determinar com segurança as unidades dos produtos da venda ${saleLabel}: ` +
+      "há vários detalhes com MLB e pelo menos um deles não informa unidades.",
+      diagnostics
+    );
+  }
+
+  const items = details.map((detail) => ({
+    ...detail,
+    saleNumber: detail.saleNumber || parent.saleNumber,
+    saleDate: detail.saleDate || parent.saleDate,
+    statusKind: detail.statusKind !== "other" ? detail.statusKind : parent.statusKind,
+    units: Number(detail.units) > 0 ? detail.units : parent.units,
+  }));
+
+  const allocationProbe = allocateByRevenue(1, items);
+  if (items.length > 0 && round2(allocationProbe.reduce((sum, value) => sum + value, 0)) !== 1) {
+    throw createMeliParsingError(
+      `Não foi possível ratear com segurança os valores da venda ${saleLabel} entre seus produtos.`,
+      diagnostics
+    );
+  }
+
+  const productRevenue = allocateParentValue(parent.productRevenue, items);
+  const total = allocateParentValue(parent.total, items);
+  const tarifaVenda = allocateParentValue(parent.tarifaVenda, items);
+  const tarifaEnvio = allocateParentValue(parent.tarifaEnvio, items);
+  const cancelRefund = allocateParentValue(parent.cancelRefund, items);
+  const descontosBonus = allocateParentValue(parent.descontosBonus, items);
+  const platformAdjustment = allocateParentValue(
+    (parent.productRevenue || 0) +
+      (parent.tarifaVenda || 0) +
+      (parent.tarifaEnvio || 0) +
+      (parent.descontosBonus || 0) -
+      (parent.total || 0),
+    items
+  );
+
+  return items.map((item, index) => ({
+    ...item,
+    productRevenue: productRevenue[index],
+    total: total[index],
+    tarifaVenda: tarifaVenda[index],
+    tarifaEnvio: tarifaEnvio[index],
+    cancelRefund: cancelRefund[index],
+    descontosBonus: descontosBonus[index],
+    platformAdjustment: platformAdjustment[index],
+    parentRowIndex: parent.rowIndex,
+  }));
 }
 
 function rowHasData(row) {
@@ -106,19 +245,20 @@ function analyzeMeliParsing(rows) {
       }
     }
   }
-  const mainRows = parsedRows.filter((row) => !row.adId && Math.abs(row.productRevenue) > 0);
-  const itemRows = parsedRows.filter((row) => !!row.adId && row.units > 0);
-  const saleKeys = new Set(
-    itemRows.map((row) => row.saleNumber || `linha:${row.rowIndex + 1}`)
+  const mainRows = parsedRows.filter(isMainRow);
+  const detailRows = parsedRows.filter(isDetailRow);
+  const associations = collectMeliAssociations(parsedRows);
+  const standaloneSaleKeys = new Set(
+    associations.standaloneItems.map(({ row }) => row.saleNumber || `linha:${row.rowIndex + 1}`)
   );
-  const itemRevenue = itemRows.reduce((sum, row) => {
+  const standaloneRevenue = associations.standaloneItems.reduce((sum, { row }) => {
     const gross = row.unitSalePrice > 0
       ? row.units * row.unitSalePrice
       : Math.abs(row.productRevenue || row.total || 0);
     return sum + gross;
   }, 0);
-  const mainRevenue = mainRows.reduce(
-    (sum, row) => sum + Math.abs(row.productRevenue || row.total || 0),
+  const associatedRevenue = associations.groups.reduce(
+    (sum, group) => sum + Math.abs(group.parent.productRevenue || group.parent.total || 0),
     0
   );
 
@@ -129,10 +269,14 @@ function analyzeMeliParsing(rows) {
     rowsWithAd: parsedRows.filter((row) => !!row.adId).length,
     rowsWithUnits: parsedRows.filter((row) => row.units > 0).length,
     mainRowsCount: mainRows.length,
-    itemRowsCount: itemRows.length,
-    recognizedRowsCount: mainRows.length + itemRows.length,
-    recognizedSalesCount: saleKeys.size,
-    sourceRevenueFound: round2(itemRevenue > 0 ? itemRevenue : mainRevenue),
+    detailRowsCount: detailRows.length,
+    itemRowsCount: detailRows.length,
+    recognizedRowsCount: mainRows.length + detailRows.length,
+    recognizedSalesCount: associations.groups.length + standaloneSaleKeys.size,
+    associatedItemsCount:
+      associations.groups.reduce((sum, group) => sum + group.details.length, 0) +
+      associations.standaloneItems.length,
+    sourceRevenueFound: round2(associatedRevenue + standaloneRevenue),
     detectedRevenueHeaders: revenueHeaders,
     unparsedRevenueCells,
     financialRowsCount: 0,
@@ -387,6 +531,10 @@ function processMeli(
   const parsingDiagnostics = analyzeMeliParsing(salesRowsRaw);
   const salesRows = parsingDiagnostics.parsedRows;
   const costMap = buildMeliCostMap(costRowsRaw);
+  const associations = collectMeliAssociations(salesRows);
+  const groupByParentIndex = new Map(
+    associations.groups.map((group) => [group.parentIndex, group])
+  );
 
   if (
     parsingDiagnostics.totalRowsRead > 0 &&
@@ -429,14 +577,6 @@ function processMeli(
       .reduce((sum, row) => sum + Number(row.productRevenue || 0), 0)
   );
 
-  function isMainRow(row) {
-    return !row.adId && Math.abs(row.productRevenue) > 0;
-  }
-
-  function isItemRow(row) {
-    return !!row.adId && row.units > 0;
-  }
-
   function computePlatformAdjustment(row) {
     const expected =
       (row.productRevenue || 0) +
@@ -464,8 +604,12 @@ function processMeli(
     const id = normalizeId(item.adId || item.adIdRaw);
     const units = round2(item.units);
     const price = round2(item.unitSalePrice);
+    const inheritedRevenue =
+      item.parentRowIndex !== undefined && Math.abs(item.productRevenue) > 0;
     const vendaTotal =
-      price > 0
+      inheritedRevenue
+        ? round2(Math.abs(item.productRevenue))
+        : price > 0
         ? round2(units * price)
         : Math.abs(item.productRevenue) > 0
           ? round2(Math.abs(item.productRevenue))
@@ -489,8 +633,12 @@ function processMeli(
 
     const units = round2(item.units);
     const price = round2(item.unitSalePrice);
+    const inheritedRevenue =
+      item.parentRowIndex !== undefined && Math.abs(item.productRevenue) > 0;
     const vendaTotal =
-      price > 0
+      inheritedRevenue
+        ? round2(Math.abs(item.productRevenue))
+        : price > 0
         ? round2(units * price)
         : Math.abs(item.productRevenue) > 0
           ? round2(Math.abs(item.productRevenue))
@@ -572,50 +720,24 @@ function processMeli(
 
     const current = salesRows[i];
 
-    // Exclui do cálculo de LC/MC mas não dos totais de reembolso
-    const statusAtual = classifyMeliSaleStatus(salesRowsRaw[i] || {});
-    if (isMeliStatusOutOfProfit(statusAtual) && !isMainRow(current)) {
-      registerExcludedRow(current, statusAtual, current.total);
-      continue;
-    }
-
     if (isMainRow(current)) {
-      const children = [];
-      const childrenIndexes = [];
-      let j = i + 1;
+      const group = groupByParentIndex.get(i);
 
-      while (j < salesRows.length) {
-        const next = salesRows[j];
+      if (group?.details.length > 0) {
+        const effectiveItems = enrichDetailsFromMain(
+          current,
+          group.details,
+          parsingDiagnostics
+        );
 
-        if (isMainRow(next)) break;
-        if (next.saleDate !== current.saleDate) break;
-        if (!isItemRow(next)) break;
-
-        children.push(next);
-        childrenIndexes.push(j);
-        j++;
-      }
-
-      if (children.length > 0) {
-        // Rateio proporcional ao valor vendido (não por quantidade) sobre
-        // TODOS os filhos: o agregado do pedido não muda, só a distribuição.
-        const totalRateado = allocateByRevenue(current.total, children);
-        const ajusteParent = computePlatformAdjustment(current);
-        const ajustesRateados = allocateByRevenue(ajusteParent, children);
-
-        for (let k = 0; k < children.length; k++) {
-          // Cada filho é classificado ANTES de ser marcado como consumido.
-          const childStatus = classifyMeliSaleStatus(
-            salesRowsRaw[childrenIndexes[k]] || {}
-          );
-
-          if (isMeliStatusOutOfProfit(childStatus)) {
-            registerExcludedRow(children[k], childStatus, totalRateado[k]);
+        for (let k = 0; k < effectiveItems.length; k++) {
+          const item = effectiveItems[k];
+          if (isMeliStatusOutOfProfit(item.statusKind)) {
+            registerExcludedRow(item, item.statusKind, item.total);
           } else {
-            pushCalculatedRow(children[k], totalRateado[k], ajustesRateados[k]);
+            pushCalculatedRow(item, item.total, item.platformAdjustment);
           }
-
-          consumedIndexes.add(childrenIndexes[k]);
+          consumedIndexes.add(group.detailIndexes[k]);
         }
 
         consumedIndexes.add(i);
@@ -626,8 +748,12 @@ function processMeli(
       continue;
     }
 
-    if (isItemRow(current)) {
-      pushCalculatedRow(current, current.total, computePlatformAdjustment(current));
+    if (isEffectiveItemRow(current)) {
+      if (isMeliStatusOutOfProfit(current.statusKind)) {
+        registerExcludedRow(current, current.statusKind, current.total);
+      } else {
+        pushCalculatedRow(current, current.total, computePlatformAdjustment(current));
+      }
       consumedIndexes.add(i);
     }
   }
@@ -1466,6 +1592,11 @@ function processMeliForCentralVendas({
 module.exports = {
   parseMeliRows,
   analyzeMeliParsing,
+  isMainRow,
+  isDetailRow,
+  isEffectiveItemRow,
+  collectMeliAssociations,
+  enrichDetailsFromMain,
   parseMeliCostRows,
   buildMeliCostMap,
   buildMeliBaseSheetRows,

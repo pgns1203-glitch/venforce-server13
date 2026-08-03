@@ -1,6 +1,10 @@
 (function () {
   "use strict";
 
+  if (typeof window.initLayout === "function") {
+    window.initLayout();
+  }
+
   const apiLib = window.VF_DESIGN_STUDIO_API;
   const documentModel = window.VF_DESIGN_DOCUMENT_MODEL;
   const legacyMigrationLib = window.VF_DESIGN_LEGACY_MIGRATION;

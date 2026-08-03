@@ -475,12 +475,28 @@ function buildFechamentoResumo(payload, quick = 'todos') {
   else if (validos.every(o => o.resultadoStatus === 'real')) confianca = 'confiavel';
   else confianca = 'parcial';
 
+  // Cobertura de cada total agregado: qual % da receita válida ele representa.
+  // Necessário porque faturamento soma TODOS os pedidos válidos, enquanto
+  // comissão/custo/imposto/frete somam só os pedidos que têm o dado. Exibir os
+  // números lado a lado sem isso faz o leitor calcular margem sobre bases
+  // diferentes (ex.: custo que cobre 60% da receita lido como se fosse o total).
+  const coberturaDe = (subset) =>
+    faturamento > 0 ? round2(fechSum(subset, o => o.valor) / faturamento * 100) : null;
+
+  const cobertura = {
+    comissao: comComissao.length ? coberturaDe(comComissao) : null,
+    custo: comCusto.length ? coberturaDe(comCusto) : null,
+    imposto: comImposto.length ? coberturaDe(comImposto) : null,
+    frete: comFrete.length ? coberturaDe(comFrete) : null,
+    resultado: comResultado.length ? coberturaDe(comResultado) : null,
+  };
+
   return {
     periodo: payload.periodo, cliente: payload.cliente,
     fonte: payload.motor?.origemPrincipal || payload.fonte || 'central_vendas_db',
     totalPedidos: orders.length, validos: validos.length, cancelProblema: cancelProblema.length,
     unidades, faturamento, ticket, comissao, custoTotal, impostoTotal, freteTotal,
-    resultadoParcial, receitaBloqueada, confianca,
+    resultadoParcial, receitaBloqueada, confianca, cobertura,
   };
 }
 
@@ -1157,7 +1173,11 @@ function renderFechamentoSection() {
       next:'Volte para "Todos".',
     })}</div></div>`;
   } else {
-    const parcialFoot = r.confianca === 'confiavel' ? 'todos componentes reais' : 'parcial';
+    const parcialFoot = r.confianca === 'confiavel'
+      ? 'todos componentes reais'
+      : (r.cobertura?.resultado != null
+          ? `parcial · cobre ${pct(r.cobertura.resultado)} da receita`
+          : 'parcial');
     const kpis = `<div class="vf-kpi-grid" role="list" aria-label="Indicadores principais do fechamento">
       ${kpi({ label:'Faturamento bruto', valueHtml: kpiValueHtml(r.faturamento, { currency:true }), foot:'pedidos válidos', mod:'vf-kpi--featured' })}
       ${kpi({ label:'Resultado parcial', valueHtml: kpiValueHtml(r.resultadoParcial, { currency:true }), foot: parcialFoot, footTone: r.confianca === 'confiavel' ? 'is-success' : 'is-warning', mod: r.confianca === 'confiavel' ? '' : 'vf-kpi--warning' })}
@@ -1167,13 +1187,23 @@ function renderFechamentoSection() {
       ${kpi({ label:'Unidades vendidas', valueHtml: kpiValueHtml(r.unidades), foot:'itens válidos' })}
     </div>`;
 
+    // Cada total carrega a própria cobertura: sem isso, comissão/custo/imposto/
+    // frete (somados só onde o dado existe) parecem comparáveis ao faturamento,
+    // que soma todos os pedidos válidos.
+    const cob = r.cobertura || {};
+    const hintCob = (base, pctCob) =>
+      pctCob == null ? base
+        : pctCob >= 99.95 ? `${base} · cobre 100% da receita`
+        : `${base} · cobre ${pct(pctCob)} da receita`;
+    const mutedCob = (valor, pctCob) => valor == null || (pctCob != null && pctCob < 99.95);
+
     const secundarios = `<div class="vf-fapi-secondary-metrics" aria-label="Métricas secundárias do fechamento">
       ${secondaryMetric('Total de pedidos', valOr(r.totalPedidos), 'no período')}
       ${secondaryMetric('Ticket médio', valOr(r.ticket, money), 'por pedido válido')}
-      ${secondaryMetric('Comissão marketplace', valOr(r.comissao, money), 'tarifa ML (sale_fee)')}
-      ${secondaryMetric('Custo dos produtos', valOr(r.custoTotal, money), 'base vinculada')}
-      ${secondaryMetric('Imposto interno', valOr(r.impostoTotal, money), 'cálculo interno')}
-      ${secondaryMetric('Frete seller', valOr(r.freteTotal, money), r.freteTotal == null ? 'ausente (shipments)' : 'real (shipments API)', r.freteTotal == null)}
+      ${secondaryMetric('Comissão marketplace', valOr(r.comissao, money), hintCob('tarifa ML (sale_fee)', cob.comissao), mutedCob(r.comissao, cob.comissao))}
+      ${secondaryMetric('Custo dos produtos', valOr(r.custoTotal, money), hintCob('base vinculada', cob.custo), mutedCob(r.custoTotal, cob.custo))}
+      ${secondaryMetric('Imposto interno', valOr(r.impostoTotal, money), hintCob('cálculo interno', cob.imposto), mutedCob(r.impostoTotal, cob.imposto))}
+      ${secondaryMetric('Frete seller', valOr(r.freteTotal, money), r.freteTotal == null ? 'ausente (shipments)' : hintCob('real (shipments API)', cob.frete), mutedCob(r.freteTotal, cob.frete))}
     </div>`;
 
     // Composição do resultado

@@ -154,10 +154,25 @@ function buildProdutos(itens) {
 
 function buildPedidoContrato(pedido, itens, componentes) {
   const pedidoId = rowValue(pedido, "pedidoId", "pedido_id");
-  const pedidoItens = itens.filter((item) => rowValue(item, "pedidoId", "pedido_id") === pedidoId);
-  const pedidoComponentes = componentes.filter(
-    (component) => rowValue(component, "pedidoId", "pedido_id") === pedidoId
-  );
+  // Vinculo por pedido_row_id (PK da linha de central_vendas_pedidos), nunca por
+  // pedido_id. getCentralVendasByRange le imports de VARIAS competencias, entao o
+  // mesmo pedido_id do ML pode existir em mais de uma importacao (pedido de borda
+  // de mes, reimportacao). Casar por pedido_id somava os componentes das duas
+  // importacoes no mesmo pedido: custo, frete e tarifa dobrados e itens
+  // duplicados — inflando produtos, unidades e a ponte inteira no Cliente 360.
+  const pedidoRowId = rowValue(pedido, "id", "id");
+  const mesmaLinha = (row) => {
+    const rowId = rowValue(row, "pedidoRowId", "pedido_row_id");
+    // Fallback por pedido_id apenas quando o row id nao veio (payloads legados,
+    // testes com snapshot montado a mao). Nunca quando ha row id disponivel.
+    if (rowId === null || rowId === undefined || pedidoRowId === null || pedidoRowId === undefined) {
+      return rowValue(row, "pedidoId", "pedido_id") === pedidoId;
+    }
+    return String(rowId) === String(pedidoRowId);
+  };
+
+  const pedidoItens = itens.filter(mesmaLinha);
+  const pedidoComponentes = componentes.filter(mesmaLinha);
   const firstItem = pedidoItens[0] || null;
   const confianca = rowValue(pedido, "confianca", "confianca");
   // logistica/full so existem no fluxo API-first (Orders API); planilha = null.

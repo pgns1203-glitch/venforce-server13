@@ -108,13 +108,18 @@ function readSheetRows(fileBuffer) {
   const sheet = workbook.Sheets[firstSheetName];
   repairWorksheetRef(sheet);
 
+  const decodedRange = sheet["!ref"]
+    ? XLSX.utils.decode_range(sheet["!ref"])
+    : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+  const firstRowIndex = decodedRange.s.r;
+
   const rowsAsArrays = XLSX.utils.sheet_to_json(sheet, {
     header: 1,
     defval: "",
     raw: false,
   });
 
-  return { workbook, sheet, rowsAsArrays };
+  return { workbook, sheet, rowsAsArrays, firstRowIndex };
 }
 
 function parseSpreadsheet(fileBuffer, skipRows = 0) {
@@ -127,26 +132,68 @@ function parseSpreadsheet(fileBuffer, skipRows = 0) {
   });
 }
 
+function analyzeMeliHeaderCells(cells) {
+  const headers = (cells || [])
+    .map((cell) => String(cell ?? "").trim())
+    .filter(Boolean);
+  const normalizedHeaders = headers.map(normalizeHeaderName);
+  const matchedFields = [];
+
+  for (const [field, aliases] of Object.entries(NORMALIZED_MELI_HEADER_FIELDS)) {
+    if (normalizedHeaders.some((header) => aliases.some((alias) => headerMatchesAlias(header, alias)))) {
+      matchedFields.push(field);
+    }
+  }
+
+  return { headers, matchedFields, score: matchedFields.length };
+}
+
+function validateMeliHeaderAtRow(fileBuffer, rowIndex) {
+  const { sheet } = readSheetRows(fileBuffer);
+  const decodedRange = sheet["!ref"]
+    ? XLSX.utils.decode_range(sheet["!ref"])
+    : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+  const absoluteRowIndex = Math.max(0, Number(rowIndex) || 0);
+  const rows = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: "",
+    raw: false,
+    range: {
+      s: { r: absoluteRowIndex, c: decodedRange.s.c },
+      e: { r: absoluteRowIndex, c: decodedRange.e.c },
+    },
+  });
+  const analysis = analyzeMeliHeaderCells(rows[0] || []);
+  const hasSaleNumber = analysis.matchedFields.includes("saleNumber");
+  const hasUnits = analysis.matchedFields.includes("units");
+  const hasRevenue = analysis.matchedFields.some(
+    (field) => field === "productRevenue" || field === "total"
+  );
+  const hasAdId = analysis.matchedFields.includes("adId");
+
+  return {
+    ...analysis,
+    rowIndex: absoluteRowIndex,
+    valid: hasSaleNumber && hasUnits && hasRevenue && hasAdId,
+  };
+}
+
 function detectMeliHeader(fileBuffer) {
-  const { rowsAsArrays } = readSheetRows(fileBuffer);
+  const { rowsAsArrays, firstRowIndex } = readSheetRows(fileBuffer);
   let best = null;
 
   for (let i = 0; i < rowsAsArrays.length; i++) {
-    const headers = (rowsAsArrays[i] || [])
-      .map((cell) => String(cell ?? "").trim())
-      .filter(Boolean);
-    const normalizedHeaders = headers.map(normalizeHeaderName);
-    const matchedFields = [];
-
-    for (const [field, aliases] of Object.entries(NORMALIZED_MELI_HEADER_FIELDS)) {
-      if (normalizedHeaders.some((header) => aliases.some((alias) => headerMatchesAlias(header, alias)))) {
-        matchedFields.push(field);
-      }
-    }
-
-    const score = matchedFields.length;
+    const { headers, matchedFields, score } = analyzeMeliHeaderCells(rowsAsArrays[i]);
+    const absoluteRowIndex = firstRowIndex + i;
     if (!best || score > best.score || (score === best.score && headers.length > best.headers.length)) {
-      best = { rowIndex: i, headers, matchedFields, score };
+      best = {
+        rowIndex: absoluteRowIndex,
+        relativeRowIndex: i,
+        firstRowIndex,
+        headers,
+        matchedFields,
+        score,
+      };
     }
   }
 
@@ -158,7 +205,15 @@ function detectMeliHeader(fileBuffer) {
   const found = Boolean(best && best.score >= 3 && hasIdentity && hasQuantity && hasRevenue);
 
   if (!best) {
-    return { rowIndex: 0, headers: [], matchedFields: [], score: 0, found: false };
+    return {
+      rowIndex: firstRowIndex,
+      relativeRowIndex: 0,
+      firstRowIndex,
+      headers: [],
+      matchedFields: [],
+      score: 0,
+      found: false,
+    };
   }
 
   return { ...best, found };
@@ -210,6 +265,7 @@ module.exports = {
   MELI_HEADER_FIELDS,
   detectMeliHeader,
   detectMeliHeaderRow,
+  validateMeliHeaderAtRow,
   detectShopeeHeaderRow,
   createBadRequestError,
 };

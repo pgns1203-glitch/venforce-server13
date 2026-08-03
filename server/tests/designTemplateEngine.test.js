@@ -210,18 +210,4 @@ eq("12b. imagem reidratada passa pela mesma normalização do model (normalizeIm
   hidratado.project.product.originalImage,
   imageModel.normalizeImageRef(salvoValido.product.originalImage));
 
-/* ── 14. HTML carrega os módulos na ordem correta ─────────────────────── */
-
-const html = fs.readFileSync(path.join(portalDir, "design-templates.html"), "utf8");
-const ordemEsperada = [
-  "design-image-model.js", "design-image-storage.js", "design-image-api.js", "design-image-editor.js",
-  "design-template-engine.js", "design-template-presets.js", "design-templates.js",
-];
-const posicoes = ordemEsperada.map((nome) => html.indexOf(`src="${nome}"`));
-ok("14. todos os módulos do estúdio aparecem no HTML", posicoes.every((p) => p > -1));
-ok("14b. engine e presets carregam antes de design-templates.js",
-  posicoes[4] < posicoes[6] && posicoes[5] < posicoes[6]);
-ok("14c. a ordem de carregamento respeita a dependência declarada",
-  posicoes.every((p, i) => i === 0 || p > posicoes[i - 1]));
-
 console.log(`\n${checks} verificações passaram no motor de templates.`);

@@ -1,0 +1,140 @@
+/* Portal/css/pages/design-library-v2.css
+   ----------------------------------------------------------------------------
+   Biblioteca de Templates: toolbar de filtros, grade de cards com miniatura
+   real, Editor Reduzido (Fabric.js) e modal de importação em 3 etapas.
+   Fundação V2 apenas: tokens --vf-*, sem cor solta, pouco arredondamento,
+   sem sombra pesada, roxo discreto.
+   ---------------------------------------------------------------------------- */
+
+/* ── identidade recolhível ────────────────────────────────────────────── */
+
+.dtl-identity-panel { margin-top: 1rem; padding: 1rem 1.15rem; }
+.dtl-identity-panel summary { display: flex; justify-content: space-between; gap: 1rem; cursor: pointer; color: var(--vf-primary); list-style: none; }
+.dtl-identity-panel summary::-webkit-details-marker { display: none; }
+.dtl-identity-panel summary > span:first-child { display: flex; flex-direction: column; gap: .15rem; color: var(--vf-text); }
+.dtl-identity-panel summary small { color: var(--vf-text-muted); font-weight: 400; }
+.dtl-identity-body { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, .6fr); gap: 1.25rem; padding-top: 1rem; }
+
+/* ── toolbar ──────────────────────────────────────────────────────────── */
+
+.dtl-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-top: 1.5rem; }
+.dtl-toolbar .vf-tabs { margin: 0; }
+.dtl-toolbar .vf-toolbar__filters { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.dtl-search-field { width: min(240px, 100%); }
+.dtl-filter-field { width: 170px; }
+
+/* ── grade ────────────────────────────────────────────────────────────── */
+
+.dtl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
+
+.dtl-card { overflow: visible; display: flex; flex-direction: column; }
+.dtl-card__thumb { position: relative; height: 160px; overflow: hidden; border-radius: var(--vf-radius) var(--vf-radius) 0 0; background: var(--vf-surface-2); display: grid; place-items: center; }
+.dtl-card__thumb img { width: 100%; height: 100%; object-fit: cover; }
+.dtl-card__thumb-placeholder { display: grid; place-items: center; width: 100%; height: 100%; color: var(--vf-text-muted); font-size: var(--vf-fs-xs); }
+.dtl-card__badge { position: absolute; top: .5rem; left: .5rem; padding: .18rem .5rem; border-radius: var(--vf-radius-pill); background: color-mix(in srgb, var(--vf-primary) 88%, black); color: #fff; font-size: var(--vf-fs-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+
+.dtl-card__body { padding: .85rem 1rem 1rem; display: flex; flex-direction: column; gap: .35rem; flex: 1; }
+.dtl-card__title { margin: 0; font-size: var(--vf-fs-md); font-weight: 700; color: var(--vf-text); }
+.dtl-card__meta { margin: 0; display: flex; flex-wrap: wrap; gap: .3rem .6rem; color: var(--vf-text-muted); font-size: var(--vf-fs-xs); }
+.dtl-card__meta span::after { content: "·"; margin-left: .6rem; color: var(--vf-border); }
+.dtl-card__meta span:last-child::after { content: ""; margin: 0; }
+
+.dtl-card__actions { display: flex; gap: .4rem; align-items: center; margin-top: auto; padding-top: .6rem; }
+.dtl-card__actions .vf-btn { flex: 1; }
+.dtl-card__menu-wrap { position: relative; flex: 0 0 auto; }
+.dtl-card__menu-wrap .vf-menu { position: absolute; right: 0; bottom: calc(100% + 4px); }
+
+/* ── Editor Reduzido ──────────────────────────────────────────────────── */
+
+.dse-view { display: flex; flex-direction: column; gap: .85rem; }
+
+.dse-topbar { display: flex; align-items: center; gap: .85rem; padding: .65rem .85rem; border: 1px solid var(--vf-border); border-radius: var(--vf-radius); background: var(--vf-surface); }
+.dse-name-field { flex: 1; max-width: 360px; }
+.dse-status { color: var(--vf-text-muted); font-size: var(--vf-fs-xs); white-space: nowrap; }
+.dse-status.is-dirty { color: var(--vf-warning, #ad6a13); }
+.dse-status.is-saving { color: var(--vf-primary); }
+.dse-status.is-error { color: var(--vf-danger); }
+.dse-topbar__actions { display: flex; gap: .5rem; margin-left: auto; }
+
+.dse-legacy-warning { margin: 0; }
+
+.dse-body { display: grid; grid-template-columns: 200px minmax(0, 1fr) 260px; gap: .85rem; align-items: start; }
+
+.dse-pages-panel, .dse-objects-panel, .dse-properties-panel { border: 1px solid var(--vf-border); border-radius: var(--vf-radius); background: var(--vf-surface); }
+.dse-right-panel { display: flex; flex-direction: column; gap: .85rem; }
+.dse-panel-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .6rem .75rem; border-bottom: 1px solid var(--vf-border); font-size: var(--vf-fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--vf-text-muted); }
+
+.dse-pages-list, .dse-objects-list { list-style: none; margin: 0; padding: .4rem; display: flex; flex-direction: column; gap: .25rem; max-height: 60vh; overflow: auto; }
+.dse-page-item, .dse-object-item { display: flex; align-items: center; gap: .4rem; padding: .3rem .4rem; border-radius: var(--vf-radius-sm); cursor: pointer; font-size: var(--vf-fs-sm); }
+.dse-page-item:hover, .dse-object-item:hover { background: var(--vf-surface-hover); }
+.dse-page-item.is-active, .dse-object-item.is-active { background: var(--vf-primary-soft); color: var(--vf-primary-strong); }
+.dse-page-item__name, .dse-object-item__name {
+  flex: 1; min-width: 0; padding: .25rem .4rem; background: transparent; border: 1px solid transparent;
+  border-radius: var(--vf-radius-sm); font: inherit; font-size: var(--vf-fs-sm); color: inherit;
+}
+.dse-page-item__name:hover, .dse-object-item__name:hover, .dse-page-item__name:focus, .dse-object-item__name:focus {
+  background: var(--vf-surface); border-color: var(--vf-border);
+}
+.dse-page-item__actions, .dse-object-item__actions { display: flex; gap: .15rem; flex: 0 0 auto; }
+.dse-icon-btn { display: grid; place-items: center; width: 22px; height: 22px; border: none; border-radius: var(--vf-radius-sm); background: transparent; color: var(--vf-text-muted); cursor: pointer; font-size: var(--vf-fs-xs); flex: 0 0 auto; }
+.dse-icon-btn:hover { background: var(--vf-surface-2); color: var(--vf-text); }
+.dse-icon-btn.is-active { color: var(--vf-primary); }
+
+.dse-canvas-column { display: flex; flex-direction: column; gap: .6rem; min-width: 0; }
+.dse-insert-toolbar { display: flex; flex-wrap: wrap; gap: .8rem; justify-content: space-between; padding: .5rem .65rem; border: 1px solid var(--vf-border); border-radius: var(--vf-radius); background: var(--vf-surface); }
+.dse-insert-group { display: flex; gap: .35rem; flex-wrap: wrap; }
+.dse-canvas-stage { display: grid; place-items: center; min-height: 60vh; padding: 1.5rem; border: 1px solid var(--vf-border); border-radius: var(--vf-radius); background: var(--vf-surface-2); overflow: auto; }
+.dse-canvas-stage canvas { box-shadow: var(--vf-shadow-xs); }
+
+.dse-properties-panel { flex: 1; padding: .75rem; display: flex; flex-direction: column; gap: .6rem; overflow: auto; }
+.dse-properties-empty { margin: .5rem 0; color: var(--vf-text-muted); font-size: var(--vf-fs-xs); }
+#dse-properties-fields { display: flex; flex-direction: column; gap: .6rem; }
+.dse-prop-row { display: block; }
+.dse-prop-field { display: flex; flex-direction: column; gap: .2rem; }
+.dse-prop-field label { display: flex; flex-direction: column; gap: .2rem; }
+.dse-prop-field label > span { font-size: var(--vf-fs-2xs); color: var(--vf-text-muted); text-transform: uppercase; letter-spacing: .03em; }
+.dse-prop-field input[type="text"], .dse-prop-field input[type="number"], .dse-prop-field select, .dse-prop-field textarea {
+  padding: .35rem .5rem; border: 1px solid var(--vf-border); border-radius: var(--vf-radius-sm); font: inherit; font-size: var(--vf-fs-sm);
+}
+.dse-prop-field input[type="color"] { width: 100%; height: 30px; padding: 0; border: 1px solid var(--vf-border); border-radius: var(--vf-radius-sm); }
+.dse-prop-field input[type="checkbox"] { width: auto; }
+.dse-prop-field label:has(input[type="checkbox"]) { flex-direction: row; align-items: center; }
+.dse-prop-field label:has(input[type="checkbox"]) > span { text-transform: none; font-size: var(--vf-fs-sm); color: var(--vf-text); order: 2; }
+.dse-prop-field button { width: 100%; }
+
+@media (max-width: 1180px) {
+  .dse-body { grid-template-columns: 1fr; }
+  .dse-pages-panel, .dse-right-panel { order: 2; }
+}
+
+/* ── Modal de importação ──────────────────────────────────────────────── */
+
+.dim-modal { max-width: 560px; }
+.dim-steps { display: flex; gap: 1rem; padding: 0 var(--vf-sp-6, 1.5rem); }
+.dim-step { padding: .4rem 0; font-size: var(--vf-fs-xs); font-weight: 600; color: var(--vf-text-muted); border-bottom: 2px solid transparent; }
+.dim-step.is-active { color: var(--vf-primary); border-bottom-color: var(--vf-primary); }
+.dim-step.is-done { color: var(--vf-text); }
+
+.dim-body { display: flex; flex-direction: column; gap: 1rem; min-height: 220px; }
+/* O controlador (design-import-modal.js) só alterna o atributo `hidden`
+   nativo — nada de classe `.is-active` aqui, para não precisar sincronizar
+   os dois. */
+.dim-panel { display: flex; flex-direction: column; gap: 1rem; }
+.dim-panel[hidden] { display: none; }
+
+.dim-dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .4rem; padding: 2.5rem 1rem; border: 1px dashed var(--vf-border); border-radius: var(--vf-radius); text-align: center; cursor: pointer; }
+.dim-dropzone.is-dragging { border-color: var(--vf-primary); background: var(--vf-primary-soft); }
+.dim-dropzone__title { font-weight: 600; color: var(--vf-text); }
+.dim-dropzone__hint { font-size: var(--vf-fs-xs); color: var(--vf-text-muted); }
+
+.dim-file-picked { display: flex; flex-direction: column; gap: .15rem; padding: .6rem .75rem; border: 1px solid var(--vf-border); border-radius: var(--vf-radius-sm); }
+.dim-file-picked span { color: var(--vf-text-muted); font-size: var(--vf-fs-xs); }
+
+.dim-review-list { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem 1rem; margin: 0; }
+.dim-review-list div { display: flex; flex-direction: column; gap: .1rem; }
+.dim-review-list dt { font-size: var(--vf-fs-2xs); text-transform: uppercase; letter-spacing: .04em; color: var(--vf-text-muted); }
+.dim-review-list dd { margin: 0; font-size: var(--vf-fs-sm); color: var(--vf-text); }
+.dim-review-warnings { margin: 0; padding-left: 1.1rem; color: var(--vf-warning, #ad6a13); font-size: var(--vf-fs-xs); }
+.dim-review-warnings:empty { display: none; }
+
+.dim-save-client { margin: 0; font-size: var(--vf-fs-sm); color: var(--vf-text-muted); }

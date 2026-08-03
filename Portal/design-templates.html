@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VenForce — Estúdio de Templates</title>
+  <title>VenForce — Biblioteca de Templates</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -11,8 +11,7 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/design-templates-v2.css">
-  <link rel="stylesheet" href="css/pages/design-template-builder-v2.css">
-  <link rel="stylesheet" href="css/pages/design-image-editor-v2.css">
+  <link rel="stylesheet" href="css/pages/design-library-v2.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
 <body class="vf-page vf-page-dashboard vf-page-design-templates">
@@ -20,618 +19,178 @@
     <main class="vf-content">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide dt-page-container">
+
           <header class="vf-page-header">
             <div class="vf-page-header__main">
-              <p class="vf-page-header__eyebrow">Design</p>
-              <h1 class="vf-page-header__title">Estúdio de Templates</h1>
-              <p class="vf-page-header__description">Crie, organize e reutilize templates e artes no espaço compartilhado de cada cliente.</p>
+              <p class="vf-page-header__eyebrow" id="dtl-client-badge">Nenhum cliente selecionado</p>
+              <h1 class="vf-page-header__title">Biblioteca de Templates</h1>
+              <p class="vf-page-header__description">Importe, organize e reutilize templates e artes no espaço compartilhado de cada cliente.</p>
             </div>
-            <div class="vf-page-header__actions" id="dt-editor-header-actions" hidden>
-              <span class="dt-save-status" id="dt-save-status" role="status" aria-live="polite">Pronto para salvar</span>
-              <button type="button" class="vf-btn vf-btn--secondary" id="dt-save">Salvar versão</button>
-              <button type="button" class="vf-btn vf-btn--primary" id="dt-download-page">Baixar página atual</button>
-            </div>
-            <div class="vf-page-header__actions" id="dt-builder-header-actions" hidden>
-              <span class="dt-save-status" id="dtb-save-status" role="status" aria-live="polite">Rascunho neste navegador</span>
-              <button type="button" class="vf-btn vf-btn--secondary" id="dtb-save-draft">Salvar rascunho</button>
-              <button type="button" class="vf-btn vf-btn--primary" id="dtb-save-template">Salvar como template</button>
+            <div class="vf-page-header__actions">
+              <button type="button" class="vf-btn vf-btn--secondary" id="dtl-new-blank">Criar template em branco</button>
+              <button type="button" class="vf-btn vf-btn--primary" id="dtl-import">Importar template</button>
             </div>
           </header>
 
-          <div class="vf-tabs dt-view-tabs" role="tablist" aria-label="Área do estúdio">
-            <button type="button" class="vf-tab is-active" id="dt-library-tab" role="tab" aria-selected="true" aria-controls="dt-library-view">Biblioteca</button>
-            <button type="button" class="vf-tab" id="dt-editor-tab" role="tab" aria-selected="false" aria-controls="dt-editor-view">Editor</button>
-            <button type="button" class="vf-tab" id="dt-builder-tab" role="tab" aria-selected="false" aria-controls="dt-builder-view">Construtor</button>
-          </div>
-
-          <section id="dt-library-view" aria-labelledby="dt-library-tab">
-            <section class="ds-shell" aria-labelledby="ds-workspace-name">
-              <div class="ds-client-bar">
-                <label class="vf-field ds-client-field" for="ds-client-select"><span class="vf-field__label">Espaço do cliente</span><select class="vf-select" id="ds-client-select"><option value="">Carregando clientes…</option></select></label>
-                <div class="ds-client-title"><span class="vf-page-header__eyebrow">Estúdio do cliente</span><h2 id="ds-workspace-name">Selecione um cliente</h2><span id="ds-workspace-slug" class="vf-mono"></span></div>
-                <div class="ds-primary-actions">
-                  <label class="vf-field ds-account-field" for="ds-art-account"><span class="vf-field__label">Conta para novas artes</span><select class="vf-select" id="ds-art-account"><option value="">Todas / não definida</option></select></label>
-                  <label class="vf-field ds-count-field" for="ds-generate-count"><span class="vf-field__label">Quantidade</span><select class="vf-select" id="ds-generate-count"><option>8</option><option selected>12</option><option>16</option><option>24</option></select></label>
-                  <button type="button" class="vf-btn vf-btn--secondary" id="ds-generate">Gerar opções</button>
-                  <button type="button" class="vf-btn vf-btn--primary" id="ds-create-empty">Criar do zero</button>
-                </div>
-              </div>
-              <div id="ds-loading" class="ds-loading" role="status">Carregando espaço do cliente…</div>
-              <div id="ds-content" hidden>
-                <div class="ds-overview-grid">
-                  <details class="vf-card ds-identity-card">
-                    <summary><span><strong>Identidade visual</strong><small>Cores, marca, fonte e logo aplicáveis aos novos projetos</small></span><span>Editar</span></summary>
-                    <div class="ds-identity-form">
-                      <label class="vf-field"><span class="vf-field__label">Nome da marca</span><input class="vf-input" id="ds-brand-name" maxlength="100"></label>
-                      <label class="vf-field"><span class="vf-field__label">Fonte</span><select class="vf-select" id="ds-font"><option>Manrope</option><option>Hanken Grotesk</option><option>Arial</option><option>Georgia</option></select></label>
-                      <div class="ds-colors"><label>Principal <input type="color" id="ds-primary"></label><label>Secundária <input type="color" id="ds-secondary"></label><label>Fundo <input type="color" id="ds-background"></label><label>Texto <input type="color" id="ds-text"></label></div>
-                      <label class="vf-field"><span class="vf-field__label">Logo</span><input class="vf-input" type="file" id="ds-logo-file" accept="image/png,image/jpeg,image/webp"><img id="ds-logo-preview" class="ds-logo-preview" alt="Logo do cliente" hidden></label>
-                      <label class="vf-field ds-notes"><span class="vf-field__label">Orientações da marca</span><textarea class="vf-textarea" id="ds-identity-notes" rows="2" maxlength="1000"></textarea></label>
-                      <button type="button" class="vf-btn vf-btn--primary" id="ds-save-identity">Salvar identidade</button>
-                    </div>
-                  </details>
-                  <div class="vf-card ds-accounts-card"><div><strong>Contas vinculadas</strong><small>Marketplaces e bases disponíveis para este cliente</small></div><div id="ds-account-list" class="ds-account-list"></div></div>
-                </div>
-                <div class="ds-library-head">
-                  <div class="vf-tabs" role="tablist" aria-label="Acervo do cliente"><button type="button" class="vf-tab is-active" data-ds-tab="templates">Templates</button><button type="button" class="vf-tab" data-ds-tab="artworks">Artes</button><button type="button" class="vf-tab" data-ds-tab="archived">Arquivados</button></div>
-                  <label class="vf-field ds-search-field"><span class="vf-field__label">Buscar no acervo</span><input class="vf-input vf-search" id="ds-search" type="search" placeholder="Nome do item"></label>
-                </div>
-                <div class="ds-section-title"><h2 id="ds-items-title">Templates</h2><span class="vf-badge" id="ds-items-count">0</span></div>
-                <div class="dt-template-grid ds-grid" id="ds-grid"></div>
-                <div class="vf-empty dt-empty" id="ds-empty"><h3 class="vf-empty__title">Nada por aqui ainda</h3><p class="vf-empty__description">Gere opções ou crie um template do zero.</p></div>
-              </div>
-            </section>
-
-            <div class="vf-toolbar dt-library-toolbar" aria-label="Filtros da biblioteca">
-              <div class="vf-toolbar__filters">
-                <label class="vf-field dt-search-field" for="dt-search">
-                  <span class="vf-field__label">Buscar template</span>
-                  <input class="vf-input vf-search" type="search" id="dt-search" placeholder="Nome do template" autocomplete="off">
-                </label>
-                <label class="vf-field dt-filter-field" for="dt-segment-filter">
-                  <span class="vf-field__label">Segmento</span>
-                  <select class="vf-select" id="dt-segment-filter"><option value="">Todos</option></select>
-                </label>
-                <label class="vf-field dt-filter-field" for="dt-marketplace-filter">
-                  <span class="vf-field__label">Marketplace</span>
-                  <select class="vf-select" id="dt-marketplace-filter"><option value="">Todos</option></select>
-                </label>
-              </div>
-              <div class="vf-toolbar__actions">
-                <button type="button" class="vf-btn vf-btn--primary" id="dt-new-project">Criar do zero</button>
-              </div>
+          <section id="dtl-library-view" aria-labelledby="ds-workspace-name">
+            <div class="ds-client-bar">
+              <label class="vf-field ds-client-field" for="ds-client-select"><span class="vf-field__label">Espaço do cliente</span><select class="vf-select" id="ds-client-select"><option value="">Carregando clientes…</option></select></label>
+              <div class="ds-client-title"><span class="vf-page-header__eyebrow">Estúdio do cliente</span><h2 id="ds-workspace-name">Selecione um cliente</h2><span id="ds-workspace-slug" class="vf-mono"></span></div>
             </div>
 
-            <h2 class="dt-library-heading" id="dt-system-heading">Modelos de partida</h2>
-            <div class="dt-template-grid" id="dt-template-grid" aria-live="polite" aria-labelledby="dt-system-heading"></div>
-            <div class="vf-empty dt-empty" id="dt-library-empty" hidden>
-              <h2 class="vf-empty__title">Nenhum template encontrado</h2>
-              <p class="vf-empty__description">Ajuste os filtros ou limpe a busca para ver o catálogo.</p>
-            </div>
+            <div id="ds-loading" class="ds-loading" role="status">Carregando espaço do cliente…</div>
 
-            <div hidden>
-            <h2 class="dt-library-heading" id="dt-local-heading">Templates salvos</h2>
-            <div class="dt-template-grid" id="dt-local-template-grid" aria-live="polite" aria-labelledby="dt-local-heading"></div>
-            <div class="vf-empty dt-empty" id="dt-local-empty" hidden>
-              <h2 class="vf-empty__title">Nenhum template salvo ainda</h2>
-              <p class="vf-empty__description">Crie um template e salve-o no espaço do cliente.</p>
-            </div>
+            <div id="ds-content" hidden>
+              <details class="vf-card dtl-identity-panel" id="dtl-identity-panel">
+                <summary><span><strong>Identidade do cliente</strong><small>Marca, cores, fonte, logo e contas vinculadas</small></span><span>Editar</span></summary>
+                <div class="dtl-identity-body">
+                  <div class="ds-identity-form">
+                    <label class="vf-field"><span class="vf-field__label">Nome da marca</span><input class="vf-input" id="ds-brand-name" maxlength="100"></label>
+                    <label class="vf-field"><span class="vf-field__label">Fonte</span><select class="vf-select" id="ds-font"><option>Manrope</option><option>Hanken Grotesk</option><option>Arial</option><option>Georgia</option></select></label>
+                    <div class="ds-colors"><label>Principal <input type="color" id="ds-primary"></label><label>Secundária <input type="color" id="ds-secondary"></label><label>Fundo <input type="color" id="ds-background"></label><label>Texto <input type="color" id="ds-text"></label></div>
+                    <label class="vf-field"><span class="vf-field__label">Logo</span><input class="vf-input" type="file" id="ds-logo-file" accept="image/png,image/jpeg,image/webp"><img id="ds-logo-preview" class="ds-logo-preview" alt="Logo do cliente" hidden></label>
+                    <label class="vf-field ds-notes"><span class="vf-field__label">Orientações da marca</span><textarea class="vf-textarea" id="ds-identity-notes" rows="2" maxlength="1000"></textarea></label>
+                    <button type="button" class="vf-btn vf-btn--primary" id="ds-save-identity">Salvar identidade</button>
+                  </div>
+                  <div class="ds-accounts-card"><div><strong>Contas vinculadas</strong><small>Marketplaces e bases disponíveis para este cliente</small></div><div id="ds-account-list" class="ds-account-list"></div></div>
+                </div>
+              </details>
+
+              <div class="vf-toolbar dtl-toolbar" aria-label="Filtros da biblioteca">
+                <div class="vf-tabs" role="tablist" aria-label="Acervo do cliente">
+                  <button type="button" class="vf-tab is-active" data-ds-tab="templates" role="tab" aria-selected="true">Templates</button>
+                  <button type="button" class="vf-tab" data-ds-tab="artworks" role="tab" aria-selected="false">Artes</button>
+                  <button type="button" class="vf-tab" data-ds-tab="archived" role="tab" aria-selected="false">Arquivados</button>
+                </div>
+                <div class="vf-toolbar__filters">
+                  <label class="vf-field dtl-search-field" for="ds-search"><span class="vf-field__label">Buscar no acervo</span><input class="vf-input vf-search" id="ds-search" type="search" placeholder="Nome do item"></label>
+                  <label class="vf-field dtl-filter-field" for="dtl-origin-filter"><span class="vf-field__label">Origem</span><select class="vf-select" id="dtl-origin-filter"><option value="">Todas</option><option value="manual">Criado manualmente</option><option value="generated">Gerado</option><option value="json">Importado (JSON)</option><option value="svg">Importado (SVG)</option><option value="image">Importado (imagem)</option><option value="legacy">Migrado</option></select></label>
+                  <label class="vf-field dtl-filter-field" for="dtl-account-filter" id="dtl-account-filter-field" hidden><span class="vf-field__label">Conta vinculada</span><select class="vf-select" id="dtl-account-filter"><option value="">Todas</option></select></label>
+                </div>
+              </div>
+
+              <div class="ds-section-title"><h2 id="ds-items-title">Templates</h2><span class="vf-badge" id="ds-items-count">0</span></div>
+              <div class="dtl-grid" id="ds-grid"></div>
+              <div class="vf-empty dt-empty" id="ds-empty"><h3 class="vf-empty__title">Nada por aqui ainda</h3><p class="vf-empty__description">Importe um template ou crie um em branco para começar.</p></div>
             </div>
           </section>
 
-          <section id="dt-editor-view" class="dt-editor-view" aria-labelledby="dt-editor-view-title" hidden>
-            <div class="dt-editor-toolbar">
-              <div class="dt-editor-toolbar__main">
-                <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dt-back-library">Voltar à biblioteca</button>
-                <div>
-                  <h2 id="dt-editor-view-title">Carregador portátil — conjunto completo</h2>
-                  <p id="dt-editor-meta">7 peças · 1200 × 1200 px</p>
-                </div>
-              </div>
-              <div class="dt-editor-toolbar__actions">
-                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dt-reset">Restaurar template</button>
-                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dt-export-config">Exportar configuração</button>
+          <section id="dse-view" class="dse-view" aria-labelledby="dse-title" hidden>
+            <div class="dse-topbar">
+              <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dse-back">Voltar à biblioteca</button>
+              <label class="vf-field dse-name-field" for="dse-name"><span class="vf-field__label" id="dse-title">Nome do projeto</span><input class="vf-input" id="dse-name" type="text" maxlength="120"></label>
+              <span class="dse-status" id="dse-status" role="status" aria-live="polite">Sem alterações</span>
+              <div class="dse-topbar__actions">
+                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dse-export">Exportar</button>
+                <button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="dse-save-version">Salvar versão</button>
               </div>
             </div>
 
-            <div class="dt-editor-layout" id="dt-token-root">
-              <aside class="dt-config-panel" aria-label="Configuração do template">
-                <div class="dt-config-panel__header">
-                  <div>
-                    <p class="vf-page-header__eyebrow">Projeto compartilhado</p>
-                    <h2>Personalização</h2>
-                  </div>
-                  <span class="dt-version vf-mono">V1</span>
-                </div>
+            <div class="vf-banner is-warning dse-legacy-warning" id="dse-legacy-warning" role="status" hidden>
+              <div class="vf-banner__content"><p class="vf-banner__description" id="dse-legacy-warning-text"></p></div>
+            </div>
 
-                <div class="vf-tabs dt-control-tabs" role="tablist" aria-label="Grupos de configuração">
-                  <button type="button" class="vf-tab is-active" role="tab" aria-selected="true" aria-controls="dt-panel-identity" data-control-tab="identity">Identidade</button>
-                  <button type="button" class="vf-tab" role="tab" aria-selected="false" aria-controls="dt-panel-product" data-control-tab="product">Produto</button>
-                  <button type="button" class="vf-tab" role="tab" aria-selected="false" aria-controls="dt-panel-content" data-control-tab="content">Conteúdo</button>
-                </div>
-
-                <div class="dt-config-panel__body">
-                  <div class="dt-control-panel is-active" id="dt-panel-identity" role="tabpanel" data-control-panel="identity">
-                    <div class="dt-control-section">
-                      <h3>Cliente</h3>
-                      <label class="vf-field" for="dt-client-select">
-                        <span class="vf-field__label">Cliente ativo</span>
-                        <select class="vf-select" id="dt-client-select">
-                          <option value="">Cliente personalizado</option>
-                        </select>
-                      </label>
-                      <div class="vf-banner vf-banner--compact is-warning" id="dt-client-warning" role="status" hidden>
-                        <div class="vf-banner__content"><p class="vf-banner__description" id="dt-client-warning-text">Clientes indisponíveis. Continue com o preenchimento manual.</p></div>
-                      </div>
-                      <label class="vf-field" for="dt-client-name">
-                        <span class="vf-field__label">Nome do cliente</span>
-                        <input class="vf-input" id="dt-client-name" type="text" maxlength="80" autocomplete="organization">
-                      </label>
-                      <label class="vf-field" for="dt-brand-name">
-                        <span class="vf-field__label">Nome da marca</span>
-                        <input class="vf-input" id="dt-brand-name" type="text" maxlength="40" autocomplete="off">
-                      </label>
-                    </div>
-
-                    <div class="dt-control-section">
-                      <h3>Paleta do template</h3>
-                      <div class="dt-color-grid">
-                        <label class="vf-field" for="dt-color-primary"><span class="vf-field__label">Cor principal</span><input class="dt-color-input" id="dt-color-primary" type="color"></label>
-                        <label class="vf-field" for="dt-color-secondary"><span class="vf-field__label">Cor secundária</span><input class="dt-color-input" id="dt-color-secondary" type="color"></label>
-                        <label class="vf-field" for="dt-color-background"><span class="vf-field__label">Cor de fundo</span><input class="dt-color-input" id="dt-color-background" type="color"></label>
-                        <label class="vf-field" for="dt-color-text"><span class="vf-field__label">Cor do texto</span><input class="dt-color-input" id="dt-color-text" type="color"></label>
-                      </div>
-                    </div>
-
-                    <div class="dt-control-section">
-                      <h3>Logo</h3>
-                      <label class="dt-file-drop" for="dt-logo-file">
-                        <span class="dt-file-drop__title">Selecionar imagem do logo</span>
-                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
-                        <input id="dt-logo-file" type="file" accept="image/png,image/jpeg,image/webp">
-                      </label>
-                      <div class="dt-upload-state" id="dt-logo-state" hidden>
-                        <img id="dt-logo-preview" alt="Prévia do logo selecionado">
-                        <span id="dt-logo-filename"></span>
-                        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dt-remove-logo">Remover logo</button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="dt-control-panel" id="dt-panel-product" role="tabpanel" data-control-panel="product" hidden>
-                    <div class="dt-control-section">
-                      <h3>Informações do produto</h3>
-                      <label class="vf-field" for="dt-product-name"><span class="vf-field__label">Nome do produto</span><input class="vf-input" id="dt-product-name" type="text" maxlength="64"></label>
-                      <label class="vf-field" for="dt-product-subtitle"><span class="vf-field__label">Subtítulo</span><textarea class="vf-textarea" id="dt-product-subtitle" rows="2" maxlength="120"></textarea></label>
-                    </div>
-
-                    <div class="dt-control-section">
-                      <h3>Imagem principal</h3>
-                      <label class="dt-file-drop" for="dt-product-file">
-                        <span class="dt-file-drop__title">Selecionar imagem do produto</span>
-                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
-                        <input id="dt-product-file" type="file" accept="image/png,image/jpeg,image/webp">
-                      </label>
-                      <div class="dt-upload-state" id="dt-product-state" hidden>
-                        <img id="dt-product-preview" alt="Prévia do produto selecionado">
-                        <span id="dt-product-filename"></span>
-                        <div class="dt-upload-actions">
-                          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dt-edit-product">Editar imagem</button>
-                          <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dt-remove-product">Remover imagem</button>
-                        </div>
-                      </div>
-                      <div class="dt-upload-note" id="dt-product-edit-note" hidden>
-                        <span>Edição aplicada · o arquivo original continua guardado.</span>
-                        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dt-restore-product">Restaurar original</button>
-                      </div>
-                      <div class="vf-banner vf-banner--compact is-warning" id="dt-product-lowres" role="status" hidden>
-                        <div class="vf-banner__content"><p class="vf-banner__description">Resolução baixa para uma arte de 1200 × 1200 px. O resultado pode sair sem nitidez.</p></div>
-                      </div>
-                    </div>
-
-                    <div class="dt-control-section">
-                      <h3>Enquadramento</h3>
-                      <label class="dt-range-field" for="dt-product-scale"><span>Escala da imagem</span><output id="dt-product-scale-value">100%</output><input id="dt-product-scale" type="range" min="60" max="145" step="1"></label>
-                      <label class="dt-range-field" for="dt-product-x"><span>Posição horizontal</span><output id="dt-product-x-value">50%</output><input id="dt-product-x" type="range" min="20" max="80" step="1"></label>
-                      <label class="dt-range-field" for="dt-product-y"><span>Posição vertical</span><output id="dt-product-y-value">50%</output><input id="dt-product-y" type="range" min="20" max="80" step="1"></label>
-                    </div>
-                  </div>
-
-                  <div class="dt-control-panel" id="dt-panel-content" role="tabpanel" data-control-panel="content" hidden>
-                    <div class="dt-control-section">
-                      <h3>Mensagens</h3>
-                      <label class="vf-field" for="dt-benefit"><span class="vf-field__label">Benefício principal</span><textarea class="vf-textarea" id="dt-benefit" rows="2" maxlength="110"></textarea></label>
-                      <label class="vf-field" for="dt-wireless"><span class="vf-field__label">Carregamento por indução</span><textarea class="vf-textarea" id="dt-wireless" rows="3" maxlength="180"></textarea></label>
-                      <label class="vf-field" for="dt-led"><span class="vf-field__label">Iluminação LED</span><textarea class="vf-textarea" id="dt-led" rows="3" maxlength="180"></textarea></label>
-                    </div>
-                    <div class="dt-control-section">
-                      <h3>Especificações</h3>
-                      <label class="vf-field" for="dt-package"><span class="vf-field__label">Conteúdo da embalagem</span><textarea class="vf-textarea" id="dt-package" rows="4" maxlength="260" aria-describedby="dt-package-hint"></textarea><span class="vf-field__hint" id="dt-package-hint">Um item por linha.</span></label>
-                      <div class="dt-measure-grid">
-                        <label class="vf-field" for="dt-width"><span class="vf-field__label">Largura</span><input class="vf-input" id="dt-width" type="text" maxlength="18"></label>
-                        <label class="vf-field" for="dt-height"><span class="vf-field__label">Altura</span><input class="vf-input" id="dt-height" type="text" maxlength="18"></label>
-                        <label class="vf-field" for="dt-depth"><span class="vf-field__label">Profundidade</span><input class="vf-input" id="dt-depth" type="text" maxlength="18"></label>
-                      </div>
-                      <label class="vf-field" for="dt-features"><span class="vf-field__label">Funcionalidades</span><textarea class="vf-textarea" id="dt-features" rows="4" maxlength="300" aria-describedby="dt-features-hint"></textarea><span class="vf-field__hint" id="dt-features-hint">Uma funcionalidade por linha.</span></label>
-                    </div>
-                    <div class="dt-control-section">
-                      <h3>Confiança</h3>
-                      <label class="vf-field" for="dt-safe"><span class="vf-field__label">Texto de compra segura</span><textarea class="vf-textarea" id="dt-safe" rows="2" maxlength="140"></textarea></label>
-                      <label class="vf-field" for="dt-shipping"><span class="vf-field__label">Texto de envio</span><textarea class="vf-textarea" id="dt-shipping" rows="2" maxlength="140"></textarea></label>
-                      <label class="vf-field" for="dt-warranty"><span class="vf-field__label">Texto de garantia</span><textarea class="vf-textarea" id="dt-warranty" rows="2" maxlength="140"></textarea></label>
-                    </div>
-                  </div>
-                </div>
+            <div class="dse-body">
+              <aside class="dse-pages-panel" aria-label="Páginas">
+                <div class="dse-panel-head"><span>Páginas</span><button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dse-add-page">Nova página</button></div>
+                <ul class="dse-pages-list" id="dse-pages-list"></ul>
               </aside>
 
-              <section class="dt-preview-panel" aria-label="Preview do template">
-                <div class="dt-preview-panel__toolbar">
-                  <div>
-                    <span class="dt-page-kicker" id="dt-page-number">PEÇA 01 DE 07</span>
-                    <h2 id="dt-page-name">Capa principal</h2>
+              <div class="dse-canvas-column">
+                <div class="dse-insert-toolbar" role="toolbar" aria-label="Inserir e organizar objetos">
+                  <div class="dse-insert-group" role="group" aria-label="Inserir objeto">
+                    <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-insert="text">Texto</button>
+                    <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-insert="image">Imagem</button>
+                    <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-insert="rect">Retângulo</button>
+                    <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-insert="circle">Círculo</button>
+                    <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-insert="logo">Logo do cliente</button>
                   </div>
-                  <div class="dt-preview-options">
-                    <div class="vf-segmented" aria-label="Modo de comparação">
-                      <button type="button" class="vf-segmented__item" id="dt-view-original" aria-pressed="false">Original</button>
-                      <button type="button" class="vf-segmented__item is-active" id="dt-view-custom" aria-pressed="true">Personalizado</button>
-                    </div>
-                    <label class="dt-zoom-field" for="dt-zoom"><span>Zoom</span><select class="vf-select vf-select--sm" id="dt-zoom"><option value="75">75%</option><option value="100" selected>100%</option><option value="125">125%</option></select></label>
+                  <div class="dse-insert-group" role="group" aria-label="Organizar objeto selecionado">
+                    <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dse-bring-front">Trazer para frente</button>
+                    <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dse-send-back">Enviar para trás</button>
+                    <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dse-duplicate-object">Duplicar</button>
+                    <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dse-delete-object">Excluir</button>
                   </div>
                 </div>
-
-                <div class="dt-canvas-stage" id="dt-canvas-stage">
-                  <div class="dt-canvas-frame" id="dt-main-preview" aria-live="polite"></div>
+                <div class="dse-canvas-stage" id="dse-canvas-stage">
+                  <canvas id="dse-canvas" aria-label="Área de edição do template"></canvas>
                 </div>
+              </div>
 
-                <div class="dt-thumbnail-section">
-                  <div class="dt-thumbnail-heading"><span>Conjunto</span><span class="vf-mono">1200 × 1200</span></div>
-                  <div class="dt-thumbnails" id="dt-thumbnails" role="group" aria-label="Peças do template"></div>
+              <aside class="dse-right-panel" aria-label="Objetos e propriedades">
+                <div class="dse-objects-panel">
+                  <div class="dse-panel-head"><span>Objetos</span></div>
+                  <ul class="dse-objects-list" id="dse-objects-list"></ul>
                 </div>
-              </section>
+                <div class="dse-properties-panel" id="dse-properties" aria-label="Propriedades do objeto selecionado">
+                  <p class="dse-properties-empty" id="dse-properties-empty">Selecione um objeto para editar suas propriedades.</p>
+                  <div class="dse-properties-fields" id="dse-properties-fields" hidden></div>
+                </div>
+              </aside>
             </div>
           </section>
 
-          <section id="dt-builder-view" class="dtb-view" aria-labelledby="dtb-title" hidden>
-            <div class="dtb-toolbar">
-              <div class="dtb-toolbar__main">
-                <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dtb-back-library">Voltar para a biblioteca</button>
-                <div>
-                  <h2 id="dtb-title">Criar carrossel modular</h2>
-                  <p id="dtb-meta">5 páginas · 1200 × 1200 px</p>
-                </div>
-              </div>
-              <div class="dtb-toolbar__actions">
-                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtb-generate">Gerar prévia</button>
-                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtb-reset">Restaurar</button>
-              </div>
-            </div>
-
-            <p class="dtb-intro">Escolha a identidade, preencha as informações do produto e combine páginas para gerar um conjunto de artes reutilizável.</p>
-
-            <div class="vf-segmented dtb-mode" role="group" aria-label="Modo do construtor">
-              <button type="button" class="vf-segmented__item is-active" id="dtb-mode-generate" aria-pressed="true">Gerar propostas</button>
-              <button type="button" class="vf-segmented__item" id="dtb-mode-manual" aria-pressed="false">Montar manualmente</button>
-            </div>
-
-            <div class="vf-banner is-danger dtb-errors" id="dtb-errors" role="alert" hidden>
-              <div class="vf-banner__content">
-                <p class="vf-banner__title">Revise antes de continuar</p>
-                <ul class="dtb-errors__list" id="dtb-errors-list"></ul>
-              </div>
-            </div>
-
-            <div class="dtg-layout" id="dtb-generate-view">
-              <aside class="dtb-config dtg-form" aria-label="Dados do produto">
-                <div class="dtg-form__header">
-                  <h3>Dados do produto</h3>
-                  <p>Preencha o que existir. As páginas são escolhidas conforme os dados informados — nada é inventado.</p>
-                </div>
-
-                <div class="dtb-config__body">
-                  <div class="dtb-panel">
-                    <div class="dtb-section">
-                      <h3>Projeto</h3>
-                      <label class="vf-field" for="dtg-project-name"><span class="vf-field__label">Nome do projeto</span><input class="vf-input" id="dtg-project-name" type="text" maxlength="80" placeholder="Carrossel da lavadora" autocomplete="off"></label>
-                      <label class="vf-field" for="dtg-client-select">
-                        <span class="vf-field__label">Cliente</span>
-                        <select class="vf-select" id="dtg-client-select"><option value="">Cliente personalizado</option></select>
-                      </label>
-                      <label class="vf-field" for="dtg-client-name"><span class="vf-field__label">Nome do cliente</span><input class="vf-input" id="dtg-client-name" type="text" maxlength="80" placeholder="Nome do cliente" autocomplete="organization"></label>
-                      <label class="vf-field" for="dtg-segment"><span class="vf-field__label">Segmento</span><select class="vf-select" id="dtg-segment"></select></label>
-                      <label class="vf-field" for="dtg-brand-name"><span class="vf-field__label">Nome da marca</span><input class="vf-input" id="dtg-brand-name" type="text" maxlength="40" placeholder="Marca exibida nas artes" autocomplete="off"></label>
-                      <label class="dt-file-drop" for="dtg-logo-file">
-                        <span class="dt-file-drop__title">Logo</span>
-                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
-                        <input id="dtg-logo-file" type="file" accept="image/png,image/jpeg,image/webp">
-                      </label>
-                      <div class="dt-upload-state" id="dtg-logo-state" hidden>
-                        <img id="dtg-logo-preview" alt="Prévia do logo selecionado">
-                        <span id="dtg-logo-filename"></span>
-                        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dtg-remove-logo">Remover logo</button>
-                      </div>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Produto</h3>
-                      <label class="vf-field" for="dtg-product-name"><span class="vf-field__label">Nome do produto</span><input class="vf-input" id="dtg-product-name" type="text" maxlength="64" placeholder="Lavadora de alta pressão"></label>
-                      <label class="vf-field" for="dtg-product-subtitle"><span class="vf-field__label">Subtítulo</span><textarea class="vf-textarea" id="dtg-product-subtitle" rows="2" maxlength="140" placeholder="Uma frase com o diferencial do produto"></textarea></label>
-                      <label class="dt-file-drop" for="dtg-product-file">
-                        <span class="dt-file-drop__title">Imagem principal</span>
-                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
-                        <input id="dtg-product-file" type="file" accept="image/png,image/jpeg,image/webp">
-                      </label>
-                      <div class="dt-upload-state" id="dtg-product-state" hidden>
-                        <img id="dtg-product-preview" alt="Prévia do produto selecionado">
-                        <span id="dtg-product-filename"></span>
-                        <div class="dt-upload-actions">
-                          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtg-edit-product">Editar imagem</button>
-                          <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dtg-remove-product">Remover imagem</button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Benefícios</h3>
-                      <label class="vf-field" for="dtg-main-benefit"><span class="vf-field__label">Benefício principal</span><textarea class="vf-textarea" id="dtg-main-benefit" rows="2" maxlength="120" placeholder="A promessa que abre o carrossel"></textarea></label>
-                      <label class="vf-field" for="dtg-benefit-1"><span class="vf-field__label">Benefício 1</span><textarea class="vf-textarea" id="dtg-benefit-1" rows="2" maxlength="90" placeholder="Um ganho concreto para o cliente"></textarea></label>
-                      <label class="vf-field" for="dtg-benefit-2"><span class="vf-field__label">Benefício 2</span><textarea class="vf-textarea" id="dtg-benefit-2" rows="2" maxlength="90"></textarea></label>
-                      <label class="vf-field" for="dtg-benefit-3"><span class="vf-field__label">Benefício 3</span><textarea class="vf-textarea" id="dtg-benefit-3" rows="2" maxlength="90"></textarea></label>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Ficha técnica</h3>
-                      <label class="vf-field" for="dtg-specs">
-                        <span class="vf-field__label">Especificações, uma por linha</span>
-                        <textarea class="vf-textarea" id="dtg-specs" rows="6" maxlength="420" aria-describedby="dtg-specs-hint" placeholder="Potência: 1800 W&#10;Pressão: 2000 PSI"></textarea>
-                        <span class="vf-field__hint" id="dtg-specs-hint">A página de especificações precisa de pelo menos 2 linhas.</span>
-                      </label>
-                      <label class="vf-field" for="dtg-package">
-                        <span class="vf-field__label">Conteúdo da embalagem, um por linha</span>
-                        <textarea class="vf-textarea" id="dtg-package" rows="5" maxlength="360" placeholder="1 lavadora&#10;1 mangueira de 8 m"></textarea>
-                      </label>
-                      <div class="dt-measure-grid">
-                        <label class="vf-field" for="dtg-width"><span class="vf-field__label">Largura</span><input class="vf-input" id="dtg-width" type="text" maxlength="18" placeholder="32 cm"></label>
-                        <label class="vf-field" for="dtg-height"><span class="vf-field__label">Altura</span><input class="vf-input" id="dtg-height" type="text" maxlength="18" placeholder="78 cm"></label>
-                        <label class="vf-field" for="dtg-depth"><span class="vf-field__label">Profundidade</span><input class="vf-input" id="dtg-depth" type="text" maxlength="18" placeholder="29 cm"></label>
-                      </div>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Garantia e envio</h3>
-                      <label class="vf-field" for="dtg-warranty"><span class="vf-field__label">Garantia</span><textarea class="vf-textarea" id="dtg-warranty" rows="2" maxlength="160" placeholder="12 meses contra defeitos de fabricação"></textarea></label>
-                      <label class="vf-field" for="dtg-shipping"><span class="vf-field__label">Envio</span><textarea class="vf-textarea" id="dtg-shipping" rows="2" maxlength="160" placeholder="Envio com acompanhamento do pedido"></textarea></label>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="dtg-form__footer">
-                  <button type="button" class="vf-btn vf-btn--primary vf-btn--full" id="dtg-generate">Gerar 3 propostas</button>
-                  <button type="button" class="vf-btn vf-btn--secondary vf-btn--full" id="dtg-regenerate">Gerar outras opções</button>
-                </div>
-              </aside>
-
-              <section class="dtg-results" aria-label="Propostas geradas" aria-live="polite">
-                <div class="vf-empty dtg-empty" id="dtg-empty">
-                  <h2 class="vf-empty__title">Nenhuma proposta gerada ainda</h2>
-                  <p class="vf-empty__description">Preencha ao menos o nome do produto e clique em “Gerar 3 propostas”. O estúdio monta três carrosséis com direções visuais diferentes.</p>
-                </div>
-
-                <div class="vf-banner is-info dtg-warnings" id="dtg-warnings" role="status" hidden>
-                  <div class="vf-banner__content">
-                    <p class="vf-banner__title">Páginas não criadas</p>
-                    <ul class="dtb-errors__list" id="dtg-warnings-list"></ul>
-                  </div>
-                </div>
-
-                <div class="dtg-cards" id="dtg-proposals"></div>
-              </section>
-            </div>
-
-            <div class="dtb-layout" id="dtb-manual-view" hidden>
-              <aside class="dtb-config" aria-label="Configuração do carrossel">
-                <div class="vf-tabs dtb-config__tabs" role="tablist" aria-label="Grupos de configuração do construtor">
-                  <button type="button" class="vf-tab is-active" role="tab" aria-selected="true" aria-controls="dtb-panel-identity" data-builder-tab="identity">Identidade</button>
-                  <button type="button" class="vf-tab" role="tab" aria-selected="false" aria-controls="dtb-panel-product" data-builder-tab="product">Produto</button>
-                  <button type="button" class="vf-tab" role="tab" aria-selected="false" aria-controls="dtb-panel-content" data-builder-tab="content">Conteúdo</button>
-                  <button type="button" class="vf-tab" role="tab" aria-selected="false" aria-controls="dtb-panel-pages" data-builder-tab="pages">Páginas</button>
-                </div>
-
-                <div class="dtb-config__body">
-                  <div class="dtb-panel is-active" id="dtb-panel-identity" role="tabpanel" data-builder-panel="identity">
-                    <div class="dtb-section">
-                      <h3>Projeto</h3>
-                      <label class="vf-field" for="dtb-project-name">
-                        <span class="vf-field__label">Nome do projeto</span>
-                        <input class="vf-input" id="dtb-project-name" type="text" maxlength="80" autocomplete="off">
-                      </label>
-                      <label class="vf-field" for="dtb-client-select">
-                        <span class="vf-field__label">Cliente ativo</span>
-                        <select class="vf-select" id="dtb-client-select"><option value="">Cliente personalizado</option></select>
-                      </label>
-                      <div class="vf-banner vf-banner--compact is-warning" id="dtb-client-warning" role="status" hidden>
-                        <div class="vf-banner__content"><p class="vf-banner__description">Clientes indisponíveis. Continue com o preenchimento manual.</p></div>
-                      </div>
-                      <label class="vf-field" for="dtb-client-name">
-                        <span class="vf-field__label">Nome do cliente</span>
-                        <input class="vf-input" id="dtb-client-name" type="text" maxlength="80" autocomplete="organization">
-                      </label>
-                      <label class="vf-field" for="dtb-brand-name">
-                        <span class="vf-field__label">Nome da marca</span>
-                        <input class="vf-input" id="dtb-brand-name" type="text" maxlength="40" autocomplete="off">
-                      </label>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Segmento e estilo</h3>
-                      <label class="vf-field" for="dtb-segment">
-                        <span class="vf-field__label">Segmento</span>
-                        <select class="vf-select" id="dtb-segment"></select>
-                      </label>
-                      <label class="vf-field" for="dtb-style">
-                        <span class="vf-field__label">Estilo visual</span>
-                        <select class="vf-select" id="dtb-style" aria-describedby="dtb-style-hint"></select>
-                        <span class="vf-field__hint" id="dtb-style-hint">O estilo aplica uma paleta inicial. Você pode ajustar cada cor depois.</span>
-                      </label>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Paleta</h3>
-                      <div class="dt-color-grid">
-                        <label class="vf-field" for="dtb-color-primary"><span class="vf-field__label">Cor principal</span><input class="dt-color-input" id="dtb-color-primary" type="color"></label>
-                        <label class="vf-field" for="dtb-color-secondary"><span class="vf-field__label">Cor secundária</span><input class="dt-color-input" id="dtb-color-secondary" type="color"></label>
-                        <label class="vf-field" for="dtb-color-background"><span class="vf-field__label">Cor de fundo</span><input class="dt-color-input" id="dtb-color-background" type="color"></label>
-                        <label class="vf-field" for="dtb-color-text"><span class="vf-field__label">Cor do texto</span><input class="dt-color-input" id="dtb-color-text" type="color"></label>
-                      </div>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Logo</h3>
-                      <label class="dt-file-drop" for="dtb-logo-file">
-                        <span class="dt-file-drop__title">Selecionar imagem do logo</span>
-                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
-                        <input id="dtb-logo-file" type="file" accept="image/png,image/jpeg,image/webp">
-                      </label>
-                      <div class="dt-upload-state" id="dtb-logo-state" hidden>
-                        <img id="dtb-logo-preview" alt="Prévia do logo selecionado">
-                        <span id="dtb-logo-filename"></span>
-                        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dtb-remove-logo">Remover logo</button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="dtb-panel" id="dtb-panel-product" role="tabpanel" data-builder-panel="product" hidden>
-                    <div class="dtb-section">
-                      <h3>Informações do produto</h3>
-                      <label class="vf-field" for="dtb-product-name"><span class="vf-field__label">Nome do produto</span><input class="vf-input" id="dtb-product-name" type="text" maxlength="64"></label>
-                      <label class="vf-field" for="dtb-product-subtitle"><span class="vf-field__label">Subtítulo</span><textarea class="vf-textarea" id="dtb-product-subtitle" rows="2" maxlength="140"></textarea></label>
-                      <label class="vf-field" for="dtb-main-benefit"><span class="vf-field__label">Benefício principal</span><textarea class="vf-textarea" id="dtb-main-benefit" rows="2" maxlength="120"></textarea></label>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Imagem principal</h3>
-                      <label class="dt-file-drop" for="dtb-product-file">
-                        <span class="dt-file-drop__title">Selecionar imagem do produto</span>
-                        <span class="dt-file-drop__hint">PNG, JPG ou WebP · até 8 MB</span>
-                        <input id="dtb-product-file" type="file" accept="image/png,image/jpeg,image/webp">
-                      </label>
-                      <div class="dt-upload-state" id="dtb-product-state" hidden>
-                        <img id="dtb-product-preview" alt="Prévia do produto selecionado">
-                        <span id="dtb-product-filename"></span>
-                        <div class="dt-upload-actions">
-                          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtb-edit-product">Editar imagem</button>
-                          <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dtb-remove-product">Remover imagem</button>
-                        </div>
-                      </div>
-                      <div class="dt-upload-note" id="dtb-product-edit-note" hidden>
-                        <span>Edição aplicada · o arquivo original continua guardado.</span>
-                        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="dtb-restore-product">Restaurar original</button>
-                      </div>
-                      <div class="vf-banner vf-banner--compact is-warning" id="dtb-product-lowres" role="status" hidden>
-                        <div class="vf-banner__content"><p class="vf-banner__description">Resolução baixa para uma arte de 1200 × 1200 px. O resultado pode sair sem nitidez.</p></div>
-                      </div>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Enquadramento</h3>
-                      <label class="dt-range-field" for="dtb-product-scale"><span>Escala da imagem</span><output id="dtb-product-scale-value">100%</output><input id="dtb-product-scale" type="range" min="60" max="145" step="1"></label>
-                      <label class="dt-range-field" for="dtb-product-x"><span>Posição horizontal</span><output id="dtb-product-x-value">50%</output><input id="dtb-product-x" type="range" min="20" max="80" step="1"></label>
-                      <label class="dt-range-field" for="dtb-product-y"><span>Posição vertical</span><output id="dtb-product-y-value">50%</output><input id="dtb-product-y" type="range" min="20" max="80" step="1"></label>
-                    </div>
-                  </div>
-
-                  <div class="dtb-panel" id="dtb-panel-content" role="tabpanel" data-builder-panel="content" hidden>
-                    <div class="dtb-section">
-                      <h3>Benefícios</h3>
-                      <label class="vf-field" for="dtb-benefit-1"><span class="vf-field__label">Benefício 1</span><textarea class="vf-textarea" id="dtb-benefit-1" rows="2" maxlength="90"></textarea></label>
-                      <label class="vf-field" for="dtb-benefit-2"><span class="vf-field__label">Benefício 2</span><textarea class="vf-textarea" id="dtb-benefit-2" rows="2" maxlength="90"></textarea></label>
-                      <label class="vf-field" for="dtb-benefit-3"><span class="vf-field__label">Benefício 3</span><textarea class="vf-textarea" id="dtb-benefit-3" rows="2" maxlength="90"></textarea></label>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Ficha técnica</h3>
-                      <label class="vf-field" for="dtb-specs">
-                        <span class="vf-field__label">Especificações técnicas</span>
-                        <textarea class="vf-textarea" id="dtb-specs" rows="6" maxlength="420" aria-describedby="dtb-specs-hint" placeholder="Potência: 650 W"></textarea>
-                        <span class="vf-field__hint" id="dtb-specs-hint">Uma informação por linha, no formato “Rótulo: valor”. Até 6 linhas.</span>
-                      </label>
-                      <label class="vf-field" for="dtb-package">
-                        <span class="vf-field__label">Conteúdo da embalagem</span>
-                        <textarea class="vf-textarea" id="dtb-package" rows="5" maxlength="360" aria-describedby="dtb-package-hint"></textarea>
-                        <span class="vf-field__hint" id="dtb-package-hint">Um item por linha. Até 6 itens.</span>
-                      </label>
-                      <div class="dt-measure-grid">
-                        <label class="vf-field" for="dtb-width"><span class="vf-field__label">Largura</span><input class="vf-input" id="dtb-width" type="text" maxlength="18"></label>
-                        <label class="vf-field" for="dtb-height"><span class="vf-field__label">Altura</span><input class="vf-input" id="dtb-height" type="text" maxlength="18"></label>
-                        <label class="vf-field" for="dtb-depth"><span class="vf-field__label">Profundidade</span><input class="vf-input" id="dtb-depth" type="text" maxlength="18"></label>
-                      </div>
-                    </div>
-
-                    <div class="dtb-section">
-                      <h3>Uso e garantias</h3>
-                      <label class="vf-field" for="dtb-how-to-use"><span class="vf-field__label">Como usar</span><textarea class="vf-textarea" id="dtb-how-to-use" rows="3" maxlength="220"></textarea></label>
-                      <label class="vf-field" for="dtb-warranty"><span class="vf-field__label">Garantia</span><textarea class="vf-textarea" id="dtb-warranty" rows="2" maxlength="160"></textarea></label>
-                      <label class="vf-field" for="dtb-shipping"><span class="vf-field__label">Informação de envio</span><textarea class="vf-textarea" id="dtb-shipping" rows="2" maxlength="160"></textarea></label>
-                    </div>
-                  </div>
-
-                  <div class="dtb-panel" id="dtb-panel-pages" role="tabpanel" data-builder-panel="pages" hidden>
-                    <div class="dtb-section">
-                      <h3>Páginas do carrossel</h3>
-                      <p class="dtb-section__hint">Marque as páginas que entram no conjunto e use as setas para definir a ordem. A capa é obrigatória.</p>
-                      <ul class="dtb-pages" id="dtb-pages-list"></ul>
-                    </div>
-                  </div>
-                </div>
-              </aside>
-
-              <section class="dtb-preview" aria-label="Prévia do carrossel">
-                <div class="dtb-preview__toolbar">
-                  <div>
-                    <span class="dt-page-kicker" id="dtb-page-number">PÁGINA 01 DE 05</span>
-                    <h2 id="dtb-page-name">Capa dividida</h2>
-                  </div>
-                  <div class="dtb-preview__options">
-                    <div class="vf-btn-group dtb-nav" role="group" aria-label="Navegar entre as páginas">
-                      <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtb-prev">Anterior</button>
-                      <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtb-next">Próxima</button>
-                    </div>
-                    <div class="vf-segmented" aria-label="Modo de comparação">
-                      <button type="button" class="vf-segmented__item" id="dtb-view-original" aria-pressed="false">Valores iniciais</button>
-                      <button type="button" class="vf-segmented__item is-active" id="dtb-view-custom" aria-pressed="true">Meu carrossel</button>
-                    </div>
-                    <label class="dt-zoom-field" for="dtb-zoom"><span>Zoom</span><select class="vf-select vf-select--sm" id="dtb-zoom"><option value="75">75%</option><option value="100" selected>100%</option><option value="125">125%</option></select></label>
-                  </div>
-                </div>
-
-                <div class="dt-canvas-stage" id="dtb-canvas-stage">
-                  <div class="dt-canvas-frame" id="dtb-main-preview" aria-live="polite"></div>
-                </div>
-
-                <div class="dt-thumbnail-section">
-                  <div class="dt-thumbnail-heading"><span>Páginas incluídas</span><span class="vf-mono">1200 × 1200</span></div>
-                  <div class="dtb-thumbnails" id="dtb-thumbnails" role="group" aria-label="Páginas do carrossel"></div>
-                </div>
-
-                <div class="dtb-preview__actions">
-                  <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtb-download-page">Baixar página atual</button>
-                  <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtb-download-all">Baixar todas as páginas</button>
-                </div>
-              </section>
-            </div>
-          </section>
         </div>
       </div>
     </main>
   </div>
 
-  <div class="vf-overlay" id="dt-confirm-overlay" aria-hidden="true">
-    <div class="vf-modal vf-modal--sm" role="dialog" aria-modal="true" aria-labelledby="dt-confirm-title" aria-describedby="dt-confirm-description">
-      <div class="vf-modal__header"><h2 class="vf-modal__title" id="dt-confirm-title">Restaurar template?</h2></div>
-      <div class="vf-modal__body"><p id="dt-confirm-description">Todos os ajustes locais deste projeto serão apagados.</p></div>
-      <div class="vf-modal__footer">
-        <button type="button" class="vf-btn vf-btn--secondary" id="dt-confirm-cancel">Cancelar</button>
-        <button type="button" class="vf-btn vf-btn--primary" id="dt-confirm-accept">Confirmar</button>
+  <div class="vf-overlay dim-overlay" id="dim-overlay" aria-hidden="true">
+    <div class="vf-modal dim-modal" role="dialog" aria-modal="true" aria-labelledby="dim-title">
+      <header class="vf-modal__header">
+        <h2 class="vf-modal__title" id="dim-title">Importar template</h2>
+        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon" id="dim-close" aria-label="Fechar importação">×</button>
+      </header>
+
+      <div class="dim-steps" role="tablist" aria-label="Etapas da importação">
+        <span class="dim-step is-active" id="dim-step-indicator-file">1. Arquivo</span>
+        <span class="dim-step" id="dim-step-indicator-review">2. Revisão</span>
+        <span class="dim-step" id="dim-step-indicator-save">3. Salvar</span>
       </div>
+
+      <div class="vf-modal__body dim-body">
+        <section class="dim-panel is-active" id="dim-panel-file" aria-label="Etapa 1: arquivo">
+          <label class="dim-dropzone" for="dim-file-input" id="dim-dropzone">
+            <span class="dim-dropzone__title">Arraste um arquivo aqui ou clique para selecionar</span>
+            <span class="dim-dropzone__hint" id="dim-formats-hint">Formatos aceitos: .json, .vfdesign.json, .svg, .png, .jpg, .jpeg, .webp — até 8 MB</span>
+            <input type="file" id="dim-file-input" accept=".json,.vfdesign.json,.svg,.png,.jpg,.jpeg,.webp" hidden>
+          </label>
+          <div class="dim-file-picked" id="dim-file-picked" hidden>
+            <strong id="dim-file-name"></strong>
+            <span id="dim-file-meta"></span>
+          </div>
+          <div class="vf-banner is-danger dim-error" id="dim-file-error" role="alert" hidden>
+            <div class="vf-banner__content"><p class="vf-banner__description" id="dim-file-error-text"></p></div>
+          </div>
+        </section>
+
+        <section class="dim-panel" id="dim-panel-review" aria-label="Etapa 2: revisão" hidden>
+          <dl class="dim-review-list">
+            <div><dt>Nome</dt><dd id="dim-review-name">—</dd></div>
+            <div><dt>Formato</dt><dd id="dim-review-format">—</dd></div>
+            <div><dt>Tamanho</dt><dd id="dim-review-size">—</dd></div>
+            <div><dt>Dimensões</dt><dd id="dim-review-dimensions">—</dd></div>
+            <div><dt>Páginas</dt><dd id="dim-review-pages">—</dd></div>
+            <div><dt>Objetos/camadas</dt><dd id="dim-review-objects">—</dd></div>
+          </dl>
+          <ul class="dim-review-warnings" id="dim-review-warnings"></ul>
+        </section>
+
+        <section class="dim-panel" id="dim-panel-save" aria-label="Etapa 3: salvar" hidden>
+          <label class="vf-field" for="dim-save-name"><span class="vf-field__label">Nome</span><input class="vf-input" id="dim-save-name" type="text" maxlength="120"></label>
+          <div class="vf-segmented dim-save-type" role="group" aria-label="Importar como">
+            <button type="button" class="vf-segmented__item is-active" id="dim-save-as-template" aria-pressed="true">Template</button>
+            <button type="button" class="vf-segmented__item" id="dim-save-as-artwork" aria-pressed="false">Arte</button>
+          </div>
+          <label class="vf-field" for="dim-save-account" id="dim-save-account-field" hidden><span class="vf-field__label">Conta vinculada</span><select class="vf-select" id="dim-save-account"><option value="">Nenhuma</option></select></label>
+        </section>
+      </div>
+
+      <footer class="vf-modal__footer">
+        <button type="button" class="vf-btn vf-btn--secondary" id="dim-back" hidden>Voltar</button>
+        <button type="button" class="vf-btn vf-btn--secondary" id="dim-cancel">Cancelar</button>
+        <button type="button" class="vf-btn vf-btn--primary" id="dim-next">Avançar</button>
+      </footer>
     </div>
   </div>
 
@@ -639,155 +198,6 @@
     <div class="vf-modal vf-modal--sm ds-versions-modal" role="dialog" aria-modal="true" aria-labelledby="ds-versions-title">
       <div class="vf-modal__header"><h2 class="vf-modal__title" id="ds-versions-title">Versões</h2><button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="ds-versions-close">Fechar</button></div>
       <div class="vf-modal__body" id="ds-versions-list"></div>
-    </div>
-  </div>
-
-  <div class="vf-overlay dtg-preview-overlay" id="dtg-preview-overlay" aria-hidden="true">
-    <div class="vf-modal dtg-preview-modal" role="dialog" aria-modal="true" aria-labelledby="dtg-preview-title">
-      <header class="vf-modal__header dtg-preview-header">
-        <div>
-          <p class="vf-page-header__eyebrow" id="dtg-preview-direction">Direção visual</p>
-          <h2 class="vf-modal__title" id="dtg-preview-title">Proposta</h2>
-        </div>
-        <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon" id="dtg-preview-close" aria-label="Fechar prévia da proposta">×</button>
-      </header>
-
-      <div class="vf-modal__body dtg-preview-body">
-        <div class="dtg-preview-toolbar">
-          <span class="dt-page-kicker" id="dtg-preview-page">PÁGINA 01 DE 05</span>
-          <div class="vf-btn-group">
-            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtg-preview-prev">Anterior</button>
-            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="dtg-preview-next">Próxima</button>
-          </div>
-        </div>
-        <div class="dt-canvas-stage dtg-preview-stage">
-          <div class="dt-canvas-frame" id="dtg-preview-canvas" aria-live="polite"></div>
-        </div>
-        <div class="dtg-preview-thumbs" id="dtg-preview-thumbs" role="group" aria-label="Páginas da proposta"></div>
-      </div>
-
-      <footer class="vf-modal__footer">
-        <button type="button" class="vf-btn vf-btn--secondary" id="dtg-preview-cancel">Fechar</button>
-        <button type="button" class="vf-btn vf-btn--primary" id="dtg-preview-use">Usar esta proposta</button>
-      </footer>
-    </div>
-  </div>
-
-  <div class="vf-overlay die-overlay" id="die-overlay" aria-hidden="true">
-    <div class="vf-modal die-modal" id="die-modal" role="dialog" aria-modal="true" aria-labelledby="die-title" aria-describedby="die-file-name">
-      <header class="vf-modal__header die-header">
-        <div class="die-header__info">
-          <h2 class="vf-modal__title" id="die-title">Editar imagem do produto</h2>
-          <p class="die-header__file"><span id="die-file-name">Imagem do produto</span> · <span class="vf-mono" id="die-file-meta">—</span></p>
-        </div>
-        <div class="die-header__actions">
-          <span class="die-dirty" id="die-dirty" role="status" hidden>Alterações não aplicadas</span>
-          <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon" id="die-close" aria-label="Fechar editor de imagem">×</button>
-        </div>
-      </header>
-
-      <div class="die-body">
-        <div class="die-stage-column">
-          <div class="die-toolbar" role="toolbar" aria-label="Ferramentas da imagem">
-            <div class="die-toolbar__group" role="group" aria-label="Girar e espelhar">
-              <button type="button" class="die-tool" id="die-rotate-left" title="Girar 90° à esquerda (tecla [)" aria-label="Girar 90 graus à esquerda">⟲ 90°</button>
-              <button type="button" class="die-tool" id="die-rotate-right" title="Girar 90° à direita (tecla ])" aria-label="Girar 90 graus à direita">⟳ 90°</button>
-              <button type="button" class="die-tool" id="die-flip-x" aria-pressed="false" title="Espelhar horizontalmente">⇄ Horizontal</button>
-              <button type="button" class="die-tool" id="die-flip-y" aria-pressed="false" title="Espelhar verticalmente">⇅ Vertical</button>
-            </div>
-            <div class="die-toolbar__group" role="group" aria-label="Enquadrar">
-              <button type="button" class="die-tool" id="die-center" title="Centralizar na área">Centralizar</button>
-              <button type="button" class="die-tool" id="die-fit" title="Ajustar à área (tecla 0)">Ajustar</button>
-              <button type="button" class="die-tool" id="die-crop" aria-pressed="false" title="Recortar a imagem">Recortar</button>
-            </div>
-            <div class="die-toolbar__group die-toolbar__group--end" role="group" aria-label="Histórico">
-              <button type="button" class="die-tool" id="die-undo" title="Desfazer (Ctrl+Z)" disabled>Desfazer</button>
-              <button type="button" class="die-tool" id="die-redo" title="Refazer (Ctrl+Shift+Z)" disabled>Refazer</button>
-              <button type="button" class="die-tool" id="die-compare" aria-pressed="false" title="Comparar com a original (tecla C)">Comparar</button>
-            </div>
-          </div>
-
-          <div class="die-crop-actions" id="die-crop-actions" hidden>
-            <span class="die-crop-actions__hint">Arraste as alças para escolher a área. A rotação volta depois de aplicar.</span>
-            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="die-crop-square">Quadrado 1:1</button>
-            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="die-crop-clear">Limpar recorte</button>
-            <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="die-crop-cancel">Cancelar recorte</button>
-            <button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="die-crop-confirm">Aplicar recorte</button>
-          </div>
-
-          <div class="die-stage" id="die-stage">
-            <canvas id="die-canvas" aria-label="Área de edição da imagem do produto"></canvas>
-            <div class="die-stage__loading" id="die-loading" hidden>
-              <span class="vf-spinner" aria-hidden="true"></span>
-              <p role="status">Preparando a imagem…</p>
-            </div>
-          </div>
-
-          <div class="die-stage-footer">
-            <p class="die-stage-footer__hint">Arraste a imagem no palco. As alças redimensionam e giram. Setas movem, Shift move mais rápido.</p>
-            <p class="die-compare-hint" id="die-compare-hint" role="status" hidden>Mostrando a imagem original. Os ajustes continuam guardados.</p>
-          </div>
-        </div>
-
-        <aside class="die-panel" id="die-panel" aria-label="Ajustes da imagem">
-          <div class="vf-banner vf-banner--compact is-warning die-lowres" id="die-low-res" role="status" hidden>
-            <div class="vf-banner__content"><p class="vf-banner__description">Resolução baixa para 1200 × 1200 px. Ampliar demais vai deixar a arte macia.</p></div>
-          </div>
-
-          <section class="die-group">
-            <h3 class="die-group__title">Transformação</h3>
-            <label class="dt-range-field" for="die-rotation"><span>Rotação livre</span><output id="die-rotation-value">0°</output><input id="die-rotation" type="range" min="0" max="360" step="1"></label>
-            <label class="dt-range-field" for="die-scale"><span>Tamanho</span><output id="die-scale-value">100%</output><input id="die-scale" type="range" min="10" max="400" step="1"></label>
-          </section>
-
-          <section class="die-group">
-            <h3 class="die-group__title">Cor</h3>
-            <label class="dt-range-field" for="die-brightness"><span>Brilho</span><output id="die-brightness-value">0</output><input id="die-brightness" type="range" min="-100" max="100" step="1"></label>
-            <label class="dt-range-field" for="die-contrast"><span>Contraste</span><output id="die-contrast-value">0</output><input id="die-contrast" type="range" min="-100" max="100" step="1"></label>
-            <label class="dt-range-field" for="die-saturation"><span>Saturação</span><output id="die-saturation-value">0</output><input id="die-saturation" type="range" min="-100" max="100" step="1"></label>
-            <label class="dt-range-field" for="die-sharpen"><span>Nitidez</span><output id="die-sharpen-value">0</output><input id="die-sharpen" type="range" min="0" max="100" step="1"></label>
-          </section>
-
-          <section class="die-group">
-            <h3 class="die-group__title">Fundo</h3>
-            <div class="vf-segmented die-bg-toggle" role="group" aria-label="Tipo de fundo">
-              <button type="button" class="vf-segmented__item is-active" id="die-bg-transparent" aria-pressed="true">Transparente</button>
-              <button type="button" class="vf-segmented__item" id="die-bg-color" aria-pressed="false">Cor sólida</button>
-            </div>
-            <label class="vf-field die-bg-field" for="die-bg-color-input">
-              <span class="vf-field__label">Cor de fundo</span>
-              <input class="dt-color-input" id="die-bg-color-input" type="color" value="#ffffff" disabled>
-            </label>
-          </section>
-
-          <section class="die-group">
-            <h3 class="die-group__title">Sombra</h3>
-            <label class="die-switch-row" for="die-shadow-enabled">
-              <span>Sombra sob o produto</span>
-              <span class="vf-switch"><input type="checkbox" id="die-shadow-enabled"></span>
-            </label>
-            <label class="dt-range-field" for="die-shadow-blur"><span>Desfoque</span><output id="die-shadow-blur-value">0</output><input id="die-shadow-blur" type="range" min="0" max="100" step="1" disabled></label>
-            <label class="dt-range-field" for="die-shadow-x"><span>Deslocamento X</span><output id="die-shadow-x-value">0</output><input id="die-shadow-x" type="range" min="-100" max="100" step="1" disabled></label>
-            <label class="dt-range-field" for="die-shadow-y"><span>Deslocamento Y</span><output id="die-shadow-y-value">0</output><input id="die-shadow-y" type="range" min="-100" max="100" step="1" disabled></label>
-            <label class="dt-range-field" for="die-shadow-opacity"><span>Opacidade</span><output id="die-shadow-opacity-value">0</output><input id="die-shadow-opacity" type="range" min="0" max="100" step="1" disabled></label>
-          </section>
-
-          <section class="die-group" id="die-ai-section" hidden>
-            <h3 class="die-group__title">Inteligência artificial</h3>
-            <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm vf-btn--full" id="die-ai-remove-bg" disabled>Remover fundo com IA</button>
-            <p class="die-group__hint">Disponível apenas quando um provedor de IA está configurado no servidor.</p>
-          </section>
-
-          <section class="die-group die-group--restore">
-            <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm vf-btn--full" id="die-restore">Restaurar imagem original</button>
-          </section>
-        </aside>
-      </div>
-
-      <footer class="vf-modal__footer">
-        <button type="button" class="vf-btn vf-btn--secondary" id="die-cancel">Cancelar</button>
-        <button type="button" class="vf-btn vf-btn--primary" id="die-apply">Aplicar edição</button>
-      </footer>
     </div>
   </div>
 
@@ -804,16 +214,11 @@
     integrity="sha384-tJL5KnyuJRcbkoB4qkFwtd3KVVHDCE4PZOeY/QcwVENg7IVB65tqBKSs0UHUZ+k6"
     crossorigin="anonymous"
     referrerpolicy="no-referrer"></script>
-  <script src="design-image-model.js"></script>
-  <script src="design-image-storage.js"></script>
-  <script src="design-image-api.js"></script>
-  <script src="design-image-editor.js"></script>
   <!--
-    Módulos de template, em ordem de dependência:
-    engine (puro) -> presets (dados) -> components -> layouts -> renderer.
-    Depois o núcleo do construtor (model e storage, ambos puros).
-    A tela (design-templates.js) entra em seguida e publica a integração;
-    design-template-builder.js é o último e só consome os globals.
+    Motor de renderização de templates antigos (puro), só para a migração de
+    documentos legados poder transformar as páginas em SVG antes de entrar
+    no Fabric. Ordem de dependência: engine -> presets -> components ->
+    layouts -> renderer -> builder-model.
   -->
   <script src="design-template-engine.js"></script>
   <script src="design-template-presets.js"></script>
@@ -821,10 +226,23 @@
   <script src="design-template-layouts.js"></script>
   <script src="design-template-renderer.js"></script>
   <script src="design-template-builder-model.js"></script>
-  <script src="design-template-builder-storage.js"></script>
-  <script src="design-template-proposal-generator.js"></script>
-  <script src="design-templates.js"></script>
-  <script src="design-template-builder.js"></script>
+  <!--
+    Núcleo da Biblioteca de Templates: modelo do documento, migração de
+    documentos antigos, importadores (registro + json/svg/imagem), painel de
+    objetos e exportação — todos puros/testáveis em Node.
+  -->
+  <script src="design-document-model.js"></script>
+  <script src="design-legacy-migration.js"></script>
+  <script src="design-import-registry.js"></script>
+  <script src="design-import-json.js"></script>
+  <script src="design-import-svg.js"></script>
+  <script src="design-import-image.js"></script>
+  <script src="design-simple-layers.js"></script>
+  <script src="design-export.js"></script>
+  <!-- Editor Reduzido (Fabric.js) e modal de importação — dependem do núcleo acima. -->
+  <script src="design-simple-editor.js"></script>
+  <script src="design-import-modal.js"></script>
+  <!-- Cliente HTTP do Design Studio e a tela (biblioteca do cliente). -->
   <script src="design-studio-api.js"></script>
   <script src="design-studio-workspace.js"></script>
 </body>

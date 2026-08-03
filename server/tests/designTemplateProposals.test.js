@@ -1,6 +1,7 @@
 // server/tests/designTemplateProposals.test.js
 // -----------------------------------------------------------------------------
-// Gerador de propostas de carrossel, exercitado sem navegador:
+// Gerador de propostas de carrossel (design-template-proposal-generator.js),
+// exercitado sem navegador:
 //
 //   • generateProposals devolve TRÊS propostas, com direções e layouts
 //     diferentes — não é a mesma composição com outra paleta;
@@ -9,8 +10,16 @@
 //   • nada é inventado: campo vazio na entrada continua vazio na proposta;
 //   • os quinze layouts modulares estão registrados, renderizam SVG e saem
 //     em 1200 × 1200 em todos os cenários-limite;
-//   • projetos salvos com os cinco ids antigos continuam abrindo;
-//   • a TELA REAL gera, visualiza, aplica e salva uma proposta.
+//   • projetos salvos com os cinco ids antigos continuam abrindo.
+//
+// A refatoração da Biblioteca de Templates removeu o gerador de propostas
+// (aba Construtor > "Gerar propostas") da interface principal — a atividade
+// pedia explicitamente a remoção do botão "Gerar opções", do seletor de
+// quantidade de propostas e do modo de geração automática. Os testes de
+// interface e a simulação de "tela real" que existiam aqui foram retirados
+// por descreverem uma tela que não existe mais; o núcleo puro do gerador
+// (abaixo) continua coberto porque o arquivo segue no repositório por
+// compatibilidade.
 
 const assert = require("assert");
 const fs = require("fs");
@@ -443,265 +452,6 @@ function criarLocalStorage() {
       === propostaComImagem.pages.map((p) => p.rendererId).join()
       && reaberta.origin === "gerado" && reaberta.direction === "comercial-impacto";
   })());
-
-  /* ── 17/18/19. Interface ───────────────────────────────────────────────── */
-
-  const html = fs.readFileSync(path.join(portalDir, "design-templates.html"), "utf8");
-
-  ok("17. o modo “Gerar propostas” aparece na interface",
-    /id="dtb-mode-generate"[^>]*>Gerar propostas</.test(html));
-  ok("17b. o modo “Montar manualmente” também aparece",
-    /id="dtb-mode-manual"[^>]*>Montar manualmente</.test(html));
-  ok("18. “Gerar propostas” é o modo marcado por padrão no HTML",
-    /id="dtb-mode-generate"[^>]*aria-pressed="true"/.test(html)
-    && /id="dtb-mode-manual"[^>]*aria-pressed="false"/.test(html));
-  ok("18b. a seção de geração começa visível e a manual escondida",
-    html.indexOf('id="dtb-generate-view"') > -1
-    && /id="dtb-manual-view"[^>]*hidden/.test(html));
-  ok("18c. o botão “Gerar 3 propostas” existe",
-    /id="dtg-generate"[^>]*>Gerar 3 propostas</.test(html));
-  ok("18d. o botão “Gerar outras opções” existe",
-    /id="dtg-regenerate"[^>]*>Gerar outras opções</.test(html));
-
-  const CAMPOS_DO_FORMULARIO = ["dtg-project-name", "dtg-client-select", "dtg-segment", "dtg-brand-name",
-    "dtg-logo-file", "dtg-product-name", "dtg-product-subtitle", "dtg-product-file", "dtg-main-benefit",
-    "dtg-benefit-1", "dtg-benefit-2", "dtg-benefit-3", "dtg-specs", "dtg-package",
-    "dtg-width", "dtg-height", "dtg-depth", "dtg-warranty", "dtg-shipping"];
-  eq("19. o formulário de geração tem todos os campos pedidos",
-    CAMPOS_DO_FORMULARIO.filter((id) => !html.includes(`id="${id}"`)), []);
-  ok("19b. os campos vazios usam placeholder, não conteúdo falso",
-    /id="dtg-specs"[^>]*placeholder="Potência: 1800 W/.test(html));
-  ok("19c. o gerador é carregado antes da tela",
-    html.indexOf('src="design-template-proposal-generator.js"') > -1
-    && html.indexOf('src="design-template-proposal-generator.js"') < html.indexOf('src="design-templates.js"'));
-  ok("19d. existe a prévia da proposta (Visualizar)",
-    html.includes('id="dtg-preview-overlay"') && /id="dtg-preview-use"[^>]*>Usar esta proposta</.test(html));
-
-  /* ── TELA REAL: gerar, visualizar, usar e salvar ───────────────────────── */
-
-  await (async function telaReal() {
-    console.log("\n  — tela real: gerar, visualizar, usar e salvar —\n");
-
-    const elementos = new Map();
-    const tabsDoConstrutor = [];
-    const paineisDoConstrutor = [];
-
-    function criar(tag, ns) {
-      const el = snap.criarElemento(tag, ns);
-      const listeners = new Map();
-      el.addEventListener = (evento, handler) => {
-        if (!listeners.has(evento)) listeners.set(evento, []);
-        listeners.get(evento).push(handler);
-      };
-      el.dispatch = (evento, payload) => {
-        (listeners.get(evento) || []).forEach((h) => h({ target: el, preventDefault() {}, ...(payload || {}) }));
-      };
-      el.click = () => el.dispatch("click");
-      return el;
-    }
-
-    function byIdFake(id) {
-      if (!elementos.has(id)) {
-        const el = criar("div");
-        el.id = id;
-        elementos.set(id, el);
-      }
-      return elementos.get(id);
-    }
-
-    ["identity", "product", "content", "pages"].forEach((nome) => {
-      const tab = criar("button");
-      tab.dataset.builderTab = nome;
-      tabsDoConstrutor.push(tab);
-      const painel = criar("div");
-      painel.dataset.builderPanel = nome;
-      paineisDoConstrutor.push(painel);
-    });
-
-    const armazenamento = criarLocalStorage();
-    const doc = snap.criarDocumentoFake();
-
-    const contexto = {
-      initLayout: () => {},
-      fetch: () => Promise.reject(new TypeError("sem rede")),
-      localStorage: armazenamento,
-      indexedDB: undefined,
-      AbortController: class { constructor() { this.signal = {}; } abort() {} },
-      FormData: class { append() {} },
-      URL: { createObjectURL: () => "blob:fake", revokeObjectURL() {} },
-      XMLSerializer: class { serializeToString() { return "<svg/>"; } },
-      Blob: class { constructor(partes) { this.partes = partes; } },
-      FileReader: class {}, Image: class {}, fabric: {},
-      setTimeout, clearTimeout, console: { log() {}, warn() {}, error() {} },
-    };
-    contexto.window = contexto;
-    contexto.globalThis = contexto;
-    contexto.document = {
-      ...doc,
-      getElementById: byIdFake,
-      createElement: (tag) => criar(tag),
-      createElementNS: (ns, tag) => criar(tag, ns),
-      querySelector: () => null,
-      querySelectorAll: (seletor) => {
-        if (seletor === "[data-builder-tab]") return tabsDoConstrutor;
-        if (seletor === "[data-builder-panel]") return paineisDoConstrutor;
-        return [];
-      },
-      addEventListener() {}, removeEventListener() {},
-      body: criar("body"), activeElement: null,
-    };
-    contexto.addEventListener = () => {};
-    contexto.removeEventListener = () => {};
-    contexto.VF_DESIGN_IMAGE_MODEL = imageModel;
-    contexto.VF_DESIGN_IMAGE_STORAGE = require(path.join(portalDir, "design-image-storage"));
-    contexto.VF_DESIGN_IMAGE_API = require(path.join(portalDir, "design-image-api"));
-    contexto.VF_DESIGN_TEMPLATE_ENGINE = engine;
-    contexto.VF_DESIGN_TEMPLATE_PRESETS = presets;
-    contexto.VF_DESIGN_TEMPLATE_COMPONENTS = componentsLib;
-    contexto.VF_DESIGN_TEMPLATE_LAYOUTS = layoutsLib;
-    contexto.VF_DESIGN_TEMPLATE_RENDERER = rendererLib;
-    contexto.VF_DESIGN_TEMPLATE_BUILDER_MODEL = model;
-    contexto.VF_DESIGN_TEMPLATE_BUILDER_STORAGE = storageLib;
-    contexto.VF_DESIGN_TEMPLATE_PROPOSAL_GENERATOR = generator;
-    contexto.VFDesignImageEditor = { createDesignImageEditor: () => ({ abrir: () => Promise.resolve(null) }) };
-
-    vm.createContext(contexto);
-    vm.runInContext(fs.readFileSync(path.join(portalDir, "design-templates.js"), "utf8"),
-      contexto, { filename: "design-templates.js" });
-    vm.runInContext(fs.readFileSync(path.join(portalDir, "design-template-builder.js"), "utf8"),
-      contexto, { filename: "design-template-builder.js" });
-
-    const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-    byIdFake("dt-builder-tab").dispatch("click");
-    ok("G1. o Construtor abre no modo “Gerar propostas”",
-      byIdFake("dtb-generate-view").hidden === false && byIdFake("dtb-manual-view").hidden === true);
-    ok("G1b. o formulário começa em branco, sem dado comercial fictício",
-      byIdFake("dtg-product-name").value === "" && byIdFake("dtg-specs").value === ""
-      && byIdFake("dtg-main-benefit").value === "");
-    ok("G1c. nenhuma proposta antes de gerar",
-      byIdFake("dtg-proposals").children.length === 0 && byIdFake("dtg-empty").hidden === false);
-
-    // preenche o formulário
-    const preencher = (id, valor) => {
-      byIdFake(id).value = valor;
-      byIdFake(id).dispatch("input");
-    };
-    preencher("dtg-project-name", "Carrossel da Lavadora");
-    preencher("dtg-brand-name", "AQUAFORCE");
-    preencher("dtg-product-name", "Lavadora de Alta Pressão");
-    preencher("dtg-product-subtitle", "Limpeza profunda para calçada e carro.");
-    preencher("dtg-main-benefit", "2000 PSI para a sujeira mais difícil.");
-    preencher("dtg-benefit-1", "Motor de indução silencioso");
-    preencher("dtg-benefit-2", "Mangueira de 8 metros");
-    preencher("dtg-benefit-3", "Bico regulável");
-    preencher("dtg-specs", "Potência: 1800 W\nPressão: 2000 PSI\nVazão: 420 L/h");
-    preencher("dtg-package", "1 lavadora\n1 pistola\n1 mangueira");
-    preencher("dtg-width", "32 cm");
-    preencher("dtg-height", "78 cm");
-    preencher("dtg-depth", "29 cm");
-
-    byIdFake("dtg-generate").dispatch("click");
-    await tick();
-
-    eq("G2. clicar em “Gerar 3 propostas” cria três cards", byIdFake("dtg-proposals").children.length, 3);
-    ok("G2b. o estado vazio some", byIdFake("dtg-empty").hidden === true);
-    const textosDosCards = byIdFake("dtg-proposals").children.map((card) => textosDe(card).join(" "));
-    ok("G2c. os cards trazem as três direções",
-      /Industrial limpo/.test(textosDosCards[0]) && /Técnico moderno/.test(textosDosCards[1])
-      && /Comercial de impacto/.test(textosDosCards[2]));
-    ok("G2d. cada card informa a quantidade de páginas",
-      textosDosCards.every((t) => /5 páginas/.test(t)));
-    ok("G2e. cada card lista os layouts usados",
-      /cover-split-v1/.test(textosDosCards[0]) && /cover-centered-v1/.test(textosDosCards[1])
-      && /cover-impact-v1/.test(textosDosCards[2]));
-    ok("G2f. os cards mostram miniaturas renderizadas de verdade", (() => {
-      const miniaturas = byIdFake("dtg-proposals").children[0].children[3];
-      return miniaturas.children.length === 5
-        && miniaturas.children[0].children[0].children[0].tagName === "svg";
-    })());
-    ok("G2g. os cards mostram a paleta", byIdFake("dtg-proposals").children[0].children[2].children.length === 4);
-
-    // Visualizar não altera o projeto atual
-    const projetoAntesDeVisualizar = JSON.stringify(armazenamento.getItem("vf-design-template-builder-draft-v1"));
-    const cardDoMeio = byIdFake("dtg-proposals").children[1];
-    cardDoMeio.children[5].children[0].dispatch("click"); // Visualizar
-    ok("G3. “Visualizar” abre a prévia da proposta",
-      byIdFake("dtg-preview-overlay").classList.contains("is-open"));
-    ok("G3b. a prévia mostra uma página renderizada",
-      byIdFake("dtg-preview-canvas").children.length === 1
-      && byIdFake("dtg-preview-canvas").children[0].tagName === "svg");
-    eq("G3c. a prévia lista todas as páginas", byIdFake("dtg-preview-thumbs").children.length, 5);
-    byIdFake("dtg-preview-next").dispatch("click");
-    ok("G3d. dá para navegar pelas páginas na prévia",
-      /PÁGINA 02 DE 05/.test(byIdFake("dtg-preview-page").textContent));
-    eq("G3e. visualizar NÃO alterou o projeto atual",
-      JSON.stringify(armazenamento.getItem("vf-design-template-builder-draft-v1")), projetoAntesDeVisualizar);
-    ok("G3f. o modo continua sendo o de geração", byIdFake("dtb-generate-view").hidden === false);
-
-    // Usar esta proposta
-    byIdFake("dtg-preview-use").dispatch("click");
-    await tick();
-    ok("G4. “Usar esta proposta” fecha a prévia",
-      byIdFake("dtg-preview-overlay").classList.contains("is-open") === false);
-    ok("G4b. o editor manual abre com a proposta aplicada",
-      byIdFake("dtb-manual-view").hidden === false && byIdFake("dtb-generate-view").hidden === true);
-    eq("G4c. as cinco páginas foram transferidas", byIdFake("dtb-thumbnails").children.length, 5);
-    ok("G4d. os textos foram transferidos sem redigitar",
-      byIdFake("dtb-product-name").value === "Lavadora de Alta Pressão"
-      && byIdFake("dtb-specs").value === "Potência: 1800 W\nPressão: 2000 PSI\nVazão: 420 L/h"
-      && byIdFake("dtb-project-name").value === "Carrossel da Lavadora");
-    ok("G4e. a proposta aplicada é a que foi visualizada (Técnico moderno)", (() => {
-      const rotulos = byIdFake("dtb-thumbnails").children.map((b) => b.children[1].textContent);
-      return /Capa centralizada/.test(rotulos[0]);
-    })());
-    ok("G4f. a paleta da direção foi aplicada",
-      byIdFake("dtb-color-primary").value === generator.paletteFor("tecnico-moderno", "Geral").primary);
-
-    // Salvar como template gerado
-    byIdFake("dtb-save-template").dispatch("click");
-    await tick();
-    eq("G5. salvar coloca o template na Biblioteca", byIdFake("dt-local-template-grid").children.length, 1);
-    ok("G5b. o card se identifica como “Template gerado”",
-      textosDe(byIdFake("dt-local-template-grid").children[0]).includes("Template gerado"));
-    ok("G5c. o card mostra a direção visual",
-      textosDe(byIdFake("dt-local-template-grid").children[0]).join(" ").includes("Técnico moderno"));
-
-    const salvos = storageLib.createBuilderLibrary({ localStorage: armazenamento }).listar();
-    eq("G6. o registro guarda a direção", salvos[0].direction, "tecnico-moderno");
-    eq("G6b. o registro guarda o layout de cada página",
-      salvos[0].pages.map((p) => p.rendererId),
-      ["cover-centered-v1", "benefits-side-list-v1", "specifications-table-v1", "package-grid-v1", "dimensions-panel-v1"]);
-    ok("G6c. o localStorage não recebeu base64",
-      !armazenamento.getItem(storageLib.LIBRARY_KEY).includes("data:image"));
-
-    // Reabrir recupera os layouts corretos
-    byIdFake("dt-library-tab").dispatch("click");
-    byIdFake("dtb-project-name").value = "Descartável";
-    byIdFake("dtb-project-name").dispatch("input");
-    byIdFake("dt-local-template-grid").children[0].children[1].children[1].children[0].dispatch("click");
-    await tick();
-    ok("G7. reabrir o template recupera o nome", byIdFake("dtb-project-name").value === "Carrossel da Lavadora");
-    ok("G7b. reabrir recupera os layouts da direção escolhida", (() => {
-      const rotulos = byIdFake("dtb-thumbnails").children.map((b) => b.children[1].textContent);
-      return /Capa centralizada/.test(rotulos[0]) && /Painel de medidas/.test(rotulos[4]);
-    })());
-
-    // "Gerar outras opções" roda as combinações
-    byIdFake("dtb-mode-generate").dispatch("click");
-    const layoutsAntes = textosDe(byIdFake("dtg-proposals").children[0]).join(" ");
-    byIdFake("dtg-regenerate").dispatch("click");
-    await tick();
-    eq("G8. “Gerar outras opções” mantém três propostas", byIdFake("dtg-proposals").children.length, 3);
-    ok("G8b. as combinações de layout mudaram",
-      textosDe(byIdFake("dtg-proposals").children[0]).join(" ") !== layoutsAntes);
-
-    // O editor antigo continua intacto
-    byIdFake("dt-editor-tab").dispatch("click");
-    eq("G9. o template do sistema continua com 7 peças", byIdFake("dt-thumbnails").children.length, 7);
-    ok("G9b. os campos do editor antigo seguem preenchidos",
-      byIdFake("dt-product-name").value === "Power Station One");
-  })();
 
   console.log(`\n${checks} verificações passaram no gerador de propostas.`);
 })().catch((erro) => {

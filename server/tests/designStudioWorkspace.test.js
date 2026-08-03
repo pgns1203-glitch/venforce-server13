@@ -63,8 +63,14 @@ const apiLib = require("../../Portal/design-studio-api");
 
   const html = read("Portal/design-templates.html");
   const workspace = read("Portal/design-studio-workspace.js");
-  ["ds-client-select", "ds-account-list", "ds-art-account", "ds-grid", "ds-save-identity", "ds-generate", "ds-create-empty"]
+  // A refatoração da Biblioteca de Templates removeu o gerador de opções
+  // ("Gerar opções"/quantidade) e o seletor global de conta para novas
+  // artes da interface principal — a conta agora vem do filtro da
+  // biblioteca (dtl-account-filter) quando o usuário cria uma arte.
+  ["ds-client-select", "ds-account-list", "ds-grid", "ds-save-identity", "dtl-import", "dtl-new-blank", "dtl-origin-filter"]
     .forEach((id) => ok(`interface contém ${id}`, html.includes(`id="${id}"`)));
+  ["ds-generate", "ds-art-account", "ds-create-empty", "ds-generate-count"]
+    .forEach((id) => ok(`interface NÃO contém mais ${id} (fluxo antigo removido)`, !html.includes(`id="${id}"`)));
   ok("interface separa Templates, Artes e Arquivados", ["templates", "artworks", "archived"].every((tab) => html.includes(`data-ds-tab="${tab}"`)));
   ok("arte nasce de cópia do template pelo backend", workspace.includes("templateId: item.id") && workspace.includes("document: {}"));
   ok("salvar passa pelo acervo compartilhado", workspace.includes("saveDocument") && workspace.includes("api.updateItem"));

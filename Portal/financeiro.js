@@ -1013,6 +1013,12 @@ function finMetricas(data) {
   const semCusto = finNumOrNull(s.revenueWithoutCost);
   const lcTotal = finNumOrNull(s.contributionProfitTotal);
   const finalResult = finNumOrNull(s.finalResult);
+  // Receita Líquida (paidRevenueTotal) soma apenas o repasse já publicado
+  // pelo ML; vendas com financeiro pendente entram como 0 nessa soma, não
+  // porque o repasse seja zero. Exibimos a cobertura junto pra deixar isso
+  // explícito e não parecer que houve cancelamento/dedução.
+  const financeiroPublicadoPercent = finNumOrNull(s.financialDataCoveragePercent);
+  const financeiroPendente = finNumOrNull(s.revenuePendingFinancial);
 
   // Base das margens calculadas: receita com custo. Sem esse campo (payloads
   // antigos), cai para o faturamento reconhecido.
@@ -1039,6 +1045,8 @@ function finMetricas(data) {
     tacox: finNumOrNull(s.tacox),
     confianca: String(s.financialConfidence || ""),
     modo: finModoLabel(s),
+    financeiroPublicadoPercent,
+    financeiroPendente,
   };
 }
 
@@ -1071,6 +1079,23 @@ function renderFinResumoExecutivo(data) {
 
   setOrDash("fin-exec-receita-bruta", m.gross, brl, finTone(m.gross));
   setOrDash("fin-exec-receita-liquida", m.net, brl, finTone(m.net));
+
+  // Explica a diferença Bruta x Líquida quando ela vem de financeiro
+  // pendente do ML, não de cancelamento (que já tem card próprio em Deduções).
+  const finPublicadoEl = document.getElementById("fin-exec-financeiro-publicado");
+  if (finPublicadoEl) {
+    if (m.financeiroPendente && m.financeiroPendente > 0) {
+      finPublicadoEl.textContent =
+        `${pct((m.financeiroPublicadoPercent || 0) / 100)} · ${brl(m.financeiroPendente)} pendente`;
+      finPublicadoEl.classList.add("vf-fin-exec__value--neg");
+      finPublicadoEl.classList.remove("vf-fin-exec__value--muted");
+    } else {
+      finPublicadoEl.textContent = "100%";
+      finPublicadoEl.classList.add("vf-fin-exec__value--muted");
+      finPublicadoEl.classList.remove("vf-fin-exec__value--neg");
+    }
+  }
+
   setOrDash("fin-exec-receita-com-custo", m.comCusto, brl, finTone(m.comCusto));
   setOrDash("fin-exec-receita-sem-custo", m.semCusto, brl, (m.semCusto || 0) > 0 ? "negative" : "muted");
   setOrDash(

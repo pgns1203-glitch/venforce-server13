@@ -335,10 +335,12 @@ async function carregarClientesFinanceiro() {
   const sel = document.getElementById("fin-cliente");
   if (!sel) return;
   try {
-    const res = await fetch(`${API_BASE}/clientes`, {
+    const res = await fetch(`${API_BASE}/fechamentos/financeiro/clientes`, {
       headers: { Authorization: "Bearer " + TOKEN }
     });
+    if (res.status === 401) { window.location.replace("index.html"); return; }
     const data = await res.json();
+    if (!res.ok) throw new Error(data?.erro || data?.error || "Erro ao carregar clientes");
     const lista = Array.isArray(data)
       ? data
       : (data?.clientes || data?.data || []);

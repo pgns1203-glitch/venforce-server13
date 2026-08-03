@@ -19,6 +19,9 @@ const {
 const {
   buildCostRowsFromBase,
 } = require("../services/bases/baseCustosService");
+const {
+  listarClientesAtivosFinanceiro,
+} = require("../services/fechamentoFinanceiro/clientesFinanceiroService");
 
 const CALCULATION_MODE_LABEL = {
   real_financial: "Fechamento por dados financeiros (repasse e taxas reais)",
@@ -31,6 +34,19 @@ const CONFIDENCE_LABEL = {
   parcial: "Parcial — existem vendas sem custo cadastrado",
   insuficiente: "Insuficiente — nenhuma receita com custo identificado",
 };
+
+async function listarClientesFinanceiroController(req, res) {
+  try {
+    const clientes = await listarClientesAtivosFinanceiro();
+    return res.json({ ok: true, clientes });
+  } catch (error) {
+    console.error("Erro em GET /fechamentos/financeiro/clientes:", error);
+    return res.status(500).json({
+      ok: false,
+      erro: "Erro ao listar clientes do Fechamento.",
+    });
+  }
+}
 
 // null/undefined viram vazio (ausência), nunca 0 falso.
 function formatSummaryValue(value) {
@@ -251,6 +267,7 @@ async function processarFechamentoFinanceiroController(req, res) {
 }
 
 module.exports = {
+  listarClientesFinanceiroController,
   processarFechamentoFinanceiroController,
   buildFechamentoContextRows,
   formatSummaryValue,

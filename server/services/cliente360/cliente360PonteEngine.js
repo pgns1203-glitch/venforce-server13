@@ -24,6 +24,8 @@
 //   - simulador what-if (cliente360SimuladorEngine)
 //   - estimador de elasticidade (cliente360ElasticidadeEngine)
 
+const { pedidoEntraNoResultado } = require("../centralVendas/centralVendasService");
+
 const EPS = 0.01; // tolerância de fechamento em reais
 
 function num(v) {
@@ -34,12 +36,6 @@ function num(v) {
 
 function round2(v) {
   return Math.round((Number(v) + Number.EPSILON) * 100) / 100;
-}
-
-// Pedidos que entram no resultado. Cancelados e mediações (`com_problema`)
-// saem dos dois lados da ponte; pendentes continuam marcados na cobertura.
-function pedidoEntraNoResultado(pedido) {
-  return !!pedido && pedido.status !== "cancelado" && pedido.status !== "com_problema";
 }
 
 // ── Agregação por produto (chave = MLB) ─────────────────────────────────────

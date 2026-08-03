@@ -17,7 +17,8 @@
 // Nada aqui força números a fechar. Quando a diferença não tem origem
 // identificável, ela é reportada e a confiança cai para parcial.
 
-const { num, round2, pedidoEntraNoResultado } = require("./cliente360PonteEngine");
+const { num, round2 } = require("./cliente360PonteEngine");
+const { pedidoEntraNoResultado } = require("../centralVendas/centralVendasService");
 
 const TOLERANCIA = 0.01; // R$
 

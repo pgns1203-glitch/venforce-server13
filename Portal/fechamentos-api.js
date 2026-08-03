@@ -361,10 +361,12 @@ function sanitizeFilters(filters, payload) {
   return f;
 }
 
-// Cancelados e mediações continuam visíveis, mas não entram nos agregados
-// financeiros — mesma regra do fechamento por planilha.
+// Espelho frontend de STATUS_FORA_DO_RESULTADO, cuja fonte de verdade fica em
+// centralVendasService.js. Cancelados e mediações continuam visíveis, mas não
+// entram nos agregados financeiros — mesma regra do fechamento por planilha.
+const STATUS_FORA_DO_RESULTADO = new Set(['cancelado', 'com_problema']);
 function pedidoEntraNoResultado(o) {
-  return !!o && o.status !== 'cancelado' && o.status !== 'com_problema';
+  return !!o && !STATUS_FORA_DO_RESULTADO.has(o.status);
 }
 
 /* Calcula o pedido cruzando com o produto/base. Resultado DERIVADO. */
@@ -458,7 +460,8 @@ function fechSum(arr, f) { return round2(arr.reduce((s, o) => s + (Number(f(o)) 
 function buildFechamentoResumo(payload, quick = 'todos') {
   const orders = fechamentoOrdersFiltered(payload, quick);
   const validos = orders.filter(pedidoEntraNoResultado);
-  const cancelProblema = orders.filter(o => o.status === 'cancelado' || o.status === 'com_problema');
+  const cancelados = orders.filter(o => o.status === 'cancelado');
+  const mediacoes = orders.filter(o => o.status === 'com_problema');
   const faturamento = fechSum(validos, o => o.valor);
   const unidades = validos.reduce((s, o) => s + (o.unidades || 0), 0);
   const comComissao = validos.filter(o => o.taxas != null);
@@ -500,7 +503,9 @@ function buildFechamentoResumo(payload, quick = 'todos') {
   return {
     periodo: payload.periodo, cliente: payload.cliente,
     fonte: payload.motor?.origemPrincipal || payload.fonte || 'central_vendas_db',
-    totalPedidos: orders.length, validos: validos.length, cancelProblema: cancelProblema.length,
+    totalPedidos: orders.length, validos: validos.length,
+    cancelados: cancelados.length, mediacoes: mediacoes.length,
+    cancelProblema: cancelados.length + mediacoes.length,
     unidades, faturamento, ticket, comissao, custoTotal, impostoTotal, freteTotal,
     resultadoParcial, receitaBloqueada, confianca, cobertura,
   };
@@ -545,7 +550,9 @@ function buildFechamentoQualidade(payload, quick = 'todos') {
   return {
     semCusto: validos.filter(o => o.mlb && o.custoStatus === 'ausente').length,
     semFrete: validos.filter(o => o.frete == null).length,
-    cancelProblema: orders.filter(o => o.status === 'cancelado' || o.status === 'com_problema').length,
+    cancelados: orders.filter(o => o.status === 'cancelado').length,
+    mediacoes: orders.filter(o => o.status === 'com_problema').length,
+    cancelProblema: orders.filter(o => STATUS_FORA_DO_RESULTADO.has(o.status)).length,
     comResultado: validos.filter(o => o.resultado != null).length,
     bloqueados: validos.filter(o => o.resultadoStatus === 'bloqueado').length,
     pctFatComCusto: faturamento > 0 ? round2(fatComCusto / faturamento * 100) : null,
@@ -927,7 +934,7 @@ function pedidoRowClass(o) {
   return '';
 }
 
-const STATUS_PEDIDO = { pago:['is-success','Pago'], cancelado:['is-danger','Cancelado'], com_problema:['is-warning','Problema'], pendente:['is-warning','Pendente'] };
+const STATUS_PEDIDO = { pago:['is-success','Pago'], cancelado:['is-danger','Cancelado'], com_problema:['is-warning','Mediação / problema'], pendente:['is-warning','Pendente'] };
 
 /* Pedidos filtrados (recorte rápido + busca). Ordenação/paginação ficam na tabela. */
 function pedidoMatchesSearch(o, term) {
@@ -1189,7 +1196,8 @@ function renderFechamentoSection() {
       ${kpi({ label:'Resultado parcial', valueHtml: kpiValueHtml(r.resultadoParcial, { currency:true }), foot: parcialFoot, footTone: r.confianca === 'confiavel' ? 'is-success' : 'is-warning', mod: r.confianca === 'confiavel' ? '' : 'vf-kpi--warning' })}
       ${kpi({ label:'Receita bloqueada', valueHtml: kpiValueHtml(r.receitaBloqueada, { currency:true }), foot:'falta custo/frete p/ calcular', footTone: r.receitaBloqueada > 0 ? 'is-warning' : '', mod: r.receitaBloqueada > 0 ? 'vf-kpi--warning' : '' })}
       ${kpi({ label:'Pedidos válidos', valueHtml: kpiValueHtml(r.validos), foot:'fora cancelamentos e mediações' })}
-      ${kpi({ label:'Cancelados / problema', valueHtml: kpiValueHtml(r.cancelProblema), foot:'fora da venda boa', footTone: r.cancelProblema > 0 ? 'is-danger' : '', mod: r.cancelProblema > 0 ? 'vf-kpi--danger' : '' })}
+      ${kpi({ label:'Cancelados', valueHtml: kpiValueHtml(r.cancelados), foot:'fora da venda boa · definitivo', footTone: r.cancelados > 0 ? 'is-danger' : '', mod: r.cancelados > 0 ? 'vf-kpi--danger' : '' })}
+      ${kpi({ label:'Mediações / problema', valueHtml: kpiValueHtml(r.mediacoes), foot:'fora da venda boa · aguardando decisão', footTone: r.mediacoes > 0 ? 'is-warning' : '', mod: r.mediacoes > 0 ? 'vf-kpi--warning' : '' })}
       ${kpi({ label:'Unidades vendidas', valueHtml: kpiValueHtml(r.unidades), foot:'itens válidos' })}
     </div>`;
 

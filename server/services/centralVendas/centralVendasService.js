@@ -78,6 +78,8 @@ function toIsoDate(value) {
   return String(value).slice(0, 10);
 }
 
+const STATUS_FORA_DO_RESULTADO = new Set(["cancelado", "com_problema"]);
+
 function normalizePedidoStatus(status) {
   const text = String(status || "").toLowerCase();
   if (/cancel|devolu|reembolso/.test(text)) return "cancelado";
@@ -90,7 +92,7 @@ function normalizePedidoStatus(status) {
 // compõem faturamento, resultado ou margem — mesma regra do motor por planilha.
 function pedidoEntraNoResultado(pedido) {
   const status = normalizePedidoStatus(pedido?.status);
-  return !!pedido && status !== "cancelado" && status !== "com_problema";
+  return !!pedido && !STATUS_FORA_DO_RESULTADO.has(status);
 }
 
 function rowValue(row, camel, snake) {
@@ -198,7 +200,7 @@ function buildPedidoContrato(pedido, itens, componentes) {
     pedidoId,
     data: toIsoDate(rowValue(pedido, "dataPedido", "data_pedido")),
     status,
-    entraNoResultado: status !== "cancelado" && status !== "com_problema",
+    entraNoResultado: !STATUS_FORA_DO_RESULTADO.has(status),
     mlb: firstItem ? rowValue(firstItem, "mlb", "mlb") || null : null,
     sku: firstItem ? rowValue(firstItem, "sku", "sku") || null : null,
     produto: firstItem
@@ -498,6 +500,7 @@ module.exports = {
   // fechamento por intervalo de datas sem duplicar o contrato de pedido.
   buildPayloadFromRange,
   buildPedidos,
+  STATUS_FORA_DO_RESULTADO,
   normalizePedidoStatus,
   pedidoEntraNoResultado,
   periodoFromCompetencia,

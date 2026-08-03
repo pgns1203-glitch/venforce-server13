@@ -17,7 +17,7 @@
 // Ads não entra na confiança do resultado operacional: a disponibilidade de Ads é
 // reportada em bloco próprio (ads.status) e não degrada a análise operacional.
 
-const { pedidoEntraNoResultado } = require("./cliente360PonteEngine");
+const { pedidoEntraNoResultado } = require("../centralVendas/centralVendasService");
 
 const FAIXA_CONFIAVEL = 0.90;
 const FAIXA_PARCIAL = 0.70;

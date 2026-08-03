@@ -198,12 +198,16 @@ function onClienteChange() {
   const readiness = document.getElementById("auto-readiness");
   const btn = document.getElementById("btn-otimizador-analisar");
   const btnPlanilha = document.getElementById("btn-baixar-planilha-precificacao");
+  const btnModeloBase = document.getElementById("btn-gerar-modelo-base");
+  const btnAbrirBases = document.getElementById("btn-abrir-bases-custo");
 
   if (!ctx) {
     if (readiness) readiness.hidden = true;
     setStateBanner({});
     if (btn) btn.disabled = true;
     if (btnPlanilha) btnPlanilha.disabled = true;
+    if (btnModeloBase) { btnModeloBase.hidden = true; btnModeloBase.disabled = true; }
+    if (btnAbrirBases) btnAbrirBases.hidden = true;
     return;
   }
 
@@ -211,6 +215,9 @@ function onClienteChange() {
   if (btn) btn.disabled = !ctx.prontoParaAnalise;
   // Baixar planilha só exige grant ML — não depende de base vinculada.
   if (btnPlanilha) btnPlanilha.disabled = !ctx.hasGrantMl;
+  const podeGerarModelo = ctx.hasGrantMl && ctx.baseStatus === "ausente";
+  if (btnModeloBase) { btnModeloBase.hidden = !podeGerarModelo; btnModeloBase.disabled = !podeGerarModelo; }
+  if (btnAbrirBases) btnAbrirBases.hidden = !podeGerarModelo;
 }
 
 function setStatusChip(id, tone, texto) {
@@ -255,7 +262,7 @@ function renderReadiness(ctx) {
     setStateBanner({
       tone: "warning",
       titulo: "Cliente sem base MELI vinculada",
-      descricao: "O diagnóstico financeiro está bloqueado, mas você pode baixar a planilha de precificação, preencher os custos e importá-la em Bases de Custo.",
+      descricao: "O diagnóstico financeiro está bloqueado. Baixe a planilha de precificação ou gere um modelo simples para preencher e importar em Bases de Custo.",
     });
   } else if (ctx.baseStatus === "multiplas") {
     setStatusChip("rd-status", "warning", "Requer correção");
@@ -272,7 +279,7 @@ function renderReadiness(ctx) {
 
 // ─── Alternância de estados da página ────────────────────────────────────
 function setConfigDisabled(disabled) {
-  ["auto-cliente-search", "auto-cliente", "auto-margem", "btn-otimizador-analisar", "btn-baixar-planilha-precificacao"]
+  ["auto-cliente-search", "auto-cliente", "auto-margem", "btn-otimizador-analisar", "btn-baixar-planilha-precificacao", "btn-gerar-modelo-base"]
     .forEach((id) => { const el = document.getElementById(id); if (el) el.disabled = disabled; });
 }
 
@@ -605,6 +612,58 @@ async function baixarPlanilhaPrecificacao() {
   }
 }
 
+// Modelo destinado exclusivamente à criação da base de custos: contém apenas
+// os MLBs ativos e deixa custo, imposto e taxa fixa para preenchimento manual.
+async function gerarModeloBaseCustos() {
+  if (!TOKEN) return;
+  const ctx = getClienteAtual();
+  if (!ctx) { setFeedback("Selecione um cliente para gerar o modelo de base.", "danger"); return; }
+  if (!ctx.hasGrantMl) { setFeedback("Este cliente não possui grant ML conectado.", "danger"); return; }
+  if (ctx.baseStatus !== "ausente") {
+    setFeedback("O modelo de base está disponível apenas para clientes sem base MELI vinculada.", "warning");
+    return;
+  }
+
+  const btn = document.getElementById("btn-gerar-modelo-base");
+  if (btn) { btn.disabled = true; btn.classList.add("is-loading"); }
+  setFeedback("Buscando IDs dos anúncios ativos e gerando modelo de base…", "info");
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/automacoes/clientes/${encodeURIComponent(ctx.slug)}/modelo-base-custos.xlsx`,
+      { headers: { Authorization: "Bearer " + TOKEN } }
+    );
+    if (res.status === 401) { clearSession(); return; }
+    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw new Error(json?.erro || `HTTP ${res.status}`);
+    }
+
+    const blob = await res.blob();
+    const disp = res.headers.get("content-disposition") || "";
+    const nomeMatch = disp.match(/filename="?([^";]+)"?/i);
+    const filename = nomeMatch?.[1] || `modelo-base-custos-${ctx.slug}.xlsx`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    setFeedback(
+      "Modelo de base gerado. Preencha custo, imposto e taxa fixa e importe o arquivo em Bases de Custo.",
+      "success"
+    );
+  } catch (err) {
+    setFeedback(`Erro ao gerar o modelo de base: ${err.message}`, "danger");
+  } finally {
+    const atual = getClienteAtual();
+    if (btn) {
+      btn.classList.remove("is-loading");
+      btn.disabled = !(atual?.hasGrantMl && atual?.baseStatus === "ausente");
+    }
+  }
+}
+
 function novaAnalise() {
   resetResultadoEProcessamento();
   setConfigDisabled(false);
@@ -619,6 +678,7 @@ document.getElementById("auto-cliente")?.addEventListener("change", onClienteCha
 document.getElementById("btn-otimizador-analisar")?.addEventListener("click", analisarLoja);
 document.getElementById("btn-nova-analise")?.addEventListener("click", novaAnalise);
 document.getElementById("btn-baixar-planilha-precificacao")?.addEventListener("click", baixarPlanilhaPrecificacao);
+document.getElementById("btn-gerar-modelo-base")?.addEventListener("click", gerarModeloBaseCustos);
 document.getElementById("btn-baixar-xlsx")?.addEventListener("click", () => {
   if (RELATORIO_CONCLUIDO_ID) baixarXlsx(RELATORIO_CONCLUIDO_ID);
 });

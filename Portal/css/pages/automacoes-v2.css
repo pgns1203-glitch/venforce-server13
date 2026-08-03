@@ -43,7 +43,8 @@
    que têm especificidade maior que a regra [hidden] do navegador. */
 .vf-page-automacoes .vf-banner[hidden],
 .vf-page-automacoes .vf-auto-readiness[hidden],
-.vf-page-automacoes .vf-auto-results[hidden] {
+.vf-page-automacoes .vf-auto-results[hidden],
+.vf-page-automacoes .vf-card__footer [hidden] {
   display: none;
 }
 

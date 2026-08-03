@@ -3,6 +3,7 @@
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
 
 const assert = require("assert");
+const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const pool = require("../config/database");
@@ -47,6 +48,25 @@ async function main() {
   eq("autenticação é o primeiro middleware", names[0], "authMiddleware");
   eq("permissão do módulo é o segundo middleware", names[1], "requireAutomacoesAccess");
   eq("controller roda somente depois das proteções", names[2], "listarClientesFinanceiroController");
+
+  // Prova o caminho público completo usado pelo frontend. Sem token deve ser
+  // 401; um 404 aqui indicaria router ausente ou montado no prefixo errado.
+  {
+    const app = express();
+    app.use("/fechamentos", routes);
+    const server = await new Promise((resolve) => {
+      const instance = app.listen(0, "127.0.0.1", () => resolve(instance));
+    });
+    try {
+      const address = server.address();
+      const response = await fetch(
+        `http://127.0.0.1:${address.port}/fechamentos/financeiro/clientes`
+      );
+      eq("rota completa está montada (sem token = 401, nunca 404)", response.status, 401);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
 
   for (const role of ["admin", "user", "membro"]) {
     let nextCalled = false;

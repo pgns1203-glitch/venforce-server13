@@ -4,10 +4,10 @@
 
 const XLSX = require("xlsx");
 
-const { toNumber } = require("../utils/numberUtils");
+const { parseMoneyValue } = require("../utils/numberUtils");
 const {
   parseSpreadsheet,
-  detectMeliHeaderRow,
+  detectMeliHeader,
   detectShopeeHeaderRow,
 } = require("../utils/excelUtils");
 const {
@@ -119,7 +119,20 @@ function buildFechamentoContextRows(summary, marketplace) {
   return rows;
 }
 
+function parseFinancialInput(body, field, label) {
+  const parsed = parseMoneyValue(body?.[field]);
+  if (parsed.valid) return parsed.value;
+
+  const error = new Error(
+    `${label}: formato monetário inválido ou ambíguo. ` +
+    "Use, por exemplo, 3011, 3011.00 ou 3.011,00."
+  );
+  error.statusCode = 400;
+  throw error;
+}
+
 async function processarFechamentoFinanceiroController(req, res) {
+  let meliHeaderDiagnostic = null;
   try {
     const salesFile = req.files && req.files["sales"] && req.files["sales"][0];
     const costsFile = req.files && req.files["costs"] && req.files["costs"][0];
@@ -128,12 +141,12 @@ async function processarFechamentoFinanceiroController(req, res) {
       .trim()
       .toLowerCase();
 
-    const ads = toNumber(req.body.ads);
-    const venforce = toNumber(req.body.venforce);
-    const affiliates = toNumber(req.body.affiliates);
+    const ads = parseFinancialInput(req.body, "ads", "ADS");
+    const venforce = parseFinancialInput(req.body, "venforce", "Venforce");
+    const affiliates = parseFinancialInput(req.body, "affiliates", "Afiliados");
     // Opcionais, só Mercado Livre. Campo vazio/ausente vale zero.
-    const fullCost = toNumber(req.body.fullCost);
-    const additionalCosts = toNumber(req.body.additionalCosts);
+    const fullCost = parseFinancialInput(req.body, "fullCost", "FULL");
+    const additionalCosts = parseFinancialInput(req.body, "additionalCosts", "Custos adicionais");
 
     // Origem alternativa dos custos: base vinculada ao cliente (sem upload).
     const costsBaseId = req.body.costsBaseId || req.body.baseId || null;
@@ -160,10 +173,18 @@ async function processarFechamentoFinanceiroController(req, res) {
 
     // Cabeçalho detectado automaticamente: a exportação do ML nem sempre põe
     // o cabeçalho na linha 6.
-    const salesRowsRaw =
-      marketplace === "meli"
-        ? parseSpreadsheet(salesBuffer, detectMeliHeaderRow(salesBuffer))
-        : parseSpreadsheet(salesBuffer, detectShopeeHeaderRow(salesBuffer));
+    let salesRowsRaw;
+    if (marketplace === "meli") {
+      const detectedHeader = detectMeliHeader(salesBuffer);
+      meliHeaderDiagnostic = {
+        detectedHeaders: detectedHeader.headers,
+        headerRow: detectedHeader.rowIndex + 1,
+        headerRecognized: detectedHeader.found,
+      };
+      salesRowsRaw = parseSpreadsheet(salesBuffer, detectedHeader.rowIndex);
+    } else {
+      salesRowsRaw = parseSpreadsheet(salesBuffer, detectShopeeHeaderRow(salesBuffer));
+    }
 
     let costRowsRaw;
     let costsSource = "upload";
@@ -203,6 +224,22 @@ async function processarFechamentoFinanceiroController(req, res) {
       additionalCosts,
       ordersAllRowsRaw,
     });
+
+    if (marketplace === "meli") {
+      const diagnostic = result.parsingDiagnostics || {};
+      console.info("[fechamento-meli] parsing", {
+        headerRow: meliHeaderDiagnostic?.headerRow,
+        headerRecognized: meliHeaderDiagnostic?.headerRecognized,
+        totalRowsRead: diagnostic.totalRowsRead,
+        rowsWithSaleNumber: diagnostic.rowsWithSaleNumber,
+        rowsWithAd: diagnostic.rowsWithAd,
+        rowsWithUnits: diagnostic.rowsWithUnits,
+        recognizedRows: diagnostic.recognizedRowsCount,
+        recognizedSales: diagnostic.recognizedSalesCount,
+        financialRows: diagnostic.financialRowsCount,
+        revenueFound: diagnostic.revenueFound,
+      });
+    }
 
     const workbook = XLSX.utils.book_new();
 
@@ -250,6 +287,7 @@ async function processarFechamentoFinanceiroController(req, res) {
       ignoredRowsWithoutCost: result.ignoredRowsWithoutCost,
       ignoredRevenue: result.ignoredRevenue,
       message: result.message,
+      emptySales: result.emptySales === true,
       costsSource,
       costsBase
     });
@@ -259,10 +297,20 @@ async function processarFechamentoFinanceiroController(req, res) {
       Number.isFinite(Number(error?.statusCode)) && Number(error.statusCode) >= 400
         ? Number(error.statusCode)
         : 500;
-    res.status(statusCode).json({
+    const payload = {
       ok: false,
       error: error instanceof Error ? error.message : "Erro ao processar os arquivos enviados."
-    });
+    };
+    if (statusCode === 422 && meliHeaderDiagnostic) {
+      payload.diagnostico = {
+        cabecalhosDetectados: meliHeaderDiagnostic.detectedHeaders,
+        linhaCabecalho: meliHeaderDiagnostic.headerRow,
+        totalLinhasLidas: error?.diagnostics?.totalRowsRead ?? 0,
+        totalLinhasReconhecidas: error?.diagnostics?.recognizedRowsCount ?? 0,
+        totalVendasReconhecidas: error?.diagnostics?.recognizedSalesCount ?? 0,
+      };
+    }
+    res.status(statusCode).json(payload);
   }
 }
 

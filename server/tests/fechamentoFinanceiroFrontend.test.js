@@ -313,4 +313,14 @@ console.log("\n▸ Limpeza de estado");
   eq("banner escondido", byId("fin-cobertura-banner").hidden, true);
 }
 
+console.log("\n▸ Validação monetária do formulário");
+{
+  for (const [raw, expected] of [["3011", 3011], ["3011.00", 3011], ["3.011,00", 3011]]) {
+    const parsed = parseMoneyInputResult(raw);
+    ok(`${raw} é aceito no frontend`, parsed.valid);
+    eq(`${raw} preserva o valor no frontend`, parsed.value, expected);
+  }
+  ok("3.01100 é rejeitado no frontend", !parseMoneyInputResult("3.01100").valid);
+}
+
 console.log(`\n${checks} verificações passaram. Frontend do fechamento OK.`);

@@ -62,6 +62,17 @@ async function getMlTokenByClienteNoRefresh(clienteId) {
   return row.access_token;
 }
 
+// Retry-After em segundos, quando o Mercado Livre devolve o header (ex.: 429).
+// Retorna null quando ausente ou não numérico — nunca inventa um valor.
+function parseRetryAfter(res) {
+  const header = res && res.headers && typeof res.headers.get === "function"
+    ? res.headers.get("retry-after")
+    : null;
+  if (!header) return null;
+  const seconds = Number(header);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+}
+
 async function mlFetch(clienteId, path, options = {}) {
   const ML_API = "https://api.mercadolibre.com";
   const { noRefresh = false, ...fetchOptions } = options;
@@ -96,7 +107,7 @@ async function mlFetch(clienteId, path, options = {}) {
     let data;
     try { data = await res.json(); } catch { data = null; }
 
-    return { ok: res.ok, status: res.status, data };
+    return { ok: res.ok, status: res.status, data, retryAfter: parseRetryAfter(res) };
   } catch (err) {
     console.error(`[mlFetch] erro — path: ${path} clienteId: ${clienteId} —`, err.message);
     throw err;

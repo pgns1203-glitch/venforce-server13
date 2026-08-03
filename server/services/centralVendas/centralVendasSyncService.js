@@ -11,8 +11,12 @@
 //   Pedido sem custo na base e PERSISTIDO mesmo assim, com confianca
 //   bloqueada/parcial. Custo vem SEMPRE da base vinculada (nunca planilha).
 //
-// Nesta fase NAO chamamos GET /shipments/:id: o frete real por pedido fica
-// como componente frete_seller com valor null e confianca "ausente".
+// Fluxo completo: Orders API → coleta shipment IDs → Shipments API (GET
+// /shipments/:id, em lotes via centralVendasFreteService) → frete seller
+// real por pedido → motor do fechamento (buildMotorFromOrders) → persistencia
+// dos componentes (centralVendasRepository) → Cliente 360 V2. Quando o frete
+// real nao e encontrado, o componente frete_seller fica com valor null e
+// confianca "ausente" — nunca um frete estimado ou zero inventado.
 
 const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
@@ -495,8 +499,10 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // Pedidos via Orders API (intervalo inteiro numa paginacao)
     const orders = await fetchAllOrders(cliente.id, sellerId, from, to);
 
-    // Frete real por pedido (shipments API): busca em lote, cache + concorrencia
-    // baixa + cap de seguranca. Falha por shipment NAO trava o sync.
+    // Frete real por pedido (shipments API): busca TODOS os shipment IDs unicos,
+    // em lotes com concorrencia controlada e retry seguro. Sem cap — nenhum
+    // shipment e descartado por exceder quantidade. Falha por shipment NAO
+    // trava o sync (fica ausente e auditavel em freteLote.erros).
     const shipmentIds = orders.map((o) => o.shipping?.id).filter((v) => v != null);
     const freteLote = await buscarFretesEmLote({ clienteId: cliente.id, shipmentIds });
     const freteMap = freteLote.freteMap;
@@ -550,7 +556,8 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       `[centralVendas] sync ${slug} ${from}..${to}:` +
         ` orders=${orders.length} meses=${grupos.size} pedidos=${pedidosPersistidos}` +
         ` baseVinculada=${base ? base.id : "nenhuma"} custosNaBase=${custos.length}` +
-        ` shipments=${freteLote.buscados}/${freteLote.total} comFrete=${freteLote.comFrete}`
+        ` shipments=${freteLote.buscados}/${freteLote.total} comFrete=${freteLote.comFrete}` +
+        ` semFrete=${freteLote.ausentes} erros=${freteLote.erros} lotes=${freteLote.lotes}`
     );
 
     return {
@@ -566,6 +573,9 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         shipmentsUnicos: freteLote.total,
         shipmentsBuscados: freteLote.buscados,
         comFreteReal: freteLote.comFrete,
+        semFrete: freteLote.ausentes,
+        erros: freteLote.erros,
+        lotes: freteLote.lotes,
         capExcedido: freteLote.capExcedido,
       },
       pedidosPersistidos,

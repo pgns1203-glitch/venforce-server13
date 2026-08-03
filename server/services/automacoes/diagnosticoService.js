@@ -4,6 +4,7 @@
 
 const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
+const { resolverPrecosItem } = require("./precoItemService");
 
 function extrairSkuMl(body) {
   const direto = [body?.seller_custom_field, body?.sku]
@@ -106,29 +107,15 @@ async function diagEnriquecerItem({ clienteId, body, baseRow, margemAlvo }) {
   const categoryId = body?.category_id || null;
   const sellerId = body?.seller_id || null;
 
-  const precoOriginalNum = body?.price != null ? Number(body.price) : NaN;
-  const precoOriginal =
-    Number.isFinite(precoOriginalNum) && precoOriginalNum > 0 ? precoOriginalNum : null;
+  const precoListaFallbackNum = body?.price != null ? Number(body.price) : NaN;
+  const precoListaFallback =
+    Number.isFinite(precoListaFallbackNum) && precoListaFallbackNum > 0 ? precoListaFallbackNum : null;
 
-  let precoPromocional = null;
-  try {
-    if (itemId) {
-      const r = await mlFetch(clienteId, `/items/${encodeURIComponent(itemId)}/prices`);
-      const lista = Array.isArray(r?.data?.prices) ? r.data.prices : [];
-      const promoEntry = lista.find(p => p?.type === "promotion" && Number.isFinite(Number(p?.amount)) && Number(p.amount) > 0);
-      const standardEntry = lista.find(p => p?.type === "standard" && Number.isFinite(Number(p?.amount)) && Number(p.amount) > 0);
-      if (promoEntry) {
-        precoPromocional = Number(promoEntry.amount);
-      } else if (standardEntry) {
-        precoPromocional = Number(standardEntry.amount);
-      } else {
-        const valores = lista.map(p => Number(p?.amount)).filter(n => Number.isFinite(n) && n > 0);
-        if (valores.length > 0) precoPromocional = Math.min(...valores);
-      }
-    }
-  } catch (_) { precoPromocional = null; }
-
-  const precoEfetivo = precoPromocional ?? precoOriginal;
+  const {
+    precoCheio: precoOriginal,
+    precoPromocional,
+    precoEfetivo,
+  } = await resolverPrecosItem({ clienteId, itemId, precoListaFallback });
 
   const [listingPricesResp, shippingResp] = await Promise.all([
     (async () => {

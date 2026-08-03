@@ -110,6 +110,7 @@
       pages,
       legacySource: source.legacySource ?? null,
       thumbnail: isNonEmptyString(source.thumbnail) ? source.thumbnail : null,
+      canvaUrl: null,
     };
   }
 
@@ -190,6 +191,7 @@
       pages: Array.isArray(source.pages) && source.pages.length ? source.pages : undefined,
       legacySource: source.legacySource,
       thumbnail: source.thumbnail,
+      canvaUrl: source.canvaUrl,
     });
     return built;
   }

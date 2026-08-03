@@ -102,6 +102,7 @@
     function bringToFront(canvas, layerId) {
       const object = findByLayerId(canvas, layerId);
       if (!object) return false;
+      if (object.vfType === "background-image") return false;
       canvas.bringObjectToFront(object);
       canvas.requestRenderAll();
       return true;
@@ -111,6 +112,8 @@
       const object = findByLayerId(canvas, layerId);
       if (!object) return false;
       canvas.sendObjectToBack(object);
+      const background = canvas.getObjects().find((item) => item.vfType === "background-image");
+      if (background && background !== object) canvas.sendObjectToBack(background);
       canvas.requestRenderAll();
       return true;
     }

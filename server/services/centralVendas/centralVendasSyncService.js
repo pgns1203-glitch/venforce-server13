@@ -22,9 +22,13 @@ const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
 const { toNumber, round2 } = require("../../utils/numberUtils");
 const { normalizeId } = require("../../utils/textUtils");
-const { periodoFromCompetencia } = require("./centralVendasService");
+const { periodoFromCompetencia, pedidoEntraNoResultado } = require("./centralVendasService");
 const { buildResumoCentralVendas } = require("./centralVendasImportService");
 const { buscarFretesEmLote } = require("./centralVendasFreteService");
+const {
+  buscarClaimsPorPeriodo,
+  classificarClaimsDoPedido,
+} = require("./centralVendasClaimsService");
 
 const MAX_PAGINAS = 100; // 100 * 50 = 5.000 pedidos — teto de seguranca (Render)
 const PAGE_LIMIT = 50;
@@ -210,7 +214,16 @@ function allocateFrete(total, unitsArr) {
   return out;
 }
 
-function buildMotorFromOrders({ orders, costMap, freteMap = new Map(), clienteSlug, competencia }) {
+function buildMotorFromOrders({
+  orders,
+  costMap,
+  freteMap = new Map(),
+  claimsMap = new Map(),
+  claimsIndisponivel = false,
+  claimsMotivo = null,
+  clienteSlug,
+  competencia,
+}) {
   const pedidos = [];
   const itens = [];
   const componentes = [];
@@ -220,6 +233,9 @@ function buildMotorFromOrders({ orders, costMap, freteMap = new Map(), clienteSl
     const pedidoId = String(order.id);
     const logisticType = order.shipping?.logistic_type || null;
     const logistica = logisticType ? (logisticType === "fulfillment" ? "full" : "normal") : null;
+    const claimsEntry = claimsMap.get(pedidoId);
+    const claimsPedido = Array.isArray(claimsEntry) ? claimsEntry : claimsEntry ? [claimsEntry] : [];
+    const posVenda = classificarClaimsDoPedido(claimsPedido);
 
     const pedido = {
       pedidoId,
@@ -228,7 +244,12 @@ function buildMotorFromOrders({ orders, costMap, freteMap = new Map(), clienteSl
       clienteSlug,
       competencia,
       dataPedido: order.date_created || null,
-      status: order.status || null,
+      status: posVenda?.status || order.status || null,
+      statusOriginal: order.status || null,
+      posVendaTipo: posVenda?.tipo || null,
+      posVendaMotivo: posVenda?.motivo || null,
+      claimId: posVenda?.claimId || null,
+      claimIds: claimsPedido.map((claim) => claim?.id).filter((id) => id != null).map(String),
       logisticType,
       logistica,
       full: logistica ? logistica === "full" : null,
@@ -399,18 +420,23 @@ function buildMotorFromOrders({ orders, costMap, freteMap = new Map(), clienteSl
     pedidos.push(pedido);
   }
 
+  // O pedido pós-venda continua persistido e auditável, mas os agregados do
+  // motor usam o mesmo predicado compartilhado por Fechamento e Cliente 360.
+  const pedidosResultado = pedidos.filter(pedidoEntraNoResultado);
+  const pedidoIdsResultado = new Set(pedidosResultado.map((p) => p.pedidoId));
+
   // resumo interno (mesmos campos de processMeliForCentralVendas)
   const receitaConfiavel = round2(
-    pedidos.filter((p) => p.confianca === "confiavel").reduce((s, p) => s + Number(p.faturamento || 0), 0)
+    pedidosResultado.filter((p) => p.confianca === "confiavel").reduce((s, p) => s + Number(p.faturamento || 0), 0)
   );
   const receitaParcial = round2(
-    pedidos.filter((p) => p.confianca === "parcial").reduce((s, p) => s + Number(p.faturamento || 0), 0)
+    pedidosResultado.filter((p) => p.confianca === "parcial").reduce((s, p) => s + Number(p.faturamento || 0), 0)
   );
   const receitaBloqueada = round2(
-    pedidos.filter((p) => p.confianca === "bloqueado").reduce((s, p) => s + Number(p.faturamento || 0), 0)
+    pedidosResultado.filter((p) => p.confianca === "bloqueado").reduce((s, p) => s + Number(p.faturamento || 0), 0)
   );
   const faturamento = round2(receitaConfiavel + receitaParcial);
-  const pedidosComResultado = pedidos.filter((p) => p.lucroContribuicao !== null && p.lucroContribuicao !== undefined);
+  const pedidosComResultado = pedidosResultado.filter((p) => p.lucroContribuicao !== null && p.lucroContribuicao !== undefined);
   const lucroContribuicao = pedidosComResultado.length
     ? round2(pedidosComResultado.reduce((s, p) => s + Number(p.lucroContribuicao || 0), 0))
     : null;
@@ -419,7 +445,7 @@ function buildMotorFromOrders({ orders, costMap, freteMap = new Map(), clienteSl
   for (const tipo of ["receita_produto", "tarifa_venda", "frete_seller", "custo_produto", "imposto_interno"]) {
     totaisPorTipo[tipo] = round2(
       componentes
-        .filter((c) => c.tipo === tipo && c.valor !== null)
+        .filter((c) => pedidoIdsResultado.has(c.pedidoId) && c.tipo === tipo && c.valor !== null)
         .reduce((s, c) => s + Number(c.valor || 0), 0)
     );
   }
@@ -432,9 +458,11 @@ function buildMotorFromOrders({ orders, costMap, freteMap = new Map(), clienteSl
       clienteSlug,
       competencia,
       pedidosTotal: pedidos.length,
-      pedidosConfiaveis: pedidos.filter((p) => p.confianca === "confiavel").length,
-      pedidosParciais: pedidos.filter((p) => p.confianca === "parcial").length,
-      pedidosBloqueados: pedidos.filter((p) => p.confianca === "bloqueado").length,
+      pedidosValidos: pedidosResultado.length,
+      pedidosForaResultado: pedidos.length - pedidosResultado.length,
+      pedidosConfiaveis: pedidosResultado.filter((p) => p.confianca === "confiavel").length,
+      pedidosParciais: pedidosResultado.filter((p) => p.confianca === "parcial").length,
+      pedidosBloqueados: pedidosResultado.filter((p) => p.confianca === "bloqueado").length,
       faturamento,
       lucroContribuicao,
       margemContribuicaoPercentual:
@@ -445,6 +473,13 @@ function buildMotorFromOrders({ orders, costMap, freteMap = new Map(), clienteSl
       receitaParcial,
       receitaBloqueada,
       totaisPorTipo,
+      claimsIndisponivel: !!claimsIndisponivel,
+      claimsVerificados: !claimsIndisponivel,
+      claimsMotivo: claimsIndisponivel ? claimsMotivo || "consulta_indisponivel" : null,
+      claimsEncontrados: pedidos.filter((p) => p.claimIds.length > 0).length,
+      devolucoes: pedidos.filter((p) => p.posVendaTipo === "devolucao").length,
+      mediacoes: pedidos.filter((p) => p.posVendaTipo === "mediacao").length,
+      confianca: claimsIndisponivel ? "parcial" : undefined,
     },
   };
 }
@@ -499,13 +534,33 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // Pedidos via Orders API (intervalo inteiro numa paginacao)
     const orders = await fetchAllOrders(cliente.id, sellerId, from, to);
 
-    // Frete real por pedido (shipments API): busca TODOS os shipment IDs unicos,
-    // em lotes com concorrencia controlada e retry seguro. Sem cap — nenhum
-    // shipment e descartado por exceder quantidade. Falha por shipment NAO
-    // trava o sync (fica ausente e auditavel em freteLote.erros).
+    // Frete e pós-venda são independentes e rodam em paralelo. Claims são
+    // buscados por período + seller, nunca uma vez por pedido. A documentação
+    // atual exige players.user_id/role para buscas globais por intervalo.
     const shipmentIds = orders.map((o) => o.shipping?.id).filter((v) => v != null);
-    const freteLote = await buscarFretesEmLote({ clienteId: cliente.id, sellerId, shipmentIds });
+    const [freteLote, claimsLote] = await Promise.all([
+      buscarFretesEmLote({ clienteId: cliente.id, sellerId, shipmentIds }),
+      buscarClaimsPorPeriodo({ clienteId: cliente.id, sellerId, dateFrom: from, dateTo: to }),
+    ]);
     const freteMap = freteLote.freteMap;
+    const claimsMap = claimsLote.claimsMap;
+
+    // Auditoria do caminho barato: registra apenas uma amostra curta das tags
+    // de pedidos cuja Claims API confirmou devolução. Tags continuam sendo
+    // observadas, mas não decidem o resultado porque não informam resolução,
+    // beneficiário nem reembolso efetivado.
+    const tagsDevolucoes = orders
+      .map((order) => ({
+        orderId: String(order.id),
+        tags: Array.isArray(order.tags) ? order.tags : [],
+        posVenda: classificarClaimsDoPedido(claimsMap.get(String(order.id))),
+      }))
+      .filter((entry) => entry.posVenda?.tipo === "devolucao")
+      .slice(0, 5)
+      .map(({ orderId, tags }) => ({ orderId, tags }));
+    if (tagsDevolucoes.length) {
+      console.log("[centralVendas] amostra order.tags de devoluções confirmadas:", tagsDevolucoes);
+    }
 
     // Agrupa por competencia (mes de date_created)
     const grupos = new Map();
@@ -526,12 +581,19 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         orders: groupOrders,
         costMap,
         freteMap,
+        claimsMap,
+        claimsIndisponivel: claimsLote.indisponivel,
+        claimsMotivo: claimsLote.motivo,
         clienteSlug: slug,
         competencia: comp,
       });
       if (!motorResult.pedidos.length) continue;
 
-      const resumo = buildResumoCentralVendas(motorResult);
+      const resumoCalculado = buildResumoCentralVendas(motorResult);
+      const resumo = {
+        ...resumoCalculado,
+        confianca: claimsLote.indisponivel ? "parcial" : resumoCalculado.confianca,
+      };
       const motorPayload = { ...motorResult, resumo };
       const persisted = await repository.persistCentralVendasImport({
         cliente,
@@ -558,6 +620,8 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         ` baseVinculada=${base ? base.id : "nenhuma"} custosNaBase=${custos.length}` +
         ` shipments=${freteLote.buscados}/${freteLote.total} comFrete=${freteLote.comFrete}` +
         ` semFrete=${freteLote.ausentes} erros=${freteLote.erros} lotes=${freteLote.lotes}`
+        + ` claims=${claimsLote.claims.length} pedidosComClaims=${claimsMap.size}`
+        + ` claimsPaginas=${claimsLote.pages} claimsIndisponivel=${claimsLote.indisponivel ? 1 : 0}`
     );
 
     return {
@@ -577,6 +641,14 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         erros: freteLote.erros,
         lotes: freteLote.lotes,
         capExcedido: freteLote.capExcedido,
+      },
+      posVenda: {
+        claimsEncontrados: claimsLote.claims.length,
+        pedidosComClaims: claimsMap.size,
+        paginas: claimsLote.pages,
+        tentativas: claimsLote.attempts,
+        indisponivel: claimsLote.indisponivel,
+        motivo: claimsLote.motivo,
       },
       pedidosPersistidos,
       itensPersistidos,

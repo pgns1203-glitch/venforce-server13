@@ -188,6 +188,10 @@ function buildPedidoContrato(pedido, itens, componentes) {
   const pedidoPayload = jsonValue(rowValue(pedido, "payload", "payload_json"), {});
   const logistica = pedidoPayload.logistica ?? null;
   const full = pedidoPayload.full ?? (logistica ? logistica === "full" : null);
+  const posVendaTipo = pedidoPayload.posVendaTipo ?? null;
+  const posVendaMotivo = pedidoPayload.posVendaMotivo ?? null;
+  const claimId = pedidoPayload.claimId ?? null;
+  const claimIds = Array.isArray(pedidoPayload.claimIds) ? pedidoPayload.claimIds.map(String) : [];
   const frete = sumComponents(pedidoComponentes, "frete_seller");
   const taxas = sumComponents(pedidoComponentes, "tarifa_venda");
   const custo = sumComponents(pedidoComponentes, "custo_produto");
@@ -200,7 +204,12 @@ function buildPedidoContrato(pedido, itens, componentes) {
     pedidoId,
     data: toIsoDate(rowValue(pedido, "dataPedido", "data_pedido")),
     status,
+    statusOriginal: pedidoPayload.statusOriginal ?? rowValue(pedido, "status", "status") ?? null,
     entraNoResultado: !STATUS_FORA_DO_RESULTADO.has(status),
+    posVendaTipo,
+    posVendaMotivo,
+    claimId,
+    claimIds,
     mlb: firstItem ? rowValue(firstItem, "mlb", "mlb") || null : null,
     sku: firstItem ? rowValue(firstItem, "sku", "sku") || null : null,
     produto: firstItem
@@ -290,8 +299,19 @@ function buildEmptyPayload(cliente, competencia) {
 function buildPayloadFromSnapshot(cliente, competencia, snapshot) {
   if (!snapshot) return buildEmptyPayload(cliente, competencia);
 
-  const resumo = jsonValue(snapshot.importacao.resumo_json, {});
   const pedidos = buildPedidos(snapshot);
+  const claimsState = buildClaimsState(snapshot);
+  const resumoBase = jsonValue(snapshot.importacao.resumo_json, {});
+  const resumo = {
+    ...resumoBase,
+    ...claimsState,
+    claimsVerificados: !claimsState.claimsIndisponivel,
+    claimsEncontrados: pedidos.filter((pedido) => (pedido.claimIds || []).length > 0).length,
+    devolucoes: pedidos.filter((pedido) => pedido.posVendaTipo === "devolucao").length,
+    mediacoes: pedidos.filter((pedido) => pedido.posVendaTipo === "mediacao").length,
+    confianca: claimsState.claimsIndisponivel ? "parcial" : resumoBase.confianca,
+  };
+  const temBloqueado = pedidos.some((pedido) => pedido.confianca === "bloqueado");
   const geradoEm = snapshot.importacao.created_at || snapshot.importacao.createdAt || null;
 
   return {
@@ -304,10 +324,12 @@ function buildPayloadFromSnapshot(cliente, competencia, snapshot) {
       etapaAtual: "importacao_persistida",
       progresso: 100,
       confianca: resumo.confianca || snapshot.importacao.confianca || "parcial",
-      podeConcluir: !pedidos.some((pedido) => pedido.confianca === "bloqueado"),
-      motivoBloqueio: pedidos.some((pedido) => pedido.confianca === "bloqueado")
-        ? "Ha pedidos bloqueados por custo/produto ausente."
-        : null,
+      podeConcluir: !temBloqueado && !claimsState.claimsIndisponivel,
+      motivoBloqueio: claimsState.claimsIndisponivel
+        ? "A verificacao de pos-venda (claims) nao foi concluida."
+        : temBloqueado
+          ? "Ha pedidos bloqueados por custo/produto ausente."
+          : null,
       geradoEm: geradoEm instanceof Date ? geradoEm.toISOString() : geradoEm,
       origemPrincipal: snapshot.importacao.fonte || "planilha_vendas",
       importId: snapshot.importacao.id,
@@ -324,6 +346,27 @@ function buildPedidos(snapshot) {
   const itens = snapshot.itens || [];
   const componentes = snapshot.componentes || [];
   return (snapshot.pedidos || []).map((pedido) => buildPedidoContrato(pedido, itens, componentes));
+}
+
+function buildClaimsState(snapshot) {
+  const imports = Array.isArray(snapshot?.imports) && snapshot.imports.length
+    ? snapshot.imports
+    : snapshot?.importacao
+      ? [snapshot.importacao]
+      : [];
+  const apiImports = imports.filter((importacao) => (importacao.fonte || "orders_api") === "orders_api");
+  const indisponiveis = apiImports
+    .map((importacao) => jsonValue(importacao.resumo_json, {}))
+    // Imports API legados não registravam a verificação. Até uma nova
+    // sincronização, a ausência desse sinal também é tratada honestamente como
+    // pós-venda não verificado.
+    .filter((resumo) => resumo.claimsIndisponivel !== false);
+
+  return {
+    claimsIndisponivel: indisponiveis.length > 0,
+    claimsMotivo: indisponiveis.find((resumo) => resumo.claimsMotivo)?.claimsMotivo
+      || (indisponiveis.length ? "nao_verificado" : null),
+  };
 }
 
 function buildResumoFromRange(resumoBase, pedidos) {
@@ -360,6 +403,9 @@ function buildResumoFromRange(resumoBase, pedidos) {
     pedidosTotal: pedidos.length,
     pedidosValidos: validos.length,
     pedidosForaResultado: pedidos.length - validos.length,
+    claimsEncontrados: pedidos.filter((pedido) => (pedido.claimIds || []).length > 0).length,
+    devolucoes: pedidos.filter((pedido) => pedido.posVendaTipo === "devolucao").length,
+    mediacoes: pedidos.filter((pedido) => pedido.posVendaTipo === "mediacao").length,
     pedidosConfiaveis: validos.filter((pedido) => pedido.confianca === "confiavel").length,
     pedidosParciais: validos.filter((pedido) => pedido.confianca === "parcial").length,
     pedidosBloqueados: validos.filter((pedido) => pedido.confianca === "bloqueado").length,
@@ -418,8 +464,19 @@ function buildPayloadFromRange(cliente, range, snapshot) {
   const pedidos = buildPedidos(snapshot);
   const pedidosValidos = pedidos.filter(pedidoEntraNoResultado);
   const temBloqueado = pedidosValidos.some((pedido) => pedido.confianca === "bloqueado");
+  const claimsState = buildClaimsState(snapshot);
   const geradoEm = snapshot.importacao?.created_at || null;
-  const resumo = buildResumoFromRange(jsonValue(snapshot.importacao?.resumo_json, {}), pedidos);
+  const resumo = {
+    ...buildResumoFromRange(jsonValue(snapshot.importacao?.resumo_json, {}), pedidos),
+    ...claimsState,
+    claimsVerificados: !claimsState.claimsIndisponivel,
+    confianca: claimsState.claimsIndisponivel
+      ? "parcial"
+      : (temBloqueado ? "parcial" : pedidosValidos.length ? "confiavel" : "ausente"),
+  };
+  const motivosBloqueio = [];
+  if (temBloqueado) motivosBloqueio.push("Ha pedidos bloqueados por custo/produto ausente.");
+  if (claimsState.claimsIndisponivel) motivosBloqueio.push("A verificacao de pos-venda (claims) nao foi concluida.");
 
   return {
     ok: true,
@@ -430,9 +487,9 @@ function buildPayloadFromRange(cliente, range, snapshot) {
       status: "persistido",
       etapaAtual: "importacao_persistida",
       progresso: 100,
-      confianca: temBloqueado ? "parcial" : pedidosValidos.length ? "confiavel" : "ausente",
-      podeConcluir: !temBloqueado,
-      motivoBloqueio: temBloqueado ? "Ha pedidos bloqueados por custo/produto ausente." : null,
+      confianca: resumo.confianca,
+      podeConcluir: !temBloqueado && !claimsState.claimsIndisponivel,
+      motivoBloqueio: motivosBloqueio.length ? motivosBloqueio.join(" ") : null,
       geradoEm: geradoEm instanceof Date ? geradoEm.toISOString() : geradoEm,
       origemPrincipal: snapshot.importacao?.fonte || "orders_api",
       importId: snapshot.importacao?.id,

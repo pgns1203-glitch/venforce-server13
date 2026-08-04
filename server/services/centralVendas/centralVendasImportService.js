@@ -3,6 +3,7 @@ const {
   parseMeliRows,
 } = require("../fechamentoFinanceiro/meliFinanceiroService");
 const pool = require("../../config/database");
+const { pedidoEntraNoResultado } = require("./centralVendasService");
 
 function getRepository() {
   return require("./centralVendasRepository");
@@ -26,14 +27,15 @@ function round2(value) {
 
 function buildResumoCentralVendas(motorResult) {
   const pedidos = Array.isArray(motorResult?.pedidos) ? motorResult.pedidos : [];
+  const pedidosValidos = pedidos.filter(pedidoEntraNoResultado);
   const resumoMotor = motorResult?.resumo || {};
   const receitaBloqueada = round2(
-    pedidos
+    pedidosValidos
       .filter((pedido) => pedido.confianca === "bloqueado")
       .reduce((sum, pedido) => sum + Number(pedido.faturamento || 0), 0)
   );
   const faturamentoComCusto = round2(
-    pedidos
+    pedidosValidos
       .filter((pedido) => pedido.confianca !== "bloqueado")
       .reduce((sum, pedido) => sum + Number(pedido.faturamento || 0), 0)
   );
@@ -54,11 +56,11 @@ function buildResumoCentralVendas(motorResult) {
         ? round2((lucroContribuicao / faturamentoComCusto) * 100)
         : null,
     confianca:
-      pedidos.some((pedido) => pedido.confianca === "bloqueado")
+      pedidosValidos.some((pedido) => pedido.confianca === "bloqueado")
         ? "parcial"
-        : pedidos.some((pedido) => pedido.confianca === "parcial")
+        : pedidosValidos.some((pedido) => pedido.confianca === "parcial")
           ? "parcial"
-          : pedidos.length
+          : pedidosValidos.length
             ? "confiavel"
             : "ausente",
   };

@@ -460,8 +460,9 @@ function fechSum(arr, f) { return round2(arr.reduce((s, o) => s + (Number(f(o)) 
 function buildFechamentoResumo(payload, quick = 'todos') {
   const orders = fechamentoOrdersFiltered(payload, quick);
   const validos = orders.filter(pedidoEntraNoResultado);
-  const cancelados = orders.filter(o => o.status === 'cancelado');
-  const mediacoes = orders.filter(o => o.status === 'com_problema');
+  const devolucoes = orders.filter(o => o.posVendaTipo === 'devolucao');
+  const cancelados = orders.filter(o => o.status === 'cancelado' && o.posVendaTipo !== 'devolucao');
+  const mediacoes = orders.filter(o => o.status === 'com_problema' && o.posVendaTipo !== 'devolucao');
   const faturamento = fechSum(validos, o => o.valor);
   const unidades = validos.reduce((s, o) => s + (o.unidades || 0), 0);
   const comComissao = validos.filter(o => o.taxas != null);
@@ -483,6 +484,7 @@ function buildFechamentoResumo(payload, quick = 'todos') {
   if (!validos.length || !comResultado.length) confianca = 'insuficiente';
   else if (validos.every(o => o.resultadoStatus === 'real')) confianca = 'confiavel';
   else confianca = 'parcial';
+  if (payload?.resumo?.claimsIndisponivel && orders.length) confianca = 'parcial';
 
   // Cobertura de cada total agregado: qual % da receita válida ele representa.
   // Necessário porque faturamento soma TODOS os pedidos válidos, enquanto
@@ -504,8 +506,8 @@ function buildFechamentoResumo(payload, quick = 'todos') {
     periodo: payload.periodo, cliente: payload.cliente,
     fonte: payload.motor?.origemPrincipal || payload.fonte || 'central_vendas_db',
     totalPedidos: orders.length, validos: validos.length,
-    cancelados: cancelados.length, mediacoes: mediacoes.length,
-    cancelProblema: cancelados.length + mediacoes.length,
+    cancelados: cancelados.length, devolucoes: devolucoes.length, mediacoes: mediacoes.length,
+    cancelProblema: orders.filter(o => STATUS_FORA_DO_RESULTADO.has(o.status)).length,
     unidades, faturamento, ticket, comissao, custoTotal, impostoTotal, freteTotal,
     resultadoParcial, receitaBloqueada, confianca, cobertura,
   };
@@ -550,9 +552,11 @@ function buildFechamentoQualidade(payload, quick = 'todos') {
   return {
     semCusto: validos.filter(o => o.mlb && o.custoStatus === 'ausente').length,
     semFrete: validos.filter(o => o.frete == null).length,
-    cancelados: orders.filter(o => o.status === 'cancelado').length,
-    mediacoes: orders.filter(o => o.status === 'com_problema').length,
+    cancelados: orders.filter(o => o.status === 'cancelado' && o.posVendaTipo !== 'devolucao').length,
+    devolucoes: orders.filter(o => o.posVendaTipo === 'devolucao').length,
+    mediacoes: orders.filter(o => o.status === 'com_problema' && o.posVendaTipo !== 'devolucao').length,
     cancelProblema: orders.filter(o => STATUS_FORA_DO_RESULTADO.has(o.status)).length,
+    claimsIndisponivel: payload?.resumo?.claimsIndisponivel === true,
     comResultado: validos.filter(o => o.resultado != null).length,
     bloqueados: validos.filter(o => o.resultadoStatus === 'bloqueado').length,
     pctFatComCusto: faturamento > 0 ? round2(fatComCusto / faturamento * 100) : null,
@@ -935,6 +939,14 @@ function pedidoRowClass(o) {
 }
 
 const STATUS_PEDIDO = { pago:['is-success','Pago'], cancelado:['is-danger','Cancelado'], com_problema:['is-warning','Mediação / problema'], pendente:['is-warning','Pendente'] };
+function statusPedidoInfo(o) {
+  if (o?.posVendaTipo === 'devolucao') {
+    return o.status === 'cancelado'
+      ? ['is-danger', 'Devolução / reembolso']
+      : ['is-warning', 'Devolução em andamento'];
+  }
+  return STATUS_PEDIDO[o?.status] || ['is-neutral', o?.status];
+}
 
 /* Pedidos filtrados (recorte rápido + busca). Ordenação/paginação ficam na tabela. */
 function pedidoMatchesSearch(o, term) {
@@ -943,7 +955,7 @@ function pedidoMatchesSearch(o, term) {
     String(o.produto?.sku || o.sku || '').toLowerCase().includes(term) ||
     String(o.produto?.titulo || '').toLowerCase().includes(term) ||
     String(o.status || '').toLowerCase().includes(term) ||
-    String((STATUS_PEDIDO[o.status] || [])[1] || '').toLowerCase().includes(term) ||
+    String(statusPedidoInfo(o)[1] || '').toLowerCase().includes(term) ||
     (o.full === true ? 'full' : 'normal').includes(term) ||
     String(o.logistica || '').toLowerCase().includes(term);
 }
@@ -1068,6 +1080,9 @@ function renderContextStatus() {
     if (p.motor?.importId != null) parts.push(item('Import', `<span class="vf-mono">#${esc(p.motor.importId)}</span>`));
     if (p.periodo?.label) parts.push(item('Intervalo', `<b>${esc(p.periodo.label)}</b>`));
     if (F.lastSyncBase?.nome) parts.push(item('Base vinculada', `<b>${esc(F.lastSyncBase.nome)}</b>`));
+    if (p.resumo?.claimsIndisponivel) {
+      parts.push(item('Pós-venda', '<span class="vf-status is-warning">Não verificado</span>'));
+    }
   }
   host.innerHTML = parts.join('');
 }
@@ -1177,6 +1192,14 @@ function renderFechamentoSection() {
   const clearBtn = quick !== 'todos'
     ? '<button type="button" class="vf-clear-filters" data-fechq="todos">Limpar recorte</button>' : '';
   const recorteBar = `<div class="vf-fapi-fech-chips" role="group" aria-label="Recorte do fechamento">${chips}${clearBtn}</div>`;
+  const posVendaWarning = payload.resumo?.claimsIndisponivel
+    ? `<div class="vf-banner is-warning vf-banner--compact" role="alert">
+        <div class="vf-banner__content">
+          <p class="vf-banner__title">Pós-venda não verificado</p>
+          <p class="vf-banner__description">A consulta de claims do Mercado Livre não foi concluída. Devoluções e mediações podem estar ausentes; por segurança, a confiança deste fechamento permanece parcial.</p>
+        </div>
+      </div>`
+    : '';
 
   let corpo;
   if (!r.totalPedidos) {
@@ -1195,8 +1218,9 @@ function renderFechamentoSection() {
       ${kpi({ label:'Faturamento bruto', valueHtml: kpiValueHtml(r.faturamento, { currency:true }), foot:'pedidos válidos', mod:'vf-kpi--featured' })}
       ${kpi({ label:'Resultado parcial', valueHtml: kpiValueHtml(r.resultadoParcial, { currency:true }), foot: parcialFoot, footTone: r.confianca === 'confiavel' ? 'is-success' : 'is-warning', mod: r.confianca === 'confiavel' ? '' : 'vf-kpi--warning' })}
       ${kpi({ label:'Receita bloqueada', valueHtml: kpiValueHtml(r.receitaBloqueada, { currency:true }), foot:'falta custo/frete p/ calcular', footTone: r.receitaBloqueada > 0 ? 'is-warning' : '', mod: r.receitaBloqueada > 0 ? 'vf-kpi--warning' : '' })}
-      ${kpi({ label:'Pedidos válidos', valueHtml: kpiValueHtml(r.validos), foot:'fora cancelamentos e mediações' })}
+      ${kpi({ label:'Pedidos válidos', valueHtml: kpiValueHtml(r.validos), foot:'fora cancelamentos, devoluções e mediações' })}
       ${kpi({ label:'Cancelados', valueHtml: kpiValueHtml(r.cancelados), foot:'fora da venda boa · definitivo', footTone: r.cancelados > 0 ? 'is-danger' : '', mod: r.cancelados > 0 ? 'vf-kpi--danger' : '' })}
+      ${kpi({ label:'Devoluções / reembolsos', valueHtml: kpiValueHtml(r.devolucoes), foot:'fora da venda boa · pós-venda', footTone: r.devolucoes > 0 ? 'is-danger' : '', mod: r.devolucoes > 0 ? 'vf-kpi--danger' : '' })}
       ${kpi({ label:'Mediações / problema', valueHtml: kpiValueHtml(r.mediacoes), foot:'fora da venda boa · aguardando decisão', footTone: r.mediacoes > 0 ? 'is-warning' : '', mod: r.mediacoes > 0 ? 'vf-kpi--warning' : '' })}
       ${kpi({ label:'Unidades vendidas', valueHtml: kpiValueHtml(r.unidades), foot:'itens válidos' })}
     </div>`;
@@ -1254,7 +1278,9 @@ function renderFechamentoSection() {
             ${qRow('Pedidos sem frete', valOr(q.semFrete), q.semFrete ? 'is-warning' : '')}
             ${qRow('Com resultado calculável', valOr(q.comResultado))}
             ${qRow('Pedidos bloqueados', valOr(q.bloqueados), q.bloqueados ? 'is-danger' : '')}
-            ${qRow('Cancelados/problema', valOr(q.cancelProblema))}
+            ${qRow('Cancelados', valOr(q.cancelados), q.cancelados ? 'is-danger' : '')}
+            ${qRow('Devoluções / reembolsos', valOr(q.devolucoes), q.devolucoes ? 'is-danger' : '')}
+            ${qRow('Mediações / problema', valOr(q.mediacoes), q.mediacoes ? 'is-warning' : '')}
             ${qRow('% faturamento com custo', valOr(q.pctFatComCusto, pct))}
             ${qRow('% faturamento com frete real', valOr(q.pctFatComFrete, pct), (q.pctFatComFrete || 0) > 0 ? 'is-success' : '')}
             ${qRow('% faturamento bloqueado', valOr(q.pctFatBloqueado, pct), (q.pctFatBloqueado || 0) > 0 ? 'is-warning' : '')}
@@ -1266,7 +1292,7 @@ function renderFechamentoSection() {
       <div class="vf-banner__content"><p class="vf-banner__description">Fechamento do <strong>período inteiro</strong> (independe dos filtros da tabela de pedidos). O <strong>frete seller</strong> vem da Shipments API por pedido quando disponível; pedidos sem frete real mantêm o fechamento <strong>parcial</strong>. Ausência aparece como <strong>—</strong>, nunca R$ 0,00.</p></div>
     </div>`;
 
-    corpo = `${kpis}${secundarios}<div class="vf-fapi-composition-grid">${composicao}${qualidade}</div>${nota}`;
+    corpo = `${posVendaWarning}${kpis}${secundarios}<div class="vf-fapi-composition-grid">${composicao}${qualidade}</div>${nota}`;
   }
 
   host.innerHTML = `
@@ -1507,7 +1533,7 @@ function renderPedTable() {
   const rows = sorted.slice(start, end);
 
   const tr = rows.map(o => {
-    const [scls, slbl] = STATUS_PEDIDO[o.status] || ['is-neutral', o.status];
+    const [scls, slbl] = statusPedidoInfo(o);
     const res = o.resultado == null ? '—' : `<span class="vf-fapi-est">${money(o.resultado)}</span>`;
     const selected = F.ui.drawerOrderId === o.id;
     return `
@@ -1595,7 +1621,7 @@ function buildOrderDrawerBody(o) {
   const bloqueado = o.resultado == null;
   const cancelado = o.status === 'cancelado';
   const precoUnit = (o.valor != null && o.unidades) ? round2(o.valor / o.unidades) : null;
-  const [scls, slbl] = STATUS_PEDIDO[o.status] || ['is-neutral', o.status];
+  const [scls, slbl] = statusPedidoInfo(o);
 
   const kv = pairs => `<dl class="vf-fapi-kv">${pairs.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
 

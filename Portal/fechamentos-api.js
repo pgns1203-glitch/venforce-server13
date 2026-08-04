@@ -513,33 +513,67 @@ function buildFechamentoResumo(payload, quick = 'todos') {
   };
 }
 
+/* A composição precisa FECHAR: a receita das linhas superiores tem de ser a
+   mesma base que produziu o Resultado Parcial. "Receita de produtos" soma todos
+   os pedidos válidos (inclusive os bloqueados, que aparecem no card de
+   faturamento), mas o Resultado Parcial só existe para os pedidos calculáveis.
+   Por isso a receita bloqueada sai numa linha explícita — ela não é escondida,
+   é subtraída — e os descontos abaixo somam apenas pedidos calculáveis. */
 function buildFechamentoComponentes(payload, quick = 'todos') {
   const r = buildFechamentoResumo(payload, quick);
   const orders = fechamentoOrdersFiltered(payload, quick);
   const validos = orders.filter(pedidoEntraNoResultado);
+  const calculaveis = validos.filter(o => o.resultado != null);
+  const foraDoCalculo = validos.filter(o => o.resultado == null);
   const semCusto = validos.filter(o => o.mlb && o.custoStatus === 'ausente').length;
   const semFrete = validos.filter(o => o.frete == null).length;
+  const semFreteCalc = calculaveis.filter(o => o.frete == null).length;
+
+  const receitaFora = fechSum(foraDoCalculo, o => o.valor);
+  const somaCalc = (campo) => {
+    const comDado = calculaveis.filter(o => o[campo] != null);
+    return comDado.length ? fechSum(comDado, o => o[campo]) : null;
+  };
+  const comissaoCalc = somaCalc('taxas');
+  const custoCalc = somaCalc('custo');
+  const impostoCalc = somaCalc('imposto');
+  const freteCalc = somaCalc('frete');
+
   return [
     { comp:'Receita de produtos', op:'+', valor: r.faturamento,
       status: r.faturamento > 0 ? 'real' : 'ausente', fonte:'orders_api', obs:'soma do valor dos pedidos válidos' },
-    { comp:'Tarifa marketplace', op:'−', valor: r.comissao == null ? null : -r.comissao,
-      status: r.comissao == null ? 'ausente' : 'real', fonte:'orders_api', obs:'comissão (sale_fee) dos pedidos' },
-    { comp:'Custo dos produtos', op:'−', valor: r.custoTotal == null ? null : -r.custoTotal,
-      status: r.custoTotal == null ? 'ausente' : (semCusto > 0 ? 'parcial' : 'real'), fonte:'base vinculada',
-      obs: semCusto > 0 ? `${num(semCusto)} pedido(s) sem custo na base` : 'custo unitário × unidades' },
-    { comp:'Imposto interno', op:'−', valor: r.impostoTotal == null ? null : -r.impostoTotal,
-      status: r.impostoTotal == null ? 'ausente' : (semCusto > 0 ? 'parcial' : 'real'), fonte:'cálculo interno',
-      obs:'imposto % da base × receita' },
-    { comp:'Frete seller', op:'−', valor: r.freteTotal == null ? null : -r.freteTotal,
-      status: r.freteTotal == null ? 'ausente' : (semFrete > 0 ? 'parcial' : 'real'),
-      fonte: r.freteTotal == null ? 'pendente' : 'shipments_api',
-      obs: r.freteTotal == null
+    { comp:'Receita bloqueada fora do cálculo', op:'−', valor: receitaFora === 0 ? 0 : -receitaFora,
+      status: foraDoCalculo.length ? 'parcial' : 'real', fonte:'cálculo interno',
+      obs: foraDoCalculo.length
+        ? `${num(foraDoCalculo.length)} pedido(s) sem custo/produto — receita existe, resultado não é calculável`
+        : 'nenhum pedido válido bloqueado' },
+    { comp:'Tarifa marketplace', op:'−', valor: comissaoCalc == null ? null : -comissaoCalc,
+      status: comissaoCalc == null ? 'ausente' : 'real', fonte:'orders_api', obs:'comissão (sale_fee) dos pedidos calculáveis' },
+    { comp:'Custo dos produtos', op:'−', valor: custoCalc == null ? null : -custoCalc,
+      status: custoCalc == null ? 'ausente' : 'real', fonte:'base vinculada',
+      obs: semCusto > 0 ? `${num(semCusto)} pedido(s) sem custo na base ficaram na linha bloqueada` : 'custo unitário × unidades' },
+    { comp:'Imposto interno', op:'−', valor: impostoCalc == null ? null : -impostoCalc,
+      status: impostoCalc == null ? 'ausente' : 'real', fonte:'cálculo interno',
+      obs:'imposto % da base × receita dos pedidos calculáveis' },
+    { comp:'Frete seller', op:'−', valor: freteCalc == null ? null : -freteCalc,
+      status: freteCalc == null ? 'ausente' : (semFreteCalc > 0 ? 'parcial' : 'real'),
+      fonte: freteCalc == null ? 'pendente' : 'shipments_api',
+      obs: freteCalc == null
         ? 'nenhum envio retornou custo (shipments API)'
-        : (semFrete > 0 ? `${num(semFrete)} pedido(s) sem frete real` : 'custo final do seller (shipments costs)') },
+        : (semFreteCalc > 0 ? `${num(semFreteCalc)} pedido(s) calculáveis sem frete real` : 'custo final do seller (shipments costs)') },
     { comp:'Resultado parcial', op:'=', valor: r.resultadoParcial,
       status: r.resultadoParcial == null ? 'ausente' : (r.confianca === 'confiavel' ? 'real' : 'parcial'), fonte:'cálculo interno',
       obs: r.confianca === 'confiavel' ? 'todos os componentes reais' : (semFrete > 0 || r.freteTotal == null ? 'parcial — frete incompleto' : 'parcial — falta custo em parte') },
   ];
+}
+
+/* Resíduo da composição: soma das linhas (exceto o total) menos o Resultado
+   Parcial. Deve ser 0 — se não for, a tabela está mentindo e o valor aparece. */
+function fechamentoComposicaoResiduo(comps) {
+  const total = comps.find(c => c.op === '=');
+  if (!total || total.valor == null) return null;
+  const soma = comps.filter(c => c.op !== '=').reduce((s, c) => s + (Number(c.valor) || 0), 0);
+  return round2(soma - total.valor);
 }
 
 function buildFechamentoQualidade(payload, quick = 'todos') {
@@ -554,9 +588,13 @@ function buildFechamentoQualidade(payload, quick = 'todos') {
     semFrete: validos.filter(o => o.frete == null).length,
     cancelados: orders.filter(o => o.status === 'cancelado' && o.posVendaTipo !== 'devolucao').length,
     devolucoes: orders.filter(o => o.posVendaTipo === 'devolucao').length,
+    // Devolução parcial NÃO cancela o pedido: ele continua no resultado e só é
+    // sinalizado aqui, com a quantidade afetada persistida no payload.
+    devolucoesParciais: orders.filter(o => o.posVendaTipo === 'devolucao_parcial').length,
     mediacoes: orders.filter(o => o.status === 'com_problema' && o.posVendaTipo !== 'devolucao').length,
     cancelProblema: orders.filter(o => STATUS_FORA_DO_RESULTADO.has(o.status)).length,
     claimsIndisponivel: payload?.resumo?.claimsIndisponivel === true,
+    claimsReturnsNaoResolvidos: Number(payload?.resumo?.claimsReturnsNaoResolvidos) || 0,
     comResultado: validos.filter(o => o.resultado != null).length,
     bloqueados: validos.filter(o => o.resultadoStatus === 'bloqueado').length,
     pctFatComCusto: faturamento > 0 ? round2(fatComCusto / faturamento * 100) : null,
@@ -1193,14 +1231,29 @@ function renderFechamentoSection() {
     ? '<button type="button" class="vf-clear-filters" data-fechq="todos">Limpar recorte</button>' : '';
   const recorteBar = `<div class="vf-fapi-fech-chips" role="group" aria-label="Recorte do fechamento">${chips}${clearBtn}</div>`;
   const claimsMotivo = String(payload.resumo?.claimsMotivo || 'motivo_nao_informado');
+  // 401/403 = a aplicação provavelmente não tem o tópico Post Purchase/Claims
+  // habilitado no painel do ML. É configuração de painel, não código — o código
+  // técnico aparece na tela sem expor token, header ou resposta.
+  const claimsSemPermissao = claimsMotivo === 'http_401' || claimsMotivo === 'http_403';
+  const claimsPermissaoHint = claimsSemPermissao
+    ? ' O código indica <strong>falta de permissão</strong>: a aplicação pode não ter acesso a Post Purchase/Claims (tópico habilitado em "Minhas aplicações", no painel do Mercado Livre).'
+    : '';
+  const returnsNaoResolvidos = Number(payload.resumo?.claimsReturnsNaoResolvidos) || 0;
   const posVendaWarning = payload.resumo?.claimsIndisponivel
     ? `<div class="vf-banner is-warning vf-banner--compact" role="alert">
         <div class="vf-banner__content">
           <p class="vf-banner__title">Pós-venda não verificado</p>
-          <p class="vf-banner__description">A consulta de claims do Mercado Livre não foi concluída (<strong>motivo: ${esc(claimsMotivo)}</strong>). Devoluções e mediações podem estar ausentes; por segurança, a confiança deste fechamento permanece parcial.</p>
+          <p class="vf-banner__description">A consulta de claims do Mercado Livre não foi concluída (<strong>motivo: ${esc(claimsMotivo)}</strong>).${claimsPermissaoHint} Devoluções e mediações podem estar ausentes; por segurança, a confiança deste fechamento permanece parcial.</p>
         </div>
       </div>`
-    : '';
+    : returnsNaoResolvidos > 0
+      ? `<div class="vf-banner is-warning vf-banner--compact" role="alert">
+        <div class="vf-banner__content">
+          <p class="vf-banner__title">Pós-venda verificado parcialmente</p>
+          <p class="vf-banner__description">A consulta de claims foi concluída, mas <strong>${num(returnsNaoResolvidos)}</strong> devolução(ões) não puderam ser ligadas a um pedido (detalhe de returns indisponível). Esses casos <strong>não</strong> foram tratados como "sem devolução"; a confiança permanece parcial.</p>
+        </div>
+      </div>`
+      : '';
 
   let corpo;
   if (!r.totalPedidos) {
@@ -1256,13 +1309,18 @@ function renderFechamentoSection() {
         <td class="vf-fapi-fonte">${esc(c.fonte)}</td>
         <td class="vf-fapi-obs vf-truncate" title="${esc(c.obs)}">${esc(c.obs)}</td>
       </tr>`).join('');
+    // A equação tem de fechar. Se sobrar resíduo, ele aparece — nunca some.
+    const residuo = fechamentoComposicaoResiduo(comps);
+    const residuoRow = (residuo != null && Math.abs(residuo) >= 0.01)
+      ? `<tr class="vf-fapi-total-row"><td>Resíduo não explicado</td><td class="vf-fapi-op" aria-hidden="true">≠</td><td class="num"><span class="vf-fapi-est">${money(residuo)}</span></td><td>${statusTag('parcial')}</td><td class="vf-fapi-fonte">cálculo interno</td><td class="vf-fapi-obs">as linhas acima não fecham no resultado — reportar</td></tr>`
+      : '';
     const composicao = `
       <div class="vf-card vf-card--compact vf-fapi-composition">
         <div class="vf-card__header"><h3 class="vf-card__title">Composição do resultado</h3></div>
         <div class="vf-table-wrap">
           <table class="vf-table vf-table--compact">
             <thead><tr><th scope="col">Componente</th><th scope="col"><span class="vf-visually-hidden">Operação</span></th><th scope="col" class="num">Valor</th><th scope="col">Status</th><th scope="col">Fonte</th><th scope="col">Observação</th></tr></thead>
-            <tbody>${compRows}</tbody>
+            <tbody>${compRows}${residuoRow}</tbody>
           </table>
         </div>
       </div>`;
@@ -1281,6 +1339,7 @@ function renderFechamentoSection() {
             ${qRow('Pedidos bloqueados', valOr(q.bloqueados), q.bloqueados ? 'is-danger' : '')}
             ${qRow('Cancelados', valOr(q.cancelados), q.cancelados ? 'is-danger' : '')}
             ${qRow('Devoluções / reembolsos', valOr(q.devolucoes), q.devolucoes ? 'is-danger' : '')}
+            ${qRow('Devoluções parciais (no resultado)', valOr(q.devolucoesParciais), q.devolucoesParciais ? 'is-warning' : '')}
             ${qRow('Mediações / problema', valOr(q.mediacoes), q.mediacoes ? 'is-warning' : '')}
             ${qRow('% faturamento com custo', valOr(q.pctFatComCusto, pct))}
             ${qRow('% faturamento com frete real', valOr(q.pctFatComFrete, pct), (q.pctFatComFrete || 0) > 0 ? 'is-success' : '')}

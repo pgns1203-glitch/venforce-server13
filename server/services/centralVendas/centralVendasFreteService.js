@@ -45,6 +45,9 @@ function chunk(arr, size) {
 
 // `senders[].cost` já é o custo final do usuário. Nunca usa gross_amount,
 // base_cost, compensation ou save como fallback. Mantém 0 como zero real.
+//
+// ATENÇÃO: `receiver.cost` (valor de envio pago pelo COMPRADOR) sai por
+// extrairReceitaComprador e nunca é misturado aqui — são grandezas diferentes.
 function extrairFreteSeller(costs, sellerId) {
   if (!costs || typeof costs !== "object" || !Array.isArray(costs.senders)) return null;
   if (sellerId === null || sellerId === undefined || String(sellerId).trim() === "") return null;
@@ -64,6 +67,19 @@ function extrairFreteSeller(costs, sellerId) {
 
   if (sender.cost === null || sender.cost === undefined || !Number.isFinite(Number(sender.cost))) return null;
   return round2(Number(sender.cost));
+}
+
+// Receita de envio: `receiver.cost` da MESMA resposta de GET /shipments/:id/costs
+// é o valor de envio pago pelo comprador. Nunca usa base_cost, gross_amount,
+// compensation ou save como fallback, e nunca cai para senders[].cost.
+// null = ausente · 0 = zero real (frete grátis cobrado do comprador como 0).
+function extrairReceitaComprador(costs) {
+  if (!costs || typeof costs !== "object") return null;
+  const receiver = costs.receiver;
+  if (!receiver || typeof receiver !== "object") return null;
+  if (receiver.cost === null || receiver.cost === undefined) return null;
+  const valor = Number(receiver.cost);
+  return Number.isFinite(valor) ? round2(valor) : null;
 }
 
 // Pool simples de concorrencia (mesmo padrao do diagnosticoService.diagPLimit).
@@ -90,14 +106,24 @@ function pLimit(concorrencia) {
 
 function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep } = {}) {
   // Consulta um shipment com retry seguro. Resultado sempre no formato
-  // { valor, status, motivo, tentativas, erro }.
-  //   valor: number|null · status: "real" | "ausente"
+  // { valor, custoSeller, receitaComprador, status, motivo, tentativas, erro }.
+  //   custoSeller (= valor, mantido por compatibilidade): senders[].cost
+  //   receitaComprador: receiver.cost — valor de envio pago pelo comprador
+  //   status: "real" | "ausente" (refere-se SEMPRE ao custo do seller)
   //   erro: true quando a ausência veio de falha tecnica (429/5xx/fetch),
   //         false quando é ausência legitima (404/400/401/403/sem_custo_seller).
   async function buscarFreteShipment({ clienteId, sellerId, shipmentId, maxRetries = FRETE_MAX_RETRIES }) {
     const id = String(shipmentId || "").trim();
     if (!id) {
-      return { valor: null, status: "ausente", motivo: "sem_shipment_id", tentativas: 0, erro: false };
+      return {
+        valor: null,
+        custoSeller: null,
+        receitaComprador: null,
+        status: "ausente",
+        motivo: "sem_shipment_id",
+        tentativas: 0,
+        erro: false,
+      };
     }
 
     let motivoFalha = "erro_fetch";
@@ -109,10 +135,27 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
 
         if (ok) {
           const valor = extrairFreteSeller(data, sellerId);
+          const receitaComprador = extrairReceitaComprador(data);
           if (valor === null) {
-            return { valor: null, status: "ausente", motivo: "sem_custo_seller", tentativas: attempt, erro: false };
+            return {
+              valor: null,
+              custoSeller: null,
+              receitaComprador,
+              status: "ausente",
+              motivo: "sem_custo_seller",
+              tentativas: attempt,
+              erro: false,
+            };
           }
-          return { valor, status: "real", motivo: null, tentativas: attempt, erro: false };
+          return {
+            valor,
+            custoSeller: valor,
+            receitaComprador,
+            status: "real",
+            motivo: null,
+            tentativas: attempt,
+            erro: false,
+          };
         }
 
         motivoFalha = `http_${status}`;
@@ -122,6 +165,8 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
         }
         return {
           valor: null,
+          custoSeller: null,
+          receitaComprador: null,
           status: "ausente",
           motivo: motivoFalha,
           tentativas: attempt,
@@ -133,11 +178,27 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
           await sleepFn(backoffDelayMs(attempt, null));
           continue;
         }
-        return { valor: null, status: "ausente", motivo: "erro_fetch", tentativas: attempt, erro: true };
+        return {
+          valor: null,
+          custoSeller: null,
+          receitaComprador: null,
+          status: "ausente",
+          motivo: "erro_fetch",
+          tentativas: attempt,
+          erro: true,
+        };
       }
     }
 
-    return { valor: null, status: "ausente", motivo: motivoFalha, tentativas: maxRetries, erro: true };
+    return {
+      valor: null,
+      custoSeller: null,
+      receitaComprador: null,
+      status: "ausente",
+      motivo: motivoFalha,
+      tentativas: maxRetries,
+      erro: true,
+    };
   }
 
   // Busca o frete de TODOS os shipmentIds unicos, em lotes sequenciais com
@@ -162,6 +223,7 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
     let ausentes = 0;
     let erros = 0;
     let tentativasExtras = 0;
+    let comReceitaEnvio = 0;
 
     for (let i = 0; i < lotesArr.length; i++) {
       const lote = lotesArr[i];
@@ -172,8 +234,15 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
         lote.map((id) =>
           limit(async () => {
             const r = await buscarFreteShipment({ clienteId, sellerId, shipmentId: id, maxRetries });
-            freteMap.set(id, { valor: r.valor, status: r.status, motivo: r.motivo });
+            freteMap.set(id, {
+              valor: r.valor,
+              custoSeller: r.custoSeller,
+              receitaComprador: r.receitaComprador,
+              status: r.status,
+              motivo: r.motivo,
+            });
 
+            if (r.receitaComprador !== null && r.receitaComprador !== undefined) comReceitaEnvio++;
             processados++;
             if (r.status === "real") {
               comFrete++;
@@ -196,6 +265,7 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
     console.log(
       `[centralVendas] frete shipments: total=${total} buscados=${processados}` +
         ` comFrete=${comFrete} ausentes=${ausentes} erros=${erros}` +
+        ` comReceitaEnvio=${comReceitaEnvio}` +
         ` tentativasExtras=${tentativasExtras} lotes=${lotesArr.length} capExcedido=0`
     );
 
@@ -204,6 +274,7 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
       total,
       buscados: processados,
       comFrete,
+      comReceitaEnvio,
       ausentes,
       erros,
       tentativasExtras,
@@ -219,6 +290,7 @@ const defaultService = createCentralVendasFreteService();
 
 module.exports = {
   extrairFreteSeller,
+  extrairReceitaComprador,
   buscarFreteShipment: defaultService.buscarFreteShipment,
   buscarFretesEmLote: defaultService.buscarFretesEmLote,
   createCentralVendasFreteService,

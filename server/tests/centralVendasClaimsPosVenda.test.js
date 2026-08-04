@@ -1,16 +1,52 @@
 const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
 const {
   buildClaimsMap,
+  buildClaimsWindow,
   classificarClaim,
   createCentralVendasClaimsService,
+  extrairReturnDetalhe,
+  CLAIMS_LOOKAHEAD_DAYS,
 } = require("../services/centralVendas/centralVendasClaimsService");
 const {
   buildCostMap,
   buildMotorFromOrders,
+  extrairReembolso,
 } = require("../services/centralVendas/centralVendasSyncService");
+const {
+  extrairFreteSeller,
+  extrairReceitaComprador,
+} = require("../services/centralVendas/centralVendasFreteService");
 const { buildPayloadFromRange } = require("../services/centralVendas/centralVendasService");
 
-function order(id) {
+let checks = 0;
+function ok(label, condition) {
+  assert.ok(condition, `FALHOU: ${label}`);
+  checks += 1;
+}
+function eq(label, actual, expected) {
+  assert.deepStrictEqual(actual, expected, `FALHOU: ${label} — recebido ${JSON.stringify(actual)}`);
+  checks += 1;
+}
+
+// Captura os console.log do serviço sem poluir a saída do teste.
+async function capturandoLogs(fn) {
+  const linhas = [];
+  const original = console.log;
+  console.log = (...args) => { linhas.push(args); };
+  try {
+    return { resultado: await fn(), linhas };
+  } finally {
+    console.log = original;
+  }
+}
+
+const HOJE = new Date("2026-08-15T00:00:00.000Z");
+const PERIODO = { dateFrom: "2026-07-01", dateTo: "2026-07-31" };
+
+function order(id, extra = {}) {
   return {
     id,
     date_created: "2026-07-10T10:00:00.000-03:00",
@@ -23,7 +59,18 @@ function order(id) {
       unit_price: 100,
       sale_fee: 10,
     }],
+    ...extra,
   };
+}
+
+const COST_MAP = buildCostMap([{ produto_id: "MLB111", custo_produto: 40, imposto_percentual: 5 }]);
+
+function freteMapDe(orders, entry = { valor: 5, status: "real" }) {
+  return new Map(orders.map((o) => [o.shipping.id, { receitaComprador: null, ...entry }]));
+}
+
+function componenteDe(motor, pedidoId, tipo) {
+  return motor.componentes.find((c) => c.pedidoId === pedidoId && c.tipo === tipo);
 }
 
 function snapshotFromMotor(motor, resumo = motor.resumo) {
@@ -65,190 +112,547 @@ function snapshotFromMotor(motor, resumo = motor.resumo) {
   };
 }
 
+// Carrega o módulo de tela num sandbox: as funções puras do Fechamento são
+// declarações de função e ficam acessíveis no contexto.
+function carregarTelaFechamento() {
+  const src = fs.readFileSync(path.join(__dirname, "..", "..", "Portal", "fechamentos-api.js"), "utf8");
+  const ctx = vm.createContext({
+    document: { addEventListener() {}, getElementById() { return null; } },
+    window: { location: { replace() {} } },
+    localStorage: { getItem() { return "token-fake"; }, setItem() {}, removeItem() {} },
+    console: { log() {}, warn() {}, error() {} },
+    fetch() {},
+    setTimeout,
+    clearTimeout,
+  });
+  vm.runInContext(src, ctx, { filename: "fechamentos-api.js" });
+  return ctx;
+}
+
+/* ── Claims de referência ──────────────────────────────────────────────── */
+
+const devolucao = {
+  id: 501,
+  resource: "order",
+  resource_id: "DEVOLVIDO",
+  status: "closed",
+  type: "returns",
+  stage: "claim",
+  related_entities: ["return"],
+  resolution: { reason: "item_returned", benefited: ["complainant"] },
+};
+const mediacao = {
+  id: 502,
+  resource: "order",
+  resource_id: "MEDIACAO",
+  status: "opened",
+  type: "mediations",
+  stage: "dispute",
+  related_entities: [],
+  resolution: null,
+};
+const favorVendedor = {
+  id: 503,
+  resource: "order",
+  resource_id: "FAVOR_VENDEDOR",
+  status: "closed",
+  type: "mediations",
+  stage: "dispute",
+  related_entities: [],
+  resolution: { reason: "coverage_decision", benefited: ["respondent"] },
+};
+const recursoErrado = {
+  id: 504,
+  resource: "shipment",
+  resource_id: "SEM_CLAIM",
+  status: "closed",
+  type: "returns",
+  related_entities: ["return"],
+  resolution: { reason: "item_returned", benefited: ["complainant"] },
+};
+
+function servicoComRespostas(handler) {
+  const paths = [];
+  const service = createCentralVendasClaimsService({
+    sleepFn: async () => {},
+    mlFetchFn: async (_clienteId, requestPath) => {
+      paths.push(requestPath);
+      return handler(requestPath, paths.length - 1);
+    },
+  });
+  return { service, paths };
+}
+
+function rangeDe(requestPath) {
+  return new URL(`https://api.test${requestPath}`).searchParams.get("range");
+}
+
 async function run() {
-  const devolucao = {
-    id: 501,
-    resource: "order",
-    resource_id: "DEVOLVIDO",
-    status: "closed",
-    type: "returns",
-    stage: "claim",
-    related_entities: ["return"],
-    resolution: { reason: "item_returned", benefited: ["complainant"] },
-  };
-  const mediacao = {
-    id: 502,
-    resource: "order",
-    resource_id: "MEDIACAO",
-    status: "opened",
-    type: "mediations",
-    stage: "dispute",
-    related_entities: [],
-    resolution: null,
-  };
-  const favorVendedor = {
-    id: 503,
-    resource: "order",
-    resource_id: "FAVOR_VENDEDOR",
-    status: "closed",
-    type: "mediations",
-    stage: "dispute",
-    related_entities: [],
-    resolution: { reason: "coverage_decision", benefited: ["respondent"] },
-  };
-  const recursoErrado = {
-    id: 504,
-    resource: "shipment",
-    resource_id: "SEM_CLAIM",
-    status: "closed",
-    type: "returns",
-    related_entities: ["return"],
-    resolution: { reason: "item_returned", benefited: ["complainant"] },
-  };
+  /* ── Classificação e cruzamento (6, 7) ──────────────────────────────── */
 
-  assert.deepStrictEqual(classificarClaim(devolucao), {
-    status: "cancelado",
-    tipo: "devolucao",
-    motivo: "item_returned",
+  eq("classifica devolução efetivada como cancelado", classificarClaim(devolucao), {
+    status: "cancelado", tipo: "devolucao", motivo: "item_returned",
   });
-  assert.deepStrictEqual(classificarClaim(mediacao), {
-    status: "com_problema",
-    tipo: "mediacao",
-    motivo: "mediacao_em_aberto",
+  eq("classifica mediação aberta como com_problema", classificarClaim(mediacao), {
+    status: "com_problema", tipo: "mediacao", motivo: "mediacao_em_aberto",
   });
-  assert.strictEqual(classificarClaim(favorVendedor), null);
+  eq("claim a favor do vendedor não impacta", classificarClaim(favorVendedor), null);
 
-  // O cruzamento usa resource_id somente quando resource=order.
+  // 6. Claim de order cruza por resource_id · 7. sem vínculo confiável não cruza.
   const claimsMap = buildClaimsMap([devolucao, mediacao, favorVendedor, recursoErrado]);
-  assert.strictEqual(claimsMap.size, 3);
-  assert.strictEqual(claimsMap.has("DEVOLVIDO"), true);
-  assert.strictEqual(claimsMap.has("SEM_CLAIM"), false);
+  eq("6. claims de order entram no mapa por resource_id", claimsMap.size, 3);
+  ok("6. devolução cruzada por resource_id", claimsMap.has("DEVOLVIDO"));
+  ok("7. claim de shipment não é associado ao pedido por chute", !claimsMap.has("SEM_CLAIM"));
 
   const orders = [order("DEVOLVIDO"), order("MEDIACAO"), order("FAVOR_VENDEDOR"), order("SEM_CLAIM")];
-  const freteMap = new Map(orders.map((pedido) => [pedido.shipping.id, { valor: 5, status: "real" }]));
   const motor = buildMotorFromOrders({
     orders,
-    costMap: buildCostMap([{ produto_id: "MLB111", custo_produto: 40, imposto_percentual: 5 }]),
-    freteMap,
+    costMap: COST_MAP,
+    freteMap: freteMapDe(orders),
     claimsMap,
     claimsIndisponivel: false,
     clienteSlug: "cliente-teste",
     competencia: "2026-07",
   });
 
-  // 1. Devolução efetivada sai dos agregados, mas continua visível.
-  const pedidoDevolvido = motor.pedidos.find((pedido) => pedido.pedidoId === "DEVOLVIDO");
-  assert.strictEqual(pedidoDevolvido.status, "cancelado");
-  assert.strictEqual(pedidoDevolvido.posVendaTipo, "devolucao");
-  assert.strictEqual(pedidoDevolvido.faturamento, 100);
-
-  // 2. Mediação aberta usa o status existente e também sai do resultado.
-  const pedidoMediacao = motor.pedidos.find((pedido) => pedido.pedidoId === "MEDIACAO");
-  assert.strictEqual(pedidoMediacao.status, "com_problema");
-  assert.strictEqual(pedidoMediacao.posVendaTipo, "mediacao");
-
-  // 3. Claim encerrado a favor do vendedor, sem return/refund, permanece pago.
-  assert.strictEqual(motor.pedidos.find((pedido) => pedido.pedidoId === "FAVOR_VENDEDOR").status, "paid");
-
-  // 5. Pedido sem claim de order não é afetado. Os dois pedidos válidos formam
-  // a base financeira; devolução e mediação permanecem na contagem total.
-  assert.strictEqual(motor.pedidos.find((pedido) => pedido.pedidoId === "SEM_CLAIM").status, "paid");
-  assert.strictEqual(motor.resumo.pedidosTotal, 4);
-  assert.strictEqual(motor.resumo.pedidosValidos, 2);
-  assert.strictEqual(motor.resumo.faturamento, 200);
-  assert.strictEqual(motor.resumo.devolucoes, 1);
-  assert.strictEqual(motor.resumo.mediacoes, 1);
+  eq("devolução sai do resultado mas continua visível",
+    motor.pedidos.find((p) => p.pedidoId === "DEVOLVIDO").status, "cancelado");
+  eq("mediação vira com_problema",
+    motor.pedidos.find((p) => p.pedidoId === "MEDIACAO").status, "com_problema");
+  eq("claim a favor do vendedor mantém o pedido pago",
+    motor.pedidos.find((p) => p.pedidoId === "FAVOR_VENDEDOR").status, "paid");
+  eq("pedido sem claim não é afetado",
+    motor.pedidos.find((p) => p.pedidoId === "SEM_CLAIM").status, "paid");
+  eq("agregados excluem devolução e mediação", motor.resumo.pedidosValidos, 2);
+  eq("faturamento só dos pedidos válidos", motor.resumo.faturamento, 200);
+  eq("contador de devoluções", motor.resumo.devolucoes, 1);
+  eq("contador de mediações", motor.resumo.mediacoes, 1);
 
   const payload = buildPayloadFromRange(
     { id: 1, slug: "cliente-teste", nome: "Cliente Teste" },
-    { dateFrom: "2026-07-01", dateTo: "2026-07-31" },
+    PERIODO,
     snapshotFromMotor(motor)
   );
-  assert.strictEqual(payload.pedidos.length, 4);
-  assert.strictEqual(payload.resumo.faturamento, 200);
-  assert.strictEqual(payload.resumo.devolucoes, 1);
-  assert.strictEqual(payload.resumo.mediacoes, 1);
-  assert.strictEqual(payload.pedidos.find((pedido) => pedido.id === "DEVOLVIDO").entraNoResultado, false);
-  assert.strictEqual(payload.pedidos.find((pedido) => pedido.id === "MEDIACAO").entraNoResultado, false);
+  eq("payload preserva os 4 pedidos", payload.pedidos.length, 4);
+  eq("payload exclui devolvido do resultado",
+    payload.pedidos.find((p) => p.id === "DEVOLVIDO").entraNoResultado, false);
 
-  // Busca paginada: seller + período, sem chamada por pedido.
-  const paths = [];
-  const paginas = [devolucao, mediacao];
-  const service = createCentralVendasClaimsService({
-    sleepFn: async () => {},
-    mlFetchFn: async (_clienteId, path) => {
-      paths.push(path);
-      const offset = Number(new URL(`https://api.test${path}`).searchParams.get("offset"));
-      return {
-        ok: true,
-        status: 200,
-        data: { paging: { total: 2, offset, limit: 1 }, data: [paginas[offset]] },
-      };
-    },
-  });
-  const lote = await service.buscarClaimsPorPeriodo({
-    clienteId: 1,
-    sellerId: 999,
-    dateFrom: "2026-07-01",
-    dateTo: "2026-07-31",
-    limit: 1,
-  });
-  assert.strictEqual(paths.length, 2);
-  assert.match(paths[0], /players\.user_id=999/);
-  assert.match(paths[0], /range=date_created/);
-  assert.match(paths[1], /offset=1/);
-  const firstQuery = new URL(`https://api.test${paths[0]}`).searchParams;
-  assert.match(firstQuery.get("range"), /T00:00:00\.000-03:00/);
-  assert.strictEqual(firstQuery.has("sort"), false);
-  assert.strictEqual(lote.claimsMap.size, 2);
-  assert.strictEqual(lote.indisponivel, false);
+  /* ── 1. HTTP 400 propaga status, motivo e corpo ─────────────────────── */
 
-  // 4. Falha técnica: retries esgotados, mapa parcial descartado e confiança
-  // explicitamente rebaixada no motor e no contrato retornado à tela.
-  let calls = 0;
-  const failingService = createCentralVendasClaimsService({
-    sleepFn: async () => {},
-    mlFetchFn: async () => {
-      calls++;
-      return { ok: false, status: 503, data: null };
-    },
-  });
-  const falha = await failingService.buscarClaimsPorPeriodo({
-    clienteId: 1,
-    sellerId: 999,
-    dateFrom: "2026-07-01",
-    dateTo: "2026-07-31",
-  });
-  assert.strictEqual(calls, 3);
-  assert.strictEqual(falha.indisponivel, true);
-  assert.strictEqual(falha.motivo, "http_503");
-  assert.strictEqual(falha.claimsMap.size, 0);
+  const corpo400 = {
+    error: "bad_request",
+    message: "Invalid parameter",
+    cause: [{ code: "range.invalid", description: "range format not accepted" }],
+  };
+  const cenario400 = servicoComRespostas(() => ({ ok: false, status: 400, data: corpo400 }));
+  const { resultado: falha400, linhas: logs400 } = await capturandoLogs(() =>
+    cenario400.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+    })
+  );
+  eq("1. motivo http_400 propagado", falha400.motivo, "http_400");
+  eq("1. status HTTP preservado", falha400.status, 400);
+  eq("1. mapa vazio e indisponível", [falha400.indisponivel, falha400.claimsMap.size], [true, 0]);
+  const log400 = logs400.find((l) => l[0] === "[centralVendas] claims indisponivel");
+  ok("1. log estruturado emitido", !!log400);
+  eq("1. log carrega error do ML", log400[1].error, "bad_request");
+  eq("1. log carrega message do ML", log400[1].message, "Invalid parameter");
+  eq("1. log carrega cause do ML", log400[1].cause, corpo400.cause);
+  eq("1. log carrega a query rejeitada", log400[1].query.sellerId, "999");
+  ok("1. log não expõe token nem resposta completa",
+    !JSON.stringify(log400).match(/token|authorization|Bearer/i));
 
-  const motorSemClaims = buildMotorFromOrders({
-    orders: [order("NAO_VERIFICADO")],
-    costMap: buildCostMap([{ produto_id: "MLB111", custo_produto: 40, imposto_percentual: 5 }]),
-    freteMap: new Map([["SHIP-NAO_VERIFICADO", { valor: 5, status: "real" }]]),
-    claimsMap: falha.claimsMap,
-    claimsIndisponivel: falha.indisponivel,
-    claimsMotivo: falha.motivo,
+  /* ── 3. As duas variantes de fuso falham ────────────────────────────── */
+
+  eq("3. duas variantes tentadas em toda a sincronização", cenario400.paths.length, 2);
+  ok("3. primeira variante usa -03:00", rangeDe(cenario400.paths[0]).includes("-03:00"));
+  ok("3. segunda variante usa -0300",
+    rangeDe(cenario400.paths[1]).includes("-0300") && !rangeDe(cenario400.paths[1]).includes("-03:00"));
+  eq("3. falha nas duas mantém claims indisponíveis", falha400.indisponivel, true);
+
+  /* ── 2. Primeira variante falha, segunda funciona ───────────────────── */
+
+  const cenarioFallback = servicoComRespostas((requestPath) => {
+    if (rangeDe(requestPath).includes("-03:00")) {
+      return { ok: false, status: 400, data: { error: "bad_request", message: "bad range" } };
+    }
+    const offset = Number(new URL(`https://api.test${requestPath}`).searchParams.get("offset"));
+    const paginas = [[devolucao], [mediacao]];
+    return { ok: true, status: 200, data: { paging: { total: 2 }, data: paginas[offset] || [] } };
+  });
+  const { resultado: comFallback } = await capturandoLogs(() =>
+    cenarioFallback.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, limit: 1, hoje: HOJE,
+    })
+  );
+  eq("2. claims recuperados na segunda variante", comFallback.indisponivel, false);
+  eq("2. variante vencedora registrada", comFallback.timezoneFormato, "-0300");
+  eq("2. dois pedidos com claims", comFallback.claimsMap.size, 2);
+  eq("2. fallback tentado uma única vez (1 falha + 2 páginas)", cenarioFallback.paths.length, 3);
+  ok("2. páginas seguintes já usam a variante que funcionou",
+    cenarioFallback.paths.slice(1).every((p) => rangeDe(p).includes("-0300")));
+
+  /* ── 4. HTTP 401/403 não vira lista vazia confiável ─────────────────── */
+
+  for (const status of [401, 403]) {
+    const cenario = servicoComRespostas(() => ({ ok: false, status, data: { message: "forbidden" } }));
+    const { resultado } = await capturandoLogs(() =>
+      cenario.service.buscarClaimsPorPeriodo({ clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE })
+    );
+    eq(`4. http_${status} propagado como motivo`, resultado.motivo, `http_${status}`);
+    eq(`4. http_${status} mantém claims indisponíveis`, resultado.indisponivel, true);
+    eq(`4. http_${status} não vira lista vazia`, resultado.claims.length, 0);
+    eq(`4. http_${status} não dispara fallback de fuso`, cenario.paths.length, 1);
+  }
+
+  /* ── 5. Falha depois da 1ª página descarta as páginas parciais ──────── */
+
+  const cenarioParcial = servicoComRespostas((requestPath) => {
+    const offset = Number(new URL(`https://api.test${requestPath}`).searchParams.get("offset"));
+    if (offset === 0) return { ok: true, status: 200, data: { paging: { total: 2 }, data: [devolucao] } };
+    return { ok: false, status: 500, data: { message: "boom" } };
+  });
+  const { resultado: parcial } = await capturandoLogs(() =>
+    cenarioParcial.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, limit: 1, hoje: HOJE,
+    })
+  );
+  eq("5. falha em página posterior marca indisponível", parcial.indisponivel, true);
+  eq("5. página parcial descartada", parcial.claimsMap.size, 0);
+  eq("5. motivo da falha preservado", parcial.motivo, "http_500");
+
+  /* ── 8. Pós-venda posterior ao mês da venda ─────────────────────────── */
+
+  const janela = buildClaimsWindow("2026-07-01", "2026-07-31", { hoje: HOJE });
+  eq("8. janela começa no início do período", janela.from, "2026-07-01");
+  eq("8. janela ampliada limitada por hoje", janela.to, "2026-08-15");
+  eq("8. lookahead é a constante única", janela.lookaheadDays, CLAIMS_LOOKAHEAD_DAYS);
+  const janelaPassado = buildClaimsWindow("2026-01-01", "2026-01-31", { hoje: HOJE });
+  eq("8. período antigo usa o lookahead cheio", janelaPassado.to, "2026-05-01");
+
+  const claimDeAgosto = {
+    id: 601,
+    resource: "order",
+    resource_id: "VENDA_JULHO",
+    date_created: "2026-08-09T10:00:00.000-03:00",
+    status: "closed",
+    type: "returns",
+    related_entities: ["return"],
+    resolution: { reason: "item_returned", benefited: ["complainant"] },
+  };
+  const claimDeOutroPedido = { ...claimDeAgosto, id: 602, resource_id: "VENDA_DE_JUNHO" };
+  const cenarioJanela = servicoComRespostas(() => ({
+    ok: true, status: 200, data: { paging: { total: 2 }, data: [claimDeAgosto, claimDeOutroPedido] },
+  }));
+  const { resultado: loteJanela } = await capturandoLogs(() =>
+    cenarioJanela.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+      orderIds: new Set(["VENDA_JULHO"]),
+    })
+  );
+  ok("8. consulta usa a janela ampliada", rangeDe(cenarioJanela.paths[0]).includes("2026-08-16"));
+  ok("8. claim de agosto vincula à venda de julho", loteJanela.claimsMap.has("VENDA_JULHO"));
+  ok("8. claim de pedido fora do período é descartado", !loteJanela.claimsMap.has("VENDA_DE_JUNHO"));
+  eq("8. descartes contabilizados", loteJanela.claimsForaDoPeriodo, 1);
+
+  const motorJanela = buildMotorFromOrders({
+    orders: [order("VENDA_JULHO")],
+    costMap: COST_MAP,
+    freteMap: freteMapDe([order("VENDA_JULHO")]),
+    claimsMap: loteJanela.claimsMap,
     clienteSlug: "cliente-teste",
     competencia: "2026-07",
   });
-  assert.strictEqual(motorSemClaims.resumo.claimsIndisponivel, true);
-  assert.strictEqual(motorSemClaims.resumo.claimsMotivo, "http_503");
-  assert.strictEqual(motorSemClaims.resumo.confianca, "parcial");
+  eq("8. devolução de agosto sai do resultado de julho",
+    motorJanela.pedidos[0].status, "cancelado");
+
+  /* ── Detalhe de returns: vínculo só com order_id da API ─────────────── */
+
+  // O serviço anota o detalhe resolvido no próprio claim, então cada cenário
+  // recebe uma cópia nova.
+  const claimReturnSemOrder = () => ({
+    id: 700, resource: "shipment", resource_id: "SHIP-XYZ",
+    status: "closed", type: "returns", related_entities: ["return"],
+    resolution: { reason: "item_returned", benefited: ["complainant"] },
+  });
+  const cenarioDetalhe = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) {
+      return { ok: true, status: 200, data: { order_id: "PEDIDO_RESOLVIDO", status: "closed" } };
+    }
+    return { ok: true, status: 200, data: { paging: { total: 1 }, data: [claimReturnSemOrder()] } };
+  });
+  const { resultado: loteDetalhe } = await capturandoLogs(() =>
+    cenarioDetalhe.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+      orderIds: new Set(["PEDIDO_RESOLVIDO"]),
+    })
+  );
+  ok("detalhe v2 consultado só para devolução sem vínculo",
+    cenarioDetalhe.paths.filter((p) => p.includes("/returns")).length === 1);
+  ok("vínculo usa o order_id devolvido pela API", loteDetalhe.claimsMap.has("PEDIDO_RESOLVIDO"));
+  eq("devoluções resolvidas contabilizadas", loteDetalhe.returnsResolvidos, 1);
+
+  const cenarioDetalheFalha = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) return { ok: false, status: 500, data: null };
+    return { ok: true, status: 200, data: { paging: { total: 1 }, data: [claimReturnSemOrder()] } };
+  });
+  const { resultado: loteDetalheFalha } = await capturandoLogs(() =>
+    cenarioDetalheFalha.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+      orderIds: new Set(["PEDIDO_RESOLVIDO"]),
+    })
+  );
+  eq("falha no detalhe não vira 'pedido sem devolução'", loteDetalheFalha.returnsNaoResolvidos, 1);
+  eq("claim sem vínculo não entra no mapa por suposição", loteDetalheFalha.claimsMap.size, 0);
+
+  const motorReturnsIncompleto = buildMotorFromOrders({
+    orders: [order("PEDIDO_RESOLVIDO")],
+    costMap: COST_MAP,
+    freteMap: freteMapDe([order("PEDIDO_RESOLVIDO")]),
+    claimsMap: loteDetalheFalha.claimsMap,
+    claimsIndisponivel: false,
+    claimsReturnsNaoResolvidos: loteDetalheFalha.returnsNaoResolvidos,
+    clienteSlug: "cliente-teste",
+    competencia: "2026-07",
+  });
+  eq("16b. devolução não resolvida rebaixa a confiança",
+    motorReturnsIncompleto.resumo.confianca, "parcial");
+  const payloadReturns = buildPayloadFromRange(
+    { id: 1, slug: "cliente-teste", nome: "Cliente Teste" },
+    PERIODO,
+    snapshotFromMotor(motorReturnsIncompleto)
+  );
+  eq("16b. tela não pode concluir com pós-venda incompleto", payloadReturns.motor.podeConcluir, false);
+  eq("16b. contagem exposta no payload", payloadReturns.resumo.claimsReturnsNaoResolvidos, 1);
+
+  /* ── 9. Devolução parcial não cancela o pedido inteiro ──────────────── */
+
+  const detalheParcial = extrairReturnDetalhe({
+    order_id: "PARCIAL",
+    status: "closed",
+    items: [{ quantity: 3, quantity_returned: 1 }],
+  });
+  eq("9. detalhe identifica devolução parcial", detalheParcial.parcial, true);
+  eq("9. quantidades preservadas",
+    [detalheParcial.quantidadeComprada, detalheParcial.quantidadeDevolvida], [3, 1]);
+  const detalheTotal = extrairReturnDetalhe({ order_id: "TOTAL", items: [{ quantity: 2, quantity_returned: 2 }] });
+  eq("9. devolução total não é marcada como parcial", detalheTotal.parcial, false);
+  const detalheSemQtd = extrairReturnDetalhe({ order_id: "SEM_QTD", status: "closed" });
+  eq("9. sem quantidades na API, nada é inventado", detalheSemQtd.quantidadeDevolvida, null);
+  eq("9. sem quantidades o comportamento total é preservado", detalheSemQtd.parcial, false);
+
+  const claimParcial = {
+    id: 801, resource: "order", resource_id: "PARCIAL",
+    status: "closed", type: "returns", related_entities: ["return"],
+    resolution: { reason: "partial_refunded", benefited: ["complainant"] },
+    returnDetalhe: detalheParcial,
+  };
+  const classificacaoParcial = classificarClaim(claimParcial);
+  eq("9. devolução parcial não zera o pedido", classificacaoParcial.status, null);
+  eq("9. tipo próprio para devolução parcial", classificacaoParcial.tipo, "devolucao_parcial");
+
+  const ordersParcial = [order("PARCIAL", {
+    order_items: [{
+      item: { id: "MLB111", title: "Produto", seller_sku: "SKU-1" },
+      quantity: 3, unit_price: 100, sale_fee: 10,
+    }],
+  })];
+  const motorParcial = buildMotorFromOrders({
+    orders: ordersParcial,
+    costMap: COST_MAP,
+    freteMap: freteMapDe(ordersParcial),
+    claimsMap: buildClaimsMap([claimParcial]),
+    clienteSlug: "cliente-teste",
+    competencia: "2026-07",
+  });
+  const pedidoParcial = motorParcial.pedidos[0];
+  eq("9. status original da Orders API preservado", pedidoParcial.status, "paid");
+  eq("9. pedido parcial continua no resultado", motorParcial.resumo.pedidosValidos, 1);
+  eq("9. receita do pedido não é removida", pedidoParcial.faturamento, 300);
+  eq("9. pedido marcado como parcial", pedidoParcial.posVendaParcial, true);
+  eq("9. quantidade devolvida persistida", pedidoParcial.posVendaQuantidadeDevolvida, 1);
+  eq("9. contador de devoluções parciais", motorParcial.resumo.devolucoesParciais, 1);
+  eq("9. devolução parcial não conta como devolução total", motorParcial.resumo.devolucoes, 0);
+
+  /* ── 10, 11, 12, 13. receiver.cost × senders[].cost ─────────────────── */
+
+  const costsComReceiver = {
+    senders: [{ user_id: 999, cost: 12.5, base_cost: 30, compensation: 4 }],
+    receiver: { cost: 0, base_cost: 21.9, save: 21.9 },
+    gross_amount: 99,
+  };
+  eq("10. receiver.cost = 0 permanece zero real", extrairReceitaComprador(costsComReceiver), 0);
+  eq("11. receiver.cost ausente permanece null",
+    extrairReceitaComprador({ senders: [{ user_id: 999, cost: 12.5 }] }), null);
+  eq("11. receiver.cost null permanece null",
+    extrairReceitaComprador({ receiver: { cost: null, base_cost: 30 } }), null);
+  eq("12. custo seller vem só de senders[].cost", extrairFreteSeller(costsComReceiver, 999), 12.5);
+  eq("12. receiver.cost não vira custo seller",
+    extrairFreteSeller({ receiver: { cost: 40 }, senders: [] }, 999), null);
+
+  const ordersEnvio = [order("COM_ENVIO"), order("ZERO_ENVIO"), order("SEM_ENVIO")];
+  const freteMapEnvio = new Map([
+    ["SHIP-COM_ENVIO", { valor: 5, custoSeller: 5, receitaComprador: 18.9, status: "real" }],
+    ["SHIP-ZERO_ENVIO", { valor: 5, custoSeller: 5, receitaComprador: 0, status: "real" }],
+    ["SHIP-SEM_ENVIO", { valor: 5, custoSeller: 5, receitaComprador: null, status: "real" }],
+  ]);
+  const motorEnvio = buildMotorFromOrders({
+    orders: ordersEnvio,
+    costMap: COST_MAP,
+    freteMap: freteMapEnvio,
+    clienteSlug: "cliente-teste",
+    competencia: "2026-07",
+  });
+  const envioPositivo = componenteDe(motorEnvio, "COM_ENVIO", "receita_envio");
+  eq("13. receita_envio é positiva", envioPositivo.valor, 18.9);
+  eq("13. receita_envio vem da shipments API", envioPositivo.fonte, "shipments_api");
+  eq("13. receita_envio real", envioPositivo.confianca, "real");
+  eq("10. receita_envio zero real persistida como 0",
+    componenteDe(motorEnvio, "ZERO_ENVIO", "receita_envio").valor, 0);
+  eq("10. zero real não é ausência",
+    componenteDe(motorEnvio, "ZERO_ENVIO", "receita_envio").confianca, "real");
+  eq("11. receita_envio ausente fica null",
+    componenteDe(motorEnvio, "SEM_ENVIO", "receita_envio").valor, null);
+  eq("11. receita_envio ausente é marcada ausente",
+    componenteDe(motorEnvio, "SEM_ENVIO", "receita_envio").confianca, "ausente");
+  eq("12. frete_seller continua negativo e do sender",
+    componenteDe(motorEnvio, "COM_ENVIO", "frete_seller").valor, -5);
+  eq("13. receita_envio não entra no resultado do pedido",
+    motorEnvio.pedidos.find((p) => p.pedidoId === "COM_ENVIO").resultado, 40);
+
+  /* ── 14, 15. Reembolso ──────────────────────────────────────────────── */
+
+  eq("14. reembolso somado de payments[]", extrairReembolso({
+    payments: [
+      { status: "refunded", transaction_amount: 100, transaction_amount_refunded: 60 },
+      { status: "approved", transaction_amount: 100, transaction_amount_refunded: 40 },
+    ],
+  }), 100);
+  eq("15. pedido sem payments não tem reembolso", extrairReembolso({}), null);
+  eq("15. reembolso 0 não vira reembolso", extrairReembolso({
+    payments: [{ status: "approved", transaction_amount_refunded: 0 }],
+  }), null);
+  eq("15. campo ausente não vira zero", extrairReembolso({
+    payments: [{ status: "approved", total_paid_amount: 120, shipping_cost: 20 }],
+  }), null);
+
+  const ordersReembolso = [
+    order("REEMBOLSADO", { payments: [{ status: "refunded", transaction_amount_refunded: 100 }] }),
+    order("SEM_REEMBOLSO", { payments: [{ status: "approved", transaction_amount_refunded: 0 }] }),
+  ];
+  const motorReembolso = buildMotorFromOrders({
+    orders: ordersReembolso,
+    costMap: COST_MAP,
+    freteMap: freteMapDe(ordersReembolso),
+    clienteSlug: "cliente-teste",
+    competencia: "2026-07",
+  });
+  const compReembolso = componenteDe(motorReembolso, "REEMBOLSADO", "cancelamento_reembolso");
+  eq("14. cancelamento_reembolso é negativo", compReembolso.valor, -100);
+  eq("14. fonte do reembolso", compReembolso.fonte, "orders_api_payments");
+  eq("14. reembolso é dado real", compReembolso.confianca, "real");
+  eq("15. ausência de reembolso não gera componente",
+    componenteDe(motorReembolso, "SEM_REEMBOLSO", "cancelamento_reembolso"), undefined);
+  // Sem dupla contagem: o resultado do pedido não desconta o reembolso.
+  eq("14. reembolso não é somado ao resultado do pedido",
+    motorReembolso.pedidos.find((p) => p.pedidoId === "REEMBOLSADO").resultado, 40);
+
+  /* ── 16. Guard-rail com claims indisponíveis ────────────────────────── */
+
+  const cenarioFalhaTecnica = servicoComRespostas(() => ({ ok: false, status: 503, data: null }));
+  const { resultado: falha503 } = await capturandoLogs(() =>
+    cenarioFalhaTecnica.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+    })
+  );
+  eq("16. retries esgotados em 5xx", cenarioFalhaTecnica.paths.length, 3);
+  eq("16. motivo técnico propagado", falha503.motivo, "http_503");
+  eq("16. mapa descartado", falha503.claimsMap.size, 0);
+
+  const motorSemClaims = buildMotorFromOrders({
+    orders: [order("NAO_VERIFICADO")],
+    costMap: COST_MAP,
+    freteMap: freteMapDe([order("NAO_VERIFICADO")]),
+    claimsMap: falha503.claimsMap,
+    claimsIndisponivel: falha503.indisponivel,
+    claimsMotivo: falha503.motivo,
+    clienteSlug: "cliente-teste",
+    competencia: "2026-07",
+  });
+  eq("16. motor marca claims indisponíveis", motorSemClaims.resumo.claimsIndisponivel, true);
+  eq("16. motivo chega ao resumo", motorSemClaims.resumo.claimsMotivo, "http_503");
+  eq("16. confiança rebaixada", motorSemClaims.resumo.confianca, "parcial");
 
   const payloadSemClaims = buildPayloadFromRange(
     { id: 1, slug: "cliente-teste", nome: "Cliente Teste" },
-    { dateFrom: "2026-07-01", dateTo: "2026-07-31" },
+    PERIODO,
     snapshotFromMotor(motorSemClaims)
   );
-  assert.strictEqual(payloadSemClaims.resumo.claimsIndisponivel, true);
-  assert.strictEqual(payloadSemClaims.resumo.claimsMotivo, "http_503");
-  assert.ok(String(payloadSemClaims.resumo.claimsMotivo).trim().length > 0);
-  assert.strictEqual(payloadSemClaims.motor.confianca, "parcial");
-  assert.strictEqual(payloadSemClaims.motor.podeConcluir, false);
+  eq("16. tela recebe o motivo técnico", payloadSemClaims.resumo.claimsMotivo, "http_503");
+  eq("16. confiança parcial na tela", payloadSemClaims.motor.confianca, "parcial");
+  eq("16. fechamento não pode concluir", payloadSemClaims.motor.podeConcluir, false);
 
+  /* ── 17. A composição exibida fecha matematicamente ─────────────────── */
+
+  const tela = carregarTelaFechamento();
+
+  // Cenário misto: pedido completo, pedido sem frete real, pedido bloqueado por
+  // custo ausente (receita existe, resultado não é calculável) e uma devolução.
+  const ordersComposicao = [
+    order("OK"),
+    order("SEM_FRETE"),
+    order("BLOQUEADO", {
+      order_items: [{
+        item: { id: "MLB999", title: "Sem custo", seller_sku: "SKU-9" },
+        quantity: 1, unit_price: 591.1, sale_fee: 59,
+      }],
+    }),
+    order("DEVOLVIDO"),
+  ];
+  const freteMapComposicao = new Map([
+    ["SHIP-OK", { valor: 7.5, custoSeller: 7.5, receitaComprador: 19.9, status: "real" }],
+    ["SHIP-SEM_FRETE", { valor: null, custoSeller: null, receitaComprador: null, status: "ausente" }],
+    ["SHIP-BLOQUEADO", { valor: 9, custoSeller: 9, receitaComprador: null, status: "real" }],
+    ["SHIP-DEVOLVIDO", { valor: 3, custoSeller: 3, receitaComprador: null, status: "real" }],
+  ]);
+  const motorComposicao = buildMotorFromOrders({
+    orders: ordersComposicao,
+    costMap: COST_MAP,
+    freteMap: freteMapComposicao,
+    claimsMap: buildClaimsMap([devolucao]),
+    claimsIndisponivel: false,
+    clienteSlug: "cliente-teste",
+    competencia: "2026-07",
+  });
+  const payloadComposicao = buildPayloadFromRange(
+    { id: 1, slug: "cliente-teste", nome: "Cliente Teste" },
+    PERIODO,
+    snapshotFromMotor(motorComposicao)
+  );
+
+  const comps = tela.buildFechamentoComponentes(payloadComposicao, "todos");
+  const resumoTela = tela.buildFechamentoResumo(payloadComposicao, "todos");
+  const linhaBloqueada = comps.find((c) => c.comp === "Receita bloqueada fora do cálculo");
+  const linhaTotal = comps.find((c) => c.op === "=");
+
+  ok("17. existe linha explícita de receita bloqueada", !!linhaBloqueada);
+  eq("17. receita bloqueada aparece com o valor real", linhaBloqueada.valor, -591.1);
+  eq("17. receita bloqueada bate com o KPI", Math.abs(linhaBloqueada.valor), resumoTela.receitaBloqueada);
+  eq("17. faturamento dos cards não é reduzido", comps[0].valor, resumoTela.faturamento);
+  eq("17. linha final é o Resultado Parcial exibido", linhaTotal.valor, resumoTela.resultadoParcial);
+  eq("17. a composição fecha (resíduo zero)", tela.fechamentoComposicaoResiduo(comps), 0);
+
+  // A soma manual das linhas também tem de bater com o Resultado Parcial.
+  const somaLinhas = comps.filter((c) => c.op !== "=").reduce((s, c) => s + (Number(c.valor) || 0), 0);
+  eq("17. soma das linhas = resultado parcial",
+    Math.round(somaLinhas * 100) / 100, resumoTela.resultadoParcial);
+
+  // Mesmo recorte com um filtro rápido: continua fechando.
+  const compsValidos = tela.buildFechamentoComponentes(payloadComposicao, "validos");
+  eq("17. composição fecha também no recorte de válidos",
+    tela.fechamentoComposicaoResiduo(compsValidos), 0);
+
+  console.log(`\n${checks} verificacoes passaram. Pos-venda, receita de envio, reembolso e composicao OK.`);
   console.log("centralVendasClaimsPosVenda.test.js passed");
 }
 

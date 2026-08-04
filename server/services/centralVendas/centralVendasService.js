@@ -80,6 +80,21 @@ function toIsoDate(value) {
 
 const STATUS_FORA_DO_RESULTADO = new Set(["cancelado", "com_problema"]);
 
+// Tipos de componente persistidos pelo motor API-first. Os cinco primeiros
+// formam o Resultado Parcial; `receita_envio` (receiver.cost) e
+// `cancelamento_reembolso` (payments[].transaction_amount_refunded) entram nos
+// TOTAIS para conciliacao, mas NUNCA na formula do resultado — somar o reembolso
+// a um pedido cuja receita ja foi excluida seria dupla contagem.
+const TIPOS_COMPONENTE = [
+  "receita_produto",
+  "tarifa_venda",
+  "frete_seller",
+  "custo_produto",
+  "imposto_interno",
+  "receita_envio",
+  "cancelamento_reembolso",
+];
+
 function normalizePedidoStatus(status) {
   const text = String(status || "").toLowerCase();
   if (/cancel|devolu|reembolso/.test(text)) return "cancelado";
@@ -190,12 +205,16 @@ function buildPedidoContrato(pedido, itens, componentes) {
   const full = pedidoPayload.full ?? (logistica ? logistica === "full" : null);
   const posVendaTipo = pedidoPayload.posVendaTipo ?? null;
   const posVendaMotivo = pedidoPayload.posVendaMotivo ?? null;
+  const posVendaParcial = pedidoPayload.posVendaParcial === true;
   const claimId = pedidoPayload.claimId ?? null;
   const claimIds = Array.isArray(pedidoPayload.claimIds) ? pedidoPayload.claimIds.map(String) : [];
   const frete = sumComponents(pedidoComponentes, "frete_seller");
   const taxas = sumComponents(pedidoComponentes, "tarifa_venda");
   const custo = sumComponents(pedidoComponentes, "custo_produto");
   const imposto = sumComponents(pedidoComponentes, "imposto_interno");
+  // Conciliacao: nao entram no resultado do pedido, apenas sao expostos.
+  const receitaEnvio = sumComponents(pedidoComponentes, "receita_envio");
+  const reembolso = sumComponents(pedidoComponentes, "cancelamento_reembolso");
 
   const status = normalizePedidoStatus(rowValue(pedido, "status", "status"));
 
@@ -208,6 +227,9 @@ function buildPedidoContrato(pedido, itens, componentes) {
     entraNoResultado: !STATUS_FORA_DO_RESULTADO.has(status),
     posVendaTipo,
     posVendaMotivo,
+    posVendaParcial,
+    posVendaQuantidadeComprada: pedidoPayload.posVendaQuantidadeComprada ?? null,
+    posVendaQuantidadeDevolvida: pedidoPayload.posVendaQuantidadeDevolvida ?? null,
     claimId,
     claimIds,
     mlb: firstItem ? rowValue(firstItem, "mlb", "mlb") || null : null,
@@ -228,6 +250,12 @@ function buildPedidoContrato(pedido, itens, componentes) {
     custo: custo === null ? null : Math.abs(custo),
     custoStatus: custo === null ? "ausente" : "real",
     imposto: imposto === null ? null : Math.abs(imposto),
+    // receita_envio (receiver.cost) e cancelamento_reembolso ficam fora do
+    // resultado — sao dados de conciliacao, nao componentes do calculo.
+    receitaEnvio: receitaEnvio === null ? null : Math.abs(receitaEnvio),
+    receitaEnvioStatus: receitaEnvio === null ? "ausente" : "real",
+    reembolso: reembolso === null ? null : Math.abs(reembolso),
+    reembolsoStatus: reembolso === null ? "ausente" : "real",
     resultado: numberOrNull(rowValue(pedido, "resultado", "resultado")),
     resultadoStatus: confidenceToResultadoStatus(confianca),
     confianca,
@@ -308,8 +336,12 @@ function buildPayloadFromSnapshot(cliente, competencia, snapshot) {
     claimsVerificados: !claimsState.claimsIndisponivel,
     claimsEncontrados: pedidos.filter((pedido) => (pedido.claimIds || []).length > 0).length,
     devolucoes: pedidos.filter((pedido) => pedido.posVendaTipo === "devolucao").length,
+    devolucoesParciais: pedidos.filter((pedido) => pedido.posVendaTipo === "devolucao_parcial").length,
     mediacoes: pedidos.filter((pedido) => pedido.posVendaTipo === "mediacao").length,
-    confianca: claimsState.claimsIndisponivel ? "parcial" : resumoBase.confianca,
+    confianca:
+      claimsState.claimsIndisponivel || claimsState.claimsReturnsNaoResolvidos > 0
+        ? "parcial"
+        : resumoBase.confianca,
   };
   const temBloqueado = pedidos.some((pedido) => pedido.confianca === "bloqueado");
   const geradoEm = snapshot.importacao.created_at || snapshot.importacao.createdAt || null;
@@ -362,10 +394,20 @@ function buildClaimsState(snapshot) {
     // pós-venda não verificado.
     .filter((resumo) => resumo.claimsIndisponivel !== false);
 
+  const resumos = apiImports.map((importacao) => jsonValue(importacao.resumo_json, {}));
+  const returnsNaoResolvidos = resumos.reduce(
+    (sum, resumo) => sum + (Number(resumo.claimsReturnsNaoResolvidos) || 0),
+    0
+  );
+
   return {
     claimsIndisponivel: indisponiveis.length > 0,
     claimsMotivo: indisponiveis.find((resumo) => resumo.claimsMotivo)?.claimsMotivo
       || (indisponiveis.length ? "nao_verificado" : null),
+    // Devoluções cujo pedido não pôde ser resolvido: o pós-venda foi consultado,
+    // mas ficou incompleto. Não é o mesmo que "indisponível", e também não pode
+    // ser lido como "sem devolução".
+    claimsReturnsNaoResolvidos: returnsNaoResolvidos,
   };
 }
 
@@ -390,7 +432,7 @@ function buildResumoFromRange(resumoBase, pedidos) {
   );
 
   const totaisPorTipo = {};
-  for (const tipo of ["receita_produto", "tarifa_venda", "frete_seller", "custo_produto", "imposto_interno"]) {
+  for (const tipo of TIPOS_COMPONENTE) {
     totaisPorTipo[tipo] = round2(
       validos.flatMap((pedido) => pedido.componentes || [])
         .filter((component) => component.tipo === tipo && component.valor !== null)
@@ -405,7 +447,9 @@ function buildResumoFromRange(resumoBase, pedidos) {
     pedidosForaResultado: pedidos.length - validos.length,
     claimsEncontrados: pedidos.filter((pedido) => (pedido.claimIds || []).length > 0).length,
     devolucoes: pedidos.filter((pedido) => pedido.posVendaTipo === "devolucao").length,
+    devolucoesParciais: pedidos.filter((pedido) => pedido.posVendaTipo === "devolucao_parcial").length,
     mediacoes: pedidos.filter((pedido) => pedido.posVendaTipo === "mediacao").length,
+    pedidosComReembolso: pedidos.filter((pedido) => pedido.reembolso !== null).length,
     pedidosConfiaveis: validos.filter((pedido) => pedido.confianca === "confiavel").length,
     pedidosParciais: validos.filter((pedido) => pedido.confianca === "parcial").length,
     pedidosBloqueados: validos.filter((pedido) => pedido.confianca === "bloqueado").length,
@@ -470,13 +514,18 @@ function buildPayloadFromRange(cliente, range, snapshot) {
     ...buildResumoFromRange(jsonValue(snapshot.importacao?.resumo_json, {}), pedidos),
     ...claimsState,
     claimsVerificados: !claimsState.claimsIndisponivel,
-    confianca: claimsState.claimsIndisponivel
+    confianca: claimsState.claimsIndisponivel || claimsState.claimsReturnsNaoResolvidos > 0
       ? "parcial"
       : (temBloqueado ? "parcial" : pedidosValidos.length ? "confiavel" : "ausente"),
   };
   const motivosBloqueio = [];
   if (temBloqueado) motivosBloqueio.push("Ha pedidos bloqueados por custo/produto ausente.");
   if (claimsState.claimsIndisponivel) motivosBloqueio.push("A verificacao de pos-venda (claims) nao foi concluida.");
+  if (claimsState.claimsReturnsNaoResolvidos > 0) {
+    motivosBloqueio.push(
+      `${claimsState.claimsReturnsNaoResolvidos} devolucao(oes) sem pedido resolvido no detalhe de returns.`
+    );
+  }
 
   return {
     ok: true,
@@ -488,7 +537,7 @@ function buildPayloadFromRange(cliente, range, snapshot) {
       etapaAtual: "importacao_persistida",
       progresso: 100,
       confianca: resumo.confianca,
-      podeConcluir: !temBloqueado && !claimsState.claimsIndisponivel,
+      podeConcluir: !temBloqueado && !claimsState.claimsIndisponivel && claimsState.claimsReturnsNaoResolvidos === 0,
       motivoBloqueio: motivosBloqueio.length ? motivosBloqueio.join(" ") : null,
       geradoEm: geradoEm instanceof Date ? geradoEm.toISOString() : geradoEm,
       origemPrincipal: snapshot.importacao?.fonte || "orders_api",
@@ -558,6 +607,7 @@ module.exports = {
   buildPayloadFromRange,
   buildPedidos,
   STATUS_FORA_DO_RESULTADO,
+  TIPOS_COMPONENTE,
   normalizePedidoStatus,
   pedidoEntraNoResultado,
   periodoFromCompetencia,

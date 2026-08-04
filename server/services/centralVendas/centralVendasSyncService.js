@@ -22,7 +22,11 @@ const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
 const { toNumber, round2 } = require("../../utils/numberUtils");
 const { normalizeId } = require("../../utils/textUtils");
-const { periodoFromCompetencia, pedidoEntraNoResultado } = require("./centralVendasService");
+const {
+  periodoFromCompetencia,
+  pedidoEntraNoResultado,
+  TIPOS_COMPONENTE,
+} = require("./centralVendasService");
 const { buildResumoCentralVendas } = require("./centralVendasImportService");
 const { buscarFretesEmLote } = require("./centralVendasFreteService");
 const {
@@ -182,6 +186,26 @@ function getCost(costMap, mlb) {
 // Mesmo contrato que processMeliForCentralVendas, para o GET ler igual.
 // ---------------------------------------------------------------------------
 
+// Reembolso efetivado do pedido — Orders API, `order.payments[]`.
+// Usa somente `transaction_amount_refunded`, que é o valor já devolvido ao
+// comprador. Nada é derivado de total_paid_amount, shipping_cost ou
+// marketplace_fee. null = ausente (nenhum pagamento informou reembolso);
+// reembolso 0 não gera componente — ausência nunca vira "zero real" falso.
+function extrairReembolso(order) {
+  const payments = Array.isArray(order?.payments) ? order.payments : [];
+  let total = null;
+
+  for (const payment of payments) {
+    const bruto = payment?.transaction_amount_refunded;
+    if (bruto === null || bruto === undefined) continue;
+    const valor = Number(bruto);
+    if (!Number.isFinite(valor) || valor <= 0) continue;
+    total = round2((total || 0) + valor);
+  }
+
+  return total;
+}
+
 function buildComponent({ pedidoId, itemId, tipo, valor, fonte, confianca, obs }) {
   return {
     pedidoId,
@@ -221,6 +245,7 @@ function buildMotorFromOrders({
   claimsMap = new Map(),
   claimsIndisponivel = false,
   claimsMotivo = null,
+  claimsReturnsNaoResolvidos = 0,
   clienteSlug,
   competencia,
 }) {
@@ -248,6 +273,12 @@ function buildMotorFromOrders({
       statusOriginal: order.status || null,
       posVendaTipo: posVenda?.tipo || null,
       posVendaMotivo: posVenda?.motivo || null,
+      // Devolução PARCIAL não cancela o pedido: `posVenda.status` vem null, o
+      // status original da Orders API é preservado e o pedido continua no
+      // resultado. As quantidades ficam persistidas para auditoria.
+      posVendaParcial: posVenda?.parcial === true,
+      posVendaQuantidadeComprada: posVenda?.quantidadeComprada ?? null,
+      posVendaQuantidadeDevolvida: posVenda?.quantidadeDevolvida ?? null,
       claimId: posVenda?.claimId || null,
       claimIds: claimsPedido.map((claim) => claim?.id).filter((id) => id != null).map(String),
       logisticType,
@@ -255,6 +286,8 @@ function buildMotorFromOrders({
       full: logistica ? logistica === "full" : null,
       quantidadeItens: 0,
       faturamento: 0,
+      receitaEnvio: null,
+      reembolso: null,
       lucroContribuicao: 0,
       resultado: 0,
       margemContribuicaoPercentual: null,
@@ -403,6 +436,49 @@ function buildMotorFromOrders({
       else if (confianca === "parcial" && pedido.confianca !== "bloqueado") pedido.confianca = "parcial";
     });
 
+    // ── Componentes de PEDIDO (sem item, não entram no rateio) ─────────────
+    // Receita de envio paga pelo COMPRADOR (`receiver.cost` da mesma resposta de
+    // GET /shipments/:id/costs). Valor positivo, fonte shipments_api. Não é
+    // contrapartida nem fallback de `frete_seller` e NÃO entra na fórmula do
+    // Resultado Parcial — fica persistida e exposta no payload para conciliação.
+    if (pedido.shipmentId) {
+      const receitaEnvio = freteEntry ? freteEntry.receitaComprador ?? null : null;
+      const temReceitaEnvio = receitaEnvio !== null;
+      if (temReceitaEnvio) pedido.receitaEnvio = round2(Math.abs(receitaEnvio));
+      componentes.push(
+        buildComponent({
+          pedidoId,
+          itemId: null,
+          tipo: "receita_envio",
+          valor: temReceitaEnvio ? Math.abs(receitaEnvio) : null,
+          fonte: temReceitaEnvio ? "shipments_api" : "ausente",
+          confianca: temReceitaEnvio ? "real" : "ausente",
+          obs: temReceitaEnvio ? null : "receiver.cost ausente na resposta de /shipments/:id/costs.",
+        })
+      );
+    }
+
+    // Reembolso efetivado (Orders API, payments[].transaction_amount_refunded).
+    // Só existe quando há valor real: ausência não gera componente zero falso.
+    // O valor NÃO é somado ao Resultado Parcial — quando o pedido sai do
+    // resultado, a receita já foi excluída; descontar o reembolso de novo seria
+    // dupla contagem. Fica persistido para a visão de conciliação financeira.
+    const reembolso = extrairReembolso(order);
+    if (reembolso !== null) {
+      pedido.reembolso = round2(reembolso);
+      componentes.push(
+        buildComponent({
+          pedidoId,
+          itemId: null,
+          tipo: "cancelamento_reembolso",
+          valor: -Math.abs(reembolso),
+          fonte: "orders_api_payments",
+          confianca: "real",
+          obs: "Reembolso efetivado ao comprador. Fora do Resultado Parcial (a receita do pedido ja e excluida) — usar apenas na conciliacao financeira.",
+        })
+      );
+    }
+
     // finishPedido: ausencia nunca vira 0 — sem resultado confiavel ⇒ null.
     if (pedido.confianca === "bloqueado" || !pedido._temResultado) {
       pedido.lucroContribuicao = null;
@@ -442,7 +518,7 @@ function buildMotorFromOrders({
     : null;
 
   const totaisPorTipo = {};
-  for (const tipo of ["receita_produto", "tarifa_venda", "frete_seller", "custo_produto", "imposto_interno"]) {
+  for (const tipo of TIPOS_COMPONENTE) {
     totaisPorTipo[tipo] = round2(
       componentes
         .filter((c) => pedidoIdsResultado.has(c.pedidoId) && c.tipo === tipo && c.valor !== null)
@@ -478,8 +554,13 @@ function buildMotorFromOrders({
       claimsMotivo: claimsIndisponivel ? claimsMotivo || "consulta_indisponivel" : null,
       claimsEncontrados: pedidos.filter((p) => p.claimIds.length > 0).length,
       devolucoes: pedidos.filter((p) => p.posVendaTipo === "devolucao").length,
+      devolucoesParciais: pedidos.filter((p) => p.posVendaTipo === "devolucao_parcial").length,
       mediacoes: pedidos.filter((p) => p.posVendaTipo === "mediacao").length,
-      confianca: claimsIndisponivel ? "parcial" : undefined,
+      // Devolução cujo pedido não pôde ser resolvido pelo detalhe v2: continua
+      // não verificada, jamais "sem devolução".
+      claimsReturnsNaoResolvidos: Number(claimsReturnsNaoResolvidos) || 0,
+      pedidosComReembolso: pedidos.filter((p) => p.reembolso !== null).length,
+      confianca: claimsIndisponivel || Number(claimsReturnsNaoResolvidos) > 0 ? "parcial" : undefined,
     },
   };
 }
@@ -537,10 +618,16 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // Frete e pós-venda são independentes e rodam em paralelo. Claims são
     // buscados por período + seller, nunca uma vez por pedido. A documentação
     // atual exige players.user_id/role para buscas globais por intervalo.
+    //
+    // `orderIds` é o conjunto de pedidos DO PERÍODO. A janela de claims é maior
+    // (CLAIMS_LOOKAHEAD_DAYS) para alcançar o pós-venda aberto depois do mês da
+    // venda, e esse conjunto garante que só claims desses pedidos entrem no
+    // fechamento — claim de pedido externo é descartado.
     const shipmentIds = orders.map((o) => o.shipping?.id).filter((v) => v != null);
+    const orderIds = new Set(orders.map((o) => String(o.id)));
     const [freteLote, claimsLote] = await Promise.all([
       buscarFretesEmLote({ clienteId: cliente.id, sellerId, shipmentIds }),
-      buscarClaimsPorPeriodo({ clienteId: cliente.id, sellerId, dateFrom: from, dateTo: to }),
+      buscarClaimsPorPeriodo({ clienteId: cliente.id, sellerId, dateFrom: from, dateTo: to, orderIds }),
     ]);
     const freteMap = freteLote.freteMap;
     const claimsMap = claimsLote.claimsMap;
@@ -558,10 +645,13 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       .filter((entry) => entry.posVenda);
     const devolucoesClassificadas = posVendaClassificados
       .filter((entry) => entry.posVenda.tipo === "devolucao").length;
+    const parciaisClassificadas = posVendaClassificados
+      .filter((entry) => entry.posVenda.tipo === "devolucao_parcial").length;
     const mediacoesClassificadas = posVendaClassificados
       .filter((entry) => entry.posVenda.tipo === "mediacao").length;
     console.log(
       `[centralVendas] claims classificados: devolucoes=${devolucoesClassificadas}`
+        + ` devolucoesParciais=${parciaisClassificadas}`
         + ` mediacoes=${mediacoesClassificadas} pedidos=${posVendaClassificados.length}`
     );
 
@@ -595,6 +685,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         claimsMap,
         claimsIndisponivel: claimsLote.indisponivel,
         claimsMotivo: claimsLote.motivo,
+        claimsReturnsNaoResolvidos: claimsLote.returnsNaoResolvidos || 0,
         clienteSlug: slug,
         competencia: comp,
       });
@@ -603,7 +694,12 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       const resumoCalculado = buildResumoCentralVendas(motorResult);
       const resumo = {
         ...resumoCalculado,
-        confianca: claimsLote.indisponivel ? "parcial" : resumoCalculado.confianca,
+        // Devolução sem pedido resolvido também rebaixa a confiança: o pós-venda
+        // ficou incompleto, e incompleto nunca é "confiável".
+        confianca:
+          claimsLote.indisponivel || (claimsLote.returnsNaoResolvidos || 0) > 0
+            ? "parcial"
+            : resumoCalculado.confianca,
       };
       const motorPayload = { ...motorResult, resumo };
       const persisted = await repository.persistCentralVendasImport({
@@ -631,8 +727,12 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         ` baseVinculada=${base ? base.id : "nenhuma"} custosNaBase=${custos.length}` +
         ` shipments=${freteLote.buscados}/${freteLote.total} comFrete=${freteLote.comFrete}` +
         ` semFrete=${freteLote.ausentes} erros=${freteLote.erros} lotes=${freteLote.lotes}`
+        + ` comReceitaEnvio=${freteLote.comReceitaEnvio}`
         + ` claims=${claimsLote.claims.length} pedidosComClaims=${claimsMap.size}`
         + ` claimsPaginas=${claimsLote.pages} claimsIndisponivel=${claimsLote.indisponivel ? 1 : 0}`
+        + ` claimsJanela=${claimsLote.janela ? `${claimsLote.janela.from}..${claimsLote.janela.to}` : "n/d"}`
+        + ` claimsForaDoPeriodo=${claimsLote.claimsForaDoPeriodo || 0}`
+        + ` returnsNaoResolvidos=${claimsLote.returnsNaoResolvidos || 0}`
     );
 
     return {
@@ -660,6 +760,13 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         tentativas: claimsLote.attempts,
         indisponivel: claimsLote.indisponivel,
         motivo: claimsLote.motivo,
+        status: claimsLote.status ?? null,
+        janela: claimsLote.janela || null,
+        timezoneFormato: claimsLote.timezoneFormato || null,
+        resourceCounts: claimsLote.resourceCounts || {},
+        claimsForaDoPeriodo: claimsLote.claimsForaDoPeriodo || 0,
+        returnsResolvidos: claimsLote.returnsResolvidos || 0,
+        returnsNaoResolvidos: claimsLote.returnsNaoResolvidos || 0,
       },
       pedidosPersistidos,
       itensPersistidos,
@@ -674,6 +781,7 @@ module.exports = {
   sincronizarVendasMeli: (params) => createCentralVendasSyncService().sincronizarVendasMeli(params),
   createCentralVendasSyncService,
   buildMotorFromOrders,
+  extrairReembolso,
   buildCostMap,
   getCost,
   buscarBaseECustos,

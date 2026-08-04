@@ -16,9 +16,16 @@ function normalizarTexto(valor) {
     .trim();
 }
 
+function ehTikTok(texto) {
+  return texto.includes("tiktok") || /(^|\s)tik tok(\s|$)/.test(texto);
+}
+
+// "TikTok", "TikTok Shop", "Tik Tok" e "tiktok" → "tiktok".
+// TikTok é checado ANTES de Shopee porque "tiktok shop" contém "shop".
 function normalizarMarketplace(valor) {
   const texto = normalizarTexto(valor);
   if (!texto) return "";
+  if (ehTikTok(texto)) return "tiktok";
   if (texto.includes("shopee") || texto.includes(" shop ") || texto.includes(" shp ")) return "shopee";
   if (
     texto.includes("meli") ||
@@ -27,7 +34,7 @@ function normalizarMarketplace(valor) {
     texto.includes("mlb") ||
     /(^|\s)ml(\s|$)/.test(texto)
   ) return "meli";
-  if (["meli", "shopee", "outro"].includes(texto)) return texto;
+  if (["meli", "shopee", "tiktok", "outro"].includes(texto)) return texto;
   return "outro";
 }
 
@@ -35,6 +42,7 @@ function tokensRelevantes(valor) {
   const ignorar = new Set([
     "base", "bases", "custo", "custos", "cliente", "clientes",
     "mercado", "livre", "meli", "ml", "mlb", "shopee", "shop", "shp", "sp",
+    "tiktok", "tik", "tok",
   ]);
   return normalizarTexto(valor)
     .split(" ")
@@ -44,6 +52,7 @@ function tokensRelevantes(valor) {
 function detectarMarketplaceBase(base) {
   const texto = normalizarTexto(`${base?.nome || ""} ${base?.slug || ""}`);
   if (!texto) return "outro";
+  if (ehTikTok(texto)) return "tiktok";
   if (texto.includes("shopee")) return "shopee";
   if (
     texto.includes("meli") ||
@@ -275,6 +284,9 @@ async function desativarVinculoBase(baseId) {
 }
 
 module.exports = {
+  normalizarMarketplace,
+  detectarMarketplaceBase,
+  sugerirVinculo,
   listarBasesComVinculos,
   listarClientesDisponiveis,
   criarVinculoManual,

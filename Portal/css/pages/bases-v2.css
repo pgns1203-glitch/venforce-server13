@@ -63,12 +63,12 @@
 }
 
 /* ------------------------------------------------------------
- * 2. Grade lado a lado: Mercado Livre + Shopee
+ * 2. Grade lado a lado: Mercado Livre + Shopee + TikTok Shop
  * ------------------------------------------------------------ */
 .vf-page-bases .vf-bases-market-grid {
   display: grid;
-  /* Mercado Livre recebe o dobro do espaço da coluna Shopee */
-  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  /* Mercado Livre recebe mais espaço; Shopee e TikTok dividem o restante */
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr) minmax(280px, 1fr);
   gap: var(--vf-sp-5);
   align-items: start;
 }
@@ -97,6 +97,18 @@
 
 .vf-page-bases .vf-bases-mp__dot--shopee {
   background: var(--vf-danger);
+}
+
+/* TikTok Shop: identidade discreta, dentro da paleta da Fundação V2 */
+.vf-page-bases .vf-bases-mp__dot--tiktok {
+  background: var(--vf-info, var(--vf-primary));
+}
+
+/* Cobertura da base (SKUs / com custo / sem custo) sob o nome da base */
+.vf-page-bases .vf-bases-cobertura {
+  font-size: var(--vf-fs-xs);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
 }
 
 .vf-page-bases .vf-bases-mp__count {
@@ -487,7 +499,14 @@
  * 8. Responsivo específico da página
  * (os componentes globais já respondem sozinhos)
  * ------------------------------------------------------------ */
-@media (max-width: 1120px) {
+/* Telas médias: duas colunas (a terceira seção desce para a linha de baixo) */
+@media (max-width: 1360px) {
+  .vf-page-bases .vf-bases-market-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
   .vf-page-bases .vf-bases-market-grid {
     grid-template-columns: 1fr;
   }

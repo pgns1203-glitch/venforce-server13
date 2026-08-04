@@ -97,6 +97,26 @@ function repairWorksheetRef(sheet) {
   return sheet;
 }
 
+// CSV vem como bytes crus: sem codepage, o xlsx assume a página padrão e
+// "Custo unitário" chega como "Custo unitÃ¡rio", quebrando a detecção por
+// cabeçalho. Só forçamos UTF-8 quando o buffer realmente decodifica como UTF-8
+// (ASCII puro também passa e fica idêntico ao comportamento anterior).
+function bufferEhUtf8(buffer) {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function lerWorkbookPlanilha(fileBuffer, originalName) {
+  const ext = String(originalName || "").toLowerCase().slice(-4);
+  const opcoes = { type: "buffer" };
+  if (ext === ".csv" && bufferEhUtf8(fileBuffer)) opcoes.codepage = 65001;
+  return XLSX.read(fileBuffer, opcoes);
+}
+
 function readSheetRows(fileBuffer) {
   const workbook = XLSX.read(fileBuffer, { type: "buffer" });
   const firstSheetName = workbook.SheetNames[0];
@@ -260,6 +280,7 @@ function createBadRequestError(message) {
 
 module.exports = {
   repairWorksheetRef,
+  lerWorkbookPlanilha,
   readSheetRows,
   parseSpreadsheet,
   MELI_HEADER_FIELDS,

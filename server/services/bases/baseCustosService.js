@@ -2,6 +2,14 @@
 // Regras e operações de custos por base (editor rápido).
 
 const pool = require("../../config/database");
+const {
+  MARKETPLACES_SUPORTADOS,
+  isMarketplaceSuportado,
+} = require("./marketplacesBases");
+
+// Mensagem única para IDs TikTok que o Excel já destruiu (notação científica).
+const ERRO_ID_TIKTOK_CIENTIFICO =
+  "ID do SKU TikTok em notação científica. Formate a coluna como texto antes de importar.";
 
 function normalizarSlug(valor) {
   return String(valor || "")
@@ -55,6 +63,42 @@ function normalizarProdutoIdShopee(valor) {
   return limpo;  // sem prefixo MLB
 }
 
+// TikTok Shop: o produto_id é o "ID do SKU" (18–19 dígitos) e precisa chegar
+// ao PostgreSQL exatamente como veio. Nada de Number/parseInt/Math.trunc aqui:
+// qualquer conversão numérica perderia dígitos silenciosamente.
+function normalizarProdutoIdTikTok(valor) {
+  if (valor === null || valor === undefined) return "";
+
+  // Um número já chegou convertido pela camada anterior (Excel/JSON). Só é
+  // seguro se ainda for inteiro exato; caso contrário os dígitos já se foram.
+  if (typeof valor === "number") {
+    if (!Number.isFinite(valor) || !Number.isSafeInteger(valor)) {
+      throw criarHttpErro(400, {
+        ok: false,
+        erro: "ID do SKU TikTok chegou como número e perdeu precisão. Envie o ID como texto.",
+      });
+    }
+    return String(valor);
+  }
+
+  let limpo = String(valor).replace(/^﻿/, "").trim();
+  if (!limpo) return "";
+
+  limpo = limpo.replace(/^['"]+|['"]+$/g, "").trim();
+  if (!limpo) return "";
+
+  // "1735907463738524810.0" → "1735907463738524810" (só dígitos seguidos de .0…)
+  if (/^\d+\.0+$/.test(limpo)) limpo = limpo.replace(/\.0+$/, "");
+
+  // Notação científica é rejeitada: o Excel já perdeu os dígitos finais e
+  // reconstruir o ID a partir do float produziria um ID errado.
+  if (/^\d+(?:[.,]\d+)?[eE][+-]?\d+$/.test(limpo)) {
+    throw criarHttpErro(400, { ok: false, erro: ERRO_ID_TIKTOK_CIENTIFICO });
+  }
+
+  return limpo;
+}
+
 function criarHttpErro(statusCode, payload) {
   const err = new Error(payload?.erro || "Erro");
   err.statusCode = statusCode;
@@ -75,10 +119,20 @@ async function obterBaseAtivaPorSlug(baseSlugRaw) {
   if (!r.rows.length) {
     throw criarHttpErro(404, { ok: false, erro: "Base não encontrada." });
   }
+  // Marketplace desconhecido no banco NÃO vira MELI silenciosamente: seria
+  // aplicar a normalização de ID errada (prefixo MLB) em base de outro canal.
+  const marketplace = String(r.rows[0].marketplace || "").trim().toLowerCase();
+  if (!isMarketplaceSuportado(marketplace)) {
+    throw criarHttpErro(422, {
+      ok: false,
+      erro: `Base "${r.rows[0].slug}" tem marketplace inválido ("${r.rows[0].marketplace || "vazio"}"). Suportados: ${MARKETPLACES_SUPORTADOS.join(", ")}.`,
+    });
+  }
+
   return {
     id: r.rows[0].id,
     slug: r.rows[0].slug,
-    marketplace: ["meli", "shopee"].includes(r.rows[0].marketplace) ? r.rows[0].marketplace : "meli",
+    marketplace,
   };
 }
 
@@ -124,9 +178,35 @@ function validarNumeroOpcional(valor, nomeCampo) {
   return { tem: true, numero: n };
 }
 
-async function upsertCustoBase({ baseId, produtoIdNorm, custoProduto, impostoPercentualOpt, taxaFixaOpt, idModel }) {
+// Texto vazio/ausente não sobrescreve o nome já gravado — só nome preenchido atualiza.
+function textoOpcional(valor) {
+  const texto = String(valor == null ? "" : valor).trim();
+  return texto ? texto : null;
+}
+
+const COLUNAS_CUSTO_RETORNO =
+  "base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, updated_at";
+
+async function upsertCustoBase({
+  baseId,
+  produtoIdNorm,
+  custoProduto,
+  impostoPercentualOpt,
+  taxaFixaOpt,
+  idModel,
+  produtoNome,
+  variacaoNome,
+  marketplace,
+}) {
+  // TikTok não usa taxa fixa nem id_model (variação vem por nome, não por id).
+  const isTikTok = String(marketplace || "").trim().toLowerCase() === "tiktok";
+  const taxaOpt = isTikTok ? { tem: true, numero: 0 } : taxaFixaOpt;
+  const idModelEntrada = isTikTok ? null : idModel;
+  const produtoNomeFinal = textoOpcional(produtoNome);
+  const variacaoNomeFinal = textoOpcional(variacaoNome);
+
   const existente = await pool.query(
-    `SELECT base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model
+    `SELECT ${COLUNAS_CUSTO_RETORNO}
        FROM custos
       WHERE base_id = $1 AND produto_id = $2
       LIMIT 1`,
@@ -136,18 +216,23 @@ async function upsertCustoBase({ baseId, produtoIdNorm, custoProduto, impostoPer
   if (existente.rows.length) {
     const atual = existente.rows[0];
     const impostoFinal = impostoPercentualOpt.tem ? impostoPercentualOpt.numero : Number(atual.imposto_percentual);
-    const taxaFinal = taxaFixaOpt.tem ? taxaFixaOpt.numero : Number(atual.taxa_fixa);
-    const idModelFinal = idModel !== undefined ? (idModel || null) : (atual.id_model || null);
+    const taxaFinal = taxaOpt.tem ? taxaOpt.numero : Number(atual.taxa_fixa);
+    const idModelFinal = isTikTok
+      ? null
+      : (idModelEntrada !== undefined ? (idModelEntrada || null) : (atual.id_model || null));
 
     const upd = await pool.query(
       `UPDATE custos
           SET custo_produto = $3,
               imposto_percentual = $4,
               taxa_fixa = $5,
-              id_model = $6
+              id_model = $6,
+              produto_nome = COALESCE($7, produto_nome),
+              variacao_nome = COALESCE($8, variacao_nome),
+              updated_at = CURRENT_TIMESTAMP
         WHERE base_id = $1 AND produto_id = $2
-        RETURNING base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model`,
-      [baseId, produtoIdNorm, custoProduto, impostoFinal, taxaFinal, idModelFinal]
+        RETURNING ${COLUNAS_CUSTO_RETORNO}`,
+      [baseId, produtoIdNorm, custoProduto, impostoFinal, taxaFinal, idModelFinal, produtoNomeFinal, variacaoNomeFinal]
     );
 
     await tocarUpdatedAtBase(baseId);
@@ -157,18 +242,26 @@ async function upsertCustoBase({ baseId, produtoIdNorm, custoProduto, impostoPer
 
   const padrao = await obterPadraoCustoBase(baseId);
   const impostoFinal = impostoPercentualOpt.tem ? impostoPercentualOpt.numero : padrao.imposto_percentual;
-  const taxaFinal = taxaFixaOpt.tem ? taxaFixaOpt.numero : padrao.taxa_fixa;
+  const taxaFinal = taxaOpt.tem ? taxaOpt.numero : (isTikTok ? 0 : padrao.taxa_fixa);
 
   const ins = await pool.query(
-    `INSERT INTO custos (base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model`,
-    [baseId, produtoIdNorm, custoProduto, impostoFinal, taxaFinal, idModel || null]
+    `INSERT INTO custos (base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+     RETURNING ${COLUNAS_CUSTO_RETORNO}`,
+    [baseId, produtoIdNorm, custoProduto, impostoFinal, taxaFinal, idModelEntrada || null, produtoNomeFinal, variacaoNomeFinal]
   );
 
   await tocarUpdatedAtBase(baseId);
 
   return { acao: "criado", custo: ins.rows[0] };
+}
+
+// Colunas novas de `custos` (nomes do TikTok + carimbo por linha). Idempotente:
+// roda no boot e na rota /setup sem quebrar bases já existentes.
+async function ensureColunasCustos() {
+  await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS produto_nome TEXT`);
+  await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS variacao_nome TEXT`);
+  await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
 }
 
 // Marca a base como atualizada agora sempre que um custo é criado/alterado.
@@ -254,8 +347,12 @@ async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace }) {
 }
 
 module.exports = {
+  MARKETPLACES_SUPORTADOS,
+  ERRO_ID_TIKTOK_CIENTIFICO,
   normalizarProdutoIdBase,
   normalizarProdutoIdShopee,
+  normalizarProdutoIdTikTok,
+  ensureColunasCustos,
   obterBaseAtivaPorSlug,
   obterPadraoCustoBase,
   upsertCustoBase,

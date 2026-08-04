@@ -35,12 +35,18 @@ function getImportMarketplace() {
   return el ? el.value : "";
 }
 
+// Mercado Livre e TikTok Shop nascem sempre vinculados a um cliente.
+function marketplaceExigeCliente(mp) {
+  return mp === "meli" || mp === "tiktok";
+}
+
 function atualizarBotaoImportarDisabled() {
   const btn = document.getElementById("btn-importar");
   if (!btn) return;
   const mp = getImportMarketplace();
   let ok = !!mp;
-  if (mp === "meli") {
+  // Cliente é obrigatório para Mercado Livre e TikTok Shop.
+  if (marketplaceExigeCliente(mp)) {
     const cli = document.getElementById("import-cliente");
     ok = ok && !!(cli && cli.value);
   }
@@ -63,11 +69,12 @@ const stateError    = document.getElementById("state-error");
 const basesCount    = document.getElementById("bases-count");
 const basesTbodyMeli   = document.getElementById("bases-tbody-meli");
 const basesTbodyShopee = document.getElementById("bases-tbody-shopee");
+const basesTbodyTiktok = document.getElementById("bases-tbody-tiktok");
 
 // ─── Estado (filtros frontend) ───
 let TODAS_BASES = [];
 let BASES_BUSCA = "";
-let BASES_FILTRO_MP = "";      // "", "meli", "shopee"
+let BASES_FILTRO_MP = "";      // "", "meli", "shopee", "tiktok"
 let BASES_FILTRO_ATUAL = "";   // "", "atualizada", "desatualizada"
 let BASES_SORT = "attention";  // "attention", "oldest", "newest", "az"
 const BASES_ALERTAS_IGNORADOS = new Set(); // slugs com alerta de desatualização ignorado (visual/local, não persiste)
@@ -94,11 +101,16 @@ function setDashboardFeedback(msg, type = "neutral") {
   el.textContent = msg;
 }
 
+const MARKETPLACES_SUPORTADOS = ["meli", "shopee", "tiktok"];
+
+// "tiktok" / "tik tok" / "TikTok Shop" → "tiktok". A checagem de TikTok vem
+// antes da de Shopee porque "tiktok shop" contém "shop". Nada que não seja
+// reconhecido vira "meli": valor desconhecido é "outro".
 function normalizarMarketplaceKey(valor) {
   const raw = String(valor || "").toLowerCase().trim();
+  if (raw.includes("tiktok") || raw.includes("tik tok")) return "tiktok";
   if (raw.includes("shopee")) return "shopee";
   if (raw.includes("meli") || raw.includes("mercado")) return "meli";
-  if (raw === "outro") return "outro";
   return "outro";
 }
 
@@ -106,6 +118,7 @@ function marketplaceLabel(key) {
   const k = normalizarMarketplaceKey(key);
   if (k === "meli") return "Mercado Livre";
   if (k === "shopee") return "Shopee";
+  if (k === "tiktok") return "TikTok Shop";
   return "Outro";
 }
 
@@ -144,10 +157,23 @@ function getClienteTexto(base) {
   ].filter(Boolean).join(" ");
 }
 
-// Marketplace intrínseco da base (definido na importação). Default 'meli'.
+// Marketplace intrínseco da base (definido na importação). Bases antigas sem
+// marketplace continuam como 'meli' (o banco tem DEFAULT 'meli'); valor
+// preenchido e desconhecido NÃO é convertido em meli — vira "outro".
 function getBaseMarketplaceKey(base) {
   const raw = String(base?.marketplace || "").toLowerCase().trim();
-  return raw === "shopee" ? "shopee" : "meli";
+  if (!raw) return "meli";
+  const key = normalizarMarketplaceKey(raw);
+  return MARKETPLACES_SUPORTADOS.includes(key) ? key : "outro";
+}
+
+// Cobertura da base (vem de GET /bases): total de SKUs e quantos têm custo.
+function getCoberturaBase(base) {
+  const total = Number(base?.total_skus);
+  const comCusto = Number(base?.skus_com_custo);
+  if (!Number.isFinite(total)) return null;
+  const com = Number.isFinite(comCusto) ? comCusto : 0;
+  return { total, comCusto: com, semCusto: Math.max(0, total - com) };
 }
 
 // ─── Desatualização (COALESCE(updated_at, created_at) < hoje − 30d) ───
@@ -228,6 +254,7 @@ function renderBasesSummary() {
   const total = bases.length;
   const meli = bases.filter((b) => getBaseMarketplaceKey(b) === "meli").length;
   const shopee = bases.filter((b) => getBaseMarketplaceKey(b) === "shopee").length;
+  const tiktok = bases.filter((b) => getBaseMarketplaceKey(b) === "tiktok").length;
   const desatualizadas = bases.filter((b) => isBaseDesatualizada(b)).length;
   const atualizadas = total - desatualizadas;
 
@@ -235,6 +262,7 @@ function renderBasesSummary() {
     { label: "Total de bases", value: String(total) },
     { label: "Mercado Livre", value: String(meli), filtro: { tipo: "mp", valor: "meli" } },
     { label: "Shopee", value: String(shopee), filtro: { tipo: "mp", valor: "shopee" } },
+    { label: "TikTok Shop", value: String(tiktok), filtro: { tipo: "mp", valor: "tiktok" } },
     { label: "Atualizadas", value: String(atualizadas), filtro: { tipo: "at", valor: "atualizada" } },
     { label: "Desatualizadas +30d", value: String(desatualizadas), warning: true, filtro: { tipo: "at", valor: "desatualizada" } },
   ];
@@ -574,6 +602,37 @@ function buildMeliRow(base) {
   return tr;
 }
 
+// ─── Linha: TikTok Shop (Cliente → Base oficial + cobertura) ───
+function buildTiktokRow(base) {
+  const tr = document.createElement("tr");
+  const v = base?.vinculo;
+  const clienteCell = v
+    ? `<div class="vf-bases-cliente"><strong>${escapeHTML(v.cliente_nome || v.cliente_slug || "—")}</strong></div>`
+    : `<div class="vf-bases-muted">Sem cliente vinculado</div>`;
+
+  // Cobertura: total de SKUs / com custo / sem custo (custo explícito 0 conta
+  // como preenchido; "sem custo" é custo ausente).
+  const cob = getCoberturaBase(base);
+  const coberturaCell = cob
+    ? `<div class="vf-bases-muted vf-bases-cobertura">${cob.total} SKU${cob.total !== 1 ? "s" : ""} · ${cob.comCusto} com custo${cob.semCusto ? ` · ${cob.semCusto} sem custo` : ""}</div>`
+    : "";
+
+  tr.innerHTML = `
+    <td>${clienteCell}</td>
+    <td>
+      <div class="vf-bases-basename"><span class="name-text">${escapeHTML(base.nome || "—")}</span></div>
+      ${coberturaCell}
+    </td>
+    <td>${renderStatusTag(base)}</td>
+    <td>
+      <div class="vf-bases-row-actions">
+        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="tiktok" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
+        ${renderMenuBase(base)}
+      </div>
+    </td>`;
+  return tr;
+}
+
 // ─── Linha: Shopee (Base + Loja/apelido) ───
 function buildShopeeRow(base) {
   const tr = document.createElement("tr");
@@ -647,6 +706,7 @@ function bindBaseRowActions(tbody) {
 function renderBases(bases) {
   basesTbodyMeli.innerHTML   = "";
   basesTbodyShopee.innerHTML = "";
+  if (basesTbodyTiktok) basesTbodyTiktok.innerHTML = "";
 
   // Sem nenhuma base cadastrada (primeiro uso) → estado vazio dedicado
   if (!(Array.isArray(TODAS_BASES) && TODAS_BASES.length)) {
@@ -657,9 +717,11 @@ function renderBases(bases) {
 
   const meli   = bases.filter((b) => getBaseMarketplaceKey(b) === "meli");
   const shopee = bases.filter((b) => getBaseMarketplaceKey(b) === "shopee");
+  const tiktok = bases.filter((b) => getBaseMarketplaceKey(b) === "tiktok");
 
   meli.forEach((base)   => basesTbodyMeli.appendChild(buildMeliRow(base)));
   shopee.forEach((base) => basesTbodyShopee.appendChild(buildShopeeRow(base)));
+  if (basesTbodyTiktok) tiktok.forEach((base) => basesTbodyTiktok.appendChild(buildTiktokRow(base)));
 
   document.getElementById("count-meli").textContent    = String(meli.length);
   document.getElementById("count-shopee").textContent  = String(shopee.length);
@@ -668,10 +730,18 @@ function renderBases(bases) {
   document.getElementById("empty-meli").style.display   = meli.length   ? "none" : "block";
   document.getElementById("empty-shopee").style.display = shopee.length ? "none" : "block";
 
+  const countTiktok = document.getElementById("count-tiktok");
+  const wrapTiktok  = document.getElementById("wrap-tiktok");
+  const emptyTiktok = document.getElementById("empty-tiktok");
+  if (countTiktok) countTiktok.textContent = String(tiktok.length);
+  if (wrapTiktok)  wrapTiktok.style.display  = tiktok.length ? "" : "none";
+  if (emptyTiktok) emptyTiktok.style.display = tiktok.length ? "none" : "block";
+
   basesCount.textContent = String(bases.length);
 
   bindBaseRowActions(basesTbodyMeli);
   bindBaseRowActions(basesTbodyShopee);
+  if (basesTbodyTiktok) bindBaseRowActions(basesTbodyTiktok);
 
   atualizarRodape(bases.length, TODAS_BASES.length);
   showSections();
@@ -783,7 +853,8 @@ async function abrirModalVinculo(baseId) {
   await carregarClientesParaVinculos(false);
 
   const clienteSugerido = base.vinculo?.cliente_id || base.sugestao?.cliente_id || "";
-  const marketplaceSugerido = base.vinculo?.marketplace || base.sugestao?.marketplace || "outro";
+  // Sem vínculo/sugestão, cai no marketplace da própria base (importação).
+  const marketplaceSugerido = base.vinculo?.marketplace || base.sugestao?.marketplace || getBaseMarketplaceKey(base);
   renderClientesOptions(clienteSugerido);
   if (marketplace) marketplace.value = normalizarMarketplaceKey(marketplaceSugerido);
 
@@ -910,15 +981,24 @@ function onImportMarketplaceChange() {
   const field = document.getElementById("import-cliente-field");
   const req = document.getElementById("import-cliente-req");
   const hint = document.getElementById("import-cliente-hint");
+  const label = document.getElementById("import-cliente-label");
   const desc = document.getElementById("bases-import-desc");
   if (mp === "meli") {
     if (field) field.style.display = "";
     if (req) req.style.display = "";
-    if (hint) hint.textContent = "Obrigatório para Mercado Livre — a base nasce vinculada a este cliente.";
+    if (label) label.textContent = "Cliente / Grant ML";
+    if (hint) hint.textContent = "Obrigatório para Mercado Livre e TikTok Shop.";
     if (desc) desc.textContent = "A base de Mercado Livre nasce associada ao cliente/grant escolhido.";
+  } else if (mp === "tiktok") {
+    if (field) field.style.display = "";
+    if (req) req.style.display = "";
+    if (label) label.textContent = "Cliente";
+    if (hint) hint.textContent = "Obrigatório para Mercado Livre e TikTok Shop.";
+    if (desc) desc.textContent = "Base TikTok Shop: use a planilha com ID do SKU, custo unitário e imposto.";
   } else if (mp === "shopee") {
     if (field) field.style.display = "";
     if (req) req.style.display = "none";
+    if (label) label.textContent = "Loja / cliente";
     if (hint) hint.textContent = "Opcional para Shopee — pode ser criada sem cliente por enquanto.";
     if (desc) desc.textContent = "Base Shopee: informe a loja/cliente se já houver (opcional).";
   } else {
@@ -1027,9 +1107,21 @@ function openPreview(payload) {
   document.getElementById("preview-meta").textContent =
     `${payload.total} linhas · ${payload.idsDetectados} IDs válidos`;
 
-  const isShopee = String(payload.marketplace || "").toLowerCase() === "shopee";
+  const mpPreview = normalizarMarketplaceKey(payload.marketplace);
+  const isShopee = mpPreview === "shopee";
+  const isTiktok = mpPreview === "tiktok";
+
   const thIdModel = document.getElementById("preview-th-idmodel");
   if (thIdModel) thIdModel.style.display = isShopee ? "" : "none";
+  // TikTok: nome do produto e da variação no lugar de ID Model / taxa fixa.
+  const thId = document.getElementById("preview-th-id");
+  if (thId) thId.textContent = isTiktok ? "ID do SKU" : "ID do Produto";
+  const thProduto = document.getElementById("preview-th-produto");
+  if (thProduto) thProduto.style.display = isTiktok ? "" : "none";
+  const thVariacao = document.getElementById("preview-th-variacao");
+  if (thVariacao) thVariacao.style.display = isTiktok ? "" : "none";
+  const thTaxa = document.getElementById("preview-th-taxa");
+  if (thTaxa) thTaxa.style.display = isTiktok ? "none" : "";
 
   const tbody = document.getElementById("preview-tbody");
   tbody.innerHTML = "";
@@ -1038,12 +1130,17 @@ function openPreview(payload) {
     const idModelCell = isShopee
       ? `<td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.id_model ?? "—"))}</td>`
       : "";
+    const nomesCells = isTiktok
+      ? `<td>${escapeHTML(String(r.produto_nome ?? "—"))}</td><td>${escapeHTML(String(r.variacao_nome ?? "—"))}</td>`
+      : "";
+    const taxaCell = isTiktok ? "" : `<td style="text-align:right;">${r.taxa_fixa ?? 0}</td>`;
     tr.innerHTML = `
       <td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.id ?? ""))}</td>
       ${idModelCell}
+      ${nomesCells}
       <td style="text-align:right;">${r.custo_produto ?? 0}</td>
       <td style="text-align:right;">${r.imposto_percentual ?? 0}</td>
-      <td style="text-align:right;">${r.taxa_fixa ?? 0}</td>`;
+      ${taxaCell}`;
     tbody.appendChild(tr);
   });
 
@@ -1130,9 +1227,12 @@ document.getElementById("btn-importar").addEventListener("click", async () => {
 
   setImportStatus("", "");
   if (!marketplace) { setImportStatus("Selecione o marketplace.", "var(--vf-danger)"); return; }
-  if (marketplace === "meli") {
+  if (marketplaceExigeCliente(marketplace)) {
     const cli = document.getElementById("import-cliente");
-    if (!cli || !cli.value) { setImportStatus("Selecione o cliente / grant ML (obrigatório para Mercado Livre).", "var(--vf-danger)"); return; }
+    if (!cli || !cli.value) {
+      setImportStatus(`Selecione o cliente (obrigatório para ${marketplaceLabel(marketplace)}).`, "var(--vf-danger)");
+      return;
+    }
   }
   if (!nome)    { setImportStatus("Informe o nome da base.", "var(--vf-danger)"); return; }
   if (!arquivo) { setImportStatus("Selecione um arquivo .xlsx ou .csv.", "var(--vf-danger)"); return; }
@@ -1174,7 +1274,9 @@ document.getElementById("btn-importar").addEventListener("click", async () => {
 let DRAWER_ITENS = [];
 // Filtros nativos no cabeçalho da tabela de custos (client-side, sem API).
 let DRAWER_FILTROS = { produto: "", custo: "todos", imposto: "todos", taxa: "todos" };
-let DRAWER_IS_SHOPEE = false;
+// Chave única do marketplace da base aberta ("meli" | "shopee" | "tiktok").
+// Substitui as flags booleanas por marketplace.
+let DRAWER_MARKETPLACE = "meli";
 let DRAWER_BTN_ORIGEM = null;
 let DRAWER_SLUG = "";
 let DRAWER_BASE_ATUAL = null;       // objeto da base aberta no drawer
@@ -1205,9 +1307,12 @@ function setDrawerHint(msg, tipo) {
     : tipo === "danger" ? "var(--vf-danger)" : "";
 }
 
+function drawerEhShopee() { return DRAWER_MARKETPLACE === "shopee"; }
+function drawerEhTiktok() { return DRAWER_MARKETPLACE === "tiktok"; }
+
 function abrirDrawerCustos(slug, mp, btnOrigem) {
   DRAWER_SLUG = slug || "";
-  DRAWER_IS_SHOPEE = mp === "shopee";
+  DRAWER_MARKETPLACE = normalizarMarketplaceKey(mp);
   DRAWER_BTN_ORIGEM = btnOrigem || null;
   DRAWER_ITENS = [];
   resetarFiltrosDrawer();
@@ -1218,8 +1323,10 @@ function abrirDrawerCustos(slug, mp, btnOrigem) {
   DRAWER_BASE_ATUAL = base || null;
   document.getElementById("bases-drawer-title").textContent = base?.nome || slug || "Base";
   const meta = document.getElementById("bases-drawer-meta");
-  const mpLabel = DRAWER_IS_SHOPEE ? "Shopee" : "Mercado Livre";
-  const donoLabel = DRAWER_IS_SHOPEE ? "Loja / apelido" : "Cliente / Grant ML";
+  const mpLabel = marketplaceLabel(DRAWER_MARKETPLACE);
+  const donoLabel = drawerEhShopee() ? "Loja / apelido"
+    : drawerEhTiktok() ? "Cliente"
+    : "Cliente / Grant ML";
   const dono = base?.vinculo ? (base.vinculo.cliente_nome || base.vinculo.cliente_slug || "—") : "—";
   if (meta) meta.innerHTML = `
     <span>Marketplace: <b>${escapeHTML(mpLabel)}</b></span>
@@ -1262,6 +1369,9 @@ async function carregarCustosDrawer(slug) {
       custo: v.custo_produto ?? v.custo ?? null,
       imposto: v.imposto_percentual ?? v.imposto ?? null,
       taxa: v.taxa_fixa ?? v.taxa ?? null,
+      produto_nome: v.produto_nome ?? null,
+      variacao_nome: v.variacao_nome ?? null,
+      updated_at: v.updated_at ?? null,
     }));
     renderDrawerItens();
   } catch (err) {
@@ -1292,7 +1402,7 @@ function drawerFiltrarItens() {
     if (!passaFiltroNumerico(DRAWER_FILTROS.imposto, it.imposto)) return false;
     if (!passaFiltroNumerico(DRAWER_FILTROS.taxa, it.taxa)) return false;
     if (termo) {
-      const hay = `${it.id ?? ""} ${it.id_model ?? ""}`.toLowerCase();
+      const hay = `${it.id ?? ""} ${it.id_model ?? ""} ${it.produto_nome ?? ""} ${it.variacao_nome ?? ""}`.toLowerCase();
       if (!hay.includes(termo)) return false;
     }
     return true;
@@ -1339,21 +1449,46 @@ function renderDrawerItens() {
   const filtrados = drawerFiltrarItens();
   const totalFiltrado = filtrados.length;
   const exibidos = filtrados.slice(0, DRAWER_LIMITE);
+  const isShopee = drawerEhShopee();
+  const isTiktok = drawerEhTiktok();
 
+  // TikTok: sem ID Model e sem taxa fixa; com nome do produto, nome da
+  // variação e data da última atualização do item.
   const thIdModel = document.getElementById("bases-costs-th-idmodel");
-  if (thIdModel) thIdModel.style.display = DRAWER_IS_SHOPEE ? "" : "none";
+  if (thIdModel) thIdModel.style.display = isShopee ? "" : "none";
+  const thProdutoLabel = document.getElementById("bases-costs-th-produto-label");
+  if (thProdutoLabel) thProdutoLabel.textContent = isTiktok ? "ID do SKU" : "Produto";
+  const thProdutoNome = document.getElementById("bases-costs-th-produto-nome");
+  if (thProdutoNome) thProdutoNome.style.display = isTiktok ? "" : "none";
+  const thVariacao = document.getElementById("bases-costs-th-variacao");
+  if (thVariacao) thVariacao.style.display = isTiktok ? "" : "none";
+  const thTaxa = document.getElementById("bases-costs-th-taxa");
+  if (thTaxa) thTaxa.style.display = isTiktok ? "none" : "";
+  const thAtualizacao = document.getElementById("bases-costs-th-atualizacao");
+  if (thAtualizacao) thAtualizacao.style.display = isTiktok ? "" : "none";
 
   const rows = exibidos.map((it, idx) => {
     const custoZero = Number(it.custo) === 0;
     const impostoZero = Number(it.imposto) === 0;
     const taxaZero = Number(it.taxa) === 0;
-    const idModelTd = DRAWER_IS_SHOPEE ? `<td class="vf-mono">${escapeHTML(String(it.id_model ?? "—"))}</td>` : "";
+    const idModelTd = isShopee ? `<td class="vf-mono">${escapeHTML(String(it.id_model ?? "—"))}</td>` : "";
+    const nomesTd = isTiktok
+      ? `<td>${escapeHTML(String(it.produto_nome ?? "—"))}</td><td>${escapeHTML(String(it.variacao_nome ?? "—"))}</td>`
+      : "";
+    const taxaTd = isTiktok
+      ? ""
+      : `<td class="num vf-mono ${taxaZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.taxa))}</td>`;
+    const atualizacaoTd = isTiktok
+      ? `<td class="vf-bases-muted">${escapeHTML(it.updated_at ? formatDateTime(it.updated_at) : "—")}</td>`
+      : "";
     return `<tr class="b-cost-row" data-cost-idx="${idx}" tabindex="0">
       <td class="vf-mono">${escapeHTML(String(it.id ?? "—"))}</td>
       ${idModelTd}
+      ${nomesTd}
       <td class="num vf-mono ${custoZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.custo))}</td>
       <td class="num vf-mono ${impostoZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtPercentDrawer(it.imposto))}</td>
-      <td class="num vf-mono ${taxaZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.taxa))}</td>
+      ${taxaTd}
+      ${atualizacaoTd}
       <td class="vf-bases-cost-actions">
         <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-cost-edit" data-cost-idx="${idx}" title="Editar item" aria-label="Editar item">${B_EDIT_SM_SVG}</button>
       </td>
@@ -1362,7 +1497,7 @@ function renderDrawerItens() {
 
   // Cabeçalho com filtros continua visível mesmo sem resultados, para o
   // usuário conseguir trocar/limpar o filtro que zerou a lista.
-  const colspan = (DRAWER_IS_SHOPEE ? 6 : 5);
+  const colspan = isTiktok ? 7 : (isShopee ? 6 : 5);
   const rowsOuVazio = totalFiltrado
     ? rows
     : `<tr class="vf-table__empty"><td colspan="${colspan}">Nenhum item para os filtros atuais.</td></tr>`;
@@ -1473,11 +1608,14 @@ function abrirFormularioItem(item = null) {
 
   DRAWER_ITEM_EDITANDO = item || null;
   const editando = !!item;
-  const isShopee = DRAWER_IS_SHOPEE;
+  const isShopee = drawerEhShopee();
+  const isTiktok = drawerEhTiktok();
   const titulo = editando ? "Editar item da base" : "Adicionar item à base";
   const btnLabel = editando ? "Salvar alterações" : "Adicionar item";
   const microcopy = editando
-    ? "As alterações sobrescrevem custo, imposto e taxa deste item."
+    ? (isTiktok
+      ? "O ID do SKU não muda na edição — alterar o ID cria outro item. As alterações sobrescrevem custo e imposto."
+      : "As alterações sobrescrevem custo, imposto e taxa deste item.")
     : "Se o produto já existir na base, os valores serão atualizados.";
 
   const produtoVal = editando ? escapeHTML(String(item.id ?? "")) : "";
@@ -1493,6 +1631,28 @@ function abrirFormularioItem(item = null) {
       <input type="text" class="vf-input" id="cost-form-id-model" value="${idModelVal}" placeholder="Opcional — usado principalmente para Shopee" autocomplete="off">
     </div>` : "";
 
+  // TikTok: nome do produto e nome da variação; sem taxa fixa e sem ID Model.
+  const produtoNomeVal = editando ? escapeHTML(String(item.produto_nome ?? "")) : "";
+  const variacaoNomeVal = editando ? escapeHTML(String(item.variacao_nome ?? "")) : "";
+  const nomesFields = isTiktok ? `
+    <div class="vf-field vf-field--full">
+      <label class="vf-field__label" for="cost-form-produto-nome">Nome do produto</label>
+      <input type="text" class="vf-input" id="cost-form-produto-nome" value="${produtoNomeVal}" placeholder="Opcional — como aparece no TikTok Shop" autocomplete="off">
+    </div>
+    <div class="vf-field vf-field--full">
+      <label class="vf-field__label" for="cost-form-variacao-nome">Nome da variação</label>
+      <input type="text" class="vf-input" id="cost-form-variacao-nome" value="${variacaoNomeVal}" placeholder="Ex.: Preto, G" autocomplete="off">
+    </div>` : "";
+
+  const taxaField = isTiktok ? "" : `
+        <div class="vf-field">
+          <label class="vf-field__label" for="cost-form-taxa">Taxa fixa</label>
+          <input type="number" class="vf-input" id="cost-form-taxa" step="0.01" min="0" value="${taxaVal}" placeholder="0.00">
+        </div>`;
+
+  const labelProduto = isTiktok ? "ID do SKU" : "Produto / MLB / SKU";
+  const placeholderProduto = isTiktok ? "Ex.: 1735907463738524810" : "Ex.: MLB123456789 ou SKU";
+
   panel.innerHTML = `
     <div class="vf-bases-cost-form">
       <div class="vf-bases-cost-form-head">
@@ -1501,22 +1661,20 @@ function abrirFormularioItem(item = null) {
       </div>
       <div class="vf-form-grid vf-bases-cost-grid">
         <div class="vf-field vf-field--full">
-          <label class="vf-field__label" for="cost-form-produto">Produto / MLB / SKU <span class="vf-field__required">*</span></label>
-          <input type="text" class="vf-input" id="cost-form-produto" value="${produtoVal}" placeholder="Ex.: MLB123456789 ou SKU" autocomplete="off"${editando ? " readonly" : ""}>
+          <label class="vf-field__label" for="cost-form-produto">${escapeHTML(labelProduto)} <span class="vf-field__required">*</span></label>
+          <input type="text" class="vf-input" id="cost-form-produto" value="${produtoVal}" placeholder="${escapeHTML(placeholderProduto)}" autocomplete="off"${editando ? " readonly" : ""}>
         </div>
         ${idModelField}
+        ${nomesFields}
         <div class="vf-field">
-          <label class="vf-field__label" for="cost-form-custo">Custo <span class="vf-field__required">*</span></label>
+          <label class="vf-field__label" for="cost-form-custo">${isTiktok ? "Custo unitário" : "Custo"} <span class="vf-field__required">*</span></label>
           <input type="number" class="vf-input" id="cost-form-custo" step="0.01" min="0" value="${custoVal}" placeholder="0.00">
         </div>
         <div class="vf-field">
           <label class="vf-field__label" for="cost-form-imposto">Imposto %</label>
           <input type="number" class="vf-input" id="cost-form-imposto" step="0.01" min="0" value="${impostoVal}" placeholder="0">
         </div>
-        <div class="vf-field">
-          <label class="vf-field__label" for="cost-form-taxa">Taxa fixa</label>
-          <input type="number" class="vf-input" id="cost-form-taxa" step="0.01" min="0" value="${taxaVal}" placeholder="0.00">
-        </div>
+        ${taxaField}
       </div>
       <p class="vf-field__hint vf-bases-microcopy">${escapeHTML(microcopy)}</p>
       <div class="vf-alert vf-bases-cost-feedback" id="cost-form-feedback" style="display:none;" aria-live="polite"></div>
@@ -1530,7 +1688,7 @@ function abrirFormularioItem(item = null) {
   document.getElementById("cost-form-close")?.addEventListener("click", fecharPainelCusto);
   document.getElementById("cost-form-cancel")?.addEventListener("click", fecharPainelCusto);
   document.getElementById("cost-form-save")?.addEventListener("click", salvarItemManual);
-  ["cost-form-produto", "cost-form-id-model", "cost-form-custo", "cost-form-imposto", "cost-form-taxa"].forEach((id) => {
+  ["cost-form-produto", "cost-form-id-model", "cost-form-produto-nome", "cost-form-variacao-nome", "cost-form-custo", "cost-form-imposto", "cost-form-taxa"].forEach((id) => {
     document.getElementById(id)?.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); salvarItemManual(); }
     });
@@ -1549,13 +1707,25 @@ async function salvarItemManual() {
 
   const produtoEl = document.getElementById("cost-form-produto");
   const idModelEl = document.getElementById("cost-form-id-model");
+  const produtoNomeEl = document.getElementById("cost-form-produto-nome");
+  const variacaoNomeEl = document.getElementById("cost-form-variacao-nome");
   const custoEl = document.getElementById("cost-form-custo");
   const impostoEl = document.getElementById("cost-form-imposto");
   const taxaEl = document.getElementById("cost-form-taxa");
   const saveBtn = document.getElementById("cost-form-save");
+  const isTiktok = drawerEhTiktok();
 
   const produto = String(produtoEl?.value || "").trim();
-  if (!produto) { setCostFeedback("Informe o produto / MLB / SKU.", "danger"); produtoEl?.focus(); return; }
+  if (!produto) {
+    setCostFeedback(isTiktok ? "Informe o ID do SKU." : "Informe o produto / MLB / SKU.", "danger");
+    produtoEl?.focus();
+    return;
+  }
+  if (isTiktok && /e[+-]?\d/i.test(produto)) {
+    setCostFeedback("ID do SKU TikTok em notação científica. Formate a coluna como texto antes de importar.", "danger");
+    produtoEl?.focus();
+    return;
+  }
 
   const custo = parseNumeroUpdate(custoEl?.value);
   if (!custo.tem) { setCostFeedback("Informe o custo (pode ser 0).", "danger"); custoEl?.focus(); return; }
@@ -1569,10 +1739,17 @@ async function salvarItemManual() {
 
   const payload = { produto_id: produto, custo_produto: custo.valor };
   if (imposto.tem) payload.imposto_percentual = imposto.valor;
-  if (taxa.tem) payload.taxa_fixa = taxa.valor;
-  if (DRAWER_IS_SHOPEE) {
+  // TikTok não tem taxa fixa — o campo nem existe no formulário.
+  if (!isTiktok && taxa.tem) payload.taxa_fixa = taxa.valor;
+  if (drawerEhShopee()) {
     const idModel = String(idModelEl?.value || "").trim();
     if (idModel) payload.id_model = idModel;
+  }
+  if (isTiktok) {
+    const produtoNome = String(produtoNomeEl?.value || "").trim();
+    const variacaoNome = String(variacaoNomeEl?.value || "").trim();
+    if (produtoNome) payload.produto_nome = produtoNome;
+    if (variacaoNome) payload.variacao_nome = variacaoNome;
   }
 
   const editando = !!DRAWER_ITEM_EDITANDO;
@@ -1601,6 +1778,8 @@ async function salvarItemManual() {
       // Mantém o formulário aberto p/ adicionar outro item; limpa os campos.
       if (produtoEl) produtoEl.value = "";
       if (idModelEl) idModelEl.value = "";
+      if (produtoNomeEl) produtoNomeEl.value = "";
+      if (variacaoNomeEl) variacaoNomeEl.value = "";
       if (custoEl) custoEl.value = "";
       if (impostoEl) impostoEl.value = "";
       if (taxaEl) taxaEl.value = "";
@@ -1688,6 +1867,8 @@ function dedupEClassificarPlanilha(rows) {
       id_model: r.id_model ?? null,
       custo: r.custo,
       imposto: r.imposto,
+      produto_nome: r.produto_nome ?? null,
+      variacao_nome: r.variacao_nome ?? null,
       acao: existe ? "atualizar" : "adicionar",
     });
   }
@@ -1719,7 +1900,9 @@ async function previewPlanilhaDrawer() {
   if (box) { box.style.display = "none"; box.innerHTML = ""; }
 
   try {
-    const marketplace = DRAWER_IS_SHOPEE ? "shopee" : "meli";
+    // O preview precisa saber o marketplace da base para escolher a
+    // normalização de ID correta (TikTok nunca vira MLB).
+    const marketplace = DRAWER_MARKETPLACE;
     const fd = new FormData();
     fd.append("arquivo", file);
     // Preview seguro: o servidor apenas parseia/normaliza e devolve dados_importacao.
@@ -1764,7 +1947,8 @@ function renderPreviewPlanilha({ lidas, nAtualizar, nAdicionar, ignoradas, dupli
 
   const linhas = (PLANILHA_STATE && PLANILHA_STATE.linhas) || [];
   const validos = linhas.length;
-  const isShopee = DRAWER_IS_SHOPEE;
+  const isShopee = drawerEhShopee();
+  const isTiktok = drawerEhTiktok();
 
   const resumoLinhas = [
     `${lidas} linha(s) lida(s)`,
@@ -1778,17 +1962,24 @@ function renderPreviewPlanilha({ lidas, nAtualizar, nAdicionar, ignoradas, dupli
 
   const exibidos = linhas.slice(0, PLANILHA_PREVIEW_LIMITE);
   const thIdModel = isShopee ? `<th>ID Model</th>` : "";
+  const thNomes = isTiktok ? `<th>Produto</th><th>Variação</th>` : "";
+  const thTaxa = isTiktok ? "" : `<th class="num">Taxa fixa</th>`;
   const corpo = exibidos.map((l) => {
     const obs = l.acao === "adicionar"
       ? "Novo item"
       : (Number.isFinite(Number(l.imposto)) ? "Sobrescreve custo e imposto" : "Sobrescreve custo · imposto atual mantido");
     const idModelTd = isShopee ? `<td class="vf-mono">${escapeHTML(String(l.id_model ?? "—"))}</td>` : "";
+    const nomesTd = isTiktok
+      ? `<td>${escapeHTML(String(l.produto_nome ?? "—"))}</td><td>${escapeHTML(String(l.variacao_nome ?? "—"))}</td>`
+      : "";
+    const taxaTd = isTiktok ? "" : `<td class="num vf-mono">—</td>`;
     return `<tr>
       <td class="vf-mono">${escapeHTML(String(l.id))}</td>
       ${idModelTd}
+      ${nomesTd}
       <td class="num vf-mono">${escapeHTML(fmtMoedaDrawer(l.custo))}</td>
       <td class="num vf-mono">${escapeHTML(fmtPercentDrawer(l.imposto))}</td>
-      <td class="num vf-mono">—</td>
+      ${taxaTd}
       <td>${badgeAcaoPlanilha(l.acao)}</td>
       <td>${escapeHTML(obs)}</td>
     </tr>`;
@@ -1801,15 +1992,17 @@ function renderPreviewPlanilha({ lidas, nAtualizar, nAdicionar, ignoradas, dupli
   box.innerHTML = `
     <div class="vf-bases-preview-title">Preview da atualização incremental</div>
     <ul class="vf-bases-resumo">${resumoLinhas.map((t) => `<li>${escapeHTML(t)}</li>`).join("")}</ul>
-    <p class="vf-field__hint" style="margin:0 0 8px;">Taxa fixa não vem nesta planilha: o valor atual de cada item é preservado.</p>
+    <p class="vf-field__hint" style="margin:0 0 8px;">${isTiktok
+      ? "TikTok Shop não usa taxa fixa: cada item fica com taxa zero."
+      : "Taxa fixa não vem nesta planilha: o valor atual de cada item é preservado."}</p>
     <div class="vf-table-wrap vf-bases-planilha-wrap">
       <table class="vf-table vf-table--compact">
         <thead><tr>
-          <th>Produto / MLB / SKU</th>${thIdModel}
-          <th class="num">Custo</th><th class="num">Imposto</th><th class="num">Taxa fixa</th>
+          <th>${isTiktok ? "ID do SKU" : "Produto / MLB / SKU"}</th>${thIdModel}${thNomes}
+          <th class="num">Custo</th><th class="num">Imposto</th>${thTaxa}
           <th>Ação</th><th>Observação</th>
         </tr></thead>
-        <tbody>${corpo || `<tr class="vf-table__empty"><td colspan="${isShopee ? 7 : 6}">Nenhum item válido para salvar.</td></tr>`}</tbody>
+        <tbody>${corpo || `<tr class="vf-table__empty"><td colspan="${isTiktok ? 7 : (isShopee ? 7 : 6)}">Nenhum item válido para salvar.</td></tr>`}</tbody>
       </table>
     </div>
     ${truncado}
@@ -1857,7 +2050,12 @@ async function confirmarPlanilhaDrawer() {
     // (item existente) ou usa o padrão da base (item novo). Nunca zera à força.
     if (Number.isFinite(Number(linha.imposto))) payload.imposto_percentual = Number(linha.imposto);
     // Taxa fixa não é extraída deste preview → omitida → preservada.
+    // (Em TikTok o backend força 0 e nunca aceita taxa.)
     if (marketplace === "shopee" && linha.id_model) payload.id_model = linha.id_model;
+    if (marketplace === "tiktok") {
+      if (linha.produto_nome) payload.produto_nome = linha.produto_nome;
+      if (linha.variacao_nome) payload.variacao_nome = linha.variacao_nome;
+    }
 
     try {
       const res = await fetch(`${API_BASE}/bases/${encodeURIComponent(slug)}/custos/upsert`, {
@@ -2376,6 +2574,10 @@ async function asstEnviarPreview(configOverride) {
   try {
     const fd = new FormData();
     fd.append("arquivo", arquivo);
+    // O assistente vive dentro do modal de importação: segue o marketplace já
+    // escolhido ali. Sem isso um ID do TikTok receberia prefixo MLB no preview.
+    const mpSelecionado = getImportMarketplace();
+    if (mpSelecionado) fd.append("marketplace", mpSelecionado);
     if (configOverride && Object.keys(configOverride).length) {
       fd.append("config", JSON.stringify(configOverride));
     }
@@ -2484,13 +2686,25 @@ function asstAtualizarBotaoImportar() {
   btn.disabled = !(temDados && nome.trim().length > 0);
 }
 
-function asstGerarCsv(linhas) {
+function asstGerarCsv(linhas, marketplace) {
   const rows = linhas.filter(r => r.id != null && String(r.id).trim() !== "");
+  const csvTexto = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+  // TikTok: leva também os nomes de produto/variação e o cabeçalho reconhecido
+  // pelo parser do TikTok (ID do SKU), sem taxa fixa.
+  if (marketplace === "tiktok") {
+    const lines = rows.map(r => {
+      const custo   = r.custo   != null ? Number(r.custo).toFixed(2)  : "";
+      const imposto = r.imposto != null ? Number(r.imposto).toFixed(6) : "";
+      return `${csvTexto(r.id)},${csvTexto(r.produto_nome)},${csvTexto(r.variacao_nome)},${custo},${imposto}`;
+    });
+    return "ID do SKU,Nome do produto,Nome do SKU,Custo unitário,Imposto\n" + lines.join("\n");
+  }
+
   const lines = rows.map(r => {
-    const id      = String(r.id ?? "").replace(/"/g, '""');
     const custo   = r.custo   != null ? Number(r.custo).toFixed(2)   : "";
     const imposto = r.imposto != null ? Number(r.imposto).toFixed(6)  : "";
-    return `"${id}",${custo},${imposto}`;
+    return `${csvTexto(r.id)},${custo},${imposto}`;
   });
   return "ID,Custo,Imposto\n" + lines.join("\n");
 }
@@ -2520,14 +2734,17 @@ async function asstImportarBaseLimpa() {
   asstSetImportStatus("", "");
 
   try {
-    const csv      = asstGerarCsv(linhasImportaveis);
+    // Respeita o marketplace escolhido no modal — importar como "meli" por
+    // padrão prefixaria MLB em IDs de Shopee/TikTok.
+    const marketplace = getImportMarketplace() || "meli";
+    const csv      = asstGerarCsv(linhasImportaveis, marketplace);
     const blob     = new Blob([csv], { type: "text/csv" });
     const arquivo  = new File([blob], `${nome.replace(/[^a-z0-9_\-]/gi, "_")}.csv`, { type: "text/csv" });
 
     const fd = new FormData();
     fd.append("arquivo",   arquivo);
     fd.append("nomeBase",  nome);
-    fd.append("marketplace", "meli");
+    fd.append("marketplace", marketplace);
     fd.append("confirmar", "true");
 
     const res = await fetch(`${API_BASE}/importar-base`, {

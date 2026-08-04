@@ -135,6 +135,30 @@
                   </div>
                   <div id="empty-shopee" class="vf-bases-empty-msg" style="display:none;">Nenhuma base de Shopee para os filtros atuais.</div>
                 </section>
+
+                <!-- TIKTOK SHOP -->
+                <section class="vf-section vf-bases-mp">
+                  <div class="vf-section__header">
+                    <h2 class="vf-section__title vf-bases-mp__title">
+                      <span class="vf-bases-mp__dot vf-bases-mp__dot--tiktok"></span>TikTok Shop
+                    </h2>
+                    <span class="vf-bases-mp__count"><span id="count-tiktok">0</span> bases</span>
+                  </div>
+                  <div class="vf-table-wrap" id="wrap-tiktok">
+                    <table class="vf-table vf-table--compact">
+                      <thead>
+                        <tr>
+                          <th>Cliente</th>
+                          <th>Base oficial</th>
+                          <th>Status</th>
+                          <th><span class="vf-visually-hidden">Ações</span></th>
+                        </tr>
+                      </thead>
+                      <tbody id="bases-tbody-tiktok"></tbody>
+                    </table>
+                  </div>
+                  <div id="empty-tiktok" class="vf-bases-empty-msg" style="display:none;">Nenhuma base de TikTok Shop para os filtros atuais.</div>
+                </section>
               </div>
 
               <!-- Rodapé/status -->
@@ -189,16 +213,17 @@
             <option value="">Selecione o marketplace…</option>
             <option value="meli">Mercado Livre</option>
             <option value="shopee">Shopee</option>
+            <option value="tiktok">TikTok Shop</option>
           </select>
         </div>
 
-        <!-- Cliente / Grant ML: obrigatório para Meli, opcional para Shopee -->
+        <!-- Cliente: obrigatório para Meli e TikTok Shop, opcional para Shopee -->
         <div class="vf-field" id="import-cliente-field" style="display:none;">
-          <label class="vf-field__label" for="import-cliente">Cliente / Grant ML <span class="vf-field__required" id="import-cliente-req" aria-hidden="true">*</span></label>
+          <label class="vf-field__label" for="import-cliente"><span id="import-cliente-label">Cliente</span> <span class="vf-field__required" id="import-cliente-req" aria-hidden="true">*</span></label>
           <select id="import-cliente" class="vf-select">
-            <option value="">Selecione o cliente/grant…</option>
+            <option value="">Selecione o cliente…</option>
           </select>
-          <span class="vf-field__hint" id="import-cliente-hint">Obrigatório para Mercado Livre — a base nasce vinculada a este cliente.</span>
+          <span class="vf-field__hint" id="import-cliente-hint">Obrigatório para Mercado Livre e TikTok Shop.</span>
         </div>
 
         <div class="vf-field">
@@ -338,11 +363,14 @@
           <tr>
             <th>
               <div class="b-th-filter-inline" id="cost-filter-wrap-produto">
-                <span>Produto</span>
+                <span id="bases-costs-th-produto-label">Produto</span>
                 <input type="search" id="cost-filter-produto" class="vf-input vf-input--sm" placeholder="Buscar..." autocomplete="off">
               </div>
             </th>
             <th id="bases-costs-th-idmodel" style="display:none;">ID Model</th>
+            <!-- TikTok: nome do produto e nome da variação (sem ID de variação) -->
+            <th id="bases-costs-th-produto-nome" style="display:none;">Produto</th>
+            <th id="bases-costs-th-variacao" style="display:none;">Variação</th>
             <th class="num">
               <div class="b-th-filter-inline" id="cost-filter-wrap-custo">
                 <span>Custo</span>
@@ -363,7 +391,7 @@
                 </select>
               </div>
             </th>
-            <th class="num">
+            <th class="num" id="bases-costs-th-taxa">
               <div class="b-th-filter-inline" id="cost-filter-wrap-taxa">
                 <span>Taxa fixa</span>
                 <select id="cost-filter-taxa" class="vf-select vf-select--sm">
@@ -373,6 +401,7 @@
                 </select>
               </div>
             </th>
+            <th id="bases-costs-th-atualizacao" style="display:none;">Atualização</th>
             <th class="vf-bases-cost-actions"><span class="vf-visually-hidden">Ações</span></th>
           </tr>
         </thead>
@@ -403,11 +432,13 @@
         <table class="vf-table">
           <thead>
             <tr>
-              <th>ID do Produto</th>
+              <th id="preview-th-id">ID do Produto</th>
               <th id="preview-th-idmodel" style="display:none;">ID Model</th>
+              <th id="preview-th-produto" style="display:none;">Produto</th>
+              <th id="preview-th-variacao" style="display:none;">Variação</th>
               <th class="num">Custo (R$)</th>
               <th class="num">Imposto (%)</th>
-              <th class="num">Taxa Fixa</th>
+              <th class="num" id="preview-th-taxa">Taxa Fixa</th>
             </tr>
           </thead>
           <tbody id="preview-tbody"></tbody>
@@ -467,6 +498,7 @@
           <select id="vf-vinculo-marketplace" class="vf-select">
             <option value="meli">Mercado Livre</option>
             <option value="shopee">Shopee</option>
+            <option value="tiktok">TikTok Shop</option>
             <option value="outro">Outro</option>
           </select>
         </div>

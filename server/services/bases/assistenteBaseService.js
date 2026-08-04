@@ -4,9 +4,10 @@
 
 const path = require("path");
 const XLSX = require("xlsx");
-const { repairWorksheetRef } = require("../../utils/excelUtils");
+const { repairWorksheetRef, lerWorkbookPlanilha } = require("../../utils/excelUtils");
 const { normalizeKey } = require("../../utils/textUtils");
 const { toNumber, round2 } = require("../../utils/numberUtils");
+const { MARKETPLACES_SUPORTADOS } = require("./marketplacesBases");
 
 // ─── Utilitários de letra de coluna ─────────────────────────────────────────
 
@@ -56,6 +57,43 @@ const CANDIDATOS_ID_MODEL = [
   "id da variação", "variante identificador", "variation id", "model id",
 ];
 
+// ─── Candidatos específicos do TikTok Shop ───────────────────────────────────
+// Lista própria (não estende a do MELI) para não mudar a detecção das
+// planilhas de Mercado Livre/Shopee que já funcionam hoje. Os textos aqui já
+// estão na forma que pontuarColuna produz: sem acento, sem "_", minúsculo.
+const CANDIDATOS_ID_TIKTOK = [
+  "id do sku", "id sku", "sku id", "tiktok sku id", "produto id", "produtoid", "id", "sku",
+];
+
+const CANDIDATOS_CUSTO_TIKTOK = [
+  "custo unitario", "custo", "preco de custo", "custoproduto", "custo produto",
+  "cmv unitario", "cmv",
+];
+
+const CANDIDATOS_IMPOSTO_TIKTOK = [
+  "imposto", "imposto percentual", "impostopercentual", "aliquota",
+];
+
+const CANDIDATOS_PRODUTO_NOME = [
+  "nome do produto", "produto", "product name", "produtonome",
+];
+
+const CANDIDATOS_VARIACAO_NOME = [
+  "nome do sku", "variacao", "nome da variacao", "sku name", "variacaonome",
+];
+
+function candidatosId(marketplace) {
+  return marketplace === "tiktok" ? CANDIDATOS_ID_TIKTOK : CANDIDATOS_ID;
+}
+
+function candidatosCusto(marketplace) {
+  return marketplace === "tiktok" ? CANDIDATOS_CUSTO_TIKTOK : CANDIDATOS_CUSTO;
+}
+
+function candidatosImposto(marketplace) {
+  return marketplace === "tiktok" ? CANDIDATOS_IMPOSTO_TIKTOK : CANDIDATOS_IMPOSTO;
+}
+
 // ─── Pontuação de coluna ─────────────────────────────────────────────────────
 
 function pontuarColuna(header, candidatos, exclusoes) {
@@ -96,7 +134,7 @@ function criarErro(statusCode, mensagem) {
 
 // ─── Detecção de linha de cabeçalho ──────────────────────────────────────────
 
-function detectarCabecalho(rowsAsArrays) {
+function detectarCabecalho(rowsAsArrays, marketplace) {
   const MAX_SCAN = Math.min(15, rowsAsArrays.length);
   let melhorLinha = 0;
   let melhorScore = -1;
@@ -108,9 +146,9 @@ function detectarCabecalho(rowsAsArrays) {
     for (const cell of row) {
       const texto = String(cell || "").trim();
       if (!texto) continue;
-      score += pontuarColuna(texto, CANDIDATOS_ID);
-      score += pontuarColuna(texto, CANDIDATOS_CUSTO, EXCLUIR_CUSTO);
-      score += pontuarColuna(texto, CANDIDATOS_IMPOSTO);
+      score += pontuarColuna(texto, candidatosId(marketplace));
+      score += pontuarColuna(texto, candidatosCusto(marketplace), EXCLUIR_CUSTO);
+      score += pontuarColuna(texto, candidatosImposto(marketplace));
     }
 
     if (score > melhorScore) {
@@ -124,22 +162,26 @@ function detectarCabecalho(rowsAsArrays) {
 
 // ─── Detecção de colunas ──────────────────────────────────────────────────────
 
-function detectarColunas(headerRow) {
+function detectarColunas(headerRow, marketplace) {
   const disponiveis = [];
   const scoresId = [];
   const scoresCusto = [];
   const scoresImposto = [];
   const scoresIdModel = [];
+  const scoresProdutoNome = [];
+  const scoresVariacaoNome = [];
 
   headerRow.forEach((cell, idx) => {
     const letra = indicePraLetra(idx);
     const texto = String(cell || "").trim();
     if (texto) disponiveis.push({ coluna: letra, cabecalho: texto });
 
-    scoresId.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_ID) });
-    scoresCusto.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_CUSTO, EXCLUIR_CUSTO) });
-    scoresImposto.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_IMPOSTO) });
+    scoresId.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, candidatosId(marketplace)) });
+    scoresCusto.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, candidatosCusto(marketplace), EXCLUIR_CUSTO) });
+    scoresImposto.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, candidatosImposto(marketplace)) });
     scoresIdModel.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_ID_MODEL) });
+    scoresProdutoNome.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_PRODUTO_NOME) });
+    scoresVariacaoNome.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_VARIACAO_NOME) });
   });
 
   function melhorCandidato(scores) {
@@ -150,12 +192,18 @@ function detectarColunas(headerRow) {
       : null;
   }
 
+  const idDetectado = melhorCandidato(scoresId);
+  // A mesma coluna não pode ser ID e nome ao mesmo tempo ("ID do SKU" x "Nome do SKU").
+  const semColunaDoId = (cand) => (cand && idDetectado && cand.coluna === idDetectado.coluna ? null : cand);
+
   return {
     detectadas: {
-      id:       melhorCandidato(scoresId),
+      id:       idDetectado,
       custo:    melhorCandidato(scoresCusto),
       imposto:  melhorCandidato(scoresImposto),
       id_model: melhorCandidato(scoresIdModel),
+      produto_nome:  semColunaDoId(melhorCandidato(scoresProdutoNome)),
+      variacao_nome: semColunaDoId(melhorCandidato(scoresVariacaoNome)),
     },
     disponiveis,
   };
@@ -204,6 +252,39 @@ function normalizarIdShopee(value) {
   return text;  // retorna numérico puro, sem prefixo MLB
 }
 
+// TikTok Shop: o ID do SKU tem 18–19 dígitos e precisa continuar texto.
+// Diferente do MELI/Shopee: não prefixa MLB e NÃO converte notação científica
+// (o Excel já perdeu dígitos nesse caso). ID inválido devolve null e a linha
+// entra no preview como ignorada, com alerta próprio.
+function normalizarIdTikTok(value) {
+  if (value === null || value === undefined) return null;
+
+  // Número inteiro exato ainda é recuperável; fora disso a precisão já se foi.
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? String(value) : null;
+  }
+
+  let text = String(value).replace(/^﻿/, "").trim().replace(/^['"]+|['"]+$/g, "").trim();
+  if (!text) return null;
+
+  if (/^\d+\.0+$/.test(text)) text = text.replace(/\.0+$/, "");
+  if (/^\d+(?:[.,]\d+)?[eE][+-]?\d+$/.test(text)) return null; // científico → rejeitado
+
+  return text;
+}
+
+function ehIdTikTokCientifico(value) {
+  if (typeof value === "number") return !Number.isSafeInteger(value);
+  const text = String(value == null ? "" : value).replace(/^﻿/, "").trim().replace(/^['"]+|['"]+$/g, "").trim();
+  return /^\d+(?:[.,]\d+)?[eE][+-]?\d+$/.test(text);
+}
+
+function normalizarTextoCelula(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).replace(/^﻿/, "").trim();
+  return text ? text : null;
+}
+
 function normalizarCustoBase(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
@@ -224,11 +305,20 @@ function normalizarImpostoBase(value) {
 
 // ─── Processamento de linhas ──────────────────────────────────────────────────
 
+function normalizarIdPorMarketplace(marketplace, valor) {
+  if (marketplace === "tiktok") return normalizarIdTikTok(valor);
+  if (marketplace === "shopee") return normalizarIdShopee(valor);
+  return normalizarIdBase(valor);
+}
+
 function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
   const idxId      = mapeamento.id      ? letraParaIndice(mapeamento.id)      : -1;
   const idxCusto   = mapeamento.custo   ? letraParaIndice(mapeamento.custo)   : -1;
   const idxImposto = mapeamento.imposto ? letraParaIndice(mapeamento.imposto) : -1;
   const idxIdModel = mapeamento.id_model ? letraParaIndice(mapeamento.id_model) : -1;
+  const idxProduto = mapeamento.produto_nome  ? letraParaIndice(mapeamento.produto_nome)  : -1;
+  const idxVariacao = mapeamento.variacao_nome ? letraParaIndice(mapeamento.variacao_nome) : -1;
+  const isTikTok = marketplace === "tiktok";
 
   const todas = [];
   const dataRows = rowsAsArrays.slice(linhaHeader + 1);
@@ -239,17 +329,20 @@ function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
     if (!hasContent) continue;
 
     const linhaOriginal = linhaHeader + 2 + i; // 1-based, considera header
+    const idBruto = idxId >= 0 ? row[idxId] : "";
 
     todas.push({
       linha_original: linhaOriginal,
-      id: marketplace === "shopee"
-        ? normalizarIdShopee(idxId >= 0 ? row[idxId] : "")
-        : normalizarIdBase(idxId >= 0 ? row[idxId] : ""),
+      id: normalizarIdPorMarketplace(marketplace, idBruto),
       custo:   normalizarCustoBase(idxCusto   >= 0 ? row[idxCusto]   : ""),
       imposto: normalizarImpostoBase(idxImposto >= 0 ? row[idxImposto] : ""),
+      // id_model é conceito de variação da Shopee — TikTok usa nome da variação.
       id_model: (marketplace === "shopee" && idxIdModel >= 0)
         ? normalizarIdShopee(row[idxIdModel])
         : null,
+      produto_nome:  idxProduto  >= 0 ? normalizarTextoCelula(row[idxProduto])  : null,
+      variacao_nome: idxVariacao >= 0 ? normalizarTextoCelula(row[idxVariacao]) : null,
+      ...(isTikTok ? { id_cientifico: ehIdTikTokCientifico(idBruto) } : {}),
     });
   }
 
@@ -313,6 +406,16 @@ function gerarAlertas(linhas, mapeamento, resumo) {
     alertas.push({ tipo: "linhas_sem_id", nivel: "warning", mensagem: `${semId} linhas ignoradas por ID ausente ou inválido.` });
   }
 
+  // TikTok: ID em notação científica não é recuperável — o Excel já perdeu dígitos.
+  const idsCientificos = linhas.filter((l) => l.id_cientifico).length;
+  if (idsCientificos > 0) {
+    alertas.push({
+      tipo: "id_notacao_cientifica",
+      nivel: "erro",
+      mensagem: `${idsCientificos} linha(s) com ID do SKU TikTok em notação científica. Formate a coluna como texto antes de importar.`,
+    });
+  }
+
   const semCusto = linhas.filter((l) => l.custo === null).length;
   if (semCusto > 0) {
     alertas.push({ tipo: "linhas_sem_custo", nivel: "warning", mensagem: `${semCusto} linhas sem custo detectado.` });
@@ -341,16 +444,21 @@ function gerarAlertas(linhas, mapeamento, resumo) {
 async function analisarPlanilhaBase(buffer, originalname, config) {
   config = config || {};
 
-  const marketplace = ["meli", "shopee"].includes(config.marketplace)
+  // O controller já validou/normalizou; aqui só recusamos valor não suportado
+  // em vez de assumir MELI para qualquer coisa.
+  const marketplace = MARKETPLACES_SUPORTADOS.includes(config.marketplace)
     ? config.marketplace
-    : "meli";
+    : (config.marketplace ? null : "meli");
+  if (!marketplace) {
+    throw criarErro(400, `marketplace inválido: "${config.marketplace}". Use: ${MARKETPLACES_SUPORTADOS.join(", ")}.`);
+  }
 
   const ext = path.extname(String(originalname || "")).toLowerCase();
   if (![".xlsx", ".xls", ".csv"].includes(ext)) {
     throw criarErro(400, "Formato inválido. Envie .xlsx, .xls ou .csv.");
   }
 
-  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const workbook = lerWorkbookPlanilha(buffer, originalname);
   const abas = listarAbas(workbook);
   if (!abas.length) throw criarErro(400, "A planilha não possui abas válidas.");
 
@@ -368,10 +476,10 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
   // Linha de cabeçalho
   const linhaHeader = config.linhaCabecalho !== undefined
     ? Math.max(0, parseInt(config.linhaCabecalho) || 0)
-    : detectarCabecalho(rowsAsArrays);
+    : detectarCabecalho(rowsAsArrays, marketplace);
 
   const headerRow = rowsAsArrays[linhaHeader] || [];
-  const { detectadas, disponiveis } = detectarColunas(headerRow);
+  const { detectadas, disponiveis } = detectarColunas(headerRow, marketplace);
 
   // Aplica overrides manuais de coluna
   const colunasFinais = {
@@ -379,10 +487,12 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
     custo:    detectadas.custo,
     imposto:  detectadas.imposto,
     id_model: detectadas.id_model,
+    produto_nome:  detectadas.produto_nome,
+    variacao_nome: detectadas.variacao_nome,
   };
 
   if (config.colunas) {
-    for (const tipo of ["id", "custo", "imposto", "id_model"]) {
+    for (const tipo of ["id", "custo", "imposto", "id_model", "produto_nome", "variacao_nome"]) {
       const letraOverride = config.colunas[tipo];
       if (letraOverride) {
         const letra    = String(letraOverride).toUpperCase().trim();
@@ -398,6 +508,8 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
     custo:    colunasFinais.custo    ? colunasFinais.custo.coluna    : null,
     imposto:  colunasFinais.imposto  ? colunasFinais.imposto.coluna  : null,
     id_model: colunasFinais.id_model ? colunasFinais.id_model.coluna : null,
+    produto_nome:  colunasFinais.produto_nome  ? colunasFinais.produto_nome.coluna  : null,
+    variacao_nome: colunasFinais.variacao_nome ? colunasFinais.variacao_nome.coluna : null,
   };
 
   const todasLinhas     = processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace);
@@ -409,7 +521,10 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
       id:       l.id,
       custo:    l.custo,
       imposto:  l.imposto,
+      // id_model só existe para Shopee; TikTok identifica a variação pelo nome.
       id_model: marketplace === "shopee" ? (l.id_model || null) : null,
+      produto_nome:  l.produto_nome  || null,
+      variacao_nome: l.variacao_nome || null,
     }));
 
   // Confiança geral = média das colunas detectadas
@@ -452,6 +567,7 @@ module.exports = {
   detectarColunas,
   normalizarIdBase,
   normalizarIdShopee,
+  normalizarIdTikTok,
   normalizarCustoBase,
   normalizarImpostoBase,
   calcularResumo,

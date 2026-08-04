@@ -4,14 +4,23 @@
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("../services/activityLogService");
 
 const {
+  MARKETPLACES_SUPORTADOS,
   normalizarProdutoIdBase,
   normalizarProdutoIdShopee,
+  normalizarProdutoIdTikTok,
   obterBaseAtivaPorSlug,
   obterPadraoCustoBase,
   upsertCustoBase,
   validarNumeroObrigatorio,
   validarNumeroOpcional,
 } = require("../services/bases/baseCustosService");
+
+// Normalizador de produto_id por marketplace — escolha explícita, sem fallback.
+const NORMALIZADORES_PRODUTO_ID = {
+  meli: normalizarProdutoIdBase,
+  shopee: normalizarProdutoIdShopee,
+  tiktok: normalizarProdutoIdTikTok,
+};
 
 function responderErroService(res, err) {
   if (err && err.payload && err.statusCode) {
@@ -47,17 +56,25 @@ async function upsertCustoBaseController(req, res) {
       return res.status(400).json({ ok: false, erro: "produto_id é obrigatório." });
     }
 
-    const normalizarProdutoId = base.marketplace === "shopee"
-      ? normalizarProdutoIdShopee
-      : normalizarProdutoIdBase;
+    const normalizarProdutoId = NORMALIZADORES_PRODUTO_ID[base.marketplace];
+    if (!normalizarProdutoId) {
+      return res.status(400).json({
+        ok: false,
+        erro: `marketplace inválido para a base. Use: ${MARKETPLACES_SUPORTADOS.join(", ")}.`,
+      });
+    }
     const produtoIdNorm = normalizarProdutoId(produtoIdRaw);
     if (!produtoIdNorm) {
       return res.status(400).json({ ok: false, erro: "produto_id inválido." });
     }
 
+    const isTikTok = base.marketplace === "tiktok";
     const custoProduto = validarNumeroObrigatorio(body.custo_produto, "custo_produto");
     const impostoPercentualOpt = validarNumeroOpcional(body.imposto_percentual, "imposto_percentual");
-    const taxaFixaOpt = validarNumeroOpcional(body.taxa_fixa, "taxa_fixa");
+    // TikTok não tem taxa fixa: sempre 0, mesmo que o cliente envie outro valor.
+    const taxaFixaOpt = isTikTok
+      ? { tem: true, numero: 0 }
+      : validarNumeroOpcional(body.taxa_fixa, "taxa_fixa");
     const idModel = base.marketplace === "shopee" ? (body.id_model || null) : null;
 
     const resultado = await upsertCustoBase({
@@ -67,6 +84,9 @@ async function upsertCustoBaseController(req, res) {
       impostoPercentualOpt,
       taxaFixaOpt,
       idModel,
+      produtoNome: body.produto_nome,
+      variacaoNome: body.variacao_nome,
+      marketplace: base.marketplace,
     });
 
     try {
@@ -91,6 +111,7 @@ async function upsertCustoBaseController(req, res) {
     return res.json({
       ok: true,
       acao: resultado.acao,
+      marketplace: base.marketplace,
       custo: {
         base_id: resultado.custo.base_id,
         produto_id: resultado.custo.produto_id,
@@ -98,6 +119,9 @@ async function upsertCustoBaseController(req, res) {
         imposto_percentual: Number(resultado.custo.imposto_percentual),
         taxa_fixa: Number(resultado.custo.taxa_fixa),
         id_model: resultado.custo.id_model ?? null,
+        produto_nome: resultado.custo.produto_nome ?? null,
+        variacao_nome: resultado.custo.variacao_nome ?? null,
+        updated_at: resultado.custo.updated_at ?? null,
       },
     });
   } catch (err) {

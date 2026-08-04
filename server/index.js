@@ -31,6 +31,7 @@ const {
 } = require("./utils/textUtils");
 const {
   repairWorksheetRef,
+  lerWorkbookPlanilha,
   readSheetRows,
   parseSpreadsheet,
   detectMeliHeaderRow,
@@ -88,6 +89,11 @@ const {
   captureRequestError,
 } = require("./middlewares/observabilityMiddleware");
 const { ensureObservabilityTables } = require("./repositories/observabilityRepository");
+const {
+  MARKETPLACES_SUPORTADOS,
+  normalizarProdutoIdTikTok,
+  ensureColunasCustos,
+} = require("./services/bases/baseCustosService");
 
 const app = express();
 const PORT = process.env.PORT || 3333;
@@ -211,22 +217,79 @@ function extrairIdModel(row) {
   return null;
 }
 
+// ─── TikTok Shop: cabeçalhos da planilha de custos ───────────────────────────
+// Aliases já em caixa baixa e sem acento — comparados contra o cabeçalho
+// limpo por normalizarChaveHeader().
+const TIKTOK_ALIASES_ID = ["id do sku", "id sku", "sku id", "tiktok sku id", "produto_id", "id", "sku"];
+const TIKTOK_ALIASES_CUSTO = ["custo unitario", "custo", "preco de custo", "custo_produto", "cmv unitario"];
+const TIKTOK_ALIASES_IMPOSTO = ["imposto", "imposto (%)", "imposto percentual", "aliquota", "imposto_percentual"];
+const TIKTOK_ALIASES_PRODUTO = ["nome do produto", "produto", "product name"];
+const TIKTOK_ALIASES_VARIACAO = ["nome do sku", "variacao", "nome da variacao", "sku name"];
+
+function normalizarChaveHeader(valor) {
+  return String(valor || "")
+    .replace(/^﻿/, "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+// Primeira coluna cujo cabeçalho bate com um dos aliases. Devolve o valor CRU,
+// sem conversão numérica (essencial para o ID do SKU do TikTok).
+function obterValorPorAlias(row, aliases) {
+  for (const alias of aliases) {
+    for (const [k, v] of Object.entries(row)) {
+      if (normalizarChaveHeader(k) === alias) {
+        if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+      }
+    }
+  }
+  return "";
+}
+
+function headerParecerTikTok(headersNormalizados) {
+  return headersNormalizados.some((h) => ["id do sku", "id sku", "sku id", "tiktok sku id"].includes(h));
+}
+
+// Lê SÓ a primeira linha da aba (para decidir o marketplace antes de escolher
+// o modo de leitura das células).
+function lerCabecalhoPlanilha(sheet) {
+  const ref = sheet && sheet["!ref"];
+  if (!ref) return [];
+  const range = XLSX.utils.decode_range(ref);
+  const soCabecalho = { s: { ...range.s }, e: { ...range.e, r: range.s.r } };
+  const linhas = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false, range: soCabecalho });
+  return (linhas[0] || []).map(normalizarChaveHeader);
+}
+
 function parsePlanilha(buffer, originalName, marketplace) {
   const ext = path.extname(originalName).toLowerCase();
   if (![".xlsx", ".xls", ".csv"].includes(ext)) throw new Error("Formato inválido. Envie .xlsx, .xls ou .csv");
-  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const workbook = lerWorkbookPlanilha(buffer, originalName);
   const primeiraAba = workbook.SheetNames[0];
   if (!primeiraAba) throw new Error("A planilha não possui abas válidas");
-  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[primeiraAba], { defval: "" });
-  if (!rows.length) throw new Error("A planilha está vazia");
+  const sheet = workbook.Sheets[primeiraAba];
 
   // Marketplace explícito (vindo do body) tem prioridade. Sem ele, mantém a
-  // detecção automática por cabeçalho ("model id" e variantes).
+  // detecção automática por cabeçalho ("model id" e variantes / "ID do SKU").
   // Em Shopee os IDs são numéricos do próprio Shopee — NÃO devem receber MLB.
-  const mktExplicito = ["meli", "shopee"].includes(marketplace) ? marketplace : null;
+  const mktExplicito = MARKETPLACES_SUPORTADOS.includes(marketplace) ? marketplace : null;
+  const isTikTok = mktExplicito
+    ? mktExplicito === "tiktok"
+    : headerParecerTikTok(lerCabecalhoPlanilha(sheet));
+
+  // TikTok lê as células como texto (raw:false): com raw:true o xlsx devolveria
+  // o ID do SKU como número e 19 dígitos não cabem num double. MELI e Shopee
+  // seguem no modo antigo (raw padrão), sem mudança de comportamento.
+  const rows = isTikTok
+    ? XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false })
+    : XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  if (!rows.length) throw new Error("A planilha está vazia");
+
   const headers = Object.keys(rows[0] || {}).map((h) => h.trim().toLowerCase());
   const headerShopee = headers.some((h) => CANDIDATOS_ID_MODEL_HEADER.includes(h));
-  const isShopee = mktExplicito ? mktExplicito === "shopee" : headerShopee;
+  const isShopee = mktExplicito ? mktExplicito === "shopee" : (!isTikTok && headerShopee);
 
   const resultado = [];
   for (const row of rows) {
@@ -239,6 +302,28 @@ function parsePlanilha(buffer, originalName, marketplace) {
       const cleanVal =
         typeof v === "string" ? v.replace(/^['"]+|['"]+$/g, "") : v;
       r[cleanKey] = cleanVal;
+    }
+
+    if (isTikTok) {
+      // TikTok: produto_id = ID do SKU, sempre texto. normalizarProdutoIdTikTok
+      // rejeita notação científica (o Excel já perdeu os dígitos originais).
+      const idTikTok = normalizarProdutoIdTikTok(obterValorPorAlias(r, TIKTOK_ALIASES_ID));
+      if (!idTikTok) continue;
+
+      const custoRaw = obterValorPorAlias(r, TIKTOK_ALIASES_CUSTO);
+      resultado.push({
+        produto_id: idTikTok,
+        custo_produto: numeroSeguro(custoRaw),
+        imposto_percentual: normalizarImposto(obterValorPorAlias(r, TIKTOK_ALIASES_IMPOSTO)),
+        // TikTok não usa taxa fixa nem id_model.
+        taxa_fixa: 0,
+        id_model: null,
+        produto_nome: String(obterValorPorAlias(r, TIKTOK_ALIASES_PRODUTO) || "").trim() || null,
+        variacao_nome: String(obterValorPorAlias(r, TIKTOK_ALIASES_VARIACAO) || "").trim() || null,
+        // custo_produto é NOT NULL no banco: linha sem custo não é persistida.
+        tem_custo: String(custoRaw == null ? "" : custoRaw).trim() !== "",
+      });
+      continue;
     }
 
     const idRaw = String(obterValorColuna(r, ["id", "ID", "Id", "sku", "SKU", "Sku", "mlb", "MLB", "Mlb"])).trim();
@@ -259,6 +344,9 @@ function parsePlanilha(buffer, originalName, marketplace) {
       taxa_fixa: numeroSeguro(obterValorColuna(r, ["Taxa", "taxa_fixa", "TAXA_FIXA", "taxa", "TAXA", "Taxa Fixa"])),
       // id_model só é preenchido para Shopee (ID de variação).
       id_model: isShopee ? extrairIdModel(r) : null,
+      produto_nome: null,
+      variacao_nome: null,
+      tem_custo: true,
     });
   }
   if (!resultado.length) throw new Error("Nenhum ID válido encontrado na planilha");
@@ -449,6 +537,22 @@ CREATE TABLE IF NOT EXISTS callbacks (
     await pool.query(`
   ALTER TABLE custos
   ADD COLUMN IF NOT EXISTS id_model TEXT;
+`);
+
+    // Nomes vindos da planilha do TikTok Shop + carimbo por linha de custo.
+    await pool.query(`
+  ALTER TABLE custos
+  ADD COLUMN IF NOT EXISTS produto_nome TEXT;
+`);
+
+    await pool.query(`
+  ALTER TABLE custos
+  ADD COLUMN IF NOT EXISTS variacao_nome TEXT;
+`);
+
+    await pool.query(`
+  ALTER TABLE custos
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 `);
 
     await pool.query(`
@@ -649,8 +753,15 @@ app.get("/api/bases/:baseSlug", apiKeyMiddleware, async (req, res) => {
 // LISTAR BASES
 app.get("/bases", authMiddleware, async (req, res) => {
   try {
+    // total_skus / skus_com_custo alimentam a cobertura por base na tela /bases.
     const result = await pool.query(
-      "SELECT id, slug, nome, ativo, marketplace, created_at, updated_at FROM bases ORDER BY created_at DESC"
+      `SELECT b.id, b.slug, b.nome, b.ativo, b.marketplace, b.created_at, b.updated_at,
+              COUNT(c.produto_id)::int AS total_skus,
+              COUNT(c.custo_produto)::int AS skus_com_custo
+         FROM bases b
+         LEFT JOIN custos c ON c.base_id = b.id
+        GROUP BY b.id
+        ORDER BY b.created_at DESC`
     );
     res.json({ ok: true, bases: result.rows });
   } catch (err) {
@@ -669,16 +780,19 @@ app.get("/bases/:baseId", authMiddleware, async (req, res) => {
     if (!acesso.rows.length) return res.status(404).json({ ok: false, erro: "Base não encontrada" });
     const base = acesso.rows[0];
     const custos = await pool.query(
-      "SELECT produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model FROM custos WHERE base_id = $1",
+      "SELECT produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, updated_at FROM custos WHERE base_id = $1",
       [base.id]
     );
     const dados = {};
     for (const row of custos.rows) {
       dados[row.produto_id] = {
-        custo_produto: parseFloat(row.custo_produto),
+        custo_produto: row.custo_produto == null ? null : parseFloat(row.custo_produto),
         imposto_percentual: parseFloat(row.imposto_percentual),
         taxa_fixa: parseFloat(row.taxa_fixa),
-        id_model: row.id_model || null
+        id_model: row.id_model || null,
+        produto_nome: row.produto_nome || null,
+        variacao_nome: row.variacao_nome || null,
+        updated_at: row.updated_at || null
       };
     }
     res.json({ ok: true, baseId: base.slug, nome: base.nome, marketplace: base.marketplace || "meli", total: custos.rows.length, dados });
@@ -697,8 +811,8 @@ app.post("/importar-base", authMiddleware, upload.single("arquivo"), async (req,
 
     // marketplace: validado quando presente; ausente → 'meli' (não-regressão).
     const marketplaceRaw = String(req.body.marketplace || "").trim().toLowerCase();
-    if (marketplaceRaw && !["meli", "shopee"].includes(marketplaceRaw)) {
-      return res.status(400).json({ ok: false, erro: "marketplace inválido. Use 'meli' ou 'shopee'." });
+    if (marketplaceRaw && !MARKETPLACES_SUPORTADOS.includes(marketplaceRaw)) {
+      return res.status(400).json({ ok: false, erro: `marketplace inválido. Use: ${MARKETPLACES_SUPORTADOS.join(", ")}.` });
     }
     const marketplace = marketplaceRaw || "meli";
 
@@ -709,9 +823,25 @@ app.post("/importar-base", authMiddleware, upload.single("arquivo"), async (req,
       return res.json({
         ok: true,
         marketplace,
-        preview: linhas.slice(0, 10).map(l => ({ id: l.produto_id, custo_produto: l.custo_produto, imposto_percentual: l.imposto_percentual, taxa_fixa: l.taxa_fixa, id_model: l.id_model || null })),
+        preview: linhas.slice(0, 10).map(l => ({
+          id: l.produto_id,
+          custo_produto: l.custo_produto,
+          imposto_percentual: l.imposto_percentual,
+          taxa_fixa: l.taxa_fixa,
+          id_model: l.id_model || null,
+          produto_nome: l.produto_nome || null,
+          variacao_nome: l.variacao_nome || null,
+          tem_custo: l.tem_custo !== false,
+        })),
         total: linhas.length, idsDetectados: linhas.length, colunaId: "id / sku"
       });
+    }
+
+    // custo_produto é NOT NULL: linha sem custo fica de fora da persistência
+    // (aparece no preview, mas não vira 0 no banco).
+    const linhasPersistiveis = linhas.filter((l) => l.tem_custo !== false);
+    if (!linhasPersistiveis.length) {
+      return res.status(400).json({ ok: false, erro: "Nenhuma linha com custo preenchido para importar." });
     }
 
     const client = await pool.connect();
@@ -734,23 +864,25 @@ for (const u of users.rows) {
   );
 }
       await client.query("DELETE FROM custos WHERE base_id = $1", [baseId]);
-      for (const linha of linhas) {
+      for (const linha of linhasPersistiveis) {
         await client.query(
-          `INSERT INTO custos (base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model)
-           VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (base_id, produto_id) DO UPDATE SET
-           custo_produto = EXCLUDED.custo_produto, imposto_percentual = EXCLUDED.imposto_percentual, taxa_fixa = EXCLUDED.taxa_fixa, id_model = EXCLUDED.id_model`,
-          [baseId, linha.produto_id, linha.custo_produto, linha.imposto_percentual, linha.taxa_fixa, linha.id_model || null]
+          `INSERT INTO custos (base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP) ON CONFLICT (base_id, produto_id) DO UPDATE SET
+           custo_produto = EXCLUDED.custo_produto, imposto_percentual = EXCLUDED.imposto_percentual, taxa_fixa = EXCLUDED.taxa_fixa, id_model = EXCLUDED.id_model,
+           produto_nome = COALESCE(EXCLUDED.produto_nome, custos.produto_nome), variacao_nome = COALESCE(EXCLUDED.variacao_nome, custos.variacao_nome),
+           updated_at = CURRENT_TIMESTAMP`,
+          [baseId, linha.produto_id, linha.custo_produto, linha.imposto_percentual, linha.taxa_fixa, linha.id_model || null, linha.produto_nome || null, linha.variacao_nome || null]
         );
       }
       await client.query("COMMIT");
       registrarLog({
         ...dadosUsuarioDeReq(req),
         acao: "base.importar",
-        detalhes: { base_slug: slug, nome_base: nomeBaseOriginal, marketplace, total_itens: linhas.length },
+        detalhes: { base_slug: slug, nome_base: nomeBaseOriginal, marketplace, total_itens: linhasPersistiveis.length },
         ip: extrairIp(req),
         status: "sucesso"
       });
-      res.json({ ok: true, mensagem: "Base criada e planilha importada com sucesso", base: slug, total: linhas.length });
+      res.json({ ok: true, mensagem: "Base criada e planilha importada com sucesso", base: slug, total: linhasPersistiveis.length });
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -758,7 +890,10 @@ for (const u of users.rows) {
       client.release();
     }
   } catch (err) {
-    res.status(500).json({ ok: false, erro: err.message });
+    // Erros de validação de planilha (ex.: ID TikTok em notação científica)
+    // chegam com statusCode 400 — não são falha interna.
+    const status = err.statusCode || 500;
+    res.status(status).json(err.payload || { ok: false, erro: err.message });
   }
 });
 
@@ -1489,6 +1624,12 @@ const server = app.listen(PORT, () => {
 
   ensureCentralVendasTables().catch((err) => {
     console.error("[centralVendas] erro ao garantir tabelas no boot:", err.message);
+  });
+
+  // /setup é desabilitado em produção — as colunas novas de `custos`
+  // (produto_nome, variacao_nome, updated_at) são garantidas aqui.
+  ensureColunasCustos().catch((err) => {
+    console.error("[bases] erro ao garantir colunas de custos no boot:", err.message);
   });
 
   ensureDiagnosticoInicialTables().catch((err) => {

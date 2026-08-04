@@ -50,7 +50,7 @@ function nextIsoDate(isoDate) {
 }
 
 function buildClaimsRange(dateFrom, dateTo) {
-  return `date_created:after:${dateFrom}T00:00:00.000-0300,before:${nextIsoDate(dateTo)}T00:00:00.000-0300`;
+  return `date_created:after:${dateFrom}T00:00:00.000-03:00,before:${nextIsoDate(dateTo)}T00:00:00.000-03:00`;
 }
 
 function claimHasReturn(claim) {
@@ -158,7 +158,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
           await sleepFn(backoffDelayMs(attempt, response?.retryAfter));
           continue;
         }
-        return { ok: false, motivo: lastReason, attempts: attempt };
+        return { ok: false, motivo: lastReason, status: response?.status ?? null, attempts: attempt };
       } catch (_) {
         lastReason = "erro_fetch";
         if (attempt < maxAttempts) {
@@ -168,7 +168,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       }
     }
 
-    return { ok: false, motivo: lastReason, attempts: maxAttempts };
+    return { ok: false, motivo: lastReason, status: null, attempts: maxAttempts };
   }
 
   async function buscarClaimsPorPeriodo({
@@ -193,7 +193,6 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
         range: buildClaimsRange(dateFrom, dateTo),
         limit: String(pageLimit),
         offset: String(offset),
-        sort: "date_created:asc",
       });
       const path = `/post-purchase/v1/claims/search?${qs}`;
       const response = await fetchPage(clienteId, path, maxAttempts);
@@ -202,6 +201,10 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       if (!response.ok) {
         // Descarta páginas parciais: mapa incompleto não pode significar que os
         // pedidos não encontrados são vendas boas.
+        console.log(
+          `[centralVendas] claims indisponivel: motivo=${response.motivo}`
+            + ` status=${response.status ?? "sem_status"} pagina=${page} path=${path}`
+        );
         return {
           claimsMap: new Map(),
           claims: [],
@@ -224,6 +227,10 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       offset += data.length;
       if (apiTotal !== null && offset >= apiTotal) break;
       if (offset > 9999) {
+        console.log(
+          `[centralVendas] claims indisponivel: motivo=limite_paginacao_excedido`
+            + ` status=sem_status pagina=${page} path=${path}`
+        );
         return {
           claimsMap: new Map(),
           claims: [],
@@ -237,6 +244,10 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
     }
 
     const claimsMap = buildClaimsMap(claims);
+    console.log(
+      `[centralVendas] claims: total=${claims.length} paginas=${pages}`
+        + ` pedidosComClaims=${claimsMap.size}`
+    );
     return {
       claimsMap,
       claims,

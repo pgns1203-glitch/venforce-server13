@@ -1192,11 +1192,12 @@ function renderFechamentoSection() {
   const clearBtn = quick !== 'todos'
     ? '<button type="button" class="vf-clear-filters" data-fechq="todos">Limpar recorte</button>' : '';
   const recorteBar = `<div class="vf-fapi-fech-chips" role="group" aria-label="Recorte do fechamento">${chips}${clearBtn}</div>`;
+  const claimsMotivo = String(payload.resumo?.claimsMotivo || 'motivo_nao_informado');
   const posVendaWarning = payload.resumo?.claimsIndisponivel
     ? `<div class="vf-banner is-warning vf-banner--compact" role="alert">
         <div class="vf-banner__content">
           <p class="vf-banner__title">Pós-venda não verificado</p>
-          <p class="vf-banner__description">A consulta de claims do Mercado Livre não foi concluída. Devoluções e mediações podem estar ausentes; por segurança, a confiança deste fechamento permanece parcial.</p>
+          <p class="vf-banner__description">A consulta de claims do Mercado Livre não foi concluída (<strong>motivo: ${esc(claimsMotivo)}</strong>). Devoluções e mediações podem estar ausentes; por segurança, a confiança deste fechamento permanece parcial.</p>
         </div>
       </div>`
     : '';

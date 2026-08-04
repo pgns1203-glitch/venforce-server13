@@ -197,6 +197,9 @@ async function run() {
   assert.match(paths[0], /players\.user_id=999/);
   assert.match(paths[0], /range=date_created/);
   assert.match(paths[1], /offset=1/);
+  const firstQuery = new URL(`https://api.test${paths[0]}`).searchParams;
+  assert.match(firstQuery.get("range"), /T00:00:00\.000-03:00/);
+  assert.strictEqual(firstQuery.has("sort"), false);
   assert.strictEqual(lote.claimsMap.size, 2);
   assert.strictEqual(lote.indisponivel, false);
 
@@ -232,6 +235,7 @@ async function run() {
     competencia: "2026-07",
   });
   assert.strictEqual(motorSemClaims.resumo.claimsIndisponivel, true);
+  assert.strictEqual(motorSemClaims.resumo.claimsMotivo, "http_503");
   assert.strictEqual(motorSemClaims.resumo.confianca, "parcial");
 
   const payloadSemClaims = buildPayloadFromRange(
@@ -240,6 +244,8 @@ async function run() {
     snapshotFromMotor(motorSemClaims)
   );
   assert.strictEqual(payloadSemClaims.resumo.claimsIndisponivel, true);
+  assert.strictEqual(payloadSemClaims.resumo.claimsMotivo, "http_503");
+  assert.ok(String(payloadSemClaims.resumo.claimsMotivo).trim().length > 0);
   assert.strictEqual(payloadSemClaims.motor.confianca, "parcial");
   assert.strictEqual(payloadSemClaims.motor.podeConcluir, false);
 

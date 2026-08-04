@@ -549,13 +549,24 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // de pedidos cuja Claims API confirmou devolução. Tags continuam sendo
     // observadas, mas não decidem o resultado porque não informam resolução,
     // beneficiário nem reembolso efetivado.
-    const tagsDevolucoes = orders
+    const posVendaClassificados = orders
       .map((order) => ({
         orderId: String(order.id),
         tags: Array.isArray(order.tags) ? order.tags : [],
         posVenda: classificarClaimsDoPedido(claimsMap.get(String(order.id))),
       }))
-      .filter((entry) => entry.posVenda?.tipo === "devolucao")
+      .filter((entry) => entry.posVenda);
+    const devolucoesClassificadas = posVendaClassificados
+      .filter((entry) => entry.posVenda.tipo === "devolucao").length;
+    const mediacoesClassificadas = posVendaClassificados
+      .filter((entry) => entry.posVenda.tipo === "mediacao").length;
+    console.log(
+      `[centralVendas] claims classificados: devolucoes=${devolucoesClassificadas}`
+        + ` mediacoes=${mediacoesClassificadas} pedidos=${posVendaClassificados.length}`
+    );
+
+    const tagsDevolucoes = posVendaClassificados
+      .filter((entry) => entry.posVenda.tipo === "devolucao")
       .slice(0, 5)
       .map(({ orderId, tags }) => ({ orderId, tags }));
     if (tagsDevolucoes.length) {

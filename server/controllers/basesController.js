@@ -69,6 +69,9 @@ async function upsertCustoBaseController(req, res) {
     }
 
     const isTikTok = base.marketplace === "tiktok";
+    if (isTikTok && !String(body.sku || "").trim()) {
+      return res.status(400).json({ ok: false, erro: "SKU é obrigatório para TikTok." });
+    }
     const custoProduto = validarNumeroObrigatorio(body.custo_produto, "custo_produto");
     const impostoPercentualOpt = validarNumeroOpcional(body.imposto_percentual, "imposto_percentual");
     // TikTok não tem taxa fixa: sempre 0, mesmo que o cliente envie outro valor.
@@ -86,6 +89,7 @@ async function upsertCustoBaseController(req, res) {
       idModel,
       produtoNome: body.produto_nome,
       variacaoNome: body.variacao_nome,
+      sku: body.sku,
       marketplace: base.marketplace,
     });
 
@@ -121,6 +125,7 @@ async function upsertCustoBaseController(req, res) {
         id_model: resultado.custo.id_model ?? null,
         produto_nome: resultado.custo.produto_nome ?? null,
         variacao_nome: resultado.custo.variacao_nome ?? null,
+        sku: resultado.custo.sku || null,
         updated_at: resultado.custo.updated_at ?? null,
       },
     });

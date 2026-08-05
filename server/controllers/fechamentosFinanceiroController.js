@@ -202,13 +202,13 @@ async function processarFechamentoFinanceiroController(req, res) {
       return res.status(400).json({ ok: false, error: "Marketplace inválido. Envie exatamente 'meli', 'shopee' ou 'tiktok'." });
     }
 
-    // TikTok Shop: os custos vêm SEMPRE da Base TikTok vinculada — não existe
-    // planilha de custos para esse marketplace.
-    if (marketplace === "tiktok" && !costsBaseId && !clienteSlug) {
+    // TikTok Shop: os custos vêm SEMPRE de uma Base TikTok escolhida
+    // manualmente — não existe planilha de custos nem vínculo automático por
+    // cliente para esse marketplace (a Base TikTok não exige cliente).
+    if (marketplace === "tiktok" && !costsBaseId) {
       return res.status(400).json({
         ok: false,
-        error:
-          "Nenhuma Base TikTok vinculada a este cliente. Cadastre ou vincule a base na tela de Bases antes de processar o fechamento.",
+        error: "Selecione uma Base TikTok antes de processar o fechamento.",
       });
     }
 

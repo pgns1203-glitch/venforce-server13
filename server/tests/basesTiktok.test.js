@@ -297,37 +297,54 @@ async function testeImportacao() {
   );
 
   // Rota legada /importar-base → parsePlanilha
-  const linhasTikTok = parsePlanilha(planilhaBuffer(aoaTikTok), "tiktok.xlsx", "tiktok");
+  // Exemplo real do bug: mesmo ID numérico, SKUs textuais diferentes, cada
+  // um com custo próprio (KIT2BIBI/KIT3BIBI) — precisa virar DUAS linhas.
+  const aoaTikTokMultiSku = [
+    ["ID do SKU", "SKU", "Nome do produto", "Custo unitário", "Imposto (%)"],
+    [ID_19, "KIT2BIBI", "Kit Bibi", "22,90", "6"],
+    [ID_19, "KIT3BIBI", "Kit Bibi", "34,70", "6"],
+  ];
+  const linhasTikTok = parsePlanilha(planilhaBuffer(aoaTikTokMultiSku), "tiktok.xlsx", "tiktok");
   eq("parse: preserva o ID do SKU", linhasTikTok[0].produto_id, ID_19);
-  eq("parse: segundo ID preservado", linhasTikTok[1].produto_id, ID_18);
+  eq("parse: mesmo ID vira duas linhas com SKUs diferentes", linhasTikTok.length, 2);
+  eq("parse: segundo ID igual ao primeiro (mesmo produto)", linhasTikTok[1].produto_id, ID_19);
+  eq("parse: sku do primeiro item", linhasTikTok[0].sku, "KIT2BIBI");
+  eq("parse: sku do segundo item", linhasTikTok[1].sku, "KIT3BIBI");
   eq("parse: mantém taxa fixa zero", linhasTikTok[0].taxa_fixa, 0);
   eq("parse: mantém id_model nulo", linhasTikTok[0].id_model, null);
-  eq("parse: salva produto_nome", linhasTikTok[0].produto_nome, "Camiseta Dry");
-  eq("parse: salva variacao_nome", linhasTikTok[0].variacao_nome, "Preto, G");
-  eq("parse: custo lido", linhasTikTok[0].custo_produto, 15.9);
-  eq("parse: imposto decimal", linhasTikTok[0].imposto_percentual, 0.08);
+  eq("parse: salva produto_nome", linhasTikTok[0].produto_nome, "Kit Bibi");
+  eq("parse: custo do primeiro SKU", linhasTikTok[0].custo_produto, 22.9);
+  eq("parse: custo do segundo SKU (diferente do primeiro)", linhasTikTok[1].custo_produto, 34.7);
+  eq("parse: imposto decimal", linhasTikTok[0].imposto_percentual, 0.06);
   ok("parse: nunca prefixa MLB no TikTok", !linhasTikTok[0].produto_id.includes("MLB"));
 
   throws(
     "parse: rejeita ID científico",
-    () => parsePlanilha(planilhaBuffer([["ID do SKU", "Custo unitário"], ["1.7359074637385248E+18", "10"]]), "t.xlsx", "tiktok"),
+    () => parsePlanilha(planilhaBuffer([["ID do SKU", "SKU", "Custo unitário"], ["1.7359074637385248E+18", "KIT1", "10"]]), "t.xlsx", "tiktok"),
     (err) => err.statusCode === 400 && /notação científica/i.test(err.payload.erro)
   );
 
+  throws(
+    "parse: linha com ID mas sem SKU é rejeitada",
+    () => parsePlanilha(planilhaBuffer([["ID do SKU", "Custo unitário"], [ID_19, "10"]]), "sem-sku.xlsx", "tiktok"),
+    (err) => err.statusCode === 400 && /ID e SKU/.test(err.payload.erro)
+  );
+
   // CSV UTF-8 com cabeçalho acentuado ("Custo unitário") precisa ser lido.
-  const csvTikTok = `ID do SKU,Nome do produto,Nome do SKU,Custo unitário,Imposto\n"${ID_19}","Camiseta","Preto, G",15.90,0.08`;
+  // "Nome do SKU" é alias de SKU (não de variação) no formato novo.
+  const csvTikTok = `ID do SKU,Nome do produto,Nome do SKU,Custo unitário,Imposto\n"${ID_19}","Camiseta","KIT2BIBI",15.90,0.08`;
   const linhasCsv = parsePlanilha(Buffer.from(csvTikTok, "utf8"), "tiktok.csv", "tiktok");
   eq("parse CSV: ID preservado", linhasCsv[0].produto_id, ID_19);
   eq("parse CSV: custo acentuado lido", linhasCsv[0].custo_produto, 15.9);
-  eq("parse CSV: variação lida", linhasCsv[0].variacao_nome, "Preto, G");
+  eq("parse CSV: SKU lido via alias 'Nome do SKU'", linhasCsv[0].sku, "KIT2BIBI");
 
   const semCusto = parsePlanilha(
-    planilhaBuffer([["ID do SKU", "Custo unitário"], [ID_19, ""], [ID_18, "9,90"]]),
+    planilhaBuffer([["ID do SKU", "SKU", "Custo unitário"], [ID_19, "KIT2BIBI", ""], [ID_18, "KIT-UNICO", "9,90"]]),
     "t.xlsx",
     "tiktok"
   );
-  eq("parse: linha sem custo é marcada", semCusto.find((l) => l.produto_id === ID_19).tem_custo, false);
-  eq("parse: linha com custo é marcada", semCusto.find((l) => l.produto_id === ID_18).tem_custo, true);
+  eq("parse: linha sem custo é marcada", semCusto.find((l) => l.sku === "KIT2BIBI").tem_custo, false);
+  eq("parse: linha com custo é marcada", semCusto.find((l) => l.sku === "KIT-UNICO").tem_custo, true);
 
   // ── Não regressão MELI / Shopee ──
   const linhasMeli = parsePlanilha(
@@ -362,7 +379,7 @@ async function testeUpsert() {
 
   // ── criação (não existe ainda) ──
   const stubCriar = instalarPoolFalso([
-    { match: /INSERT INTO custos/i, resultado: { rows: [{ base_id: 1, produto_id: ID_19, custo_produto: "15.90", imposto_percentual: "0.08", taxa_fixa: "0", id_model: null, produto_nome: "Camiseta", variacao_nome: "Preto, G", updated_at: "2026-08-04T10:00:00Z" }] } },
+    { match: /INSERT INTO custos/i, resultado: { rows: [{ base_id: 1, produto_id: ID_19, sku: "KIT2BIBI", custo_produto: "15.90", imposto_percentual: "0.08", taxa_fixa: "0", id_model: null, produto_nome: "Camiseta", variacao_nome: "Preto, G", updated_at: "2026-08-04T10:00:00Z" }] } },
   ]);
   const criado = await upsertCustoBase({
     baseId: 1,
@@ -373,6 +390,7 @@ async function testeUpsert() {
     idModel: "deveria ser ignorado",
     produtoNome: "Camiseta",
     variacaoNome: "Preto, G",
+    sku: "KIT2BIBI",
     marketplace: "tiktok",
   });
   const insert = stubCriar.queries.find((q) => /INSERT INTO custos/i.test(q.text));
@@ -384,11 +402,22 @@ async function testeUpsert() {
   eq("insert força id_model nulo", insert.params[5], null);
   eq("insert grava produto_nome", insert.params[6], "Camiseta");
   eq("insert grava variacao_nome", insert.params[7], "Preto, G");
+  eq("insert grava sku", insert.params[8], "KIT2BIBI");
   ok("insert carimba updated_at", /updated_at/.test(insert.text) && /CURRENT_TIMESTAMP/.test(insert.text));
 
-  // ── atualização (já existe) ──
+  // SKU é obrigatório para TikTok — sem ele nem chega a consultar o banco.
+  let erroSemSku = null;
+  try {
+    await upsertCustoBase({
+      baseId: 1, produtoIdNorm: ID_19, custoProduto: 10,
+      impostoPercentualOpt: semOpt, taxaFixaOpt: semOpt, marketplace: "tiktok",
+    });
+  } catch (e) { erroSemSku = e; }
+  ok("upsert TikTok sem SKU é rejeitado", !!erroSemSku && erroSemSku.statusCode === 400);
+
+  // ── atualização (já existe, mesmo ID + mesmo SKU) ──
   const existente = {
-    base_id: 1, produto_id: ID_19, custo_produto: "15.90", imposto_percentual: "0.08",
+    base_id: 1, produto_id: ID_19, sku: "KIT2BIBI", custo_produto: "15.90", imposto_percentual: "0.08",
     taxa_fixa: "0", id_model: null, produto_nome: "Camiseta", variacao_nome: "Preto, G", updated_at: null,
   };
   const stubAtualizar = instalarPoolFalso([
@@ -403,8 +432,10 @@ async function testeUpsert() {
     taxaFixaOpt: { tem: true, numero: 7 }, // ignorado no TikTok
     produtoNome: "   ",                   // vazio → não sobrescreve
     variacaoNome: "Preto, GG",
+    sku: "kit2bibi",                      // mesmo SKU, caixa diferente → mesma linha
     marketplace: "tiktok",
   });
+  const select = stubAtualizar.queries.find((q) => /SELECT[\s\S]*FROM custos/i.test(q.text));
   const update = stubAtualizar.queries.find((q) => /UPDATE custos/i.test(q.text));
   const tocaBase = stubAtualizar.queries.find((q) => /UPDATE bases SET updated_at/i.test(q.text));
   stubAtualizar.restaurar();
@@ -415,9 +446,28 @@ async function testeUpsert() {
   eq("taxa TikTok continua zero mesmo se enviada", update.params[4], 0);
   eq("nome vazio não sobrescreve", update.params[6], null);
   eq("atualiza nomes não vazios", update.params[7], "Preto, GG");
+  eq("update grava o sku informado", update.params[8], "kit2bibi");
   ok("update usa COALESCE para preservar nomes", /COALESCE\(\$7, produto_nome\)/.test(update.text));
+  ok("update filtra por SKU (case-insensitive), nunca só pelo produto_id", /LOWER\(sku\) = LOWER\(\$9\)/.test(update.text));
+  ok("select de existência também filtra por SKU no TikTok", /LOWER\(sku\) = LOWER\(\$3\)/.test(select.text));
   ok("atualiza custos.updated_at", /updated_at = CURRENT_TIMESTAMP/.test(update.text));
   ok("atualiza bases.updated_at", !!tocaBase);
+
+  // ── mesmo ID, SKU diferente = registro DISTINTO (o bug relatado) ──
+  // SELECT não encontra nada (nenhum outro SKU deste ID bate) → cria, não atualiza.
+  const stubOutroSku = instalarPoolFalso([
+    { match: /SELECT[\s\S]*FROM custos/i, resultado: { rows: [] } },
+    { match: /INSERT INTO custos/i, resultado: { rows: [{ ...existente, sku: "KIT3BIBI", custo_produto: "34.70" }] } },
+  ]);
+  const criadoOutroSku = await upsertCustoBase({
+    baseId: 1, produtoIdNorm: ID_19, custoProduto: 34.7,
+    impostoPercentualOpt: { tem: true, numero: 0.06 }, taxaFixaOpt: semOpt,
+    sku: "KIT3BIBI", marketplace: "tiktok",
+  });
+  const selectOutroSku = stubOutroSku.queries.find((q) => /SELECT[\s\S]*FROM custos/i.test(q.text));
+  stubOutroSku.restaurar();
+  eq("mesmo ID + SKU novo cria (não atualiza) o registro", criadoOutroSku.acao, "criado");
+  eq("busca de existência usa o novo SKU, não o ID sozinho", selectOutroSku.params[2], "KIT3BIBI");
 
   // ── não regressão: MELI/Shopee mantêm taxa fixa e id_model ──
   const stubMeli = instalarPoolFalso([
@@ -468,18 +518,71 @@ function testeTelaBases() {
   ok("wrapper da seção TikTok", html.includes('id="wrap-tiktok"'));
   ok("estado vazio da seção TikTok", html.includes('id="empty-tiktok"'));
   ok("TikTok no modal de vínculo", (html.match(/value="tiktok"/g) || []).length >= 2);
-  ok("campo cliente não fala só de Grant ML", html.includes("Obrigatório para Mercado Livre e TikTok Shop."));
+  ok("campo cliente obrigatório só para Mercado Livre", html.includes("Obrigatório para Mercado Livre."));
+  ok("drawer tem coluna de SKU", html.includes('id="bases-costs-th-sku"'));
   ok("drawer tem coluna de variação", html.includes('id="bases-costs-th-variacao"'));
   ok("drawer tem coluna de atualização", html.includes('id="bases-costs-th-atualizacao"'));
 
   const js = fs.readFileSync(path.join(__dirname, "..", "..", "Portal", "bases.js"), "utf8");
   ok("bases.js referencia o tbody TikTok", js.includes('document.getElementById("bases-tbody-tiktok")'));
   ok("drawer usa uma única chave de marketplace", js.includes("DRAWER_MARKETPLACE") && !js.includes("DRAWER_IS_SHOPEE"));
-  ok("cliente obrigatório para TikTok", js.includes('mp === "meli" || mp === "tiktok"'));
+  ok("cliente é opcional para TikTok (só MELI exige)", js.includes("function marketplaceExigeCliente(mp) {\n  return mp === \"meli\";\n}"));
+  ok("drawer tem campo de SKU no formulário", js.includes('id="cost-form-sku"'));
 
   const css = fs.readFileSync(path.join(__dirname, "..", "..", "Portal", "css", "pages", "bases-v2.css"), "utf8");
   ok("dot visual do TikTok", css.includes(".vf-bases-mp__dot--tiktok"));
   ok("grade com três colunas", css.includes("minmax(280px, 1fr) minmax(280px, 1fr)"));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   6. Cliente opcional na Base TikTok (criação/importação/vínculo)
+   ═══════════════════════════════════════════════════════════════════════════ */
+function testeClienteOpcionalTikTok() {
+  console.log("\n▸ Cliente opcional (Base TikTok)");
+
+  // 1/2. Base TikTok criada/importada sem cliente: a rota /importar-base não
+  // lê nem exige cliente_slug em nenhum ponto — a base TikTok é persistida
+  // (INSERT INTO bases + custos) sem qualquer referência a cliente.
+  const indexSrc = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+  const inicioRota = indexSrc.indexOf('app.post("/importar-base"');
+  const fimRota = indexSrc.indexOf("// DESABILITAR BASE");
+  ok("rota /importar-base localizada", inicioRota > 0 && fimRota > inicioRota);
+  const rotaImportar = indexSrc.slice(inicioRota, fimRota);
+  ok(
+    "importação de base NÃO exige nem lê cliente_slug",
+    !/cliente_slug|clienteSlug/.test(rotaImportar)
+  );
+
+  // 3. Cliente opcional ainda pode ser vinculado: o vínculo só acontece se um
+  // clienteId for explicitamente informado (fluxo best-effort no frontend).
+  const basesJsSrc = fs.readFileSync(path.join(__dirname, "..", "..", "Portal", "bases.js"), "utf8");
+  ok(
+    "vínculo automático só ocorre com clienteId informado (nunca vazio)",
+    /if \(!VINCULOS_EDITAVEIS \|\| !clienteId\) return;/.test(basesJsSrc)
+  );
+  ok(
+    "endpoint de vínculo manual exige cliente_id explicitamente (não é chamado sem ele)",
+    /criarVinculoManual/.test(fs.readFileSync(path.join(__dirname, "..", "services", "baseVinculosService.js"), "utf8"))
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   7. GET /bases/:baseId — não colapsa linhas com o mesmo produto_id (TikTok)
+   ═══════════════════════════════════════════════════════════════════════════ */
+function testeGetBaseMultiSku() {
+  console.log("\n▸ GET /bases/:baseId — chave composta no TikTok");
+
+  const indexSrc = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+  const inicio = indexSrc.indexOf("// BUSCAR CUSTOS DE UMA BASE");
+  const fim = indexSrc.indexOf("// IMPORTAR PLANILHA");
+  ok("rota GET /bases/:baseId localizada", inicio > 0 && fim > inicio);
+  const rota = indexSrc.slice(inicio, fim);
+  ok(
+    "chave do dicionário inclui o SKU quando presente (evita colapsar linhas)",
+    /row\.sku \? `\$\{row\.produto_id\}::\$\{row\.sku\}` : row\.produto_id/.test(rota)
+  );
+  ok("resposta expõe produto_id explicitamente por item", /produto_id: row\.produto_id/.test(rota));
+  ok("resposta expõe sku por item", /sku: row\.sku \|\| null/.test(rota));
 }
 
 /* ── runner ───────────────────────────────────────────────────────────────── */
@@ -489,6 +592,8 @@ async function main() {
   await testeMarketplace();
   await testeImportacao();
   await testeUpsert();
+  testeClienteOpcionalTikTok();
+  testeGetBaseMultiSku();
   testeTelaBases();
   console.log(`\nbasesTiktok: ok (${checks} verificações)`);
 }

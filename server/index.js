@@ -220,11 +220,15 @@ function extrairIdModel(row) {
 // ─── TikTok Shop: cabeçalhos da planilha de custos ───────────────────────────
 // Aliases já em caixa baixa e sem acento — comparados contra o cabeçalho
 // limpo por normalizarChaveHeader().
-const TIKTOK_ALIASES_ID = ["id do sku", "id sku", "sku id", "tiktok sku id", "produto_id", "id", "sku"];
+// "sku" NÃO é alias de ID: desde que a base passou a exigir SKU textual
+// distinto do ID (mesmo produto_id pode ter várias linhas com SKUs
+// diferentes), uma coluna solta "SKU" é sempre o texto do SKU, nunca o ID.
+const TIKTOK_ALIASES_ID = ["id do sku", "id sku", "sku id", "tiktok sku id", "id do produto", "produto_id", "id"];
+const TIKTOK_ALIASES_SKU = ["sku", "nome do sku", "sku do vendedor", "seller sku", "codigo sku"];
 const TIKTOK_ALIASES_CUSTO = ["custo unitario", "custo", "preco de custo", "custo_produto", "cmv unitario"];
 const TIKTOK_ALIASES_IMPOSTO = ["imposto", "imposto (%)", "imposto percentual", "aliquota", "imposto_percentual"];
 const TIKTOK_ALIASES_PRODUTO = ["nome do produto", "produto", "product name"];
-const TIKTOK_ALIASES_VARIACAO = ["nome do sku", "variacao", "nome da variacao", "sku name"];
+const TIKTOK_ALIASES_VARIACAO = ["variacao", "nome da variacao"];
 
 function normalizarChaveHeader(valor) {
   return String(valor || "")
@@ -308,11 +312,23 @@ function parsePlanilha(buffer, originalName, marketplace) {
       // TikTok: produto_id = ID do SKU, sempre texto. normalizarProdutoIdTikTok
       // rejeita notação científica (o Excel já perdeu os dígitos originais).
       const idTikTok = normalizarProdutoIdTikTok(obterValorPorAlias(r, TIKTOK_ALIASES_ID));
-      if (!idTikTok) continue;
+      const skuTikTok = String(obterValorPorAlias(r, TIKTOK_ALIASES_SKU) || "").trim();
+      if (!idTikTok && !skuTikTok) continue; // linha em branco
+
+      // A chave lógica do TikTok é ID + SKU: os dois são obrigatórios juntos.
+      // O mesmo ID pode aparecer em várias linhas com SKUs diferentes, cada
+      // uma com seu próprio custo — sem o SKU não há como distingui-las.
+      if (!idTikTok || !skuTikTok) {
+        const erroLinha = new Error("A linha TikTok precisa possuir ID e SKU.");
+        erroLinha.statusCode = 400;
+        erroLinha.payload = { ok: false, erro: "A linha TikTok precisa possuir ID e SKU." };
+        throw erroLinha;
+      }
 
       const custoRaw = obterValorPorAlias(r, TIKTOK_ALIASES_CUSTO);
       resultado.push({
         produto_id: idTikTok,
+        sku: skuTikTok,
         custo_produto: numeroSeguro(custoRaw),
         imposto_percentual: normalizarImposto(obterValorPorAlias(r, TIKTOK_ALIASES_IMPOSTO)),
         // TikTok não usa taxa fixa nem id_model.
@@ -555,6 +571,26 @@ CREATE TABLE IF NOT EXISTS callbacks (
   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 `);
 
+    // TikTok Shop: o mesmo produto_id (ID do SKU) pode ter várias linhas com
+    // SKUs textuais diferentes (KIT2BIBI, KIT3BIBI...), cada uma com seu
+    // próprio custo. MELI/Shopee nunca preenchem esta coluna (fica '' — o
+    // default), então a unicidade histórica (base_id, produto_id) para eles
+    // é preservada pelo índice único abaixo.
+    await pool.query(`
+  ALTER TABLE custos
+  ADD COLUMN IF NOT EXISTS sku TEXT NOT NULL DEFAULT '';
+`);
+    await pool.query(`
+  DO $$
+  BEGIN
+    ALTER TABLE custos DROP CONSTRAINT IF EXISTS custos_base_id_produto_id_key;
+  EXCEPTION WHEN undefined_object THEN NULL;
+  END $$;
+`);
+    await pool.query(`
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_produto_sku ON custos (base_id, produto_id, sku);
+`);
+
     await pool.query(`
       ALTER TABLE ml_tokens ADD COLUMN IF NOT EXISTS cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE;
     `);
@@ -780,12 +816,19 @@ app.get("/bases/:baseId", authMiddleware, async (req, res) => {
     if (!acesso.rows.length) return res.status(404).json({ ok: false, erro: "Base não encontrada" });
     const base = acesso.rows[0];
     const custos = await pool.query(
-      "SELECT produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, updated_at FROM custos WHERE base_id = $1",
+      "SELECT produto_id, sku, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, updated_at FROM custos WHERE base_id = $1",
       [base.id]
     );
     const dados = {};
     for (const row of custos.rows) {
-      dados[row.produto_id] = {
+      // TikTok: o mesmo produto_id pode ter várias linhas com SKUs
+      // diferentes — a chave do objeto precisa incluir o SKU para não
+      // colapsar linhas distintas. MELI/Shopee nunca preenchem sku, então a
+      // chave continua sendo só o produto_id (comportamento inalterado).
+      const chave = row.sku ? `${row.produto_id}::${row.sku}` : row.produto_id;
+      dados[chave] = {
+        produto_id: row.produto_id,
+        sku: row.sku || null,
         custo_produto: row.custo_produto == null ? null : parseFloat(row.custo_produto),
         imposto_percentual: parseFloat(row.imposto_percentual),
         taxa_fixa: parseFloat(row.taxa_fixa),
@@ -825,6 +868,7 @@ app.post("/importar-base", authMiddleware, upload.single("arquivo"), async (req,
         marketplace,
         preview: linhas.slice(0, 10).map(l => ({
           id: l.produto_id,
+          sku: l.sku || null,
           custo_produto: l.custo_produto,
           imposto_percentual: l.imposto_percentual,
           taxa_fixa: l.taxa_fixa,
@@ -865,13 +909,17 @@ for (const u of users.rows) {
 }
       await client.query("DELETE FROM custos WHERE base_id = $1", [baseId]);
       for (const linha of linhasPersistiveis) {
+        // TikTok: identidade única é (base_id, produto_id, sku) — o mesmo
+        // produto_id pode ter várias linhas com SKUs diferentes. MELI/Shopee
+        // não preenchem sku (fica ''), então o conflito continua batendo só
+        // por produto_id para eles, como antes.
         await client.query(
-          `INSERT INTO custos (base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP) ON CONFLICT (base_id, produto_id) DO UPDATE SET
+          `INSERT INTO custos (base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP) ON CONFLICT (base_id, produto_id, sku) DO UPDATE SET
            custo_produto = EXCLUDED.custo_produto, imposto_percentual = EXCLUDED.imposto_percentual, taxa_fixa = EXCLUDED.taxa_fixa, id_model = EXCLUDED.id_model,
            produto_nome = COALESCE(EXCLUDED.produto_nome, custos.produto_nome), variacao_nome = COALESCE(EXCLUDED.variacao_nome, custos.variacao_nome),
            updated_at = CURRENT_TIMESTAMP`,
-          [baseId, linha.produto_id, linha.custo_produto, linha.imposto_percentual, linha.taxa_fixa, linha.id_model || null, linha.produto_nome || null, linha.variacao_nome || null]
+          [baseId, linha.produto_id, linha.custo_produto, linha.imposto_percentual, linha.taxa_fixa, linha.id_model || null, linha.produto_nome || null, linha.variacao_nome || null, linha.sku || ""]
         );
       }
       await client.query("COMMIT");

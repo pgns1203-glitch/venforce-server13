@@ -92,15 +92,17 @@ function marketplaceLabel(mk) {
   return "—";
 }
 
-// Marketplaces cujos custos vêm da base vinculada (sem upload de planilha).
-// MELI aceita base OU upload; TikTok exige a Base TikTok vinculada.
+// Marketplaces cujos custos vêm da base (sem upload de planilha). MELI aceita
+// base vinculada OU upload; TikTok exige uma Base TikTok — mas, diferente do
+// MELI, a base do TikTok não tem vínculo automático por cliente: é escolhida
+// manualmente no select #fin-tiktok-base (ver detectarBaseVinculada/
+// aplicarSelecaoBaseTikTok). O mesmo estado (baseVinculadaState) é reusado
+// nos dois fluxos para não duplicar toda a lógica de FormData/chips/cost-card.
 function marketplaceUsaBaseVinculada(mk) {
   return mk === "meli" || mk === "tiktok";
 }
 
-const MSG_TIKTOK_SEM_BASE =
-  "Nenhuma Base TikTok vinculada a este cliente. Cadastre ou vincule a base na tela de Bases " +
-  "antes de processar o fechamento.";
+const MSG_TIKTOK_SEM_BASE = "Selecione uma Base TikTok antes de processar o fechamento.";
 
 // Entrega ao cliente ainda não entende o motor TikTok: o relatório público usa
 // metodologia/fórmulas de MELI/Shopee e o payload salvo descartaria Onhold e
@@ -164,18 +166,19 @@ function atualizarChips() {
   setChip("fin-chip-cliente", "Cliente", clienteNome, sel?.value ? "info" : null);
   setChip("fin-chip-marketplace", "Marketplace", marketplaceLabel(marketplace), marketplace ? "info" : null);
 
-  // Chip da base
-  if (!sel?.value || !marketplace) {
+  // Chip da base. TikTok não depende de cliente selecionado — a base é
+  // escolhida manualmente e vale mesmo sem cliente.
+  if (!marketplace || (marketplace !== "tiktok" && !sel?.value)) {
     setChip("fin-chip-base", "Base", "—", null);
   } else if (baseVinculadaState.loading) {
-    setChip("fin-chip-base", "Base", "verificando…", null);
+    setChip("fin-chip-base", "Base", marketplace === "tiktok" ? "carregando…" : "verificando…", null);
   } else if (baseVinculadaState.hasLink) {
-    setChip("fin-chip-base", "Base", "vinculada", "ok");
+    setChip("fin-chip-base", "Base", marketplace === "tiktok" ? "selecionada" : "vinculada", "ok");
   } else if (marketplace === "shopee") {
     setChip("fin-chip-base", "Base", "upload manual", "info");
   } else if (marketplace === "tiktok") {
-    // TikTok não tem plano B: sem base vinculada não há como cruzar custos.
-    setChip("fin-chip-base", "Base", "obrigatória — não vinculada", "bad");
+    // TikTok não tem plano B: sem base escolhida não há como cruzar custos.
+    setChip("fin-chip-base", "Base", "obrigatória — não selecionada", "bad");
   } else {
     setChip("fin-chip-base", "Base", "não vinculada", "warn");
   }
@@ -225,6 +228,54 @@ function atualizarHintClienteFinanceiro() {
   }
 }
 
+// ── Base TikTok: seleção manual (sem vínculo com cliente) ──────────────────
+// A seleção do cliente NÃO decide automaticamente qual base usar no TikTok.
+async function carregarBasesTikTokFinanceiro() {
+  const sel = document.getElementById("fin-tiktok-base");
+  if (!sel) return;
+  const valorAtual = sel.value;
+  try {
+    const res = await fetch(`${API_BASE}/bases`, {
+      headers: { Authorization: "Bearer " + TOKEN },
+    });
+    if (res.status === 401) { window.location.replace("index.html"); return; }
+    const data = await res.json().catch(() => ({}));
+    const bases = Array.isArray(data?.bases) ? data.bases : [];
+    const basesTikTok = bases.filter((b) => {
+      const mk = String(b?.marketplace || "").trim().toLowerCase();
+      return mk === "tiktok" && b?.ativo !== false;
+    });
+    sel.innerHTML = `<option value="">Selecione a Base TikTok…</option>` +
+      basesTikTok
+        .map((b) => `<option value="${b.id}">${escapeHTML(b.nome || b.slug || ("Base #" + b.id))}</option>`)
+        .join("");
+    if (valorAtual && basesTikTok.some((b) => String(b.id) === valorAtual)) sel.value = valorAtual;
+  } catch (_) {
+    // Silencioso: select fica só com o placeholder.
+  }
+}
+
+// Reflete a opção escolhida em #fin-tiktok-base no mesmo estado que o fluxo
+// MELI usa para base vinculada — reaproveita FormData/chips/cost-card.
+function aplicarSelecaoBaseTikTok() {
+  const sel = document.getElementById("fin-tiktok-base");
+  const val = sel?.value || "";
+  if (val) {
+    baseVinculadaState.hasLink = true;
+    baseVinculadaState.baseId = Number(val);
+    baseVinculadaState.baseNome = sel.options[sel.selectedIndex]?.textContent || ("Base #" + val);
+  } else {
+    baseVinculadaState.hasLink = false;
+    baseVinculadaState.baseId = null;
+    baseVinculadaState.baseNome = null;
+  }
+  baseVinculadaState.loading = false;
+  aplicarEstadoBase();
+}
+
+const tiktokBaseSelect = document.getElementById("fin-tiktok-base");
+if (tiktokBaseSelect) tiktokBaseSelect.addEventListener("change", aplicarSelecaoBaseTikTok);
+
 // ── Base vinculada (cliente + marketplace) ─────────────────────────────────
 async function detectarBaseVinculada() {
   const clienteSlug = document.getElementById("fin-cliente")?.value || "";
@@ -232,6 +283,17 @@ async function detectarBaseVinculada() {
 
   baseVinculadaState.clienteSlug = clienteSlug;
   baseVinculadaState.marketplace = marketplace;
+
+  // TikTok: nunca busca vínculo automático por cliente. A base é escolhida
+  // manualmente no select #fin-tiktok-base — o cliente não decide a base.
+  if (marketplace === "tiktok") {
+    baseVinculadaState.loading = true;
+    aplicarEstadoBase();
+    await carregarBasesTikTokFinanceiro();
+    aplicarSelecaoBaseTikTok();
+    return;
+  }
+
   baseVinculadaState.hasLink = false;
   baseVinculadaState.baseId = null;
   baseVinculadaState.baseNome = null;
@@ -295,15 +357,20 @@ function aplicarEstadoBase() {
   const isTikTok = marketplace === "tiktok";
   const usandoBase = marketplaceUsaBaseVinculada(marketplace) && baseVinculadaState.hasLink;
 
-  // Card de custos: base vinculada resolve os custos no servidor.
-  // No TikTok o upload de custos nunca é aceito — com ou sem vínculo.
+  // Select manual da Base TikTok — só aparece para TikTok.
+  const tiktokBaseField = document.getElementById("fin-tiktok-base-field");
+  if (tiktokBaseField) tiktokBaseField.hidden = !isTikTok;
+
+  // Card de custos: base (vinculada no MELI, selecionada manualmente no
+  // TikTok) resolve os custos no servidor. No TikTok o upload de custos
+  // nunca é aceito — com ou sem base escolhida.
   if (costsInput) costsInput.disabled = usandoBase || isTikTok;
   if (costsCard) {
     costsCard.classList.toggle("is-linked", usandoBase);
     if (isTikTok && !usandoBase) {
       if (costsBadge) { costsBadge.textContent = "Base obrigatória"; costsBadge.className = "vf-tag is-danger"; }
-      if (costsTitle) costsTitle.textContent = "Base TikTok não vinculada";
-      if (costsHint) costsHint.textContent = "Vincule a base na tela de Bases";
+      if (costsTitle) costsTitle.textContent = "Nenhuma Base TikTok selecionada";
+      if (costsHint) costsHint.textContent = "Escolha a base acima";
       if (costsInput && costsInput.files?.length) {
         costsInput.value = "";
         costsInput.dispatchEvent(new Event("change"));
@@ -315,8 +382,8 @@ function aplicarEstadoBase() {
         costsNote.hidden = false;
       }
     } else if (usandoBase) {
-      if (costsBadge) { costsBadge.textContent = "Base vinculada"; costsBadge.className = "vf-tag is-info"; }
-      if (costsTitle) costsTitle.textContent = "Usando base vinculada do cliente";
+      if (costsBadge) { costsBadge.textContent = isTikTok ? "Base selecionada" : "Base vinculada"; costsBadge.className = "vf-tag is-info"; }
+      if (costsTitle) costsTitle.textContent = isTikTok ? "Usando a Base TikTok selecionada" : "Usando base vinculada do cliente";
       if (costsHint) costsHint.textContent = baseVinculadaState.baseNome || "Custos resolvidos automaticamente";
       // Limpa qualquer upload manual anterior para não conflitar
       if (costsInput && costsInput.files?.length) {
@@ -340,9 +407,13 @@ function aplicarEstadoBase() {
   // Status da base → vf-banner
   if (statusEl) {
     statusEl.classList.remove("is-info", "is-success", "is-warning", "is-danger");
-    if (!clienteSlug || !marketplace) {
+    if (!marketplace || (!isTikTok && !clienteSlug)) {
       statusEl.hidden = true;
-    } else if (baseVinculadaState.loading) {
+    } else if (isTikTok && baseVinculadaState.loading) {
+      statusEl.hidden = false;
+      statusEl.classList.add("is-info");
+      statusEl.textContent = "Carregando bases TikTok disponíveis…";
+    } else if (!isTikTok && baseVinculadaState.loading) {
       statusEl.hidden = false;
       statusEl.classList.add("is-info");
       statusEl.textContent = "Verificando base vinculada do cliente…";
@@ -350,7 +421,7 @@ function aplicarEstadoBase() {
       statusEl.hidden = false;
       statusEl.classList.add("is-success");
       statusEl.textContent = isTikTok
-        ? `Base TikTok vinculada: "${baseVinculadaState.baseNome}". Os custos vêm dela — envie apenas o Income.`
+        ? `Base TikTok selecionada: "${baseVinculadaState.baseNome}". Os custos vêm dela — envie apenas o Income.`
         : marketplace === "meli"
           ? `Base vinculada encontrada: "${baseVinculadaState.baseNome}". O upload de custos não é necessário.`
           : `Base vinculada encontrada: "${baseVinculadaState.baseNome}".`;
@@ -432,7 +503,9 @@ function atualizarMiniResumo() {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   set("fin-res-cliente", clienteNome);
   set("fin-res-marketplace", marketplaceLabel(marketplace));
-  set("fin-res-base", usandoBase ? `Vinculada (${baseVinculadaState.baseNome})` : (marketplace ? "Upload manual" : "—"));
+  set("fin-res-base", usandoBase
+    ? `${marketplace === "tiktok" ? "Selecionada" : "Vinculada"} (${baseVinculadaState.baseNome})`
+    : (marketplace ? "Upload manual" : "—"));
   set("fin-res-arquivos", arquivos.length ? arquivos.join(", ") : "nenhum selecionado");
   if (marketplace === "meli") {
     const fullCost = parseMoneyInput(document.getElementById("fin-full-cost")?.value);
@@ -2017,10 +2090,12 @@ async function processarFechamentoFinanceiro() {
   }
 
   const costs = document.getElementById("fin-costs")?.files?.[0];
-  // TikTok: cliente + base vinculada são obrigatórios; não existe upload de custos.
-  if (isTikTok) {
-    if (!clienteSlug) { setStatus("Selecione o cliente para localizar a Base TikTok vinculada.", "danger"); return; }
-    if (!baseVinculadaState.hasLink) { setStatus(MSG_TIKTOK_SEM_BASE, "danger"); return; }
+  // TikTok: a Base TikTok é obrigatória (seleção manual) e não existe upload
+  // de custos. O cliente é opcional — só identifica o fechamento quando
+  // informado, nunca decide qual base usar.
+  if (isTikTok && !baseVinculadaState.hasLink) {
+    setStatus(MSG_TIKTOK_SEM_BASE, "danger");
+    return;
   }
 
   const usandoBase =
@@ -2394,6 +2469,8 @@ if (btnFinLimpar) {
     baseVinculadaState.baseNome = null;
     baseVinculadaState.clienteSlug = "";
     baseVinculadaState.marketplace = "";
+    const tiktokBaseSelectReset = document.getElementById("fin-tiktok-base");
+    if (tiktokBaseSelectReset) tiktokBaseSelectReset.value = "";
     updateOrdersAllVisibility();
     updateMeliExtraCostsVisibility();
     updateTikTokOnholdVisibility();

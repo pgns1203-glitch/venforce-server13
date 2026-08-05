@@ -217,13 +217,13 @@
           </select>
         </div>
 
-        <!-- Cliente: obrigatório para Meli e TikTok Shop, opcional para Shopee -->
+        <!-- Cliente: obrigatório para Meli, opcional para Shopee e TikTok Shop -->
         <div class="vf-field" id="import-cliente-field" style="display:none;">
           <label class="vf-field__label" for="import-cliente"><span id="import-cliente-label">Cliente</span> <span class="vf-field__required" id="import-cliente-req" aria-hidden="true">*</span></label>
           <select id="import-cliente" class="vf-select">
             <option value="">Selecione o cliente…</option>
           </select>
-          <span class="vf-field__hint" id="import-cliente-hint">Obrigatório para Mercado Livre e TikTok Shop.</span>
+          <span class="vf-field__hint" id="import-cliente-hint">Obrigatório para Mercado Livre.</span>
         </div>
 
         <div class="vf-field">
@@ -368,7 +368,8 @@
               </div>
             </th>
             <th id="bases-costs-th-idmodel" style="display:none;">ID Model</th>
-            <!-- TikTok: nome do produto e nome da variação (sem ID de variação) -->
+            <!-- TikTok: SKU (chave junto com o ID), nome do produto e nome da variação -->
+            <th id="bases-costs-th-sku" style="display:none;">SKU</th>
             <th id="bases-costs-th-produto-nome" style="display:none;">Produto</th>
             <th id="bases-costs-th-variacao" style="display:none;">Variação</th>
             <th class="num">
@@ -433,6 +434,7 @@
           <thead>
             <tr>
               <th id="preview-th-id">ID do Produto</th>
+              <th id="preview-th-sku" style="display:none;">SKU</th>
               <th id="preview-th-idmodel" style="display:none;">ID Model</th>
               <th id="preview-th-produto" style="display:none;">Produto</th>
               <th id="preview-th-variacao" style="display:none;">Variação</th>

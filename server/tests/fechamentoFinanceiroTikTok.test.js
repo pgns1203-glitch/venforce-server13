@@ -18,6 +18,7 @@ const {
   parseTikTokIncomeBuffer,
   parseTikTokOnholdBuffer,
   buildTikTokCostMap,
+  buildTikTokCostKey,
   normalizeTikTokSkuId,
   parseTikTokMoney,
   parseTikTokQuantity,
@@ -169,19 +170,22 @@ function onholdBuffer(linhas, { avisos = [] } = {}) {
   });
 }
 
-// Formato devolvido por buildCostRowsFromBase para o TikTok.
+// Formato devolvido por buildCostRowsFromBase para o TikTok. A chave de
+// cruzamento é ID + SKU (buildTikTokCostKey) — "Nome do SKU" no Income é o
+// mesmo texto usado como "SKU" do lado da base.
 function custosBase(rows) {
   return rows.map((r) => ({
     "ID do SKU": r.id,
+    "SKU": r.sku != null ? r.sku : (r.variacao || ""),
     "Custo unitário": r.custo,
     "Imposto (%)": r.imposto,
     "Nome do produto": r.produto || "",
-    "Nome do SKU": r.variacao || "",
+    "Nome da variação": r.variacao || "",
   }));
 }
 
 const CUSTOS_PADRAO = custosBase([
-  { id: SKU_19, custo: 10, imposto: 0.1, produto: "Furadeira X", variacao: "Azul" },
+  { id: SKU_19, sku: "Azul", custo: 10, imposto: 0.1, produto: "Furadeira X", variacao: "Azul" },
 ]);
 
 // ── A. IDs ──────────────────────────────────────────────────────────────────
@@ -278,12 +282,14 @@ console.log("\n▸ B. Detecção de cabeçalho");
 
 // ── C. Cruzamento ───────────────────────────────────────────────────────────
 
-console.log("\n▸ C. Cruzamento por ID do SKU");
+console.log("\n▸ C. Cruzamento por ID do SKU + Nome do SKU (nunca só o ID)");
 {
+  const chave = buildTikTokCostKey(SKU_19, "Azul");
   const { map } = buildTikTokCostMap(CUSTOS_PADRAO);
-  eq("mapa de custos indexado por ID do SKU", map.get(SKU_19).cost, 10);
+  eq("mapa de custos indexado por ID+SKU", map.get(chave).cost, 10);
+  eq("mapa não cria entrada só pelo ID", map.has(SKU_19), false);
   eq("mapa não cria entrada por nome do produto", map.has("Furadeira X"), false);
-  eq("um SKU, uma entrada", map.size, 1);
+  eq("um par ID+SKU, uma entrada", map.size, 1);
 }
 {
   // Mesmo produto, ID diferente: não pode casar por nome.
@@ -297,6 +303,67 @@ console.log("\n▸ C. Cruzamento por ID do SKU");
   eq("custo ausente não vira zero", result.detailedRows[0].custo_unitario, null);
   eq("LC não é calculado sem custo", result.detailedRows[0].lc, null);
   eq("ID entra em unmatchedIds", result.unmatchedIds[0], SKU_18);
+}
+{
+  // Reprodução exata do bug relatado: mesmo ID numérico, vários SKUs textuais
+  // diferentes (KIT2BIBI, KIT3BIBI, KIT4BIBI), cada um com custo próprio.
+  const custosMultiSku = custosBase([
+    { id: SKU_19, sku: "KIT2BIBI", custo: 22.9, imposto: 0.06 },
+    { id: SKU_19, sku: "KIT3BIBI", custo: 34.7, imposto: 0.06 },
+    { id: SKU_19, sku: "KIT4BIBI", custo: 45.6, imposto: 0.06 },
+  ]);
+  const { map: mapaMultiSku } = buildTikTokCostMap(custosMultiSku);
+  eq("mesmo ID com 3 SKUs gera 3 entradas no mapa", mapaMultiSku.size, 3);
+
+  const resultKit2 = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ produto: "Kit Bibi", variacao: "KIT2BIBI" })]),
+    costRowsRaw: custosMultiSku,
+    ads: 0, venforce: 0,
+  });
+  eq("KIT2BIBI recebe o custo do KIT2BIBI", resultKit2.detailedRows[0].custo_unitario, 22.9);
+  eq("KIT2BIBI não recebe custo de outro SKU do mesmo ID", resultKit2.detailedRows[0].custo_unitario !== 34.7, true);
+  eq("KIT2BIBI calcula normalmente", resultKit2.detailedRows[0].status_calculo, "calculado");
+
+  const resultKit3 = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ produto: "Kit Bibi", variacao: "KIT3BIBI" })]),
+    costRowsRaw: custosMultiSku,
+    ads: 0, venforce: 0,
+  });
+  eq("KIT3BIBI recebe o custo do KIT3BIBI", resultKit3.detailedRows[0].custo_unitario, 34.7);
+  eq("KIT3BIBI nunca usa o custo do KIT2BIBI (mesmo ID)", resultKit3.detailedRows[0].custo_unitario !== 22.9, true);
+
+  // Mesmo ID, SKU que NÃO existe na base: não pode "cair" para nenhum dos
+  // outros SKUs do mesmo ID (sem fallback pelo ID sozinho).
+  const resultKitInexistente = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ produto: "Kit Bibi", variacao: "KIT9BIBI" })]),
+    costRowsRaw: custosMultiSku,
+    ads: 0, venforce: 0,
+  });
+  eq("SKU inexistente do mesmo ID fica sem_custo", resultKitInexistente.detailedRows[0].status_calculo, "sem_custo");
+  eq("SKU inexistente não herda custo de nenhum SKU irmão", resultKitInexistente.detailedRows[0].custo_unitario, null);
+  eq(
+    "unmatchedSkuKeys registra a combinação ID+SKU exata",
+    resultKitInexistente.unmatchedSkuKeys.some((u) => u.id_sku === SKU_19 && u.sku === "KIT9BIBI"),
+    true
+  );
+}
+{
+  // Income com ID mas sem "Nome do SKU": nunca cai para busca só pelo ID.
+  const resultSemSku = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ variacao: "" })]),
+    costRowsRaw: CUSTOS_PADRAO,
+    ads: 0, venforce: 0,
+  });
+  const rowSemSku = resultSemSku.detailedRows[0];
+  eq("ID sem SKU fica com status próprio", rowSemSku.status_calculo, "sku_ausente");
+  eq("ID sem SKU não calcula CMV", rowSemSku.cmv, null);
+  eq("ID sem SKU não calcula LC", rowSemSku.lc, null);
+  eq("faturamento é preservado mesmo sem SKU", resultSemSku.summary.grossRevenueTotal, 100);
+  eq("confiança rebaixada sem nenhuma linha calculável", resultSemSku.summary.financialConfidence, "insuficiente");
+  ok(
+    "auditoria explica a ausência do SKU",
+    resultSemSku.auditRows.some((a) => /sem "Nome do SKU"/.test(a.motivo))
+  );
 }
 {
   // Duas vendas do mesmo SKU continuam duas linhas financeiras.
@@ -358,7 +425,7 @@ const base = processTikTok({
   // Alíquota gravada como 10 (pontos percentuais) tem o mesmo efeito de 0.1.
   const comPercentual = processTikTok({
     salesBuffer: incomeBuffer([linhaIncome()]),
-    costRowsRaw: custosBase([{ id: SKU_19, custo: 10, imposto: 10 }]),
+    costRowsRaw: custosBase([{ id: SKU_19, sku: "Azul", custo: 10, imposto: 10 }]),
     ads: 0,
     venforce: 0,
   });
@@ -569,12 +636,28 @@ async function main() {
   ok("sem Onhold não cria aba Em_aberto_TikTok", !workbook.SheetNames.includes("Em_aberto_TikTok"));
 }
 {
+  // 13. Sem costsBaseId (mesmo com cliente informado), a seleção manual é
+  // obrigatória — mensagem exata pedida.
   const res = await runTikTokController({
     files: { sales: [{ buffer: incomeBuffer([linhaIncome()]) }] },
-    body: { cliente_slug: "", costsBaseId: "" },
+    body: { costsBaseId: "" },
   });
-  eq("sem cliente/base o fechamento TikTok é recusado", res.statusCode, 400);
-  ok("mensagem orienta vincular a Base TikTok", /Base TikTok/.test(res.body.error));
+  eq("sem Base TikTok selecionada, o fechamento é recusado", res.statusCode, 400);
+  eq(
+    "mensagem exata pede seleção manual da base",
+    res.body.error,
+    "Selecione uma Base TikTok antes de processar o fechamento."
+  );
+}
+{
+  // 15. Cliente vazio + Base TikTok selecionada: processa normalmente — a
+  // base não precisa estar vinculada ao cliente.
+  const res = await runTikTokController({
+    files: { sales: [{ buffer: incomeBuffer([linhaIncome()]) }] },
+    body: { cliente_slug: "", costsBaseId: "7" },
+  });
+  eq("cliente vazio não bloqueia o fechamento TikTok", res.statusCode, 200);
+  ok("processa normalmente sem cliente", res.body.ok === true);
 }
 {
   const rows = buildFechamentoContextRows({ calculationMode: "real_meli_vendas" }, "meli");
@@ -639,6 +722,7 @@ console.log("\n▸ H. Orquestrador");
 const {
   vinculoBaseEhValido,
   resolverBaseVinculadaEstrita,
+  resolverBaseTikTokPorId,
   exigeVinculoEstrito,
 } = baseCustosService;
 const buildCostRowsFromBase = buildCostRowsFromBaseReal;
@@ -661,7 +745,12 @@ const PEDIDO_TIKTOK = { clienteSlug: "cliente-teste", marketplace: "tiktok", bas
 
 async function testesPrePush() {
   // ── I. Base vinculada ───────────────────────────────────────────────────
-  console.log("\n▸ I. Base TikTok — vínculo estrito");
+  // NOTA: a Base TikTok passou a ser escolhida MANUALMENTE em /financeiro
+  // (sem vínculo com cliente — ver §6 do pedido). O mecanismo de vínculo
+  // estrito abaixo (vinculoBaseEhValido/resolverBaseVinculadaEstrita) continua
+  // existindo e correto como função pura, mas buildCostRowsFromBase NÃO o usa
+  // mais para TikTok — ver resolverBaseTikTokPorId logo depois.
+  console.log("\n▸ I. Base TikTok — vínculo estrito (mecanismo legado, não usado pelo TikTok)");
   eq("TikTok exige vínculo estrito", exigeVinculoEstrito("tiktok"), true);
   eq("MELI mantém a resolução histórica", exigeVinculoEstrito("meli"), false);
   eq("Shopee mantém a resolução histórica", exigeVinculoEstrito("shopee"), false);
@@ -700,14 +789,16 @@ async function testesPrePush() {
     !vinculoBaseEhValido(candidato(), { clienteSlug: "", marketplace: "tiktok", baseId: 7 })
   );
 
-  // Integração com o SQL: o pool é substituído por um duplo controlado.
+  // Integração com o SQL do mecanismo legado (candidatosDoBanco = vínculo).
   const pool = require("../config/database");
   const queryOriginal = pool.query;
   let candidatosDoBanco = [];
+  let basesDoBanco = [];
   // O duplo respeita os MESMOS filtros do SQL ($1 = slug do cliente,
   // $2 = base id opcional) — senão o teste não distingue 404 de 422.
   pool.query = async (sql, params = []) => {
-    if (String(sql).includes("base_cliente_vinculos")) {
+    const texto = String(sql);
+    if (texto.includes("base_cliente_vinculos")) {
       const [slug, id] = params;
       return {
         rows: candidatosDoBanco.filter(
@@ -717,11 +808,17 @@ async function testesPrePush() {
         ),
       };
     }
-    if (String(sql).includes("FROM custos")) {
+    // Resolução manual da Base TikTok (resolverBaseTikTokPorId): SELECT
+    // direto por id, sem cliente/vínculo envolvido.
+    if (/FROM bases WHERE id = \$1/.test(texto)) {
+      const [id] = params;
+      return { rows: basesDoBanco.filter((b) => Number(b.id) === Number(id)) };
+    }
+    if (texto.includes("FROM custos")) {
       return {
         rows: [{
-          produto_id: SKU_19, custo_produto: 10, imposto_percentual: 0.1,
-          id_model: null, produto_nome: "Furadeira X", variacao_nome: "Azul",
+          produto_id: SKU_19, sku: "Azul", custo_produto: 10, imposto_percentual: 0.1,
+          id_model: null, produto_nome: "Furadeira X", variacao_nome: "",
         }],
       };
     }
@@ -731,43 +828,88 @@ async function testesPrePush() {
   try {
     candidatosDoBanco = [candidato()];
     const base = await resolverBaseVinculadaEstrita({ baseId: 7, clienteSlug: "cliente-teste", marketplace: "tiktok" });
-    eq("resolve a base quando o vínculo prova a posse", base.id, 7);
-
-    const custos = await buildCostRowsFromBase({ baseId: 7, clienteSlug: "cliente-teste", marketplace: "tiktok" });
-    eq("custos vêm no formato TikTok", custos.costRows[0]["ID do SKU"], SKU_19);
+    eq("resolve a base quando o vínculo prova a posse (mecanismo legado)", base.id, 7);
 
     candidatosDoBanco = [candidato({ cliente_slug: "outro-cliente" })];
     let erro = null;
     try {
       await resolverBaseVinculadaEstrita({ baseId: 7, clienteSlug: "cliente-teste", marketplace: "tiktok" });
     } catch (e) { erro = e; }
-    ok("base de outro cliente não resolve", !!erro);
+    ok("base de outro cliente não resolve (mecanismo legado)", !!erro);
     eq("recusa por cliente errado responde 404", erro.statusCode, 404);
+  } finally {
+    pool.query = queryOriginal;
+  }
 
-    candidatosDoBanco = [candidato({ vinculo_marketplace: "meli", base_marketplace: "meli" })];
+  // ── I-bis. Base TikTok — seleção manual (contrato atual) ────────────────
+  // A Base TikTok não exige mais vínculo com cliente: o usuário escolhe a
+  // base manualmente em /financeiro (select "Base de custos TikTok"). O
+  // backend só confirma que a base existe, está ativa e é do TikTok.
+  console.log("\n▸ I-bis. Base TikTok — seleção manual (sem vínculo com cliente)");
+  pool.query = async (sql, params = []) => {
+    const texto = String(sql);
+    if (/FROM bases WHERE id = \$1/.test(texto)) {
+      const [id] = params;
+      return { rows: basesDoBanco.filter((b) => Number(b.id) === Number(id)) };
+    }
+    if (texto.includes("FROM custos")) {
+      return {
+        rows: [{
+          produto_id: SKU_19, sku: "Azul", custo_produto: 10, imposto_percentual: 0.1,
+          id_model: null, produto_nome: "Furadeira X", variacao_nome: "",
+        }],
+      };
+    }
+    return { rows: [] };
+  };
+
+  try {
+    // 13/15. Base ativa e do TikTok resolve — SEM cliente/vínculo nenhum.
+    basesDoBanco = [{ id: 7, slug: "base-tiktok", nome: "Base TikTok Teste", marketplace: "tiktok", ativo: true }];
+    const baseManual = await resolverBaseTikTokPorId(7);
+    eq("resolve a base só pelo id, sem cliente envolvido", baseManual.id, 7);
+
+    const custosManual = await buildCostRowsFromBase({ baseId: 7, clienteSlug: "", marketplace: "tiktok" });
+    eq("custos vêm no formato TikTok", custosManual.costRows[0]["ID do SKU"], SKU_19);
+    eq("costRows expõe o SKU da base", custosManual.costRows[0]["SKU"], "Azul");
+    eq("base resolvida sem cliente_slug algum", custosManual.base.id, 7);
+
+    // 13. Sem costsBaseId, a seleção é obrigatória.
+    let erro = null;
+    try {
+      await resolverBaseTikTokPorId(null);
+    } catch (e) { erro = e; }
+    ok("baseId ausente é recusado", !!erro);
+    eq("mensagem pede para selecionar a base", erro.statusCode, 400);
+    ok("mensagem do erro pede seleção manual", /Selecione uma Base TikTok/.test(erro.payload.erro));
+
+    // 14. Base de outro marketplace é rejeitada mesmo com id certo.
+    basesDoBanco = [{ id: 8, slug: "base-meli", nome: "Base MELI", marketplace: "meli", ativo: true }];
     erro = null;
     try {
-      await resolverBaseVinculadaEstrita({ baseId: 7, clienteSlug: "cliente-teste", marketplace: "tiktok" });
+      await resolverBaseTikTokPorId(8);
     } catch (e) { erro = e; }
-    ok("base MELI do mesmo cliente não resolve como TikTok", !!erro);
+    ok("base de outro marketplace é recusada", !!erro);
     eq("recusa por marketplace responde 422", erro.statusCode, 422);
-    ok("mensagem explica o motivo", /marketplace/i.test(erro.message));
+    ok("mensagem explica o motivo", /não é uma Base TikTok/i.test(erro.payload.erro));
 
-    // baseId de outra base do MESMO cliente: nada de cair para a base vinculada.
-    candidatosDoBanco = [candidato()];
+    // Base inativa também é recusada.
+    basesDoBanco = [{ id: 9, slug: "base-tiktok-inativa", nome: "Base Inativa", marketplace: "tiktok", ativo: false }];
     erro = null;
     try {
-      await resolverBaseVinculadaEstrita({ baseId: 99, clienteSlug: "cliente-teste", marketplace: "tiktok" });
+      await resolverBaseTikTokPorId(9);
     } catch (e) { erro = e; }
-    ok("baseId inexistente não cai para outra base do cliente", !!erro);
-    eq("sem candidato, 404", erro.statusCode, 404);
+    ok("base inativa é recusada", !!erro);
+    eq("recusa por base inativa responde 422", erro.statusCode, 422);
 
-    candidatosDoBanco = [];
+    // baseId inexistente → 404.
+    basesDoBanco = [];
     erro = null;
     try {
-      await buildCostRowsFromBase({ baseId: 7, clienteSlug: "cliente-teste", marketplace: "tiktok" });
+      await resolverBaseTikTokPorId(999);
     } catch (e) { erro = e; }
-    eq("sem vínculo nenhum, 404", erro.statusCode, 404);
+    ok("baseId inexistente não resolve", !!erro);
+    eq("base inexistente responde 404", erro.statusCode, 404);
   } finally {
     pool.query = queryOriginal;
   }

@@ -4,13 +4,17 @@
 // ── O que este service faz ──────────────────────────────────────────────────
 //   1. lê o workbook preservando o "ID do SKU" como STRING (18–19 dígitos);
 //   2. detecta a aba e a linha de cabeçalho por conteúdo, não por índice;
-//   3. cruza cada linha do Income com a base de custos SOMENTE por ID do SKU;
+//   3. cruza cada linha do Income com a base de custos por ID do SKU + Nome
+//      do SKU (buildTikTokCostKey) — nunca só pelo ID;
 //   4. calcula CMV, imposto interno, LC, MC, resultado final, TACoS/TACoX;
 //   5. trata o Onhold como valor em aberto — nunca como resultado realizado.
 //
 // ── Chave de cruzamento ─────────────────────────────────────────────────────
-// linhaIncome["ID do SKU"] === custos.produto_id. Nome do produto e nome do SKU
-// existem apenas para exibição/auditoria. Nunca cruzar por nome, pedido,
+// No TikTok, o mesmo ID numérico pode aparecer em várias linhas com SKUs
+// textuais diferentes (ex.: KIT2BIBI, KIT3BIBI), cada um com custo próprio.
+// A chave de cruzamento é sempre ID do SKU + Nome do SKU (produto_id + sku na
+// base) via buildTikTokCostKey — nunca o ID sozinho. Nome do produto existe
+// apenas para exibição/auditoria. Nunca cruzar por nome do produto, pedido,
 // pagamento, demonstrativo ou posição da linha.
 //
 // ── ID do SKU ───────────────────────────────────────────────────────────────
@@ -47,6 +51,7 @@ const {
 } = require("../../utils/fechamento/financeiroShared");
 const {
   normalizarProdutoIdTikTok,
+  buildTikTokCostKey,
 } = require("../bases/baseCustosService");
 
 const CALCULATION_MODE = "real_tiktok_income";
@@ -582,6 +587,8 @@ function parseTikTokOnholdBuffer(buffer) {
 // ── Base de custos ──────────────────────────────────────────────────────────
 
 const COST_ID_FIELDS = ["id do sku", "id sku", "sku id", "produto_id", "produto id"];
+// SKU: campo de identidade obrigatório junto com o ID (ver buildTikTokCostKey).
+const COST_SKU_FIELDS = ["sku", "nome do sku", "sku do vendedor", "seller sku", "codigo sku"];
 const COST_VALUE_FIELDS = [
   "custo unitario", "custo unitário", "custo do produto", "custo_produto",
   "preco de custo", "preço de custo", "custo",
@@ -591,7 +598,8 @@ const COST_TAX_FIELDS = [
   "imposto percentual", "aliquota", "alíquota",
 ];
 const COST_PRODUCT_FIELDS = ["nome do produto", "produto_nome", "produto"];
-const COST_VARIATION_FIELDS = ["nome do sku", "variacao_nome", "nome da variacao", "variacao"];
+// Variação é só exibição — não faz parte da chave de cruzamento.
+const COST_VARIATION_FIELDS = ["nome da variacao", "variacao_nome", "variacao"];
 
 // Mesma leitura de imposto do motor MELI: a base pode gravar 0.08 ou 8 para
 // 8%. Vale a MESMA regra dos dois lados — nunca duas conversões.
@@ -617,6 +625,15 @@ function parseTikTokCostRows(rows) {
     const produtoId = normalizeTikTokSkuId(rawId);
     if (!produtoId) continue;
 
+    // SKU é obrigatório para formar a chave — sem ele a linha não é
+    // matchável (o mesmo ID pode ter outras linhas com SKUs diferentes).
+    const rawSku = findField(row, COST_SKU_FIELDS);
+    const sku = String(rawSku == null ? "" : rawSku).trim();
+    if (!sku) continue;
+
+    const key = buildTikTokCostKey(produtoId, sku);
+    if (!key) continue;
+
     const rawCost = findField(row, COST_VALUE_FIELDS);
     if (rawCost === "" || rawCost === null || rawCost === undefined) continue;
     const cost = toNumber(rawCost);
@@ -626,6 +643,8 @@ function parseTikTokCostRows(rows) {
 
     parsed.push({
       produtoId,
+      sku,
+      key,
       cost,
       taxPercent,
       taxDecimal: taxDecimalFromPercent(taxPercent),
@@ -636,14 +655,16 @@ function parseTikTokCostRows(rows) {
   return parsed;
 }
 
+// Mapa indexado por ID + SKU (nunca só pelo ID): o mesmo produto_id pode ter
+// custos diferentes por SKU (KIT2BIBI, KIT3BIBI...) e nunca devem se misturar.
 function buildTikTokCostMap(rows) {
   const map = new Map();
   const conflicts = [];
 
   for (const cost of parseTikTokCostRows(rows)) {
-    const existing = map.get(cost.produtoId);
+    const existing = map.get(cost.key);
     if (!existing) {
-      map.set(cost.produtoId, cost);
+      map.set(cost.key, cost);
       continue;
     }
     if (
@@ -652,6 +673,7 @@ function buildTikTokCostMap(rows) {
     ) {
       conflicts.push({
         id: cost.produtoId,
+        sku: cost.sku,
         values: [
           { cost: round2(existing.cost), taxPercent: round2(existing.taxPercent) },
           { cost: round2(cost.cost), taxPercent: round2(cost.taxPercent) },
@@ -767,6 +789,11 @@ function processTikTok({
   const auditRows = [];
   const unmatchedIds = new Set();
   const unmatchedCancelled = new Set();
+  // Combinações ID+SKU do Income que não bateram com nenhum custo da base
+  // (id e sku existiam, mas a combinação não foi encontrada). Mais preciso
+  // que unmatchedIds quando o mesmo ID tem vários SKUs na base.
+  const unmatchedSkuKeys = [];
+  const unmatchedSkuKeysSeen = new Set();
 
   let grossRevenueTotal = 0;
   let productNetSalesTotal = 0;
@@ -797,6 +824,7 @@ function processTikTok({
   let tiktokTaxesTotal = 0;
 
   let rowsWithoutId = 0;
+  let rowsWithoutSku = 0;
   let rowsWithoutCost = 0;
   let salesPendingFinancialIncomeCount = 0;
   let rowsWithInvalidQuantity = 0;
@@ -810,7 +838,12 @@ function processTikTok({
   const duplicateIndex = new Map();
 
   for (const row of income.rows) {
-    const cost = row.skuId ? costMap.get(row.skuId) : undefined;
+    // "Nome do SKU" do Income é o SKU textual usado na chave — nunca cruzar
+    // só pelo ID quando o SKU está ausente ou quando há vários SKUs por ID.
+    const skuText = String(row.variationName || "").trim();
+    const hasSkuText = !!skuText;
+    const costKey = row.skuId && hasSkuText ? buildTikTokCostKey(row.skuId, skuText) : "";
+    const cost = costKey ? costMap.get(costKey) : undefined;
     const hasCost = !!cost;
     const hasSettlement = row.settlementLine !== null;
     const gross = row.grossRevenueLine;
@@ -896,6 +929,29 @@ function processTikTok({
         tem_custo_na_base: hasCost ? "sim" : "não",
         linha_planilha: row.spreadsheetRow,
       });
+    } else if (row.skuId && !hasSkuText) {
+      // ID presente, mas sem "Nome do SKU": não dá para montar a chave
+      // ID+SKU, e nunca se procura custo só pelo ID (o mesmo ID pode ter
+      // vários SKUs cadastrados na base). Faturamento preservado, sem LC.
+      statusCalculo = "sku_ausente";
+      rowsWithoutSku += 1;
+      revenueWithoutCost += grossValue;
+      ignoredRevenue += grossValue;
+      auditRows.push({
+        origem: "Income",
+        motivo:
+          `ID do SKU ${row.skuId} presente, mas sem "Nome do SKU" no pedido ` +
+          `${row.orderId || "(sem ID)"} — impossível cruzar com a base sem o SKU. ` +
+          "CMV, imposto interno e LC não calculados.",
+        id_sku: row.skuId,
+        sku: "",
+        id_pedido: row.orderId || "",
+        produto: row.productName || "",
+        variacao: row.variationName || "",
+        faturamento: gross,
+        valor_total_liquidar: row.settlementLine,
+        linha_planilha: row.spreadsheetRow,
+      });
     } else if (!hasCost) {
       // Custo ausente NUNCA vira zero: o faturamento fica, o lucro não.
       statusCalculo = "sem_custo";
@@ -906,12 +962,19 @@ function processTikTok({
         unmatchedIds.add(row.skuId);
         if (statusForaDoLucro(row.status)) unmatchedCancelled.add(row.skuId);
       }
+      if (costKey && !unmatchedSkuKeysSeen.has(costKey)) {
+        unmatchedSkuKeysSeen.add(costKey);
+        unmatchedSkuKeys.push({ id_sku: row.skuId, sku: skuText });
+      }
       auditRows.push({
         origem: "Income",
         motivo: row.skuId
-          ? "ID do SKU sem custo cadastrado na Base TikTok"
+          ? (hasSkuText
+              ? `ID do SKU ${row.skuId} + SKU "${skuText}" sem custo cadastrado na Base TikTok`
+              : "ID do SKU sem custo cadastrado na Base TikTok")
           : "Linha sem ID do SKU — impossível cruzar com a base",
         id_sku: row.skuId || "",
+        sku: skuText,
         id_pedido: row.orderId || "",
         produto: row.productName || "",
         variacao: row.variationName || "",
@@ -991,6 +1054,7 @@ function processTikTok({
       status: row.status || "",
 
       id_sku: row.skuId || "",
+      sku: skuText,
       produto: row.productName || (cost ? cost.productName : null) || "",
       variacao: row.variationName || (cost ? cost.variationName : null) || "",
       quantidade: row.quantity,
@@ -1028,7 +1092,10 @@ function processTikTok({
   let onholdWithoutCostCount = 0;
 
   for (const row of onhold.rows) {
-    const hasCost = row.skuId ? costMap.has(row.skuId) : false;
+    const onholdSkuText = String(row.variationName || "").trim();
+    const onholdKey =
+      row.skuId && onholdSkuText ? buildTikTokCostKey(row.skuId, onholdSkuText) : "";
+    const hasCost = onholdKey ? costMap.has(onholdKey) : false;
     if (hasCost) onholdWithCostCount += 1;
     else onholdWithoutCostCount += 1;
     if (row.skuId) onholdSkus.add(row.skuId);
@@ -1042,6 +1109,7 @@ function processTikTok({
       data: row.date || "",
       status: row.status || "",
       id_sku: row.skuId || "",
+      sku: onholdSkuText,
       produto: row.productName || "",
       variacao: row.variationName || "",
       quantidade: row.quantity,
@@ -1121,6 +1189,7 @@ function processTikTok({
   } else if (
     rowsWithoutCost > 0 ||
     rowsWithoutId > 0 ||
+    rowsWithoutSku > 0 ||
     salesPendingFinancialIncomeCount > 0 ||
     rowsWithInvalidQuantity > 0 ||
     possibleDuplicateRowsCount > 0 ||
@@ -1136,6 +1205,13 @@ function processTikTok({
     executiveNotes.push(
       `Fechamento parcial: ${unmatchedIds.size} SKU(s) do TikTok sem custo na base vinculada. ` +
         "O faturamento continua completo; LC, MC e Resultado Final cobrem apenas a receita com custo."
+    );
+  }
+  if (rowsWithoutSku > 0) {
+    executiveNotes.push(
+      `${rowsWithoutSku} linha(s) do Income com ID do SKU mas sem "Nome do SKU": impossível cruzar ` +
+        "com a base (o mesmo ID pode ter vários SKUs cadastrados). CMV, imposto interno e LC não " +
+        "foram calculados para elas."
     );
   }
   if (salesPendingFinancialIncomeCount > 0) {
@@ -1252,6 +1328,7 @@ function processTikTok({
 
       // Qualidade dos dados do período.
       rowsWithInvalidQuantity,
+      rowsWithoutSku,
       possibleDuplicateRowsCount,
       possibleDuplicateGroupsCount,
 
@@ -1294,6 +1371,7 @@ function processTikTok({
     excelFileName: "fechamento-tiktok.xlsx",
     unmatchedIds: Array.from(unmatchedIds),
     unmatchedCancelled: Array.from(unmatchedCancelled),
+    unmatchedSkuKeys,
     ignoredRowsWithoutCost: rowsWithoutCost,
     ignoredRevenue,
     message: emptySales
@@ -1311,6 +1389,7 @@ module.exports = {
   parseTikTokOnholdBuffer,
   parseTikTokCostRows,
   buildTikTokCostMap,
+  buildTikTokCostKey,
   normalizeTikTokSkuId,
   parseTikTokMoney,
   parseTikTokQuantity,

@@ -73,6 +73,7 @@
                         <option value="">Selecione o marketplace...</option>
                         <option value="meli">Mercado Livre (MELI)</option>
                         <option value="shopee">Shopee</option>
+                        <option value="tiktok">TikTok Shop</option>
                       </select>
                     </div>
 
@@ -180,6 +181,41 @@
                         </span>
                         <span class="vf-dropzone__title">Clique ou arraste o arquivo</span>
                         <span class="vf-dropzone__hint">.xlsx · Cancelamentos e não pagos</span>
+                      </label>
+                      <div class="vf-file-item" hidden>
+                        <span class="vf-file-item__icon" aria-hidden="true">XLSX</span>
+                        <div class="vf-file-item__meta">
+                          <p class="vf-file-item__name"></p>
+                          <p class="vf-file-item__info"></p>
+                        </div>
+                        <div class="vf-file-item__actions">
+                          <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm vf-fin-file-remove" aria-label="Remover arquivo">✕</button>
+                        </div>
+                      </div>
+                      <p class="vf-fin-upload__note" hidden></p>
+                    </div>
+                  </div>
+
+                  <!-- Valores em aberto (TikTok Shop) -->
+                  <div id="fin-tiktok-onhold-block" hidden>
+                    <p class="vf-field__label vf-fin-orders-label">Valores em aberto
+                      <span class="vf-fin-step__hint">Opcional — mostra o que ainda não foi liquidado. Não entra no resultado realizado.</span>
+                    </p>
+                    <div class="vf-fin-upload vf-fin-upload--single" id="fin-tiktok-onhold-card">
+                      <div class="vf-fin-upload__head">
+                        <span class="vf-fin-upload__label">Onhold TikTok Shop</span>
+                        <span class="vf-tag is-warning">Opcional · TikTok Shop</span>
+                      </div>
+                      <input class="vf-visually-hidden" type="file" id="fin-tiktok-onhold" accept=".xlsx">
+                      <label class="vf-dropzone" for="fin-tiktok-onhold">
+                        <span class="vf-dropzone__icon" aria-hidden="true">
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/><circle cx="12" cy="15" r="3"/><path d="M12 14v1.5l1 .5"/>
+                          </svg>
+                        </span>
+                        <span class="vf-dropzone__title">Clique ou arraste o arquivo</span>
+                        <span class="vf-dropzone__hint">.xlsx · Pedidos e valores não liquidados</span>
                       </label>
                       <div class="vf-file-item" hidden>
                         <span class="vf-file-item__icon" aria-hidden="true">XLSX</span>

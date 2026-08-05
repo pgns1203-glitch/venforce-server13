@@ -88,7 +88,72 @@ function setChip(id, label, value, variant) {
 function marketplaceLabel(mk) {
   if (mk === "meli") return "Mercado Livre";
   if (mk === "shopee") return "Shopee";
+  if (mk === "tiktok") return "TikTok Shop";
   return "—";
+}
+
+// Marketplaces cujos custos vêm da base vinculada (sem upload de planilha).
+// MELI aceita base OU upload; TikTok exige a Base TikTok vinculada.
+function marketplaceUsaBaseVinculada(mk) {
+  return mk === "meli" || mk === "tiktok";
+}
+
+const MSG_TIKTOK_SEM_BASE =
+  "Nenhuma Base TikTok vinculada a este cliente. Cadastre ou vincule a base na tela de Bases " +
+  "antes de processar o fechamento.";
+
+// Entrega ao cliente ainda não entende o motor TikTok: o relatório público usa
+// metodologia/fórmulas de MELI/Shopee e o payload salvo descartaria Onhold e
+// pendências. Até essa adaptação, TikTok processa e baixa, mas não salva nem
+// publica — um payload incompleto no link do cliente seria informação errada.
+const MSG_TIKTOK_SEM_ENTREGA =
+  "O processamento TikTok está disponível para análise e download. O salvamento e o " +
+  "relatório público serão liberados após a adaptação da entrega ao cliente.";
+
+// Marketplace que vale para a entrega: o do fechamento já processado quando
+// existir, senão o selecionado na tela.
+function marketplaceDaEntrega() {
+  const doFechamento = ultimoFechamentoFinanceiro?.marketplace;
+  const daTela = document.getElementById("fin-marketplace")?.value;
+  return String(doFechamento || daTela || "").trim().toLowerCase();
+}
+
+function fechamentoPermiteEntregaCliente() {
+  return marketplaceDaEntrega() !== "tiktok";
+}
+
+// Liga/desliga salvar, aba de entrega e geração de link conforme o marketplace.
+// MELI e Shopee continuam exatamente como antes.
+function aplicarEstadoEntregaCliente() {
+  const permite = fechamentoPermiteEntregaCliente();
+  const processado = !!ultimoFechamentoFinanceiro?.data;
+
+  const btnSalvar = document.getElementById("btn-fin-salvar");
+  if (btnSalvar) {
+    btnSalvar.hidden = !permite || !processado;
+    btnSalvar.disabled = !permite;
+    if (!permite) btnSalvar.title = MSG_TIKTOK_SEM_ENTREGA;
+    else btnSalvar.removeAttribute?.("title");
+  }
+
+  const btnEntrega = document.getElementById("vft-btn-entrega");
+  if (btnEntrega && !permite) {
+    btnEntrega.disabled = true;
+    btnEntrega.title = MSG_TIKTOK_SEM_ENTREGA;
+  }
+
+  const btnGerar = document.getElementById("btn-vft-gerar");
+  if (btnGerar) {
+    btnGerar.disabled = !permite;
+    if (!permite) btnGerar.title = MSG_TIKTOK_SEM_ENTREGA;
+  }
+
+  if (!permite) {
+    showLinkClienteActions(false);
+    setLinkClienteOutput("");
+  }
+
+  return permite;
 }
 
 function atualizarChips() {
@@ -108,6 +173,9 @@ function atualizarChips() {
     setChip("fin-chip-base", "Base", "vinculada", "ok");
   } else if (marketplace === "shopee") {
     setChip("fin-chip-base", "Base", "upload manual", "info");
+  } else if (marketplace === "tiktok") {
+    // TikTok não tem plano B: sem base vinculada não há como cruzar custos.
+    setChip("fin-chip-base", "Base", "obrigatória — não vinculada", "bad");
   } else {
     setChip("fin-chip-base", "Base", "não vinculada", "warn");
   }
@@ -224,13 +292,29 @@ function aplicarEstadoBase() {
   const costsNote = costsCard?.querySelector(".vf-fin-upload__note");
   const arquivosHint = document.getElementById("fin-arquivos-hint");
 
-  const usandoBase = marketplace === "meli" && baseVinculadaState.hasLink;
+  const isTikTok = marketplace === "tiktok";
+  const usandoBase = marketplaceUsaBaseVinculada(marketplace) && baseVinculadaState.hasLink;
 
-  // Card de custos: base vinculada resolve os custos no servidor
-  if (costsInput) costsInput.disabled = usandoBase;
+  // Card de custos: base vinculada resolve os custos no servidor.
+  // No TikTok o upload de custos nunca é aceito — com ou sem vínculo.
+  if (costsInput) costsInput.disabled = usandoBase || isTikTok;
   if (costsCard) {
     costsCard.classList.toggle("is-linked", usandoBase);
-    if (usandoBase) {
+    if (isTikTok && !usandoBase) {
+      if (costsBadge) { costsBadge.textContent = "Base obrigatória"; costsBadge.className = "vf-tag is-danger"; }
+      if (costsTitle) costsTitle.textContent = "Base TikTok não vinculada";
+      if (costsHint) costsHint.textContent = "Vincule a base na tela de Bases";
+      if (costsInput && costsInput.files?.length) {
+        costsInput.value = "";
+        costsInput.dispatchEvent(new Event("change"));
+      }
+      costsCard.classList.remove("has-file");
+      if (costsNote) {
+        costsNote.classList.add("is-error");
+        costsNote.textContent = MSG_TIKTOK_SEM_BASE;
+        costsNote.hidden = false;
+      }
+    } else if (usandoBase) {
       if (costsBadge) { costsBadge.textContent = "Base vinculada"; costsBadge.className = "vf-tag is-info"; }
       if (costsTitle) costsTitle.textContent = "Usando base vinculada do cliente";
       if (costsHint) costsHint.textContent = baseVinculadaState.baseNome || "Custos resolvidos automaticamente";
@@ -265,9 +349,15 @@ function aplicarEstadoBase() {
     } else if (baseVinculadaState.hasLink) {
       statusEl.hidden = false;
       statusEl.classList.add("is-success");
-      statusEl.textContent = marketplace === "meli"
-        ? `Base vinculada encontrada: "${baseVinculadaState.baseNome}". O upload de custos não é necessário.`
-        : `Base vinculada encontrada: "${baseVinculadaState.baseNome}".`;
+      statusEl.textContent = isTikTok
+        ? `Base TikTok vinculada: "${baseVinculadaState.baseNome}". Os custos vêm dela — envie apenas o Income.`
+        : marketplace === "meli"
+          ? `Base vinculada encontrada: "${baseVinculadaState.baseNome}". O upload de custos não é necessário.`
+          : `Base vinculada encontrada: "${baseVinculadaState.baseNome}".`;
+    } else if (isTikTok) {
+      statusEl.hidden = false;
+      statusEl.classList.add("is-danger");
+      statusEl.textContent = MSG_TIKTOK_SEM_BASE;
     } else if (marketplace === "meli") {
       statusEl.hidden = false;
       statusEl.classList.add("is-warning");
@@ -279,7 +369,8 @@ function aplicarEstadoBase() {
 
   // Hint dos arquivos
   if (arquivosHint) {
-    if (usandoBase) arquivosHint.textContent = "Envie apenas a planilha de vendas — os custos vêm da base vinculada.";
+    if (isTikTok) arquivosHint.textContent = "Envie o Income do TikTok Shop — os custos vêm da Base TikTok vinculada. O Onhold é opcional.";
+    else if (usandoBase) arquivosHint.textContent = "Envie apenas a planilha de vendas — os custos vêm da base vinculada.";
     else if (marketplace === "shopee") arquivosHint.textContent = "Envie as planilhas de vendas e custos da Shopee.";
     else arquivosHint.textContent = "Envie a planilha de vendas e a planilha de custos.";
   }
@@ -287,21 +378,52 @@ function aplicarEstadoBase() {
   atualizarMiniResumo();
 }
 
+// ── Ajustes de formulário específicos do marketplace ───────────────────────
+// Card da planilha principal: no TikTok ele passa a ser o Income.
+function aplicarRotulosPlanilhaPrincipal() {
+  const marketplace = document.getElementById("fin-marketplace")?.value || "";
+  const card = document.getElementById("fin-sales-card");
+  if (!card) return;
+
+  const label = card.querySelector(".vf-fin-upload__label");
+  const hint = card.querySelector(".vf-dropzone__hint");
+  const isTikTok = marketplace === "tiktok";
+
+  if (label) label.textContent = isTikTok ? "Income TikTok Shop" : "Planilha de vendas";
+  if (hint) hint.textContent = isTikTok ? "Relatório financeiro realizado do período" : ".xlsx";
+}
+
+// Afiliados manual: no TikTok a comissão de afiliados já está descontada no
+// repasse do Income, então o campo sai da tela e vai zerado para o backend.
+function aplicarVisibilidadeAfiliados() {
+  const marketplace = document.getElementById("fin-marketplace")?.value || "";
+  const input = document.getElementById("fin-affiliates");
+  if (!input) return;
+
+  const isTikTok = marketplace === "tiktok";
+  const field = input.closest(".vf-field");
+  if (field) field.hidden = isTikTok;
+  input.disabled = isTikTok;
+  if (isTikTok) input.value = "0";
+}
+
 // ── Mini resumo antes de processar ─────────────────────────────────────────
 function atualizarMiniResumo() {
   const sel = document.getElementById("fin-cliente");
   const clienteNome = sel?.value ? (sel.options?.[sel.selectedIndex]?.textContent || "—") : "—";
   const marketplace = document.getElementById("fin-marketplace")?.value || "";
-  const usandoBase = marketplace === "meli" && baseVinculadaState.hasLink;
+  const usandoBase = marketplaceUsaBaseVinculada(marketplace) && baseVinculadaState.hasLink;
 
   const salesFile = document.getElementById("fin-sales")?.files?.[0];
   const costsFile = document.getElementById("fin-costs")?.files?.[0];
   const ordersAll = document.getElementById("fin-orders-all")?.files?.[0];
+  const onhold = document.getElementById("fin-tiktok-onhold")?.files?.[0];
 
   const arquivos = [];
-  if (salesFile) arquivos.push("vendas");
+  if (salesFile) arquivos.push(marketplace === "tiktok" ? "Income" : "vendas");
   if (costsFile) arquivos.push("custos");
   if (ordersAll) arquivos.push("Order.all");
+  if (onhold && marketplace === "tiktok") arquivos.push("Onhold");
 
   const ads = parseMoneyInput(document.getElementById("fin-ads")?.value);
   const venforce = parseMoneyInput(document.getElementById("fin-venforce")?.value);
@@ -316,6 +438,9 @@ function atualizarMiniResumo() {
     const fullCost = parseMoneyInput(document.getElementById("fin-full-cost")?.value);
     const additionalCosts = parseMoneyInput(document.getElementById("fin-additional-costs")?.value);
     set("fin-res-ajustes", `ADS ${brl(ads)} · Venforce ${brl(venforce)} · Afiliados ${brl(afiliados)} · Full ${brl(fullCost)} · Custos adicionais ${brl(additionalCosts)}`);
+  } else if (marketplace === "tiktok") {
+    // Afiliados não aparece: já está descontado no repasse do Income.
+    set("fin-res-ajustes", `ADS ${brl(ads)} · Venforce ${brl(venforce)}`);
   } else {
     set("fin-res-ajustes", `ADS ${brl(ads)} · Venforce ${brl(venforce)} · Afiliados ${brl(afiliados)}`);
   }
@@ -796,6 +921,11 @@ async function gerarLinkClienteFinanceiro() {
     setStatusLinkCliente("Processa um fechamento antes de gerar o link.", "danger");
     return;
   }
+  if (!fechamentoPermiteEntregaCliente()) {
+    aplicarEstadoEntregaCliente();
+    setStatusLinkCliente(MSG_TIKTOK_SEM_ENTREGA, "danger");
+    return;
+  }
 
   const btn = document.getElementById("btn-fin-gerar-link-cliente");
   if (btn) { btn.disabled = true; btn.textContent = "Gerando..."; }
@@ -827,6 +957,7 @@ const FIN_MODO_LABEL = {
   real_financial: "Fechamento por dados financeiros",
   estimated_performance: "Estimativa por performance",
   real_meli_vendas: "Fechamento por dados financeiros",
+  real_tiktok_income: "Fechamento financeiro TikTok Shop",
 };
 
 const FIN_CONFIANCA_LABEL = {
@@ -889,6 +1020,17 @@ function renderCoberturaBanner(data) {
     return;
   }
 
+  // O texto do financeiro pendente segue o marketplace do fechamento: o
+  // backend manda o aviso pronto e o fallback deixa de citar o Mercado Livre
+  // quando o modo é de outro canal.
+  const isTikTokFechamento = String(s.calculationMode || "") === "real_tiktok_income";
+  const avisoPendentePadrao = isTikTokFechamento
+    ? "Parte dos valores do TikTok Shop ainda não foi liquidada. LC, MC e Resultado Final " +
+      "consideram somente as linhas do Income já liquidadas."
+    : "Parte das vendas ainda não possui tarifas e repasse disponíveis no relatório " +
+      "do Mercado Livre. LC, MC e Resultado Final consideram somente as vendas com " +
+      "dados financeiros completos.";
+
   const linhas = [];
   if (modo) linhas.push(`<p><b>${escapeHTML(modo)}</b></p>`);
 
@@ -896,16 +1038,21 @@ function renderCoberturaBanner(data) {
   // fica fora de LC, MC e Resultado Final.
   if (financeiroPendente) {
     linhas.push(
-      `<p>${escapeHTML(
-        s.pendingFinancialWarning ||
-        "Parte das vendas ainda não possui tarifas e repasse disponíveis no relatório " +
-        "do Mercado Livre. LC, MC e Resultado Final consideram somente as vendas com " +
-        "dados financeiros completos."
-      )}</p>`,
-      `<p>Vendas aguardando financeiro: <b>${pendenteQtd ?? 0}</b>` +
+      `<p>${escapeHTML(s.pendingFinancialWarning || avisoPendentePadrao)}</p>`,
+      `<p>${isTikTokFechamento ? "Linhas aguardando liquidação" : "Vendas aguardando financeiro"}: <b>${pendenteQtd ?? 0}</b>` +
       ` · Faturamento pendente: <b>${brl(pendenteValor)}</b>` +
       (coberturaFin !== null ? ` · Cobertura financeira: <b>${pct(coberturaFin / 100)}</b>` : "") +
       `.</p>`
+    );
+  }
+
+  // Onhold: valores em aberto do TikTok, sempre fora do resultado realizado.
+  const onholdCount = finNumOrNull(s.onholdCount);
+  if (onholdCount !== null && onholdCount > 0) {
+    linhas.push(
+      `<p>Em aberto (Onhold): <b>${num(onholdCount)}</b> linha(s)` +
+      ` · <b>${brl(finNumOrNull(s.onholdRevenueTotal) || 0)}</b>` +
+      ` — não somados ao faturamento, ao LC nem ao resultado final.</p>`
     );
   }
 
@@ -925,7 +1072,9 @@ function renderCoberturaBanner(data) {
       <div class="vf-banner__content">
         <p class="vf-banner__title">${
           financeiroPendente
-            ? "Financeiro pendente no relatório do Mercado Livre"
+            ? (isTikTokFechamento
+                ? "Valores ainda não liquidados no TikTok Shop"
+                : "Financeiro pendente no relatório do Mercado Livre")
             : parcial
               ? "Cobertura parcial da base de custos"
               : "Modo de cálculo"
@@ -1084,6 +1233,15 @@ function renderFinResumoExecutivo(data) {
   // pendente do ML, não de cancelamento (que já tem card próprio em Deduções).
   const finPublicadoEl = document.getElementById("fin-exec-financeiro-publicado");
   if (finPublicadoEl) {
+    // O rótulo segue o marketplace: "publicado pelo ML" não faz sentido no
+    // TikTok, onde a pendência é de liquidação.
+    const rotulo = finPublicadoEl.parentElement?.querySelector(".vf-fin-exec__label");
+    if (rotulo) {
+      rotulo.textContent =
+        String(s.calculationMode || "") === "real_tiktok_income"
+          ? "Já liquidado (TikTok)"
+          : "Financeiro publicado (ML)";
+    }
     if (m.financeiroPendente && m.financeiroPendente > 0) {
       finPublicadoEl.textContent =
         `${pct((m.financeiroPublicadoPercent || 0) / 100)} · ${brl(m.financeiroPendente)} pendente`;
@@ -1845,13 +2003,30 @@ async function processarFechamentoFinanceiro() {
 
   const clienteSlug = document.getElementById("fin-cliente")?.value || "";
 
+  const isTikTok = marketplace === "tiktok";
+
   const sales = document.getElementById("fin-sales")?.files?.[0];
-  if (!sales) { setStatus("Selecione a planilha de vendas (.xlsx).", "danger"); return; }
+  if (!sales) {
+    setStatus(
+      isTikTok
+        ? "Selecione a planilha Income do TikTok Shop (.xlsx)."
+        : "Selecione a planilha de vendas (.xlsx).",
+      "danger"
+    );
+    return;
+  }
 
   const costs = document.getElementById("fin-costs")?.files?.[0];
-  const usandoBase = marketplace === "meli" && baseVinculadaState.hasLink && !costs;
+  // TikTok: cliente + base vinculada são obrigatórios; não existe upload de custos.
+  if (isTikTok) {
+    if (!clienteSlug) { setStatus("Selecione o cliente para localizar a Base TikTok vinculada.", "danger"); return; }
+    if (!baseVinculadaState.hasLink) { setStatus(MSG_TIKTOK_SEM_BASE, "danger"); return; }
+  }
 
-  // Custos: arquivo manual OU base vinculada (só MELI).
+  const usandoBase =
+    isTikTok || (marketplace === "meli" && baseVinculadaState.hasLink && !costs);
+
+  // Custos: arquivo manual OU base vinculada (MELI/TikTok).
   if (!costs && !usandoBase) {
     if (marketplace === "meli") {
       setStatus("Selecione a planilha de custos ou vincule uma base ao cliente na tela de Bases.", "danger");
@@ -1869,7 +2044,9 @@ async function processarFechamentoFinanceiro() {
   try {
     const ads = readValidatedMoneyInput("fin-ads", "ADS");
     const venforce = readValidatedMoneyInput("fin-venforce", "Venforce");
-    const affiliates = readValidatedMoneyInput("fin-affiliates", "Afiliados");
+    // TikTok: afiliados do relatório já estão no repasse — vai sempre 0 para
+    // não descontar duas vezes (o contrato do endpoint continua exigindo o campo).
+    const affiliates = isTikTok ? 0 : readValidatedMoneyInput("fin-affiliates", "Afiliados");
 
     const formData = new FormData();
     formData.append("sales", sales);
@@ -1877,7 +2054,7 @@ async function processarFechamentoFinanceiro() {
     if (clienteSlug) formData.append("cliente_slug", clienteSlug);
 
     if (usandoBase) {
-      // MELI com base vinculada — custos resolvidos no servidor.
+      // MELI/TikTok com base vinculada — custos resolvidos no servidor.
       if (baseVinculadaState.baseId != null) formData.append("costsBaseId", baseVinculadaState.baseId);
     } else {
       formData.append("costs", costs);
@@ -1887,6 +2064,12 @@ async function processarFechamentoFinanceiro() {
     if (marketplace === "shopee") {
       const ordersAll = document.getElementById("fin-orders-all")?.files?.[0];
       if (ordersAll) formData.append("ordersAll", ordersAll);
+    }
+
+    // Onhold opcional, só TikTok Shop
+    if (isTikTok) {
+      const onhold = document.getElementById("fin-tiktok-onhold")?.files?.[0];
+      if (onhold) formData.append("onhold", onhold);
     }
     formData.append("ads", String(ads));
     formData.append("venforce", String(venforce));
@@ -1938,22 +2121,32 @@ async function processarFechamentoFinanceiro() {
     renderShopeeReconciliacao(json);
     renderFinTabela(json);
     document.querySelector(".vf-fin-dashboard")?.setAttribute("data-processed", "");
-    initEntregaTabs();
+
+    // Entrega ao cliente: liberada em MELI/Shopee, bloqueada no TikTok até o
+    // relatório público entender o motor.
+    const permiteEntrega = fechamentoPermiteEntregaCliente();
+    if (permiteEntrega) initEntregaTabs();
+    else resetEntregaTabs();
 
     // Ações pós-processamento
     const btnSalvar = document.getElementById("btn-fin-salvar");
-    if (btnSalvar) { btnSalvar.hidden = false; btnSalvar.disabled = false; btnSalvar.textContent = "Salvar fechamento"; }
+    if (btnSalvar) btnSalvar.textContent = "Salvar fechamento";
+    aplicarEstadoEntregaCliente();
     setChipProcessamento("processado", "ok");
-    setChipSalvo("processado, ainda não salvo", "warn");
+    setChipSalvo(
+      permiteEntrega ? "processado, ainda não salvo" : "processado — salvamento indisponível no TikTok",
+      permiteEntrega ? "warn" : "info"
+    );
 
     const origemTxt = json.costsSource === "base"
       ? ` Custos: base vinculada${json.costsBase?.nome ? ` "${json.costsBase.nome}"` : ""}.`
       : "";
+    const entregaTxt = permiteEntrega ? "" : ` ${MSG_TIKTOK_SEM_ENTREGA}`;
     if (json.emptySales) {
       setChipProcessamento("sem vendas", "info");
-      setStatus("Planilha válida sem vendas." + origemTxt, "info");
+      setStatus("Planilha válida sem vendas." + origemTxt + entregaTxt, "info");
     } else {
-      setStatus("✓ Processado com sucesso." + origemTxt, "success");
+      setStatus("✓ Processado com sucesso." + origemTxt + entregaTxt, permiteEntrega ? "success" : "warn");
     }
 
     if (json.excelBase64) {
@@ -1988,6 +2181,13 @@ async function salvarFechamentoFinanceiro() {
   if (!TOKEN) return;
   if (!ultimoFechamentoFinanceiro?.data) {
     setStatus("Processe um fechamento antes de salvar.", "danger");
+    return;
+  }
+  // Trava de segurança: mesmo que o botão escape, nada de TikTok é salvo como
+  // se a entrega ao cliente já suportasse o motor.
+  if (!fechamentoPermiteEntregaCliente()) {
+    aplicarEstadoEntregaCliente();
+    setStatus(MSG_TIKTOK_SEM_ENTREGA, "warn");
     return;
   }
 
@@ -2139,7 +2339,8 @@ if (btnFinLimpar) {
     const sales = document.getElementById("fin-sales");
     const costs = document.getElementById("fin-costs");
     const ordersAll = document.getElementById("fin-orders-all");
-    [sales, costs, ordersAll].forEach((inp) => {
+    const onhold = document.getElementById("fin-tiktok-onhold");
+    [sales, costs, ordersAll, onhold].forEach((inp) => {
       if (!inp) return;
       inp.value = "";
       inp.dispatchEvent(new Event("change"));
@@ -2195,6 +2396,10 @@ if (btnFinLimpar) {
     baseVinculadaState.marketplace = "";
     updateOrdersAllVisibility();
     updateMeliExtraCostsVisibility();
+    updateTikTokOnholdVisibility();
+    aplicarRotulosPlanilhaPrincipal();
+    aplicarVisibilidadeAfiliados();
+    aplicarEstadoEntregaCliente();
     aplicarEstadoBase();
     setChipProcessamento("não iniciado", null);
     setChipSalvo("", null);
@@ -2248,7 +2453,7 @@ if (btnAbrirLinkCliente) {
   });
 }
 
-["fin-sales", "fin-costs", "fin-orders-all"].forEach((id) => {
+["fin-sales", "fin-costs", "fin-orders-all", "fin-tiktok-onhold"].forEach((id) => {
   const input = document.getElementById(id);
   if (input) input.addEventListener("change", () => updateFileCard(input));
 });
@@ -2278,10 +2483,29 @@ function updateMeliExtraCostsVisibility() {
   if (meliExtraCostsBlock) meliExtraCostsBlock.hidden = marketplaceSelect?.value !== "meli";
 }
 
+// Bloco Onhold (valores em aberto) — visível só para TikTok Shop.
+const tiktokOnholdBlock = document.getElementById("fin-tiktok-onhold-block");
+function updateTikTokOnholdVisibility() {
+  const isTikTok = marketplaceSelect?.value === "tiktok";
+  if (tiktokOnholdBlock) tiktokOnholdBlock.hidden = !isTikTok;
+  // Sair do TikTok não pode deixar um Onhold pendurado no formulário.
+  if (!isTikTok) {
+    const input = document.getElementById("fin-tiktok-onhold");
+    if (input && input.files?.length) {
+      input.value = "";
+      input.dispatchEvent(new Event("change"));
+    }
+  }
+}
+
 // Alteração de cliente/marketplace redetecta base vinculada e atualiza a UI.
 function onClienteOuMarketplaceChange() {
   updateOrdersAllVisibility();
   updateMeliExtraCostsVisibility();
+  updateTikTokOnholdVisibility();
+  aplicarRotulosPlanilhaPrincipal();
+  aplicarVisibilidadeAfiliados();
+  aplicarEstadoEntregaCliente();
   detectarBaseVinculada();
 }
 if (marketplaceSelect) marketplaceSelect.addEventListener("change", onClienteOuMarketplaceChange);
@@ -2323,11 +2547,16 @@ const FIN_MONEY_LABELS = {
 
 updateOrdersAllVisibility();
 updateMeliExtraCostsVisibility();
+updateTikTokOnholdVisibility();
+aplicarRotulosPlanilhaPrincipal();
+aplicarVisibilidadeAfiliados();
+aplicarEstadoEntregaCliente();
 carregarClientesFinanceiro();
 
 initUploadDragDrop("fin-sales");
 initUploadDragDrop("fin-costs");
 initUploadDragDrop("fin-orders-all");
+initUploadDragDrop("fin-tiktok-onhold");
 
 limparFinStats();
 limparFinResumoExecutivo();
@@ -2468,6 +2697,11 @@ async function _gerarLinkComEntrega() {
   if (!TOKEN) return;
   if (!ultimoFechamentoFinanceiro?.data) {
     _setEntStatus("Processe um fechamento antes de gerar o link.", "err");
+    return;
+  }
+  if (!fechamentoPermiteEntregaCliente()) {
+    aplicarEstadoEntregaCliente();
+    _setEntStatus(MSG_TIKTOK_SEM_ENTREGA, "err");
     return;
   }
 

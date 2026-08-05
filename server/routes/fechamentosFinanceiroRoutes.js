@@ -32,6 +32,9 @@ router.post(
     { name: "sales", maxCount: 1 },
     { name: "costs", maxCount: 1 },
     { name: "ordersAll", maxCount: 1 },
+    // Onhold do TikTok Shop: opcional e com campo próprio — não reaproveita
+    // ordersAll (Shopee), que tem semântica diferente.
+    { name: "onhold", maxCount: 1 },
   ]),
   processarFechamentoFinanceiroController
 );

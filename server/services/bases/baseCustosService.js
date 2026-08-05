@@ -309,8 +309,143 @@ async function resolverBaseVinculada({ baseId, clienteSlug, marketplace }) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Vínculo estrito (TikTok).
+// resolverBaseVinculada aceita um baseId explícito só conferindo "base ativa",
+// o que permitiria fechar um cliente com a base de OUTRO cliente/marketplace.
+// Para o TikTok a base só vale quando o vínculo prova a posse: cliente certo,
+// vínculo ativo e marketplace do vínculo igual ao do fechamento.
+// ---------------------------------------------------------------------------
+const MARKETPLACES_VINCULO_ESTRITO = new Set(["tiktok"]);
+
+function exigeVinculoEstrito(marketplace) {
+  return MARKETPLACES_VINCULO_ESTRITO.has(
+    String(marketplace || "").trim().toLowerCase()
+  );
+}
+
+function normalizarComparacao(valor) {
+  return String(valor == null ? "" : valor).trim().toLowerCase();
+}
+
+// Pura e testável sem banco: decide se um candidato (base + vínculo + cliente)
+// serve para o fechamento pedido. Qualquer "não" aqui bloqueia o cálculo.
+function vinculoBaseEhValido(candidato, { clienteSlug, marketplace, baseId }) {
+  if (!candidato) return false;
+
+  const mkt = normalizarComparacao(marketplace);
+  const slug = normalizarComparacao(clienteSlug);
+  if (!mkt || !slug) return false;
+
+  // O vínculo precisa ser deste cliente e estar ativo.
+  if (normalizarComparacao(candidato.cliente_slug) !== slug) return false;
+  if (candidato.vinculo_ativo !== true) return false;
+  if (normalizarComparacao(candidato.vinculo_marketplace) !== mkt) return false;
+
+  // A base precisa estar ativa e, quando declara marketplace, ser do mesmo
+  // canal. Base sem marketplace preenchido (legado) é decidida pelo vínculo.
+  if (candidato.base_ativa === false) return false;
+  const baseMkt = normalizarComparacao(candidato.base_marketplace);
+  if (baseMkt && baseMkt !== mkt) return false;
+
+  // baseId explícito nunca "cai" para outra base: ou é aquela, ou nada.
+  if (baseId !== null && baseId !== undefined && Number(candidato.id) !== Number(baseId)) {
+    return false;
+  }
+
+  return true;
+}
+
+// Motivo legível da recusa — vira mensagem de erro para quem opera a tela.
+function motivoVinculoInvalido(candidato, { clienteSlug, marketplace }) {
+  const mkt = normalizarComparacao(marketplace);
+  if (!candidato) return "não existe vínculo ativo desta base com o cliente";
+  if (normalizarComparacao(candidato.cliente_slug) !== normalizarComparacao(clienteSlug)) {
+    return "a base está vinculada a outro cliente";
+  }
+  if (candidato.vinculo_ativo !== true) return "o vínculo da base com o cliente está inativo";
+  if (normalizarComparacao(candidato.vinculo_marketplace) !== mkt) {
+    return `o vínculo é do marketplace "${candidato.vinculo_marketplace || "vazio"}", não "${mkt}"`;
+  }
+  if (candidato.base_ativa === false) return "a base está inativa";
+  const baseMkt = normalizarComparacao(candidato.base_marketplace);
+  if (baseMkt && baseMkt !== mkt) {
+    return `a base é do marketplace "${baseMkt}", não "${mkt}"`;
+  }
+  return "a base informada não é a base vinculada a este cliente";
+}
+
+const SQL_CANDIDATOS_VINCULO = `
+  SELECT b.id,
+         b.slug,
+         b.nome,
+         b.ativo            AS base_ativa,
+         b.marketplace      AS base_marketplace,
+         v.ativo            AS vinculo_ativo,
+         v.marketplace      AS vinculo_marketplace,
+         LOWER(c.slug)      AS cliente_slug,
+         v.updated_at
+    FROM base_cliente_vinculos v
+    JOIN bases b    ON b.id = v.base_id
+    JOIN clientes c ON c.id = v.cliente_id
+   WHERE LOWER(c.slug) = $1
+     AND ($2::int IS NULL OR b.id = $2::int)
+   ORDER BY v.updated_at DESC NULLS LAST`;
+
+// Devolve { base } ou lança erro explicando por que a base foi recusada.
+async function resolverBaseVinculadaEstrita({ baseId, clienteSlug, marketplace }) {
+  const mkt = normalizarComparacao(marketplace);
+  const slug = normalizarComparacao(clienteSlug);
+  const idNum = Number(baseId);
+  const temId = Number.isInteger(idNum) && idNum > 0;
+
+  if (!slug) {
+    throw criarHttpErro(400, {
+      ok: false,
+      erro: `Selecione o cliente para localizar a base vinculada de ${mkt || "marketplace"}.`,
+    });
+  }
+
+  const r = await pool.query(SQL_CANDIDATOS_VINCULO, [slug, temId ? idNum : null]);
+  const candidatos = r.rows || [];
+
+  const valido = candidatos.find((candidato) =>
+    vinculoBaseEhValido(candidato, {
+      clienteSlug: slug,
+      marketplace: mkt,
+      baseId: temId ? idNum : null,
+    })
+  );
+
+  if (valido) {
+    return { id: valido.id, slug: valido.slug, nome: valido.nome };
+  }
+
+  if (candidatos.length > 0) {
+    throw criarHttpErro(422, {
+      ok: false,
+      erro:
+        `Base recusada para o fechamento de ${mkt}: ` +
+        `${motivoVinculoInvalido(candidatos[0], { clienteSlug: slug, marketplace: mkt })}. ` +
+        "Ajuste o vínculo na tela de Bases.",
+    });
+  }
+
+  throw criarHttpErro(404, {
+    ok: false,
+    erro:
+      `Nenhuma base de ${mkt} ativa e vinculada a este cliente. ` +
+      "Cadastre ou vincule a base na tela de Bases antes de processar o fechamento.",
+  });
+}
+
 async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace }) {
-  const base = await resolverBaseVinculada({ baseId, clienteSlug, marketplace });
+  // TikTok: vínculo estrito (cliente + marketplace + vínculo ativo).
+  // MELI/Shopee seguem exatamente o caminho histórico.
+  const base = exigeVinculoEstrito(marketplace)
+    ? await resolverBaseVinculadaEstrita({ baseId, clienteSlug, marketplace })
+    : await resolverBaseVinculada({ baseId, clienteSlug, marketplace });
+
   if (!base) {
     throw criarHttpErro(404, {
       ok: false,
@@ -319,7 +454,7 @@ async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace }) {
   }
 
   const custos = await pool.query(
-    `SELECT produto_id, custo_produto, imposto_percentual, id_model
+    `SELECT produto_id, custo_produto, imposto_percentual, id_model, produto_nome, variacao_nome
        FROM custos
       WHERE base_id = $1`,
     [base.id]
@@ -332,13 +467,27 @@ async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace }) {
     });
   }
 
-  // Chaves reconhecidas por findField/parseMeliCostRows (normalização por acento/caixa).
-  const costRows = custos.rows.map((row) => ({
-    "# de anúncio": row.produto_id,
-    "preço de custo": row.custo_produto,
-    imposto: row.imposto_percentual,
-    model_id: row.id_model || "",
-  }));
+  const isTikTok = String(marketplace || "").trim().toLowerCase() === "tiktok";
+
+  // O formato depende do marketplace porque cada motor tem o seu parser de
+  // custos. MELI mantém exatamente o retorno histórico (parseMeliCostRows).
+  // TikTok recebe as chaves do seu parser — e produto_id continua STRING,
+  // sem qualquer conversão numérica (IDs de 18–19 dígitos).
+  const costRows = isTikTok
+    ? custos.rows.map((row) => ({
+        "ID do SKU": row.produto_id,
+        "Custo unitário": row.custo_produto,
+        "Imposto (%)": row.imposto_percentual,
+        "Nome do produto": row.produto_nome || "",
+        "Nome do SKU": row.variacao_nome || "",
+      }))
+    : // Chaves reconhecidas por findField/parseMeliCostRows (normalização por acento/caixa).
+      custos.rows.map((row) => ({
+        "# de anúncio": row.produto_id,
+        "preço de custo": row.custo_produto,
+        imposto: row.imposto_percentual,
+        model_id: row.id_model || "",
+      }));
 
   return {
     base: { id: base.id, slug: base.slug, nome: base.nome },
@@ -360,6 +509,10 @@ module.exports = {
   validarNumeroOpcional,
   criarHttpErro,
   resolverBaseVinculada,
+  resolverBaseVinculadaEstrita,
+  vinculoBaseEhValido,
+  motivoVinculoInvalido,
+  exigeVinculoEstrito,
   buildCostRowsFromBase,
 };
 

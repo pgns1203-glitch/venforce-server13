@@ -28,6 +28,7 @@ const CALCULATION_MODE_LABEL = {
   real_financial: "Fechamento por dados financeiros (repasse e taxas reais)",
   estimated_performance: "Estimativa por performance (tarifas por faixa de ticket)",
   real_meli_vendas: "Fechamento pela planilha de vendas do Mercado Livre",
+  real_tiktok_income: "Fechamento financeiro realizado do TikTok Shop",
 };
 
 const CONFIDENCE_LABEL = {
@@ -109,6 +110,41 @@ function buildFechamentoContextRows(summary, marketplace) {
     });
   }
 
+  // Bloco exclusivo do TikTok Shop: repasse e componentes do relatório
+  // financeiro (leitura — não são reaplicados sobre o repasse) + Onhold.
+  if (mode === "real_tiktok_income") {
+    const tiktokRows = [
+      ["Repasse total (valor liquidado)", s.paidRevenueTotal],
+      ["Vendas líquidas dos produtos", s.productNetSalesTotal],
+      ["Receita com LC calculado (base das margens)", s.revenueWithCalculatedProfit],
+      ["Linhas com quantidade inválida", s.rowsWithInvalidQuantity],
+      ["Linhas com possível duplicidade", s.possibleDuplicateRowsCount],
+      // Reembolso total: venda preservada no faturamento, fora do lucro.
+      ["Pedidos totalmente reembolsados", s.fullyRefundedCount],
+      ["Faturamento original totalmente reembolsado", s.fullyRefundedGrossRevenue],
+      ["Valor total reembolsado", s.fullyRefundedAmount],
+      ["Componente TikTok: comissão da plataforma", s.platformCommissionTotal],
+      ["Componente TikTok: taxas de serviço", s.serviceFeesTotal],
+      ["Componente TikTok: frete líquido", s.shippingFeesTotal],
+      ["Componente TikTok: comissões de afiliados (relatório)", s.affiliateFeesReportTotal],
+      ["Componente TikTok: descontos do vendedor", s.sellerDiscountsTotal],
+      ["Componente TikTok: reembolsos", s.refundsTotal],
+      ["Componente TikTok: impostos cobrados pelo TikTok", s.tiktokTaxesTotal],
+      ["Componente TikTok: ajustes", s.adjustmentsTotal],
+      ["Linhas em aberto (Onhold)", s.onholdCount],
+      ["Valor em aberto (Onhold)", s.onholdRevenueTotal],
+    ];
+    for (const [label, value] of tiktokRows) {
+      rows.push({ Item: label, Valor: formatSummaryValue(value) });
+    }
+    rows.push({
+      Item: "Observação",
+      Valor:
+        "Comissões, taxas de serviço, frete, afiliados, descontos e reembolsos já estão " +
+        "descontados no repasse do TikTok — aparecem aqui apenas como leitura.",
+    });
+  }
+
   if (Array.isArray(s.missingColumns) && s.missingColumns.length > 0) {
     rows.push({ Item: "Colunas ausentes / indeterminadas", Valor: s.missingColumns.join(" | ") });
   }
@@ -162,13 +198,25 @@ async function processarFechamentoFinanceiroController(req, res) {
       return res.status(400).json({ ok: false, error: "Arquivo de vendas não enviado." });
     }
 
-    if (marketplace !== "meli" && marketplace !== "shopee") {
-      return res.status(400).json({ ok: false, error: "Marketplace inválido. Envie exatamente 'meli' ou 'shopee'." });
+    if (marketplace !== "meli" && marketplace !== "shopee" && marketplace !== "tiktok") {
+      return res.status(400).json({ ok: false, error: "Marketplace inválido. Envie exatamente 'meli', 'shopee' ou 'tiktok'." });
     }
 
-    // Resolve a origem dos custos: arquivo enviado OU base vinculada (só MELI).
+    // TikTok Shop: os custos vêm SEMPRE da Base TikTok vinculada — não existe
+    // planilha de custos para esse marketplace.
+    if (marketplace === "tiktok" && !costsBaseId && !clienteSlug) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          "Nenhuma Base TikTok vinculada a este cliente. Cadastre ou vincule a base na tela de Bases antes de processar o fechamento.",
+      });
+    }
+
+    // Resolve a origem dos custos: arquivo enviado OU base vinculada
+    // (MELI quando existir vínculo; TikTok sempre).
     const podeUsarBaseVinculada =
-      marketplace === "meli" && (costsBaseId || clienteSlug);
+      (marketplace === "meli" && (costsBaseId || clienteSlug)) ||
+      marketplace === "tiktok";
 
     if ((!costsFile || !costsFile.buffer) && !podeUsarBaseVinculada) {
       return res.status(400).json({ ok: false, error: "Arquivo de custos não enviado." });
@@ -176,11 +224,17 @@ async function processarFechamentoFinanceiroController(req, res) {
 
     const salesBuffer = salesFile.buffer;
     const ordersAllFile = req.files?.ordersAll?.[0];
+    // Onhold: opcional e exclusivo do TikTok Shop.
+    const onholdFile = req.files?.onhold?.[0];
 
     // Cabeçalho detectado automaticamente: a exportação do ML nem sempre põe
     // o cabeçalho na linha 6.
     let salesRowsRaw;
-    if (marketplace === "meli") {
+    if (marketplace === "tiktok") {
+      // O TikTok não passa por parseSpreadsheet: o parser próprio precisa do
+      // buffer para saber se a célula do ID era texto ou número.
+      salesRowsRaw = null;
+    } else if (marketplace === "meli") {
       const detectedHeader = detectMeliHeader(salesBuffer);
       const validatedHeader = validateMeliHeaderAtRow(
         salesBuffer,
@@ -209,10 +263,11 @@ async function processarFechamentoFinanceiroController(req, res) {
     let costRowsRaw;
     let costsSource = "upload";
     let costsBase = null;
-    if (costsFile && costsFile.buffer) {
+    if (costsFile && costsFile.buffer && marketplace !== "tiktok") {
       costRowsRaw = parseSpreadsheet(costsFile.buffer);
     } else {
-      // MELI usando base vinculada: monta as linhas de custo a partir do banco.
+      // Base vinculada: monta as linhas de custo a partir do banco, no formato
+      // que o parser do marketplace entende (MELI ou TikTok).
       const resolved = await buildCostRowsFromBase({
         baseId: costsBaseId,
         clienteSlug,
@@ -243,6 +298,10 @@ async function processarFechamentoFinanceiroController(req, res) {
       fullCost,
       additionalCosts,
       ordersAllRowsRaw,
+      // TikTok: buffers crus (Income obrigatório, Onhold opcional).
+      salesBufferRaw: marketplace === "tiktok" ? salesBuffer : null,
+      onholdBufferRaw:
+        marketplace === "tiktok" && onholdFile?.buffer ? onholdFile.buffer : null,
     });
 
     if (marketplace === "meli") {
@@ -290,6 +349,13 @@ async function processarFechamentoFinanceiroController(req, res) {
       XLSX.utils.book_append_sheet(workbook, auditSheet, "Auditoria");
     }
 
+    // Onhold do TikTok: aba própria. Valores em aberto ficam separados do
+    // resultado realizado, nunca somados a ele.
+    if (marketplace === "tiktok" && Array.isArray(result.pendingRows) && result.pendingRows.length > 0) {
+      const pendingSheet = XLSX.utils.json_to_sheet(result.pendingRows);
+      XLSX.utils.book_append_sheet(workbook, pendingSheet, "Em_aberto_TikTok");
+    }
+
     const excelBuffer = XLSX.write(workbook, {
       type: "buffer",
       bookType: "xlsx",
@@ -310,6 +376,10 @@ async function processarFechamentoFinanceiroController(req, res) {
       emptySales: result.emptySales === true,
       costsSource,
       costsBase,
+      ...(marketplace === "tiktok" ? {
+        pendingRows: result.pendingRows || [],
+        onholdSummary: result.onholdSummary || null,
+      } : {}),
       ...(marketplace === "meli" ? {
         diagnostico: {
           cabecalhosDetectados: meliHeaderDiagnostic.detectedHeaders,

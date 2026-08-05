@@ -67,10 +67,17 @@
  * ------------------------------------------------------------ */
 .vf-page-bases .vf-bases-market-grid {
   display: grid;
-  /* Mercado Livre recebe mais espaço; Shopee e TikTok dividem o restante */
-  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr) minmax(280px, 1fr);
+  /* Mercado Livre e Shopee dividem a linha de cima em partes iguais;
+     minmax(0, 1fr) impede que o conteúdo estoure a coluna (overflow
+     horizontal na página) — a rolagem fica dentro de .vf-table-wrap. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--vf-sp-5);
   align-items: start;
+}
+
+/* TikTok Shop ocupa a largura inteira, na linha abaixo das duas primeiras */
+.vf-page-bases .vf-bases-mp--tiktok {
+  grid-column: 1 / -1;
 }
 
 .vf-page-bases .vf-bases-mp {
@@ -118,13 +125,13 @@
 }
 
 /* Rolagem interna das listas + layout fixo de colunas.
-   table-layout:fixed + width:100% garante que as 4 colunas caibam
-   sempre no wrapper — nunca há rolagem horizontal. A rolagem é só
-   vertical (overflow-x oculto), então a barra horizontal some quando
-   a tabela cabe. */
+   table-layout:fixed + width:100% faz as 4 colunas caberem no wrapper,
+   então na prática só há rolagem vertical. O overflow:auto mantém
+   qualquer rolagem horizontal residual DENTRO do wrapper, nunca na
+   página. */
 .vf-page-bases .vf-bases-mp .vf-table-wrap {
   max-height: 520px;
-  overflow: hidden auto;
+  overflow: auto;
 }
 
 .vf-page-bases .vf-bases-mp .vf-table {
@@ -499,16 +506,10 @@
  * 8. Responsivo específico da página
  * (os componentes globais já respondem sozinhos)
  * ------------------------------------------------------------ */
-/* Telas médias: duas colunas (a terceira seção desce para a linha de baixo) */
-@media (max-width: 1360px) {
+/* Tablet e mobile: uma coluna só — Mercado Livre, Shopee e TikTok empilhados */
+@media (max-width: 1024px) {
   .vf-page-bases .vf-bases-market-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 900px) {
-  .vf-page-bases .vf-bases-market-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

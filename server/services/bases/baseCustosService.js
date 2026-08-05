@@ -120,6 +120,49 @@ function buildTikTokCostKey(produtoId, sku) {
   return `${id}::${skuNorm}`;
 }
 
+// ---------------------------------------------------------------------------
+// Chave TikTok — função ÚNICA de resolução, reaproveitada pela importação da
+// base, pelo upsert do editor rápido e pelo motor financeiro (Income).
+//
+// Regra: ID é sempre obrigatório.
+//   - SKU preenchido  → chave composta ID+SKU (buildTikTokCostKey).
+//   - SKU vazio       → usa o ID sozinho como chave, MAS só quando esse ID
+//                        aparece uma única vez no lote/base (contagemPorId).
+//                        Se o ID repetir, usar o ID sozinho seria ambíguo —
+//                        `ambiguo: true` avisa o chamador para rejeitar/
+//                        ignorar a linha em vez de adivinhar.
+// contagemPorId: Map<id, quantidade> — quantas linhas do MESMO lote (import)
+// ou da MESMA base (upsert) têm esse produto_id, com ou sem SKU.
+// ---------------------------------------------------------------------------
+function resolverChaveTikTok(produtoId, sku, contagemPorId) {
+  const id = normalizarProdutoIdTikTok(produtoId);
+  if (!id) return { chave: "", ambiguo: false, usaSomenteId: false };
+
+  const skuNorm = normalizarSkuTikTok(sku);
+  if (skuNorm) {
+    return { chave: buildTikTokCostKey(id, skuNorm), ambiguo: false, usaSomenteId: false };
+  }
+
+  // Duck-typed em vez de `instanceof Map`: código carregado num sandbox de
+  // outro realm (ex.: testes que fazem eval de index.js via vm.createContext)
+  // cria um Map de outro construtor global — `instanceof` falharia mesmo com
+  // um Map válido.
+  const contagem = contagemPorId && typeof contagemPorId.get === "function"
+    ? (contagemPorId.get(id) || 0)
+    : 0;
+  if (contagem > 1) {
+    return { chave: "", ambiguo: true, usaSomenteId: false };
+  }
+  return { chave: id, ambiguo: false, usaSomenteId: true };
+}
+
+// Mensagem única do bloqueio de ambiguidade — usada pela importação e pelo
+// upsert do editor rápido, para o operador ver sempre o mesmo texto.
+function erroIdAmbiguoTikTok(produtoId, contexto) {
+  const sufixo = contexto ? ` ${contexto}` : "";
+  return `O ID ${produtoId} aparece em mais de uma linha. Informe o SKU para diferenciar os custos.${sufixo}`;
+}
+
 function criarHttpErro(statusCode, payload) {
   const err = new Error(payload?.erro || "Erro");
   err.statusCode = statusCode;
@@ -231,8 +274,17 @@ async function upsertCustoBase({
   const variacaoNomeFinal = textoOpcional(variacaoNome);
   const skuFinal = isTikTok ? normalizarSkuTikTok(sku) : null;
 
+  // SKU vazio só é seguro quando o ID for único na base: se já existe outra
+  // linha deste produto_id com SKU preenchido, usar o ID sozinho ficaria
+  // ambíguo — o SKU passa a ser obrigatório também para esta linha.
   if (isTikTok && !skuFinal) {
-    throw criarHttpErro(400, { ok: false, erro: "SKU é obrigatório para TikTok." });
+    const outras = await pool.query(
+      `SELECT 1 FROM custos WHERE base_id = $1 AND produto_id = $2 AND sku <> '' LIMIT 1`,
+      [baseId, produtoIdNorm]
+    );
+    if (outras.rows.length > 0) {
+      throw criarHttpErro(422, { ok: false, erro: erroIdAmbiguoTikTok(produtoIdNorm) });
+    }
   }
 
   const whereSku = isTikTok ? " AND LOWER(sku) = LOWER($3)" : "";
@@ -600,6 +652,8 @@ module.exports = {
   normalizarProdutoIdTikTok,
   normalizarSkuTikTok,
   buildTikTokCostKey,
+  resolverChaveTikTok,
+  erroIdAmbiguoTikTok,
   ensureColunasCustos,
   obterBaseAtivaPorSlug,
   obterPadraoCustoBase,

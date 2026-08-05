@@ -52,6 +52,8 @@ const {
   normalizarProdutoIdTikTok,
   obterBaseAtivaPorSlug,
   upsertCustoBase,
+  resolverChaveTikTok,
+  erroIdAmbiguoTikTok,
 } = require("../services/bases/baseCustosService");
 const {
   MARKETPLACES_SUPORTADOS,
@@ -84,6 +86,8 @@ function carregarAuxiliaresIndex() {
     path,
     MARKETPLACES_SUPORTADOS,
     normalizarProdutoIdTikTok,
+    resolverChaveTikTok,
+    erroIdAmbiguoTikTok,
     lerWorkbookPlanilha,
     module: { exports: {} },
     console,
@@ -324,10 +328,34 @@ async function testeImportacao() {
     (err) => err.statusCode === 400 && /notação científica/i.test(err.payload.erro)
   );
 
+  // ID único sem SKU é aceito: usa o ID sozinho como chave (regra nova).
+  const linhasIdUnicoSemSku = parsePlanilha(
+    planilhaBuffer([["ID do SKU", "Custo unitário"], [ID_19, "10"]]),
+    "sem-sku.xlsx",
+    "tiktok"
+  );
+  eq("parse: ID único sem SKU é aceito", linhasIdUnicoSemSku.length, 1);
+  eq("parse: ID único sem SKU preserva o ID", linhasIdUnicoSemSku[0].produto_id, ID_19);
+  eq("parse: ID único sem SKU grava sku vazio", linhasIdUnicoSemSku[0].sku, "");
+
+  // ID repetido com uma das linhas sem SKU é rejeitado — mensagem cita o ID
+  // e o número da linha da planilha (linha 3: cabeçalho=1, KIT2BIBI=2, sem SKU=3).
   throws(
-    "parse: linha com ID mas sem SKU é rejeitada",
-    () => parsePlanilha(planilhaBuffer([["ID do SKU", "Custo unitário"], [ID_19, "10"]]), "sem-sku.xlsx", "tiktok"),
-    (err) => err.statusCode === 400 && /ID e SKU/.test(err.payload.erro)
+    "parse: ID repetido com uma linha sem SKU é rejeitado",
+    () => parsePlanilha(
+      planilhaBuffer([
+        ["ID do SKU", "SKU", "Custo unitário"],
+        [ID_19, "KIT2BIBI", "22,90"],
+        [ID_19, "", "34,70"],
+      ]),
+      "ambiguo.xlsx",
+      "tiktok"
+    ),
+    (err) =>
+      err.statusCode === 422 &&
+      err.payload.erro.includes(ID_19) &&
+      /Informe o SKU/.test(err.payload.erro) &&
+      /linha 3/.test(err.payload.erro)
   );
 
   // CSV UTF-8 com cabeçalho acentuado ("Custo unitário") precisa ser lido.
@@ -405,15 +433,34 @@ async function testeUpsert() {
   eq("insert grava sku", insert.params[8], "KIT2BIBI");
   ok("insert carimba updated_at", /updated_at/.test(insert.text) && /CURRENT_TIMESTAMP/.test(insert.text));
 
-  // SKU é obrigatório para TikTok — sem ele nem chega a consultar o banco.
-  let erroSemSku = null;
+  // SKU vazio é aceito quando o ID é único na base (nenhuma outra linha do
+  // mesmo produto_id já tem SKU preenchido).
+  const stubIdUnicoSemSku = instalarPoolFalso([
+    { match: /SELECT 1 FROM custos/i, resultado: { rows: [] } },
+    { match: /INSERT INTO custos/i, resultado: { rows: [{ base_id: 1, produto_id: ID_19, sku: "", custo_produto: "10", imposto_percentual: "0", taxa_fixa: "0", id_model: null, produto_nome: null, variacao_nome: null, updated_at: "2026-08-05T10:00:00Z" }] } },
+  ]);
+  const criadoSemSku = await upsertCustoBase({
+    baseId: 1, produtoIdNorm: ID_19, custoProduto: 10,
+    impostoPercentualOpt: semOpt, taxaFixaOpt: semOpt, marketplace: "tiktok",
+  });
+  stubIdUnicoSemSku.restaurar();
+  eq("upsert: ID único sem SKU é aceito", criadoSemSku.acao, "criado");
+
+  // ID que já tem outra linha com SKU preenchido: usar o ID sozinho ficaria
+  // ambíguo — SKU passa a ser obrigatório também para esta linha.
+  const stubIdAmbiguo = instalarPoolFalso([
+    { match: /SELECT 1 FROM custos/i, resultado: { rows: [{ existe: 1 }] } },
+  ]);
+  let erroAmbiguo = null;
   try {
     await upsertCustoBase({
       baseId: 1, produtoIdNorm: ID_19, custoProduto: 10,
       impostoPercentualOpt: semOpt, taxaFixaOpt: semOpt, marketplace: "tiktok",
     });
-  } catch (e) { erroSemSku = e; }
-  ok("upsert TikTok sem SKU é rejeitado", !!erroSemSku && erroSemSku.statusCode === 400);
+  } catch (e) { erroAmbiguo = e; }
+  stubIdAmbiguo.restaurar();
+  ok("upsert: ID com outro SKU cadastrado exige SKU (422)", !!erroAmbiguo && erroAmbiguo.statusCode === 422);
+  ok("upsert: mensagem cita o ID e pede o SKU", erroAmbiguo && erroAmbiguo.payload.erro.includes(ID_19) && /Informe o SKU/.test(erroAmbiguo.payload.erro));
 
   // ── atualização (já existe, mesmo ID + mesmo SKU) ──
   const existente = {

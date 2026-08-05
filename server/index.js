@@ -92,6 +92,8 @@ const { ensureObservabilityTables } = require("./repositories/observabilityRepos
 const {
   MARKETPLACES_SUPORTADOS,
   normalizarProdutoIdTikTok,
+  resolverChaveTikTok,
+  erroIdAmbiguoTikTok,
   ensureColunasCustos,
 } = require("./services/bases/baseCustosService");
 
@@ -296,7 +298,14 @@ function parsePlanilha(buffer, originalName, marketplace) {
   const isShopee = mktExplicito ? mktExplicito === "shopee" : (!isTikTok && headerShopee);
 
   const resultado = [];
+  // TikTok: ID é sempre obrigatório, mas o SKU só é obrigatório quando o
+  // mesmo ID aparece em mais de uma linha do lote — validado num segundo
+  // passe (precisa ver TODAS as linhas antes de decidir se um ID é ambíguo).
+  const candidatosTikTok = [];
+  let linhaPlanilhaAtual = 1; // 1 = cabeçalho; dados começam na linha 2
+
   for (const row of rows) {
+    linhaPlanilhaAtual += 1;
     const r = {};
     for (const [k, v] of Object.entries(row)) {
       const cleanKey = k
@@ -314,19 +323,11 @@ function parsePlanilha(buffer, originalName, marketplace) {
       const idTikTok = normalizarProdutoIdTikTok(obterValorPorAlias(r, TIKTOK_ALIASES_ID));
       const skuTikTok = String(obterValorPorAlias(r, TIKTOK_ALIASES_SKU) || "").trim();
       if (!idTikTok && !skuTikTok) continue; // linha em branco
-
-      // A chave lógica do TikTok é ID + SKU: os dois são obrigatórios juntos.
-      // O mesmo ID pode aparecer em várias linhas com SKUs diferentes, cada
-      // uma com seu próprio custo — sem o SKU não há como distingui-las.
-      if (!idTikTok || !skuTikTok) {
-        const erroLinha = new Error("A linha TikTok precisa possuir ID e SKU.");
-        erroLinha.statusCode = 400;
-        erroLinha.payload = { ok: false, erro: "A linha TikTok precisa possuir ID e SKU." };
-        throw erroLinha;
-      }
+      if (!idTikTok) continue; // SKU sem ID não identifica nada — mesmo tratamento de linha em branco
 
       const custoRaw = obterValorPorAlias(r, TIKTOK_ALIASES_CUSTO);
-      resultado.push({
+      candidatosTikTok.push({
+        linha: linhaPlanilhaAtual,
         produto_id: idTikTok,
         sku: skuTikTok,
         custo_produto: numeroSeguro(custoRaw),
@@ -365,6 +366,40 @@ function parsePlanilha(buffer, originalName, marketplace) {
       tem_custo: true,
     });
   }
+
+  if (isTikTok) {
+    // Segundo passe: só agora sabemos quantas linhas cada ID tem no lote
+    // inteiro. SKU vazio só é seguro quando o ID for único — caso contrário
+    // não há como saber a qual linha o custo pertence.
+    const contagemPorId = new Map();
+    for (const c of candidatosTikTok) {
+      contagemPorId.set(c.produto_id, (contagemPorId.get(c.produto_id) || 0) + 1);
+    }
+
+    for (const c of candidatosTikTok) {
+      const resolvido = resolverChaveTikTok(c.produto_id, c.sku, contagemPorId);
+      if (resolvido.ambiguo) {
+        const erroLinha = new Error(
+          erroIdAmbiguoTikTok(c.produto_id, `(linha ${c.linha})`)
+        );
+        erroLinha.statusCode = 422;
+        erroLinha.payload = { ok: false, erro: erroLinha.message };
+        throw erroLinha;
+      }
+      resultado.push({
+        produto_id: c.produto_id,
+        sku: c.sku,
+        custo_produto: c.custo_produto,
+        imposto_percentual: c.imposto_percentual,
+        taxa_fixa: c.taxa_fixa,
+        id_model: c.id_model,
+        produto_nome: c.produto_nome,
+        variacao_nome: c.variacao_nome,
+        tem_custo: c.tem_custo,
+      });
+    }
+  }
+
   if (!resultado.length) throw new Error("Nenhum ID válido encontrado na planilha");
   return resultado;
 }

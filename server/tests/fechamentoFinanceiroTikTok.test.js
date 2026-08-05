@@ -348,21 +348,40 @@ console.log("\n▸ C. Cruzamento por ID do SKU + Nome do SKU (nunca só o ID)");
   );
 }
 {
-  // Income com ID mas sem "Nome do SKU": nunca cai para busca só pelo ID.
-  const resultSemSku = processTikTok({
+  // Income com ID mas sem "Nome do SKU", e o ID é ÚNICO na base (só um custo
+  // cadastrado): cruza normalmente pelo ID sozinho (regra nova).
+  const resultUnicoSemSku = processTikTok({
     salesBuffer: incomeBuffer([linhaIncome({ variacao: "" })]),
-    costRowsRaw: CUSTOS_PADRAO,
+    costRowsRaw: CUSTOS_PADRAO, // um único custo para SKU_19
     ads: 0, venforce: 0,
   });
-  const rowSemSku = resultSemSku.detailedRows[0];
-  eq("ID sem SKU fica com status próprio", rowSemSku.status_calculo, "sku_ausente");
-  eq("ID sem SKU não calcula CMV", rowSemSku.cmv, null);
-  eq("ID sem SKU não calcula LC", rowSemSku.lc, null);
-  eq("faturamento é preservado mesmo sem SKU", resultSemSku.summary.grossRevenueTotal, 100);
-  eq("confiança rebaixada sem nenhuma linha calculável", resultSemSku.summary.financialConfidence, "insuficiente");
+  const rowUnicoSemSku = resultUnicoSemSku.detailedRows[0];
+  eq("ID único sem SKU no Income é aceito", rowUnicoSemSku.status_calculo, "calculado");
+  eq("ID único sem SKU calcula CMV normalmente", rowUnicoSemSku.cmv, 20);
+  eq("ID único sem SKU calcula LC normalmente", rowUnicoSemSku.lc, 41);
+  eq("confiança confiável quando o único custo do ID casa", resultUnicoSemSku.summary.financialConfidence, "confiavel");
+}
+{
+  // Income sem "Nome do SKU", mas o ID tem VÁRIOS custos na base: nunca
+  // escolhe arbitrariamente — fica sem custo, mesma regra de "sem_custo".
+  const custosMultiSku = custosBase([
+    { id: SKU_19, sku: "KIT2BIBI", custo: 22.9, imposto: 0.06 },
+    { id: SKU_19, sku: "KIT3BIBI", custo: 34.7, imposto: 0.06 },
+  ]);
+  const resultAmbiguoSemSku = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ variacao: "" })]),
+    costRowsRaw: custosMultiSku,
+    ads: 0, venforce: 0,
+  });
+  const rowAmbiguoSemSku = resultAmbiguoSemSku.detailedRows[0];
+  eq("Income sem SKU não escolhe custo quando há vários SKUs do ID", rowAmbiguoSemSku.status_calculo, "sem_custo");
+  eq("nenhum custo é atribuído arbitrariamente", rowAmbiguoSemSku.cmv, null);
+  eq("nenhum custo é atribuído arbitrariamente (custo unitário)", rowAmbiguoSemSku.custo_unitario, null);
+  eq("faturamento é preservado mesmo sem escolher custo", resultAmbiguoSemSku.summary.grossRevenueTotal, 100);
+  eq("confiança rebaixada sem nenhuma linha calculável", resultAmbiguoSemSku.summary.financialConfidence, "insuficiente");
   ok(
-    "auditoria explica a ausência do SKU",
-    resultSemSku.auditRows.some((a) => /sem "Nome do SKU"/.test(a.motivo))
+    "auditoria explica a ambiguidade",
+    resultAmbiguoSemSku.auditRows.some((a) => /mais de um custo cadastrado, ou nenhum/.test(a.motivo))
   );
 }
 {

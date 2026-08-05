@@ -69,9 +69,9 @@ async function upsertCustoBaseController(req, res) {
     }
 
     const isTikTok = base.marketplace === "tiktok";
-    if (isTikTok && !String(body.sku || "").trim()) {
-      return res.status(400).json({ ok: false, erro: "SKU é obrigatório para TikTok." });
-    }
+    // SKU agora é opcional para TikTok: só é exigido quando o ID já não é
+    // único na base (checagem feita em upsertCustoBase, que tem acesso ao
+    // banco e devolve 422 com o motivo caso seja ambíguo).
     const custoProduto = validarNumeroObrigatorio(body.custo_produto, "custo_produto");
     const impostoPercentualOpt = validarNumeroOpcional(body.imposto_percentual, "imposto_percentual");
     // TikTok não tem taxa fixa: sempre 0, mesmo que o cliente envie outro valor.

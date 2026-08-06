@@ -1,6 +1,7 @@
 // server/services/ads/mlAdsService.js
 const { mlFetch } = require("../../utils/mlClient");
 const pool = require("../../config/database");
+const { resolveMlGrant } = require("../mlTokenService");
 
 // ─── Códigos de retorno ───────────────────────────────────────────────────────
 // NO_TOKEN              – cliente não tem token ML configurado
@@ -63,28 +64,29 @@ function logMl(path, status, body) {
 
 async function resolverClienteToken(clienteSlug) {
   const result = await pool.query(
-    `SELECT c.id AS cliente_id, t.ml_user_id
-     FROM clientes c
-     INNER JOIN ml_tokens t ON t.cliente_id = c.id
-     WHERE c.slug = $1 AND c.ativo = true
-     LIMIT 1`,
+    `SELECT c.id AS cliente_id
+       FROM clientes c
+      WHERE c.slug = $1 AND c.ativo = true
+      LIMIT 1`,
     [clienteSlug]
   );
 
   if (!result.rows.length) {
-    const existe = await pool.query(
-      "SELECT id FROM clientes WHERE slug = $1 AND ativo = true",
-      [clienteSlug]
-    );
-    if (!existe.rows.length) throw new Error(`Cliente "${clienteSlug}" não encontrado.`);
-    const err = new Error("Cliente sem token Mercado Livre configurado.");
-    err.adsCodigo = "NO_TOKEN";
-    throw err;
+    throw new Error(`Cliente "${clienteSlug}" não encontrado.`);
+  }
+
+  let grant;
+  try {
+    grant = await resolveMlGrant({ clienteId: result.rows[0].cliente_id, requireUsable: true });
+  } catch (_) {
+    const error = new Error("Cliente sem token Mercado Livre configurado.");
+    error.adsCodigo = "NO_TOKEN";
+    throw error;
   }
 
   return {
     clienteId: result.rows[0].cliente_id,
-    mlUserId:  String(result.rows[0].ml_user_id),
+    mlUserId: String(grant.ml_user_id),
   };
 }
 

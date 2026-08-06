@@ -12,7 +12,7 @@ const crypto = require("crypto");
 const pool = require("./config/database");
 const { processarFechamento, compilarFechamentos } = require("./utils/fechamento/process");
 const { processarFechamentoMeli, compilarFechamentosMeli } = require("./utils/fechamento/meliConversaoService");
-const { getValidMlTokenByCliente, mlFetch } = require("./utils/mlClient");
+const { mlFetch } = require("./utils/mlClient");
 const { startTokenRefreshWorker } = require("./utils/tokenRefreshWorker");
 const { authMiddleware, requireAdmin } = require("./middlewares/authMiddleware");
 const {
@@ -1063,28 +1063,6 @@ app.get("/admin/users", authMiddleware, requireAdmin, async (req, res) => {
   }
 });
 
-app.get("/admin/ml-tokens", authMiddleware, requireAdmin, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT
-        c.id AS cliente_id,
-        c.nome AS cliente_nome,
-        c.slug AS cliente_slug,
-        t.ml_user_id,
-        t.access_token,
-        t.refresh_token,
-        t.expires_at,
-        t.updated_at
-      FROM clientes c
-      INNER JOIN ml_tokens t ON t.cliente_id = c.id
-      ORDER BY c.nome ASC
-    `);
-    res.json({ ok: true, tokens: result.rows });
-  } catch (err) {
-    res.status(500).json({ ok: false, erro: err.message });
-  }
-});
-
 app.get("/clientes", authMiddleware, async (req, res) => {
   try {
     const role = String(req.user?.role || "").toLowerCase();
@@ -1283,40 +1261,6 @@ app.get("/design/anuncios/:itemId/imagens/download", authMiddleware, requireDesi
     });
   } catch (err) {
     return res.status(500).json({ ok: false, erro: err.message });
-  }
-});
-
-app.get("/clientes/:slug/ml-status", authMiddleware, requireAdmin, async (req, res) => {
-  try {
-    const slug = normalizarSlug(req.params.slug);
-    const c = await pool.query("SELECT id FROM clientes WHERE slug = $1", [slug]);
-    if (!c.rows.length) {
-      return res.status(404).json({ ok: false, erro: "Cliente não encontrado." });
-    }
-    const clienteId = c.rows[0].id;
-    const t = await pool.query(
-      "SELECT ml_user_id, expires_at, updated_at FROM ml_tokens WHERE cliente_id = $1",
-      [clienteId]
-    );
-    if (!t.rows.length) {
-      return res.json({ ok: true, conectado: false });
-    }
-    const row = t.rows[0];
-    const expiresAt = new Date(row.expires_at);
-    const now = new Date();
-    const expira_em_segundos = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
-    const precisa_refresh = expira_em_segundos < 300;
-    res.json({
-      ok: true,
-      conectado: true,
-      ml_user_id: row.ml_user_id,
-      expires_at: row.expires_at,
-      updated_at: row.updated_at,
-      expira_em_segundos,
-      precisa_refresh
-    });
-  } catch (err) {
-    res.status(500).json({ ok: false, erro: err.message });
   }
 });
 

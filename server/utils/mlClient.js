@@ -1,69 +1,17 @@
-// server/utils/mlClient.js
-const pool = require("../config/database");
+const {
+  getValidMlGrantToken,
+  getValidMlTokenByCliente,
+  getMlGrantTokenNoRefresh,
+  refreshMlGrant,
+  sanitizeErrorMessage,
+} = require("../services/mlTokenService");
 
-// TODO: mover getValidMlTokenByCliente para server/utils/mlToken.js
-// Por enquanto importa direto do index via referência circular —
-// para evitar circular, copie a função getValidMlTokenByCliente aqui por enquanto
-// e deixe um comentário DUPLICATE: remover após extrair mlToken.js
+const ML_API = "https://api.mercadolibre.com";
 
-const ML_CLIENT_ID     = process.env.ML_CLIENT_ID     || "";
-const ML_CLIENT_SECRET = process.env.ML_CLIENT_SECRET || "";
-
-// DUPLICATE: remover após extrair mlToken.js
-async function getValidMlTokenByCliente(clienteId) {
-  const result = await pool.query("SELECT * FROM ml_tokens WHERE cliente_id = $1", [clienteId]);
-  const row = result.rows[0];
-  if (!row) throw new Error("Cliente não possui token ML");
-
-  const now = Date.now();
-  const expiresAt = new Date(row.expires_at).getTime();
-  const msLeft = expiresAt - now;
-  const fiveMin = 5 * 60 * 1000;
-
-  if (msLeft < fiveMin) {
-    const tokenRes = await fetch("https://api.mercadolibre.com/oauth/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        client_id: ML_CLIENT_ID,
-        client_secret: ML_CLIENT_SECRET,
-        refresh_token: row.refresh_token
-      })
-    });
-    const data = await tokenRes.json();
-    if (!tokenRes.ok) throw new Error(data?.message || JSON.stringify(data));
-    const { access_token, refresh_token, expires_in } = data;
-    const newExpires = new Date(Date.now() + (expires_in || 0) * 1000);
-    const newRefresh = refresh_token || row.refresh_token;
-    await pool.query(
-      `UPDATE ml_tokens SET access_token = $1, refresh_token = $2, expires_at = $3, updated_at = NOW()
-       WHERE cliente_id = $4`,
-      [access_token, newRefresh, newExpires, clienteId]
-    );
-    return access_token;
-  }
-
-  return row.access_token;
+async function getMlTokenByClienteNoRefresh(clienteId, options = {}) {
+  return (await getMlGrantTokenNoRefresh(clienteId, options)).accessToken;
 }
 
-// Somente leitura: não faz refresh e não altera ml_tokens.
-// Usar quando a rota precisa garantir que não haverá POST no OAuth/token do ML.
-async function getMlTokenByClienteNoRefresh(clienteId) {
-  const result = await pool.query("SELECT access_token, expires_at FROM ml_tokens WHERE cliente_id = $1", [clienteId]);
-  const row = result.rows[0];
-  if (!row) throw new Error("Cliente não possui token ML");
-
-  const expiresAt = new Date(row.expires_at).getTime();
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    throw new Error("Token ML expirado (rota read-only não faz refresh automático).");
-  }
-
-  return row.access_token;
-}
-
-// Retry-After em segundos, quando o Mercado Livre devolve o header (ex.: 429).
-// Retorna null quando ausente ou não numérico — nunca inventa um valor.
 function parseRetryAfter(res) {
   const header = res && res.headers && typeof res.headers.get === "function"
     ? res.headers.get("retry-after")
@@ -74,8 +22,7 @@ function parseRetryAfter(res) {
 }
 
 async function mlFetch(clienteId, path, options = {}) {
-  const ML_API = "https://api.mercadolibre.com";
-  const { noRefresh = false, ...fetchOptions } = options;
+  const { mlUserId, noRefresh = false, ...fetchOptions } = options;
 
   async function doRequest(token) {
     return fetch(`${ML_API}${path}`, {
@@ -83,50 +30,49 @@ async function mlFetch(clienteId, path, options = {}) {
       headers: {
         "Content-Type": "application/json",
         ...(fetchOptions.headers || {}),
-        Authorization: "Bearer " + token,
+        Authorization: `Bearer ${token}`,
       },
     });
   }
 
   try {
-    const token = noRefresh
-      ? await getMlTokenByClienteNoRefresh(clienteId)
-      : await getValidMlTokenByCliente(clienteId);
-    let res = await doRequest(token);
+    let tokenResult = noRefresh
+      ? await getMlGrantTokenNoRefresh(clienteId, { mlUserId })
+      : await getValidMlGrantToken(clienteId, { mlUserId });
+    let res = await doRequest(tokenResult.accessToken);
 
     if (!noRefresh && res.status === 401) {
-      console.warn(`[mlFetch] 401 em ${path} para clienteId ${clienteId} — forçando refresh`);
-      await pool.query(
-        "UPDATE ml_tokens SET expires_at = NOW() WHERE cliente_id = $1",
-        [clienteId]
-      );
-      const freshToken = await getValidMlTokenByCliente(clienteId);
-      res = await doRequest(freshToken);
+      console.warn(JSON.stringify({
+        event: "ml_api_unauthorized_refresh",
+        cliente_id: clienteId,
+        grant_id: tokenResult.grant.id,
+        path,
+      }));
+      const refreshed = await refreshMlGrant(tokenResult.grant.id, {
+        force: true,
+        staleAccessToken: tokenResult.accessToken,
+      });
+      tokenResult = { grant: refreshed, accessToken: refreshed.access_token };
+      res = await doRequest(tokenResult.accessToken);
     }
 
     let data;
-    try { data = await res.json(); } catch { data = null; }
-
+    try { data = await res.json(); } catch (_) { data = null; }
     return { ok: res.ok, status: res.status, data, retryAfter: parseRetryAfter(res) };
-  } catch (err) {
-    console.error(`[mlFetch] erro — path: ${path} clienteId: ${clienteId} —`, err.message);
-    throw err;
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "ml_api_request_failed",
+      cliente_id: clienteId,
+      path,
+      error: sanitizeErrorMessage(error),
+    }));
+    throw error;
   }
 }
 
-module.exports = { mlFetch, getValidMlTokenByCliente, getMlTokenByClienteNoRefresh };
-
-/*
-  USO NAS ROTAS (importar assim):
-  const { mlFetch } = require("./utils/mlClient");
-
-  // GET
-  const { ok, status, data } = await mlFetch(clienteId, "/users/me");
-
-  // POST
-  const { ok, data } = await mlFetch(clienteId, "/items", {
-    method: "POST",
-    body: JSON.stringify({ title: "..." })
-  });
-*/
-
+module.exports = {
+  mlFetch,
+  getValidMlTokenByCliente,
+  getMlTokenByClienteNoRefresh,
+  parseRetryAfter,
+};

@@ -4,6 +4,7 @@
 
 const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
+const { resolveMlGrant } = require("../mlTokenService");
 const { resolverPrecosItem } = require("./precoItemService");
 
 function extrairSkuMl(body) {
@@ -292,10 +293,8 @@ async function executarDiagnosticoCompleto(relatorioId) {
   let cliente, base, mlUserId, margemAlvo;
   try {
     const r = await pool.query(
-      `SELECT r.cliente_id, r.base_id, r.margem_alvo, r.cliente_slug, r.base_slug,
-              t.ml_user_id
+      `SELECT r.cliente_id, r.base_id, r.margem_alvo, r.cliente_slug, r.base_slug
          FROM relatorios r
-         LEFT JOIN ml_tokens t ON t.cliente_id = r.cliente_id
         WHERE r.id = $1`,
       [relatorioId]
     );
@@ -303,7 +302,7 @@ async function executarDiagnosticoCompleto(relatorioId) {
     const row = r.rows[0];
     cliente = { id: row.cliente_id, slug: row.cliente_slug };
     base = { id: row.base_id, slug: row.base_slug };
-    mlUserId = row.ml_user_id;
+    mlUserId = (await resolveMlGrant({ clienteId: row.cliente_id, requireUsable: true })).ml_user_id;
     margemAlvo = row.margem_alvo != null ? Number(row.margem_alvo) : null;
     if (!mlUserId) throw new Error("Cliente sem conta ML vinculada.");
     if (!base.id) throw new Error("Base não encontrada.");
@@ -318,7 +317,7 @@ async function executarDiagnosticoCompleto(relatorioId) {
 
   // Validar que o token pertence ao mlUserId esperado
   try {
-    const meResp = await mlFetch(cliente.id, "/users/me");
+    const meResp = await mlFetch(cliente.id, "/users/me", { mlUserId });
     if (!meResp.ok) {
       throw new Error(`Falha ao validar token ML: HTTP ${meResp.status}`);
     }
@@ -389,7 +388,8 @@ async function executarDiagnosticoCompleto(relatorioId) {
 
       const scan = await mlFetch(
         cliente.id,
-        `/users/${mlUserId}/items/search?${params.toString()}`
+        `/users/${mlUserId}/items/search?${params.toString()}`,
+        { mlUserId }
       );
       if (!scan.ok) {
         throw new Error(`Falha no scroll do ML (HTTP ${scan.status}): ${scan.data?.message || "erro"}`);
@@ -401,7 +401,7 @@ async function executarDiagnosticoCompleto(relatorioId) {
       for (const lote of diagChunk(ids, DIAG_BATCH_DETAILS)) {
         let detalhes = [];
         try {
-          const batch = await mlFetch(cliente.id, `/items?ids=${lote.join(",")}`);
+          const batch = await mlFetch(cliente.id, `/items?ids=${lote.join(",")}`, { mlUserId });
           if (batch.ok && Array.isArray(batch.data)) detalhes = batch.data;
         } catch (_) { detalhes = []; }
 
@@ -459,4 +459,3 @@ module.exports = {
   DIAG_BATCH_DETAILS,
   DIAG_ENRICH_CONCURRENCY,
 };
-

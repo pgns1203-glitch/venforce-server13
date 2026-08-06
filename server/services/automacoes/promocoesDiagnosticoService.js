@@ -19,6 +19,7 @@ const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
+const { resolveMlGrant } = require("../mlTokenService");
 const {
   carregarContextoFinanceiro,
   enriquecerItem,
@@ -374,10 +375,8 @@ async function executarDiagnosticoPromocoes(diagnosticoId) {
   try {
     const r = await pool.query(
       `SELECT d.cliente_id, d.base_id, d.cliente_slug, d.base_slug,
-              d.margem_alvo, d.tolerancia, d.seller_id,
-              t.ml_user_id
+              d.margem_alvo, d.tolerancia, d.seller_id
          FROM promocoes_diagnosticos d
-         LEFT JOIN ml_tokens t ON t.cliente_id = d.cliente_id
         WHERE d.id = $1`,
       [diagnosticoId]
     );
@@ -385,7 +384,11 @@ async function executarDiagnosticoPromocoes(diagnosticoId) {
     const row = r.rows[0];
     cliente = { id: row.cliente_id, slug: row.cliente_slug };
     base = { id: row.base_id, slug: row.base_slug };
-    mlUserId = row.ml_user_id || row.seller_id;
+    mlUserId = (await resolveMlGrant({
+      clienteId: row.cliente_id,
+      mlUserId: row.seller_id || undefined,
+      requireUsable: true,
+    })).ml_user_id;
     margemAlvo = row.margem_alvo != null ? Number(row.margem_alvo) : null;
     tolerancia = row.tolerancia != null ? Number(row.tolerancia) : null;
     if (!mlUserId) throw new Error("Cliente sem conta ML vinculada.");
@@ -425,7 +428,7 @@ async function executarDiagnosticoPromocoes(diagnosticoId) {
       });
       if (scrollId) params.set("scroll_id", scrollId);
 
-      const scan = await mlFetch(cliente.id, `/users/${mlUserId}/items/search?${params.toString()}`);
+      const scan = await mlFetch(cliente.id, `/users/${mlUserId}/items/search?${params.toString()}`, { mlUserId });
       if (!scan.ok) {
         throw new Error(`Falha no scroll do ML (HTTP ${scan.status}): ${scan.data?.message || "erro"}`);
       }
@@ -439,7 +442,7 @@ async function executarDiagnosticoPromocoes(diagnosticoId) {
       for (const lote of chunk(ids, DIAG_PROMO_BATCH_DETAILS)) {
         let detalhes = [];
         try {
-          const batch = await mlFetch(cliente.id, `/items?ids=${lote.join(",")}`);
+          const batch = await mlFetch(cliente.id, `/items?ids=${lote.join(",")}`, { mlUserId });
           if (batch.ok && Array.isArray(batch.data)) detalhes = batch.data;
         } catch (_) { detalhes = []; }
 

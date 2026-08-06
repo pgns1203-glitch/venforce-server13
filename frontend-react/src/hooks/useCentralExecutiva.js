@@ -27,15 +27,23 @@ function escreverUrl(filtros) {
       query.set(chave, String(valor));
     }
   }
-  window.history.replaceState({}, "", `${window.location.pathname}?${query}`);
+  const sufixo = query.toString() ? `?${query}` : "";
+  window.history.replaceState({}, "", `${window.location.pathname}${sufixo}`);
+}
+
+function normalizarErro(err) {
+  return {
+    mensagem: err?.message || "Não foi possível carregar a carteira.",
+    codigo: err?.codigo || "erro_api",
+    status: err?.status || 0,
+  };
 }
 
 export function useCentralExecutiva() {
   const [filtros, setFiltros] = useState(filtrosIniciais);
-  const [contas, setContas] = useState([]);
+  const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
-  const [progresso, setProgresso] = useState({ concluidos: 0, total: 0 });
   const abortRef = useRef(null);
 
   const carregar = useCallback(async () => {
@@ -45,7 +53,6 @@ export function useCentralExecutiva() {
 
     setCarregando(true);
     setErro(null);
-    setProgresso({ concluidos: 0, total: 0 });
 
     try {
       const resposta = await obterCarteiraExecutiva({
@@ -54,12 +61,11 @@ export function useCentralExecutiva() {
         marketplace: filtros.marketplace,
         margemAlvo: filtros.margemAlvo,
         signal: controller.signal,
-        onProgresso: setProgresso,
       });
-      if (!controller.signal.aborted) setContas(resposta.contas || []);
+      if (!controller.signal.aborted) setDados(resposta);
     } catch (err) {
       if (err?.name !== "AbortError" && !controller.signal.aborted) {
-        setErro(err?.message || "Não foi possível carregar a carteira.");
+        setErro(normalizarErro(err));
       }
     } finally {
       if (!controller.signal.aborted) setCarregando(false);
@@ -75,16 +81,18 @@ export function useCentralExecutiva() {
     return () => abortRef.current?.abort();
   }, [carregar]);
 
+  const contas = dados?.contas || [];
+
   const contasFiltradas = useMemo(() => {
     const termo = filtros.busca.trim().toLowerCase();
     return contas
       .filter((conta) => filtros.status === "todos" || conta.status === filtros.status)
-      .filter((conta) => !termo || conta.cliente?.nome?.toLowerCase().includes(termo) || conta.cliente?.slug?.includes(termo))
-      .sort((a, b) => {
-        const prioridade = { critico: 0, atencao: 1, sem_dados: 2, saudavel: 3 };
-        const porStatus = (prioridade[a.status] ?? 9) - (prioridade[b.status] ?? 9);
-        if (porStatus !== 0) return porStatus;
-        return (a.deltaResultado ?? 0) - (b.deltaResultado ?? 0);
+      .filter((conta) => {
+        if (!termo) return true;
+        const nome = String(conta.cliente?.nome || "").toLowerCase();
+        const slug = String(conta.cliente?.slug || "").toLowerCase();
+        const causa = String(conta.causa?.titulo || "").toLowerCase();
+        return nome.includes(termo) || slug.includes(termo) || causa.includes(termo);
       });
   }, [contas, filtros.busca, filtros.status]);
 
@@ -101,11 +109,14 @@ export function useCentralExecutiva() {
   return {
     filtros,
     atualizarFiltro,
+    dados,
+    resumo: dados?.resumo || null,
+    narrativa: dados?.narrativa || null,
+    causas: dados?.causas || [],
     contas,
     contasFiltradas,
     carregando,
     erro,
-    progresso,
     recarregar: carregar,
   };
 }

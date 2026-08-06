@@ -29,7 +29,11 @@ async function runRefreshCycle() {
     const rows = await findRefreshCandidates(REFRESH_WINDOW_S);
     if (!rows.length) return;
     console.log(JSON.stringify({ event: "ml_token_worker_cycle", grants: rows.length }));
-    await Promise.allSettled(rows.map(refreshTokenRow));
+    // Renova sequencialmente para não esgotar o pool PostgreSQL.
+	// Cada refresh mantém uma conexão durante o lock e a chamada OAuth.
+	for (const row of rows) {
+	 await refreshTokenRow(row);
+	}
   } catch (error) {
     console.error(JSON.stringify({ event: "ml_token_worker_failed", error: sanitizeErrorMessage(error) }));
   }

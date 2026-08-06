@@ -21,6 +21,7 @@ const db =
   _dbModule && typeof _dbModule.query === "function"
     ? _dbModule
     : _dbModule.pool || _dbModule.default || _dbModule;
+const { resolveMlGrant } = require("../mlTokenService");
 
 // -----------------------------------------------------------------------------
 // Schema
@@ -132,16 +133,11 @@ async function resolverCliente(clienteSlug) {
 
 // Resolve o ml_user_id de um cliente. Retorna string/number ou null.
 async function resolverMlUserId(clienteId) {
-  // ordena por expires_at (coluna confirmada no mapeamento) para pegar o
-  // token mais recente caso o cliente tenha mais de uma conta ML.
-  const { rows } = await db.query(
-    `SELECT ml_user_id FROM ml_tokens
-       WHERE cliente_id = $1 AND ml_user_id IS NOT NULL
-       ORDER BY expires_at DESC NULLS LAST
-       LIMIT 1;`,
-    [clienteId]
-  );
-  return rows.length ? rows[0].ml_user_id : null;
+  try {
+    return (await resolveMlGrant({ clienteId, requireUsable: true })).ml_user_id;
+  } catch (_) {
+    return null;
+  }
 }
 
 // -----------------------------------------------------------------------------

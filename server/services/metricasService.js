@@ -3,6 +3,7 @@
 // Nunca expõe access_token, refresh_token, dados pessoais do comprador.
 const pool = require('../config/database');
 const { mlFetch } = require('../utils/mlClient');
+const { resolveMlGrant } = require('./mlTokenService');
 
 // Cancelamentos que aproximam o card do painel ML.
 // Excluídos: shipment_not_delivered, pack_splitted (logísticos/internos).
@@ -16,26 +17,30 @@ const MAX_PAGINAS = 100; // 100 * 50 = 5.000 pedidos — teto de segurança para
 // ---------------------------------------------------------------------------
 
 async function listarClientesComML() {
-  const { rows } = await pool.query(`
-    SELECT c.id, c.slug, c.nome, t.ml_user_id
-    FROM clientes c
-    INNER JOIN ml_tokens t ON t.cliente_id = c.id
-    WHERE c.ativo = true
-    ORDER BY c.nome ASC
-  `);
-  return rows.map(r => ({ id: r.id, slug: r.slug, nome: r.nome, ml_user_id: r.ml_user_id }));
+  const { rows } = await pool.query(`SELECT c.id, c.slug, c.nome FROM clientes c WHERE c.ativo = true ORDER BY c.nome ASC`);
+  const resolved = await Promise.all(rows.map(async (row) => {
+    try {
+      const grant = await resolveMlGrant({ clienteId: row.id, requireUsable: true });
+      return { ...row, ml_user_id: grant.ml_user_id };
+    } catch (_) {
+      return null;
+    }
+  }));
+  return resolved.filter(Boolean);
 }
 
 async function buscarClienteComToken(slug) {
   const { rows } = await pool.query(
-    `SELECT c.id, c.slug, c.nome, t.ml_user_id
-     FROM clientes c
-     INNER JOIN ml_tokens t ON t.cliente_id = c.id
-     WHERE c.slug = $1 AND c.ativo = true
-     LIMIT 1`,
+    `SELECT c.id, c.slug, c.nome FROM clientes c WHERE c.slug = $1 AND c.ativo = true LIMIT 1`,
     [slug]
   );
-  return rows[0] || null;
+  if (!rows[0]) return null;
+  try {
+    const grant = await resolveMlGrant({ clienteId: rows[0].id, requireUsable: true });
+    return { ...rows[0], ml_user_id: grant.ml_user_id };
+  } catch (_) {
+    return null;
+  }
 }
 
 async function clienteExisteAtivo(slug) {
@@ -79,7 +84,7 @@ async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo, status) {
     });
     if (status) qs.set('order.status', status);
 
-    const { ok, status: httpStatus, data } = await mlFetch(clienteId, `/orders/search?${qs}`);
+    const { ok, status: httpStatus, data } = await mlFetch(clienteId, `/orders/search?${qs}`, { mlUserId: sellerId });
 
     if (!ok) {
       const err = new Error(data?.message || 'Erro na Orders API do Mercado Livre');

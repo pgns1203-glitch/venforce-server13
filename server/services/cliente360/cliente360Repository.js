@@ -59,10 +59,12 @@ async function findBasesVinculadasByCliente(clienteId) {
 // Grant ML mascarável: NUNCA seleciona access_token/refresh_token.
 async function findMlGrantByCliente(clienteId) {
   const { rows } = await pool.query(
-    `SELECT ml_user_id, expires_at, token_status, updated_at
-       FROM ml_tokens
-      WHERE cliente_id = $1
-      ORDER BY updated_at DESC
+    `SELECT t.ml_user_id, t.expires_at, t.token_status, t.updated_at,
+            COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) AS is_primary
+       FROM ml_tokens t
+      WHERE t.cliente_id = $1
+      ORDER BY COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) DESC,
+               t.updated_at DESC NULLS LAST, t.id DESC
       LIMIT 1`,
     [clienteId]
   );
@@ -72,9 +74,14 @@ async function findMlGrantByCliente(clienteId) {
 // Mapa cliente_id → grant resumido (para a lista operacional, sem N+1).
 async function findGrantsResumo() {
   const { rows } = await pool.query(
-    `SELECT cliente_id, ml_user_id, expires_at, token_status
-       FROM ml_tokens
-      WHERE cliente_id IS NOT NULL`
+    `SELECT DISTINCT ON (t.cliente_id)
+            t.cliente_id, t.ml_user_id, t.expires_at, t.token_status,
+            COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) AS is_primary
+       FROM ml_tokens t
+      WHERE t.cliente_id IS NOT NULL
+      ORDER BY t.cliente_id,
+               COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) DESC,
+               t.updated_at DESC NULLS LAST, t.id DESC`
   );
   return rows;
 }

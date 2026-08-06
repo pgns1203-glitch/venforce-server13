@@ -20,6 +20,7 @@
 
 const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
+const { createMlTokenService } = require("../mlTokenService");
 const { toNumber, round2 } = require("../../utils/numberUtils");
 const { normalizeId } = require("../../utils/textUtils");
 const {
@@ -80,7 +81,7 @@ async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo) {
       offset: String(offset),
     });
 
-    const { ok, status, data } = await mlFetch(clienteId, `/orders/search?${qs}`);
+    const { ok, status, data } = await mlFetch(clienteId, `/orders/search?${qs}`, { mlUserId: sellerId });
 
     if (!ok) {
       const statusCode = status === 401 || status === 403 ? 422 : 502;
@@ -570,6 +571,7 @@ function buildMotorFromOrders({
 // ---------------------------------------------------------------------------
 
 function createCentralVendasSyncService(repository = getRepository(), db = pool) {
+  const tokenService = createMlTokenService({ db });
   // Aceita { dateFrom, dateTo } (periodo de analise) OU competencia (legado).
   // Busca os pedidos do intervalo numa unica paginacao, agrupa por mes
   // (competencia) e persiste um import por mes — preserva o agrupamento mensal
@@ -601,11 +603,12 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     if (!cliente) throw criarErroHttp(404, "Cliente nao encontrado.");
 
     // Token / seller ML
-    const tokenResult = await db.query(
-      "SELECT ml_user_id FROM ml_tokens WHERE cliente_id = $1 LIMIT 1",
-      [cliente.id]
-    );
-    const sellerId = tokenResult.rows[0]?.ml_user_id;
+    let sellerId;
+    try {
+      sellerId = (await tokenService.resolveMlGrant({ clienteId: cliente.id, requireUsable: true })).ml_user_id;
+    } catch (_) {
+      sellerId = null;
+    }
     if (!sellerId) throw criarErroHttp(422, "Cliente sem Mercado Livre conectado.");
 
     // Base vinculada oficial + custos (tolerante: sem base ⇒ tudo bloqueado, mas persiste)

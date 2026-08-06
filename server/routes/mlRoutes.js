@@ -10,6 +10,10 @@ const {
   conectarMlLegadoController,
   iniciarConexaoMlController,
   callbackMlController,
+  listarMlTokensAdminController,
+  definirGrantPrincipalController,
+  testarGrantAdminController,
+  statusClienteMlController,
 } = require("../controllers/mlController");
 const {
   receberNotificacaoMlController,
@@ -46,6 +50,34 @@ router.get(
   callbackMlController
 );
 
+router.get(
+  "/admin/ml-tokens",
+  authMiddleware,
+  requireAdmin,
+  listarMlTokensAdminController
+);
+
+router.patch(
+  "/admin/ml-tokens/:tokenId/principal",
+  authMiddleware,
+  requireAdmin,
+  definirGrantPrincipalController
+);
+
+router.post(
+  "/admin/ml-tokens/:tokenId/testar",
+  authMiddleware,
+  requireAdmin,
+  testarGrantAdminController
+);
+
+router.get(
+  "/clientes/:slug/ml-status",
+  authMiddleware,
+  requireAdmin,
+  statusClienteMlController
+);
+
 // Notificações/webhooks do Mercado Livre (topic orders_v2, items, etc.).
 // POST /callback é compatibilidade imediata: o app do ML hoje aponta para lá.
 // POST /webhooks/meli é a rota canônica — o painel do ML será migrado para
@@ -61,4 +93,3 @@ router.post(
 );
 
 module.exports = router;
-

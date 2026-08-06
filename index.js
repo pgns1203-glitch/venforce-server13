@@ -685,13 +685,11 @@ app.get("/callback", async (req, res) => {
     });
 
     const data = await tokenRes.json();
-    console.log("[ML callback] resposta:", JSON.stringify(data));
-
     if (!tokenRes.ok) {
       return res.status(502).send(`
         <html><body style="font-family:sans-serif;text-align:center;padding:3rem;background:#f8f9fc;">
           <h2>❌ Erro ao obter token</h2>
-          <p style="color:#6b7280;">${data?.message || JSON.stringify(data)}</p>
+          <p style="color:#6b7280;">Não foi possível concluir a autorização.</p>
         </body></html>`);
     }
 
@@ -725,8 +723,8 @@ app.get("/callback", async (req, res) => {
       </body></html>`);
 
   } catch (err) {
-    console.error("[ML callback] erro:", err);
-    return res.status(500).send("Erro interno: " + err.message);
+    console.error("[ML callback] erro interno ao concluir autorização.");
+    return res.status(500).send("Erro interno ao concluir a autorização.");
   }
 });
 

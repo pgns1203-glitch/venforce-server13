@@ -13,6 +13,7 @@
 // Este arquivo apenas RESOLVE qual base/grant usar; não calcula nada.
 
 const pool = require("../../config/database");
+const { resolveMlGrant } = require("../mlTokenService");
 
 function normalizarSlug(nome) {
   return String(nome || "").trim().toLowerCase()
@@ -89,11 +90,10 @@ async function resolverContextoPrecificacao({ clienteSlugRaw }) {
   }
   const cliente = c.rows[0];
 
-  const tok = await pool.query(
-    "SELECT ml_user_id FROM ml_tokens WHERE cliente_id = $1 LIMIT 1",
-    [cliente.id]
-  );
-  const mlUserId = tok.rows[0]?.ml_user_id ?? null;
+  let mlUserId = null;
+  try {
+    mlUserId = (await resolveMlGrant({ clienteId: cliente.id, requireUsable: true })).ml_user_id;
+  } catch (_) {}
   const grant = { conectado: Boolean(mlUserId), ml_user_id: mlUserId };
 
   const basesMeli = await buscarBasesMeliDoCliente(cliente.id);

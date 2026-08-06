@@ -6,6 +6,7 @@
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const pool = require("../config/database");
+const { saveMlToken } = require("./mlTokenService");
 
 const ML_CLIENT_ID = process.env.ML_CLIENT_ID || "";
 const ML_CLIENT_SECRET = process.env.ML_CLIENT_SECRET || "";
@@ -85,16 +86,7 @@ function calcularMlExpiresAt(expiresIn) {
 }
 
 async function salvarMlToken({ clienteId, mlUserId, accessToken, refreshToken, expiresAt }) {
-  await pool.query(
-    `INSERT INTO ml_tokens (cliente_id, ml_user_id, access_token, refresh_token, expires_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())
-     ON CONFLICT (cliente_id, ml_user_id) DO UPDATE SET
-       access_token = EXCLUDED.access_token,
-       refresh_token = EXCLUDED.refresh_token,
-       expires_at = EXCLUDED.expires_at,
-       updated_at = NOW()`,
-    [clienteId, String(mlUserId), accessToken, refreshToken, expiresAt]
-  );
+  return saveMlToken({ clienteId, mlUserId, accessToken, refreshToken, expiresAt });
 }
 
 module.exports = {

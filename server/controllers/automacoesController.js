@@ -3,6 +3,7 @@
 // Extraído de server/index.js sem alterar endpoints, payloads ou comportamento.
 
 const pool = require("../config/database");
+const { resolveMlGrant } = require("../services/mlTokenService");
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("../services/activityLogService");
 
 const {
@@ -60,18 +61,12 @@ function responderErroService(res, err) {
 
 async function listarClientesAutomacoesController(req, res) {
   try {
-    // Clientes ativos + grant ML + bases MELI vinculadas (ativas), resolvidos
-    // numa única consulta sem fan-out (LATERAL). O frontend usa estes campos
-    // para decidir prontidão sem exigir baseSlug manual.
+    // Bases são agregadas em uma consulta; o grant passa pelo resolver único.
     const result = await pool.query(
       `SELECT
          c.id, c.nome, c.slug, c.ativo, c.created_at,
-         tok.ml_user_id,
          COALESCE(bm.bases, '[]'::jsonb) AS bases_meli
        FROM clientes c
-       LEFT JOIN LATERAL (
-         SELECT ml_user_id FROM ml_tokens WHERE cliente_id = c.id LIMIT 1
-       ) tok ON true
        LEFT JOIN LATERAL (
          SELECT jsonb_agg(
                   jsonb_build_object(
@@ -88,9 +83,13 @@ async function listarClientesAutomacoesController(req, res) {
        ORDER BY c.nome ASC`
     );
 
-    const clientes = result.rows.map((row) => {
+    const clientes = await Promise.all(result.rows.map(async (row) => {
       const basesMeli = Array.isArray(row.bases_meli) ? row.bases_meli : [];
-      const hasGrantMl = Boolean(row.ml_user_id);
+      let grant = null;
+      try {
+        grant = await resolveMlGrant({ clienteId: row.id, requireUsable: true });
+      } catch (_) {}
+      const hasGrantMl = Boolean(grant);
       let baseStatus;
       if (basesMeli.length === 0) baseStatus = "ausente";
       else if (basesMeli.length === 1) baseStatus = "ok";
@@ -106,7 +105,7 @@ async function listarClientesAutomacoesController(req, res) {
         created_at: row.created_at,
         // Contexto de prontidão
         hasGrantMl,
-        mlUserId: row.ml_user_id || null,
+        mlUserId: grant?.ml_user_id || null,
         baseMeli: baseUnica ? baseUnica.slug : null,
         baseMeliNome: baseUnica ? baseUnica.nome : null,
         baseMeliUpdatedAt: baseUnica ? baseUnica.updated_at : null,
@@ -115,7 +114,7 @@ async function listarClientesAutomacoesController(req, res) {
         prontoParaAnalise: hasGrantMl && basesMeli.length === 1,
         prontoParaExportacaoCrua: hasGrantMl,
       };
-    });
+    }));
 
     res.json({ ok: true, clientes });
   } catch (err) {

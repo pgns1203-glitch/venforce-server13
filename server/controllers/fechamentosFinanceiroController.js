@@ -281,7 +281,13 @@ async function processarFechamentoFinanceiroController(req, res) {
     let ordersAllRowsRaw = null;
     if (ordersAllFile && marketplace === "shopee") {
       try {
-        ordersAllRowsRaw = parseSpreadsheet(ordersAllFile.buffer, 0);
+        // Mesma detecção de cabeçalho do arquivo principal: este upload deixou
+        // de ser só reconciliação de status — com a performance no campo de
+        // vendas, é ele que vira a fonte financeira real.
+        ordersAllRowsRaw = parseSpreadsheet(
+          ordersAllFile.buffer,
+          detectShopeeHeaderRow(ordersAllFile.buffer)
+        );
       } catch (e) {
         // Se o parse falhar, ignora silenciosamente — é opcional.
         ordersAllRowsRaw = null;

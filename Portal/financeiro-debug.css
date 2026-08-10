@@ -269,6 +269,7 @@ table.fdbg-table tbody tr:hover { background: var(--vf-surface-2, #fbfbfe); }
 .fdbg-trace-step.hit { background: var(--vf-success-bg, #e3f4ea); }
 .fdbg-trace-step.miss { background: transparent; }
 .fdbg-trace-step.skip { opacity: 0.55; }
+.fdbg-trace-step.ambiguous { background: var(--vf-warning-bg, #fdf1de); }
 
 .fdbg-trace-step__idx { font-family: var(--vf-font-mono); color: var(--vf-text-tertiary); }
 .fdbg-trace-step__field { font-family: var(--vf-font-mono); font-weight: 600; }

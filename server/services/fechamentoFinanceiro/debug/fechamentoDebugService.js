@@ -949,7 +949,18 @@ function runFechamentoDebug(input) {
   if (shopeeOrderAll) {
     const collector = createDebugCollector();
     try {
-      const result = processShopee(rawRows.shopeeOrderAll, rawRows.shopeeCustos, ads, venforce, affiliates, null, collector);
+      // Espelha a produção: quando a performance também foi enviada, ela entra
+      // como PONTE DE IDENTIDADE (SKU -> ID) do motor real. O financeiro
+      // continua saindo inteiramente do Order.all.
+      const result = processShopee(
+        rawRows.shopeeOrderAll,
+        rawRows.shopeeCustos,
+        ads,
+        venforce,
+        affiliates,
+        rawRows.shopeePerformance.length ? rawRows.shopeePerformance : null,
+        collector
+      );
       engines.shopee_real = result;
       matchAttemptsByEngine.shopee_real = collector.snapshot().matchAttempts;
       if (!shopeeCustos) {
@@ -986,13 +997,16 @@ function runFechamentoDebug(input) {
   if (shopeePerformance) {
     const collector = createDebugCollector();
     try {
+      // Sempre SEM Order.all: este slot é a visão "e se só houvesse a
+      // performance?" (motor estimado puro). Com o Order.all junto, o motor
+      // real com ponte já aparece em engines.shopee_real.
       const result = processShopee(
         rawRows.shopeePerformance,
         rawRows.shopeeCustos,
         ads,
         venforce,
         affiliates,
-        rawRows.shopeeOrderAll.length ? rawRows.shopeeOrderAll : null,
+        null,
         collector
       );
       engines.shopee_performance = result;
@@ -1056,12 +1070,30 @@ function runFechamentoDebug(input) {
     performanceRowsRaw: rawRows.shopeePerformance,
     costRowsRaw: rawRows.shopeeCustos,
   });
-  if (bridge.available && bridge.directMatch.percent < bridge.fullBridge.percent - 1) {
+  // A ponte agora participa do motor real quando a performance é enviada.
+  // O warning só faz sentido quando ela resolveria mais e NÃO foi usada.
+  bridge.usedByEngine = engines.shopee_real?.summary?.costBridgeAvailable === true;
+  if (
+    bridge.available &&
+    !bridge.usedByEngine &&
+    bridge.directMatch.percent < bridge.fullBridge.percent - 1
+  ) {
     pushWarning(warnings, {
       code: WARNING_CODES.BRIDGE_AVAILABLE_NOT_USED,
       severity: "warning",
       engine: "shopee_real",
       message: bridge.conclusion,
+    });
+  }
+  if (bridge.usedByEngine) {
+    pushWarning(warnings, {
+      code: "BRIDGE_USED",
+      severity: "info",
+      engine: "shopee_real",
+      message:
+        `Ponte SKU → ID ativa no motor real: ${engines.shopee_real.summary.bridgeCostMatchCount} linha(s) com custo ` +
+        `resolvido pela performance, ${engines.shopee_real.summary.directCostMatchCount} por match direto, ` +
+        `${engines.shopee_real.summary.bridgeAmbiguousCount} ambígua(s) mantida(s) sem custo.`,
     });
   }
 

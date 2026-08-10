@@ -442,7 +442,7 @@ function aplicarEstadoBase() {
   if (arquivosHint) {
     if (isTikTok) arquivosHint.textContent = "Envie o Income do TikTok Shop — os custos vêm da Base TikTok vinculada. O Onhold é opcional.";
     else if (usandoBase) arquivosHint.textContent = "Envie apenas a planilha de vendas — os custos vêm da base vinculada.";
-    else if (marketplace === "shopee") arquivosHint.textContent = "Envie as planilhas de vendas e custos da Shopee.";
+    else if (marketplace === "shopee") arquivosHint.textContent = "Shopee: performance + custos + Order.all (recomendado) — as 3 juntas geram o fechamento financeiro real.";
     else arquivosHint.textContent = "Envie a planilha de vendas e a planilha de custos.";
   }
 
@@ -460,8 +460,13 @@ function aplicarRotulosPlanilhaPrincipal() {
   const hint = card.querySelector(".vf-dropzone__hint");
   const isTikTok = marketplace === "tiktok";
 
+  const isShopee = marketplace === "shopee";
   if (label) label.textContent = isTikTok ? "Income TikTok Shop" : "Planilha de vendas";
-  if (hint) hint.textContent = isTikTok ? "Relatório financeiro realizado do período" : ".xlsx";
+  if (hint) {
+    if (isTikTok) hint.textContent = "Relatório financeiro realizado do período";
+    else if (isShopee) hint.textContent = ".xlsx · performance (parentskudetail) ou Order.all";
+    else hint.textContent = ".xlsx";
+  }
 }
 
 // Afiliados manual: no TikTok a comissão de afiliados já está descontada no

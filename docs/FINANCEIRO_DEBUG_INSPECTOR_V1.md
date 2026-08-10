@@ -19,9 +19,17 @@ Caso de prova do V1 (o mesmo da auditoria `AUDITORIA_FECHAMENTO_PLANILHAS_REAIS_
 com `Order.all.xlsx` + `Extra-custo-shopee1.xlsx`, o motor real (`real_financial`) fecha
 com **0% de cobertura de custo** porque a base de custos usa IDs numéricos internos da
 Shopee e o `Order.all` só expõe SKU do vendedor. Ao adicionar a planilha de performance
-(`parentskudetail.xlsx`, que tem os dois), a ponte SKU→ID→Base resolve **~99%** dos casos —
-mas o motor real de produção não usa essa ponte hoje. O Debug Financeiro mostra os dois
-números lado a lado e a ponte item a item, sem alterar o fechamento real.
+(`parentskudetail.xlsx`, que tem os dois), a ponte SKU→ID→Base resolve a maior parte dos
+casos. O Debug Financeiro mostrou esse diagnóstico primeiro; a correção depois entrou na
+produção.
+
+> **Atualização (ago/2026).** A ponte deixou de ser só um "e se": o motor real de produção
+> passou a usá-la quando a planilha de performance é enviada junto (ver
+> `docs/fechamento-shopee-colunas.md` → "Conciliação de custo"). No Debug, `engines.shopee_real`
+> agora roda **com** a ponte quando há performance, e `engines.shopee_performance` roda
+> sempre **sem** `Order.all` (é a visão "e se só houvesse a performance?"). O warning
+> `BRIDGE_AVAILABLE_NOT_USED` só aparece quando a ponte resolveria mais e **não** está em
+> uso; quando está, sai um `BRIDGE_USED` informativo com a contagem de matches.
 
 ## 2. Arquitetura
 
@@ -179,11 +187,15 @@ Colunas de dado pessoal (CPF, endereço, comprador, CEP, telefone, ...) nunca ap
 ## 7. Match Explorer / Match Trace
 
 Cada tentativa de match de custo vira um registro:
-`{ engine, stage: "cost_lookup", orderId, field, rawValue, normalizedKey, result: "hit"|"miss"|"skip" }`.
+`{ engine, stage, orderId, field, rawValue, normalizedKey, result: "hit"|"miss"|"skip"|"ambiguous" }`.
+
+`stage` distingue o caminho: `cost_lookup` (match direto), `cost_bridge_sku` (SKU do
+Order.all encontrado na ponte da performance), `cost_bridge_variation` e
+`cost_bridge_item` (ID resolvido pela ponte consultado na base de custos).
 
 A ORDEM dos campos tentados é a mesma da produção:
 
-- Shopee real: `variationId → modelId → itemId → productId → skuVariation → skuPrinciple → skuMainRef → skuRefNumber → sku` (`SHOPEE_COST_LOOKUP_FIELDS`, exportado de `shopeeOrderAllService.js`).
+- Shopee real: `variationId → modelId → itemId → productId → skuVariation → skuPrinciple → skuMainRef → skuRefNumber → sku` (`SHOPEE_COST_LOOKUP_FIELDS`, exportado de `shopeeOrderAllService.js`) e, só em MISS, a ponte (`SHOPEE_BRIDGE_SKU_FIELDS` → variação antes de item).
 - Shopee performance: `saleModelId → id → itemId`.
 - MELI: chave de variação (`model_id`/SKU) → `model_id` isolado → MLB "pelado" (normalizado / sem prefixo / com prefixo).
 
@@ -203,13 +215,14 @@ reais já exportadas — não é um motor novo:
 | Performance → Base | Para cada item da performance, tenta `costMap.get()` pelo `ID da Variação`/`Model ID`/`ID do Item` |
 | Completo via ponte | Para cada linha do Order.all, resolve SKU → IDs via ponte → tenta a base com esses IDs |
 
-Quando "match direto" é bem menor que "completo via ponte", o backend gera automaticamente
-um warning `BRIDGE_AVAILABLE_NOT_USED` com a conclusão em texto ("o financeiro real perdeu
-cobertura porque a ponte não participa do caminho atual").
+Quando "match direto" é bem menor que "completo via ponte" **e a ponte não está em uso**
+(nenhuma performance enviada), o backend gera o warning `BRIDGE_AVAILABLE_NOT_USED`. Quando
+a ponte está em uso, `bridges.shopee.usedByEngine` fica `true` e sai um `BRIDGE_USED`
+informativo.
 
-**Isto NÃO altera `result.engines.shopee_real`** — o resultado do motor real continua sendo
-exatamente o que `processShopeeFinancialOrders` calculou, com match direto. A ponte é só
-uma pergunta "e se...", respondida à parte.
+Este diagnóstico continua sendo **calculado à parte** do motor: ele mede o potencial da
+ponte linha a linha. O resultado exibido em `result.engines.shopee_real` é sempre o que
+`processShopeeFinancialOrders` de fato calculou.
 
 ## 9. Limitações da V1
 

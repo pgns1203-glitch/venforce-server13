@@ -996,7 +996,7 @@ function onImportMarketplaceChange() {
     if (req) req.style.display = "none";
     if (label) label.textContent = "Cliente";
     if (hint) hint.textContent = "Opcional — a Base TikTok funciona de forma independente. Vincule depois pelo menu ⋯, se quiser.";
-    if (desc) desc.textContent = "Base TikTok Shop: use a planilha com ID, SKU, custo e imposto (o mesmo ID pode ter vários SKUs).";
+    if (desc) desc.textContent = "Base TikTok Shop: planilha com ID | ID DO SKU | CUSTO | IMPOSTO (o mesmo ID de produto repete — um ID DO SKU por variação).";
   } else if (mp === "shopee") {
     if (field) field.style.display = "";
     if (req) req.style.display = "none";
@@ -1115,15 +1115,12 @@ function openPreview(payload) {
 
   const thIdModel = document.getElementById("preview-th-idmodel");
   if (thIdModel) thIdModel.style.display = isShopee ? "" : "none";
-  // TikTok: SKU, nome do produto e da variação no lugar de ID Model / taxa fixa.
+  // TikTok: contrato ID | ID DO SKU | CUSTO | IMPOSTO — sem taxa fixa, sem
+  // ID Model, sem SKU textual e sem nomes de produto/variação.
   const thId = document.getElementById("preview-th-id");
-  if (thId) thId.textContent = isTiktok ? "ID do SKU" : "ID do Produto";
+  if (thId) thId.textContent = isTiktok ? "ID" : "ID do Produto";
   const thSku = document.getElementById("preview-th-sku");
   if (thSku) thSku.style.display = isTiktok ? "" : "none";
-  const thProduto = document.getElementById("preview-th-produto");
-  if (thProduto) thProduto.style.display = isTiktok ? "" : "none";
-  const thVariacao = document.getElementById("preview-th-variacao");
-  if (thVariacao) thVariacao.style.display = isTiktok ? "" : "none";
   const thTaxa = document.getElementById("preview-th-taxa");
   if (thTaxa) thTaxa.style.display = isTiktok ? "none" : "";
 
@@ -1134,18 +1131,14 @@ function openPreview(payload) {
     const idModelCell = isShopee
       ? `<td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.id_model ?? "—"))}</td>`
       : "";
-    const skuCell = isTiktok
-      ? `<td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.sku ?? "—"))}</td>`
-      : "";
-    const nomesCells = isTiktok
-      ? `<td>${escapeHTML(String(r.produto_nome ?? "—"))}</td><td>${escapeHTML(String(r.variacao_nome ?? "—"))}</td>`
+    const skuIdCell = isTiktok
+      ? `<td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.sku_id ?? "—"))}</td>`
       : "";
     const taxaCell = isTiktok ? "" : `<td style="text-align:right;">${r.taxa_fixa ?? 0}</td>`;
     tr.innerHTML = `
-      <td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.id ?? ""))}</td>
-      ${skuCell}
+      <td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.id ?? "") || "—")}</td>
+      ${skuIdCell}
       ${idModelCell}
-      ${nomesCells}
       <td style="text-align:right;">${r.custo_produto ?? 0}</td>
       <td style="text-align:right;">${r.imposto_percentual ?? 0}</td>
       ${taxaCell}`;
@@ -1371,12 +1364,13 @@ async function carregarCustosDrawer(slug) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.erro || `HTTP ${res.status}`);
     const dados = data.dados || {};
-    // A chave do objeto é só um identificador único de mapa (pode ser
-    // "produto_id::sku" no TikTok, quando o mesmo ID tem vários SKUs) — o
-    // produto_id real vem sempre de v.produto_id, com fallback pra chave
-    // antiga (respostas de antes do campo existir).
+    // A chave do objeto é só um identificador único de mapa (no TikTok é o
+    // sku_id, identidade real da variação) — o produto_id vem sempre de
+    // v.produto_id, com fallback pra chave antiga (respostas de antes do
+    // campo existir).
     DRAWER_ITENS = Object.entries(dados).map(([chave, v]) => ({
       id: v.produto_id ?? chave,
+      sku_id: v.sku_id ?? null,
       sku: v.sku ?? null,
       id_model: v.id_model ?? v.idModel ?? null,
       custo: v.custo_produto ?? v.custo ?? null,
@@ -1415,7 +1409,7 @@ function drawerFiltrarItens() {
     if (!passaFiltroNumerico(DRAWER_FILTROS.imposto, it.imposto)) return false;
     if (!passaFiltroNumerico(DRAWER_FILTROS.taxa, it.taxa)) return false;
     if (termo) {
-      const hay = `${it.id ?? ""} ${it.sku ?? ""} ${it.id_model ?? ""} ${it.produto_nome ?? ""} ${it.variacao_nome ?? ""}`.toLowerCase();
+      const hay = `${it.id ?? ""} ${it.sku_id ?? ""} ${it.sku ?? ""} ${it.id_model ?? ""} ${it.produto_nome ?? ""} ${it.variacao_nome ?? ""}`.toLowerCase();
       if (!hay.includes(termo)) return false;
     }
     return true;
@@ -1465,18 +1459,15 @@ function renderDrawerItens() {
   const isShopee = drawerEhShopee();
   const isTiktok = drawerEhTiktok();
 
-  // TikTok: sem ID Model e sem taxa fixa; com SKU, nome do produto, nome da
-  // variação e data da última atualização do item.
+  // TikTok: ID | ID DO SKU | CUSTO | IMPOSTO | ATUALIZAÇÃO | AÇÃO.
+  // Sem ID Model, sem taxa fixa, sem SKU textual e sem nomes: o custo da
+  // variação é identificado só pelo ID DO SKU (sku_id).
   const thIdModel = document.getElementById("bases-costs-th-idmodel");
   if (thIdModel) thIdModel.style.display = isShopee ? "" : "none";
   const thProdutoLabel = document.getElementById("bases-costs-th-produto-label");
-  if (thProdutoLabel) thProdutoLabel.textContent = isTiktok ? "ID do SKU" : "Produto";
+  if (thProdutoLabel) thProdutoLabel.textContent = isTiktok ? "ID" : "Produto";
   const thSku = document.getElementById("bases-costs-th-sku");
   if (thSku) thSku.style.display = isTiktok ? "" : "none";
-  const thProdutoNome = document.getElementById("bases-costs-th-produto-nome");
-  if (thProdutoNome) thProdutoNome.style.display = isTiktok ? "" : "none";
-  const thVariacao = document.getElementById("bases-costs-th-variacao");
-  if (thVariacao) thVariacao.style.display = isTiktok ? "" : "none";
   const thTaxa = document.getElementById("bases-costs-th-taxa");
   if (thTaxa) thTaxa.style.display = isTiktok ? "none" : "";
   const thAtualizacao = document.getElementById("bases-costs-th-atualizacao");
@@ -1487,21 +1478,19 @@ function renderDrawerItens() {
     const impostoZero = Number(it.imposto) === 0;
     const taxaZero = Number(it.taxa) === 0;
     const idModelTd = isShopee ? `<td class="vf-mono">${escapeHTML(String(it.id_model ?? "—"))}</td>` : "";
-    const skuTd = isTiktok ? `<td class="vf-mono">${escapeHTML(String(it.sku ?? "—"))}</td>` : "";
-    const nomesTd = isTiktok
-      ? `<td>${escapeHTML(String(it.produto_nome ?? "—"))}</td><td>${escapeHTML(String(it.variacao_nome ?? "—"))}</td>`
-      : "";
+    const skuIdTd = isTiktok ? `<td class="vf-mono">${escapeHTML(String(it.sku_id || "—"))}</td>` : "";
     const taxaTd = isTiktok
       ? ""
       : `<td class="num vf-mono ${taxaZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.taxa))}</td>`;
     const atualizacaoTd = isTiktok
       ? `<td class="vf-bases-muted">${escapeHTML(it.updated_at ? formatDateTime(it.updated_at) : "—")}</td>`
       : "";
+    // No TikTok a 1ª coluna é o ID do produto (informativo, pode repetir).
+    const idExibido = isTiktok ? (it.id || "—") : (it.id ?? "—");
     return `<tr class="b-cost-row" data-cost-idx="${idx}" tabindex="0">
-      <td class="vf-mono">${escapeHTML(String(it.id ?? "—"))}</td>
-      ${skuTd}
+      <td class="vf-mono">${escapeHTML(String(idExibido))}</td>
+      ${skuIdTd}
       ${idModelTd}
-      ${nomesTd}
       <td class="num vf-mono ${custoZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtMoedaDrawer(it.custo))}</td>
       <td class="num vf-mono ${impostoZero ? "vf-bases-zero" : ""}">${escapeHTML(fmtPercentDrawer(it.imposto))}</td>
       ${taxaTd}
@@ -1514,7 +1503,8 @@ function renderDrawerItens() {
 
   // Cabeçalho com filtros continua visível mesmo sem resultados, para o
   // usuário conseguir trocar/limpar o filtro que zerou a lista.
-  const colspan = isTiktok ? 8 : (isShopee ? 6 : 5);
+  // TikTok: ID, ID DO SKU, Custo, Imposto, Atualização, Ações.
+  const colspan = isTiktok ? 6 : (isShopee ? 6 : 5);
   const rowsOuVazio = totalFiltrado
     ? rows
     : `<tr class="vf-table__empty"><td colspan="${colspan}">Nenhum item para os filtros atuais.</td></tr>`;
@@ -1631,14 +1621,14 @@ function abrirFormularioItem(item = null) {
   const btnLabel = editando ? "Salvar alterações" : "Adicionar item";
   const microcopy = editando
     ? (isTiktok
-      ? "O ID e o SKU não mudam na edição — alterar qualquer um cria outro item (o mesmo ID pode ter vários SKUs). As alterações sobrescrevem custo e imposto."
+      ? "O ID DO SKU não muda na edição — ele é a identidade da variação. As alterações sobrescrevem custo e imposto."
       : "As alterações sobrescrevem custo, imposto e taxa deste item.")
     : (isTiktok
-      ? "Se o par ID + SKU já existir na base, os valores serão atualizados. O mesmo ID pode ter vários SKUs, cada um com seu próprio custo."
+      ? "O ID DO SKU identifica a variação: se já existir na base, os valores serão atualizados. O mesmo ID de produto pode aparecer em vários itens, um por variação."
       : "Se o produto já existir na base, os valores serão atualizados.");
 
   const produtoVal = editando ? escapeHTML(String(item.id ?? "")) : "";
-  const skuVal = editando ? escapeHTML(String(item.sku ?? "")) : "";
+  const skuIdVal = editando ? escapeHTML(String(item.sku_id ?? "")) : "";
   const idModelVal = editando ? escapeHTML(String(item.id_model ?? "")) : "";
   const custoVal = editando && Number.isFinite(Number(item.custo)) ? Number(item.custo) : "";
   const impostoVal = editando && Number.isFinite(Number(item.imposto))
@@ -1651,24 +1641,13 @@ function abrirFormularioItem(item = null) {
       <input type="text" class="vf-input" id="cost-form-id-model" value="${idModelVal}" placeholder="Opcional — usado principalmente para Shopee" autocomplete="off">
     </div>` : "";
 
-  // TikTok: SKU obrigatório (chave junto com o ID), nome do produto e nome
-  // da variação; sem taxa fixa e sem ID Model.
-  const skuField = isTiktok ? `
+  // TikTok: ID DO SKU obrigatório (é a chave do custo). Sem SKU textual, sem
+  // nomes, sem taxa fixa e sem ID Model.
+  const skuIdField = isTiktok ? `
     <div class="vf-field vf-field--full">
-      <label class="vf-field__label" for="cost-form-sku">SKU <span class="vf-field__required">*</span></label>
-      <input type="text" class="vf-input" id="cost-form-sku" value="${skuVal}" placeholder="Ex.: KIT2BIBI" autocomplete="off"${editando ? " readonly" : ""}>
-    </div>` : "";
-
-  const produtoNomeVal = editando ? escapeHTML(String(item.produto_nome ?? "")) : "";
-  const variacaoNomeVal = editando ? escapeHTML(String(item.variacao_nome ?? "")) : "";
-  const nomesFields = isTiktok ? `
-    <div class="vf-field vf-field--full">
-      <label class="vf-field__label" for="cost-form-produto-nome">Nome do produto</label>
-      <input type="text" class="vf-input" id="cost-form-produto-nome" value="${produtoNomeVal}" placeholder="Opcional — como aparece no TikTok Shop" autocomplete="off">
-    </div>
-    <div class="vf-field vf-field--full">
-      <label class="vf-field__label" for="cost-form-variacao-nome">Nome da variação</label>
-      <input type="text" class="vf-input" id="cost-form-variacao-nome" value="${variacaoNomeVal}" placeholder="Ex.: Preto, G" autocomplete="off">
+      <label class="vf-field__label" for="cost-form-sku-id">ID DO SKU <span class="vf-field__required">*</span></label>
+      <input type="text" class="vf-input" id="cost-form-sku-id" value="${skuIdVal}" placeholder="Ex.: 1736898108355347594" autocomplete="off"${editando ? " readonly" : ""}>
+      <span class="vf-field__hint">ID da variação no TikTok Shop — é o campo comparado com o "ID do SKU" do Income no fechamento.</span>
     </div>` : "";
 
   const taxaField = isTiktok ? "" : `
@@ -1677,8 +1656,8 @@ function abrirFormularioItem(item = null) {
           <input type="number" class="vf-input" id="cost-form-taxa" step="0.01" min="0" value="${taxaVal}" placeholder="0.00">
         </div>`;
 
-  const labelProduto = isTiktok ? "ID do SKU" : "Produto / MLB / SKU";
-  const placeholderProduto = isTiktok ? "Ex.: 1735907463738524810" : "Ex.: MLB123456789 ou SKU";
+  const labelProduto = isTiktok ? "ID" : "Produto / MLB / SKU";
+  const placeholderProduto = isTiktok ? "Ex.: 1736898364814492810 (opcional)" : "Ex.: MLB123456789 ou SKU";
 
   panel.innerHTML = `
     <div class="vf-bases-cost-form">
@@ -1688,12 +1667,12 @@ function abrirFormularioItem(item = null) {
       </div>
       <div class="vf-form-grid vf-bases-cost-grid">
         <div class="vf-field vf-field--full">
-          <label class="vf-field__label" for="cost-form-produto">${escapeHTML(labelProduto)} <span class="vf-field__required">*</span></label>
+          <label class="vf-field__label" for="cost-form-produto">${escapeHTML(labelProduto)}${isTiktok ? "" : ` <span class="vf-field__required">*</span>`}</label>
           <input type="text" class="vf-input" id="cost-form-produto" value="${produtoVal}" placeholder="${escapeHTML(placeholderProduto)}" autocomplete="off"${editando ? " readonly" : ""}>
+          ${isTiktok ? `<span class="vf-field__hint">ID do produto no TikTok Shop. Informativo: repete entre as variações e não é usado para achar o custo.</span>` : ""}
         </div>
-        ${skuField}
+        ${skuIdField}
         ${idModelField}
-        ${nomesFields}
         <div class="vf-field">
           <label class="vf-field__label" for="cost-form-custo">${isTiktok ? "Custo unitário" : "Custo"} <span class="vf-field__required">*</span></label>
           <input type="number" class="vf-input" id="cost-form-custo" step="0.01" min="0" value="${custoVal}" placeholder="0.00">
@@ -1716,14 +1695,16 @@ function abrirFormularioItem(item = null) {
   document.getElementById("cost-form-close")?.addEventListener("click", fecharPainelCusto);
   document.getElementById("cost-form-cancel")?.addEventListener("click", fecharPainelCusto);
   document.getElementById("cost-form-save")?.addEventListener("click", salvarItemManual);
-  ["cost-form-produto", "cost-form-sku", "cost-form-id-model", "cost-form-produto-nome", "cost-form-variacao-nome", "cost-form-custo", "cost-form-imposto", "cost-form-taxa"].forEach((id) => {
+  ["cost-form-produto", "cost-form-sku-id", "cost-form-id-model", "cost-form-custo", "cost-form-imposto", "cost-form-taxa"].forEach((id) => {
     document.getElementById(id)?.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); salvarItemManual(); }
     });
   });
 
   setTimeout(() => {
-    const first = editando ? document.getElementById("cost-form-custo") : document.getElementById("cost-form-produto");
+    const first = editando
+      ? document.getElementById("cost-form-custo")
+      : document.getElementById(isTiktok ? "cost-form-sku-id" : "cost-form-produto");
     first?.focus();
   }, 30);
   panel.scrollIntoView({ block: "nearest" });
@@ -1734,32 +1715,37 @@ async function salvarItemManual() {
   if (!slug) return;
 
   const produtoEl = document.getElementById("cost-form-produto");
-  const skuEl = document.getElementById("cost-form-sku");
+  const skuIdEl = document.getElementById("cost-form-sku-id");
   const idModelEl = document.getElementById("cost-form-id-model");
-  const produtoNomeEl = document.getElementById("cost-form-produto-nome");
-  const variacaoNomeEl = document.getElementById("cost-form-variacao-nome");
   const custoEl = document.getElementById("cost-form-custo");
   const impostoEl = document.getElementById("cost-form-imposto");
   const taxaEl = document.getElementById("cost-form-taxa");
   const saveBtn = document.getElementById("cost-form-save");
   const isTiktok = drawerEhTiktok();
 
+  // TikTok: o ID do produto é opcional (informativo). O obrigatório é o
+  // ID DO SKU, que identifica a variação e resolve o custo no fechamento.
   const produto = String(produtoEl?.value || "").trim();
-  if (!produto) {
-    setCostFeedback(isTiktok ? "Informe o ID do SKU." : "Informe o produto / MLB / SKU.", "danger");
+  if (!isTiktok && !produto) {
+    setCostFeedback("Informe o produto / MLB / SKU.", "danger");
     produtoEl?.focus();
     return;
   }
-  if (isTiktok && /e[+-]?\d/i.test(produto)) {
-    setCostFeedback("ID do SKU TikTok em notação científica. Formate a coluna como texto antes de importar.", "danger");
+  if (isTiktok && produto && /e[+-]?\d/i.test(produto)) {
+    setCostFeedback("ID TikTok em notação científica. Formate a coluna como texto antes de importar.", "danger");
     produtoEl?.focus();
     return;
   }
 
-  const sku = isTiktok ? String(skuEl?.value || "").trim() : "";
-  if (isTiktok && !sku) {
-    setCostFeedback("Informe o SKU.", "danger");
-    skuEl?.focus();
+  const skuId = isTiktok ? String(skuIdEl?.value || "").trim() : "";
+  if (isTiktok && !skuId) {
+    setCostFeedback("Informe o ID DO SKU (id da variação).", "danger");
+    skuIdEl?.focus();
+    return;
+  }
+  if (isTiktok && /e[+-]?\d/i.test(skuId)) {
+    setCostFeedback("ID do SKU TikTok em notação científica. Formate a coluna como texto antes de importar.", "danger");
+    skuIdEl?.focus();
     return;
   }
 
@@ -1781,13 +1767,8 @@ async function salvarItemManual() {
     const idModel = String(idModelEl?.value || "").trim();
     if (idModel) payload.id_model = idModel;
   }
-  if (isTiktok) {
-    payload.sku = sku;
-    const produtoNome = String(produtoNomeEl?.value || "").trim();
-    const variacaoNome = String(variacaoNomeEl?.value || "").trim();
-    if (produtoNome) payload.produto_nome = produtoNome;
-    if (variacaoNome) payload.variacao_nome = variacaoNome;
-  }
+  // TikTok: sku_id é a chave do custo no servidor (base_id + sku_id).
+  if (isTiktok) payload.sku_id = skuId;
 
   const editando = !!DRAWER_ITEM_EDITANDO;
   const textoOriginal = saveBtn ? saveBtn.textContent : "Salvar";
@@ -1814,15 +1795,18 @@ async function salvarItemManual() {
     } else {
       // Mantém o formulário aberto p/ adicionar outro item; limpa os campos.
       if (produtoEl) produtoEl.value = "";
-      if (skuEl) skuEl.value = "";
+      if (skuIdEl) skuIdEl.value = "";
       if (idModelEl) idModelEl.value = "";
-      if (produtoNomeEl) produtoNomeEl.value = "";
-      if (variacaoNomeEl) variacaoNomeEl.value = "";
       if (custoEl) custoEl.value = "";
       if (impostoEl) impostoEl.value = "";
       if (taxaEl) taxaEl.value = "";
-      setCostFeedback("Item adicionado. Se o produto já existia, os valores foram atualizados.", "success");
-      produtoEl?.focus();
+      setCostFeedback(
+        isTiktok
+          ? "Item adicionado. Se o ID DO SKU já existia, os valores foram atualizados."
+          : "Item adicionado. Se o produto já existia, os valores foram atualizados.",
+        "success"
+      );
+      (isTiktok ? skuIdEl : produtoEl)?.focus();
     }
   } catch (err) {
     setCostFeedback("Erro ao salvar item: " + (err?.message || "tente novamente."), "danger");
@@ -1878,37 +1862,47 @@ function abrirPainelPlanilha() {
   panel.scrollIntoView({ block: "nearest" });
 }
 
-// Deduplica as linhas normalizadas do preview (mantém a ÚLTIMA ocorrência por ID,
-// contando quantas foram sobrescritas) e classifica cada uma contra DRAWER_ITENS.
-// A classificação usa apenas o produto_id. Para TikTok isso é uma aproximação:
-// a chave real do upsert é produto_id + sku (o mesmo ID pode ter vários SKUs),
-// mas o assistente de planilha ainda não expõe SKU no preview — fluxo Opção B
-// (não persiste nada), então o rótulo "Atualizar/Adicionar" é só indicativo.
+// Deduplica as linhas normalizadas do preview (mantém a ÚLTIMA ocorrência por
+// chave de identidade, contando quantas foram sobrescritas) e classifica cada
+// uma contra DRAWER_ITENS.
+//
+// A chave de identidade é a MESMA que o upsert do servidor usa:
+//   TikTok        → sku_id  (ID DO SKU da variação)
+//   MELI/Shopee   → produto_id
+// Assim o rótulo "Atualizar/Adicionar" reflete o que vai acontecer de fato.
+function chaveIdentidadePlanilha(linha, isTiktok) {
+  const bruto = isTiktok ? linha?.sku_id : linha?.id;
+  return bruto == null || String(bruto).trim() === "" ? "" : String(bruto);
+}
+
 function dedupEClassificarPlanilha(rows) {
-  const existentes = new Set(DRAWER_ITENS.map((it) => String(it.id)));
-  const porId = new Map();
+  const isTiktok = drawerEhTiktok();
+  const existentes = new Set(
+    DRAWER_ITENS.map((it) => chaveIdentidadePlanilha(it, isTiktok)).filter(Boolean)
+  );
+  const porChave = new Map();
   let duplicadosSobrescritos = 0;
 
   for (const r of rows) {
-    if (!r || r.id == null) continue;
-    const id = String(r.id);
-    if (porId.has(id)) duplicadosSobrescritos++;
-    porId.set(id, r); // última ocorrência vence
+    const chave = chaveIdentidadePlanilha(r, isTiktok);
+    if (!chave) continue;
+    if (porChave.has(chave)) duplicadosSobrescritos++;
+    porChave.set(chave, r); // última ocorrência vence
   }
 
   const linhas = [];
   let nAtualizar = 0;
   let nAdicionar = 0;
-  for (const r of porId.values()) {
-    const existe = existentes.has(String(r.id));
+  for (const [chave, r] of porChave) {
+    const existe = existentes.has(chave);
     if (existe) nAtualizar++; else nAdicionar++;
     linhas.push({
-      id: String(r.id),
+      id: r.id == null ? "" : String(r.id),
+      sku_id: r.sku_id == null ? null : String(r.sku_id),
+      chave,
       id_model: r.id_model ?? null,
       custo: r.custo,
       imposto: r.imposto,
-      produto_nome: r.produto_nome ?? null,
-      variacao_nome: r.variacao_nome ?? null,
       acao: existe ? "atualizar" : "adicionar",
     });
   }
@@ -1962,8 +1956,11 @@ async function previewPlanilhaDrawer() {
     const resumo = data.resumo || {};
     const { linhas, nAtualizar, nAdicionar, duplicadosSobrescritos } = dedupEClassificarPlanilha(dados);
 
-    const idsPlanilha = new Set(linhas.map((l) => String(l.id)));
-    const preservados = DRAWER_ITENS.filter((it) => !idsPlanilha.has(String(it.id))).length;
+    const isTiktokPreview = drawerEhTiktok();
+    const chavesPlanilha = new Set(linhas.map((l) => l.chave));
+    const preservados = DRAWER_ITENS.filter(
+      (it) => !chavesPlanilha.has(chaveIdentidadePlanilha(it, isTiktokPreview))
+    ).length;
     const ignoradas = Number(resumo.linhas_ignoradas || 0);
     const lidas = Number(resumo.linhas_lidas || dados.length);
 
@@ -2002,21 +1999,19 @@ function renderPreviewPlanilha({ lidas, nAtualizar, nAdicionar, ignoradas, dupli
 
   const exibidos = linhas.slice(0, PLANILHA_PREVIEW_LIMITE);
   const thIdModel = isShopee ? `<th>ID Model</th>` : "";
-  const thNomes = isTiktok ? `<th>Produto</th><th>Variação</th>` : "";
+  const thSkuId = isTiktok ? `<th>ID DO SKU</th>` : "";
   const thTaxa = isTiktok ? "" : `<th class="num">Taxa fixa</th>`;
   const corpo = exibidos.map((l) => {
     const obs = l.acao === "adicionar"
       ? "Novo item"
       : (Number.isFinite(Number(l.imposto)) ? "Sobrescreve custo e imposto" : "Sobrescreve custo · imposto atual mantido");
     const idModelTd = isShopee ? `<td class="vf-mono">${escapeHTML(String(l.id_model ?? "—"))}</td>` : "";
-    const nomesTd = isTiktok
-      ? `<td>${escapeHTML(String(l.produto_nome ?? "—"))}</td><td>${escapeHTML(String(l.variacao_nome ?? "—"))}</td>`
-      : "";
+    const skuIdTd = isTiktok ? `<td class="vf-mono">${escapeHTML(String(l.sku_id || "—"))}</td>` : "";
     const taxaTd = isTiktok ? "" : `<td class="num vf-mono">—</td>`;
     return `<tr>
-      <td class="vf-mono">${escapeHTML(String(l.id))}</td>
+      <td class="vf-mono">${escapeHTML(String(l.id || "—"))}</td>
+      ${skuIdTd}
       ${idModelTd}
-      ${nomesTd}
       <td class="num vf-mono">${escapeHTML(fmtMoedaDrawer(l.custo))}</td>
       <td class="num vf-mono">${escapeHTML(fmtPercentDrawer(l.imposto))}</td>
       ${taxaTd}
@@ -2038,11 +2033,11 @@ function renderPreviewPlanilha({ lidas, nAtualizar, nAdicionar, ignoradas, dupli
     <div class="vf-table-wrap vf-bases-planilha-wrap">
       <table class="vf-table vf-table--compact">
         <thead><tr>
-          <th>${isTiktok ? "ID do SKU" : "Produto / MLB / SKU"}</th>${thIdModel}${thNomes}
+          <th>${isTiktok ? "ID" : "Produto / MLB / SKU"}</th>${thSkuId}${thIdModel}
           <th class="num">Custo</th><th class="num">Imposto</th>${thTaxa}
           <th>Ação</th><th>Observação</th>
         </tr></thead>
-        <tbody>${corpo || `<tr class="vf-table__empty"><td colspan="${isTiktok ? 7 : (isShopee ? 7 : 6)}">Nenhum item válido para salvar.</td></tr>`}</tbody>
+        <tbody>${corpo || `<tr class="vf-table__empty"><td colspan="${isTiktok ? 6 : (isShopee ? 7 : 6)}">Nenhum item válido para salvar.</td></tr>`}</tbody>
       </table>
     </div>
     ${truncado}
@@ -2092,10 +2087,8 @@ async function confirmarPlanilhaDrawer() {
     // Taxa fixa não é extraída deste preview → omitida → preservada.
     // (Em TikTok o backend força 0 e nunca aceita taxa.)
     if (marketplace === "shopee" && linha.id_model) payload.id_model = linha.id_model;
-    if (marketplace === "tiktok") {
-      if (linha.produto_nome) payload.produto_nome = linha.produto_nome;
-      if (linha.variacao_nome) payload.variacao_nome = linha.variacao_nome;
-    }
+    // TikTok: sku_id é a chave — sem ele o servidor recusa a linha (400).
+    if (marketplace === "tiktok") payload.sku_id = linha.sku_id || "";
 
     try {
       const res = await fetch(`${API_BASE}/bases/${encodeURIComponent(slug)}/custos/upsert`, {
@@ -2107,13 +2100,13 @@ async function confirmarPlanilhaDrawer() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) {
         falhas++;
-        if (errosDetalhe.length < 10) errosDetalhe.push(`${linha.id}: ${data.erro || `HTTP ${res.status}`}`);
+        if (errosDetalhe.length < 10) errosDetalhe.push(`${linha.chave}: ${data.erro || `HTTP ${res.status}`}`);
         continue;
       }
       if (data.acao === "criado") adicionados++; else atualizados++;
     } catch (err) {
       falhas++;
-      if (errosDetalhe.length < 10) errosDetalhe.push(`${linha.id}: ${err?.message || "erro de conexão"}`);
+      if (errosDetalhe.length < 10) errosDetalhe.push(`${linha.chave}: ${err?.message || "erro de conexão"}`);
     }
   }
 
@@ -2393,26 +2386,41 @@ function asstBuildSelectOptions(disponiveis, valorAtual) {
   return opts.join("");
 }
 
-function asstRenderSelects(disponiveis, detectadas) {
+function asstRenderSelects(disponiveis, detectadas, isTiktok) {
   const valId      = (detectadas && detectadas.id      && detectadas.id.coluna)      || "";
+  const valSkuId   = (detectadas && detectadas.sku_id  && detectadas.sku_id.coluna)  || "";
   const valCusto   = (detectadas && detectadas.custo   && detectadas.custo.coluna)   || "";
   const valImposto = (detectadas && detectadas.imposto && detectadas.imposto.coluna) || "";
 
-  const alertaId = !valId
+  // TikTok: a coluna obrigatória é ID DO SKU. A coluna ID (produto) é opcional.
+  const alertaId = !valId && !isTiktok
     ? `<div class="asst-select-alerta">Não foi possível detectar a coluna de ID — selecione manualmente e reanalise.</div>`
     : "";
+  const alertaSkuId = isTiktok && !valSkuId
+    ? `<div class="asst-select-alerta">Não foi possível detectar a coluna "ID DO SKU" — ela é obrigatória no TikTok. Selecione manualmente e reanalise.</div>`
+    : "";
+
+  const selectSkuId = isTiktok ? `
+        <div class="asst-select-item${!valSkuId ? " asst-select-item-needed" : ""}">
+          <label class="asst-select-label" for="asst-sel-sku-id">Coluna de ID DO SKU</label>
+          ${alertaSkuId}
+          <select id="asst-sel-sku-id" class="vf-input asst-select">
+            ${asstBuildSelectOptions(disponiveis, valSkuId)}
+          </select>
+        </div>` : "";
 
   return `
     <div class="asst-result-section asst-manual-section">
       <div class="asst-section-title">Ajuste de colunas</div>
       <div class="asst-selects-grid">
-        <div class="asst-select-item${!valId ? " asst-select-item-needed" : ""}">
-          <label class="asst-select-label" for="asst-sel-id">Coluna de ID</label>
+        <div class="asst-select-item${!valId && !isTiktok ? " asst-select-item-needed" : ""}">
+          <label class="asst-select-label" for="asst-sel-id">${isTiktok ? "Coluna de ID (produto)" : "Coluna de ID"}</label>
           ${alertaId}
           <select id="asst-sel-id" class="vf-input asst-select">
             ${asstBuildSelectOptions(disponiveis, valId)}
           </select>
         </div>
+        ${selectSkuId}
         <div class="asst-select-item">
           <label class="asst-select-label" for="asst-sel-custo">Coluna de Custo</label>
           <select id="asst-sel-custo" class="vf-input asst-select">
@@ -2436,9 +2444,9 @@ function asstRenderSelects(disponiveis, detectadas) {
 }
 
 // ── Render principal ──────────────────────────────────────────────────────────
-function asstRenderColunas(colunas) {
-  const tipos  = ["id", "custo", "imposto"];
-  const labels = { id: "ID", custo: "Custo", imposto: "Imposto" };
+function asstRenderColunas(colunas, isTiktok) {
+  const tipos  = isTiktok ? ["id", "sku_id", "custo", "imposto"] : ["id", "custo", "imposto"];
+  const labels = { id: "ID", sku_id: "ID DO SKU", custo: "Custo", imposto: "Imposto" };
   return tipos.map((t) => {
     const c = colunas && colunas[t];
     if (!c) {
@@ -2475,6 +2483,7 @@ function asstRenderPreview(data) {
   const alertas     = data.alertas  || [];
   const rows        = Array.isArray(data.preview) ? data.preview : [];
   const disponiveis = Array.isArray(data.colunas_disponiveis) ? data.colunas_disponiveis : [];
+  const isTiktokAsst = normalizarMarketplaceKey(data.marketplace) === "tiktok";
 
   // ── Resumo cards ──
   const summaryCards = [
@@ -2514,9 +2523,13 @@ function asstRenderPreview(data) {
     const tbody = rows.map((r, i) => {
       const custo   = r.custo   != null ? Number(r.custo).toFixed(2)              : "—";
       const imposto = r.imposto != null ? (Number(r.imposto) * 100).toFixed(2) + "%" : "—";
+      const skuIdTd = isTiktokAsst
+        ? `<td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.sku_id || "—"))}</td>`
+        : "";
       return `<tr>
         <td style="color:var(--vf-text-l);font-family:var(--vf-mono);font-size:.8rem;">${i + 1}</td>
-        <td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.id ?? "—"))}</td>
+        <td style="font-family:var(--vf-mono);font-size:.8rem;">${escapeHTML(String(r.id || "—"))}</td>
+        ${skuIdTd}
         <td style="text-align:right;">${escapeHTML(custo)}</td>
         <td style="text-align:right;">${escapeHTML(imposto)}</td>
       </tr>`;
@@ -2529,6 +2542,7 @@ function asstRenderPreview(data) {
             <tr>
               <th style="width:40px;">#</th>
               <th>ID</th>
+              ${isTiktokAsst ? `<th>ID DO SKU</th>` : ""}
               <th style="text-align:right;width:120px;">Custo (R$)</th>
               <th style="text-align:right;width:120px;">Imposto</th>
             </tr>
@@ -2549,9 +2563,9 @@ function asstRenderPreview(data) {
       </div>
       <div class="asst-result-section">
         <div class="asst-section-title">Colunas detectadas</div>
-        <div class="asst-colunas-grid">${asstRenderColunas(data.colunas_detectadas)}</div>
+        <div class="asst-colunas-grid">${asstRenderColunas(data.colunas_detectadas, isTiktokAsst)}</div>
       </div>
-      ${asstRenderSelects(disponiveis, data.colunas_detectadas)}
+      ${asstRenderSelects(disponiveis, data.colunas_detectadas, isTiktokAsst)}
       ${alertasHtml}
       ${tableHtml}
     </div>`;
@@ -2566,11 +2580,13 @@ function asstRenderPreview(data) {
 // ── Reanálise ─────────────────────────────────────────────────────────────────
 async function asstReanalisar() {
   const selId      = ((document.getElementById("asst-sel-id")      || {}).value || "").trim();
+  const selSkuId   = ((document.getElementById("asst-sel-sku-id")  || {}).value || "").trim();
   const selCusto   = ((document.getElementById("asst-sel-custo")   || {}).value || "").trim();
   const selImposto = ((document.getElementById("asst-sel-imposto") || {}).value || "").trim();
 
   const config = { colunas: {} };
   if (selId)      config.colunas.id      = selId;
+  if (selSkuId)   config.colunas.sku_id  = selSkuId;
   if (selCusto)   config.colunas.custo   = selCusto;
   if (selImposto) config.colunas.imposto = selImposto;
 
@@ -2673,13 +2689,19 @@ async function asstBaixarBase(slug, nome, btn) {
       return;
     }
 
-    const linhas = entradas.map(([produtoId, v]) => {
-      const id      = String(produtoId).replace(/"/g, '""');
+    // TikTok baixa no contrato canônico ID | ID DO SKU | CUSTO | IMPOSTO, para
+    // que o arquivo baixado possa ser reimportado sem edição.
+    const isTiktokDownload = normalizarMarketplaceKey(data.marketplace) === "tiktok";
+    const csvTexto = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const linhas = entradas.map(([chave, v]) => {
       const custo   = v.custo_produto   != null ? Number(v.custo_produto).toFixed(2)  : "";
       const imposto = v.imposto_percentual != null ? Number(v.imposto_percentual).toFixed(6) : "";
-      return `"${id}",${custo},${imposto}`;
+      if (isTiktokDownload) {
+        return `${csvTexto(v.produto_id ?? "")},${csvTexto(v.sku_id ?? chave)},${custo},${imposto}`;
+      }
+      return `${csvTexto(v.produto_id ?? chave)},${custo},${imposto}`;
     });
-    const csv = "ID,Custo,Imposto\n" + linhas.join("\n");
+    const csv = (isTiktokDownload ? "ID,ID DO SKU,CUSTO,IMPOSTO\n" : "ID,Custo,Imposto\n") + linhas.join("\n");
 
     const nomeArquivo = "base-" + String(slug || nome).replace(/[^a-z0-9_\-]/gi, "_") + ".csv";
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -2727,20 +2749,22 @@ function asstAtualizarBotaoImportar() {
 }
 
 function asstGerarCsv(linhas, marketplace) {
-  const rows = linhas.filter(r => r.id != null && String(r.id).trim() !== "");
   const csvTexto = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
 
-  // TikTok: leva também os nomes de produto/variação e o cabeçalho reconhecido
-  // pelo parser do TikTok (ID do SKU), sem taxa fixa.
+  // TikTok: contrato canônico ID | ID DO SKU | CUSTO | IMPOSTO. A identidade da
+  // linha é o ID DO SKU (sku_id) — linha sem ele não é importável.
   if (marketplace === "tiktok") {
-    const lines = rows.map(r => {
-      const custo   = r.custo   != null ? Number(r.custo).toFixed(2)  : "";
-      const imposto = r.imposto != null ? Number(r.imposto).toFixed(6) : "";
-      return `${csvTexto(r.id)},${csvTexto(r.produto_nome)},${csvTexto(r.variacao_nome)},${custo},${imposto}`;
-    });
-    return "ID do SKU,Nome do produto,Nome do SKU,Custo unitário,Imposto\n" + lines.join("\n");
+    const lines = linhas
+      .filter(r => r.sku_id != null && String(r.sku_id).trim() !== "")
+      .map(r => {
+        const custo   = r.custo   != null ? Number(r.custo).toFixed(2)  : "";
+        const imposto = r.imposto != null ? Number(r.imposto).toFixed(6) : "";
+        return `${csvTexto(r.id)},${csvTexto(r.sku_id)},${custo},${imposto}`;
+      });
+    return "ID,ID DO SKU,CUSTO,IMPOSTO\n" + lines.join("\n");
   }
 
+  const rows = linhas.filter(r => r.id != null && String(r.id).trim() !== "");
   const lines = rows.map(r => {
     const custo   = r.custo   != null ? Number(r.custo).toFixed(2)   : "";
     const imposto = r.imposto != null ? Number(r.imposto).toFixed(6)  : "";

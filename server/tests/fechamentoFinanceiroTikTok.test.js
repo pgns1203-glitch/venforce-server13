@@ -2,7 +2,10 @@
 // Motor de fechamento financeiro do TikTok Shop:
 //   A. IDs de 18–19 dígitos preservados como string
 //   B. detecção de cabeçalho (Income e Onhold)
-//   C. cruzamento só por ID do SKU
+//   C. cruzamento EXCLUSIVAMENTE por ID do SKU (Income) × sku_id (base):
+//      o mesmo product_id com vários sku_id devolve o custo de cada variação,
+//      e nada de título / Nome do SKU / seller_sku / preço / product_id
+//      influencia o resultado
 //   D. fórmula (CMV, imposto interno, LC, MC) sem cobrança dupla
 //   E. resumo (faturamento, repasse, cobertura, resultado final, TACoS)
 //   F. Onhold fora do resultado realizado + aba Em_aberto_TikTok
@@ -18,7 +21,6 @@ const {
   parseTikTokIncomeBuffer,
   parseTikTokOnholdBuffer,
   buildTikTokCostMap,
-  buildTikTokCostKey,
   normalizeTikTokSkuId,
   parseTikTokMoney,
   parseTikTokQuantity,
@@ -58,6 +60,12 @@ function throws(label, fn) {
 
 const SKU_19 = "1735907463738524810";
 const SKU_18 = "173590746373852481";
+
+// Exemplo real do pedido: UM product_id, TRÊS sku_id, custos diferentes.
+const PRODUTO_ID = "1736898364814492810";
+const SKU_ID_A = "1736898108355347594"; // custo 13,80
+const SKU_ID_B = "1736898108355413130"; // custo 13,80
+const SKU_ID_C = "1736898108355871882"; // custo  6,90
 
 // Escreve a planilha marcando as colunas de ID como TEXTO (t: "s"), que é
 // exatamente como o TikTok exporta quando a coluna está formatada como texto.
@@ -170,13 +178,15 @@ function onholdBuffer(linhas, { avisos = [] } = {}) {
   });
 }
 
-// Formato devolvido por buildCostRowsFromBase para o TikTok. A chave de
-// cruzamento é ID + SKU (buildTikTokCostKey) — "Nome do SKU" no Income é o
-// mesmo texto usado como "SKU" do lado da base.
+// Formato devolvido por buildCostRowsFromBase para o TikTok:
+//   "ID"        = produto_id (product_id, informativo — pode repetir)
+//   "ID do SKU" = sku_id     (chave ÚNICA de cruzamento)
+// `skuId` é obrigatório nas fixtures; `id` (produto) é opcional de propósito,
+// para provar que o cruzamento não depende dele.
 function custosBase(rows) {
   return rows.map((r) => ({
-    "ID do SKU": r.id,
-    "SKU": r.sku != null ? r.sku : (r.variacao || ""),
+    "ID": r.id != null ? r.id : "",
+    "ID do SKU": r.skuId,
     "Custo unitário": r.custo,
     "Imposto (%)": r.imposto,
     "Nome do produto": r.produto || "",
@@ -185,7 +195,14 @@ function custosBase(rows) {
 }
 
 const CUSTOS_PADRAO = custosBase([
-  { id: SKU_19, sku: "Azul", custo: 10, imposto: 0.1, produto: "Furadeira X", variacao: "Azul" },
+  { id: PRODUTO_ID, skuId: SKU_19, custo: 10, imposto: 0.1, produto: "Furadeira X", variacao: "Azul" },
+]);
+
+// As três variações do MESMO produto, com os custos do exemplo real.
+const CUSTOS_TRES_VARIACOES = custosBase([
+  { id: PRODUTO_ID, skuId: SKU_ID_A, custo: 13.8, imposto: 0.06, produto: "Kit Bibi", variacao: "KIT2BIBI" },
+  { id: PRODUTO_ID, skuId: SKU_ID_B, custo: 13.8, imposto: 0.06, produto: "Kit Bibi", variacao: "KIT3BIBI" },
+  { id: PRODUTO_ID, skuId: SKU_ID_C, custo: 6.9, imposto: 0.06, produto: "Kit Bibi", variacao: "KIT4BIBI" },
 ]);
 
 // ── A. IDs ──────────────────────────────────────────────────────────────────
@@ -282,17 +299,17 @@ console.log("\n▸ B. Detecção de cabeçalho");
 
 // ── C. Cruzamento ───────────────────────────────────────────────────────────
 
-console.log("\n▸ C. Cruzamento por ID do SKU + Nome do SKU (nunca só o ID)");
+console.log("\n▸ C. Cruzamento SÓ por ID do SKU (sku_id) — sem nenhum fallback");
 {
-  const chave = buildTikTokCostKey(SKU_19, "Azul");
   const { map } = buildTikTokCostMap(CUSTOS_PADRAO);
-  eq("mapa de custos indexado por ID+SKU", map.get(chave).cost, 10);
-  eq("mapa não cria entrada só pelo ID", map.has(SKU_19), false);
-  eq("mapa não cria entrada por nome do produto", map.has("Furadeira X"), false);
-  eq("um par ID+SKU, uma entrada", map.size, 1);
+  eq("mapa de custos indexado por sku_id", map.get(SKU_19).cost, 10);
+  eq("mapa NÃO cria entrada pelo product_id", map.has(PRODUTO_ID), false);
+  eq("mapa NÃO cria entrada por nome do produto", map.has("Furadeira X"), false);
+  eq("mapa NÃO cria entrada por Nome do SKU", map.has("Azul"), false);
+  eq("um sku_id, uma entrada", map.size, 1);
 }
 {
-  // Mesmo produto, ID diferente: não pode casar por nome.
+  // sku_id que não existe na base: sem custo, mesmo com título/variação iguais.
   const result = processTikTok({
     salesBuffer: incomeBuffer([linhaIncome({ sku: SKU_18 })]),
     costRowsRaw: CUSTOS_PADRAO,
@@ -302,87 +319,136 @@ console.log("\n▸ C. Cruzamento por ID do SKU + Nome do SKU (nunca só o ID)");
   eq("nome igual não gera cruzamento", result.detailedRows[0].status_calculo, "sem_custo");
   eq("custo ausente não vira zero", result.detailedRows[0].custo_unitario, null);
   eq("LC não é calculado sem custo", result.detailedRows[0].lc, null);
-  eq("ID entra em unmatchedIds", result.unmatchedIds[0], SKU_18);
-}
-{
-  // Reprodução exata do bug relatado: mesmo ID numérico, vários SKUs textuais
-  // diferentes (KIT2BIBI, KIT3BIBI, KIT4BIBI), cada um com custo próprio.
-  const custosMultiSku = custosBase([
-    { id: SKU_19, sku: "KIT2BIBI", custo: 22.9, imposto: 0.06 },
-    { id: SKU_19, sku: "KIT3BIBI", custo: 34.7, imposto: 0.06 },
-    { id: SKU_19, sku: "KIT4BIBI", custo: 45.6, imposto: 0.06 },
-  ]);
-  const { map: mapaMultiSku } = buildTikTokCostMap(custosMultiSku);
-  eq("mesmo ID com 3 SKUs gera 3 entradas no mapa", mapaMultiSku.size, 3);
-
-  const resultKit2 = processTikTok({
-    salesBuffer: incomeBuffer([linhaIncome({ produto: "Kit Bibi", variacao: "KIT2BIBI" })]),
-    costRowsRaw: custosMultiSku,
-    ads: 0, venforce: 0,
-  });
-  eq("KIT2BIBI recebe o custo do KIT2BIBI", resultKit2.detailedRows[0].custo_unitario, 22.9);
-  eq("KIT2BIBI não recebe custo de outro SKU do mesmo ID", resultKit2.detailedRows[0].custo_unitario !== 34.7, true);
-  eq("KIT2BIBI calcula normalmente", resultKit2.detailedRows[0].status_calculo, "calculado");
-
-  const resultKit3 = processTikTok({
-    salesBuffer: incomeBuffer([linhaIncome({ produto: "Kit Bibi", variacao: "KIT3BIBI" })]),
-    costRowsRaw: custosMultiSku,
-    ads: 0, venforce: 0,
-  });
-  eq("KIT3BIBI recebe o custo do KIT3BIBI", resultKit3.detailedRows[0].custo_unitario, 34.7);
-  eq("KIT3BIBI nunca usa o custo do KIT2BIBI (mesmo ID)", resultKit3.detailedRows[0].custo_unitario !== 22.9, true);
-
-  // Mesmo ID, SKU que NÃO existe na base: não pode "cair" para nenhum dos
-  // outros SKUs do mesmo ID (sem fallback pelo ID sozinho).
-  const resultKitInexistente = processTikTok({
-    salesBuffer: incomeBuffer([linhaIncome({ produto: "Kit Bibi", variacao: "KIT9BIBI" })]),
-    costRowsRaw: custosMultiSku,
-    ads: 0, venforce: 0,
-  });
-  eq("SKU inexistente do mesmo ID fica sem_custo", resultKitInexistente.detailedRows[0].status_calculo, "sem_custo");
-  eq("SKU inexistente não herda custo de nenhum SKU irmão", resultKitInexistente.detailedRows[0].custo_unitario, null);
+  eq("ID do SKU entra em unmatchedIds", result.unmatchedIds[0], SKU_18);
   eq(
-    "unmatchedSkuKeys registra a combinação ID+SKU exata",
-    resultKitInexistente.unmatchedSkuKeys.some((u) => u.id_sku === SKU_19 && u.sku === "KIT9BIBI"),
+    "unmatchedSkuKeys expõe o próprio ID DO SKU que faltou",
+    result.unmatchedSkuKeys.some((u) => u.id_sku === SKU_18),
     true
   );
-}
-{
-  // Income com ID mas sem "Nome do SKU", e o ID é ÚNICO na base (só um custo
-  // cadastrado): cruza normalmente pelo ID sozinho (regra nova).
-  const resultUnicoSemSku = processTikTok({
-    salesBuffer: incomeBuffer([linhaIncome({ variacao: "" })]),
-    costRowsRaw: CUSTOS_PADRAO, // um único custo para SKU_19
-    ads: 0, venforce: 0,
-  });
-  const rowUnicoSemSku = resultUnicoSemSku.detailedRows[0];
-  eq("ID único sem SKU no Income é aceito", rowUnicoSemSku.status_calculo, "calculado");
-  eq("ID único sem SKU calcula CMV normalmente", rowUnicoSemSku.cmv, 20);
-  eq("ID único sem SKU calcula LC normalmente", rowUnicoSemSku.lc, 41);
-  eq("confiança confiável quando o único custo do ID casa", resultUnicoSemSku.summary.financialConfidence, "confiavel");
-}
-{
-  // Income sem "Nome do SKU", mas o ID tem VÁRIOS custos na base: nunca
-  // escolhe arbitrariamente — fica sem custo, mesma regra de "sem_custo".
-  const custosMultiSku = custosBase([
-    { id: SKU_19, sku: "KIT2BIBI", custo: 22.9, imposto: 0.06 },
-    { id: SKU_19, sku: "KIT3BIBI", custo: 34.7, imposto: 0.06 },
-  ]);
-  const resultAmbiguoSemSku = processTikTok({
-    salesBuffer: incomeBuffer([linhaIncome({ variacao: "" })]),
-    costRowsRaw: custosMultiSku,
-    ads: 0, venforce: 0,
-  });
-  const rowAmbiguoSemSku = resultAmbiguoSemSku.detailedRows[0];
-  eq("Income sem SKU não escolhe custo quando há vários SKUs do ID", rowAmbiguoSemSku.status_calculo, "sem_custo");
-  eq("nenhum custo é atribuído arbitrariamente", rowAmbiguoSemSku.cmv, null);
-  eq("nenhum custo é atribuído arbitrariamente (custo unitário)", rowAmbiguoSemSku.custo_unitario, null);
-  eq("faturamento é preservado mesmo sem escolher custo", resultAmbiguoSemSku.summary.grossRevenueTotal, 100);
-  eq("confiança rebaixada sem nenhuma linha calculável", resultAmbiguoSemSku.summary.financialConfidence, "insuficiente");
   ok(
-    "auditoria explica a ambiguidade",
-    resultAmbiguoSemSku.auditRows.some((a) => /mais de um custo cadastrado, ou nenhum/.test(a.motivo))
+    "auditoria diz que o ID do SKU não está na base",
+    result.auditRows.some((a) => a.motivo.includes(SKU_18) && /não encontrado na Base TikTok/.test(a.motivo))
   );
+}
+{
+  // ── §11 do pedido: mesmo product_id, três sku_id, custos diferentes ──
+  const { map } = buildTikTokCostMap(CUSTOS_TRES_VARIACOES);
+  eq("mesmo product_id com 3 sku_id gera 3 entradas", map.size, 3);
+  eq("entrada da variação A", map.get(SKU_ID_A).cost, 13.8);
+  eq("entrada da variação B", map.get(SKU_ID_B).cost, 13.8);
+  eq("entrada da variação C", map.get(SKU_ID_C).cost, 6.9);
+  eq("product_id não vira chave", map.has(PRODUTO_ID), false);
+
+  // Income com títulos, seller SKU e preços IDÊNTICOS — só o sku_id difere.
+  const comumIncome = { produto: "Kit Bibi", variacao: "KIT2BIBI", quantidade: 1, subtotal: 100, liquidas: 100, liquidar: 90 };
+
+  const rA = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ ...comumIncome, sku: SKU_ID_A })]),
+    costRowsRaw: CUSTOS_TRES_VARIACOES, ads: 0, venforce: 0,
+  });
+  eq("sku_id A → custo 13,80", rA.detailedRows[0].custo_unitario, 13.8);
+  eq("sku_id A calcula normalmente", rA.detailedRows[0].status_calculo, "calculado");
+
+  const rC = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ ...comumIncome, sku: SKU_ID_C })]),
+    costRowsRaw: CUSTOS_TRES_VARIACOES, ads: 0, venforce: 0,
+  });
+  eq("sku_id C → custo 6,90", rC.detailedRows[0].custo_unitario, 6.9);
+  ok("sku_id C não herda o custo da variação A", rC.detailedRows[0].custo_unitario !== 13.8);
+  eq("CMV usa o custo da própria variação", rC.detailedRows[0].cmv, 6.9);
+
+  // Título igual, seller SKU igual, preço igual: nada disso muda o custo.
+  eq("título idêntico não altera o custo", rA.detailedRows[0].produto, rC.detailedRows[0].produto);
+  eq("Nome do SKU idêntico não altera o custo", rA.detailedRows[0].sku, rC.detailedRows[0].sku);
+  eq("preço de venda idêntico não altera o custo", rA.detailedRows[0].subtotal_antes_descontos, rC.detailedRows[0].subtotal_antes_descontos);
+  ok("mesmo assim os custos são diferentes", rA.detailedRows[0].custo_unitario !== rC.detailedRows[0].custo_unitario);
+
+  // As três na mesma planilha, cada uma com o seu custo.
+  const rTodas = processTikTok({
+    salesBuffer: incomeBuffer([
+      linhaIncome({ ...comumIncome, pedido: "P-A", sku: SKU_ID_A }),
+      linhaIncome({ ...comumIncome, pedido: "P-B", sku: SKU_ID_B }),
+      linhaIncome({ ...comumIncome, pedido: "P-C", sku: SKU_ID_C }),
+    ]),
+    costRowsRaw: CUSTOS_TRES_VARIACOES, ads: 0, venforce: 0,
+  });
+  eq("três linhas calculadas", rTodas.summary.contributionProfitRowsCount, 3);
+  eq("CMV total = 13,80 + 13,80 + 6,90", rTodas.summary.cmvTotal, 34.5);
+  eq("cobertura total da base", rTodas.summary.calculatedCoveragePercent, 100);
+
+  // sku_id inexistente do MESMO produto: não cai para nenhuma variação irmã.
+  const rInexistente = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ ...comumIncome, sku: "1736898108355999999" })]),
+    costRowsRaw: CUSTOS_TRES_VARIACOES, ads: 0, venforce: 0,
+  });
+  eq("sku_id inexistente fica sem_custo", rInexistente.detailedRows[0].status_calculo, "sem_custo");
+  eq("sku_id inexistente não herda custo de variação irmã", rInexistente.detailedRows[0].custo_unitario, null);
+  eq("sku_id inexistente NÃO vira custo zero", rInexistente.detailedRows[0].cmv, null);
+  eq(
+    "pendência registra o ID DO SKU exato que faltou",
+    rInexistente.unmatchedSkuKeys.some((u) => u.id_sku === "1736898108355999999"),
+    true
+  );
+  eq("faturamento preservado mesmo sem custo", rInexistente.summary.grossRevenueTotal, 100);
+}
+{
+  // §12: imposto vem da MESMA linha da base encontrada pelo sku_id.
+  const custosImpostosDiferentes = custosBase([
+    { id: PRODUTO_ID, skuId: SKU_ID_A, custo: 13.8, imposto: 0.06 },
+    { id: PRODUTO_ID, skuId: SKU_ID_C, custo: 6.9, imposto: 0.04 },
+  ]);
+  const linhaBaseComum = { quantidade: 1, subtotal: 100, liquidas: 100, liquidar: 90 };
+
+  const rA = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ ...linhaBaseComum, sku: SKU_ID_A })]),
+    costRowsRaw: custosImpostosDiferentes, ads: 0, venforce: 0,
+  });
+  eq("variação A usa imposto 6%", rA.detailedRows[0].imposto_percentual, 6);
+  eq("valor do imposto da variação A", rA.detailedRows[0].imposto_valor, 6);
+
+  const rC = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ ...linhaBaseComum, sku: SKU_ID_C })]),
+    costRowsRaw: custosImpostosDiferentes, ads: 0, venforce: 0,
+  });
+  eq("variação C usa imposto 4%", rC.detailedRows[0].imposto_percentual, 4);
+  eq("valor do imposto da variação C", rC.detailedRows[0].imposto_valor, 4);
+  ok("cada variação usa a própria alíquota", rA.detailedRows[0].imposto_valor !== rC.detailedRows[0].imposto_valor);
+}
+{
+  // §7: o fechamento funciona sem SKU textual em lado nenhum.
+  const custosSemNomes = custosBase([{ id: PRODUTO_ID, skuId: SKU_19, custo: 10, imposto: 0.1 }]);
+  const result = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ produto: "", variacao: "" })]),
+    costRowsRaw: custosSemNomes,
+    ads: 0, venforce: 0,
+  });
+  const row = result.detailedRows[0];
+  eq("cruza sem Nome do SKU no Income e sem nomes na base", row.status_calculo, "calculado");
+  eq("CMV calculado normalmente", row.cmv, 20);
+  eq("LC calculado normalmente", row.lc, 41);
+  eq("confiança confiável", result.summary.financialConfidence, "confiavel");
+}
+{
+  // A base sem a coluna "ID" (product_id) continua cruzando: só sku_id importa.
+  const custosSemProdutoId = custosBase([{ skuId: SKU_19, custo: 10, imposto: 0.1 }]);
+  const result = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome()]),
+    costRowsRaw: custosSemProdutoId,
+    ads: 0, venforce: 0,
+  });
+  eq("base sem product_id ainda resolve o custo", result.detailedRows[0].custo_unitario, 10);
+  eq("e calcula o LC", result.detailedRows[0].lc, 41);
+}
+{
+  // product_id da base NUNCA é usado como chave: um Income cujo "ID do SKU"
+  // por acaso é igual ao product_id não pode achar custo.
+  const result = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ sku: PRODUTO_ID })]),
+    costRowsRaw: CUSTOS_TRES_VARIACOES,
+    ads: 0, venforce: 0,
+  });
+  eq("product_id não resolve custo", result.detailedRows[0].status_calculo, "sem_custo");
+  eq("nenhum custo atribuído pelo product_id", result.detailedRows[0].custo_unitario, null);
 }
 {
   // Duas vendas do mesmo SKU continuam duas linhas financeiras.
@@ -444,7 +510,7 @@ const base = processTikTok({
   // Alíquota gravada como 10 (pontos percentuais) tem o mesmo efeito de 0.1.
   const comPercentual = processTikTok({
     salesBuffer: incomeBuffer([linhaIncome()]),
-    costRowsRaw: custosBase([{ id: SKU_19, sku: "Azul", custo: 10, imposto: 10 }]),
+    costRowsRaw: custosBase([{ id: PRODUTO_ID, skuId: SKU_19, custo: 10, imposto: 10 }]),
     ads: 0,
     venforce: 0,
   });
@@ -547,6 +613,42 @@ const comOnhold = processTikTok({
   eq("linhas pendentes expostas", comOnhold.pendingRows.length, 2);
   eq("origem preservada nas linhas do Income", comOnhold.detailedRows[0].origem, "Income");
   eq("origem preservada nas linhas em aberto", comOnhold.pendingRows[0].origem, "Onhold");
+  eq("Onhold com custo é o do sku_id cadastrado", comOnhold.pendingRows[0].custo_na_base, "sim");
+  eq("Onhold sem sku_id na base acusa falta", comOnhold.pendingRows[1].custo_na_base, "não");
+}
+{
+  // §12: o Onhold usa a MESMA identidade (sku_id) do Income — e continua
+  // fora do resultado realizado (semântica contábil inalterada).
+  const r = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome()]),
+    onholdBuffer: onholdBuffer([
+      ["PED-A", SKU_ID_A, "Kit Bibi", "KIT2BIBI", 1, 40, "Em processamento", "2026-07-25"],
+      ["PED-C", SKU_ID_C, "Kit Bibi", "KIT4BIBI", 1, 20, "Em processamento", "2026-07-25"],
+      ["PED-X", "1736898108355999999", "Kit Bibi", "KIT9BIBI", 1, 10, "Em processamento", "2026-07-25"],
+    ]),
+    costRowsRaw: CUSTOS_TRES_VARIACOES,
+    ads: 0, venforce: 0,
+  });
+  eq("Onhold resolve custo por sku_id (2 de 3)", r.summary.onholdWithCostCount, 2);
+  eq("Onhold sem sku_id na base fica sem custo", r.summary.onholdWithoutCostCount, 1);
+  eq("Onhold não entra no LC", r.summary.contributionProfitTotal, 0);
+  eq("Onhold não entra no faturamento realizado", r.summary.grossRevenueTotal, 100);
+  eq("Onhold só soma valor em aberto", r.summary.onholdRevenueTotal, 70);
+  eq("Onhold não altera o resultado final", r.summary.finalResult, 0);
+  eq("linhas do Onhold têm status em_aberto", r.pendingRows[0].status_calculo, "em_aberto");
+  eq("ID DO SKU preservado no Onhold", r.pendingRows[0].id_sku, SKU_ID_A);
+}
+{
+  // §16.15: TikTok nunca recebe prefixo MLB em nenhum ID, nem na base.
+  const r = processTikTok({
+    salesBuffer: incomeBuffer([linhaIncome({ sku: SKU_ID_A, quantidade: 1, subtotal: 100, liquidas: 100, liquidar: 90 })]),
+    costRowsRaw: CUSTOS_TRES_VARIACOES,
+    ads: 0, venforce: 0,
+  });
+  const serializado = JSON.stringify(r);
+  ok("nenhum MLB aparece no resultado TikTok", !/MLB/.test(serializado));
+  eq("id_sku sai como string exata", r.detailedRows[0].id_sku, SKU_ID_A);
+  eq("id_sku mantém 19 dígitos", r.detailedRows[0].id_sku.length, 19);
 }
 
 // ── G. Contrato HTTP ────────────────────────────────────────────────────────
@@ -836,8 +938,9 @@ async function testesPrePush() {
     if (texto.includes("FROM custos")) {
       return {
         rows: [{
-          produto_id: SKU_19, sku: "Azul", custo_produto: 10, imposto_percentual: 0.1,
-          id_model: null, produto_nome: "Furadeira X", variacao_nome: "",
+          produto_id: PRODUTO_ID, sku_id: SKU_19, sku: "", custo_produto: 10,
+          imposto_percentual: 0.1, id_model: null, produto_nome: "Furadeira X",
+          variacao_nome: "",
         }],
       };
     }
@@ -865,8 +968,10 @@ async function testesPrePush() {
   // base manualmente em /financeiro (select "Base de custos TikTok"). O
   // backend só confirma que a base existe, está ativa e é do TikTok.
   console.log("\n▸ I-bis. Base TikTok — seleção manual (sem vínculo com cliente)");
+  const queriesDoBanco = [];
   pool.query = async (sql, params = []) => {
     const texto = String(sql);
+    queriesDoBanco.push(texto);
     if (/FROM bases WHERE id = \$1/.test(texto)) {
       const [id] = params;
       return { rows: basesDoBanco.filter((b) => Number(b.id) === Number(id)) };
@@ -874,8 +979,9 @@ async function testesPrePush() {
     if (texto.includes("FROM custos")) {
       return {
         rows: [{
-          produto_id: SKU_19, sku: "Azul", custo_produto: 10, imposto_percentual: 0.1,
-          id_model: null, produto_nome: "Furadeira X", variacao_nome: "",
+          produto_id: PRODUTO_ID, sku_id: SKU_19, sku: "", custo_produto: 10,
+          imposto_percentual: 0.1, id_model: null, produto_nome: "Furadeira X",
+          variacao_nome: "",
         }],
       };
     }
@@ -889,9 +995,13 @@ async function testesPrePush() {
     eq("resolve a base só pelo id, sem cliente envolvido", baseManual.id, 7);
 
     const custosManual = await buildCostRowsFromBase({ baseId: 7, clienteSlug: "", marketplace: "tiktok" });
-    eq("custos vêm no formato TikTok", custosManual.costRows[0]["ID do SKU"], SKU_19);
-    eq("costRows expõe o SKU da base", custosManual.costRows[0]["SKU"], "Azul");
+    eq("costRows expõe o sku_id como 'ID do SKU'", custosManual.costRows[0]["ID do SKU"], SKU_19);
+    eq("costRows expõe o product_id como 'ID'", custosManual.costRows[0]["ID"], PRODUTO_ID);
+    ok("costRows não expõe mais SKU textual", !("SKU" in custosManual.costRows[0]));
     eq("base resolvida sem cliente_slug algum", custosManual.base.id, 7);
+    // O SELECT da base precisa ler a coluna nova, senão o cruzamento perde a chave.
+    const selectCustos = queriesDoBanco.find((q) => /FROM custos/.test(q));
+    ok("SELECT da base de custos inclui sku_id", /sku_id/.test(String(selectCustos)));
 
     // 13. Sem costsBaseId, a seleção é obrigatória.
     let erro = null;

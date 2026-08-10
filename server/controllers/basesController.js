@@ -8,6 +8,7 @@ const {
   normalizarProdutoIdBase,
   normalizarProdutoIdShopee,
   normalizarProdutoIdTikTok,
+  normalizarSkuIdTikTok,
   obterBaseAtivaPorSlug,
   obterPadraoCustoBase,
   upsertCustoBase,
@@ -51,10 +52,7 @@ async function upsertCustoBaseController(req, res) {
     const base = await obterBaseAtivaPorSlug(req.params.baseSlug);
 
     const body = req.body || {};
-    const produtoIdRaw = body.produto_id;
-    if (!produtoIdRaw) {
-      return res.status(400).json({ ok: false, erro: "produto_id é obrigatório." });
-    }
+    const isTikTok = base.marketplace === "tiktok";
 
     const normalizarProdutoId = NORMALIZADORES_PRODUTO_ID[base.marketplace];
     if (!normalizarProdutoId) {
@@ -63,15 +61,33 @@ async function upsertCustoBaseController(req, res) {
         erro: `marketplace inválido para a base. Use: ${MARKETPLACES_SUPORTADOS.join(", ")}.`,
       });
     }
-    const produtoIdNorm = normalizarProdutoId(produtoIdRaw);
-    if (!produtoIdNorm) {
+
+    // TikTok: a chave do custo é sku_id (coluna "ID DO SKU"). O produto_id
+    // (coluna "ID") é informativo e opcional — nunca identifica a variação.
+    // MELI/Shopee seguem exigindo produto_id, como sempre.
+    const produtoIdRaw = body.produto_id;
+    if (!isTikTok && !produtoIdRaw) {
+      return res.status(400).json({ ok: false, erro: "produto_id é obrigatório." });
+    }
+    const produtoIdNorm = produtoIdRaw ? normalizarProdutoId(produtoIdRaw) : "";
+    if (!isTikTok && !produtoIdNorm) {
       return res.status(400).json({ ok: false, erro: "produto_id inválido." });
     }
 
-    const isTikTok = base.marketplace === "tiktok";
-    // SKU agora é opcional para TikTok: só é exigido quando o ID já não é
-    // único na base (checagem feita em upsertCustoBase, que tem acesso ao
-    // banco e devolve 422 com o motivo caso seja ambíguo).
+    let skuIdNorm = "";
+    if (isTikTok) {
+      if (!body.sku_id) {
+        return res.status(400).json({
+          ok: false,
+          erro: "ID DO SKU é obrigatório nas bases TikTok — é a chave do custo da variação.",
+        });
+      }
+      skuIdNorm = normalizarSkuIdTikTok(body.sku_id);
+      if (!skuIdNorm) {
+        return res.status(400).json({ ok: false, erro: "ID DO SKU inválido." });
+      }
+    }
+
     const custoProduto = validarNumeroObrigatorio(body.custo_produto, "custo_produto");
     const impostoPercentualOpt = validarNumeroOpcional(body.imposto_percentual, "imposto_percentual");
     // TikTok não tem taxa fixa: sempre 0, mesmo que o cliente envie outro valor.
@@ -83,13 +99,13 @@ async function upsertCustoBaseController(req, res) {
     const resultado = await upsertCustoBase({
       baseId: base.id,
       produtoIdNorm,
+      skuIdNorm,
       custoProduto,
       impostoPercentualOpt,
       taxaFixaOpt,
       idModel,
       produtoNome: body.produto_nome,
       variacaoNome: body.variacao_nome,
-      sku: body.sku,
       marketplace: base.marketplace,
     });
 
@@ -100,6 +116,7 @@ async function upsertCustoBaseController(req, res) {
         detalhes: {
           base_slug: base.slug,
           produto_id: produtoIdNorm,
+          ...(isTikTok ? { sku_id: skuIdNorm } : {}),
           acao: resultado.acao,
           custo_produto: Number(resultado.custo?.custo_produto),
           imposto_percentual: Number(resultado.custo?.imposto_percentual),
@@ -119,6 +136,7 @@ async function upsertCustoBaseController(req, res) {
       custo: {
         base_id: resultado.custo.base_id,
         produto_id: resultado.custo.produto_id,
+        sku_id: resultado.custo.sku_id || null,
         custo_produto: Number(resultado.custo.custo_produto),
         imposto_percentual: Number(resultado.custo.imposto_percentual),
         taxa_fixa: Number(resultado.custo.taxa_fixa),

@@ -61,8 +61,19 @@ const CANDIDATOS_ID_MODEL = [
 // Lista própria (não estende a do MELI) para não mudar a detecção das
 // planilhas de Mercado Livre/Shopee que já funcionam hoje. Os textos aqui já
 // estão na forma que pontuarColuna produz: sem acento, sem "_", minúsculo.
+//
+// Contrato: ID | ID DO SKU | CUSTO | IMPOSTO.
+//   ID        → product_id (informativo, pode repetir)
+//   ID DO SKU → sku_id da variação (chave de custo)
+// As duas listas são disjuntas e a coluna do sku_id é resolvida PRIMEIRO, para
+// que "ID do SKU" nunca seja confundida com a coluna "ID" (ver detectarColunas).
+const CANDIDATOS_SKU_ID_TIKTOK = [
+  "id do sku", "id sku", "sku id", "skuid", "tiktok sku id",
+  "id da variacao", "id variacao",
+];
+
 const CANDIDATOS_ID_TIKTOK = [
-  "id do sku", "id sku", "sku id", "tiktok sku id", "produto id", "produtoid", "id", "sku",
+  "id", "id do produto", "produto id", "produtoid", "product id",
 ];
 
 const CANDIDATOS_CUSTO_TIKTOK = [
@@ -84,6 +95,10 @@ const CANDIDATOS_VARIACAO_NOME = [
 
 function candidatosId(marketplace) {
   return marketplace === "tiktok" ? CANDIDATOS_ID_TIKTOK : CANDIDATOS_ID;
+}
+
+function candidatosSkuId(marketplace) {
+  return marketplace === "tiktok" ? CANDIDATOS_SKU_ID_TIKTOK : [];
 }
 
 function candidatosCusto(marketplace) {
@@ -120,6 +135,29 @@ function pontuarColuna(header, candidatos, exclusoes) {
   return 0;
 }
 
+// Variante ESTRITA: só casa quando o cabeçalho contém o candidato, nunca o
+// contrário. Usada para o ID DO SKU do TikTok — com a pontuação frouxa, um
+// cabeçalho "ID" casaria com o candidato "id do sku" (porque "id do sku"
+// começa com "id") e a coluna do produto seria lida como sku_id.
+function pontuarColunaEstrita(header, candidatos) {
+  const norm = normalizeKey(String(header || ""))
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!norm) return 0;
+
+  for (const c of candidatos) {
+    if (norm === c) return 95;
+  }
+  for (const c of candidatos) {
+    if (norm.startsWith(c)) return 80;
+  }
+  for (const c of candidatos) {
+    if (norm.includes(c)) return 65;
+  }
+  return 0;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function listarAbas(workbook) {
@@ -147,6 +185,7 @@ function detectarCabecalho(rowsAsArrays, marketplace) {
       const texto = String(cell || "").trim();
       if (!texto) continue;
       score += pontuarColuna(texto, candidatosId(marketplace));
+      score += pontuarColunaEstrita(texto, candidatosSkuId(marketplace));
       score += pontuarColuna(texto, candidatosCusto(marketplace), EXCLUIR_CUSTO);
       score += pontuarColuna(texto, candidatosImposto(marketplace));
     }
@@ -165,6 +204,7 @@ function detectarCabecalho(rowsAsArrays, marketplace) {
 function detectarColunas(headerRow, marketplace) {
   const disponiveis = [];
   const scoresId = [];
+  const scoresSkuId = [];
   const scoresCusto = [];
   const scoresImposto = [];
   const scoresIdModel = [];
@@ -177,6 +217,7 @@ function detectarColunas(headerRow, marketplace) {
     if (texto) disponiveis.push({ coluna: letra, cabecalho: texto });
 
     scoresId.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, candidatosId(marketplace)) });
+    scoresSkuId.push({ coluna: letra, cabecalho: texto, score: pontuarColunaEstrita(texto, candidatosSkuId(marketplace)) });
     scoresCusto.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, candidatosCusto(marketplace), EXCLUIR_CUSTO) });
     scoresImposto.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, candidatosImposto(marketplace)) });
     scoresIdModel.push({ coluna: letra, cabecalho: texto, score: pontuarColuna(texto, CANDIDATOS_ID_MODEL) });
@@ -192,18 +233,26 @@ function detectarColunas(headerRow, marketplace) {
       : null;
   }
 
-  const idDetectado = melhorCandidato(scoresId);
+  // TikTok: o sku_id é resolvido ANTES do ID e a coluna escolhida sai da
+  // disputa. Sem isso, "ID do SKU" (score 80 por startsWith("id")) poderia ser
+  // eleita coluna de produto numa planilha que só tem essa coluna de ID.
+  const skuIdDetectado = melhorCandidato(scoresSkuId);
+  const semColunaDoSkuId = (cand) =>
+    (cand && skuIdDetectado && cand.coluna === skuIdDetectado.coluna ? null : cand);
+
+  const idDetectado = semColunaDoSkuId(melhorCandidato(scoresId));
   // A mesma coluna não pode ser ID e nome ao mesmo tempo ("ID do SKU" x "Nome do SKU").
   const semColunaDoId = (cand) => (cand && idDetectado && cand.coluna === idDetectado.coluna ? null : cand);
 
   return {
     detectadas: {
       id:       idDetectado,
+      sku_id:   skuIdDetectado,
       custo:    melhorCandidato(scoresCusto),
       imposto:  melhorCandidato(scoresImposto),
       id_model: melhorCandidato(scoresIdModel),
-      produto_nome:  semColunaDoId(melhorCandidato(scoresProdutoNome)),
-      variacao_nome: semColunaDoId(melhorCandidato(scoresVariacaoNome)),
+      produto_nome:  semColunaDoSkuId(semColunaDoId(melhorCandidato(scoresProdutoNome))),
+      variacao_nome: semColunaDoSkuId(semColunaDoId(melhorCandidato(scoresVariacaoNome))),
     },
     disponiveis,
   };
@@ -313,6 +362,7 @@ function normalizarIdPorMarketplace(marketplace, valor) {
 
 function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
   const idxId      = mapeamento.id      ? letraParaIndice(mapeamento.id)      : -1;
+  const idxSkuId   = mapeamento.sku_id  ? letraParaIndice(mapeamento.sku_id)  : -1;
   const idxCusto   = mapeamento.custo   ? letraParaIndice(mapeamento.custo)   : -1;
   const idxImposto = mapeamento.imposto ? letraParaIndice(mapeamento.imposto) : -1;
   const idxIdModel = mapeamento.id_model ? letraParaIndice(mapeamento.id_model) : -1;
@@ -330,19 +380,27 @@ function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
 
     const linhaOriginal = linhaHeader + 2 + i; // 1-based, considera header
     const idBruto = idxId >= 0 ? row[idxId] : "";
+    const skuIdBruto = idxSkuId >= 0 ? row[idxSkuId] : "";
 
     todas.push({
       linha_original: linhaOriginal,
       id: normalizarIdPorMarketplace(marketplace, idBruto),
+      // sku_id só existe no TikTok — é a chave de custo da variação.
+      ...(isTikTok ? { sku_id: normalizarIdTikTok(skuIdBruto) } : {}),
       custo:   normalizarCustoBase(idxCusto   >= 0 ? row[idxCusto]   : ""),
       imposto: normalizarImpostoBase(idxImposto >= 0 ? row[idxImposto] : ""),
-      // id_model é conceito de variação da Shopee — TikTok usa nome da variação.
+      // id_model é conceito de variação da Shopee — TikTok usa sku_id.
       id_model: (marketplace === "shopee" && idxIdModel >= 0)
         ? normalizarIdShopee(row[idxIdModel])
         : null,
       produto_nome:  idxProduto  >= 0 ? normalizarTextoCelula(row[idxProduto])  : null,
       variacao_nome: idxVariacao >= 0 ? normalizarTextoCelula(row[idxVariacao]) : null,
-      ...(isTikTok ? { id_cientifico: ehIdTikTokCientifico(idBruto) } : {}),
+      ...(isTikTok
+        ? {
+            id_cientifico:
+              ehIdTikTokCientifico(idBruto) || ehIdTikTokCientifico(skuIdBruto),
+          }
+        : {}),
     });
   }
 
@@ -351,10 +409,18 @@ function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
 
 // ─── Resumo ───────────────────────────────────────────────────────────────────
 
-function calcularResumo(linhas) {
+// TikTok: a identidade da linha é o sku_id (ID DO SKU). O ID do produto repete
+// entre variações de propósito e NÃO conta como duplicidade.
+// MELI/Shopee: identidade é o ID, como sempre.
+function chaveIdentidadeLinha(linha, marketplace) {
+  return marketplace === "tiktok" ? linha.sku_id : linha.id;
+}
+
+function calcularResumo(linhas, marketplace) {
+  const temIdentidade = (l) => !!chaveIdentidadeLinha(l, marketplace);
   const total    = linhas.length;
-  const validas  = linhas.filter((l) => l.id && l.custo !== null).length;
-  const importaveis = linhas.filter((l) => l.id && l.custo !== null).length;
+  const validas  = linhas.filter((l) => temIdentidade(l) && l.custo !== null).length;
+  const importaveis = validas;
   const ignoradas = total - validas;
 
   const idCounts   = {};
@@ -363,11 +429,12 @@ function calcularResumo(linhas) {
   let conflitos    = 0;
 
   for (const l of linhas) {
-    if (!l.id) continue;
-    idCounts[l.id] = (idCounts[l.id] || 0) + 1;
-    if (!(l.id in idParaCusto)) {
-      idParaCusto[l.id] = l.custo;
-    } else if (idParaCusto[l.id] !== l.custo) {
+    const chave = chaveIdentidadeLinha(l, marketplace);
+    if (!chave) continue;
+    idCounts[chave] = (idCounts[chave] || 0) + 1;
+    if (!(chave in idParaCusto)) {
+      idParaCusto[chave] = l.custo;
+    } else if (idParaCusto[chave] !== l.custo) {
       conflitos++;
     }
   }
@@ -381,10 +448,28 @@ function calcularResumo(linhas) {
 
 // ─── Alertas ──────────────────────────────────────────────────────────────────
 
-function gerarAlertas(linhas, mapeamento, resumo) {
+function gerarAlertas(linhas, mapeamento, resumo, marketplace) {
   const alertas = [];
+  const isTikTok = marketplace === "tiktok";
 
-  if (!mapeamento.id) {
+  // TikTok: a coluna obrigatória é ID DO SKU (sku_id). A coluna ID (produto) é
+  // informativa — sua ausência é aviso, não erro.
+  if (isTikTok) {
+    if (!mapeamento.sku_id) {
+      alertas.push({
+        tipo: "sem_coluna_sku_id",
+        nivel: "erro",
+        mensagem: 'Não foi possível detectar a coluna "ID DO SKU" (id da variação). Ela é obrigatória: é a chave do custo no TikTok. Selecione manualmente.',
+      });
+    }
+    if (!mapeamento.id) {
+      alertas.push({
+        tipo: "sem_coluna_id_produto",
+        nivel: "aviso",
+        mensagem: 'Coluna "ID" (id do produto) não detectada. O cruzamento de custo usa apenas o ID DO SKU, então a importação continua possível.',
+      });
+    }
+  } else if (!mapeamento.id) {
     alertas.push({ tipo: "sem_coluna_id",    nivel: "erro",    mensagem: "Não foi possível detectar a coluna de ID. Selecione manualmente." });
   }
   if (!mapeamento.custo) {
@@ -394,25 +479,41 @@ function gerarAlertas(linhas, mapeamento, resumo) {
     alertas.push({ tipo: "sem_coluna_imposto", nivel: "aviso", mensagem: "Coluna de imposto não detectada. Use 0 ou selecione manualmente." });
   }
 
+  const rotuloIdentidade = isTikTok ? "ID DO SKU" : "ID";
   if (resumo.duplicados > 0) {
-    alertas.push({ tipo: "duplicidade",    nivel: "warning", mensagem: `Foram encontrados ${resumo.duplicados} IDs duplicados.` });
+    alertas.push({
+      tipo: "duplicidade",
+      nivel: "warning",
+      mensagem: `Foram encontrados ${resumo.duplicados} ${rotuloIdentidade} duplicados.`,
+    });
   }
   if (resumo.conflitos > 0) {
-    alertas.push({ tipo: "conflito_custo", nivel: "warning", mensagem: `${resumo.conflitos} IDs com custos diferentes em linhas duplicadas.` });
+    alertas.push({
+      tipo: "conflito_custo",
+      nivel: isTikTok ? "erro" : "warning",
+      mensagem: isTikTok
+        ? `${resumo.conflitos} ID DO SKU com custos diferentes em linhas repetidas. Corrija a planilha: cada variação só pode ter um custo.`
+        : `${resumo.conflitos} IDs com custos diferentes em linhas duplicadas.`,
+    });
   }
 
-  const semId = linhas.filter((l) => !l.id).length;
-  if (semId > 0) {
-    alertas.push({ tipo: "linhas_sem_id", nivel: "warning", mensagem: `${semId} linhas ignoradas por ID ausente ou inválido.` });
+  const semIdentidade = linhas.filter((l) => !chaveIdentidadeLinha(l, marketplace)).length;
+  if (semIdentidade > 0) {
+    alertas.push({
+      tipo: isTikTok ? "linhas_sem_sku_id" : "linhas_sem_id",
+      nivel: "warning",
+      mensagem: `${semIdentidade} linhas ignoradas por ${rotuloIdentidade} ausente ou inválido.`,
+    });
   }
 
-  // TikTok: ID em notação científica não é recuperável — o Excel já perdeu dígitos.
+  // TikTok: ID em notação científica não é recuperável — o Excel já perdeu
+  // dígitos. Vale para as duas colunas (ID e ID DO SKU).
   const idsCientificos = linhas.filter((l) => l.id_cientifico).length;
   if (idsCientificos > 0) {
     alertas.push({
       tipo: "id_notacao_cientifica",
       nivel: "erro",
-      mensagem: `${idsCientificos} linha(s) com ID do SKU TikTok em notação científica. Formate a coluna como texto antes de importar.`,
+      mensagem: `${idsCientificos} linha(s) com ID TikTok (ID ou ID DO SKU) em notação científica. Formate a coluna como texto antes de importar.`,
     });
   }
 
@@ -421,12 +522,12 @@ function gerarAlertas(linhas, mapeamento, resumo) {
     alertas.push({ tipo: "linhas_sem_custo", nivel: "warning", mensagem: `${semCusto} linhas sem custo detectado.` });
   }
 
-  const custoZero = linhas.filter((l) => l.id && l.custo === 0).length;
+  const custoZero = linhas.filter((l) => chaveIdentidadeLinha(l, marketplace) && l.custo === 0).length;
   if (custoZero > 0) {
     alertas.push({ tipo: "custo_zerado", nivel: "info", mensagem: `${custoZero} linhas com custo igual a R$ 0,00.` });
   }
 
-  const custoNeg = linhas.filter((l) => l.id && l.custo !== null && l.custo < 0).length;
+  const custoNeg = linhas.filter((l) => chaveIdentidadeLinha(l, marketplace) && l.custo !== null && l.custo < 0).length;
   if (custoNeg > 0) {
     alertas.push({ tipo: "custo_negativo", nivel: "warning", mensagem: `${custoNeg} linhas com custo negativo.` });
   }
@@ -484,6 +585,7 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
   // Aplica overrides manuais de coluna
   const colunasFinais = {
     id:       detectadas.id,
+    sku_id:   detectadas.sku_id,
     custo:    detectadas.custo,
     imposto:  detectadas.imposto,
     id_model: detectadas.id_model,
@@ -492,7 +594,7 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
   };
 
   if (config.colunas) {
-    for (const tipo of ["id", "custo", "imposto", "id_model", "produto_nome", "variacao_nome"]) {
+    for (const tipo of ["id", "sku_id", "custo", "imposto", "id_model", "produto_nome", "variacao_nome"]) {
       const letraOverride = config.colunas[tipo];
       if (letraOverride) {
         const letra    = String(letraOverride).toUpperCase().trim();
@@ -505,6 +607,7 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
 
   const mapeamento = {
     id:       colunasFinais.id       ? colunasFinais.id.coluna       : null,
+    sku_id:   colunasFinais.sku_id   ? colunasFinais.sku_id.coluna   : null,
     custo:    colunasFinais.custo    ? colunasFinais.custo.coluna    : null,
     imposto:  colunasFinais.imposto  ? colunasFinais.imposto.coluna  : null,
     id_model: colunasFinais.id_model ? colunasFinais.id_model.coluna : null,
@@ -513,22 +616,29 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
   };
 
   const todasLinhas     = processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace);
-  const resumo          = calcularResumo(todasLinhas);
-  const alertas         = gerarAlertas(todasLinhas, mapeamento, resumo);
+  const resumo          = calcularResumo(todasLinhas, marketplace);
+  const alertas         = gerarAlertas(todasLinhas, mapeamento, resumo, marketplace);
   const dadosImportacao = todasLinhas
-    .filter((l) => l.id && l.custo !== null)
+    // TikTok: a linha só é importável com ID DO SKU (chave de custo). O ID do
+    // produto é opcional. Demais marketplaces seguem exigindo o ID.
+    .filter((l) => chaveIdentidadeLinha(l, marketplace) && l.custo !== null)
     .map((l) => ({
       id:       l.id,
+      ...(marketplace === "tiktok" ? { sku_id: l.sku_id } : {}),
       custo:    l.custo,
       imposto:  l.imposto,
-      // id_model só existe para Shopee; TikTok identifica a variação pelo nome.
+      // id_model só existe para Shopee; TikTok identifica a variação por sku_id.
       id_model: marketplace === "shopee" ? (l.id_model || null) : null,
       produto_nome:  l.produto_nome  || null,
       variacao_nome: l.variacao_nome || null,
     }));
 
-  // Confiança geral = média das colunas detectadas
-  const scoresParciais = ["id", "custo", "imposto"]
+  // Confiança geral = média das colunas detectadas. No TikTok a coluna de
+  // identidade é sku_id (ID DO SKU), não o ID do produto.
+  const camposConfianca = marketplace === "tiktok"
+    ? ["sku_id", "custo", "imposto"]
+    : ["id", "custo", "imposto"];
+  const scoresParciais = camposConfianca
     .map((t) => (colunasFinais[t] ? colunasFinais[t].confianca : 0))
     .filter((s) => s > 0);
   const confiancaGeral = scoresParciais.length

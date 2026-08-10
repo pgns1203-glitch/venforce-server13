@@ -93,8 +93,8 @@ const { ensureObservabilityTables } = require("./repositories/observabilityRepos
 const {
   MARKETPLACES_SUPORTADOS,
   normalizarProdutoIdTikTok,
-  resolverChaveTikTok,
-  erroIdAmbiguoTikTok,
+  normalizarSkuIdTikTok,
+  erroSkuIdDuplicadoTikTok,
   ensureColunasCustos,
 } = require("./services/bases/baseCustosService");
 
@@ -221,17 +221,23 @@ function extrairIdModel(row) {
 }
 
 // ─── TikTok Shop: cabeçalhos da planilha de custos ───────────────────────────
-// Aliases já em caixa baixa e sem acento — comparados contra o cabeçalho
-// limpo por normalizarChaveHeader().
-// "sku" NÃO é alias de ID: desde que a base passou a exigir SKU textual
-// distinto do ID (mesmo produto_id pode ter várias linhas com SKUs
-// diferentes), uma coluna solta "SKU" é sempre o texto do SKU, nunca o ID.
-const TIKTOK_ALIASES_ID = ["id do sku", "id sku", "sku id", "tiktok sku id", "id do produto", "produto_id", "id"];
-const TIKTOK_ALIASES_SKU = ["sku", "nome do sku", "sku do vendedor", "seller sku", "codigo sku"];
+// Contrato canônico da planilha:  ID | ID DO SKU | CUSTO | IMPOSTO
+//   ID         = product_id do produto  (repete entre as variações)
+//   ID DO SKU  = sku_id da variação      (chave autoritativa de custo)
+//
+// Aliases já em caixa baixa e sem acento — comparados contra o cabeçalho limpo
+// por normalizarChaveHeader(). As duas listas são DISJUNTAS de propósito e o
+// ID DO SKU é resolvido primeiro (ver resolverColunasIdTikTok): "ID do SKU" é
+// mais específico que "ID" e não pode ser roubado pela coluna do produto.
+const TIKTOK_ALIASES_SKU_ID = ["id do sku", "id sku", "sku id", "sku_id", "skuid", "tiktok sku id", "id da variacao", "id variacao"];
+const TIKTOK_ALIASES_ID = ["id", "id do produto", "id produto", "produto_id", "product id", "id do product"];
 const TIKTOK_ALIASES_CUSTO = ["custo unitario", "custo", "preco de custo", "custo_produto", "cmv unitario"];
 const TIKTOK_ALIASES_IMPOSTO = ["imposto", "imposto (%)", "imposto percentual", "aliquota", "imposto_percentual"];
+// LEGADO — nomes e SKU textual continuam sendo lidos quando existem na
+// planilha (compatibilidade histórica), mas NÃO são obrigatórios e NÃO fazem
+// parte de nenhuma chave de custo.
 const TIKTOK_ALIASES_PRODUTO = ["nome do produto", "produto", "product name"];
-const TIKTOK_ALIASES_VARIACAO = ["variacao", "nome da variacao"];
+const TIKTOK_ALIASES_VARIACAO = ["variacao", "nome da variacao", "nome do sku"];
 
 function normalizarChaveHeader(valor) {
   return String(valor || "")
@@ -255,8 +261,47 @@ function obterValorPorAlias(row, aliases) {
   return "";
 }
 
+// Detecção automática (usada só quando o marketplace não vem no body). Fica
+// restrita aos aliases inconfundíveis do sku_id: "id da variacao" também é
+// cabeçalho da Shopee (id_model) e não pode arrastar planilha Shopee p/ TikTok.
 function headerParecerTikTok(headersNormalizados) {
-  return headersNormalizados.some((h) => ["id do sku", "id sku", "sku id", "tiktok sku id"].includes(h));
+  return headersNormalizados.some((h) =>
+    ["id do sku", "id sku", "sku id", "sku_id", "skuid", "tiktok sku id"].includes(h)
+  );
+}
+
+// Resolve as DUAS colunas de ID do TikTok numa única passada, garantindo que
+// uma coluna nunca seja lida como os dois campos. "ID DO SKU" é resolvido
+// primeiro: é o mais específico e é a chave de custo.
+// Preferência dentro de cada campo: primeiro alias com valor preenchido;
+// se nenhum tiver valor, o primeiro alias que exista (a coluna continua
+// "consumida", então o outro campo não a rouba).
+function resolverColunasIdTikTok(row) {
+  const chaves = Object.keys(row);
+  const normalizadas = new Map(chaves.map((k) => [k, normalizarChaveHeader(k)]));
+
+  const acharChave = (aliases, usadas) => {
+    let primeiraExistente = null;
+    for (const alias of aliases) {
+      for (const k of chaves) {
+        if (usadas.has(k) || normalizadas.get(k) !== alias) continue;
+        if (primeiraExistente === null) primeiraExistente = k;
+        const v = row[k];
+        if (v !== undefined && v !== null && String(v).trim() !== "") return k;
+      }
+    }
+    return primeiraExistente;
+  };
+
+  const usadas = new Set();
+  const chaveSkuId = acharChave(TIKTOK_ALIASES_SKU_ID, usadas);
+  if (chaveSkuId) usadas.add(chaveSkuId);
+  const chaveProdutoId = acharChave(TIKTOK_ALIASES_ID, usadas);
+
+  return {
+    skuIdBruto: chaveSkuId ? row[chaveSkuId] : "",
+    produtoIdBruto: chaveProdutoId ? row[chaveProdutoId] : "",
+  };
 }
 
 // Lê SÓ a primeira linha da aba (para decidir o marketplace antes de escolher
@@ -299,9 +344,9 @@ function parsePlanilha(buffer, originalName, marketplace) {
   const isShopee = mktExplicito ? mktExplicito === "shopee" : (!isTikTok && headerShopee);
 
   const resultado = [];
-  // TikTok: ID é sempre obrigatório, mas o SKU só é obrigatório quando o
-  // mesmo ID aparece em mais de uma linha do lote — validado num segundo
-  // passe (precisa ver TODAS as linhas antes de decidir se um ID é ambíguo).
+  // TikTok: ID DO SKU (sku_id) é obrigatório — é a identidade da variação.
+  // O ID do produto é informativo e PODE repetir. A validação de duplicidade
+  // acontece num segundo passe (precisa ver TODAS as linhas do lote).
   const candidatosTikTok = [];
   let linhaPlanilhaAtual = 1; // 1 = cabeçalho; dados começam na linha 2
 
@@ -319,23 +364,30 @@ function parsePlanilha(buffer, originalName, marketplace) {
     }
 
     if (isTikTok) {
-      // TikTok: produto_id = ID do SKU, sempre texto. normalizarProdutoIdTikTok
-      // rejeita notação científica (o Excel já perdeu os dígitos originais).
-      const idTikTok = normalizarProdutoIdTikTok(obterValorPorAlias(r, TIKTOK_ALIASES_ID));
-      const skuTikTok = String(obterValorPorAlias(r, TIKTOK_ALIASES_SKU) || "").trim();
-      if (!idTikTok && !skuTikTok) continue; // linha em branco
-      if (!idTikTok) continue; // SKU sem ID não identifica nada — mesmo tratamento de linha em branco
+      // TikTok: duas colunas de ID, ambas sempre texto. As normalizações
+      // rejeitam notação científica (o Excel já perdeu os dígitos originais).
+      //   ID        → produto_id (product_id, informativo, pode repetir)
+      //   ID DO SKU → sku_id     (variação, chave de custo, único por base)
+      const { skuIdBruto, produtoIdBruto } = resolverColunasIdTikTok(r);
+      const skuIdTikTok = normalizarSkuIdTikTok(skuIdBruto);
+      const produtoIdTikTok = normalizarProdutoIdTikTok(produtoIdBruto);
+      // Sem ID DO SKU não há como identificar a variação: linha ignorada
+      // (mesmo tratamento de linha em branco).
+      if (!skuIdTikTok) continue;
 
       const custoRaw = obterValorPorAlias(r, TIKTOK_ALIASES_CUSTO);
       candidatosTikTok.push({
         linha: linhaPlanilhaAtual,
-        produto_id: idTikTok,
-        sku: skuTikTok,
+        produto_id: produtoIdTikTok,
+        sku_id: skuIdTikTok,
+        // SKU textual não é lido nem exigido no modelo novo (fica '').
+        sku: "",
         custo_produto: numeroSeguro(custoRaw),
         imposto_percentual: normalizarImposto(obterValorPorAlias(r, TIKTOK_ALIASES_IMPOSTO)),
         // TikTok não usa taxa fixa nem id_model.
         taxa_fixa: 0,
         id_model: null,
+        // Nomes: legado, opcionais, só exibição/auditoria.
         produto_nome: String(obterValorPorAlias(r, TIKTOK_ALIASES_PRODUTO) || "").trim() || null,
         variacao_nome: String(obterValorPorAlias(r, TIKTOK_ALIASES_VARIACAO) || "").trim() || null,
         // custo_produto é NOT NULL no banco: linha sem custo não é persistida.
@@ -369,26 +421,39 @@ function parsePlanilha(buffer, originalName, marketplace) {
   }
 
   if (isTikTok) {
-    // Segundo passe: só agora sabemos quantas linhas cada ID tem no lote
-    // inteiro. SKU vazio só é seguro quando o ID for único — caso contrário
-    // não há como saber a qual linha o custo pertence.
-    const contagemPorId = new Map();
+    // Segundo passe: ID do produto repetido é ESPERADO (uma linha por
+    // variação). O que não pode é o mesmo ID DO SKU aparecer duas vezes:
+    //   · valores idênticos  → duplicidade inofensiva, mantém uma linha;
+    //   · valores divergentes → 422. Nunca escolher um custo arbitrário.
+    const porSkuId = new Map();
     for (const c of candidatosTikTok) {
-      contagemPorId.set(c.produto_id, (contagemPorId.get(c.produto_id) || 0) + 1);
-    }
-
-    for (const c of candidatosTikTok) {
-      const resolvido = resolverChaveTikTok(c.produto_id, c.sku, contagemPorId);
-      if (resolvido.ambiguo) {
+      const anterior = porSkuId.get(c.sku_id);
+      if (!anterior) {
+        porSkuId.set(c.sku_id, c);
+        continue;
+      }
+      const mesmoCusto = anterior.custo_produto === c.custo_produto;
+      const mesmoImposto = anterior.imposto_percentual === c.imposto_percentual;
+      const mesmoTemCusto = anterior.tem_custo === c.tem_custo;
+      if (!mesmoCusto || !mesmoImposto || !mesmoTemCusto) {
         const erroLinha = new Error(
-          erroIdAmbiguoTikTok(c.produto_id, `(linha ${c.linha})`)
+          erroSkuIdDuplicadoTikTok(c.sku_id, `(linhas ${anterior.linha} e ${c.linha})`)
         );
         erroLinha.statusCode = 422;
         erroLinha.payload = { ok: false, erro: erroLinha.message };
         throw erroLinha;
       }
+      // Linha repetida idêntica: completa o que faltar (ex.: product_id/nomes
+      // preenchidos só em uma das ocorrências) e segue com uma única linha.
+      if (!anterior.produto_id && c.produto_id) anterior.produto_id = c.produto_id;
+      if (!anterior.produto_nome && c.produto_nome) anterior.produto_nome = c.produto_nome;
+      if (!anterior.variacao_nome && c.variacao_nome) anterior.variacao_nome = c.variacao_nome;
+    }
+
+    for (const c of porSkuId.values()) {
       resultado.push({
         produto_id: c.produto_id,
+        sku_id: c.sku_id,
         sku: c.sku,
         custo_produto: c.custo_produto,
         imposto_percentual: c.imposto_percentual,
@@ -401,7 +466,13 @@ function parsePlanilha(buffer, originalName, marketplace) {
     }
   }
 
-  if (!resultado.length) throw new Error("Nenhum ID válido encontrado na planilha");
+  if (!resultado.length) {
+    throw new Error(
+      isTikTok
+        ? "Nenhum ID DO SKU válido encontrado na planilha. O formato esperado é: ID | ID DO SKU | CUSTO | IMPOSTO."
+        : "Nenhum ID válido encontrado na planilha"
+    );
+  }
   return resultado;
 }
 
@@ -607,14 +678,19 @@ CREATE TABLE IF NOT EXISTS callbacks (
   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 `);
 
-    // TikTok Shop: o mesmo produto_id (ID do SKU) pode ter várias linhas com
-    // SKUs textuais diferentes (KIT2BIBI, KIT3BIBI...), cada uma com seu
-    // próprio custo. MELI/Shopee nunca preenchem esta coluna (fica '' — o
-    // default), então a unicidade histórica (base_id, produto_id) para eles
-    // é preservada pelo índice único abaixo.
+    // LEGADO: SKU textual. MELI/Shopee nunca preenchem (fica '' — o default) e
+    // o TikTok deixou de usar quando a identidade passou a ser sku_id.
     await pool.query(`
   ALTER TABLE custos
   ADD COLUMN IF NOT EXISTS sku TEXT NOT NULL DEFAULT '';
+`);
+    // TikTok Shop: sku_id = coluna "ID DO SKU" da planilha (id da variação,
+    // 18–19 dígitos, TEXT). É a identidade de custo do TikTok — o produto_id
+    // repete entre as variações do mesmo produto. Ver a migration
+    // 20260810_add_sku_id_tiktok.sql (inclui o backfill das bases antigas).
+    await pool.query(`
+  ALTER TABLE custos
+  ADD COLUMN IF NOT EXISTS sku_id TEXT NOT NULL DEFAULT '';
 `);
     await pool.query(`
   DO $$
@@ -623,8 +699,14 @@ CREATE TABLE IF NOT EXISTS callbacks (
   EXCEPTION WHEN undefined_object THEN NULL;
   END $$;
 `);
+    await pool.query(`DROP INDEX IF EXISTS uq_custos_base_produto_sku;`);
     await pool.query(`
-  CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_produto_sku ON custos (base_id, produto_id, sku);
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_sku_id
+    ON custos (base_id, sku_id) WHERE sku_id <> '';
+`);
+    await pool.query(`
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_produto_sku_legado
+    ON custos (base_id, produto_id, sku) WHERE sku_id = '';
 `);
 
     await pool.query(`
@@ -853,18 +935,24 @@ app.get("/bases/:baseId", authMiddleware, async (req, res) => {
     if (!acesso.rows.length) return res.status(404).json({ ok: false, erro: "Base não encontrada" });
     const base = acesso.rows[0];
     const custos = await pool.query(
-      "SELECT produto_id, sku, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, updated_at FROM custos WHERE base_id = $1",
+      "SELECT produto_id, sku_id, sku, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, updated_at FROM custos WHERE base_id = $1",
       [base.id]
     );
     const dados = {};
     for (const row of custos.rows) {
-      // TikTok: o mesmo produto_id pode ter várias linhas com SKUs
-      // diferentes — a chave do objeto precisa incluir o SKU para não
-      // colapsar linhas distintas. MELI/Shopee nunca preenchem sku, então a
-      // chave continua sendo só o produto_id (comportamento inalterado).
-      const chave = row.sku ? `${row.produto_id}::${row.sku}` : row.produto_id;
+      // TikTok: o mesmo produto_id aparece em várias linhas (uma por
+      // variação), então a chave do dicionário é o sku_id — identidade real da
+      // linha. MELI/Shopee nunca preenchem sku_id, e a chave continua sendo só
+      // o produto_id (comportamento inalterado). O `sku` textual ainda entra na
+      // chave das linhas TikTok legadas, que não têm sku_id.
+      const chave = row.sku_id
+        ? row.sku_id
+        : row.sku
+          ? `${row.produto_id}::${row.sku}`
+          : row.produto_id;
       dados[chave] = {
         produto_id: row.produto_id,
+        sku_id: row.sku_id || null,
         sku: row.sku || null,
         custo_produto: row.custo_produto == null ? null : parseFloat(row.custo_produto),
         imposto_percentual: parseFloat(row.imposto_percentual),
@@ -905,6 +993,7 @@ app.post("/importar-base", authMiddleware, upload.single("arquivo"), async (req,
         marketplace,
         preview: linhas.slice(0, 10).map(l => ({
           id: l.produto_id,
+          sku_id: l.sku_id || null,
           sku: l.sku || null,
           custo_produto: l.custo_produto,
           imposto_percentual: l.imposto_percentual,
@@ -914,7 +1003,9 @@ app.post("/importar-base", authMiddleware, upload.single("arquivo"), async (req,
           variacao_nome: l.variacao_nome || null,
           tem_custo: l.tem_custo !== false,
         })),
-        total: linhas.length, idsDetectados: linhas.length, colunaId: "id / sku"
+        total: linhas.length,
+        idsDetectados: linhas.length,
+        colunaId: marketplace === "tiktok" ? "id / id do sku" : "id / sku"
       });
     }
 
@@ -945,18 +1036,36 @@ for (const u of users.rows) {
   );
 }
       await client.query("DELETE FROM custos WHERE base_id = $1", [baseId]);
+      // TikTok: identidade única é (base_id, sku_id) — o mesmo produto_id
+      // aparece em várias linhas, uma por variação. MELI/Shopee não preenchem
+      // sku_id (fica ''), então o conflito deles continua batendo por
+      // (base_id, produto_id, sku) — com sku sempre '', igual a antes.
+      // Os dois índices são PARCIAIS (ver 20260810_add_sku_id_tiktok.sql), por
+      // isso o ON CONFLICT precisa repetir o predicado para inferi-los.
+      const SQL_INSERT_CUSTO_TIKTOK = `
+        INSERT INTO custos (base_id, produto_id, sku_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+        ON CONFLICT (base_id, sku_id) WHERE sku_id <> '' DO UPDATE SET
+          produto_id = COALESCE(NULLIF(EXCLUDED.produto_id, ''), custos.produto_id),
+          custo_produto = EXCLUDED.custo_produto, imposto_percentual = EXCLUDED.imposto_percentual,
+          taxa_fixa = EXCLUDED.taxa_fixa, id_model = EXCLUDED.id_model,
+          produto_nome = COALESCE(EXCLUDED.produto_nome, custos.produto_nome),
+          variacao_nome = COALESCE(EXCLUDED.variacao_nome, custos.variacao_nome),
+          updated_at = CURRENT_TIMESTAMP`;
+      const SQL_INSERT_CUSTO_LEGADO = `
+        INSERT INTO custos (base_id, produto_id, sku_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+        ON CONFLICT (base_id, produto_id, sku) WHERE sku_id = '' DO UPDATE SET
+          custo_produto = EXCLUDED.custo_produto, imposto_percentual = EXCLUDED.imposto_percentual,
+          taxa_fixa = EXCLUDED.taxa_fixa, id_model = EXCLUDED.id_model,
+          produto_nome = COALESCE(EXCLUDED.produto_nome, custos.produto_nome),
+          variacao_nome = COALESCE(EXCLUDED.variacao_nome, custos.variacao_nome),
+          updated_at = CURRENT_TIMESTAMP`;
       for (const linha of linhasPersistiveis) {
-        // TikTok: identidade única é (base_id, produto_id, sku) — o mesmo
-        // produto_id pode ter várias linhas com SKUs diferentes. MELI/Shopee
-        // não preenchem sku (fica ''), então o conflito continua batendo só
-        // por produto_id para eles, como antes.
+        const skuIdLinha = linha.sku_id || "";
         await client.query(
-          `INSERT INTO custos (base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP) ON CONFLICT (base_id, produto_id, sku) DO UPDATE SET
-           custo_produto = EXCLUDED.custo_produto, imposto_percentual = EXCLUDED.imposto_percentual, taxa_fixa = EXCLUDED.taxa_fixa, id_model = EXCLUDED.id_model,
-           produto_nome = COALESCE(EXCLUDED.produto_nome, custos.produto_nome), variacao_nome = COALESCE(EXCLUDED.variacao_nome, custos.variacao_nome),
-           updated_at = CURRENT_TIMESTAMP`,
-          [baseId, linha.produto_id, linha.custo_produto, linha.imposto_percentual, linha.taxa_fixa, linha.id_model || null, linha.produto_nome || null, linha.variacao_nome || null, linha.sku || ""]
+          skuIdLinha ? SQL_INSERT_CUSTO_TIKTOK : SQL_INSERT_CUSTO_LEGADO,
+          [baseId, linha.produto_id || "", skuIdLinha, linha.custo_produto, linha.imposto_percentual, linha.taxa_fixa, linha.id_model || null, linha.produto_nome || null, linha.variacao_nome || null, linha.sku || ""]
         );
       }
       await client.query("COMMIT");

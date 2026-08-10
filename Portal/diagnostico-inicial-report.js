@@ -57,10 +57,20 @@
     };
   }
 
+  function normalizeMarketplace(value) {
+    const marketplaces = schema ? schema.MARKETPLACES : ["meli", "shopee"];
+    return marketplaces.includes(value) ? value : "meli";
+  }
+
+  function marketplaceLabel(marketplace) {
+    if (schema && schema.MARKETPLACE_LABELS[marketplace]) return schema.MARKETPLACE_LABELS[marketplace];
+    return marketplace === "shopee" ? "Shopee" : "Mercado Livre";
+  }
+
   function buildDraftSnapshot(diagnostico, meta) {
     const diag = diagnostico || {};
     const respostas = diag.respostas_json || {};
-    const marketplace = diag.marketplace === "shopee" ? "shopee" : "meli";
+    const marketplace = normalizeMarketplace(diag.marketplace);
     const completude = schema.evaluateCompleteness(marketplace, respostas);
     const analysis = normalizeAnalysis(diag.diagnostico_revisado_json || diag.diagnostico_gerado_json);
     const secoes = schema.getSections(marketplace).map((section) => ({
@@ -81,7 +91,7 @@
     return {
       version: 1, generatedAt: new Date().toISOString(), titulo: "Relatório de Diagnóstico Inicial Venforce",
       cliente: { id: diag.cliente_id || null, nome: String(diag.cliente_nome || meta?.clienteNome || ""), slug: String(diag.cliente_slug || "") },
-      marketplace, marketplaceLabel: marketplace === "shopee" ? "Shopee" : "Mercado Livre",
+      marketplace, marketplaceLabel: marketplaceLabel(marketplace),
       responsavel: { nome: String(diag.responsavel_nome || meta?.responsavelNome || "") },
       dataDiagnostico: diag.data_diagnostico || null, status: diag.status || "rascunho", completedAt: diag.completed_at || null,
       completude,

@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS diagnosticos_iniciais (
   id SERIAL PRIMARY KEY,
   cliente_id INTEGER NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
-  marketplace TEXT NOT NULL CHECK (marketplace IN ('meli', 'shopee')),
+  marketplace TEXT NOT NULL CHECK (marketplace IN ('meli', 'shopee', 'tiktok')),
   responsavel_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   data_diagnostico DATE NOT NULL DEFAULT CURRENT_DATE,
   status TEXT NOT NULL DEFAULT 'rascunho' CHECK (status IN ('rascunho', 'concluido')),
@@ -17,6 +17,16 @@ CREATE TABLE IF NOT EXISTS diagnosticos_iniciais (
 
 ALTER TABLE diagnosticos_iniciais
   ADD COLUMN IF NOT EXISTS relatorio_snapshot_json JSONB;
+
+-- Migração: tabelas criadas antes do TikTok Shop têm a CHECK antiga
+-- (meli, shopee). Recria a constraint para incluir 'tiktok' sem tocar em
+-- dados existentes. Idempotente: seguro rodar em toda inicialização.
+ALTER TABLE diagnosticos_iniciais
+  DROP CONSTRAINT IF EXISTS diagnosticos_iniciais_marketplace_check;
+
+ALTER TABLE diagnosticos_iniciais
+  ADD CONSTRAINT diagnosticos_iniciais_marketplace_check
+  CHECK (marketplace IN ('meli', 'shopee', 'tiktok'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_diagnosticos_iniciais_rascunho
   ON diagnosticos_iniciais (cliente_id, marketplace)

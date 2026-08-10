@@ -4,6 +4,13 @@
    sem cor hexadecimal, sem gradiente, sem sombra pesada permanente.
    ================================================================ */
 
+/* ── Segmented de marketplace: quebra linha se não couber (3 itens) ── */
+
+#diag-marketplace-switch {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
 /* ── Layout geral: nav de seções + seção ativa ────────────────── */
 
 .vf-diag-layout {

@@ -22,7 +22,7 @@ function buildSnapshot(diagnostico, { generatedAt } = {}) {
   const respostas = diagnostico?.respostas_json && typeof diagnostico.respostas_json === "object"
     ? diagnostico.respostas_json
     : {};
-  const marketplace = diagnostico?.marketplace === "shopee" ? "shopee" : "meli";
+  const marketplace = schema.MARKETPLACES.includes(diagnostico?.marketplace) ? diagnostico.marketplace : "meli";
   const completude = schema.evaluateCompleteness(marketplace, respostas);
   const analysisSource = diagnostico?.diagnostico_revisado_json || diagnostico?.diagnostico_gerado_json || {};
 
@@ -58,7 +58,7 @@ function buildSnapshot(diagnostico, { generatedAt } = {}) {
       slug: String(diagnostico?.cliente_slug || diagnostico?.cliente?.slug || ""),
     },
     marketplace,
-    marketplaceLabel: marketplace === "shopee" ? "Shopee" : "Mercado Livre",
+    marketplaceLabel: schema.MARKETPLACE_LABELS[marketplace] || marketplace,
     responsavel: { nome: String(diagnostico?.responsavel_nome || "") },
     dataDiagnostico: diagnostico?.data_diagnostico || null,
     status: diagnostico?.status || "rascunho",

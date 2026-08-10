@@ -1,11 +1,12 @@
 // server/services/diagnosticoInicial/diagnosticoInicialService.js
 // Regras de negócio do Diagnóstico Inicial. HTTP fica no controller; SQL fica no repository.
 
+const schema = require("../../../Portal/diagnostico-inicial-schema");
 const repo = require("./diagnosticoInicialRepository");
 const gerador = require("./diagnosticoInicialGeradorService");
 const report = require("./diagnosticoInicialReportService");
 
-const MARKETPLACES = ["meli", "shopee"];
+const MARKETPLACES = schema.MARKETPLACES;
 const TRISTATE_VALUES = new Set(["sim", "nao", "nao_avaliado", ""]);
 
 function erro(statusCode, mensagem) {
@@ -21,7 +22,7 @@ function isPlainObject(valor) {
 function normalizeMarketplace(marketplace) {
   const mkt = String(marketplace || "").trim().toLowerCase();
   if (!MARKETPLACES.includes(mkt)) {
-    throw erro(400, "marketplace inválido. Use 'meli' ou 'shopee'.");
+    throw erro(400, `marketplace inválido. Use ${MARKETPLACES.map((m) => `'${m}'`).join(", ")}.`);
   }
   return mkt;
 }
@@ -91,10 +92,12 @@ function validarRespostas(marketplace, respostas) {
 
   if (marketplace === "meli") {
     validarTabela(respostas?.productAds?.meses, { campo: "Product Ads", max: 12 });
-  } else {
+  } else if (marketplace === "shopee") {
     validarTabela(respostas?.produtos?.itens, { campo: "Produtos", max: 10, chaveUnica: "id" });
     validarTabela(respostas?.shopeeAds?.meses, { campo: "Shopee Ads", max: 12 });
     validarTabela(respostas?.afiliados?.meses, { campo: "Afiliados", max: 12 });
+  } else if (marketplace === "tiktok") {
+    validarTabela(respostas?.produtos?.itens, { campo: "Produtos", max: 20, chaveUnica: "id" });
   }
 }
 

@@ -57,6 +57,7 @@ const {
 const authRoutes = require("./routes/authRoutes");
 const logsRoutes = require("./routes/logsRoutes");
 const fechamentosFinanceiroRoutes = require("./routes/fechamentosFinanceiroRoutes");
+const fechamentoDebugRoutes = require("./routes/fechamentoDebugRoutes");
 const mlRoutes = require("./routes/mlRoutes");
 const automacoesRoutes = require("./routes/automacoesRoutes");
 const entregasClienteRoutes = require("./routes/entregasClienteRoutes");
@@ -683,6 +684,7 @@ app.use("/auth", authRoutes);
 app.use("/admin/logs", logsRoutes);
 app.use("/admin/observability", observabilityRoutes);
 app.use("/fechamentos", fechamentosFinanceiroRoutes);
+app.use("/fechamentos", fechamentoDebugRoutes);
 app.use("/", mlRoutes);
 app.use("/", tiktokShopRoutes);
 app.use("/shopee", shopeeRoutes);

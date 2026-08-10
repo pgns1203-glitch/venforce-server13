@@ -729,7 +729,9 @@ function buildShopeeCostMap(costRowsRaw) {
   return costMap;
 }
 
-function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ordersAllRowsRaw) {
+// debugCollector é opcional (só vem do Debug Financeiro). Sem ele, o
+// resultado de processShopee() é IDÊNTICO ao anterior.
+function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ordersAllRowsRaw, debugCollector) {
   const detectedColumns =
     salesRowsRaw.length > 0 ? Object.keys(salesRowsRaw[0]) : [];
   const executiveNotes = [];
@@ -746,6 +748,7 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
       ads,
       venforce,
       affiliates,
+      debugCollector,
     });
   }
 
@@ -782,10 +785,46 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
       excludedVariationIdsSet.add(sale.id);
     }
 
-    const costRow =
-      (sale.saleModelId && costMap.get(normalizeMatchKey(sale.saleModelId))) ||
-      costMap.get(normalizeMatchKey(sale.id)) ||
-      costMap.get(normalizeMatchKey(sale.itemId));
+    // Mesma prioridade/short-circuit de sempre: saleModelId -> id -> itemId.
+    // A instrumentação abaixo só registra; não muda qual costRow é escolhido.
+    let costRow = null;
+    for (const candidate of [
+      { field: "saleModelId", value: sale.saleModelId },
+      { field: "id", value: sale.id },
+      { field: "itemId", value: sale.itemId },
+    ]) {
+      const key = normalizeMatchKey(candidate.value);
+      if (!key) {
+        if (debugCollector) {
+          debugCollector.recordMatchAttempt({
+            engine: "shopee_performance",
+            stage: "cost_lookup",
+            orderId: sale.id,
+            field: candidate.field,
+            rawValue: candidate.value ?? null,
+            normalizedKey: null,
+            result: "skip",
+          });
+        }
+        continue;
+      }
+      const hit = costMap.get(key);
+      if (debugCollector) {
+        debugCollector.recordMatchAttempt({
+          engine: "shopee_performance",
+          stage: "cost_lookup",
+          orderId: sale.id,
+          field: candidate.field,
+          rawValue: candidate.value,
+          normalizedKey: key,
+          result: hit ? "hit" : "miss",
+        });
+      }
+      if (hit) {
+        costRow = hit;
+        break;
+      }
+    }
 
     // Sem custo: a receita CONTINUA no faturamento, apenas sem lucro calculável.
     if (!costRow || costRow.cost <= 0) {

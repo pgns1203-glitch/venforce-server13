@@ -21,11 +21,15 @@ function processFechamentoFinanceiro({
   // preservar o "ID do SKU" de 18–19 dígitos como string.
   salesBufferRaw,
   onholdBufferRaw,
+  // Opcional — só vem do Debug Financeiro (POST /fechamentos/financeiro/debug).
+  // Sem ele, o resultado é IDÊNTICO ao fechamento normal. TikTok ainda não é
+  // instrumentado (v1 do Debug Financeiro só cobre MELI e Shopee).
+  debugCollector,
 }) {
   const marketplaceNorm = String(marketplace || "").trim().toLowerCase();
 
   if (marketplaceNorm === "meli") {
-    return processMeli(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, fullCost, additionalCosts);
+    return processMeli(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, fullCost, additionalCosts, debugCollector);
   }
 
   if (marketplaceNorm === "shopee") {
@@ -35,7 +39,8 @@ function processFechamentoFinanceiro({
       ads,
       venforce,
       affiliates,
-      ordersAllRowsRaw
+      ordersAllRowsRaw,
+      debugCollector
     );
   }
 

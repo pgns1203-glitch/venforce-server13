@@ -442,25 +442,59 @@ function collapseOrderLevelValue(values) {
   };
 }
 
-function lookupShopeeCost(costMap, line) {
+// Ordem real de tentativa de match do motor real. Extraída como constante
+// só para o Debug Financeiro conseguir nomear cada tentativa — o LOOP e a
+// prioridade continuam sendo os mesmos de sempre.
+const SHOPEE_COST_LOOKUP_FIELDS = Object.freeze([
+  "variationId",
+  "modelId",
+  "itemId",
+  "productId",
+  "skuVariation",
+  "skuPrinciple",
+  "skuMainRef",
+  "skuRefNumber",
+  "sku",
+]);
+
+// debugCollector é opcional e só existe quando chamado a partir do Debug
+// Financeiro (POST /fechamentos/financeiro/debug). Sem ele, o comportamento
+// e o retorno desta função são IDÊNTICOS ao anterior — mesmo loop, mesmo
+// early return no primeiro hit.
+function lookupShopeeCost(costMap, line, debugCollector) {
   if (!costMap || typeof costMap.get !== "function") return null;
 
-  const candidates = [
-    line.variationId,
-    line.modelId,
-    line.itemId,
-    line.productId,
-    line.skuVariation,
-    line.skuPrinciple,
-    line.skuMainRef,
-    line.skuRefNumber,
-    line.sku,
-  ];
-
-  for (const candidate of candidates) {
+  for (const field of SHOPEE_COST_LOOKUP_FIELDS) {
+    const candidate = line[field];
     const key = normalizeMatchKey(candidate);
-    if (!key) continue;
+
+    if (!key) {
+      if (debugCollector) {
+        debugCollector.recordMatchAttempt({
+          engine: "shopee_real",
+          stage: "cost_lookup",
+          orderId: line.id,
+          field,
+          rawValue: candidate ?? null,
+          normalizedKey: null,
+          result: "skip",
+        });
+      }
+      continue;
+    }
+
     const hit = costMap.get(key);
+    if (debugCollector) {
+      debugCollector.recordMatchAttempt({
+        engine: "shopee_real",
+        stage: "cost_lookup",
+        orderId: line.id,
+        field,
+        rawValue: candidate,
+        normalizedKey: key,
+        result: hit ? "hit" : "miss",
+      });
+    }
     if (hit) return hit;
   }
 
@@ -476,6 +510,8 @@ function processShopeeFinancialOrders({
   ads = 0,
   venforce = 0,
   affiliates = 0,
+  // Opcional — só existe vindo do Debug Financeiro. Sem ele, resultado idêntico.
+  debugCollector = null,
 }) {
   const lines = parseShopeeFinancialRows(salesRowsRaw);
   const executiveNotes = [];
@@ -568,7 +604,7 @@ function processShopeeFinancialOrders({
       }
 
       if (orderKind === "cancelledConfirmed") {
-        const cost = lookupShopeeCost(costMap, orderLines[0]);
+        const cost = lookupShopeeCost(costMap, orderLines[0], debugCollector);
         if (!cost) {
           unmatchedCancelled.push({
             orderId,
@@ -673,7 +709,7 @@ function processShopeeFinancialOrders({
       const lineNet = netByLine[i];
 
       // CMV real da planilha tem prioridade; senão, base de custos.
-      const costRow = lookupShopeeCost(costMap, line);
+      const costRow = lookupShopeeCost(costMap, line, debugCollector);
       let cmvLine = null;
       let costSource = "ausente";
 
@@ -847,4 +883,6 @@ module.exports = {
   detectShopeeAdjustmentColumns,
   processShopeeFinancialOrders,
   SHOPEE_KINDS_OUT_OF_REVENUE,
+  lookupShopeeCost,
+  SHOPEE_COST_LOOKUP_FIELDS,
 };

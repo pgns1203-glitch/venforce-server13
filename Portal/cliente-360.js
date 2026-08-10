@@ -2280,7 +2280,8 @@ function renderFechCard(f) {
         </div>
       </div>
       <div class="c360-fech-side" onclick="event.stopPropagation();">
-        ${f.token_publico ? `<a href="/relatorio-publico.html?token=${esc(f.token_publico)}" target="_blank" class="c360-btn-link">Ver →</a>` : ''}
+        <a href="relatorio-publico.html?entregaId=${f.id}" target="_blank" class="c360-btn-link">Abrir →</a>
+        ${f.publicado && f.token_publico ? `<a href="/relatorio-publico.html?token=${esc(f.token_publico)}" target="_blank" class="c360-btn-link">Link público →</a>` : ''}
         <button class="c360-btn c360-btn-danger" onclick="removerFechamento(${f.id})">Remover</button>
       </div>
     </div>`;

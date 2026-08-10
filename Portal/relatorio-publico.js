@@ -2,6 +2,7 @@
 // Versão completa: visual Venforce + dados automáticos + campos manuais (destaques/prioridades)
 
 const API_BASE = "https://venforce-server.onrender.com";
+const TOKEN    = localStorage.getItem("vf-token") || "";
 
 // ── UTILITÁRIOS ──────────────────────────────────────────────────────────────
 
@@ -382,11 +383,19 @@ MC = LC / Venda Total × 100</div>
 
 // ── RENDER PRINCIPAL ──────────────────────────────────────────────────────────
 
-function renderReport(payload) {
+function renderReport(payload, opts = {}) {
   destroyCharts();
   const d = extractData(payload);
   const root = document.getElementById("rp-root");
   if (!root) return;
+
+  const internalBanner = opts.internal ? `
+    <div class="rp-alert ${opts.publicado ? "rp-alert-ok" : "rp-alert-warn"}" style="margin-bottom:20px;">
+      <span class="rp-alert-icon">${opts.publicado ? "🌐" : "📝"}</span>
+      <span>${opts.publicado
+        ? "Publicado — este fechamento também está disponível pelo link público."
+        : "Rascunho — visualização interna. Este fechamento ainda não foi publicado para o cliente."}</span>
+    </div>` : "";
 
   // Status geral
   let statusCls, statusLabel;
@@ -432,6 +441,7 @@ function renderReport(payload) {
   // ── HTML ──────────────────────────────────────────────────────────────────
 
   root.innerHTML = `<div class="rp-page">
+    ${internalBanner}
 
     <!-- HERO -->
     <div class="rp-hero rp-section">
@@ -726,10 +736,33 @@ function renderError(msg) {
 
 // ── BOOT ──────────────────────────────────────────────────────────────────────
 
-async function init() {
-  const token = qs("token");
-  if (!token) { renderError("Token não encontrado na URL."); return; }
+// Visualização interna (Cliente 360 → aba Fechamentos → "Abrir"): usa o
+// endpoint autenticado /entregas-cliente/:id, sem exigir token_publico —
+// funciona para rascunhos e para fechamentos já publicados.
+async function initInterno(entregaId) {
+  if (!TOKEN) { renderError("Sessão não encontrada. Abra este link a partir do Portal (Cliente 360)."); return; }
+  try {
+    const res = await fetch(`${API_BASE}/entregas-cliente/${encodeURIComponent(entregaId)}`, {
+      headers: { Authorization: "Bearer " + TOKEN },
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      renderError(j?.erro || j?.error || `Erro ${res.status}.`);
+      return;
+    }
+    const json = await res.json();
+    const entrega = json?.entrega || json;
+    const payload = entrega?.payload_json;
+    if (!payload || typeof payload !== "object") { renderError("Fechamento inválido ou vazio."); return; }
+    renderReport(payload, { internal: true, publicado: !!entrega.publicado });
+  } catch (err) {
+    renderError("Erro de conexão ao carregar o fechamento.");
+  }
+}
 
+// Visualização pública (link enviado ao cliente): usa o token público,
+// somente para fechamentos publicados.
+async function initPublico(token) {
   try {
     const res = await fetch(`${API_BASE}/public/entregas/${encodeURIComponent(token)}`);
     if (!res.ok) {
@@ -744,6 +777,14 @@ async function init() {
   } catch (err) {
     renderError("Erro de conexão ao carregar o relatório.");
   }
+}
+
+async function init() {
+  const entregaId = qs("entregaId");
+  const token = qs("token");
+  if (entregaId) { await initInterno(entregaId); return; }
+  if (token) { await initPublico(token); return; }
+  renderError("Token não encontrado na URL.");
 }
 
 document.addEventListener("DOMContentLoaded", () => {

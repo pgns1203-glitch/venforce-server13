@@ -183,6 +183,20 @@
   margin: 0 0 var(--vf-sp-2);
 }
 
+/* Explicação do cruzamento das 3 planilhas Shopee (performance/Order.all/custos) */
+.vf-page-financeiro .vf-fin-orders-help {
+  margin: 0 0 var(--vf-sp-3);
+  max-width: 78ch;
+  font-size: var(--vf-fs-xs, 0.78rem);
+  line-height: 1.55;
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-financeiro .vf-fin-orders-help strong {
+  color: var(--vf-text-primary);
+  font-weight: 600;
+}
+
 /* Quando há arquivo selecionado, o dropzone dá lugar ao file-item */
 .vf-page-financeiro .vf-fin-upload.has-file .vf-dropzone {
   display: none;

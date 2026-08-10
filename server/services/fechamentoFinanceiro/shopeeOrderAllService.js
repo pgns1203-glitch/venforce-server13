@@ -457,12 +457,36 @@ const SHOPEE_COST_LOOKUP_FIELDS = Object.freeze([
   "sku",
 ]);
 
+// Nome do "costMatchSource" de cada campo do match DIRETO. Só rotula o que já
+// acontecia — a ordem de tentativa continua sendo SHOPEE_COST_LOOKUP_FIELDS.
+const SHOPEE_DIRECT_MATCH_SOURCE = Object.freeze({
+  variationId: "direct_variation_id",
+  modelId: "direct_model_id",
+  itemId: "direct_item_id",
+  productId: "direct_product_id",
+  skuVariation: "direct_sku",
+  skuPrinciple: "direct_sku",
+  skuMainRef: "direct_sku",
+  skuRefNumber: "direct_sku",
+  sku: "direct_sku",
+});
+
+// Campos de SKU do Order.all, na ordem em que a ponte deve tentá-los: do mais
+// específico (SKU da variação) para o mais genérico.
+const SHOPEE_BRIDGE_SKU_FIELDS = Object.freeze([
+  "skuVariation",
+  "skuPrinciple",
+  "skuMainRef",
+  "skuRefNumber",
+  "sku",
+]);
+
 // debugCollector é opcional e só existe quando chamado a partir do Debug
 // Financeiro (POST /fechamentos/financeiro/debug). Sem ele, o comportamento
 // e o retorno desta função são IDÊNTICOS ao anterior — mesmo loop, mesmo
 // early return no primeiro hit.
-function lookupShopeeCost(costMap, line, debugCollector) {
-  if (!costMap || typeof costMap.get !== "function") return null;
+function lookupShopeeCostDetailed(costMap, line, debugCollector) {
+  if (!costMap || typeof costMap.get !== "function") return { row: null, field: null };
 
   for (const field of SHOPEE_COST_LOOKUP_FIELDS) {
     const candidate = line[field];
@@ -495,18 +519,163 @@ function lookupShopeeCost(costMap, line, debugCollector) {
         result: hit ? "hit" : "miss",
       });
     }
-    if (hit) return hit;
+    if (hit) return { row: hit, field };
   }
 
-  return null;
+  return { row: null, field: null };
+}
+
+function lookupShopeeCost(costMap, line, debugCollector) {
+  return lookupShopeeCostDetailed(costMap, line, debugCollector).row;
+}
+
+// Dois candidatos que apontam para a MESMA linha de custo (ou para custos
+// idênticos) não são ambiguidade — só duplicidade de chave na base.
+function sameCostRow(a, b) {
+  if (a === b) return true;
+  return (
+    round2(Number(a.cost || 0)) === round2(Number(b.cost || 0)) &&
+    round2(Number(a.taxPercent || 0)) === round2(Number(b.taxPercent || 0))
+  );
+}
+
+// Resolve custo a partir de uma lista de IDs vindos da ponte. Se dois IDs
+// distintos levarem a custos DIFERENTES, devolve ambiguous — nunca escolhe.
+function resolveBridgeCandidates(costMap, ids) {
+  const rows = [];
+  const hitIds = [];
+
+  for (const id of Array.isArray(ids) ? ids : []) {
+    const key = normalizeMatchKey(id);
+    if (!key) continue;
+    const row = costMap.get(key);
+    if (!row) continue;
+    if (!rows.includes(row)) {
+      rows.push(row);
+      hitIds.push(id);
+    }
+  }
+
+  if (rows.length === 0) return { row: null, ambiguous: false, id: null };
+  if (rows.length === 1) return { row: rows[0], ambiguous: false, id: hitIds[0] };
+
+  const allEquivalent = rows.every((row) => sameCostRow(row, rows[0]));
+  if (allEquivalent) return { row: rows[0], ambiguous: false, id: hitIds[0] };
+
+  return { row: null, ambiguous: true, id: null, candidateIds: hitIds };
+}
+
+// Conciliação de custo de UMA linha do Order.all.
+//
+//   1. match DIRETO (comportamento de sempre, prioridade intacta);
+//   2. em MISS, e só então, a ponte de identidade da planilha de performance:
+//      SKU do Order.all -> ID da Variação / ID do Item -> base de custos.
+//
+// A ponte é APENAS identidade: nenhum valor financeiro da performance entra
+// aqui. Ambiguidade nunca é resolvida por escolha arbitrária.
+function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
+  const direct = lookupShopeeCostDetailed(costMap, line, debugCollector);
+  if (direct.row) {
+    return {
+      costRow: direct.row,
+      source: SHOPEE_DIRECT_MATCH_SOURCE[direct.field] || "direct_sku",
+      bridgeUsed: false,
+      bridgeIds: null,
+      ambiguous: false,
+    };
+  }
+
+  const hasBridge = costBridge && typeof costBridge.get === "function" && costBridge.size > 0;
+  if (!hasBridge || !costMap || typeof costMap.get !== "function") {
+    return { costRow: null, source: "miss", bridgeUsed: false, bridgeIds: null, ambiguous: false };
+  }
+
+  // Primeiro SKU da linha que existe na ponte vence: do mais específico
+  // (SKU da variação) para o mais genérico.
+  let bridgeIds = null;
+  let bridgeSku = null;
+  for (const field of SHOPEE_BRIDGE_SKU_FIELDS) {
+    const sku = normalizeShopeeId(line[field]);
+    if (!sku) continue;
+    const found = costBridge.get(sku);
+    if (debugCollector) {
+      debugCollector.recordMatchAttempt({
+        engine: "shopee_real",
+        stage: "cost_bridge_sku",
+        orderId: line.id,
+        field,
+        rawValue: line[field],
+        normalizedKey: sku,
+        result: found ? "hit" : "miss",
+      });
+    }
+    if (found) {
+      bridgeIds = found;
+      bridgeSku = sku;
+      break;
+    }
+  }
+
+  if (!bridgeIds) {
+    return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds: null, ambiguous: false };
+  }
+
+  // ID da Variação antes do ID do Item: a base pode ter custo por variação.
+  for (const [ids, sourceName, stage] of [
+    [bridgeIds.variationIds, "bridge_variation_id", "cost_bridge_variation"],
+    [bridgeIds.itemIds, "bridge_item_id", "cost_bridge_item"],
+  ]) {
+    const resolved = resolveBridgeCandidates(costMap, ids);
+    if (debugCollector && Array.isArray(ids) && ids.length > 0) {
+      debugCollector.recordMatchAttempt({
+        engine: "shopee_real",
+        stage,
+        orderId: line.id,
+        field: sourceName,
+        rawValue: bridgeSku,
+        normalizedKey: resolved.id || ids.join(" | "),
+        result: resolved.ambiguous ? "ambiguous" : resolved.row ? "hit" : "miss",
+      });
+    }
+    if (resolved.ambiguous) {
+      return {
+        costRow: null,
+        source: "ambiguous",
+        bridgeUsed: true,
+        bridgeIds,
+        bridgeSku,
+        ambiguous: true,
+        ambiguousCandidates: resolved.candidateIds || [],
+      };
+    }
+    if (resolved.row) {
+      return {
+        costRow: resolved.row,
+        source: sourceName,
+        bridgeUsed: true,
+        bridgeIds,
+        bridgeSku,
+        matchedId: resolved.id,
+        ambiguous: false,
+      };
+    }
+  }
+
+  return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds, bridgeSku, ambiguous: false };
 }
 
 // Motor financeiro real da Shopee. Calcula POR PEDIDO/LINHA, com taxas reais.
 // costMap é montado por quem chama (shopeePerformanceService) para evitar
 // dependência circular.
+//
+// costBridge (opcional) é a ponte de IDENTIDADE SKU -> ID do Item/ID da
+// Variação extraída da planilha de performance. Ela só muda COMO o custo é
+// localizado; receita, taxas, frete, status e cancelamentos continuam vindo
+// exclusivamente do Order.all.
 function processShopeeFinancialOrders({
   salesRowsRaw,
   costMap,
+  costBridge = null,
   ads = 0,
   venforce = 0,
   affiliates = 0,
@@ -562,6 +731,19 @@ function processShopeeFinancialOrders({
   let shippingIndeterminateOrders = 0;
   let feesMissingOrders = 0;
 
+  // Observabilidade da conciliação de custo (não substitui nenhum campo já
+  // existente — é diagnóstico adicional).
+  const bridgeAvailable =
+    !!costBridge && typeof costBridge.get === "function" && costBridge.size > 0;
+  let directCostMatchCount = 0;
+  let bridgeCostMatchCount = 0;
+  let bridgeMissCount = 0;
+  let bridgeAmbiguousCount = 0;
+  let zeroCostRowsCount = 0;
+  let revenueDirectMatched = 0;
+  let revenueBridgeMatched = 0;
+  const bridgeAmbiguousKeys = [];
+
   for (const [orderId, orderLines] of orders.entries()) {
     // Status do PEDIDO: o mais severo entre as linhas (uma devolução em
     // qualquer linha marca o pedido).
@@ -604,7 +786,12 @@ function processShopeeFinancialOrders({
       }
 
       if (orderKind === "cancelledConfirmed") {
-        const cost = lookupShopeeCost(costMap, orderLines[0], debugCollector);
+        const cost = resolveShopeeLineCost(
+          costMap,
+          orderLines[0],
+          costBridge,
+          debugCollector
+        ).costRow;
         if (!cost) {
           unmatchedCancelled.push({
             orderId,
@@ -708,17 +895,40 @@ function processShopeeFinancialOrders({
       const lineGross = round2(line.grossRevenue);
       const lineNet = netByLine[i];
 
-      // CMV real da planilha tem prioridade; senão, base de custos.
-      const costRow = lookupShopeeCost(costMap, line, debugCollector);
+      // CMV real da planilha tem prioridade; senão, base de custos (match
+      // direto e, em MISS, ponte SKU -> ID da performance).
+      const costMatch = resolveShopeeLineCost(costMap, line, costBridge, debugCollector);
+      const costRow = costMatch.costRow;
       let cmvLine = null;
       let costSource = "ausente";
+
+      if (costMatch.ambiguous) {
+        bridgeAmbiguousCount += 1;
+        if (bridgeAmbiguousKeys.length < 50 && !bridgeAmbiguousKeys.includes(costMatch.bridgeSku)) {
+          bridgeAmbiguousKeys.push(costMatch.bridgeSku);
+        }
+      } else if (costMatch.bridgeUsed && !costRow) {
+        bridgeMissCount += 1;
+      }
 
       if (line.cmvProvided && Math.abs(line.cmv) > 0) {
         cmvLine = round2(Math.abs(line.cmv));
         costSource = "planilha_financeira";
       } else if (costRow && costRow.cost > 0) {
         cmvLine = round2(costRow.cost * line.quantity);
-        costSource = "base_custos";
+        if (costMatch.bridgeUsed) {
+          costSource = "base_custos_ponte";
+          bridgeCostMatchCount += 1;
+          revenueBridgeMatched = round2(revenueBridgeMatched + lineGross);
+        } else {
+          costSource = "base_custos";
+          directCostMatchCount += 1;
+          revenueDirectMatched = round2(revenueDirectMatched + lineGross);
+        }
+      } else if (costRow) {
+        // Linha existe na base, mas com custo <= 0: continua "sem custo"
+        // (regra de sempre) — não vira CMV zero.
+        zeroCostRowsCount += 1;
       }
 
       let taxLine = null;
@@ -762,6 +972,9 @@ function processShopeeFinancialOrders({
         CMV: cmvLine,
         Imposto: taxLine,
         "Origem do custo": costSource,
+        // direct_* | bridge_* | miss | ambiguous — diagnóstico da conciliação.
+        "Match de custo": costMatch.source,
+        "ID resolvido pela ponte": costMatch.matchedId || "",
         LC: lc,
         MC: mc === null ? null : round2(mc * 100),
         "Cobertura de custo": hasCost ? "com custo" : "sem custo",
@@ -784,11 +997,28 @@ function processShopeeFinancialOrders({
       `${feesMissingOrders} pedido(s) sem repasse e sem taxas: a receita líquida usou a receita bruta e o resultado desses pedidos está superestimado.`
     );
   }
+  if (bridgeAvailable) {
+    executiveNotes.push(
+      "Ponte de identidade ativa: a planilha de performance forneceu apenas a relação SKU → ID do Item / ID da Variação. " +
+      "Receita, taxas, frete, status e cancelamentos continuam vindo integralmente do Order.all."
+    );
+  }
+  if (bridgeAmbiguousCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_AMBIGUOUS: ${bridgeAmbiguousCount} linha(s) tiveram o mesmo SKU apontando para variações com custos ` +
+      `diferentes na base. O custo foi mantido em branco (nenhum custo é escolhido por arbitragem)` +
+      `${bridgeAmbiguousKeys.length ? `. SKUs afetados: ${bridgeAmbiguousKeys.join(", ")}` : ""}.`
+    );
+  }
   if (coverage.financialConfidence !== "confiavel") {
     executiveNotes.push(
       "Fechamento parcial: existem vendas sem custo cadastrado. O faturamento total está completo; LC e MC cobrem apenas a receita com custo identificado."
     );
   }
+
+  const recognizedRevenue = round2(revenueWithCost + revenueWithoutCost);
+  const coveragePercent = (value) =>
+    recognizedRevenue > 0 ? round2((value / recognizedRevenue) * 100) : 0;
 
   const finalResult = round2(contributionProfitTotal - ads - venforce - affiliates);
 
@@ -855,6 +1085,22 @@ function processShopeeFinancialOrders({
       orderAllUnpaidCount: statusTotals.unpaid.count,
       orderAllUnpaidRevenue: statusTotals.unpaid.revenue,
       orderAllTopCancelledItems: [],
+      // Diagnóstico da conciliação de custo (aditivo — não substitui
+      // revenueWithCost/calculatedCoveragePercent).
+      costBridgeAvailable: bridgeAvailable,
+      costBridgeSkuCount: bridgeAvailable ? costBridge.size : 0,
+      directCostMatchCount,
+      bridgeCostMatchCount,
+      bridgeMissCount,
+      bridgeAmbiguousCount,
+      bridgeAmbiguousKeys,
+      zeroCostRowsCount,
+      directCoverage: coveragePercent(revenueDirectMatched),
+      bridgeResolvedCoverage: coveragePercent(revenueBridgeMatched),
+      // finalCoverage inclui também as linhas cujo CMV veio da própria
+      // planilha financeira (coluna CMV), por isso pode ser maior que a soma
+      // de directCoverage + bridgeResolvedCoverage.
+      finalCoverage: coverage.calculatedCoveragePercent,
       detectedAdjustmentColumns: adjustmentColumns,
       missingColumns,
       executiveNotes,
@@ -884,5 +1130,9 @@ module.exports = {
   processShopeeFinancialOrders,
   SHOPEE_KINDS_OUT_OF_REVENUE,
   lookupShopeeCost,
+  lookupShopeeCostDetailed,
+  resolveShopeeLineCost,
   SHOPEE_COST_LOOKUP_FIELDS,
+  SHOPEE_BRIDGE_SKU_FIELDS,
+  SHOPEE_DIRECT_MATCH_SOURCE,
 };

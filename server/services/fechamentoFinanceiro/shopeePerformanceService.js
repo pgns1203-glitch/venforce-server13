@@ -351,6 +351,72 @@ function buildShopeePerfSkuBridge(rows) {
 
 
 
+// Ponte de custo: SKU do vendedor -> TODOS os IDs numéricos da Shopee que a
+// planilha de performance associa a ele.
+//
+// Diferente de buildShopeePerfSkuBridge (que guarda só o PRIMEIRO id de cada
+// SKU e serve à reconciliação de status), aqui os IDs são acumulados: um SKU
+// que aparece em duas variações precisa expor as duas para que a conciliação
+// de custo possa detectar ambiguidade em vez de escolher uma por acaso.
+//
+// A ponte carrega SOMENTE identidade. Nenhum número financeiro da performance
+// (vendas, unidades, ticket, comissão estimada) é lido aqui.
+function buildShopeeCostBridge(performanceRowsRaw) {
+  const bridge = new Map();
+  if (!Array.isArray(performanceRowsRaw)) return bridge;
+
+  // A performance usa "-" para "não se aplica" (item sem variação). Isso não é
+  // identidade: não pode virar chave nem candidato de custo.
+  const PLACEHOLDERS = new Set(["-", "--", "–", "N/A", "NA", "0"]);
+  const identity = (value) => {
+    const normalized = normalizeShopeeId(value);
+    return PLACEHOLDERS.has(normalized) ? "" : normalized;
+  };
+
+  const pushId = (entry, key, value) => {
+    const id = identity(value);
+    if (!id) return;
+    if (!entry[key].includes(id)) entry[key].push(id);
+  };
+
+  for (const row of performanceRowsRaw) {
+    if (!row || typeof row !== "object") continue;
+
+    const itemId = findField(row, ["id do item", "id item", "item id"]);
+    const variationId = findField(row, [
+      "id da variacao",
+      "id da variação",
+      "id variacao",
+      "variation id",
+    ]);
+    const modelId = findField(row, ["model id", "model_id", "modelid"]);
+
+    // SKU é TEXTO: normalizeShopeeId preserva zeros à esquerda ("0007654352998"
+    // continua "0007654352998"); Number() jamais é usado aqui.
+    const skus = [
+      findField(row, ["sku da variacao", "sku da variação"]),
+      findField(row, ["sku principle", "sku principal"]),
+    ];
+
+    for (const skuRaw of skus) {
+      const sku = identity(skuRaw);
+      if (!sku) continue;
+
+      if (!bridge.has(sku)) {
+        bridge.set(sku, { sku, variationIds: [], itemIds: [] });
+      }
+      const entry = bridge.get(sku);
+      pushId(entry, "variationIds", variationId);
+      pushId(entry, "variationIds", modelId);
+      pushId(entry, "itemIds", itemId);
+    }
+  }
+
+  return bridge;
+}
+
+
+
 function buildOrderAllTopCancelledItems(orderAllItems) {
   const map = new Map();
   // Item entra quando o PEDIDO é cancelado confirmado, não a linha isolada.
@@ -738,13 +804,36 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
   const isFinancial = isShopeeFinancialOrderSheet(salesRowsRaw);
   const isPerformance = isShopeePerformanceSheet(salesRowsRaw);
 
+  // O segundo upload (ordersAll) é classificado pelo CONTEÚDO, igual ao
+  // primeiro: com performance + Order.all + custos, o financeiro vem do
+  // Order.all e a performance entra só como ponte de identidade.
+  const hasOrdersAllRows = Array.isArray(ordersAllRowsRaw) && ordersAllRowsRaw.length > 0;
+  const ordersAllIsFinancial = hasOrdersAllRows && isShopeeFinancialOrderSheet(ordersAllRowsRaw);
+  const ordersAllIsPerformance = hasOrdersAllRows && isShopeePerformanceSheet(ordersAllRowsRaw);
+
+  // CASO A — as 3 planilhas: performance (identidade) + Order.all (financeiro)
+  // + base de custos. Motor REAL com ponte de custo.
+  if (isPerformance && !isFinancial && ordersAllIsFinancial) {
+    return processShopeeFinancialOrders({
+      salesRowsRaw: ordersAllRowsRaw,
+      costMap: buildShopeeCostMap(costRowsRaw),
+      costBridge: buildShopeeCostBridge(salesRowsRaw),
+      ads,
+      venforce,
+      affiliates,
+      debugCollector,
+    });
+  }
+
   // Planilha financeira de pedidos: motor REAL (repasse + taxas efetivas,
   // por pedido). Antes era rejeitada — o cruzamento com a base de custos usa
   // SKU/ID de variação, não só ID do item.
+  // Se o segundo arquivo for a performance, ela vira a ponte de identidade.
   if (isFinancial && !isPerformance) {
     return processShopeeFinancialOrders({
       salesRowsRaw,
       costMap: buildShopeeCostMap(costRowsRaw),
+      costBridge: ordersAllIsPerformance ? buildShopeeCostBridge(ordersAllRowsRaw) : null,
       ads,
       venforce,
       affiliates,
@@ -1067,6 +1156,7 @@ module.exports = {
   isShopeeMassUpdateSheet,
   parseShopeeOrderAllForStatus,
   buildShopeePerfSkuBridge,
+  buildShopeeCostBridge,
   buildShopeeStatusSummary,
   groupShopeeOrders,
   buildShopeeCostMap,

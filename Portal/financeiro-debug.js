@@ -51,7 +51,18 @@ function resultBadge(result) {
   if (result === "hit") return badge("hit", "✓ HIT");
   if (result === "miss") return badge("miss", "× MISS");
   if (result === "skip") return badge("skip", "— SKIP");
+  if (result === "ambiguous") return badge("warning", "≠ AMBÍGUO");
   return badge("info", String(result || "?"));
+}
+
+// cost_lookup = match direto (comportamento de sempre);
+// cost_bridge_* = ponte SKU → ID vinda da planilha de performance.
+function stageLabel(stage) {
+  if (stage === "cost_lookup") return "direto";
+  if (stage === "cost_bridge_sku") return "ponte: SKU";
+  if (stage === "cost_bridge_variation") return "ponte: variação";
+  if (stage === "cost_bridge_item") return "ponte: item";
+  return String(stage || "—");
 }
 
 function severityBadge(sev) {
@@ -340,13 +351,14 @@ function renderMatchExplorer(panel) {
         <option value="hit">só HIT</option>
         <option value="miss">só MISS</option>
         <option value="skip">só SKIP</option>
+        <option value="ambiguous">só AMBÍGUO</option>
       </select>
       <span class="fdbg-hint" id="fdbg-match-count"></span>
       ${byEngine[engines[0]]?.truncated ? '<span class="fdbg-badge warning">amostra limitada</span>' : ""}
     </div>
     <div class="fdbg-table-wrap">
       <table class="fdbg-table">
-        <thead><tr><th>Pedido/Venda</th><th>Campo tentado</th><th>Valor bruto</th><th>Chave normalizada</th><th>Resultado</th></tr></thead>
+        <thead><tr><th>Pedido/Venda</th><th>Etapa</th><th>Campo tentado</th><th>Valor bruto</th><th>Chave normalizada</th><th>Resultado</th></tr></thead>
         <tbody id="fdbg-match-tbody"></tbody>
       </table>
     </div>`;
@@ -359,7 +371,7 @@ function renderMatchExplorer(panel) {
 
   function draw() {
     if (!currentEngine) {
-      tbody.innerHTML = '<tr><td colspan="5" class="fdbg-muted">Sem dados.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="fdbg-muted">Sem dados.</td></tr>';
       return;
     }
     const q = search.value.trim().toLowerCase();
@@ -376,6 +388,7 @@ function renderMatchExplorer(panel) {
         (a) => `
       <tr>
         <td class="fdbg-mono">${escapeHTML(a.orderId ?? "—")}</td>
+        <td class="fdbg-mono fdbg-muted">${escapeHTML(stageLabel(a.stage))}</td>
         <td class="fdbg-mono">${escapeHTML(a.field)}</td>
         <td class="fdbg-mono">${a.rawValue === null || a.rawValue === undefined || a.rawValue === "" ? '<span class="fdbg-absent">ausente</span>' : escapeHTML(a.rawValue)}</td>
         <td class="fdbg-mono fdbg-muted">${escapeHTML(a.normalizedKey ?? "—")}</td>
@@ -436,14 +449,23 @@ function renderMatchTrace(panel) {
         html += `
           <div class="fdbg-trace-step ${s.result}">
             <span class="fdbg-trace-step__idx">${i + 1}.</span>
-            <span class="fdbg-trace-step__field">${escapeHTML(s.field)}</span>
+            <span class="fdbg-trace-step__field">${escapeHTML(stageLabel(s.stage))} · ${escapeHTML(s.field)}</span>
             <span class="fdbg-trace-step__value">${s.rawValue ? escapeHTML(s.rawValue) : '<span class="fdbg-absent">—</span>'}${s.normalizedKey ? ` → <span class="fdbg-muted">${escapeHTML(s.normalizedKey)}</span>` : ""}</span>
             <span>${resultBadge(s.result)}</span>
           </div>`;
       });
       html += "</div>";
-      const overallHit = steps.some((s) => s.result === "hit");
-      html += `<p class="fdbg-hint">Resultado do motor real: <strong>${overallHit ? "COST_FOUND" : "COST_NOT_FOUND"}</strong></p>`;
+      const bridgeStep = steps.find((s) => s.result === "hit" && String(s.stage || "").startsWith("cost_bridge_") && s.stage !== "cost_bridge_sku");
+      const directHit = steps.some((s) => s.result === "hit" && s.stage === "cost_lookup");
+      const ambiguous = steps.some((s) => s.result === "ambiguous");
+      const outcome = ambiguous
+        ? "COST_BRIDGE_AMBIGUOUS (custo mantido em branco)"
+        : directHit
+          ? `COST_FOUND — ${steps.find((s) => s.result === "hit" && s.stage === "cost_lookup").field} (match direto)`
+          : bridgeStep
+            ? `COST_FOUND — ${bridgeStep.field} (ponte da performance)`
+            : "COST_NOT_FOUND";
+      html += `<p class="fdbg-hint">Resultado do motor real: <strong>${escapeHTML(outcome)}</strong></p>`;
     }
 
     const bridgeItem = bridgeItems.find((b) => String(b.orderId) === id);

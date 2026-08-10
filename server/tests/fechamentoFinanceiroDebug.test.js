@@ -275,17 +275,45 @@ const SHOPEE_COSTS_AOA = [
   ok("payload final é ok:true", payload.ok);
   ok("motor shopee_real rodou", !!payload.result.engines.shopee_real && !payload.result.engines.shopee_real.error);
   ok("motor shopee_performance rodou", !!payload.result.engines.shopee_performance && !payload.result.engines.shopee_performance.error);
+  // Com as 3 planilhas, o motor real agora usa a ponte SKU -> ID: o que antes
+  // era "cobertura 0% + warning" vira custo efetivamente resolvido.
   ok(
-    "cobertura de custo do motor real é baixa (chave incompatível)",
-    payload.result.engines.shopee_real.summary.calculatedCoveragePercent < 50
+    "motor real usa a ponte quando a performance está presente",
+    payload.result.engines.shopee_real.summary.costBridgeAvailable === true
+  );
+  ok(
+    "cobertura de custo do motor real deixa de ser zero",
+    payload.result.engines.shopee_real.summary.calculatedCoveragePercent > 0
+  );
+  ok(
+    "o custo do pedido incompatível foi resolvido pela ponte",
+    payload.result.engines.shopee_real.summary.bridgeCostMatchCount > 0
   );
   ok(
     "ponte mostra cobertura potencial maior que o match direto",
     payload.debug.bridges.shopee.fullBridge.percent > payload.debug.bridges.shopee.directMatch.percent
   );
+  ok("diagnóstico marca a ponte como usada pelo motor", payload.debug.bridges.shopee.usedByEngine === true);
   ok(
-    "warning BRIDGE_AVAILABLE_NOT_USED aparece quando a ponte resolveria mais",
-    payload.debug.warnings.some((w) => w.code === "BRIDGE_AVAILABLE_NOT_USED")
+    "sem ponte em uso, nenhum warning BRIDGE_AVAILABLE_NOT_USED",
+    !payload.debug.warnings.some((w) => w.code === "BRIDGE_AVAILABLE_NOT_USED")
+  );
+
+  // Sem a performance, o cenário antigo continua sendo detectado e avisado.
+  const semPerformance = runFechamentoDebug({
+    uploadedFiles: [
+      { buffer: orderAllBuffer, originalName: "Order.all.xlsx", sizeBytes: orderAllBuffer.length },
+      { buffer: costsBuffer, originalName: "custos.xlsx", sizeBytes: costsBuffer.length },
+    ],
+  });
+  ok(
+    "sem performance a ponte não é usada",
+    semPerformance.result.engines.shopee_real.summary.costBridgeAvailable === false
+  );
+  ok(
+    "sem performance o warning COST_MATCH_FAILED continua possível",
+    semPerformance.result.engines.shopee_real.summary.calculatedCoveragePercent <
+      payload.result.engines.shopee_real.summary.calculatedCoveragePercent
   );
 }
 

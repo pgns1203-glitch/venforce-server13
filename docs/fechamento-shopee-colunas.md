@@ -31,6 +31,54 @@ Acionado quando a planilha de vendas é a planilha de pedidos (tem `ID do pedido
 | SKU | `sku`, `sku da variacao`, `sku principal`, `no de referencia do sku principal`, `numero de referencia sku` |
 | IDs | `id do item`, `id do produto`, `id da variacao`, `id do modelo` |
 
+### Conciliação de custo — match direto e ponte SKU → ID
+
+O `Order.all` só expõe **SKU do vendedor** (`Nº de referência do SKU principal`,
+`Número de referência SKU`). Muitas bases de custo Shopee usam só os **IDs
+numéricos internos** (`id`, `model id`) e não têm coluna de SKU — universos de
+chave diferentes, zero interseção (era 0% de cobertura no cliente real).
+
+A planilha de **performance** (`parentskudetail`) tem os dois lados, então ela
+entra como **ponte de identidade**:
+
+```
+Order.all (SKU)  →  performance (SKU → ID do Item / ID da Variação)  →  base (ID → custo/imposto)
+```
+
+Ordem de resolução por linha (`resolveShopeeLineCost`):
+
+1. **Match direto** — `variationId → modelId → itemId → productId → skuVariation
+   → skuPrinciple → skuMainRef → skuRefNumber → sku` (inalterado). Se acerta,
+   acabou: a ponte nem é consultada.
+2. **Ponte** (só em MISS, e só quando a performance foi enviada) — primeiro SKU
+   da linha presente na ponte, do mais específico (`skuVariation`) ao mais
+   genérico (`sku`); com os IDs desse SKU, tenta **ID da Variação antes do ID do
+   Item** (a base pode ter custo por variação).
+
+`summary.detailedRows["Match de custo"]` registra qual caminho resolveu:
+`direct_variation_id`, `direct_model_id`, `direct_item_id`, `direct_product_id`,
+`direct_sku`, `bridge_variation_id`, `bridge_item_id`, `miss`, `ambiguous`.
+
+**A ponte é SÓ identidade.** Nenhum número da performance (vendas, unidades,
+ticket, comissão estimada, taxa fixa) entra no motor real: receita, taxas,
+frete, status, cancelamentos e devoluções continuam vindo integralmente do
+`Order.all`. Por isso o `calculationMode` continua `real_financial`.
+
+**Ambiguidade nunca é resolvida por arbitragem.** Se o mesmo SKU aponta para
+variações/itens com custos **diferentes** na base, o custo fica `null`, a linha
+entra como "sem custo" e o fechamento reporta `COST_BRIDGE_AMBIGUOUS` em
+`summary.executiveNotes` + `summary.bridgeAmbiguousKeys`. Dois IDs com custo
+idêntico não são ambiguidade (é duplicidade de chave) e resolvem normalmente.
+
+SKU é **texto**: `0007654352998` nunca vira `7654352998`. Valores de
+preenchimento da performance (`-`, `--`, `N/A`, `0`) não viram identidade.
+
+Diagnóstico adicional no `summary` (aditivo, não substitui `revenueWithCost` /
+`calculatedCoveragePercent`): `costBridgeAvailable`, `costBridgeSkuCount`,
+`directCostMatchCount`, `bridgeCostMatchCount`, `bridgeMissCount`,
+`bridgeAmbiguousCount`, `bridgeAmbiguousKeys`, `zeroCostRowsCount`,
+`directCoverage`, `bridgeResolvedCoverage`, `finalCoverage`.
+
 ### Regras que evitam contagem dupla
 
 1. **Comissão e serviço: líquida OU bruta, nunca as duas.** `resolveFeeComponent`
@@ -82,5 +130,21 @@ deve ser apresentado como fechamento financeiro definitivo.
 Colunas: `id do item`, `id da variacao`, `produto`, `vendas (pedido pago) (brl)`,
 `unidades (pedido pago)`, `impressao do produto`, `cliques por produto`, `ctr`.
 
-O arquivo opcional `Order.all` continua sendo usado apenas para reconciliação de
-status (cancelados, não pagos, devoluções) — contados **por pedido**.
+Este motor só é escolhido quando **não há `Order.all` válido junto**. Se a
+performance e o `Order.all` forem enviados na mesma requisição, o fechamento usa
+o motor real (`real_financial`) com a performance apenas como ponte de
+identidade — ver "Conciliação de custo" acima.
+
+Quando o segundo arquivo existe mas **não** é um `Order.all` reconhecível, ele
+continua servindo apenas à reconciliação de status (cancelados, não pagos,
+devoluções) — contados **por pedido**.
+
+## Qual motor roda (prioridade)
+
+| Arquivos enviados | Motor | `calculationMode` |
+| --- | --- | --- |
+| performance + custos + `Order.all` | real, com ponte SKU → ID | `real_financial` |
+| `Order.all` + custos + performance (ordem invertida dos uploads) | idem — o papel é decidido pelo conteúdo | `real_financial` |
+| `Order.all` + custos | real, só match direto | `real_financial` |
+| performance + custos | estimado por faixa de ticket | `estimated_performance` |
+| ponte insuficiente / chave ambígua | custo `null`, faturamento preservado | inalterado |

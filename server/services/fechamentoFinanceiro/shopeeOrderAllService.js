@@ -165,6 +165,26 @@ function rawProvided(raw) {
   return String(raw ?? "").trim() !== "";
 }
 
+// "0", "0.00", "0,00" — o placeholder numérico que a Shopee grava em colunas
+// de TEXTO na linha de TOTAL do Order.all, nunca visto em pedido real.
+function isZeroPlaceholder(value) {
+  const text = String(value ?? "").trim();
+  return text !== "" && /^0+([.,]0+)?$/.test(text);
+}
+
+// A linha de TOTAL/resumo do Order.all real (confirmada num export do
+// cliente) repete esse placeholder em ID do pedido, Status do pedido E Nome
+// do Produto — três colunas que todo pedido de verdade preenche com texto
+// (o "ID do pedido" da Shopee é sempre alfanumérico, nunca só dígitos/zeros).
+// Exige o ID mais pelo menos um dos outros dois para não confundir um
+// pedido real cujo nome de produto por acaso viesse vazio/zerado.
+function isShopeeOrderAllTotalRow(orderId, statusRaw, product) {
+  return (
+    isZeroPlaceholder(orderId) &&
+    (isZeroPlaceholder(statusRaw) || isZeroPlaceholder(product))
+  );
+}
+
 function parseShopeeFinancialRows(rows) {
   const parsed = [];
 
@@ -175,6 +195,16 @@ function parseShopeeFinancialRows(rows) {
     const product = String(
       findField(row, ["nome do produto", "produto", "product name"]) || ""
     ).trim();
+
+    // Linha de TOTAL/resumo da planilha, não um pedido: não entra em
+    // nenhuma métrica (faturamento, contagem, cobertura, LC/MC).
+    const statusRawForTotalCheck = String(
+      findField(row, ["status do pedido", "status pedido"]) || ""
+    ).trim();
+    if (isShopeeOrderAllTotalRow(orderId, statusRawForTotalCheck, product)) {
+      continue;
+    }
+
     const itemIdRaw = findField(row, [
       "id do item",
       "id do produto",
@@ -1135,4 +1165,5 @@ module.exports = {
   SHOPEE_COST_LOOKUP_FIELDS,
   SHOPEE_BRIDGE_SKU_FIELDS,
   SHOPEE_DIRECT_MATCH_SOURCE,
+  isShopeeOrderAllTotalRow,
 };

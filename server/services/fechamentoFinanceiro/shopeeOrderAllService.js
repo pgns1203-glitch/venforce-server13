@@ -629,20 +629,37 @@ function getShopeeCostBridgeRecords(costBridge) {
   const records = [];
   for (const [sku, entry] of costBridge.entries()) {
     for (const modelId of Array.isArray(entry?.variationIds) ? entry.variationIds : []) {
-      records.push({ modelId, variationId: modelId, itemId: "", productName: "", variationName: "", sellerSkus: [sku] });
+      records.push({ modelId, variationId: modelId, itemId: "", productName: "", variationName: "", variationSkus: [sku], principalSkus: [] });
     }
     for (const itemId of Array.isArray(entry?.itemIds) ? entry.itemIds : []) {
-      records.push({ modelId: "", variationId: "", itemId, productName: "", variationName: "", sellerSkus: [sku] });
+      records.push({ modelId: "", variationId: "", itemId, productName: "", variationName: "", variationSkus: [sku], principalSkus: [] });
     }
   }
   return records;
 }
 
+function getShopeeCostBridgeIndex(costBridge, type) {
+  if (!costBridge || typeof costBridge.get !== "function") return null;
+  if (type === "variation") {
+    return costBridge.variationSkuIndex instanceof Map
+      ? costBridge.variationSkuIndex
+      : costBridge;
+  }
+  return costBridge.principalSkuIndex instanceof Map
+    ? costBridge.principalSkuIndex
+    : null;
+}
+
 function hasShopeeCostBridge(costBridge) {
+  const principalIndex = getShopeeCostBridgeIndex(costBridge, "principal");
   return (
     !!costBridge &&
     typeof costBridge.get === "function" &&
-    (costBridge.size > 0 || getShopeeCostBridgeRecords(costBridge).length > 0)
+    (
+      costBridge.size > 0 ||
+      (principalIndex && principalIndex.size > 0) ||
+      getShopeeCostBridgeRecords(costBridge).length > 0
+    )
   );
 }
 
@@ -663,88 +680,93 @@ function bridgeCandidateIds(records) {
   return ids.variationIds.length > 0 ? ids.variationIds : ids.itemIds;
 }
 
-// Seleciona a identidade da Performance usando somente combinações exatas e
-// auditáveis. Produto + variação é a chave real compartilhada pelas planilhas;
-// SKU entra como auxiliar e só resolve sozinho quando resta uma identidade.
+function selectShopeeIdentityFromRecords(rawRecords, line, source, bridgeSku) {
+  const records = uniqueBridgeRecords(rawRecords);
+  if (records.length === 0) return null;
+  const productKey = normalizeShopeeIdentityText(line.product);
+  const variationKey = normalizeShopeeIdentityText(line.variationName);
+  const recordProduct = (record) => normalizeShopeeIdentityText(record.productName);
+  const recordVariation = (record) => normalizeShopeeIdentityText(record.variationName);
+  const ambiguityKey = line.product && line.variationName
+    ? `${line.product} / ${line.variationName}`
+    : bridgeSku || line.product;
+
+  if (records.length === 1) {
+    return { ambiguous: false, record: records[0], records, source, bridgeSku, ambiguityKey };
+  }
+
+  // O mesmo SKU da Variação pode existir em anúncios diferentes. Nessa
+  // situação, somente os campos exatos compartilhados pelas duas planilhas
+  // podem reduzir os candidatos.
+  let narrowed = records;
+  if (productKey) {
+    const byProduct = narrowed.filter((record) => recordProduct(record) === productKey);
+    if (byProduct.length === 0) {
+      return { ambiguous: true, record: null, records, source, bridgeSku, ambiguityKey };
+    }
+    narrowed = byProduct;
+  }
+  if (variationKey) {
+    const byVariation = narrowed.filter((record) => recordVariation(record) === variationKey);
+    if (byVariation.length === 0) {
+      return { ambiguous: true, record: null, records, source, bridgeSku, ambiguityKey };
+    }
+    narrowed = byVariation;
+  }
+
+  narrowed = uniqueBridgeRecords(narrowed);
+  if (narrowed.length === 1) {
+    return { ambiguous: false, record: narrowed[0], records: narrowed, source, bridgeSku, ambiguityKey };
+  }
+  return { ambiguous: true, record: null, records: narrowed, source, bridgeSku, ambiguityKey };
+}
+
+// Ordem estrita da ponte:
+//   1. Número de referência SKU -> índice SKU da Variação;
+//   2. produto + variação exatos (preserva identidade quando o SKU mudou);
+//   3. SKU principal, em índice separado e somente se for inequívoco.
 function selectShopeeBridgeIdentity(line, costBridge) {
   const allRecords = getShopeeCostBridgeRecords(costBridge);
   if (allRecords.length === 0) return null;
 
-  const productKey = normalizeShopeeIdentityText(line.product);
-  const variationKey = normalizeShopeeIdentityText(line.variationName);
-  const lineSkus = SHOPEE_BRIDGE_SKU_FIELDS
+  const variationIndex = getShopeeCostBridgeIndex(costBridge, "variation");
+  const principalIndex = getShopeeCostBridgeIndex(costBridge, "principal");
+  const uniqueSkus = (fields) => fields
     .map((field) => normalizeShopeeId(line[field]))
     .filter((sku, index, all) => sku && all.indexOf(sku) === index);
 
-  const recordProduct = (record) => normalizeShopeeIdentityText(record.productName);
-  const recordVariation = (record) => normalizeShopeeIdentityText(record.variationName);
-  const recordHasSku = (record) =>
-    (Array.isArray(record.sellerSkus) ? record.sellerSkus : [])
-      .map(normalizeShopeeId)
-      .some((sku) => lineSkus.includes(sku));
+  // Em pontes novas, somente campos de SKU de VARIAÇÃO consultam este índice.
+  // A lista ampla fica restrita ao formato legado/manual, que não tem índices.
+  const variationFields = costBridge.variationSkuIndex instanceof Map
+    ? ["skuRefNumber", "skuVariation", "sku"]
+    : SHOPEE_BRIDGE_SKU_FIELDS;
+  for (const sku of uniqueSkus(variationFields)) {
+    const entry = variationIndex && variationIndex.get(sku);
+    if (!entry) continue;
+    return selectShopeeIdentityFromRecords(entry.records, line, "variation_sku", sku);
+  }
 
-  const strategies = [];
+  const productKey = normalizeShopeeIdentityText(line.product);
+  const variationKey = normalizeShopeeIdentityText(line.variationName);
   if (productKey && variationKey) {
-    const exactProductVariation = allRecords.filter(
-      (record) => recordProduct(record) === productKey && recordVariation(record) === variationKey
+    const exact = allRecords.filter(
+      (record) =>
+        normalizeShopeeIdentityText(record.productName) === productKey &&
+        normalizeShopeeIdentityText(record.variationName) === variationKey
     );
-    strategies.push({
-      source: "product_variation",
-      records: exactProductVariation,
-    });
-    // O produto existe na Performance, mas a opção vendida não: não degradar
-    // para SKU e correr o risco de escolher uma variação irmã.
-    if (exactProductVariation.length === 0) {
-      const sameProductRecords = uniqueBridgeRecords(
-        allRecords.filter((record) => recordProduct(record) === productKey)
-      );
-      if (sameProductRecords.length > 0) {
-        const bridgeSku = lineSkus[0] || null;
-        return {
-          ambiguous: true,
-          record: null,
-          records: sameProductRecords,
-          source: "product_variation_mismatch",
-          bridgeSku,
-          ambiguityKey: `${line.product} / ${line.variationName}`,
-        };
-      }
-    }
-  }
-  if (productKey && lineSkus.length > 0) {
-    strategies.push({
-      source: "product_sku",
-      records: allRecords.filter(
-        (record) => recordProduct(record) === productKey && recordHasSku(record)
-      ),
-    });
-  }
-  if (lineSkus.length > 0) {
-    strategies.push({
-      source: "sku_unique",
-      records: allRecords.filter(recordHasSku),
-    });
+    const selected = selectShopeeIdentityFromRecords(
+      exact,
+      line,
+      "product_variation",
+      uniqueSkus(variationFields)[0] || null
+    );
+    if (selected) return selected;
   }
 
-  for (const strategy of strategies) {
-    const records = uniqueBridgeRecords(strategy.records);
-    if (records.length === 0) continue;
-    const matchedSku = lineSkus.find((sku) =>
-      records.some((record) =>
-        (Array.isArray(record.sellerSkus) ? record.sellerSkus : [])
-          .map(normalizeShopeeId)
-          .includes(sku)
-      )
-    );
-    const bridgeSku = matchedSku || lineSkus[0] || null;
-    const ambiguityKey = line.product && line.variationName
-      ? `${line.product} / ${line.variationName}`
-      : bridgeSku || line.product;
-
-    if (records.length === 1) {
-      return { ambiguous: false, record: records[0], records, source: strategy.source, bridgeSku, ambiguityKey };
-    }
-    return { ambiguous: true, record: null, records, source: strategy.source, bridgeSku, ambiguityKey };
+  for (const sku of uniqueSkus(["skuMainRef", "skuPrinciple"])) {
+    const entry = principalIndex && principalIndex.get(sku);
+    if (!entry) continue;
+    return selectShopeeIdentityFromRecords(entry.records, line, "principal_sku", sku);
   }
 
   return null;

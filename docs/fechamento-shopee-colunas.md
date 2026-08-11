@@ -48,6 +48,10 @@ Order.all (produto + variação) → Performance (Model ID exato) → base (mode
 SKU é apenas auxiliar. Alterar `5444` para `5444-V` não troca a identidade se
 produto + variação continuam apontando para o mesmo Model ID.
 
+`SKU da Variação` e `SKU Principle` possuem índices separados. Um valor que
+aparece nos dois campos nunca faz as variações do SKU principal contaminarem
+os candidatos do SKU da variação.
+
 Ordem de resolução por linha (`resolveShopeeLineCost`):
 
 1. **Match direto** — se `variationId`/`modelId` existir no `Order.all`, somente
@@ -55,9 +59,13 @@ Ordem de resolução por linha (`resolveShopeeLineCost`):
    pai, SKU ou ponte. Sem Model ID direto, seguem `itemId → productId →
    skuVariation → skuPrinciple → skuMainRef → skuRefNumber → sku`.
 2. **Ponte** (só em MISS, e só quando a performance foi enviada):
-   - produto + nome da variação exatos;
-   - produto + SKU, quando a combinação deixa uma única identidade;
-   - SKU sozinho somente quando deixa uma única identidade.
+   - `Número de referência SKU` consulta primeiro e exclusivamente o índice
+     `SKU da Variação`;
+   - se o SKU da variação aparecer em vários anúncios, produto + nome da
+     variação exatos precisam deixar uma única identidade;
+   - produto + variação exatos preservam o caso de SKU renomeado;
+   - `SKU Principle` é consultado por último, em índice separado, e somente
+     resolve quando os campos disponíveis deixam uma identidade inequívoca.
 3. Encontrado um Model ID, o custo vem **exclusivamente** desse Model ID. Se ele
    não existir na base, não há fallback para o ID do Item pai.
 

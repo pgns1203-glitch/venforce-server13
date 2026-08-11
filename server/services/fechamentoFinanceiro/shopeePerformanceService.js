@@ -359,13 +359,24 @@ function buildShopeePerfSkuBridge(rows) {
 // A ponte carrega SOMENTE identidade. Nenhum número financeiro da performance
 // (vendas, unidades, ticket, comissão estimada) é lido aqui.
 function buildShopeeCostBridge(performanceRowsRaw) {
-  const bridge = new Map();
+  // Compatibilidade: o próprio Map retornado representa SOMENTE o índice de
+  // SKU da Variação. SKU Principle vive em outro índice e nunca adiciona
+  // variações aos candidatos deste Map.
+  const variationSkuIndex = new Map();
+  const principalSkuIndex = new Map();
+  const bridge = variationSkuIndex;
   const records = [];
-  Object.defineProperty(bridge, "records", {
-    value: records,
-    enumerable: false,
-    writable: false,
-  });
+  for (const [property, value] of [
+    ["records", records],
+    ["variationSkuIndex", variationSkuIndex],
+    ["principalSkuIndex", principalSkuIndex],
+  ]) {
+    Object.defineProperty(bridge, property, {
+      value,
+      enumerable: false,
+      writable: false,
+    });
+  }
   if (!Array.isArray(performanceRowsRaw)) return bridge;
 
   // A performance usa "-" para "não se aplica" (item sem variação). Isso não é
@@ -403,10 +414,12 @@ function buildShopeeCostBridge(performanceRowsRaw) {
 
     // SKU é TEXTO: normalizeShopeeId preserva zeros à esquerda ("0007654352998"
     // continua "0007654352998"); Number() jamais é usado aqui.
-    const sellerSkus = [
+    const variationSkus = [
       findField(row, ["sku da variacao", "sku da variação"]),
+    ].map(identity).filter(Boolean);
+    const principalSkus = [
       findField(row, ["sku principle", "sku principal"]),
-    ].map(identity).filter((sku, index, all) => sku && all.indexOf(sku) === index);
+    ].map(identity).filter(Boolean);
 
     const normalizedVariationId = identity(variationId);
     const record = {
@@ -417,17 +430,18 @@ function buildShopeeCostBridge(performanceRowsRaw) {
       modelId: identity(modelIdRaw) || normalizedVariationId,
       productName,
       variationName,
-      sellerSkus,
+      variationSkus,
+      principalSkus,
     };
 
     if (!record.modelId && !record.itemId) continue;
     records.push(record);
 
-    for (const sku of sellerSkus) {
-      if (!bridge.has(sku)) {
-        bridge.set(sku, { sku, records: [], variationIds: [], itemIds: [] });
+    const addToIndex = (index, sku) => {
+      if (!index.has(sku)) {
+        index.set(sku, { sku, records: [], variationIds: [], itemIds: [] });
       }
-      const entry = bridge.get(sku);
+      const entry = index.get(sku);
       entry.records.push(record);
       if (record.modelId && !entry.variationIds.includes(record.modelId)) {
         entry.variationIds.push(record.modelId);
@@ -435,7 +449,10 @@ function buildShopeeCostBridge(performanceRowsRaw) {
       if (record.itemId && !entry.itemIds.includes(record.itemId)) {
         entry.itemIds.push(record.itemId);
       }
-    }
+    };
+
+    for (const sku of variationSkus) addToIndex(variationSkuIndex, sku);
+    for (const sku of principalSkus) addToIndex(principalSkuIndex, sku);
   }
 
   return bridge;

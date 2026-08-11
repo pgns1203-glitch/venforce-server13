@@ -437,7 +437,87 @@ console.log("\n▸ Casos A–E — Model ID define o custo; SKU é apenas auxili
   eq("E: pendência direta preserva o Model ID informado", directE.unmatchedCosts[0].value, "MODEL-E-DIRECT");
 }
 
-// ── Teste 5 — sem Order.all, nada muda no motor estimado ──────────────────
+// ── Regressão real — índices de SKU separados ───────────────────
+console.log("\n▸ Regressão A–E — índices separados de SKU da Variação e SKU Principle");
+{
+  // A/B/D) 1155 é SKU da Variação de Prata e SKU Principle de três
+  // opções. Os custos das irmãs não podem contaminar o Model ID de Prata.
+  const productB = "Base de Mesa Florença Aço Carbono P/ Tampos Até 80x80cm Moderna Resistente Sala Jantar Cozinha";
+  const performanceB = [
+    linhaPerformance({ "ID do Item": "19199703630", "ID da Variação": "219174272058", "Nome da Variação": "Prata", "SKU da Variação": "1155", "SKU Principle": "1155", Produto: productB }),
+    linhaPerformance({ "ID do Item": "19199703630", "ID da Variação": "229420852966", "Nome da Variação": "Branco", "SKU da Variação": "1153", "SKU Principle": "1155", Produto: productB }),
+    linhaPerformance({ "ID do Item": "19199703630", "ID da Variação": "238784409845", "Nome da Variação": "Preta", "SKU da Variação": "1154", "SKU Principle": "1155", Produto: productB }),
+  ];
+  const bridgeB = buildShopeeCostBridge(performanceB);
+  assert.deepStrictEqual(bridgeB.variationSkuIndex.get("1155").variationIds, ["219174272058"]);
+  checks += 1;
+  console.log("  ok  B: SKU da Variação 1155 fica isolado do SKU Principle 1155");
+  assert.deepStrictEqual(
+    bridgeB.principalSkuIndex.get("1155").variationIds,
+    ["219174272058", "229420852966", "238784409845"]
+  );
+  checks += 1;
+  console.log("  ok  B: SKU Principle mantém seu conjunto no índice separado");
+
+  const resultB = processShopee(performanceB, [
+    { id: "19199703630", "model id": "219174272058", Custo: 31.34, imposto: 10 },
+    { id: "19199703630", "model id": "229420852966", Custo: 34.57, imposto: 10 },
+    { id: "19199703630", "model id": "238784409845", Custo: 31.34, imposto: 10 },
+  ], 0, 0, 0, [linhaOrderAll({
+    "ID do pedido": "INDEX-B",
+    "Nome do Produto": productB,
+    "Nome da variação": "Prata",
+    "Nº de referência do SKU principal": "1155",
+    "Número de referência SKU": "1155",
+    "Subtotal do produto": 100,
+    "Preço acordado": 100,
+  })]);
+  eq("A: SKU da Variação único resolve um Model ID", resultB.detailedRows[0]["ID resolvido pela ponte"], "219174272058");
+  eq("B: o mesmo texto no SKU Principle não mistura candidatos", resultB.summary.bridgeAmbiguousCount, 0);
+  eq("D: custos diferentes das outras variações não criam ambiguidade", resultB.detailedRows[0].CMV, 31.34);
+
+  // C) Mesmo SKU da Variação em anúncios diferentes.
+  const performanceC = [
+    linhaPerformance({ "ID do Item": "ITEM-C1", "ID da Variação": "MODEL-C1", "SKU da Variação": "DUP-C", Produto: "Produto C1", "Nome da Variação": "220V" }),
+    linhaPerformance({ "ID do Item": "ITEM-C2", "ID da Variação": "MODEL-C2", "SKU da Variação": "DUP-C", Produto: "Produto C2", "Nome da Variação": "127V" }),
+  ];
+  const resultC = processShopee(performanceC, [
+    { id: "ITEM-C1", "model id": "MODEL-C1", Custo: 80, imposto: 0 },
+    { id: "ITEM-C2", "model id": "MODEL-C2", Custo: 40, imposto: 0 },
+  ], 0, 0, 0, [linhaOrderAll({
+    "ID do pedido": "INDEX-C",
+    "Nome do Produto": "Produto C2",
+    "Nome da variação": "127V",
+    "Número de referência SKU": "DUP-C",
+    "Subtotal do produto": 100,
+    "Preço acordado": 100,
+  })]);
+  eq("C: produto + variação desambiguam SKU da Variação repetido", resultC.detailedRows[0]["ID resolvido pela ponte"], "MODEL-C2");
+  eq("C: custo vem exclusivamente do Model ID escolhido", resultC.detailedRows[0].CMV, 40);
+
+  // E) Mesmo SKU, produto e variação: faltam campos para escolher.
+  const performanceE = [
+    linhaPerformance({ "ID do Item": "ITEM-E1", "ID da Variação": "MODEL-E1", "SKU da Variação": "DUP-E", Produto: "Produto E", "Nome da Variação": "Única" }),
+    linhaPerformance({ "ID do Item": "ITEM-E2", "ID da Variação": "MODEL-E2", "SKU da Variação": "DUP-E", Produto: "Produto E", "Nome da Variação": "Única" }),
+  ];
+  const resultE = processShopee(performanceE, [
+    { id: "ITEM-E1", "model id": "MODEL-E1", Custo: 10, imposto: 0 },
+    { id: "ITEM-E2", "model id": "MODEL-E2", Custo: 20, imposto: 0 },
+  ], 0, 0, 0, [linhaOrderAll({
+    "ID do pedido": "INDEX-E",
+    "Nome do Produto": "Produto E",
+    "Nome da variação": "Única",
+    "Número de referência SKU": "DUP-E",
+    "Subtotal do produto": 100,
+    "Preço acordado": 100,
+  })]);
+  eq("E: identidade insuficiente deixa custo vazio", resultE.detailedRows[0].CMV, null);
+  assert.deepStrictEqual(resultE.unmatchedCosts[0].candidates, ["MODEL-E1", "MODEL-E2"]);
+  checks += 1;
+  console.log("  ok  E: somente os Model IDs candidatos são exibidos");
+}
+
+// ── Teste 5 — sem Order.all, nada muda no motor estimado ─────────────────
 console.log("\n▸ Teste 5 — performance + custos continua estimated_performance");
 {
   const performance = [

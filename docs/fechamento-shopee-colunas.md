@@ -18,6 +18,7 @@ Acionado quando a planilha de vendas é a planilha de pedidos (tem `ID do pedido
 | Motivo de cancelamento | `cancelar motivo`, `motivo cancelamento`, `motivo do cancelamento`, `cancel reason` |
 | Status de devolução | `status da devolucao / reembolso`, `status de devolucao/reembolso` |
 | Produto | `nome do produto`, `produto`, `product name` |
+| Nome da variação | `nome da variacao`, `nome da variação`, `opcao da variacao`, `opção da variação`, `variation name`, `variation option` |
 | Quantidade | `quantidade`, `qty` |
 | Receita bruta do item | `subtotal do produto` → `faturamento` → `preco acordado` × quantidade |
 | Repasse (líquido) | `repasse` |
@@ -31,29 +32,42 @@ Acionado quando a planilha de vendas é a planilha de pedidos (tem `ID do pedido
 | SKU | `sku`, `sku da variacao`, `sku principal`, `no de referencia do sku principal`, `numero de referencia sku` |
 | IDs | `id do item`, `id do produto`, `id da variacao`, `id do modelo` |
 
-### Conciliação de custo — match direto e ponte SKU → ID
+### Conciliação de custo — Model ID como identidade da variação
 
-O `Order.all` só expõe **SKU do vendedor** (`Nº de referência do SKU principal`,
-`Número de referência SKU`). Muitas bases de custo Shopee usam só os **IDs
-numéricos internos** (`id`, `model id`) e não têm coluna de SKU — universos de
-chave diferentes, zero interseção (era 0% de cobertura no cliente real).
+O `Order.all` real expõe `Nome do Produto`, `Nome da variação`, `Nº de
+referência do SKU principal` e `Número de referência SKU`. A Performance expõe
+os mesmos nomes, além de `ID do Item` e `ID da Variação`; este último corresponde
+ao `model id` da base de custos.
 
-A planilha de **performance** (`parentskudetail`) tem os dois lados, então ela
-entra como **ponte de identidade**:
+A planilha de **performance** (`parentskudetail`) entra como ponte de identidade:
 
 ```
-Order.all (SKU)  →  performance (SKU → ID do Item / ID da Variação)  →  base (ID → custo/imposto)
+Order.all (produto + variação) → Performance (Model ID exato) → base (model id → custo/imposto)
 ```
+
+SKU é apenas auxiliar. Alterar `5444` para `5444-V` não troca a identidade se
+produto + variação continuam apontando para o mesmo Model ID.
+
+`SKU da Variação` e `SKU Principle` possuem índices separados. Um valor que
+aparece nos dois campos nunca faz as variações do SKU principal contaminarem
+os candidatos do SKU da variação.
 
 Ordem de resolução por linha (`resolveShopeeLineCost`):
 
-1. **Match direto** — `variationId → modelId → itemId → productId → skuVariation
-   → skuPrinciple → skuMainRef → skuRefNumber → sku` (inalterado). Se acerta,
-   acabou: a ponte nem é consultada.
-2. **Ponte** (só em MISS, e só quando a performance foi enviada) — primeiro SKU
-   da linha presente na ponte, do mais específico (`skuVariation`) ao mais
-   genérico (`sku`); com os IDs desse SKU, tenta **ID da Variação antes do ID do
-   Item** (a base pode ter custo por variação).
+1. **Match direto** — se `variationId`/`modelId` existir no `Order.all`, somente
+   essa identidade é consultada; sua ausência na base não permite cair para item
+   pai, SKU ou ponte. Sem Model ID direto, seguem `itemId → productId →
+   skuVariation → skuPrinciple → skuMainRef → skuRefNumber → sku`.
+2. **Ponte** (só em MISS, e só quando a performance foi enviada):
+   - `Número de referência SKU` consulta primeiro e exclusivamente o índice
+     `SKU da Variação`;
+   - se o SKU da variação aparecer em vários anúncios, produto + nome da
+     variação exatos precisam deixar uma única identidade;
+   - produto + variação exatos preservam o caso de SKU renomeado;
+   - `SKU Principle` é consultado por último, em índice separado, e somente
+     resolve quando os campos disponíveis deixam uma identidade inequívoca.
+3. Encontrado um Model ID, o custo vem **exclusivamente** desse Model ID. Se ele
+   não existir na base, não há fallback para o ID do Item pai.
 
 `summary.detailedRows["Match de custo"]` registra qual caminho resolveu:
 `direct_variation_id`, `direct_model_id`, `direct_item_id`, `direct_product_id`,
@@ -64,18 +78,17 @@ ticket, comissão estimada, taxa fixa) entra no motor real: receita, taxas,
 frete, status, cancelamentos e devoluções continuam vindo integralmente do
 `Order.all`. Por isso o `calculationMode` continua `real_financial`.
 
-**Ambiguidade nunca é resolvida por arbitragem.** Se o mesmo SKU aponta para
-variações/itens com custos **diferentes** na base, o custo fica `null`, a linha
-entra como "sem custo" e o fechamento reporta `COST_BRIDGE_AMBIGUOUS` em
-`summary.executiveNotes` + `summary.bridgeAmbiguousKeys`. Dois IDs com custo
-idêntico não são ambiguidade (é duplicidade de chave) e resolvem normalmente.
+**Ambiguidade nunca é resolvida por arbitragem.** Se os campos da venda não
+distinguirem uma única identidade, o custo fica `null`, a linha entra como "sem
+custo" e o fechamento reporta `COST_BRIDGE_AMBIGUOUS`, incluindo os IDs
+candidatos. Custos iguais não autorizam escolher entre Model IDs diferentes.
 
 SKU é **texto**: `0007654352998` nunca vira `7654352998`. Valores de
 preenchimento da performance (`-`, `--`, `N/A`, `0`) não viram identidade.
 
 Diagnóstico adicional no `summary` (aditivo, não substitui `revenueWithCost` /
 `calculatedCoveragePercent`): `costBridgeAvailable`, `costBridgeSkuCount`,
-`directCostMatchCount`, `bridgeCostMatchCount`, `bridgeMissCount`,
+`costBridgeIdentityCount`, `directCostMatchCount`, `bridgeCostMatchCount`, `bridgeMissCount`,
 `bridgeAmbiguousCount`, `bridgeAmbiguousKeys`, `zeroCostRowsCount`,
 `directCoverage`, `bridgeResolvedCoverage`, `finalCoverage`.
 
@@ -143,7 +156,7 @@ devoluções) — contados **por pedido**.
 
 | Arquivos enviados | Motor | `calculationMode` |
 | --- | --- | --- |
-| performance + custos + `Order.all` | real, com ponte SKU → ID | `real_financial` |
+| performance + custos + `Order.all` | real, com ponte variação → Model ID | `real_financial` |
 | `Order.all` + custos + performance (ordem invertida dos uploads) | idem — o papel é decidido pelo conteúdo | `real_financial` |
 | `Order.all` + custos | real, só match direto | `real_financial` |
 | performance + custos | estimado por faixa de ticket | `estimated_performance` |

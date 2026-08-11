@@ -351,18 +351,32 @@ function buildShopeePerfSkuBridge(rows) {
 
 
 
-// Ponte de custo: SKU do vendedor -> TODOS os IDs numéricos da Shopee que a
-// planilha de performance associa a ele.
-//
-// Diferente de buildShopeePerfSkuBridge (que guarda só o PRIMEIRO id de cada
-// SKU e serve à reconciliação de status), aqui os IDs são acumulados: um SKU
-// que aparece em duas variações precisa expor as duas para que a conciliação
-// de custo possa detectar ambiguidade em vez de escolher uma por acaso.
+// Ponte de custo por REGISTRO DE VARIAÇÃO. O Map por SKU é mantido para
+// compatibilidade/diagnóstico, mas a identidade preservada em `bridge.records`
+// contém os campos que permitem distinguir a linha vendida sem depender da
+// estabilidade textual do SKU.
 //
 // A ponte carrega SOMENTE identidade. Nenhum número financeiro da performance
 // (vendas, unidades, ticket, comissão estimada) é lido aqui.
 function buildShopeeCostBridge(performanceRowsRaw) {
-  const bridge = new Map();
+  // Compatibilidade: o próprio Map retornado representa SOMENTE o índice de
+  // SKU da Variação. SKU Principle vive em outro índice e nunca adiciona
+  // variações aos candidatos deste Map.
+  const variationSkuIndex = new Map();
+  const principalSkuIndex = new Map();
+  const bridge = variationSkuIndex;
+  const records = [];
+  for (const [property, value] of [
+    ["records", records],
+    ["variationSkuIndex", variationSkuIndex],
+    ["principalSkuIndex", principalSkuIndex],
+  ]) {
+    Object.defineProperty(bridge, property, {
+      value,
+      enumerable: false,
+      writable: false,
+    });
+  }
   if (!Array.isArray(performanceRowsRaw)) return bridge;
 
   // A performance usa "-" para "não se aplica" (item sem variação). Isso não é
@@ -371,12 +385,6 @@ function buildShopeeCostBridge(performanceRowsRaw) {
   const identity = (value) => {
     const normalized = normalizeShopeeId(value);
     return PLACEHOLDERS.has(normalized) ? "" : normalized;
-  };
-
-  const pushId = (entry, key, value) => {
-    const id = identity(value);
-    if (!id) return;
-    if (!entry[key].includes(id)) entry[key].push(id);
   };
 
   for (const row of performanceRowsRaw) {
@@ -389,27 +397,62 @@ function buildShopeeCostBridge(performanceRowsRaw) {
       "id variacao",
       "variation id",
     ]);
-    const modelId = findField(row, ["model id", "model_id", "modelid"]);
+    const modelIdRaw = findField(row, ["model id", "model_id", "modelid"]);
+    const productName = String(
+      findField(row, ["produto", "nome do produto", "product name"]) || ""
+    ).trim();
+    const variationName = String(
+      findField(row, [
+        "nome da variacao",
+        "nome da variação",
+        "opcao da variacao",
+        "opção da variação",
+        "variation name",
+        "variation option",
+      ]) || ""
+    ).trim();
 
     // SKU é TEXTO: normalizeShopeeId preserva zeros à esquerda ("0007654352998"
     // continua "0007654352998"); Number() jamais é usado aqui.
-    const skus = [
+    const variationSkus = [
       findField(row, ["sku da variacao", "sku da variação"]),
+    ].map(identity).filter(Boolean);
+    const principalSkus = [
       findField(row, ["sku principle", "sku principal"]),
-    ];
+    ].map(identity).filter(Boolean);
 
-    for (const skuRaw of skus) {
-      const sku = identity(skuRaw);
-      if (!sku) continue;
+    const normalizedVariationId = identity(variationId);
+    const record = {
+      itemId: identity(itemId),
+      variationId: normalizedVariationId,
+      // Na exportação real, "ID da Variação" corresponde ao "model id" da
+      // base. Quando a Performance trouxer Model ID explicitamente, ele vence.
+      modelId: identity(modelIdRaw) || normalizedVariationId,
+      productName,
+      variationName,
+      variationSkus,
+      principalSkus,
+    };
 
-      if (!bridge.has(sku)) {
-        bridge.set(sku, { sku, variationIds: [], itemIds: [] });
+    if (!record.modelId && !record.itemId) continue;
+    records.push(record);
+
+    const addToIndex = (index, sku) => {
+      if (!index.has(sku)) {
+        index.set(sku, { sku, records: [], variationIds: [], itemIds: [] });
       }
-      const entry = bridge.get(sku);
-      pushId(entry, "variationIds", variationId);
-      pushId(entry, "variationIds", modelId);
-      pushId(entry, "itemIds", itemId);
-    }
+      const entry = index.get(sku);
+      entry.records.push(record);
+      if (record.modelId && !entry.variationIds.includes(record.modelId)) {
+        entry.variationIds.push(record.modelId);
+      }
+      if (record.itemId && !entry.itemIds.includes(record.itemId)) {
+        entry.itemIds.push(record.itemId);
+      }
+    };
+
+    for (const sku of variationSkus) addToIndex(variationSkuIndex, sku);
+    for (const sku of principalSkus) addToIndex(principalSkuIndex, sku);
   }
 
   return bridge;

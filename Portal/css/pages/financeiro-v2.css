@@ -780,10 +780,6 @@
   color: var(--vf-text-muted);
 }
 
-.vf-page-financeiro .vf-fin-idlist__hint {
-  color: var(--vf-text-muted);
-}
-
 /* ------------------------------------------------------------
  * 12. Sistema de abas (Dashboard / Entrega)
  * ------------------------------------------------------------ */

@@ -375,6 +375,7 @@ async function processarFechamentoFinanceiroController(req, res) {
       detailedRows: result.detailedRows,
       excelBase64,
       unmatchedIds: result.unmatchedIds,
+      unmatchedCosts: result.unmatchedCosts || [],
       unmatchedCancelled: result.unmatchedCancelled,
       ignoredRowsWithoutCost: result.ignoredRowsWithoutCost,
       ignoredRevenue: result.ignoredRevenue,

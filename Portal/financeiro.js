@@ -733,6 +733,7 @@ function montarPayloadFechamentoCliente(data) {
   ].filter(Boolean).join(" ");
 
   const unmatched = Array.isArray(data?.unmatchedIds) ? data.unmatchedIds : [];
+  const unmatchedCosts = Array.isArray(data?.unmatchedCosts) ? data.unmatchedCosts : [];
   const unmatchedCancelled = Array.isArray(data?.unmatchedCancelled) ? data.unmatchedCancelled : [];
   const ignoredRevenue = safeNumber(data?.ignoredRevenue);
   const detailedAll = Array.isArray(data?.detailedRows) ? data.detailedRows : [];
@@ -794,11 +795,15 @@ function montarPayloadFechamentoCliente(data) {
   }
 
   if (unmatched.length > 0) {
+    const totalPendencias = unmatchedCosts.length > 0 ? unmatchedCosts.length : unmatched.length;
     secoes.push({
       tipo: "atencao",
-      titulo: "Produtos sem custo cadastrado",
-      texto: `Identificamos ${unmatched.length} produto(s) que não foram cruzados com a base de custos. O faturamento deles continua no total; o lucro não os cobre. Receita sem custo: ${brl(summaryNormalized.revenueWithoutCost ?? ignoredRevenue)}.`,
-      bullets: unmatched.slice(0, 30).map((x) => String(x)),
+      titulo: "Produtos sem custo identificado",
+      texto: `Identificamos ${totalPendencias} produto(s) sem custo identificado. Esse valor permanece no faturamento, mas fica fora do cálculo de LC/MC. Receita sem custo identificado: ${brl(summaryNormalized.revenueWithoutCost ?? ignoredRevenue)}.`,
+      bullets:
+        unmatchedCosts.length > 0
+          ? unmatchedCosts.slice(0, 30).map((item) => shopeeCostGapToPlainText(item))
+          : unmatched.slice(0, 30).map((x) => String(x)),
     });
   }
 
@@ -1785,6 +1790,46 @@ function wireReconInfoPopover(root) {
   });
 }
 
+// Rótulo do diagnóstico tipado de custo Shopee (server/services/fechamentoFinanceiro/
+// shopeeOrderAllService.js -> describeShopeeCostGap). Nunca mistura SKU e ID:
+// diz explicitamente qual dos dois está sendo mostrado.
+const SHOPEE_COST_GAP_TYPE_LABEL = {
+  variation_id: "ID Variação",
+  item_id: "ID Item",
+  model_id: "ID Model",
+  product_id: "ID Produto",
+  sku: "SKU",
+  order_id: "ID do pedido",
+};
+
+const SHOPEE_COST_GAP_REASON_LABEL = {
+  not_found_in_performance_bridge: "não encontrado na performance",
+  not_found_in_cost_base: "não encontrado na base de custos",
+  ambiguous_bridge_candidates: "mesmo SKU aponta para custos diferentes na base — não escolhido automaticamente",
+  zero_cost_in_base: "encontrado na base, mas sem custo cadastrado (0)",
+  not_found_direct: "não encontrado na base de custos",
+};
+
+// Mesmo diagnóstico tipado, em texto puro (para bullets/relatório sem HTML).
+function shopeeCostGapToPlainText(item) {
+  const typeLabel = SHOPEE_COST_GAP_TYPE_LABEL[item?.type] || "ID";
+  const reasonLabel = SHOPEE_COST_GAP_REASON_LABEL[item?.reason] || "não encontrado";
+  const value = String(item?.value ?? "—");
+  const skuHint = item?.sku && item.type !== "sku" ? ` (SKU ${item.sku})` : "";
+  return `${typeLabel}: ${value}${skuHint} — ${reasonLabel}`;
+}
+
+function renderShopeeCostGapItem(item) {
+  const typeLabel = SHOPEE_COST_GAP_TYPE_LABEL[item?.type] || "ID";
+  const reasonLabel = SHOPEE_COST_GAP_REASON_LABEL[item?.reason] || "não encontrado";
+  const value = escapeHTML(String(item?.value ?? "—"));
+  // Para pendências resolvidas via ponte (ID achado na performance), mostra
+  // também o SKU de origem — é o que liga a mensagem ao produto no Order.all.
+  const skuHint =
+    item?.sku && item.type !== "sku" ? ` <span class="vf-fin-idlist__hint">(SKU ${escapeHTML(String(item.sku))})</span>` : "";
+  return `<span class="vf-fin-idlist__item vf-mono" title="${escapeHTML(reasonLabel)}">${escapeHTML(typeLabel)}: ${value}${skuHint} — ${escapeHTML(reasonLabel)}</span>`;
+}
+
 function renderFinTabela(data) {
   const host = document.getElementById("fin-tabela");
   if (!host) return;
@@ -1999,22 +2044,32 @@ function renderFinTabela(data) {
     renderPage();
   }
 
-  // --- IDs sem custo ---
+  // --- Produtos sem custo identificado ---
   const unmatched = Array.isArray(data?.unmatchedIds) ? data.unmatchedIds : [];
+  const unmatchedCosts = Array.isArray(data?.unmatchedCosts) ? data.unmatchedCosts : [];
   if (unmatched.length > 0) {
     const panel = document.createElement("div");
     panel.className = "vf-banner is-danger";
     panel.setAttribute("role", "alert");
 
-    const idsHtml = unmatched
-      .map((id) => `<span class="vf-fin-idlist__item vf-mono">${escapeHTML(String(id))}</span>`)
-      .join("");
+    // unmatchedCosts é o diagnóstico tipado (SKU x ID resolvido pela ponte
+    // x motivo); quando ele existe, é o que é mostrado. unmatchedIds (lista
+    // solta, sem dizer se é SKU ou ID) fica só como fallback de compatibilidade
+    // para motores/marketplaces que ainda não emitem o diagnóstico tipado.
+    const itemsHtml = unmatchedCosts.length > 0
+      ? unmatchedCosts.map((item) => renderShopeeCostGapItem(item)).join("")
+      : unmatched
+          .map((id) => `<span class="vf-fin-idlist__item vf-mono">${escapeHTML(String(id))}</span>`)
+          .join("");
+
+    const totalPendencias = unmatchedCosts.length > 0 ? unmatchedCosts.length : unmatched.length;
+    const revenueSemCusto = data?.summary?.revenueWithoutCost ?? data?.ignoredRevenue ?? 0;
 
     panel.innerHTML = `
       <div class="vf-banner__content">
-        <p class="vf-banner__title">${unmatched.length} ID(s) não encontrados na planilha de custos</p>
-        <p class="vf-banner__description">Receita ignorada: ${escapeHTML(brl(data?.ignoredRevenue || 0))}. Cadastre esses IDs na base de custos e processe novamente.</p>
-        <div class="vf-fin-idlist">${idsHtml}</div>
+        <p class="vf-banner__title">${totalPendencias} produto(s) sem custo identificado</p>
+        <p class="vf-banner__description">Receita sem custo identificado: ${escapeHTML(brl(revenueSemCusto))}. Esse valor permanece no faturamento, mas fica fora do cálculo de LC/MC. Cadastre o custo na base e processe novamente.</p>
+        <div class="vf-fin-idlist">${itemsHtml}</div>
       </div>
     `;
     host.appendChild(panel);

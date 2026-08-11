@@ -609,6 +609,9 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
     return {
       costRow: direct.row,
       source: SHOPEE_DIRECT_MATCH_SOURCE[direct.field] || "direct_sku",
+      // Valor bruto que efetivamente bateu — usado só pelo diagnóstico de
+      // itens sem custo (describeShopeeCostGap), nunca pelo cálculo.
+      matchedValue: line[direct.field],
       bridgeUsed: false,
       bridgeIds: null,
       ambiguous: false,
@@ -624,9 +627,13 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
   // (SKU da variação) para o mais genérico.
   let bridgeIds = null;
   let bridgeSku = null;
+  // Primeiro SKU não vazio tentado, HIT ou MISS — é o valor que o
+  // diagnóstico mostra quando nenhum deles bate na performance.
+  let skuTried = null;
   for (const field of SHOPEE_BRIDGE_SKU_FIELDS) {
     const sku = normalizeShopeeId(line[field]);
     if (!sku) continue;
+    if (skuTried === null) skuTried = sku;
     const found = costBridge.get(sku);
     if (debugCollector) {
       debugCollector.recordMatchAttempt({
@@ -647,7 +654,7 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
   }
 
   if (!bridgeIds) {
-    return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds: null, ambiguous: false };
+    return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds: null, skuTried, ambiguous: false };
   }
 
   // ID da Variação antes do ID do Item: a base pode ter custo por variação.
@@ -686,12 +693,63 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
         bridgeIds,
         bridgeSku,
         matchedId: resolved.id,
+        matchedValue: resolved.id,
         ambiguous: false,
       };
     }
   }
 
-  return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds, bridgeSku, ambiguous: false };
+  return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds, bridgeSku, skuTried: bridgeSku, ambiguous: false };
+}
+
+// Diagnóstico legível de "por que este item ficou sem custo". Nunca mistura
+// SKU e ID sem dizer o tipo — resolve a confusão da tela ("ID(s) não
+// encontrados" mostrando SKU) sem tocar em nenhum valor financeiro.
+//
+//   type   "variation_id" | "item_id" | "model_id" | "product_id" | "sku" | "order_id"
+//   value  o identificador cru (nunca normalizado/arredondado)
+//   sku    o SKU do Order.all que originou o diagnóstico (quando houver)
+//   reason "not_found_in_performance_bridge" | "not_found_in_cost_base" |
+//          "ambiguous_bridge_candidates" | "zero_cost_in_base" | "not_found_direct"
+function describeShopeeCostGap(line, costMatch, orderId) {
+  if (costMatch.ambiguous) {
+    const sku = costMatch.bridgeSku || line.skuVariation || line.skuPrinciple || line.sku || "";
+    return { type: "sku", value: sku, sku: sku || null, reason: "ambiguous_bridge_candidates" };
+  }
+
+  if (costMatch.costRow) {
+    // A base TEM a linha (achada direto ou pela ponte), só que com custo <= 0.
+    const type = String(costMatch.source || "").replace(/^(direct|bridge)_/, "") || "sku";
+    const value = costMatch.matchedValue ?? "";
+    const sku = costMatch.bridgeUsed ? costMatch.bridgeSku : null;
+    return { type, value: String(value), sku, reason: "zero_cost_in_base" };
+  }
+
+  if (costMatch.bridgeUsed) {
+    if (costMatch.bridgeIds) {
+      // O SKU foi encontrado na performance e virou ID — mas o ID não existe
+      // na base. Variação antes de item, mesma prioridade do lookup.
+      const variationId = (costMatch.bridgeIds.variationIds || [])[0];
+      const itemId = (costMatch.bridgeIds.itemIds || [])[0];
+      if (variationId) {
+        return { type: "variation_id", value: variationId, sku: costMatch.bridgeSku, reason: "not_found_in_cost_base" };
+      }
+      if (itemId) {
+        return { type: "item_id", value: itemId, sku: costMatch.bridgeSku, reason: "not_found_in_cost_base" };
+      }
+    }
+    // O SKU do Order.all não foi encontrado na planilha de performance.
+    const sku = costMatch.skuTried || "";
+    return { type: "sku", value: sku, sku: sku || null, reason: "not_found_in_performance_bridge" };
+  }
+
+  // Sem ponte disponível (performance não enviada): mesmo fallback de
+  // sempre, agora com o tipo explícito em vez de um valor solto.
+  if (line.variationId) return { type: "variation_id", value: line.variationId, sku: null, reason: "not_found_direct" };
+  if (line.itemId) return { type: "item_id", value: line.itemId, sku: null, reason: "not_found_direct" };
+  if (line.skuVariation) return { type: "sku", value: line.skuVariation, sku: line.skuVariation, reason: "not_found_direct" };
+  if (line.sku) return { type: "sku", value: line.sku, sku: line.sku, reason: "not_found_direct" };
+  return { type: "order_id", value: orderId, sku: null, reason: "not_found_direct" };
 }
 
 // Motor financeiro real da Shopee. Calcula POR PEDIDO/LINHA, com taxas reais.
@@ -734,6 +792,9 @@ function processShopeeFinancialOrders({
   const detailedRows = [];
   const auditRows = [];
   const unmatchedIdsSet = new Set();
+  // Diagnóstico tipado, aditivo ao unmatchedIds legado — deduplicado por
+  // tipo+valor+SKU+motivo para não repetir a mesma pendência linha a linha.
+  const unmatchedCostsMap = new Map();
   const unmatchedCancelled = [];
 
   const statusTotals = {
@@ -985,6 +1046,9 @@ function processShopeeFinancialOrders({
         unmatchedIdsSet.add(
           line.variationId || line.itemId || line.skuVariation || line.sku || orderId
         );
+        const gap = describeShopeeCostGap(line, costMatch, orderId);
+        const gapKey = `${gap.type}|${gap.value}|${gap.sku || ""}|${gap.reason}`;
+        if (!unmatchedCostsMap.has(gapKey)) unmatchedCostsMap.set(gapKey, gap);
       }
 
       detailedRows.push({
@@ -1138,7 +1202,10 @@ function processShopeeFinancialOrders({
     detailedRows,
     auditRows,
     excelFileName: "fechamento-shopee.xlsx",
+    // Mantido por compatibilidade — mistura SKU e ID sem dizer o tipo.
     unmatchedIds: Array.from(unmatchedIdsSet),
+    // Diagnóstico tipado: { type, value, sku, reason } por pendência única.
+    unmatchedCosts: Array.from(unmatchedCostsMap.values()),
     excludedVariationIds: [],
     ignoredRowsWithoutCost: unmatchedIdsSet.size,
     ignoredRevenue,
@@ -1166,4 +1233,5 @@ module.exports = {
   SHOPEE_BRIDGE_SKU_FIELDS,
   SHOPEE_DIRECT_MATCH_SOURCE,
   isShopeeOrderAllTotalRow,
+  describeShopeeCostGap,
 };

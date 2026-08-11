@@ -706,15 +706,30 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
 // SKU e ID sem dizer o tipo — resolve a confusão da tela ("ID(s) não
 // encontrados" mostrando SKU) sem tocar em nenhum valor financeiro.
 //
-//   type   "variation_id" | "item_id" | "model_id" | "product_id" | "sku" | "order_id"
-//   value  o identificador cru (nunca normalizado/arredondado)
-//   sku    o SKU do Order.all que originou o diagnóstico (quando houver)
-//   reason "not_found_in_performance_bridge" | "not_found_in_cost_base" |
-//          "ambiguous_bridge_candidates" | "zero_cost_in_base" | "not_found_direct"
+//   type       "variation_id" | "item_id" | "model_id" | "product_id" | "sku" |
+//              "order_id" | "ambiguous_ids"
+//   value      o identificador cru (nunca normalizado/arredondado) — para
+//              "ambiguous_ids", os candidatos já juntados em texto
+//   sku        o SKU do Order.all que originou o diagnóstico (quando houver)
+//   candidates só em "ambiguous_ids": os IDs conflitantes resolvidos pela
+//              ponte, cada um levando a um custo diferente na base
+//   reason     "not_found_in_performance_bridge" | "not_found_in_cost_base" |
+//              "ambiguous_bridge_candidates" | "zero_cost_in_base" | "not_found_direct"
 function describeShopeeCostGap(line, costMatch, orderId) {
   if (costMatch.ambiguous) {
-    const sku = costMatch.bridgeSku || line.skuVariation || line.skuPrinciple || line.sku || "";
-    return { type: "sku", value: sku, sku: sku || null, reason: "ambiguous_bridge_candidates" };
+    // A pendência é o CONFLITO de IDs, não o SKU que os originou — a tela
+    // não deve mostrar SKU aqui, só os IDs que a base resolve para custos
+    // diferentes (é isso que impede a escolha automática).
+    const candidates = Array.isArray(costMatch.ambiguousCandidates)
+      ? costMatch.ambiguousCandidates.map((id) => String(id))
+      : [];
+    return {
+      type: "ambiguous_ids",
+      value: candidates.join(", "),
+      sku: null,
+      candidates,
+      reason: "ambiguous_bridge_candidates",
+    };
   }
 
   if (costMatch.costRow) {

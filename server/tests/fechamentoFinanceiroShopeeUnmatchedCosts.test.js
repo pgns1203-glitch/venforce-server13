@@ -225,6 +225,46 @@ console.log("\n▸ Caso 4 — LC/MC/receita idênticos ao comportamento anterior
   ok("unmatchedCosts tem uma pendência por linha sem custo", rSemBase.unmatchedCosts.length === 2);
 }
 
+// ── Caso ambíguo, ponta a ponta — nunca mostra SKU, só os IDs conflitantes ─
+console.log("\n▸ Caso ambíguo (real) — unmatchedCosts mostra os IDs conflitantes, não o SKU");
+{
+  const orderAll = [
+    linhaOrderAll({
+      "ID do pedido": "P-AMB",
+      "Nº de referência do SKU principal": "7862",
+      "Subtotal do produto": 180,
+      "Preço acordado": 180,
+      "Taxa de comissão líquida": 18,
+    }),
+  ];
+  // Caso real do cliente: o mesmo SKU aparece em dois itens com custos diferentes.
+  const performance = [
+    linhaPerformance({ "ID do Item": "16256858358", "SKU Principle": "7862", Produto: "Par de Discos" }),
+    linhaPerformance({ "ID do Item": "58253291069", "SKU Principle": "7862", Produto: "Kit 4 Discos" }),
+  ];
+  const costRows = [
+    { id: "16256858358", Custo: 45, imposto: 14.5 },
+    { id: "58253291069", Custo: 180, imposto: 14.5 },
+  ];
+
+  const r = processShopee(performance, costRows, 0, 0, 0, orderAll);
+  eq("1 pendência ambígua", r.unmatchedCosts.length, 1);
+  const item = r.unmatchedCosts[0];
+  eq("tipo é ambiguous_ids", item.type, "ambiguous_ids");
+  eq("sku nunca aparece no diagnóstico ambíguo", item.sku, null);
+  ok("value não contém o texto 'SKU'", !String(item.value).includes("SKU"));
+  ok(
+    "os dois IDs conflitantes aparecem em candidates",
+    item.candidates.includes("16256858358") && item.candidates.includes("58253291069")
+  );
+  eq("value é a junção legível dos candidatos", item.value, item.candidates.join(", "));
+
+  // Financeiro continua intocado: mesmos números do teste de ambiguidade original.
+  eq("faturamento preservado", r.summary.grossRevenueTotal, 180);
+  eq("LC continua nulo na linha ambígua", r.detailedRows[0].LC, null);
+  eq("bridgeAmbiguousCount inalterado", r.summary.bridgeAmbiguousCount, 1);
+}
+
 // ── describeShopeeCostGap isolado (unidade) ────────────────────────────────
 console.log("\n▸ describeShopeeCostGap — unidade");
 {
@@ -260,10 +300,19 @@ console.log("\n▸ describeShopeeCostGap — unidade");
 
   const ambiguous = describeShopeeCostGap(
     line,
-    { costRow: null, bridgeUsed: true, bridgeSku: "SKU-Z", ambiguous: true },
+    {
+      costRow: null,
+      bridgeUsed: true,
+      bridgeSku: "SKU-Z",
+      ambiguous: true,
+      ambiguousCandidates: ["123456789", "987654321"],
+    },
     "PED-X"
   );
-  eq("ambíguo vira tipo sku", ambiguous.type, "sku");
+  eq("ambíguo vira tipo ambiguous_ids, nunca sku", ambiguous.type, "ambiguous_ids");
+  eq("value junta os IDs conflitantes", ambiguous.value, "123456789, 987654321");
+  eq("candidates expõe os IDs crus", JSON.stringify(ambiguous.candidates), JSON.stringify(["123456789", "987654321"]));
+  eq("sku não aparece no diagnóstico ambíguo", ambiguous.sku, null);
   eq("reason ambíguo", ambiguous.reason, "ambiguous_bridge_candidates");
 
   const zeroCost = describeShopeeCostGap(

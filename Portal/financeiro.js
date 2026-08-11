@@ -1800,34 +1800,31 @@ const SHOPEE_COST_GAP_TYPE_LABEL = {
   product_id: "ID Produto",
   sku: "SKU",
   order_id: "ID do pedido",
+  ambiguous_ids: "IDs conflitantes",
 };
 
 const SHOPEE_COST_GAP_REASON_LABEL = {
   not_found_in_performance_bridge: "não encontrado na performance",
   not_found_in_cost_base: "não encontrado na base de custos",
-  ambiguous_bridge_candidates: "mesmo SKU aponta para custos diferentes na base — não escolhido automaticamente",
+  ambiguous_bridge_candidates: "custos diferentes na base",
   zero_cost_in_base: "encontrado na base, mas sem custo cadastrado (0)",
   not_found_direct: "não encontrado na base de custos",
 };
 
 // Mesmo diagnóstico tipado, em texto puro (para bullets/relatório sem HTML).
+// A tela mostra só IDs — nunca SKU ao lado de um ID já resolvido.
 function shopeeCostGapToPlainText(item) {
   const typeLabel = SHOPEE_COST_GAP_TYPE_LABEL[item?.type] || "ID";
   const reasonLabel = SHOPEE_COST_GAP_REASON_LABEL[item?.reason] || "não encontrado";
   const value = String(item?.value ?? "—");
-  const skuHint = item?.sku && item.type !== "sku" ? ` (SKU ${item.sku})` : "";
-  return `${typeLabel}: ${value}${skuHint} — ${reasonLabel}`;
+  return `${typeLabel}: ${value} — ${reasonLabel}`;
 }
 
 function renderShopeeCostGapItem(item) {
   const typeLabel = SHOPEE_COST_GAP_TYPE_LABEL[item?.type] || "ID";
   const reasonLabel = SHOPEE_COST_GAP_REASON_LABEL[item?.reason] || "não encontrado";
   const value = escapeHTML(String(item?.value ?? "—"));
-  // Para pendências resolvidas via ponte (ID achado na performance), mostra
-  // também o SKU de origem — é o que liga a mensagem ao produto no Order.all.
-  const skuHint =
-    item?.sku && item.type !== "sku" ? ` <span class="vf-fin-idlist__hint">(SKU ${escapeHTML(String(item.sku))})</span>` : "";
-  return `<span class="vf-fin-idlist__item vf-mono" title="${escapeHTML(reasonLabel)}">${escapeHTML(typeLabel)}: ${value}${skuHint} — ${escapeHTML(reasonLabel)}</span>`;
+  return `<span class="vf-fin-idlist__item vf-mono" title="${escapeHTML(reasonLabel)}">${escapeHTML(typeLabel)}: ${value} — ${escapeHTML(reasonLabel)}</span>`;
 }
 
 function renderFinTabela(data) {

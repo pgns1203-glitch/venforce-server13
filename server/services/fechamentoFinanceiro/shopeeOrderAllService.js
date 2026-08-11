@@ -680,6 +680,26 @@ function bridgeCandidateIds(records) {
   return ids.variationIds.length > 0 ? ids.variationIds : ids.itemIds;
 }
 
+function resolveEquivalentShopeeBridgeCost(costMap, records) {
+  const candidateIds = bridgeCandidateIds(records);
+  if (candidateIds.length < 2 || !costMap || typeof costMap.get !== "function") {
+    return null;
+  }
+
+  const costRows = candidateIds.map((id) => costMap.get(normalizeMatchKey(id)) || null);
+  // Se qualquer identidade candidata não existir na base, o resultado
+  // financeiro dela é desconhecido e não há equivalência segura.
+  if (costRows.some((row) => !row)) return null;
+
+  const first = costRows[0];
+  const equivalent = costRows.every(
+    (row) =>
+      round2(Number(row.cost || 0)) === round2(Number(first.cost || 0)) &&
+      round2(Number(row.taxPercent || 0)) === round2(Number(first.taxPercent || 0))
+  );
+  return equivalent ? { costRow: first, candidateIds } : null;
+}
+
 function selectShopeeIdentityFromRecords(rawRecords, line, source, bridgeSku) {
   const records = uniqueBridgeRecords(rawRecords);
   if (records.length === 0) return null;
@@ -744,6 +764,36 @@ function selectShopeeBridgeIdentity(line, costBridge) {
     const entry = variationIndex && variationIndex.get(sku);
     if (!entry) continue;
     return selectShopeeIdentityFromRecords(entry.records, line, "variation_sku", sku);
+  }
+
+  // Fallback controlado para SKU histórico. Somente os sufixos explicitamente
+  // conhecidos são adicionados/removidos; nenhuma outra normalização ocorre.
+  const historicalSuffixes = ["-V", "-0"];
+  const historicalRecords = [];
+  const historicalMatches = [];
+  for (const sku of uniqueSkus(variationFields)) {
+    const candidateSkus = [];
+    for (const suffix of historicalSuffixes) {
+      candidateSkus.push(`${sku}${suffix}`);
+      if (sku.endsWith(suffix) && sku.length > suffix.length) {
+        candidateSkus.push(sku.slice(0, -suffix.length));
+      }
+    }
+    for (const candidateSku of candidateSkus) {
+      if (historicalMatches.includes(candidateSku)) continue;
+      const entry = variationIndex && variationIndex.get(candidateSku);
+      if (!entry) continue;
+      historicalMatches.push(candidateSku);
+      historicalRecords.push(...entry.records);
+    }
+  }
+  if (historicalRecords.length > 0) {
+    return selectShopeeIdentityFromRecords(
+      historicalRecords,
+      line,
+      "historical_variation_sku",
+      historicalMatches.join(" | ")
+    );
   }
 
   const productKey = normalizeShopeeIdentityText(line.product);
@@ -834,6 +884,21 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
   }
 
   if (identity.ambiguous) {
+    const equivalentCost = resolveEquivalentShopeeBridgeCost(costMap, identity.records);
+    if (equivalentCost) {
+      return {
+        costRow: equivalentCost.costRow,
+        source: "bridge_equivalent_cost",
+        bridgeUsed: true,
+        bridgeIds,
+        bridgeSku: identity.bridgeSku,
+        identitySource: identity.source,
+        identityAmbiguous: true,
+        financiallyEquivalent: true,
+        ambiguous: false,
+        ambiguousCandidates: equivalentCost.candidateIds,
+      };
+    }
     return {
       costRow: null,
       source: "ambiguous",
@@ -1035,6 +1100,8 @@ function processShopeeFinancialOrders({
   const bridgeAvailable = hasShopeeCostBridge(costBridge);
   let directCostMatchCount = 0;
   let bridgeCostMatchCount = 0;
+  let bridgeEquivalentCostMatchCount = 0;
+  let bridgeHistoricalSkuMatchCount = 0;
   let bridgeMissCount = 0;
   let bridgeAmbiguousCount = 0;
   let zeroCostRowsCount = 0;
@@ -1218,6 +1285,10 @@ function processShopeeFinancialOrders({
         if (costMatch.bridgeUsed) {
           costSource = "base_custos_ponte";
           bridgeCostMatchCount += 1;
+          if (costMatch.financiallyEquivalent) bridgeEquivalentCostMatchCount += 1;
+          if (costMatch.identitySource === "historical_variation_sku") {
+            bridgeHistoricalSkuMatchCount += 1;
+          }
           revenueBridgeMatched = round2(revenueBridgeMatched + lineGross);
         } else {
           costSource = "base_custos";
@@ -1312,6 +1383,18 @@ function processShopeeFinancialOrders({
       `${bridgeAmbiguousKeys.length ? `. Identidades afetadas: ${bridgeAmbiguousKeys.join(", ")}` : ""}.`
     );
   }
+  if (bridgeEquivalentCostMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_EQUIVALENT: ${bridgeEquivalentCostMatchCount} linha(s) tinham mais de um Model ID possível, ` +
+      "mas todos os candidatos possuíam custo e imposto idênticos; o resultado financeiro foi calculado normalmente."
+    );
+  }
+  if (bridgeHistoricalSkuMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_HISTORICAL_SKU: ${bridgeHistoricalSkuMatchCount} linha(s) foram conciliadas pelo fallback controlado ` +
+      'de SKU histórico (somente sufixos "-V" e "-0").'
+    );
+  }
   if (coverage.financialConfidence !== "confiavel") {
     executiveNotes.push(
       "Fechamento parcial: existem vendas sem custo cadastrado. O faturamento total está completo; LC e MC cobrem apenas a receita com custo identificado."
@@ -1396,6 +1479,8 @@ function processShopeeFinancialOrders({
         : 0,
       directCostMatchCount,
       bridgeCostMatchCount,
+      bridgeEquivalentCostMatchCount,
+      bridgeHistoricalSkuMatchCount,
       bridgeMissCount,
       bridgeAmbiguousCount,
       bridgeAmbiguousKeys,

@@ -277,10 +277,10 @@ console.log("\n▸ Teste 4 — mesmo SKU em duas variações com custos diferent
   const r = processShopee(performance, costRows, 0, 0, 0, orderAll);
   const linha = r.detailedRows[0];
   eq("match marcado como ambíguo", linha["Match de custo"], "ambiguous");
-  eq("custo fica nulo", linha.CMV, null);
+  eq("B: custo diferente mantém CMV nulo", linha.CMV, null);
   eq("LC fica desconhecido", linha.LC, null);
   eq("linha entra como sem custo", linha["Cobertura de custo"], "sem custo");
-  eq("contador de ambiguidade", r.summary.bridgeAmbiguousCount, 1);
+  eq("B: custo diferente continua ambíguo", r.summary.bridgeAmbiguousCount, 1);
   eq("nenhum custo resolvido pela ponte", r.summary.bridgeCostMatchCount, 0);
   ok(
     "nota executiva usa o código COST_BRIDGE_AMBIGUOUS",
@@ -289,15 +289,24 @@ console.log("\n▸ Teste 4 — mesmo SKU em duas variações com custos diferent
   ok("o SKU ambíguo é informado", r.summary.bridgeAmbiguousKeys.includes("7862"));
   eq("faturamento é preservado", r.summary.grossRevenueTotal, 180);
 
-  // Mesmo com custos iguais, dois Model IDs continuam sendo duas identidades:
-  // sem campos que distingam a variação, não há escolha automática.
+  // A) Identidade ainda ambígua, mas resultado financeiro equivalente.
   const costRowsIguais = [
     { id: "16256858358", Custo: 45, imposto: 14.5 },
     { id: "58253291069", Custo: 45, imposto: 14.5 },
   ];
   const rIguais = processShopee(performance, costRowsIguais, 0, 0, 0, orderAll);
-  eq("custos idênticos não autorizam escolher identidade", rIguais.detailedRows[0].CMV, null);
-  eq("continua ambíguo sem campos distintivos", rIguais.summary.bridgeAmbiguousCount, 1);
+  eq("A: custo equivalente é aplicado", rIguais.detailedRows[0].CMV, 45);
+  eq("A: imposto equivalente é aplicado", rIguais.detailedRows[0].Imposto, 26.1);
+  eq("A: identidade ambígua equivalente não bloqueia", rIguais.summary.bridgeAmbiguousCount, 0);
+  eq("A: match informa equivalência financeira", rIguais.detailedRows[0]["Match de custo"], "bridge_equivalent_cost");
+
+  // C) Mesmo custo com imposto diferente continua bloqueado.
+  const rImpostoDiferente = processShopee(performance, [
+    { id: "16256858358", Custo: 45, imposto: 14.5 },
+    { id: "58253291069", Custo: 45, imposto: 10 },
+  ], 0, 0, 0, orderAll);
+  eq("C: imposto diferente mantém custo vazio", rImpostoDiferente.detailedRows[0].CMV, null);
+  eq("C: imposto diferente continua ambíguo", rImpostoDiferente.summary.bridgeAmbiguousCount, 1);
 }
 
 // ── Casos obrigatórios A–E — identidade por Model ID ─────────────────────
@@ -517,7 +526,88 @@ console.log("\n▸ Regressão A–E — índices separados de SKU da Variação 
   console.log("  ok  E: somente os Model IDs candidatos são exibidos");
 }
 
-// ── Teste 5 — sem Order.all, nada muda no motor estimado ─────────────────
+// ── Regressão de SKU histórico ──────────────────────────────────
+// Regressão D–H — fallback controlado de SKU histórico.
+console.log("\n▸ Regressão D–H — SKU histórico com sufixos -V e -0");
+{
+  // D) O SKU literal sempre vence a alternativa normalizada.
+  const resultD = processShopee([
+    linhaPerformance({ "ID do Item": "ITEM-D1", "ID da Variação": "MODEL-D-EXATO", "SKU da Variação": "5454", Produto: "Produto D", "Nome da Variação": "Opção" }),
+    linhaPerformance({ "ID do Item": "ITEM-D2", "ID da Variação": "MODEL-D-HIST", "SKU da Variação": "5454-V", Produto: "Produto D", "Nome da Variação": "Opção" }),
+  ], [
+    { id: "ITEM-D1", "model id": "MODEL-D-EXATO", Custo: 10, imposto: 0 },
+    { id: "ITEM-D2", "model id": "MODEL-D-HIST", Custo: 20, imposto: 0 },
+  ], 0, 0, 0, [linhaOrderAll({
+    "ID do pedido": "HIST-D", "Nome do Produto": "Produto D", "Nome da variação": "Opção",
+    "Número de referência SKU": "5454", "Subtotal do produto": 100, "Preço acordado": 100,
+  })]);
+  eq("D: SKU exato tem prioridade", resultD.detailedRows[0]["ID resolvido pela ponte"], "MODEL-D-EXATO");
+  eq("D: normalização não substitui match exato", resultD.detailedRows[0].CMV, 10);
+
+  // E) Caso real 5454 -> 5454-V.
+  const productE = "Mesa de Canto P/ Sala Austria Design Moderno Industrial Minimalista Em Aço";
+  const resultE = processShopee([
+    linhaPerformance({ "ID do Item": "20998990904", "ID da Variação": "446064281548", "SKU da Variação": "5454-V", Produto: productE, "Nome da Variação": "Dourado/Branco" }),
+  ], [
+    { id: "20998990904", "model id": "446064281548", Custo: 75.21, imposto: 10 },
+  ], 0, 0, 0, [linhaOrderAll({
+    "ID do pedido": "HIST-E", "Nome do Produto": productE, "Nome da variação": "Dourado/Branco",
+    "Número de referência SKU": "5454", "Subtotal do produto": 100, "Preço acordado": 100,
+  })]);
+  eq("E: 5454 encontra 5454-V", resultE.detailedRows[0]["ID resolvido pela ponte"], "446064281548");
+  eq("E: custo do Model ID histórico é aplicado", resultE.detailedRows[0].CMV, 75.21);
+  eq("E: match histórico é contabilizado", resultE.summary.bridgeHistoricalSkuMatchCount, 1);
+
+  // F) Caso real 5470 -> 5470-0.
+  const resultF = processShopee([
+    linhaPerformance({ "ID do Item": "20398289024", "ID da Variação": "426030428544", "SKU da Variação": "5470-0", Produto: "Base Kansas", "Nome da Variação": "Dourado" }),
+  ], [
+    { id: "20398289024", "model id": "426030428544", Custo: 83.79, imposto: 10 },
+  ], 0, 0, 0, [linhaOrderAll({
+    "ID do pedido": "HIST-F", "Nome do Produto": "Base Kansas", "Nome da variação": "Dourado",
+    "Número de referência SKU": "5470", "Subtotal do produto": 100, "Preço acordado": 100,
+  })]);
+  eq("F: 5470 encontra 5470-0", resultF.detailedRows[0]["ID resolvido pela ponte"], "426030428544");
+  eq("F: custo correto é aplicado", resultF.detailedRows[0].CMV, 83.79);
+
+  const resultFInverso = processShopee([
+    linhaPerformance({ "ID do Item": "ITEM-FI", "ID da Variação": "MODEL-FI", "SKU da Variação": "8000", Produto: "Produto FI", "Nome da Variação": "Única" }),
+  ], [
+    { id: "ITEM-FI", "model id": "MODEL-FI", Custo: 30, imposto: 0 },
+  ], 0, 0, 0, [linhaOrderAll({
+    "ID do pedido": "HIST-FI", "Nome do Produto": "Produto FI", "Nome da variação": "Única",
+    "Número de referência SKU": "8000-V", "Subtotal do produto": 100, "Preço acordado": 100,
+  })]);
+  eq("F: caminho inverso remove somente -V", resultFInverso.detailedRows[0]["ID resolvido pela ponte"], "MODEL-FI");
+
+  // G) Dois anúncios no SKU histórico: nomes compartilhados desambiguam.
+  const resultG = processShopee([
+    linhaPerformance({ "ID do Item": "ITEM-G1", "ID da Variação": "MODEL-G1", "SKU da Variação": "7000-V", Produto: "Produto G1", "Nome da Variação": "Azul" }),
+    linhaPerformance({ "ID do Item": "ITEM-G2", "ID da Variação": "MODEL-G2", "SKU da Variação": "7000-V", Produto: "Produto G2", "Nome da Variação": "Verde" }),
+  ], [
+    { id: "ITEM-G1", "model id": "MODEL-G1", Custo: 10, imposto: 0 },
+    { id: "ITEM-G2", "model id": "MODEL-G2", Custo: 20, imposto: 0 },
+  ], 0, 0, 0, [linhaOrderAll({
+    "ID do pedido": "HIST-G", "Nome do Produto": "Produto G2", "Nome da variação": "Verde",
+    "Número de referência SKU": "7000", "Subtotal do produto": 100, "Preço acordado": 100,
+  })]);
+  eq("G: produto + variação desambiguam SKU histórico", resultG.detailedRows[0]["ID resolvido pela ponte"], "MODEL-G2");
+  eq("G: custo vem do Model ID desambiguado", resultG.detailedRows[0].CMV, 20);
+
+  // H) Sem 5444, 5444-V ou 5444-0 na Performance, continua sem custo.
+  const resultH = processShopee([
+    linhaPerformance({ "ID do Item": "ITEM-H", "ID da Variação": "MODEL-H", "SKU da Variação": "OUTRO-SKU", Produto: "Outro produto" }),
+  ], [
+    { id: "ITEM-H", "model id": "MODEL-H", Custo: 10, imposto: 0 },
+  ], 0, 0, 0, [linhaOrderAll({
+    "ID do pedido": "HIST-H", "Nome do Produto": "Prateleira Tripla Hone", "Nome da variação": "Dourado/Branco",
+    "Número de referência SKU": "5444", "Subtotal do produto": 100, "Preço acordado": 100,
+  })]);
+  eq("H: 5444 sem correspondência segura continua sem custo", resultH.detailedRows[0].CMV, null);
+  eq("H: 5444 permanece como SKU não encontrado", resultH.unmatchedCosts[0].value, "5444");
+}
+
+// Teste 5 — sem Order.all, nada muda no motor estimado.
 console.log("\n▸ Teste 5 — performance + custos continua estimated_performance");
 {
   const performance = [

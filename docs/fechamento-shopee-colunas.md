@@ -66,12 +66,20 @@ Ordem de resolução por linha (`resolveShopeeLineCost`):
    - produto + variação exatos preservam o caso de SKU renomeado;
    - `SKU Principle` é consultado por último, em índice separado, e somente
      resolve quando os campos disponíveis deixam uma identidade inequívoca.
+   - se o SKU exato não existir, o fallback histórico aceita somente adição ou
+     remoção dos sufixos `-V` e `-0`; os nomes de produto/variação continuam
+     sendo usados quando houver mais de um candidato.
 3. Encontrado um Model ID, o custo vem **exclusivamente** desse Model ID. Se ele
    não existir na base, não há fallback para o ID do Item pai.
+4. Se ainda restarem vários Model IDs, o cálculo só prossegue quando **todos**
+   existirem na base e tiverem custo e imposto numericamente idênticos. A
+   identidade permanece informativamente ambígua, mas o resultado financeiro é
+   equivalente. Qualquer diferença de custo ou imposto mantém a linha sem custo.
 
 `summary.detailedRows["Match de custo"]` registra qual caminho resolveu:
 `direct_variation_id`, `direct_model_id`, `direct_item_id`, `direct_product_id`,
-`direct_sku`, `bridge_variation_id`, `bridge_item_id`, `miss`, `ambiguous`.
+`direct_sku`, `bridge_variation_id`, `bridge_item_id`,
+`bridge_equivalent_cost`, `miss`, `ambiguous`.
 
 **A ponte é SÓ identidade.** Nenhum número da performance (vendas, unidades,
 ticket, comissão estimada, taxa fixa) entra no motor real: receita, taxas,
@@ -79,9 +87,9 @@ frete, status, cancelamentos e devoluções continuam vindo integralmente do
 `Order.all`. Por isso o `calculationMode` continua `real_financial`.
 
 **Ambiguidade nunca é resolvida por arbitragem.** Se os campos da venda não
-distinguirem uma única identidade, o custo fica `null`, a linha entra como "sem
-custo" e o fechamento reporta `COST_BRIDGE_AMBIGUOUS`, incluindo os IDs
-candidatos. Custos iguais não autorizam escolher entre Model IDs diferentes.
+distinguirem uma única identidade e os candidatos não forem financeiramente
+equivalentes, o custo fica `null`, a linha entra como "sem custo" e o fechamento
+reporta `COST_BRIDGE_AMBIGUOUS`, incluindo os IDs candidatos.
 
 SKU é **texto**: `0007654352998` nunca vira `7654352998`. Valores de
 preenchimento da performance (`-`, `--`, `N/A`, `0`) não viram identidade.
@@ -89,6 +97,7 @@ preenchimento da performance (`-`, `--`, `N/A`, `0`) não viram identidade.
 Diagnóstico adicional no `summary` (aditivo, não substitui `revenueWithCost` /
 `calculatedCoveragePercent`): `costBridgeAvailable`, `costBridgeSkuCount`,
 `costBridgeIdentityCount`, `directCostMatchCount`, `bridgeCostMatchCount`, `bridgeMissCount`,
+`bridgeEquivalentCostMatchCount`, `bridgeHistoricalSkuMatchCount`,
 `bridgeAmbiguousCount`, `bridgeAmbiguousKeys`, `zeroCostRowsCount`,
 `directCoverage`, `bridgeResolvedCoverage`, `finalCoverage`.
 

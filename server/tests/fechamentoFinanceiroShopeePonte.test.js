@@ -1,6 +1,6 @@
 // server/tests/fechamentoFinanceiroShopeePonte.test.js
 // Ponte de custo da Shopee: Order.all (financeiro real) -> performance
-// (identidade SKU -> ID) -> base de custos (custo/imposto).
+// (identidade produto/variação -> Model ID; SKU auxiliar) -> base de custos.
 //
 // Regras protegidas aqui:
 //  - o financeiro continua vindo SÓ do Order.all (a performance nunca vira receita);
@@ -53,6 +53,7 @@ function linhaOrderAll(overrides) {
     "Status do pedido": "Concluído",
     "Status da Devolução / Reembolso": "",
     "Nome do Produto": "Produto",
+    "Nome da variação": "",
     "Nº de referência do SKU principal": "",
     "Número de referência SKU": "",
     Quantidade: 1,
@@ -288,14 +289,152 @@ console.log("\n▸ Teste 4 — mesmo SKU em duas variações com custos diferent
   ok("o SKU ambíguo é informado", r.summary.bridgeAmbiguousKeys.includes("7862"));
   eq("faturamento é preservado", r.summary.grossRevenueTotal, 180);
 
-  // Dois IDs com o MESMO custo não são ambiguidade — é duplicidade de chave.
+  // Mesmo com custos iguais, dois Model IDs continuam sendo duas identidades:
+  // sem campos que distingam a variação, não há escolha automática.
   const costRowsIguais = [
     { id: "16256858358", Custo: 45, imposto: 14.5 },
     { id: "58253291069", Custo: 45, imposto: 14.5 },
   ];
   const rIguais = processShopee(performance, costRowsIguais, 0, 0, 0, orderAll);
-  eq("custos idênticos resolvem normalmente", rIguais.detailedRows[0].CMV, 45);
-  eq("sem ambiguidade quando o custo é o mesmo", rIguais.summary.bridgeAmbiguousCount, 0);
+  eq("custos idênticos não autorizam escolher identidade", rIguais.detailedRows[0].CMV, null);
+  eq("continua ambíguo sem campos distintivos", rIguais.summary.bridgeAmbiguousCount, 1);
+}
+
+// ── Casos obrigatórios A–E — identidade por Model ID ─────────────────────
+console.log("\n▸ Casos A–E — Model ID define o custo; SKU é apenas auxiliar");
+{
+  // A) SKU único continua resolvendo normalmente.
+  const orderA = [linhaOrderAll({
+    "ID do pedido": "CASE-A",
+    "Nº de referência do SKU principal": "SKU-A",
+    "Subtotal do produto": 100,
+    "Preço acordado": 100,
+  })];
+  const performanceA = [
+    linhaPerformance({ "ID do Item": "ITEM-A", "ID da Variação": "-", "SKU Principle": "SKU-A" }),
+    linhaPerformance({
+      "ID do Item": "ITEM-A",
+      "ID da Variação": "MODEL-A",
+      "SKU da Variação": "SKU-A",
+    }),
+  ];
+  const resultA = processShopee(performanceA, [
+    { id: "ITEM-A", "model id": "MODEL-A", Custo: 20, imposto: 0 },
+  ], 0, 0, 0, orderA);
+  eq("A: mesmo SKU → um Model ID resolve", resultA.detailedRows[0].CMV, 20);
+
+  // B) Mesmo SKU, Model IDs e custos distintos: produto + nome da variação
+  // selecionam exatamente a identidade da linha vendida.
+  const productB = "Estufa de Salgados Reta Tripla 3 Andares 09 Bandejas Grand Alta Capacidade e Eficiência 127v/220v";
+  const orderB = [linhaOrderAll({
+    "ID do pedido": "CASE-B",
+    "Nome do Produto": productB,
+    "Nome da variação": "220V",
+    "Nº de referência do SKU principal": "816",
+    "Subtotal do produto": 1638.9,
+    "Preço acordado": 1638.9,
+  })];
+  const performanceB = [
+    linhaPerformance({ "ID do Item": "23698827488", "ID da Variação": "189610928129", "Nome da Variação": "220v", "SKU Principle": "816", Produto: productB }),
+    linhaPerformance({ "ID do Item": "23698827488", "ID da Variação": "219613990608", "Nome da Variação": "127v", "SKU Principle": "816", Produto: productB }),
+  ];
+  const resultB = processShopee(performanceB, [
+    { id: "23698827488", "model id": "189610928129", Custo: 1156, imposto: 14.5 },
+    { id: "23698827488", "model id": "219613990608", Custo: 999, imposto: 14.5 },
+  ], 0, 0, 0, orderB);
+  eq("B: produto + 220V escolhem o Model ID de 220V", resultB.detailedRows[0]["ID resolvido pela ponte"], "189610928129");
+  eq("B: custo vem somente da variação de 220V", resultB.detailedRows[0].CMV, 1156);
+  eq("B: múltiplos Model IDs no SKU não geram ambiguidade", resultB.summary.bridgeAmbiguousCount, 0);
+
+  // C) SKU renomeado, mas mesma identidade de produto/variação e Model ID.
+  const orderC = [linhaOrderAll({
+    "ID do pedido": "CASE-C",
+    "Nome do Produto": "Produto X",
+    "Nome da variação": "220V",
+    "Nº de referência do SKU principal": "5444",
+    "Número de referência SKU": "5444",
+    "Subtotal do produto": 200,
+    "Preço acordado": 200,
+  })];
+  const performanceC = [
+    linhaPerformance({ "ID do Item": "ITEM-X", "ID da Variação": "310974457230", "Nome da Variação": "220V", "SKU da Variação": "5444", Produto: "Produto X" }),
+    linhaPerformance({ "ID do Item": "ITEM-X", "ID da Variação": "310974457230", "Nome da Variação": "220V", "SKU da Variação": "5444-V", Produto: "Produto X" }),
+  ];
+  const resultC = processShopee(performanceC, [
+    { id: "ITEM-X", "model id": "310974457230", Custo: 73, imposto: 0 },
+  ], 0, 0, 0, orderC);
+  eq("C: SKU antigo e atual convergem ao mesmo Model ID", resultC.detailedRows[0]["ID resolvido pela ponte"], "310974457230");
+  eq("C: renomear SKU não altera o custo", resultC.detailedRows[0].CMV, 73);
+
+  // D) Sem variação/produto suficiente, SKU compartilhado não escolhe.
+  const orderD = [linhaOrderAll({
+    "ID do pedido": "CASE-D",
+    "Nome do Produto": "Produto sem identidade suficiente",
+    "Nº de referência do SKU principal": "SKU-D",
+    "Subtotal do produto": 100,
+    "Preço acordado": 100,
+  })];
+  const performanceD = [
+    linhaPerformance({ "ID do Item": "ITEM-D", "ID da Variação": "MODEL-D1", "Nome da Variação": "127V", "SKU Principle": "SKU-D", Produto: "Outro produto" }),
+    linhaPerformance({ "ID do Item": "ITEM-D", "ID da Variação": "MODEL-D2", "Nome da Variação": "220V", "SKU Principle": "SKU-D", Produto: "Outro produto" }),
+  ];
+  const resultD = processShopee(performanceD, [
+    { id: "ITEM-D", "model id": "MODEL-D1", Custo: 40, imposto: 0 },
+    { id: "ITEM-D", "model id": "MODEL-D2", Custo: 60, imposto: 0 },
+  ], 0, 0, 0, orderD);
+  eq("D: informação insuficiente mantém custo vazio", resultD.detailedRows[0].CMV, null);
+  ok("D: candidatos mostram os dois Model IDs", resultD.unmatchedCosts[0].candidates.includes("MODEL-D1") && resultD.unmatchedCosts[0].candidates.includes("MODEL-D2"));
+
+  // E) Encontrado o Model ID, o item pai não pode virar fallback de custo.
+  const orderE = [linhaOrderAll({
+    "ID do pedido": "CASE-E",
+    "Nome do Produto": "Produto E",
+    "Nome da variação": "220V",
+    "Nº de referência do SKU principal": "SKU-E",
+    "Subtotal do produto": 100,
+    "Preço acordado": 100,
+  })];
+  const performanceE = [linhaPerformance({
+    "ID do Item": "ITEM-E",
+    "ID da Variação": "MODEL-E",
+    "Nome da Variação": "220V",
+    "SKU Principle": "SKU-E",
+    Produto: "Produto E",
+  })];
+  const resultE = processShopee(performanceE, [
+    { id: "ITEM-E", Custo: 999, imposto: 0 },
+  ], 0, 0, 0, orderE);
+  eq("E: Model ID ausente na base não cai no custo do item pai", resultE.detailedRows[0].CMV, null);
+  eq("E: pendência informa o Model ID exato", resultE.unmatchedCosts[0].value, "MODEL-E");
+
+  const directE = processShopeeFinancialOrders({
+    salesRowsRaw: [
+      linhaOrderAll({
+        "ID do pedido": "E-DIRECT",
+        "ID da Variação": "MODEL-E-DIRECT",
+        "ID do Item": "ITEM-E-DIRECT",
+        "Nº de referência do SKU principal": "SKU-E-DIRECT",
+        "Subtotal do produto": 100,
+        "Preço acordado": 100,
+      }),
+    ],
+    costMap: buildShopeeCostMap([
+      { id: "ITEM-E-DIRECT", "model id": "OUTRO-MODEL", Custo: 999, imposto: 0 },
+      { id: "SKU-E-DIRECT", "model id": "OUTRO-SKU-MODEL", Custo: 888, imposto: 0 },
+    ]),
+    costBridge: buildShopeeCostBridge([
+      linhaPerformance({
+        "ID do Item": "ITEM-E-DIRECT",
+        "ID da Variação": "OUTRO-MODEL",
+        "SKU Principle": "SKU-E-DIRECT",
+      }),
+    ]),
+    ads: 0,
+    venforce: 0,
+    affiliates: 0,
+  });
+  eq("E: Model ID direto também não cai em item, SKU ou ponte", directE.detailedRows[0].CMV, null);
+  eq("E: pendência direta preserva o Model ID informado", directE.unmatchedCosts[0].value, "MODEL-E-DIRECT");
 }
 
 // ── Teste 5 — sem Order.all, nada muda no motor estimado ──────────────────

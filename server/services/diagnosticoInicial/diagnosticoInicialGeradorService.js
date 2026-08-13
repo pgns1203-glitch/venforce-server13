@@ -75,7 +75,7 @@ function calcularCompletude(marketplace, respostas) {
 }
 
 function montarResumoExecutivo(avaliacao, marketplace) {
-  const nomeMkt = marketplace === "shopee" ? "Shopee" : "Mercado Livre";
+  const nomeMkt = schema.MARKETPLACE_LABELS[marketplace] || marketplace;
   const partes = [`Diagnóstico inicial ${nomeMkt} gerado com ${avaliacao.completude.percentual}% de completude.`];
   if (avaliacao.pontosPositivos.length) partes.push(`${avaliacao.pontosPositivos.length} ponto(s) positivo(s) identificado(s).`);
   if (avaliacao.pontosNegativos.length) partes.push(`${avaliacao.pontosNegativos.length} ponto(s) de atenção identificado(s).`);

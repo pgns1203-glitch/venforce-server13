@@ -442,7 +442,7 @@ function aplicarEstadoBase() {
   if (arquivosHint) {
     if (isTikTok) arquivosHint.textContent = "Envie o Income do TikTok Shop — os custos vêm da Base TikTok vinculada. O Onhold é opcional.";
     else if (usandoBase) arquivosHint.textContent = "Envie apenas a planilha de vendas — os custos vêm da base vinculada.";
-    else if (marketplace === "shopee") arquivosHint.textContent = "Envie as planilhas de vendas e custos da Shopee.";
+    else if (marketplace === "shopee") arquivosHint.textContent = "Shopee: performance + custos + Order.all (recomendado) — as 3 juntas geram o fechamento financeiro real.";
     else arquivosHint.textContent = "Envie a planilha de vendas e a planilha de custos.";
   }
 
@@ -460,8 +460,13 @@ function aplicarRotulosPlanilhaPrincipal() {
   const hint = card.querySelector(".vf-dropzone__hint");
   const isTikTok = marketplace === "tiktok";
 
+  const isShopee = marketplace === "shopee";
   if (label) label.textContent = isTikTok ? "Income TikTok Shop" : "Planilha de vendas";
-  if (hint) hint.textContent = isTikTok ? "Relatório financeiro realizado do período" : ".xlsx";
+  if (hint) {
+    if (isTikTok) hint.textContent = "Relatório financeiro realizado do período";
+    else if (isShopee) hint.textContent = ".xlsx · performance (parentskudetail) ou Order.all";
+    else hint.textContent = ".xlsx";
+  }
 }
 
 // Afiliados manual: no TikTok a comissão de afiliados já está descontada no
@@ -728,6 +733,7 @@ function montarPayloadFechamentoCliente(data) {
   ].filter(Boolean).join(" ");
 
   const unmatched = Array.isArray(data?.unmatchedIds) ? data.unmatchedIds : [];
+  const unmatchedCosts = Array.isArray(data?.unmatchedCosts) ? data.unmatchedCosts : [];
   const unmatchedCancelled = Array.isArray(data?.unmatchedCancelled) ? data.unmatchedCancelled : [];
   const ignoredRevenue = safeNumber(data?.ignoredRevenue);
   const detailedAll = Array.isArray(data?.detailedRows) ? data.detailedRows : [];
@@ -789,11 +795,15 @@ function montarPayloadFechamentoCliente(data) {
   }
 
   if (unmatched.length > 0) {
+    const totalPendencias = unmatchedCosts.length > 0 ? unmatchedCosts.length : unmatched.length;
     secoes.push({
       tipo: "atencao",
-      titulo: "Produtos sem custo cadastrado",
-      texto: `Identificamos ${unmatched.length} produto(s) que não foram cruzados com a base de custos. O faturamento deles continua no total; o lucro não os cobre. Receita sem custo: ${brl(summaryNormalized.revenueWithoutCost ?? ignoredRevenue)}.`,
-      bullets: unmatched.slice(0, 30).map((x) => String(x)),
+      titulo: "Produtos sem custo identificado",
+      texto: `Identificamos ${totalPendencias} produto(s) sem custo identificado. Esse valor permanece no faturamento, mas fica fora do cálculo de LC/MC. Receita sem custo identificado: ${brl(summaryNormalized.revenueWithoutCost ?? ignoredRevenue)}.`,
+      bullets:
+        unmatchedCosts.length > 0
+          ? unmatchedCosts.slice(0, 30).map((item) => shopeeCostGapToPlainText(item))
+          : unmatched.slice(0, 30).map((x) => String(x)),
     });
   }
 
@@ -1780,6 +1790,43 @@ function wireReconInfoPopover(root) {
   });
 }
 
+// Rótulo do diagnóstico tipado de custo Shopee (server/services/fechamentoFinanceiro/
+// shopeeOrderAllService.js -> describeShopeeCostGap). Nunca mistura SKU e ID:
+// diz explicitamente qual dos dois está sendo mostrado.
+const SHOPEE_COST_GAP_TYPE_LABEL = {
+  variation_id: "ID Variação",
+  item_id: "ID Item",
+  model_id: "ID Model",
+  product_id: "ID Produto",
+  sku: "SKU",
+  order_id: "ID do pedido",
+  ambiguous_ids: "IDs conflitantes",
+};
+
+const SHOPEE_COST_GAP_REASON_LABEL = {
+  not_found_in_performance_bridge: "não encontrado na performance",
+  not_found_in_cost_base: "não encontrado na base de custos",
+  ambiguous_bridge_candidates: "custos diferentes na base",
+  zero_cost_in_base: "encontrado na base, mas sem custo cadastrado (0)",
+  not_found_direct: "não encontrado na base de custos",
+};
+
+// Mesmo diagnóstico tipado, em texto puro (para bullets/relatório sem HTML).
+// A tela mostra só IDs — nunca SKU ao lado de um ID já resolvido.
+function shopeeCostGapToPlainText(item) {
+  const typeLabel = SHOPEE_COST_GAP_TYPE_LABEL[item?.type] || "ID";
+  const reasonLabel = SHOPEE_COST_GAP_REASON_LABEL[item?.reason] || "não encontrado";
+  const value = String(item?.value ?? "—");
+  return `${typeLabel}: ${value} — ${reasonLabel}`;
+}
+
+function renderShopeeCostGapItem(item) {
+  const typeLabel = SHOPEE_COST_GAP_TYPE_LABEL[item?.type] || "ID";
+  const reasonLabel = SHOPEE_COST_GAP_REASON_LABEL[item?.reason] || "não encontrado";
+  const value = escapeHTML(String(item?.value ?? "—"));
+  return `<span class="vf-fin-idlist__item vf-mono" title="${escapeHTML(reasonLabel)}">${escapeHTML(typeLabel)}: ${value} — ${escapeHTML(reasonLabel)}</span>`;
+}
+
 function renderFinTabela(data) {
   const host = document.getElementById("fin-tabela");
   if (!host) return;
@@ -1994,22 +2041,32 @@ function renderFinTabela(data) {
     renderPage();
   }
 
-  // --- IDs sem custo ---
+  // --- Produtos sem custo identificado ---
   const unmatched = Array.isArray(data?.unmatchedIds) ? data.unmatchedIds : [];
+  const unmatchedCosts = Array.isArray(data?.unmatchedCosts) ? data.unmatchedCosts : [];
   if (unmatched.length > 0) {
     const panel = document.createElement("div");
     panel.className = "vf-banner is-danger";
     panel.setAttribute("role", "alert");
 
-    const idsHtml = unmatched
-      .map((id) => `<span class="vf-fin-idlist__item vf-mono">${escapeHTML(String(id))}</span>`)
-      .join("");
+    // unmatchedCosts é o diagnóstico tipado (SKU x ID resolvido pela ponte
+    // x motivo); quando ele existe, é o que é mostrado. unmatchedIds (lista
+    // solta, sem dizer se é SKU ou ID) fica só como fallback de compatibilidade
+    // para motores/marketplaces que ainda não emitem o diagnóstico tipado.
+    const itemsHtml = unmatchedCosts.length > 0
+      ? unmatchedCosts.map((item) => renderShopeeCostGapItem(item)).join("")
+      : unmatched
+          .map((id) => `<span class="vf-fin-idlist__item vf-mono">${escapeHTML(String(id))}</span>`)
+          .join("");
+
+    const totalPendencias = unmatchedCosts.length > 0 ? unmatchedCosts.length : unmatched.length;
+    const revenueSemCusto = data?.summary?.revenueWithoutCost ?? data?.ignoredRevenue ?? 0;
 
     panel.innerHTML = `
       <div class="vf-banner__content">
-        <p class="vf-banner__title">${unmatched.length} ID(s) não encontrados na planilha de custos</p>
-        <p class="vf-banner__description">Receita ignorada: ${escapeHTML(brl(data?.ignoredRevenue || 0))}. Cadastre esses IDs na base de custos e processe novamente.</p>
-        <div class="vf-fin-idlist">${idsHtml}</div>
+        <p class="vf-banner__title">${totalPendencias} produto(s) sem custo identificado</p>
+        <p class="vf-banner__description">Receita sem custo identificado: ${escapeHTML(brl(revenueSemCusto))}. Esse valor permanece no faturamento, mas fica fora do cálculo de LC/MC. Cadastre o custo na base e processe novamente.</p>
+        <div class="vf-fin-idlist">${itemsHtml}</div>
       </div>
     `;
     host.appendChild(panel);

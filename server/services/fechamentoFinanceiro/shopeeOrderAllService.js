@@ -165,6 +165,26 @@ function rawProvided(raw) {
   return String(raw ?? "").trim() !== "";
 }
 
+// "0", "0.00", "0,00" — o placeholder numérico que a Shopee grava em colunas
+// de TEXTO na linha de TOTAL do Order.all, nunca visto em pedido real.
+function isZeroPlaceholder(value) {
+  const text = String(value ?? "").trim();
+  return text !== "" && /^0+([.,]0+)?$/.test(text);
+}
+
+// A linha de TOTAL/resumo do Order.all real (confirmada num export do
+// cliente) repete esse placeholder em ID do pedido, Status do pedido E Nome
+// do Produto — três colunas que todo pedido de verdade preenche com texto
+// (o "ID do pedido" da Shopee é sempre alfanumérico, nunca só dígitos/zeros).
+// Exige o ID mais pelo menos um dos outros dois para não confundir um
+// pedido real cujo nome de produto por acaso viesse vazio/zerado.
+function isShopeeOrderAllTotalRow(orderId, statusRaw, product) {
+  return (
+    isZeroPlaceholder(orderId) &&
+    (isZeroPlaceholder(statusRaw) || isZeroPlaceholder(product))
+  );
+}
+
 function parseShopeeFinancialRows(rows) {
   const parsed = [];
 
@@ -175,6 +195,26 @@ function parseShopeeFinancialRows(rows) {
     const product = String(
       findField(row, ["nome do produto", "produto", "product name"]) || ""
     ).trim();
+    const variationName = String(
+      findField(row, [
+        "nome da variacao",
+        "nome da variação",
+        "opcao da variacao",
+        "opção da variação",
+        "variation name",
+        "variation option",
+      ]) || ""
+    ).trim();
+
+    // Linha de TOTAL/resumo da planilha, não um pedido: não entra em
+    // nenhuma métrica (faturamento, contagem, cobertura, LC/MC).
+    const statusRawForTotalCheck = String(
+      findField(row, ["status do pedido", "status pedido"]) || ""
+    ).trim();
+    if (isShopeeOrderAllTotalRow(orderId, statusRawForTotalCheck, product)) {
+      continue;
+    }
+
     const itemIdRaw = findField(row, [
       "id do item",
       "id do produto",
@@ -330,6 +370,7 @@ function parseShopeeFinancialRows(rows) {
     parsed.push({
       id: orderId || String(parsed.length + 1),
       product: product || "—",
+      variationName,
       itemId,
       productId,
       variationId,
@@ -442,40 +483,565 @@ function collapseOrderLevelValue(values) {
   };
 }
 
-function lookupShopeeCost(costMap, line) {
-  if (!costMap || typeof costMap.get !== "function") return null;
+// Ordem real de tentativa de match do motor real. Extraída como constante
+// só para o Debug Financeiro conseguir nomear cada tentativa — o LOOP e a
+// prioridade continuam sendo os mesmos de sempre.
+const SHOPEE_COST_LOOKUP_FIELDS = Object.freeze([
+  "variationId",
+  "modelId",
+  "itemId",
+  "productId",
+  "skuVariation",
+  "skuPrinciple",
+  "skuMainRef",
+  "skuRefNumber",
+  "sku",
+]);
 
-  const candidates = [
-    line.variationId,
-    line.modelId,
-    line.itemId,
-    line.productId,
-    line.skuVariation,
-    line.skuPrinciple,
-    line.skuMainRef,
-    line.skuRefNumber,
-    line.sku,
-  ];
+// Nome do "costMatchSource" de cada campo do match DIRETO. Só rotula o que já
+// acontecia — a ordem de tentativa continua sendo SHOPEE_COST_LOOKUP_FIELDS.
+const SHOPEE_DIRECT_MATCH_SOURCE = Object.freeze({
+  variationId: "direct_variation_id",
+  modelId: "direct_model_id",
+  itemId: "direct_item_id",
+  productId: "direct_product_id",
+  skuVariation: "direct_sku",
+  skuPrinciple: "direct_sku",
+  skuMainRef: "direct_sku",
+  skuRefNumber: "direct_sku",
+  sku: "direct_sku",
+});
 
-  for (const candidate of candidates) {
+// Campos de SKU do Order.all, na ordem em que a ponte deve tentá-los: do mais
+// específico (SKU da variação) para o mais genérico.
+const SHOPEE_BRIDGE_SKU_FIELDS = Object.freeze([
+  "skuVariation",
+  "skuPrinciple",
+  "skuMainRef",
+  "skuRefNumber",
+  "sku",
+]);
+
+// debugCollector é opcional e só existe quando chamado a partir do Debug
+// Financeiro (POST /fechamentos/financeiro/debug). Sem ele, o comportamento
+// e o retorno desta função são IDÊNTICOS ao anterior — mesmo loop, mesmo
+// early return no primeiro hit.
+function lookupShopeeCostDetailed(costMap, line, debugCollector) {
+  if (!costMap || typeof costMap.get !== "function") return { row: null, field: null };
+
+  // Model ID / ID da Variação presente no próprio Order.all é uma
+  // identidade autoritativa. Se a base não contiver esse ID, não é seguro
+  // degradar para item pai ou SKU, que podem representar outra variação.
+  const authoritativeFields = ["variationId", "modelId"].filter((field) =>
+    normalizeMatchKey(line[field])
+  );
+  const lookupFields = authoritativeFields.length > 0
+    ? authoritativeFields
+    : SHOPEE_COST_LOOKUP_FIELDS;
+
+  for (const field of lookupFields) {
+    const candidate = line[field];
     const key = normalizeMatchKey(candidate);
-    if (!key) continue;
+
+    if (!key) {
+      if (debugCollector) {
+        debugCollector.recordMatchAttempt({
+          engine: "shopee_real",
+          stage: "cost_lookup",
+          orderId: line.id,
+          field,
+          rawValue: candidate ?? null,
+          normalizedKey: null,
+          result: "skip",
+        });
+      }
+      continue;
+    }
+
     const hit = costMap.get(key);
-    if (hit) return hit;
+    if (debugCollector) {
+      debugCollector.recordMatchAttempt({
+        engine: "shopee_real",
+        stage: "cost_lookup",
+        orderId: line.id,
+        field,
+        rawValue: candidate,
+        normalizedKey: key,
+        result: hit ? "hit" : "miss",
+      });
+    }
+    if (hit) return { row: hit, field };
+  }
+
+  return {
+    row: null,
+    field: null,
+    authoritativeField: authoritativeFields[0] || null,
+  };
+}
+
+function lookupShopeeCost(costMap, line, debugCollector) {
+  return lookupShopeeCostDetailed(costMap, line, debugCollector).row;
+}
+
+const SHOPEE_IDENTITY_PLACEHOLDERS = new Set(["", "-", "--", "–", "n/a", "na", "0"]);
+
+function normalizeShopeeIdentityText(value) {
+  const normalized = normalizeKey(value);
+  return SHOPEE_IDENTITY_PLACEHOLDERS.has(normalized) ? "" : normalized;
+}
+
+function bridgeRecordIdentity(record) {
+  const modelId = normalizeShopeeId(record?.modelId || record?.variationId);
+  if (modelId) return `model:${modelId}`;
+  const itemId = normalizeShopeeId(record?.itemId);
+  return itemId ? `item:${itemId}` : "";
+}
+
+function uniqueBridgeRecords(records) {
+  const list = Array.isArray(records) ? records : [];
+  // A Performance traz uma linha agregada do item pai e, logo abaixo, suas
+  // variações. Quando há Model ID para o mesmo item, a linha pai não é uma
+  // segunda identidade candidata.
+  const itemIdsWithModels = new Set(
+    list
+      .filter((record) => normalizeShopeeId(record?.modelId || record?.variationId))
+      .map((record) => normalizeShopeeId(record?.itemId))
+      .filter(Boolean)
+  );
+  const unique = new Map();
+  for (const record of list) {
+    const modelId = normalizeShopeeId(record?.modelId || record?.variationId);
+    const itemId = normalizeShopeeId(record?.itemId);
+    if (!modelId && itemId && itemIdsWithModels.has(itemId)) continue;
+    const key = bridgeRecordIdentity(record);
+    if (key && !unique.has(key)) unique.set(key, record);
+  }
+  return Array.from(unique.values());
+}
+
+function getShopeeCostBridgeRecords(costBridge) {
+  if (!costBridge || typeof costBridge.get !== "function") return [];
+  if (Array.isArray(costBridge.records)) return costBridge.records;
+
+  // Compatibilidade defensiva com pontes antigas/manuais no formato
+  // Map<SKU, { variationIds, itemIds }>.
+  const records = [];
+  for (const [sku, entry] of costBridge.entries()) {
+    for (const modelId of Array.isArray(entry?.variationIds) ? entry.variationIds : []) {
+      records.push({ modelId, variationId: modelId, itemId: "", productName: "", variationName: "", variationSkus: [sku], principalSkus: [] });
+    }
+    for (const itemId of Array.isArray(entry?.itemIds) ? entry.itemIds : []) {
+      records.push({ modelId: "", variationId: "", itemId, productName: "", variationName: "", variationSkus: [sku], principalSkus: [] });
+    }
+  }
+  return records;
+}
+
+function getShopeeCostBridgeIndex(costBridge, type) {
+  if (!costBridge || typeof costBridge.get !== "function") return null;
+  if (type === "variation") {
+    return costBridge.variationSkuIndex instanceof Map
+      ? costBridge.variationSkuIndex
+      : costBridge;
+  }
+  return costBridge.principalSkuIndex instanceof Map
+    ? costBridge.principalSkuIndex
+    : null;
+}
+
+function hasShopeeCostBridge(costBridge) {
+  const principalIndex = getShopeeCostBridgeIndex(costBridge, "principal");
+  return (
+    !!costBridge &&
+    typeof costBridge.get === "function" &&
+    (
+      costBridge.size > 0 ||
+      (principalIndex && principalIndex.size > 0) ||
+      getShopeeCostBridgeRecords(costBridge).length > 0
+    )
+  );
+}
+
+function bridgeIdsFromRecords(records) {
+  const variationIds = [];
+  const itemIds = [];
+  for (const record of uniqueBridgeRecords(records)) {
+    const modelId = normalizeShopeeId(record.modelId || record.variationId);
+    const itemId = normalizeShopeeId(record.itemId);
+    if (modelId && !variationIds.includes(modelId)) variationIds.push(modelId);
+    if (itemId && !itemIds.includes(itemId)) itemIds.push(itemId);
+  }
+  return { variationIds, itemIds };
+}
+
+function bridgeCandidateIds(records) {
+  const ids = bridgeIdsFromRecords(records);
+  return ids.variationIds.length > 0 ? ids.variationIds : ids.itemIds;
+}
+
+function resolveEquivalentShopeeBridgeCost(costMap, records) {
+  const candidateIds = bridgeCandidateIds(records);
+  if (candidateIds.length < 2 || !costMap || typeof costMap.get !== "function") {
+    return null;
+  }
+
+  const costRows = candidateIds.map((id) => costMap.get(normalizeMatchKey(id)) || null);
+  // Se qualquer identidade candidata não existir na base, o resultado
+  // financeiro dela é desconhecido e não há equivalência segura.
+  if (costRows.some((row) => !row)) return null;
+
+  const first = costRows[0];
+  const equivalent = costRows.every(
+    (row) =>
+      round2(Number(row.cost || 0)) === round2(Number(first.cost || 0)) &&
+      round2(Number(row.taxPercent || 0)) === round2(Number(first.taxPercent || 0))
+  );
+  return equivalent ? { costRow: first, candidateIds } : null;
+}
+
+function selectShopeeIdentityFromRecords(rawRecords, line, source, bridgeSku) {
+  const records = uniqueBridgeRecords(rawRecords);
+  if (records.length === 0) return null;
+  const productKey = normalizeShopeeIdentityText(line.product);
+  const variationKey = normalizeShopeeIdentityText(line.variationName);
+  const recordProduct = (record) => normalizeShopeeIdentityText(record.productName);
+  const recordVariation = (record) => normalizeShopeeIdentityText(record.variationName);
+  const ambiguityKey = line.product && line.variationName
+    ? `${line.product} / ${line.variationName}`
+    : bridgeSku || line.product;
+
+  if (records.length === 1) {
+    return { ambiguous: false, record: records[0], records, source, bridgeSku, ambiguityKey };
+  }
+
+  // O mesmo SKU da Variação pode existir em anúncios diferentes. Nessa
+  // situação, somente os campos exatos compartilhados pelas duas planilhas
+  // podem reduzir os candidatos.
+  let narrowed = records;
+  if (productKey) {
+    const byProduct = narrowed.filter((record) => recordProduct(record) === productKey);
+    if (byProduct.length === 0) {
+      return { ambiguous: true, record: null, records, source, bridgeSku, ambiguityKey };
+    }
+    narrowed = byProduct;
+  }
+  if (variationKey) {
+    const byVariation = narrowed.filter((record) => recordVariation(record) === variationKey);
+    if (byVariation.length === 0) {
+      return { ambiguous: true, record: null, records, source, bridgeSku, ambiguityKey };
+    }
+    narrowed = byVariation;
+  }
+
+  narrowed = uniqueBridgeRecords(narrowed);
+  if (narrowed.length === 1) {
+    return { ambiguous: false, record: narrowed[0], records: narrowed, source, bridgeSku, ambiguityKey };
+  }
+  return { ambiguous: true, record: null, records: narrowed, source, bridgeSku, ambiguityKey };
+}
+
+// Ordem estrita da ponte:
+//   1. Número de referência SKU -> índice SKU da Variação;
+//   2. produto + variação exatos (preserva identidade quando o SKU mudou);
+//   3. SKU principal, em índice separado e somente se for inequívoco.
+function selectShopeeBridgeIdentity(line, costBridge) {
+  const allRecords = getShopeeCostBridgeRecords(costBridge);
+  if (allRecords.length === 0) return null;
+
+  const variationIndex = getShopeeCostBridgeIndex(costBridge, "variation");
+  const principalIndex = getShopeeCostBridgeIndex(costBridge, "principal");
+  const uniqueSkus = (fields) => fields
+    .map((field) => normalizeShopeeId(line[field]))
+    .filter((sku, index, all) => sku && all.indexOf(sku) === index);
+
+  // Em pontes novas, somente campos de SKU de VARIAÇÃO consultam este índice.
+  // A lista ampla fica restrita ao formato legado/manual, que não tem índices.
+  const variationFields = costBridge.variationSkuIndex instanceof Map
+    ? ["skuRefNumber", "skuVariation", "sku"]
+    : SHOPEE_BRIDGE_SKU_FIELDS;
+  for (const sku of uniqueSkus(variationFields)) {
+    const entry = variationIndex && variationIndex.get(sku);
+    if (!entry) continue;
+    return selectShopeeIdentityFromRecords(entry.records, line, "variation_sku", sku);
+  }
+
+  // Fallback controlado para SKU histórico. Somente os sufixos explicitamente
+  // conhecidos são adicionados/removidos; nenhuma outra normalização ocorre.
+  const historicalSuffixes = ["-V", "-0"];
+  const historicalRecords = [];
+  const historicalMatches = [];
+  for (const sku of uniqueSkus(variationFields)) {
+    const candidateSkus = [];
+    for (const suffix of historicalSuffixes) {
+      candidateSkus.push(`${sku}${suffix}`);
+      if (sku.endsWith(suffix) && sku.length > suffix.length) {
+        candidateSkus.push(sku.slice(0, -suffix.length));
+      }
+    }
+    for (const candidateSku of candidateSkus) {
+      if (historicalMatches.includes(candidateSku)) continue;
+      const entry = variationIndex && variationIndex.get(candidateSku);
+      if (!entry) continue;
+      historicalMatches.push(candidateSku);
+      historicalRecords.push(...entry.records);
+    }
+  }
+  if (historicalRecords.length > 0) {
+    return selectShopeeIdentityFromRecords(
+      historicalRecords,
+      line,
+      "historical_variation_sku",
+      historicalMatches.join(" | ")
+    );
+  }
+
+  const productKey = normalizeShopeeIdentityText(line.product);
+  const variationKey = normalizeShopeeIdentityText(line.variationName);
+  if (productKey && variationKey) {
+    const exact = allRecords.filter(
+      (record) =>
+        normalizeShopeeIdentityText(record.productName) === productKey &&
+        normalizeShopeeIdentityText(record.variationName) === variationKey
+    );
+    const selected = selectShopeeIdentityFromRecords(
+      exact,
+      line,
+      "product_variation",
+      uniqueSkus(variationFields)[0] || null
+    );
+    if (selected) return selected;
+  }
+
+  for (const sku of uniqueSkus(["skuMainRef", "skuPrinciple"])) {
+    const entry = principalIndex && principalIndex.get(sku);
+    if (!entry) continue;
+    return selectShopeeIdentityFromRecords(entry.records, line, "principal_sku", sku);
   }
 
   return null;
 }
 
+// Conciliação de custo de UMA linha do Order.all.
+//
+//   1. match DIRETO (comportamento de sempre, prioridade intacta);
+//   2. em MISS, e só então, a ponte de identidade da planilha de performance:
+//      produto + variação (preferencial) / SKU auxiliar -> Model ID exato -> base.
+//
+// A ponte é APENAS identidade: nenhum valor financeiro da performance entra
+// aqui. Ambiguidade nunca é resolvida por escolha arbitrária.
+function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
+  const direct = lookupShopeeCostDetailed(costMap, line, debugCollector);
+  if (direct.row) {
+    return {
+      costRow: direct.row,
+      source: SHOPEE_DIRECT_MATCH_SOURCE[direct.field] || "direct_sku",
+      // Valor bruto que efetivamente bateu — usado só pelo diagnóstico de
+      // itens sem custo (describeShopeeCostGap), nunca pelo cálculo.
+      matchedValue: line[direct.field],
+      bridgeUsed: false,
+      bridgeIds: null,
+      ambiguous: false,
+    };
+  }
+
+  if (direct.authoritativeField) {
+    return {
+      costRow: null,
+      source: "miss",
+      matchedValue: line[direct.authoritativeField],
+      bridgeUsed: false,
+      bridgeIds: null,
+      ambiguous: false,
+    };
+  }
+
+  const hasBridge = hasShopeeCostBridge(costBridge);
+  if (!hasBridge || !costMap || typeof costMap.get !== "function") {
+    return { costRow: null, source: "miss", bridgeUsed: false, bridgeIds: null, ambiguous: false };
+  }
+
+  const skuTried = SHOPEE_BRIDGE_SKU_FIELDS
+    .map((field) => normalizeShopeeId(line[field]))
+    .find(Boolean) || null;
+  const identity = selectShopeeBridgeIdentity(line, costBridge);
+
+  if (!identity) {
+    return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds: null, skuTried, ambiguous: false };
+  }
+
+  const bridgeIds = bridgeIdsFromRecords(identity.records);
+  if (debugCollector) {
+    debugCollector.recordMatchAttempt({
+      engine: "shopee_real",
+      stage: "cost_bridge_identity",
+      orderId: line.id,
+      field: identity.source,
+      rawValue: [line.product, line.variationName].filter(Boolean).join(" | ") || identity.bridgeSku,
+      normalizedKey: bridgeCandidateIds(identity.records).join(" | "),
+      result: identity.ambiguous ? "ambiguous" : "hit",
+    });
+  }
+
+  if (identity.ambiguous) {
+    const equivalentCost = resolveEquivalentShopeeBridgeCost(costMap, identity.records);
+    if (equivalentCost) {
+      return {
+        costRow: equivalentCost.costRow,
+        source: "bridge_equivalent_cost",
+        bridgeUsed: true,
+        bridgeIds,
+        bridgeSku: identity.bridgeSku,
+        identitySource: identity.source,
+        identityAmbiguous: true,
+        financiallyEquivalent: true,
+        ambiguous: false,
+        ambiguousCandidates: equivalentCost.candidateIds,
+      };
+    }
+    return {
+      costRow: null,
+      source: "ambiguous",
+      bridgeUsed: true,
+      bridgeIds,
+      bridgeSku: identity.bridgeSku,
+      ambiguityKey: identity.ambiguityKey,
+      identitySource: identity.source,
+      ambiguous: true,
+      ambiguousCandidates: bridgeCandidateIds(identity.records),
+    };
+  }
+
+  const record = identity.record;
+  const modelId = normalizeShopeeId(record.modelId || record.variationId);
+  const itemId = normalizeShopeeId(record.itemId);
+  // Quando a identidade exata fornece Model ID, SOMENTE ele pode fornecer o
+  // custo. Não há fallback para o item pai, que pode ter outra variação/custo.
+  const matchedId = modelId || itemId;
+  const sourceName = modelId ? "bridge_variation_id" : "bridge_item_id";
+  const stage = modelId ? "cost_bridge_variation" : "cost_bridge_item";
+  const costRow = matchedId ? costMap.get(normalizeMatchKey(matchedId)) || null : null;
+
+  if (debugCollector && matchedId) {
+    debugCollector.recordMatchAttempt({
+      engine: "shopee_real",
+      stage,
+      orderId: line.id,
+      field: sourceName,
+      rawValue: identity.bridgeSku,
+      normalizedKey: matchedId,
+      result: costRow ? "hit" : "miss",
+    });
+  }
+
+  if (costRow) {
+    return {
+      costRow,
+      source: sourceName,
+      bridgeUsed: true,
+      bridgeIds,
+      bridgeSku: identity.bridgeSku,
+      identitySource: identity.source,
+      matchedId,
+      matchedValue: matchedId,
+      ambiguous: false,
+    };
+  }
+
+  return {
+    costRow: null,
+    source: "miss",
+    bridgeUsed: true,
+    bridgeIds,
+    bridgeSku: identity.bridgeSku,
+    identitySource: identity.source,
+    skuTried: identity.bridgeSku || skuTried,
+    ambiguous: false,
+  };
+}
+
+// Diagnóstico legível de "por que este item ficou sem custo". Nunca mistura
+// SKU e ID sem dizer o tipo — resolve a confusão da tela ("ID(s) não
+// encontrados" mostrando SKU) sem tocar em nenhum valor financeiro.
+//
+//   type       "variation_id" | "item_id" | "model_id" | "product_id" | "sku" |
+//              "order_id" | "ambiguous_ids"
+//   value      o identificador cru (nunca normalizado/arredondado) — para
+//              "ambiguous_ids", os candidatos já juntados em texto
+//   sku        o SKU do Order.all que originou o diagnóstico (quando houver)
+//   candidates só em "ambiguous_ids": os IDs conflitantes resolvidos pela
+//              ponte, sem pressupor equivalência entre identidades distintas
+//   reason     "not_found_in_performance_bridge" | "not_found_in_cost_base" |
+//              "ambiguous_bridge_candidates" | "zero_cost_in_base" | "not_found_direct"
+function describeShopeeCostGap(line, costMatch, orderId) {
+  if (costMatch.ambiguous) {
+    // A pendência é o CONFLITO de IDs, não o SKU que os originou — a tela
+    // não deve mostrar SKU aqui, só os IDs que a base resolve para custos
+    // diferentes (é isso que impede a escolha automática).
+    const candidates = Array.isArray(costMatch.ambiguousCandidates)
+      ? costMatch.ambiguousCandidates.map((id) => String(id))
+      : [];
+    return {
+      type: "ambiguous_ids",
+      value: candidates.join(", "),
+      sku: null,
+      candidates,
+      reason: "ambiguous_bridge_candidates",
+    };
+  }
+
+  if (costMatch.costRow) {
+    // A base TEM a linha (achada direto ou pela ponte), só que com custo <= 0.
+    const type = String(costMatch.source || "").replace(/^(direct|bridge)_/, "") || "sku";
+    const value = costMatch.matchedValue ?? "";
+    const sku = costMatch.bridgeUsed ? costMatch.bridgeSku : null;
+    return { type, value: String(value), sku, reason: "zero_cost_in_base" };
+  }
+
+  if (costMatch.bridgeUsed) {
+    if (costMatch.bridgeIds) {
+      // O SKU foi encontrado na performance e virou ID — mas o ID não existe
+      // na base. Variação antes de item, mesma prioridade do lookup.
+      const variationId = (costMatch.bridgeIds.variationIds || [])[0];
+      const itemId = (costMatch.bridgeIds.itemIds || [])[0];
+      if (variationId) {
+        return { type: "variation_id", value: variationId, sku: costMatch.bridgeSku, reason: "not_found_in_cost_base" };
+      }
+      if (itemId) {
+        return { type: "item_id", value: itemId, sku: costMatch.bridgeSku, reason: "not_found_in_cost_base" };
+      }
+    }
+    // O SKU do Order.all não foi encontrado na planilha de performance.
+    const sku = costMatch.skuTried || "";
+    return { type: "sku", value: sku, sku: sku || null, reason: "not_found_in_performance_bridge" };
+  }
+
+  // Sem ponte disponível (performance não enviada): mesmo fallback de
+  // sempre, agora com o tipo explícito em vez de um valor solto.
+  if (line.variationId) return { type: "variation_id", value: line.variationId, sku: null, reason: "not_found_direct" };
+  if (line.itemId) return { type: "item_id", value: line.itemId, sku: null, reason: "not_found_direct" };
+  if (line.skuVariation) return { type: "sku", value: line.skuVariation, sku: line.skuVariation, reason: "not_found_direct" };
+  if (line.sku) return { type: "sku", value: line.sku, sku: line.sku, reason: "not_found_direct" };
+  return { type: "order_id", value: orderId, sku: null, reason: "not_found_direct" };
+}
+
 // Motor financeiro real da Shopee. Calcula POR PEDIDO/LINHA, com taxas reais.
 // costMap é montado por quem chama (shopeePerformanceService) para evitar
 // dependência circular.
+//
+// costBridge (opcional) é a ponte de IDENTIDADE da variação extraída da
+// planilha de performance. Ela só muda COMO o custo é
+// localizado; receita, taxas, frete, status e cancelamentos continuam vindo
+// exclusivamente do Order.all.
 function processShopeeFinancialOrders({
   salesRowsRaw,
   costMap,
+  costBridge = null,
   ads = 0,
   venforce = 0,
   affiliates = 0,
+  // Opcional — só existe vindo do Debug Financeiro. Sem ele, resultado idêntico.
+  debugCollector = null,
 }) {
   const lines = parseShopeeFinancialRows(salesRowsRaw);
   const executiveNotes = [];
@@ -499,6 +1065,9 @@ function processShopeeFinancialOrders({
   const detailedRows = [];
   const auditRows = [];
   const unmatchedIdsSet = new Set();
+  // Diagnóstico tipado, aditivo ao unmatchedIds legado — deduplicado por
+  // tipo+valor+SKU+motivo para não repetir a mesma pendência linha a linha.
+  const unmatchedCostsMap = new Map();
   const unmatchedCancelled = [];
 
   const statusTotals = {
@@ -525,6 +1094,20 @@ function processShopeeFinancialOrders({
   let ignoredRevenue = 0;
   let shippingIndeterminateOrders = 0;
   let feesMissingOrders = 0;
+
+  // Observabilidade da conciliação de custo (não substitui nenhum campo já
+  // existente — é diagnóstico adicional).
+  const bridgeAvailable = hasShopeeCostBridge(costBridge);
+  let directCostMatchCount = 0;
+  let bridgeCostMatchCount = 0;
+  let bridgeEquivalentCostMatchCount = 0;
+  let bridgeHistoricalSkuMatchCount = 0;
+  let bridgeMissCount = 0;
+  let bridgeAmbiguousCount = 0;
+  let zeroCostRowsCount = 0;
+  let revenueDirectMatched = 0;
+  let revenueBridgeMatched = 0;
+  const bridgeAmbiguousKeys = [];
 
   for (const [orderId, orderLines] of orders.entries()) {
     // Status do PEDIDO: o mais severo entre as linhas (uma devolução em
@@ -568,7 +1151,12 @@ function processShopeeFinancialOrders({
       }
 
       if (orderKind === "cancelledConfirmed") {
-        const cost = lookupShopeeCost(costMap, orderLines[0]);
+        const cost = resolveShopeeLineCost(
+          costMap,
+          orderLines[0],
+          costBridge,
+          debugCollector
+        ).costRow;
         if (!cost) {
           unmatchedCancelled.push({
             orderId,
@@ -672,17 +1260,45 @@ function processShopeeFinancialOrders({
       const lineGross = round2(line.grossRevenue);
       const lineNet = netByLine[i];
 
-      // CMV real da planilha tem prioridade; senão, base de custos.
-      const costRow = lookupShopeeCost(costMap, line);
+      // CMV real da planilha tem prioridade; senão, base de custos (match
+      // direto e, em MISS, ponte de identidade da variação via performance).
+      const costMatch = resolveShopeeLineCost(costMap, line, costBridge, debugCollector);
+      const costRow = costMatch.costRow;
       let cmvLine = null;
       let costSource = "ausente";
+
+      if (costMatch.ambiguous) {
+        bridgeAmbiguousCount += 1;
+        const ambiguityKey = costMatch.ambiguityKey || costMatch.bridgeSku || "identidade insuficiente";
+        if (bridgeAmbiguousKeys.length < 50 && !bridgeAmbiguousKeys.includes(ambiguityKey)) {
+          bridgeAmbiguousKeys.push(ambiguityKey);
+        }
+      } else if (costMatch.bridgeUsed && !costRow) {
+        bridgeMissCount += 1;
+      }
 
       if (line.cmvProvided && Math.abs(line.cmv) > 0) {
         cmvLine = round2(Math.abs(line.cmv));
         costSource = "planilha_financeira";
       } else if (costRow && costRow.cost > 0) {
         cmvLine = round2(costRow.cost * line.quantity);
-        costSource = "base_custos";
+        if (costMatch.bridgeUsed) {
+          costSource = "base_custos_ponte";
+          bridgeCostMatchCount += 1;
+          if (costMatch.financiallyEquivalent) bridgeEquivalentCostMatchCount += 1;
+          if (costMatch.identitySource === "historical_variation_sku") {
+            bridgeHistoricalSkuMatchCount += 1;
+          }
+          revenueBridgeMatched = round2(revenueBridgeMatched + lineGross);
+        } else {
+          costSource = "base_custos";
+          directCostMatchCount += 1;
+          revenueDirectMatched = round2(revenueDirectMatched + lineGross);
+        }
+      } else if (costRow) {
+        // Linha existe na base, mas com custo <= 0: continua "sem custo"
+        // (regra de sempre) — não vira CMV zero.
+        zeroCostRowsCount += 1;
       }
 
       let taxLine = null;
@@ -709,6 +1325,9 @@ function processShopeeFinancialOrders({
         unmatchedIdsSet.add(
           line.variationId || line.itemId || line.skuVariation || line.sku || orderId
         );
+        const gap = describeShopeeCostGap(line, costMatch, orderId);
+        const gapKey = `${gap.type}|${gap.value}|${gap.sku || ""}|${gap.reason}`;
+        if (!unmatchedCostsMap.has(gapKey)) unmatchedCostsMap.set(gapKey, gap);
       }
 
       detailedRows.push({
@@ -726,6 +1345,9 @@ function processShopeeFinancialOrders({
         CMV: cmvLine,
         Imposto: taxLine,
         "Origem do custo": costSource,
+        // direct_* | bridge_* | miss | ambiguous — diagnóstico da conciliação.
+        "Match de custo": costMatch.source,
+        "ID resolvido pela ponte": costMatch.matchedId || "",
         LC: lc,
         MC: mc === null ? null : round2(mc * 100),
         "Cobertura de custo": hasCost ? "com custo" : "sem custo",
@@ -748,11 +1370,40 @@ function processShopeeFinancialOrders({
       `${feesMissingOrders} pedido(s) sem repasse e sem taxas: a receita líquida usou a receita bruta e o resultado desses pedidos está superestimado.`
     );
   }
+  if (bridgeAvailable) {
+    executiveNotes.push(
+      "Ponte de identidade ativa: a planilha de performance forneceu produto/variação → Model ID; SKU foi usado apenas como auxiliar. " +
+      "Receita, taxas, frete, status e cancelamentos continuam vindo integralmente do Order.all."
+    );
+  }
+  if (bridgeAmbiguousCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_AMBIGUOUS: ${bridgeAmbiguousCount} linha(s) não tinham campos suficientes para distinguir o Model ID exato. ` +
+      `O custo foi mantido em branco (nenhum custo é escolhido por arbitragem)` +
+      `${bridgeAmbiguousKeys.length ? `. Identidades afetadas: ${bridgeAmbiguousKeys.join(", ")}` : ""}.`
+    );
+  }
+  if (bridgeEquivalentCostMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_EQUIVALENT: ${bridgeEquivalentCostMatchCount} linha(s) tinham mais de um Model ID possível, ` +
+      "mas todos os candidatos possuíam custo e imposto idênticos; o resultado financeiro foi calculado normalmente."
+    );
+  }
+  if (bridgeHistoricalSkuMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_HISTORICAL_SKU: ${bridgeHistoricalSkuMatchCount} linha(s) foram conciliadas pelo fallback controlado ` +
+      'de SKU histórico (somente sufixos "-V" e "-0").'
+    );
+  }
   if (coverage.financialConfidence !== "confiavel") {
     executiveNotes.push(
       "Fechamento parcial: existem vendas sem custo cadastrado. O faturamento total está completo; LC e MC cobrem apenas a receita com custo identificado."
     );
   }
+
+  const recognizedRevenue = round2(revenueWithCost + revenueWithoutCost);
+  const coveragePercent = (value) =>
+    recognizedRevenue > 0 ? round2((value / recognizedRevenue) * 100) : 0;
 
   const finalResult = round2(contributionProfitTotal - ads - venforce - affiliates);
 
@@ -819,6 +1470,27 @@ function processShopeeFinancialOrders({
       orderAllUnpaidCount: statusTotals.unpaid.count,
       orderAllUnpaidRevenue: statusTotals.unpaid.revenue,
       orderAllTopCancelledItems: [],
+      // Diagnóstico da conciliação de custo (aditivo — não substitui
+      // revenueWithCost/calculatedCoveragePercent).
+      costBridgeAvailable: bridgeAvailable,
+      costBridgeSkuCount: bridgeAvailable ? costBridge.size : 0,
+      costBridgeIdentityCount: bridgeAvailable
+        ? uniqueBridgeRecords(getShopeeCostBridgeRecords(costBridge)).length
+        : 0,
+      directCostMatchCount,
+      bridgeCostMatchCount,
+      bridgeEquivalentCostMatchCount,
+      bridgeHistoricalSkuMatchCount,
+      bridgeMissCount,
+      bridgeAmbiguousCount,
+      bridgeAmbiguousKeys,
+      zeroCostRowsCount,
+      directCoverage: coveragePercent(revenueDirectMatched),
+      bridgeResolvedCoverage: coveragePercent(revenueBridgeMatched),
+      // finalCoverage inclui também as linhas cujo CMV veio da própria
+      // planilha financeira (coluna CMV), por isso pode ser maior que a soma
+      // de directCoverage + bridgeResolvedCoverage.
+      finalCoverage: coverage.calculatedCoveragePercent,
       detectedAdjustmentColumns: adjustmentColumns,
       missingColumns,
       executiveNotes,
@@ -826,7 +1498,10 @@ function processShopeeFinancialOrders({
     detailedRows,
     auditRows,
     excelFileName: "fechamento-shopee.xlsx",
+    // Mantido por compatibilidade — mistura SKU e ID sem dizer o tipo.
     unmatchedIds: Array.from(unmatchedIdsSet),
+    // Diagnóstico tipado: { type, value, sku, reason } por pendência única.
+    unmatchedCosts: Array.from(unmatchedCostsMap.values()),
     excludedVariationIds: [],
     ignoredRowsWithoutCost: unmatchedIdsSet.size,
     ignoredRevenue,
@@ -847,4 +1522,12 @@ module.exports = {
   detectShopeeAdjustmentColumns,
   processShopeeFinancialOrders,
   SHOPEE_KINDS_OUT_OF_REVENUE,
+  lookupShopeeCost,
+  lookupShopeeCostDetailed,
+  resolveShopeeLineCost,
+  SHOPEE_COST_LOOKUP_FIELDS,
+  SHOPEE_BRIDGE_SKU_FIELDS,
+  SHOPEE_DIRECT_MATCH_SOURCE,
+  isShopeeOrderAllTotalRow,
+  describeShopeeCostGap,
 };

@@ -351,6 +351,115 @@ function buildShopeePerfSkuBridge(rows) {
 
 
 
+// Ponte de custo por REGISTRO DE VARIAÇÃO. O Map por SKU é mantido para
+// compatibilidade/diagnóstico, mas a identidade preservada em `bridge.records`
+// contém os campos que permitem distinguir a linha vendida sem depender da
+// estabilidade textual do SKU.
+//
+// A ponte carrega SOMENTE identidade. Nenhum número financeiro da performance
+// (vendas, unidades, ticket, comissão estimada) é lido aqui.
+function buildShopeeCostBridge(performanceRowsRaw) {
+  // Compatibilidade: o próprio Map retornado representa SOMENTE o índice de
+  // SKU da Variação. SKU Principle vive em outro índice e nunca adiciona
+  // variações aos candidatos deste Map.
+  const variationSkuIndex = new Map();
+  const principalSkuIndex = new Map();
+  const bridge = variationSkuIndex;
+  const records = [];
+  for (const [property, value] of [
+    ["records", records],
+    ["variationSkuIndex", variationSkuIndex],
+    ["principalSkuIndex", principalSkuIndex],
+  ]) {
+    Object.defineProperty(bridge, property, {
+      value,
+      enumerable: false,
+      writable: false,
+    });
+  }
+  if (!Array.isArray(performanceRowsRaw)) return bridge;
+
+  // A performance usa "-" para "não se aplica" (item sem variação). Isso não é
+  // identidade: não pode virar chave nem candidato de custo.
+  const PLACEHOLDERS = new Set(["-", "--", "–", "N/A", "NA", "0"]);
+  const identity = (value) => {
+    const normalized = normalizeShopeeId(value);
+    return PLACEHOLDERS.has(normalized) ? "" : normalized;
+  };
+
+  for (const row of performanceRowsRaw) {
+    if (!row || typeof row !== "object") continue;
+
+    const itemId = findField(row, ["id do item", "id item", "item id"]);
+    const variationId = findField(row, [
+      "id da variacao",
+      "id da variação",
+      "id variacao",
+      "variation id",
+    ]);
+    const modelIdRaw = findField(row, ["model id", "model_id", "modelid"]);
+    const productName = String(
+      findField(row, ["produto", "nome do produto", "product name"]) || ""
+    ).trim();
+    const variationName = String(
+      findField(row, [
+        "nome da variacao",
+        "nome da variação",
+        "opcao da variacao",
+        "opção da variação",
+        "variation name",
+        "variation option",
+      ]) || ""
+    ).trim();
+
+    // SKU é TEXTO: normalizeShopeeId preserva zeros à esquerda ("0007654352998"
+    // continua "0007654352998"); Number() jamais é usado aqui.
+    const variationSkus = [
+      findField(row, ["sku da variacao", "sku da variação"]),
+    ].map(identity).filter(Boolean);
+    const principalSkus = [
+      findField(row, ["sku principle", "sku principal"]),
+    ].map(identity).filter(Boolean);
+
+    const normalizedVariationId = identity(variationId);
+    const record = {
+      itemId: identity(itemId),
+      variationId: normalizedVariationId,
+      // Na exportação real, "ID da Variação" corresponde ao "model id" da
+      // base. Quando a Performance trouxer Model ID explicitamente, ele vence.
+      modelId: identity(modelIdRaw) || normalizedVariationId,
+      productName,
+      variationName,
+      variationSkus,
+      principalSkus,
+    };
+
+    if (!record.modelId && !record.itemId) continue;
+    records.push(record);
+
+    const addToIndex = (index, sku) => {
+      if (!index.has(sku)) {
+        index.set(sku, { sku, records: [], variationIds: [], itemIds: [] });
+      }
+      const entry = index.get(sku);
+      entry.records.push(record);
+      if (record.modelId && !entry.variationIds.includes(record.modelId)) {
+        entry.variationIds.push(record.modelId);
+      }
+      if (record.itemId && !entry.itemIds.includes(record.itemId)) {
+        entry.itemIds.push(record.itemId);
+      }
+    };
+
+    for (const sku of variationSkus) addToIndex(variationSkuIndex, sku);
+    for (const sku of principalSkus) addToIndex(principalSkuIndex, sku);
+  }
+
+  return bridge;
+}
+
+
+
 function buildOrderAllTopCancelledItems(orderAllItems) {
   const map = new Map();
   // Item entra quando o PEDIDO é cancelado confirmado, não a linha isolada.
@@ -729,23 +838,49 @@ function buildShopeeCostMap(costRowsRaw) {
   return costMap;
 }
 
-function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ordersAllRowsRaw) {
+// debugCollector é opcional (só vem do Debug Financeiro). Sem ele, o
+// resultado de processShopee() é IDÊNTICO ao anterior.
+function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ordersAllRowsRaw, debugCollector) {
   const detectedColumns =
     salesRowsRaw.length > 0 ? Object.keys(salesRowsRaw[0]) : [];
   const executiveNotes = [];
   const isFinancial = isShopeeFinancialOrderSheet(salesRowsRaw);
   const isPerformance = isShopeePerformanceSheet(salesRowsRaw);
 
+  // O segundo upload (ordersAll) é classificado pelo CONTEÚDO, igual ao
+  // primeiro: com performance + Order.all + custos, o financeiro vem do
+  // Order.all e a performance entra só como ponte de identidade.
+  const hasOrdersAllRows = Array.isArray(ordersAllRowsRaw) && ordersAllRowsRaw.length > 0;
+  const ordersAllIsFinancial = hasOrdersAllRows && isShopeeFinancialOrderSheet(ordersAllRowsRaw);
+  const ordersAllIsPerformance = hasOrdersAllRows && isShopeePerformanceSheet(ordersAllRowsRaw);
+
+  // CASO A — as 3 planilhas: performance (identidade) + Order.all (financeiro)
+  // + base de custos. Motor REAL com ponte de custo.
+  if (isPerformance && !isFinancial && ordersAllIsFinancial) {
+    return processShopeeFinancialOrders({
+      salesRowsRaw: ordersAllRowsRaw,
+      costMap: buildShopeeCostMap(costRowsRaw),
+      costBridge: buildShopeeCostBridge(salesRowsRaw),
+      ads,
+      venforce,
+      affiliates,
+      debugCollector,
+    });
+  }
+
   // Planilha financeira de pedidos: motor REAL (repasse + taxas efetivas,
   // por pedido). Antes era rejeitada — o cruzamento com a base de custos usa
   // SKU/ID de variação, não só ID do item.
+  // Se o segundo arquivo for a performance, ela vira a ponte de identidade.
   if (isFinancial && !isPerformance) {
     return processShopeeFinancialOrders({
       salesRowsRaw,
       costMap: buildShopeeCostMap(costRowsRaw),
+      costBridge: ordersAllIsPerformance ? buildShopeeCostBridge(ordersAllRowsRaw) : null,
       ads,
       venforce,
       affiliates,
+      debugCollector,
     });
   }
 
@@ -782,10 +917,46 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
       excludedVariationIdsSet.add(sale.id);
     }
 
-    const costRow =
-      (sale.saleModelId && costMap.get(normalizeMatchKey(sale.saleModelId))) ||
-      costMap.get(normalizeMatchKey(sale.id)) ||
-      costMap.get(normalizeMatchKey(sale.itemId));
+    // Mesma prioridade/short-circuit de sempre: saleModelId -> id -> itemId.
+    // A instrumentação abaixo só registra; não muda qual costRow é escolhido.
+    let costRow = null;
+    for (const candidate of [
+      { field: "saleModelId", value: sale.saleModelId },
+      { field: "id", value: sale.id },
+      { field: "itemId", value: sale.itemId },
+    ]) {
+      const key = normalizeMatchKey(candidate.value);
+      if (!key) {
+        if (debugCollector) {
+          debugCollector.recordMatchAttempt({
+            engine: "shopee_performance",
+            stage: "cost_lookup",
+            orderId: sale.id,
+            field: candidate.field,
+            rawValue: candidate.value ?? null,
+            normalizedKey: null,
+            result: "skip",
+          });
+        }
+        continue;
+      }
+      const hit = costMap.get(key);
+      if (debugCollector) {
+        debugCollector.recordMatchAttempt({
+          engine: "shopee_performance",
+          stage: "cost_lookup",
+          orderId: sale.id,
+          field: candidate.field,
+          rawValue: candidate.value,
+          normalizedKey: key,
+          result: hit ? "hit" : "miss",
+        });
+      }
+      if (hit) {
+        costRow = hit;
+        break;
+      }
+    }
 
     // Sem custo: a receita CONTINUA no faturamento, apenas sem lucro calculável.
     if (!costRow || costRow.cost <= 0) {
@@ -1028,6 +1199,7 @@ module.exports = {
   isShopeeMassUpdateSheet,
   parseShopeeOrderAllForStatus,
   buildShopeePerfSkuBridge,
+  buildShopeeCostBridge,
   buildShopeeStatusSummary,
   groupShopeeOrders,
   buildShopeeCostMap,

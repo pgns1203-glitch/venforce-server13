@@ -55,6 +55,17 @@
     col("roi", "ROI", "percent"), col("compradoresTotais", "Compradores totais", "number"),
     col("novosCompradores", "Novos compradores", "number"),
   ];
+  const METRICAS_TIKTOK = [
+    col("mes", "Mês"), col("gmv", "GMV (R$)", "currency"),
+    col("itensVendidos", "Itens vendidos", "number"), col("pedidosSku", "Pedidos de SKU", "number"),
+    col("pedidos", "Pedidos", "number"),
+  ];
+  const PRODUTOS_TIKTOK = [
+    col("id", "ID"), col("titulo", "Título"), col("gmv", "GMV", "currency"),
+    col("gmvVideo", "GMV Vídeo", "currency"), col("gmvLive", "GMV Live", "currency"),
+    col("gmvAfiliado", "GMV Afiliado", "currency"), col("gmvCartao", "GMV Cartão", "currency"),
+    col("pedidos", "Pedidos", "number"), col("unidadesVendidas", "Unidades vendidas", "number"),
+  ];
 
   const COMMON_IDENTIFICACAO = {
     id: "identificacao", title: "Identificação",
@@ -209,7 +220,67 @@
     COMMON_DIAGNOSTICO,
   ];
 
-  const SCHEMAS = { meli: ML, shopee: SHOPEE };
+  const TIKTOK = [
+    COMMON_IDENTIFICACAO,
+    { id: "metricas", title: "Métricas de negócio", fields: [table("metricasNegocio.meses", "Métricas de negócio (últimos meses)", METRICAS_TIKTOK)] },
+    { id: "produtos", title: "Produtos", fields: [table("produtos.itens", "Top 20 produtos", PRODUTOS_TIKTOK)] },
+    { id: "avaliacoes", title: "Avaliações de produtos", fields: [
+      num("avaliacoesProdutos.negativas", "Avaliações negativas"), num("avaliacoesProdutos.neutras", "Avaliações neutras"),
+      pct("avaliacoesProdutos.taxaNegativasRelacionadasVendedor", "Taxa de avaliações negativas relacionadas ao vendedor"),
+    ] },
+    { id: "marketing", title: "Central de marketing", fields: [
+      tri("centralMarketing.centralDesconto", "Central de desconto", { positive: "Central de desconto ativa.", negative: "Central de desconto não está ativa." }),
+      tri("centralMarketing.ofertaRelampago", "Oferta relâmpago", { positive: "Participa de oferta relâmpago.", negative: "Não participa de oferta relâmpago." }),
+      tri("centralMarketing.cuponsVendedores", "Cupons de vendedores", { positive: "Utiliza cupons de vendedores.", negative: "Não utiliza cupons de vendedores." }),
+      tri("centralMarketing.campanhasTiktok", "Campanhas TikTok", { positive: "Participa de campanhas TikTok.", negative: "Não participa de campanhas TikTok." }),
+      tri("centralMarketing.liveVideo", "Live e vídeo", { positive: "Utiliza Live e vídeo.", negative: "Não utiliza Live e vídeo." }),
+    ] },
+    { id: "afiliados", title: "Afiliados", fields: [
+      tri("afiliados.campanhaAbertaAtiva", "Possui campanha aberta ativa?", { positive: "Possui campanha aberta ativa de afiliados.", negative: "Não possui campanha aberta ativa de afiliados." }),
+      tri("afiliados.campanhaDirecionadaAtiva", "Possui campanha direcionada ativa?", { positive: "Possui campanha direcionada ativa de afiliados.", negative: "Não possui campanha direcionada ativa de afiliados." }),
+      tri("afiliados.solicitacoesAmostraGratisAtiva", "Solicitações de amostra grátis está ativa?", { positive: "Solicitações de amostra grátis estão ativas.", negative: "Solicitações de amostra grátis não estão ativas." }),
+      tri("afiliados.solicitacoesAmostraReembolsavelAtiva", "Solicitações de amostra reembolsável está ativa?", { positive: "Solicitações de amostra reembolsável estão ativas.", negative: "Solicitações de amostra reembolsável não estão ativas." }),
+      money("afiliados.gmvAtribuidoCriador", "GMV atribuído ao criador"),
+      num("afiliados.criadoresPublicaramConteudo", "Criadores que publicaram conteúdo"),
+      num("afiliados.todosCriadoresContatados", "Todos criadores contatados"),
+      num("afiliados.criadoresConvidados", "Criadores convidados"),
+      num("afiliados.criadoresEnviouMensagens", "Criadores aos quais você enviou mensagens"),
+      num("afiliados.criadoresAdicionaramProdutos", "Criadores que adicionaram produtos"),
+      num("afiliados.criadoresSolicitaramAmostra", "Criadores que solicitaram amostra"),
+      num("afiliados.criadoresReceberamAmostras", "Criadores que receberam amostras"),
+      num("afiliados.criadoresComVendas", "Criadores com vendas"),
+    ] },
+    { id: "integridade", title: "Classificação e integridade da conta", fields: [
+      text("integridadeConta.status", "Status"), num("integridadeConta.pontuacao", "Pontuação"),
+      pct("integridadeConta.taxaEnviosAtraso", "Taxa de envios com atraso"),
+      pct("integridadeConta.taxaCancelamentoFalhaVendedor", "Taxa de cancelamento por falha do vendedor"),
+      pct("integridadeConta.taxaRespostas24h", "Taxa de respostas em 24 horas"),
+      num("integridadeConta.violacoesPolitica.gerenciamentoConta", "Gerenciamento de conta", { risk: true }),
+      num("integridadeConta.violacoesPolitica.avaliacaoCliente", "Avaliação do cliente", { risk: true }),
+      num("integridadeConta.violacoesPolitica.negociacaoJusta", "Negociação justa", { risk: true }),
+      num("integridadeConta.violacoesPolitica.envioPosVenda", "Envio e pós-venda", { risk: true }),
+      num("integridadeConta.violacoesPolitica.propriedadeIntelectual", "Propriedade intelectual", { risk: true }),
+      num("integridadeConta.violacoesPolitica.qualidadeAnuncio", "Qualidade do anúncio", { risk: true }),
+      num("integridadeConta.violacoesPolitica.outro", "Outro", { risk: true }),
+      num("integridadeConta.violacoesPolitica.conformidadeProduto", "Conformidade do produto", { risk: true }),
+      num("integridadeConta.violacoesPolitica.segurancaProduto", "Segurança do produto", { risk: true }),
+    ] },
+    { id: "desempenho", title: "Pontuação de desempenho da loja", fields: [
+      num("pontuacaoDesempenhoLoja.satisfacaoProduto", "Satisfação do produto"),
+      num("pontuacaoDesempenhoLoja.cumprimentoLogistica", "Cumprimento e logística"),
+      num("pontuacaoDesempenhoLoja.atendimentoCliente", "Atendimento ao cliente"),
+      num("pontuacaoDesempenhoLoja.pontuacaoGeralSps", "Pontuação geral (SPS)"),
+    ] },
+    { id: "decoracao", title: "Decoração da loja", fields: [
+      tri("decoracaoLoja.possuiDecoracao", "Possui decoração?", { positive: "Loja possui decoração configurada.", negative: "Loja não possui decoração configurada." }),
+    ] },
+    COMMON_ABC,
+    COMMON_DIAGNOSTICO,
+  ];
+
+  const MARKETPLACES = ["meli", "shopee", "tiktok"];
+  const MARKETPLACE_LABELS = { meli: "Mercado Livre", shopee: "Shopee", tiktok: "TikTok Shop" };
+  const SCHEMAS = { meli: ML, shopee: SHOPEE, tiktok: TIKTOK };
 
   function getPath(obj, path) {
     return String(path || "").split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
@@ -275,5 +346,5 @@
     };
   }
 
-  return { SCHEMA_VERSION: 1, getPath, isMissing, isApplicable, isAnswered, getSections, getFields, evaluateCompleteness };
+  return { SCHEMA_VERSION: 1, MARKETPLACES, MARKETPLACE_LABELS, getPath, isMissing, isApplicable, isAnswered, getSections, getFields, evaluateCompleteness };
 });

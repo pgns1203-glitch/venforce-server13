@@ -631,6 +631,9 @@ function buildMeliBaseSheetRows(finalRows) {
 
 
 
+// debugCollector é opcional (só vem do Debug Financeiro). Sem ele, o
+// resultado de processMeli() é IDÊNTICO ao anterior — cada ponto de
+// instrumentação abaixo é guardado por `if (debugCollector)`.
 function processMeli(
   salesRowsRaw,
   costRowsRaw,
@@ -638,7 +641,8 @@ function processMeli(
   venforce,
   affiliates,
   fullCost = 0,
-  additionalCosts = 0
+  additionalCosts = 0,
+  debugCollector = null
 ) {
   const parsingDiagnostics = analyzeMeliParsing(salesRowsRaw);
   const salesRows = parsingDiagnostics.parsedRows;
@@ -709,16 +713,37 @@ function processMeli(
     return round2(expected - (row.total || 0));
   }
 
-  function getCostForAd(adId) {
+  // saleNumberOf() só serve para nomear a tentativa no Debug Financeiro —
+  // não influencia o resultado do lookup.
+  function saleNumberOf(item) {
+    return (item && item.saleNumber) || null;
+  }
+
+  function getCostForAd(adId, item) {
     const normalized = normalizeId(adId);
     const noPrefix = normalized.replace(/^MLB/i, "");
 
-    return (
-      costMap.get(normalized) ||
-      costMap.get(noPrefix) ||
-      costMap.get(`MLB${noPrefix}`) ||
-      null
-    );
+    for (const candidate of [
+      { field: "mlb_normalizado", value: normalized },
+      { field: "mlb_sem_prefixo", value: noPrefix },
+      { field: "mlb_com_prefixo", value: `MLB${noPrefix}` },
+    ]) {
+      const hit = costMap.get(candidate.value);
+      if (debugCollector) {
+        debugCollector.recordMatchAttempt({
+          engine: "meli",
+          stage: "cost_lookup",
+          orderId: saleNumberOf(item),
+          field: candidate.field,
+          rawValue: candidate.value || null,
+          normalizedKey: candidate.value || null,
+          result: hit ? "hit" : candidate.value ? "miss" : "skip",
+        });
+      }
+      if (hit) return hit;
+    }
+
+    return null;
   }
 
   // Resolve o custo do item preferindo a variação (model_id/SKU). Só cai no
@@ -727,13 +752,34 @@ function processMeli(
   function resolveCostForItem(item, id) {
     for (const key of variationLookupKeys(id, item)) {
       const byVariation = costMap.get(key);
+      if (debugCollector) {
+        debugCollector.recordMatchAttempt({
+          engine: "meli",
+          stage: "cost_lookup",
+          orderId: saleNumberOf(item),
+          field: "variation_key",
+          rawValue: key,
+          normalizedKey: key,
+          result: byVariation ? "hit" : "miss",
+        });
+      }
       if (byVariation) return byVariation;
     }
     if (item.modelIdRaw) {
-      const byModel = getCostForAd(item.modelIdRaw);
+      const byModel = getCostForAd(item.modelIdRaw, item);
       if (byModel) return byModel;
+    } else if (debugCollector) {
+      debugCollector.recordMatchAttempt({
+        engine: "meli",
+        stage: "cost_lookup",
+        orderId: saleNumberOf(item),
+        field: "model_id_raw",
+        rawValue: null,
+        normalizedKey: null,
+        result: "skip",
+      });
     }
-    return getCostForAd(id);
+    return getCostForAd(id, item);
   }
 
   // Item cancelado/devolvido/reembolsado/em mediação: sai do LC, mas NÃO

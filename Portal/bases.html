@@ -368,10 +368,9 @@
               </div>
             </th>
             <th id="bases-costs-th-idmodel" style="display:none;">ID Model</th>
-            <!-- TikTok: SKU (chave junto com o ID), nome do produto e nome da variação -->
-            <th id="bases-costs-th-sku" style="display:none;">SKU</th>
-            <th id="bases-costs-th-produto-nome" style="display:none;">Produto</th>
-            <th id="bases-costs-th-variacao" style="display:none;">Variação</th>
+            <!-- TikTok: a 1ª coluna passa a ser "ID" (product_id) e esta é o
+                 "ID DO SKU" (sku_id da variação) — a chave do custo. -->
+            <th id="bases-costs-th-sku" style="display:none;">ID DO SKU</th>
             <th class="num">
               <div class="b-th-filter-inline" id="cost-filter-wrap-custo">
                 <span>Custo</span>
@@ -434,10 +433,9 @@
           <thead>
             <tr>
               <th id="preview-th-id">ID do Produto</th>
-              <th id="preview-th-sku" style="display:none;">SKU</th>
+              <!-- TikTok: ID DO SKU (sku_id da variação) — chave do custo -->
+              <th id="preview-th-sku" style="display:none;">ID DO SKU</th>
               <th id="preview-th-idmodel" style="display:none;">ID Model</th>
-              <th id="preview-th-produto" style="display:none;">Produto</th>
-              <th id="preview-th-variacao" style="display:none;">Variação</th>
               <th class="num">Custo (R$)</th>
               <th class="num">Imposto (%)</th>
               <th class="num" id="preview-th-taxa">Taxa Fixa</th>

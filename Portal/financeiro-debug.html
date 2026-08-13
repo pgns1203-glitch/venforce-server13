@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Debug Financeiro</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (IDs, JSON, chaves) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 1. Layout compartilhado (sidebar/topbar) -->
+  <link rel="stylesheet" href="style.css">
+  <!-- 2. Fundação Global V2 (tokens → componentes → página) -->
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
+  <link rel="stylesheet" href="financeiro-debug.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+</head>
+<body class="vf-page fdbg-page" data-vf-density="compact">
+
+  <div class="vf-main-with-sidebar">
+    <main class="vf-content" id="fdbg-main" aria-label="Debug Financeiro">
+      <div class="vf-page-shell">
+        <div class="vf-page-container vf-page-container--wide">
+
+          <header class="vf-page-header">
+            <div class="vf-page-header__main">
+              <p class="vf-page-header__eyebrow">Admin · Engenharia</p>
+              <h1 class="vf-page-header__title">Debug Financeiro <span class="fdbg-subtitle-tag">Fechamento Inspector</span></h1>
+              <p class="vf-page-header__description">
+                Roda os MESMOS motores do fechamento real (processMeli / processShopee / processTikTok) e expõe
+                cada etapa: classificação de arquivo, colunas usadas, tentativas de match de custo e a ponte
+                Order.all → Performance → Base. Não é um segundo motor financeiro — só observabilidade.
+              </p>
+            </div>
+          </header>
+
+          <!-- ────────────────── ACESSO NEGADO (não-admin) ────────────────── -->
+          <div id="fdbg-denied" class="vf-empty-state" hidden>
+            <p><strong>Acesso restrito.</strong> Esta ferramenta é exclusiva para administradores.</p>
+          </div>
+
+          <div id="fdbg-app" hidden>
+
+            <!-- ────────────────── UPLOAD ────────────────── -->
+            <section class="fdbg-card">
+              <div class="fdbg-card__head">
+                <h2>1. Arquivos</h2>
+                <span class="fdbg-hint">Envie quantos .xlsx quiser — o papel de cada um (MELI vendas, Shopee Order.all, base de custos, etc.) é detectado pelo conteúdo, não pelo nome.</span>
+              </div>
+              <div class="fdbg-upload-row">
+                <input type="file" id="fdbg-files" multiple accept=".xlsx,.xls,.csv" class="vf-input" />
+                <div class="fdbg-money-inputs">
+                  <label>Ads <input type="text" id="fdbg-ads" class="vf-input vf-input--sm" placeholder="0,00"></label>
+                  <label>Venforce <input type="text" id="fdbg-venforce" class="vf-input vf-input--sm" placeholder="0,00"></label>
+                  <label>Afiliados <input type="text" id="fdbg-affiliates" class="vf-input vf-input--sm" placeholder="0,00"></label>
+                  <label>FULL (MELI) <input type="text" id="fdbg-fullcost" class="vf-input vf-input--sm" placeholder="0,00"></label>
+                  <label>Custos adic. (MELI) <input type="text" id="fdbg-additional" class="vf-input vf-input--sm" placeholder="0,00"></label>
+                </div>
+                <button type="button" id="fdbg-run" class="vf-btn vf-btn--primary">Rodar diagnóstico</button>
+              </div>
+              <div id="fdbg-upload-status" class="fdbg-status-line" aria-live="polite"></div>
+            </section>
+
+            <!-- ────────────────── PIPELINE ────────────────── -->
+            <section class="fdbg-card" id="fdbg-pipeline-card" hidden>
+              <div class="fdbg-card__head"><h2>Pipeline</h2></div>
+              <div id="fdbg-pipeline" class="fdbg-pipeline"></div>
+            </section>
+
+            <!-- ────────────────── TABS ────────────────── -->
+            <nav class="vf-tabs" id="fdbg-tabs" hidden>
+              <button class="vf-tab is-active" type="button" data-tab="arquivos">Arquivos</button>
+              <button class="vf-tab" type="button" data-tab="colunas">Colunas</button>
+              <button class="vf-tab" type="button" data-tab="match">Match Explorer</button>
+              <button class="vf-tab" type="button" data-tab="trace">Match Trace</button>
+              <button class="vf-tab" type="button" data-tab="bridge">Ponte Shopee</button>
+              <button class="vf-tab" type="button" data-tab="raw">Raw / Normalizado</button>
+              <button class="vf-tab" type="button" data-tab="resultado">Resultado</button>
+              <button class="vf-tab" type="button" data-tab="warnings">Warnings</button>
+            </nav>
+
+            <section id="fdbg-panels" class="fdbg-panels"></section>
+
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="layout.js"></script>
+  <script src="financeiro-debug.js"></script>
+</body>
+</html>

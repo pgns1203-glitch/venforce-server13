@@ -170,15 +170,22 @@
                     </div>
                   </div>
 
-                  <!-- Reconciliação e cancelamentos (Shopee) -->
+                  <!-- Order.all — fonte do financeiro real da Shopee -->
                   <div id="fin-orders-all-block" hidden>
-                    <p class="vf-field__label vf-fin-orders-label">Reconciliação e cancelamentos
-                      <span class="vf-fin-step__hint">Opcional — melhora a leitura de cancelados e não pagos.</span>
+                    <p class="vf-field__label vf-fin-orders-label">Fechamento financeiro real (Order.all)
+                      <span class="vf-fin-step__hint">Recomendado — com ele o fechamento passa a usar pedidos, taxas e frete reais.</span>
+                    </p>
+                    <p class="vf-fin-orders-help">
+                      Como a Shopee cruza as 3 planilhas:
+                      <strong>planilha de performance</strong> (parentskudetail) identifica os produtos e faz a ponte SKU ↔ ID do Item/Variação ·
+                      <strong>Order.all</strong> fornece pedidos, status, taxas, comissão, serviço, frete e cancelamentos — é a fonte financeira real ·
+                      <strong>base de custos</strong> fornece custo e imposto por ID.
+                      Enviando performance + Order.all + custos, o fechamento sai como financeiro real; sem o Order.all, sai como estimativa por performance.
                     </p>
                     <div class="vf-fin-upload vf-fin-upload--single" id="fin-orders-all-wrapper">
                       <div class="vf-fin-upload__head">
                         <span class="vf-fin-upload__label">Order.all Shopee</span>
-                        <span class="vf-tag is-warning">Opcional · Shopee</span>
+                        <span class="vf-tag is-warning">Recomendado · Shopee</span>
                       </div>
                       <input class="vf-visually-hidden" type="file" id="fin-orders-all" accept=".xlsx">
                       <label class="vf-dropzone" for="fin-orders-all">
@@ -189,7 +196,7 @@
                           </svg>
                         </span>
                         <span class="vf-dropzone__title">Clique ou arraste o arquivo</span>
-                        <span class="vf-dropzone__hint">.xlsx · Cancelamentos e não pagos</span>
+                        <span class="vf-dropzone__hint">.xlsx · Pedidos, taxas e cancelamentos reais</span>
                       </label>
                       <div class="vf-file-item" hidden>
                         <span class="vf-file-item__icon" aria-hidden="true">XLSX</span>

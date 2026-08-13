@@ -2,6 +2,7 @@
 // Versão completa: visual Venforce + dados automáticos + campos manuais (destaques/prioridades)
 
 const API_BASE = "https://venforce-server.onrender.com";
+const TOKEN    = localStorage.getItem("vf-token") || "";
 
 // ── UTILITÁRIOS ──────────────────────────────────────────────────────────────
 
@@ -38,6 +39,27 @@ function truncate(s, n = 42) {
 function fmtDate(d) {
   try { return new Date(d).toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" }); }
   catch { return ""; }
+}
+
+function fmtPeriod(periodo) {
+  const raw = String(periodo || "").trim();
+  const match = raw.match(/^(\d{4})[-/]([01]?\d)$/) || raw.match(/^([01]?\d)[-/](\d{4})$/);
+  if (!match) return raw;
+  const yearFirst = match[1].length === 4;
+  const year = Number(yearFirst ? match[1] : match[2]);
+  const month = Number(yearFirst ? match[2] : match[1]);
+  if (month < 1 || month > 12) return raw;
+  const label = new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(new Date(year, month - 1, 1));
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)} / ${year}`;
+}
+
+function marketplaceName(mp) {
+  const value = String(mp || "").toLowerCase();
+  if (value.includes("mercado") || value === "ml" || value === "meli") return "Mercado Livre";
+  if (value.includes("shopee")) return "Shopee";
+  if (value.includes("amazon")) return "Amazon";
+  if (value.includes("tiktok")) return "TikTok Shop";
+  return value ? value.replace(/\b\w/g, c => c.toUpperCase()) : "—";
 }
 
 // Encontra valor num objeto por candidatos de chave (case-insensitive, normalizado)
@@ -183,7 +205,7 @@ function renderBarChart(id, rows) {
     .sort((a, b) => b.lc - a.lc)
     .slice(0, 10);
 
-  if (!top.length) { el.parentElement.innerHTML += `<p style="text-align:center;color:var(--text-3);padding:20px 0;font-size:13px;">Sem dados de LC.</p>`; return; }
+  if (!top.length) { el.parentElement.innerHTML += `<p class="rp-chart-empty">Sem dados de LC.</p>`; return; }
 
   _charts[id] = new Chart(el, {
     type: "bar",
@@ -191,20 +213,24 @@ function renderBarChart(id, rows) {
       labels: top.map(r => r.label),
       datasets: [{
         data: top.map(r => r.lc),
-        backgroundColor: top.map(r => r.lc >= 0 ? "rgba(185,87,240,.55)" : "rgba(248,113,113,.45)"),
-        borderColor:     top.map(r => r.lc >= 0 ? "#b957f0" : "#f87171"),
-        borderWidth: 1, borderRadius: 4,
+        backgroundColor: top.map(r => r.lc >= 0 ? "rgba(90,42,143,.76)" : "rgba(198,40,40,.7)"),
+        borderColor:     top.map(r => r.lc >= 0 ? "#5a2a8f" : "#c62828"),
+        borderWidth: 1, borderRadius: 3,
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false, indexAxis: "y",
       plugins: {
         legend: { display: false },
-        tooltip: { callbacks: { label: ctx => ` LC: ${brl(ctx.parsed.x)}` } }
+        tooltip: {
+          backgroundColor: "#1b1d28", titleColor: "#fff", bodyColor: "#fff",
+          padding: 10, cornerRadius: 6, displayColors: false,
+          callbacks: { label: ctx => `LC: ${brl(ctx.parsed.x)}` }
+        }
       },
       scales: {
-        x: { ticks: { color: "#71717a", font: { size: 11 }, callback: v => brl(v) }, grid: { color: "rgba(255,255,255,.04)" } },
-        y: { ticks: { color: "#a1a1aa", font: { size: 11 } }, grid: { display: false } }
+        x: { border: { color: "#e7e9f0" }, ticks: { color: "#697083", font: { family: "Inter", size: 10 }, callback: v => brl(v), maxRotation: 0 }, grid: { color: "rgba(214,217,228,.65)" } },
+        y: { border: { display: false }, ticks: { color: "#5a6072", font: { family: "Inter", size: 10 } }, grid: { display: false } }
       }
     }
   });
@@ -224,16 +250,20 @@ function renderDonutChart(id, rows, unmatched) {
       labels: ["Saudável", "Atenção", "Crítico", "Sem custo"],
       datasets: [{
         data: [dist.saudavel, dist.atencao, dist.critico, dist.sem_custo],
-        backgroundColor: ["rgba(74,222,128,.6)", "rgba(251,191,36,.55)", "rgba(248,113,113,.55)", "rgba(113,113,122,.45)"],
-        borderColor:     ["#4ade80", "#fbbf24", "#f87171", "#71717a"],
-        borderWidth: 1,
+        backgroundColor: ["#0f7a52", "#d17a18", "#c62828", "#969cad"],
+        borderColor: "#ffffff",
+        borderWidth: 2,
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false, cutout: "65%",
       plugins: {
-        legend: { position: "bottom", labels: { color: "#a1a1aa", font: { size: 12 }, padding: 14 } },
-        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.parsed} produto(s)` } }
+        legend: { position: "bottom", labels: { color: "#5a6072", usePointStyle: true, pointStyle: "circle", boxWidth: 7, boxHeight: 7, font: { family: "Inter", size: 11 }, padding: 14 } },
+        tooltip: {
+          backgroundColor: "#1b1d28", titleColor: "#fff", bodyColor: "#fff",
+          padding: 10, cornerRadius: 6,
+          callbacks: { label: ctx => ` ${ctx.label}: ${ctx.parsed} produto(s)` }
+        }
       }
     }
   });
@@ -270,7 +300,7 @@ function renderTable() {
     const cls = classifyProduct(row, _tableUnmatched);
     return `<tr>
       <td>
-        <div class="rp-table-name">${esc(truncate(lbl, 52))}</div>
+        <div class="rp-table-name">${esc(lbl)}</div>
         ${id && id !== lbl ? `<div class="rp-table-id">${esc(id)}</div>` : ""}
       </td>
       <td class="r">${rev !== null ? brl(rev) : "—"}</td>
@@ -278,7 +308,7 @@ function renderTable() {
       <td class="r">${mc  !== null ? pct(mc)   : "—"}</td>
       <td>${pillHtml(cls)}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--text-3);">Nenhum produto encontrado.</td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="rp-table-empty">Nenhum produto encontrado.</td></tr>`;
 
   if (foot) foot.textContent = `${sorted.length} de ${filtered.length} produto(s)${q ? " (filtrado)" : ""}.`;
 }
@@ -368,11 +398,11 @@ MC = LC / Venda Total × 100</div>
       </div>
 
       ${d.unmatched.length > 0
-        ? `<div style="background:var(--warn-bg);border:1px solid var(--warn-border);border-radius:8px;padding:12px 16px;font-size:13px;color:var(--warn);">
+        ? `<div class="rp-method-status rp-method-status--warning">
             ⚠ <strong>${d.unmatched.length} produto(s) sem custo cadastrado</strong> foram excluídos.
             Receita não considerada: ${brl(d.ignoredRev)}.
           </div>`
-        : `<div style="background:var(--ok-bg);border:1px solid var(--ok-border);border-radius:8px;padding:12px 16px;font-size:13px;color:var(--ok);">
+        : `<div class="rp-method-status rp-method-status--success">
             ✓ Todos os produtos foram cruzados com a base de custos.
           </div>`
       }
@@ -382,11 +412,19 @@ MC = LC / Venda Total × 100</div>
 
 // ── RENDER PRINCIPAL ──────────────────────────────────────────────────────────
 
-function renderReport(payload) {
+function renderReport(payload, opts = {}) {
   destroyCharts();
   const d = extractData(payload);
   const root = document.getElementById("rp-root");
   if (!root) return;
+
+  const internalBanner = opts.internal ? `
+    <div class="rp-alert rp-internal-banner ${opts.publicado ? "rp-alert-ok" : "rp-alert-warn"}">
+      <span class="rp-alert-icon">${opts.publicado ? "🌐" : "📝"}</span>
+      <span>${opts.publicado
+        ? "Publicado — este fechamento também está disponível pelo link público."
+        : "Rascunho — visualização interna. Este fechamento ainda não foi publicado para o cliente."}</span>
+    </div>` : "";
 
   // Status geral
   let statusCls, statusLabel;
@@ -397,7 +435,6 @@ function renderReport(payload) {
 
   // Alertas dinâmicos
   const alertItems = [];
-  const cancelVal = d.isShopee ? (d.cancLost + d.unpaidLost) : Math.abs(d.refunds);
   const cancelCnt = d.isShopee ? (d.cancCnt + d.unpaidCnt) : d.refCnt;
   if (cancelCnt > 0)
     alertItems.push({ cls: "rp-alert-warn", icon: "⚠", text: d.isShopee
@@ -408,14 +445,6 @@ function renderReport(payload) {
   if (d.unmatched.length > 0)
     alertItems.push({ cls: "rp-alert-crit", icon: "🔍", text: `<strong>${d.unmatched.length} produto(s)</strong> sem custo na base — ${brl(d.ignoredRev)} de receita não considerada.` });
 
-  // Chips de meta
-  const chips = [
-    `<span class="rp-chip rp-chip-vp">${esc(d.mp.toUpperCase())}</span>`,
-    d.periodo  ? `<span class="rp-chip rp-chip-plain">📅 ${esc(d.periodo)}</span>` : "",
-    d.cliente  ? `<span class="rp-chip rp-chip-plain">👤 ${esc(d.cliente)}</span>` : "",
-    d.geradoEm ? `<span class="rp-chip rp-chip-plain">Gerado em ${esc(fmtDate(d.geradoEm))}</span>` : "",
-  ].filter(Boolean).join("");
-
   // KPI pill helper
   const kpiPill = (mcVal) => {
     if (mcVal >= 0.15) return `<span class="rp-kpi-pill rp-pill-ok">Saudável ≥15%</span>`;
@@ -423,71 +452,85 @@ function renderReport(payload) {
     return `<span class="rp-kpi-pill rp-pill-warn">Atenção &lt;15%</span>`;
   };
 
-  // Despesas detalhadas
-  const expItems = [];
-  if (d.ads > 0)        expItems.push(`ADS ${brl(d.ads)}`);
-  if (d.venforce > 0)   expItems.push(`VenForce ${brl(d.venforce)}`);
-  if (d.affiliates > 0) expItems.push(`Afiliados ${brl(d.affiliates)}`);
+  const displayPeriod = fmtPeriod(d.periodo) || "—";
+  const displayMarketplace = marketplaceName(d.mp);
+  const productStatus = d.rows.reduce((acc, row) => {
+    acc[classifyProduct(row, d.unmatched)]++;
+    return acc;
+  }, { saudavel: 0, atencao: 0, critico: 0, sem_custo: 0 });
+  const resultTone = d.result > 0 ? "rp-result-card--positive" : d.result < 0 ? "rp-result-card--negative" : "";
+  const resultKpiTone = d.result > 0 ? "rp-kpi-positive" : d.result < 0 ? "rp-kpi-negative" : "";
 
   // ── HTML ──────────────────────────────────────────────────────────────────
 
   root.innerHTML = `<div class="rp-page">
+    ${internalBanner}
 
-    <!-- HERO -->
-    <div class="rp-hero rp-section">
-      <div class="rp-hero-chips">${chips}</div>
-      <div class="rp-hero-title">Fechamento Financeiro</div>
-      <div class="rp-hero-meta">
-        <span>Resultado por produto com base nas planilhas de ${esc(d.mp.toUpperCase())}</span>
-        ${expItems.length ? `<span>Despesas: ${expItems.join(" · ")}</span>` : ""}
+    <!-- CABEÇALHO DO RELATÓRIO -->
+    <div class="rp-report-header rp-section">
+      <div class="rp-report-header__top">
+        <div class="rp-report-header__copy">
+          <div class="rp-report-kicker">VenForce · Relatório executivo</div>
+          <h1 class="rp-report-title">Relatório de fechamento financeiro</h1>
+          <p class="rp-report-description">Consolidado financeiro e desempenho dos produtos no período.</p>
+        </div>
       </div>
-      <span class="rp-hero-status ${statusCls}">${esc(statusLabel)}</span>
+      <div class="rp-report-meta">
+        <div class="rp-meta-item">
+          <span class="rp-meta-label">Cliente</span>
+          <span class="rp-meta-value rp-meta-value--client">${esc(d.cliente || "—")}</span>
+        </div>
+        <div class="rp-meta-item">
+          <span class="rp-meta-label">Período</span>
+          <span class="rp-meta-value">${esc(displayPeriod)}</span>
+        </div>
+        <div class="rp-meta-item">
+          <span class="rp-meta-label">Marketplace</span>
+          <span class="rp-meta-value">${esc(displayMarketplace)}</span>
+        </div>
+        <div class="rp-meta-item">
+          <span class="rp-meta-label">Status financeiro</span>
+          <span class="rp-hero-status ${statusCls}">${esc(statusLabel)}</span>
+        </div>
+      </div>
+      ${d.geradoEm ? `<div class="rp-meta-note">Relatório gerado em ${esc(fmtDate(d.geradoEm))}</div>` : ""}
     </div>
-
-    <!-- ALERTAS -->
-    ${alertItems.length ? `<div class="rp-alerts rp-section">
-      ${alertItems.map(a => `<div class="rp-alert ${a.cls}">
-        <span class="rp-alert-icon">${a.icon}</span><span>${a.text}</span>
-      </div>`).join("")}
-    </div>` : ""}
 
     <!-- RESUMO EXECUTIVO -->
     <div class="rp-section">
       <div class="rp-section-head">
         <span class="rp-section-badge">Resumo Executivo</span>
+        <h2 class="rp-section-title">Visão geral do período</h2>
+        <div class="rp-section-sub">Os indicadores essenciais para uma leitura rápida do fechamento.</div>
       </div>
-      <div class="rp-section-title">Visão geral do período</div>
-      ${d.periodo ? `<div class="rp-section-sub">${esc(d.periodo)}</div>` : ""}
-
-      <div style="margin-top:18px;">
-        <div class="rp-kpi-grid">
-          <div class="rp-kpi rp-kpi-featured">
-            <div class="rp-kpi-label">Resultado Final</div>
+      <div class="rp-kpi-grid">
+          <div class="rp-kpi rp-kpi-vp">
+            <div class="rp-kpi-label">Faturamento</div>
+            <div class="rp-kpi-value">${brl(d.gross)}</div>
+            <div class="rp-kpi-sub">Receita bruta no período</div>
+          </div>
+          <div class="rp-kpi rp-kpi-blue">
+            <div class="rp-kpi-label">Receita líquida</div>
+            <div class="rp-kpi-value">${brl(d.net)}</div>
+            <div class="rp-kpi-sub">Após tarifas e envio</div>
+          </div>
+          <div class="rp-kpi rp-kpi-ok">
+            <div class="rp-kpi-label">Lucro de contribuição</div>
+            <div class="rp-kpi-value">${brl(d.lc)}</div>
+            <div class="rp-kpi-sub">LC total do fechamento</div>
+            <span class="rp-kpi-pill ${d.lc > 0 ? "rp-pill-ok" : "rp-pill-crit"}">${d.lc > 0 ? "Positivo" : "Negativo"}</span>
+          </div>
+          <div class="rp-kpi rp-kpi-blue rp-kpi-emphasis">
+            <div class="rp-kpi-label">Margem de contribuição</div>
+            <div class="rp-kpi-value">${pct(d.mc)}</div>
+            <div class="rp-kpi-sub">MC média do período</div>
+            ${kpiPill(d.mc)}
+          </div>
+          <div class="rp-kpi rp-kpi-featured ${resultKpiTone}">
+            <div class="rp-kpi-label">Resultado final</div>
             <div class="rp-kpi-value">${brl(d.result)}</div>
             <div class="rp-kpi-sub">Após ADS, VenForce e Afiliados</div>
             <span class="rp-kpi-pill ${d.result > 0 ? "rp-pill-ok" : d.result < 0 ? "rp-pill-crit" : "rp-pill-muted"}">${d.result > 0 ? "Positivo" : d.result < 0 ? "Negativo" : "Neutro"}</span>
-          </div>
-          <div class="rp-kpi rp-kpi-vp">
-            <div class="rp-kpi-label">Receita Total</div>
-            <div class="rp-kpi-value">${brl(d.gross)}</div>
-            <div class="rp-kpi-sub">Total vendido no período</div>
-          </div>
-          <div class="rp-kpi rp-kpi-ok">
-            <div class="rp-kpi-label">LC Total</div>
-            <div class="rp-kpi-value">${brl(d.lc)}</div>
-            <div class="rp-kpi-sub">Lucro de contribuição</div>
-            <span class="rp-kpi-pill ${d.lc > 0 ? "rp-pill-ok" : "rp-pill-crit"}">${d.lc > 0 ? "Positivo" : "Negativo"}</span>
-          </div>
-          <div class="rp-kpi rp-kpi-blue">
-            <div class="rp-kpi-label">MC Média</div>
-            <div class="rp-kpi-value">${pct(d.mc)}</div>
-            <div class="rp-kpi-sub">Margem de contribuição</div>
-            ${kpiPill(d.mc)}
-          </div>
-          <div class="rp-kpi rp-kpi-muted">
-            <div class="rp-kpi-label">Investimento ADS</div>
-            <div class="rp-kpi-value">${brl(d.ads)}</div>
-            <div class="rp-kpi-sub">Total investido no período</div>
           </div>
           <div class="rp-kpi rp-kpi-muted">
             <div class="rp-kpi-label">TACoS</div>
@@ -495,84 +538,92 @@ function renderReport(payload) {
             <div class="rp-kpi-sub">ADS como % da receita bruta</div>
             <span class="rp-kpi-pill rp-pill-muted">${d.tacos > 0 ? "Informativo" : "Sem ADS"}</span>
           </div>
-        </div>
       </div>
     </div>
 
-    <!-- DESTAQUES DO MÊS (manual) -->
-    ${(d.destaques.length > 0 || d.atencoes.length > 0) ? `
+    <!-- RESULTADO FINANCEIRO -->
     <div class="rp-section">
-      <div class="rp-section-head"><span class="rp-section-badge">Destaques</span></div>
-      <div class="rp-section-title">Destaques do Mês</div>
-      <div style="margin-top:16px;">
-        <div class="rp-destaques-grid">
-          ${d.destaques.map(t => `
-            <div class="rp-destaque rp-destaque-ok">
-              <span class="rp-destaque-icon">✅</span>
-              <span>${esc(t)}</span>
-            </div>`).join("")}
-          ${d.atencoes.map(t => `
-            <div class="rp-destaque rp-destaque-warn">
-              <span class="rp-destaque-icon">⚠️</span>
-              <span>${esc(t)}</span>
-            </div>`).join("")}
-        </div>
+      <div class="rp-section-head">
+        <span class="rp-section-badge">Resultado financeiro</span>
+        <h2 class="rp-section-title">Composição do fechamento</h2>
+        <div class="rp-section-sub">Da receita bruta ao resultado final consolidado.</div>
       </div>
-    </div>` : ""}
-
-    <!-- RECEITA & FATURAMENTO -->
-    <div class="rp-section">
-      <div class="rp-section-head"><span class="rp-section-badge">Receita / Faturamento</span></div>
-      <div class="rp-section-title">Receita &amp; Faturamento</div>
-      <div class="rp-section-sub">Resultado financeiro consolidado do período</div>
-
-      <div style="margin-top:18px;">
-        <div class="rp-charts-row">
-          <div class="rp-card">
-            <div class="rp-card-title">Top 10 Produtos por LC</div>
-            <div class="rp-chart-wrap rp-chart-h240">
-              <canvas id="rp-chart-bar"></canvas>
-            </div>
-            <p class="rp-chart-note">Ordenado por Lucro de Contribuição decrescente.</p>
+      <div class="rp-result-grid">
+        <div class="rp-ledger">
+          <h3 class="rp-card-title">Demonstrativo resumido</h3>
+          <div class="rp-ledger-row">
+            <span class="rp-ledger-label">Faturamento <small>Receita bruta</small></span>
+            <span class="rp-ledger-value">${brl(d.gross)}</span>
           </div>
-          <div class="rp-card">
-            <div class="rp-card-title">Distribuição de Status</div>
-            <div class="rp-chart-wrap rp-chart-h240">
-              <canvas id="rp-chart-donut"></canvas>
-            </div>
-            <p class="rp-chart-note">Saudável = MC ≥ 15%. Atenção = 0–15%. Crítico = MC negativa.</p>
+          <div class="rp-ledger-row">
+            <span class="rp-ledger-label">Receita líquida <small>Após tarifas e envio</small></span>
+            <span class="rp-ledger-value">${brl(d.net)}</span>
+          </div>
+          <div class="rp-ledger-row">
+            <span class="rp-ledger-label">Lucro de contribuição <small>Margem média de ${pct(d.mc)}</small></span>
+            <span class="rp-ledger-value">${brl(d.lc)}</span>
+          </div>
+          <div class="rp-ledger-row rp-ledger-row--total">
+            <span class="rp-ledger-label">Resultado final</span>
+            <span class="rp-ledger-value">${brl(d.result)}</span>
           </div>
         </div>
-
-        <div class="rp-kpi-grid" style="grid-template-columns:repeat(3,1fr);">
-          <div class="rp-kpi rp-kpi-vp">
-            <div class="rp-kpi-label">Faturamento do Mês</div>
-            <div class="rp-kpi-value">${brl(d.gross)}</div>
-            <div class="rp-kpi-sub">Receita Bruta (Venda Total)</div>
+        <div class="rp-result-card ${resultTone}">
+          <div>
+            <div class="rp-result-card__label">Resultado do período</div>
+            <div class="rp-result-card__value">${brl(d.result)}</div>
           </div>
-          <div class="rp-kpi rp-kpi-ok">
-            <div class="rp-kpi-label">Lucro do Mês</div>
-            <div class="rp-kpi-value">${brl(d.lc)}</div>
-            <div class="rp-kpi-sub">LC Total · MC: ${pct(d.mc)}</div>
-          </div>
-          <div class="rp-kpi rp-kpi-blue">
-            <div class="rp-kpi-label">Receita Líquida</div>
-            <div class="rp-kpi-value">${brl(d.net)}</div>
-            <div class="rp-kpi-sub">Após tarifas e envio</div>
+          <div>
+            <span class="rp-hero-status ${statusCls}">${esc(statusLabel)}</span>
+            <div class="rp-result-card__note">Resultado após as despesas informadas no fechamento.</div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- MÉTRICAS DE ADS -->
-    ${(d.ads > 0 || d.affiliates > 0) ? `
+    <!-- DESTAQUES E PONTOS DE ATENÇÃO -->
     <div class="rp-section">
-      <div class="rp-section-head"><span class="rp-section-badge">ADS</span></div>
-      <div class="rp-section-title">Métricas de ADS</div>
-      <div class="rp-section-sub">Investimento, retorno e afiliados · ${esc(d.periodo || "período")}</div>
+      <div class="rp-section-head">
+        <span class="rp-section-badge">Destaques e atenções</span>
+        <h2 class="rp-section-title">Leitura executiva</h2>
+        <div class="rp-section-sub">Principais sinais para orientar a análise e as próximas decisões.</div>
+      </div>
+      <div class="rp-insights-grid">
+        <div class="rp-insight-group rp-insight-group--positive">
+          <div class="rp-insight-head"><span class="rp-insight-icon">✓</span> Destaques positivos</div>
+          <div class="rp-destaques">
+            ${d.destaques.length ? d.destaques.map(t => `
+              <div class="rp-destaque rp-destaque-ok">
+                <span class="rp-destaque-icon">✓</span><span>${esc(t)}</span>
+              </div>`).join("") : `<p class="rp-insight-empty">Nenhum destaque positivo registrado para o período.</p>`}
+          </div>
+        </div>
+        <div class="rp-insight-group rp-insight-group--attention">
+          <div class="rp-insight-head"><span class="rp-insight-icon">!</span> Pontos de atenção</div>
+          <div class="rp-alerts">
+            ${d.atencoes.map(t => `
+              <div class="rp-destaque rp-destaque-warn">
+                <span class="rp-destaque-icon">!</span><span>${esc(t)}</span>
+              </div>`).join("")}
+            ${alertItems.map(a => `<div class="rp-alert ${a.cls}">
+              <span class="rp-alert-icon">${a.cls === "rp-alert-crit" ? "×" : "!"}</span><span>${a.text}</span>
+            </div>`).join("")}
+            ${!d.atencoes.length && !alertItems.length ? `<p class="rp-insight-empty">Nenhum ponto de atenção identificado para o período.</p>` : ""}
+          </div>
+        </div>
+      </div>
+    </div>
 
-      <div style="margin-top:18px;">
-        <div class="rp-kpi-grid" style="grid-template-columns:repeat(auto-fill,minmax(170px,1fr));margin-bottom:12px;">
+    <!-- DESPESAS E AJUSTES -->
+    ${(d.ads > 0 || d.venforce > 0 || d.affiliates > 0) ? `
+    <div class="rp-section">
+      <div class="rp-section-head">
+        <span class="rp-section-badge">Despesas e ajustes</span>
+        <h2 class="rp-section-title">Investimentos do período</h2>
+        <div class="rp-section-sub">ADS, afiliados, VenForce e indicadores de retorno · ${esc(displayPeriod)}</div>
+      </div>
+
+        <div class="rp-kpi-grid rp-kpi-grid--compact">
           <div class="rp-kpi rp-kpi-vp">
             <div class="rp-kpi-label">Investimento ADS</div>
             <div class="rp-kpi-value">${brl(d.ads)}</div>
@@ -595,31 +646,30 @@ function renderReport(payload) {
           </div>
         </div>
 
-        <div class="rp-card">
-          <div class="rp-card-title">Afiliados &amp; Canais</div>
+        <div class="rp-card rp-expense-detail">
+          <h3 class="rp-card-title">Composição das despesas e canais</h3>
           <table class="rp-canais-table">
             <tr>
-              <td><span class="rp-canais-label"><span class="rp-canais-dot" style="background:var(--vp)"></span> Investimento ADS</span></td>
+              <td><span class="rp-canais-label"><span class="rp-canais-dot rp-canais-dot--primary"></span> Investimento ADS</span></td>
               <td>${brl(d.ads)}</td>
             </tr>
             <tr>
-              <td><span class="rp-canais-label"><span class="rp-canais-dot" style="background:var(--warn)"></span> TACoS</span></td>
+              <td><span class="rp-canais-label"><span class="rp-canais-dot rp-canais-dot--warning"></span> TACoS</span></td>
               <td>${pct(d.tacos)}</td>
             </tr>
             <tr>
-              <td><span class="rp-canais-label"><span class="rp-canais-dot" style="background:var(--ok)"></span> Comissão paga (Afiliados)</span></td>
+              <td><span class="rp-canais-label"><span class="rp-canais-dot rp-canais-dot--success"></span> Comissão paga (Afiliados)</span></td>
               <td>${brl(d.affiliates)}</td>
             </tr>
             <tr>
-              <td><span class="rp-canais-label"><span class="rp-canais-dot" style="background:var(--blue)"></span> ROAS ADS</span></td>
+              <td><span class="rp-canais-label"><span class="rp-canais-dot rp-canais-dot--info"></span> ROAS ADS</span></td>
               <td>${d.ads > 0 ? (d.gross / d.ads).toFixed(1) + "x" : "—"}</td>
             </tr>
             <tr>
-              <td><span class="rp-canais-label"><span class="rp-canais-dot" style="background:var(--text-3)"></span> VenForce</span></td>
+              <td><span class="rp-canais-label"><span class="rp-canais-dot rp-canais-dot--neutral"></span> VenForce</span></td>
               <td>${brl(d.venforce)}</td>
             </tr>
           </table>
-        </div>
       </div>
     </div>` : ""}
 
@@ -630,20 +680,21 @@ function renderReport(payload) {
       (d.prio.baixa || []).some(i => i.titulo)
     ) ? `
     <div class="rp-section">
-      <div class="rp-section-head"><span class="rp-section-badge">Próximo Mês</span></div>
-      <div class="rp-section-title">Plano de Prioridades</div>
-      <div class="rp-section-sub">O que será feito no próximo período</div>
-      <div style="margin-top:18px;">
+      <div class="rp-section-head">
+        <span class="rp-section-badge">Próximo período</span>
+        <h2 class="rp-section-title">Prioridades para o próximo período</h2>
+        <div class="rp-section-sub">Ações registradas para orientar o próximo ciclo.</div>
+      </div>
         <div class="rp-prio-grid">
           ${[
-            { key: "alta",  label: "Alta Prioridade",  dot: "#f87171", border: "rgba(248,113,113,0.3)" },
-            { key: "media", label: "Média Prioridade", dot: "#fbbf24", border: "rgba(251,191,36,0.3)"  },
-            { key: "baixa", label: "Baixa Prioridade", dot: "#60a5fa", border: "rgba(96,165,250,0.3)"  },
+            { key: "alta",  label: "Alta prioridade" },
+            { key: "media", label: "Média prioridade" },
+            { key: "baixa", label: "Baixa prioridade" },
           ].map(col => {
             const items = (d.prio[col.key] || []).filter(i => i.titulo);
-            return `<div class="rp-prio-col" style="border-color:${col.border}">
+            return `<div class="rp-prio-col rp-prio-col--${col.key}">
               <div class="rp-prio-col-head">
-                <span class="rp-prio-dot" style="background:${col.dot}"></span>
+                <span class="rp-prio-dot"></span>
                 ${esc(col.label)}
               </div>
               <div class="rp-prio-items">
@@ -653,10 +704,58 @@ function renderReport(payload) {
                     ${item.desc ? `<div class="rp-prio-item-desc">${esc(item.desc)}</div>` : ""}
                     ${item.data ? `<div class="rp-prio-item-date">📅 ${esc(item.data)}</div>` : ""}
                   </div>`).join("")
-                : `<div style="font-size:12px;color:var(--text-3);padding:8px 0;">—</div>`}
+                : `<div class="rp-prio-empty">—</div>`}
               </div>
             </div>`;
           }).join("")}
+        </div>
+    </div>` : ""}
+
+    <!-- PERFORMANCE DOS PRODUTOS -->
+    ${d.rows.length ? `
+    <div class="rp-section">
+      <div class="rp-section-head">
+        <span class="rp-section-badge">Performance dos produtos</span>
+        <h2 class="rp-section-title">Saúde do portfólio</h2>
+        <div class="rp-section-sub">Distribuição dos ${num(d.rows.length)} produtos conforme a margem de contribuição.</div>
+      </div>
+      <div class="rp-performance-grid">
+        <div class="rp-performance-stat">
+          <div class="rp-performance-stat__top"><span class="rp-performance-dot rp-performance-dot--ok"></span> Saudáveis</div>
+          <div class="rp-performance-stat__value">${num(productStatus.saudavel)}</div>
+        </div>
+        <div class="rp-performance-stat">
+          <div class="rp-performance-stat__top"><span class="rp-performance-dot rp-performance-dot--warn"></span> Em atenção</div>
+          <div class="rp-performance-stat__value">${num(productStatus.atencao)}</div>
+        </div>
+        <div class="rp-performance-stat">
+          <div class="rp-performance-stat__top"><span class="rp-performance-dot rp-performance-dot--crit"></span> Críticos</div>
+          <div class="rp-performance-stat__value">${num(productStatus.critico)}</div>
+        </div>
+        <div class="rp-performance-stat">
+          <div class="rp-performance-stat__top"><span class="rp-performance-dot rp-performance-dot--neutral"></span> Sem custo</div>
+          <div class="rp-performance-stat__value">${num(productStatus.sem_custo)}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GRÁFICOS -->
+    <div class="rp-section">
+      <div class="rp-section-head">
+        <span class="rp-section-badge">Gráficos</span>
+        <h2 class="rp-section-title">Análise visual</h2>
+        <div class="rp-section-sub">Comparação do lucro de contribuição e distribuição de status.</div>
+      </div>
+      <div class="rp-charts-row">
+        <div class="rp-card rp-chart-card">
+          <h3 class="rp-card-title">Top 10 produtos por LC</h3>
+          <div class="rp-chart-wrap"><canvas id="rp-chart-bar"></canvas></div>
+          <p class="rp-chart-note">Ordenado por lucro de contribuição decrescente.</p>
+        </div>
+        <div class="rp-card rp-chart-card">
+          <h3 class="rp-card-title">Distribuição de status</h3>
+          <div class="rp-chart-wrap"><canvas id="rp-chart-donut"></canvas></div>
+          <p class="rp-chart-note">Saudável = MC ≥ 15%. Atenção = 0–15%. Crítico = MC negativa.</p>
         </div>
       </div>
     </div>` : ""}
@@ -664,30 +763,30 @@ function renderReport(payload) {
     <!-- DETALHAMENTO POR PRODUTO -->
     ${d.rows.length ? `
     <div class="rp-section">
-      <div class="rp-section-head"><span class="rp-section-badge">Produtos</span></div>
-      <div class="rp-section-title">Detalhamento por Produto</div>
-      <div class="rp-section-sub">${num(d.rows.length)} produto(s) · ordenado por LC decrescente</div>
-      <div style="margin-top:16px;">
+      <div class="rp-section-head">
+        <span class="rp-section-badge">Tabela detalhada</span>
+        <h2 class="rp-section-title">Detalhamento por produto</h2>
+        <div class="rp-section-sub">${num(d.rows.length)} produto(s) · ordenado por LC decrescente</div>
+      </div>
         <div class="rp-table-card">
           <div class="rp-table-head">
             <span class="rp-table-title">Produtos</span>
             <input id="rp-search" class="rp-search no-print" type="search" placeholder="Buscar produto ou ID…" />
           </div>
-          <div style="overflow-x:auto;">
+          <div class="rp-table-scroll">
             <table class="rp-table">
               <thead><tr>
-                <th style="min-width:220px;">Produto</th>
-                <th class="r" style="width:120px;">Receita</th>
-                <th class="r" style="width:120px;">LC</th>
-                <th class="r" style="width:90px;">MC</th>
-                <th style="width:100px;">Status</th>
+                <th>Produto</th>
+                <th class="r rp-col-money">Receita</th>
+                <th class="r rp-col-money">LC</th>
+                <th class="r rp-col-percent">MC</th>
+                <th class="rp-col-status">Status</th>
               </tr></thead>
               <tbody id="rp-tbody"></tbody>
             </table>
           </div>
           <div class="rp-table-foot" id="rp-tfoot"></div>
         </div>
-      </div>
     </div>` : ""}
 
     <!-- METODOLOGIA -->
@@ -715,7 +814,7 @@ function renderError(msg) {
   const root = document.getElementById("rp-root");
   if (!root) return;
   root.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:center;min-height:70vh;">
+    <div class="rp-error-wrap">
       <div class="rp-error">
         <div class="rp-error-icon">⚠️</div>
         <div class="rp-error-title">Não foi possível abrir o relatório</div>
@@ -726,10 +825,33 @@ function renderError(msg) {
 
 // ── BOOT ──────────────────────────────────────────────────────────────────────
 
-async function init() {
-  const token = qs("token");
-  if (!token) { renderError("Token não encontrado na URL."); return; }
+// Visualização interna (Cliente 360 → aba Fechamentos → "Abrir"): usa o
+// endpoint autenticado /entregas-cliente/:id, sem exigir token_publico —
+// funciona para rascunhos e para fechamentos já publicados.
+async function initInterno(entregaId) {
+  if (!TOKEN) { renderError("Sessão não encontrada. Abra este link a partir do Portal (Cliente 360)."); return; }
+  try {
+    const res = await fetch(`${API_BASE}/entregas-cliente/${encodeURIComponent(entregaId)}`, {
+      headers: { Authorization: "Bearer " + TOKEN },
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      renderError(j?.erro || j?.error || `Erro ${res.status}.`);
+      return;
+    }
+    const json = await res.json();
+    const entrega = json?.entrega || json;
+    const payload = entrega?.payload_json;
+    if (!payload || typeof payload !== "object") { renderError("Fechamento inválido ou vazio."); return; }
+    renderReport(payload, { internal: true, publicado: !!entrega.publicado });
+  } catch (err) {
+    renderError("Erro de conexão ao carregar o fechamento.");
+  }
+}
 
+// Visualização pública (link enviado ao cliente): usa o token público,
+// somente para fechamentos publicados.
+async function initPublico(token) {
   try {
     const res = await fetch(`${API_BASE}/public/entregas/${encodeURIComponent(token)}`);
     if (!res.ok) {
@@ -744,6 +866,14 @@ async function init() {
   } catch (err) {
     renderError("Erro de conexão ao carregar o relatório.");
   }
+}
+
+async function init() {
+  const entregaId = qs("entregaId");
+  const token = qs("token");
+  if (entregaId) { await initInterno(entregaId); return; }
+  if (token) { await initPublico(token); return; }
+  renderError("Token não encontrado na URL.");
 }
 
 document.addEventListener("DOMContentLoaded", () => {

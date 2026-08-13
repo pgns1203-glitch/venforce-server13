@@ -105,22 +105,31 @@
 
   /* ── Estado ───────────────────────────────────────────────────── */
 
+  const MARKETPLACES = (diagnosticSchema && diagnosticSchema.MARKETPLACES) || ["meli", "shopee", "tiktok"];
+
+  function initByMarketplace(factory) {
+    return MARKETPLACES.reduce((acc, mkt) => {
+      acc[mkt] = typeof factory === "function" ? factory() : factory;
+      return acc;
+    }, {});
+  }
+
   const state = {
     clientes: [],
     clienteId: null,
     clienteNome: "",
     marketplaceAtivo: "meli",
     secaoAtivaId: null,
-    diagnosticos: { meli: null, shopee: null },
-    rascunhos: { meli: null, shopee: null },
-    dirty: { meli: false, shopee: false },
-    versions: { meli: 0, shopee: 0 },
-    historico: { meli: [], shopee: [] },
+    diagnosticos: initByMarketplace(null),
+    rascunhos: initByMarketplace(null),
+    dirty: initByMarketplace(false),
+    versions: initByMarketplace(0),
+    historico: initByMarketplace(() => []),
     saving: false,
   };
 
   let autosaveTimer = null;
-  const saveInFlight = { meli: null, shopee: null };
+  const saveInFlight = initByMarketplace(null);
 
   function getDiag() { return state.diagnosticos[state.marketplaceAtivo]; }
   function getRespostas() {
@@ -129,8 +138,11 @@
     if (!diag.respostas_json) diag.respostas_json = {};
     return diag.respostas_json;
   }
+  function secoesFor(mkt) {
+    return SECOES_POR_MARKETPLACE[mkt] || SECOES_ML;
+  }
   function currentSecoes() {
-    return state.marketplaceAtivo === "shopee" ? SECOES_SHOPEE : SECOES_ML;
+    return secoesFor(state.marketplaceAtivo);
   }
 
   /* ── Feedback / status ────────────────────────────────────────── */
@@ -776,6 +788,139 @@
     { id: "diagnostico", label: "Diagnóstico e plano de ação", render: secDiagnosticoPanel },
   ];
 
+  /* ── Seções — TikTok Shop ─────────────────────────────────────── */
+
+  function secMetricasTiktok(ctx) {
+    const cols = [
+      { key: "mes", label: "Mês" },
+      { key: "gmv", label: "GMV (R$)", num: true },
+      { key: "itensVendidos", label: "Itens vendidos", num: true },
+      { key: "pedidosSku", label: "Pedidos de SKU", num: true },
+      { key: "pedidos", label: "Pedidos", num: true },
+    ];
+    const body = tableEditor("metricasNegocio.meses", getPath(ctx.respostas, "metricasNegocio.meses"), cols, { maxRows: 12, addLabel: "Adicionar mês" });
+    return sectionCard("Métricas de negócio", "TikTok Shop Seller Center → Análise → Visão geral", "Registre até 12 meses.", body);
+  }
+
+  function secProdutosTiktok(ctx) {
+    const cols = [
+      { key: "id", label: "ID" },
+      { key: "titulo", label: "Título" },
+      { key: "gmv", label: "GMV (R$)", num: true },
+      { key: "gmvVideo", label: "GMV Vídeo (R$)", num: true },
+      { key: "gmvLive", label: "GMV Live (R$)", num: true },
+      { key: "gmvAfiliado", label: "GMV Afiliado (R$)", num: true },
+      { key: "gmvCartao", label: "GMV Cartão (R$)", num: true },
+      { key: "pedidos", label: "Pedidos", num: true },
+      { key: "unidadesVendidas", label: "Unidades vendidas", num: true },
+    ];
+    const body = tableEditor("produtos.itens", getPath(ctx.respostas, "produtos.itens"), cols, { maxRows: 20, addLabel: "Adicionar produto" });
+    return sectionCard("Produtos", "TikTok Shop Seller Center → Produtos → Desempenho", "Registre os 20 principais produtos.", body);
+  }
+
+  function secAvaliacoesProdutosTiktok(ctx) {
+    const v = (p) => getPath(ctx.respostas, p);
+    const body = `<div class="vf-diag-field-grid">
+      ${fieldWrap("Avaliações negativas", inputNumber("avaliacoesProdutos.negativas", v("avaliacoesProdutos.negativas")))}
+      ${fieldWrap("Avaliações neutras", inputNumber("avaliacoesProdutos.neutras", v("avaliacoesProdutos.neutras")))}
+      ${fieldWrap("Taxa de avaliações negativas relacionadas ao vendedor (%)", inputNumber("avaliacoesProdutos.taxaNegativasRelacionadasVendedor", v("avaliacoesProdutos.taxaNegativasRelacionadasVendedor"), { suffix: "%" }))}
+    </div>`;
+    return sectionCard("Avaliações de produtos", "", "", body);
+  }
+
+  function secMarketingTiktok(ctx) {
+    const v = (p) => getPath(ctx.respostas, p);
+    const body = `
+      ${tristateRow("Central de desconto", "centralMarketing.centralDesconto", v("centralMarketing.centralDesconto"))}
+      ${tristateRow("Oferta relâmpago", "centralMarketing.ofertaRelampago", v("centralMarketing.ofertaRelampago"))}
+      ${tristateRow("Cupons de vendedores", "centralMarketing.cuponsVendedores", v("centralMarketing.cuponsVendedores"))}
+      ${tristateRow("Campanhas TikTok", "centralMarketing.campanhasTiktok", v("centralMarketing.campanhasTiktok"))}
+      ${tristateRow("Live e vídeo", "centralMarketing.liveVideo", v("centralMarketing.liveVideo"))}`;
+    return sectionCard("Central de marketing", "TikTok Shop Seller Center → Marketing", "", body);
+  }
+
+  function secAfiliadosTiktok(ctx) {
+    const v = (p) => getPath(ctx.respostas, p);
+    const body = `
+      ${tristateRow("Possui campanha aberta ativa?", "afiliados.campanhaAbertaAtiva", v("afiliados.campanhaAbertaAtiva"))}
+      ${tristateRow("Possui campanha direcionada ativa?", "afiliados.campanhaDirecionadaAtiva", v("afiliados.campanhaDirecionadaAtiva"))}
+      ${tristateRow("Solicitações de amostra grátis está ativa?", "afiliados.solicitacoesAmostraGratisAtiva", v("afiliados.solicitacoesAmostraGratisAtiva"))}
+      ${tristateRow("Solicitações de amostra reembolsável está ativa?", "afiliados.solicitacoesAmostraReembolsavelAtiva", v("afiliados.solicitacoesAmostraReembolsavelAtiva"))}
+      <div class="vf-diag-subgroup">
+        <div class="vf-diag-field-grid">
+          ${fieldWrap("GMV atribuído ao criador (R$)", inputNumber("afiliados.gmvAtribuidoCriador", v("afiliados.gmvAtribuidoCriador"), { prefix: "R$" }))}
+          ${fieldWrap("Criadores que publicaram conteúdo", inputNumber("afiliados.criadoresPublicaramConteudo", v("afiliados.criadoresPublicaramConteudo")))}
+          ${fieldWrap("Todos criadores contatados", inputNumber("afiliados.todosCriadoresContatados", v("afiliados.todosCriadoresContatados")))}
+          ${fieldWrap("Criadores convidados", inputNumber("afiliados.criadoresConvidados", v("afiliados.criadoresConvidados")))}
+          ${fieldWrap("Criadores aos quais você enviou mensagens", inputNumber("afiliados.criadoresEnviouMensagens", v("afiliados.criadoresEnviouMensagens")))}
+          ${fieldWrap("Criadores que adicionaram produtos", inputNumber("afiliados.criadoresAdicionaramProdutos", v("afiliados.criadoresAdicionaramProdutos")))}
+          ${fieldWrap("Criadores que solicitaram amostra", inputNumber("afiliados.criadoresSolicitaramAmostra", v("afiliados.criadoresSolicitaramAmostra")))}
+          ${fieldWrap("Criadores que receberam amostras", inputNumber("afiliados.criadoresReceberamAmostras", v("afiliados.criadoresReceberamAmostras")))}
+          ${fieldWrap("Criadores com vendas", inputNumber("afiliados.criadoresComVendas", v("afiliados.criadoresComVendas")))}
+        </div>
+      </div>`;
+    return sectionCard("Afiliados", "TikTok Shop Seller Center → Marketing → Afiliados", "", body);
+  }
+
+  function secIntegridadeContaTiktok(ctx) {
+    const v = (p) => getPath(ctx.respostas, p);
+    const body = `
+      <div class="vf-diag-field-grid">
+        ${fieldWrap("Status", inputText("integridadeConta.status", v("integridadeConta.status")))}
+        ${fieldWrap("Pontuação", inputNumber("integridadeConta.pontuacao", v("integridadeConta.pontuacao")))}
+        ${fieldWrap("Taxa de envios com atraso (%)", inputNumber("integridadeConta.taxaEnviosAtraso", v("integridadeConta.taxaEnviosAtraso"), { suffix: "%" }))}
+        ${fieldWrap("Taxa de cancelamento por falha do vendedor (%)", inputNumber("integridadeConta.taxaCancelamentoFalhaVendedor", v("integridadeConta.taxaCancelamentoFalhaVendedor"), { suffix: "%" }))}
+        ${fieldWrap("Taxa de respostas em 24 horas (%)", inputNumber("integridadeConta.taxaRespostas24h", v("integridadeConta.taxaRespostas24h"), { suffix: "%" }))}
+      </div>
+      <div class="vf-diag-subgroup">
+        <div class="vf-diag-subgroup__title">Violação de política</div>
+        <div class="vf-diag-field-grid">
+          ${fieldWrap("Gerenciamento de conta", inputNumber("integridadeConta.violacoesPolitica.gerenciamentoConta", v("integridadeConta.violacoesPolitica.gerenciamentoConta")))}
+          ${fieldWrap("Avaliação do cliente", inputNumber("integridadeConta.violacoesPolitica.avaliacaoCliente", v("integridadeConta.violacoesPolitica.avaliacaoCliente")))}
+          ${fieldWrap("Negociação justa", inputNumber("integridadeConta.violacoesPolitica.negociacaoJusta", v("integridadeConta.violacoesPolitica.negociacaoJusta")))}
+          ${fieldWrap("Envio e pós-venda", inputNumber("integridadeConta.violacoesPolitica.envioPosVenda", v("integridadeConta.violacoesPolitica.envioPosVenda")))}
+          ${fieldWrap("Propriedade intelectual", inputNumber("integridadeConta.violacoesPolitica.propriedadeIntelectual", v("integridadeConta.violacoesPolitica.propriedadeIntelectual")))}
+          ${fieldWrap("Qualidade do anúncio", inputNumber("integridadeConta.violacoesPolitica.qualidadeAnuncio", v("integridadeConta.violacoesPolitica.qualidadeAnuncio")))}
+          ${fieldWrap("Outro", inputNumber("integridadeConta.violacoesPolitica.outro", v("integridadeConta.violacoesPolitica.outro")))}
+          ${fieldWrap("Conformidade do produto", inputNumber("integridadeConta.violacoesPolitica.conformidadeProduto", v("integridadeConta.violacoesPolitica.conformidadeProduto")))}
+          ${fieldWrap("Segurança do produto", inputNumber("integridadeConta.violacoesPolitica.segurancaProduto", v("integridadeConta.violacoesPolitica.segurancaProduto")))}
+        </div>
+      </div>`;
+    return sectionCard("Classificação e integridade da conta", "TikTok Shop Seller Center → Desempenho da loja → Integridade da conta", "", body);
+  }
+
+  function secPontuacaoDesempenhoLojaTiktok(ctx) {
+    const v = (p) => getPath(ctx.respostas, p);
+    const body = `<div class="vf-diag-field-grid">
+      ${fieldWrap("Satisfação do produto", inputNumber("pontuacaoDesempenhoLoja.satisfacaoProduto", v("pontuacaoDesempenhoLoja.satisfacaoProduto")))}
+      ${fieldWrap("Cumprimento e logística", inputNumber("pontuacaoDesempenhoLoja.cumprimentoLogistica", v("pontuacaoDesempenhoLoja.cumprimentoLogistica")))}
+      ${fieldWrap("Atendimento ao cliente", inputNumber("pontuacaoDesempenhoLoja.atendimentoCliente", v("pontuacaoDesempenhoLoja.atendimentoCliente")))}
+      ${fieldWrap("Pontuação geral (SPS)", inputNumber("pontuacaoDesempenhoLoja.pontuacaoGeralSps", v("pontuacaoDesempenhoLoja.pontuacaoGeralSps")))}
+    </div>`;
+    return sectionCard("Pontuação de desempenho da loja", "TikTok Shop Seller Center → Desempenho da loja → SPS", "Pontuação pode ser decimal — não é arredondada.", body);
+  }
+
+  function secDecoracaoLojaTiktok(ctx) {
+    const body = tristateRow("Possui decoração?", "decoracaoLoja.possuiDecoracao", getPath(ctx.respostas, "decoracaoLoja.possuiDecoracao"));
+    return sectionCard("Decoração da loja", "TikTok Shop Seller Center → Loja → Decoração", "", body);
+  }
+
+  const SECOES_TIKTOK = [
+    { id: "identificacao", label: "Identificação", render: secIdentificacao },
+    { id: "metricas", label: "Métricas de negócio", render: secMetricasTiktok },
+    { id: "produtos", label: "Produtos", render: secProdutosTiktok },
+    { id: "avaliacoes", label: "Avaliações de produtos", render: secAvaliacoesProdutosTiktok },
+    { id: "marketing", label: "Central de marketing", render: secMarketingTiktok },
+    { id: "afiliados", label: "Afiliados", render: secAfiliadosTiktok },
+    { id: "integridade", label: "Integridade da conta", render: secIntegridadeContaTiktok },
+    { id: "desempenho", label: "Pontuação de desempenho da loja", render: secPontuacaoDesempenhoLojaTiktok },
+    { id: "decoracao", label: "Decoração da loja", render: secDecoracaoLojaTiktok },
+    { id: "abc", label: "Curva ABC", render: secCurvaAbc },
+    { id: "diagnostico", label: "Diagnóstico e plano de ação", render: secDiagnosticoPanel },
+  ];
+
+  const SECOES_POR_MARKETPLACE = { meli: SECOES_ML, shopee: SECOES_SHOPEE, tiktok: SECOES_TIKTOK };
+
   /* ── Renderização ─────────────────────────────────────────────── */
 
   function renderEmptyState(isEmpty) {
@@ -967,7 +1112,7 @@
     if (!diag.respostas_json) diag.respostas_json = {};
     state.diagnosticos[mkt] = diag;
     state.rascunhos[mkt] = diag;
-    state.secaoAtivaId = state.secaoAtivaId || (mkt === "shopee" ? SECOES_SHOPEE[0].id : SECOES_ML[0].id);
+    state.secaoAtivaId = state.secaoAtivaId || secoesFor(mkt)[0].id;
 
     await loadHistorico(mkt);
     renderAll();
@@ -985,11 +1130,11 @@
 
     state.clienteId = id || null;
     state.clienteNome = id ? (state.clientes.find((cliente) => String(cliente.id) === String(id))?.nome || "") : "";
-    state.diagnosticos = { meli: null, shopee: null };
-    state.rascunhos = { meli: null, shopee: null };
-    state.dirty = { meli: false, shopee: false };
-    state.versions = { meli: 0, shopee: 0 };
-    state.historico = { meli: [], shopee: [] };
+    state.diagnosticos = initByMarketplace(null);
+    state.rascunhos = initByMarketplace(null);
+    state.dirty = initByMarketplace(false);
+    state.versions = initByMarketplace(0);
+    state.historico = initByMarketplace(() => []);
     state.secaoAtivaId = null;
     showFeedback("", null);
 
@@ -1012,7 +1157,7 @@
     const saved = await flushAutosave({ force: false });
     if (!saved) return;
     state.marketplaceAtivo = mkt;
-    state.secaoAtivaId = mkt === "shopee" ? SECOES_SHOPEE[0].id : SECOES_ML[0].id;
+    state.secaoAtivaId = secoesFor(mkt)[0].id;
     updateMarketplaceSwitchUI();
     await ensureDraftForMarketplace(mkt);
   }
@@ -1318,7 +1463,7 @@
     document.getElementById("diag-modal-confirmar").addEventListener("click", confirmarConclusao);
 
     window.addEventListener("beforeunload", (e) => {
-      if (state.dirty.meli || state.dirty.shopee) {
+      if (Object.values(state.dirty).some(Boolean)) {
         e.preventDefault();
         e.returnValue = "";
       }

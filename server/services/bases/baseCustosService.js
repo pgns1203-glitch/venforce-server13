@@ -8,8 +8,13 @@ const {
 } = require("./marketplacesBases");
 
 // Mensagem única para IDs TikTok que o Excel já destruiu (notação científica).
-const ERRO_ID_TIKTOK_CIENTIFICO =
-  "ID do SKU TikTok em notação científica. Formate a coluna como texto antes de importar.";
+// Vale para as DUAS colunas numéricas do TikTok — "ID" (product_id) e
+// "ID do SKU" (sku_id) —, por isso o rótulo é parametrizado.
+function erroCientificoTikTok(rotulo) {
+  return `${rotulo} TikTok em notação científica. Formate a coluna como texto antes de importar.`;
+}
+
+const ERRO_ID_TIKTOK_CIENTIFICO = erroCientificoTikTok("ID do SKU");
 
 function normalizarSlug(valor) {
   return String(valor || "")
@@ -63,10 +68,20 @@ function normalizarProdutoIdShopee(valor) {
   return limpo;  // sem prefixo MLB
 }
 
-// TikTok Shop: o produto_id é o "ID do SKU" (18–19 dígitos) e precisa chegar
-// ao PostgreSQL exatamente como veio. Nada de Number/parseInt/Math.trunc aqui:
-// qualquer conversão numérica perderia dígitos silenciosamente.
-function normalizarProdutoIdTikTok(valor) {
+// ---------------------------------------------------------------------------
+// IDs numéricos do TikTok Shop — DOIS campos distintos, mesma regra de tipo:
+//
+//   produto_id  ← coluna "ID"         da planilha = product_id do TikTok
+//   sku_id      ← coluna "ID DO SKU"  da planilha = sku_id da VARIAÇÃO
+//
+// Ambos têm 18–19 dígitos e precisam chegar ao PostgreSQL exatamente como
+// vieram. Nada de Number/parseInt/parseFloat/Math.trunc aqui: qualquer
+// conversão numérica perderia dígitos silenciosamente.
+//
+// A chave de custo do TikTok é sku_id (ver buildTikTokCostMap). O produto_id
+// é informativo e PODE repetir — cada variação tem seu próprio sku_id.
+// ---------------------------------------------------------------------------
+function normalizarIdNumericoTikTok(valor, rotulo) {
   if (valor === null || valor === undefined) return "";
 
   // Um número já chegou convertido pela camada anterior (Excel/JSON). Só é
@@ -75,7 +90,7 @@ function normalizarProdutoIdTikTok(valor) {
     if (!Number.isFinite(valor) || !Number.isSafeInteger(valor)) {
       throw criarHttpErro(400, {
         ok: false,
-        erro: "ID do SKU TikTok chegou como número e perdeu precisão. Envie o ID como texto.",
+        erro: `${rotulo} TikTok chegou como número e perdeu precisão. Envie o ID como texto.`,
       });
     }
     return String(valor);
@@ -93,74 +108,39 @@ function normalizarProdutoIdTikTok(valor) {
   // Notação científica é rejeitada: o Excel já perdeu os dígitos finais e
   // reconstruir o ID a partir do float produziria um ID errado.
   if (/^\d+(?:[.,]\d+)?[eE][+-]?\d+$/.test(limpo)) {
-    throw criarHttpErro(400, { ok: false, erro: ERRO_ID_TIKTOK_CIENTIFICO });
+    throw criarHttpErro(400, { ok: false, erro: erroCientificoTikTok(rotulo) });
   }
 
   return limpo;
 }
 
-// TikTok Shop: o mesmo produto_id (ID do SKU) pode aparecer em várias linhas
-// da base com SKUs textuais diferentes (ex.: KIT2BIBI, KIT3BIBI), cada um com
-// seu próprio custo. A chave lógica de custo do TikTok é produto_id + sku —
-// nunca produto_id sozinho. Normalização: só trim, preserva o texto original;
-// a comparação (chave/lookup) é case-insensitive via lowercase na própria chave.
+// Coluna "ID" da planilha TikTok → custos.produto_id (product_id).
+function normalizarProdutoIdTikTok(valor) {
+  return normalizarIdNumericoTikTok(valor, "ID");
+}
+
+// Coluna "ID DO SKU" da planilha TikTok → custos.sku_id (sku_id da variação).
+// É a chave autoritativa de custo do TikTok.
+function normalizarSkuIdTikTok(valor) {
+  return normalizarIdNumericoTikTok(valor, "ID do SKU");
+}
+
+// LEGADO — SKU textual. Continua existindo apenas para as bases de
+// Mercado Livre/Shopee (onde a coluna fica '') e para linhas TikTok antigas
+// importadas antes do modelo product_id × sku_id. NÃO participa de nenhuma
+// chave de custo do TikTok: o cruzamento é exclusivamente por sku_id.
 function normalizarSkuTikTok(valor) {
   return String(valor == null ? "" : valor).trim();
 }
 
-// Função pura, reaproveitada pelo motor financeiro (tiktokFinanceiroService)
-// e pela camada de bases: montar o mapa de custos, procurar o custo de cada
-// linha do Income, detectar duplicidade e auditoria usam sempre esta mesma
-// chave. ID inválido (ex.: notação científica) propaga o erro de
-// normalizarProdutoIdTikTok — quem chamar decide como tratar.
-function buildTikTokCostKey(produtoId, sku) {
-  const id = normalizarProdutoIdTikTok(produtoId);
-  const skuNorm = normalizarSkuTikTok(sku).toLowerCase();
-  if (!id || !skuNorm) return "";
-  return `${id}::${skuNorm}`;
-}
-
-// ---------------------------------------------------------------------------
-// Chave TikTok — função ÚNICA de resolução, reaproveitada pela importação da
-// base, pelo upsert do editor rápido e pelo motor financeiro (Income).
-//
-// Regra: ID é sempre obrigatório.
-//   - SKU preenchido  → chave composta ID+SKU (buildTikTokCostKey).
-//   - SKU vazio       → usa o ID sozinho como chave, MAS só quando esse ID
-//                        aparece uma única vez no lote/base (contagemPorId).
-//                        Se o ID repetir, usar o ID sozinho seria ambíguo —
-//                        `ambiguo: true` avisa o chamador para rejeitar/
-//                        ignorar a linha em vez de adivinhar.
-// contagemPorId: Map<id, quantidade> — quantas linhas do MESMO lote (import)
-// ou da MESMA base (upsert) têm esse produto_id, com ou sem SKU.
-// ---------------------------------------------------------------------------
-function resolverChaveTikTok(produtoId, sku, contagemPorId) {
-  const id = normalizarProdutoIdTikTok(produtoId);
-  if (!id) return { chave: "", ambiguo: false, usaSomenteId: false };
-
-  const skuNorm = normalizarSkuTikTok(sku);
-  if (skuNorm) {
-    return { chave: buildTikTokCostKey(id, skuNorm), ambiguo: false, usaSomenteId: false };
-  }
-
-  // Duck-typed em vez de `instanceof Map`: código carregado num sandbox de
-  // outro realm (ex.: testes que fazem eval de index.js via vm.createContext)
-  // cria um Map de outro construtor global — `instanceof` falharia mesmo com
-  // um Map válido.
-  const contagem = contagemPorId && typeof contagemPorId.get === "function"
-    ? (contagemPorId.get(id) || 0)
-    : 0;
-  if (contagem > 1) {
-    return { chave: "", ambiguo: true, usaSomenteId: false };
-  }
-  return { chave: id, ambiguo: false, usaSomenteId: true };
-}
-
-// Mensagem única do bloqueio de ambiguidade — usada pela importação e pelo
-// upsert do editor rápido, para o operador ver sempre o mesmo texto.
-function erroIdAmbiguoTikTok(produtoId, contexto) {
+// Mensagem única para sku_id repetido com valores divergentes dentro do mesmo
+// lote/base — usada pela importação e pelo preview.
+function erroSkuIdDuplicadoTikTok(skuId, contexto) {
   const sufixo = contexto ? ` ${contexto}` : "";
-  return `O ID ${produtoId} aparece em mais de uma linha. Informe o SKU para diferenciar os custos.${sufixo}`;
+  return (
+    `O ID DO SKU ${skuId} aparece em mais de uma linha com custo ou imposto ` +
+    `diferentes. Corrija a planilha: cada ID DO SKU só pode ter um custo.${sufixo}`
+  );
 }
 
 function criarHttpErro(statusCode, payload) {
@@ -249,51 +229,49 @@ function textoOpcional(valor) {
 }
 
 const COLUNAS_CUSTO_RETORNO =
-  "base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at";
+  "base_id, produto_id, sku_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at";
 
 async function upsertCustoBase({
   baseId,
   produtoIdNorm,
+  skuIdNorm,
   custoProduto,
   impostoPercentualOpt,
   taxaFixaOpt,
   idModel,
   produtoNome,
   variacaoNome,
-  sku,
   marketplace,
 }) {
-  // TikTok não usa taxa fixa nem id_model (variação vem por nome, não por id).
-  // A identidade lógica no TikTok é produto_id + sku: o mesmo produto_id pode
-  // ter várias linhas com SKUs diferentes (KIT2BIBI, KIT3BIBI...), cada uma
-  // com seu próprio custo — nunca atualizar só pelo produto_id.
+  // TikTok não usa taxa fixa nem id_model. A identidade de custo é
+  // base_id + sku_id (uma linha por VARIAÇÃO): o mesmo produto_id aparece em
+  // várias linhas, uma por sku_id, cada uma com seu próprio custo/imposto.
+  // Nunca localizar/atualizar pelo produto_id, pelo SKU textual ou por nome.
   const isTikTok = String(marketplace || "").trim().toLowerCase() === "tiktok";
   const taxaOpt = isTikTok ? { tem: true, numero: 0 } : taxaFixaOpt;
   const idModelEntrada = isTikTok ? null : idModel;
   const produtoNomeFinal = textoOpcional(produtoNome);
   const variacaoNomeFinal = textoOpcional(variacaoNome);
-  const skuFinal = isTikTok ? normalizarSkuTikTok(sku) : null;
+  // SKU textual (legado) nunca é escrito por este upsert: MELI/Shopee não têm
+  // o campo e o TikTok passou a identificar a variação por sku_id. null =
+  // "não mexer" no UPDATE (COALESCE) e '' no INSERT.
+  const skuFinal = null;
+  const skuIdFinal = isTikTok ? String(skuIdNorm || "").trim() : "";
 
-  // SKU vazio só é seguro quando o ID for único na base: se já existe outra
-  // linha deste produto_id com SKU preenchido, usar o ID sozinho ficaria
-  // ambíguo — o SKU passa a ser obrigatório também para esta linha.
-  if (isTikTok && !skuFinal) {
-    const outras = await pool.query(
-      `SELECT 1 FROM custos WHERE base_id = $1 AND produto_id = $2 AND sku <> '' LIMIT 1`,
-      [baseId, produtoIdNorm]
-    );
-    if (outras.rows.length > 0) {
-      throw criarHttpErro(422, { ok: false, erro: erroIdAmbiguoTikTok(produtoIdNorm) });
-    }
+  if (isTikTok && !skuIdFinal) {
+    throw criarHttpErro(400, {
+      ok: false,
+      erro: "ID DO SKU é obrigatório nas bases TikTok — é a chave do custo da variação.",
+    });
   }
 
-  const whereSku = isTikTok ? " AND LOWER(sku) = LOWER($3)" : "";
+  // Localização da linha: TikTok por sku_id; MELI/Shopee por produto_id (o
+  // caminho histórico, inalterado).
   const existente = await pool.query(
-    `SELECT ${COLUNAS_CUSTO_RETORNO}
-       FROM custos
-      WHERE base_id = $1 AND produto_id = $2${whereSku}
-      LIMIT 1`,
-    isTikTok ? [baseId, produtoIdNorm, skuFinal] : [baseId, produtoIdNorm]
+    isTikTok
+      ? `SELECT ${COLUNAS_CUSTO_RETORNO} FROM custos WHERE base_id = $1 AND sku_id = $2 LIMIT 1`
+      : `SELECT ${COLUNAS_CUSTO_RETORNO} FROM custos WHERE base_id = $1 AND produto_id = $2 LIMIT 1`,
+    [baseId, isTikTok ? skuIdFinal : produtoIdNorm]
   );
 
   if (existente.rows.length) {
@@ -304,9 +282,28 @@ async function upsertCustoBase({
       ? null
       : (idModelEntrada !== undefined ? (idModelEntrada || null) : (atual.id_model || null));
 
-    // A cláusula extra garante que a atualização nunca alcance outra linha do
-    // mesmo produto_id com SKU diferente (identidade TikTok = produto_id+sku).
-    const whereSkuUpdate = isTikTok ? " AND LOWER(sku) = LOWER($9)" : "";
+    if (isTikTok) {
+      // produto_id só é sobrescrito quando vem preenchido: base antiga que não
+      // conhecia o product_id ganha o valor, e nunca o perde.
+      const upd = await pool.query(
+        `UPDATE custos
+            SET produto_id = COALESCE(NULLIF($3, ''), produto_id),
+                custo_produto = $4,
+                imposto_percentual = $5,
+                taxa_fixa = 0,
+                id_model = NULL,
+                produto_nome = COALESCE($6, produto_nome),
+                variacao_nome = COALESCE($7, variacao_nome),
+                updated_at = CURRENT_TIMESTAMP
+          WHERE base_id = $1 AND sku_id = $2
+          RETURNING ${COLUNAS_CUSTO_RETORNO}`,
+        [baseId, skuIdFinal, produtoIdNorm || "", custoProduto, impostoFinal, produtoNomeFinal, variacaoNomeFinal]
+      );
+
+      await tocarUpdatedAtBase(baseId);
+      return { acao: "atualizado", custo: upd.rows[0] };
+    }
+
     const upd = await pool.query(
       `UPDATE custos
           SET custo_produto = $3,
@@ -317,7 +314,7 @@ async function upsertCustoBase({
               variacao_nome = COALESCE($8, variacao_nome),
               sku = COALESCE($9, sku),
               updated_at = CURRENT_TIMESTAMP
-        WHERE base_id = $1 AND produto_id = $2${whereSkuUpdate}
+        WHERE base_id = $1 AND produto_id = $2
         RETURNING ${COLUNAS_CUSTO_RETORNO}`,
       [baseId, produtoIdNorm, custoProduto, impostoFinal, taxaFinal, idModelFinal, produtoNomeFinal, variacaoNomeFinal, skuFinal]
     );
@@ -332,10 +329,10 @@ async function upsertCustoBase({
   const taxaFinal = taxaOpt.tem ? taxaOpt.numero : (isTikTok ? 0 : padrao.taxa_fixa);
 
   const ins = await pool.query(
-    `INSERT INTO custos (base_id, produto_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+    `INSERT INTO custos (base_id, produto_id, sku_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
      RETURNING ${COLUNAS_CUSTO_RETORNO}`,
-    [baseId, produtoIdNorm, custoProduto, impostoFinal, taxaFinal, idModelEntrada || null, produtoNomeFinal, variacaoNomeFinal, skuFinal || ""]
+    [baseId, produtoIdNorm || "", skuIdFinal, custoProduto, impostoFinal, taxaFinal, idModelEntrada || null, produtoNomeFinal, variacaoNomeFinal, skuFinal || ""]
   );
 
   await tocarUpdatedAtBase(baseId);
@@ -343,17 +340,20 @@ async function upsertCustoBase({
   return { acao: "criado", custo: ins.rows[0] };
 }
 
-// Colunas novas de `custos` (nomes do TikTok + carimbo por linha). Idempotente:
-// roda no boot e na rota /setup sem quebrar bases já existentes.
+// Colunas novas de `custos` + índices de unicidade. Idempotente: roda no boot e
+// na rota /setup sem quebrar bases já existentes. Espelha a migration
+// 20260810_add_sku_id_tiktok.sql — as duas precisam continuar equivalentes.
 async function ensureColunasCustos() {
   await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS produto_nome TEXT`);
   await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS variacao_nome TEXT`);
   await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
-  // TikTok: mesmo produto_id pode ter várias linhas com SKUs diferentes
-  // (KIT2BIBI, KIT3BIBI...). MELI/Shopee nunca preenchem esta coluna (fica
-  // '' — o default), então a unicidade histórica (base_id, produto_id) para
-  // eles é preservada pelo índice abaixo.
+  // LEGADO: SKU textual. MELI/Shopee nunca preenchem (fica ''); TikTok deixou
+  // de usar quando a identidade passou a ser sku_id.
   await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS sku TEXT NOT NULL DEFAULT ''`);
+  // TikTok Shop: sku_id = ID DO SKU (id da variação, 18–19 dígitos, TEXT).
+  // É a identidade de custo do TikTok — o mesmo produto_id repete entre as
+  // variações. MELI/Shopee nunca preenchem esta coluna (fica '').
+  await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS sku_id TEXT NOT NULL DEFAULT ''`);
   await pool.query(`
     DO $$
     BEGIN
@@ -361,8 +361,16 @@ async function ensureColunasCustos() {
     EXCEPTION WHEN undefined_object THEN NULL;
     END $$;
   `);
+  await pool.query(`DROP INDEX IF EXISTS uq_custos_base_produto_sku`);
+  // TikTok: uma linha por variação.
   await pool.query(
-    `CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_produto_sku ON custos (base_id, produto_id, sku)`
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_sku_id
+       ON custos (base_id, sku_id) WHERE sku_id <> ''`
+  );
+  // MELI/Shopee (e linhas TikTok legadas sem sku_id): identidade histórica.
+  await pool.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_produto_sku_legado
+       ON custos (base_id, produto_id, sku) WHERE sku_id = ''`
   );
 }
 
@@ -602,7 +610,7 @@ async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace }) {
   }
 
   const custos = await pool.query(
-    `SELECT produto_id, sku, custo_produto, imposto_percentual, id_model, produto_nome, variacao_nome
+    `SELECT produto_id, sku_id, sku, custo_produto, imposto_percentual, id_model, produto_nome, variacao_nome
        FROM custos
       WHERE base_id = $1`,
     [base.id]
@@ -617,14 +625,13 @@ async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace }) {
 
   // O formato depende do marketplace porque cada motor tem o seu parser de
   // custos. MELI mantém exatamente o retorno histórico (parseMeliCostRows).
-  // TikTok recebe as chaves do seu parser — produto_id e sku continuam
-  // STRING, sem qualquer conversão numérica (IDs de 18–19 dígitos). A chave
-  // lógica do TikTok é produto_id + sku (ver buildTikTokCostKey): o mesmo
-  // produto_id pode aparecer em várias linhas com SKUs diferentes.
+  // TikTok recebe as chaves do seu parser: "ID" (product_id, informativo) e
+  // "ID do SKU" (sku_id — a ÚNICA chave de cruzamento). Ambos continuam
+  // STRING, sem qualquer conversão numérica (IDs de 18–19 dígitos).
   const costRows = isTikTok
     ? custos.rows.map((row) => ({
-        "ID do SKU": row.produto_id,
-        "SKU": row.sku || "",
+        "ID": row.produto_id || "",
+        "ID do SKU": row.sku_id || "",
         "Custo unitário": row.custo_produto,
         "Imposto (%)": row.imposto_percentual,
         "Nome do produto": row.produto_nome || "",
@@ -647,13 +654,13 @@ async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace }) {
 module.exports = {
   MARKETPLACES_SUPORTADOS,
   ERRO_ID_TIKTOK_CIENTIFICO,
+  erroCientificoTikTok,
   normalizarProdutoIdBase,
   normalizarProdutoIdShopee,
   normalizarProdutoIdTikTok,
+  normalizarSkuIdTikTok,
   normalizarSkuTikTok,
-  buildTikTokCostKey,
-  resolverChaveTikTok,
-  erroIdAmbiguoTikTok,
+  erroSkuIdDuplicadoTikTok,
   ensureColunasCustos,
   obterBaseAtivaPorSlug,
   obterPadraoCustoBase,

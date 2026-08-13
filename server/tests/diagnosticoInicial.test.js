@@ -150,6 +150,63 @@ function completeAnswers(marketplace) {
   ok("22. relatório não contém elementos da aplicação", !/<(?:input|select|textarea|button)\b/i.test(html) && !/diag-empty-state|vf-sidebar|vf-app-topbar|Selecione um cliente/i.test(html));
   ok("23. relatório apresenta tabela com cabeçalhos legíveis", html.includes("Faturamento") && html.includes("<table") && !html.includes("metricasNegocio.meses"));
 
+  console.log("\n▸ Diagnóstico Inicial — TikTok Shop");
+
+  await rejects("24. marketplace desconhecido continua rejeitado (não vira meli/shopee/tiktok em silêncio)",
+    () => service.obterOuCriarRascunho({ clienteId: 10, marketplace: "tiktok_shop", responsavelUserId: 7 }), 400);
+
+  const tiktokDraft = await service.obterOuCriarRascunho({ clienteId: 10, marketplace: "tiktok", responsavelUserId: 7, dataDiagnostico: "2026-07-29" });
+  ok("25. tiktok é aceito como marketplace e cria diagnóstico em rascunho", tiktokDraft.marketplace === "tiktok" && tiktokDraft.status === "rascunho");
+
+  const tiktokAnswers = completeAnswers("tiktok");
+  const tiktokSaved = await service.atualizarRespostas(tiktokDraft.id, { respostasJson: tiktokAnswers });
+  ok("26. tiktok salva respostas_json", tiktokSaved.respostas_json.integridadeConta.pontuacao === 0);
+  eq("27. tiktok atinge 100% de completude com respostas completas", tiktokSaved.completude, 100);
+
+  const tiktokReopened = await service.obterOuCriarRascunho({ clienteId: 10, marketplace: "tiktok", responsavelUserId: 7 });
+  eq("28. tiktok pode ser carregado novamente com as mesmas respostas", tiktokReopened.respostas_json, tiktokAnswers);
+
+  ok("29. tiktok mantém respostas independentes de ML e Shopee (campo integridadeConta só existe no TikTok)",
+    tiktokSaved.id !== draft.id && tiktokSaved.id !== shopeeDraft.id &&
+    tiktokSaved.respostas_json.integridadeConta !== undefined &&
+    saved.respostas_json.integridadeConta === undefined &&
+    shopeeSaved.respostas_json.integridadeConta === undefined);
+
+  const tiktokSecoes = schema.getSections("tiktok");
+  ok("30. schema retorna as seções corretas do TikTok",
+    ["identificacao", "metricas", "produtos", "avaliacoes", "marketing", "afiliados", "integridade", "desempenho", "decoracao", "abc", "diagnostico"]
+      .every((id) => tiktokSecoes.some((secao) => secao.id === id)));
+
+  const metricasExtras = Array.from({ length: 13 }, (_, i) => ({ mes: `2026-${String(i + 1).padStart(2, "0")}`, gmv: 0 }));
+  await rejects("31. métricas do TikTok aceita no máximo 12 linhas",
+    () => service.atualizarRespostas(tiktokDraft.id, { respostasJson: { ...tiktokAnswers, metricasNegocio: { meses: metricasExtras } } }), 400);
+
+  const produtosVinte = Array.from({ length: 20 }, (_, i) => ({ id: `SKU-${i}`, titulo: "Produto", gmv: 0 }));
+  const produtosVinteUm = [...produtosVinte, { id: "SKU-20", titulo: "Produto", gmv: 0 }];
+  await service.atualizarRespostas(tiktokDraft.id, { respostasJson: { ...tiktokAnswers, produtos: { itens: produtosVinte } } });
+  ok("32. produtos do TikTok aceita até 20 linhas", true);
+  await rejects("33. produtos do TikTok rejeita a 21ª linha",
+    () => service.atualizarRespostas(tiktokDraft.id, { respostasJson: { ...tiktokAnswers, produtos: { itens: produtosVinteUm } } }), 400);
+
+  await service.atualizarRespostas(tiktokDraft.id, { respostasJson: tiktokAnswers });
+
+  const tiktokGenerated = await service.gerar(tiktokDraft.id, { geradoPor: "Ana Gestora" });
+  ok("34. geração funciona para o TikTok", tiktokGenerated.diagnostico_gerado_json?.resumoExecutivo?.includes("TikTok Shop") && tiktokGenerated.diagnostico_revisado_json);
+
+  const tiktokConcluded = await service.concluir(tiktokDraft.id);
+  ok("35. conclusão funciona para o TikTok", tiktokConcluded.status === "concluido" && tiktokConcluded.completude === 100);
+
+  ok("36. snapshot identifica o TikTok corretamente",
+    tiktokConcluded.relatorio_snapshot_json.marketplace === "tiktok" &&
+    tiktokConcluded.relatorio_snapshot_json.marketplaceLabel === "TikTok Shop");
+
+  const tiktokHtml = reportRenderer.renderReportHtml(tiktokConcluded.relatorio_snapshot_json);
+  ok("37. relatório exibe \"TikTok Shop\"", tiktokHtml.includes("TikTok Shop"));
+  ok("38. TikTok não aparece como Mercado Livre no relatório", !tiktokHtml.includes(">Mercado Livre<") && tiktokConcluded.relatorio_snapshot_json.marketplaceLabel !== "Mercado Livre");
+
+  ok("39. Mercado Livre continua funcionando após a mudança", concluded.marketplace === "meli" && concluded.status === "concluido");
+  ok("40. Shopee continua funcionando após a mudança", shopeeSaved.marketplace === "shopee" && shopeeSaved.completude === 100);
+
   const routes = require("../routes/diagnosticoInicialRoutes");
   const endpoints = routes.stack.filter((layer) => layer.route).map((layer) => `${Object.keys(layer.route.methods)[0].toUpperCase()} ${layer.route.path}`);
   ok("24. endpoints de criar, salvar, gerar, concluir, listar e recuperar permanecem autenticados", ["GET /", "GET /:id", "POST /", "PATCH /:id", "POST /:id/gerar", "POST /:id/concluir"].every((endpoint) => endpoints.includes(endpoint)) && routes.stack.filter((layer) => layer.route).every((layer) => layer.route.stack.length >= 3));

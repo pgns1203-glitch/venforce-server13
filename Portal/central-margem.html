@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VenForce — Central de Margem</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
+  <link rel="stylesheet" href="css/pages/central-margem-v2.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+</head>
+<body class="vf-page vf-page-central-margem" data-vf-density="compact">
+  <div class="vf-main-with-sidebar">
+    <main class="vf-content" id="cm-main" aria-label="Central de Margem">
+      <div class="vf-page-shell">
+        <div class="vf-page-container vf-page-container--wide">
+          <header class="vf-page-header">
+            <div class="vf-page-header__main">
+              <p class="vf-page-header__eyebrow">Análises · Exceções operacionais</p>
+              <h1 class="vf-page-header__title">Central de Margem</h1>
+              <p class="vf-page-header__description">Priorize produtos, compare fontes e investigue a diferença entre margem projetada e realizada.</p>
+            </div>
+          </header>
+
+          <section class="cm-context vf-card" aria-label="Contexto da análise">
+            <div class="vf-toolbar cm-context__toolbar">
+              <div class="vf-toolbar__filters">
+                <div class="vf-field cm-context__client">
+                  <label class="vf-field__label" for="cm-client">Cliente</label>
+                  <select class="vf-select vf-select--sm" id="cm-client">
+                    <option value="">Carregando clientes…</option>
+                  </select>
+                </div>
+                <div class="vf-field cm-context__marketplace">
+                  <label class="vf-field__label" for="cm-marketplace">Marketplace</label>
+                  <select class="vf-select vf-select--sm" id="cm-marketplace">
+                    <option value="meli">Mercado Livre</option>
+                  </select>
+                </div>
+                <div class="vf-field cm-context__search">
+                  <label class="vf-field__label" for="cm-search">Buscar produto</label>
+                  <input class="vf-input vf-input--sm vf-search" id="cm-search" type="search" placeholder="Título, MLB ou SKU" autocomplete="off">
+                </div>
+              </div>
+              <div class="vf-toolbar__actions cm-context__actions">
+                <div class="cm-updated" id="cm-updated" aria-live="polite">
+                  <span class="cm-updated__label">Última atualização</span>
+                  <strong>—</strong>
+                </div>
+                <button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-refresh">Atualizar leitura</button>
+              </div>
+            </div>
+            <div class="cm-context__meta" id="cm-context-meta" aria-live="polite"></div>
+          </section>
+
+          <div id="cm-page-state" aria-live="polite"></div>
+
+          <section class="vf-section cm-summary-section" aria-labelledby="cm-summary-title">
+            <div class="vf-section__header">
+              <div>
+                <h2 class="vf-section__title" id="cm-summary-title">Resumo operacional</h2>
+                <p class="vf-section__description" id="cm-summary-scope">Selecione um cliente para iniciar a análise.</p>
+              </div>
+              <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-clear-status" hidden>Limpar filtro de status</button>
+            </div>
+            <div class="vf-kpi-grid cm-summary" id="cm-summary" aria-label="Filtros por estado operacional"></div>
+          </section>
+
+          <section class="vf-section cm-workspace" aria-labelledby="cm-view-title">
+            <nav class="vf-tabs cm-tabs" id="cm-tabs" aria-label="Visões da Central de Margem">
+              <button class="vf-tab is-active" type="button" data-view="general" aria-pressed="true">Geral</button>
+              <button class="vf-tab" type="button" data-view="price" aria-pressed="false">Preço</button>
+              <button class="vf-tab" type="button" data-view="cost" aria-pressed="false">Custo</button>
+              <button class="vf-tab" type="button" data-view="tax" aria-pressed="false">Imposto</button>
+              <button class="vf-tab" type="button" data-view="commission" aria-pressed="false">Comissão</button>
+              <button class="vf-tab" type="button" data-view="freight" aria-pressed="false">Frete</button>
+              <button class="vf-tab" type="button" data-view="receipt" aria-pressed="false">Recebimento</button>
+            </nav>
+
+            <div class="cm-workspace__header">
+              <div>
+                <p class="vf-page-header__eyebrow" id="cm-view-eyebrow">Visão geral</p>
+                <h2 class="vf-section__title" id="cm-view-title">Quais produtos precisam de ação?</h2>
+                <p class="vf-section__description" id="cm-view-description">Margem ruim e dado ruim são problemas diferentes. A fila prioriza ambos sem esconder a origem.</p>
+              </div>
+              <div class="cm-workspace__controls">
+                <label class="vf-filter-group">
+                  <span class="vf-filter-group__label">Confiança</span>
+                  <select class="vf-select vf-select--sm" id="cm-confidence-filter">
+                    <option value="">Todas</option>
+                    <option value="HIGH">Alta</option>
+                    <option value="MEDIUM">Média</option>
+                    <option value="LOW">Baixa</option>
+                    <option value="UNKNOWN">Desconhecida</option>
+                  </select>
+                </label>
+                <span class="vf-tag is-neutral" id="cm-result-count">0 produtos</span>
+              </div>
+            </div>
+
+            <div class="vf-active-filters" id="cm-active-filters"></div>
+            <div id="cm-table-host" class="cm-table-host" aria-live="polite"></div>
+            <nav class="vf-pagination cm-pagination" id="cm-pagination" aria-label="Paginação dos produtos" hidden></nav>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="vf-drawer-backdrop" id="cm-drawer-backdrop"></div>
+  <aside class="vf-drawer vf-drawer--lg cm-drawer" id="cm-drawer" role="dialog" aria-modal="true" aria-labelledby="cm-drawer-title" tabindex="-1">
+    <header class="vf-drawer__header">
+      <div class="cm-drawer__heading">
+        <p class="vf-page-header__eyebrow">Detalhe do produto</p>
+        <h2 class="vf-drawer__title" id="cm-drawer-title">Produto</h2>
+      </div>
+      <div class="vf-cluster cm-drawer__nav">
+        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" type="button" id="cm-drawer-prev" aria-label="Produto anterior">←</button>
+        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" type="button" id="cm-drawer-next" aria-label="Próximo produto">→</button>
+        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" type="button" id="cm-drawer-close" aria-label="Fechar detalhe do produto">✕</button>
+      </div>
+    </header>
+    <div class="vf-drawer__body" id="cm-drawer-body"></div>
+    <footer class="vf-drawer__footer">
+      <span class="cm-drawer__position" id="cm-drawer-position"></span>
+      <button class="vf-btn vf-btn--secondary" type="button" id="cm-drawer-close-footer">Fechar</button>
+    </footer>
+  </aside>
+
+  <div class="vf-toast-stack" id="cm-toasts" aria-live="polite"></div>
+
+  <script src="layout.js"></script>
+  <script src="central-margem-api.js"></script>
+  <script src="central-margem.js"></script>
+</body>
+</html>

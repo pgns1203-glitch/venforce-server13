@@ -68,6 +68,7 @@ const operacaoRoutes = require("./routes/operacaoRoutes");
 const cliente360Routes = require("./routes/cliente360Routes");
 const cliente360ResultadoRoutes = require("./routes/cliente360ResultadoRoutes");
 const centralVendasRoutes = require("./routes/centralVendasRoutes");
+const motorMargemRoutes = require("./routes/motorMargemRoutes");
 const diagnosticoInicialRoutes = require("./routes/diagnosticoInicialRoutes");
 const adsRoutes = require("./routes/adsRoutes");
 const designImageRoutes = require("./routes/designImageRoutes");
@@ -780,6 +781,8 @@ app.use("/bases/assistente", assistenteBaseRoutes);
 app.use("/operacao/cliente-360", cliente360ResultadoRoutes);
 app.use("/operacao/cliente-360", cliente360Routes);
 app.use("/operacao/central-vendas", centralVendasRoutes);
+// Central de Margem — API read-only do Motor de Margem (somente GET).
+app.use("/operacao/central-margem", motorMargemRoutes);
 app.use("/operacao/diagnosticos-iniciais", diagnosticoInicialRoutes);
 app.use("/operacao", operacaoRoutes);
 app.use("/seller", sellerRoutes);

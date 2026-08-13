@@ -166,6 +166,7 @@
         { label: "Estúdio de Templates", href: "design-templates.html", icon: "media" },
 
         { separator: true, label: "ANÁLISES" },
+        { label: "Central de Margem", href: "central-margem.html", icon: "vf-financeiro" },
         { label: "Fechamento",   href: "financeiro.html",    icon: "vf-financeiro" },
         { label: "Fechamento - API", href: "fechamentos-api.html", icon: "vf-financeiro", adminOnly: true },
         { label: "Curva ABC",    href: "fechamento.html",    icon: "vf-fechamento" },
@@ -246,6 +247,7 @@
     "diagnostico-inicial.html": "operacao",
     "cliente-360.html":       "operacao",
     "cliente-360-react.html": "operacao",
+    "central-margem.html":   "operacao",
     "dashboard.html":       "operacao",
     "bases.html":           "operacao",
   };

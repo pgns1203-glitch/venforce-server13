@@ -289,6 +289,395 @@ async function run() {
     assert.ok(simulation.missing.includes("commissionRate"));
   });
 
+  // =========================================================================
+  // V9 — composição por fonte, cenário e derivações de apresentação
+  // =========================================================================
+
+  function evidence(source, kind, value, observedAt) {
+    return { source, kind, value, observedAt: observedAt || null, quality: "MEASURED", note: null };
+  }
+
+  function canonicalField(evidences, divergences) {
+    const list = evidences.filter((entry) => entry && entry.value !== null);
+    const realized = list.find((entry) => entry.kind === "REALIZED") || null;
+    const projected = list.find((entry) => entry.kind === "PROJECTED") || null;
+    return {
+      present: Boolean(realized || projected),
+      selectedValue: realized ? realized.value : projected && projected.value,
+      selectedSource: realized ? realized.source : projected && projected.source,
+      projected,
+      realized,
+      evidences: list,
+      divergences: divergences || [],
+    };
+  }
+
+  function canonicalItem(overrides = {}) {
+    return Object.assign({
+      identity: { itemId: "MLB-V9", sku: "V9", titulo: "Produto V9", marketplace: "meli" },
+      itemId: "MLB-V9",
+      sku: "V9",
+      title: "Produto V9",
+      status: "LOW_MARGIN",
+      confidence: "MEDIUM",
+      targetMargin: 0.12,
+      projected: { margin: 0.05, profit: 5 },
+      realized: { margin: 0.07, profit: 7 },
+      fields: {
+        price: canonicalField([
+          evidence("MELI_API", "PROJECTED", 100, "2026-08-12T10:00:00Z"),
+          evidence("MELI_ORDER", "REALIZED", 96, "2026-08-10T10:00:00Z"),
+        ]),
+        cost: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 40)]),
+        taxRate: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 0.06)]),
+        fixedFee: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 0)]),
+        commission: canonicalField([
+          evidence("MELI_API", "PROJECTED", 16.5, "2026-08-12T10:00:00Z"),
+          evidence("MELI_ORDER", "REALIZED", 15.9, "2026-08-10T10:00:00Z"),
+        ]),
+        commissionRate: canonicalField([evidence("MELI_API", "PROJECTED", 0.165)]),
+        freight: canonicalField([
+          evidence("MELI_API", "PROJECTED", 23.4, "2026-08-12T10:00:00Z"),
+          evidence("MELI_ORDER", "REALIZED", 18.7, "2026-08-10T10:00:00Z"),
+        ], [{
+          type: "DRIFT",
+          a: { source: "MELI_API", kind: "PROJECTED", value: 23.4, observedAt: "2026-08-12T10:00:00Z" },
+          b: { source: "MELI_ORDER", kind: "REALIZED", value: 18.7, observedAt: "2026-08-10T10:00:00Z" },
+        }]),
+        netReceipt: canonicalField([]),
+      },
+      quality: { confidence: "MEDIUM", confidenceByField: {}, statusReasons: ["Margem abaixo da meta."] },
+      sales: { hasOrders: true, unidades: 3 },
+      settlement: { available: false, motivo: "MERCADO_PAGO_NAO_INTEGRADO" },
+    }, overrides);
+  }
+
+  function normalizedItem(overrides) {
+    return api.normalizeCanonicalItem(canonicalItem(overrides), { client: { slug: "loja-teste", name: "Loja" }, marketplace: "meli" });
+  }
+
+  await test("evidências viram mapa fonte -> observação, com effectiveAt sempre Não informado", () => {
+    const item = normalizedItem();
+    const price = item.sources.price;
+    assert.deepStrictEqual(price.order, ["MELI_API", "EXTENSION_DOM", "MELI_ORDER"]);
+    assert.strictEqual(price.entries.MELI_API.value, 100);
+    assert.strictEqual(price.entries.MELI_API.observedAt, "2026-08-12T10:00:00Z");
+    // O contrato do Motor não possui effectiveAt: nenhum horário é inventado.
+    assert.strictEqual(price.entries.MELI_API.effectiveAt, null);
+    // Fonte declarada no catálogo mas sem evidência continua ausente.
+    assert.strictEqual(price.entries.EXTENSION_DOM.available, false);
+    assert.strictEqual(price.entries.EXTENSION_DOM.value, null);
+  });
+
+  await test("escolha do Motor é exposta separada da composição da planilha", () => {
+    const item = normalizedItem();
+    // resolveField: realizado tem precedência sobre projetado.
+    assert.strictEqual(item.motorChoice.freight.source, "MELI_ORDER");
+    assert.strictEqual(item.motorChoice.freight.value, 18.7);
+    assert.strictEqual(item.motorChoice.freight.kind, "REALIZED");
+    // A planilha em modo Projetado usa a outra ponta — e as duas coexistem.
+    assert.strictEqual(api.resolveComposition(item, api.PRESETS.projected).entries.freight.source, "MELI_API");
+    // Variável declarada só tem a Base.
+    assert.strictEqual(item.motorChoice.cost.source, "VENFORCE_BASE");
+    // Sem evidência, não há escolha inventada.
+    const noCost = normalizedItem({ fields: Object.assign({}, canonicalItem().fields, { cost: canonicalField([]) }) });
+    assert.strictEqual(noCost.motorChoice.cost.available, false);
+    assert.strictEqual(noCost.motorChoice.cost.value, null);
+  });
+
+  await test("preset Projetado e preset Realizado resolvem as fontes reais de cada momento", () => {
+    const item = normalizedItem();
+    const projected = api.resolveComposition(item, api.PRESETS.projected);
+    const realized = api.resolveComposition(item, api.PRESETS.realized);
+    assert.strictEqual(projected.values.price, 100);
+    assert.strictEqual(projected.values.freight, 23.4);
+    assert.strictEqual(projected.values.commission, 16.5);
+    assert.strictEqual(realized.values.price, 96);
+    assert.strictEqual(realized.values.freight, 18.7);
+    assert.strictEqual(realized.values.commission, 15.9);
+    // custo/imposto/taxa fixa são declarados: o realizado usa a mesma Base,
+    // como `valueForKind` faz no backend. Não existe "custo realizado".
+    assert.strictEqual(realized.values.cost, 40);
+    assert.strictEqual(realized.values.tax, 0.06);
+    assert.strictEqual(realized.entries.cost.source, "VENFORCE_BASE");
+    assert.strictEqual(projected.preset, "projected");
+    assert.strictEqual(realized.preset, "realized");
+  });
+
+  await test("alterar uma fonte manualmente resulta em modo Personalizado", () => {
+    const custom = Object.assign(api.clonePreset("projected"), { freight: "MELI_ORDER" });
+    assert.strictEqual(api.presetFor(custom), "custom");
+    assert.strictEqual(api.presetFor(api.clonePreset("projected")), "projected");
+    assert.strictEqual(api.presetFor(api.clonePreset("realized")), "realized");
+    // clonePreset devolve cópia: mexer no resultado não contamina o preset.
+    const clone = api.clonePreset("projected");
+    clone.price = "MELI_ORDER";
+    assert.strictEqual(api.PRESETS.projected.price, "MELI_API");
+  });
+
+  await test("núcleo espelha marginEngine: preço e custo obrigatórios, opcional vira zero declarado", () => {
+    const complete = api.computeMargin({ price: 100, cost: 40, tax: 0.06, commission: 16.5, freight: 23.4, fixedFee: 0 });
+    assert.strictEqual(complete.computable, true);
+    assert.strictEqual(complete.profit, 14.1);
+    assert.strictEqual(complete.margin, 0.141);
+    assert.strictEqual(complete.strict, true);
+
+    const missingCost = api.computeMargin({ price: 100, cost: null, tax: 0.06, commission: 1, freight: 1, fixedFee: 0 });
+    assert.strictEqual(missingCost.computable, false);
+    assert.deepStrictEqual(missingCost.missing, ["cost"]);
+    assert.strictEqual(missingCost.profit, null);
+    assert.strictEqual(missingCost.margin, null);
+
+    // Opcional ausente entra como zero DECLARADO, nunca como zero silencioso.
+    const assumedFreight = api.computeMargin({ price: 100, cost: 40, tax: 0.06, commission: 16.5, freight: null, fixedFee: null });
+    assert.strictEqual(assumedFreight.computable, true);
+    assert.deepStrictEqual(assumedFreight.assumed, ["freight", "fixedFee"]);
+    assert.strictEqual(assumedFreight.strict, false);
+
+    // Preço zero não é margem zero: é dado impossível.
+    assert.strictEqual(api.computeMargin({ price: 0, cost: 10 }).computable, false);
+  });
+
+  await test("fonte sem evidência mantém null e impede o cálculo em vez de zerar", () => {
+    const item = normalizedItem();
+    const composition = api.resolveComposition(item, Object.assign(api.clonePreset("projected"), { price: "EXTENSION_DOM" }));
+    assert.strictEqual(composition.values.price, null);
+    assert.deepStrictEqual(composition.unavailable, ["price"]);
+    assert.strictEqual(composition.computable, false);
+    assert.strictEqual(composition.profit, null);
+    assert.strictEqual(composition.margin, null);
+  });
+
+  await test("simulatePrice continua idêntico à implementação anterior", () => {
+    // Oráculo: cópia literal da fórmula que existia antes da centralização.
+    function round(value, digits) {
+      if (value === null) return null;
+      const factor = Math.pow(10, digits === undefined ? 2 : digits);
+      return Math.round((value + Number.EPSILON) * factor) / factor;
+    }
+    function legacySimulatePrice(item, newPrice) {
+      const price = Number.isFinite(Number(newPrice)) && newPrice !== null && newPrice !== "" ? Number(newPrice) : null;
+      const inputs = (item && item.simulationInputs) || {};
+      const missing = [];
+      const num = (v) => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+      if (price === null || price <= 0) missing.push("price");
+      if (num(inputs.cost) === null) missing.push("cost");
+      if (num(inputs.taxRate) === null) missing.push("taxRate");
+      if (num(inputs.commissionRate) === null) missing.push("commissionRate");
+      if (num(inputs.freight) === null) missing.push("freight");
+      if (missing.length) return { computable: false, missing, profit: null, margin: null };
+      const cost = Number(inputs.cost);
+      const taxRate = Number(inputs.taxRate);
+      const commissionRate = Number(inputs.commissionRate);
+      const freight = Number(inputs.freight);
+      const fixedFee = num(inputs.fixedFee) || 0;
+      const profit = price - price * taxRate - price * commissionRate - freight - fixedFee - cost;
+      const margin = profit / price;
+      const currentMargin = item.projected && item.projected.margin;
+      const targetMargin = item.targetMargin;
+      return {
+        computable: true,
+        price: round(price, 2),
+        profit: round(profit, 2),
+        margin: round(margin, 6),
+        currentMargin,
+        deltaCurrentPp: currentMargin === null || currentMargin === undefined ? null : round((margin - currentMargin) * 100, 2),
+        targetMargin,
+        deltaTargetPp: targetMargin === null || targetMargin === undefined ? null : round((margin - targetMargin) * 100, 2),
+        source: inputs.source || "Motor de Margem",
+        missing: [],
+      };
+    }
+
+    const cases = [];
+    [null, 0, 1, 47, 99.9, 119.9, 1234.56].forEach((price) => {
+      [
+        { cost: 40, taxRate: 0.06, commissionRate: 0.165, freight: 23.4, fixedFee: 0, source: "Motor de Margem" },
+        { cost: 83.33, taxRate: 0.115, commissionRate: 0.1499, freight: 18.7, fixedFee: 6.75, source: "Adapter" },
+        { cost: null, taxRate: 0.06, commissionRate: 0.165, freight: 23.4, fixedFee: 0 },
+        { cost: 40, taxRate: 0.06, commissionRate: null, freight: null, fixedFee: null },
+      ].forEach((inputs) => {
+        [null, 0.12, 0].forEach((targetMargin) => {
+          cases.push({ simulationInputs: inputs, targetMargin, projected: { margin: 0.05 } });
+          cases.push({ simulationInputs: inputs, targetMargin, projected: { margin: null } });
+        });
+        cases.forEach((item) => { item.__price = price; });
+      });
+    });
+
+    let compared = 0;
+    cases.forEach((item) => {
+      [null, 0, 1, 47, 99.9, 120, 1234.56].forEach((price) => {
+        assert.deepStrictEqual(api.simulatePrice(item, price), legacySimulatePrice(item, price),
+          `divergiu para preço ${price} e inputs ${JSON.stringify(item.simulationInputs)}`);
+        compared += 1;
+      });
+    });
+    assert.ok(compared >= 100, `poucos casos comparados: ${compared}`);
+  });
+
+  await test("cenário é local: overrides não viram evidência nem alteram o item", () => {
+    const item = normalizedItem();
+    const before = JSON.stringify(item.sources);
+    const scenario = {
+      price: { source: "MELI_API", value: 150, manual: true },
+      cost: { source: "VENFORCE_BASE", value: null, manual: false },
+      tax: { source: "VENFORCE_BASE", value: null, manual: false },
+      commission: { source: "MELI_API", value: null, manual: false },
+      freight: { source: "MELI_ORDER", value: null, manual: false },
+      fixedFee: { source: "VENFORCE_BASE", value: null, manual: false },
+    };
+    const simulation = api.simulateScenario(item, scenario, api.PRESETS.projected);
+    assert.strictEqual(simulation.computable, true);
+    assert.strictEqual(simulation.values.price, 150);
+    assert.strictEqual(simulation.values.freight, 18.7);
+    assert.deepStrictEqual(simulation.changed.sort(), ["freight", "price"]);
+    assert.strictEqual(simulation.persisted, false);
+    assert.ok(simulation.deltaMarginPp !== null);
+    // Nada do item foi mutado pela simulação.
+    assert.strictEqual(JSON.stringify(item.sources), before);
+  });
+
+  await test("cenário sem variável obrigatória não calcula e não assume zero", () => {
+    const item = normalizedItem();
+    const scenario = {
+      price: { source: "MELI_API", value: null, manual: false },
+      cost: { source: "VENFORCE_BASE", value: null, manual: true },
+      tax: { source: "VENFORCE_BASE", value: null, manual: false },
+      commission: { source: "MELI_API", value: null, manual: false },
+      freight: { source: "MELI_API", value: null, manual: false },
+      fixedFee: { source: "VENFORCE_BASE", value: null, manual: false },
+    };
+    const simulation = api.simulateScenario(item, scenario, api.PRESETS.projected);
+    assert.strictEqual(simulation.computable, false);
+    assert.deepStrictEqual(simulation.missing, ["cost"]);
+    assert.strictEqual(simulation.profit, null);
+    assert.strictEqual(simulation.margin, null);
+  });
+
+  await test("resultado financeiro usa o status do Motor e só deriva quando ele é de qualidade", () => {
+    const backend = normalizedItem({ status: "LOSS" });
+    assert.strictEqual(api.financialResult(backend).key, "LOSS");
+    assert.strictEqual(api.financialResult(backend).origin, "backend");
+
+    // Status ocupado por qualidade: o resultado financeiro é derivado das
+    // margens que o próprio Motor calculou, sem reescrever `status`.
+    const suspect = normalizedItem({ status: "SUSPECT_DATA", realized: { margin: 0.07 }, projected: { margin: 0.05 } });
+    assert.strictEqual(suspect.status, "SUSPECT_DATA");
+    assert.strictEqual(api.financialResult(suspect).key, "LOW_MARGIN");
+    assert.strictEqual(api.financialResult(suspect).origin, "derived");
+
+    const lossHidden = normalizedItem({ status: "RECONCILING", realized: { margin: -0.2 }, projected: { margin: -0.1 } });
+    assert.strictEqual(api.financialResult(lossHidden).key, "LOSS");
+
+    const noMargin = normalizedItem({ status: "UNVALIDATED", realized: { margin: null }, projected: { margin: null } });
+    assert.strictEqual(api.financialResult(noMargin).key, "UNKNOWN");
+    assert.strictEqual(api.financialResult(noMargin).margin, null);
+  });
+
+  await test("integridade do dado é uma leitura separada do resultado financeiro", () => {
+    assert.strictEqual(api.dataIntegrity(normalizedItem({ status: "UNVALIDATED" })).key, "MISSING");
+    assert.strictEqual(api.dataIntegrity(normalizedItem({ status: "SUSPECT_DATA" })).key, "SUSPECT");
+    assert.strictEqual(api.dataIntegrity(normalizedItem({ status: "RECONCILING" })).key, "RECONCILING");
+
+    // Prejuízo com dado confiável: financeiro ruim, integridade boa.
+    const reliableLoss = normalizedItem({ status: "LOSS", realized: { margin: -0.3 } });
+    assert.strictEqual(api.financialResult(reliableLoss).key, "LOSS");
+    assert.strictEqual(api.dataIntegrity(reliableLoss).key, "RELIABLE");
+
+    // Custo ausente com status financeiro: a integridade acusa mesmo assim.
+    const noCost = normalizedItem({
+      status: "HEALTHY",
+      fields: Object.assign({}, canonicalItem().fields, { cost: canonicalField([]) }),
+    });
+    assert.strictEqual(api.dataIntegrity(noCost).key, "MISSING");
+
+    const summary = api.summarizeItems([reliableLoss, noCost]);
+    assert.strictEqual(summary.financial.LOSS, 1);
+    assert.strictEqual(summary.integrity.MISSING, 1);
+  });
+
+  await test("fila de divergências usa divergência real e calcula o impacto na MC", () => {
+    const item = normalizedItem();
+    const rows = api.divergenceQueue([item], api.PRESETS.projected);
+    assert.strictEqual(rows.length, 1);
+    const row = rows[0];
+    assert.strictEqual(row.variable, "freight");
+    assert.strictEqual(row.selectedSource, "MELI_API");
+    assert.strictEqual(row.selectedValue, 23.4);
+    assert.strictEqual(row.alternativeSource, "MELI_ORDER");
+    assert.strictEqual(row.alternativeValue, 18.7);
+    // Frete menor melhora a MC: (23,40 − 18,70) / 100 = +4,7 pp.
+    assert.strictEqual(row.impactPp, 4.7);
+    assert.strictEqual(row.type, "DRIFT");
+    assert.strictEqual(row.origin, "motor");
+
+    // O Motor publica a mesma divergência em fields[x].divergences e em
+    // quality.divergences; a fila mostra uma linha só.
+    const duplicated = api.normalizeCanonicalItem(
+      Object.assign(canonicalItem(), {
+        divergences: [{
+          field: "freight",
+          type: "DRIFT",
+          a: { source: "MELI_API", kind: "PROJECTED", value: 23.4, observedAt: "2026-08-12T10:00:00Z" },
+          b: { source: "MELI_ORDER", kind: "REALIZED", value: 18.7, observedAt: "2026-08-10T10:00:00Z" },
+        }],
+      }),
+      { client: { slug: "loja-teste", name: "Loja" }, marketplace: "meli" }
+    );
+    assert.strictEqual(duplicated.divergences.length, 1);
+    assert.strictEqual(api.divergenceQueue([duplicated], api.PRESETS.projected).length, 1);
+
+    // Sem divergência relatada, a fila fica vazia: nada é inventado.
+    const clean = normalizedItem({
+      fields: Object.assign({}, canonicalItem().fields, {
+        freight: canonicalField([evidence("MELI_API", "PROJECTED", 23.4), evidence("MELI_ORDER", "REALIZED", 23.4)]),
+      }),
+    });
+    assert.strictEqual(api.divergenceQueue([clean], api.PRESETS.projected).length, 0);
+  });
+
+  await test("saúde das fontes não inventa Mercado Pago nem Extensão", () => {
+    const response = api.normalizeCanonicalResponse({ ok: true, itens: [canonicalItem()] }, context());
+    const health = Object.fromEntries(api.sourceHealth(response).map((entry) => [entry.key, entry]));
+    assert.strictEqual(health.MELI_API.state, "OK");
+    assert.strictEqual(health.VENFORCE_BASE.state, "OK");
+    assert.strictEqual(health.MELI_ORDER.state, "OK");
+    assert.strictEqual(health.MERCADO_PAGO.state, "PENDING");
+    assert.strictEqual(health.MERCADO_PAGO.detail, "integração pendente");
+    assert.strictEqual(health.EXTENSION_DOM.state, "PENDING");
+    assert.strictEqual(health.EXTENSION_DOM.detail, "ingestão pendente");
+    // Recebimento líquido continua ausente: nunca derivado do preço vendido.
+    assert.strictEqual(response.items[0].variables.netReceipt.value, null);
+    assert.strictEqual(response.items[0].variables.mercadoPago.value, null);
+  });
+
+  await test("adapter legado expõe fontes reais e deriva divergência com a tolerância do núcleo", () => {
+    const fixture = legacyFixture();
+    // Preço de catálogo 100 × último vendido 100: dentro da tolerância.
+    const same = api.adaptLegacyResponse(fixture.catalog, fixture.sales, context());
+    const itemA = same.items.find((entry) => entry.id === "MLB-A");
+    assert.strictEqual(itemA.sources.price.entries.MELI_API.value, 100);
+    assert.strictEqual(itemA.sources.price.entries.MELI_ORDER.value, 100);
+    assert.strictEqual(itemA.divergences.length, 0);
+    // O adapter não tem frete previsto nem taxa fixa: ausência explícita.
+    assert.strictEqual(itemA.sources.freight.entries.MELI_API.available, false);
+    assert.strictEqual(itemA.sources.fixedFee.entries.VENFORCE_BASE.available, false);
+    assert.strictEqual(api.resolveComposition(itemA, api.PRESETS.projected).values.freight, null);
+
+    // Agora com preço vendido bem diferente do catálogo.
+    const drifted = JSON.parse(JSON.stringify(fixture));
+    drifted.sales.pedidos[0].itens[0].valorUnitario = 80;
+    const result = api.adaptLegacyResponse(drifted.catalog, drifted.sales, context());
+    const item = result.items.find((entry) => entry.id === "MLB-A");
+    assert.strictEqual(item.divergences.length, 1);
+    assert.strictEqual(item.divergences[0].type, "DRIFT");
+    assert.strictEqual(item.divergences[0].origin, "adapter");
+    assert.strictEqual(item.divergences[0].variableKey, "price");
+    // DRIFT não é defeito de dado: o status permanece o que era.
+    assert.strictEqual(item.status, "HEALTHY");
+  });
+
   console.log(`# ${passed} testes concluídos`);
 }
 

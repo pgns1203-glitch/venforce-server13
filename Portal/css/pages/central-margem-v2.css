@@ -6,12 +6,40 @@
   --vf-table-cell-py: 7px;
   /* O drawer da Central é um workspace com abas, não um painel de leitura. */
   --vf-drawer-lg: min(880px, 98vw);
-  --cm-sheet-min-width: 1560px;
-  --cm-product-col: 280px;
+
+  /* Larguras alvo das colunas (table-layout: fixed). A soma cabe em
+     ~1036px — em 1366px com sidebar aberta (~1050px úteis) isso ainda
+     entra sem scroll; em 1440/1650 o navegador distribui o espaço extra
+     proporcionalmente entre as colunas. */
+  --cm-product-col: 210px;
+  --cm-col-money: 90px;
+  --cm-col-rate: 72px;
+  --cm-col-margem: 104px;
+  --cm-col-estado: 100px;
+  --cm-col-diag: 118px;
+}
+
+/* A Central usa praticamente toda a largura entre a sidebar e a borda
+   direita: o `.vf-content` legado (style.css) trava a página em
+   `--vf-content-max` (1080px) muito antes de `.vf-page-container--wide`
+   conseguir respirar. Neutralizamos só aqui — a Fundação inteira continua
+   intacta para as outras páginas. */
+.vf-page-central-margem .vf-content {
+  max-width: none;
+  padding: 0;
+  min-width: 0;
+}
+
+.vf-page-central-margem .vf-main-with-sidebar,
+.vf-page-central-margem .vf-page-shell,
+.vf-page-central-margem .vf-page-container {
+  min-width: 0;
 }
 
 .vf-page-central-margem .vf-page-container--wide {
-  max-width: var(--vf-content-wide);
+  /* Teto generoso só para não esticar ao infinito em monitores 4K — em
+     1650/1440/1366 isso é, na prática, "toda a largura disponível". */
+  max-width: 1900px;
   display: flex;
   flex-direction: column;
   gap: var(--vf-sp-5);
@@ -60,6 +88,9 @@
   font-size: var(--vf-fs-xs);
 }
 
+.vf-page-central-margem .cm-coverage { font-weight: var(--vf-fw-semibold); }
+.vf-page-central-margem .cm-coverage.is-partial { color: var(--vf-warning-strong); }
+
 .vf-page-central-margem .cm-context__meta:empty { display: none; }
 .vf-page-central-margem #cm-page-state:empty { display: none; }
 
@@ -87,6 +118,14 @@
   font-weight: var(--vf-fw-bold);
   letter-spacing: var(--vf-ls-caps);
   text-transform: uppercase;
+}
+
+.vf-page-central-margem .cm-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  flex-wrap: wrap;
 }
 
 .vf-page-central-margem .cm-mode-copy {
@@ -352,11 +391,34 @@
 
 .vf-page-central-margem .cm-table {
   width: 100%;
-  min-width: var(--cm-sheet-min-width);
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
   font-size: var(--vf-fs-xs);
 }
+
+/* Larguras por posição (table-layout: fixed usa a 1ª linha para calibrar):
+   1 Produto · 2–7 as 6 variáveis · 8 Margem · 9 Estado · 10 Diagnóstico. */
+.vf-page-central-margem .cm-table th:nth-child(1),
+.vf-page-central-margem .cm-table td:nth-child(1) { width: var(--cm-product-col); }
+.vf-page-central-margem .cm-table th:nth-child(2),
+.vf-page-central-margem .cm-table td:nth-child(2),
+.vf-page-central-margem .cm-table th:nth-child(3),
+.vf-page-central-margem .cm-table td:nth-child(3),
+.vf-page-central-margem .cm-table th:nth-child(5),
+.vf-page-central-margem .cm-table td:nth-child(5),
+.vf-page-central-margem .cm-table th:nth-child(6),
+.vf-page-central-margem .cm-table td:nth-child(6) { width: var(--cm-col-money); }
+.vf-page-central-margem .cm-table th:nth-child(4),
+.vf-page-central-margem .cm-table td:nth-child(4),
+.vf-page-central-margem .cm-table th:nth-child(7),
+.vf-page-central-margem .cm-table td:nth-child(7) { width: var(--cm-col-rate); }
+.vf-page-central-margem .cm-table th:nth-child(8),
+.vf-page-central-margem .cm-table td:nth-child(8) { width: var(--cm-col-margem); }
+.vf-page-central-margem .cm-table th:nth-child(9),
+.vf-page-central-margem .cm-table td:nth-child(9) { width: var(--cm-col-estado); }
+.vf-page-central-margem .cm-table th:nth-child(10),
+.vf-page-central-margem .cm-table td:nth-child(10) { width: var(--cm-col-diag); }
 
 .vf-page-central-margem .cm-table thead th {
   position: sticky;
@@ -504,13 +566,13 @@
   text-transform: uppercase;
 }
 
-.vf-page-central-margem .cm-var-head { min-width: 132px; }
+.vf-page-central-margem .cm-var-head { overflow: hidden; }
 
 .vf-page-central-margem .cm-head-select {
   width: 100%;
   height: var(--vf-control-h-sm);
   margin-top: var(--vf-sp-1);
-  padding: 0 var(--vf-sp-2);
+  padding: 0 var(--vf-sp-1);
   border: 1px solid var(--vf-border-strong);
   border-radius: var(--vf-radius-sm);
   background: var(--vf-surface);
@@ -535,10 +597,13 @@
 
 /* Célula financeira: valor domina, fonte é discreta, divergência é um sinal compacto. */
 
-.vf-page-central-margem .cm-var-cell { min-width: 132px; }
+.vf-page-central-margem .cm-var-cell { overflow: hidden; }
 
 .vf-page-central-margem .cm-cell-value {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--vf-font-display);
   font-size: var(--vf-fs-sm);
   font-weight: var(--vf-fw-bold);
@@ -573,32 +638,43 @@
 .vf-page-central-margem .cm-low { color: var(--vf-warning-strong); }
 .vf-page-central-margem .cm-good { color: var(--vf-success); }
 
-/* LC / MC: área de cálculo, separada visualmente sem pintar a célula inteira. */
+/* Margem: MC (principal, maior) + LC (secundário) na mesma coluna. */
 
 .vf-page-central-margem .cm-calc-head { background: var(--vf-primary-soft); }
 .vf-page-central-margem .cm-calc-head .cm-head-label { color: var(--vf-primary-strong); }
 
-.vf-page-central-margem .cm-calc-cell { min-width: 96px; }
-.vf-page-central-margem .cm-calc-cell--lc { border-left: 1px solid var(--vf-primary-border); }
-.vf-page-central-margem .cm-calc-cell--mc { border-right: 1px solid var(--vf-primary-border); }
+.vf-page-central-margem .cm-calc-cell {
+  overflow: hidden;
+  border-left: 1px solid var(--vf-primary-border);
+  border-right: 1px solid var(--vf-primary-border);
+}
 
-/* MC é o resultado que importa: precisa ler mais forte que LC. */
-.vf-page-central-margem .cm-calc-cell--mc .cm-cell-value {
+.vf-page-central-margem .cm-mc-value {
   font-size: var(--vf-fs-md);
   font-weight: var(--vf-fw-extrabold);
 }
 
-/* Problema / Próxima ação: texto secundário, não podem roubar largura das variáveis. */
+.vf-page-central-margem .cm-lc-value .cm-cell-meta { font-family: var(--vf-font-display); }
 
-/* `min-width` (não só `max-width`) é necessário: sem ele, o layout automático
-   da tabela colapsa a coluna ao tamanho da maior palavra e o texto quebra em
-   várias linhas curtas, inflando a altura da linha inteira. */
-.vf-page-central-margem .cm-problem {
+/* Estado: resultado financeiro + integridade do dado — dois conceitos, dois
+   status, uma coluna. */
+.vf-page-central-margem .cm-state-cell { overflow: hidden; }
+
+.vf-page-central-margem .cm-state-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+/* Diagnóstico: problema → próxima ação, sem duas colunas largas de texto. */
+
+.vf-page-central-margem .cm-diag-cell { overflow: hidden; }
+
+.vf-page-central-margem .cm-diag-problem {
   display: -webkit-box;
   overflow: hidden;
   margin: 0;
-  min-width: 180px;
-  max-width: 200px;
   color: var(--vf-text-secondary);
   font-size: var(--vf-fs-xs);
   line-height: var(--vf-lh-snug);
@@ -606,21 +682,22 @@
   -webkit-line-clamp: 2;
 }
 
-.vf-page-central-margem .cm-next-action { min-width: 170px; max-width: 190px; }
-
-.vf-page-central-margem .cm-next-action strong {
-  display: block;
+.vf-page-central-margem .cm-diag-action {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--vf-text);
   font-size: var(--vf-fs-xs);
   font-weight: var(--vf-fw-bold);
 }
 
-.vf-page-central-margem .cm-next-action span {
-  display: block;
-  margin-top: 2px;
+.vf-page-central-margem .cm-diag-arrow {
+  flex: 0 0 auto;
   color: var(--vf-text-muted);
-  font-size: var(--vf-fs-2xs);
-  line-height: var(--vf-lh-snug);
 }
 
 .vf-page-central-margem .cm-unavailable,
@@ -629,6 +706,16 @@
   font-size: var(--vf-fs-xs);
   font-weight: var(--vf-fw-medium);
   white-space: nowrap;
+  cursor: help;
+}
+
+/* Marcador discreto de "clique/passe o mouse para saber por quê" — nunca
+   deixa "Indisponível" parecer um beco sem saída. */
+.vf-page-central-margem .cm-info-mark {
+  display: inline-block;
+  margin-left: 3px;
+  color: var(--vf-text-muted);
+  font-size: 0.85em;
 }
 
 /* ── Fila de divergências ─────────────────────────────────────────────── */
@@ -1367,6 +1454,65 @@
 }
 
 /* ── Responsivo ───────────────────────────────────────────────────────── */
+
+/* ── Painel "Fontes e cobertura" ──────────────────────────────────────── */
+
+.cm-sources-intro {
+  margin: 0 0 var(--vf-sp-4);
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-sm);
+  line-height: var(--vf-lh-normal);
+}
+
+.cm-sources-coverage {
+  margin: 0 0 var(--vf-sp-4);
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface-2);
+  color: var(--vf-text);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.cm-sources-table {
+  width: 100%;
+  margin-bottom: var(--vf-sp-4);
+  border-collapse: collapse;
+  font-size: var(--vf-fs-sm);
+}
+
+.cm-sources-table th,
+.cm-sources-table td {
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  border-bottom: 1px solid var(--vf-border);
+  text-align: left;
+}
+
+.cm-sources-table th {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-bold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+}
+
+.cm-sources-table td:first-child { font-weight: var(--vf-fw-semibold); color: var(--vf-text); }
+
+.cm-sources-pending {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  margin-bottom: var(--vf-sp-4);
+  padding: var(--vf-sp-3);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface-2);
+}
+
+.cm-sources-pending p { margin: 0; font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); }
+
+.cm-sources-actions { display: flex; justify-content: flex-end; }
 
 @media (max-width: 1280px) {
   .vf-page-central-margem .cm-source-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }

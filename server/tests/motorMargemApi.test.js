@@ -61,7 +61,12 @@ function depsPadrao(overrides = {}) {
             ultimaVendaEm: "2026-08-05",
             comissao: { soma: 24, itensComValor: 1 },
             frete: { soma: 40, itensComValor: 1 },
-            reembolso: { soma: 0, atribuido: false },
+            // Histórico persistido pela Central de Vendas — mesmos valores da
+            // Base neste fixture (cost 40, taxRate 0.1), mas por um caminho
+            // INDEPENDENTE: ver teste dedicado provando que Base atual mudar
+            // não afeta o realizado.
+            custo: { soma: 80, itensComValor: 1 },
+            imposto: { soma: 20, itensComValor: 1 },
             resultadoPersistido: { soma: 36, itensComValor: 1 },
             precoUnitarioMin: 100,
             precoUnitarioMax: 100,
@@ -81,14 +86,17 @@ function depsPadrao(overrides = {}) {
             comissao: { soma: 12, itensComValor: 1 },
             // Frete realizado 25 contra 10 previsto → divergência.
             frete: { soma: 25, itensComValor: 1 },
-            reembolso: { soma: 0, atribuido: false },
+            custo: { soma: 60, itensComValor: 1 },
+            imposto: { soma: 10, itensComValor: 1 },
             resultadoPersistido: { soma: -7, itensComValor: 1 },
             precoUnitarioMin: 100,
             precoUnitarioMax: 100,
           },
         ],
       ]),
+      reembolsoPorMlb: new Map(),
       naoAtribuido: { reembolso: 0 },
+      reembolsos: { atribuidoMlb: 0, atribuidoPedido: 0, naoAtribuivel: 0 },
     }),
     buscarItensAtivos: async () => ({ ids: ["MLB1", "MLB2", "MLB3"], total: 3 }),
     buscarDetalhesItens: async ({ ids }) =>
@@ -376,7 +384,10 @@ function depsWorkspace({ n, total, searchIndex, divergenceIndex }) {
       comissao: { soma: anuncio.commission, itensComValor: 1 },
       // Frete realizado bem acima do previsto → DRIFT detectável.
       frete: { soma: anuncio.freight + 40, itensComValor: 1 },
-      reembolso: { soma: 0, atribuido: false },
+      // Sem histórico de custo/imposto neste fixture — cobertura 0, sem
+      // evidência REALIZED (não afeta o teste de divergência de frete).
+      custo: { soma: 0, itensComValor: 0 },
+      imposto: { soma: 0, itensComValor: 0 },
       resultadoPersistido: { soma: 0, itensComValor: 1 },
       precoUnitarioMin: anuncio.price, precoUnitarioMax: anuncio.price,
     });
@@ -387,7 +398,12 @@ function depsWorkspace({ n, total, searchIndex, divergenceIndex }) {
     exigirContexto: async () => ({ cliente: CLIENTE, base: BASE, mlUserId: "99" }),
     carregarCustos: async () => ({ index: catalogo.custos, total: catalogo.custos.size }),
     carregarVendas: async () => ({ sincronizado: true, imports: [], pedidos: [], itens: [], componentes: [] }),
-    agregarPorMlb: () => ({ porMlb: vendasPorMlb, naoAtribuido: { reembolso: 0 } }),
+    agregarPorMlb: () => ({
+      porMlb: vendasPorMlb,
+      reembolsoPorMlb: new Map(),
+      naoAtribuido: { reembolso: 0 },
+      reembolsos: { atribuidoMlb: 0, atribuidoPedido: 0, naoAtribuivel: 0 },
+    }),
     buscarItensAtivos: async ({ offset, limit }) => {
       chamadasMl.push({ offset, limit });
       return { ids: catalogo.ids.slice(offset, offset + limit), total: total ?? n };
@@ -477,6 +493,118 @@ cenario("workspace aceita maxItens explícito, sempre limitado ao teto seguro", 
   const resposta = await service.obterWorkspace({ ...params, maxItens: String(service.RESUMO_MAX_ITENS_TETO * 5) }, deps);
   // Mesmo pedindo muito mais, o teto de segurança da leitura continua valendo.
   assert.strictEqual(resposta.cobertura.maxItens, service.RESUMO_MAX_ITENS_TETO);
+});
+
+// ── Preparação única do contexto (AUDITORIA §1 — prepareWorkspaceContext) ────
+// Um workspace de 87 itens em 5 lotes de <=20 deve resolver contexto/Base/
+// Central de Vendas/agregação UMA vez, não uma vez por lote.
+
+cenario("contexto/Base/Central de Vendas/agregação são resolvidos 1x para um workspace de 87 itens em 5 lotes", async () => {
+  const contadores = { exigirContexto: 0, carregarCustos: 0, carregarVendas: 0, agregarPorMlb: 0 };
+  const { deps } = depsWorkspace({ n: 87, total: 87 });
+
+  const instrumentado = {
+    ...deps,
+    exigirContexto: async (...args) => {
+      contadores.exigirContexto += 1;
+      return deps.exigirContexto(...args);
+    },
+    carregarCustos: async (...args) => {
+      contadores.carregarCustos += 1;
+      return deps.carregarCustos(...args);
+    },
+    carregarVendas: async (...args) => {
+      contadores.carregarVendas += 1;
+      return deps.carregarVendas(...args);
+    },
+    agregarPorMlb: (...args) => {
+      contadores.agregarPorMlb += 1;
+      return deps.agregarPorMlb(...args);
+    },
+  };
+
+  const resposta = await service.obterWorkspace(params, instrumentado);
+
+  assert.strictEqual(resposta.itens.length, 87);
+  assert.strictEqual(contadores.exigirContexto, 1, "contexto: 1 leitura, não 5");
+  assert.strictEqual(contadores.carregarCustos, 1, "Base: 1 leitura, não 5");
+  assert.strictEqual(contadores.carregarVendas, 1, "Central de Vendas: 1 leitura, não 5");
+  assert.strictEqual(contadores.agregarPorMlb, 1, "agregação por MLB: 1 execução, não 5");
+});
+
+cenario("obterResumo (mesmo helper de workspace) também resolve o contexto 1x", async () => {
+  const contadores = { exigirContexto: 0 };
+  const { deps } = depsWorkspace({ n: 45, total: 45 });
+  const instrumentado = {
+    ...deps,
+    exigirContexto: async (...args) => {
+      contadores.exigirContexto += 1;
+      return deps.exigirContexto(...args);
+    },
+  };
+
+  await service.obterResumo({ ...params, maxItens: "45" }, instrumentado);
+  // 45 itens / 20 por lote = 3 lotes.
+  assert.strictEqual(contadores.exigirContexto, 1, "3 lotes, 1 contexto só");
+});
+
+cenario("prepareWorkspaceContext expõe o contexto para enrichBatch reaproveitar entre lotes", async () => {
+  const { deps } = depsWorkspace({ n: 5, total: 5 });
+  const prepared = await service.prepareWorkspaceContext(params, deps);
+
+  assert.strictEqual(prepared.cliente.slug, "cliente-teste");
+  assert.ok(prepared.porMlb instanceof Map);
+  assert.ok(prepared.reembolsoPorMlb instanceof Map);
+  assert.ok(prepared.custos.index, "índice de custos da Base já resolvido");
+
+  const lote1 = await service.enrichBatch(prepared, { offset: 0, limit: 20, targetMargin: 0.1 }, deps);
+  const lote2 = await service.enrichBatch(prepared, { offset: 20, limit: 20, targetMargin: 0.1 }, deps);
+  assert.strictEqual(lote1.totalItensMl, 5);
+  assert.strictEqual(lote1.itens.length, 5, "só 5 existem, o resto do lote 1 já cobre tudo");
+  assert.strictEqual(lote2.itens.length, 0, "lote 2 não encontra mais nada — não recarrega contexto para saber isso");
+});
+
+// ── Filtro/busca/paginação/drawer não chamam o Mercado Livre ────────────────
+// Uma vez que o workspace foi carregado, interações do operador (trocar
+// página, filtrar por status/confiança, buscar, abrir o drawer de um item)
+// são operações PURAS sobre o array já carregado — nenhuma delas aceita
+// `deps`/rede, então não têm como disparar uma nova chamada ao ML.
+
+cenario("filtrar, buscar e paginar visualmente o workspace já carregado não chama o ML de novo", async () => {
+  let chamadasMl = 0;
+  const { deps } = depsWorkspace({ n: 30, total: 30 });
+  const instrumentado = {
+    ...deps,
+    buscarItensAtivos: async (...args) => {
+      chamadasMl += 1;
+      return deps.buscarItensAtivos(...args);
+    },
+  };
+
+  const workspace = await service.obterWorkspace(params, instrumentado);
+  const chamadasApósCarga = chamadasMl;
+  assert.ok(chamadasApósCarga > 0, "a carga inicial chama o ML normalmente");
+
+  // Filtro por status — puro, sobre o array já carregado.
+  const porStatus = service.aplicarFiltros(workspace.itens, { status: "HEALTHY" });
+  // Busca por texto — idem.
+  const porBusca = service.aplicarFiltros(workspace.itens, { busca: "produto" });
+  // Filtro por divergência — idem.
+  const porDivergencia = service.aplicarFiltros(workspace.itens, { comDivergencia: true });
+  // "Paginação visual" — fatiar o array em memória, sem nova busca.
+  const pagina2 = workspace.itens.slice(20, 40);
+  // "Abrir o drawer" — os dados do item (evidências, divergências, diagnóstico)
+  // já vieram no workspace; nenhuma chamada nova é necessária para exibi-los.
+  const itemDoDrawer = workspace.itens[0];
+
+  assert.ok(Array.isArray(porStatus));
+  assert.ok(Array.isArray(porBusca));
+  assert.ok(Array.isArray(porDivergencia));
+  assert.ok(Array.isArray(pagina2));
+  assert.ok(itemDoDrawer.fields, "o drawer lê evidências já carregadas no item");
+  assert.ok(itemDoDrawer.divergences, "e as divergências já carregadas");
+
+  assert.strictEqual(chamadasMl, chamadasApósCarga, "nenhuma das operações acima chamou o ML");
 });
 
 cenario("rota de workspace responde no controller com os mesmos aliases da raiz", async () => {

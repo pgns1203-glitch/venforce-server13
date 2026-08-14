@@ -163,13 +163,24 @@ async function obterContextoMargem({ clienteSlug, dateFrom, dateTo }, deps = {})
 }
 
 // ---------------------------------------------------------------------------
-// Montagem dos itens
+// Preparação do contexto do workspace — UMA VEZ por requisição
 // ---------------------------------------------------------------------------
-
-async function montarItens(
-  { clienteSlug, baseSlug, dateFrom, dateTo, offset, limit, targetMargin, itemIds },
-  deps = {}
-) {
+//
+// O contexto cliente/grant/Base, a Base financeira completa, a Central de
+// Vendas do período e a agregação por MLB NÃO dependem de qual página/lote de
+// anúncios está sendo enriquecida — só dependem de cliente + base + período.
+// Antes, `montarItens` resolvia tudo isso a cada chamada, e `carregarWorkspace`
+// chamava `montarItens` uma vez por lote de <=20 anúncios: um workspace de 87
+// itens em 5 lotes lia a Base 5 vezes, a Central de Vendas 5 vezes etc.
+//
+// `prepareWorkspaceContext` isola exatamente essa parte (1 leitura, sempre).
+// `enrichBatch` consome o contexto já pronto e faz só o que É por lote: buscar
+// os IDs do catálogo (respeitando o teto de 20 do multiget do ML) e os
+// detalhes desses itens. `montarItens` continua existindo com o MESMO
+// contrato de sempre (usado por `listarItens`/`obterItem`, que são
+// naturalmente de 1 lote só); `carregarWorkspace` passa a preparar uma vez e
+// enriquecer N lotes sobre o mesmo contexto.
+async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo }, deps = {}) {
   const db = deps.db;
   const now = deps.now || new Date();
   const periodo = resolverPeriodo({ dateFrom, dateTo, now });
@@ -188,7 +199,37 @@ async function montarItens(
     { clienteSlug: cliente.slug, dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, marketplace: MARKETPLACE },
     db
   );
-  const { porMlb, naoAtribuido } = (deps.agregarPorMlb || centralVendas.agregarPorMlb)(vendasRaw);
+
+  const agregado = (deps.agregarPorMlb || centralVendas.agregarPorMlb)({
+    pedidosTodos: vendasRaw.pedidosTodos || vendasRaw.pedidos,
+    pedidosResultado: vendasRaw.pedidos,
+    itens: vendasRaw.itens,
+    componentes: vendasRaw.componentes,
+  });
+
+  return {
+    now,
+    cliente,
+    base,
+    mlUserId,
+    periodo,
+    custos,
+    vendasRaw,
+    porMlb: agregado.porMlb,
+    reembolsoPorMlb: agregado.reembolsoPorMlb,
+    naoAtribuido: agregado.naoAtribuido,
+    reembolsos: agregado.reembolsos,
+    // Timestamp do snapshot (prioridade 3 do §Timestamp): só usado quando um
+    // agregado não tem `ultimaVendaEm` seguro. Nunca é `new Date()`.
+    fallbackObservedAt: vendasRaw.importSnapshotAt || null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Enriquecimento de UM lote (<=20 anúncios) sobre o contexto já preparado
+// ---------------------------------------------------------------------------
+async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, deps = {}) {
+  const { cliente, base, mlUserId, custos, porMlb, reembolsoPorMlb, fallbackObservedAt, now } = prepared;
 
   // Lista de anúncios: ou os IDs pedidos explicitamente (detalhe de item), ou
   // uma página dos ativos do vendedor.
@@ -221,16 +262,24 @@ async function montarItens(
     // 1) Estado atual do anúncio (MELI_API).
     const observado = await aplicarProjetadas(bag, { clienteId: cliente.id, body, observedAt: now }, deps);
 
-    // 2) Custo/imposto/taxa fixa declarados na Base (VENFORCE_BASE).
+    // 2) Custo/imposto/taxa fixa declarados na Base ATUAL (VENFORCE_BASE,
+    // PROJETADO). O realizado histórico vem do passo 3, nunca daqui.
     const temCusto = baseCustos.aplicarEvidenciasDeCusto(bag, {
       itemId: observado.itemId,
       index: custos.index,
       baseSlug: base.slug,
     });
 
-    // 3) O que a venda entregou (MELI_ORDER, via Central de Vendas).
+    // 3) O que a venda entregou (MELI_ORDER/VENFORCE_BASE histórico, via
+    // Central de Vendas). Preço/comissão/frete/custo/imposto realizados nunca
+    // caem para o estado atual — ausente fica ausente (ver marginItem.js).
     const agregado = porMlb.get(observado.itemId) || null;
-    const realizado = centralVendas.aplicarEvidenciasRealizadas(bag, { agregado, observedAt: now });
+    const realizado = centralVendas.aplicarEvidenciasRealizadas(bag, { agregado, fallbackObservedAt });
+
+    // 3b) Reembolso — independente de o MLB ter venda computável no período
+    // (um pedido cancelado e reembolsado não passa pelo `agregado` acima).
+    const reembolso = reembolsoPorMlb.get(observado.itemId) || null;
+    const reembolsoInfo = centralVendas.aplicarEvidenciaReembolso(bag, { reembolso, fallbackObservedAt });
 
     // 4) Extensão: sem canal de ingestão hoje (registra nada, mantém o motivo).
     extensao.aplicarEvidenciasDom(bag, extensao.coletar());
@@ -274,22 +323,44 @@ async function montarItens(
       faltantesMeliApi: observado.faltantes,
       conciliacao: { ...conciliacao },
       realizado: realizado || null,
+      reembolso: reembolsoInfo || null,
     };
 
     return item;
   });
 
+  return { totalItensMl, itens };
+}
+
+// ---------------------------------------------------------------------------
+// Montagem dos itens — 1 lote, contexto preparado inline (compat)
+// ---------------------------------------------------------------------------
+
+async function montarItens(
+  { clienteSlug, baseSlug, dateFrom, dateTo, offset, limit, targetMargin, itemIds },
+  deps = {}
+) {
+  const prepared = await (deps.prepareWorkspaceContext || prepareWorkspaceContext)(
+    { clienteSlug, baseSlug, dateFrom, dateTo },
+    deps
+  );
+  const { totalItensMl, itens } = await (deps.enrichBatch || enrichBatch)(
+    prepared,
+    { offset, limit, targetMargin, itemIds },
+    deps
+  );
+
   return {
-    cliente,
-    base,
-    periodo,
+    cliente: prepared.cliente,
+    base: prepared.base,
+    periodo: prepared.periodo,
     totalItensMl,
     itens,
     vendas: {
-      sincronizado: vendasRaw.sincronizado,
-      pedidosNoPeriodo: vendasRaw.pedidos.length,
-      anunciosComVenda: porMlb.size,
-      reembolsoNaoAtribuido: naoAtribuido.reembolso,
+      sincronizado: prepared.vendasRaw.sincronizado,
+      pedidosNoPeriodo: prepared.vendasRaw.pedidos.length,
+      anunciosComVenda: prepared.porMlb.size,
+      reembolsoNaoAtribuido: prepared.naoAtribuido.reembolso,
     },
   };
 }
@@ -523,45 +594,54 @@ function resumoVazio() {
 
 /**
  * WORKSPACE — varredura em batches do catálogo, reaproveitada por `obterResumo`
- * e `obterWorkspace`. Cada chamada a `montarItens` já respeita PAGE_LIMIT_MAX
- * (teto do multiget `/items?ids=`); esta função só decide QUANTOS batches
- * encadear, nunca aumenta o tamanho de um único batch.
+ * e `obterWorkspace`. Cada lote respeita PAGE_LIMIT_MAX (teto do multiget
+ * `/items?ids=`); esta função só decide QUANTOS lotes encadear, nunca aumenta
+ * o tamanho de um único lote.
  *
  * `offset 0, 20, 40…` até terminar o catálogo (`totalItensMl`) ou atingir
  * `maxItens` — o teto seguro de chamadas ao Mercado Livre nesta leitura.
- * Contexto/Base/vendas são resolvidos UMA VEZ por `montarItens` (cache
- * implícito de `exigirContextoPronto`/`carregarCustos`/`carregarVendas` fica a
- * cargo dos deps injetados); aqui só se acumulam os itens.
+ *
+ * Contexto/Base/Central de Vendas/agregação são resolvidos UMA VEZ aqui via
+ * `prepareWorkspaceContext`, ANTES do loop — não a cada lote. Cada lote só
+ * chama `enrichBatch`, que reaproveita esse contexto e faz apenas o que
+ * depende do lote: buscar os IDs da página e os detalhes desses itens.
  */
 async function carregarWorkspace(
   { clienteSlug, baseSlug, dateFrom, dateTo, targetMargin, maxItens },
   deps = {}
 ) {
+  const prepared = await (deps.prepareWorkspaceContext || prepareWorkspaceContext)(
+    { clienteSlug, baseSlug, dateFrom, dateTo },
+    deps
+  );
+  const enrich = deps.enrichBatch || enrichBatch;
+
   const itens = [];
   let totalItensMl = 0;
-  let cliente = null;
-  let base = null;
-  let periodo = null;
-  let vendas = null;
 
   for (let offset = 0; offset < maxItens; offset += PAGE_LIMIT_MAX) {
     const limit = Math.min(PAGE_LIMIT_MAX, maxItens - offset);
-    const montado = await montarItens(
-      { clienteSlug, baseSlug, dateFrom, dateTo, offset, limit, targetMargin },
-      deps
-    );
+    const resultado = await enrich(prepared, { offset, limit, targetMargin }, deps);
 
-    cliente = montado.cliente;
-    base = montado.base;
-    periodo = montado.periodo;
-    vendas = montado.vendas;
-    totalItensMl = montado.totalItensMl;
-    itens.push(...montado.itens);
+    totalItensMl = resultado.totalItensMl;
+    itens.push(...resultado.itens);
 
-    if (montado.itens.length === 0 || offset + limit >= totalItensMl) break;
+    if (resultado.itens.length === 0 || offset + limit >= totalItensMl) break;
   }
 
-  return { cliente, base, periodo, vendas, totalItensMl, itens };
+  return {
+    cliente: prepared.cliente,
+    base: prepared.base,
+    periodo: prepared.periodo,
+    vendas: {
+      sincronizado: prepared.vendasRaw.sincronizado,
+      pedidosNoPeriodo: prepared.vendasRaw.pedidos.length,
+      anunciosComVenda: prepared.porMlb.size,
+      reembolsoNaoAtribuido: prepared.naoAtribuido.reembolso,
+    },
+    totalItensMl,
+    itens,
+  };
 }
 
 /**
@@ -744,6 +824,8 @@ module.exports = {
   obterResumo,
   obterWorkspace,
   comAliasesDeCompatibilidade,
+  prepareWorkspaceContext,
+  enrichBatch,
   montarItens,
   carregarWorkspace,
   aplicarFiltros,

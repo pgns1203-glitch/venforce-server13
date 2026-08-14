@@ -45,6 +45,17 @@
     DERIVED: "Derivado",
   };
 
+  // Rótulo ULTRA curto para o controle compacto do cabeçalho da planilha
+  // (o nome completo continua disponível via title/aria-label do <select>).
+  var SOURCE_SELECT_LABELS = {
+    MELI_API: "ML",
+    MELI_ORDER: "Pedido",
+    MERCADO_PAGO: "Mercado Pago",
+    VENFORCE_BASE: "Base",
+    EXTENSION_DOM: "Extensão",
+    DERIVED: "Derivado",
+  };
+
   /*
    * Composição da planilha
    * ----------------------
@@ -721,6 +732,55 @@
         scope: normalizedScope,
       },
       lastUpdated: firstValue(payload.lastUpdated, payload.updatedAt, payload.ultimaAtualizacao, payload.geradoEm, derivedLastUpdated),
+      period: payload.period || payload.periodo || null,
+      warnings: arrayOf(firstValue(payload.warnings, payload.avisos, [])),
+      gaps: arrayOf(firstValue(payload.gaps, payload.lacunas, [])),
+    };
+  }
+
+  /*
+   * WORKSPACE — normaliza o payload de `/operacao/central-margem/:slug/workspace`.
+   * Diferente de `normalizeCanonicalResponse` (paginação do servidor), aqui
+   * `items` é O CATÁLOGO CARREGADO inteiro (até o teto seguro do backend) e a
+   * cobertura (`loaded`/`total`/`partial`) é o que a UI usa para nunca
+   * apresentar uma amostra como se fosse o catálogo inteiro.
+   */
+  function normalizeWorkspaceResponse(payload, context) {
+    payload = payload || {};
+    context = context || {};
+    var rows = arrayOf(firstValue(payload.items, payload.itens, []));
+    var items = rows.map(function (row) { return normalizeCanonicalItem(row, context); });
+    var coverageRaw = payload.coverage || payload.cobertura || {};
+    var loaded = numberOrNull(firstValue(coverageRaw.loaded, coverageRaw.carregados, items.length));
+    if (loaded === null) loaded = items.length;
+    var total = numberOrNull(firstValue(coverageRaw.total, coverageRaw.totalItensMl, loaded));
+    if (total === null) total = loaded;
+    var summaryRaw = payload.summary || payload.resumo || {};
+    var statusSummary = summaryRaw.counts || summaryRaw.porStatus || {};
+    var counts = countStatuses(items);
+    var partial = payload.partial === true || payload.parcial === true || coverageRaw.parcial === true || loaded < total;
+
+    return {
+      ok: true,
+      sourceMode: "motor",
+      sourceLabel: "Motor de Margem",
+      client: context.client,
+      marketplace: context.marketplace || "meli",
+      items: items,
+      partial: partial,
+      coverage: { loaded: loaded, total: total, partial: partial },
+      summary: {
+        counts: {
+          HEALTHY: numberOrNull(firstValue(statusSummary.HEALTHY, counts.HEALTHY)) || 0,
+          LOW_MARGIN: numberOrNull(firstValue(statusSummary.LOW_MARGIN, counts.LOW_MARGIN)) || 0,
+          LOSS: numberOrNull(firstValue(statusSummary.LOSS, counts.LOSS)) || 0,
+          UNVALIDATED: numberOrNull(firstValue(statusSummary.UNVALIDATED, counts.UNVALIDATED)) || 0,
+          SUSPECT_DATA: numberOrNull(firstValue(statusSummary.SUSPECT_DATA, counts.SUSPECT_DATA)) || 0,
+          RECONCILING: numberOrNull(firstValue(statusSummary.RECONCILING, counts.RECONCILING)) || 0,
+        },
+        scope: "workspace",
+      },
+      lastUpdated: firstValue(payload.lastUpdated, payload.updatedAt, payload.ultimaAtualizacao, payload.geradoEm),
       period: payload.period || payload.periodo || null,
       warnings: arrayOf(firstValue(payload.warnings, payload.avisos, [])),
       gaps: arrayOf(firstValue(payload.gaps, payload.lacunas, [])),
@@ -1697,7 +1757,77 @@
         });
     }
 
-    return { getClients: getClients, getCentral: getCentral, call: call };
+    /*
+     * WORKSPACE — uma única leitura que alimenta planilha, filtros, KPIs e
+     * fila de divergências. Diferente de `getCentral` (paginado no servidor),
+     * aqui a página inteira do catálogo carregado (até o teto seguro do
+     * backend) volta em `items`; filtro, busca e paginação visual acontecem
+     * no cliente sobre esse array. Nenhuma chamada por linha nesta função.
+     */
+    function getWorkspace(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      if (!slug) return Promise.resolve({ ok: false, status: 400, error: "Selecione um cliente.", type: "no-client" });
+      var context = {
+        client: { slug: slug, name: params.clientName || slug },
+        marketplace: params.marketplace || "meli",
+      };
+      var range = dateRange(params);
+      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias" };
+      var workspaceQuery = buildQuery({
+        marketplace: context.marketplace,
+        dateFrom: range.dateFrom,
+        dateTo: range.dateTo,
+        maxItens: params.maxItens,
+      });
+
+      return call("/operacao/central-margem/" + encodeURIComponent(slug) + "/workspace" + workspaceQuery, { signal: signal })
+        .then(function (canonical) {
+          if (canonical.ok) return normalizeWorkspaceResponse(canonical.data, context);
+          if (canonical.aborted) return canonical;
+          if ([404, 501].indexOf(canonical.status) === -1) {
+            return { ok: false, status: canonical.status, error: canonical.error || "O Motor de Margem não respondeu.", code: canonical.code || null, type: canonical.type || "api" };
+          }
+
+          // Fallback legado: o catálogo sincronizado (DB) não tem o teto de
+          // batch ao vivo do Motor — pede um limite maior para aproximar um
+          // workspace sem nunca chamar o Mercado Livre por linha.
+          var maxItens = numberOrNull(params.maxItens) || 200;
+          var catalogQuery = buildQuery({ clienteSlug: slug, limit: maxItens, page: 1 });
+          var salesQuery = buildQuery({ marketplace: context.marketplace, dateFrom: range.dateFrom, dateTo: range.dateTo });
+          return Promise.all([
+            call("/anuncios-meli" + catalogQuery, { signal: signal }),
+            call("/operacao/central-vendas/" + encodeURIComponent(slug) + salesQuery, { signal: signal }),
+          ]).then(function (results) {
+            var catalog = results[0];
+            var sales = results[1];
+            if (catalog.aborted || sales.aborted) return { ok: false, aborted: true, type: "aborted" };
+            if (!catalog.ok) {
+              return { ok: false, status: catalog.status, error: catalog.error || "Não foi possível carregar o catálogo do cliente.", type: catalog.type || "api" };
+            }
+            var legacy = adaptLegacyResponse(catalog.data, sales.ok ? sales.data : null, context, sales.ok ? null : sales);
+            var total = legacy.pagination.total || legacy.items.length;
+            var partial = legacy.items.length < total;
+            return {
+              ok: true,
+              sourceMode: legacy.sourceMode,
+              sourceLabel: legacy.sourceLabel,
+              client: legacy.client,
+              marketplace: legacy.marketplace,
+              items: legacy.items,
+              partial: partial,
+              coverage: { loaded: legacy.items.length, total: total, partial: partial },
+              summary: { counts: legacy.summary.counts, scope: "workspace" },
+              lastUpdated: legacy.lastUpdated,
+              period: legacy.period,
+              warnings: legacy.warnings,
+              gaps: legacy.gaps,
+            };
+          });
+        });
+    }
+
+    return { getClients: getClients, getCentral: getCentral, getWorkspace: getWorkspace, call: call };
   }
 
   return {
@@ -1705,6 +1835,7 @@
     LEVELS: LEVELS,
     SOURCE_LABELS: SOURCE_LABELS,
     SOURCE_SHORT_LABELS: SOURCE_SHORT_LABELS,
+    SOURCE_SELECT_LABELS: SOURCE_SELECT_LABELS,
     VARIABLES: VARIABLES,
     VARIABLE_META: VARIABLE_META,
     SOURCE_SLOTS: SOURCE_SLOTS,
@@ -1730,6 +1861,7 @@
     normalizeStatus: normalizeStatus,
     normalizeCanonicalItem: normalizeCanonicalItem,
     normalizeCanonicalResponse: normalizeCanonicalResponse,
+    normalizeWorkspaceResponse: normalizeWorkspaceResponse,
     adaptLegacyResponse: adaptLegacyResponse,
     buildSalesIndex: buildSalesIndex,
     simulatePrice: simulatePrice,

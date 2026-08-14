@@ -54,8 +54,10 @@
     selection: contract.clonePreset("projected"),
     preset: "projected",
     criticalOnly: false,
-    page: 1,
-    limit: 20,
+    // Paginação VISUAL apenas: fatia o array já carregado no workspace.
+    // Nunca dispara nova leitura — "Todos carregados" usa a string "all".
+    visiblePageSize: 50,
+    visiblePage: 1,
     loading: false,
     data: null,
     error: null,
@@ -109,6 +111,17 @@
     return meta && meta.format === "percent" ? formatPercent(value) : formatMoney(value);
   }
 
+  /**
+   * Rótulo de cobertura do workspace: "107 de 107 carregados" (completa) ou
+   * "200 de 350 carregados" (parcial — nunca some o total real do catálogo).
+   */
+  function coverageLabel(coverage) {
+    if (!coverage) return "—";
+    var loaded = coverage.loaded || 0;
+    var total = coverage.total || loaded;
+    return loaded + " de " + total + " carregados";
+  }
+
   function formatDateTime(value) {
     if (!value) return null;
     var date = new Date(value);
@@ -119,7 +132,42 @@
   /** Ausência é informação: nunca vira zero, nunca vira traço mudo. */
   function unavailable(label, title) {
     return '<span class="cm-unavailable"' + (title ? ' title="' + escapeHtml(title) + '"' : "") +
-      ">" + escapeHtml(label || "Indisponível") + "</span>";
+      ">" + escapeHtml(label || "Indisponível") +
+      (title ? '<span class="cm-info-mark" aria-hidden="true">ⓘ</span>' : "") + "</span>";
+  }
+
+  /*
+   * Explica POR QUE uma célula está indisponível: fonte esperada, situação e
+   * próxima ação — nunca inventa um motivo que o backend não informou. Sem
+   * causa específica, cai no texto genérico e honesto do pedido.
+   */
+  var SOURCE_EXPECTATION_LABEL = {
+    MELI_API: "Mercado Livre API",
+    MELI_ORDER: "Pedido ML / shipment",
+    VENFORCE_BASE: "Base VenForce",
+    MERCADO_PAGO: "Mercado Pago",
+    EXTENSION_DOM: "Extensão VenForce",
+  };
+
+  function explainUnavailable(variableKey, source) {
+    var fonte = SOURCE_EXPECTATION_LABEL[source] || contract.sourceLabel(source);
+    var linhas = ["Fonte esperada: " + fonte];
+    if (source === "MERCADO_PAGO") {
+      linhas.push("Situação: integração ainda não disponível.");
+    } else if (source === "EXTENSION_DOM") {
+      linhas.push("Situação: canal de ingestão ainda não disponível.");
+    } else if (source === "VENFORCE_BASE") {
+      linhas.push("Situação: nenhum " + variableLabel(variableKey) + " encontrado para este MLB na Base.");
+      linhas.push("Ação: Ver na Base.");
+    } else if (source === "MELI_API") {
+      linhas.push("Situação: nenhuma evidência desta fonte foi retornada nesta leitura.");
+      linhas.push("Ação: verificar conexão/sincronização ML.");
+    } else if (source === "MELI_ORDER") {
+      linhas.push("Situação: nenhuma venda/evidência realizada no período.");
+    } else {
+      linhas.push("Situação: nenhuma evidência desta fonte foi retornada nesta leitura.");
+    }
+    return linhas.join("\n");
   }
 
   function statusTag(entry) {
@@ -161,6 +209,10 @@
     refs.presets = el("cm-presets");
     refs.modeCopy = el("cm-mode-copy");
     refs.sourceStrip = el("cm-source-strip");
+    refs.openSources = el("cm-open-sources");
+    refs.sourcesOverlay = el("cm-sources-overlay");
+    refs.sourcesClose = el("cm-sources-close");
+    refs.sourcesBody = el("cm-sources-body");
     refs.kpisFinancial = el("cm-kpis-financial");
     refs.kpisIntegrity = el("cm-kpis-integrity");
     refs.summaryScope = el("cm-summary-scope");
@@ -196,7 +248,7 @@
     refs.client.addEventListener("change", function () {
       var selected = state.clients.find(function (client) { return client.slug === refs.client.value; }) || null;
       state.client = selected;
-      state.page = 1;
+      state.visiblePage = 1;
       closeDrawer();
       try {
         if (selected) root.localStorage.setItem("vf-central-margem-cliente", selected.slug);
@@ -213,18 +265,21 @@
 
     refs.marketplace.addEventListener("change", function () {
       state.marketplace = refs.marketplace.value || "meli";
-      state.page = 1;
+      state.visiblePage = 1;
       if (state.client) loadCentral();
     });
 
+    // Busca é PURAMENTE local: filtra o workspace já carregado, sem nova
+    // leitura. Alcança todo item carregado, não só a página visual atual.
     refs.search.addEventListener("input", function () {
       state.search = refs.search.value.trim();
-      state.page = 1;
+      state.visiblePage = 1;
       if (state.searchTimer) root.clearTimeout(state.searchTimer);
       state.searchTimer = root.setTimeout(function () {
-        if (state.client) loadCentral();
-        else renderAll();
-      }, 350);
+        renderSummary();
+        renderSheet();
+        renderDivergences();
+      }, 150);
     });
 
     refs.refresh.addEventListener("click", function () {
@@ -240,8 +295,15 @@
 
     refs.restoreSources.addEventListener("click", function () { applyPreset("projected"); });
 
+    refs.openSources.addEventListener("click", openSourcesPanel);
+    refs.sourcesClose.addEventListener("click", closeSourcesPanel);
+    refs.sourcesOverlay.addEventListener("click", function (event) {
+      if (event.target === refs.sourcesOverlay) closeSourcesPanel();
+    });
+
     refs.financialFilter.addEventListener("change", function () {
       state.financial = refs.financialFilter.value;
+      state.visiblePage = 1;
       renderSummary();
       renderSheet();
       renderDivergences();
@@ -250,6 +312,7 @@
 
     refs.integrityFilter.addEventListener("change", function () {
       state.integrity = refs.integrityFilter.value;
+      state.visiblePage = 1;
       renderSummary();
       renderSheet();
       renderDivergences();
@@ -262,6 +325,7 @@
       var target = button.getAttribute("data-clear-filter");
       if (target === "financial") { state.financial = ""; refs.financialFilter.value = ""; }
       if (target === "integrity") { state.integrity = ""; refs.integrityFilter.value = ""; }
+      state.visiblePage = 1;
       renderSummary();
       renderSheet();
       renderDivergences();
@@ -274,6 +338,7 @@
       var value = button.getAttribute("data-financial-filter");
       state.financial = state.financial === value ? "" : value;
       refs.financialFilter.value = state.financial;
+      state.visiblePage = 1;
       renderSummary();
       renderSheet();
       renderDivergences();
@@ -286,6 +351,7 @@
       var value = button.getAttribute("data-integrity-filter");
       state.integrity = state.integrity === value ? "" : value;
       refs.integrityFilter.value = state.integrity;
+      state.visiblePage = 1;
       renderSummary();
       renderSheet();
       renderDivergences();
@@ -358,6 +424,7 @@
     });
 
     document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && refs.sourcesOverlay.classList.contains("is-open")) { closeSourcesPanel(); return; }
       if (event.key === "Escape" && refs.drawer.classList.contains("is-open")) closeDrawer();
       if (event.key === "Tab" && refs.drawer.classList.contains("is-open")) trapFocus(event);
     });
@@ -473,17 +540,17 @@
     state.loading = true;
     state.error = null;
     state.errorCode = null;
+    state.visiblePage = 1;
     renderAll();
 
-    // Uma única leitura agregada por página. Nenhuma chamada por linha, nem na
-    // abertura do drawer.
-    return api.getCentral({
+    // UMA ÚNICA varredura (workspace) alimenta planilha, filtros, KPIs e fila
+    // de divergências. Nenhuma chamada por linha, nem na abertura do drawer,
+    // nem ao filtrar/buscar/paginar visualmente — só "Atualizar leitura"
+    // monta um novo workspace.
+    return api.getWorkspace({
       clientSlug: state.client.slug,
       clientName: state.client.name,
       marketplace: state.marketplace,
-      search: state.search,
-      page: state.page,
-      limit: state.limit,
     }, state.abortController && state.abortController.signal).then(function (result) {
       if (sequence !== state.requestSequence || result.aborted) return;
       state.loading = false;
@@ -531,19 +598,22 @@
     var data = state.data;
     refs.updated.innerHTML = '<span class="cm-updated__label">Última atualização</span><strong>' +
       escapeHtml((data && formatDateTime(data.lastUpdated)) || "—") + "</strong>";
-    refs.monitoredTag.textContent = data ? (data.summary.monitored || 0) + " monitorados" : "—";
+    refs.monitoredTag.textContent = data ? coverageLabel(data.coverage) : "—";
     refs.sourceTag.textContent = data ? data.sourceLabel + " · leitura" : "Motor · leitura";
     if (!data || !state.client) {
       refs.contextMeta.innerHTML = state.client ? '<span><strong>Cliente:</strong> ' + escapeHtml(state.client.name) + "</span>" : "";
       return;
     }
     var period = data.period || {};
+    var coverage = data.coverage || {};
     refs.contextMeta.innerHTML =
       '<span><strong>Cliente:</strong> ' + escapeHtml(state.client.name) + "</span>" +
       '<span><strong>Marketplace:</strong> Mercado Livre</span>' +
       '<span><strong>Fonte:</strong> ' + escapeHtml(data.sourceLabel) + "</span>" +
       '<span><strong>Realizado:</strong> ' + escapeHtml(period.label || "últimos 30 dias") + "</span>" +
-      '<span><strong>Modo:</strong> somente leitura</span>';
+      '<span><strong>Modo:</strong> somente leitura</span>' +
+      '<span class="cm-coverage' + (coverage.partial ? " is-partial" : "") + '"><strong>Cobertura:</strong> ' +
+      escapeHtml(coverageLabel(coverage)) + (coverage.partial ? " · parcial" : "") + "</span>";
   }
 
   function renderPageState() {
@@ -574,8 +644,13 @@
       return;
     }
     var warnings = (data.warnings || []).map(function (warning) { return "<li>" + escapeHtml(warning) + "</li>"; }).join("");
+    var coverageNote = data.partial
+      ? "<p class=\"vf-banner__description\">" + escapeHtml(coverageLabel(data.coverage)) +
+        " · cobertura parcial: o catálogo tem mais anúncios do que o teto seguro desta leitura. Filtros, KPIs e divergências consideram só os " +
+        (data.coverage && data.coverage.loaded || 0) + " carregados.</p>"
+      : "";
     refs.pageState.innerHTML = '<div class="vf-banner is-info"><div class="vf-banner__content"><p class="vf-banner__title">Leitura parcial e rastreável</p><p class="vf-banner__description">Os valores exibidos são reais ou derivados de fontes reais; campos sem fonte permanecem indisponíveis.</p>' +
-      (warnings ? "<ul>" + warnings + "</ul>" : "") + "</div></div>";
+      coverageNote + (warnings ? "<ul>" + warnings + "</ul>" : "") + "</div></div>";
   }
 
   function renderSourceStrip() {
@@ -591,12 +666,60 @@
     }).join("");
   }
 
+  /*
+   * Painel "Fontes e cobertura" — responde "de onde vem essa coluna?" e "por
+   * que essa célula está indisponível?". A Saúde das fontes (cm-source-strip)
+   * responde uma pergunta diferente ("a fonte está disponível?"); este painel
+   * é o mapa fonte → variável, estático por design (não muda por item).
+   */
+  function sourcesTableHtml() {
+    var rows = contract.VARIABLES.map(function (variableKey) {
+      var meta = contract.VARIABLE_META[variableKey];
+      var projected = contract.PRESETS.projected[variableKey];
+      var realized = contract.PRESETS.realized[variableKey];
+      return "<tr><td>" + escapeHtml(meta.label) + "</td><td>" + escapeHtml(contract.sourceLabel(projected)) +
+        "</td><td>" + escapeHtml(contract.sourceLabel(realized)) + "</td></tr>";
+    }).join("");
+    return '<table class="cm-sources-table"><thead><tr><th>Variável</th><th>Projetado</th><th>Realizado</th></tr></thead><tbody>' +
+      rows + "</tbody></table>";
+  }
+
+  function renderSourcesPanel() {
+    var coverage = (state.data && state.data.coverage) || {};
+    var coverageHtml = state.data
+      ? '<p class="cm-sources-coverage">' + escapeHtml(coverageLabel(coverage)) +
+        (coverage.partial ? " · cobertura parcial do catálogo nesta leitura." : " · cobertura completa nesta leitura.") + "</p>"
+      : '<p class="cm-sources-coverage">Selecione um cliente para ver a cobertura desta leitura.</p>';
+
+    refs.sourcesBody.innerHTML =
+      '<p class="cm-sources-intro">Cada variável da planilha tem uma fonte PROJETADA (estado atual do anúncio) e uma REALIZADA (o que a venda entregou). Custo, imposto e taxa fixa são declarados na Base e valem para os dois momentos — o Motor não tem uma versão "realizada" separada delas.</p>' +
+      coverageHtml + sourcesTableHtml() +
+      '<div class="cm-sources-pending">' +
+      '<p><strong>Mercado Pago</strong> · recebimento/conciliação — integração pendente. Nenhum valor é inventado; a célula fica indisponível até a integração existir.</p>' +
+      '<p><strong>Extensão</strong> · evidência visual — ingestão pendente. O canal de recebimento ainda não existe no backend.</p>' +
+      "</div>" +
+      '<div class="cm-sources-actions"><a class="vf-btn vf-btn--secondary vf-btn--sm" href="bases.html">Ver na Base</a></div>';
+  }
+
+  function openSourcesPanel() {
+    renderSourcesPanel();
+    state.previousFocus = document.activeElement;
+    refs.sourcesOverlay.classList.add("is-open");
+    refs.sourcesClose.focus();
+  }
+
+  function closeSourcesPanel() {
+    refs.sourcesOverlay.classList.remove("is-open");
+    if (state.previousFocus && state.previousFocus.focus) state.previousFocus.focus();
+  }
+
   function financialCards() {
     var summary = state.data ? contract.summarizeItems(state.data.items) : { financial: {} };
     var counts = summary.financial || {};
-    var monitored = state.data ? state.data.summary.monitored || 0 : 0;
+    var coverage = state.data ? state.data.coverage || {} : {};
+    var monitored = coverage.loaded || 0;
     return [
-      { filter: null, label: "Monitorados", value: monitored, foot: "universo do catálogo", modifier: "" },
+      { filter: null, label: "Carregados", value: monitored, foot: coverageLabel(coverage), modifier: "" },
       { filter: "HEALTHY", label: "Saudáveis", value: counts.HEALTHY || 0, foot: "sem ação imediata", modifier: "is-success" },
       { filter: "LOW_MARGIN", label: "Margem baixa", value: counts.LOW_MARGIN || 0, foot: "abaixo da meta", modifier: "is-warning" },
       { filter: "LOSS", label: "Prejuízo", value: counts.LOSS || 0, foot: "ação prioritária", modifier: "is-danger" },
@@ -636,8 +759,9 @@
     else if (state.loading) refs.summaryScope.textContent = "Atualizando a leitura…";
     else if (!state.data) refs.summaryScope.textContent = "";
     else {
+      var coverage = state.data.coverage || {};
       refs.summaryScope.textContent = "Resultado financeiro e integridade do dado são leituras diferentes: um produto pode ter prejuízo com dado confiável, e margem aparentemente saudável com dado suspeito. " +
-        "Monitorados considera o catálogo; os dois placares refletem os " + (state.data.items || []).length + " produtos carregados nesta página.";
+        "Os dois placares refletem os " + coverageLabel(coverage) + (coverage.partial ? " (cobertura parcial do catálogo)" : "") + ".";
     }
   }
 
@@ -654,13 +778,34 @@
     refs.activeFilters.innerHTML = chips.join("");
   }
 
+  /**
+   * Filtra o WORKSPACE INTEIRO (todos os itens carregados), nunca uma página.
+   * Busca, filtro financeiro e filtro de integridade operam sobre o mesmo
+   * array que alimenta KPIs e fila de divergências — uma única varredura.
+   */
   function filteredItems() {
     var items = state.data ? state.data.items || [] : [];
+    var term = state.search ? state.search.trim().toLowerCase() : "";
     return items.filter(function (item) {
       if (state.financial && contract.financialResult(item).key !== state.financial) return false;
       if (state.integrity && contract.dataIntegrity(item).key !== state.integrity) return false;
+      if (term) {
+        var haystack = [item.title, item.itemId, item.sku].join(" ").toLowerCase();
+        if (haystack.indexOf(term) === -1) return false;
+      }
       return true;
     });
+  }
+
+  /** Fatia a paginação VISUAL sobre um array já filtrado. Nunca chama a rede. */
+  function visibleSlice(items) {
+    if (state.visiblePageSize === "all") return items;
+    var size = Number(state.visiblePageSize) || 50;
+    var totalPages = Math.max(Math.ceil(items.length / size), 1);
+    if (state.visiblePage > totalPages) state.visiblePage = totalPages;
+    if (state.visiblePage < 1) state.visiblePage = 1;
+    var start = (state.visiblePage - 1) * size;
+    return items.slice(start, start + size);
   }
 
   // ---------------------------------------------------------------------------
@@ -671,25 +816,23 @@
     var meta = contract.VARIABLE_META[variableKey];
     var selected = state.selection[variableKey];
     var options = contract.SOURCE_SLOTS[variableKey].map(function (source) {
-      return '<option value="' + source + '"' + (source === selected ? " selected" : "") + ">" +
-        escapeHtml(contract.SOURCE_SHORT_LABELS[source] || source) + "</option>";
+      return '<option value="' + source + '" title="' + escapeHtml(contract.sourceLabel(source)) + '"' +
+        (source === selected ? " selected" : "") + ">" +
+        escapeHtml(contract.SOURCE_SELECT_LABELS[source] || contract.SOURCE_SHORT_LABELS[source] || source) + "</option>";
     }).join("");
     var changed = state.preset === "custom" && selected !== contract.PRESETS.projected[variableKey];
     return '<th class="cm-var-head"><span class="cm-head-label">' + escapeHtml(meta.label) + "</span>" +
       '<select class="cm-head-select' + (changed ? " is-changed" : "") + '" data-source-select="' + variableKey +
-      '" aria-label="Fonte de ' + escapeHtml(meta.label) + '">' + options + "</select></th>";
+      '" aria-label="Fonte de ' + escapeHtml(meta.label) + '" title="' + escapeHtml(contract.sourceLabel(selected)) + '">' + options + "</select></th>";
   }
 
   function sheetHead() {
     return "<tr>" +
       '<th class="cm-product-head"><span class="cm-head-label">Produto</span></th>' +
       contract.VARIABLES.map(sourceSelectHtml).join("") +
-      '<th class="num cm-calc-head"><span class="cm-head-label">LC</span></th>' +
-      '<th class="num cm-calc-head"><span class="cm-head-label">MC</span></th>' +
-      '<th><span class="cm-head-label">Resultado</span></th>' +
-      '<th><span class="cm-head-label">Integridade</span></th>' +
-      '<th><span class="cm-head-label">Problema</span></th>' +
-      '<th><span class="cm-head-label">Próxima ação</span></th>' +
+      '<th class="num cm-calc-head"><span class="cm-head-label">Margem</span></th>' +
+      '<th class="cm-state-head"><span class="cm-head-label">Estado</span></th>' +
+      '<th class="cm-diag-head"><span class="cm-head-label">Diagnóstico</span></th>' +
       "</tr>";
   }
 
@@ -697,8 +840,7 @@
     var source = state.selection[variableKey];
     var entry = contract.sourceEntry(item, variableKey, source);
     if (!entry || !entry.available) {
-      return '<td class="num cm-var-cell">' + unavailable("Indisponível", "Nenhuma observação de " +
-        contract.VARIABLE_META[variableKey].label.toLowerCase() + " por " + contract.sourceLabel(source) + ".") + "</td>";
+      return '<td class="num cm-var-cell">' + unavailable("Indisponível", explainUnavailable(variableKey, source)) + "</td>";
     }
     var differs = contract.hasSourceDisagreement(item, variableKey, source);
     return '<td class="num cm-var-cell"><span class="cm-cell-value">' + escapeHtml(formatByVariable(variableKey, entry.value)) + "</span>" +
@@ -791,19 +933,29 @@
       ? '<span class="cm-cell-meta">assumido 0: ' + escapeHtml(composition.assumed.map(variableLabel).join(", ")) + "</span>"
       : "";
 
+    // Margem: MC é o número que importa (principal, maior); LC é o valor em
+    // R$ que sustenta a MC (secundário). Os dois continuam presentes — só
+    // compartilham uma coluna em vez de duas.
+    var margemCellHtml = composition.computable
+      ? '<span class="cm-cell-value cm-mc-value ' + marginClass(composition.margin, item) + '">' + escapeHtml(formatPercent(composition.margin)) + "</span>" +
+        '<span class="cm-cell-sub cm-lc-value"><span class="cm-cell-meta">LC ' + escapeHtml(formatMoney(composition.profit)) + "</span></span>" + assumed
+      : unavailable("Indisponível", "Falta " + composition.missing.map(variableLabel).join(", ") + " na composição selecionada.");
+
+    // Estado: resultado financeiro + integridade do dado continuam sendo DOIS
+    // conceitos e dois status — só agrupados visualmente numa coluna.
+    var estadoCellHtml = '<div class="cm-state-stack">' + statusTag(financial) + statusTag(integrity) + "</div>";
+
+    // Diagnóstico: problema → próxima ação, sem duas colunas largas de texto.
+    var diagCellHtml = '<p class="cm-diag-problem">' + escapeHtml(item.problem || "Sem problema informado") + "</p>" +
+      '<div class="cm-diag-action" title="' + escapeHtml(action.detail) + '"><span class="cm-diag-arrow" aria-hidden="true">→</span><strong>' +
+      escapeHtml(action.title) + "</strong></div>";
+
     return '<tr class="' + (state.selectedItemId === item.id ? "is-selected" : "") + '" data-item-id="' + escapeHtml(item.id) + '" tabindex="0">' +
       productCellHtml(item, stripeTone) +
       contract.VARIABLES.map(function (variableKey) { return valueCell(item, variableKey); }).join("") +
-      '<td class="num cm-calc-cell cm-calc-cell--lc">' + (composition.computable
-        ? '<span class="cm-cell-value ' + (composition.profit < 0 ? "cm-negative" : "") + '">' + escapeHtml(formatMoney(composition.profit)) + "</span>" + assumed
-        : unavailable("Indisponível", "Falta " + composition.missing.map(variableLabel).join(", ") + " na composição selecionada.")) + "</td>" +
-      '<td class="num cm-calc-cell cm-calc-cell--mc">' + (composition.computable
-        ? '<span class="cm-cell-value ' + marginClass(composition.margin, item) + '">' + escapeHtml(formatPercent(composition.margin)) + "</span>"
-        : unavailable("Indisponível")) + "</td>" +
-      '<td class="status-cell">' + statusTag(financial) + "</td>" +
-      '<td class="status-cell">' + statusTag(integrity) + "</td>" +
-      '<td><p class="cm-problem">' + escapeHtml(item.problem || "Sem problema informado") + "</p></td>" +
-      '<td><div class="cm-next-action"><strong>' + escapeHtml(action.title) + "</strong><span>" + escapeHtml(action.detail) + "</span></div></td>" +
+      '<td class="num cm-calc-cell">' + margemCellHtml + "</td>" +
+      '<td class="cm-state-cell">' + estadoCellHtml + "</td>" +
+      '<td class="cm-diag-cell">' + diagCellHtml + "</td>" +
       "</tr>";
   }
 
@@ -838,7 +990,9 @@
       return;
     }
     var items = filteredItems();
-    refs.resultCount.textContent = items.length + (items.length === 1 ? " produto" : " produtos");
+    var coverage = (state.data && state.data.coverage) || {};
+    refs.resultCount.textContent = items.length + (items.length === 1 ? " resultado" : " resultados") +
+      (coverage.loaded ? " de " + coverage.loaded + " carregados" : "");
     if (!items.length) {
       var hasFilters = state.search || state.financial || state.integrity;
       refs.tableHost.innerHTML = stateHtml("empty", hasFilters ? "Nenhum resultado" : "Nenhum item monitorado",
@@ -849,46 +1003,61 @@
       refs.pagination.hidden = true;
       return;
     }
+    // Paginação VISUAL: fatia o array já filtrado. Não dispara nova leitura.
+    var page = visibleSlice(items);
     refs.tableHost.innerHTML = '<div class="vf-table-wrap cm-table-wrap"><table class="cm-table"><thead>' +
-      sheetHead() + "</thead><tbody>" + items.map(rowHtml).join("") + "</tbody></table></div>";
-    renderPagination();
+      sheetHead() + "</thead><tbody>" + page.map(rowHtml).join("") + "</tbody></table></div>";
+    renderPagination(items.length);
   }
 
   function clearAllFilters() {
     state.financial = "";
     state.integrity = "";
     state.search = "";
-    state.page = 1;
+    state.visiblePage = 1;
     refs.search.value = "";
     refs.financialFilter.value = "";
     refs.integrityFilter.value = "";
-    loadCentral();
+    renderSummary();
+    renderSheet();
+    renderDivergences();
+    renderActiveFilters();
   }
 
-  function renderPagination() {
-    var pagination = state.data && state.data.pagination;
-    if (!pagination) {
+  /**
+   * Paginação 100% visual: 50/100/Todos carregados. Nunca chama a rede —
+   * o array já filtrado (`total`) só é reapresentado em fatias diferentes.
+   */
+  function renderPagination(total) {
+    if (!state.data || !total) {
       refs.pagination.hidden = true;
       return;
     }
-    var start = pagination.total ? (pagination.page - 1) * pagination.limit + 1 : 0;
-    var end = Math.min(pagination.page * pagination.limit, pagination.total);
+    var size = state.visiblePageSize === "all" ? total : Number(state.visiblePageSize) || 50;
+    var totalPages = Math.max(Math.ceil(total / size), 1);
+    if (state.visiblePage > totalPages) state.visiblePage = totalPages;
+    var start = total ? (state.visiblePage - 1) * (Number(state.visiblePageSize) || total) + 1 : 0;
+    var end = state.visiblePageSize === "all" ? total : Math.min(state.visiblePage * size, total);
     refs.pagination.hidden = false;
-    refs.pagination.innerHTML = '<span class="vf-pagination__info">' + start + "–" + end + " de " + pagination.total + '</span><label class="vf-page-size">Por página <select class="vf-select vf-select--sm" id="cm-page-size"><option value="10">10</option><option value="20">20</option></select></label><div class="vf-pagination__actions"><button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-page-prev"' +
-      (pagination.page <= 1 ? " disabled" : "") + '>Anterior</button><span class="vf-tag is-neutral">Página ' + pagination.page + " de " + pagination.totalPages + '</span><button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-page-next"' +
-      (pagination.page >= pagination.totalPages ? " disabled" : "") + ">Próxima</button></div>";
-    var size = el("cm-page-size");
-    size.value = String(state.limit);
-    size.addEventListener("change", function () {
-      state.limit = Number(size.value) || 20;
-      state.page = 1;
-      loadCentral();
+    refs.pagination.innerHTML = '<span class="vf-pagination__info">' + start + "–" + end + " de " + total +
+      '</span><label class="vf-page-size">Por página <select class="vf-select vf-select--sm" id="cm-page-size">' +
+      '<option value="50">50</option><option value="100">100</option><option value="all">Todos carregados</option>' +
+      '</select></label><div class="vf-pagination__actions"><button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-page-prev"' +
+      (state.visiblePage <= 1 || state.visiblePageSize === "all" ? " disabled" : "") + '>Anterior</button><span class="vf-tag is-neutral">Página ' +
+      state.visiblePage + " de " + totalPages + '</span><button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-page-next"' +
+      (state.visiblePage >= totalPages || state.visiblePageSize === "all" ? " disabled" : "") + ">Próxima</button></div>";
+    var sizeSelect = el("cm-page-size");
+    sizeSelect.value = String(state.visiblePageSize);
+    sizeSelect.addEventListener("change", function () {
+      state.visiblePageSize = sizeSelect.value === "all" ? "all" : Number(sizeSelect.value) || 50;
+      state.visiblePage = 1;
+      renderSheet();
     });
     el("cm-page-prev").addEventListener("click", function () {
-      if (state.page > 1) { state.page -= 1; loadCentral(); }
+      if (state.visiblePage > 1) { state.visiblePage -= 1; renderSheet(); }
     });
     el("cm-page-next").addEventListener("click", function () {
-      if (state.page < pagination.totalPages) { state.page += 1; loadCentral(); }
+      if (state.visiblePage < totalPages) { state.visiblePage += 1; renderSheet(); }
     });
   }
 
@@ -906,13 +1075,15 @@
       refs.divergenceCount.textContent = "";
       refs.divergences.innerHTML = state.loading
         ? stateHtml("loading", "Comparando fontes…")
-        : stateHtml("empty", "Sem leitura carregada", "A fila de divergências acompanha a página carregada da planilha.");
+        : stateHtml("empty", "Sem leitura carregada", "A fila de divergências acompanha todo o workspace carregado, não a página visual da planilha.");
       return;
     }
     var rows = divergenceRows();
-    refs.divergenceCount.textContent = rows.length + (rows.length === 1 ? " divergência" : " divergências");
+    var coverage = (state.data && state.data.coverage) || {};
+    refs.divergenceCount.textContent = rows.length + (rows.length === 1 ? " divergência" : " divergências") +
+      (coverage.loaded ? " nos " + coverage.loaded + " carregados" : "");
     if (!rows.length) {
-      refs.divergences.innerHTML = stateHtml("empty", "Nenhuma divergência nesta página",
+      refs.divergences.innerHTML = stateHtml("empty", "Nenhuma divergência no workspace carregado",
         state.criticalOnly ? "Nenhuma divergência crítica no recorte atual." : "As fontes disponíveis concordam dentro da tolerância do Motor.");
       return;
     }

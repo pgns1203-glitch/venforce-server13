@@ -11,18 +11,15 @@
 //   GET /sites/MLB/listing_prices                        → comissão (R$ e %)
 //   GET /users/{seller}/shipping_options/free            → frete previsto
 //
-// REÚSO: `mlFetch` (utils/mlClient) e `resolverPrecosItem`
-// (automacoes/precoItemService) são os mesmos helpers do Otimizador — o preço
-// promocional não é reimplementado aqui.
-//
-// ⚠️ DUPLICAÇÃO CONHECIDA: a montagem das queries de `listing_prices` e
-// `shipping_options/free` já existe copiada em precificacaoService.js e
-// diagnosticoService.js. Esta é a terceira cópia. Unificar as três é
-// refatoração fora do escopo desta rodada — registrado em
-// MOTOR_MARGEM_IMPLEMENTACAO §Próximos passos.
+// REÚSO: a cotação corrente (preço vigente, promoção, comissão prevista e
+// frete previsto) vem de `shared/marketplaceCurrentQuoteService`, extraído
+// desta mesma lógica na refatoração estrutural da Central de Margem — ver
+// docs/AUDITORIA_ARQUITETURAL_CENTRAL_MARGEM.md. Automações e Diagnóstico
+// ainda têm suas próprias cópias (migração deles fica para a próxima rodada,
+// por escopo — ver relatório de entrega da refatoração).
 
 const { mlFetch } = require("../../../utils/mlClient");
-const { resolverPrecosItem } = require("../../automacoes/precoItemService");
+const { obterCotacaoAtual } = require("../../shared/marketplaceCurrentQuoteService");
 const { SOURCES, EVIDENCE_KINDS, EVIDENCE_QUALITY } = require("../core/marginSources");
 const { FIELDS } = require("../core/marginEvidence");
 
@@ -84,70 +81,10 @@ async function buscarDetalhesItens({ clienteId, ids }, fetchFn = mlFetch) {
 }
 
 /**
- * Comissão + frete previstos de UM item, no preço efetivo informado.
- * Qualquer falha vira `null` (ausente) — nunca 0.
- */
-async function buscarCustosMarketplace(
-  { clienteId, itemId, precoEfetivo, listingTypeId, categoryId, sellerId, logisticType },
-  fetchFn = mlFetch
-) {
-  const [listingPricesResp, shippingResp] = await Promise.all([
-    (async () => {
-      if (precoEfetivo === null || !listingTypeId || !categoryId) return null;
-      const query =
-        `/sites/MLB/listing_prices?price=${encodeURIComponent(precoEfetivo)}` +
-        `&listing_type_id=${encodeURIComponent(listingTypeId)}` +
-        `&category_id=${encodeURIComponent(categoryId)}`;
-      try {
-        return await fetchFn(clienteId, query);
-      } catch (_) {
-        return null;
-      }
-    })(),
-    (async () => {
-      // Frete combinável (não especificado/custom) não tem custo previsto pelo
-      // ML — pedir mesmo assim devolveria um número que não se aplica.
-      const isCombinable = ["not_specified", "custom", ""].includes(logisticType || "");
-      if (isCombinable) return null;
-      if (precoEfetivo === null || !sellerId || !listingTypeId || !itemId) return null;
-      const query =
-        `/users/${encodeURIComponent(sellerId)}/shipping_options/free` +
-        `?item_id=${encodeURIComponent(itemId)}&verbose=true` +
-        `&item_price=${encodeURIComponent(precoEfetivo)}` +
-        `&listing_type_id=${encodeURIComponent(listingTypeId)}&mode=me2`;
-      try {
-        return await fetchFn(clienteId, query);
-      } catch (_) {
-        return null;
-      }
-    })(),
-  ]);
-
-  const listingPricesData = listingPricesResp && listingPricesResp.ok ? listingPricesResp.data : null;
-  const root = Array.isArray(listingPricesData)
-    ? listingPricesData[0]
-    : Array.isArray(listingPricesData?.results)
-      ? listingPricesData.results[0]
-      : listingPricesData;
-
-  const commission = numOrNull(root?.sale_fee_amount);
-  const commissionPercent = numOrNull(root?.sale_fee_details?.percentage_fee);
-
-  const freight =
-    shippingResp && shippingResp.ok
-      ? numOrNull(shippingResp.data?.coverage?.all_country?.list_cost)
-      : null;
-
-  return {
-    commission,
-    // O ML devolve o percentual em escala 0–100; o núcleo trabalha em decimal.
-    commissionRate: commissionPercent === null ? null : commissionPercent / 100,
-    freight,
-  };
-}
-
-/**
  * Coleta TODAS as evidências projetadas de um item e registra no bag.
+ * Preço + comissão prevista + frete previsto vêm de
+ * `shared/marketplaceCurrentQuoteService.obterCotacaoAtual` — nenhuma consulta
+ * a `listing_prices`/`shipping_options` é reimplementada aqui.
  * @returns {Promise<object>} resumo do que foi observado (para diagnóstico)
  */
 async function aplicarEvidenciasProjetadas(
@@ -155,9 +92,6 @@ async function aplicarEvidenciasProjetadas(
   { clienteId, body, observedAt = new Date() },
   deps = {}
 ) {
-  const fetchFn = deps.mlFetchFn || mlFetch;
-  const precosFn = deps.resolverPrecosItemFn || resolverPrecosItem;
-
   const itemId = String(body?.id || "").trim();
   const listingTypeId = body?.listing_type_id || null;
   const categoryId = body?.category_id || null;
@@ -167,11 +101,11 @@ async function aplicarEvidenciasProjetadas(
   const precoListaFallback =
     numOrNull(body?.price) !== null && numOrNull(body.price) > 0 ? numOrNull(body.price) : null;
 
-  const { precoCheio, precoPromocional, precoEfetivo, fonte } = await precosFn({
-    clienteId,
-    itemId,
-    precoListaFallback,
-  });
+  const cotarFn = deps.obterCotacaoAtualFn || obterCotacaoAtual;
+  const cotacao = await cotarFn(
+    { clienteId, itemId, precoListaFallback, listingTypeId, categoryId, sellerId, logisticType },
+    { mlFetchFn: deps.mlFetchFn, resolverPrecosItemFn: deps.resolverPrecosItemFn }
+  );
 
   const comum = {
     source: SOURCES.MELI_API,
@@ -180,24 +114,26 @@ async function aplicarEvidenciasProjetadas(
     observedAt,
   };
 
-  bag.add(FIELDS.PRICE, { ...comum, value: precoEfetivo, note: `sale_price (${fonte})` });
-  bag.add(FIELDS.LIST_PRICE, { ...comum, value: precoCheio, note: `sale_price (${fonte})` });
-  bag.add(FIELDS.PROMO_PRICE, { ...comum, value: precoPromocional, note: `sale_price (${fonte})` });
-
-  const { commission, commissionRate, freight } = await buscarCustosMarketplace(
-    { clienteId, itemId, precoEfetivo, listingTypeId, categoryId, sellerId, logisticType },
-    fetchFn
-  );
-
-  bag.add(FIELDS.COMMISSION, { ...comum, value: commission, note: "listing_prices.sale_fee_amount" });
+  bag.add(FIELDS.PRICE, { ...comum, value: cotacao.precoEfetivo, note: `sale_price (${cotacao.fontePreco})` });
+  bag.add(FIELDS.LIST_PRICE, { ...comum, value: cotacao.precoOriginal, note: `sale_price (${cotacao.fontePreco})` });
+  bag.add(FIELDS.PROMO_PRICE, {
+    ...comum,
+    value: cotacao.precoPromocional,
+    note: `sale_price (${cotacao.fontePreco})`,
+  });
+  bag.add(FIELDS.COMMISSION, {
+    ...comum,
+    value: cotacao.comissaoValor,
+    note: "listing_prices.sale_fee_amount",
+  });
   bag.add(FIELDS.COMMISSION_RATE, {
     ...comum,
-    value: commissionRate,
+    value: cotacao.comissaoPercentual,
     note: "listing_prices.sale_fee_details.percentage_fee",
   });
   bag.add(FIELDS.FREIGHT, {
     ...comum,
-    value: freight,
+    value: cotacao.fretePrevisto,
     note: "shipping_options/free.coverage.all_country.list_cost",
   });
 
@@ -210,18 +146,14 @@ async function aplicarEvidenciasProjetadas(
     listingTypeId,
     categoryId,
     logisticType: logisticType || null,
-    precoEfetivo,
-    precoCheio,
-    precoPromocional,
-    commission,
-    commissionRate,
-    freight,
+    precoEfetivo: cotacao.precoEfetivo,
+    precoCheio: cotacao.precoOriginal,
+    precoPromocional: cotacao.precoPromocional,
+    commission: cotacao.comissaoValor,
+    commissionRate: cotacao.comissaoPercentual,
+    freight: cotacao.fretePrevisto,
     // Sinaliza para a Central por que uma variável ficou sem valor.
-    faltantes: [
-      precoEfetivo === null ? "preco" : null,
-      commission === null ? "comissao" : null,
-      freight === null ? "frete" : null,
-    ].filter(Boolean),
+    faltantes: cotacao.faltantes,
   };
 }
 
@@ -229,7 +161,6 @@ module.exports = {
   SEARCH_PAGE_LIMIT,
   buscarItensAtivos,
   buscarDetalhesItens,
-  buscarCustosMarketplace,
   aplicarEvidenciasProjetadas,
   extrairImagem,
 };

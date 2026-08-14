@@ -17,6 +17,7 @@ const router = express.Router();
 
 router.get("/:clienteSlug/contexto", authMiddleware, requireAutomacoesAccess, controller.obterContexto);
 router.get("/:clienteSlug/resumo", authMiddleware, requireAutomacoesAccess, controller.obterResumo);
+router.get("/:clienteSlug/workspace", authMiddleware, requireAutomacoesAccess, controller.obterWorkspace);
 router.get("/:clienteSlug/itens", authMiddleware, requireAutomacoesAccess, controller.listarItens);
 router.get(
   "/:clienteSlug/itens/:itemId/evidencias",

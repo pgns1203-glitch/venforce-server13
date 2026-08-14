@@ -337,6 +337,168 @@ cenario("resumo declara cobertura parcial quando o catálogo é maior que o teto
   assert.ok(resposta.cobertura.motivoParcial, "motivo da amostragem é explícito");
 });
 
+// ── Workspace ────────────────────────────────────────────────────────────────
+// Uma única varredura em batches <=20 alimenta planilha, filtros, KPIs e fila
+// de divergências no frontend. Estes testes provam que o workspace enxerga
+// itens além da antiga "página 1" de 20, sem nunca violar o teto do multiget.
+
+function gerarCatalogo(n) {
+  const ids = [];
+  const anuncios = {};
+  const custos = new Map();
+  for (let i = 1; i <= n; i += 1) {
+    const id = `MLB${String(i).padStart(4, "0")}`;
+    ids.push(id);
+    const price = 100 + (i % 5) * 10;
+    anuncios[id] = { price, commission: price * 0.12, commissionRate: 0.12, freight: 15, titulo: `Produto ${i}` };
+    custos.set(id, { produtoId: id, cost: price * 0.4, taxRate: 0.08, fixedFee: 0, observedAt: null });
+  }
+  return { ids, anuncios, custos };
+}
+
+function depsWorkspace({ n, total, searchIndex, divergenceIndex }) {
+  const catalogo = gerarCatalogo(n);
+  const chamadasMl = [];
+  let searchId = null;
+  if (searchIndex) {
+    searchId = catalogo.ids[searchIndex - 1];
+    catalogo.anuncios[searchId].titulo = "Produto Raro Único";
+  }
+  let divergenceId = null;
+  const vendasPorMlb = new Map();
+  if (divergenceIndex) {
+    divergenceId = catalogo.ids[divergenceIndex - 1];
+    const anuncio = catalogo.anuncios[divergenceId];
+    vendasPorMlb.set(divergenceId, {
+      mlb: divergenceId, sku: "SKU-DIV", titulo: anuncio.titulo,
+      unidades: 1, receita: anuncio.price, itensContados: 1,
+      pedidos: new Set(["9"]), ultimaVendaEm: "2026-08-05",
+      comissao: { soma: anuncio.commission, itensComValor: 1 },
+      // Frete realizado bem acima do previsto → DRIFT detectável.
+      frete: { soma: anuncio.freight + 40, itensComValor: 1 },
+      reembolso: { soma: 0, atribuido: false },
+      resultadoPersistido: { soma: 0, itensComValor: 1 },
+      precoUnitarioMin: anuncio.price, precoUnitarioMax: anuncio.price,
+    });
+  }
+
+  const deps = {
+    now: NOW,
+    exigirContexto: async () => ({ cliente: CLIENTE, base: BASE, mlUserId: "99" }),
+    carregarCustos: async () => ({ index: catalogo.custos, total: catalogo.custos.size }),
+    carregarVendas: async () => ({ sincronizado: true, imports: [], pedidos: [], itens: [], componentes: [] }),
+    agregarPorMlb: () => ({ porMlb: vendasPorMlb, naoAtribuido: { reembolso: 0 } }),
+    buscarItensAtivos: async ({ offset, limit }) => {
+      chamadasMl.push({ offset, limit });
+      return { ids: catalogo.ids.slice(offset, offset + limit), total: total ?? n };
+    },
+    buscarDetalhesItens: async ({ ids }) =>
+      ids.map((id) => ({ id, title: catalogo.anuncios[id].titulo, secure_thumbnail: `https://img/${id}.jpg` })),
+    aplicarEvidenciasProjetadas: async (bag, { body, observedAt }) => {
+      const anuncio = catalogo.anuncios[body.id];
+      const comum = { source: C.SOURCES.MELI_API, kind: C.EVIDENCE_KINDS.PROJECTED, quality: C.EVIDENCE_QUALITY.MEASURED, observedAt };
+      bag.add(C.FIELDS.PRICE, { ...comum, value: anuncio.price });
+      bag.add(C.FIELDS.LIST_PRICE, { ...comum, value: anuncio.price });
+      bag.add(C.FIELDS.COMMISSION, { ...comum, value: anuncio.commission });
+      bag.add(C.FIELDS.COMMISSION_RATE, { ...comum, value: anuncio.commissionRate });
+      bag.add(C.FIELDS.FREIGHT, { ...comum, value: anuncio.freight });
+      return {
+        itemId: body.id, titulo: anuncio.titulo, sku: null, status: "active",
+        image: body.secure_thumbnail || null,
+        listingTypeId: "gold_special", logisticType: "drop_off",
+        precoEfetivo: anuncio.price, precoCheio: anuncio.price, precoPromocional: null,
+        commission: anuncio.commission, commissionRate: anuncio.commissionRate, freight: anuncio.freight,
+        faltantes: [],
+      };
+    },
+  };
+
+  return { deps, catalogo, searchId, divergenceId, chamadasMl };
+}
+
+cenario("workspace agrega catálogo de 87 itens em batches <=20, sem violar o teto do ML", async () => {
+  const { deps, chamadasMl } = depsWorkspace({ n: 87, total: 87 });
+  const resposta = await service.obterWorkspace(params, deps);
+
+  assert.strictEqual(resposta.ok, true);
+  assert.strictEqual(resposta.itens.length, 87);
+  assert.strictEqual(resposta.cobertura.carregados, 87);
+  assert.strictEqual(resposta.cobertura.totalItensMl, 87);
+  assert.strictEqual(resposta.cobertura.parcial, false, "87 de 87 é cobertura completa");
+  assert.strictEqual(resposta.resumo.itensCarregados, 87);
+
+  assert.deepStrictEqual(chamadasMl.map((c) => c.offset), [0, 20, 40, 60, 80]);
+  assert.ok(chamadasMl.every((c) => c.limit <= service.PAGE_LIMIT_MAX), "nenhum batch pede mais de 20 IDs");
+});
+
+cenario("busca encontraria um item da antiga página 4 porque o workspace carrega o catálogo inteiro", async () => {
+  // Índice 65 cairia na página 4 de uma paginação antiga de 20 por página.
+  const { deps, searchId } = depsWorkspace({ n: 87, total: 87, searchIndex: 65 });
+  const resposta = await service.obterWorkspace(params, deps);
+
+  const item = resposta.itens.find((i) => i.itemId === searchId);
+  assert.ok(item, "item da antiga página 4 precisa estar no workspace");
+  assert.strictEqual(item.title, "Produto Raro Único");
+});
+
+cenario("divergência fora dos primeiros 20 itens aparece no workspace", async () => {
+  const { deps, divergenceId } = depsWorkspace({ n: 87, total: 87, divergenceIndex: 73 });
+  const resposta = await service.obterWorkspace(params, deps);
+
+  const item = resposta.itens.find((i) => i.itemId === divergenceId);
+  assert.ok(item, "item divergente precisa estar carregado");
+  assert.ok(item.divergences.length > 0, "divergência de frete precisa aparecer no item");
+  assert.ok(resposta.resumo.itensComDivergencia >= 1);
+});
+
+cenario("workspace propaga a imagem do ML para cada item, sem chamada extra", async () => {
+  const { deps } = depsWorkspace({ n: 5, total: 5 });
+  const resposta = await service.obterWorkspace(params, deps);
+  assert.strictEqual(resposta.itens[0].image, "https://img/MLB0001.jpg");
+});
+
+cenario("REQUISITO DE ESCALA: catálogo de 1.037 anúncios declara cobertura parcial sem violar o teto", async () => {
+  const { deps, chamadasMl } = depsWorkspace({ n: service.RESUMO_MAX_ITENS_TETO, total: 1037 });
+  const resposta = await service.obterWorkspace(params, deps);
+
+  // Catálogo completo é CONHECIDO mesmo sem estar todo carregado.
+  assert.strictEqual(resposta.cobertura.totalItensMl, 1037);
+  assert.strictEqual(resposta.cobertura.carregados, service.RESUMO_MAX_ITENS_TETO);
+  assert.strictEqual(resposta.cobertura.parcial, true);
+  assert.ok(resposta.cobertura.motivoParcial, "motivo da cobertura parcial é explícito");
+  assert.strictEqual(resposta.parcial, true);
+
+  assert.ok(chamadasMl.every((c) => c.limit <= service.PAGE_LIMIT_MAX), "nenhum batch excede 20 mesmo em catálogo de 1037");
+  assert.strictEqual(chamadasMl.length, service.RESUMO_MAX_ITENS_TETO / service.PAGE_LIMIT_MAX);
+});
+
+cenario("workspace aceita maxItens explícito, sempre limitado ao teto seguro", async () => {
+  const { deps } = depsWorkspace({ n: 50, total: 50 });
+  const resposta = await service.obterWorkspace({ ...params, maxItens: String(service.RESUMO_MAX_ITENS_TETO * 5) }, deps);
+  // Mesmo pedindo muito mais, o teto de segurança da leitura continua valendo.
+  assert.strictEqual(resposta.cobertura.maxItens, service.RESUMO_MAX_ITENS_TETO);
+});
+
+cenario("rota de workspace responde no controller com os mesmos aliases da raiz", async () => {
+  const req = { params: { clienteSlug: "cliente-teste" }, query: { dateFrom: "2026-08-01", dateTo: "2026-08-31" } };
+  let statusCode = null;
+  let payload = null;
+  const res = { status(code) { statusCode = code; return this; }, json(body) { payload = body; return this; } };
+
+  const original = require("../services/motorMargem/motorMargemService").obterWorkspace;
+  require("../services/motorMargem/motorMargemService").obterWorkspace = async () => ({
+    ok: true, itens: [{ itemId: "MLB1", image: "https://img/1.jpg" }], cobertura: { carregados: 1, totalItensMl: 1, parcial: false },
+  });
+  try {
+    await controller.obterWorkspace(req, res);
+  } finally {
+    require("../services/motorMargem/motorMargemService").obterWorkspace = original;
+  }
+  assert.strictEqual(statusCode, 200);
+  assert.strictEqual(payload.ok, true);
+  assert.strictEqual(payload.itens[0].image, "https://img/1.jpg");
+});
+
 // ── Detalhe de item ──────────────────────────────────────────────────────────
 
 cenario("obterItem busca um único anúncio e devolve 404 quando não existe", async () => {
@@ -478,7 +640,7 @@ cenario("todas as rotas montadas são GET (API read-only)", () => {
     methods: Object.keys(layer.route.methods),
   }));
 
-  assert.strictEqual(rotas.length, 6);
+  assert.strictEqual(rotas.length, 7);
   for (const rota of rotas) {
     assert.deepStrictEqual(rota.methods, ["get"], `${rota.path} precisa ser somente GET`);
   }
@@ -491,6 +653,7 @@ cenario("todas as rotas montadas são GET (API read-only)", () => {
       "/:clienteSlug/itens/:itemId",
       "/:clienteSlug/itens/:itemId/evidencias",
       "/:clienteSlug/resumo",
+      "/:clienteSlug/workspace",
     ]
   );
   // A raiz é curinga: registrada por último, não pode engolir os subcaminhos.

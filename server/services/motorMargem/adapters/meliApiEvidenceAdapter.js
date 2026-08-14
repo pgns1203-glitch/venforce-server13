@@ -34,6 +34,25 @@ function numOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Imagem do anúncio — extraída do MESMO `body` que `/items?ids=` já devolve.
+ * ZERO chamada nova: é metadado de identidade/apresentação, não evidência
+ * financeira. Defensivo porque o contrato do ML nem sempre traz as três
+ * variantes; a primeira disponível vence.
+ */
+function extrairImagem(body) {
+  const secureThumb = typeof body?.secure_thumbnail === "string" ? body.secure_thumbnail.trim() : "";
+  if (secureThumb) return secureThumb;
+  const thumb = typeof body?.thumbnail === "string" ? body.thumbnail.trim() : "";
+  if (thumb) return thumb;
+  const pictures = Array.isArray(body?.pictures) ? body.pictures : [];
+  for (const picture of pictures) {
+    const url = (picture && (picture.secure_url || picture.url) || "").trim();
+    if (url) return url;
+  }
+  return null;
+}
+
 /** Página de anúncios ativos do vendedor. Somente leitura. */
 async function buscarItensAtivos({ clienteId, mlUserId, offset = 0, limit = SEARCH_PAGE_LIMIT }, fetchFn = mlFetch) {
   const resp = await fetchFn(
@@ -187,6 +206,7 @@ async function aplicarEvidenciasProjetadas(
     titulo: body?.title || null,
     sku: body?.seller_custom_field || null,
     status: body?.status || null,
+    image: extrairImagem(body),
     listingTypeId,
     categoryId,
     logisticType: logisticType || null,
@@ -211,4 +231,5 @@ module.exports = {
   buscarDetalhesItens,
   buscarCustosMarketplace,
   aplicarEvidenciasProjetadas,
+  extrairImagem,
 };

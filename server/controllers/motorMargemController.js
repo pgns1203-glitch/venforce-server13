@@ -119,6 +119,26 @@ async function listarItens(req, res) {
   }
 }
 
+/**
+ * Workspace: uma única varredura (batches <=20 no ML) que alimenta planilha,
+ * filtros, KPIs e fila de divergências no frontend. Paginação visual e
+ * filtro/busca acontecem no cliente sobre o array `itens` inteiro.
+ */
+async function obterWorkspace(req, res) {
+  try {
+    const clienteSlug = slugParam(req);
+    if (!clienteSlug) return responder(res, 400, { ok: false, erro: "clienteSlug é obrigatório." });
+    const data = await motorMargemService.obterWorkspace({
+      clienteSlug,
+      ...periodoQuery(req),
+      maxItens: req.query.maxItens,
+    });
+    return responder(res, 200, data);
+  } catch (err) {
+    return tratarErro(res, err, "obterWorkspace");
+  }
+}
+
 async function obterResumo(req, res) {
   try {
     const clienteSlug = slugParam(req);
@@ -187,6 +207,7 @@ module.exports = {
   obterContexto,
   listarItens,
   obterResumo,
+  obterWorkspace,
   obterItem,
   obterEvidencias,
   maskSensitiveData,

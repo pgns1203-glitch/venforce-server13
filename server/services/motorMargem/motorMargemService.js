@@ -245,6 +245,9 @@ async function montarItens(
         itemId: observado.itemId,
         sku: observado.sku || agregado?.sku || null,
         titulo: observado.titulo || agregado?.titulo || null,
+        // Metadado de apresentação, não evidência financeira: vem do MESMO
+        // body de /items?ids= já buscado — zero chamada nova ao ML.
+        image: observado.image || null,
       },
       bag,
       sales: {
@@ -416,6 +419,7 @@ function comAliasesDeCompatibilidade(item) {
     sku: item.identity.sku,
     title: item.identity.titulo,
     titulo: item.identity.titulo,
+    image: item.identity.image,
     marketplace: item.identity.marketplace,
     status: item.quality.status,
     confidence: item.quality.confidence,
@@ -518,6 +522,49 @@ function resumoVazio() {
 }
 
 /**
+ * WORKSPACE — varredura em batches do catálogo, reaproveitada por `obterResumo`
+ * e `obterWorkspace`. Cada chamada a `montarItens` já respeita PAGE_LIMIT_MAX
+ * (teto do multiget `/items?ids=`); esta função só decide QUANTOS batches
+ * encadear, nunca aumenta o tamanho de um único batch.
+ *
+ * `offset 0, 20, 40…` até terminar o catálogo (`totalItensMl`) ou atingir
+ * `maxItens` — o teto seguro de chamadas ao Mercado Livre nesta leitura.
+ * Contexto/Base/vendas são resolvidos UMA VEZ por `montarItens` (cache
+ * implícito de `exigirContextoPronto`/`carregarCustos`/`carregarVendas` fica a
+ * cargo dos deps injetados); aqui só se acumulam os itens.
+ */
+async function carregarWorkspace(
+  { clienteSlug, baseSlug, dateFrom, dateTo, targetMargin, maxItens },
+  deps = {}
+) {
+  const itens = [];
+  let totalItensMl = 0;
+  let cliente = null;
+  let base = null;
+  let periodo = null;
+  let vendas = null;
+
+  for (let offset = 0; offset < maxItens; offset += PAGE_LIMIT_MAX) {
+    const limit = Math.min(PAGE_LIMIT_MAX, maxItens - offset);
+    const montado = await montarItens(
+      { clienteSlug, baseSlug, dateFrom, dateTo, offset, limit, targetMargin },
+      deps
+    );
+
+    cliente = montado.cliente;
+    base = montado.base;
+    periodo = montado.periodo;
+    vendas = montado.vendas;
+    totalItensMl = montado.totalItensMl;
+    itens.push(...montado.itens);
+
+    if (montado.itens.length === 0 || offset + limit >= totalItensMl) break;
+  }
+
+  return { cliente, base, periodo, vendas, totalItensMl, itens };
+}
+
+/**
  * Resumo/placar do período.
  *
  * ⚠️ COBERTURA PARCIAL POR DESENHO: varre no máximo `maxItens` anúncios (padrão
@@ -534,37 +581,18 @@ async function obterResumo(params = {}, deps = {}) {
   );
 
   const acumulado = resumoVazio();
-  const itensAnalisados = [];
-  let totalItensMl = 0;
-  let cliente = null;
-  let base = null;
-  let periodo = null;
-  let vendas = null;
-
-  for (let offset = 0; offset < maxItens; offset += PAGE_LIMIT_MAX) {
-    const limit = Math.min(PAGE_LIMIT_MAX, maxItens - offset);
-    const montado = await montarItens(
-      {
-        clienteSlug: params.clienteSlug,
-        baseSlug: params.baseSlug,
-        dateFrom: params.dateFrom,
-        dateTo: params.dateTo,
-        offset,
-        limit,
-        targetMargin,
-      },
-      deps
-    );
-
-    cliente = montado.cliente;
-    base = montado.base;
-    periodo = montado.periodo;
-    vendas = montado.vendas;
-    totalItensMl = montado.totalItensMl;
-    itensAnalisados.push(...montado.itens);
-
-    if (montado.itens.length === 0 || offset + limit >= totalItensMl) break;
-  }
+  const workspace = await carregarWorkspace(
+    {
+      clienteSlug: params.clienteSlug,
+      baseSlug: params.baseSlug,
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+      targetMargin,
+      maxItens,
+    },
+    deps
+  );
+  const { cliente, base, periodo, vendas, totalItensMl, itens: itensAnalisados } = workspace;
 
   for (const item of itensAnalisados) {
     acumulado.porStatus[item.quality.status] = (acumulado.porStatus[item.quality.status] || 0) + 1;
@@ -632,6 +660,77 @@ async function obterResumo(params = {}, deps = {}) {
   };
 }
 
+/**
+ * WORKSPACE da Central — uma única varredura que alimenta planilha, filtros,
+ * KPIs e fila de divergências no frontend. Substitui o padrão antigo de
+ * "20 itens → filtra a página": aqui filtro/busca/paginação visual acontecem
+ * no cliente, sobre TODOS os itens deste workspace.
+ *
+ * Reaproveita `carregarWorkspace` (mesmo helper de `obterResumo`) e devolve
+ * o catálogo carregado com os aliases de compatibilidade do frontend + a
+ * cobertura explícita: quantos foram carregados de quantos existem no
+ * catálogo do Mercado Livre. `maxItens` continua limitado por
+ * RESUMO_MAX_ITENS_TETO nesta fase — catálogos maiores declaram cobertura
+ * parcial em vez de fingir que carregaram tudo (ver proposta de Fase 2 no
+ * relatório de entrega para snapshot/atualização progressiva).
+ */
+async function obterWorkspace(params = {}, deps = {}) {
+  const targetMargin = parseTargetMargin(params.margemAlvo);
+  const maxItens = Math.min(
+    Math.max(1, parseInt(params.maxItens, 10) || RESUMO_MAX_ITENS_TETO),
+    RESUMO_MAX_ITENS_TETO
+  );
+
+  const workspace = await carregarWorkspace(
+    {
+      clienteSlug: params.clienteSlug,
+      baseSlug: params.baseSlug,
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+      targetMargin,
+      maxItens,
+    },
+    deps
+  );
+
+  const itens = workspace.itens.map(comAliasesDeCompatibilidade);
+  const contagemPorStatus = {};
+  for (const key of Object.keys(STATUS)) contagemPorStatus[key] = 0;
+  for (const item of itens) {
+    contagemPorStatus[item.status] = (contagemPorStatus[item.status] || 0) + 1;
+  }
+  const parcial = itens.length < workspace.totalItensMl;
+
+  return {
+    ok: true,
+    cliente: workspace.cliente,
+    base: workspace.base ? { id: workspace.base.id, slug: workspace.base.slug, nome: workspace.base.nome } : null,
+    periodo: workspace.periodo,
+    margemAlvo: targetMargin,
+    parcial,
+    // Cobertura: o que a UI precisa para nunca apresentar uma amostra como
+    // se fosse o catálogo inteiro (ver seção "Cobertura" do pedido).
+    cobertura: {
+      carregados: itens.length,
+      totalItensMl: workspace.totalItensMl,
+      maxItens,
+      parcial,
+      motivoParcial: parcial
+        ? "Catálogo maior que o teto seguro desta leitura (parâmetro maxItens)."
+        : null,
+    },
+    vendas: workspace.vendas,
+    resumo: {
+      escopo: "workspace",
+      porStatus: contagemPorStatus,
+      itensCarregados: itens.length,
+      totalItensMl: workspace.totalItensMl,
+      itensComDivergencia: itens.filter((i) => i.divergences.length > 0).length,
+    },
+    itens,
+  };
+}
+
 module.exports = {
   MARKETPLACE,
   PAGE_LIMIT_DEFAULT,
@@ -643,8 +742,10 @@ module.exports = {
   listarItens,
   obterItem,
   obterResumo,
+  obterWorkspace,
   comAliasesDeCompatibilidade,
   montarItens,
+  carregarWorkspace,
   aplicarFiltros,
   resolverPeriodo,
   parseTargetMargin,

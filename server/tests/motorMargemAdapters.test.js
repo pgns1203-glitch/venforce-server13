@@ -371,6 +371,80 @@ cenario("aplicarEvidenciasProjetadas registra preço, comissão e frete do ML", 
   assert.ok(bag.list(C.FIELDS.PRICE).every((e) => e.source === C.SOURCES.MELI_API));
 });
 
+// ── Imagem do anúncio (metadado de identidade, zero request extra) ──────────
+
+cenario("extrairImagem prioriza secure_thumbnail, depois thumbnail, depois pictures[0]", () => {
+  assert.strictEqual(
+    meliApi.extrairImagem({ secure_thumbnail: "https://x/a.jpg", thumbnail: "https://x/b.jpg" }),
+    "https://x/a.jpg"
+  );
+  assert.strictEqual(meliApi.extrairImagem({ thumbnail: "https://x/b.jpg" }), "https://x/b.jpg");
+  assert.strictEqual(
+    meliApi.extrairImagem({ pictures: [{ secure_url: "https://x/c.jpg" }] }),
+    "https://x/c.jpg"
+  );
+  assert.strictEqual(meliApi.extrairImagem({ pictures: [{ url: "https://x/d.jpg" }] }), "https://x/d.jpg");
+});
+
+cenario("extrairImagem nunca inventa imagem quando o contrato não trouxe nenhuma", () => {
+  assert.strictEqual(meliApi.extrairImagem({}), null);
+  assert.strictEqual(meliApi.extrairImagem({ thumbnail: "" }), null);
+  assert.strictEqual(meliApi.extrairImagem({ pictures: [] }), null);
+  assert.strictEqual(meliApi.extrairImagem(null), null);
+});
+
+cenario("aplicarEvidenciasProjetadas propaga a imagem do MESMO body, sem request novo", async () => {
+  const bag = C.createEvidenceBag();
+  const chamadasMl = [];
+  const observado = await meliApi.aplicarEvidenciasProjetadas(
+    bag,
+    {
+      clienteId: 1,
+      body: {
+        id: "MLB1",
+        title: "Produto",
+        price: 120,
+        secure_thumbnail: "https://http2.mlstatic.com/D_NQ_NP_123.jpg",
+        listing_type_id: "gold_special",
+        category_id: "MLB1",
+        seller_id: "9",
+        status: "active",
+        shipping: { logistic_type: "drop_off" },
+      },
+      observedAt: new Date("2026-08-12T00:00:00Z"),
+    },
+    {
+      resolverPrecosItemFn: async () => ({
+        precoCheio: 120, precoPromocional: null, precoEfetivo: 120, fonte: "sale_price",
+      }),
+      mlFetchFn: async (clienteId, path) => {
+        chamadasMl.push(path);
+        return path.includes("listing_prices")
+          ? { ok: true, data: [{ sale_fee_amount: 12, sale_fee_details: { percentage_fee: 12 } }] }
+          : { ok: true, data: { coverage: { all_country: { list_cost: 20 } } } };
+      },
+    }
+  );
+
+  assert.strictEqual(observado.image, "https://http2.mlstatic.com/D_NQ_NP_123.jpg");
+  // Nenhuma chamada extra ao ML só para buscar imagem — as 2 chamadas são
+  // as mesmas de sempre (listing_prices + shipping_options).
+  assert.strictEqual(chamadasMl.length, 2);
+});
+
+cenario("aplicarEvidenciasProjetadas devolve image null quando o ML não trouxe nenhuma", async () => {
+  const bag = C.createEvidenceBag();
+  const observado = await meliApi.aplicarEvidenciasProjetadas(
+    bag,
+    { clienteId: 1, body: { id: "MLB2", title: "Sem foto", price: 50 }, observedAt: new Date() },
+    {
+      resolverPrecosItemFn: async () => ({ precoCheio: 50, precoPromocional: null, precoEfetivo: 50, fonte: "sale_price" }),
+      mlFetchFn: async () => ({ ok: false, status: 404, data: null }),
+    }
+  );
+  assert.strictEqual(observado.image, null);
+});
+
 // ── Runner ───────────────────────────────────────────────────────────────────
 
 async function main() {

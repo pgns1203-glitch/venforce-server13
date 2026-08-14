@@ -169,6 +169,9 @@ function buildMarginItem(params = {}) {
       itemId: identity.itemId || null,
       sku: identity.sku || null,
       titulo: identity.titulo || null,
+      // Metadado de apresentação (thumbnail do anúncio), não evidência
+      // financeira — não entra em nenhum cálculo do núcleo.
+      image: identity.image || null,
     },
 
     // Camada de evidências crua, variável por variável (saída de resolveField).

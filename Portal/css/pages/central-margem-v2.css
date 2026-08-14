@@ -6,8 +6,8 @@
   --vf-table-cell-py: 7px;
   /* O drawer da Central é um workspace com abas, não um painel de leitura. */
   --vf-drawer-lg: min(880px, 98vw);
-  --cm-sheet-min-width: 1500px;
-  --cm-product-col: 240px;
+  --cm-sheet-min-width: 1560px;
+  --cm-product-col: 280px;
 }
 
 .vf-page-central-margem .vf-page-container--wide {
@@ -304,7 +304,13 @@
   font-size: var(--vf-fs-xs);
 }
 
-/* ── Planilha principal ───────────────────────────────────────────────── */
+/* ── Planilha principal ───────────────────────────────────────────────── *
+ * `cm-table` é composição própria da Central: não herda `.vf-table`.
+ * O componente global pinta a linha inteira em is-warning/is-danger, o que
+ * é correto para uma tabela administrativa, mas aqui esmaga a hierarquia
+ * produto → valor → fonte → sinal que o preview V9 define. A Central usa
+ * seus próprios tokens da Fundação para chegar num resultado equivalente
+ * (faixa fina de status, célula financeira estruturada) sem essa herança. */
 
 .vf-page-central-margem .cm-sheet { overflow: hidden; }
 
@@ -339,30 +345,155 @@
 
 /* A planilha rola dentro do próprio card; a página nunca rola na horizontal. */
 .vf-page-central-margem .cm-table-wrap {
-  max-height: min(58vh, 640px);
+  max-height: min(60vh, 660px);
   border: 0;
   border-radius: 0;
 }
 
 .vf-page-central-margem .cm-table {
+  width: 100%;
   min-width: var(--cm-sheet-min-width);
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--vf-fs-xs);
 }
 
 .vf-page-central-margem .cm-table thead th {
   position: sticky;
   top: 0;
   z-index: 2;
+  padding: var(--vf-sp-2) var(--vf-sp-3);
   vertical-align: bottom;
   background: var(--vf-surface-2);
+  border-bottom: 1px solid var(--vf-border);
+  text-align: left;
 }
 
-.vf-page-central-margem .cm-table thead th.vf-table__sticky-cell { z-index: 4; }
+.vf-page-central-margem .cm-table tbody td {
+  padding: 9px var(--vf-sp-3);
+  border-bottom: 1px solid var(--vf-border);
+  vertical-align: middle;
+  background: var(--vf-surface);
+  color: var(--vf-text);
+  line-height: var(--vf-lh-snug);
+}
+
+.vf-page-central-margem .cm-table tbody tr:last-child td { border-bottom: 0; }
+
+.vf-page-central-margem .cm-table td.num,
+.vf-page-central-margem .cm-table th.num {
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.vf-page-central-margem .cm-table tbody tr[data-item-id] { cursor: pointer; }
+
+.vf-page-central-margem .cm-table tbody tr:hover td { background: var(--vf-surface-hover); }
+
+.vf-page-central-margem .cm-table tbody tr[data-item-id]:focus-visible td {
+  background: var(--vf-primary-soft);
+  outline: 2px solid var(--vf-primary);
+  outline-offset: -2px;
+}
+
+/* Linha aberta no drawer: tinta muito leve — nunca a tabela pintada por inteiro. */
+.vf-page-central-margem .cm-table tbody tr.is-selected td { background: var(--vf-primary-soft); }
+
+/* Produto: âncora sticky da linha ───────────────────────────────────── */
 
 .vf-page-central-margem .cm-product-head,
 .vf-page-central-margem .cm-product-cell {
+  position: sticky;
+  left: 0;
   min-width: var(--cm-product-col);
   max-width: var(--cm-product-col);
+  box-shadow: inset -1px 0 0 var(--vf-border);
 }
+
+.vf-page-central-margem .cm-product-head {
+  z-index: 4;
+  background: var(--vf-surface-2);
+}
+
+.vf-page-central-margem .cm-product-cell {
+  z-index: 1;
+  background: var(--vf-surface);
+}
+
+.vf-page-central-margem .cm-table tbody tr:hover .cm-product-cell { background: var(--vf-surface-hover); }
+.vf-page-central-margem .cm-table tbody tr.is-selected .cm-product-cell { background: var(--vf-primary-soft); }
+
+/* Faixa fina de status na esquerda da linha, não a linha inteira pintada. */
+.vf-page-central-margem .cm-product-cell::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: transparent;
+}
+
+.vf-page-central-margem .cm-product-cell.is-danger::before { background: var(--vf-danger); }
+.vf-page-central-margem .cm-product-cell.is-warning::before { background: var(--vf-warning); }
+.vf-page-central-margem .cm-product-cell.is-info::before { background: var(--vf-info); }
+.vf-page-central-margem .cm-product-cell.is-success::before { background: var(--vf-success); }
+
+.vf-page-central-margem .cm-product {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  min-width: 0;
+  padding-left: 4px;
+}
+
+.vf-page-central-margem .cm-product__thumb {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface-2);
+}
+
+.vf-page-central-margem .cm-product__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Sem `item.image` (ou falha ao carregar): ícone neutro de imagem, nunca um quadrado vazio. */
+.vf-page-central-margem .cm-product__thumb--empty,
+.vf-page-central-margem .cm-product__thumb.is-fallback {
+  background: var(--vf-neutral-bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239aa0b3' stroke-width='1.6'%3E%3Crect x='3' y='5' width='18' height='14' rx='2'/%3E%3Ccircle cx='9' cy='11' r='1.6'/%3E%3Cpath d='M21 16l-5.5-5-4 4L9 13l-6 6'/%3E%3C/svg%3E") center / 20px no-repeat;
+}
+
+.vf-page-central-margem .cm-product__info { min-width: 0; }
+
+.vf-page-central-margem .cm-prod-title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--vf-text);
+  font-weight: var(--vf-fw-bold);
+  line-height: var(--vf-lh-snug);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.vf-page-central-margem .cm-prod-meta {
+  display: block;
+  margin-top: 3px;
+  color: var(--vf-text-muted);
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+}
+
+/* Cabeçalho de variável: nome + seletor de fonte ─────────────────────── */
 
 .vf-page-central-margem .cm-head-label {
   display: block;
@@ -373,7 +504,7 @@
   text-transform: uppercase;
 }
 
-.vf-page-central-margem .cm-var-head { min-width: 128px; }
+.vf-page-central-margem .cm-var-head { min-width: 132px; }
 
 .vf-page-central-margem .cm-head-select {
   width: 100%;
@@ -402,84 +533,86 @@
   font-weight: var(--vf-fw-bold);
 }
 
-.vf-page-central-margem .cm-calc-head { background: var(--vf-primary-soft); }
-.vf-page-central-margem .cm-calc-head .cm-head-label { color: var(--vf-primary-strong); }
+/* Célula financeira: valor domina, fonte é discreta, divergência é um sinal compacto. */
 
-.vf-page-central-margem .cm-table tbody tr[data-item-id] { cursor: pointer; }
-
-.vf-page-central-margem .cm-table tbody tr[data-item-id]:focus-visible td {
-  background: var(--vf-primary-soft);
-  outline: 2px solid var(--vf-primary);
-  outline-offset: -2px;
-}
-
-.vf-page-central-margem .cm-prod-title {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--vf-text);
-  font-weight: var(--vf-fw-bold);
-  line-height: var(--vf-lh-snug);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.vf-page-central-margem .cm-prod-meta {
-  display: block;
-  margin-top: 2px;
-  color: var(--vf-text-muted);
-  font-family: var(--vf-font-mono);
-  font-size: var(--vf-fs-2xs);
-}
+.vf-page-central-margem .cm-var-cell { min-width: 132px; }
 
 .vf-page-central-margem .cm-cell-value {
+  display: block;
   font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
   font-weight: var(--vf-fw-bold);
+}
+
+.vf-page-central-margem .cm-cell-sub {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 2px;
 }
 
 .vf-page-central-margem .cm-cell-meta {
-  display: block;
-  margin-top: 2px;
   color: var(--vf-text-muted);
   font-size: var(--vf-fs-2xs);
   white-space: nowrap;
 }
 
+/* Ponto compacto, não um terceiro texto: "outra fonte difere" vira sinal. */
 .vf-page-central-margem .cm-cell-diff {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 2px;
-  color: var(--vf-warning-strong);
-  font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-bold);
-  white-space: nowrap;
-}
-
-.vf-page-central-margem .cm-cell-diff::before {
-  content: "";
-  width: 5px;
-  height: 5px;
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
   border-radius: var(--vf-radius-pill);
-  background: currentColor;
+  background: var(--vf-warning);
+  cursor: help;
 }
 
 .vf-page-central-margem .cm-negative { color: var(--vf-danger); }
 .vf-page-central-margem .cm-low { color: var(--vf-warning-strong); }
 .vf-page-central-margem .cm-good { color: var(--vf-success); }
 
+/* LC / MC: área de cálculo, separada visualmente sem pintar a célula inteira. */
+
+.vf-page-central-margem .cm-calc-head { background: var(--vf-primary-soft); }
+.vf-page-central-margem .cm-calc-head .cm-head-label { color: var(--vf-primary-strong); }
+
+.vf-page-central-margem .cm-calc-cell { min-width: 96px; }
+.vf-page-central-margem .cm-calc-cell--lc { border-left: 1px solid var(--vf-primary-border); }
+.vf-page-central-margem .cm-calc-cell--mc { border-right: 1px solid var(--vf-primary-border); }
+
+/* MC é o resultado que importa: precisa ler mais forte que LC. */
+.vf-page-central-margem .cm-calc-cell--mc .cm-cell-value {
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-extrabold);
+}
+
+/* Problema / Próxima ação: texto secundário, não podem roubar largura das variáveis. */
+
+/* `min-width` (não só `max-width`) é necessário: sem ele, o layout automático
+   da tabela colapsa a coluna ao tamanho da maior palavra e o texto quebra em
+   várias linhas curtas, inflando a altura da linha inteira. */
 .vf-page-central-margem .cm-problem {
+  display: -webkit-box;
+  overflow: hidden;
   margin: 0;
-  max-width: 220px;
+  min-width: 180px;
+  max-width: 200px;
   color: var(--vf-text-secondary);
   font-size: var(--vf-fs-xs);
   line-height: var(--vf-lh-snug);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
-.vf-page-central-margem .cm-next-action { max-width: 200px; }
+.vf-page-central-margem .cm-next-action { min-width: 170px; max-width: 190px; }
 
 .vf-page-central-margem .cm-next-action strong {
   display: block;
+  color: var(--vf-text);
   font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-bold);
 }
 
 .vf-page-central-margem .cm-next-action span {

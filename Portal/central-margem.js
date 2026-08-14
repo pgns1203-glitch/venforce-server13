@@ -682,7 +682,7 @@
 
   function sheetHead() {
     return "<tr>" +
-      '<th class="vf-table__sticky-cell cm-product-head"><span class="cm-head-label">Produto</span></th>' +
+      '<th class="cm-product-head"><span class="cm-head-label">Produto</span></th>' +
       contract.VARIABLES.map(sourceSelectHtml).join("") +
       '<th class="num cm-calc-head"><span class="cm-head-label">LC</span></th>' +
       '<th class="num cm-calc-head"><span class="cm-head-label">MC</span></th>' +
@@ -697,13 +697,13 @@
     var source = state.selection[variableKey];
     var entry = contract.sourceEntry(item, variableKey, source);
     if (!entry || !entry.available) {
-      return '<td class="num">' + unavailable("Indisponível", "Nenhuma observação de " +
+      return '<td class="num cm-var-cell">' + unavailable("Indisponível", "Nenhuma observação de " +
         contract.VARIABLE_META[variableKey].label.toLowerCase() + " por " + contract.sourceLabel(source) + ".") + "</td>";
     }
     var differs = contract.hasSourceDisagreement(item, variableKey, source);
-    return '<td class="num"><span class="cm-cell-value">' + escapeHtml(formatByVariable(variableKey, entry.value)) + "</span>" +
-      '<span class="cm-cell-meta">' + escapeHtml(entry.sourceShort) + "</span>" +
-      (differs ? '<span class="cm-cell-diff">outra fonte difere</span>' : "") + "</td>";
+    return '<td class="num cm-var-cell"><span class="cm-cell-value">' + escapeHtml(formatByVariable(variableKey, entry.value)) + "</span>" +
+      '<span class="cm-cell-sub"><span class="cm-cell-meta">' + escapeHtml(entry.sourceShort) + "</span>" +
+      (differs ? '<span class="cm-cell-diff" title="Outra fonte disponível diverge deste valor."></span>' : "") + "</span></td>";
   }
 
   function marginClass(margin, item) {
@@ -750,29 +750,58 @@
     return contract.VARIABLE_META[variableKey] ? contract.VARIABLE_META[variableKey].label.toLowerCase() : variableKey;
   }
 
+  /**
+   * Faixa fina de status da linha (produto é a âncora visual). Prioriza o
+   * resultado financeiro — é o sinal mais acionável — e cai para integridade
+   * quando o financeiro não aponta exceção. Não inventa estado novo: reusa
+   * exatamente as chaves que `financialResult`/`dataIntegrity` já expõem.
+   */
+  function rowStripeTone(financial, integrity) {
+    if (financial.key === "LOSS") return "is-danger";
+    if (financial.key === "LOW_MARGIN") return "is-warning";
+    if (integrity.key === "SUSPECT") return "is-warning";
+    if (integrity.key === "RECONCILING") return "is-info";
+    if (financial.key === "HEALTHY") return "is-success";
+    return "";
+  }
+
+  function productThumbHtml(item) {
+    if (item.image) {
+      return '<span class="cm-product__thumb"><img src="' + escapeHtml(item.image) + '" alt="" loading="lazy" ' +
+        'onerror="this.parentElement.classList.add(\'is-fallback\');this.remove();"></span>';
+    }
+    return '<span class="cm-product__thumb cm-product__thumb--empty" aria-hidden="true"></span>';
+  }
+
+  function productCellHtml(item, stripeTone) {
+    return '<td class="cm-product-cell' + (stripeTone ? " " + stripeTone : "") + '">' +
+      '<div class="cm-product">' + productThumbHtml(item) +
+      '<div class="cm-product__info"><span class="cm-prod-title">' + escapeHtml(item.title) + "</span>" +
+      '<span class="cm-prod-meta">' + escapeHtml(item.itemId || "—") + " · " + escapeHtml(item.sku || "sem SKU") + "</span></div>" +
+      "</div></td>";
+  }
+
   function rowHtml(item) {
     var composition = contract.resolveComposition(item, state.selection);
     var financial = contract.financialResult(item);
     var integrity = contract.dataIntegrity(item);
     var action = nextAction(item, integrity, financial, composition);
-    var rowClass = financial.key === "LOSS" ? "row--danger"
-      : integrity.key === "SUSPECT" || financial.key === "LOW_MARGIN" ? "row--warning" : "";
+    var stripeTone = rowStripeTone(financial, integrity);
     var assumed = composition.computable && composition.assumed.length
       ? '<span class="cm-cell-meta">assumido 0: ' + escapeHtml(composition.assumed.map(variableLabel).join(", ")) + "</span>"
       : "";
 
-    return '<tr class="' + rowClass + (state.selectedItemId === item.id ? " row--selected" : "") + '" data-item-id="' + escapeHtml(item.id) + '" tabindex="0">' +
-      '<td class="vf-table__sticky-cell cm-product-cell"><span class="cm-prod-title">' + escapeHtml(item.title) + "</span>" +
-      '<span class="cm-prod-meta">' + escapeHtml(item.itemId || "—") + " · " + escapeHtml(item.sku || "sem SKU") + "</span></td>" +
+    return '<tr class="' + (state.selectedItemId === item.id ? "is-selected" : "") + '" data-item-id="' + escapeHtml(item.id) + '" tabindex="0">' +
+      productCellHtml(item, stripeTone) +
       contract.VARIABLES.map(function (variableKey) { return valueCell(item, variableKey); }).join("") +
-      '<td class="num">' + (composition.computable
+      '<td class="num cm-calc-cell cm-calc-cell--lc">' + (composition.computable
         ? '<span class="cm-cell-value ' + (composition.profit < 0 ? "cm-negative" : "") + '">' + escapeHtml(formatMoney(composition.profit)) + "</span>" + assumed
         : unavailable("Indisponível", "Falta " + composition.missing.map(variableLabel).join(", ") + " na composição selecionada.")) + "</td>" +
-      '<td class="num">' + (composition.computable
+      '<td class="num cm-calc-cell cm-calc-cell--mc">' + (composition.computable
         ? '<span class="cm-cell-value ' + marginClass(composition.margin, item) + '">' + escapeHtml(formatPercent(composition.margin)) + "</span>"
         : unavailable("Indisponível")) + "</td>" +
-      "<td>" + statusTag(financial) + "</td>" +
-      "<td>" + statusTag(integrity) + "</td>" +
+      '<td class="status-cell">' + statusTag(financial) + "</td>" +
+      '<td class="status-cell">' + statusTag(integrity) + "</td>" +
       '<td><p class="cm-problem">' + escapeHtml(item.problem || "Sem problema informado") + "</p></td>" +
       '<td><div class="cm-next-action"><strong>' + escapeHtml(action.title) + "</strong><span>" + escapeHtml(action.detail) + "</span></div></td>" +
       "</tr>";
@@ -820,7 +849,7 @@
       refs.pagination.hidden = true;
       return;
     }
-    refs.tableHost.innerHTML = '<div class="vf-table-wrap cm-table-wrap"><table class="vf-table vf-table--compact cm-table"><thead>' +
+    refs.tableHost.innerHTML = '<div class="vf-table-wrap cm-table-wrap"><table class="cm-table"><thead>' +
       sheetHead() + "</thead><tbody>" + items.map(rowHtml).join("") + "</tbody></table></div>";
     renderPagination();
   }
@@ -920,7 +949,7 @@
    */
   function markSelectedRow() {
     Array.prototype.forEach.call(refs.tableHost.querySelectorAll("tr[data-item-id]"), function (row) {
-      row.classList.toggle("row--selected", row.getAttribute("data-item-id") === state.selectedItemId);
+      row.classList.toggle("is-selected", row.getAttribute("data-item-id") === state.selectedItemId);
     });
   }
 

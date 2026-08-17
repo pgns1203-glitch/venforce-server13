@@ -176,7 +176,7 @@ SELECT
   jsonb_build_object('origem', 'backfill_ml_tokens', 'grant_id', n.grant_id)
 FROM numerados n
 JOIN clientes_slug cs ON cs.id = n.cliente_id
-ON CONFLICT (cliente_id, marketplace, external_account_id) DO NOTHING;
+ON CONFLICT (cliente_id, marketplace, external_account_id) WHERE external_account_id IS NOT NULL DO NOTHING;
 
 -- Liga cada grant à conta recém-criada (ou já existente) correspondente.
 -- Nunca toca em access_token/refresh_token/expires_at/token_status/etc.
@@ -220,6 +220,12 @@ WHERE NOT EXISTS (
      AND p.resolvido = false
 );
 
+WITH contas_por_cliente_mkt AS (
+  SELECT cliente_id, marketplace, COUNT(*) AS total, MIN(id) AS unica_conta_id
+    FROM cliente_contas
+   WHERE ativo = true
+   GROUP BY cliente_id, marketplace
+)
 UPDATE base_cliente_vinculos v
    SET cliente_conta_id = cpm.unica_conta_id,
        updated_at = NOW()

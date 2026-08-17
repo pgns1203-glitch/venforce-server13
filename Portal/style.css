@@ -2920,6 +2920,12 @@ body {
   gap: 0.45rem;
   align-items: stretch;
 }
+.vf-mlt-cred-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
 .vf-mlt-copy-btn {
   display: inline-flex;
   align-items: center;

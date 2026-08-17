@@ -59,6 +59,8 @@ const logsRoutes = require("./routes/logsRoutes");
 const fechamentosFinanceiroRoutes = require("./routes/fechamentosFinanceiroRoutes");
 const fechamentoDebugRoutes = require("./routes/fechamentoDebugRoutes");
 const mlRoutes = require("./routes/mlRoutes");
+const clienteContasRoutes = require("./routes/clienteContasRoutes");
+const { verificarDependenciasCliente } = require("./services/clientes/clienteDependenciasService");
 const automacoesRoutes = require("./routes/automacoesRoutes");
 const entregasClienteRoutes = require("./routes/entregasClienteRoutes");
 const basesRoutes = require("./routes/basesRoutes");
@@ -771,6 +773,7 @@ app.use("/dashboard", dashboardRoutes);
 app.use("/fechamentos", fechamentosFinanceiroRoutes);
 app.use("/fechamentos", fechamentoDebugRoutes);
 app.use("/", mlRoutes);
+app.use("/", clienteContasRoutes);
 app.use("/", tiktokShopRoutes);
 app.use("/shopee", shopeeRoutes);
 app.use("/", automacoesRoutes);
@@ -1387,6 +1390,18 @@ app.delete("/clientes/:slug/ml-token", authMiddleware, requireAdmin, async (req,
     if (!c.rows.length) {
       return res.status(404).json({ ok: false, erro: "Cliente não encontrado." });
     }
+    // Esta rota é legada e não é account-scoped: ela apaga TODOS os grants
+    // ML do cliente. Com múltiplas contas isso apagaria ML1 ao tentar
+    // desconectar só ML2. Bloqueia com erro explícito nesse caso e orienta
+    // a usar DELETE /cliente-contas/:id/ml-grant (account-scoped).
+    const grants = await pool.query("SELECT COUNT(*)::int AS total FROM ml_tokens WHERE cliente_id = $1", [c.rows[0].id]);
+    if ((grants.rows[0]?.total || 0) > 1) {
+      return res.status(409).json({
+        ok: false,
+        code: "MULTIPLE_ML_GRANTS",
+        erro: "Este cliente possui mais de uma conta Mercado Livre. Use DELETE /cliente-contas/:id/ml-grant para desconectar uma conta específica, sem apagar as demais.",
+      });
+    }
     await pool.query("DELETE FROM ml_tokens WHERE cliente_id = $1", [c.rows[0].id]);
     registrarLog({
       ...dadosUsuarioDeReq(req),
@@ -1434,6 +1449,24 @@ app.post("/clientes", authMiddleware, requireAdmin, async (req, res) => {
 app.delete("/clientes/:slug", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const slug = normalizarSlug(req.params.slug);
+    const clienteAtual = await pool.query("SELECT id FROM clientes WHERE slug = $1", [slug]);
+    if (!clienteAtual.rows.length) {
+      return res.status(404).json({ ok: false, erro: "Cliente não encontrado." });
+    }
+    // Proteção de impacto (auditoria de clientes/contas): o hard delete
+    // mistura CASCADE destrutivo com tabelas sem FK que ficariam órfãs.
+    // Em vez de apagar tudo silenciosamente, bloqueia quando há
+    // dependências relevantes e explica o que está em jogo.
+    const dependencias = await verificarDependenciasCliente(clienteAtual.rows[0].id);
+    if (dependencias.length) {
+      return res.status(409).json({
+        ok: false,
+        code: "CLIENTE_COM_DEPENDENCIAS",
+        erro: "Este cliente possui dados vinculados (grants, contas, bases, fechamentos ou históricos) e não pode ser excluído diretamente.",
+        dependencias,
+      });
+    }
+
     const result = await pool.query(
       "DELETE FROM clientes WHERE slug = $1 RETURNING id",
       [slug]

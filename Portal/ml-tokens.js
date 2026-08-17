@@ -145,14 +145,118 @@ function showError(msg) {
   if (mltFilterEmpty) mltFilterEmpty.style.display = "none";
 }
 
-function credentialsCellHtml(hasAccess, hasRefresh) {
-  const access = hasAccess ? "Access configurado" : "Sem access";
-  const refresh = hasRefresh ? "Refresh configurado" : "Sem refresh";
-  return `<div class="vf-mlt-actions" aria-label="Credenciais protegidas">
-    <span class="vf-mlt-action-muted">${access}</span>
-    <span class="vf-mlt-action-muted">${refresh}</span>
+// Área dev-admin explícita (ver server/controllers/mlController.js
+// revelarCredenciaisGrantController): esta tela é admin-only (checado no
+// topo do arquivo) e pode revelar access_token/refresh_token sob demanda,
+// mas nunca por padrão — mascarado até o clique, nunca em localStorage/
+// sessionStorage, cache só em memória (CRED_CACHE) e perdido ao recarregar.
+const CRED_CACHE = new Map(); // tokenId -> { access_token, refresh_token }
+const CRED_REVEALED = new Set(); // `${tokenId}:${campo}`
+
+async function fetchCredenciais(tokenId) {
+  if (CRED_CACHE.has(tokenId)) return CRED_CACHE.get(tokenId);
+  const res = await fetch(`${API_BASE}/admin/ml-tokens/${tokenId}/credentials`, {
+    headers: { Authorization: "Bearer " + TOKEN },
+  });
+  if (res.status === 401) { clearSession(); throw new Error("Sessão expirada."); }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.erro || `HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  const creds = { access_token: data.access_token || "", refresh_token: data.refresh_token || "" };
+  CRED_CACHE.set(tokenId, creds);
+  return creds;
+}
+
+function credentialFieldHtml(row, campo, label) {
+  const has = campo === "access_token" ? row.has_access_token : row.has_refresh_token;
+  if (!has) return `<div class="vf-mlt-action-muted">${label}: sem credencial</div>`;
+
+  const key = `${row.id}:${campo}`;
+  const cache = CRED_CACHE.get(row.id);
+  const revelado = CRED_REVEALED.has(key) && cache;
+
+  if (revelado) {
+    const valor = cache[campo] || "";
+    return `
+      <div class="vf-mlt-cred-row" data-token-id="${row.id}" data-campo="${campo}">
+        <span class="vf-mlt-mono" style="word-break:break-all;">${escapeHTML(valor)}</span>
+        <button type="button" class="vf-mlt-copy-btn" data-cred-action="ocultar">Ocultar</button>
+        <button type="button" class="vf-mlt-copy-btn" data-cred-action="copiar">Copiar</button>
+      </div>`;
+  }
+
+  return `
+    <div class="vf-mlt-cred-row" data-token-id="${row.id}" data-campo="${campo}">
+      <span class="vf-mlt-mask">${label}: ••••••••</span>
+      <button type="button" class="vf-mlt-copy-btn" data-cred-action="revelar">Revelar</button>
+    </div>`;
+}
+
+function credentialsCellHtml(row) {
+  return `<div class="vf-mlt-actions" aria-label="Credenciais">
+    ${credentialFieldHtml(row, "access_token", "Access")}
+    ${credentialFieldHtml(row, "refresh_token", "Refresh")}
   </div>`;
 }
+
+function rerenderCredentialsCell(tokenId) {
+  const row = allTokens.find((t) => t.id === tokenId);
+  const cell = document.getElementById(`mlt-cred-${tokenId}`);
+  if (!row || !cell) return;
+  cell.innerHTML = credentialsCellHtml(row);
+}
+
+tokensTbody?.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-cred-action]");
+  if (!btn) return;
+  const wrap = btn.closest("[data-token-id]");
+  if (!wrap) return;
+  const tokenId = Number(wrap.getAttribute("data-token-id"));
+  const campo = wrap.getAttribute("data-campo");
+  const acao = btn.getAttribute("data-cred-action");
+  const key = `${tokenId}:${campo}`;
+
+  if (acao === "revelar") {
+    btn.disabled = true;
+    btn.textContent = "Carregando…";
+    try {
+      await fetchCredenciais(tokenId);
+      CRED_REVEALED.add(key);
+      rerenderCredentialsCell(tokenId);
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "Revelar";
+      window.alert(`Não foi possível revelar: ${err.message}`);
+    }
+    return;
+  }
+
+  if (acao === "ocultar") {
+    CRED_REVEALED.delete(key);
+    rerenderCredentialsCell(tokenId);
+    return;
+  }
+
+  if (acao === "copiar") {
+    const cache = CRED_CACHE.get(tokenId);
+    const valor = cache ? cache[campo] : "";
+    if (!valor) return;
+    try {
+      await navigator.clipboard.writeText(valor);
+      const prev = btn.textContent;
+      btn.textContent = "Copiado!";
+      btn.classList.add("vf-mlt-copy-done-state");
+      setTimeout(() => {
+        btn.textContent = prev;
+        btn.classList.remove("vf-mlt-copy-done-state");
+      }, 1500);
+    } catch {
+      window.alert("Não foi possível copiar para a área de transferência.");
+    }
+  }
+});
 
 function applyRowFilters() {
   const q = (mltFilterQ?.value || "").trim().toLowerCase();
@@ -219,6 +323,8 @@ function renderTokens(tokens) {
     const searchBlob = [
       row.cliente_nome,
       row.cliente_slug,
+      row.cliente_conta_nome,
+      row.cliente_conta_slug,
       row.ml_user_id,
       st.label,
       st.key,
@@ -226,6 +332,10 @@ function renderTokens(tokens) {
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
+
+    const contaHtml = row.cliente_conta_nome
+      ? `${escapeHTML(row.cliente_conta_nome)}${row.is_primary ? ' <span class="vf-mlt-badge vf-mlt-badge--ok">Principal</span>' : ""}`
+      : `<span class="vf-mlt-action-muted">Conta não definida${row.is_primary ? " · principal" : ""}</span>`;
 
     const tr = document.createElement("tr");
     tr.classList.add("animate-fade-up");
@@ -235,11 +345,12 @@ function renderTokens(tokens) {
     tr.innerHTML = `
       <td class="vf-mlt-td-cliente"><strong>${escapeHTML(row.cliente_nome || "—")}</strong></td>
       <td class="vf-mlt-td-slug vf-mlt-mono">${escapeHTML(row.cliente_slug || "—")}</td>
+      <td class="vf-mlt-td-conta">${contaHtml}</td>
       <td class="vf-mlt-td-ml vf-mlt-mono">${escapeHTML(String(row.ml_user_id ?? "—"))}</td>
-      <td class="vf-mlt-td-status">${statusBadgeHtml(st)}</td>
+      <td class="vf-mlt-td-status">${statusBadgeHtml(st)}${row.refresh_failures ? `<div class="vf-mlt-action-muted">${row.refresh_failures}x falha de refresh</div>` : ""}</td>
       <td class="vf-mlt-td-exp"><span class="vf-mlt-date">${escapeHTML(expStr)}</span></td>
       <td class="vf-mlt-td-upd"><span class="vf-mlt-date">${escapeHTML(updatedAt)}</span></td>
-      <td class="vf-mlt-td-act">${credentialsCellHtml(row.has_access_token, row.has_refresh_token)}</td>
+      <td class="vf-mlt-td-act" id="mlt-cred-${row.id}">${credentialsCellHtml(row)}</td>
     `;
     tokensTbody.appendChild(tr);
   });

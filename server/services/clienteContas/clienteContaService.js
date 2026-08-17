@@ -1,0 +1,529 @@
+// server/services/clienteContas/clienteContaService.js
+//
+// Fundação de Contas do Marketplace (Fase 1).
+//
+// Formaliza CLIENTE → CLIENTE_CONTA → MARKETPLACE → GRANT/BASE sem tocar em
+// `ml_tokens` de forma destrutiva. Este service é a porta de entrada para
+// resolver o contexto operacional de uma conta; consumidores existentes que
+// só conhecem `clienteId` continuam funcionando (fallback legado — ver
+// resolveMarketplaceAccountContext).
+//
+// Não remove nem substitui o resolver de grants existente
+// (server/services/mlTokenService.js). Apenas o utiliza de forma explícita
+// por ml_user_id quando uma conta é conhecida.
+
+const pool = require("../../config/database");
+const mlTokenService = require("../mlTokenService");
+
+const MARKETPLACES_SUPORTADOS = new Set(["meli", "shopee"]);
+
+function criarErroHttp(statusCode, mensagem, extra = {}) {
+  const err = new Error(mensagem);
+  err.statusCode = statusCode;
+  Object.assign(err, extra);
+  return err;
+}
+
+function normalizarSlug(nome) {
+  return String(nome || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(new RegExp("[\\u0300-\\u036f]", "g"), "")
+    .replace(/[^\w\-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function normalizarMarketplaceConta(valor) {
+  const texto = String(valor || "").trim().toLowerCase();
+  return MARKETPLACES_SUPORTADOS.has(texto) ? texto : null;
+}
+
+function sanitizarConta(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    cliente_id: row.cliente_id,
+    marketplace: row.marketplace,
+    nome: row.nome,
+    slug: row.slug,
+    external_account_id: row.external_account_id,
+    is_primary: row.is_primary === true,
+    ativo: row.ativo !== false,
+    metadata_json: row.metadata_json || {},
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+async function resolverClientePorIdOuSlug({ clienteId, clienteSlug }, queryable = pool) {
+  if (clienteId != null && String(clienteId).trim() !== "") {
+    const idNum = Number(clienteId);
+    if (!Number.isInteger(idNum) || idNum <= 0) {
+      throw criarErroHttp(400, "cliente inválido.");
+    }
+    const r = await queryable.query("SELECT id, nome, slug, ativo FROM clientes WHERE id = $1", [idNum]);
+    if (!r.rows.length) throw criarErroHttp(404, "Cliente não encontrado.");
+    return r.rows[0];
+  }
+  const slugNorm = normalizarSlug(clienteSlug);
+  if (!slugNorm) throw criarErroHttp(400, "cliente é obrigatório.");
+  const r = await queryable.query("SELECT id, nome, slug, ativo FROM clientes WHERE slug = $1", [slugNorm]);
+  if (!r.rows.length) throw criarErroHttp(404, "Cliente não encontrado.");
+  return r.rows[0];
+}
+
+async function gerarSlugContaUnico(clienteSlug, marketplace, nome, queryable = pool) {
+  const base = normalizarSlug(`${clienteSlug}-${marketplace}-${nome}`) || normalizarSlug(`${clienteSlug}-${marketplace}`);
+  let candidato = base;
+  let sufixo = 1;
+  // Poucas contas por cliente: laço simples é suficiente e evita corrida
+  // de nomes sem precisar de sequência dedicada.
+  while (true) {
+    const existente = await queryable.query("SELECT 1 FROM cliente_contas WHERE slug = $1", [candidato]);
+    if (!existente.rows.length) return candidato;
+    sufixo += 1;
+    candidato = `${base}-${sufixo}`;
+  }
+}
+
+async function listarContasDoCliente({ clienteId, clienteSlug, marketplace, incluirInativas = true }) {
+  const cliente = await resolverClientePorIdOuSlug({ clienteId, clienteSlug });
+  const marketplaceNorm = marketplace ? normalizarMarketplaceConta(marketplace) : null;
+  if (marketplace && !marketplaceNorm) throw criarErroHttp(400, "marketplace inválido.");
+
+  const params = [cliente.id];
+  const filtros = ["cc.cliente_id = $1"];
+  if (marketplaceNorm) {
+    params.push(marketplaceNorm);
+    filtros.push(`cc.marketplace = $${params.length}`);
+  }
+  if (!incluirInativas) filtros.push("cc.ativo = true");
+
+  const result = await pool.query(
+    `SELECT cc.*,
+            g.id AS grant_id,
+            g.ml_user_id AS grant_ml_user_id,
+            COALESCE(NULLIF(to_jsonb(g)->>'token_status', ''), 'valid') AS grant_token_status,
+            COALESCE(NULLIF(to_jsonb(g)->>'is_primary', '')::boolean, false) AS grant_is_primary,
+            v.id AS vinculo_id,
+            v.base_id AS vinculo_base_id,
+            b.slug AS vinculo_base_slug,
+            b.nome AS vinculo_base_nome
+       FROM cliente_contas cc
+       LEFT JOIN ml_tokens g ON g.cliente_conta_id = cc.id
+       LEFT JOIN base_cliente_vinculos v ON v.cliente_conta_id = cc.id AND v.ativo = true
+       LEFT JOIN bases b ON b.id = v.base_id
+      WHERE ${filtros.join(" AND ")}
+      ORDER BY cc.marketplace ASC, cc.is_primary DESC, cc.created_at ASC, cc.id ASC`,
+    params
+  );
+
+  return {
+    cliente: { id: cliente.id, nome: cliente.nome, slug: cliente.slug, ativo: cliente.ativo },
+    contas: result.rows.map((row) => ({
+      ...sanitizarConta(row),
+      grant: row.grant_id
+        ? {
+            id: row.grant_id,
+            ml_user_id: row.grant_ml_user_id == null ? null : String(row.grant_ml_user_id),
+            token_status: row.grant_token_status,
+            is_primary: row.grant_is_primary === true,
+          }
+        : null,
+      base: row.vinculo_id
+        ? { vinculo_id: row.vinculo_id, base_id: row.vinculo_base_id, slug: row.vinculo_base_slug, nome: row.vinculo_base_nome }
+        : null,
+    })),
+  };
+}
+
+async function obterConta(contaId, queryable = pool) {
+  const idNum = Number(contaId);
+  if (!Number.isInteger(idNum) || idNum <= 0) throw criarErroHttp(400, "conta inválida.");
+  const r = await queryable.query("SELECT * FROM cliente_contas WHERE id = $1", [idNum]);
+  if (!r.rows.length) throw criarErroHttp(404, "Conta não encontrada.");
+  return r.rows[0];
+}
+
+async function criarConta({ clienteId, clienteSlug, marketplace, nome, externalAccountId = null, isPrimary = false, metadata = {} }) {
+  const cliente = await resolverClientePorIdOuSlug({ clienteId, clienteSlug });
+  const marketplaceNorm = normalizarMarketplaceConta(marketplace);
+  if (!marketplaceNorm) throw criarErroHttp(400, "marketplace deve ser 'meli' ou 'shopee'.");
+
+  const nomeFinal = String(nome || "").trim();
+  if (!nomeFinal) throw criarErroHttp(400, "nome é obrigatório.");
+
+  if (metadata && typeof metadata === "object") {
+    if ("access_token" in metadata || "refresh_token" in metadata) {
+      throw criarErroHttp(400, "metadata_json não pode conter tokens.");
+    }
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SELECT pg_advisory_xact_lock(1296845909, $1)`, [Number(cliente.id)]);
+
+    const ativas = await client.query(
+      "SELECT id FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true AND is_primary = true",
+      [cliente.id, marketplaceNorm]
+    );
+    const devePrincipal = isPrimary === true || ativas.rows.length === 0;
+
+    const slug = await gerarSlugContaUnico(cliente.slug, marketplaceNorm, nomeFinal, client);
+
+    if (devePrincipal && ativas.rows.length) {
+      await client.query(
+        "UPDATE cliente_contas SET is_primary = false, updated_at = NOW() WHERE cliente_id = $1 AND marketplace = $2 AND is_primary = true",
+        [cliente.id, marketplaceNorm]
+      );
+    }
+
+    const inserted = await client.query(
+      `INSERT INTO cliente_contas (cliente_id, marketplace, nome, slug, external_account_id, is_primary, ativo, metadata_json)
+       VALUES ($1, $2, $3, $4, $5, $6, true, $7)
+       RETURNING *`,
+      [cliente.id, marketplaceNorm, nomeFinal, slug, externalAccountId || null, devePrincipal, metadata || {}]
+    );
+
+    await client.query("COMMIT");
+    return sanitizarConta(inserted.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if (error.code === "23505") throw criarErroHttp(409, "Já existe uma conta com esse identificador.");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// Chamada depois de um OAuth ML bem-sucedido (mlController.callbackMlController)
+// para que a conta VenForce exista desde a primeira conexão, não só via
+// backfill em massa da migration. Idempotente: se a conta já existe para
+// (cliente_id, ml_user_id), apenas garante que o grant aponte para ela.
+// Nunca toca em access_token/refresh_token/expires_at/token_status.
+async function garantirContaMlParaGrant({ clienteId, clienteSlug, mlUserId, grantIsPrimary = false }) {
+  const mlUserIdStr = mlUserId == null ? "" : String(mlUserId);
+  if (!mlUserIdStr) return null;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SELECT pg_advisory_xact_lock(1296845909, $1)`, [Number(clienteId)]);
+
+    const existente = await client.query(
+      "SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = 'meli' AND external_account_id = $2 LIMIT 1",
+      [clienteId, mlUserIdStr]
+    );
+
+    let conta = existente.rows[0] || null;
+    if (!conta) {
+      const totalAtual = await client.query(
+        "SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = 'meli'",
+        [clienteId]
+      );
+      const ordinal = (totalAtual.rows[0]?.total || 0) + 1;
+      const ativas = await client.query(
+        "SELECT id FROM cliente_contas WHERE cliente_id = $1 AND marketplace = 'meli' AND ativo = true AND is_primary = true",
+        [clienteId]
+      );
+      const devePrincipal = grantIsPrimary === true || ativas.rows.length === 0;
+      const slug = await gerarSlugContaUnico(clienteSlug, "meli", `Mercado Livre ${ordinal}`, client);
+
+      if (devePrincipal && ativas.rows.length) {
+        await client.query(
+          "UPDATE cliente_contas SET is_primary = false, updated_at = NOW() WHERE cliente_id = $1 AND marketplace = 'meli' AND is_primary = true",
+          [clienteId]
+        );
+      }
+
+      const inserted = await client.query(
+        `INSERT INTO cliente_contas (cliente_id, marketplace, nome, slug, external_account_id, is_primary, ativo, metadata_json)
+         VALUES ($1, 'meli', $2, $3, $4, $5, true, $6)
+         ON CONFLICT (cliente_id, marketplace, external_account_id) DO NOTHING
+         RETURNING *`,
+        [clienteId, `Mercado Livre ${ordinal}`, slug, mlUserIdStr, devePrincipal, { origem: "oauth_callback" }]
+      );
+      conta = inserted.rows[0] || (await client.query(
+        "SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = 'meli' AND external_account_id = $2 LIMIT 1",
+        [clienteId, mlUserIdStr]
+      )).rows[0];
+    }
+
+    if (conta) {
+      await client.query(
+        "UPDATE ml_tokens SET cliente_conta_id = $1 WHERE cliente_id = $2 AND ml_user_id = $3 AND cliente_conta_id IS NULL",
+        [conta.id, clienteId, mlUserIdStr]
+      );
+    }
+
+    await client.query("COMMIT");
+    return sanitizarConta(conta);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    // Nunca deve derrubar o fluxo OAuth por causa da fundação de contas.
+    console.error(JSON.stringify({ event: "cliente_conta_auto_provisao_falhou", cliente_id: clienteId, ml_user_id: mlUserIdStr, error: error.message }));
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
+async function atualizarConta(contaId, { nome, ativo } = {}) {
+  const conta = await obterConta(contaId);
+  const patches = [];
+  const params = [];
+
+  if (nome !== undefined) {
+    const nomeFinal = String(nome || "").trim();
+    if (!nomeFinal) throw criarErroHttp(400, "nome não pode ser vazio.");
+    params.push(nomeFinal);
+    patches.push(`nome = $${params.length}`);
+  }
+
+  if (ativo !== undefined) {
+    const ativoBool = Boolean(ativo);
+    params.push(ativoBool);
+    patches.push(`ativo = $${params.length}`);
+    // Desativar a conta principal libera o slot; não promove outra
+    // automaticamente (evitaria escolha silenciosa de conta).
+    if (!ativoBool) patches.push(`is_primary = false`);
+  }
+
+  if (!patches.length) throw criarErroHttp(400, "Nenhum campo para atualizar.");
+
+  patches.push("updated_at = NOW()");
+  params.push(conta.id);
+  const result = await pool.query(
+    `UPDATE cliente_contas SET ${patches.join(", ")} WHERE id = $${params.length} RETURNING *`,
+    params
+  );
+  return sanitizarConta(result.rows[0]);
+}
+
+async function definirContaPrincipal(contaId) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const found = await client.query("SELECT id, cliente_id, marketplace, ativo FROM cliente_contas WHERE id = $1 FOR UPDATE", [contaId]);
+    const conta = found.rows[0];
+    if (!conta) throw criarErroHttp(404, "Conta não encontrada.");
+    if (!conta.ativo) throw criarErroHttp(409, "Conta inativa não pode ser principal.");
+
+    await client.query(`SELECT pg_advisory_xact_lock(1296845909, $1)`, [Number(conta.cliente_id)]);
+    await client.query(
+      "UPDATE cliente_contas SET is_primary = false, updated_at = NOW() WHERE cliente_id = $1 AND marketplace = $2 AND is_primary = true AND id <> $3",
+      [conta.cliente_id, conta.marketplace, conta.id]
+    );
+    const updated = await client.query(
+      "UPDATE cliente_contas SET is_primary = true, updated_at = NOW() WHERE id = $1 RETURNING *",
+      [conta.id]
+    );
+    await client.query("COMMIT");
+    return sanitizarConta(updated.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function obterBaseDaConta(contaId) {
+  const conta = await obterConta(contaId);
+  const direto = await pool.query(
+    `SELECT v.id AS vinculo_id, v.base_id, b.slug, b.nome
+       FROM base_cliente_vinculos v
+       JOIN bases b ON b.id = v.base_id
+      WHERE v.cliente_conta_id = $1 AND v.ativo = true
+      LIMIT 1`,
+    [conta.id]
+  );
+  if (direto.rows.length) return { ...direto.rows[0], resolvido_por: "conta" };
+
+  // Compatibilidade: se esta é a única conta ativa daquele marketplace para
+  // o cliente, um vínculo legado (cliente_id + marketplace) ainda identifica
+  // a base sem ambiguidade.
+  const outrasContas = await pool.query(
+    "SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true",
+    [conta.cliente_id, conta.marketplace]
+  );
+  if ((outrasContas.rows[0]?.total || 0) !== 1) return { vinculo_id: null, base_id: null, resolvido_por: null };
+
+  const legado = await pool.query(
+    `SELECT v.id AS vinculo_id, v.base_id, b.slug, b.nome
+       FROM base_cliente_vinculos v
+       JOIN bases b ON b.id = v.base_id
+      WHERE v.cliente_id = $1 AND v.marketplace = $2 AND v.ativo = true
+      ORDER BY v.updated_at DESC NULLS LAST, v.id DESC
+      LIMIT 1`,
+    [conta.cliente_id, conta.marketplace]
+  );
+  if (!legado.rows.length) return { vinculo_id: null, base_id: null, resolvido_por: null };
+  return { ...legado.rows[0], resolvido_por: "legado_unico" };
+}
+
+async function vincularBaseNaConta(contaId, baseIdRaw) {
+  const conta = await obterConta(contaId);
+  const baseIdNum = Number(baseIdRaw);
+  if (!Number.isInteger(baseIdNum) || baseIdNum <= 0) throw criarErroHttp(400, "base_id inválido.");
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const base = await client.query("SELECT id, slug, nome, marketplace, ativo FROM bases WHERE id = $1", [baseIdNum]);
+    if (!base.rows.length) throw criarErroHttp(404, "Base não encontrada.");
+    const baseRow = base.rows[0];
+
+    if (String(baseRow.marketplace || "").toLowerCase() !== conta.marketplace) {
+      throw criarErroHttp(422, `Base é do marketplace "${baseRow.marketplace}" e a conta é "${conta.marketplace}". Vínculo bloqueado.`, {
+        code: "BASE_MARKETPLACE_MISMATCH",
+      });
+    }
+
+    await client.query(
+      "UPDATE base_cliente_vinculos SET ativo = false, updated_at = NOW() WHERE base_id = $1 AND ativo = true",
+      [baseIdNum]
+    );
+
+    const vinculo = await client.query(
+      `INSERT INTO base_cliente_vinculos (base_id, cliente_id, cliente_conta_id, marketplace, origem, ativo, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'conta', true, NOW(), NOW())
+       RETURNING *`,
+      [baseIdNum, conta.cliente_id, conta.id, conta.marketplace]
+    );
+
+    await client.query("COMMIT");
+    return { base: baseRow, vinculo: vinculo.rows[0] };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// Desconecta APENAS o grant ML ligado a esta conta — nunca os grants de
+// outras contas do mesmo cliente. Complementar a (não substitui)
+// DELETE /clientes/:slug/ml-token, que continua existindo por
+// compatibilidade legada.
+async function desconectarGrantMlDaConta(contaId) {
+  const conta = await obterConta(contaId);
+  if (conta.marketplace !== "meli") {
+    throw criarErroHttp(422, "Esta conta não é Mercado Livre.");
+  }
+  const result = await pool.query(
+    "DELETE FROM ml_tokens WHERE cliente_conta_id = $1 RETURNING id, ml_user_id",
+    [conta.id]
+  );
+  if (!result.rows.length) {
+    throw criarErroHttp(404, "Esta conta não possui um grant Mercado Livre vinculado (migration de backfill pode não ter rodado ainda).");
+  }
+  return { conta_id: conta.id, grants_removidos: result.rows.map((r) => r.id) };
+}
+
+// Porta de entrada para operações account-sensitive. Nunca escolhe
+// silenciosamente entre 2+ contas do mesmo marketplace — ver seção 7 da
+// auditoria/spec (regra de ambiguidade).
+async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, marketplace, clienteContaId = null, requireUsableGrant = false }) {
+  const cliente = await resolverClientePorIdOuSlug({ clienteId, clienteSlug });
+  const marketplaceNorm = normalizarMarketplaceConta(marketplace);
+  if (!marketplaceNorm) throw criarErroHttp(400, "marketplace deve ser 'meli' ou 'shopee'.");
+
+  let conta = null;
+
+  if (clienteContaId != null) {
+    conta = await obterConta(clienteContaId);
+    if (conta.cliente_id !== cliente.id) {
+      throw criarErroHttp(403, "Esta conta não pertence ao cliente informado.");
+    }
+    if (conta.marketplace !== marketplaceNorm) {
+      throw criarErroHttp(422, "Esta conta não é do marketplace informado.");
+    }
+  } else {
+    const ativas = await pool.query(
+      "SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true ORDER BY is_primary DESC, created_at ASC, id ASC",
+      [cliente.id, marketplaceNorm]
+    );
+    if (ativas.rows.length === 1) {
+      conta = ativas.rows[0];
+    } else if (ativas.rows.length > 1) {
+      throw criarErroHttp(409, "O cliente possui mais de uma conta para este marketplace; informe cliente_conta_id.", {
+        code: "MULTIPLE_MARKETPLACE_ACCOUNTS",
+        contas: ativas.rows.map(sanitizarConta),
+      });
+    }
+    // 0 contas ativas: segue em modo legado (conta = null).
+  }
+
+  const context = {
+    cliente: { id: cliente.id, nome: cliente.nome, slug: cliente.slug },
+    marketplace: marketplaceNorm,
+    conta: sanitizarConta(conta),
+    grant: null,
+    mlUserId: null,
+    base: null,
+  };
+
+  if (marketplaceNorm === "meli") {
+    if (conta) {
+      context.mlUserId = conta.external_account_id || null;
+      if (context.mlUserId) {
+        try {
+          context.grant = await mlTokenService.resolveMlGrant({
+            clienteId: cliente.id,
+            mlUserId: context.mlUserId,
+            requireUsable: requireUsableGrant,
+          });
+        } catch (error) {
+          if (requireUsableGrant) throw error;
+          context.grantError = error.code || error.message;
+        }
+      }
+    } else {
+      // Legado: sem conta cadastrada, comportamento pré-existente (principal/fallback).
+      try {
+        context.grant = await mlTokenService.resolveMlGrant({ clienteId: cliente.id, requireUsable: requireUsableGrant });
+        context.mlUserId = context.grant?.ml_user_id != null ? String(context.grant.ml_user_id) : null;
+      } catch (error) {
+        if (requireUsableGrant) throw error;
+        context.grantError = error.code || error.message;
+      }
+    }
+  }
+
+  if (conta) {
+    context.base = await obterBaseDaConta(conta.id);
+  } else {
+    const legado = await pool.query(
+      `SELECT v.id AS vinculo_id, v.base_id, b.slug, b.nome
+         FROM base_cliente_vinculos v
+         JOIN bases b ON b.id = v.base_id
+        WHERE v.cliente_id = $1 AND v.marketplace = $2 AND v.ativo = true
+        ORDER BY v.updated_at DESC NULLS LAST, v.id DESC
+        LIMIT 1`,
+      [cliente.id, marketplaceNorm]
+    );
+    context.base = legado.rows.length ? { ...legado.rows[0], resolvido_por: "legado" } : { vinculo_id: null, base_id: null, resolvido_por: null };
+  }
+
+  return context;
+}
+
+module.exports = {
+  normalizarMarketplaceConta,
+  resolverClientePorIdOuSlug,
+  listarContasDoCliente,
+  obterConta,
+  criarConta,
+  garantirContaMlParaGrant,
+  atualizarConta,
+  definirContaPrincipal,
+  obterBaseDaConta,
+  vincularBaseNaConta,
+  desconectarGrantMlDaConta,
+  resolveMarketplaceAccountContext,
+  sanitizarConta,
+};

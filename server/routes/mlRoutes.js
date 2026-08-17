@@ -12,6 +12,7 @@ const {
   callbackMlController,
   listarMlTokensAdminController,
   definirGrantPrincipalController,
+  revelarCredenciaisGrantController,
   testarGrantAdminController,
   statusClienteMlController,
 } = require("../controllers/mlController");
@@ -69,6 +70,15 @@ router.post(
   authMiddleware,
   requireAdmin,
   testarGrantAdminController
+);
+
+// Área dev-admin explícita: access_token/refresh_token só saem daqui, nunca
+// de /admin/ml-tokens (listagem) ou das rotas de cliente-contas.
+router.get(
+  "/admin/ml-tokens/:tokenId/credentials",
+  authMiddleware,
+  requireAdmin,
+  revelarCredenciaisGrantController
 );
 
 router.get(

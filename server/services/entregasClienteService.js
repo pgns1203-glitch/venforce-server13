@@ -74,6 +74,27 @@ function parseTimestampOrNull(v) {
   return d;
 }
 
+// Trava crítica encontrada na auditoria de clientes/contas: processar um
+// fechamento para o Cliente A, trocar o seletor para B e salvar não
+// invalidava o resultado — o payload ficava com identidade de A mas era
+// salvo como entrega de B. `payload_json.cliente.slug` é a identidade
+// congelada no momento do cálculo (ver Portal/financeiro.js, _vf_meta);
+// se ela existir e divergir da identidade que está sendo persistida agora,
+// bloqueia em vez de aceitar silenciosamente.
+function validarIdentidadeFechamento({ payloadJson, clienteSlugResolvido }) {
+  const payloadClienteSlugRaw = payloadJson && typeof payloadJson === "object" ? payloadJson.cliente?.slug : null;
+  if (!payloadClienteSlugRaw) return;
+  const payloadSlug = normalizarSlug(payloadClienteSlugRaw);
+  const alvoSlug = clienteSlugResolvido ? normalizarSlug(clienteSlugResolvido) : "";
+  if (payloadSlug && alvoSlug && payloadSlug !== alvoSlug) {
+    throw criarErroHttp(409, {
+      ok: false,
+      code: "IDENTIDADE_DIVERGENTE",
+      erro: `O fechamento foi processado para "${payloadSlug}", mas está sendo salvo como "${alvoSlug}". Reprocesse antes de salvar.`,
+    });
+  }
+}
+
 async function buscarClientePorSlugOuId({ clienteIdRaw, clienteSlugRaw }) {
   const clienteId = clienteIdRaw != null ? parseInt(clienteIdRaw, 10) : null;
   const clienteSlug = clienteSlugRaw != null ? normalizarSlug(clienteSlugRaw) : "";
@@ -132,6 +153,8 @@ async function criarEntrega({ userId, body }) {
   const cliente_id = cliente ? cliente.id : null;
   const cliente_slug = cliente ? cliente.slug : (body?.cliente_slug ? normalizarSlug(body.cliente_slug) : null);
   const cliente_nome = cliente ? cliente.nome : (body?.cliente_nome ? String(body.cliente_nome).trim() : null);
+
+  validarIdentidadeFechamento({ payloadJson: body?.payload_json, clienteSlugResolvido: cliente_slug });
 
   const payloadInput = body?.payload_json;
   const payloadVazio =
@@ -320,6 +343,8 @@ async function atualizarEntrega({ idRaw, body }) {
     patches.push(`status = $${params.length}`);
   }
 
+  let cliente_slug_final = atual.rows[0].cliente_slug;
+
   if (Object.prototype.hasOwnProperty.call(body || {}, "cliente_id") ||
       Object.prototype.hasOwnProperty.call(body || {}, "cliente_slug") ||
       Object.prototype.hasOwnProperty.call(body || {}, "cliente_nome")) {
@@ -331,6 +356,7 @@ async function atualizarEntrega({ idRaw, body }) {
     const cliente_id = cliente ? cliente.id : null;
     const cliente_slug = cliente ? cliente.slug : (body?.cliente_slug ? normalizarSlug(body.cliente_slug) : null);
     const cliente_nome = cliente ? cliente.nome : (body?.cliente_nome ? String(body.cliente_nome).trim() : null);
+    cliente_slug_final = cliente_slug;
 
     params.push(cliente_id);
     patches.push(`cliente_id = $${params.length}`);
@@ -339,6 +365,11 @@ async function atualizarEntrega({ idRaw, body }) {
     params.push(cliente_nome);
     patches.push(`cliente_nome = $${params.length}`);
   }
+
+  const payloadParaValidar = Object.prototype.hasOwnProperty.call(body || {}, "payload_json")
+    ? body.payload_json
+    : atual.rows[0].payload_json;
+  validarIdentidadeFechamento({ payloadJson: payloadParaValidar, clienteSlugResolvido: cliente_slug_final });
 
   if (!patches.length) {
     throw criarErroHttp(400, { ok: false, erro: "Nenhum campo para atualizar." });

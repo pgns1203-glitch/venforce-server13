@@ -4,137 +4,189 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Venforce — Clientes</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (códigos) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 1. Layout compartilhado (sidebar/topbar/estados globais indispensáveis) -->
   <link rel="stylesheet" href="style.css">
+  <!-- 2. Fundação Global V2 (tokens → componentes → página) -->
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
+  <link rel="stylesheet" href="css/pages/clientes-v2.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
-<body class="vf-page vf-page-clientes">
+<body class="vf-page vf-page-dashboard vf-page-clientes">
 
   <div class="vf-main-with-sidebar">
     <main class="vf-content">
+      <div class="vf-page-shell">
+        <div class="vf-page-container">
 
-      <div class="vf-page-header">
-        <h2>Clientes</h2>
-        <p>Gerencie os clientes e suas chaves de API.</p>
-      </div>
-
-      <!-- ── ADICIONAR CLIENTE ── -->
-      <div class="vf-card" style="margin-bottom:24px;">
-        <div class="vf-card-header">
-          <h5>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-              <circle cx="8.5" cy="7" r="4"/>
-              <line x1="20" y1="8" x2="20" y2="14"/>
-              <line x1="23" y1="11" x2="17" y2="11"/>
-            </svg>
-            Adicionar Cliente
-          </h5>
-        </div>
-        <div style="padding:1.5rem 1.75rem;">
-          <div class="vf-clientes-create-grid" style="display:grid;grid-template-columns:1fr 1fr auto;gap:1rem;align-items:end;">
-            <div class="vf-form-group" style="margin:0;">
-              <label for="cliente-nome">Nome do cliente</label>
-              <input type="text" id="cliente-nome" class="vf-input" placeholder="ex: Cliente XYZ">
+          <header class="vf-page-header">
+            <div class="vf-page-header__main">
+              <p class="vf-page-header__eyebrow">Operação</p>
+              <h1 class="vf-page-header__title">Clientes</h1>
+              <p class="vf-page-header__description">
+                Cada cliente é a loja principal. Mercado Livre e Shopee vivem como contas
+                dentro dele — um mesmo cliente pode ter várias contas do mesmo marketplace.
+              </p>
             </div>
-            <div class="vf-form-group" style="margin:0;">
-              <label for="cliente-slug">Slug</label>
-              <input type="text" id="cliente-slug" class="vf-input" placeholder="ex: cliente_xyz">
+          </header>
+
+          <div id="clientes-feedback" class="vf-banner" role="status" style="display:none;" aria-live="polite"></div>
+
+          <!-- ── ADICIONAR CLIENTE ── -->
+          <section class="vf-section">
+            <div class="vf-card">
+              <div class="vf-card__header">
+                <h2 class="vf-section__title">Adicionar cliente</h2>
+              </div>
+              <div class="vf-card__body">
+                <div class="vf-clientes-create-grid">
+                  <div class="vf-field">
+                    <label class="vf-field__label" for="cliente-nome">Nome do cliente</label>
+                    <input type="text" id="cliente-nome" class="vf-input" placeholder="ex: Loja Eletrônico">
+                  </div>
+                  <div class="vf-field">
+                    <label class="vf-field__label" for="cliente-slug">Slug</label>
+                    <input type="text" id="cliente-slug" class="vf-input" placeholder="ex: loja_eletronico">
+                  </div>
+                  <div class="vf-clientes-create-submit">
+                    <button id="btn-criar-cliente" class="vf-btn vf-btn--primary">
+                      <span id="btn-criar-cliente-text">Criar cliente</span>
+                      <span id="btn-criar-cliente-spinner" class="btn-spinner" style="display:none;"></span>
+                    </button>
+                  </div>
+                </div>
+                <div id="cliente-status" class="vf-field__hint" style="display:none;margin-top:var(--vf-sp-2);"></div>
+              </div>
             </div>
-            <div style="display:flex;justify-content:flex-end;">
-              <button id="btn-criar-cliente" class="vf-btn-primary" style="width:auto;margin:0;min-width:160px;">
-                <span id="btn-criar-cliente-text">Criar cliente</span>
-                <span id="btn-criar-cliente-spinner" class="btn-spinner" style="display:none;"></span>
-              </button>
+          </section>
+
+          <!-- ── TOOLBAR ── -->
+          <section class="vf-toolbar">
+            <div class="vf-toolbar__filters">
+              <input type="text" id="busca-cliente" class="vf-input vf-search" placeholder="Buscar cliente por nome ou slug…" autocomplete="off">
             </div>
-          </div>
-          <div id="cliente-status" style="margin-top:12px;font-size:.875rem;display:none;"></div>
-        </div>
-      </div>
+            <span id="clientes-count" class="vf-badge" style="display:none;">0</span>
+          </section>
 
-      <!-- ── CLIENTES CADASTRADOS ── -->
-      <div class="vf-card">
-        <div class="vf-card-header">
-          <h5>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-            </svg>
-            Clientes cadastrados
-          </h5>
-          <span id="clientes-count" class="vf-badge" style="display:none;">0</span>
-        </div>
+          <!-- ── CLIENTES CADASTRADOS ── -->
+          <section id="clientes-content">
+            <div id="state-loading" class="vf-loading-state">
+              <div class="loading-dots"><span></span><span></span><span></span></div>
+              <p>Carregando clientes…</p>
+            </div>
 
-        <div style="padding:1rem 1.75rem;border-bottom:1px solid var(--vf-border);">
-          <input
-            type="text"
-            id="busca-cliente"
-            class="vf-input"
-            placeholder="Buscar cliente por nome ou slug..."
-            autocomplete="off"
-            style="max-width:400px;"
-          >
-        </div>
+            <div id="state-table" class="vf-table-wrap" style="display:none;">
+              <table class="vf-table">
+                <thead>
+                  <tr>
+                    <th style="width:44px;">#</th>
+                    <th>Nome</th>
+                    <th>Slug</th>
+                    <th>Status</th>
+                    <th>Contas</th>
+                    <th>Bases</th>
+                    <th><span class="vf-visually-hidden">Ações</span></th>
+                  </tr>
+                </thead>
+                <tbody id="clientes-tbody"></tbody>
+              </table>
+            </div>
 
-        <div id="clientes-content" style="min-height:200px;">
-          <div id="clientes-feedback" class="vf-alert" style="margin:14px 1.75rem 0;"></div>
-          <div id="state-loading" class="vf-loading">
-            <div class="loading-dots"><span></span><span></span><span></span></div>
-            <p>Carregando clientes…</p>
-          </div>
-          <div id="state-table" class="vf-table-wrapper" style="display:none;">
-            <table class="vf-table">
-              <thead>
-                <tr>
-                  <th style="width:50px;">#</th>
-                  <th>Nome</th>
-                  <th style="width:180px;">Slug</th>
-                  <th style="width:240px;">API Key</th>
-                  <th style="width:120px;text-align:center;">Status</th>
-                  <th style="width:160px;text-align:center;">Mercado Livre</th>
-                  <th style="width:220px;text-align:center;">Ações</th>
-                </tr>
-              </thead>
-              <tbody id="clientes-tbody"></tbody>
-            </table>
-          </div>
-          <div id="state-empty" class="vf-empty-state" style="display:none;">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-            </svg>
-            <p>Nenhum cliente encontrado. Crie um cliente acima.</p>
-          </div>
-          <div id="state-error" class="vf-error-state" style="display:none;">
-            <p id="error-message">Erro ao carregar dados.</p>
-            <button id="btn-retry" class="vf-btn-retry">Tentar novamente</button>
-          </div>
+            <div id="state-empty" class="vf-empty" style="display:none;">
+              <div class="vf-empty__icon" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+              </div>
+              <p class="vf-empty__title">Nenhum cliente encontrado</p>
+              <p class="vf-empty__description">Crie um cliente acima para começar.</p>
+            </div>
+
+            <div id="state-error" class="vf-empty" style="display:none;">
+              <div class="vf-empty__icon is-danger" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              </div>
+              <p class="vf-empty__title" id="error-message">Erro ao carregar dados.</p>
+              <div class="vf-empty__actions">
+                <button id="btn-retry" class="vf-btn vf-btn--secondary">Tentar novamente</button>
+              </div>
+            </div>
+          </section>
+
         </div>
       </div>
-
     </main>
   </div>
 
-  <div id="vf-clientes-confirm-modal" class="vf-modal-overlay" style="display:none;">
-    <div class="vf-modal-shell" role="dialog" aria-modal="true" aria-labelledby="vf-clientes-confirm-title">
-      <div class="vf-modal-header">
-        <div>
-          <div id="vf-clientes-confirm-title" class="vf-modal-title">Confirmar</div>
-          <div id="vf-clientes-confirm-subtitle" class="vf-modal-subtitle"></div>
+  <!-- ── DRAWER DO CLIENTE (contas ML/Shopee) ── -->
+  <div class="vf-drawer-backdrop" id="cliente-drawer-backdrop"></div>
+  <aside class="vf-drawer vf-drawer--lg" id="cliente-drawer" role="dialog" aria-modal="true" aria-labelledby="cliente-drawer-title">
+    <div class="vf-drawer__header">
+      <div>
+        <p class="vf-page-header__eyebrow">Cliente</p>
+        <h3 class="vf-drawer__title" id="cliente-drawer-title">—</h3>
+        <div class="vf-clientes-drawer-meta" id="cliente-drawer-meta"></div>
+      </div>
+      <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" id="cliente-drawer-close" aria-label="Fechar">✕</button>
+    </div>
+    <div class="vf-drawer__body" id="cliente-drawer-body">
+      <div id="cliente-drawer-state" class="vf-clientes-drawer-state"></div>
+
+      <section class="vf-clientes-mp-section" data-mp="meli">
+        <div class="vf-clientes-mp-section__header">
+          <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--meli"></span>Mercado Livre</h4>
+          <a href="#" id="cliente-drawer-add-meli" class="vf-btn vf-btn--sm vf-btn--secondary" target="_blank" rel="noopener">+ Conta Mercado Livre</a>
         </div>
-        <button type="button" id="vf-clientes-confirm-close" class="vf-modal-close" aria-label="Fechar">×</button>
+        <div id="cliente-drawer-meli-list" class="vf-clientes-conta-list"></div>
+        <p id="cliente-drawer-meli-empty" class="vf-clientes-mp-empty" style="display:none;">Nenhuma conta Mercado Livre conectada.</p>
+      </section>
+
+      <section class="vf-clientes-mp-section" data-mp="shopee">
+        <div class="vf-clientes-mp-section__header">
+          <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--shopee"></span>Shopee</h4>
+          <button type="button" id="cliente-drawer-add-shopee" class="vf-btn vf-btn--sm vf-btn--secondary">+ Conta Shopee</button>
+        </div>
+        <div id="cliente-drawer-shopee-form" class="vf-clientes-new-conta-form" style="display:none;">
+          <div class="vf-field">
+            <label class="vf-field__label" for="shopee-conta-nome">Nome da conta</label>
+            <input type="text" id="shopee-conta-nome" class="vf-input" placeholder="ex: Shopee 1">
+          </div>
+          <div class="vf-clientes-new-conta-actions">
+            <button type="button" id="cliente-drawer-shopee-cancel" class="vf-btn vf-btn--sm vf-btn--secondary">Cancelar</button>
+            <button type="button" id="cliente-drawer-shopee-salvar" class="vf-btn vf-btn--sm vf-btn--primary">Criar conta</button>
+          </div>
+        </div>
+        <div id="cliente-drawer-shopee-list" class="vf-clientes-conta-list"></div>
+        <p id="cliente-drawer-shopee-empty" class="vf-clientes-mp-empty" style="display:none;">Nenhuma conta Shopee cadastrada.</p>
+      </section>
+    </div>
+    <div class="vf-drawer__footer">
+      <button type="button" class="vf-btn vf-btn--secondary" id="cliente-drawer-close-footer">Fechar</button>
+    </div>
+  </aside>
+
+  <!-- ── MODAL DE CONFIRMAÇÃO GENÉRICA ── -->
+  <div id="vf-clientes-confirm-modal" class="vf-overlay">
+    <div class="vf-modal vf-modal--sm" role="dialog" aria-modal="true" aria-labelledby="vf-clientes-confirm-title">
+      <div class="vf-modal__header">
+        <div>
+          <h3 id="vf-clientes-confirm-title" class="vf-modal__title">Confirmar</h3>
+          <p id="vf-clientes-confirm-subtitle" class="vf-clientes-modal-sub"></p>
+        </div>
+        <button type="button" id="vf-clientes-confirm-close" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" aria-label="Fechar">✕</button>
       </div>
-      <div class="vf-modal-body">
-        <p id="vf-clientes-confirm-desc" style="margin:0;color:var(--vf-text-m);"></p>
-        <div id="vf-clientes-confirm-danger" class="vf-danger-message" style="display:none;margin-top:12px;"></div>
+      <div class="vf-modal__body">
+        <p id="vf-clientes-confirm-desc" style="margin:0;color:var(--vf-text-secondary);"></p>
+        <div id="vf-clientes-confirm-danger" class="vf-alert is-danger" style="display:none;margin-top:12px;"></div>
       </div>
-      <div class="vf-modal-footer">
-        <button type="button" id="vf-clientes-confirm-cancel" class="vf-action-btn vf-action-btn-secondary">Cancelar</button>
-        <button type="button" id="vf-clientes-confirm-ok" class="vf-action-btn vf-action-btn-danger">Confirmar</button>
+      <div class="vf-modal__footer">
+        <button type="button" id="vf-clientes-confirm-cancel" class="vf-btn vf-btn--secondary">Cancelar</button>
+        <button type="button" id="vf-clientes-confirm-ok" class="vf-btn vf-btn--danger">Confirmar</button>
       </div>
     </div>
   </div>
@@ -143,4 +195,3 @@
   <script src="clientes.js"></script>
 </body>
 </html>
-

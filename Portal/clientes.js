@@ -24,36 +24,25 @@ function escapeHTML(s) {
 }
 
 function filtrarClientes() {
-  const termo = (document.getElementById("busca-cliente")?.value || "")
-    .toLowerCase().trim();
-
+  const termo = (document.getElementById("busca-cliente")?.value || "").toLowerCase().trim();
   const linhas = document.querySelectorAll("#clientes-tbody tr");
   let visiveis = 0;
-
   linhas.forEach((tr) => {
     const texto = tr.textContent.toLowerCase();
     const bate = !termo || texto.includes(termo);
     tr.style.display = bate ? "" : "none";
     if (bate) visiveis++;
   });
-
-  // Atualiza badge com total visível
   const badge = document.getElementById("clientes-count");
-  if (badge && badge.style.display !== "none") {
-    badge.textContent = String(visiveis);
-  }
+  if (badge && badge.style.display !== "none") badge.textContent = String(visiveis);
 }
 
 function getMlConectarLink(slug) {
-  const base = "https://venforce-server.onrender.com";
-  return `${base}/ml/conectar/${encodeURIComponent(slug)}`;
+  return `${API_BASE}/ml/conectar/${encodeURIComponent(slug)}`;
 }
 
 function slugify(nome) {
-  return String(nome || "")
-    .toLowerCase()
-    .replace(/\s+/g, "_")
-    .replace(/[^a-z0-9_]/g, "");
+  return String(nome || "").toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
 }
 
 const stateLoading = document.getElementById("state-loading");
@@ -64,18 +53,21 @@ const clientesCount = document.getElementById("clientes-count");
 const clientesTbody = document.getElementById("clientes-tbody");
 const clientesFeedback = document.getElementById("clientes-feedback");
 
+let CLIENTES_LISTA = [];
 let CLIENTES_CONFIRM_OPEN = false;
 let CLIENTES_CONFIRM_ACTION = null;
 let CLIENTE_DELETE_PENDENTE = null; // { slug, btn }
+let DRAWER_CLIENTE = null; // { id, slug, nome }
 
 function setClientesFeedback(message, type = "neutral") {
   if (!clientesFeedback) return;
-  clientesFeedback.classList.remove("show", "vf-alert-success", "vf-alert-danger");
+  clientesFeedback.classList.remove("is-success", "is-danger", "is-info");
   clientesFeedback.textContent = "";
+  clientesFeedback.style.display = "none";
   if (!message) return;
-  const cls = type === "success" ? "vf-alert-success" : (type === "danger" ? "vf-alert-danger" : "");
-  if (cls) clientesFeedback.classList.add(cls);
-  clientesFeedback.classList.add("show");
+  const cls = type === "success" ? "is-success" : (type === "danger" ? "is-danger" : "is-info");
+  clientesFeedback.classList.add(cls);
+  clientesFeedback.style.display = "block";
   clientesFeedback.textContent = message;
 }
 
@@ -96,20 +88,15 @@ function abrirModalConfirmacaoClientes({ title, subtitle = "", description, conf
   desc.textContent = description || "";
 
   ok.textContent = confirmLabel || "Confirmar";
-  ok.classList.remove("vf-action-btn-secondary");
-  ok.classList.add(danger ? "vf-action-btn-danger" : "vf-action-btn-secondary");
+  ok.classList.remove("vf-btn--secondary", "vf-btn--danger");
+  ok.classList.add(danger ? "vf-btn--danger" : "vf-btn--secondary");
 
-  if (dangerBox) {
-    dangerBox.style.display = "none";
-    dangerBox.textContent = "";
-  }
-
-  modal.style.display = "flex";
+  if (dangerBox) { dangerBox.style.display = "none"; dangerBox.textContent = ""; }
+  modal.classList.add("is-open");
 }
 
 function fecharModalConfirmacaoClientes() {
-  const modal = document.getElementById("vf-clientes-confirm-modal");
-  if (modal) modal.style.display = "none";
+  document.getElementById("vf-clientes-confirm-modal")?.classList.remove("is-open");
   CLIENTES_CONFIRM_OPEN = false;
   CLIENTES_CONFIRM_ACTION = null;
   CLIENTE_DELETE_PENDENTE = null;
@@ -120,14 +107,8 @@ async function confirmarModalClientes() {
   const dangerBox = document.getElementById("vf-clientes-confirm-danger");
   if (!CLIENTE_DELETE_PENDENTE && !CLIENTES_CONFIRM_ACTION) return;
 
-  if (dangerBox) {
-    dangerBox.style.display = "none";
-    dangerBox.textContent = "";
-  }
-  if (ok) {
-    ok.disabled = true;
-    ok.textContent = CLIENTE_DELETE_PENDENTE ? "Excluindo..." : "Processando…";
-  }
+  if (dangerBox) { dangerBox.style.display = "none"; dangerBox.textContent = ""; }
+  if (ok) { ok.disabled = true; ok.textContent = CLIENTE_DELETE_PENDENTE ? "Excluindo..." : "Processando…"; }
 
   try {
     if (CLIENTE_DELETE_PENDENTE) {
@@ -141,16 +122,16 @@ async function confirmarModalClientes() {
     fecharModalConfirmacaoClientes();
   } catch (err) {
     const msg = err?.message || "Não foi possível concluir a ação.";
+    const dependencias = err?.dependencias;
     if (dangerBox) {
       dangerBox.style.display = "block";
-      dangerBox.textContent = msg;
+      dangerBox.textContent = dependencias?.length
+        ? `${msg} (${dependencias.map((d) => `${d.label}: ${d.total}`).join(", ")})`
+        : msg;
     } else {
       setClientesFeedback(msg, "danger");
     }
-    if (ok) {
-      ok.disabled = false;
-      ok.textContent = CLIENTE_DELETE_PENDENTE ? "Excluir cliente" : "Confirmar";
-    }
+    if (ok) { ok.disabled = false; ok.textContent = CLIENTE_DELETE_PENDENTE ? "Excluir cliente" : "Confirmar"; }
   }
 }
 
@@ -182,24 +163,37 @@ function setCreateLoading(on) {
   sp.style.display = on ? "inline-block" : "none";
 }
 
-function setFormStatus(msg, color) {
+function setFormStatus(msg, isError) {
   const el = document.getElementById("cliente-status");
   el.textContent = msg || "";
-  el.style.color = color || "var(--vf-text-m)";
+  el.style.color = isError ? "var(--vf-danger)" : "var(--vf-success)";
   el.style.display = msg ? "block" : "none";
+}
+
+async function apiFetch(path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: { Authorization: "Bearer " + TOKEN, ...(options.headers || {}) },
+  });
+  if (res.status === 401) { clearSession(); throw new Error("Sessão expirada."); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data?.erro || data?.error || `HTTP ${res.status}`);
+    err.code = data?.code;
+    err.dependencias = data?.dependencias;
+    err.contas = data?.contas;
+    throw err;
+  }
+  return data;
 }
 
 async function loadClientes() {
   if (!TOKEN) return;
   showLoading();
   try {
-    const res = await fetch(`${API_BASE}/clientes`, {
-      headers: { Authorization: "Bearer " + TOKEN }
-    });
-    if (res.status === 401) { clearSession(); return; }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json().catch(() => ({}));
-    const clientes = Array.isArray(data.clientes) ? data.clientes : (Array.isArray(data) ? data : []);
+    const data = await apiFetch("/clientes");
+    const clientes = Array.isArray(data.clientes) ? data.clientes : [];
+    CLIENTES_LISTA = clientes;
     renderClientes(clientes);
   } catch (err) {
     showError("Não foi possível carregar os clientes. Tente novamente.");
@@ -222,21 +216,18 @@ function renderClientes(clientes) {
     tr.style.animationDelay = `${i * 0.04}s`;
 
     tr.innerHTML = `
-      <td style="color:var(--vf-text-l);font-family:var(--vf-mono);font-size:.8rem;">${String(i + 1).padStart(2, "0")}</td>
+      <td style="color:var(--vf-text-muted);font-family:var(--vf-font-mono);font-size:.8rem;">${String(i + 1).padStart(2, "0")}</td>
       <td><strong>${escapeHTML(c.nome || "—")}</strong></td>
-      <td style="color:var(--vf-text-m);font-size:.875rem;font-family:var(--vf-mono);">${escapeHTML(c.slug || "—")}</td>
+      <td style="color:var(--vf-text-secondary);font-size:.875rem;font-family:var(--vf-font-mono);">${escapeHTML(c.slug || "—")}</td>
       <td>
-        <span style="font-size:.8rem;color:var(--vf-text-m);">Protegida · exibida somente na criação</span>
+        <span class="vf-status ${ativo ? "is-success" : "is-danger"}">${ativo ? "Ativo" : "Inativo"}</span>
       </td>
-      <td style="text-align:center;">
-        <span class="vf-status-pill ${ativo ? "vf-status-pill-success" : "vf-status-pill-danger"}">${ativo ? "Ativo" : "Inativo"}</span>
-      </td>
-      <td id="ml-cell-${escapeHTML(c.slug || "")}" style="text-align:center;">
-        <span style="color:var(--vf-text-l);font-size:.8rem;">…</span>
-      </td>
-      <td style="text-align:center;">
-        <div class="vf-table-actions">
-          <button class="vf-action-btn vf-action-btn-danger" data-action="delete" data-slug="${escapeHTML(c.slug || "")}">Excluir</button>
+      <td id="resumo-contas-${escapeHTML(c.slug || "")}"><span style="color:var(--vf-text-muted);font-size:.8rem;">…</span></td>
+      <td id="resumo-bases-${escapeHTML(c.slug || "")}"><span style="color:var(--vf-text-muted);font-size:.8rem;">…</span></td>
+      <td>
+        <div class="vf-table__actions">
+          <button class="vf-btn vf-btn--sm vf-btn--secondary" data-action="abrir" data-slug="${escapeHTML(c.slug || "")}">Abrir</button>
+          <button class="vf-btn vf-btn--sm vf-btn--danger" data-action="delete" data-slug="${escapeHTML(c.slug || "")}">Excluir</button>
         </div>
       </td>
     `;
@@ -252,7 +243,7 @@ function renderClientes(clientes) {
       abrirModalConfirmacaoClientes({
         title: "Excluir cliente",
         subtitle: slug,
-        description: `Esta ação remove o cliente "${slug}" do portal. Não pode ser desfeita.`,
+        description: `Esta ação remove o cliente "${slug}" do portal. Se houver contas, bases ou históricos vinculados, a exclusão será bloqueada.`,
         confirmLabel: "Excluir cliente",
         danger: true,
         onConfirm: null,
@@ -260,128 +251,50 @@ function renderClientes(clientes) {
     });
   });
 
-
-showTable();
-const buscaAtiva = document.getElementById("busca-cliente");
-if (buscaAtiva) buscaAtiva.value = "";
-// Disparar fetches de status ML em paralelo, sem bloquear a renderização
-clientes.forEach(c => fetchMlStatus(c.slug || ""));
-}
- 
-async function fetchMlStatus(slug) {
-  const cell = document.getElementById(`ml-cell-${slug}`);
-  if (!cell) return;
-  try {
-    const res = await fetch(`${API_BASE}/clientes/${encodeURIComponent(slug)}/ml-status`, {
-      headers: { Authorization: "Bearer " + TOKEN }
-    });
-    if (!res.ok) {
-      cell.innerHTML = `<span style="color:var(--vf-text-l);font-size:.8rem;">—</span>`;
-      return;
-    }
-    const data = await res.json();
-    if (data.conectado) {
-      cell.innerHTML = `
-        <div style="display:flex;align-items:center;gap:6px;justify-content:center;">
-          <span class="vf-status-pill vf-status-pill-success">Conectado</span>
-          <button type="button" class="vf-action-btn vf-action-btn-danger" data-action="ml-desconectar"
-            data-slug="${escapeHTML(slug)}" style="font-size:.72rem;padding:.28rem .5rem;">Desvincular</button>
-        </div>`;
-      cell.querySelector('[data-action="ml-desconectar"]').addEventListener("click", () => {
-        abrirModalConfirmacaoClientes({
-          title: "Desvincular Mercado Livre",
-          subtitle: slug,
-          description: "Esta ação remove a conexão do Mercado Livre deste cliente.",
-          confirmLabel: "Desvincular",
-          danger: true,
-          onConfirm: () => desvincularMl(slug, cell),
-        });
-      });
-    } else {
-      const link = getMlConectarLink(slug);
-      cell.innerHTML = `
-  <div style="display:flex;align-items:center;gap:6px;justify-content:center;">
-    <span class="vf-status-pill vf-status-pill-neutral" title="Conta Mercado Livre não conectada">Desconectado</span>
-    <a href="${link}" target="_blank" class="vf-btn-secondary"
-      style="font-size:.75rem;padding:4px 12px;text-decoration:none;display:inline-block;">
-      Conectar ML
-    </a>
-    <button type="button"
-      data-action="copy-ml-link"
-      data-link="${escapeHTML(link)}"
-      data-slug="${escapeHTML(slug)}"
-      class="vf-btn-secondary"
-      style="font-size:.75rem;padding:4px 10px;">
-      Copiar link
-    </button>
-  </div>`;
-
-// Bind do botão copiar imediatamente após setar innerHTML
-const copyBtn = cell.querySelector('[data-action="copy-ml-link"]');
-if (copyBtn) {
-  copyBtn.addEventListener("click", async () => {
-    const url = copyBtn.getAttribute("data-link") || "";
-    if (!url) return;
-    try {
-      await navigator.clipboard.writeText(url);
-      const prev = copyBtn.textContent;
-      copyBtn.textContent = "Copiado!";
-      copyBtn.style.color = "var(--vf-success)";
-      copyBtn.style.borderColor = "rgba(4,120,87,.25)";
-      setTimeout(() => {
-        copyBtn.textContent = prev;
-        copyBtn.style.color = "";
-        copyBtn.style.borderColor = "";
-      }, 2000);
-      setClientesFeedback(`Link de conexão ML copiado para "${slug}".`, "success");
-    } catch {
-      setClientesFeedback("Não foi possível copiar o link de conexão ML.", "danger");
-    }
+  clientesTbody.querySelectorAll('button[data-action="abrir"]').forEach((btn) => {
+    btn.addEventListener("click", () => abrirDrawerCliente(btn.getAttribute("data-slug") || ""));
   });
+
+  showTable();
+  const buscaAtiva = document.getElementById("busca-cliente");
+  if (buscaAtiva) buscaAtiva.value = "";
+
+  clientes.forEach((c) => carregarResumoContas(c.slug || ""));
 }
-    }
-  } catch {
-    cell.innerHTML = `<span style="color:var(--vf-text-l);font-size:.8rem;">—</span>`;
-  }
-}
- 
-async function desvincularMl(slug, cell) {
-  cell.innerHTML = `<span style="color:var(--vf-text-l);font-size:.8rem;">Desvinculando…</span>`;
+
+async function carregarResumoContas(slug) {
+  const celContas = document.getElementById(`resumo-contas-${slug}`);
+  const celBases = document.getElementById(`resumo-bases-${slug}`);
+  if (!celContas || !celBases) return;
   try {
-    const res = await fetch(`${API_BASE}/clientes/${encodeURIComponent(slug)}/ml-token`, {
-      method: "DELETE",
-      headers: { Authorization: "Bearer " + TOKEN }
-    });
-    if (res.status === 401) { clearSession(); return; }
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      throw new Error(d.erro || `HTTP ${res.status}`);
-    }
-    fetchMlStatus(slug);
-    setClientesFeedback(`Mercado Livre desvinculado de "${slug}".`, "success");
-    return true;
-  } catch (err) {
-    setClientesFeedback(`Erro ao desvincular: ${err.message}`, "danger");
-    fetchMlStatus(slug);
-    throw err;
+    const data = await apiFetch(`/clientes/${encodeURIComponent(slug)}/contas`);
+    const contas = Array.isArray(data.contas) ? data.contas : [];
+    const meli = contas.filter((c) => c.marketplace === "meli" && c.ativo !== false).length;
+    const shopee = contas.filter((c) => c.marketplace === "shopee" && c.ativo !== false).length;
+    const bases = contas.filter((c) => c.base?.base_id).length;
+
+    celContas.innerHTML = `
+      <div class="vf-clientes-resumo">
+        <span class="vf-clientes-resumo-item"><span class="vf-clientes-mp-dot vf-clientes-mp-dot--meli"></span>ML: ${meli}</span>
+        <span class="vf-clientes-resumo-item"><span class="vf-clientes-mp-dot vf-clientes-mp-dot--shopee"></span>Shopee: ${shopee}</span>
+      </div>`;
+    celBases.innerHTML = `<span style="font-size:.8rem;color:var(--vf-text-secondary);">${bases}</span>`;
+  } catch {
+    celContas.innerHTML = `<span style="color:var(--vf-text-muted);font-size:.8rem;">—</span>`;
+    celBases.innerHTML = `<span style="color:var(--vf-text-muted);font-size:.8rem;">—</span>`;
   }
 }
+
 async function deleteCliente(slug, btn) {
   btn.disabled = true;
   btn.textContent = "Excluindo…";
   try {
-    const res = await fetch(`${API_BASE}/clientes/${encodeURIComponent(slug)}`, {
-      method: "DELETE",
-      headers: { Authorization: "Bearer " + TOKEN }
-    });
-    if (res.status === 401) { clearSession(); return; }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+    await apiFetch(`/clientes/${encodeURIComponent(slug)}`, { method: "DELETE" });
     setClientesFeedback(`Cliente "${slug}" excluído com sucesso.`, "success");
     loadClientes();
     return true;
   } catch (err) {
-    setClientesFeedback(`Erro ao excluir: ${err.message}`, "danger");
+    if (err.code !== "CLIENTE_COM_DEPENDENCIAS") setClientesFeedback(`Erro ao excluir: ${err.message}`, "danger");
     btn.disabled = false;
     btn.textContent = "Excluir";
     throw err;
@@ -394,32 +307,188 @@ async function createCliente() {
   const nome = nomeEl.value.trim();
   const slug = slugEl.value.trim();
 
-  setFormStatus("", "");
-  if (!nome) { setFormStatus("Informe o nome do cliente.", "var(--vf-danger)"); return; }
-  if (!slug) { setFormStatus("Informe o slug do cliente.", "var(--vf-danger)"); return; }
+  setFormStatus("", false);
+  if (!nome) { setFormStatus("Informe o nome do cliente.", true); return; }
+  if (!slug) { setFormStatus("Informe o slug do cliente.", true); return; }
 
   setCreateLoading(true);
   try {
-    const res = await fetch(`${API_BASE}/clientes`, {
+    await apiFetch("/clientes", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + TOKEN
-      },
-      body: JSON.stringify({ nome, slug })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nome, slug }),
     });
-    const data = await res.json().catch(() => ({}));
-    if (res.status === 401) { clearSession(); return; }
-    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
-
     nomeEl.value = "";
     slugEl.value = "";
-    setFormStatus("✓ Cliente criado com sucesso.", "var(--vf-success)");
+    setFormStatus("✓ Cliente criado com sucesso.", false);
     loadClientes();
   } catch (err) {
-    setFormStatus("Erro ao criar: " + err.message, "var(--vf-danger)");
+    setFormStatus("Erro ao criar: " + err.message, true);
   } finally {
     setCreateLoading(false);
+  }
+}
+
+// ── DRAWER DO CLIENTE (contas ML/Shopee) ──────────────────────────────────
+
+function abrirDrawerBase() {
+  document.getElementById("cliente-drawer-backdrop")?.classList.add("is-open");
+  document.getElementById("cliente-drawer")?.classList.add("is-open");
+}
+function fecharDrawerCliente() {
+  document.getElementById("cliente-drawer-backdrop")?.classList.remove("is-open");
+  document.getElementById("cliente-drawer")?.classList.remove("is-open");
+  document.getElementById("cliente-drawer-shopee-form").style.display = "none";
+  DRAWER_CLIENTE = null;
+}
+
+async function abrirDrawerCliente(slug) {
+  const cliente = CLIENTES_LISTA.find((c) => c.slug === slug);
+  if (!cliente) return;
+  DRAWER_CLIENTE = cliente;
+
+  document.getElementById("cliente-drawer-title").textContent = cliente.nome || slug;
+  document.getElementById("cliente-drawer-meta").textContent = `${slug} · ${cliente.ativo !== false ? "ativo" : "inativo"}`;
+  document.getElementById("cliente-drawer-add-meli").href = getMlConectarLink(slug);
+  document.getElementById("cliente-drawer-state").textContent = "Carregando contas…";
+  document.getElementById("cliente-drawer-meli-list").innerHTML = "";
+  document.getElementById("cliente-drawer-shopee-list").innerHTML = "";
+
+  abrirDrawerBase();
+  await recarregarContasDrawer();
+}
+
+async function recarregarContasDrawer() {
+  if (!DRAWER_CLIENTE) return;
+  const stateEl = document.getElementById("cliente-drawer-state");
+  try {
+    const data = await apiFetch(`/clientes/${encodeURIComponent(DRAWER_CLIENTE.slug)}/contas`);
+    const contas = Array.isArray(data.contas) ? data.contas : [];
+    stateEl.textContent = "";
+    renderContasMarketplace("meli", contas.filter((c) => c.marketplace === "meli"));
+    renderContasMarketplace("shopee", contas.filter((c) => c.marketplace === "shopee"));
+  } catch (err) {
+    stateEl.textContent = `Não foi possível carregar as contas: ${err.message}`;
+  }
+}
+
+function renderContasMarketplace(marketplace, contas) {
+  const list = document.getElementById(`cliente-drawer-${marketplace}-list`);
+  const empty = document.getElementById(`cliente-drawer-${marketplace}-empty`);
+  list.innerHTML = "";
+  if (!contas.length) { empty.style.display = "block"; return; }
+  empty.style.display = "none";
+
+  contas.forEach((conta) => {
+    const card = document.createElement("div");
+    card.className = "vf-clientes-conta-card";
+
+    const tagPrincipal = conta.is_primary ? `<span class="vf-tag is-primary">Principal</span>` : "";
+    const tagAtivo = conta.ativo === false
+      ? `<span class="vf-status is-danger">Inativa</span>`
+      : `<span class="vf-status is-success">Ativa</span>`;
+
+    let grantHtml = "";
+    if (marketplace === "meli") {
+      if (conta.grant) {
+        const statusOk = conta.grant.token_status === "valid";
+        grantHtml = `
+          <div class="vf-clientes-conta-card__meta">
+            ml_user_id: ${escapeHTML(conta.grant.ml_user_id || "—")} ·
+            <span class="vf-status ${statusOk ? "is-success" : "is-danger"}">${escapeHTML(conta.grant.token_status || "—")}</span>
+          </div>`;
+      } else {
+        grantHtml = `<div class="vf-clientes-conta-card__meta">Sem grant Mercado Livre vinculado.</div>`;
+      }
+    }
+
+    const baseHtml = conta.base?.base_id
+      ? `<span class="vf-tag is-info">Base: ${escapeHTML(conta.base.nome || conta.base.slug || conta.base.base_id)}</span>`
+      : `<span class="vf-tag is-neutral">Conta não definida</span>`;
+
+    card.innerHTML = `
+      <div class="vf-clientes-conta-card__top">
+        <span class="vf-clientes-conta-card__nome">${escapeHTML(conta.nome)}</span>
+        <div class="vf-clientes-conta-card__tags">${tagPrincipal}${tagAtivo}</div>
+      </div>
+      ${grantHtml}
+      <div class="vf-clientes-conta-card__base">${baseHtml}</div>
+      <div class="vf-clientes-conta-card__actions"></div>
+    `;
+
+    const actions = card.querySelector(".vf-clientes-conta-card__actions");
+
+    if (!conta.is_primary && conta.ativo !== false) {
+      const btnPrincipal = document.createElement("button");
+      btnPrincipal.className = "vf-btn vf-btn--sm vf-btn--secondary";
+      btnPrincipal.textContent = "Tornar principal";
+      btnPrincipal.addEventListener("click", () => acaoConta(() => apiFetch(`/cliente-contas/${conta.id}/principal`, { method: "PATCH" })));
+      actions.appendChild(btnPrincipal);
+    }
+
+    const btnToggle = document.createElement("button");
+    btnToggle.className = "vf-btn vf-btn--sm vf-btn--secondary";
+    btnToggle.textContent = conta.ativo === false ? "Ativar" : "Desativar";
+    btnToggle.addEventListener("click", () => acaoConta(() =>
+      apiFetch(`/cliente-contas/${conta.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ativo: conta.ativo === false }),
+      })
+    ));
+    actions.appendChild(btnToggle);
+
+    if (marketplace === "meli" && conta.grant) {
+      const btnDesconectar = document.createElement("button");
+      btnDesconectar.className = "vf-btn vf-btn--sm vf-btn--danger";
+      btnDesconectar.textContent = "Desconectar";
+      btnDesconectar.addEventListener("click", () => {
+        abrirModalConfirmacaoClientes({
+          title: "Desconectar conta Mercado Livre",
+          subtitle: conta.nome,
+          description: `Remove só o grant desta conta (${conta.nome}). As demais contas Mercado Livre deste cliente não são afetadas.`,
+          confirmLabel: "Desconectar",
+          danger: true,
+          onConfirm: () => acaoConta(() => apiFetch(`/cliente-contas/${conta.id}/ml-grant`, { method: "DELETE" })),
+        });
+      });
+      actions.appendChild(btnDesconectar);
+    }
+
+    list.appendChild(card);
+  });
+}
+
+async function acaoConta(fn) {
+  try {
+    await fn();
+    await recarregarContasDrawer();
+    if (DRAWER_CLIENTE) carregarResumoContas(DRAWER_CLIENTE.slug);
+  } catch (err) {
+    setClientesFeedback(err.message || "Não foi possível concluir a ação.", "danger");
+    throw err;
+  }
+}
+
+async function criarContaShopee() {
+  const nomeEl = document.getElementById("shopee-conta-nome");
+  const nome = nomeEl.value.trim();
+  if (!nome) { setClientesFeedback("Informe o nome da conta Shopee.", "danger"); return; }
+  if (!DRAWER_CLIENTE) return;
+
+  try {
+    await apiFetch(`/clientes/${encodeURIComponent(DRAWER_CLIENTE.slug)}/contas`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ marketplace: "shopee", nome }),
+    });
+    nomeEl.value = "";
+    document.getElementById("cliente-drawer-shopee-form").style.display = "none";
+    await recarregarContasDrawer();
+    carregarResumoContas(DRAWER_CLIENTE.slug);
+    setClientesFeedback(`Conta Shopee "${nome}" criada.`, "success");
+  } catch (err) {
+    setClientesFeedback(`Erro ao criar conta Shopee: ${err.message}`, "danger");
   }
 }
 
@@ -442,8 +511,22 @@ document.getElementById("vf-clientes-confirm-ok")?.addEventListener("click", con
 document.getElementById("vf-clientes-confirm-modal")?.addEventListener("click", (e) => {
   if (e.target?.id === "vf-clientes-confirm-modal") fecharModalConfirmacaoClientes();
 });
+
+document.getElementById("cliente-drawer-close")?.addEventListener("click", fecharDrawerCliente);
+document.getElementById("cliente-drawer-close-footer")?.addEventListener("click", fecharDrawerCliente);
+document.getElementById("cliente-drawer-backdrop")?.addEventListener("click", fecharDrawerCliente);
+document.getElementById("cliente-drawer-add-shopee")?.addEventListener("click", () => {
+  document.getElementById("cliente-drawer-shopee-form").style.display = "block";
+});
+document.getElementById("cliente-drawer-shopee-cancel")?.addEventListener("click", () => {
+  document.getElementById("cliente-drawer-shopee-form").style.display = "none";
+});
+document.getElementById("cliente-drawer-shopee-salvar")?.addEventListener("click", criarContaShopee);
+
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && CLIENTES_CONFIRM_OPEN) fecharModalConfirmacaoClientes();
+  if (e.key !== "Escape") return;
+  if (CLIENTES_CONFIRM_OPEN) fecharModalConfirmacaoClientes();
+  else if (DRAWER_CLIENTE) fecharDrawerCliente();
 });
 
 const buscaInput = document.getElementById("busca-cliente");
@@ -456,4 +539,3 @@ if (buscaInput) {
 }
 
 if (TOKEN) loadClientes();
-

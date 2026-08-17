@@ -2633,7 +2633,24 @@ function updateTikTokOnholdVisibility() {
 }
 
 // Alteração de cliente/marketplace redetecta base vinculada e atualiza a UI.
+//
+// Trava de identidade (auditoria de clientes/contas): o resultado processado
+// carrega o cliente/marketplace congelados no momento do cálculo
+// (json._vf_meta / payload.cliente). Se o operador troca o seletor depois de
+// processar, o resultado antigo não pode mais ser salvo com a identidade
+// nova — invalida aqui, na UI, e o backend também rejeita
+// (IDENTIDADE_DIVERGENTE) como segunda trava caso este código seja
+// contornado.
 function onClienteOuMarketplaceChange() {
+  if (ultimoFechamentoFinanceiro) {
+    ultimoFechamentoFinanceiro = null;
+    _entregaIdSalvo = null;
+    _entregaPublicada = false;
+    document.querySelector(".vf-fin-dashboard")?.removeAttribute("data-processed");
+    setChipProcessamento("aguardando novo processamento", "warn");
+    setChipSalvo("cliente/marketplace alterado — reprocesse antes de salvar", "warn");
+    setStatus("Cliente ou marketplace alterado. Processe novamente antes de salvar.", "warn");
+  }
   updateOrdersAllVisibility();
   updateMeliExtraCostsVisibility();
   updateTikTokOnholdVisibility();

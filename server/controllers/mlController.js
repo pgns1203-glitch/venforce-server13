@@ -21,6 +21,7 @@ const {
   registrarLog,
   extrairIp,
 } = require("../services/activityLogService");
+const { garantirContaMlParaGrant } = require("../services/clienteContas/clienteContaService");
 
 const {
   buscarClienteAtivoPorSlug,
@@ -198,13 +199,24 @@ async function callbackMlController(req, res) {
     const { access_token, refresh_token, user_id: mlUserId, expires_in } = data;
     const expiresAt = calcularMlExpiresAt(expires_in);
 
-    await salvarMlToken({
+    const grantSalvo = await salvarMlToken({
       clienteId: cliente.id,
       mlUserId,
       accessToken: access_token,
       refreshToken: refresh_token,
       expiresAt,
     });
+
+    // Aditivo: garante que a conta VenForce exista desde a primeira conexão
+    // (não só via backfill em massa). Nunca lança — não pode derrubar o
+    // fluxo OAuth por causa da fundação de contas.
+    await garantirContaMlParaGrant({
+      clienteId: cliente.id,
+      clienteSlug: cliente.slug,
+      mlUserId,
+      grantIsPrimary: grantSalvo?.is_primary === true,
+    });
+
     registrarLog({
       userId: null,
       userEmail: null,
@@ -237,6 +249,13 @@ async function callbackMlController(req, res) {
 
 async function listarMlTokensAdminController(req, res) {
   try {
+    // A migration da Fase 1 (cliente_contas) pode ainda não ter rodado em
+    // produção — o LEFT JOIN só é seguro se a tabela já existir.
+    const tabelaContas = await pool.query(
+      `SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'cliente_contas'`
+    );
+    const temContas = tabelaContas.rows.length > 0;
+
     const result = await pool.query(`
       SELECT t.id, t.cliente_id, c.nome AS cliente_nome, c.slug AS cliente_slug,
              t.ml_user_id,
@@ -248,8 +267,10 @@ async function listarMlTokensAdminController(req, res) {
              NULLIF(to_jsonb(t)->>'next_refresh_attempt_at', '')::timestamp AS next_refresh_attempt_at,
              (t.access_token IS NOT NULL AND t.access_token <> '') AS has_access_token,
              (t.refresh_token IS NOT NULL AND t.refresh_token <> '') AS has_refresh_token
+             ${temContas ? ", cc.nome AS cliente_conta_nome, cc.slug AS cliente_conta_slug" : ""}
         FROM ml_tokens t
         INNER JOIN clientes c ON c.id = t.cliente_id
+        ${temContas ? "LEFT JOIN cliente_contas cc ON cc.id = NULLIF(to_jsonb(t)->>'cliente_conta_id', '')::integer" : ""}
        ORDER BY c.nome ASC,
                 COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) DESC,
                 t.updated_at DESC NULLS LAST, t.id DESC
@@ -273,6 +294,32 @@ async function definirGrantPrincipalController(req, res) {
       ok: false,
       erro: error.statusCode === 404 ? error.message : "Não foi possível definir o grant principal.",
     });
+  }
+}
+
+// Área dev-admin explícita (auditoria de clientes/contas): access_token e
+// refresh_token NUNCA aparecem em listagens genéricas (listarMlTokensAdminController,
+// cliente-contas). Só este endpoint, admin-only, revela o par de credenciais
+// de um grant específico — para debug/manutenção pontual. Não logar o
+// resultado; a mensagem de erro também não pode ecoar tokens.
+async function revelarCredenciaisGrantController(req, res) {
+  const tokenId = Number(req.params.tokenId);
+  if (!Number.isInteger(tokenId) || tokenId <= 0) {
+    return res.status(400).json({ ok: false, erro: "tokenId inválido." });
+  }
+  try {
+    const grant = await findGrantById(tokenId);
+    if (!grant) return res.status(404).json({ ok: false, erro: "Grant Mercado Livre não encontrado." });
+    return res.json({
+      ok: true,
+      token_id: grant.id,
+      cliente_id: grant.cliente_id,
+      ml_user_id: grant.ml_user_id == null ? null : String(grant.ml_user_id),
+      access_token: grant.access_token || null,
+      refresh_token: grant.refresh_token || null,
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, erro: "Não foi possível obter as credenciais deste grant." });
   }
 }
 
@@ -399,6 +446,7 @@ module.exports = {
   callbackMlController,
   listarMlTokensAdminController,
   definirGrantPrincipalController,
+  revelarCredenciaisGrantController,
   testarGrantAdminController,
   statusClienteMlController,
 };

@@ -1,0 +1,174 @@
+/* ============================================================
+ * VenForce — Clientes · CSS da página (V2)
+ *
+ * Ordem de carga (em clientes.html):
+ *   style.css (layout/sidebar/topbar) →
+ *   css/vf-tokens-v2.css → css/vf-components-v2.css →
+ *   css/pages/clientes-v2.css (este arquivo, sempre por último)
+ *
+ * Só o que é específico desta tela: grid do form "Adicionar cliente",
+ * dots de marketplace, cartões de conta dentro do drawer e o mini-form
+ * de "+ Conta Shopee". Componentes globais vêm de vf-components-v2.css.
+ * Só tokens --vf-*. Todo seletor é escopado por .vf-page-clientes.
+ * ============================================================ */
+
+.vf-page-clientes .vf-clientes-create-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: var(--vf-sp-4);
+  align-items: end;
+}
+
+.vf-page-clientes .vf-clientes-create-submit {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 720px) {
+  .vf-page-clientes .vf-clientes-create-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Dots de marketplace (mesma paleta usada em Bases). */
+.vf-page-clientes .vf-clientes-mp-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--vf-radius-pill);
+  margin-right: var(--vf-sp-2);
+}
+.vf-page-clientes .vf-clientes-mp-dot--meli { background: var(--vf-warning); }
+.vf-page-clientes .vf-clientes-mp-dot--shopee { background: var(--vf-danger); }
+
+/* Resumo de contas/bases na tabela (célula "Contas" / "Bases"). */
+.vf-page-clientes .vf-clientes-resumo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2);
+}
+.vf-page-clientes .vf-clientes-resumo-item {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+  white-space: nowrap;
+}
+
+/* Drawer do cliente. */
+.vf-page-clientes .vf-clientes-drawer-meta {
+  margin-top: var(--vf-sp-1);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-clientes .vf-clientes-drawer-state {
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-clientes .vf-clientes-mp-section {
+  margin-bottom: var(--vf-sp-6);
+}
+.vf-page-clientes .vf-clientes-mp-section:last-child {
+  margin-bottom: 0;
+}
+.vf-page-clientes .vf-clientes-mp-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  margin-bottom: var(--vf-sp-3);
+}
+.vf-page-clientes .vf-clientes-mp-section__header h4 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-clientes .vf-clientes-mp-empty {
+  margin: 0;
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-clientes .vf-clientes-conta-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-clientes .vf-clientes-conta-card {
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  background: var(--vf-surface-2);
+}
+
+.vf-page-clientes .vf-clientes-conta-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  flex-wrap: wrap;
+}
+
+.vf-page-clientes .vf-clientes-conta-card__nome {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-clientes .vf-clientes-conta-card__tags {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+}
+
+.vf-page-clientes .vf-clientes-conta-card__meta {
+  margin-top: var(--vf-sp-2);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+  font-family: var(--vf-font-mono);
+}
+
+.vf-page-clientes .vf-clientes-conta-card__base {
+  margin-top: var(--vf-sp-2);
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-page-clientes .vf-clientes-conta-card__actions {
+  margin-top: var(--vf-sp-3);
+  display: flex;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+}
+
+.vf-page-clientes .vf-clientes-new-conta-form {
+  border: 1px dashed var(--vf-border);
+  border-radius: var(--vf-radius);
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  margin-bottom: var(--vf-sp-3);
+  background: var(--vf-surface-2);
+}
+
+.vf-page-clientes .vf-clientes-new-conta-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--vf-sp-2);
+  margin-top: var(--vf-sp-2);
+}
+
+.vf-page-clientes .vf-clientes-modal-sub {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}

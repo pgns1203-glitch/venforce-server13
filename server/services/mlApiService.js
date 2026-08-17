@@ -29,16 +29,14 @@ async function buscarClienteAtivoPorId(clienteId) {
   return result.rows[0] || null;
 }
 
-function gerarMlState(cliente) {
-  return jwt.sign(
-    {
-      clienteId: cliente.id,
-      clienteSlug: cliente.slug,
-      nonce: crypto.randomBytes(16).toString("hex"),
-    },
-    JWT_SECRET,
-    { expiresIn: "10m" }
-  );
+function gerarMlState(cliente, { clienteContaId = null } = {}) {
+  const payload = {
+    clienteId: cliente.id,
+    clienteSlug: cliente.slug,
+    nonce: crypto.randomBytes(16).toString("hex"),
+  };
+  if (clienteContaId != null) payload.clienteContaId = Number(clienteContaId);
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "10m" });
 }
 
 function verificarMlState(state) {

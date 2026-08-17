@@ -271,6 +271,54 @@ async function garantirContaMlParaGrant({ clienteId, clienteSlug, mlUserId, gran
   }
 }
 
+// Chamado pelo callback OAuth account-scoped (mlController.callbackMlController)
+// depois que o code já foi trocado por token e a checagem de seller
+// incompatível (regra "reconexão segura") já passou no controller — este
+// service é a segunda linha de defesa, não a única. Idempotente: se a conta
+// ainda não tem external_account_id, grava agora (primeira conexão daquela
+// conta). Nunca move o grant para outra conta nem apaga tokens existentes.
+async function vincularGrantMlNaConta({ contaId, mlUserId }) {
+  const mlUserIdStr = mlUserId == null ? "" : String(mlUserId);
+  if (!mlUserIdStr) throw criarErroHttp(400, "mlUserId é obrigatório.");
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const found = await client.query("SELECT * FROM cliente_contas WHERE id = $1 FOR UPDATE", [contaId]);
+    const conta = found.rows[0];
+    if (!conta) throw criarErroHttp(404, "Conta não encontrada.");
+
+    if (conta.external_account_id && String(conta.external_account_id) !== mlUserIdStr) {
+      throw criarErroHttp(409, `Esta conexão pertence ao seller ${mlUserIdStr}, mas a conta ${conta.nome} espera o seller ${conta.external_account_id}.`, {
+        code: "ML_ACCOUNT_MISMATCH",
+      });
+    }
+
+    if (!conta.external_account_id) {
+      await client.query(
+        "UPDATE cliente_contas SET external_account_id = $1, updated_at = NOW() WHERE id = $2",
+        [mlUserIdStr, contaId]
+      );
+    }
+
+    await client.query(
+      "UPDATE ml_tokens SET cliente_conta_id = $1 WHERE cliente_id = $2 AND ml_user_id = $3",
+      [conta.id, conta.cliente_id, mlUserIdStr]
+    );
+
+    await client.query("COMMIT");
+    return sanitizarConta({ ...conta, external_account_id: conta.external_account_id || mlUserIdStr });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if (error.code === "23505") {
+      throw criarErroHttp(409, "Este seller já está vinculado a outra conta VenForce.", { code: "ML_ACCOUNT_MISMATCH" });
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function atualizarConta(contaId, { nome, ativo } = {}) {
   const conta = await obterConta(contaId);
   const patches = [];
@@ -519,6 +567,7 @@ module.exports = {
   obterConta,
   criarConta,
   garantirContaMlParaGrant,
+  vincularGrantMlNaConta,
   atualizarConta,
   definirContaPrincipal,
   obterBaseDaConta,

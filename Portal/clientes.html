@@ -140,10 +140,20 @@
       <section class="vf-clientes-mp-section" data-mp="meli">
         <div class="vf-clientes-mp-section__header">
           <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--meli"></span>Mercado Livre</h4>
-          <a href="#" id="cliente-drawer-add-meli" class="vf-btn vf-btn--sm vf-btn--secondary" target="_blank" rel="noopener">+ Conta Mercado Livre</a>
+          <button type="button" id="cliente-drawer-add-meli" class="vf-btn vf-btn--sm vf-btn--secondary">+ Conta Mercado Livre</button>
+        </div>
+        <div id="cliente-drawer-meli-form" class="vf-clientes-new-conta-form" style="display:none;">
+          <div class="vf-field">
+            <label class="vf-field__label" for="meli-conta-nome">Nome da conta</label>
+            <input type="text" id="meli-conta-nome" class="vf-input" placeholder="ex: Mercado Livre 1">
+          </div>
+          <div class="vf-clientes-new-conta-actions">
+            <button type="button" id="cliente-drawer-meli-cancel" class="vf-btn vf-btn--sm vf-btn--secondary">Cancelar</button>
+            <button type="button" id="cliente-drawer-meli-salvar" class="vf-btn vf-btn--sm vf-btn--primary">Criar conta</button>
+          </div>
         </div>
         <div id="cliente-drawer-meli-list" class="vf-clientes-conta-list"></div>
-        <p id="cliente-drawer-meli-empty" class="vf-clientes-mp-empty" style="display:none;">Nenhuma conta Mercado Livre conectada.</p>
+        <p id="cliente-drawer-meli-empty" class="vf-clientes-mp-empty" style="display:none;">Nenhuma conta Mercado Livre cadastrada.</p>
       </section>
 
       <section class="vf-clientes-mp-section" data-mp="shopee">

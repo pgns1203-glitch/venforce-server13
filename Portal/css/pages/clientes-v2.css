@@ -129,6 +129,14 @@
   flex-wrap: wrap;
 }
 
+.vf-page-clientes .vf-clientes-conta-card__status {
+  margin-top: var(--vf-sp-2);
+}
+.vf-page-clientes .vf-clientes-conta-card__status .vf-status {
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+}
+
 .vf-page-clientes .vf-clientes-conta-card__meta {
   margin-top: var(--vf-sp-2);
   font-size: var(--vf-fs-xs);

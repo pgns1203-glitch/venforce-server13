@@ -21,7 +21,11 @@ const {
   registrarLog,
   extrairIp,
 } = require("../services/activityLogService");
-const { garantirContaMlParaGrant } = require("../services/clienteContas/clienteContaService");
+const {
+  garantirContaMlParaGrant,
+  vincularGrantMlNaConta,
+  obterConta,
+} = require("../services/clienteContas/clienteContaService");
 
 const {
   buscarClienteAtivoPorSlug,
@@ -33,6 +37,15 @@ const {
   calcularMlExpiresAt,
   salvarMlToken,
 } = require("../services/mlApiService");
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 function normalizarSlug(nome) {
   return String(nome || "").trim().toLowerCase()
@@ -139,6 +152,46 @@ async function iniciarConexaoMlController(req, res) {
   }
 }
 
+// Link account-scoped (Fundação de Contas): identifica a cliente_conta
+// específica, não só o cliente. Continua público — é o link compartilhável
+// com o cliente, igual ao /ml/conectar/:clienteSlug legado — mas valida no
+// backend que a conta existe, é do marketplace meli, está ativa e o cliente
+// dono dela também está ativo antes de redirecionar para o Mercado Livre.
+async function iniciarConexaoContaMlController(req, res) {
+  try {
+    const contaId = Number(req.params.clienteContaId);
+    if (!Number.isInteger(contaId) || contaId <= 0) {
+      return res.status(400).send("Conta inválida.");
+    }
+
+    let conta = null;
+    try {
+      conta = await obterConta(contaId);
+    } catch (_) {
+      conta = null;
+    }
+    if (!conta || conta.marketplace !== "meli" || conta.ativo === false) {
+      return res.status(404).send("Conta Mercado Livre não encontrada ou inativa.");
+    }
+
+    const cliente = await buscarClienteAtivoPorId(conta.cliente_id);
+    if (!cliente) {
+      return res.status(404).send("Cliente não encontrado ou inativo.");
+    }
+
+    const state = gerarMlState(cliente, { clienteContaId: conta.id });
+    const url = gerarMlAuthorizationUrl(state);
+
+    res.redirect(url);
+  } catch (err) {
+    if (err.message === "ML_CLIENT_ID não configurado.") {
+      return res.status(500).send("ML_CLIENT_ID não configurado.");
+    }
+    console.error("[ML conectar-conta] erro:", err);
+    res.status(500).send("Erro interno: " + err.message);
+  }
+}
+
 async function callbackMlController(req, res) {
   const { code, error, state } = req.query;
 
@@ -179,6 +232,25 @@ async function callbackMlController(req, res) {
       );
     }
 
+    // Fluxo account-scoped (Fundação de Contas): resolve e valida a
+    // cliente_conta ANTES de trocar o code — falha cedo se a conta não
+    // existir mais, tiver sido desativada, ou não pertencer a este cliente.
+    // O fluxo legado (sem clienteContaId no state) segue exatamente como
+    // antes — contaAlvo fica null e nada muda.
+    let contaAlvo = null;
+    if (decoded.clienteContaId != null) {
+      try {
+        contaAlvo = await obterConta(decoded.clienteContaId);
+      } catch (_) {
+        contaAlvo = null;
+      }
+      if (!contaAlvo || contaAlvo.cliente_id !== cliente.id || contaAlvo.marketplace !== "meli" || contaAlvo.ativo === false) {
+        return res.status(400).send(
+          `<html><body style="font-family:sans-serif;padding:2rem;"><h2>Erro</h2><p>Conta Mercado Livre inválida, inativa ou não pertence a este cliente.</p></body></html>`
+        );
+      }
+    }
+
     const tokenResult = await trocarCodePorTokenMl(code);
     const data = tokenResult.data;
 
@@ -197,6 +269,34 @@ async function callbackMlController(req, res) {
     }
 
     const { access_token, refresh_token, user_id: mlUserId, expires_in } = data;
+
+    // Reconexão segura (regra obrigatória): se a conta já tem um seller
+    // identificado e o Mercado Livre devolveu outro, bloqueia ANTES de
+    // salvar qualquer coisa. Nunca substitui a conta, nunca move o grant,
+    // nunca toca em tokens existentes.
+    if (contaAlvo && contaAlvo.external_account_id && String(contaAlvo.external_account_id) !== String(mlUserId)) {
+      console.warn(JSON.stringify({
+        event: "ml_account_mismatch",
+        cliente_id: cliente.id,
+        cliente_conta_id: contaAlvo.id,
+        esperado: contaAlvo.external_account_id,
+        recebido: String(mlUserId),
+      }));
+      return res.status(409).send(`
+        <html><body style="font-family:sans-serif;text-align:center;padding:3rem;background:#f8f9fc;">
+          <div style="max-width:460px;margin:0 auto;background:#fff;border-radius:16px;padding:2.5rem;box-shadow:0 4px 24px rgba(0,0,0,.08);">
+            <div style="font-size:2.5rem;margin-bottom:1rem;">⚠️</div>
+            <h2 style="margin:0 0 .5rem;color:#2d2d2d;">Conta Mercado Livre incompatível</h2>
+            <p style="color:#6b7280;margin:0 0 1rem;">
+              Esta conexão pertence ao seller <strong>${escapeHtml(String(mlUserId))}</strong>, mas
+              <strong>${escapeHtml(contaAlvo.nome)}</strong> espera o seller
+              <strong>${escapeHtml(String(contaAlvo.external_account_id))}</strong>.
+            </p>
+            <p style="color:#9ca3af;font-size:.85rem;">Nenhum token foi alterado. Faça login no Mercado Livre com a conta correta ou gere um novo link para o seller certo.</p>
+          </div>
+        </body></html>`);
+    }
+
     const expiresAt = calcularMlExpiresAt(expires_in);
 
     const grantSalvo = await salvarMlToken({
@@ -207,22 +307,38 @@ async function callbackMlController(req, res) {
       expiresAt,
     });
 
-    // Aditivo: garante que a conta VenForce exista desde a primeira conexão
-    // (não só via backfill em massa). Nunca lança — não pode derrubar o
-    // fluxo OAuth por causa da fundação de contas.
-    await garantirContaMlParaGrant({
-      clienteId: cliente.id,
-      clienteSlug: cliente.slug,
-      mlUserId,
-      grantIsPrimary: grantSalvo?.is_primary === true,
-    });
+    if (contaAlvo) {
+      // Fluxo account-scoped: liga o grant exatamente à conta pedida pelo
+      // link (nunca escolhe/cria outra). Não deve derrubar o OAuth — se
+      // falhar aqui o grant já foi salvo (comportamento igual ao legado).
+      try {
+        await vincularGrantMlNaConta({ contaId: contaAlvo.id, mlUserId });
+      } catch (vinculoErr) {
+        console.error(JSON.stringify({ event: "ml_conta_vinculo_falhou", cliente_conta_id: contaAlvo.id, error: vinculoErr.message }));
+      }
+    } else {
+      // Aditivo: garante que a conta VenForce exista desde a primeira conexão
+      // (não só via backfill em massa). Nunca lança — não pode derrubar o
+      // fluxo OAuth por causa da fundação de contas.
+      await garantirContaMlParaGrant({
+        clienteId: cliente.id,
+        clienteSlug: cliente.slug,
+        mlUserId,
+        grantIsPrimary: grantSalvo?.is_primary === true,
+      });
+    }
 
     registrarLog({
       userId: null,
       userEmail: null,
       userNome: null,
       acao: "admin.ml.conectar",
-      detalhes: { cliente_slug: cliente.slug, cliente_nome: cliente.nome, ml_user_id: String(mlUserId) },
+      detalhes: {
+        cliente_slug: cliente.slug,
+        cliente_nome: cliente.nome,
+        ml_user_id: String(mlUserId),
+        cliente_conta_id: contaAlvo ? contaAlvo.id : null,
+      },
       ip: extrairIp(req),
       status: "sucesso"
     });
@@ -234,9 +350,9 @@ async function callbackMlController(req, res) {
         <div style="max-width:420px;margin:0 auto;background:#fff;border-radius:16px;padding:2.5rem;box-shadow:0 4px 24px rgba(0,0,0,.08);">
           <div style="font-size:2.5rem;margin-bottom:1rem;">✅</div>
           <h2 style="margin:0 0 .5rem;color:#2d2d2d;">Conta conectada!</h2>
-          <p style="color:#6b7280;margin:0 0 1rem;"><strong>${cliente.nome}</strong></p>
+          <p style="color:#6b7280;margin:0 0 1rem;"><strong>${escapeHtml(cliente.nome)}</strong>${contaAlvo ? ` · ${escapeHtml(contaAlvo.nome)}` : ""}</p>
           <p style="font-family:monospace;font-size:.8rem;color:#9ca3af;background:#f8f9fc;padding:.75rem;border-radius:8px;">
-            ML User ID: ${mlUserId}<br>
+            ML User ID: ${escapeHtml(String(mlUserId))}<br>
             Expira em: ${expiresAt.toLocaleString("pt-BR")}
           </p>
         </div>
@@ -443,6 +559,7 @@ module.exports = {
   listarMlItemsController,
   conectarMlLegadoController,
   iniciarConexaoMlController,
+  iniciarConexaoContaMlController,
   callbackMlController,
   listarMlTokensAdminController,
   definirGrantPrincipalController,

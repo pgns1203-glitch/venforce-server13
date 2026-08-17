@@ -9,6 +9,7 @@ const {
   listarMlItemsController,
   conectarMlLegadoController,
   iniciarConexaoMlController,
+  iniciarConexaoContaMlController,
   callbackMlController,
   listarMlTokensAdminController,
   definirGrantPrincipalController,
@@ -44,6 +45,14 @@ router.get(
 router.get(
   "/ml/conectar/:clienteSlug",
   iniciarConexaoMlController
+);
+
+// Fundação de Contas: link account-scoped, identifica a cliente_conta
+// específica (não o cliente todo). Mantém o legado acima intacto por
+// compatibilidade — /clientes.html usa exclusivamente esta rota nova.
+router.get(
+  "/ml/conectar-conta/:clienteContaId",
+  iniciarConexaoContaMlController
 );
 
 router.get(

@@ -37,8 +37,39 @@ function filtrarClientes() {
   if (badge && badge.style.display !== "none") badge.textContent = String(visiveis);
 }
 
-function getMlConectarLink(slug) {
-  return `${API_BASE}/ml/conectar/${encodeURIComponent(slug)}`;
+// Link account-scoped (Fundação de Contas): identifica a cliente_conta
+// específica, nunca o cliente genérico — necessário para diferenciar
+// ML1/ML2/ML3 do mesmo cliente. O link legado /ml/conectar/:clienteSlug
+// continua existindo no backend por compatibilidade, mas /clientes.html
+// usa exclusivamente este.
+function getMlConectarContaLink(contaId) {
+  return `${API_BASE}/ml/conectar-conta/${contaId}`;
+}
+
+// grant == null            → sem grant / aguardando conexão
+// grant existe + valid     → conectado
+// grant existe + problema  → atenção (token_status indica erro/revogação)
+function classificarStatusConta(conta) {
+  if (!conta.grant) {
+    return { code: "sem_grant", label: "Aguardando grant", cls: "", symbol: "○" };
+  }
+  const status = String(conta.grant.token_status || "valid").toLowerCase();
+  if (status === "valid") {
+    return { code: "conectado", label: "Conectado", cls: "is-success", symbol: "●" };
+  }
+  return { code: "atencao", label: "Grant com problema", cls: "is-warning", symbol: "⚠" };
+}
+
+async function copiarLinkConta(link, btn) {
+  const original = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(link);
+    btn.textContent = "✓ Link copiado";
+  } catch (err) {
+    setClientesFeedback(`Não foi possível copiar automaticamente. Link: ${link}`, "danger");
+    return;
+  }
+  setTimeout(() => { btn.textContent = original; }, 1800);
 }
 
 function slugify(nome) {
@@ -58,6 +89,7 @@ let CLIENTES_CONFIRM_OPEN = false;
 let CLIENTES_CONFIRM_ACTION = null;
 let CLIENTE_DELETE_PENDENTE = null; // { slug, btn }
 let DRAWER_CLIENTE = null; // { id, slug, nome }
+let DRAWER_CONTAS = []; // contas cruas da última carga do drawer (sugestão de nome, cache)
 
 function setClientesFeedback(message, type = "neutral") {
   if (!clientesFeedback) return;
@@ -269,13 +301,25 @@ async function carregarResumoContas(slug) {
   try {
     const data = await apiFetch(`/clientes/${encodeURIComponent(slug)}/contas`);
     const contas = Array.isArray(data.contas) ? data.contas : [];
-    const meli = contas.filter((c) => c.marketplace === "meli" && c.ativo !== false).length;
+    const contasMl = contas.filter((c) => c.marketplace === "meli" && c.ativo !== false);
     const shopee = contas.filter((c) => c.marketplace === "shopee" && c.ativo !== false).length;
     const bases = contas.filter((c) => c.base?.base_id).length;
 
+    // Distingue EXISTÊNCIA DA CONTA de EXISTÊNCIA DO GRANT — "ML: 2" sozinho
+    // não diz se as contas estão conectadas. Só conta grant=valid como
+    // "conectada"; grant ausente é "sem grant"; grant com problema é
+    // classificado à parte (nunca junto de "conectada").
+    const conectadas = contasMl.filter((c) => classificarStatusConta(c).code === "conectado").length;
+    const semGrant = contasMl.filter((c) => classificarStatusConta(c).code === "sem_grant").length;
+    const atencao = contasMl.filter((c) => classificarStatusConta(c).code === "atencao").length;
+    const partesMl = [];
+    if (conectadas) partesMl.push(`${conectadas} conectada${conectadas > 1 ? "s" : ""}`);
+    if (semGrant) partesMl.push(`${semGrant} sem grant`);
+    if (atencao) partesMl.push(`${atencao} atenção`);
+
     celContas.innerHTML = `
       <div class="vf-clientes-resumo">
-        <span class="vf-clientes-resumo-item"><span class="vf-clientes-mp-dot vf-clientes-mp-dot--meli"></span>ML: ${meli}</span>
+        <span class="vf-clientes-resumo-item"><span class="vf-clientes-mp-dot vf-clientes-mp-dot--meli"></span>ML: ${contasMl.length}${partesMl.length ? ` · ${escapeHTML(partesMl.join(" · "))}` : ""}</span>
         <span class="vf-clientes-resumo-item"><span class="vf-clientes-mp-dot vf-clientes-mp-dot--shopee"></span>Shopee: ${shopee}</span>
       </div>`;
     celBases.innerHTML = `<span style="font-size:.8rem;color:var(--vf-text-secondary);">${bases}</span>`;
@@ -339,7 +383,9 @@ function fecharDrawerCliente() {
   document.getElementById("cliente-drawer-backdrop")?.classList.remove("is-open");
   document.getElementById("cliente-drawer")?.classList.remove("is-open");
   document.getElementById("cliente-drawer-shopee-form").style.display = "none";
+  document.getElementById("cliente-drawer-meli-form").style.display = "none";
   DRAWER_CLIENTE = null;
+  DRAWER_CONTAS = [];
 }
 
 async function abrirDrawerCliente(slug) {
@@ -349,7 +395,6 @@ async function abrirDrawerCliente(slug) {
 
   document.getElementById("cliente-drawer-title").textContent = cliente.nome || slug;
   document.getElementById("cliente-drawer-meta").textContent = `${slug} · ${cliente.ativo !== false ? "ativo" : "inativo"}`;
-  document.getElementById("cliente-drawer-add-meli").href = getMlConectarLink(slug);
   document.getElementById("cliente-drawer-state").textContent = "Carregando contas…";
   document.getElementById("cliente-drawer-meli-list").innerHTML = "";
   document.getElementById("cliente-drawer-shopee-list").innerHTML = "";
@@ -364,6 +409,7 @@ async function recarregarContasDrawer() {
   try {
     const data = await apiFetch(`/clientes/${encodeURIComponent(DRAWER_CLIENTE.slug)}/contas`);
     const contas = Array.isArray(data.contas) ? data.contas : [];
+    DRAWER_CONTAS = contas;
     stateEl.textContent = "";
     renderContasMarketplace("meli", contas.filter((c) => c.marketplace === "meli"));
     renderContasMarketplace("shopee", contas.filter((c) => c.marketplace === "shopee"));
@@ -384,39 +430,75 @@ function renderContasMarketplace(marketplace, contas) {
     card.className = "vf-clientes-conta-card";
 
     const tagPrincipal = conta.is_primary ? `<span class="vf-tag is-primary">Principal</span>` : "";
-    const tagAtivo = conta.ativo === false
-      ? `<span class="vf-status is-danger">Inativa</span>`
-      : `<span class="vf-status is-success">Ativa</span>`;
+    const tagAtivo = conta.ativo === false ? `<span class="vf-tag is-danger">Inativa</span>` : "";
 
-    let grantHtml = "";
+    let statusHtml = "";
+    let metaHtml = "";
     if (marketplace === "meli") {
+      const status = classificarStatusConta(conta);
+      statusHtml = `
+        <div class="vf-clientes-conta-card__status">
+          <span class="vf-status ${status.cls}">${status.symbol} ${escapeHTML(status.label.toUpperCase())}</span>
+        </div>`;
+
+      const linhasMeta = [];
       if (conta.grant) {
-        const statusOk = conta.grant.token_status === "valid";
-        grantHtml = `
-          <div class="vf-clientes-conta-card__meta">
-            ml_user_id: ${escapeHTML(conta.grant.ml_user_id || "—")} ·
-            <span class="vf-status ${statusOk ? "is-success" : "is-danger"}">${escapeHTML(conta.grant.token_status || "—")}</span>
-          </div>`;
-      } else {
-        grantHtml = `<div class="vf-clientes-conta-card__meta">Sem grant Mercado Livre vinculado.</div>`;
+        linhasMeta.push(`seller ${escapeHTML(conta.grant.ml_user_id || "—")}`);
+        linhasMeta.push(`token_status: ${escapeHTML(conta.grant.token_status || "—")}`);
+      } else if (conta.external_account_id) {
+        // Conta já identificou um seller antes (ex: grant desconectado
+        // manualmente), mas hoje não tem grant ativo — o seller esperado
+        // continua valendo para a proteção de reconexão.
+        linhasMeta.push(`seller ${escapeHTML(conta.external_account_id)} (grant ausente)`);
+      }
+      if (linhasMeta.length) {
+        metaHtml = `<div class="vf-clientes-conta-card__meta">${linhasMeta.join(" · ")}</div>`;
       }
     }
 
     const baseHtml = conta.base?.base_id
       ? `<span class="vf-tag is-info">Base: ${escapeHTML(conta.base.nome || conta.base.slug || conta.base.base_id)}</span>`
-      : `<span class="vf-tag is-neutral">Conta não definida</span>`;
+      : `<span class="vf-tag is-neutral">Base não definida</span>`;
 
     card.innerHTML = `
       <div class="vf-clientes-conta-card__top">
         <span class="vf-clientes-conta-card__nome">${escapeHTML(conta.nome)}</span>
         <div class="vf-clientes-conta-card__tags">${tagPrincipal}${tagAtivo}</div>
       </div>
-      ${grantHtml}
+      ${statusHtml}
+      ${metaHtml}
       <div class="vf-clientes-conta-card__base">${baseHtml}</div>
       <div class="vf-clientes-conta-card__actions"></div>
     `;
 
     const actions = card.querySelector(".vf-clientes-conta-card__actions");
+
+    if (marketplace === "meli" && conta.ativo !== false) {
+      const temGrant = !!conta.grant;
+      const link = getMlConectarContaLink(conta.id);
+
+      const btnConectar = document.createElement("a");
+      btnConectar.className = "vf-btn vf-btn--sm vf-btn--secondary";
+      btnConectar.textContent = temGrant ? "Reconectar" : "Conectar";
+      btnConectar.href = link;
+      btnConectar.target = "_blank";
+      btnConectar.rel = "noopener";
+      actions.appendChild(btnConectar);
+
+      const btnCopiar = document.createElement("button");
+      btnCopiar.className = "vf-btn vf-btn--sm vf-btn--secondary";
+      btnCopiar.textContent = "Copiar link";
+      btnCopiar.addEventListener("click", () => copiarLinkConta(link, btnCopiar));
+      actions.appendChild(btnCopiar);
+
+      if (temGrant) {
+        const btnTestar = document.createElement("button");
+        btnTestar.className = "vf-btn vf-btn--sm vf-btn--secondary";
+        btnTestar.textContent = "Testar grant";
+        btnTestar.addEventListener("click", () => testarGrantConta(conta, btnTestar));
+        actions.appendChild(btnTestar);
+      }
+    }
 
     if (!conta.is_primary && conta.ativo !== false) {
       const btnPrincipal = document.createElement("button");
@@ -459,6 +541,24 @@ function renderContasMarketplace(marketplace, contas) {
   });
 }
 
+async function testarGrantConta(conta, btn) {
+  if (!conta.grant) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Testando…";
+  try {
+    await apiFetch(`/admin/ml-tokens/${conta.grant.id}/testar`, { method: "POST" });
+    setClientesFeedback(`Grant de "${conta.nome}" testado com sucesso.`, "success");
+  } catch (err) {
+    setClientesFeedback(`Falha ao testar grant de "${conta.nome}": ${err.message}`, "danger");
+  } finally {
+    await recarregarContasDrawer();
+    if (DRAWER_CLIENTE) carregarResumoContas(DRAWER_CLIENTE.slug);
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 async function acaoConta(fn) {
   try {
     await fn();
@@ -492,6 +592,31 @@ async function criarContaShopee() {
   }
 }
 
+async function criarContaMeli() {
+  const nomeEl = document.getElementById("meli-conta-nome");
+  const nome = nomeEl.value.trim();
+  if (!nome) { setClientesFeedback("Informe o nome da conta Mercado Livre.", "danger"); return; }
+  if (!DRAWER_CLIENTE) return;
+
+  try {
+    // Cria a cliente_conta ANTES de qualquer OAuth — nasce com grant=null
+    // (Aguardando grant). A conexão é um passo separado, feito depois pelo
+    // botão [Conectar]/link account-scoped do próprio card.
+    await apiFetch(`/clientes/${encodeURIComponent(DRAWER_CLIENTE.slug)}/contas`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ marketplace: "meli", nome }),
+    });
+    nomeEl.value = "";
+    document.getElementById("cliente-drawer-meli-form").style.display = "none";
+    await recarregarContasDrawer();
+    carregarResumoContas(DRAWER_CLIENTE.slug);
+    setClientesFeedback(`Conta Mercado Livre "${nome}" criada — aguardando grant.`, "success");
+  } catch (err) {
+    setClientesFeedback(`Erro ao criar conta Mercado Livre: ${err.message}`, "danger");
+  }
+}
+
 // Slug auto (editável)
 let slugTouched = false;
 const nomeInput = document.getElementById("cliente-nome");
@@ -522,6 +647,19 @@ document.getElementById("cliente-drawer-shopee-cancel")?.addEventListener("click
   document.getElementById("cliente-drawer-shopee-form").style.display = "none";
 });
 document.getElementById("cliente-drawer-shopee-salvar")?.addEventListener("click", criarContaShopee);
+
+document.getElementById("cliente-drawer-add-meli")?.addEventListener("click", () => {
+  const nomeEl = document.getElementById("meli-conta-nome");
+  const existentes = DRAWER_CONTAS.filter((c) => c.marketplace === "meli").length;
+  nomeEl.value = `Mercado Livre ${existentes + 1}`;
+  document.getElementById("cliente-drawer-meli-form").style.display = "block";
+  nomeEl.focus();
+  nomeEl.select();
+});
+document.getElementById("cliente-drawer-meli-cancel")?.addEventListener("click", () => {
+  document.getElementById("cliente-drawer-meli-form").style.display = "none";
+});
+document.getElementById("cliente-drawer-meli-salvar")?.addEventListener("click", criarContaMeli);
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;

@@ -7,10 +7,10 @@ const {
 
 function responderErro(res, err) {
   const status = err?.statusCode || 500;
-  return res.status(status).json({
-    ok: false,
-    erro: err?.message || "Erro interno.",
-  });
+  const payload = { ok: false, erro: err?.message || "Erro interno." };
+  if (err?.code) payload.code = err.code;
+  if (err?.contas) payload.contas = err.contas;
+  return res.status(status).json(payload);
 }
 
 async function listar(req, res) {
@@ -37,6 +37,7 @@ async function criar(req, res) {
       baseId: req.body?.base_id,
       clienteId: req.body?.cliente_id,
       marketplace: req.body?.marketplace,
+      clienteContaId: req.body?.cliente_conta_id ?? null,
       userId: req.user?.id,
     });
 

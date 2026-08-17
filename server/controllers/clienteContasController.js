@@ -9,6 +9,7 @@ const {
   desconectarGrantMlDaConta,
   sanitizarConta,
 } = require("../services/clienteContas/clienteContaService");
+const { listarBasesComVinculos } = require("../services/baseVinculosService");
 
 function responderErro(res, err) {
   const status = err?.statusCode || 500;
@@ -89,6 +90,25 @@ async function obterBase(req, res) {
   }
 }
 
+// Bases elegíveis pro picker "Definir base"/"Trocar base" do cliente:
+// reaproveita listarBasesComVinculos (mesma leitura que /bases.html usa),
+// só filtrando pelo marketplace da própria conta — nunca duplica a lógica
+// de vínculo/sugestão de base.
+async function basesElegiveis(req, res) {
+  try {
+    const conta = await obterConta(req.params.id);
+    const bases = await listarBasesComVinculos({ marketplace: conta.marketplace });
+    return res.json({
+      ok: true,
+      conta_id: conta.id,
+      marketplace: conta.marketplace,
+      bases: bases.filter((b) => b.ativo !== false),
+    });
+  } catch (err) {
+    return responderErro(res, err);
+  }
+}
+
 async function vincularBase(req, res) {
   try {
     const resultado = await vincularBaseNaConta(req.params.id, req.body?.base_id);
@@ -114,6 +134,7 @@ module.exports = {
   atualizar,
   definirPrincipal,
   obterBase,
+  basesElegiveis,
   vincularBase,
   desconectarMlGrant,
 };

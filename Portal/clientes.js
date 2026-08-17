@@ -11,6 +11,8 @@ const user = JSON.parse(localStorage.getItem("vf-user") || "{}");
 if (user.role !== "admin") window.location.replace("dashboard.html");
 initLayout();
 
+const { classificarStatusConta, resumirContasMarketplace, criarExpansaoUnica } = window.VF_CLIENTES_CONTAS_RESUMO;
+
 function clearSession() {
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem("vf-user");
@@ -25,12 +27,17 @@ function escapeHTML(s) {
 
 function filtrarClientes() {
   const termo = (document.getElementById("busca-cliente")?.value || "").toLowerCase().trim();
-  const linhas = document.querySelectorAll("#clientes-tbody tr");
+  const linhas = document.querySelectorAll("#clientes-tbody > tr.vf-clientes-row");
   let visiveis = 0;
   linhas.forEach((tr) => {
     const texto = tr.textContent.toLowerCase();
     const bate = !termo || texto.includes(termo);
     tr.style.display = bate ? "" : "none";
+    // A linha de expansão é a próxima irmã — acompanha a visibilidade do cliente dono.
+    const expandRow = tr.nextElementSibling;
+    if (expandRow && expandRow.classList.contains("vf-clientes-expand-row")) {
+      expandRow.style.display = bate ? "" : "none";
+    }
     if (bate) visiveis++;
   });
   const badge = document.getElementById("clientes-count");
@@ -44,20 +51,6 @@ function filtrarClientes() {
 // usa exclusivamente este.
 function getMlConectarContaLink(contaId) {
   return `${API_BASE}/ml/conectar-conta/${contaId}`;
-}
-
-// grant == null            → sem grant / aguardando conexão
-// grant existe + valid     → conectado
-// grant existe + problema  → atenção (token_status indica erro/revogação)
-function classificarStatusConta(conta) {
-  if (!conta.grant) {
-    return { code: "sem_grant", label: "Aguardando grant", cls: "", symbol: "○" };
-  }
-  const status = String(conta.grant.token_status || "valid").toLowerCase();
-  if (status === "valid") {
-    return { code: "conectado", label: "Conectado", cls: "is-success", symbol: "●" };
-  }
-  return { code: "atencao", label: "Grant com problema", cls: "is-warning", symbol: "⚠" };
 }
 
 async function copiarLinkConta(link, btn) {
@@ -88,8 +81,9 @@ let CLIENTES_LISTA = [];
 let CLIENTES_CONFIRM_OPEN = false;
 let CLIENTES_CONFIRM_ACTION = null;
 let CLIENTE_DELETE_PENDENTE = null; // { slug, btn }
-let DRAWER_CLIENTE = null; // { id, slug, nome }
-let DRAWER_CONTAS = []; // contas cruas da última carga do drawer (sugestão de nome, cache)
+const EXPANSAO = criarExpansaoUnica(); // controla qual linha está aberta (só uma por vez)
+const EXPANDIDO_CONTAS = new Map(); // slug -> contas cruas da última carga (cache p/ sugestão de nome "+Conta")
+let BASE_PICKER_CONTA = null; // conta sendo editada no modal "Definir/Trocar base"
 
 function setClientesFeedback(message, type = "neutral") {
   if (!clientesFeedback) return;
@@ -222,6 +216,8 @@ async function apiFetch(path, options = {}) {
 async function loadClientes() {
   if (!TOKEN) return;
   showLoading();
+  EXPANSAO.fechar();
+  EXPANDIDO_CONTAS.clear();
   try {
     const data = await apiFetch("/clientes");
     const clientes = Array.isArray(data.clientes) ? data.clientes : [];
@@ -242,27 +238,36 @@ function renderClientes(clientes) {
 
   clientes.forEach((c, i) => {
     const ativo = c.ativo !== false;
+    const slug = c.slug || "";
 
     const tr = document.createElement("tr");
-    tr.classList.add("animate-fade-up");
+    tr.className = "vf-clientes-row animate-fade-up";
+    tr.id = `cliente-row-${escapeHTML(slug)}`;
     tr.style.animationDelay = `${i * 0.04}s`;
+    tr.dataset.slug = slug;
 
     tr.innerHTML = `
       <td style="color:var(--vf-text-muted);font-family:var(--vf-font-mono);font-size:.8rem;">${String(i + 1).padStart(2, "0")}</td>
       <td><strong>${escapeHTML(c.nome || "—")}</strong></td>
-      <td style="color:var(--vf-text-secondary);font-size:.875rem;font-family:var(--vf-font-mono);">${escapeHTML(c.slug || "—")}</td>
+      <td style="color:var(--vf-text-secondary);font-size:.875rem;font-family:var(--vf-font-mono);">${escapeHTML(slug || "—")}</td>
       <td>
         <span class="vf-status ${ativo ? "is-success" : "is-danger"}">${ativo ? "Ativo" : "Inativo"}</span>
       </td>
-      <td id="resumo-contas-${escapeHTML(c.slug || "")}"><span style="color:var(--vf-text-muted);font-size:.8rem;">…</span></td>
-      <td id="resumo-bases-${escapeHTML(c.slug || "")}"><span style="color:var(--vf-text-muted);font-size:.8rem;">…</span></td>
+      <td id="resumo-contas-${escapeHTML(slug)}"><span style="color:var(--vf-text-muted);font-size:.8rem;">…</span></td>
       <td>
         <div class="vf-table__actions">
-          <button class="vf-btn vf-btn--sm vf-btn--secondary" data-action="abrir" data-slug="${escapeHTML(c.slug || "")}">Abrir</button>
-          <button class="vf-btn vf-btn--sm vf-btn--danger" data-action="delete" data-slug="${escapeHTML(c.slug || "")}">Excluir</button>
+          <button class="vf-btn vf-btn--sm vf-btn--secondary vf-clientes-toggle-btn" data-action="toggle-expand" data-slug="${escapeHTML(slug)}" aria-expanded="false" title="Detalhes">⌄</button>
+          <button class="vf-btn vf-btn--sm vf-btn--danger" data-action="delete" data-slug="${escapeHTML(slug)}">Excluir</button>
         </div>
       </td>
     `;
+
+    // A linha inteira é clicável para expandir, exceto a célula de ações
+    // (Excluir e o próprio botão de expandir têm seus próprios handlers).
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest(".vf-table__actions")) return;
+      toggleExpandCliente(slug);
+    });
 
     clientesTbody.appendChild(tr);
   });
@@ -283,8 +288,8 @@ function renderClientes(clientes) {
     });
   });
 
-  clientesTbody.querySelectorAll('button[data-action="abrir"]').forEach((btn) => {
-    btn.addEventListener("click", () => abrirDrawerCliente(btn.getAttribute("data-slug") || ""));
+  clientesTbody.querySelectorAll('button[data-action="toggle-expand"]').forEach((btn) => {
+    btn.addEventListener("click", () => toggleExpandCliente(btn.getAttribute("data-slug") || ""));
   });
 
   showTable();
@@ -296,37 +301,38 @@ function renderClientes(clientes) {
 
 async function carregarResumoContas(slug) {
   const celContas = document.getElementById(`resumo-contas-${slug}`);
-  const celBases = document.getElementById(`resumo-bases-${slug}`);
-  if (!celContas || !celBases) return;
+  if (!celContas) return;
   try {
     const data = await apiFetch(`/clientes/${encodeURIComponent(slug)}/contas`);
     const contas = Array.isArray(data.contas) ? data.contas : [];
-    const contasMl = contas.filter((c) => c.marketplace === "meli" && c.ativo !== false);
-    const shopee = contas.filter((c) => c.marketplace === "shopee" && c.ativo !== false).length;
-    const bases = contas.filter((c) => c.base?.base_id).length;
-
-    // Distingue EXISTÊNCIA DA CONTA de EXISTÊNCIA DO GRANT — "ML: 2" sozinho
-    // não diz se as contas estão conectadas. Só conta grant=valid como
-    // "conectada"; grant ausente é "sem grant"; grant com problema é
-    // classificado à parte (nunca junto de "conectada").
-    const conectadas = contasMl.filter((c) => classificarStatusConta(c).code === "conectado").length;
-    const semGrant = contasMl.filter((c) => classificarStatusConta(c).code === "sem_grant").length;
-    const atencao = contasMl.filter((c) => classificarStatusConta(c).code === "atencao").length;
-    const partesMl = [];
-    if (conectadas) partesMl.push(`${conectadas} conectada${conectadas > 1 ? "s" : ""}`);
-    if (semGrant) partesMl.push(`${semGrant} sem grant`);
-    if (atencao) partesMl.push(`${atencao} atenção`);
-
-    celContas.innerHTML = `
-      <div class="vf-clientes-resumo">
-        <span class="vf-clientes-resumo-item"><span class="vf-clientes-mp-dot vf-clientes-mp-dot--meli"></span>ML: ${contasMl.length}${partesMl.length ? ` · ${escapeHTML(partesMl.join(" · "))}` : ""}</span>
-        <span class="vf-clientes-resumo-item"><span class="vf-clientes-mp-dot vf-clientes-mp-dot--shopee"></span>Shopee: ${shopee}</span>
-      </div>`;
-    celBases.innerHTML = `<span style="font-size:.8rem;color:var(--vf-text-secondary);">${bases}</span>`;
+    renderResumoContasCelula(celContas, contas);
   } catch {
     celContas.innerHTML = `<span style="color:var(--vf-text-muted);font-size:.8rem;">—</span>`;
-    celBases.innerHTML = `<span style="color:var(--vf-text-muted);font-size:.8rem;">—</span>`;
   }
+}
+
+// Coluna "Contas": duas linhas compactas (ML / Shopee), cor de ESTADO — não
+// de marketplace. verde=saudável · amarelo=pendência · vermelho=problema ·
+// cinza=inexistente. Ver Portal/clientes-contas-resumo.js.
+function linhaResumoHtml(marketplace, label, contas) {
+  const r = resumirContasMarketplace(marketplace, contas);
+  const clsPorEstado = { saudavel: "is-ok", pendencia: "is-warn", problema: "is-danger", vazio: "is-muted" };
+  return `
+    <div class="vf-clientes-resumo-linha ${clsPorEstado[r.state]}">
+      <span class="vf-clientes-resumo-label">${escapeHTML(label)}</span>
+      <span class="vf-clientes-resumo-dot">${r.symbol}</span>
+      <span class="vf-clientes-resumo-texto">${escapeHTML(r.texto)}</span>
+    </div>`;
+}
+
+function renderResumoContasCelula(el, contas) {
+  const ml = contas.filter((c) => c.marketplace === "meli");
+  const shopee = contas.filter((c) => c.marketplace === "shopee");
+  el.innerHTML = `
+    <div class="vf-clientes-resumo">
+      ${linhaResumoHtml("meli", "ML", ml)}
+      ${linhaResumoHtml("shopee", "Shopee", shopee)}
+    </div>`;
 }
 
 async function deleteCliente(slug, btn) {
@@ -373,54 +379,185 @@ async function createCliente() {
   }
 }
 
-// ── DRAWER DO CLIENTE (contas ML/Shopee) ──────────────────────────────────
+// ── EXPANSÃO INLINE DA LINHA (substitui o drawer) ─────────────────────────
+// Só uma linha expandida por vez (EXPANSAO, Portal/clientes-contas-resumo.js).
+// Abrir/fechar não recarrega a tabela inteira nem perde a busca ativa.
 
-function abrirDrawerBase() {
-  document.getElementById("cliente-drawer-backdrop")?.classList.add("is-open");
-  document.getElementById("cliente-drawer")?.classList.add("is-open");
+function expansaoTemplate(slug) {
+  return `
+    <div class="vf-clientes-expand__state" data-role="state">Carregando contas…</div>
+
+    <section class="vf-clientes-mp-section" data-mp="meli">
+      <div class="vf-clientes-mp-section__header">
+        <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--meli"></span>Mercado Livre</h4>
+        <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="add-conta" data-mp="meli">+ Conta Mercado Livre</button>
+      </div>
+      <div class="vf-clientes-new-conta-form" data-form="meli" style="display:none;">
+        <div class="vf-field">
+          <label class="vf-field__label">Nome da conta</label>
+          <input type="text" class="vf-input" data-input="nome" placeholder="ex: Mercado Livre 1">
+        </div>
+        <div class="vf-clientes-new-conta-actions">
+          <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="cancelar-conta" data-mp="meli">Cancelar</button>
+          <button type="button" class="vf-btn vf-btn--sm vf-btn--primary" data-action="salvar-conta" data-mp="meli">Criar conta</button>
+        </div>
+      </div>
+      <div class="vf-clientes-conta-list" data-list="meli"></div>
+      <p class="vf-clientes-mp-empty" data-empty="meli" style="display:none;">Nenhuma conta Mercado Livre cadastrada.</p>
+    </section>
+
+    <section class="vf-clientes-mp-section" data-mp="shopee">
+      <div class="vf-clientes-mp-section__header">
+        <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--shopee"></span>Shopee</h4>
+        <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="add-conta" data-mp="shopee">+ Conta Shopee</button>
+      </div>
+      <div class="vf-clientes-new-conta-form" data-form="shopee" style="display:none;">
+        <div class="vf-field">
+          <label class="vf-field__label">Nome da conta</label>
+          <input type="text" class="vf-input" data-input="nome" placeholder="ex: Shopee 1">
+        </div>
+        <div class="vf-clientes-new-conta-actions">
+          <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="cancelar-conta" data-mp="shopee">Cancelar</button>
+          <button type="button" class="vf-btn vf-btn--sm vf-btn--primary" data-action="salvar-conta" data-mp="shopee">Criar conta</button>
+        </div>
+      </div>
+      <div class="vf-clientes-conta-list" data-list="shopee"></div>
+      <p class="vf-clientes-mp-empty" data-empty="shopee" style="display:none;">Nenhuma conta Shopee cadastrada.</p>
+    </section>
+  `;
 }
-function fecharDrawerCliente() {
-  document.getElementById("cliente-drawer-backdrop")?.classList.remove("is-open");
-  document.getElementById("cliente-drawer")?.classList.remove("is-open");
-  document.getElementById("cliente-drawer-shopee-form").style.display = "none";
-  document.getElementById("cliente-drawer-meli-form").style.display = "none";
-  DRAWER_CLIENTE = null;
-  DRAWER_CONTAS = [];
+
+function atualizarChevron(slug, aberto) {
+  const btn = clientesTbody.querySelector(`button[data-action="toggle-expand"][data-slug="${CSS.escape(slug)}"]`);
+  if (!btn) return;
+  btn.textContent = aberto ? "︿" : "⌄";
+  btn.setAttribute("aria-expanded", aberto ? "true" : "false");
 }
 
-async function abrirDrawerCliente(slug) {
-  const cliente = CLIENTES_LISTA.find((c) => c.slug === slug);
-  if (!cliente) return;
-  DRAWER_CLIENTE = cliente;
-
-  document.getElementById("cliente-drawer-title").textContent = cliente.nome || slug;
-  document.getElementById("cliente-drawer-meta").textContent = `${slug} · ${cliente.ativo !== false ? "ativo" : "inativo"}`;
-  document.getElementById("cliente-drawer-state").textContent = "Carregando contas…";
-  document.getElementById("cliente-drawer-meli-list").innerHTML = "";
-  document.getElementById("cliente-drawer-shopee-list").innerHTML = "";
-
-  abrirDrawerBase();
-  await recarregarContasDrawer();
+function removerLinhaExpandida(slug) {
+  document.getElementById(`cliente-expand-row-${slug}`)?.remove();
+  EXPANDIDO_CONTAS.delete(slug);
 }
 
-async function recarregarContasDrawer() {
-  if (!DRAWER_CLIENTE) return;
-  const stateEl = document.getElementById("cliente-drawer-state");
-  try {
-    const data = await apiFetch(`/clientes/${encodeURIComponent(DRAWER_CLIENTE.slug)}/contas`);
-    const contas = Array.isArray(data.contas) ? data.contas : [];
-    DRAWER_CONTAS = contas;
-    stateEl.textContent = "";
-    renderContasMarketplace("meli", contas.filter((c) => c.marketplace === "meli"));
-    renderContasMarketplace("shopee", contas.filter((c) => c.marketplace === "shopee"));
-  } catch (err) {
-    stateEl.textContent = `Não foi possível carregar as contas: ${err.message}`;
+function abrirLinhaExpandida(slug) {
+  const rowCliente = document.getElementById(`cliente-row-${slug}`);
+  if (!rowCliente) return;
+
+  const tr = document.createElement("tr");
+  tr.className = "vf-clientes-expand-row";
+  tr.id = `cliente-expand-row-${slug}`;
+  const colspan = rowCliente.children.length;
+  tr.innerHTML = `<td colspan="${colspan}"><div class="vf-clientes-expand" id="cliente-expand-${slug}" data-slug="${escapeHTML(slug)}">${expansaoTemplate(slug)}</div></td>`;
+  rowCliente.insertAdjacentElement("afterend", tr);
+
+  const container = document.getElementById(`cliente-expand-${slug}`);
+  wireExpansaoEstatica(container, slug);
+  carregarContasExpandidas(slug);
+}
+
+function toggleExpandCliente(slug) {
+  if (!slug) return;
+  const anteriorAntes = EXPANSAO.atual();
+  const novoAtual = EXPANSAO.toggle(slug);
+
+  if (anteriorAntes && anteriorAntes !== novoAtual) {
+    removerLinhaExpandida(anteriorAntes);
+    atualizarChevron(anteriorAntes, false);
+  }
+
+  if (novoAtual === slug) {
+    abrirLinhaExpandida(slug);
+    atualizarChevron(slug, true);
+  } else {
+    removerLinhaExpandida(slug);
+    atualizarChevron(slug, false);
   }
 }
 
-function renderContasMarketplace(marketplace, contas) {
-  const list = document.getElementById(`cliente-drawer-${marketplace}-list`);
-  const empty = document.getElementById(`cliente-drawer-${marketplace}-empty`);
+// Listeners do "esqueleto" da expansão (mini-form de + Conta) — ligados uma
+// única vez quando a linha abre; o conteúdo dinâmico (cards de conta) é
+// re-renderizado à parte por carregarContasExpandidas/renderContasMarketplace
+// sem recriar este esqueleto (senão os listeners duplicariam a cada refresh).
+function wireExpansaoEstatica(container, slug) {
+  container.querySelectorAll('[data-action="add-conta"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mp = btn.getAttribute("data-mp");
+      const form = container.querySelector(`[data-form="${mp}"]`);
+      const input = form.querySelector('[data-input="nome"]');
+      if (mp === "meli") {
+        const existentes = (EXPANDIDO_CONTAS.get(slug) || []).filter((c) => c.marketplace === "meli").length;
+        input.value = `Mercado Livre ${existentes + 1}`;
+      }
+      form.style.display = "block";
+      input.focus();
+      input.select();
+    });
+  });
+  container.querySelectorAll('[data-action="cancelar-conta"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mp = btn.getAttribute("data-mp");
+      container.querySelector(`[data-form="${mp}"]`).style.display = "none";
+    });
+  });
+  container.querySelectorAll('[data-action="salvar-conta"]').forEach((btn) => {
+    btn.addEventListener("click", () => criarContaNaExpansao(slug, btn.getAttribute("data-mp")));
+  });
+}
+
+async function criarContaNaExpansao(slug, marketplace) {
+  const container = document.getElementById(`cliente-expand-${slug}`);
+  if (!container) return;
+  const form = container.querySelector(`[data-form="${marketplace}"]`);
+  const input = form.querySelector('[data-input="nome"]');
+  const nome = input.value.trim();
+  const label = marketplace === "meli" ? "Mercado Livre" : "Shopee";
+  if (!nome) { setClientesFeedback(`Informe o nome da conta ${label}.`, "danger"); return; }
+
+  try {
+    await apiFetch(`/clientes/${encodeURIComponent(slug)}/contas`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ marketplace, nome }),
+    });
+    input.value = "";
+    form.style.display = "none";
+    await carregarContasExpandidas(slug);
+    carregarResumoContas(slug);
+    setClientesFeedback(`Conta ${label} "${nome}" criada.`, "success");
+  } catch (err) {
+    setClientesFeedback(`Erro ao criar conta ${label}: ${err.message}`, "danger");
+  }
+}
+
+async function carregarContasExpandidas(slug) {
+  const container = document.getElementById(`cliente-expand-${slug}`);
+  if (!container) return;
+  const stateEl = container.querySelector('[data-role="state"]');
+  try {
+    const data = await apiFetch(`/clientes/${encodeURIComponent(slug)}/contas`);
+    const contas = Array.isArray(data.contas) ? data.contas : [];
+    EXPANDIDO_CONTAS.set(slug, contas);
+    if (stateEl) stateEl.textContent = "";
+    renderContasMarketplace(container, "meli", contas.filter((c) => c.marketplace === "meli"));
+    renderContasMarketplace(container, "shopee", contas.filter((c) => c.marketplace === "shopee"));
+  } catch (err) {
+    if (stateEl) stateEl.textContent = `Não foi possível carregar as contas: ${err.message}`;
+  }
+}
+
+// Recarrega o conteúdo já aberto (sem fechar/reabrir a linha) e a célula de
+// resumo do cliente — usado depois de qualquer ação dentro da expansão
+// (criar conta, vincular base, conectar/testar/desconectar grant).
+async function atualizarAposAcao(slug) {
+  await carregarContasExpandidas(slug);
+  carregarResumoContas(slug);
+}
+
+function renderContasMarketplace(container, marketplace, contas) {
+  const list = container.querySelector(`[data-list="${marketplace}"]`);
+  const empty = container.querySelector(`[data-empty="${marketplace}"]`);
+  if (!list || !empty) return;
+  const slug = container.dataset.slug;
   list.innerHTML = "";
   if (!contas.length) { empty.style.display = "block"; return; }
   empty.style.display = "none";
@@ -454,6 +591,12 @@ function renderContasMarketplace(marketplace, contas) {
       if (linhasMeta.length) {
         metaHtml = `<div class="vf-clientes-conta-card__meta">${linhasMeta.join(" · ")}</div>`;
       }
+    } else if (conta.ativo !== false) {
+      const semBase = !conta.base?.base_id;
+      statusHtml = `
+        <div class="vf-clientes-conta-card__status">
+          <span class="vf-status ${semBase ? "is-warning" : "is-success"}">${semBase ? "⚠ BASE NÃO DEFINIDA" : "● CONFIGURADA"}</span>
+        </div>`;
     }
 
     const baseHtml = conta.base?.base_id
@@ -495,23 +638,31 @@ function renderContasMarketplace(marketplace, contas) {
         const btnTestar = document.createElement("button");
         btnTestar.className = "vf-btn vf-btn--sm vf-btn--secondary";
         btnTestar.textContent = "Testar grant";
-        btnTestar.addEventListener("click", () => testarGrantConta(conta, btnTestar));
+        btnTestar.addEventListener("click", () => testarGrantConta(slug, conta, btnTestar));
         actions.appendChild(btnTestar);
       }
+    }
+
+    if (conta.ativo !== false) {
+      const btnBase = document.createElement("button");
+      btnBase.className = "vf-btn vf-btn--sm vf-btn--secondary";
+      btnBase.textContent = conta.base?.base_id ? "Trocar base" : "Definir base";
+      btnBase.addEventListener("click", () => abrirBasePicker(slug, conta));
+      actions.appendChild(btnBase);
     }
 
     if (!conta.is_primary && conta.ativo !== false) {
       const btnPrincipal = document.createElement("button");
       btnPrincipal.className = "vf-btn vf-btn--sm vf-btn--secondary";
       btnPrincipal.textContent = "Tornar principal";
-      btnPrincipal.addEventListener("click", () => acaoConta(() => apiFetch(`/cliente-contas/${conta.id}/principal`, { method: "PATCH" })));
+      btnPrincipal.addEventListener("click", () => acaoConta(slug, () => apiFetch(`/cliente-contas/${conta.id}/principal`, { method: "PATCH" })));
       actions.appendChild(btnPrincipal);
     }
 
     const btnToggle = document.createElement("button");
     btnToggle.className = "vf-btn vf-btn--sm vf-btn--secondary";
     btnToggle.textContent = conta.ativo === false ? "Ativar" : "Desativar";
-    btnToggle.addEventListener("click", () => acaoConta(() =>
+    btnToggle.addEventListener("click", () => acaoConta(slug, () =>
       apiFetch(`/cliente-contas/${conta.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -531,7 +682,7 @@ function renderContasMarketplace(marketplace, contas) {
           description: `Remove só o grant desta conta (${conta.nome}). As demais contas Mercado Livre deste cliente não são afetadas.`,
           confirmLabel: "Desconectar",
           danger: true,
-          onConfirm: () => acaoConta(() => apiFetch(`/cliente-contas/${conta.id}/ml-grant`, { method: "DELETE" })),
+          onConfirm: () => acaoConta(slug, () => apiFetch(`/cliente-contas/${conta.id}/ml-grant`, { method: "DELETE" })),
         });
       });
       actions.appendChild(btnDesconectar);
@@ -541,7 +692,7 @@ function renderContasMarketplace(marketplace, contas) {
   });
 }
 
-async function testarGrantConta(conta, btn) {
+async function testarGrantConta(slug, conta, btn) {
   if (!conta.grant) return;
   const original = btn.textContent;
   btn.disabled = true;
@@ -552,68 +703,101 @@ async function testarGrantConta(conta, btn) {
   } catch (err) {
     setClientesFeedback(`Falha ao testar grant de "${conta.nome}": ${err.message}`, "danger");
   } finally {
-    await recarregarContasDrawer();
-    if (DRAWER_CLIENTE) carregarResumoContas(DRAWER_CLIENTE.slug);
+    await atualizarAposAcao(slug);
     btn.disabled = false;
     btn.textContent = original;
   }
 }
 
-async function acaoConta(fn) {
+async function acaoConta(slug, fn) {
   try {
     await fn();
-    await recarregarContasDrawer();
-    if (DRAWER_CLIENTE) carregarResumoContas(DRAWER_CLIENTE.slug);
+    await atualizarAposAcao(slug);
   } catch (err) {
     setClientesFeedback(err.message || "Não foi possível concluir a ação.", "danger");
     throw err;
   }
 }
 
-async function criarContaShopee() {
-  const nomeEl = document.getElementById("shopee-conta-nome");
-  const nome = nomeEl.value.trim();
-  if (!nome) { setClientesFeedback("Informe o nome da conta Shopee.", "danger"); return; }
-  if (!DRAWER_CLIENTE) return;
+// ── MODAL "DEFINIR BASE" / "TROCAR BASE" (item 5 do Fechamento da Fase 1) ──
+// Só lista bases do MESMO marketplace da conta (GET /cliente-contas/:id/
+// bases-elegiveis, que reaproveita baseVinculosService — nunca duplica a
+// regra de compatibilidade, que é validada de novo no backend ao salvar).
+
+async function abrirBasePicker(slug, conta) {
+  BASE_PICKER_CONTA = { slug, conta };
+  const modal = document.getElementById("vf-base-picker-modal");
+  const subtitle = document.getElementById("vf-base-picker-subtitle");
+  const loading = document.getElementById("vf-base-picker-loading");
+  const field = document.getElementById("vf-base-picker-field");
+  const empty = document.getElementById("vf-base-picker-empty");
+  const select = document.getElementById("vf-base-picker-select");
+  const danger = document.getElementById("vf-base-picker-danger");
+  const okBtn = document.getElementById("vf-base-picker-ok");
+
+  document.getElementById("vf-base-picker-title").textContent = conta.base?.base_id ? "Trocar base" : "Definir base";
+  subtitle.textContent = `${conta.nome} · ${conta.marketplace === "meli" ? "Mercado Livre" : "Shopee"}`;
+  loading.style.display = "block";
+  field.style.display = "none";
+  empty.style.display = "none";
+  danger.style.display = "none";
+  danger.textContent = "";
+  select.innerHTML = "";
+  okBtn.disabled = true;
+  modal.classList.add("is-open");
 
   try {
-    await apiFetch(`/clientes/${encodeURIComponent(DRAWER_CLIENTE.slug)}/contas`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ marketplace: "shopee", nome }),
-    });
-    nomeEl.value = "";
-    document.getElementById("cliente-drawer-shopee-form").style.display = "none";
-    await recarregarContasDrawer();
-    carregarResumoContas(DRAWER_CLIENTE.slug);
-    setClientesFeedback(`Conta Shopee "${nome}" criada.`, "success");
+    const data = await apiFetch(`/cliente-contas/${conta.id}/bases-elegiveis`);
+    const bases = Array.isArray(data.bases) ? data.bases : [];
+    loading.style.display = "none";
+    if (!bases.length) { empty.style.display = "block"; return; }
+
+    field.style.display = "block";
+    select.innerHTML = bases.map((b) => {
+      const ocupada = b.vinculo && b.vinculo.cliente_slug && b.vinculo.cliente_slug !== slug;
+      const rotulo = ocupada ? `${b.nome} (${b.slug}) — hoje em ${b.vinculo.cliente_nome || b.vinculo.cliente_slug}` : `${b.nome} (${b.slug})`;
+      return `<option value="${b.id}">${escapeHTML(rotulo)}</option>`;
+    }).join("");
+    if (conta.base?.base_id) select.value = String(conta.base.base_id);
+    okBtn.disabled = false;
   } catch (err) {
-    setClientesFeedback(`Erro ao criar conta Shopee: ${err.message}`, "danger");
+    loading.style.display = "none";
+    danger.style.display = "block";
+    danger.textContent = `Não foi possível carregar as bases elegíveis: ${err.message}`;
   }
 }
 
-async function criarContaMeli() {
-  const nomeEl = document.getElementById("meli-conta-nome");
-  const nome = nomeEl.value.trim();
-  if (!nome) { setClientesFeedback("Informe o nome da conta Mercado Livre.", "danger"); return; }
-  if (!DRAWER_CLIENTE) return;
+function fecharBasePicker() {
+  document.getElementById("vf-base-picker-modal")?.classList.remove("is-open");
+  BASE_PICKER_CONTA = null;
+}
 
+async function confirmarBasePicker() {
+  if (!BASE_PICKER_CONTA) return;
+  const { slug, conta } = BASE_PICKER_CONTA;
+  const select = document.getElementById("vf-base-picker-select");
+  const okBtn = document.getElementById("vf-base-picker-ok");
+  const danger = document.getElementById("vf-base-picker-danger");
+  const baseId = select.value;
+  if (!baseId) return;
+
+  okBtn.disabled = true;
+  okBtn.textContent = "Vinculando…";
   try {
-    // Cria a cliente_conta ANTES de qualquer OAuth — nasce com grant=null
-    // (Aguardando grant). A conexão é um passo separado, feito depois pelo
-    // botão [Conectar]/link account-scoped do próprio card.
-    await apiFetch(`/clientes/${encodeURIComponent(DRAWER_CLIENTE.slug)}/contas`, {
-      method: "POST",
+    await apiFetch(`/cliente-contas/${conta.id}/base`, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ marketplace: "meli", nome }),
+      body: JSON.stringify({ base_id: Number(baseId) }),
     });
-    nomeEl.value = "";
-    document.getElementById("cliente-drawer-meli-form").style.display = "none";
-    await recarregarContasDrawer();
-    carregarResumoContas(DRAWER_CLIENTE.slug);
-    setClientesFeedback(`Conta Mercado Livre "${nome}" criada — aguardando grant.`, "success");
+    setClientesFeedback(`Base vinculada à conta "${conta.nome}".`, "success");
+    fecharBasePicker();
+    await atualizarAposAcao(slug);
   } catch (err) {
-    setClientesFeedback(`Erro ao criar conta Mercado Livre: ${err.message}`, "danger");
+    danger.style.display = "block";
+    danger.textContent = err.message || "Não foi possível vincular a base.";
+  } finally {
+    okBtn.disabled = false;
+    okBtn.textContent = "Vincular base";
   }
 }
 
@@ -637,34 +821,17 @@ document.getElementById("vf-clientes-confirm-modal")?.addEventListener("click", 
   if (e.target?.id === "vf-clientes-confirm-modal") fecharModalConfirmacaoClientes();
 });
 
-document.getElementById("cliente-drawer-close")?.addEventListener("click", fecharDrawerCliente);
-document.getElementById("cliente-drawer-close-footer")?.addEventListener("click", fecharDrawerCliente);
-document.getElementById("cliente-drawer-backdrop")?.addEventListener("click", fecharDrawerCliente);
-document.getElementById("cliente-drawer-add-shopee")?.addEventListener("click", () => {
-  document.getElementById("cliente-drawer-shopee-form").style.display = "block";
+document.getElementById("vf-base-picker-close")?.addEventListener("click", fecharBasePicker);
+document.getElementById("vf-base-picker-cancel")?.addEventListener("click", fecharBasePicker);
+document.getElementById("vf-base-picker-ok")?.addEventListener("click", confirmarBasePicker);
+document.getElementById("vf-base-picker-modal")?.addEventListener("click", (e) => {
+  if (e.target?.id === "vf-base-picker-modal") fecharBasePicker();
 });
-document.getElementById("cliente-drawer-shopee-cancel")?.addEventListener("click", () => {
-  document.getElementById("cliente-drawer-shopee-form").style.display = "none";
-});
-document.getElementById("cliente-drawer-shopee-salvar")?.addEventListener("click", criarContaShopee);
-
-document.getElementById("cliente-drawer-add-meli")?.addEventListener("click", () => {
-  const nomeEl = document.getElementById("meli-conta-nome");
-  const existentes = DRAWER_CONTAS.filter((c) => c.marketplace === "meli").length;
-  nomeEl.value = `Mercado Livre ${existentes + 1}`;
-  document.getElementById("cliente-drawer-meli-form").style.display = "block";
-  nomeEl.focus();
-  nomeEl.select();
-});
-document.getElementById("cliente-drawer-meli-cancel")?.addEventListener("click", () => {
-  document.getElementById("cliente-drawer-meli-form").style.display = "none";
-});
-document.getElementById("cliente-drawer-meli-salvar")?.addEventListener("click", criarContaMeli);
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (CLIENTES_CONFIRM_OPEN) fecharModalConfirmacaoClientes();
-  else if (DRAWER_CLIENTE) fecharDrawerCliente();
+  else if (BASE_PICKER_CONTA) fecharBasePicker();
 });
 
 const buscaInput = document.getElementById("busca-cliente");

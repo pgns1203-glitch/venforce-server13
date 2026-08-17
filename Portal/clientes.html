@@ -88,7 +88,6 @@
                     <th>Slug</th>
                     <th>Status</th>
                     <th>Contas</th>
-                    <th>Bases</th>
                     <th><span class="vf-visually-hidden">Ações</span></th>
                   </tr>
                 </thead>
@@ -123,62 +122,31 @@
     </main>
   </div>
 
-  <!-- ── DRAWER DO CLIENTE (contas ML/Shopee) ── -->
-  <div class="vf-drawer-backdrop" id="cliente-drawer-backdrop"></div>
-  <aside class="vf-drawer vf-drawer--lg" id="cliente-drawer" role="dialog" aria-modal="true" aria-labelledby="cliente-drawer-title">
-    <div class="vf-drawer__header">
-      <div>
-        <p class="vf-page-header__eyebrow">Cliente</p>
-        <h3 class="vf-drawer__title" id="cliente-drawer-title">—</h3>
-        <div class="vf-clientes-drawer-meta" id="cliente-drawer-meta"></div>
+  <!-- ── MODAL "DEFINIR BASE" / "TROCAR BASE" (item 5 do Fechamento da Fase 1) ── -->
+  <div id="vf-base-picker-modal" class="vf-overlay">
+    <div class="vf-modal vf-modal--sm" role="dialog" aria-modal="true" aria-labelledby="vf-base-picker-title">
+      <div class="vf-modal__header">
+        <div>
+          <h3 id="vf-base-picker-title" class="vf-modal__title">Definir base</h3>
+          <p id="vf-base-picker-subtitle" class="vf-clientes-modal-sub"></p>
+        </div>
+        <button type="button" id="vf-base-picker-close" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" aria-label="Fechar">✕</button>
       </div>
-      <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" id="cliente-drawer-close" aria-label="Fechar">✕</button>
+      <div class="vf-modal__body">
+        <div id="vf-base-picker-loading" class="vf-field__hint">Carregando bases elegíveis…</div>
+        <div id="vf-base-picker-field" class="vf-field" style="display:none;">
+          <label class="vf-field__label" for="vf-base-picker-select">Base compatível com este marketplace</label>
+          <select id="vf-base-picker-select" class="vf-input"></select>
+        </div>
+        <p id="vf-base-picker-empty" class="vf-field__hint" style="display:none;">Nenhuma base deste marketplace foi encontrada. Crie/importe a base em /bases.html primeiro.</p>
+        <div id="vf-base-picker-danger" class="vf-alert is-danger" style="display:none;margin-top:12px;"></div>
+      </div>
+      <div class="vf-modal__footer">
+        <button type="button" id="vf-base-picker-cancel" class="vf-btn vf-btn--secondary">Cancelar</button>
+        <button type="button" id="vf-base-picker-ok" class="vf-btn vf-btn--primary">Vincular base</button>
+      </div>
     </div>
-    <div class="vf-drawer__body" id="cliente-drawer-body">
-      <div id="cliente-drawer-state" class="vf-clientes-drawer-state"></div>
-
-      <section class="vf-clientes-mp-section" data-mp="meli">
-        <div class="vf-clientes-mp-section__header">
-          <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--meli"></span>Mercado Livre</h4>
-          <button type="button" id="cliente-drawer-add-meli" class="vf-btn vf-btn--sm vf-btn--secondary">+ Conta Mercado Livre</button>
-        </div>
-        <div id="cliente-drawer-meli-form" class="vf-clientes-new-conta-form" style="display:none;">
-          <div class="vf-field">
-            <label class="vf-field__label" for="meli-conta-nome">Nome da conta</label>
-            <input type="text" id="meli-conta-nome" class="vf-input" placeholder="ex: Mercado Livre 1">
-          </div>
-          <div class="vf-clientes-new-conta-actions">
-            <button type="button" id="cliente-drawer-meli-cancel" class="vf-btn vf-btn--sm vf-btn--secondary">Cancelar</button>
-            <button type="button" id="cliente-drawer-meli-salvar" class="vf-btn vf-btn--sm vf-btn--primary">Criar conta</button>
-          </div>
-        </div>
-        <div id="cliente-drawer-meli-list" class="vf-clientes-conta-list"></div>
-        <p id="cliente-drawer-meli-empty" class="vf-clientes-mp-empty" style="display:none;">Nenhuma conta Mercado Livre cadastrada.</p>
-      </section>
-
-      <section class="vf-clientes-mp-section" data-mp="shopee">
-        <div class="vf-clientes-mp-section__header">
-          <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--shopee"></span>Shopee</h4>
-          <button type="button" id="cliente-drawer-add-shopee" class="vf-btn vf-btn--sm vf-btn--secondary">+ Conta Shopee</button>
-        </div>
-        <div id="cliente-drawer-shopee-form" class="vf-clientes-new-conta-form" style="display:none;">
-          <div class="vf-field">
-            <label class="vf-field__label" for="shopee-conta-nome">Nome da conta</label>
-            <input type="text" id="shopee-conta-nome" class="vf-input" placeholder="ex: Shopee 1">
-          </div>
-          <div class="vf-clientes-new-conta-actions">
-            <button type="button" id="cliente-drawer-shopee-cancel" class="vf-btn vf-btn--sm vf-btn--secondary">Cancelar</button>
-            <button type="button" id="cliente-drawer-shopee-salvar" class="vf-btn vf-btn--sm vf-btn--primary">Criar conta</button>
-          </div>
-        </div>
-        <div id="cliente-drawer-shopee-list" class="vf-clientes-conta-list"></div>
-        <p id="cliente-drawer-shopee-empty" class="vf-clientes-mp-empty" style="display:none;">Nenhuma conta Shopee cadastrada.</p>
-      </section>
-    </div>
-    <div class="vf-drawer__footer">
-      <button type="button" class="vf-btn vf-btn--secondary" id="cliente-drawer-close-footer">Fechar</button>
-    </div>
-  </aside>
+  </div>
 
   <!-- ── MODAL DE CONFIRMAÇÃO GENÉRICA ── -->
   <div id="vf-clientes-confirm-modal" class="vf-overlay">
@@ -202,6 +170,7 @@
   </div>
 
   <script src="layout.js"></script>
+  <script src="clientes-contas-resumo.js"></script>
   <script src="clientes.js"></script>
 </body>
 </html>

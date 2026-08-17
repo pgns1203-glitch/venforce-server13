@@ -1,4 +1,5 @@
 const pool = require("../config/database");
+const clienteContaService = require("./clienteContas/clienteContaService");
 
 function criarErroHttp(statusCode, mensagem) {
   const err = new Error(mensagem);
@@ -112,12 +113,13 @@ function sugerirVinculo(base, clientes) {
   return melhor;
 }
 
-function mapearBaseComVinculo(row, sugestao) {
+function mapearBaseComVinculo(row, sugestao, baseMarketplace = null) {
   return {
     id: row.id,
     slug: row.slug,
     nome: row.nome,
     ativo: row.ativo,
+    marketplace: baseMarketplace,
     created_at: row.created_at,
     updated_at: row.updated_at,
     vinculo: row.vinculo_id ? {
@@ -132,21 +134,31 @@ function mapearBaseComVinculo(row, sugestao) {
   };
 }
 
-async function listarBasesComVinculos() {
+// marketplace, quando informado, filtra pela COLUNA PRÓPRIA de bases.marketplace
+// (não pela do vínculo) — é o campo que vincularBaseNaConta() usa para
+// bloquear BASE_MARKETPLACE_MISMATCH, então é essa mesma fonte de verdade
+// que o picker "Definir/Trocar base" do cliente precisa enxergar.
+async function listarBasesComVinculos({ marketplace } = {}) {
+  const marketplaceNorm = marketplace ? normalizarMarketplace(marketplace) : null;
+  const filtroMarketplace = marketplaceNorm ? "WHERE b.marketplace = $1" : "";
+  const params = marketplaceNorm ? [marketplaceNorm] : [];
+
   const [basesResult, clientesResult] = await Promise.all([
-    pool.query(`
+    pool.query(
+      `
       SELECT
         b.id,
         b.slug,
         b.nome,
         b.ativo,
+        b.marketplace,
         b.created_at,
         b.updated_at,
         v.id AS vinculo_id,
         v.cliente_id,
         c.slug AS cliente_slug,
         c.nome AS cliente_nome,
-        v.marketplace,
+        v.marketplace AS vinculo_marketplace,
         v.origem,
         v.updated_at AS vinculo_updated_at
       FROM bases b
@@ -155,8 +167,11 @@ async function listarBasesComVinculos() {
        AND v.ativo = true
       LEFT JOIN clientes c
         ON c.id = v.cliente_id
+      ${filtroMarketplace}
       ORDER BY b.created_at DESC
-    `),
+    `,
+      params
+    ),
     pool.query(`
       SELECT id, nome, slug
       FROM clientes
@@ -168,7 +183,7 @@ async function listarBasesComVinculos() {
   const clientesAtivos = clientesResult.rows;
   return basesResult.rows.map((row) => {
     const sugestao = row.vinculo_id ? null : sugerirVinculo(row, clientesAtivos);
-    return mapearBaseComVinculo(row, sugestao);
+    return mapearBaseComVinculo({ ...row, marketplace: row.vinculo_marketplace }, sugestao, row.marketplace);
   });
 }
 
@@ -182,19 +197,43 @@ async function listarClientesDisponiveis() {
   return result.rows;
 }
 
-async function criarVinculoManual({ baseId, clienteId, marketplace, userId }) {
+// clienteContaId, quando informado, é a fonte de verdade: cliente_id e
+// marketplace são derivados da própria cliente_conta (nunca aceitos do
+// corpo da requisição junto com clienteContaId, pra não permitir uma
+// inconsistência tipo "conta é Shopee1 do cliente Extra, mas cliente_id
+// aponta pra outro cliente"). Sem clienteContaId, o comportamento legado
+// (cliente_id + marketplace) só resolve sozinho quando não há ambiguidade;
+// 2+ contas ativas daquele marketplace faz resolverContaParaVinculoLegado
+// lançar 409 MULTIPLE_MARKETPLACE_ACCOUNTS em vez de escolher uma.
+async function criarVinculoManual({ baseId, clienteId, marketplace, clienteContaId, userId }) {
   const baseIdNum = Number(baseId);
-  const clienteIdNum = Number(clienteId);
   if (!Number.isInteger(baseIdNum) || baseIdNum <= 0) {
     throw criarErroHttp(400, "base_id inválido.");
   }
-  if (!Number.isInteger(clienteIdNum) || clienteIdNum <= 0) {
-    throw criarErroHttp(400, "cliente_id inválido.");
-  }
 
-  const marketplaceNorm = normalizarMarketplace(marketplace);
-  if (!marketplaceNorm) {
-    throw criarErroHttp(400, "marketplace é obrigatório.");
+  let contaResolvida = null;
+  let clienteIdFinal;
+  let marketplaceFinal;
+
+  if (clienteContaId != null && String(clienteContaId).trim() !== "") {
+    contaResolvida = await clienteContaService.obterConta(clienteContaId);
+    clienteIdFinal = contaResolvida.cliente_id;
+    marketplaceFinal = contaResolvida.marketplace;
+  } else {
+    const clienteIdNum = Number(clienteId);
+    if (!Number.isInteger(clienteIdNum) || clienteIdNum <= 0) {
+      throw criarErroHttp(400, "cliente_id inválido.");
+    }
+    const marketplaceNorm = normalizarMarketplace(marketplace);
+    if (!marketplaceNorm) {
+      throw criarErroHttp(400, "marketplace é obrigatório.");
+    }
+    clienteIdFinal = clienteIdNum;
+    marketplaceFinal = marketplaceNorm;
+    contaResolvida = await clienteContaService.resolverContaParaVinculoLegado({
+      clienteId: clienteIdNum,
+      marketplace: marketplaceNorm,
+    });
   }
 
   const client = await pool.connect();
@@ -209,7 +248,7 @@ async function criarVinculoManual({ baseId, clienteId, marketplace, userId }) {
 
     const cliente = await client.query(
       "SELECT id, slug, nome FROM clientes WHERE id = $1 AND ativo = true",
-      [clienteIdNum]
+      [clienteIdFinal]
     );
     if (!cliente.rows.length) throw criarErroHttp(404, "Cliente ativo não encontrado.");
 
@@ -223,10 +262,10 @@ async function criarVinculoManual({ baseId, clienteId, marketplace, userId }) {
 
     const vinculo = await client.query(
       `INSERT INTO base_cliente_vinculos
-         (base_id, cliente_id, marketplace, origem, ativo, confirmado_por, created_at, updated_at)
-       VALUES ($1, $2, $3, 'manual', true, $4, NOW(), NOW())
-       RETURNING id, base_id, cliente_id, marketplace, origem, ativo, confirmado_por, created_at, updated_at`,
-      [baseIdNum, clienteIdNum, marketplaceNorm, userId || null]
+         (base_id, cliente_id, cliente_conta_id, marketplace, origem, ativo, confirmado_por, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, true, $6, NOW(), NOW())
+       RETURNING id, base_id, cliente_id, cliente_conta_id, marketplace, origem, ativo, confirmado_por, created_at, updated_at`,
+      [baseIdNum, clienteIdFinal, contaResolvida?.id || null, marketplaceFinal, contaResolvida ? "conta" : "manual", userId || null]
     );
 
     await client.query("COMMIT");

@@ -30,7 +30,8 @@
   }
 }
 
-/* Dots de marketplace (mesma paleta usada em Bases). */
+/* Dots de marketplace — só identificam a SEÇÃO dentro da expansão (Mercado
+   Livre × Shopee), nunca usados como indicador de estado/saúde. */
 .vf-page-clientes .vf-clientes-mp-dot {
   display: inline-block;
   width: 8px;
@@ -41,31 +42,64 @@
 .vf-page-clientes .vf-clientes-mp-dot--meli { background: var(--vf-warning); }
 .vf-page-clientes .vf-clientes-mp-dot--shopee { background: var(--vf-danger); }
 
-/* Resumo de contas/bases na tabela (célula "Contas" / "Bases"). */
+/* Coluna "Contas" da tabela — duas linhas compactas (ML / Shopee). A cor
+   representa ESTADO (saudável/pendência/problema/inexistente), nunca o
+   marketplace — ver Portal/clientes-contas-resumo.js. */
 .vf-page-clientes .vf-clientes-resumo {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--vf-sp-2);
+  flex-direction: column;
+  gap: var(--vf-sp-1);
 }
-.vf-page-clientes .vf-clientes-resumo-item {
+.vf-page-clientes .vf-clientes-resumo-linha {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
+  gap: var(--vf-sp-2);
   font-size: var(--vf-fs-xs);
-  color: var(--vf-text-secondary);
   white-space: nowrap;
 }
-
-/* Drawer do cliente. */
-.vf-page-clientes .vf-clientes-drawer-meta {
-  margin-top: var(--vf-sp-1);
-  font-size: var(--vf-fs-xs);
-  color: var(--vf-text-muted);
-}
-
-.vf-page-clientes .vf-clientes-drawer-state {
-  font-size: var(--vf-fs-sm);
+.vf-page-clientes .vf-clientes-resumo-label {
+  width: 3.2em;
+  flex: none;
+  font-weight: var(--vf-fw-semibold);
   color: var(--vf-text-secondary);
 }
+.vf-page-clientes .vf-clientes-resumo-dot { font-size: .9em; line-height: 1; }
+.vf-page-clientes .vf-clientes-resumo-texto { color: var(--vf-text-secondary); }
+
+.vf-page-clientes .vf-clientes-resumo-linha.is-ok .vf-clientes-resumo-dot { color: var(--vf-success); }
+.vf-page-clientes .vf-clientes-resumo-linha.is-ok .vf-clientes-resumo-texto { color: var(--vf-success-strong); }
+.vf-page-clientes .vf-clientes-resumo-linha.is-warn .vf-clientes-resumo-dot { color: var(--vf-warning); }
+.vf-page-clientes .vf-clientes-resumo-linha.is-warn .vf-clientes-resumo-texto { color: var(--vf-warning-strong); }
+.vf-page-clientes .vf-clientes-resumo-linha.is-danger .vf-clientes-resumo-dot { color: var(--vf-danger); }
+.vf-page-clientes .vf-clientes-resumo-linha.is-danger .vf-clientes-resumo-texto { color: var(--vf-danger-strong); }
+.vf-page-clientes .vf-clientes-resumo-linha.is-muted .vf-clientes-resumo-dot,
+.vf-page-clientes .vf-clientes-resumo-linha.is-muted .vf-clientes-resumo-texto { color: var(--vf-text-muted); }
+
+/* Linha do cliente é clicável (expande) — só a célula de ações escapa disso. */
+.vf-page-clientes .vf-clientes-row { cursor: pointer; }
+.vf-page-clientes .vf-clientes-row:hover { background: var(--vf-surface-2); }
+.vf-page-clientes .vf-clientes-row .vf-table__actions { cursor: default; }
+.vf-page-clientes .vf-clientes-toggle-btn {
+  font-family: var(--vf-font-mono);
+  min-width: 2.2em;
+}
+
+/* Expansão inline da linha (substitui o drawer lateral). */
+.vf-page-clientes .vf-clientes-expand-row > td {
+  padding: 0;
+  background: var(--vf-surface-2);
+  border-top: 1px solid var(--vf-border);
+  border-bottom: 1px solid var(--vf-border);
+}
+.vf-page-clientes .vf-clientes-expand {
+  padding: var(--vf-sp-5) var(--vf-sp-6);
+}
+.vf-page-clientes .vf-clientes-expand__state {
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-secondary);
+  margin-bottom: var(--vf-sp-3);
+}
+.vf-page-clientes .vf-clientes-expand__state:empty { display: none; }
 
 .vf-page-clientes .vf-clientes-mp-section {
   margin-bottom: var(--vf-sp-6);

@@ -29,6 +29,7 @@ router.get("/cliente-contas/:id", requireAutomacoesAccess, controller.obter);
 router.patch("/cliente-contas/:id", requireAdmin, controller.atualizar);
 router.patch("/cliente-contas/:id/principal", requireAdmin, controller.definirPrincipal);
 router.get("/cliente-contas/:id/base", requireAutomacoesAccess, controller.obterBase);
+router.get("/cliente-contas/:id/bases-elegiveis", requireAutomacoesAccess, controller.basesElegiveis);
 router.put("/cliente-contas/:id/base", requireAdmin, controller.vincularBase);
 router.delete("/cliente-contas/:id/ml-grant", requireAdmin, controller.desconectarMlGrant);
 

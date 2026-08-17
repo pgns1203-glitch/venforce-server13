@@ -120,23 +120,86 @@ async function listarContasDoCliente({ clienteId, clienteSlug, marketplace, incl
     params
   );
 
+  // Compatibilidade: uma conta sem vínculo direto (cliente_conta_id) ainda
+  // pode ter um vínculo legado (cliente_id + marketplace) apontando pra ela
+  // sem ambiguidade — mesma regra de obterBaseDaConta. Sem isto, esta
+  // listagem (a que /clientes.html usa) diverge da leitura por conta e
+  // mostra "Base não definida" para bases que já estão vinculadas.
+  const ativasPorMarketplace = new Map();
+  for (const row of result.rows) {
+    if (row.ativo === false) continue;
+    ativasPorMarketplace.set(row.marketplace, (ativasPorMarketplace.get(row.marketplace) || 0) + 1);
+  }
+  const marketplacesElegiveis = [...ativasPorMarketplace.entries()]
+    .filter(([, total]) => total === 1)
+    .map(([mp]) => mp);
+
+  const legadoPorMarketplace = new Map();
+  if (marketplacesElegiveis.length) {
+    const legado = await pool.query(
+      `SELECT DISTINCT ON (v.marketplace)
+              v.marketplace, v.id AS vinculo_id, v.base_id, b.slug, b.nome
+         FROM base_cliente_vinculos v
+         JOIN bases b ON b.id = v.base_id
+        WHERE v.cliente_id = $1
+          AND v.marketplace = ANY($2::text[])
+          AND v.ativo = true
+          AND v.cliente_conta_id IS NULL
+        ORDER BY v.marketplace, v.updated_at DESC NULLS LAST, v.id DESC`,
+      [cliente.id, marketplacesElegiveis]
+    );
+    for (const row of legado.rows) legadoPorMarketplace.set(row.marketplace, row);
+  }
+
   return {
     cliente: { id: cliente.id, nome: cliente.nome, slug: cliente.slug, ativo: cliente.ativo },
-    contas: result.rows.map((row) => ({
-      ...sanitizarConta(row),
-      grant: row.grant_id
-        ? {
-            id: row.grant_id,
-            ml_user_id: row.grant_ml_user_id == null ? null : String(row.grant_ml_user_id),
-            token_status: row.grant_token_status,
-            is_primary: row.grant_is_primary === true,
-          }
-        : null,
-      base: row.vinculo_id
-        ? { vinculo_id: row.vinculo_id, base_id: row.vinculo_base_id, slug: row.vinculo_base_slug, nome: row.vinculo_base_nome }
-        : null,
-    })),
+    contas: result.rows.map((row) => {
+      let base = row.vinculo_id
+        ? { vinculo_id: row.vinculo_id, base_id: row.vinculo_base_id, slug: row.vinculo_base_slug, nome: row.vinculo_base_nome, resolvido_por: "conta" }
+        : null;
+      if (!base && row.ativo !== false) {
+        const legadoRow = legadoPorMarketplace.get(row.marketplace);
+        if (legadoRow) {
+          base = { vinculo_id: legadoRow.vinculo_id, base_id: legadoRow.base_id, slug: legadoRow.slug, nome: legadoRow.nome, resolvido_por: "legado_unico" };
+        }
+      }
+      return {
+        ...sanitizarConta(row),
+        grant: row.grant_id
+          ? {
+              id: row.grant_id,
+              ml_user_id: row.grant_ml_user_id == null ? null : String(row.grant_ml_user_id),
+              token_status: row.grant_token_status,
+              is_primary: row.grant_is_primary === true,
+            }
+          : null,
+        base,
+      };
+    }),
   };
+}
+
+// Usado pelo fluxo legado de vínculo de base (baseVinculosService.criarVinculoManual)
+// quando só há cliente_id + marketplace, sem cliente_conta_id explícito.
+// Nunca escolhe entre 2+ contas ativas — mesma regra de ambiguidade de
+// resolveMarketplaceAccountContext. Marketplace fora da fundação (ex.:
+// tiktok) devolve null: o vínculo legado segue sem cliente_conta_id.
+async function resolverContaParaVinculoLegado({ clienteId, marketplace }) {
+  const marketplaceNorm = normalizarMarketplaceConta(marketplace);
+  if (!marketplaceNorm) return null;
+
+  const ativas = await pool.query(
+    "SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true ORDER BY is_primary DESC, created_at ASC, id ASC",
+    [clienteId, marketplaceNorm]
+  );
+  if (!ativas.rows.length) return null;
+  if (ativas.rows.length > 1) {
+    throw criarErroHttp(409, "O cliente possui mais de uma conta para este marketplace; informe cliente_conta_id.", {
+      code: "MULTIPLE_MARKETPLACE_ACCOUNTS",
+      contas: ativas.rows.map(sanitizarConta),
+    });
+  }
+  return sanitizarConta(ativas.rows[0]);
 }
 
 async function obterConta(contaId, queryable = pool) {
@@ -564,6 +627,7 @@ module.exports = {
   normalizarMarketplaceConta,
   resolverClientePorIdOuSlug,
   listarContasDoCliente,
+  resolverContaParaVinculoLegado,
   obterConta,
   criarConta,
   garantirContaMlParaGrant,

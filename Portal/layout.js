@@ -341,10 +341,18 @@
     const footer = document.createElement("div");
     footer.className = "vf-sidebar-footer";
     footer.innerHTML = `
-      <div class="vf-sidebar-avatar">${getInitial(user)}</div>
-      <div class="vf-sidebar-user-name" title="${(user.nome || user.email || "").replace(/"/g, "")}">${user.nome || user.email || "Usuário"}</div>
+      <div class="vf-sidebar-avatar"></div>
+      <div class="vf-sidebar-user-name"></div>
       <button class="vf-sidebar-logout" id="vf-btn-logout" title="Sair">${svgIcon("logout")}</button>
     `;
+    const footerAvatar = footer.querySelector(".vf-sidebar-avatar");
+    const footerUserName = footer.querySelector(".vf-sidebar-user-name");
+    const safeUserName = String(user.nome || user.email || "Usuário");
+    if (footerAvatar) footerAvatar.textContent = getInitial(user);
+    if (footerUserName) {
+      footerUserName.textContent = safeUserName;
+      footerUserName.title = safeUserName;
+    }
 
     sidebar.appendChild(logo);
     sidebar.appendChild(nav);

@@ -24,27 +24,6 @@ function escapeHTML(s) {
   return d.innerHTML;
 }
 
-/** Armazena tokens completos só em memória — não vai para atributos HTML */
-const tokenCopyStore = new Map();
-let copyIdCounter = 0;
-
-function clearCopyStore() {
-  tokenCopyStore.clear();
-  copyIdCounter = 0;
-}
-
-function registerTokenForCopy(full) {
-  const k = `c${++copyIdCounter}`;
-  tokenCopyStore.set(k, full == null ? "" : String(full));
-  return k;
-}
-
-function maskToken(tok) {
-  const s = String(tok || "");
-  if (!s) return "—";
-  return `${s.slice(0, 10)}••••••••`;
-}
-
 function formatDateTimeBR(value) {
   if (!value) return "—";
   const dt = new Date(value);
@@ -52,13 +31,12 @@ function formatDateTimeBR(value) {
   return dt.toLocaleString("pt-BR");
 }
 
-/**
- * Deriva status apenas do payload atual (sem token_status no servidor).
- */
 function deriveConnectionStatus(row) {
-  const access = String(row.access_token || "").trim();
-  const refresh = String(row.refresh_token || "").trim();
-  if (!access && !refresh) {
+  const tokenStatus = String(row.token_status || "").trim().toLowerCase();
+  if (["error", "invalid", "expired", "revoked"].includes(tokenStatus)) {
+    return { key: "erro", label: "Requer revisão", tier: "err" };
+  }
+  if (!row.has_access_token && !row.has_refresh_token) {
     return { key: "erro", label: "Sem credenciais", tier: "err" };
   }
   const expMs = new Date(row.expires_at).getTime();
@@ -167,49 +145,13 @@ function showError(msg) {
   if (mltFilterEmpty) mltFilterEmpty.style.display = "none";
 }
 
-function bindCopyButtons(root) {
-  root.querySelectorAll("button[data-copy-ref]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const ref = btn.getAttribute("data-copy-ref");
-      const value = ref ? tokenCopyStore.get(ref) : "";
-      if (!value) return;
-      try {
-        await navigator.clipboard.writeText(value);
-        const old = btn.innerHTML;
-        btn.innerHTML = `<span class="vf-mlt-copy-done">Copiado!</span>`;
-        btn.classList.add("vf-mlt-copy-done-state");
-        setTimeout(() => {
-          btn.innerHTML = old;
-          btn.classList.remove("vf-mlt-copy-done-state");
-        }, 1000);
-      } catch {
-        alert("Não foi possível copiar.");
-      }
-    });
-  });
-}
-
-function actionsCellHtml(access, refresh) {
-  const hasAccess = !!String(access || "").trim();
-  const hasRefresh = !!String(refresh || "").trim();
-  const accessRef = hasAccess ? registerTokenForCopy(access) : "";
-  const refreshRef = hasRefresh ? registerTokenForCopy(refresh) : "";
-
-  const accessBtn = hasAccess
-    ? `<button type="button" class="vf-mlt-copy-btn" data-copy-ref="${escapeHTML(accessRef)}" title="Copiar access token">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        Access <span class="vf-mlt-mask">${escapeHTML(maskToken(access))}</span>
-      </button>`
-    : `<span class="vf-mlt-action-muted">Sem access</span>`;
-
-  const refreshBtn = hasRefresh
-    ? `<button type="button" class="vf-mlt-copy-btn" data-copy-ref="${escapeHTML(refreshRef)}" title="Copiar refresh token">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        Refresh <span class="vf-mlt-mask">${escapeHTML(maskToken(refresh))}</span>
-      </button>`
-    : `<span class="vf-mlt-action-muted">Sem refresh</span>`;
-
-  return `<div class="vf-mlt-actions">${accessBtn}${refreshBtn}</div>`;
+function credentialsCellHtml(hasAccess, hasRefresh) {
+  const access = hasAccess ? "Access configurado" : "Sem access";
+  const refresh = hasRefresh ? "Refresh configurado" : "Sem refresh";
+  return `<div class="vf-mlt-actions" aria-label="Credenciais protegidas">
+    <span class="vf-mlt-action-muted">${access}</span>
+    <span class="vf-mlt-action-muted">${refresh}</span>
+  </div>`;
 }
 
 function applyRowFilters() {
@@ -256,7 +198,6 @@ async function loadMlTokens() {
 }
 
 function renderTokens(tokens) {
-  clearCopyStore();
   tokensTbody.innerHTML = "";
   allTokens = tokens;
 
@@ -274,8 +215,6 @@ function renderTokens(tokens) {
     const st = deriveConnectionStatus(row);
     const expStr = formatDateTimeBR(row.expires_at);
     const updatedAt = formatDateTimeBR(row.updated_at);
-    const access = row.access_token || "";
-    const refresh = row.refresh_token || "";
 
     const searchBlob = [
       row.cliente_nome,
@@ -300,12 +239,11 @@ function renderTokens(tokens) {
       <td class="vf-mlt-td-status">${statusBadgeHtml(st)}</td>
       <td class="vf-mlt-td-exp"><span class="vf-mlt-date">${escapeHTML(expStr)}</span></td>
       <td class="vf-mlt-td-upd"><span class="vf-mlt-date">${escapeHTML(updatedAt)}</span></td>
-      <td class="vf-mlt-td-act">${actionsCellHtml(access, refresh)}</td>
+      <td class="vf-mlt-td-act">${credentialsCellHtml(row.has_access_token, row.has_refresh_token)}</td>
     `;
     tokensTbody.appendChild(tr);
   });
 
-  bindCopyButtons(tokensTbody);
   applyRowFilters();
   showTable();
 }

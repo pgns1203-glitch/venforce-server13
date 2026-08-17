@@ -2,10 +2,10 @@
   "name": "venforce-upload-server",
   "version": "1.0.0",
   "description": "Servidor de upload VenForce",
-  "main": "server.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js",
-    "test": "for f in tests/*.test.js; do echo \"\\n▸ $f\"; node \"$f\" || exit 1; done",
+    "start": "node index.js",
+    "test": "node tests/run-all.js",
     "test:cliente360": "node tests/cliente360Contratos.test.js && node tests/cliente360Ponte.test.js && node tests/cliente360Ads.test.js && node tests/cliente360Capacidades.test.js && node tests/cliente360Resultado.test.js"
   },
   "dependencies": {

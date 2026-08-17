@@ -240,7 +240,6 @@ async function listarMlTokensAdminController(req, res) {
     const result = await pool.query(`
       SELECT t.id, t.cliente_id, c.nome AS cliente_nome, c.slug AS cliente_slug,
              t.ml_user_id,
-             t.access_token, t.refresh_token,
              t.expires_at, t.updated_at,
              COALESCE(NULLIF(to_jsonb(t)->>'token_status', ''), 'valid') AS token_status,
              COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) AS is_primary,

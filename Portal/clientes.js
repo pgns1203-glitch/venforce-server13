@@ -216,8 +216,6 @@ function renderClientes(clientes) {
 
   clientes.forEach((c, i) => {
     const ativo = c.ativo !== false;
-    const apiKey = c.apiKey || c.api_key || c.api_key_plain || c.key || "";
-    const apiKeyMasked = apiKey ? `${String(apiKey).slice(0, 8)}••••••••` : "—";
 
     const tr = document.createElement("tr");
     tr.classList.add("animate-fade-up");
@@ -228,18 +226,7 @@ function renderClientes(clientes) {
       <td><strong>${escapeHTML(c.nome || "—")}</strong></td>
       <td style="color:var(--vf-text-m);font-size:.875rem;font-family:var(--vf-mono);">${escapeHTML(c.slug || "—")}</td>
       <td>
-        <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;">
-          <span style="font-family:var(--vf-mono);font-size:.8rem;color:var(--vf-text-m);">${escapeHTML(apiKeyMasked)}</span>
-          <button type="button" data-action="copy" data-apikey="${escapeHTML(apiKey)}"
-            title="Copiar API key"
-            class="vf-action-btn"
-            style="width:34px;height:34px;padding:0;display:inline-flex;align-items:center;justify-content:center;">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-            </svg>
-          </button>
-        </div>
+        <span style="font-size:.8rem;color:var(--vf-text-m);">Protegida · exibida somente na criação</span>
       </td>
       <td style="text-align:center;">
         <span class="vf-status-pill ${ativo ? "vf-status-pill-success" : "vf-status-pill-danger"}">${ativo ? "Ativo" : "Inativo"}</span>
@@ -255,28 +242,6 @@ function renderClientes(clientes) {
     `;
 
     clientesTbody.appendChild(tr);
-  });
-
-  clientesTbody.querySelectorAll('button[data-action="copy"]').forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const apiKey = btn.getAttribute("data-apikey") || "";
-      if (!apiKey) return;
-      try {
-        await navigator.clipboard.writeText(apiKey);
-        const old = btn.innerHTML;
-        btn.innerHTML = `<span style="font-size:.75rem;font-weight:600;color:var(--vf-success);">Copiado!</span>`;
-        btn.style.borderColor = "rgba(4,120,87,.25)";
-        btn.style.background = "#f0fdf4";
-        setTimeout(() => {
-          btn.innerHTML = old;
-          btn.style.borderColor = "var(--vf-border)";
-          btn.style.background = "var(--vf-bg)";
-        }, 900);
-        setClientesFeedback("API key copiada.", "success");
-      } catch {
-        setClientesFeedback("Não foi possível copiar a API key.", "danger");
-      }
-    });
   });
 
   clientesTbody.querySelectorAll('button[data-action="delete"]').forEach((btn) => {

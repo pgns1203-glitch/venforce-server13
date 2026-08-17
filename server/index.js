@@ -85,6 +85,7 @@ const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 const { ensureDiagnosticoInicialTables } = require("./services/diagnosticoInicial/diagnosticoInicialRepository");
 const observabilityRoutes = require("./routes/observabilityRoutes");
+const dashboardRoutes = require("./routes/dashboardRoutes");
 const observabilityService = require("./services/observabilityService");
 const {
   observabilityMiddleware,
@@ -766,6 +767,7 @@ END $$;
 app.use("/auth", authRoutes);
 app.use("/admin/logs", logsRoutes);
 app.use("/admin/observability", observabilityRoutes);
+app.use("/dashboard", dashboardRoutes);
 app.use("/fechamentos", fechamentosFinanceiroRoutes);
 app.use("/fechamentos", fechamentoDebugRoutes);
 app.use("/", mlRoutes);
@@ -1193,7 +1195,7 @@ app.get("/clientes", authMiddleware, async (req, res) => {
     }
 
     const result = await pool.query(
-      "SELECT id, nome, slug, api_key, ativo, created_at FROM clientes ORDER BY created_at DESC"
+      "SELECT id, nome, slug, ativo, created_at FROM clientes ORDER BY created_at DESC"
     );
     res.json({ ok: true, clientes: result.rows });
   } catch (err) {

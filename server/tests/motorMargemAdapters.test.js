@@ -10,6 +10,7 @@ const centralVendas = require("../services/motorMargem/adapters/centralVendasEvi
 const settlement = require("../services/motorMargem/adapters/settlementEvidenceAdapter");
 const extensao = require("../services/motorMargem/adapters/extensionEvidenceAdapter");
 const meliApi = require("../services/motorMargem/adapters/meliApiEvidenceAdapter");
+const quoteService = require("../services/shared/marketplaceCurrentQuoteService");
 const C = require("../services/motorMargem/core");
 
 const casos = [];
@@ -106,13 +107,16 @@ cenario("carregarCustosDaBase só executa SELECT", async () => {
 const PEDIDOS = [
   { id: 1, pedido_id: "P1", status: "pago", data_pedido: "2026-08-01" },
   { id: 2, pedido_id: "P2", status: "pago", data_pedido: "2026-08-05" },
+  // P3 cancelado: sai do CÁLCULO PRINCIPAL, mas item único + reembolso não
+  // podem desaparecer da evidência (AUDITORIA §Reembolsos).
   { id: 3, pedido_id: "P3", status: "cancelado", data_pedido: "2026-08-06" },
 ];
 
 const ITENS = [
-  { id: 10, pedido_row_id: 1, mlb: "MLB1", sku: "SKU-1", titulo: "Item 1", quantidade: 2, valor_unitario: 100, receita_produto: 200, resultado: 30 },
-  { id: 11, pedido_row_id: 2, mlb: "MLB1", sku: "SKU-1", titulo: "Item 1", quantidade: 1, valor_unitario: 110, receita_produto: 110, resultado: 18 },
-  { id: 12, pedido_row_id: 2, mlb: "MLB2", sku: "SKU-2", titulo: "Item 2", quantidade: 1, valor_unitario: 50, receita_produto: 50, resultado: 5 },
+  { id: 10, pedido_row_id: 1, mlb: "MLB1", sku: "SKU-1", titulo: "Item 1", quantidade: 2, valor_unitario: 100, receita_produto: 200, custo_produto: 80, imposto_interno: 20, resultado: 30 },
+  { id: 11, pedido_row_id: 2, mlb: "MLB1", sku: "SKU-1", titulo: "Item 1", quantidade: 1, valor_unitario: 110, receita_produto: 110, custo_produto: 44, imposto_interno: 11, resultado: 18 },
+  { id: 12, pedido_row_id: 2, mlb: "MLB2", sku: "SKU-2", titulo: "Item 2", quantidade: 1, valor_unitario: 50, receita_produto: 50, custo_produto: null, imposto_interno: null, resultado: 5 },
+  { id: 13, pedido_row_id: 3, mlb: "MLB3", sku: "SKU-3", titulo: "Item 3", quantidade: 1, valor_unitario: 90, receita_produto: 90, custo_produto: 30, imposto_interno: 9, resultado: null },
 ];
 
 const COMPONENTES = [
@@ -125,11 +129,16 @@ const COMPONENTES = [
   { item_row_id: null, pedido_row_id: 2, tipo: "cancelamento_reembolso", valor: -30, fonte: "orders_api_payments" },
   // Reembolso de pedido de item ÚNICO (P1 só tem MLB1): atribuível.
   { item_row_id: null, pedido_row_id: 1, tipo: "cancelamento_reembolso", valor: -20, fonte: "orders_api_payments" },
+  // Reembolso de pedido CANCELADO (P3, item único MLB3): fato financeiro real,
+  // não pode sumir só porque o pedido saiu do resultado principal.
+  { item_row_id: null, pedido_row_id: 3, tipo: "cancelamento_reembolso", valor: -90, fonte: "orders_api_payments" },
 ];
 
-cenario("carregarVendasDoPeriodo exclui pedidos fora do resultado", async () => {
+cenario("carregarVendasDoPeriodo delega para a projeção canônica da Central de Vendas", async () => {
   const db = fakeDb({
-    "FROM central_vendas_imports": [{ id: 100, competencia: "2026-08", fonte: "orders_api" }],
+    "FROM central_vendas_imports": [
+      { id: 100, competencia: "2026-08", fonte: "orders_api", created_at: "2026-08-10T12:00:00Z" },
+    ],
     "FROM central_vendas_pedidos": PEDIDOS,
     "FROM central_vendas_pedido_itens": ITENS,
     "FROM central_vendas_componentes": COMPONENTES,
@@ -141,9 +150,17 @@ cenario("carregarVendasDoPeriodo exclui pedidos fora do resultado", async () => 
   );
 
   assert.strictEqual(vendas.sincronizado, true);
-  // P3 (cancelado) sai — mesmo predicado do Fechamento e do Cliente 360.
+  // `pedidos` (compat): só os que entram no resultado — mesmo predicado do
+  // Fechamento e do Cliente 360. P3 (cancelado) sai.
   assert.deepStrictEqual(vendas.pedidos.map((p) => p.pedido_id), ["P1", "P2"]);
-  // "último import por competência" preservado.
+  // `pedidosTodos` preserva P3 — é o que sustenta a auditoria de reembolso.
+  assert.deepStrictEqual(vendas.pedidosTodos.map((p) => p.pedido_id), ["P1", "P2", "P3"]);
+  // itens/componentes cobrem TODO o período, não só os pedidos do resultado —
+  // sem isso o reembolso de P3 nunca chegaria a `agregarPorMlb`.
+  assert.strictEqual(vendas.itens.length, ITENS.length);
+  assert.strictEqual(vendas.componentes.length, COMPONENTES.length);
+  assert.ok(vendas.importSnapshotAt, "timestamp do snapshot disponível como fallback");
+  // Nenhuma consulta própria: é a MESMA leitura de sempre ("último import por competência").
   assert.ok(db.chamadas[0].sql.includes("DISTINCT ON (competencia)"));
 });
 
@@ -155,12 +172,15 @@ cenario("sem import no período → realizado inexistente, não zerado", async (
   );
   assert.strictEqual(vendas.sincronizado, false);
   assert.deepStrictEqual(vendas.pedidos, []);
+  assert.deepStrictEqual(vendas.pedidosTodos, []);
+  assert.strictEqual(vendas.importSnapshotAt, null);
   assert.strictEqual(db.chamadas.length, 1, "não consulta pedidos sem import");
 });
 
-cenario("agregação por MLB converte totais em valor por unidade", () => {
+cenario("agregação por MLB converte totais em valor por unidade, incluindo custo/imposto históricos", () => {
   const { porMlb } = centralVendas.agregarPorMlb({
-    pedidos: PEDIDOS.slice(0, 2),
+    pedidosTodos: PEDIDOS,
+    pedidosResultado: PEDIDOS.slice(0, 2),
     itens: ITENS,
     componentes: COMPONENTES,
   });
@@ -174,24 +194,74 @@ cenario("agregação por MLB converte totais em valor por unidade", () => {
   assert.strictEqual(mlb1.comissao.itensComValor, 2);
   assert.strictEqual(mlb1.frete.soma, 40, "só a linha que tinha frete real");
   assert.strictEqual(mlb1.frete.itensComValor, 1, "cobertura parcial de frete");
+  // Custo/imposto: histórico persistido pela Central de Vendas, nunca a Base
+  // atual (AUDITORIA §3/§4).
+  assert.strictEqual(mlb1.custo.soma, 124, "80 + 44");
+  assert.strictEqual(mlb1.custo.itensComValor, 2);
+  assert.strictEqual(mlb1.imposto.soma, 31, "20 + 11");
+  assert.strictEqual(mlb1.imposto.itensComValor, 2);
+
+  const mlb2 = porMlb.get("MLB2");
+  assert.strictEqual(mlb2.custo.itensComValor, 0, "sem custo histórico persistido para este item");
+
+  // MLB3 só existe em pedido cancelado (fora do resultado): não entra na
+  // agregação principal — mas ver reembolso abaixo.
+  assert.strictEqual(porMlb.has("MLB3"), false);
 });
 
-cenario("reembolso só é atribuído a um anúncio em pedido de item único", () => {
-  const { porMlb, naoAtribuido } = centralVendas.agregarPorMlb({
-    pedidos: PEDIDOS.slice(0, 2),
+cenario("reembolso é classificado em 3 estados e sobrevive ao status do pedido", () => {
+  const { reembolsoPorMlb, naoAtribuido, reembolsos } = centralVendas.agregarPorMlb({
+    pedidosTodos: PEDIDOS,
+    pedidosResultado: PEDIDOS.slice(0, 2),
     itens: ITENS,
     componentes: COMPONENTES,
   });
 
-  assert.strictEqual(porMlb.get("MLB1").reembolso.soma, 20, "reembolso do pedido P1");
-  assert.strictEqual(porMlb.get("MLB2").reembolso.soma, 0);
-  // O reembolso do pedido multi-item não é rateado por chute.
+  // P1 (item único, no resultado): atribuído ao MLB1.
+  assert.strictEqual(reembolsoPorMlb.get("MLB1").soma, 20, "reembolso do pedido P1");
+  // P2 (multi-item): não é rateado por chute entre MLB1/MLB2.
+  assert.strictEqual(reembolsoPorMlb.has("MLB2"), false);
+  // P3 (item único, CANCELADO — fora do cálculo principal): o reembolso NÃO
+  // desaparece; continua atribuído ao MLB3.
+  assert.strictEqual(reembolsoPorMlb.get("MLB3").soma, 90, "reembolso de pedido cancelado não some");
+
+  assert.strictEqual(reembolsos.atribuidoMlb, 110, "20 (P1) + 90 (P3)");
+  assert.strictEqual(reembolsos.atribuidoPedido, 30, "P2, multi-item");
+  assert.strictEqual(reembolsos.naoAtribuivel, 0);
+  // Compat: soma do que não pôde ir para 1 MLB.
   assert.strictEqual(naoAtribuido.reembolso, 30);
 });
 
-cenario("cobertura parcial de frete vira evidência ESTIMATED", () => {
+cenario("aplicarEvidenciaReembolso registra o reembolso mesmo sem venda computável no período", () => {
+  const { reembolsoPorMlb } = centralVendas.agregarPorMlb({
+    pedidosTodos: PEDIDOS,
+    pedidosResultado: PEDIDOS.slice(0, 2),
+    itens: ITENS,
+    componentes: COMPONENTES,
+  });
+
+  const bag = C.createEvidenceBag();
+  // MLB3 não tem entrada em `porMlb` (pedido cancelado, sem venda computável)
+  // — o reembolso ainda assim precisa virar evidência.
+  const resumo = centralVendas.aplicarEvidenciaReembolso(bag, {
+    reembolso: reembolsoPorMlb.get("MLB3"),
+    fallbackObservedAt: "2026-08-10T12:00:00.000Z",
+  });
+
+  assert.strictEqual(resumo.reembolsoTotal, 90);
+  const evidencia = bag.list(C.FIELDS.REFUNDS)[0];
+  assert.strictEqual(evidencia.value, 90);
+  assert.strictEqual(evidencia.kind, C.EVIDENCE_KINDS.REALIZED);
+
+  const bagVazio = C.createEvidenceBag();
+  assert.strictEqual(centralVendas.aplicarEvidenciaReembolso(bagVazio, { reembolso: null }), null);
+  assert.deepStrictEqual(bagVazio.fields(), []);
+});
+
+cenario("cobertura parcial de frete vira evidência ESTIMATED; custo/imposto completos viram DECLARED", () => {
   const { porMlb } = centralVendas.agregarPorMlb({
-    pedidos: PEDIDOS.slice(0, 2),
+    pedidosTodos: PEDIDOS,
+    pedidosResultado: PEDIDOS.slice(0, 2),
     itens: ITENS,
     componentes: COMPONENTES,
   });
@@ -202,6 +272,8 @@ cenario("cobertura parcial de frete vira evidência ESTIMATED", () => {
   assert.strictEqual(resumo.unidades, 3);
   assert.strictEqual(resumo.precoUnitarioMedio, 103.33, "310 / 3");
   assert.strictEqual(resumo.freteCobertura, 0.5, "1 de 2 linhas com frete");
+  assert.strictEqual(resumo.custoCobertura, 1, "2 de 2 linhas com custo histórico");
+  assert.strictEqual(resumo.impostoCobertura, 1, "2 de 2 linhas com imposto histórico");
 
   const frete = bag.list(C.FIELDS.FREIGHT)[0];
   assert.strictEqual(frete.value, 40 / 3, "frete total rateado por unidade");
@@ -209,6 +281,18 @@ cenario("cobertura parcial de frete vira evidência ESTIMATED", () => {
 
   const comissao = bag.list(C.FIELDS.COMMISSION)[0];
   assert.strictEqual(comissao.quality, C.EVIDENCE_QUALITY.DERIVED, "cobertura total");
+
+  const custo = bag.list(C.FIELDS.COST)[0];
+  assert.strictEqual(custo.value, 124 / 3, "custo histórico total rateado por unidade");
+  assert.strictEqual(custo.source, C.SOURCES.VENFORCE_BASE);
+  assert.strictEqual(custo.kind, C.EVIDENCE_KINDS.REALIZED);
+  assert.strictEqual(custo.quality, C.EVIDENCE_QUALITY.DECLARED, "cobertura total");
+
+  const taxRate = bag.list(C.FIELDS.TAX_RATE)[0];
+  assert.strictEqual(taxRate.value, 31 / 310, "imposto histórico / receita histórica");
+
+  // Taxa fixa: SEM contrapartida histórica — nunca registrada no realizado.
+  assert.deepStrictEqual(bag.list(C.FIELDS.FIXED_FEE), []);
 
   // O ESTIMATED do frete precisa chegar até a confiança da variável.
   const campo = C.resolveField(C.FIELDS.FREIGHT, bag.list(C.FIELDS.FREIGHT));
@@ -219,10 +303,82 @@ cenario("cobertura parcial de frete vira evidência ESTIMATED", () => {
   );
 });
 
+cenario("sem nenhum custo histórico persistido, fica ausente — nunca a Base atual", () => {
+  const { porMlb } = centralVendas.agregarPorMlb({
+    pedidosTodos: PEDIDOS,
+    pedidosResultado: PEDIDOS.slice(0, 2),
+    itens: ITENS,
+    componentes: COMPONENTES,
+  });
+
+  const bag = C.createEvidenceBag();
+  // MLB2 tem 1 linha, sem custo/imposto histórico persistido.
+  centralVendas.aplicarEvidenciasRealizadas(bag, { agregado: porMlb.get("MLB2") });
+  assert.deepStrictEqual(bag.list(C.FIELDS.COST), [], "sem histórico, sem evidência — nunca a Base atual");
+  assert.deepStrictEqual(bag.list(C.FIELDS.TAX_RATE), []);
+});
+
 cenario("anúncio sem venda não produz evidência realizada", () => {
   const bag = C.createEvidenceBag();
   assert.strictEqual(centralVendas.aplicarEvidenciasRealizadas(bag, { agregado: null }), null);
   assert.deepStrictEqual(bag.fields(), []);
+});
+
+// ── Timestamp do realizado (AUDITORIA_ARQUITETURAL_CENTRAL_MARGEM §Timestamp) ─
+
+cenario("timestamp do realizado é a data da venda, nunca o instante da requisição", () => {
+  const { porMlb } = centralVendas.agregarPorMlb({
+    pedidosTodos: PEDIDOS,
+    pedidosResultado: PEDIDOS.slice(0, 2),
+    itens: ITENS,
+    componentes: COMPONENTES,
+  });
+
+  const bag = C.createEvidenceBag();
+  // Nenhum "agora" de requisição é passado — só o fallback do snapshot, bem
+  // diferente de qualquer "now" de teste.
+  centralVendas.aplicarEvidenciasRealizadas(bag, {
+    agregado: porMlb.get("MLB1"),
+    fallbackObservedAt: "2020-01-01T00:00:00.000Z",
+  });
+
+  const preco = bag.list(C.FIELDS.PRICE)[0];
+  // ultimaVendaEm (2026-08-05) tem prioridade sobre o fallback do snapshot.
+  assert.ok(preco.observedAt.startsWith("2026-08-05"), `observedAt foi ${preco.observedAt}`);
+});
+
+function agregadoSemDataDeVenda() {
+  return {
+    unidades: 1,
+    receita: 100,
+    itensContados: 1,
+    pedidos: new Set(["1"]),
+    ultimaVendaEm: null,
+    comissao: { soma: 0, itensComValor: 0 },
+    frete: { soma: 0, itensComValor: 0 },
+    custo: { soma: 0, itensComValor: 0 },
+    imposto: { soma: 0, itensComValor: 0 },
+    resultadoPersistido: { soma: 0, itensComValor: 0 },
+    precoUnitarioMin: 100,
+    precoUnitarioMax: 100,
+  };
+}
+
+cenario("timestamp cai para o snapshot do import quando não há data de venda segura", () => {
+  const bag = C.createEvidenceBag();
+  centralVendas.aplicarEvidenciasRealizadas(bag, {
+    agregado: agregadoSemDataDeVenda(),
+    fallbackObservedAt: "2026-08-09T08:00:00.000Z",
+  });
+  const preco = bag.list(C.FIELDS.PRICE)[0];
+  assert.strictEqual(preco.observedAt, "2026-08-09T08:00:00.000Z");
+});
+
+cenario("sem data de venda e sem snapshot, observedAt fica null — nunca inventa", () => {
+  const bag = C.createEvidenceBag();
+  centralVendas.aplicarEvidenciasRealizadas(bag, { agregado: agregadoSemDataDeVenda() });
+  const preco = bag.list(C.FIELDS.PRICE)[0];
+  assert.strictEqual(preco.observedAt, null);
 });
 
 // ── Fontes indisponíveis ─────────────────────────────────────────────────────
@@ -258,7 +414,10 @@ cenario("extensão não tem canal de ingestão, mas a função de ingestão func
   assert.strictEqual(bag.list(C.FIELDS.PRICE)[0].source, C.SOURCES.EXTENSION_DOM);
 });
 
-// ── Mercado Livre API ────────────────────────────────────────────────────────
+// ── Cotação corrente compartilhada (shared/marketplaceCurrentQuoteService) ───
+// Extraída do Motor nesta refatoração (AUDITORIA §7) — Automações e
+// Diagnóstico continuam com cópia própria por enquanto (migração deles é a
+// próxima rodada), mas o Motor já consome só este módulo.
 
 cenario("comissão do ML é convertida de 0–100 para decimal; falha vira null", async () => {
   const fetchOk = async (clienteId, path) => {
@@ -271,7 +430,7 @@ cenario("comissão do ML é convertida de 0–100 para decimal; falha vira null"
     return { ok: false, status: 404, data: null };
   };
 
-  const resultado = await meliApi.buscarCustosMarketplace(
+  const resultado = await quoteService.buscarComissaoEFrete(
     {
       clienteId: 1,
       itemId: "MLB1",
@@ -283,12 +442,12 @@ cenario("comissão do ML é convertida de 0–100 para decimal; falha vira null"
     },
     fetchOk
   );
-  assert.strictEqual(resultado.commission, 12.5);
-  assert.strictEqual(resultado.commissionRate, 0.125, "percentual vira decimal");
-  assert.strictEqual(resultado.freight, 23.4);
+  assert.strictEqual(resultado.comissaoValor, 12.5);
+  assert.strictEqual(resultado.comissaoPercentual, 0.125, "percentual vira decimal");
+  assert.strictEqual(resultado.fretePrevisto, 23.4);
 
   const fetchErro = async () => ({ ok: false, status: 500, data: null });
-  const semDados = await meliApi.buscarCustosMarketplace(
+  const semDados = await quoteService.buscarComissaoEFrete(
     {
       clienteId: 1,
       itemId: "MLB1",
@@ -300,8 +459,8 @@ cenario("comissão do ML é convertida de 0–100 para decimal; falha vira null"
     },
     fetchErro
   );
-  assert.strictEqual(semDados.commission, null, "falha da API vira ausente, nunca 0");
-  assert.strictEqual(semDados.freight, null);
+  assert.strictEqual(semDados.comissaoValor, null, "falha da API vira ausente, nunca 0");
+  assert.strictEqual(semDados.fretePrevisto, null);
 });
 
 cenario("frete combinável não é consultado (não existe frete previsto)", async () => {
@@ -311,7 +470,7 @@ cenario("frete combinável não é consultado (não existe frete previsto)", asy
     return { ok: true, data: [{ sale_fee_amount: 10, sale_fee_details: { percentage_fee: 10 } }] };
   };
 
-  const resultado = await meliApi.buscarCustosMarketplace(
+  const resultado = await quoteService.buscarComissaoEFrete(
     {
       clienteId: 1,
       itemId: "MLB1",
@@ -324,8 +483,38 @@ cenario("frete combinável não é consultado (não existe frete previsto)", asy
     fetchFn
   );
 
-  assert.strictEqual(resultado.freight, null);
+  assert.strictEqual(resultado.fretePrevisto, null);
   assert.ok(!paths.some((p) => p.includes("shipping_options")), "nenhuma chamada de frete");
+});
+
+cenario("obterCotacaoAtual junta preço + comissão + frete num contrato único", async () => {
+  const cotacao = await quoteService.obterCotacaoAtual(
+    {
+      clienteId: 1,
+      itemId: "MLB1",
+      listingTypeId: "gold_special",
+      categoryId: "MLB1",
+      sellerId: "9",
+      logisticType: "drop_off",
+    },
+    {
+      resolverPrecosItemFn: async () => ({
+        precoCheio: 120, precoPromocional: 100, precoEfetivo: 100, fonte: "sale_price",
+      }),
+      mlFetchFn: async (clienteId, path) =>
+        path.includes("listing_prices")
+          ? { ok: true, data: [{ sale_fee_amount: 12, sale_fee_details: { percentage_fee: 12 } }] }
+          : { ok: true, data: { coverage: { all_country: { list_cost: 20 } } } },
+    }
+  );
+
+  assert.strictEqual(cotacao.precoAtual, 100);
+  assert.strictEqual(cotacao.precoOriginal, 120);
+  assert.strictEqual(cotacao.precoPromocional, 100);
+  assert.strictEqual(cotacao.comissaoValor, 12);
+  assert.strictEqual(cotacao.comissaoPercentual, 0.12);
+  assert.strictEqual(cotacao.fretePrevisto, 20);
+  assert.deepStrictEqual(cotacao.faltantes, []);
 });
 
 cenario("aplicarEvidenciasProjetadas registra preço, comissão e frete do ML", async () => {
@@ -369,6 +558,80 @@ cenario("aplicarEvidenciasProjetadas registra preço, comissão e frete do ML", 
   assert.strictEqual(bag.list(C.FIELDS.COMMISSION_RATE)[0].value, 0.12);
   assert.strictEqual(bag.list(C.FIELDS.FREIGHT)[0].value, 20);
   assert.ok(bag.list(C.FIELDS.PRICE).every((e) => e.source === C.SOURCES.MELI_API));
+});
+
+// ── Imagem do anúncio (metadado de identidade, zero request extra) ──────────
+
+cenario("extrairImagem prioriza secure_thumbnail, depois thumbnail, depois pictures[0]", () => {
+  assert.strictEqual(
+    meliApi.extrairImagem({ secure_thumbnail: "https://x/a.jpg", thumbnail: "https://x/b.jpg" }),
+    "https://x/a.jpg"
+  );
+  assert.strictEqual(meliApi.extrairImagem({ thumbnail: "https://x/b.jpg" }), "https://x/b.jpg");
+  assert.strictEqual(
+    meliApi.extrairImagem({ pictures: [{ secure_url: "https://x/c.jpg" }] }),
+    "https://x/c.jpg"
+  );
+  assert.strictEqual(meliApi.extrairImagem({ pictures: [{ url: "https://x/d.jpg" }] }), "https://x/d.jpg");
+});
+
+cenario("extrairImagem nunca inventa imagem quando o contrato não trouxe nenhuma", () => {
+  assert.strictEqual(meliApi.extrairImagem({}), null);
+  assert.strictEqual(meliApi.extrairImagem({ thumbnail: "" }), null);
+  assert.strictEqual(meliApi.extrairImagem({ pictures: [] }), null);
+  assert.strictEqual(meliApi.extrairImagem(null), null);
+});
+
+cenario("aplicarEvidenciasProjetadas propaga a imagem do MESMO body, sem request novo", async () => {
+  const bag = C.createEvidenceBag();
+  const chamadasMl = [];
+  const observado = await meliApi.aplicarEvidenciasProjetadas(
+    bag,
+    {
+      clienteId: 1,
+      body: {
+        id: "MLB1",
+        title: "Produto",
+        price: 120,
+        secure_thumbnail: "https://http2.mlstatic.com/D_NQ_NP_123.jpg",
+        listing_type_id: "gold_special",
+        category_id: "MLB1",
+        seller_id: "9",
+        status: "active",
+        shipping: { logistic_type: "drop_off" },
+      },
+      observedAt: new Date("2026-08-12T00:00:00Z"),
+    },
+    {
+      resolverPrecosItemFn: async () => ({
+        precoCheio: 120, precoPromocional: null, precoEfetivo: 120, fonte: "sale_price",
+      }),
+      mlFetchFn: async (clienteId, path) => {
+        chamadasMl.push(path);
+        return path.includes("listing_prices")
+          ? { ok: true, data: [{ sale_fee_amount: 12, sale_fee_details: { percentage_fee: 12 } }] }
+          : { ok: true, data: { coverage: { all_country: { list_cost: 20 } } } };
+      },
+    }
+  );
+
+  assert.strictEqual(observado.image, "https://http2.mlstatic.com/D_NQ_NP_123.jpg");
+  // Nenhuma chamada extra ao ML só para buscar imagem — as 2 chamadas são
+  // as mesmas de sempre (listing_prices + shipping_options).
+  assert.strictEqual(chamadasMl.length, 2);
+});
+
+cenario("aplicarEvidenciasProjetadas devolve image null quando o ML não trouxe nenhuma", async () => {
+  const bag = C.createEvidenceBag();
+  const observado = await meliApi.aplicarEvidenciasProjetadas(
+    bag,
+    { clienteId: 1, body: { id: "MLB2", title: "Sem foto", price: 50 }, observedAt: new Date() },
+    {
+      resolverPrecosItemFn: async () => ({ precoCheio: 50, precoPromocional: null, precoEfetivo: 50, fonte: "sale_price" }),
+      mlFetchFn: async () => ({ ok: false, status: 404, data: null }),
+    }
+  );
+  assert.strictEqual(observado.image, null);
 });
 
 // ── Runner ───────────────────────────────────────────────────────────────────

@@ -20,15 +20,20 @@ const {
 const { buildConfidenceReport, LEVELS } = require("./marginConfidence");
 const { classifyStatus, DEFAULT_TARGET_MARGIN } = require("./marginStatus");
 
-// Variáveis DECLARADAS na Base: valem para os dois momentos. Não existe "custo
-// realizado" vindo da venda — o custo do produto continua sendo o da Base.
-const DECLARED_FIELDS = new Set([FIELDS.COST, FIELDS.TAX_RATE, FIELDS.FIXED_FEE]);
+// REQUISITO FINANCEIRO CRÍTICO: o realizado NUNCA cai para o projetado/Base
+// atual. Uma alteração de custo hoje não pode mudar retroativamente a margem
+// realizada de uma venda antiga — se não há evidência histórica (REALIZED),
+// a variável fica ausente, nunca preenchida por "o que a Base diz agora".
+// custo/imposto ganham evidência REALIZED própria quando a Central de Vendas
+// persistiu o valor histórico (ver centralVendasEvidenceAdapter). Taxa fixa
+// não tem contrapartida histórica na Central de Vendas hoje — fica ausente no
+// realizado por desenho, não por bug (ver AUDITORIA_ARQUITETURAL_CENTRAL_MARGEM
+// §Taxa fixa histórica).
 
 function valueForKind(field, kind) {
   if (!field || !field.present) return null;
   if (kind === EVIDENCE_KINDS.REALIZED) {
-    if (field.realized) return field.realized.value;
-    return DECLARED_FIELDS.has(field.key) && field.projected ? field.projected.value : null;
+    return field.realized ? field.realized.value : null;
   }
   return field.projected ? field.projected.value : null;
 }
@@ -169,6 +174,9 @@ function buildMarginItem(params = {}) {
       itemId: identity.itemId || null,
       sku: identity.sku || null,
       titulo: identity.titulo || null,
+      // Metadado de apresentação (thumbnail do anúncio), não evidência
+      // financeira — não entra em nenhum cálculo do núcleo.
+      image: identity.image || null,
     },
 
     // Camada de evidências crua, variável por variável (saída de resolveField).
@@ -273,6 +281,5 @@ module.exports = {
   buildMarginItem,
   fieldContract,
   valueForKind,
-  DECLARED_FIELDS,
   LEVELS,
 };

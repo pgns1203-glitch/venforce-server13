@@ -39,16 +39,30 @@ function meliApi(bag, { price, commission, commissionRate, freight }) {
   if (freight !== undefined) bag.add(C.FIELDS.FREIGHT, { ...comum, value: freight });
 }
 
-function pedido(bag, { price, commission, freight }) {
-  const comum = {
+// `cost`/`taxRate` simulam o histórico persistido pela Central de Vendas
+// (custo_produto/imposto_interno da venda) — fonte VENFORCE_BASE, mas kind
+// REALIZED, porque é o que valia NAQUELA venda, não a Base de hoje. Sem
+// evidência REALIZED própria, custo/imposto ficam ausentes no realizado (ver
+// marginItem.js — o realizado NUNCA cai para o projetado).
+function pedido(bag, { price, commission, freight, cost, taxRate }) {
+  const comumMedido = {
     source: C.SOURCES.MELI_ORDER,
     kind: C.EVIDENCE_KINDS.REALIZED,
     quality: C.EVIDENCE_QUALITY.MEASURED,
     observedAt: RECENTE,
   };
-  if (price !== undefined) bag.add(C.FIELDS.PRICE, { ...comum, value: price });
-  if (commission !== undefined) bag.add(C.FIELDS.COMMISSION, { ...comum, value: commission });
-  if (freight !== undefined) bag.add(C.FIELDS.FREIGHT, { ...comum, value: freight });
+  if (price !== undefined) bag.add(C.FIELDS.PRICE, { ...comumMedido, value: price });
+  if (commission !== undefined) bag.add(C.FIELDS.COMMISSION, { ...comumMedido, value: commission });
+  if (freight !== undefined) bag.add(C.FIELDS.FREIGHT, { ...comumMedido, value: freight });
+
+  const comumDeclarado = {
+    source: C.SOURCES.VENFORCE_BASE,
+    kind: C.EVIDENCE_KINDS.REALIZED,
+    quality: C.EVIDENCE_QUALITY.DECLARED,
+    observedAt: RECENTE,
+  };
+  if (cost !== undefined) bag.add(C.FIELDS.COST, { ...comumDeclarado, value: cost });
+  if (taxRate !== undefined) bag.add(C.FIELDS.TAX_RATE, { ...comumDeclarado, value: taxRate });
 }
 
 function montar(bag, { hasOrders = false, settlementAvailable = false, targetMargin } = {}) {
@@ -219,7 +233,7 @@ cenario("pedido sem conciliação do Mercado Pago → RECONCILING", () => {
   const bag = C.createEvidenceBag();
   base(bag, { cost: 40 });
   meliApi(bag, { price: 100, commission: 12, commissionRate: 0.12, freight: 20 });
-  pedido(bag, { price: 100, commission: 12, freight: 20 });
+  pedido(bag, { price: 100, commission: 12, freight: 20, cost: 40, taxRate: 0.1 });
 
   const item = montar(bag, { hasOrders: true, settlementAvailable: false });
 
@@ -261,7 +275,7 @@ cenario("margem projetada ≠ realizada → erro de projeção em pontos percent
   // Projetado: 100 − 10 − 12 − 20 − 40 = 18 → 18,0%
   meliApi(bag, { price: 100, commission: 12, commissionRate: 0.12, freight: 20 });
   // Realizado: 100 − 10 − 12 − 21 − 40 = 17 → 17,0%
-  pedido(bag, { price: 100, commission: 12, freight: 21 });
+  pedido(bag, { price: 100, commission: 12, freight: 21, cost: 40, taxRate: 0.1 });
 
   const item = montar(bag, { hasOrders: true });
 
@@ -417,6 +431,81 @@ cenario("houve venda mas nenhuma evidência realizada de frete → rebaixa a var
   assert.ok(temMotivo(frete.reasons, C.REASONS.SEM_EVIDENCIA_REALIZADA));
   // MEDIUM não é LOW: o item não é declarado suspeito por isso.
   assert.notStrictEqual(item.quality.status, C.STATUS.SUSPECT_DATA);
+});
+
+// ── O passado não pode mudar (AUDITORIA_ARQUITETURAL_CENTRAL_MARGEM §3/§4) ──
+
+cenario("realizado usa custo/imposto HISTÓRICOS da venda, nunca a Base atual", () => {
+  const bag = C.createEvidenceBag();
+  // Base MUDOU depois da venda: custo atual é 999, muito diferente do
+  // histórico. O projetado deve refletir o custo atual; o realizado NÃO.
+  base(bag, { cost: 999, taxRate: 0.3 });
+  meliApi(bag, { price: 100, commission: 12, commissionRate: 0.12, freight: 20 });
+  // Histórico persistido pela Central de Vendas no momento da venda.
+  pedido(bag, { price: 100, commission: 12, freight: 20, cost: 40, taxRate: 0.1 });
+
+  const item = montar(bag, { hasOrders: true, settlementAvailable: true });
+
+  // Projetado usa a Base de HOJE (999).
+  assert.strictEqual(item.margin.projected.computable, true);
+  assert.strictEqual(item.margin.projected.profit, 100 - 100 * 0.3 - 12 - 20 - 999);
+
+  // Realizado usa o histórico (40/0.1), nunca os 999/0.3 da Base atual.
+  assert.strictEqual(item.margin.realized.computable, true);
+  assert.strictEqual(item.margin.realized.profit, 18); // 100 − 10 − 12 − 20 − 40
+  assert.strictEqual(item.margin.realized.marginPercent, 18);
+});
+
+cenario("sem custo histórico da venda, realizado fica não-computável mesmo com custo atual disponível", () => {
+  const bag = C.createEvidenceBag();
+  base(bag, { cost: 40 }); // Base atual TEM custo
+  meliApi(bag, { price: 100, commission: 12, commissionRate: 0.12, freight: 20 });
+  // Central de Vendas não persistiu custo/imposto para esta venda.
+  pedido(bag, { price: 100, commission: 12, freight: 20 });
+
+  const item = montar(bag, { hasOrders: true, settlementAvailable: true });
+
+  assert.strictEqual(item.margin.projected.computable, true, "projetado usa a Base normalmente");
+  assert.strictEqual(item.margin.realized.computable, false, "custo é obrigatório e não pode vir do projetado");
+  assert.strictEqual(item.margin.realized.margin, null);
+  assert.ok(item.margin.realized.missing.includes(C.FIELDS.COST));
+});
+
+cenario("taxa fixa ausente no realizado permanece ausente, mesmo com taxa fixa atual disponível", () => {
+  const bag = C.createEvidenceBag();
+  base(bag, { cost: 40, fixedFee: 5 }); // Base atual TEM taxa fixa
+  meliApi(bag, { price: 100, commission: 12, commissionRate: 0.12, freight: 20 });
+  // Central de Vendas não preserva taxa fixa histórica hoje (gap documentado).
+  pedido(bag, { price: 100, commission: 12, freight: 20, cost: 40, taxRate: 0.1 });
+
+  const item = montar(bag, { hasOrders: true, settlementAvailable: true });
+
+  assert.strictEqual(item.margin.projected.profit, 100 - 10 - 12 - 20 - 5 - 40, "projetado desconta a taxa fixa atual");
+  // Realizado: taxa fixa é OPCIONAL (assumida 0), nunca herdada da Base atual.
+  assert.strictEqual(item.margin.realized.computable, true);
+  assert.ok(item.margin.realized.assumed.includes(C.FIELDS.FIXED_FEE), "taxa fixa entrou como assumida, não como 5");
+  assert.strictEqual(item.margin.realized.strict, false);
+  assert.strictEqual(item.margin.realized.profit, 18, "100 − 10 − 12 − 20 − 0(assumido) − 40, nunca −5");
+});
+
+// ── Equivalência do projetado antes/depois da refatoração (AUDITORIA §9) ─────
+// `marginEngine` não foi tocado nesta rodada — só a ALIMENTAÇÃO do Motor
+// mudou (prepareWorkspaceContext, projeção da Central de Vendas). Estes
+// valores são um "golden set": mesmos inputs projetados devem sempre produzir
+// o mesmo LC/MC, sem depender de nenhum adapter.
+cenario("equivalência: mesmos inputs projetados produzem sempre o mesmo LC/MC (golden set)", () => {
+  const casosGolden = [
+    { input: { price: 100, cost: 40, taxRate: 0.1, fixedFee: 0, commission: 12, freight: 20 }, profit: 18, margin: 0.18 },
+    { input: { price: 100, cost: 60, taxRate: 0.1, fixedFee: 0, commission: 12, freight: 15 }, profit: 3, margin: 0.03 },
+    { input: { price: 100, cost: 40, taxRate: 0.1, fixedFee: 2, commission: 12, freight: 20 }, profit: 16, margin: 0.16 },
+    { input: { price: 250, cost: 120, taxRate: 0.12, fixedFee: 5, commission: 30, freight: 18 }, profit: 47, margin: 0.188 },
+  ];
+  for (const { input, profit, margin } of casosGolden) {
+    const resultado = C.computeMargin(input);
+    assert.strictEqual(resultado.computable, true);
+    assert.strictEqual(resultado.profit, profit, `profit para ${JSON.stringify(input)}`);
+    assert.ok(Math.abs(resultado.margin - margin) < 1e-9, `margin para ${JSON.stringify(input)}`);
+  }
 });
 
 // ── Runner ───────────────────────────────────────────────────────────────────

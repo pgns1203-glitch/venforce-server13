@@ -61,7 +61,12 @@ function depsPadrao(overrides = {}) {
             ultimaVendaEm: "2026-08-05",
             comissao: { soma: 24, itensComValor: 1 },
             frete: { soma: 40, itensComValor: 1 },
-            reembolso: { soma: 0, atribuido: false },
+            // Histórico persistido pela Central de Vendas — mesmos valores da
+            // Base neste fixture (cost 40, taxRate 0.1), mas por um caminho
+            // INDEPENDENTE: ver teste dedicado provando que Base atual mudar
+            // não afeta o realizado.
+            custo: { soma: 80, itensComValor: 1 },
+            imposto: { soma: 20, itensComValor: 1 },
             resultadoPersistido: { soma: 36, itensComValor: 1 },
             precoUnitarioMin: 100,
             precoUnitarioMax: 100,
@@ -81,14 +86,17 @@ function depsPadrao(overrides = {}) {
             comissao: { soma: 12, itensComValor: 1 },
             // Frete realizado 25 contra 10 previsto → divergência.
             frete: { soma: 25, itensComValor: 1 },
-            reembolso: { soma: 0, atribuido: false },
+            custo: { soma: 60, itensComValor: 1 },
+            imposto: { soma: 10, itensComValor: 1 },
             resultadoPersistido: { soma: -7, itensComValor: 1 },
             precoUnitarioMin: 100,
             precoUnitarioMax: 100,
           },
         ],
       ]),
+      reembolsoPorMlb: new Map(),
       naoAtribuido: { reembolso: 0 },
+      reembolsos: { atribuidoMlb: 0, atribuidoPedido: 0, naoAtribuivel: 0 },
     }),
     buscarItensAtivos: async () => ({ ids: ["MLB1", "MLB2", "MLB3"], total: 3 }),
     buscarDetalhesItens: async ({ ids }) =>
@@ -337,6 +345,288 @@ cenario("resumo declara cobertura parcial quando o catálogo é maior que o teto
   assert.ok(resposta.cobertura.motivoParcial, "motivo da amostragem é explícito");
 });
 
+// ── Workspace ────────────────────────────────────────────────────────────────
+// Uma única varredura em batches <=20 alimenta planilha, filtros, KPIs e fila
+// de divergências no frontend. Estes testes provam que o workspace enxerga
+// itens além da antiga "página 1" de 20, sem nunca violar o teto do multiget.
+
+function gerarCatalogo(n) {
+  const ids = [];
+  const anuncios = {};
+  const custos = new Map();
+  for (let i = 1; i <= n; i += 1) {
+    const id = `MLB${String(i).padStart(4, "0")}`;
+    ids.push(id);
+    const price = 100 + (i % 5) * 10;
+    anuncios[id] = { price, commission: price * 0.12, commissionRate: 0.12, freight: 15, titulo: `Produto ${i}` };
+    custos.set(id, { produtoId: id, cost: price * 0.4, taxRate: 0.08, fixedFee: 0, observedAt: null });
+  }
+  return { ids, anuncios, custos };
+}
+
+function depsWorkspace({ n, total, searchIndex, divergenceIndex }) {
+  const catalogo = gerarCatalogo(n);
+  const chamadasMl = [];
+  let searchId = null;
+  if (searchIndex) {
+    searchId = catalogo.ids[searchIndex - 1];
+    catalogo.anuncios[searchId].titulo = "Produto Raro Único";
+  }
+  let divergenceId = null;
+  const vendasPorMlb = new Map();
+  if (divergenceIndex) {
+    divergenceId = catalogo.ids[divergenceIndex - 1];
+    const anuncio = catalogo.anuncios[divergenceId];
+    vendasPorMlb.set(divergenceId, {
+      mlb: divergenceId, sku: "SKU-DIV", titulo: anuncio.titulo,
+      unidades: 1, receita: anuncio.price, itensContados: 1,
+      pedidos: new Set(["9"]), ultimaVendaEm: "2026-08-05",
+      comissao: { soma: anuncio.commission, itensComValor: 1 },
+      // Frete realizado bem acima do previsto → DRIFT detectável.
+      frete: { soma: anuncio.freight + 40, itensComValor: 1 },
+      // Sem histórico de custo/imposto neste fixture — cobertura 0, sem
+      // evidência REALIZED (não afeta o teste de divergência de frete).
+      custo: { soma: 0, itensComValor: 0 },
+      imposto: { soma: 0, itensComValor: 0 },
+      resultadoPersistido: { soma: 0, itensComValor: 1 },
+      precoUnitarioMin: anuncio.price, precoUnitarioMax: anuncio.price,
+    });
+  }
+
+  const deps = {
+    now: NOW,
+    exigirContexto: async () => ({ cliente: CLIENTE, base: BASE, mlUserId: "99" }),
+    carregarCustos: async () => ({ index: catalogo.custos, total: catalogo.custos.size }),
+    carregarVendas: async () => ({ sincronizado: true, imports: [], pedidos: [], itens: [], componentes: [] }),
+    agregarPorMlb: () => ({
+      porMlb: vendasPorMlb,
+      reembolsoPorMlb: new Map(),
+      naoAtribuido: { reembolso: 0 },
+      reembolsos: { atribuidoMlb: 0, atribuidoPedido: 0, naoAtribuivel: 0 },
+    }),
+    buscarItensAtivos: async ({ offset, limit }) => {
+      chamadasMl.push({ offset, limit });
+      return { ids: catalogo.ids.slice(offset, offset + limit), total: total ?? n };
+    },
+    buscarDetalhesItens: async ({ ids }) =>
+      ids.map((id) => ({ id, title: catalogo.anuncios[id].titulo, secure_thumbnail: `https://img/${id}.jpg` })),
+    aplicarEvidenciasProjetadas: async (bag, { body, observedAt }) => {
+      const anuncio = catalogo.anuncios[body.id];
+      const comum = { source: C.SOURCES.MELI_API, kind: C.EVIDENCE_KINDS.PROJECTED, quality: C.EVIDENCE_QUALITY.MEASURED, observedAt };
+      bag.add(C.FIELDS.PRICE, { ...comum, value: anuncio.price });
+      bag.add(C.FIELDS.LIST_PRICE, { ...comum, value: anuncio.price });
+      bag.add(C.FIELDS.COMMISSION, { ...comum, value: anuncio.commission });
+      bag.add(C.FIELDS.COMMISSION_RATE, { ...comum, value: anuncio.commissionRate });
+      bag.add(C.FIELDS.FREIGHT, { ...comum, value: anuncio.freight });
+      return {
+        itemId: body.id, titulo: anuncio.titulo, sku: null, status: "active",
+        image: body.secure_thumbnail || null,
+        listingTypeId: "gold_special", logisticType: "drop_off",
+        precoEfetivo: anuncio.price, precoCheio: anuncio.price, precoPromocional: null,
+        commission: anuncio.commission, commissionRate: anuncio.commissionRate, freight: anuncio.freight,
+        faltantes: [],
+      };
+    },
+  };
+
+  return { deps, catalogo, searchId, divergenceId, chamadasMl };
+}
+
+cenario("workspace agrega catálogo de 87 itens em batches <=20, sem violar o teto do ML", async () => {
+  const { deps, chamadasMl } = depsWorkspace({ n: 87, total: 87 });
+  const resposta = await service.obterWorkspace(params, deps);
+
+  assert.strictEqual(resposta.ok, true);
+  assert.strictEqual(resposta.itens.length, 87);
+  assert.strictEqual(resposta.cobertura.carregados, 87);
+  assert.strictEqual(resposta.cobertura.totalItensMl, 87);
+  assert.strictEqual(resposta.cobertura.parcial, false, "87 de 87 é cobertura completa");
+  assert.strictEqual(resposta.resumo.itensCarregados, 87);
+
+  assert.deepStrictEqual(chamadasMl.map((c) => c.offset), [0, 20, 40, 60, 80]);
+  assert.ok(chamadasMl.every((c) => c.limit <= service.PAGE_LIMIT_MAX), "nenhum batch pede mais de 20 IDs");
+});
+
+cenario("busca encontraria um item da antiga página 4 porque o workspace carrega o catálogo inteiro", async () => {
+  // Índice 65 cairia na página 4 de uma paginação antiga de 20 por página.
+  const { deps, searchId } = depsWorkspace({ n: 87, total: 87, searchIndex: 65 });
+  const resposta = await service.obterWorkspace(params, deps);
+
+  const item = resposta.itens.find((i) => i.itemId === searchId);
+  assert.ok(item, "item da antiga página 4 precisa estar no workspace");
+  assert.strictEqual(item.title, "Produto Raro Único");
+});
+
+cenario("divergência fora dos primeiros 20 itens aparece no workspace", async () => {
+  const { deps, divergenceId } = depsWorkspace({ n: 87, total: 87, divergenceIndex: 73 });
+  const resposta = await service.obterWorkspace(params, deps);
+
+  const item = resposta.itens.find((i) => i.itemId === divergenceId);
+  assert.ok(item, "item divergente precisa estar carregado");
+  assert.ok(item.divergences.length > 0, "divergência de frete precisa aparecer no item");
+  assert.ok(resposta.resumo.itensComDivergencia >= 1);
+});
+
+cenario("workspace propaga a imagem do ML para cada item, sem chamada extra", async () => {
+  const { deps } = depsWorkspace({ n: 5, total: 5 });
+  const resposta = await service.obterWorkspace(params, deps);
+  assert.strictEqual(resposta.itens[0].image, "https://img/MLB0001.jpg");
+});
+
+cenario("REQUISITO DE ESCALA: catálogo de 1.037 anúncios declara cobertura parcial sem violar o teto", async () => {
+  const { deps, chamadasMl } = depsWorkspace({ n: service.RESUMO_MAX_ITENS_TETO, total: 1037 });
+  const resposta = await service.obterWorkspace(params, deps);
+
+  // Catálogo completo é CONHECIDO mesmo sem estar todo carregado.
+  assert.strictEqual(resposta.cobertura.totalItensMl, 1037);
+  assert.strictEqual(resposta.cobertura.carregados, service.RESUMO_MAX_ITENS_TETO);
+  assert.strictEqual(resposta.cobertura.parcial, true);
+  assert.ok(resposta.cobertura.motivoParcial, "motivo da cobertura parcial é explícito");
+  assert.strictEqual(resposta.parcial, true);
+
+  assert.ok(chamadasMl.every((c) => c.limit <= service.PAGE_LIMIT_MAX), "nenhum batch excede 20 mesmo em catálogo de 1037");
+  assert.strictEqual(chamadasMl.length, service.RESUMO_MAX_ITENS_TETO / service.PAGE_LIMIT_MAX);
+});
+
+cenario("workspace aceita maxItens explícito, sempre limitado ao teto seguro", async () => {
+  const { deps } = depsWorkspace({ n: 50, total: 50 });
+  const resposta = await service.obterWorkspace({ ...params, maxItens: String(service.RESUMO_MAX_ITENS_TETO * 5) }, deps);
+  // Mesmo pedindo muito mais, o teto de segurança da leitura continua valendo.
+  assert.strictEqual(resposta.cobertura.maxItens, service.RESUMO_MAX_ITENS_TETO);
+});
+
+// ── Preparação única do contexto (AUDITORIA §1 — prepareWorkspaceContext) ────
+// Um workspace de 87 itens em 5 lotes de <=20 deve resolver contexto/Base/
+// Central de Vendas/agregação UMA vez, não uma vez por lote.
+
+cenario("contexto/Base/Central de Vendas/agregação são resolvidos 1x para um workspace de 87 itens em 5 lotes", async () => {
+  const contadores = { exigirContexto: 0, carregarCustos: 0, carregarVendas: 0, agregarPorMlb: 0 };
+  const { deps } = depsWorkspace({ n: 87, total: 87 });
+
+  const instrumentado = {
+    ...deps,
+    exigirContexto: async (...args) => {
+      contadores.exigirContexto += 1;
+      return deps.exigirContexto(...args);
+    },
+    carregarCustos: async (...args) => {
+      contadores.carregarCustos += 1;
+      return deps.carregarCustos(...args);
+    },
+    carregarVendas: async (...args) => {
+      contadores.carregarVendas += 1;
+      return deps.carregarVendas(...args);
+    },
+    agregarPorMlb: (...args) => {
+      contadores.agregarPorMlb += 1;
+      return deps.agregarPorMlb(...args);
+    },
+  };
+
+  const resposta = await service.obterWorkspace(params, instrumentado);
+
+  assert.strictEqual(resposta.itens.length, 87);
+  assert.strictEqual(contadores.exigirContexto, 1, "contexto: 1 leitura, não 5");
+  assert.strictEqual(contadores.carregarCustos, 1, "Base: 1 leitura, não 5");
+  assert.strictEqual(contadores.carregarVendas, 1, "Central de Vendas: 1 leitura, não 5");
+  assert.strictEqual(contadores.agregarPorMlb, 1, "agregação por MLB: 1 execução, não 5");
+});
+
+cenario("obterResumo (mesmo helper de workspace) também resolve o contexto 1x", async () => {
+  const contadores = { exigirContexto: 0 };
+  const { deps } = depsWorkspace({ n: 45, total: 45 });
+  const instrumentado = {
+    ...deps,
+    exigirContexto: async (...args) => {
+      contadores.exigirContexto += 1;
+      return deps.exigirContexto(...args);
+    },
+  };
+
+  await service.obterResumo({ ...params, maxItens: "45" }, instrumentado);
+  // 45 itens / 20 por lote = 3 lotes.
+  assert.strictEqual(contadores.exigirContexto, 1, "3 lotes, 1 contexto só");
+});
+
+cenario("prepareWorkspaceContext expõe o contexto para enrichBatch reaproveitar entre lotes", async () => {
+  const { deps } = depsWorkspace({ n: 5, total: 5 });
+  const prepared = await service.prepareWorkspaceContext(params, deps);
+
+  assert.strictEqual(prepared.cliente.slug, "cliente-teste");
+  assert.ok(prepared.porMlb instanceof Map);
+  assert.ok(prepared.reembolsoPorMlb instanceof Map);
+  assert.ok(prepared.custos.index, "índice de custos da Base já resolvido");
+
+  const lote1 = await service.enrichBatch(prepared, { offset: 0, limit: 20, targetMargin: 0.1 }, deps);
+  const lote2 = await service.enrichBatch(prepared, { offset: 20, limit: 20, targetMargin: 0.1 }, deps);
+  assert.strictEqual(lote1.totalItensMl, 5);
+  assert.strictEqual(lote1.itens.length, 5, "só 5 existem, o resto do lote 1 já cobre tudo");
+  assert.strictEqual(lote2.itens.length, 0, "lote 2 não encontra mais nada — não recarrega contexto para saber isso");
+});
+
+// ── Filtro/busca/paginação/drawer não chamam o Mercado Livre ────────────────
+// Uma vez que o workspace foi carregado, interações do operador (trocar
+// página, filtrar por status/confiança, buscar, abrir o drawer de um item)
+// são operações PURAS sobre o array já carregado — nenhuma delas aceita
+// `deps`/rede, então não têm como disparar uma nova chamada ao ML.
+
+cenario("filtrar, buscar e paginar visualmente o workspace já carregado não chama o ML de novo", async () => {
+  let chamadasMl = 0;
+  const { deps } = depsWorkspace({ n: 30, total: 30 });
+  const instrumentado = {
+    ...deps,
+    buscarItensAtivos: async (...args) => {
+      chamadasMl += 1;
+      return deps.buscarItensAtivos(...args);
+    },
+  };
+
+  const workspace = await service.obterWorkspace(params, instrumentado);
+  const chamadasApósCarga = chamadasMl;
+  assert.ok(chamadasApósCarga > 0, "a carga inicial chama o ML normalmente");
+
+  // Filtro por status — puro, sobre o array já carregado.
+  const porStatus = service.aplicarFiltros(workspace.itens, { status: "HEALTHY" });
+  // Busca por texto — idem.
+  const porBusca = service.aplicarFiltros(workspace.itens, { busca: "produto" });
+  // Filtro por divergência — idem.
+  const porDivergencia = service.aplicarFiltros(workspace.itens, { comDivergencia: true });
+  // "Paginação visual" — fatiar o array em memória, sem nova busca.
+  const pagina2 = workspace.itens.slice(20, 40);
+  // "Abrir o drawer" — os dados do item (evidências, divergências, diagnóstico)
+  // já vieram no workspace; nenhuma chamada nova é necessária para exibi-los.
+  const itemDoDrawer = workspace.itens[0];
+
+  assert.ok(Array.isArray(porStatus));
+  assert.ok(Array.isArray(porBusca));
+  assert.ok(Array.isArray(porDivergencia));
+  assert.ok(Array.isArray(pagina2));
+  assert.ok(itemDoDrawer.fields, "o drawer lê evidências já carregadas no item");
+  assert.ok(itemDoDrawer.divergences, "e as divergências já carregadas");
+
+  assert.strictEqual(chamadasMl, chamadasApósCarga, "nenhuma das operações acima chamou o ML");
+});
+
+cenario("rota de workspace responde no controller com os mesmos aliases da raiz", async () => {
+  const req = { params: { clienteSlug: "cliente-teste" }, query: { dateFrom: "2026-08-01", dateTo: "2026-08-31" } };
+  let statusCode = null;
+  let payload = null;
+  const res = { status(code) { statusCode = code; return this; }, json(body) { payload = body; return this; } };
+
+  const original = require("../services/motorMargem/motorMargemService").obterWorkspace;
+  require("../services/motorMargem/motorMargemService").obterWorkspace = async () => ({
+    ok: true, itens: [{ itemId: "MLB1", image: "https://img/1.jpg" }], cobertura: { carregados: 1, totalItensMl: 1, parcial: false },
+  });
+  try {
+    await controller.obterWorkspace(req, res);
+  } finally {
+    require("../services/motorMargem/motorMargemService").obterWorkspace = original;
+  }
+  assert.strictEqual(statusCode, 200);
+  assert.strictEqual(payload.ok, true);
+  assert.strictEqual(payload.itens[0].image, "https://img/1.jpg");
+});
+
 // ── Detalhe de item ──────────────────────────────────────────────────────────
 
 cenario("obterItem busca um único anúncio e devolve 404 quando não existe", async () => {
@@ -478,7 +768,7 @@ cenario("todas as rotas montadas são GET (API read-only)", () => {
     methods: Object.keys(layer.route.methods),
   }));
 
-  assert.strictEqual(rotas.length, 6);
+  assert.strictEqual(rotas.length, 7);
   for (const rota of rotas) {
     assert.deepStrictEqual(rota.methods, ["get"], `${rota.path} precisa ser somente GET`);
   }
@@ -491,6 +781,7 @@ cenario("todas as rotas montadas são GET (API read-only)", () => {
       "/:clienteSlug/itens/:itemId",
       "/:clienteSlug/itens/:itemId/evidencias",
       "/:clienteSlug/resumo",
+      "/:clienteSlug/workspace",
     ]
   );
   // A raiz é curinga: registrada por último, não pode engolir os subcaminhos.

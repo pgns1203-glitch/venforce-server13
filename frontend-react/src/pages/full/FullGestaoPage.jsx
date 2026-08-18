@@ -1,8 +1,9 @@
 // Página da Central de Gestão Full — build isolado (PR5).
 //
-// V1 desta tela: a conta ML vem explícita da URL (?clienteContaId=123).
-// Um seletor de cliente/conta (GET /clientes/:slug/contas) fica para uma
-// próxima rodada — não bloqueia o operacional de quem já sabe a conta.
+// Entrada normal: seletor Cliente → Conta Mercado Livre (useFullAccountPicker),
+// reaproveitando a Fundação de Clientes/Contas já existente — sem exigir
+// ?clienteContaId= na URL. Deep-link (?clienteContaId=123) continua
+// funcionando como atalho autossuficiente e opcional (bypassa o seletor).
 //
 // Sem múltiplas coletas simultâneas: resumo, filtros, tabela e drawer
 // compartilham o MESMO `dados` de `useFullSnapshot`; o drawer dispara sua
@@ -10,6 +11,7 @@
 
 import { useMemo, useState } from "react";
 import { useFullSnapshot } from "../../hooks/useFullSnapshot.js";
+import { useFullAccountPicker } from "../../hooks/useFullAccountPicker.js";
 import { computeFullSummary, filterInventories } from "../../utils/fullSummary.js";
 import FullSummaryKpis from "../../components/full/FullSummaryKpis.jsx";
 import FullFilters from "../../components/full/FullFilters.jsx";
@@ -18,6 +20,7 @@ import FullInventoryDrawer from "../../components/full/FullInventoryDrawer.jsx";
 import FullLoadingState from "../../components/full/FullLoadingState.jsx";
 import FullErrorState from "../../components/full/FullErrorState.jsx";
 import FullEmptyState from "../../components/full/FullEmptyState.jsx";
+import FullAccountSelector from "../../components/full/FullAccountSelector.jsx";
 
 const FILTROS_PADRAO = { search: "", status: "", somenteComDemanda: false };
 
@@ -27,8 +30,22 @@ export function lerClienteContaIdDaUrl(search = window.location.search) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+function limparClienteContaIdDaUrl() {
+  window.history.replaceState({}, "", window.location.pathname);
+}
+
 export default function FullGestaoPage() {
-  const [clienteContaId] = useState(() => lerClienteContaIdDaUrl());
+  // Deep-link (?clienteContaId=<id>) é um atalho autossuficiente: quando
+  // presente, carrega direto por esse id e nem monta o seletor — não é um
+  // requisito para usar a ferramenta, é um caminho alternativo que continua
+  // funcionando sozinho, sem depender da Fundação de Clientes/Contas.
+  const [deepLinkId, setDeepLinkId] = useState(() => lerClienteContaIdDaUrl());
+  const picker = useFullAccountPicker({ habilitado: !deepLinkId });
+
+  // Fluxo normal: só chega em clienteContaIdAtivo quando o usuário escolheu
+  // uma conta ML de fato conectada (ver useFullAccountPicker) — nunca dispara
+  // a coleta Full numa conta sem grant válido.
+  const clienteContaId = deepLinkId ?? picker.clienteContaIdAtivo;
   const { dados, carregando, erro, recarregar } = useFullSnapshot(clienteContaId);
   const [filtros, setFiltros] = useState(FILTROS_PADRAO);
   const [inventoryIdSelecionado, setInventoryIdSelecionado] = useState(null);
@@ -40,6 +57,11 @@ export default function FullGestaoPage() {
     [dados, filtros]
   );
   const resumo = useMemo(() => (dados ? computeFullSummary(dados.inventories) : null), [dados]);
+
+  function trocarContaViaSeletor() {
+    limparClienteContaIdDaUrl();
+    setDeepLinkId(null);
+  }
 
   return (
     <div className="vf-page-shell full-page">
@@ -56,13 +78,31 @@ export default function FullGestaoPage() {
               {dados.cache?.stale ? " · dados desatualizados (nova coleta em andamento ou aguardando limite do ML)" : ""}
             </span>
           )}
+          {deepLinkId && (
+            <button type="button" className="vf-btn vf-btn--ghost" onClick={trocarContaViaSeletor}>
+              Trocar cliente/conta
+            </button>
+          )}
           <button type="button" className="vf-btn" onClick={recarregar} disabled={carregando || !clienteContaId}>
             Atualizar
           </button>
         </header>
 
-        {!clienteContaId && (
-          <FullEmptyState mensagem="Informe ?clienteContaId=<id> na URL para escolher a conta Mercado Livre desta coleta." />
+        {!deepLinkId && (
+          <FullAccountSelector
+            clientes={picker.clientes}
+            carregandoClientes={picker.carregandoClientes}
+            erroClientes={picker.erroClientes}
+            clienteId={picker.clienteId}
+            onClienteChange={picker.selecionarCliente}
+            contas={picker.contas}
+            carregandoContas={picker.carregandoContas}
+            erroContas={picker.erroContas}
+            contaId={picker.contaId}
+            onContaChange={picker.selecionarConta}
+            contaSelecionada={picker.contaSelecionada}
+            statusContaSelecionada={picker.statusContaSelecionada}
+          />
         )}
 
         {clienteContaId && erro && !dados && <FullErrorState erro={erro} onTentarNovamente={recarregar} />}

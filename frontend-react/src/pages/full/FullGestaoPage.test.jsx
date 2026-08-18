@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   obterSnapshotFull: vi.fn(),
   obterInventoryDetail: vi.fn(),
   obterInventoryMovements: vi.fn(),
+  obterClientesDisponiveis: vi.fn(),
+  obterContasMeliDoCliente: vi.fn(),
 }));
 
 vi.mock("../../services/fullApi.js", () => mocks);
@@ -68,6 +70,25 @@ function snapshotBase(overrides = {}) {
   };
 }
 
+function clienteMock(overrides = {}) {
+  return { id: 1, nome: "Cliente A", slug: "cliente-a", ativo: true, ...overrides };
+}
+
+function contaMock(overrides = {}) {
+  return {
+    id: 501,
+    cliente_id: 1,
+    marketplace: "meli",
+    nome: "Loja Principal",
+    slug: "cliente-a-meli",
+    ativo: true,
+    is_primary: true,
+    grant: { id: 9, ml_user_id: "384324657", token_status: "valid", is_primary: true },
+    base: null,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   irParaUrl("?clienteContaId=123");
   vi.clearAllMocks();
@@ -77,14 +98,120 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("Central de Gestão Full · estados", () => {
-  it("sem clienteContaId na URL, pede o parâmetro e nunca chama a API", async () => {
+describe("Central de Gestão Full · seletor Cliente → Conta ML", () => {
+  it("sem clienteContaId na URL, mostra o seletor de cliente/conta e nunca chama a API", async () => {
     irParaUrl("");
+    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
+
     render(<FullGestaoPage />);
-    expect(await screen.findByText(/informe \?clienteContaId=/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/^cliente$/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/conta mercado livre/i)).toBeInTheDocument();
     expect(mocks.obterSnapshotFull).not.toHaveBeenCalled();
   });
 
+  it("cliente com 1 conta ML: seleciona automaticamente e carrega o snapshot dessa conta", async () => {
+    irParaUrl("");
+    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
+    mocks.obterContasMeliDoCliente.mockResolvedValue({ ok: true, contas: [contaMock()] });
+    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
+
+    render(<FullGestaoPage />);
+    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
+
+    await waitFor(() => expect(mocks.obterContasMeliDoCliente).toHaveBeenCalledWith("1", expect.anything()));
+    await screen.findByText("Produto 1");
+    expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(501, expect.anything());
+  });
+
+  it("cliente com 2+ contas ML: nunca escolhe sozinho, exige seleção manual", async () => {
+    irParaUrl("");
+    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
+    mocks.obterContasMeliDoCliente.mockResolvedValue({
+      ok: true,
+      contas: [contaMock({ id: 501, nome: "Loja 1" }), contaMock({ id: 502, nome: "Loja 2" })],
+    });
+
+    render(<FullGestaoPage />);
+    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
+
+    expect(await screen.findByText(/mais de uma conta mercado livre/i)).toBeInTheDocument();
+    expect(mocks.obterSnapshotFull).not.toHaveBeenCalled();
+
+    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
+    await userEvent.selectOptions(screen.getByLabelText(/conta mercado livre/i), "502");
+    await waitFor(() => expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(502, expect.anything()));
+  });
+
+  it("conta sem grant: aparece como aguardando grant/pendente e nunca dispara a coleta Full", async () => {
+    irParaUrl("");
+    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
+    mocks.obterContasMeliDoCliente.mockResolvedValue({ ok: true, contas: [contaMock({ grant: null })] });
+
+    render(<FullGestaoPage />);
+    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
+
+    expect(await screen.findByRole("status")).toHaveTextContent(/aguardando grant/i);
+    expect(mocks.obterSnapshotFull).not.toHaveBeenCalled();
+  });
+
+  it("conta com grant válido: ao selecionar entre várias, carrega o snapshot da conta certa", async () => {
+    irParaUrl("");
+    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
+    mocks.obterContasMeliDoCliente.mockResolvedValue({
+      ok: true,
+      contas: [
+        contaMock({ id: 501, nome: "Loja sem grant", grant: null }),
+        contaMock({ id: 502, nome: "Loja conectada", grant: { id: 9, ml_user_id: "1", token_status: "valid" } }),
+      ],
+    });
+    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
+
+    render(<FullGestaoPage />);
+    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
+    await userEvent.selectOptions(await screen.findByLabelText(/conta mercado livre/i), "502");
+
+    await screen.findByText("Produto 1");
+    expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(502, expect.anything());
+    expect(mocks.obterSnapshotFull).not.toHaveBeenCalledWith(501, expect.anything());
+  });
+
+  it("conta duplicada na resposta (mesma cliente_conta_id 2x) conta como UMA conta, não como ambiguidade", async () => {
+    // Regressão de um caso real de produção: /clientes/:id/contas pode
+    // devolver a mesma cliente_conta_id 2x quando ela tem 2+ vínculos de
+    // base ativos (fan-out de JOIN no backend). O seletor precisa tratar
+    // isso como uma única conta, nunca como "2 contas" exigindo escolha.
+    irParaUrl("");
+    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
+    mocks.obterContasMeliDoCliente.mockResolvedValue({
+      ok: true,
+      contas: [contaMock({ id: 21 }), contaMock({ id: 21 })],
+    });
+    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
+
+    render(<FullGestaoPage />);
+    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
+
+    await screen.findByText("Produto 1");
+    expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(21, expect.anything());
+    expect(screen.getAllByRole("option", { name: /loja principal/i })).toHaveLength(1);
+  });
+
+  it("deep-link por clienteContaId ignora o seletor, carrega direto e permite trocar de conta", async () => {
+    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
+    render(<FullGestaoPage />);
+
+    await screen.findByText("Produto 1");
+    expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(123, expect.anything());
+    expect(screen.queryByLabelText(/^cliente$/i)).not.toBeInTheDocument();
+    expect(mocks.obterClientesDisponiveis).not.toHaveBeenCalled();
+
+    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [] });
+    await userEvent.click(screen.getByRole("button", { name: /trocar cliente\/conta/i }));
+    expect(await screen.findByLabelText(/^cliente$/i)).toBeInTheDocument();
+  });
+});
+
+describe("Central de Gestão Full · estados", () => {
   it("mostra loading enquanto o snapshot não chega", async () => {
     mocks.obterSnapshotFull.mockReturnValue(new Promise(() => {}));
     render(<FullGestaoPage />);

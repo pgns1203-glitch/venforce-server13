@@ -20,7 +20,7 @@ import { fileURLToPath, URL } from "node:url";
 const portalDir = fileURLToPath(new URL("../Portal", import.meta.url));
 
 const BACKEND_DEV = process.env.VITE_BACKEND_ORIGIN || "http://localhost:3333";
-const ROTAS_API = ["/operacao", "/auth", "/ads", "/fechamentos", "/clientes", "/health"];
+const ROTAS_API = ["/operacao", "/auth", "/ads", "/fechamentos", "/clientes", "/base-vinculos", "/health"];
 
 export default defineConfig({
   base: "./",

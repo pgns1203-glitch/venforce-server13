@@ -8,6 +8,11 @@
 const assert = require("assert");
 const { createFullController, maskSensitiveData, maskSellerId, mapError } = require("../controllers/fullController");
 
+// clienteContaService.obterConta (usado pelo resolverClienteId padrao) toca
+// Postgres real — esta suite nunca faz I/O, entao todo createFullController
+// injeta um resolver falso, exatamente como fullService ja e falso.
+const resolverClienteIdFalso = async () => 1;
+
 function fakeRes() {
   const res = { statusCode: null, body: null };
   res.status = (code) => { res.statusCode = code; return res; };
@@ -68,7 +73,7 @@ function run() {
     // getSnapshot: caminho feliz — sellerId nunca aparece, so sellerIdMasked; _internal nunca vaza
     {
       const fullService = { buildSnapshot: async () => baseSnapshot() };
-      const controller = createFullController({ fullService });
+      const controller = createFullController({ fullService, resolverClienteId: resolverClienteIdFalso });
       const res = fakeRes();
       await controller.getSnapshot({ params: { clienteContaId: "123" }, query: {} }, res);
 
@@ -80,11 +85,55 @@ function run() {
       console.log("  ✓ getSnapshot: 200 com sellerIdMasked, sem sellerId cru e sem _internal");
     }
 
+    // getSnapshot/getInventoryDetail/getInventoryMovements: o controller resolve
+    // clienteId a partir da propria clienteContaId (resolverClienteId) e repassa
+    // ao service — resolveMarketplaceAccountContext exige clienteId/clienteSlug
+    // mesmo com clienteContaId informado; sem isso, toda chamada real falhava
+    // com "cliente e obrigatorio" (bug encontrado via smoke test end-to-end).
+    {
+      let clienteIdRecebidoSnapshot = null;
+      let clienteContaIdConsultado = null;
+      const resolverEspiao = async (id) => { clienteContaIdConsultado = id; return 777; };
+      const fullService = {
+        buildSnapshot: async (args) => { clienteIdRecebidoSnapshot = args.clienteId; return baseSnapshot(); },
+        getInventoryDetail: async (args) => ({ inventoryId: args.inventoryId, stock: {}, _clienteId: args.clienteId }),
+        getInventoryMovements: async (args) => ({ inventoryId: args.inventoryId, movements: [], nextCursor: null, total: 0, salesStatus: "ok", _clienteId: args.clienteId }),
+      };
+      const controller = createFullController({ fullService, resolverClienteId: resolverEspiao });
+
+      await controller.getSnapshot({ params: { clienteContaId: "123" }, query: {} }, fakeRes());
+      assert.strictEqual(clienteContaIdConsultado, 123);
+      assert.strictEqual(clienteIdRecebidoSnapshot, 777, "buildSnapshot precisa receber o clienteId resolvido, nao undefined");
+
+      const resDetail = fakeRes();
+      await controller.getInventoryDetail({ params: { clienteContaId: "123", inventoryId: "INV-1" } }, resDetail);
+      assert.strictEqual(resDetail.body._clienteId, 777);
+
+      const resMov = fakeRes();
+      await controller.getInventoryMovements({ params: { clienteContaId: "123", inventoryId: "INV-1" }, query: {} }, resMov);
+      assert.strictEqual(resMov.body._clienteId, 777);
+      console.log("  ✓ getSnapshot/getInventoryDetail/getInventoryMovements resolvem clienteId da propria conta e repassam ao service");
+    }
+
+    // resolverClienteId falhando (ex.: conta inexistente) vira erro mapeado normalmente, nunca undefined silencioso
+    {
+      const fullService = { buildSnapshot: async () => baseSnapshot() };
+      const controller = createFullController({
+        fullService,
+        resolverClienteId: async () => { throw Object.assign(new Error("Conta não encontrada."), { statusCode: 404 }); },
+      });
+      const res = fakeRes();
+      await controller.getSnapshot({ params: { clienteContaId: "999" }, query: {} }, res);
+      assert.strictEqual(res.statusCode, 404);
+      assert.strictEqual(res.body.ok, false);
+      console.log("  ✓ falha ao resolver clienteId da conta (ex.: conta inexistente) vira erro mapeado, nunca undefined silencioso");
+    }
+
     // getSnapshot: clienteContaId invalido nunca chega ao service
     {
       let called = false;
       const fullService = { buildSnapshot: async () => { called = true; return baseSnapshot(); } };
-      const controller = createFullController({ fullService });
+      const controller = createFullController({ fullService, resolverClienteId: resolverClienteIdFalso });
       const res = fakeRes();
       await controller.getSnapshot({ params: { clienteContaId: "abc" }, query: {} }, res);
       assert.strictEqual(res.statusCode, 400);
@@ -96,7 +145,7 @@ function run() {
     // getSnapshot: windowDays diferente de 14 vira 400 (contrato so aceita 14 no V1)
     {
       const fullService = { buildSnapshot: async () => baseSnapshot() };
-      const controller = createFullController({ fullService });
+      const controller = createFullController({ fullService, resolverClienteId: resolverClienteIdFalso });
       const res = fakeRes();
       await controller.getSnapshot({ params: { clienteContaId: "123" }, query: { windowDays: "abc" } }, res);
       assert.strictEqual(res.statusCode, 400);
@@ -107,6 +156,7 @@ function run() {
     {
       const controllerConflito = createFullController({
         fullService: { buildSnapshot: async () => { throw Object.assign(new Error("multiplas contas"), { code: "MULTIPLE_MARKETPLACE_ACCOUNTS", contas: [{ id: 1 }] }); } },
+        resolverClienteId: resolverClienteIdFalso,
       });
       const resConflito = fakeRes();
       await controllerConflito.getSnapshot({ params: { clienteContaId: "123" }, query: {} }, resConflito);
@@ -115,6 +165,7 @@ function run() {
 
       const controllerFalha = createFullController({
         fullService: { buildSnapshot: async () => { throw new Error("falha inesperada"); } },
+        resolverClienteId: resolverClienteIdFalso,
       });
       const resFalha = fakeRes();
       await controllerFalha.getSnapshot({ params: { clienteContaId: "123" }, query: {} }, resFalha);
@@ -126,7 +177,7 @@ function run() {
     // getSnapshot: resposta parcial (quality=partial) continua 200, nunca vira erro
     {
       const fullService = { buildSnapshot: async () => baseSnapshot({ quality: { status: "partial", sources: {} } }) };
-      const controller = createFullController({ fullService });
+      const controller = createFullController({ fullService, resolverClienteId: resolverClienteIdFalso });
       const res = fakeRes();
       await controller.getSnapshot({ params: { clienteContaId: "123" }, query: {} }, res);
       assert.strictEqual(res.statusCode, 200);
@@ -137,7 +188,7 @@ function run() {
     // getInventoryDetail: caminho feliz e 404 explicito
     {
       const fullService = { getInventoryDetail: async () => ({ inventoryId: "INV-1", stock: {} }) };
-      const controller = createFullController({ fullService });
+      const controller = createFullController({ fullService, resolverClienteId: resolverClienteIdFalso });
       const res = fakeRes();
       await controller.getInventoryDetail({ params: { clienteContaId: "123", inventoryId: "INV-1" } }, res);
       assert.strictEqual(res.statusCode, 200);
@@ -145,6 +196,7 @@ function run() {
 
       const controllerNotFound = createFullController({
         fullService: { getInventoryDetail: async () => { throw Object.assign(new Error("nao encontrado"), { code: "INVENTORY_NOT_FOUND", statusCode: 404 }); } },
+        resolverClienteId: resolverClienteIdFalso,
       });
       const resNotFound = fakeRes();
       await controllerNotFound.getInventoryDetail({ params: { clienteContaId: "123", inventoryId: "INV-X" } }, resNotFound);
@@ -162,7 +214,7 @@ function run() {
           return { inventoryId: args.inventoryId, movements: [], nextCursor: null, total: 0, salesStatus: "ok" };
         },
       };
-      const controller = createFullController({ fullService });
+      const controller = createFullController({ fullService, resolverClienteId: resolverClienteIdFalso });
       const res = fakeRes();
       await controller.getInventoryMovements(
         { params: { clienteContaId: "123", inventoryId: "INV-1" }, query: { cursor: "OPAQUE123", limit: "50" } },
@@ -184,7 +236,7 @@ function run() {
     // Guarda final: mesmo se o service vazar um segredo por engano, a resposta HTTP nunca expoe
     {
       const fullService = { buildSnapshot: async () => baseSnapshot({ leaked: { access_token: "NUNCA" } }) };
-      const controller = createFullController({ fullService });
+      const controller = createFullController({ fullService, resolverClienteId: resolverClienteIdFalso });
       const res = fakeRes();
       await controller.getSnapshot({ params: { clienteContaId: "123" }, query: {} }, res);
       assert.strictEqual(res.body.leaked.access_token, "[REDACTED]");

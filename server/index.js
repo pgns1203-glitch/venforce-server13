@@ -790,7 +790,11 @@ app.use("/operacao/central-vendas", centralVendasRoutes);
 // Central de Margem — API read-only do Motor de Margem (somente GET).
 app.use("/operacao/central-margem", motorMargemRoutes);
 app.use("/operacao/diagnosticos-iniciais", diagnosticoInicialRoutes);
-// Central de Gestao Full — atras de feature flag (FULL_CENTRAL_ENABLED), sem link no menu ainda.
+// Central de Gestao Full — ja linkada no menu do Portal (Marketplace >
+// Central Full), mas o namespace inteiro so responde com FULL_CENTRAL_ENABLED=true
+// (ver server/routes/fullRoutes.js). Sem essa env var setada no ambiente do
+// Render, toda rota devolve 404 como se nao existisse — confirmar a env var
+// no Render antes de considerar a V1 disponivel em producao.
 app.use("/operacao/full", fullRoutes);
 app.use("/operacao", operacaoRoutes);
 app.use("/seller", sellerRoutes);

@@ -6,8 +6,10 @@
 //
 // [RISCO DE PRODUCAO] Atras de feature flag: com FULL_CENTRAL_ENABLED
 // diferente de "true", todo este namespace responde 404 (como se a rota nao
-// existisse). Sem link no menu do Portal ate o smoke test do build React
-// isolado (proxima fase). Ativar exige setar a env var explicitamente.
+// existisse), mesmo com o link ja disponivel no menu do Portal (Marketplace
+// > Central Full). Ativar em producao exige setar FULL_CENTRAL_ENABLED=true
+// nas env vars do servico no Render — sem isso, o link no menu leva a uma
+// tela que so recebe 404 do backend.
 
 const express = require("express");
 const { authMiddleware } = require("../middlewares/authMiddleware");

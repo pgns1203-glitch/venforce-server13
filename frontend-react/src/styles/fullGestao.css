@@ -81,6 +81,38 @@
   font-size: var(--vf-fs-2xs, 0.8rem);
 }
 
+.full-account-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--vf-sp-4, 12px);
+  margin-bottom: var(--vf-sp-4, 12px);
+  padding: var(--vf-sp-4, 12px);
+  background: var(--vf-surface, #fff);
+  border: 1px solid var(--vf-border, #e5e7eb);
+  border-radius: var(--vf-radius, 8px);
+}
+
+.full-account-picker-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-1, 4px);
+  min-width: 220px;
+}
+
+.full-account-picker-field label {
+  font-size: var(--vf-fs-2xs, 0.8rem);
+  color: var(--vf-text-muted, #6b7280);
+  font-weight: 600;
+}
+
+.full-account-picker-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--vf-text-muted, #6b7280);
+  font-size: var(--vf-fs-2xs, 0.85rem);
+}
+
 .full-filters {
   display: flex;
   flex-wrap: wrap;

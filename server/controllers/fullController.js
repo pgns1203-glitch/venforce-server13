@@ -5,7 +5,7 @@
 // auditado). O service resolve a conta explicita e nunca aceita
 // seller_id/cliente_id vindos do corpo/query do browser.
 
-const { resolveMarketplaceAccountContext } = require("../services/clienteContas/clienteContaService");
+const { resolveMarketplaceAccountContext, obterConta } = require("../services/clienteContas/clienteContaService");
 const { createFullMlGateway } = require("../services/full/fullMlGateway");
 const { createFullService } = require("../services/full/fullService");
 
@@ -104,6 +104,19 @@ function parseInventoryId(req) {
   return raw || null;
 }
 
+/**
+ * `resolveMarketplaceAccountContext` (Fundação de Contas) exige clienteId ou
+ * clienteSlug mesmo quando `clienteContaId` já foi informado — a Full só
+ * conhece a conta pelo path (nunca aceita cliente_id do browser), então
+ * precisa resolver o cliente dono dela primeiro. Reaproveita `obterConta`
+ * (mesmo service, nenhum SQL novo); erro (ex.: conta inexistente) propaga
+ * como está para `handleError`.
+ */
+async function resolverClienteIdDaConta(clienteContaId) {
+  const conta = await obterConta(clienteContaId);
+  return conta.cliente_id;
+}
+
 /** Remove campos internos (movimentos crus por inventory) e mascara o seller_id antes de sair pela API. */
 function toPublicSnapshot(snapshot) {
   const { _internal, account, ...rest } = snapshot;
@@ -116,7 +129,7 @@ function toPublicSnapshot(snapshot) {
  * falso (sem DB/rede); a exportacao default deste modulo usa o service real
  * (clienteContaService + mlFetch), montado uma unica vez no require.
  */
-function createFullController({ fullService }) {
+function createFullController({ fullService, resolverClienteId = resolverClienteIdDaConta }) {
   if (!fullService || typeof fullService !== "object") {
     throw new TypeError("fullService e obrigatorio");
   }
@@ -132,7 +145,8 @@ function createFullController({ fullService }) {
         return respond(res, 400, { ok: false, code: "INVALID_FULL_QUERY", message: "windowDays invalido." });
       }
 
-      const snapshot = await fullService.buildSnapshot({ clienteContaId, windowDays });
+      const clienteId = await resolverClienteId(clienteContaId);
+      const snapshot = await fullService.buildSnapshot({ clienteContaId, clienteId, windowDays });
       return respond(res, 200, { ok: true, contractVersion: 1, ...toPublicSnapshot(snapshot) });
     } catch (err) {
       return handleError(res, err, "getSnapshot");
@@ -150,7 +164,8 @@ function createFullController({ fullService }) {
         return respond(res, 400, { ok: false, code: "INVALID_FULL_QUERY", message: "inventoryId invalido." });
       }
 
-      const detail = await fullService.getInventoryDetail({ clienteContaId, windowDays: 14, inventoryId });
+      const clienteId = await resolverClienteId(clienteContaId);
+      const detail = await fullService.getInventoryDetail({ clienteContaId, clienteId, windowDays: 14, inventoryId });
       return respond(res, 200, { ok: true, ...detail });
     } catch (err) {
       return handleError(res, err, "getInventoryDetail");
@@ -172,8 +187,10 @@ function createFullController({ fullService }) {
         return respond(res, 400, { ok: false, code: "INVALID_FULL_QUERY", message: "limit invalido (1-200)." });
       }
 
+      const clienteId = await resolverClienteId(clienteContaId);
       const result = await fullService.getInventoryMovements({
         clienteContaId,
+        clienteId,
         windowDays: 14,
         inventoryId,
         cursor: req.query.cursor || null,

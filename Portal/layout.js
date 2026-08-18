@@ -161,6 +161,7 @@
         { label: "Precificação - API",   href: "automacoes.html",    icon: "repeat"       },
         { label: "Relatórios",   href: "relatorios.html",    icon: "bar-chart"     },
         { label: "Promoções ML", href: "promocoes-retorno.html", icon: "trending-up" },
+        { label: "Central Full", href: "full-gestao.html",   icon: "database"     },
 
         { separator: true, label: "DESIGN" },
         { label: "Estúdio de Templates", href: "design-templates.html", icon: "media" },
@@ -247,6 +248,7 @@
     "diagnostico-inicial.html": "operacao",
     "cliente-360.html":       "operacao",
     "cliente-360-react.html": "operacao",
+    "full-gestao.html":       "operacao",
     "central-margem.html":   "operacao",
     "dashboard.html":       "operacao",
     "bases.html":           "operacao",

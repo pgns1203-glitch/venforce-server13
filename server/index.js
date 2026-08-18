@@ -67,6 +67,7 @@ const basesRoutes = require("./routes/basesRoutes");
 const baseVinculosRoutes = require("./routes/baseVinculosRoutes");
 const assistenteBaseRoutes = require("./routes/assistenteBaseRoutes");
 const operacaoRoutes = require("./routes/operacaoRoutes");
+const fullRoutes = require("./routes/fullRoutes");
 const cliente360Routes = require("./routes/cliente360Routes");
 const cliente360ResultadoRoutes = require("./routes/cliente360ResultadoRoutes");
 const centralVendasRoutes = require("./routes/centralVendasRoutes");
@@ -789,6 +790,8 @@ app.use("/operacao/central-vendas", centralVendasRoutes);
 // Central de Margem — API read-only do Motor de Margem (somente GET).
 app.use("/operacao/central-margem", motorMargemRoutes);
 app.use("/operacao/diagnosticos-iniciais", diagnosticoInicialRoutes);
+// Central de Gestao Full — atras de feature flag (FULL_CENTRAL_ENABLED), sem link no menu ainda.
+app.use("/operacao/full", fullRoutes);
 app.use("/operacao", operacaoRoutes);
 app.use("/seller", sellerRoutes);
 app.use("/ads", adsRoutes);

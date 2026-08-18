@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "node scripts/clean-assets.mjs && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev:full": "vite --config vite.full.config.js",
+    "build:full": "node scripts/clean-assets-full.mjs && vite build --config vite.full.config.js"
   },
   "dependencies": {
     "react": "^18.3.1",

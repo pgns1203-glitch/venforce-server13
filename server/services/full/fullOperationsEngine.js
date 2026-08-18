@@ -3,12 +3,16 @@
 // Normalizacao/agregacao de operacoes de estoque Full (SALE_CONFIRMATION e
 // afins) e as funcoes puras de janela de periodo que dependem delas.
 //
-// [VALIDAR] O formato exato de uma operacao crua (`/stock/fulfillment/operations/search`)
-// ainda nao foi confirmado com fixtures reais (ver secao 6/13 do plano
-// auditado). Este arquivo assume `{ id, type, inventory_id, date, detail: {
-// available_quantity } }`, o formato mais provavel pela documentacao
-// publica, e isola essa suposicao em `normalizeOperation` para ser ajustada
-// sem tocar no restante do motor quando fixtures reais chegarem.
+// [FIX] Confirmado com payload real da API (GET /stock/fulfillment/operations/search):
+// o campo de data e `date_created`, nao `date` -- esse campo nao existe na
+// resposta real. Com `date` a operacao nunca era descartada por campo
+// obrigatorio ausente (id/type/inventory_id continuam presentes), mas
+// `operation.date` ficava sempre null e `!operation.date` descartava TODA
+// operacao silenciosamente, tanto em `aggregateOperationsByInventory` aqui
+// quanto em `buildMovementsByInventory` (fullService.js) -- giro/cobertura
+// viravam "confirmado zero" e a lista de movimentos ficava sempre vazia,
+// mesmo com vendas reais na janela. Este arquivo assume
+// `{ id, type, inventory_id, date_created, detail: { available_quantity } }`.
 //
 // Regra fixa (nao depende da suposicao acima): so SALE_CONFIRMATION conta
 // como venda. SALE_CANCELATION, SALE_RETURN etc. nunca sao somadas
@@ -33,7 +37,7 @@ function normalizeOperation(raw) {
   const operationId = raw.id !== undefined && raw.id !== null ? String(raw.id) : null;
   const type = isNonEmptyString(raw.type) ? raw.type : null;
   const inventoryId = raw.inventory_id !== undefined && raw.inventory_id !== null ? String(raw.inventory_id) : null;
-  const date = isNonEmptyString(raw.date) ? raw.date : null;
+  const date = isNonEmptyString(raw.date_created) ? raw.date_created : null;
   const availableQuantityDelta =
     raw.detail && typeof raw.detail === "object" && typeof raw.detail.available_quantity === "number"
       ? raw.detail.available_quantity

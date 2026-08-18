@@ -49,7 +49,8 @@ function makeFakeGateway({ totalItems, failStockIds = new Set(), failOperationsB
         id: `OP-${invId}-${dateFrom}`,
         type: "SALE_CONFIRMATION",
         inventory_id: invId,
-        date: `${dateFrom}T00:00:00Z`,
+        // [FIX] campo real da API e date_created, nao date (ver fullOperationsEngine.js)
+        date_created: `${dateFrom}T00:00:00Z`,
         detail: { available_quantity: -2 },
       }));
       return { ok: true, status: 200, operations, nextCursor: null };

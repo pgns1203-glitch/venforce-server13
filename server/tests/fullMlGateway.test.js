@@ -109,7 +109,11 @@ async function run() {
     console.log("  ✓ getInventoryStock monta o path correto com inventoryId escapado");
   }
 
-  // searchStockOperations: validacao de obrigatorios e mapeamento de results/scroll
+  // searchStockOperations: query real gerada -- [FIX] a documentacao oficial
+  // de GET /stock/fulfillment/operations/search usa `inventory_id` no
+  // singular (lista separada por virgula); `inventory_ids` (plural) nao
+  // existe na API real e a ML responde 400 "The field inventory_id is
+  // required" -- confirmado ao vivo contra a API antes desta correcao.
   {
     const { gateway, calls } = makeGateway({ responses: okResponse({ results: [{ id: "OP1" }], scroll: "SCR-1" }) });
     const result = await gateway.searchStockOperations({
@@ -119,15 +123,36 @@ async function run() {
       inventoryIds: ["INV-1", "INV-2"],
       dateFrom: "2026-08-01",
       dateTo: "2026-08-14",
+      scroll: "SCROLL-ANTERIOR",
+      limit: 500,
     });
 
     const path = calls[0].path;
     assert.ok(path.startsWith("/stock/fulfillment/operations/search?"));
-    assert.ok(path.includes("inventory_ids=INV-1%2CINV-2") || path.includes("inventory_ids=INV-1,INV-2"));
-    assert.ok(path.includes("date_from=2026-08-01"));
-    assert.ok(path.includes("date_to=2026-08-14"));
+    const query = new URLSearchParams(path.split("?")[1]);
+    assert.strictEqual(query.get("inventory_id"), "INV-1,INV-2", "deve enviar inventory_id (singular) com a lista separada por virgula");
+    assert.strictEqual(query.has("inventory_ids"), false, "inventory_ids (plural) nunca deve ser enviado -- nao existe na API real");
+    assert.strictEqual(query.get("seller_id"), "S1");
+    assert.strictEqual(query.get("date_from"), "2026-08-01");
+    assert.strictEqual(query.get("date_to"), "2026-08-14");
+    assert.strictEqual(query.get("limit"), "500");
+    assert.strictEqual(query.get("scroll"), "SCROLL-ANTERIOR");
     assert.deepStrictEqual(result.operations, [{ id: "OP1" }]);
     assert.strictEqual(result.nextCursor, "SCR-1");
+
+    // limit default (1000) e nenhum parametro scroll quando e a primeira pagina
+    const { gateway: gatewayPrimeiraPagina, calls: callsPrimeiraPagina } = makeGateway({ responses: okResponse({ results: [], scroll: null }) });
+    await gatewayPrimeiraPagina.searchStockOperations({
+      clienteId: 1,
+      mlUserId: "U1",
+      sellerId: "S1",
+      inventoryIds: ["INV-1"],
+      dateFrom: "2026-08-01",
+      dateTo: "2026-08-14",
+    });
+    const queryPrimeiraPagina = new URLSearchParams(callsPrimeiraPagina[0].path.split("?")[1]);
+    assert.strictEqual(queryPrimeiraPagina.get("limit"), "1000");
+    assert.strictEqual(queryPrimeiraPagina.has("scroll"), false, "sem scroll informado (primeira pagina), o parametro nao deve ser enviado");
 
     await assert.rejects(
       () => gateway.searchStockOperations({ clienteId: 1, mlUserId: "U1", sellerId: "S1", inventoryIds: [], dateFrom: "a", dateTo: "b" }),
@@ -137,7 +162,7 @@ async function run() {
       () => gateway.searchStockOperations({ clienteId: 1, mlUserId: "U1", sellerId: "S1", inventoryIds: ["INV-1"], dateFrom: null, dateTo: "b" }),
       TypeError
     );
-    console.log("  ✓ searchStockOperations valida obrigatorios e mapeia results/scroll");
+    console.log("  ✓ searchStockOperations monta a query real com inventory_id (singular) e preserva seller_id/date_from/date_to/limit/scroll");
   }
 
   // getStockOperationDetail: path com encoding, uso pontual

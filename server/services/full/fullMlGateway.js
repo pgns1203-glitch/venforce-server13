@@ -156,9 +156,15 @@ function createFullMlGateway({
     assertPresent(dateFrom, "dateFrom e obrigatorio para buscar operacoes");
     assertPresent(dateTo, "dateTo e obrigatorio para buscar operacoes");
 
+    // [FIX] Documentação oficial (GET /stock/fulfillment/operations/search)
+    // usa `inventory_id` no singular — mesmo aceitando lista separada por
+    // vírgula. `inventory_ids` (plural) não existe na API e a ML responde
+    // 400 "The field inventory_id is required", que o gateway trata como
+    // falha de lote (fonte "operations" vira partial, pages=0/records=0).
+    // Confirmado ao vivo contra a API real antes desta correção.
     const query = new URLSearchParams({
       seller_id: String(sellerId),
-      inventory_ids: inventoryIds.join(","),
+      inventory_id: inventoryIds.join(","),
       date_from: dateFrom,
       date_to: dateTo,
       limit: String(limit),

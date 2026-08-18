@@ -14,8 +14,12 @@ const {
   aggregateOperationsByInventory,
 } = require("../services/full/fullOperationsEngine");
 
+// [FIX] O payload real de /stock/fulfillment/operations/search usa
+// `date_created`, nao `date` (nao existe esse campo na API) -- confirmado
+// contra a API ao vivo. Este helper de teste usa `date_created` para
+// espelhar o formato real.
 function op({ id, type, inventoryId, date, delta }) {
-  return { id, type, inventory_id: inventoryId, date, detail: delta === undefined ? undefined : { available_quantity: delta } };
+  return { id, type, inventory_id: inventoryId, date_created: date, detail: delta === undefined ? undefined : { available_quantity: delta } };
 }
 
 function run() {

@@ -50,13 +50,18 @@ async function withTransaction(callback) {
   }
 }
 
-async function createImport({ cliente, marketplace, competencia, resumo, payload, fonte, status }, db) {
+async function createImport({
+  cliente, marketplace, competencia, resumo, payload, fonte, status,
+  clienteContaId = null, baseId = null, baseResolutionMode = null, grantId = null, externalAccountId = null,
+}, db) {
   const result = await db.query(
     `INSERT INTO central_vendas_imports
-      (cliente_id, cliente_slug, marketplace, competencia, fonte, status, confianca, resumo_json, payload_json)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb)
+      (cliente_id, cliente_slug, marketplace, competencia, fonte, status, confianca, resumo_json, payload_json,
+       cliente_conta_id, base_id, base_resolution_mode, grant_id, external_account_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14)
      RETURNING id, cliente_id, cliente_slug, marketplace, competencia, fonte, status, confianca,
-               resumo_json, payload_json, created_at, updated_at`,
+               resumo_json, payload_json, created_at, updated_at,
+               cliente_conta_id, base_id, base_resolution_mode, grant_id, external_account_id`,
     [
       cliente.id,
       cliente.slug,
@@ -67,6 +72,11 @@ async function createImport({ cliente, marketplace, competencia, resumo, payload
       resumo?.confianca || null,
       asJson(resumo, {}),
       asJson(payload, {}),
+      clienteContaId,
+      baseId,
+      baseResolutionMode,
+      grantId,
+      externalAccountId,
     ]
   );
   return result.rows[0];
@@ -177,7 +187,10 @@ async function insertComponente({
   return result.rows[0];
 }
 
-async function persistCentralVendasImport({ cliente, marketplace, competencia, motorPayload, resumo, fonte }) {
+async function persistCentralVendasImport({
+  cliente, marketplace, competencia, motorPayload, resumo, fonte,
+  clienteContaId = null, baseId = null, baseResolutionMode = null, grantId = null, externalAccountId = null,
+}) {
   return withTransaction(async (db) => {
     const importacao = await createImport({
       cliente,
@@ -186,6 +199,11 @@ async function persistCentralVendasImport({ cliente, marketplace, competencia, m
       resumo,
       payload: motorPayload,
       fonte,
+      clienteContaId,
+      baseId,
+      baseResolutionMode,
+      grantId,
+      externalAccountId,
     }, db);
 
     const pedidoRowsById = new Map();

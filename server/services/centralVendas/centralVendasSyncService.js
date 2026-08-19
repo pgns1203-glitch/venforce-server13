@@ -20,7 +20,7 @@
 
 const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
-const { createMlTokenService } = require("../mlTokenService");
+const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 const { toNumber, round2 } = require("../../utils/numberUtils");
 const { normalizeId } = require("../../utils/textUtils");
 const {
@@ -107,39 +107,20 @@ async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo) {
 }
 
 // ---------------------------------------------------------------------------
-// Base vinculada oficial + custos (preserva null = ausente, 0 = zero real)
+// Custos da base já resolvida pelo contexto de conta (nunca por cliente_id
+// isolado — ver resolveMarketplaceAccountContext). Preserva null = ausente,
+// 0 = zero real.
 // ---------------------------------------------------------------------------
 
-async function buscarBaseECustos(clienteId, db) {
-  const vinculoResult = await db.query(
-    `SELECT b.id AS base_id, b.nome AS base_nome
-       FROM bases b
-       INNER JOIN base_cliente_vinculos v ON v.base_id = b.id
-      WHERE v.cliente_id = $1
-        AND v.ativo = true
-        AND b.ativo = true
-        AND v.marketplace = 'meli'
-      ORDER BY v.updated_at DESC
-      LIMIT 1`,
-    [clienteId]
-  );
-
-  if (!vinculoResult.rows.length) {
-    return { base: null, custos: [] };
-  }
-
-  const { base_id, base_nome } = vinculoResult.rows[0];
+async function buscarCustosPorBaseId(baseId, db) {
+  if (!baseId) return [];
   const custosResult = await db.query(
     `SELECT produto_id, custo_produto, imposto_percentual
        FROM custos
       WHERE base_id = $1`,
-    [base_id]
+    [baseId]
   );
-
-  return {
-    base: { id: base_id, nome: base_nome },
-    custos: custosResult.rows,
-  };
+  return custosResult.rows;
 }
 
 function numberOrNull(value) {
@@ -571,12 +552,11 @@ function buildMotorFromOrders({
 // ---------------------------------------------------------------------------
 
 function createCentralVendasSyncService(repository = getRepository(), db = pool) {
-  const tokenService = createMlTokenService({ db });
   // Aceita { dateFrom, dateTo } (periodo de analise) OU competencia (legado).
   // Busca os pedidos do intervalo numa unica paginacao, agrupa por mes
   // (competencia) e persiste um import por mes — preserva o agrupamento mensal
   // do banco sem prender a UI a um unico mes.
-  async function sincronizarVendasMeli({ clienteSlug, competencia, dateFrom, dateTo, marketplace = "meli" }) {
+  async function sincronizarVendasMeli({ clienteSlug, clienteContaId = null, competencia, dateFrom, dateTo, marketplace = "meli" }) {
     const slug = normalizeSlug(clienteSlug);
     const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
 
@@ -602,17 +582,28 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     const cliente = await repository.getClienteBySlug(slug);
     if (!cliente) throw criarErroHttp(404, "Cliente nao encontrado.");
 
-    // Token / seller ML
-    let sellerId;
-    try {
-      sellerId = (await tokenService.resolveMlGrant({ clienteId: cliente.id, requireUsable: true })).ml_user_id;
-    } catch (_) {
-      sellerId = null;
-    }
+    // Porta única de identidade: cliente → conta → marketplace → grant/base.
+    // Nunca escolhe entre 2+ contas ML do mesmo cliente (lança 409
+    // MULTIPLE_MARKETPLACE_ACCOUNTS quando ambíguo e clienteContaId não foi
+    // informado). requireUsableGrant:true replica o comportamento anterior
+    // de falhar cedo quando não há um grant utilizável.
+    const context = await resolveMarketplaceAccountContext({
+      clienteId: cliente.id,
+      marketplace: marketplaceNorm,
+      clienteContaId,
+      requireUsableGrant: true,
+      queryable: db,
+    });
+
+    const sellerId = context.mlUserId;
     if (!sellerId) throw criarErroHttp(422, "Cliente sem Mercado Livre conectado.");
 
-    // Base vinculada oficial + custos (tolerante: sem base ⇒ tudo bloqueado, mas persiste)
-    const { base, custos } = await buscarBaseECustos(cliente.id, db);
+    // Base oficial da CONTA (nunca "última base do cliente") + custos.
+    // Tolerante: sem base ⇒ tudo bloqueado, mas a sincronização persiste
+    // mesmo assim (honestidade do dado > bloquear a operação inteira).
+    const baseId = context.base?.base_id || null;
+    const custos = await buscarCustosPorBaseId(baseId, db);
+    const base = baseId ? { id: baseId, nome: context.base.nome } : null;
     const costMap = buildCostMap(custos);
 
     // Pedidos via Orders API (intervalo inteiro numa paginacao)
@@ -712,6 +703,13 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         fonte: "orders_api",
         motorPayload,
         resumo,
+        // Identidade da execução — permite provar qual conta/grant/base
+        // produziram este snapshot (seção 35, proveniência).
+        clienteContaId: context.conta?.id || null,
+        baseId,
+        baseResolutionMode: context.base?.resolvido_por || null,
+        grantId: context.grant?.id || null,
+        externalAccountId: context.mlUserId || null,
       });
 
       pedidosPersistidos += persisted.pedidosPersistidos;
@@ -745,6 +743,13 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       marketplace: marketplaceNorm,
       periodo: { dateFrom: from, dateTo: to },
       porCompetencia,
+      // Identidade operacional resolvida — nunca "última conta"/"última base".
+      contexto: {
+        conta: context.conta,
+        externalAccountId: context.mlUserId,
+        grantId: context.grant?.id || null,
+        baseResolutionMode: context.base?.resolvido_por || null,
+      },
       baseVinculada: base ? { id: base.id, nome: base.nome, custos: custos.length } : null,
       ordersEncontrados: orders.length,
       frete: {
@@ -787,6 +792,6 @@ module.exports = {
   extrairReembolso,
   buildCostMap,
   getCost,
-  buscarBaseECustos,
+  buscarCustosPorBaseId,
   fetchAllOrders,
 };

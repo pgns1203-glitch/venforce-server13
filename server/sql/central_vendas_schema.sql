@@ -88,6 +88,24 @@ CREATE TABLE IF NOT EXISTS central_vendas_componentes (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Identidade da execução (Fundação Cliente/Contas — M1 da Central de Vendas
+-- V3). Aditivo e nullable: snapshots antigos ficam com esses campos NULL
+-- ("account_context = unresolved" para efeitos de auditoria), nunca
+-- atribuídos retroativamente por adivinhação.
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS cliente_conta_id BIGINT REFERENCES cliente_contas(id) ON DELETE SET NULL;
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS base_id BIGINT REFERENCES bases(id) ON DELETE SET NULL;
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS base_resolution_mode TEXT;
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS grant_id BIGINT REFERENCES ml_tokens(id) ON DELETE SET NULL;
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS external_account_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_imports_cliente_conta
+  ON central_vendas_imports (cliente_conta_id, competencia);
+
 CREATE INDEX IF NOT EXISTS idx_central_vendas_imports_cliente_comp
   ON central_vendas_imports (cliente_slug, competencia, created_at DESC);
 

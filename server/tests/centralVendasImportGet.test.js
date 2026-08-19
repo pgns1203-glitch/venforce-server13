@@ -154,6 +154,11 @@ const custosNaBanco = [
 
 const fakeDb = {
   async query(sql) {
+    // resolveMarketplaceAccountContext (chamado pelo GET account-aware):
+    // este cliente não tem cliente_contas cadastrada — cai no modo legado
+    // (conta=null, sem grant, sem base por conta), que é o que este teste
+    // de import/GET quer exercitar.
+    if (/FROM clientes/.test(sql))         return { rows: [{ id: cliente.id, nome: cliente.nome, slug: cliente.slug, ativo: true }] };
     if (/base_cliente_vinculos/.test(sql)) return { rows: [{ base_id: 1, base_nome: "Base Teste" }] };
     if (/FROM custos/.test(sql))           return { rows: custosNaBanco };
     return { rows: [] };
@@ -162,7 +167,7 @@ const fakeDb = {
 
 async function run() {
   const importService = createCentralVendasImportService(fakeRepository, fakeDb);
-  const readService = createCentralVendasService(fakeRepository);
+  const readService = createCentralVendasService(fakeRepository, fakeDb);
 
   const imported = await importService.importarVendasMeli({
     salesRowsRaw,

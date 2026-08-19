@@ -442,9 +442,9 @@ async function definirContaPrincipal(contaId) {
   }
 }
 
-async function obterBaseDaConta(contaId) {
-  const conta = await obterConta(contaId);
-  const direto = await pool.query(
+async function obterBaseDaConta(contaId, queryable = pool) {
+  const conta = await obterConta(contaId, queryable);
+  const direto = await queryable.query(
     `SELECT v.id AS vinculo_id, v.base_id, b.slug, b.nome
        FROM base_cliente_vinculos v
        JOIN bases b ON b.id = v.base_id
@@ -457,13 +457,13 @@ async function obterBaseDaConta(contaId) {
   // Compatibilidade: se esta é a única conta ativa daquele marketplace para
   // o cliente, um vínculo legado (cliente_id + marketplace) ainda identifica
   // a base sem ambiguidade.
-  const outrasContas = await pool.query(
+  const outrasContas = await queryable.query(
     "SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true",
     [conta.cliente_id, conta.marketplace]
   );
   if ((outrasContas.rows[0]?.total || 0) !== 1) return { vinculo_id: null, base_id: null, resolvido_por: null };
 
-  const legado = await pool.query(
+  const legado = await queryable.query(
     `SELECT v.id AS vinculo_id, v.base_id, b.slug, b.nome
        FROM base_cliente_vinculos v
        JOIN bases b ON b.id = v.base_id
@@ -574,15 +574,21 @@ async function desconectarGrantMlDaConta(contaId) {
 // Porta de entrada para operações account-sensitive. Nunca escolhe
 // silenciosamente entre 2+ contas do mesmo marketplace — ver seção 7 da
 // auditoria/spec (regra de ambiguidade).
-async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, marketplace, clienteContaId = null, requireUsableGrant = false }) {
-  const cliente = await resolverClientePorIdOuSlug({ clienteId, clienteSlug });
+//
+// `queryable` é opcional (default: pool real) e existe para permitir
+// injeção de um db fake em testes de consumidores (ex.: Central de Vendas),
+// sem precisar monkeypatchar o singleton do pool. Todo chamador existente
+// (Central Full, /clientes, /bases) continua igual — não passa esse campo e
+// cai no default.
+async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, marketplace, clienteContaId = null, requireUsableGrant = false, queryable = pool }) {
+  const cliente = await resolverClientePorIdOuSlug({ clienteId, clienteSlug }, queryable);
   const marketplaceNorm = normalizarMarketplaceConta(marketplace);
   if (!marketplaceNorm) throw criarErroHttp(400, "marketplace deve ser 'meli' ou 'shopee'.");
 
   let conta = null;
 
   if (clienteContaId != null) {
-    conta = await obterConta(clienteContaId);
+    conta = await obterConta(clienteContaId, queryable);
     if (conta.cliente_id !== cliente.id) {
       throw criarErroHttp(403, "Esta conta não pertence ao cliente informado.");
     }
@@ -590,7 +596,7 @@ async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, market
       throw criarErroHttp(422, "Esta conta não é do marketplace informado.");
     }
   } else {
-    const ativas = await pool.query(
+    const ativas = await queryable.query(
       "SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true ORDER BY is_primary DESC, created_at ASC, id ASC",
       [cliente.id, marketplaceNorm]
     );
@@ -615,11 +621,12 @@ async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, market
   };
 
   if (marketplaceNorm === "meli") {
+    const tokenService = mlTokenService.createMlTokenService({ db: queryable });
     if (conta) {
       context.mlUserId = conta.external_account_id || null;
       if (context.mlUserId) {
         try {
-          context.grant = await mlTokenService.resolveMlGrant({
+          context.grant = await tokenService.resolveMlGrant({
             clienteId: cliente.id,
             mlUserId: context.mlUserId,
             requireUsable: requireUsableGrant,
@@ -632,7 +639,7 @@ async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, market
     } else {
       // Legado: sem conta cadastrada, comportamento pré-existente (principal/fallback).
       try {
-        context.grant = await mlTokenService.resolveMlGrant({ clienteId: cliente.id, requireUsable: requireUsableGrant });
+        context.grant = await tokenService.resolveMlGrant({ clienteId: cliente.id, requireUsable: requireUsableGrant });
         context.mlUserId = context.grant?.ml_user_id != null ? String(context.grant.ml_user_id) : null;
       } catch (error) {
         if (requireUsableGrant) throw error;
@@ -642,9 +649,9 @@ async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, market
   }
 
   if (conta) {
-    context.base = await obterBaseDaConta(conta.id);
+    context.base = await obterBaseDaConta(conta.id, queryable);
   } else {
-    const legado = await pool.query(
+    const legado = await queryable.query(
       `SELECT v.id AS vinculo_id, v.base_id, b.slug, b.nome
          FROM base_cliente_vinculos v
          JOIN bases b ON b.id = v.base_id

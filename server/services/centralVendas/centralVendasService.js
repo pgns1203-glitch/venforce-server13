@@ -1,6 +1,10 @@
+const pool = require("../../config/database");
+
 function getRepository() {
   return require("./centralVendasRepository");
 }
+
+const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 
 const MESES = [
   "Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho",
@@ -551,8 +555,18 @@ function buildPayloadFromRange(cliente, range, snapshot) {
   };
 }
 
-function createCentralVendasService(repository = getRepository()) {
-  async function getCentralVendas(clienteSlug, { competencia, dateFrom, dateTo, marketplace = "meli" } = {}) {
+function buildContextoPayload(context) {
+  if (!context) return null;
+  return {
+    conta: context.conta,
+    externalAccountId: context.mlUserId,
+    baseResolutionMode: context.base?.resolvido_por || null,
+    baseId: context.base?.base_id || null,
+  };
+}
+
+function createCentralVendasService(repository = getRepository(), db = pool) {
+  async function getCentralVendas(clienteSlug, { competencia, dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = {}) {
     const slug = normalizeSlug(clienteSlug);
     const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
 
@@ -569,6 +583,21 @@ function createCentralVendasService(repository = getRepository()) {
       throw err;
     }
 
+    // Mesma regra de identidade do sync, aplicada também na leitura: nunca
+    // deixar a tela abrir um fechamento sem saber de qual conta ele é,
+    // quando existe ambiguidade real (2+ contas ML ativas). Sem grant
+    // obrigatório aqui — GET é leitura, não dispara chamada ao Mercado Livre.
+    let context = null;
+    if (marketplaceNorm === "meli") {
+      context = await resolveMarketplaceAccountContext({
+        clienteId: cliente.id,
+        marketplace: marketplaceNorm,
+        clienteContaId,
+        requireUsableGrant: false,
+        queryable: db,
+      });
+    }
+
     // Novo: periodo de analise por intervalo de datas (pode cruzar meses).
     if (isValidIsoDate(dateFrom) && isValidIsoDate(dateTo)) {
       const from = dateFrom <= dateTo ? dateFrom : dateTo;
@@ -579,7 +608,9 @@ function createCentralVendasService(repository = getRepository()) {
         dateTo: to,
         marketplace: marketplaceNorm,
       });
-      return buildPayloadFromRange(cliente, { dateFrom: from, dateTo: to }, snapshot);
+      const payload = buildPayloadFromRange(cliente, { dateFrom: from, dateTo: to }, snapshot);
+      payload.contexto = buildContextoPayload(context);
+      return payload;
     }
 
     // Legado: por competencia (mes unico).
@@ -590,7 +621,9 @@ function createCentralVendasService(repository = getRepository()) {
       marketplace: marketplaceNorm,
     });
 
-    return buildPayloadFromSnapshot(cliente, competenciaNorm, snapshot);
+    const payload = buildPayloadFromSnapshot(cliente, competenciaNorm, snapshot);
+    payload.contexto = buildContextoPayload(context);
+    return payload;
   }
 
   return {

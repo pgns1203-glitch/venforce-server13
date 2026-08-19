@@ -147,6 +147,10 @@ class MockDb {
       this.vinculos.forEach((v) => { if (v.base_id === Number(params[0]) && v.ativo) v.ativo = false; });
       return { rows: [] };
     }
+    if (q.startsWith("UPDATE base_cliente_vinculos SET ativo = false, updated_at = NOW() WHERE cliente_conta_id = $1 AND ativo = true")) {
+      this.vinculos.forEach((v) => { if (v.cliente_conta_id === Number(params[0]) && v.ativo) v.ativo = false; });
+      return { rows: [] };
+    }
     if (q.startsWith("INSERT INTO base_cliente_vinculos")) {
       const vinculo = {
         id: this.nextVinculoId++,

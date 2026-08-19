@@ -184,11 +184,11 @@ async function listarContasDoCliente({ clienteId, clienteSlug, marketplace, incl
 // Nunca escolhe entre 2+ contas ativas — mesma regra de ambiguidade de
 // resolveMarketplaceAccountContext. Marketplace fora da fundação (ex.:
 // tiktok) devolve null: o vínculo legado segue sem cliente_conta_id.
-async function resolverContaParaVinculoLegado({ clienteId, marketplace }) {
+async function resolverContaParaVinculoLegado({ clienteId, marketplace }, queryable = pool) {
   const marketplaceNorm = normalizarMarketplaceConta(marketplace);
   if (!marketplaceNorm) return null;
 
-  const ativas = await pool.query(
+  const ativas = await queryable.query(
     "SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true ORDER BY is_primary DESC, created_at ASC, id ASC",
     [clienteId, marketplaceNorm]
   );
@@ -476,38 +476,74 @@ async function obterBaseDaConta(contaId) {
   return { ...legado.rows[0], resolvido_por: "legado_unico" };
 }
 
-async function vincularBaseNaConta(contaId, baseIdRaw) {
-  const conta = await obterConta(contaId);
-  const baseIdNum = Number(baseIdRaw);
+// Núcleo transacional do vínculo account-aware. Não abre/fecha transação —
+// quem chama (vincularBaseNaConta ou um comando maior, ex.: importação
+// atômica de base) controla BEGIN/COMMIT/ROLLBACK e passa o client.
+//
+// Invariante de cardinalidade (decisão da correção pós-auditoria): uma
+// cliente_conta tem no máximo 1 base oficial ativa, e uma base tem no
+// máximo 1 vínculo ativo. "Trocar base" da mesma conta desativa o vínculo
+// anterior da CONTA (não só o da base) na mesma transação — sem isso, uma
+// conta acumulava vínculos ativos em bases diferentes (achado P1 da
+// auditoria: trocar base não desativava o vínculo antigo da conta).
+async function vincularBaseNaContaTx(client, { contaId, baseId, userId = null }) {
+  const conta = await obterConta(contaId, client);
+  if (conta.ativo === false) {
+    throw criarErroHttp(422, `Conta "${conta.nome}" está inativa e não pode receber vínculo de base.`, {
+      code: "CONTA_INATIVA",
+    });
+  }
+
+  const baseIdNum = Number(baseId);
   if (!Number.isInteger(baseIdNum) || baseIdNum <= 0) throw criarErroHttp(400, "base_id inválido.");
 
+  const base = await client.query("SELECT id, slug, nome, marketplace, ativo FROM bases WHERE id = $1", [baseIdNum]);
+  if (!base.rows.length) throw criarErroHttp(404, "Base não encontrada.");
+  const baseRow = base.rows[0];
+
+  if (baseRow.ativo === false) {
+    throw criarErroHttp(422, `Base "${baseRow.nome}" está inativa e não pode receber vínculo.`, {
+      code: "BASE_INATIVA",
+    });
+  }
+
+  if (String(baseRow.marketplace || "").toLowerCase() !== conta.marketplace) {
+    throw criarErroHttp(422, `Base é do marketplace "${baseRow.marketplace}" e a conta é "${conta.marketplace}". Vínculo bloqueado.`, {
+      code: "BASE_MARKETPLACE_MISMATCH",
+    });
+  }
+
+  // Cardinalidade: desativa o vínculo anterior da BASE e o vínculo anterior
+  // da CONTA (podem ser linhas diferentes) antes de ativar o novo.
+  await client.query(
+    "UPDATE base_cliente_vinculos SET ativo = false, updated_at = NOW() WHERE base_id = $1 AND ativo = true",
+    [baseIdNum]
+  );
+  await client.query(
+    "UPDATE base_cliente_vinculos SET ativo = false, updated_at = NOW() WHERE cliente_conta_id = $1 AND ativo = true",
+    [conta.id]
+  );
+
+  const vinculo = await client.query(
+    `INSERT INTO base_cliente_vinculos
+       (base_id, cliente_id, cliente_conta_id, marketplace, origem, ativo, confirmado_por, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, 'conta', true, $5, NOW(), NOW())
+     RETURNING *`,
+    [baseIdNum, conta.cliente_id, conta.id, conta.marketplace, userId || null]
+  );
+
+  return { base: baseRow, vinculo: vinculo.rows[0], conta };
+}
+
+// Wrapper com transação própria — mantém a assinatura pública usada por
+// clienteContasController (PUT /cliente-contas/:id/base).
+async function vincularBaseNaConta(contaId, baseIdRaw, { userId = null } = {}) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const base = await client.query("SELECT id, slug, nome, marketplace, ativo FROM bases WHERE id = $1", [baseIdNum]);
-    if (!base.rows.length) throw criarErroHttp(404, "Base não encontrada.");
-    const baseRow = base.rows[0];
-
-    if (String(baseRow.marketplace || "").toLowerCase() !== conta.marketplace) {
-      throw criarErroHttp(422, `Base é do marketplace "${baseRow.marketplace}" e a conta é "${conta.marketplace}". Vínculo bloqueado.`, {
-        code: "BASE_MARKETPLACE_MISMATCH",
-      });
-    }
-
-    await client.query(
-      "UPDATE base_cliente_vinculos SET ativo = false, updated_at = NOW() WHERE base_id = $1 AND ativo = true",
-      [baseIdNum]
-    );
-
-    const vinculo = await client.query(
-      `INSERT INTO base_cliente_vinculos (base_id, cliente_id, cliente_conta_id, marketplace, origem, ativo, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'conta', true, NOW(), NOW())
-       RETURNING *`,
-      [baseIdNum, conta.cliente_id, conta.id, conta.marketplace]
-    );
-
+    const resultado = await vincularBaseNaContaTx(client, { contaId, baseId: baseIdRaw, userId });
     await client.query("COMMIT");
-    return { base: baseRow, vinculo: vinculo.rows[0] };
+    return resultado;
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -636,6 +672,7 @@ module.exports = {
   definirContaPrincipal,
   obterBaseDaConta,
   vincularBaseNaConta,
+  vincularBaseNaContaTx,
   desconectarGrantMlDaConta,
   resolveMarketplaceAccountContext,
   sanitizarConta,

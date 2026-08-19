@@ -1,9 +1,9 @@
 # Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte)
 
 > Este documento cobre **o que foi implementado**: M1 (Central Account-Aware),
-> M2 (Sync Run persistido), o **Hardening M1/M2** (seção 9) e agora
-> **M3 — Completude por Fonte** (seção 10), quatro dos dez marcos descritos
-> na especificação da fundação da Central V3.
+> M2 (Sync Run persistido), o **Hardening M1/M2** (seção 9), **M3 —
+> Completude por Fonte** (seção 10) e o **Hardening M3** (seção 11) que
+> corrigiu 4 lacunas de integridade na prova de completude antes do M4.
 > M4–M10 (candidate/published, motor por item, ledger, API de leitura
 > paginada, frontend account-aware, remoção do recálculo no frontend,
 > performance/bulk) **não foram implementados** — ver seção 10.14 "O que
@@ -816,7 +816,256 @@ continua exatamente como M1/M2/Hardening deixou. A Central continua sendo
 um **fechamento operacional em evolução**, nunca "conciliação financeira
 final".
 
-## 11. Próximo marco (M4, fora do escopo desta rodada)
+## 11. Hardening M3 (rodada de correção, antes do M4)
+
+Uma revisão posterior ao M3 encontrou 4 lacunas de integridade na prova de
+completude. Esta rodada as corrige sem tocar em nada além do escopo do M3
+(sem candidate/published, sem motor por item, sem Ads/Mercado Pago).
+
+### 11.1 P0 — fonte obrigatória ausente não podia impedir `complete`
+
+**O bug.** `calcularCompletudeDoRun()` partia das linhas que **existem**
+em `central_vendas_sync_sources` e filtrava as relevantes. Uma fonte
+obrigatória que nunca chegou a ser registrada (ex.: o processo caiu entre
+`iniciarFonte("claims")` e `iniciarFonte("shipments")`, num ponto que a
+rede de segurança do M3 não cobria) ficava **invisível** para o agregador
+— `orders`/`claims`/`base` completos sozinhos podiam virar `complete` sem
+qualquer evidência de Shipments.
+
+**A correção.** `requiredSources` agora é um conjunto **fixo**
+(`orders`/`shipments`/`claims`/`base`, mais `returns` quando uma linha
+dela foi de fato registrada — seção 11.2), independente de quais linhas
+existem. `missingSources` é calculado por diferença de conjunto
+(`requiredSources - observedSources`) e nunca pode resultar em `complete`.
+
+```js
+// central_vendas_sync_sources tem só: orders(complete), claims(complete), base(complete)
+// shipments NUNCA foi registrada
+
+calcularCompletudeDoRun(runId, { runStatus: "completed" })
+// {
+//   status: "partial",
+//   requiredSources: ["orders","shipments","claims","base"],
+//   observedSources: ["orders","claims","base"],
+//   missingSources: ["shipments"],
+//   incompleteSources: [],
+//   failedSources: []
+// }
+```
+
+**`run.status` entra na decisão (seção 2 da spec).** Uma fonte ausente
+enquanto o run ainda está `queued`/`running` pode legitimamente significar
+"ainda não chegou a vez dela" — não é uma lacuna, é falta de informação.
+`calcularCompletudeDoRun` ganhou um segundo parâmetro opcional
+`{ runStatus, db }`: com `runStatus` igual a `queued`/`running`, fonte
+ausente vira `unknown`; em qualquer outro caso (`completed`/`failed`, ou
+`runStatus` omitido — comportamento estrito por padrão), fonte obrigatória
+ausente/incompleta/failed nunca resulta em `complete`. Os três chamadores
+de produção (`centralVendasSyncService` no meio do processamento,
+`centralVendasSyncWorker` antes de marcar o run `completed`, e o
+controller no GET) passam `runStatus` explicitamente — a decisão nunca é
+duplicada no frontend.
+
+### 11.2 Returns continua condicional
+
+Não virou fonte obrigatória universal. `returns` só entra em
+`requiredSources` quando uma linha foi de fato registrada no run (o run
+teve claims de devolução para avaliar) — por isso `returns` nunca aparece
+em `missingSources`: sua ausência não é uma lacuna, é "não se aplicou a
+este run". Quando Claims falha, Returns continua sendo registrada como
+`incomplete`/`RETURNS_BLOCKED_BY_CLAIMS` (inalterado do M3) — isso
+continua impedindo completude total normalmente, via `incompleteSources`.
+
+### 11.3 P0 — Claims com `paging.total` ausente não é mais prova de completude
+
+**O bug.** A regra antiga (`claimsExpected === null ? claimsReceived === 0
+: ...`) permitia que `HTTP 200 + paging.total ausente + data=[]` virasse
+`claims.complete = true` — a mesma distorção que Orders já evitava
+(`ORDERS_COUNT_MISMATCH` quando `paging.total` nunca aparece), mas que
+Claims ainda não seguia.
+
+**A correção.** Nova função `computeClaimsCompleteness()` em
+`centralVendasClaimsService.js`, mesma filosofia de `fetchAllOrders`:
+
+```text
+maxReportedTotal === null            -> incomplete / CLAIMS_TOTAL_UNKNOWN
+  (mesmo com receivedCount = 0 — lista vazia sem total NUNCA é "zero confirmado")
+cappedBySafetyLimit && received<max  -> incomplete / CLAIMS_TRUNCATED_BY_SAFETY_LIMIT
+receivedCount !== maxReportedTotal   -> incomplete / CLAIMS_COUNT_MISMATCH
+                                         (ou CLAIMS_EARLY_EMPTY_PAGE quando a
+                                         página chegou vazia antes do total)
+receivedCount === maxReportedTotal   -> complete (inclui 0/0 quando total=0 é
+                                         realmente informado pela API)
+```
+
+### 11.4 Claims — total variando entre páginas usa a estratégia conservadora
+
+**O bug.** `apiTotal` era simplesmente sobrescrito a cada página
+(`apiTotal = novo ?? apiTotal`) — se a API informasse `120` na página 1 e
+`100` na página 2, o último valor vencia silenciosamente, mascarando a
+inconsistência.
+
+**A correção.** Mesma estratégia de `fetchAllOrders`:
+`firstReportedTotal`/`lastReportedTotal`/`maxReportedTotal` rastreados
+página a página; `expectedCount = maxReportedTotal` (nunca o último visto).
+`metadata.totalChanged` sinaliza quando a API variou. Se a cobertura final
+atinge o maior total, é completa; se não atinge, `CLAIMS_COUNT_MISMATCH`
+ou `CLAIMS_EARLY_EMPTY_PAGE` (a segunda quando a divergência se manifesta
+como uma página vazia antes do total conhecido — as duas situações são
+indistinguíveis no nível da API: "o total caiu" e "chegou vazio antes do
+total" produzem exatamente a mesma resposta HTTP).
+
+### 11.5 Claims — teto de paginação vira motivo tipado, não falha genérica
+
+**Antes**, atingir o teto de offset (`> 9999`, essencialmente o mesmo
+limite de `CLAIMS_MAX_PAGES × CLAIMS_PAGE_LIMIT = 100 × 100`) retornava
+`indisponivel: true` genérico (`limite_paginacao_excedido`) — a
+sincronização descartava os claims já coletados e tratava como se a API
+tivesse falhado.
+
+**Agora**, o teto encerra o loop (`cappedBySafetyLimit = true`) e os
+claims já coletados seguem para `resolverReturnsSemVinculo`/`buildClaimsMap`
+normalmente — a causa específica (`CLAIMS_TRUNCATED_BY_SAFETY_LIMIT`) é
+provada pela comparação final contra `maxReportedTotal`, mesmo espírito de
+`ORDERS_TRUNCATED_BY_SAFETY_LIMIT`. `indisponivel` nunca mais é usado como
+"causa desconhecida" quando a causa é conhecida.
+
+### 11.6 P0 — Shipments não pode chamar 401/403 de "coleta completa"
+
+**O bug.** `buscarFreteShipment()` só marcava `erro: true` (falha técnica)
+para status retryable (429/5xx) exauridos ou exceção de rede — 401/403
+caíam no mesmo bucket que `sem_custo_seller` ("ausência legítima",
+`erro: false`). Como `shipmentsComplete = freteLote.erros === 0` só olhava
+para `erros`, um cenário real e grave passava despercebido:
+
+```text
+573 shipments únicos
+573 requisições → HTTP 403 (aplicação sem permissão)
+erros = 0  (403 não é retryable, nunca incrementava este contador)
+
+shipments.complete = true   ← ERRADO
+missingFreight = 573
+```
+
+**A correção.** `buscarFreteShipment()` ganhou um campo novo, `collected`,
+ortogonal a `erro` (mantido por compatibilidade — nada que já dependia de
+`erro` quebrou):
+
+| Cenário                          | `status`  | `collected` | `erro`   |
+| --------------------------------- | --------- | ------------ | -------- |
+| HTTP 200 + `sender.cost` presente | `real`    | `true`       | `false`  |
+| HTTP 200 + sem custo utilizável    | `ausente` | `true`       | `false`  |
+| HTTP 401 / 403                    | `ausente` | **`false`**  | `false`  |
+| HTTP 400 / 404 (sem evidência suficiente no projeto — tratado conservador) | `ausente` | **`false`**  | `false`  |
+| 429 / 5xx exaurido                | `ausente` | **`false`**  | `true`   |
+| erro de rede exaurido             | `ausente` | **`false`**  | `true`   |
+
+`buscarFretesEmLote()` ganhou `naoColetados`/`coletados` — `naoColetados`
+é o superset real de `erros` (inclui 401/403/400/404) e é **este**
+contador, não `erros`, que decide `shipmentsComplete` em
+`centralVendasSyncService.js`. `missingFreightCount` (renomeado
+`missingFinancialValueCount`) agora é estritamente `ausentes -
+naoColetados` — só a ausência financeira legítima, nunca confundida com
+falha de coleta.
+
+### 11.7 Novo contrato do agregador (GET)
+
+`GET /operacao/central-vendas/:slug/sync-runs/:runId` ganha `completeness`
+ao lado de `run`/`sources` — a agregação já pronta, nunca recalculada pelo
+frontend:
+
+```json
+{
+  "ok": true,
+  "run": { "id": 123, "status": "completed", "completenessStatus": "partial" },
+  "completeness": {
+    "status": "partial",
+    "requiredSources": ["orders", "shipments", "claims", "base"],
+    "observedSources": ["orders", "claims", "base"],
+    "missingSources": ["shipments"],
+    "incompleteSources": [],
+    "failedSources": []
+  },
+  "sources": [ /* inalterado do M3 */ ]
+}
+```
+
+O snapshot compacto (`resumo_json`, seção 43 do M3) ganha `missingSources`
+próprio e mantém `incompleteSources` como a união `missing ∪ incomplete ∪
+failed` — a distinção fina fica preservada na fonte canônica
+(`central_vendas_sync_sources`, via `calcularCompletudeDoRun`), a união é
+só a conveniência de leitura rápida para o GET da Central
+(`centralVendasService.buildCompletenessState`, inalterado nesta rodada —
+já lia `incompleteSources` genericamente e passou a herdar
+`missingSources` automaticamente por já estar na união).
+
+### 11.8 Claims HTTP 400 real — investigação (sem correção nova)
+
+O caso real observado (`GET /post-purchase/v1/claims/search → HTTP 400`,
+com as duas variantes de timezone `-03:00`/`-0300` já tentadas) foi
+investigado nesta rodada. Evidência disponível no repositório
+(`docs/prompt-codex-claims-log.md`, rodada anterior): as duas correções
+"baratas e sem contraindicação" identificadas na época — usar `-03:00`
+(com dois pontos) como formato primário e remover o parâmetro `sort` não
+documentado — **já estão aplicadas no código atual**
+(`CLAIMS_TIMEZONE_FORMATS = ["-03:00", "-0300"]`; `buildClaimsSearchPath`
+não envia `sort`). Não há, nesta sessão, acesso a um payload real
+recém-capturado de um HTTP 400 em produção para investigar além disso.
+
+Por isso, seguindo a seção 21 da spec deste hardening: **nenhuma mudança
+de endpoint ou query foi feita** — trocar endpoint "por tentativa" está
+explicitamente proibido sem evidência. O comportamento correto e já
+implementado (`CLAIMS_HTTP_400`, `claims.complete = false`, run continua
+`completed`/completude `partial`) permanece. Se a causa for permissão de
+aplicação (tópico "Post Purchase/Claims" não habilitado no painel do
+Mercado Livre — hipótese já registrada no log existente), é configuração
+de painel, não algo que um ajuste de código resolve.
+
+### 11.9 Testes
+
+```text
+centralVendasClaimsCompleteness.test.js       28 verificações — computeClaimsCompleteness
+                                                (total ausente, total variável, página vazia,
+                                                 teto de paginação, HTTP 400)
+centralVendasShipmentsCompleteness.test.js    30 verificações — collected/httpStatus,
+                                                401/403/429/5xx/erro-de-rede/400/404,
+                                                lote com falha parcial de coleta
+centralVendasSyncSourceService.test.js        46 verificações (10 novas: fonte obrigatória
+                                                ausente x2, run ainda em andamento, zero
+                                                fontes + run terminal)
+centralVendasM3Completude.test.js             39 verificações (7 novas: cenário 4 — todos os
+                                                shipments HTTP 403 fim-a-fim via worker real,
+                                                prova que a fonte nunca vira `complete`)
+```
+
+Suíte geral: 95/97 arquivos `*.test.js` (as mesmas 2 falhas pré-existentes
+do Hardening M1/M2 — `designStudioWorkspace.test.js` e
+`mlTokenService.test.js` — confirmadas novamente, ainda não relacionadas).
+Sem teste de integração contra PostgreSQL real nesta rodada — mesma
+limitação registrada no M3 original, não mudou (sem `DATABASE_URL`
+disponível neste ambiente).
+
+### 11.10 Critérios de aceite verificados
+
+Os quatro cenários que a spec deste hardening pede para tornar
+impossíveis foram cobertos por teste e confirmados corrigidos:
+
+```text
+shipments sem linha registrada        → completeness "partial" (nunca "complete")
+Claims HTTP 200 + total ausente + []  → "incomplete"/CLAIMS_TOTAL_UNKNOWN (nunca "complete")
+Claims total 120→100, received=100    → "incomplete" (nunca "complete" silenciosamente)
+573 shipments com HTTP 403            → shipments "incomplete" (nunca "complete")
+```
+
+E os dois cenários que a spec pede para funcionar corretamente:
+
+```text
+HTTP 200 sem sender.cost   → collected=true (coleta completa), cobertura financeira ausente
+Orders/Shipments complete,
+Claims HTTP 400            → run completed, completeness partial, podeConcluir false
+```
+
+## 12. Próximo marco (M4, fora do escopo desta rodada)
 
 Candidate / Published Snapshot — decidir qual snapshot de um período é o
 "oficial" quando existem múltiplas sincronizações, e só então permitir que

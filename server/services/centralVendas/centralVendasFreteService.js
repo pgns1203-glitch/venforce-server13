@@ -106,12 +106,23 @@ function pLimit(concorrencia) {
 
 function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep } = {}) {
   // Consulta um shipment com retry seguro. Resultado sempre no formato
-  // { valor, custoSeller, receitaComprador, status, motivo, tentativas, erro }.
+  // { valor, custoSeller, receitaComprador, status, motivo, tentativas, erro,
+  //   collected, httpStatus }.
   //   custoSeller (= valor, mantido por compatibilidade): senders[].cost
   //   receitaComprador: receiver.cost — valor de envio pago pelo comprador
   //   status: "real" | "ausente" (refere-se SEMPRE ao custo do seller)
-  //   erro: true quando a ausência veio de falha tecnica (429/5xx/fetch),
-  //         false quando é ausência legitima (404/400/401/403/sem_custo_seller).
+  //   erro: true quando a ausência veio de falha tecnica retryable exaurida
+  //         (429/5xx) ou exceção de rede — mantido por compatibilidade com
+  //         `buscarFretesEmLote.erros`, nunca renomeado.
+  //   collected (Hardening M3, seções 12-15): true SOMENTE quando a fonte foi
+  //         de fato consultada com sucesso (HTTP ok — com ou sem custo
+  //         utilizável). 401/403/429-exaurido/5xx-exaurido/erro de rede NUNCA
+  //         são "coleta completa" — isso é o bug real corrigido aqui: antes,
+  //         `shipments.complete` só olhava para `erro` (retryable), então
+  //         573 HTTP 403 viravam "coleta completa" silenciosamente. 400/404
+  //         não têm evidência suficiente no projeto para assumir ausência
+  //         legítima — tratados conservadoramente como coleta não
+  //         confirmada também (nunca otimista sem prova).
   async function buscarFreteShipment({ clienteId, sellerId, shipmentId, maxRetries = FRETE_MAX_RETRIES }) {
     const id = String(shipmentId || "").trim();
     if (!id) {
@@ -123,10 +134,13 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
         motivo: "sem_shipment_id",
         tentativas: 0,
         erro: false,
+        collected: false,
+        httpStatus: null,
       };
     }
 
     let motivoFalha = "erro_fetch";
+    let httpStatusFalha = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -145,6 +159,8 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
               motivo: "sem_custo_seller",
               tentativas: attempt,
               erro: false,
+              collected: true,
+              httpStatus: status,
             };
           }
           return {
@@ -155,10 +171,13 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
             motivo: null,
             tentativas: attempt,
             erro: false,
+            collected: true,
+            httpStatus: status,
           };
         }
 
         motivoFalha = `http_${status}`;
+        httpStatusFalha = status;
         if (RETRYABLE_STATUS.has(status) && attempt < maxRetries) {
           await sleepFn(backoffDelayMs(attempt, retryAfter));
           continue;
@@ -171,6 +190,8 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
           motivo: motivoFalha,
           tentativas: attempt,
           erro: RETRYABLE_STATUS.has(status),
+          collected: false,
+          httpStatus: status,
         };
       } catch (err) {
         motivoFalha = "erro_fetch";
@@ -186,6 +207,8 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
           motivo: "erro_fetch",
           tentativas: attempt,
           erro: true,
+          collected: false,
+          httpStatus: null,
         };
       }
     }
@@ -198,6 +221,8 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
       motivo: motivoFalha,
       tentativas: maxRetries,
       erro: true,
+      collected: false,
+      httpStatus: httpStatusFalha,
     };
   }
 
@@ -222,6 +247,7 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
     let comFrete = 0;
     let ausentes = 0;
     let erros = 0;
+    let naoColetados = 0;
     let tentativasExtras = 0;
     let comReceitaEnvio = 0;
 
@@ -240,6 +266,8 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
               receitaComprador: r.receitaComprador,
               status: r.status,
               motivo: r.motivo,
+              collected: r.collected,
+              httpStatus: r.httpStatus,
             });
 
             if (r.receitaComprador !== null && r.receitaComprador !== undefined) comReceitaEnvio++;
@@ -251,6 +279,10 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
               ausentes++;
             }
             if (r.erro) erros++;
+            // naoColetados (Hardening M3): superset de `erros` — inclui
+            // também 401/403/400/404, que `erros` sempre ignorou. É este
+            // contador, não `erros`, que decide a completude da fonte.
+            if (!r.collected) naoColetados++;
             tentativasExtras += Math.max(0, (r.tentativas || 1) - 1);
           })
         )
@@ -264,7 +296,7 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
 
     console.log(
       `[centralVendas] frete shipments: total=${total} buscados=${processados}` +
-        ` comFrete=${comFrete} ausentes=${ausentes} erros=${erros}` +
+        ` comFrete=${comFrete} ausentes=${ausentes} erros=${erros} naoColetados=${naoColetados}` +
         ` comReceitaEnvio=${comReceitaEnvio}` +
         ` tentativasExtras=${tentativasExtras} lotes=${lotesArr.length} capExcedido=0`
     );
@@ -277,6 +309,8 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
       comReceitaEnvio,
       ausentes,
       erros,
+      naoColetados,
+      coletados: processados - naoColetados,
       tentativasExtras,
       lotes: lotesArr.length,
       capExcedido: 0,

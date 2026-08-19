@@ -94,7 +94,10 @@ async function executarSyncRun({ run, context, params, db = pool, sincronizarVen
     // continua completed/failed exatamente como no M2). Nunca calculado no
     // frontend nem duplicado em outro lugar — sempre via
     // calcularCompletudeDoRun (verdade única em central_vendas_sync_sources).
-    const completeness = await sourceService.calcularCompletudeDoRun(run.id, db);
+    // runStatus:"completed" — o run está prestes a ser marcado completed
+    // logo abaixo; uma fonte obrigatória que nunca foi registrada até aqui é
+    // lacuna real (Hardening M3, P0 seção 1), não "ainda vai rodar".
+    const completeness = await sourceService.calcularCompletudeDoRun(run.id, { runStatus: "completed", db });
     await runService.atualizarCompletenessRun(run.id, completeness.status, db);
     await runService.marcarRunCompleted(run.id, resumoDoResultado(resultado), db);
 
@@ -105,6 +108,7 @@ async function executarSyncRun({ run, context, params, db = pool, sincronizarVen
         f.source,
         `${f.status}${f.expectedCount != null && f.receivedCount != null ? ` ${f.receivedCount}/${f.expectedCount}` : ""}`,
       ])),
+      completeness.missingSources.length ? `missing=${completeness.missingSources.join(",")}` : "",
       `overall=${completeness.status}`
     );
 

@@ -388,6 +388,41 @@ async function run() {
     ok("cenario3: nenhuma fonte presa em running/pending", fontes.every((f) => f.status !== "running" && f.status !== "pending"));
   });
 
+  // ── CENÁRIO 4 (Hardening M3, P0 seção 12-16): TODOS os shipments HTTP 403
+  // → shipments NUNCA pode ficar `complete`, mesmo com `erros=0` (403 não é
+  // retryable). Prova o bug real fim-a-fim, não só no collector isolado.
+  await capturandoLogs(async () => {
+    const db = makeDb({ contas, grants });
+    const { run: r, context } = await runService.criarSyncRun({
+      clienteSlug: cliente.slug, marketplace: "meli", dateFrom: "2026-08-01", dateTo: "2026-08-31", db,
+    });
+    const fakeRepo = await novoRunFakeRepo();
+
+    const syncService = carregarComHandlers([
+      ["/orders/search", () => ({ ok: true, status: 200, data: { results: [pedido("9020", "s20")], paging: { total: 1 } } })],
+      ["/shipments/", () => ({ ok: false, status: 403, data: null })],
+      ["/post-purchase/v1/claims/search", () => ({ ok: true, status: 200, data: { data: [], paging: { total: 0 } } })],
+    ]);
+
+    const sincronizarVendasMeli = syncService.createCentralVendasSyncService(fakeRepo, db).sincronizarVendasMeli;
+    await worker.executarSyncRun({
+      run: r, context, db, sincronizarVendasMeli,
+      params: { clienteSlug: cliente.slug, dateFrom: "2026-08-01", dateTo: "2026-08-31", marketplace: "meli" },
+    });
+
+    const runFinal = await runService.obterSyncRun({ runId: r.id, clienteSlug: cliente.slug, db });
+    eq("cenario4: run tecnico completed (403 nao e falha estrutural)", runFinal.status, "completed");
+    eq("cenario4: completude partial (nunca complete com shipments 403)", runFinal.completenessStatus, "partial");
+
+    const fontes = await sourceService.listarFontesDoRun(r.id, db);
+    const porFonte = Object.fromEntries(fontes.map((f) => [f.source, f]));
+    eq("cenario4: shipments incomplete (nao complete)", porFonte.shipments.status, "incomplete");
+    eq("cenario4: shipments expectedCount", porFonte.shipments.expectedCount, 1);
+    eq("cenario4: shipments receivedCount (nenhum coletado)", porFonte.shipments.receivedCount, 0);
+    eq("cenario4: shipments errorCode", porFonte.shipments.errorCode, "SHIPMENTS_PARTIAL");
+    eq("cenario4: shipments metadata.failedCollectionCount", porFonte.shipments.metadata.failedCollectionCount, 1);
+  });
+
   console.log(`centralVendasM3Completude.test.js: ${checks} verificacoes OK`);
 }
 

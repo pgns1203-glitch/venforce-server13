@@ -322,6 +322,55 @@ function logClaimsIndisponivel({ motivo, status, data, page, sellerId, dateFrom,
   });
 }
 
+// Completude de Claims (Hardening M3, seções 5-10): mesma filosofia já
+// aplicada a Orders em centralVendasSyncService.fetchAllOrders — nunca
+// devolver "completo" sem prova. `paging.total` ausente em TODAS as páginas
+// NUNCA vira "zero claims confirmado", mesmo com lista vazia (seção 6);
+// `expectedCount` usa a maior `paging.total` já reportada entre páginas
+// (estratégia conservadora, seção 8), nunca a última sobrescrevendo a
+// anterior; página vazia antes do total conhecido e o teto de paginação
+// (CLAIMS_MAX_PAGES/offset>9999) geram motivos tipados próprios em vez de
+// mismatch genérico.
+function computeClaimsCompleteness({
+  receivedCount, firstReportedTotal, lastReportedTotal, maxReportedTotal,
+  earlyEmptyReason, cappedBySafetyLimit,
+}) {
+  let complete;
+  let reason = earlyEmptyReason || null;
+
+  if (maxReportedTotal === null) {
+    // API nunca informou paging.total confiável em nenhuma página — não há
+    // como provar cobertura, mesmo que a lista recebida esteja vazia.
+    complete = false;
+    reason = reason || "CLAIMS_TOTAL_UNKNOWN";
+  } else if (cappedBySafetyLimit && receivedCount < maxReportedTotal) {
+    complete = false;
+    reason = "CLAIMS_TRUNCATED_BY_SAFETY_LIMIT";
+  } else if (receivedCount !== maxReportedTotal) {
+    complete = false;
+    reason = reason || "CLAIMS_COUNT_MISMATCH";
+  } else {
+    // Inclui total=0/received=0: zero é resultado válido quando a API
+    // realmente informou o total (não quando ele está ausente).
+    complete = true;
+    reason = null;
+  }
+
+  return {
+    expectedCount: maxReportedTotal,
+    receivedCount,
+    complete,
+    truncated: !complete,
+    reason,
+    metadata: {
+      firstReportedTotal,
+      lastReportedTotal,
+      maxReportedTotal,
+      totalChanged: firstReportedTotal !== null && lastReportedTotal !== null && firstReportedTotal !== lastReportedTotal,
+    },
+  };
+}
+
 function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep } = {}) {
   async function fetchPage(clienteId, path, maxAttempts) {
     let lastReason = "erro_fetch";
@@ -455,7 +504,11 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
     let offset = 0;
     let attempts = 0;
     let pages = 0;
-    let apiTotal = null;
+    let firstReportedTotal = null;
+    let lastReportedTotal = null;
+    let maxReportedTotal = null;
+    let earlyEmptyReason = null;
+    let cappedBySafetyLimit = false;
     let tzIndex = 0;
     let fallbackTzUsado = false;
 
@@ -466,7 +519,8 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       motivo,
       pages,
       attempts,
-      totalApi: apiTotal,
+      totalApi: maxReportedTotal,
+      completeness: null,
       janela,
       timezoneFormato: CLAIMS_TIMEZONE_FORMATS[tzIndex],
       resourceCounts: {},
@@ -550,27 +604,46 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       pages++;
       const data = Array.isArray(response.data?.data) ? response.data.data : [];
       claims.push(...data);
-      apiTotal = Number.isFinite(Number(response.data?.paging?.total))
-        ? Number(response.data.paging.total)
-        : apiTotal;
 
-      if (!data.length) break;
+      // Estratégia conservadora (Hardening M3, seção 8): usa o MAIOR total já
+      // reportado, nunca sobrescreve com o último visto — se a API variar o
+      // total entre páginas, isso fica registrado em metadata.totalChanged,
+      // nunca escondido atrás de "100 == 100" por coincidência de arredondar
+      // no último valor.
+      const totalPagina = Number.isFinite(Number(response.data?.paging?.total))
+        ? Number(response.data.paging.total)
+        : null;
+      if (totalPagina !== null) {
+        if (firstReportedTotal === null) firstReportedTotal = totalPagina;
+        lastReportedTotal = totalPagina;
+        maxReportedTotal = maxReportedTotal === null ? totalPagina : Math.max(maxReportedTotal, totalPagina);
+      }
+
+      if (!data.length) {
+        // Página vazia antes do total conhecido (seção 9): nunca considerar
+        // completo só porque a API parou de mandar resultado.
+        if (maxReportedTotal !== null && claims.length < maxReportedTotal) {
+          earlyEmptyReason = "CLAIMS_EARLY_EMPTY_PAGE";
+        }
+        break;
+      }
+
       offset += data.length;
-      if (apiTotal !== null && offset >= apiTotal) break;
-      if (offset > 9999) {
-        logClaimsIndisponivel({
-          motivo: "limite_paginacao_excedido",
-          status: null,
-          data: null,
-          page,
-          sellerId,
-          dateFrom: janela.from,
-          dateTo: janela.to,
-          limit: pageLimit,
-          offset,
-          timezoneFormat: CLAIMS_TIMEZONE_FORMATS[tzIndex],
-        });
-        return falha("limite_paginacao_excedido");
+      if (maxReportedTotal !== null && offset >= maxReportedTotal) break;
+
+      // Teto de paginação (seção 10): antes isto retornava `indisponivel:true`
+      // genérico (limite_paginacao_excedido), escondendo uma causa que agora
+      // conseguimos provar. Em vez de abortar a coleta inteira, encerra o
+      // loop com os claims já coletados — a comparação final contra
+      // maxReportedTotal marca a fonte como incompleta/truncada
+      // (CLAIMS_TRUNCATED_BY_SAFETY_LIMIT), no mesmo espírito de Orders.
+      if (offset > 9999 || page === CLAIMS_MAX_PAGES - 1) {
+        cappedBySafetyLimit = true;
+        console.log(
+          `[centralVendas] claims: teto de paginacao atingido (offset=${offset}, paginas=${pages})`
+            + ` maxReportedTotal=${maxReportedTotal ?? "n/d"} claimsColetados=${claims.length}`
+        );
+        break;
       }
     }
 
@@ -594,10 +667,20 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       }
     }
 
+    const completeness = computeClaimsCompleteness({
+      receivedCount: claims.length,
+      firstReportedTotal,
+      lastReportedTotal,
+      maxReportedTotal,
+      earlyEmptyReason,
+      cappedBySafetyLimit,
+    });
+
     console.log(
       `[centralVendas] claims: total=${claims.length} paginas=${pages}`
         + ` pedidosComClaims=${claimsMap.size} foraDoPeriodo=${claimsForaDoPeriodo}`
         + ` janela=${janela.from}..${janela.to} fuso=${CLAIMS_TIMEZONE_FORMATS[tzIndex]}`
+        + ` completude=${completeness.complete ? "complete" : `incomplete(${completeness.reason})`}`
     );
 
     return {
@@ -608,7 +691,11 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       status: 200,
       pages,
       attempts,
-      totalApi: apiTotal,
+      // totalApi preservado por compatibilidade (Hardening M3 renomeia o
+      // conceito para completeness.expectedCount, que usa maxReportedTotal
+      // em vez do último valor sobrescrito — ver seção 8).
+      totalApi: maxReportedTotal,
+      completeness,
       janela,
       timezoneFormato: CLAIMS_TIMEZONE_FORMATS[tzIndex],
       resourceCounts,
@@ -638,8 +725,10 @@ module.exports = {
   classificarClaimsDoPedido,
   contarResources,
   extrairReturnDetalhe,
+  computeClaimsCompleteness,
   CLAIMS_PAGE_LIMIT,
   CLAIMS_MAX_ATTEMPTS,
+  CLAIMS_MAX_PAGES,
   CLAIMS_LOOKAHEAD_DAYS,
   CLAIMS_TIMEZONE_FORMATS,
 };

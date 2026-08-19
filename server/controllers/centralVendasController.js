@@ -228,7 +228,11 @@ async function obterSyncRunController(req, res) {
     // (dono do cliente) acima por obterSyncRun — nunca outro caminho de
     // acesso a central_vendas_sync_sources.
     const sources = await centralVendasSyncSourceService.listarFontesDoRun(run.id);
-    return responder(res, 200, { ok: true, run, sources });
+    // Hardening M3, seção 26: expõe a agregação já pronta (missingSources/
+    // incompleteSources/failedSources) — nunca duplicar a regra no
+    // controller nem obrigar o frontend a recalculá-la a partir de `sources`.
+    const completeness = await centralVendasSyncSourceService.calcularCompletudeDoRun(run.id, { runStatus: run.status });
+    return responder(res, 200, { ok: true, run, completeness, sources });
   } catch (err) {
     return tratarErro(res, err, "obterSyncRun");
   }

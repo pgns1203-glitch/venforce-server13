@@ -821,23 +821,26 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
 
     if (sourceService) {
       // Shipments: universo esperado = shipment IDs únicos do período (seção
-      // 22), nunca orders.length. "erros" (429/5xx/fetch exauridos) é o único
-      // motivo de incompletude — frete ausente por ausência legítima
-      // (sem_custo_seller/HTTP 400/401/403/404) é cobertura financeira, não
-      // truncamento da coleta (seção 23/24).
-      const shipmentsComplete = freteLote.erros === 0;
+      // 22), nunca orders.length. `naoColetados` (Hardening M3, seções 12-16)
+      // é quem decide completude — superset de `erros`: inclui também
+      // 401/403/400/404, que antes eram silenciosamente tratados como
+      // "ausência legítima" e podiam virar `shipments.complete=true` mesmo
+      // com 100% das requisições rejeitadas por permissão. Ausência
+      // legítima de custo (HTTP ok, sem sender.cost) continua sendo
+      // cobertura financeira, não truncamento da coleta.
+      const shipmentsComplete = freteLote.naoColetados === 0;
       const marcarShip = shipmentsComplete
         ? sourceService.marcarFonteCompleta
         : sourceService.marcarFonteIncompleta;
       await marcarShip({
         runId, source: "shipments",
         expectedCount: freteLote.total,
-        receivedCount: freteLote.total - freteLote.erros,
+        receivedCount: freteLote.coletados,
         errorCode: shipmentsComplete ? undefined : "SHIPMENTS_PARTIAL",
         metadata: {
           usableFreightCount: freteLote.comFrete,
-          missingFreightCount: Math.max(0, freteLote.ausentes - freteLote.erros),
-          failedCount: freteLote.erros,
+          missingFinancialValueCount: Math.max(0, freteLote.ausentes - freteLote.naoColetados),
+          failedCollectionCount: freteLote.naoColetados,
           retryCount: freteLote.tentativasExtras,
           comReceitaEnvio: freteLote.comReceitaEnvio,
           lotes: freteLote.lotes,
@@ -865,22 +868,26 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
           db,
         });
       } else {
-        const claimsExpected = claimsLote.totalApi;
-        const claimsReceived = claimsLote.claims.length;
-        const claimsComplete = claimsExpected === null ? claimsReceived === 0 : claimsExpected === claimsReceived;
+        // Hardening M3, seções 5-10: a decisão de completude de Claims agora
+        // vem inteira de claimsLote.completeness (computeClaimsCompleteness),
+        // que nunca trata `paging.total` ausente como prova de zero — mesma
+        // filosofia de fetchAllOrders.
+        const claimsCompleteness = claimsLote.completeness;
+        const claimsComplete = claimsCompleteness.complete;
         const marcarClaims = claimsComplete
           ? sourceService.marcarFonteCompleta
           : sourceService.marcarFonteIncompleta;
         await marcarClaims({
           runId, source: "claims",
-          expectedCount: claimsExpected,
-          receivedCount: claimsReceived,
+          expectedCount: claimsCompleteness.expectedCount,
+          receivedCount: claimsCompleteness.receivedCount,
           pagesReceived: claimsLote.pages,
-          errorCode: claimsComplete ? undefined : "CLAIMS_COUNT_MISMATCH",
+          errorCode: claimsComplete ? undefined : claimsCompleteness.reason,
           metadata: {
             attempts: claimsLote.attempts,
             pedidosComClaims: claimsLote.pedidosComClaims,
             claimsForaDoPeriodo: claimsLote.claimsForaDoPeriodo,
+            ...claimsCompleteness.metadata,
           },
           db,
         });
@@ -955,8 +962,13 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // M3, seção 43: referência compacta à completude do run vai em cada
     // snapshot — a fonte canônica continua sendo central_vendas_sync_sources,
     // isto é só uma cópia leve para o GET não depender de outra tabela.
+    // runStatus:"completed" — todas as fontes que ESTE sincronismo ia marcar
+    // já concluíram terminal (o bloco acima só chega aqui depois de orders/
+    // base/shipments/claims/returns resolvidos, ou já teria lançado); uma
+    // fonte obrigatória que nunca chegou a ser iniciada aqui é lacuna real,
+    // não "ainda não rodou" — não deve virar `unknown`.
     const completenessSnapshot = sourceService
-      ? await sourceService.calcularCompletudeDoRun(runId, db)
+      ? await sourceService.calcularCompletudeDoRun(runId, { runStatus: "completed", db })
       : null;
 
     for (const [comp, groupOrders] of grupos) {
@@ -986,12 +998,20 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
           ? {
               syncRunId: runId,
               completenessStatus: completenessSnapshot.status,
-              // Compacto para o GET (seção 43): "não está confiavelmente
-              // completa" inclui tanto incomplete quanto failed — a
-              // distinção fina entre os dois fica em sync_sources, a fonte
+              // Hardening M3, seção 25: preserva missingSources separado
+              // (fonte que nunca chegou a ser registrada — não é o mesmo
+              // problema que uma fonte que rodou e falhou).
+              missingSources: completenessSnapshot.missingSources,
+              // Compacto para o GET (seção 24): "não está confiavelmente
+              // completa" é a união missing ∪ incomplete ∪ failed — a
+              // distinção fina entre os três fica em sync_sources, a fonte
               // canônica (GET /sync-runs/:id).
               incompleteSources: [
-                ...new Set([...completenessSnapshot.incompleteSources, ...completenessSnapshot.failedSources]),
+                ...new Set([
+                  ...completenessSnapshot.missingSources,
+                  ...completenessSnapshot.incompleteSources,
+                  ...completenessSnapshot.failedSources,
+                ]),
               ],
             }
           : {}),

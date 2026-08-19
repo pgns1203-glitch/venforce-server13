@@ -239,11 +239,24 @@ async function run() {
 
   // ── AGREGAÇÃO (calcularCompletudeDoRun) ─────────────────────────────────
 
-  // 12. Nenhuma fonte registrada → 'unknown'.
+  // 12. Nenhuma fonte registrada, run AINDA queued/running → 'unknown'
+  //     (seção 2 do hardening: ausência pode só significar "ainda não
+  //     chegou a vez dela").
   {
     const db = makeDb();
-    const completude = await sourceService.calcularCompletudeDoRun(1, db);
-    eq("12: status unknown", completude.status, "unknown");
+    const completude = await sourceService.calcularCompletudeDoRun(1, { runStatus: "queued", db });
+    eq("12: status unknown (run em andamento)", completude.status, "unknown");
+  }
+
+  // 12b. Nenhuma fonte registrada, run já terminal (ou runStatus omitido —
+  //      comportamento estrito por padrão) → 'partial', TODAS as 4
+  //      obrigatórias aparecem em missingSources. Nunca 'complete' por
+  //      omissão total de evidência.
+  {
+    const db = makeDb();
+    const completude = await sourceService.calcularCompletudeDoRun(1, { runStatus: "completed", db });
+    eq("12b: status partial (run terminal, zero fontes)", completude.status, "partial");
+    eq("12b: todas ausentes", completude.missingSources.sort(), ["base", "claims", "orders", "shipments"]);
   }
 
   // 13. Todas completas (incluindo returns) → 'complete'.
@@ -253,10 +266,12 @@ async function run() {
       await sourceService.iniciarFonte({ runId: 1, source, db });
       await sourceService.marcarFonteCompleta({ runId: 1, source, expectedCount: 1, receivedCount: 1, db });
     }
-    const completude = await sourceService.calcularCompletudeDoRun(1, db);
+    const completude = await sourceService.calcularCompletudeDoRun(1, { db });
     eq("13: status complete", completude.status, "complete");
     eq("13: sem incompletas", completude.incompleteSources, []);
     eq("13: sem falhas", completude.failedSources, []);
+    eq("13: sem ausentes", completude.missingSources, []);
+    eq("13: requiredSources inclui returns (foi registrada)", completude.requiredSources.sort(), ["base", "claims", "orders", "returns", "shipments"]);
   }
 
   // 14. Claims failed, restante complete → 'partial' (NUNCA 'failed' — claims
@@ -272,7 +287,7 @@ async function run() {
     await sourceService.iniciarFonte({ runId: 1, source: "returns", db });
     await sourceService.marcarFonteIncompleta({ runId: 1, source: "returns", errorCode: "RETURNS_BLOCKED_BY_CLAIMS", db });
 
-    const completude = await sourceService.calcularCompletudeDoRun(1, db);
+    const completude = await sourceService.calcularCompletudeDoRun(1, { db });
     eq("14: status partial", completude.status, "partial");
     eq("14: failedSources", completude.failedSources, ["claims"]);
     eq("14: incompleteSources", completude.incompleteSources, ["returns"]);
@@ -289,7 +304,7 @@ async function run() {
       await sourceService.iniciarFonte({ runId: 1, source, db });
       await sourceService.marcarFonteCompleta({ runId: 1, source, expectedCount: 1, receivedCount: 1, db });
     }
-    const completude = await sourceService.calcularCompletudeDoRun(1, db);
+    const completude = await sourceService.calcularCompletudeDoRun(1, { db });
     eq("15: status partial", completude.status, "partial");
   }
 
@@ -298,7 +313,7 @@ async function run() {
     const db = makeDb();
     await sourceService.iniciarFonte({ runId: 1, source: "orders", db });
     await sourceService.marcarFonteFalha({ runId: 1, source: "orders", errorCode: "ORDERS_HTTP_ERROR", httpStatus: 500, db });
-    const completude = await sourceService.calcularCompletudeDoRun(1, db);
+    const completude = await sourceService.calcularCompletudeDoRun(1, { db });
     eq("16: status failed", completude.status, "failed");
   }
 
@@ -307,8 +322,48 @@ async function run() {
     const db = makeDb();
     await sourceService.iniciarFonte({ runId: 1, source: "base", db });
     await sourceService.marcarFonteFalha({ runId: 1, source: "base", errorCode: "BASE_QUERY_ERROR", db });
-    const completude = await sourceService.calcularCompletudeDoRun(1, db);
+    const completude = await sourceService.calcularCompletudeDoRun(1, { db });
     eq("17: status failed", completude.status, "failed");
+  }
+
+  // 18. P0 do hardening: orders/claims/base complete, shipments NUNCA
+  //     registrada (nenhuma linha) → 'partial', missingSources=['shipments'].
+  //     Este é exatamente o cenário que o agregador antigo (baseado só nas
+  //     linhas existentes) deixava passar como 'complete' silenciosamente.
+  {
+    const db = makeDb();
+    for (const source of ["orders", "claims", "base"]) {
+      await sourceService.iniciarFonte({ runId: 1, source, db });
+      await sourceService.marcarFonteCompleta({ runId: 1, source, expectedCount: 1, receivedCount: 1, db });
+    }
+    const completude = await sourceService.calcularCompletudeDoRun(1, { runStatus: "completed", db });
+    eq("18: status partial", completude.status, "partial");
+    eq("18: missingSources", completude.missingSources, ["shipments"]);
+    eq("18: nunca complete", completude.status !== "complete", true);
+  }
+
+  // 19. Simétrico: orders/shipments/base complete, claims nunca registrada.
+  {
+    const db = makeDb();
+    for (const source of ["orders", "shipments", "base"]) {
+      await sourceService.iniciarFonte({ runId: 1, source, db });
+      await sourceService.marcarFonteCompleta({ runId: 1, source, expectedCount: 1, receivedCount: 1, db });
+    }
+    const completude = await sourceService.calcularCompletudeDoRun(1, { runStatus: "completed", db });
+    eq("19: status partial", completude.status, "partial");
+    eq("19: missingSources", completude.missingSources, ["claims"]);
+  }
+
+  // 20. Mesmo cenário do 18, mas o run AINDA está running — shipments pode
+  //     legitimamente ainda não ter rodado. Vira 'unknown', não 'partial'.
+  {
+    const db = makeDb();
+    for (const source of ["orders", "claims", "base"]) {
+      await sourceService.iniciarFonte({ runId: 1, source, db });
+      await sourceService.marcarFonteCompleta({ runId: 1, source, expectedCount: 1, receivedCount: 1, db });
+    }
+    const completude = await sourceService.calcularCompletudeDoRun(1, { runStatus: "running", db });
+    eq("20: status unknown (run ainda em andamento)", completude.status, "unknown");
   }
 
   console.log(`centralVendasSyncSourceService.test.js: ${checks} verificacoes OK`);

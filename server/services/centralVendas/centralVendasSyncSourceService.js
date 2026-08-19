@@ -185,29 +185,61 @@ async function listarFontesDoRun(runId, db = pool) {
 // falha deles é sempre 'partial', nunca 'failed' (seção 21, teste #30).
 const STRUCTURAL_SOURCES = new Set(["orders", "base"]);
 
-// Verdade única de agregação (seções 37/39 da spec M3): nunca duplicar esta
-// regra no frontend nem no GET. `returns` só entra na obrigatoriedade quando
-// foi de fato registrada neste run.
-async function calcularCompletudeDoRun(runId, db = pool) {
+// Hardening M3, P0 seção 1: a agregação ANTIGA partia só das linhas que
+// EXISTEM em central_vendas_sync_sources — uma fonte obrigatória que nunca
+// chegou a ser registrada (ex.: o worker morreu antes de sequer chamar
+// iniciarFonte("shipments")) ficava invisível para o agregador, e
+// orders/claims/base completos sozinhos podiam virar `complete` sem
+// qualquer evidência de Shipments. `requiredSources` agora é FIXO
+// (independente de quais linhas existem) e `missingSources` é calculado
+// explicitamente por diferença de conjunto — fonte obrigatória ausente
+// NUNCA pode resultar em `complete`.
+async function calcularCompletudeDoRun(runId, { runStatus = null, db = pool } = {}) {
   const fontes = await listarFontesDoRun(runId, db);
-  const relevantes = fontes.filter((f) => REQUIRED_SOURCES_BASE.has(f.source) || f.source === "returns");
+  const observadas = new Set(fontes.map((f) => f.source));
 
-  if (!relevantes.length) {
-    return { status: "unknown", requiredSources: [], incompleteSources: [], failedSources: [] };
-  }
+  // `returns` é condicional (seção 3 do hardening): só entra na
+  // obrigatoriedade quando o run de fato precisou avaliar devolução (uma
+  // linha foi registrada). Nunca aparece em `missingSources` — sua
+  // ausência não é uma lacuna, é "não se aplicou a este run".
+  const requiredSet = new Set(REQUIRED_SOURCES_BASE);
+  if (observadas.has("returns")) requiredSet.add("returns");
+  const requiredSources = [...requiredSet];
+  const missingSources = requiredSources.filter((source) => !observadas.has(source));
 
+  const relevantes = fontes.filter((f) => requiredSet.has(f.source));
   const failedSources = relevantes.filter((f) => f.status === "failed").map((f) => f.source);
   const incompleteSources = relevantes.filter((f) => f.status === "incomplete").map((f) => f.source);
   const pendentes = relevantes.some((f) => f.status === "pending" || f.status === "running");
   const falhaEstrutural = failedSources.some((source) => STRUCTURAL_SOURCES.has(source));
 
-  let status;
-  if (falhaEstrutural) status = "failed";
-  else if (failedSources.length || incompleteSources.length) status = "partial";
-  else if (pendentes) status = "unknown";
-  else status = "complete";
+  // Run técnico ainda não terminou (seção 2): fonte ausente/pendente pode
+  // legitimamente significar "ainda não chegou a vez dela", não uma lacuna
+  // — por isso o veredito fica `unknown`, nunca `partial`, enquanto
+  // queued/running. Depois de completed/failed (ou quando o chamador não
+  // informa o status — mantém o comportamento estrito por padrão), fonte
+  // obrigatória ausente/incompleta/falha NUNCA vira `complete`.
+  const aindaEmAndamento = runStatus === "queued" || runStatus === "running";
 
-  return { status, requiredSources: relevantes.map((f) => f.source), incompleteSources, failedSources };
+  let status;
+  if (falhaEstrutural) {
+    status = "failed";
+  } else if (missingSources.length || failedSources.length || incompleteSources.length) {
+    status = aindaEmAndamento ? "unknown" : "partial";
+  } else if (pendentes) {
+    status = "unknown";
+  } else {
+    status = "complete";
+  }
+
+  return {
+    status,
+    requiredSources,
+    observedSources: [...observadas],
+    missingSources,
+    incompleteSources,
+    failedSources,
+  };
 }
 
 module.exports = {

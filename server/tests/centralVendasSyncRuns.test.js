@@ -66,7 +66,14 @@ function grantFixture({ id, cliente_id, ml_user_id, token_status = "valid" }) {
 function makeDb({ contas = [], vinculos = [], grants = [] } = {}) {
   const clientes = [clienteA, clienteB];
   const runs = []; // linhas em memória, mimetiza central_vendas_sync_runs
+  // M3: linhas em memória de central_vendas_sync_sources — sincronizarVendasMeli
+  // com runId agora registra fontes (base/orders/shipments/claims/returns).
+  // Não precisa simular guarda de transição aqui (isso é coberto em
+  // centralVendasSyncSourceService.test.js) — só o suficiente para não
+  // quebrar os testes de M2 que passam runId.
+  const sources = [];
   let nextId = 1;
+  let nextSourceId = 1;
 
   function sameOrNull(a, b) {
     return (a ?? null) === (b ?? null);
@@ -292,6 +299,64 @@ function makeDb({ contas = [], vinculos = [], grants = [] } = {}) {
         row.error_code = code;
         row.error_message = message;
         return { rows: [row] };
+      }
+
+      // ── central_vendas_sync_runs: completeness_status (M3) ──
+      if (sql.includes("UPDATE central_vendas_sync_runs") && sql.includes("completeness_status = $2")) {
+        const [runId, completenessStatus] = params;
+        const row = runs.find((r) => r.id === runId);
+        if (!row) return { rows: [] };
+        row.completeness_status = completenessStatus;
+        row.updated_at = new Date().toISOString();
+        return { rows: [row] };
+      }
+
+      // ── central_vendas_sync_sources (M3) ──
+      if (sql.includes("INSERT INTO central_vendas_sync_sources")) {
+        const [syncRunId, source] = params;
+        const TERMINAL = new Set(["complete", "incomplete", "failed", "not_applicable"]);
+        let row = sources.find((r) => r.sync_run_id === syncRunId && r.source === source);
+        if (!row) {
+          row = {
+            id: nextSourceId++, sync_run_id: syncRunId, source, status: "running", complete: null,
+            expected_count: null, received_count: null, pages_expected: null, pages_received: null,
+            attempts: 1, started_at: new Date().toISOString(), finished_at: null,
+            error_code: null, http_status: null, error_message: null, metadata_json: {},
+          };
+          sources.push(row);
+          return { rows: [row] };
+        }
+        if (TERMINAL.has(row.status)) return { rows: [] };
+        row.status = "running";
+        row.attempts += 1;
+        return { rows: [row] };
+      }
+      if (sql.includes("UPDATE central_vendas_sync_sources") && sql.includes("status = $3")) {
+        const [
+          syncRunId, source, status, complete, expectedCount, receivedCount,
+          pagesExpected, pagesReceived, errorCode, httpStatus, errorMessage, metadataJson,
+        ] = params;
+        const TERMINAL = new Set(["complete", "incomplete", "failed", "not_applicable"]);
+        const row = sources.find((r) => r.sync_run_id === syncRunId && r.source === source && !TERMINAL.has(r.status));
+        if (!row) return { rows: [] };
+        Object.assign(row, {
+          status, complete, expected_count: expectedCount, received_count: receivedCount,
+          pages_expected: pagesExpected, pages_received: pagesReceived, error_code: errorCode,
+          http_status: httpStatus, error_message: errorMessage, metadata_json: JSON.parse(metadataJson),
+        });
+        return { rows: [row] };
+      }
+      if (sql.includes("status = 'failed', complete = false") && sql.includes("IN ('pending', 'running')")) {
+        const [syncRunId, errorCode, errorMessage] = params;
+        const afetadas = sources.filter((r) => r.sync_run_id === syncRunId && (r.status === "pending" || r.status === "running"));
+        for (const row of afetadas) {
+          Object.assign(row, { status: "failed", complete: false, error_code: errorCode, error_message: errorMessage });
+        }
+        return { rows: afetadas.map((r) => ({ source: r.source })) };
+      }
+      if (sql.includes("SELECT * FROM central_vendas_sync_sources WHERE sync_run_id = $1")) {
+        const [syncRunId] = params;
+        return { rows: sources.filter((r) => r.sync_run_id === syncRunId).sort((a, b) => a.id - b.id) };
       }
 
       throw new Error(`Fake db: SQL nao mapeado -> ${sql.slice(0, 120)}`);

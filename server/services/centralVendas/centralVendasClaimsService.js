@@ -397,7 +397,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
     });
 
     if (!pendentes.length) {
-      return { tentados: 0, resolvidos: 0, naoResolvidos: 0, truncados: 0 };
+      return { tentados: 0, resolvidos: 0, naoResolvidos: 0, truncados: 0, pendentesTotal: 0 };
     }
 
     const alvos = pendentes.slice(0, CLAIMS_RETURNS_MAX_DETALHES);
@@ -426,7 +426,16 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
         + ` naoResolvidos=${naoResolvidos + truncados}`
     );
 
-    return { tentados: alvos.length, resolvidos, naoResolvidos: naoResolvidos + truncados, truncados };
+    return {
+      tentados: alvos.length,
+      resolvidos,
+      naoResolvidos: naoResolvidos + truncados,
+      truncados,
+      // Universo esperado real de Returns (seção 29/30 da spec M3): todos os
+      // claims de devolução que precisavam de detalhe, não apenas os que
+      // couberam no teto CLAIMS_RETURNS_MAX_DETALHES.
+      pendentesTotal: pendentes.length,
+    };
   }
 
   async function buscarClaimsPorPeriodo({
@@ -463,6 +472,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       resourceCounts: {},
       returnsResolvidos: 0,
       returnsNaoResolvidos: 0,
+      returnsPendentesTotal: 0,
       claimsForaDoPeriodo: 0,
       pedidosComClaims: 0,
       ...extra,
@@ -604,6 +614,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       resourceCounts,
       returnsResolvidos: returns.resolvidos,
       returnsNaoResolvidos: returns.naoResolvidos,
+      returnsPendentesTotal: returns.pendentesTotal,
       claimsForaDoPeriodo,
       pedidosComClaims: claimsMap.size,
     };

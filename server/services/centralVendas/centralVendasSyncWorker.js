@@ -20,6 +20,7 @@
 
 const pool = require("../../config/database");
 const runService = require("./centralVendasSyncRunService");
+const sourceService = require("./centralVendasSyncSourceService");
 
 const CONCORRENCIA = Number(process.env.CENTRAL_VENDAS_SYNC_CONCURRENCY) || 1;
 
@@ -88,10 +89,35 @@ async function executarSyncRun({ run, context, params, db = pool, sincronizarVen
       accountContext: context, // identidade congelada — não re-resolvida aqui
       runId: run.id,
     });
+
+    // M3 — completude por fonte: eixo separado do status técnico (run.status
+    // continua completed/failed exatamente como no M2). Nunca calculado no
+    // frontend nem duplicado em outro lugar — sempre via
+    // calcularCompletudeDoRun (verdade única em central_vendas_sync_sources).
+    const completeness = await sourceService.calcularCompletudeDoRun(run.id, db);
+    await runService.atualizarCompletenessRun(run.id, completeness.status, db);
     await runService.marcarRunCompleted(run.id, resumoDoResultado(resultado), db);
+
+    const fontes = await sourceService.listarFontesDoRun(run.id, db);
+    console.log(
+      `[centralVendas] sync-run #${run.id} completeness`,
+      Object.fromEntries(fontes.map((f) => [
+        f.source,
+        `${f.status}${f.expectedCount != null && f.receivedCount != null ? ` ${f.receivedCount}/${f.expectedCount}` : ""}`,
+      ])),
+      `overall=${completeness.status}`
+    );
+
     return resultado;
   } catch (err) {
     const code = err?.code || "SYNC_EXECUTION_ERROR";
+    // Rede de segurança (seção 54): fecha qualquer fonte ainda pending/
+    // running deste run como failed antes de marcar o run como failed —
+    // nunca deixa "run failed, sources todas running".
+    await sourceService.falharFontesEmAndamento(run.id, { errorCode: code, errorMessage: err?.message }, db);
+    // Um run failed nunca pode ser lido como completude confiável — o eixo
+    // de completude segue o técnico aqui, sem exceção.
+    await runService.atualizarCompletenessRun(run.id, "failed", db);
     await runService.marcarRunFailed(run.id, { code, message: err?.message || "Erro desconhecido na sincronizacao." }, db);
     throw err;
   }

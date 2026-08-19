@@ -68,9 +68,21 @@ function criarErroHttp(statusCode, mensagem) {
 // (mesmo padrao de metricasService.fetchAllOrders, replicado para nao acoplar)
 // ---------------------------------------------------------------------------
 
+// Contrato de completude (M3, seção 11 da spec): nunca devolve sucesso
+// silencioso quando o universo pretendido (paging.total) não foi coberto.
+// `expectedCount` usa a estratégia conservadora "maior total já reportado"
+// (maxReportedTotal) — se a API variar o total entre páginas, não ignora,
+// registra em metadata e usa o maior valor visto (seção 18).
 async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo) {
+  const seen = new Map();
+  let receivedRaw = 0;
+  let firstReportedTotal = null;
+  let lastReportedTotal = null;
+  let maxReportedTotal = null;
+  let pagesReceived = 0;
+  let earlyEmptyReason = null;
+  let cappedBySafetyLimit = false;
   let offset = 0;
-  const all = [];
 
   for (let page = 0; page < MAX_PAGINAS; page++) {
     const qs = new URLSearchParams({
@@ -92,18 +104,119 @@ async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo) {
           : "Nao foi possivel carregar os pedidos na Orders API do Mercado Livre."
       );
       err.mlStatus = status;
+      err.code = "ORDERS_HTTP_ERROR";
       throw err;
     }
 
-    const results = Array.isArray(data?.results) ? data.results : [];
-    all.push(...results);
+    pagesReceived += 1;
+    const total = Number.isFinite(Number(data?.paging?.total)) ? Number(data.paging.total) : null;
+    if (total !== null) {
+      if (firstReportedTotal === null) firstReportedTotal = total;
+      lastReportedTotal = total;
+      maxReportedTotal = maxReportedTotal === null ? total : Math.max(maxReportedTotal, total);
+    }
 
-    if (!results.length) break;
+    const results = Array.isArray(data?.results) ? data.results : [];
+    receivedRaw += results.length;
+    // Dedupe por order.id (seção 17): duplicata entre páginas nunca conta
+    // duas vezes na comparação de completude, e o pedido nunca é duplicado
+    // economicamente no motor.
+    for (const order of results) {
+      const id = order?.id != null ? String(order.id) : null;
+      const key = id || `__sem_id_${page}_${seen.size}`;
+      if (!seen.has(key)) seen.set(key, order);
+    }
+
+    if (!results.length) {
+      // Página vazia antes do total conhecido (seção 15): nunca considerar
+      // completo por "a API parou de mandar resultado".
+      if (maxReportedTotal !== null && seen.size < maxReportedTotal) {
+        earlyEmptyReason = "ORDERS_EARLY_EMPTY_PAGE";
+      }
+      break;
+    }
+
     offset += PAGE_LIMIT;
-    if (offset >= (data?.paging?.total || 0)) break;
+    if (maxReportedTotal !== null && offset >= maxReportedTotal) break;
+    if (page === MAX_PAGINAS - 1) cappedBySafetyLimit = true;
   }
 
-  return all;
+  const orders = [...seen.values()];
+  const receivedCount = orders.length;
+  const duplicateCount = Math.max(0, receivedRaw - receivedCount);
+  const expectedCount = maxReportedTotal;
+
+  let complete;
+  let reason = earlyEmptyReason;
+  if (expectedCount === null) {
+    // A API nunca informou paging.total em nenhuma página — não há como
+    // provar cobertura. Nunca assumir completo por omissão (seção 12).
+    complete = false;
+    reason = reason || "ORDERS_COUNT_MISMATCH";
+  } else if (cappedBySafetyLimit && receivedCount < expectedCount) {
+    // Bateu no teto de segurança (MAX_PAGINAS) com pedidos ainda faltando —
+    // truncamento explícito, nunca "5000 vira o total" (seção 13).
+    complete = false;
+    reason = "ORDERS_TRUNCATED_BY_SAFETY_LIMIT";
+  } else if (receivedCount !== expectedCount) {
+    // Contagem final diverge do total (seção 16) por qualquer outro motivo
+    // (página curta, etc.) — sempre comparado no final, nunca assumido.
+    complete = false;
+    reason = reason || "ORDERS_COUNT_MISMATCH";
+  } else {
+    // Inclui o caso 0/0 (seção 19): zero pedidos é resultado válido.
+    complete = true;
+    reason = null;
+  }
+
+  return {
+    data: orders,
+    completeness: {
+      expectedCount,
+      receivedCount,
+      receivedRaw,
+      duplicateCount,
+      pagesReceived,
+      pagesExpected: expectedCount !== null ? Math.ceil(expectedCount / PAGE_LIMIT) : null,
+      complete,
+      truncated: !complete,
+      reason,
+      metadata: { firstReportedTotal, lastReportedTotal, maxReportedTotal },
+    },
+  };
+}
+
+// Universo esperado/cobertura financeira da Base (seções 32-34 da spec M3):
+// a query de custos pode estar 100% completa mesmo com produtos sem custo —
+// isso vira metadata (itemsMissingCost/itemsMissingTax), nunca reduz
+// `complete` da fonte. mlbs sem base vinculada (baseId null) também é
+// "consulta concluída": não há o que buscar, e isso é honesto, não é falha.
+function computeBaseStats(orders, costMap) {
+  const mlbs = new Set();
+  for (const order of orders || []) {
+    const items = Array.isArray(order.order_items) ? order.order_items : [];
+    for (const oi of items) {
+      const mlb = normalizeId(oi?.item?.id);
+      if (mlb) mlbs.add(mlb);
+    }
+  }
+
+  let itemsMatched = 0;
+  let itemsMissingCost = 0;
+  let itemsMissingTax = 0;
+  for (const mlb of mlbs) {
+    const entry = getCost(costMap, mlb);
+    if (entry && entry.hasCost) itemsMatched += 1;
+    else itemsMissingCost += 1;
+    if (!entry || !entry.hasTax) itemsMissingTax += 1;
+  }
+
+  return {
+    itemsInOrders: mlbs.size,
+    itemsMatched,
+    itemsMissingCost,
+    itemsMissingTax,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -607,16 +720,81 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     const sellerId = context.mlUserId;
     if (!sellerId) throw criarErroHttp(422, "Cliente sem Mercado Livre conectado.");
 
+    // M3 — completude por fonte (só quando o chamador já tem um sync_run
+    // persistido; sincronizarVendasMeli continua funcionando sem runId para
+    // chamadas diretas/legadas, só sem o rastro de completude).
+    const sourceService = runId ? require("./centralVendasSyncSourceService") : null;
+
     // Base oficial da CONTA (nunca "última base do cliente") + custos.
     // Tolerante: sem base ⇒ tudo bloqueado, mas a sincronização persiste
     // mesmo assim (honestidade do dado > bloquear a operação inteira).
     const baseId = context.base?.base_id || null;
-    const custos = await buscarCustosPorBaseId(baseId, db);
+    if (sourceService) await sourceService.iniciarFonte({ runId, source: "base", db });
+    let custos;
+    try {
+      custos = await buscarCustosPorBaseId(baseId, db);
+    } catch (err) {
+      if (sourceService) {
+        await sourceService.marcarFonteFalha({
+          runId, source: "base", errorCode: "BASE_QUERY_ERROR", errorMessage: err?.message, db,
+        });
+      }
+      throw err;
+    }
     const base = baseId ? { id: baseId, nome: context.base.nome } : null;
     const costMap = buildCostMap(custos);
 
-    // Pedidos via Orders API (intervalo inteiro numa paginacao)
-    const orders = await fetchAllOrders(cliente.id, sellerId, from, to);
+    // Pedidos via Orders API (intervalo inteiro numa paginacao). O contrato
+    // devolve {data, completeness} (M3) — nunca sucesso silencioso quando o
+    // universo pretendido (paging.total) não foi coberto.
+    if (sourceService) await sourceService.iniciarFonte({ runId, source: "orders", db });
+    let ordersResult;
+    try {
+      ordersResult = await fetchAllOrders(cliente.id, sellerId, from, to);
+    } catch (err) {
+      if (sourceService) {
+        await sourceService.marcarFonteFalha({
+          runId, source: "orders",
+          errorCode: err?.code || "ORDERS_HTTP_ERROR",
+          httpStatus: err?.mlStatus || null,
+          errorMessage: err?.message,
+          db,
+        });
+      }
+      throw err;
+    }
+    const orders = ordersResult.data;
+    const ordersCompleteness = ordersResult.completeness;
+    if (sourceService) {
+      const marcar = ordersCompleteness.complete
+        ? sourceService.marcarFonteCompleta
+        : sourceService.marcarFonteIncompleta;
+      await marcar({
+        runId, source: "orders",
+        expectedCount: ordersCompleteness.expectedCount,
+        receivedCount: ordersCompleteness.receivedCount,
+        pagesExpected: ordersCompleteness.pagesExpected,
+        pagesReceived: ordersCompleteness.pagesReceived,
+        errorCode: ordersCompleteness.complete ? undefined : ordersCompleteness.reason,
+        metadata: {
+          receivedRaw: ordersCompleteness.receivedRaw,
+          duplicateCount: ordersCompleteness.duplicateCount,
+          ...ordersCompleteness.metadata,
+        },
+        db,
+      });
+    }
+
+    // Base finalizada aqui (não antes): a cobertura financeira (seção 33) só
+    // é conhecida depois que os pedidos existem — a fonte "base" continua
+    // reportando "consulta concluída", nunca a completude dos pedidos.
+    if (sourceService) {
+      await sourceService.marcarFonteCompleta({
+        runId, source: "base",
+        metadata: { baseId, ...computeBaseStats(orders, costMap) },
+        db,
+      });
+    }
 
     // Frete e pós-venda são independentes e rodam em paralelo. Claims são
     // buscados por período + seller, nunca uma vez por pedido. A documentação
@@ -628,12 +806,106 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // fechamento — claim de pedido externo é descartado.
     const shipmentIds = orders.map((o) => o.shipping?.id).filter((v) => v != null);
     const orderIds = new Set(orders.map((o) => String(o.id)));
+    if (sourceService) {
+      await Promise.all([
+        sourceService.iniciarFonte({ runId, source: "shipments", db }),
+        sourceService.iniciarFonte({ runId, source: "claims", db }),
+      ]);
+    }
     const [freteLote, claimsLote] = await Promise.all([
       buscarFretesEmLote({ clienteId: cliente.id, sellerId, shipmentIds }),
       buscarClaimsPorPeriodo({ clienteId: cliente.id, sellerId, dateFrom: from, dateTo: to, orderIds }),
     ]);
     const freteMap = freteLote.freteMap;
     const claimsMap = claimsLote.claimsMap;
+
+    if (sourceService) {
+      // Shipments: universo esperado = shipment IDs únicos do período (seção
+      // 22), nunca orders.length. "erros" (429/5xx/fetch exauridos) é o único
+      // motivo de incompletude — frete ausente por ausência legítima
+      // (sem_custo_seller/HTTP 400/401/403/404) é cobertura financeira, não
+      // truncamento da coleta (seção 23/24).
+      const shipmentsComplete = freteLote.erros === 0;
+      const marcarShip = shipmentsComplete
+        ? sourceService.marcarFonteCompleta
+        : sourceService.marcarFonteIncompleta;
+      await marcarShip({
+        runId, source: "shipments",
+        expectedCount: freteLote.total,
+        receivedCount: freteLote.total - freteLote.erros,
+        errorCode: shipmentsComplete ? undefined : "SHIPMENTS_PARTIAL",
+        metadata: {
+          usableFreightCount: freteLote.comFrete,
+          missingFreightCount: Math.max(0, freteLote.ausentes - freteLote.erros),
+          failedCount: freteLote.erros,
+          retryCount: freteLote.tentativasExtras,
+          comReceitaEnvio: freteLote.comReceitaEnvio,
+          lotes: freteLote.lotes,
+        },
+        db,
+      });
+
+      if (claimsLote.indisponivel) {
+        // Claims falhou: nunca vira "0 claims" (seção 25). Returns fica
+        // bloqueado — não pôde ser verificado, nunca "sem devolução".
+        const httpStatus = Number.isInteger(claimsLote.status) ? claimsLote.status : null;
+        const errorCode = httpStatus === 400 ? "CLAIMS_HTTP_400" : "CLAIMS_HTTP_ERROR";
+        await sourceService.marcarFonteFalha({
+          runId, source: "claims",
+          errorCode, httpStatus,
+          errorMessage: claimsLote.motivo || null,
+          metadata: { attempts: claimsLote.attempts, pages: claimsLote.pages },
+          db,
+        });
+        await sourceService.iniciarFonte({ runId, source: "returns", db });
+        await sourceService.marcarFonteIncompleta({
+          runId, source: "returns",
+          errorCode: "RETURNS_BLOCKED_BY_CLAIMS",
+          metadata: { reason: "blocked_by_claims_failure" },
+          db,
+        });
+      } else {
+        const claimsExpected = claimsLote.totalApi;
+        const claimsReceived = claimsLote.claims.length;
+        const claimsComplete = claimsExpected === null ? claimsReceived === 0 : claimsExpected === claimsReceived;
+        const marcarClaims = claimsComplete
+          ? sourceService.marcarFonteCompleta
+          : sourceService.marcarFonteIncompleta;
+        await marcarClaims({
+          runId, source: "claims",
+          expectedCount: claimsExpected,
+          receivedCount: claimsReceived,
+          pagesReceived: claimsLote.pages,
+          errorCode: claimsComplete ? undefined : "CLAIMS_COUNT_MISMATCH",
+          metadata: {
+            attempts: claimsLote.attempts,
+            pedidosComClaims: claimsLote.pedidosComClaims,
+            claimsForaDoPeriodo: claimsLote.claimsForaDoPeriodo,
+          },
+          db,
+        });
+
+        // Returns: universo esperado real (seção 29/30) — claims de devolução
+        // que precisavam de detalhe via GET .../claims/{id}/returns, não
+        // claims.length inteiro (nem todo claim exige esse detalhe).
+        const returnsExpected = claimsLote.returnsPendentesTotal ?? 0;
+        const returnsResolved = claimsLote.returnsResolvidos ?? 0;
+        const returnsUnresolved = claimsLote.returnsNaoResolvidos ?? 0;
+        const returnsComplete = returnsUnresolved === 0;
+        await sourceService.iniciarFonte({ runId, source: "returns", db });
+        const marcarReturns = returnsComplete
+          ? sourceService.marcarFonteCompleta
+          : sourceService.marcarFonteIncompleta;
+        await marcarReturns({
+          runId, source: "returns",
+          expectedCount: returnsExpected,
+          receivedCount: returnsResolved,
+          errorCode: returnsComplete ? undefined : "RETURNS_UNRESOLVED",
+          metadata: { resolved: returnsResolved, unresolved: returnsUnresolved },
+          db,
+        });
+      }
+    }
 
     // Auditoria do caminho barato: registra apenas uma amostra curta das tags
     // de pedidos cuja Claims API confirmou devolução. Tags continuam sendo
@@ -680,6 +952,13 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     let componentesPersistidos = 0;
     const porCompetencia = [];
 
+    // M3, seção 43: referência compacta à completude do run vai em cada
+    // snapshot — a fonte canônica continua sendo central_vendas_sync_sources,
+    // isto é só uma cópia leve para o GET não depender de outra tabela.
+    const completenessSnapshot = sourceService
+      ? await sourceService.calcularCompletudeDoRun(runId, db)
+      : null;
+
     for (const [comp, groupOrders] of grupos) {
       const motorResult = buildMotorFromOrders({
         orders: groupOrders,
@@ -703,6 +982,19 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
           claimsLote.indisponivel || (claimsLote.returnsNaoResolvidos || 0) > 0
             ? "parcial"
             : resumoCalculado.confianca,
+        ...(completenessSnapshot
+          ? {
+              syncRunId: runId,
+              completenessStatus: completenessSnapshot.status,
+              // Compacto para o GET (seção 43): "não está confiavelmente
+              // completa" inclui tanto incomplete quanto failed — a
+              // distinção fina entre os dois fica em sync_sources, a fonte
+              // canônica (GET /sync-runs/:id).
+              incompleteSources: [
+                ...new Set([...completenessSnapshot.incompleteSources, ...completenessSnapshot.failedSources]),
+              ],
+            }
+          : {}),
       };
       const motorPayload = { ...motorResult, resumo };
       const persisted = await repository.persistCentralVendasImport({
@@ -763,6 +1055,8 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       },
       baseVinculada: base ? { id: base.id, nome: base.nome, custos: custos.length } : null,
       ordersEncontrados: orders.length,
+      ordersCompleteness,
+      completude: completenessSnapshot,
       frete: {
         shipmentsUnicos: freteLote.total,
         shipmentsBuscados: freteLote.buscados,
@@ -805,4 +1099,5 @@ module.exports = {
   getCost,
   buscarCustosPorBaseId,
   fetchAllOrders,
+  computeBaseStats,
 };

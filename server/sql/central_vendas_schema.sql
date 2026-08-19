@@ -202,3 +202,48 @@ ALTER TABLE central_vendas_imports
 
 CREATE INDEX IF NOT EXISTS idx_central_vendas_imports_sync_run
   ON central_vendas_imports (sync_run_id);
+
+-- ---------------------------------------------------------------------------
+-- M3 — Completude por fonte (Central de Vendas V3)
+--
+-- Uma linha = o resultado da coleta de UMA fonte (orders/shipments/claims/
+-- returns/base) dentro de UMA execução (central_vendas_sync_runs). Isto é um
+-- eixo SEPARADO do status técnico do run (M2): um run pode terminar
+-- 'completed' e ainda assim ter uma fonte 'incomplete'/'failed' — ver
+-- centralVendasSyncSourceService e docs/CENTRAL_VENDAS_V3_ARQUITETURA.md.
+--
+-- status: pending -> running -> (complete | incomplete | failed |
+-- not_applicable). Guarda de transição no service: nunca terminal ->
+-- terminal silenciosamente (mesmo espírito do M2). `complete` NÃO é
+-- sinônimo de "dado financeiro presente" — ver seção 7 da spec do M3.
+CREATE TABLE IF NOT EXISTS central_vendas_sync_sources (
+  id BIGSERIAL PRIMARY KEY,
+  sync_run_id BIGINT NOT NULL REFERENCES central_vendas_sync_runs(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  complete BOOLEAN,
+  expected_count INTEGER,
+  received_count INTEGER,
+  pages_expected INTEGER,
+  pages_received INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  error_code TEXT,
+  http_status INTEGER,
+  error_message TEXT,
+  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (sync_run_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_sync_sources_run
+  ON central_vendas_sync_sources (sync_run_id);
+
+-- Cache de conveniência: SEMPRE derivado de central_vendas_sync_sources via
+-- calcularCompletudeDoRun (nunca escrito de outro lugar). run.status
+-- continua queued/running/completed/failed (M2, inalterado) — este é o eixo
+-- separado: um run completed pode ter completeness_status = 'partial'.
+ALTER TABLE central_vendas_sync_runs
+  ADD COLUMN IF NOT EXISTS completeness_status TEXT;

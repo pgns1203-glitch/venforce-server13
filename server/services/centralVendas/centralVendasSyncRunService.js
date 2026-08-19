@@ -82,6 +82,11 @@ function sanitizeRun(row) {
     baseResolutionMode: row.base_resolution_mode || null,
     dateFrom: row.date_from ? String(row.date_from).slice(0, 10) : null,
     dateTo: row.date_to ? String(row.date_to).slice(0, 10) : null,
+    // M3 — eixo separado do status técnico (ver seção 40 da spec): um run
+    // completed pode ter completenessStatus 'partial'. Sempre derivado de
+    // central_vendas_sync_sources via calcularCompletudeDoRun, nunca escrito
+    // diretamente por outro caminho — ver atualizarCompletenessRun.
+    completenessStatus: row.completeness_status || null,
     createdAt: row.created_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -363,6 +368,22 @@ async function marcarRunFailed(runId, { code = null, message = null } = {}, db =
   return result.rows[0] || null;
 }
 
+// M3 — grava o cache de completude do run (sempre derivado de
+// centralVendasSyncSourceService.calcularCompletudeDoRun, nunca calculado
+// aqui). Não é uma transição de estado do run (queued/running/completed/
+// failed continuam exatamente como no M2) — por isso não tem guarda de
+// status: pode ser chamado a qualquer momento sem afetar run.status.
+async function atualizarCompletenessRun(runId, completenessStatus, db = pool) {
+  const result = await db.query(
+    `UPDATE central_vendas_sync_runs
+        SET completeness_status = $2, updated_at = NOW()
+      WHERE id = $1
+      RETURNING *`,
+    [runId, completenessStatus || null]
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
 module.exports = {
   criarSyncRun,
   obterSyncRun,
@@ -370,6 +391,7 @@ module.exports = {
   marcarRunRunning,
   marcarRunCompleted,
   marcarRunFailed,
+  atualizarCompletenessRun,
   reconciliarRunsStale,
   sanitizeRun,
   ESTADOS_FINAIS,

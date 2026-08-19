@@ -348,7 +348,16 @@ function buildPayloadFromSnapshot(cliente, competencia, snapshot) {
         : resumoBase.confianca,
   };
   const temBloqueado = pedidos.some((pedido) => pedido.confianca === "bloqueado");
+  const completenessState = buildCompletenessState(snapshot);
+  const completudeIncompleta = completenessState.hasSignal && completenessState.completenessStatus !== "complete";
   const geradoEm = snapshot.importacao.created_at || snapshot.importacao.createdAt || null;
+
+  const motivosBloqueio = [];
+  if (claimsState.claimsIndisponivel) motivosBloqueio.push("A verificacao de pos-venda (claims) nao foi concluida.");
+  if (temBloqueado) motivosBloqueio.push("Ha pedidos bloqueados por custo/produto ausente.");
+  if (completudeIncompleta) {
+    motivosBloqueio.push(`Coleta incompleta: ${completenessState.incompleteSources.join(", ") || "fonte nao verificada"}.`);
+  }
 
   return {
     ok: true,
@@ -359,13 +368,9 @@ function buildPayloadFromSnapshot(cliente, competencia, snapshot) {
       status: "persistido",
       etapaAtual: "importacao_persistida",
       progresso: 100,
-      confianca: resumo.confianca || snapshot.importacao.confianca || "parcial",
-      podeConcluir: !temBloqueado && !claimsState.claimsIndisponivel,
-      motivoBloqueio: claimsState.claimsIndisponivel
-        ? "A verificacao de pos-venda (claims) nao foi concluida."
-        : temBloqueado
-          ? "Ha pedidos bloqueados por custo/produto ausente."
-          : null,
+      confianca: completudeIncompleta ? "parcial" : (resumo.confianca || snapshot.importacao.confianca || "parcial"),
+      podeConcluir: !temBloqueado && !claimsState.claimsIndisponivel && !completudeIncompleta,
+      motivoBloqueio: motivosBloqueio.length ? motivosBloqueio.join(" ") : null,
       geradoEm: geradoEm instanceof Date ? geradoEm.toISOString() : geradoEm,
       origemPrincipal: snapshot.importacao.fonte || "planilha_vendas",
       importId: snapshot.importacao.id,
@@ -373,6 +378,9 @@ function buildPayloadFromSnapshot(cliente, competencia, snapshot) {
     adsPorProdutoDisponivel: false,
     adsMensal: { investimento: null, status: "ausente" },
     resumo,
+    completude: completenessState.hasSignal
+      ? { status: completenessState.completenessStatus, fontesIncompletas: completenessState.incompleteSources }
+      : null,
     produtos: buildProdutos(snapshot.itens || []),
     pedidos,
   };
@@ -413,6 +421,37 @@ function buildClaimsState(snapshot) {
     // ser lido como "sem devolução".
     claimsReturnsNaoResolvidos: returnsNaoResolvidos,
   };
+}
+
+// M3, seção 44 — honestidade do GET: quando o snapshot veio de um sync_run
+// com fonte obrigatória incompleta, o motor nunca pode apresentar
+// confianca=confiavel/podeConcluir=true. Só aplica a gate quando o import
+// carrega o sinal (completenessStatus em resumo_json, gravado pelo M3) —
+// imports legados/planilha sem esse campo seguem exatamente a regra
+// anterior (claimsState/temBloqueado), sem regressão de texto.
+function buildCompletenessState(snapshot) {
+  const imports = Array.isArray(snapshot?.imports) && snapshot.imports.length
+    ? snapshot.imports
+    : snapshot?.importacao
+      ? [snapshot.importacao]
+      : [];
+  const resumos = imports
+    .map((importacao) => jsonValue(importacao.resumo_json, {}))
+    .filter((resumo) => resumo && typeof resumo.completenessStatus === "string");
+
+  if (!resumos.length) return { hasSignal: false, completenessStatus: null, incompleteSources: [] };
+
+  const statuses = resumos.map((resumo) => resumo.completenessStatus);
+  const incompleteSources = [...new Set(
+    resumos.flatMap((resumo) => (Array.isArray(resumo.incompleteSources) ? resumo.incompleteSources : []))
+  )];
+
+  let completenessStatus = "complete";
+  if (statuses.includes("failed")) completenessStatus = "failed";
+  else if (statuses.includes("partial")) completenessStatus = "partial";
+  else if (statuses.some((status) => status !== "complete")) completenessStatus = "unknown";
+
+  return { hasSignal: true, completenessStatus, incompleteSources };
 }
 
 function buildResumoFromRange(resumoBase, pedidos) {
@@ -513,12 +552,14 @@ function buildPayloadFromRange(cliente, range, snapshot) {
   const pedidosValidos = pedidos.filter(pedidoEntraNoResultado);
   const temBloqueado = pedidosValidos.some((pedido) => pedido.confianca === "bloqueado");
   const claimsState = buildClaimsState(snapshot);
+  const completenessState = buildCompletenessState(snapshot);
+  const completudeIncompleta = completenessState.hasSignal && completenessState.completenessStatus !== "complete";
   const geradoEm = snapshot.importacao?.created_at || null;
   const resumo = {
     ...buildResumoFromRange(jsonValue(snapshot.importacao?.resumo_json, {}), pedidos),
     ...claimsState,
     claimsVerificados: !claimsState.claimsIndisponivel,
-    confianca: claimsState.claimsIndisponivel || claimsState.claimsReturnsNaoResolvidos > 0
+    confianca: claimsState.claimsIndisponivel || claimsState.claimsReturnsNaoResolvidos > 0 || completudeIncompleta
       ? "parcial"
       : (temBloqueado ? "parcial" : pedidosValidos.length ? "confiavel" : "ausente"),
   };
@@ -529,6 +570,9 @@ function buildPayloadFromRange(cliente, range, snapshot) {
     motivosBloqueio.push(
       `${claimsState.claimsReturnsNaoResolvidos} devolucao(oes) sem pedido resolvido no detalhe de returns.`
     );
+  }
+  if (completudeIncompleta) {
+    motivosBloqueio.push(`Coleta incompleta: ${completenessState.incompleteSources.join(", ") || "fonte nao verificada"}.`);
   }
 
   return {
@@ -541,7 +585,8 @@ function buildPayloadFromRange(cliente, range, snapshot) {
       etapaAtual: "importacao_persistida",
       progresso: 100,
       confianca: resumo.confianca,
-      podeConcluir: !temBloqueado && !claimsState.claimsIndisponivel && claimsState.claimsReturnsNaoResolvidos === 0,
+      podeConcluir: !temBloqueado && !claimsState.claimsIndisponivel
+        && claimsState.claimsReturnsNaoResolvidos === 0 && !completudeIncompleta,
       motivoBloqueio: motivosBloqueio.length ? motivosBloqueio.join(" ") : null,
       geradoEm: geradoEm instanceof Date ? geradoEm.toISOString() : geradoEm,
       origemPrincipal: snapshot.importacao?.fonte || "orders_api",
@@ -550,6 +595,9 @@ function buildPayloadFromRange(cliente, range, snapshot) {
     adsPorProdutoDisponivel: false,
     adsMensal: { investimento: null, status: "ausente" },
     resumo,
+    completude: completenessState.hasSignal
+      ? { status: completenessState.completenessStatus, fontesIncompletas: completenessState.incompleteSources }
+      : null,
     produtos: buildProdutos(snapshot.itens || []),
     pedidos,
   };

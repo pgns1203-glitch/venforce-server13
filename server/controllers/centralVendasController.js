@@ -3,6 +3,7 @@ const centralVendasService = require("../services/centralVendas/centralVendasSer
 const centralVendasImportService = require("../services/centralVendas/centralVendasImportService");
 const centralVendasSyncRunService = require("../services/centralVendas/centralVendasSyncRunService");
 const centralVendasSyncWorker = require("../services/centralVendas/centralVendasSyncWorker");
+const centralVendasSyncSourceService = require("../services/centralVendas/centralVendasSyncSourceService");
 
 const CAMPOS_SENSIVEIS = new Set([
   "access_token", "refresh_token", "api_key", "apikey", "password",
@@ -223,7 +224,11 @@ async function obterSyncRunController(req, res) {
     if (!Number.isFinite(runId)) return responder(res, 400, { ok: false, erro: "runId invalido." });
 
     const run = await centralVendasSyncRunService.obterSyncRun({ runId, clienteSlug: slug });
-    return responder(res, 200, { ok: true, run });
+    // M3, seção 41: sources sempre escopadas pelo mesmo runId já validado
+    // (dono do cliente) acima por obterSyncRun — nunca outro caminho de
+    // acesso a central_vendas_sync_sources.
+    const sources = await centralVendasSyncSourceService.listarFontesDoRun(run.id);
+    return responder(res, 200, { ok: true, run, sources });
   } catch (err) {
     return tratarErro(res, err, "obterSyncRun");
   }

@@ -1,14 +1,13 @@
-# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run)
+# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte)
 
-> Este documento cobre **o que foi implementado**: M1 (Central Account-Aware)
-> e M2 (Sync Run persistido), os dois primeiros dos dez marcos descritos na
-> especificação da fundação da Central V3, mais uma rodada de **Hardening
-> M1/M2** (seção 9) que corrigiu 5 lacunas encontradas numa revisão antes
-> do início do M3.
-> M3–M10 (completude por fonte, candidate/published, motor por item, ledger,
-> API de leitura paginada, frontend account-aware, remoção do recálculo no
-> frontend, performance/bulk) **não foram implementados** — ver seção "O que
-> fica para depois".
+> Este documento cobre **o que foi implementado**: M1 (Central Account-Aware),
+> M2 (Sync Run persistido), o **Hardening M1/M2** (seção 9) e agora
+> **M3 — Completude por Fonte** (seção 10), quatro dos dez marcos descritos
+> na especificação da fundação da Central V3.
+> M4–M10 (candidate/published, motor por item, ledger, API de leitura
+> paginada, frontend account-aware, remoção do recálculo no frontend,
+> performance/bulk) **não foram implementados** — ver seção 10.14 "O que
+> continua fora do escopo".
 >
 > Referência do estado anterior: `TELA_CENTRAL_VENDAS_V2.md` (auditoria de
 > 2026-08-19) e `docs/AUDITORIA_BASES_POS_CLIENTE_CONTAS.md` (mesmo dia,
@@ -555,8 +554,270 @@ ledger, Ads, Mercado Pago, histórico temporal de custos, bulk insert — tudo
 isso continua exatamente como M1/M2 deixou. Esta rodada é só a fundação
 ficando sólida antes do M3.
 
-## 10. Próximo marco (M3, fora do escopo desta rodada)
+## 10. M3 — Completude por Fonte
 
-Completude por fonte — comparar `paging.total` real da Orders API contra o
-que foi de fato coletado, e o mesmo tratamento para Shipments/Claims, antes
-de qualquer mudança no motor por item.
+### 10.1 Objetivo
+
+Antes do M3, `run.status = completed` só provava que o processo técnico
+chegou ao fim — nunca que Orders foi coletado inteiro, que Shipments/Claims
+foram realmente consultados, ou que a API atingiu algum limite silenciosamente
+(o teto de 5.000 pedidos podia truncar sem avisar). M3 separa definitivamente:
+
+```text
+EXECUÇÃO TÉCNICA (run.status)       queued | running | completed | failed
+COMPLETUDE DAS FONTES (completeness) unknown | complete | partial | failed
+```
+
+Um run pode terminar `completed` e ainda ter `completenessStatus = 'partial'`
+— exatamente o caso real que motivou este marco: Claims respondendo HTTP 400
+enquanto Orders e Shipments vieram inteiros.
+
+### 10.2 Schema — `central_vendas_sync_sources`
+
+Uma linha = o resultado da coleta de UMA fonte (`orders`/`shipments`/
+`claims`/`returns`/`base`) dentro de UM `sync_run`. `UNIQUE(sync_run_id,
+source)`, upsert idempotente.
+
+```text
+id, sync_run_id (FK), source, status, complete BOOLEAN,
+expected_count, received_count, pages_expected, pages_received, attempts,
+started_at, finished_at, error_code, http_status, error_message,
+metadata_json, created_at, updated_at
+```
+
+`central_vendas_sync_runs` ganha `completeness_status` — cache de
+conveniência, **sempre** escrito por `calcularCompletudeDoRun` (nunca por
+outro caminho); `run.status` continua exatamente queued/running/completed/
+failed do M2, inalterado.
+
+### 10.3 Estados de fonte
+
+```text
+pending -> running -> (complete | incomplete | failed | not_applicable)
+```
+
+Guarda de transição em `centralVendasSyncSourceService` (mesmo espírito do
+M2): nenhuma fonte volta de um estado terminal para outro estado, nem para
+outro terminal, silenciosamente. `complete` **não é sinônimo de "dado
+financeiro presente"** — Shipments pode estar `complete=true` (todos os
+endpoints responderam) com fretes ausentes; isso vira `missingFreightCount`
+em `metadata_json`, nunca reduz `status`.
+
+### 10.4 Regra por fonte
+
+| Fonte     | Expected                    | Received                | Coleta completa? | Cobertura financeira (metadata)          | Obrigatória |
+| --------- | ---------------------------- | ------------------------ | ----------------- | ----------------------------------------- | ----------- |
+| Orders    | `maxReportedTotal` (paging.total) | pedidos únicos (dedupe por id) | `received === expected`, sem bater no teto de 100 páginas | n/a — Orders é a fonte de universo | sim (estrutural) |
+| Shipments | shipment IDs únicos do período | requisições sem erro (`total - erros`) | `erros === 0` | `usableFreightCount`/`missingFreightCount` | sim |
+| Claims    | `paging.total` da Claims API | claims recebidos | `expected === received`; HTTP 400/5xx → `failed` | pós-venda verificado | sim |
+| Returns   | claims de devolução que precisam do detalhe v2 (`pendentesTotal`) | detalhes resolvidos | `unresolved === 0`; bloqueado se Claims falhou | devoluções | quando aplicável |
+| Base      | consulta de custos | consulta concluída (mesmo sem base vinculada) | sempre, salvo erro de banco | `itemsMatched`/`itemsMissingCost`/`itemsMissingTax` | sim (estrutural) |
+
+**Orders — contrato de completude.** `fetchAllOrders` devolve
+`{data, completeness}` em vez de um array puro. `expectedCount` usa a
+estratégia conservadora "maior `paging.total` já visto entre as páginas"
+(`maxReportedTotal`) — se a API variar o total, o maior valor vence e a
+variação fica registrada em `metadata.{firstReportedTotal,lastReportedTotal,
+maxReportedTotal}`. Motivos tipados: `ORDERS_TRUNCATED_BY_SAFETY_LIMIT`
+(bateu no teto de 100 páginas com pedidos faltando — nunca vira sucesso
+silencioso, e o `expectedCount` real continua persistido, nunca reescrito
+para o que foi coletado), `ORDERS_EARLY_EMPTY_PAGE` (página vazia antes do
+total conhecido) e `ORDERS_COUNT_MISMATCH` (qualquer outra divergência final
+entre `receivedUnique` e `expectedCount`). Duplicata entre páginas é
+deduplicada por `order.id`; `receivedRaw`/`duplicateCount` ficam em
+metadata. `total=0`/`total=5000` exatos são `complete=true` — zero é
+resultado válido, teto batido exatamente não é truncamento.
+
+**Shipments.** Reaproveita `centralVendasFreteService.buscarFretesEmLote`
+sem alterá-lo — `expected = total` (shipment IDs únicos do período, nunca
+`orders.length`), `received = total - erros`. `erros` (429/5xx/fetch
+exauridos após retry) é o único motivo de incompletude; ausência legítima de
+frete (`sem_custo_seller`, HTTP 400/401/403/404 — convenção já existente do
+serviço) é cobertura financeira, nunca truncamento da coleta.
+
+**Claims.** Reaproveita `centralVendasClaimsService.buscarClaimsPorPeriodo`.
+`claimsLote.indisponivel === true` → `failed`, com `CLAIMS_HTTP_400`
+(erro_code específico para o caso real observado) ou `CLAIMS_HTTP_ERROR`
+(demais códigos) + `http_status` preservado. Nunca vira `claimsEncontrados =
+0` — essa é exatamente a distorção que o M3 elimina. Quando a API responde
+com sucesso, `totalApi` (paging.total da Claims API) contra `claims.length`
+decide `complete`/`incomplete` (`CLAIMS_COUNT_MISMATCH`); `total=0` com HTTP
+200 é `complete=true`.
+
+**Returns.** Fonte própria, não confundida com Claims. Universo esperado
+real: `pendentesTotal` (novo campo exposto por
+`centralVendasClaimsService.resolverReturnsSemVinculo`) — os claims de
+devolução que exigiam o detalhe `GET /post-purchase/v2/claims/{id}/returns`,
+nunca `claims.length` inteiro. Se Claims falhou, Returns nunca é apresentado
+como verificado: vira `incomplete`/`complete=false` com
+`RETURNS_BLOCKED_BY_CLAIMS` e `metadata.reason = "blocked_by_claims_failure"`
+(convenção enxuta escolhida entre as duas sugeridas pela spec — sem usar
+`not_applicable`, reservado para fontes que realmente não se aplicam).
+
+**Base.** A fonte é finalizada **depois** de Orders (não antes) porque a
+cobertura financeira (`itemsInOrders`/`itemsMatched`/`itemsMissingCost`/
+`itemsMissingTax`, calculada por `computeBaseStats`) só é conhecível quando
+os pedidos existem — mas a consulta de custos em si roda cedo, e um erro
+real de banco (`BASE_QUERY_ERROR`) marca a fonte `failed` imediatamente e
+aborta o run (fonte estrutural, mesmo grau de `orders`). Sem base vinculada
+(`baseId = null`) continua `complete=true` — "consulta concluída" nunca se
+confunde com "todo produto tem custo".
+
+### 10.5 Agregação — `calcularCompletudeDoRun`
+
+Única função que decide `completenessStatus`, nunca duplicada no frontend
+nem no GET:
+
+```text
+falha estrutural (orders OU base com status='failed')  -> 'failed'
+qualquer fonte failed/incomplete (não estrutural)        -> 'partial'
+alguma fonte ainda pending/running                       -> 'unknown'
+todas complete (ou not_applicable)                       -> 'complete'
+```
+
+A distinção estrutural importa porque só Orders/Base fazem
+`sincronizarVendasMeli` lançar exceção (abortando o run tecnicamente) —
+Shipments/Claims/Returns nunca lançam (`buscarFretesEmLote`/
+`buscarClaimsPorPeriodo` sempre resolvem), então a falha deles nunca pode
+virar `completenessStatus = 'failed'` sem que o run também tenha falhado
+tecnicamente. Um run com falha estrutural sempre grava
+`completeness_status = 'failed'` diretamente no catch do worker (nunca
+recalculado depois — um run failed não é reaproveitável).
+
+`falharFontesEmAndamento(runId, ...)` é a rede de segurança do worker
+(seção 54 da spec): fecha qualquer fonte ainda `pending`/`running` como
+`failed` quando o worker aborta por um erro que a orquestração normal não
+previu — nunca deixa "run failed, fontes todas running".
+
+### 10.6 Contrato HTTP
+
+`GET /operacao/central-vendas/:slug/sync-runs/:runId` passa a devolver
+`sources` (lista completa de `centralVendasSyncSourceService.listarFontesDoRun`,
+escopada pelo mesmo `runId` já validado por `obterSyncRun`) e
+`run.completenessStatus`:
+
+```json
+{
+  "ok": true,
+  "run": { "id": 123, "status": "completed", "completenessStatus": "partial" },
+  "sources": [
+    { "source": "orders", "status": "complete", "complete": true, "expectedCount": 587, "receivedCount": 587 },
+    { "source": "claims", "status": "failed", "complete": false, "httpStatus": 400, "errorCode": "CLAIMS_HTTP_400" }
+  ]
+}
+```
+
+`GET /sync-runs` (lista) ganha `completenessStatus` por run via
+`sanitizeRun`, sem detalhe de fontes (fica só no GET de um run).
+
+### 10.7 Propagação ao snapshot
+
+Cada import produzido por um `sync_run` carrega em `resumo_json` uma
+referência compacta: `syncRunId`, `completenessStatus`,
+`incompleteSources` (união de fontes `incomplete` **e** `failed` — o
+snapshot não distingue os dois graus, só marca "não dá para confiar nesta
+fonte"; a distinção fina fica em `central_vendas_sync_sources`, a fonte
+canônica). A fonte de verdade nunca é duplicada por inteiro no import.
+
+### 10.8 Honestidade do GET da Central
+
+`centralVendasService.buildPayloadFromSnapshot`/`buildPayloadFromRange`
+ganham `buildCompletenessState(snapshot)`: quando o import carrega o sinal
+do M3 (`completenessStatus` em `resumo_json`) e ele é diferente de
+`'complete'`, o motor força `confianca = 'parcial'` e `podeConcluir = false`
+— mesmo que Claims/temBloqueado isoladamente não tivessem barrado. O
+payload ganha um campo novo, `completude: { status, fontesIncompletas }`,
+só quando o sinal existe (imports legados/planilha sem o campo seguem
+exatamente a regra anterior, sem regressão de texto).
+
+### 10.9 Frontend (alteração mínima)
+
+`Portal/fechamentos-api.js`: `pollSyncRun` monta o texto de conclusão a
+partir de `run.completenessStatus` + `sources` (nunca só cor — cada fonte
+aparece nomeada: "Orders 587/587 · Fretes 573/573 · Pós-venda falhou").
+`renderContextStatus` ganha um chip "Completude" quando
+`payload.completude.status !== 'complete'`, ao lado do chip "Pós-venda" já
+existente (mantido por compatibilidade).
+
+### 10.10 Cenário real formalizado
+
+```text
+Orders     587/587   complete
+Shipments  573/573   complete
+Claims     HTTP 400  failed (CLAIMS_HTTP_400)
+Returns    bloqueado (RETURNS_BLOCKED_BY_CLAIMS)
+
+run.status = completed
+run.completenessStatus = partial
+
+Central: confianca = parcial · podeConcluir = false
+motivo: "A verificacao de pos-venda (claims) nao foi concluida."
+```
+
+Coberto fim-a-fim em `server/tests/centralVendasM3Completude.test.js`
+(cenário 2), com contagens menores (1 pedido) pelo mesmo motivo do M2: provar
+a forma, não simular volume real.
+
+### 10.11 Arquivos alterados
+
+```text
+novo:    server/services/centralVendas/centralVendasSyncSourceService.js
+editado: server/sql/central_vendas_schema.sql               (tabela + coluna)
+editado: server/services/centralVendas/centralVendasSyncRunService.js  (+atualizarCompletenessRun)
+editado: server/services/centralVendas/centralVendasSyncWorker.js      (orquestra fontes + rede de segurança)
+editado: server/services/centralVendas/centralVendasSyncService.js     (fetchAllOrders + instrumentação de todas as fontes)
+editado: server/services/centralVendas/centralVendasClaimsService.js   (+pendentesTotal/returnsPendentesTotal)
+editado: server/controllers/centralVendasController.js                 (GET expõe sources)
+editado: server/services/centralVendas/centralVendasService.js         (honestidade do GET)
+editado: Portal/fechamentos-api.js                                     (polling mínimo)
+```
+
+### 10.12 Testes
+
+```text
+centralVendasOrdersCompleteness.test.js     39 verificações — contrato de fetchAllOrders (10 cenários da spec) + computeBaseStats
+centralVendasSyncSourceService.test.js      36 verificações — lifecycle/guarda de transição/UNIQUE/rede de segurança/agregação
+centralVendasM3Completude.test.js           32 verificações — fim-a-fim via worker real (3 cenários, incluindo o cenário obrigatório da seção 68)
+centralVendasSyncRuns.test.js (estendido)   makeDb ganhou suporte a central_vendas_sync_sources — os testes 15/16 (M2, runId->sync_run_id) continuam passando com o worker agora registrando fontes
+```
+
+Suíte geral após esta rodada: 93/95 arquivos `*.test.js` (as mesmas 2
+falhas pré-existentes do Hardening M1/M2 — `designStudioWorkspace.test.js` e
+`mlTokenService.test.js` — confirmadas como preexistentes rodando os mesmos
+dois arquivos no `main` antes desta rodada, não relacionadas ao M3).
+
+Não há teste de integração contra PostgreSQL real nesta rodada — os fakes
+de `db` (pattern-matching de SQL, mesmo estilo do M2) simulam UNIQUE
+constraint, guarda de transição e o índice único de runs ativos, mas não
+substituem um teste contra um Postgres vivo. Registrado como limitação, não
+escondido.
+
+### 10.13 Limitações remanescentes
+
+* Timeout por chamada ao `mlClient` não foi tocado (fora do escopo — evita
+  virar uma refatoração transversal de todas as APIs, seção 51 da spec).
+* Sem fila externa (Redis/BullMQ) — mesma limitação conhecida do M2; a rede
+  de segurança de fontes (`falharFontesEmAndamento`) só roda quando o
+  próprio processo Node captura o erro, não sobrevive a um restart no meio
+  de uma sincronização.
+* `not_applicable` foi implementado no service mas não é usado por nenhuma
+  das 5 fontes desta fase (reservado para `ads`/`full_costs` quando forem
+  integradas).
+* Frontend continua sem seletor de conta explícito (isso é M8) — mesma
+  limitação já registrada no Hardening M1/M2.
+
+### 10.14 O que continua fora do escopo
+
+Candidate/published, seleção de snapshot oficial, motor financeiro V3,
+ledger, correção estrutural da devolução parcial, Ads, Mercado Pago, custos
+financeiros Full, histórico temporal de custo, nova Read API paginada,
+grande refatoração de frontend, Redis/BullMQ, bulk insert — tudo isso
+continua exatamente como M1/M2/Hardening deixou. A Central continua sendo
+um **fechamento operacional em evolução**, nunca "conciliação financeira
+final".
+
+## 11. Próximo marco (M4, fora do escopo desta rodada)
+
+Candidate / Published Snapshot — decidir qual snapshot de um período é o
+"oficial" quando existem múltiplas sincronizações, e só então permitir que
+o Cliente 360/Financeiro tratem a Central como fechamento confiável.

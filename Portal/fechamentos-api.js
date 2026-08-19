@@ -1122,6 +1122,12 @@ function renderContextStatus() {
     if (p.resumo?.claimsIndisponivel) {
       parts.push(item('Pós-venda', '<span class="vf-status is-warning">Não verificado</span>'));
     }
+    // M3 — completude por fonte (seção 44): honestidade além de claims —
+    // orders truncado, shipments parcial etc também pedem o aviso aqui.
+    if (p.completude && p.completude.status && p.completude.status !== 'complete') {
+      const fontes = (p.completude.fontesIncompletas || []).map(f => FONTE_LABEL[f] || f).join(', ');
+      parts.push(item('Completude', `<span class="vf-status is-warning">${esc(fontes ? `Parcial (${fontes})` : 'Parcial')}</span>`));
+    }
   }
   host.innerHTML = parts.join('');
 }
@@ -2408,6 +2414,29 @@ async function executarSincronizacao() {
   }
 }
 
+// M3 — resumo textual de completude por fonte (nunca só cor, seção 47).
+// `sources` vem do mesmo GET /sync-runs/:id que devolveu `run`.
+const FONTE_LABEL = { orders: 'Orders', shipments: 'Fretes', claims: 'Pós-venda', returns: 'Devoluções', base: 'Base' };
+function resumoConclusaoSync(run, sources, meta) {
+  const partes = (Array.isArray(sources) ? sources : []).map((s) => {
+    const nome = FONTE_LABEL[s.source] || s.source;
+    if (s.status === 'complete') {
+      return (s.expectedCount != null && s.receivedCount != null)
+        ? `${nome} ${s.receivedCount}/${s.expectedCount}`
+        : `${nome} verificado`;
+    }
+    if (s.status === 'failed') return `${nome} falhou`;
+    if (s.status === 'incomplete') return `${nome} incompleto`;
+    return null;
+  }).filter(Boolean);
+
+  const base = `${meta.pedidosPersistidos ?? '?'} pedido(s) sincronizados via API.`;
+  if (!partes.length) return base;
+  return run.completenessStatus === 'partial'
+    ? `Sincronização concluída com pendências. ${partes.join(' · ')}.`
+    : `${base} ${partes.join(' · ')}.`;
+}
+
 async function pollSyncRun(runId, clienteSlugNoInicio) {
   // Cliente trocado enquanto aguardava a resposta, ou outro poll assumiu — ignora.
   if (F.sync.runId !== runId || F.cliente?.slug !== clienteSlugNoInicio) return;
@@ -2444,12 +2473,14 @@ async function pollSyncRun(runId, clienteSlugNoInicio) {
       return;
     }
 
-    // completed
+    // completed — run.status (técnico) e run.completenessStatus (M3) são eixos
+    // separados: um run completed pode ter pendências de coleta (ex.: claims
+    // HTTP 400). O texto sempre nomeia a fonte, nunca só cor (seção 47).
     const meta = run.metadata || {};
     F.lastSyncBase = run.baseId ? { id: run.baseId } : null;
-    setActionStatus(`Sincronizado: ${meta.pedidosPersistidos ?? '?'} pedido(s) de ${meta.ordersEncontrados ?? '?'} da API. Recarregando…`, ACTION_TONE.ok);
+    setActionStatus('Sincronização concluída. Recarregando…', ACTION_TONE.info);
     await carregarTela();
-    setActionStatus(`${meta.pedidosPersistidos ?? '?'} pedido(s) sincronizados via API.`, ACTION_TONE.ok);
+    setActionStatus(resumoConclusaoSync(run, json.sources, meta), run.completenessStatus === 'partial' ? ACTION_TONE.warn : ACTION_TONE.ok);
   } catch (_) {
     if (F.sync.runId === runId) F.sync.timer = setTimeout(() => pollSyncRun(runId, clienteSlugNoInicio), SYNC_POLL_MS);
   }

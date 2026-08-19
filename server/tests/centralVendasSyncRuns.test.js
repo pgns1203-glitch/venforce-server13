@@ -185,20 +185,85 @@ function makeDb({ contas = [], vinculos = [], grants = [] } = {}) {
         const slug = params[0];
         const cliente = clientes.find((c) => c.slug === slug);
         let filtrados = runs.filter((r) => cliente && r.cliente_id === cliente.id);
-        // filtros adicionais (clienteContaId/marketplace/status) foram
-        // acrescentados na ordem em que aparecem no SQL — aplicamos todos os
-        // params extras, exceto o último (limit).
+        // filtros adicionais (clienteContaId/marketplace/status/dateFrom/
+        // dateTo) foram acrescentados na ordem em que aparecem no SQL —
+        // consome cada valor de `extras` UMA VEZ (fora do callback do
+        // filter — `.shift()` dentro do filter avançaria uma vez por
+        // ELEMENTO iterado, não uma vez por filtro, e corromperia o
+        // pareamento assim que houvesse 2+ runs candidatos).
         const extras = params.slice(1, -1);
         const limit = params[params.length - 1];
-        if (sql.includes("r.cliente_conta_id = $2")) filtrados = filtrados.filter((r) => r.cliente_conta_id === extras.shift());
-        if (sql.includes("r.marketplace = $")) filtrados = filtrados.filter((r) => r.marketplace === extras.shift());
-        if (sql.includes("r.status = $")) filtrados = filtrados.filter((r) => r.status === extras.shift());
+        if (sql.includes("r.cliente_conta_id = $2")) {
+          const valor = extras.shift();
+          filtrados = filtrados.filter((r) => r.cliente_conta_id === valor);
+        }
+        if (sql.includes("r.marketplace = $")) {
+          const valor = extras.shift();
+          filtrados = filtrados.filter((r) => r.marketplace === valor);
+        }
+        if (sql.includes("r.status = $")) {
+          const valor = extras.shift();
+          filtrados = filtrados.filter((r) => r.status === valor);
+        }
+        if (sql.includes("r.date_from = $")) {
+          const valor = extras.shift();
+          filtrados = filtrados.filter((r) => r.date_from === valor);
+        }
+        if (sql.includes("r.date_to = $")) {
+          const valor = extras.shift();
+          filtrados = filtrados.filter((r) => r.date_to === valor);
+        }
         filtrados = filtrados.slice().sort((a, b) => b.id - a.id).slice(0, limit);
         return { rows: filtrados };
       }
 
+      // ── central_vendas_sync_runs: reconciliação de stale runs (roda ANTES
+      //    do dedupe, dentro de criarSyncRun — ver reconciliarRunsStale) ──
+      // Checada ANTES das transições genéricas de estado porque a query
+      // real também contém "status = 'failed'".
+      if (sql.includes("SYNC_RUN_STALE_QUEUED")) {
+        const [clienteId, clienteContaId, marketplace, dateFrom, dateTo, staleMinutes] = params;
+        const cutoff = Date.now() - Number(staleMinutes) * 60000;
+        for (const r of runs) {
+          if (
+            r.cliente_id === clienteId && sameOrNull(r.cliente_conta_id, clienteContaId) &&
+            r.marketplace === marketplace && r.date_from === dateFrom && r.date_to === dateTo &&
+            r.status === "queued" && new Date(r.created_at).getTime() < cutoff
+          ) {
+            r.status = "failed";
+            r.finished_at = new Date().toISOString();
+            r.updated_at = new Date().toISOString();
+            r.error_code = "SYNC_RUN_STALE_QUEUED";
+            r.error_message = "Run abandonado: ficou queued alem do limite (possivel restart do processo).";
+          }
+        }
+        return { rows: [] };
+      }
+      if (sql.includes("SYNC_RUN_STALE_RUNNING")) {
+        const [clienteId, clienteContaId, marketplace, dateFrom, dateTo, staleMinutes] = params;
+        const cutoff = Date.now() - Number(staleMinutes) * 60000;
+        for (const r of runs) {
+          if (
+            r.cliente_id === clienteId && sameOrNull(r.cliente_conta_id, clienteContaId) &&
+            r.marketplace === marketplace && r.date_from === dateFrom && r.date_to === dateTo &&
+            r.status === "running" && r.started_at && new Date(r.started_at).getTime() < cutoff
+          ) {
+            r.status = "failed";
+            r.finished_at = new Date().toISOString();
+            r.updated_at = new Date().toISOString();
+            r.error_code = "SYNC_RUN_STALE_RUNNING";
+            r.error_message = "Run abandonado: ficou running alem do limite (possivel restart do processo).";
+          }
+        }
+        return { rows: [] };
+      }
+
       // ── central_vendas_sync_runs: transições de estado ──
-      if (sql.includes("UPDATE central_vendas_sync_runs") && sql.includes("status = 'running'")) {
+      // Transições estritas (hardening M1/M2): completed/failed só saem de
+      // 'running' — nunca 'status <> completed'/'status <> failed' (isso
+      // deixava passar failed->completed e completed->failed). O fake db
+      // simula exatamente essa guarda, não a antiga negação.
+      if (sql.includes("UPDATE central_vendas_sync_runs") && sql.includes("status = 'running'") && sql.includes("started_at = NOW()")) {
         const [runId] = params;
         const row = runs.find((r) => r.id === runId && r.status === "queued");
         if (!row) return { rows: [] };
@@ -209,7 +274,7 @@ function makeDb({ contas = [], vinculos = [], grants = [] } = {}) {
       }
       if (sql.includes("UPDATE central_vendas_sync_runs") && sql.includes("status = 'completed'")) {
         const [runId, metadataJson] = params;
-        const row = runs.find((r) => r.id === runId && r.status !== "completed");
+        const row = runs.find((r) => r.id === runId && r.status === "running");
         if (!row) return { rows: [] };
         row.status = "completed";
         row.finished_at = new Date().toISOString();
@@ -219,7 +284,7 @@ function makeDb({ contas = [], vinculos = [], grants = [] } = {}) {
       }
       if (sql.includes("UPDATE central_vendas_sync_runs") && sql.includes("status = 'failed'")) {
         const [runId, code, message] = params;
-        const row = runs.find((r) => r.id === runId && r.status !== "failed");
+        const row = runs.find((r) => r.id === runId && r.status === "running");
         if (!row) return { rows: [] };
         row.status = "failed";
         row.finished_at = new Date().toISOString();
@@ -381,6 +446,177 @@ async function run() {
     const semEfeito = await runService.marcarRunRunning(r.id, db);
     assert.strictEqual(semEfeito, null, "run completed não pode voltar para running");
     console.log("  ✓ estado final (completed) nunca volta para running");
+  }
+
+  // Transições inválidas adicionais (hardening M1/M2, bug real encontrado
+  // na revisão): failed->completed e completed->failed passavam antes
+  // porque a guarda era "status <> completed"/"status <> failed" em vez de
+  // "status = running". Cobre as 3 transições que a spec proíbe e que os
+  // testes antigos não cobriam.
+  {
+    const contas = [{ id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", slug: "a1", external_account_id: "111", is_primary: true, ativo: true }];
+    const grants = [grantFixture({ id: 100, cliente_id: 1, ml_user_id: "111" })];
+
+    // completed -> failed não deve ter efeito.
+    {
+      const db = makeDb({ contas, grants });
+      const { run: r } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-02-01", dateTo: "2027-02-28", db });
+      await runService.marcarRunRunning(r.id, db);
+      await runService.marcarRunCompleted(r.id, { pedidosPersistidos: 3 }, db);
+      const semEfeito = await runService.marcarRunFailed(r.id, { code: "X", message: "nao deveria aplicar" }, db);
+      assert.strictEqual(semEfeito, null, "completed não pode virar failed");
+      const final = await runService.obterSyncRun({ runId: r.id, clienteSlug: "cliente-a", db });
+      assert.strictEqual(final.status, "completed", "status deve permanecer completed");
+      assert.strictEqual(final.error, null, "erro não deve ter sido gravado");
+      console.log("  ✓ completed -> failed não tem efeito (transição proibida)");
+    }
+
+    // failed -> completed não deve ter efeito.
+    {
+      const db = makeDb({ contas, grants });
+      const { run: r } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-03-01", dateTo: "2027-03-31", db });
+      await runService.marcarRunRunning(r.id, db);
+      await runService.marcarRunFailed(r.id, { code: "ML_GRANT_REVOKED", message: "revogado" }, db);
+      const semEfeito = await runService.marcarRunCompleted(r.id, { pedidosPersistidos: 99 }, db);
+      assert.strictEqual(semEfeito, null, "failed não pode virar completed");
+      const final = await runService.obterSyncRun({ runId: r.id, clienteSlug: "cliente-a", db });
+      assert.strictEqual(final.status, "failed", "status deve permanecer failed");
+      assert.strictEqual(final.error.code, "ML_GRANT_REVOKED", "erro original deve permanecer intacto");
+      console.log("  ✓ failed -> completed não tem efeito (transição proibida)");
+    }
+
+    // failed -> running não deve ter efeito (mesma guarda de "estado final nunca volta").
+    {
+      const db = makeDb({ contas, grants });
+      const { run: r } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-04-01", dateTo: "2027-04-30", db });
+      await runService.marcarRunRunning(r.id, db);
+      await runService.marcarRunFailed(r.id, { code: "SYNC_EXECUTION_ERROR", message: "erro" }, db);
+      const semEfeito = await runService.marcarRunRunning(r.id, db);
+      assert.strictEqual(semEfeito, null, "failed não pode voltar para running");
+      const final = await runService.obterSyncRun({ runId: r.id, clienteSlug: "cliente-a", db });
+      assert.strictEqual(final.status, "failed");
+      console.log("  ✓ failed -> running não tem efeito (transição proibida)");
+    }
+  }
+
+  // ── STALE RUNS ─────────────────────────────────────────────────────────
+  // Worker in-process (sem fila externa): um restart do processo Node com
+  // um run em queued/running nunca avança sozinho. reconciliarRunsStale()
+  // roda dentro de criarSyncRun(), antes do dedupe, e destrava a próxima
+  // tentativa marcando o run velho como failed (nunca apaga a linha).
+
+  // 1. queued recente (dentro do limite) → não é tocado; uma nova tentativa
+  //    idêntica reaproveita ele normalmente (comportamento de dedupe já
+  //    coberto acima, aqui só provamos que reconciliarRunsStale não mexe).
+  {
+    const contas = [{ id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", slug: "a1", external_account_id: "111", is_primary: true, ativo: true }];
+    const grants = [grantFixture({ id: 100, cliente_id: 1, ml_user_id: "111" })];
+    const db = makeDb({ contas, grants });
+    const { run: r1 } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-05-01", dateTo: "2027-05-31", db });
+
+    const { run: r2, reaproveitado } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-05-01", dateTo: "2027-05-31", db });
+    assert.strictEqual(reaproveitado, true);
+    assert.strictEqual(r2.id, r1.id, "queued recente deve ser reaproveitado, não substituído");
+    assert.strictEqual(r2.status, "queued");
+    console.log("  ✓ stale: queued recente é reaproveitado (não tocado pela reconciliação)");
+  }
+
+  // 2. queued antigo (além do limite) → marcado failed/SYNC_RUN_STALE_QUEUED,
+  //    e uma nova tentativa cria um run novo (não reaproveita o morto).
+  {
+    const contas = [{ id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", slug: "a1", external_account_id: "111", is_primary: true, ativo: true }];
+    const grants = [grantFixture({ id: 100, cliente_id: 1, ml_user_id: "111" })];
+    const db = makeDb({ contas, grants });
+    const { run: r1 } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-06-01", dateTo: "2027-06-30", db });
+    // Simula idade: volta created_at para além do limite (default 15min).
+    const rowR1 = db.runs.find((r) => r.id === r1.id);
+    rowR1.created_at = new Date(Date.now() - (runService.QUEUED_STALE_MINUTES + 5) * 60000).toISOString();
+
+    const { run: r2, reaproveitado } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-06-01", dateTo: "2027-06-30", db });
+    assert.strictEqual(reaproveitado, false, "run stale não deve ser reaproveitado");
+    assert.notStrictEqual(r2.id, r1.id, "deve nascer um run novo");
+
+    const r1Final = await runService.obterSyncRun({ runId: r1.id, clienteSlug: "cliente-a", db });
+    assert.strictEqual(r1Final.status, "failed");
+    assert.strictEqual(r1Final.error.code, "SYNC_RUN_STALE_QUEUED");
+    console.log("  ✓ stale: queued antigo é marcado failed/SYNC_RUN_STALE_QUEUED e libera um run novo");
+  }
+
+  // 3. running recente → não é tocado.
+  {
+    const contas = [{ id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", slug: "a1", external_account_id: "111", is_primary: true, ativo: true }];
+    const grants = [grantFixture({ id: 100, cliente_id: 1, ml_user_id: "111" })];
+    const db = makeDb({ contas, grants });
+    const { run: r1 } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-07-01", dateTo: "2027-07-31", db });
+    await runService.marcarRunRunning(r1.id, db);
+
+    const { run: r2, reaproveitado } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-07-01", dateTo: "2027-07-31", db });
+    assert.strictEqual(reaproveitado, true);
+    assert.strictEqual(r2.id, r1.id, "running recente deve ser reaproveitado, não substituído");
+    assert.strictEqual(r2.status, "running");
+    console.log("  ✓ stale: running recente é reaproveitado (não tocado pela reconciliação)");
+  }
+
+  // 4. running antigo (além do limite, ex.: processo reiniciou no meio) →
+  //    marcado failed/SYNC_RUN_STALE_RUNNING, nova tentativa cria run novo.
+  {
+    const contas = [{ id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", slug: "a1", external_account_id: "111", is_primary: true, ativo: true }];
+    const grants = [grantFixture({ id: 100, cliente_id: 1, ml_user_id: "111" })];
+    const db = makeDb({ contas, grants });
+    const { run: r1 } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-08-01", dateTo: "2027-08-31", db });
+    await runService.marcarRunRunning(r1.id, db);
+    const rowR1 = db.runs.find((r) => r.id === r1.id);
+    rowR1.started_at = new Date(Date.now() - (runService.RUNNING_STALE_MINUTES + 10) * 60000).toISOString();
+
+    const { run: r2, reaproveitado } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-08-01", dateTo: "2027-08-31", db });
+    assert.strictEqual(reaproveitado, false, "run running travado não deve ser reaproveitado");
+    assert.notStrictEqual(r2.id, r1.id, "deve nascer um run novo, o restart não bloqueia para sempre");
+
+    const r1Final = await runService.obterSyncRun({ runId: r1.id, clienteSlug: "cliente-a", db });
+    assert.strictEqual(r1Final.status, "failed");
+    assert.strictEqual(r1Final.error.code, "SYNC_RUN_STALE_RUNNING");
+    console.log("  ✓ stale: running travado (restart) é marcado failed/SYNC_RUN_STALE_RUNNING e libera um run novo");
+  }
+
+  // 5. Reconciliação de stale é escopada por conta/marketplace/período —
+  //    nunca mexe num run stale de OUTRO escopo.
+  {
+    const contas = [{ id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", slug: "a1", external_account_id: "111", is_primary: true, ativo: true }];
+    const grants = [grantFixture({ id: 100, cliente_id: 1, ml_user_id: "111" })];
+    const db = makeDb({ contas, grants });
+    const { run: rOutroPeriodo } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-09-01", dateTo: "2027-09-30", db });
+    const rowOutro = db.runs.find((r) => r.id === rOutroPeriodo.id);
+    rowOutro.created_at = new Date(Date.now() - (runService.QUEUED_STALE_MINUTES + 5) * 60000).toISOString();
+
+    // Cria um run num período DIFERENTE — só deve reconciliar o escopo dele, não o de setembro.
+    await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-10-01", dateTo: "2027-10-31", db });
+
+    const outroFinal = await runService.obterSyncRun({ runId: rOutroPeriodo.id, clienteSlug: "cliente-a", db });
+    assert.strictEqual(outroFinal.status, "queued", "run stale de outro período não deve ser tocado por uma criação de período diferente");
+    console.log("  ✓ stale: reconciliação nunca mexe em run de outro cliente/conta/período");
+  }
+
+  // ── LISTAGEM POR PERÍODO (seção 24/25) ────────────────────────────────
+  // GET /sync-runs?dateFrom&dateTo permite ao frontend achar o run
+  // equivalente ao período aberto na tela, mesmo com duas sincronizações
+  // concorrentes de meses diferentes (seção 25 — retomada nunca deve
+  // acompanhar o run mais recente do cliente cegamente).
+  {
+    const contas = [{ id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", slug: "a1", external_account_id: "111", is_primary: true, ativo: true }];
+    const grants = [grantFixture({ id: 100, cliente_id: 1, ml_user_id: "111" })];
+    const db = makeDb({ contas, grants });
+
+    const { run: runAgosto } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-11-01", dateTo: "2027-11-30", db });
+    await runService.marcarRunRunning(runAgosto.id, db);
+    const { run: runJulho } = await runService.criarSyncRun({ clienteSlug: "cliente-a", marketplace: "meli", dateFrom: "2027-12-01", dateTo: "2027-12-31", db });
+    await runService.marcarRunRunning(runJulho.id, db);
+
+    const runsDeNovembro = await runService.listarSyncRuns({
+      clienteSlug: "cliente-a", dateFrom: "2027-11-01", dateTo: "2027-11-30", status: "running", db,
+    });
+    assert.strictEqual(runsDeNovembro.length, 1);
+    assert.strictEqual(runsDeNovembro[0].id, runAgosto.id, "listagem filtrada por período deve achar só o run daquele período, nunca o de outro mês");
+    console.log("  ✓ listarSyncRuns filtra por dateFrom/dateTo — tela de um mês nunca acompanha o run de outro");
   }
 
   // ── SEGURANÇA ──────────────────────────────────────────────────────────

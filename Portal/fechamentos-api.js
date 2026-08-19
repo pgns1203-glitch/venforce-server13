@@ -2456,15 +2456,23 @@ async function pollSyncRun(runId, clienteSlugNoInicio) {
 }
 
 // Reload/troca de cliente-período: se já existir um sync-run queued/running
-// para este cliente, retoma o acompanhamento em vez de deixar o usuário sem
-// feedback (seção 24 — não depende de variável JS em memória sobrevivendo
-// ao reload, só reconsulta o servidor).
+// para este cliente NESTE MESMO PERÍODO, retoma o acompanhamento em vez de
+// deixar o usuário sem feedback. Filtra por dateFrom/dateTo no servidor
+// (M1/M2 hardening, seção 24) para nunca reconectar a um run de um mês
+// diferente do que está aberto na tela — o frontend ainda não manda
+// clienteContaId (isso é M8), então dois cliques em CONTAS diferentes do
+// mesmo cliente ainda podem colidir aqui; período, pelo menos, não.
 async function retomarSyncEmAndamento() {
-  if (!TOKEN || !F.cliente) return;
+  if (!TOKEN || !F.cliente || !F.periodo) return;
   pararPollingSync();
   try {
+    const params = new URLSearchParams({
+      limit: '5',
+      dateFrom: F.periodo.dateFrom,
+      dateTo: F.periodo.dateTo,
+    });
     const res = await fetch(
-      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/sync-runs?limit=5`,
+      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/sync-runs?${params.toString()}`,
       { headers: { Authorization: 'Bearer ' + TOKEN } }
     );
     if (!res.ok) return;

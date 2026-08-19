@@ -122,6 +122,7 @@ async function importarVendas(req, res) {
     const data = await centralVendasImportService.importarVendasMeli({
       salesRowsRaw,
       clienteSlug: slug,
+      clienteContaId: req.body?.clienteContaId || req.query?.clienteContaId || null,
       competencia: req.body?.competencia || req.query?.competencia,
       marketplace: req.body?.marketplace || "meli",
     });
@@ -238,6 +239,8 @@ async function listarSyncRunsController(req, res) {
       clienteContaId: req.query?.clienteContaId || null,
       marketplace: req.query?.marketplace || null,
       status: req.query?.status || null,
+      dateFrom: req.query?.dateFrom || null,
+      dateTo: req.query?.dateTo || null,
       limit: req.query?.limit || 20,
     });
     return responder(res, 200, { ok: true, runs });

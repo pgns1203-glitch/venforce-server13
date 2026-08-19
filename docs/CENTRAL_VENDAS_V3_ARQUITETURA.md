@@ -2,7 +2,9 @@
 
 > Este documento cobre **o que foi implementado**: M1 (Central Account-Aware)
 > e M2 (Sync Run persistido), os dois primeiros dos dez marcos descritos na
-> especificação da fundação da Central V3.
+> especificação da fundação da Central V3, mais uma rodada de **Hardening
+> M1/M2** (seção 9) que corrigiu 5 lacunas encontradas numa revisão antes
+> do início do M3.
 > M3–M10 (completude por fonte, candidate/published, motor por item, ledger,
 > API de leitura paginada, frontend account-aware, remoção do recálculo no
 > frontend, performance/bulk) **não foram implementados** — ver seção "O que
@@ -104,15 +106,10 @@ objeto `contexto` (conta, `externalAccountId`, `grantId`,
 
 - **Fórmula financeira**: intocada. `buildMotorFromOrders` continua exatamente
   igual — M1 é só identidade, não motor por item (isso é M5).
-- **`centralVendasImportService.js` (importação por planilha)**: continua
-  resolvendo a base de custos por `cliente_id` apenas
-  (`buscarCostRowsDaBase`), sem `clienteContaId`. Diferente do sync, esse
-  caminho não chama a Orders API/grant — o risco é só ambiguidade de base
-  (menor). Dois testes existentes (`centralVendasBaseVinculada.test.js`,
-  `centralVendasImportGet.test.js`) fixam esse contrato hoje; corrigir
-  exigiria o mesmo tratamento de injeção de `queryable` aplicado a
-  `clienteContaService`, feito numa rodada dedicada para não misturar com o
-  path de sync. **Gap real, registrado, não escondido.**
+- **`centralVendasImportService.js` (importação por planilha)**: no M1
+  original, resolvia a base de custos por `cliente_id` apenas
+  (`buscarCostRowsDaBase`), sem `clienteContaId` — **corrigido na rodada de
+  Hardening M1/M2, ver seção 9.**
 - **Sync run persistido (M2)**: a sincronização continua sendo uma requisição
   síncrona longa. Não existe `central_vendas_sync_runs`.
 - **Completude por fonte (M3)**: Orders ainda usa o teto de 100 páginas
@@ -313,9 +310,10 @@ não inicia a execução de forma síncrona) e a ponte run→import
 (`sync_run_id` persistido com `runId`, `null` na chamada legada sem
 `accountContext`).
 
-Suíte completa: 87/89 arquivos passam (as 2 falhas — `designStudioWorkspace.test.js`
-e uma asserção de SQL em `mlTokenService.test.js` — são pré-existentes,
-confirmadas antes desta rodada e não relacionadas a esta mudança).
+Suíte completa (na época do M2): 87/89 arquivos passam (as 2 falhas —
+`designStudioWorkspace.test.js` e uma asserção de SQL em
+`mlTokenService.test.js` — pré-existentes). Contagem atual após o
+Hardening M1/M2: ver seção 9.7.
 
 ### 7.11 O que M2 NÃO fez
 
@@ -328,7 +326,236 @@ confirmadas antes desta rodada e não relacionadas a esta mudança).
 - Importação por planilha: continua síncrona, sem `sync_run_id` (fora do
   escopo — M2 é sobre o botão de sincronização API).
 
-## 8. Próximo marco (M3, fora do escopo desta rodada)
+## 9. Hardening M1/M2 (rodada de correção, antes do M3)
+
+Antes de iniciar M3, uma revisão cirúrgica do M1 (`aa9e85e`) e M2
+(`974fe48`) encontrou 5 lacunas reais nos fundamentos já implementados.
+Esta seção documenta o que foi corrigido — nenhum marco novo (candidate/
+published, motor por item, ledger, Ads, Mercado Público, completude por
+fonte) foi tocado.
+
+### 9.1 GET account-scoped (P0)
+
+Antes: `getCentralVendas()` resolvia `context.conta` via
+`resolveMarketplaceAccountContext()`, mas `centralVendasRepository`
+filtrava o snapshot só por `cliente_slug + marketplace + competência/range`
+— nunca por `cliente_conta_id`. Um cliente com 2 contas ML podia pedir o
+GET da conta A e receber o snapshot mais recente da conta B.
+
+Depois: `getLatestCentralVendasImport()` e `getCentralVendasByRange()`
+aceitam `clienteContaId` + `includeLegacy` e aplicam
+`WHERE cliente_conta_id = $N` (ou `(cliente_conta_id = $N OR
+cliente_conta_id IS NULL)` quando `includeLegacy` é verdadeiro). Política
+de `includeLegacy` (calculada em `centralVendasService.getCentralVendas()`
+antes de chamar o repository):
+
+```text
+conta não resolvida (marketplace != meli, ou cliente 100% legado)
+  → includeLegacy = true, sem filtro de conta (comportamento anterior)
+
+conta resolvida E é a ÚNICA conta ativa daquele marketplace
+  → includeLegacy = true — snapshot legado (cliente_conta_id NULL,
+    anterior à fundação de contas) continua legível, porque só pode
+    pertencer a essa conta
+
+conta resolvida E existem 2+ contas ativas daquele marketplace
+  → includeLegacy = false — nunca mistura a conta resolvida com NULL
+    (poderia ser de outra conta); um snapshot legado nessas condições
+    não é devolvido para nenhuma conta (payload "sem_dados", nunca um
+    número potencialmente errado)
+```
+
+Não foi introduzido um código de erro novo (`ACCOUNT_CONTEXT_UNRESOLVED`)
+para o caso ambíguo — a resposta é o mesmo contrato "sem_dados" que o GET
+já usa para "nenhuma importação encontrada", que já é honesto (não inventa
+dado) sem abrir uma nova superfície de erro no frontend. Decisão registrada
+aqui para revisão.
+
+Teste: `server/tests/centralVendasGetAccountScoped.test.js` (5 cenários,
+reproduz literalmente o caso da spec — conta 10 com import mais antigo,
+conta 11 com import mais recente, GET da conta 10 nunca lê o da 11 — e
+testa por competência, por range cruzando meses, compat legada com 1 conta
+e bloqueio com 2+ contas).
+
+### 9.2 Importação por planilha account-aware (P0)
+
+Antes: `centralVendasImportService.buscarCostRowsDaBase(clienteId)` fazia
+`WHERE cliente_id = ? AND marketplace = 'meli' ORDER BY updated_at DESC
+LIMIT 1` — podia escolher a base de custo de outra conta ML do mesmo
+cliente.
+
+Depois: `importarVendasMeli()` aceita `clienteContaId` (body/query, mesmo
+padrão dos demais endpoints) e chama `resolveMarketplaceAccountContext({
+requireUsableGrant: false, ... })` — a mesma porta de entrada do GET e do
+sync API-first. `requireUsableGrant: false` porque importar arquivo não
+depende de chamar a API do Mercado Livre; a base ainda vem de
+`context.base.base_id` (nunca de "última base atualizada do cliente").
+`buscarCostRowsDaBase(clienteId)` foi removida (o bug que ela reproduzia
+não tinha uso legítimo); `buscarCostRowsPorBaseId(baseId, db)` a substitui,
+recebendo uma base já resolvida.
+
+Identidade persistida no import (mesmos campos do M1/M2, nunca inventados):
+`cliente_conta_id`, `base_id`, `base_resolution_mode`, `grant_id` (só
+quando o resolver encontrou um grant real — planilha não exige grant
+utilizável), `external_account_id`.
+
+Contrato HTTP:
+
+```http
+POST /operacao/central-vendas/:slug/importar-vendas
+     body/query: { clienteContaId? }
+```
+
+Teste: `server/tests/centralVendasImportAccountAware.test.js` (9 cenários:
+1 conta resolve sozinha, 2 contas sem `clienteContaId` → 409, conta
+explícita nunca usa a base da outra, conta de outro cliente → 403,
+marketplace mismatch → 422, funciona sem grant utilizável, identidade
+completa persiste, conta sem base → 422).
+
+### 9.3 Máquina de estados estrita
+
+Antes: `marcarRunCompleted` usava `WHERE status <> 'completed'` e
+`marcarRunFailed` usava `WHERE status <> 'failed'` — a negação (em vez de
+exigir `status = 'running'`) deixava passar `failed → completed` e
+`completed → failed`.
+
+Depois: as duas guardas exigem `AND status = 'running'` — únicas
+transições possíveis são `queued → running`, `running → completed`,
+`running → failed`. Consistente com o único chamador real
+(`centralVendasSyncWorker.executarSyncRun`, que sempre chama
+`marcarRunRunning` antes).
+
+Teste: 3 cenários novos em `centralVendasSyncRuns.test.js`
+(`completed → failed`, `failed → completed`, `failed → running` — todos
+sem efeito, erro/estado original preservado).
+
+### 9.4 Stale runs (worker in-process sem fila externa)
+
+Política (env configurável, valores conservadores por padrão):
+
+```text
+CENTRAL_VENDAS_SYNC_QUEUED_STALE_MINUTES   (default: 15)
+CENTRAL_VENDAS_SYNC_RUNNING_STALE_MINUTES  (default: 60)
+```
+
+`reconciliarRunsStale()` roda dentro de `criarSyncRun()`, ANTES do dedupe
+(`buscarRunAtivoEquivalente`), escopada ao MESMO
+cliente/conta/marketplace/período do run que está sendo criado (nunca
+varre a tabela inteira, nunca mexe em run de outro escopo). Runs `queued`
+mais velhos que `created_at` ou `running` mais velhos que `started_at`
+viram `failed` com `error_code` `SYNC_RUN_STALE_QUEUED` /
+`SYNC_RUN_STALE_RUNNING` — nunca apagados, sempre auditáveis.
+
+Não é heartbeat: só um teto de idade. Um run legítimo que está
+genuinamente demorado (ex.: cliente com muitos pedidos) pode ser marcado
+stale se passar do limite — trade-off aceito nesta rodada (mesmo
+trade-off que M2 já documentava para o worker in-process). Reconciliação
+não foi replicada em `GET /sync-runs` (listagem) para não dar efeito
+colateral de escrita a uma rota de leitura.
+
+Teste: 5 cenários novos em `centralVendasSyncRuns.test.js` (queued/running
+recentes são reaproveitados sem serem tocados; queued/running antigos
+viram `failed` com o `error_code` certo e liberam um run novo; reconciliação
+nunca mexe em run de outro cliente/conta/período).
+
+### 9.5 Índice único com NULL
+
+Antes: `UNIQUE (cliente_id, cliente_conta_id, marketplace, date_from,
+date_to) WHERE status IN ('queued','running')` — um índice único padrão do
+Postgres trata `NULL <> NULL`, então dois runs legados
+(`cliente_conta_id = NULL`, cliente sem `cliente_contas` cadastrada) para
+o mesmo cliente/marketplace/período podiam coexistir mesmo com o índice
+"único" no ar.
+
+Depois (`server/sql/central_vendas_schema.sql`): `DROP INDEX IF EXISTS
+uq_central_vendas_sync_runs_ativo` seguido de `CREATE UNIQUE INDEX IF NOT
+EXISTS uq_central_vendas_sync_runs_ativo_v2 ON central_vendas_sync_runs
+(cliente_id, COALESCE(cliente_conta_id, 0), marketplace, date_from,
+date_to) WHERE status IN ('queued', 'running')`. `0` é seguro como
+sentinela — `cliente_conta_id` é `BIGSERIAL`, começa em 1.
+
+**Saneamento prévio (roda antes do `CREATE UNIQUE INDEX`, dentro do mesmo
+`ensureCentralVendasTables()`, idempotente):** um `UPDATE` com
+`ROW_NUMBER() OVER (PARTITION BY cliente_id, COALESCE(cliente_conta_id,
+0), marketplace, date_from, date_to ORDER BY id DESC)` marca como `failed`
+(`error_code = SYNC_RUN_DEDUPE_LEGACY_NULL`) qualquer duplicata que o bug
+antigo possa ter deixado ativa, mantendo só a mais recente de cada grupo —
+**nunca `DELETE`**. Sem duplicatas, é um no-op.
+
+**Limitação conhecida**: não há Postgres real neste ambiente de
+desenvolvimento para validar a migração contra dados de produção. A
+migração é idempotente e não destrutiva por construção, mas recomenda-se
+rodar `SELECT cliente_id, COALESCE(cliente_conta_id,0), marketplace,
+date_from, date_to, COUNT(*) FROM central_vendas_sync_runs WHERE status IN
+('queued','running') GROUP BY 1,2,3,4,5 HAVING COUNT(*) > 1` manualmente
+antes do primeiro deploy pós-hardening, para confirmar o volume real de
+duplicatas (esperado: zero ou muito baixo, dado que o bug só se manifesta
+em clientes 100% legados com 2+ runs concorrentes).
+
+Teste: `server/tests/centralVendasSyncRunsUniqueIndexSchema.test.js` — teste
+de contrato (inspeciona o SQL versionado: índice antigo removido, índice
+novo com `COALESCE`, saneamento via `UPDATE` nunca `DELETE`). Não reproduz
+a semântica real de `NULL` do Postgres (exigiria um banco vivo — os fakes
+em memória do resto da suíte já simulam `IS NOT DISTINCT FROM`, que é o
+comportamento CORRIGIDO, não o bug original). Limitação documentada, não
+escondida.
+
+### 9.6 Retomada de sync run por período (frontend)
+
+Antes: `retomarSyncEmAndamento()` (`Portal/fechamentos-api.js`) buscava
+`GET /sync-runs?limit=5` e pegava o primeiro `queued`/`running` do
+cliente, sem filtrar por período — reload da tela em agosto podia
+reconectar a um run de julho ainda em andamento.
+
+Depois: `GET /sync-runs` aceita `dateFrom`/`dateTo` (além de
+`clienteContaId`/`marketplace`/`status` que já existiam) e
+`retomarSyncEmAndamento()` passa o período atualmente aberto na tela
+(`F.periodo.dateFrom/dateTo`). A tela nunca mais acompanha o run de um mês
+diferente do que está aberto.
+
+**Limitação conhecida**: o frontend ainda não manda `clienteContaId` (isso
+é M8 — seletor de conta na UI). Dois cliques em CONTAS diferentes do mesmo
+cliente, no MESMO período, ainda podem colidir na retomada. Registrado,
+não escondido — reduzir o escopo do problema (período) já elimina o
+cenário mais comum (reload de página) sem esperar o M8 inteiro.
+
+Não foi possível escrever um teste automatizado para essa mudança:
+`Portal/fechamentos-api.js` é um script de browser sem `module.exports`
+(usa `document`/`window`/globals diretamente), diferente de
+`Portal/central-margem-api.js`, que já é testável por ser um módulo
+CommonJS puro. Reestruturar `fechamentos-api.js` para ser testável está
+fora do escopo desta rodada cirúrgica.
+
+### 9.7 Regressão
+
+```text
+novos testes desta rodada: 17/17
+  centralVendasGetAccountScoped.test.js:            5/5
+  centralVendasImportAccountAware.test.js:           9/9
+  centralVendasSyncRunsUniqueIndexSchema.test.js:    3/3
+
+testes existentes ajustados (contrato account-aware, sem mudar o que provam):
+  centralVendasBaseVinculada.test.js:                4/4
+  centralVendasSyncRuns.test.js:                   22/22 (8 cenários novos:
+    3 transições inválidas + 5 de stale run + 1 de listagem por período,
+    dentro do mesmo arquivo)
+
+suíte geral: 90/92 arquivos
+
+falhas preexistentes (confirmadas antes desta rodada, não relacionadas):
+  - designStudioWorkspace.test.js
+  - mlTokenService.test.js (linha 313, asserção de SQL)
+```
+
+### 9.8 O que NÃO foi tocado nesta rodada
+
+Teto de 5.000 pedidos, completude de Orders/Claims/Shipments, `completed`
+vs `partial`, candidate/published, devolução parcial, motor por item,
+ledger, Ads, Mercado Pago, histórico temporal de custos, bulk insert — tudo
+isso continua exatamente como M1/M2 deixou. Esta rodada é só a fundação
+ficando sólida antes do M3.
+
+## 10. Próximo marco (M3, fora do escopo desta rodada)
 
 Completude por fonte — comparar `paging.total` real da Orders API contra o
 que foi de fato coletado, e o mesmo tratamento para Shipments/Claims, antes

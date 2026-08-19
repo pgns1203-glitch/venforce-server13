@@ -17,7 +17,7 @@ Module._load = function loadWithXlsxStub(request, parent, isMain) {
 
 const {
   createCentralVendasImportService,
-  buscarCostRowsDaBase,
+  buscarCostRowsPorBaseId,
 } = require("../services/centralVendas/centralVendasImportService");
 
 Module._load = originalLoad;
@@ -85,9 +85,18 @@ const salesRowsRaw = [
 
 // ── fake db que simula a query de base vinculada ──────────────────────────────
 
+// resolveMarketplaceAccountContext() agora entra no caminho (import
+// account-aware, hardening M1/M2): este cliente não tem cliente_contas
+// cadastrada (query "cliente_contas WHERE..." cai no default {rows:[]}),
+// então cai no modo legado — resolve a base via base_cliente_vinculos por
+// cliente_id+marketplace, mesma coisa que o código antigo fazia, só que
+// agora dentro do resolver compartilhado em vez de uma query própria.
 function makeFakeDb({ comBase = true, comItens = true } = {}) {
   return {
     async query(sql, params) {
+      if (/FROM clientes/.test(sql)) {
+        return { rows: [{ id: cliente.id, nome: cliente.nome, slug: cliente.slug, ativo: true }] };
+      }
       if (/base_cliente_vinculos/.test(sql)) {
         if (!comBase) return { rows: [] };
         return { rows: [{ base_id: 99, base_nome: "Base Meli Loja" }] };
@@ -133,11 +142,11 @@ async function runImport(fakeDb) {
 // ── testes ────────────────────────────────────────────────────────────────────
 
 async function run() {
-  // 1. De-para: buscarCostRowsDaBase deve converter produto_id→mlb, custo_produto→custo,
+  // 1. De-para: buscarCostRowsPorBaseId deve converter produto_id→mlb, custo_produto→custo,
   //    imposto_percentual→imposto com os tipos corretos (string MLB, number custo/imposto).
   {
     const fakeDb = makeFakeDb({ comBase: true, comItens: true });
-    const rows = await buscarCostRowsDaBase(cliente.id, fakeDb);
+    const rows = await buscarCostRowsPorBaseId(99, fakeDb);
 
     assert.strictEqual(rows.length, 3, "deve retornar 3 itens de custo");
 

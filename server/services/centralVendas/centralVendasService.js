@@ -598,6 +598,22 @@ function createCentralVendasService(repository = getRepository(), db = pool) {
       });
     }
 
+    // P0 do hardening M1/M2: a leitura precisa ser escopada pela MESMA conta
+    // que o resolver validou — nunca só cliente_slug+marketplace (isso
+    // permitia ler o snapshot mais recente de OUTRA conta do mesmo
+    // cliente). includeLegacy só libera snapshot com cliente_conta_id NULL
+    // quando essa conta é comprovadamente a única ativa daquele marketplace
+    // (nunca com 2+ contas ativas — ver centralVendasRepository).
+    const contaIdResolvida = context?.conta?.id || null;
+    let includeLegacy = true;
+    if (contaIdResolvida) {
+      const totalAtivasResult = await db.query(
+        "SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true",
+        [cliente.id, marketplaceNorm]
+      );
+      includeLegacy = (totalAtivasResult.rows[0]?.total || 0) <= 1;
+    }
+
     // Novo: periodo de analise por intervalo de datas (pode cruzar meses).
     if (isValidIsoDate(dateFrom) && isValidIsoDate(dateTo)) {
       const from = dateFrom <= dateTo ? dateFrom : dateTo;
@@ -607,6 +623,8 @@ function createCentralVendasService(repository = getRepository(), db = pool) {
         dateFrom: from,
         dateTo: to,
         marketplace: marketplaceNorm,
+        clienteContaId: contaIdResolvida,
+        includeLegacy,
       });
       const payload = buildPayloadFromRange(cliente, { dateFrom: from, dateTo: to }, snapshot);
       payload.contexto = buildContextoPayload(context);
@@ -619,6 +637,8 @@ function createCentralVendasService(repository = getRepository(), db = pool) {
       clienteSlug: slug,
       competencia: competenciaNorm,
       marketplace: marketplaceNorm,
+      clienteContaId: contaIdResolvida,
+      includeLegacy,
     });
 
     const payload = buildPayloadFromSnapshot(cliente, competenciaNorm, snapshot);

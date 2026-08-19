@@ -154,11 +154,41 @@ CREATE TABLE IF NOT EXISTS central_vendas_sync_runs (
 );
 
 -- Impede dois runs queued/running simultâneos para a mesma
--- conta+marketplace+período — proteção real contra corrida de dois cliques
--- (não só um SELECT prévio: cliente_conta_id NULL — cliente 100% legado —
--- ainda assim é coberto porque cliente_id nunca é NULL).
-CREATE UNIQUE INDEX IF NOT EXISTS uq_central_vendas_sync_runs_ativo
-  ON central_vendas_sync_runs (cliente_id, cliente_conta_id, marketplace, date_from, date_to)
+-- conta+marketplace+período — proteção real contra corrida de dois cliques.
+--
+-- BUG corrigido no hardening M1/M2: um índice único padrão do Postgres
+-- trata NULL como distinto de NULL, então o índice original (sem COALESCE)
+-- NÃO protegia dois runs legados com cliente_conta_id = NULL para o mesmo
+-- cliente/marketplace/período — eles podiam coexistir mesmo com o índice
+-- "único" no ar. COALESCE(cliente_conta_id, 0) fecha esse buraco (0 é
+-- impossível como id de cliente_conta: BIGSERIAL começa em 1).
+--
+-- Antes de recriar o índice, saneia com segurança eventuais duplicatas que
+-- o bug possa ter deixado ativas: mantém só o run mais recente de cada
+-- grupo como queued/running e marca os demais como failed (nunca deleta —
+-- o histórico continua auditável). Idempotente: sem duplicatas, é um
+-- no-op. Roda toda vez que ensureCentralVendasTables() é chamado, mas o
+-- custo é proporcional ao número de runs ativos (tabela pequena).
+WITH duplicados_legado AS (
+  SELECT id,
+         ROW_NUMBER() OVER (
+           PARTITION BY cliente_id, COALESCE(cliente_conta_id, 0), marketplace, date_from, date_to
+           ORDER BY id DESC
+         ) AS rn
+    FROM central_vendas_sync_runs
+   WHERE status IN ('queued', 'running')
+)
+UPDATE central_vendas_sync_runs r
+   SET status = 'failed', finished_at = NOW(), updated_at = NOW(),
+       error_code = 'SYNC_RUN_DEDUPE_LEGACY_NULL',
+       error_message = 'Run duplicado (indice unico anterior nao cobria cliente_conta_id NULL); superado por um run mais recente equivalente.'
+  FROM duplicados_legado d
+ WHERE r.id = d.id AND d.rn > 1;
+
+DROP INDEX IF EXISTS uq_central_vendas_sync_runs_ativo;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_central_vendas_sync_runs_ativo_v2
+  ON central_vendas_sync_runs (cliente_id, COALESCE(cliente_conta_id, 0), marketplace, date_from, date_to)
   WHERE status IN ('queued', 'running');
 
 CREATE INDEX IF NOT EXISTS idx_central_vendas_sync_runs_cliente

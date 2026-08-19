@@ -251,17 +251,41 @@ async function persistCentralVendasImport({
   });
 }
 
-async function getLatestCentralVendasImport({ clienteSlug, competencia, marketplace = "meli" }, db = pool) {
+// clienteContaId + includeLegacy implementam a política de escopo de conta
+// (P0 do hardening M1/M2): quando uma conta foi resolvida, a leitura NUNCA
+// pode devolver o snapshot de outra conta. includeLegacy só é true quando o
+// chamador (centralVendasService) provou que cliente+marketplace têm no
+// máximo 1 conta ativa — aí um snapshot legado (cliente_conta_id NULL,
+// anterior à fundação de contas) pode ser lido com segurança, porque só
+// pode pertencer a essa conta. Com 2+ contas ativas, includeLegacy é
+// sempre false: misturar cliente_conta_id=X com NULL seria arriscar dado
+// de outra conta (ver seção 2 da spec de hardening).
+function condicaoContaSql(paramsList, clienteContaId, includeLegacy) {
+  if (clienteContaId == null) return null;
+  paramsList.push(clienteContaId);
+  const idx = paramsList.length;
+  return includeLegacy
+    ? `(cliente_conta_id = $${idx} OR cliente_conta_id IS NULL)`
+    : `cliente_conta_id = $${idx}`;
+}
+
+async function getLatestCentralVendasImport(
+  { clienteSlug, competencia, marketplace = "meli", clienteContaId = null, includeLegacy = false },
+  db = pool
+) {
+  const params = [normalizeSlug(clienteSlug), competencia, marketplace];
+  const condicoes = ["cliente_slug = $1", "competencia = $2", "marketplace = $3"];
+  const condicaoConta = condicaoContaSql(params, clienteContaId, includeLegacy);
+  if (condicaoConta) condicoes.push(condicaoConta);
+
   const importResult = await db.query(
     `SELECT id, cliente_id, cliente_slug, marketplace, competencia, fonte, status, confianca,
-            resumo_json, payload_json, created_at, updated_at
+            resumo_json, payload_json, created_at, updated_at, cliente_conta_id
        FROM central_vendas_imports
-      WHERE cliente_slug = $1
-        AND competencia = $2
-        AND marketplace = $3
+      WHERE ${condicoes.join(" AND ")}
       ORDER BY created_at DESC, id DESC
       LIMIT 1`,
-    [normalizeSlug(clienteSlug), competencia, marketplace]
+    params
   );
 
   const importacao = importResult.rows[0];
@@ -303,20 +327,27 @@ async function getLatestCentralVendasImport({ clienteSlug, competencia, marketpl
 // que toca o intervalo, usa o ÚLTIMO import (evita duplicar re-sincronizações) e
 // retorna só os pedidos com data_pedido dentro de [dateFrom, dateTo]. Itens e
 // componentes são escopados pelos pedidos em range via pedido_row_id.
-async function getCentralVendasByRange({ clienteSlug, dateFrom, dateTo, marketplace = "meli" }, db = pool) {
+async function getCentralVendasByRange(
+  { clienteSlug, dateFrom, dateTo, marketplace = "meli", clienteContaId = null, includeLegacy = false },
+  db = pool
+) {
   const slug = normalizeSlug(clienteSlug);
   const compFrom = String(dateFrom).slice(0, 7);
   const compTo = String(dateTo).slice(0, 7);
 
+  const params = [slug, marketplace, compFrom, compTo];
+  const condicoes = ["cliente_slug = $1", "marketplace = $2", "competencia BETWEEN $3 AND $4"];
+  const condicaoConta = condicaoContaSql(params, clienteContaId, includeLegacy);
+  if (condicaoConta) condicoes.push(condicaoConta);
+
   const importsResult = await db.query(
     `SELECT DISTINCT ON (competencia)
-            id, competencia, fonte, status, confianca, resumo_json, payload_json, created_at, updated_at
+            id, competencia, fonte, status, confianca, resumo_json, payload_json, created_at, updated_at,
+            cliente_conta_id
        FROM central_vendas_imports
-      WHERE cliente_slug = $1
-        AND marketplace = $2
-        AND competencia BETWEEN $3 AND $4
+      WHERE ${condicoes.join(" AND ")}
       ORDER BY competencia, created_at DESC, id DESC`,
-    [slug, marketplace, compFrom, compTo]
+    params
   );
 
   const imports = importsResult.rows;

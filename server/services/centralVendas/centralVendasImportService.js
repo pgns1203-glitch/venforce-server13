@@ -4,6 +4,7 @@ const {
 } = require("../fechamentoFinanceiro/meliFinanceiroService");
 const pool = require("../../config/database");
 const { pedidoEntraNoResultado } = require("./centralVendasService");
+const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 
 function getRepository() {
   return require("./centralVendasRepository");
@@ -67,7 +68,8 @@ function buildResumoCentralVendas(motorResult) {
 }
 
 /*
- * Busca os custos da base vinculada ao cliente (marketplace meli) e monta
+ * Busca os custos de uma base JÁ RESOLVIDA (por conta, nunca por
+ * "última base do cliente" — ver resolveMarketplaceAccountContext) e monta
  * costRowsRaw no formato que parseMeliCostRows/buildCentralCostMap esperam:
  *   [{ mlb: "MLB123", custo: 18.90, imposto: 10 }, ...]
  *
@@ -75,37 +77,16 @@ function buildResumoCentralVendas(motorResult) {
  * - custo_produto → chave "custo"  (alias de "preço de custo")
  * - imposto_percentual → chave "imposto" (alias direto)
  *
- * Erros 422 explícitos:
- *   "cliente sem base de custo vinculada"
- *   "base vinculada não possui itens de custo cadastrados"
+ * Erro 422 explícito: "base vinculada não possui itens de custo cadastrados"
+ * ("cliente sem base de custo vinculada" é lançado por quem resolve a
+ * identidade, antes de chegar aqui — ver importarVendasMeli).
  */
-async function buscarCostRowsDaBase(clienteId, db = pool) {
-  const vinculoResult = await db.query(
-    `SELECT b.id AS base_id, b.nome AS base_nome
-       FROM bases b
-       INNER JOIN base_cliente_vinculos v ON v.base_id = b.id
-      WHERE v.cliente_id = $1
-        AND v.ativo = true
-        AND b.ativo = true
-        AND v.marketplace = 'meli'
-      ORDER BY v.updated_at DESC
-      LIMIT 1`,
-    [clienteId]
-  );
-
-  if (!vinculoResult.rows.length) {
-    const err = new Error("cliente sem base de custo vinculada");
-    err.statusCode = 422;
-    throw err;
-  }
-
-  const { base_id } = vinculoResult.rows[0];
-
+async function buscarCostRowsPorBaseId(baseId, db = pool) {
   const custosResult = await db.query(
     `SELECT produto_id, custo_produto, imposto_percentual
        FROM custos
       WHERE base_id = $1`,
-    [base_id]
+    [baseId]
   );
 
   if (!custosResult.rows.length) {
@@ -126,6 +107,7 @@ function createCentralVendasImportService(repository = getRepository(), db = poo
   async function importarVendasMeli({
     salesRowsRaw,
     clienteSlug,
+    clienteContaId = null,
     competencia,
     marketplace = "meli",
   }) {
@@ -160,7 +142,28 @@ function createCentralVendasImportService(repository = getRepository(), db = poo
       throw err;
     }
 
-    const costRowsRaw = await buscarCostRowsDaBase(cliente.id, db);
+    // Mesma porta de identidade do GET e do sync API-first (M1). Importar
+    // planilha não depende de chamar a API do Mercado Livre, então
+    // requireUsableGrant:false — mas a BASE ainda precisa vir da CONTA
+    // resolvida, nunca de "última base atualizada do cliente" (P0 do
+    // hardening: dois cliques em contas diferentes do mesmo cliente não
+    // podem usar a base um do outro). Lança 409/403/422 antes de tocar em
+    // custos quando a identidade é ambígua ou inválida.
+    const context = await resolveMarketplaceAccountContext({
+      clienteId: cliente.id,
+      marketplace: marketplaceNorm,
+      clienteContaId,
+      requireUsableGrant: false,
+      queryable: db,
+    });
+
+    if (!context.base?.base_id) {
+      const err = new Error("cliente sem base de custo vinculada");
+      err.statusCode = 422;
+      throw err;
+    }
+
+    const costRowsRaw = await buscarCostRowsPorBaseId(context.base.base_id, db);
 
     // Diagnóstico de parsing: converte antes do motor para poder logar
     const salesRowsParsed = parseMeliRows(salesRowsRaw);
@@ -225,6 +228,14 @@ function createCentralVendasImportService(repository = getRepository(), db = poo
       competencia: competenciaNorm,
       motorPayload,
       resumo,
+      // Mesma identidade resolvida acima — nunca inventada. grantId só é
+      // preenchido quando o resolver encontrou um grant real (planilha não
+      // exige grant utilizável; ver requireUsableGrant:false acima).
+      clienteContaId: context.conta?.id || null,
+      baseId: context.base.base_id,
+      baseResolutionMode: context.base.resolvido_por || null,
+      grantId: context.grant?.id || null,
+      externalAccountId: context.mlUserId || null,
     });
 
     return {
@@ -249,5 +260,5 @@ module.exports = {
   importarVendasMeli: (params) => createCentralVendasImportService().importarVendasMeli(params),
   createCentralVendasImportService,
   buildResumoCentralVendas,
-  buscarCostRowsDaBase,
+  buscarCostRowsPorBaseId,
 };

@@ -19,6 +19,15 @@
 const pool = require("../../config/database");
 const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 
+// Política de stale run (seção 14 do hardening M1/M2): o worker é
+// in-process (sem fila externa — ver centralVendasSyncWorker). Se o
+// processo Node reiniciar com um run em 'queued'/'running', ninguém nunca
+// mais avança esse estado sozinho, e o índice único de runs ativos
+// bloquearia uma nova tentativa idêntica para sempre. Limites conservadores
+// e configuráveis por env — não é heartbeat, só um teto de idade.
+const QUEUED_STALE_MINUTES = Number(process.env.CENTRAL_VENDAS_SYNC_QUEUED_STALE_MINUTES) || 15;
+const RUNNING_STALE_MINUTES = Number(process.env.CENTRAL_VENDAS_SYNC_RUNNING_STALE_MINUTES) || 60;
+
 const CAMPOS_SENSIVEIS = new Set([
   "access_token", "refresh_token", "api_key", "apikey", "password",
   "authorization", "token", "secret", "client_secret",
@@ -125,6 +134,18 @@ async function criarSyncRun({
     throw criarErroHttp(422, "Cliente sem Mercado Livre conectado.", { code: "GRANT_UNAVAILABLE" });
   }
 
+  // Reconcilia runs presos ANTES do dedupe (seção 16 do hardening): sem
+  // isso, um run 'running' órfão de um restart do processo bloquearia esta
+  // chamada para sempre (o índice único cobre queued/running).
+  await reconciliarRunsStale({
+    clienteId: cliente.id,
+    clienteContaId: context.conta?.id || null,
+    marketplace: marketplaceNorm,
+    dateFrom: from,
+    dateTo: to,
+    db,
+  });
+
   // Fast path: já existe um run queued/running idêntico? Devolve ele em vez
   // de criar outro (seção 21 — dois cliques não geram dois workers).
   const existenteAntes = await buscarRunAtivoEquivalente({
@@ -180,6 +201,45 @@ async function criarSyncRun({
   return { run: sanitizeRun(insertResult.rows[0]), context, reaproveitado: false };
 }
 
+// Marca como 'failed' (error_code SYNC_RUN_STALE_QUEUED/SYNC_RUN_STALE_RUNNING)
+// runs 'queued'/'running' velhos demais para o mesmo escopo (cliente/conta/
+// marketplace/período) do run que está prestes a ser criado. Escopo
+// deliberadamente estreito (não varre a tabela inteira) — seção 16: "no
+// mínimo, antes de buscarRunAtivoEquivalente". Nunca mexe em runs de outro
+// cliente/conta/período, e nunca apaga linha nenhuma (só transiciona
+// estado, mantendo o histórico auditável).
+async function reconciliarRunsStale({ clienteId, clienteContaId, marketplace, dateFrom, dateTo, db = pool }) {
+  await db.query(
+    `UPDATE central_vendas_sync_runs
+        SET status = 'failed', finished_at = NOW(), updated_at = NOW(),
+            error_code = 'SYNC_RUN_STALE_QUEUED',
+            error_message = 'Run abandonado: ficou queued alem do limite (possivel restart do processo).'
+      WHERE cliente_id = $1
+        AND cliente_conta_id IS NOT DISTINCT FROM $2
+        AND marketplace = $3
+        AND date_from = $4
+        AND date_to = $5
+        AND status = 'queued'
+        AND created_at < NOW() - make_interval(mins => $6::int)`,
+    [clienteId, clienteContaId, marketplace, dateFrom, dateTo, QUEUED_STALE_MINUTES]
+  );
+
+  await db.query(
+    `UPDATE central_vendas_sync_runs
+        SET status = 'failed', finished_at = NOW(), updated_at = NOW(),
+            error_code = 'SYNC_RUN_STALE_RUNNING',
+            error_message = 'Run abandonado: ficou running alem do limite (possivel restart do processo).'
+      WHERE cliente_id = $1
+        AND cliente_conta_id IS NOT DISTINCT FROM $2
+        AND marketplace = $3
+        AND date_from = $4
+        AND date_to = $5
+        AND status = 'running'
+        AND started_at < NOW() - make_interval(mins => $6::int)`,
+    [clienteId, clienteContaId, marketplace, dateFrom, dateTo, RUNNING_STALE_MINUTES]
+  );
+}
+
 async function buscarRunAtivoEquivalente({ clienteId, clienteContaId, marketplace, dateFrom, dateTo, db = pool }) {
   const result = await db.query(
     `SELECT * FROM central_vendas_sync_runs
@@ -213,7 +273,10 @@ async function obterSyncRun({ runId, clienteSlug, db = pool }) {
   return sanitizeRun(result.rows[0]);
 }
 
-async function listarSyncRuns({ clienteSlug, clienteContaId = null, marketplace = null, status = null, limit = 20, db = pool }) {
+async function listarSyncRuns({
+  clienteSlug, clienteContaId = null, marketplace = null, status = null,
+  dateFrom = null, dateTo = null, limit = 20, db = pool,
+}) {
   const slug = normalizeSlug(clienteSlug);
   const limitNum = Math.min(Math.max(Number(limit) || 20, 1), 100);
   const condicoes = ["c.slug = $1"];
@@ -230,6 +293,17 @@ async function listarSyncRuns({ clienteSlug, clienteContaId = null, marketplace 
   if (status) {
     params.push(String(status).trim().toLowerCase());
     condicoes.push(`r.status = $${params.length}`);
+  }
+  // Filtro por período (seção 24): permite ao frontend achar o run
+  // equivalente ao período aberto na tela, em vez de pegar "o mais recente
+  // do cliente" quando há sincronizações concorrentes de meses diferentes.
+  if (isValidIsoDate(dateFrom)) {
+    params.push(dateFrom);
+    condicoes.push(`r.date_from = $${params.length}`);
+  }
+  if (isValidIsoDate(dateTo)) {
+    params.push(dateTo);
+    condicoes.push(`r.date_to = $${params.length}`);
   }
 
   params.push(limitNum);
@@ -259,12 +333,18 @@ async function marcarRunRunning(runId, db = pool) {
   return result.rows[0] || null;
 }
 
+// Transições estritas (seção 11 do hardening): só running -> completed e
+// running -> failed. Um estado final (completed/failed) NUNCA volta para
+// outro estado, nem para o mesmo estado final por outro caminho — por isso
+// a guarda é "AND status = 'running'", não "status <> 'completed'"/"status
+// <> 'failed'" (essa negação deixava passar failed->completed e
+// completed->failed, o bug real encontrado na revisão).
 async function marcarRunCompleted(runId, metadata = {}, db = pool) {
   assertNoSecrets(metadata);
   const result = await db.query(
     `UPDATE central_vendas_sync_runs
         SET status = 'completed', finished_at = NOW(), updated_at = NOW(), metadata_json = $2::jsonb
-      WHERE id = $1 AND status <> 'completed'
+      WHERE id = $1 AND status = 'running'
       RETURNING *`,
     [runId, JSON.stringify(metadata || {})]
   );
@@ -276,7 +356,7 @@ async function marcarRunFailed(runId, { code = null, message = null } = {}, db =
     `UPDATE central_vendas_sync_runs
         SET status = 'failed', finished_at = NOW(), updated_at = NOW(),
             error_code = $2, error_message = $3
-      WHERE id = $1 AND status <> 'failed'
+      WHERE id = $1 AND status = 'running'
       RETURNING *`,
     [runId, code, message ? String(message).slice(0, 2000) : null]
   );
@@ -290,6 +370,9 @@ module.exports = {
   marcarRunRunning,
   marcarRunCompleted,
   marcarRunFailed,
+  reconciliarRunsStale,
   sanitizeRun,
   ESTADOS_FINAIS,
+  QUEUED_STALE_MINUTES,
+  RUNNING_STALE_MINUTES,
 };

@@ -16,6 +16,12 @@ function clearSession() {
   window.location.replace("index.html");
 }
 
+// ─── Autorização (espelha o backend: estrutura/identidade/destruição da
+// base é admin-only — vincular/trocar conta, hard delete). A UI só reflete
+// a mesma regra que o backend já aplica; nunca é a única barreira. ───
+const VF_USER = JSON.parse(localStorage.getItem("vf-user") || "{}");
+const IS_ADMIN = String(VF_USER.role || "").toLowerCase() === "admin";
+
 // ─── Helpers ───
 function escapeHTML(s) {
   const d = document.createElement("div");
@@ -35,11 +41,20 @@ function getImportMarketplace() {
   return el ? el.value : "";
 }
 
-// Mercado Livre nasce sempre vinculado a um cliente/grant. TikTok Shop e
-// Shopee funcionam como base independente — cliente é opcional (o vínculo,
-// quando existir, é feito depois pelo menu "⋯").
+// Mercado Livre nasce sempre vinculado a uma conta explícita — nunca
+// escolhida sozinha entre duas. TikTok Shop e Shopee funcionam como base
+// independente — cliente/conta são opcionais (o vínculo, quando existir, é
+// feito na própria importação ou depois pelo menu "⋯").
 function marketplaceExigeCliente(mp) {
   return mp === "meli";
+}
+function marketplaceExigeConta(mp) {
+  return mp === "meli";
+}
+// Marketplaces cobertos pela Fundação Cliente/Contas (ML/Shopee) — TikTok
+// segue no modelo legado (cliente opcional, sem conta).
+function marketplaceTemConta(mp) {
+  return mp === "meli" || mp === "shopee";
 }
 
 function atualizarBotaoImportarDisabled() {
@@ -51,6 +66,11 @@ function atualizarBotaoImportarDisabled() {
   if (marketplaceExigeCliente(mp)) {
     const cli = document.getElementById("import-cliente");
     ok = ok && !!(cli && cli.value);
+  }
+  // Conta é obrigatória só para Mercado Livre — nunca escolhida sozinha.
+  if (marketplaceExigeConta(mp)) {
+    const conta = document.getElementById("import-conta");
+    ok = ok && !!(conta && conta.value);
   }
   btn.disabled = !ok;
 }
@@ -82,9 +102,13 @@ let BASES_SORT = "attention";  // "attention", "oldest", "newest", "az"
 const BASES_ALERTAS_IGNORADOS = new Set(); // slugs com alerta de desatualização ignorado (visual/local, não persiste)
 let CLIENTES_DISPONIVEIS = [];
 let CLIENTES_CARREGADOS = false;
-let VINCULOS_EDITAVEIS = true;
+// Vincular/trocar conta da base é admin-only no backend (POST/DELETE
+// /base-vinculos, PUT /cliente-contas/:id/base) — a UI espelha a mesma regra.
+let VINCULOS_EDITAVEIS = IS_ADMIN;
 let VINCULO_BASE_ATUAL = null;
 let VINCULOS_AVISO_ATIVO = false;
+// Contas do cliente selecionado no modal de vínculo/importação, por marketplace.
+let CONTAS_CLIENTE_ATUAL = [];
 
 // ─── Estado (exclusão) ───
 let BASE_DELETE_PENDENTE = null; // { slug, nome, btn }
@@ -154,6 +178,9 @@ function getClienteTexto(base) {
   return [
     v?.cliente_nome,
     v?.cliente_slug,
+    v?.conta_nome,
+    v?.conta_slug,
+    v?.external_account_id,
     s?.cliente_nome,
     s?.cliente_slug,
   ].filter(Boolean).join(" ");
@@ -252,7 +279,14 @@ function getBasesFiltradas() {
 function renderBasesSummary() {
   const el = document.getElementById("bases-summary");
   if (!el) return;
-  const bases = Array.isArray(TODAS_BASES) ? TODAS_BASES : [];
+  // Sem filtros: KPIs globais ("Totais gerais"). Com filtro ativo (busca,
+  // marketplace ou atualização), os seis KPIs refletem o conjunto filtrado
+  // — decisão pós-auditoria (achado P2 "KPIs permanecem globais e o escopo
+  // nunca muda"). O rótulo acompanha o mesmo estado.
+  const filtrosAtivos = hasFiltrosAtivos();
+  const scopeEl = document.getElementById("bases-kpi-scope");
+  if (scopeEl) scopeEl.textContent = filtrosAtivos ? "Refletindo filtros" : "Totais gerais";
+  const bases = filtrosAtivos ? getBasesFiltradas() : (Array.isArray(TODAS_BASES) ? TODAS_BASES : []);
   const total = bases.length;
   const meli = bases.filter((b) => getBaseMarketplaceKey(b) === "meli").length;
   const shopee = bases.filter((b) => getBaseMarketplaceKey(b) === "shopee").length;
@@ -391,9 +425,17 @@ async function confirmarExclusaoBase() {
     await deleteBase(slug, btn);
     fecharModalExcluirBase();
   } catch (err) {
-    const msg = err?.message || "Não foi possível excluir a base.";
-    if (danger) { danger.style.display = "block"; danger.textContent = msg; }
-    else setDashboardFeedback(msg, "danger");
+    if (danger) {
+      danger.style.display = "block";
+      if (Array.isArray(err.dependencies) && err.dependencies.length) {
+        const itens = err.dependencies.map((d) => `<li>${escapeHTML(d.mensagem || d.tipo || "dependência")}</li>`).join("");
+        danger.innerHTML = `<strong>${escapeHTML(err.message || "Esta base tem dependências e não pode ser excluída.")}</strong><ul style="margin:6px 0 0;padding-left:18px;">${itens}</ul>`;
+      } else {
+        danger.textContent = err?.message || "Não foi possível excluir a base.";
+      }
+    } else {
+      setDashboardFeedback(err?.message || "Não foi possível excluir a base.", "danger");
+    }
     if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = "Excluir base"; }
   }
 }
@@ -417,8 +459,12 @@ function showError(msg) {
   document.getElementById("error-message").textContent = msg;
 }
 
+// Leitura de clientes (GET /base-vinculos/clientes) não é admin-only —
+// serve tanto o modal de importação (qualquer autenticado pode importar)
+// quanto o modal de vínculo (edição em si é que é admin-only, checada em
+// VINCULOS_EDITAVEIS na hora de salvar).
 async function carregarClientesParaVinculos(silencioso = false) {
-  if (!TOKEN || CLIENTES_CARREGADOS || !VINCULOS_EDITAVEIS) return CLIENTES_DISPONIVEIS;
+  if (!TOKEN || CLIENTES_CARREGADOS) return CLIENTES_DISPONIVEIS;
   try {
     const res = await fetch(`${API_BASE}/base-vinculos/clientes`, { headers: { Authorization: `Bearer ${TOKEN}` } });
     if (res.status === 401) { clearSession(); return []; }
@@ -438,6 +484,26 @@ async function carregarClientesParaVinculos(silencioso = false) {
   } catch (err) {
     if (!silencioso) setDashboardFeedback("Não foi possível carregar os clientes para vínculo.", "danger");
     return CLIENTES_DISPONIVEIS;
+  }
+}
+
+// Contas (ML/Shopee) de um cliente, filtradas por marketplace — usado tanto
+// pelo picker de importação quanto pelo modal de vínculo. Reaproveita
+// GET /clientes/:id/contas (mesma rota que /clientes.html usa), nunca expõe
+// token — só id, nome, external_account_id e status do grant.
+async function carregarContasCliente(clienteId, marketplace) {
+  if (!TOKEN || !clienteId || !marketplace) return [];
+  try {
+    const res = await fetch(
+      `${API_BASE}/clientes/${encodeURIComponent(clienteId)}/contas?marketplace=${encodeURIComponent(marketplace)}`,
+      { headers: { Authorization: `Bearer ${TOKEN}` } }
+    );
+    if (res.status === 401) { clearSession(); return []; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+    return Array.isArray(data.contas) ? data.contas.filter((c) => c.ativo !== false) : [];
+  } catch (err) {
+    return [];
   }
 }
 
@@ -571,24 +637,52 @@ function renderMenuBase(base) {
     <button class="vf-menu__item vf-btn-vincular-base" data-base-id="${id}">${base.vinculo ? "Alterar cliente/vínculo" : "Definir cliente/vínculo"}</button>
     ${base.vinculo ? `<button class="vf-menu__item vf-btn-remover-vinculo" data-base-id="${id}">Remover vínculo</button>` : ""}
   ` : "";
+  // Desativar é a ação operacional comum (preserva custos/histórico); hard
+  // delete fica só para admin, com preflight de dependências no backend —
+  // achado P0 da auditoria (delete físico sem guard rail).
+  const desativarItem = base.ativo !== false
+    ? `<button class="vf-menu__item btn-desativar-base" data-slug="${slug}" data-nome="${nome}">Desativar base</button>`
+    : "";
+  const excluirItem = IS_ADMIN
+    ? `<button class="vf-menu__item is-danger btn-excluir-base" data-slug="${slug}" data-nome="${nome}">Excluir base (permanente)</button>`
+    : "";
   return `
     <div class="b-menu">
       <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-menu-trigger" aria-haspopup="true" aria-expanded="false" title="Mais ações" aria-label="Mais ações">⋯</button>
       <div class="b-menu-pop vf-menu">
         ${vinculoItens}
         <button class="vf-menu__item asst-btn-baixar-base" data-slug="${slug}" data-nome="${nome}">Baixar CSV</button>
-        <button class="vf-menu__item is-danger btn-excluir-base" data-slug="${slug}" data-nome="${nome}">Excluir base</button>
+        ${desativarItem}
+        ${excluirItem}
       </div>
     </div>`;
 }
 
-// ─── Linha: Mercado Livre (Cliente/Grant ML → Base oficial) ───
+// ─── Linha: Mercado Livre (Cliente/Conta → Base oficial) ───
+// Identidade Cliente → Conta na tabela: "Cliente X / ML 2" nunca é igual a
+// "Cliente X / ML 1" — achado P2 da auditoria (duas contas do mesmo cliente
+// ficavam visualmente indistinguíveis). Vínculo legado sem cliente_conta_id
+// (marketplace com Fundação de Contas) aparece como "Conta não definida",
+// nunca fingindo ser a conta certa.
+function identidadeVinculoCell(v, marketplace) {
+  if (!v) return `<div class="vf-bases-muted">Sem cliente vinculado</div>`;
+  const clienteNome = v.cliente_nome || v.cliente_slug || "—";
+  if (!marketplaceTemConta(marketplace)) {
+    return `<div class="vf-bases-cliente"><strong>${escapeHTML(clienteNome)}</strong></div>`;
+  }
+  if (v.cliente_conta_id && v.conta_nome) {
+    const externo = v.external_account_id
+      ? `<div class="vf-bases-muted" style="font-size:.78rem;">ID: ${escapeHTML(String(v.external_account_id))}</div>`
+      : "";
+    return `<div class="vf-bases-cliente"><strong>${escapeHTML(clienteNome)} / ${escapeHTML(v.conta_nome)}</strong></div>${externo}`;
+  }
+  return `<div class="vf-bases-cliente"><strong>${escapeHTML(clienteNome)}</strong></div><div class="vf-bases-muted" style="font-size:.78rem;">Conta não definida</div>`;
+}
+
 function buildMeliRow(base) {
   const tr = document.createElement("tr");
   const v = base?.vinculo;
-  const clienteCell = v
-    ? `<div class="vf-bases-cliente"><strong>${escapeHTML(v.cliente_nome || v.cliente_slug || "—")}</strong></div>`
-    : `<div class="vf-bases-muted">Sem cliente vinculado</div>`;
+  const clienteCell = identidadeVinculoCell(v, "meli");
   tr.innerHTML = `
     <td>${clienteCell}</td>
     <td>
@@ -639,10 +733,9 @@ function buildTiktokRow(base) {
 function buildShopeeRow(base) {
   const tr = document.createElement("tr");
   const v = base?.vinculo;
-  const loja = v ? (v.cliente_nome || v.cliente_slug) : "";
-  const lojaCell = loja
-    ? `<span class="vf-bases-cliente"><strong>${escapeHTML(loja)}</strong></span>`
-    : `<span class="vf-bases-muted">—</span>`;
+  // A célula mostra a cliente_conta (identidade real da loja Shopee), não
+  // o nome do cliente disfarçado de "Loja/apelido" (achado P2 da auditoria).
+  const lojaCell = v ? identidadeVinculoCell(v, "shopee") : `<span class="vf-bases-muted">—</span>`;
   tr.innerHTML = `
     <td>
       <div class="vf-bases-basename"><span class="name-text">${escapeHTML(base.nome || "—")}</span></div>
@@ -678,6 +771,9 @@ function bindBaseRowActions(tbody) {
   });
   tbody.querySelectorAll(".btn-excluir-base").forEach(btn => {
     btn.addEventListener("click", () => { const { slug, nome } = btn.dataset; abrirModalExcluirBase({ slug, nome, btn }); });
+  });
+  tbody.querySelectorAll(".btn-desativar-base").forEach(btn => {
+    btn.addEventListener("click", () => { const { slug, nome } = btn.dataset; desativarBase(slug, nome, btn); });
   });
   tbody.querySelectorAll(".vf-btn-vincular-base").forEach(btn => {
     btn.addEventListener("click", () => abrirModalVinculo(btn.dataset.baseId));
@@ -759,15 +855,46 @@ async function deleteBase(slug, btn) {
     });
     if (res.status === 401) { clearSession(); return; }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+    if (!res.ok) {
+      // 409 estruturado (BASE_HAS_DEPENDENCIES): explica por que não pode
+      // apagar, em vez de deixar o FK estourar em erro cru — achado P0 da
+      // auditoria.
+      const err = new Error(data.erro || `HTTP ${res.status}`);
+      err.dependencies = Array.isArray(data.dependencies) ? data.dependencies : null;
+      throw err;
+    }
     setDashboardFeedback(`Base "${slug}" excluída com sucesso.`, "success");
     loadBases();
     return true;
   } catch (err) {
-    setDashboardFeedback("Erro ao excluir: " + err.message, "danger");
+    if (!err.dependencies) setDashboardFeedback("Erro ao excluir: " + err.message, "danger");
     btn.disabled    = false;
     btn.textContent = "Excluir";
     throw err;
+  }
+}
+
+// Ação operacional comum (preserva custos/histórico) — reaproveita
+// POST /bases/:slug/desabilitar, que já existia mas não estava exposto na
+// tela. Substitui o hard delete como caminho padrão (achado P0/decisão 7).
+async function desativarBase(slug, nome, btn) {
+  const confirmou = confirm(`Desativar a base "${nome || slug}"? Ela deixa de aparecer como ativa; custos e histórico são preservados.`);
+  if (!confirmou) return;
+  const textoOriginal = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "Desativando…"; }
+  try {
+    const res = await fetch(`${API_BASE}/bases/${encodeURIComponent(slug)}/desabilitar`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    if (res.status === 401) { clearSession(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+    setDashboardFeedback(`Base "${nome || slug}" desativada com sucesso.`, "success");
+    await loadBases();
+  } catch (err) {
+    setDashboardFeedback("Erro ao desativar: " + (err.message || "tente novamente."), "danger");
+    if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
   }
 }
 
@@ -786,13 +913,13 @@ function setVinculoModalDanger(msg) {
 function setVinculoModalLoading(on) {
   const save = document.getElementById("vf-vinculo-base-save");
   const cliente = document.getElementById("vf-vinculo-cliente");
-  const marketplace = document.getElementById("vf-vinculo-marketplace");
+  const conta = document.getElementById("vf-vinculo-conta");
   if (save) {
     save.disabled = on || !VINCULOS_EDITAVEIS;
     save.textContent = on ? "Salvando..." : "Salvar vínculo";
   }
   if (cliente) cliente.disabled = on || !VINCULOS_EDITAVEIS;
-  if (marketplace) marketplace.disabled = on || !VINCULOS_EDITAVEIS;
+  if (conta) conta.disabled = on || !VINCULOS_EDITAVEIS;
 }
 
 function renderClientesOptions(clienteIdSelecionado) {
@@ -834,6 +961,48 @@ function renderSugestaoModal(base) {
   el.textContent = `Sugestão: ${s.cliente_nome || s.cliente_slug || "cliente sugerido"} — confirmar para tornar oficial (${marketplaceLabel(s.marketplace)}).`;
 }
 
+// Recarrega o picker de conta do modal de vínculo (marketplace é sempre o
+// da BASE — nunca editável aqui, ver abrirModalVinculo).
+async function popularContasVinculo(marketplaceBase, clienteIdSelecionado) {
+  const contaField = document.getElementById("vf-vinculo-conta-field");
+  const contaSel = document.getElementById("vf-vinculo-conta");
+  const contaHint = document.getElementById("vf-vinculo-conta-hint");
+  const contaReq = document.getElementById("vf-vinculo-conta-req");
+  if (!contaField || !contaSel) return;
+
+  if (!marketplaceTemConta(marketplaceBase) || !clienteIdSelecionado) {
+    contaField.style.display = "none";
+    contaSel.innerHTML = "";
+    return;
+  }
+
+  contaField.style.display = "";
+  contaSel.innerHTML = `<option value="">Carregando contas…</option>`;
+  const contas = await carregarContasCliente(clienteIdSelecionado, marketplaceBase);
+  CONTAS_CLIENTE_ATUAL = contas;
+  popularContaOptions(contaSel, contas, "Selecione a conta…");
+
+  const contaAtualId = VINCULO_BASE_ATUAL?.vinculo?.cliente_conta_id;
+  if (contaAtualId && contas.some((c) => String(c.id) === String(contaAtualId))) {
+    contaSel.value = String(contaAtualId);
+  } else if (contas.length === 1) {
+    contaSel.value = String(contas[0].id);
+  }
+
+  // Mercado Livre: conta explícita é obrigatória (nunca escolhida sozinha).
+  // Shopee: preserva compatibilidade — sem conta cadastrada, o legado
+  // (cliente_id + marketplace) ainda resolve no backend.
+  const obrigatoria = marketplaceBase === "meli" && contas.length > 0;
+  if (contaReq) contaReq.style.display = obrigatoria ? "" : "none";
+  if (contaHint) {
+    contaHint.textContent = !contas.length
+      ? "Nenhuma conta cadastrada para este cliente/marketplace ainda — cadastre em /clientes."
+      : marketplaceBase === "meli"
+        ? "Obrigatório — nunca escolhida sozinha entre duas contas do mesmo cliente."
+        : "Se o cliente tiver mais de uma conta Shopee, escolha explicitamente.";
+  }
+}
+
 async function abrirModalVinculo(baseId) {
   const base = getBasePorId(baseId);
   if (!base) return;
@@ -841,7 +1010,7 @@ async function abrirModalVinculo(baseId) {
   const modal = document.getElementById("vf-vinculo-base-modal");
   const title = document.getElementById("vf-vinculo-base-title");
   const sub = document.getElementById("vf-vinculo-base-subtitle");
-  const marketplace = document.getElementById("vf-vinculo-marketplace");
+  const contexto = document.getElementById("vf-vinculo-marketplace-contexto");
   if (!modal) return;
 
   VINCULO_BASE_ATUAL = base;
@@ -849,16 +1018,18 @@ async function abrirModalVinculo(baseId) {
   setModalPermissaoVisivel(false);
   renderSugestaoModal(base);
 
+  // Marketplace é sempre o da BASE (bases.marketplace) — nunca uma escolha
+  // manual aqui. Base ML só pode listar contas ML; base Shopee só Shopee.
+  const marketplaceBase = getBaseMarketplaceKey(base);
   if (title) title.textContent = base.vinculo ? "Alterar vínculo" : "Vincular base";
   if (sub) sub.textContent = `${base.nome || base.slug || "Base"} (${base.slug || "sem slug"})`;
+  if (contexto) contexto.textContent = `Marketplace: ${marketplaceLabel(marketplaceBase)} (definido pela base, não é editável aqui).`;
 
   await carregarClientesParaVinculos(false);
 
   const clienteSugerido = base.vinculo?.cliente_id || base.sugestao?.cliente_id || "";
-  // Sem vínculo/sugestão, cai no marketplace da própria base (importação).
-  const marketplaceSugerido = base.vinculo?.marketplace || base.sugestao?.marketplace || getBaseMarketplaceKey(base);
   renderClientesOptions(clienteSugerido);
-  if (marketplace) marketplace.value = normalizarMarketplaceKey(marketplaceSugerido);
+  await popularContasVinculo(marketplaceBase, clienteSugerido);
 
   setModalPermissaoVisivel(!VINCULOS_EDITAVEIS);
   setVinculoModalLoading(false);
@@ -876,38 +1047,48 @@ function fecharModalVinculo() {
   setVinculoModalDanger("");
 }
 
+document.getElementById("vf-vinculo-cliente")?.addEventListener("change", (e) => {
+  if (!VINCULO_BASE_ATUAL) return;
+  popularContasVinculo(getBaseMarketplaceKey(VINCULO_BASE_ATUAL), e.target.value);
+});
+
 async function salvarVinculoBase() {
   if (!VINCULO_BASE_ATUAL || !VINCULOS_EDITAVEIS) return;
   const clienteId = (document.getElementById("vf-vinculo-cliente") || {}).value || "";
-  const marketplace = (document.getElementById("vf-vinculo-marketplace") || {}).value || "";
+  const contaId = (document.getElementById("vf-vinculo-conta") || {}).value || "";
+  // Marketplace é sempre o da base — nunca vem de um select editável.
+  const marketplace = getBaseMarketplaceKey(VINCULO_BASE_ATUAL);
   if (!clienteId) {
     setVinculoModalDanger("Selecione um cliente.");
     return;
   }
-  if (!marketplace) {
-    setVinculoModalDanger("Selecione um marketplace.");
+  if (marketplace === "meli" && Array.isArray(CONTAS_CLIENTE_ATUAL) && CONTAS_CLIENTE_ATUAL.length > 0 && !contaId) {
+    setVinculoModalDanger("Selecione a conta Mercado Livre — nunca escolhida sozinha entre duas contas do mesmo cliente.");
     return;
   }
 
   setVinculoModalLoading(true);
   setVinculoModalDanger("");
   try {
+    const payload = { base_id: VINCULO_BASE_ATUAL.id };
+    if (contaId) {
+      payload.cliente_conta_id = Number(contaId);
+    } else {
+      payload.cliente_id = Number(clienteId);
+      payload.marketplace = marketplace;
+    }
     const res = await fetch(`${API_BASE}/base-vinculos`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        base_id: VINCULO_BASE_ATUAL.id,
-        cliente_id: Number(clienteId),
-        marketplace,
-      }),
+      body: JSON.stringify(payload),
     });
     if (res.status === 401) { clearSession(); return; }
     const data = await res.json().catch(() => ({}));
     if (res.status === 403) throw new Error("Não foi possível salvar o vínculo desta base.");
-    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+    if (!res.ok) throw new Error(mensagemErroImportacao(data) || `HTTP ${res.status}`);
 
     fecharModalVinculo();
     setDashboardFeedback("Vínculo salvo com sucesso.", "success");
@@ -969,13 +1150,36 @@ function abrirModalImportar(mp, nomePrefill) {
     if (nomeEl) nomeEl.value = nomePrefill;
   }
   onImportMarketplaceChange();
-  popularClientesImport();
+  popularClientesImport().then(() => popularContasImport());
   backdrop.classList.add("is-open");
 }
 
 function fecharModalImportar() {
   const backdrop = document.getElementById("bases-import-backdrop");
   if (backdrop) backdrop.classList.remove("is-open");
+}
+
+// Rótulo de conta com contexto operacional (nome + identidade externa +
+// status do grant) — nunca token. "Mercado Livre 2 · ID: 123456789 · conectado".
+function contaLabel(conta) {
+  const partes = [conta?.nome || conta?.slug || "Conta"];
+  if (conta?.external_account_id) partes.push(`ID: ${conta.external_account_id}`);
+  if (conta?.grant) {
+    partes.push(conta.grant.token_status === "valid" ? "conectado" : (conta.grant.token_status || "status desconhecido"));
+  } else if (conta?.marketplace === "meli") {
+    partes.push("aguardando conexão");
+  }
+  return partes.join(" · ");
+}
+
+function popularContaOptions(selectEl, contas, placeholder) {
+  if (!selectEl) return;
+  if (!Array.isArray(contas) || !contas.length) {
+    selectEl.innerHTML = `<option value="">Nenhuma conta cadastrada para este cliente</option>`;
+    return;
+  }
+  selectEl.innerHTML = `<option value="">${escapeHTML(placeholder || "Selecione a conta…")}</option>` +
+    contas.map((c) => `<option value="${escapeHTML(String(c.id))}">${escapeHTML(contaLabel(c))}</option>`).join("");
 }
 
 function onImportMarketplaceChange() {
@@ -985,28 +1189,45 @@ function onImportMarketplaceChange() {
   const hint = document.getElementById("import-cliente-hint");
   const label = document.getElementById("import-cliente-label");
   const desc = document.getElementById("bases-import-desc");
+  const contaField = document.getElementById("import-conta-field");
+  const contaReq = document.getElementById("import-conta-req");
+  const contaHint = document.getElementById("import-conta-hint");
+  const contaLabelEl = document.getElementById("import-conta-label");
+  const contaSel = document.getElementById("import-conta");
   if (mp === "meli") {
     if (field) field.style.display = "";
     if (req) req.style.display = "";
-    if (label) label.textContent = "Cliente / Grant ML";
+    if (label) label.textContent = "Cliente";
     if (hint) hint.textContent = "Obrigatório para Mercado Livre.";
-    if (desc) desc.textContent = "A base de Mercado Livre nasce associada ao cliente/grant escolhido.";
+    if (desc) desc.textContent = "A base de Mercado Livre nasce vinculada à conta explícita escolhida abaixo.";
+    if (contaField) contaField.style.display = "";
+    if (contaReq) contaReq.style.display = "";
+    if (contaLabelEl) contaLabelEl.textContent = "Conta Mercado Livre";
+    if (contaHint) contaHint.textContent = "Obrigatório — nunca escolhida sozinha entre duas contas do mesmo cliente.";
   } else if (mp === "tiktok") {
     if (field) field.style.display = "";
     if (req) req.style.display = "none";
     if (label) label.textContent = "Cliente";
     if (hint) hint.textContent = "Opcional — a Base TikTok funciona de forma independente. Vincule depois pelo menu ⋯, se quiser.";
     if (desc) desc.textContent = "Base TikTok Shop: planilha com ID | ID DO SKU | CUSTO | IMPOSTO (o mesmo ID de produto repete — um ID DO SKU por variação).";
+    if (contaField) contaField.style.display = "none";
+    if (contaSel) contaSel.value = "";
   } else if (mp === "shopee") {
     if (field) field.style.display = "";
     if (req) req.style.display = "none";
-    if (label) label.textContent = "Loja / cliente";
+    if (label) label.textContent = "Cliente";
     if (hint) hint.textContent = "Opcional para Shopee — pode ser criada sem cliente por enquanto.";
-    if (desc) desc.textContent = "Base Shopee: informe a loja/cliente se já houver (opcional).";
+    if (desc) desc.textContent = "Base Shopee: informe o cliente e a conta, se já houver (opcional).";
+    if (contaField) contaField.style.display = "";
+    if (contaReq) contaReq.style.display = "none";
+    if (contaLabelEl) contaLabelEl.textContent = "Conta Shopee";
+    if (contaHint) contaHint.textContent = "Opcional — se o cliente tiver mais de uma conta Shopee, escolha explicitamente.";
   } else {
     if (field) field.style.display = "none";
+    if (contaField) contaField.style.display = "none";
     if (desc) desc.textContent = "Envie uma planilha de custos. A pré-visualização aparece antes de confirmar.";
   }
+  if (contaField && contaField.style.display === "none" && contaSel) contaSel.value = "";
   atualizarBotaoImportarDisabled();
 }
 
@@ -1016,7 +1237,7 @@ async function popularClientesImport() {
   await carregarClientesParaVinculos(true);
   const clientes = Array.isArray(CLIENTES_DISPONIVEIS) ? CLIENTES_DISPONIVEIS : [];
   const atual = sel.value;
-  sel.innerHTML = `<option value="">Selecione o cliente/grant…</option>` + clientes.map((c) => {
+  sel.innerHTML = `<option value="">Selecione o cliente…</option>` + clientes.map((c) => {
     const id = String(c.id || "");
     const nome = c.nome || c.slug || "Cliente";
     const slug = c.slug ? ` · ${c.slug}` : "";
@@ -1026,30 +1247,32 @@ async function popularClientesImport() {
   atualizarBotaoImportarDisabled();
 }
 
-// Best-effort: vincula a base recém-importada ao cliente/grant escolhido
-// usando o endpoint existente POST /base-vinculos. Falha silenciosa: a base
-// já foi importada; o vínculo pode ser feito depois pelo menu "⋯".
-async function tentarAutovinculoImport(nome, marketplace, clienteId) {
-  try {
-    if (!VINCULOS_EDITAVEIS || !clienteId) return;
-    const mpKey = normalizarMarketplaceKey(marketplace);
-    const alvo = (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).find((b) =>
-      String(b.nome || "").trim().toLowerCase() === String(nome).trim().toLowerCase() &&
-      getBaseMarketplaceKey(b) === mpKey && !b.vinculo
-    );
-    if (!alvo || alvo.id == null) return;
-    const res = await fetch(`${API_BASE}/base-vinculos`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ base_id: alvo.id, cliente_id: Number(clienteId), marketplace: mpKey }),
-    });
-    if (res.ok) await loadBases();
-  } catch (_) { /* best-effort */ }
+// Recarrega o picker de conta do modal de importação sempre que cliente OU
+// marketplace mudam — GET /clientes/:id/contas?marketplace=X (mesma rota
+// account-aware que /clientes.html usa).
+async function popularContasImport() {
+  const contaSel = document.getElementById("import-conta");
+  if (!contaSel) return;
+  const mp = getImportMarketplace();
+  const clienteId = (document.getElementById("import-cliente") || {}).value || "";
+  if (!marketplaceTemConta(mp) || !clienteId) {
+    popularContaOptions(contaSel, [], "Selecione o cliente primeiro…");
+    atualizarBotaoImportarDisabled();
+    return;
+  }
+  contaSel.innerHTML = `<option value="">Carregando contas…</option>`;
+  const contas = await carregarContasCliente(clienteId, mp);
+  popularContaOptions(contaSel, contas, "Selecione a conta…");
+  // Só uma conta disponível: pré-seleciona, mas o usuário ainda vê e pode
+  // trocar — não é uma escolha invisível do backend.
+  if (contas.length === 1) contaSel.value = String(contas[0].id);
+  atualizarBotaoImportarDisabled();
 }
 
-// ─── Marketplace / cliente: habilita "Pré-visualizar" e alterna campo cliente ───
-document.getElementById("import-marketplace")?.addEventListener("change", onImportMarketplaceChange);
-document.getElementById("import-cliente")?.addEventListener("change", atualizarBotaoImportarDisabled);
+// ─── Marketplace / cliente: habilita "Pré-visualizar" e alterna campo cliente/conta ───
+document.getElementById("import-marketplace")?.addEventListener("change", () => { onImportMarketplaceChange(); popularContasImport(); });
+document.getElementById("import-cliente")?.addEventListener("change", () => { popularContasImport(); });
+document.getElementById("import-conta")?.addEventListener("change", atualizarBotaoImportarDisabled);
 onImportMarketplaceChange();
 
 function validarArquivoImportacao(file) {
@@ -1163,6 +1386,30 @@ document.getElementById("preview-overlay").addEventListener("click", (e) => {
 });
 
 // ─── Confirmar importação ───
+// Mensagens específicas por código de erro estruturado do comando atômico
+// de importação (server/services/bases/baseImportService.js). Sem isso a
+// tela mostrava "sucesso" mesmo quando o vínculo falhava (achado P0 da
+// auditoria) — agora a importação inteira falha/rollback e o erro é
+// explícito.
+function mensagemErroImportacao(data) {
+  if (data?.code === "BASE_SLUG_ALREADY_EXISTS") {
+    return "Já existe uma base com este nome/slug. Escolha outro nome ou use a atualização por planilha dentro da base existente.";
+  }
+  if (data?.code === "ML_ACCOUNT_REQUIRED") {
+    return "Selecione a conta Mercado Livre explícita antes de importar.";
+  }
+  if (data?.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") {
+    return "Este cliente tem mais de uma conta para este marketplace. Selecione a conta explicitamente.";
+  }
+  if (data?.code === "BASE_MARKETPLACE_MISMATCH") {
+    return "A conta selecionada é de outro marketplace. Verifique cliente/conta escolhidos.";
+  }
+  if (data?.code === "CONTA_INATIVA" || data?.code === "BASE_INATIVA") {
+    return data.erro || "Conta ou base inativa não pode receber vínculo.";
+  }
+  return data?.erro || null;
+}
+
 document.getElementById("preview-confirm").addEventListener("click", async () => {
   const arquivo = document.getElementById("import-arquivo").files?.[0];
   const nome    = document.getElementById("import-nome").value.trim();
@@ -1174,12 +1421,20 @@ document.getElementById("preview-confirm").addEventListener("click", async () =>
   document.getElementById("preview-confirm-spinner").style.display   = "inline-block";
 
   try {
+    const clienteId = (document.getElementById("import-cliente") || {}).value || "";
+    const contaId   = (document.getElementById("import-conta") || {}).value || "";
+
     const fd = new FormData();
     fd.append("arquivo", arquivo);
     fd.append("nomeBase", nome);
     fd.append("marketplace", marketplace);
     fd.append("confirmar", "true");
+    if (clienteId) fd.append("cliente_id", clienteId);
+    if (contaId) fd.append("cliente_conta_id", contaId);
 
+    // Base + custos + vínculo (quando cliente/conta são informados) são
+    // atômicos no backend: se o vínculo falhar, nada fica gravado — não há
+    // mais "sucesso" seguido de tentativa de vínculo separada.
     const res  = await fetch(`${API_BASE}/importar-base`, {
       method: "POST",
       headers: { Authorization: `Bearer ${TOKEN}` },
@@ -1188,13 +1443,12 @@ document.getElementById("preview-confirm").addEventListener("click", async () =>
     const data = await res.json().catch(() => ({}));
 
     if (res.status === 401) { clearSession(); return; }
-    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
-
-    const clienteIdSel = (document.getElementById("import-cliente") || {}).value || "";
+    if (!res.ok) throw new Error(mensagemErroImportacao(data) || `HTTP ${res.status}`);
 
     closePreview();
     fecharModalImportar();
-    setDashboardFeedback(`✓ ${data.mensagem || "Base importada com sucesso."} (${data.total ?? 0} produtos)`, "success");
+    const vinculoMsg = data.vinculo ? " e vinculada" : "";
+    setDashboardFeedback(`✓ ${data.mensagem || "Base importada"}${vinculoMsg} com sucesso. (${data.total ?? 0} produtos)`, "success");
 
     // reset do formulário
     document.getElementById("import-nome").value    = "";
@@ -1205,10 +1459,11 @@ document.getElementById("preview-confirm").addEventListener("click", async () =>
     if (mpSel) mpSel.value = "";
     const cliSel = document.getElementById("import-cliente");
     if (cliSel) cliSel.value = "";
+    const contaSel = document.getElementById("import-conta");
+    if (contaSel) contaSel.value = "";
     onImportMarketplaceChange();
 
     await loadBases();
-    await tentarAutovinculoImport(nome, marketplace, clienteIdSel);
 
   } catch (err) {
     closePreview();
@@ -1232,6 +1487,13 @@ document.getElementById("btn-importar").addEventListener("click", async () => {
     const cli = document.getElementById("import-cliente");
     if (!cli || !cli.value) {
       setImportStatus(`Selecione o cliente (obrigatório para ${marketplaceLabel(marketplace)}).`, "var(--vf-danger)");
+      return;
+    }
+  }
+  if (marketplaceExigeConta(marketplace)) {
+    const conta = document.getElementById("import-conta");
+    if (!conta || !conta.value) {
+      setImportStatus(`Selecione a conta (obrigatória para ${marketplaceLabel(marketplace)} — nunca escolhida sozinha).`, "var(--vf-danger)");
       return;
     }
   }
@@ -1325,10 +1587,15 @@ function abrirDrawerCustos(slug, mp, btnOrigem) {
   document.getElementById("bases-drawer-title").textContent = base?.nome || slug || "Base";
   const meta = document.getElementById("bases-drawer-meta");
   const mpLabel = marketplaceLabel(DRAWER_MARKETPLACE);
-  const donoLabel = drawerEhShopee() ? "Loja / apelido"
-    : drawerEhTiktok() ? "Cliente"
-    : "Cliente / Grant ML";
-  const dono = base?.vinculo ? (base.vinculo.cliente_nome || base.vinculo.cliente_slug || "—") : "—";
+  const donoLabel = drawerEhTiktok() ? "Cliente" : "Cliente / Conta";
+  const v = base?.vinculo;
+  const dono = !v
+    ? "—"
+    : marketplaceTemConta(DRAWER_MARKETPLACE)
+      ? (v.cliente_conta_id && v.conta_nome
+          ? `${v.cliente_nome || v.cliente_slug || "—"} / ${v.conta_nome}`
+          : `${v.cliente_nome || v.cliente_slug || "—"} (conta não definida)`)
+      : (v.cliente_nome || v.cliente_slug || "—");
   if (meta) meta.innerHTML = `
     <span>Marketplace: <b>${escapeHTML(mpLabel)}</b></span>
     <span>${escapeHTML(donoLabel)}: <b>${escapeHTML(dono)}</b></span>
@@ -2789,8 +3056,23 @@ async function asstImportarBaseLimpa() {
 
   const linhasImportaveis = asstUltimosDados.dados_importacao;
 
+  // Respeita o marketplace escolhido no modal — importar como "meli" por
+  // padrão prefixaria MLB em IDs de Shopee/TikTok.
+  const marketplace = getImportMarketplace() || "meli";
+  const clienteId = (document.getElementById("import-cliente") || {}).value || "";
+  const contaId   = (document.getElementById("import-conta") || {}).value || "";
+
+  // O Assistente é só um parser alternativo — usa o MESMO comando atômico e
+  // a MESMA regra de conta do fluxo padrão (achado P0 da auditoria: o
+  // Assistente tinha um segundo caminho de importação que não exigia nem
+  // executava vínculo de conta para ML).
+  if (marketplaceExigeConta(marketplace) && !contaId) {
+    asstSetImportStatus(`Selecione a conta ${marketplaceLabel(marketplace)} no campo acima antes de importar.`, "erro");
+    return;
+  }
+
   const confirmou = confirm(
-    `Importar "${nome}" com ${linhasImportaveis.length} linha(s) normalizada(s)?\n\nEsta ação substituirá a base existente com este nome.`
+    `Importar "${nome}" com ${linhasImportaveis.length} linha(s) normalizada(s)?\n\nSe já existir uma base com este nome, a importação será recusada — nada é substituído.`
   );
   if (!confirmou) return;
 
@@ -2798,9 +3080,6 @@ async function asstImportarBaseLimpa() {
   asstSetImportStatus("", "");
 
   try {
-    // Respeita o marketplace escolhido no modal — importar como "meli" por
-    // padrão prefixaria MLB em IDs de Shopee/TikTok.
-    const marketplace = getImportMarketplace() || "meli";
     const csv      = asstGerarCsv(linhasImportaveis, marketplace);
     const blob     = new Blob([csv], { type: "text/csv" });
     const arquivo  = new File([blob], `${nome.replace(/[^a-z0-9_\-]/gi, "_")}.csv`, { type: "text/csv" });
@@ -2810,6 +3089,8 @@ async function asstImportarBaseLimpa() {
     fd.append("nomeBase",  nome);
     fd.append("marketplace", marketplace);
     fd.append("confirmar", "true");
+    if (clienteId) fd.append("cliente_id", clienteId);
+    if (contaId) fd.append("cliente_conta_id", contaId);
 
     const res = await fetch(`${API_BASE}/importar-base`, {
       method: "POST",
@@ -2822,11 +3103,11 @@ async function asstImportarBaseLimpa() {
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-      asstSetImportStatus(data.erro || data.message || `Erro ${res.status} ao importar.`, "erro");
+      asstSetImportStatus(mensagemErroImportacao(data) || `Erro ${res.status} ao importar.`, "erro");
       return;
     }
 
-    asstSetImportStatus(`Base "${nome}" importada com sucesso!`, "ok");
+    asstSetImportStatus(`Base "${nome}" importada${data.vinculo ? " e vinculada" : ""} com sucesso!`, "ok");
     loadBases();
 
   } catch (err) {

@@ -78,7 +78,7 @@ class MockDb {
       return { rows: this.contas.filter((c) => c.cliente_id === params[0] && c.marketplace === params[1] && c.ativo) };
     }
 
-    if (q.startsWith("SELECT id, slug, nome, ativo, created_at, updated_at FROM bases WHERE id = $1")) {
+    if (q.startsWith("SELECT id, slug, nome, marketplace, ativo") && q.includes("FROM bases WHERE id = $1")) {
       return { rows: this.bases.filter((b) => b.id === Number(params[0])) };
     }
 
@@ -86,16 +86,37 @@ class MockDb {
       this.vinculos.forEach((v) => { if (v.base_id === Number(params[0]) && v.ativo) v.ativo = false; });
       return { rows: [] };
     }
+    if (q.startsWith("UPDATE base_cliente_vinculos SET ativo = false, updated_at = NOW() WHERE cliente_conta_id = $1 AND ativo = true")) {
+      this.vinculos.forEach((v) => { if (v.cliente_conta_id === Number(params[0]) && v.ativo) v.ativo = false; });
+      return { rows: [] };
+    }
 
-    if (q.startsWith("INSERT INTO base_cliente_vinculos") && q.includes("cliente_conta_id, marketplace, origem")) {
+    // vincularBaseNaContaTx (origem 'conta', literal na query — 5 params).
+    if (q.startsWith("INSERT INTO base_cliente_vinculos") && q.includes("'conta', true, $5")) {
       const vinculo = {
         id: this.nextVinculoId++,
         base_id: params[0],
         cliente_id: params[1],
         cliente_conta_id: params[2],
         marketplace: params[3],
-        origem: params[4],
-        confirmado_por: params[5] || null,
+        origem: "conta",
+        confirmado_por: params[4] || null,
+        ativo: true,
+        updated_at: new Date(),
+      };
+      this.vinculos.push(vinculo);
+      return { rows: [{ ...vinculo }] };
+    }
+    // criarVinculoManualTx modo manual (origem 'manual', literal — 4 params).
+    if (q.startsWith("INSERT INTO base_cliente_vinculos") && q.includes("'manual', true, $4")) {
+      const vinculo = {
+        id: this.nextVinculoId++,
+        base_id: params[0],
+        cliente_id: params[1],
+        cliente_conta_id: null,
+        marketplace: params[2],
+        origem: "manual",
+        confirmado_por: params[3] || null,
         ativo: true,
         updated_at: new Date(),
       };
@@ -181,8 +202,8 @@ async function run() {
   try {
     const shopee1 = criarConta(db, { clienteId: 1, marketplace: "shopee", nome: "Shopee 1", isPrimary: true });
     const ml1 = criarConta(db, { clienteId: 1, marketplace: "meli", nome: "Mercado Livre 1", isPrimary: true });
-    db.bases.push({ id: 501, slug: "extra-shopee", nome: "Extra Shopee", ativo: true });
-    db.bases.push({ id: 502, slug: "extra-ml", nome: "Extra Mercado Livre", ativo: true });
+    db.bases.push({ id: 501, slug: "extra-shopee", nome: "Extra Shopee", marketplace: "shopee", ativo: true });
+    db.bases.push({ id: 502, slug: "extra-ml", nome: "Extra Mercado Livre", marketplace: "meli", ativo: true });
 
     // ── 1. Shopee: conta única ativa resolve o vínculo legado sozinha ──
     await baseVinculosService.criarVinculoManual({ baseId: 501, clienteId: 1, marketplace: "shopee", userId: 9 });
@@ -200,7 +221,7 @@ async function run() {
 
     // ── 3. clienteContaId explícito é fonte de verdade ──────────────────
     const shopee2 = criarConta(db, { clienteId: 1, marketplace: "shopee", nome: "Shopee 2" });
-    db.bases.push({ id: 503, slug: "extra-shopee-2", nome: "Extra Shopee 2", ativo: true });
+    db.bases.push({ id: 503, slug: "extra-shopee-2", nome: "Extra Shopee 2", marketplace: "shopee", ativo: true });
     const resultadoConta = await baseVinculosService.criarVinculoManual({
       baseId: 503,
       clienteContaId: shopee2.id,
@@ -215,7 +236,7 @@ async function run() {
 
     // ── 4. Ambiguidade: 2+ contas ativas do marketplace nunca é escolhida ──
     const mlAmbigua = criarConta(db, { clienteId: 1, marketplace: "meli", nome: "Mercado Livre Ambígua" });
-    db.bases.push({ id: 504, slug: "base-ambigua", nome: "Base Ambígua", ativo: true });
+    db.bases.push({ id: 504, slug: "base-ambigua", nome: "Base Ambígua", marketplace: "meli", ativo: true });
     // agora há 2 contas ML ativas (ml1 + mlAmbigua) para o cliente 1
     await rejeitaCom(
       "vínculo legado com 2+ contas ML ativas → 409 MULTIPLE_MARKETPLACE_ACCOUNTS, não escolhe sozinho",

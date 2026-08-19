@@ -717,14 +717,20 @@ function testeSchemaSkuId() {
   ok("boot cria uq_custos_base_produto_sku_legado", /uq_custos_base_produto_sku_legado/.test(servicoSrc));
 
   // Importação: ON CONFLICT correto por marketplace (índices parciais).
-  const indexSrc = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+  // A escrita de custos da importação foi extraída para
+  // baseImportService.js (correção pós-auditoria de "Importar nova base");
+  // o contrato de identidade por marketplace continua o mesmo.
+  const baseImportSrc = fs.readFileSync(
+    path.join(__dirname, "..", "services", "bases", "baseImportService.js"),
+    "utf8"
+  );
   ok(
     "import TikTok resolve conflito por (base_id, sku_id)",
-    /ON CONFLICT \(base_id, sku_id\) WHERE sku_id <> ''/.test(indexSrc)
+    /ON CONFLICT \(base_id, sku_id\) WHERE sku_id <> ''/.test(baseImportSrc)
   );
   ok(
     "import MELI/Shopee mantém o conflito histórico",
-    /ON CONFLICT \(base_id, produto_id, sku\) WHERE sku_id = ''/.test(indexSrc)
+    /ON CONFLICT \(base_id, produto_id, sku\) WHERE sku_id = ''/.test(baseImportSrc)
   );
 }
 
@@ -740,7 +746,11 @@ function testeTelaBases() {
   ok("tbody da seção TikTok", html.includes('id="bases-tbody-tiktok"'));
   ok("wrapper da seção TikTok", html.includes('id="wrap-tiktok"'));
   ok("estado vazio da seção TikTok", html.includes('id="empty-tiktok"'));
-  ok("TikTok no modal de vínculo", (html.match(/value="tiktok"/g) || []).length >= 2);
+  // Correção pós-auditoria (achado H3/P0): marketplace deixou de ser um
+  // select editável no modal de vínculo — vem sempre de bases.marketplace,
+  // exibido como contexto fixo (inclui TikTok, sem exceção).
+  ok("modal de vínculo não tem mais select de marketplace manual", !html.includes('id="vf-vinculo-marketplace"'));
+  ok("modal de vínculo mostra o marketplace como contexto fixo", html.includes('id="vf-vinculo-marketplace-contexto"'));
   ok("campo cliente obrigatório só para Mercado Livre", html.includes("Obrigatório para Mercado Livre."));
   // Tabela TikTok: ID | ID DO SKU | CUSTO | IMPOSTO | ATUALIZAÇÃO | AÇÃO.
   ok("drawer tem a coluna do ID DO SKU", html.includes('id="bases-costs-th-sku"'));
@@ -791,16 +801,28 @@ function testeClienteOpcionalTikTok() {
     !/cliente_slug|clienteSlug/.test(rotaImportar)
   );
 
-  // 3. Cliente opcional ainda pode ser vinculado: o vínculo só acontece se um
-  // clienteId for explicitamente informado (fluxo best-effort no frontend).
+  // 3. Cliente opcional ainda pode ser vinculado: a importação atômica só
+  // grava vínculo quando cliente_id/cliente_conta_id são explicitamente
+  // enviados no FormData. Correção pós-auditoria (achado P0 "importação
+  // confirma sucesso antes do vínculo"): o `best-effort` separado
+  // (tentarAutovinculoImport) foi removido — base+custos+vínculo agora são
+  // atômicos em baseImportService.criarBaseComCustos.
   const basesJsSrc = fs.readFileSync(path.join(__dirname, "..", "..", "Portal", "bases.js"), "utf8");
   ok(
-    "vínculo automático só ocorre com clienteId informado (nunca vazio)",
-    /if \(!VINCULOS_EDITAVEIS \|\| !clienteId\) return;/.test(basesJsSrc)
+    "frontend não tem mais o autovínculo best-effort separado",
+    !basesJsSrc.includes("tentarAutovinculoImport")
   );
   ok(
-    "endpoint de vínculo manual exige cliente_id explicitamente (não é chamado sem ele)",
-    /criarVinculoManual/.test(fs.readFileSync(path.join(__dirname, "..", "services", "baseVinculosService.js"), "utf8"))
+    "frontend só envia cliente_id/cliente_conta_id quando preenchidos",
+    /if \(clienteId\) fd\.append\("cliente_id", clienteId\);/.test(basesJsSrc)
+  );
+  const baseImportSrc = fs.readFileSync(
+    path.join(__dirname, "..", "services", "bases", "baseImportService.js"),
+    "utf8"
+  );
+  ok(
+    "importação atômica só vincula quando cliente/conta são informados",
+    /if \(podeVincular && \(clienteContaId \|\| clienteId\)\)/.test(baseImportSrc)
   );
 }
 

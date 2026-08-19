@@ -66,10 +66,14 @@ class MockDb {
       this.vinculos.forEach((v) => { if (v.base_id === Number(params[0]) && v.ativo) v.ativo = false; });
       return { rows: [] };
     }
-    if (q.startsWith("INSERT INTO base_cliente_vinculos (base_id, cliente_id, cliente_conta_id, marketplace, origem, ativo, created_at, updated_at) VALUES")) {
+    if (q.startsWith("UPDATE base_cliente_vinculos SET ativo = false, updated_at = NOW() WHERE cliente_conta_id = $1 AND ativo = true")) {
+      this.vinculos.forEach((v) => { if (v.cliente_conta_id === Number(params[0]) && v.ativo) v.ativo = false; });
+      return { rows: [] };
+    }
+    if (q.startsWith("INSERT INTO base_cliente_vinculos (base_id, cliente_id, cliente_conta_id, marketplace, origem, ativo, confirmado_por, created_at, updated_at) VALUES")) {
       const vinculo = {
         id: this.nextVinculoId++, base_id: params[0], cliente_id: params[1], cliente_conta_id: params[2],
-        marketplace: params[3], origem: "conta", ativo: true, updated_at: new Date(),
+        marketplace: params[3], origem: "conta", ativo: true, confirmado_por: params[4] || null, updated_at: new Date(),
       };
       this.vinculos.push(vinculo);
       return { rows: [{ ...vinculo }] };

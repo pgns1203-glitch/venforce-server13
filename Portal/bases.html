@@ -52,7 +52,7 @@
           <!-- 4. TOOLBAR -->
           <section class="vf-toolbar">
             <div class="vf-toolbar__filters">
-              <input type="text" id="bases-busca" class="vf-input vf-search" placeholder="Buscar por base, cliente/grant, slug ou loja…" autocomplete="off">
+              <input type="text" id="bases-busca" class="vf-input vf-search" placeholder="Buscar por base, cliente, conta ou ID externo…" autocomplete="off">
               <button type="button" class="vf-btn vf-btn--secondary vf-btn--icon" id="bases-refresh" title="Atualizar lista" aria-label="Atualizar lista">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="23 4 23 10 17 10"/>
@@ -100,7 +100,7 @@
                     <table class="vf-table vf-table--compact">
                       <thead>
                         <tr>
-                          <th>Cliente / Grant ML</th>
+                          <th>Cliente / Conta</th>
                           <th>Base oficial</th>
                           <th>Status</th>
                           <th><span class="vf-visually-hidden">Ações</span></th>
@@ -125,7 +125,7 @@
                       <thead>
                         <tr>
                           <th>Base</th>
-                          <th>Loja / apelido</th>
+                          <th>Cliente / Conta</th>
                           <th>Status</th>
                           <th><span class="vf-visually-hidden">Ações</span></th>
                         </tr>
@@ -224,6 +224,17 @@
             <option value="">Selecione o cliente…</option>
           </select>
           <span class="vf-field__hint" id="import-cliente-hint">Obrigatório para Mercado Livre.</span>
+        </div>
+
+        <!-- Conta (Mercado Livre/Shopee): carregada depois do cliente. A base
+             nasce vinculada à conta explícita — nunca escolhida sozinha entre
+             duas contas do mesmo marketplace. -->
+        <div class="vf-field" id="import-conta-field" style="display:none;">
+          <label class="vf-field__label" for="import-conta"><span id="import-conta-label">Conta</span> <span class="vf-field__required" id="import-conta-req" aria-hidden="true">*</span></label>
+          <select id="import-conta" class="vf-select">
+            <option value="">Selecione o cliente primeiro…</option>
+          </select>
+          <span class="vf-field__hint" id="import-conta-hint">Obrigatório para Mercado Livre — a base nasce vinculada a esta conta.</span>
         </div>
 
         <div class="vf-field">
@@ -489,18 +500,18 @@
       <div class="vf-modal__body">
         <div id="vf-vinculo-base-sugestao" class="vf-alert is-info" style="display:none;"></div>
         <div id="vf-vinculo-base-permissao" class="vf-alert is-danger" style="display:none;"></div>
+        <!-- Marketplace vem da própria base (bases.marketplace) — contexto
+             fixo, nunca uma escolha manual. Mismatch base × conta é bloqueado
+             no backend nos dois caminhos (legado e account-aware). -->
+        <p class="vf-field__hint" id="vf-vinculo-marketplace-contexto" style="margin:0 0 4px;"></p>
         <div class="vf-field">
           <label class="vf-field__label" for="vf-vinculo-cliente">Cliente</label>
           <select id="vf-vinculo-cliente" class="vf-select"></select>
         </div>
-        <div class="vf-field">
-          <label class="vf-field__label" for="vf-vinculo-marketplace">Marketplace</label>
-          <select id="vf-vinculo-marketplace" class="vf-select">
-            <option value="meli">Mercado Livre</option>
-            <option value="shopee">Shopee</option>
-            <option value="tiktok">TikTok Shop</option>
-            <option value="outro">Outro</option>
-          </select>
+        <div class="vf-field" id="vf-vinculo-conta-field" style="display:none;">
+          <label class="vf-field__label" for="vf-vinculo-conta"><span id="vf-vinculo-conta-label">Conta</span> <span class="vf-field__required" id="vf-vinculo-conta-req" aria-hidden="true">*</span></label>
+          <select id="vf-vinculo-conta" class="vf-select"></select>
+          <span class="vf-field__hint" id="vf-vinculo-conta-hint"></span>
         </div>
         <div id="vf-vinculo-base-danger" class="vf-alert is-danger" style="display:none;"></div>
       </div>

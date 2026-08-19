@@ -119,9 +119,16 @@ async function executarSyncRun({ run, context, params, db = pool, sincronizarVen
     // running deste run como failed antes de marcar o run como failed —
     // nunca deixa "run failed, sources todas running".
     await sourceService.falharFontesEmAndamento(run.id, { errorCode: code, errorMessage: err?.message }, db);
-    // Um run failed nunca pode ser lido como completude confiável — o eixo
-    // de completude segue o técnico aqui, sem exceção.
-    await runService.atualizarCompletenessRun(run.id, "failed", db);
+    // completenessStatus é SEMPRE derivado de calcularCompletudeDoRun, nunca
+    // forçado — um run técnico failed pode ter fontes obrigatórias que
+    // fecharam bem antes do erro (ex.: erro de persistência depois de
+    // orders/shipments/claims/base completos) ou só uma fonte não-estrutural
+    // falha (ex.: claims), o que dá completude `partial`, não `failed`. Só
+    // falha estrutural (orders/base) força `failed` — ver STRUCTURAL_SOURCES
+    // em centralVendasSyncSourceService. runStatus:"failed" aqui garante o
+    // veredito estrito (nunca "unknown" por engano de run ainda em andamento).
+    const completeness = await sourceService.calcularCompletudeDoRun(run.id, { runStatus: "failed", db });
+    await runService.atualizarCompletenessRun(run.id, completeness.status, db);
     await runService.marcarRunFailed(run.id, { code, message: err?.message || "Erro desconhecido na sincronizacao." }, db);
     throw err;
   }

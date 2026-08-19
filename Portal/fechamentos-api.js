@@ -249,6 +249,7 @@ const F = {
   periodo: null,          // { mode, dateFrom, dateTo } — período de análise
   rawPayload: null, viewPayload: null, visiblePayload: null,
   lastSyncBase: null,     // base vinculada informada pela última sincronização da sessão
+  sync: { runId: null, timer: null, clienteSlug: null }, // sync-run em andamento (M2) — sobrevive a reload via GET /sync-runs
   loadSeq: 0,             // guard de concorrência: ignora resposta de fetch antigo
   loadAbort: null,        // AbortController do fetch em voo
   loading: false,
@@ -2362,19 +2363,29 @@ async function executarImportacao() {
   }
 }
 
-/* Sincronização API-first: busca pedidos direto da Orders API do ML, sem planilha.
-   Custo continua vindo da base vinculada oficial do cliente. */
+/* Sincronização API-first (M2 — sync run assíncrono): cria a execução no
+   servidor (POST /sync-runs, responde 202 sem esperar terminar) e acompanha
+   por polling (GET /sync-runs/:id). Sobrevive a reload da página — ver
+   retomarSyncEmAndamento(), chamada ao trocar cliente/período. */
+const SYNC_POLL_MS = 3000;
+
+function pararPollingSync() {
+  if (F.sync.timer) { clearTimeout(F.sync.timer); F.sync.timer = null; }
+  F.sync.runId = null;
+  F.sync.clienteSlug = null;
+}
+
 async function executarSincronizacao() {
   if (!TOKEN) return;
   if (!F.cliente) { setActionStatus('Selecione um cliente antes de sincronizar.', ACTION_TONE.warn); return; }
   if (!F.periodo) { setActionStatus('Selecione o período antes de sincronizar.', ACTION_TONE.warn); return; }
 
   setAdminBusy(true, 'fapi-sync-btn');
-  setActionStatus('Sincronizando pedidos via API do Mercado Livre…', ACTION_TONE.info);
+  setActionStatus('Iniciando sincronização…', ACTION_TONE.info);
 
   try {
     const res = await fetch(
-      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/sincronizar`,
+      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/sync-runs`,
       {
         method: 'POST',
         headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
@@ -2387,18 +2398,86 @@ async function executarSincronizacao() {
     const json = await res.json();
     if (!res.ok) throw new Error(json.erro || json.error || json.message || `HTTP ${res.status}`);
 
-    const pedidos = json.pedidosPersistidos ?? '?';
-    const orders = json.ordersEncontrados ?? '?';
-    F.lastSyncBase = json.baseVinculada || null;
-    const baseTxt = json.baseVinculada ? `base "${json.baseVinculada.nome}"` : 'sem base vinculada';
-    setActionStatus(`Sincronizado: ${pedidos} pedido(s) de ${orders} da API · ${baseTxt}. Recarregando…`, ACTION_TONE.ok);
-    await carregarTela();
-    setActionStatus(`${pedidos} pedido(s) sincronizados via API (${baseTxt}).`, ACTION_TONE.ok);
+    setActionStatus('Sincronização iniciada — acompanhando…', ACTION_TONE.info);
+    F.sync.runId = json.run.id;
+    F.sync.clienteSlug = F.cliente.slug;
+    pollSyncRun(json.run.id, F.cliente.slug);
   } catch (err) {
-    setActionStatus(`Erro: ${err?.message || 'Falha na sincronização.'}`, ACTION_TONE.danger);
-  } finally {
+    setActionStatus(`Erro: ${err?.message || 'Falha ao iniciar a sincronização.'}`, ACTION_TONE.danger);
     setAdminBusy(false);
   }
+}
+
+async function pollSyncRun(runId, clienteSlugNoInicio) {
+  // Cliente trocado enquanto aguardava a resposta, ou outro poll assumiu — ignora.
+  if (F.sync.runId !== runId || F.cliente?.slug !== clienteSlugNoInicio) return;
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(clienteSlugNoInicio)}/sync-runs/${runId}`,
+      { headers: { Authorization: 'Bearer ' + TOKEN } }
+    );
+    if (res.status === 401) { window.location.replace('index.html'); return; }
+    const json = await res.json();
+
+    if (F.sync.runId !== runId || F.cliente?.slug !== clienteSlugNoInicio) return; // trocou de cliente durante o fetch
+
+    if (!res.ok || !json?.ok) {
+      pararPollingSync();
+      setActionStatus(`Erro ao acompanhar sincronização: ${json?.erro || `HTTP ${res.status}`}`, ACTION_TONE.danger);
+      setAdminBusy(false);
+      return;
+    }
+
+    const run = json.run;
+    if (run.status === 'queued' || run.status === 'running') {
+      setActionStatus(run.status === 'queued' ? 'Sincronização na fila…' : 'Sincronizando pedidos via API do Mercado Livre…', ACTION_TONE.info);
+      F.sync.timer = setTimeout(() => pollSyncRun(runId, clienteSlugNoInicio), SYNC_POLL_MS);
+      return;
+    }
+
+    pararPollingSync();
+    setAdminBusy(false);
+
+    if (run.status === 'failed') {
+      setActionStatus(`Sincronização falhou: ${run.error?.message || 'erro desconhecido'}.`, ACTION_TONE.danger);
+      return;
+    }
+
+    // completed
+    const meta = run.metadata || {};
+    F.lastSyncBase = run.baseId ? { id: run.baseId } : null;
+    setActionStatus(`Sincronizado: ${meta.pedidosPersistidos ?? '?'} pedido(s) de ${meta.ordersEncontrados ?? '?'} da API. Recarregando…`, ACTION_TONE.ok);
+    await carregarTela();
+    setActionStatus(`${meta.pedidosPersistidos ?? '?'} pedido(s) sincronizados via API.`, ACTION_TONE.ok);
+  } catch (_) {
+    if (F.sync.runId === runId) F.sync.timer = setTimeout(() => pollSyncRun(runId, clienteSlugNoInicio), SYNC_POLL_MS);
+  }
+}
+
+// Reload/troca de cliente-período: se já existir um sync-run queued/running
+// para este cliente, retoma o acompanhamento em vez de deixar o usuário sem
+// feedback (seção 24 — não depende de variável JS em memória sobrevivendo
+// ao reload, só reconsulta o servidor).
+async function retomarSyncEmAndamento() {
+  if (!TOKEN || !F.cliente) return;
+  pararPollingSync();
+  try {
+    const res = await fetch(
+      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/sync-runs?limit=5`,
+      { headers: { Authorization: 'Bearer ' + TOKEN } }
+    );
+    if (!res.ok) return;
+    const json = await res.json();
+    const ativo = (json.runs || []).find(r => r.status === 'queued' || r.status === 'running');
+    if (!ativo) return;
+
+    F.sync.runId = ativo.id;
+    F.sync.clienteSlug = F.cliente.slug;
+    setAdminBusy(true, 'fapi-sync-btn');
+    setActionStatus('Retomando acompanhamento de sincronização em andamento…', ACTION_TONE.info);
+    pollSyncRun(ativo.id, F.cliente.slug);
+  } catch (_) { /* silencioso — não bloqueia a tela por causa do resume */ }
 }
 
 /* ── WIRING ESTÁTICO (uma vez, no boot — delegação nos hosts) ── */
@@ -2410,6 +2489,7 @@ function wireStatic() {
     F.lastSyncBase = null;
     resetFilters();
     carregarTela();
+    retomarSyncEmAndamento(); // reload/troca de cliente: reconecta a um sync-run já em andamento, se houver
   });
   document.getElementById('fapi-period-select')?.addEventListener('change', onPeriodChange);
   document.getElementById('fapi-period-apply')?.addEventListener('click', aplicarPeriodoCustom);

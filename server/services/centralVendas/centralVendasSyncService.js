@@ -556,7 +556,16 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
   // Busca os pedidos do intervalo numa unica paginacao, agrupa por mes
   // (competencia) e persiste um import por mes — preserva o agrupamento mensal
   // do banco sem prender a UI a um unico mes.
-  async function sincronizarVendasMeli({ clienteSlug, clienteContaId = null, competencia, dateFrom, dateTo, marketplace = "meli" }) {
+  // accountContext/runId (M2, Sync Run): quando o chamador já resolveu a
+  // identidade da conta (ver centralVendasSyncRunService.criarSyncRun), passa
+  // o contexto pronto e a resolução NÃO roda de novo aqui — a identidade fica
+  // congelada na criação do run, nunca re-resolvida no meio do processamento
+  // (uma troca de base oficial no meio da execução não pode afetar um run já
+  // em andamento). Sem accountContext, comportamento idêntico ao pré-M2.
+  async function sincronizarVendasMeli({
+    clienteSlug, clienteContaId = null, competencia, dateFrom, dateTo, marketplace = "meli",
+    accountContext = null, runId = null,
+  }) {
     const slug = normalizeSlug(clienteSlug);
     const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
 
@@ -587,7 +596,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // MULTIPLE_MARKETPLACE_ACCOUNTS quando ambíguo e clienteContaId não foi
     // informado). requireUsableGrant:true replica o comportamento anterior
     // de falhar cedo quando não há um grant utilizável.
-    const context = await resolveMarketplaceAccountContext({
+    const context = accountContext || await resolveMarketplaceAccountContext({
       clienteId: cliente.id,
       marketplace: marketplaceNorm,
       clienteContaId,
@@ -710,6 +719,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         baseResolutionMode: context.base?.resolvido_por || null,
         grantId: context.grant?.id || null,
         externalAccountId: context.mlUserId || null,
+        syncRunId: runId,
       });
 
       pedidosPersistidos += persisted.pedidosPersistidos;
@@ -739,6 +749,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     return {
       ok: true,
       fonte: "orders_api",
+      runId,
       cliente,
       marketplace: marketplaceNorm,
       periodo: { dateFrom: from, dateTo: to },

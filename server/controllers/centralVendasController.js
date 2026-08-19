@@ -1,7 +1,8 @@
 const { parseSpreadsheet, detectMeliHeaderRow } = require("../utils/excelUtils");
 const centralVendasService = require("../services/centralVendas/centralVendasService");
 const centralVendasImportService = require("../services/centralVendas/centralVendasImportService");
-const centralVendasSyncService = require("../services/centralVendas/centralVendasSyncService");
+const centralVendasSyncRunService = require("../services/centralVendas/centralVendasSyncRunService");
+const centralVendasSyncWorker = require("../services/centralVendas/centralVendasSyncWorker");
 
 const CAMPOS_SENSIVEIS = new Set([
   "access_token", "refresh_token", "api_key", "apikey", "password",
@@ -43,6 +44,25 @@ function tratarErro(res, err, contexto) {
 
 function slugParam(req) {
   return String(req.params.slug || "").trim().toLowerCase();
+}
+
+function isValidIsoDate(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+// Resolve o intervalo do request: dateFrom/dateTo tem prioridade; senao
+// deriva da competencia legada (mesma regra usada pelo servico de sync).
+function resolverIntervalo(req) {
+  const dateFrom = req.body?.dateFrom || req.query?.dateFrom;
+  const dateTo = req.body?.dateTo || req.query?.dateTo;
+  if (isValidIsoDate(dateFrom) && isValidIsoDate(dateTo)) return { dateFrom, dateTo };
+
+  const competenciaRaw = req.body?.competencia || req.query?.competencia;
+  const competencia = /^\d{4}-\d{2}$/.test(String(competenciaRaw || "").trim())
+    ? String(competenciaRaw).trim()
+    : (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; })();
+  const periodo = centralVendasService.periodoFromCompetencia(competencia);
+  return { dateFrom: periodo.inicio, dateTo: periodo.fim };
 }
 
 function parseSalesRows(req) {
@@ -111,22 +131,118 @@ async function importarVendas(req, res) {
   }
 }
 
+// Endpoint legado: continua respondendo de forma SINCRONA (o mesmo contrato
+// de sempre, so com "runId" adicionado). Por baixo, cria um sync_run e
+// AGUARDA a mesma funcao (`executarSyncRun`) que o worker roda em segundo
+// plano para o endpoint novo — nao existem dois motores de sincronizacao.
 async function sincronizarVendas(req, res) {
   try {
     const slug = slugParam(req);
     if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
 
-    const data = await centralVendasSyncService.sincronizarVendasMeli({
+    const { dateFrom, dateTo } = resolverIntervalo(req);
+    const marketplace = req.body?.marketplace || "meli";
+    const clienteContaId = req.body?.clienteContaId || req.query?.clienteContaId || null;
+
+    const { run, context } = await centralVendasSyncRunService.criarSyncRun({
       clienteSlug: slug,
-      clienteContaId: req.body?.clienteContaId || req.query?.clienteContaId || null,
-      dateFrom: req.body?.dateFrom || req.query?.dateFrom,
-      dateTo: req.body?.dateTo || req.query?.dateTo,
-      competencia: req.body?.competencia || req.query?.competencia, // legado
-      marketplace: req.body?.marketplace || "meli",
+      clienteContaId,
+      marketplace,
+      dateFrom,
+      dateTo,
+      requestedBy: req.user?.id || null,
     });
+
+    const data = await centralVendasSyncWorker.executarSyncRun({
+      run,
+      context,
+      params: { clienteSlug: slug, dateFrom, dateTo, marketplace },
+    });
+
+    // executarSyncRun devolve null se o run ja tinha sido processado por
+    // outra chamada concorrente (mesmo cliente/conta/periodo) — nesse caso
+    // nao ha payload novo para devolver; o operador deve consultar o run.
+    if (!data) {
+      return responder(res, 202, {
+        ok: true,
+        aviso: "Sincronizacao equivalente ja em andamento ou concluida.",
+        run,
+      });
+    }
+
     return responder(res, 201, data);
   } catch (err) {
     return tratarErro(res, err, "sincronizarVendas");
+  }
+}
+
+// POST /:slug/sync-runs — cria o run e retorna 202 imediatamente. A
+// sincronizacao roda em segundo plano (mesmo processo Node, fila
+// in-process — ver centralVendasSyncWorker).
+async function criarSyncRunController(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+
+    const { dateFrom, dateTo } = resolverIntervalo(req);
+    const marketplace = req.body?.marketplace || "meli";
+    const clienteContaId = req.body?.clienteContaId || req.query?.clienteContaId || null;
+
+    const { run, context, reaproveitado } = await centralVendasSyncRunService.criarSyncRun({
+      clienteSlug: slug,
+      clienteContaId,
+      marketplace,
+      dateFrom,
+      dateTo,
+      requestedBy: req.user?.id || null,
+    });
+
+    // Novo (queued): enfileira para o worker processar em background.
+    // Reaproveitado (ja queued/running de um clique anterior): nao enfileira
+    // de novo, so devolve o run existente para o frontend acompanhar.
+    if (!reaproveitado) {
+      centralVendasSyncWorker.enfileirar({
+        run,
+        context,
+        params: { clienteSlug: slug, dateFrom, dateTo, marketplace },
+      });
+    }
+
+    return responder(res, 202, { ok: true, run, reaproveitado: !!reaproveitado });
+  } catch (err) {
+    return tratarErro(res, err, "criarSyncRun");
+  }
+}
+
+async function obterSyncRunController(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId)) return responder(res, 400, { ok: false, erro: "runId invalido." });
+
+    const run = await centralVendasSyncRunService.obterSyncRun({ runId, clienteSlug: slug });
+    return responder(res, 200, { ok: true, run });
+  } catch (err) {
+    return tratarErro(res, err, "obterSyncRun");
+  }
+}
+
+async function listarSyncRunsController(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+
+    const runs = await centralVendasSyncRunService.listarSyncRuns({
+      clienteSlug: slug,
+      clienteContaId: req.query?.clienteContaId || null,
+      marketplace: req.query?.marketplace || null,
+      status: req.query?.status || null,
+      limit: req.query?.limit || 20,
+    });
+    return responder(res, 200, { ok: true, runs });
+  } catch (err) {
+    return tratarErro(res, err, "listarSyncRuns");
   }
 }
 
@@ -134,5 +250,8 @@ module.exports = {
   obterCentralVendas,
   importarVendas,
   sincronizarVendas,
+  criarSyncRunController,
+  obterSyncRunController,
+  listarSyncRunsController,
   maskSensitiveData,
 };

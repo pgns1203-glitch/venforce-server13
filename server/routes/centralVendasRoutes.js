@@ -26,11 +26,36 @@ router.post(
 
 // API-first: busca pedidos na Orders API do ML e persiste no banco.
 // Fluxo pesado (chama API ML); GET da Central continua lendo so do banco.
+// Endpoint legado (M2): por baixo agora cria um sync_run e aguarda a mesma
+// execucao que o worker roda em background — resposta continua sincrona.
 router.post(
   "/:slug/sincronizar",
   authMiddleware,
   requireAdmin,
   controller.sincronizarVendas
+);
+
+// M2 — Sync Run persistido: cria a execucao e responde 202 sem esperar a
+// sincronizacao terminar. Mesma autorizacao do endpoint legado (admin-only).
+router.post(
+  "/:slug/sync-runs",
+  authMiddleware,
+  requireAdmin,
+  controller.criarSyncRunController
+);
+
+router.get(
+  "/:slug/sync-runs/:runId",
+  authMiddleware,
+  requireAdmin,
+  controller.obterSyncRunController
+);
+
+router.get(
+  "/:slug/sync-runs",
+  authMiddleware,
+  requireAdmin,
+  controller.listarSyncRunsController
 );
 
 module.exports = router;

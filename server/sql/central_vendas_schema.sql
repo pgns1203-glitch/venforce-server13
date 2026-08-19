@@ -117,3 +117,58 @@ CREATE INDEX IF NOT EXISTS idx_central_vendas_itens_import
 
 CREATE INDEX IF NOT EXISTS idx_central_vendas_componentes_import
   ON central_vendas_componentes (import_id, pedido_id, item_id);
+
+-- ---------------------------------------------------------------------------
+-- M2 — Sync Run persistido (Central de Vendas V3)
+--
+-- Uma linha = uma tentativa de sincronizar UMA conta de marketplace em UM
+-- intervalo. Não é o snapshot nem o fechamento — é a execução que produziu ou
+-- tentou produzir dados. Identidade (cliente_conta_id/grant_id/base_id/
+-- external_account_id) é resolvida uma única vez na criação e nunca
+-- re-resolvida durante o processamento (ver centralVendasSyncRunService).
+--
+-- status: queued -> running -> (completed | failed). Nunca volta de um
+-- estado final para running. published/partial/truncated pertencem a M3/M4 e
+-- não são usados aqui.
+CREATE TABLE IF NOT EXISTS central_vendas_sync_runs (
+  id BIGSERIAL PRIMARY KEY,
+  cliente_id BIGINT NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+  cliente_slug TEXT NOT NULL,
+  cliente_conta_id BIGINT REFERENCES cliente_contas(id) ON DELETE SET NULL,
+  marketplace TEXT NOT NULL DEFAULT 'meli',
+  external_account_id TEXT,
+  grant_id BIGINT REFERENCES ml_tokens(id) ON DELETE SET NULL,
+  base_id BIGINT REFERENCES bases(id) ON DELETE SET NULL,
+  base_resolution_mode TEXT,
+  date_from DATE NOT NULL,
+  date_to DATE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  requested_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  error_code TEXT,
+  error_message TEXT,
+  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Impede dois runs queued/running simultâneos para a mesma
+-- conta+marketplace+período — proteção real contra corrida de dois cliques
+-- (não só um SELECT prévio: cliente_conta_id NULL — cliente 100% legado —
+-- ainda assim é coberto porque cliente_id nunca é NULL).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_central_vendas_sync_runs_ativo
+  ON central_vendas_sync_runs (cliente_id, cliente_conta_id, marketplace, date_from, date_to)
+  WHERE status IN ('queued', 'running');
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_sync_runs_cliente
+  ON central_vendas_sync_runs (cliente_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_sync_runs_conta_status
+  ON central_vendas_sync_runs (cliente_conta_id, marketplace, status);
+
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS sync_run_id BIGINT REFERENCES central_vendas_sync_runs(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_imports_sync_run
+  ON central_vendas_imports (sync_run_id);

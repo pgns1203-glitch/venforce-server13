@@ -247,3 +247,34 @@ CREATE INDEX IF NOT EXISTS idx_central_vendas_sync_sources_run
 -- separado: um run completed pode ter completeness_status = 'partial'.
 ALTER TABLE central_vendas_sync_runs
   ADD COLUMN IF NOT EXISTS completeness_status TEXT;
+
+-- ---------------------------------------------------------------------------
+-- M4 — Candidate / Published (Central de Vendas V3)
+--
+-- Separa "dado produzido por uma sincronização" de "dado oficial que a
+-- Central pode exibir". Todo import nasce candidate (via sync_run) ou legacy
+-- (planilha, ou qualquer import pré-M4); só vira published quando promovido
+-- por centralVendasPublicationService.publicarRun — nunca dentro do
+-- collector. Ver docs/CENTRAL_VENDAS_V3_ARQUITETURA.md seção 12.
+--
+-- DEFAULT 'legacy' aplica-se retroativamente a TODAS as linhas já existentes
+-- na tabela — deliberado (seção 1 da spec M4): snapshots antigos nunca são
+-- marcados published por adivinhação, viram legacy explicitamente e seguem
+-- elegíveis para o fallback (nunca para o caminho "oficial published").
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS publication_status TEXT NOT NULL DEFAULT 'legacy';
+
+-- Cobertura REAL do snapshot (seção 5) — nunca a competência inteira quando
+-- o sync só cobriu um pedaço dela. NULL em linhas legadas (nunca inferido
+-- por adivinhação); toda linha nova produzida por sync_run grava a
+-- interseção do intervalo do run com o mês da competência.
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS coverage_date_from DATE;
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS coverage_date_to DATE;
+
+ALTER TABLE central_vendas_imports
+  ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_imports_publicacao
+  ON central_vendas_imports (cliente_slug, marketplace, competencia, publication_status);

@@ -1,13 +1,14 @@
-# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte)
+# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte, M4: Candidate/Published)
 
 > Este documento cobre **o que foi implementado**: M1 (Central Account-Aware),
 > M2 (Sync Run persistido), o **Hardening M1/M2** (seção 9), **M3 —
-> Completude por Fonte** (seção 10) e o **Hardening M3** (seção 11) que
-> corrigiu 4 lacunas de integridade na prova de completude antes do M4.
-> M4–M10 (candidate/published, motor por item, ledger, API de leitura
-> paginada, frontend account-aware, remoção do recálculo no frontend,
-> performance/bulk) **não foram implementados** — ver seção 10.14 "O que
-> continua fora do escopo".
+> Completude por Fonte** (seção 10), o **Hardening M3** (seção 11) que
+> corrigiu 4 lacunas de integridade na prova de completude, e **M4 —
+> Candidate/Published** (seção 12), que separa "dado produzido por uma
+> sincronização" de "dado oficial que a Central pode exibir".
+> M5–M10 (motor por item, ledger, API de leitura paginada, frontend
+> account-aware, remoção do recálculo no frontend, performance/bulk) **não
+> foram implementados** — ver seção 12.11 "O que continua fora do escopo".
 >
 > Referência do estado anterior: `TELA_CENTRAL_VENDAS_V2.md` (auditoria de
 > 2026-08-19) e `docs/AUDITORIA_BASES_POS_CLIENTE_CONTAS.md` (mesmo dia,
@@ -1065,8 +1066,234 @@ Orders/Shipments complete,
 Claims HTTP 400            → run completed, completeness partial, podeConcluir false
 ```
 
-## 12. Próximo marco (M4, fora do escopo desta rodada)
+## 12. M4 — Candidate / Published
 
-Candidate / Published Snapshot — decidir qual snapshot de um período é o
-"oficial" quando existem múltiplas sincronizações, e só então permitir que
-o Cliente 360/Financeiro tratem a Central como fechamento confiável.
+### 12.1 Objetivo
+
+Antes do M4, o GET da Central sempre lia "o import mais recente da
+competência" — qualquer sincronização persistida, mesmo uma que truncou
+Orders no meio, podia virar imediatamente o dado exibido, substituindo um
+snapshot bom anterior sem nenhum degrau de validação no meio.
+
+M4 separa dois conceitos que estavam fundidos na mesma tabela:
+
+```text
+dado produzido por uma sincronização      → candidate  (sempre gravado)
+dado oficial que a Central pode exibir    → published  (promovido, nunca
+                                                          implícito)
+```
+
+```text
+SYNC RUN → gera snapshot → CANDIDATE → validação → PUBLISHED → GET da Central
+```
+
+Um candidate ruim nunca substitui o último published bom — ele fica
+persistido (auditoria, nunca deletado), mas invisível ao GET até alguém
+(o próprio worker, automaticamente) provar que ele é publicável.
+
+### 12.2 Schema — `central_vendas_imports` (aditivo)
+
+```sql
+publication_status   TEXT NOT NULL DEFAULT 'legacy'   -- legacy | candidate | published
+coverage_date_from    DATE
+coverage_date_to      DATE
+published_at          TIMESTAMPTZ
+```
+
+`DEFAULT 'legacy'` aplica-se retroativamente a toda linha já existente na
+tabela — deliberado: nenhum snapshot antigo é marcado `published` por
+adivinhação. Legacy é um terceiro estado, não um sinônimo de `published`
+nem de `candidate` — ver seção 12.6.
+
+### 12.3 Todo sync novo nasce candidate
+
+`centralVendasSyncService.sincronizarVendasMeli`, ao persistir cada import:
+
+```text
+runId presente (produzido por um sync_run)  → publication_status = "candidate"
+runId ausente (chamada legada direta,
+sem passar por sync_run)                    → publication_status = "legacy"
+```
+
+Nunca publica dentro do collector — Orders/Claims/Shipments continuam
+apenas produzindo evidências (M3, inalterado).
+
+### 12.4 Regra de publicação (gate real — `centralVendasPublicationService`)
+
+**Não é** `run.completenessStatus === "complete"` (o agregado do M3, que
+mistura orders/shipments/claims/returns/base). Esse agregado continua
+existindo e continua controlando `confianca`/`podeConcluir` no GET — mas
+não decide se um candidate pode virar published.
+
+```text
+publicarRun(runId) promove quando:
+
+  run.status === "completed"
+  AND
+  fonte "orders" desse run === "complete"    (sem truncamento, cobriu
+                                               integralmente o intervalo
+                                               pedido — mesmo veredito que
+                                               fetchAllOrders/M3 já produz,
+                                               não recalculado aqui)
+```
+
+Shipments/Claims/Returns incompletos ou com falha **não bloqueiam**
+publicação — o snapshot publica mesmo assim, só que o GET continua
+mostrando `confianca="parcial"`/`podeConcluir=false` via
+`buildCompletenessState` (M3, inalterado). Só falta de Orders (truncado,
+incompleto, ou o run nunca chegou a rodá-lo) ou o run não ter terminado
+`completed` impede a publicação — Orders é o único requisito estrutural do
+snapshot, porque sem ele o conjunto de pedidos do período não é confiável
+nem para exibir como "parcial".
+
+```text
+Orders 587/587 complete, Shipments 570/573 incomplete,
+Claims HTTP 400 failed, Returns blocked, run completed
+  → PUBLICA (candidate promovido; GET mostra confianca=parcial,
+    podeConcluir=false)
+
+Orders 5000/7300 incomplete, run completed
+  → NÃO publica (candidate fica candidate; published anterior intacto)
+
+run failed (mesmo com completenessStatus="complete" — ver
+centralVendasSyncWorker, catch corrigido antes do M4)
+  → NÃO publica (run.status !== "completed" já barra)
+```
+
+Publicado **não** significa conclusivo — significa "o snapshot oficial
+agora é este". Conclusivo (`podeConcluir=true`) continua sendo decidido no
+GET pelo agregado de completude + claims, exatamente como no M3.
+
+### 12.5 Cobertura real (nunca a competência inteira por adivinhação)
+
+Um sync de `2026-08-10` a `2026-08-15` persiste um import com
+`competencia="2026-08"`, mas isso não pode competir com um snapshot que
+cobriu agosto inteiro. `coverage_date_from`/`coverage_date_to` gravam a
+interseção real do intervalo do run com o mês da competência:
+
+```text
+run 2026-07-20 → 2026-08-15
+  import competencia=2026-07  coverage 07-20 → 07-31
+  import competencia=2026-08  coverage 08-01 → 08-15
+```
+
+O GET só usa um `published` se sua cobertura **contém integralmente** o
+trecho pedido daquela competência (`coverage_date_from <= segmentStart AND
+coverage_date_to >= segmentEnd`) — nunca um snapshot `10→15` respondendo
+uma consulta `01→31`; um snapshot `01→31` pode responder uma consulta
+`10→15` (contido).
+
+### 12.6 Seleção do published no GET (`centralVendasRepository`)
+
+Trocou "último import da competência" (`DISTINCT ON` por `created_at`) por
+`selecionarMelhorImportPorCompetencia`, aplicada em
+`getLatestCentralVendasImport` (leitura mensal legada) e
+`getCentralVendasByRange` (leitura por intervalo, pode cruzar meses):
+
+```text
+1. entre os `published` cuja cobertura contém o trecho pedido,
+   usa o mais recentemente publicado (published_at DESC, id DESC);
+2. sem nenhum `published` qualificado, cai no `legacy` mais recente
+   (created_at DESC, id DESC — mesmo critério de sempre);
+3. `candidate` NUNCA entra nessa seleção, em nenhum dos dois passos.
+```
+
+As condições de conta do M1 (`condicaoContaSql`/`includeLegacy`, escopo por
+`cliente_conta_id`) continuam aplicadas antes da seleção — published da
+conta A nunca aparece na leitura da conta B.
+
+### 12.7 Legacy — compatibilidade com dado pré-M4
+
+```text
+existe published M4 que cobre o período pedido  → usa published
+senão                                            → fallback legacy
+                                                    (mesma regra de sempre)
+candidate                                        → nunca entra nesse fallback
+```
+
+Todo snapshot anterior ao M4 é `legacy` (default da coluna), não
+`published` nem invisível — continua respondendo o GET exatamente como
+antes, só que agora com um `publication_status` explícito em vez de
+implícito.
+
+### 12.8 Zero pedidos é snapshot válido
+
+Antes do M4, um sync com `Orders total = 0` não persistia import nenhum
+(o loop de competências vinha de `orders`, que estava vazio) — o GET não
+tinha como distinguir isso de "cliente nunca sincronizou". Duas correções,
+uma no write, uma no read:
+
+- **Write** (`centralVendasSyncService`): quando `orders.length === 0` no
+  run inteiro, persiste um snapshot vazio (porém real, candidate,
+  auditável) para cada competência que o intervalo do run tocou —
+  `pedidos: []`, mas import gravado com sua cobertura. Um run com pedido
+  em alguns meses e nenhum em outro preserva o comportamento anterior (mês
+  sem pedido = sem import) — o problema descrito é especificamente o total
+  zero.
+- **Read** (`centralVendasService.buildPayloadFromRange` +
+  `centralVendasImportService.buildResumoCentralVendas`): `snapshot ===
+  null` (nenhum import encontrado) continua `motor.status="sem_dados"`,
+  `confianca="ausente"`. Um snapshot que existe mas tem `pedidos: []` agora
+  cai no corpo normal — `motor.status="persistido"`, `confianca="confiavel"`
+  (zero pedidos **verificados**, não "não sabemos"). Essa ambiguidade
+  também existia dentro do próprio `resumo_json` persistido (`confianca`
+  calculada como `"ausente"` quando `pedidosValidos.length === 0`) — o
+  mesmo fix elimina os dois pontos, sem duplicar a regra.
+
+```text
+Orders 0/0 complete, run completed, candidate → published
+GET: motor.status="persistido", resumo.pedidosTotal=0, confianca="confiavel"
+
+(nunca "sem_dados"/"aguardando_sincronizacao")
+```
+
+### 12.9 `centralVendasPublicationService` — idempotência
+
+`publicarRun(runId)` faz um único `UPDATE central_vendas_imports SET
+publication_status='published', published_at=NOW() WHERE sync_run_id=$1
+AND publication_status='candidate'`. Chamar duas vezes não duplica nada: a
+segunda chamada encontra 0 linhas `candidate` (a primeira já promoveu
+todas) e devolve `published:true, importIds:[]` sem tocar em
+`published_at` de novo. Se a query falhar, é uma única operação atômica —
+nunca deixa metade dos imports do run promovidos e metade não.
+
+### 12.10 Worker (`centralVendasSyncWorker`)
+
+```text
+sync terminou (sucesso técnico)
+  ↓
+calcular completude (M3, agregado — inalterado)
+  ↓
+marcar run completed
+  ↓
+tentar publicarRun(run.id)      [try/catch PRÓPRIO, nunca o catch de sync]
+  ↓
+  elegível  → promove candidates → published
+  não elegível → loga o motivo, candidate continua candidate
+  erro ao publicar → loga o erro, published anterior intacto
+```
+
+O try/catch da publicação é deliberadamente **separado** do catch que trata
+falha de sincronização: o run já terminou `completed` com sucesso técnico
+quando `publicarRun` é chamado — uma falha ali nunca pode reabrir o run,
+marcá-lo `failed`, nem propagar como se a sincronização tivesse quebrado.
+A state machine do M2 (`queued → running → completed|failed`) não muda.
+
+### 12.11 O que continua fora do escopo
+
+Não implementado neste marco (fica para M5+): motor por item, ledger,
+Ads, Mercado Pago, Full, histórico temporal de custo, frontend React,
+nova Read API paginada, bulk insert. M4 não alterou a matemática
+financeira (`buildMotorFromOrders`, componentes, resultado) — só write-gate
+(candidate/published), cobertura, e a leitura segura no GET.
+
+### 12.12 Testes
+
+`server/tests/centralVendasM4Publication.test.js` cobre: published A +
+candidate B (orders incompleto) → GET continua A; candidate com orders
+complete (mesmo com outras fontes falhas) vira published e GET passa a
+usá-lo com confianca parcial; run failed nunca publica; cobertura parcial
+nunca responde por um range maior; cobertura total responde por um range
+menor; duas contas nunca se misturam; zero orders vira snapshot published
+válido; candidate nunca aparece no GET oficial; sem published cai no
+fallback legacy; `publicarRun()` chamado duas vezes é idempotente.

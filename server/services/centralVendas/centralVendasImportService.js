@@ -56,14 +56,21 @@ function buildResumoCentralVendas(motorResult) {
       lucroContribuicao !== null && faturamentoComCusto > 0
         ? round2((lucroContribuicao / faturamentoComCusto) * 100)
         : null,
+    // M4, seção 8: zero pedidos válidos (Orders 0/0, ou todos cancelados) NÃO
+    // é "ausente" — é um resultado verificado. "ausente" neste código
+    // sempre significou "não sabemos", e aqui sabemos: o período foi
+    // consultado e não há receita a reportar. Distinguir isso de "nunca
+    // sincronizado" é o próprio motivo do snapshot vazio existir (a Central
+    // já trata `pedidosValidos.length === 0` sem erro em todo o resto desta
+    // função — round2(0), null em lucroContribuicao — então nunca é
+    // alcançado pela planilha, que bloqueia esse caso antes, em
+    // importarVendasMeli).
     confianca:
       pedidosValidos.some((pedido) => pedido.confianca === "bloqueado")
         ? "parcial"
         : pedidosValidos.some((pedido) => pedido.confianca === "parcial")
           ? "parcial"
-          : pedidosValidos.length
-            ? "confiavel"
-            : "ausente",
+          : "confiavel",
   };
 }
 

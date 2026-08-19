@@ -25,6 +25,7 @@ const imports = [
     updated_at: "2026-07-05T10:00:00.000Z",
     cliente_slug: CLIENTE_SLUG,
     marketplace: MARKETPLACE,
+    publication_status: "legacy",
   },
   {
     id: 200,
@@ -38,6 +39,7 @@ const imports = [
     updated_at: "2026-07-06T10:00:00.000Z",
     cliente_slug: CLIENTE_SLUG,
     marketplace: MARKETPLACE,
+    publication_status: "legacy",
   },
 ];
 
@@ -53,26 +55,20 @@ const componentes = [
 
 const fakeDb = {
   async query(sql, params) {
-    if (/DISTINCT ON \(competencia\)/.test(sql) && /FROM central_vendas_imports/.test(sql)) {
+    // M4: o repository real agora busca TODAS as linhas candidatas
+    // (published/legacy) e reduz em JS (selecionarMelhorImportPorCompetencia)
+    // — este fake só filtra, sem escolher a "mais recente" por competência.
+    if (/competencia BETWEEN \$3 AND \$4/.test(sql) && /FROM central_vendas_imports/.test(sql)) {
       const [slug, marketplace, compFrom, compTo] = params;
       const candidatos = imports.filter(
         (row) =>
           row.cliente_slug === slug &&
           row.marketplace === marketplace &&
           row.competencia >= compFrom &&
-          row.competencia <= compTo
+          row.competencia <= compTo &&
+          (row.publication_status === "published" || row.publication_status === "legacy")
       );
-      // DISTINCT ON (competencia) ORDER BY competencia, created_at DESC, id DESC
-      // -> um registro por competencia, o mais recente.
-      const porCompetencia = new Map();
-      for (const row of candidatos) {
-        const atual = porCompetencia.get(row.competencia);
-        if (!atual) { porCompetencia.set(row.competencia, row); continue; }
-        const maisNovo =
-          row.created_at > atual.created_at || (row.created_at === atual.created_at && row.id > atual.id);
-        if (maisNovo) porCompetencia.set(row.competencia, row);
-      }
-      return { rows: [...porCompetencia.values()] };
+      return { rows: candidatos };
     }
 
     if (/FROM central_vendas_pedidos/.test(sql) && /import_id = ANY/.test(sql)) {

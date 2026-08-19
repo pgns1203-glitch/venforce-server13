@@ -57,6 +57,35 @@ function isValidIsoDate(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+// M4, seção 8 — lista "YYYY-MM" de cada mês tocado por [from, to] (inclusive
+// nas duas pontas). Usado só para preencher o snapshot vazio quando o run
+// inteiro voltou com 0 pedidos (ver uso abaixo) — nunca para decidir quais
+// competências têm dado real.
+function competenciasNoIntervalo(from, to) {
+  const [yStart, mStart] = String(from).slice(0, 7).split("-").map(Number);
+  const [yEnd, mEnd] = String(to).slice(0, 7).split("-").map(Number);
+  const result = [];
+  let y = yStart;
+  let m = mStart;
+  while (y < yEnd || (y === yEnd && m <= mEnd)) {
+    result.push(`${y}-${String(m).padStart(2, "0")}`);
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return result;
+}
+
+// M4, seção 5 — cobertura REAL de um snapshot: a interseção do intervalo do
+// run com o mês da competência, nunca o mês inteiro quando o run só cobriu
+// um pedaço dele (ex.: run 07-20..08-15 → competencia 2026-07 cobre só
+// 07-20..07-31).
+function coverageParaCompetencia(comp, from, to) {
+  const periodo = periodoFromCompetencia(comp);
+  const coverageFrom = periodo.inicio > from ? periodo.inicio : from;
+  const coverageTo = periodo.fim < to ? periodo.fim : to;
+  return { coverageFrom, coverageTo };
+}
+
 function criarErroHttp(statusCode, mensagem) {
   const err = new Error(mensagem);
   err.statusCode = statusCode;
@@ -954,6 +983,20 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       grupos.get(compKey).push(order);
     }
 
+    // M4, seção 8: Orders total=0 NUNCA pode virar "nenhuma sincronização
+    // existente" — sem isso, grupos ficaria vazio e nenhum import seria
+    // persistido, indistinguível de "cliente nunca sincronizado". Persiste
+    // um snapshot vazio (porém real, candidate, auditável) para cada
+    // competência que o intervalo do run tocou. Só entra aqui quando orders
+    // é 0 no TOTAL — um run com orders em alguns meses e nao em outros
+    // preserva o comportamento anterior (mês sem pedido = sem import), que
+    // não é o problema descrito na spec.
+    if (orders.length === 0) {
+      for (const comp of competenciasNoIntervalo(from, to)) {
+        if (!grupos.has(comp)) grupos.set(comp, []);
+      }
+    }
+
     let pedidosPersistidos = 0;
     let itensPersistidos = 0;
     let componentesPersistidos = 0;
@@ -983,7 +1026,10 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         clienteSlug: slug,
         competencia: comp,
       });
-      if (!motorResult.pedidos.length) continue;
+      // M4, seção 8: NÃO pular competências com 0 pedidos — um snapshot
+      // vazio (Orders 0/0, completude complete) é um resultado válido e
+      // precisa ficar auditável como candidate, nunca indistinguível de
+      // "nunca sincronizou".
 
       const resumoCalculado = buildResumoCentralVendas(motorResult);
       const resumo = {
@@ -1017,6 +1063,16 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
           : {}),
       };
       const motorPayload = { ...motorResult, resumo };
+      // M4, seção 2/5: produzido por um sync_run nasce SEMPRE candidate —
+      // só centralVendasPublicationService.publicarRun promove para
+      // published, nunca aqui. Sem runId (chamada legada direta, sem
+      // sync_run — ver teste "sincronização legada"), nasce legacy: nunca
+      // fica preso atrás de um publish que nunca vai rodar, e continua
+      // imediatamente visível pelo fallback (seção 7), igual ao
+      // comportamento pré-M4. Cobertura real (seção 5): interseção do
+      // intervalo do run com o mês desta competência — nunca o mês inteiro
+      // quando o run só tocou um pedaço dele.
+      const { coverageFrom, coverageTo } = coverageParaCompetencia(comp, from, to);
       const persisted = await repository.persistCentralVendasImport({
         cliente,
         marketplace: marketplaceNorm,
@@ -1032,6 +1088,9 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         grantId: context.grant?.id || null,
         externalAccountId: context.mlUserId || null,
         syncRunId: runId,
+        publicationStatus: runId ? "candidate" : "legacy",
+        coverageDateFrom: coverageFrom,
+        coverageDateTo: coverageTo,
       });
 
       pedidosPersistidos += persisted.pedidosPersistidos;

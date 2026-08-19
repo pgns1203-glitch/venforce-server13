@@ -112,6 +112,28 @@ async function executarSyncRun({ run, context, params, db = pool, sincronizarVen
       `overall=${completeness.status}`
     );
 
+    // M4 — publica automaticamente quando elegível (gate real é orders
+    // completo + run completed, não o agregado acima — ver
+    // centralVendasPublicationService). Nunca dentro do collector, sempre
+    // depois do run já ter terminado completed. Try/catch PRÓPRIO
+    // (deliberado, separado do catch de sincronização abaixo): o run já
+    // terminou com sucesso técnico aqui — uma falha ao publicar nunca pode
+    // reabrir/falhar o run nem virar um "throw" que o catch de baixo
+    // reinterpretaria como sincronização quebrada. Se a promoção falhar, o
+    // candidate simplesmente continua candidate e o published anterior (se
+    // houver) continua sendo o oficial — nunca inventa publicação.
+    try {
+      const publicationService = require("./centralVendasPublicationService");
+      const publicacao = await publicationService.publicarRun(run.id, { db });
+      console.log(
+        publicacao.published
+          ? `[centralVendas] sync-run #${run.id} publicado — imports=${publicacao.importIds.join(",") || "nenhum"}`
+          : `[centralVendas] sync-run #${run.id} nao publicado: ${publicacao.reason}`
+      );
+    } catch (publishErr) {
+      console.error(`[centralVendas] sync-run #${run.id} erro ao tentar publicar:`, publishErr?.message);
+    }
+
     return resultado;
   } catch (err) {
     const code = err?.code || "SYNC_EXECUTION_ERROR";

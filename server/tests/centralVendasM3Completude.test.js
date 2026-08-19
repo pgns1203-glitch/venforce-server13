@@ -182,6 +182,19 @@ function makeDb({ contas, grants }) {
         return { rows: sources.filter((r) => r.sync_run_id === params[0]).sort((a, b) => a.id - b.id) };
       }
 
+      // M4 — o worker tenta publicar sozinho depois de completed (best-effort,
+      // nunca falha o run). Este arquivo não modela central_vendas_imports —
+      // devolve "run existe" e "nada para promover", suficiente para o
+      // publish ser um no-op silencioso e não poluir os testes de M3 com um
+      // erro que não tem nada a ver com o que eles provam.
+      if (sql.includes("SELECT * FROM central_vendas_sync_runs WHERE id = $1")) {
+        const row = runs.find((r) => r.id === params[0]);
+        return { rows: row ? [row] : [] };
+      }
+      if (sql.includes("UPDATE central_vendas_imports") && sql.includes("publication_status = 'published'")) {
+        return { rows: [] };
+      }
+
       throw new Error(`Fake db: SQL nao mapeado -> ${sql.slice(0, 120)}`);
     },
   };

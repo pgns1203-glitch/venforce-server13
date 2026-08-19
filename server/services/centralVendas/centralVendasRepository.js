@@ -8,8 +8,14 @@ function asJson(value, fallback) {
   return JSON.stringify(value ?? fallback);
 }
 
+// Usada tanto para escrever (input ISO string, ex.: pedido.dataPedido) quanto
+// para ler colunas DATE de volta do pg (que chegam como objeto Date, não
+// string — sem o branch abaixo, String(date).slice(0,10) corta um texto tipo
+// "Mon Aug 10" em vez de "2026-08-10", quebrando qualquer comparação de
+// cobertura em coberturaContemSegmento).
 function asDate(value) {
   if (!value) return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
   return String(value).slice(0, 10);
 }
 
@@ -54,15 +60,23 @@ async function createImport({
   cliente, marketplace, competencia, resumo, payload, fonte, status,
   clienteContaId = null, baseId = null, baseResolutionMode = null, grantId = null, externalAccountId = null,
   syncRunId = null,
+  // M4 — candidate/published (seção 2/5). publicationStatus default 'legacy':
+  // só quem produz o import via sync_run decide 'candidate' explicitamente
+  // (centralVendasSyncService) — nunca escolhido por adivinhação aqui.
+  publicationStatus = "legacy",
+  coverageDateFrom = null,
+  coverageDateTo = null,
 }, db) {
   const result = await db.query(
     `INSERT INTO central_vendas_imports
       (cliente_id, cliente_slug, marketplace, competencia, fonte, status, confianca, resumo_json, payload_json,
-       cliente_conta_id, base_id, base_resolution_mode, grant_id, external_account_id, sync_run_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,$15)
+       cliente_conta_id, base_id, base_resolution_mode, grant_id, external_account_id, sync_run_id,
+       publication_status, coverage_date_from, coverage_date_to)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18)
      RETURNING id, cliente_id, cliente_slug, marketplace, competencia, fonte, status, confianca,
                resumo_json, payload_json, created_at, updated_at,
-               cliente_conta_id, base_id, base_resolution_mode, grant_id, external_account_id, sync_run_id`,
+               cliente_conta_id, base_id, base_resolution_mode, grant_id, external_account_id, sync_run_id,
+               publication_status, coverage_date_from, coverage_date_to, published_at`,
     [
       cliente.id,
       cliente.slug,
@@ -79,6 +93,9 @@ async function createImport({
       grantId,
       externalAccountId,
       syncRunId,
+      publicationStatus,
+      asDate(coverageDateFrom),
+      asDate(coverageDateTo),
     ]
   );
   return result.rows[0];
@@ -193,6 +210,9 @@ async function persistCentralVendasImport({
   cliente, marketplace, competencia, motorPayload, resumo, fonte,
   clienteContaId = null, baseId = null, baseResolutionMode = null, grantId = null, externalAccountId = null,
   syncRunId = null,
+  publicationStatus = "legacy",
+  coverageDateFrom = null,
+  coverageDateTo = null,
 }) {
   return withTransaction(async (db) => {
     const importacao = await createImport({
@@ -208,6 +228,9 @@ async function persistCentralVendasImport({
       grantId,
       externalAccountId,
       syncRunId,
+      publicationStatus,
+      coverageDateFrom,
+      coverageDateTo,
     }, db);
 
     const pedidoRowsById = new Map();
@@ -269,26 +292,81 @@ function condicaoContaSql(paramsList, clienteContaId, includeLegacy) {
     : `cliente_conta_id = $${idx}`;
 }
 
+// M4 — Candidate/Published (seções 5-7): nunca escolhe um import 'candidate'
+// aqui — só 'published' (com cobertura comprovada) ou 'legacy' (fallback sem
+// garantia de cobertura, mesma regra de sempre). `segmentStart`/`segmentEnd`
+// é o trecho REAL que o chamador precisa cobrir: a competência inteira na
+// leitura mensal legada, ou a interseção do intervalo pedido com o mês em
+// getCentralVendasByRange. Um published só serve se sua cobertura CONTÉM
+// esse trecho inteiro — nunca um snapshot 10→15 respondendo uma pergunta
+// 01→31 (seção 5). Entre published válidos, o mais recentemente publicado
+// vence (published_at DESC, id DESC — seção 6); sem published qualificado,
+// cai no legacy mais recente (created_at DESC, id DESC — comportamento
+// pré-M4 preservado para dado antigo).
+function coberturaContemSegmento(row, segmentStart, segmentEnd) {
+  const coverageFrom = asDate(row.coverage_date_from);
+  const coverageTo = asDate(row.coverage_date_to);
+  if (!coverageFrom || !coverageTo) return false;
+  return coverageFrom <= segmentStart && coverageTo >= segmentEnd;
+}
+
+function selecionarMelhorImportPorCompetencia(rows, { segmentStart, segmentEnd }) {
+  const publicados = rows
+    .filter((row) => row.publication_status === "published" && coberturaContemSegmento(row, segmentStart, segmentEnd))
+    .sort((a, b) => {
+      const pubA = a.published_at ? new Date(a.published_at).getTime() : 0;
+      const pubB = b.published_at ? new Date(b.published_at).getTime() : 0;
+      if (pubB !== pubA) return pubB - pubA;
+      return Number(b.id) - Number(a.id);
+    });
+  if (publicados.length) return publicados[0];
+
+  const legados = rows
+    .filter((row) => row.publication_status === "legacy")
+    .sort((a, b) => {
+      const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      if (createdB !== createdA) return createdB - createdA;
+      return Number(b.id) - Number(a.id);
+    });
+  return legados[0] || null;
+}
+
+// Limites de calendário do mês da competência — só aritmética de data, não
+// regra de negócio (duplicar isso localmente evita acoplar o repository ao
+// centralVendasService, que já expõe periodoFromCompetencia para outros
+// usos).
+function monthBounds(competencia) {
+  const [yearText, monthText] = String(competencia).split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const lastDay = new Date(year, month, 0).getDate();
+  return { inicio: `${competencia}-01`, fim: `${competencia}-${String(lastDay).padStart(2, "0")}` };
+}
+
 async function getLatestCentralVendasImport(
   { clienteSlug, competencia, marketplace = "meli", clienteContaId = null, includeLegacy = false },
   db = pool
 ) {
   const params = [normalizeSlug(clienteSlug), competencia, marketplace];
-  const condicoes = ["cliente_slug = $1", "competencia = $2", "marketplace = $3"];
+  const condicoes = [
+    "cliente_slug = $1", "competencia = $2", "marketplace = $3",
+    "publication_status IN ('published', 'legacy')",
+  ];
   const condicaoConta = condicaoContaSql(params, clienteContaId, includeLegacy);
   if (condicaoConta) condicoes.push(condicaoConta);
 
-  const importResult = await db.query(
+  const rowsResult = await db.query(
     `SELECT id, cliente_id, cliente_slug, marketplace, competencia, fonte, status, confianca,
-            resumo_json, payload_json, created_at, updated_at, cliente_conta_id
+            resumo_json, payload_json, created_at, updated_at, cliente_conta_id,
+            publication_status, coverage_date_from, coverage_date_to, published_at
        FROM central_vendas_imports
-      WHERE ${condicoes.join(" AND ")}
-      ORDER BY created_at DESC, id DESC
-      LIMIT 1`,
+      WHERE ${condicoes.join(" AND ")}`,
     params
   );
 
-  const importacao = importResult.rows[0];
+  const { inicio, fim } = monthBounds(competencia);
+  const importacao = selecionarMelhorImportPorCompetencia(rowsResult.rows, { segmentStart: inicio, segmentEnd: fim });
   if (!importacao) return null;
 
   const [pedidosResult, itensResult, componentesResult] = await Promise.all([
@@ -336,21 +414,41 @@ async function getCentralVendasByRange(
   const compTo = String(dateTo).slice(0, 7);
 
   const params = [slug, marketplace, compFrom, compTo];
-  const condicoes = ["cliente_slug = $1", "marketplace = $2", "competencia BETWEEN $3 AND $4"];
+  const condicoes = [
+    "cliente_slug = $1", "marketplace = $2", "competencia BETWEEN $3 AND $4",
+    "publication_status IN ('published', 'legacy')",
+  ];
   const condicaoConta = condicaoContaSql(params, clienteContaId, includeLegacy);
   if (condicaoConta) condicoes.push(condicaoConta);
 
-  const importsResult = await db.query(
-    `SELECT DISTINCT ON (competencia)
-            id, competencia, fonte, status, confianca, resumo_json, payload_json, created_at, updated_at,
-            cliente_conta_id
+  const rowsResult = await db.query(
+    `SELECT id, competencia, fonte, status, confianca, resumo_json, payload_json, created_at, updated_at,
+            cliente_conta_id, publication_status, coverage_date_from, coverage_date_to, published_at
        FROM central_vendas_imports
-      WHERE ${condicoes.join(" AND ")}
-      ORDER BY competencia, created_at DESC, id DESC`,
+      WHERE ${condicoes.join(" AND ")}`,
     params
   );
 
-  const imports = importsResult.rows;
+  // M4 — um published só serve para a fatia daquela competência realmente
+  // pedida (interseção de [dateFrom, dateTo] com o mês da competência —
+  // seção 5). Reduz em JS (não em SQL) porque o trecho exigido varia por
+  // competência dentro do mesmo range multi-mês.
+  const porCompetencia = new Map();
+  for (const row of rowsResult.rows) {
+    if (!porCompetencia.has(row.competencia)) porCompetencia.set(row.competencia, []);
+    porCompetencia.get(row.competencia).push(row);
+  }
+
+  const imports = [];
+  for (const [comp, rows] of porCompetencia) {
+    const { inicio, fim } = monthBounds(comp);
+    const segmentStart = inicio > dateFrom ? inicio : dateFrom;
+    const segmentEnd = fim < dateTo ? fim : dateTo;
+    const escolhido = selecionarMelhorImportPorCompetencia(rows, { segmentStart, segmentEnd });
+    if (escolhido) imports.push(escolhido);
+  }
+  imports.sort((a, b) => String(a.competencia).localeCompare(String(b.competencia)));
+
   if (!imports.length) return null;
 
   const importIds = imports.map((row) => row.id);
@@ -396,10 +494,30 @@ async function getCentralVendasByRange(
   };
 }
 
+// M4, seção 9 — promove TODOS os candidates de um sync_run para published de
+// uma vez (um run pode ter gerado 1 import por competência tocada). Nunca
+// mexe em published_at de linhas já published (WHERE publication_status =
+// 'candidate' as exclui) — rodar duas vezes para o mesmo runId na segunda
+// vez não encontra candidate nenhum e é um no-op: idempotente por
+// construção, sem precisar de lock ou verificação extra.
+async function promoverCandidatesDoRun(syncRunId, db = pool) {
+  const result = await db.query(
+    `UPDATE central_vendas_imports
+        SET publication_status = 'published', published_at = NOW(), updated_at = NOW()
+      WHERE sync_run_id = $1 AND publication_status = 'candidate'
+      RETURNING id, competencia`,
+    [syncRunId]
+  );
+  return result.rows;
+}
+
 module.exports = {
   ensureCentralVendasTables,
   getClienteBySlug,
   persistCentralVendasImport,
   getLatestCentralVendasImport,
   getCentralVendasByRange,
+  promoverCandidatesDoRun,
+  selecionarMelhorImportPorCompetencia,
+  monthBounds,
 };

@@ -517,7 +517,15 @@ function buildResumoFromRange(resumoBase, pedidos) {
 function buildPayloadFromRange(cliente, range, snapshot) {
   const periodo = periodoFromRange(range.dateFrom, range.dateTo);
 
-  if (!snapshot || !(snapshot.pedidos || []).length) {
+  // M4, seção 8: `snapshot === null` é "nenhum import encontrado para este
+  // período" (getCentralVendasByRange devolve null quando nenhuma linha
+  // published/legacy cobre o range) — isso sim é "nunca sincronizado".
+  // `snapshot` existente com `pedidos: []` é outra coisa: um import REAL foi
+  // encontrado (ex.: Orders 0/0, run completed/candidate publicado) e
+  // simplesmente não há pedido nesse período — um resultado verificado, não
+  // a ausência de sincronização. Cai no corpo normal abaixo, que já tolera
+  // pedidos vazios (buildPedidos([]) = [], somas em 0).
+  if (!snapshot) {
     return {
       ok: true,
       fonte: "central_vendas_db",
@@ -559,9 +567,12 @@ function buildPayloadFromRange(cliente, range, snapshot) {
     ...buildResumoFromRange(jsonValue(snapshot.importacao?.resumo_json, {}), pedidos),
     ...claimsState,
     claimsVerificados: !claimsState.claimsIndisponivel,
+    // M4, seção 8: zero pedidos válidos verificados (Orders 0/0) é
+    // "confiavel", não "ausente" — "ausente" já é usado acima para "nenhum
+    // snapshot encontrado"; aqui o snapshot existe e foi consultado.
     confianca: claimsState.claimsIndisponivel || claimsState.claimsReturnsNaoResolvidos > 0 || completudeIncompleta
       ? "parcial"
-      : (temBloqueado ? "parcial" : pedidosValidos.length ? "confiavel" : "ausente"),
+      : (temBloqueado ? "parcial" : "confiavel"),
   };
   const motivosBloqueio = [];
   if (temBloqueado) motivosBloqueio.push("Ha pedidos bloqueados por custo/produto ausente.");

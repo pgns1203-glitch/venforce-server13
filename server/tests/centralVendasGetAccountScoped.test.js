@@ -71,10 +71,11 @@ function makeDb({ contas = [], imports = [], pedidos = [] }) {
       if (sql.includes("v.cliente_id = $1 AND v.marketplace = $2 AND v.ativo = true")) return { rows: [] };
 
       // ── central_vendas_imports: getLatestCentralVendasImport (por competência) ──
-      if (sql.includes("FROM central_vendas_imports") && sql.includes("competencia = $2") && !sql.includes("DISTINCT ON")) {
+      if (sql.includes("FROM central_vendas_imports") && sql.includes("competencia = $2")) {
         const [slug, competencia, marketplace] = params;
         let candidatos = imports.filter((row) =>
           row.cliente_slug === slug && row.competencia === competencia && row.marketplace === marketplace
+          && (row.publication_status === "published" || row.publication_status === "legacy")
         );
         // condição de conta é opcional, adicionada dinamicamente — simula
         // por posição: se o SQL contém "cliente_conta_id = $4" é estrito;
@@ -96,12 +97,17 @@ function makeDb({ contas = [], imports = [], pedidos = [] }) {
       if (sql.includes("FROM central_vendas_pedido_itens") && sql.includes("import_id = $1")) return { rows: [] };
       if (sql.includes("FROM central_vendas_componentes") && sql.includes("import_id = $1") && !sql.includes("ANY")) return { rows: [] };
 
-      // ── central_vendas_imports: getCentralVendasByRange (DISTINCT ON) ──
-      if (sql.includes("DISTINCT ON (competencia)") && sql.includes("FROM central_vendas_imports")) {
+      // ── central_vendas_imports: getCentralVendasByRange ──
+      // M4: o repository real agora busca TODAS as linhas candidatas e reduz
+      // em JS (selecionarMelhorImportPorCompetencia, considerando published/
+      // legacy/cobertura) — este fake só filtra (slug/marketplace/competência/
+      // conta/publication_status), sem escolher a "vencedora" por competência.
+      if (sql.includes("competencia BETWEEN $3 AND $4") && sql.includes("FROM central_vendas_imports")) {
         const [slug, marketplace, compFrom, compTo] = params;
         let candidatos = imports.filter((row) =>
           row.cliente_slug === slug && row.marketplace === marketplace &&
-          row.competencia >= compFrom && row.competencia <= compTo
+          row.competencia >= compFrom && row.competencia <= compTo &&
+          (row.publication_status === "published" || row.publication_status === "legacy")
         );
         if (params.length >= 5) {
           const clienteContaId = params[4];
@@ -111,14 +117,7 @@ function makeDb({ contas = [], imports = [], pedidos = [] }) {
             candidatos = candidatos.filter((r) => r.cliente_conta_id === clienteContaId);
           }
         }
-        const porCompetencia = new Map();
-        for (const row of candidatos) {
-          const atual = porCompetencia.get(row.competencia);
-          if (!atual || row.created_at > atual.created_at || (row.created_at === atual.created_at && row.id > atual.id)) {
-            porCompetencia.set(row.competencia, row);
-          }
-        }
-        return { rows: [...porCompetencia.values()] };
+        return { rows: candidatos };
       }
       if (sql.includes("FROM central_vendas_pedidos") && sql.includes("import_id = ANY")) {
         const [importIds, dateFrom, dateTo] = params;
@@ -140,8 +139,8 @@ async function run() {
       { id: 11, cliente_id: 1, marketplace: "meli", nome: "ML 2", slug: "a2", external_account_id: "222", is_primary: false, ativo: true },
     ];
     const imports = [
-      { id: 100, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-08", cliente_conta_id: 10, fonte: "orders_api", status: "processado", confianca: "confiavel", resumo_json: {}, payload_json: {}, created_at: "2026-08-19T10:00:00.000Z" },
-      { id: 101, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-08", cliente_conta_id: 11, fonte: "orders_api", status: "processado", confianca: "confiavel", resumo_json: {}, payload_json: {}, created_at: "2026-08-19T11:00:00.000Z" },
+      { id: 100, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-08", cliente_conta_id: 10, fonte: "orders_api", status: "processado", confianca: "confiavel", publication_status: "legacy", resumo_json: {}, payload_json: {}, created_at: "2026-08-19T10:00:00.000Z" },
+      { id: 101, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-08", cliente_conta_id: 11, fonte: "orders_api", status: "processado", confianca: "confiavel", publication_status: "legacy", resumo_json: {}, payload_json: {}, created_at: "2026-08-19T11:00:00.000Z" },
     ];
     const pedidos = [
       { id: 1, import_id: 100, pedido_id: "P_CONTA10", data_pedido: "2026-08-05", status: "paid", confianca: "confiavel", pendencias_json: [], payload_json: {} },
@@ -172,10 +171,10 @@ async function run() {
       { id: 11, cliente_id: 1, marketplace: "meli", nome: "ML 2", slug: "a2", external_account_id: "222", is_primary: false, ativo: true },
     ];
     const imports = [
-      { id: 200, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-07", cliente_conta_id: 10, fonte: "orders_api", status: "processado", confianca: "confiavel", resumo_json: {}, payload_json: {}, created_at: "2026-07-31T10:00:00.000Z" },
-      { id: 201, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-07", cliente_conta_id: 11, fonte: "orders_api", status: "processado", confianca: "confiavel", resumo_json: {}, payload_json: {}, created_at: "2026-07-31T11:00:00.000Z" },
-      { id: 202, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-08", cliente_conta_id: 10, fonte: "orders_api", status: "processado", confianca: "confiavel", resumo_json: {}, payload_json: {}, created_at: "2026-08-10T10:00:00.000Z" },
-      { id: 203, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-08", cliente_conta_id: 11, fonte: "orders_api", status: "processado", confianca: "confiavel", resumo_json: {}, payload_json: {}, created_at: "2026-08-10T11:00:00.000Z" },
+      { id: 200, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-07", cliente_conta_id: 10, fonte: "orders_api", status: "processado", confianca: "confiavel", publication_status: "legacy", resumo_json: {}, payload_json: {}, created_at: "2026-07-31T10:00:00.000Z" },
+      { id: 201, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-07", cliente_conta_id: 11, fonte: "orders_api", status: "processado", confianca: "confiavel", publication_status: "legacy", resumo_json: {}, payload_json: {}, created_at: "2026-07-31T11:00:00.000Z" },
+      { id: 202, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-08", cliente_conta_id: 10, fonte: "orders_api", status: "processado", confianca: "confiavel", publication_status: "legacy", resumo_json: {}, payload_json: {}, created_at: "2026-08-10T10:00:00.000Z" },
+      { id: 203, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-08", cliente_conta_id: 11, fonte: "orders_api", status: "processado", confianca: "confiavel", publication_status: "legacy", resumo_json: {}, payload_json: {}, created_at: "2026-08-10T11:00:00.000Z" },
     ];
     const pedidos = [
       { id: 1, import_id: 200, pedido_id: "JUL_CONTA10", data_pedido: "2026-07-15", status: "paid", confianca: "confiavel", pendencias_json: [], payload_json: {} },
@@ -200,7 +199,7 @@ async function run() {
       { id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", slug: "a1", external_account_id: "111", is_primary: true, ativo: true },
     ];
     const imports = [
-      { id: 300, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-06", cliente_conta_id: null, fonte: "orders_api", status: "processado", confianca: "confiavel", resumo_json: {}, payload_json: {}, created_at: "2026-06-30T10:00:00.000Z" },
+      { id: 300, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-06", cliente_conta_id: null, fonte: "orders_api", status: "processado", confianca: "confiavel", publication_status: "legacy", resumo_json: {}, payload_json: {}, created_at: "2026-06-30T10:00:00.000Z" },
     ];
     const pedidos = [
       { id: 1, import_id: 300, pedido_id: "LEGADO", data_pedido: "2026-06-15", status: "paid", confianca: "confiavel", pendencias_json: [], payload_json: {} },
@@ -221,7 +220,7 @@ async function run() {
       { id: 11, cliente_id: 1, marketplace: "meli", nome: "ML 2", slug: "a2", external_account_id: "222", is_primary: false, ativo: true },
     ];
     const imports = [
-      { id: 400, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-05", cliente_conta_id: null, fonte: "orders_api", status: "processado", confianca: "confiavel", resumo_json: {}, payload_json: {}, created_at: "2026-05-31T10:00:00.000Z" },
+      { id: 400, cliente_slug: "cliente-a", marketplace: "meli", competencia: "2026-05", cliente_conta_id: null, fonte: "orders_api", status: "processado", confianca: "confiavel", publication_status: "legacy", resumo_json: {}, payload_json: {}, created_at: "2026-05-31T10:00:00.000Z" },
     ];
     const pedidos = [
       { id: 1, import_id: 400, pedido_id: "LEGADO_AMBIGUO", data_pedido: "2026-05-15", status: "paid", confianca: "confiavel", pendencias_json: [], payload_json: {} },

@@ -137,7 +137,7 @@ const COMPONENTES = [
 cenario("carregarVendasDoPeriodo delega para a projeção canônica da Central de Vendas", async () => {
   const db = fakeDb({
     "FROM central_vendas_imports": [
-      { id: 100, competencia: "2026-08", fonte: "orders_api", created_at: "2026-08-10T12:00:00Z" },
+      { id: 100, competencia: "2026-08", fonte: "orders_api", created_at: "2026-08-10T12:00:00Z", publication_status: "legacy" },
     ],
     "FROM central_vendas_pedidos": PEDIDOS,
     "FROM central_vendas_pedido_itens": ITENS,
@@ -160,8 +160,10 @@ cenario("carregarVendasDoPeriodo delega para a projeção canônica da Central d
   assert.strictEqual(vendas.itens.length, ITENS.length);
   assert.strictEqual(vendas.componentes.length, COMPONENTES.length);
   assert.ok(vendas.importSnapshotAt, "timestamp do snapshot disponível como fallback");
-  // Nenhuma consulta própria: é a MESMA leitura de sempre ("último import por competência").
-  assert.ok(db.chamadas[0].sql.includes("DISTINCT ON (competencia)"));
+  // Nenhuma consulta própria: é a MESMA leitura de sempre (M4: published/legacy
+  // mais recente por competência — nunca "qualquer import", nunca candidate).
+  assert.ok(db.chamadas[0].sql.includes("FROM central_vendas_imports"));
+  assert.ok(db.chamadas[0].sql.includes("publication_status IN ('published', 'legacy')"));
 });
 
 cenario("sem import no período → realizado inexistente, não zerado", async () => {

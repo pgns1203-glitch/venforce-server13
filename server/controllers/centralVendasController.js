@@ -32,10 +32,13 @@ function tratarErro(res, err, contexto) {
       ? Number(err.statusCode)
       : 500;
   if (statusCode >= 500) console.error(`[centralVendas] ${contexto}:`, err?.message);
-  return responder(res, statusCode, {
-    ok: false,
-    erro: err?.message || "Erro interno.",
-  });
+  const payload = { ok: false, erro: err?.message || "Erro interno." };
+  // Ambiguidade de conta (409 MULTIPLE_MARKETPLACE_ACCOUNTS) precisa do
+  // código + lista de contas para uma UI futura oferecer o seletor —
+  // maskSensitiveData já garante que nenhum token vaze aqui.
+  if (err?.code) payload.code = err.code;
+  if (Array.isArray(err?.contas)) payload.contas = err.contas;
+  return responder(res, statusCode, payload);
 }
 
 function slugParam(req) {
@@ -73,6 +76,7 @@ async function obterCentralVendas(req, res) {
       dateFrom: req.query.dateFrom,
       dateTo: req.query.dateTo,
       marketplace: req.query.marketplace || "meli",
+      clienteContaId: req.query.clienteContaId || null,
     });
     return responder(res, 200, data);
   } catch (err) {
@@ -114,6 +118,7 @@ async function sincronizarVendas(req, res) {
 
     const data = await centralVendasSyncService.sincronizarVendasMeli({
       clienteSlug: slug,
+      clienteContaId: req.body?.clienteContaId || req.query?.clienteContaId || null,
       dateFrom: req.body?.dateFrom || req.query?.dateFrom,
       dateTo: req.body?.dateTo || req.query?.dateTo,
       competencia: req.body?.competencia || req.query?.competencia, // legado

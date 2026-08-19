@@ -717,14 +717,20 @@ function testeSchemaSkuId() {
   ok("boot cria uq_custos_base_produto_sku_legado", /uq_custos_base_produto_sku_legado/.test(servicoSrc));
 
   // Importação: ON CONFLICT correto por marketplace (índices parciais).
-  const indexSrc = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+  // A escrita de custos da importação foi extraída para
+  // baseImportService.js (correção pós-auditoria de "Importar nova base");
+  // o contrato de identidade por marketplace continua o mesmo.
+  const baseImportSrc = fs.readFileSync(
+    path.join(__dirname, "..", "services", "bases", "baseImportService.js"),
+    "utf8"
+  );
   ok(
     "import TikTok resolve conflito por (base_id, sku_id)",
-    /ON CONFLICT \(base_id, sku_id\) WHERE sku_id <> ''/.test(indexSrc)
+    /ON CONFLICT \(base_id, sku_id\) WHERE sku_id <> ''/.test(baseImportSrc)
   );
   ok(
     "import MELI/Shopee mantém o conflito histórico",
-    /ON CONFLICT \(base_id, produto_id, sku\) WHERE sku_id = ''/.test(indexSrc)
+    /ON CONFLICT \(base_id, produto_id, sku\) WHERE sku_id = ''/.test(baseImportSrc)
   );
 }
 

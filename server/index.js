@@ -102,6 +102,8 @@ const {
   erroSkuIdDuplicadoTikTok,
   ensureColunasCustos,
 } = require("./services/bases/baseCustosService");
+const baseImportService = require("./services/bases/baseImportService");
+const baseDependenciesService = require("./services/bases/baseDependenciesService");
 
 const app = express();
 const PORT = process.env.PORT || 3333;
@@ -1031,78 +1033,58 @@ app.post("/importar-base", authMiddleware, upload.single("arquivo"), async (req,
       return res.status(400).json({ ok: false, erro: "Nenhuma linha com custo preenchido para importar." });
     }
 
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      const baseResult = await client.query(
-        `INSERT INTO bases (slug, nome, marketplace) VALUES ($1, $2, $3) ON CONFLICT (slug) DO UPDATE SET nome = EXCLUDED.nome, marketplace = EXCLUDED.marketplace, ativo = true, updated_at = CURRENT_TIMESTAMP RETURNING id`,
-        [slug, nomeBaseOriginal, marketplace]
-      );
-      const baseId = baseResult.rows[0].id;
-      // vincular base a TODOS usuários
-const users = await client.query(`SELECT id FROM users`);
+    // "Importar nova base" é sempre CRIAR — nunca substitui uma base
+    // existente. Slug colidindo é 409 (BASE_SLUG_ALREADY_EXISTS): nenhum
+    // UPDATE, nenhum DELETE, nenhum custo antigo é tocado. Base + custos +
+    // vínculo (quando cliente/conta são informados) são atômicos: se o
+    // vínculo falhar (ex.: ML com 2+ contas sem escolha explícita), a base e
+    // os custos também não ficam gravados — ver server/services/bases/baseImportService.js.
+    const clienteContaId = req.body.cliente_conta_id != null && String(req.body.cliente_conta_id).trim() !== ""
+      ? req.body.cliente_conta_id
+      : null;
+    const clienteId = req.body.cliente_id != null && String(req.body.cliente_id).trim() !== ""
+      ? req.body.cliente_id
+      : null;
 
-for (const u of users.rows) {
-  await client.query(
-    `INSERT INTO user_bases (user_id, base_id)
-     VALUES ($1, $2)
-     ON CONFLICT DO NOTHING`,
-    [u.id, baseId]
-  );
-}
-      await client.query("DELETE FROM custos WHERE base_id = $1", [baseId]);
-      // TikTok: identidade única é (base_id, sku_id) — o mesmo produto_id
-      // aparece em várias linhas, uma por variação. MELI/Shopee não preenchem
-      // sku_id (fica ''), então o conflito deles continua batendo por
-      // (base_id, produto_id, sku) — com sku sempre '', igual a antes.
-      // Os dois índices são PARCIAIS (ver 20260810_add_sku_id_tiktok.sql), por
-      // isso o ON CONFLICT precisa repetir o predicado para inferi-los.
-      const SQL_INSERT_CUSTO_TIKTOK = `
-        INSERT INTO custos (base_id, produto_id, sku_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
-        ON CONFLICT (base_id, sku_id) WHERE sku_id <> '' DO UPDATE SET
-          produto_id = COALESCE(NULLIF(EXCLUDED.produto_id, ''), custos.produto_id),
-          custo_produto = EXCLUDED.custo_produto, imposto_percentual = EXCLUDED.imposto_percentual,
-          taxa_fixa = EXCLUDED.taxa_fixa, id_model = EXCLUDED.id_model,
-          produto_nome = COALESCE(EXCLUDED.produto_nome, custos.produto_nome),
-          variacao_nome = COALESCE(EXCLUDED.variacao_nome, custos.variacao_nome),
-          updated_at = CURRENT_TIMESTAMP`;
-      const SQL_INSERT_CUSTO_LEGADO = `
-        INSERT INTO custos (base_id, produto_id, sku_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
-        ON CONFLICT (base_id, produto_id, sku) WHERE sku_id = '' DO UPDATE SET
-          custo_produto = EXCLUDED.custo_produto, imposto_percentual = EXCLUDED.imposto_percentual,
-          taxa_fixa = EXCLUDED.taxa_fixa, id_model = EXCLUDED.id_model,
-          produto_nome = COALESCE(EXCLUDED.produto_nome, custos.produto_nome),
-          variacao_nome = COALESCE(EXCLUDED.variacao_nome, custos.variacao_nome),
-          updated_at = CURRENT_TIMESTAMP`;
-      for (const linha of linhasPersistiveis) {
-        const skuIdLinha = linha.sku_id || "";
-        await client.query(
-          skuIdLinha ? SQL_INSERT_CUSTO_TIKTOK : SQL_INSERT_CUSTO_LEGADO,
-          [baseId, linha.produto_id || "", skuIdLinha, linha.custo_produto, linha.imposto_percentual, linha.taxa_fixa, linha.id_model || null, linha.produto_nome || null, linha.variacao_nome || null, linha.sku || ""]
-        );
-      }
-      await client.query("COMMIT");
-      registrarLog({
-        ...dadosUsuarioDeReq(req),
-        acao: "base.importar",
-        detalhes: { base_slug: slug, nome_base: nomeBaseOriginal, marketplace, total_itens: linhasPersistiveis.length },
-        ip: extrairIp(req),
-        status: "sucesso"
-      });
-      res.json({ ok: true, mensagem: "Base criada e planilha importada com sucesso", base: slug, total: linhasPersistiveis.length });
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
-    }
+    const resultado = await baseImportService.criarBaseComCustos({
+      slug,
+      nomeBase: nomeBaseOriginal,
+      marketplace,
+      linhasPersistiveis,
+      clienteId,
+      clienteContaId,
+      userId: req.user?.id,
+    });
+
+    registrarLog({
+      ...dadosUsuarioDeReq(req),
+      acao: "base.importar",
+      detalhes: {
+        base_slug: slug,
+        nome_base: nomeBaseOriginal,
+        marketplace,
+        total_itens: resultado.total,
+        vinculado: !!resultado.vinculo,
+      },
+      ip: extrairIp(req),
+      status: "sucesso"
+    });
+    res.json({
+      ok: true,
+      mensagem: "Base criada e planilha importada com sucesso",
+      base: slug,
+      total: resultado.total,
+      vinculo: resultado.vinculo,
+    });
   } catch (err) {
     // Erros de validação de planilha (ex.: ID TikTok em notação científica)
-    // chegam com statusCode 400 — não são falha interna.
+    // e os erros estruturados do service de importação (409/422 com code)
+    // chegam com statusCode — não são falha interna.
     const status = err.statusCode || 500;
-    res.status(status).json(err.payload || { ok: false, erro: err.message });
+    const payload = err.payload || { ok: false, erro: err.message };
+    if (!err.payload && err.code) payload.code = err.code;
+    if (!err.payload && err.contas) payload.contas = err.contas;
+    res.status(status).json(payload);
   }
 });
 
@@ -1129,41 +1111,54 @@ app.post("/bases/:baseId/desabilitar", authMiddleware, async (req, res) => {
   }
 });
 
-// EXCLUIR BASE
-app.delete("/bases/:baseId", authMiddleware, async (req, res) => {
+// EXCLUIR BASE (hard delete) — estrutura/identidade/destruição alinhada à
+// política da Fundação Cliente/Contas: admin-only, com preflight de
+// dependências. A ação operacional comum passou a ser "Desabilitar base"
+// (POST /bases/:baseId/desabilitar, acima), que preserva custos/histórico.
+// Este endpoint continua existindo só para compatibilidade/admin (achado P0
+// da auditoria: qualquer usuário com user_bases podia apagar e o CASCADE
+// removia vínculo ativo em silêncio; seller_custos_submissoes sem ON DELETE
+// virava 500 cru).
+app.delete("/bases/:baseId", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const param = req.params.baseId;
 
-    let baseId;
+    const result = await pool.query(
+      `SELECT id FROM bases WHERE id = $1 OR slug = $2`,
+      [parseInt(param) || 0, normalizarSlug(param)]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ ok: false, erro: "Base não encontrada" });
+    }
+    const baseId = result.rows[0].id;
 
-    if (req.user.role === "admin") {
-      const result = await pool.query(
-        `SELECT id FROM bases WHERE id = $1 OR slug = $2`,
-        [parseInt(param) || 0, normalizarSlug(param)]
-      );
-
-      if (!result.rows.length) {
-        return res.status(404).json({ ok: false, erro: "Base não encontrada" });
-      }
-
-      baseId = result.rows[0].id;
-
-    } else {
-      const acesso = await pool.query(
-        `SELECT b.id FROM bases b
-         JOIN user_bases ub ON ub.base_id = b.id
-         WHERE (b.id = $1 OR b.slug = $2) AND ub.user_id = $3`,
-        [parseInt(param) || 0, normalizarSlug(param), req.user.id]
-      );
-
-      if (!acesso.rows.length) {
-        return res.status(404).json({ ok: false, erro: "Base não encontrada" });
-      }
-
-      baseId = acesso.rows[0].id;
+    const dependencias = await baseDependenciesService.checarDependenciasBase(baseId);
+    if (dependencias.bloqueado) {
+      return res.status(409).json({
+        ok: false,
+        code: "BASE_HAS_DEPENDENCIES",
+        erro: "Esta base tem dependências ativas e não pode ser excluída. Desative o vínculo (ou as dependências listadas) antes de tentar novamente.",
+        dependencies: dependencias.dependencias,
+      });
     }
 
-    await pool.query("DELETE FROM bases WHERE id = $1", [baseId]);
+    try {
+      await pool.query("DELETE FROM bases WHERE id = $1", [baseId]);
+    } catch (err) {
+      // Rede de segurança: qualquer FK não coberta pelo preflight vira 409
+      // estruturado em vez de 500 cru (ex.: nova dependência futura sem
+      // ON DELETE declarado).
+      if (err.code === "23503") {
+        return res.status(409).json({
+          ok: false,
+          code: "BASE_HAS_DEPENDENCIES",
+          erro: "Esta base ainda possui dependências que impedem a exclusão.",
+          dependencies: dependencias.dependencias,
+        });
+      }
+      throw err;
+    }
+
     registrarLog({
       ...dadosUsuarioDeReq(req),
       acao: "base.excluir",

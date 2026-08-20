@@ -1,17 +1,21 @@
-# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte, M4: Candidate/Published, M5: Motor por Item)
+# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte, M4: Candidate/Published, M5: Motor por Item, M6: Ledger Auditável)
 
 > Este documento cobre **o que foi implementado**: M1 (Central Account-Aware),
 > M2 (Sync Run persistido), o **Hardening M1/M2** (seção 9), **M3 —
 > Completude por Fonte** (seção 10), o **Hardening M3** (seção 11) que
 > corrigiu 4 lacunas de integridade na prova de completude, **M4 —
 > Candidate/Published** (seção 12), que separa "dado produzido por uma
-> sincronização" de "dado oficial que a Central pode exibir", e **M5 —
+> sincronização" de "dado oficial que a Central pode exibir", **M5 —
 > Motor Financeiro Canônico por Item** (seção 13), que **auditou e provou por
 > teste** que o motor por item já implementado desde antes do M1 satisfaz os
-> invariantes exigidos — sem reescrever a matemática financeira.
-> M6–M10 (ledger, API de leitura paginada, frontend account-aware, remoção do
+> invariantes exigidos — sem reescrever a matemática financeira, e **M6 —
+> Ledger Financeiro Auditável** (seção 14), que classifica cada componente já
+> persistido em `central_vendas_componentes` (escopo/efeito/incluído no
+> resultado) e prova, por teste, que essa soma reconcilia com o resultado do
+> item — sem criar uma tabela paralela nem um segundo motor de cálculo.
+> M7–M10 (API de leitura paginada, frontend account-aware, remoção do
 > recálculo no frontend, performance/bulk) **não foram implementados** — ver
-> seção 13.7 "O que continua fora do escopo".
+> seção 14.9 "O que continua fora do escopo".
 >
 > Referência do estado anterior: `TELA_CENTRAL_VENDAS_V2.md` (auditoria de
 > 2026-08-19) e `docs/AUDITORIA_BASES_POS_CLIENTE_CONTAS.md` (mesmo dia,
@@ -1448,3 +1452,216 @@ nunca responde por um range maior; cobertura total responde por um range
 menor; duas contas nunca se misturam; zero orders vira snapshot published
 válido; candidate nunca aparece no GET oficial; sem published cai no
 fallback legacy; `publicarRun()` chamado duas vezes é idempotente.
+
+## 14. M6 — Ledger Financeiro Auditável
+
+### 14.1 Decisão: evoluir `central_vendas_componentes`, não criar tabela nova
+
+M6 pedia para auditar antes de criar. Confirmado: `central_vendas_componentes`
+já era, desde antes do M1, a evidência item-a-item do resultado (`import_id`,
+`pedido_row_id`, `item_row_id`, `tipo`, `valor`, `fonte`, `confianca`, `obs`,
+`payload_json`), com `persistCentralVendasImport()` já gravando import →
+pedidos → itens → componentes numa transação. **Não existe uma segunda
+estrutura.** M6 é aditivo: três colunas novas na mesma tabela
+(`escopo`, `efeito`, `incluido_no_resultado`) e um módulo de classificação
+puro (`server/services/centralVendas/centralVendasComponenteLedger.js`).
+Nenhuma tabela `central_vendas_ledger` foi criada.
+
+### 14.2 O que já existia vs. o gap real
+
+```text
+import/snapshot          já existia (central_vendas_imports)
+pedido                    já existia (central_vendas_pedidos)
+item                      já existia (central_vendas_pedido_itens)
+tipo/valor/fonte/confianca/obs   já existiam (central_vendas_componentes)
+escopo                     NÃO existia — GAP
+efeito                     NÃO existia — GAP
+incluido_no_resultado      NÃO existia — GAP
+evidência (payload_json)   já existia, já sem token/credencial (buildComponent
+                            só copia campos nomeados, nunca `...order`)
+imutabilidade               já existia por construção (insertComponente só
+                            faz INSERT, nunca UPDATE de linha existente;
+                            promoverCandidatesDoRun só toca
+                            central_vendas_imports)
+```
+
+O único gap real era a ausência de metadado explícito de
+escopo/efeito/inclusão no resultado — a informação já existia
+*implicitamente* (tipo + presença de `item_id` + comentários no código), mas
+não como campo consultável.
+
+### 14.3 Contrato final do componente
+
+```text
+escopo                  "item" | "pedido"      — deriva de item_id (fato já
+                         persistido: item_id != null ⇒ "item"), nunca de tipo
+efeito                  "credito" | "debito"   — natureza conceitual do tipo,
+                         fixa e IGUAL nas duas origens (API-first e planilha)
+incluido_no_resultado   true | false | null    — se este componente entra na
+                         fórmula do Resultado Parcial; null só para um tipo
+                         desconhecido (nunca inventado)
+```
+
+Classificação (`centralVendasComponenteLedger.classificarComponenteFinanceiro`):
+
+| tipo | efeito | incluido_no_resultado |
+| --- | --- | --- |
+| `receita_produto` | credito | true |
+| `tarifa_venda` | debito | true |
+| `custo_produto` | debito | true |
+| `imposto_interno` | debito | true |
+| `frete_seller` | debito | true |
+| `receita_envio` | credito | false |
+| `cancelamento_reembolso` | debito | false |
+
+`escopo` nunca aparece nessa tabela porque **não é função de tipo** — é
+função de `item_id`. Achado do M6: os dois motores até divergem aqui para
+`cancelamento_reembolso` (pedido na API-first — `itemId: null`, deduzido de
+`payments[].transaction_amount_refunded` — mas item na planilha — `itemId`
+setado, rateado por linha via `allocateByRevenue`). Como escopo deriva de um
+fato já persistido, essa divergência é capturada corretamente sem nenhum
+caso especial por origem.
+
+### 14.4 Como `resultado_item` bate com o ledger
+
+Auditoria empírica (não leitura de comentário) rodando os dois motores reais:
+
+```text
+soma(componentes do item onde incluido_no_resultado=true)
+===
+resultado_item
+```
+
+confirmado para:
+
+- **Motor API-first** (`buildMotorFromOrders`): sempre exato, sem exceção —
+  a fórmula do item (M5) não tem nenhum termo que não seja um dos 5
+  componentes persistidos.
+- **Motor de planilha** (`processMeliForCentralVendas`), pedido bem-formado
+  (sem `ajuste_plataforma_presente`, sem `descontos_e_bonus`): também exato
+  — reproduzido com números reais em teste, inclusive multi-item com
+  arredondamento (`allocateByRevenue` já usa "último item absorve o resto",
+  mesmo padrão de `allocateFrete`).
+
+**GAP real encontrado e documentado, não corrigido:** quando um pedido da
+planilha carrega a pendência pré-existente `ajuste_plataforma_presente` (o
+`total` líquido reportado não bate com
+`receita + tarifa + tarifaEnvio + descontos` — divergência que já existia
+antes do M6), a soma dos 5 componentes **diverge de `resultado_item`
+exatamente pelo valor do ajuste**, porque esse ajuste não é persistido como
+seu próprio componente. Reproduzido em teste
+(`server/tests/centralVendasComponenteLedger.test.js`, bloco "GAP
+documentado"): total=80 mas `receita(100) - tarifa(10) - frete(5) -
+custo(20) - imposto(5) = 60` enquanto `resultado_item = 55` — diferença de 5,
+exatamente o ajuste de plataforma. Corrigir isso exigiria persistir um novo
+tipo de componente (`ajuste_plataforma`, por exemplo) ou mudar a fórmula do
+motor de planilha — **decisão de regra financeira fora do escopo do M6**,
+não tomada aqui. O sinal de alerta (`ajuste_plataforma_presente`) já existia
+antes do M6 e continua disponível para quem consumir o ledger.
+
+### 14.5 Componentes informativos (fora do resultado)
+
+`receita_envio` (receiver.cost, receita de frete paga pelo comprador) e
+`cancelamento_reembolso` (reembolso efetivado) continuam **fora** do
+Resultado Parcial nas duas origens — `incluido_no_resultado=false`, sem
+nenhuma mudança na regra financeira. `receita_envio` só existe no motor
+API-first (a planilha não tem esse dado); `cancelamento_reembolso` existe
+nos dois, com escopo divergente (seção 14.3).
+
+### 14.6 Imutabilidade
+
+`insertComponente` só faz `INSERT` — nunca há um caminho de `UPDATE` sobre
+uma linha de `central_vendas_componentes` já existente em todo o código
+(`grep` confirma: o único `UPDATE` que toca `central_vendas_imports` é
+`promoverCandidatesDoRun`, e ele nunca referencia a tabela de componentes).
+Uma nova sincronização produz um novo `import_id` com suas próprias linhas;
+snapshots antigos nunca são reescritos.
+
+O backfill do M6 (`server/sql/central_vendas_schema.sql`) é a única exceção
+— um `UPDATE` que roda uma vez por linha legada (`WHERE escopo IS NULL`),
+preenchendo só as 3 colunas novas (nunca `valor`/`tipo`/`fonte`/`confianca`).
+Depois da primeira classificação, a mesma linha nunca é tocada de novo.
+
+Provado por teste (`centralVendasLedgerPersistencia.test.js`, Caso F):
+persistir snapshot A, depois snapshot B, e comparar byte-a-byte os
+componentes de A antes e depois — idênticos.
+
+### 14.7 Candidate/Published não altera o ledger
+
+`promoverCandidatesDoRun` (M4) só executa
+`UPDATE central_vendas_imports SET publication_status = 'published', ...` —
+nunca toca `central_vendas_componentes`, `central_vendas_pedidos` ou
+`central_vendas_pedido_itens`. Provado por teste (Caso G): comparação
+byte-a-byte dos componentes antes/depois de publicar confirma nenhuma
+alteração.
+
+### 14.8 Account-awareness e segurança
+
+Nenhuma leitura nova foi criada no M6 — os componentes continuam só
+alcançáveis através de `getCentralVendasByRange`/`getLatestCentralVendasImport`
+(M1), que já escopam por `cliente_conta_id` antes de resolver quais
+`import_id`/`pedido_row_id` existem. Provado por teste (Caso H): snapshot da
+conta 10 nunca contém um componente cujo `import_id` pertença à conta 20.
+
+Segurança (Caso J): `buildComponent`/`buildCentralComponent` (os dois
+motores) só copiam campos nomeados (`pedidoId`, `itemId`, `tipo`, `valor`,
+`fonte`, `confianca`, `obs`) — nunca `...order` ou qualquer objeto bruto do
+ML. Testado explicitamente: nenhum `payload_json` persistido contém
+`access_token`/`refresh_token`/`authorization`/`cookie`/`segredo`/
+`credencial`/`senha`/`password`, e as chaves de todo `payload_json` de
+componente pertencem só ao conjunto permitido.
+
+### 14.9 O que continua fora do escopo
+
+Nenhuma API nova foi criada — `escopo`/`efeito`/`incluido_no_resultado`
+existem na persistência e são consultáveis por SQL, mas **não foram
+adicionados ao payload do GET** (`buildPedidoContrato` em
+`centralVendasService.js` não foi tocado). Isso fica para M7 (Read API),
+por instrução explícita do M6. Também não implementado neste marco: ledger
+como tipo de componente para o ajuste de plataforma da planilha (seção
+14.4), frontend account-aware (M8), remoção do recálculo no frontend (M9),
+performance/bulk (M10), Mercado Pago, Ads, custos Full, histórico temporal
+de custo, devolução parcial nova, promoções/descontos novos, nova fórmula
+de reembolso. O achado do M5 sobre `imposto_percentual > 1` vs `<= 1` não
+foi tocado.
+
+### 14.10 Arquivos alterados
+
+```text
+novo:    server/services/centralVendas/centralVendasComponenteLedger.js
+novo:    server/tests/centralVendasComponenteLedger.test.js
+novo:    server/tests/centralVendasLedgerPersistencia.test.js
+editado: server/sql/central_vendas_schema.sql            (3 colunas + backfill idempotente)
+editado: server/services/centralVendas/centralVendasRepository.js
+           (insertComponente grava escopo/efeito/incluido_no_resultado;
+            createImport/insertPedido/insertItem/insertComponente exportados
+            para teste direto sem Postgres real)
+```
+
+### 14.11 Testes
+
+```text
+centralVendasComponenteLedger.test.js       matriz de classificação (7 tipos);
+                                              Caso A (API-first, item + multi-item);
+                                              Caso B/C (receita_envio/reembolso
+                                              informativos); Caso D (escopo,
+                                              incluindo a divergência de
+                                              cancelamento_reembolso); Caso E
+                                              (ausência não vira confiança);
+                                              planilha bem-formada (reconcilia);
+                                              GAP documentado (ajuste de
+                                              plataforma não reconcilia)
+centralVendasLedgerPersistencia.test.js     Caso F (imutabilidade); Caso G
+                                              (candidate/published não altera
+                                              ledger); Caso H (account scope);
+                                              Caso J (segurança) — 36 verificações
+                                              contra createImport/insertPedido/
+                                              insertItem/insertComponente REAIS
+```
+
+Suíte completa: 100/102 arquivos `*.test.js` passam (as mesmas 2 falhas
+pré-existentes de sempre — `designStudioWorkspace.test.js` e
+`mlTokenService.test.js` linha 313 — confirmadas rodando os dois arquivos
+antes desta rodada e depois, sem nenhuma mudança na causa; nenhum arquivo de
+produção fora de `centralVendasComponenteLedger.js`/`centralVendasRepository.js`/
+`central_vendas_schema.sql` foi alterado no M6).

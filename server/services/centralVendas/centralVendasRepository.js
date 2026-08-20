@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
+const { classificarComponenteFinanceiro } = require("./centralVendasComponenteLedger");
 
 const schemaPath = path.join(__dirname, "..", "..", "sql", "central_vendas_schema.sql");
 
@@ -179,11 +180,22 @@ async function insertComponente({
   competencia,
   componente,
 }, db) {
+  // M6 — classificação explícita (escopo/efeito/incluido_no_resultado),
+  // nunca inferida só pelo sinal de `valor`. Ver
+  // centralVendasComponenteLedger.js: mesma regra nas duas origens
+  // (API-first e planilha), com um gap documentado (não corrigido aqui)
+  // quando o motor de planilha sinaliza `ajuste_plataforma_presente`.
+  const { escopo, efeito, incluidoNoResultado } = classificarComponenteFinanceiro({
+    tipo: componente.tipo,
+    itemId: componente.itemId || null,
+  });
+
   const result = await db.query(
     `INSERT INTO central_vendas_componentes
       (import_id, pedido_row_id, item_row_id, cliente_id, cliente_slug, marketplace, competencia,
-       pedido_id, item_id, tipo, valor, fonte, confianca, obs, payload_json)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
+       pedido_id, item_id, tipo, valor, fonte, confianca, obs, payload_json,
+       escopo, efeito, incluido_no_resultado)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
      RETURNING id`,
     [
       importacao.id,
@@ -201,6 +213,9 @@ async function insertComponente({
       componente.confianca,
       componente.obs || null,
       asJson(componente, {}),
+      escopo,
+      efeito,
+      incluidoNoResultado,
     ]
   );
   return result.rows[0];
@@ -520,4 +535,12 @@ module.exports = {
   promoverCandidatesDoRun,
   selecionarMelhorImportPorCompetencia,
   monthBounds,
+  // M6 — expostas para teste direto do ledger (insertComponente em
+  // particular) contra uma fake db, sem depender de withTransaction/pool
+  // real (persistCentralVendasImport não aceita db injetado — ver
+  // centralVendasM4Publication.test.js para o mesmo motivo já documentado).
+  createImport,
+  insertPedido,
+  insertItem,
+  insertComponente,
 };

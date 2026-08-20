@@ -278,3 +278,59 @@ ALTER TABLE central_vendas_imports
 
 CREATE INDEX IF NOT EXISTS idx_central_vendas_imports_publicacao
   ON central_vendas_imports (cliente_slug, marketplace, competencia, publication_status);
+
+-- ---------------------------------------------------------------------------
+-- M6 — Ledger financeiro auditável (Central de Vendas V3)
+--
+-- central_vendas_componentes já era, desde antes do M1, a evidência
+-- item-a-item do resultado. M6 auditou e confirmou que essa tabela é a
+-- estrutura canônica do ledger — não cria tabela paralela. Três colunas
+-- aditivas tornam a natureza de cada componente EXPLÍCITA (nunca inferida só
+-- pelo sinal de `valor`):
+--
+--   escopo                 'item' | 'pedido'    — deriva de item_id (fato já
+--                          persistido, nunca reinterpretado)
+--   efeito                 'credito' | 'debito'  — natureza conceitual do
+--                          tipo, fixa e igual nas duas origens (API/planilha)
+--   incluido_no_resultado  BOOLEAN — se este componente entra na fórmula do
+--                          Resultado Parcial DAQUELE motor que o produziu
+--
+-- IMPORTANTE (achado do M6, auditado empiricamente contra os dois motores —
+-- ver docs/CENTRAL_VENDAS_V3_ARQUITETURA.md seção 14 e
+-- centralVendasComponenteLedger.js): incluido_no_resultado É uma função pura
+-- de `tipo`, igual nas duas origens (API-first e planilha) — os cinco tipos
+-- do item (receita_produto/tarifa_venda/custo_produto/imposto_interno/
+-- frete_seller) somam exatamente ao resultado_item nos dois motores quando o
+-- item é calculável. Gap documentado (não corrigido aqui): no motor de
+-- planilha, um pedido com a pendência pré-existente `ajuste_plataforma_presente`
+-- tem um resíduo que nenhum componente persistido captura — a soma deixa de
+-- bater com resultado_item exatamente por esse valor. Ver o teste que
+-- reproduz isso em server/tests/centralVendasComponenteLedger.test.js.
+ALTER TABLE central_vendas_componentes ADD COLUMN IF NOT EXISTS escopo TEXT;
+ALTER TABLE central_vendas_componentes ADD COLUMN IF NOT EXISTS efeito TEXT;
+ALTER TABLE central_vendas_componentes ADD COLUMN IF NOT EXISTS incluido_no_resultado BOOLEAN;
+
+-- Backfill idempotente das linhas legadas (anteriores ao M6): só toca linhas
+-- ainda não classificadas (escopo IS NULL) — nunca reescreve valor/tipo/
+-- fonte/confianca, e não roda de novo depois da primeira classificação.
+-- Mesma regra determinística de classificarComponenteFinanceiro() — nunca
+-- duplicada com lógica diferente. Segura para dado legado: escopo e tipo já
+-- são fatos persistidos, nunca uma adivinhação nova criada aqui.
+UPDATE central_vendas_componentes c
+   SET escopo = CASE WHEN c.item_id IS NULL THEN 'pedido' ELSE 'item' END,
+       efeito = CASE c.tipo
+                  WHEN 'receita_produto' THEN 'credito'
+                  WHEN 'receita_envio' THEN 'credito'
+                  WHEN 'tarifa_venda' THEN 'debito'
+                  WHEN 'custo_produto' THEN 'debito'
+                  WHEN 'imposto_interno' THEN 'debito'
+                  WHEN 'frete_seller' THEN 'debito'
+                  WHEN 'cancelamento_reembolso' THEN 'debito'
+                  ELSE NULL
+                END,
+       incluido_no_resultado = CASE
+                  WHEN c.tipo IN ('receita_produto', 'tarifa_venda', 'custo_produto', 'imposto_interno', 'frete_seller') THEN TRUE
+                  WHEN c.tipo IN ('receita_envio', 'cancelamento_reembolso') THEN FALSE
+                  ELSE NULL
+                END
+ WHERE c.escopo IS NULL;

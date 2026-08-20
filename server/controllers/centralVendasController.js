@@ -4,6 +4,7 @@ const centralVendasImportService = require("../services/centralVendas/centralVen
 const centralVendasSyncRunService = require("../services/centralVendas/centralVendasSyncRunService");
 const centralVendasSyncWorker = require("../services/centralVendas/centralVendasSyncWorker");
 const centralVendasSyncSourceService = require("../services/centralVendas/centralVendasSyncSourceService");
+const centralVendasReadService = require("../services/centralVendas/centralVendasReadService");
 
 const CAMPOS_SENSIVEIS = new Set([
   "access_token", "refresh_token", "api_key", "apikey", "password",
@@ -102,6 +103,53 @@ async function obterCentralVendas(req, res) {
     return responder(res, 200, data);
   } catch (err) {
     return tratarErro(res, err, "obterCentralVendas");
+  }
+}
+
+// M7 — Read API canonica e paginada. Rota nova, aditiva: GET legado
+// (obterCentralVendas) continua devolvendo o payload completo do periodo,
+// inalterado. Autorizacao igual ao GET legado (leitura, nao admin-only).
+async function obterCentralVendasRead(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+
+    const data = await centralVendasReadService.getCentralVendasRead(slug, {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      marketplace: req.query.marketplace || "meli",
+      clienteContaId: req.query.clienteContaId || null,
+      page: req.query.page,
+      limit: req.query.limit,
+      sort: req.query.sort,
+      filtro: req.query.filtro,
+      status: req.query.status,
+      logistica: req.query.logistica,
+      search: req.query.search,
+    });
+    return responder(res, 200, data);
+  } catch (err) {
+    return tratarErro(res, err, "obterCentralVendasRead");
+  }
+}
+
+// M7, secao 9 — detalhe/ledger sob demanda. rowId (pedido_row_id) so
+// resolve dentro do MESMO snapshot account-scoped da Read API — nunca
+// aceita pedidoId/importId isolado (ver centralVendasReadService).
+async function obterCentralVendasReadOrderDetail(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+
+    const data = await centralVendasReadService.getCentralVendasReadOrderDetail(slug, req.params.rowId, {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      marketplace: req.query.marketplace || "meli",
+      clienteContaId: req.query.clienteContaId || null,
+    });
+    return responder(res, 200, data);
+  } catch (err) {
+    return tratarErro(res, err, "obterCentralVendasReadOrderDetail");
   }
 }
 
@@ -260,6 +308,8 @@ async function listarSyncRunsController(req, res) {
 
 module.exports = {
   obterCentralVendas,
+  obterCentralVendasRead,
+  obterCentralVendasReadOrderDetail,
   importarVendas,
   sincronizarVendas,
   criarSyncRunController,

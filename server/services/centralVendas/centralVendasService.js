@@ -225,6 +225,18 @@ function buildPedidoContrato(pedido, itens, componentes) {
   return {
     id: pedidoId,
     pedidoId,
+    // M7 — identificador não ambíguo da LINHA (pedido_row_id), nunca o
+    // pedido_id do ML: o mesmo pedido_id pode existir em mais de uma
+    // importação (pedido de borda de mês, reimportação — ver comentário
+    // acima sobre `mesmaLinha`). rowId é o que a Read API usa para
+    // detalhe/ledger sob demanda sem ambiguidade nem IDOR (seção 9/10).
+    rowId: pedidoRowId ?? null,
+    // M7, seção 10 — honestidade multi-item: a linha nunca deve ser lida
+    // como "o pedido é este 1 produto" quando há mais de um item. Os
+    // valores financeiros já são a soma dos itens (M5); estes dois campos
+    // só tornam essa contagem visível, sem mudar nenhum valor.
+    multiItem: pedidoItens.length > 1,
+    qtdItens: pedidoItens.length,
     data: toIsoDate(rowValue(pedido, "dataPedido", "data_pedido")),
     status,
     statusOriginal: pedidoPayload.statusOriginal ?? rowValue(pedido, "status", "status") ?? null,
@@ -289,6 +301,12 @@ function buildPedidoContrato(pedido, itens, componentes) {
       confianca: rowValue(component, "confianca", "confianca"),
       obs: rowValue(component, "obs", "obs") || null,
       itemId: rowValue(component, "itemId", "item_id") || null,
+      // M6 (escopo/efeito/incluido_no_resultado) já persistido desde aquele
+      // marco; M7 é só quem primeiro expõe no payload (seção 9 do M6:
+      // "fica para M7"). Nunca recalculado aqui — leitura direta da coluna.
+      escopo: rowValue(component, "escopo", "escopo") || null,
+      efeito: rowValue(component, "efeito", "efeito") || null,
+      incluidoNoResultado: rowValue(component, "incluidoNoResultado", "incluido_no_resultado") ?? null,
     })),
   };
 }
@@ -625,12 +643,23 @@ function buildContextoPayload(context) {
 }
 
 function createCentralVendasService(repository = getRepository(), db = pool) {
-  async function getCentralVendas(clienteSlug, { competencia, dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = {}) {
+  // M7 — resolução de identidade + snapshot por INTERVALO, extraída de
+  // getCentralVendas sem mudar nenhum comportamento (mesma ordem de
+  // validações, mesma query de includeLegacy, mesma chamada ao
+  // repository). Único ponto de seleção do snapshot por range: getCentralVendas
+  // (GET legado) e centralVendasReadService (M7) chamam ESTA função — nunca
+  // uma segunda implementação paralela da regra do M4.
+  async function resolveRangeContext(clienteSlug, { dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = {}) {
     const slug = normalizeSlug(clienteSlug);
     const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
 
     if (!slug) {
       const err = new Error("slug e obrigatorio.");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!isValidIsoDate(dateFrom) || !isValidIsoDate(dateTo)) {
+      const err = new Error("dateFrom e dateTo (YYYY-MM-DD) sao obrigatorios.");
       err.statusCode = 400;
       throw err;
     }
@@ -673,21 +702,65 @@ function createCentralVendasService(repository = getRepository(), db = pool) {
       includeLegacy = (totalAtivasResult.rows[0]?.total || 0) <= 1;
     }
 
+    const from = dateFrom <= dateTo ? dateFrom : dateTo;
+    const to = dateFrom <= dateTo ? dateTo : dateFrom;
+    const snapshot = await repository.getCentralVendasByRange({
+      clienteSlug: slug,
+      dateFrom: from,
+      dateTo: to,
+      marketplace: marketplaceNorm,
+      clienteContaId: contaIdResolvida,
+      includeLegacy,
+    });
+
+    return { cliente, context, snapshot, dateFrom: from, dateTo: to, marketplace: marketplaceNorm };
+  }
+
+  async function getCentralVendas(clienteSlug, { competencia, dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = {}) {
     // Novo: periodo de analise por intervalo de datas (pode cruzar meses).
     if (isValidIsoDate(dateFrom) && isValidIsoDate(dateTo)) {
-      const from = dateFrom <= dateTo ? dateFrom : dateTo;
-      const to = dateFrom <= dateTo ? dateTo : dateFrom;
-      const snapshot = await repository.getCentralVendasByRange({
-        clienteSlug: slug,
-        dateFrom: from,
-        dateTo: to,
-        marketplace: marketplaceNorm,
-        clienteContaId: contaIdResolvida,
-        includeLegacy,
-      });
+      const { cliente, context, snapshot, dateFrom: from, dateTo: to } =
+        await resolveRangeContext(clienteSlug, { dateFrom, dateTo, marketplace, clienteContaId });
       const payload = buildPayloadFromRange(cliente, { dateFrom: from, dateTo: to }, snapshot);
       payload.contexto = buildContextoPayload(context);
       return payload;
+    }
+
+    const slug = normalizeSlug(clienteSlug);
+    const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
+
+    if (!slug) {
+      const err = new Error("slug e obrigatorio.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const cliente = await repository.getClienteBySlug(slug);
+    if (!cliente) {
+      const err = new Error("Cliente nao encontrado.");
+      err.statusCode = 404;
+      throw err;
+    }
+
+    let context = null;
+    if (marketplaceNorm === "meli") {
+      context = await resolveMarketplaceAccountContext({
+        clienteId: cliente.id,
+        marketplace: marketplaceNorm,
+        clienteContaId,
+        requireUsableGrant: false,
+        queryable: db,
+      });
+    }
+
+    const contaIdResolvida = context?.conta?.id || null;
+    let includeLegacy = true;
+    if (contaIdResolvida) {
+      const totalAtivasResult = await db.query(
+        "SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true",
+        [cliente.id, marketplaceNorm]
+      );
+      includeLegacy = (totalAtivasResult.rows[0]?.total || 0) <= 1;
     }
 
     // Legado: por competencia (mes unico).
@@ -707,6 +780,7 @@ function createCentralVendasService(repository = getRepository(), db = pool) {
 
   return {
     getCentralVendas,
+    resolveRangeContext,
   };
 }
 
@@ -718,6 +792,8 @@ module.exports = {
   // fechamento por intervalo de datas sem duplicar o contrato de pedido.
   buildPayloadFromRange,
   buildPedidos,
+  buildContextoPayload,
+  periodoFromRange,
   STATUS_FORA_DO_RESULTADO,
   TIPOS_COMPONENTE,
   normalizePedidoStatus,

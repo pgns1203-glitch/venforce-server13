@@ -13,6 +13,16 @@ const upload = multer({
 
 router.get("/:slug", authMiddleware, requireAutomacoesAccess, controller.obterCentralVendas);
 
+// M7 — Read API canonica e paginada. Aditiva: nao substitui o GET legado
+// acima, que continua devolvendo o payload completo do periodo.
+router.get("/:slug/read", authMiddleware, requireAutomacoesAccess, controller.obterCentralVendasRead);
+router.get(
+  "/:slug/read/orders/:rowId",
+  authMiddleware,
+  requireAutomacoesAccess,
+  controller.obterCentralVendasReadOrderDetail
+);
+
 router.post(
   "/:slug/importar-vendas",
   authMiddleware,

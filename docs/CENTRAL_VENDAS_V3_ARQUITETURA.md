@@ -1,4 +1,4 @@
-# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte, M4: Candidate/Published, M5: Motor por Item, M6: Ledger Auditável)
+# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte, M4: Candidate/Published, M5: Motor por Item, M6: Ledger Auditável, M7: Read API paginada, M8: Frontend account-aware)
 
 > Este documento cobre **o que foi implementado**: M1 (Central Account-Aware),
 > M2 (Sync Run persistido), o **Hardening M1/M2** (seção 9), **M3 —
@@ -8,14 +8,18 @@
 > sincronização" de "dado oficial que a Central pode exibir", **M5 —
 > Motor Financeiro Canônico por Item** (seção 13), que **auditou e provou por
 > teste** que o motor por item já implementado desde antes do M1 satisfaz os
-> invariantes exigidos — sem reescrever a matemática financeira, e **M6 —
+> invariantes exigidos — sem reescrever a matemática financeira, **M6 —
 > Ledger Financeiro Auditável** (seção 14), que classifica cada componente já
 > persistido em `central_vendas_componentes` (escopo/efeito/incluído no
 > resultado) e prova, por teste, que essa soma reconcilia com o resultado do
-> item — sem criar uma tabela paralela nem um segundo motor de cálculo.
-> M7–M10 (API de leitura paginada, frontend account-aware, remoção do
+> item — sem criar uma tabela paralela nem um segundo motor de cálculo, **M7
+> — Read API canônica e paginada** (seção 15), que cria uma leitura nova,
+> aditiva e paginada sobre o mesmo snapshot/motor já existente (nenhuma
+> fórmula financeira nova, nenhuma segunda seleção de snapshot), e **M8 —
+> Frontend account-aware** (seção 16), que faz `Portal/fechamentos-api.js`
+> trabalhar explicitamente com cliente + conta + período. M9–M10 (remoção do
 > recálculo no frontend, performance/bulk) **não foram implementados** — ver
-> seção 14.9 "O que continua fora do escopo".
+> seção 16.9 "O que continua fora do escopo".
 >
 > Referência do estado anterior: `TELA_CENTRAL_VENDAS_V2.md` (auditoria de
 > 2026-08-19) e `docs/AUDITORIA_BASES_POS_CLIENTE_CONTAS.md` (mesmo dia,
@@ -1665,3 +1669,350 @@ pré-existentes de sempre — `designStudioWorkspace.test.js` e
 antes desta rodada e depois, sem nenhuma mudança na causa; nenhum arquivo de
 produção fora de `centralVendasComponenteLedger.js`/`centralVendasRepository.js`/
 `central_vendas_schema.sql` foi alterado no M6).
+
+## 15. M7 — Read API canônica e paginada
+
+### 15.1 Objetivo
+
+Antes do M7, o GET da Central (`obterCentralVendas`) sempre devolvia o
+período inteiro: todos os pedidos, itens e componentes do intervalo
+pedido chegavam ao navegador de uma vez, e `Portal/fechamentos-api.js`
+filtrava/ordenava/paginava tudo em memória (`applyFilters`, `sortPedidos`,
+paginação local de 100 em 100). Isso não escala para períodos grandes.
+
+M7 cria uma leitura nova — `GET /operacao/central-vendas/:slug/read` —
+que devolve `summary` (agregado do período inteiro) separado de `rows`
+(só a página pedida), com filtro/ordenação aplicados **antes** da
+paginação. **Não substitui nem altera o GET legado**, que continua
+devolvendo o payload completo do período, inalterado, para não quebrar
+nenhum consumidor existente (`Portal/fechamentos-api.js` ainda não foi
+migrado para consumir esta rota — isso é M9).
+
+### 15.2 Reuso, não uma segunda implementação
+
+M7 não é um segundo motor de leitura. `centralVendasService.js` ganhou
+`resolveRangeContext(clienteSlug, params)`, extraído **sem mudar
+comportamento** do código que já existia dentro de `getCentralVendas()`
+(mesma ordem de validação, mesma query de `includeLegacy`, mesma chamada a
+`repository.getCentralVendasByRange`). Tanto o GET legado quanto
+`centralVendasReadService.js` (M7) chamam esta MESMA função — nunca uma
+segunda seleção paralela de snapshot. `getCentralVendasRead()` também
+chama `buildPayloadFromRange()` (a mesma função que o GET legado usa) para
+produzir `motor`/`resumo`/`completude`/`pedidos` — os valores financeiros
+continuam vindo de M5 (motor por item) e M6 (ledger), nunca recalculados
+na Read API.
+
+### 15.3 Contrato HTTP
+
+```http
+GET /operacao/central-vendas/:slug/read
+    ?dateFrom&dateTo&marketplace&clienteContaId
+    &page&limit&sort&filtro&status&logistica&search
+
+GET /operacao/central-vendas/:slug/read/orders/:rowId
+    ?dateFrom&dateTo&marketplace&clienteContaId
+```
+
+`dateFrom`/`dateTo` são obrigatórios (a Read API só existe no modo
+intervalo — o único que `Portal/fechamentos-api.js` já usa hoje;
+`computePeriodo()` sempre resolve para `dateFrom`/`dateTo`, mesmo para
+"mês atual"). Autorização igual ao GET legado (`requireAutomacoesAccess`,
+não admin-only — é leitura).
+
+Resposta da lista:
+
+```json
+{
+  "ok": true,
+  "cliente": {},
+  "periodo": {},
+  "contexto": {},
+  "snapshot": { "importId": 1, "fonte": "orders_api", "publicationStatus": "published", "coverageDateFrom": "...", "coverageDateTo": "...", "publishedAt": "...", "geradoEm": "..." },
+  "motor": {},
+  "completude": null,
+  "summary": {},
+  "rows": [],
+  "pagination": { "page": 1, "limit": 50, "total": 587, "totalPages": 12 }
+}
+```
+
+`snapshot` é `null` quando nenhum import (published ou legacy) cobre o
+período pedido — distinto de um snapshot com `rows: []` (zero pedidos
+verificados, motor `persistido`, seção 15.6).
+
+### 15.4 Seleção do snapshot (reusa M4 integralmente)
+
+`resolveRangeContext` → `repository.getCentralVendasByRange` aplica,
+sem alteração: published com cobertura que contém o trecho pedido (o mais
+recentemente publicado vence); sem published qualificado, cai no legacy
+mais recente; `candidate` nunca entra em nenhum dos dois passos.
+Account-awareness (`cliente_conta_id`/`includeLegacy`) idêntica ao GET
+legado — conta A nunca lê o snapshot da conta B.
+
+### 15.5 Summary é sempre global
+
+`summary` (`payload.resumo` de `buildPayloadFromRange`) é calculado sobre
+**todos** os pedidos do snapshot, antes de qualquer filtro ou paginação —
+nunca recalculado a partir de `rows`. Página 1 e página 2 da mesma
+consulta devolvem `summary` byte-a-byte idêntico (provado em
+`centralVendasM7Read.test.js`, cenário B).
+
+### 15.6 Zero pedidos é snapshot válido
+
+Mesma regra do M4 (seção 12.8): um snapshot com `pedidos: []` mas
+persistido (candidate/published `Orders 0/0 complete`) devolve
+`snapshot` não-nulo, `motor.status = "persistido"`, `rows: []`,
+`pagination: { page: 1, limit, total: 0, totalPages: 0 }` — nunca
+confundido com "nenhum snapshot encontrado" (`snapshot: null`, `motor.status
+= "sem_dados"`).
+
+### 15.7 Filtro, busca e ordenação (antes da paginação)
+
+`centralVendasReadService.js` porta as MESMAS predicados que
+`Portal/fechamentos-api.js` já usa localmente (`QUICK_FILTERS`,
+`STATUS_PEDIDO`, `ORDER_SORTS`, `pedidoMatchesSearch`), operando sobre o
+contrato de pedido já canônico (`resultadoStatus`/`custoStatus`/`frete`/
+`confianca` — nenhum recálculo):
+
+- `filtro`: `todos | sem_custo | sem_frete | frete_real | calculavel | bloqueados | receita_bloqueada | cancel_problema | full | normal`
+- `status`: `todos | valido | cancelado | problema | bloqueado`
+- `logistica`: `todos | full | nao_full`
+- `search`: mesmos campos da busca local (id, mlb, sku, título, status, logística)
+- `sort`: mesmas chaves de `ORDER_SORTS` (`data_desc`, `fat_desc`, `resultado_desc`, `confianca`, etc.)
+
+Filtro/busca acontecem **antes** da paginação — `pagination.total` é o
+tamanho do universo já filtrado, nunca o total do snapshot inteiro quando
+há filtro ativo (`summary`, por outro lado, permanece sempre global —
+seção 15.5).
+
+### 15.8 Ordenação determinística
+
+Todo comparador tem `pedido_row_id` (`rowId`) como critério de desempate
+final — dois pedidos com o mesmo `valor`/`resultado`/`confiança` nunca
+trocam de posição entre chamadas, e nunca aparecem simultaneamente na
+página 1 e na página 2 (provado com 10 pedidos com faturamento idêntico
+em `centralVendasM7Read.test.js`, cenário D).
+
+### 15.9 Limites de paginação
+
+`limit` default 50, máximo 200 (`limit=100000` é silenciosamente
+clampado para 200 — nunca reconstrói o payload gigante que o M7 existe
+para evitar). `page` mínimo 1; pedir uma página além do total devolve
+`rows: []` sem erro.
+
+### 15.10 Multi-item honesto
+
+`buildPedidoContrato` (`centralVendasService.js`) ganhou 3 campos
+aditivos, usados tanto pelo GET legado quanto pela Read API:
+
+```text
+rowId       — pedido_row_id (PK), nunca ambíguo entre importações
+              (o mesmo pedido_id do ML pode existir em >1 import — seção
+              já documentada no comentário de mesmaLinha)
+multiItem   — true quando o pedido tem mais de 1 item
+qtdItens    — contagem real de itens
+```
+
+Os valores financeiros da linha (`valor`, `resultado`, `custo`, etc.) já
+eram a soma dos itens (M5, `buildMotorFromOrders`) — a Read API só torna
+essa contagem visível, nunca inventa um "produto único" quando o pedido
+tem mais de um.
+
+### 15.11 Detalhe/ledger sob demanda (nunca `pedidoId` isolado)
+
+Para manter o payload da lista leve, `rows` **não** inclui `itens`/
+`componentes` — só o detalhe (`GET .../read/orders/:rowId`) traz isso.
+O detalhe exige os MESMOS parâmetros de contexto (`dateFrom`/`dateTo`/
+`marketplace`/`clienteContaId`) da lista, resolve o MESMO snapshot
+account-scoped via `resolveRangeContext`, e só então procura o pedido com
+aquele `rowId` dentro do array já resolvido — um `rowId` de outro
+cliente/conta/snapshot nunca aparece nesse array, então nunca resolve
+(404), sem checagem extra de posse. Não existe rota que aceite
+`pedidoId`/`importId` isolado.
+
+`componentes` do detalhe ganham `escopo`/`efeito`/`incluidoNoResultado`
+(as 3 colunas do M6, lidas direto de `central_vendas_componentes` — nunca
+recalculadas) — o M6 (seção 14.9) deixou isso explicitamente para o M7.
+
+### 15.12 Arquivos alterados
+
+```text
+novo:    server/services/centralVendas/centralVendasReadService.js
+novo:    server/tests/centralVendasM7Read.test.js
+editado: server/services/centralVendas/centralVendasService.js
+           (resolveRangeContext extraído/exportado; buildPedidoContrato
+            ganha rowId/multiItem/qtdItens e escopo/efeito/incluidoNoResultado
+            nos componentes; buildContextoPayload/periodoFromRange exportados)
+editado: server/controllers/centralVendasController.js
+           (obterCentralVendasRead, obterCentralVendasReadOrderDetail)
+editado: server/routes/centralVendasRoutes.js
+           (GET /:slug/read, GET /:slug/read/orders/:rowId — aditivas)
+```
+
+### 15.13 Testes
+
+`server/tests/centralVendasM7Read.test.js` — 12 cenários (A–L, mesma
+letra da especificação do marco), 230 verificações, contra o
+`centralVendasRepository` REAL rodando sobre uma fake db em memória
+(mesmo padrão de `centralVendasGetAccountScoped.test.js`/
+`centralVendasM4Publication.test.js`): paginação sem duplicação (185
+pedidos/limit 50 → 4 páginas), summary idêntico entre páginas, filtro +
+paginação (total do universo filtrado), ordenação determinística com
+empate total, published correto, candidate nunca oficial, legacy
+fallback, cobertura parcial nunca responde range maior, account-aware
+(conta A nunca lê conta B), zero pedidos é snapshot válido, multi-item
+(valores = soma dos itens, nunca só o primeiro), detalhe/ledger sob
+demanda escopado ao snapshot (`rowId` de fora do snapshot → 404).
+
+Suíte completa: 101/103 arquivos `*.test.js` passam (as mesmas 2 falhas
+pré-existentes — `designStudioWorkspace.test.js` e
+`mlTokenService.test.js` linha 313 — confirmadas sem relação com esta
+mudança).
+
+### 15.14 O que continua fora do escopo
+
+`Portal/fechamentos-api.js` **não foi tocado** neste marco — continua
+buscando o payload completo do GET legado e recalculando tudo em memória
+(`computeOrder`, filtros/ordenação/paginação locais). Migrar a tela para
+consumir a Read API e remover o recálculo do browser é o M9, por
+instrução explícita. Curva ABC, Visão geral e Vendas por dia também não
+foram tocadas — a Read API não precisou de agregados próprios (`daily`/
+`products`) para o que foi pedido nesta rodada; ficam disponíveis para
+uma rodada futura que precise deles.
+
+## 16. M8 — Frontend account-aware
+
+### 16.1 Objetivo
+
+A identidade do backend (M1) já resolvia `cliente_conta` corretamente
+desde antes deste marco, mas `Portal/fechamentos-api.js` nunca enviava
+`clienteContaId` — um cliente com 2+ contas ML ativas ficava bloqueado na
+tela com um 409 `MULTIPLE_MARKETPLACE_ACCOUNTS` visível, sem seletor
+nenhum para resolver isso (limitação já registrada na seção 5 e na seção
+9.6). M8 adiciona esse seletor: a tela passa a trabalhar explicitamente
+com **cliente + conta + período**, não apenas cliente + período.
+
+Tecnologia inalterada: HTML/CSS/JS vanilla, Fundação Global V2 — sem
+React, sem redesenho da barra de contexto além do campo novo.
+
+### 16.2 Fonte oficial de contas (reusada, não duplicada)
+
+`GET /clientes/:slug/contas?marketplace=meli`
+(`clienteContasRoutes.js`/`clienteContaService.listarContasDoCliente`) —
+o mesmo endpoint que Cliente 360/Financeiro/Central de Margem já
+reaproveitam. Nenhuma rota nova foi criada para isto; `Portal/
+fechamentos-api.js` só filtra `ativo !== false` no cliente (espelhando o
+que o backend já faz na query de `includeLegacy`/`resolveMarketplaceAccountContext`).
+
+### 16.3 Estado do frontend
+
+```js
+F.contas          // contas ML ativas do cliente atual
+F.clienteConta     // conta selecionada (ou null)
+F.contasLoading    // true durante o fetch de contas
+F.contaLoadSeq     // guard de concorrência da troca de cliente
+F.sync.clienteContaId  // qual conta iniciou/está sendo acompanhada no polling
+```
+
+`F.clienteConta?.id` é o `clienteContaId` efetivo — nunca inferido de
+outra forma.
+
+### 16.4 Comportamento por quantidade de contas (seção 21 da spec)
+
+```text
+0 contas   → legado: clienteContaId nunca enviado; comportamento
+             pré-existente do backend (fallback legacy) preservado
+1 conta    → auto-selecionada (F.contas.length === 1 → F.clienteConta = contas[0])
+2+ contas  → escolha explícita obrigatória; nunca contas[0] nem "principal"
+             silenciosos; nenhum GET/sync/import dispara até o operador
+             escolher — renderAll() mostra um estado de bloqueio dedicado
+             ("Selecione a conta do Mercado Livre")
+```
+
+A guarda contra disparo com conta ambígua existe em 3 pontos
+independentes (defesa em profundidade, não um único `if`): dentro de
+`trocarContexto()` (não chama `carregarTela()`/`retomarSyncEmAndamento()`
+quando `contas.length > 1`), dentro de `carregarTela()` (mesma checagem,
+cobre chamadas diretas de `onPeriodChange`/"Atualizar leitura"), e dentro
+de `executarSincronizacao()`/`executarImportacao()` (o botão de
+sincronizar/importar vive na barra de contexto, fora dos painéis que o
+estado de bloqueio esconde).
+
+### 16.5 Todas as chamadas dependentes levam `clienteContaId`
+
+```text
+GET  /operacao/central-vendas/:slug?...&clienteContaId=       (carregarPayload)
+POST /operacao/central-vendas/:slug/sync-runs                  (body.clienteContaId)
+GET  /operacao/central-vendas/:slug/sync-runs?...&clienteContaId=  (retomarSyncEmAndamento)
+POST /operacao/central-vendas/:slug/importar-vendas             (form clienteContaId)
+```
+
+`GET /sync-runs/:runId` (polling de UM run) não precisa de
+`clienteContaId` — o `runId` já é a identidade; `pollSyncRun` passa a
+receber `clienteContaIdNoInicio` e compara contra `F.clienteConta?.id`
+atual para decidir se ainda deve continuar acompanhando (seção 16.6).
+
+### 16.6 Troca de cliente e de conta — nunca sobrescreve o contexto errado
+
+`trocarContexto()` (chamada ao trocar de cliente): reseta
+`F.contas`/`F.clienteConta` incondicionalmente (contas nunca são
+herdadas do cliente anterior), busca as contas do cliente novo com um
+guard de sequência próprio (`F.contaLoadSeq`) — se o operador trocar de
+cliente duas vezes rápido, a resposta de contas do cliente antigo nunca
+sobrescreve o cliente novo.
+
+`onContaChange()` (troca de conta dentro do mesmo cliente): chama
+`pararPollingSync()` antes de tudo (a conta anterior nunca continua
+sendo acompanhada), depois `carregarTela()` — que reusa o
+`AbortController`/`loadSeq` já existentes desde antes do M8 (nunca um
+mecanismo paralelo): a resposta do GET da conta anterior, se ainda
+estiver em voo, é abortada/ignorada e nunca sobrescreve a tela da conta
+nova (provado em `fechamentosApiAccountAware.test.js`, cenário "troca
+A→B", inclusive com a resposta de A resolvendo DEPOIS da troca para B).
+
+### 16.7 Sync run — retomada considera conta, não só período
+
+O hardening M1/M2 (seção 9.6) já havia limitado `retomarSyncEmAndamento()`
+por período, mas documentou explicitamente que "o frontend ainda não
+manda `clienteContaId` (isso é M8)". M8 fecha essa lacuna:
+`GET /sync-runs` passa a levar `clienteContaId` além de
+`dateFrom`/`dateTo` — cliente + conta + período juntos identificam o run
+retomado; nunca retoma o run de outra conta.
+
+### 16.8 Erro 409 — tratamento defensivo (seção 28 da spec)
+
+Depois do M8, a tela já resolve a conta antes de qualquer chamada
+financeira — o 409 `MULTIPLE_MARKETPLACE_ACCOUNTS` não deveria ser o
+fluxo normal. Mas `carregarPayload()` continua tratando-o
+defensivamente: se o backend ainda assim devolver 409 (ex.: uma conta
+nova cadastrada em outra aba durante a sessão), a tela nunca escolhe uma
+conta sozinha — atualiza `F.contas` com a lista que o próprio erro
+devolve e deixa o estado de bloqueio (seção 16.4) assumir.
+
+### 16.9 O que continua fora do escopo
+
+`computeOrder()` e todo o recálculo financeiro no browser continuam
+intocados — isso é M9. Ads, Mercado Pago, custos Full, histórico de
+custo, nova regra de devolução, ajuste de plataforma não foram tocados.
+Curva ABC não foi refeita. `Portal/fechamentos-api.js` não foi migrado
+para React nem redesenhado além do campo "Conta" na barra de contexto.
+A Read API do M7 não foi ligada ao frontend nesta rodada (fica para M9).
+
+### 16.10 Testes
+
+`server/tests/fechamentosApiAccountAware.test.js` — mesma limitação já
+registrada na seção 9.6 (`Portal/fechamentos-api.js` é um script de
+browser sem `module.exports`): o arquivo real é carregado num contexto
+`vm` com `document`/`localStorage`/`fetch` mínimos (não simula clique —
+chama as funções de wiring diretamente, que é o que os listeners
+acabariam chamando), 29 verificações: 1 conta auto-seleciona e as
+chamadas levam seu id; 2 contas exige escolha e nenhum GET/sync dispara
+para conta arbitrária; troca A→B nunca deixa resposta atrasada de A
+sobrescrever B; `POST /sync-runs` recebe a conta correta; retomada usa
+`clienteContaId` + período; importação envia a conta correta; cliente
+legado (0 contas) continua funcionando sem enviar `clienteContaId`.
+
+Suíte completa: 102/104 arquivos `*.test.js` passam (as mesmas 2 falhas
+pré-existentes — `designStudioWorkspace.test.js` e
+`mlTokenService.test.js` linha 313 — confirmadas sem relação com esta
+mudança).

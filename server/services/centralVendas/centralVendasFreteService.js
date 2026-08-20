@@ -144,7 +144,11 @@ function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep 
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const resp = await mlFetchFn(clienteId, `/shipments/${encodeURIComponent(id)}/costs`);
+        // mlUserId=sellerId: a conta já foi congelada pelo sync run (M1/M2) —
+        // nunca deixar o mlClient re-resolver "qualquer grant válido do
+        // cliente", ou o custo pode vir do token de outra conta do mesmo
+        // cliente (ver docs/AUDITORIA_IDENTIDADE_CENTRAL_VENDAS_CLAIMS_FRETE.md).
+        const resp = await mlFetchFn(clienteId, `/shipments/${encodeURIComponent(id)}/costs`, { mlUserId: sellerId });
         const { ok, status, data, retryAfter } = resp || {};
 
         if (ok) {

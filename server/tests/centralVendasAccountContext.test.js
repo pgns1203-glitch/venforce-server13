@@ -223,7 +223,15 @@ async function run() {
     assert.strictEqual(r1.baseVinculada.id, 900);
     assert.strictEqual(r1.ordersEncontrados, 1);
     assert.strictEqual(mlFetchCalls.filter((c) => c.path.startsWith("/orders/search")).at(-1).mlUserId, "111");
+    // Hardening account-aware de Claims/Frete: Claims era o único collector que
+    // não recebia mlUserId (mlFetch caía no grant "principal" do cliente,
+    // ignorando a conta explicitamente sincronizada — ver
+    // docs/AUDITORIA_IDENTIDADE_CENTRAL_VENDAS_CLAIMS_FRETE.md).
+    const claimsCalls1 = mlFetchCalls.filter((c) => c.path.includes("/post-purchase/v1/claims/search"));
+    assert.ok(claimsCalls1.length > 0, "claims deve ter sido consultado");
+    assert.ok(claimsCalls1.every((c) => c.mlUserId === "111"), "claims da conta 10 deve sempre usar mlUserId=111, nunca o grant principal implícito");
 
+    mlFetchCalls = [];
     const repo2 = makeFakeRepository(clienteA);
     const db2 = makeAccountDb({ contas, vinculos, grants, custosPorBase });
     const r2 = await createCentralVendasSyncService(repo2, db2).sincronizarVendasMeli({
@@ -232,8 +240,13 @@ async function run() {
     assert.strictEqual(r2.contexto.conta.id, 11);
     assert.strictEqual(r2.baseVinculada.id, 901, "conta 2 deve usar a base 901, nunca a 900 da conta 1");
     assert.strictEqual(mlFetchCalls.filter((c) => c.path.startsWith("/orders/search")).at(-1).mlUserId, "222");
+    const claimsCalls2 = mlFetchCalls.filter((c) => c.path.includes("/post-purchase/v1/claims/search"));
+    assert.ok(claimsCalls2.length > 0, "claims deve ter sido consultado");
+    assert.ok(claimsCalls2.every((c) => c.mlUserId === "222"), "claims da conta 11 deve sempre usar mlUserId=222, nunca o grant 111 da conta 1");
+    assert.ok(mlFetchCalls.every((c) => c.mlUserId !== "111"), "nenhuma chamada da 2a sincronização (conta 11) pode ter usado o grant 111 da conta 1");
 
     console.log("  ✓ conta explícita entre 2 contas nunca mistura seller/base da outra conta");
+    console.log("  ✓ claims usa mlUserId da conta selecionada em ambas as sincronizações (nunca o grant principal implícito)");
   }
 
   // 4. clienteContaId de conta de OUTRO cliente — 403, nada persistido.

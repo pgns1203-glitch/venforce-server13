@@ -886,7 +886,17 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
           runId, source: "claims",
           errorCode, httpStatus,
           errorMessage: claimsLote.motivo || null,
-          metadata: { attempts: claimsLote.attempts, pages: claimsLote.pages },
+          // diagnostic (Hardening account-aware/400): antes só sobrevivia no
+          // console.log de logClaimsIndisponivel — nunca chegava ao Sync
+          // Source. São só os 3 campos documentados de erro do ML
+          // (error/message/cause), truncados — nunca o corpo completo, nunca
+          // token/Authorization (ver
+          // docs/AUDITORIA_IDENTIDADE_CENTRAL_VENDAS_CLAIMS_FRETE.md, seção 5).
+          metadata: {
+            attempts: claimsLote.attempts,
+            pages: claimsLote.pages,
+            ...(claimsLote.diagnostic ? { mlDiagnostic: claimsLote.diagnostic } : {}),
+          },
           db,
         });
         await sourceService.iniciarFonte({ runId, source: "returns", db });

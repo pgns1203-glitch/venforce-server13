@@ -155,6 +155,34 @@ async function run() {
     console.log("  ✓ F. falha isolada: somente o shipment com falha fica ausente, demais reais");
   }
 
+  // G. Hardening account-aware: mlUserId=sellerId deve ser propagado em toda
+  // chamada a mlFetchFn — nunca deixar o mlClient re-resolver "qualquer
+  // grant válido do cliente" (ver
+  // docs/AUDITORIA_IDENTIDADE_CENTRAL_VENDAS_CLAIMS_FRETE.md, seção 8).
+  {
+    const mlUserIdsRecebidos = [];
+    const service = createCentralVendasFreteService({
+      sleepFn: semEspera,
+      mlFetchFn: async (_clienteId, _path, options = {}) => {
+        mlUserIdsRecebidos.push(options.mlUserId);
+        return { ok: true, status: 200, data: costsPayload(1) };
+      },
+    });
+
+    await service.buscarFretesEmLote({
+      clienteId: 1,
+      sellerId: SELLER_ID,
+      shipmentIds: ["A1", "A2", "A3"],
+    });
+
+    assert.strictEqual(mlUserIdsRecebidos.length, 3);
+    assert.ok(
+      mlUserIdsRecebidos.every((id) => id === SELLER_ID),
+      "toda chamada de custo de frete deve propagar mlUserId=sellerId da conta sincronizada"
+    );
+    console.log("  ✓ G. mlUserId=sellerId propagado em 100% das chamadas de frete");
+  }
+
   console.log("centralVendasFreteLotes.test.js passed");
 }
 

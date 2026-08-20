@@ -178,14 +178,16 @@ const recursoErrado = {
 
 function servicoComRespostas(handler) {
   const paths = [];
+  const mlUserIds = [];
   const service = createCentralVendasClaimsService({
     sleepFn: async () => {},
-    mlFetchFn: async (_clienteId, requestPath) => {
+    mlFetchFn: async (_clienteId, requestPath, options = {}) => {
       paths.push(requestPath);
+      mlUserIds.push(options.mlUserId);
       return handler(requestPath, paths.length - 1);
     },
   });
-  return { service, paths };
+  return { service, paths, mlUserIds };
 }
 
 function rangeDe(requestPath) {
@@ -396,6 +398,11 @@ async function run() {
     cenarioDetalhe.paths.filter((p) => p.includes("/returns")).length === 1);
   ok("vínculo usa o order_id devolvido pela API", loteDetalhe.claimsMap.has("PEDIDO_RESOLVIDO"));
   eq("devoluções resolvidas contabilizadas", loteDetalhe.returnsResolvidos, 1);
+  // Hardening account-aware: o detalhe de devolução (GET .../claims/:id/returns)
+  // também propaga mlUserId=sellerId — antes só a busca por período recebia a
+  // conta explícita (ver docs/AUDITORIA_IDENTIDADE_CENTRAL_VENDAS_CLAIMS_FRETE.md).
+  ok("detalhe v2 de devolução propaga mlUserId=sellerId",
+    cenarioDetalhe.mlUserIds.every((id) => id === 999));
 
   const cenarioDetalheFalha = servicoComRespostas((requestPath) => {
     if (requestPath.includes("/returns")) return { ok: false, status: 500, data: null };

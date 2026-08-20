@@ -154,6 +154,53 @@ async function run() {
       eq("7: indisponivel", r.indisponivel, true);
       eq("7: status http", r.status, 400);
     }
+
+    // 8. Diagnostico do HTTP 400 (Hardening identidade/400): o corpo de erro
+    //    do ML sobrevive ate o resultado do collector (antes se perdia em
+    //    `falha()`, so aparecia no console.log — ver
+    //    docs/AUDITORIA_IDENTIDADE_CENTRAL_VENDAS_CLAIMS_FRETE.md, secao 5).
+    //    Apenas os 3 campos documentados, nunca o corpo bruto completo.
+    {
+      const svc = servicoComPaginas([{
+        erro: true, status: 400,
+        data: { error: "bad_request", message: "invalid range parameter", cause: [{ code: "range.invalid" }], extra_field_nao_esperado: "nao deve vazar sem necessidade" },
+      }]);
+      const r = await svc.buscarClaimsPorPeriodo(base);
+      eq("8: indisponivel", r.indisponivel, true);
+      ok("8: diagnostic presente", r.diagnostic !== null && r.diagnostic !== undefined);
+      eq("8: diagnostic.mlError", r.diagnostic.mlError, "bad_request");
+      eq("8: diagnostic.mlMessage", r.diagnostic.mlMessage, "invalid range parameter");
+      ok("8: diagnostic.mlCause presente", typeof r.diagnostic.mlCause === "string" && r.diagnostic.mlCause.includes("range.invalid"));
+      eq("8: diagnostic nao vaza campos fora do whitelist", Object.keys(r.diagnostic).sort(), ["mlCause", "mlError", "mlMessage"]);
+    }
+
+    // 9. Falha sem corpo (erro de rede) -> diagnostic null, nunca objeto vazio
+    //    fantasma.
+    {
+      const svc = servicoComPaginas([{ erro: true, status: 500, data: null }]);
+      const r = await svc.buscarClaimsPorPeriodo(base);
+      eq("9: diagnostic null quando nao ha corpo", r.diagnostic, null);
+    }
+  });
+
+  // 10. mlUserId=sellerId deve ser propagado em toda chamada de busca de
+  //     claims — nunca deixar o mlClient re-resolver "qualquer grant valido
+  //     do cliente" quando a conta ja foi congelada pelo sync run.
+  await capturandoLogs(async () => {
+    const mlUserIdsRecebidos = [];
+    const svc = createCentralVendasClaimsService({
+      sleepFn: semEspera,
+      mlFetchFn: async (_clienteId, path, options = {}) => {
+        if (path.startsWith("/post-purchase/v1/claims/search")) {
+          mlUserIdsRecebidos.push(options.mlUserId);
+          return { ok: true, status: 200, data: { data: [], paging: { total: 0 } } };
+        }
+        return { ok: true, status: 200, data: {} };
+      },
+    });
+    await svc.buscarClaimsPorPeriodo({ ...base, sellerId: "222" });
+    ok("10: claims consultado ao menos uma vez", mlUserIdsRecebidos.length > 0);
+    ok("10: mlUserId=222 propagado em 100% das chamadas", mlUserIdsRecebidos.every((id) => id === "222"));
   });
 
   // computeClaimsCompleteness isolada — zero claims sem sinal de total

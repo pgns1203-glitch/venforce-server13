@@ -322,6 +322,27 @@ function logClaimsIndisponivel({ motivo, status, data, page, sellerId, dateFrom,
   });
 }
 
+// Diagnóstico seguro do corpo de erro do Mercado Livre — sobrevive até o Sync
+// Source (antes só chegava ao console.log via logClaimsIndisponivel e se
+// perdia dali em diante). Apenas os três campos documentados de erro
+// (error/message/cause), truncados: nunca o corpo completo, nunca headers,
+// nunca token/Authorization.
+function extractClaimsDiagnostic(data) {
+  if (!data || typeof data !== "object") return null;
+  const truncate = (value) => {
+    if (value === null || value === undefined) return null;
+    const str = typeof value === "string" ? value : JSON.stringify(value);
+    return str.slice(0, 300);
+  };
+  const diagnostic = {
+    mlError: truncate(data.error),
+    mlMessage: truncate(data.message),
+    mlCause: truncate(data.cause),
+  };
+  if (diagnostic.mlError === null && diagnostic.mlMessage === null && diagnostic.mlCause === null) return null;
+  return diagnostic;
+}
+
 // Completude de Claims (Hardening M3, seções 5-10): mesma filosofia já
 // aplicada a Orders em centralVendasSyncService.fetchAllOrders — nunca
 // devolver "completo" sem prova. `paging.total` ausente em TODAS as páginas
@@ -372,12 +393,15 @@ function computeClaimsCompleteness({
 }
 
 function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep } = {}) {
-  async function fetchPage(clienteId, path, maxAttempts) {
+  async function fetchPage(clienteId, path, maxAttempts, mlUserId) {
     let lastReason = "erro_fetch";
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const response = await mlFetchFn(clienteId, path);
+        // mlUserId: identidade já congelada pelo sync run (M1/M2) — nunca
+        // deixar o mlClient re-resolver "qualquer grant válido do cliente"
+        // (ver docs/AUDITORIA_IDENTIDADE_CENTRAL_VENDAS_CLAIMS_FRETE.md).
+        const response = await mlFetchFn(clienteId, path, { mlUserId });
         if (response?.ok) return { ok: true, data: response.data, status: response.status ?? 200, attempts: attempt };
 
         lastReason = `http_${response?.status || "desconhecido"}`;
@@ -409,14 +433,14 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
   // GET /post-purchase/v2/claims/{claim_id}/returns — retry apenas para 429/5xx.
   // Falha aqui NUNCA vira "pedido sem devolução": o claim fica sem vínculo e é
   // contado em `returnsNaoResolvidos`.
-  async function buscarDetalheReturn({ clienteId, claimId, maxAttempts = CLAIMS_MAX_ATTEMPTS }) {
+  async function buscarDetalheReturn({ clienteId, claimId, mlUserId, maxAttempts = CLAIMS_MAX_ATTEMPTS }) {
     const id = String(claimId || "").trim();
     if (!id) return { ok: false, motivo: "sem_claim_id", detalhe: null };
 
     let motivo = "erro_fetch";
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const response = await mlFetchFn(clienteId, `/post-purchase/v2/claims/${encodeURIComponent(id)}/returns`);
+        const response = await mlFetchFn(clienteId, `/post-purchase/v2/claims/${encodeURIComponent(id)}/returns`, { mlUserId });
         if (response?.ok) return { ok: true, motivo: null, detalhe: extrairReturnDetalhe(response.data) };
 
         motivo = `http_${response?.status || "desconhecido"}`;
@@ -439,7 +463,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
   // Resolve o pedido de claims de devolução que NÃO têm vínculo direto com order.
   // Não há chamada indiscriminada: só entram claims com indicação de devolução e
   // sem `resource=order`.
-  async function resolverReturnsSemVinculo({ clienteId, claims, maxAttempts }) {
+  async function resolverReturnsSemVinculo({ clienteId, claims, mlUserId, maxAttempts }) {
     const pendentes = (claims || []).filter((claim) => {
       if (String(claim?.resource || "").toLowerCase() === "order") return false;
       return claimHasReturn(claim) && claim?.id != null;
@@ -458,7 +482,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
     await Promise.all(
       alvos.map((claim) =>
         limit(async () => {
-          const resultado = await buscarDetalheReturn({ clienteId, claimId: claim.id, maxAttempts });
+          const resultado = await buscarDetalheReturn({ clienteId, claimId: claim.id, mlUserId, maxAttempts });
           if (resultado.ok && resultado.detalhe && resultado.detalhe.orderId) {
             claim.returnDetalhe = resultado.detalhe;
             resolvidos++;
@@ -529,6 +553,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       returnsPendentesTotal: 0,
       claimsForaDoPeriodo: 0,
       pedidosComClaims: 0,
+      diagnostic: null,
       ...extra,
     });
 
@@ -542,7 +567,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
         offset,
       });
 
-      let response = await fetchPage(clienteId, buildPath(), maxAttempts);
+      let response = await fetchPage(clienteId, buildPath(), maxAttempts, sellerId);
       attempts += response.attempts || 0;
 
       // HTTP 400 = parâmetro/formato rejeitado. Testa a segunda variante de fuso
@@ -572,7 +597,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
           `[centralVendas] claims: testando variante de fuso "${CLAIMS_TIMEZONE_FORMATS[tzIndex]}"`
             + ` apos http_400 na variante "${CLAIMS_TIMEZONE_FORMATS[tzIndex - 1]}"`
         );
-        response = await fetchPage(clienteId, buildPath(), maxAttempts);
+        response = await fetchPage(clienteId, buildPath(), maxAttempts, sellerId);
         attempts += response.attempts || 0;
       }
 
@@ -598,7 +623,10 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
               + " Post Purchase/Claims habilitado no painel do Mercado Livre."
           );
         }
-        return falha(response.motivo, { status: response.status ?? null });
+        return falha(response.motivo, {
+          status: response.status ?? null,
+          diagnostic: extractClaimsDiagnostic(response.data),
+        });
       }
 
       pages++;
@@ -650,7 +678,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
     const resourceCounts = contarResources(claims);
     console.log("[centralVendas] claims por resource:", resourceCounts);
 
-    const returns = await resolverReturnsSemVinculo({ clienteId, claims, maxAttempts });
+    const returns = await resolverReturnsSemVinculo({ clienteId, claims, mlUserId: sellerId, maxAttempts });
 
     const claimsMapCompleto = buildClaimsMap(claims);
 
@@ -725,6 +753,7 @@ module.exports = {
   classificarClaimsDoPedido,
   contarResources,
   extrairReturnDetalhe,
+  extractClaimsDiagnostic,
   computeClaimsCompleteness,
   CLAIMS_PAGE_LIMIT,
   CLAIMS_MAX_ATTEMPTS,

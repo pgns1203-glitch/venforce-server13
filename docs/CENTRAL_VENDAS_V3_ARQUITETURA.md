@@ -2407,3 +2407,146 @@ mudança (nenhuma delas toca Central de Vendas).
   sem essa troca, `money(null)` exibiria "R$ 0,00", reintroduzindo
   exatamente o problema de "ausência virando zero" que esta rodada
   corrigiu no backend. Nenhuma outra linha da tela foi alterada.
+
+## 18. Hardening — Claims/Frete account-aware + diagnóstico do `CLAIMS_HTTP_400`
+
+Auditoria completa: `docs/AUDITORIA_IDENTIDADE_CENTRAL_VENDAS_CLAIMS_FRETE.md`.
+
+### 18.1 O bug real
+
+O M1 (seção 1) tornou a Central account-aware para Orders — `sellerId` vira
+`mlUserId` e é passado explicitamente a `mlFetch(clienteId, path, { mlUserId })`.
+Claims e Frete foram escritos **antes** da fundação `cliente_contas` e nunca
+foram migrados: chamavam `mlFetch(clienteId, path)` sem `mlUserId`, mesmo já
+recebendo `sellerId` como parâmetro.
+
+Quando `mlUserId` está ausente, `mlTokenService.resolveMlGrant()`
+(`server/services/mlTokenService.js`) não falha — ele re-resolve "qualquer
+grant utilizável do cliente", preferindo o grant `is_primary`. Com uma conta
+só, isso coincide com a conta certa por acidente. Com duas contas e a conta
+**não-primária** selecionada explicitamente (`clienteContaId` explícito), o
+custo de frete e a busca de claims eram feitos com o token da conta primária
+— não da conta que o run realmente sincronizou. O `sync_run`/snapshot
+registravam a conta correta (`external_account_id` da seção 4), mas
+Shipments/Claims/Returns podiam ter sido consultados com outro grant: uma
+divergência de auditoria silenciosa, não apenas um risco teórico.
+
+Returns herda o problema porque `resolverReturnsSemVinculo`/
+`buscarDetalheReturn` (detalhe `GET /post-purchase/v2/claims/:id/returns`)
+vivem dentro do próprio Claims service.
+
+### 18.2 A correção
+
+`sellerId` já É o `mlUserId` congelado pelo sync run (M1: `sellerId =
+context.mlUserId`, seção 1). A correção não introduz nenhum resolvedor novo
+nem parâmetro novo no sincronizador — só passa a reaproveitar o `sellerId`
+que os collectors já recebiam, como terceira opção de `mlFetch`:
+
+- `centralVendasFreteService.buscarFreteShipment()`: `mlFetchFn(clienteId, path, { mlUserId: sellerId })`.
+- `centralVendasClaimsService.fetchPage()` (busca por período, ambas as
+  variantes de timezone) e `buscarDetalheReturn()` (detalhe de devolução):
+  recebem `mlUserId` e propagam da mesma forma.
+
+`centralVendasSyncService.js` não mudou nas chamadas a `buscarFretesEmLote`/
+`buscarClaimsPorPeriodo` — ele já passava `sellerId`; a lacuna estava
+inteiramente dentro dos dois collectors.
+
+Nenhum fallback para "grant primário do cliente" foi mantido dentro de uma
+coleta que já pertence a uma conta explícita — a mesma garantia que Orders já
+tinha (seção 1, "nunca escolhe entre 2+ contas"), agora também para
+Shipments/Claims/Returns.
+
+### 18.3 Prova de isolamento
+
+`server/tests/centralVendasAccountContext.test.js`, cenário 3 (duas contas,
+conta 10 = primária, conta 11 = não-primária, ambas com grant utilizável):
+intercepta `mlFetch` no nível de módulo e agora também afirma que toda
+chamada a `/post-purchase/v1/claims/search` durante a sincronização da conta
+11 carrega `mlUserId=222` — nunca `mlUserId=111` (grant primário da conta
+10). Sem a correção, esse teste falha (a chamada não carregava `mlUserId`
+nenhum, revelando a mesma lacuna que só não se manifestava no resultado
+final porque a conta 10 também era a primária nos outros cenários do
+arquivo).
+
+Testes dedicados de propagação (terceiro argumento de `mlFetchFn`):
+- `centralVendasFreteLotes.test.js` (caso G): 100% das chamadas de custo de
+  frete carregam `mlUserId=sellerId`.
+- `centralVendasClaimsCompleteness.test.js` (caso 10): 100% das chamadas de
+  busca de claims carregam `mlUserId=sellerId`.
+- `centralVendasClaimsPosVenda.test.js`: o detalhe v2 de devolução
+  (`buscarDetalheReturn`) também carrega `mlUserId=sellerId`.
+
+### 18.4 `CLAIMS_HTTP_400` — investigado separadamente, causa raiz não encontrada
+
+O histórico (`4d87f0b`, `d8d83c3`, `ae8e061`, `9ca5c52`/`9b8ebf3`) mostra que
+o HTTP 400 já existia **antes** da fundação `cliente_contas` — timezone
+`-03:00` e `-0300` já haviam sido tentados, `sort` já havia sido removido.
+`buildClaimsSearchPath()`/`buscarClaimsPorPeriodo()` foram reauditados campo
+a campo (endpoint, `players.user_id`, `players.role=respondent`, `range`,
+`limit≤100`, `offset≤9999`) contra a documentação oficial vigente do
+Mercado Livre — nenhuma divergência de contrato foi encontrada.
+
+**Conclusão: a lacuna de account-awareness (seção 18.1) não é comprovada
+como causa do 400 histórico**, nem o inverso — são dois problemas
+investigados separadamente, como pedido. Nenhuma mudança de endpoint,
+`range` ou paginação foi feita sem evidência do corpo real do erro em
+produção. `CLAIMS_HTTP_400` continua sendo o comportamento observado; a
+próxima investigação precisa do corpo real de um 400 reproduzido com a
+identidade agora corrigida.
+
+### 18.5 Observabilidade — o corpo do erro parava de existir antes do Sync Source
+
+Cadeia investigada (Mercado Livre → `mlFetch` → Claims service → Sync
+Service → `central_vendas_sync_sources`): o body de erro do ML **era**
+preservado por `mlFetch` e por `fetchPage()`, e aparecia no
+`console.log` de `logClaimsIndisponivel()` — mas se perdia no retorno de
+`falha()`, que descartava tudo exceto `motivo`/`status`. O sincronizador só
+gravava `errorCode`/`httpStatus`/`errorMessage="http_400"` no Sync Source;
+se o log de produção não estivesse disponível, a causa exata ficava
+irrecuperável.
+
+**Correção de observabilidade (não de comportamento):** nova função
+`extractClaimsDiagnostic(data)` em `centralVendasClaimsService.js` extrai
+apenas os três campos documentados de erro do Mercado Livre —
+`error`/`message`/`cause` — truncados a 300 caracteres cada, nunca o corpo
+bruto. `falha()` agora inclui `diagnostic` no resultado do collector;
+`centralVendasSyncService.js` grava esse diagnóstico (quando presente) como
+`metadata.mlDiagnostic` na fonte `claims` do Sync Source (mesma
+`assertNoSecrets()` de `centralVendasSyncSourceService.js` que já bloqueia
+`access_token`/`refresh_token`/`Authorization`/etc — nenhuma exceção
+adicionada). Nada é logado ou persistido além desses três campos; nenhum
+segredo passa a ser exposto no GET/frontend.
+
+### 18.6 Semântica `claimsVerificados`/frontend
+
+Não alterado nesta rodada — o contrato de completude por fonte (seção 10.6)
+já distingue `claims.status="failed"` (não verificado) de
+`claims.status="complete"` com `receivedCount=0` (zero real, seção 10.4).
+Nenhuma mudança de apresentação foi necessária: a API já expõe os campos
+suficientes para o frontend renderizar essa distinção; não houve pedido
+explícito de alteração de tela nesta rodada, e a instrução do escopo
+proibia mexer no frontend financeiro.
+
+### 18.7 Frete — confirmado como bug real, não coincidência de produção
+
+A auditoria (seção 18.1) mostra que Frete "funcionar em produção" hoje
+depende de o grant implicitamente escolhido coincidir com a conta
+sincronizada — nunca foi garantia arquitetural. A correção (seção 18.2)
+remove essa dependência de coincidência. A regra de frete real (`sender.cost`,
+nunca `receiver.cost`, nunca estimativa) não foi alterada.
+
+### 18.8 Escopo desta rodada
+
+Alterado: `centralVendasClaimsService.js`, `centralVendasFreteService.js`,
+`centralVendasSyncService.js` (só a chamada a `marcarFonteFalha` de claims,
+para incluir `mlDiagnostic`). `mlClient.js`/`mlTokenService.js`/
+`clienteContaService.js`/`centralVendasSyncRunService.js` não precisaram de
+mudança — já suportavam `mlUserId` corretamente; a lacuna era só nos dois
+collectors não terem passado a informação que já tinham em mãos. Returns não
+foi reescrito — apenas herdou a propagação de `mlUserId` do Claims service
+de quem depende. M10 não foi iniciado. Regra financeira, frontend
+financeiro e Full não foram tocados.
+
+Suíte completa: 103/105 arquivos `*.test.js` passam — as mesmas 2 falhas
+pré-existentes (`designStudioWorkspace.test.js`, `mlTokenService.test.js`
+linha 313), confirmadas sem relação com esta mudança antes e depois dela.

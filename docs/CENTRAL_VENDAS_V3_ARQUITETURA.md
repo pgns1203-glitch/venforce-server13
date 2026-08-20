@@ -1,14 +1,17 @@
-# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte, M4: Candidate/Published)
+# Central de Vendas V3 — Fundação (M1: Account Context, M2: Sync Run, M3: Completude por Fonte, M4: Candidate/Published, M5: Motor por Item)
 
 > Este documento cobre **o que foi implementado**: M1 (Central Account-Aware),
 > M2 (Sync Run persistido), o **Hardening M1/M2** (seção 9), **M3 —
 > Completude por Fonte** (seção 10), o **Hardening M3** (seção 11) que
-> corrigiu 4 lacunas de integridade na prova de completude, e **M4 —
+> corrigiu 4 lacunas de integridade na prova de completude, **M4 —
 > Candidate/Published** (seção 12), que separa "dado produzido por uma
-> sincronização" de "dado oficial que a Central pode exibir".
-> M5–M10 (motor por item, ledger, API de leitura paginada, frontend
-> account-aware, remoção do recálculo no frontend, performance/bulk) **não
-> foram implementados** — ver seção 12.11 "O que continua fora do escopo".
+> sincronização" de "dado oficial que a Central pode exibir", e **M5 —
+> Motor Financeiro Canônico por Item** (seção 13), que **auditou e provou por
+> teste** que o motor por item já implementado desde antes do M1 satisfaz os
+> invariantes exigidos — sem reescrever a matemática financeira.
+> M6–M10 (ledger, API de leitura paginada, frontend account-aware, remoção do
+> recálculo no frontend, performance/bulk) **não foram implementados** — ver
+> seção 13.7 "O que continua fora do escopo".
 >
 > Referência do estado anterior: `TELA_CENTRAL_VENDAS_V2.md` (auditoria de
 > 2026-08-19) e `docs/AUDITORIA_BASES_POS_CLIENTE_CONTAS.md` (mesmo dia,
@@ -1021,6 +1024,154 @@ implementado (`CLAIMS_HTTP_400`, `claims.complete = false`, run continua
 aplicação (tópico "Post Purchase/Claims" não habilitado no painel do
 Mercado Livre — hipótese já registrada no log existente), é configuração
 de painel, não algo que um ajuste de código resolve.
+
+## 13. M5 — Motor Financeiro Canônico por Item
+
+### 13.1 Resultado da auditoria: Caso A — o motor já satisfazia o M5
+
+M5 pedia explicitamente para ser tratado como auditoria antes de
+implementação, porque o comportamento desejado "aparentemente já existe no
+backend". Confirmado: `buildMotorFromOrders`
+(`server/services/centralVendas/centralVendasSyncService.js`) já era, desde
+antes do M1, o único lugar que calcula receita/tarifa/custo/imposto/frete —
+e já fazia isso por ITEM, não por pedido. **Nenhuma linha de
+`buildMotorFromOrders`, `allocateFrete`, `buildCostMap`, `getCost` ou
+`extrairFreteSeller` foi alterada nesta rodada.** M5 é hardening formal
+(prova por teste + documentação), não reescrita.
+
+### 13.2 Invariantes auditados e confirmados
+
+**A. Item independente.** Cada item do loop em `buildMotorFromOrders`
+(linha ~428) resolve seu próprio custo via `getCost(costMap, mlb)` chamado
+com o `mlb` DAQUELE item — não existe estado compartilhado entre iterações,
+nem uso do "primeiro item do pedido" para os demais. `getCost` é uma busca
+pura no Map por 3 variantes de chave (MLB completo/sem prefixo/com
+prefixo), sem efeito colateral.
+
+**B. Frete real.** `extrairFreteSeller(costs, sellerId)`
+(`centralVendasFreteService.js`) lê exclusivamente `senders[].cost`
+(filtrado pelo `user_id` do seller) — nunca `receiver.cost` (que
+`extrairReceitaComprador` trata à parte, como receita de envio, componente
+de PEDIDO sem entrar no resultado). `sender.cost` ausente/não-finito ⇒
+`null`; `0` é preservado como zero real. Não há tabela de peso, não há
+estimativa — confirmado lendo o arquivo inteiro.
+
+**C. Rateio do frete.** `allocateFrete(total, unitsArr)` é determinístico:
+os primeiros N-1 itens recebem `round2((total/totalUnits) * unidades)`, e o
+**último item leva o resto** (`total - acc`) — isso garante
+`Σ frete_item === frete_pedido` exatamente, mesmo com centavos que não
+dividem igualmente (provado com R$ 20,00 / 4 unidades no teste do Caso 2:
+5,00 + 15,00). `total == null` ⇒ todos os itens ficam `null` (nunca
+inventa 0).
+
+**D. Fórmula do item.** Preservada e confirmada byte a byte:
+`resultado_item = receita_produto - tarifa_venda - custo_produto -
+imposto_interno - frete_rateado`, com cada termo ausente tratado como `0`
+apenas no cálculo (nunca como confiança "real").
+
+**E. Pedido = soma dos itens.** Não existe uma segunda fórmula para o
+pedido. `pedido.faturamento` e `pedido.lucroContribuicao` são acumulados
+literalmente dentro do próprio loop de itens (linhas ~549-554) —
+`pedido.faturamento += receitaProduto`, `pedido.lucroContribuicao +=
+lucroContribuicao`. Estruturalmente impossível divergir da soma dos itens
+quando o pedido não está bloqueado.
+
+**F. Resumo = soma dos pedidos.** `resumo.lucroContribuicao` e
+`resumo.faturamento` são agregações de `pedidosResultado` (pedidos que
+passam por `pedidoEntraNoResultado`, ou seja, exclui `cancelado`/
+`com_problema`) — também uma agregação literal, não uma fórmula paralela.
+
+### 13.3 Política de confiança confirmada (não alterada)
+
+- Item: `bloqueado` se falta produto OU custo; `parcial` se falta
+  imposto/tarifa/frete mas tem produto+custo; `confiavel` se tudo presente.
+  Ausência nunca vira `0` — os componentes ficam com `valor: null`.
+- Pedido: **all-or-nothing** — 1 item bloqueado é suficiente para o pedido
+  inteiro virar `confianca: "bloqueado"` e `resultado: null`, mesmo que
+  outros itens do mesmo pedido tenham resultado individualmente calculável
+  (o item mantém seu próprio `resultado` calculado — só o agregado do
+  pedido é nulado). Esta é a política **já existente**; M5 não a mudou nem
+  decidiu sozinho alterá-la (isso seria uma decisão de negócio, fora do
+  escopo pedido).
+
+### 13.4 Gap real encontrado: cobertura de teste, não código
+
+Todos os testes de motor existentes (`centralVendasMotorFrete.test.js`,
+`meliFinanceiroCentralVendas.test.js`, `centralVendasBaseVinculada.test.js`
+etc.) usavam exclusivamente pedidos de **1 item** — nenhum provava
+explicitamente independência entre itens, rateio de frete multi-item, ou
+que um item bloqueado não contamina outro. O gap não estava na fórmula;
+estava na ausência de um teste de regressão que tornasse a contaminação
+entre itens impossível de reintroduzir silenciosamente no futuro.
+
+### 13.5 O que foi feito
+
+Um único arquivo novo, sem tocar em código de produção:
+
+```text
+server/tests/centralVendasMotorItemCanonico.test.js
+```
+
+8 cenários (mapeados aos Casos 1–8 da spec do M5; o Caso 9 — duas contas —
+é coberto pela suíte completa de M1/M4, que continua passando sem
+alteração):
+
+1. pedido simples (1 item): receita/tarifa/custo/imposto/frete/resultado.
+2. multi-item heterogêneo: item A (custo 40, imposto 5%) e item B (custo
+   15, imposto 2%) nunca cruzam dados — também prova o rateio de frete
+   real (R$ 20,00 entre 1 e 3 unidades → 5,00 + 15,00, soma exata) e que
+   `resultado_pedido === Σ resultado_item`.
+3. regressão explícita de contaminação: números extremos (custo
+   1000×imposto 50% vs. custo 1×imposto 1%) — se o item posterior herdasse
+   dados do primeiro, a diferença apareceria em ordens de grandeza.
+4. coberto dentro do Caso 2 (frete real multi-item sem perda de centavo).
+5. item sem custo: bloqueia só a si mesmo no nível item (nunca herda o
+   custo do outro); o pedido segue a política atual all-or-nothing.
+6. frete ausente multi-item: `null` permanece `null` nos dois itens, nunca
+   confiança "confiável" por adivinhação.
+7. coberto dentro do Caso 2 (`resultado_pedido === Σ resultado_item`).
+8. resumo: `lucroContribuicao`/`faturamento` provados iguais à soma real
+   dos pedidos válidos (não hardcoded — o teste soma
+   `motor.pedidos.filter(pedidoEntraNoResultado)` e compara com
+   `motor.resumo`), com um pedido cancelado (excluído por completo) e um
+   pedido bloqueado (entra no `pedidosTotal`/`receitaBloqueada`, não no
+   `lucroContribuicao`) no mesmo cenário.
+
+### 13.6 Achado colateral (documentado, não corrigido — fora do escopo do M5)
+
+A conversão de `imposto_percentual` em `buildMotorFromOrders`
+(`costEntry.taxPercent > 1 ? taxPercent/100 : taxPercent`) trata qualquer
+valor `<= 1` como fração já decimal e qualquer valor `> 1` como percentual
+inteiro. Isso significa que um imposto de exatamente "1%" só pode ser
+representado na base como `0.01` — se alguém digitar `1` na base
+pretendendo dizer "1%", o motor interpreta como **100%**. Esse
+comportamento é anterior ao M5, está fora do invariante D (a fórmula do
+item, que M5 audita) e é uma convenção de entrada de dado da base de
+custos, não do motor de cálculo — registrado aqui para uma rodada futura
+avaliar, não corrigido nesta.
+
+### 13.7 O que continua fora do escopo
+
+`Portal/fechamentos-api.js` ainda tem `computeOrder()` recalculando
+custo/imposto/resultado no browser — lido e confirmado nesta auditoria
+como o motivo real do M9 (remoção do recálculo no frontend), mas **não
+tocado aqui**, por instrução explícita do M5. Ledger canônico (M6), API de
+leitura paginada (M7), frontend account-aware (M8), performance/bulk
+(M10), reembolso/devolução parcial/receita de envio/Mercado Pago/Ads/
+Full/promoções/custo histórico — nenhum desses temas foi tocado; M5 não
+alterou nenhuma regra financeira além de comprová-la.
+
+### 13.8 Testes
+
+```text
+centralVendasMotorItemCanonico.test.js   8 cenários (novo)
+
+suíte completa: server/tests/*.test.js → 100 arquivos, 98 passam
+falhas pré-existentes (confirmadas sem relação com esta mudança — nenhum
+arquivo de produção foi alterado no M5, só o teste novo foi adicionado):
+  - designStudioWorkspace.test.js
+  - mlTokenService.test.js (linha 313, asserção de SQL)
+```
 
 ### 11.9 Testes
 

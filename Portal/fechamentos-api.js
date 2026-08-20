@@ -246,10 +246,21 @@ function defaultFilters() { return { modo:'mes', dia:null, semana:null, de:null,
 function cloneFilters(filters) { return { ...defaultFilters(), ...(filters || {}) }; }
 const F = {
   clientes: [], cliente: null,
+  // M8 — identidade da tela passa a ser cliente + conta + período.
+  // F.contas: contas ML ativas do cliente atual (carregadas a cada troca de
+  // cliente, nunca herdadas do cliente anterior). F.clienteConta: conta
+  // selecionada (auto quando há só 1; escolha explícita obrigatória quando
+  // há 2+ — nunca contas[0]/"principal" silenciosos).
+  contas: [], clienteConta: null,
+  contasLoading: false,
+  contaLoadSeq: 0,        // guard de concorrência da troca de cliente (contas)
   periodo: null,          // { mode, dateFrom, dateTo } — período de análise
   rawPayload: null, viewPayload: null, visiblePayload: null,
   lastSyncBase: null,     // base vinculada informada pela última sincronização da sessão
-  sync: { runId: null, timer: null, clienteSlug: null }, // sync-run em andamento (M2) — sobrevive a reload via GET /sync-runs
+  // sync-run em andamento (M2) — sobrevive a reload via GET /sync-runs.
+  // clienteContaId (M8): identifica a QUAL conta esse acompanhamento pertence
+  // — nunca deixa a resposta de um poll de outra conta atualizar a tela.
+  sync: { runId: null, timer: null, clienteSlug: null, clienteContaId: null },
   loadSeq: 0,             // guard de concorrência: ignora resposta de fetch antigo
   loadAbort: null,        // AbortController do fetch em voo
   loading: false,
@@ -726,25 +737,19 @@ function buildMockPayload(slug) {
   p.periodo = { competencia:comp.competencia, inicio:comp.inicio, fim:comp.fim, label:comp.label };
   return p;
 }
-async function lerRespostaErro(res) {
-  try {
-    const data = await res.json();
-    return data?.erro || data?.message || data?.error || JSON.stringify(data);
-  } catch (_) {
-    try { return await res.text(); } catch (_) { return ''; }
-  }
-}
 const HTTP_ERRO_MSG = {
   401: 'Sessão expirada. Faça login novamente.',
   403: 'Você não tem permissão para acessar estes dados.',
 };
-async function carregarPayload(slug, dateFrom, dateTo, signal) {
+async function carregarPayload(slug, dateFrom, dateTo, clienteContaId, signal) {
   if (!slug) return null;
 
   let res;
   try {
+    const qs = new URLSearchParams({ dateFrom, dateTo });
+    if (clienteContaId) qs.set('clienteContaId', clienteContaId);
     res = await fetch(
-      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(slug)}?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`,
+      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(slug)}?${qs.toString()}`,
       { headers: { Authorization: "Bearer " + TOKEN }, signal }
     );
   } catch (err) {
@@ -755,7 +760,17 @@ async function carregarPayload(slug, dateFrom, dateTo, signal) {
   }
 
   if (!res.ok) {
-    const corpo = await lerRespostaErro(res);
+    const texto = await res.text().catch(() => '');
+    let corpoJson = null;
+    try { corpoJson = JSON.parse(texto); } catch (_) { /* corpo nao e JSON */ }
+    // M8, seção 28 — defensivo: mesmo com a conta já resolvida pela tela, o
+    // backend pode voltar a exigir escolha (conta nova cadastrada em outra
+    // aba, corrida de carregamento). Nunca escolhe uma conta sozinho aqui —
+    // devolve o sinal para carregarTela() atualizar as opções e bloquear.
+    if (res.status === 409 && corpoJson?.code === 'MULTIPLE_MARKETPLACE_ACCOUNTS') {
+      return { ok:false, erro: corpoJson.erro || 'Selecione a conta.', erroTipo:'ambiguidade_conta', contas: corpoJson.contas || [] };
+    }
+    const corpo = corpoJson?.erro || corpoJson?.message || corpoJson?.error || (corpoJson ? JSON.stringify(corpoJson) : texto);
     const mensagem = HTTP_ERRO_MSG[res.status] || corpo || `Erro ${res.status} ao carregar a Central de Vendas.`;
     console.error(`[fechamentos-api] HTTP ${res.status} em /operacao/central-vendas/${slug}:`, corpo);
     if (mockModeDevAtivo()) return buildMockPayload(slug);
@@ -875,12 +890,136 @@ function resetFilters() {
   resetCurvaAbcState();
 }
 
+/* ── CONTAS DO CLIENTE (M8 — account-aware) ──────────────────
+   Fonte oficial: GET /clientes/:slug/contas (Fundação de Contas — mesmo
+   endpoint que Cliente 360/Financeiro/Central de Margem já reaproveitam).
+   Nunca cria endpoint paralelo nem resolve conta no browser: só lista o
+   que o backend já considera ativo e deixa o operador (ou a regra
+   1-conta-auto) escolher. */
+async function carregarContasCliente(clienteSlug) {
+  if (!TOKEN || !clienteSlug) return [];
+  try {
+    const res = await fetch(
+      `${API_BASE}/clientes/${encodeURIComponent(clienteSlug)}/contas?marketplace=meli`,
+      { headers: { Authorization: 'Bearer ' + TOKEN } }
+    );
+    if (!res.ok) return [];
+    const json = await res.json();
+    return Array.isArray(json?.contas) ? json.contas.filter(c => c?.ativo !== false) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function renderContextoConta() {
+  const field = document.getElementById('fapi-conta-field');
+  const select = document.getElementById('fapi-conta-select');
+  if (!field || !select) return;
+
+  if (!F.cliente) { field.hidden = true; return; }
+
+  if (F.contasLoading) {
+    field.hidden = false;
+    select.disabled = true;
+    select.innerHTML = '<option value="">Carregando contas…</option>';
+    return;
+  }
+
+  // 0 conta cadastrada: cliente 100% legado — o backend resolve sozinho
+  // (fallback pré-existente). Nada para escolher, então nada para mostrar.
+  if (!F.contas.length) { field.hidden = true; return; }
+
+  field.hidden = false;
+  const precisaEscolha = F.contas.length > 1;
+  // 1 conta: select informativo (a única opção já está selecionada) — não
+  // há ambiguidade para resolver, mas o operador ainda vê qual conta está
+  // ativa. 2+: obrigatório escolher, nunca pré-selecionado.
+  select.disabled = !precisaEscolha;
+  const placeholder = precisaEscolha ? '<option value="">Selecione a conta…</option>' : '';
+  select.innerHTML = placeholder + F.contas.map(c => {
+    const selecionada = F.clienteConta?.id === c.id;
+    const nome = c.nome || c.slug || `Conta ${c.id}`;
+    return `<option value="${esc(c.id)}"${selecionada ? ' selected' : ''}>${esc(nome)}${c.is_primary ? ' (principal)' : ''}</option>`;
+  }).join('');
+}
+
+function onContaChange(contaIdRaw) {
+  const conta = F.contas.find(c => String(c.id) === String(contaIdRaw)) || null;
+  if (!conta || F.clienteConta?.id === conta.id) return;
+  // Troca de conta (seção 25): nunca deixa o sync/poll da conta anterior
+  // continuar nem sobrescrever a tela da conta nova.
+  pararPollingSync();
+  F.clienteConta = conta;
+  closeOrderDrawer({ restoreFocus: false });
+  F.lastSyncBase = null;
+  resetFilters();
+  renderContextoConta();
+  carregarTela();
+  retomarSyncEmAndamento();
+}
+
+/* Chamado sempre que o CLIENTE troca. Contas nunca são herdadas do
+   cliente anterior — recarregadas do zero a cada troca (seção 24).
+   Guard de concorrência (contaLoadSeq) evita que a resposta de contas de
+   um cliente antigo sobrescreva o cliente novo se o operador trocar duas
+   vezes rápido. */
+async function trocarContexto() {
+  const seq = ++F.contaLoadSeq;
+  F.contas = [];
+  F.clienteConta = null;
+
+  if (!F.cliente) {
+    F.contasLoading = false;
+    renderContextoConta();
+    carregarTela();
+    return;
+  }
+
+  F.contasLoading = true;
+  renderContextoConta();
+  renderAll();
+
+  const contas = await carregarContasCliente(F.cliente.slug);
+  if (seq !== F.contaLoadSeq) return; // outra troca de cliente aconteceu antes desta resolver
+
+  F.contasLoading = false;
+  F.contas = contas;
+  // Seção 21: 1 conta pode ser selecionada automaticamente; 2+ exige
+  // escolha explícita (nunca contas[0] nem "principal" silenciosos); 0
+  // contas preserva o comportamento legado (clienteContaId nunca enviado).
+  if (contas.length === 1) F.clienteConta = contas[0];
+  renderContextoConta();
+
+  if (contas.length <= 1) {
+    carregarTela();
+    retomarSyncEmAndamento();
+  } else {
+    // Bloqueado até escolha explícita — nenhum GET/sync parte com conta
+    // arbitrária (seção 21/28). carregarTela() também tem esta guarda,
+    // mas o estado já fica correto aqui sem esperar o primeiro render.
+    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null;
+    renderAll();
+  }
+}
+
 /* ÚNICO ponto de fetch. Só deve ser chamado em: init, troca de cliente/
    período, "Atualizar leitura" e depois de importar/sincronizar.
    Filtros/busca/paginação/aba NÃO passam por aqui — renders locais.
    Guard de concorrência (loadSeq) + AbortController ignoram resposta antiga. */
 async function carregarTela() {
   if (!F.cliente) {
+    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null;
+    F.loading = false;
+    renderAll();
+    return;
+  }
+
+  // M8 — nunca dispara leitura para conta ambígua (2+ contas ativas sem
+  // escolha explícita). renderAll() é quem desenha o bloqueio; aqui só
+  // garante que nenhum fetch parte sem conta resolvida quando ela é
+  // obrigatória (defesa contra chamadas diretas de outros pontos —
+  // onPeriodChange, refresh — enquanto a tela está nesse estado).
+  if (F.contas.length > 1 && !F.clienteConta) {
     F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null;
     F.loading = false;
     renderAll();
@@ -895,10 +1034,25 @@ async function carregarTela() {
   F.loading = true;
   renderAll();
 
-  const payload = await carregarPayload(F.cliente.slug, F.periodo.dateFrom, F.periodo.dateTo, F.loadAbort?.signal);
+  const clienteContaId = F.clienteConta?.id || null;
+  const payload = await carregarPayload(F.cliente.slug, F.periodo.dateFrom, F.periodo.dateTo, clienteContaId, F.loadAbort?.signal);
   if (seq !== F.loadSeq) return; // resposta de um carregamento mais antigo — ignora
 
   F.loading = false;
+
+  // M8, seção 28 — defensivo: o backend voltou a exigir escolha de conta
+  // mesmo com a tela já achando que tinha resolvido (ex.: conta nova
+  // cadastrada em outra aba durante a sessão). Nunca escolhe uma conta
+  // sozinho aqui: atualiza as opções e deixa o bloqueio assumir.
+  if (payload?.erroTipo === 'ambiguidade_conta') {
+    F.contas = payload.contas || [];
+    F.clienteConta = null;
+    renderContextoConta();
+    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null;
+    renderAll();
+    return;
+  }
+
   F.rawPayload = payload;
   if (!F.rawPayload?.ok) {
     renderAll();
@@ -1016,6 +1170,7 @@ const TAB_HASH = { visao:'#visao-geral', pedidos:'#pedidos', produtos:'#produtos
 
 function renderAll() {
   renderContextStatus();
+  renderContextoConta();
 
   const stateHost = document.getElementById('fapi-state-host');
   const tabs = document.getElementById('fapi-tabs');
@@ -1034,6 +1189,27 @@ function renderAll() {
       icon:'target', title:'Selecione um cliente para abrir a Central de Vendas',
       why:'O fechamento por pedido é sempre por cliente e por período de análise.',
       next:'Escolha um cliente e o período na barra acima.',
+    });
+    return;
+  }
+
+  // 1.5) Carregando as contas do cliente (M8)
+  if (F.contasLoading) {
+    showPanels(false);
+    stateHost.hidden = false;
+    stateHost.innerHTML = loadingState('Carregando contas do cliente…');
+    return;
+  }
+
+  // 1.6) 2+ contas ML ativas sem escolha explícita — nunca lê/sincroniza
+  // com conta arbitrária (M8, seção 21).
+  if (F.contas.length > 1 && !F.clienteConta) {
+    showPanels(false);
+    stateHost.hidden = false;
+    stateHost.innerHTML = emptyState({
+      icon:'target', title:'Selecione a conta do Mercado Livre',
+      why:'Este cliente tem mais de uma conta ativa — a Central precisa saber qual conta ler antes de mostrar qualquer número.',
+      next:'Escolha a conta no seletor da barra acima.',
     });
     return;
   }
@@ -1118,6 +1294,10 @@ function renderContextStatus() {
     if (p.motor?.geradoEm) parts.push(item('Gerado em', `<b>${esc(fmtDtHr(p.motor.geradoEm))}</b>`));
     if (p.motor?.importId != null) parts.push(item('Import', `<span class="vf-mono">#${esc(p.motor.importId)}</span>`));
     if (p.periodo?.label) parts.push(item('Intervalo', `<b>${esc(p.periodo.label)}</b>`));
+    // M8 — identidade agora é cliente + conta + período; a conta ativa fica
+    // visível ao lado do intervalo sempre que houver mais de uma cadastrada
+    // (com 0 ou 1 conta o seletor já mostra isso, sem precisar repetir aqui).
+    if (F.clienteConta && F.contas.length > 1) parts.push(item('Conta', `<b>${esc(F.clienteConta.nome || F.clienteConta.slug)}</b>`));
     if (F.lastSyncBase?.nome) parts.push(item('Base vinculada', `<b>${esc(F.lastSyncBase.nome)}</b>`));
     if (p.resumo?.claimsIndisponivel) {
       parts.push(item('Pós-venda', '<span class="vf-status is-warning">Não verificado</span>'));
@@ -2329,6 +2509,11 @@ function setAdminBusy(busy, activeBtnId) {
 async function executarImportacao() {
   if (!TOKEN) return;
   if (!F.cliente) { setActionStatus('Selecione um cliente antes de importar.', ACTION_TONE.warn); return; }
+  // M8, seção 27 — nunca resolve conta sozinho no browser: com 2+ contas
+  // ativas sem escolha, a importação fica bloqueada como qualquer outra
+  // ação dependente de conta (o backend também bloquearia com 409, mas o
+  // botão de importar fica fora dos painéis ocultos pelo estado de bloqueio).
+  if (F.contas.length > 1 && !F.clienteConta) { setActionStatus('Selecione a conta antes de importar.', ACTION_TONE.warn); return; }
   if (!F.periodo) { setActionStatus('Selecione o período antes de importar.', ACTION_TONE.warn); return; }
 
   // Usa F.arquivoImport (variável de estado) — não depende de input.files[0],
@@ -2344,6 +2529,10 @@ async function executarImportacao() {
     form.append('sales', arquivo);
     // Import (planilha) ainda agrupa por competência: deriva do mês do início do período.
     form.append('competencia', String(F.periodo.dateFrom).slice(0, 7));
+    // M8, seção 27 — a planilha também precisa da conta selecionada quando
+    // há contexto de conta; o backend continua resolvendo (base/grant), o
+    // browser só repassa a escolha já feita.
+    if (F.clienteConta?.id) form.append('clienteContaId', String(F.clienteConta.id));
 
     const res = await fetch(
       `${API_BASE}/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/importar-vendas`,
@@ -2379,23 +2568,29 @@ function pararPollingSync() {
   if (F.sync.timer) { clearTimeout(F.sync.timer); F.sync.timer = null; }
   F.sync.runId = null;
   F.sync.clienteSlug = null;
+  F.sync.clienteContaId = null;
 }
 
 async function executarSincronizacao() {
   if (!TOKEN) return;
   if (!F.cliente) { setActionStatus('Selecione um cliente antes de sincronizar.', ACTION_TONE.warn); return; }
+  // M8, seção 21/28 — nunca dispara sync para conta ambígua.
+  if (F.contas.length > 1 && !F.clienteConta) { setActionStatus('Selecione a conta antes de sincronizar.', ACTION_TONE.warn); return; }
   if (!F.periodo) { setActionStatus('Selecione o período antes de sincronizar.', ACTION_TONE.warn); return; }
 
   setAdminBusy(true, 'fapi-sync-btn');
   setActionStatus('Iniciando sincronização…', ACTION_TONE.info);
 
+  const clienteContaId = F.clienteConta?.id || null;
   try {
+    const body = { dateFrom: F.periodo.dateFrom, dateTo: F.periodo.dateTo };
+    if (clienteContaId) body.clienteContaId = clienteContaId;
     const res = await fetch(
       `${API_BASE}/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/sync-runs`,
       {
         method: 'POST',
         headers: { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dateFrom: F.periodo.dateFrom, dateTo: F.periodo.dateTo }),
+        body: JSON.stringify(body),
       }
     );
 
@@ -2407,7 +2602,8 @@ async function executarSincronizacao() {
     setActionStatus('Sincronização iniciada — acompanhando…', ACTION_TONE.info);
     F.sync.runId = json.run.id;
     F.sync.clienteSlug = F.cliente.slug;
-    pollSyncRun(json.run.id, F.cliente.slug);
+    F.sync.clienteContaId = clienteContaId;
+    pollSyncRun(json.run.id, F.cliente.slug, clienteContaId);
   } catch (err) {
     setActionStatus(`Erro: ${err?.message || 'Falha ao iniciar a sincronização.'}`, ACTION_TONE.danger);
     setAdminBusy(false);
@@ -2437,9 +2633,14 @@ function resumoConclusaoSync(run, sources, meta) {
     : `${base} ${partes.join(' · ')}.`;
 }
 
-async function pollSyncRun(runId, clienteSlugNoInicio) {
-  // Cliente trocado enquanto aguardava a resposta, ou outro poll assumiu — ignora.
-  if (F.sync.runId !== runId || F.cliente?.slug !== clienteSlugNoInicio) return;
+async function pollSyncRun(runId, clienteSlugNoInicio, clienteContaIdNoInicio = null) {
+  // Cliente/conta trocado enquanto aguardava a resposta, ou outro poll
+  // assumiu — ignora. Comparação de conta trata null/undefined como
+  // equivalentes (cliente legado sem conta selecionada).
+  const contextoMudou = () =>
+    F.sync.runId !== runId || F.cliente?.slug !== clienteSlugNoInicio ||
+    (F.clienteConta?.id || null) !== (clienteContaIdNoInicio || null);
+  if (contextoMudou()) return;
 
   try {
     const res = await fetch(
@@ -2449,7 +2650,7 @@ async function pollSyncRun(runId, clienteSlugNoInicio) {
     if (res.status === 401) { window.location.replace('index.html'); return; }
     const json = await res.json();
 
-    if (F.sync.runId !== runId || F.cliente?.slug !== clienteSlugNoInicio) return; // trocou de cliente durante o fetch
+    if (contextoMudou()) return; // trocou de cliente/conta durante o fetch
 
     if (!res.ok || !json?.ok) {
       pararPollingSync();
@@ -2461,7 +2662,7 @@ async function pollSyncRun(runId, clienteSlugNoInicio) {
     const run = json.run;
     if (run.status === 'queued' || run.status === 'running') {
       setActionStatus(run.status === 'queued' ? 'Sincronização na fila…' : 'Sincronizando pedidos via API do Mercado Livre…', ACTION_TONE.info);
-      F.sync.timer = setTimeout(() => pollSyncRun(runId, clienteSlugNoInicio), SYNC_POLL_MS);
+      F.sync.timer = setTimeout(() => pollSyncRun(runId, clienteSlugNoInicio, clienteContaIdNoInicio), SYNC_POLL_MS);
       return;
     }
 
@@ -2482,26 +2683,28 @@ async function pollSyncRun(runId, clienteSlugNoInicio) {
     await carregarTela();
     setActionStatus(resumoConclusaoSync(run, json.sources, meta), run.completenessStatus === 'partial' ? ACTION_TONE.warn : ACTION_TONE.ok);
   } catch (_) {
-    if (F.sync.runId === runId) F.sync.timer = setTimeout(() => pollSyncRun(runId, clienteSlugNoInicio), SYNC_POLL_MS);
+    if (!contextoMudou()) F.sync.timer = setTimeout(() => pollSyncRun(runId, clienteSlugNoInicio, clienteContaIdNoInicio), SYNC_POLL_MS);
   }
 }
 
-// Reload/troca de cliente-período: se já existir um sync-run queued/running
-// para este cliente NESTE MESMO PERÍODO, retoma o acompanhamento em vez de
-// deixar o usuário sem feedback. Filtra por dateFrom/dateTo no servidor
-// (M1/M2 hardening, seção 24) para nunca reconectar a um run de um mês
-// diferente do que está aberto na tela — o frontend ainda não manda
-// clienteContaId (isso é M8), então dois cliques em CONTAS diferentes do
-// mesmo cliente ainda podem colidir aqui; período, pelo menos, não.
+// Reload/troca de cliente-período-conta: se já existir um sync-run
+// queued/running para este cliente+CONTA neste mesmo período, retoma o
+// acompanhamento em vez de deixar o usuário sem feedback. M8: filtra por
+// clienteContaId no servidor além de dateFrom/dateTo (M1/M2 hardening,
+// seção 24/26) — dois cliques em CONTAS diferentes do mesmo cliente nunca
+// mais colidem aqui, porque a tela já sabe qual conta está ativa.
 async function retomarSyncEmAndamento() {
   if (!TOKEN || !F.cliente || !F.periodo) return;
+  if (F.contas.length > 1 && !F.clienteConta) return; // sem conta resolvida, nada a retomar ainda
   pararPollingSync();
+  const clienteContaId = F.clienteConta?.id || null;
   try {
     const params = new URLSearchParams({
       limit: '5',
       dateFrom: F.periodo.dateFrom,
       dateTo: F.periodo.dateTo,
     });
+    if (clienteContaId) params.set('clienteContaId', clienteContaId);
     const res = await fetch(
       `${API_BASE}/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/sync-runs?${params.toString()}`,
       { headers: { Authorization: 'Bearer ' + TOKEN } }
@@ -2513,9 +2716,10 @@ async function retomarSyncEmAndamento() {
 
     F.sync.runId = ativo.id;
     F.sync.clienteSlug = F.cliente.slug;
+    F.sync.clienteContaId = clienteContaId;
     setAdminBusy(true, 'fapi-sync-btn');
     setActionStatus('Retomando acompanhamento de sincronização em andamento…', ACTION_TONE.info);
-    pollSyncRun(ativo.id, F.cliente.slug);
+    pollSyncRun(ativo.id, F.cliente.slug, clienteContaId);
   } catch (_) { /* silencioso — não bloqueia a tela por causa do resume */ }
 }
 
@@ -2526,10 +2730,11 @@ function wireStatic() {
     F.cliente = F.clientes.find(c => c.slug === e.target.value) || null;
     closeOrderDrawer({ restoreFocus: false });
     F.lastSyncBase = null;
+    pararPollingSync(); // conta/cliente antigo nunca continua sendo acompanhado (seção 24)
     resetFilters();
-    carregarTela();
-    retomarSyncEmAndamento(); // reload/troca de cliente: reconecta a um sync-run já em andamento, se houver
+    trocarContexto(); // M8: recarrega contas do cliente novo, depois dados/retomada de sync
   });
+  document.getElementById('fapi-conta-select')?.addEventListener('change', e => onContaChange(e.target.value));
   document.getElementById('fapi-period-select')?.addEventListener('change', onPeriodChange);
   document.getElementById('fapi-period-apply')?.addEventListener('click', aplicarPeriodoCustom);
   document.getElementById('fapi-refresh-btn')?.addEventListener('click', () => {

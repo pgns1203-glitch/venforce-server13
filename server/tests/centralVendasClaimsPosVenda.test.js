@@ -19,7 +19,7 @@ const {
   extrairFreteSeller,
   extrairReceitaComprador,
 } = require("../services/centralVendas/centralVendasFreteService");
-const { buildPayloadFromRange } = require("../services/centralVendas/centralVendasService");
+const { buildPayloadFromRange, buildResumoFromRange } = require("../services/centralVendas/centralVendasService");
 
 let checks = 0;
 function ok(label, condition) {
@@ -112,8 +112,13 @@ function snapshotFromMotor(motor, resumo = motor.resumo) {
   };
 }
 
-// Carrega o módulo de tela num sandbox: as funções puras do Fechamento são
-// declarações de função e ficam acessíveis no contexto.
+// M9 — Portal/fechamentos-api.js não tem mais fórmula financeira própria
+// (computeOrder/buildFechamentoResumo/buildFechamentoComponentes foram
+// removidas: a tela só consulta a Read API). Este carregador continua
+// existindo só para a seção 17 provar, no arquivo REAL, que essas
+// declarações de fato não existem mais — a composição em si é validada
+// contra `buildResumoFromRange` (centralVendasService.js), que é quem
+// calcula esses agregados agora.
 function carregarTelaFechamento() {
   const src = fs.readFileSync(path.join(__dirname, "..", "..", "Portal", "fechamentos-api.js"), "utf8");
   const ctx = vm.createContext({
@@ -592,9 +597,19 @@ async function run() {
   eq("16. confiança parcial na tela", payloadSemClaims.motor.confianca, "parcial");
   eq("16. fechamento não pode concluir", payloadSemClaims.motor.podeConcluir, false);
 
-  /* ── 17. A composição exibida fecha matematicamente ─────────────────── */
+  /* ── 17. M9 — a composição fecha matematicamente NO BACKEND (a tela não
+     tem mais fórmula própria: buildFechamentoResumo/buildFechamentoComponentes/
+     fechamentoComposicaoResiduo foram removidas de Portal/fechamentos-api.js;
+     Composição/Qualidade da Visão Geral agora só formatam os campos que
+     buildResumoFromRange já calcula) ─────────────────────────────────── */
 
   const tela = carregarTelaFechamento();
+  ok("17. computeOrder não existe mais no arquivo real (M9)", tela.computeOrder === undefined);
+  ok("17. buildFechamentoResumo não existe mais (M9 — virou buildResumoFromRange no backend)", tela.buildFechamentoResumo === undefined);
+  ok("17. buildFechamentoComponentes não existe mais (M9 — Composição só formata summary/filteredSummary)", tela.buildFechamentoComponentes === undefined);
+  const fonte = fs.readFileSync(path.join(__dirname, "..", "..", "Portal", "fechamentos-api.js"), "utf8");
+  ok("17. a fórmula 'valor - frete - taxas - custo - imposto' não existe mais no arquivo",
+    !/valor\s*-\s*\(?o?\.?frete/.test(fonte));
 
   // Cenário misto: pedido completo, pedido sem frete real, pedido bloqueado por
   // custo ausente (receita existe, resultado não é calculável) e uma devolução.
@@ -630,27 +645,45 @@ async function run() {
     snapshotFromMotor(motorComposicao)
   );
 
-  const comps = tela.buildFechamentoComponentes(payloadComposicao, "todos");
-  const resumoTela = tela.buildFechamentoResumo(payloadComposicao, "todos");
-  const linhaBloqueada = comps.find((c) => c.comp === "Receita bloqueada fora do cálculo");
-  const linhaTotal = comps.find((c) => c.op === "=");
+  // buildResumoFromRange é a MESMA função que Portal/fechamentos-api.js
+  // consome via GET /read (summary/filteredSummary) — não existe mais
+  // segunda implementação no frontend para reconciliar contra.
+  const resumo = buildResumoFromRange({}, payloadComposicao.pedidos);
 
-  ok("17. existe linha explícita de receita bloqueada", !!linhaBloqueada);
-  eq("17. receita bloqueada aparece com o valor real", linhaBloqueada.valor, -591.1);
-  eq("17. receita bloqueada bate com o KPI", Math.abs(linhaBloqueada.valor), resumoTela.receitaBloqueada);
-  eq("17. faturamento dos cards não é reduzido", comps[0].valor, resumoTela.faturamento);
-  eq("17. linha final é o Resultado Parcial exibido", linhaTotal.valor, resumoTela.resultadoParcial);
-  eq("17. a composição fecha (resíduo zero)", tela.fechamentoComposicaoResiduo(comps), 0);
+  ok("17. receita bloqueada existe e é > 0 (pedido BLOQUEADO sem custo)", resumo.receitaBloqueada > 0);
+  eq("17. receita bloqueada bate com o valor real do pedido sem custo", resumo.receitaBloqueada, 591.1);
+  ok("17. faturamento dos cards não é reduzido pela receita bloqueada", resumo.faturamento > resumo.receitaBloqueada);
 
-  // A soma manual das linhas também tem de bater com o Resultado Parcial.
-  const somaLinhas = comps.filter((c) => c.op !== "=").reduce((s, c) => s + (Number(c.valor) || 0), 0);
-  eq("17. soma das linhas = resultado parcial",
-    Math.round(somaLinhas * 100) / 100, resumoTela.resultadoParcial);
+  // A composição (Receita − bloqueada − comissão − custo − imposto − frete)
+  // tem de fechar EXATAMENTE no Resultado Parcial exibido — mesma
+  // propriedade que a tela antiga provava localmente; agora é uma
+  // propriedade do backend, auditada aqui sem nenhuma segunda fórmula.
+  const linhas = [
+    resumo.faturamento,
+    -resumo.receitaBloqueada,
+    resumo.comissao == null ? 0 : -resumo.comissao,
+    resumo.custoTotal == null ? 0 : -resumo.custoTotal,
+    resumo.impostoTotal == null ? 0 : -resumo.impostoTotal,
+    resumo.freteTotal == null ? 0 : -resumo.freteTotal,
+  ];
+  const somaLinhas = Math.round(linhas.reduce((s, v) => s + v, 0) * 100) / 100;
+  eq("17. soma das linhas da Composição = Resultado Parcial (resíduo zero)", somaLinhas, resumo.lucroContribuicao);
 
-  // Mesmo recorte com um filtro rápido: continua fechando.
-  const compsValidos = tela.buildFechamentoComponentes(payloadComposicao, "validos");
-  eq("17. composição fecha também no recorte de válidos",
-    tela.fechamentoComposicaoResiduo(compsValidos), 0);
+  // Mesma propriedade também precisa valer sobre um recorte real (não o
+  // universo inteiro) — aqui, só os pedidos com resultado calculável.
+  const { pedidoMatchesQuick } = require("../services/centralVendas/centralVendasReadService");
+  const calculaveis = payloadComposicao.pedidos.filter((p) => pedidoMatchesQuick(p, "calculavel"));
+  const resumoCalculaveis = buildResumoFromRange({}, calculaveis);
+  const linhasCalc = [
+    resumoCalculaveis.faturamento,
+    -resumoCalculaveis.receitaBloqueada,
+    resumoCalculaveis.comissao == null ? 0 : -resumoCalculaveis.comissao,
+    resumoCalculaveis.custoTotal == null ? 0 : -resumoCalculaveis.custoTotal,
+    resumoCalculaveis.impostoTotal == null ? 0 : -resumoCalculaveis.impostoTotal,
+    resumoCalculaveis.freteTotal == null ? 0 : -resumoCalculaveis.freteTotal,
+  ];
+  const somaLinhasCalc = Math.round(linhasCalc.reduce((s, v) => s + v, 0) * 100) / 100;
+  eq("17. composição também fecha no recorte 'calculável' (resíduo zero)", somaLinhasCalc, resumoCalculaveis.lucroContribuicao);
 
   console.log(`\n${checks} verificacoes passaram. Pos-venda, receita de envio, reembolso e composicao OK.`);
   console.log("centralVendasClaimsPosVenda.test.js passed");

@@ -125,11 +125,53 @@ async function obterCentralVendasRead(req, res) {
       filtro: req.query.filtro,
       status: req.query.status,
       logistica: req.query.logistica,
+      diagbase: req.query.diagbase,
       search: req.query.search,
+      dataDe: req.query.dataDe,
+      dataAte: req.query.dataAte,
+      resumoFiltro: req.query.resumoFiltro,
     });
     return responder(res, 200, data);
   } catch (err) {
     return tratarErro(res, err, "obterCentralVendasRead");
+  }
+}
+
+// M9 — agregado diário ("Vendas por dia"), período inteiro. Aditiva: não
+// substitui o GET legado nem o /read acima.
+async function obterCentralVendasReadDaily(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+
+    const data = await centralVendasReadService.getCentralVendasReadDaily(slug, {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      marketplace: req.query.marketplace || "meli",
+      clienteContaId: req.query.clienteContaId || null,
+    });
+    return responder(res, 200, data);
+  } catch (err) {
+    return tratarErro(res, err, "obterCentralVendasReadDaily");
+  }
+}
+
+// M9 — Curva ABC / Produtos agregada, período inteiro. Aditiva: não
+// substitui o GET legado nem o /read acima.
+async function obterCentralVendasReadProducts(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+
+    const data = await centralVendasReadService.getCentralVendasReadProducts(slug, {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      marketplace: req.query.marketplace || "meli",
+      clienteContaId: req.query.clienteContaId || null,
+    });
+    return responder(res, 200, data);
+  } catch (err) {
+    return tratarErro(res, err, "obterCentralVendasReadProducts");
   }
 }
 
@@ -310,6 +352,8 @@ module.exports = {
   obterCentralVendas,
   obterCentralVendasRead,
   obterCentralVendasReadOrderDetail,
+  obterCentralVendasReadDaily,
+  obterCentralVendasReadProducts,
   importarVendas,
   sincronizarVendas,
   criarSyncRunController,

@@ -22,6 +22,19 @@ router.get(
   requireAutomacoesAccess,
   controller.obterCentralVendasReadOrderDetail
 );
+// M9 — agregados de leitura (Vendas por dia / Curva ABC), período inteiro.
+router.get(
+  "/:slug/read/daily",
+  authMiddleware,
+  requireAutomacoesAccess,
+  controller.obterCentralVendasReadDaily
+);
+router.get(
+  "/:slug/read/products",
+  authMiddleware,
+  requireAutomacoesAccess,
+  controller.obterCentralVendasReadProducts
+);
 
 router.post(
   "/:slug/importar-vendas",

@@ -1,6 +1,11 @@
 // server/tests/fechamentosApiAccountAware.test.js
 //
 // M8 — Frontend account-aware (Portal/fechamentos-api.js).
+// M9 — atualizado para a Read API canônica: carregarTela() agora busca
+// GET .../read + .../read/daily + .../read/products em paralelo (nunca
+// mais o GET legado do payload inteiro) — os 3 precisam levar
+// clienteContaId igualmente, e a resposta vira F.ok/F.summary/F.rows/
+// F.daily/F.products (não mais F.rawPayload).
 //
 // Portal/fechamentos-api.js é um script de browser sem module.exports (ver
 // docs/CENTRAL_VENDAS_V3_ARQUITETURA.md seção 9.6, mesma limitação já
@@ -14,11 +19,11 @@
 // carregar o script. `F` é `const` (não vira propriedade global sozinho),
 // então um segundo script minúsculo o expõe via `this.__F = F`.
 //
-// GET /operacao/central-vendas/:slug é sempre mockado para responder
-// { ok:false } — isso evita exercitar toda a renderização pesada de
-// payload (fora do escopo deste teste, que é só wiring de conta) sem
-// esconder nada: renderAll() já trata "!F.rawPayload?.ok" como um estado
-// leve (branch 3), nunca chamando renderFechamentoSection/renderOrdersPanel.
+// GET .../read (e .../read/daily, .../read/products) é sempre mockado para
+// responder { ok:false } — isso evita exercitar toda a renderização pesada
+// (fora do escopo deste teste, que é só wiring de conta) sem esconder nada:
+// renderAll() já trata "!F.ok" como um estado leve (branch 3), nunca
+// chamando renderFechamentoSection/renderOrdersPanel.
 
 const assert = require("assert");
 const fs = require("fs");
@@ -179,10 +184,16 @@ async function run() {
 
     eq("1conta: F.contas tem 1 conta", F.contas.length, 1);
     ok("1conta: auto-selecionada", F.clienteConta?.id === 501);
-    const getCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-a?"));
-    ok("1conta: GET central-vendas foi chamado", !!getCall);
+    const getCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-a/read?"));
+    ok("1conta: GET .../read foi chamado", !!getCall);
     ok("1conta: GET leva clienteContaId=501", getCall.url.includes("clienteContaId=501"));
-    console.log("  ✓ 1 conta: auto-seleciona e as chamadas levam seu id");
+    const dailyCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-a/read/daily?"));
+    ok("1conta: GET .../read/daily também é chamado (M9)", !!dailyCall);
+    ok("1conta: .../read/daily leva clienteContaId=501", dailyCall.url.includes("clienteContaId=501"));
+    const productsCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-a/read/products?"));
+    ok("1conta: GET .../read/products também é chamado (M9)", !!productsCall);
+    ok("1conta: .../read/products leva clienteContaId=501", productsCall.url.includes("clienteContaId=501"));
+    console.log("  ✓ 1 conta: auto-seleciona e as 3 chamadas de leitura (read/daily/products) levam seu id");
   }
 
   // ── 2 contas: exige escolha; nenhum GET/sync é disparado para conta arbitrária ──
@@ -208,8 +219,8 @@ async function run() {
 
     eq("2contas: F.contas tem 2", F.contas.length, 2);
     eq("2contas: nenhuma conta pré-selecionada (nunca contas[0])", F.clienteConta, null);
-    const getCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-a?"));
-    ok("2contas: GET NUNCA disparado sem escolha explicita", !getCall);
+    const getCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-a/read"));
+    ok("2contas: nenhuma leitura (read/daily/products) disparada sem escolha explicita", !getCall);
 
     // Tentar sincronizar/importar sem conta escolhida também não deve chamar o backend financeiro.
     await sandbox.executarSincronizacao();
@@ -234,8 +245,14 @@ async function run() {
       handlers: [
         ["/contas?marketplace=meli", () => jsonResponse(200, { ok: true, contas })],
         ["/operacao/central-vendas/", async (url) => {
-          if (url.includes("clienteContaId=10")) { await pendenteA; return jsonResponse(200, { ok: true, motor: { status: "persistido" }, resumo: {}, produtos: {}, pedidos: [], periodo: {}, cliente: {}, dono: "A" }); }
-          return jsonResponse(200, { ok: true, motor: { status: "persistido" }, resumo: {}, produtos: {}, pedidos: [], periodo: {}, cliente: {}, dono: "B" });
+          // M9: as 3 chamadas (read/read-daily/read-products) da conta A
+          // ficam pendentes no MESMO promise — resolvem juntas quando
+          // resolveA() é chamado, simulando uma resposta atrasada de rede.
+          if (url.includes("clienteContaId=10")) {
+            await pendenteA;
+            return jsonResponse(200, { ok: true, motor: { status: "persistido", origemPrincipal: "A" }, summary: {}, filteredSummary: {}, rows: [], pagination: { page: 1, limit: 50, total: 0, totalPages: 0 }, dias: [], produtos: [], periodo: {}, cliente: {} });
+          }
+          return jsonResponse(200, { ok: true, motor: { status: "persistido", origemPrincipal: "B" }, summary: {}, filteredSummary: {}, rows: [], pagination: { page: 1, limit: 50, total: 0, totalPages: 0 }, dias: [], produtos: [], periodo: {}, cliente: {} });
         }],
       ],
     });
@@ -246,20 +263,20 @@ async function run() {
     await flush();
     eq("trocaAB: 2 contas, nenhuma selecionada ainda", F.clienteConta, null);
 
-    sandbox.onContaChange("10"); // dispara GET(A) que fica pendente (pendenteA)
+    sandbox.onContaChange("10"); // dispara as leituras de A, que ficam pendentes (pendenteA)
     await flush();
     ok("trocaAB: conta A selecionada", F.clienteConta?.id === 10);
 
     sandbox.onContaChange("11"); // troca para B ANTES de A responder
     await flush();
     ok("trocaAB: conta B selecionada", F.clienteConta?.id === 11);
-    eq("trocaAB: payload apos B ja resolvido e o de B", F.rawPayload?.dono, "B");
+    eq("trocaAB: dado apos B ja resolvido e o de B", F.motor?.origemPrincipal, "B");
 
     resolveA(); // A finalmente responde
     await flush();
-    eq("trocaAB: resposta atrasada de A NUNCA sobrescreve B", F.rawPayload?.dono, "B");
+    eq("trocaAB: resposta atrasada de A NUNCA sobrescreve B", F.motor?.origemPrincipal, "B");
     eq("trocaAB: conta continua B", F.clienteConta?.id, 11);
-    console.log("  ✓ troca A→B: resposta atrasada de A não substitui B");
+    console.log("  ✓ troca A→B: resposta atrasada de A não substitui B (read/daily/products)");
   }
 
   // ── sync: POST /sync-runs recebe a conta correta ──
@@ -365,7 +382,7 @@ async function run() {
       log,
       handlers: [
         ["/contas?marketplace=meli", () => jsonResponse(200, { ok: true, contas: [] })],
-        ["/operacao/central-vendas/", () => jsonResponse(200, { ok: true, motor: { status: "persistido" }, resumo: {}, produtos: {}, pedidos: [], periodo: {}, cliente: {} })],
+        ["/operacao/central-vendas/", () => jsonResponse(200, { ok: true, motor: { status: "persistido" }, summary: {}, filteredSummary: {}, rows: [], pagination: { page: 1, limit: 50, total: 0, totalPages: 0 }, dias: [], produtos: [], periodo: {}, cliente: {} })],
       ],
     });
     const F = sandbox.__F;
@@ -376,10 +393,10 @@ async function run() {
 
     eq("legado: 0 contas", F.contas.length, 0);
     eq("legado: nenhuma conta selecionada", F.clienteConta, null);
-    const getCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-legado?"));
-    ok("legado: GET ainda e chamado normalmente (fallback do backend)", !!getCall);
+    const getCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-legado/read?"));
+    ok("legado: GET .../read ainda e chamado normalmente (fallback do backend)", !!getCall);
     ok("legado: clienteContaId NUNCA enviado", !getCall.url.includes("clienteContaId"));
-    ok("legado: payload carregado com sucesso", F.rawPayload?.ok === true);
+    ok("legado: dado carregado com sucesso", F.ok === true);
     console.log("  ✓ legado: cliente sem cliente_contas continua funcionando, sem enviar clienteContaId");
   }
 

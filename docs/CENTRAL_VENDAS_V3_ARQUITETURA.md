@@ -2016,3 +2016,250 @@ Suíte completa: 102/104 arquivos `*.test.js` passam (as mesmas 2 falhas
 pré-existentes — `designStudioWorkspace.test.js` e
 `mlTokenService.test.js` linha 313 — confirmadas sem relação com esta
 mudança).
+
+## 17. M9 — Frontend consome cálculo canônico do backend
+
+### 17.1 Objetivo
+
+Eliminar a segunda fórmula financeira que `Portal/fechamentos-api.js`
+mantinha desde a V1/mock: `computeOrder()` recalculava
+custo/imposto/resultado/confiança cruzando `payload.pedidos` com
+`payload.produtos[mlb].base` no browser, ignorando os campos que o
+motor (M5/M6) já persistia por item. A partir do M9:
+
+```
+BACKEND  calcula · persiste · classifica · agrega
+              ↓
+FRONTEND consulta · filtra/navega · formata · renderiza
+```
+
+Nenhuma regra financeira foi alterada — só relocada. Onde a Read API
+(M7) ainda não tinha o agregado que a tela precisava (Vendas por dia,
+Curva ABC, Composição/Qualidade do fechamento), o M9 estendeu o
+**mínimo** contrato de leitura necessário, sempre reaproveitando
+`buildPayloadFromRange`/`pedidoEntraNoResultado` (M1-M7) — nunca uma
+segunda seleção de snapshot nem uma segunda fórmula.
+
+### 17.2 Inventário do que existia (e foi removido)
+
+Classificação da auditoria em `Portal/fechamentos-api.js` antes do M9:
+
+| Função | Categoria | Destino |
+|---|---|---|
+| `computeOrder` | C — cálculo financeiro | **removida** |
+| `applyFilters`, `sanitizeFilters`, `pedidoMatchesQuick/Status/Search` (locais) | B — filtro | **removida** (virou query param do `/read`) |
+| `getSearchedPedidos`, `getVisiblePedidos`, `recomputeView` | B — filtro/estado | **removida** |
+| `fechamentoOrders(Filtered)`, `fechSum` | D — agregação | **removida** |
+| `buildFechamentoResumo` | D — agregação | **removida** → `buildResumoFromRange` (backend) |
+| `buildFechamentoComponentes`, `fechamentoComposicaoResiduo` | D — agregação | **removida** → campos de `summary`/`filteredSummary`, tela só formata (`buildComposicaoRows`) |
+| `buildFechamentoQualidade` | D — agregação | **removida** → campos de `summary` |
+| `buildFechamentoPorDia`, `buildDailySales` | D — agregação | **removida** → `GET .../read/daily` |
+| `aggByProduct`, `buildCurvaAbcRows` (parte de agregação) | D — agregação | **removida** → `GET .../read/products`; a parte de grupo/ordenação/busca (B) virou `buildCurvaAbcView`, local sobre a lista já agregada |
+| `getProduto`, `hasProductAds` | leitura de catálogo mock | **removida** (linha já traz `custoStatus`/`adsStatus`) |
+| `findOrderById` (síncrono) | leitura local | **removida** → `openOrderDrawer` assíncrono, busca `GET .../read/orders/:rowId` |
+| `esc/num/money/pct/round2/fmtDt/…`, `statusTag/confStatus/tagFull/tagAds`, `emptyState/loadingState` | A — apresentação | mantidas |
+
+### 17.3 Extensões mínimas da Read API
+
+Todas aditivas, sob `/operacao/central-vendas/:slug/...`, mesma
+autorização do `/read` (M7):
+
+```
+GET .../read
+  + dataDe, dataAte     → recorte de data DENTRO do período (clique no dia)
+  + diagbase            → com_custo | sem_custo (as opções no_diag/fora_diag
+                           dependiam de produtos[mlb].diag.presente, que o
+                           motor real nunca preenche — sempre false — e
+                           foram descontinuadas, seção 17.7)
+  + resumoFiltro        → todos | sem_custo | sem_frete | bloqueados |
+                           calculavel (mesmos valores de `filtro`, mas um
+                           CONCEITO DIFERENTE: recorta o resumo da Visão
+                           Geral, nunca as `rows`)
+  summary               → inalterado (M7), agora com mais campos (17.4)
+  + filteredSummary     → summary computado só sobre o recorte de
+                           `resumoFiltro`; contrato DISTINTO de `summary`
+                           (nunca reaproveita "global" com outro sentido —
+                           seção 15.5/M7)
+
+GET .../read/daily      (novo)
+  → { ok, cliente, periodo, contexto, snapshot, motor, dias:[...] }
+  dias: agregado por data, período inteiro, independente de
+  página/filtro da tabela de Pedidos — cada linha:
+  { data, pedidos, unidades, faturamento, comissao, custo, imposto,
+    receitaBloqueada, cancelProblema, semFrete, semCusto, produtos,
+    topProduto:{mlb,titulo,faturamento}|null }
+
+GET .../read/products   (novo)
+  → { ok, cliente, periodo, contexto, snapshot, motor, produtos:[...],
+      totalFaturamento }
+  produtos: Curva ABC agregada por MLB, período inteiro — cada linha:
+  { mlb, sku, titulo, semProduto, temCusto, custoUnit, unidades, pedidos,
+    faturamento, receitaBloqueada, comissao, ticketMedio, pctFat,
+    acumPctFat, curva:"A"|"B"|"C"|null, logisticaTipo }
+```
+
+Implementadas em `centralVendasService.js` (`buildDiario`,
+`buildAbcProdutos`, extensão de `buildResumoFromRange`) e expostas por
+`centralVendasReadService.js`/`centralVendasController.js`/
+`centralVendasRoutes.js` — nenhuma segunda seleção de snapshot: as três
+rotas chamam a MESMA `resolveRangeContext` + `buildPayloadFromRange` do
+`/read`.
+
+### 17.4 `summary`/`filteredSummary` — o que foi adicionado
+
+`buildResumoFromRange` (única função, usada por `summary` E
+`filteredSummary`) ganhou: `unidades`, `ticket`, `cancelados`,
+`problemas`, `full`, `normal`, `comissao`, `custoTotal`, `impostoTotal`,
+`freteTotal`, `cobertura` (`{comissao,custo,imposto,frete,resultado}`,
+% da receita válida), `semCusto`, `semFrete`, `pctFatBloqueado`,
+`confiancaFechamento` (`confiavel|parcial|insuficiente` — 3 estados,
+distinto do `resumo.confianca` global orientado a claims).
+
+**Achado corrigido durante a implementação:** os quatro totais
+(`comissao/custoTotal/impostoTotal/freteTotal`) e a `cobertura` têm de
+somar sobre os pedidos **calculáveis** (`resultado != null`), nunca
+sobre todos os `validos` — um pedido bloqueado por custo ausente pode
+ter tarifa/frete reais persistidos, e somá-los incluiria uma linha que
+a Composição não usa no Resultado Parcial, quebrando a propriedade
+"soma das linhas = Resultado Parcial" (resíduo ≠ 0). Auditado com
+1.874 pedidos reais (`comprou_enviou_chegou`, 07/2026): resíduo = 0.
+
+### 17.5 Como a tela consome (dois pontos de fetch, não um)
+
+```
+carregarTela()            → cliente/conta/período mudou: Promise.all(
+                             GET /read (page=1), GET /read/daily,
+                             GET /read/products)
+atualizarListaEResumo()   → filtro/busca/ordenação/página/dia/recorte
+                             da Visão Geral mudou: só refaz GET /read
+                             (rows+summary+filteredSummary); daily/
+                             products não dependem desses filtros
+```
+
+`F.summary`/`F.rows`/`F.pagination`/`F.daily`/`F.products` substituem
+`F.rawPayload`. Guard de concorrência dobrado: `F.loadSeq`/`F.loadAbort`
+para a carga principal, `F.orders.loadSeq`/`F.orders.loadAbort` para a
+lista — a resposta de um filtro antigo nunca sobrescreve um mais novo.
+
+### 17.6 Drawer (M6 aparece de verdade)
+
+`openOrderDrawer(rowId)` é assíncrono: mostra um estado de carregamento
+e busca `GET .../read/orders/:rowId`. O corpo passa a ter uma seção
+"Itens do pedido" (contrato M5 por item) e "Composição financeira
+(ledger)" — cada componente do M6 (`tipo/valor/confianca/escopo/
+incluidoNoResultado/fonte/obs`) listado individualmente, ordenado por
+`receita_produto → tarifa_venda → custo_produto → imposto_interno →
+frete_seller → receita_envio → cancelamento_reembolso`, com o Resultado
+como linha de total lida direto de `pedido.resultado` — nunca somado
+no browser.
+
+**Achado real corrigido durante a verificação (seção 17.10):**
+`getCentralVendasReadOrderDetail` (M7) comparava `o.rowId === rowIdNum`
+— `pedido_row_id` é `bigint` no Postgres e o driver `pg` devolve bigint
+como *string* (evita perda de precisão), então essa comparação estrita
+sempre falhava em produção (`"89169" === 89169` → `false`). Nenhum
+teste com fake db pegou isso porque os fixtures usavam `id` numérico.
+Como o drawer nunca chamava esse endpoint antes do M9 (a V1 resolvia o
+pedido localmente), o bug nunca tinha sido exercitado. Corrigido para
+`String(o.rowId) === String(rowIdNum)`.
+
+### 17.7 Simplificações conscientes (documentadas, não removidas por remover)
+
+- **Filtro "Mídia" (com_ads/sem_ads) e "Diagnóstico" (no_diag/fora_diag)
+  da aba Pedidos**: `produtos[mlb].ads.status` e `.diag.presente` são
+  sempre `"ausente"`/`false` no motor real (nunca preenchidos —
+  integração de Ads e Motor de Margem ficam fora deste marco, seções
+  20-22 do prompt original). Esses dois filtros já eram
+  matematicamente inertes com dado real antes do M9 (sempre 0 ou 100%
+  dos resultados); `com_custo`/`sem_custo` (que usam `custoStatus`,
+  campo real) foram preservados. `adsStatus` continua na linha e no
+  drawer para quando Ads for integrado.
+- **Régua de "Vendas por dia" respeitando filtros avançados de
+  pedido**: antes do M9, a régua (mas não a tabela "Resumo por dia"
+  logo abaixo) aplicava os filtros de logística/mídia/diagnóstico/
+  status da aba Pedidos — uma inconsistência entre as duas visões do
+  mesmo bloco. `GET /read/daily` é sempre período inteiro
+  (independente de filtro), então as duas agora mostram sempre os
+  MESMOS números — mais consistente que antes, documentado aqui como
+  mudança de comportamento.
+- **`modo:'semana'`/`'ultimos7'` do filtro de data**: não havia
+  nenhum seletor na UI que alcançasse esses valores (só o clique num
+  dia, que sempre usava `modo:'intervalo'` com `de === ate`) — código
+  morto removido; o recorte de data do backend usa só `dataDe`/`dataAte`.
+
+### 17.8 Mock (dev-only)
+
+`MOCK_ROWS` deixou de ser uma tabela de pedidos brutos com um catálogo
+de produtos ao lado (que o antigo `computeOrder` cruzava): agora são 6
+pedidos com o contrato **já canônico** — `resultado`/`custo`/`imposto`/
+`confianca`/`itens`/`componentes` escritos à mão como constantes,
+cobrindo os 6 perfis de confiança/estado (confiável, multi-item,
+bloqueado, cancelado, com_problema, parcial). `buildMockRead/Daily/
+Products/OrderDetail` só filtram/ordenam/somam esses campos já prontos
+— isolados neste bloco, nunca importados por nenhum caminho de
+produção (seção 23 do prompt original: contrato já canônico, não
+"segunda preparação com fórmula própria").
+
+### 17.9 O que continua fora do escopo
+
+Ads, Mercado Pago, custos Full, histórico de custo, `imposto_percentual`
+> 1 vs ≤ 1, ajuste de plataforma (gap do M6), regra de devolução — nada
+disso foi tocado. `Portal/fechamentos-api.js` não foi migrado para
+React nem redesenhado (mesma identidade visual: abas, drawer, Curva ABC
+integrada). Otimização do backend (SQL pagination real, streaming) fica
+para M10, igual ao que M9 recebeu de M7.
+
+### 17.10 Testes
+
+- `server/tests/centralVendasM9ReadAggregates.test.js` (31 verificações):
+  `summary`/`filteredSummary` (honestidade de ausência, contrato
+  distinto), `dataDe`/`dataAte` recortando `rows` sem afetar `summary`,
+  `diagbase`, `/read/daily` (ausência ≠ 0, cancelado fora do
+  faturamento), `/read/products` (curva ABC, `custoUnit` do catálogo —
+  nunca da divisão do total de um pedido multi-item), account-aware nos
+  3 endpoints novos.
+- `server/tests/centralVendasClaimsPosVenda.test.js`, seção 17,
+  atualizada: a prova de que a Composição fecha matematicamente
+  (resíduo zero) migrou de `tela.buildFechamentoComponentes` (removida)
+  para `buildResumoFromRange` (backend) — inclui um scan no arquivo
+  real confirmando que `computeOrder`/`buildFechamentoResumo`/
+  `buildFechamentoComponentes` não existem mais.
+- `server/tests/fechamentosApiAccountAware.test.js` (M8, atualizado):
+  as mesmas 7 verificações de account-awareness, agora contra `GET
+  .../read` + `.../read/daily` + `.../read/products` (3 chamadas
+  paralelas) em vez do GET legado; `F.rawPayload` → `F.ok`/`F.motor`.
+- `Portal/fechamentos-api.test.js` (novo, 23 verificações): carrega o
+  arquivo REAL num `vm.Context` com DOM mínimo (mesmo padrão dos testes
+  acima) e prova, direto no arquivo de produção: `computeOrder` não
+  existe; pedido multi-item nunca é recalculado pelo "primeiro
+  produto"; `summary` idêntico entre páginas/filtro, `filteredSummary`
+  é contrato distinto; custo/frete ausentes continuam `null`;
+  `renderAll()` não lança exceção com dado carregado, zero pedidos, nem
+  `/read` falho; o drawer monta o corpo para os 6 perfis do fixture sem
+  exceção.
+- **Verificação end-to-end contra o servidor e o Postgres reais**
+  (não persistida como teste automatizado — feita manualmente durante
+  esta rodada): servidor local reiniciado com o código deste marco,
+  `GET .../read` + `.../read/daily` + `.../read/products` chamados
+  contra um cliente real com 1.874 pedidos publicados (07/2026) —
+  paginação e `summary` estáveis entre páginas, soma diária de pedidos
+  bate com `summary.pedidosTotal`, soma do faturamento por produto bate
+  com `totalFaturamento`, resíduo da Composição = 0. Foi essa
+  verificação que encontrou o bug de `rowId` da seção 17.6.
+
+Suíte completa: 104/104 arquivos `*.test.js` (mais o novo
+`Portal/fechamentos-api.test.js`) passam, exceto as mesmas 2 falhas
+pré-existentes já documentadas na seção 16.10 (confirmadas com a mesma
+causa, sem relação com esta mudança).
+
+### 17.11 Arquivos alterados
+
+Backend: `centralVendasService.js` (`buildResumoFromRange` estendida,
+`buildDiario`, `buildAbcProdutos`), `centralVendasReadService.js`
+(`resumoFiltro`/`dataDe`/`dataAte`/`diagbase`, `getCentralVendasReadDaily`,
+`getCentralVendasReadProducts`, fix do `rowId`), `centralVendasController.js`,
+`centralVendasRoutes.js`.
+Frontend: `Portal/fechamentos-api.js` (reescrito).
+Testes: `centralVendasM9ReadAggregates.test.js` (novo),
+`fechamentos-api.test.js` (novo), `centralVendasClaimsPosVenda.test.js`
+(seção 17 migrada), `fechamentosApiAccountAware.test.js` (endpoints M9).

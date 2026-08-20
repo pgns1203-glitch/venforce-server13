@@ -501,6 +501,84 @@ function buildResumoFromRange(resumoBase, pedidos) {
     );
   }
 
+  // M9 — agregados que Portal/fechamentos-api.js antes recalculava localmente
+  // sobre `payload.pedidos` inteiro (buildFechamentoResumo/
+  // buildFechamentoComponentes/buildFechamentoQualidade, removidas do
+  // frontend nesse marco). Nenhuma fórmula nova: soma direta de campos já
+  // canônicos do pedido (M5/M6), com a MESMA honestidade de ausência —
+  // campo null em TODOS os pedidos válidos permanece null aqui, nunca vira
+  // 0 escondendo ausência.
+  const unidades = validos.reduce((sum, pedido) => sum + Number(pedido.unidades || 0), 0);
+  const ticket = validos.length ? round2(faturamento / validos.length) : null;
+  // Cancelados/problemas exclui devolução para não contar a mesma linha em
+  // dois cartões (devolução já tem contagem própria por posVendaTipo,
+  // acima) — mesma regra que a tela aplicava localmente.
+  const cancelados = pedidos.filter((pedido) => pedido.status === "cancelado" && pedido.posVendaTipo !== "devolucao").length;
+  const problemas = pedidos.filter((pedido) => pedido.status === "com_problema" && pedido.posVendaTipo !== "devolucao").length;
+  // Contagem dos chips rápidos da aba Pedidos (Portal/fechamentos-api.js) —
+  // mesmo predicado de sempre (pedido.full), sobre TODOS os pedidos (não só
+  // válidos), igual ao recorte "cancel_problema" já existente.
+  const full = pedidos.filter((pedido) => pedido.full === true).length;
+  const normal = pedidos.filter((pedido) => pedido.full !== true).length;
+
+  // Gate pela mesma base do Resultado Parcial (comResultado), não por
+  // `validos` inteiro: o motor (M5) trata frete/tarifa/imposto ausentes
+  // como efeito zero DENTRO do resultado de um pedido calculável (custo é o
+  // único bloqueador — vira `bloqueado`/resultado null). Somar
+  // comissão/custo/imposto/frete sobre `validos` incluiria um pedido
+  // bloqueado que por acaso já tem tarifa/frete persistidos, e a soma das
+  // linhas da Composição deixaria de bater com o Resultado Parcial exibido
+  // (resíduo != 0) — auditado em
+  // server/tests/centralVendasClaimsPosVenda.test.js, seção 17.
+  const somaCampoSeTiver = (campo) => {
+    const comDado = comResultado.filter((pedido) => pedido[campo] !== null && pedido[campo] !== undefined);
+    return {
+      valor: comDado.length ? round2(comDado.reduce((sum, pedido) => sum + Number(pedido[campo] || 0), 0)) : null,
+      count: comDado.length,
+    };
+  };
+  const comissaoAgg = somaCampoSeTiver("taxas");
+  const custoAgg = somaCampoSeTiver("custo");
+  const impostoAgg = somaCampoSeTiver("imposto");
+  const freteAgg = somaCampoSeTiver("frete");
+
+  // Cobertura: qual % da receita válida cada total agregado representa —
+  // necessário porque faturamento soma TODOS os pedidos válidos, enquanto
+  // comissão/custo/imposto/frete/resultado só somam os calculáveis (mesma
+  // base de `somaCampoSeTiver` acima — nunca `validos` inteiro, pelo motivo
+  // já explicado).
+  const coberturaDoCampo = (campo) => {
+    const comDado = comResultado.filter((pedido) => pedido[campo] !== null && pedido[campo] !== undefined);
+    if (!comDado.length || faturamento <= 0) return null;
+    const soma = round2(comDado.reduce((sum, pedido) => sum + Number(pedido.valor || 0), 0));
+    return round2((soma / faturamento) * 100);
+  };
+  const cobertura = {
+    comissao: coberturaDoCampo("taxas"),
+    custo: coberturaDoCampo("custo"),
+    imposto: coberturaDoCampo("imposto"),
+    frete: coberturaDoCampo("frete"),
+    resultado: coberturaDoCampo("resultado"),
+  };
+  // semCusto/semFrete (Qualidade do fechamento) contam sobre TODOS os
+  // pedidos válidos, não só os calculáveis — é exatamente por causa desses
+  // pedidos (custo/frete ausente) que eles ficam bloqueados/parciais.
+  const semCusto = validos.filter((pedido) => pedido.mlb && pedido.custoStatus === "ausente").length;
+  const semFrete = validos.filter((pedido) => pedido.frete === null || pedido.frete === undefined).length;
+
+  // Confiança do FECHAMENTO deste recorte (distinta de `resumo.confianca`,
+  // que é sempre do snapshot/claims global) — mesma regra de 3 estados que
+  // a tela aplicava localmente: sem pedido válido ou sem nenhum resultado
+  // calculável é "insuficiente" (não "confiável" por omissão); todos os
+  // pedidos válidos com resultado real é "confiavel"; qualquer parcial
+  // rebaixa para "parcial". O ajuste por claims indisponível (global) é
+  // aplicado por quem chama esta função, que já tem esse sinal à mão.
+  const confiancaFechamento = !validos.length || !comResultado.length
+    ? "insuficiente"
+    : validos.every((pedido) => pedido.confianca === "confiavel")
+      ? "confiavel"
+      : "parcial";
+
   return {
     ...resumoBase,
     pedidosTotal: pedidos.length,
@@ -528,7 +606,156 @@ function buildResumoFromRange(resumoBase, pedidos) {
     receitaParcial,
     receitaBloqueada,
     totaisPorTipo,
+    // M9 — ver comentário acima.
+    unidades,
+    ticket,
+    cancelados,
+    problemas,
+    full,
+    normal,
+    comissao: comissaoAgg.valor,
+    custoTotal: custoAgg.valor,
+    impostoTotal: impostoAgg.valor,
+    freteTotal: freteAgg.valor,
+    cobertura,
+    semCusto,
+    semFrete,
+    pctFatBloqueado: faturamento > 0 ? round2((receitaBloqueada / faturamento) * 100) : null,
+    confiancaFechamento,
   };
+}
+
+// M9 — agregado diário puro (D): soma os mesmos campos já canônicos do
+// pedido (M5/M6) por data, sem recalcular nada. Substitui o par
+// buildFechamentoPorDia/buildDailySales que existia no frontend por UM
+// único contrato, período inteiro, independente de página/filtro da tabela
+// de pedidos (zero dias — calendário completo — fica a cargo do frontend,
+// que já sabia preencher os dias sem pedido a partir de `periodo`).
+function buildDiario(pedidos) {
+  const map = new Map();
+  for (const pedido of pedidos || []) {
+    if (!pedido.data) continue;
+    if (!map.has(pedido.data)) {
+      map.set(pedido.data, {
+        data: pedido.data, pedidos: 0, unidades: 0, faturamento: 0,
+        comissao: 0, custo: 0, imposto: 0, receitaBloqueada: 0,
+        cancelProblema: 0, semFrete: 0, semCusto: 0,
+        _comissao: false, _custo: false, _imposto: false,
+        _produtos: new Set(), _topMap: new Map(),
+      });
+    }
+    const dia = map.get(pedido.data);
+    const valido = pedidoEntraNoResultado(pedido);
+    dia.pedidos += 1;
+    if (valido) {
+      dia.faturamento += Number(pedido.valor || 0);
+      dia.unidades += Number(pedido.unidades || 0);
+      if (pedido.mlb) {
+        dia._produtos.add(pedido.mlb);
+        const atual = dia._topMap.get(pedido.mlb) || { valor: 0, titulo: pedido.produto?.titulo || pedido.mlb };
+        atual.valor += Number(pedido.valor || 0);
+        dia._topMap.set(pedido.mlb, atual);
+      }
+      if (pedido.taxas !== null && pedido.taxas !== undefined) { dia.comissao += Number(pedido.taxas); dia._comissao = true; }
+      if (pedido.custo !== null && pedido.custo !== undefined) { dia.custo += Number(pedido.custo); dia._custo = true; }
+      if (pedido.imposto !== null && pedido.imposto !== undefined) { dia.imposto += Number(pedido.imposto); dia._imposto = true; }
+      if (pedido.frete === null || pedido.frete === undefined) dia.semFrete += 1;
+      if (pedido.mlb && pedido.custoStatus === "ausente") dia.semCusto += 1;
+    }
+    if (pedido.confianca === "bloqueado" && valido) dia.receitaBloqueada += Number(pedido.valor || 0);
+    if (pedido.status === "cancelado" || pedido.status === "com_problema") dia.cancelProblema += 1;
+  }
+
+  return [...map.values()]
+    .map((dia) => {
+      let top = null;
+      for (const [mlb, info] of dia._topMap) {
+        if (!top || info.valor > top.valor) top = { mlb, titulo: info.titulo, valor: info.valor };
+      }
+      return {
+        data: dia.data,
+        pedidos: dia.pedidos,
+        unidades: dia.unidades,
+        faturamento: round2(dia.faturamento),
+        comissao: dia._comissao ? round2(dia.comissao) : null,
+        custo: dia._custo ? round2(dia.custo) : null,
+        imposto: dia._imposto ? round2(dia.imposto) : null,
+        receitaBloqueada: round2(dia.receitaBloqueada),
+        cancelProblema: dia.cancelProblema,
+        semFrete: dia.semFrete,
+        semCusto: dia.semCusto,
+        produtos: dia._produtos.size,
+        topProduto: top ? { mlb: top.mlb, titulo: top.titulo, faturamento: round2(top.valor) } : null,
+      };
+    })
+    .sort((a, b) => a.data.localeCompare(b.data));
+}
+
+// M9 — Curva ABC agregada por produto (D): soma os mesmos campos já
+// canônicos do pedido por MLB, período inteiro (nunca por página da tabela
+// de pedidos). Substitui aggByProduct/buildCurvaAbcRows que existiam no
+// frontend — mesma classificação A (até 80% acumulado) / B (até 95%) / C
+// (resto), portada sem alteração. `produtosCatalogo` é o mesmo dicionário
+// já produzido por buildProdutos (base/custo por MLB) — custoUnit lê o
+// catálogo, nunca divide o total do pedido (um pedido multi-item some
+// custos de produtos diferentes; dividir por unidades daria um custo
+// unitário errado para o MLB representante da linha — ver M7, seção 10).
+function buildAbcProdutos(pedidos, produtosCatalogo = {}) {
+  const map = new Map();
+  for (const pedido of pedidos || []) {
+    const key = pedido.mlb || "__SEM_PRODUTO__";
+    if (!map.has(key)) {
+      const catalogo = pedido.mlb ? produtosCatalogo[pedido.mlb] : null;
+      const temCusto = catalogo?.base?.temCusto === true;
+      map.set(key, {
+        mlb: pedido.mlb, sku: pedido.sku, titulo: pedido.produto?.titulo || pedido.mlb,
+        semProduto: !pedido.mlb,
+        temCusto,
+        custoUnit: temCusto ? catalogo.base.custo : null,
+        unidades: 0, pedidos: 0, faturamento: 0, receitaBloqueada: 0, comissao: 0,
+        fullPedidos: 0, normalPedidos: 0,
+      });
+    }
+    const produto = map.get(key);
+    const valido = pedidoEntraNoResultado(pedido);
+    produto.pedidos += 1;
+    if (valido) {
+      produto.unidades += Number(pedido.unidades || 0);
+      produto.faturamento += Number(pedido.valor || 0);
+      produto.comissao += Number(pedido.taxas || 0);
+    }
+    if (pedido.confianca === "bloqueado" && valido) produto.receitaBloqueada += Number(pedido.valor || 0);
+    if (pedido.full === true) produto.fullPedidos += 1;
+    else produto.normalPedidos += 1;
+  }
+
+  const all = [...map.values()].map((p) => {
+    const faturamento = round2(p.faturamento);
+    return {
+      mlb: p.mlb, sku: p.sku, titulo: p.titulo, semProduto: p.semProduto,
+      temCusto: p.temCusto, custoUnit: p.custoUnit,
+      unidades: p.unidades, pedidos: p.pedidos, faturamento,
+      receitaBloqueada: round2(p.receitaBloqueada),
+      comissao: round2(p.comissao),
+      ticketMedio: p.pedidos > 0 ? round2(faturamento / p.pedidos) : null,
+      logisticaTipo: p.fullPedidos > 0 && p.normalPedidos > 0 ? "misto"
+        : p.fullPedidos > 0 ? "full" : p.normalPedidos > 0 ? "normal" : null,
+    };
+  });
+
+  const totalFat = round2(all.reduce((sum, p) => sum + p.faturamento, 0));
+  all.forEach((p) => { p.pctFat = totalFat > 0 ? round2((p.faturamento / totalFat) * 100) : null; });
+
+  const porFaturamento = all.slice().sort((a, b) => b.faturamento - a.faturamento);
+  let acumulado = 0;
+  for (const p of porFaturamento) {
+    const anterior = acumulado;
+    acumulado = round2(acumulado + (p.pctFat || 0));
+    p.acumPctFat = acumulado;
+    p.curva = p.faturamento <= 0 ? null : (anterior < 80 ? "A" : anterior < 95 ? "B" : "C");
+  }
+
+  return { produtos: all, totalFat };
 }
 
 // Payload por INTERVALO de datas (período de análise). Pode unir vários meses.
@@ -793,6 +1020,9 @@ module.exports = {
   buildPayloadFromRange,
   buildPedidos,
   buildContextoPayload,
+  buildResumoFromRange,
+  buildDiario,
+  buildAbcProdutos,
   periodoFromRange,
   STATUS_FORA_DO_RESULTADO,
   TIPOS_COMPONENTE,

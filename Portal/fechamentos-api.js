@@ -2,23 +2,30 @@
    fechamentos-api.js — VenForce · Central de Vendas (Fundação V2)
    ----------------------------------------------------------------
    FERRAMENTA OPERACIONAL de conciliação por PEDIDO.
-   Regra central: o PEDIDO é a fonte da verdade; o PRODUTO é agregação
-   dos pedidos; dia/semana/mês são FILTROS sobre os pedidos.
 
-   Honestidade do dado:
+   M9 — a tela NÃO possui mais interpretação financeira própria:
+
+     BACKEND calcula · persiste · classifica · agrega
+              ↓
+     FRONTEND consulta · filtra/navega · formata · renderiza
+
+   Todo custo/imposto/resultado/confiança/margem exibido vem PRONTO da Read
+   API canônica (M7) e dos agregados de leitura do M9 (/read, /read/daily,
+   /read/products, /read/orders/:rowId). Não existe `computeOrder` nem
+   nenhuma segunda fórmula: filtro, busca, ordenação e paginação da aba
+   Pedidos viram parâmetros de query no backend; o que resta local é
+   navegação (aba ativa, drawer aberto, campo de busca, período escolhido).
+
+   Honestidade do dado (inalterada):
      null/undefined = AUSENTE (mostra "—")   ·   0 = zero REAL
-     status: real | estimado | ausente | parcial | bloqueado
+     status: real | ausente | parcial | bloqueado
      resultado NUNCA é exibido como confiável se faltar dado.
 
-   Arquitetura da tela (V2):
-     - Barra global de contexto (cliente/período/motor/ações admin);
+   Arquitetura da tela (V2, inalterada nesta rodada):
+     - Barra global de contexto (cliente/conta/período/motor/ações admin);
      - Abas: Visão geral · Pedidos · Produtos/Curva ABC;
-     - UM único fetch por carregamento (init, troca de cliente/período,
-       pós-importação, pós-sincronização); filtros/busca/paginação e
-       troca de aba são 100% locais;
-     - Detalhe do pedido em drawer lateral;
-     - Curva ABC integrada permanentemente à Fechamento API e isolada em
-       módulo próprio apenas para organização interna.
+     - Detalhe do pedido em drawer lateral (busca sob demanda no M7);
+     - Curva ABC integrada permanentemente à Fechamento API, módulo próprio.
    ================================================================ */
 
 const STORAGE_KEY = "vf-token";
@@ -33,7 +40,7 @@ const TOKEN = getToken();
 
 if (typeof window.initLayout === "function") window.initLayout();
 
-/* ── HELPERS DE FORMATO ───────────────────────────────────── */
+/* ── HELPERS DE FORMATO (A — apresentação, sem cálculo financeiro) ── */
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 const num   = (n, d = 0) => (Number(n) || 0).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -70,7 +77,6 @@ function computePeriodo(mode, customFrom, customTo) {
     const to = customTo || isoDate(hoje);
     return { mode: 'personalizado', dateFrom: from <= to ? from : to, dateTo: from <= to ? to : from };
   }
-  // mes_atual (default): 1º dia do mês até hoje
   return { mode: 'mes_atual', dateFrom: isoDate(new Date(y, m, 1)), dateTo: isoDate(hoje) };
 }
 const shortMoney = n => {
@@ -82,6 +88,18 @@ const shortMoney = n => {
 };
 /* '—' para ausente; valor para 0 real. */
 const valOr = (v, f = num) => (v === null || v === undefined) ? '—' : f(v);
+/* Datas do calendário do período — só aritmética de data (categoria A/B),
+   usada para preencher dias sem pedido na régua de "Vendas por dia". */
+function getCompetenceDays(inicio, fim) {
+  const days = [];
+  const cur = new Date(inicio + 'T00:00:00');
+  const end = new Date(fim + 'T00:00:00');
+  while (!isNaN(cur.getTime()) && cur <= end) {
+    days.push(isoDate(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return days;
+}
 
 /* ── STATUS / CONFIANÇA / TAGS SEMÂNTICAS (Fundação V2) ──────
    real → sucesso · estimado → info · ausente → perigo ·
@@ -107,19 +125,57 @@ function tagAds(status) {
   if (status === 'nao')     return `<span class="vf-tag is-neutral">sem Ads</span>`;
   return `<span class="vf-tag is-neutral">Ads —</span>`;
 }
-function tagDiag(prod) {
-  if (!prod) return `<span class="vf-tag is-neutral">—</span>`;
-  const temCusto = prod.base?.temCusto === true;
-  const noDiag = prod.diag?.presente === true;
-  if (temCusto && noDiag)  return `<span class="vf-tag is-success">base + diag</span>`;
-  if (temCusto && !noDiag) return `<span class="vf-tag is-warning">base · fora diag</span>`;
-  if (!temCusto && noDiag) return `<span class="vf-tag is-warning">diag · sem custo</span>`;
-  return `<span class="vf-tag is-danger">sem base/diag</span>`;
+/* Diagnóstico (Motor de Margem) fica fora do escopo do M9 (seção 21/22) — o
+   motor real da Central de Vendas nunca preenche `diag.presente` (é sempre
+   `false`, hardcoded em buildProdutos), então a única leitura honesta hoje
+   é "base" (custoStatus) cruzada com "fora do diagnóstico" sempre. Quando o
+   Motor de Margem passar a alimentar esse dado, este é o único ponto a
+   trocar — nenhuma tabela/coluna precisa mudar de lugar. */
+function tagDiag(custoStatus) {
+  const temCusto = custoStatus === 'real';
+  return temCusto
+    ? `<span class="vf-tag is-warning">base · fora diag</span>`
+    : `<span class="vf-tag is-danger">sem base/diag</span>`;
 }
 function thumb(p) {
   const ini = String(p?.titulo || p?.sku || p?.mlb || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || '—';
   return `<span class="vf-fapi-thumb" aria-hidden="true">${esc(ini)}</span>`;
 }
+
+/* Pendências: códigos curtos persistidos pelo motor (M5/M6 —
+   centralVendasSyncService.js / meliFinanceiroService.js). Só tradução para
+   leitura humana — nenhuma regra nova, os códigos são os mesmos das duas
+   origens (API-first e planilha). */
+const PENDENCIA_LBL = {
+  produto_ausente: 'financeiro sem produto conciliado',
+  custo_produto_ausente: 'MLB sem custo na base',
+  tarifa_venda_ausente: 'tarifa não identificada',
+  frete_seller_ausente: 'frete real ausente',
+  imposto_interno_ausente: 'imposto não calculável',
+  ajuste_plataforma_presente: 'ajuste de plataforma não conciliado',
+};
+const PENDENCIA_IMPACTO = {
+  produto_ausente: 'impede atribuir custo/base e calcular resultado do item',
+  custo_produto_ausente: 'impede calcular resultado do item',
+  tarifa_venda_ausente: 'resultado fica parcial, nunca confiável',
+  frete_seller_ausente: 'resultado fica parcial, nunca confiável',
+  imposto_interno_ausente: 'resultado fica parcial, nunca confiável',
+  ajuste_plataforma_presente: 'o total líquido reportado não bate com os componentes — resíduo não conciliado (achado documentado, não corrigido)',
+};
+function pendenciaLabel(code) { return PENDENCIA_LBL[code] || String(code || '').replace(/_/g, ' '); }
+function pendenciaImpacto(code) { return PENDENCIA_IMPACTO[code] || ''; }
+
+/* Componentes do ledger financeiro (M6) — tradução de tipo p/ leitura humana. */
+const COMPONENTE_LBL = {
+  receita_produto: 'Receita do produto',
+  tarifa_venda: 'Tarifa de venda',
+  frete_seller: 'Frete seller',
+  custo_produto: 'Custo do produto',
+  imposto_interno: 'Imposto interno',
+  receita_envio: 'Receita de envio (conciliação)',
+  cancelamento_reembolso: 'Cancelamento / reembolso (conciliação)',
+};
+const COMPONENTE_ORDEM = ['receita_produto', 'tarifa_venda', 'custo_produto', 'imposto_interno', 'frete_seller', 'receita_envio', 'cancelamento_reembolso'];
 
 /* Ícones SVG neutros para estados (sem emoji como único significado) */
 const EMPTY_ICONS = {
@@ -142,620 +198,381 @@ function loadingState(msg) {
   return `<div class="vf-loading-state"><span class="vf-spinner vf-spinner--lg" aria-hidden="true"></span><span>${esc(msg || 'Carregando dados do período…')}</span></div>`;
 }
 
-/* ── SELETORES MOCK ───────────────────────────────────────── */
-const MOCK_CLIENTES = [
-  { id:12, nome:'Loja Exemplo', slug:'loja-exemplo' },
-  { id:27, nome:'Casa & Decoração BR', slug:'casa-decoracao-br' },
-  { id:41, nome:'TechParts Oficial', slug:'techparts-oficial' },
-];
-const MOCK_COMPETENCIAS = [
-  { competencia:'2026-05', label:'Maio/2026', inicio:'2026-05-01', fim:'2026-05-31' },
-  { competencia:'2026-04', label:'Abril/2026', inicio:'2026-04-01', fim:'2026-04-30' },
-];
-
 /* ================================================================
-   FIXTURE — catálogo de produtos + pedidos.
-   Produto carrega base/custo, diagnóstico e Product Ads (quando houver
-   por produto). Pedido carrega valores crus; resultado é DERIVADO.
-   ================================================================ */
-const MOCK_PRODUTOS = {
-  MLB1111: { mlb:'MLB1111', sku:'SKU-001', titulo:'Cabo USB-C 2m Nylon',        full:true,  ads:{status:'real', investimento:420.00, vendasAds:6200.00, acos:6.8}, base:{temCusto:true, custo:18.00, imposto:10, status:'real'},    diag:{presente:true, mc:14.2, status:'real'} },
-  MLB2222: { mlb:'MLB2222', sku:'SKU-014', titulo:'Suporte Articulado Monitor', full:true,  ads:{status:'real', investimento:880.00, vendasAds:12400.00, acos:7.1}, base:{temCusto:true, custo:95.00, imposto:10, status:'real'},   diag:{presente:true, mc:22.0, status:'real'} },
-  MLB3333: { mlb:'MLB3333', sku:'SKU-022', titulo:'Luminária LED Mesa',         full:false, ads:{status:'ausente'},                                                  base:{temCusto:false, custo:null, imposto:null, status:'ausente'}, diag:{presente:false, mc:null, status:'ausente'} },
-  MLB4444: { mlb:'MLB4444', sku:'SKU-037', titulo:'Organizador Gavetas Kit',    full:true,  ads:{status:'nao'},                                                      base:{temCusto:true, custo:52.00, imposto:10, status:'real'},   diag:{presente:true, mc:9.0, status:'real'} },
-  MLB5555: { mlb:'MLB5555', sku:'SKU-048', titulo:'Fone Bluetooth Esportivo',   full:false, ads:{status:'real', investimento:610.00, vendasAds:8900.00, acos:6.9}, base:{temCusto:true, custo:70.00, imposto:10, status:'real'},   diag:{presente:true, mc:18.0, status:'real'} },
-  MLB6666: { mlb:'MLB6666', sku:null,      titulo:'Capa Protetora Universal',   full:null,  ads:{status:'parcial', investimento:null, vendasAds:null, acos:null},     base:{temCusto:false, custo:null, imposto:null, status:'ausente'}, diag:{presente:false, mc:null, status:'ausente'} },
-  MLB7777: { mlb:'MLB7777', sku:'SKU-061', titulo:'Garrafa Térmica Inox 1L',    full:true,  ads:{status:'ausente'},                                                  base:{temCusto:false, custo:null, imposto:null, status:'ausente'}, diag:{presente:true, mc:null, status:'parcial'} },
-  MLB8888: { mlb:'MLB8888', sku:'SKU-070', titulo:'Mouse Gamer RGB',            full:false, ads:{status:'real', investimento:300.00, vendasAds:5400.00, acos:5.6}, base:{temCusto:true, custo:60.00, imposto:10, status:'real'},   diag:{presente:true, mc:16.5, status:'real'} },
-};
+   MOCK — só ligado explicitamente em dev (vf-fapi-mock-dev=1 no
+   localStorage), nunca automático após erro real de backend (seção 23).
 
-// pedidos: data, mlb(ref|null), unidades, valor, frete, freteStatus, taxas, taxasStatus, status, logistica
-const MOCK_PEDIDOS = [
-  { id:'2000000001', data:'2026-05-02', mlb:'MLB1111', unidades:3, valor:312.90, frete:24.90, freteStatus:'real',    taxas:41.80,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000002', data:'2026-05-02', mlb:'MLB2222', unidades:2, valor:489.50, frete:32.40, freteStatus:'real',    taxas:65.20,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000003', data:'2026-05-03', mlb:'MLB3333', unidades:1, valor:220.00, frete:null,  freteStatus:'ausente', taxas:28.00,  taxasStatus:'real',    status:'pago',         logistica:'normal' },
-  { id:'2000000004', data:'2026-05-05', mlb:'MLB5555', unidades:2, valor:360.00, frete:26.70, freteStatus:'real',    taxas:47.00,  taxasStatus:'real',    status:'pago',         logistica:'normal' },
-  { id:'2000000005', data:'2026-05-06', mlb:'MLB7777', unidades:4, valor:1180.00,frete:41.00, freteStatus:'real',    taxas:150.00, taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000006', data:'2026-05-07', mlb:'MLB4444', unidades:1, valor:159.00, frete:null,  freteStatus:'ausente', taxas:21.10,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000007', data:'2026-05-08', mlb:'MLB1111', unidades:5, valor:521.50, frete:30.00, freteStatus:'real',    taxas:70.00,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000008', data:'2026-05-09', mlb:'MLB2222', unidades:1, valor:268.00, frete:26.70, freteStatus:'real',    taxas:35.70,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000009', data:'2026-05-10', mlb:'MLB6666', unidades:6, valor:540.00, frete:38.00, freteStatus:'real',    taxas:70.00,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000010', data:'2026-05-11', mlb:'MLB8888', unidades:2, valor:370.00, frete:28.00, freteStatus:'real',    taxas:49.00,  taxasStatus:'real',    status:'pago',         logistica:'normal' },
-  { id:'2000000011', data:'2026-05-12', mlb:'MLB3333', unidades:2, valor:440.00, frete:30.00, freteStatus:'real',    taxas:56.00,  taxasStatus:'real',    status:'cancelado',    logistica:'normal' },
-  { id:'2000000012', data:'2026-05-13', mlb:'MLB5555', unidades:1, valor:180.00, frete:18.50, freteStatus:'real',    taxas:24.00,  taxasStatus:'real',    status:'pago',         logistica:'normal' },
-  { id:'2000000013', data:'2026-05-15', mlb:null,      unidades:1, valor:318.40, frete:19.90, freteStatus:'real',    taxas:44.30,  taxasStatus:'real',    status:'pago',         logistica:'normal' },
-  { id:'2000000014', data:'2026-05-16', mlb:'MLB2222', unidades:3, valor:735.00, frete:45.00, freteStatus:'real',    taxas:98.00,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000015', data:'2026-05-17', mlb:'MLB7777', unidades:2, valor:590.00, frete:22.00, freteStatus:'real',    taxas:76.00,  taxasStatus:'real',    status:'com_problema', logistica:'full' },
-  { id:'2000000016', data:'2026-05-18', mlb:'MLB1111', unidades:4, valor:417.20, frete:28.00, freteStatus:'real',    taxas:55.00,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000017', data:'2026-05-20', mlb:'MLB4444', unidades:2, valor:318.00, frete:null,  freteStatus:'ausente', taxas:42.00,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000018', data:'2026-05-22', mlb:'MLB8888', unidades:3, valor:555.00, frete:33.00, freteStatus:'real',    taxas:73.00,  taxasStatus:'real',    status:'pago',         logistica:'normal' },
-  { id:'2000000019', data:'2026-05-23', mlb:'MLB5555', unidades:2, valor:360.00, frete:26.00, freteStatus:'real',    taxas:null,   taxasStatus:'ausente', status:'pago',         logistica:'normal' },
-  { id:'2000000020', data:'2026-05-24', mlb:'MLB2222', unidades:1, valor:268.00, frete:26.70, freteStatus:'real',    taxas:35.70,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000021', data:'2026-05-26', mlb:'MLB6666', unidades:3, valor:270.00, frete:20.00, freteStatus:'estimado',taxas:35.00,  taxasStatus:'real',    status:'pago',         logistica:'full' },
-  { id:'2000000022', data:'2026-05-28', mlb:'MLB1111', unidades:2, valor:208.60, frete:16.00, freteStatus:'real',    taxas:27.00,  taxasStatus:'real',    status:'pago',         logistica:'full' },
+   Contrato JÁ CANÔNICO: cada pedido abaixo já traz os campos finais
+   (resultado/custo/imposto/confiança) como CONSTANTES escritas à mão —
+   nenhuma fórmula os deriva. `buildMockResponse*` só filtra/ordena/pagina/
+   soma esses campos já prontos (equivalente ao que o backend faz), do
+   mesmo jeito que a Read API real faz sobre o pedido persistido — isolado
+   neste bloco, nunca importado nem chamado por nenhum caminho de produção.
+   ================================================================ */
+const MOCK_PERIODO = { competencia:'2026-08', inicio:'2026-08-01', fim:'2026-08-31', label:'Agosto/2026' };
+
+function mockPedido(over) {
+  return Object.assign({
+    id: over.pedidoId, pedidoId: over.pedidoId, rowId: over.rowId,
+    multiItem: false, qtdItens: 1,
+    status: 'pago', statusOriginal: 'paid', entraNoResultado: true,
+    posVendaTipo: null, posVendaMotivo: null, posVendaParcial: false,
+    posVendaQuantidadeComprada: null, posVendaQuantidadeDevolvida: null,
+    claimId: null, claimIds: [],
+    receitaEnvio: null, receitaEnvioStatus: 'ausente',
+    reembolso: null, reembolsoStatus: 'ausente',
+    logistica: over.full ? 'full' : 'normal',
+    adsStatus: 'ausente',
+    pendencias: [],
+    itens: [], componentes: [],
+  }, over);
+}
+
+const MOCK_ROWS = [
+  mockPedido({
+    pedidoId:'9000000001', rowId:1, data:'2026-08-02', valor:200, frete:20, freteStatus:'real',
+    taxas:30, taxasStatus:'real', custo:60, custoStatus:'real', imposto:8,
+    resultado:82, resultadoStatus:'real', confianca:'confiavel', unidades:2, full:true,
+    mlb:'MLBA', sku:'SKU-A', produto:{ mlb:'MLBA', sku:'SKU-A', titulo:'Cabo USB-C 2m' },
+    itens: [{ id:'IT1', itemId:'IT1', mlb:'MLBA', sku:'SKU-A', titulo:'Cabo USB-C 2m', quantidade:2, valorUnitario:100, receitaProduto:200, custoProduto:60, impostoInterno:8, resultado:82, confianca:'confiavel', pendencias:[] }],
+    componentes: [
+      { tipo:'receita_produto', valor:200, fonte:'orders_api', confianca:'confiavel', obs:null, itemId:'IT1', escopo:'item', efeito:'credito', incluidoNoResultado:true },
+      { tipo:'tarifa_venda', valor:30, fonte:'orders_api', confianca:'confiavel', obs:null, itemId:'IT1', escopo:'item', efeito:'debito', incluidoNoResultado:true },
+      { tipo:'custo_produto', valor:60, fonte:'base_vinculada', confianca:'confiavel', obs:null, itemId:'IT1', escopo:'item', efeito:'debito', incluidoNoResultado:true },
+      { tipo:'imposto_interno', valor:8, fonte:'base_vinculada', confianca:'confiavel', obs:null, itemId:'IT1', escopo:'item', efeito:'debito', incluidoNoResultado:true },
+      { tipo:'frete_seller', valor:20, fonte:'shipments_api', confianca:'confiavel', obs:null, itemId:'IT1', escopo:'item', efeito:'debito', incluidoNoResultado:true },
+    ],
+  }),
+  mockPedido({
+    pedidoId:'9000000002', rowId:2, data:'2026-08-03', valor:250, frete:25, freteStatus:'real',
+    taxas:35, taxasStatus:'real', custo:80, custoStatus:'real', imposto:10,
+    resultado:100, resultadoStatus:'real', confianca:'confiavel', unidades:2, full:true,
+    multiItem:true, qtdItens:2,
+    mlb:'MLBB', sku:'SKU-B', produto:{ mlb:'MLBB', sku:'SKU-B', titulo:'Suporte Articulado Monitor' },
+    itens: [
+      { id:'IT2', itemId:'IT2', mlb:'MLBB', sku:'SKU-B', titulo:'Suporte Articulado Monitor', quantidade:1, valorUnitario:150, receitaProduto:150, custoProduto:50, impostoInterno:6, resultado:62, confianca:'confiavel', pendencias:[] },
+      { id:'IT3', itemId:'IT3', mlb:'MLBC', sku:'SKU-C', titulo:'Luminária LED Mesa', quantidade:1, valorUnitario:100, receitaProduto:100, custoProduto:30, impostoInterno:4, resultado:38, confianca:'confiavel', pendencias:[] },
+    ],
+    componentes: [
+      { tipo:'receita_produto', valor:150, itemId:'IT2', escopo:'item', efeito:'credito', incluidoNoResultado:true, confianca:'confiavel', fonte:'orders_api' },
+      { tipo:'receita_produto', valor:100, itemId:'IT3', escopo:'item', efeito:'credito', incluidoNoResultado:true, confianca:'confiavel', fonte:'orders_api' },
+      { tipo:'custo_produto', valor:50, itemId:'IT2', escopo:'item', efeito:'debito', incluidoNoResultado:true, confianca:'confiavel', fonte:'base_vinculada' },
+      { tipo:'custo_produto', valor:30, itemId:'IT3', escopo:'item', efeito:'debito', incluidoNoResultado:true, confianca:'confiavel', fonte:'base_vinculada' },
+      { tipo:'tarifa_venda', valor:35, itemId:null, escopo:'pedido', efeito:'debito', incluidoNoResultado:true, confianca:'confiavel', fonte:'orders_api' },
+      { tipo:'frete_seller', valor:25, itemId:null, escopo:'pedido', efeito:'debito', incluidoNoResultado:true, confianca:'confiavel', fonte:'shipments_api' },
+      { tipo:'imposto_interno', valor:10, itemId:null, escopo:'pedido', efeito:'debito', incluidoNoResultado:true, confianca:'confiavel', fonte:'base_vinculada' },
+    ],
+  }),
+  mockPedido({
+    pedidoId:'9000000003', rowId:3, data:'2026-08-03', valor:180, frete:15, freteStatus:'real',
+    taxas:22, taxasStatus:'real', custo:null, custoStatus:'ausente', imposto:null,
+    resultado:null, resultadoStatus:'bloqueado', confianca:'bloqueado', unidades:1, full:false,
+    mlb:'MLBD', sku:null, produto:{ mlb:'MLBD', sku:null, titulo:'Produto sem base vinculada' },
+    pendencias:['custo_produto_ausente', 'imposto_interno_ausente'],
+    itens: [{ id:'IT4', itemId:'IT4', mlb:'MLBD', sku:null, titulo:'Produto sem base vinculada', quantidade:1, valorUnitario:180, receitaProduto:180, custoProduto:null, impostoInterno:null, resultado:null, confianca:'bloqueado', pendencias:['custo_produto_ausente'] }],
+    componentes: [
+      { tipo:'receita_produto', valor:180, itemId:'IT4', escopo:'item', efeito:'credito', incluidoNoResultado:true, confianca:'bloqueado', fonte:'orders_api' },
+      { tipo:'tarifa_venda', valor:22, itemId:'IT4', escopo:'item', efeito:'debito', incluidoNoResultado:true, confianca:'bloqueado', fonte:'orders_api' },
+      { tipo:'frete_seller', valor:15, itemId:'IT4', escopo:'item', efeito:'debito', incluidoNoResultado:true, confianca:'bloqueado', fonte:'shipments_api' },
+    ],
+  }),
+  mockPedido({
+    pedidoId:'9000000004', rowId:4, data:'2026-08-04', valor:90, frete:null, freteStatus:'ausente',
+    taxas:null, taxasStatus:'ausente', custo:null, custoStatus:'ausente', imposto:null,
+    resultado:null, resultadoStatus:'bloqueado', confianca:'bloqueado', unidades:1, full:false,
+    status:'cancelado', statusOriginal:'cancelled', entraNoResultado:false,
+    mlb:'MLBA', sku:'SKU-A', produto:{ mlb:'MLBA', sku:'SKU-A', titulo:'Cabo USB-C 2m' },
+  }),
+  mockPedido({
+    pedidoId:'9000000005', rowId:5, data:'2026-08-05', valor:260, frete:20, freteStatus:'real',
+    taxas:30, taxasStatus:'real', custo:null, custoStatus:'ausente', imposto:null,
+    resultado:null, resultadoStatus:'bloqueado', confianca:'bloqueado', unidades:2, full:true,
+    status:'com_problema', statusOriginal:'mediation', entraNoResultado:false, posVendaTipo:'mediacao',
+    mlb:'MLBB', sku:'SKU-B', produto:{ mlb:'MLBB', sku:'SKU-B', titulo:'Suporte Articulado Monitor' },
+  }),
+  mockPedido({
+    pedidoId:'9000000006', rowId:6, data:'2026-08-06', valor:130, frete:null, freteStatus:'ausente',
+    taxas:18, taxasStatus:'real', custo:40, custoStatus:'real', imposto:5,
+    resultado:67, resultadoStatus:'parcial', confianca:'parcial', unidades:1, full:false,
+    mlb:'MLBC', sku:'SKU-C', produto:{ mlb:'MLBC', sku:'SKU-C', titulo:'Luminária LED Mesa' },
+    pendencias:['frete_seller_ausente'],
+    itens: [{ id:'IT5', itemId:'IT5', mlb:'MLBC', sku:'SKU-C', titulo:'Luminária LED Mesa', quantidade:1, valorUnitario:130, receitaProduto:130, custoProduto:40, impostoInterno:5, resultado:67, confianca:'parcial', pendencias:['frete_seller_ausente'] }],
+    componentes: [
+      { tipo:'receita_produto', valor:130, itemId:'IT5', escopo:'item', efeito:'credito', incluidoNoResultado:true, confianca:'parcial', fonte:'orders_api' },
+      { tipo:'tarifa_venda', valor:18, itemId:'IT5', escopo:'item', efeito:'debito', incluidoNoResultado:true, confianca:'parcial', fonte:'orders_api' },
+      { tipo:'custo_produto', valor:40, itemId:'IT5', escopo:'item', efeito:'debito', incluidoNoResultado:true, confianca:'parcial', fonte:'base_vinculada' },
+      { tipo:'imposto_interno', valor:5, itemId:'IT5', escopo:'item', efeito:'debito', incluidoNoResultado:true, confianca:'parcial', fonte:'base_vinculada' },
+    ],
+  }),
 ];
 
-/* Contrato consumível pela tela (mantém compatibilidade com a doc). */
-const mockFechamentoApiPayload = {
-  ok: true,
-  fonte: 'mock_conciliacao_fechamento_api',
-  cliente: { id:12, nome:'Loja Exemplo', slug:'loja-exemplo' },
-  periodo: { competencia:'2026-05', inicio:'2026-05-01', fim:'2026-05-31', label:'Maio/2026' },
-  motor: { status:'mock', etapaAtual:'cruzar_base_custo', progresso:62, confianca:'parcial', podeConcluir:false,
-           motivoBloqueio:'Receita sem produto conciliado e itens sem custo/base impedem resultado confiável.',
-           geradoEm:new Date().toISOString(), origemPrincipal:'planilha_vendas' },
-  adsPorProdutoDisponivel: true,   // há Product Ads por produto p/ parte do catálogo
-  adsMensal: { investimento: 2210.00, status: 'real' },
-  produtos: MOCK_PRODUTOS,
-  pedidos: MOCK_PEDIDOS,
-};
-
-/* ────────────────────────────────────────────────────────────────
-   CONTRATO FUTURO (não implementar agora) — Curva ABC e Full real.
-   Nesta versão NÃO há Curva ABC do backend nem Full API real, e não se
-   inventa estoque parado / retirada Full / quantidade parada. Quando o
-   backend/Drive existir, deve preencher estes campos; sem dado, mostrar
-   "sem dado" ou ocultar.
-
-   abc: {
-     fonte,
-     produtos: [{
-       mlb, sku, titulo, unidades, faturamento,
-       percentualFaturamento, acumuladoFaturamento,
-       percentualUnidades, acumuladoUnidades,
-       curvaFaturamento, curvaUnidades, curvaFinal
-     }]
-   }
-   full: {
-     fonte, pedidosFull, produtosFull, estoqueFull, retiradaFull
-   }
-   ──────────────────────────────────────────────────────────────── */
+/* Mock só: filtro/ordenação/agregação sobre os campos JÁ prontos acima —
+   mesmo formato de saída da Read API real, isolado, nunca chamado fora do
+   modo mock explícito (mockModeDevAtivo()). */
+const MOCK_STATUS_FORA = new Set(['cancelado', 'com_problema']);
+function mockMatchesQuick(o, q) {
+  switch (q) {
+    case 'sem_custo': return !!o.mlb && o.custoStatus === 'ausente';
+    case 'sem_frete': return o.entraNoResultado && o.frete == null;
+    case 'frete_real': return o.frete != null;
+    case 'calculavel': return o.resultado != null;
+    case 'bloqueados': case 'receita_bloqueada': return o.resultadoStatus === 'bloqueado' && o.entraNoResultado;
+    case 'cancel_problema': return MOCK_STATUS_FORA.has(o.status);
+    case 'full': return o.full === true;
+    case 'normal': return o.full !== true;
+    default: return true;
+  }
+}
+function mockMatchesStatus(o, s) {
+  if (s === 'valido') return o.status === 'pago';
+  if (s === 'cancelado') return o.status === 'cancelado';
+  if (s === 'problema') return o.status === 'com_problema';
+  if (s === 'bloqueado') return o.resultadoStatus === 'bloqueado' && o.entraNoResultado;
+  return true;
+}
+function mockMatchesLogistica(o, l) {
+  if (l === 'full') return o.full === true;
+  if (l === 'nao_full') return o.full !== true;
+  return true;
+}
+function mockMatchesDiagbase(o, d) {
+  if (d === 'com_custo') return o.custoStatus === 'real';
+  if (d === 'sem_custo') return o.custoStatus === 'ausente';
+  return true;
+}
+function mockMatchesSearch(o, termo) {
+  if (!termo) return true;
+  return String(o.id || '').toLowerCase().includes(termo)
+    || String(o.mlb || '').toLowerCase().includes(termo)
+    || String(o.sku || '').toLowerCase().includes(termo)
+    || String(o.produto?.titulo || '').toLowerCase().includes(termo)
+    || String(o.status || '').toLowerCase().includes(termo);
+}
+function mockSort(arr, key) {
+  const a = arr.slice();
+  const desc = f => (x, y) => (Number(f(y)) || 0) - (Number(f(x)) || 0);
+  const asc  = f => (x, y) => (Number(f(x)) || 0) - (Number(f(y)) || 0);
+  switch (key) {
+    case 'data_asc': a.sort((x, y) => String(x.data).localeCompare(String(y.data))); break;
+    case 'fat_desc': a.sort(desc(o => o.valor)); break;
+    case 'fat_asc': a.sort(asc(o => o.valor)); break;
+    case 'resultado_desc': a.sort(desc(o => o.resultado)); break;
+    default: a.sort((x, y) => String(y.data).localeCompare(String(x.data))); break;
+  }
+  return a;
+}
+function mockResumo(rows) {
+  const validos = rows.filter(o => o.entraNoResultado);
+  const comResultado = validos.filter(o => o.resultado != null);
+  const faturamento = round2(validos.reduce((s, o) => s + (o.valor || 0), 0));
+  const lucroContribuicao = comResultado.length ? round2(comResultado.reduce((s, o) => s + (o.resultado || 0), 0)) : null;
+  const somaSe = campo => {
+    const c = validos.filter(o => o[campo] != null);
+    return c.length ? round2(c.reduce((s, o) => s + (o[campo] || 0), 0)) : null;
+  };
+  const receitaBloqueada = round2(validos.filter(o => o.confianca === 'bloqueado').reduce((s, o) => s + (o.valor || 0), 0));
+  return {
+    pedidosTotal: rows.length, pedidosValidos: validos.length, pedidosForaResultado: rows.length - validos.length,
+    pedidosConfiaveis: validos.filter(o => o.confianca === 'confiavel').length,
+    pedidosParciais: validos.filter(o => o.confianca === 'parcial').length,
+    pedidosBloqueados: validos.filter(o => o.confianca === 'bloqueado').length,
+    faturamento, lucroContribuicao,
+    margemContribuicaoPercentual: lucroContribuicao != null && faturamento > 0 ? round2(lucroContribuicao / faturamento * 100) : null,
+    receitaBloqueada, unidades: validos.reduce((s, o) => s + (o.unidades || 0), 0),
+    ticket: validos.length ? round2(faturamento / validos.length) : null,
+    cancelados: rows.filter(o => o.status === 'cancelado' && o.posVendaTipo !== 'devolucao').length,
+    problemas: rows.filter(o => o.status === 'com_problema' && o.posVendaTipo !== 'devolucao').length,
+    full: rows.filter(o => o.full === true).length, normal: rows.filter(o => o.full !== true).length,
+    comissao: somaSe('taxas'), custoTotal: somaSe('custo'), impostoTotal: somaSe('imposto'), freteTotal: somaSe('frete'),
+    semCusto: validos.filter(o => o.mlb && o.custoStatus === 'ausente').length,
+    semFrete: validos.filter(o => o.frete == null).length,
+    devolucoes: 0, devolucoesParciais: 0, mediacoes: rows.filter(o => o.posVendaTipo === 'mediacao').length,
+    claimsIndisponivel: false, claimsReturnsNaoResolvidos: 0,
+    pctFatBloqueado: faturamento > 0 ? round2(receitaBloqueada / faturamento * 100) : null,
+    cobertura: {
+      comissao: faturamento > 0 ? round2(validos.filter(o => o.taxas != null).reduce((s, o) => s + (o.valor || 0), 0) / faturamento * 100) : null,
+      custo: faturamento > 0 ? round2(validos.filter(o => o.custo != null).reduce((s, o) => s + (o.valor || 0), 0) / faturamento * 100) : null,
+      imposto: faturamento > 0 ? round2(validos.filter(o => o.imposto != null).reduce((s, o) => s + (o.valor || 0), 0) / faturamento * 100) : null,
+      frete: faturamento > 0 ? round2(validos.filter(o => o.frete != null).reduce((s, o) => s + (o.valor || 0), 0) / faturamento * 100) : null,
+      resultado: faturamento > 0 ? round2(comResultado.reduce((s, o) => s + (o.valor || 0), 0) / faturamento * 100) : null,
+    },
+    confiancaFechamento: !validos.length || !comResultado.length ? 'insuficiente' : validos.every(o => o.confianca === 'confiavel') ? 'confiavel' : 'parcial',
+  };
+}
+function mockDiario(rows) {
+  const map = new Map();
+  for (const o of rows) {
+    if (!map.has(o.data)) map.set(o.data, { data:o.data, pedidos:0, unidades:0, faturamento:0, comissao:0, custo:0, imposto:0, receitaBloqueada:0, cancelProblema:0, semFrete:0, semCusto:0, _c:false, _cu:false, _i:false, produtosSet:new Set() });
+    const d = map.get(o.data);
+    d.pedidos += 1;
+    if (o.entraNoResultado) {
+      d.faturamento += o.valor || 0; d.unidades += o.unidades || 0;
+      if (o.mlb) d.produtosSet.add(o.mlb);
+      if (o.taxas != null) { d.comissao += o.taxas; d._c = true; }
+      if (o.custo != null) { d.custo += o.custo; d._cu = true; }
+      if (o.imposto != null) { d.imposto += o.imposto; d._i = true; }
+      if (o.frete == null) d.semFrete += 1;
+      if (o.mlb && o.custoStatus === 'ausente') d.semCusto += 1;
+    }
+    if (o.confianca === 'bloqueado' && o.entraNoResultado) d.receitaBloqueada += o.valor || 0;
+    if (MOCK_STATUS_FORA.has(o.status)) d.cancelProblema += 1;
+  }
+  return [...map.values()].sort((a, b) => a.data.localeCompare(b.data)).map(d => ({
+    data:d.data, pedidos:d.pedidos, unidades:d.unidades, faturamento:round2(d.faturamento),
+    comissao:d._c?round2(d.comissao):null, custo:d._cu?round2(d.custo):null, imposto:d._i?round2(d.imposto):null,
+    receitaBloqueada:round2(d.receitaBloqueada), cancelProblema:d.cancelProblema, semFrete:d.semFrete, semCusto:d.semCusto,
+    produtos:d.produtosSet.size, topProduto:null,
+  }));
+}
+function mockAbcProdutos(rows) {
+  const map = new Map();
+  for (const o of rows) {
+    const key = o.mlb || '__SEM__';
+    if (!map.has(key)) map.set(key, { mlb:o.mlb, sku:o.sku, titulo:o.produto?.titulo || o.mlb, semProduto:!o.mlb, temCusto:o.custoStatus === 'real', custoUnit: (o.custoStatus === 'real' && o.unidades) ? round2(o.custo / o.unidades) : null, unidades:0, pedidos:0, faturamento:0, receitaBloqueada:0, comissao:0, fullP:0, normalP:0 });
+    const p = map.get(key);
+    p.pedidos += 1;
+    if (o.entraNoResultado) { p.unidades += o.unidades || 0; p.faturamento += o.valor || 0; p.comissao += o.taxas || 0; }
+    if (o.confianca === 'bloqueado' && o.entraNoResultado) p.receitaBloqueada += o.valor || 0;
+    if (o.full === true) p.fullP += 1; else p.normalP += 1;
+  }
+  const all = [...map.values()].map(p => ({
+    mlb:p.mlb, sku:p.sku, titulo:p.titulo, semProduto:p.semProduto, temCusto:p.temCusto, custoUnit:p.custoUnit,
+    unidades:p.unidades, pedidos:p.pedidos, faturamento:round2(p.faturamento), receitaBloqueada:round2(p.receitaBloqueada),
+    comissao:round2(p.comissao), ticketMedio:p.pedidos>0?round2(p.faturamento/p.pedidos):null,
+    logisticaTipo: p.fullP>0 && p.normalP>0 ? 'misto' : p.fullP>0 ? 'full' : p.normalP>0 ? 'normal' : null,
+  }));
+  const totalFat = round2(all.reduce((s, p) => s + p.faturamento, 0));
+  all.forEach(p => { p.pctFat = totalFat > 0 ? round2(p.faturamento / totalFat * 100) : null; });
+  const porFat = all.slice().sort((a, b) => b.faturamento - a.faturamento);
+  let acc = 0;
+  for (const p of porFat) { const prev = acc; acc = round2(acc + (p.pctFat || 0)); p.acumPctFat = acc; p.curva = p.faturamento <= 0 ? null : (prev < 80 ? 'A' : prev < 95 ? 'B' : 'C'); }
+  return { produtos: all, totalFat };
+}
+function buildMockRead(params) {
+  const termo = String(params.search || '').trim().toLowerCase();
+  const dentro = o => (!params.dataDe || o.data >= params.dataDe) && (!params.dataAte || o.data <= params.dataAte);
+  const filtrados = MOCK_ROWS.filter(dentro)
+    .filter(o => mockMatchesQuick(o, params.filtro || 'todos'))
+    .filter(o => mockMatchesStatus(o, params.status || 'todos'))
+    .filter(o => mockMatchesLogistica(o, params.logistica || 'todos'))
+    .filter(o => mockMatchesDiagbase(o, params.diagbase || 'todos'))
+    .filter(o => mockMatchesSearch(o, termo));
+  const ordenados = mockSort(filtrados, params.sort || 'data_desc');
+  const limit = Number(params.limit) || 50;
+  const page = Number(params.page) || 1;
+  const total = ordenados.length;
+  const totalPages = total ? Math.ceil(total / limit) : 0;
+  const inicio = (page - 1) * limit;
+  const rows = ordenados.slice(inicio, inicio + limit).map(({ itens, componentes, ...resto }) => resto);
+  return {
+    ok: true, cliente: F.cliente || { id:0, nome:'Cliente simulado', slug: params.slug || '' }, periodo: MOCK_PERIODO,
+    contexto: null, snapshot: { importId: 1, fonte: 'orders_api', publicationStatus: 'published' },
+    motor: { status:'mock', etapaAtual:'simulacao_local', progresso:100, confianca:'parcial', podeConcluir:false,
+             motivoBloqueio:'Dados simulados — o backend não respondeu.', geradoEm:new Date().toISOString(), origemPrincipal:'mock_conciliacao_fechamento_api' },
+    completude: null,
+    summary: mockResumo(MOCK_ROWS), filteredSummary: mockResumo(MOCK_ROWS.filter(o => mockMatchesQuick(o, params.resumoFiltro || 'todos'))),
+    rows, pagination: { page, limit, total, totalPages },
+  };
+}
+function buildMockDaily() {
+  return { ok: true, dias: mockDiario(MOCK_ROWS) };
+}
+function buildMockProducts() {
+  const { produtos, totalFat } = mockAbcProdutos(MOCK_ROWS);
+  return { ok: true, produtos, totalFaturamento: totalFat };
+}
+function buildMockOrderDetail(rowId) {
+  const pedido = MOCK_ROWS.find(o => o.rowId === Number(rowId));
+  return pedido ? { ok: true, pedido } : { ok: false, erro: 'Pedido não encontrado no mock.' };
+}
 
 /* ── ESTADO ───────────────────────────────────────────────────
-   Um único objeto F, com sub-estados por módulo:
-     F.ui      → aba ativa, drawer, painéis abertos (só interface)
-     F.orders  → tudo da tabela de Pedidos (filtros locais)
-     F.summary → recorte e ordenação do bloco de fechamento/dias
-     F.abc     → estado EXCLUSIVO do módulo Curva ABC
-   Os pedidos nunca são duplicados: viewPayload/visiblePayload são
-   derivados de rawPayload em memória.
-
-   Modos de período expostos na UI: mes | intervalo (via clique num dia).
-   'dia'/'semana'/'ultimos7' são LEGADOS aceitos pelo sanitizador. */
-function defaultFilters() { return { modo:'mes', dia:null, semana:null, de:null, ate:null, logistica:'todos', midia:'todos', diagbase:'todos', status:'todos' }; }
-function cloneFilters(filters) { return { ...defaultFilters(), ...(filters || {}) }; }
+   F guarda o que a Read API M9 devolveu, nada recalculado:
+     F.summary          → resumo GLOBAL do período (sempre igual entre
+                           páginas/filtros — M7, seção 10)
+     F.filteredSummary  → resumo do recorte da Visão Geral
+                           (F.summary.quickFilter), contrato distinto
+     F.rows/F.pagination→ página atual da tabela de Pedidos
+     F.daily            → agregado diário (/read/daily), período inteiro
+     F.products          → Curva ABC agregada (/read/products), período inteiro
+   Os pedidos nunca são duplicados/recalculados: cada seção lê exatamente o
+   que o backend devolveu. */
+function defaultOrderFilters() { return { logistica:'todos', diagbase:'todos', status:'todos', de:null, ate:null }; }
 const F = {
   clientes: [], cliente: null,
-  // M8 — identidade da tela passa a ser cliente + conta + período.
-  // F.contas: contas ML ativas do cliente atual (carregadas a cada troca de
-  // cliente, nunca herdadas do cliente anterior). F.clienteConta: conta
-  // selecionada (auto quando há só 1; escolha explícita obrigatória quando
-  // há 2+ — nunca contas[0]/"principal" silenciosos).
   contas: [], clienteConta: null,
   contasLoading: false,
-  contaLoadSeq: 0,        // guard de concorrência da troca de cliente (contas)
-  periodo: null,          // { mode, dateFrom, dateTo } — período de análise
-  rawPayload: null, viewPayload: null, visiblePayload: null,
-  lastSyncBase: null,     // base vinculada informada pela última sincronização da sessão
-  // sync-run em andamento (M2) — sobrevive a reload via GET /sync-runs.
-  // clienteContaId (M8): identifica a QUAL conta esse acompanhamento pertence
-  // — nunca deixa a resposta de um poll de outra conta atualizar a tela.
+  contaLoadSeq: 0,
+  periodo: null,          // { mode, dateFrom, dateTo } — período de análise escolhido na UI
+  periodoResp: null,      // periodo ecoado pela Read API (mesmo intervalo, rótulo formatado)
+
+  ok: null,               // null = nada carregado ainda · true/false = último /read
+  erro: null,
+  motor: null, completude: null, snapshot: null, contexto: null,
+  summary: null, filteredSummary: null,
+  rows: [], pagination: null,
+  daily: [], products: [], totalFaturamento: 0,
+
+  lastSyncBase: null,
   sync: { runId: null, timer: null, clienteSlug: null, clienteContaId: null },
-  loadSeq: 0,             // guard de concorrência: ignora resposta de fetch antigo
-  loadAbort: null,        // AbortController do fetch em voo
-  loading: false,
-  arquivoImport: null,    // File guardado no change do input — imune a re-render
+
+  loadSeq: 0, loadAbort: null, loading: false,     // carga PRINCIPAL (cliente/conta/período)
+  arquivoImport: null,
 
   ui: {
-    activeTab: 'visao',   // visao | pedidos | produtos
-    drawerOrderId: null,
+    activeTab: 'visao',
+    drawerRowId: null,
     drawerReturnFocusId: null,
+    drawerLoadSeq: 0,
     filtersPanelOpen: false,
     importPanelOpen: false,
   },
 
   orders: {
-    filters: defaultFilters(), // selects locais (logística/mídia/diag.base/status) + dia
-    quickFilter: 'todos',      // recorte rápido (chips)
-    search: '',                // busca local por pedido/MLB/SKU/título/status/logística
-    searchTimer: null,         // debounce da busca
-    sort: 'data_desc',         // ordenação local
-    page: 1, pageSize: 100,    // paginação local (100 pedidos/página)
-  },
-
-  summary: {
-    quickFilter: 'todos',      // recorte do bloco Fechamento (não toca Pedidos/ABC)
-    dailySort: 'data',         // ordenação da tabela "Resumo por dia"
-  },
-
-  abc: {                       // estado EXCLUSIVO do módulo Curva ABC
-    group: 'todos',
-    sort: 'faturamento',
+    filters: defaultOrderFilters(),
+    quickFilter: 'todos',
     search: '',
     searchTimer: null,
+    sort: 'data_desc',
+    page: 1, pageSize: 100,
+    loadSeq: 0, loadAbort: null, loading: false,   // carga da LISTA (filtro/busca/ordenação/página/dia)
+  },
+
+  summaryUi: {
+    quickFilter: 'todos',      // recorte da Visão Geral (Composição/Qualidade) — vira resumoFiltro
+    dailySort: 'data',
+  },
+
+  abc: {                       // estado do módulo Curva ABC — navegação sobre F.products
+    group: 'todos', sort: 'faturamento', search: '', searchTimer: null,
     page: 1, pageSize: 50,
-    selectedProduct: null,     // estado interno do módulo (sem uso hoje)
   },
 };
 
-/* ── DERIVAÇÕES DE PEDIDO (motor por pedido) ──────────────── */
-function getOrderDate(o) { const d = new Date(String(o.data) + 'T00:00:00'); return isNaN(d.getTime()) ? null : d; }
-function getWeekOfMonth(o) { const d = getOrderDate(o); return d ? Math.ceil(d.getDate() / 7) : null; }
-function isOrderFull(o) { return o.logistica === 'full'; }
-function getProduto(payload, mlb) { return mlb ? (payload.produtos || {})[mlb] || null : null; }
-function hasProductAds(prod) { const s = prod?.ads?.status; return s === 'real' || s === 'parcial'; }
-function isDateInPeriod(iso, period) {
-  return !!iso && iso >= period.inicio && iso <= period.fim;
-}
-function clampDateToPeriod(iso, period) {
-  if (!iso) return null;
-  if (iso < period.inicio) return period.inicio;
-  if (iso > period.fim) return period.fim;
-  return iso;
-}
-function getCompetenceDays(period) {
-  const days = [];
-  const cur = new Date(period.inicio + 'T00:00:00');
-  const end = new Date(period.fim + 'T00:00:00');
-  while (!isNaN(cur.getTime()) && cur <= end) {
-    days.push(isoDate(cur));
-    cur.setDate(cur.getDate() + 1);
-  }
-  return days;
-}
-function getWeekRanges(period) {
-  const days = getCompetenceDays(period);
-  const max = days.length ? Math.ceil(Number(days[days.length - 1].slice(8, 10)) / 7) : 5;
-  return Array.from({ length:max }, (_, idx) => {
-    const semana = idx + 1;
-    const fromDay = (semana - 1) * 7 + 1;
-    const toDay = Math.min(semana * 7, Number(period.fim.slice(8, 10)));
-    const ym = period.competencia;
-    return {
-      semana,
-      de: `${ym}-${String(fromDay).padStart(2, '0')}`,
-      ate: `${ym}-${String(toDay).padStart(2, '0')}`,
-    };
-  });
-}
-function getLast7Range(period) {
-  const fim = new Date(period.fim + 'T00:00:00');
-  const de = new Date(fim);
-  de.setDate(de.getDate() - 6);
-  const deIso = isoDate(de);
-  return { de: deIso < period.inicio ? period.inicio : deIso, ate: period.fim };
-}
-function sanitizeFilters(filters, payload) {
-  const f = cloneFilters(filters);
-  const period = payload.periodo;
-
-  if (!['mes', 'dia', 'semana', 'intervalo', 'ultimos7'].includes(f.modo)) f.modo = 'mes';
-  if (!['todos', 'full', 'nao_full'].includes(f.logistica)) f.logistica = 'todos';
-  if (!['todos', 'com_ads', 'sem_ads'].includes(f.midia)) f.midia = 'todos';
-  if (!['todos', 'com_custo', 'sem_custo', 'no_diag', 'fora_diag'].includes(f.diagbase)) f.diagbase = 'todos';
-  if (!['todos', 'valido', 'cancelado', 'problema', 'bloqueado'].includes(f.status)) f.status = 'todos';
-
-  if (f.modo === 'dia') {
-    f.dia = isDateInPeriod(f.dia, period) ? f.dia : null;
-    f.semana = null; f.de = null; f.ate = null;
-  } else if (f.modo === 'semana') {
-    const weeks = getWeekRanges(period).map(w => String(w.semana));
-    f.semana = weeks.includes(String(f.semana || '')) ? String(f.semana) : null;
-    f.dia = null; f.de = null; f.ate = null;
-  } else if (f.modo === 'intervalo') {
-    f.de = clampDateToPeriod(f.de, period);
-    f.ate = clampDateToPeriod(f.ate, period);
-    if (f.de && f.ate && f.de > f.ate) { const t = f.de; f.de = f.ate; f.ate = t; }
-    f.dia = null; f.semana = null;
-  } else {
-    f.dia = null; f.semana = null; f.de = null; f.ate = null;
-  }
-  return f;
-}
-
-// Espelho frontend de STATUS_FORA_DO_RESULTADO, cuja fonte de verdade fica em
-// centralVendasService.js. Cancelados e mediações continuam visíveis, mas não
-// entram nos agregados financeiros — mesma regra do fechamento por planilha.
-const STATUS_FORA_DO_RESULTADO = new Set(['cancelado', 'com_problema']);
-function pedidoEntraNoResultado(o) {
-  return !!o && !STATUS_FORA_DO_RESULTADO.has(o.status);
-}
-
-/* Calcula o pedido cruzando com o produto/base. Resultado DERIVADO. */
-function computeOrder(o, payload) {
-  const prod = getProduto(payload, o.mlb);
-  const un = o.unidades;
-  const cancelled = o.status === 'cancelado';
-  const noProduct = !o.mlb;
-  const temCusto = prod?.base?.temCusto === true;
-  const custoTotal = (temCusto && un != null) ? round2(prod.base.custo * un) : null;
-  const impostoPct = temCusto ? (prod.base.imposto || 0) : null;
-  const imposto = (custoTotal != null) ? round2(o.valor * (impostoPct / 100)) : null;
-
-  const out = {
-    ...o,
-    produto: prod ? { mlb:prod.mlb, sku:prod.sku, titulo:prod.titulo } : { mlb:o.mlb, sku:null, titulo:(noProduct ? '(linha financeira sem produto)' : o.mlb) },
-    prod,
-    full: isOrderFull(o),
-    adsStatus: prod?.ads?.status ?? 'ausente',
-    custo: custoTotal, custoStatus: custoTotal == null ? 'ausente' : 'real',
-    imposto,
-    resultado: null, resultadoStatus: 'bloqueado', confianca: 'bloqueado',
-    pendencias: [],
-  };
-
-  if (cancelled) { out.pendencias.push('cancelado/reembolso — fora do resultado'); out.status = 'cancelado'; return out; }
-  if (o.status === 'com_problema') { out.pendencias.push('mediação/problema — fora do resultado'); return out; }
-  if (noProduct) { out.pendencias.push('financeiro sem produto conciliado'); return out; }
-  if (custoTotal == null) { out.pendencias.push('MLB sem custo na base'); return out; }
-
-  const provis = round2(o.valor - (o.frete || 0) - (o.taxas || 0) - custoTotal - (imposto || 0));
-  out.resultado = provis;
-  if (o.frete == null)        { out.resultadoStatus = 'parcial';  out.confianca = 'parcial'; out.pendencias.push('frete real ausente'); }
-  else if (o.taxas == null)   { out.resultadoStatus = 'parcial';  out.confianca = 'parcial'; out.pendencias.push('taxa não identificada'); }
-  else if (o.freteStatus === 'estimado') { out.resultadoStatus = 'estimado'; out.confianca = 'parcial'; out.pendencias.push('frete estimado'); }
-  else                        { out.resultadoStatus = 'real';     out.confianca = 'confiavel'; }
-  if (prod && prod.diag?.presente !== true) out.pendencias.push('produto fora do diagnóstico');
-  return out;
-}
-
-/* ── FILTROS ──────────────────────────────────────────────── */
-function applyFilters(payload, filters) {
-  filters = sanitizeFilters(filters, payload);
-  let pedidos = (payload.pedidos || []).map(o => computeOrder(o, payload));
-
-  // período de análise (intervalo de datas — pode cruzar meses)
-  pedidos = pedidos.filter(o => o.data && o.data >= payload.periodo.inicio && o.data <= payload.periodo.fim);
-  if (filters.modo === 'dia' && filters.dia) pedidos = pedidos.filter(o => o.data === filters.dia);
-  if (filters.modo === 'semana' && filters.semana) pedidos = pedidos.filter(o => getWeekOfMonth(o) === Number(filters.semana));
-  if (filters.modo === 'intervalo' && (filters.de || filters.ate)) {
-    pedidos = pedidos.filter(o => (!filters.de || o.data >= filters.de) && (!filters.ate || o.data <= filters.ate));
-  }
-  if (filters.modo === 'ultimos7') {
-    const r = getLast7Range(payload.periodo);
-    pedidos = pedidos.filter(o => o.data >= r.de && o.data <= r.ate);
-  }
-  // logística
-  if (filters.logistica === 'full')     pedidos = pedidos.filter(o => o.full === true);
-  if (filters.logistica === 'nao_full') pedidos = pedidos.filter(o => o.full !== true);
-  // mídia
-  if (filters.midia === 'com_ads') pedidos = pedidos.filter(o => hasProductAds(o.prod));
-  if (filters.midia === 'sem_ads') pedidos = pedidos.filter(o => !hasProductAds(o.prod));
-  // diagnóstico/base
-  if (filters.diagbase === 'com_custo')  pedidos = pedidos.filter(o => o.prod?.base?.temCusto === true);
-  if (filters.diagbase === 'sem_custo')  pedidos = pedidos.filter(o => o.prod?.base?.temCusto !== true);
-  if (filters.diagbase === 'no_diag')    pedidos = pedidos.filter(o => o.prod?.diag?.presente === true);
-  if (filters.diagbase === 'fora_diag')  pedidos = pedidos.filter(o => !o.prod || o.prod.diag?.presente !== true);
-  // status
-  if (filters.status === 'valido')    pedidos = pedidos.filter(o => o.status === 'pago');
-  if (filters.status === 'cancelado') pedidos = pedidos.filter(o => o.status === 'cancelado');
-  if (filters.status === 'problema')  pedidos = pedidos.filter(o => o.status === 'com_problema');
-  if (filters.status === 'bloqueado') pedidos = pedidos.filter(o => o.resultadoStatus === 'bloqueado' && pedidoEntraNoResultado(o));
-
-  return { ...payload, pedidos };
-}
-
-/* ── FECHAMENTO API (helpers puros) ───────────────────────────
-   Fecham o PERÍODO inteiro (payload já escopado pelo GET por range) usando
-   só pedidos/itens/componentes sincronizados + base vinculada. Não chamam ML.
-   null = ausente ("—") · 0 = zero real · ausência nunca vira R$ 0,00. */
-function fechamentoOrders(payload) {
-  return (payload?.pedidos || []).map(o => (o.prod !== undefined ? o : computeOrder(o, payload)));
-}
-/* Recorte do Fechamento (reaproveita o predicado dos chips de pedido). */
-function fechamentoOrdersFiltered(payload, quick) {
-  const orders = fechamentoOrders(payload);
-  return (quick && quick !== 'todos') ? orders.filter(o => pedidoMatchesQuick(o, quick)) : orders;
-}
-function fechSum(arr, f) { return round2(arr.reduce((s, o) => s + (Number(f(o)) || 0), 0)); }
-
-function buildFechamentoResumo(payload, quick = 'todos') {
-  const orders = fechamentoOrdersFiltered(payload, quick);
-  const validos = orders.filter(pedidoEntraNoResultado);
-  const devolucoes = orders.filter(o => o.posVendaTipo === 'devolucao');
-  const cancelados = orders.filter(o => o.status === 'cancelado' && o.posVendaTipo !== 'devolucao');
-  const mediacoes = orders.filter(o => o.status === 'com_problema' && o.posVendaTipo !== 'devolucao');
-  const faturamento = fechSum(validos, o => o.valor);
-  const unidades = validos.reduce((s, o) => s + (o.unidades || 0), 0);
-  const comComissao = validos.filter(o => o.taxas != null);
-  const comissao = comComissao.length ? fechSum(comComissao, o => o.taxas) : null;
-  const comCusto = validos.filter(o => o.custo != null);
-  const custoTotal = comCusto.length ? fechSum(comCusto, o => o.custo) : null;
-  const comImposto = validos.filter(o => o.imposto != null);
-  const impostoTotal = comImposto.length ? fechSum(comImposto, o => o.imposto) : null;
-  const comFrete = validos.filter(o => o.frete != null);
-  const freteTotal = comFrete.length ? fechSum(comFrete, o => o.frete) : null; // null = ausente (sem Shipping API)
-  const comResultado = validos.filter(o => o.resultado != null);
-  const resultadoParcial = comResultado.length ? fechSum(comResultado, o => o.resultado) : null;
-  const receitaBloqueada = fechSum(validos.filter(o => o.resultadoStatus === 'bloqueado'), o => o.valor);
-  const ticket = validos.length ? round2(faturamento / validos.length) : null;
-
-  // Confiável só quando TODO pedido válido tem resultado real (custo + tarifa +
-  // frete real). Qualquer ausência (inclusive frete) mantém o fechamento parcial.
-  let confianca;
-  if (!validos.length || !comResultado.length) confianca = 'insuficiente';
-  else if (validos.every(o => o.resultadoStatus === 'real')) confianca = 'confiavel';
-  else confianca = 'parcial';
-  if (payload?.resumo?.claimsIndisponivel && orders.length) confianca = 'parcial';
-
-  // Cobertura de cada total agregado: qual % da receita válida ele representa.
-  // Necessário porque faturamento soma TODOS os pedidos válidos, enquanto
-  // comissão/custo/imposto/frete somam só os pedidos que têm o dado. Exibir os
-  // números lado a lado sem isso faz o leitor calcular margem sobre bases
-  // diferentes (ex.: custo que cobre 60% da receita lido como se fosse o total).
-  const coberturaDe = (subset) =>
-    faturamento > 0 ? round2(fechSum(subset, o => o.valor) / faturamento * 100) : null;
-
-  const cobertura = {
-    comissao: comComissao.length ? coberturaDe(comComissao) : null,
-    custo: comCusto.length ? coberturaDe(comCusto) : null,
-    imposto: comImposto.length ? coberturaDe(comImposto) : null,
-    frete: comFrete.length ? coberturaDe(comFrete) : null,
-    resultado: comResultado.length ? coberturaDe(comResultado) : null,
-  };
-
-  return {
-    periodo: payload.periodo, cliente: payload.cliente,
-    fonte: payload.motor?.origemPrincipal || payload.fonte || 'central_vendas_db',
-    totalPedidos: orders.length, validos: validos.length,
-    cancelados: cancelados.length, devolucoes: devolucoes.length, mediacoes: mediacoes.length,
-    cancelProblema: orders.filter(o => STATUS_FORA_DO_RESULTADO.has(o.status)).length,
-    unidades, faturamento, ticket, comissao, custoTotal, impostoTotal, freteTotal,
-    resultadoParcial, receitaBloqueada, confianca, cobertura,
-  };
-}
-
-/* A composição precisa FECHAR: a receita das linhas superiores tem de ser a
-   mesma base que produziu o Resultado Parcial. "Receita de produtos" soma todos
-   os pedidos válidos (inclusive os bloqueados, que aparecem no card de
-   faturamento), mas o Resultado Parcial só existe para os pedidos calculáveis.
-   Por isso a receita bloqueada sai numa linha explícita — ela não é escondida,
-   é subtraída — e os descontos abaixo somam apenas pedidos calculáveis. */
-function buildFechamentoComponentes(payload, quick = 'todos') {
-  const r = buildFechamentoResumo(payload, quick);
-  const orders = fechamentoOrdersFiltered(payload, quick);
-  const validos = orders.filter(pedidoEntraNoResultado);
-  const calculaveis = validos.filter(o => o.resultado != null);
-  const foraDoCalculo = validos.filter(o => o.resultado == null);
-  const semCusto = validos.filter(o => o.mlb && o.custoStatus === 'ausente').length;
-  const semFrete = validos.filter(o => o.frete == null).length;
-  const semFreteCalc = calculaveis.filter(o => o.frete == null).length;
-
-  const receitaFora = fechSum(foraDoCalculo, o => o.valor);
-  const somaCalc = (campo) => {
-    const comDado = calculaveis.filter(o => o[campo] != null);
-    return comDado.length ? fechSum(comDado, o => o[campo]) : null;
-  };
-  const comissaoCalc = somaCalc('taxas');
-  const custoCalc = somaCalc('custo');
-  const impostoCalc = somaCalc('imposto');
-  const freteCalc = somaCalc('frete');
-
-  return [
-    { comp:'Receita de produtos', op:'+', valor: r.faturamento,
-      status: r.faturamento > 0 ? 'real' : 'ausente', fonte:'orders_api', obs:'soma do valor dos pedidos válidos' },
-    { comp:'Receita bloqueada fora do cálculo', op:'−', valor: receitaFora === 0 ? 0 : -receitaFora,
-      status: foraDoCalculo.length ? 'parcial' : 'real', fonte:'cálculo interno',
-      obs: foraDoCalculo.length
-        ? `${num(foraDoCalculo.length)} pedido(s) sem custo/produto — receita existe, resultado não é calculável`
-        : 'nenhum pedido válido bloqueado' },
-    { comp:'Tarifa marketplace', op:'−', valor: comissaoCalc == null ? null : -comissaoCalc,
-      status: comissaoCalc == null ? 'ausente' : 'real', fonte:'orders_api', obs:'comissão (sale_fee) dos pedidos calculáveis' },
-    { comp:'Custo dos produtos', op:'−', valor: custoCalc == null ? null : -custoCalc,
-      status: custoCalc == null ? 'ausente' : 'real', fonte:'base vinculada',
-      obs: semCusto > 0 ? `${num(semCusto)} pedido(s) sem custo na base ficaram na linha bloqueada` : 'custo unitário × unidades' },
-    { comp:'Imposto interno', op:'−', valor: impostoCalc == null ? null : -impostoCalc,
-      status: impostoCalc == null ? 'ausente' : 'real', fonte:'cálculo interno',
-      obs:'imposto % da base × receita dos pedidos calculáveis' },
-    { comp:'Frete seller', op:'−', valor: freteCalc == null ? null : -freteCalc,
-      status: freteCalc == null ? 'ausente' : (semFreteCalc > 0 ? 'parcial' : 'real'),
-      fonte: freteCalc == null ? 'pendente' : 'shipments_api',
-      obs: freteCalc == null
-        ? 'nenhum envio retornou custo (shipments API)'
-        : (semFreteCalc > 0 ? `${num(semFreteCalc)} pedido(s) calculáveis sem frete real` : 'custo final do seller (shipments costs)') },
-    { comp:'Resultado parcial', op:'=', valor: r.resultadoParcial,
-      status: r.resultadoParcial == null ? 'ausente' : (r.confianca === 'confiavel' ? 'real' : 'parcial'), fonte:'cálculo interno',
-      obs: r.confianca === 'confiavel' ? 'todos os componentes reais' : (semFrete > 0 || r.freteTotal == null ? 'parcial — frete incompleto' : 'parcial — falta custo em parte') },
-  ];
-}
-
-/* Resíduo da composição: soma das linhas (exceto o total) menos o Resultado
-   Parcial. Deve ser 0 — se não for, a tabela está mentindo e o valor aparece. */
-function fechamentoComposicaoResiduo(comps) {
-  const total = comps.find(c => c.op === '=');
-  if (!total || total.valor == null) return null;
-  const soma = comps.filter(c => c.op !== '=').reduce((s, c) => s + (Number(c.valor) || 0), 0);
-  return round2(soma - total.valor);
-}
-
-function buildFechamentoQualidade(payload, quick = 'todos') {
-  const orders = fechamentoOrdersFiltered(payload, quick);
-  const validos = orders.filter(pedidoEntraNoResultado);
-  const faturamento = fechSum(validos, o => o.valor);
-  const fatComCusto = fechSum(validos.filter(o => o.custo != null), o => o.valor);
-  const fatComFrete = fechSum(validos.filter(o => o.frete != null), o => o.valor);
-  const fatBloqueado = fechSum(validos.filter(o => o.resultadoStatus === 'bloqueado'), o => o.valor);
-  return {
-    semCusto: validos.filter(o => o.mlb && o.custoStatus === 'ausente').length,
-    semFrete: validos.filter(o => o.frete == null).length,
-    cancelados: orders.filter(o => o.status === 'cancelado' && o.posVendaTipo !== 'devolucao').length,
-    devolucoes: orders.filter(o => o.posVendaTipo === 'devolucao').length,
-    // Devolução parcial NÃO cancela o pedido: ele continua no resultado e só é
-    // sinalizado aqui, com a quantidade afetada persistida no payload.
-    devolucoesParciais: orders.filter(o => o.posVendaTipo === 'devolucao_parcial').length,
-    mediacoes: orders.filter(o => o.status === 'com_problema' && o.posVendaTipo !== 'devolucao').length,
-    cancelProblema: orders.filter(o => STATUS_FORA_DO_RESULTADO.has(o.status)).length,
-    claimsIndisponivel: payload?.resumo?.claimsIndisponivel === true,
-    claimsReturnsNaoResolvidos: Number(payload?.resumo?.claimsReturnsNaoResolvidos) || 0,
-    comResultado: validos.filter(o => o.resultado != null).length,
-    bloqueados: validos.filter(o => o.resultadoStatus === 'bloqueado').length,
-    pctFatComCusto: faturamento > 0 ? round2(fatComCusto / faturamento * 100) : null,
-    pctFatComFrete: faturamento > 0 ? round2(fatComFrete / faturamento * 100) : null,
-    pctFatBloqueado: faturamento > 0 ? round2(fatBloqueado / faturamento * 100) : null,
-  };
-}
-
-function buildFechamentoPorDia(payload, quick = 'todos') {
-  const orders = fechamentoOrdersFiltered(payload, quick);
-  const map = new Map();
-  for (const o of orders) {
-    if (!o.data) continue;
-    if (!map.has(o.data)) map.set(o.data, { data:o.data, pedidos:0, faturamento:0, comissao:0, custo:0, imposto:0, receitaBloqueada:0, cancelProblema:0, semFrete:0, semCusto:0, _comissao:false, _custo:false, _imposto:false });
-    const d = map.get(o.data);
-    const valido = pedidoEntraNoResultado(o);
-    d.pedidos += 1;
-    if (valido) {
-      d.faturamento += (o.valor || 0);
-      if (o.taxas != null) { d.comissao += o.taxas; d._comissao = true; }
-      if (o.custo != null) { d.custo += o.custo; d._custo = true; }
-      if (o.imposto != null) { d.imposto += o.imposto; d._imposto = true; }
-      if (o.frete == null) d.semFrete += 1;
-      if (o.mlb && o.custoStatus === 'ausente') d.semCusto += 1;
-    }
-    if (o.resultadoStatus === 'bloqueado' && valido) d.receitaBloqueada += (o.valor || 0);
-    if (o.status === 'cancelado' || o.status === 'com_problema') d.cancelProblema += 1;
-  }
-  return [...map.values()].map(d => ({
-    data: d.data, pedidos: d.pedidos,
-    faturamento: round2(d.faturamento),
-    comissao: d._comissao ? round2(d.comissao) : null,
-    custo: d._custo ? round2(d.custo) : null,
-    imposto: d._imposto ? round2(d.imposto) : null,
-    receitaBloqueada: round2(d.receitaBloqueada),
-    cancelProblema: d.cancelProblema,
-    semFrete: d.semFrete, semCusto: d.semCusto,
-  }));
-}
-
-const FECH_DAILY_SORTS = [
-  ['data', 'Data'], ['faturamento', 'Maior faturamento'], ['pedidos', 'Mais pedidos'],
-  ['cancelProblema', 'Mais cancelados/problema'], ['receitaBloqueada', 'Maior receita bloqueada'],
-  ['semFrete', 'Mais sem frete'], ['semCusto', 'Mais sem custo'],
-];
-function sortDias(dias, key) {
-  const a = dias.slice();
-  if (key === 'data') a.sort((x, y) => x.data.localeCompare(y.data));
-  else a.sort((x, y) => (y[key] || 0) - (x[key] || 0) || x.data.localeCompare(y.data));
-  return a;
-}
-
-function buildDailySales(view) {
-  const map = new Map();
-  for (const o of view.pedidos) {
-    if (!map.has(o.data)) map.set(o.data, { data:o.data, faturamento:0, pedidos:0, unidades:0, cancelProblema:0, produtosSet:new Set(), receitaBloqueada:0, _topMap:new Map() });
-    const d = map.get(o.data);
-    const valido = pedidoEntraNoResultado(o);
-    d.pedidos += 1;
-    if (valido) { d.faturamento += (o.valor || 0); d.unidades += (o.unidades || 0); if (o.mlb) d.produtosSet.add(o.mlb); }
-    if (o.status === 'cancelado' || o.status === 'com_problema') d.cancelProblema += 1;
-    if (o.resultadoStatus === 'bloqueado' && valido) d.receitaBloqueada += (o.valor || 0);
-    if (valido && o.mlb) d._topMap.set(o.mlb, (d._topMap.get(o.mlb) || 0) + (o.valor || 0));
-  }
-  const arr = [...map.values()].map(d => {
-    let top = null; let topV = -1;
-    for (const [mlb, v] of d._topMap) if (v > topV) { topV = v; top = mlb; }
-    // Catálogo do payload carregado (a V1 lia direto de MOCK_PRODUTOS e o
-    // "top do dia" sumia com dados reais; no mock o objeto é o mesmo).
-    const prod = top ? (F.rawPayload?.produtos || {})[top] || null : null;
-    return { data:d.data, faturamento:round2(d.faturamento), pedidos:d.pedidos, unidades:d.unidades,
-             cancelProblema:d.cancelProblema, produtos:d.produtosSet.size, receitaBloqueada:round2(d.receitaBloqueada),
-             topProduto: prod ? { titulo:prod.titulo, faturamento:round2(topV) } : null };
-  });
-  arr.sort((a, b) => a.data.localeCompare(b.data));
-  return arr;
-}
-
-function buildDailyRulerRows() {
-  if (!F.rawPayload) return [];
-  const secondaryFilters = {
-    ...F.orders.filters,
-    modo: 'mes',
-    dia: null,
-    semana: null,
-    de: null,
-    ate: null,
-  };
-  const monthView = applyFilters(F.rawPayload, secondaryFilters);
-  const byDay = new Map(buildDailySales(monthView).map(d => [d.data, d]));
-  return getCompetenceDays(F.rawPayload.periodo).map(data => byDay.get(data) || {
-    data,
-    faturamento: 0,
-    pedidos: 0,
-    unidades: 0,
-    cancelProblema: 0,
-    produtos: 0,
-    receitaBloqueada: 0,
-    topProduto: null,
-  });
-}
-/* 'selected' = dia exato do filtro · 'scope' = dentro do recorte ativo. */
-function dayScope(data) {
-  const fl = F.orders.filters;
-  if (fl.modo === 'dia') return fl.dia === data ? 'selected' : '';
-  if (fl.modo === 'intervalo' && fl.de && fl.de === fl.ate) return fl.de === data ? 'selected' : '';
-  if (fl.modo === 'semana' && fl.semana) return getWeekOfMonth({ data }) === Number(fl.semana) ? 'scope' : '';
-  if (fl.modo === 'intervalo' && (fl.de || fl.ate)) return (!fl.de || data >= fl.de) && (!fl.ate || data <= fl.ate) ? 'scope' : '';
-  if (fl.modo === 'ultimos7') {
-    const r = getLast7Range(F.rawPayload.periodo);
-    return data >= r.de && data <= r.ate ? 'scope' : '';
-  }
-  return '';
-}
-
-/* ── CARREGAMENTO ─────────────────────────────────────────── */
-// Mock só é usado se explicitamente ligado neste navegador (nunca automático
-// após erro real de backend): localStorage.setItem('vf-fapi-mock-dev','1').
+/* ── FETCH — Read API M9 (única fonte de verdade) ────────────
+   Mock só é usado se explicitamente ligado neste navegador (nunca
+   automático após erro real de backend): localStorage 'vf-fapi-mock-dev'. */
 function mockModeDevAtivo() {
   try { return localStorage.getItem('vf-fapi-mock-dev') === '1'; }
   catch (_) { return false; }
-}
-function buildMockPayload(slug) {
-  const cli = F.clientes.find(c => c.slug === slug) || mockFechamentoApiPayload.cliente;
-  const comp = MOCK_COMPETENCIAS[0];
-  const p = JSON.parse(JSON.stringify(mockFechamentoApiPayload));
-  p.cliente = { id:cli.id, nome:cli.nome, slug:cli.slug };
-  p.periodo = { competencia:comp.competencia, inicio:comp.inicio, fim:comp.fim, label:comp.label };
-  return p;
 }
 const HTTP_ERRO_MSG = {
   401: 'Sessão expirada. Faça login novamente.',
   403: 'Você não tem permissão para acessar estes dados.',
 };
-async function carregarPayload(slug, dateFrom, dateTo, clienteContaId, signal) {
-  if (!slug) return null;
-
+/* GET genérico contra a Central de Vendas: devolve o JSON quando ok, ou um
+   objeto { ok:false, erro, erroTipo, contas? } — nunca lança. */
+async function fetchCentralVendas(path, params, signal) {
   let res;
   try {
-    const qs = new URLSearchParams({ dateFrom, dateTo });
-    if (clienteContaId) qs.set('clienteContaId', clienteContaId);
-    res = await fetch(
-      `${API_BASE}/operacao/central-vendas/${encodeURIComponent(slug)}?${qs.toString()}`,
-      { headers: { Authorization: "Bearer " + TOKEN }, signal }
-    );
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params || {})) {
+      if (v !== null && v !== undefined && v !== '') qs.set(k, v);
+    }
+    res = await fetch(`${API_BASE}${path}?${qs.toString()}`, { headers: { Authorization: 'Bearer ' + TOKEN }, signal });
   } catch (err) {
-    if (err?.name === 'AbortError') return null; // cancelado por troca de cliente/período — silencioso
-    console.error('[fechamentos-api] falha de rede ao carregar a Central de Vendas:', err);
-    if (mockModeDevAtivo()) return buildMockPayload(slug);
+    if (err?.name === 'AbortError') return null; // cancelado por troca de contexto — silencioso
+    console.error(`[fechamentos-api] falha de rede em ${path}:`, err);
     return { ok:false, erro:'Falha de conexão com o servidor.', erroTipo:'rede' };
   }
 
@@ -763,37 +580,57 @@ async function carregarPayload(slug, dateFrom, dateTo, clienteContaId, signal) {
     const texto = await res.text().catch(() => '');
     let corpoJson = null;
     try { corpoJson = JSON.parse(texto); } catch (_) { /* corpo nao e JSON */ }
-    // M8, seção 28 — defensivo: mesmo com a conta já resolvida pela tela, o
-    // backend pode voltar a exigir escolha (conta nova cadastrada em outra
-    // aba, corrida de carregamento). Nunca escolhe uma conta sozinho aqui —
-    // devolve o sinal para carregarTela() atualizar as opções e bloquear.
     if (res.status === 409 && corpoJson?.code === 'MULTIPLE_MARKETPLACE_ACCOUNTS') {
       return { ok:false, erro: corpoJson.erro || 'Selecione a conta.', erroTipo:'ambiguidade_conta', contas: corpoJson.contas || [] };
     }
+    if (res.status === 401) { window.location.replace('index.html'); return null; }
     const corpo = corpoJson?.erro || corpoJson?.message || corpoJson?.error || (corpoJson ? JSON.stringify(corpoJson) : texto);
-    const mensagem = HTTP_ERRO_MSG[res.status] || corpo || `Erro ${res.status} ao carregar a Central de Vendas.`;
-    console.error(`[fechamentos-api] HTTP ${res.status} em /operacao/central-vendas/${slug}:`, corpo);
-    if (mockModeDevAtivo()) return buildMockPayload(slug);
+    const mensagem = HTTP_ERRO_MSG[res.status] || corpo || `Erro ${res.status} em ${path}.`;
+    console.error(`[fechamentos-api] HTTP ${res.status} em ${path}:`, corpo);
     return { ok:false, erro:mensagem, erroTipo:'http', httpStatus:res.status };
   }
 
-  let data;
   try {
-    data = await res.json();
+    const data = await res.json();
+    if (!data || data.ok !== true) return { ok:false, erro: data?.erro || 'Backend retornou um payload inválido.', erroTipo:'payload_invalido' };
+    return data;
   } catch (err) {
-    console.error('[fechamentos-api] resposta inválida (JSON) da Central de Vendas:', err);
-    if (mockModeDevAtivo()) return buildMockPayload(slug);
+    console.error(`[fechamentos-api] resposta inválida (JSON) em ${path}:`, err);
     return { ok:false, erro:'Resposta inválida do servidor.', erroTipo:'json_invalido' };
   }
+}
 
-  if (!data || data.ok !== true) {
-    console.error('[fechamentos-api] payload com ok !== true da Central de Vendas:', data);
-    if (mockModeDevAtivo()) return buildMockPayload(slug);
-    return { ok:false, erro: data?.erro || 'Backend retornou um payload inválido.', erroTipo:'payload_invalido' };
-  }
+function contextoParams(extra) {
+  return {
+    dateFrom: F.periodo?.dateFrom, dateTo: F.periodo?.dateTo,
+    clienteContaId: F.clienteConta?.id || null,
+    ...extra,
+  };
+}
 
-  // Período sem pedidos é resposta VÁLIDA (mostra estado vazio honesto, não mock).
-  return data;
+async function fetchRead(params, signal) {
+  const resp = await fetchCentralVendas(`/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/read`, params, signal);
+  if (resp === null) return null;
+  if (!resp.ok && mockModeDevAtivo() && resp.erroTipo !== 'ambiguidade_conta') return buildMockRead({ ...params, slug: F.cliente.slug });
+  return resp;
+}
+async function fetchDaily(signal) {
+  const resp = await fetchCentralVendas(`/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/read/daily`, contextoParams(), signal);
+  if (resp === null) return null;
+  if (!resp.ok && mockModeDevAtivo()) return buildMockDaily();
+  return resp;
+}
+async function fetchProducts(signal) {
+  const resp = await fetchCentralVendas(`/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/read/products`, contextoParams(), signal);
+  if (resp === null) return null;
+  if (!resp.ok && mockModeDevAtivo()) return buildMockProducts();
+  return resp;
+}
+async function fetchOrderDetail(rowId, signal) {
+  const resp = await fetchCentralVendas(`/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/read/orders/${encodeURIComponent(rowId)}`, contextoParams(), signal);
+  if (resp === null) return null;
+  if (!resp.ok && mockModeDevAtivo()) return buildMockOrderDetail(rowId);
+  return resp;
 }
 
 /* ── INIT ─────────────────────────────────────────────────── */
@@ -803,8 +640,6 @@ function isAdminUser() {
 }
 
 async function initFechamentosApi() {
-  // Busca lista real de clientes — mesmo endpoint e lógica do cliente-360.js.
-  // Fallback para /clientes (admin-only) se o endpoint operacional não existir.
   try {
     let data = await fetch(`${API_BASE}/operacao/cliente-360/clientes`,
       { headers: { Authorization: 'Bearer ' + TOKEN } }).then(r => r.ok ? r.json() : null);
@@ -827,7 +662,6 @@ async function initFechamentosApi() {
     sel.innerHTML = '<option value="">Selecione o cliente…</option>' +
       F.clientes.map(c => `<option value="${esc(c.slug)}">${esc(c.nome)}</option>`).join('');
   }
-  // Período de análise. Default: mês atual.
   const periodSel = document.getElementById('fapi-period-select');
   if (periodSel) {
     periodSel.innerHTML = PERIOD_OPTS.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
@@ -835,13 +669,11 @@ async function initFechamentosApi() {
     periodSel.value = 'mes_atual';
   }
 
-  // Ações administrativas só para admin (leitura fica para todos).
   if (isAdminUser()) {
     document.getElementById('fapi-sync-btn')?.removeAttribute('hidden');
     document.getElementById('fapi-import-toggle')?.removeAttribute('hidden');
   }
 
-  // Aba inicial via hash opcional (#visao-geral / #pedidos / #produtos).
   const hashTab = { '#visao-geral':'visao', '#pedidos':'pedidos', '#produtos':'produtos' }[window.location.hash];
   if (hashTab) F.ui.activeTab = hashTab;
 
@@ -849,8 +681,6 @@ async function initFechamentosApi() {
   carregarTela();
 }
 
-/* Troca de período de análise. "Personalizado" só mostra os inputs; aplica no
-   botão "Aplicar". Os demais modos carregam dados uma vez. */
 function onPeriodChange() {
   const periodSel = document.getElementById('fapi-period-select');
   const custom = document.getElementById('fapi-period-custom');
@@ -879,23 +709,18 @@ function aplicarPeriodoCustom() {
   carregarTela();
 }
 function resetFilters() {
-  F.orders.filters = defaultFilters();
+  F.orders.filters = defaultOrderFilters();
   F.orders.quickFilter = 'todos';
   F.orders.search = '';
   F.orders.sort = 'data_desc';
   F.orders.page = 1;
   F.ui.filtersPanelOpen = false;
-  F.summary.quickFilter = 'todos';
-  F.summary.dailySort = 'data';
+  F.summaryUi.quickFilter = 'todos';
+  F.summaryUi.dailySort = 'data';
   resetCurvaAbcState();
 }
 
-/* ── CONTAS DO CLIENTE (M8 — account-aware) ──────────────────
-   Fonte oficial: GET /clientes/:slug/contas (Fundação de Contas — mesmo
-   endpoint que Cliente 360/Financeiro/Central de Margem já reaproveitam).
-   Nunca cria endpoint paralelo nem resolve conta no browser: só lista o
-   que o backend já considera ativo e deixa o operador (ou a regra
-   1-conta-auto) escolher. */
+/* ── CONTAS DO CLIENTE (M8 — account-aware, inalterado) ─────── */
 async function carregarContasCliente(clienteSlug) {
   if (!TOKEN || !clienteSlug) return [];
   try {
@@ -925,15 +750,10 @@ function renderContextoConta() {
     return;
   }
 
-  // 0 conta cadastrada: cliente 100% legado — o backend resolve sozinho
-  // (fallback pré-existente). Nada para escolher, então nada para mostrar.
   if (!F.contas.length) { field.hidden = true; return; }
 
   field.hidden = false;
   const precisaEscolha = F.contas.length > 1;
-  // 1 conta: select informativo (a única opção já está selecionada) — não
-  // há ambiguidade para resolver, mas o operador ainda vê qual conta está
-  // ativa. 2+: obrigatório escolher, nunca pré-selecionado.
   select.disabled = !precisaEscolha;
   const placeholder = precisaEscolha ? '<option value="">Selecione a conta…</option>' : '';
   select.innerHTML = placeholder + F.contas.map(c => {
@@ -946,8 +766,6 @@ function renderContextoConta() {
 function onContaChange(contaIdRaw) {
   const conta = F.contas.find(c => String(c.id) === String(contaIdRaw)) || null;
   if (!conta || F.clienteConta?.id === conta.id) return;
-  // Troca de conta (seção 25): nunca deixa o sync/poll da conta anterior
-  // continuar nem sobrescrever a tela da conta nova.
   pararPollingSync();
   F.clienteConta = conta;
   closeOrderDrawer({ restoreFocus: false });
@@ -958,11 +776,6 @@ function onContaChange(contaIdRaw) {
   retomarSyncEmAndamento();
 }
 
-/* Chamado sempre que o CLIENTE troca. Contas nunca são herdadas do
-   cliente anterior — recarregadas do zero a cada troca (seção 24).
-   Guard de concorrência (contaLoadSeq) evita que a resposta de contas de
-   um cliente antigo sobrescreva o cliente novo se o operador trocar duas
-   vezes rápido. */
 async function trocarContexto() {
   const seq = ++F.contaLoadSeq;
   F.contas = [];
@@ -980,13 +793,10 @@ async function trocarContexto() {
   renderAll();
 
   const contas = await carregarContasCliente(F.cliente.slug);
-  if (seq !== F.contaLoadSeq) return; // outra troca de cliente aconteceu antes desta resolver
+  if (seq !== F.contaLoadSeq) return;
 
   F.contasLoading = false;
   F.contas = contas;
-  // Seção 21: 1 conta pode ser selecionada automaticamente; 2+ exige
-  // escolha explícita (nunca contas[0] nem "principal" silenciosos); 0
-  // contas preserva o comportamento legado (clienteContaId nunca enviado).
   if (contas.length === 1) F.clienteConta = contas[0];
   renderContextoConta();
 
@@ -994,174 +804,133 @@ async function trocarContexto() {
     carregarTela();
     retomarSyncEmAndamento();
   } else {
-    // Bloqueado até escolha explícita — nenhum GET/sync parte com conta
-    // arbitrária (seção 21/28). carregarTela() também tem esta guarda,
-    // mas o estado já fica correto aqui sem esperar o primeiro render.
-    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null;
+    resetDataState();
     renderAll();
   }
 }
 
-/* ÚNICO ponto de fetch. Só deve ser chamado em: init, troca de cliente/
-   período, "Atualizar leitura" e depois de importar/sincronizar.
-   Filtros/busca/paginação/aba NÃO passam por aqui — renders locais.
-   Guard de concorrência (loadSeq) + AbortController ignoram resposta antiga. */
+/* ── CARREGAMENTO — Read API M9 ───────────────────────────────
+   Dois pontos de fetch:
+     carregarTela()          → troca de cliente/conta/período: busca
+                                summary+rows(pág.1) + daily + products em
+                                paralelo (3 endpoints, nenhum payload com
+                                "todos os pedidos").
+     atualizarListaEResumo() → qualquer filtro/busca/ordenação/página da
+                                aba Pedidos OU recorte da Visão Geral: só
+                                refaz /read (rows+summary+filteredSummary);
+                                daily/products não dependem desses filtros,
+                                não são refeitos.
+   Guard de concorrência (loadSeq) + AbortController em cada um — resposta
+   antiga nunca sobrescreve estado novo. */
+function resetDataState() {
+  F.ok = null; F.erro = null; F.motor = null; F.completude = null; F.snapshot = null; F.contexto = null;
+  F.summary = null; F.filteredSummary = null; F.rows = []; F.pagination = null;
+  F.daily = []; F.products = []; F.totalFaturamento = 0; F.periodoResp = null;
+}
+
+function applyReadResponse(resp) {
+  if (!resp?.ok) {
+    F.ok = false; F.erro = resp?.erro || 'O backend do motor não respondeu para este cliente/período.';
+    F.summary = null; F.filteredSummary = null; F.rows = []; F.pagination = null;
+    F.motor = null; F.completude = null; F.snapshot = null; F.contexto = null; F.periodoResp = null;
+    return;
+  }
+  F.ok = true; F.erro = null;
+  F.summary = resp.summary; F.filteredSummary = resp.filteredSummary;
+  F.rows = resp.rows; F.pagination = resp.pagination;
+  F.motor = resp.motor; F.completude = resp.completude; F.snapshot = resp.snapshot; F.contexto = resp.contexto;
+  F.periodoResp = resp.periodo;
+}
+
+function buildReadParams(extra) {
+  return contextoParams({
+    page: F.orders.page, limit: F.orders.pageSize, sort: F.orders.sort,
+    filtro: F.orders.quickFilter, status: F.orders.filters.status,
+    logistica: F.orders.filters.logistica, diagbase: F.orders.filters.diagbase,
+    search: F.orders.search, dataDe: F.orders.filters.de, dataAte: F.orders.filters.ate,
+    resumoFiltro: F.summaryUi.quickFilter,
+    ...extra,
+  });
+}
+
+/* ÚNICO ponto de fetch "pesado" (3 endpoints). Só deve ser chamado em:
+   init, troca de cliente/conta/período, "Atualizar leitura" e depois de
+   importar/sincronizar. */
 async function carregarTela() {
-  if (!F.cliente) {
-    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null;
-    F.loading = false;
-    renderAll();
-    return;
-  }
-
-  // M8 — nunca dispara leitura para conta ambígua (2+ contas ativas sem
-  // escolha explícita). renderAll() é quem desenha o bloqueio; aqui só
-  // garante que nenhum fetch parte sem conta resolvida quando ela é
-  // obrigatória (defesa contra chamadas diretas de outros pontos —
-  // onPeriodChange, refresh — enquanto a tela está nesse estado).
-  if (F.contas.length > 1 && !F.clienteConta) {
-    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null;
-    F.loading = false;
-    renderAll();
-    return;
-  }
-
+  if (!F.cliente) { resetDataState(); F.loading = false; renderAll(); return; }
+  if (F.contas.length > 1 && !F.clienteConta) { resetDataState(); F.loading = false; renderAll(); return; }
   if (!F.periodo) F.periodo = computePeriodo('mes_atual');
+
   const seq = ++F.loadSeq;
   if (F.loadAbort) { try { F.loadAbort.abort(); } catch (_) {} }
   F.loadAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const signal = F.loadAbort?.signal;
 
   F.loading = true;
   renderAll();
 
-  const clienteContaId = F.clienteConta?.id || null;
-  const payload = await carregarPayload(F.cliente.slug, F.periodo.dateFrom, F.periodo.dateTo, clienteContaId, F.loadAbort?.signal);
-  if (seq !== F.loadSeq) return; // resposta de um carregamento mais antigo — ignora
+  F.orders.page = 1;
+  const [readResp, dailyResp, productsResp] = await Promise.all([
+    fetchRead(buildReadParams({ page: 1 }), signal),
+    fetchDaily(signal),
+    fetchProducts(signal),
+  ]);
+  if (seq !== F.loadSeq) return;
 
   F.loading = false;
 
-  // M8, seção 28 — defensivo: o backend voltou a exigir escolha de conta
-  // mesmo com a tela já achando que tinha resolvido (ex.: conta nova
-  // cadastrada em outra aba durante a sessão). Nunca escolhe uma conta
-  // sozinho aqui: atualiza as opções e deixa o bloqueio assumir.
-  if (payload?.erroTipo === 'ambiguidade_conta') {
-    F.contas = payload.contas || [];
+  if (readResp?.erroTipo === 'ambiguidade_conta') {
+    F.contas = readResp.contas || [];
     F.clienteConta = null;
     renderContextoConta();
-    F.rawPayload = null; F.viewPayload = null; F.visiblePayload = null;
+    resetDataState();
     renderAll();
     return;
   }
 
-  F.rawPayload = payload;
-  if (!F.rawPayload?.ok) {
-    renderAll();
-    return;
-  }
-
-  F.orders.filters = sanitizeFilters(F.orders.filters, F.rawPayload);
-  F.orders.page = 1;
-  recomputeView();
+  applyReadResponse(readResp);
+  F.daily = dailyResp?.ok ? (dailyResp.dias || []) : [];
+  F.products = productsResp?.ok ? (productsResp.produtos || []) : [];
+  F.totalFaturamento = productsResp?.ok ? (productsResp.totalFaturamento || 0) : 0;
+  resetCurvaAbcState();
   renderAll();
 }
 
-/* Aplica filtros sobre F.rawPayload em memória — SEM fetch. Recalcula uma vez. */
-function recomputeView() {
-  F.viewPayload = F.rawPayload ? applyFilters(F.rawPayload, F.orders.filters) : null;
-}
+/* Refaz só a lista de pedidos + os dois resumos (summary/filteredSummary) —
+   nunca daily/products, que não dependem de filtro/busca/página. */
+async function atualizarListaEResumo({ resetPage = false } = {}) {
+  if (!F.cliente || (F.contas.length > 1 && !F.clienteConta) || !F.periodo) return;
+  if (resetPage) F.orders.page = 1;
 
-/* Recortes rápidos (chips). Tudo local sobre o pedido. */
-const QUICK_FILTERS = [
-  ['todos', 'Todos'], ['sem_custo', 'Sem custo'], ['sem_frete', 'Sem frete'],
-  ['frete_real', 'Com frete real'], ['calculavel', 'Resultado calculável'],
-  ['bloqueados', 'Bloqueados'], ['receita_bloqueada', 'Receita bloqueada'],
-  ['cancel_problema', 'Cancelados/problema'], ['full', 'Full'], ['normal', 'Normal'],
-];
-/* Chips expostos na linha principal; os demais ficam no painel "Filtros". */
-const QUICK_PRIMARY = ['todos', 'sem_custo', 'sem_frete', 'bloqueados', 'cancel_problema', 'full'];
-function pedidoMatchesQuick(o, q) {
-  switch (q) {
-    case 'sem_custo':         return !!o.mlb && o.custoStatus === 'ausente';
-    case 'sem_frete':         return pedidoEntraNoResultado(o) && o.frete == null;
-    case 'frete_real':        return o.frete != null;
-    case 'calculavel':        return o.resultado != null;
-    case 'bloqueados':        return o.resultadoStatus === 'bloqueado' && pedidoEntraNoResultado(o);
-    case 'receita_bloqueada': return o.resultadoStatus === 'bloqueado' && pedidoEntraNoResultado(o);
-    case 'cancel_problema':   return o.status === 'cancelado' || o.status === 'com_problema';
-    case 'full':              return o.full === true;
-    case 'normal':            return o.full !== true;
-    default:                  return true;
+  const seq = ++F.orders.loadSeq;
+  if (F.orders.loadAbort) { try { F.orders.loadAbort.abort(); } catch (_) {} }
+  F.orders.loadAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  F.orders.loading = true;
+  renderPedTable();
+
+  const resp = await fetchRead(buildReadParams({}), F.orders.loadAbort?.signal);
+  if (seq !== F.orders.loadSeq) return;
+  F.orders.loading = false;
+
+  if (resp?.erroTipo === 'ambiguidade_conta') {
+    F.contas = resp.contas || [];
+    F.clienteConta = null;
+    renderContextoConta();
+    resetDataState();
+    renderAll();
+    return;
   }
-}
-
-/* Ordenações locais da tabela de pedidos. */
-const ORDER_SORTS = [
-  ['data_desc', 'Data (mais recente)'], ['data_asc', 'Data (mais antiga)'],
-  ['fat_desc', 'Maior faturamento'], ['fat_asc', 'Menor faturamento'],
-  ['comissao_desc', 'Maior comissão'], ['frete_desc', 'Maior frete'],
-  ['custo_desc', 'Maior custo'], ['resultado_desc', 'Maior resultado'],
-  ['bloqueada_desc', 'Maior receita bloqueada'], ['confianca', 'Confiança (pior 1º)'],
-];
-const CONF_RANK = { bloqueado: 0, insuficiente: 0, parcial: 1, estimado: 2, real: 3, confiavel: 3 };
-function sortPedidos(arr, key) {
-  const a = arr.slice();
-  const desc = f => (x, y) => { const vx = f(x), vy = f(y); return (vy == null ? -Infinity : vy) - (vx == null ? -Infinity : vx); };
-  const asc  = f => (x, y) => { const vx = f(x), vy = f(y); return (vx == null ? Infinity : vx) - (vy == null ? Infinity : vy); };
-  switch (key) {
-    case 'data_asc':       a.sort((x, y) => String(x.data || '').localeCompare(String(y.data || '')) || String(x.id).localeCompare(String(y.id))); break;
-    case 'fat_desc':       a.sort(desc(o => o.valor)); break;
-    case 'fat_asc':        a.sort(asc(o => o.valor)); break;
-    case 'comissao_desc':  a.sort(desc(o => o.taxas)); break;
-    case 'frete_desc':     a.sort(desc(o => o.frete)); break;
-    case 'custo_desc':     a.sort(desc(o => o.custo)); break;
-    case 'resultado_desc': a.sort(desc(o => o.resultado)); break;
-    case 'bloqueada_desc': a.sort(desc(o => (o.resultadoStatus === 'bloqueado' && pedidoEntraNoResultado(o)) ? (o.valor || 0) : null)); break;
-    case 'confianca':      a.sort((x, y) => (CONF_RANK[x.confianca] ?? 9) - (CONF_RANK[y.confianca] ?? 9)); break;
-    default:               a.sort((x, y) => String(y.data || '').localeCompare(String(x.data || '')) || String(y.id).localeCompare(String(x.id))); break;
+  if (!resp?.ok) {
+    setActionStatus(resp?.erro || 'Falha ao atualizar pedidos.', ACTION_TONE.danger);
+    renderPedTable();
+    return;
   }
-  return a;
-}
-/* Estado da linha (filete à esquerda + classes de leitura). */
-function pedidoRowClass(o) {
-  if (o.status === 'cancelado') return ' is-cancel';
-  if (o.status === 'com_problema') return ' is-problem';
-  if (o.resultadoStatus === 'bloqueado') return ' is-blocked';
-  if (o.mlb && o.custoStatus === 'ausente') return ' is-nocost';
-  if (o.frete == null) return ' is-nofreight';
-  return '';
-}
 
-const STATUS_PEDIDO = { pago:['is-success','Pago'], cancelado:['is-danger','Cancelado'], com_problema:['is-warning','Mediação / problema'], pendente:['is-warning','Pendente'] };
-function statusPedidoInfo(o) {
-  if (o?.posVendaTipo === 'devolucao') {
-    return o.status === 'cancelado'
-      ? ['is-danger', 'Devolução / reembolso']
-      : ['is-warning', 'Devolução em andamento'];
-  }
-  return STATUS_PEDIDO[o?.status] || ['is-neutral', o?.status];
-}
-
-/* Pedidos filtrados (recorte rápido + busca). Ordenação/paginação ficam na tabela. */
-function pedidoMatchesSearch(o, term) {
-  return String(o.id || '').toLowerCase().includes(term) ||
-    String(o.produto?.mlb || o.mlb || '').toLowerCase().includes(term) ||
-    String(o.produto?.sku || o.sku || '').toLowerCase().includes(term) ||
-    String(o.produto?.titulo || '').toLowerCase().includes(term) ||
-    String(o.status || '').toLowerCase().includes(term) ||
-    String(statusPedidoInfo(o)[1] || '').toLowerCase().includes(term) ||
-    (o.full === true ? 'full' : 'normal').includes(term) ||
-    String(o.logistica || '').toLowerCase().includes(term);
-}
-function getSearchedPedidos() {
-  let pedidos = F.viewPayload?.pedidos || [];
-  const term = String(F.orders.search || '').trim().toLowerCase();
-  if (term) pedidos = pedidos.filter(o => pedidoMatchesSearch(o, term));
-  return pedidos;
-}
-function getVisiblePedidos() {
-  let pedidos = getSearchedPedidos();
-  if (F.orders.quickFilter && F.orders.quickFilter !== 'todos') pedidos = pedidos.filter(o => pedidoMatchesQuick(o, F.orders.quickFilter));
-  return pedidos;
+  applyReadResponse(resp);
+  renderTabCounts();
+  renderContextStatus();
+  renderFechamentoSection();
+  renderPedTable();
 }
 
 /* ── RENDER GERAL (sem fetch) ─────────────────────────────── */
@@ -1181,7 +950,6 @@ function renderAll() {
     if (!show) return;
   };
 
-  // 1) Sem cliente selecionado
   if (!F.cliente) {
     showPanels(false);
     stateHost.hidden = false;
@@ -1193,7 +961,6 @@ function renderAll() {
     return;
   }
 
-  // 1.5) Carregando as contas do cliente (M8)
   if (F.contasLoading) {
     showPanels(false);
     stateHost.hidden = false;
@@ -1201,8 +968,6 @@ function renderAll() {
     return;
   }
 
-  // 1.6) 2+ contas ML ativas sem escolha explícita — nunca lê/sincroniza
-  // com conta arbitrária (M8, seção 21).
   if (F.contas.length > 1 && !F.clienteConta) {
     showPanels(false);
     stateHost.hidden = false;
@@ -1214,7 +979,6 @@ function renderAll() {
     return;
   }
 
-  // 2) Carregando
   if (F.loading) {
     showPanels(false);
     stateHost.hidden = false;
@@ -1222,24 +986,21 @@ function renderAll() {
     return;
   }
 
-  // 3) Backend indisponível ou retornou erro real (sem payload válido)
-  if (!F.rawPayload?.ok) {
+  if (!F.ok) {
     showPanels(false);
     stateHost.hidden = false;
     stateHost.innerHTML = emptyState({
       icon:'plug', tone:'is-danger', title:'Motor indisponível',
-      why: F.rawPayload?.erro || 'O backend do motor não respondeu para este cliente/período.',
+      why: F.erro || 'O backend do motor não respondeu para este cliente/período.',
       next:'Tente novamente em instantes ou use "Atualizar leitura".',
     });
     return;
   }
 
-  // 4) Dados carregados — abas + painéis
   stateHost.hidden = true;
   stateHost.innerHTML = '';
   if (tabs) tabs.hidden = false;
   renderTabCounts();
-  F.visiblePayload = { ...F.viewPayload, pedidos: getVisiblePedidos() };
   renderFechamentoSection();
   renderDaysSection();
   renderOrdersPanel();
@@ -1247,7 +1008,6 @@ function renderAll() {
   setActiveTab(F.ui.activeTab, { updateHash: false, focus: false });
 }
 
-/* Estados do motor → componentes semânticos (barra de contexto). */
 const MOTOR = {
   mock:         ['is-info',    'Mock — dados simulados'],
   parcial:      ['is-warning', 'Parcial'],
@@ -1262,6 +1022,8 @@ const ORIGEM_LBL = {
   central_vendas_db: 'Banco Central de Vendas',
   mock_conciliacao_fechamento_api: 'Simulação local',
 };
+const FONTE_LABEL = { orders: 'Orders', shipments: 'Fretes', claims: 'Pós-venda', returns: 'Devoluções', base: 'Base' };
+
 function renderContextStatus() {
   const host = document.getElementById('fapi-context-status');
   const mockBanner = document.getElementById('fapi-mock-banner');
@@ -1280,32 +1042,26 @@ function renderContextStatus() {
     return;
   }
 
-  const p = F.rawPayload;
-  const motorStatus = p?.ok ? (p.motor?.status || 'indisponivel') : 'indisponivel';
+  const motorStatus = F.ok ? (F.motor?.status || 'indisponivel') : 'indisponivel';
   const [cls, label] = MOTOR[motorStatus] || MOTOR.indisponivel;
   const isMock = motorStatus === 'mock';
   if (mockBanner) mockBanner.hidden = !isMock;
 
   const parts = [item('Motor', `<span class="vf-status ${cls}">${esc(label)}</span>`)];
-  if (p?.ok) {
-    if (p.motor?.confianca && p.motor.confianca !== 'ausente') parts.push(item('Confiança', confStatus(p.motor.confianca)));
-    const origem = p.motor?.origemPrincipal || p.fonte;
+  if (F.ok) {
+    if (F.motor?.confianca && F.motor.confianca !== 'ausente') parts.push(item('Confiança', confStatus(F.motor.confianca)));
+    const origem = F.motor?.origemPrincipal;
     if (origem) parts.push(item('Origem', `<b>${esc(ORIGEM_LBL[origem] || origem)}</b>`));
-    if (p.motor?.geradoEm) parts.push(item('Gerado em', `<b>${esc(fmtDtHr(p.motor.geradoEm))}</b>`));
-    if (p.motor?.importId != null) parts.push(item('Import', `<span class="vf-mono">#${esc(p.motor.importId)}</span>`));
-    if (p.periodo?.label) parts.push(item('Intervalo', `<b>${esc(p.periodo.label)}</b>`));
-    // M8 — identidade agora é cliente + conta + período; a conta ativa fica
-    // visível ao lado do intervalo sempre que houver mais de uma cadastrada
-    // (com 0 ou 1 conta o seletor já mostra isso, sem precisar repetir aqui).
+    if (F.motor?.geradoEm) parts.push(item('Gerado em', `<b>${esc(fmtDtHr(F.motor.geradoEm))}</b>`));
+    if (F.motor?.importId != null) parts.push(item('Import', `<span class="vf-mono">#${esc(F.motor.importId)}</span>`));
+    if (F.periodoResp?.label) parts.push(item('Intervalo', `<b>${esc(F.periodoResp.label)}</b>`));
     if (F.clienteConta && F.contas.length > 1) parts.push(item('Conta', `<b>${esc(F.clienteConta.nome || F.clienteConta.slug)}</b>`));
     if (F.lastSyncBase?.nome) parts.push(item('Base vinculada', `<b>${esc(F.lastSyncBase.nome)}</b>`));
-    if (p.resumo?.claimsIndisponivel) {
+    if (F.summary?.claimsIndisponivel) {
       parts.push(item('Pós-venda', '<span class="vf-status is-warning">Não verificado</span>'));
     }
-    // M3 — completude por fonte (seção 44): honestidade além de claims —
-    // orders truncado, shipments parcial etc também pedem o aviso aqui.
-    if (p.completude && p.completude.status && p.completude.status !== 'complete') {
-      const fontes = (p.completude.fontesIncompletas || []).map(f => FONTE_LABEL[f] || f).join(', ');
+    if (F.completude && F.completude.status && F.completude.status !== 'complete') {
+      const fontes = (F.completude.fontesIncompletas || []).map(f => FONTE_LABEL[f] || f).join(', ');
       parts.push(item('Completude', `<span class="vf-status is-warning">${esc(fontes ? `Parcial (${fontes})` : 'Parcial')}</span>`));
     }
   }
@@ -1313,15 +1069,14 @@ function renderContextStatus() {
 }
 
 function renderTabCounts() {
-  const pedidos = fechamentoOrders(F.rawPayload);
-  const produtos = new Set(pedidos.filter(o => o.mlb).map(o => o.mlb)).size;
   const pc = document.getElementById('fapi-tab-pedidos-count');
   const gc = document.getElementById('fapi-tab-produtos-count');
-  if (pc) { pc.hidden = !pedidos.length; pc.textContent = num(pedidos.length); }
-  if (gc) { gc.hidden = !produtos; gc.textContent = num(produtos); }
+  const pedidosTotal = F.summary?.pedidosTotal || 0;
+  const produtosTotal = F.products.filter(p => !p.semProduto).length;
+  if (pc) { pc.hidden = !pedidosTotal; pc.textContent = num(pedidosTotal); }
+  if (gc) { gc.hidden = !produtosTotal; gc.textContent = num(produtosTotal); }
 }
 
-/* Troca de aba: só visibilidade — NUNCA dispara fetch nem re-render. */
 function setActiveTab(key, { updateHash = true, focus = false } = {}) {
   if (!TAB_KEYS.includes(key)) key = 'visao';
   F.ui.activeTab = key;
@@ -1352,12 +1107,24 @@ function onTablistKeydown(e) {
 }
 
 /* ── ABA 1 · VISÃO GERAL — Fechamento (KPIs, composição, qualidade) ──
-   Recorte próprio (F.summary.quickFilter) filtra SÓ este bloco —
-   não toca a tabela de pedidos nem a Curva ABC. */
+   Tudo lido de F.summary (global) / F.filteredSummary (recorte da Visão
+   Geral, F.summaryUi.quickFilter) — nenhum cálculo aqui, só formatação. */
 const FECH_QUICKS = [
   ['todos', 'Todos'], ['sem_custo', 'Sem custo'], ['sem_frete', 'Sem frete'],
   ['bloqueados', 'Bloqueados'], ['calculavel', 'Calculáveis'],
 ];
+/* Contagem de cada chip: sempre sobre o período INTEIRO (F.summary global),
+   igual ao comportamento anterior (rAll era o payload inteiro, nunca
+   escopado pela busca/filtro da tabela de pedidos). */
+function fechQuickCount(k, s) {
+  switch (k) {
+    case 'sem_custo': return s.semCusto;
+    case 'sem_frete': return s.semFrete;
+    case 'bloqueados': return s.pedidosBloqueados;
+    case 'calculavel': return Math.max(0, s.pedidosValidos - s.pedidosBloqueados);
+    default: return s.pedidosTotal;
+  }
+}
 
 function kpiValueHtml(v, { currency = false } = {}) {
   if (v === null || v === undefined) return '<span class="vf-kpi__value">—</span>';
@@ -1378,16 +1145,51 @@ function secondaryMetric(label, valueHtml, hint = '', muted = false) {
   </div>`;
 }
 
+/* Linhas da "Composição do resultado" — formatação sobre os agregados já
+   prontos de F.filteredSummary (comissao/custoTotal/impostoTotal/freteTotal/
+   lucroContribuicao/receitaBloqueada), nunca uma fórmula HTML/JS paralela. */
+function buildComposicaoRows(s) {
+  const foraDoCalculo = Math.max(0, s.pedidosValidos - (s.pedidosConfiaveis + s.pedidosParciais));
+  return [
+    { comp:'Receita de produtos', op:'+', valor: s.faturamento,
+      status: s.faturamento > 0 ? 'real' : 'ausente', fonte:'orders_api', obs:'soma do valor dos pedidos válidos' },
+    { comp:'Receita bloqueada fora do cálculo', op:'−', valor: s.receitaBloqueada === 0 ? 0 : -s.receitaBloqueada,
+      status: foraDoCalculo ? 'parcial' : 'real', fonte:'cálculo interno',
+      obs: foraDoCalculo ? `${num(foraDoCalculo)} pedido(s) sem custo/produto — receita existe, resultado não é calculável` : 'nenhum pedido válido bloqueado' },
+    { comp:'Tarifa marketplace', op:'−', valor: s.comissao == null ? null : -s.comissao,
+      status: s.comissao == null ? 'ausente' : 'real', fonte:'orders_api', obs:'comissão (sale_fee) dos pedidos calculáveis' },
+    { comp:'Custo dos produtos', op:'−', valor: s.custoTotal == null ? null : -s.custoTotal,
+      status: s.custoTotal == null ? 'ausente' : 'real', fonte:'base vinculada',
+      obs: s.semCusto > 0 ? `${num(s.semCusto)} pedido(s) sem custo na base ficaram na linha bloqueada` : 'custo unitário × unidades' },
+    { comp:'Imposto interno', op:'−', valor: s.impostoTotal == null ? null : -s.impostoTotal,
+      status: s.impostoTotal == null ? 'ausente' : 'real', fonte:'cálculo interno', obs:'imposto % da base × receita dos pedidos calculáveis' },
+    { comp:'Frete seller', op:'−', valor: s.freteTotal == null ? null : -s.freteTotal,
+      status: s.freteTotal == null ? 'ausente' : (s.semFrete > 0 ? 'parcial' : 'real'),
+      fonte: s.freteTotal == null ? 'pendente' : 'shipments_api',
+      obs: s.freteTotal == null ? 'nenhum envio retornou custo (shipments API)' : (s.semFrete > 0 ? `${num(s.semFrete)} pedido(s) calculáveis sem frete real` : 'custo final do seller (shipments costs)') },
+    { comp:'Resultado parcial', op:'=', valor: s.lucroContribuicao,
+      status: s.lucroContribuicao == null ? 'ausente' : (s.confiancaFechamento === 'confiavel' ? 'real' : 'parcial'), fonte:'cálculo interno',
+      obs: s.confiancaFechamento === 'confiavel' ? 'todos os componentes reais' : (s.semFrete > 0 || s.freteTotal == null ? 'parcial — frete incompleto' : 'parcial — falta custo em parte') },
+  ];
+}
+/* Resíduo: soma das linhas (exceto o total) menos o Resultado Parcial —
+   formatação de auditoria sobre os mesmos agregados, não um novo cálculo
+   independente (deve bater com o que o backend já persistiu). */
+function composicaoResiduo(comps) {
+  const total = comps.find(c => c.op === '=');
+  if (!total || total.valor == null) return null;
+  const soma = comps.filter(c => c.op !== '=').reduce((s, c) => s + (Number(c.valor) || 0), 0);
+  return round2(soma - total.valor);
+}
+
 function renderFechamentoSection() {
   const host = document.getElementById('fapi-fech-host');
-  const payload = F.rawPayload;
-  if (!host || !payload?.ok) return;
+  if (!host || !F.ok) return;
+  const rAll = F.summary;
+  const fonteTxt = (F.motor?.origemPrincipal === 'orders_api') ? 'orders_api · central_vendas_db' : esc(F.motor?.origemPrincipal || 'central_vendas_db');
+  const headerMeta = `${esc(F.periodoResp?.label || '')} · ${esc(F.cliente?.nome || '')} · fonte: ${fonteTxt}`;
 
-  const rAll = buildFechamentoResumo(payload, 'todos');
-  const fonteTxt = (rAll.fonte === 'orders_api') ? 'orders_api · central_vendas_db' : esc(rAll.fonte);
-  const headerMeta = `${esc(payload.periodo?.label || '')} · ${esc(payload.cliente?.nome || '')} · fonte: ${fonteTxt}`;
-
-  if (!rAll.totalPedidos) {
+  if (!rAll.pedidosTotal) {
     const syncBtn = isAdminUser()
       ? '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-action="sync-empty">Sincronizar via API</button>' : '';
     host.innerHTML = `
@@ -1408,25 +1210,22 @@ function renderFechamentoSection() {
     return;
   }
 
-  const quick = F.summary.quickFilter;
-  const r = buildFechamentoResumo(payload, quick);
+  const quick = F.summaryUi.quickFilter;
+  const s = F.filteredSummary || rAll;
   const chips = FECH_QUICKS.map(([k, l]) => {
-    const count = k === 'todos' ? rAll.totalPedidos : fechamentoOrdersFiltered(payload, k).length;
+    const count = fechQuickCount(k, rAll);
     return `<button type="button" class="vf-filter-chip${quick === k ? ' is-active' : ''}" data-fechq="${k}" aria-pressed="${quick === k}">${esc(l)} <span class="vf-badge">${num(count)}</span></button>`;
   }).join('');
   const clearBtn = quick !== 'todos'
     ? '<button type="button" class="vf-clear-filters" data-fechq="todos">Limpar recorte</button>' : '';
   const recorteBar = `<div class="vf-fapi-fech-chips" role="group" aria-label="Recorte do fechamento">${chips}${clearBtn}</div>`;
-  const claimsMotivo = String(payload.resumo?.claimsMotivo || 'motivo_nao_informado');
-  // 401/403 = a aplicação provavelmente não tem o tópico Post Purchase/Claims
-  // habilitado no painel do ML. É configuração de painel, não código — o código
-  // técnico aparece na tela sem expor token, header ou resposta.
+  const claimsMotivo = String(rAll.claimsMotivo || 'motivo_nao_informado');
   const claimsSemPermissao = claimsMotivo === 'http_401' || claimsMotivo === 'http_403';
   const claimsPermissaoHint = claimsSemPermissao
     ? ' O código indica <strong>falta de permissão</strong>: a aplicação pode não ter acesso a Post Purchase/Claims (tópico habilitado em "Minhas aplicações", no painel do Mercado Livre).'
     : '';
-  const returnsNaoResolvidos = Number(payload.resumo?.claimsReturnsNaoResolvidos) || 0;
-  const posVendaWarning = payload.resumo?.claimsIndisponivel
+  const returnsNaoResolvidos = Number(rAll.claimsReturnsNaoResolvidos) || 0;
+  const posVendaWarning = rAll.claimsIndisponivel
     ? `<div class="vf-banner is-warning vf-banner--compact" role="alert">
         <div class="vf-banner__content">
           <p class="vf-banner__title">Pós-venda não verificado</p>
@@ -1443,33 +1242,28 @@ function renderFechamentoSection() {
       : '';
 
   let corpo;
-  if (!r.totalPedidos) {
+  if (!s.pedidosTotal) {
     corpo = `<div class="vf-card"><div class="vf-card__body">${emptyState({
       icon:'dot', title:'Nenhum pedido neste recorte',
       why:'O recorte selecionado não tem pedidos.',
       next:'Volte para "Todos".',
     })}</div></div>`;
   } else {
-    const parcialFoot = r.confianca === 'confiavel'
+    const parcialFoot = s.confiancaFechamento === 'confiavel'
       ? 'todos componentes reais'
-      : (r.cobertura?.resultado != null
-          ? `parcial · cobre ${pct(r.cobertura.resultado)} da receita`
-          : 'parcial');
+      : (s.cobertura?.resultado != null ? `parcial · cobre ${pct(s.cobertura.resultado)} da receita` : 'parcial');
     const kpis = `<div class="vf-kpi-grid" role="list" aria-label="Indicadores principais do fechamento">
-      ${kpi({ label:'Faturamento bruto', valueHtml: kpiValueHtml(r.faturamento, { currency:true }), foot:'pedidos válidos', mod:'vf-kpi--featured' })}
-      ${kpi({ label:'Resultado parcial', valueHtml: kpiValueHtml(r.resultadoParcial, { currency:true }), foot: parcialFoot, footTone: r.confianca === 'confiavel' ? 'is-success' : 'is-warning', mod: r.confianca === 'confiavel' ? '' : 'vf-kpi--warning' })}
-      ${kpi({ label:'Receita bloqueada', valueHtml: kpiValueHtml(r.receitaBloqueada, { currency:true }), foot:'falta custo/frete p/ calcular', footTone: r.receitaBloqueada > 0 ? 'is-warning' : '', mod: r.receitaBloqueada > 0 ? 'vf-kpi--warning' : '' })}
-      ${kpi({ label:'Pedidos válidos', valueHtml: kpiValueHtml(r.validos), foot:'fora cancelamentos, devoluções e mediações' })}
-      ${kpi({ label:'Cancelados', valueHtml: kpiValueHtml(r.cancelados), foot:'fora da venda boa · definitivo', footTone: r.cancelados > 0 ? 'is-danger' : '', mod: r.cancelados > 0 ? 'vf-kpi--danger' : '' })}
-      ${kpi({ label:'Devoluções / reembolsos', valueHtml: kpiValueHtml(r.devolucoes), foot:'fora da venda boa · pós-venda', footTone: r.devolucoes > 0 ? 'is-danger' : '', mod: r.devolucoes > 0 ? 'vf-kpi--danger' : '' })}
-      ${kpi({ label:'Mediações / problema', valueHtml: kpiValueHtml(r.mediacoes), foot:'fora da venda boa · aguardando decisão', footTone: r.mediacoes > 0 ? 'is-warning' : '', mod: r.mediacoes > 0 ? 'vf-kpi--warning' : '' })}
-      ${kpi({ label:'Unidades vendidas', valueHtml: kpiValueHtml(r.unidades), foot:'itens válidos' })}
+      ${kpi({ label:'Faturamento bruto', valueHtml: kpiValueHtml(s.faturamento, { currency:true }), foot:'pedidos válidos', mod:'vf-kpi--featured' })}
+      ${kpi({ label:'Resultado parcial', valueHtml: kpiValueHtml(s.lucroContribuicao, { currency:true }), foot: parcialFoot, footTone: s.confiancaFechamento === 'confiavel' ? 'is-success' : 'is-warning', mod: s.confiancaFechamento === 'confiavel' ? '' : 'vf-kpi--warning' })}
+      ${kpi({ label:'Receita bloqueada', valueHtml: kpiValueHtml(s.receitaBloqueada, { currency:true }), foot:'falta custo/frete p/ calcular', footTone: s.receitaBloqueada > 0 ? 'is-warning' : '', mod: s.receitaBloqueada > 0 ? 'vf-kpi--warning' : '' })}
+      ${kpi({ label:'Pedidos válidos', valueHtml: kpiValueHtml(s.pedidosValidos), foot:'fora cancelamentos, devoluções e mediações' })}
+      ${kpi({ label:'Cancelados', valueHtml: kpiValueHtml(s.cancelados), foot:'fora da venda boa · definitivo', footTone: s.cancelados > 0 ? 'is-danger' : '', mod: s.cancelados > 0 ? 'vf-kpi--danger' : '' })}
+      ${kpi({ label:'Devoluções / reembolsos', valueHtml: kpiValueHtml(s.devolucoes), foot:'fora da venda boa · pós-venda', footTone: s.devolucoes > 0 ? 'is-danger' : '', mod: s.devolucoes > 0 ? 'vf-kpi--danger' : '' })}
+      ${kpi({ label:'Mediações / problema', valueHtml: kpiValueHtml(s.problemas), foot:'fora da venda boa · aguardando decisão', footTone: s.problemas > 0 ? 'is-warning' : '', mod: s.problemas > 0 ? 'vf-kpi--warning' : '' })}
+      ${kpi({ label:'Unidades vendidas', valueHtml: kpiValueHtml(s.unidades), foot:'itens válidos' })}
     </div>`;
 
-    // Cada total carrega a própria cobertura: sem isso, comissão/custo/imposto/
-    // frete (somados só onde o dado existe) parecem comparáveis ao faturamento,
-    // que soma todos os pedidos válidos.
-    const cob = r.cobertura || {};
+    const cob = s.cobertura || {};
     const hintCob = (base, pctCob) =>
       pctCob == null ? base
         : pctCob >= 99.95 ? `${base} · cobre 100% da receita`
@@ -1477,16 +1271,15 @@ function renderFechamentoSection() {
     const mutedCob = (valor, pctCob) => valor == null || (pctCob != null && pctCob < 99.95);
 
     const secundarios = `<div class="vf-fapi-secondary-metrics" aria-label="Métricas secundárias do fechamento">
-      ${secondaryMetric('Total de pedidos', valOr(r.totalPedidos), 'no período')}
-      ${secondaryMetric('Ticket médio', valOr(r.ticket, money), 'por pedido válido')}
-      ${secondaryMetric('Comissão marketplace', valOr(r.comissao, money), hintCob('tarifa ML (sale_fee)', cob.comissao), mutedCob(r.comissao, cob.comissao))}
-      ${secondaryMetric('Custo dos produtos', valOr(r.custoTotal, money), hintCob('base vinculada', cob.custo), mutedCob(r.custoTotal, cob.custo))}
-      ${secondaryMetric('Imposto interno', valOr(r.impostoTotal, money), hintCob('cálculo interno', cob.imposto), mutedCob(r.impostoTotal, cob.imposto))}
-      ${secondaryMetric('Frete seller', valOr(r.freteTotal, money), r.freteTotal == null ? 'ausente (shipments)' : hintCob('real (shipments API)', cob.frete), mutedCob(r.freteTotal, cob.frete))}
+      ${secondaryMetric('Total de pedidos', valOr(s.pedidosTotal), 'no período')}
+      ${secondaryMetric('Ticket médio', valOr(s.ticket, money), 'por pedido válido')}
+      ${secondaryMetric('Comissão marketplace', valOr(s.comissao, money), hintCob('tarifa ML (sale_fee)', cob.comissao), mutedCob(s.comissao, cob.comissao))}
+      ${secondaryMetric('Custo dos produtos', valOr(s.custoTotal, money), hintCob('base vinculada', cob.custo), mutedCob(s.custoTotal, cob.custo))}
+      ${secondaryMetric('Imposto interno', valOr(s.impostoTotal, money), hintCob('cálculo interno', cob.imposto), mutedCob(s.impostoTotal, cob.imposto))}
+      ${secondaryMetric('Frete seller', valOr(s.freteTotal, money), s.freteTotal == null ? 'ausente (shipments)' : hintCob('real (shipments API)', cob.frete), mutedCob(s.freteTotal, cob.frete))}
     </div>`;
 
-    // Composição do resultado
-    const comps = buildFechamentoComponentes(payload, quick);
+    const comps = buildComposicaoRows(s);
     const compRows = comps.map(c => `
       <tr${c.comp === 'Resultado parcial' ? ' class="vf-fapi-total-row"' : ''}>
         <td>${esc(c.comp)}</td>
@@ -1496,8 +1289,7 @@ function renderFechamentoSection() {
         <td class="vf-fapi-fonte">${esc(c.fonte)}</td>
         <td class="vf-fapi-obs vf-truncate" title="${esc(c.obs)}">${esc(c.obs)}</td>
       </tr>`).join('');
-    // A equação tem de fechar. Se sobrar resíduo, ele aparece — nunca some.
-    const residuo = fechamentoComposicaoResiduo(comps);
+    const residuo = composicaoResiduo(comps);
     const residuoRow = (residuo != null && Math.abs(residuo) >= 0.01)
       ? `<tr class="vf-fapi-total-row"><td>Resíduo não explicado</td><td class="vf-fapi-op" aria-hidden="true">≠</td><td class="num"><span class="vf-fapi-est">${money(residuo)}</span></td><td>${statusTag('parcial')}</td><td class="vf-fapi-fonte">cálculo interno</td><td class="vf-fapi-obs">as linhas acima não fecham no resultado — reportar</td></tr>`
       : '';
@@ -1512,25 +1304,24 @@ function renderFechamentoSection() {
         </div>
       </div>`;
 
-    // Qualidade do fechamento — lista compacta, exceções destacadas
-    const q = buildFechamentoQualidade(payload, quick);
     const qRow = (lbl, val, cls) => `<div class="vf-fapi-quality__row"><span class="vf-fapi-quality__label">${esc(lbl)}</span><span class="vf-fapi-quality__value${cls ? ' ' + cls : ''}">${val}</span></div>`;
+    const comResultado = Math.max(0, s.pedidosValidos - s.pedidosBloqueados);
     const qualidade = `
       <div class="vf-card vf-card--compact vf-fapi-quality">
         <div class="vf-card__header"><h3 class="vf-card__title">Qualidade do fechamento</h3></div>
         <div class="vf-card__body">
           <div class="vf-fapi-quality__list">
-            ${qRow('Pedidos sem custo', valOr(q.semCusto), q.semCusto ? 'is-danger' : '')}
-            ${qRow('Pedidos sem frete', valOr(q.semFrete), q.semFrete ? 'is-warning' : '')}
-            ${qRow('Com resultado calculável', valOr(q.comResultado))}
-            ${qRow('Pedidos bloqueados', valOr(q.bloqueados), q.bloqueados ? 'is-danger' : '')}
-            ${qRow('Cancelados', valOr(q.cancelados), q.cancelados ? 'is-danger' : '')}
-            ${qRow('Devoluções / reembolsos', valOr(q.devolucoes), q.devolucoes ? 'is-danger' : '')}
-            ${qRow('Devoluções parciais (no resultado)', valOr(q.devolucoesParciais), q.devolucoesParciais ? 'is-warning' : '')}
-            ${qRow('Mediações / problema', valOr(q.mediacoes), q.mediacoes ? 'is-warning' : '')}
-            ${qRow('% faturamento com custo', valOr(q.pctFatComCusto, pct))}
-            ${qRow('% faturamento com frete real', valOr(q.pctFatComFrete, pct), (q.pctFatComFrete || 0) > 0 ? 'is-success' : '')}
-            ${qRow('% faturamento bloqueado', valOr(q.pctFatBloqueado, pct), (q.pctFatBloqueado || 0) > 0 ? 'is-warning' : '')}
+            ${qRow('Pedidos sem custo', valOr(s.semCusto), s.semCusto ? 'is-danger' : '')}
+            ${qRow('Pedidos sem frete', valOr(s.semFrete), s.semFrete ? 'is-warning' : '')}
+            ${qRow('Com resultado calculável', valOr(comResultado))}
+            ${qRow('Pedidos bloqueados', valOr(s.pedidosBloqueados), s.pedidosBloqueados ? 'is-danger' : '')}
+            ${qRow('Cancelados', valOr(s.cancelados), s.cancelados ? 'is-danger' : '')}
+            ${qRow('Devoluções / reembolsos', valOr(s.devolucoes), s.devolucoes ? 'is-danger' : '')}
+            ${qRow('Devoluções parciais (no resultado)', valOr(s.devolucoesParciais), s.devolucoesParciais ? 'is-warning' : '')}
+            ${qRow('Mediações / problema', valOr(s.problemas), s.problemas ? 'is-warning' : '')}
+            ${qRow('% faturamento com custo', valOr(cob.custo, pct))}
+            ${qRow('% faturamento com frete real', valOr(cob.frete, pct), (cob.frete || 0) > 0 ? 'is-success' : '')}
+            ${qRow('% faturamento bloqueado', valOr(s.pctFatBloqueado, pct), (s.pctFatBloqueado || 0) > 0 ? 'is-warning' : '')}
           </div>
         </div>
       </div>`;
@@ -1550,7 +1341,7 @@ function renderFechamentoSection() {
           <p class="vf-section__description">${headerMeta}</p>
         </div>
         <div class="vf-section__actions">
-          <span class="vf-fapi-context__status-item"><span class="vf-fapi-context__status-label">Confiança</span> ${confStatus(r.totalPedidos ? r.confianca : rAll.confianca)}</span>
+          <span class="vf-fapi-context__status-item"><span class="vf-fapi-context__status-label">Confiança</span> ${confStatus(s.pedidosTotal ? s.confiancaFechamento : rAll.confiancaFechamento)}</span>
         </div>
       </div>
       ${recorteBar}
@@ -1558,11 +1349,46 @@ function renderFechamentoSection() {
     </section>`;
 }
 
-/* ── ABA 1 · VISÃO GERAL — Vendas por dia (régua + tabela) ── */
+/* ── ABA 1 · VISÃO GERAL — Vendas por dia (régua + tabela) ──
+   F.daily já vem agregado por data do backend (/read/daily, período
+   inteiro, sempre igual — não respeita filtro/busca da tabela de Pedidos,
+   simplificação assumida no M9: antes a régua e a tabela podiam divergir
+   entre si por causa disso; agora as duas leem a MESMA fonte). Só o
+   preenchimento dos dias sem pedido (zero) é feito aqui — aritmética de
+   calendário, não financeira. */
+function diasComZeros() {
+  if (!F.periodoResp) return [];
+  const byDay = new Map(F.daily.map(d => [d.data, d]));
+  return getCompetenceDays(F.periodoResp.inicio, F.periodoResp.fim).map(data => byDay.get(data) || {
+    data, pedidos: 0, unidades: 0, faturamento: 0, comissao: null, custo: null, imposto: null,
+    receitaBloqueada: 0, cancelProblema: 0, semFrete: 0, semCusto: 0, produtos: 0, topProduto: null,
+  });
+}
+/* 'selected' = dia exato do filtro ativo da aba Pedidos. */
+function dayScope(data) {
+  const fl = F.orders.filters;
+  if (fl.de && fl.de === fl.ate) return fl.de === data ? 'selected' : '';
+  if (fl.de || fl.ate) return (!fl.de || data >= fl.de) && (!fl.ate || data <= fl.ate) ? 'scope' : '';
+  return '';
+}
+
+const FECH_DAILY_SORTS = [
+  ['data', 'Data'], ['faturamento', 'Maior faturamento'], ['pedidos', 'Mais pedidos'],
+  ['cancelProblema', 'Mais cancelados/problema'], ['receitaBloqueada', 'Maior receita bloqueada'],
+  ['semFrete', 'Mais sem frete'], ['semCusto', 'Mais sem custo'],
+];
+function sortDias(dias, key) {
+  const a = dias.slice();
+  if (key === 'data') a.sort((x, y) => x.data.localeCompare(y.data));
+  else a.sort((x, y) => (y[key] || 0) - (x[key] || 0) || x.data.localeCompare(y.data));
+  return a;
+}
+
 function renderDaysSection() {
   const host = document.getElementById('fapi-days-host');
-  if (!host || !F.rawPayload?.ok) return;
-  const dias = buildDailyRulerRows();
+  if (!host || !F.ok) return;
+
+  const dias = diasComZeros();
   if (!dias.length) { host.innerHTML = ''; return; }
 
   const cells = dias.map(d => {
@@ -1588,12 +1414,11 @@ function renderDaysSection() {
     </button>`;
   }).join('');
 
-  // Tabela ordenável por dia (período inteiro, independe dos recortes)
-  const tdias = sortDias(buildFechamentoPorDia(F.rawPayload, 'todos'), F.summary.dailySort);
-  const dailySortOpts = FECH_DAILY_SORTS.map(([k, l]) => `<option value="${k}"${F.summary.dailySort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  const tdias = sortDias(F.daily, F.summaryUi.dailySort);
+  const dailySortOpts = FECH_DAILY_SORTS.map(([k, l]) => `<option value="${k}"${F.summaryUi.dailySort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
   const DAILY_SORT_COL = { data:['data','ascending'], faturamento:['faturamento','descending'], pedidos:['pedidos','descending'], cancelProblema:['cancelProblema','descending'], receitaBloqueada:['receitaBloqueada','descending'], semFrete:['semFrete','descending'], semCusto:['semCusto','descending'] };
   const dailyTh = (key, label, numCls) => {
-    const s = DAILY_SORT_COL[F.summary.dailySort];
+    const s = DAILY_SORT_COL[F.summaryUi.dailySort];
     const sorted = s && s[0] === key ? ` aria-sort="${s[1]}"` : '';
     return `<th scope="col"${numCls ? ' class="num"' : ''}${sorted}>${esc(label)}</th>`;
   };
@@ -1648,16 +1473,90 @@ function renderDaysSection() {
     </section>`;
 }
 
-/* ── ABA 2 · PEDIDOS — toolbar em duas camadas + tabela ─────
-   A toolbar é renderizada por carga de dados; a tabela vive em
-   #fapi-ped-table e re-renderiza sozinha (busca/recorte/ordenação/
-   página) preservando o foco do campo de busca. */
+/* ── ABA 2 · PEDIDOS — toolbar + tabela (server-side) ─────────
+   F.rows é a PÁGINA atual, já filtrada/ordenada/paginada pelo backend
+   (M7/M9 — GET /read). Nenhum filtro/busca/ordenação roda no browser;
+   mudar qualquer um deles chama atualizarListaEResumo(). */
+const QUICK_FILTERS = [
+  ['todos', 'Todos'], ['sem_custo', 'Sem custo'], ['sem_frete', 'Sem frete'],
+  ['frete_real', 'Com frete real'], ['calculavel', 'Resultado calculável'],
+  ['bloqueados', 'Bloqueados'], ['receita_bloqueada', 'Receita bloqueada'],
+  ['cancel_problema', 'Cancelados/problema'], ['full', 'Full'], ['normal', 'Normal'],
+];
+const QUICK_PRIMARY = ['todos', 'sem_custo', 'sem_frete', 'bloqueados', 'cancel_problema', 'full'];
+/* Contagem de cada chip: sempre o total do PERÍODO (F.summary global),
+   igual ao dado que a Read API já traz pronto — nunca uma nova busca. */
+function quickCountFromSummary(k, s) {
+  if (!s) return 0;
+  switch (k) {
+    case 'sem_custo': return s.semCusto;
+    case 'sem_frete': return s.semFrete;
+    case 'frete_real': return Math.max(0, s.pedidosValidos - s.semFrete);
+    case 'calculavel': return Math.max(0, s.pedidosValidos - s.pedidosBloqueados);
+    case 'bloqueados': case 'receita_bloqueada': return s.pedidosBloqueados;
+    case 'cancel_problema': return s.pedidosForaResultado;
+    case 'full': return s.full;
+    case 'normal': return s.normal;
+    default: return s.pedidosTotal;
+  }
+}
 function quickChipHtml(k, label, count, active) {
   return `<button type="button" class="vf-filter-chip${active ? ' is-active' : ''}" data-quick="${k}" aria-pressed="${active}">${esc(label)} <span class="vf-badge">${num(count)}</span></button>`;
 }
+
+const ORDER_SORTS = [
+  ['data_desc', 'Data (mais recente)'], ['data_asc', 'Data (mais antiga)'],
+  ['fat_desc', 'Maior faturamento'], ['fat_asc', 'Menor faturamento'],
+  ['comissao_desc', 'Maior comissão'], ['frete_desc', 'Maior frete'],
+  ['custo_desc', 'Maior custo'], ['resultado_desc', 'Maior resultado'],
+  ['bloqueada_desc', 'Maior receita bloqueada'], ['confianca', 'Confiança (pior 1º)'],
+];
+/* Estado da linha (filete à esquerda + classes de leitura) — direto dos
+   campos já canônicos da row. */
+function pedidoRowClass(o) {
+  if (o.status === 'cancelado') return ' is-cancel';
+  if (o.status === 'com_problema') return ' is-problem';
+  if (o.resultadoStatus === 'bloqueado') return ' is-blocked';
+  if (o.mlb && o.custoStatus === 'ausente') return ' is-nocost';
+  if (o.frete == null) return ' is-nofreight';
+  return '';
+}
+const STATUS_PEDIDO = { pago:['is-success','Pago'], cancelado:['is-danger','Cancelado'], com_problema:['is-warning','Mediação / problema'], pendente:['is-warning','Pendente'] };
+function statusPedidoInfo(o) {
+  if (o?.posVendaTipo === 'devolucao') {
+    return o.status === 'cancelado'
+      ? ['is-danger', 'Devolução / reembolso']
+      : ['is-warning', 'Devolução em andamento'];
+  }
+  return STATUS_PEDIDO[o?.status] || ['is-neutral', o?.status];
+}
+
+const PEDFILTER_LBL = {
+  logistica: { full:'Full', nao_full:'Não Full' },
+  diagbase: { com_custo:'Com custo', sem_custo:'Sem custo' },
+  status: { valido:'Válido', cancelado:'Cancelado', problema:'Problema', bloqueado:'Bloqueado' },
+};
+function buildActiveFilters() {
+  const fl = F.orders.filters;
+  const items = [];
+  if (F.orders.quickFilter && F.orders.quickFilter !== 'todos') {
+    const q = QUICK_FILTERS.find(c => c[0] === F.orders.quickFilter);
+    if (q) items.push({ type:'quick', label:q[1] });
+  }
+  for (const key of ['logistica', 'diagbase', 'status']) {
+    if (fl[key] !== 'todos') items.push({ type:'pedfilter', key, label: PEDFILTER_LBL[key][fl[key]] || fl[key] });
+  }
+  if (fl.de || fl.ate) {
+    items.push({ type:'dia', label: fl.de === fl.ate ? `Dia ${fmtDt(fl.de)}` : `${fmtDt(fl.de)} até ${fmtDt(fl.ate)}` });
+  }
+  const termo = String(F.orders.search || '').trim();
+  if (termo) items.push({ type:'busca', label:`Busca "${termo}"` });
+  return items;
+}
+
 function renderOrdersPanel() {
   const panel = document.getElementById('fapi-panel-pedidos');
-  if (!panel || !F.rawPayload?.ok) return;
+  if (!panel || !F.ok) return;
   const fl = F.orders.filters;
   const opt = (v, label, cur) => `<option value="${esc(v)}"${cur === v ? ' selected' : ''}>${esc(label)}</option>`;
   const selF = (id, key, labelTxt, opts) => `
@@ -1666,22 +1565,20 @@ function renderOrdersPanel() {
       <select id="${id}" class="vf-select vf-select--sm" data-pedfilter="${key}">${opts}</select>
     </div>`;
 
-  const base = getSearchedPedidos();
-  const countBy = q => q === 'todos' ? base.length : base.filter(o => pedidoMatchesQuick(o, q)).length;
   const primary = QUICK_FILTERS.filter(([k]) => QUICK_PRIMARY.includes(k))
-    .map(([k, l]) => quickChipHtml(k, l, countBy(k), F.orders.quickFilter === k)).join('');
+    .map(([k, l]) => quickChipHtml(k, l, quickCountFromSummary(k, F.summary), F.orders.quickFilter === k)).join('');
   const extra = QUICK_FILTERS.filter(([k]) => !QUICK_PRIMARY.includes(k))
-    .map(([k, l]) => quickChipHtml(k, l, countBy(k), F.orders.quickFilter === k)).join('');
+    .map(([k, l]) => quickChipHtml(k, l, quickCountFromSummary(k, F.summary), F.orders.quickFilter === k)).join('');
 
   const sortOpts = ORDER_SORTS.map(([k, l]) => `<option value="${k}"${F.orders.sort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
-  const advCount = ['logistica', 'midia', 'diagbase', 'status'].filter(k => fl[k] !== 'todos').length;
+  const advCount = ['logistica', 'diagbase', 'status'].filter(k => fl[k] !== 'todos').length;
 
   panel.innerHTML = `
     <section class="vf-section" aria-label="Pedidos do período">
       <div class="vf-section__header">
         <div>
           <h2 class="vf-section__title">Pedidos</h2>
-          <p class="vf-section__description">Clique num pedido para abrir o extrato. Todos os filtros são locais — nenhuma nova busca no servidor.</p>
+          <p class="vf-section__description">Clique num pedido para abrir o extrato. Filtro, busca e ordenação consultam o servidor.</p>
         </div>
       </div>
 
@@ -1699,8 +1596,7 @@ function renderOrdersPanel() {
         <div class="vf-fapi-orders-filters" id="fapi-filters-panel"${F.ui.filtersPanelOpen ? '' : ' hidden'}>
           <div class="vf-fapi-orders-filters__grid">
             ${selF('fapi-filter-logistica', 'logistica', 'Logística', [opt('todos','Todas',fl.logistica), opt('full','Full',fl.logistica), opt('nao_full','Não Full',fl.logistica)].join(''))}
-            ${selF('fapi-filter-midia', 'midia', 'Mídia', [opt('todos','Todas',fl.midia), opt('com_ads','Com Ads',fl.midia), opt('sem_ads','Sem Ads',fl.midia)].join(''))}
-            ${selF('fapi-filter-diagbase', 'diagbase', 'Diagnóstico / base', [opt('todos','Todos',fl.diagbase), opt('com_custo','Com custo',fl.diagbase), opt('sem_custo','Sem custo',fl.diagbase), opt('no_diag','No diagnóstico',fl.diagbase), opt('fora_diag','Fora do diag.',fl.diagbase)].join(''))}
+            ${selF('fapi-filter-diagbase', 'diagbase', 'Diagnóstico / base', [opt('todos','Todos',fl.diagbase), opt('com_custo','Com custo',fl.diagbase), opt('sem_custo','Sem custo',fl.diagbase)].join(''))}
             ${selF('fapi-filter-status', 'status', 'Status do pedido', [opt('todos','Todos',fl.status), opt('valido','Válido',fl.status), opt('cancelado','Cancelado',fl.status), opt('problema','Problema',fl.status), opt('bloqueado','Bloqueado',fl.status)].join(''))}
           </div>
           <div class="vf-fapi-orders-toolbar__chips" role="group" aria-label="Recortes adicionais">${extra}</div>
@@ -1712,41 +1608,20 @@ function renderOrdersPanel() {
   renderPedTable();
 }
 
-/* Filtros ativos: chips removíveis (recorte + selects + dia + busca). */
-const PEDFILTER_LBL = {
-  logistica: { full:'Full', nao_full:'Não Full' },
-  midia: { com_ads:'Com Ads', sem_ads:'Sem Ads' },
-  diagbase: { com_custo:'Com custo', sem_custo:'Sem custo', no_diag:'No diagnóstico', fora_diag:'Fora do diag.' },
-  status: { valido:'Válido', cancelado:'Cancelado', problema:'Problema', bloqueado:'Bloqueado' },
-};
-function buildActiveFilters() {
-  const fl = F.orders.filters;
-  const items = [];
-  if (F.orders.quickFilter && F.orders.quickFilter !== 'todos') {
-    const q = QUICK_FILTERS.find(c => c[0] === F.orders.quickFilter);
-    if (q) items.push({ type:'quick', label:q[1] });
-  }
-  for (const key of ['logistica', 'midia', 'diagbase', 'status']) {
-    if (fl[key] !== 'todos') items.push({ type:'pedfilter', key, label: PEDFILTER_LBL[key][fl[key]] || fl[key] });
-  }
-  if (fl.modo === 'intervalo' && (fl.de || fl.ate)) {
-    items.push({ type:'dia', label: fl.de === fl.ate ? `Dia ${fmtDt(fl.de)}` : `${fmtDt(fl.de)} até ${fmtDt(fl.ate)}` });
-  }
-  const termo = String(F.orders.search || '').trim();
-  if (termo) items.push({ type:'busca', label:`Busca "${termo}"` });
-  return items;
-}
-
-/* Tabela + paginação + linha de filtros ativos (re-renderável isoladamente). */
 function renderPedTable() {
   const host = document.getElementById('fapi-ped-table');
   if (!host) return;
-  const all = getVisiblePedidos();
-  const sorted = sortPedidos(all, F.orders.sort);
-  const total = sorted.length;
+
+  if (F.orders.loading) {
+    host.innerHTML = loadingState('Atualizando pedidos…');
+    return;
+  }
+
+  const rows = F.rows || [];
+  const pg = F.pagination || { page:1, limit:F.orders.pageSize, total:0, totalPages:0 };
 
   const countEl = document.getElementById('fapi-orders-count');
-  if (countEl) countEl.textContent = `${num(total)} pedido(s) encontrados`;
+  if (countEl) countEl.textContent = `${num(pg.total)} pedido(s) encontrados`;
 
   const ativos = buildActiveFilters();
   const activeLine = ativos.length ? `
@@ -1759,7 +1634,7 @@ function renderPedTable() {
       <button type="button" class="vf-clear-filters" id="fapi-clear-local">Limpar tudo</button>
     </div>` : '';
 
-  if (!total) {
+  if (!pg.total) {
     const buscando = String(F.orders.search || '').trim();
     host.innerHTML = `${activeLine}<div class="vf-card"><div class="vf-card__body">${emptyState({
       icon:'box',
@@ -1771,24 +1646,18 @@ function renderPedTable() {
     return;
   }
 
-  const pageSize = F.orders.pageSize;
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  if (F.orders.page > pages) F.orders.page = pages;
-  if (F.orders.page < 1) F.orders.page = 1;
-  const start = (F.orders.page - 1) * pageSize;
-  const end = Math.min(start + pageSize, total);
-  const rows = sorted.slice(start, end);
-
   const tr = rows.map(o => {
     const [scls, slbl] = statusPedidoInfo(o);
     const res = o.resultado == null ? '—' : `<span class="vf-fapi-est">${money(o.resultado)}</span>`;
-    const selected = F.ui.drawerOrderId === o.id;
+    const selected = F.ui.drawerRowId === o.rowId;
+    const pendPrimaria = o.pendencias?.length ? pendenciaLabel(o.pendencias[0]) : '—';
+    const pendTitle = o.pendencias?.length ? o.pendencias.map(pendenciaLabel).join(' · ') : '—';
     return `
-      <tr class="${(pedidoRowClass(o) + (selected ? ' row--selected' : '')).trim()}" data-pedido="${esc(o.id)}" tabindex="0" aria-label="Abrir extrato do pedido ${esc(o.id)}">
-        <td class="vf-mono">${esc(o.id)}</td>
+      <tr class="${(pedidoRowClass(o) + (selected ? ' row--selected' : '')).trim()}" data-row-id="${esc(o.rowId)}" tabindex="0" aria-label="Abrir extrato do pedido ${esc(o.id)}">
+        <td class="vf-mono">${esc(o.id)}${o.multiItem ? ` <span class="vf-tag is-info" title="${esc(o.qtdItens)} itens neste pedido">${esc(o.qtdItens)} itens</span>` : ''}</td>
         <td>${fmtDt(o.data)}</td>
         <td><span class="vf-tag ${scls}">${esc(slbl)}</span></td>
-        <td class="vf-truncate" title="${esc(o.produto?.titulo || '—')}">${esc(o.produto?.titulo || '—')}</td>
+        <td class="vf-truncate" title="${esc(o.produto?.titulo || '—')}">${esc(o.produto?.titulo || '—')}${o.multiItem ? ' (+ outros)' : ''}</td>
         <td class="vf-mono">${esc(o.produto?.mlb || '—')}</td>
         <td class="vf-mono${o.produto?.sku ? '' : ' is-absent'}">${esc(o.produto?.sku || '—')}</td>
         <td>${tagFull(o.full)}</td>
@@ -1799,7 +1668,7 @@ function renderPedTable() {
         <td class="num${o.custo == null ? ' is-absent' : ''}">${valOr(o.custo, money)}</td>
         <td class="num${o.resultado == null ? ' is-absent' : ''}">${res}</td>
         <td>${confStatus(o.confianca)}</td>
-        <td class="vf-truncate is-absent" title="${esc(o.pendencias.length ? o.pendencias.join(' · ') : '—')}">${o.pendencias.length ? esc(o.pendencias[0]) : '—'}</td>
+        <td class="vf-truncate is-absent" title="${esc(pendTitle)}">${esc(pendPrimaria)}</td>
       </tr>`;
   }).join('');
 
@@ -1809,6 +1678,9 @@ function renderPedTable() {
     const sorted2 = s && s[0] === key ? ` aria-sort="${s[1]}"` : '';
     return `<th scope="col"${numCls ? ' class="num"' : ''}${sorted2}>${esc(label)}</th>`;
   };
+
+  const start = pg.total ? (pg.page - 1) * pg.limit + 1 : 0;
+  const end = Math.min(pg.page * pg.limit, pg.total);
 
   host.innerHTML = `${activeLine}
     <div class="vf-table-wrap vf-fapi-orders__table-wrap">
@@ -1834,54 +1706,86 @@ function renderPedTable() {
       </table>
     </div>
     <div class="vf-pager">
-      <span class="vf-pager__info">Mostrando ${num(start + 1)}–${num(end)} de ${num(total)} pedidos${pages > 1 ? ` · página ${num(F.orders.page)}/${num(pages)}` : ''}</span>
+      <span class="vf-pager__info">Mostrando ${num(start)}–${num(end)} de ${num(pg.total)} pedidos${pg.totalPages > 1 ? ` · página ${num(pg.page)}/${num(pg.totalPages)}` : ''}</span>
       <div class="vf-pager__nav">
-        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-page-prev"${F.orders.page <= 1 ? ' disabled' : ''}>← Anterior</button>
-        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-page-next"${F.orders.page >= pages ? ' disabled' : ''}>Próxima →</button>
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-page-prev"${pg.page <= 1 ? ' disabled' : ''}>← Anterior</button>
+        <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-page-next"${pg.page >= pg.totalPages ? ' disabled' : ''}>Próxima →</button>
       </div>
     </div>
-    <p class="vf-fapi-legend">Filete à esquerda da linha: <b>vermelho</b> cancelado/bloqueado · <b>âmbar</b> problema/sem custo · <b>cinza</b> sem frete. O estado também está escrito nas colunas Status, Confiança e Pendência. Ausência é <b>—</b>, nunca R$ 0,00.</p>`;
+    <p class="vf-fapi-legend">Filete à esquerda da linha: <b>vermelho</b> cancelado/bloqueado · <b>âmbar</b> problema/sem custo · <b>cinza</b> sem frete. O estado também está escrito nas colunas Status, Confiança e Pendência. Pedido com mais de um item mostra a etiqueta "N itens" — os valores já são a soma de todos os itens (nunca só o primeiro produto). Ausência é <b>—</b>, nunca R$ 0,00.</p>`;
 }
 
-/* ── DETALHE DO PEDIDO (drawer lateral) ───────────────────── */
-/* Lista o que falta para concluir, com o impacto de cada lacuna. */
-function faltasDoPedido(o, prod) {
+/* ── DETALHE DO PEDIDO (drawer lateral) ───────────────────────
+   M9 — busca sob demanda em GET /read/orders/:rowId (M7/M6): itens e
+   componentes vêm prontos do ledger, nunca reconstruídos aqui. */
+function faltasDoPedido(o) {
   const faltas = [];
   if (o.status === 'cancelado') faltas.push(['pedido cancelado/reembolso', 'não conclui resultado; impacto fora da venda boa']);
   if (o.status === 'com_problema') faltas.push(['pedido em mediação/problema', 'não conclui resultado; impacto fora da venda boa']);
-  if (!o.mlb) faltas.push(['financeiro sem produto', 'impede atribuir custo/base e calcular resultado do item']);
-  if (o.custoStatus === 'ausente' && o.mlb) faltas.push(['falta custo/base', 'impede calcular resultado do item']);
-  if (o.frete == null) faltas.push(['falta frete real', 'resultado fica parcial, nunca confiável']);
-  if (o.taxas == null) faltas.push(['falta taxa', 'resultado fica parcial, nunca confiável']);
-  if (prod && prod.diag?.presente !== true) faltas.push(['falta vínculo com diagnóstico', 'sem checagem de margem do produto']);
+  for (const code of (o.pendencias || [])) faltas.push([pendenciaLabel(code), pendenciaImpacto(code)]);
   return faltas;
-}
-function findOrderById(id) {
-  return (F.viewPayload?.pedidos || F.rawPayload?.pedidos || [])
-    .map(x => x.prod !== undefined ? x : computeOrder(x, F.rawPayload))
-    .find(x => x.id === id) || null;
 }
 
 function buildOrderDrawerBody(o) {
-  const prod = o.prod;
-  const faltas = faltasDoPedido(o, prod);
+  const faltas = faltasDoPedido(o);
   const bloqueado = o.resultado == null;
-  const cancelado = o.status === 'cancelado';
   const precoUnit = (o.valor != null && o.unidades) ? round2(o.valor / o.unidades) : null;
   const [scls, slbl] = statusPedidoInfo(o);
-
   const kv = pairs => `<dl class="vf-fapi-kv">${pairs.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
 
-  // Uma linha do extrato: Componente · Valor · Status · Fonte · Obs.
-  const linha = (comp, op, valHtml, status, fonte, obs) => `
+  const itensSecao = (o.itens && o.itens.length) ? `
+    <section class="vf-fapi-drawer-section" aria-label="Itens do pedido">
+      <h3 class="vf-fapi-drawer-section__title">Itens do pedido${o.multiItem ? ` (${esc(o.qtdItens)})` : ''}</h3>
+      <div class="vf-table-wrap">
+        <table class="vf-table vf-table--compact">
+          <thead><tr><th scope="col">Produto</th><th scope="col">MLB</th><th scope="col">SKU</th><th scope="col" class="num">Qtd.</th><th scope="col" class="num">Receita</th><th scope="col" class="num">Custo</th><th scope="col" class="num">Imposto</th><th scope="col" class="num">Resultado</th><th scope="col">Confiança</th></tr></thead>
+          <tbody>${o.itens.map(it => `
+            <tr>
+              <td class="vf-truncate" title="${esc(it.titulo || '—')}">${esc(it.titulo || '—')}</td>
+              <td class="vf-mono">${esc(it.mlb || '—')}</td>
+              <td class="vf-mono${it.sku ? '' : ' is-absent'}">${esc(it.sku || '—')}</td>
+              <td class="num">${valOr(it.quantidade)}</td>
+              <td class="num">${valOr(it.receitaProduto, money)}</td>
+              <td class="num${it.custoProduto == null ? ' is-absent' : ''}">${valOr(it.custoProduto, money)}</td>
+              <td class="num${it.impostoInterno == null ? ' is-absent' : ''}">${valOr(it.impostoInterno, money)}</td>
+              <td class="num${it.resultado == null ? ' is-absent' : ''}">${valOr(it.resultado, money)}</td>
+              <td>${confStatus(it.confianca)}</td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </section>` : '';
+
+  const componentesOrdenados = (o.componentes || []).slice()
+    .sort((a, b) => COMPONENTE_ORDEM.indexOf(a.tipo) - COMPONENTE_ORDEM.indexOf(b.tipo));
+  const compLinha = c => `
     <tr>
-      <td>${esc(comp)}</td>
-      <td class="vf-fapi-op" aria-hidden="true">${esc(op || '')}</td>
-      <td class="num">${valHtml}</td>
-      <td>${status ? statusTag(status) : '—'}</td>
-      <td class="vf-fapi-fonte">${esc(fonte || '—')}</td>
-      <td class="vf-fapi-obs vf-truncate" title="${esc(obs || '—')}">${esc(obs || '—')}</td>
+      <td>${esc(COMPONENTE_LBL[c.tipo] || c.tipo)}${c.itemId ? ` <span class="vf-fapi-fonte">(${esc(c.itemId)})</span>` : ''}</td>
+      <td class="vf-fapi-op" aria-hidden="true">${c.efeito === 'credito' ? '+' : c.efeito === 'debito' ? '−' : ''}</td>
+      <td class="num">${valOr(c.valor, money)}</td>
+      <td>${confStatus(c.confianca)}</td>
+      <td>${c.incluidoNoResultado === false ? '<span class="vf-tag is-neutral">conciliação</span>' : (c.escopo ? `<span class="vf-tag is-neutral">${esc(c.escopo)}</span>` : '—')}</td>
+      <td class="vf-fapi-fonte">${esc(c.fonte || '—')}</td>
+      <td class="vf-fapi-obs vf-truncate" title="${esc(c.obs || '—')}">${esc(c.obs || '—')}</td>
     </tr>`;
+  const ledgerSecao = componentesOrdenados.length ? `
+    <section class="vf-fapi-drawer-section" aria-label="Composição financeira">
+      <h3 class="vf-fapi-drawer-section__title">Composição financeira (ledger)</h3>
+      <div class="vf-table-wrap">
+        <table class="vf-table vf-table--compact">
+          <thead><tr><th scope="col">Componente</th><th scope="col"><span class="vf-visually-hidden">Operação</span></th><th scope="col" class="num">Valor</th><th scope="col">Confiança</th><th scope="col">Escopo</th><th scope="col">Fonte</th><th scope="col">Observação</th></tr></thead>
+          <tbody>${componentesOrdenados.map(compLinha).join('')}
+            <tr class="vf-fapi-total-row">
+              <td>Resultado</td>
+              <td class="vf-fapi-op" aria-hidden="true">=</td>
+              <td class="num">${o.resultado == null ? '—' : `<span class="vf-fapi-est">${money(o.resultado)}</span>`}</td>
+              <td>${statusTag(o.resultadoStatus)}</td>
+              <td colspan="3" class="vf-fapi-obs">${esc(bloqueado ? 'bloqueado — não vira R$ 0,00' : (o.resultadoStatus === 'real' ? 'todos os componentes presentes' : 'parcial — não confiável'))} · persistido pelo backend, não recalculado aqui</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="vf-fapi-legend">"conciliação" = fora do Resultado Parcial (receita de envio / cancelamento-reembolso — nunca somados de novo).</p>
+    </section>` : '';
 
   return `
     <section class="vf-fapi-drawer-section" aria-label="Identificação do pedido">
@@ -1892,90 +1796,74 @@ function buildOrderDrawerBody(o) {
           <p class="vf-fapi-drawer-ident__meta">Pedido <span class="vf-mono">${esc(o.id)}</span> · ${fmtDt(o.data)}</p>
           <div class="vf-fapi-drawer-ident__tags">
             <span class="vf-tag ${scls}">${esc(slbl)}</span>
-            ${tagFull(o.full)} ${tagAds(o.adsStatus)} ${tagDiag(prod)}
+            ${tagFull(o.full)} ${tagAds(o.adsStatus)} ${tagDiag(o.custoStatus)}
+            ${o.multiItem ? `<span class="vf-tag is-info">${esc(o.qtdItens)} itens neste pedido</span>` : ''}
           </div>
         </div>
       </div>
-      <p class="vf-fapi-legend">Valores derivados do pedido e dos cruzamentos disponíveis. Ausência nunca vira zero.</p>
+      <p class="vf-fapi-legend">Valores exatamente como persistidos pelo backend (M5/M6) — a tela nunca recalcula. Ausência nunca vira zero.</p>
     </section>
-
-    <section class="vf-fapi-drawer-section" aria-label="Resultado financeiro">
-      <h3 class="vf-fapi-drawer-section__title">Resultado financeiro</h3>
-      <div class="vf-table-wrap">
-        <table class="vf-table vf-table--compact">
-          <thead><tr><th scope="col">Componente</th><th scope="col"><span class="vf-visually-hidden">Operação</span></th><th scope="col" class="num">Valor</th><th scope="col">Status</th><th scope="col">Fonte</th><th scope="col">Observação</th></tr></thead>
-          <tbody>
-            ${linha('Receita do pedido', '', valOr(o.valor, money), 'real', o.mlb ? 'planilha vendas / futuro Orders API' : 'planilha vendas (sem MLB)', o.mlb ? '' : 'linha financeira sem produto')}
-            ${linha('Frete seller', '−', valOr(o.frete, money), o.frete == null ? 'ausente' : o.freteStatus, o.freteStatus === 'estimado' ? 'estimado / futuro Shipping API' : 'planilha vendas / futuro Shipping API', o.frete == null ? 'sem frete real — parcial' : '')}
-            ${linha('Taxas marketplace', '−', valOr(o.taxas, money), o.taxas == null ? 'ausente' : o.taxasStatus, 'planilha vendas / futuro pagamentos', o.taxas == null ? 'taxa não identificada — parcial' : '')}
-            ${linha('Custo / base', '−', valOr(o.custo, money), o.custoStatus, 'base interna', o.custoStatus === 'ausente' ? (o.mlb ? 'sem custo na base — bloqueia' : 'sem produto vinculado') : '')}
-            ${linha('Imposto / regra interna', '−', valOr(o.imposto, money), o.imposto == null ? 'ausente' : 'real', 'base interna · Imposto %', o.imposto == null ? 'depende do custo/base' : '')}
-            ${cancelado ? linha('Reembolso / cancelamento', '−', valOr(o.valor, money), 'parcial', 'planilha vendas', 'pedido cancelado — impacto, não conclusão') : ''}
-            <tr class="vf-fapi-total-row">
-              <td>Resultado estimado</td>
-              <td class="vf-fapi-op" aria-hidden="true">=</td>
-              <td class="num">${o.resultado == null ? '—' : `<span class="vf-fapi-est">${money(o.resultado)}</span>`}</td>
-              <td>${statusTag(o.resultadoStatus)}</td>
-              <td class="vf-fapi-fonte">derivado</td>
-              <td class="vf-fapi-obs">${esc(bloqueado ? 'bloqueado — não vira R$ 0,00' : (o.resultadoStatus === 'real' ? 'todos os componentes presentes' : 'parcial — não confiável'))}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="vf-fapi-drawer-section" aria-label="Produto e base">
-      <h3 class="vf-fapi-drawer-section__title">Produto e base</h3>
+    ${itensSecao}
+    ${ledgerSecao}
+    <section class="vf-fapi-drawer-section" aria-label="Pedido">
+      <h3 class="vf-fapi-drawer-section__title">Pedido</h3>
       ${kv([
         ['MLB', `<span class="vf-mono">${esc(o.produto?.mlb || '—')}</span>`],
         ['SKU', `<span class="vf-mono">${esc(o.produto?.sku || '—')}</span>`],
         ['Quantidade', esc(valOr(o.unidades, num))],
-        ['Preço unit.', esc(valOr(precoUnit, money))],
+        ['Preço médio unit.', esc(valOr(precoUnit, money))],
         ['Valor do pedido', esc(valOr(o.valor, money))],
-        ['Custo unit. (base)', esc(valOr(prod?.base?.temCusto ? prod.base.custo : null, money))],
-        ['Imposto % (base)', prod?.base?.imposto == null ? '—' : esc(pct(prod.base.imposto))],
       ])}
     </section>
-
-    <section class="vf-fapi-drawer-section" aria-label="Logística e Ads">
-      <h3 class="vf-fapi-drawer-section__title">Logística e Ads</h3>
-      <div class="vf-cluster">${tagFull(o.full)} ${tagAds(o.adsStatus)} ${tagDiag(prod)}</div>
-    </section>
-
     ${(bloqueado || faltas.length) ? `
     <section class="vf-fapi-drawer-section" aria-label="Pendências e confiança">
       <h3 class="vf-fapi-drawer-section__title">Pendências e confiança</h3>
       <div class="vf-banner ${bloqueado ? 'is-danger' : 'is-warning'} vf-banner--compact">
         <div class="vf-banner__content">
           <p class="vf-banner__title">${bloqueado ? 'Sem informações suficientes para concluir' : 'Resultado parcial — o que ainda falta'}</p>
-          <ul>${faltas.map(([f, imp]) => `<li><strong>${esc(f)}</strong> — ${esc(imp)}</li>`).join('')}</ul>
+          <ul>${faltas.map(([f, imp]) => `<li><strong>${esc(f)}</strong>${imp ? ` — ${esc(imp)}` : ''}</li>`).join('')}</ul>
         </div>
       </div>
     </section>` : ''}`;
 }
 
-function openOrderDrawer(id, triggerRow) {
-  const o = findOrderById(id);
+async function openOrderDrawer(rowId, triggerRow) {
   const drawer = document.getElementById('fapi-order-drawer');
   const backdrop = document.getElementById('fapi-drawer-backdrop');
   const body = document.getElementById('fapi-drawer-body');
-  if (!o || !drawer || !body) return;
-
-  F.ui.drawerOrderId = id;
-  F.ui.drawerReturnFocusId = triggerRow?.dataset?.pedido || id;
-  document.querySelectorAll('#fapi-ped-table tr[data-pedido]').forEach(r =>
-    r.classList.toggle('row--selected', r.dataset.pedido === id));
-
   const conf = document.getElementById('fapi-drawer-conf');
-  if (conf) conf.innerHTML = confStatus(o.confianca);
-  body.innerHTML = buildOrderDrawerBody(o);
+  if (!drawer || !body) return;
 
+  const rowIdNum = Number(rowId);
+  F.ui.drawerRowId = rowIdNum;
+  F.ui.drawerReturnFocusId = triggerRow?.dataset?.rowId || String(rowId);
+  document.querySelectorAll('#fapi-ped-table tr[data-row-id]').forEach(r =>
+    r.classList.toggle('row--selected', Number(r.dataset.rowId) === rowIdNum));
+
+  if (conf) conf.innerHTML = '';
+  body.innerHTML = loadingState('Carregando extrato do pedido…');
   drawer.classList.add('is-open');
   if (backdrop) backdrop.classList.add('is-open');
   document.body.classList.add('vf-no-scroll');
-  // Foco inicial após o estilo aplicar (o drawer sai de visibility:hidden)
   requestAnimationFrame(() => requestAnimationFrame(() =>
     document.getElementById('fapi-drawer-close')?.focus()));
+
+  const seq = ++F.ui.drawerLoadSeq;
+  const detalhe = await fetchOrderDetail(rowIdNum, null);
+  if (seq !== F.ui.drawerLoadSeq || F.ui.drawerRowId !== rowIdNum) return; // drawer trocou/fechou antes da resposta
+
+  if (!detalhe?.ok || !detalhe.pedido) {
+    body.innerHTML = emptyState({
+      icon:'plug', tone:'is-danger', title:'Não foi possível carregar o extrato',
+      why: detalhe?.erro || 'O backend não respondeu para este pedido.',
+      next:'Feche e tente novamente.',
+    });
+    return;
+  }
+
+  const o = detalhe.pedido;
+  if (conf) conf.innerHTML = confStatus(o.confianca);
+  body.innerHTML = buildOrderDrawerBody(o);
 }
 
 function closeOrderDrawer({ restoreFocus = true } = {}) {
@@ -1986,16 +1874,15 @@ function closeOrderDrawer({ restoreFocus = true } = {}) {
   backdrop?.classList.remove('is-open');
   document.body.classList.remove('vf-no-scroll');
   const returnId = F.ui.drawerReturnFocusId;
-  F.ui.drawerOrderId = null;
+  F.ui.drawerRowId = null;
   F.ui.drawerReturnFocusId = null;
   document.querySelectorAll('#fapi-ped-table tr.row--selected').forEach(r => r.classList.remove('row--selected'));
   if (wasOpen && restoreFocus && returnId) {
-    const row = document.querySelector(`#fapi-ped-table tr[data-pedido="${CSS.escape(returnId)}"]`);
+    const row = document.querySelector(`#fapi-ped-table tr[data-row-id="${CSS.escape(returnId)}"]`);
     (row || document.getElementById('fapi-search'))?.focus();
   }
 }
 
-/* Foco preso dentro do drawer enquanto aberto (Tab cíclico). */
 function onDrawerKeydown(e) {
   if (e.key !== 'Tab') return;
   const drawer = document.getElementById('fapi-order-drawer');
@@ -2009,23 +1896,14 @@ function onDrawerKeydown(e) {
 }
 
 /* ================================================================
-   MÓDULO CURVA ABC  (aba Produtos / Curva ABC)
+   MÓDULO CURVA ABC (aba Produtos / Curva ABC)
    ----------------------------------------------------------------
-   ORGANIZAÇÃO INTERNA DO MÓDULO — regras deste bloco:
-     - Estado exclusivo em F.abc (nenhum outro módulo lê/escreve);
-     - Recebe os pedidos DERIVADOS como argumento (não conhece
-       F.viewPayload, filtros de Pedidos nem paginação de Pedidos);
-     - Todo DOM manipulado aqui vive sob o root
-       [data-module="curva-abc"] (#fapi-abc-root) — seletores sempre
-       escopados via root.querySelector;
-     - Nenhuma função daqui toca o DOM de Pedidos, e nenhuma função
-       de Pedidos toca o DOM daqui;
-     - CSS específico usa o prefixo .vf-fapi-abc.
-   O módulo permanece nesta página. O isolamento de estado, DOM e CSS
-   existe somente para manter a Fechamento API organizada; o módulo não
-   será movido para outra página.
+   M9 — a agregação por produto (faturamento, curva A/B/C, unidades,
+   ticket, comissão, custo unitário) vem PRONTA de F.products (GET
+   /read/products, período inteiro). Este módulo só agrupa/ordena/busca/
+   pagina sobre essa lista já agregada — nenhuma soma nova, nenhuma
+   reconstrução a partir de pedidos.
    ================================================================ */
-
 function abcRoot() { return document.getElementById('fapi-abc-root'); }
 
 function resetCurvaAbcState() {
@@ -2033,93 +1911,10 @@ function resetCurvaAbcState() {
   F.abc.sort = 'faturamento';
   F.abc.search = '';
   F.abc.page = 1;
-  F.abc.selectedProduct = null;
 }
 
-/* Agregação por produto a partir dos pedidos (fonte da verdade). */
-function aggByProduct(pedidos) {
-  const map = new Map();
-  for (const o of pedidos) {
-    const key = o.mlb || '__SEM_PRODUTO__';
-    if (!map.has(key)) map.set(key, {
-      mlb: o.mlb, prod: o.prod, titulo: o.produto.titulo, sku: o.produto.sku,
-      unidades: 0, pedidos: 0, faturamento: 0, receitaBloqueada: 0, freteAcum: 0, taxasAcum: 0,
-      cancelProblema: 0, full: o.full, fullPedidos: 0, normalPedidos: 0, semProduto: !o.mlb,
-    });
-    const a = map.get(key);
-    const valido = pedidoEntraNoResultado(o);
-    a.pedidos += 1;
-    if (valido) { a.unidades += (o.unidades || 0); a.faturamento += (o.valor || 0); a.taxasAcum += (o.taxas || 0); }
-    if (o.resultadoStatus === 'bloqueado' && valido) a.receitaBloqueada += (o.valor || 0);
-    a.freteAcum += (o.frete || 0);
-    if (o.status === 'cancelado' || o.status === 'com_problema') a.cancelProblema += 1;
-    if (o.full === true) { a.full = true; a.fullPedidos += 1; } else { a.normalPedidos += 1; }
-  }
-  for (const a of map.values()) { a.faturamento = round2(a.faturamento); a.receitaBloqueada = round2(a.receitaBloqueada); a.freteAcum = round2(a.freteAcum); a.taxasAcum = round2(a.taxasAcum); }
-  return [...map.values()];
-}
-
-/* Logística do produto: full / normal / misto (ambos) / null (—). */
-function productLogisticaTipo(a) {
-  const f = a.fullPedidos > 0, n = a.normalPedidos > 0;
-  return f && n ? 'misto' : f ? 'full' : n ? 'normal' : null;
-}
-
-/* Enriquece a agregação com derivados de leitura e aplica grupo + ordenação
-   + busca local. Tudo derivado dos pedidos recebidos — sem inventar custo/
-   frete. Classificação ABC idêntica à V1:
-   A: acumulado até 80% · B: 80%–95% · C: o restante (item que cruza a
-   fronteira fica na faixa anterior). */
-function buildCurvaAbcRows(orders, { group = 'todos', sortBy = 'faturamento', search = '' } = {}) {
-  const all = aggByProduct(orders).map(a => {
-    const temCusto = !a.semProduto && a.prod?.base?.temCusto === true;
-    return {
-      ...a,
-      temCusto,
-      custoUnit: temCusto ? a.prod.base.custo : null,
-      comissao: a.taxasAcum,
-      ticketMedio: a.pedidos > 0 ? round2(a.faturamento / a.pedidos) : null,
-      logisticaTipo: productLogisticaTipo(a),
-    };
-  });
-  const totalFat = all.reduce((s, a) => s + a.faturamento, 0) || 0;
-  all.forEach(a => { a.pctFat = totalFat > 0 ? round2(a.faturamento / totalFat * 100) : null; });
-
-  // Curva ABC: ordena por faturamento desc, acumula % e classifica.
-  const byFat = all.slice().sort((x, y) => y.faturamento - x.faturamento);
-  let acc = 0;
-  for (const a of byFat) {
-    const prev = acc;
-    acc = round2(acc + (a.pctFat || 0));
-    a.acumPctFat = acc;
-    a.curva = (a.faturamento <= 0) ? null : (prev < 80 ? 'A' : prev < 95 ? 'B' : 'C');
-  }
-
-  let rows = all;
-  if (group === 'sem_custo')            rows = rows.filter(a => !a.semProduto && !a.temCusto);
-  else if (group === 'receita_bloqueada') rows = rows.filter(a => (a.receitaBloqueada || 0) > 0);
-  else if (group === 'full')            rows = rows.filter(a => a.logisticaTipo === 'full' || a.logisticaTipo === 'misto');
-  else if (group === 'normal')          rows = rows.filter(a => a.logisticaTipo === 'normal' || a.logisticaTipo === 'misto');
-  else if (group === 'misto')           rows = rows.filter(a => a.logisticaTipo === 'misto');
-  else if (group === 'curva_a')         rows = rows.filter(a => a.curva === 'A');
-  else if (group === 'curva_b')         rows = rows.filter(a => a.curva === 'B');
-  else if (group === 'curva_c')         rows = rows.filter(a => a.curva === 'C');
-  // 'todos' não filtra
-
-  // Busca local (aplicada APÓS a classificação — não altera curva/acumulado)
-  const term = String(search || '').trim().toLowerCase();
-  if (term) {
-    rows = rows.filter(a =>
-      String(a.mlb || '').toLowerCase().includes(term) ||
-      String(a.sku || '').toLowerCase().includes(term) ||
-      String(a.titulo || '').toLowerCase().includes(term));
-  }
-
-  const sortKey = group === 'receita_bloqueada' ? 'receitaBloqueada' : sortBy;
-  rows = rows.slice().sort((x, y) => (y[sortKey] || 0) - (x[sortKey] || 0));
-  return { rows, allRows: all, totalFat };
-}
-
+/* Logística do produto: full / normal / misto (vem pronta de F.products —
+   logisticaTipo). */
 const ABC_SORTS = [
   ['faturamento','Faturamento'], ['unidades','Unidades'], ['pedidos','Pedidos'],
   ['ticketMedio','Ticket médio'], ['comissao','Comissão'], ['receitaBloqueada','Receita bloqueada'],
@@ -2138,17 +1933,36 @@ function abcLogTag(t) {
   if (t === 'misto') return '<span class="vf-tag is-info">Misto</span>';
   return '<span class="vf-tag is-neutral">—</span>';
 }
-function abcDiagTag(a) {
-  if (a.semProduto || !a.prod) return '<span class="vf-tag is-neutral">—</span>';
-  return a.prod.diag?.presente === true
-    ? '<span class="vf-tag is-success">no diagnóstico</span>'
-    : '<span class="vf-tag is-warning">fora do diag.</span>';
-}
 const ABC_CURVA_TAG = {
   A: '<span class="vf-tag is-primary">A</span>',
   B: '<span class="vf-tag is-neutral">B</span>',
   C: '<span class="vf-tag is-neutral">C</span>',
 };
+
+/* Filtro/ordenação/busca — categoria B, navegação sobre dado já agregado. */
+function buildCurvaAbcView({ group = 'todos', sortBy = 'faturamento', search = '' } = {}) {
+  let rows = F.products;
+  if (group === 'sem_custo')              rows = rows.filter(a => !a.semProduto && !a.temCusto);
+  else if (group === 'receita_bloqueada') rows = rows.filter(a => (a.receitaBloqueada || 0) > 0);
+  else if (group === 'full')              rows = rows.filter(a => a.logisticaTipo === 'full' || a.logisticaTipo === 'misto');
+  else if (group === 'normal')            rows = rows.filter(a => a.logisticaTipo === 'normal' || a.logisticaTipo === 'misto');
+  else if (group === 'misto')             rows = rows.filter(a => a.logisticaTipo === 'misto');
+  else if (group === 'curva_a')           rows = rows.filter(a => a.curva === 'A');
+  else if (group === 'curva_b')           rows = rows.filter(a => a.curva === 'B');
+  else if (group === 'curva_c')           rows = rows.filter(a => a.curva === 'C');
+
+  const term = String(search || '').trim().toLowerCase();
+  if (term) {
+    rows = rows.filter(a =>
+      String(a.mlb || '').toLowerCase().includes(term) ||
+      String(a.sku || '').toLowerCase().includes(term) ||
+      String(a.titulo || '').toLowerCase().includes(term));
+  }
+
+  const sortKey = group === 'receita_bloqueada' ? 'receitaBloqueada' : sortBy;
+  rows = rows.slice().sort((x, y) => (y[sortKey] || 0) - (x[sortKey] || 0));
+  return rows;
+}
 
 function renderCurvaAbcToolbar(counts) {
   const groupOpts = ABC_GROUPS.map(([k, l]) => `<option value="${k}"${F.abc.group === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
@@ -2213,7 +2027,7 @@ function renderCurvaAbcTable(rows, totalFat) {
       <td class="num">${money(a.comissao)}</td>
       <td class="num${a.custoUnit == null ? ' is-absent' : ''}">${valOr(a.custoUnit, money)}</td>
       <td>${abcBaseTag(a)}</td>
-      <td>${abcDiagTag(a)}</td>
+      <td>${tagDiag(a.temCusto ? 'real' : 'ausente')}</td>
       <td>${abcLogTag(a.logisticaTipo)}</td>
       <td class="num">${a.receitaBloqueada > 0 ? `<span class="vf-fapi-est">${money(a.receitaBloqueada)}</span>` : '—'}</td>
     </tr>`).join('');
@@ -2253,18 +2067,18 @@ function renderCurvaAbcTable(rows, totalFat) {
     <p class="vf-fapi-legend">A ≤ 80% · B ≤ 95% · C = resto do faturamento acumulado do período. Curva calculada sobre o período inteiro — a busca e os grupos não alteram a classificação. Filete âmbar = produto sem custo na base.</p>`;
 }
 
-/* Render do módulo. Recebe os pedidos derivados (período inteiro). */
-function renderCurvaAbc(orders) {
+function renderCurvaAbc() {
   const root = abcRoot();
   if (!root) return;
-  const { rows, allRows, totalFat } = buildCurvaAbcRows(orders, { group: F.abc.group, sortBy: F.abc.sort, search: F.abc.search });
+  const rows = buildCurvaAbcView({ group: F.abc.group, sortBy: F.abc.sort, search: F.abc.search });
+  const totalFat = F.totalFaturamento;
 
-  const vendidos = allRows.filter(a => !a.semProduto);
+  const vendidos = F.products.filter(a => !a.semProduto);
   const curvaA = vendidos.filter(a => a.curva === 'A');
   const semCusto = vendidos.filter(a => !a.temCusto);
   const fatSemCusto = round2(semCusto.reduce((s, a) => s + a.faturamento, 0));
-  const unidadesTotal = allRows.reduce((s, a) => s + (a.unidades || 0), 0);
-  const receitaBloqTotal = round2(allRows.reduce((s, a) => s + (a.receitaBloqueada || 0), 0));
+  const unidadesTotal = F.products.reduce((s, a) => s + (a.unidades || 0), 0);
+  const receitaBloqTotal = round2(F.products.reduce((s, a) => s + (a.receitaBloqueada || 0), 0));
 
   const sum = (label, val, cls = '', foot = '') => `
     <div class="vf-fapi-abc-summary__item">
@@ -2292,13 +2106,11 @@ function renderCurvaAbc(orders) {
     <div data-abc-table>${renderCurvaAbcTable(rows, totalFat)}</div>`;
 }
 
-/* Ponte única entre a página e o módulo: deriva os pedidos e delega. */
 function renderAbc() {
-  if (!F.rawPayload?.ok) return;
-  renderCurvaAbc(fechamentoOrders(F.rawPayload));
+  if (!F.ok) return;
+  renderCurvaAbc();
 }
 
-/* Copia para a área de transferência os MLBs sem custo na base (todo o período). */
 function fallbackCopy(texto, cb) {
   try {
     const ta = document.createElement('textarea');
@@ -2309,9 +2121,8 @@ function fallbackCopy(texto, cb) {
   } catch (_) { /* ignora */ }
   if (cb) cb();
 }
-function copiarMlbsSemCusto(orders, btn) {
-  const { allRows } = buildCurvaAbcRows(orders, { group: 'todos', sortBy: 'faturamento' });
-  const mlbs = allRows.filter(a => !a.semProduto && !a.temCusto && a.mlb).map(a => a.mlb);
+function copiarMlbsSemCusto(btn) {
+  const mlbs = F.products.filter(a => !a.semProduto && !a.temCusto && a.mlb).map(a => a.mlb);
   const flash = msg => { if (btn) { const t = btn.dataset.label || btn.textContent; btn.dataset.label = t; btn.textContent = msg; setTimeout(() => { btn.textContent = t; }, 1600); } };
   if (!mlbs.length) { flash('Nenhum sem custo'); return; }
   const texto = mlbs.join('\n');
@@ -2320,7 +2131,6 @@ function copiarMlbsSemCusto(orders, btn) {
   else fallbackCopy(texto, ok);
 }
 
-/* Interações do módulo — delegação escopada ao root (uma vez, no boot). */
 function wireCurvaAbc() {
   const root = abcRoot();
   if (!root) return;
@@ -2340,14 +2150,12 @@ function wireCurvaAbc() {
     F.abc.searchTimer = setTimeout(() => {
       F.abc.search = value;
       F.abc.page = 1;
-      // Re-render só da tabela (o campo de busca fica fora e preserva o foco)
       const tableHost = root.querySelector('[data-abc-table]');
-      if (!tableHost || !F.rawPayload?.ok) return;
-      const orders = fechamentoOrders(F.rawPayload);
-      const { rows, totalFat } = buildCurvaAbcRows(orders, { group: F.abc.group, sortBy: F.abc.sort, search: F.abc.search });
+      if (!tableHost || !F.ok) return;
+      const rows = buildCurvaAbcView({ group: F.abc.group, sortBy: F.abc.sort, search: F.abc.search });
       const count = root.querySelector('.vf-fapi-abc-toolbar__count');
       if (count) count.textContent = `${num(rows.length)} produto(s)`;
-      tableHost.innerHTML = renderCurvaAbcTable(rows, totalFat);
+      tableHost.innerHTML = renderCurvaAbcTable(rows, F.totalFaturamento);
     }, 300);
   });
 
@@ -2355,105 +2163,82 @@ function wireCurvaAbc() {
     const pageBtn = e.target.closest('[data-abc-page]');
     if (pageBtn) { F.abc.page = Math.max(1, F.abc.page + Number(pageBtn.dataset.abcPage)); renderAbc(); return; }
     const action = e.target.closest('[data-abc-action]');
-    if (!action || !F.rawPayload?.ok) return;
+    if (!action || !F.ok) return;
     if (action.dataset.abcAction === 'only-nocost') { F.abc.group = 'sem_custo'; F.abc.page = 1; renderAbc(); return; }
-    if (action.dataset.abcAction === 'copy-nocost') { copiarMlbsSemCusto(fechamentoOrders(F.rawPayload), action); return; }
+    if (action.dataset.abcAction === 'copy-nocost') { copiarMlbsSemCusto(action); return; }
   });
 }
 /* ════════════════ FIM DO MÓDULO CURVA ABC ════════════════ */
 
-/* ── INTERAÇÕES (tudo local, sem fetch) ───────────────────── */
-/* Filtro de pedido (select do painel Filtros) — aplica instantâneo. */
+/* ── INTERAÇÕES — cada mudança de filtro/busca/ordenação/página
+   dispara uma nova consulta ao servidor (M9, seção 11). Navegação pura
+   (aba ativa, drawer, painel de filtros aberto) continua 100% local. ── */
 function setPedFilter(key, value) {
-  F.orders.filters[key] = value || (key === 'logistica' || key === 'midia' || key === 'diagbase' || key === 'status' ? 'todos' : null);
-  F.orders.filters = sanitizeFilters(F.orders.filters, F.rawPayload);
+  F.orders.filters[key] = value || 'todos';
   closeOrderDrawer({ restoreFocus: false });
-  F.orders.page = 1;
-  recomputeView();
-  renderPedTable();
-  updateQuickChips();
-  renderDaysSection(); // a régua de dias respeita logística/mídia/diag/status
+  atualizarListaEResumo({ resetPage: true });
 }
-/* Clique num dia (régua ou tabela) → filtra SÓ a tabela de pedidos daquele
-   dia e leva o usuário para a aba Pedidos (sem novo fetch). */
+/* Clique num dia (régua ou tabela) → filtra a tabela de Pedidos por
+   dataDe/dataAte e leva o usuário para a aba Pedidos. */
 function applyDayFilter(day) {
-  if (!isDateInPeriod(day, F.rawPayload.periodo)) return;
-  F.orders.filters = { ...cloneFilters(F.orders.filters), modo:'intervalo', dia:null, semana:null, de:day, ate:day };
+  if (!F.periodoResp || day < F.periodoResp.inicio || day > F.periodoResp.fim) return;
+  F.orders.filters.de = day;
+  F.orders.filters.ate = day;
   closeOrderDrawer({ restoreFocus: false });
-  F.orders.page = 1;
-  recomputeView();
-  renderOrdersPanel();     // rebuild da toolbar (linha de filtros ativos ganha o dia)
-  renderDaysSection();     // destaque do dia selecionado na régua/tabela
   setActiveTab('pedidos');
+  atualizarListaEResumo({ resetPage: true }).then(renderDaysSection);
 }
-/* Recorte rápido (chip). Toggle: reclicar o ativo volta a "Todos". */
 function applyQuickFilter(q) {
   F.orders.quickFilter = (q !== 'todos' && q === F.orders.quickFilter) ? 'todos' : q;
-  F.orders.page = 1;
   closeOrderDrawer({ restoreFocus: false });
-  renderPedTable();
-  updateQuickChips();
-}
-function updateQuickChips() {
-  const panel = document.getElementById('fapi-panel-pedidos');
-  if (!panel) return;
-  const base = getSearchedPedidos();
-  panel.querySelectorAll('[data-quick]').forEach(b => {
-    const k = b.dataset.quick;
-    const active = k === F.orders.quickFilter;
-    b.classList.toggle('is-active', active);
-    b.setAttribute('aria-pressed', String(active));
-    const badge = b.querySelector('.vf-badge');
-    if (badge) badge.textContent = num(k === 'todos' ? base.length : base.filter(o => pedidoMatchesQuick(o, k)).length);
-  });
+  atualizarListaEResumo({ resetPage: true });
 }
 function setOrderSort(value) {
   F.orders.sort = value || 'data_desc';
-  F.orders.page = 1;
-  renderPedTable();
+  atualizarListaEResumo({ resetPage: true });
 }
-/* "Limpar tudo": zera recorte, ordenação, busca e selects (mantém o período). */
 function limparTudoLocal() {
-  resetFilters();
+  F.orders.filters = defaultOrderFilters();
+  F.orders.quickFilter = 'todos';
+  F.orders.search = '';
+  F.orders.sort = 'data_desc';
+  const input = document.getElementById('fapi-search');
+  if (input) input.value = '';
   closeOrderDrawer({ restoreFocus: false });
-  recomputeView();
-  renderOrdersPanel();  // rebuild toolbar (selects/busca/chips) + tabela
-  renderDaysSection();  // remove destaque de dia/escopo
+  atualizarListaEResumo({ resetPage: true }).then(renderDaysSection);
 }
-/* Busca local com debounce de 300ms — re-renderiza só #fapi-ped-table; o input
-   está na toolbar (fora desse host), então o foco é preservado. */
 function onSearchInput(value) {
   if (F.orders.searchTimer) clearTimeout(F.orders.searchTimer);
   F.orders.searchTimer = setTimeout(() => {
     F.orders.search = value;
-    F.orders.page = 1;
     closeOrderDrawer({ restoreFocus: false });
-    renderPedTable();
-    updateQuickChips();
+    atualizarListaEResumo({ resetPage: true });
   }, 300);
 }
 function goToPage(delta) {
-  F.orders.page = Math.max(1, F.orders.page + delta);
-  renderPedTable();
+  const pages = F.pagination?.totalPages || 1;
+  const next = Math.min(pages, Math.max(1, F.orders.page + delta));
+  if (next === F.orders.page) return;
+  F.orders.page = next;
+  atualizarListaEResumo({});
 }
-/* Recorte do Fechamento (chips próprios) — re-render só do bloco Fechamento. */
+/* Recorte do Fechamento (Visão Geral) — refaz o mesmo /read (summary muda
+   de recorte via resumoFiltro; a lista de Pedidos é atualizada junto,
+   sem custo extra de fórmula). */
 function setFechQuick(q) {
-  F.summary.quickFilter = (q !== 'todos' && q === F.summary.quickFilter) ? 'todos' : q;
-  renderFechamentoSection();
+  F.summaryUi.quickFilter = (q !== 'todos' && q === F.summaryUi.quickFilter) ? 'todos' : q;
+  atualizarListaEResumo({});
 }
 function setDailySort(value) {
-  F.summary.dailySort = value || 'data';
+  F.summaryUi.dailySort = value || 'data';
   renderDaysSection();
 }
-/* Remoção de um filtro ativo individual (chips da linha "Filtros ativos"). */
 function removeActiveFilter(type, key) {
   if (type === 'quick') { F.orders.quickFilter = 'todos'; }
-  else if (type === 'pedfilter' && key) { setPedFilter(key, 'todos'); renderOrdersPanel(); return; }
+  else if (type === 'pedfilter' && key) { setPedFilter(key, 'todos'); return; }
   else if (type === 'dia') {
-    F.orders.filters = { ...cloneFilters(F.orders.filters), modo:'mes', dia:null, semana:null, de:null, ate:null };
-    recomputeView();
-    renderOrdersPanel();
-    renderDaysSection();
+    F.orders.filters.de = null; F.orders.filters.ate = null;
+    atualizarListaEResumo({ resetPage: true }).then(renderDaysSection);
     return;
   }
   else if (type === 'busca') {
@@ -2461,12 +2246,11 @@ function removeActiveFilter(type, key) {
     const input = document.getElementById('fapi-search');
     if (input) input.value = '';
   }
-  F.orders.page = 1;
-  renderPedTable();
-  updateQuickChips();
+  atualizarListaEResumo({ resetPage: true });
 }
 
-/* ── IMPORTAÇÃO / SINCRONIZAÇÃO (admin only — endpoints preservados) ── */
+/* ── IMPORTAÇÃO / SINCRONIZAÇÃO (admin only — endpoints preservados,
+   inalterados nesta rodada: M9 troca a LEITURA, não a escrita) ── */
 function setActionStatus(msg, tipo) {
   const el = document.getElementById('fapi-action-status');
   if (!el) return;
@@ -2509,15 +2293,9 @@ function setAdminBusy(busy, activeBtnId) {
 async function executarImportacao() {
   if (!TOKEN) return;
   if (!F.cliente) { setActionStatus('Selecione um cliente antes de importar.', ACTION_TONE.warn); return; }
-  // M8, seção 27 — nunca resolve conta sozinho no browser: com 2+ contas
-  // ativas sem escolha, a importação fica bloqueada como qualquer outra
-  // ação dependente de conta (o backend também bloquearia com 409, mas o
-  // botão de importar fica fora dos painéis ocultos pelo estado de bloqueio).
   if (F.contas.length > 1 && !F.clienteConta) { setActionStatus('Selecione a conta antes de importar.', ACTION_TONE.warn); return; }
   if (!F.periodo) { setActionStatus('Selecione o período antes de importar.', ACTION_TONE.warn); return; }
 
-  // Usa F.arquivoImport (variável de estado) — não depende de input.files[0],
-  // que o browser pode zerar após repaint mesmo sem destruir o elemento.
   const arquivo = F.arquivoImport;
   if (!arquivo) { setActionStatus('Selecione a planilha de vendas (.xlsx).', ACTION_TONE.warn); return; }
 
@@ -2527,11 +2305,7 @@ async function executarImportacao() {
   try {
     const form = new FormData();
     form.append('sales', arquivo);
-    // Import (planilha) ainda agrupa por competência: deriva do mês do início do período.
     form.append('competencia', String(F.periodo.dateFrom).slice(0, 7));
-    // M8, seção 27 — a planilha também precisa da conta selecionada quando
-    // há contexto de conta; o backend continua resolvendo (base/grant), o
-    // browser só repassa a escolha já feita.
     if (F.clienteConta?.id) form.append('clienteContaId', String(F.clienteConta.id));
 
     const res = await fetch(
@@ -2546,7 +2320,6 @@ async function executarImportacao() {
 
     const pedidos = json.pedidosPersistidos ?? '?';
     setActionStatus(`Importado: ${pedidos} pedido(s). Recarregando…`, ACTION_TONE.ok);
-    // Limpa o arquivo após importação bem-sucedida
     setImportFile(null);
     toggleImportPanel(false);
     await carregarTela();
@@ -2558,10 +2331,6 @@ async function executarImportacao() {
   }
 }
 
-/* Sincronização API-first (M2 — sync run assíncrono): cria a execução no
-   servidor (POST /sync-runs, responde 202 sem esperar terminar) e acompanha
-   por polling (GET /sync-runs/:id). Sobrevive a reload da página — ver
-   retomarSyncEmAndamento(), chamada ao trocar cliente/período. */
 const SYNC_POLL_MS = 3000;
 
 function pararPollingSync() {
@@ -2574,7 +2343,6 @@ function pararPollingSync() {
 async function executarSincronizacao() {
   if (!TOKEN) return;
   if (!F.cliente) { setActionStatus('Selecione um cliente antes de sincronizar.', ACTION_TONE.warn); return; }
-  // M8, seção 21/28 — nunca dispara sync para conta ambígua.
   if (F.contas.length > 1 && !F.clienteConta) { setActionStatus('Selecione a conta antes de sincronizar.', ACTION_TONE.warn); return; }
   if (!F.periodo) { setActionStatus('Selecione o período antes de sincronizar.', ACTION_TONE.warn); return; }
 
@@ -2610,9 +2378,6 @@ async function executarSincronizacao() {
   }
 }
 
-// M3 — resumo textual de completude por fonte (nunca só cor, seção 47).
-// `sources` vem do mesmo GET /sync-runs/:id que devolveu `run`.
-const FONTE_LABEL = { orders: 'Orders', shipments: 'Fretes', claims: 'Pós-venda', returns: 'Devoluções', base: 'Base' };
 function resumoConclusaoSync(run, sources, meta) {
   const partes = (Array.isArray(sources) ? sources : []).map((s) => {
     const nome = FONTE_LABEL[s.source] || s.source;
@@ -2634,9 +2399,6 @@ function resumoConclusaoSync(run, sources, meta) {
 }
 
 async function pollSyncRun(runId, clienteSlugNoInicio, clienteContaIdNoInicio = null) {
-  // Cliente/conta trocado enquanto aguardava a resposta, ou outro poll
-  // assumiu — ignora. Comparação de conta trata null/undefined como
-  // equivalentes (cliente legado sem conta selecionada).
   const contextoMudou = () =>
     F.sync.runId !== runId || F.cliente?.slug !== clienteSlugNoInicio ||
     (F.clienteConta?.id || null) !== (clienteContaIdNoInicio || null);
@@ -2650,7 +2412,7 @@ async function pollSyncRun(runId, clienteSlugNoInicio, clienteContaIdNoInicio = 
     if (res.status === 401) { window.location.replace('index.html'); return; }
     const json = await res.json();
 
-    if (contextoMudou()) return; // trocou de cliente/conta durante o fetch
+    if (contextoMudou()) return;
 
     if (!res.ok || !json?.ok) {
       pararPollingSync();
@@ -2674,9 +2436,6 @@ async function pollSyncRun(runId, clienteSlugNoInicio, clienteContaIdNoInicio = 
       return;
     }
 
-    // completed — run.status (técnico) e run.completenessStatus (M3) são eixos
-    // separados: um run completed pode ter pendências de coleta (ex.: claims
-    // HTTP 400). O texto sempre nomeia a fonte, nunca só cor (seção 47).
     const meta = run.metadata || {};
     F.lastSyncBase = run.baseId ? { id: run.baseId } : null;
     setActionStatus('Sincronização concluída. Recarregando…', ACTION_TONE.info);
@@ -2687,15 +2446,9 @@ async function pollSyncRun(runId, clienteSlugNoInicio, clienteContaIdNoInicio = 
   }
 }
 
-// Reload/troca de cliente-período-conta: se já existir um sync-run
-// queued/running para este cliente+CONTA neste mesmo período, retoma o
-// acompanhamento em vez de deixar o usuário sem feedback. M8: filtra por
-// clienteContaId no servidor além de dateFrom/dateTo (M1/M2 hardening,
-// seção 24/26) — dois cliques em CONTAS diferentes do mesmo cliente nunca
-// mais colidem aqui, porque a tela já sabe qual conta está ativa.
 async function retomarSyncEmAndamento() {
   if (!TOKEN || !F.cliente || !F.periodo) return;
-  if (F.contas.length > 1 && !F.clienteConta) return; // sem conta resolvida, nada a retomar ainda
+  if (F.contas.length > 1 && !F.clienteConta) return;
   pararPollingSync();
   const clienteContaId = F.clienteConta?.id || null;
   try {
@@ -2725,21 +2478,20 @@ async function retomarSyncEmAndamento() {
 
 /* ── WIRING ESTÁTICO (uma vez, no boot — delegação nos hosts) ── */
 function wireStatic() {
-  // Barra de contexto
   document.getElementById('fapi-client-select')?.addEventListener('change', e => {
     F.cliente = F.clientes.find(c => c.slug === e.target.value) || null;
     closeOrderDrawer({ restoreFocus: false });
     F.lastSyncBase = null;
-    pararPollingSync(); // conta/cliente antigo nunca continua sendo acompanhado (seção 24)
+    pararPollingSync();
     resetFilters();
-    trocarContexto(); // M8: recarrega contas do cliente novo, depois dados/retomada de sync
+    trocarContexto();
   });
   document.getElementById('fapi-conta-select')?.addEventListener('change', e => onContaChange(e.target.value));
   document.getElementById('fapi-period-select')?.addEventListener('change', onPeriodChange);
   document.getElementById('fapi-period-apply')?.addEventListener('click', aplicarPeriodoCustom);
   document.getElementById('fapi-refresh-btn')?.addEventListener('click', () => {
     setActionStatus('', '');
-    carregarTela(); // relê o banco (GET) — não chama a API do ML
+    carregarTela();
   });
   document.getElementById('fapi-sync-btn')?.addEventListener('click', executarSincronizacao);
   document.getElementById('fapi-import-toggle')?.addEventListener('click', () => toggleImportPanel());
@@ -2751,7 +2503,6 @@ function wireStatic() {
   document.getElementById('fapi-import-clear')?.addEventListener('click', () => setImportFile(null));
   document.getElementById('fapi-import-btn')?.addEventListener('click', executarImportacao);
 
-  // Abas (tablist com teclado)
   const tabs = document.getElementById('fapi-tabs');
   tabs?.addEventListener('click', e => {
     const tab = e.target.closest('[data-tab]');
@@ -2759,7 +2510,6 @@ function wireStatic() {
   });
   tabs?.addEventListener('keydown', onTablistKeydown);
 
-  // Aba Visão geral: recorte do fechamento, régua de dias, tabela diária, CTA
   const visao = document.getElementById('fapi-panel-visao');
   visao?.addEventListener('click', e => {
     const fechq = e.target.closest('[data-fechq]');
@@ -2780,7 +2530,6 @@ function wireStatic() {
     if (e.target.id === 'fapi-daily-sort') setDailySort(e.target.value);
   });
 
-  // Aba Pedidos: busca, ordenação, filtros, chips, tabela, paginação
   const pedidos = document.getElementById('fapi-panel-pedidos');
   pedidos?.addEventListener('input', e => {
     if (e.target.id === 'fapi-search') onSearchInput(e.target.value);
@@ -2806,19 +2555,17 @@ function wireStatic() {
       toggle.setAttribute('aria-expanded', String(F.ui.filtersPanelOpen));
       return;
     }
-    const row = e.target.closest('tr[data-pedido]');
-    if (row) { openOrderDrawer(row.dataset.pedido, row); return; }
+    const row = e.target.closest('tr[data-row-id]');
+    if (row) { openOrderDrawer(row.dataset.rowId, row); return; }
   });
   pedidos?.addEventListener('keydown', e => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
-    const row = e.target.closest('tr[data-pedido]');
-    if (row && e.target === row) { e.preventDefault(); openOrderDrawer(row.dataset.pedido, row); }
+    const row = e.target.closest('tr[data-row-id]');
+    if (row && e.target === row) { e.preventDefault(); openOrderDrawer(row.dataset.rowId, row); }
   });
 
-  // Módulo Curva ABC (delegação própria, escopada ao root)
   wireCurvaAbc();
 
-  // Drawer do pedido
   document.getElementById('fapi-drawer-close')?.addEventListener('click', () => closeOrderDrawer());
   document.getElementById('fapi-drawer-close-footer')?.addEventListener('click', () => closeOrderDrawer());
   document.getElementById('fapi-drawer-backdrop')?.addEventListener('click', () => closeOrderDrawer());

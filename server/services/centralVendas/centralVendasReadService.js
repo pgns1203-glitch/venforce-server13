@@ -23,6 +23,9 @@ const {
   createCentralVendasService,
   buildPayloadFromRange,
   buildContextoPayload,
+  buildResumoFromRange,
+  buildDiario,
+  buildAbcProdutos,
 } = require("./centralVendasService");
 
 const DEFAULT_LIMIT = 50;
@@ -72,6 +75,17 @@ function pedidoMatchesStatus(o, s) {
 function pedidoMatchesLogistica(o, l) {
   if (l === "full") return o.full === true;
   if (l === "nao_full") return o.full !== true;
+  return true;
+}
+
+// Espelha o filtro avançado "diagbase" de Portal/fechamentos-api.js — só as
+// opções com_custo/sem_custo sobrevivem ao M9 (no_diag/fora_diag dependiam
+// de `produtos[mlb].diag.presente`, que o motor real nunca preenche —
+// sempre `false` — então essas duas opções eram inertes com dado real;
+// removidas do frontend nesse marco, não portadas aqui).
+function pedidoMatchesDiagbase(o, d) {
+  if (d === "com_custo") return o.custoStatus === "real";
+  if (d === "sem_custo") return o.custoStatus === "ausente";
   return true;
 }
 
@@ -143,7 +157,19 @@ function createCentralVendasReadService(repository = getRepository(), db = pool)
     const {
       dateFrom, dateTo, marketplace = "meli", clienteContaId = null,
       page, limit, sort = "data_desc",
-      filtro = "todos", status = "todos", logistica = "todos", search = "",
+      filtro = "todos", status = "todos", logistica = "todos", diagbase = "todos", search = "",
+      // M9 — refinamento de data DENTRO do período já selecionado (clique num
+      // dia/linha de "Vendas por dia"). Nunca troca o período de análise
+      // (dateFrom/dateTo, que continua definindo `summary`/`motor`/
+      // `completude` — seção 10): só recorta quais pedidos entram nas
+      // `rows` paginadas, igual ao antigo filtro local `modo:'intervalo'`.
+      dataDe = null, dataAte = null,
+      // M9 — recorte independente do "Fechamento do período" (Visão Geral):
+      // mesmos valores de `filtro` (todos/sem_custo/sem_frete/bloqueados/
+      // calculavel), mas nunca lido como o `filtro` das `rows` — ver seção
+      // 10: dois conceitos, dois campos, nunca reaproveita `summary` com
+      // outro significado.
+      resumoFiltro = "todos",
     } = params;
 
     const { cliente, context, snapshot, dateFrom: from, dateTo: to } =
@@ -152,10 +178,15 @@ function createCentralVendasReadService(repository = getRepository(), db = pool)
     const payload = buildPayloadFromRange(cliente, { dateFrom: from, dateTo: to }, snapshot);
     const termo = String(search || "").trim().toLowerCase();
 
+    const dentroDoSubperiodo = (o) =>
+      (!dataDe || (o.data && o.data >= dataDe)) && (!dataAte || (o.data && o.data <= dataAte));
+
     const filtrados = (payload.pedidos || [])
+      .filter(dentroDoSubperiodo)
       .filter((o) => pedidoMatchesQuick(o, filtro))
       .filter((o) => pedidoMatchesStatus(o, status))
       .filter((o) => pedidoMatchesLogistica(o, logistica))
+      .filter((o) => pedidoMatchesDiagbase(o, diagbase))
       .filter((o) => pedidoMatchesSearch(o, termo));
 
     const ordenados = sortPedidos(filtrados, sort);
@@ -168,6 +199,15 @@ function createCentralVendasReadService(repository = getRepository(), db = pool)
     const inicio = (pageClamped - 1) * limitClamped;
     const rows = ordenados.slice(inicio, inicio + limitClamped).map(toListRow);
 
+    const pedidosDoResumoFiltrado = (payload.pedidos || []).filter((o) => pedidoMatchesQuick(o, resumoFiltro));
+    const filteredSummary = buildResumoFromRange({}, pedidosDoResumoFiltrado);
+    // Pós-venda (claims) não verificado é um sinal do SNAPSHOT inteiro, não
+    // de um recorte — nunca calculado por subconjunto. Mesmo ajuste que a
+    // tela aplicava localmente após buildFechamentoResumo (seção 6 do M9).
+    if (payload.resumo?.claimsIndisponivel && pedidosDoResumoFiltrado.length) {
+      filteredSummary.confiancaFechamento = "parcial";
+    }
+
     return {
       ok: true,
       cliente,
@@ -177,8 +217,49 @@ function createCentralVendasReadService(repository = getRepository(), db = pool)
       motor: payload.motor,
       completude: payload.completude,
       summary: payload.resumo,
+      filteredSummary,
       rows,
       pagination: { page: pageClamped, limit: limitClamped, total, totalPages },
+    };
+  }
+
+  // M9 — agregado diário (Vendas por dia), período inteiro, independente de
+  // página/filtro da tabela de pedidos. Mesmo snapshot/payload de
+  // getCentralVendasRead — nenhuma segunda seleção de snapshot.
+  async function getCentralVendasReadDaily(clienteSlug, params = {}) {
+    const { dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = params;
+    const { cliente, context, snapshot, dateFrom: from, dateTo: to } =
+      await base.resolveRangeContext(clienteSlug, { dateFrom, dateTo, marketplace, clienteContaId });
+    const payload = buildPayloadFromRange(cliente, { dateFrom: from, dateTo: to }, snapshot);
+    return {
+      ok: true,
+      cliente,
+      periodo: payload.periodo,
+      contexto: buildContextoPayload(context),
+      snapshot: buildSnapshotMeta(snapshot),
+      motor: payload.motor,
+      dias: buildDiario(payload.pedidos || []),
+    };
+  }
+
+  // M9 — Curva ABC / Produtos, período inteiro, independente de
+  // página/filtro da tabela de pedidos. Mesmo snapshot/payload de
+  // getCentralVendasRead — nenhuma segunda seleção de snapshot.
+  async function getCentralVendasReadProducts(clienteSlug, params = {}) {
+    const { dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = params;
+    const { cliente, context, snapshot, dateFrom: from, dateTo: to } =
+      await base.resolveRangeContext(clienteSlug, { dateFrom, dateTo, marketplace, clienteContaId });
+    const payload = buildPayloadFromRange(cliente, { dateFrom: from, dateTo: to }, snapshot);
+    const { produtos, totalFat } = buildAbcProdutos(payload.pedidos || [], payload.produtos || {});
+    return {
+      ok: true,
+      cliente,
+      periodo: payload.periodo,
+      contexto: buildContextoPayload(context),
+      snapshot: buildSnapshotMeta(snapshot),
+      motor: payload.motor,
+      produtos,
+      totalFaturamento: totalFat,
     };
   }
 
@@ -200,7 +281,13 @@ function createCentralVendasReadService(repository = getRepository(), db = pool)
     }
 
     const payload = buildPayloadFromRange(cliente, { dateFrom, dateTo }, snapshot);
-    const pedido = (payload.pedidos || []).find((o) => o.rowId === rowIdNum);
+    // `pedido_row_id` é bigint no Postgres: o driver `pg` devolve bigint como
+    // STRING (evita perda de precisão), então `pedido.rowId` já chega como
+    // string em produção mesmo com `numberOrNull`/atribuição direta — nunca
+    // comparar com `===` contra o Number(rowId) da URL (achado real, rodando
+    // contra o Postgres de produção — nenhum teste com fake db pegou isso
+    // porque os fixtures usavam `id` numérico, não string).
+    const pedido = (payload.pedidos || []).find((o) => String(o.rowId) === String(rowIdNum));
     if (!pedido) {
       const err = new Error("Pedido nao encontrado neste snapshot.");
       err.statusCode = 404;
@@ -210,17 +297,26 @@ function createCentralVendasReadService(repository = getRepository(), db = pool)
     return { ok: true, pedido };
   }
 
-  return { getCentralVendasRead, getCentralVendasReadOrderDetail, resolveRangeContext: base.resolveRangeContext };
+  return {
+    getCentralVendasRead,
+    getCentralVendasReadOrderDetail,
+    getCentralVendasReadDaily,
+    getCentralVendasReadProducts,
+    resolveRangeContext: base.resolveRangeContext,
+  };
 }
 
 module.exports = {
   createCentralVendasReadService,
   getCentralVendasRead: (...args) => createCentralVendasReadService().getCentralVendasRead(...args),
   getCentralVendasReadOrderDetail: (...args) => createCentralVendasReadService().getCentralVendasReadOrderDetail(...args),
+  getCentralVendasReadDaily: (...args) => createCentralVendasReadService().getCentralVendasReadDaily(...args),
+  getCentralVendasReadProducts: (...args) => createCentralVendasReadService().getCentralVendasReadProducts(...args),
   // Exposto para teste direto das funções puras (filtro/ordenação).
   pedidoMatchesQuick,
   pedidoMatchesStatus,
   pedidoMatchesLogistica,
+  pedidoMatchesDiagbase,
   pedidoMatchesSearch,
   sortPedidos,
 };

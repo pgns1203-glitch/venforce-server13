@@ -2263,3 +2263,147 @@ Frontend: `Portal/fechamentos-api.js` (reescrito).
 Testes: `centralVendasM9ReadAggregates.test.js` (novo),
 `fechamentos-api.test.js` (novo), `centralVendasClaimsPosVenda.test.js`
 (seção 17 migrada), `fechamentosApiAccountAware.test.js` (endpoints M9).
+
+### 17.12 Hardening pós-M9 — agregação de produtos multi-item
+
+#### 17.12.1 Bug encontrado
+
+A revisão do M9 (partindo do commit `ba705ce`) encontrou um erro conceitual
+em `buildAbcProdutos` (Curva ABC, `/read/products`) e na dimensão de
+produto de `buildDiario` (Vendas por dia, `/read/daily`): as duas funções
+agregavam por `pedido.mlb` — o MLB do **primeiro item** da linha
+(`firstItem`, ver `buildPedidoContrato`, seção 15.10) — em vez de percorrer
+`pedido.itens[]`, o array real de itens que o M5 já produz por item.
+
+Em um pedido com 2 produtos (A = R$100, B = R$200), o resultado antes desta
+rodada era: o produto do primeiro item recebia o **faturamento do pedido
+inteiro** (R$300) e o segundo produto nunca aparecia na Curva ABC nem em
+"produtos distintos"/`topProduto` de Vendas por dia. A própria suíte de
+teste do M9 (`centralVendasM9ReadAggregates.test.js`, cenário F) continha
+uma asserção que documentava esse comportamento como esperado ("linha MULTI
+conta só pelo mlb representante") — instrução explícita desta rodada foi
+tratar essa asserção como o bug, não como regra de negócio, e substituí-la.
+
+#### 17.12.2 Causa
+
+`buildAbcProdutos`/`buildDiario` foram escritos operando sobre `pedido`
+(contrato de LINHA, uma entrada por pedido), reaproveitando por atalho o
+campo `pedido.mlb` que o M7 introduziu só para exibição de honestidade
+multi-item (seção 15.10) — nunca para agregação. `pedido.itens[]` (mesmo
+contrato, já continha `mlb`/`receitaProduto`/`quantidade`/`confianca` por
+item, produzidos pelo M5) já existia e nunca tinha sido usado nessas duas
+funções.
+
+#### 17.12.3 Regra corrigida
+
+`buildAbcProdutos` e a dimensão de produto de `buildDiario` agora percorrem
+`pedido.itens[]`:
+
+- cada item soma **só a própria** `receitaProduto`/`quantidade` ao seu
+  MLB — nunca ao MLB de outro item do mesmo pedido;
+- **comissão** (`tarifa_venda`) por produto passa a ler o componente já
+  persistido POR ITEM (`pedido.componentes`, filtrado por `itemId` — o
+  motor, `centralVendasSyncService.js`, já grava `tarifa_venda`/
+  `custo_produto`/`imposto_interno`/`frete_seller`/`receita_produto` com
+  `itemId` desde o M5; nada novo foi persistido, só passou a ser lido
+  corretamente). Ausência de tarifa naquele item ⇒ `null`, nunca `0`
+  (`itemComponentTotal`, nova função pura);
+- **receita bloqueada** por produto usa `item.confianca === "bloqueado"`
+  (confiança do próprio item, M5 invariante A), não mais
+  `pedido.confianca` — um pedido bloqueado pelo item A nunca marca a
+  receita do item B como bloqueada;
+- **contagem de pedidos** por produto é por PEDIDO distinto
+  (`pedido.rowId`), nunca por linha de item — um MLB repetido em 2 linhas
+  do mesmo pedido conta 1 pedido, não 2;
+- `custoUnit` continua vindo do catálogo (`buildProdutos`), que já era
+  por item — não mudou, só foi confirmado por teste que não regrediu;
+- pedidos sem nenhuma linha de item persistida (payload legado/planilha,
+  sem `central_vendas_pedido_itens`) caem num único produto "sem produto"
+  com os totais do próprio pedido — preserva a reconciliação
+  (Σ faturamento dos produtos = faturamento válido do período) mesmo
+  nesse caso degenerado, sem inventar item onde não existe.
+
+Nenhuma fórmula financeira foi alterada — `pedido.itens[].resultado`,
+`pedido.itens[].receitaProduto` etc. continuam exatamente os valores que o
+M5 (`buildMotorFromOrders`) já calculava e persistia; esta rodada só
+corrigiu QUAL chave de agregação a leitura usa.
+
+Componentes de escopo PEDIDO (`receita_envio`, `cancelamento_reembolso`) e
+qualquer rateio novo não foram tocados nem inventados — `frete_seller` e
+`tarifa_venda` já são persistidos por item desde o M5 (têm `itemId`
+gravado em `centralVendasSyncService.js`), então usá-los por item não é um
+rateio novo, é ler o dado que já existe. Nenhum componente sem rateio
+canônico existente foi atribuído por produto.
+
+#### 17.12.4 Antes/depois (exemplo do enunciado)
+
+```text
+Pedido: item A → MLB_A → receitaProduto = 100
+        item B → MLB_B → receitaProduto = 200
+Total do pedido: R$ 300
+
+ANTES:  MLB_A (representante) = R$300 | MLB_B = ausente da Curva ABC
+DEPOIS: MLB_A = R$100                 | MLB_B = R$200
+        Σ produtos = R$300 = faturamento do pedido (reconciliado)
+```
+
+#### 17.12.5 Testes adicionados
+
+`server/tests/centralVendasM9ReadAggregates.test.js`:
+
+```text
+F  (reescrito)  cada MLB do multi-item recebe só a própria receita/comissão;
+                custoUnit continua do catálogo; curva A/B/C recalculada;
+                reconciliação Σ produtos = totalFaturamento
+F2 (novo)       2 pedidos com o mesmo MLB → pedidos=2; 2 linhas do mesmo
+                MLB no MESMO pedido → não duplica (continua 1)
+F3 (novo)       custo/imposto de itens diferentes no mesmo pedido nunca se
+                misturam entre produtos (custoUnit e faturamento isolados)
+F4 (novo)       /read/daily: produtos distintos do dia = 2 num pedido
+                multi-item A+B; topProduto = o item de maior receita (B),
+                nunca o mlb representante com o total do pedido
+```
+
+18 verificações novas/reescritas (48 no total do arquivo, antes 31).
+
+#### 17.12.6 Suíte
+
+```text
+centralVendasMotorItemCanonico.test.js (M5)  8 cenários — sem alteração de comportamento
+centralVendasClaimsPosVenda.test.js (M6)     117 verificações — sem alteração
+centralVendasM7Read.test.js (M7)             230 verificações — sem alteração
+fechamentosApiAccountAware.test.js (M8/M9)   33 verificações — sem alteração
+centralVendasM9ReadAggregates.test.js (M9)   48 verificações (18 novas/reescritas)
+Portal/fechamentos-api.test.js (M9)          23 verificações — sem alteração
+```
+
+Suíte completa: 103/105 arquivos `*.test.js` passam — as mesmas 2 falhas
+pré-existentes já documentadas desde o M5 (`designStudioWorkspace.test.js`
+e `mlTokenService.test.js`, linha 313), confirmadas sem relação com esta
+mudança (nenhuma delas toca Central de Vendas).
+
+#### 17.12.7 O que permanece honestamente ausente/parcial
+
+- **`frete_seller` por produto**: não foi adicionado ao agregado de
+  produto nesta rodada. Ele já é persistido por item (mesma mecânica da
+  comissão), mas não foi pedido pelo escopo desta tarefa e não há campo
+  `frete` hoje no contrato de `/read/products` — registrado aqui para uma
+  rodada futura que precise dele, usando o mesmo padrão de
+  `itemComponentTotal` já criado.
+- **`receita_envio`/`cancelamento_reembolso` por produto**: continuam
+  sem atribuição por produto — são componentes de escopo PEDIDO
+  (`itemId: null` na origem, `centralVendasSyncService.js`), sem rateio
+  canônico existente; nenhum rateio foi inventado, por instrução
+  explícita.
+- **`imposto_interno` por produto**: não exposto no agregado de Curva
+  ABC (o contrato de `/read/products` nunca teve esse campo, nem antes
+  nem depois desta rodada) — fora do escopo desta correção, que tratou
+  apenas dos campos já existentes no contrato (`faturamento`, `unidades`,
+  `pedidos`, `comissao`, `receitaBloqueada`, `custoUnit`).
+- `Portal/fechamentos-api.js` só foi tocado num ponto (linha da Curva ABC
+  que renderizava `comissao`): trocado de `money(a.comissao)` para
+  `valOr(a.comissao, money)`, porque `comissao` passou a poder ser `null`
+  honestamente (produto sem nenhum item com `tarifa_venda` persistida) —
+  sem essa troca, `money(null)` exibiria "R$ 0,00", reintroduzindo
+  exatamente o problema de "ausência virando zero" que esta rodada
+  corrigiu no backend. Nenhuma outra linha da tela foi alterada.

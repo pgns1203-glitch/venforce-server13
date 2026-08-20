@@ -14,6 +14,7 @@
 const assert = require("assert");
 const repository = require("../services/centralVendas/centralVendasRepository");
 const { createCentralVendasReadService } = require("../services/centralVendas/centralVendasReadService");
+const { round2 } = require("../utils/numberUtils");
 
 const cliente = { id: 1, nome: "Cliente A", slug: "cliente-a", ativo: true };
 
@@ -249,22 +250,21 @@ async function run() {
     console.log("  ✓ E. /read/daily agrega por data — ausência nunca vira 0, cancelado fora do faturamento");
   }
 
-  // ── F. Curva ABC (/read/products): classificação A/B/C e custo do catálogo (não do total do pedido) ──
+  // ── F. Curva ABC (/read/products): cada MLB recebe SÓ a própria receita,
+  // mesmo dentro de um pedido multi-item — nunca o total do pedido inteiro
+  // no "mlb representante" (bug corrigido no hardening M9: a expectativa
+  // antiga desta suíte era "linha MULTI conta só pelo mlb representante",
+  // que era o próprio bug documentado, não uma regra de negócio). ──
   {
     const imp = importRow({ id: 1, competencia: "2026-08", coverageFrom: "2026-08-01", coverageTo: "2026-08-31", publishedAt: "2026-08-01T10:00:00Z" });
-    // MULTI-ITEM: um pedido com 2 produtos diferentes. buildAbcProdutos
-    // classifica pela mlb do primeiro item (honestidade M7) mas o custoUnit
-    // tem de vir do CATÁLOGO daquele mlb, nunca de pedido.custo/unidades
-    // (que somaria os dois produtos e daria um custo unitário errado).
+    // MULTI-ITEM: um pedido com 2 produtos diferentes (MLBB e MLBA) + um
+    // segundo pedido mono-produto reforçando MLBA. custoUnit tem de vir do
+    // CATÁLOGO daquele mlb, nunca de pedido.custo/unidades (que somaria os
+    // dois produtos e daria um custo unitário errado).
     const pedidos = [
       pedidoRow({ id: 1, importId: 1, pedidoId: "MULTI", data: "2026-08-01", faturamento: 300, resultado: 100, quantidadeItens: 3 }),
       pedidoRow({ id: 2, importId: 1, pedidoId: "SO_A", data: "2026-08-02", faturamento: 700, resultado: 200, quantidadeItens: 1 }),
     ];
-    // IT1B (mlb MLBB) vem ANTES de IT1A no array: buildPedidoContrato usa
-    // itens[0] como "primeiro item" (honestidade M7) — aqui isso torna MLBB
-    // o mlb representante da linha MULTI, deixando MLBA livre para
-    // aparecer só no pedido SO_A (mono-produto), o que permite provar a
-    // diferença entre custoUnit do catálogo vs. divisão do total do pedido.
     const itens = [
       itemRow({ id: 2, pedidoRowId: 1, itemId: "IT1B", mlb: "MLBB", pedidoId: "MULTI", quantidade: 2, receitaProduto: 200, custoProduto: 160 }),
       itemRow({ id: 1, pedidoRowId: 1, itemId: "IT1A", mlb: "MLBA", pedidoId: "MULTI", quantidade: 1, receitaProduto: 100, custoProduto: 40 }),
@@ -272,22 +272,116 @@ async function run() {
     ];
     const componentes = [
       componenteRow({ id: 2, pedidoRowId: 1, itemRowId: 2, pedidoId: "MULTI", itemId: "IT1B", tipo: "custo_produto", valor: 160, escopo: "item", efeito: "debito", incluidoNoResultado: true }),
+      componenteRow({ id: 4, pedidoRowId: 1, itemRowId: 2, pedidoId: "MULTI", itemId: "IT1B", tipo: "tarifa_venda", valor: 20, escopo: "item", efeito: "debito", incluidoNoResultado: true }),
       componenteRow({ id: 1, pedidoRowId: 1, itemRowId: 1, pedidoId: "MULTI", itemId: "IT1A", tipo: "custo_produto", valor: 40, escopo: "item", efeito: "debito", incluidoNoResultado: true }),
+      componenteRow({ id: 5, pedidoRowId: 1, itemRowId: 1, pedidoId: "MULTI", itemId: "IT1A", tipo: "tarifa_venda", valor: 10, escopo: "item", efeito: "debito", incluidoNoResultado: true }),
       componenteRow({ id: 3, pedidoRowId: 2, itemRowId: 3, pedidoId: "SO_A", itemId: "IT2A", tipo: "custo_produto", valor: 40, escopo: "item", efeito: "debito", incluidoNoResultado: true }),
+      // SO_A não tem tarifa_venda -> comissão de MLBA deve ser só a de IT1A (10), nunca 0 nem null.
     ];
     const db = makeDb({ imports: [imp], pedidos, itens, componentes });
     const resp = await svcFor(db).getCentralVendasReadProducts(cliente.slug, { dateFrom: "2026-08-01", dateTo: "2026-08-31" });
 
-    eq("F: total agregado = 2 (linha MULTI conta só pelo mlb representante, honestidade M7)", resp.produtos.length, 2);
-    eq("F: totalFaturamento = soma dos 2 pedidos", resp.totalFaturamento, 1000);
+    eq("F: 2 produtos distintos (MLBA e MLBB), cada MLB do multi-item vira sua própria linha", resp.produtos.length, 2);
+    eq("F: totalFaturamento = soma dos 2 pedidos (300 + 700)", resp.totalFaturamento, 1000);
     const mlbA = resp.produtos.find((p) => p.mlb === "MLBA");
+    const mlbB = resp.produtos.find((p) => p.mlb === "MLBB");
+    // MLBA recebe só a própria receita: 100 (item do MULTI) + 700 (SO_A) = 800.
+    // NUNCA 300 (faturamento do pedido MULTI inteiro) nem 0.
+    eq("F: MLBA faturamento = soma só dos itens MLBA (100 + 700), nunca o total do pedido MULTI", mlbA.faturamento, 800);
+    // MLBB recebe só a própria receita do item dentro do MULTI: 200. Nunca 300 (total do pedido) nem 0.
+    eq("F: MLBB faturamento = só a receita do próprio item (200), nunca o total do pedido nem 0", mlbB.faturamento, 200);
+    eq("F: MLBA aparece em 2 pedidos distintos (MULTI e SO_A)", mlbA.pedidos, 2);
+    eq("F: MLBB aparece em 1 pedido (só o MULTI)", mlbB.pedidos, 1);
     // custo unitário do catálogo (MLBA: custo_produto=40, quantidade=1 -> 40/1=40),
     // nunca pedido.custo/pedido.unidades do MULTI (que seria (40+160)/3 = 66.67, errado).
     eq("F: custoUnit vem do catálogo do MLB, não da divisão do total multi-item", mlbA.custoUnit, 40);
-    eq("F: MLBA concentra 70% do faturamento (700 de 1000) -> curva A", mlbA.curva, "A");
-    const mlbB = resp.produtos.find((p) => p.mlb === "MLBB");
-    ok("F: MLBB (representa a linha MULTI) tem faturamento = valor total do pedido (soma dos itens, M5)", mlbB.faturamento === 300);
-    console.log("  ✓ F. /read/products: curva ABC + custoUnit do catálogo (nunca do total multi-item do pedido)");
+    eq("F: MLBA concentra 80% do faturamento (800 de 1000) -> curva A", mlbA.curva, "A");
+    // Comissão (tarifa_venda) já é persistida por ITEM (M5) — nunca a tarifa do pedido inteiro.
+    eq("F: comissão de MLBB = só a tarifa do próprio item (20), nunca a soma do pedido inteiro (30)", mlbB.comissao, 20);
+    eq("F: comissão de MLBA = soma das tarifas dos itens MLBA (10 do MULTI; SO_A não tem)", mlbA.comissao, 10);
+    // Reconciliação (Caso H da spec): Σ faturamento dos produtos == faturamento válido do período.
+    const somaProdutos = round2(resp.produtos.reduce((sum, p) => sum + p.faturamento, 0));
+    eq("F/H: Σ faturamento dos produtos reconcilia com totalFaturamento do período", somaProdutos, resp.totalFaturamento);
+    console.log("  ✓ F. /read/products: cada MLB recebe só a própria receita/comissão, mesmo em pedido multi-item; reconciliação (Σ produtos = total)");
+  }
+
+  // ── F2. Caso C/D da spec de hardening — contagem de PEDIDOS por produto:
+  // 2 pedidos com o mesmo MLB -> 2; o mesmo MLB repetido em 2 LINHAS do
+  // MESMO pedido -> não duplica (continua 1). ──
+  {
+    const imp = importRow({ id: 1, competencia: "2026-08", coverageFrom: "2026-08-01", coverageTo: "2026-08-31", publishedAt: "2026-08-01T10:00:00Z" });
+    const pedidos = [
+      pedidoRow({ id: 1, importId: 1, pedidoId: "REP1", data: "2026-08-01", faturamento: 50, quantidadeItens: 1 }),
+      pedidoRow({ id: 2, importId: 1, pedidoId: "REP2", data: "2026-08-02", faturamento: 30, quantidadeItens: 1 }),
+      // Duas LINHAS do mesmo MLB dentro do MESMO pedido (ex.: 2 unidades vendidas em entradas separadas).
+      pedidoRow({ id: 3, importId: 1, pedidoId: "DUPLINHA", data: "2026-08-03", faturamento: 40, quantidadeItens: 2 }),
+    ];
+    const itens = [
+      itemRow({ id: 1, pedidoRowId: 1, itemId: "R1", mlb: "MLBREP", pedidoId: "REP1", quantidade: 1, receitaProduto: 50, custoProduto: 20 }),
+      itemRow({ id: 2, pedidoRowId: 2, itemId: "R2", mlb: "MLBREP", pedidoId: "REP2", quantidade: 1, receitaProduto: 30, custoProduto: 10 }),
+      itemRow({ id: 3, pedidoRowId: 3, itemId: "R3a", mlb: "MLBREP", pedidoId: "DUPLINHA", quantidade: 1, receitaProduto: 20, custoProduto: 8 }),
+      itemRow({ id: 4, pedidoRowId: 3, itemId: "R3b", mlb: "MLBREP", pedidoId: "DUPLINHA", quantidade: 1, receitaProduto: 20, custoProduto: 8 }),
+    ];
+    const db = makeDb({ imports: [imp], pedidos, itens });
+    const resp = await svcFor(db).getCentralVendasReadProducts(cliente.slug, { dateFrom: "2026-08-01", dateTo: "2026-08-31" });
+    const rep = resp.produtos.find((p) => p.mlb === "MLBREP");
+    eq("F2 (Caso C): MLBREP aparece em 3 pedidos distintos (REP1, REP2, DUPLINHA)", rep.pedidos, 3);
+    eq("F2 (Caso D): 2 linhas do mesmo MLB no pedido DUPLINHA não duplicam a contagem de pedidos (conta 1x)", rep.pedidos, 3);
+    eq("F2: faturamento soma as 2 linhas do DUPLINHA (50+30+20+20=120)", rep.faturamento, 120);
+    eq("F2: unidades soma as 2 linhas do DUPLINHA (1+1+1+1=4)", rep.unidades, 4);
+    console.log("  ✓ F2. Contagem de pedidos por produto: 2 pedidos com mesmo MLB conta 2; 2 linhas no mesmo pedido não duplicam");
+  }
+
+  // ── F3. Caso I da spec de hardening — custos/receitas de itens diferentes
+  // no mesmo pedido nunca se misturam entre produtos. ──
+  {
+    const imp = importRow({ id: 1, competencia: "2026-08", coverageFrom: "2026-08-01", coverageTo: "2026-08-31", publishedAt: "2026-08-01T10:00:00Z" });
+    const pedidos = [
+      pedidoRow({ id: 1, importId: 1, pedidoId: "MIX", data: "2026-08-01", faturamento: 1010, quantidadeItens: 2 }),
+    ];
+    // Item A: custo altíssimo (1000) e imposto alto. Item B: custo baixíssimo
+    // (1) e imposto baixo. Se o item posterior herdasse dado do primeiro (ou
+    // vice-versa), a diferença apareceria em ordens de grandeza no custoUnit
+    // do catálogo (que já é por item — aqui provamos que o agregado por
+    // produto também nunca soma o custo/receita do MLB errado).
+    const itens = [
+      itemRow({ id: 1, pedidoRowId: 1, itemId: "MA", mlb: "MLB_CARO", pedidoId: "MIX", quantidade: 1, receitaProduto: 1000, custoProduto: 900 }),
+      itemRow({ id: 2, pedidoRowId: 1, itemId: "MB", mlb: "MLB_BARATO", pedidoId: "MIX", quantidade: 1, receitaProduto: 10, custoProduto: 1 }),
+    ];
+    const componentes = [
+      componenteRow({ id: 1, pedidoRowId: 1, itemRowId: 1, pedidoId: "MIX", itemId: "MA", tipo: "custo_produto", valor: 900, escopo: "item", efeito: "debito", incluidoNoResultado: true }),
+      componenteRow({ id: 2, pedidoRowId: 1, itemRowId: 2, pedidoId: "MIX", itemId: "MB", tipo: "custo_produto", valor: 1, escopo: "item", efeito: "debito", incluidoNoResultado: true }),
+    ];
+    const db = makeDb({ imports: [imp], pedidos, itens, componentes });
+    const resp = await svcFor(db).getCentralVendasReadProducts(cliente.slug, { dateFrom: "2026-08-01", dateTo: "2026-08-31" });
+    const caro = resp.produtos.find((p) => p.mlb === "MLB_CARO");
+    const barato = resp.produtos.find((p) => p.mlb === "MLB_BARATO");
+    eq("F3 (Caso I): MLB_CARO custoUnit = 900 (nunca contaminado pelo item barato)", caro.custoUnit, 900);
+    eq("F3 (Caso I): MLB_BARATO custoUnit = 1 (nunca contaminado pelo item caro)", barato.custoUnit, 1);
+    eq("F3 (Caso I): MLB_CARO faturamento = só o próprio item (1000)", caro.faturamento, 1000);
+    eq("F3 (Caso I): MLB_BARATO faturamento = só o próprio item (10)", barato.faturamento, 10);
+    console.log("  ✓ F3. Custo/receita de itens diferentes no mesmo pedido nunca se misturam entre produtos");
+  }
+
+  // ── F4. Caso E/F da spec de hardening — /read/daily: produtos distintos e
+  // topProduto respeitam cada MLB real do pedido multi-item, nunca o
+  // "primeiro produto" absorvendo o pedido inteiro. ──
+  {
+    const imp = importRow({ id: 1, competencia: "2026-08", coverageFrom: "2026-08-01", coverageTo: "2026-08-31", publishedAt: "2026-08-01T10:00:00Z" });
+    const pedidos = [
+      pedidoRow({ id: 1, importId: 1, pedidoId: "DIAMULTI", data: "2026-08-10", faturamento: 300, quantidadeItens: 3 }),
+    ];
+    const itens = [
+      itemRow({ id: 1, pedidoRowId: 1, itemId: "DA", mlb: "MLB_A", pedidoId: "DIAMULTI", quantidade: 1, receitaProduto: 100 }),
+      itemRow({ id: 2, pedidoRowId: 1, itemId: "DB", mlb: "MLB_B", pedidoId: "DIAMULTI", quantidade: 2, receitaProduto: 200 }),
+    ];
+    const db = makeDb({ imports: [imp], pedidos, itens });
+    const resp = await svcFor(db).getCentralVendasReadDaily(cliente.slug, { dateFrom: "2026-08-01", dateTo: "2026-08-31" });
+    const dia = resp.dias.find((d) => d.data === "2026-08-10");
+    eq("F4 (Caso E): produtos distintos do dia = 2 (MLB_A e MLB_B), nunca 1", dia.produtos, 2);
+    eq("F4 (Caso F): topProduto = MLB_B (200), nunca MLB_A com o total do pedido (300)", dia.topProduto?.mlb, "MLB_B");
+    eq("F4 (Caso F): topProduto.faturamento = só a receita do próprio item (200), nunca 300", dia.topProduto?.faturamento, 200);
+    console.log("  ✓ F4. /read/daily: produtos distintos e topProduto por item, nunca pelo mlb representante do pedido");
   }
 
   // ── G. Conta A nunca vê agregados (daily/products) da conta B ──

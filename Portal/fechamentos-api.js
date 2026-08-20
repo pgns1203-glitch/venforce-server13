@@ -2024,7 +2024,7 @@ function renderCurvaAbcTable(rows, totalFat) {
       <td class="num">${valOr(a.unidades)}</td>
       <td class="num">${valOr(a.pedidos)}</td>
       <td class="num${a.ticketMedio == null ? ' is-absent' : ''}">${valOr(a.ticketMedio, money)}</td>
-      <td class="num">${money(a.comissao)}</td>
+      <td class="num${a.comissao == null ? ' is-absent' : ''}">${valOr(a.comissao, money)}</td>
       <td class="num${a.custoUnit == null ? ' is-absent' : ''}">${valOr(a.custoUnit, money)}</td>
       <td>${abcBaseTag(a)}</td>
       <td>${tagDiag(a.temCusto ? 'real' : 'ausente')}</td>

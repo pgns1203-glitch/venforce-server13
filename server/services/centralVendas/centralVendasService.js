@@ -650,11 +650,19 @@ function buildDiario(pedidos) {
     if (valido) {
       dia.faturamento += Number(pedido.valor || 0);
       dia.unidades += Number(pedido.unidades || 0);
-      if (pedido.mlb) {
-        dia._produtos.add(pedido.mlb);
-        const atual = dia._topMap.get(pedido.mlb) || { valor: 0, titulo: pedido.produto?.titulo || pedido.mlb };
-        atual.valor += Number(pedido.valor || 0);
-        dia._topMap.set(pedido.mlb, atual);
+      // Hardening M9 — dimensão de PRODUTO por ITEM (nunca pelo mlb
+      // representante do pedido): um pedido multi-item precisa contar cada
+      // MLB real que carrega, senão "produtos distintos"/`topProduto`
+      // concentram tudo no primeiro item e zeram os demais (ver
+      // buildAbcProdutos abaixo, mesmo bug). Os totais financeiros do dia
+      // (faturamento/unidades acima) continuam por PEDIDO — só a dimensão
+      // de produto passa a ser por item.
+      for (const item of pedido.itens || []) {
+        if (!item.mlb) continue;
+        dia._produtos.add(item.mlb);
+        const atual = dia._topMap.get(item.mlb) || { valor: 0, titulo: item.titulo || item.mlb };
+        atual.valor += Number(item.receitaProduto || 0);
+        dia._topMap.set(item.mlb, atual);
       }
       if (pedido.taxas !== null && pedido.taxas !== undefined) { dia.comissao += Number(pedido.taxas); dia._comissao = true; }
       if (pedido.custo !== null && pedido.custo !== undefined) { dia.custo += Number(pedido.custo); dia._custo = true; }
@@ -691,53 +699,117 @@ function buildDiario(pedidos) {
     .sort((a, b) => a.data.localeCompare(b.data));
 }
 
-// M9 — Curva ABC agregada por produto (D): soma os mesmos campos já
-// canônicos do pedido por MLB, período inteiro (nunca por página da tabela
-// de pedidos). Substitui aggByProduct/buildCurvaAbcRows que existiam no
-// frontend — mesma classificação A (até 80% acumulado) / B (até 95%) / C
-// (resto), portada sem alteração. `produtosCatalogo` é o mesmo dicionário
-// já produzido por buildProdutos (base/custo por MLB) — custoUnit lê o
-// catálogo, nunca divide o total do pedido (um pedido multi-item some
-// custos de produtos diferentes; dividir por unidades daria um custo
-// unitário errado para o MLB representante da linha — ver M7, seção 10).
+// Hardening M9 — soma os componentes de item (M5, `pedido.componentes` com
+// `itemId`) que pertencem a UM item específico. Usa dado já persistido por
+// item (nunca inventa rateio novo): `tarifa_venda`/`custo_produto`/etc. já
+// nascem por item em buildMotorFromOrders (centralVendasSyncService.js) —
+// esta função só filtra o que já existe. Ausência (nenhum componente
+// daquele tipo para o item) devolve `null`, nunca `0`.
+function itemComponentTotal(componentes, itemId, tipo) {
+  if (itemId === null || itemId === undefined) return null;
+  const values = (componentes || [])
+    .filter((c) => c.tipo === tipo && c.itemId !== null && c.itemId !== undefined && String(c.itemId) === String(itemId))
+    .map((c) => c.valor)
+    .filter((v) => v !== null && v !== undefined);
+  if (!values.length) return null;
+  return round2(values.reduce((sum, v) => sum + Number(v), 0));
+}
+
+// M9 (hardening) — Curva ABC agregada por PRODUTO: percorre os itens reais
+// de cada pedido (`pedido.itens`, contrato canônico do M5/M7), nunca o MLB
+// representante da linha (`pedido.mlb` = primeiro item só). Bug original:
+// agregar por `pedido.mlb` fazia um pedido multi-item inteiro (faturamento,
+// unidades, comissão) cair no primeiro produto e zerar os demais — a Curva
+// ABC, a concentração de faturamento e a contagem de produtos distintos
+// ficavam erradas em qualquer pedido com mais de 1 item. `produtosCatalogo`
+// continua sendo o mesmo dicionário de buildProdutos (base/custo por MLB) —
+// custoUnit lê o catálogo, nunca divide o total do pedido (um pedido
+// multi-item some custos de produtos diferentes; dividir por unidades daria
+// um custo unitário errado — ver M7, seção 10).
 function buildAbcProdutos(pedidos, produtosCatalogo = {}) {
   const map = new Map();
   for (const pedido of pedidos || []) {
-    const key = pedido.mlb || "__SEM_PRODUTO__";
-    if (!map.has(key)) {
-      const catalogo = pedido.mlb ? produtosCatalogo[pedido.mlb] : null;
-      const temCusto = catalogo?.base?.temCusto === true;
-      map.set(key, {
-        mlb: pedido.mlb, sku: pedido.sku, titulo: pedido.produto?.titulo || pedido.mlb,
-        semProduto: !pedido.mlb,
-        temCusto,
-        custoUnit: temCusto ? catalogo.base.custo : null,
-        unidades: 0, pedidos: 0, faturamento: 0, receitaBloqueada: 0, comissao: 0,
-        fullPedidos: 0, normalPedidos: 0,
-      });
-    }
-    const produto = map.get(key);
     const valido = pedidoEntraNoResultado(pedido);
-    produto.pedidos += 1;
-    if (valido) {
-      produto.unidades += Number(pedido.unidades || 0);
-      produto.faturamento += Number(pedido.valor || 0);
-      produto.comissao += Number(pedido.taxas || 0);
+    const itensReais = pedido.itens || [];
+    // Pedido sem nenhuma linha de item persistida (payload legado/planilha,
+    // sem central_vendas_pedido_itens — ver comentário de `mesmaLinha` em
+    // buildPedidoContrato): trata como um único produto "sem produto" com
+    // os totais do PEDIDO, para nunca perder faturamento na reconciliação
+    // (Σ faturamento dos produtos === faturamento válido do período).
+    const itensParaAgregar = itensReais.length
+      ? itensReais
+      : [{
+          itemId: null, mlb: null, sku: null, titulo: null,
+          quantidade: pedido.unidades, receitaProduto: pedido.valor,
+          confianca: pedido.confianca,
+        }];
+
+    // Uma linha de item repetida com o mesmo MLB no MESMO pedido não pode
+    // inflar a contagem de PEDIDOS daquele produto — a contagem de pedido é
+    // "esse pedido contém este MLB", não "quantas linhas".
+    const mlbsVistosNestePedido = new Set();
+    for (const item of itensParaAgregar) {
+      const mlb = item.mlb || null;
+      const key = mlb || "__SEM_PRODUTO__";
+      if (!map.has(key)) {
+        const catalogo = mlb ? produtosCatalogo[mlb] : null;
+        const temCusto = catalogo?.base?.temCusto === true;
+        map.set(key, {
+          mlb, sku: item.sku || null, titulo: item.titulo || mlb,
+          semProduto: !mlb,
+          temCusto,
+          custoUnit: temCusto ? catalogo.base.custo : null,
+          unidades: 0, pedidosSet: new Set(), faturamento: 0, receitaBloqueada: 0,
+          comissao: 0, temComissao: false,
+          fullPedidos: 0, normalPedidos: 0,
+        });
+      }
+      const produto = map.get(key);
+
+      if (valido) {
+        produto.unidades += Number(item.quantidade || 0);
+        produto.faturamento += Number(item.receitaProduto || 0);
+        // Comissão (tarifa_venda) já é persistida POR ITEM pelo motor (M5) —
+        // nunca a comissão do pedido inteiro atribuída a um único produto.
+        // Fallback para `pedido.taxas` só no caso degenerado sem item real
+        // (mesma linha acima), onde não existe granularidade menor.
+        const tarifaItem = itensReais.length
+          ? itemComponentTotal(pedido.componentes, item.itemId, "tarifa_venda")
+          : pedido.taxas;
+        if (tarifaItem !== null && tarifaItem !== undefined) {
+          produto.comissao += Math.abs(Number(tarifaItem));
+          produto.temComissao = true;
+        }
+        // Bloqueio é avaliado no ITEM (M5, invariante A — cada item calcula
+        // sua própria confiança), nunca herdado do pedido inteiro: um
+        // pedido bloqueado por causa do item A não pode marcar a receita do
+        // item B como bloqueada.
+        if (item.confianca === "bloqueado") {
+          produto.receitaBloqueada += Number(item.receitaProduto || 0);
+        }
+      }
+
+      if (!mlbsVistosNestePedido.has(key)) {
+        mlbsVistosNestePedido.add(key);
+        produto.pedidosSet.add(pedido.rowId ?? pedido.pedidoId ?? pedido.id);
+        if (pedido.full === true) produto.fullPedidos += 1;
+        else produto.normalPedidos += 1;
+      }
     }
-    if (pedido.confianca === "bloqueado" && valido) produto.receitaBloqueada += Number(pedido.valor || 0);
-    if (pedido.full === true) produto.fullPedidos += 1;
-    else produto.normalPedidos += 1;
   }
 
   const all = [...map.values()].map((p) => {
     const faturamento = round2(p.faturamento);
+    const pedidosCount = p.pedidosSet.size;
     return {
       mlb: p.mlb, sku: p.sku, titulo: p.titulo, semProduto: p.semProduto,
       temCusto: p.temCusto, custoUnit: p.custoUnit,
-      unidades: p.unidades, pedidos: p.pedidos, faturamento,
+      unidades: p.unidades, pedidos: pedidosCount, faturamento,
       receitaBloqueada: round2(p.receitaBloqueada),
-      comissao: round2(p.comissao),
-      ticketMedio: p.pedidos > 0 ? round2(faturamento / p.pedidos) : null,
+      // Honestidade de ausência (M9, requisito 9): nenhum item deste
+      // produto tinha componente tarifa_venda -> null, nunca 0.
+      comissao: p.temComissao ? round2(p.comissao) : null,
+      ticketMedio: pedidosCount > 0 ? round2(faturamento / pedidosCount) : null,
       logisticaTipo: p.fullPedidos > 0 && p.normalPedidos > 0 ? "misto"
         : p.fullPedidos > 0 ? "full" : p.normalPedidos > 0 ? "normal" : null,
     };

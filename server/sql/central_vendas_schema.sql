@@ -348,3 +348,96 @@ UPDATE central_vendas_componentes c
                   ELSE NULL
                 END
  WHERE c.escopo IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- MP1 — Ingestão canônica de Mercado Pago Payments + charges_details
+-- (Central de Vendas V3).
+--
+-- Ver docs/mercado_pago/HANDOFF_MERCADO_PAGO_LIQUIDACAO_REAL_COMPLETO.md —
+-- evidência primária. MP1 é INGESTÃO: persiste o Payment normalizado e seus
+-- charges_details, auditável por Sync Run. NÃO altera Resultado Parcial,
+-- margem, ledger M6, confiança do fechamento ou podeConcluir — ver
+-- centralVendasMpPaymentsService/centralVendasMpPaymentsRepository.
+--
+-- Uma linha = UM Payment observado em UM Sync Run. UNIQUE (sync_run_id,
+-- payment_id) garante idempotência dentro do mesmo run (reprocessamento faz
+-- UPSERT, nunca duplica) e, ao mesmo tempo, preserva auditoria por run:
+-- sincronizações diferentes do MESMO payment_id (ex.: money_release_status
+-- mudou de pending para released entre dois runs) viram linhas SEPARADAS,
+-- nunca uma sobrescrita silenciosa de uma observação histórica de outro run
+-- (seção 7 do spec MP1). "Solução mais simples que preserve auditoria por
+-- run" — sem tabela de "estado atual" separada, que só o Settlement (fora
+-- do escopo MP1) justificaria.
+CREATE TABLE IF NOT EXISTS central_vendas_mp_payments (
+  id BIGSERIAL PRIMARY KEY,
+  sync_run_id BIGINT NOT NULL REFERENCES central_vendas_sync_runs(id) ON DELETE CASCADE,
+  cliente_id BIGINT,
+  cliente_conta_id BIGINT REFERENCES cliente_contas(id) ON DELETE SET NULL,
+  external_account_id TEXT,
+  order_id TEXT,
+  order_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  payment_id TEXT NOT NULL,
+  status TEXT,
+  status_detail TEXT,
+  transaction_amount NUMERIC(14,2),
+  transaction_amount_refunded NUMERIC(14,2),
+  net_received_amount NUMERIC(14,2),
+  total_paid_amount NUMERIC(14,2),
+  shipping_amount NUMERIC(14,2),
+  money_release_date TIMESTAMPTZ,
+  money_release_status TEXT,
+  currency_id TEXT,
+  date_created TIMESTAMPTZ,
+  date_approved TIMESTAMPTZ,
+  date_last_updated TIMESTAMPTZ,
+  refund_count INTEGER,
+  refund_ids_json JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (sync_run_id, payment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_payments_run
+  ON central_vendas_mp_payments (sync_run_id);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_payments_payment
+  ON central_vendas_mp_payments (payment_id);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_payments_order
+  ON central_vendas_mp_payments (order_id);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_payments_cliente_conta
+  ON central_vendas_mp_payments (cliente_conta_id);
+
+-- Charges individuais de um Payment (shipping/fee/etc. — seção 6 do spec
+-- MP1). `mp_payment_row_id` ancora a idempotência: reprocessar o mesmo run
+-- apaga e reinsere as charges daquele payment (ver
+-- centralVendasMpPaymentsRepository.replaceMpPaymentCharges) — nunca
+-- duplica, porque não há chave estável por charge (a API nem sempre traz um
+-- `id` de charge, ver payload real no handoff, seção 8).
+CREATE TABLE IF NOT EXISTS central_vendas_mp_payment_charges (
+  id BIGSERIAL PRIMARY KEY,
+  mp_payment_row_id BIGINT NOT NULL REFERENCES central_vendas_mp_payments(id) ON DELETE CASCADE,
+  sync_run_id BIGINT NOT NULL,
+  payment_id TEXT NOT NULL,
+  charge_id TEXT,
+  name TEXT,
+  type TEXT,
+  amount_original NUMERIC(14,2),
+  amount_refunded NUMERIC(14,2),
+  account_from TEXT,
+  account_to TEXT,
+  metadata_shipment_id TEXT,
+  metadata_source TEXT,
+  metadata_source_detail TEXT,
+  refund_charges_json JSONB,
+  update_charges_json JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_payment_charges_payment_row
+  ON central_vendas_mp_payment_charges (mp_payment_row_id);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_payment_charges_run
+  ON central_vendas_mp_payment_charges (sync_run_id);

@@ -34,6 +34,8 @@ const {
   buscarClaimsPorPeriodo,
   classificarClaimsDoPedido,
 } = require("./centralVendasClaimsService");
+const { coletarPaymentsMp } = require("./centralVendasMpPaymentsService");
+const { persistMpPayments } = require("./centralVendasMpPaymentsRepository");
 
 const MAX_PAGINAS = 100; // 100 * 50 = 5.000 pedidos — teto de seguranca (Render)
 const PAGE_LIMIT = 50;
@@ -839,17 +841,79 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       await Promise.all([
         sourceService.iniciarFonte({ runId, source: "shipments", db }),
         sourceService.iniciarFonte({ runId, source: "claims", db }),
+        // MP1 — só coleta Payments quando há um sync_run real: as tabelas
+        // central_vendas_mp_payments exigem sync_run_id NOT NULL (auditoria
+        // por run, seção 7 do spec), então a chamada legada direta (sem
+        // runId) simplesmente não tem onde persistir e fica de fora, sem
+        // afetar M1-M10.
+        sourceService.iniciarFonte({ runId, source: "payments", db }),
       ]);
     }
-    const [freteLote, claimsLote] = await Promise.all([
+    // Payments MP roda no MESMO Promise.all de shipments/claims: usa um host
+    // diferente (api.mercadopago.com) do restante (api.mercadolibre.com), e
+    // sua concorrência interna já é limitada (MP_PAYMENTS_CONCURRENCY=6,
+    // igual a Frete) — não amplia pressão sobre o rate limit do Mercado
+    // Livre. Reaproveita os MESMOS `orders` já carregados: nenhuma segunda
+    // chamada a /orders/search (seção 13 do spec MP1).
+    const [freteLote, claimsLote, paymentsLote] = await Promise.all([
       buscarFretesEmLote({ clienteId: cliente.id, sellerId, shipmentIds }),
       // `orders`: só para o índice em memória shipmentId->orderIds (RUN 7 —
       // claim.resource="shipment" vinculado por order.shipping.id). Nenhuma
       // chamada de API extra é feita a partir disso.
       buscarClaimsPorPeriodo({ clienteId: cliente.id, sellerId, dateFrom: from, dateTo: to, orderIds, orders }),
+      sourceService
+        ? coletarPaymentsMp({ clienteId: cliente.id, sellerId, orders })
+        : Promise.resolve(null),
     ]);
     const freteMap = freteLote.freteMap;
     const claimsMap = claimsLote.claimsMap;
+
+    // MP1 — persiste os Payments coletados (auditável por sync_run_id) e
+    // marca a completude da fonte "payments". NÃO entra em
+    // REQUIRED_SOURCES_BASE (seção 8): não bloqueia publicação, não muda
+    // podeConcluir, não muda a confiança financeira atual. NÃO altera
+    // Resultado Parcial/margem/ledger M6 — só persiste evidência.
+    let paymentsPersistResult = null;
+    if (sourceService && paymentsLote) {
+      paymentsPersistResult = await persistMpPayments({
+        syncRunId: runId,
+        clienteId: cliente.id,
+        clienteContaId: context.conta?.id || null,
+        externalAccountId: sellerId,
+        paymentsLote,
+      }, db);
+
+      const paymentsComplete = paymentsLote.naoColetados === 0
+        && paymentsPersistResult.failedToPersist.length === 0;
+      const marcarPayments = paymentsComplete
+        ? sourceService.marcarFonteCompleta
+        : sourceService.marcarFonteIncompleta;
+      await marcarPayments({
+        runId, source: "payments",
+        expectedCount: paymentsLote.paymentIdsUnique.length,
+        receivedCount: paymentsPersistResult.persistedCount,
+        errorCode: paymentsComplete ? undefined : "PAYMENTS_PARTIAL",
+        metadata: {
+          ordersCount: paymentsLote.ordersCount,
+          ordersWithPaymentId: paymentsLote.ordersWithPaymentId,
+          ordersWithoutPaymentId: paymentsLote.ordersWithoutPaymentId,
+          ordersWithoutPaymentIdSample: paymentsLote.ordersWithoutPaymentIdSample,
+          paymentIdsRaw: paymentsLote.paymentIdsRaw,
+          paymentIdsUnique: paymentsLote.paymentIdsUnique.length,
+          duplicatePaymentRefs: paymentsLote.duplicatePaymentRefs,
+          statusCounts: paymentsLote.statusCounts,
+          moneyReleaseStatusCounts: paymentsLote.moneyReleaseStatusCounts,
+          chargesCount: paymentsLote.chargesCount,
+          paymentsWithCharges: paymentsLote.paymentsWithCharges,
+          paymentsWithoutCharges: paymentsLote.paymentsWithoutCharges,
+          failedCollectionCount: paymentsLote.naoColetados,
+          failedPersistCount: paymentsPersistResult.failedToPersist.length,
+          retryCount: paymentsLote.tentativasExtras,
+          lotes: paymentsLote.lotes,
+        },
+        db,
+      });
+    }
 
     if (sourceService) {
       // Shipments: universo esperado = shipment IDs únicos do período (seção
@@ -1139,6 +1203,11 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         + ` claimsJanela=${claimsLote.janela ? `${claimsLote.janela.from}..${claimsLote.janela.to}` : "n/d"}`
         + ` claimsForaDoPeriodo=${claimsLote.claimsForaDoPeriodo || 0}`
         + ` returnsNaoResolvidos=${claimsLote.returnsNaoResolvidos || 0}`
+        + (paymentsLote
+          ? ` paymentsMp=${paymentsLote.coletados}/${paymentsLote.paymentIdsUnique.length}`
+            + ` persistidos=${paymentsPersistResult ? paymentsPersistResult.persistedCount : 0}`
+            + ` chargesMp=${paymentsLote.chargesCount}`
+          : "")
     );
 
     return {
@@ -1184,6 +1253,17 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         returnsResolvidos: claimsLote.returnsResolvidos || 0,
         returnsNaoResolvidos: claimsLote.returnsNaoResolvidos || 0,
       },
+      // MP1 — ingestão de evidência (Payments/charges). null quando não há
+      // sync_run (chamada legada direta) — ver comentário acima do collect.
+      // NUNCA usado para recalcular Resultado Parcial/margem/ledger.
+      pagamentosMp: paymentsLote ? {
+        paymentIdsUnicos: paymentsLote.paymentIdsUnique.length,
+        coletados: paymentsLote.coletados,
+        naoColetados: paymentsLote.naoColetados,
+        persistidos: paymentsPersistResult ? paymentsPersistResult.persistedCount : 0,
+        chargesCount: paymentsLote.chargesCount,
+        ordersWithoutPaymentId: paymentsLote.ordersWithoutPaymentId,
+      } : null,
       pedidosPersistidos,
       itensPersistidos,
       componentesPersistidos,

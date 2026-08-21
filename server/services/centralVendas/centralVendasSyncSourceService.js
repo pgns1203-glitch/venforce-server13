@@ -21,13 +21,20 @@
 
 const pool = require("../../config/database");
 
-const SOURCES = ["orders", "shipments", "claims", "returns", "base"];
+// MP1 — "payments" (Mercado Pago) é uma fonte reconhecida com sua própria
+// completude, mas NÃO entra em REQUIRED_SOURCES_BASE nesta fase: falha/
+// incompletude de Payments fica registrada e auditável, mas não muda o
+// status global do fechamento, não bloqueia publicação, não muda podeConcluir
+// e não muda a confiança financeira atual. MP3 decidirá quando Mercado Pago
+// vira obrigatório para o fechamento definitivo — ver seção 8 do spec MP1.
+const SOURCES = ["orders", "shipments", "claims", "returns", "base", "payments"];
 const STATUSES = ["pending", "running", "complete", "incomplete", "failed", "not_applicable"];
 const TERMINAL_STATUSES = new Set(["complete", "incomplete", "failed", "not_applicable"]);
 
 // Fontes que entram na agregação de completude do run nesta fase. `returns`
 // só participa quando uma linha dela foi de fato registrada no run (nem todo
-// run tem devolução a resolver) — ver calcularCompletudeDoRun.
+// run tem devolução a resolver) — ver calcularCompletudeDoRun. `payments`
+// (MP1) é deliberadamente EXCLUÍDA daqui — ver comentário acima de SOURCES.
 const REQUIRED_SOURCES_BASE = new Set(["orders", "shipments", "claims", "base"]);
 
 const CAMPOS_SENSIVEIS = new Set([

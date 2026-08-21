@@ -62,6 +62,20 @@
 // detalhe não repita `order_id`); por isso o detalhe continua sendo buscado
 // mesmo após o vínculo por shipment, só para enriquecer quantidade/
 // parcialidade/status_money — nunca para desfazer o vínculo já resolvido.
+//
+// RUN 8 (21/08, mesmo claim 5553953268): a sincronização real seguinte ao
+// fix acima permaneceu com o MESMO RETURNS_UNRESOLVED (1/1). O código de
+// resolveClaimOrderLink/buildShipmentOrderIndex não mudou nesta rodada —
+// só observabilidade foi adicionada, porque não havia prova de qual dos 3
+// cenários realmente ocorre em produção: (A) 0 matches no índice shipment->
+// order, (B) 1 match que por algum motivo não foi usado, ou (C) 2+ matches
+// (pack ambíguo). `returnsDiagnosticos` ganhou `claimResourceId`,
+// `shipmentMatchCount`, `shipmentCandidateOrderIds` (máx. 5),
+// `shipmentAmbiguous`, `resolvedOrderId`, `resolvedOrderSource` e
+// `ordersWithShippingIdCount` (soma dos tamanhos dos sets do índice — prova
+// se `orders` chegou com `shipping.id` populado até aqui). NENHUM vínculo
+// novo foi inventado nesta rodada: a próxima sincronização real explica
+// sozinha, pelo diagnóstico, qual dos 3 cenários é o real.
 
 const { mlFetch } = require("../../utils/mlClient");
 
@@ -630,6 +644,17 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       return { tentados: 0, resolvidos: 0, naoResolvidos: 0, truncados: 0, pendentesTotal: 0, diagnosticos: [] };
     }
 
+    // Diagnóstico de chegada de `orders` (RUN 8): a soma dos tamanhos dos
+    // sets do índice shipment->orders é o número de orders do período que
+    // tinham `shipping.id` válido e entraram no índice. Se isso vier 0 com
+    // orders reais existindo, o problema é `orders` não chegar até aqui —
+    // não o cruzamento em si. Persistido 1x por run no diagnóstico (nunca
+    // um valor por claim, o índice é o mesmo para todos).
+    let ordersWithShippingIdCount = 0;
+    if (shipmentToOrderIds instanceof Map) {
+      for (const candidatos of shipmentToOrderIds.values()) ordersWithShippingIdCount += candidatos.size;
+    }
+
     // ORDER LINK primeiro (independente do detalhe — seção 5 do prompt):
     // `resource="shipment"` cruzado em memória com os Orders do período. Roda
     // para TODOS os pendentes, mesmo os que vão ficar de fora do teto de
@@ -672,14 +697,37 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
           }
 
           if (claim.resolvedOrderId == null && diagnosticos.length < CLAIMS_RETURNS_DIAGNOSTIC_MAX) {
+            // Resultado REAL de resolveClaimOrderLink/buildShipmentOrderIndex
+            // para este claim (RUN 8 — micro-investigação cirúrgica): permite
+            // distinguir, sem reproduzir o caso manualmente, se foi (A) 0
+            // matches, (B) 1 match que por algum motivo não foi usado — nunca
+            // deveria acontecer, já que resolveClaimOrderLink usa o match
+            // único direto, mas o diagnóstico prova isso em vez de assumir —
+            // ou (C) 2+ matches (pack ambíguo).
+            const claimResource = String(claim?.resource || "").toLowerCase();
+            const claimResourceId = normalizeCrossId(claim?.resource_id);
+            const candidatosShipment =
+              claimResource === "shipment" && shipmentToOrderIds instanceof Map && claimResourceId
+                ? shipmentToOrderIds.get(claimResourceId) || null
+                : null;
             diagnosticos.push({
               claimId: claim.id != null ? String(claim.id) : null,
               // Estrutura do claim já trazida pela busca por período —
               // responde à seção 4 do prompt (resource/resource_id do
               // PRÓPRIO claim já bastariam?) sem inventar vínculo.
               claimResource: claim?.resource != null ? String(claim.resource).slice(0, 40) : null,
+              // ID técnico do shipment/order do PRÓPRIO claim (resource_id) —
+              // nunca token, nunca dado de comprador. Necessário para provar
+              // qual chave foi usada no cruzamento com o índice.
+              claimResourceId,
               claimHasResourceId: claim?.resource_id !== null && claim?.resource_id !== undefined,
               claimHasOrderIdField: claim?.order_id !== null && claim?.order_id !== undefined,
+              shipmentMatchCount: candidatosShipment ? candidatosShipment.size : 0,
+              shipmentCandidateOrderIds: candidatosShipment ? [...candidatosShipment].slice(0, 5) : [],
+              shipmentAmbiguous: candidatosShipment ? candidatosShipment.size > 1 : false,
+              resolvedOrderId: claim.resolvedOrderId ?? null,
+              resolvedOrderSource: claim.resolvedOrderSource ?? null,
+              ordersWithShippingIdCount,
               httpStatus: resultado.status ?? null,
               motivo: resultado.motivo ?? null,
               ...(resultado.diagnostic ? { detalhe: resultado.diagnostic } : {}),

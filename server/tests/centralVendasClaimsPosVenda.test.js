@@ -727,6 +727,67 @@ async function run() {
   ok("run7. pack ambíguo nunca entra no mapa de nenhum dos dois orders",
     !lotePackAmbiguo.claimsMap.has("PACK_REAL_1") && !lotePackAmbiguo.claimsMap.has("PACK_REAL_2"));
 
+  /* ── RUN 8 — diagnóstico de resolveClaimOrderLink/buildShipmentOrderIndex
+     no unresolvedDiagnostics (A: 0 matches · B: 1 match usado · C: 2+ pack
+     ambíguo). Sem isso, syncRunId 7/8 só provavam o contador agregado, nunca
+     QUAL dos 3 cenários realmente ocorreu para o claim 5553953268 ─────────── */
+
+  // C) pack ambíguo (2 matches): o mesmo cenário acima, agora auditando o
+  // diagnóstico persistido — nunca só o contador.
+  const diagPack = lotePackAmbiguo.returnsDiagnosticos[0];
+  eq("run8. diag pack: claimResourceId é o shipment do próprio claim",
+    diagPack.claimResourceId, "SHIP-PACK-REAL");
+  eq("run8. diag pack: shipmentMatchCount = 2", diagPack.shipmentMatchCount, 2);
+  eq("run8. diag pack: shipmentCandidateOrderIds lista os 2 orders (máx 5)",
+    [...diagPack.shipmentCandidateOrderIds].sort(), ["PACK_REAL_1", "PACK_REAL_2"]);
+  eq("run8. diag pack: shipmentAmbiguous = true", diagPack.shipmentAmbiguous, true);
+  eq("run8. diag pack: resolvedOrderId continua null (nunca escolhe A nem B)",
+    diagPack.resolvedOrderId, null);
+  eq("run8. diag pack: ordersWithShippingIdCount = 2 (as 2 orders do período)",
+    diagPack.ordersWithShippingIdCount, 2);
+
+  // A) 0 matches: shipment do claim não bate com NENHUM order.shipping.id
+  // dos orders do período — orders chegou (ordersWithShippingIdCount > 0),
+  // só não existe o shipment procurado (índice não inventa vínculo).
+  const orderSemMatch = order("SEM_MATCH"); // shipping.id = "SHIP-SEM_MATCH"
+  const claimZeroMatch = () => ({
+    id: "9002", resource: "shipment", resource_id: "SHIP-INEXISTENTE-RUN8",
+    status: "closed", type: "returns", related_entities: ["return"],
+    resolution: { reason: "item_returned", benefited: ["complainant"] },
+  });
+  const cenarioZeroMatch = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) {
+      return { ok: true, status: 200, data: { status: "delivered", resource: null } };
+    }
+    return { ok: true, status: 200, data: { paging: { total: 1 }, data: [claimZeroMatch()] } };
+  });
+  const { resultado: loteZeroMatch } = await capturandoLogs(() =>
+    cenarioZeroMatch.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+      orderIds: new Set(["SEM_MATCH"]),
+      orders: [orderSemMatch],
+    })
+  );
+  eq("run8. diag 0-match: continua unresolved", loteZeroMatch.returnsNaoResolvidos, 1);
+  const diagZero = loteZeroMatch.returnsDiagnosticos[0];
+  eq("run8. diag 0-match: claimResourceId preservado", diagZero.claimResourceId, "SHIP-INEXISTENTE-RUN8");
+  eq("run8. diag 0-match: shipmentMatchCount = 0", diagZero.shipmentMatchCount, 0);
+  eq("run8. diag 0-match: shipmentCandidateOrderIds vazio", diagZero.shipmentCandidateOrderIds, []);
+  eq("run8. diag 0-match: shipmentAmbiguous = false", diagZero.shipmentAmbiguous, false);
+  eq("run8. diag 0-match: resolvedOrderId null", diagZero.resolvedOrderId, null);
+  eq("run8. diag 0-match: resolvedOrderSource null", diagZero.resolvedOrderSource, null);
+  eq("run8. diag 0-match: ordersWithShippingIdCount prova que orders chegou (1, mesmo sem bater)",
+    diagZero.ordersWithShippingIdCount, 1);
+
+  // B) 1 match único: prova que, quando há exatamente 1 candidato, ele É
+  // usado (nunca fica preso no diagnóstico com shipmentMatchCount=1 e
+  // resolvedOrderId=null) — a lista de não-resolvidos fica vazia porque o
+  // vínculo se resolveu de verdade, exatamente como o cenário RUN7 já prova
+  // acima (loteRun7.returnsDiagnosticos.length === 0). Reforça aqui, ao lado
+  // dos outros 2 cenários, que a cobertura A/B/C está completa neste arquivo.
+  eq("run8. diag 1-match (B): resolve e não aparece em unresolvedDiagnostics",
+    loteRun7.returnsDiagnosticos.length, 0);
+
   // Shipment ambíguo + detalhe COM order_id explícito: aí sim resolve.
   const cenarioPackResolvidoPorDetalhe = servicoComRespostas((requestPath) => {
     if (requestPath.includes("/returns")) {

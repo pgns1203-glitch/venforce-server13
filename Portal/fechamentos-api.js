@@ -632,6 +632,30 @@ async function fetchOrderDetail(rowId, signal) {
   if (!resp.ok && mockModeDevAtivo()) return buildMockOrderDetail(rowId);
   return resp;
 }
+/* M10 — carga inicial em 1 request (backend resolve contexto + constrói o
+   payload do período 1x só, deriva read+daily+products no mesmo processo).
+   Fallback defensivo: se a rota nova falhar por qualquer motivo que não seja
+   ambiguidade de conta (servidor antigo sem a rota, erro de rede pontual),
+   refaz pelo caminho antigo (3 requests, cada um com seu próprio fallback de
+   mock dev mode) — nunca perde a tela por causa da otimização. */
+async function fetchBootstrap(params, signal) {
+  const resp = await fetchCentralVendas(`/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/read/bootstrap`, params, signal);
+  if (resp === null) return null;
+  if (resp.ok || resp.erroTipo === 'ambiguidade_conta') return resp;
+
+  const [readResp, dailyResp, productsResp] = await Promise.all([
+    fetchRead(params, signal),
+    fetchDaily(signal),
+    fetchProducts(signal),
+  ]);
+  if (!readResp?.ok) return readResp;
+  return {
+    ...readResp,
+    dias: dailyResp?.ok ? (dailyResp.dias || []) : [],
+    produtos: productsResp?.ok ? (productsResp.produtos || []) : [],
+    totalFaturamento: productsResp?.ok ? (productsResp.totalFaturamento || 0) : 0,
+  };
+}
 
 /* ── INIT ─────────────────────────────────────────────────── */
 function isAdminUser() {
@@ -809,12 +833,15 @@ async function trocarContexto() {
   }
 }
 
-/* ── CARREGAMENTO — Read API M9 ───────────────────────────────
+/* ── CARREGAMENTO — Read API M9/M10 ───────────────────────────
    Dois pontos de fetch:
      carregarTela()          → troca de cliente/conta/período: busca
-                                summary+rows(pág.1) + daily + products em
-                                paralelo (3 endpoints, nenhum payload com
-                                "todos os pedidos").
+                                summary+rows(pág.1)+daily+products em 1
+                                request (/read/bootstrap, M10 — backend
+                                resolve contexto e constrói o payload do
+                                período 1x só, em vez de 3x). Fallback
+                                automático para os 3 endpoints antigos em
+                                paralelo se o bootstrap falhar.
      atualizarListaEResumo() → qualquer filtro/busca/ordenação/página da
                                 aba Pedidos OU recorte da Visão Geral: só
                                 refaz /read (rows+summary+filteredSummary);
@@ -853,9 +880,9 @@ function buildReadParams(extra) {
   });
 }
 
-/* ÚNICO ponto de fetch "pesado" (3 endpoints). Só deve ser chamado em:
-   init, troca de cliente/conta/período, "Atualizar leitura" e depois de
-   importar/sincronizar. */
+/* ÚNICO ponto de fetch "pesado" (1 endpoint, /read/bootstrap — M10). Só deve
+   ser chamado em: init, troca de cliente/conta/período, "Atualizar leitura"
+   e depois de importar/sincronizar. */
 async function carregarTela() {
   if (!F.cliente) { resetDataState(); F.loading = false; renderAll(); return; }
   if (F.contas.length > 1 && !F.clienteConta) { resetDataState(); F.loading = false; renderAll(); return; }
@@ -870,17 +897,13 @@ async function carregarTela() {
   renderAll();
 
   F.orders.page = 1;
-  const [readResp, dailyResp, productsResp] = await Promise.all([
-    fetchRead(buildReadParams({ page: 1 }), signal),
-    fetchDaily(signal),
-    fetchProducts(signal),
-  ]);
+  const bootstrapResp = await fetchBootstrap(buildReadParams({ page: 1 }), signal);
   if (seq !== F.loadSeq) return;
 
   F.loading = false;
 
-  if (readResp?.erroTipo === 'ambiguidade_conta') {
-    F.contas = readResp.contas || [];
+  if (bootstrapResp?.erroTipo === 'ambiguidade_conta') {
+    F.contas = bootstrapResp.contas || [];
     F.clienteConta = null;
     renderContextoConta();
     resetDataState();
@@ -888,10 +911,10 @@ async function carregarTela() {
     return;
   }
 
-  applyReadResponse(readResp);
-  F.daily = dailyResp?.ok ? (dailyResp.dias || []) : [];
-  F.products = productsResp?.ok ? (productsResp.produtos || []) : [];
-  F.totalFaturamento = productsResp?.ok ? (productsResp.totalFaturamento || 0) : 0;
+  applyReadResponse(bootstrapResp);
+  F.daily = bootstrapResp?.ok ? (bootstrapResp.dias || []) : [];
+  F.products = bootstrapResp?.ok ? (bootstrapResp.produtos || []) : [];
+  F.totalFaturamento = bootstrapResp?.ok ? (bootstrapResp.totalFaturamento || 0) : 0;
   resetCurvaAbcState();
   renderAll();
 }

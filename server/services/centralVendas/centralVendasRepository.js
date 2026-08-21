@@ -393,14 +393,14 @@ async function getLatestCentralVendasImport(
       [importacao.id]
     ),
     db.query(
-      `SELECT *
+      `SELECT ${ITEM_READ_COLUMNS}
          FROM central_vendas_pedido_itens
         WHERE import_id = $1
         ORDER BY pedido_id ASC, id ASC`,
       [importacao.id]
     ),
     db.query(
-      `SELECT *
+      `SELECT ${COMPONENTE_READ_COLUMNS}
          FROM central_vendas_componentes
         WHERE import_id = $1
         ORDER BY pedido_id ASC, item_id ASC NULLS LAST, id ASC`,
@@ -416,11 +416,29 @@ async function getLatestCentralVendasImport(
   };
 }
 
-// Lê pedidos por INTERVALO de datas (não preso a um mês). Para cada competência
-// que toca o intervalo, usa o ÚLTIMO import (evita duplicar re-sincronizações) e
-// retorna só os pedidos com data_pedido dentro de [dateFrom, dateTo]. Itens e
-// componentes são escopados pelos pedidos em range via pedido_row_id.
-async function getCentralVendasByRange(
+// Colunas realmente lidas de central_vendas_pedido_itens/componentes pelo
+// caminho de leitura (buildPedidoContrato/buildProdutos em
+// centralVendasService.js e centralVendasEvidenceAdapter.js — auditado no
+// M10): nenhum dos dois lê `payload_json` dessas duas tabelas (só
+// `central_vendas_pedidos.payload_json` é lido, para logistica/full/pós-venda
+// — ver rowValue(pedido, "payload", "payload_json") em buildPedidoContrato).
+// Excluir esse JSONB da leitura em massa reduz bytes trafegados sem tirar
+// nenhum campo do contrato canônico (M10, seção 9).
+const ITEM_READ_COLUMNS = `id, import_id, pedido_row_id, cliente_id, cliente_slug, marketplace, competencia,
+       pedido_id, item_id, mlb, sku, titulo, quantidade, valor_unitario, receita_produto, custo_produto,
+       imposto_interno, lucro_contribuicao, resultado, margem_contribuicao_percentual, confianca,
+       pendencias_json, created_at, updated_at`;
+const COMPONENTE_READ_COLUMNS = `id, import_id, pedido_row_id, item_row_id, cliente_id, cliente_slug, marketplace,
+       competencia, pedido_id, item_id, tipo, valor, fonte, confianca, obs, escopo, efeito,
+       incluido_no_resultado, created_at, updated_at`;
+
+// M10 — extraído de getCentralVendasByRange (mesma regra M4 exata, apenas
+// separada da carga pesada de pedidos/itens/componentes): resolve SÓ os
+// imports elegíveis (published com cobertura, senão legacy mais recente) por
+// competência tocada pelo range. Usado tanto pela leitura completa do
+// período (loadPedidosByImportIds abaixo) quanto pelo detalhe de 1 pedido
+// (getPedidoDetailByRowId) — nunca uma segunda implementação da seleção.
+async function resolveImportsForRange(
   { clienteSlug, dateFrom, dateTo, marketplace = "meli", clienteContaId = null, includeLegacy = false },
   db = pool
 ) {
@@ -464,9 +482,18 @@ async function getCentralVendasByRange(
   }
   imports.sort((a, b) => String(a.competencia).localeCompare(String(b.competencia)));
 
-  if (!imports.length) return null;
+  return { imports, importIds: imports.map((row) => row.id) };
+}
 
-  const importIds = imports.map((row) => row.id);
+// M10 — extraído de getCentralVendasByRange: carga pesada (pedidos + itens +
+// componentes) de um conjunto de imports JÁ resolvido por
+// resolveImportsForRange. Comportamento idêntico ao bloco que existia dentro
+// de getCentralVendasByRange antes do M10 — só separado para poder ser
+// pulado no caminho de detalhe de 1 pedido.
+async function loadPedidosByImportIds({ importIds, dateFrom, dateTo }, db = pool) {
+  if (!Array.isArray(importIds) || !importIds.length) {
+    return { pedidos: [], itens: [], componentes: [] };
+  }
 
   const pedidosResult = await db.query(
     `SELECT *
@@ -480,19 +507,19 @@ async function getCentralVendasByRange(
 
   const pedidoRowIds = pedidos.map((row) => row.id);
   if (!pedidoRowIds.length) {
-    return { importacao: imports[0], imports, pedidos: [], itens: [], componentes: [] };
+    return { pedidos: [], itens: [], componentes: [] };
   }
 
   const [itensResult, componentesResult] = await Promise.all([
     db.query(
-      `SELECT *
+      `SELECT ${ITEM_READ_COLUMNS}
          FROM central_vendas_pedido_itens
         WHERE pedido_row_id = ANY($1::bigint[])
         ORDER BY pedido_id ASC, id ASC`,
       [pedidoRowIds]
     ),
     db.query(
-      `SELECT *
+      `SELECT ${COMPONENTE_READ_COLUMNS}
          FROM central_vendas_componentes
         WHERE pedido_row_id = ANY($1::bigint[])
         ORDER BY pedido_id ASC, item_id ASC NULLS LAST, id ASC`,
@@ -500,13 +527,73 @@ async function getCentralVendasByRange(
     ),
   ]);
 
-  return {
-    importacao: imports[0],
-    imports,
-    pedidos,
-    itens: itensResult.rows,
-    componentes: componentesResult.rows,
-  };
+  return { pedidos, itens: itensResult.rows, componentes: componentesResult.rows };
+}
+
+// Lê pedidos por INTERVALO de datas (não preso a um mês). Para cada competência
+// que toca o intervalo, usa o ÚLTIMO import (evita duplicar re-sincronizações) e
+// retorna só os pedidos com data_pedido dentro de [dateFrom, dateTo]. Itens e
+// componentes são escopados pelos pedidos em range via pedido_row_id.
+//
+// M10 — reimplementado em cima de resolveImportsForRange +
+// loadPedidosByImportIds (mesmas duas queries, mesma ordem, mesmo resultado
+// final); comportamento e assinatura inalterados — centralVendasEvidenceAdapter
+// (Motor de Margem) chama esta função diretamente.
+async function getCentralVendasByRange(
+  { clienteSlug, dateFrom, dateTo, marketplace = "meli", clienteContaId = null, includeLegacy = false },
+  db = pool
+) {
+  const { imports, importIds } = await resolveImportsForRange(
+    { clienteSlug, dateFrom, dateTo, marketplace, clienteContaId, includeLegacy },
+    db
+  );
+  if (!imports.length) return null;
+
+  const { pedidos, itens, componentes } = await loadPedidosByImportIds({ importIds, dateFrom, dateTo }, db);
+  return { importacao: imports[0], imports, pedidos, itens, componentes };
+}
+
+// M10 — detalhe de UM pedido (drawer da Central), sem carregar/reconstruir o
+// período inteiro. `importIds` já vem resolvido pela MESMA seleção M4
+// (resolveImportsForRange, chamada por centralVendasService.resolveRangeImports)
+// — aqui só valida que o rowId pedido pertence a um desses imports e está
+// dentro do range, e carrega SÓ aquele pedido + seus itens + seus
+// componentes. Nunca aceita rowId sem essa validação (evita IDOR por
+// construção, seção 9 do M7 preservada).
+async function getPedidoDetailByRowId({ importIds, dateFrom, dateTo, rowId }, db = pool) {
+  if (!Array.isArray(importIds) || !importIds.length) return null;
+  if (!Number.isFinite(Number(rowId))) return null;
+
+  const pedidoResult = await db.query(
+    `SELECT *
+       FROM central_vendas_pedidos
+      WHERE id = $1
+        AND import_id = ANY($2::bigint[])
+        AND data_pedido BETWEEN $3 AND $4
+      LIMIT 1`,
+    [rowId, importIds, dateFrom, dateTo]
+  );
+  const pedido = pedidoResult.rows[0];
+  if (!pedido) return null;
+
+  const [itensResult, componentesResult] = await Promise.all([
+    db.query(
+      `SELECT ${ITEM_READ_COLUMNS}
+         FROM central_vendas_pedido_itens
+        WHERE pedido_row_id = $1
+        ORDER BY id ASC`,
+      [pedido.id]
+    ),
+    db.query(
+      `SELECT ${COMPONENTE_READ_COLUMNS}
+         FROM central_vendas_componentes
+        WHERE pedido_row_id = $1
+        ORDER BY item_id ASC NULLS LAST, id ASC`,
+      [pedido.id]
+    ),
+  ]);
+
+  return { pedido, itens: itensResult.rows, componentes: componentesResult.rows };
 }
 
 // M4, seção 9 — promove TODOS os candidates de um sync_run para published de
@@ -532,6 +619,10 @@ module.exports = {
   persistCentralVendasImport,
   getLatestCentralVendasImport,
   getCentralVendasByRange,
+  // M10 — leitura otimizada (ver comentários acima das funções).
+  resolveImportsForRange,
+  loadPedidosByImportIds,
+  getPedidoDetailByRowId,
   promoverCandidatesDoRun,
   selecionarMelhorImportPorCompetencia,
   monthBounds,

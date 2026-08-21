@@ -137,6 +137,38 @@ async function obterCentralVendasRead(req, res) {
   }
 }
 
+// M10 — carga inicial: resolve contexto e constrói o payload do período UMA
+// vez só e devolve tudo que a tela busca hoje em 3 requests (/read +
+// /read/daily + /read/products, cada um reconstruindo o período do zero).
+// Aditiva: os 3 endpoints antigos continuam existindo e inalterados.
+async function obterCentralVendasReadBootstrap(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+
+    const data = await centralVendasReadService.getCentralVendasReadBootstrap(slug, {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      marketplace: req.query.marketplace || "meli",
+      clienteContaId: req.query.clienteContaId || null,
+      page: req.query.page,
+      limit: req.query.limit,
+      sort: req.query.sort,
+      filtro: req.query.filtro,
+      status: req.query.status,
+      logistica: req.query.logistica,
+      diagbase: req.query.diagbase,
+      search: req.query.search,
+      dataDe: req.query.dataDe,
+      dataAte: req.query.dataAte,
+      resumoFiltro: req.query.resumoFiltro,
+    });
+    return responder(res, 200, data);
+  } catch (err) {
+    return tratarErro(res, err, "obterCentralVendasReadBootstrap");
+  }
+}
+
 // M9 — agregado diário ("Vendas por dia"), período inteiro. Aditiva: não
 // substitui o GET legado nem o /read acima.
 async function obterCentralVendasReadDaily(req, res) {
@@ -352,6 +384,7 @@ module.exports = {
   obterCentralVendas,
   obterCentralVendasRead,
   obterCentralVendasReadOrderDetail,
+  obterCentralVendasReadBootstrap,
   obterCentralVendasReadDaily,
   obterCentralVendasReadProducts,
   importarVendas,

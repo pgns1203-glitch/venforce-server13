@@ -942,13 +942,15 @@ function buildContextoPayload(context) {
 }
 
 function createCentralVendasService(repository = getRepository(), db = pool) {
-  // M7 — resolução de identidade + snapshot por INTERVALO, extraída de
-  // getCentralVendas sem mudar nenhum comportamento (mesma ordem de
-  // validações, mesma query de includeLegacy, mesma chamada ao
-  // repository). Único ponto de seleção do snapshot por range: getCentralVendas
-  // (GET legado) e centralVendasReadService (M7) chamam ESTA função — nunca
-  // uma segunda implementação paralela da regra do M4.
-  async function resolveRangeContext(clienteSlug, { dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = {}) {
+  // M10 — identidade + SELEÇÃO de imports (M4), sem carregar pedidos/itens/
+  // componentes. Extraído de resolveRangeContext (mesma ordem de validações,
+  // mesma regra de includeLegacy, byte a byte) para servir também o detalhe
+  // de 1 pedido (centralVendasReadService.getCentralVendasReadOrderDetail),
+  // que não precisa da carga pesada do período inteiro só para achar 1
+  // linha. resolveRangeContext (abaixo) continua sendo o único ponto que
+  // decide QUAL snapshot é válido — esta função só executa a mesma decisão
+  // parando antes da query pesada.
+  async function resolveRangeImports(clienteSlug, { dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = {}) {
     const slug = normalizeSlug(clienteSlug);
     const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
 
@@ -991,6 +993,95 @@ function createCentralVendasService(repository = getRepository(), db = pool) {
     // cliente). includeLegacy só libera snapshot com cliente_conta_id NULL
     // quando essa conta é comprovadamente a única ativa daquele marketplace
     // (nunca com 2+ contas ativas — ver centralVendasRepository).
+    const contaIdResolvida = context?.conta?.id || null;
+    let includeLegacy = true;
+    if (contaIdResolvida) {
+      const totalAtivasResult = await db.query(
+        "SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true",
+        [cliente.id, marketplaceNorm]
+      );
+      includeLegacy = (totalAtivasResult.rows[0]?.total || 0) <= 1;
+    }
+
+    const from = dateFrom <= dateTo ? dateFrom : dateTo;
+    const to = dateFrom <= dateTo ? dateTo : dateFrom;
+    const { imports, importIds } = await repository.resolveImportsForRange({
+      clienteSlug: slug,
+      dateFrom: from,
+      dateTo: to,
+      marketplace: marketplaceNorm,
+      clienteContaId: contaIdResolvida,
+      includeLegacy,
+    });
+
+    return { cliente, context, imports, importIds, dateFrom: from, dateTo: to, marketplace: marketplaceNorm };
+  }
+
+  // M10 — detalhe de UM pedido, sem carregar o período inteiro. Reusa
+  // resolveRangeImports (MESMA seleção M4 de resolveRangeContext) e devolve
+  // o contrato canônico via buildPedidoContrato (M5/M6) — nenhuma fórmula
+  // financeira nova. rowId que não pertence aos imports resolvidos (outro
+  // snapshot/conta) ou cuja data_pedido cai fora do range devolve null —
+  // nunca um vínculo aceito por adivinhação (mesma garantia anti-IDOR do M7).
+  async function resolveOrderDetail(clienteSlug, rowId, { dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = {}) {
+    const { cliente, context, importIds, dateFrom: from, dateTo: to } =
+      await resolveRangeImports(clienteSlug, { dateFrom, dateTo, marketplace, clienteContaId });
+
+    if (!importIds.length) return { cliente, context, pedido: null };
+
+    const detalhe = await repository.getPedidoDetailByRowId({ importIds, dateFrom: from, dateTo: to, rowId });
+    if (!detalhe) return { cliente, context, pedido: null };
+
+    return { cliente, context, pedido: buildPedidoContrato(detalhe.pedido, detalhe.itens, detalhe.componentes) };
+  }
+
+  // M7 — resolução de identidade + snapshot por INTERVALO, extraída de
+  // getCentralVendas sem mudar nenhum comportamento (mesma ordem de
+  // validações, mesma query de includeLegacy, mesma chamada ao
+  // repository). Único ponto de seleção do snapshot por range: getCentralVendas
+  // (GET legado) e centralVendasReadService (M7) chamam ESTA função — nunca
+  // uma segunda implementação paralela da regra do M4.
+  //
+  // M10 — deliberadamente NÃO delegada a resolveRangeImports: várias
+  // suítes (cliente360Resultado/cliente360Contratos, entre outras) injetam
+  // um `repository` fake que só implementa `getCentralVendasByRange` para
+  // testar esta função — trocar a chamada interna quebraria esse contrato
+  // sem motivo (a regra de seleção em si já é única, dentro do repository:
+  // getCentralVendasByRange e resolveImportsForRange chamam a MESMA
+  // selecionarMelhorImportPorCompetencia). Corpo idêntico ao pré-M10.
+  async function resolveRangeContext(clienteSlug, { dateFrom, dateTo, marketplace = "meli", clienteContaId = null } = {}) {
+    const slug = normalizeSlug(clienteSlug);
+    const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
+
+    if (!slug) {
+      const err = new Error("slug e obrigatorio.");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!isValidIsoDate(dateFrom) || !isValidIsoDate(dateTo)) {
+      const err = new Error("dateFrom e dateTo (YYYY-MM-DD) sao obrigatorios.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const cliente = await repository.getClienteBySlug(slug);
+    if (!cliente) {
+      const err = new Error("Cliente nao encontrado.");
+      err.statusCode = 404;
+      throw err;
+    }
+
+    let context = null;
+    if (marketplaceNorm === "meli") {
+      context = await resolveMarketplaceAccountContext({
+        clienteId: cliente.id,
+        marketplace: marketplaceNorm,
+        clienteContaId,
+        requireUsableGrant: false,
+        queryable: db,
+      });
+    }
+
     const contaIdResolvida = context?.conta?.id || null;
     let includeLegacy = true;
     if (contaIdResolvida) {
@@ -1080,6 +1171,8 @@ function createCentralVendasService(repository = getRepository(), db = pool) {
   return {
     getCentralVendas,
     resolveRangeContext,
+    resolveRangeImports,
+    resolveOrderDetail,
   };
 }
 
@@ -1090,6 +1183,10 @@ module.exports = {
   // Consumido pela Cliente 360 (cliente360FechamentoAdapter) para ler o
   // fechamento por intervalo de datas sem duplicar o contrato de pedido.
   buildPayloadFromRange,
+  // M10 — contrato canônico de pedido, reusado diretamente pelo detalhe
+  // otimizado (centralVendasReadService/resolveOrderDetail) sem passar por
+  // buildPedidos/buildPayloadFromRange (que reconstroem o período inteiro).
+  buildPedidoContrato,
   buildPedidos,
   buildContextoPayload,
   buildResumoFromRange,

@@ -24,6 +24,10 @@ function realRepositoryComDb(db) {
     getClienteBySlug: (slug) => repository.getClienteBySlug(slug, db),
     getLatestCentralVendasImport: (args) => repository.getLatestCentralVendasImport(args, db),
     getCentralVendasByRange: (args) => repository.getCentralVendasByRange(args, db),
+    // M10 — leitura otimizada: mesmo padrão de binding dos métodos acima.
+    resolveImportsForRange: (args) => repository.resolveImportsForRange(args, db),
+    loadPedidosByImportIds: (args) => repository.loadPedidosByImportIds(args, db),
+    getPedidoDetailByRowId: (args) => repository.getPedidoDetailByRowId(args, db),
   };
 }
 
@@ -73,6 +77,16 @@ function makeDb({ contas = [], imports = [], pedidos = [], itens = [], component
         }
         return { rows: candidatos };
       }
+      // M10 — getPedidoDetailByRowId: 1 pedido específico (checado ANTES do
+      // branch genérico de import_id = ANY abaixo, que também casaria com
+      // esta query — LIMIT 1 é a marca exclusiva desta).
+      if (sql.includes("FROM central_vendas_pedidos") && sql.includes("LIMIT 1")) {
+        const [rowId, importIds, dateFrom, dateTo] = params;
+        const found = pedidos.find((p) =>
+          p.id === rowId && importIds.includes(p.import_id) && p.data_pedido >= dateFrom && p.data_pedido <= dateTo
+        );
+        return { rows: found ? [found] : [] };
+      }
       if (sql.includes("FROM central_vendas_pedidos") && sql.includes("import_id = ANY")) {
         const [importIds, dateFrom, dateTo] = params;
         return {
@@ -83,9 +97,18 @@ function makeDb({ contas = [], imports = [], pedidos = [], itens = [], component
         const [rowIds] = params;
         return { rows: itens.filter((i) => rowIds.includes(i.pedido_row_id)) };
       }
+      // M10 — getPedidoDetailByRowId: itens/componentes de 1 pedido só.
+      if (sql.includes("FROM central_vendas_pedido_itens") && sql.includes("pedido_row_id = $1")) {
+        const [rowId] = params;
+        return { rows: itens.filter((i) => i.pedido_row_id === rowId) };
+      }
       if (sql.includes("FROM central_vendas_componentes") && sql.includes("pedido_row_id = ANY")) {
         const [rowIds] = params;
         return { rows: componentes.filter((c) => rowIds.includes(c.pedido_row_id)) };
+      }
+      if (sql.includes("FROM central_vendas_componentes") && sql.includes("pedido_row_id = $1")) {
+        const [rowId] = params;
+        return { rows: componentes.filter((c) => c.pedido_row_id === rowId) };
       }
 
       throw new Error(`Fake db: SQL nao mapeado -> ${sql.slice(0, 160)}`);

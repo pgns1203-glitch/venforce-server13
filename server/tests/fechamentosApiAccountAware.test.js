@@ -1,11 +1,20 @@
 // server/tests/fechamentosApiAccountAware.test.js
 //
 // M8 — Frontend account-aware (Portal/fechamentos-api.js).
-// M9 — atualizado para a Read API canônica: carregarTela() agora busca
+// M9 — atualizado para a Read API canônica: carregarTela() buscava
 // GET .../read + .../read/daily + .../read/products em paralelo (nunca
-// mais o GET legado do payload inteiro) — os 3 precisam levar
-// clienteContaId igualmente, e a resposta vira F.ok/F.summary/F.rows/
+// mais o GET legado do payload inteiro) — os 3 precisavam levar
+// clienteContaId igualmente, e a resposta virava F.ok/F.summary/F.rows/
 // F.daily/F.products (não mais F.rawPayload).
+// M10 — carregarTela() passou a buscar GET .../read/bootstrap (1 request,
+// backend resolve contexto e monta o payload do período 1x só). Os testes
+// abaixo que usam o handler genérico "/operacao/central-vendas/" com
+// {ok:true} continuam válidos sem alteração (bootstrap responde na mesma
+// forma que /read + campos extras); só o cenário "legado" checava a URL
+// literal ".../read?" e precisou trocar para ".../read/bootstrap?". Se o
+// backend responder ok:false para o bootstrap, o frontend cai de volta para
+// os 3 requests antigos (fetchBootstrap em fechamentos-api.js) — nenhum
+// cenário aqui simula essa falha específica ainda.
 //
 // Portal/fechamentos-api.js é um script de browser sem module.exports (ver
 // docs/CENTRAL_VENDAS_V3_ARQUITETURA.md seção 9.6, mesma limitação já
@@ -393,11 +402,57 @@ async function run() {
 
     eq("legado: 0 contas", F.contas.length, 0);
     eq("legado: nenhuma conta selecionada", F.clienteConta, null);
-    const getCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-legado/read?"));
-    ok("legado: GET .../read ainda e chamado normalmente (fallback do backend)", !!getCall);
+    // M10: carregarTela() busca /read/bootstrap (1 request) em vez de /read
+    // diretamente — o mock genérico responde ok:true para qualquer sub-path
+    // de /operacao/central-vendas/, então o fallback de 3 endpoints nunca
+    // dispara aqui (só dispara quando bootstrap falha — ver cenário abaixo).
+    const getCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-legado/read/bootstrap?"));
+    ok("legado: GET .../read/bootstrap ainda e chamado normalmente (fallback do backend)", !!getCall);
     ok("legado: clienteContaId NUNCA enviado", !getCall.url.includes("clienteContaId"));
     ok("legado: dado carregado com sucesso", F.ok === true);
     console.log("  ✓ legado: cliente sem cliente_contas continua funcionando, sem enviar clienteContaId");
+  }
+
+  // ── M10: bootstrap falha (backend antigo sem a rota / erro pontual) →
+  // fallback automático para os 3 endpoints antigos, cada um com o
+  // clienteContaId correto ──
+  {
+    const log = [];
+    const contas = [{ id: 501, nome: "ML Loja A", marketplace: "meli", is_primary: true, ativo: true }];
+    const sandbox = bootScript({
+      log,
+      handlers: [
+        ["/contas?marketplace=meli", () => jsonResponse(200, { ok: true, contas })],
+        ["/operacao/central-vendas/", (url) => {
+          const u = String(url);
+          if (u.includes("/read/bootstrap")) return jsonResponse(200, { ok: false, erro: "rota indisponivel neste teste" });
+          if (u.includes("/read/daily")) return jsonResponse(200, { ok: true, dias: [{ data: "2026-08-01" }] });
+          if (u.includes("/read/products")) return jsonResponse(200, { ok: true, produtos: [{ mlb: "MLB1" }], totalFaturamento: 42 });
+          return jsonResponse(200, { ok: true, motor: { status: "persistido" }, summary: {}, filteredSummary: {}, rows: [], pagination: { page: 1, limit: 50, total: 0, totalPages: 0 }, periodo: {}, cliente: {} });
+        }],
+      ],
+    });
+    const F = sandbox.__F;
+    F.cliente = { id: 1, nome: "Cliente A", slug: "cliente-a" };
+    F.periodo = { mode: "mes_atual", dateFrom: "2026-08-01", dateTo: "2026-08-31" };
+
+    await sandbox.trocarContexto();
+    await flush();
+
+    eq("fallback: bootstrap foi tentado primeiro", log.filter((c) => c.url.includes("/read/bootstrap?")).length, 1);
+    ok("fallback: leva clienteContaId=501", log.find((c) => c.url.includes("/read/bootstrap?")).url.includes("clienteContaId=501"));
+    const getCall = log.find((c) => c.url.includes("/operacao/central-vendas/cliente-a/read?"));
+    ok("fallback: bootstrap falhou -> GET .../read é chamado em seguida", !!getCall);
+    ok("fallback: .../read leva clienteContaId=501", getCall.url.includes("clienteContaId=501"));
+    const dailyCall = log.find((c) => c.url.includes("/read/daily?"));
+    ok("fallback: .../read/daily também é chamado", !!dailyCall);
+    const productsCall = log.find((c) => c.url.includes("/read/products?"));
+    ok("fallback: .../read/products também é chamado", !!productsCall);
+    ok("fallback: F.ok fica true (dado veio pelo caminho antigo)", F.ok === true);
+    eq("fallback: F.daily vem do /read/daily", F.daily, [{ data: "2026-08-01" }]);
+    eq("fallback: F.products vem do /read/products", F.products, [{ mlb: "MLB1" }]);
+    eq("fallback: F.totalFaturamento vem do /read/products", F.totalFaturamento, 42);
+    console.log("  ✓ M10 fallback: bootstrap falho refaz pelo caminho antigo (3 requests), sem perder a tela");
   }
 
   console.log(`fechamentosApiAccountAware.test.js: ${checks} verificacoes OK`);

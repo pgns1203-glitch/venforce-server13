@@ -24,6 +24,10 @@ function realRepositoryComDb(db) {
     getClienteBySlug: (slug) => repository.getClienteBySlug(slug, db),
     getLatestCentralVendasImport: (args) => repository.getLatestCentralVendasImport(args, db),
     getCentralVendasByRange: (args) => repository.getCentralVendasByRange(args, db),
+    // M10 — leitura otimizada: mesmo padrão de binding dos métodos acima.
+    resolveImportsForRange: (args) => repository.resolveImportsForRange(args, db),
+    loadPedidosByImportIds: (args) => repository.loadPedidosByImportIds(args, db),
+    getPedidoDetailByRowId: (args) => repository.getPedidoDetailByRowId(args, db),
   };
 }
 

@@ -118,6 +118,20 @@ CREATE INDEX IF NOT EXISTS idx_central_vendas_itens_import
 CREATE INDEX IF NOT EXISTS idx_central_vendas_componentes_import
   ON central_vendas_componentes (import_id, pedido_id, item_id);
 
+-- M10 — os índices acima cobrem (import_id, ...), mas o padrão de query real
+-- da Read API (centralVendasRepository.loadPedidosByImportIds/
+-- getPedidoDetailByRowId) filtra itens/componentes por `pedido_row_id`
+-- (WHERE pedido_row_id = ANY(...) na carga do período inteiro, WHERE
+-- pedido_row_id = $1 no detalhe de 1 pedido) — nenhum índice existente cobre
+-- essa coluna, forçando seq scan nas duas tabelas em toda leitura. Evidência
+-- é o padrão de query (auditado no código, não EXPLAIN ANALYZE real — sem
+-- Postgres vivo neste ambiente); índice puro, não muda nenhuma semântica.
+CREATE INDEX IF NOT EXISTS idx_central_vendas_itens_pedido_row
+  ON central_vendas_pedido_itens (pedido_row_id);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_componentes_pedido_row
+  ON central_vendas_componentes (pedido_row_id);
+
 -- ---------------------------------------------------------------------------
 -- M2 — Sync Run persistido (Central de Vendas V3)
 --

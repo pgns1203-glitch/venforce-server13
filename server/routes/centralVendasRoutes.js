@@ -22,6 +22,13 @@ router.get(
   requireAutomacoesAccess,
   controller.obterCentralVendasReadOrderDetail
 );
+// M10 — carga inicial em 1 request (ver comentário no controller). Aditiva.
+router.get(
+  "/:slug/read/bootstrap",
+  authMiddleware,
+  requireAutomacoesAccess,
+  controller.obterCentralVendasReadBootstrap
+);
 // M9 — agregados de leitura (Vendas por dia / Curva ABC), período inteiro.
 router.get(
   "/:slug/read/daily",

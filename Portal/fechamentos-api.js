@@ -1757,12 +1757,16 @@ function buildOrderDrawerBody(o) {
 
   const componentesOrdenados = (o.componentes || []).slice()
     .sort((a, b) => COMPONENTE_ORDEM.indexOf(a.tipo) - COMPONENTE_ORDEM.indexOf(b.tipo));
+  // c.confianca é status de COMPONENTE (real/estimado/ausente/parcial/bloqueado
+  // — STATUS_LBL), não confiança de PEDIDO (confiavel/parcial/insuficiente/
+  // bloqueado — CONF). confStatus() só conhece o vocabulário de pedido; "real"
+  // caía no fallback e virava "Bloqueado" mesmo com valor presente.
   const compLinha = c => `
     <tr>
       <td>${esc(COMPONENTE_LBL[c.tipo] || c.tipo)}${c.itemId ? ` <span class="vf-fapi-fonte">(${esc(c.itemId)})</span>` : ''}</td>
       <td class="vf-fapi-op" aria-hidden="true">${c.efeito === 'credito' ? '+' : c.efeito === 'debito' ? '−' : ''}</td>
       <td class="num">${valOr(c.valor, money)}</td>
-      <td>${confStatus(c.confianca)}</td>
+      <td>${statusTag(c.confianca)}</td>
       <td>${c.incluidoNoResultado === false ? '<span class="vf-tag is-neutral">conciliação</span>' : (c.escopo ? `<span class="vf-tag is-neutral">${esc(c.escopo)}</span>` : '—')}</td>
       <td class="vf-fapi-fonte">${esc(c.fonte || '—')}</td>
       <td class="vf-fapi-obs vf-truncate" title="${esc(c.obs || '—')}">${esc(c.obs || '—')}</td>

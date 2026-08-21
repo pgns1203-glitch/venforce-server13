@@ -15,6 +15,20 @@
 // evidência no projeto de que `range=last_updated:...` seja aceito, portanto o
 // filtro continua sendo `date_created` + janela ampliada. Nenhum parâmetro novo
 // foi inventado.
+//
+// Causa raiz comprovada do CLAIMS_HTTP_400 (21/08, probes reais contra a API
+// com o grant/seller do run 5 — ver relatório da rodada): a API rejeita
+// `players.user_id`/`players.role` com `atLeastOneFilterProvided: at least
+// one filter parameter must be provided`, MESMO documentados como parâmetros
+// de filtro válidos e MESMO combinados com `range`. `range` isolado também não
+// conta como filtro. Filtros reconhecidos e testados com sucesso: `order_id`,
+// `stage`, `site_id`. A doc confirma que a busca já é implicitamente
+// escopada ao dono do token ("The search for claims will help you know which
+// ones belong to the user of a valid token") — não é preciso repetir o
+// vendedor via `players.*`. A correção usa `site_id=MLB` (mercado exclusivo
+// do produto) só para satisfazer a exigência de "ao menos um filtro"; o
+// escopo por conta continua garantido pelo token (`mlUserId` propagado a
+// `mlFetch`), nunca por um parâmetro de query.
 
 const { mlFetch } = require("../../utils/mlClient");
 
@@ -31,6 +45,10 @@ const CLAIMS_LOOKAHEAD_DAYS = 90;
 // projeto (mesma da Orders API em fetchAllOrders e dos testes): `-03:00`. A
 // segunda só é tentada UMA vez, e somente quando a API responde HTTP 400.
 const CLAIMS_TIMEZONE_FORMATS = ["-03:00", "-0300"];
+
+// Filtro exigido pela API além de `range` (ver causa raiz acima). O produto só
+// opera Mercado Livre Brasil — nunca outro site do Mercado Livre/Libre.
+const CLAIMS_SITE_ID = "MLB";
 
 // Detalhe de devolução: usado apenas para claims de devolução SEM vínculo direto
 // e confiável com um pedido. Teto para não transformar isso numa chamada por claim.
@@ -98,10 +116,13 @@ function buildClaimsRange(dateFrom, dateTo, timezoneFormat = CLAIMS_TIMEZONE_FOR
 }
 
 // Único lugar que monta a query da busca de claims — evita query string duplicada.
-function buildClaimsSearchPath({ sellerId, dateFrom, dateTo, timezoneFormat, limit, offset }) {
+// Não filtra por `players.user_id`/`players.role` (ver causa raiz do
+// CLAIMS_HTTP_400 no cabeçalho do arquivo): a API rejeita esses parâmetros com
+// `atLeastOneFilterProvided`. O escopo por vendedor vem do token
+// (`mlUserId` propagado a `mlFetch`), nunca da query string.
+function buildClaimsSearchPath({ dateFrom, dateTo, timezoneFormat, limit, offset }) {
   const qs = new URLSearchParams({
-    "players.user_id": String(sellerId),
-    "players.role": "respondent",
+    site_id: CLAIMS_SITE_ID,
     range: buildClaimsRange(dateFrom, dateTo, timezoneFormat),
     limit: String(limit),
     offset: String(offset),
@@ -559,7 +580,6 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
 
     for (let page = 0; page < CLAIMS_MAX_PAGES; page++) {
       const buildPath = () => buildClaimsSearchPath({
-        sellerId,
         dateFrom: janela.from,
         dateTo: janela.to,
         timezoneFormat: CLAIMS_TIMEZONE_FORMATS[tzIndex],
@@ -760,4 +780,5 @@ module.exports = {
   CLAIMS_MAX_PAGES,
   CLAIMS_LOOKAHEAD_DAYS,
   CLAIMS_TIMEZONE_FORMATS,
+  CLAIMS_SITE_ID,
 };

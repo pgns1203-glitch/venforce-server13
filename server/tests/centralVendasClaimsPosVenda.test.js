@@ -4,11 +4,13 @@ const path = require("path");
 const vm = require("vm");
 const {
   buildClaimsMap,
+  buildClaimsSearchPath,
   buildClaimsWindow,
   classificarClaim,
   createCentralVendasClaimsService,
   extrairReturnDetalhe,
   CLAIMS_LOOKAHEAD_DAYS,
+  CLAIMS_SITE_ID,
 } = require("../services/centralVendas/centralVendasClaimsService");
 const {
   buildCostMap,
@@ -268,6 +270,46 @@ async function run() {
   eq("1. log carrega a query rejeitada", log400[1].query.sellerId, "999");
   ok("1. log não expõe token nem resposta completa",
     !JSON.stringify(log400).match(/token|authorization|Bearer/i));
+
+  /* ── 0. Regressão do CLAIMS_HTTP_400 real (players.* rejeitado pela API) ─
+     Causa raiz comprovada com probes reais em 21/08: a API responde
+     `atLeastOneFilterProvided` para `players.user_id`/`players.role`, mesmo
+     combinados com `range`, e `range` isolado também não conta como filtro.
+     `site_id` é reconhecido. Este mock reproduz o contrato real descoberto —
+     não a implementação — para travar a causa, não o sintoma. */
+
+  const path0 = buildClaimsSearchPath({
+    dateFrom: PERIODO.dateFrom, dateTo: PERIODO.dateTo, timezoneFormat: "-03:00", limit: 100, offset: 0,
+  });
+  const query0 = new URL(`https://api.test${path0}`).searchParams;
+  ok("0. query não usa players.user_id (API rejeita)", !query0.has("players.user_id"));
+  ok("0. query não usa players.role (API rejeita)", !query0.has("players.role"));
+  eq("0. query usa site_id (filtro exigido, aceito pela API real)", query0.get("site_id"), CLAIMS_SITE_ID);
+  ok("0. range continua presente", !!query0.get("range"));
+
+  function mlRealContract(requestPath) {
+    const q = new URL(`https://api.test${requestPath}`).searchParams;
+    const temFiltroReconhecido = q.has("site_id") || q.has("stage") || q.has("status") || q.has("order_id");
+    if (!temFiltroReconhecido) {
+      return {
+        ok: false, status: 400,
+        data: { error: "bad_request_error", message: "atLeastOneFilterProvided: at least one filter parameter must be provided", cause: null },
+      };
+    }
+    return { ok: true, status: 200, data: { data: [devolucao], paging: { total: 1 } } };
+  }
+
+  const cenarioContratoReal = servicoComRespostas(mlRealContract);
+  const { resultado: comContratoReal } = await capturandoLogs(() =>
+    cenarioContratoReal.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: "222", ...PERIODO, hoje: HOJE,
+    })
+  );
+  eq("0. com o filtro exigido pela API real, claims são recuperados", comContratoReal.indisponivel, false);
+  eq("0. claim do pedido é encontrado", comContratoReal.claimsMap.size, 1);
+  ok("0. sellerId vai como mlUserId da request, nunca na query",
+    cenarioContratoReal.mlUserIds.every((id) => id === "222")
+      && !cenarioContratoReal.paths.some((p) => p.includes("222")));
 
   /* ── 3. As duas variantes de fuso falham ────────────────────────────── */
 

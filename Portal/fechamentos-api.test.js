@@ -176,6 +176,28 @@ for (const pedido of sandbox.MOCK_ROWS) {
 }
 checks += 1; console.log("  ✓ K: drawer monta o corpo (itens M5 + ledger M6) para os 6 perfis do fixture sem exceção");
 
+// ── L. Bug real de produção: componente com confianca do vocabulário de
+// STATUS ("real"/"ausente"/"bloqueado" — o que o backend de fato envia em
+// `componentes[]`, ver server/services/centralVendas/centralVendasSyncService.js)
+// não pode cair no fallback "Bloqueado" de confStatus() (vocabulário de
+// CONFIANÇA DE PEDIDO — "confiavel"/"parcial"/"insuficiente"/"bloqueado").
+// O fixture MOCK_ROWS usa "confiavel" nos componentes (não reproduz o valor
+// real do backend), por isso este teste monta o pedido à parte.
+{
+  const base = JSON.parse(JSON.stringify(sandbox.MOCK_ROWS[0]));
+  const pedidoReal = { ...base, componentes: base.componentes.map((c) => ({ ...c, confianca: "real" })) };
+  const htmlReal = sandbox.buildOrderDrawerBody(pedidoReal);
+  ok("L: componente com confianca='real' renderiza 'Real' via statusTag (vf-tag is-success)",
+    htmlReal.includes('class="vf-tag is-success">Real<'));
+  ok("L: componente com confianca='real' NUNCA cai no fallback 'Bloqueado' de confStatus",
+    !htmlReal.includes('class="vf-status is-danger">Bloqueado<'));
+
+  const pedidoAusente = { ...base, componentes: base.componentes.map((c) => ({ ...c, confianca: "ausente" })) };
+  const htmlAusente = sandbox.buildOrderDrawerBody(pedidoAusente);
+  ok("L: componente com confianca='ausente' renderiza 'Ausente' (não vira 'Bloqueado' por fallback)",
+    htmlAusente.includes('class="vf-tag is-danger">Ausente<'));
+}
+
 const respVazio = {
   ok: true, cliente: sandbox.F.cliente, periodo: sandbox.MOCK_PERIODO, contexto: null,
   snapshot: { importId: 2 }, motor: { status: "persistido", origemPrincipal: "orders_api" }, completude: null,

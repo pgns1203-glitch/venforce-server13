@@ -4,6 +4,8 @@ const path = require("path");
 const vm = require("vm");
 const {
   buildClaimsMap,
+  buildShipmentOrderIndex,
+  resolveClaimOrderLink,
   buildClaimsSearchPath,
   buildClaimsWindow,
   classificarClaim,
@@ -566,6 +568,205 @@ async function run() {
   eq("diag. lista de diagnóstico respeita o teto", loteTeto.returnsDiagnosticos.length, CLAIMS_RETURNS_DIAGNOSTIC_MAX);
   eq("diag. contador agregado continua contando TODOS, não só o teto",
     loteTeto.returnsNaoResolvidos, muitosClaimsSemVinculo.length);
+
+  /* ── RUN 7 — claim.resource="shipment" vinculado por order.shipping.id
+     (síndrome do claim 5553953268: detalhe HTTP 200, sem order_id, porque o
+     claim está associado a um SHIPMENT, não a um order) ──────────────────── */
+
+  // buildShipmentOrderIndex: índice em memória, só com Orders do período.
+  eq("shipment. índice vazio sem orders", buildShipmentOrderIndex(null).size, 0);
+
+  const orderUnico = order("UNICO"); // shipping.id = "SHIP-UNICO"
+  const indexUnico = buildShipmentOrderIndex([orderUnico]);
+  eq("shipment. índice mapeia shipmentId -> Set(orderId)",
+    [...indexUnico.get("SHIP-UNICO")], ["UNICO"]);
+
+  // resolveClaimOrderLink: só relações oficiais (resource=order direto, ou
+  // resource=shipment cruzado com o índice), nunca heurística.
+  eq("shipment. resource=order continua resolvendo direto, sem depender do índice",
+    resolveClaimOrderLink({ resource: "order", resource_id: "PEDIDO_X" }, indexUnico),
+    { orderId: "PEDIDO_X", source: "resource_order", ambiguous: false });
+
+  eq("shipment. resource=shipment unívoco resolve o order",
+    resolveClaimOrderLink({ resource: "shipment", resource_id: "SHIP-UNICO" }, indexUnico),
+    { orderId: "UNICO", source: "shipment_resource", ambiguous: false });
+
+  eq("shipment. 0 orders correspondentes não inventa vínculo",
+    resolveClaimOrderLink({ resource: "shipment", resource_id: "SHIP-INEXISTENTE" }, indexUnico),
+    { orderId: null, source: null, ambiguous: false });
+
+  // Pack: mesmo shipment cobrindo 2 orders — nunca escolher um dos dois.
+  const orderPackA = order("PACK_A", { shipping: { id: "SHIP-PACK" } });
+  const orderPackB = order("PACK_B", { shipping: { id: "SHIP-PACK" } });
+  const indexPack = buildShipmentOrderIndex([orderPackA, orderPackB]);
+  eq("shipment. 2+ orders no mesmo shipment fica ambíguo (nunca A, nunca B)",
+    resolveClaimOrderLink({ resource: "shipment", resource_id: "SHIP-PACK" }, indexPack),
+    { orderId: null, source: null, ambiguous: true });
+
+  // Nenhuma heurística de SKU/MLB/valor/data: dois orders com item/preço
+  // idênticos e shipments DIFERENTES não se confundem.
+  const orderGemeoA = order("GEMEO_A");
+  const orderGemeoB = order("GEMEO_B");
+  const indexGemeos = buildShipmentOrderIndex([orderGemeoA, orderGemeoB]);
+  eq("shipment. orders com item/preço idênticos não cruzam por acidente (só por shipping.id)",
+    resolveClaimOrderLink({ resource: "shipment", resource_id: "SHIP-GEMEO_A" }, indexGemeos).orderId,
+    "GEMEO_A");
+
+  // Cenário end-to-end (o próprio RUN 7): Claims 1/1, resource=shipment,
+  // shipment pertence unicamente a um order do período, /returns responde
+  // HTTP 200 sem order_id => vínculo resolvido, sem RETURNS_UNRESOLVED.
+  const orderRun7 = order("PEDIDO_RUN7"); // shipping.id = "SHIP-PEDIDO_RUN7"
+  const claimRun7 = () => ({
+    id: "5553953268", resource: "shipment", resource_id: "SHIP-PEDIDO_RUN7",
+    status: "closed", type: "returns", related_entities: ["return"],
+    resolution: { reason: "item_returned", benefited: ["complainant"] },
+  });
+  const cenarioRun7 = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) {
+      // Reprodução exata do diagnóstico real: 200 OK, sem order_id, resource null.
+      return { ok: true, status: 200, data: { status: "delivered", subtype: null, resource: null, items: [] } };
+    }
+    return { ok: true, status: 200, data: { paging: { total: 1 }, data: [claimRun7()] } };
+  });
+  const { resultado: loteRun7 } = await capturandoLogs(() =>
+    cenarioRun7.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+      orderIds: new Set(["PEDIDO_RUN7"]),
+      orders: [orderRun7],
+    })
+  );
+  eq("run7. shipment unívoco resolve o order mesmo sem order_id no detalhe",
+    [...loteRun7.claimsMap.keys()], ["PEDIDO_RUN7"]);
+  eq("run7. NÃO fica RETURNS_UNRESOLVED só por falta de order_id no detalhe",
+    loteRun7.returnsNaoResolvidos, 0);
+  eq("run7. devolução contabilizada como resolvida", loteRun7.returnsResolvidos, 1);
+  eq("run7. nenhum diagnóstico de não-resolvido gerado", loteRun7.returnsDiagnosticos.length, 0);
+
+  const motorRun7 = buildMotorFromOrders({
+    orders: [orderRun7],
+    costMap: COST_MAP,
+    freteMap: freteMapDe([orderRun7]),
+    claimsMap: loteRun7.claimsMap,
+    claimsIndisponivel: false,
+    claimsReturnsNaoResolvidos: loteRun7.returnsNaoResolvidos,
+    clienteSlug: "cliente-teste",
+    competencia: "2026-07",
+  });
+  eq("run7. pedido vira devolução (cancelado) via vínculo por shipment",
+    motorRun7.pedidos[0].status, "cancelado");
+  eq("run7. confiança não é rebaixada por RETURNS_UNRESOLVED",
+    motorRun7.resumo.confianca, undefined);
+
+  // Devolução PARCIAL: vínculo por shipment + detalhe com quantidade —
+  // enriquece returnDetalhe (não perde a informação de parcialidade).
+  const orderRun7Parcial = order("PEDIDO_RUN7_PARCIAL", {
+    order_items: [{
+      item: { id: "MLB111", title: "Produto", seller_sku: "SKU-1" },
+      quantity: 3, unit_price: 100, sale_fee: 10,
+    }],
+  });
+  const claimRun7Parcial = () => ({
+    id: "5553953269", resource: "shipment", resource_id: "SHIP-PEDIDO_RUN7_PARCIAL",
+    status: "closed", type: "returns", related_entities: ["return"],
+    resolution: { reason: "partial_refunded", benefited: ["complainant"] },
+  });
+  const cenarioRun7Parcial = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) {
+      return { ok: true, status: 200, data: { status: "closed", items: [{ quantity: 3, quantity_returned: 1 }] } };
+    }
+    return { ok: true, status: 200, data: { paging: { total: 1 }, data: [claimRun7Parcial()] } };
+  });
+  const { resultado: loteRun7Parcial } = await capturandoLogs(() =>
+    cenarioRun7Parcial.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+      orderIds: new Set(["PEDIDO_RUN7_PARCIAL"]),
+      orders: [orderRun7Parcial],
+    })
+  );
+  const motorRun7Parcial = buildMotorFromOrders({
+    orders: [orderRun7Parcial],
+    costMap: COST_MAP,
+    freteMap: freteMapDe([orderRun7Parcial]),
+    claimsMap: loteRun7Parcial.claimsMap,
+    claimsIndisponivel: false,
+    claimsReturnsNaoResolvidos: loteRun7Parcial.returnsNaoResolvidos,
+    clienteSlug: "cliente-teste",
+    competencia: "2026-07",
+  });
+  eq("run7. shipment unívoco + detalhe com parcialidade preserva/enriquece returnDetalhe",
+    motorRun7Parcial.pedidos[0].posVendaParcial, true);
+  eq("run7. quantidade devolvida parcial preservada",
+    motorRun7Parcial.pedidos[0].posVendaQuantidadeDevolvida, 1);
+  eq("run7. pedido parcial não é removido do resultado",
+    motorRun7Parcial.resumo.pedidosValidos, 1);
+
+  // Shipment ambíguo (pack de 2 orders do período) SEM order_id explícito no
+  // detalhe: nunca escolhe A nem B — continua unresolved.
+  const orderPackReal1 = order("PACK_REAL_1", { shipping: { id: "SHIP-PACK-REAL" } });
+  const orderPackReal2 = order("PACK_REAL_2", { shipping: { id: "SHIP-PACK-REAL" } });
+  const claimPackAmbiguo = () => ({
+    id: "9001", resource: "shipment", resource_id: "SHIP-PACK-REAL",
+    status: "closed", type: "returns", related_entities: ["return"],
+    resolution: { reason: "item_returned", benefited: ["complainant"] },
+  });
+  const cenarioPackAmbiguo = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) {
+      return { ok: true, status: 200, data: { status: "closed", resource: null } }; // sem order_id
+    }
+    return { ok: true, status: 200, data: { paging: { total: 1 }, data: [claimPackAmbiguo()] } };
+  });
+  const { resultado: lotePackAmbiguo } = await capturandoLogs(() =>
+    cenarioPackAmbiguo.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+      orderIds: new Set(["PACK_REAL_1", "PACK_REAL_2"]),
+      orders: [orderPackReal1, orderPackReal2],
+    })
+  );
+  eq("run7. pack ambíguo sem order_id explícito continua unresolved (nunca escolhe A nem B)",
+    lotePackAmbiguo.returnsNaoResolvidos, 1);
+  ok("run7. pack ambíguo nunca entra no mapa de nenhum dos dois orders",
+    !lotePackAmbiguo.claimsMap.has("PACK_REAL_1") && !lotePackAmbiguo.claimsMap.has("PACK_REAL_2"));
+
+  // Shipment ambíguo + detalhe COM order_id explícito: aí sim resolve.
+  const cenarioPackResolvidoPorDetalhe = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) {
+      return { ok: true, status: 200, data: { order_id: "PACK_REAL_1", status: "closed" } };
+    }
+    return { ok: true, status: 200, data: { paging: { total: 1 }, data: [claimPackAmbiguo()] } };
+  });
+  const { resultado: lotePackResolvidoPorDetalhe } = await capturandoLogs(() =>
+    cenarioPackResolvidoPorDetalhe.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+      orderIds: new Set(["PACK_REAL_1", "PACK_REAL_2"]),
+      orders: [orderPackReal1, orderPackReal2],
+    })
+  );
+  eq("run7. pack ambíguo + order_id explícito no detalhe resolve",
+    lotePackResolvidoPorDetalhe.returnsNaoResolvidos, 0);
+  ok("run7. detalhe explícito resolve exatamente o order indicado pela API",
+    lotePackResolvidoPorDetalhe.claimsMap.has("PACK_REAL_1"));
+
+  // resource=order não regressa: continua ignorando o índice de shipment.
+  const orderComShipmentEmOutroPedido = order("ORDER_DIRETO");
+  const claimOrderDireto = {
+    id: "9100", resource: "order", resource_id: "ORDER_DIRETO",
+    status: "closed", type: "returns", related_entities: ["return"],
+    resolution: { reason: "item_returned", benefited: ["complainant"] },
+  };
+  const cenarioOrderDireto = servicoComRespostas(() => ({
+    ok: true, status: 200, data: { paging: { total: 1 }, data: [claimOrderDireto] },
+  }));
+  const { resultado: loteOrderDireto } = await capturandoLogs(() =>
+    cenarioOrderDireto.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+      orderIds: new Set(["ORDER_DIRETO"]),
+      orders: [orderComShipmentEmOutroPedido],
+    })
+  );
+  eq("run7. resource=order continua resolvendo direto (sem chamar /returns)",
+    cenarioOrderDireto.paths.filter((p) => p.includes("/returns")).length, 0);
+  ok("run7. resource=order vincula normalmente com o índice de shipment presente",
+    loteOrderDireto.claimsMap.has("ORDER_DIRETO"));
 
   /* ── 9. Devolução parcial não cancela o pedido inteiro ──────────────── */
 

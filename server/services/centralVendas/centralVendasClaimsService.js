@@ -44,6 +44,24 @@
 // (developers.mercadolivre.com.br e global-selling.mercadolibre.com) foi
 // bloqueada por 403 nas ferramentas de fetch disponíveis — o endpoint não
 // foi alterado por falta de evidência (ver regra do próprio prompt).
+//
+// RETURNS_UNRESOLVED por claim.resource="shipment" (21/08, syncRunId 7,
+// diagnóstico do claim 5553953268): o detalhe do endpoint respondeu HTTP 200
+// (`status: "delivered"`, `hasResourceId: true`, `resource: null`,
+// `hasOrderId: false`) — não é falha de rede nem de permissão, o claim
+// original só está associado a um SHIPMENT, não a um order. A Orders API já
+// fornece a relação oficial `order.shipping.id` — a mesma que o claim carrega
+// em `resource_id` quando `resource="shipment"`. `buildShipmentOrderIndex`
+// constrói, em memória e só com os Orders reais do período (nunca API
+// extra), o índice `shipmentId -> Set<orderId>`; `resolveClaimOrderLink` usa
+// esse índice para resolver o vínculo SOMENTE quando ele é unívoco (exatamente
+// 1 order no shipment). Shipment compartilhado por 2+ orders (pack) fica
+// `ambiguous: true` e nunca escolhe um dos dois — só o detalhe de returns
+// trazendo `order_id` explícito resolve esse caso. ORDER LINK e RETURN DETAIL
+// são responsabilidades separadas (o vínculo pode vir do shipment mesmo que o
+// detalhe não repita `order_id`); por isso o detalhe continua sendo buscado
+// mesmo após o vínculo por shipment, só para enriquecer quantidade/
+// parcialidade/status_money — nunca para desfazer o vínculo já resolvido.
 
 const { mlFetch } = require("../../utils/mlClient");
 
@@ -311,13 +329,73 @@ function classificarClaimsDoPedido(claims) {
   };
 }
 
+// Normalização de id de order/shipment: só string trim, igual ao resto do
+// arquivo (`String(claim.resource_id)`, `String(order.id)`). Não é o mesmo
+// `normalizeId` de utils/textUtils — aquele é específico de MLB de
+// item/produto (força prefixo "MLB" e descarta tudo que não é dígito), o que
+// corromperia ids de order/shipment (numéricos, sem prefixo MLB).
+function normalizeCrossId(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+// Índice em memória shipmentId -> Set<orderId>, construído SOMENTE com os
+// Orders reais já carregados para o período (nunca banco, nunca API extra —
+// a Orders API já forneceu `order.shipping.id`). Chave de cruzamento única e
+// oficial: `claim.resource_id === order.shipping.id`.
+function buildShipmentOrderIndex(orders) {
+  const index = new Map();
+  for (const order of orders || []) {
+    const shipmentId = normalizeCrossId(order?.shipping?.id);
+    const orderId = normalizeCrossId(order?.id);
+    if (!shipmentId || !orderId) continue;
+    if (!index.has(shipmentId)) index.set(shipmentId, new Set());
+    index.get(shipmentId).add(orderId);
+  }
+  return index;
+}
+
+// Resolve o vínculo order de um claim usando SOMENTE relações oficiais das
+// próprias APIs do Mercado Livre: `resource="order"` (id direto, comportamento
+// já existente) ou `resource="shipment"` cruzado com `shipmentToOrderIds`
+// (seção 4 do prompt). NUNCA por SKU, MLB, valor, data, posição no array ou
+// `pack_id == order_id` — essas heurísticas foram explicitamente proibidas.
+// Shipment com 2+ orders (pack compartilhado) nunca escolhe um: fica
+// `ambiguous: true` e só o detalhe de returns com `order_id` explícito
+// resolve esse caso (ver resolverReturnsSemVinculo).
+function resolveClaimOrderLink(claim, shipmentToOrderIds) {
+  const resource = String(claim?.resource || "").toLowerCase();
+  const resourceId = normalizeCrossId(claim?.resource_id);
+  if (!resourceId) return { orderId: null, source: null, ambiguous: false };
+
+  if (resource === "order") {
+    return { orderId: resourceId, source: "resource_order", ambiguous: false };
+  }
+
+  if (resource === "shipment" && shipmentToOrderIds instanceof Map) {
+    const candidatos = shipmentToOrderIds.get(resourceId);
+    if (candidatos && candidatos.size === 1) {
+      return { orderId: [...candidatos][0], source: "shipment_resource", ambiguous: false };
+    }
+    if (candidatos && candidatos.size > 1) {
+      return { orderId: null, source: null, ambiguous: true };
+    }
+  }
+
+  return { orderId: null, source: null, ambiguous: false };
+}
+
 function buildClaimsMap(claims) {
   const claimsMap = new Map();
   for (const claim of claims || []) {
     // `resource_id` só é id de pedido quando resource=order. Não usamos
     // order_id, pack_id nem posição no array como atalhos de cruzamento.
-    // A única exceção é o claim cujo detalhe v2 de devolução devolveu o
-    // `order_id` real — nesse caso o vínculo veio da API, não de suposição.
+    // As duas exceções são vínculos que vieram da própria API: o claim cujo
+    // detalhe v2 de devolução devolveu o `order_id` real, e o claim
+    // `resource=shipment` resolvido de forma unívoca por
+    // resolverReturnsSemVinculo (claim.resolvedOrderId — ver
+    // resolveClaimOrderLink/buildShipmentOrderIndex).
     const resolvidoPorDetalhe = claim?.returnDetalhe?.orderId || null;
     const porResource =
       String(claim?.resource || "").toLowerCase() === "order"
@@ -325,7 +403,7 @@ function buildClaimsMap(claims) {
       && claim?.resource_id !== undefined
         ? String(claim.resource_id)
         : null;
-    const orderId = porResource || resolvidoPorDetalhe;
+    const orderId = porResource || claim?.resolvedOrderId || resolvidoPorDetalhe;
     if (!orderId) continue;
     if (!claimsMap.has(orderId)) claimsMap.set(orderId, []);
     claimsMap.get(orderId).push(claim);
@@ -542,21 +620,33 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
   // Resolve o pedido de claims de devolução que NÃO têm vínculo direto com order.
   // Não há chamada indiscriminada: só entram claims com indicação de devolução e
   // sem `resource=order`.
-  async function resolverReturnsSemVinculo({ clienteId, claims, mlUserId, maxAttempts }) {
+  async function resolverReturnsSemVinculo({ clienteId, claims, mlUserId, maxAttempts, shipmentToOrderIds }) {
     const pendentes = (claims || []).filter((claim) => {
       if (String(claim?.resource || "").toLowerCase() === "order") return false;
       return claimHasReturn(claim) && claim?.id != null;
     });
 
     if (!pendentes.length) {
-      return { tentados: 0, resolvidos: 0, naoResolvidos: 0, truncados: 0, pendentesTotal: 0 };
+      return { tentados: 0, resolvidos: 0, naoResolvidos: 0, truncados: 0, pendentesTotal: 0, diagnosticos: [] };
+    }
+
+    // ORDER LINK primeiro (independente do detalhe — seção 5 do prompt):
+    // `resource="shipment"` cruzado em memória com os Orders do período. Roda
+    // para TODOS os pendentes, mesmo os que vão ficar de fora do teto de
+    // detalhe abaixo — é lookup em memória (nenhuma chamada de API), então não
+    // faz sentido deixar de tentar. Nunca escolhe entre 2+ orders do mesmo
+    // shipment (pack): esse caso fica `ambiguous` e cai no fluxo de detalhe.
+    for (const claim of pendentes) {
+      const link = resolveClaimOrderLink(claim, shipmentToOrderIds);
+      if (link.orderId) {
+        claim.resolvedOrderId = link.orderId;
+        claim.resolvedOrderSource = link.source;
+      }
     }
 
     const alvos = pendentes.slice(0, CLAIMS_RETURNS_MAX_DETALHES);
     const truncados = pendentes.length - alvos.length;
     const limit = pLimit(CLAIMS_RETURNS_CONCURRENCY);
-    let resolvidos = 0;
-    let naoResolvidos = 0;
     // Diagnóstico seguro (whitelist fixa) de cada devolução que ficou sem
     // vínculo — teto CLAIMS_RETURNS_DIAGNOSTIC_MAX, nunca o payload inteiro.
     // Objetivo: a próxima sincronização real explica SOZINHA a causa do
@@ -567,40 +657,59 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       alvos.map((claim) =>
         limit(async () => {
           const resultado = await buscarDetalheReturn({ clienteId, claimId: claim.id, mlUserId, maxAttempts });
-          if (resultado.ok && resultado.detalhe && resultado.detalhe.orderId) {
+
+          if (resultado.ok && resultado.detalhe) {
+            // RETURN DETAIL fica sempre disponível para enriquecer quantidade/
+            // parcialidade/status_money — mesmo quando não traz `order_id` e o
+            // vínculo já veio do shipment (seção 5: são responsabilidades
+            // separadas). Só usa o `order_id` do detalhe para o ORDER LINK
+            // quando o shipment não resolveu (0 orders ou pack ambíguo).
             claim.returnDetalhe = resultado.detalhe;
-            resolvidos++;
-          } else {
-            naoResolvidos++;
-            if (diagnosticos.length < CLAIMS_RETURNS_DIAGNOSTIC_MAX) {
-              diagnosticos.push({
-                claimId: claim.id != null ? String(claim.id) : null,
-                // Estrutura do claim já trazida pela busca por período —
-                // responde à seção 4 do prompt (resource/resource_id do
-                // PRÓPRIO claim já bastariam?) sem inventar vínculo.
-                claimResource: claim?.resource != null ? String(claim.resource).slice(0, 40) : null,
-                claimHasResourceId: claim?.resource_id !== null && claim?.resource_id !== undefined,
-                claimHasOrderIdField: claim?.order_id !== null && claim?.order_id !== undefined,
-                httpStatus: resultado.status ?? null,
-                motivo: resultado.motivo ?? null,
-                ...(resultado.diagnostic ? { detalhe: resultado.diagnostic } : {}),
-              });
+            if (claim.resolvedOrderId == null && resultado.detalhe.orderId) {
+              claim.resolvedOrderId = resultado.detalhe.orderId;
+              claim.resolvedOrderSource = "return_detail";
             }
+          }
+
+          if (claim.resolvedOrderId == null && diagnosticos.length < CLAIMS_RETURNS_DIAGNOSTIC_MAX) {
+            diagnosticos.push({
+              claimId: claim.id != null ? String(claim.id) : null,
+              // Estrutura do claim já trazida pela busca por período —
+              // responde à seção 4 do prompt (resource/resource_id do
+              // PRÓPRIO claim já bastariam?) sem inventar vínculo.
+              claimResource: claim?.resource != null ? String(claim.resource).slice(0, 40) : null,
+              claimHasResourceId: claim?.resource_id !== null && claim?.resource_id !== undefined,
+              claimHasOrderIdField: claim?.order_id !== null && claim?.order_id !== undefined,
+              httpStatus: resultado.status ?? null,
+              motivo: resultado.motivo ?? null,
+              ...(resultado.diagnostic ? { detalhe: resultado.diagnostic } : {}),
+            });
           }
         })
       )
     );
 
+    // Contagem final a partir do estado real de cada claim (não do resultado
+    // da chamada isolada): um claim truncado pelo teto de detalhe, mas
+    // resolvido pelo shipment no laço acima, é resolvido de verdade — nunca
+    // API extra, e o vínculo já existia em memória (seção 6/10 do prompt).
+    let resolvidos = 0;
+    let naoResolvidos = 0;
+    for (const claim of pendentes) {
+      if (claim.resolvedOrderId != null) resolvidos++;
+      else naoResolvidos++;
+    }
+
     console.log(
       `[centralVendas] claims returns detalhe: pendentes=${pendentes.length}`
         + ` tentados=${alvos.length} resolvidos=${resolvidos}`
-        + ` naoResolvidos=${naoResolvidos + truncados}`
+        + ` naoResolvidos=${naoResolvidos}`
     );
 
     return {
       tentados: alvos.length,
       resolvidos,
-      naoResolvidos: naoResolvidos + truncados,
+      naoResolvidos,
       truncados,
       // Universo esperado real de Returns (seção 29/30 da spec M3): todos os
       // claims de devolução que precisavam de detalhe, não apenas os que
@@ -616,6 +725,11 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
     dateFrom,
     dateTo,
     orderIds = null,
+    // Orders reais do período (mesmos objetos já carregados pelo sync, com
+    // `.id`/`.shipping.id`) — usados SOMENTE para montar o índice em memória
+    // shipmentId->orderIds (buildShipmentOrderIndex). Nenhuma chamada de API
+    // adicional é feita a partir daqui.
+    orders = null,
     limit = CLAIMS_PAGE_LIMIT,
     maxAttempts = CLAIMS_MAX_ATTEMPTS,
     lookaheadDays = CLAIMS_LOOKAHEAD_DAYS,
@@ -777,7 +891,10 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
     const resourceCounts = contarResources(claims);
     console.log("[centralVendas] claims por resource:", resourceCounts);
 
-    const returns = await resolverReturnsSemVinculo({ clienteId, claims, mlUserId: sellerId, maxAttempts });
+    const shipmentToOrderIds = buildShipmentOrderIndex(orders);
+    const returns = await resolverReturnsSemVinculo({
+      clienteId, claims, mlUserId: sellerId, maxAttempts, shipmentToOrderIds,
+    });
 
     const claimsMapCompleto = buildClaimsMap(claims);
 
@@ -845,6 +962,8 @@ module.exports = {
   buscarDetalheReturn: defaultService.buscarDetalheReturn,
   createCentralVendasClaimsService,
   buildClaimsMap,
+  buildShipmentOrderIndex,
+  resolveClaimOrderLink,
   buildClaimsRange,
   buildClaimsSearchPath,
   buildClaimsWindow,

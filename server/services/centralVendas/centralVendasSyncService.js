@@ -843,7 +843,10 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     }
     const [freteLote, claimsLote] = await Promise.all([
       buscarFretesEmLote({ clienteId: cliente.id, sellerId, shipmentIds }),
-      buscarClaimsPorPeriodo({ clienteId: cliente.id, sellerId, dateFrom: from, dateTo: to, orderIds }),
+      // `orders`: só para o índice em memória shipmentId->orderIds (RUN 7 —
+      // claim.resource="shipment" vinculado por order.shipping.id). Nenhuma
+      // chamada de API extra é feita a partir disso.
+      buscarClaimsPorPeriodo({ clienteId: cliente.id, sellerId, dateFrom: from, dateTo: to, orderIds, orders }),
     ]);
     const freteMap = freteLote.freteMap;
     const claimsMap = claimsLote.claimsMap;

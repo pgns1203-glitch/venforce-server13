@@ -69,11 +69,19 @@ function deriveSyncRunIds(snapshot) {
 
 // classificação simples e explícita (seção 8/19 do spec MP3) — nunca um
 // booleano único escondendo o motivo.
+//
+// Correção (status global do Settlement pendente): coveragePercent === 0
+// com Payments existentes NÃO é "partial" por si só — só é "pending" quando
+// a causa é settlement ainda não importado (assíncrono, seção do hardening
+// MP3). Zero cobertura por settlement_missing definitivo (nenhum Payment em
+// settlement_pending) nunca vira "pending" — cai em "partial", igual a
+// qualquer outra cobertura incompleta.
 function classificarMpReconciliationStatus({ syncRunIds, summary }) {
   if (!syncRunIds.length || summary.ordersTotal === 0) return "not_available";
-  if (summary.paymentsUnique === 0) return "pending";
   if (summary.ordersDivergent > 0 || summary.ordersAmbiguous > 0) return "divergent";
+  if (summary.paymentsUnique === 0) return "pending";
   if (summary.coveragePercent >= 99.995) return "complete";
+  if (summary.coveragePercent === 0 && summary.paymentsSettlementPending > 0) return "pending";
   return "partial";
 }
 

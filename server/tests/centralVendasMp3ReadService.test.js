@@ -16,7 +16,10 @@
 
 const assert = require("assert");
 const repository = require("../services/centralVendas/centralVendasRepository");
-const { createCentralVendasMp3ReadService } = require("../services/centralVendas/centralVendasMp3ReadService");
+const {
+  createCentralVendasMp3ReadService,
+  classificarMpReconciliationStatus,
+} = require("../services/centralVendas/centralVendasMp3ReadService");
 
 let checks = 0;
 function ok(label, condition) {
@@ -321,6 +324,44 @@ async function run() {
     const resp = await svc.getMercadoPagoReconciliationForRange(cliente.slug, { dateFrom: "2026-08-01", dateTo: "2026-08-31", page: 1, limit: 2 });
     eq("7: sem full, continua paginado (2 rows)", resp.rows.length, 2);
     ok("7: pagination.full ausente/falsy (comportamento antigo preservado)", !resp.pagination.full);
+  }
+
+  // 8 — classificarMpReconciliationStatus: correcao do status global do
+  // Settlement pendente. 0% de cobertura com Payments em settlement_pending
+  // NUNCA é "partial" (era o bug); 0% de cobertura por settlement_missing
+  // definitivo NUNCA vira "pending" (nunca confundir os dois motivos).
+  {
+    const base = { syncRunIds: [1], summary: {
+      ordersTotal: 425, paymentsUnique: 425, paymentsSettlementPending: 425,
+      coveragePercent: 0, ordersDivergent: 0, ordersAmbiguous: 0,
+    } };
+    eq("8: 425 pending / 0 cobertos -> pending", classificarMpReconciliationStatus(base), "pending");
+
+    const parcial = { syncRunIds: [1], summary: {
+      ordersTotal: 425, paymentsUnique: 425, paymentsSettlementPending: 225,
+      coveragePercent: 47.06, ordersDivergent: 0, ordersAmbiguous: 0,
+    } };
+    eq("8: 200 matched + 225 pending -> partial", classificarMpReconciliationStatus(parcial), "partial");
+
+    const completo = { syncRunIds: [1], summary: {
+      ordersTotal: 425, paymentsUnique: 425, paymentsSettlementPending: 0,
+      coveragePercent: 100, ordersDivergent: 0, ordersAmbiguous: 0,
+    } };
+    eq("8: 425 matched / 100% -> complete", classificarMpReconciliationStatus(completo), "complete");
+
+    const divergente = { syncRunIds: [1], summary: {
+      ordersTotal: 425, paymentsUnique: 425, paymentsSettlementPending: 0,
+      coveragePercent: 99, ordersDivergent: 1, ordersAmbiguous: 0,
+    } };
+    eq("8: 1 divergent -> divergent", classificarMpReconciliationStatus(divergente), "divergent");
+
+    // 0% de cobertura por settlement_missing DEFINITIVO (nao pending) —
+    // nunca chamar isso de "pending" (regra explicita do hardening).
+    const missingDefinitivo = { syncRunIds: [1], summary: {
+      ordersTotal: 10, paymentsUnique: 10, paymentsSettlementPending: 0,
+      coveragePercent: 0, ordersDivergent: 0, ordersAmbiguous: 0,
+    } };
+    eq("8: 0% cobertura por settlement_missing (nao pending) -> partial", classificarMpReconciliationStatus(missingDefinitivo), "partial");
   }
 
   console.log(`centralVendasMp3ReadService.test.js: ${checks} verificacoes OK`);

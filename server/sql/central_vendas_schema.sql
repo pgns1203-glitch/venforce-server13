@@ -441,3 +441,88 @@ CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_payment_charges_payment_row
 
 CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_payment_charges_run
   ON central_vendas_mp_payment_charges (sync_run_id);
+
+-- =============================================================================
+-- MP2 — Settlement Report + conciliação Payment <-> Settlement.
+--
+-- Ver docs/mercado_pago/HANDOFF_MERCADO_PAGO_LIQUIDACAO_REAL_COMPLETO.md —
+-- provou Payment.id = Settlement.SOURCE_ID com dado real. MP2 é ingestão +
+-- conciliação, NÃO participa do ledger M6/Resultado Parcial/podeConcluir —
+-- ver centralVendasMpSettlementReportService/centralVendasMpReconciliationService.
+--
+-- UNIQUE(sync_run_id): um report externo por run (seção 7/14 do spec MP2) —
+-- reconsultar/retomar o MESMO run NUNCA gera um segundo report do Mercado
+-- Pago. Runs diferentes (mesmo período reprocessado) preservam histórico:
+-- cada um tem sua própria linha, nunca sobrescreve a de outro run.
+--
+-- report_external_id é NULLABLE: uma tentativa pode falhar ANTES de chegar a
+-- gerar o report externo (ex.: SETTLEMENT_CONFIG_INCOMPATIBLE) e ainda assim
+-- precisa de uma linha auditável (status='failed') para aquele run.
+CREATE TABLE IF NOT EXISTS central_vendas_mp_settlement_reports (
+  id BIGSERIAL PRIMARY KEY,
+  sync_run_id BIGINT NOT NULL REFERENCES central_vendas_sync_runs(id) ON DELETE CASCADE,
+  cliente_id BIGINT,
+  cliente_conta_id BIGINT REFERENCES cliente_contas(id) ON DELETE SET NULL,
+  external_account_id TEXT,
+  report_external_id TEXT,
+  begin_date TIMESTAMPTZ,
+  end_date TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'requested',
+  report_type TEXT,
+  format TEXT,
+  currency_id TEXT,
+  file_name TEXT,
+  file_sha256 TEXT,
+  rows_count INTEGER,
+  error_code TEXT,
+  error_message TEXT,
+  requested_at TIMESTAMPTZ,
+  processed_at TIMESTAMPTZ,
+  downloaded_at TIMESTAMPTZ,
+  imported_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (sync_run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_settlement_reports_cliente_conta
+  ON central_vendas_mp_settlement_reports (cliente_conta_id);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_settlement_reports_status
+  ON central_vendas_mp_settlement_reports (status);
+
+-- Uma linha = UM movimento (uma linha do CSV) de UM Settlement Report. O
+-- Settlement é fonte DA CONTA, não só dos Payments do run atual (seção 15 do
+-- spec MP2) — movimentos sem Payment correspondente no run são preservados,
+-- nunca descartados. UNIQUE(settlement_report_id, row_number) ancora a
+-- idempotência: reimportar o MESMO report substitui as linhas daquele
+-- report (ver centralVendasMpSettlementRepository.replaceSettlementMovements),
+-- nunca duplica.
+CREATE TABLE IF NOT EXISTS central_vendas_mp_settlement_movements (
+  id BIGSERIAL PRIMARY KEY,
+  settlement_report_id BIGINT NOT NULL REFERENCES central_vendas_mp_settlement_reports(id) ON DELETE CASCADE,
+  sync_run_id BIGINT NOT NULL,
+  cliente_conta_id BIGINT,
+  row_number INTEGER NOT NULL,
+  source_id TEXT,
+  order_id TEXT,
+  shipping_id TEXT,
+  transaction_type TEXT,
+  transaction_amount NUMERIC(14,2),
+  fee_amount NUMERIC(14,2),
+  settlement_net_amount NUMERIC(14,2),
+  real_amount NUMERIC(14,2),
+  money_release_date TIMESTAMPTZ,
+  is_released BOOLEAN,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (settlement_report_id, row_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_settlement_movements_report
+  ON central_vendas_mp_settlement_movements (settlement_report_id);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_settlement_movements_source
+  ON central_vendas_mp_settlement_movements (source_id);
+
+CREATE INDEX IF NOT EXISTS idx_central_vendas_mp_settlement_movements_run
+  ON central_vendas_mp_settlement_movements (sync_run_id);

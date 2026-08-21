@@ -170,8 +170,37 @@ async function persistMpPayments({
   return { persistedCount, failedToPersist };
 }
 
+// MP2 — leitura read-only dos Payments persistidos de um run, com o total de
+// charges já somado (evidência auxiliar de feeExplanationMatch — seção 20 do
+// spec MP2). Aditivo: não altera nenhuma escrita do MP1. `charges_total` usa
+// COALESCE(SUM(...),0) só para o caso "0 charges" virar zero real (nunca
+// null) — o mesmo payment sem NENHUMA charge é uma soma vazia genuína.
+async function listMpPaymentsWithChargesTotalByRun(syncRunId, db = pool) {
+  const result = await db.query(
+    `SELECT p.*, COALESCE(SUM(c.amount_original), 0)::numeric(14,2) AS charges_total
+       FROM central_vendas_mp_payments p
+       LEFT JOIN central_vendas_mp_payment_charges c ON c.mp_payment_row_id = p.id
+      WHERE p.sync_run_id = $1
+      GROUP BY p.id
+      ORDER BY p.id ASC`,
+    [syncRunId]
+  );
+  return result.rows.map((row) => ({
+    id: Number(row.id),
+    syncRunId: Number(row.sync_run_id),
+    clienteContaId: row.cliente_conta_id != null ? Number(row.cliente_conta_id) : null,
+    orderId: row.order_id || null,
+    orderIds: Array.isArray(row.order_ids_json) ? row.order_ids_json : [],
+    paymentId: row.payment_id,
+    transactionAmount: row.transaction_amount === null ? null : Number(row.transaction_amount),
+    netReceivedAmount: row.net_received_amount === null ? null : Number(row.net_received_amount),
+    chargesTotal: row.charges_total === null ? 0 : Number(row.charges_total),
+  }));
+}
+
 module.exports = {
   upsertMpPayment,
   replaceMpPaymentCharges,
   persistMpPayments,
+  listMpPaymentsWithChargesTotalByRun,
 };

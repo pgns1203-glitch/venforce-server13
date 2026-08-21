@@ -88,4 +88,21 @@ router.get(
   controller.listarSyncRunsController
 );
 
+// MP2 — conciliação Payment <-> Settlement (Mercado Pago), escopada pelo
+// mesmo runId/clienteSlug validado por obterSyncRun (ver controller).
+router.get(
+  "/:slug/sync-runs/:runId/mercado-pago/reconciliation",
+  authMiddleware,
+  requireAdmin,
+  controller.obterMercadoPagoReconciliationController
+);
+
+// MP2 — start/refresh idempotente do Settlement Report do run.
+router.post(
+  "/:slug/sync-runs/:runId/mercado-pago/settlement",
+  authMiddleware,
+  requireAdmin,
+  controller.iniciarOuRetomarMercadoPagoSettlementController
+);
+
 module.exports = router;

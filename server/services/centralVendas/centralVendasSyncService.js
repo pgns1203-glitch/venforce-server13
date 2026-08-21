@@ -36,9 +36,24 @@ const {
 } = require("./centralVendasClaimsService");
 const { coletarPaymentsMp } = require("./centralVendasMpPaymentsService");
 const { persistMpPayments } = require("./centralVendasMpPaymentsRepository");
+// MP2 — Settlement Report. Automação no Sync Worker é OPT-IN (env flag,
+// desligada por padrão nesta rodada — ver comentário no ponto de chamada
+// abaixo): dispara efetivamente só quando o operador ligar
+// CENTRAL_VENDAS_MP_SETTLEMENT_AUTOSTART=true. O endpoint operacional
+// POST .../mercado-pago/settlement continua disponível para start/refresh
+// manual independente desta flag.
+const { ensureSettlementReportForRun } = require("./centralVendasMpSettlementReportService");
 
 const MAX_PAGINAS = 100; // 100 * 50 = 5.000 pedidos — teto de seguranca (Render)
 const PAGE_LIMIT = 50;
+
+// MP2 — desligado por padrão: liga a automação do Settlement Report no
+// próprio Sync Worker. Enquanto desligada, o comportamento do worker é
+// IDÊNTICO ao pré-MP2 (nenhuma chamada extra a mercadoPagoClient/nenhuma
+// escrita nas tabelas de Settlement) — só o endpoint operacional POST
+// .../mercado-pago/settlement aciona o fluxo manualmente.
+const SETTLEMENT_AUTOSTART_ENABLED =
+  String(process.env.CENTRAL_VENDAS_MP_SETTLEMENT_AUTOSTART || "").toLowerCase() === "true";
 
 function getRepository() {
   return require("./centralVendasRepository");
@@ -915,6 +930,33 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       });
     }
 
+    // MP2 — Settlement Report automático, OPT-IN via env flag (desligado por
+    // padrão nesta rodada). Quando ligado: ensure/poll bounded/download/
+    // importa dentro do próprio ciclo do run, sem nunca travar o worker (a
+    // função já é bounded internamente) e sem nunca derrubar a sincronização
+    // se o Mercado Pago falhar/estiver indisponível (try/catch dedicado,
+    // fora do fluxo principal). NÃO registra fonte em
+    // central_vendas_sync_sources (seção 8 do spec MP2 — o lifecycle
+    // assíncrono já tem autoridade própria em
+    // central_vendas_mp_settlement_reports; nunca falso "incomplete"/
+    // "failed" por um report legitimamente pending).
+    if (sourceService && SETTLEMENT_AUTOSTART_ENABLED) {
+      try {
+        await ensureSettlementReportForRun({
+          syncRunId: runId,
+          clienteId: cliente.id,
+          clienteContaId: context.conta?.id || null,
+          externalAccountId: sellerId,
+          sellerId,
+          dateFrom: from,
+          dateTo: to,
+          db,
+        });
+      } catch (err) {
+        console.error(`[centralVendas][mp2] settlement automatico falhou (run ${runId}):`, err?.message);
+      }
+    }
+
     if (sourceService) {
       // Shipments: universo esperado = shipment IDs únicos do período (seção
       // 22), nunca orders.length. `naoColetados` (Hardening M3, seções 12-16)
@@ -1283,4 +1325,5 @@ module.exports = {
   buscarCustosPorBaseId,
   fetchAllOrders,
   computeBaseStats,
+  SETTLEMENT_AUTOSTART_ENABLED,
 };

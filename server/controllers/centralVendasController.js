@@ -5,6 +5,9 @@ const centralVendasSyncRunService = require("../services/centralVendas/centralVe
 const centralVendasSyncWorker = require("../services/centralVendas/centralVendasSyncWorker");
 const centralVendasSyncSourceService = require("../services/centralVendas/centralVendasSyncSourceService");
 const centralVendasReadService = require("../services/centralVendas/centralVendasReadService");
+// MP2 — conciliação Payment <-> Settlement (Mercado Pago). Read-only.
+const centralVendasMpReconciliationService = require("../services/centralVendas/centralVendasMpReconciliationService");
+const centralVendasMpSettlementReportService = require("../services/centralVendas/centralVendasMpSettlementReportService");
 
 const CAMPOS_SENSIVEIS = new Set([
   "access_token", "refresh_token", "api_key", "apikey", "password",
@@ -380,6 +383,78 @@ async function listarSyncRunsController(req, res) {
   }
 }
 
+// MP2 — GET read-only da conciliação Payment <-> Settlement de um run.
+// IDOR-safe: reusa obterSyncRun (mesma porta de M2/M3), que já lança 404 se
+// o run não pertencer ao clienteSlug — nunca uma segunda forma de acesso a
+// dado escopado por run. Sem token, sem dado de comprador (rows só trazem
+// os campos financeiros agregados listados na seção 27 do spec MP2).
+async function obterMercadoPagoReconciliationController(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId)) return responder(res, 400, { ok: false, erro: "runId invalido." });
+
+    const run = await centralVendasSyncRunService.obterSyncRun({ runId, clienteSlug: slug });
+    const { report, rows, summary } = await centralVendasMpReconciliationService.getReconciliationForRun({ run });
+
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const start = (page - 1) * limit;
+    const pageRows = rows.slice(start, start + limit);
+
+    return responder(res, 200, {
+      ok: true,
+      report: report ? {
+        id: report.reportExternalId,
+        status: report.status,
+        fileName: report.fileName,
+        rowsCount: report.rowsCount,
+        beginDate: report.beginDate,
+        endDate: report.endDate,
+        errorCode: report.errorCode,
+      } : null,
+      summary,
+      rows: pageRows,
+      pagination: { page, limit, total: rows.length },
+    });
+  } catch (err) {
+    return tratarErro(res, err, "obterMercadoPagoReconciliation");
+  }
+}
+
+// MP2 — POST idempotente de start/refresh do Settlement Report do run.
+// Mesmo escopo de conta/IDOR do endpoint de leitura acima — nunca gera um
+// segundo report externo quando já existe um válido para este run (seção 28
+// do spec MP2).
+async function iniciarOuRetomarMercadoPagoSettlementController(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId)) return responder(res, 400, { ok: false, erro: "runId invalido." });
+
+    const run = await centralVendasSyncRunService.obterSyncRun({ runId, clienteSlug: slug });
+    if (!run.externalAccountId) {
+      return responder(res, 422, { ok: false, erro: "Run sem conta Mercado Livre/Pago associada." });
+    }
+
+    const report = await centralVendasMpSettlementReportService.ensureSettlementReportForRun({
+      syncRunId: run.id,
+      clienteId: run.clienteId,
+      clienteContaId: run.clienteContaId,
+      externalAccountId: run.externalAccountId,
+      sellerId: run.externalAccountId,
+      dateFrom: run.dateFrom,
+      dateTo: run.dateTo,
+    });
+
+    return responder(res, 202, { ok: true, report });
+  } catch (err) {
+    return tratarErro(res, err, "iniciarOuRetomarMercadoPagoSettlement");
+  }
+}
+
 module.exports = {
   obterCentralVendas,
   obterCentralVendasRead,
@@ -392,5 +467,7 @@ module.exports = {
   criarSyncRunController,
   obterSyncRunController,
   listarSyncRunsController,
+  obterMercadoPagoReconciliationController,
+  iniciarOuRetomarMercadoPagoSettlementController,
   maskSensitiveData,
 };

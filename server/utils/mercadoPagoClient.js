@@ -28,9 +28,26 @@ function parseRetryAfter(res) {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
-// Idêntico a mlFetch (mesma máquina de refresh em 401), só troca o host.
-// `path` sempre relativo (ex.: "/v1/payments/123") — nunca uma URL completa.
-async function mpFetch(clienteId, path, options = {}) {
+// `path` deve ser sempre relativo (ex.: "/v1/payments/123"), nunca uma URL
+// absoluta — mesmo que o chamador tente injetar algo como "https://evil".
+// O host é sempre `${MP_API}${path}` (concatenação simples, nunca URL()
+// parseada a partir de entrada externa), então isso já é seguro por
+// construção; esta função só recusa cedo um path visivelmente errado (ex.:
+// path vindo de um file_name de Settlement não sanitizado — seção 21/31 do
+// spec MP2).
+function assertPathRelativoSeguro(path) {
+  const p = String(path || "");
+  if (!p.startsWith("/") || p.includes("://")) {
+    throw new Error(`Path invalido para mpFetch/mpFetchText (precisa ser relativo, comecar com "/"): "${p.slice(0, 200)}"`);
+  }
+}
+
+// Núcleo compartilhado por mpFetch (JSON) e mpFetchText (CSV do Settlement
+// Report — MP2). Mesma máquina de refresh em 401/mesmo grant account-aware/
+// mesmo Retry-After de mpFetch original; só troca como o corpo da resposta é
+// lido (`readBody`).
+async function mpFetchCore(clienteId, path, options, readBody) {
+  assertPathRelativoSeguro(path);
   const { mlUserId, noRefresh = false, ...fetchOptions } = options;
 
   async function doRequest(token) {
@@ -65,8 +82,7 @@ async function mpFetch(clienteId, path, options = {}) {
       res = await doRequest(tokenResult.accessToken);
     }
 
-    let data;
-    try { data = await res.json(); } catch (_) { data = null; }
+    const data = await readBody(res);
     return { ok: res.ok, status: res.status, data, retryAfter: parseRetryAfter(res) };
   } catch (error) {
     console.error(JSON.stringify({
@@ -79,8 +95,28 @@ async function mpFetch(clienteId, path, options = {}) {
   }
 }
 
+// Idêntico a mlFetch (mesma máquina de refresh em 401), só troca o host.
+// `path` sempre relativo (ex.: "/v1/payments/123") — nunca uma URL completa.
+async function mpFetch(clienteId, path, options = {}) {
+  return mpFetchCore(clienteId, path, options, async (res) => {
+    try { return await res.json(); } catch (_) { return null; }
+  });
+}
+
+// MP2 — Settlement Report é baixado como CSV (nunca JSON). Aditivo: mesmo
+// account-aware/refresh/Retry-After de mpFetch, só troca `res.json()` por
+// `res.text()`. `data` aqui é sempre uma string (ou null em falha de leitura),
+// nunca um objeto parseado — quem decide o que fazer com o texto é o chamador
+// (ver centralVendasMpSettlementCsvParser).
+async function mpFetchText(clienteId, path, options = {}) {
+  return mpFetchCore(clienteId, path, options, async (res) => {
+    try { return await res.text(); } catch (_) { return null; }
+  });
+}
+
 module.exports = {
   mpFetch,
+  mpFetchText,
   parseRetryAfter,
   MP_API,
 };

@@ -9,8 +9,10 @@ const {
   classificarClaim,
   createCentralVendasClaimsService,
   extrairReturnDetalhe,
+  extractReturnDetalheDiagnostic,
   CLAIMS_LOOKAHEAD_DAYS,
   CLAIMS_SITE_ID,
+  CLAIMS_RETURNS_DIAGNOSTIC_MAX,
 } = require("../services/centralVendas/centralVendasClaimsService");
 const {
   buildCostMap,
@@ -478,6 +480,92 @@ async function run() {
   );
   eq("16b. tela não pode concluir com pós-venda incompleto", payloadReturns.motor.podeConcluir, false);
   eq("16b. contagem exposta no payload", payloadReturns.resumo.claimsReturnsNaoResolvidos, 1);
+
+  /* ── Diagnóstico seguro de returns não resolvidos (rodada do 21/08:
+     syncRunId 6, cliente red_fish, RETURNS_UNRESOLVED com 1/1 devolução sem
+     vínculo). Antes só existia o contador agregado — a causa real do único
+     caso nunca sobrevivia além do console.log do worker. ──────────────── */
+
+  // extractReturnDetalheDiagnostic: extrai só a whitelist fixa de campos
+  // estruturais, nunca o payload inteiro nem dado de comprador/endereço.
+  eq("diag. resposta OK sem order_id expõe estrutura (hasOrderId=false)",
+    extractReturnDetalheDiagnostic({ status: "closed", subtype: "dispute", resource: "shipment", items: [{ quantity: 1 }] }),
+    { hasOrderId: false, resource: "shipment", hasResourceId: false, itemsCount: 1, status: "closed", subtype: "dispute" });
+  eq("diag. resposta com order_id expõe hasOrderId=true", extractReturnDetalheDiagnostic({ order_id: "X" }).hasOrderId, true);
+  eq("diag. resposta vazia/nula não gera diagnóstico", extractReturnDetalheDiagnostic(null), null);
+  ok("diag. nunca inclui campos além da whitelist",
+    Object.keys(extractReturnDetalheDiagnostic({
+      order_id: "X", buyer: { nickname: "fulano" }, shipping_address: "Rua X, 123", token: "abc",
+    })).every((k) => ["hasOrderId", "resource", "hasResourceId", "itemsCount", "status", "subtype"].includes(k)));
+
+  // Caso 1: detalhe responde OK mas SEM order_id (estrutura ausente, não erro
+  // HTTP) — é o caso que a rodada real (syncRunId 6) mais provavelmente
+  // encontrou, já que Claims Search fechou 39/39 (permissão OK).
+  const claimReturnSemOrderDiag = () => ({
+    id: 900, resource: "shipment", resource_id: "SHIP-DIAG",
+    status: "opened", type: "returns", related_entities: ["return"],
+    resolution: null,
+  });
+  const cenarioSemOrderId = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) {
+      return { ok: true, status: 200, data: { status: "opened", subtype: "dispute", items: [] } };
+    }
+    return { ok: true, status: 200, data: { paging: { total: 1 }, data: [claimReturnSemOrderDiag()] } };
+  });
+  const { resultado: loteSemOrderId } = await capturandoLogs(() =>
+    cenarioSemOrderId.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+    })
+  );
+  eq("diag. resposta OK sem order_id conta como não resolvido", loteSemOrderId.returnsNaoResolvidos, 1);
+  eq("diag. 1 entrada de diagnóstico gerada", loteSemOrderId.returnsDiagnosticos.length, 1);
+  eq("diag. claimId preservado", loteSemOrderId.returnsDiagnosticos[0].claimId, "900");
+  eq("diag. httpStatus 200 quando a resposta foi OK", loteSemOrderId.returnsDiagnosticos[0].httpStatus, 200);
+  eq("diag. estrutura do detalhe exposta (hasOrderId=false)",
+    loteSemOrderId.returnsDiagnosticos[0].detalhe,
+    { hasOrderId: false, resource: null, hasResourceId: false, itemsCount: 0, status: "opened", subtype: "dispute" });
+  eq("diag. resource do PRÓPRIO claim (busca por período) também vai junto",
+    loteSemOrderId.returnsDiagnosticos[0].claimResource, "shipment");
+
+  // Caso 2: detalhe falha por HTTP (ex.: 404/403) — diagnóstico carrega
+  // httpStatus + error/message/cause do ML, nunca token/Authorization.
+  const cenarioHttpFalha = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) {
+      return { ok: false, status: 404, data: { error: "not_found", message: "claim return not found", cause: null } };
+    }
+    return { ok: true, status: 200, data: { paging: { total: 1 }, data: [claimReturnSemOrderDiag()] } };
+  });
+  const { resultado: loteHttpFalha } = await capturandoLogs(() =>
+    cenarioHttpFalha.service.buscarClaimsPorPeriodo({
+      clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE,
+    })
+  );
+  eq("diag. httpStatus 404 propagado", loteHttpFalha.returnsDiagnosticos[0].httpStatus, 404);
+  eq("diag. motivo http_404 propagado", loteHttpFalha.returnsDiagnosticos[0].motivo, "http_404");
+  eq("diag. error/message do ML propagados, nunca o corpo inteiro",
+    [loteHttpFalha.returnsDiagnosticos[0].detalhe.mlError, loteHttpFalha.returnsDiagnosticos[0].detalhe.mlMessage],
+    ["not_found", "claim return not found"]);
+  ok("diag. nenhum diagnóstico contém token/Authorization",
+    !JSON.stringify(loteHttpFalha.returnsDiagnosticos).match(/token|authorization|Bearer/i));
+  ok("diag. nenhum diagnóstico contém dado de comprador/endereço/nome",
+    !JSON.stringify(loteHttpFalha.returnsDiagnosticos).match(/buyer|nickname|address|endereco/i));
+
+  // Teto: diagnóstico nunca cresce sem limite mesmo com muitas devoluções
+  // sem vínculo no mesmo run.
+  const muitosClaimsSemVinculo = Array.from({ length: CLAIMS_RETURNS_DIAGNOSTIC_MAX + 5 }, (_, i) => ({
+    id: 1000 + i, resource: "shipment", resource_id: `SHIP-${i}`,
+    status: "opened", type: "returns", related_entities: ["return"], resolution: null,
+  }));
+  const cenarioTeto = servicoComRespostas((requestPath) => {
+    if (requestPath.includes("/returns")) return { ok: true, status: 200, data: { status: "opened" } };
+    return { ok: true, status: 200, data: { paging: { total: muitosClaimsSemVinculo.length }, data: muitosClaimsSemVinculo } };
+  });
+  const { resultado: loteTeto } = await capturandoLogs(() =>
+    cenarioTeto.service.buscarClaimsPorPeriodo({ clienteId: 1, sellerId: 999, ...PERIODO, hoje: HOJE })
+  );
+  eq("diag. lista de diagnóstico respeita o teto", loteTeto.returnsDiagnosticos.length, CLAIMS_RETURNS_DIAGNOSTIC_MAX);
+  eq("diag. contador agregado continua contando TODOS, não só o teto",
+    loteTeto.returnsNaoResolvidos, muitosClaimsSemVinculo.length);
 
   /* ── 9. Devolução parcial não cancela o pedido inteiro ──────────────── */
 

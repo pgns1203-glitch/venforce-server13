@@ -947,7 +947,18 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
           expectedCount: returnsExpected,
           receivedCount: returnsResolved,
           errorCode: returnsComplete ? undefined : "RETURNS_UNRESOLVED",
-          metadata: { resolved: returnsResolved, unresolved: returnsUnresolved },
+          metadata: {
+            resolved: returnsResolved,
+            unresolved: returnsUnresolved,
+            // Diagnóstico seguro (whitelist fixa, sem token/payload completo)
+            // de CADA devolução que ficou sem vínculo — antes só existia o
+            // contador agregado, e a causa real nunca sobrevivia ao console.log
+            // do worker. Ver extractReturnDetalheDiagnostic em
+            // centralVendasClaimsService.js.
+            ...(claimsLote.returnsDiagnosticos && claimsLote.returnsDiagnosticos.length
+              ? { unresolvedDiagnostics: claimsLote.returnsDiagnosticos }
+              : {}),
+          },
           db,
         });
       }

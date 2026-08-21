@@ -29,6 +29,21 @@
 // do produto) só para satisfazer a exigência de "ao menos um filtro"; o
 // escopo por conta continua garantido pelo token (`mlUserId` propagado a
 // `mlFetch`), nunca por um parâmetro de query.
+//
+// RETURNS_UNRESOLVED (21/08, syncRunId 6, cliente red_fish): com o
+// CLAIMS_HTTP_400 resolvido, Claims fechou 39/39 e sobrou exatamente 1
+// devolução sem vínculo (`resource != order`) cujo detalhe v2 não trouxe
+// `order_id`. Não havia, até então, nenhum registro de QUAL claim era esse
+// nem do que a resposta do detalhe realmente trazia — só o contador agregado
+// chegava ao Sync Source. `extractReturnDetalheDiagnostic` e o campo
+// `returnsDiagnosticos` (propagados até
+// central_vendas_sync_sources.metadata_json.unresolvedDiagnostics) existem
+// para que a PRÓXIMA sincronização real explique sozinha a causa — sem
+// inventar vínculo nenhum, e sem gravar payload completo, token ou dado de
+// comprador. Tentativa de auditar a doc oficial do endpoint nesta rodada
+// (developers.mercadolivre.com.br e global-selling.mercadolibre.com) foi
+// bloqueada por 403 nas ferramentas de fetch disponíveis — o endpoint não
+// foi alterado por falta de evidência (ver regra do próprio prompt).
 
 const { mlFetch } = require("../../utils/mlClient");
 
@@ -54,6 +69,13 @@ const CLAIMS_SITE_ID = "MLB";
 // e confiável com um pedido. Teto para não transformar isso numa chamada por claim.
 const CLAIMS_RETURNS_MAX_DETALHES = 300;
 const CLAIMS_RETURNS_CONCURRENCY = 4;
+
+// Teto do diagnóstico seguro de returns não resolvidos (whitelist de campos,
+// nunca o payload completo) que sobrevive até o Sync Source. Não é o mesmo
+// teto de CLAIMS_RETURNS_MAX_DETALHES: aqui só limitamos quantas ENTRADAS de
+// diagnóstico persistem por run, para não crescer sem limite se muitas
+// devoluções ficarem sem vínculo.
+const CLAIMS_RETURNS_DIAGNOSTIC_MAX = 20;
 
 const REFUND_RESOLUTIONS = new Set([
   "item_returned",
@@ -188,6 +210,27 @@ function extrairReturnDetalhe(data) {
     estado: data.status ?? null,
     subtipo: data.subtype ?? null,
     parcial,
+  };
+}
+
+// Diagnóstico SEGURO do detalhe de GET .../claims/{id}/returns — usado só
+// quando o detalhe respondeu OK mas não trouxe vínculo (orderId null), para
+// entender a causa sem guardar o payload inteiro. Whitelist fixa: nenhum
+// dado de comprador, endereço, nome ou token. `resource`/`status`/`subtype`
+// são rótulos curtos documentados pela API (ex.: "order", "closed",
+// "dispute"), nunca texto livre do usuário.
+function extractReturnDetalheDiagnostic(data) {
+  if (!data || typeof data !== "object") return null;
+  const orderIdDireto = data.order_id ?? data.orderId ?? null;
+  const resourceId = data.resource_id ?? null;
+  const itens = Array.isArray(data.items) ? data.items : [];
+  return {
+    hasOrderId: orderIdDireto !== null && orderIdDireto !== undefined,
+    resource: data.resource != null ? String(data.resource).slice(0, 40) : null,
+    hasResourceId: resourceId !== null && resourceId !== undefined,
+    itemsCount: itens.length,
+    status: data.status != null ? String(data.status).slice(0, 40) : null,
+    subtype: data.subtype != null ? String(data.subtype).slice(0, 40) : null,
   };
 }
 
@@ -456,20 +499,35 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
   // contado em `returnsNaoResolvidos`.
   async function buscarDetalheReturn({ clienteId, claimId, mlUserId, maxAttempts = CLAIMS_MAX_ATTEMPTS }) {
     const id = String(claimId || "").trim();
-    if (!id) return { ok: false, motivo: "sem_claim_id", detalhe: null };
+    if (!id) return { ok: false, motivo: "sem_claim_id", status: null, detalhe: null, diagnostic: null };
 
     let motivo = "erro_fetch";
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const response = await mlFetchFn(clienteId, `/post-purchase/v2/claims/${encodeURIComponent(id)}/returns`, { mlUserId });
-        if (response?.ok) return { ok: true, motivo: null, detalhe: extrairReturnDetalhe(response.data) };
+        if (response?.ok) {
+          return {
+            ok: true,
+            motivo: null,
+            status: response.status ?? 200,
+            detalhe: extrairReturnDetalhe(response.data),
+            // Diagnóstico estrutural: sobrevive mesmo quando a resposta é OK
+            // mas não trouxe orderId — é exatamente o caso que precisa de
+            // explicação (ver extractReturnDetalheDiagnostic acima).
+            diagnostic: extractReturnDetalheDiagnostic(response.data),
+          };
+        }
 
         motivo = `http_${response?.status || "desconhecido"}`;
+        // Corpo de erro do ML: mesmos 3 campos documentados (error/message/
+        // cause) já usados em extractClaimsDiagnostic para a busca — nunca o
+        // corpo completo.
+        const diagnosticoErro = extractClaimsDiagnostic(response?.data);
         if (RETRYABLE_STATUS.has(response?.status) && attempt < maxAttempts) {
           await sleepFn(backoffDelayMs(attempt, response?.retryAfter));
           continue;
         }
-        return { ok: false, motivo, detalhe: null };
+        return { ok: false, motivo, status: response?.status ?? null, detalhe: null, diagnostic: diagnosticoErro };
       } catch (_) {
         motivo = "erro_fetch";
         if (attempt < maxAttempts) {
@@ -478,7 +536,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
         }
       }
     }
-    return { ok: false, motivo, detalhe: null };
+    return { ok: false, motivo, status: null, detalhe: null, diagnostic: null };
   }
 
   // Resolve o pedido de claims de devolução que NÃO têm vínculo direto com order.
@@ -499,6 +557,11 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
     const limit = pLimit(CLAIMS_RETURNS_CONCURRENCY);
     let resolvidos = 0;
     let naoResolvidos = 0;
+    // Diagnóstico seguro (whitelist fixa) de cada devolução que ficou sem
+    // vínculo — teto CLAIMS_RETURNS_DIAGNOSTIC_MAX, nunca o payload inteiro.
+    // Objetivo: a próxima sincronização real explica SOZINHA a causa do
+    // RETURNS_UNRESOLVED, sem precisar reproduzir o caso manualmente.
+    const diagnosticos = [];
 
     await Promise.all(
       alvos.map((claim) =>
@@ -509,6 +572,20 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
             resolvidos++;
           } else {
             naoResolvidos++;
+            if (diagnosticos.length < CLAIMS_RETURNS_DIAGNOSTIC_MAX) {
+              diagnosticos.push({
+                claimId: claim.id != null ? String(claim.id) : null,
+                // Estrutura do claim já trazida pela busca por período —
+                // responde à seção 4 do prompt (resource/resource_id do
+                // PRÓPRIO claim já bastariam?) sem inventar vínculo.
+                claimResource: claim?.resource != null ? String(claim.resource).slice(0, 40) : null,
+                claimHasResourceId: claim?.resource_id !== null && claim?.resource_id !== undefined,
+                claimHasOrderIdField: claim?.order_id !== null && claim?.order_id !== undefined,
+                httpStatus: resultado.status ?? null,
+                motivo: resultado.motivo ?? null,
+                ...(resultado.diagnostic ? { detalhe: resultado.diagnostic } : {}),
+              });
+            }
           }
         })
       )
@@ -529,6 +606,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       // claims de devolução que precisavam de detalhe, não apenas os que
       // couberam no teto CLAIMS_RETURNS_MAX_DETALHES.
       pendentesTotal: pendentes.length,
+      diagnosticos,
     };
   }
 
@@ -572,6 +650,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       returnsResolvidos: 0,
       returnsNaoResolvidos: 0,
       returnsPendentesTotal: 0,
+      returnsDiagnosticos: [],
       claimsForaDoPeriodo: 0,
       pedidosComClaims: 0,
       diagnostic: null,
@@ -750,6 +829,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep
       returnsResolvidos: returns.resolvidos,
       returnsNaoResolvidos: returns.naoResolvidos,
       returnsPendentesTotal: returns.pendentesTotal,
+      returnsDiagnosticos: returns.diagnosticos,
       claimsForaDoPeriodo,
       pedidosComClaims: claimsMap.size,
     };
@@ -773,6 +853,7 @@ module.exports = {
   classificarClaimsDoPedido,
   contarResources,
   extrairReturnDetalhe,
+  extractReturnDetalheDiagnostic,
   extractClaimsDiagnostic,
   computeClaimsCompleteness,
   CLAIMS_PAGE_LIMIT,
@@ -781,4 +862,6 @@ module.exports = {
   CLAIMS_LOOKAHEAD_DAYS,
   CLAIMS_TIMEZONE_FORMATS,
   CLAIMS_SITE_ID,
+  CLAIMS_RETURNS_MAX_DETALHES,
+  CLAIMS_RETURNS_DIAGNOSTIC_MAX,
 };

@@ -175,6 +175,55 @@ function run() {
     eq("tipo desconhecido aparece em typeCounts", summary.transactionTypeCounts.TIPO_NUNCA_VISTO_ANTES, 1);
   }
 
+  // Hardening final MP3 (ponto 2) — settlement_pending vs settlement_missing.
+  // Retrocompatibilidade: sem `reports`, comportamento IDENTICO ao anterior
+  // (settlement_missing definitivo) — teste 34 acima ja prova isso.
+  {
+    // report ainda "pending" (nao imported) -> zero SETTLEMENT NUNCA vira
+    // settlement_missing definitivo.
+    const payments = [payment({ paymentId: "P1", transactionAmount: 100, netReceivedAmount: 90 })];
+    payments[0].syncRunId = 501;
+    const { rows } = reconcilePayments({ payments, movements: [], reports: [{ syncRunId: 501, status: "pending" }] });
+    eq("hardening: report pending -> settlement_pending (nunca missing)", rows[0].reconciliationStatus, "settlement_pending");
+  }
+  {
+    // report "processed" (ainda nao importado) -> mesma regra.
+    const payments = [payment({ paymentId: "P1", transactionAmount: 100, netReceivedAmount: 90 })];
+    payments[0].syncRunId = 502;
+    const { rows } = reconcilePayments({ payments, movements: [], reports: [{ syncRunId: 502, status: "processed" }] });
+    eq("hardening: report processed -> settlement_pending", rows[0].reconciliationStatus, "settlement_pending");
+  }
+  {
+    // report "imported" + zero SETTLEMENT -> settlement_missing DEFINITIVO.
+    const payments = [payment({ paymentId: "P1", transactionAmount: 100, netReceivedAmount: 90 })];
+    payments[0].syncRunId = 503;
+    const { rows, summary } = reconcilePayments({ payments, movements: [], reports: [{ syncRunId: 503, status: "imported" }] });
+    eq("hardening: report imported + zero settlement -> settlement_missing", rows[0].reconciliationStatus, "settlement_missing");
+    eq("hardening: summary.paymentsSettlementMissing", summary.paymentsSettlementMissing, 1);
+  }
+  {
+    // nenhum report para o run do Payment (ainda nem foi requisitado) ->
+    // nunca definitivo enquanto nao ha prova de import completo.
+    const payments = [payment({ paymentId: "P1", transactionAmount: 100, netReceivedAmount: 90 })];
+    payments[0].syncRunId = 504;
+    const { rows } = reconcilePayments({ payments, movements: [], reports: [] });
+    eq("hardening: sem report algum para o run -> settlement_pending (nao missing)", rows[0].reconciliationStatus, "settlement_pending");
+  }
+  {
+    // range com varios runs: 1 imported + 1 pending -> classificados
+    // separadamente, nunca o pending contado como missing.
+    const payments = [
+      { paymentId: "PA", orderId: "OA", orderIds: ["OA"], transactionAmount: 100, netReceivedAmount: 90, chargesTotal: 0, syncRunId: 601 },
+      { paymentId: "PB", orderId: "OB", orderIds: ["OB"], transactionAmount: 100, netReceivedAmount: 90, chargesTotal: 0, syncRunId: 602 },
+    ];
+    const reports = [{ syncRunId: 601, status: "imported" }, { syncRunId: 602, status: "pending" }];
+    const { rows, summary } = reconcilePayments({ payments, movements: [], reports });
+    eq("hardening: run imported -> settlement_missing", rows.find((r) => r.paymentId === "PA").reconciliationStatus, "settlement_missing");
+    eq("hardening: run pending -> settlement_pending", rows.find((r) => r.paymentId === "PB").reconciliationStatus, "settlement_pending");
+    eq("hardening: summary.paymentsSettlementMissing=1", summary.paymentsSettlementMissing, 1);
+    eq("hardening: summary.paymentsSettlementPending=1", summary.paymentsSettlementPending, 1);
+  }
+
   console.log(`centralVendasMp2Reconciliation.test.js: ${checks} verificacoes OK`);
 }
 

@@ -50,6 +50,9 @@ async function run() {
       eq("dateFrom propagado", params.dateFrom, "2026-08-01");
       eq("dateTo propagado", params.dateTo, "2026-08-31");
       eq("clienteContaId propagado", params.clienteContaId, "10");
+      // Hardening final MP3 (ponto 1) — full=1 repassado ao service (modo
+      // indice completo para os drawers, sem depender de limit/page).
+      eq("full propagado", params.full, "1");
       return {
         ok: true, rows: [{ orderId: "O1", paymentIds: ["P1"], mpStatus: "matched_clean" }],
         summary: { ordersTotal: 1 }, mpReconciliationStatus: "complete",
@@ -58,7 +61,7 @@ async function run() {
       };
     };
     const controller = carregarControllerComStub(stub);
-    const req = { params: { slug: "cliente-a" }, query: { dateFrom: "2026-08-01", dateTo: "2026-08-31", clienteContaId: "10" } };
+    const req = { params: { slug: "cliente-a" }, query: { dateFrom: "2026-08-01", dateTo: "2026-08-31", clienteContaId: "10", full: "1" } };
     const res = fakeRes();
     await controller.obterCentralVendasReadMercadoPagoReconciliation(req, res);
     eq("200", res.statusCode, 200);

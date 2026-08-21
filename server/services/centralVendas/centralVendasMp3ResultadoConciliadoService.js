@@ -25,13 +25,19 @@ function isRealRefund(row) {
   return typeof row.paymentTransactionAmountRefunded === "number" && row.paymentTransactionAmountRefunded > 0;
 }
 
-// released só quando TODOS os payments do pedido estão released; caso
-// contrário "pending" (nunca assume liberado por omissão — seção 9 do
-// spec). "unknown" só quando nenhum payment tem o campo preenchido.
+// released só quando TODOS os payments do pedido têm moneyReleaseStatus
+// EXPLICITAMENTE "released" — nunca por omissão (seção 9 do spec): um
+// payment com status ausente ao lado de outro "released" NUNCA vira
+// "released" (bug corrigido: filtrar os null antes do every() permitia
+// [released, null] passar como released). "pending" tem prioridade sobre
+// "unknown" quando coexistem (é um sinal explícito, não ausência de dado).
+// "unknown" cobre tanto ausência total quanto ausência parcial sem pending.
 function aggregateMoneyReleaseStatus(rows) {
-  const statuses = rows.map((r) => r.moneyReleaseStatus).filter((s) => s != null);
-  if (!statuses.length) return "unknown";
-  return statuses.every((s) => s === "released") ? "released" : "pending";
+  if (!rows.length) return "unknown";
+  const statuses = rows.map((r) => r.moneyReleaseStatus);
+  if (statuses.some((s) => s === "pending")) return "pending";
+  if (statuses.every((s) => s === "released")) return "released";
+  return "unknown";
 }
 
 function sumIfAllPresent(rows, field) {
@@ -103,7 +109,14 @@ function computeOrderMpReconciliation(pedido, rowsDoPedido) {
     return { ...linha, mpStatus: "payment_incomplete", motivo: "payment sem transaction_amount/net_received_amount usaveis" };
   }
   if (rows.some((r) => r.reconciliationStatus === "settlement_missing")) {
-    return { ...linha, mpStatus: "settlement_missing", motivo: "nenhum SETTLEMENT encontrado para o(s) payment(s) deste pedido" };
+    return { ...linha, mpStatus: "settlement_missing", motivo: "nenhum SETTLEMENT encontrado para o(s) payment(s) deste pedido (report ja importado)" };
+  }
+  // Hardening final MP3 (ponto 2) — Settlement assincrono: report ainda
+  // requested/pending/processed (ou ainda nao existe) NUNCA vira
+  // settlement_missing definitivo (seção do hardening) — so quando o report
+  // do run ja terminou de importar e mesmo assim nao ha SETTLEMENT.
+  if (rows.some((r) => r.reconciliationStatus === "settlement_pending")) {
+    return { ...linha, mpStatus: "settlement_pending", motivo: "settlement do(s) payment(s) deste pedido ainda nao foi importado (sync assincrono em andamento)" };
   }
   if (rows.some((r) => r.reconciliationStatus === "settlement_ambiguous")) {
     return { ...linha, mpStatus: "settlement_ambiguous", motivo: "mais de 1 SETTLEMENT para o mesmo payment" };
@@ -166,6 +179,9 @@ function buildResumoAgregado(rows, reconciliationRows, transactionTypeCounts) {
   const ordersDivergent = rows.filter((r) => r.mpStatus === "divergent" || r.mpStatus === "order_gross_divergent").length;
   const ordersMissing = rows.filter((r) => r.mpStatus === "payment_missing" || r.mpStatus === "settlement_missing").length;
   const ordersAmbiguous = rows.filter((r) => r.mpStatus === "shared_payment_ambiguous" || r.mpStatus === "settlement_ambiguous").length;
+  // Hardening final MP3 (ponto 2) — contado À PARTE de ordersMissing: cobertura
+  // parcial/pending nunca deve ser lida como ausência definitiva.
+  const ordersSettlementPending = rows.filter((r) => r.mpStatus === "settlement_pending").length;
 
   // Elegível = entra no resultado operacional (mpStatus !== not_applicable).
   // Coberto = de fato produziu resultadoConciliadoMpBase. coveragePercent é
@@ -178,6 +194,7 @@ function buildResumoAgregado(rows, reconciliationRows, transactionTypeCounts) {
   const paymentsList = reconciliationRows || [];
   const paymentsUnique = paymentsList.length;
   const paymentsMatched = paymentsList.filter((r) => r.reconciliationStatus === "matched").length;
+  const paymentsSettlementPending = paymentsList.filter((r) => r.reconciliationStatus === "settlement_pending").length;
   const paymentsReleased = paymentsList.filter((r) => r.moneyReleaseStatus === "released").length;
   // "Pendente" agrupa pending + unknown (nunca assume liberado por omissão
   // — seção 9): só existem 2 baldes no agregado (seção 11 do spec MP3).
@@ -206,8 +223,8 @@ function buildResumoAgregado(rows, reconciliationRows, transactionTypeCounts) {
 
   return {
     ordersTotal, ordersComPayment, ordersMatchedClean, ordersMatchedWithEvents,
-    ordersDivergent, ordersMissing, ordersAmbiguous, coveragePercent,
-    paymentsUnique, paymentsMatched,
+    ordersDivergent, ordersMissing, ordersAmbiguous, ordersSettlementPending, coveragePercent,
+    paymentsUnique, paymentsMatched, paymentsSettlementPending,
     totalPaymentGross, totalPaymentNet, totalSettlementNet,
     resultadoOperacionalDosOrdersCobertos, resultadoConciliadoDosOrdersCobertos, deltaResultadoDosOrdersCobertos,
     paymentsReleased, paymentsPendingRelease,

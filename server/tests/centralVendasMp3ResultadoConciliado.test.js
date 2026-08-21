@@ -152,6 +152,23 @@ async function run() {
     ok("7: resultado nao calculado", rows[0].resultadoConciliadoMpBase === null);
   }
 
+  // 7b — hardening final MP3 (ponto 2): settlement ainda nao importado
+  // (report pending) NUNCA vira settlement_missing no nivel do PEDIDO —
+  // vira settlement_pending, contado a parte de ordersMissing.
+  {
+    const paymentComRun = { ...payment({ paymentId: "P1", orderId: "O1", transactionAmount: 100, netReceivedAmount: 90 }), syncRunId: 701 };
+    const { rows: rec } = reconcilePayments({
+      payments: [paymentComRun], movements: [],
+      reports: [{ syncRunId: 701, status: "pending" }],
+    });
+    const pedidos = [pedido({ id: "O1", valor: 100, custo: 10, imposto: 1, resultado: 50 })];
+    const { rows, summary } = computeResultadoConciliadoMp({ pedidos, reconciliationRows: rec });
+    eq("7b: mpStatus settlement_pending (nunca missing enquanto report nao importou)", rows[0].mpStatus, "settlement_pending");
+    ok("7b: resultado nao calculado", rows[0].resultadoConciliadoMpBase === null);
+    eq("7b: ordersMissing=0 (pending NUNCA contado como missing)", summary.ordersMissing, 0);
+    eq("7b: ordersSettlementPending=1", summary.ordersSettlementPending, 1);
+  }
+
   // 8 — Settlement ambiguous (2 SETTLEMENT para o mesmo SOURCE_ID).
   {
     const { rows: rec } = reconciliar({
@@ -322,6 +339,31 @@ async function run() {
     const pedidos = [pedido({ id: "O1", valor: 100, custo: 10, imposto: 1, resultado: 55 })];
     const { rows } = computeResultadoConciliadoMp({ pedidos, reconciliationRows: rec });
     eq("17: resultadoOperacional preservado identico ao pedido (nunca sobrescrito)", rows[0].resultadoOperacional, 55);
+  }
+
+  // 18 — hardening final MP3 (ponto 3): aggregateMoneyReleaseStatus nunca
+  // assume "released" por omissão. Tabela-verdade obrigatória do hardening,
+  // via 2 Payments no MESMO pedido (aggregateMoneyReleaseStatus so roda
+  // quando ha >=1 payment; usamos 2 pra forcar a agregacao real).
+  {
+    function doisPayments(status1, status2) {
+      const { rows: rec } = reconciliar({
+        payments: [
+          payment({ paymentId: "P1", orderId: "O1", transactionAmount: 50, netReceivedAmount: 45, moneyReleaseStatus: status1 }),
+          payment({ paymentId: "P2", orderId: "O1", transactionAmount: 50, netReceivedAmount: 45, moneyReleaseStatus: status2 }),
+        ],
+        movements: [
+          movement({ sourceId: "P1", orderId: "O1", transactionAmount: 50, feeAmount: -5, settlementNetAmount: 45 }),
+          movement({ sourceId: "P2", orderId: "O1", transactionAmount: 50, feeAmount: -5, settlementNetAmount: 45 }),
+        ],
+      });
+      const pedidos = [pedido({ id: "O1", valor: 100, custo: 5, imposto: 0, resultado: 90 })];
+      return computeResultadoConciliadoMp({ pedidos, reconciliationRows: rec }).rows[0].moneyReleaseStatus;
+    }
+    eq("18a: [released, null] -> unknown (NUNCA released por omissao)", doisPayments("released", null), "unknown");
+    eq("18b: [released, released] -> released", doisPayments("released", "released"), "released");
+    eq("18c: [released, pending] -> pending", doisPayments("released", "pending"), "pending");
+    eq("18d: [null, null] -> unknown", doisPayments(null, null), "unknown");
   }
 
   console.log(`centralVendasMp3ResultadoConciliado.test.js: ${checks} verificacoes OK`);

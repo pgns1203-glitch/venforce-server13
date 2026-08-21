@@ -48,10 +48,26 @@ function indexMovementsBySourceId(movements) {
   return bySource;
 }
 
+// Hardening final MP3 (ponto 2) — Settlement é assíncrono (report do run
+// passa por requested/pending/processed antes de "imported"). Zero SETTLEMENT
+// para um Payment só pode ser considerado ausência DEFINITIVA quando o
+// report do sync_run do Payment já terminou de importar; caso contrário é
+// "settlement_pending" (cobertura ainda em andamento, nunca "ausente").
+//
+// `reportInfo` é opcional (retrocompatibilidade — seção 34 do spec MP2, teste
+// pré-existente): quando o CHAMADOR não passa `reports` para reconcilePayments
+// (reportInfo.provided=false), preserva o comportamento anterior
+// (settlement_missing definitivo) — só quem carrega os reports em bulk (MP3
+// Read API / MP2 getReconciliationForRun) ganha a distinção nova.
+function resolveZeroSettlementStatus(reportInfo) {
+  if (!reportInfo || !reportInfo.provided) return "settlement_missing";
+  return reportInfo.status === "imported" ? "settlement_missing" : "settlement_pending";
+}
+
 // Para 1 Payment, encontra a(s) linha(s) SETTLEMENT do MESMO SOURCE_ID e
 // classifica 0/1/N (seção 18/24 do spec MP2) — nunca escolhe "a primeira"
 // quando há ambiguidade.
-function reconcileOnePayment(payment, movementsForSource) {
+function reconcileOnePayment(payment, movementsForSource, reportInfo) {
   const movs = movementsForSource || [];
   const settlementRows = movs.filter((m) => m.transactionType === "SETTLEMENT");
   const postMovements = movs.filter((m) => m.transactionType !== "SETTLEMENT");
@@ -82,7 +98,7 @@ function reconcileOnePayment(payment, movementsForSource) {
   if (paymentSemValoresUsaveis) {
     reconciliationStatus = "payment_incomplete";
   } else if (settlementBaseMatchCount === 0) {
-    reconciliationStatus = "settlement_missing";
+    reconciliationStatus = resolveZeroSettlementStatus(reportInfo);
   } else if (settlementBaseMatchCount > 1) {
     reconciliationStatus = "settlement_ambiguous";
   } else if (grossCheck.match === true && netCheck.match === true) {
@@ -93,6 +109,10 @@ function reconcileOnePayment(payment, movementsForSource) {
 
   return {
     paymentId: payment.paymentId,
+    // Hardening final MP3 (ponto 2) — propagado para permitir diagnosticar
+    // settlement_pending por run em telas futuras, sem precisar reabrir o
+    // contrato da row para isso depois.
+    syncRunId: payment.syncRunId ?? null,
     orderId: payment.orderId,
     orderIds: payment.orderIds,
     paymentStatus: payment.status ?? null,
@@ -126,13 +146,34 @@ function reconcileOnePayment(payment, movementsForSource) {
   };
 }
 
+// Hardening final MP3 (ponto 2) — indexa o status do report por sync_run_id
+// (bulk já carregado pelo chamador, nunca 1 query por payment/run). `reports`
+// pode conter linhas `null` (run sem report ainda) — ignoradas no índice.
+function indexReportStatusBySyncRunId(reports) {
+  const bySyncRunId = new Map();
+  for (const r of reports || []) {
+    if (r && r.syncRunId != null) bySyncRunId.set(r.syncRunId, r.status);
+  }
+  return bySyncRunId;
+}
+
 // Função PURA (sem I/O) — recebe as duas evidências já carregadas e devolve
-// rows + summary. Testável sem banco/rede.
-function reconcilePayments({ payments, movements }) {
+// rows + summary. Testável sem banco/rede. `reports` é OPCIONAL (ponto 2 do
+// hardening final): quando o chamador não o informa, comportamento idêntico
+// ao anterior (settlement_missing definitivo); quando informado (mesmo que
+// vazio), zero SETTLEMENT só vira settlement_missing se o report do run do
+// Payment já está "imported" — senão settlement_pending.
+function reconcilePayments({ payments, movements, reports }) {
   const bySource = indexMovementsBySourceId(movements);
+  const reportsProvided = reports !== undefined;
+  const reportStatusBySyncRunId = indexReportStatusBySyncRunId(reports);
   const rows = (payments || []).map((payment) => {
     const movs = bySource.get(payment.paymentId) || [];
-    return reconcileOnePayment(payment, movs);
+    const reportInfo = {
+      provided: reportsProvided,
+      status: reportStatusBySyncRunId.has(payment.syncRunId) ? reportStatusBySyncRunId.get(payment.syncRunId) : null,
+    };
+    return reconcileOnePayment(payment, movs, reportInfo);
   });
 
   const linkedSourceIds = new Set((payments || []).map((p) => p.paymentId));
@@ -150,6 +191,7 @@ function reconcilePayments({ payments, movements }) {
     paymentsMatched: rows.filter((r) => r.reconciliationStatus === "matched").length,
     paymentsDivergent: rows.filter((r) => r.reconciliationStatus === "divergent").length,
     paymentsSettlementMissing: rows.filter((r) => r.reconciliationStatus === "settlement_missing").length,
+    paymentsSettlementPending: rows.filter((r) => r.reconciliationStatus === "settlement_pending").length,
     paymentsSettlementAmbiguous: rows.filter((r) => r.reconciliationStatus === "settlement_ambiguous").length,
     paymentsIncomplete: rows.filter((r) => r.reconciliationStatus === "payment_incomplete").length,
     postMovementsCount: rows.reduce((acc, r) => acc + r.postMovementsCount, 0),
@@ -173,7 +215,11 @@ async function getReconciliationForRun({ run, db }) {
     centralVendasMpSettlementRepository.getSettlementReportByRun(run.id, db),
   ]);
 
-  const { rows, summary } = reconcilePayments({ payments, movements });
+  // Hardening final MP3 (ponto 2) — `report` já carregado acima (mesma
+  // Promise.all, nenhuma query extra); propagado para reconcilePayments para
+  // que zero SETTLEMENT so vire settlement_missing quando o report deste
+  // MESMO run já está "imported" (senão settlement_pending).
+  const { rows, summary } = reconcilePayments({ payments, movements, reports: report ? [report] : [] });
   return { report, rows, summary };
 }
 

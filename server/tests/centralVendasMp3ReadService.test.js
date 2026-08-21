@@ -281,6 +281,48 @@ async function run() {
     eq("5: summary.ordersTotal = 5 (universo inteiro)", resp.summary.ordersTotal, 5);
   }
 
+  // 6 — hardening final MP3 (ponto 1): modo full=1 devolve o RANGE INTEIRO
+  // (>200 pedidos) numa unica execucao — summary correto, pedido alem da
+  // posicao 200 disponivel, e nenhuma query extra (nunca N+1, nunca uma
+  // segunda reconciliacao por pagina).
+  {
+    const TOTAL_PEDIDOS = 250;
+    const imp = importRow({ id: 1, competencia: "2026-08", publicationStatus: "published", coverageFrom: "2026-08-01", coverageTo: "2026-08-31", publishedAt: "2026-08-01T10:00:00Z", syncRunId: 901 });
+    const pedidos = Array.from({ length: TOTAL_PEDIDOS }, (_, i) => pedidoRow({ id: i + 1, importId: 1, pedidoId: `O${i + 1}`, data: "2026-08-10", faturamento: 10, resultado: 5 }));
+    const componentes = pedidos.flatMap((_, i) => [
+      componenteRow({ id: i * 2 + 1, importId: 1, pedidoRowId: i + 1, tipo: "custo_produto", valor: 2 }),
+      componenteRow({ id: i * 2 + 2, importId: 1, pedidoRowId: i + 1, tipo: "imposto_interno", valor: 0 }),
+    ]);
+    const db = makeDb({ imports: [imp], pedidos, componentes });
+    const payments = pedidos.map((_, i) => paymentFixture({ syncRunId: 901, orderId: `O${i + 1}`, paymentId: `P${i + 1}`, transactionAmount: 10, netReceivedAmount: 8 }));
+    const movements = pedidos.map((_, i) => movementFixture({ syncRunId: 901, sourceId: `P${i + 1}`, orderId: `O${i + 1}`, transactionAmount: 10, feeAmount: -2, settlementNetAmount: 8 }));
+    const mp = makeMpRepos({ payments, movements, reports: [{ syncRunId: 901, status: "imported" }] });
+    const svc = createCentralVendasMp3ReadService(realRepositoryComDb(db), db, mp.mpPaymentsRepository, mp.mpSettlementRepository);
+
+    const resp = await svc.getMercadoPagoReconciliationForRange(cliente.slug, { dateFrom: "2026-08-01", dateTo: "2026-08-31", full: 1 });
+    eq("6: full=1 devolve TODOS os rows (nao so 200)", resp.rows.length, TOTAL_PEDIDOS);
+    eq("6: summary.ordersTotal cobre o range inteiro", resp.summary.ordersTotal, TOTAL_PEDIDOS);
+    ok("6: pedido alem da posicao 200 esta no indice", resp.rows.some((r) => r.orderId === "O250"));
+    eq("6: pagination.total = 250", resp.pagination.total, TOTAL_PEDIDOS);
+    ok("6: pagination.full=true", resp.pagination.full === true);
+    ok("6: nao truncado (250 < teto de seguranca)", resp.pagination.truncatedBySafetyLimit === false);
+    eq("6: ainda 1 unica query bulk de payments (nunca N+1)", mp.calls.payments, 1);
+    eq("6: ainda 1 unica query bulk de movements (nunca N+1)", mp.calls.movements, 1);
+    eq("6: ainda 1 unica query bulk de reports (nunca N+1)", mp.calls.reports, 1);
+  }
+
+  // 7 — sem full: comportamento paginado de sempre, inalterado.
+  {
+    const imp = importRow({ id: 1, competencia: "2026-08", publicationStatus: "published", coverageFrom: "2026-08-01", coverageTo: "2026-08-31", publishedAt: "2026-08-01T10:00:00Z", syncRunId: 902 });
+    const pedidos = Array.from({ length: 3 }, (_, i) => pedidoRow({ id: i + 1, importId: 1, pedidoId: `O${i + 1}`, data: "2026-08-10", faturamento: 10, resultado: 5 }));
+    const db = makeDb({ imports: [imp], pedidos });
+    const mp = makeMpRepos({ payments: [], movements: [], reports: [] });
+    const svc = createCentralVendasMp3ReadService(realRepositoryComDb(db), db, mp.mpPaymentsRepository, mp.mpSettlementRepository);
+    const resp = await svc.getMercadoPagoReconciliationForRange(cliente.slug, { dateFrom: "2026-08-01", dateTo: "2026-08-31", page: 1, limit: 2 });
+    eq("7: sem full, continua paginado (2 rows)", resp.rows.length, 2);
+    ok("7: pagination.full ausente/falsy (comportamento antigo preservado)", !resp.pagination.full);
+  }
+
   console.log(`centralVendasMp3ReadService.test.js: ${checks} verificacoes OK`);
 }
 

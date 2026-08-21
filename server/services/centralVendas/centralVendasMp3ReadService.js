@@ -35,6 +35,11 @@ const { computeResultadoConciliadoMp } = require("./centralVendasMp3ResultadoCon
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
+// Hardening final MP3 (ponto 1) — teto de segurança do modo `full` (índice
+// completo do range para os drawers), coerente com o teto já usado pela
+// Central para "todos os pedidos de um período" (centralVendasSyncService
+// MAX_PAGINAS=100 * 50/página = 5.000 pedidos). Nunca um payload ilimitado.
+const MAX_INDEX_ROWS = 5000;
 
 function clampPage(value) {
   const n = parseInt(value, 10);
@@ -44,6 +49,9 @@ function clampLimit(value) {
   const n = parseInt(value, 10);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
   return Math.min(n, MAX_LIMIT);
+}
+function isFullModeRequested(value) {
+  return value === true || value === "1" || value === 1 || value === "true";
 }
 
 // Deriva os sync_run_ids elegíveis do MESMO snapshot que a Read API já
@@ -78,7 +86,7 @@ function createCentralVendasMp3ReadService(
   const base = createCentralVendasService(repository, db);
 
   async function getMercadoPagoReconciliationForRange(clienteSlug, params = {}) {
-    const { dateFrom, dateTo, marketplace = "meli", clienteContaId = null, page, limit } = params;
+    const { dateFrom, dateTo, marketplace = "meli", clienteContaId = null, page, limit, full } = params;
 
     const { cliente, context, snapshot, dateFrom: from, dateTo: to } =
       await base.resolveRangeContext(clienteSlug, { dateFrom, dateTo, marketplace, clienteContaId });
@@ -95,7 +103,11 @@ function createCentralVendasMp3ReadService(
       mpSettlementRepository.listSettlementReportsByRunIds(syncRunIds, db),
     ]);
 
-    const { rows: reconciliationRows, summary: mpSummary } = reconcilePayments({ payments, movements });
+    // Hardening final MP3 (ponto 2) — reports já carregados em bulk acima
+    // (1 query, nunca 1 por run); propagados para reconcilePayments
+    // distinguir settlement_pending (report ainda nao "imported") de
+    // settlement_missing (definitivo, so quando o report do run ja importou).
+    const { rows: reconciliationRows, summary: mpSummary } = reconcilePayments({ payments, movements, reports });
     const { rows, summary } = computeResultadoConciliadoMp({
       pedidos,
       reconciliationRows,
@@ -103,13 +115,33 @@ function createCentralVendasMp3ReadService(
     });
 
     const mpReconciliationStatus = classificarMpReconciliationStatus({ syncRunIds, summary });
-
-    const pageClamped = clampPage(page);
-    const limitClamped = clampLimit(limit);
     const total = rows.length;
-    const totalPages = total ? Math.ceil(total / limitClamped) : 0;
-    const inicio = (pageClamped - 1) * limitClamped;
-    const pageRows = rows.slice(inicio, inicio + limitClamped);
+
+    // Hardening final MP3 (ponto 1) — modo `full`: os `rows` já foram
+    // computados UMA vez, para o range inteiro, na mesma execução acima
+    // (nunca uma segunda reconciliação nem 1 query por página) — este modo
+    // só decide NÃO fatiar o resultado, para servir de índice completo aos
+    // drawers de pedido (nunca perder pedidos além da posição 200 nem
+    // depender da paginação da tabela principal). Teto de segurança
+    // MAX_INDEX_ROWS (mesmo espírito do MAX_PAGINAS do Sync) protege contra
+    // ranges anormalmente grandes — nunca um payload ilimitado.
+    let pageRows;
+    let pagination;
+    if (isFullModeRequested(full)) {
+      const truncatedBySafetyLimit = total > MAX_INDEX_ROWS;
+      pageRows = truncatedBySafetyLimit ? rows.slice(0, MAX_INDEX_ROWS) : rows;
+      pagination = {
+        page: 1, limit: pageRows.length, total, totalPages: 1,
+        full: true, truncatedBySafetyLimit,
+      };
+    } else {
+      const pageClamped = clampPage(page);
+      const limitClamped = clampLimit(limit);
+      const totalPages = total ? Math.ceil(total / limitClamped) : 0;
+      const inicio = (pageClamped - 1) * limitClamped;
+      pageRows = rows.slice(inicio, inicio + limitClamped);
+      pagination = { page: pageClamped, limit: limitClamped, total, totalPages };
+    }
 
     return {
       ok: true,
@@ -123,7 +155,7 @@ function createCentralVendasMp3ReadService(
         rowsCount: r.rowsCount, errorCode: r.errorCode,
       })),
       rows: pageRows,
-      pagination: { page: pageClamped, limit: limitClamped, total, totalPages },
+      pagination,
     };
   }
 
@@ -136,4 +168,5 @@ module.exports = {
     createCentralVendasMp3ReadService().getMercadoPagoReconciliationForRange(...args),
   deriveSyncRunIds,
   classificarMpReconciliationStatus,
+  MAX_INDEX_ROWS,
 };

@@ -229,6 +229,9 @@ async function obterCentralVendasReadMercadoPagoReconciliation(req, res) {
       clienteContaId: req.query.clienteContaId || null,
       page: req.query.page,
       limit: req.query.limit,
+      // Hardening final MP3 (ponto 1) — modo full=1: índice completo do
+      // range para os drawers (nunca perder pedidos acima da posição 200).
+      full: req.query.full,
     });
     return responder(res, 200, data);
   } catch (err) {

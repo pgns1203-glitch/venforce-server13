@@ -640,8 +640,13 @@ async function fetchOrderDetail(rowId, signal) {
    fallback de mock: é uma camada auxiliar (seção 19 do spec MP3) — se
    falhar, a Central inteira continua funcionando normalmente, só esta
    seção fica indisponível. */
+/* Hardening final MP3 (ponto 1) — full=1 pede o índice COMPLETO do range
+   numa única execução backend (summary + rows de TODO período, sem depender
+   de paginação), nunca só os primeiros 200 — necessário para o drawer achar
+   qualquer pedido do período, mesmo além da posição 200/da paginação da
+   tabela principal de Pedidos. Continua 1 unica request, sem N+1. */
 async function fetchMercadoPagoReconciliation(signal) {
-  const resp = await fetchCentralVendas(`/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/read/mercado-pago/reconciliation`, contextoParams({ limit: 200 }), signal);
+  const resp = await fetchCentralVendas(`/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/read/mercado-pago/reconciliation`, contextoParams({ full: 1 }), signal);
   return resp;
 }
 /* Carga PRÓPRIA, disparada depois do conteúdo principal (nunca await'ada

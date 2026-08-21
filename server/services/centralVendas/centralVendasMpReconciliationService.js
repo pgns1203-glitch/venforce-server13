@@ -95,8 +95,17 @@ function reconcileOnePayment(payment, movementsForSource) {
     paymentId: payment.paymentId,
     orderId: payment.orderId,
     orderIds: payment.orderIds,
+    paymentStatus: payment.status ?? null,
+    paymentStatusDetail: payment.statusDetail ?? null,
     paymentTransactionAmount: payment.transactionAmount ?? null,
+    paymentTransactionAmountRefunded: payment.transactionAmountRefunded ?? null,
     paymentNetReceivedAmount: payment.netReceivedAmount ?? null,
+    // MP3 preflight (seção 1.1/9 do spec MP3) — conciliação != liberação do
+    // dinheiro: exposto aqui só como evidência, nunca usado para alterar
+    // reconciliationStatus/resultado sozinho.
+    moneyReleaseStatus: payment.moneyReleaseStatus ?? null,
+    moneyReleaseDate: payment.moneyReleaseDate ?? null,
+    refundCount: payment.refundCount ?? null,
     settlementTransactionAmount: base ? base.transactionAmount : null,
     settlementFeeAmount: base ? base.feeAmount : null,
     settlementNetAmount: base ? base.settlementNetAmount : null,

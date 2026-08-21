@@ -438,6 +438,12 @@ const COMPONENTE_READ_COLUMNS = `id, import_id, pedido_row_id, item_row_id, clie
 // competência tocada pelo range. Usado tanto pela leitura completa do
 // período (loadPedidosByImportIds abaixo) quanto pelo detalhe de 1 pedido
 // (getPedidoDetailByRowId) — nunca uma segunda implementação da seleção.
+//
+// MP3 — `sync_run_id` entrou no SELECT (aditivo, mesma regra de seleção
+// inalterada) para o caller poder derivar os sync_run_ids elegíveis do
+// range sem uma segunda query: a conciliação Mercado Pago é escopada por
+// sync_run_id (central_vendas_mp_payments/settlement_movements), nunca por
+// import_id — ver centralVendasMp3ReadService.
 async function resolveImportsForRange(
   { clienteSlug, dateFrom, dateTo, marketplace = "meli", clienteContaId = null, includeLegacy = false },
   db = pool
@@ -456,7 +462,7 @@ async function resolveImportsForRange(
 
   const rowsResult = await db.query(
     `SELECT id, competencia, fonte, status, confianca, resumo_json, payload_json, created_at, updated_at,
-            cliente_conta_id, publication_status, coverage_date_from, coverage_date_to, published_at
+            cliente_conta_id, publication_status, coverage_date_from, coverage_date_to, published_at, sync_run_id
        FROM central_vendas_imports
       WHERE ${condicoes.join(" AND ")}`,
     params

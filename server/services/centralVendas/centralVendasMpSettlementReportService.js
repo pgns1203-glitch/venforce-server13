@@ -28,6 +28,18 @@ const SETTLEMENT_REPORT_PATH = "/v1/account/settlement_report";
 const DEFAULT_POLL_ATTEMPTS = 2;
 const DEFAULT_POLL_DELAY_MS = 1500;
 
+// MP3 preflight (seção 1.2 do spec MP3) — falha ocorrida DEPOIS de já existir
+// reportExternalId (download ou parse do CSV) pode ser retomada no MESMO
+// report: nunca um novo POST, só reconsulta status/re-baixa/re-parseia.
+// Qualquer outro erro (ou "failed" sem reportExternalId) continua terminal —
+// SETTLEMENT_CONFIG_INCOMPATIBLE e SETTLEMENT_FILE_NAME_INVALID nunca aqui;
+// SETTLEMENT_GENERATION_FAILED nunca tem reportExternalId (falhou antes de
+// obter um), então nunca cai neste conjunto por construção.
+const RETRYABLE_FAILED_ERROR_CODES = new Set([
+  "SETTLEMENT_DOWNLOAD_FAILED",
+  "SETTLEMENT_PARSE_FAILED",
+]);
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -156,9 +168,19 @@ function createCentralVendasMpSettlementReportService({
   }) {
     let reportRow = await repo.getSettlementReportByRun(syncRunId, db);
 
-    // Estados terminais definitivos: nada a fazer, devolve como está.
-    if (reportRow && (reportRow.status === "imported" || reportRow.status === "failed")) {
+    // "imported" é sempre terminal. "failed" só é retomado (seção 1.2 do
+    // spec MP3) quando o erro é um dos RETRYABLE_FAILED_ERROR_CODES E já
+    // existe reportExternalId (a falha aconteceu DEPOIS do POST) — nunca
+    // reabre indiscriminadamente todo "failed", e nunca gera um segundo
+    // POST para o mesmo run (reportRow já existe, o bloco de criação abaixo
+    // não roda de novo).
+    if (reportRow && reportRow.status === "imported") {
       return reportRow;
+    }
+    if (reportRow && reportRow.status === "failed") {
+      const podeRetomarMesmoReport = RETRYABLE_FAILED_ERROR_CODES.has(reportRow.errorCode) && !!reportRow.reportExternalId;
+      if (!podeRetomarMesmoReport) return reportRow;
+      // segue para reconsultar/re-baixar o MESMO reportExternalId abaixo.
     }
 
     // Ainda não existe report para este run: checa config e gera.
@@ -254,4 +276,5 @@ module.exports = {
   sha256Hex,
   DEFAULT_POLL_ATTEMPTS,
   DEFAULT_POLL_DELAY_MS,
+  RETRYABLE_FAILED_ERROR_CODES,
 };

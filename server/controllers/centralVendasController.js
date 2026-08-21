@@ -8,6 +8,8 @@ const centralVendasReadService = require("../services/centralVendas/centralVenda
 // MP2 — conciliação Payment <-> Settlement (Mercado Pago). Read-only.
 const centralVendasMpReconciliationService = require("../services/centralVendas/centralVendasMpReconciliationService");
 const centralVendasMpSettlementReportService = require("../services/centralVendas/centralVendasMpSettlementReportService");
+// MP3 — resultadoConciliadoMp por Order, range-aware (M4/account-aware).
+const centralVendasMp3ReadService = require("../services/centralVendas/centralVendasMp3ReadService");
 
 const CAMPOS_SENSIVEIS = new Set([
   "access_token", "refresh_token", "api_key", "apikey", "password",
@@ -207,6 +209,30 @@ async function obterCentralVendasReadProducts(req, res) {
     return responder(res, 200, data);
   } catch (err) {
     return tratarErro(res, err, "obterCentralVendasReadProducts");
+  }
+}
+
+// MP3 — GET range-aware da conciliação Mercado Pago (resultadoConciliadoMp
+// por Order). Mesma autorização/escopo account-aware do resto da Read API
+// (requireAutomacoesAccess, nunca requireAdmin — é leitura de resumo
+// financeiro já publicado, não uma ação sobre um sync_run especifico como
+// o MP2 sync-runs/:runId/mercado-pago/*). Nunca retorna token.
+async function obterCentralVendasReadMercadoPagoReconciliation(req, res) {
+  try {
+    const slug = slugParam(req);
+    if (!slug) return responder(res, 400, { ok: false, erro: "slug e obrigatorio." });
+
+    const data = await centralVendasMp3ReadService.getMercadoPagoReconciliationForRange(slug, {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      marketplace: req.query.marketplace || "meli",
+      clienteContaId: req.query.clienteContaId || null,
+      page: req.query.page,
+      limit: req.query.limit,
+    });
+    return responder(res, 200, data);
+  } catch (err) {
+    return tratarErro(res, err, "obterCentralVendasReadMercadoPagoReconciliation");
   }
 }
 
@@ -462,6 +488,7 @@ module.exports = {
   obterCentralVendasReadBootstrap,
   obterCentralVendasReadDaily,
   obterCentralVendasReadProducts,
+  obterCentralVendasReadMercadoPagoReconciliation,
   importarVendas,
   sincronizarVendas,
   criarSyncRunController,

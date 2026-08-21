@@ -516,6 +516,10 @@ const F = {
   lastSyncBase: null,
   sync: { runId: null, timer: null, clienteSlug: null, clienteContaId: null },
 
+  // MP3 — Conciliação Mercado Pago: carga própria, assíncrona, NUNCA bloqueia
+  // carregarTela()/renderAll() principal (seção 13/15 do spec MP3).
+  mp: { loading: false, loadSeq: 0, data: null, rowsByOrderId: null },
+
   loadSeq: 0, loadAbort: null, loading: false,     // carga PRINCIPAL (cliente/conta/período)
   arquivoImport: null,
 
@@ -631,6 +635,37 @@ async function fetchOrderDetail(rowId, signal) {
   if (resp === null) return null;
   if (!resp.ok && mockModeDevAtivo()) return buildMockOrderDetail(rowId);
   return resp;
+}
+/* MP3 — conciliação Mercado Pago (resultadoConciliadoMp), range-aware. Sem
+   fallback de mock: é uma camada auxiliar (seção 19 do spec MP3) — se
+   falhar, a Central inteira continua funcionando normalmente, só esta
+   seção fica indisponível. */
+async function fetchMercadoPagoReconciliation(signal) {
+  const resp = await fetchCentralVendas(`/operacao/central-vendas/${encodeURIComponent(F.cliente.slug)}/read/mercado-pago/reconciliation`, contextoParams({ limit: 200 }), signal);
+  return resp;
+}
+/* Carga PRÓPRIA, disparada depois do conteúdo principal (nunca await'ada
+   por carregarTela) — nunca trava a tela principal se o Mercado Pago
+   estiver lento/indisponível. */
+async function carregarConciliacaoMercadoPago() {
+  if (!F.cliente || (F.contas.length > 1 && !F.clienteConta) || !F.periodo) {
+    F.mp.loading = false; F.mp.data = null; F.mp.rowsByOrderId = null;
+    renderMercadoPagoSection();
+    return;
+  }
+  const seq = ++F.mp.loadSeq;
+  F.mp.loading = true;
+  renderMercadoPagoSection();
+
+  const resp = await fetchMercadoPagoReconciliation();
+  if (seq !== F.mp.loadSeq) return; // contexto trocou antes da resposta
+
+  F.mp.loading = false;
+  F.mp.data = (resp && resp.ok) ? resp : null;
+  F.mp.rowsByOrderId = F.mp.data
+    ? new Map((F.mp.data.rows || []).map(r => [String(r.orderId), r]))
+    : null;
+  renderMercadoPagoSection();
 }
 /* M10 — carga inicial em 1 request (backend resolve contexto + constrói o
    payload do período 1x só, deriva read+daily+products no mesmo processo).
@@ -853,6 +888,7 @@ function resetDataState() {
   F.ok = null; F.erro = null; F.motor = null; F.completude = null; F.snapshot = null; F.contexto = null;
   F.summary = null; F.filteredSummary = null; F.rows = []; F.pagination = null;
   F.daily = []; F.products = []; F.totalFaturamento = 0; F.periodoResp = null;
+  F.mp.loadSeq += 1; F.mp.loading = false; F.mp.data = null; F.mp.rowsByOrderId = null;
 }
 
 function applyReadResponse(resp) {
@@ -917,6 +953,10 @@ async function carregarTela() {
   F.totalFaturamento = bootstrapResp?.ok ? (bootstrapResp.totalFaturamento || 0) : 0;
   resetCurvaAbcState();
   renderAll();
+
+  // MP3 — nunca aguardada: conteúdo principal já está na tela; a conciliação
+  // Mercado Pago carrega à parte e se auto-renderiza quando chegar.
+  if (F.ok) carregarConciliacaoMercadoPago();
 }
 
 /* Refaz só a lista de pedidos + os dois resumos (summary/filteredSummary) —
@@ -1025,6 +1065,7 @@ function renderAll() {
   if (tabs) tabs.hidden = false;
   renderTabCounts();
   renderFechamentoSection();
+  renderMercadoPagoSection();
   renderDaysSection();
   renderOrdersPanel();
   renderAbc();
@@ -1369,6 +1410,107 @@ function renderFechamentoSection() {
       </div>
       ${recorteBar}
       ${corpo}
+    </section>`;
+}
+
+/* MP3 — Conciliação Mercado Pago (Payment + Settlement), seção enxuta e
+   auxiliar (seção 15 do spec MP3). NUNCA compara um subtotal (só os pedidos
+   cobertos) com o total da Central como se fossem a mesma base — por isso
+   "Resultado calculado" aqui é resultadoOperacionalDosOrdersCobertos
+   (mesmo subconjunto do resultado conciliado), não F.summary.lucroContribuicao. */
+const MP_STATUS_LBL = {
+  matched_clean: 'Conciliado',
+  matched_with_post_events: 'Conciliado (c/ eventos pós-venda)',
+  payment_missing: 'Sem Payment',
+  payment_incomplete: 'Payment incompleto',
+  shared_payment_ambiguous: 'Payment compartilhado',
+  settlement_pending: 'Settlement pendente',
+  settlement_missing: 'Settlement ausente',
+  settlement_ambiguous: 'Settlement ambíguo',
+  divergent: 'Divergente',
+  order_gross_divergent: 'Divergente (bruto)',
+  not_applicable: 'Não se aplica',
+};
+const MP_STATUS_CLS = {
+  matched_clean: 'is-success',
+  matched_with_post_events: 'is-success',
+  payment_missing: 'is-neutral',
+  payment_incomplete: 'is-warning',
+  shared_payment_ambiguous: 'is-warning',
+  settlement_pending: 'is-neutral',
+  settlement_missing: 'is-warning',
+  settlement_ambiguous: 'is-warning',
+  divergent: 'is-danger',
+  order_gross_divergent: 'is-danger',
+  not_applicable: 'is-neutral',
+};
+const MP_RECONCILIATION_STATUS_LBL = {
+  not_available: 'Ainda não disponível para este período',
+  pending: 'Sincronização pendente',
+  partial: 'Cobertura parcial',
+  complete: 'Cobertura completa',
+  divergent: 'Divergências encontradas',
+};
+function mpStatusTag(s) { return `<span class="vf-tag ${MP_STATUS_CLS[s] || 'is-neutral'}">${esc(MP_STATUS_LBL[s] || s || '—')}</span>`; }
+
+function renderMercadoPagoSection() {
+  const host = document.getElementById('fapi-mp-host');
+  if (!host || !F.ok) return;
+
+  if (F.mp.loading && !F.mp.data) {
+    host.innerHTML = `
+      <section class="vf-section" aria-label="Conciliação Mercado Pago">
+        <div class="vf-section__header"><div>
+          <h2 class="vf-section__title">Conciliação Mercado Pago</h2>
+        </div></div>
+        <div class="vf-card"><div class="vf-card__body"><p class="vf-fapi-legend">Carregando conciliação Mercado Pago…</p></div></div>
+      </section>`;
+    return;
+  }
+
+  if (!F.mp.data) {
+    host.innerHTML = '';
+    return; // falha silenciosa: camada auxiliar, nunca derruba a tela principal
+  }
+
+  const status = F.mp.data.mpReconciliationStatus || 'not_available';
+  if (status === 'not_available') {
+    host.innerHTML = `
+      <section class="vf-section" aria-label="Conciliação Mercado Pago">
+        <div class="vf-section__header"><div>
+          <h2 class="vf-section__title">Conciliação Mercado Pago</h2>
+          <p class="vf-section__description">Camada auxiliar de conciliação financeira com o Mercado Pago (Payment + Settlement) — não substitui o Resultado Parcial.</p>
+        </div></div>
+        <div class="vf-card"><div class="vf-card__body">${emptyState({
+          icon:'dot', title:'Ainda não disponível para este período',
+          why:'Nenhum Payment/Settlement do Mercado Pago foi sincronizado para este intervalo/conta.',
+          next:'Sincronize novamente após validar a integração de Mercado Pago.',
+        })}</div></div>
+      </section>`;
+    return;
+  }
+
+  const s = F.mp.data.summary || {};
+  const cobertura = s.coveragePercent != null ? pct(s.coveragePercent) : '—';
+  const metrics = `<div class="vf-fapi-secondary-metrics" aria-label="Métricas da conciliação Mercado Pago">
+    ${secondaryMetric('Resultado calculado', esc(valOr(s.resultadoOperacionalDosOrdersCobertos, money)), 'sobre os pedidos conciliados')}
+    ${secondaryMetric(`Resultado conciliado MP · ${esc(cobertura)}`, esc(valOr(s.resultadoConciliadoDosOrdersCobertos, money)), `cobertura: ${esc(cobertura)} dos pedidos elegíveis`)}
+    ${secondaryMetric('Diferença nos pedidos conciliados', esc(valOr(s.deltaResultadoDosOrdersCobertos, money)), 'resultado conciliado − resultado calculado', s.deltaResultadoDosOrdersCobertos === 0)}
+    ${secondaryMetric('Payments conciliados', `${num(s.paymentsMatched)} / ${num(s.paymentsUnique)}`, 'matched / total únicos')}
+    ${secondaryMetric('Liberação', `${num(s.paymentsReleased)} liberados · ${num(s.paymentsPendingRelease)} pendentes`, 'money_release_status — nunca assume liberado por omissão')}
+    ${secondaryMetric('Divergências', num((s.ordersDivergent || 0) + (s.ordersAmbiguous || 0)), 'pedidos divergentes/ambíguos', !(s.ordersDivergent || s.ordersAmbiguous)) }
+    ${secondaryMetric('Eventos pós-venda financeiros', num(s.postMovementsCount), 'REFUND/DISPUTE/etc. — nunca somados ao resultado', !s.postMovementsCount)}
+  </div>`;
+
+  host.innerHTML = `
+    <section class="vf-section" aria-label="Conciliação Mercado Pago">
+      <div class="vf-section__header">
+        <div>
+          <h2 class="vf-section__title">Conciliação Mercado Pago</h2>
+          <p class="vf-section__description">Resultado conciliado sobre ${esc(cobertura)} dos pedidos elegíveis — ${esc(MP_RECONCILIATION_STATUS_LBL[status] || status)}. Camada auxiliar; não substitui o Resultado Parcial.</p>
+        </div>
+      </div>
+      <div class="vf-card"><div class="vf-card__body">${metrics}</div></div>
     </section>`;
 }
 
@@ -1749,7 +1891,40 @@ function faltasDoPedido(o) {
   return faltas;
 }
 
-function buildOrderDrawerBody(o) {
+/* MP3, seção 16 do spec — seção enxuta do drawer: só os campos prioritários,
+   nunca despeja JSON bruto. mpRow vem de F.mp.rowsByOrderId (já carregado
+   pela seção de topo, seção 15) — nunca dispara um fetch extra por pedido.
+   Ausência de mpRow (pedido fora da página carregada, ou MP indisponível
+   para o período) simplesmente omite a seção — nunca um falso "ausente". */
+function buildMercadoPagoDrawerSection(mpRow) {
+  if (!mpRow || !mpRow.paymentsCount) return '';
+  const kv = pairs => `<dl class="vf-fapi-kv">${pairs.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+  const releaseLbl = mpRow.moneyReleaseStatus === 'released' ? 'Liberado'
+    : mpRow.moneyReleaseStatus === 'pending' ? 'Pendente' : 'Desconhecido';
+  const eventos = mpRow.temEventosPosteriores
+    ? `${esc((mpRow.postMovementTypes || []).join(', ') || '—')} (${num(mpRow.postMovementsCount)})`
+    : 'Nenhum';
+
+  return `
+    <section class="vf-fapi-drawer-section" aria-label="Mercado Pago">
+      <h3 class="vf-fapi-drawer-section__title">Mercado Pago ${mpStatusTag(mpRow.mpStatus)}</h3>
+      ${kv([
+        ['Payment(s)', esc((mpRow.paymentIds || []).join(', ') || '—')],
+        ['Valor bruto (Payment)', esc(valOr(mpRow.paymentTransactionAmountTotal, money))],
+        ['Líquido Payment', esc(valOr(mpRow.paymentNetReceivedAmountTotal, money))],
+        ['Líquido Settlement', esc(valOr(mpRow.settlementNetAmountTotal, money))],
+        ['Resultado operacional', esc(valOr(mpRow.resultadoOperacional, money))],
+        ['Resultado conciliado MP', esc(valOr(mpRow.resultadoConciliadoMpBase, money))],
+        ['Diferença (conciliado − operacional)', esc(valOr(mpRow.deltaResultadoMp, money))],
+        ['Liberação (money_release_status)', esc(releaseLbl) + (mpRow.moneyReleaseDate ? ` · ${esc(fmtDt(mpRow.moneyReleaseDate))}` : '')],
+        ['Eventos pós-venda (REFUND/DISPUTE/…)', eventos],
+      ])}
+      ${mpRow.motivo ? `<p class="vf-fapi-legend">${esc(mpRow.motivo)}</p>` : ''}
+      <p class="vf-fapi-legend">Camada auxiliar de conciliação (Payment + Settlement) — nunca substitui o Resultado acima, persistido pelo backend.</p>
+    </section>`;
+}
+
+function buildOrderDrawerBody(o, mpRow) {
   const faltas = faltasDoPedido(o);
   const bloqueado = o.resultado == null;
   const precoUnit = (o.valor != null && o.unidades) ? round2(o.valor / o.unidades) : null;
@@ -1832,6 +2007,7 @@ function buildOrderDrawerBody(o) {
     </section>
     ${itensSecao}
     ${ledgerSecao}
+    ${buildMercadoPagoDrawerSection(mpRow)}
     <section class="vf-fapi-drawer-section" aria-label="Pedido">
       <h3 class="vf-fapi-drawer-section__title">Pedido</h3>
       ${kv([
@@ -1890,7 +2066,8 @@ async function openOrderDrawer(rowId, triggerRow) {
 
   const o = detalhe.pedido;
   if (conf) conf.innerHTML = confStatus(o.confianca);
-  body.innerHTML = buildOrderDrawerBody(o);
+  const mpRow = F.mp.rowsByOrderId ? F.mp.rowsByOrderId.get(String(o.id)) : null;
+  body.innerHTML = buildOrderDrawerBody(o, mpRow);
 }
 
 function closeOrderDrawer({ restoreFocus = true } = {}) {

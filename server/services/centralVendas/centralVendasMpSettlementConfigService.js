@@ -83,8 +83,13 @@ function createCentralVendasMpSettlementConfigService({ mpFetchFn = mpFetch } = 
       return { compatible: false, reason: "incompatible", missingColumns: missing, config: getResp.data };
     }
 
-    const isNotFound = getResp?.status === 404
-      && (getResp?.data?.error === "config_not_found_for_user" || getResp?.data?.status === 404);
+    // MP3 preflight (seção 1.3 do spec MP3) — restrito ao erro DOCUMENTADO
+    // no handoff (seção 14: {"error":"config_not_found_for_user","status":404}).
+    // Antes aceitava também `data.status === 404` isolado, o que criava
+    // config automaticamente a partir de QUALQUER 404 cujo corpo tivesse um
+    // campo `status`, mesmo sem o `error` reconhecido — nunca altera a conta
+    // a partir de um payload não documentado.
+    const isNotFound = getResp?.status === 404 && getResp?.data?.error === "config_not_found_for_user";
     if (isNotFound) {
       const body = buildConfigBody();
       const postResp = await mpFetchFn(clienteId, SETTLEMENT_CONFIG_PATH, {

@@ -42,6 +42,15 @@ router.get(
   requireAutomacoesAccess,
   controller.obterCentralVendasReadProducts
 );
+// MP3 — conciliação Mercado Pago range-aware (resultadoConciliadoMp por
+// Order). Mesma autorização das demais rotas /read (requireAutomacoesAccess),
+// nunca requireAdmin — é leitura de resumo, não uma ação sobre 1 sync_run.
+router.get(
+  "/:slug/read/mercado-pago/reconciliation",
+  authMiddleware,
+  requireAutomacoesAccess,
+  controller.obterCentralVendasReadMercadoPagoReconciliation
+);
 
 router.post(
   "/:slug/importar-vendas",

@@ -203,12 +203,40 @@ async function listSettlementMovementsByRun(syncRunId, db = pool) {
   return result.rows.map(sanitizeMovementRow);
 }
 
+// MP3 (seção 12/13 do spec MP3) — mesma leitura acima, mas para o conjunto
+// de sync_run_ids de um RANGE (M4/M10 pode selecionar mais de 1 import/run
+// num período multi-mês). 1 única query, nunca 1 por run.
+async function listSettlementMovementsByRunIds(syncRunIds, db = pool) {
+  const ids = Array.isArray(syncRunIds) ? syncRunIds.filter((id) => Number.isFinite(Number(id))) : [];
+  if (!ids.length) return [];
+  const result = await db.query(
+    `SELECT * FROM central_vendas_mp_settlement_movements WHERE sync_run_id = ANY($1::bigint[]) ORDER BY sync_run_id ASC, row_number ASC`,
+    [ids]
+  );
+  return result.rows.map(sanitizeMovementRow);
+}
+
+// MP3 — reports (lifecycle) de vários runs de uma vez, para o frontend
+// exibir status do Settlement Report agregado do range (seção 15/16 do
+// spec MP3) sem 1 query por run.
+async function listSettlementReportsByRunIds(syncRunIds, db = pool) {
+  const ids = Array.isArray(syncRunIds) ? syncRunIds.filter((id) => Number.isFinite(Number(id))) : [];
+  if (!ids.length) return [];
+  const result = await db.query(
+    `SELECT * FROM central_vendas_mp_settlement_reports WHERE sync_run_id = ANY($1::bigint[])`,
+    [ids]
+  );
+  return result.rows.map(sanitizeReportRow);
+}
+
 module.exports = {
   upsertSettlementReport,
   getSettlementReportByRun,
   updateSettlementReportStatus,
   replaceSettlementMovements,
   listSettlementMovementsByRun,
+  listSettlementMovementsByRunIds,
+  listSettlementReportsByRunIds,
   sanitizeReportRow,
   sanitizeMovementRow,
 };

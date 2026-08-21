@@ -175,6 +175,32 @@ async function persistMpPayments({
 // spec MP2). Aditivo: não altera nenhuma escrita do MP1. `charges_total` usa
 // COALESCE(SUM(...),0) só para o caso "0 charges" virar zero real (nunca
 // null) — o mesmo payment sem NENHUMA charge é uma soma vazia genuína.
+//
+// MP3 preflight (seção 1.1 do spec MP3): expõe também status/statusDetail/
+// moneyReleaseStatus/moneyReleaseDate/transactionAmountRefunded/refundCount —
+// necessários para mpStatus e para distinguir liberação de conciliação
+// (seção 9) sem uma segunda query por Payment. Ausência continua NULL, nunca
+// convertida em zero/string vazia (mesma garantia do MP1/MP2).
+function sanitizePaymentRow(row) {
+  return {
+    id: Number(row.id),
+    syncRunId: Number(row.sync_run_id),
+    clienteContaId: row.cliente_conta_id != null ? Number(row.cliente_conta_id) : null,
+    orderId: row.order_id || null,
+    orderIds: Array.isArray(row.order_ids_json) ? row.order_ids_json : [],
+    paymentId: row.payment_id,
+    status: row.status ?? null,
+    statusDetail: row.status_detail ?? null,
+    transactionAmount: row.transaction_amount === null ? null : Number(row.transaction_amount),
+    transactionAmountRefunded: row.transaction_amount_refunded === null ? null : Number(row.transaction_amount_refunded),
+    netReceivedAmount: row.net_received_amount === null ? null : Number(row.net_received_amount),
+    moneyReleaseStatus: row.money_release_status ?? null,
+    moneyReleaseDate: row.money_release_date ?? null,
+    refundCount: row.refund_count === null || row.refund_count === undefined ? null : Number(row.refund_count),
+    chargesTotal: row.charges_total === null ? 0 : Number(row.charges_total),
+  };
+}
+
 async function listMpPaymentsWithChargesTotalByRun(syncRunId, db = pool) {
   const result = await db.query(
     `SELECT p.*, COALESCE(SUM(c.amount_original), 0)::numeric(14,2) AS charges_total
@@ -185,17 +211,26 @@ async function listMpPaymentsWithChargesTotalByRun(syncRunId, db = pool) {
       ORDER BY p.id ASC`,
     [syncRunId]
   );
-  return result.rows.map((row) => ({
-    id: Number(row.id),
-    syncRunId: Number(row.sync_run_id),
-    clienteContaId: row.cliente_conta_id != null ? Number(row.cliente_conta_id) : null,
-    orderId: row.order_id || null,
-    orderIds: Array.isArray(row.order_ids_json) ? row.order_ids_json : [],
-    paymentId: row.payment_id,
-    transactionAmount: row.transaction_amount === null ? null : Number(row.transaction_amount),
-    netReceivedAmount: row.net_received_amount === null ? null : Number(row.net_received_amount),
-    chargesTotal: row.charges_total === null ? 0 : Number(row.charges_total),
-  }));
+  return result.rows.map(sanitizePaymentRow);
+}
+
+// MP3 (seção 13 do spec MP3) — mesma leitura acima, mas para VÁRIOS runs de
+// uma vez (range que cruza mais de um sync_run_id). Bulk por construção:
+// nunca 1 query por Order/por run — quem chama já resolveu o array de
+// syncRunIds via resolveRangeImports (M4/account-aware).
+async function listMpPaymentsWithChargesTotalByRunIds(syncRunIds, db = pool) {
+  const ids = Array.isArray(syncRunIds) ? syncRunIds.filter((id) => Number.isFinite(Number(id))) : [];
+  if (!ids.length) return [];
+  const result = await db.query(
+    `SELECT p.*, COALESCE(SUM(c.amount_original), 0)::numeric(14,2) AS charges_total
+       FROM central_vendas_mp_payments p
+       LEFT JOIN central_vendas_mp_payment_charges c ON c.mp_payment_row_id = p.id
+      WHERE p.sync_run_id = ANY($1::bigint[])
+      GROUP BY p.id
+      ORDER BY p.id ASC`,
+    [ids]
+  );
+  return result.rows.map(sanitizePaymentRow);
 }
 
 module.exports = {
@@ -203,4 +238,5 @@ module.exports = {
   replaceMpPaymentCharges,
   persistMpPayments,
   listMpPaymentsWithChargesTotalByRun,
+  listMpPaymentsWithChargesTotalByRunIds,
 };

@@ -1,13 +1,4 @@
-const STATUS_OPCOES = [
-  ["RUPTURA", "Ruptura"],
-  ["CRITICO", "Crítico"],
-  ["REPOR", "Repor"],
-  ["SAUDAVEL", "Saudável"],
-  ["ALTO", "Alto"],
-  ["EXCESSO", "Excesso"],
-  ["SEM_GIRO", "Sem giro"],
-  ["SEM_DADO", "Sem dado"],
-];
+import { STATUS_OPTIONS } from "../../utils/fullOperationalStatus.js";
 
 // Filtros puramente locais: nunca disparam requisição, so recalculam a
 // lista já carregada (ver utils/fullSummary.js).
@@ -30,7 +21,7 @@ export default function FullFilters({ filtros, onAtualizar }) {
         aria-label="Filtrar por status operacional"
       >
         <option value="">Todos os status</option>
-        {STATUS_OPCOES.map(([valor, rotulo]) => (
+        {STATUS_OPTIONS.map(([valor, rotulo]) => (
           <option key={valor} value={valor}>
             {rotulo}
           </option>

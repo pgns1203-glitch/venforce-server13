@@ -1,15 +1,5 @@
 import { formatarNumero, ehAusente, AUSENTE } from "../../utils/numbers.js";
-
-const STATUS_LABEL = {
-  RUPTURA: "Ruptura",
-  CRITICO: "Crítico",
-  REPOR: "Repor",
-  SAUDAVEL: "Saudável",
-  ALTO: "Alto",
-  EXCESSO: "Excesso",
-  SEM_GIRO: "Sem giro",
-  SEM_DADO: "Sem dado",
-};
+import { STATUS_LABEL, STATUS_TONE } from "../../utils/fullOperationalStatus.js";
 
 // `variationPct` do backend já é ponto percentual pronto (80 = 80%), ao
 // contrário de utils/percentage.js (que espera fração 0-1 vinda do motor de
@@ -37,50 +27,51 @@ export default function FullInventoryTable({ inventories, onDetalhar }) {
   }
 
   return (
-    <div className="full-table-scroll">
-      <table className="full-table">
+    <div className="vf-table-wrap">
+      <table className="vf-table">
         <thead>
           <tr>
             <th scope="col">Produto / referências</th>
             <th scope="col">Status</th>
-            <th scope="col">Estoque disp.</th>
-            <th scope="col">Indisp.</th>
-            <th scope="col">7d anterior</th>
-            <th scope="col">7d atual</th>
-            <th scope="col">Δ / variação</th>
-            <th scope="col">Giro/dia</th>
-            <th scope="col">Cobertura (dias)</th>
-            <th scope="col">Enviar</th>
+            <th scope="col" className="num">Estoque disp.</th>
+            <th scope="col" className="num">Indisp.</th>
+            <th scope="col" className="num">7d anterior</th>
+            <th scope="col" className="num">7d atual</th>
+            <th scope="col" className="num">Δ / variação</th>
+            <th scope="col" className="num">Giro/dia</th>
+            <th scope="col" className="num">Cobertura (dias)</th>
+            <th scope="col" className="num">Enviar</th>
             <th scope="col">
-              <span className="full-sr-only">Ações</span>
+              <span className="vf-visually-hidden">Ações</span>
             </th>
           </tr>
         </thead>
         <tbody>
           {inventories.map((inv) => {
             const principal = referenciaPrincipal(inv);
-            const statusClasse = String(inv.operationalStatus || "sem-dado").toLowerCase().replace(/_/g, "-");
+            const statusTom = STATUS_TONE[inv.operationalStatus] || "";
             return (
               <tr key={inv.inventoryId}>
                 <td>
                   <div className="full-table-produto">
                     <strong>{principal.titulo}</strong>
                     <span className="full-table-refs">
-                      {principal.mlb} · SKU {principal.sku}
+                      <span className="vf-mono">{principal.mlb}</span> · SKU{" "}
+                      <span className="vf-mono">{principal.sku}</span>
                       {principal.extras > 0 ? ` · +${principal.extras} ref.` : ""}
                     </span>
                   </div>
                 </td>
                 <td>
-                  <span className={`full-badge full-badge--${statusClasse}`}>
+                  <span className={`vf-status${statusTom ? ` ${statusTom}` : ""}`}>
                     {STATUS_LABEL[inv.operationalStatus] || inv.operationalStatus || AUSENTE}
                   </span>
                 </td>
-                <td>{formatarNumero(inv.stock?.available)}</td>
-                <td>{formatarNumero(inv.stock?.notAvailable)}</td>
-                <td>{formatarNumero(inv.sales?.previous7d)}</td>
-                <td>{formatarNumero(inv.sales?.current7d)}</td>
-                <td>
+                <td className="num">{formatarNumero(inv.stock?.available)}</td>
+                <td className="num">{formatarNumero(inv.stock?.notAvailable)}</td>
+                <td className="num">{formatarNumero(inv.sales?.previous7d)}</td>
+                <td className="num">{formatarNumero(inv.sales?.current7d)}</td>
+                <td className="num">
                   {inv.trend ? (
                     <>
                       {formatarNumero(inv.trend.deltaUnits)} ({formatarVariacaoPontos(inv.trend.variationPct)})
@@ -89,11 +80,15 @@ export default function FullInventoryTable({ inventories, onDetalhar }) {
                     AUSENTE
                   )}
                 </td>
-                <td>{formatarNumero(inv.dailyTurnover, 2)}</td>
-                <td>{formatarNumero(inv.coverageDays, 1)}</td>
-                <td>{formatarNumero(inv.sendQuantity)}</td>
+                <td className="num">{formatarNumero(inv.dailyTurnover, 2)}</td>
+                <td className="num">{formatarNumero(inv.coverageDays, 1)}</td>
+                <td className="num">{formatarNumero(inv.sendQuantity)}</td>
                 <td>
-                  <button type="button" className="vf-btn vf-btn--ghost" onClick={() => onDetalhar(inv.inventoryId)}>
+                  <button
+                    type="button"
+                    className="vf-btn vf-btn--ghost vf-btn--sm"
+                    onClick={() => onDetalhar(inv.inventoryId)}
+                  >
                     Detalhar
                   </button>
                 </td>

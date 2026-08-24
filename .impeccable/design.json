@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-24T21:00:00.000Z",
+  "title": "Design System: VenForce Portal",
+  "extensions": {
+    "colorMeta": {
+      "primary": { "role": "primary", "displayName": "Roxo VenForce", "canonical": "#5a2a8f", "tonalRamp": ["#1f0f33", "#341a54", "#452073", "#5a2a8f", "#7845a8", "#9c74c0", "#c3aadb", "#e2d5f2"] },
+      "success": { "role": "semantic", "displayName": "Verde Confirmado", "canonical": "#0f7a52", "tonalRamp": ["#052e1f", "#0a5c3d", "#0f7a52", "#2f9a70", "#6dbd9c", "#a3d7c0", "#cfead9", "#e7f6ef"] },
+      "warning": { "role": "semantic", "displayName": "Âmbar Atenção", "canonical": "#b25e00", "tonalRamp": ["#3d2000", "#6e3a00", "#8f4c00", "#b25e00", "#d17f2c", "#e3a35f", "#f2c592", "#fdf1e3"] },
+      "danger": { "role": "semantic", "displayName": "Vermelho Divergência", "canonical": "#c62828", "tonalRamp": ["#4a0e0e", "#7a1616", "#a81f1f", "#c62828", "#da5252", "#e88a8a", "#f2b8b8", "#fdecec"] },
+      "info": { "role": "semantic", "displayName": "Azul Informativo", "canonical": "#1d5fb8", "tonalRamp": ["#0a2547", "#123a72", "#174d96", "#1d5fb8", "#4a80cb", "#82a9dd", "#bcd3ef", "#e8f1fc"] },
+      "bg": { "role": "neutral", "displayName": "Fundo da Aplicação", "canonical": "#f7f8fb" },
+      "surface": { "role": "neutral", "displayName": "Superfície", "canonical": "#ffffff" },
+      "text": { "role": "neutral", "displayName": "Texto Principal", "canonical": "#1b1d28" },
+      "text-secondary": { "role": "neutral", "displayName": "Texto Secundário", "canonical": "#545b6e" },
+      "border": { "role": "neutral", "displayName": "Borda Padrão", "canonical": "#e7e9f0" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display (Manrope)", "purpose": "Título de página, KPIs, valores em destaque." },
+      "headline": { "displayName": "Headline (Manrope)", "purpose": "Título de seção." },
+      "title": { "displayName": "Title (Manrope)", "purpose": "Título de card, modal e drawer." },
+      "body": { "displayName": "Body (Hanken Grotesk)", "purpose": "Corpo, controles, tabelas — piso de leitura." },
+      "label": { "displayName": "Label (Hanken Grotesk)", "purpose": "Eyebrow, hints, chips, badges — uppercase pequeno." },
+      "mono": { "displayName": "Mono (IBM Plex Mono)", "purpose": "Identificadores técnicos (SKU, MLB, ID, log). Nunca todo número." }
+    },
+    "shadows": [
+      { "name": "xs", "value": "0 1px 2px rgba(18, 22, 45, 0.05)", "purpose": "Uso mínimo, quase imperceptível." },
+      { "name": "hover", "value": "0 4px 14px rgba(27, 29, 40, 0.08)", "purpose": "Hover de card interativo/clicável." },
+      { "name": "popover", "value": "0 6px 20px rgba(27, 29, 40, 0.12)", "purpose": "Menus, popovers, tooltips." },
+      { "name": "modal", "value": "0 12px 32px rgba(27, 29, 40, 0.18)", "purpose": "Modal e drawer." }
+    ],
+    "motion": [
+      { "name": "duration-fast", "value": "0.12s", "purpose": "Hover de itens pequenos." },
+      { "name": "duration", "value": "0.18s", "purpose": "Transição padrão de componente." },
+      { "name": "duration-slow", "value": "0.28s", "purpose": "Entrada de drawer e modal." },
+      { "name": "ease", "value": "cubic-bezier(0.2, 0.7, 0.2, 1)", "purpose": "Easing padrão de todas as transições do sistema." }
+    ],
+    "breakpoints": [
+      { "name": "content-standard", "value": "1200px" },
+      { "name": "content-wide", "value": "1560px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Ação primária da tela — fundo Roxo VenForce, texto branco.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Salvar</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 38px; padding: 0 16px; border: 1px solid #d6d9e4; border-radius: 6px; font-family: 'Hanken Grotesk', sans-serif; font-size: 0.875rem; font-weight: 600; color: #1b1d28; background: #ffffff; cursor: pointer; transition: background-color 0.18s cubic-bezier(0.2,0.7,0.2,1), border-color 0.18s cubic-bezier(0.2,0.7,0.2,1); } .ds-btn-primary { background: #5a2a8f; border-color: #5a2a8f; color: #ffffff; } .ds-btn-primary:hover { background: #4c2379; border-color: #4c2379; } .ds-btn-primary:focus-visible { outline: 2px solid #5a2a8f; outline-offset: 2px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Ação secundária — fundo neutro, borda visível mesmo sem estado.",
+      "html": "<button class=\"ds-btn ds-btn-secondary\">Cancelar</button>",
+      "css": ".ds-btn-secondary { background: #ffffff; border: 1px solid #d6d9e4; color: #1b1d28; height: 38px; padding: 0 16px; border-radius: 6px; font-family: 'Hanken Grotesk', sans-serif; font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: background-color 0.18s, border-color 0.18s; } .ds-btn-secondary:hover { border-color: #c2c7d6; background: #f3f5f9; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Ação terciária — transparente em repouso, roxo suave só no hover.",
+      "html": "<button class=\"ds-btn ds-btn-ghost\">Ver detalhes</button>",
+      "css": ".ds-btn-ghost { background: transparent; border: 1px solid transparent; color: #545b6e; height: 38px; padding: 0 16px; border-radius: 6px; font-family: 'Hanken Grotesk', sans-serif; font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: background-color 0.18s, color 0.18s; } .ds-btn-ghost:hover { background: #f4eef9; color: #452073; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Campo de texto padrão — foco com halo roxo, sem outline nativo.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Buscar pedido, SKU ou cliente\" />",
+      "css": ".ds-input { width: 100%; height: 38px; border: 1px solid #d6d9e4; border-radius: 6px; background: #ffffff; font-family: 'Hanken Grotesk', sans-serif; font-size: 0.9375rem; color: #1b1d28; padding: 0 12px; transition: border-color 0.18s, box-shadow 0.18s; } .ds-input::placeholder { color: #9aa0b3; } .ds-input:hover:not(:focus) { border-color: #c2c7d6; } .ds-input:focus { border-color: #5a2a8f; box-shadow: 0 0 0 3px rgba(90,42,143,0.2); outline: none; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Superfície de conteúdo padrão — sem sombra em repouso, borda fina, cabeçalho com divisor.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-header\"><h3 class=\"ds-card-title\">Fechamento — Agosto</h3></div><div class=\"ds-card-body\">Conteúdo do card.</div></div>",
+      "css": ".ds-card { background: #ffffff; border: 1px solid #e7e9f0; border-radius: 10px; } .ds-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid #e7e9f0; } .ds-card-title { margin: 0; font-family: Manrope, sans-serif; font-size: 0.9375rem; font-weight: 600; color: #1b1d28; } .ds-card-body { padding: 20px; }"
+    },
+    {
+      "name": "Semantic Tag",
+      "kind": "chip",
+      "refersTo": "tag",
+      "description": "Categoria/filtro — fundo suave + texto forte da cor semântica, sem dot.",
+      "html": "<span class=\"ds-tag ds-tag-success\">Conciliado</span>",
+      "css": ".ds-tag { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; font-family: 'Hanken Grotesk', sans-serif; font-size: 0.6875rem; font-weight: 600; line-height: 1; white-space: nowrap; } .ds-tag-success { background: #e7f6ef; color: #0a5c3d; } .ds-tag-danger { background: #fdecec; color: #a81f1f; }"
+    },
+    {
+      "name": "Modal",
+      "kind": "custom",
+      "refersTo": "modal",
+      "description": "Overlay + painel — a única superfície com sombra estrutural (não é hover, é sobreposição).",
+      "html": "<div class=\"ds-overlay\"><div class=\"ds-modal\"><div class=\"ds-modal-header\"><h3 class=\"ds-modal-title\">Confirmar fechamento</h3></div><div class=\"ds-modal-body\">Esta ação não pode ser desfeita.</div></div></div>",
+      "css": ".ds-overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(27,29,40,0.45); } .ds-modal { width: 100%; max-width: 560px; background: #ffffff; border: 1px solid #e7e9f0; border-radius: 12px; box-shadow: 0 12px 32px rgba(27,29,40,0.18); overflow: hidden; } .ds-modal-header { padding: 16px 20px; border-bottom: 1px solid #e7e9f0; } .ds-modal-title { margin: 0; font-family: Manrope, sans-serif; font-size: 0.9375rem; font-weight: 600; color: #1b1d28; } .ds-modal-body { padding: 20px; font-size: 0.875rem; color: #545b6e; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "A Mesa de Conciliação",
+    "overview": "O VenForce Portal é a mesa de trabalho onde números de origens diferentes — pedido do marketplace, base de custo interna, pagamento liquidado, imposto — são postos lado a lado até baterem. Não é um site que vende, é uma bancada operacional: densa, legível, sem enfeite que compita com o dado. Uma paleta neutra cinza-azulada carrega quase toda a interface; o roxo institucional aparece só onde há decisão ou identidade (ação primária, estado selecionado, marca), nunca como decoração.\n\nO sistema rejeita duas tentações do software B2B denso: (1) virar cinza demais e perder hierarquia — por isso títulos usam uma família de display distinta (Manrope) e números críticos (KPIs, moeda) recebem peso e tamanho próprios; (2) empilhar sombra e profundidade decorativa — por isso não há sombra permanente em nenhuma superfície de repouso; sombra só aparece como resposta a um estado (hover, modal, popover), nunca como estilo base de um card ou botão.",
+    "keyCharacteristics": [
+      "Neutro cinza-azulado dominante; roxo (--vf-primary) reservado para ação primária, seleção e marca.",
+      "Sem sombra permanente em repouso — a elevação é sempre uma resposta a estado.",
+      "Três famílias tipográficas com papéis fixos: Manrope para display/números, Hanken Grotesk para corpo/controles, IBM Plex Mono só para identificadores técnicos.",
+      "Raios pequenos e consistentes (6–12px).",
+      "Densidade é uma variável de primeira classe via data-vf-density=\"compact\", não um componente duplicado."
+    ],
+    "rules": [
+      { "name": "The One Accent Rule", "body": "O roxo VenForce aparece só em ação primária, seleção e marca — nunca como cor de fundo decorativa ou ilustrativa.", "section": "colors" },
+      { "name": "The Semantic-Only Color Rule", "body": "Verde, laranja, vermelho e azul só codificam estado real do dado. Nunca usar como paleta decorativa alternativa.", "section": "colors" },
+      { "name": "The Numeric-vs-Identifier Rule", "body": "Quantidade/dinheiro usa .num (Manrope, tabular); identificador técnico usa .vf-mono (IBM Plex Mono). Nunca trocar os dois.", "section": "typography" },
+      { "name": "The No-Shadow-At-Rest Rule", "body": "Nenhuma superfície tem sombra no estado de repouso; toda sombra é resposta a hover, foco ou sobreposição.", "section": "elevation" },
+      { "name": "The Shared-Contract Rule", "body": "A Fundação Global V2 é o contrato visual compartilhado entre Vanilla e React. Tokens, tipografia, cores, spacing, status, densidade e princípios podem e devem ser compartilhados entre stacks; implementações de DOM/JS vanilla não devem ser transplantadas para React — cada superfície React implementa o mesmo contrato de forma idiomática em componentes React.", "section": "overview" }
+    ],
+    "dos": [
+      "Do reservar o Roxo VenForce (#5a2a8f) para ação primária, seleção e marca.",
+      "Do manter sombra fora do estado de repouso.",
+      "Do usar .num para quantidade/dinheiro e .vf-mono para identificadores.",
+      "Do tratar densidade como redefinição de tokens, nunca componente duplicado."
+    ],
+    "donts": [
+      "Don't introduzir uma nova cor de acento fora do roxo fixo e das quatro semânticas já definidas.",
+      "Don't adicionar sombra permanente a card, botão ou input em repouso.",
+      "Don't aplicar .vf-mono a números de quantidade/moeda, nem a família display a identificadores técnicos.",
+      "Don't tratar a sidebar/topbar atual (style.css) como referência de componente V2 — é território de migração pendente."
+    ]
+  }
+}

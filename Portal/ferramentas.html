@@ -11,10 +11,16 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/ferramentas-v2.css">
+  <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
-<body class="vf-page vf-page-ferramentas">
-  <div class="vf-main-with-sidebar">
+<body class="vf-page vf-page-ferramentas" data-vf-scope="global" data-vf-module="ferramentas">
+  <!-- vf-main-with-sidebar era o wrapper de margem fixa do layout.js legado
+       (style.css:2356, margin-left:240px incondicional). O Shell V3 tem sua
+       própria grade (.vf-shell) — manter a classe aqui somaria mais 240px de
+       vazio DENTRO da coluna de conteúdo do shell (achado testando no
+       navegador). A div continua só como wrapper neutro. -->
+  <div>
     <main class="vf-content">
       <div class="vf-page-shell">
         <div class="vf-page-container">
@@ -235,7 +241,12 @@
     </main>
   </div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
+  <!-- ferramentas.js chama initLayout() sem guarda de typeof (diferente do
+       padrão do resto do Portal). Shell V3 é ES module, deferred — não
+       corre a tempo de definir isso antes deste script clássico rodar.
+       Sem tocar ferramentas.js: um no-op quando o shell V3 está ativo. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <script src="ferramentas.js"></script>
 </body>
 </html>

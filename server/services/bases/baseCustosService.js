@@ -6,6 +6,7 @@ const {
   MARKETPLACES_SUPORTADOS,
   isMarketplaceSuportado,
 } = require("./marketplacesBases");
+const { sanitizarConta } = require("../clienteContas/clienteContaService");
 
 // Mensagem única para IDs TikTok que o Excel já destruiu (notação científica).
 // Vale para as DUAS colunas numéricas do TikTok — "ID" (product_id) e
@@ -147,6 +148,8 @@ function criarHttpErro(statusCode, payload) {
   const err = new Error(payload?.erro || "Erro");
   err.statusCode = statusCode;
   err.payload = payload;
+  if (payload?.code) err.code = payload.code;
+  if (payload?.contas) err.contas = payload.contas;
   return err;
 }
 
@@ -386,7 +389,21 @@ async function tocarUpdatedAtBase(baseId) {
 // do MELI já entende (ver parseMeliCostRows em meliFinanceiroService.js).
 // Objetivo: mudar a ORIGEM dos custos sem tocar na fórmula de LC/MC.
 // ---------------------------------------------------------------------------
-async function resolverBaseVinculada({ baseId, clienteSlug, marketplace }) {
+// Resolve a base de custos vinculada a um cliente+marketplace para o
+// fechamento financeiro (MELI/Shopee — TikTok usa a variante estrita abaixo).
+//
+// baseId explícito sempre vence (comportamento pré-existente). Sem baseId,
+// busca os vínculos ativos e só escolhe sozinha quando não há ambiguidade
+// REAL entre contas: múltiplos vínculos com o MESMO cliente_conta_id
+// (histórico de reimportação) ou com cliente_conta_id NULL (legado) não são
+// ambíguos — o ORDER BY updated_at DESC continua decidindo entre eles como
+// sempre decidiu. Só quando existem 2+ cliente_conta_id DISTINTOS e não-nulos
+// (o cliente tem 2+ contas do marketplace, cada uma vinculada a uma base) é
+// que a escolha automática pararia de ser segura — nesse caso o erro
+// MULTIPLE_MARKETPLACE_ACCOUNTS pede clienteContaId em vez de escolher a
+// vinculação mais recente em silêncio (mesma classe de bug já corrigida em
+// Ads/Métricas ML, aqui manifestada como "base de custos errada").
+async function resolverBaseVinculada({ baseId, clienteSlug, marketplace, clienteContaId = null }) {
   const idNum = Number(baseId);
   if (Number.isInteger(idNum) && idNum > 0) {
     const r = await pool.query(
@@ -398,25 +415,53 @@ async function resolverBaseVinculada({ baseId, clienteSlug, marketplace }) {
 
   const slug = String(clienteSlug || "").trim().toLowerCase();
   const mkt = String(marketplace || "").trim().toLowerCase();
-  if (slug && mkt) {
-    const r = await pool.query(
-      `SELECT b.id, b.slug, b.nome
-         FROM bases b
-         JOIN base_cliente_vinculos v
-           ON v.base_id = b.id AND v.ativo = true
-         JOIN clientes c
-           ON c.id = v.cliente_id
-        WHERE LOWER(c.slug) = $1
-          AND v.marketplace = $2
-          AND b.ativo = true
-        ORDER BY v.updated_at DESC
-        LIMIT 1`,
-      [slug, mkt]
-    );
-    if (r.rows.length) return r.rows[0];
+  if (!slug || !mkt) return null;
+
+  const r = await pool.query(
+    `SELECT b.id, b.slug, b.nome, v.cliente_conta_id
+       FROM bases b
+       JOIN base_cliente_vinculos v
+         ON v.base_id = b.id AND v.ativo = true
+       JOIN clientes c
+         ON c.id = v.cliente_id
+      WHERE LOWER(c.slug) = $1
+        AND v.marketplace = $2
+        AND b.ativo = true
+      ORDER BY v.updated_at DESC`,
+    [slug, mkt]
+  );
+  const candidatos = r.rows;
+  if (!candidatos.length) return null;
+
+  const contaIdNum = Number(clienteContaId);
+  const temContaId = Number.isInteger(contaIdNum) && contaIdNum > 0;
+
+  if (temContaId) {
+    // clienteContaId explícito é a fonte de verdade: só o vínculo daquela
+    // conta (ou o legado cliente_conta_id IS NULL, se a conta ainda não tiver
+    // vínculo próprio). Nunca cai para a base de outra conta.
+    const daConta = candidatos.find((c) => c.cliente_conta_id === contaIdNum);
+    if (daConta) return { id: daConta.id, slug: daConta.slug, nome: daConta.nome };
+    const legado = candidatos.find((c) => c.cliente_conta_id == null);
+    return legado ? { id: legado.id, slug: legado.slug, nome: legado.nome } : null;
   }
 
-  return null;
+  const contaIdsDistintos = [...new Set(candidatos.map((c) => c.cliente_conta_id).filter((id) => id != null))];
+  if (contaIdsDistintos.length > 1) {
+    const contasResult = await pool.query(
+      "SELECT * FROM cliente_contas WHERE id = ANY($1::int[]) ORDER BY is_primary DESC, created_at ASC, id ASC",
+      [contaIdsDistintos]
+    );
+    throw criarHttpErro(409, {
+      ok: false,
+      code: "MULTIPLE_MARKETPLACE_ACCOUNTS",
+      erro: "O cliente possui mais de uma conta vinculada a bases de custos diferentes para este marketplace; informe clienteContaId.",
+      contas: contasResult.rows.map(sanitizarConta),
+    });
+  }
+
+  const escolhido = candidatos[0];
+  return { id: escolhido.id, slug: escolhido.slug, nome: escolhido.nome };
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +635,7 @@ async function resolverBaseTikTokPorId(baseId) {
   return { id: base.id, slug: base.slug, nome: base.nome };
 }
 
-async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace }) {
+async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace, clienteContaId = null }) {
   const mkt = String(marketplace || "").trim().toLowerCase();
   const isTikTok = mkt === "tiktok";
 
@@ -600,7 +645,7 @@ async function buildCostRowsFromBase({ baseId, clienteSlug, marketplace }) {
     ? await resolverBaseTikTokPorId(baseId)
     : exigeVinculoEstrito(marketplace)
       ? await resolverBaseVinculadaEstrita({ baseId, clienteSlug, marketplace })
-      : await resolverBaseVinculada({ baseId, clienteSlug, marketplace });
+      : await resolverBaseVinculada({ baseId, clienteSlug, marketplace, clienteContaId });
 
   if (!base) {
     throw criarHttpErro(404, {

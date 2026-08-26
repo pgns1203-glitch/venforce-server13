@@ -34,6 +34,16 @@ const baseVinculadaState = {
   marketplace: "",
 };
 
+// Contas do marketplace do cliente selecionado (Cliente/Conta) — o seletor
+// #fin-conta só aparece quando há 2+ contas ativas do marketplace escolhido
+// (MELI/Shopee; TikTok não usa vínculo por cliente, ver detectarBaseVinculada).
+const contaMercadoState = {
+  contas: [],
+  contaId: "",
+  clienteSlugCarregado: null,
+  marketplaceCarregado: null,
+};
+
 function escapeHTML(s) {
   const d = document.createElement("div");
   d.textContent = s == null ? "" : String(s);
@@ -276,6 +286,52 @@ function aplicarSelecaoBaseTikTok() {
 const tiktokBaseSelect = document.getElementById("fin-tiktok-base");
 if (tiktokBaseSelect) tiktokBaseSelect.addEventListener("change", aplicarSelecaoBaseTikTok);
 
+// ── Conta do marketplace (Cliente/Conta) ───────────────────────────────────
+// Só relevante para MELI/Shopee: se o cliente tiver 2+ contas ativas do
+// marketplace, cada uma pode estar vinculada a uma base de custos diferente
+// — resolverBaseVinculada() no backend recusa escolher sozinho nesse caso
+// (409 MULTIPLE_MARKETPLACE_ACCOUNTS). Buscar isso ANTES do submit evita
+// golpear o endpoint de fechamento (que carrega arquivo) só para descobrir
+// a ambiguidade depois.
+async function carregarContasMercado(clienteSlug, marketplace) {
+  const wrap = document.getElementById("fin-conta-field");
+  const sel = document.getElementById("fin-conta");
+  contaMercadoState.contas = [];
+  contaMercadoState.contaId = "";
+  if (!wrap || !sel) return;
+
+  if (!clienteSlug || !marketplace || marketplace === "tiktok") {
+    wrap.hidden = true;
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/clientes/${encodeURIComponent(clienteSlug)}/contas?marketplace=${encodeURIComponent(marketplace)}`, {
+      headers: { Authorization: "Bearer " + TOKEN },
+    });
+    if (res.status === 401) { window.location.replace("index.html"); return; }
+    const data = await res.json().catch(() => ({}));
+    const contas = (Array.isArray(data?.contas) ? data.contas : []).filter((c) => c?.ativo !== false);
+    contaMercadoState.contas = contas;
+    if (contas.length > 1) {
+      sel.innerHTML = `<option value="">Selecione a conta…</option>` +
+        contas.map((c) => `<option value="${c.id}">${escapeHTML(c.nome || String(c.id))}</option>`).join("");
+      wrap.hidden = false;
+    } else {
+      wrap.hidden = true;
+      sel.innerHTML = `<option value="">Selecione a conta…</option>`;
+    }
+  } catch (_) {
+    wrap.hidden = true;
+  }
+}
+
+const contaMercadoSelect = document.getElementById("fin-conta");
+if (contaMercadoSelect) contaMercadoSelect.addEventListener("change", (e) => {
+  contaMercadoState.contaId = e.target.value || "";
+  detectarBaseVinculada();
+});
+
 // ── Base vinculada (cliente + marketplace) ─────────────────────────────────
 async function detectarBaseVinculada() {
   const clienteSlug = document.getElementById("fin-cliente")?.value || "";
@@ -304,6 +360,20 @@ async function detectarBaseVinculada() {
     return;
   }
 
+  if (contaMercadoState.clienteSlugCarregado !== clienteSlug || contaMercadoState.marketplaceCarregado !== marketplace) {
+    contaMercadoState.clienteSlugCarregado = clienteSlug;
+    contaMercadoState.marketplaceCarregado = marketplace;
+    await carregarContasMercado(clienteSlug, marketplace);
+  }
+
+  // 2+ contas ativas e nenhuma escolhida: não adianta prever a base (o
+  // backend recusaria escolher sozinho) — pede a conta primeiro.
+  if (contaMercadoState.contas.length > 1 && !contaMercadoState.contaId) {
+    baseVinculadaState.loading = false;
+    aplicarEstadoBase();
+    return;
+  }
+
   baseVinculadaState.loading = true;
   aplicarEstadoBase();
 
@@ -315,12 +385,19 @@ async function detectarBaseVinculada() {
     const data = await res.json();
     const bases = Array.isArray(data) ? data : (data?.bases || data?.data || []);
 
-    const match = bases.find((b) => {
+    const candidatos = bases.filter((b) => {
       const v = b?.vinculo;
       return v
         && String(v.cliente_slug || "").toLowerCase() === clienteSlug.toLowerCase()
         && String(v.marketplace || "").toLowerCase() === marketplace.toLowerCase();
     });
+    // Com conta escolhida, prioriza o vínculo daquela conta específica (ou o
+    // legado cliente_conta_id nulo, se a conta ainda não tiver vínculo
+    // próprio) — nunca mostra a base de outra conta como se fosse a certa.
+    const match = contaMercadoState.contaId
+      ? candidatos.find((b) => String(b.vinculo.cliente_conta_id || "") === String(contaMercadoState.contaId))
+        || candidatos.find((b) => !b.vinculo.cliente_conta_id)
+      : candidatos[0];
 
     // Evita condição de corrida: só aplica se a seleção não mudou.
     if (baseVinculadaState.clienteSlug !== clienteSlug ||
@@ -2191,6 +2268,7 @@ async function processarFechamentoFinanceiro() {
     } else {
       formData.append("costs", costs);
     }
+    if (contaMercadoState.contaId) formData.append("clienteContaId", contaMercadoState.contaId);
 
     // Order.all opcional, só Shopee
     if (marketplace === "shopee") {

@@ -83,6 +83,16 @@
                       <span class="vf-field__hint">Usado para nomear e rastrear o fechamento salvo.</span>
                     </div>
 
+                    <!-- MELI/Shopee: só aparece quando o cliente tem 2+ contas do marketplace,
+                         cada uma vinculada a uma base de custos diferente (ambiguidade real). -->
+                    <div class="vf-field" id="fin-conta-field" hidden>
+                      <label class="vf-field__label" for="fin-conta">Conta do marketplace <span class="vf-field__required">*</span></label>
+                      <select id="fin-conta" class="vf-select">
+                        <option value="">Selecione a conta…</option>
+                      </select>
+                      <span class="vf-field__hint">Este cliente tem mais de uma conta vinculada a bases de custos diferentes.</span>
+                    </div>
+
                     <!-- TikTok: a Base TikTok não exige vínculo com cliente — seleção manual -->
                     <div class="vf-field" id="fin-tiktok-base-field" hidden>
                       <label class="vf-field__label" for="fin-tiktok-base">Base de custos TikTok <span class="vf-field__required">*</span></label>

@@ -193,6 +193,8 @@ async function processarFechamentoFinanceiroController(req, res) {
     // Origem alternativa dos custos: base vinculada ao cliente (sem upload).
     const costsBaseId = req.body.costsBaseId || req.body.baseId || null;
     const clienteSlug = req.body.cliente_slug || req.body.clienteSlug || null;
+    const clienteContaIdRaw = req.body.clienteContaId;
+    const clienteContaId = /^\d+$/.test(String(clienteContaIdRaw || "")) ? Number(clienteContaIdRaw) : null;
 
     if (!salesFile || !salesFile.buffer) {
       return res.status(400).json({ ok: false, error: "Arquivo de vendas não enviado." });
@@ -272,6 +274,7 @@ async function processarFechamentoFinanceiroController(req, res) {
         baseId: costsBaseId,
         clienteSlug,
         marketplace,
+        clienteContaId,
       });
       costRowsRaw = resolved.costRows;
       costsSource = "base";
@@ -407,6 +410,8 @@ async function processarFechamentoFinanceiroController(req, res) {
       ok: false,
       error: error instanceof Error ? error.message : "Erro ao processar os arquivos enviados."
     };
+    if (error?.code) payload.code = error.code;
+    if (Array.isArray(error?.contas)) payload.contas = error.contas;
     if (statusCode === 422 && meliHeaderDiagnostic) {
       payload.diagnostico = {
         cabecalhosDetectados: meliHeaderDiagnostic.detectedHeaders,

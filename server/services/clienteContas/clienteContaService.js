@@ -208,6 +208,64 @@ async function listarContasDoCliente({ clienteId, clienteSlug, marketplace, incl
   };
 }
 
+// Versão em lote de listarContasDoCliente, para GET /me/portfolio (V3): a
+// Carteira precisa das contas de N clientes autorizados em UMA consulta, não
+// N+1 (V3 Master Spec §10.5/§18.2, nível C). Só contas ATIVAS — a Carteira
+// nunca lista conta desativada. Simplificação deliberada em relação a
+// listarContasDoCliente: não aplica o enriquecimento de "vínculo legado
+// único" (base ligada por cliente_id+marketplace sem cliente_conta_id) —
+// esse shim de compatibilidade é do modelo pré-Fundação de Contas; aqui o
+// custo de replicar por lote não compensa para um payload de resumo. Uma
+// conta nessa situação rara aparece com baseVinculada=null em vez do nome
+// da base; nunca mistura dado de outra conta.
+async function listarContasDeClientesAtivos(clienteIds) {
+  if (!Array.isArray(clienteIds) || !clienteIds.length) return [];
+
+  const result = await pool.query(
+    `SELECT cc.*,
+            g.id AS grant_id,
+            g.ml_user_id AS grant_ml_user_id,
+            COALESCE(NULLIF(to_jsonb(g)->>'token_status', ''), 'valid') AS grant_token_status,
+            g.expires_at AS grant_expires_at,
+            v.id AS vinculo_id,
+            v.base_id AS vinculo_base_id,
+            b.slug AS vinculo_base_slug,
+            b.nome AS vinculo_base_nome
+       FROM cliente_contas cc
+       LEFT JOIN LATERAL (
+         SELECT * FROM ml_tokens g
+          WHERE g.cliente_conta_id = cc.id
+          ORDER BY g.updated_at DESC NULLS LAST, g.id DESC
+          LIMIT 1
+       ) g ON true
+       LEFT JOIN LATERAL (
+         SELECT * FROM base_cliente_vinculos v
+          WHERE v.cliente_conta_id = cc.id AND v.ativo = true
+          ORDER BY v.updated_at DESC NULLS LAST, v.id DESC
+          LIMIT 1
+       ) v ON true
+       LEFT JOIN bases b ON b.id = v.base_id
+      WHERE cc.cliente_id = ANY($1::int[]) AND cc.ativo = true
+      ORDER BY cc.cliente_id ASC, cc.marketplace ASC, cc.is_primary DESC, cc.created_at ASC, cc.id ASC`,
+    [clienteIds]
+  );
+
+  return result.rows.map((row) => ({
+    ...sanitizarConta(row),
+    grant: row.grant_id
+      ? {
+          id: row.grant_id,
+          ml_user_id: row.grant_ml_user_id == null ? null : String(row.grant_ml_user_id),
+          token_status: row.grant_token_status,
+          expires_at: row.grant_expires_at,
+        }
+      : null,
+    base: row.vinculo_id
+      ? { vinculo_id: row.vinculo_id, base_id: row.vinculo_base_id, slug: row.vinculo_base_slug, nome: row.vinculo_base_nome }
+      : null,
+  }));
+}
+
 // Usado pelo fluxo legado de vínculo de base (baseVinculosService.criarVinculoManual)
 // quando só há cliente_id + marketplace, sem cliente_conta_id explícito.
 // Nunca escolhe entre 2+ contas ativas — mesma regra de ambiguidade de
@@ -733,6 +791,7 @@ module.exports = {
   normalizarMarketplaceConta,
   resolverClientePorIdOuSlug,
   listarContasDoCliente,
+  listarContasDeClientesAtivos,
   resolverContaParaVinculoLegado,
   obterConta,
   criarConta,

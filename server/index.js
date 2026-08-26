@@ -60,6 +60,7 @@ const fechamentosFinanceiroRoutes = require("./routes/fechamentosFinanceiroRoute
 const fechamentoDebugRoutes = require("./routes/fechamentoDebugRoutes");
 const mlRoutes = require("./routes/mlRoutes");
 const clienteContasRoutes = require("./routes/clienteContasRoutes");
+const meRoutes = require("./routes/meRoutes");
 const { verificarDependenciasCliente } = require("./services/clientes/clienteDependenciasService");
 const automacoesRoutes = require("./routes/automacoesRoutes");
 const entregasClienteRoutes = require("./routes/entregasClienteRoutes");
@@ -777,6 +778,7 @@ app.use("/fechamentos", fechamentosFinanceiroRoutes);
 app.use("/fechamentos", fechamentoDebugRoutes);
 app.use("/", mlRoutes);
 app.use("/", clienteContasRoutes);
+app.use("/me", meRoutes);
 app.use("/", tiktokShopRoutes);
 app.use("/shopee", shopeeRoutes);
 app.use("/", automacoesRoutes);

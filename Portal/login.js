@@ -2,11 +2,13 @@ const STORAGE_KEY = "vf-token";
 const API_BASE = "https://venforce-server.onrender.com";
 
 // ─── Destino pós-login por role ───
+// F1.3 — Carteira vira a home dos papéis internos (MASTER_SPEC D2/§20.3).
+// seller e shopee_reviewer têm telas próprias e NÃO mudam.
 function destinoPorRole(user) {
   const role = String(user?.role || "").toLowerCase();
   if (role === "seller") return "seller.html";
   if (role === "shopee_reviewer") return "cliente-operacao.html";
-  return "dashboard.html";
+  return "carteira.html";
 }
 
 // ─── Redirect se já logado ───
@@ -79,6 +81,15 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
 
     localStorage.setItem(STORAGE_KEY, data.token);
     localStorage.setItem("vf-user", JSON.stringify(data.user));
+    // D12/D3 — login bem-sucedido limpa o contexto operacional ANTES do
+    // redirect, para uma aba reaproveitada não herdar Cliente/Conta do
+    // usuário anterior. Fonte única: vf-context.js (import dinâmico —
+    // login.js continua script clássico, switchTab() precisa ficar global
+    // para o onclick inline do HTML). Falha do módulo nunca bloqueia login.
+    try {
+      const { vfContext } = await import("./vf-context.js");
+      vfContext.clearOperationalContext();
+    } catch {}
     try {
       if (chrome?.runtime?.sendMessage) {
         chrome.runtime.sendMessage(

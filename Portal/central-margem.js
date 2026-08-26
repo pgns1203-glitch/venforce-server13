@@ -45,7 +45,12 @@
 
   var state = {
     token: null,
-    clients: [],
+    // F2.3 — cliente vem do Shell V3 (aplicarContextoDoShell). getWorkspace
+    // não recebe clienteContaId (é client-level, não account-level — §14
+    // do MASTER_SPEC), então nada aqui finge precisão por conta. marketplace
+    // segue fixo em "meli": o próprio renderContext() já escrevia "Mercado
+    // Livre" hardcoded antes desta unidade — o Motor de Margem só resolve
+    // bases MELI (confirmado em contextoPrecificacaoService).
     client: null,
     marketplace: "meli",
     search: "",
@@ -197,8 +202,6 @@
   }
 
   function cacheRefs() {
-    refs.client = el("cm-client");
-    refs.marketplace = el("cm-marketplace");
     refs.search = el("cm-search");
     refs.refresh = el("cm-refresh");
     refs.updated = el("cm-updated");
@@ -245,29 +248,9 @@
   // ---------------------------------------------------------------------------
 
   function bindEvents() {
-    refs.client.addEventListener("change", function () {
-      var selected = state.clients.find(function (client) { return client.slug === refs.client.value; }) || null;
-      state.client = selected;
-      state.visiblePage = 1;
-      closeDrawer();
-      try {
-        if (selected) root.localStorage.setItem("vf-central-margem-cliente", selected.slug);
-        else root.localStorage.removeItem("vf-central-margem-cliente");
-      } catch (_) { /* armazenamento opcional */ }
-      syncUrl();
-      if (selected) loadCentral();
-      else {
-        state.data = null;
-        state.error = null;
-        renderAll();
-      }
-    });
-
-    refs.marketplace.addEventListener("change", function () {
-      state.marketplace = refs.marketplace.value || "meli";
-      state.visiblePage = 1;
-      if (state.client) loadCentral();
-    });
+    // F2.3 — Cliente/Marketplace não são mais seletores locais: o contexto
+    // vem do Shell V3 (aplicarContextoDoShell(), assinado via evento
+    // 'vf:context' no fim do arquivo).
 
     // Busca é PURAMENTE local: filtra o workspace já carregado, sem nova
     // leitura. Alcança todo item carregado, não só a página visual atual.
@@ -450,15 +433,6 @@
     }
   }
 
-  function syncUrl() {
-    try {
-      var params = new URLSearchParams(root.location.search || "");
-      if (state.client) params.set("cliente", state.client.slug);
-      else params.delete("cliente");
-      root.history.replaceState({}, "", root.location.pathname + (params.toString() ? "?" + params.toString() : ""));
-    } catch (_) { /* history pode estar bloqueado */ }
-  }
-
   function applyPreset(name) {
     if (name === "custom") {
       // "Personalizado" é um ESTADO, não um preset: só é atingido alterando um
@@ -492,43 +466,38 @@
   // Carregamento
   // ---------------------------------------------------------------------------
 
-  function loadClients() {
-    refs.client.disabled = true;
-    refs.client.innerHTML = '<option value="">Carregando clientes…</option>';
-    return api.getClients().then(function (result) {
-      refs.client.disabled = false;
-      if (!result.ok) {
-        state.error = result.error || "Não foi possível carregar os clientes.";
-        state.errorCode = result.code || null;
-        refs.client.innerHTML = '<option value="">Falha ao carregar</option>';
-        renderAll();
-        return;
-      }
-      state.clients = result.clients || [];
-      var options = '<option value="">Selecione um cliente</option>';
-      state.clients.forEach(function (client) {
-        options += '<option value="' + escapeHtml(client.slug) + '">' + escapeHtml(client.name) +
-          (client.mlConnected ? "" : " · ML não conectado") + "</option>";
-      });
-      refs.client.innerHTML = options;
+  // F2.3 — o contexto vem do Shell V3 (vf-context.js), nunca mais de um
+  // <select> local nem de localStorage. data-vf-scope="client" nesta
+  // página (não "account"): getWorkspace() é client-level, sem
+  // clienteContaId — exigir uma operação escolhida antes de liberar a
+  // tela seria um passo sem efeito nenhum no que é carregado.
+  //
+  // central-margem.js roda como <script> CLÁSSICO, carregado ANTES do
+  // vf-shell.js (module, deferred) terminar de executar — a ponte é o
+  // evento DOM 'vf:context' (MASTER_SPEC §6.5/§15.3), registrada no fim
+  // deste arquivo antes de qualquer emit poder acontecer.
+  var ultimoClienteAplicado; // difere de undefined/null na primeira chamada
+  function aplicarContextoDoShell(snap) {
+    var ctx = root.VF && root.VF.context;
+    var temCliente = ctx && snap.context && snap.context.clienteId;
+    var clienteAtual = temCliente ? ctx.getClienteAtual() : null;
+    var chave = clienteAtual ? clienteAtual.slug : null;
 
-      var requested = null;
-      try { requested = new URLSearchParams(root.location.search || "").get("cliente"); } catch (_) { /* ignora */ }
-      var saved = null;
-      try { saved = root.localStorage.getItem("vf-central-margem-cliente"); } catch (_) { /* ignora */ }
-      var preferred = requested || saved;
-      var match = state.clients.find(function (client) { return client.slug === preferred; }) || null;
-      if (match) {
-        state.client = match;
-        refs.client.value = match.slug;
-        loadCentral();
-      } else {
-        state.client = null;
-        state.error = null;
-        state.errorCode = null;
-        renderAll();
-      }
-    });
+    state.client = clienteAtual ? { id: clienteAtual.id, slug: clienteAtual.slug, name: clienteAtual.nome } : null;
+
+    if (chave === ultimoClienteAplicado) return;
+    ultimoClienteAplicado = chave;
+
+    state.visiblePage = 1;
+    closeDrawer();
+    if (state.client) {
+      loadCentral();
+    } else {
+      state.data = null;
+      state.error = null;
+      state.errorCode = null;
+      renderAll();
+    }
   }
 
   function loadCentral(manual) {
@@ -583,7 +552,6 @@
     refs.refresh.disabled = state.loading || !state.client;
     refs.refresh.classList.toggle("is-loading", state.loading);
     refs.search.disabled = !state.client;
-    refs.marketplace.disabled = !state.client;
     renderContext();
     renderPageState();
     syncPresetButtons();
@@ -618,7 +586,9 @@
 
   function renderPageState() {
     if (!state.client && !state.error) {
-      refs.pageState.innerHTML = '<div class="vf-banner is-info"><div class="vf-banner__content"><p class="vf-banner__title">Selecione o contexto da análise</p><p class="vf-banner__description">Escolha um cliente para carregar anúncios, dados financeiros e cobertura de Base.</p></div></div>';
+      // F2.3 — o Shell (data-vf-scope="client") já bloqueia esta tela
+      // enquanto nenhum cliente estiver escolhido; isto é rede de segurança.
+      refs.pageState.innerHTML = '<div class="vf-banner is-info"><div class="vf-banner__content"><p class="vf-banner__title">Selecione o contexto da análise</p><p class="vf-banner__description">Escolha um cliente na barra lateral para carregar anúncios, dados financeiros e cobertura de Base.</p></div></div>';
       return;
     }
     if (state.error) {
@@ -631,7 +601,9 @@
         escapeHtml(state.error) + '</p></div><div class="vf-banner__actions">' + (contextError ? contextError.action : "") + '<button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-retry">Tentar novamente</button></div></div>';
       if (contextError) refs.pageState.querySelector(".vf-banner__title").textContent = contextError.title;
       var retry = el("cm-retry");
-      if (retry) retry.addEventListener("click", function () { state.client ? loadCentral() : loadClients(); });
+      // state.client sempre existe aqui: o Shell resolve o cliente antes de
+      // qualquer chamada a loadCentral() (aplicarContextoDoShell()).
+      if (retry) retry.addEventListener("click", function () { loadCentral(); });
       return;
     }
     if (!state.data || state.loading) {
@@ -1691,7 +1663,7 @@
       return;
     }
     renderAll();
-    loadClients();
+    document.addEventListener("vf:context", function (event) { aplicarContextoDoShell(event.detail); });
   }
 
   root.VFCentralMargemUi = {

@@ -19,7 +19,7 @@
 </head>
 <body class="vf-page vf-page-fechamentos-api" data-vf-scope="account" data-vf-module="central-vendas">
 
-  <div class="vf-main-with-sidebar">
+  <div>
     <main class="vf-content" id="fapi-main" aria-label="Central de Vendas">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
@@ -41,20 +41,12 @@
             </div>
           </div>
 
-          <!-- 2. BARRA GLOBAL DE CONTEXTO (cliente + período + motor + ações) -->
+          <!-- 2. BARRA GLOBAL DE CONTEXTO (período + motor + ações) —
+               F2.2: Cliente/Conta saíram daqui, o Shell V3 (barra lateral)
+               é quem resolve o contexto agora; MASTER_SPEC §5/§9. -->
           <section class="vf-fapi-context" aria-label="Contexto da análise">
             <div class="vf-fapi-context__row">
               <div class="vf-fapi-context__filters">
-                <div class="vf-field">
-                  <label class="vf-field__label" for="fapi-client-select">Cliente</label>
-                  <select id="fapi-client-select" class="vf-select vf-select--sm">
-                    <option value="">Carregando…</option>
-                  </select>
-                </div>
-                <div class="vf-field" id="fapi-conta-field" hidden>
-                  <label class="vf-field__label" for="fapi-conta-select">Conta</label>
-                  <select id="fapi-conta-select" class="vf-select vf-select--sm"></select>
-                </div>
                 <div class="vf-field">
                   <label class="vf-field__label" for="fapi-period-select">Período de análise</label>
                   <select id="fapi-period-select" class="vf-select vf-select--sm"></select>
@@ -157,29 +149,12 @@
     </footer>
   </aside>
 
-  <!-- F0.7 — comparação lado a lado (MASTER_SPEC §5.3/§20.2): sem ?shell=v3,
-       comportamento idêntico ao de hoje (layout.js). Com ?shell=v3, o Shell
-       V3 assume. Os dois <script> nunca coexistem — document.write decide
-       ANTES de fechamentos-api.js rodar (ele chama window.initLayout() de
-       forma síncrona, então a escolha não pode depender de um <script
-       type="module">, que é sempre deferred e rodaria tarde demais). Sem
-       tocar layout.js nem fechamentos-api.js. -->
-  <script>
-    (function () {
-      var v3 = /(?:^|[?&])shell=v3(?:&|$)/.test(window.location.search);
-      if (v3) {
-        // .vf-main-with-sidebar é margem fixa de 240px do layout.js legado
-        // (style.css:2356, incondicional). Dentro da grade do Shell V3 isso
-        // duplicaria o recuo (achado migrando ferramentas.html). Só remove
-        // a classe no modo v3 — o modo legado continua precisando dela.
-        var wrap = document.querySelector(".vf-main-with-sidebar");
-        if (wrap) wrap.classList.remove("vf-main-with-sidebar");
-        document.write('<script type="module" src="vf-shell.js"><\/script>');
-      } else {
-        document.write('<script src="layout.js"><\/script>');
-      }
-    })();
-  </script>
+  <!-- F2.2 — Shell V3 por padrão (a comparação lado a lado de F0.7 já
+       provou que ele não regride a tela; a flag ?shell=v3 não é mais
+       necessária). layout.js sai de vez desta página — a barra lateral
+       antiga não tem mais nada para controlar aqui (Cliente/Conta já
+       vêm do Shell). Rollback: `git revert` deste commit. -->
+  <script type="module" src="vf-shell.js"></script>
   <script src="fechamentos-api.js"></script>
 </body>
 </html>

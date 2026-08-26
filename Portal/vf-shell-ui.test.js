@@ -308,7 +308,7 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("window.VF.context.getState()"), estadoAntes, "clicar na conta inativa não deveria mudar o estado");
     });
 
-    await check("S06/S07/S10 — escolher Shopee: 3 módulos ML-only colapsam, aria-live anuncia o contexto", async () => {
+    await check("S06/S07/S10 — escolher Shopee: 4 módulos ML-only colapsam, aria-live anuncia o contexto", async () => {
       await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-menu__item'), function(x){return x.textContent.indexOf('Shopee')>=0;}).click()");
       await waitFor(cdp, "window.VF.context.getState() === 'READY'", "não chegou a READY na conta Shopee");
 
@@ -319,9 +319,11 @@ async function run() {
           return { summary: det.querySelector('summary').textContent, itens: det.querySelectorAll('.vf-shell__item').length };
         })();
       `);
-      assert.ok(grupo, "grupo de indisponíveis não apareceu com 3 módulos ML-only");
-      assert.ok(grupo.summary.includes("Shopee") && grupo.summary.includes("3"));
-      assert.strictEqual(grupo.itens, 3);
+      // F2.3 — "margem" ganhou marketplaces:["meli"] (achado lendo o código
+      // real: Motor de Margem só resolve base MELI). 3 → 4 módulos ML-only.
+      assert.ok(grupo, "grupo de indisponíveis não apareceu com 4 módulos ML-only");
+      assert.ok(grupo.summary.includes("Shopee") && grupo.summary.includes("4"));
+      assert.strictEqual(grupo.itens, 4);
 
       const adsItem = await cdp.evaluate(`
         (function(){ var a = document.querySelector('.vf-shell__item[data-module=ads]'); return a ? { disabled: a.getAttribute('aria-disabled'), title: a.title } : null; })();

@@ -11,10 +11,14 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/central-margem-v2.css">
+  <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
-<body class="vf-page vf-page-central-margem" data-vf-density="compact">
-  <div class="vf-main-with-sidebar">
+<!-- F2.3 — data-vf-scope="client", não "account": getWorkspace() é
+     client-level (sem clienteContaId, MASTER_SPEC §14) — exigir uma
+     operação escolhida não mudaria nada do que carrega aqui. -->
+<body class="vf-page vf-page-central-margem" data-vf-density="compact" data-vf-scope="client" data-vf-module="margem">
+  <div>
     <main class="vf-content" id="cm-main" aria-label="Central de Margem">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
@@ -31,20 +35,11 @@
             </div>
           </header>
 
+          <!-- F2.3 — Cliente/Marketplace saíram daqui: o Shell V3 (barra
+               lateral) resolve o Cliente; Marketplace continua fixo em
+               Mercado Livre (o Motor de Margem nunca resolveu outro). -->
           <section class="cm-context vf-card" aria-label="Contexto da análise">
             <div class="cm-context__grid">
-              <div class="vf-field">
-                <label class="vf-field__label" for="cm-client">Cliente</label>
-                <select class="vf-select vf-select--sm" id="cm-client">
-                  <option value="">Carregando clientes…</option>
-                </select>
-              </div>
-              <div class="vf-field">
-                <label class="vf-field__label" for="cm-marketplace">Marketplace</label>
-                <select class="vf-select vf-select--sm" id="cm-marketplace">
-                  <option value="meli">Mercado Livre</option>
-                </select>
-              </div>
               <div class="vf-field cm-context__search">
                 <label class="vf-field__label" for="cm-search">Buscar produto</label>
                 <input class="vf-input vf-input--sm vf-search" id="cm-search" type="search" placeholder="Título, MLB ou SKU" autocomplete="off">
@@ -218,7 +213,7 @@
 
   <div class="vf-toast-stack" id="cm-toasts" aria-live="polite"></div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
   <script src="central-margem-api.js"></script>
   <script src="central-margem.js"></script>
 </body>

@@ -499,10 +499,13 @@ function buildMockOrderDetail(rowId) {
    que o backend devolveu. */
 function defaultOrderFilters() { return { logistica:'todos', diagbase:'todos', status:'todos', de:null, ate:null }; }
 const F = {
-  clientes: [], cliente: null,
+  // F2.2 — cliente/contas/clienteConta NÃO são mais resolvidos aqui: vêm de
+  // window.VF.context (Shell V3), espelhados por aplicarContextoDoShell().
+  // O "motor" abaixo (fetchRead/carregarTela/atualizarListaEResumo/sync)
+  // continua lendo F.cliente.slug e F.clienteConta.id exatamente como
+  // antes — só quem os escreve mudou.
+  cliente: null,
   contas: [], clienteConta: null,
-  contasLoading: false,
-  contaLoadSeq: 0,
   periodo: null,          // { mode, dateFrom, dateTo } — período de análise escolhido na UI
   periodoResp: null,      // periodo ecoado pela Read API (mesmo intervalo, rótulo formatado)
 
@@ -703,29 +706,11 @@ function isAdminUser() {
   catch (_) { return false; }
 }
 
-async function initFechamentosApi() {
-  try {
-    let data = await fetch(`${API_BASE}/operacao/cliente-360/clientes`,
-      { headers: { Authorization: 'Bearer ' + TOKEN } }).then(r => r.ok ? r.json() : null);
-    if (!data?.ok) {
-      const r2 = await fetch(`${API_BASE}/clientes`, { headers: { Authorization: 'Bearer ' + TOKEN } });
-      data = r2.ok ? await r2.json() : null;
-    }
-    const lista = Array.isArray(data?.clientes) ? data.clientes
-                : Array.isArray(data)            ? data
-                : [];
-    F.clientes = lista
-      .filter(c => c?.ativo !== false)
-      .sort((a, b) => (a.nome || '').localeCompare(b.nome || ''));
-  } catch (_) {
-    F.clientes = [];
-  }
-
-  const sel = document.getElementById('fapi-client-select');
-  if (sel) {
-    sel.innerHTML = '<option value="">Selecione o cliente…</option>' +
-      F.clientes.map(c => `<option value="${esc(c.slug)}">${esc(c.nome)}</option>`).join('');
-  }
+function initFechamentosApi() {
+  // F2.2 — a lista de clientes e a resolução de cliente/conta são do Shell
+  // V3 agora (aplicarContextoDoShell(), já assinando `vf:context` desde o
+  // topo do arquivo). Esta função só cuida do que continua local à página:
+  // período, visibilidade de ações admin, aba restaurada do hash.
   const periodSel = document.getElementById('fapi-period-select');
   if (periodSel) {
     periodSel.innerHTML = PERIOD_OPTS.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
@@ -742,7 +727,9 @@ async function initFechamentosApi() {
   if (hashTab) F.ui.activeTab = hashTab;
 
   wireStatic();
-  carregarTela();
+  // Não chama carregarTela() aqui: o listener de 'vf:context' já recebeu
+  // (ou vai receber, síncrono) o primeiro emit("boot") de vf-context.js e
+  // aplicarContextoDoShell() chama carregarTela() sozinho.
 }
 
 function onPeriodChange() {
@@ -784,94 +771,54 @@ function resetFilters() {
   resetCurvaAbcState();
 }
 
-/* ── CONTAS DO CLIENTE (M8 — account-aware, inalterado) ─────── */
-async function carregarContasCliente(clienteSlug) {
-  if (!TOKEN || !clienteSlug) return [];
-  try {
-    const res = await fetch(
-      `${API_BASE}/clientes/${encodeURIComponent(clienteSlug)}/contas?marketplace=meli`,
-      { headers: { Authorization: 'Bearer ' + TOKEN } }
-    );
-    if (!res.ok) return [];
-    const json = await res.json();
-    return Array.isArray(json?.contas) ? json.contas.filter(c => c?.ativo !== false) : [];
-  } catch (_) {
-    return [];
-  }
-}
+/* ── CONTEXTO (F2.2 — vem do Shell V3, não mais desta tela) ───
+   window.VF.context é a máquina de estados de vf-context.js (F0.3): ela já
+   resolve cardinalidade (1 conta ativa → auto; 2+ → escolha explícita;
+   0 → NO_ACTIVE_ACCOUNT), dedupe de fan-out (I6) e validação de posse/
+   atividade — nada disso é reimplementado aqui (R8: a regra de
+   cardinalidade mora só em vf-context.js).
 
-function renderContextoConta() {
-  const field = document.getElementById('fapi-conta-field');
-  const select = document.getElementById('fapi-conta-select');
-  if (!field || !select) return;
+   fechamentos-api.js roda como <script> CLÁSSICO (não-module), carregado
+   ANTES do vf-shell.js (module, deferred) terminar de executar — não dá
+   para `import` nem assinar window.VF.context.subscribe() direto na hora
+   em que este arquivo é avaliado. A ponte documentada para esse caso
+   (MASTER_SPEC §6.5/§15.3) é o evento DOM `vf:context`, que vf-context.js
+   dispara a cada emit() — inclusive o primeiro, síncrono, dentro de
+   init(). Registrar o listener AQUI (antes do módulo rodar) garante que
+   nenhum emit é perdido, sem polling. */
+let ultimoContextoAplicado = Symbol('contexto-nao-aplicado-ainda'); // difere de qualquer chave real ou de `null`
+function aplicarContextoDoShell(snap) {
+  const ctx = window.VF?.context;
+  const pronto = ctx && snap.state === ctx.STATES.READY;
 
-  if (!F.cliente) { field.hidden = true; return; }
+  // clienteAtual/F.contas dependem só de ctx.clienteId estar setado — não
+  // de READY. Em ACCOUNT_CHOICE_REQUIRED o cliente JÁ é conhecido (só a
+  // conta está pendente) e ctx.getAccounts() já tem as contas resolvidas;
+  // gatear os dois atrás de `pronto` faria carregarTela() cair no ramo
+  // "!F.cliente" ("selecione um cliente") em vez do ramo certo
+  // ("selecione a operação") — invisível hoje (o Shell já esconde #fapi-main
+  // nesse estado), mas incorreto internamente, e visível no VM sandbox de
+  // server/tests/fechamentosApiAccountAware.test.js, que chama esta função
+  // direto, sem o gating do shell por cima.
+  const clienteAtual = ctx && snap.context ? ctx.getClienteAtual() : null;
+  const contaMeta = pronto ? ctx.getAccountMeta() : null;
+  const chave = pronto && snap.context ? `${snap.context.clienteSlug}:${snap.context.clienteContaId}` : null;
 
-  if (F.contasLoading) {
-    field.hidden = false;
-    select.disabled = true;
-    select.innerHTML = '<option value="">Carregando contas…</option>';
-    return;
-  }
+  F.cliente = clienteAtual ? { id: clienteAtual.id, slug: clienteAtual.slug, nome: clienteAtual.nome } : null;
+  F.contas = clienteAtual && ctx.getAccounts ? ctx.getAccounts().filter(c => c?.ativo !== false) : [];
+  F.clienteConta = contaMeta ? { id: contaMeta.id, nome: contaMeta.nome } : null;
 
-  if (!F.contas.length) { field.hidden = true; return; }
+  if (chave === ultimoContextoAplicado) return; // mesmo cliente+conta — nada novo para carregar (ex.: flag de integração)
+  ultimoContextoAplicado = chave;
 
-  field.hidden = false;
-  const precisaEscolha = F.contas.length > 1;
-  select.disabled = !precisaEscolha;
-  const placeholder = precisaEscolha ? '<option value="">Selecione a conta…</option>' : '';
-  select.innerHTML = placeholder + F.contas.map(c => {
-    const selecionada = F.clienteConta?.id === c.id;
-    const nome = c.nome || c.slug || `Conta ${c.id}`;
-    return `<option value="${esc(c.id)}"${selecionada ? ' selected' : ''}>${esc(nome)}${c.is_primary ? ' (principal)' : ''}</option>`;
-  }).join('');
-}
-
-function onContaChange(contaIdRaw) {
-  const conta = F.contas.find(c => String(c.id) === String(contaIdRaw)) || null;
-  if (!conta || F.clienteConta?.id === conta.id) return;
   pararPollingSync();
-  F.clienteConta = conta;
   closeOrderDrawer({ restoreFocus: false });
   F.lastSyncBase = null;
   resetFilters();
-  renderContextoConta();
   carregarTela();
-  retomarSyncEmAndamento();
+  if (pronto) retomarSyncEmAndamento();
 }
-
-async function trocarContexto() {
-  const seq = ++F.contaLoadSeq;
-  F.contas = [];
-  F.clienteConta = null;
-
-  if (!F.cliente) {
-    F.contasLoading = false;
-    renderContextoConta();
-    carregarTela();
-    return;
-  }
-
-  F.contasLoading = true;
-  renderContextoConta();
-  renderAll();
-
-  const contas = await carregarContasCliente(F.cliente.slug);
-  if (seq !== F.contaLoadSeq) return;
-
-  F.contasLoading = false;
-  F.contas = contas;
-  if (contas.length === 1) F.clienteConta = contas[0];
-  renderContextoConta();
-
-  if (contas.length <= 1) {
-    carregarTela();
-    retomarSyncEmAndamento();
-  } else {
-    resetDataState();
-    renderAll();
-  }
-}
+document.addEventListener('vf:context', e => aplicarContextoDoShell(e.detail));
 
 /* ── CARREGAMENTO — Read API M9/M10 ───────────────────────────
    Dois pontos de fetch:
@@ -944,9 +891,11 @@ async function carregarTela() {
   F.loading = false;
 
   if (bootstrapResp?.erroTipo === 'ambiguidade_conta') {
-    F.contas = bootstrapResp.contas || [];
-    F.clienteConta = null;
-    renderContextoConta();
+    // A cardinalidade é do Shell (vf-context.js), não mais desta tela —
+    // devolve o sinal para lá; a máquina de estados zera a conta e abre
+    // ACCOUNT_CHOICE_REQUIRED, o que reemite vf:context e passa de novo
+    // por aplicarContextoDoShell() com F.contas/F.clienteConta corretos.
+    window.VF?.context?.signalContextError({ code: 'CONTA_AMBIGUA' });
     resetDataState();
     renderAll();
     return;
@@ -981,9 +930,7 @@ async function atualizarListaEResumo({ resetPage = false } = {}) {
   F.orders.loading = false;
 
   if (resp?.erroTipo === 'ambiguidade_conta') {
-    F.contas = resp.contas || [];
-    F.clienteConta = null;
-    renderContextoConta();
+    window.VF?.context?.signalContextError({ code: 'CONTA_AMBIGUA' });
     resetDataState();
     renderAll();
     return;
@@ -1007,7 +954,6 @@ const TAB_HASH = { visao:'#visao-geral', pedidos:'#pedidos', produtos:'#produtos
 
 function renderAll() {
   renderContextStatus();
-  renderContextoConta();
 
   const stateHost = document.getElementById('fapi-state-host');
   const tabs = document.getElementById('fapi-tabs');
@@ -1018,21 +964,17 @@ function renderAll() {
     if (!show) return;
   };
 
+  // F2.2 — estas duas condições já são bloqueadas pelo próprio Shell V3
+  // (data-vf-scope="account" só libera main quando READY, MASTER_SPEC
+  // §5.4); ficam como rede de segurança, nunca visíveis na prática.
   if (!F.cliente) {
     showPanels(false);
     stateHost.hidden = false;
     stateHost.innerHTML = emptyState({
       icon:'target', title:'Selecione um cliente para abrir a Central de Vendas',
       why:'O fechamento por pedido é sempre por cliente e por período de análise.',
-      next:'Escolha um cliente e o período na barra acima.',
+      next:'Escolha um cliente e uma operação na barra lateral.',
     });
-    return;
-  }
-
-  if (F.contasLoading) {
-    showPanels(false);
-    stateHost.hidden = false;
-    stateHost.innerHTML = loadingState('Carregando contas do cliente…');
     return;
   }
 
@@ -1040,9 +982,9 @@ function renderAll() {
     showPanels(false);
     stateHost.hidden = false;
     stateHost.innerHTML = emptyState({
-      icon:'target', title:'Selecione a conta do Mercado Livre',
-      why:'Este cliente tem mais de uma conta ativa — a Central precisa saber qual conta ler antes de mostrar qualquer número.',
-      next:'Escolha a conta no seletor da barra acima.',
+      icon:'target', title:'Selecione a operação',
+      why:'Este cliente tem mais de uma operação ativa — a Central precisa saber qual conta ler antes de mostrar qualquer número.',
+      next:'Escolha a operação na barra lateral.',
     });
     return;
   }
@@ -2687,15 +2629,9 @@ async function retomarSyncEmAndamento() {
 
 /* ── WIRING ESTÁTICO (uma vez, no boot — delegação nos hosts) ── */
 function wireStatic() {
-  document.getElementById('fapi-client-select')?.addEventListener('change', e => {
-    F.cliente = F.clientes.find(c => c.slug === e.target.value) || null;
-    closeOrderDrawer({ restoreFocus: false });
-    F.lastSyncBase = null;
-    pararPollingSync();
-    resetFilters();
-    trocarContexto();
-  });
-  document.getElementById('fapi-conta-select')?.addEventListener('change', e => onContaChange(e.target.value));
+  // F2.2 — seletores de Cliente/Conta removidos: o contexto vem do Shell V3
+  // (aplicarContextoDoShell(), assinado via evento 'vf:context' no topo do
+  // arquivo). Período não é contexto (D11) e continua local.
   document.getElementById('fapi-period-select')?.addEventListener('change', onPeriodChange);
   document.getElementById('fapi-period-apply')?.addEventListener('click', aplicarPeriodoCustom);
   document.getElementById('fapi-refresh-btn')?.addEventListener('click', () => {

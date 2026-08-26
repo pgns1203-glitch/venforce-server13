@@ -14,9 +14,10 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/fechamentos-api-v2.css">
+  <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
-<body class="vf-page vf-page-fechamentos-api">
+<body class="vf-page vf-page-fechamentos-api" data-vf-scope="account" data-vf-module="central-vendas">
 
   <div class="vf-main-with-sidebar">
     <main class="vf-content" id="fapi-main" aria-label="Central de Vendas">
@@ -156,7 +157,29 @@
     </footer>
   </aside>
 
-  <script src="layout.js"></script>
+  <!-- F0.7 — comparação lado a lado (MASTER_SPEC §5.3/§20.2): sem ?shell=v3,
+       comportamento idêntico ao de hoje (layout.js). Com ?shell=v3, o Shell
+       V3 assume. Os dois <script> nunca coexistem — document.write decide
+       ANTES de fechamentos-api.js rodar (ele chama window.initLayout() de
+       forma síncrona, então a escolha não pode depender de um <script
+       type="module">, que é sempre deferred e rodaria tarde demais). Sem
+       tocar layout.js nem fechamentos-api.js. -->
+  <script>
+    (function () {
+      var v3 = /(?:^|[?&])shell=v3(?:&|$)/.test(window.location.search);
+      if (v3) {
+        // .vf-main-with-sidebar é margem fixa de 240px do layout.js legado
+        // (style.css:2356, incondicional). Dentro da grade do Shell V3 isso
+        // duplicaria o recuo (achado migrando ferramentas.html). Só remove
+        // a classe no modo v3 — o modo legado continua precisando dela.
+        var wrap = document.querySelector(".vf-main-with-sidebar");
+        if (wrap) wrap.classList.remove("vf-main-with-sidebar");
+        document.write('<script type="module" src="vf-shell.js"><\/script>');
+      } else {
+        document.write('<script src="layout.js"><\/script>');
+      }
+    })();
+  </script>
   <script src="fechamentos-api.js"></script>
 </body>
 </html>

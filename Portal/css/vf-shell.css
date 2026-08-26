@@ -1,0 +1,547 @@
+/* ============================================================================
+ * Portal/css/vf-shell.css
+ * Shell V3 (F0.4) — MASTER_SPEC §5 (Shell), §9 (Sidebar), §16.3 (componentes
+ * que faltam na Fundação V2), §19 (responsividade).
+ *
+ * Fundação ESTRUTURAL, não a implementação inteira de cada tela. Só entram
+ * aqui os componentes que o SHELL precisa para montar sidebar + bloco de
+ * contexto + navegação + os pontos de encaixe da Carteira (lista densa,
+ * chip de operação) e dos painéis de estado. Blocos de página (KPIs,
+ * waterfall financeiro, listas de atividade, …) pertencem às unidades que os
+ * introduzem (F3/F4) — não a esta.
+ *
+ * Ninguém carrega este arquivo ainda: `vf-shell.js` (F0.5) é quem vai
+ * consumi-lo. Promovido de Squads_migration/preview_v3/css/vf-shell-preview.css
+ * (rascunho validado visualmente), com a lista de componentes recortada
+ * para o escopo de F0.4 — ver "divergências" no relatório de entrega.
+ *
+ * Regras que este arquivo respeita:
+ *   1. ZERO tokens novos. Tudo sai de vf-tokens-v2.css — inclusive
+ *      --vf-sidebar-w e --vf-sidebar-w-collapsed, que JÁ existem e que
+ *      style.css:2181 ignora, escrevendo 240px literal (M24).
+ *   2. Nenhuma transição de propriedade de layout (width/height/margin/
+ *      padding). style.css:2186 anima `width` da sidebar — layout thrash
+ *      (M23). Aqui só transform/opacity/cor.
+ *   3. Nenhuma sombra em repouso (DESIGN.md) — sombra é resposta a estado
+ *      (ex.: dropdown aberto).
+ *   4. Status por FORMA, não só por cor (§16.4/M8): a correção do
+ *      `.vf-status` fica fora de @layer nesta unidade (ver nota abaixo) e
+ *      migra para vf-components-v2.css só em F6.4.
+ * ========================================================================== */
+
+@layer shell {
+
+/* ── Estrutura ───────────────────────────────────────────────────────────── */
+
+.vf-shell {
+  display: grid;
+  grid-template-columns: var(--vf-sidebar-w) minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--vf-bg);
+}
+
+.vf-shell__body {
+  /* Bloco, NÃO flex. `.vf-page-container` (vf-components-v2.css) traz
+     `margin: 0 auto`; dentro de um flex item, margin:auto no eixo cruzado
+     desliga o stretch e o container encolhe para fit-content em vez de
+     ocupar a largura disponível (M34, medido no protótipo — 620px de
+     1005px). Empilhamento em bloco evita o problema sem tocar na V2. */
+  min-width: 0; /* tabelas largas rolam DENTRO do contêiner, §19 */
+}
+
+.vf-shell__main {
+  padding: var(--vf-sp-6) var(--vf-sp-6) var(--vf-sp-10);
+  min-width: 0;
+}
+
+/* Ponto de encaixe dos 13 estados do contexto (§7) — BOOT/PORTFOLIO_ERROR/
+   NO_CLIENT/FORBIDDEN/… . O conteúdo interno (banner, estado vazio) reusa
+   os componentes que a V2 já tem (§16.1); este bloco só posiciona. */
+.vf-shell__state {
+  padding: var(--vf-sp-6) var(--vf-sp-6) 0;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+
+.vf-shell__sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--vf-surface);
+  border-right: 1px solid var(--vf-border);
+  scrollbar-width: thin;
+}
+
+.vf-shell__logo {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-4) var(--vf-sp-4);
+  border-bottom: 1px solid var(--vf-border);
+  position: sticky;
+  top: 0;
+  background: var(--vf-surface);
+  z-index: 2;
+}
+
+.vf-shell__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  font-family: var(--vf-font-display);
+  font-weight: var(--vf-fw-bold);
+}
+.vf-shell__brand-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-primary);
+  color: var(--vf-text-on-primary);
+  font-size: var(--vf-fs-xs);
+  letter-spacing: 0.02em;
+}
+.vf-shell__brand-text { font-size: var(--vf-fs-md); color: var(--vf-text); }
+
+.vf-shell__collapse {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--vf-border-strong);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  color: var(--vf-text-secondary);
+  cursor: pointer;
+  line-height: 1;
+}
+.vf-shell__collapse:hover { border-color: var(--vf-border-hover); color: var(--vf-text); }
+
+/* ── Bloco de contexto — sticky: nunca sai da dobra (§9.2) ───────────────── */
+
+.vf-shell__context {
+  position: sticky;
+  top: 59px;
+  z-index: 1;
+  padding: var(--vf-sp-3) var(--vf-sp-4) var(--vf-sp-4);
+  background: var(--vf-primary-soft);
+  border-bottom: 1px solid var(--vf-primary-border);
+}
+
+/* Página global: o contexto é REBAIXADO, não pausado (D15, §9.4). Continua
+   ativo; só não é usado por esta tela. "Pausado" é proibido por ser falso. */
+.vf-shell__context.is-muted {
+  background: var(--vf-surface-2);
+  border-bottom-color: var(--vf-border);
+}
+
+.vf-shell__context-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vf-text-secondary);
+  margin: var(--vf-sp-2) 0 var(--vf-sp-1);
+}
+.vf-shell__context-label:first-child { margin-top: 0; }
+
+.vf-shell__context-flag {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-2xs);
+}
+
+/* Seletor de contexto — o componente que não existe na V2 (§16.3). Compõe
+   `.vf-menu`/`.vf-input` existentes; não redefine nada delas. */
+.vf-ctx-selector {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  border: 1px solid var(--vf-border-strong);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  color: var(--vf-text);
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-medium);
+  text-align: left;
+  cursor: pointer;
+}
+.vf-ctx-selector:hover:not(:disabled) { border-color: var(--vf-border-hover); }
+.vf-ctx-selector:disabled { cursor: default; background: var(--vf-disabled-bg); color: var(--vf-text-secondary); }
+.vf-ctx-selector.is-open { border-color: var(--vf-primary); box-shadow: var(--vf-focus-ring); }
+.vf-ctx-selector__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vf-ctx-selector__value.is-empty { color: var(--vf-text-placeholder); font-weight: var(--vf-fw-regular); }
+.vf-ctx-selector__sub {
+  flex: 1 0 100%;
+  font-family: var(--vf-font-mono); /* identificador externo = mono (DESIGN.md) */
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-shell__dropdown {
+  margin-top: var(--vf-sp-1);
+  max-height: 340px;
+  overflow-y: auto;
+  box-shadow: var(--vf-shadow-popover); /* sombra é resposta a estado, nunca repouso */
+}
+.vf-shell__dropdown-search { padding: var(--vf-sp-2); border-bottom: 1px solid var(--vf-border); }
+.vf-shell__dropdown-search .vf-input { width: 100%; }
+
+/* Extensões do `.vf-menu__item` da V2 para o conteúdo específico do
+   seletor de contexto (nome + sub-linha + estado desabilitado). */
+.vf-menu__item { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; text-align: left; }
+.vf-menu__item small { flex: 1 0 100%; font-size: var(--vf-fs-2xs); color: var(--vf-text-muted); }
+.vf-menu__item.is-disabled { opacity: 0.5; cursor: default; }
+.vf-menu__check { margin-left: auto; color: var(--vf-primary); }
+
+/* Status de integração (grant/base) no bloco de contexto, §17.3. */
+.vf-shell__integrations { margin-top: var(--vf-sp-2); display: flex; flex-direction: column; gap: 2px; }
+.vf-shell__integ { font-size: var(--vf-fs-2xs); color: var(--vf-text-muted); }
+.vf-shell__integ.is-warning { color: var(--vf-warning-strong); font-weight: var(--vf-fw-medium); }
+
+/* ── Navegação ───────────────────────────────────────────────────────────── */
+
+.vf-shell__nav { display: flex; flex-direction: column; padding: var(--vf-sp-2) var(--vf-sp-2); }
+
+.vf-shell__item {
+  position: relative;
+  padding: 7px var(--vf-sp-3);
+  border-radius: var(--vf-radius-sm);
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-medium);
+  text-decoration: none;
+  transition: background-color var(--vf-duration-fast) var(--vf-ease), color var(--vf-duration-fast) var(--vf-ease);
+}
+.vf-shell__item:hover { background: var(--vf-surface-hover); color: var(--vf-text); }
+
+/* Item ativo: primary-soft de fundo + faixa. Roxo sólido seria "roxo demais"
+   (DESIGN.md, The One Accent Rule). */
+.vf-shell__item.is-active { background: var(--vf-primary-soft); color: var(--vf-primary-strong); font-weight: var(--vf-fw-semibold); }
+.vf-shell__item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 0 var(--vf-radius-pill) var(--vf-radius-pill) 0;
+  background: var(--vf-primary);
+}
+
+/* Desabilitado por marketplace/escopo: aria-disabled + title, NUNCA
+   `disabled` puro — o item continua alcançável por teclado e o motivo
+   fica legível (§9.3, tabela de acessibilidade). */
+.vf-shell__item.is-disabled { color: var(--vf-text-disabled); cursor: default; }
+.vf-shell__item.is-disabled:hover { background: transparent; color: var(--vf-text-disabled); }
+
+.vf-shell__section-label {
+  padding: var(--vf-sp-4) var(--vf-sp-4) var(--vf-sp-1);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+  border-top: 1px solid var(--vf-border);
+  margin-top: var(--vf-sp-2);
+}
+
+/* Módulos incompatíveis com o marketplace atual colapsam em grupo a partir
+   de 3 (§14.2/M13) — <details> nativo preserva teclado sem JS extra. */
+.vf-shell__unavailable, .vf-shell__admin { padding: 0 var(--vf-sp-2); }
+.vf-shell__unavailable > summary, .vf-shell__admin > summary {
+  padding: 7px var(--vf-sp-3);
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+  border-radius: var(--vf-radius-sm);
+}
+.vf-shell__unavailable > summary:hover, .vf-shell__admin > summary:hover { background: var(--vf-surface-hover); }
+.vf-shell__admin { border-top: 1px solid var(--vf-border); margin-top: var(--vf-sp-2); padding-top: var(--vf-sp-2); }
+
+.vf-shell__footer {
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
+  background: var(--vf-surface);
+}
+.vf-shell__avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-bold);
+}
+.vf-shell__user { display: flex; flex-direction: column; min-width: 0; }
+.vf-shell__user b { font-size: var(--vf-fs-sm); font-weight: var(--vf-fw-medium); color: var(--vf-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vf-shell__user small { font-size: var(--vf-fs-2xs); color: var(--vf-text-muted); }
+.vf-shell__logout {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--vf-border-strong);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  color: var(--vf-text-secondary);
+  cursor: pointer;
+}
+.vf-shell__logout:hover { border-color: var(--vf-danger-border); color: var(--vf-danger); }
+
+/* Colapsada (toggle manual, disponível em qualquer largura ≥861px — §19,
+   faixa 1200–1440 "colapsável, padrão expandida"): some o texto, mantém o
+   alvo. Sem animar `width` — só a visibilidade do conteúdo textual muda. */
+.is-collapsed .vf-shell__brand-text,
+.is-collapsed .vf-shell__context,
+.is-collapsed .vf-shell__section-label,
+.is-collapsed .vf-shell__user { display: none; }
+.is-collapsed .vf-shell__item { text-align: center; padding-inline: 0; font-size: var(--vf-fs-2xs); }
+
+/* ── Carteira: lista densa (§16.3) ───────────────────────────────────────── */
+/* Lista, não card: a moldura é uma régua de 1px. Card só quando agrupa
+   coisas heterogêneas (§16.5). Nomenclatura literal do §16.3:
+   .vf-portfolio-list / __row / __ops. */
+
+.vf-portfolio-list { list-style: none; margin: 0; padding: 0; }
+
+.vf-portfolio-list__group {
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+  margin: var(--vf-sp-6) 0 var(--vf-sp-2);
+  padding-bottom: var(--vf-sp-1);
+  border-bottom: 1px solid var(--vf-border);
+}
+.vf-portfolio-list__group small { text-transform: none; letter-spacing: 0; font-weight: var(--vf-fw-regular); }
+
+.vf-portfolio-list__row {
+  padding: var(--vf-sp-3) var(--vf-sp-2);
+  border-bottom: 1px solid var(--vf-border);
+}
+.vf-portfolio-list__row:hover { background: var(--vf-surface-hover); }
+.vf-portfolio-list__row.is-skeleton { display: flex; flex-direction: column; gap: 6px; }
+
+.vf-portfolio-list__head { display: flex; align-items: center; gap: var(--vf-sp-2); }
+.vf-portfolio-list__spacer { flex: 1 1 auto; }
+.vf-portfolio-list__name {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+/* Cliente com 2+ contas: clique no NOME não entra (P09) — o nome vira botão
+   só quando o cliente tem exatamente 1 conta e o clique na linha resolve. */
+.vf-portfolio-list__name.is-clickable {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+.vf-portfolio-list__name.is-clickable:hover { color: var(--vf-primary-strong); text-decoration: underline; }
+.vf-portfolio-list__ops { display: flex; flex-wrap: wrap; gap: var(--vf-sp-2); margin-top: var(--vf-sp-2); }
+.vf-portfolio-list__foot { margin: var(--vf-sp-2) 0 0; font-size: var(--vf-fs-xs); color: var(--vf-text-muted); }
+
+/* Chip de operação — o alvo de clique que resolve cliente + conta num
+   passo só (§16.3). */
+.vf-op-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  max-width: 260px;
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  border: 1px solid var(--vf-border-strong);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--vf-duration-fast) var(--vf-ease), background-color var(--vf-duration-fast) var(--vf-ease);
+}
+.vf-op-chip:hover:not(.is-inactive) { border-color: var(--vf-primary); background: var(--vf-primary-soft); }
+.vf-op-chip.is-inactive { opacity: 0.55; cursor: default; }
+.vf-op-chip.is-skeleton { min-height: 58px; }
+.vf-op-chip.is-error {
+  min-width: 260px;
+  border-color: var(--vf-danger-border);
+  background: var(--vf-danger-bg);
+  color: var(--vf-danger-strong);
+  font-size: var(--vf-fs-xs);
+  cursor: default;
+}
+.vf-op-chip__top { display: inline-flex; align-items: center; gap: 6px; font-size: var(--vf-fs-sm); font-weight: var(--vf-fw-medium); color: var(--vf-text); }
+/* Rótulo externo em mono: é IDENTIFICADOR, não número (DESIGN.md) */
+.vf-op-chip__label { font-family: var(--vf-font-mono); font-size: var(--vf-fs-2xs); color: var(--vf-text-secondary); }
+.vf-op-chip__meta { font-size: var(--vf-fs-2xs); color: var(--vf-text-muted); }
+
+/* ── Responsividade (§19) ────────────────────────────────────────────────── */
+
+/* ≤1200px — o bloco de contexto NÃO colapsa e NÃO fica espremido no rail:
+   o shell o REPARENTA para cá (§19.1, M35). Não saber para quem se está
+   olhando é a falha mais cara deste produto. Mesmo NÓ, um dropdown, um
+   alvo de teclado — vf-shell.js (F0.5) move o elemento; este seletor só
+   descreve como ele se organiza quando está aqui dentro. */
+.vf-shell__contextbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--vf-z-sticky);
+  background: var(--vf-primary-soft);
+  border-bottom: 1px solid var(--vf-primary-border);
+  padding: var(--vf-sp-2) var(--vf-sp-4);
+}
+.vf-shell__contextbar .vf-shell__context {
+  position: static;
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  flex-wrap: wrap;
+  padding: 0;
+  background: none;
+  border: 0;
+}
+.vf-shell__contextbar .vf-shell__context-label { margin: 0; flex: 0 0 auto; }
+.vf-shell__contextbar .vf-ctx-selector { width: auto; min-width: 190px; flex: 0 1 auto; }
+.vf-shell__contextbar .vf-shell__integrations { flex: 1 0 100%; flex-direction: row; gap: var(--vf-sp-3); }
+.vf-shell__contextbar .vf-shell__dropdown { position: absolute; min-width: 260px; margin-top: var(--vf-sp-1); }
+
+/* 861–1200px: rail de 64px, ícone + aria-label/title completos (rótulo
+   abreviado por vf-shell.js via railEstreito() — não redundante com o
+   predicado abaixo de 860, ver comentário na próxima faixa). */
+@media (max-width: 1200px) {
+  .vf-shell { grid-template-columns: var(--vf-sidebar-w-collapsed) minmax(0, 1fr); }
+  .vf-shell__sidebar .vf-shell__brand-text,
+  .vf-shell__sidebar .vf-shell__section-label,
+  .vf-shell__sidebar .vf-shell__user { display: none; }
+  .vf-shell__logo { padding: var(--vf-sp-3) var(--vf-sp-2); justify-content: center; }
+  .vf-shell__collapse { display: none; } /* já está no rail; o toggle perde a função */
+  .vf-shell__footer { padding: var(--vf-sp-3) var(--vf-sp-2); justify-content: center; }
+  .vf-shell__nav { padding-inline: 6px; }
+  .vf-shell__item {
+    text-align: center;
+    padding-inline: 0;
+    font-size: var(--vf-fs-2xs);
+    font-weight: var(--vf-fw-semibold);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .vf-shell__unavailable > summary, .vf-shell__admin > summary {
+    text-align: center;
+    padding-inline: 0;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+}
+
+/* ≤860px: a sidebar deixa de ser coluna e vira FAIXA HORIZONTAL. Há largura
+   de sobra aqui — os rótulos voltam por extenso (predicado railEstreito()
+   de vf-shell.js só cobre 861–1200; abaixo disso os dois predicados
+   divergem de propósito, §19.1) e cada item recupera o próprio padding —
+   sem isso os itens colidem e viram "ViFiCVAdAnMaDiAu". O contexto
+   continua na barra reparentada acima. */
+@media (max-width: 860px) {
+  .vf-shell { grid-template-columns: minmax(0, 1fr); }
+  .vf-shell__sidebar {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+    padding: var(--vf-sp-2) var(--vf-sp-3);
+    border-right: 0;
+    border-bottom: 1px solid var(--vf-border);
+  }
+  .vf-shell__logo { border-bottom: 0; padding: 0 var(--vf-sp-2) 0 0; position: static; }
+  .vf-shell__nav { flex-direction: row; flex-wrap: wrap; padding: 0; gap: 2px; }
+  .vf-shell__item {
+    text-align: left;
+    padding: 5px var(--vf-sp-2);
+    font-size: var(--vf-fs-xs);
+    font-weight: var(--vf-fw-medium);
+    letter-spacing: 0;
+  }
+  .vf-shell__item.is-active::before { display: none; } /* faixa lateral não faz sentido em linha */
+  .vf-shell__section-label { display: none; }
+  .vf-shell__footer { margin-left: auto; border-top: 0; padding: 0; position: static; }
+  .vf-shell__main { padding: var(--vf-sp-4) var(--vf-sp-3) var(--vf-sp-8); }
+}
+
+} /* @layer shell */
+
+/* ════════════════════════════════════════════════════════════════════════
+   FORA DO @layer — e isso é um achado de arquitetura, não uma gambiarra.
+
+   CSS SEM CAMADA VENCE CSS EM CAMADA, independentemente de especificidade.
+   Enquanto `vf-components-v2.css` não estiver dentro de `@layer components`
+   (isso só acontece em F6.3, quando TODOS os arquivos entram juntos —
+   §16.2/R14), NADA escrito dentro de `@layer shell` consegue sobrescrever
+   um componente V2. Dois sintomas medidos no protótipo, ambos silenciosos:
+
+     · `.vf-status.is-warning::before` continuava com border-radius 999px
+       (o pill do `.vf-status` base) — a correção de forma não acontecia;
+     · `#vf-main[hidden]` continuava visível, porque `.vf-page-container`
+       traz `display: flex` — o módulo bloqueado por escopo aparecia mesmo
+       com o painel de estado na tela.
+
+   As duas regras abaixo ficam FORA de propósito, até F6.3 unificar tudo.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* `display` declarado no próprio componente vence o `[hidden]` do
+   user-agent (origem de autor ganha da origem do UA). Sem estes guards,
+   esconder o shell, o main ou o painel de estado por atributo não some. */
+.vf-shell[hidden],
+.vf-shell__contextbar[hidden],
+.vf-shell__main[hidden],
+.vf-shell__state[hidden] { display: none; }
+
+/* Correção de acessibilidade do .vf-status (§16.4/M8) — vf-components-v2.css
+   desenha SEMPRE o mesmo círculo preenchido, mudando só a cor; o
+   vocabulário ● ○ ⚠ carrega significado por FORMA e é achatado em cor.
+   Migra para vf-components-v2.css numa unidade própria em F6.4 — custo real:
+   4 linhas. Aplicada fora de @layer pelo mesmo motivo do bloco acima: dentro
+   de `@layer shell` ela perderia silenciosamente para `.vf-status::before`. */
+.vf-status.is-empty { color: var(--vf-text-muted); }
+.vf-status.is-empty::before { background: transparent; border: 1.5px solid var(--vf-neutral); }
+.vf-status.is-warning::before { border-radius: 0; transform: rotate(45deg); }

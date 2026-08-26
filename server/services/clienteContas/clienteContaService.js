@@ -40,6 +40,16 @@ function normalizarMarketplaceConta(valor) {
   return MARKETPLACES_SUPORTADOS.has(texto) ? texto : null;
 }
 
+// externalAccountLabel: o desambiguador humano entre 2+ contas do mesmo
+// marketplace (nickname ML / nome da loja). Vem de metadata_json.nickname,
+// capturado no momento do OAuth (ver callbackMlController) — nunca exige
+// uma chamada ao marketplace na leitura. null quando ainda não capturado;
+// o consumidor cai para external_account_id, depois #id (V3 Master Spec §14.3).
+function externalAccountLabelDe(row) {
+  const nickname = row?.metadata_json?.nickname;
+  return typeof nickname === "string" && nickname.trim() ? nickname.trim() : null;
+}
+
 function sanitizarConta(row) {
   if (!row) return null;
   return {
@@ -49,6 +59,7 @@ function sanitizarConta(row) {
     nome: row.nome,
     slug: row.slug,
     external_account_id: row.external_account_id,
+    externalAccountLabel: externalAccountLabelDe(row),
     is_primary: row.is_primary === true,
     ativo: row.ativo !== false,
     metadata_json: row.metadata_json || {},
@@ -101,6 +112,14 @@ async function listarContasDoCliente({ clienteId, clienteSlug, marketplace, incl
   }
   if (!incluirInativas) filtros.push("cc.ativo = true");
 
+  // LATERAL + LIMIT 1 em vez de LEFT JOIN direto: uma cliente_conta com 2+
+  // linhas em ml_tokens (reconexão que deixou o grant antigo, migration de
+  // backfill) ou 2+ vínculos ativos em base_cliente_vinculos (violação do
+  // invariante "1 conta = no máx. 1 base ativa", dado histórico) duplicava a
+  // linha da conta na resposta — uma conta virava "2 contas" na leitura, a
+  // mesma ambiguidade que todo o modelo existe para evitar (achado do V3
+  // Master Spec §18.1: fan-out era corrigido só defensivamente no frontend).
+  // Corrigido na origem: no máximo 1 grant e 1 vínculo por conta, sempre.
   const result = await pool.query(
     `SELECT cc.*,
             g.id AS grant_id,
@@ -112,8 +131,18 @@ async function listarContasDoCliente({ clienteId, clienteSlug, marketplace, incl
             b.slug AS vinculo_base_slug,
             b.nome AS vinculo_base_nome
        FROM cliente_contas cc
-       LEFT JOIN ml_tokens g ON g.cliente_conta_id = cc.id
-       LEFT JOIN base_cliente_vinculos v ON v.cliente_conta_id = cc.id AND v.ativo = true
+       LEFT JOIN LATERAL (
+         SELECT * FROM ml_tokens g
+          WHERE g.cliente_conta_id = cc.id
+          ORDER BY g.updated_at DESC NULLS LAST, g.id DESC
+          LIMIT 1
+       ) g ON true
+       LEFT JOIN LATERAL (
+         SELECT * FROM base_cliente_vinculos v
+          WHERE v.cliente_conta_id = cc.id AND v.ativo = true
+          ORDER BY v.updated_at DESC NULLS LAST, v.id DESC
+          LIMIT 1
+       ) v ON true
        LEFT JOIN bases b ON b.id = v.base_id
       WHERE ${filtros.join(" AND ")}
       ORDER BY cc.marketplace ASC, cc.is_primary DESC, cc.created_at ASC, cc.id ASC`,
@@ -259,6 +288,27 @@ async function criarConta({ clienteId, clienteSlug, marketplace, nome, externalA
     throw error;
   } finally {
     client.release();
+  }
+}
+
+// Captura o desambiguador humano da conta (V3 Master Spec §14.3, Q1):
+// o nickname/nome de loja do Mercado Livre, mesclado em metadata_json sem
+// apagar outras chaves. Chamado no momento do OAuth (uma vez por conexão,
+// não a cada leitura da Carteira) e, opcionalmente, ao testar um grant.
+// Nunca deve derrubar o fluxo que a chamou — falha vira log, não exceção.
+async function atualizarNicknameConta(contaId, nickname, queryable = pool) {
+  const nomeNick = typeof nickname === "string" ? nickname.trim() : "";
+  if (!nomeNick || contaId == null) return;
+  try {
+    await queryable.query(
+      `UPDATE cliente_contas
+          SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || jsonb_build_object('nickname', $2::text),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [contaId, nomeNick]
+    );
+  } catch (error) {
+    console.error(JSON.stringify({ event: "cliente_conta_nickname_falhou", cliente_conta_id: contaId, error: error.message }));
   }
 }
 
@@ -590,10 +640,23 @@ async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, market
   if (clienteContaId != null) {
     conta = await obterConta(clienteContaId, queryable);
     if (conta.cliente_id !== cliente.id) {
-      throw criarErroHttp(403, "Esta conta não pertence ao cliente informado.");
+      throw criarErroHttp(403, "Esta conta não pertence ao cliente informado.", {
+        code: "CONTA_NAO_PERTENCE_AO_CLIENTE",
+      });
     }
     if (conta.marketplace !== marketplaceNorm) {
-      throw criarErroHttp(422, "Esta conta não é do marketplace informado.");
+      throw criarErroHttp(422, "Esta conta não é do marketplace informado.", {
+        code: "MARKETPLACE_INCOMPATIVEL",
+      });
+    }
+    // V3 Master Spec M32: uma operação account-aware nunca pode operar
+    // silenciosamente numa conta desativada, mesmo com clienteContaId
+    // explícito (ex.: link antigo, cache do frontend). Antes desta checagem,
+    // resolveMarketplaceAccountContext não rejeitava conta inativa.
+    if (conta.ativo === false) {
+      throw criarErroHttp(409, `A conta "${conta.nome}" foi desativada.`, {
+        code: "CONTA_INATIVA",
+      });
     }
   } else {
     const ativas = await queryable.query(
@@ -675,6 +738,7 @@ module.exports = {
   criarConta,
   garantirContaMlParaGrant,
   vincularGrantMlNaConta,
+  atualizarNicknameConta,
   atualizarConta,
   definirContaPrincipal,
   obterBaseDaConta,

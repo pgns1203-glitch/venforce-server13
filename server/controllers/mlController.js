@@ -25,6 +25,7 @@ const {
   garantirContaMlParaGrant,
   vincularGrantMlNaConta,
   obterConta,
+  atualizarNicknameConta,
 } = require("../services/clienteContas/clienteContaService");
 
 const {
@@ -307,12 +308,13 @@ async function callbackMlController(req, res) {
       expiresAt,
     });
 
+    let contaResolvida = null;
     if (contaAlvo) {
       // Fluxo account-scoped: liga o grant exatamente à conta pedida pelo
       // link (nunca escolhe/cria outra). Não deve derrubar o OAuth — se
       // falhar aqui o grant já foi salvo (comportamento igual ao legado).
       try {
-        await vincularGrantMlNaConta({ contaId: contaAlvo.id, mlUserId });
+        contaResolvida = await vincularGrantMlNaConta({ contaId: contaAlvo.id, mlUserId });
       } catch (vinculoErr) {
         console.error(JSON.stringify({ event: "ml_conta_vinculo_falhou", cliente_conta_id: contaAlvo.id, error: vinculoErr.message }));
       }
@@ -320,12 +322,27 @@ async function callbackMlController(req, res) {
       // Aditivo: garante que a conta VenForce exista desde a primeira conexão
       // (não só via backfill em massa). Nunca lança — não pode derrubar o
       // fluxo OAuth por causa da fundação de contas.
-      await garantirContaMlParaGrant({
+      contaResolvida = await garantirContaMlParaGrant({
         clienteId: cliente.id,
         clienteSlug: cliente.slug,
         mlUserId,
         grantIsPrimary: grantSalvo?.is_primary === true,
       });
+    }
+
+    // externalAccountLabel (V3 Master Spec §14.3): captura o nickname/nome
+    // de loja UMA VEZ, aqui, para que a Carteira nunca precise consultar o
+    // Mercado Livre ao abrir. Falha aqui nunca derruba o OAuth — o grant já
+    // foi salvo; sem nickname, o consumidor cai para external_account_id.
+    if (contaResolvida) {
+      try {
+        const meResp = await mlFetch(cliente.id, "/users/me", { mlUserId });
+        if (meResp.ok && meResp.data?.nickname) {
+          await atualizarNicknameConta(contaResolvida.id, meResp.data.nickname);
+        }
+      } catch (nicknameErr) {
+        console.error(JSON.stringify({ event: "ml_conta_nickname_falhou", cliente_conta_id: contaResolvida.id, error: nicknameErr.message }));
+      }
     }
 
     registrarLog({

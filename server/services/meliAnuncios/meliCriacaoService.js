@@ -64,7 +64,8 @@ async function ensureSchema() {
     ALTER TABLE meli_anuncio_publicacoes
       ADD COLUMN IF NOT EXISTS preco_atacado_status TEXT,
       ADD COLUMN IF NOT EXISTS preco_atacado_config_json JSONB,
-      ADD COLUMN IF NOT EXISTS preco_atacado_erro_json JSONB;
+      ADD COLUMN IF NOT EXISTS preco_atacado_erro_json JSONB,
+      ADD COLUMN IF NOT EXISTS cliente_conta_id INTEGER;
   `);
 
   _schemaPronto = true;
@@ -517,8 +518,15 @@ function montarPayloadItem(dados) {
 // -----------------------------------------------------------------------------
 // Status da conta / helpers de consulta
 // -----------------------------------------------------------------------------
-async function obterStatusConta(clienteId) {
-  const mlUserId = await anunciosService.resolverMlUserId(clienteId);
+async function obterStatusConta(clienteId, clienteContaId = null) {
+  let contexto;
+  try {
+    contexto = await anunciosService.resolverContextoConta({ clienteId, clienteContaId, requireUsableGrant: true });
+  } catch (err) {
+    if (err.statusCode) throw err; // 409 MULTIPLE_MARKETPLACE_ACCOUNTS propaga intacto
+    contexto = null;
+  }
+  const mlUserId = contexto?.mlUserId || null;
   if (!mlUserId) {
     return {
       ok: false,
@@ -531,12 +539,14 @@ async function obterStatusConta(clienteId) {
       precoAtacadoElegivel: false,
     };
   }
+  const contaId = contexto?.contaId ?? null;
 
   let me = null;
   try {
     const resp = await mlFetch(
       clienteId,
-      `/users/${encodeURIComponent(mlUserId)}`
+      `/users/${encodeURIComponent(mlUserId)}`,
+      { mlUserId }
     );
     if (!resp.ok) {
       return {
@@ -548,6 +558,7 @@ async function obterStatusConta(clienteId) {
         podePublicar: false,
         precoAtacadoElegivel: false,
         mlUserId: String(mlUserId),
+        contaId,
         statusMl: resp.status,
       };
     }
@@ -562,6 +573,7 @@ async function obterStatusConta(clienteId) {
       podePublicar: false,
       precoAtacadoElegivel: false,
       mlUserId: String(mlUserId),
+      contaId,
     };
   }
 
@@ -583,6 +595,7 @@ async function obterStatusConta(clienteId) {
     tokenValido: true,
     podePublicar,
     mlUserId: String(me.id || mlUserId),
+    contaId,
     nickname: me.nickname || null,
     email: me.email || null,
     siteId: me.site_id || SITE_ID,
@@ -593,7 +606,7 @@ async function obterStatusConta(clienteId) {
   };
 }
 
-async function buscarCategorias(clienteId, q) {
+async function buscarCategorias(clienteId, q, mlUserId = null) {
   const termo = String(q || "").trim();
   if (!termo || termo.length < 2) {
     return { ok: false, motivo: "Informe ao menos 2 caracteres para buscar categorias." };
@@ -605,7 +618,7 @@ async function buscarCategorias(clienteId, q) {
     encodeURIComponent(termo) +
     `&limit=8`;
 
-  const resp = await mlFetch(clienteId, path);
+  const resp = await mlFetch(clienteId, path, { mlUserId });
   if (!resp.ok) {
     return mapearErroMl(resp.data, resp.status);
   }
@@ -621,7 +634,7 @@ async function buscarCategorias(clienteId, q) {
   return { ok: true, categorias };
 }
 
-async function obterAtributosCategoria(clienteId, categoryId) {
+async function obterAtributosCategoria(clienteId, categoryId, mlUserId = null) {
   const id = String(categoryId || "").trim();
   if (!id) {
     return { ok: false, motivo: "Informe categoryId." };
@@ -629,7 +642,8 @@ async function obterAtributosCategoria(clienteId, categoryId) {
 
   const resp = await mlFetch(
     clienteId,
-    `/categories/${encodeURIComponent(id)}/attributes`
+    `/categories/${encodeURIComponent(id)}/attributes`,
+    { mlUserId }
   );
   if (!resp.ok) {
     return mapearErroMl(resp.data, resp.status);
@@ -659,7 +673,7 @@ async function obterAtributosCategoria(clienteId, categoryId) {
   };
 }
 
-async function obterSaleTermsCategoria(clienteId, categoryId) {
+async function obterSaleTermsCategoria(clienteId, categoryId, mlUserId = null) {
   const id = String(categoryId || "").trim();
   if (!id) {
     return { ok: false, motivo: "Informe categoryId." };
@@ -667,7 +681,8 @@ async function obterSaleTermsCategoria(clienteId, categoryId) {
 
   const resp = await mlFetch(
     clienteId,
-    `/categories/${encodeURIComponent(id)}/sale_terms`
+    `/categories/${encodeURIComponent(id)}/sale_terms`,
+    { mlUserId }
   );
   if (!resp.ok) {
     // Algumas categorias podem não expor sale_terms — não bloqueia o fluxo.
@@ -693,8 +708,8 @@ async function obterSaleTermsCategoria(clienteId, categoryId) {
   };
 }
 
-async function obterTiposAnuncio(clienteId) {
-  const resp = await mlFetch(clienteId, `/sites/${SITE_ID}/listing_types`);
+async function obterTiposAnuncio(clienteId, mlUserId = null) {
+  const resp = await mlFetch(clienteId, `/sites/${SITE_ID}/listing_types`, { mlUserId });
   if (!resp.ok) {
     return mapearErroMl(resp.data, resp.status);
   }
@@ -801,6 +816,7 @@ async function cadastrarPrecosAtacado({
   precoAtacado,
   precoNormal,
   moeda,
+  mlUserId = null,
 }) {
   const id = String(itemId || "").trim();
   if (!id) {
@@ -815,7 +831,7 @@ async function cadastrarPrecosAtacado({
     pricesResp = await mlFetch(
       clienteId,
       `/items/${encodeURIComponent(id)}/prices`,
-      { headers: { "show-all-prices": "true" } }
+      { headers: { "show-all-prices": "true" }, mlUserId }
     );
   } catch (err) {
     return erroPrecoAtacado(
@@ -877,6 +893,7 @@ async function cadastrarPrecosAtacado({
       {
         method: "POST",
         body: JSON.stringify(payload),
+        mlUserId,
       }
     );
   } catch (err) {
@@ -904,7 +921,7 @@ async function cadastrarPrecosAtacado({
     confirmResp = await mlFetch(
       clienteId,
       `/items/${encodeURIComponent(id)}/prices`,
-      { headers: { "show-all-prices": "true" } }
+      { headers: { "show-all-prices": "true" }, mlUserId }
     );
   } catch (err) {
     return erroPrecoAtacado(
@@ -943,6 +960,7 @@ async function cadastrarPrecosAtacado({
 async function salvarPublicacao({
   clienteId,
   clienteSlug,
+  clienteContaId = null,
   mlUserId,
   itemId,
   permalink,
@@ -960,14 +978,15 @@ async function salvarPublicacao({
   await ensureSchema();
   const { rows } = await db.query(
     `INSERT INTO meli_anuncio_publicacoes (
-       cliente_id, cliente_slug, ml_user_id, item_id, permalink, status,
+       cliente_id, cliente_slug, cliente_conta_id, ml_user_id, item_id, permalink, status,
        titulo, category_id, payload_json, resposta_json, erro_json, created_by,
        preco_atacado_status, preco_atacado_config_json, preco_atacado_erro_json
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
      RETURNING id, item_id, permalink, status, created_at;`,
     [
       clienteId,
       clienteSlug,
+      clienteContaId || null,
       mlUserId ? String(mlUserId) : null,
       itemId || null,
       permalink || null,
@@ -1019,7 +1038,7 @@ async function atualizarPrecoAtacadoPublicacao({
   return rows[0] || null;
 }
 
-async function upsertCatalogoLocal(clienteId, clienteSlug, item) {
+async function upsertCatalogoLocal(clienteId, clienteSlug, item, clienteContaId = null, mlUserId = null) {
   if (!item || !item.id) return;
   try {
     const pictures = (Array.isArray(item.pictures) ? item.pictures : [])
@@ -1030,6 +1049,8 @@ async function upsertCatalogoLocal(clienteId, clienteSlug, item) {
       {
         cliente_id: clienteId,
         cliente_slug: clienteSlug,
+        cliente_conta_id: clienteContaId || null,
+        ml_user_id: mlUserId != null ? String(mlUserId) : null,
         item_id: item.id,
         sku: item.seller_custom_field || null,
         titulo: item.title || null,
@@ -1075,12 +1096,13 @@ async function upsertCatalogoLocal(clienteId, clienteSlug, item) {
 async function createMercadoLivreItem({
   clienteId,
   clienteSlug,
+  clienteContaId = null,
   dados,
   createdBy,
 }) {
   await ensureSchema();
 
-  const statusConta = await obterStatusConta(clienteId);
+  const statusConta = await obterStatusConta(clienteId, clienteContaId);
   if (!statusConta.ok || !statusConta.tokenValido) {
     return {
       ok: false,
@@ -1156,11 +1178,13 @@ async function createMercadoLivreItem({
     createResp = await mlFetch(clienteId, "/items", {
       method: "POST",
       body: JSON.stringify(payload),
+      mlUserId: statusConta.mlUserId,
     });
   } catch (err) {
     await salvarPublicacao({
       clienteId,
       clienteSlug,
+      clienteContaId: statusConta.contaId,
       mlUserId: statusConta.mlUserId,
       status: "error",
       titulo: payload.title,
@@ -1182,6 +1206,7 @@ async function createMercadoLivreItem({
     await salvarPublicacao({
       clienteId,
       clienteSlug,
+      clienteContaId: statusConta.contaId,
       mlUserId: statusConta.mlUserId,
       status: "error",
       titulo: payload.title,
@@ -1212,6 +1237,7 @@ async function createMercadoLivreItem({
         precoAtacado: dados.precoAtacado,
         precoNormal: dados.price,
         moeda: dados.currency_id,
+        mlUserId: statusConta.mlUserId,
       });
     } catch (err) {
       precoAtacadoResultado = erroPrecoAtacado(
@@ -1232,6 +1258,7 @@ async function createMercadoLivreItem({
         {
           method: "POST",
           body: JSON.stringify({ plain_text: description }),
+          mlUserId: statusConta.mlUserId,
         }
       );
       if (descResp.ok) {
@@ -1251,6 +1278,7 @@ async function createMercadoLivreItem({
   const registro = await salvarPublicacao({
     clienteId,
     clienteSlug,
+    clienteContaId: statusConta.contaId,
     mlUserId: statusConta.mlUserId,
     itemId,
     permalink,
@@ -1284,7 +1312,7 @@ async function createMercadoLivreItem({
         : null,
   });
 
-  await upsertCatalogoLocal(clienteId, clienteSlug, item);
+  await upsertCatalogoLocal(clienteId, clienteSlug, item, statusConta.contaId, statusConta.mlUserId);
 
   return {
     ok: true,
@@ -1319,7 +1347,7 @@ async function createMercadoLivreItem({
   };
 }
 
-async function retryPrecosAtacado({ clienteId, itemId, dados }) {
+async function retryPrecosAtacado({ clienteId, itemId, dados, clienteContaId = null }) {
   await ensureSchema();
 
   const id = String(itemId || "").trim();
@@ -1347,7 +1375,7 @@ async function retryPrecosAtacado({ clienteId, itemId, dados }) {
     }),
   };
 
-  const statusConta = await obterStatusConta(clienteId);
+  const statusConta = await obterStatusConta(clienteId, clienteContaId);
   if (!statusConta.ok || !statusConta.tokenValido) {
     const falha = {
       ok: false,
@@ -1386,6 +1414,7 @@ async function retryPrecosAtacado({ clienteId, itemId, dados }) {
     clienteId,
     itemId: id,
     precoAtacado: config,
+    mlUserId: statusConta.mlUserId,
   });
 
   await atualizarPrecoAtacadoPublicacao({

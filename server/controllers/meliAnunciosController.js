@@ -17,6 +17,16 @@ const otimizadorService = require("../services/meliAnuncios/otimizadorMeliServic
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const { mlFetch } = require("../utils/mlClient");
 
+function extrairClienteContaId(valor) {
+  return /^\d+$/.test(String(valor || "")) ? Number(valor) : null;
+}
+
+// Resposta padrão para o erro estrutural de ambiguidade de conta — mesmo
+// formato já usado em adsController/metricasController.
+function responderAmbiguidade(res, err) {
+  return res.status(409).json({ ok: false, code: err.code, motivo: err.message, contas: err.contas });
+}
+
 // ----------------------------------------------------------------------------
 // GET /anuncios-meli/clientes
 // ----------------------------------------------------------------------------
@@ -38,6 +48,7 @@ async function listarClientes(req, res) {
 async function sincronizar(req, res) {
   try {
     const { clienteSlug, modo } = req.body || {};
+    const clienteContaId = extrairClienteContaId(req.body && req.body.clienteContaId);
 
     if (!clienteSlug) {
       return res
@@ -58,12 +69,14 @@ async function sincronizar(req, res) {
       clienteId: cliente.id,
       clienteSlug: cliente.slug,
       modo,
+      clienteContaId,
     });
 
     // Falhas esperadas (sem token, erro de API) voltam como 200 + ok:false
     // para o frontend tratar com mensagem amigável.
     return res.json(resultado);
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] sincronizar:", err.message);
     return res.status(500).json({
       ok: false,
@@ -79,6 +92,7 @@ async function sincronizar(req, res) {
 async function resumo(req, res) {
   try {
     const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
     if (!clienteSlug) {
       return res
         .status(400)
@@ -92,13 +106,24 @@ async function resumo(req, res) {
         .json({ ok: false, motivo: "Cliente não encontrado." });
     }
 
-    const dados = await anunciosService.obterResumo(cliente.id);
+    let contaId = null;
+    let includeLegacy = true;
+    if (clienteContaId != null) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      contaId = contexto.contaId;
+      includeLegacy = contexto.includeLegacy;
+    }
+
+    const dados = await anunciosService.obterResumo(cliente.id, contaId, includeLegacy);
     return res.json({
       ok: true,
       cliente: { slug: cliente.slug, nome: cliente.nome },
       resumo: dados,
     });
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] resumo:", err.message);
     return res
       .status(500)
@@ -112,6 +137,7 @@ async function resumo(req, res) {
 async function listar(req, res) {
   try {
     const { clienteSlug, q, status, filtro, page, limit } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
     if (!clienteSlug) {
       return res
         .status(400)
@@ -125,8 +151,20 @@ async function listar(req, res) {
         .json({ ok: false, motivo: "Cliente não encontrado." });
     }
 
+    let contaId = null;
+    let includeLegacy = true;
+    if (clienteContaId != null) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      contaId = contexto.contaId;
+      includeLegacy = contexto.includeLegacy;
+    }
+
     const resultado = await anunciosService.listarAnuncios({
       clienteId: cliente.id,
+      clienteContaId: contaId,
+      includeLegacy,
       q,
       status,
       filtro,
@@ -141,6 +179,7 @@ async function listar(req, res) {
       paginacao: resultado.paginacao,
     });
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] listar:", err.message);
     return res
       .status(500)
@@ -156,6 +195,7 @@ async function detalhe(req, res) {
   try {
     const { itemId } = req.params;
     const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
 
     if (!clienteSlug) {
       return res
@@ -179,12 +219,24 @@ async function detalhe(req, res) {
       });
     }
 
+    // O próprio anúncio já sabe de qual conta veio (gravado na sincronização);
+    // só cai na resolução por clienteContaId/legado quando essa coluna ainda
+    // não foi preenchida (linha sincronizada antes dela existir).
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
     // Descrição buscada sob demanda (não é salva na sincronização em massa).
     let descricao = null;
     try {
       const resp = await mlFetch(
         cliente.id,
-        `/items/${encodeURIComponent(itemId)}/description`
+        `/items/${encodeURIComponent(itemId)}/description`,
+        { mlUserId }
       );
       if (resp && resp.ok && resp.data) {
         descricao = resp.data.plain_text || resp.data.text || null;
@@ -201,6 +253,7 @@ async function detalhe(req, res) {
       descricao,
     });
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] detalhe:", err.message);
     return res
       .status(500)
@@ -350,6 +403,7 @@ async function aprovarOtimizacao(req, res) {
 async function criacaoStatus(req, res) {
   try {
     const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
     }
@@ -359,13 +413,14 @@ async function criacaoStatus(req, res) {
       return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
     }
 
-    const status = await criacaoService.obterStatusConta(cliente.id);
+    const status = await criacaoService.obterStatusConta(cliente.id, clienteContaId);
     return res.json({
       ok: !!status.ok,
       cliente: { slug: cliente.slug, nome: cliente.nome },
       ...status,
     });
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] criacaoStatus:", err.message);
     return res.status(500).json({
       ok: false,
@@ -374,24 +429,39 @@ async function criacaoStatus(req, res) {
   }
 }
 
+// Resolve o cliente e o mlUserId da conta pedida (ou única/legada), para os
+// endpoints de criação que consultam catálogo do ML (categorias, atributos,
+// sale terms, tipos de anúncio). Lança MULTIPLE_MARKETPLACE_ACCOUNTS quando
+// o cliente tem 2+ contas e nenhuma foi escolhida.
+async function resolverClienteEContaCriacao(clienteSlug, clienteContaId) {
+  const cliente = await anunciosService.resolverCliente(clienteSlug);
+  if (!cliente) return { cliente: null };
+  const contexto = await anunciosService.resolverContextoConta({
+    clienteId: cliente.id, clienteContaId, requireUsableGrant: true,
+  });
+  return { cliente, mlUserId: contexto.mlUserId };
+}
+
 async function criacaoCategorias(req, res) {
   try {
     const { clienteSlug, q } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
     }
 
-    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    const { cliente, mlUserId } = await resolverClienteEContaCriacao(clienteSlug, clienteContaId);
     if (!cliente) {
       return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
     }
 
-    const resultado = await criacaoService.buscarCategorias(cliente.id, q);
+    const resultado = await criacaoService.buscarCategorias(cliente.id, q, mlUserId);
     if (!resultado.ok) {
       return res.status(resultado.statusMl || 400).json(resultado);
     }
     return res.json(resultado);
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] criacaoCategorias:", err.message);
     return res.status(500).json({
       ok: false,
@@ -404,24 +474,27 @@ async function criacaoAtributos(req, res) {
   try {
     const { categoryId } = req.params;
     const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
     }
 
-    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    const { cliente, mlUserId } = await resolverClienteEContaCriacao(clienteSlug, clienteContaId);
     if (!cliente) {
       return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
     }
 
     const resultado = await criacaoService.obterAtributosCategoria(
       cliente.id,
-      categoryId
+      categoryId,
+      mlUserId
     );
     if (!resultado.ok) {
       return res.status(resultado.statusMl || 400).json(resultado);
     }
     return res.json(resultado);
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] criacaoAtributos:", err.message);
     return res.status(500).json({
       ok: false,
@@ -434,24 +507,27 @@ async function criacaoSaleTerms(req, res) {
   try {
     const { categoryId } = req.params;
     const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
     }
 
-    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    const { cliente, mlUserId } = await resolverClienteEContaCriacao(clienteSlug, clienteContaId);
     if (!cliente) {
       return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
     }
 
     const resultado = await criacaoService.obterSaleTermsCategoria(
       cliente.id,
-      categoryId
+      categoryId,
+      mlUserId
     );
     if (!resultado.ok) {
       return res.status(resultado.statusMl || 400).json(resultado);
     }
     return res.json(resultado);
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] criacaoSaleTerms:", err.message);
     return res.status(500).json({
       ok: false,
@@ -463,21 +539,23 @@ async function criacaoSaleTerms(req, res) {
 async function criacaoListingTypes(req, res) {
   try {
     const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
     }
 
-    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    const { cliente, mlUserId } = await resolverClienteEContaCriacao(clienteSlug, clienteContaId);
     if (!cliente) {
       return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
     }
 
-    const resultado = await criacaoService.obterTiposAnuncio(cliente.id);
+    const resultado = await criacaoService.obterTiposAnuncio(cliente.id, mlUserId);
     if (!resultado.ok) {
       return res.status(resultado.statusMl || 400).json(resultado);
     }
     return res.json(resultado);
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] criacaoListingTypes:", err.message);
     return res.status(500).json({
       ok: false,
@@ -490,6 +568,7 @@ async function publicarAnuncio(req, res) {
   try {
     const body = req.body || {};
     const { clienteSlug } = body;
+    const clienteContaId = extrairClienteContaId(body.clienteContaId);
 
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
@@ -503,6 +582,7 @@ async function publicarAnuncio(req, res) {
     const resultado = await criacaoService.createMercadoLivreItem({
       clienteId: cliente.id,
       clienteSlug: cliente.slug,
+      clienteContaId,
       dados: body,
       createdBy: req.user && req.user.id,
     });
@@ -534,6 +614,7 @@ async function publicarAnuncio(req, res) {
       cliente: { slug: cliente.slug, nome: cliente.nome },
     });
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] publicarAnuncio:", err.message);
     return res.status(500).json({
       ok: false,
@@ -548,6 +629,7 @@ async function retryPrecosAtacado(req, res) {
     const { itemId } = req.params;
     const body = req.body || {};
     const { clienteSlug } = body;
+    const clienteContaId = extrairClienteContaId(body.clienteContaId);
 
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
@@ -562,6 +644,7 @@ async function retryPrecosAtacado(req, res) {
       clienteId: cliente.id,
       itemId,
       dados: body,
+      clienteContaId,
     });
 
     if (!resultado.ok) {
@@ -594,6 +677,7 @@ async function retryPrecosAtacado(req, res) {
       cliente: { slug: cliente.slug, nome: cliente.nome },
     });
   } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] retryPrecosAtacado:", err.message);
     return res.status(500).json({
       ok: false,

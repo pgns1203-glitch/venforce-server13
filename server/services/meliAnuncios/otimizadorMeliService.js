@@ -29,6 +29,7 @@ const aiProvider = require("../ai/aiProvider");
 const prompts = require("./otimizadorMeliPrompts");
 const anunciosService = require("./meliAnunciosService");
 const { mlFetch } = require("../../utils/mlClient");
+const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 
 // Tipos suportados pelo agente. Quem é admin pode rodar qualquer um;
 // expansão futura entra aqui.
@@ -99,6 +100,7 @@ async function ensureSchema() {
   // ALTERs idempotentes — garantem colunas mesmo se a tabela já existir
   // de versões anteriores.
   const ensureCol = async (sql) => { try { await db.query(sql); } catch (e) {} };
+  await ensureCol(`ALTER TABLE meli_anuncio_otimizacoes ADD COLUMN IF NOT EXISTS cliente_conta_id INTEGER;`);
   await ensureCol(`ALTER TABLE meli_anuncio_otimizacoes ADD COLUMN IF NOT EXISTS usage_json JSONB;`);
   await ensureCol(`ALTER TABLE meli_anuncio_otimizacoes ADD COLUMN IF NOT EXISTS input_tokens INTEGER;`);
   await ensureCol(`ALTER TABLE meli_anuncio_otimizacoes ADD COLUMN IF NOT EXISTS output_tokens INTEGER;`);
@@ -249,9 +251,9 @@ function normalizarModeloIndexador(modelo, titulo) {
 // Busca a descrição atual do anúncio via API do ML (read-only).
 // Falha silenciosa: descrição é opcional para o prompt.
 // -----------------------------------------------------------------------------
-async function buscarDescricaoAtual(clienteId, itemId) {
+async function buscarDescricaoAtual(clienteId, itemId, mlUserId = null) {
   try {
-    const resp = await mlFetch(clienteId, "/items/" + encodeURIComponent(itemId) + "/description");
+    const resp = await mlFetch(clienteId, "/items/" + encodeURIComponent(itemId) + "/description", { mlUserId });
     if (resp && resp.ok && resp.data) {
       return resp.data.plain_text || resp.data.text || null;
     }
@@ -348,7 +350,30 @@ async function otimizar({ clienteSlug, itemId, tipo, userId }) {
   // SEO não precisa — corta tokens à toa.
   let descricaoAtual = null;
   if (tipo === "descricao" || tipo === "ficha_tecnica") {
-    descricaoAtual = await buscarDescricaoAtual(cliente.id, anuncio.item_id);
+    // O próprio anúncio já sabe de qual conta veio (gravado na sincronização).
+    // Só quando essa informação não existir (linha sincronizada antes desta
+    // coluna existir) é que caímos na resolução legada — que ainda assim
+    // nunca escolhe "a principal" em silêncio se houver 2+ contas ativas.
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      try {
+        const contexto = await resolveMarketplaceAccountContext({
+          clienteId: cliente.id,
+          marketplace: "meli",
+          requireUsableGrant: false,
+        });
+        mlUserId = contexto.mlUserId || null;
+      } catch (err) {
+        // Este service nunca lança — ambiguidade de conta em item legado
+        // (sincronizado antes de existir cliente_conta_id) vira erro
+        // estruturado, não um crash, e não impede o fluxo com fallback
+        // silencioso de "conta principal".
+        if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") {
+          return { ok: false, http: 409, codigo: err.code, motivo: err.message, contas: err.contas };
+        }
+      }
+    }
+    descricaoAtual = await buscarDescricaoAtual(cliente.id, anuncio.item_id, mlUserId);
   }
 
   const promptTexto = prompts.montarPrompt(tipo, anuncio, { descricaoAtual });

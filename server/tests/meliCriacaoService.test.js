@@ -42,7 +42,7 @@ Module._load = function loadWithStubs(request, parent, isMain) {
   }
   if (request === "./meliAnunciosService") {
     return {
-      resolverMlUserId: async () => "123456",
+      resolverContextoConta: async () => ({ mlUserId: "123456", contaId: null, contaNome: null, includeLegacy: true }),
       upsertAnuncios: async () => {},
     };
   }

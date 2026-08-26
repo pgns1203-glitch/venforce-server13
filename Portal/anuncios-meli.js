@@ -29,6 +29,10 @@
     filtros: { q: "", status: "", filtro: "" },
     buscaTimer: null,
     carregandoCatalogo: false,
+    // Contas Mercado Livre do cliente atual (Cliente/Conta) — seletor só
+    // aparece com 2+ contas ativas; com 0 ou 1, comportamento é transparente.
+    contasMl: [],
+    contaMlId: "",
     // Estado do detalhe aberto:
     detalheAtual: null,    // { anuncio, descricao }
     otimizacoes: {         // últimas otimizações por tipo (rascunho ou aprovada)
@@ -215,9 +219,51 @@
     el("am-filtro-problema").addEventListener("change", function (e) {
       AM.filtros.filtro = e.target.value; AM.paginacao.page = 1; atualizarIndicadorFiltros(); carregarAnuncios();
     });
+    var selConta = el("am-filtro-conta");
+    if (selConta) selConta.addEventListener("change", function (e) {
+      AM.contaMlId = e.target.value || "";
+      AM.paginacao.page = 1;
+      carregarResumo();
+      carregarAnuncios();
+    });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") fecharDetalhe();
     });
+  }
+
+  // ===========================================================================
+  // Contas Mercado Livre do cliente (Cliente/Conta)
+  // ===========================================================================
+  function carregarContasMl() {
+    var wrap = el("am-filtro-conta-wrap");
+    var sel = el("am-filtro-conta");
+    AM.contasMl = [];
+    AM.contaMlId = "";
+    if (!wrap || !sel || !AM.clienteAtual) return Promise.resolve();
+
+    return api("/clientes/" + encodeURIComponent(AM.clienteAtual.slug) + "/contas?marketplace=meli")
+      .then(function (r) {
+        var contas = (r.data && Array.isArray(r.data.contas) ? r.data.contas : [])
+          .filter(function (c) { return c.ativo !== false; });
+        AM.contasMl = contas;
+        if (contas.length > 1) {
+          var html = '<option value="">Selecione a conta</option>';
+          contas.forEach(function (c) {
+            html += '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.nome || String(c.id)) + "</option>";
+          });
+          sel.innerHTML = html;
+          wrap.style.display = "";
+        } else {
+          wrap.style.display = "none";
+          sel.innerHTML = '<option value="">Selecione a conta</option>';
+        }
+      });
+  }
+
+  // true quando o cliente tem 2+ contas ML ativas e nenhuma foi escolhida —
+  // nesse caso a UI pede a conta em vez de deixar a API decidir sozinha.
+  function precisaSelecionarContaMl() {
+    return AM.contasMl.length > 1 && !AM.contaMlId;
   }
 
   // ===========================================================================
@@ -290,8 +336,10 @@
     el("am-view-clientes").classList.add("am-hidden");
     el("am-view-hud").classList.remove("am-hidden");
     renderHudHeader();
-    carregarResumo();
-    carregarAnuncios();
+    carregarContasMl().then(function () {
+      carregarResumo();
+      carregarAnuncios();
+    });
   }
 
   // ===========================================================================
@@ -331,7 +379,15 @@
 
   function carregarResumo() {
     if (!AM.clienteAtual) return;
-    api("/anuncios-meli/resumo?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug))
+    if (precisaSelecionarContaMl()) {
+      AM.resumo = null;
+      renderHudHeader();
+      renderResumo();
+      return;
+    }
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+    api("/anuncios-meli/resumo?" + qs)
       .then(function (r) {
         if (r.data && r.data.ok) {
           AM.resumo = r.data.resumo;
@@ -366,8 +422,17 @@
 
   function carregarAnuncios() {
     if (!AM.clienteAtual || AM.carregandoCatalogo) return;
-    AM.carregandoCatalogo = true;
     var box = el("am-catalogo-container");
+
+    if (precisaSelecionarContaMl()) {
+      AM.anuncios = [];
+      AM.paginacao = { page: 1, limit: AM.paginacao.limit, total: 0, totalPaginas: 1 };
+      box.innerHTML = estadoHtml("empty", "Selecione a conta Mercado Livre",
+        "Este cliente possui mais de uma conta Mercado Livre; escolha qual conta consultar acima.");
+      return;
+    }
+
+    AM.carregandoCatalogo = true;
     box.innerHTML = estadoHtml("loading", "Carregando anúncios…");
 
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
@@ -375,6 +440,7 @@
     if (AM.filtros.q) qs += "&q=" + encodeURIComponent(AM.filtros.q);
     if (AM.filtros.status) qs += "&status=" + encodeURIComponent(AM.filtros.status);
     if (AM.filtros.filtro) qs += "&filtro=" + encodeURIComponent(AM.filtros.filtro);
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
 
     api("/anuncios-meli?" + qs).then(function (r) {
       AM.carregandoCatalogo = false;
@@ -504,7 +570,8 @@
     el("am-drawer-close").focus();
 
     var url = "/anuncios-meli/" + encodeURIComponent(itemId) +
-              "?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
+              "?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+              (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
 
     api(url).then(function (r) {
       var body = el("am-drawer-body");
@@ -1198,6 +1265,10 @@
   // Sincronização
   // ===========================================================================
   function sincronizar(modo) {
+    if (precisaSelecionarContaMl()) {
+      toast("Este cliente possui mais de uma conta Mercado Livre; selecione qual conta sincronizar.", "is-warning");
+      return;
+    }
     var overlay = document.createElement("div");
     overlay.className = "am-sync-overlay vf-overlay is-open";
     overlay.id = "am-sync-overlay";
@@ -1213,7 +1284,7 @@
 
     api("/anuncios-meli/sync", {
       method: "POST",
-      body: { clienteSlug: AM.clienteAtual.slug, modo: modo },
+      body: { clienteSlug: AM.clienteAtual.slug, modo: modo, clienteContaId: AM.contaMlId || undefined },
     }).then(function (r) {
       var box = overlay.querySelector(".am-sync-box");
       var d = r.data || {};

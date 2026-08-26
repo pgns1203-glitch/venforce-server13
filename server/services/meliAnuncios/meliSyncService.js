@@ -88,7 +88,7 @@ function valorAtributo(a) {
 // -----------------------------------------------------------------------------
 // Mapeia o JSON cru de um item do ML para o registro da tabela meli_anuncios.
 // -----------------------------------------------------------------------------
-function mapearItem(body, clienteId, clienteSlug) {
+function mapearItem(body, clienteId, clienteSlug, contaId = null, mlUserId = null) {
   const attrs = Array.isArray(body.attributes) ? body.attributes : [];
 
   const attrsMap = {};
@@ -109,6 +109,8 @@ function mapearItem(body, clienteId, clienteSlug) {
   return {
     cliente_id: clienteId,
     cliente_slug: clienteSlug,
+    cliente_conta_id: contaId,
+    ml_user_id: mlUserId != null ? String(mlUserId) : null,
     item_id: body.id,
     sku,
     titulo: body.title || null,
@@ -160,7 +162,8 @@ async function coletarItemIds(clienteId, mlUserId) {
 
     const resp = await mlFetch(
       clienteId,
-      `/users/${mlUserId}/items/search?${qs}`
+      `/users/${mlUserId}/items/search?${qs}`,
+      { mlUserId }
     );
 
     if (!resp || !resp.ok) {
@@ -194,12 +197,19 @@ async function coletarItemIds(clienteId, mlUserId) {
 //     totalSalvos, limitado }
 //   { ok:false, codigo:"NO_TOKEN"|"ML_API_ERROR", motivo }
 // -----------------------------------------------------------------------------
-async function sincronizar({ clienteId, clienteSlug, modo }) {
+async function sincronizar({ clienteId, clienteSlug, modo, clienteContaId = null }) {
   const modoFinal = modo === "completo" ? "completo" : "novos";
 
   await anunciosService.ensureSchema();
 
-  const mlUserId = await anunciosService.resolverMlUserId(clienteId);
+  let contexto;
+  try {
+    contexto = await anunciosService.resolverContextoConta({ clienteId, clienteContaId, requireUsableGrant: true });
+  } catch (err) {
+    if (err.statusCode) throw err; // 409 MULTIPLE_MARKETPLACE_ACCOUNTS propaga intacto
+    contexto = null;
+  }
+  const mlUserId = contexto?.mlUserId || null;
   if (!mlUserId) {
     return {
       ok: false,
@@ -208,6 +218,7 @@ async function sincronizar({ clienteId, clienteSlug, modo }) {
         "Este cliente ainda não tem uma conta do Mercado Livre conectada.",
     };
   }
+  const { contaId } = contexto;
 
   // 1. coletar ids
   const coleta = await coletarItemIds(clienteId, mlUserId);
@@ -259,7 +270,8 @@ async function sincronizar({ clienteId, clienteSlug, modo }) {
     const lote = ids.slice(i, i + LOTE_MULTIGET);
     const resp = await mlFetch(
       clienteId,
-      `/items?ids=${lote.join(",")}`
+      `/items?ids=${lote.join(",")}`,
+      { mlUserId }
     );
 
     if (!resp || !resp.ok || !Array.isArray(resp.data)) {
@@ -269,7 +281,7 @@ async function sincronizar({ clienteId, clienteSlug, modo }) {
 
     for (const entry of resp.data) {
       if (entry && entry.code === 200 && entry.body && entry.body.id) {
-        registros.push(mapearItem(entry.body, clienteId, clienteSlug));
+        registros.push(mapearItem(entry.body, clienteId, clienteSlug, contaId, mlUserId));
       }
     }
   }
@@ -281,6 +293,8 @@ async function sincronizar({ clienteId, clienteSlug, modo }) {
     ok: true,
     codigo: "OK",
     modo: modoFinal,
+    contaId,
+    mlUserId,
     totalEncontrados,
     totalProcessados: ids.length,
     totalSalvos,

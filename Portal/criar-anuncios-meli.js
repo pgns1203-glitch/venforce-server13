@@ -21,6 +21,10 @@
   var CAM = {
     clientes: [],
     conta: null,
+    // Contas Mercado Livre do cliente selecionado (Cliente/Conta) — seletor
+    // só aparece com 2+ contas ativas; com 0 ou 1, comportamento é transparente.
+    contasMl: [],
+    contaMlId: "",
     categoryId: null,
     categoryName: null,
     attrsApi: null,
@@ -206,6 +210,40 @@
         .join("");
   }
 
+  // Sufixo de query string com clienteContaId, quando uma conta foi escolhida.
+  function qsClienteConta() {
+    return CAM.contaMlId ? "&clienteContaId=" + encodeURIComponent(CAM.contaMlId) : "";
+  }
+
+  function precisaSelecionarContaMl() {
+    return CAM.contasMl.length > 1 && !CAM.contaMlId;
+  }
+
+  async function carregarContasMl(slug) {
+    var wrap = el("cam-conta-ml-wrap");
+    var sel = el("cam-conta-ml");
+    CAM.contasMl = [];
+    CAM.contaMlId = "";
+    if (!wrap || !sel) return;
+    if (!slug) { wrap.style.display = "none"; return; }
+
+    var resp = await api("/clientes/" + encodeURIComponent(slug) + "/contas?marketplace=meli");
+    var contas = (resp.data && Array.isArray(resp.data.contas) ? resp.data.contas : [])
+      .filter(function (c) { return c.ativo !== false; });
+    CAM.contasMl = contas;
+
+    if (contas.length > 1) {
+      sel.innerHTML = '<option value="">Selecione a conta</option>' +
+        contas.map(function (c) {
+          return '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.nome || String(c.id)) + "</option>";
+        }).join("");
+      wrap.style.display = "";
+    } else {
+      wrap.style.display = "none";
+      sel.innerHTML = '<option value="">Selecione a conta</option>';
+    }
+  }
+
   async function onClienteChange() {
     var slug = (el("cam-cliente").value || "").trim();
     CAM.conta = null;
@@ -213,6 +251,11 @@
     resetWholesaleConfig();
     setPublishEnabled(false);
 
+    await carregarContasMl(slug);
+    await carregarStatusConta(slug);
+  }
+
+  async function carregarStatusConta(slug) {
     var userBox = el("cam-ml-user");
     var statusBox = el("cam-ml-status");
     userBox.textContent = "—";
@@ -231,9 +274,24 @@
       return;
     }
 
+    if (precisaSelecionarContaMl()) {
+      statusBox.textContent = "Selecione a conta Mercado Livre";
+      statusBox.className = "vf-alert cam-status-box is-warning";
+      el("cam-publish-hint").textContent =
+        "Este cliente possui mais de uma conta Mercado Livre; escolha qual conta usar para publicar.";
+      return;
+    }
+
     var resp = await api(
-      "/anuncios-meli/criacao/status?clienteSlug=" + encodeURIComponent(slug)
+      "/anuncios-meli/criacao/status?clienteSlug=" + encodeURIComponent(slug) + qsClienteConta()
     );
+    if (resp.status === 409 && resp.data && resp.data.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") {
+      statusBox.textContent = "Selecione a conta Mercado Livre";
+      statusBox.className = "vf-alert cam-status-box is-warning";
+      el("cam-publish-hint").textContent =
+        "Este cliente possui mais de uma conta Mercado Livre; escolha qual conta usar para publicar.";
+      return;
+    }
     var data = resp.data || {};
     CAM.conta = data;
     setWholesaleEligibility(
@@ -282,7 +340,7 @@
   async function carregarListingTypes(slug) {
     var resp = await api(
       "/anuncios-meli/criacao/listing-types?clienteSlug=" +
-        encodeURIComponent(slug)
+        encodeURIComponent(slug) + qsClienteConta()
     );
     if (!resp.ok || !resp.data || !resp.data.ok) return;
     var types = resp.data.listingTypes || [];
@@ -347,7 +405,8 @@
       "/anuncios-meli/criacao/categorias?clienteSlug=" +
         encodeURIComponent(slug) +
         "&q=" +
-        encodeURIComponent(q)
+        encodeURIComponent(q) +
+        qsClienteConta()
     );
 
     if (!resp.ok || !resp.data || !resp.data.ok) {
@@ -406,7 +465,7 @@
       "/anuncios-meli/criacao/categorias/" +
         encodeURIComponent(categoryId) +
         "/atributos?clienteSlug=" +
-        encodeURIComponent(slug)
+        encodeURIComponent(slug) + qsClienteConta()
     );
 
     if (!resp.ok || !resp.data || !resp.data.ok) {
@@ -431,7 +490,7 @@
       "/anuncios-meli/criacao/categorias/" +
         encodeURIComponent(categoryId) +
         "/sale-terms?clienteSlug=" +
-        encodeURIComponent(slug)
+        encodeURIComponent(slug) + qsClienteConta()
     );
 
     var terms =
@@ -880,6 +939,7 @@
 
     var payload = {
       clienteSlug: (el("cam-cliente").value || "").trim(),
+      clienteContaId: CAM.contaMlId || undefined,
       title: (el("cam-title").value || "").trim(),
       category_id: CAM.categoryId,
       price: Number(el("cam-price").value),
@@ -1034,6 +1094,7 @@
           method: "POST",
           body: {
             clienteSlug: retryData.clienteSlug,
+            clienteContaId: retryData.clienteContaId,
             faixas: retryData.faixas,
           },
         }
@@ -1213,6 +1274,7 @@
       CAM.wholesaleRetry = {
         itemId: data.item_id,
         clienteSlug: payload.clienteSlug,
+        clienteContaId: payload.clienteContaId,
         faixas: requestedRanges,
       };
     }
@@ -1238,6 +1300,10 @@
   // ─── Bindings ──────────────────────────────────────────────────────────────
   function bind() {
     el("cam-cliente").addEventListener("change", onClienteChange);
+    el("cam-conta-ml").addEventListener("change", function (e) {
+      CAM.contaMlId = e.target.value || "";
+      carregarStatusConta((el("cam-cliente").value || "").trim());
+    });
     el("cam-category-search").addEventListener("click", buscarCategorias);
     el("cam-category-q").addEventListener("keydown", function (ev) {
       if (ev.key === "Enter") {

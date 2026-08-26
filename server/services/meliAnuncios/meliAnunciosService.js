@@ -21,7 +21,7 @@ const db =
   _dbModule && typeof _dbModule.query === "function"
     ? _dbModule
     : _dbModule.pool || _dbModule.default || _dbModule;
-const { resolveMlGrant } = require("../mlTokenService");
+const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 
 // -----------------------------------------------------------------------------
 // Schema
@@ -68,6 +68,16 @@ async function ensureSchema() {
     );
   `);
 
+  // cliente_conta_id/ml_user_id: identificam de qual conta ML (Cliente/Conta)
+  // veio cada anúncio. Nullable — linhas sincronizadas antes desta coluna
+  // existir ficam NULL (nunca inferidas por adivinhação); uma ressincronização
+  // subsequente já corrige a linha com o valor real.
+  await db.query(`
+    ALTER TABLE meli_anuncios
+      ADD COLUMN IF NOT EXISTS cliente_conta_id INTEGER,
+      ADD COLUMN IF NOT EXISTS ml_user_id TEXT;
+  `);
+
   await db.query(
     `CREATE INDEX IF NOT EXISTS idx_meli_anuncios_cliente ON meli_anuncios (cliente_id);`
   );
@@ -76,6 +86,9 @@ async function ensureSchema() {
   );
   await db.query(
     `CREATE INDEX IF NOT EXISTS idx_meli_anuncios_score ON meli_anuncios (cliente_id, score_venforce);`
+  );
+  await db.query(
+    `CREATE INDEX IF NOT EXISTS idx_meli_anuncios_conta ON meli_anuncios (cliente_conta_id);`
   );
 
   _schemaPronto = true;
@@ -131,13 +144,40 @@ async function resolverCliente(clienteSlug) {
   };
 }
 
-// Resolve o ml_user_id de um cliente. Retorna string/number ou null.
-async function resolverMlUserId(clienteId) {
-  try {
-    return (await resolveMlGrant({ clienteId, requireUsable: true })).ml_user_id;
-  } catch (_) {
-    return null;
+// Resolve a conta ML exata do cliente (Cliente/Conta/Grant). Nunca escolhe
+// "a conta principal" em silêncio: com 2+ contas ML ativas sem clienteContaId
+// explícito, propaga o erro estrutural (err.statusCode=409,
+// err.code='MULTIPLE_MARKETPLACE_ACCOUNTS', err.contas) para o chamador.
+//
+// includeLegacy só é true quando a conta resolvida é comprovadamente a única
+// ativa do marketplace — assim linhas históricas (cliente_conta_id IS NULL)
+// continuam aparecendo quando não há ambiguidade real, e somem só quando há
+// 2+ contas e uma foi escolhida.
+async function resolverContextoConta({ clienteId, clienteContaId = null, requireUsableGrant = true }) {
+  const context = await resolveMarketplaceAccountContext({
+    clienteId,
+    marketplace: "meli",
+    clienteContaId: clienteContaId || null,
+    requireUsableGrant,
+    queryable: db,
+  });
+
+  const contaId = context.conta?.id ?? null;
+  let includeLegacy = true;
+  if (contaId) {
+    const totalAtivas = await db.query(
+      "SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = 'meli' AND ativo = true",
+      [clienteId]
+    );
+    includeLegacy = (totalAtivas.rows[0]?.total || 0) <= 1;
   }
+
+  return {
+    mlUserId: context.mlUserId || null,
+    contaId,
+    contaNome: context.conta?.nome ?? null,
+    includeLegacy,
+  };
 }
 
 // -----------------------------------------------------------------------------
@@ -157,6 +197,8 @@ async function itemIdsExistentes(clienteId) {
 //   sem_fotos | score_baixo | sem_sku | ficha_incompleta | pausados
 async function listarAnuncios({
   clienteId,
+  clienteContaId = null,
+  includeLegacy = true,
   q = "",
   status = "",
   filtro = "",
@@ -168,6 +210,14 @@ async function listarAnuncios({
   const where = ["cliente_id = $1"];
   const params = [clienteId];
   let i = 2;
+
+  if (clienteContaId != null) {
+    where.push(includeLegacy
+      ? `(cliente_conta_id = $${i} OR cliente_conta_id IS NULL)`
+      : `cliente_conta_id = $${i}`);
+    params.push(clienteContaId);
+    i++;
+  }
 
   const termo = String(q || "").trim();
   if (termo) {
@@ -242,8 +292,18 @@ async function listarAnuncios({
 }
 
 // Resumo agregado para os cards do HUD.
-async function obterResumo(clienteId) {
+async function obterResumo(clienteId, clienteContaId = null, includeLegacy = true) {
   await ensureSchema();
+
+  const where = ["cliente_id = $1"];
+  const params = [clienteId];
+  if (clienteContaId != null) {
+    where.push(includeLegacy
+      ? `(cliente_conta_id = $2 OR cliente_conta_id IS NULL)`
+      : `cliente_conta_id = $2`);
+    params.push(clienteContaId);
+  }
+  const whereSql = where.join(" AND ");
 
   const { rows } = await db.query(
     `SELECT
@@ -258,8 +318,8 @@ async function obterResumo(clienteId) {
         ROUND(AVG(score_venforce))::int                                AS score_medio,
         MAX(last_synced_at)                                            AS ultima_sync
        FROM meli_anuncios
-       WHERE cliente_id = $1;`,
-    [clienteId]
+       WHERE ${whereSql};`,
+    params
   );
 
   const r = rows[0] || {};
@@ -311,13 +371,15 @@ async function upsertAnuncios(registros) {
       preco, preco_original, moeda, estoque, vendidos, status, sub_status,
       listing_type_id, category_id, permalink, thumbnail, pictures_count,
       pictures_json, logistic_type, is_full, attributes_json, health,
-      score_venforce, score_motivo, last_synced_at, updated_at
+      score_venforce, score_motivo, cliente_conta_id, ml_user_id,
+      last_synced_at, updated_at
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7,
       $8, $9, $10, $11, $12, $13, $14,
       $15, $16, $17, $18, $19,
       $20, $21, $22, $23, $24,
-      $25, $26, NOW(), NOW()
+      $25, $26, $27, $28,
+      NOW(), NOW()
     )
     ON CONFLICT (cliente_id, item_id) DO UPDATE SET
       sku             = EXCLUDED.sku,
@@ -343,6 +405,8 @@ async function upsertAnuncios(registros) {
       health          = EXCLUDED.health,
       score_venforce  = EXCLUDED.score_venforce,
       score_motivo    = EXCLUDED.score_motivo,
+      cliente_conta_id = EXCLUDED.cliente_conta_id,
+      ml_user_id      = EXCLUDED.ml_user_id,
       last_synced_at  = NOW(),
       updated_at      = NOW();
   `;
@@ -376,6 +440,8 @@ async function upsertAnuncios(registros) {
       r.health,
       r.score_venforce,
       r.score_motivo,
+      r.cliente_conta_id ?? null,
+      r.ml_user_id != null ? String(r.ml_user_id) : null,
     ]);
     salvos++;
   }
@@ -386,7 +452,7 @@ module.exports = {
   ensureSchema,
   listarClientes,
   resolverCliente,
-  resolverMlUserId,
+  resolverContextoConta,
   itemIdsExistentes,
   listarAnuncios,
   obterResumo,

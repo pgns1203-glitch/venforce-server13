@@ -33,8 +33,9 @@ function calcularTacos(faturamento, adsInvestido) {
 // (cliente sem grant / token inválido / erro de API) sem derrubar o sync.
 async function consolidarMetricasMes(clienteId, dateFrom, dateTo, clienteSlug) {
   const res = await buscarResumo({ clienteSlug, dateFrom, dateTo, compare: null });
-  if (!res || res.semToken || res.notFound || res.tokenInvalido || res.erroApi) {
-    return { ok: false, motivo: res?.tokenInvalido ? "token_invalido" : "sem_metricas", resumo: null, topProdutos: null, porDia: null };
+  if (!res || res.semToken || res.notFound || res.tokenInvalido || res.erroApi || res.multiplasContas) {
+    const motivo = res?.tokenInvalido ? "token_invalido" : (res?.multiplasContas ? "multiplas_contas_sem_selecao" : "sem_metricas");
+    return { ok: false, motivo, resumo: null, topProdutos: null, porDia: null };
   }
   const r = res.resumo || {};
   // Faturamento por produto: já vem na MESMA resposta (agregarTopProdutos),

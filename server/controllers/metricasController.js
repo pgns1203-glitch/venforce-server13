@@ -19,6 +19,8 @@ async function clientes(req, res) {
 async function resumo(req, res) {
   try {
     const { clienteSlug, dateFrom, dateTo, compare } = req.query || {};
+    const clienteContaIdRaw = req.query?.clienteContaId;
+    const clienteContaId = /^\d+$/.test(String(clienteContaIdRaw || '')) ? Number(clienteContaIdRaw) : null;
 
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: 'clienteSlug é obrigatório.' });
@@ -30,8 +32,16 @@ async function resumo(req, res) {
       return res.status(400).json({ ok: false, motivo: 'Período inválido. Use dateFrom e dateTo no formato YYYY-MM-DD.' });
     }
 
-    const result = await buscarResumo({ clienteSlug, dateFrom, dateTo, compare });
+    const result = await buscarResumo({ clienteSlug, clienteContaId, dateFrom, dateTo, compare });
 
+    if (result.multiplasContas) {
+      return res.status(409).json({
+        ok: false,
+        code: 'MULTIPLE_MARKETPLACE_ACCOUNTS',
+        motivo: 'Este cliente possui mais de uma conta Mercado Livre; informe clienteContaId.',
+        contas: result.contas,
+      });
+    }
     if (result.notFound) {
       return res.status(404).json({ ok: false, motivo: 'Cliente não encontrado ou inativo.' });
     }

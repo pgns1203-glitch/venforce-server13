@@ -92,6 +92,8 @@ const S = {
   compare:     { a: null, b: null },
   compareData: { a: null, b: null },
   diag:        { relId: null, loading: false, itens: null, erro: false },
+  contasMl:    [],   // contas Mercado Livre do cliente (Cliente/Conta)
+  contaMlId:   null, // conta escolhida quando há 2+ contas ativas
 };
 
 /* ── API ─────────────────────────────────────────────────── */
@@ -249,6 +251,8 @@ async function loadCliente360(forcado = false) {
   S.adsPerformance = null; S.adsPerfLoading = false; S.adsResumo = null;
   S.diagSimAlvo = null;                            // limpa simulação ao trocar de cliente
   S.coberturaBase = null;                          // cobertura vem do payload unificado
+  S.contasMl = []; S.contaMlId = null;
+  carregarContasMl360(slug);
 
   // Sem seleção manual o backend usa o padrão: mês anterior fechado.
   const compQS = S.compSelecionada
@@ -909,10 +913,10 @@ function renderTab360(tab) {
   if (!panel) return;
   // Métricas ML são live — carregam só ao abrir a aba (ação do usuário),
   // nunca no load da página. Não roda no fallback legado (já traz S.metricas).
-  if (tab === 'metricas' && S.metricas === null && S.temGrant && !S.metricasLoading) {
+  if (tab === 'metricas' && S.metricas === null && S.temGrant && !S.metricasLoading && !precisaSelecionarContaMl()) {
     ensureMetricas360();
   }
-  if (tab === 'ads' && S.adsPerformance === null && S.temGrant && !S.adsPerfLoading) {
+  if (tab === 'ads' && S.adsPerformance === null && S.temGrant && !S.adsPerfLoading && !precisaSelecionarContaMl()) {
     ensureAdsPerformance360();
   }
   ({ overview: renderOverview, bases: renderBases360, diagnostico: renderDiag,
@@ -920,15 +924,57 @@ function renderTab360(tab) {
      historico: renderHistorico }[tab])?.(panel);
 }
 
+/* ── Conta Mercado Livre (Cliente/Conta) ────────────────────
+   Só relevante quando o cliente tem 2+ contas ML ativas — nesse caso as abas
+   Métricas e Ads (únicas consumidoras diretas do grant) pedem a escolha antes
+   de chamar a API, em vez de deixar o backend escolher "a principal". */
+async function carregarContasMl360(slug) {
+  const res = await api(`/clientes/${encodeURIComponent(slug)}/contas?marketplace=meli`);
+  if (S.cliente?.slug !== slug) return; // cliente trocou enquanto a chamada estava em voo
+  const contas = (Array.isArray(res?.contas) ? res.contas : []).filter((c) => c.ativo !== false);
+  S.contasMl = contas;
+  if (S.activeTab === 'metricas' || S.activeTab === 'ads') {
+    renderTab360(S.activeTab);
+  }
+}
+
+function precisaSelecionarContaMl() {
+  return S.contasMl.length > 1 && !S.contaMlId;
+}
+
+function renderContaMlPicker() {
+  if (S.contasMl.length <= 1) return '';
+  const opcoes = S.contasMl.map((c) =>
+    `<option value="${c.id}"${String(S.contaMlId) === String(c.id) ? ' selected' : ''}>${esc(c.nome || String(c.id))}</option>`
+  ).join('');
+  return `
+    <div class="c360-conta-ml-picker" style="margin-bottom:12px;">
+      <label style="font-size:13px;color:var(--muted,#666);margin-right:8px;">Conta Mercado Livre</label>
+      <select onchange="onContaMlChange360(this.value)">
+        <option value="">Selecione a conta</option>
+        ${opcoes}
+      </select>
+    </div>`;
+}
+
+function onContaMlChange360(value) {
+  S.contaMlId = value || null;
+  S.metricas = null; S.metricasLoading = false;
+  S.adsPerformance = null; S.adsPerfLoading = false;
+  renderTab360(S.activeTab);
+}
+
 /* Carrega métricas ML ao vivo sob demanda (aba Métricas). */
 async function ensureMetricas360() {
   const slug = S.cliente?.slug;
-  if (!slug || S.metricasLoading) return;
+  if (!slug || S.metricasLoading || precisaSelecionarContaMl()) return;
   S.metricasLoading = true;
   const panel = document.getElementById('tab-metricas');
   if (panel) renderMetricas360(panel);
   const { dateFrom, dateTo } = S.periodo;
-  const res = await api(`/metricas/resumo?clienteSlug=${encodeURIComponent(slug)}&dateFrom=${dateFrom}&dateTo=${dateTo}`);
+  let url = `/metricas/resumo?clienteSlug=${encodeURIComponent(slug)}&dateFrom=${dateFrom}&dateTo=${dateTo}`;
+  if (S.contaMlId) url += `&clienteContaId=${encodeURIComponent(S.contaMlId)}`;
+  const res = await api(url);
   S.metricas = res?.ok ? res : null;
   S.metricasLoading = false;
   if (panel && S.activeTab === 'metricas') renderMetricas360(panel);
@@ -1909,12 +1955,18 @@ function limparSimulacaoMargem() {
 /* ── ABA: MÉTRICAS ML ────────────────────────────────────── */
 function renderMetricas360(el) {
   const m = S.metricas;
+  const picker = renderContaMlPicker();
+  if (precisaSelecionarContaMl()) {
+    el.innerHTML = picker + panelEmpty('Métricas Mercado Livre', '🔀', 'Selecione a conta Mercado Livre',
+      'Este cliente possui mais de uma conta Mercado Livre; escolha qual conta consultar.');
+    return;
+  }
   if (!m) {
     if (S.metricasLoading) {
-      el.innerHTML = panelEmpty('Métricas Mercado Livre', '⏳', 'Carregando métricas ao vivo…',
+      el.innerHTML = picker + panelEmpty('Métricas Mercado Livre', '⏳', 'Carregando métricas ao vivo…',
         'Buscando pedidos no Mercado Livre para o período.');
     } else {
-      el.innerHTML = panelEmpty('Métricas Mercado Livre', '📊', 'Dados não disponíveis',
+      el.innerHTML = picker + panelEmpty('Métricas Mercado Livre', '📊', 'Dados não disponíveis',
         S.temGrant ? 'Nenhum pedido no período ou métricas indisponíveis no momento.'
                    : 'Conecte o grant Mercado Livre para carregar as métricas.');
     }
@@ -1946,7 +1998,7 @@ function renderMetricas360(el) {
     ['Valor cancelado',   valOr(cancelVal, fmtBRL)],
   ];
 
-  el.innerHTML = `
+  el.innerHTML = picker + `
     <div class="c360-grid2">
       <div class="c360-panel">
         <div class="c360-panel-head">
@@ -2125,11 +2177,14 @@ async function ensureAdsPerformance360() {
   const mes  = S.periodo?.competencia;
   if (!slug || !mes || S.adsPerfLoading || S.adsPerformance !== null) return;
   if (!S.temGrant) return;   // performance Ads exige conta ML conectada
+  if (precisaSelecionarContaMl()) return;
   S.adsPerfLoading = true;
   const panel = document.getElementById('tab-ads');
   if (panel && S.activeTab === 'ads') renderAds360(panel);
 
-  const res = await api(`/ads/performance?clienteSlug=${encodeURIComponent(slug)}&mes=${encodeURIComponent(mes)}`);
+  let url = `/ads/performance?clienteSlug=${encodeURIComponent(slug)}&mes=${encodeURIComponent(mes)}`;
+  if (S.contaMlId) url += `&clienteContaId=${encodeURIComponent(S.contaMlId)}`;
+  const res = await api(url);
   if (res && res.ok && res.performance) S.adsPerformance = res.performance;
   else if (res && res.semDados)         S.adsPerformance = { semDados: true, motivo: res.motivo };
   else                                  S.adsPerformance = { semDados: true, motivo: 'indisponivel' };
@@ -2162,19 +2217,26 @@ function renderAds360(el) {
   const p = S.adsPerformance;
   const temPerf = p && !p.semDados;
   const mensal = [...S.adsMensal].sort((a, b) => String(b.mes || '').localeCompare(String(a.mes || '')));
+  const picker = renderContaMlPicker();
+
+  if (precisaSelecionarContaMl()) {
+    el.innerHTML = picker + panelEmpty('Ads', '🔀', 'Selecione a conta Mercado Livre',
+      'Este cliente possui mais de uma conta Mercado Livre; escolha qual conta consultar.');
+    return;
+  }
 
   // Nada ainda e sem mensal: estado vazio (ou carregando).
   if (!temPerf && !mensal.length) {
     if (S.adsPerfLoading) {
-      el.innerHTML = panelEmpty('Ads', '⏳', 'Carregando performance Mercado Ads…',
+      el.innerHTML = picker + panelEmpty('Ads', '⏳', 'Carregando performance Mercado Ads…',
         'Buscando investimento, ROAS e ACOS do mês.');
     } else {
-      el.innerHTML = S.temGrant
+      el.innerHTML = picker + (S.temGrant
         ? panelEmpty('Ads', '📢', 'Sem registro de Ads no período',
             'Ausência de Ads <b>não é o mesmo que investimento zero</b>: pode não haver campanha no período ou os dados ainda não foram consolidados. Por isso TACoS aparece como indisponível, não 0%.')
         : panelEmpty('Ads', '📢', 'Sem grant Mercado Livre',
             'Sem grant não há como ler a performance de Ads do cliente.',
-            `<button class="c360-btn c360-btn-primary" onclick="copiarLink360('${esc(S.cliente?.slug || '')}')">Copiar link ML</button>`);
+            `<button class="c360-btn c360-btn-primary" onclick="copiarLink360('${esc(S.cliente?.slug || '')}')">Copiar link ML</button>`));
     }
     return;
   }
@@ -2230,7 +2292,7 @@ function renderAds360(el) {
       </div>
     </div>`;
 
-  el.innerHTML = perfHtml + mensalHtml;
+  el.innerHTML = picker + perfHtml + mensalHtml;
 }
 
 /* ── ABA: FECHAMENTOS ────────────────────────────────────── */

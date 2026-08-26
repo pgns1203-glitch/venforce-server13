@@ -1,7 +1,6 @@
 // server/services/ads/mlAdsService.js
 const { mlFetch } = require("../../utils/mlClient");
-const pool = require("../../config/database");
-const { resolveMlGrant } = require("../mlTokenService");
+const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 
 // ─── Códigos de retorno ───────────────────────────────────────────────────────
 // NO_TOKEN              – cliente não tem token ML configurado
@@ -60,33 +59,42 @@ function logMl(path, status, body) {
   console.log(`[mlAds] GET ${path} → HTTP ${status} | ${snippet}`);
 }
 
-// ─── Resolver cliente + clienteId do banco ────────────────────────────────────
+function mlFetchOptions(mlUserId) {
+  return { ...ADS_API_OPTIONS, mlUserId };
+}
 
-async function resolverClienteToken(clienteSlug) {
-  const result = await pool.query(
-    `SELECT c.id AS cliente_id
-       FROM clientes c
-      WHERE c.slug = $1 AND c.ativo = true
-      LIMIT 1`,
-    [clienteSlug]
-  );
+// ─── Resolver a conta ML exata do cliente (Cliente/Conta/Grant) ───────────────
+// Nunca escolhe "a conta principal" silenciosamente: com 2+ contas ativas do
+// marketplace sem clienteContaId explícito, propaga o 409 estrutural para o
+// chamador decidir (UI pede a conta) em vez de misturar dado entre contas.
 
-  if (!result.rows.length) {
-    throw new Error(`Cliente "${clienteSlug}" não encontrado.`);
+async function resolverContextoConta(clienteSlug, clienteContaId = null) {
+  let context;
+  try {
+    context = await resolveMarketplaceAccountContext({
+      clienteSlug,
+      marketplace: "meli",
+      clienteContaId: clienteContaId || null,
+      requireUsableGrant: true,
+    });
+  } catch (err) {
+    if (err.statusCode) throw err; // erros estruturais (404, 409) propagam intactos
+    const error = new Error("Cliente sem token Mercado Livre configurado.");
+    error.adsCodigo = "NO_TOKEN";
+    throw error;
   }
 
-  let grant;
-  try {
-    grant = await resolveMlGrant({ clienteId: result.rows[0].cliente_id, requireUsable: true });
-  } catch (_) {
+  if (!context.mlUserId) {
     const error = new Error("Cliente sem token Mercado Livre configurado.");
     error.adsCodigo = "NO_TOKEN";
     throw error;
   }
 
   return {
-    clienteId: result.rows[0].cliente_id,
-    mlUserId: String(grant.ml_user_id),
+    clienteId: context.cliente.id,
+    mlUserId: context.mlUserId,
+    contaId: context.conta?.id ?? null,
+    contaNome: context.conta?.nome ?? null,
   };
 }
 
@@ -94,11 +102,11 @@ async function resolverClienteToken(clienteSlug) {
 // GET /advertising/advertisers?product_id=PADS
 // Retorna: { advertisers: [{ advertiser_id, site_id, advertiser_name, account_name }] }
 
-async function resolverAdvertiser(clienteId) {
+async function resolverAdvertiser(clienteId, mlUserId) {
   const path = "/advertising/advertisers?product_id=PADS";
   let ok, status, data;
   try {
-    ({ ok, status, data } = await mlFetch(clienteId, path, ADS_API_OPTIONS));
+    ({ ok, status, data } = await mlFetch(clienteId, path, mlFetchOptions(mlUserId)));
   } catch (err) {
     console.warn(`[mlAds] Erro de rede em ${path}:`, err.message);
     return { advertiser: null, httpStatus: null, erro: err.message };
@@ -153,7 +161,7 @@ async function resolverAdvertiser(clienteId) {
 //     &metrics=clicks,prints,cost,cpc,ctr,acos,roas,total_amount,direct_amount,indirect_amount
 //     &aggregation=sum
 
-async function buscarTodosAnunciosComMetricas(clienteId, siteId, advertiserId, from, to) {
+async function buscarTodosAnunciosComMetricas(clienteId, siteId, advertiserId, from, to, mlUserId) {
   const todos = [];
   let offset = 0;
   let totalApi = null;
@@ -176,7 +184,7 @@ async function buscarTodosAnunciosComMetricas(clienteId, siteId, advertiserId, f
 
     let ok, status, data;
     try {
-      ({ ok, status, data } = await mlFetch(clienteId, path, ADS_API_OPTIONS));
+      ({ ok, status, data } = await mlFetch(clienteId, path, mlFetchOptions(mlUserId)));
     } catch (err) {
       console.warn(`[mlAds] Erro de rede em ads/search offset=${offset}:`, err.message);
       if (paginas === 0) primeiroErro = { erroRede: err.message };
@@ -230,7 +238,7 @@ async function buscarTodosAnunciosComMetricas(clienteId, siteId, advertiserId, f
 // O custo agregado das campanhas é a fonte principal do investimento mensal.
 // Isso evita depender do teto de anúncios para calcular o fechamento financeiro.
 
-async function buscarTodasCampanhasComMetricas(clienteId, siteId, advertiserId, from, to) {
+async function buscarTodasCampanhasComMetricas(clienteId, siteId, advertiserId, from, to, mlUserId) {
   const todas = [];
   let offset = 0;
   let totalApi = null;
@@ -253,7 +261,7 @@ async function buscarTodasCampanhasComMetricas(clienteId, siteId, advertiserId, 
 
     let ok, status, data;
     try {
-      ({ ok, status, data } = await mlFetch(clienteId, path, ADS_API_OPTIONS));
+      ({ ok, status, data } = await mlFetch(clienteId, path, mlFetchOptions(mlUserId)));
     } catch (err) {
       console.warn(`[mlAds] Erro de rede em campaigns/search offset=${offset}:`, err.message);
       if (paginas === 0) primeiroErro = { erroRede: err.message };
@@ -511,11 +519,11 @@ function normalizarCampanhas(campanhasApi, itens) {
 // — usado pela Cliente 360 quando o mês corrente ainda está aberto, para não
 // comparar Ads parcial com mês anterior cheio. Sem `janela`, o comportamento é o
 // de sempre: a competência inteira.
-async function buscarPerformanceML(clienteSlug, mesRef, janela = null) {
-  // 1. Resolver clienteId do banco
-  let clienteId, mlUserId;
+async function buscarPerformanceML(clienteSlug, mesRef, janela = null, clienteContaId = null) {
+  // 1. Resolver a conta ML exata (Cliente/Conta/Grant)
+  let clienteId, mlUserId, contaId, contaNome;
   try {
-    ({ clienteId, mlUserId } = await resolverClienteToken(clienteSlug));
+    ({ clienteId, mlUserId, contaId, contaNome } = await resolverContextoConta(clienteSlug, clienteContaId));
   } catch (err) {
     if (err.adsCodigo === "NO_TOKEN") {
       return { semDados: true, codigo: "NO_TOKEN", motivo: err.message };
@@ -530,7 +538,7 @@ async function buscarPerformanceML(clienteSlug, mesRef, janela = null) {
 
   // 2. Resolver advertiser_id
   const { advertiser, httpStatus, permissionDenied, apiData } =
-    await resolverAdvertiser(clienteId);
+    await resolverAdvertiser(clienteId, mlUserId);
 
   if (!advertiser) {
     if (permissionDenied) {
@@ -562,7 +570,8 @@ async function buscarPerformanceML(clienteSlug, mesRef, janela = null) {
     siteId,
     advertiserId,
     from,
-    to
+    to,
+    mlUserId
   );
 
   if (campanhasResp.permissionDenied) {
@@ -578,7 +587,8 @@ async function buscarPerformanceML(clienteSlug, mesRef, janela = null) {
     siteId,
     advertiserId,
     from,
-    to
+    to,
+    mlUserId
   );
 
   if (itensResp.permissionDenied) {
@@ -631,6 +641,8 @@ async function buscarPerformanceML(clienteSlug, mesRef, janela = null) {
     siteId,
     advertiserName,
     mlUserId,
+    contaId,
+    contaNome,
     periodo:   { from, to },
     ...resumo,
     anuncios,

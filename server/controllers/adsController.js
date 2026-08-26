@@ -218,6 +218,8 @@ async function getAdsPerformance(req, res) {
   try {
     const clienteSlug = String(req.query.clienteSlug || "").trim();
     const mes         = String(req.query.mes || "").trim();
+    const clienteContaIdRaw = req.query.clienteContaId;
+    const clienteContaId = /^\d+$/.test(String(clienteContaIdRaw || "")) ? Number(clienteContaIdRaw) : null;
 
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, erro: "clienteSlug é obrigatório." });
@@ -226,7 +228,7 @@ async function getAdsPerformance(req, res) {
       return res.status(400).json({ ok: false, erro: "mes é obrigatório no formato YYYY-MM." });
     }
 
-    const result = await buscarPerformanceML(clienteSlug, mes);
+    const result = await buscarPerformanceML(clienteSlug, mes, null, clienteContaId);
 
     // Erros sem dados (sem token, sem permissão, sem advertiser, erro de API)
     if (result.semDados) {
@@ -241,8 +243,14 @@ async function getAdsPerformance(req, res) {
     // Sucesso: devolve o objeto inteiro como `performance`
     return res.json({ ok: true, performance: result });
   } catch (err) {
-    console.error("[getAdsPerformance]", err.message);
-    return res.status(500).json({ ok: false, erro: err.message });
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") {
+      return res.status(409).json({ ok: false, code: err.code, erro: err.message, contas: err.contas });
+    }
+    const statusCode = Number.isFinite(Number(err?.statusCode)) && Number(err.statusCode) >= 400 ? Number(err.statusCode) : 500;
+    if (statusCode >= 500) console.error("[getAdsPerformance]", err.message);
+    const payload = { ok: false, erro: err.message };
+    if (err.code) payload.code = err.code;
+    return res.status(statusCode).json(payload);
   }
 }
 

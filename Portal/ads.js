@@ -52,6 +52,11 @@ let ADS_PERFORMANCE_ESTADO = "idle";
 let ADS_PERFORMANCE_ATUAL  = null; // dados reais da API ML
 let ADS_ANUNCIOS_PAGE      = 1;
 
+// Contas Mercado Livre do cliente selecionado (Cliente/Conta) — só aparece
+// seletor quando há 2+ contas ativas; com 0 ou 1, comportamento é transparente.
+let ADS_CONTAS_ML          = [];
+let ADS_MULTIPLAS_CONTAS   = false;
+
 // Resumo mensal gerencial salvo manualmente (faturamentoTotal, cancelados, devolvidos, tacos)
 // Vem do endpoint GET /ads/resumo-mensal e é totalmente separado da performance Mercado Ads.
 let ADS_RESUMO_MENSAL_ATUAL = null;
@@ -162,6 +167,49 @@ function adsGetLojaCampanha() {
   return (sel && sel.value) ? sel.value.trim() : "todas";
 }
 
+function adsGetContaMlId() {
+  const wrap = document.getElementById("ads-filtro-conta-wrap");
+  if (!wrap || wrap.style.display === "none") return "";
+  const sel = document.getElementById("ads-filtro-conta");
+  return sel ? (sel.value || "").trim() : "";
+}
+
+// ─── Carregar contas Mercado Livre do cliente (Cliente/Conta) ────────────────
+
+async function adsCarregarContasMl() {
+  const wrap = document.getElementById("ads-filtro-conta-wrap");
+  const sel  = document.getElementById("ads-filtro-conta");
+  ADS_CONTAS_ML = [];
+  ADS_MULTIPLAS_CONTAS = false;
+  if (!wrap || !sel) return;
+
+  const clienteSlug = adsGetClienteSlug();
+  if (!clienteSlug) {
+    wrap.style.display = "none";
+    sel.innerHTML = `<option value="">Selecione a conta</option>`;
+    return;
+  }
+
+  try {
+    const res  = await adsFetch(`/clientes/${encodeURIComponent(clienteSlug)}/contas?marketplace=meli`);
+    const data = await res.json();
+    const contas = (Array.isArray(data.contas) ? data.contas : []).filter((c) => c.ativo !== false);
+    ADS_CONTAS_ML = contas;
+
+    if (contas.length > 1) {
+      sel.innerHTML = `<option value="">Selecione a conta</option>` +
+        contas.map((c) => `<option value="${adsEscape(c.id)}">${adsEscape(c.nome || c.id)}</option>`).join("");
+      wrap.style.display = "";
+    } else {
+      wrap.style.display = "none";
+      sel.innerHTML = `<option value="">Selecione a conta</option>`;
+    }
+  } catch (err) {
+    console.warn("[ads] falha ao carregar contas ML:", err.message);
+    wrap.style.display = "none";
+  }
+}
+
 // ─── API fetch ────────────────────────────────────────────────────────────────
 
 async function adsFetch(path, options = {}) {
@@ -200,6 +248,7 @@ async function adsCarregarClientes() {
 async function adsCarregarPerformance() {
   const clienteSlug = adsGetClienteSlug();
   const mes         = adsGetFiltroMesRef();
+  const contaMlId   = adsGetContaMlId();
 
   if (!clienteSlug || !mes) {
     ADS_PERFORMANCE_ATUAL  = null;
@@ -210,14 +259,41 @@ async function adsCarregarPerformance() {
     return;
   }
 
+  // Cliente com 2+ contas ML e nenhuma escolhida: pede a escolha em vez de
+  // chamar a API (que devolveria 409 MULTIPLE_MARKETPLACE_ACCOUNTS mesmo assim).
+  const precisaSelecionarConta = ADS_CONTAS_ML.length > 1 && !contaMlId;
+  if (precisaSelecionarConta) {
+    ADS_MULTIPLAS_CONTAS  = true;
+    ADS_PERFORMANCE_ATUAL  = null;
+    ADS_PERFORMANCE_ESTADO = "sem_dados";
+    const motEl = document.getElementById("ads-sem-dados-motivo");
+    if (motEl) motEl.textContent = "Este cliente possui mais de uma conta Mercado Livre; selecione qual conta consultar.";
+    adsPopularCampanhasSelect([]);
+    adsRenderPerformance();
+    return;
+  }
+  ADS_MULTIPLAS_CONTAS = false;
+
   ADS_PERFORMANCE_ESTADO = "loading";
   ADS_ANUNCIOS_PAGE = 1;
   adsRenderPerformance();
 
   try {
     const params = new URLSearchParams({ clienteSlug, mes });
+    if (contaMlId) params.set("clienteContaId", contaMlId);
     const res    = await adsFetch(`/ads/performance?${params}`);
     const data   = await res.json();
+
+    if (res.status === 409 && data.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") {
+      ADS_MULTIPLAS_CONTAS  = true;
+      ADS_PERFORMANCE_ATUAL  = null;
+      ADS_PERFORMANCE_ESTADO = "sem_dados";
+      const motEl = document.getElementById("ads-sem-dados-motivo");
+      if (motEl) motEl.textContent = "Este cliente possui mais de uma conta Mercado Livre; selecione qual conta consultar.";
+      adsPopularCampanhasSelect([]);
+      adsRenderPerformance();
+      return;
+    }
 
     if (!res.ok || !data.ok) throw new Error(data.erro || `HTTP ${res.status}`);
 
@@ -291,7 +367,7 @@ function adsRenderBanner() {
   } else if (ADS_PERFORMANCE_ESTADO === "sem_dados") {
     banner.classList.add("is-warning");
     banner.setAttribute("role", "status");
-    titleEl.textContent = "Cliente sem dados de Ads configurados";
+    titleEl.textContent = ADS_MULTIPLAS_CONTAS ? "Selecione a conta Mercado Livre" : "Cliente sem dados de Ads configurados";
     // ads-sem-dados-motivo já foi preenchido em adsCarregarPerformance() com data.motivo
   } else if (ADS_PERFORMANCE_ESTADO === "error") {
     banner.classList.add("is-danger");
@@ -1091,10 +1167,15 @@ document.getElementById("ads-filtro-mes")?.addEventListener("change", () => {
   adsCarregarAcompanhamento();
 });
 
-document.getElementById("ads-filtro-cliente")?.addEventListener("change", () => {
+document.getElementById("ads-filtro-cliente")?.addEventListener("change", async () => {
+  await adsCarregarContasMl();
   adsCarregarPerformance();
   adsCarregarResumoMensal();
   adsCarregarAcompanhamento();
+});
+
+document.getElementById("ads-filtro-conta")?.addEventListener("change", () => {
+  adsCarregarPerformance();
 });
 
 document.getElementById("ads-filtro-campanha")?.addEventListener("change", () => {

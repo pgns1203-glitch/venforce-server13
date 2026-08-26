@@ -4,6 +4,7 @@
 const pool = require('../config/database');
 const { mlFetch } = require('../utils/mlClient');
 const { resolveMlGrant } = require('./mlTokenService');
+const { resolveMarketplaceAccountContext } = require('./clienteContas/clienteContaService');
 
 // Cancelamentos que aproximam o card do painel ML.
 // Excluídos: shipment_not_delivered, pack_splitted (logísticos/internos).
@@ -29,18 +30,26 @@ async function listarClientesComML() {
   return resolved.filter(Boolean);
 }
 
-async function buscarClienteComToken(slug) {
+async function buscarClienteComToken(slug, clienteContaId = null) {
   const { rows } = await pool.query(
     `SELECT c.id, c.slug, c.nome FROM clientes c WHERE c.slug = $1 AND c.ativo = true LIMIT 1`,
     [slug]
   );
   if (!rows[0]) return null;
+  let context;
   try {
-    const grant = await resolveMlGrant({ clienteId: rows[0].id, requireUsable: true });
-    return { ...rows[0], ml_user_id: grant.ml_user_id };
-  } catch (_) {
+    context = await resolveMarketplaceAccountContext({
+      clienteId: rows[0].id,
+      marketplace: 'meli',
+      clienteContaId: clienteContaId || null,
+      requireUsableGrant: true,
+    });
+  } catch (err) {
+    if (err.code === 'MULTIPLE_MARKETPLACE_ACCOUNTS') throw err;
     return null;
   }
+  if (!context.mlUserId) return null;
+  return { ...rows[0], ml_user_id: context.mlUserId, cliente_conta_id: context.conta?.id ?? null };
 }
 
 async function clienteExisteAtivo(slug) {
@@ -239,8 +248,16 @@ function periodoAnterior(dateFrom, dateTo) {
 // Exports públicos
 // ---------------------------------------------------------------------------
 
-async function buscarResumo({ clienteSlug, dateFrom, dateTo, compare }) {
-  const cliente = await buscarClienteComToken(clienteSlug);
+async function buscarResumo({ clienteSlug, clienteContaId = null, dateFrom, dateTo, compare }) {
+  let cliente;
+  try {
+    cliente = await buscarClienteComToken(clienteSlug, clienteContaId);
+  } catch (err) {
+    if (err.code === 'MULTIPLE_MARKETPLACE_ACCOUNTS') {
+      return { multiplasContas: true, contas: err.contas };
+    }
+    throw err;
+  }
 
   if (!cliente) {
     const existe = await clienteExisteAtivo(clienteSlug);

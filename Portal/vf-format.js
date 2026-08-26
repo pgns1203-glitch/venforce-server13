@@ -64,7 +64,45 @@ export function data(value, options) {
   return d.toLocaleString("pt-BR", options || { dateStyle: "short", timeStyle: "short" });
 }
 
-export const format = { escapeHTML, moeda, numero, percentual, data };
+// "há 2 h", "há 20 min", "ontem" — Shell V3 (F0.5) e Carteira (F1.1) usam
+// isto para "última sync". Adicionado nesta unidade porque é formatação de
+// exibição igual às demais deste arquivo, não regra de negócio.
+export function desde(value, agora) {
+  if (value === null || value === undefined || value === "") return "nunca";
+  const t = new Date(value).getTime();
+  if (Number.isNaN(t)) return AUSENTE;
+  const ms = (agora instanceof Date ? agora.getTime() : Date.now()) - t;
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return "agora";
+  if (min < 60) return `há ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `há ${h} h`;
+  const dias = Math.floor(h / 24);
+  if (dias === 1) return "ontem";
+  if (dias < 30) return `há ${dias} dias`;
+  return new Date(value).toLocaleDateString("pt-BR");
+}
+
+// Busca sem acento, case-insensitive — Shell V3 (dropdown de Cliente) e
+// Carteira (F1.1) usam a mesma normalização.
+export function normalizarBusca(texto) {
+  return String(texto || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(new RegExp("[\\u0300-\\u036f]", "g"), "")
+    .trim();
+}
+
+// Iniciais para avatar (rodapé do Shell) — "Pedro Gomes" → "PG".
+export function iniciais(nome) {
+  const base = String(nome || "").trim();
+  if (!base) return "V";
+  const partes = base.split(/\s+/);
+  if (partes.length === 1) return partes[0][0].toUpperCase();
+  return (partes[0][0] + partes[partes.length - 1][0]).toUpperCase();
+}
+
+export const format = { escapeHTML, moeda, numero, percentual, data, desde, normalizarBusca, iniciais };
 
 if (typeof window !== "undefined") {
   window.VF = window.VF || {};

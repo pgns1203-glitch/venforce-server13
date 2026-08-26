@@ -22,7 +22,7 @@ function matches(label, actual, regex) {
 
 (async () => {
   const modPath = path.join(__dirname, "..", "..", "Portal", "vf-format.js");
-  const { escapeHTML, moeda, numero, percentual, data, format } = await import(`file://${modPath}`);
+  const { escapeHTML, moeda, numero, percentual, data, desde, normalizarBusca, iniciais, format } = await import(`file://${modPath}`);
 
   console.log("\n▸ escapeHTML");
   {
@@ -91,6 +91,41 @@ function matches(label, actual, regex) {
     eq("escapeHTML(NaN) — não é null/undefined, vira texto", escapeHTML(NaN), "NaN");
   }
 
+  console.log("\n▸ desde (F0.5 — 'última sync' relativa)");
+  {
+    const agora = new Date("2026-08-26T15:00:00Z");
+    eq("nulo → nunca", desde(null, agora), "nunca");
+    eq("undefined → nunca", desde(undefined, agora), "nunca");
+    eq("string vazia → nunca", desde("", agora), "nunca");
+    eq("data inválida → ausente", desde("não é uma data", agora), "—");
+    eq("< 1 min → agora", desde("2026-08-26T14:59:45Z", agora), "agora");
+    eq("20 min", desde("2026-08-26T14:40:00Z", agora), "há 20 min");
+    eq("2 h", desde("2026-08-26T13:00:00Z", agora), "há 2 h");
+    eq("ontem (24h-47h)", desde("2026-08-25T14:00:00Z", agora), "ontem");
+    eq("5 dias", desde("2026-08-21T15:00:00Z", agora), "há 5 dias");
+    matches("30+ dias cai para data absoluta (dd/mm/aaaa)", desde("2026-01-01T00:00:00Z", agora), /^\d{2}\/\d{2}\/\d{4}$/);
+  }
+
+  console.log("\n▸ normalizarBusca (F0.5/F1.1 — typeahead sem acento)");
+  {
+    eq("remove acentos e caixa", normalizarBusca("São João"), "sao joao");
+    eq("trim", normalizarBusca("  N97  "), "n97");
+    eq("null → string vazia", normalizarBusca(null), "");
+    eq("undefined → string vazia", normalizarBusca(undefined), "");
+    eq("já normalizado permanece igual", normalizarBusca("mercado livre"), "mercado livre");
+  }
+
+  console.log("\n▸ iniciais (F0.5 — avatar do rodapé)");
+  {
+    eq("nome completo", iniciais("Pedro Gomes"), "PG");
+    eq("nome único", iniciais("Admin"), "A");
+    eq("nome vazio → V (Venforce)", iniciais(""), "V");
+    eq("null → V", iniciais(null), "V");
+    eq("undefined → V", iniciais(undefined), "V");
+    eq("nome com espaços extras", iniciais("  Ana   Ribeiro  "), "AR");
+    eq("nome com 3+ partes usa primeira e última", iniciais("Maria Clara Souza"), "MS");
+  }
+
   console.log("\n▸ ponte window.VF.format (mesma referência do módulo, sem DOM aqui)");
   {
     eq("format.escapeHTML === escapeHTML", format.escapeHTML, escapeHTML);
@@ -98,6 +133,9 @@ function matches(label, actual, regex) {
     eq("format.numero === numero", format.numero, numero);
     eq("format.percentual === percentual", format.percentual, percentual);
     eq("format.data === data", format.data, data);
+    eq("format.desde === desde", format.desde, desde);
+    eq("format.normalizarBusca === normalizarBusca", format.normalizarBusca, normalizarBusca);
+    eq("format.iniciais === iniciais", format.iniciais, iniciais);
   }
 
   console.log(`\n✓ vfFormat: ${checks} verificações`);

@@ -44,7 +44,9 @@ export const MODULOS = [
   { id: "central-vendas", label: "Central de Vendas", rota: "fechamentos-api.html" },
   { id: "ads", label: "Ads", rota: "ads.html", marketplaces: ["meli"] },
   { id: "anuncios", label: "Anúncios", rota: "anuncios-meli.html", marketplaces: ["meli"] },
-  { id: "margem", label: "Margem", rota: "central-margem.html" },
+  // F2.3 — Motor de Margem só resolve base MELI (contextoPrecificacaoService);
+  // achado lendo o código real, não previsto no MASTER_SPEC original.
+  { id: "margem", label: "Margem", rota: "central-margem.html", marketplaces: ["meli"] },
   { id: "diagnosticos", label: "Diagnósticos", rota: "diagnostico-inicial.html" },
   { id: "automacoes", label: "Automações", rota: "automacoes.html", marketplaces: ["meli"] },
 ];

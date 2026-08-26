@@ -249,6 +249,7 @@ class Cdp {
     this.socket = new WebSocket(url);
     this.nextId = 1;
     this.pending = new Map();
+    this.onEvent = null;
   }
 
   async open() {
@@ -258,11 +259,14 @@ class Cdp {
     });
     this.socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
-      if (!message.id || !this.pending.has(message.id)) return;
-      const { resolve, reject } = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      if (message.error) reject(new Error(message.error.message));
-      else resolve(message.result);
+      if (message.id && this.pending.has(message.id)) {
+        const { resolve, reject } = this.pending.get(message.id);
+        this.pending.delete(message.id);
+        if (message.error) reject(new Error(message.error.message));
+        else resolve(message.result);
+        return;
+      }
+      if (message.method && this.onEvent) this.onEvent(message.method, message.params);
     });
   }
 
@@ -321,6 +325,49 @@ async function run() {
     await cdp.open();
     await cdp.send("Page.enable");
     await cdp.send("Runtime.enable");
+
+    // F2.3 — central-margem.html agora carrega o Shell V3, que resolve
+    // Cliente (e tenta resolver Conta, embora esta página seja
+    // data-vf-scope="client" e não dependa dela) via
+    // GET /operacao/cliente-360/clientes e GET /clientes/:slug/contas —
+    // ambos contra o host de produção hardcoded (vf-config.js sem
+    // <meta vf-api-base> nesta página). Interceptado via CDP Fetch, nunca
+    // toca a rede real. O "motor" da Central de Margem em si continua
+    // mockado como antes, via window.__VF_CENTRAL_MARGEM_API_CLIENT__.
+    const PROD_HOST = "venforce-server.onrender.com";
+    await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
+    cdp.onEvent = async (method, params) => {
+      if (method !== "Fetch.requestPaused") return;
+      const url = params.request.url;
+      const respond = async (m, p) => {
+        try { await cdp.send(m, p); } catch (err) { if (!/Invalid InterceptionId/.test(err.message || "")) throw err; }
+      };
+      if (!url.includes(PROD_HOST)) { await respond("Fetch.continueRequest", { requestId: params.requestId }); return; }
+      const cors = [
+        { name: "access-control-allow-origin", value: "*" },
+        { name: "access-control-allow-headers", value: "authorization,content-type" },
+        { name: "access-control-allow-methods", value: "GET,POST,OPTIONS" },
+      ];
+      if (params.request.method === "OPTIONS") { await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: cors }); return; }
+      if (url.includes("/operacao/cliente-360/clientes")) {
+        const body = Buffer.from(JSON.stringify({
+          ok: true,
+          clientes: [{ id: 1, nome: "Loja Teste", slug: "loja-teste", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] }],
+        })).toString("base64");
+        await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 200, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body });
+        return;
+      }
+      const contasMatch = url.match(/\/clientes\/([^/?]+)\/contas/);
+      if (contasMatch) {
+        const contas = decodeURIComponent(contasMatch[1]) === "loja-teste"
+          ? [{ id: 900, cliente_id: 1, marketplace: "meli", nome: "Mercado Livre", slug: "ml", external_account_id: "111222333", externalAccountLabel: "loja-teste-ml", is_primary: true, ativo: true, grant: { id: 1, token_status: "valid" }, base: { vinculo_id: 1, base_id: 1, nome: "Custo Loja Teste" }, ultimaSync: null }]
+          : [];
+        const body = Buffer.from(JSON.stringify({ ok: true, cliente: { id: 1, nome: "Loja Teste", slug: "loja-teste", ativo: true }, contas })).toString("base64");
+        await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 200, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body });
+        return;
+      }
+      await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
+    };
 
     const injection = `
       localStorage.setItem("vf-token", "ui-test-token");
@@ -656,7 +703,10 @@ async function run() {
 
     console.log(`# ${checks} smoke tests de UI concluídos`);
   } finally {
-    if (cdp) cdp.close();
+    if (cdp) {
+      try { await cdp.send("Fetch.disable"); } catch (_) { /* já pode estar fechado */ }
+      cdp.close();
+    }
     chrome.kill("SIGTERM");
     await new Promise((resolve) => server.close(resolve));
   }

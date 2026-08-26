@@ -1,21 +1,18 @@
 /*
- * Smoke test de interface em Chrome headless para as duas primeiras
- * adoções reais do Shell V3 — F0.6 (ferramentas.html) e F0.7
- * (fechamentos-api.html atrás de `?shell=v3`).
+ * Smoke test de interface em Chrome headless para a primeira adoção real
+ * do Shell V3 — F0.6 (ferramentas.html).
  *
- * Diferença deliberada em relação a Portal/vf-shell-ui.test.js: aqui as
- * páginas são as REAIS do Portal (não um harness sintético), servidas por
- * um servidor estático local. Todo tráfego para o host de produção
- * (`venforce-server.onrender.com` — hardcoded em fechamentos-api.js e
- * usado por padrão por vf-config.js quando a página não declara
- * `<meta name="vf-api-base">`, que nenhuma das duas páginas declara) é
- * interceptado via CDP `Fetch` — nunca chega à rede real:
- *   · `/operacao/cliente-360/clientes` e `/clientes/:slug/contas` (é só
- *     o que vf-context.js chama) respondem com fixtures locais;
- *   · qualquer outra chamada (o que fechamentos-api.js faz por conta
- *     própria, com seu próprio API_BASE hardcoded — fora do escopo desta
- *     unidade, que não toca fechamentos-api.js) falha como se fosse rede
- *     fora do ar. É exatamente o que a tela já precisa tolerar hoje.
+ * Diferença deliberada em relação a Portal/vf-shell-ui.test.js: aqui a
+ * página é a REAL do Portal (não um harness sintético), servida por um
+ * servidor estático local. Todo tráfego para o host de produção
+ * (`venforce-server.onrender.com`, usado por padrão por vf-config.js
+ * quando a página não declara `<meta name="vf-api-base">`, que não
+ * declara) é interceptado via CDP `Fetch` — nunca chega à rede real.
+ *
+ * fechamentos-api.html (F0.7 → F2.2) tem cobertura própria em
+ * Portal/fechamentos-api-shell-ui.test.js — a página mudou de forma
+ * (Cliente/Conta não são mais seletores locais) e o teste específico é
+ * mais fiel do que manter este arquivo genérico crescendo com ela.
  *
  * Padrão de CDP idêntico a Portal/vf-shell-ui.test.js, com o domínio
  * `Fetch` adicionado.
@@ -265,42 +262,14 @@ async function run() {
       assert.strictEqual(relevantes.length, 0, `erros de console: ${JSON.stringify(relevantes)}`);
     });
 
-    /* ═══════════════ F0.7 — fechamentos-api.html SEM ?shell=v3 ═════════ */
-    consoleErrors.length = 0;
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/fechamentos-api.html` });
-    await sleep(400);
+    // F0.7 cobria fechamentos-api.html nos dois modos (?shell=v3 e sem o
+    // parâmetro, layout.js). F2.2 aposentou o modo dual — o Shell V3 é o
+    // único caminho da página agora, layout.js nunca mais carrega ali.
+    // Essa cobertura mudou de forma (não só de nome) e agora mora em
+    // Portal/fechamentos-api-shell-ui.test.js, junto com troca de
+    // cliente/conta, polling, drawer e os outros cenários de F2.2.
 
-    await check("F0.7 — sem ?shell=v3: continua carregando layout.js, Shell V3 NÃO monta", async () => {
-      const scripts = await cdp.evaluate("Array.prototype.map.call(document.querySelectorAll('script[src]'), function(s){return s.getAttribute('src');})");
-      assert.ok(scripts.includes("layout.js"), `layout.js deveria estar presente sem o parâmetro: ${JSON.stringify(scripts)}`);
-      assert.ok(!scripts.includes("vf-shell.js"), "vf-shell.js não deveria carregar sem ?shell=v3");
-      assert.strictEqual(await cdp.evaluate("Boolean(window.VF && window.VF.shell)"), false, "window.VF.shell não deveria existir");
-    });
-
-    /* ═══════════════ F0.7 — fechamentos-api.html COM ?shell=v3 ═════════ */
-    consoleErrors.length = 0;
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/fechamentos-api.html?shell=v3` });
-    await waitFor(cdp, "window.VF && window.VF.shell", "vf-shell não montou em fechamentos-api.html?shell=v3");
-    await sleep(300);
-
-    await check("F0.7 — com ?shell=v3: Shell V3 monta, layout.js NÃO carrega, os dois nunca coexistem", async () => {
-      const scripts = await cdp.evaluate("Array.prototype.map.call(document.querySelectorAll('script[src]'), function(s){return s.getAttribute('src');})");
-      assert.ok(!scripts.includes("layout.js"), `layout.js não deveria estar presente com ?shell=v3: ${JSON.stringify(scripts)}`);
-      assert.ok(scripts.includes("vf-shell.js"), "vf-shell.js deveria estar presente");
-      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('.vf-sidebar'))"), false, "sidebar legado (.vf-sidebar) não deveria estar no DOM");
-      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('.vf-shell__sidebar'))"), true, "sidebar do Shell V3 deveria estar no DOM");
-    });
-
-    await check("F0.7 — com ?shell=v3: módulo ativo é 'central-vendas', escopo é 'account'", async () => {
-      assert.strictEqual(await cdp.evaluate("document.body.dataset.vfScope"), "account");
-      assert.strictEqual(await cdp.evaluate("document.body.dataset.vfModule"), "central-vendas");
-      const item = await cdp.evaluate(`
-        (function(){ var a = document.querySelector('.vf-shell__item[data-module=\\'central-vendas\\']'); return a ? a.classList.contains('is-active') : null; })();
-      `);
-      assert.strictEqual(item, true);
-    });
-
-    console.log(`\n✓ ${checks} verificações de adoção real (F0.6 ferramentas.html + F0.7 fechamentos-api.html)`);
+    console.log(`\n✓ ${checks} verificações de adoção real (F0.6 ferramentas.html)`);
   } finally {
     if (cdp) {
       try { await cdp.send("Fetch.disable"); } catch (_) { /* já pode estar fechado */ }

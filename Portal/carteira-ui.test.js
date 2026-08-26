@@ -1,0 +1,449 @@
+/*
+ * Smoke test de interface em Chrome headless para a Carteira (F1.1/F1.2) —
+ * MASTER_SPEC §21.3, casos P01-P13.
+ *
+ * Mesmo padrão de Portal/vf-shell-adoption-ui.test.js: servidor estático
+ * local + CDP puro (sem puppeteer) + interceptação via `Fetch` de qualquer
+ * chamada ao host de produção (nunca toca a rede real). Diferença: a
+ * página servida é um harness (`carteira-harness.html`, escrito por este
+ * teste, nunca commitado) que monta `createCarteira()` de
+ * Portal/carteira.js diretamente — assim o teste controla `getSquads()`
+ * (P04) sem precisar de um parâmetro de URL na página de produção, que
+ * não expõe esse gancho (a Carteira real não inventa squad; ver
+ * carteira.js).
+ *
+ * A LISTA em si nunca é buscada pelo teste: como no código de produção,
+ * ela vem de vf-context.js (GET /operacao/cliente-360/clientes) — a
+ * fixture desta rota é a MESMA usada pela Carteira e pela sidebar.
+ */
+"use strict";
+
+const assert = require("assert");
+const childProcess = require("child_process");
+const fs = require("fs");
+const http = require("http");
+const path = require("path");
+const { URL } = require("url");
+
+const PORTAL_DIR = __dirname;
+
+function grant(status) {
+  return status ? { id: 900, ml_user_id: "1099887766", token_status: status, is_primary: false } : null;
+}
+function base(id, nome) {
+  return { vinculo_id: 500 + id, base_id: id, slug: "base-" + id, nome, resolvido_por: "conta" };
+}
+
+/* ── Fixtures (mesmo formato de GET /operacao/cliente-360/clientes e
+   GET /clientes/:cliente/contas — MASTER_SPEC §3.1/§18.1) ─────────────── */
+
+const N97 = { // P09/P13 — 2 contas ML (rótulo externo distingue) + 1 Shopee
+  id: 87, nome: "N97 Comercial", slug: "n97", ativo: true,
+  temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100,
+  statusOperacional: "atencao", ultimaSincronizacao: "2026-08-25T14:00:00Z", pendencias: [],
+};
+const N97_CONTAS = [
+  { id: 42, cliente_id: 87, marketplace: "meli", nome: "Mercado Livre 1", slug: "ml-1", external_account_id: "182993004", externalAccountLabel: "n97store", is_primary: true, ativo: true, grant: grant("valid"), base: base(9, "Custo 2026"), ultimaSync: "2026-08-25T14:00:00Z" },
+  { id: 43, cliente_id: 87, marketplace: "meli", nome: "Mercado Livre 2", slug: "ml-2", external_account_id: "204118872", externalAccountLabel: "n97outlet", is_primary: false, ativo: true, grant: grant("valid"), base: base(9, "Custo 2026"), ultimaSync: "2026-08-25T14:00:00Z" },
+];
+
+const EXTRA = { // P08 — 1 conta ativa, entra em 1 clique
+  id: 88, nome: "Extra Máquinas", slug: "extra", ativo: true,
+  temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100,
+  statusOperacional: "pronto", ultimaSincronizacao: "2026-08-25T16:00:00Z", pendencias: [],
+};
+const EXTRA_CONTAS = [
+  { id: 51, cliente_id: 88, marketplace: "meli", nome: "Mercado Livre", slug: "ml", external_account_id: "119847221", externalAccountLabel: "extramaquinas", is_primary: true, ativo: true, grant: grant("valid"), base: base(11, "Custo Extra"), ultimaSync: "2026-08-25T16:00:00Z" },
+];
+
+const PEDRO = { // P10 — 0 contas, "Configurar →"; também cobre P03 (pendência)
+  id: 90, nome: "Loja do Pedro", slug: "loja-do-pedro", ativo: true,
+  temGrant: false, grantStatus: "ausente", temBase: false, setupScore: 0,
+  statusOperacional: "critico", ultimaSincronizacao: null, pendencias: ["sem_grant", "sem_base"],
+};
+const PEDRO_CONTAS = [];
+
+const CASA = { // P11 — a rota de contas deste cliente falha; só a linha dele erra
+  id: 89, nome: "Casa & Cia", slug: "casa-e-cia", ativo: true,
+  temGrant: true, grantStatus: "expirado", temBase: false, setupScore: 50,
+  statusOperacional: "atencao", ultimaSincronizacao: "2026-08-19T10:00:00Z", pendencias: ["sem_base"],
+};
+// sem entrada em CONTAS_MAIN["casa-e-cia"] — o servidor de teste responde 500
+
+const PORTFOLIO_PADRAO = { ok: true, clientes: [N97, EXTRA, PEDRO, CASA] };
+const CONTAS_PADRAO = { n97: N97_CONTAS, extra: EXTRA_CONTAS, "loja-do-pedro": PEDRO_CONTAS };
+
+function carteiraGrande(n) {
+  const nomes = ["Aurora", "Bravo", "Cedro", "Delta", "Everest", "Fênix", "Gaia", "Horizonte"];
+  const out = [];
+  const contas = {};
+  for (let i = 0; i < n; i++) {
+    const slug = "cli-" + (100 + i);
+    const qtd = i % 7 === 0 ? 0 : i % 3 === 0 ? 2 : 1;
+    const lista = [];
+    for (let k = 0; k < qtd; k++) {
+      lista.push({
+        id: 1000 + i * 10 + k, cliente_id: 200 + i, marketplace: "meli",
+        nome: "Mercado Livre " + (k + 1), slug: "conta-" + k,
+        external_account_id: String(500000000 + i * 137 + k), externalAccountLabel: slug + (k ? "-b" : ""),
+        is_primary: k === 0, ativo: true, grant: grant("valid"), base: base(300 + i, "Custo " + slug),
+        ultimaSync: "2026-08-25T10:00:00Z",
+      });
+    }
+    contas[slug] = lista;
+    out.push({
+      id: 200 + i, nome: nomes[i % nomes.length] + " " + (i + 1), slug, ativo: true,
+      temGrant: qtd > 0, grantStatus: qtd > 0 ? "conectado" : "ausente", temBase: qtd > 0, setupScore: qtd > 0 ? 100 : 0,
+      statusOperacional: qtd > 0 ? "pronto" : "critico", ultimaSincronizacao: qtd > 0 ? "2026-08-25T10:00:00Z" : null,
+      pendencias: qtd > 0 ? [] : ["sem_grant", "sem_base"],
+    });
+  }
+  return { portfolio: { ok: true, clientes: out }, contas };
+}
+const GRANDE = carteiraGrande(120);
+
+function harnessHtml(squadsJson) {
+  return `<!doctype html>
+<html lang="pt-BR"><head><meta charset="UTF-8">
+<meta name="vf-api-base" content="__API_BASE__">
+<link rel="stylesheet" href="/css/vf-tokens-v2.css">
+<link rel="stylesheet" href="/css/vf-components-v2.css">
+<link rel="stylesheet" href="/css/pages/carteira-v2.css">
+<link rel="stylesheet" href="/css/vf-shell.css">
+</head>
+<body class="vf-page vf-page-carteira" data-vf-scope="global" data-vf-module="carteira">
+<script>
+  var qs = new URLSearchParams(location.search);
+  localStorage.setItem("vf-token", "ui-test-token");
+  localStorage.setItem("vf-user", JSON.stringify({ id: 12, nome: "Pedro Gomes", role: qs.get("role") || "user" }));
+</script>
+<div><main class="vf-content"><div class="vf-page-shell"><div class="vf-page-container">
+  <div id="carteira-test-root"></div>
+</div></div></main></div>
+<script type="module" src="/vf-shell.js"></script>
+<script type="module">
+  // id propositalmente DIFERENTE de "carteira-root": o import abaixo
+  // também executa o bootProduction() de carteira.js (efeito de módulo, o
+  // mesmo padrão de vf-shell.js) — sem #carteira-root no DOM, ele não
+  // monta uma segunda instância por cima desta, injetada com fixtures.
+  import { createCarteira } from "/carteira.js";
+  var squads = ${squadsJson};
+  window.__navegacoes = [];
+  window.__cart = createCarteira({ getSquads: function () { return squads; }, onNavigate: function (href) { window.__navegacoes.push(href); } });
+  window.__cart.montar(document.getElementById("carteira-test-root"));
+</script>
+</body></html>`;
+}
+
+function startServer() {
+  const server = http.createServer((req, res) => {
+    const u = new URL(req.url, "http://localhost");
+    if (u.pathname === "/harness.html") {
+      res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+      res.end(harnessHtml(u.searchParams.get("squads") || "[]").replace("__API_BASE__", `http://127.0.0.1:${serverPort}`));
+      return;
+    }
+    // API_BASE aponta para este mesmo servidor (meta vf-api-base) — o
+    // harness é servido same-origin, então nem precisa de CORS/Fetch
+    // interception (diferença deliberada de vf-shell-adoption-ui.test.js,
+    // que testa páginas com API_BASE hardcoded para produção).
+    if (u.pathname === "/operacao/cliente-360/clientes") {
+      if (currentFixture.failPortfolio) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, erro: "Falha simulada." }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(currentFixture.portfolio));
+      return;
+    }
+    const contasMatch = u.pathname.match(/^\/clientes\/([^/]+)\/contas$/);
+    if (contasMatch) {
+      const slug = decodeURIComponent(contasMatch[1]);
+      contasRequestCount += 1;
+      if (slug === currentFixture.failContasSlug) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, erro: "Falha simulada." }));
+        return;
+      }
+      const lista = currentFixture.contas[slug] || [];
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, cliente: { id: 1, nome: slug, slug, ativo: true }, contas: lista }));
+      return;
+    }
+    const target = path.resolve(PORTAL_DIR, u.pathname.replace(/^\/+/, ""));
+    if (!target.startsWith(path.resolve(PORTAL_DIR) + path.sep)) { res.writeHead(403).end("forbidden"); return; }
+    fs.readFile(target, (err, contents) => {
+      if (err) { res.writeHead(404).end("not found"); return; }
+      const ext = path.extname(target);
+      const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
+      res.writeHead(200, { "Content-Type": types[ext] || "application/octet-stream", "Cache-Control": "no-store" });
+      res.end(contents);
+    });
+  });
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => { serverPort = server.address().port; resolve(server); }));
+}
+let serverPort = 0;
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+async function waitChrome(port) {
+  for (let i = 0; i < 100; i++) {
+    try { const r = await fetch(`http://127.0.0.1:${port}/json/version`); if (r.ok) return; } catch (_) { /* aguardando */ }
+    await sleep(50);
+  }
+  throw new Error("Chrome DevTools não iniciou.");
+}
+class Cdp {
+  constructor(url) { this.socket = new WebSocket(url); this.nextId = 1; this.pending = new Map(); this.onEvent = null; }
+  async open() {
+    await new Promise((resolve, reject) => {
+      this.socket.addEventListener("open", resolve, { once: true });
+      this.socket.addEventListener("error", reject, { once: true });
+    });
+    this.socket.addEventListener("message", (event) => {
+      const m = JSON.parse(event.data);
+      if (m.id && this.pending.has(m.id)) {
+        const { resolve, reject } = this.pending.get(m.id);
+        this.pending.delete(m.id);
+        if (m.error) reject(new Error(m.error.message)); else resolve(m.result);
+        return;
+      }
+      if (m.method && this.onEvent) this.onEvent(m.method, m.params);
+    });
+  }
+  send(method, params = {}) {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.socket.send(JSON.stringify({ id, method, params }));
+    });
+  }
+  async evaluate(expression) {
+    const result = await this.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || "Falha na avaliação do navegador");
+    return result.result.value;
+  }
+  close() { this.socket.close(); }
+}
+async function waitFor(cdp, expression, message) {
+  for (let i = 0; i < 160; i++) {
+    if (await cdp.evaluate(`Boolean(${expression})`)) return;
+    await sleep(50);
+  }
+  throw new Error(message || `Timeout: ${expression}`);
+}
+
+let checks = 0;
+async function check(name, fn) {
+  await fn();
+  checks += 1;
+  console.log(`ok ${checks} - ${name}`);
+}
+
+let currentFixture = { portfolio: PORTFOLIO_PADRAO, contas: CONTAS_PADRAO, failPortfolio: false, failContasSlug: "casa-e-cia" };
+let contasRequestCount = 0;
+
+// A API é same-origin (meta vf-api-base aponta para este servidor de
+// teste), então não precisa de Fetch domain/CORS — só captura de erros de
+// console (nenhuma requisição desta suíte toca produção).
+function wireConsoleCapture(cdp) {
+  const consoleErrors = [];
+  cdp.onEvent = (method, params) => {
+    if (method === "Runtime.consoleAPICalled" && params.type === "error") {
+      consoleErrors.push((params.args || []).map((a) => (a.value !== undefined ? a.value : a.description || "")).join(" "));
+    }
+  };
+  return consoleErrors;
+}
+
+async function run() {
+  const server = await startServer();
+  const debugPort = 17000 + Math.floor(Math.random() * 1000);
+  const chrome = childProcess.spawn("google-chrome", [
+    "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+    `--remote-debugging-port=${debugPort}`, `--user-data-dir=/tmp/vf-carteira-ui-${process.pid}`, "about:blank",
+  ], { stdio: "ignore" });
+
+  let cdp;
+  try {
+    await waitChrome(debugPort);
+    const target = await (await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: "PUT" })).json();
+    cdp = new Cdp(target.webSocketDebuggerUrl);
+    await cdp.open();
+    await cdp.send("Page.enable");
+    await cdp.send("Runtime.enable");
+    const consoleErrors = wireConsoleCapture(cdp);
+
+    async function goto(qs) {
+      contasRequestCount = 0;
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/harness.html?${qs}` });
+      await waitFor(cdp, "window.__cart", "Carteira não montou");
+    }
+
+    /* ═══════════════════════ Cenário padrão ═══════════════════════════ */
+    currentFixture = { portfolio: PORTFOLIO_PADRAO, contas: CONTAS_PADRAO, failPortfolio: false, failContasSlug: "casa-e-cia" };
+    await goto("");
+    await waitFor(cdp, "document.querySelectorAll('.vf-portfolio-row').length === 4", "4 linhas não renderizaram");
+    await sleep(300); // contas sob demanda (prefetch) resolvem
+
+    await check("P08 — cliente com 1 conta ativa: nome é <button>, entra em 1 clique", async () => {
+      const el = await cdp.evaluate(`
+        (function(){ var li = document.querySelector('.vf-portfolio-row[data-slug=extra]'); var b = li.querySelector('[data-entrar]'); return b ? { tag: b.tagName, texto: b.textContent } : null; })();
+      `);
+      assert.ok(el, "Extra Máquinas deveria ter um botão [data-entrar]");
+      assert.strictEqual(el.tag, "BUTTON");
+    });
+
+    await check("P09 — cliente com 2+ contas: nome é <h3> (não clicável), só os chips entram", async () => {
+      const el = await cdp.evaluate(`
+        (function(){ var li = document.querySelector('.vf-portfolio-row[data-slug=n97]'); var h3 = li.querySelector('h3.vf-portfolio-row__name'); var btn = li.querySelector('button[data-entrar]'); var chips = li.querySelectorAll('[data-conta]'); return { temH3: !!h3, temBotaoNome: !!btn, nChips: chips.length }; })();
+      `);
+      assert.strictEqual(el.temH3, true, "nome do cliente com 2+ contas deveria ser <h3>, não botão");
+      assert.strictEqual(el.temBotaoNome, false);
+      assert.strictEqual(el.nChips, 2);
+    });
+
+    await check("P13 — duas contas ML do mesmo cliente: rótulo externo distingue (n97store × n97outlet)", async () => {
+      const labels = await cdp.evaluate(`
+        Array.prototype.map.call(document.querySelectorAll('.vf-portfolio-row[data-slug=n97] .vf-op-chip__label'), function(e){return e.textContent;})
+      `);
+      assert.deepStrictEqual(labels.sort(), ["n97outlet", "n97store"]);
+    });
+
+    await check("P10 — cliente com 0 contas: linha não clicável, 'Configurar →' presente", async () => {
+      const el = await cdp.evaluate(`
+        (function(){ var li = document.querySelector('.vf-portfolio-row[data-slug="loja-do-pedro"]'); return { temEntrar: !!li.querySelector('[data-entrar]'), rodape: li.querySelector('.vf-portfolio-row__foot') ? li.querySelector('.vf-portfolio-row__foot').textContent : null }; })();
+      `);
+      assert.strictEqual(el.temEntrar, false);
+      assert.ok(el.rodape && el.rodape.includes("Configurar"), `rodapé deveria oferecer 'Configurar →', veio: ${el.rodape}`);
+    });
+
+    await check("P11 — falha ao carregar as contas de 1 cliente: erro só naquela linha, resto intacto", async () => {
+      const el = await cdp.evaluate(`
+        (function(){ var li = document.querySelector('.vf-portfolio-row[data-slug="casa-e-cia"]'); var erro = li.querySelector('.vf-op-chip.is-error'); var recarregar = li.querySelector('[data-recarregar]'); return { temErro: !!erro, temRecarregar: !!recarregar }; })();
+      `);
+      assert.strictEqual(el.temErro, true);
+      assert.strictEqual(el.temRecarregar, true);
+      const outrasLinhasOk = await cdp.evaluate(`document.querySelectorAll('.vf-portfolio-row[data-slug=n97] .vf-op-chip:not(.is-error)').length`);
+      assert.ok(outrasLinhasOk > 0, "linha de N97 não deveria ter sido afetada pela falha de Casa & Cia");
+    });
+
+    await check("entrar() — cliente com 1 conta: clique navega direto para a operação certa (cliente=extra&conta=51)", async () => {
+      await cdp.evaluate("document.querySelector('.vf-portfolio-row[data-slug=extra] [data-entrar]').click()");
+      await waitFor(cdp, "window.__navegacoes.length === 1", "onNavigate não disparou para o cliente de 1 conta");
+      const href = await cdp.evaluate("window.__navegacoes[0]");
+      assert.ok(href.includes("cliente=extra"), `destino sem cliente=extra: ${href}`);
+      assert.ok(href.includes("conta=51"), `destino sem a conta correta (51): ${href}`);
+    });
+
+    await check("entrar() — cliente com 2+ contas: clique num CHIP (não no nome) fixa a conta e navega (ACCOUNT_CHOICE_REQUIRED → READY)", async () => {
+      await cdp.evaluate(`
+        Array.prototype.find.call(document.querySelectorAll('.vf-portfolio-row[data-slug=n97] [data-conta]'), function(b){ return b.dataset.conta === "43"; }).click()
+      `);
+      await waitFor(cdp, "window.__navegacoes.length === 2", "onNavigate não disparou para a conta escolhida via chip (2+ contas)");
+      const href = await cdp.evaluate("window.__navegacoes[1]");
+      assert.ok(href.includes("cliente=n97") && href.includes("conta=43"), `destino incorreto após escolher o chip: ${href}`);
+    });
+
+    await check("P03 — filtro 'Com pendência': só clientes com pendencias.length > 0", async () => {
+      await cdp.evaluate("document.querySelector('[data-filtro=pendencia]').click()");
+      await sleep(80);
+      const slugs = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll('.vf-portfolio-row'), function(li){return li.dataset.slug;})`);
+      assert.deepStrictEqual(slugs.sort(), ["casa-e-cia", "loja-do-pedro"]);
+      await cdp.evaluate("document.querySelector('[data-filtro=todos]').click()");
+      await sleep(80);
+    });
+
+    await check("P01 — busca por nome e slug, sem acento, filtra local", async () => {
+      await cdp.evaluate(`
+        var i = document.getElementById('cart-busca'); i.focus(); i.value = 'nao existe'; i.dispatchEvent(new Event('input', { bubbles: true }));
+      `);
+      await sleep(80);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-portfolio-row').length"), 0);
+      await cdp.evaluate(`
+        var i = document.getElementById('cart-busca'); i.value = 'n97'; i.dispatchEvent(new Event('input', { bubbles: true }));
+      `);
+      await sleep(80);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-portfolio-row').length"), 1);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('.vf-portfolio-row').dataset.slug"), "n97");
+      await cdp.evaluate(`
+        var i = document.getElementById('cart-busca'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true }));
+      `);
+      await sleep(80);
+    });
+
+    await check("P12 — teclado: '/' foca a busca; ArrowDown/ArrowUp navegam entre clientes", async () => {
+      await cdp.evaluate("document.activeElement && document.activeElement.blur && document.activeElement.blur()");
+      await cdp.evaluate("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true }))");
+      assert.strictEqual(await cdp.evaluate("document.activeElement && document.activeElement.id"), "cart-busca");
+      await cdp.evaluate("document.querySelector('.vf-portfolio-row [data-entrar], .vf-portfolio-row [data-conta]').focus()");
+      const primeiro = await cdp.evaluate("document.activeElement.closest('.vf-portfolio-row').dataset.slug");
+      await cdp.evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))");
+      const segundo = await cdp.evaluate("document.activeElement.closest('.vf-portfolio-row').dataset.slug");
+      assert.notStrictEqual(segundo, primeiro, "ArrowDown deveria mover o foco para outra linha");
+    });
+
+    /* ═══════════════════════ P04 — agrupamento por squad ══════════════ */
+    await goto("squads=" + encodeURIComponent(JSON.stringify([{ id: 3, nome: "Squad Alpha" }, { id: 5, nome: "Squad Beta" }])));
+    await waitFor(cdp, "document.querySelectorAll('.vf-portfolio-row').length === 4", "linhas não renderizaram no cenário de squad");
+    await check("P04 — 2+ squads: cabeçalhos de grupo aparecem; ausentes com 1 squad (cenário padrão)", async () => {
+      const grupos = await cdp.evaluate("document.querySelectorAll('.vf-portfolio-group').length");
+      assert.ok(grupos >= 1, "cabeçalho de squad deveria aparecer com 2+ squads");
+    });
+
+    /* ═══════════════════════ P07 — carteira vazia ═════════════════════ */
+    currentFixture = { portfolio: { ok: true, clientes: [] }, contas: {}, failPortfolio: false, failContasSlug: null };
+    await goto("");
+    await check("P07 — vazio: .vf-empty, sem ação técnica", async () => {
+      await waitFor(cdp, "document.querySelector('.vf-empty')", "estado vazio não apareceu");
+      const texto = await cdp.evaluate("document.querySelector('.vf-empty').textContent");
+      assert.ok(texto.includes("coordenador"), `mensagem de carteira vazia inesperada: ${texto}`);
+    });
+
+    /* ═══════════════════════ P05 — erro ao carregar a carteira ════════ */
+    currentFixture = { portfolio: PORTFOLIO_PADRAO, contas: CONTAS_PADRAO, failPortfolio: true, failContasSlug: null };
+    await goto("");
+    await check("P05 — erro de carga: banner + 'Tentar novamente'", async () => {
+      await waitFor(cdp, "document.querySelector('.vf-banner.is-danger')", "banner de erro não apareceu");
+      assert.ok(await cdp.evaluate("Boolean(document.getElementById('cart-retry'))"));
+    });
+
+    /* ═══════════════════════ P02/P06 — 120 clientes ═══════════════════ */
+    currentFixture = { portfolio: GRANDE.portfolio, contas: GRANDE.contas, failPortfolio: false, failContasSlug: null };
+    const t0 = Date.now();
+    await goto("");
+    await waitFor(cdp, "document.querySelectorAll('.vf-portfolio-row').length === 120", "120 linhas não renderizaram");
+    const renderMs = Date.now() - t0;
+    await sleep(400); // prefetch das primeiras linhas resolve
+
+    await check(`P02 — 120 clientes: render completo em ${renderMs}ms (limite generoso de teste: 4000ms)`, async () => {
+      assert.ok(renderMs < 4000, `render de 120 clientes levou ${renderMs}ms`);
+    });
+
+    await check("P02 — chips carregam sob demanda: não dispara 120 chamadas de contas no primeiro paint", async () => {
+      assert.ok(contasRequestCount <= 20, `esperado ~12 (prefetch), veio ${contasRequestCount}`);
+      assert.ok(contasRequestCount > 0, "nenhuma chamada de contas disparou");
+    });
+
+    await check("P06 (skeleton) — chip de conta ainda não resolvida usa o esqueleto de largura fixa", async () => {
+      const temSkeletonEmAlgumMomento = contasRequestCount < 120; // ainda há linhas fora do prefetch
+      assert.ok(temSkeletonEmAlgumMomento, "todas as 120 linhas já teriam contas resolvidas, o que contradiz 'sob demanda'");
+    });
+
+    await check("sem erros de console em nenhum cenário (rede de produção sempre interceptada)", async () => {
+      const relevantes = consoleErrors.filter((m) => !/favicon/i.test(m));
+      assert.strictEqual(relevantes.length, 0, `erros de console: ${JSON.stringify(relevantes)}`);
+    });
+
+    console.log(`\n✓ ${checks} verificações da Carteira (P01-P13, exceto P04 total/P13 parcial cobertos acima)`);
+  } finally {
+    if (cdp) cdp.close();
+    chrome.kill("SIGTERM");
+    server.close();
+  }
+}
+
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

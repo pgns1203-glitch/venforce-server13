@@ -1,0 +1,270 @@
+/* ============================================================
+ * VenForce — Carteira · CSS específico da página (F1.1/F1.2)
+ *
+ * Cinco componentes que a Fundação V2 ainda não tem (MASTER_SPEC §16.3):
+ * lista densa da Carteira, chip de operação com status, filtro em chip,
+ * grupo de squad e o rótulo de linha. Vivem aqui, não em
+ * vf-components-v2.css — F0.4 reservou aquele arquivo para uma unidade
+ * própria, revisada à parte.
+ *
+ * Nenhum token novo: só var(--vf-*) já definidos em vf-tokens-v2.css.
+ * ============================================================ */
+
+.vf-page-carteira .vf-content {
+  max-width: none;
+  padding: 0;
+}
+
+.vf-page-carteira [hidden] {
+  display: none;
+}
+
+.vf-portfolio-header .vf-page-header__main {
+  flex-basis: auto;
+}
+
+/* ── Toolbar: busca + filtros + ordenação ─────────────────────────────── */
+
+.vf-portfolio-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-3);
+}
+
+.vf-portfolio-toolbar .vf-input {
+  flex: 1 1 240px;
+  min-width: 180px;
+  max-width: 360px;
+}
+
+.vf-filter-group {
+  display: flex;
+  gap: var(--vf-sp-2);
+}
+
+.vf-filter-chip {
+  border: 1px solid var(--vf-border-strong);
+  background: var(--vf-surface);
+  color: var(--vf-text-secondary);
+  border-radius: var(--vf-radius-pill);
+  padding: var(--vf-sp-1) var(--vf-sp-3);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.vf-filter-chip:hover {
+  background: var(--vf-surface-hover);
+  border-color: var(--vf-border-hover);
+}
+
+.vf-filter-chip.is-active {
+  background: var(--vf-primary-soft);
+  border-color: var(--vf-primary-border);
+  color: var(--vf-primary-strong);
+}
+
+.vf-cluster {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-4);
+  margin-left: auto;
+}
+
+.vf-toolbar__field {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+/* ── Lista densa ──────────────────────────────────────────────────────── */
+
+.vf-portfolio-list {
+  margin-top: var(--vf-sp-4);
+}
+
+.vf-portfolio-ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.vf-portfolio-group {
+  margin: var(--vf-sp-6) 0 var(--vf-sp-2);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-bold);
+  letter-spacing: var(--vf-ls-caps);
+  color: var(--vf-text-muted);
+}
+
+.vf-portfolio-group:first-child {
+  margin-top: 0;
+}
+
+.vf-portfolio-group small {
+  font-weight: var(--vf-fw-medium);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.vf-portfolio-row {
+  padding: var(--vf-sp-4) 0;
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-portfolio-row:last-child {
+  border-bottom: none;
+}
+
+.vf-portfolio-row.is-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+}
+
+.vf-portfolio-row__head {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  margin-bottom: var(--vf-sp-2);
+}
+
+.vf-portfolio-row__name {
+  margin: 0;
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+button.vf-portfolio-row__name {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+button.vf-portfolio-row__name.is-clickable:hover {
+  color: var(--vf-primary-strong);
+  text-decoration: underline;
+}
+
+.vf-portfolio-row__spacer {
+  flex: 1 1 auto;
+}
+
+.vf-portfolio-row__ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2);
+}
+
+.vf-portfolio-row__foot {
+  margin: var(--vf-sp-2) 0 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-portfolio-row__foot a {
+  color: var(--vf-primary-strong);
+}
+
+/* ── Chip de operação ─────────────────────────────────────────────────── */
+
+.vf-op-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 168px;
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  border: 1px solid var(--vf-border-strong);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.vf-op-chip:hover {
+  border-color: var(--vf-primary-border);
+  background: var(--vf-primary-soft);
+}
+
+.vf-op-chip[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.vf-op-chip__top {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-1);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+}
+
+.vf-op-chip__label {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-op-chip__meta {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-placeholder);
+}
+
+.vf-op-chip.is-skeleton {
+  min-width: 168px;
+  padding: var(--vf-sp-3);
+}
+
+.vf-op-chip.is-error {
+  border-color: var(--vf-danger-border);
+  background: var(--vf-danger-bg);
+  color: var(--vf-danger-strong);
+  font-size: var(--vf-fs-xs);
+  cursor: default;
+}
+
+.vf-linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--vf-primary-strong);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+.vf-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 640px) {
+  .vf-portfolio-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .vf-cluster {
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+  .vf-op-chip {
+    min-width: 0;
+    flex: 1 1 140px;
+  }
+}

@@ -16,7 +16,6 @@
   const STORAGE_KEY = "vf-token";
   const API_BASE = "https://venforce-server.onrender.com";
   const DIAG_API = "/operacao/diagnosticos-iniciais";
-  const LAST_CLIENTE_KEY = "vf-diag-last-cliente";
   const reportApi = window.VF_DIAGNOSTIC_REPORT;
   const diagnosticSchema = window.VF_DIAGNOSTIC_SCHEMA;
 
@@ -115,7 +114,14 @@
   }
 
   const state = {
-    clientes: [],
+    // F2.4 — clienteId/clienteNome vêm do Shell V3 (aplicarContextoDoShell).
+    // DÍVIDA REGISTRADA (MASTER_SPEC §18.1 ajuste 3, mantida deliberadamente
+    // nesta unidade): o rascunho é keyed por clienteId+marketplace, não por
+    // clienteContaId — não mudou nesta migração. Se um cliente tiver 2+
+    // contas do MESMO marketplace, as duas contas colidem no mesmo
+    // rascunho. Já era assim antes (a versão anterior também não tinha
+    // clienteContaId); resolver isso é migração de schema, fora do escopo
+    // desta unidade.
     clienteId: null,
     clienteNome: "",
     marketplaceAtivo: "meli",
@@ -1057,29 +1063,6 @@
 
   /* ── Orquestração: cliente / marketplace / seção ────────────── */
 
-  async function loadClientes() {
-    // Lista operacional segura (admin/user/membro), mesma usada pelo Cliente 360.
-    // /clientes é admin-only e expõe api_key: não pode ser usado aqui.
-    const result = await apiGet("/operacao/cliente-360/clientes");
-    const select = document.getElementById("diag-cliente");
-    const lista = Array.isArray(result.data?.clientes) ? result.data.clientes : [];
-    state.clientes = lista;
-    select.innerHTML = '<option value="">Selecione um cliente…</option>' +
-      lista.map((c) => `<option value="${c.id}">${esc(c.nome)}${c.ativo === false ? " (inativo)" : ""}</option>`).join("");
-    if (!result.ok) {
-      showFeedback(result.error || "Não foi possível carregar a lista de clientes.", "warning");
-    }
-  }
-
-  function restoreLastCliente() {
-    const last = localStorage.getItem(LAST_CLIENTE_KEY);
-    if (!last) return;
-    const exists = state.clientes.some((c) => String(c.id) === String(last));
-    if (!exists) return;
-    document.getElementById("diag-cliente").value = last;
-    onClienteChange();
-  }
-
   async function loadHistorico(mkt) {
     const result = await apiGet(`${DIAG_API}?clienteId=${state.clienteId}&marketplace=${mkt}`);
     if (!result.ok) {
@@ -1118,39 +1101,60 @@
     renderAll();
   }
 
-  async function onClienteChange() {
-    const select = document.getElementById("diag-cliente");
-    const id = select.value;
+  // F2.4 — o cliente vem do Shell V3 (vf-context.js), nunca mais de um
+  // <select> local nem de localStorage (restoreLastCliente() eliminado —
+  // "novo login nunca reabre o último cliente" também vale aqui, D3).
+  // data-vf-scope="client" nesta página: os diagnósticos não têm noção de
+  // conta (dívida documentada no topo do arquivo), então exigir uma
+  // operação escolhida não mudaria nada do que carrega.
+  //
+  // diagnostico-inicial.js roda como <script> CLÁSSICO, carregado ANTES
+  // do vf-shell.js (module, deferred) terminar de executar — a ponte é o
+  // evento DOM 'vf:context' (MASTER_SPEC §6.5/§15.3), registrada no init()
+  // antes de qualquer emit poder acontecer.
+  let ultimoClienteAplicado; // difere de undefined/null na primeira chamada
+  async function aplicarContextoDoShell(snap) {
+    const ctx = window.VF && window.VF.context;
+    const temCliente = ctx && snap.context && snap.context.clienteId;
+    const clienteAtual = temCliente ? ctx.getClienteAtual() : null;
+    const chave = clienteAtual ? clienteAtual.id : null;
+    if (chave === ultimoClienteAplicado) return;
 
+    // Salva o rascunho do cliente anterior antes de trocar. Diferente da
+    // versão anterior (seletor local, que podia reverter a seleção se o
+    // autosave falhasse), a troca já foi decidida pelo Shell quando
+    // chegamos aqui — não há como recusá-la a partir desta página. Se
+    // falhar, avisa em vez de perder a resposta silenciosamente.
     const saved = await flushAutosave({ force: false });
-    if (!saved) {
-      select.value = state.clienteId || "";
-      return;
-    }
 
-    state.clienteId = id || null;
-    state.clienteNome = id ? (state.clientes.find((cliente) => String(cliente.id) === String(id))?.nome || "") : "";
+    ultimoClienteAplicado = chave;
+    const id = clienteAtual ? String(clienteAtual.id) : null;
+
+    state.clienteId = id;
+    state.clienteNome = clienteAtual ? clienteAtual.nome || "" : "";
     state.diagnosticos = initByMarketplace(null);
     state.rascunhos = initByMarketplace(null);
     state.dirty = initByMarketplace(false);
     state.versions = initByMarketplace(0);
     state.historico = initByMarketplace(() => []);
     state.secaoAtivaId = null;
-    showFeedback("", null);
+    showFeedback(saved ? "" : "O rascunho anterior pode não ter sido salvo antes da troca de cliente.", saved ? null : "warning");
 
     if (!id) {
-      localStorage.removeItem(LAST_CLIENTE_KEY);
       renderEmptyState(true);
       return;
     }
 
-    localStorage.setItem(LAST_CLIENTE_KEY, id);
     renderEmptyState(false);
-
     state.marketplaceAtivo = "meli";
     updateMarketplaceSwitchUI();
     await ensureDraftForMarketplace("meli");
   }
+  // Registrado no topo do arquivo (execução síncrona, antes de
+  // DOMContentLoaded) para não perder o primeiro emit("boot") de
+  // vf-context.js — vf-shell.js é um module deferred que só roda depois
+  // deste script clássico terminar de ser avaliado.
+  document.addEventListener("vf:context", (event) => aplicarContextoDoShell(event.detail));
 
   async function switchMarketplace(mkt) {
     if (mkt === state.marketplaceAtivo) return;
@@ -1421,8 +1425,6 @@
   }
 
   function bindStaticEvents() {
-    document.getElementById("diag-cliente").addEventListener("change", onClienteChange);
-
     document.getElementById("diag-data").addEventListener("change", (e) => {
       const diag = getDiag();
       if (!diag) return;
@@ -1483,7 +1485,7 @@
       showFeedback("Não foi possível carregar o modelo oficial do diagnóstico.", "danger");
       return;
     }
-    await loadClientes();
-    restoreLastCliente();
+    // Cliente vem do Shell V3 — nada a buscar aqui (aplicarContextoDoShell,
+    // já assinado no topo do arquivo).
   }
 })();

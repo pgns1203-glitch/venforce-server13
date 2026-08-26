@@ -14,11 +14,16 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/diagnostico-inicial-v2.css">
+  <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
-<body class="vf-page vf-page-dashboard vf-page-diagnostico-inicial">
+<!-- F2.4 — data-vf-scope="client": os rascunhos de diagnóstico são
+     keyed por cliente+marketplace, sem clienteContaId (dívida registrada
+     em diagnostico-inicial.js). Exigir uma operação escolhida não muda o
+     que carrega aqui. -->
+<body class="vf-page vf-page-dashboard vf-page-diagnostico-inicial" data-vf-scope="client" data-vf-module="diagnosticos">
 
-  <div class="vf-main-with-sidebar">
+  <div>
     <main class="vf-content">
       <div class="vf-page-shell">
         <div class="vf-page-container">
@@ -41,15 +46,10 @@
           <!-- Feedback global da página -->
           <div id="diag-feedback" class="vf-banner" role="status" aria-live="polite" hidden></div>
 
-          <!-- 2. TOOLBAR: cliente / responsável / data / status / último salvamento -->
+          <!-- 2. TOOLBAR: responsável / data / status / último salvamento —
+               F2.4: Cliente saiu daqui, vem do Shell V3 (barra lateral). -->
           <section class="vf-toolbar" id="diag-toolbar">
             <div class="vf-toolbar__filters">
-              <div class="vf-field">
-                <label class="vf-field__label" for="diag-cliente">Cliente</label>
-                <select id="diag-cliente" class="vf-select">
-                  <option value="">Selecione um cliente…</option>
-                </select>
-              </div>
               <div class="vf-field">
                 <label class="vf-field__label" for="diag-responsavel">Responsável</label>
                 <input id="diag-responsavel" class="vf-input" type="text" disabled>
@@ -147,7 +147,7 @@
   <!-- 8. BLOCO SOMENTE-IMPRESSÃO -->
   <div class="vf-diag-print" id="diag-print-block"></div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
   <script src="diagnostico-inicial-schema.js"></script>
   <script src="diagnostico-inicial-report.js"></script>
   <script src="diagnostico-inicial.js"></script>

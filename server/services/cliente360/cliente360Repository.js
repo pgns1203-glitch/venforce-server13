@@ -97,6 +97,38 @@ async function findClienteIdsComBase() {
   return rows.map((r) => r.cliente_id);
 }
 
+// Readiness POR CONTA de todos os clientes ativos, em UMA query — nunca
+// N+1 (V3 Master Spec §14, "readiness/cobertura": um Cliente com ML1 OK e
+// ML2 quebrado não pode aparecer como 100% saudável). Complementa
+// findGrantsResumo (que é por cliente, DISTINCT ON escolhe só 1 grant) sem
+// substituí-lo — os dois convivem até os consumidores migrarem.
+// Nunca seleciona access_token/refresh_token: o "usável" do grant é a
+// mesma heurística leve já usada em dashboardService (token_status +
+// expires_at), não o cálculo completo de isGrantUsable.
+async function findContasResumoPorCliente() {
+  const { rows } = await pool.query(
+    `SELECT cc.cliente_id, cc.marketplace, cc.ativo,
+            g.token_status AS grant_token_status,
+            g.expires_at AS grant_expires_at,
+            (g.id IS NOT NULL) AS tem_grant,
+            (v.id IS NOT NULL) AS tem_base
+       FROM cliente_contas cc
+       LEFT JOIN LATERAL (
+         SELECT id, token_status, expires_at FROM ml_tokens g
+          WHERE g.cliente_conta_id = cc.id
+          ORDER BY g.updated_at DESC NULLS LAST, g.id DESC
+          LIMIT 1
+       ) g ON true
+       LEFT JOIN LATERAL (
+         SELECT id FROM base_cliente_vinculos v
+          WHERE v.cliente_conta_id = cc.id AND v.ativo = true
+          LIMIT 1
+       ) v ON true
+      WHERE cc.ativo = true`
+  );
+  return rows;
+}
+
 // Mapa cliente_id → sincronizado_em para uma competência (lista operacional).
 async function findSincronizacoesPorCompetencia(competencia) {
   const { rows } = await pool.query(
@@ -372,6 +404,7 @@ module.exports = {
   findBasesVinculadasByCliente,
   findMlGrantByCliente,
   findGrantsResumo,
+  findContasResumoPorCliente,
   findClienteIdsComBase,
   findSincronizacoesPorCompetencia,
   findRelatoriosByCliente,

@@ -41,6 +41,37 @@ function grantStatusDe(grant) {
   };
 }
 
+// Uma conta é "operacional" por regra marketplace-aware (V3 Master Spec
+// M7): ML depende de grant usável; Shopee/outros dependem de base
+// vinculada. Um `grantStatus` genérico marcaria toda conta Shopee como
+// "sem grant" — nunca inventar essa comparação para marketplaces sem OAuth.
+function contaOperacional(row) {
+  if (row.marketplace === "meli") {
+    if (!row.tem_grant) return false;
+    const status = String(row.grant_token_status || "valid").toLowerCase();
+    if (["error", "invalid", "expired", "revoked"].includes(status)) return false;
+    if (row.grant_expires_at && new Date(row.grant_expires_at).getTime() <= Date.now()) return false;
+    return true;
+  }
+  return !!row.tem_base;
+}
+
+// Resumo de cobertura multi-conta por cliente (V3 Master Spec §14,
+// "readiness/cobertura"): um Cliente com ML1 OK e ML2 quebrado não pode
+// virar simplesmente "cliente conectado" — precisa mostrar a cobertura
+// parcial. Aditivo ao lado de temGrant/grantStatus/temBase (que continuam
+// por cliente, para não quebrar consumidores existentes).
+function resumoContasPorCliente(contasResumo) {
+  const porCliente = new Map();
+  for (const row of contasResumo) {
+    if (!porCliente.has(row.cliente_id)) porCliente.set(row.cliente_id, { total: 0, operacionais: 0 });
+    const acc = porCliente.get(row.cliente_id);
+    acc.total += 1;
+    if (contaOperacional(row)) acc.operacionais += 1;
+  }
+  return porCliente;
+}
+
 // ─── Helpers de número ──────────────────────────────────────────────────
 
 const numOrNull = (v) => (v === null || v === undefined ? null : Number(v));
@@ -516,16 +547,18 @@ async function getClientesOperacional() {
   // Mesma referência padrão da tela: mês anterior fechado.
   const periodo = periodoMesAnterior();
 
-  const [clientes, grants, idsComBase, syncs] = await Promise.all([
+  const [clientes, grants, idsComBase, syncs, contasResumoRaw] = await Promise.all([
     repo.findClientesAtivos(),
     repo.findGrantsResumo(),
     repo.findClienteIdsComBase(),
     repo.findSincronizacoesPorCompetencia(periodo.competencia),
+    repo.findContasResumoPorCliente(),
   ]);
 
   const grantPorCliente = new Map(grants.map((g) => [g.cliente_id, g]));
   const baseSet = new Set(idsComBase);
   const syncPorCliente = new Map(syncs.map((s) => [s.cliente_id, s.sincronizado_em]));
+  const contasPorCliente = resumoContasPorCliente(contasResumoRaw);
 
   const lista = clientes.map((c) => {
     const grant = grantStatusDe(grantPorCliente.get(c.id));
@@ -542,6 +575,17 @@ async function getClientesOperacional() {
     else if (!grant.temGrant || !temBase) statusOperacional = "atencao";
     else statusOperacional = "pronto";
 
+    // contas: cobertura real por conta (V3 §14) — pode divergir de
+    // temGrant/temBase acima quando o cliente tem 2+ contas do mesmo
+    // marketplace: aqueles campos respondem "existe alguma conta boa?",
+    // este responde "quantas das contas ativas estão de fato operacionais?".
+    const contasAgg = contasPorCliente.get(c.id) || { total: 0, operacionais: 0 };
+    const contas = {
+      total: contasAgg.total,
+      operacionais: contasAgg.operacionais,
+      pendentes: contasAgg.total - contasAgg.operacionais,
+    };
+
     return {
       id: c.id,
       nome: c.nome,
@@ -554,6 +598,7 @@ async function getClientesOperacional() {
       statusOperacional,
       ultimaSincronizacao: syncPorCliente.get(c.id) || null,
       pendencias,
+      contas,
     };
   });
 

@@ -76,6 +76,11 @@ class MemoryDb {
       if (c) c.external_account_id = params[0];
       return { rows: [] };
     }
+    if (q.startsWith("UPDATE cliente_contas SET metadata_json =")) {
+      const c = this.contas.find((c) => c.id === Number(params[0]));
+      if (c) c.metadata_json = { ...(c.metadata_json || {}), nickname: params[1] };
+      return { rows: [] };
+    }
     if (q.startsWith("UPDATE ml_tokens SET cliente_conta_id = $1 WHERE cliente_id = $2 AND ml_user_id = $3")) {
       this.grants.forEach((g) => {
         if (g.cliente_id === Number(params[1]) && String(g.ml_user_id) === String(params[2])) g.cliente_conta_id = Number(params[0]);
@@ -94,6 +99,12 @@ class MemoryDb {
     if (q.startsWith("SELECT id FROM ml_tokens WHERE cliente_id = $1 AND ml_user_id = $2")) {
       const g = this.grants.find((g) => g.cliente_id === Number(params[0]) && String(g.ml_user_id) === String(params[1]));
       return { rows: g ? [{ id: g.id }] : [] };
+    }
+    // mlTokenService.resolveMlGrant({ clienteId, mlUserId }) — usado por
+    // mlFetch(clienteId, path, { mlUserId }) na captura de nickname.
+    if (q.includes("FROM ml_tokens t") && q.includes("t.cliente_id = $1 AND t.ml_user_id = $2")) {
+      const g = this.grants.find((g) => g.cliente_id === Number(params[0]) && String(g.ml_user_id) === String(params[1]));
+      return { rows: g ? [{ ...g, refresh_failures: 0 }] : [] };
     }
     if (q.startsWith("INSERT INTO ml_tokens") && q.includes("ON CONFLICT (cliente_id, ml_user_id) DO UPDATE")) {
       const clienteId = Number(params[0]);
@@ -144,6 +155,8 @@ function fakeRes() {
 function mockMlTokenExchange(mlUserIdBySellerCall) {
   // Simula a resposta de POST https://api.mercadolibre.com/oauth/token —
   // devolve sempre o mesmo user_id configurado para este "code" de teste.
+  // Também responde /users/me (chamada única pós-conexão para capturar o
+  // nickname/externalAccountLabel — V3 Master Spec §14.3).
   return async (url, options) => {
     if (String(url).includes("oauth/token")) {
       return {
@@ -155,6 +168,13 @@ function mockMlTokenExchange(mlUserIdBySellerCall) {
           user_id: mlUserIdBySellerCall,
           expires_in: 21600,
         }),
+      };
+    }
+    if (String(url).includes("/users/me")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ id: Number(mlUserIdBySellerCall), nickname: `SELLER_${mlUserIdBySellerCall}` }),
       };
     }
     throw new Error(`fetch não mapeado no mock: ${url}`);
@@ -218,6 +238,8 @@ async function run() {
     ok("ML2.external_account_id gravado com o seller retornado", ml2Depois.external_account_id === "222");
     const grantML2 = db.grants.find((g) => g.ml_user_id === "222");
     ok("grant do seller 222 existe e está ligado à cliente_conta_id de ML2", !!grantML2 && grantML2.cliente_conta_id === 11);
+    ok("externalAccountLabel (nickname) capturado no OAuth, sem chamada extra da Carteira",
+      ml2Depois.metadata_json?.nickname === "SELLER_222");
 
     // ── 1ª conexão de ML1 (seller 111) para preparar os próximos testes ──
     global.fetch = mockMlTokenExchange("111");

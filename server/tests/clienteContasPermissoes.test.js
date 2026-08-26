@@ -83,7 +83,7 @@ class MockDb {
     if (q.startsWith("SELECT id, nome, slug, ativo FROM clientes WHERE slug = $1")) {
       return { rows: this.clientes.filter((c) => c.slug === params[0]) };
     }
-    if (q.includes("FROM cliente_contas cc") && q.includes("LEFT JOIN ml_tokens g")) {
+    if (q.includes("FROM cliente_contas cc") && q.includes("FROM ml_tokens g")) {
       const filtradas = this.contas.filter((c) => c.cliente_id === Number(params[0]));
       return {
         rows: filtradas.map((c) => {

@@ -14,6 +14,7 @@
 
 const pool = require("../../config/database");
 const { resolveMlGrant } = require("../mlTokenService");
+const { CODIGOS_CANONICOS } = require("../../utils/erroContextoCanonico");
 
 function normalizarSlug(nome) {
   return String(nome || "").trim().toLowerCase()
@@ -45,11 +46,30 @@ const MENSAGENS = {
 };
 
 // Status HTTP por motivo (usado quando o contexto vira erro controlado).
+//
+// GRANT_ML_NAO_CONECTADO/BASE_MELI_NAO_VINCULADA/MULTIPLAS_BASES_MELI eram
+// 400/409 — indistinguível de requisição malformada ou de ambiguidade de
+// autorização. V3 Master Spec M5/§18.5: são falhas de INTEGRAÇÃO (a conta é
+// legítima, é a conexão/base que está quebrada), não de autorização —
+// convergem para 424, o único status que central-margem-api.js/vf-api.js
+// (V3) tratam sem confundir com erro de validação. `codigo` (valor) não
+// muda; só o HTTP e o `code` canônico adicional (ver CODE_POR_MOTIVO)
+// mudam. Nenhum consumidor decide hoje por status nesta rota — confirmado
+// em Portal/central-margem.js, que lê `codigo`/`code`, nunca `res.status`.
 const STATUS_POR_MOTIVO = {
   [MOTIVOS.CLIENTE_NAO_ENCONTRADO]: 404,
-  [MOTIVOS.GRANT_ML_NAO_CONECTADO]: 400,
-  [MOTIVOS.BASE_MELI_NAO_VINCULADA]: 409,
-  [MOTIVOS.MULTIPLAS_BASES_MELI]: 409,
+  [MOTIVOS.GRANT_ML_NAO_CONECTADO]: 424,
+  [MOTIVOS.BASE_MELI_NAO_VINCULADA]: 424,
+  [MOTIVOS.MULTIPLAS_BASES_MELI]: 424,
+};
+
+// Nome canônico (V3) por motivo legado — aditivo: `codigo` continua exposto
+// com o valor de sempre; `code` é a tradução para o vocabulário unificado.
+const CODE_POR_MOTIVO = {
+  [MOTIVOS.CLIENTE_NAO_ENCONTRADO]: CODIGOS_CANONICOS.CLIENTE_NAO_ENCONTRADO,
+  [MOTIVOS.GRANT_ML_NAO_CONECTADO]: CODIGOS_CANONICOS.GRANT_DESCONECTADO,
+  [MOTIVOS.BASE_MELI_NAO_VINCULADA]: CODIGOS_CANONICOS.BASE_AUSENTE,
+  [MOTIVOS.MULTIPLAS_BASES_MELI]: CODIGOS_CANONICOS.BASE_AMBIGUA,
 };
 
 // Bases ATIVAS vinculadas ao cliente no marketplace MELI (vínculo ativo).
@@ -85,6 +105,7 @@ async function resolverContextoPrecificacao({ clienteSlugRaw }) {
     throw criarErroHttp(404, {
       ok: false,
       codigo: MOTIVOS.CLIENTE_NAO_ENCONTRADO,
+      code: CODE_POR_MOTIVO[MOTIVOS.CLIENTE_NAO_ENCONTRADO],
       erro: MENSAGENS[MOTIVOS.CLIENTE_NAO_ENCONTRADO],
     });
   }
@@ -165,6 +186,7 @@ async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw }) {
     throw criarErroHttp(STATUS_POR_MOTIVO[MOTIVOS.GRANT_ML_NAO_CONECTADO], {
       ok: false,
       codigo: MOTIVOS.GRANT_ML_NAO_CONECTADO,
+      code: CODE_POR_MOTIVO[MOTIVOS.GRANT_ML_NAO_CONECTADO],
       erro: MENSAGENS[MOTIVOS.GRANT_ML_NAO_CONECTADO],
     });
   }
@@ -174,9 +196,10 @@ async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw }) {
     // Caminho de compatibilidade: baseSlug foi informado pelo frontend antigo.
     const base = await validarBaseInformada({ clienteId: contexto.cliente.id, baseSlugRaw: baseSlugStr });
     if (!base) {
-      throw criarErroHttp(409, {
+      throw criarErroHttp(STATUS_POR_MOTIVO[MOTIVOS.BASE_MELI_NAO_VINCULADA], {
         ok: false,
         codigo: MOTIVOS.BASE_MELI_NAO_VINCULADA,
+        code: CODE_POR_MOTIVO[MOTIVOS.BASE_MELI_NAO_VINCULADA],
         erro: "Base informada não pertence ao cliente ou não está vinculada ao MELI. Ajuste o vínculo em Bases de Custo.",
       });
     }
@@ -190,9 +213,10 @@ async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw }) {
 
   // Caminho automático: resolver a base vinculada.
   if (!contexto.pronto) {
-    throw criarErroHttp(STATUS_POR_MOTIVO[contexto.motivo] || 409, {
+    throw criarErroHttp(STATUS_POR_MOTIVO[contexto.motivo] || 424, {
       ok: false,
       codigo: contexto.motivo,
+      code: CODE_POR_MOTIVO[contexto.motivo] || null,
       erro: contexto.mensagem,
     });
   }
@@ -216,6 +240,7 @@ async function exigirContextoGrantMl({ clienteSlugRaw }) {
     throw criarErroHttp(STATUS_POR_MOTIVO[MOTIVOS.GRANT_ML_NAO_CONECTADO], {
       ok: false,
       codigo: MOTIVOS.GRANT_ML_NAO_CONECTADO,
+      code: CODE_POR_MOTIVO[MOTIVOS.GRANT_ML_NAO_CONECTADO],
       erro: MENSAGENS[MOTIVOS.GRANT_ML_NAO_CONECTADO],
     });
   }
@@ -232,6 +257,7 @@ async function exigirContextoGrantMl({ clienteSlugRaw }) {
 module.exports = {
   MOTIVOS,
   MENSAGENS,
+  CODE_POR_MOTIVO,
   normalizarSlug,
   criarErroHttp,
   buscarBasesMeliDoCliente,

@@ -125,7 +125,7 @@ class MockDb {
     }
 
     // listarContasDoCliente — query principal (cliente_contas + grant + vínculo direto)
-    if (q.includes("FROM cliente_contas cc") && q.includes("LEFT JOIN ml_tokens g")) {
+    if (q.includes("FROM cliente_contas cc") && q.includes("FROM ml_tokens g")) {
       const clienteId = Number(params[0]);
       let rows = this.contas.filter((c) => c.cliente_id === clienteId);
       if (q.includes("cc.marketplace = $2")) rows = rows.filter((c) => c.marketplace === params[1]);

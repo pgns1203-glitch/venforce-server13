@@ -60,6 +60,9 @@ const fechamentosFinanceiroRoutes = require("./routes/fechamentosFinanceiroRoute
 const fechamentoDebugRoutes = require("./routes/fechamentoDebugRoutes");
 const mlRoutes = require("./routes/mlRoutes");
 const clienteContasRoutes = require("./routes/clienteContasRoutes");
+const meRoutes = require("./routes/meRoutes");
+const visaoRoutes = require("./routes/visaoRoutes");
+const financeiroVisaoRoutes = require("./routes/financeiroVisaoRoutes");
 const { verificarDependenciasCliente } = require("./services/clientes/clienteDependenciasService");
 const automacoesRoutes = require("./routes/automacoesRoutes");
 const entregasClienteRoutes = require("./routes/entregasClienteRoutes");
@@ -777,6 +780,7 @@ app.use("/fechamentos", fechamentosFinanceiroRoutes);
 app.use("/fechamentos", fechamentoDebugRoutes);
 app.use("/", mlRoutes);
 app.use("/", clienteContasRoutes);
+app.use("/me", meRoutes);
 app.use("/", tiktokShopRoutes);
 app.use("/shopee", shopeeRoutes);
 app.use("/", automacoesRoutes);
@@ -791,6 +795,10 @@ app.use("/operacao/cliente-360", cliente360Routes);
 app.use("/operacao/central-vendas", centralVendasRoutes);
 // Central de Margem — API read-only do Motor de Margem (somente GET).
 app.use("/operacao/central-margem", motorMargemRoutes);
+// V3: Visão (composicao read-only de fontes existentes) e leitura do
+// Financeiro por periodo/conta — nao confundir com /fechamentos (upload).
+app.use("/operacao/visao", visaoRoutes);
+app.use("/financeiro", financeiroVisaoRoutes);
 app.use("/operacao/diagnosticos-iniciais", diagnosticoInicialRoutes);
 // Central de Gestao Full — ja linkada no menu do Portal (Marketplace >
 // Central Full), mas o namespace inteiro so responde com FULL_CENTRAL_ENABLED=true

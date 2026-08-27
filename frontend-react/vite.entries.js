@@ -51,6 +51,19 @@ export const ENTRIES = {
     port: 5183,
     apiRoutes: ["/operacao", "/auth", "/health"],
   },
+  // F4.1 — Financeiro (leitura). Nome deliberadamente `financeiro-v3.html`,
+  // NÃO `financeiro.html`: já existe uma ferramenta legada nesse nome
+  // (upload/processamento real de fechamento, `Portal/financeiro.js`) e o
+  // MASTER_SPEC pede que o módulo novo rode em PARALELO ao antigo antes de
+  // qualquer cutover (risco alto — "é dinheiro"). O item "Financeiro" da
+  // sidebar continua apontando para o legado até uma decisão explícita de
+  // trocar a rota (fora desta unidade).
+  financeiro: {
+    html: "financeiro-v3.html",
+    assetsDir: "assets/financeiro-v3",
+    port: 5184,
+    apiRoutes: ["/financeiro", "/operacao", "/auth", "/health"],
+  },
 };
 
 export function resolveEntry(mode) {

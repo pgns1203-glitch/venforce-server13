@@ -1,17 +1,10 @@
-// frontend-react/src/hooks/useVisao.js
-//
-// Busca a Visão operacional (GET /operacao/visao/:cliente) sempre que a
-// operação atual (cliente+conta) ou o período mudam. Um único request compõe
-// os 6 blocos no servidor — nada de 6 hooks/6 fetches (isso só fazia sentido
-// no fallback client-side especulado antes de o endpoint existir).
-//
-// Guarda de corrida (MASTER_SPEC §6.6): cada chamada carrega um `seq`
-// próprio; uma resposta que chega depois de o contexto já ter mudado de novo
-// é descartada silenciosamente — nunca sobrescreve o estado com dado de uma
-// operação que o usuário já deixou.
+// frontend-react/src/hooks/useFinanceiro.js
+// Mesmo padrão de useVisao.js: um único fetch por troca de operação/período
+// (o backend já compõe resultado+conciliação+relatórios numa chamada),
+// guarda de sequência contra resposta antiga sobrescrever contexto novo.
 
 import { useEffect, useRef, useState } from "react";
-import { obterVisao } from "../services/visaoApi.js";
+import { obterFinanceiro } from "../services/financeiroApi.js";
 import { ApiError } from "../services/apiClient.js";
 import { lerPeriodoDaUrl, escreverPeriodoNaUrl } from "../utils/periodoUrl.js";
 
@@ -20,7 +13,7 @@ function normalizarErro(err) {
   return { codigo: "desconhecido", mensagem: err?.message || "Erro inesperado.", status: 0 };
 }
 
-export function useVisao({ clienteSlug, clienteContaId, pronta }) {
+export function useFinanceiro({ clienteSlug, clienteContaId, pronta }) {
   const [periodo, setPeriodo] = useState(() => lerPeriodoDaUrl());
   const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(false);
@@ -35,10 +28,6 @@ export function useVisao({ clienteSlug, clienteContaId, pronta }) {
 
   useEffect(() => {
     if (!pronta || !clienteSlug || !clienteContaId) {
-      // Contexto incompleto: o Shell já cuida de esconder a página inteira
-      // nesse caso (data-vf-scope="account") — aqui só zera o estado para
-      // não deixar dado da operação ANTERIOR visível se o React não for
-      // desmontado a tempo.
       setDados(null);
       setErro(null);
       setCarregando(false);
@@ -53,9 +42,9 @@ export function useVisao({ clienteSlug, clienteContaId, pronta }) {
     setCarregando(true);
     setErro(null);
 
-    obterVisao(clienteSlug, { clienteContaId, periodo, signal: controlador.signal })
+    obterFinanceiro(clienteSlug, { clienteContaId, periodo, signal: controlador.signal })
       .then((payload) => {
-        if (seq !== seqRef.current) return; // operação/período já trocou de novo
+        if (seq !== seqRef.current) return;
         setDados(payload);
       })
       .catch((err) => {

@@ -8,10 +8,12 @@
     "dev": "vite --mode cliente-360-react",
     "dev:full": "vite --mode full-gestao",
     "dev:visao": "vite --mode visao",
-    "build": "npm run build:cliente-360 && npm run build:full && npm run build:visao",
+    "dev:financeiro": "vite --mode financeiro",
+    "build": "npm run build:cliente-360 && npm run build:full && npm run build:visao && npm run build:financeiro",
     "build:cliente-360": "node scripts/clean-assets.mjs cliente-360-react && vite build --mode cliente-360-react",
     "build:full": "node scripts/clean-assets.mjs full-gestao && vite build --mode full-gestao",
     "build:visao": "node scripts/clean-assets.mjs visao && vite build --mode visao",
+    "build:financeiro": "node scripts/clean-assets.mjs financeiro && vite build --mode financeiro",
     "preview": "vite preview",
     "test": "vitest run"
   },

@@ -182,6 +182,25 @@ function run() {
     ok("automações GET /automacoes/clientes NÃO tem seam (lista global)", !temCarteira(handlersDe(r, "get", "/automacoes/clientes")));
   }
 
+  // ── Bases: editor rápido de custos ──
+  {
+    const r = require("../routes/basesRoutes");
+    for (const [m, p] of [["get", "/bases/:baseSlug/custos/padrao"], ["post", "/bases/:baseSlug/custos/upsert"]]) {
+      const names = handlersDe(r, m, p);
+      ok(`bases ${m.toUpperCase()} ${p} tem role gate`, Array.isArray(names) && names.includes("requireAutomacoesAccess"));
+      ok(`bases ${m.toUpperCase()} ${p} tem carteiraBaseGuard`, Array.isArray(names) && names.includes("carteiraBaseGuard"));
+    }
+  }
+
+  // ── Base-Vínculos: leitura ganha role gate ──
+  {
+    const r = require("../routes/baseVinculosRoutes");
+    for (const p of ["/", "/clientes"]) {
+      const names = handlersDe(r, "get", p);
+      ok(`base-vinculos GET ${p} tem requireAutomacoesAccess`, Array.isArray(names) && names.includes("requireAutomacoesAccess"));
+    }
+  }
+
   console.log(`\nauthzCoverageWiring.test.js: ${checks} verificações passaram.`);
 }
 

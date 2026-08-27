@@ -1,18 +1,18 @@
 const express = require("express");
 const { authMiddleware, requireAdmin } = require("../middlewares/authMiddleware");
+const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
 const controller = require("../controllers/baseVinculosController");
 
 const router = express.Router();
 
 router.use(authMiddleware);
 
-// Leitura fica para qualquer autenticado (mesma política atual). Escrita
-// (vincular/trocar/remover vínculo) é estrutura/identidade da base — alinhada
-// à mesma regra admin-only já aplicada em PUT /cliente-contas/:id/base
-// (achado P1 da auditoria: o legado aceitava qualquer autenticado enquanto o
-// caminho account-aware novo já exigia admin).
-router.get("/", controller.listar);
-router.get("/clientes", controller.listarClientes);
+// P2.1 — leitura passou a exigir role interna (admin/user/membro): a lista de
+// bases + vínculos revela cliente_slug/cliente_nome de toda a base instalada,
+// o que seller/shopee_reviewer não devem ver. O controller ainda restringe as
+// linhas à carteira do usuário (admin vê tudo). Escrita continua admin-only.
+router.get("/", requireAutomacoesAccess, controller.listar);
+router.get("/clientes", requireAutomacoesAccess, controller.listarClientes);
 router.post("/", requireAdmin, controller.criar);
 router.delete("/:baseId", requireAdmin, controller.remover);
 

@@ -207,27 +207,17 @@ function aggregateRows(rows) {
   };
 }
 
+// Carteira autorizada. Delega para a fonte ÚNICA de autorização
+// (services/squads/authorizationService). Mantém a assinatura histórica
+// `(pool, user)` — o pool passado é honrado como `db`.
+//
+//   admin   → todos os clientes ativos
+//   seller  → seller_clientes (inalterado)
+//   interno → clientes dos Squads ativos do usuário
+//   interno sem membership → [] (pendência de migração; nunca "todos")
 async function resolveEffectivePortfolio(pool, user = {}) {
-  const role = String(user.role || "").toLowerCase();
-  if (role === "seller") {
-    const result = await pool.query(`/* dashboard:AUTHORIZED_SELLER_CLIENTS */
-      SELECT DISTINCT c.id, c.slug, c.nome
-        FROM seller_clientes sc
-        JOIN clientes c ON c.id = sc.cliente_id
-       WHERE sc.user_id = $1 AND sc.ativo = true AND c.ativo = true
-       ORDER BY c.nome ASC`, [user.id]);
-    return result.rows || [];
-  }
-
-  // Squads/carteiras internas ainda não possuem vínculo persistido no schema.
-  // A regra atual das roles internas é a carteira de clientes ativos; o filtro
-  // do navegador somente reduz esse universo e nunca o amplia.
-  const result = await pool.query(`/* dashboard:AUTHORIZED_INTERNAL_CLIENTS */
-    SELECT c.id, c.slug, c.nome
-      FROM clientes c
-     WHERE c.ativo = true
-     ORDER BY c.nome ASC`);
-  return result.rows || [];
+  const { resolvePortfolioClientes } = require("./squads/authorizationService");
+  return resolvePortfolioClientes(user, pool) || [];
 }
 
 async function loadProductionData(pool, { clients, fromDate, toDate }) {

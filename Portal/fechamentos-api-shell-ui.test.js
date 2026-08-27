@@ -214,12 +214,25 @@ async function run() {
     const consoleErrors = wireFetchInterception(cdp);
 
     async function seedAndGoto(qs) {
+      // Causa raiz de uma flakiness real encontrada aqui: sessionStorage["vf-ctx"]
+      // sobrevive de propósito a navegações normais (é o mecanismo que mantém a
+      // sessão entre páginas — só o LOGIN a zera). A navegação abaixo para a
+      // página EM BRANCO (sem query, só para setar localStorage antes da real)
+      // ainda carrega vf-context.js, que lê essa sessão do cenário ANTERIOR
+      // (ex.: extra/51) e resolve — corretamente — o contexto a partir dela
+      // ANTES da navegação final aplicar a query nova, disparando uma chamada
+      // real ao motor para o cliente de ANTES. Isso acontece rápido demais
+      // para limpar depois de navegar (o boot síncrono de vf-context.js já
+      // leu a sessão antes do primeiro `cdp.evaluate` rodar) — por isso a
+      // limpeza tem que acontecer ANTES desta navegação, na página atual.
+      try { await cdp.evaluate("try{sessionStorage.clear()}catch(e){}"); } catch (_) { /* página em branco (about:blank) recusa storage: nada a limpar mesmo */ }
       await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/fechamentos-api.html` });
       await sleep(60);
       await cdp.evaluate(`
         localStorage.setItem("vf-token", "ui-test-token");
         localStorage.setItem("vf-user", JSON.stringify({ id: 12, nome: "Pedro Gomes", role: "admin" }));
         localStorage.setItem("vf-fapi-mock-dev", "1");
+        sessionStorage.clear();
       `);
       bootstrapCallLog = [];
       consoleErrors.length = 0;

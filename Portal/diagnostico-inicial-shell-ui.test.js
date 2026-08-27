@@ -24,7 +24,16 @@ const PROD_HOST = "venforce-server.onrender.com";
 
 const N97 = { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };
 const EXTRA = { id: 88, nome: "Extra Máquinas", slug: "extra", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };
-const PORTFOLIO = { ok: true, clientes: [N97, EXTRA] };
+const REDFISH = { id: 90, nome: "Red Fish", slug: "red_fish", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };
+const PORTFOLIO = { ok: true, clientes: [N97, EXTRA, REDFISH] };
+// F2.4 — REGRESSÃO: cenário real reportado manualmente (?cliente=red_fish&conta=41,
+// contexto chega a READY com uma conta ativa de verdade) nunca era exercitado
+// aqui — o fixture de contas devolvia sempre `contas: []`, então o Diagnóstico
+// nunca saía de NO_ACTIVE_ACCOUNT e a asserção de `#diag-empty-state` nunca
+// existia. Ver check "REGRESSÃO — READY com conta real" abaixo.
+const REDFISH_CONTAS = { ok: true, cliente: { id: 90, nome: "Red Fish", slug: "red_fish", ativo: true }, contas: [
+  { id: 41, nome: "Mercado Livre 1", marketplace: "meli", ativo: true, grant: { token_status: "valid" }, base: { base_id: 9 } },
+] };
 
 let diagCallLog = []; // [{method, clienteId}]
 let diagStore = {}; // clienteId -> diagnostico em rascunho
@@ -131,7 +140,12 @@ function wireFetchInterception(cdp) {
 
     if (url.includes("/operacao/cliente-360/clientes")) { await json(PORTFOLIO); return; }
     const contasMatch = url.match(/\/clientes\/([^/?]+)\/contas/);
-    if (contasMatch) { await json({ ok: true, cliente: { id: 1, nome: "x", slug: "x", ativo: true }, contas: [] }); return; }
+    if (contasMatch) {
+      const ref = decodeURIComponent(contasMatch[1]);
+      if (ref === "red_fish" || ref === "90") { await json(REDFISH_CONTAS); return; }
+      await json({ ok: true, cliente: { id: 1, nome: "x", slug: "x", ativo: true }, contas: [] });
+      return;
+    }
 
     if (url.includes("/operacao/diagnosticos-iniciais")) {
       const parsed = new URL(url);
@@ -200,6 +214,45 @@ async function run() {
       await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/diagnostico-inicial.html${qs ? "?" + qs : ""}` });
       await waitFor(cdp, "window.VF && window.VF.context", "vf-context não montou");
     }
+
+    /* ══════ REGRESSÃO — deep link com conta real, contexto chega a READY ══════
+       Cenário relatado manualmente: ?cliente=red_fish&conta=41. Shell mostra
+       Cliente/Operação corretos; o Diagnóstico não pode continuar mostrando
+       "Selecione um cliente". */
+    await seedAndGoto("cliente=red_fish&conta=41");
+    await waitFor(cdp, "window.VF.context.getState() === 'READY'", "red_fish/conta 41 não chegou a READY");
+    await sleep(400);
+
+    await check("REGRESSÃO — READY com conta real: #diag-empty-state fica hidden e o layout aparece", async () => {
+      const info = JSON.parse(await cdp.evaluate(`JSON.stringify({
+        emptyHidden: document.getElementById('diag-empty-state').hidden,
+        layoutHidden: document.getElementById('diag-layout').hidden,
+        clienteId: window.VF.context.getContext() && window.VF.context.getContext().clienteId,
+      })`));
+      assert.strictEqual(info.clienteId, 90, `contexto deveria resolver red_fish (90): ${JSON.stringify(info)}`);
+      assert.strictEqual(info.emptyHidden, true, `diag-empty-state deveria estar hidden com contexto READY: ${JSON.stringify(info)}`);
+      assert.strictEqual(info.layoutHidden, false, `diag-layout deveria estar visível com contexto READY: ${JSON.stringify(info)}`);
+    });
+
+    await check("REGRESSÃO — READY com conta real: diagnóstico consultado com clienteId certo (90)", async () => {
+      assert.ok(diagCallLog.some((c) => String(c.clienteId) === "90"), `nenhuma chamada com clienteId=90: ${JSON.stringify(diagCallLog)}`);
+    });
+
+    /* ══════ NO_CLIENT — sem query e sem sessão: estado vazio correto ══════ */
+    await cdp.evaluate("sessionStorage.clear()");
+    await seedAndGoto("");
+    await waitFor(cdp, "window.VF.context.getState() === 'NO_CLIENT'", "estado deveria ser NO_CLIENT sem query/sessão");
+    await sleep(200);
+
+    await check("NO_CLIENT — #diag-empty-state visível, layout escondido, nenhuma chamada ao diagnóstico", async () => {
+      const info = JSON.parse(await cdp.evaluate(`JSON.stringify({
+        emptyHidden: document.getElementById('diag-empty-state').hidden,
+        layoutHidden: document.getElementById('diag-layout').hidden,
+      })`));
+      assert.strictEqual(info.emptyHidden, false, `diag-empty-state deveria estar visível em NO_CLIENT: ${JSON.stringify(info)}`);
+      assert.strictEqual(info.layoutHidden, true, `diag-layout deveria estar escondido em NO_CLIENT: ${JSON.stringify(info)}`);
+      assert.strictEqual(diagCallLog.length, 0, `nenhuma chamada ao diagnóstico deveria ter ocorrido: ${JSON.stringify(diagCallLog)}`);
+    });
 
     await seedAndGoto("cliente=n97");
     await waitFor(cdp, "window.VF.context.getState() !== 'BOOT' && window.VF.context.getState() !== 'RESOLVING_CLIENT'", "n97 não resolveu");

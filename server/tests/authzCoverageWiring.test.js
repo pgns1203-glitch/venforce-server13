@@ -160,6 +160,28 @@ function run() {
     ok("anúncios-ml: seam depois do requireAutomacoesAccess", ordemRouterOk(r));
   }
 
+  // ── Automações (client-scoped) ──
+  {
+    const r = require("../routes/automacoesRoutes");
+    const rotas = [
+      "/automacoes/precificacao/preview",
+      "/automacoes/precificacao/preview-ml",
+      "/automacoes/clientes/:clienteSlug/planilha-precificacao.xlsx",
+      "/automacoes/clientes/:clienteSlug/modelo-base-custos.xlsx",
+      "/automacoes/promocoes-retorno/preview",
+      "/automacoes/promocoes-retorno/snapshot",
+      "/automacoes/promocoes-retorno/diagnostico/start",
+      "/automacoes/diagnostico-completo/start",
+      "/automacoes/relatorios",
+    ];
+    for (const p of rotas) {
+      const names = handlersDe(r, null, p);
+      ok(`automações ${p} tem carteiraClienteGuard`, temCarteira(names));
+      ok(`automações ${p} — seam depois do gate de role`, ordemOk(names, "carteiraClienteGuard"));
+    }
+    ok("automações GET /automacoes/clientes NÃO tem seam (lista global)", !temCarteira(handlersDe(r, "get", "/automacoes/clientes")));
+  }
+
   console.log(`\nauthzCoverageWiring.test.js: ${checks} verificações passaram.`);
 }
 

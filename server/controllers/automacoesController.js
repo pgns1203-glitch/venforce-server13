@@ -5,6 +5,33 @@
 const pool = require("../config/database");
 const { resolveMlGrant } = require("../services/mlTokenService");
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("../services/activityLogService");
+// P2.1 — seam de carteira para artefatos salvos por id (relatório / job de
+// diagnóstico). O cliente está no registro (cliente_slug), não em
+// clienteSlug de rota — então a autorização é aqui, via fonte única.
+const {
+  canAccessCliente,
+  resolverClienteRef,
+  resolvePortfolioClientes,
+  ehAdmin,
+} = require("../services/squads/authorizationService");
+
+// `tabela` é sempre um literal do call-site (nunca entrada do usuário).
+async function autorizarPorRegistroSalvo(req, tabela, idRaw) {
+  const id = parseInt(idRaw, 10);
+  if (!Number.isFinite(id) || id <= 0) return; // service valida o 400/404
+  const r = await pool.query(`SELECT cliente_slug FROM ${tabela} WHERE id = $1`, [id]);
+  const slug = r.rows[0] && r.rows[0].cliente_slug;
+  if (!slug) return; // registro inexistente → service devolve 404
+  const cliente = await resolverClienteRef(slug);
+  if (!cliente) return;
+  const ok = await canAccessCliente(req.user || {}, cliente.id);
+  if (!ok) {
+    const e = new Error("Cliente fora da sua carteira.");
+    e.statusCode = 403;
+    e.payload = { ok: false, code: "CLIENTE_FORA_DA_CARTEIRA", erro: e.message };
+    throw e;
+  }
+}
 
 const {
   gerarPreviewPrecificacao,
@@ -221,6 +248,7 @@ async function iniciarDiagnosticoPromocoesController(req, res) {
 
 async function statusDiagnosticoPromocoesController(req, res) {
   try {
+    await autorizarPorRegistroSalvo(req, "promocoes_diagnosticos", req.params.id);
     const resultado = await buscarStatusDiagnostico({ idRaw: req.params.id });
     return res.json(resultado);
   } catch (err) {
@@ -270,7 +298,14 @@ async function salvarRelatorioAutomacoesController(req, res) {
 
 async function listarRelatoriosAutomacoesController(req, res) {
   try {
+    const user = req.user || {};
     const resultado = await listarRelatoriosAutomacoes({ query: req.query });
+    if (!ehAdmin(user) && resultado && Array.isArray(resultado.relatorios)) {
+      const permitidos = new Set((await resolvePortfolioClientes(user)).map((c) => c.slug));
+      resultado.relatorios = resultado.relatorios.filter(
+        (r) => r.cliente_slug == null || permitidos.has(r.cliente_slug)
+      );
+    }
     return res.json(resultado);
   } catch (err) {
     return responderErroService(res, err);
@@ -315,6 +350,7 @@ async function excluirPastaRelatoriosController(req, res) {
 
 async function moverRelatorioParaPastaController(req, res) {
   try {
+    await autorizarPorRegistroSalvo(req, "relatorios", req.params.id);
     const resultado = await moverRelatorioParaPasta({ idRaw: req.params.id, body: req.body });
     return res.json(resultado);
   } catch (err) {
@@ -324,6 +360,7 @@ async function moverRelatorioParaPastaController(req, res) {
 
 async function buscarDetalheRelatorioAutomacoesController(req, res) {
   try {
+    await autorizarPorRegistroSalvo(req, "relatorios", req.params.id);
     const resultado = await buscarDetalheRelatorioAutomacoes({ idRaw: req.params.id });
     return res.json(resultado);
   } catch (err) {
@@ -333,6 +370,7 @@ async function buscarDetalheRelatorioAutomacoesController(req, res) {
 
 async function excluirRelatorioAutomacoesController(req, res) {
   try {
+    await autorizarPorRegistroSalvo(req, "relatorios", req.params.id);
     const resultado = await excluirRelatorioAutomacoes({ idRaw: req.params.id });
     return res.json(resultado);
   } catch (err) {
@@ -342,6 +380,7 @@ async function excluirRelatorioAutomacoesController(req, res) {
 
 async function exportRelatorioCsvController(req, res) {
   try {
+    await autorizarPorRegistroSalvo(req, "relatorios", req.params.id);
     const arquivo = await gerarExportRelatorioCsv({ idRaw: req.params.id });
     res.setHeader("Content-Type", arquivo.contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${arquivo.filename}"`);
@@ -353,6 +392,7 @@ async function exportRelatorioCsvController(req, res) {
 
 async function exportRelatorioXlsxController(req, res) {
   try {
+    await autorizarPorRegistroSalvo(req, "relatorios", req.params.id);
     const arquivo = await gerarExportRelatorioXlsx({ idRaw: req.params.id });
     res.setHeader("Content-Type", arquivo.contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${arquivo.filename}"`);
@@ -468,6 +508,7 @@ async function buscarDiagnosticoCompletoController(req, res) {
     if (!Number.isFinite(id) || id <= 0) {
       return res.status(400).json({ ok: false, erro: "id inválido." });
     }
+    await autorizarPorRegistroSalvo(req, "relatorios", id);
     const r = await pool.query(
       `SELECT id, cliente_slug, base_slug, margem_alvo, escopo, status,
               total_itens, itens_com_base, itens_sem_base,
@@ -479,7 +520,7 @@ async function buscarDiagnosticoCompletoController(req, res) {
     if (!r.rows.length) return res.status(404).json({ ok: false, erro: "Relatório não encontrado." });
     return res.json({ ok: true, relatorio: r.rows[0] });
   } catch (err) {
-    return res.status(500).json({ ok: false, erro: err.message });
+    return responderErroService(res, err);
   }
 }
 

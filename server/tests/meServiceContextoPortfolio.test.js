@@ -9,6 +9,8 @@
 // transferência) está em squadsIsolamento.test.js.
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
+// P2.2 — portfolio autoritativo por Squad pressupõe enforcement ativo.
+process.env.SQUADS_ENFORCEMENT = "on";
 
 const assert = require("assert");
 const pool = require("../config/database");

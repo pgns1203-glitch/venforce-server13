@@ -12,6 +12,7 @@
 
 const pool = require("../../config/database");
 const { CODIGOS_CANONICOS } = require("../../utils/erroContextoCanonico");
+const { isEnforcementEnabled } = require("../../config/squadsEnforcement");
 
 const ROLES_INTERNAS = new Set(["user", "membro", "interno"]);
 
@@ -83,6 +84,16 @@ async function resolvePortfolioClientes(user = {}, db = pool) {
   }
 
   if (ehInterno(user)) {
+    // P2.2 — enforcement OFF: papel interno enxerga TODOS os clientes ativos
+    // (comportamento pré-Squads). Nunca carteira vazia por falta de migração.
+    if (!isEnforcementEnabled()) {
+      const { rows } = await db.query(
+        `/* authz:PORTFOLIO_INTERNAL_ENFORCEMENT_OFF */
+         SELECT c.id, c.slug, c.nome FROM clientes c
+          WHERE c.ativo = true ORDER BY c.nome ASC`
+      );
+      return rows;
+    }
     // Clientes cujo Squad ativo é um dos Squads ATIVOS do usuário.
     // Squad inativo não dá acesso operacional (mission §30).
     const { rows } = await db.query(
@@ -132,6 +143,15 @@ async function canAccessCliente(user = {}, clienteId, db = pool) {
   }
 
   if (ehInterno(user)) {
+    // P2.2 — enforcement OFF: interno acessa qualquer cliente existente
+    // (espelha o bypass legado). O gate de papel continua valendo acima.
+    if (!isEnforcementEnabled()) {
+      const { rows } = await db.query(
+        `/* authz:CAN_ACCESS_ENFORCEMENT_OFF */ SELECT 1 FROM clientes WHERE id = $1`,
+        [id]
+      );
+      return rows.length > 0;
+    }
     const { rows } = await db.query(
       `/* authz:CAN_ACCESS_INTERNAL */
        SELECT 1
@@ -233,6 +253,12 @@ async function assertBaseNaCarteira(user, baseRef, { bySlug = false } = {}, db =
     throw erro(404, "BASE_NAO_ENCONTRADA", "Base não encontrada.");
   }
   if (ehAdmin(user)) {
+    return { baseId: base.id, baseSlug: base.slug, baseNome: base.nome };
+  }
+  // P2.2 — enforcement OFF: papel interno mexe em qualquer base (a base
+  // editor era `authMiddleware`-only antes de P2.1). Seller segue pelo
+  // caminho normal (interseção com seller_clientes) — o flag não o toca.
+  if (!isEnforcementEnabled() && ehInterno(user)) {
     return { baseId: base.id, baseSlug: base.slug, baseNome: base.nome };
   }
   const { rows: vinc } = await db.query(

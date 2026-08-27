@@ -10,6 +10,8 @@
 //        base 300 -> sem vínculo ativo (órfã)
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
+// P2.2 — este teste exercita a autorização por carteira COM enforcement ativo.
+process.env.SQUADS_ENFORCEMENT = "on";
 
 const assert = require("assert");
 const pool = require("../config/database");

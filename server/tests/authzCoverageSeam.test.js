@@ -10,6 +10,8 @@
 // Padrão do repo: sem Postgres real; mocka pool.query casando por marcador SQL.
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
+// P2.2 — este teste exercita a autorização por carteira COM enforcement ativo.
+process.env.SQUADS_ENFORCEMENT = "on";
 
 const assert = require("assert");
 const pool = require("../config/database");

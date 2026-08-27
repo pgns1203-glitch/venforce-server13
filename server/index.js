@@ -1856,9 +1856,33 @@ const server = app.listen(PORT, () => {
     console.error("[design-studio] erro ao garantir tabelas no boot:", err.message);
   });
 
-  ensureSquadsTables().catch((err) => {
-    console.error("[squads] erro ao garantir tabelas no boot:", err.message);
-  });
+  // P2.2 — diagnóstico de rollout: estado do enforcement + prontidão da
+  // migração, num único log de boot. NÃO ativa nem bloqueia nada — só torna
+  // observável se o flag está coerente com os dados.
+  ensureSquadsTables()
+    .then(() => require("./services/squads/squadsMigracaoService").auditoria())
+    .then((a) => {
+      const { describeEnforcement } = require("./config/squadsEnforcement");
+      const enf = describeEnforcement();
+      console.log(
+        `[squads] enforcement=${enf.enabled ? "ON" : "OFF"} ` +
+        `(SQUADS_ENFORCEMENT=${enf.envRaw ?? "<ausente>"}) | ` +
+        `clientes sem squad=${a.clientesAtivos.semSquad}/${a.clientesAtivos.total} | ` +
+        `internos sem membership=${a.usuariosInternos.semMembership}/${a.usuariosInternos.total} | ` +
+        `internos sem principal=${a.usuariosInternos.semPrincipal} | ` +
+        `auditoria.pronto=${a.pronto}`
+      );
+      if (enf.enabled && !a.pronto) {
+        console.warn(
+          "[squads] ⚠ enforcement ON com auditoria NÃO pronta: usuários internos sem " +
+          "membership receberão 403 em cascata. Complete a migração (GET /squads/migracao/auditoria) " +
+          "ou desative SQUADS_ENFORCEMENT."
+        );
+      }
+    })
+    .catch((err) => {
+      console.error("[squads] erro ao garantir tabelas / auditoria no boot:", err.message);
+    });
 
   ensureObservabilityTables()
     .then(() => observabilityService.runCleanup())

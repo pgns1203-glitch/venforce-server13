@@ -93,8 +93,15 @@ export default defineConfig(({ mode }) => {
     server: {
       port: entry.port,
       open: `/${entry.html}`,
+      // Vite casa chave de proxy por `startsWith` a menos que ela comece com
+      // `^` (aí vira RegExp) — sem o limite de borda abaixo, "/financeiro"
+      // também intercepta "/financeiro-v3.html" e devolve o 401 do Express
+      // no lugar do HTML da ilha.
       proxy: Object.fromEntries(
-        entry.apiRoutes.map((rota) => [rota, { target: BACKEND_DEV, changeOrigin: true }])
+        entry.apiRoutes.map((rota) => [
+          `^${rota}(?:/|\\?|$)`,
+          { target: BACKEND_DEV, changeOrigin: true },
+        ])
       ),
     },
     build: {

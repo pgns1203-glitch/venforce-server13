@@ -761,7 +761,11 @@ export function createVfShell(options = {}) {
    um `api`/`context` injetados). */
 function bootProduction() {
   if (typeof window === "undefined" || typeof document === "undefined") return null;
-  if (!hasToken()) return null; // sem sessão: a própria página trata o redirect (vf-api 401)
+  // Sem token não existe nenhuma chamada de API em trânsito para um 401
+  // acionar o redirect (vf-api só entra em cena depois de vfContext.init(),
+  // que este `return` evita) — sem isto a página fica em branco pra sempre,
+  // sem shell/erro/loading, em vez de mandar pro login.
+  if (!hasToken()) { window.location.replace("index.html"); return null; }
   const user = readUser();
   const scope = document.body ? document.body.dataset.vfScope || "global" : "global";
 

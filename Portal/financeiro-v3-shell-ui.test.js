@@ -297,6 +297,24 @@ async function run() {
     fs.writeFileSync(shot2, Buffer.from(png2.data, "base64"));
     console.log(`   screenshot: ${shot2}`);
 
+    // ═══ 3. REGRESSÃO P0 — sem vf-token: nunca pode ficar em branco pra
+    // sempre. bootProduction() (vf-shell.js) só chama vfContext.init() se
+    // hasToken() for true; sem isso nenhuma chamada de API acontece, então
+    // o redirect-por-401 do vf-api nunca é acionado — a página HTML real
+    // (não um harness com token pré-semeado) precisa mandar pro login
+    // sozinha nesse caso. ═══
+    await cdp.evaluate(`localStorage.removeItem("vf-token"); localStorage.removeItem("vf-user"); sessionStorage.clear();`);
+    consoleErrors.length = 0;
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=3` });
+    await waitFor(cdp, "document.body.innerText.includes('E-mail')", "sem vf-token deveria redirecionar para o login (index.html) em vez de ficar em branco pra sempre");
+
+    await check("F4.1 — sem vf-token: redireciona para o login em vez de ficar em branco pra sempre (regressão da tela branca)", async () => {
+      const pathname = await cdp.evaluate("window.location.pathname");
+      assert.ok(/index\.html$/.test(pathname), `esperava redirect para index.html, url atual: ${pathname}`);
+      const temRootDoFinanceiro = await cdp.evaluate("document.getElementById('root') !== null");
+      assert.strictEqual(temRootDoFinanceiro, false, "página de login não deveria ter o #root do Financeiro V3 sobrando no DOM");
+    });
+
     await check("sem erros de console em nenhum cenário", async () => {
       const relevantes = consoleErrors.filter((m) => !/favicon/i.test(m));
       assert.strictEqual(relevantes.length, 0, `erros de console: ${JSON.stringify(relevantes)}`);

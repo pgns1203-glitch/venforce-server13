@@ -39,10 +39,9 @@
 // que SIMULAM um payload com squad para provar que a UI funciona quando
 // o contrato existir.
 //
-// Destino ao entrar no contexto: Visão (MASTER_SPEC §11) ainda não existe
-// nesta árvore (F3, fora desta rodada) — F3.3 troca este destino para
-// visao.html quando ela existir. Até lá, o destino honesto é a Central de
-// Vendas sob o Shell V3 (a única tela operacional migrada, F0.7).
+// Destino ao entrar no contexto: Visão (MASTER_SPEC §11), a home operacional
+// por Cliente+Operação (F3.3). Antes de F3 existir, este destino era
+// fechamentos-api.html (a única tela operacional migrada até então).
 //
 // ES Module. Fábrica testável (mesmo padrão de createVfShell/createVfContext/
 // createVfApi): tudo que toca o mundo externo é injetável.
@@ -51,7 +50,7 @@ import { vfContext, statusOperacao, rotuloExterno } from "./vf-context.js";
 import { vfApi } from "./vf-api.js";
 import { format as fmt } from "./vf-format.js";
 
-const DESTINO_PADRAO = "fechamentos-api.html"; // até F3.3 trocar por visao.html
+const DESTINO_PADRAO = "visao.html";
 const PREFETCH = 12; // §10.5 nível A — ~12 requisições no primeiro paint, não 120
 
 function createProductionApi(api) {

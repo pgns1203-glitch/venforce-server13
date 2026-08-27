@@ -1,0 +1,89 @@
+/* frontend-react/src/styles/financeiro.css
+   F4.1 — só o layout específico do Financeiro. Abas/KPIs/tabela vêm da
+   Fundação Global V2; aqui só o que não existe ainda no design system
+   (a barra de composição financeira e a linha do tempo de histórico). */
+
+.vf-fin-painel {
+  margin-top: var(--vf-sp-5, 16px);
+}
+
+.vf-section.is-atualizando {
+  opacity: 0.6;
+  transition: opacity 120ms ease;
+}
+
+.vf-fin-composicao {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2, 8px);
+}
+
+.vf-fin-composicao__linha {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr minmax(110px, auto);
+  align-items: center;
+  gap: var(--vf-sp-4, 16px);
+  padding: var(--vf-sp-2, 8px) 0;
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-fin-composicao__linha:last-child {
+  border-bottom: none;
+}
+
+.vf-fin-composicao__rotulo {
+  font-size: var(--vf-fs-sm, 0.875rem);
+  color: var(--vf-text-secondary);
+}
+
+.vf-fin-composicao__barra {
+  display: block;
+  height: 8px;
+  background: var(--vf-bg-2);
+  overflow: hidden;
+}
+
+.vf-fin-composicao__preenchimento {
+  display: block;
+  height: 100%;
+  background: var(--vf-primary);
+}
+
+.vf-fin-composicao__preenchimento.is-negativo {
+  background: var(--vf-danger);
+}
+
+.vf-fin-composicao__valor {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--vf-fw-medium, 500);
+}
+
+.vf-fin-historico {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2, 8px);
+}
+
+.vf-fin-historico__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--vf-sp-3, 12px);
+  padding: var(--vf-sp-2, 8px) 0;
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-fin-historico__item:last-child {
+  border-bottom: none;
+}
+
+.vf-fin-historico__dot.is-success { color: var(--vf-success-strong); }
+.vf-fin-historico__dot.is-neutral { color: var(--vf-text-muted); }
+
+.vf-fin-historico__periodo {
+  min-width: 96px;
+  font-weight: var(--vf-fw-medium, 500);
+}

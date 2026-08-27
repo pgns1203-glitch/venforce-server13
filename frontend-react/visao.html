@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Visão</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (códigos) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 1. Layout compartilhado (estados globais indispensáveis) -->
+  <link rel="stylesheet" href="/style.css">
+  <!-- 2. Fundação Global V2 (tokens → componentes; o CSS da própria página vem no bundle) -->
+  <link rel="stylesheet" href="/css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="/css/vf-components-v2.css">
+  <link rel="stylesheet" href="/css/vf-shell.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+</head>
+<!-- F3.2 — primeira ilha React sobre o Shell V3: data-vf-scope="account"
+     (a Visão nasce de Cliente+Operação escolhidos, nunca renderiza sem
+     conta resolvida — MASTER_SPEC §11.1/§16). O Shell decide sozinho quando
+     mostrar `.vf-shell__main` (onde o #root do React vive); o React não
+     reimplementa esse gating, só assume READY quando está visível. -->
+<body class="vf-page vf-page-visao" data-vf-scope="account" data-vf-module="visao">
+  <div id="root"></div>
+
+  <!-- Shell V3: sidebar, contexto operacional, gating por escopo. Script
+       módulo, executa ANTES do bundle React abaixo (ordem de document, os
+       dois são deferred — MASTER_SPEC §6.5/§15.3). Constrói `.vf-shell` em
+       volta do #root acima (Portal/vf-shell.js: buildShellDom()). -->
+  <script type="module" src="/vf-shell.js"></script>
+  <script type="module" src="./src/visao-main.jsx"></script>
+</body>
+</html>

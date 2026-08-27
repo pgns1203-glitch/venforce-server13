@@ -35,11 +35,12 @@ const COLLAPSE_KEY = "vf-sidebar-collapsed"; // preferência de UI (§9.2) — l
 
 /* ── Modelo de navegação (MASTER_SPEC §9.5) ──────────────────────────────
    30 links em 5 grupos incoerentes → 8 módulos contextuais + globais +
-   admin. `rota: null` = módulo ainda sem destino real nesta execução
-   (Visão, F3, fora de escopo) — item PREPARADO, nunca link quebrado (§5 do
-   prompt desta execução). `marketplaces` ausente = disponível em todos. */
+   admin. `rota: null` (nenhum módulo usa isso hoje) continua suportado pelo
+   render() abaixo — vira item desabilitado com "ainda não disponível nesta
+   versão", nunca link quebrado. `marketplaces` ausente = disponível em
+   todos os marketplaces. */
 export const MODULOS = [
-  { id: "visao", label: "Visão", rota: null, futuro: true },
+  { id: "visao", label: "Visão", rota: "visao.html" },
   { id: "financeiro", label: "Financeiro", rota: "financeiro.html" },
   { id: "central-vendas", label: "Central de Vendas", rota: "fechamentos-api.html" },
   { id: "ads", label: "Ads", rota: "ads.html", marketplaces: ["meli"] },

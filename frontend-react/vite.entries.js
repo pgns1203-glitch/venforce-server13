@@ -43,6 +43,14 @@ export const ENTRIES = {
     port: 5182,
     apiRoutes: ["/operacao", "/auth", "/ads", "/fechamentos", "/clientes", "/base-vinculos", "/health"],
   },
+  // F3.2 — Visão: primeira ilha React integrada ao Shell V3 (vf-context/
+  // vf-shell), não ao layout.js legado. Ver src/hooks/useVfContext.js.
+  visao: {
+    html: "visao.html",
+    assetsDir: "assets/visao",
+    port: 5183,
+    apiRoutes: ["/operacao", "/auth", "/health"],
+  },
 };
 
 export function resolveEntry(mode) {

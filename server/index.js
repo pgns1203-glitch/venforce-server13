@@ -98,6 +98,7 @@ const {
   captureRequestError,
 } = require("./middlewares/observabilityMiddleware");
 const { ensureObservabilityTables } = require("./repositories/observabilityRepository");
+const { ensureSquadsTables } = require("./services/squads/squadsRepository");
 const {
   MARKETPLACES_SUPORTADOS,
   normalizarProdutoIdTikTok,
@@ -1827,6 +1828,10 @@ const server = app.listen(PORT, () => {
 
   designStudioService.initialize().catch((err) => {
     console.error("[design-studio] erro ao garantir tabelas no boot:", err.message);
+  });
+
+  ensureSquadsTables().catch((err) => {
+    console.error("[squads] erro ao garantir tabelas no boot:", err.message);
   });
 
   ensureObservabilityTables()

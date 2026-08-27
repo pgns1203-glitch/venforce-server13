@@ -7,7 +7,7 @@
 // `investimentoAds` de um objeto que não tem esse campo.
 
 import { formatarMoeda } from "../../utils/currency.js";
-import { formatarPercentual } from "../../utils/percentage.js";
+import { formatarPercentual, pontosParaFracao } from "../../utils/percentage.js";
 import { formatarNumero } from "../../utils/numbers.js";
 import { ADS_SEM_DADOS_MOTIVO } from "../../utils/visaoLabels.js";
 import { BlocoIndisponivel } from "./BlocoCard.jsx";
@@ -30,7 +30,7 @@ export function AdsBloco({ dados }) {
         </div>
         <div className="vf-kpi">
           <span className="vf-kpi__label">ACOS</span>
-          <span className="vf-kpi__value">{formatarPercentual((dados.acos ?? null) / 100)}</span>
+          <span className="vf-kpi__value">{formatarPercentual(pontosParaFracao(dados.acos))}</span>
         </div>
         <div className="vf-kpi">
           <span className="vf-kpi__label">ROAS</span>

@@ -98,7 +98,7 @@ export default function VisaoPage() {
               titulo="Resultado do período"
               linkHref={`fechamentos-api.html?${qs}`}
               linkLabel="Central de Vendas"
-              render={(d) => <ResultadoPeriodo dados={d} />}
+              render={(d) => <ResultadoPeriodo dados={d.filteredSummary} />}
             />
             <Bloco
               envelope={dados.margem}

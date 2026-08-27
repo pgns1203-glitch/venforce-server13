@@ -4,7 +4,7 @@
 // operação específica).
 
 import { formatarMoeda } from "../../utils/currency.js";
-import { formatarPercentual } from "../../utils/percentage.js";
+import { formatarPercentual, pontosParaFracao } from "../../utils/percentage.js";
 import { formatarNumero, AUSENTE } from "../../utils/numbers.js";
 import { CONFIANCA_FECHAMENTO } from "../../utils/visaoLabels.js";
 
@@ -24,7 +24,7 @@ export function ResultadoPeriodo({ dados }) {
         </div>
         <div className="vf-kpi">
           <span className="vf-kpi__label">Margem de contribuição</span>
-          <span className="vf-kpi__value">{formatarPercentual((dados.margemContribuicaoPercentual ?? null) / 100)}</span>
+          <span className="vf-kpi__value">{formatarPercentual(pontosParaFracao(dados.margemContribuicaoPercentual))}</span>
         </div>
         <div className="vf-kpi">
           <span className="vf-kpi__label">Ticket médio</span>

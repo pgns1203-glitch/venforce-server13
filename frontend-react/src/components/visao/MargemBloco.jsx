@@ -4,7 +4,7 @@
 // visaoService.js). Foco em qualidade de item, não em total financeiro
 // (isso é o bloco Resultado).
 
-import { formatarPercentual } from "../../utils/percentage.js";
+import { formatarPercentual, pontosParaFracao } from "../../utils/percentage.js";
 import { formatarNumero } from "../../utils/numbers.js";
 
 export function MargemBloco({ dados }) {
@@ -17,7 +17,7 @@ export function MargemBloco({ dados }) {
       <div className="vf-kpi-grid">
         <div className="vf-kpi vf-kpi--featured">
           <span className="vf-kpi__label">Margem média</span>
-          <span className="vf-kpi__value">{formatarPercentual((placar.margemMediaPercent ?? null) / 100)}</span>
+          <span className="vf-kpi__value">{formatarPercentual(pontosParaFracao(placar.margemMediaPercent))}</span>
         </div>
         <div className="vf-kpi">
           <span className="vf-kpi__label">Itens com margem</span>

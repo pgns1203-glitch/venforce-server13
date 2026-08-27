@@ -42,12 +42,22 @@ function payloadFeliz() {
         proximoPasso: { tipo: "fechamento", titulo: "Gerar o fechamento de agosto", descricao: "O período ainda não tem fechamento publicado.", href: "financeiro.html?cliente=n97" },
       },
     },
+    // `dados` é o retorno CRU de getCentralVendasReadBootstrap — um objeto
+    // grande com `summary`/`filteredSummary` aninhados (rows/pagination/dias/
+    // produtos/motor/etc. omitidos aqui por não serem lidos por
+    // ResultadoPeriodo.jsx), não um resumo já achatado. Este fixture já foi
+    // flat e mascarou, nesta mesma suíte, o bug real de VisaoPage.jsx lendo
+    // `dados.faturamento` em vez de `dados.filteredSummary.faturamento`
+    // (QA humano encontrou em produção: Red Fish/conta 41, ver commit).
     resultado: {
       disponivel: true, escopoConta: true,
       dados: {
-        faturamento: 412880.5, lucroContribuicao: 96220.3, margemContribuicaoPercentual: 23.3,
-        ticket: 128.9, pedidosTotal: 3201, pedidosValidos: 3180, cancelados: 21, problemas: 4,
-        confiancaFechamento: "parcial", semCusto: true, semFrete: false,
+        ok: true,
+        filteredSummary: {
+          faturamento: 412880.5, lucroContribuicao: 96220.3, margemContribuicaoPercentual: 23.3,
+          ticket: 128.9, pedidosTotal: 3201, pedidosValidos: 3180, cancelados: 21, problemas: 4,
+          confiancaFechamento: "parcial", semCusto: true, semFrete: false,
+        },
       },
     },
     margem: {
@@ -71,6 +81,20 @@ function payloadFeliz() {
       ],
     },
   };
+}
+
+// REGRESSÃO P0 — percentual sem dado (comResultado/comMargem vazio, campo
+// null nos três blocos que fazem `pontos / 100` no frontend) precisa virar
+// "—", nunca "0,0%". `null / 100` avalia para `0` em JS (não NaN) — um
+// número finito real que escapa do guard de ausência dos formatadores se a
+// divisão acontecer ANTES de checar ausência (bug real achado em produção
+// nos três blocos: Resultado, Margem, Ads).
+function payloadPercentuaisAusentes() {
+  const p = payloadFeliz();
+  p.resultado.dados.filteredSummary.margemContribuicaoPercentual = null;
+  p.margem.dados.placar.margemMediaPercent = null;
+  p.ads.dados.acos = null;
+  return p;
 }
 
 // Conta Shopee: margem/ads ML-only viram indisponível com motivo (nunca
@@ -284,6 +308,35 @@ async function run() {
     const png2 = await cdp.send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(shot2, Buffer.from(png2.data, "base64"));
     console.log(`   screenshot: ${shot2}`);
+
+    // ═══ 3. REGRESSÃO P0 — percentual sem dado nunca vira 0,0% ═══
+    visaoPayload = payloadPercentuaisAusentes();
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/visao.html?cliente=n97&conta=42&_r=3` });
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
+    await sleep(300);
+    await waitFor(cdp, "document.querySelectorAll('.vf-visao-bloco').length === 6", "os 6 blocos não renderizaram após reload");
+    await sleep(200);
+
+    await check("F3.2 — REGRESSÃO: margem de contribuição, margem média e ACOS ausentes mostram '—', nunca '0,0%'", async () => {
+      const lerValorPorLabel = (label) => `(function(){
+        var labels = Array.prototype.filter.call(document.querySelectorAll('.vf-kpi__label'), function(l){ return l.textContent.trim() === ${JSON.stringify(label)}; });
+        if (!labels.length) return null;
+        var valor = labels[0].parentElement.querySelector('.vf-kpi__value');
+        return valor ? valor.textContent.trim() : null;
+      })()`;
+      const mc = await cdp.evaluate(lerValorPorLabel("Margem de contribuição"));
+      const margemMedia = await cdp.evaluate(lerValorPorLabel("Margem média"));
+      const acos = await cdp.evaluate(lerValorPorLabel("ACOS"));
+      assert.strictEqual(mc, "—", `Margem de contribuição deveria ser '—' sem dado, veio: ${mc}`);
+      assert.strictEqual(margemMedia, "—", `Margem média deveria ser '—' sem dado, veio: ${margemMedia}`);
+      assert.strictEqual(acos, "—", `ACOS deveria ser '—' sem dado, veio: ${acos}`);
+      const texto = await cdp.evaluate("document.body.innerText");
+      assert.ok(!texto.includes("0,0%"), `nenhum percentual ausente pode virar 0,0%: ${texto.slice(0, 1200)}`);
+      // Faturamento (mesmo bloco Resultado) continua real — prova que o
+      // path certo (filteredSummary) está sendo lido, não só que o
+      // percentual foi silenciado.
+      assert.ok(texto.includes("R$ 412.880,50"), `faturamento real deveria continuar visível: ${texto.slice(0, 400)}`);
+    });
 
     await check("sem erros de console em nenhum cenário", async () => {
       const relevantes = consoleErrors.filter((m) => !/favicon/i.test(m));

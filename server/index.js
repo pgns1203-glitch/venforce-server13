@@ -18,7 +18,13 @@ const { authMiddleware, requireAdmin } = require("./middlewares/authMiddleware")
 const {
   apiKeyMiddleware,
   requireDesignAccess,
+  requireAutomacoesAccess,
 } = require("./middlewares/accessMiddleware");
+const { requireBaseNaCarteira } = require("./middlewares/carteiraMiddleware");
+const {
+  ehAdmin: authzEhAdmin,
+  clientesAutorizadosSet: authzClientesAutorizadosSet,
+} = require("./services/squads/authorizationService");
 const { toNumber, positive, round2 } = require("./utils/numberUtils");
 const {
   normalizeText,
@@ -61,6 +67,7 @@ const fechamentoDebugRoutes = require("./routes/fechamentoDebugRoutes");
 const mlRoutes = require("./routes/mlRoutes");
 const clienteContasRoutes = require("./routes/clienteContasRoutes");
 const meRoutes = require("./routes/meRoutes");
+const squadsRoutes = require("./routes/squadsRoutes");
 const visaoRoutes = require("./routes/visaoRoutes");
 const financeiroVisaoRoutes = require("./routes/financeiroVisaoRoutes");
 const { verificarDependenciasCliente } = require("./services/clientes/clienteDependenciasService");
@@ -98,6 +105,7 @@ const {
   captureRequestError,
 } = require("./middlewares/observabilityMiddleware");
 const { ensureObservabilityTables } = require("./repositories/observabilityRepository");
+const { ensureSquadsTables } = require("./services/squads/squadsRepository");
 const {
   MARKETPLACES_SUPORTADOS,
   normalizarProdutoIdTikTok,
@@ -781,6 +789,7 @@ app.use("/fechamentos", fechamentoDebugRoutes);
 app.use("/", mlRoutes);
 app.use("/", clienteContasRoutes);
 app.use("/me", meRoutes);
+app.use("/squads", squadsRoutes);
 app.use("/", tiktokShopRoutes);
 app.use("/shopee", shopeeRoutes);
 app.use("/", automacoesRoutes);
@@ -931,7 +940,7 @@ app.get("/api/bases/:baseSlug", apiKeyMiddleware, async (req, res) => {
 });
 
 // LISTAR BASES
-app.get("/bases", authMiddleware, async (req, res) => {
+app.get("/bases", authMiddleware, requireAutomacoesAccess, async (req, res) => {
   try {
     // total_skus / skus_com_custo alimentam a cobertura por base na tela /bases.
     const result = await pool.query(
@@ -943,14 +952,30 @@ app.get("/bases", authMiddleware, async (req, res) => {
         GROUP BY b.id
         ORDER BY b.created_at DESC`
     );
-    res.json({ ok: true, bases: result.rows });
+    let bases = result.rows;
+    // P2.1 — carteira: não-admin vê só bases órfãs (sem vínculo ativo) e as
+    // que cobrem ao menos um cliente do seu portfolio.
+    if (!authzEhAdmin(req.user)) {
+      const permitidos = [...(await authzClientesAutorizadosSet(req.user))];
+      const vinc = await pool.query(
+        `SELECT base_id,
+                COUNT(*) FILTER (WHERE cliente_id = ANY($1::int[]))::int AS mine
+           FROM base_cliente_vinculos
+          WHERE ativo = true
+          GROUP BY base_id`,
+        [permitidos]
+      );
+      const porBase = new Map(vinc.rows.map((r) => [r.base_id, r.mine]));
+      bases = bases.filter((b) => !porBase.has(b.id) || porBase.get(b.id) > 0);
+    }
+    res.json({ ok: true, bases });
   } catch (err) {
     res.status(500).json({ ok: false, erro: err.message });
   }
 });
 
 // BUSCAR CUSTOS DE UMA BASE
-app.get("/bases/:baseId", authMiddleware, async (req, res) => {
+app.get("/bases/:baseId", authMiddleware, requireAutomacoesAccess, requireBaseNaCarteira("baseId", { bySlug: true }), async (req, res) => {
   try {
     const slug = normalizarSlug(req.params.baseId);
     const acesso = await pool.query(
@@ -995,7 +1020,7 @@ app.get("/bases/:baseId", authMiddleware, async (req, res) => {
 });
 
 // IMPORTAR PLANILHA
-app.post("/importar-base", authMiddleware, upload.single("arquivo"), async (req, res) => {
+app.post("/importar-base", authMiddleware, requireAutomacoesAccess, upload.single("arquivo"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, erro: "Nenhum arquivo enviado" });
     const nomeBaseOriginal = String(req.body.nomeBase || "").trim();
@@ -1097,8 +1122,10 @@ app.post("/importar-base", authMiddleware, upload.single("arquivo"), async (req,
 });
 
 // DESABILITAR BASE
-app.post("/bases/:baseId/desabilitar", authMiddleware, async (req, res) => {
+app.post("/bases/:baseId/desabilitar", authMiddleware, requireAutomacoesAccess, async (req, res) => {
   try {
+    // Já isolado por user_bases (mecanismo legado de posse de base por usuário);
+    // P2.1 acrescenta só o gate de role. Ver BACKEND_V3_AUTHORIZATION_COVERAGE.md.
     const slug = normalizarSlug(req.params.baseId);
     const acesso = await pool.query(
       `SELECT b.id FROM bases b JOIN user_bases ub ON ub.base_id = b.id WHERE b.slug = $1 AND ub.user_id = $2`,
@@ -1828,6 +1855,34 @@ const server = app.listen(PORT, () => {
   designStudioService.initialize().catch((err) => {
     console.error("[design-studio] erro ao garantir tabelas no boot:", err.message);
   });
+
+  // P2.2 — diagnóstico de rollout: estado do enforcement + prontidão da
+  // migração, num único log de boot. NÃO ativa nem bloqueia nada — só torna
+  // observável se o flag está coerente com os dados.
+  ensureSquadsTables()
+    .then(() => require("./services/squads/squadsMigracaoService").auditoria())
+    .then((a) => {
+      const { describeEnforcement } = require("./config/squadsEnforcement");
+      const enf = describeEnforcement();
+      console.log(
+        `[squads] enforcement=${enf.enabled ? "ON" : "OFF"} ` +
+        `(SQUADS_ENFORCEMENT=${enf.envRaw ?? "<ausente>"}) | ` +
+        `clientes sem squad=${a.clientesAtivos.semSquad}/${a.clientesAtivos.total} | ` +
+        `internos sem membership=${a.usuariosInternos.semMembership}/${a.usuariosInternos.total} | ` +
+        `internos sem principal=${a.usuariosInternos.semPrincipal} | ` +
+        `auditoria.pronto=${a.pronto}`
+      );
+      if (enf.enabled && !a.pronto) {
+        console.warn(
+          "[squads] ⚠ enforcement ON com auditoria NÃO pronta: usuários internos sem " +
+          "membership receberão 403 em cascata. Complete a migração (GET /squads/migracao/auditoria) " +
+          "ou desative SQUADS_ENFORCEMENT."
+        );
+      }
+    })
+    .catch((err) => {
+      console.error("[squads] erro ao garantir tabelas / auditoria no boot:", err.message);
+    });
 
   ensureObservabilityTables()
     .then(() => observabilityService.runCleanup())

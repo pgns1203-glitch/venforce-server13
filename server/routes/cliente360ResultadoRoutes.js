@@ -17,18 +17,20 @@
 const express = require("express");
 const { authMiddleware, requireAdmin } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
+const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 const controller = require("../controllers/cliente360ResultadoController");
 
 const router = express.Router();
+const naCarteira = requireClienteNaCarteira("slug");
 
-// Leitura
-router.get("/:slug/resultado", authMiddleware, requireAutomacoesAccess, controller.obterResultado);
-router.get("/:slug/elasticidades", authMiddleware, requireAutomacoesAccess, controller.obterElasticidades);
-router.get("/:slug/placar", authMiddleware, requireAutomacoesAccess, controller.obterPlacar);
-router.get("/:slug/acoes", authMiddleware, requireAutomacoesAccess, controller.listarAcoes);
+// Leitura — autorização real por carteira (V3 S4).
+router.get("/:slug/resultado", authMiddleware, requireAutomacoesAccess, naCarteira, controller.obterResultado);
+router.get("/:slug/elasticidades", authMiddleware, requireAutomacoesAccess, naCarteira, controller.obterElasticidades);
+router.get("/:slug/placar", authMiddleware, requireAutomacoesAccess, naCarteira, controller.obterPlacar);
+router.get("/:slug/acoes", authMiddleware, requireAutomacoesAccess, naCarteira, controller.listarAcoes);
 
 // Simulação (leitura pesada, mas não persiste nada)
-router.post("/:slug/resultado/simular", authMiddleware, requireAutomacoesAccess, controller.simularResultado);
+router.post("/:slug/resultado/simular", authMiddleware, requireAutomacoesAccess, naCarteira, controller.simularResultado);
 
 // Escrita de ações do consultor (admin)
 router.post("/:slug/acoes", authMiddleware, requireAdmin, controller.registrarAcao);

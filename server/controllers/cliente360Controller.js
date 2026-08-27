@@ -4,6 +4,7 @@
 
 const service = require("../services/cliente360/cliente360Service");
 const syncService = require("../services/cliente360/cliente360SyncService");
+const { resolvePortfolioClientes, ehAdmin } = require("../services/squads/authorizationService");
 
 // Guard final: remove recursivamente qualquer campo sensível que escape do service.
 const CAMPOS_SENSIVEIS = new Set([
@@ -44,7 +45,15 @@ function slugParam(req) {
 // GET /operacao/cliente-360/clientes
 async function listarClientesOperacional(req, res) {
   try {
-    const data = await service.getClientesOperacional();
+    // Carteira autorizada (V3 S4): admin vê todos; demais papéis só os
+    // clientes que podem acessar (Squad / seller_clientes). Interno sem
+    // Squad recebe lista vazia — nunca "todos os clientes".
+    let restringirClienteIds = null;
+    if (!ehAdmin(req.user)) {
+      const autorizados = await resolvePortfolioClientes(req.user || {});
+      restringirClienteIds = autorizados.map((c) => c.id);
+    }
+    const data = await service.getClientesOperacional({ restringirClienteIds });
     return responder(res, 200, data);
   } catch (err) {
     return tratarErro(res, err, "listarClientesOperacional");

@@ -16,21 +16,33 @@
 const express = require("express");
 const { authMiddleware, requireAdmin } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
+const {
+  requireClienteNaCarteira,
+  requireClienteContaNaCarteira,
+} = require("../middlewares/carteiraMiddleware");
 const controller = require("../controllers/clienteContasController");
 
 const router = express.Router();
 
+// P2.1 — para rotas por ID de conta: resolve conta → cliente → carteira.
+// "A conta veio da lista autorizada" era premissa do frontend, não
+// enforcement; contra URL/id manipulado não vale.
+const contaNaCarteira = requireClienteContaNaCarteira("id");
+
 router.use(authMiddleware);
 
-router.get("/clientes/:cliente/contas", requireAutomacoesAccess, controller.listar);
+// Leitura das contas de um cliente: além do gate de role, autorização real
+// por carteira (V3 S4) — 403 CLIENTE_FORA_DA_CARTEIRA para cliente fora do
+// Squad do usuário interno. Admin e seller (seller_clientes) inalterados.
+router.get("/clientes/:cliente/contas", requireAutomacoesAccess, requireClienteNaCarteira("cliente"), controller.listar);
 router.post("/clientes/:cliente/contas", requireAdmin, controller.criar);
 
-router.get("/cliente-contas/:id", requireAutomacoesAccess, controller.obter);
-router.patch("/cliente-contas/:id", requireAdmin, controller.atualizar);
-router.patch("/cliente-contas/:id/principal", requireAdmin, controller.definirPrincipal);
-router.get("/cliente-contas/:id/base", requireAutomacoesAccess, controller.obterBase);
-router.get("/cliente-contas/:id/bases-elegiveis", requireAutomacoesAccess, controller.basesElegiveis);
-router.put("/cliente-contas/:id/base", requireAdmin, controller.vincularBase);
-router.delete("/cliente-contas/:id/ml-grant", requireAdmin, controller.desconectarMlGrant);
+router.get("/cliente-contas/:id", requireAutomacoesAccess, contaNaCarteira, controller.obter);
+router.patch("/cliente-contas/:id", requireAdmin, contaNaCarteira, controller.atualizar);
+router.patch("/cliente-contas/:id/principal", requireAdmin, contaNaCarteira, controller.definirPrincipal);
+router.get("/cliente-contas/:id/base", requireAutomacoesAccess, contaNaCarteira, controller.obterBase);
+router.get("/cliente-contas/:id/bases-elegiveis", requireAutomacoesAccess, contaNaCarteira, controller.basesElegiveis);
+router.put("/cliente-contas/:id/base", requireAdmin, contaNaCarteira, controller.vincularBase);
+router.delete("/cliente-contas/:id/ml-grant", requireAdmin, contaNaCarteira, controller.desconectarMlGrant);
 
 module.exports = router;

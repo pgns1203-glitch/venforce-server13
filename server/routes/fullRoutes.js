@@ -14,9 +14,14 @@
 const express = require("express");
 const { authMiddleware } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
+const { requireClienteContaNaCarteira } = require("../middlewares/carteiraMiddleware");
 const controller = require("../controllers/fullController");
 
 const router = express.Router();
+
+// P2.1 — autorização por carteira. O identificador é o ID da CLIENTE_CONTA:
+// resolve conta → cliente → Squad. "A conta existe" nunca é "pode acessar".
+const naCarteira = requireClienteContaNaCarteira("clienteContaId");
 
 function requireFullCentralEnabled(req, res, next) {
   if (process.env.FULL_CENTRAL_ENABLED !== "true") {
@@ -27,12 +32,13 @@ function requireFullCentralEnabled(req, res, next) {
 
 router.use(requireFullCentralEnabled);
 
-router.get("/contas/:clienteContaId/snapshot", authMiddleware, requireAutomacoesAccess, controller.getSnapshot);
+router.get("/contas/:clienteContaId/snapshot", authMiddleware, requireAutomacoesAccess, naCarteira, controller.getSnapshot);
 
 router.get(
   "/contas/:clienteContaId/inventories/:inventoryId/movements",
   authMiddleware,
   requireAutomacoesAccess,
+  naCarteira,
   controller.getInventoryMovements
 );
 
@@ -40,6 +46,7 @@ router.get(
   "/contas/:clienteContaId/inventories/:inventoryId",
   authMiddleware,
   requireAutomacoesAccess,
+  naCarteira,
   controller.getInventoryDetail
 );
 

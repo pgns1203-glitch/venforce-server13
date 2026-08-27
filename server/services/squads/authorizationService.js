@@ -165,11 +165,105 @@ async function assertClienteNaCarteira(user, ref, db = pool) {
   return cliente;
 }
 
+// Autoriza por ID de CLIENTE_CONTA. A herança é sempre conta -> cliente ->
+// Squad; NUNCA "a conta existe, logo pode acessar" (mission §14, P2.1 §4).
+// Lança:
+//   404 CLIENTE_NAO_ENCONTRADO — conta não existe
+//   403 CLIENTE_FORA_DA_CARTEIRA — a conta existe mas o cliente dela está
+//        fora da carteira do usuário
+// Retorna { contaId, clienteId, clienteSlug, clienteNome, clienteAtivo }.
+async function assertClienteContaNaCarteira(user, clienteContaId, db = pool) {
+  const id = Number(clienteContaId);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw erro(404, CODIGOS_CANONICOS.CLIENTE_NAO_ENCONTRADO, "Conta não encontrada.");
+  }
+  const { rows } = await db.query(
+    `/* authz:RESOLVE_CLIENTE_CONTA */
+     SELECT cc.id AS conta_id, cc.cliente_id, c.slug, c.nome, c.ativo
+       FROM cliente_contas cc
+       JOIN clientes c ON c.id = cc.cliente_id
+      WHERE cc.id = $1`,
+    [id]
+  );
+  const conta = rows[0];
+  if (!conta) {
+    throw erro(404, CODIGOS_CANONICOS.CLIENTE_NAO_ENCONTRADO, "Conta não encontrada.");
+  }
+  const ok = await canAccessCliente(user, conta.cliente_id, db);
+  if (!ok) {
+    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Cliente fora da sua carteira.");
+  }
+  return {
+    contaId: conta.conta_id,
+    clienteId: conta.cliente_id,
+    clienteSlug: conta.slug,
+    clienteNome: conta.nome,
+    clienteAtivo: conta.ativo,
+  };
+}
+
+// Ids de cliente que o usuário acessa, como Set (para interseções em memória).
+async function clientesAutorizadosSet(user, db = pool) {
+  const lista = await resolvePortfolioClientes(user, db);
+  return new Set(lista.map((c) => c.id));
+}
+
+// Autoriza por BASE de custos. A base não tem dono direto — ela cobre N
+// clientes via base_cliente_vinculos. Regra (decisão P2.1): o usuário acessa
+// a base se cobre PELO MENOS UM cliente vinculado. Base órfã (sem vínculo
+// ativo) fica acessível às roles internas — não há dado de cliente a vazar.
+// admin → sempre. Lança 404 (base não existe) / 403 CLIENTE_FORA_DA_CARTEIRA.
+// Retorna { baseId, baseSlug, baseNome }.
+async function assertBaseNaCarteira(user, baseRef, { bySlug = false } = {}, db = pool) {
+  const bruto = String(baseRef ?? "").trim();
+  if (!bruto) {
+    throw erro(404, "BASE_NAO_ENCONTRADA", "Base não encontrada.");
+  }
+  const { rows } = bySlug
+    ? await db.query(
+        `/* authz:RESOLVE_BASE_SLUG */ SELECT id, slug, nome FROM bases WHERE slug = $1`,
+        [bruto.toLowerCase()]
+      )
+    : await db.query(
+        `/* authz:RESOLVE_BASE_ID */ SELECT id, slug, nome FROM bases WHERE id = $1`,
+        [/^\d+$/.test(bruto) ? Number(bruto) : -1]
+      );
+  const base = rows[0];
+  if (!base) {
+    throw erro(404, "BASE_NAO_ENCONTRADA", "Base não encontrada.");
+  }
+  if (ehAdmin(user)) {
+    return { baseId: base.id, baseSlug: base.slug, baseNome: base.nome };
+  }
+  const { rows: vinc } = await db.query(
+    `/* authz:BASE_CLIENTES_VINCULADOS */
+     SELECT DISTINCT cliente_id FROM base_cliente_vinculos
+      WHERE base_id = $1 AND ativo = true`,
+    [base.id]
+  );
+  if (vinc.length === 0) {
+    // Base órfã: só as roles internas mexem nela.
+    if (ehInterno(user) || ehSeller(user)) {
+      return { baseId: base.id, baseSlug: base.slug, baseNome: base.nome };
+    }
+    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Base fora da sua carteira.");
+  }
+  const permitidos = await clientesAutorizadosSet(user, db);
+  const cobre = vinc.some((v) => permitidos.has(v.cliente_id));
+  if (!cobre) {
+    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Base fora da sua carteira.");
+  }
+  return { baseId: base.id, baseSlug: base.slug, baseNome: base.nome };
+}
+
 module.exports = {
   resolverClienteRef,
   resolvePortfolioClientes,
+  clientesAutorizadosSet,
   canAccessCliente,
   assertClienteNaCarteira,
+  assertClienteContaNaCarteira,
+  assertBaseNaCarteira,
   ehAdmin,
   ehSeller,
   ehInterno,

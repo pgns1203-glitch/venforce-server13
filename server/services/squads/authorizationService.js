@@ -111,8 +111,10 @@ async function canAccessCliente(user = {}, clienteId, db = pool) {
   if (!Number.isInteger(id) || id <= 0) return false;
 
   if (ehAdmin(user)) {
+    // Bypass global: basta o cliente existir (admin acessa inclusive
+    // cliente inativo, ex.: administração/migração).
     const { rows } = await db.query(
-      `/* authz:CAN_ACCESS_ADMIN */ SELECT 1 FROM clientes WHERE id = $1 AND ativo = true`,
+      `/* authz:CAN_ACCESS_ADMIN */ SELECT 1 FROM clientes WHERE id = $1`,
       [id]
     );
     return rows.length > 0;

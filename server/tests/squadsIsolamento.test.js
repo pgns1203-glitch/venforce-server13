@@ -111,7 +111,7 @@ function instalarMock(m) {
       return { rows: portfolioInterno(m, params[0]) };
     }
     if (q.includes("authz:CAN_ACCESS_ADMIN")) {
-      const c = m.clientes.find((x) => x.id === Number(params[0]) && x.ativo);
+      const c = m.clientes.find((x) => x.id === Number(params[0]));
       return { rows: c ? [{ "?column?": 1 }] : [] };
     }
     if (q.includes("authz:CAN_ACCESS_SELLER")) {

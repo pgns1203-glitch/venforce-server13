@@ -80,9 +80,10 @@ async function run() {
   pool.query = async (sql, params) => {
     const q = String(sql).replace(/\s+/g, " ");
     if (/^(CREATE|ALTER|DROP|DO |BEGIN|COMMIT)/i.test(q.trim())) return { rows: [] };
-    if (q.includes("squads:AUDIT_CLIENTES ")) return { rows: [{ ativos: 10, com_squad: 7, sem_squad: 3 }] };
+    if (q.includes("squads:AUDIT_CLIENTES ")) return { rows: [{ ativos: 10, com_squad_ativo: 6, em_squad_inativo: 1, sem_squad: 3 }] };
     if (q.includes("squads:AUDIT_CLIENTES_SEM_SQUAD")) return { rows: [{ id: 8, slug: "x", nome: "X" }, { id: 9, slug: "y", nome: "Y" }, { id: 11, slug: "z", nome: "Z" }] };
-    if (q.includes("squads:AUDIT_USUARIOS")) return { rows: [{ internos: 6, com_membership: 4, sem_membership: 2, com_multiplas: 1, sem_principal: 0 }] };
+    if (q.includes("squads:AUDIT_CLIENTES_SQUAD_INATIVO")) return { rows: [{ id: 12, slug: "w", nome: "W", squad_id: 30, squad_slug: "old", squad_nome: "Old" }] };
+    if (q.includes("squads:AUDIT_USUARIOS")) return { rows: [{ internos: 6, com_membership: 4, sem_membership: 2, apenas_squad_inativo: 1, com_multiplas: 1, multi_squad_valido: 1, sem_principal: 0 }] };
     if (q.includes("squads:AUDIT_PRINCIPAL_DUPLICADO")) return { rows: [] };
     return { rows: [] };
   };
@@ -90,8 +91,13 @@ async function run() {
     const r = await migracao.auditoria();
     ok("clientesAtivos.semSquad = 3", r.clientesAtivos.semSquad === 3);
     ok("listaSemSquad com 3 itens", r.clientesAtivos.listaSemSquad.length === 3);
+    ok("clientesAtivos.emSquadInativo = 1", r.clientesAtivos.emSquadInativo === 1);
+    ok("listaEmSquadInativo com 1 item", r.clientesAtivos.listaEmSquadInativo.length === 1);
+    ok("clientesAtivos.comSquadAtivo = 6", r.clientesAtivos.comSquadAtivo === 6);
     ok("usuariosInternos.semMembership = 2", r.usuariosInternos.semMembership === 2);
+    ok("usuariosInternos.apenasEmSquadInativo = 1", r.usuariosInternos.apenasEmSquadInativo === 1);
     ok("usuariosInternos.comMultiplasMemberships = 1", r.usuariosInternos.comMultiplasMemberships === 1);
+    ok("usuariosInternos.multiSquadValido = 1", r.usuariosInternos.multiSquadValido === 1);
     ok("comPrincipalDuplicado = 0", r.usuariosInternos.comPrincipalDuplicado === 0);
     ok("pronto = false (há pendências)", r.pronto === false);
   }

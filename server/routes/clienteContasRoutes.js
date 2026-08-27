@@ -16,13 +16,17 @@
 const express = require("express");
 const { authMiddleware, requireAdmin } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
+const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 const controller = require("../controllers/clienteContasController");
 
 const router = express.Router();
 
 router.use(authMiddleware);
 
-router.get("/clientes/:cliente/contas", requireAutomacoesAccess, controller.listar);
+// Leitura das contas de um cliente: além do gate de role, autorização real
+// por carteira (V3 S4) — 403 CLIENTE_FORA_DA_CARTEIRA para cliente fora do
+// Squad do usuário interno. Admin e seller (seller_clientes) inalterados.
+router.get("/clientes/:cliente/contas", requireAutomacoesAccess, requireClienteNaCarteira("cliente"), controller.listar);
 router.post("/clientes/:cliente/contas", requireAdmin, controller.criar);
 
 router.get("/cliente-contas/:id", requireAutomacoesAccess, controller.obter);

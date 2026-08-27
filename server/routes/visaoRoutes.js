@@ -5,10 +5,13 @@
 const express = require("express");
 const { authMiddleware } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
+const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 const controller = require("../controllers/visaoController");
 
 const router = express.Router();
 
-router.get("/:cliente", authMiddleware, requireAutomacoesAccess, controller.visao);
+// Autorização real por carteira (V3 S4): interno só vê cliente do seu Squad,
+// seller só do seller_clientes, admin bypass. 403 CLIENTE_FORA_DA_CARTEIRA.
+router.get("/:cliente", authMiddleware, requireAutomacoesAccess, requireClienteNaCarteira("cliente"), controller.visao);
 
 module.exports = router;

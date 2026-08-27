@@ -542,7 +542,12 @@ async function getFreteHistorico(slug, options = {}) {
 }
 
 // Lista operacional segura (admin/user/membro). Sem N+1.
-async function getClientesOperacional() {
+// `restringirClienteIds`: quando fornecido (array), a lista sai filtrada a
+// esses ids — usado para aplicar a carteira autorizada do usuário (V3 S4)
+// sem duplicar o cálculo de readiness. `null`/ausente = sem restrição
+// (comportamento histórico; usado por consumidores internos que já
+// filtram depois, como meService.obterPortfolio).
+async function getClientesOperacional({ restringirClienteIds = null } = {}) {
   await repo.ensureCliente360Tables();
   // Mesma referência padrão da tela: mês anterior fechado.
   const periodo = periodoMesAnterior();
@@ -560,7 +565,10 @@ async function getClientesOperacional() {
   const syncPorCliente = new Map(syncs.map((s) => [s.cliente_id, s.sincronizado_em]));
   const contasPorCliente = resumoContasPorCliente(contasResumoRaw);
 
-  const lista = clientes.map((c) => {
+  const idsPermitidos = Array.isArray(restringirClienteIds) ? new Set(restringirClienteIds.map(Number)) : null;
+  const clientesVisiveis = idsPermitidos ? clientes.filter((c) => idsPermitidos.has(Number(c.id))) : clientes;
+
+  const lista = clientesVisiveis.map((c) => {
     const grant = grantStatusDe(grantPorCliente.get(c.id));
     const temBase = baseSet.has(c.id);
     const pendencias = [];

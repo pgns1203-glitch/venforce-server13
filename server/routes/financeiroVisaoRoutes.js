@@ -5,10 +5,12 @@
 const express = require("express");
 const { authMiddleware } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
+const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 const controller = require("../controllers/financeiroVisaoController");
 
 const router = express.Router();
 
-router.get("/:cliente", authMiddleware, requireAutomacoesAccess, controller.financeiro);
+// Autorização real por carteira (V3 S4).
+router.get("/:cliente", authMiddleware, requireAutomacoesAccess, requireClienteNaCarteira("cliente"), controller.financeiro);
 
 module.exports = router;

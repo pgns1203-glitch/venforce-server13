@@ -349,6 +349,20 @@ async function run() {
         { name: "access-control-allow-methods", value: "GET,POST,OPTIONS" },
       ];
       if (params.request.method === "OPTIONS") { await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: cors }); return; }
+      // C1 — GET /me/context é a primeira chamada do Shell V3 (carteira
+      // autoritativa por Squad, server/services/meService.js).
+      if (url.includes("/me/context")) {
+        const body = Buffer.from(JSON.stringify({
+          ok: true,
+          user: { id: 12, nome: "Pedro Gomes", email: null, role: "user" },
+          squads: [], squadPrincipalId: null,
+          clientes: [{ id: 1, slug: "loja-teste", nome: "Loja Teste", squadId: null, responsavelDireto: false, contasAtivas: null }],
+          portfolio: { totalClientes: 1 },
+          permissoes: { podeAdministrar: false },
+        })).toString("base64");
+        await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 200, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body });
+        return;
+      }
       if (url.includes("/operacao/cliente-360/clientes")) {
         const body = Buffer.from(JSON.stringify({
           ok: true,

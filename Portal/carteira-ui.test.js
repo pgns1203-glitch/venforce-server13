@@ -73,6 +73,36 @@ const CASA = { // P11 — a rota de contas deste cliente falha; só a linha dele
 const PORTFOLIO_PADRAO = { ok: true, clientes: [N97, EXTRA, PEDRO, CASA] };
 const CONTAS_PADRAO = { n97: N97_CONTAS, extra: EXTRA_CONTAS, "loja-do-pedro": PEDRO_CONTAS };
 
+/* ── C1 — fixture no formato REAL de GET /me/portfolio (server/services/
+   meService.js:134-171): contas EMBUTIDAS, `pendencias` como [{tipo}],
+   `baseVinculada` no lugar de `base`, `grantStatus` já resolvido pelo
+   backend e `ultimaSync` literalmente null (meService.js:150). É de
+   propósito que este payload não se pareça com o legado — o que o teste
+   prova é justamente a adaptação. ────────────────────────────────────── */
+function contaMe(id, marketplace, nome, label, extras) {
+  return Object.assign(
+    { id, marketplace, nome, externalAccountLabel: label, external_account_id: String(100000000 + id), ativo: true, grantStatus: marketplace === "meli" ? "conectado" : null, baseVinculada: { id: 9, nome: "Custo 2026" }, ultimaSync: null },
+    extras || {}
+  );
+}
+const ME_PORTFOLIO = {
+  ok: true,
+  squads: [
+    { id: 3, nome: "Squad Alpha", slug: "alpha", principal: true },
+    { id: 5, nome: "Squad Beta", slug: "beta", principal: false },
+  ],
+  clientes: [
+    { id: 87, slug: "n97", nome: "N97 Comercial", squadId: 3, squad: { id: 3, nome: "Squad Alpha", slug: "alpha", principalParaUsuario: true }, responsavelDireto: true, statusOperacional: "atencao", pendencias: [],
+      contas: [contaMe(42, "meli", "Mercado Livre 1", "n97store"), contaMe(43, "meli", "Mercado Livre 2", "n97outlet")] },
+    { id: 88, slug: "extra", nome: "Extra Máquinas", squadId: 5, squad: { id: 5, nome: "Squad Beta", slug: "beta", principalParaUsuario: false }, responsavelDireto: false, statusOperacional: "pronto", pendencias: [],
+      contas: [contaMe(51, "meli", "Mercado Livre", "extramaquinas")] },
+    { id: 90, slug: "loja-do-pedro", nome: "Loja do Pedro", squadId: 5, squad: { id: 5, nome: "Squad Beta", slug: "beta", principalParaUsuario: false }, responsavelDireto: false, statusOperacional: "critico", pendencias: [{ tipo: "sem_grant" }, { tipo: "sem_base" }],
+      contas: [] },
+    { id: 89, slug: "casa-e-cia", nome: "Casa & Cia", squadId: 3, squad: { id: 3, nome: "Squad Alpha", slug: "alpha", principalParaUsuario: true }, responsavelDireto: false, statusOperacional: "atencao", pendencias: [{ tipo: "sem_base" }],
+      contas: [contaMe(60, "meli", "Mercado Livre", "casaecia", { grantStatus: "atencao", baseVinculada: null })] },
+  ],
+};
+
 function carteiraGrande(n) {
   const nomes = ["Aurora", "Bravo", "Cedro", "Delta", "Everest", "Fênix", "Gaia", "Horizonte"];
   const out = [];
@@ -129,7 +159,11 @@ function harnessHtml(squadsJson) {
   import { createCarteira } from "/carteira.js";
   var squads = ${squadsJson};
   window.__navegacoes = [];
-  window.__cart = createCarteira({ getSquads: function () { return squads; }, onNavigate: function (href) { window.__navegacoes.push(href); } });
+  // squads === null: NADA injetado — é o caminho de produção, em que os
+  // squads vêm do próprio payload de /me/portfolio (C1).
+  var opts = { onNavigate: function (href) { window.__navegacoes.push(href); } };
+  if (squads !== null) opts.getSquads = function () { return squads; };
+  window.__cart = createCarteira(opts);
   window.__cart.montar(document.getElementById("carteira-test-root"));
 </script>
 </body></html>`;
@@ -147,6 +181,21 @@ function startServer() {
     // harness é servido same-origin, então nem precisa de CORS/Fetch
     // interception (diferença deliberada de vf-shell-adoption-ui.test.js,
     // que testa páginas com API_BASE hardcoded para produção).
+    // C1 — GET /me/portfolio só existe quando a fixture o define. Sem ele,
+    // 404: é EXATAMENTE o que exercita a queda para o caminho anterior, que
+    // todos os cenários P01-P13 abaixo continuam medindo.
+    if (u.pathname === "/me/portfolio") {
+      if (!currentFixture.mePortfolio) { res.writeHead(404, { "Content-Type": "application/json" }); res.end('{"ok":false}'); return; }
+      if (currentFixture.mePortfolio === "erro") {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, erro: "Falha simulada em /me/portfolio." }));
+        return;
+      }
+      mePortfolioRequestCount += 1;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(currentFixture.mePortfolio));
+      return;
+    }
     if (u.pathname === "/operacao/cliente-360/clientes") {
       if (currentFixture.failPortfolio) {
         res.writeHead(500, { "Content-Type": "application/json" });
@@ -242,6 +291,7 @@ async function check(name, fn) {
 
 let currentFixture = { portfolio: PORTFOLIO_PADRAO, contas: CONTAS_PADRAO, failPortfolio: false, failContasSlug: "casa-e-cia" };
 let contasRequestCount = 0;
+let mePortfolioRequestCount = 0;
 
 // A API é same-origin (meta vf-api-base aponta para este servidor de
 // teste), então não precisa de Fetch domain/CORS — só captura de erros de
@@ -276,6 +326,7 @@ async function run() {
 
     async function goto(qs) {
       contasRequestCount = 0;
+      mePortfolioRequestCount = 0;
       await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/harness.html?${qs}` });
       await waitFor(cdp, "window.__cart", "Carteira não montou");
     }
@@ -430,12 +481,98 @@ async function run() {
       assert.ok(temSkeletonEmAlgumMomento, "todas as 120 linhas já teriam contas resolvidas, o que contradiz 'sob demanda'");
     });
 
+    /* ════════════ C1 — GET /me/portfolio como fonte da Carteira ═══════ */
+    currentFixture = { portfolio: PORTFOLIO_PADRAO, contas: CONTAS_PADRAO, failPortfolio: false, failContasSlug: null, mePortfolio: ME_PORTFOLIO };
+    await goto("squads=null");
+    await waitFor(cdp, "document.querySelectorAll('.vf-portfolio-row').length === 4", "linhas não renderizaram a partir de /me/portfolio");
+    await sleep(300); // se alguma chamada por cliente fosse sair, sairia aqui
+
+    await check("C1 — a Carteira inteira vem de UMA chamada: nenhuma requisição por cliente a /clientes/:slug/contas", async () => {
+      assert.strictEqual(mePortfolioRequestCount, 1, `esperado 1 GET /me/portfolio, veio ${mePortfolioRequestCount}`);
+      assert.strictEqual(contasRequestCount, 0, `contas já vieram embutidas; ainda assim saíram ${contasRequestCount} chamadas por cliente`);
+    });
+
+    await check("C1 — contas embutidas viram chips com o rótulo externo certo (n97store × n97outlet)", async () => {
+      const labels = await cdp.evaluate(`
+        Array.prototype.map.call(document.querySelectorAll('.vf-portfolio-row[data-slug=n97] .vf-op-chip__label'), function(e){return e.textContent;})
+      `);
+      assert.deepStrictEqual(labels.sort(), ["n97outlet", "n97store"]);
+    });
+
+    await check("C1 — squads vêm do payload (sem getSquads injetado): agrupamento aparece e o seletor de Squad é oferecido", async () => {
+      const grupos = await cdp.evaluate("document.querySelectorAll('.vf-portfolio-group').length");
+      assert.ok(grupos >= 2, `esperado ≥2 cabeçalhos de squad vindos de /me/portfolio, veio ${grupos}`);
+      assert.ok(await cdp.evaluate("Boolean(document.getElementById('cart-squad'))"), "seletor de Squad deveria existir com 2 squads no payload");
+    });
+
+    await check("C1 — pendencias [{tipo}] são traduzidas: 'Base não vinculada' aparece, nunca '[object Object]'", async () => {
+      const rodape = await cdp.evaluate(`
+        (function(){ var li = document.querySelector('.vf-portfolio-row[data-slug="casa-e-cia"]'); var f = li.querySelector('.vf-portfolio-row__foot'); return f ? f.textContent : null; })();
+      `);
+      assert.ok(rodape && rodape.includes("Base não vinculada"), `rodapé inesperado: ${rodape}`);
+      assert.ok(!/object Object/.test(rodape), `pendência não adaptada vazou para a UI: ${rodape}`);
+    });
+
+    await check("C1 — responsavelDireto do payload marca a linha ('responsável: você')", async () => {
+      const tag = await cdp.evaluate(`
+        (function(){ var li = document.querySelector('.vf-portfolio-row[data-slug=n97]'); var t = li.querySelector('.vf-tag'); return t ? t.textContent : null; })();
+      `);
+      assert.ok(tag && tag.includes("responsável"), `esperado a marca de responsável direto em N97, veio: ${tag}`);
+    });
+
+    await check("C1 — ausência de sync NÃO vira 'nunca sincronizou' (ultimaSync é null no payload)", async () => {
+      const metas = await cdp.evaluate(`
+        Array.prototype.map.call(document.querySelectorAll('.vf-op-chip__meta'), function(e){return e.textContent;}).join(' | ')
+      `);
+      assert.ok(!/nunca sincronizou/.test(metas), `afirmação indevida sobre sync: ${metas}`);
+      assert.ok(/sem dado de sync/.test(metas), `esperado 'sem dado de sync' como ausência honesta, veio: ${metas}`);
+    });
+
+    await check("C1 — sem ultimaSincronizacao no payload, a ordenação 'Última sync' não é oferecida", async () => {
+      const opcoes = await cdp.evaluate(`
+        Array.prototype.map.call(document.querySelectorAll('#cart-ordem option'), function(o){return o.value;})
+      `);
+      assert.ok(!opcoes.includes("sync"), `ordenação por sync foi oferecida sem dado para ordenar: ${JSON.stringify(opcoes)}`);
+      assert.ok(opcoes.includes("atencao") && opcoes.includes("nome") && opcoes.includes("meus"), `demais ordenações sumiram: ${JSON.stringify(opcoes)}`);
+    });
+
+    await check("C1 — grantStatus resolvido pelo backend vence: conta com 'atencao' fica em tom de aviso", async () => {
+      const tom = await cdp.evaluate(`
+        (function(){ var c = document.querySelector('.vf-portfolio-row[data-slug="casa-e-cia"] .vf-op-chip .vf-status'); return c ? c.className : null; })();
+      `);
+      assert.ok(tom && tom.includes("is-warning"), `esperado tom de aviso a partir de grantStatus='atencao', veio: ${tom}`);
+    });
+
+    await check("C1 — entrar() continua funcionando com a fonte nova (chip fixa a conta e navega)", async () => {
+      await cdp.evaluate(`
+        Array.prototype.find.call(document.querySelectorAll('.vf-portfolio-row[data-slug=n97] [data-conta]'), function(b){ return b.dataset.conta === "43"; }).click()
+      `);
+      await waitFor(cdp, "window.__navegacoes.length === 1", "onNavigate não disparou a partir da fonte /me/portfolio");
+      const href = await cdp.evaluate("window.__navegacoes[0]");
+      assert.ok(href.includes("cliente=n97") && href.includes("conta=43"), `destino incorreto: ${href}`);
+    });
+
+    /* ════════════ C1 — queda: /me/portfolio falha, tela não cai ═══════ */
+    currentFixture = { portfolio: PORTFOLIO_PADRAO, contas: CONTAS_PADRAO, failPortfolio: false, failContasSlug: null, mePortfolio: "erro" };
+    await goto("squads=null");
+    await waitFor(cdp, "document.querySelectorAll('.vf-portfolio-row').length === 4", "queda não renderizou a lista pelo caminho anterior");
+    await sleep(300);
+
+    await check("C1 — /me/portfolio com 500: a Carteira cai para context.getPortfolio() + contas sob demanda, sem banner de erro", async () => {
+      assert.ok(contasRequestCount > 0, "a queda deveria voltar a buscar contas por cliente");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-banner.is-danger').length"), 0, "falha do endpoint novo não pode virar erro de carteira");
+      const labels = await cdp.evaluate(`
+        Array.prototype.map.call(document.querySelectorAll('.vf-portfolio-row[data-slug=n97] .vf-op-chip__label'), function(e){return e.textContent;})
+      `);
+      assert.deepStrictEqual(labels.sort(), ["n97outlet", "n97store"], "chips não voltaram pelo caminho anterior");
+    });
+
     await check("sem erros de console em nenhum cenário (rede de produção sempre interceptada)", async () => {
-      const relevantes = consoleErrors.filter((m) => !/favicon/i.test(m));
+      const relevantes = consoleErrors.filter((m) => !/favicon/i.test(m) && !/Failed to load resource/i.test(m));
       assert.strictEqual(relevantes.length, 0, `erros de console: ${JSON.stringify(relevantes)}`);
     });
 
-    console.log(`\n✓ ${checks} verificações da Carteira (P01-P13, exceto P04 total/P13 parcial cobertos acima)`);
+    console.log(`\n✓ ${checks} verificações da Carteira (P01-P13 + C1 /me/portfolio e sua queda)`);
   } finally {
     if (cdp) cdp.close();
     chrome.kill("SIGTERM");

@@ -150,17 +150,37 @@ function safeLocalStorage() {
 }
 
 /* ── Adaptador padrão de API (real) para vf-context.init({ api }) ────────
-   MASTER_SPEC §18.1/§18.2 — "PRECISA AJUSTE"/"CONTRATO NECESSÁRIO" ainda
-   não existem; o fallback F1 já documentado é usado aqui: EXISTE HOJE. */
+   C1 (maratona Pessoa 1) — a carteira do shell passa a vir de
+   GET /me/context (server/routes/meRoutes.js + services/meService.js), a
+   fonte AUTORITATIVA por Squad prevista no MASTER_SPEC §18.2. Ela traz três
+   coisas que o endpoint anterior não tinha: `squads`, `squadPrincipalId` e
+   `contasAtivas` por cliente (o sub-rótulo "· N operações" do dropdown de
+   Cliente existia no código e nunca aparecia, porque o payload antigo não
+   tem esse campo).
+
+   /operacao/cliente-360/clientes continua como QUEDA, e só para um caso: o
+   servidor implantado ainda não conhece /me (404). Qualquer outra falha —
+   500, rede, timeout — propaga como PORTFOLIO_ERROR, porque mascarar um 500
+   atrás de um segundo endpoint esconderia um servidor doente atrás de uma
+   carteira que "quase" funciona. Os dois resolvem a mesma carteira
+   (resolvePortfolioClientes), então o fallback não muda quem o usuário vê,
+   só empobrece o payload. Remoção: F6, depois de confirmado em produção. */
 function createProductionContextApi(api) {
+  const comoErro = (err) => ({ ok: false, code: err && err.code, erro: err && err.message });
   return {
-    carteira: () => api.get("/operacao/cliente-360/clientes").catch((err) => ({ ok: false, code: err && err.code, erro: err && err.message })),
+    carteira: () =>
+      api.get("/me/context").catch((err) => {
+        if (err && err.status === 404) {
+          return api.get("/operacao/cliente-360/clientes").catch(comoErro);
+        }
+        return comoErro(err);
+      }),
     contasDoCliente: (ref, opts) =>
       api
         .get(`/clientes/${encodeURIComponent(ref)}/contas`, opts)
         .catch((err) => {
           if (err && err.name === "VfApiError" && err.status === 0 && err.code === "REDE") throw err; // deixa a rede real propagar (AbortError já é null)
-          return { ok: false, code: err && err.code, erro: err && err.message };
+          return comoErro(err);
         }),
   };
 }

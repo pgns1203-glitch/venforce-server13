@@ -161,6 +161,15 @@ function wireFetchInterception(cdp) {
     ];
     if (req.method === "OPTIONS") { await responder("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: cors }); return; }
 
+    // C1 — o Shell V3 pede GET /me/context antes de tudo (carteira
+    // autoritativa por Squad, server/services/meService.js). Derivado do
+    // MESMO fixture de carteira usado abaixo.
+    if (url.includes("/me/context")) {
+      const clientes = (PORTFOLIO.clientes || []).map((c) => ({ id: c.id, slug: c.slug, nome: c.nome, squadId: null, responsavelDireto: false, contasAtivas: null }));
+      const body = Buffer.from(JSON.stringify({ ok: true, user: { id: 12, nome: "Pedro Gomes", email: null, role: "user" }, squads: [], squadPrincipalId: null, clientes, portfolio: { totalClientes: clientes.length }, permissoes: { podeAdministrar: false } })).toString("base64");
+      await responder("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 200, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body });
+      return;
+    }
     if (url.includes("/operacao/cliente-360/clientes")) {
       const body = Buffer.from(JSON.stringify(PORTFOLIO)).toString("base64");
       await responder("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 200, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body });

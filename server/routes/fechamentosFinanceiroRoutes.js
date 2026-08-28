@@ -28,6 +28,12 @@ router.get(
 router.post(
   "/financeiro",
   authMiddleware,
+  // P2.1 — este POST só tinha authMiddleware (qualquer autenticado). Agora
+  // exige role interna. É um processador stateless de planilha enviada pelo
+  // usuário; a identidade do cliente é validada contra o cliente_slug do
+  // upload (ver fechamentoFinanceiroService), não lê dados por id — carteira
+  // por Squad fica como dívida aceitável (BACKEND_V3_AUTHORIZATION_COVERAGE.md).
+  requireAutomacoesAccess,
   upload.fields([
     { name: "sales", maxCount: 1 },
     { name: "costs", maxCount: 1 },

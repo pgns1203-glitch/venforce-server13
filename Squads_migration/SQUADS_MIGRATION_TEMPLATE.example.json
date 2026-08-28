@@ -1,0 +1,26 @@
+{
+  "_leiame": "EXEMPLO ILUSTRATIVO — dados fictícios só para mostrar o formato. NÃO use em produção. O plano real substitui tudo pelo mapeamento fornecido pela operação.",
+  "versao": 1,
+  "descricao": "Exemplo: 2 squads, 3 memberships, 3 carteiras, 1 responsável.",
+
+  "squads": [
+    { "slug": "squad-exemplo-a", "nome": "Squad Exemplo A", "ativo": true },
+    { "slug": "squad-exemplo-b", "nome": "Squad Exemplo B", "ativo": true }
+  ],
+
+  "membros": [
+    { "squad": "squad-exemplo-a", "usuario": "coordenador.exemplo@empresa.com", "funcao": "coordenador", "principal": true },
+    { "squad": "squad-exemplo-a", "usuario": "pessoa.exemplo@empresa.com", "funcao": "membro", "principal": true },
+    { "squad": "squad-exemplo-b", "usuario": "pessoa.exemplo@empresa.com", "funcao": "membro", "principal": false }
+  ],
+
+  "clientes": [
+    { "cliente": "cliente-exemplo-1", "squad": "squad-exemplo-a", "motivo": "migração inicial" },
+    { "cliente": "cliente-exemplo-2", "squad": "squad-exemplo-a", "motivo": "migração inicial" },
+    { "cliente": "cliente-exemplo-3", "squad": "squad-exemplo-b", "motivo": "migração inicial" }
+  ],
+
+  "responsaveis": [
+    { "cliente": "cliente-exemplo-1", "usuario": "pessoa.exemplo@empresa.com", "papel": "gestor" }
+  ]
+}

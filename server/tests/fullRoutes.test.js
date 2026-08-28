@@ -48,30 +48,28 @@ function run() {
       console.log("  ✓ requireFullCentralEnabled bloqueia com 404 sem a flag e libera com a flag ligada");
     }
 
-    // As tres rotas existem, todas GET, todas com authMiddleware + requireAutomacoesAccess antes do controller
+    // As tres rotas existem, todas GET, todas com authMiddleware +
+    // requireAutomacoesAccess + o seam de carteira (P2.1:
+    // carteiraClienteContaGuard resolve clienteContaId -> cliente -> Squad)
+    // antes do controller.
     {
-      const snapshot = findRoute("/contas/:clienteContaId/snapshot");
-      assert.ok(snapshot && snapshot.methods.get, "GET snapshot deve estar registrada");
-      assert.deepStrictEqual(
-        snapshot.stack.map((l) => l.handle),
-        [authMiddleware, requireAutomacoesAccess, controller.getSnapshot]
-      );
+      const casos = [
+        ["/contas/:clienteContaId/snapshot", controller.getSnapshot],
+        ["/contas/:clienteContaId/inventories/:inventoryId/movements", controller.getInventoryMovements],
+        ["/contas/:clienteContaId/inventories/:inventoryId", controller.getInventoryDetail],
+      ];
+      for (const [path, ctrl] of casos) {
+        const rota = findRoute(path);
+        assert.ok(rota && rota.methods.get, `GET ${path} deve estar registrada`);
+        const nomes = rota.stack.map((l) => l.handle.name);
+        assert.deepStrictEqual(
+          nomes,
+          ["authMiddleware", "requireAutomacoesAccess", "carteiraClienteContaGuard", ctrl.name],
+          `GET ${path}: gate de role + seam de carteira antes do controller`
+        );
+      }
 
-      const movements = findRoute("/contas/:clienteContaId/inventories/:inventoryId/movements");
-      assert.ok(movements && movements.methods.get, "GET movements deve estar registrada");
-      assert.deepStrictEqual(
-        movements.stack.map((l) => l.handle),
-        [authMiddleware, requireAutomacoesAccess, controller.getInventoryMovements]
-      );
-
-      const detail = findRoute("/contas/:clienteContaId/inventories/:inventoryId");
-      assert.ok(detail && detail.methods.get, "GET detail deve estar registrada");
-      assert.deepStrictEqual(
-        detail.stack.map((l) => l.handle),
-        [authMiddleware, requireAutomacoesAccess, controller.getInventoryDetail]
-      );
-
-      console.log("  ✓ snapshot/movements/detail estao registradas com authMiddleware + requireAutomacoesAccess antes do controller");
+      console.log("  ✓ snapshot/movements/detail: authMiddleware + requireAutomacoesAccess + seam de carteira antes do controller");
     }
 
     console.log("fullRoutes.test.js passed");

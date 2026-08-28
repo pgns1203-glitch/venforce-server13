@@ -5,6 +5,7 @@
 const express = require("express");
 const { authMiddleware } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
+const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 
 const {
   listarClientesAutomacoesController,
@@ -33,29 +34,36 @@ const {
 
 const router = express.Router();
 
+// P2.1 — seam de carteira para as automações client-scoped. O cliente chega
+// por `clienteSlug` em param (rotas de export), query (previews/snapshot) ou
+// body (starts/salvar). Pass-through quando não há clienteSlug. As rotas por
+// `:id` (relatório salvo / job) resolvem o cliente no service — ver
+// BACKEND_V3_AUTHORIZATION_COVERAGE.md.
+const naCarteira = requireClienteNaCarteira({ param: "clienteSlug", query: "clienteSlug", body: "clienteSlug" });
+
 router.get("/automacoes/clientes", authMiddleware, requireAutomacoesAccess, listarClientesAutomacoesController);
 
-router.get("/automacoes/precificacao/preview", authMiddleware, requireAutomacoesAccess, previewPrecificacaoController);
+router.get("/automacoes/precificacao/preview", authMiddleware, requireAutomacoesAccess, naCarteira, previewPrecificacaoController);
 
-router.get("/automacoes/precificacao/preview-ml", authMiddleware, requireAutomacoesAccess, previewPrecificacaoMlController);
+router.get("/automacoes/precificacao/preview-ml", authMiddleware, requireAutomacoesAccess, naCarteira, previewPrecificacaoMlController);
 
 // Planilha de precificação (mesma matriz/fórmulas do XLSX do relatório) gerada
 // direto do grant ML, sem exigir base de custos vinculada. Somente leitura.
-router.get("/automacoes/clientes/:clienteSlug/planilha-precificacao.xlsx", authMiddleware, requireAutomacoesAccess, exportPlanilhaPrecificacaoSemBaseController);
+router.get("/automacoes/clientes/:clienteSlug/planilha-precificacao.xlsx", authMiddleware, requireAutomacoesAccess, naCarteira, exportPlanilhaPrecificacaoSemBaseController);
 
 // Modelo simples para criar uma base: somente os IDs MLB dos anúncios ativos,
 // sem enriquecimento financeiro, relatório ou escrita no banco.
-router.get("/automacoes/clientes/:clienteSlug/modelo-base-custos.xlsx", authMiddleware, requireAutomacoesAccess, exportModeloBaseCustosController);
+router.get("/automacoes/clientes/:clienteSlug/modelo-base-custos.xlsx", authMiddleware, requireAutomacoesAccess, naCarteira, exportModeloBaseCustosController);
 
-router.get("/automacoes/promocoes-retorno/preview", authMiddleware, requireAutomacoesAccess, previewPromocoesRetornoController);
+router.get("/automacoes/promocoes-retorno/preview", authMiddleware, requireAutomacoesAccess, naCarteira, previewPromocoesRetornoController);
 
-router.post("/automacoes/promocoes-retorno/diagnostico/start", authMiddleware, requireAutomacoesAccess, iniciarDiagnosticoPromocoesController);
+router.post("/automacoes/promocoes-retorno/diagnostico/start", authMiddleware, requireAutomacoesAccess, naCarteira, iniciarDiagnosticoPromocoesController);
 
 router.get("/automacoes/promocoes-retorno/diagnostico/:id", authMiddleware, requireAutomacoesAccess, statusDiagnosticoPromocoesController);
 
-router.get("/automacoes/promocoes-retorno/snapshot", authMiddleware, requireAutomacoesAccess, buscarSnapshotPromocoesController);
+router.get("/automacoes/promocoes-retorno/snapshot", authMiddleware, requireAutomacoesAccess, naCarteira, buscarSnapshotPromocoesController);
 
-router.post("/automacoes/relatorios", authMiddleware, requireAutomacoesAccess, salvarRelatorioAutomacoesController);
+router.post("/automacoes/relatorios", authMiddleware, requireAutomacoesAccess, naCarteira, salvarRelatorioAutomacoesController);
 
 router.get("/automacoes/relatorios", authMiddleware, requireAutomacoesAccess, listarRelatoriosAutomacoesController);
 
@@ -77,7 +85,7 @@ router.get("/automacoes/relatorios/:id", authMiddleware, requireAutomacoesAccess
 
 router.delete("/automacoes/relatorios/:id", authMiddleware, requireAutomacoesAccess, excluirRelatorioAutomacoesController);
 
-router.post("/automacoes/diagnostico-completo/start", authMiddleware, requireAutomacoesAccess, iniciarDiagnosticoCompletoController);
+router.post("/automacoes/diagnostico-completo/start", authMiddleware, requireAutomacoesAccess, naCarteira, iniciarDiagnosticoCompletoController);
 
 router.get("/automacoes/diagnostico-completo/:id", authMiddleware, requireAutomacoesAccess, buscarDiagnosticoCompletoController);
 

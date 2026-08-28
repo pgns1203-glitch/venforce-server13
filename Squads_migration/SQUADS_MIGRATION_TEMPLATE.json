@@ -1,0 +1,17 @@
+{
+  "_leiame": "VenForce V3 — plano de migração de Squads (P2.3). Preencha as listas abaixo com o mapeamento REAL fornecido pela operação. NÃO invente squads, membros ou vínculos. Valide sempre com dry-run antes de --apply. Ferramenta: node server/sql/squads-migrate.js --plan <este-arquivo> [--apply]. Chaves de _doc são ignoradas pela ferramenta.",
+  "versao": 1,
+  "descricao": "",
+
+  "_doc_squads": "Unidades operacionais. slug: minúsculo, sem espaço (é normalizado). nome: obrigatório. ativo: opcional (default true). Idempotente: se o slug já existe, nome/ativo são atualizados.",
+  "squads": [],
+
+  "_doc_membros": "Vínculo usuário↔squad. squad: slug (do plano ou já existente). usuario: email OU id numérico. funcao: 'membro' (default) ou 'coordenador'. principal: true marca o Squad principal do usuário (no máx. 1 por usuário; se nenhum for marcado, a 1ª membership é auto-promovida). Membership para squad inativo é recusada.",
+  "membros": [],
+
+  "_doc_clientes": "Vínculo cliente↔squad (carteira). cliente: slug OU id numérico. squad: slug. motivo: opcional (vai para o histórico). Se o cliente já tem outro squad ativo, isto é uma TRANSFERÊNCIA (histórico preservado, nada apagado). Atribuir a squad inativo é recusado.",
+  "clientes": [],
+
+  "_doc_responsaveis": "OPCIONAL. Responsabilidade organizacional — NÃO é autorização (acesso vem do Squad). cliente: slug OU id. usuario: email OU id. papel: 'gestor' | 'auxiliar' | 'designer'. Idempotente.",
+  "responsaveis": []
+}

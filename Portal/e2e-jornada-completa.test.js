@@ -1,17 +1,23 @@
 /*
  * E2E — jornada completa através de NAVEGAÇÃO REAL (clicar, não deep
- * link) entre as páginas migradas nesta rodada (F1.3–F2.4):
+ * link) entre as páginas migradas até F3.2:
  *
- *   Carteira → N97 → ML2 → Central de Vendas → Margem → Diagnósticos
- *   → Carteira (global, contexto preservado) → Extra Máquinas → Central
- *   de Vendas (contexto novo)
+ *   Carteira → N97 → ML2 → Visão → Central de Vendas → Margem →
+ *   Diagnósticos → Carteira (global, contexto preservado) → Extra
+ *   Máquinas → Visão (contexto novo)
+ *
+ * F3.2 muda o destino padrão da Carteira de fechamentos-api.html para
+ * visao.html (MASTER_SPEC §11 — Visão é a home operacional agora). A Visão
+ * é a primeira ilha React sobre o Shell V3; sua própria chamada de dado
+ * (GET /operacao/visao/:cliente) fica FALHADA de propósito aqui, mesmo
+ * tratamento dos outros "motores" desta suíte.
  *
  * Cada teste anterior (vf-shell-ui, carteira-ui, fechamentos-api-shell-ui,
  * central-margem-ui, diagnostico-inicial-shell-ui) já prova que CADA
  * página, isoladamente, lê o contexto certo do Shell. O que só um teste
  * cross-page prova é que sessionStorage["vf-ctx"] carrega o contexto
  * corretamente de uma navegação REAL para a próxima — nenhuma delas usa
- * deep link aqui. As páginas de "motor" (Central de Vendas/Margem/
+ * deep link aqui. As páginas de "motor" (Visão/Central de Vendas/Margem/
  * Diagnóstico) têm suas próprias chamadas de dado FALHADAS de propósito:
  * o que este teste mede é a continuidade do CONTEXTO entre navegações,
  * não a renderização de cada tela (já coberta nos testes específicos).
@@ -192,75 +198,89 @@ async function run() {
       assert.strictEqual(await ctx(), null);
     });
 
-    // ═══ 2. N97 → chip ML2 ═══
+    // ═══ 2. N97 → chip ML2 → Visão (destino padrão da Carteira, F3.3) ═══
     await cdp.evaluate(`
       Array.prototype.find.call(document.querySelectorAll('.vf-portfolio-row[data-slug=n97] [data-conta]'), function(b){ return b.dataset.conta === "43"; }).click()
     `);
-    await waitFor(cdp, "window.location.href.indexOf('fechamentos-api.html') >= 0", "clique no chip ML2 não navegou para a Central de Vendas");
-    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Central de Vendas não chegou a READY vindo da Carteira");
+    await waitFor(cdp, "window.location.href.indexOf('visao.html') >= 0", "clique no chip ML2 não navegou para a Visão");
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Visão não chegou a READY vindo da Carteira");
 
-    await check("2. Central de Vendas: chegou com o contexto exato do clique (n97/43)", async () => {
+    await check("2. Visão: chegou com o contexto exato do clique (n97/43)", async () => {
       const c = await ctx();
       assert.strictEqual(c.clienteSlug, "n97");
       assert.strictEqual(c.clienteContaId, 43);
-      assert.strictEqual(await cdp.evaluate("document.body.dataset.vfModule"), "central-vendas");
+      assert.strictEqual(await cdp.evaluate("document.body.dataset.vfModule"), "visao");
+      assert.strictEqual(await cdp.evaluate("document.body.dataset.vfScope"), "account");
     });
 
-    // ═══ 3. Sidebar → Margem (navegação real, não deep link) ═══
+    // ═══ 3. Sidebar → Central de Vendas (navegação real, não deep link) ═══
+    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=central-vendas]').click()");
+    await waitFor(cdp, "window.location.href.indexOf('fechamentos-api.html') >= 0", "clique em Central de Vendas não navegou");
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Central de Vendas não chegou a READY vindo da Visão");
+    await sleep(200);
+
+    await check("3. Central de Vendas: contexto sobrevive à navegação real vinda da Visão", async () => {
+      const c = await ctx();
+      assert.strictEqual(c.clienteSlug, "n97");
+      assert.strictEqual(c.clienteContaId, 43);
+    });
+
+    // ═══ 4. Sidebar → Margem (navegação real, não deep link) ═══
     await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=margem]').click()");
     await waitFor(cdp, "window.location.href.indexOf('central-margem.html') >= 0", "clique em Margem não navegou");
     await waitFor(cdp, "window.VF && window.VF.context", "Margem não montou o Shell");
     await sleep(300);
 
-    await check("3. Margem: contexto sobrevive à navegação real (sessionStorage), cliente=n97", async () => {
+    await check("4. Margem: contexto sobrevive à navegação real (sessionStorage), cliente=n97", async () => {
       const c = await ctx();
       assert.ok(c, "contexto não deveria ser null ao chegar em Margem");
       assert.strictEqual(c.clienteSlug, "n97");
       assert.strictEqual(await cdp.evaluate("document.body.dataset.vfScope"), "client");
     });
 
-    // ═══ 4. Sidebar → Diagnósticos ═══
+    // ═══ 5. Sidebar → Diagnósticos ═══
     await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=diagnosticos]').click()");
     await waitFor(cdp, "window.location.href.indexOf('diagnostico-inicial.html') >= 0", "clique em Diagnósticos não navegou");
     await waitFor(cdp, "window.VF && window.VF.context", "Diagnósticos não montou o Shell");
     await sleep(300);
 
-    await check("4. Diagnósticos: contexto continua n97 após duas navegações reais em sequência", async () => {
+    await check("5. Diagnósticos: contexto continua n97 após três navegações reais em sequência", async () => {
       const c = await ctx();
       assert.strictEqual(c.clienteSlug, "n97");
     });
 
-    // ═══ 5. Sidebar → Carteira (global): contexto PRESERVADO, nunca "pausado" ═══
+    // ═══ 6. Sidebar → Carteira (global): contexto PRESERVADO, nunca "pausado" ═══
     await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=carteira]')?.click() || document.querySelector('a[href=\"carteira.html\"]')?.click()");
     await waitFor(cdp, "window.location.href.indexOf('carteira.html') >= 0", "navegação de volta à Carteira não ocorreu");
     await waitFor(cdp, "window.VF && window.VF.context", "Carteira (retorno) não montou o Shell");
     await sleep(300);
 
-    await check("5. De volta à Carteira: contexto de N97 preservado (D15 — nunca 'pausado')", async () => {
+    await check("6. De volta à Carteira: contexto de N97 preservado (D15 — nunca 'pausado')", async () => {
       const c = await ctx();
       assert.ok(c, "contexto deveria sobreviver à ida a uma página global");
       assert.strictEqual(c.clienteSlug, "n97");
       assert.ok(!(await cdp.evaluate("document.body.innerText")).toLowerCase().includes("pausado"), "termo 'pausado' proibido (D15)");
     });
 
-    // ═══ 6. Trocar de cliente: Extra Máquinas (1 conta, entra em 1 clique) ═══
+    // ═══ 7. Trocar de cliente: Extra Máquinas (1 conta, entra em 1 clique) → Visão ═══
     await cdp.evaluate(`
       document.querySelector('.vf-portfolio-row[data-slug=extra] [data-entrar]').click();
     `);
-    await waitFor(cdp, "window.location.href.indexOf('fechamentos-api.html') >= 0", "clique em Extra Máquinas não navegou para a Central de Vendas");
+    await waitFor(cdp, "window.location.href.indexOf('visao.html') >= 0", "clique em Extra Máquinas não navegou para a Visão");
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Extra Máquinas não chegou a READY");
 
-    await check("6. Troca de cliente pela Carteira: contexto novo é Extra/51, não mistura com N97", async () => {
+    await check("7. Troca de cliente pela Carteira: contexto novo é Extra/51, não mistura com N97", async () => {
       const c = await ctx();
       assert.strictEqual(c.clienteSlug, "extra");
       assert.strictEqual(c.clienteContaId, 51);
+      assert.strictEqual(await cdp.evaluate("document.body.dataset.vfModule"), "visao");
     });
 
     await check("sem erros de console inesperados em toda a jornada", async () => {
       assert.strictEqual(consoleErrors.length, 0, `erros: ${JSON.stringify(consoleErrors)}`);
     });
 
-    console.log(`\n✓ ${checks} verificações da jornada completa (Login→Carteira→N97→ML2→CentralDeVendas→Margem→Diagnóstico→Carteira→Extra→CentralDeVendas)`);
+    console.log(`\n✓ ${checks} verificações da jornada completa (Login→Carteira→N97→ML2→Visão→CentralDeVendas→Margem→Diagnóstico→Carteira→Extra→Visão)`);
   } finally {
     if (cdp) { try { await cdp.send("Fetch.disable"); } catch (_) { /* já pode estar fechado */ } cdp.close(); }
     chrome.kill("SIGTERM");

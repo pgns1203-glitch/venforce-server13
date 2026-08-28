@@ -102,6 +102,17 @@ class MockDb {
       return { rows: this.clientes.filter((c) => c.ativo) };
     }
 
+    // P2.1 — seam de carteira: GET /cliente-contas/:id/* resolve conta -> cliente.
+    if (q.includes("authz:RESOLVE_CLIENTE_CONTA")) {
+      const conta = this.contas.find((c) => c.id === Number(params[0]));
+      if (!conta) return { rows: [] };
+      const cli = this.clientes.find((c) => c.id === conta.cliente_id);
+      return { rows: cli ? [{ conta_id: conta.id, cliente_id: cli.id, slug: cli.slug, nome: cli.nome, ativo: cli.ativo }] : [] };
+    }
+    if (q.includes("authz:CAN_ACCESS_ADMIN")) {
+      return { rows: this.clientes.some((c) => c.id === Number(params[0])) ? [{ "?column?": 1 }] : [] };
+    }
+
     throw new Error(`Query não mapeada no mock: ${q}`);
   }
 }

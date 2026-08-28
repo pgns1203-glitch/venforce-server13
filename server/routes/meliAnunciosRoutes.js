@@ -33,10 +33,18 @@ const router = express.Router();
 
 const { authMiddleware, requireAdmin } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
+const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 const ctrl = require("../controllers/meliAnunciosController");
 
 // Todas as rotas exigem usuário autenticado com acesso a automações.
 router.use(authMiddleware, requireAutomacoesAccess);
+
+// P2.1 — seam de carteira no router. Todo endpoint client-scoped recebe
+// `clienteSlug` (query nas leituras, body nas escritas/sync/criação) e o usa
+// para resolver o cliente e o grant ML. `/clientes` (lista) e
+// `/otimizacoes/:id/aprovar` (admin-only, sem clienteSlug) passam direto —
+// o guard é pass-through quando não há referência de cliente.
+router.use(requireClienteNaCarteira({ query: "clienteSlug", body: "clienteSlug" }));
 
 // Rotas estáticas declaradas ANTES de "/:itemId" para evitar conflito.
 router.get("/clientes", ctrl.listarClientes);

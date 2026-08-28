@@ -162,6 +162,14 @@ function wireFetchInterception(cdp) {
     const json = (obj) => respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 200, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body: Buffer.from(JSON.stringify(obj)).toString("base64") });
 
     if (url.includes("/me/context")) { await json(meContextDe(PORTFOLIO)); return; }
+    // Telas migradas em F5 — só o mínimo para elas subirem; o que este teste
+    // mede continua sendo a CONTINUIDADE DO CONTEXTO entre navegações reais,
+    // não a renderização de cada motor (isso é dos testes específicos).
+    if (url.includes("/automacoes/clientes")) {
+      await json({ ok: true, clientes: [{ id: 87, nome: "N97 Comercial", slug: "n97", ativo: true, hasGrantMl: true, baseMeli: "b", baseMeliNome: "Custo", baseMeliUpdatedAt: null, baseStatus: "ok", basesMeliCount: 1, prontoParaAnalise: true, prontoParaExportacaoCrua: true }] });
+      return;
+    }
+    if (url.includes("/anuncios-meli/clientes")) { await json({ ok: true, clientes: [{ id: 87, nome: "N97 Comercial", slug: "n97", mlConectado: true, totalAnuncios: 10 }] }); return; }
     if (url.includes("/operacao/cliente-360/clientes")) { await json(PORTFOLIO); return; }
     const contasMatch = url.match(/\/clientes\/([^/?]+)\/contas/);
     if (contasMatch) {
@@ -269,6 +277,70 @@ async function run() {
       assert.strictEqual(c.clienteSlug, "n97");
     });
 
+    // ═══ 5b. Período entra em cena e precisa SOBREVIVER à troca de módulo ═══
+    // §8.5: "preservado ao trocar módulo/conta, resetado ao trocar cliente".
+    // O link da sidebar levava só cliente+conta — quem olhava julho na Visão
+    // e clicava em Financeiro chegava em outro mês, sem aviso.
+    await cdp.evaluate("window.VF.context.setPeriodoParam('2026-07')");
+    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=ads]').click()");
+    await waitFor(cdp, "window.location.href.indexOf('ads.html') >= 0", "clique em Ads não navegou");
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Ads não chegou a READY");
+    await sleep(250);
+
+    await check("5b. Ads (migrada em F5): contexto n97/43 intacto E o período viajou junto", async () => {
+      const c = await ctx();
+      assert.strictEqual(c.clienteSlug, "n97");
+      assert.strictEqual(c.clienteContaId, 43);
+      assert.strictEqual(await cdp.evaluate("window.VF.context.getPeriodoParam()"), "2026-07");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('ads-filtro-mes').value"), "2026-07",
+        "a competência da URL deveria já estar selecionada na tela");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#ads-filtro-cliente, #ads-filtro-conta').length"), 0,
+        "Ads não pode mais ter seletor próprio de cliente/conta");
+    });
+
+    // ═══ 5c. Sidebar → Anúncios ML (escopo conta, migrada em F5) ═══
+    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=anuncios]').click()");
+    await waitFor(cdp, "window.location.href.indexOf('anuncios-meli.html') >= 0", "clique em Anúncios não navegou");
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Anúncios não chegou a READY");
+    await sleep(250);
+
+    await check("5c. Anúncios ML: contexto intacto, período preservado e sem VIEW própria de escolher cliente", async () => {
+      const c = await ctx();
+      assert.strictEqual(c.clienteSlug, "n97");
+      assert.strictEqual(c.clienteContaId, 43);
+      assert.strictEqual(await cdp.evaluate("window.VF.context.getPeriodoParam()"), "2026-07");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-view-clientes, #am-filtro-conta').length"), 0);
+    });
+
+    // ═══ 5d. Sidebar → Automações (escopo CLIENTE, migrada em F5) ═══
+    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=automacoes]').click()");
+    await waitFor(cdp, "window.location.href.indexOf('automacoes.html') >= 0", "clique em Automações não navegou");
+    await waitFor(cdp, "window.VF && window.VF.context", "Automações não montou o Shell");
+    await sleep(300);
+
+    await check("5d. Automações: escopo cliente satisfeito, cliente do contexto exibido, sem seletor próprio", async () => {
+      const c = await ctx();
+      assert.strictEqual(c.clienteSlug, "n97");
+      assert.strictEqual(await cdp.evaluate("document.body.dataset.vfScope"), "client");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('vf-shell-main').hidden"), false);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('auto-cliente-nome').textContent.trim()"), "N97 Comercial");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#auto-cliente, #auto-cliente-search').length"), 0);
+    });
+
+    // ═══ 5e. Gestão global → Clientes e Contas (migrada em F5) ═══
+    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=clientes-contas]').click()");
+    await waitFor(cdp, "window.location.href.indexOf('clientes.html') >= 0", "clique em Clientes e Contas não navegou");
+    await waitFor(cdp, "window.VF && window.VF.context", "Clientes e Contas não montou o Shell");
+    await sleep(250);
+
+    await check("5e. Clientes e Contas (global, migrada): shell V3 no lugar do layout.js e contexto rebaixado, não perdido", async () => {
+      const c = await ctx();
+      assert.strictEqual(c.clienteSlug, "n97", "uma página global não pode descartar o contexto");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-sidebar').length"), 0, "a sidebar legada voltou a aparecer");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('vf-shell-main').hidden"), false);
+      assert.ok((await cdp.evaluate("document.querySelector('.vf-shell__context').innerText")).includes("contexto ativo"));
+    });
+
     // ═══ 6. Sidebar → Carteira (global): contexto PRESERVADO, nunca "pausado" ═══
     await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=carteira]')?.click() || document.querySelector('a[href=\"carteira.html\"]')?.click()");
     await waitFor(cdp, "window.location.href.indexOf('carteira.html') >= 0", "navegação de volta à Carteira não ocorreu");
@@ -289,18 +361,26 @@ async function run() {
     await waitFor(cdp, "window.location.href.indexOf('visao.html') >= 0", "clique em Extra Máquinas não navegou para a Visão");
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Extra Máquinas não chegou a READY");
 
-    await check("7. Troca de cliente pela Carteira: contexto novo é Extra/51, não mistura com N97", async () => {
+    await check("7. Troca de cliente pela Carteira: contexto novo é Extra/51, não mistura com N97, e o período ZERA (§8.5)", async () => {
       const c = await ctx();
       assert.strictEqual(c.clienteSlug, "extra");
       assert.strictEqual(c.clienteContaId, 51);
       assert.strictEqual(await cdp.evaluate("document.body.dataset.vfModule"), "visao");
+      // O mês de trabalho de um cliente não é o mês de trabalho de outro:
+      // setCliente() zera o período (§8.5), e o destino montado pela Carteira
+      // não o carrega. O que se vê aqui depois disso é a competência PADRÃO
+      // que a própria Visão escreve na URL ao montar (useVisao →
+      // escreverPeriodoNaUrl) — legítimo. O que não pode acontecer é julho,
+      // escolhido para N97, reaparecer trabalhando em Extra Máquinas.
+      const periodoAgora = await cdp.evaluate("window.VF.context.getPeriodoParam()");
+      assert.notStrictEqual(periodoAgora, "2026-07", "o período do cliente anterior atravessou a troca de cliente");
     });
 
     await check("sem erros de console inesperados em toda a jornada", async () => {
       assert.strictEqual(consoleErrors.length, 0, `erros: ${JSON.stringify(consoleErrors)}`);
     });
 
-    console.log(`\n✓ ${checks} verificações da jornada completa (Login→Carteira→N97→ML2→Visão→CentralDeVendas→Margem→Diagnóstico→Carteira→Extra→Visão)`);
+    console.log(`\n✓ ${checks} verificações da jornada completa (Login→Carteira→N97→ML2→Visão→CentralDeVendas→Margem→Diagnóstico→Ads→Anúncios→Automações→ClientesEContas→Carteira→Extra→Visão)`);
   } finally {
     if (cdp) { try { await cdp.send("Fetch.disable"); } catch (_) { /* já pode estar fechado */ } cdp.close(); }
     chrome.kill("SIGTERM");

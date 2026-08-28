@@ -38,7 +38,13 @@ const user = JSON.parse(localStorage.getItem("vf-user") || "{}");
 const role = String(user.role || "").toLowerCase();
 const canAccessAutomacoes =
   role === "admin" || role === "user" || role === "membro";
-if (!canAccessAutomacoes) window.location.replace("dashboard.html");
+// F5/Bloco F — sem permissão volta para a CARTEIRA, não para
+// dashboard.html. O dashboard é uma tela legada, fora da navegação V3 e
+// ainda no layout.js: mandar para lá quem esbarrou num 403 dentro do
+// Shell V3 troca a sidebar debaixo do usuário e o deixa num lugar de
+// onde ele não sabe voltar. A Carteira é a home operacional do V3 e
+// trata carteira vazia honestamente (NO_PORTFOLIO).
+if (!canAccessAutomacoes) window.location.replace("carteira.html");
 // F5 — initLayout() saiu junto com o layout.js: quem monta a navegação
 // agora é vf-shell.js (que também cuida de token ausente e do desvio de
 // `seller`). Sem shim aqui porque este arquivo foi migrado de verdade — o
@@ -153,7 +159,7 @@ async function loadClientes() {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json().catch(() => ({}));
@@ -337,7 +343,7 @@ async function analisarLoja() {
       body: JSON.stringify({ clienteSlug: ctx.slug, margemAlvo: getMargemDecimal() }),
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
 
     const json = await res.json().catch(() => ({}));
 
@@ -396,7 +402,7 @@ async function pollOnce(relatorioId) {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
 
@@ -500,7 +506,7 @@ async function buscarItensRelatorio(id) {
     headers: { Authorization: "Bearer " + TOKEN },
   });
   if (res.status === 401) { clearSession(); return []; }
-  if (res.status === 403) { window.location.replace("dashboard.html"); return []; }
+  if (res.status === 403) { window.location.replace("carteira.html"); return []; }
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
   return Array.isArray(json.itens) ? json.itens : [];
@@ -570,7 +576,7 @@ async function baixarXlsx(relatorioId) {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
       throw new Error(json?.erro || `HTTP ${res.status}`);
@@ -609,7 +615,7 @@ async function baixarPlanilhaPrecificacao() {
       { headers: { Authorization: "Bearer " + TOKEN } }
     );
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
       throw new Error(json?.erro || `HTTP ${res.status}`);
@@ -656,7 +662,7 @@ async function gerarModeloBaseCustos() {
       { headers: { Authorization: "Bearer " + TOKEN } }
     );
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
       throw new Error(json?.erro || `HTTP ${res.status}`);

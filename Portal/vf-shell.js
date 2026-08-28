@@ -471,6 +471,20 @@ export function createVfShell(options = {}) {
       a.setAttribute("aria-disabled", "true");
       a.title = motivoDesabilitado || "Ainda não disponível nesta versão";
       a.addEventListener("click", (e) => e.preventDefault());
+    } else {
+      // O href acima é um retrato do momento do render; o `periodo` pode
+      // mudar DEPOIS dele sem passar pelo store — as ilhas React escrevem
+      // `?periodo=` direto na URL (frontend-react/src/utils/periodoUrl.js) e
+      // não têm como notificar o shell. Recalcular no clique é o único jeito
+      // de o destino refletir a competência que está na tela agora.
+      //
+      // Só o clique principal: ctrl/cmd/shift/meio abrem em outra aba e ali
+      // vale o href renderizado, que continua correto para copiar o link.
+      a.addEventListener("click", (e) => {
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        onNavigate(buildHref(mod));
+      });
     }
     return a;
   }
@@ -478,12 +492,20 @@ export function createVfShell(options = {}) {
   // Links normais entre os dois mundos (§20.1): a página migrada passa
   // ?cliente=&conta= para a que ainda não migrou; ela ignora o que não
   // entende e usa o próprio seletor. Nenhuma quebra.
+  //
+  // `periodo` viaja junto (§8.5: "preservado ao trocar módulo/conta,
+  // resetado ao trocar cliente"). Faltava aqui: quem estava olhando julho na
+  // Visão e clicava em Financeiro chegava em outro mês, sem nada indicar a
+  // troca. Trocar de CLIENTE continua zerando o período — setCliente() limpa
+  // o parâmetro antes de qualquer navegação, então não há o que propagar.
   function buildHref(mod) {
     const ctx = ctxStore.getContext();
     if (!ctx || !ctx.clienteSlug) return mod.rota;
     const qs = new URLSearchParams();
     qs.set("cliente", ctx.clienteSlug);
     if (ctx.clienteContaId) qs.set("conta", String(ctx.clienteContaId));
+    const periodo = ctxStore.getPeriodoParam ? ctxStore.getPeriodoParam() : null;
+    if (periodo) qs.set("periodo", periodo);
     return `${mod.rota}?${qs.toString()}`;
   }
 

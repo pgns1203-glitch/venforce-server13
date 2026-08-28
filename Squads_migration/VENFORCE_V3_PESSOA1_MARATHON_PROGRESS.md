@@ -18,7 +18,7 @@
 | **Branch** | `frontend/v3-marathon-pessoa1` |
 | **Base** | `origin/main` @ `1949c760` (confirmado por `git fetch` no início) |
 | **Missão** | `Squads_migration/VENFORCE_V3_MISSAO_MARATONA_PESSOA1_OPUS.md` |
-| **Último commit** | `5bba996` |
+| **Último commit** | `baf7005` |
 | **Push** | sim |
 
 ### Verde neste momento
@@ -28,7 +28,9 @@
 | Vitest (`frontend-react`) | 127/127 (era 105) |
 | `Portal/vf-shell-ui.test.js` | 23/23 (era 18) |
 | `Portal/carteira-ui.test.js` | 27/27 (era 17) |
-| `Portal/vf-shell-f5-lote-ui.test.js` | 37/37 (**novo**) |
+| `Portal/vf-shell-f5-lote-ui.test.js` | 49/49 (**novo**) |
+| `Portal/automacoes-shell-ui.test.js` | 7/7 (**novo**) |
+| `Portal/ads-anuncios-shell-ui.test.js` | 9/9 (**novo**) |
 | `Portal/vf-shell-adoption-ui.test.js` | 5/5 |
 | `Portal/visao-shell-ui.test.js` | 8/8 |
 | `Portal/financeiro-v3-shell-ui.test.js` | 15/15 (era 9) |
@@ -36,7 +38,7 @@
 | `Portal/diagnostico-inicial-shell-ui.test.js` | 9/9 |
 | `Portal/central-margem-ui.test.js` | 24/24 |
 | `Portal/login-ui.test.js` | 7/7 |
-| `Portal/e2e-jornada-completa.test.js` | 8/8 |
+| `Portal/e2e-jornada-completa.test.js` | 12/12 (era 8) |
 
 Como rodar: `cd frontend-react && npm test` · `node Portal/<arquivo>.test.js`
 (headless usa `google-chrome`, já instalado).
@@ -122,6 +124,55 @@ tornou inadiáveis — valem para TODAS as páginas V3:
   (`layout.js:23-64`). Toda página V3 tinha perdido isso em silêncio —
   inclusive `financeiro-debug.html`.
 
+### F5 lote 2 — as 3 telas de módulo ✅ (`6b819e0`)
+
+**7 → 19 páginas no Shell V3; 23 → 11 no `layout.js`.** Com este lote, **toda
+rota da sidebar V3 chega numa página que monta o Shell V3** — exceto
+`financeiro.html`, deliberado (F4.2 / D2).
+
+O problema não era estético: `automacoes`, `ads` e `anuncios-meli` tinham
+seletor próprio de Cliente (duas também de Conta ML) e, com eles, a **segunda
+e a terceira cópia** da regra de cardinalidade de `vf-context.js`. Três
+cópias divergem; agora a regra mora num lugar só (R8).
+
+- **automacoes** (escopo CLIENTE — nenhuma rota de `automacoesRoutes.js`
+  aceita conta): `GET /automacoes/clientes` virou fonte de PRONTIDÃO, não
+  seletor. Três estados onde havia dois — o intervalo entre boot e resposta
+  parecia “sem grant ML”, uma afirmação que a tela não tinha feito.
+- **ads** (escopo CONTA): o 409 `MULTIPLE_MARKETPLACE_ACCOUNTS` volta ao
+  store (`signalContextError`) em vez de virar um “sem dados” local. A
+  competência deixou de ser “mês do ano corrente” (era impossível olhar
+  dezembro do ano passado) e virou `?periodo=YYYY-MM`.
+- **anuncios-meli** (escopo CONTA): a VIEW inteira de “Escolha um cliente”
+  saiu. `mlConectado` ganhou o terceiro estado — “ainda não verificado” era
+  renderizado como “Sem conexão ML”.
+
+Nas duas de escopo conta, a carga só dispara com cliente **e** operação
+resolvidos: `vf:context` também emite durante a resolução das contas.
+
+`vf-components-v2.css` ganhou `.vf-field__value` — o campo cujo valor vem do
+contexto. Toda tela que perde o seletor precisa disso.
+
+### Blocos E e F — jornada e dívidas ✅ (`baf7005`)
+
+**Bug real contra o próprio spec:** §8.5 manda preservar o período ao trocar
+de módulo, e `buildHref()` montava só `?cliente=&conta=`. Quem olhava julho
+na Visão e clicava em Financeiro **chegava em outro mês, sem aviso**.
+Corrigido — e resolvido **no clique**, não no render: as ilhas React escrevem
+`?periodo=` direto na URL e não avisam o shell, então um href de render nasce
+velho. Ctrl/cmd/shift/meio seguem usando o href renderizado.
+
+**403 dentro do Shell V3 jogava em `dashboard.html`** — tela legada, fora da
+navegação V3, ainda no `layout.js`: a sidebar trocava debaixo do usuário. 13
+redirecionamentos em 6 telas migradas passam a ir para a Carteira. As telas
+ainda legadas ficam como estão; lá o dashboard continua coerente.
+
+**`guia-vendedor.html`** oferecia “Baixar guia HTML” para um arquivo
+inexistente — 404 com cara de botão. Removido.
+
+**Jornada E2E 8 → 12**, agora atravessando Ads, Anúncios ML, Automações e
+Clientes e Contas por navegação REAL de sidebar.
+
 ---
 
 ## Auditorias concluídas (insumo, não entrega)
@@ -191,17 +242,28 @@ Relatório completo: `.../scratchpad/AUDIT_INVENTARIO_TELAS.md`.
 
 ## Em andamento
 
-F5 lote 2 — a ponte `?cliente=`/`?conta=` para as 14 telas ainda em
-`layout.js`, e a migração das que dependem de Cliente/Conta.
+Bloco J — limpeza conservadora de legado.
 
 ## Próximo item
 
-1. Ponte de contexto legível pelas telas legadas (o achado B1 #2: a ponte
-   existe em `buildHref()` e **nenhuma página legada lê os parâmetros**).
-2. `automacoes.html` (1 seletor de cliente, base já resolvida no servidor).
-3. `ads.html` e `anuncios-meli.html` (cliente + conta duplicados).
-4. Bloco E — jornada V3 completa incluindo as telas novas.
-5. Bloco F — dívidas frontend restantes. Bloco J — limpeza conservadora.
+1. Bloco J: `cliente-360-v2.html` (0 referências no repo) e `ferramenta-or.js`
+   (105 linhas, o HTML redireciona sem carregá-lo).
+2. `promocoes-retorno.html` — mesma receita de `automacoes` (é a tela irmã,
+   construída do mesmo molde: `promo-cliente` + `promo-cliente-search`).
+3. `relatorios.html` — única tela legada linkada de dentro do Shell V3
+   (`automacoes.js`, 2 links). Escopo global, filtros preservados.
+4. Convergência #2.
+
+### Fora de escopo por decisão, não por falta de tempo
+
+11 telas seguem em `layout.js` e **não têm entrada na sidebar V3**:
+`clickup-executivo`, `cliente-360`, `cliente-operacao`, `criar-anuncios-meli`,
+`dashboard`, `design-templates`, `fechamento`, `financeiro`, `ml-tokens`,
+`promocoes-retorno`, `relatorios`. Migrá-las sem decidir **onde elas entram
+na navegação** produz telas com shell novo e nenhum caminho até elas. Isso é
+decisão de produto (o inventário B1 chama de “destino explícito: módulo,
+sub-rota ou aposentadoria”), não código. `financeiro.html` é o caso à parte:
+fica legada de propósito enquanto D1/D2 não existirem.
 
 ---
 
@@ -245,3 +307,6 @@ documentada, e a execução segue nas unidades seguintes.
 | `163c5af` | `feat(shell-v3): Carteira e Shell passam a ler /me/context e /me/portfolio (Bloco C)` |
 | `a2d3d98` | `feat(financeiro-v3): F4.2 — publicar/despublicar entregas a partir do V3` |
 | `5bba996` | `refactor(f5): 9 telas saem do layout.js para o Shell V3, e o shell ganha 2 paridades` |
+| `89f5f75` | `docs(v3): checkpoint da maratona após F4.2 e o lote 1 de F5` |
+| `6b819e0` | `refactor(f5): Automações, Ads e Anúncios ML deixam de escolher Cliente e Conta` |
+| `baf7005` | `fix(shell-v3): período sobrevive à troca de módulo; 403 volta para a Carteira` |

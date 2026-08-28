@@ -48,11 +48,18 @@ function mock(sql, params = []) {
   if (q.startsWith("SELECT * FROM entregas_cliente WHERE id = $1")) {
     return { rows: ENTREGAS[Number(params[0])] ? [ENTREGAS[Number(params[0])]] : [] };
   }
-  if (q.includes("COUNT(*)::int AS total FROM entregas_cliente")) {
-    return { rows: [{ total: Object.keys(ENTREGAS).length }] };
-  }
+  // P2.7 — a carteira passou a entrar NO SQL (`cliente_id = ANY($n::int[])`),
+  // antes da paginacao e do COUNT. O mock precisa honrar esse filtro, senao
+  // deixa de provar o isolamento (e o `total` volta a ser o global).
   if (q.includes("FROM entregas_cliente")) {
-    return { rows: Object.values(ENTREGAS) };
+    const idxAny = q.match(/cliente_id = ANY\(\$(\d+)::int\[\]\)/);
+    let linhas = Object.values(ENTREGAS);
+    if (idxAny) {
+      const permitidos = params[Number(idxAny[1]) - 1] || [];
+      linhas = linhas.filter((e) => permitidos.includes(e.cliente_id));
+    }
+    if (q.includes("COUNT(*)::int AS total")) return { rows: [{ total: linhas.length }] };
+    return { rows: linhas };
   }
   return { rows: [] };
 }
@@ -82,11 +89,31 @@ async function run() {
     const res = fakeRes();
     await controller.listarEntregasController({ query: {}, user: interno }, res);
     ok("GET / lista -> só entregas do portfolio", res.body.ok === true && res.body.entregas.every((e) => e.cliente_id === 10));
+    ok("GET / lista -> total tambem respeita a carteira (era o total global)", res.body.total === 1);
   }
   {
     const res = fakeRes();
     await controller.listarEntregasController({ query: {}, user: admin }, res);
     ok("GET / lista admin -> todas", res.body.entregas.length === 2);
+    ok("GET / lista admin -> total global", res.body.total === 2);
+  }
+
+  // P2.7 BLOCO L — entrega ORFA (cliente_id NULL) pulava a autorizacao inteira.
+  // A FK e ON DELETE SET NULL, entao apagar um cliente PRODUZ orfas.
+  {
+    ENTREGAS[3] = { id: 3, cliente_id: null, cliente_slug: null, tipo: "fechamento", status: "rascunho" };
+    const res = fakeRes();
+    await controller.buscarEntregaPorIdController({ params: { id: "3" }, query: {}, user: interno }, res);
+    ok("GET /:id de entrega orfa -> 403 para papel interno (era 200)", res.statusCode === 403 && res.body.code === "ENTREGA_SEM_CLIENTE");
+
+    const resDel = fakeRes();
+    await controller.publicarEntregaController({ params: { id: "3" }, user: interno }, resDel);
+    ok("publicar entrega orfa -> 403 para papel interno", resDel.statusCode === 403);
+
+    const resAdmin = fakeRes();
+    await controller.buscarEntregaPorIdController({ params: { id: "3" }, query: {}, user: admin }, resAdmin);
+    ok("GET /:id de entrega orfa -> 200 so para admin (bypass canonico)", resAdmin.statusCode === 200 && resAdmin.body.ok === true);
+    delete ENTREGAS[3];
   }
   {
     const res = fakeRes();

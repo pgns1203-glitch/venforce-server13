@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const pool = require("../config/database");
+const { normalizarCompetencia } = require("../utils/competenciaCanonica");
 
 const TIPOS_PERMITIDOS = new Set([
   "fechamento_mensal",
@@ -118,15 +119,27 @@ async function buscarClientePorSlugOuId({ clienteIdRaw, clienteSlugRaw }) {
   return null;
 }
 
+// V3 P2.6 BLOCO G — escrita e leitura falavam formatos diferentes: a coluna
+// `periodo` e VARCHAR(100) livre, sem validacao, e o Portal grava o texto do
+// input (placeholder literal "ex: Maio 2026"), enquanto os leitores exigiam
+// YYYY-MM. Resultado: praticamente todo relatorio real aparecia sem periodo.
+//
+// A partir daqui, tudo que der para normalizar com seguranca e GRAVADO ja em
+// YYYY-MM. O que nao der continua sendo gravado como veio (texto livre) — nao
+// rejeitamos a escrita nem inventamos competencia, so paramos de criar dado
+// novo fora do formato. Linhas historicas seguem sendo normalizadas na leitura.
+function normalizarPeriodoParaEscrita(periodoRaw) {
+  if (periodoRaw === null || periodoRaw === undefined) return null;
+  const texto = String(periodoRaw).trim();
+  if (!texto) return null;
+  return normalizarCompetencia(texto) || texto;
+}
+
 async function criarEntrega({ userId, body }) {
   const tipo = validarTipo(body?.tipo);
   const titulo = validarTitulo(body?.titulo);
 
-  const periodoRaw = body?.periodo;
-  const periodo =
-    periodoRaw === null || periodoRaw === undefined || String(periodoRaw).trim() === ""
-      ? null
-      : String(periodoRaw).trim();
+  const periodo = normalizarPeriodoParaEscrita(body?.periodo);
 
   const statusRaw = String(body?.status || "").trim().toLowerCase();
   const status = statusRaw ? statusRaw : "rascunho";
@@ -204,7 +217,13 @@ async function criarEntrega({ userId, body }) {
   return { ok: true, entrega: ins.rows[0] };
 }
 
-async function listarEntregas({ query }) {
+// `clienteIdsPermitidos`: carteira do usuario aplicada EM SQL. Antes o
+// controller filtrava o array JA paginado pelo LIMIT/OFFSET e devolvia o
+// `total` sem filtro — vazamento de contagem e paginas curtas/vazias. Passando
+// a lista para ca, o COUNT e a paginacao concordam com o que o usuario pode ver.
+// `null`/`undefined` = sem restricao (admin ou chamada interna); array VAZIO =
+// carteira vazia, que devolve zero linhas (fail-closed), nunca "sem filtro".
+async function listarEntregas({ query, clienteIdsPermitidos = null }) {
   const tipo = query?.tipo ? String(query.tipo).trim() : "";
   if (tipo && !TIPOS_PERMITIDOS.has(tipo)) {
     throw criarErroHttp(400, { ok: false, erro: "tipo inválido." });
@@ -249,6 +268,15 @@ async function listarEntregas({ query }) {
     where.push(`publicado = $${params.length}`);
   }
 
+  if (Array.isArray(clienteIdsPermitidos)) {
+    if (!clienteIdsPermitidos.length) {
+      // Carteira vazia: nao existe entrega visivel. Nao cai em "sem filtro".
+      return { ok: true, total: 0, entregas: [] };
+    }
+    params.push(clienteIdsPermitidos);
+    where.push(`cliente_id = ANY($${params.length}::int[])`);
+  }
+
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   const totalResult = await pool.query(
@@ -268,7 +296,7 @@ async function listarEntregas({ query }) {
         created_by, created_at, updated_at, published_at, expires_at
        FROM entregas_cliente
        ${whereSql}
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, id DESC
        LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
     params
   );
@@ -312,12 +340,7 @@ async function atualizarEntrega({ idRaw, body }) {
   }
 
   if (Object.prototype.hasOwnProperty.call(body || {}, "periodo")) {
-    const periodoRaw = body?.periodo;
-    const periodo =
-      periodoRaw === null || periodoRaw === undefined || String(periodoRaw).trim() === ""
-        ? null
-        : String(periodoRaw).trim();
-    params.push(periodo);
+    params.push(normalizarPeriodoParaEscrita(body?.periodo));
     patches.push(`periodo = $${params.length}`);
   }
 

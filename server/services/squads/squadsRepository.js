@@ -16,18 +16,23 @@ const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
 
-const migrationPath = path.join(
-  __dirname, "..", "..", "sql", "migrations", "20260827_squads_foundation.sql"
-);
+const migrationsDir = path.join(__dirname, "..", "..", "sql", "migrations");
+const migrationFiles = [
+  "20260827_squads_foundation.sql",       // S — squads/members/history/responsaveis
+  "20260828_cliente_responsaveis_p24.sql", // P2.4 — colunas de encerramento/auditoria
+];
 
 let _ensured = false;
 
-// Idempotente. O arquivo de migration é a fonte canônica do schema — este
-// boot só o reaplica (CREATE TABLE IF NOT EXISTS / índices parciais).
+// Idempotente. Os arquivos de migration são a fonte canônica do schema —
+// este boot só os reaplica (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT
+// EXISTS / índices parciais).
 async function ensureSquadsTables(db = pool) {
   if (_ensured && db === pool) return;
-  const sql = fs.readFileSync(migrationPath, "utf8");
-  await db.query(sql);
+  for (const nome of migrationFiles) {
+    const sql = fs.readFileSync(path.join(migrationsDir, nome), "utf8");
+    await db.query(sql);
+  }
   if (db === pool) _ensured = true;
 }
 
@@ -257,6 +262,124 @@ async function responsaveisDeClientes(clienteIds, userId = null, db = pool) {
   return rows;
 }
 
+// Lista os responsáveis de UM cliente (com nome/email do usuário). Por
+// padrão só os vigentes; `incluirEncerrados` traz o rastro histórico.
+async function listarResponsaveisDoCliente(clienteId, { incluirEncerrados = false } = {}, db = pool) {
+  const filtroAtivo = incluirEncerrados ? "" : "AND cr.ativo = true";
+  const { rows } = await db.query(
+    `/* squads:RESPONSAVEIS_DO_CLIENTE */
+     SELECT cr.id, cr.cliente_id, cr.user_id, cr.papel, cr.ativo,
+            cr.criado_por, cr.created_at, cr.updated_at,
+            cr.encerrado_em, cr.encerrado_por, cr.motivo,
+            u.nome AS user_nome, u.email AS user_email, u.role AS user_role
+       FROM cliente_responsaveis cr
+       JOIN users u ON u.id = cr.user_id
+      WHERE cr.cliente_id = $1 ${filtroAtivo}
+      ORDER BY cr.ativo DESC, cr.papel ASC, u.nome ASC`,
+    [Number(clienteId)]
+  );
+  return rows;
+}
+
+async function obterResponsavel(clienteId, userId, papel, db = pool) {
+  const { rows } = await db.query(
+    `/* squads:GET_RESPONSAVEL */
+     SELECT id, cliente_id, user_id, papel, ativo, criado_por,
+            encerrado_em, encerrado_por, motivo
+       FROM cliente_responsaveis
+      WHERE cliente_id = $1 AND user_id = $2 AND papel = $3`,
+    [Number(clienteId), Number(userId), String(papel)]
+  );
+  return rows[0] || null;
+}
+
+// Conta responsáveis vigentes de um papel para um cliente.
+async function contarResponsaveisAtivos(clienteId, papel, db = pool) {
+  const { rows } = await db.query(
+    `/* squads:CONTAR_RESPONSAVEIS_ATIVOS */
+     SELECT COUNT(*)::int AS total
+       FROM cliente_responsaveis
+      WHERE cliente_id = $1 AND papel = $2 AND ativo = true`,
+    [Number(clienteId), String(papel)]
+  );
+  return rows[0] ? rows[0].total : 0;
+}
+
+// Insere ou reativa (reusa a linha) um responsável. Limpa o encerramento.
+async function upsertResponsavel({ clienteId, userId, papel, criadoPor = null }, db = pool) {
+  const { rows } = await db.query(
+    `/* squads:UPSERT_RESPONSAVEL */
+     INSERT INTO cliente_responsaveis (cliente_id, user_id, papel, ativo, criado_por)
+     VALUES ($1, $2, $3, true, $4)
+     ON CONFLICT (cliente_id, user_id, papel) DO UPDATE
+       SET ativo = true,
+           encerrado_em = NULL,
+           encerrado_por = NULL,
+           motivo = NULL,
+           criado_por = COALESCE(cliente_responsaveis.criado_por, EXCLUDED.criado_por),
+           updated_at = NOW()
+     RETURNING id, cliente_id, user_id, papel, ativo, criado_por, created_at, updated_at`,
+    [Number(clienteId), Number(userId), String(papel), criadoPor == null ? null : Number(criadoPor)]
+  );
+  return rows[0];
+}
+
+// Soft-delete: encerra o vínculo (não apaga a linha).
+async function encerrarResponsavel({ clienteId, userId, papel, encerradoPor = null, motivo = null }, db = pool) {
+  const { rows } = await db.query(
+    `/* squads:ENCERRAR_RESPONSAVEL */
+     UPDATE cliente_responsaveis
+        SET ativo = false, encerrado_em = NOW(), encerrado_por = $4,
+            motivo = COALESCE($5, motivo), updated_at = NOW()
+      WHERE cliente_id = $1 AND user_id = $2 AND papel = $3 AND ativo = true
+      RETURNING id, cliente_id, user_id, papel`,
+    [Number(clienteId), Number(userId), String(papel), encerradoPor == null ? null : Number(encerradoPor), motivo]
+  );
+  return rows[0] || null;
+}
+
+// Encerra, em lote, as responsabilidades vigentes de um cliente cujo usuário
+// NÃO é membro ativo de `squadDestinoId`. Chamado quando o cliente muda de
+// Squad: responsabilidade não pode continuar apontando silenciosamente para
+// quem perdeu o acesso (mission P2.4 §4). NÃO é autorização — é limpeza
+// disparada PELA transferência, nunca o contrário.
+async function encerrarResponsaveisSemAcessoAoSquad(clienteId, squadDestinoId, { encerradoPor = null, motivo = "transferencia_squad" } = {}, db = pool) {
+  const { rows } = await db.query(
+    `/* squads:ENCERRAR_RESPONSAVEIS_SEM_ACESSO */
+     UPDATE cliente_responsaveis cr
+        SET ativo = false, encerrado_em = NOW(), encerrado_por = $3,
+            motivo = $4, updated_at = NOW()
+      WHERE cr.cliente_id = $1 AND cr.ativo = true
+        AND NOT EXISTS (
+          SELECT 1 FROM squad_members sm
+           WHERE sm.squad_id = $2 AND sm.user_id = cr.user_id AND sm.ativo = true
+        )
+      RETURNING cr.user_id, cr.papel`,
+    [Number(clienteId), Number(squadDestinoId), encerradoPor == null ? null : Number(encerradoPor), motivo]
+  );
+  return rows;
+}
+
+// O usuário é membro ativo do Squad ativo do cliente? (checagem ESTRUTURAL
+// de squad_members — independe do flag SQUADS_ENFORCEMENT). Retorna:
+//   { temSquad: false }                       -> cliente sem Squad ativo
+//   { temSquad: true, membro: bool, squadId }  -> resultado da checagem
+async function usuarioTemAcessoAoSquadDoCliente(clienteId, userId, db = pool) {
+  const { rows } = await db.query(
+    `/* squads:ACESSO_ESTRUTURAL_AO_SQUAD */
+     SELECT csh.squad_id,
+            EXISTS (
+              SELECT 1 FROM squad_members sm
+               WHERE sm.squad_id = csh.squad_id AND sm.user_id = $2 AND sm.ativo = true
+            ) AS membro
+       FROM cliente_squad_history csh
+      WHERE csh.cliente_id = $1 AND csh.fim_em IS NULL`,
+    [Number(clienteId), Number(userId)]
+  );
+  if (!rows.length) return { temSquad: false };
+  return { temSquad: true, membro: rows[0].membro === true, squadId: rows[0].squad_id };
+}
+
 module.exports = {
   ensureSquadsTables,
   listarSquads,
@@ -274,5 +397,12 @@ module.exports = {
   clientesDoSquad,
   historicoDoCliente,
   responsaveisDeClientes,
+  listarResponsaveisDoCliente,
+  obterResponsavel,
+  contarResponsaveisAtivos,
+  upsertResponsavel,
+  encerrarResponsavel,
+  encerrarResponsaveisSemAcessoAoSquad,
+  usuarioTemAcessoAoSquadDoCliente,
   _resetEnsuredParaTeste: () => { _ensured = false; },
 };

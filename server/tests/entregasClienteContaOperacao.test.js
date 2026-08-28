@@ -49,7 +49,8 @@ const CLIENTES = [
   { id: 2, slug: "outro", nome: "Outro" },
 ];
 
-function mockDb({ entregas = [] } = {}) {
+function mockDb({ entregas = [], duplicatas = [] } = {}) {
+  const fixtureDuplicatas = duplicatas;
   const capturas = [];
   return {
     capturas,
@@ -64,6 +65,23 @@ function mockDb({ entregas = [] } = {}) {
       if (q.includes("FROM clientes") && q.includes("WHERE")) {
         const alvo = CLIENTES.find((c) => c.id === Number(params[0]) || c.slug === String(params[0]));
         return { rows: alvo ? [alvo] : [] };
+      }
+      if (q.startsWith("SELECT id, status, publicado, token_publico, created_at FROM entregas_cliente")) {
+        // D4 - busca de duplicata da competencia. Aplica de verdade o WHERE.
+        const [tipoAlvo, clienteAlvo, periodoAlvo] = params;
+        const semConta = /cliente_conta_id IS NULL/.test(q);
+        const contaAlvo = semConta ? null : params[3];
+        const achada = fixtureDuplicatas.find((e) =>
+          e.tipo === tipoAlvo && e.cliente_id === clienteAlvo && e.periodo === periodoAlvo
+          && (semConta ? e.cliente_conta_id == null : e.cliente_conta_id === contaAlvo));
+        return { rows: achada ? [achada] : [] };
+      }
+      if (q.startsWith("SELECT * FROM entregas_cliente WHERE id = $1")) {
+        const achada = fixtureDuplicatas.find((e) => e.id === Number(params[0]));
+        return { rows: achada ? [achada] : [] };
+      }
+      if (q.startsWith("UPDATE entregas_cliente SET")) {
+        return { rows: [{ id: params[params.length - 1], substituida: true }] };
       }
       if (q.startsWith("INSERT INTO entregas_cliente")) {
         return { rows: [{ id: 99, cliente_conta_id: params[12] ?? null }] };
@@ -237,6 +255,67 @@ async function run() {
     ok("relatorios expoem clienteContaId por item", rel[0].clienteContaId === 10);
     ok("entrega sem operacao registrada aparece como null, nunca como conta 0", rel[1].clienteContaId === null);
   }
+
+  // --------------------------------------------------------------- D4
+  // Reprocessar nao pode duplicar em silencio: dois fechamentos publicados da
+  // mesma competencia sao dois links publicos com numeros diferentes.
+  const JA_EXISTE = [
+    { id: 55, tipo: "fechamento_mensal", cliente_id: 1, cliente_conta_id: 10, periodo: "2026-08", status: "publicado", publicado: true, token_publico: "tok" },
+    { id: 56, tipo: "fechamento_mensal", cliente_id: 1, cliente_conta_id: null, periodo: "2026-07", status: "rascunho", publicado: false, token_publico: null },
+  ];
+
+  await comDb({ duplicatas: JA_EXISTE }, async () => {
+    await rejeitaCom(
+      "POST repetido da mesma competencia/operacao -> 409 ENTREGA_JA_EXISTE",
+      servico.criarEntrega({ userId: 5, body: { tipo: "fechamento_mensal", titulo: "F", cliente_id: 1, cliente_conta_id: 10, periodo: "2026-08" } }),
+      (e) => e.statusCode === 409 && e.code === "ENTREGA_JA_EXISTE"
+    );
+  });
+
+  await comDb({ duplicatas: JA_EXISTE }, async () => {
+    let erro = null;
+    try {
+      await servico.criarEntrega({ userId: 5, body: { tipo: "fechamento_mensal", titulo: "F", cliente_id: 1, cliente_conta_id: 10, periodo: "2026-08" } });
+    } catch (e) { erro = e; }
+    ok("o 409 devolve o id da entrega existente (para oferecer 'substituir')", erro.payload.entregaId === 55);
+    ok("o 409 diz se a existente ja esta publicada", erro.payload.publicado === true);
+  });
+
+  await comDb({ duplicatas: JA_EXISTE }, async (db) => {
+    const r = await servico.criarEntrega({
+      userId: 5,
+      body: { tipo: "fechamento_mensal", titulo: "F2", cliente_id: 1, cliente_conta_id: 10, periodo: "2026-08", substituir: true },
+    });
+    ok("substituir=true ATUALIZA a existente em vez de criar outra", r.entrega.substituida === true);
+    ok("substituir NAO faz INSERT novo", !db.capturas.some((c) => c.q.startsWith("INSERT INTO entregas_cliente")));
+    ok("substituir NAO toca em token_publico (o link ja divulgado nao morre)",
+      !db.capturas.some((c) => c.q.startsWith("UPDATE entregas_cliente SET") && /token_publico/.test(c.q)));
+  });
+
+  // A duplicata e por (cliente, operacao, competencia): variar qualquer um libera.
+  await comDb({ duplicatas: JA_EXISTE }, async (db) => {
+    await servico.criarEntrega({ userId: 5, body: { tipo: "fechamento_mensal", titulo: "F", cliente_id: 1, cliente_conta_id: 11, periodo: "2026-08" } });
+    ok("outra OPERACAO na mesma competencia e permitida (nao e duplicata)", db.capturas.some((c) => c.q.startsWith("INSERT INTO entregas_cliente")));
+  });
+  await comDb({ duplicatas: JA_EXISTE }, async (db) => {
+    await servico.criarEntrega({ userId: 5, body: { tipo: "fechamento_mensal", titulo: "F", cliente_id: 1, cliente_conta_id: 10, periodo: "2026-09" } });
+    ok("outra COMPETENCIA e permitida", db.capturas.some((c) => c.q.startsWith("INSERT INTO entregas_cliente")));
+  });
+  await comDb({ duplicatas: JA_EXISTE }, async (db) => {
+    await servico.criarEntrega({ userId: 5, body: { tipo: "diagnostico_completo", titulo: "F", cliente_id: 1, cliente_conta_id: 10, periodo: "2026-08" } });
+    ok("outro TIPO na mesma competencia continua livre (so fechamento_mensal e unico)", db.capturas.some((c) => c.q.startsWith("INSERT INTO entregas_cliente")));
+  });
+  await comDb({ duplicatas: JA_EXISTE }, async (db) => {
+    await servico.criarEntrega({ userId: 5, body: { tipo: "fechamento_mensal", titulo: "F", cliente_id: 1, cliente_conta_id: 10 } });
+    ok("entrega SEM competencia nunca e tratada como duplicata", db.capturas.some((c) => c.q.startsWith("INSERT INTO entregas_cliente")));
+  });
+  await comDb({ duplicatas: JA_EXISTE }, async () => {
+    await rejeitaCom(
+      "duplicata legada (sem operacao registrada) tambem e detectada",
+      servico.criarEntrega({ userId: 5, body: { tipo: "fechamento_mensal", titulo: "F", cliente_id: 1, periodo: "2026-07" } }),
+      (e) => e.statusCode === 409 && e.code === "ENTREGA_JA_EXISTE"
+    );
+  });
 
   console.log(`\nentregasClienteContaOperacao.test.js: ${checks} verificacoes passaram.`);
 }

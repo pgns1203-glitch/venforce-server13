@@ -181,6 +181,45 @@ async function resolverContaDaEntrega({ clienteContaIdRaw, clienteId }, db = poo
   return conta.id;
 }
 
+// V3 P2.6 D4 — duas entregas publicadas da MESMA competencia significam DOIS
+// links publicos com numeros diferentes circulando para o mesmo cliente.
+//
+// Hoje nada no banco impede isso: nao existe UNIQUE(cliente, tipo, periodo) e
+// o INSERT nao tem ON CONFLICT. O unico anti-duplicata era `_entregaIdSalvo`,
+// uma variavel de memoria do browser que zera ao reprocessar, ao trocar de
+// cliente e a cada F5.
+//
+// A guarda vive aqui, na aplicacao, DE PROPOSITO: o indice unico parcial
+// (sql/migrations/20260828_entregas_cliente_unicidade_p26.sql) exige sanear as
+// duplicatas que ja existem em producao ANTES de ser criado, e sanear e
+// decisao humana sobre dado real. A guarda de aplicacao funciona sem o indice
+// e continua correta depois dele.
+//
+// So vale para `fechamento_mensal` com competencia conhecida: e a unica
+// combinacao com significado de unicidade. Entrega sem periodo, ou de outro
+// tipo, continua livre.
+const TIPOS_COM_COMPETENCIA_UNICA = new Set(["fechamento_mensal"]);
+
+async function encontrarEntregaDaCompetencia({ tipo, clienteId, clienteContaId, periodo }, db = pool) {
+  if (!TIPOS_COM_COMPETENCIA_UNICA.has(tipo)) return null;
+  if (clienteId == null || !periodo) return null;
+
+  const params = [tipo, clienteId, periodo];
+  const filtroConta = clienteContaId == null
+    ? "cliente_conta_id IS NULL"
+    : `cliente_conta_id = $${params.push(clienteContaId)}`;
+
+  const { rows } = await db.query(
+    `SELECT id, status, publicado, token_publico, created_at
+       FROM entregas_cliente
+      WHERE tipo = $1 AND cliente_id = $2 AND periodo = $3 AND ${filtroConta}
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    params
+  );
+  return rows[0] || null;
+}
+
 async function criarEntrega({ userId, body }) {
   const tipo = validarTipo(body?.tipo);
   const titulo = validarTitulo(body?.titulo);
@@ -220,6 +259,32 @@ async function criarEntrega({ userId, body }) {
     clienteContaIdRaw: body?.cliente_conta_id ?? body?.clienteContaId,
     clienteId: cliente_id,
   });
+
+  // V3 P2.6 D4 — reprocessar nao pode duplicar em silencio.
+  const existente = await encontrarEntregaDaCompetencia({
+    tipo, clienteId: cliente_id, clienteContaId: cliente_conta_id, periodo,
+  });
+  if (existente) {
+    const querSubstituir = body?.substituir === true || String(body?.substituir || "").toLowerCase() === "true";
+    if (!querSubstituir) {
+      // Devolve o id existente para o frontend poder oferecer "substituir"
+      // em vez de criar um segundo link publico do mesmo mes.
+      throw criarErroHttp(409, {
+        ok: false,
+        code: "ENTREGA_JA_EXISTE",
+        erro: "Ja existe uma entrega desta competencia para este cliente/operacao. Use substituir=true para atualizar a existente.",
+        entregaId: existente.id,
+        publicado: !!existente.publicado,
+      });
+    }
+    // Substituicao explicita: ATUALIZA a entrega existente. O token publico e
+    // preservado por atualizarEntrega (ela nao toca em token_publico), entao o
+    // link ja divulgado nao morre numa substituicao.
+    return atualizarEntrega({
+      idRaw: existente.id,
+      body: { ...body, substituir: undefined },
+    });
+  }
 
   const payloadInput = body?.payload_json;
   const payloadVazio =

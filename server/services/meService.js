@@ -102,6 +102,57 @@ async function contarContasAtivas(ids) {
   return new Map(rows.map((r) => [r.cliente_id, r.contas_ativas]));
 }
 
+
+// V3 P2.7 BLOCO P / D3 — ultima sincronizacao POR CONTA.
+//
+// `contas[].ultimaSync` era `null` LITERAL (hardcoded), o que a Pessoa 1
+// registrou como divida em VENFORCE_V3_F4_2_DEPENDENCIAS_P2_6.md §D3. A fonte
+// real existe: `central_vendas_sync_runs` tem `cliente_conta_id`, `status` e
+// `finished_at`, com indice em (cliente_conta_id, marketplace, status).
+//
+// UMA query batelada com DISTINCT ON — nunca 1 por conta (a Carteira lista o
+// portfolio inteiro; um fan-out aqui seria N+1 por construcao).
+//
+// So conta run `completed`: um run `failed`/`running` nao e "sincronizado em".
+// Conta sem run completo continua `null`, e `null` significa "sem dado de
+// sync", NUNCA "nunca sincronizou" — nenhuma das duas fontes sustenta essa
+// afirmacao mais forte.
+async function ultimaSyncPorConta(clienteIds) {
+  if (!clienteIds.length) return new Map();
+  try {
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (cliente_conta_id) cliente_conta_id, finished_at
+         FROM central_vendas_sync_runs
+        WHERE cliente_id = ANY($1::bigint[])
+          AND cliente_conta_id IS NOT NULL
+          AND status = 'completed'
+          AND finished_at IS NOT NULL
+        ORDER BY cliente_conta_id, finished_at DESC`,
+      [clienteIds]
+    );
+    return new Map(rows.map((r) => [Number(r.cliente_conta_id), r.finished_at]));
+  } catch (err) {
+    // A tabela e da Central de Vendas: numa base onde ela ainda nao existe, a
+    // Carteira nao pode cair. Sem dado -> null, que ja e o contrato honesto.
+    console.warn("[me/portfolio] ultima sync por conta indisponivel:", err?.message);
+    return new Map();
+  }
+}
+
+// Destino canonico de cada pendencia — para onde o usuario vai para resolver.
+// Mapa ESTATICO derivado do tipo, nao dado inferido: nao ha invencao aqui.
+// `desde`/`dias` NAO entram: nenhuma fonte guarda desde quando a pendencia
+// existe, e datar isso seria fabricar (ver BLOCO P do runbook).
+const DESTINO_PENDENCIA = Object.freeze({
+  sem_grant: { rotulo: "Conta de marketplace nao conectada", destino: "cliente-contas" },
+  sem_base: { rotulo: "Base de custos nao vinculada", destino: "bases" },
+});
+
+function detalharPendencia(tipo) {
+  const meta = DESTINO_PENDENCIA[tipo] || null;
+  return { tipo, rotulo: meta ? meta.rotulo : null, destino: meta ? meta.destino : null };
+}
+
 // GET /me/portfolio — a Carteira. FONTE AUTORITATIVA: so clientes
 // autorizados pelo resolver. Uma requisicao: carteira + contas (sem N+1) +
 // readiness em lote + squad por cliente + responsavelDireto.
@@ -115,11 +166,12 @@ async function obterPortfolio(user) {
   const squadPrincipalId = (squads.find((s) => s.principal) || {}).id || null;
 
   await squadsRepo.ensureSquadsTables();
-  const [contasTodas, operacional, squadAtivoPorCliente, responsaveis] = await Promise.all([
+  const [contasTodas, operacional, squadAtivoPorCliente, responsaveis, syncPorConta] = await Promise.all([
     listarContasDeClientesAtivos(ids),
     cliente360Service.getClientesOperacional({ restringirClienteIds: ids }),
     squadsRepo.squadsAtivosDeClientes(ids),
     squadsRepo.responsaveisDeClientes(ids, user.id),
+    ultimaSyncPorConta(ids),
   ]);
 
   const contasPorCliente = new Map();
@@ -155,7 +207,7 @@ async function obterPortfolio(user) {
         ativo: conta.ativo,
         grantStatus: grantStatusDaConta(conta),
         baseVinculada: conta.base ? { id: conta.base.base_id, nome: conta.base.nome } : null,
-        ultimaSync: null,
+        ultimaSync: syncPorConta.get(Number(conta.id)) || null,
       }));
       return {
         id: c.id,
@@ -173,7 +225,15 @@ async function obterPortfolio(user) {
         responsavelDireto: responsavelSet.has(c.id),
         papeisDiretos: papeisDiretosPorCliente.get(c.id) || [],
         statusOperacional: readiness?.statusOperacional || null,
-        pendencias: (readiness?.pendencias || []).map((tipo) => ({ tipo })),
+        // D3 — o campo ja era calculado por getClientesOperacional (a MESMA
+        // chamada que ja fazemos); so nao era repassado. Zero query nova.
+        // null = sem dado de sync, nunca "nunca sincronizou".
+        ultimaSincronizacao: readiness?.ultimaSincronizacao || null,
+        // BLOCO P — pendencia deixa de ser so {tipo}. `rotulo` e `destino` sao
+        // mapa estatico do tipo (para onde ir resolver), nao dado inferido.
+        // `desde`/`dias` continuam FORA: nenhuma fonte guarda desde quando a
+        // pendencia existe, e datar isso seria fabricar.
+        pendencias: (readiness?.pendencias || []).map(detalharPendencia),
         contas,
       };
     }),

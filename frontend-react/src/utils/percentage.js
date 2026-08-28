@@ -6,6 +6,16 @@
 
 import { ehAusente, AUSENTE } from "./numbers.js";
 
+// Backend manda margem/ACOS como pontos percentuais prontos (23.3), não
+// fração — quem chama `formatarPercentual` precisa dividir por 100 antes.
+// `pontos / 100` sozinho quebra a honestidade de ausência: em JS,
+// `null / 100` e `undefined / 100` avaliam para `0` (coerção aritmética),
+// um número finito real — passa direto pelo guard de `ehAusente` de
+// `formatarPercentual` e vira "0,0%" para um dado que não existe.
+export function pontosParaFracao(pontos) {
+  return pontos == null ? null : pontos / 100;
+}
+
 export function formatarPercentual(fracao, casas = 1) {
   if (ehAusente(fracao)) return AUSENTE;
   return `${(Number(fracao) * 100).toLocaleString("pt-BR", {

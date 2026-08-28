@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venforce — Financeiro (V3)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (códigos) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="./css/vf-components-v2.css">
+  <link rel="stylesheet" href="./css/vf-shell.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
+  <script type="module" crossorigin src="./assets/financeiro-v3/financeiro-v3-AFprOX3V.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/financeiro-v3/financeiro-v3-DVhQqH6X.css">
+</head>
+<!-- F4.1 — Financeiro V3, SÓ LEITURA (GET /financeiro/:cliente). Convive em
+     paralelo com Portal/financeiro.html (upload/processamento real) — ver
+     vite.entries.js para o motivo do nome `financeiro-v3.html`. Cutover da
+     sidebar é decisão explícita posterior, fora desta unidade. -->
+<body class="vf-page vf-page-financeiro-v3" data-vf-scope="account" data-vf-module="financeiro">
+  <div id="root"></div>
+
+  <script type="module" src="./vf-shell.js"></script>
+</body>
+</html>

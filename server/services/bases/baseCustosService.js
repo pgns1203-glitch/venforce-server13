@@ -405,17 +405,24 @@ async function tocarUpdatedAtBase(baseId) {
 // Ads/Métricas ML, aqui manifestada como "base de custos errada").
 async function resolverBaseVinculada({ baseId, clienteSlug, marketplace, clienteContaId = null }) {
   const idNum = Number(baseId);
-  if (Number.isInteger(idNum) && idNum > 0) {
-    const r = await pool.query(
-      "SELECT id, slug, nome FROM bases WHERE id = $1 AND ativo = true",
-      [idNum]
-    );
-    if (r.rows.length) return r.rows[0];
-  }
+  const temBaseId = Number.isInteger(idNum) && idNum > 0;
 
   const slug = String(clienteSlug || "").trim().toLowerCase();
   const mkt = String(marketplace || "").trim().toLowerCase();
-  if (!slug || !mkt) return null;
+
+  // V3 P2.7 BLOCO L — sem cliente nao ha como PROVAR posse da base. Antes,
+  // um baseId sem cliente resolvia direto pelo id; agora e recusado
+  // (fail-closed) em vez de devolver a base de quem quer que seja.
+  if (!slug || !mkt) {
+    if (temBaseId) {
+      throw criarHttpErro(400, {
+        ok: false,
+        code: "BASE_SEM_CONTEXTO_DE_CLIENTE",
+        erro: "Informe o cliente e o marketplace para usar uma base de custos especifica.",
+      });
+    }
+    return null;
+  }
 
   const r = await pool.query(
     `SELECT b.id, b.slug, b.nome, v.cliente_conta_id
@@ -431,6 +438,26 @@ async function resolverBaseVinculada({ baseId, clienteSlug, marketplace, cliente
     [slug, mkt]
   );
   const candidatos = r.rows;
+
+  // V3 P2.7 BLOCO L — IDOR fechado. O baseId explicito CONTINUA tendo
+  // prioridade sobre a escolha automatica (segue sem disparar o 409 de
+  // ambiguidade), mas agora so vale se a base estiver ativa E vinculada a
+  // ESTE cliente NESTE marketplace. Antes, `SELECT ... FROM bases WHERE
+  // id = $1 AND ativo = true` retornava antes de qualquer leitura de
+  // vinculo: como `costsBaseId` vem do corpo do request, dava para fechar o
+  // Cliente A com a base de custos do Cliente B so trocando o numero.
+  // Mesma resposta para "base de outro cliente", "base inativa" e "base
+  // inexistente": nao vazamos se o id existe.
+  if (temBaseId) {
+    const daBase = candidatos.find((c) => Number(c.id) === idNum);
+    if (daBase) return { id: daBase.id, slug: daBase.slug, nome: daBase.nome };
+    throw criarHttpErro(403, {
+      ok: false,
+      code: "BASE_NAO_PERTENCE_AO_CLIENTE",
+      erro: "A base de custos informada nao esta ativa e vinculada a este cliente neste marketplace.",
+    });
+  }
+
   if (!candidatos.length) return null;
 
   const contaIdNum = Number(clienteContaId);

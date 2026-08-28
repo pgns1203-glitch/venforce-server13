@@ -34,12 +34,22 @@
 //   (publicado > mais recente > maior id) e DECLARAMOS a ambiguidade em
 //   `resultado.ambiguidade` em vez de escolher em silêncio.
 //
-// BLOCO F — `resultado.escopoConta` permanece `false`, e isso é a resposta
-//   correta, não uma pendência: `entregas_cliente` NÃO TEM `cliente_conta_id`
-//   (DDL em server/index.js, nenhuma migration toca a tabela). Tornar o bloco
-//   account-aware exigiria mudança de schema + decisão humana sobre a qual
-//   conta cada entrega histórica pertence — fora do escopo desta missão
-//   (proibido inventar mapeamento). Mentir no contrato seria pior.
+// BLOCO F + D1 — `resultado.escopoConta` deixou de ser um `false` fixo.
+//   `entregas_cliente` ganhou `cliente_conta_id` (aditivo, NULLABLE, sem
+//   backfill — ver sql/migrations/20260828_entregas_cliente_conta_p26.sql), então
+//   a partir de agora a entrega registra a OPERAÇÃO que gerou o número.
+//   O campo passa a dizer a verdade sobre CADA resposta:
+//     true  → a entrega encontrada registra esta operação;
+//     false → não há entrega, ou a entrega é legada (sem operação registrada)
+//             e portanto é do CLIENTE, não desta conta — declarado em
+//             `resultado.origemClientLevel`, nunca escondido.
+//   O bloco `relatorios` mantém `escopoConta: false` de propósito: a lista
+//   MISTURA, deliberadamente, as entregas desta operação com as legadas sem
+//   operação registrada (esconder as antigas fingiria que o histórico do
+//   cliente começa na migração). Cada item carrega `clienteContaId` para o
+//   frontend distinguir os três casos sem que o envelope precise mentir.
+//   Nenhuma entrega histórica foi atribuída a uma conta — isso exigiria
+//   decisão humana e está proibido nesta missão.
 //
 // BLOCO G — `relatorios[].periodo` era devolvido cru: podia vir null, ISO,
 //   "Maio 2026" ou texto livre, e o frontend não tinha como comparar nem
@@ -149,7 +159,16 @@ function extrairComposicaoDoFechamento(entrega) {
 //   1. publicada vence rascunho (é o que o cliente final enxerga);
 //   2. mais recente vence;
 //   3. maior id vence (desempate final, sempre total).
-function compararEntregas(a, b) {
+function compararEntregas(a, b, clienteContaId = null) {
+  // V3 P2.6 D1 — a entrega DESTA operacao vence a entrega sem operacao
+  // registrada. Sem isso, uma entrega legada poderia responder no lugar da
+  // entrega especifica da conta que o usuario esta olhando.
+  if (clienteContaId != null) {
+    const daContaA = Number(a.cliente_conta_id) === Number(clienteContaId) ? 1 : 0;
+    const daContaB = Number(b.cliente_conta_id) === Number(clienteContaId) ? 1 : 0;
+    if (daContaA !== daContaB) return daContaB - daContaA;
+  }
+
   const pubA = a.publicado === true || a.status === "publicado" ? 1 : 0;
   const pubB = b.publicado === true || b.status === "publicado" ? 1 : 0;
   if (pubA !== pubB) return pubB - pubA;
@@ -163,10 +182,10 @@ function compararEntregas(a, b) {
 
 // Seleciona o fechamento da competência pedida. Devolve também quantos
 // candidatos existiam, para o chamador poder DECLARAR a ambiguidade.
-function selecionarFechamentoDoPeriodo(entregas, competencia) {
+function selecionarFechamentoDoPeriodo(entregas, competencia, clienteContaId = null) {
   const candidatos = (entregas || []).filter((e) => mesmaCompetencia(e.periodo, competencia));
   if (!candidatos.length) return { entrega: null, candidatos: [] };
-  const ordenados = candidatos.slice().sort(compararEntregas);
+  const ordenados = candidatos.slice().sort((a, b) => compararEntregas(a, b, clienteContaId));
   return { entrega: ordenados[0], candidatos: ordenados };
 }
 
@@ -177,6 +196,10 @@ function montarHistorico(entregas) {
     id: e.id ?? null,
     periodo: normalizarCompetencia(e.periodo),
     periodoBruto: e.periodo ?? null,
+    // V3 P2.6 D1 — null significa "sem operacao registrada" (entrega antiga),
+    // NUNCA "conta 0". O frontend distingue os tres casos: desta operacao,
+    // de outra operacao, sem operacao registrada.
+    clienteContaId: e.cliente_conta_id ?? null,
     status: e.status,
     geradoEm: e.created_at,
     publicado: !!e.publicado,
@@ -206,7 +229,15 @@ async function obterFinanceiro({ clienteSlugRaw, clienteContaIdRaw, periodoRaw }
   const [entregasBloco, conciliacao] = await Promise.all([
     bloco({ escopoConta: false }, async () => {
       const { entregas } = await d.listarEntregas({
-        query: { cliente_slug: cliente.slug, tipo: "fechamento_mensal", limit: LIMITE_HISTORICO },
+        query: {
+          cliente_slug: cliente.slug,
+          tipo: "fechamento_mensal",
+          limit: LIMITE_HISTORICO,
+          // V3 P2.6 D1 — desta operacao, mais as entregas antigas sem operacao
+          // registrada (elas nao sao de OUTRA conta; elas nao tem conta).
+          cliente_conta_id: conta.id,
+          incluir_sem_conta: "true",
+        },
       });
       return entregas || [];
     }),
@@ -223,18 +254,34 @@ async function obterFinanceiro({ clienteSlugRaw, clienteContaIdRaw, periodoRaw }
 
   const entregas = entregasBloco.disponivel ? entregasBloco.dados : [];
   const { entrega, candidatos } = entregasBloco.disponivel
-    ? selecionarFechamentoDoPeriodo(entregas, competencia)
+    ? selecionarFechamentoDoPeriodo(entregas, competencia, conta.id)
     : { entrega: null, candidatos: [] };
+
+  // V3 P2.6 BLOCO F — escopoConta deixa de ser um `false` fixo e passa a dizer
+  // a VERDADE sobre a resposta que esta sendo devolvida:
+  //   true  → a entrega encontrada registra esta operacao (pos-D1);
+  //   false → nao ha entrega, ou a entrega e legada (sem operacao registrada),
+  //           e portanto e do CLIENTE, nao desta conta.
+  // Nao viramos o campo para true no nivel do bloco: enquanto existir entrega
+  // legada, o bloco continua podendo responder client-level, e mentir sobre
+  // isso seria pior que declarar.
+  const entregaDestaConta = !!entrega && Number(entrega.cliente_conta_id) === Number(conta.id);
 
   const resultado = {
     disponivel: entregasBloco.disponivel && !!entrega,
-    // BLOCO F — honesto: entregas_cliente não tem cliente_conta_id.
-    escopoConta: false,
+    escopoConta: entregaDestaConta,
     dados: entrega ? extrairComposicaoDoFechamento(entrega) : null,
     motivo: entregasBloco.disponivel
       ? (entrega ? undefined : "Nenhum fechamento gerado para este período.")
       : entregasBloco.motivo,
   };
+  if (entrega && !entregaDestaConta) {
+    // Declarado, nunca escondido: o numero na tela e do cliente, nao desta conta.
+    resultado.origemClientLevel = {
+      motivo: "Este fechamento foi salvo antes de a operacao passar a ser registrada; ele e do cliente, nao desta conta.",
+      clienteContaId: entrega.cliente_conta_id ?? null,
+    };
+  }
   if (candidatos.length > 1) {
     // Não escondemos a duplicata: a UI e a auditoria de migração precisam vê-la.
     resultado.ambiguidade = {
@@ -259,6 +306,10 @@ async function obterFinanceiro({ clienteSlugRaw, clienteContaIdRaw, periodoRaw }
     },
     resultado,
     conciliacao,
+    // relatorios: escopoConta continua false no nivel do bloco porque a lista
+    // MISTURA, de proposito, as entregas desta operacao com as legadas sem
+    // operacao registrada. Cada item carrega `clienteContaId` para o frontend
+    // distinguir os casos sem que o backend precise mentir no envelope.
     relatorios: entregasBloco.disponivel
       ? { disponivel: true, escopoConta: false, dados: montarHistorico(entregas) }
       : entregasBloco,

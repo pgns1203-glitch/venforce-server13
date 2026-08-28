@@ -660,7 +660,16 @@ CREATE TABLE IF NOT EXISTS callbacks (
         expires_at TIMESTAMP
       );
 
+      -- V3 P2.6 D1 - operacao (ClienteConta) da entrega. Aditiva e NULLABLE:
+      -- entrega antiga fica NULL, que e a verdade sobre ela (sem backfill:
+      -- escolher uma conta a posteriori seria inventar mapeamento). A FK e o
+      -- indice parcial vivem em sql/migrations/20260828_entregas_cliente_conta_p26.sql;
+      -- aqui so garantimos a COLUNA, porque a tabela cliente_contas pode ainda
+      -- nao existir nesta base e a aplicacao nao pode quebrar por isso.
+      ALTER TABLE entregas_cliente ADD COLUMN IF NOT EXISTS cliente_conta_id INTEGER;
+
       CREATE INDEX IF NOT EXISTS idx_entregas_cliente_cliente_id ON entregas_cliente(cliente_id);
+      CREATE INDEX IF NOT EXISTS idx_entregas_cliente_conta_id ON entregas_cliente(cliente_conta_id);
       CREATE INDEX IF NOT EXISTS idx_entregas_cliente_token_publico ON entregas_cliente(token_publico);
       CREATE INDEX IF NOT EXISTS idx_entregas_cliente_tipo ON entregas_cliente(tipo);
       CREATE INDEX IF NOT EXISTS idx_entregas_cliente_created_at ON entregas_cliente(created_at);

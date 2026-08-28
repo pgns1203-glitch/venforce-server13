@@ -456,6 +456,20 @@ async function importar(planoBruto, { actorId = null, dryRun = true } = {}, db =
            VALUES ($1, $2, $3, $4)`,
           [cli.id, squadId, actorId, txt(c.motivo) || "transferência P2.3"]
         );
+        // P2.4 — transferência encerra responsabilidades de quem não é membro
+        // do Squad de destino. Rodam ANTES do passo 4 (responsaveis do plano),
+        // que pode reatribuir o novo gestor logo em seguida. NÃO é autorização.
+        await client.query(
+          `UPDATE cliente_responsaveis cr
+              SET ativo = false, encerrado_em = NOW(), encerrado_por = $2,
+                  motivo = 'transferencia_squad', updated_at = NOW()
+            WHERE cr.cliente_id = $1 AND cr.ativo = true
+              AND NOT EXISTS (
+                SELECT 1 FROM squad_members sm
+                 WHERE sm.squad_id = $3 AND sm.user_id = cr.user_id AND sm.ativo = true
+              )`,
+          [cli.id, actorId, squadId]
+        );
         resumo.clientesTransferidos += 1;
       } // mesmo squad → no-op (idempotente)
     }
@@ -465,10 +479,12 @@ async function importar(planoBruto, { actorId = null, dryRun = true } = {}, db =
       const cli = ent.resolverCliente(r.cliente);
       const user = ent.resolverUser(r.usuario);
       await client.query(
-        `INSERT INTO cliente_responsaveis (cliente_id, user_id, papel, ativo)
-         VALUES ($1, $2, $3, true)
-         ON CONFLICT (cliente_id, user_id, papel) DO UPDATE SET ativo = true, updated_at = NOW()`,
-        [cli.id, user.id, txt(r.papel)]
+        `INSERT INTO cliente_responsaveis (cliente_id, user_id, papel, ativo, criado_por)
+         VALUES ($1, $2, $3, true, $4)
+         ON CONFLICT (cliente_id, user_id, papel) DO UPDATE
+           SET ativo = true, encerrado_em = NULL, encerrado_por = NULL,
+               motivo = NULL, updated_at = NOW()`,
+        [cli.id, user.id, txt(r.papel), actorId]
       );
       resumo.responsaveisUpsert += 1;
     }

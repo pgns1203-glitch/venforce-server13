@@ -37,6 +37,9 @@ const CONFIDENCE_LABEL = {
   insuficiente: "Insuficiente — nenhuma receita com custo identificado",
 };
 
+// V3 P2.6 D2 - declaracao da competencia efetivamente processada.
+const { detectarCompetenciaDeLinhas, compararCompetencias } = require("../utils/competenciaDetectada");
+
 async function listarClientesFinanceiroController(req, res) {
   try {
     // V3 P2.7 BLOCO L — req.user passa a ser obrigatorio: a lista e a carteira
@@ -374,9 +377,25 @@ async function processarFechamentoFinanceiroController(req, res) {
 
     const excelBase64 = Buffer.from(excelBuffer).toString("base64");
 
+    // V3 P2.6 D2 — o endpoint NAO infere competencia (o recorte e o conteudo da
+    // planilha) e nao vai passar a inferir. O que ele passa a fazer e DECLARAR
+    // o que encontrou, para o Financeiro V3 — que tem seletor de competencia no
+    // cabecalho — poder confrontar com o que esta em tela e avisar ANTES de
+    // salvar. Processar Julho achando que processou Agosto e publicar isso para
+    // o cliente e dinheiro.
+    //
+    // Aditivo e nao-bloqueante: `periodo` no request e OPCIONAL e nada e
+    // rejeitado por divergencia. Sem coluna de data reconhecivel,
+    // periodoDetectado e null — "nao deu para determinar", nunca "mes atual".
+    const competencia = compararCompetencias({
+      periodoSolicitado: req.body?.periodo,
+      deteccao: detectarCompetenciaDeLinhas(salesRowsRaw),
+    });
+
     res.json({
       ok: true,
       summary: result.summary,
+      competencia,
       detailedRows: result.detailedRows,
       excelBase64,
       unmatchedIds: result.unmatchedIds,

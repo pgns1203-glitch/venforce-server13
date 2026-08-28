@@ -18,19 +18,20 @@
 | **Branch** | `frontend/v3-marathon-pessoa1` |
 | **Base** | `origin/main` @ `1949c760` (confirmado por `git fetch` no início) |
 | **Missão** | `Squads_migration/VENFORCE_V3_MISSAO_MARATONA_PESSOA1_OPUS.md` |
-| **Último commit** | `163c5af` |
+| **Último commit** | `5bba996` |
 | **Push** | sim |
 
 ### Verde neste momento
 
 | Suíte | Resultado |
 |---|---|
-| Vitest (`frontend-react`) | 105/105 |
+| Vitest (`frontend-react`) | 127/127 (era 105) |
 | `Portal/vf-shell-ui.test.js` | 23/23 (era 18) |
 | `Portal/carteira-ui.test.js` | 27/27 (era 17) |
+| `Portal/vf-shell-f5-lote-ui.test.js` | 37/37 (**novo**) |
 | `Portal/vf-shell-adoption-ui.test.js` | 5/5 |
 | `Portal/visao-shell-ui.test.js` | 8/8 |
-| `Portal/financeiro-v3-shell-ui.test.js` | 9/9 |
+| `Portal/financeiro-v3-shell-ui.test.js` | 15/15 (era 9) |
 | `Portal/fechamentos-api-shell-ui.test.js` | 12/12 |
 | `Portal/diagnostico-inicial-shell-ui.test.js` | 9/9 |
 | `Portal/central-margem-ui.test.js` | 24/24 |
@@ -74,6 +75,52 @@ sincronizou”* para toda conta — nenhum dos dois payloads sabe disso (o legad
 não tem o campo; `/me/portfolio` manda `null` fixo, `meService.js:150`). Agora
 diz “sem dado de sync”, a ordenação “Última sync” só é oferecida quando algum
 cliente tem o dado, e `?ordem=sync` colado numa URL cai para `atencao`.
+
+### F4.2 — Financeiro V3 operacional ✅ (`a2d3d98`)
+
+O backend das entregas de fechamento já era completo e **autorizado por
+carteira** (`entregasClienteRoutes.js`) — e nenhuma tela chamava.
+`GET /entregas-cliente` é inclusive a fonte do bloco `relatorios` de
+`GET /financeiro/:cliente`; o que aquele bloco derruba pelo caminho é
+justamente `id`, `token_publico` e `published_at`
+(`financeiroVisaoService.js:126-131`). **Nenhum contrato novo foi criado.**
+
+Migrado (TIPO A/B): listar entregas com `id` e datas reais · **publicar** ·
+**despublicar** (a válvula que o legado nunca ligou: link publicado por ele
+não expira e não tinha como ser revogado) · abrir · copiar link.
+
+Regras de escrita em `hooks/useEntregasFechamento.js`: duplo clique
+impossível · GET autoritativo depois de todo sucesso (nunca remendo local) ·
+erro **por linha** · descarte de contexto obsoleto (cliente mudou durante a
+requisição → resultado jogado fora, sem recarga). Período nunca é inferido:
+a ação é sempre sobre uma entrega por `id`, e a confirmação em dois tempos
+**nomeia a competência** (“Publicar Junho/2026?”).
+
+Degradação honesta: se `/entregas-cliente` cair, a tabela continua em
+leitura, com motivo e retry — sem botão inerte.
+
+### F5 lote 1 — 9 telas para o Shell V3 ✅ (`5bba996`)
+
+**7 → 16 páginas no Shell V3; 23 → 14 no `layout.js`.**
+
+Migradas (escopo global, nenhuma depende de operação): `clientes`,
+`usuarios`, `guia-vendedor`, `atividade`, `control-center`, `callbacks`,
+`financeiro-debug`, `design-system-lab`, `bases`. Nenhum JS de página foi
+tocado. Os seletores de `bases.html` ficam de pé de propósito — vincular
+base↔cliente↔conta **é** a função daquela tela, não contexto duplicado.
+
+Receita (idêntica nas nove): link do `vf-shell.css` ·
+`data-vf-scope`/`data-vf-module` no `<body>` · `.vf-main-with-sidebar` vira
+wrapper neutro · `layout.js` → `vf-shell.js` + no-op de `initLayout`.
+
+**Duas paridades que o Shell V3 devia ao `layout.js`** e que este lote
+tornou inadiáveis — valem para TODAS as páginas V3:
+
+- `role=seller` volta a ser desviado para `seller.html` (`layout.js:319-323`
+  fazia; o shell não). Um consultor externo via a navegação interna inteira.
+- o cliente de depuração volta a carregar para admin com opt-in
+  (`layout.js:23-64`). Toda página V3 tinha perdido isso em silêncio —
+  inclusive `financeiro-debug.html`.
 
 ---
 
@@ -144,14 +191,17 @@ Relatório completo: `.../scratchpad/AUDIT_INVENTARIO_TELAS.md`.
 
 ## Em andamento
 
-Bloco B (F5) — ponte de contexto para as telas legadas.
+F5 lote 2 — a ponte `?cliente=`/`?conta=` para as 14 telas ainda em
+`layout.js`, e a migração das que dependem de Cliente/Conta.
 
 ## Próximo item
 
-1. `VENFORCE_V3_F4_2_DEPENDENCIAS_P2_6.md` (registro dos TIPO C do Financeiro).
-2. Ponte `?cliente=`/`?conta=` legível pelas telas legadas (F5, prioridade 0).
-3. Migração das telas legadas em lote, por prioridade.
-4. F4.2 — capacidades TIPO A/B do Financeiro V3.
+1. Ponte de contexto legível pelas telas legadas (o achado B1 #2: a ponte
+   existe em `buildHref()` e **nenhuma página legada lê os parâmetros**).
+2. `automacoes.html` (1 seletor de cliente, base já resolvida no servidor).
+3. `ads.html` e `anuncios-meli.html` (cliente + conta duplicados).
+4. Bloco E — jornada V3 completa incluindo as telas novas.
+5. Bloco F — dívidas frontend restantes. Bloco J — limpeza conservadora.
 
 ---
 
@@ -193,3 +243,5 @@ documentada, e a execução segue nas unidades seguintes.
 | SHA | Mensagem |
 |---|---|
 | `163c5af` | `feat(shell-v3): Carteira e Shell passam a ler /me/context e /me/portfolio (Bloco C)` |
+| `a2d3d98` | `feat(financeiro-v3): F4.2 — publicar/despublicar entregas a partir do V3` |
+| `5bba996` | `refactor(f5): 9 telas saem do layout.js para o Shell V3, e o shell ganha 2 paridades` |

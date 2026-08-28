@@ -39,7 +39,9 @@ const CONFIDENCE_LABEL = {
 
 async function listarClientesFinanceiroController(req, res) {
   try {
-    const clientes = await listarClientesAtivosFinanceiro();
+    // V3 P2.7 BLOCO L — req.user passa a ser obrigatorio: a lista e a carteira
+    // do usuario, nao a base inteira.
+    const clientes = await listarClientesAtivosFinanceiro(req.user);
     return res.json({ ok: true, clientes });
   } catch (error) {
     console.error("Erro em GET /fechamentos/financeiro/clientes:", error);

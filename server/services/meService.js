@@ -130,6 +130,14 @@ async function obterPortfolio(user) {
   const readinessPorCliente = new Map(operacional.clientes.map((c) => [c.id, c]));
   const squadDoCliente = new Map(squadAtivoPorCliente.map((r) => [r.cliente_id, r]));
   const responsavelSet = new Set(responsaveis.map((r) => r.cliente_id));
+  // Papéis diretos DESTE usuário no cliente (P2.4). `responsaveis` já vem
+  // filtrado por user.id. Organização, NÃO acesso — o payload não muda de
+  // tamanho de forma relevante (0..3 strings curtas por cliente).
+  const papeisDiretosPorCliente = new Map();
+  for (const r of responsaveis) {
+    if (!papeisDiretosPorCliente.has(r.cliente_id)) papeisDiretosPorCliente.set(r.cliente_id, []);
+    papeisDiretosPorCliente.get(r.cliente_id).push(r.papel);
+  }
 
   return {
     // Squads do usuario para a Carteira decidir se mostra filtro/agrupamento
@@ -163,6 +171,7 @@ async function obterPortfolio(user) {
             }
           : null,
         responsavelDireto: responsavelSet.has(c.id),
+        papeisDiretos: papeisDiretosPorCliente.get(c.id) || [],
         statusOperacional: readiness?.statusOperacional || null,
         pendencias: (readiness?.pendencias || []).map((tipo) => ({ tipo })),
         contas,

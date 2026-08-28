@@ -776,6 +776,44 @@ export function createVfShell(options = {}) {
   };
 }
 
+/* ── Cliente de depuração (paridade com layout.js) ───────────────────────
+   layout.js:23-64 carrega vf-debug-client.js para ADMIN quando
+   localStorage["vf-debug-enabled"] === "true" (ou ?vf_debug=1). Toda página
+   já migrada para o Shell V3 tinha perdido isso em silêncio — inclusive as
+   que existem para depurar. Portado aqui, com o mesmo gate (admin + token +
+   opt-in explícito) e a mesma tolerância a falha: o Portal segue inteiro se
+   o script não carregar. A duplicação com layout.js é deliberada e morre
+   com ele em F6 — mexer no layout.js legado afetaria 26 páginas de uma vez. */
+const DEBUG_ENABLED_KEY = "vf-debug-enabled";
+const DEBUG_CLIENT_SRC = "vf-debug-client.js";
+
+function loadDebugClientIfSafe() {
+  try {
+    const storage = safeLocalStorage();
+    if (!storage) return;
+    const urlFlag = new URLSearchParams(window.location.search || "").get("vf_debug");
+    if (urlFlag === "0" || urlFlag === "false" || urlFlag === "off") {
+      storage.setItem(DEBUG_ENABLED_KEY, "false");
+      return;
+    }
+    if (String(readUser().role || "").toLowerCase() !== "admin" || !hasToken()) return;
+    if (urlFlag === "1" || urlFlag === "true" || urlFlag === "on") storage.setItem(DEBUG_ENABLED_KEY, "true");
+    if (storage.getItem(DEBUG_ENABLED_KEY) !== "true") return;
+    if (window.__VF_DEBUG_CLIENT_LOADING__ || window.VFDebugClient) return;
+    if (document.querySelector('script[data-vf-debug-client="true"]')) return;
+
+    window.__VF_DEBUG_CLIENT_LOADING__ = true;
+    const script = document.createElement("script");
+    script.src = DEBUG_CLIENT_SRC;
+    script.async = true;
+    script.dataset.vfDebugClient = "true";
+    script.onerror = () => { window.__VF_DEBUG_CLIENT_LOADING__ = false; };
+    (document.head || document.documentElement).appendChild(script);
+  } catch {
+    /* auxiliar: nenhuma falha aqui pode derrubar o shell */
+  }
+}
+
 /* ── Boot de produção — só roda em página real, autenticada, sem admin
    próprio de teste (o teste headless usa createVfShell() diretamente com
    um `api`/`context` injetados). */
@@ -787,6 +825,13 @@ function bootProduction() {
   // sem shell/erro/loading, em vez de mandar pro login.
   if (!hasToken()) { window.location.replace("index.html"); return null; }
   const user = readUser();
+  // Paridade com layout.js:319-323 — `seller` é uma persona EXTERNA, com
+  // área própria. Sem este desvio ela veria a navegação interna inteira
+  // (Carteira, Bases, Pessoas, Administração) e só descobriria que não pode
+  // usá-la pelos 403 de cada tela. O backend continua sendo quem autoriza;
+  // isto é sobre não oferecer a porta errada.
+  if (String(user.role || "").toLowerCase() === "seller") { window.location.replace("seller.html"); return null; }
+  loadDebugClientIfSafe();
   const scope = document.body ? document.body.dataset.vfScope || "global" : "global";
 
   const shell = createVfShell({ getUser: readUser });

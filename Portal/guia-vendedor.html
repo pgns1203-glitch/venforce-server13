@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
   <style>
     /* ═══════════════════════════════════════════════
@@ -783,9 +784,12 @@
     }
   </style>
 </head>
-<body class="vf-page vf-page-guia">
+<body class="vf-page vf-page-guia" data-vf-scope="global" data-vf-module="guia">
 
-  <div class="vf-main-with-sidebar">
+  <!-- F5 — .vf-main-with-sidebar era a margem fixa de 240px do layout.js
+       (style.css). O Shell V3 tem grade própria (.vf-shell); manter a classe
+       somaria 240px de vazio DENTRO da coluna de conteúdo. Wrapper neutro. -->
+  <div>
     <main class="vf-content gv-page">
 
       <!-- ═══ HERO ═══ -->
@@ -1153,7 +1157,11 @@
     </main>
   </div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
+  <!-- F5 — o JS desta página chama initLayout(). O Shell V3 é ES module
+       (deferido) e não corre a tempo de defini-lo antes de um script
+       clássico. No-op, sem tocar no JS da página. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <script src="guia-vendedor.js"></script>
 </body>
 </html>

@@ -393,6 +393,22 @@ h4 {
   color: var(--vf-text-muted);
 }
 
+/* Valor DADO, não digitado — o campo cujo conteúdo vem do contexto do Shell
+   V3 em vez de um controle próprio da página (F5: toda tela que para de ter
+   seletor de Cliente/Operação precisa disto). Ocupa a mesma altura de um
+   .vf-input para não desalinhar a linha do formulário, e deliberadamente
+   NÃO desenha borda: uma caixa com cara de campo desabilitado convidaria a
+   clicar num lugar que não aceita clique. */
+.vf-field__value {
+  display: flex;
+  align-items: center;
+  min-height: var(--vf-control-h);
+  margin: 0;
+  font-size: var(--vf-control-fs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+}
+
 /* Mensagem de erro é um elemento próprio (usar role="alert") */
 .vf-field__error {
   font-size: var(--vf-fs-xs);

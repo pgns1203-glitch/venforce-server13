@@ -53,6 +53,15 @@ const PAGINAS = [
   { arquivo: "financeiro-debug.html", modulo: "debug", marca: "#fdbg-main" },
   { arquivo: "design-system-lab.html", modulo: "lab", marca: "#lab-component-search" },
   { arquivo: "bases.html", modulo: "bases", marca: "#btn-abrir-importar" },
+  // Escopo CLIENTE: automacoesRoutes.js só conhece `clienteSlug`; exigir uma
+  // operação aqui inventaria um recorte que o backend não tem. Precisa de um
+  // cliente no contexto para o conteúdo sair do gating — por isso a query.
+  { arquivo: "automacoes.html", modulo: "automacoes", marca: "#auto-cliente-nome", escopo: "client", query: "?cliente=n97" },
+  // Escopo CONTA: as duas mandam `clienteContaId` e o backend responde 409
+  // MULTIPLE_MARKETPLACE_ACCOUNTS sem ele. `?conta=42` porque a fixture de
+  // contas dá uma conta ML ativa a n97.
+  { arquivo: "ads.html", modulo: "ads", marca: "#ads-filtro-mes", escopo: "account", query: "?cliente=n97&conta=42" },
+  { arquivo: "anuncios-meli.html", modulo: "anuncios", marca: "#am-view-hud", escopo: "account", query: "?cliente=n97&conta=42" },
 ];
 
 const N97 = { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };
@@ -207,7 +216,7 @@ async function run() {
 
     for (const pagina of PAGINAS) {
       const antes = excecoes.length;
-      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/${pagina.arquivo}` });
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/${pagina.arquivo}${pagina.query || ""}` });
       await waitFor(cdp, "document.querySelector('.vf-shell__sidebar')", `${pagina.arquivo}: o Shell V3 não montou`);
       await sleep(250); // o boot do contexto e o motor da página resolvem
 
@@ -221,8 +230,10 @@ async function run() {
         assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-topbar').length"), 0, "topbar legada ainda presente");
       });
 
-      await check(`F5 — ${pagina.arquivo}: escopo global não bloqueia, e o conteúdo original continua lá`, async () => {
-        assert.strictEqual(await cdp.evaluate("document.body.dataset.vfScope"), "global");
+      const escopo = pagina.escopo || "global";
+      await check(`F5 — ${pagina.arquivo}: escopo "${escopo}" satisfeito, e o conteúdo original continua lá`, async () => {
+        assert.strictEqual(await cdp.evaluate("document.body.dataset.vfScope"), escopo);
+        if (escopo !== "global") await waitFor(cdp, "document.getElementById('vf-shell-main').hidden === false", `${pagina.arquivo}: conteúdo continuou bloqueado pelo gating`);
         assert.strictEqual(await cdp.evaluate("document.getElementById('vf-shell-main').hidden"), false);
         assert.strictEqual(await cdp.evaluate("document.body.classList.contains('vf-shell-blocked')"), false);
         assert.ok(

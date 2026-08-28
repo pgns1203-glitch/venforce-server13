@@ -14,10 +14,13 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/ads-v2.css">
+  <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
-<body class="vf-page vf-page-ads">
-  <div class="vf-main-with-sidebar">
+<body class="vf-page vf-page-ads" data-vf-scope="account" data-vf-module="ads">
+  <!-- F5 — .vf-main-with-sidebar era a margem fixa de 240px do layout.js.
+       O Shell V3 tem grade própria (.vf-shell). Wrapper neutro. -->
+  <div>
     <main class="vf-content">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
@@ -37,22 +40,15 @@
           <!-- 2. TOOLBAR DE CONTEXTO -->
           <div class="vf-toolbar">
             <div class="vf-toolbar__filters">
+              <!-- F5 — Cliente e Conta Mercado Livre saíram daqui: quem
+                   escolhe é o Shell V3 (data-vf-scope="account"). A tela
+                   tinha uma TERCEIRA cópia da regra de cardinalidade
+                   ("2+ contas → pedir escolha"); ela mora só em
+                   vf-context.js agora (R8). -->
               <div class="vf-field">
-                <label class="vf-field__label" for="ads-filtro-cliente">Cliente</label>
-                <select id="ads-filtro-cliente" class="vf-select">
-                  <option value="">Todos</option>
-                </select>
-              </div>
-              <div class="vf-field" id="ads-filtro-conta-wrap" style="display:none;">
-                <label class="vf-field__label" for="ads-filtro-conta">Conta Mercado Livre</label>
-                <select id="ads-filtro-conta" class="vf-select">
-                  <option value="">Selecione a conta</option>
-                </select>
-              </div>
-              <div class="vf-field">
-                <label class="vf-field__label" for="ads-filtro-mes">Mês</label>
+                <label class="vf-field__label" for="ads-filtro-mes">Competência</label>
                 <select id="ads-filtro-mes" class="vf-select">
-                  <option value="">Selecione o mês</option>
+                  <option value="">Selecione a competência</option>
                 </select>
               </div>
               <div class="vf-field">
@@ -195,7 +191,7 @@
     </main>
   </div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
   <script src="ads.js"></script>
 </body>
 </html>

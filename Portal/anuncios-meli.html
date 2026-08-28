@@ -9,9 +9,12 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css" />
   <link rel="stylesheet" href="css/vf-components-v2.css" />
   <link rel="stylesheet" href="css/pages/anuncios-meli-v2.css" />
+  <link rel="stylesheet" href="css/vf-shell.css">
 </head>
-<body class="vf-page vf-page-anuncios-meli">
-  <div class="vf-main-with-sidebar">
+<body class="vf-page vf-page-anuncios-meli" data-vf-scope="account" data-vf-module="anuncios">
+  <!-- F5 — .vf-main-with-sidebar era a margem fixa de 240px do layout.js.
+       O Shell V3 tem grade própria (.vf-shell). Wrapper neutro. -->
+  <div>
     <main class="vf-content" id="am-conteudo">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide" id="am-page">
@@ -23,42 +26,12 @@
             </div>
           </header>
 
-          <section class="vf-section" id="am-view-clientes" aria-labelledby="am-clientes-titulo">
-            <div class="vf-section__header">
-              <div>
-                <h2 class="vf-section__title" id="am-clientes-titulo">Escolha um cliente</h2>
-                <p class="vf-section__description">Selecione uma operação conectada para abrir o catálogo de anúncios.</p>
-              </div>
-            </div>
-
-            <div class="vf-toolbar am-clientes-toolbar">
-              <div class="vf-toolbar__filters">
-                <div class="vf-field am-cliente-search">
-                  <label class="vf-field__label" for="am-busca-cliente">Buscar cliente</label>
-                  <input type="search" id="am-busca-cliente" class="vf-input vf-search"
-                         placeholder="Nome ou slug do cliente" autocomplete="off" />
-                </div>
-              </div>
-            </div>
-
-            <div id="am-clientes-container" aria-live="polite">
-              <div class="vf-loading-state">
-                <span class="vf-spinner" aria-hidden="true"></span>
-                <span>Carregando clientes…</span>
-              </div>
-            </div>
-          </section>
-
-          <section class="vf-section am-hidden" id="am-view-hud" aria-labelledby="am-cliente-contexto-titulo">
-            <div class="am-contexto-bar">
-              <button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-voltar">← Trocar cliente</button>
-              <div class="vf-field am-hidden" id="am-filtro-conta-wrap" style="display:none;">
-                <label class="vf-field__label" for="am-filtro-conta">Conta Mercado Livre</label>
-                <select id="am-filtro-conta" class="vf-select">
-                  <option value="">Selecione a conta</option>
-                </select>
-              </div>
-            </div>
+          <!-- F5 — a VIEW de "Escolha um cliente" saiu: quem escolhe Cliente
+               e Operação é o Shell V3 (data-vf-scope="account"). A tela tinha
+               um grid de clientes E um seletor de conta Mercado Livre, com uma
+               cópia própria da regra de cardinalidade — a regra mora só em
+               vf-context.js (R8). -->
+          <section class="vf-section" id="am-view-hud" aria-labelledby="am-cliente-contexto-titulo">
 
             <div class="am-hud-top" id="am-hud-top" aria-live="polite"></div>
             <div class="vf-kpi-grid am-resumo" id="am-resumo" aria-label="Resumo dos anúncios"></div>
@@ -114,7 +87,7 @@
 
   <div class="vf-toast-stack" id="am-toast-stack" role="status" aria-live="polite" aria-atomic="false"></div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
   <script src="anuncios-meli.js"></script>
 </body>
 </html>

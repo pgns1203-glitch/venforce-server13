@@ -1,8 +1,24 @@
 // Portal/automacoes.js
 // Otimizador de Precificação ML — fluxo único:
-//   selecionar cliente → margem-alvo → prontidão automática (grant + base MELI)
-//   → Analisar loja → diagnóstico completo assíncrono → KPIs + prioridades
-//   → encaminhar detalhes para a página Relatórios.
+//   cliente (do Shell V3) → margem-alvo → prontidão automática (grant + base
+//   MELI) → Analisar loja → diagnóstico completo assíncrono → KPIs +
+//   prioridades → encaminhar detalhes para a página Relatórios.
+//
+// F5 — o CLIENTE não é mais escolhido aqui. Ele vem do Shell V3
+// (data-vf-scope="client"), pelo mesmo caminho de fechamentos-api.js: o
+// evento DOM `vf:context`, que é a ponte documentada para script clássico
+// (MASTER_SPEC §6.5/§15.3) — este arquivo roda ANTES de vf-shell.js (module,
+// deferido) terminar, então não dá para `import` nem assinar
+// window.VF.context.subscribe() na hora da avaliação.
+//
+// Escopo CLIENTE, não conta: nenhuma rota de automacoesRoutes.js aceita
+// conta — o seam de carteira é `requireClienteNaCarteira({ param/query/body:
+// "clienteSlug" })`. Por isso data-vf-scope="client": exigir uma operação
+// aqui seria inventar um recorte que o backend não tem.
+//
+// GET /automacoes/clientes continua sendo chamado, mas deixou de alimentar um
+// seletor: agora é a fonte de PRONTIDÃO (hasGrantMl, baseStatus,
+// prontoParaAnalise) do cliente que o shell escolheu.
 //
 // A base NÃO é escolhida manualmente: o backend resolve a base MELI vinculada
 // ao cliente (custo/imposto/taxa fixa). O grant fornece anúncios/preço/comissão/frete.
@@ -23,7 +39,10 @@ const role = String(user.role || "").toLowerCase();
 const canAccessAutomacoes =
   role === "admin" || role === "user" || role === "membro";
 if (!canAccessAutomacoes) window.location.replace("dashboard.html");
-initLayout();
+// F5 — initLayout() saiu junto com o layout.js: quem monta a navegação
+// agora é vf-shell.js (que também cuida de token ausente e do desvio de
+// `seller`). Sem shim aqui porque este arquivo foi migrado de verdade — o
+// no-op só existe nas páginas cujo JS não foi tocado.
 
 // ─── Estado ──────────────────────────────────────────────────────────────
 let ALL_CLIENTES = [];               // contexto de prontidão vindo do backend
@@ -116,11 +135,18 @@ function setStateBanner({ tone, titulo, descricao } = {}) {
   el.hidden = false;
 }
 
-// ─── Carregamento de clientes ────────────────────────────────────────────
+// ─── Prontidão dos clientes (fonte, não seletor) ─────────────────────────
+// A lista deixou de virar <option>: ela é consultada pelo slug que o Shell
+// escolheu. `prontidaoCarregada` distingue "ainda não sei" de "sei que este
+// cliente não está aqui" — sem isso, o intervalo entre o boot e a resposta
+// pareceria "cliente sem grant ML", que é uma afirmação.
+let prontidaoCarregada = false;
+let prontidaoErro = null;
+
 async function loadClientes() {
   if (!TOKEN) return;
-  const select = document.getElementById("auto-cliente");
-  if (select) { select.disabled = true; select.innerHTML = `<option value="">Carregando…</option>`; }
+  prontidaoCarregada = false;
+  prontidaoErro = null;
 
   try {
     const res = await fetch(`${API_BASE}/automacoes/clientes`, {
@@ -132,60 +158,42 @@ async function loadClientes() {
 
     const data = await res.json().catch(() => ({}));
     ALL_CLIENTES = Array.isArray(data.clientes) ? data.clientes : [];
-    renderClienteOptions(ALL_CLIENTES);
-    if (select) select.disabled = false;
-
-    if (!ALL_CLIENTES.length) {
-      setFeedback("Nenhum cliente ativo encontrado.", "warning");
-    }
+    prontidaoCarregada = true;
   } catch (err) {
     ALL_CLIENTES = [];
-    if (select) { select.disabled = true; select.innerHTML = `<option value="">Erro ao carregar clientes</option>`; }
-    setFeedback("Não foi possível carregar os clientes. Tente novamente.", "danger");
+    prontidaoErro = "Não foi possível carregar a prontidão deste cliente. Recarregue a página.";
   }
-}
-
-function renderClienteOptions(clientes) {
-  const select = document.getElementById("auto-cliente");
-  if (!select) return;
-  const currentValue = select.value || "";
-  select.innerHTML = "";
-  select.appendChild(new Option("Selecione um cliente…", ""));
-
-  (Array.isArray(clientes) ? clientes : []).forEach((c) => {
-    const slug = c.slug || "";
-    const nome = c.nome || slug || "—";
-    const semGrant = !c.hasGrantMl;
-    const rotulo = semGrant ? `${nome} (${slug}) — sem grant ML` : `${nome} (${slug})`;
-    const opt = new Option(rotulo, slug);
-    // Clientes sem grant ML aparecem visíveis porém desabilitados.
-    if (semGrant) opt.disabled = true;
-    select.appendChild(opt);
-  });
-
-  // Preserva a seleção atual quando ainda existe no filtro.
-  if (currentValue && clientes.some((c) => (c.slug || "") === currentValue && c.hasGrantMl)) {
-    select.value = currentValue;
-  }
-}
-
-function applyClienteSearch() {
-  const q = (document.getElementById("auto-cliente-search")?.value || "").trim().toLowerCase();
-  const filtrados = !q
-    ? ALL_CLIENTES
-    : ALL_CLIENTES.filter((c) => {
-        const nome = String(c.nome || "").toLowerCase();
-        const slug = String(c.slug || "").toLowerCase();
-        return nome.includes(q) || slug.includes(q);
-      });
-  renderClienteOptions(filtrados);
   onClienteChange();
 }
 
+// O cliente do contexto. Nenhum fallback para "o primeiro da lista": sem
+// contexto não há cliente, e o Shell já cuida de dizer isso (scope="client").
+function slugDoContexto() {
+  const ctx = window.VF && window.VF.context ? window.VF.context.getContext() : null;
+  return ctx && ctx.clienteSlug ? ctx.clienteSlug : "";
+}
+
 function getClienteAtual() {
-  const slug = document.getElementById("auto-cliente")?.value || "";
+  const slug = slugDoContexto();
   if (!slug) return null;
   return ALL_CLIENTES.find((c) => (c.slug || "") === slug) || null;
+}
+
+function renderIdentidadeCliente() {
+  const nomeEl = document.getElementById("auto-cliente-nome");
+  const hintEl = document.getElementById("auto-cliente-hint");
+  const store = window.VF && window.VF.context ? window.VF.context : null;
+  const cliente = store && store.getClienteAtual ? store.getClienteAtual() : null;
+  const slug = slugDoContexto();
+
+  if (nomeEl) nomeEl.textContent = cliente ? cliente.nome : slug || "—";
+  if (!hintEl) return;
+
+  if (!slug) hintEl.textContent = "Escolha o cliente na barra lateral.";
+  else if (!prontidaoCarregada && !prontidaoErro) hintEl.textContent = "Verificando a prontidão deste cliente…";
+  else if (prontidaoErro) hintEl.textContent = prontidaoErro;
+  else if (!getClienteAtual()) hintEl.textContent = "Este cliente não está habilitado para automações.";
+  else hintEl.textContent = slug;
 }
 
 // ─── Prontidão (grant + base) ────────────────────────────────────────────
@@ -193,6 +201,7 @@ function onClienteChange() {
   // Trocar de cliente encerra qualquer resultado/processamento visível.
   resetResultadoEProcessamento();
   setFeedback("");
+  renderIdentidadeCliente();
 
   const ctx = getClienteAtual();
   const readiness = document.getElementById("auto-readiness");
@@ -203,7 +212,20 @@ function onClienteChange() {
 
   if (!ctx) {
     if (readiness) readiness.hidden = true;
-    setStateBanner({});
+    // Cliente escolhido, prontidão já carregada e ele NÃO está na lista: é
+    // uma resposta, não um limbo. Sem cliente ou ainda carregando, o Shell e
+    // a dica já explicam — um banner de erro aqui seria ruído.
+    if (slugDoContexto() && prontidaoCarregada && !prontidaoErro) {
+      setStateBanner({
+        tone: "warning",
+        titulo: "Cliente sem automações habilitadas",
+        descricao: "Este cliente não aparece na lista de automações do Mercado Livre. Confira o grant ML em Clientes e Contas.",
+      });
+    } else if (prontidaoErro) {
+      setStateBanner({ tone: "danger", titulo: "Prontidão indisponível", descricao: prontidaoErro });
+    } else {
+      setStateBanner({});
+    }
     if (btn) btn.disabled = true;
     if (btnPlanilha) btnPlanilha.disabled = true;
     if (btnModeloBase) { btnModeloBase.hidden = true; btnModeloBase.disabled = true; }
@@ -279,7 +301,7 @@ function renderReadiness(ctx) {
 
 // ─── Alternância de estados da página ────────────────────────────────────
 function setConfigDisabled(disabled) {
-  ["auto-cliente-search", "auto-cliente", "auto-margem", "btn-otimizador-analisar", "btn-baixar-planilha-precificacao", "btn-gerar-modelo-base"]
+  ["auto-margem", "btn-otimizador-analisar", "btn-baixar-planilha-precificacao", "btn-gerar-modelo-base"]
     .forEach((id) => { const el = document.getElementById(id); if (el) el.disabled = disabled; });
 }
 
@@ -672,9 +694,25 @@ function novaAnalise() {
   onClienteChange();
 }
 
+/* ── CONTEXTO (F5 — vem do Shell V3, não mais desta tela) ────────────────
+   Mesmo padrão de fechamentos-api.js:821. O listener é registrado AQUI,
+   enquanto o script clássico é avaliado, ou seja ANTES de vf-shell.js
+   (module, deferido) rodar — assim nenhum emit se perde, inclusive o
+   primeiro, síncrono, de dentro de vfContext.init(). Sem polling.
+
+   Guarda de repetição: `vf:context` também dispara por motivos que não são
+   troca de cliente (bandeira de integração, resize do shell); refazer a
+   análise nesses casos jogaria fora um resultado na tela. */
+let ultimoClienteAplicado = Symbol("cliente-nao-aplicado-ainda");
+document.addEventListener("vf:context", () => {
+  const slug = slugDoContexto();
+  renderIdentidadeCliente();
+  if (slug === ultimoClienteAplicado) return;
+  ultimoClienteAplicado = slug;
+  onClienteChange();
+});
+
 // ─── Listeners ───────────────────────────────────────────────────────────
-document.getElementById("auto-cliente-search")?.addEventListener("input", applyClienteSearch);
-document.getElementById("auto-cliente")?.addEventListener("change", onClienteChange);
 document.getElementById("btn-otimizador-analisar")?.addEventListener("click", analisarLoja);
 document.getElementById("btn-nova-analise")?.addEventListener("click", novaAnalise);
 document.getElementById("btn-baixar-planilha-precificacao")?.addEventListener("click", baixarPlanilhaPrecificacao);

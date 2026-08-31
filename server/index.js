@@ -1829,6 +1829,19 @@ app.use((err, req, res, next) => {
   res.status(500).json({ ok: false, erro: "Erro interno do servidor" });
 });
 
+// BLOCO 14 — o segredo de assinatura é resolvido de forma preguiçosa (a cada
+// verify/sign) DE PROPÓSITO (ver config/jwtSecret.js). Mas em produção um
+// JWT_SECRET ausente/fraco NÃO PODE deixar o servidor subir e só falhar no
+// primeiro login: falha rápido, ANTES de bind na porta, com mensagem
+// acionável. Fora de produção continua ergonômico (fallback local + warn).
+try {
+  const { getJwtSecret } = require("./config/jwtSecret");
+  getJwtSecret();
+} catch (err) {
+  console.error(`[boot] ${err.message}`);
+  process.exit(1);
+}
+
 const server = app.listen(PORT, () => {
   console.log(`VenForce rodando em http://localhost:${PORT}`);
 

@@ -54,7 +54,7 @@ export function FechamentoTab({ resultado, clienteSlug, clienteNome, clienteCont
         />
       </section>
 
-      {semFechamento ? (
+      {semFechamento && !entrega ? (
         <div className="vf-empty">
           <p className="vf-empty__title">Nenhum fechamento gerado</p>
           <p className="vf-empty__description">
@@ -64,9 +64,9 @@ export function FechamentoTab({ resultado, clienteSlug, clienteNome, clienteCont
       ) : (
         <>
           <p className="vf-field__hint">
-            Gerado em {formatarDataHora(entrega?.created_at || dados.geradoEm)}
-            {entrega?.publicado || dados.publicadoEm
-              ? ` · publicado em ${formatarDataHora(entrega?.published_at || dados.publicadoEm)}`
+            Gerado em {formatarDataHora(entrega?.created_at || dados?.geradoEm)}
+            {entrega?.publicado || dados?.publicadoEm
+              ? ` · publicado em ${formatarDataHora(entrega?.published_at || dados?.publicadoEm)}`
               : ""}
           </p>
 

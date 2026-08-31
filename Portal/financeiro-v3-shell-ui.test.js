@@ -185,6 +185,9 @@ let financeiroPayload = payloadFeliz();
 let entregasFake = [];
 let entregasFalham = false; // cenário do modo degradado
 let entregasRequestCount = 0;
+// Conv#3 — processamento nativo
+let fechamentoRequestCount = 0;
+let competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-08", divergente: false };
 
 function resetEntregas() {
   entregasFalham = false;
@@ -242,7 +245,27 @@ function wireFetchInterception(cdp) {
       await json({ ok: true, entrega: alvo });
       return;
     }
+    // Conv#3 — processamento nativo (POST multipart). Devolve summary +
+    // competência declarada; `competenciaFake` controla a divergência.
+    if (url.includes("/fechamentos/financeiro")) {
+      fechamentoRequestCount += 1;
+      await json({
+        ok: true,
+        summary: { marketplace: "meli", grossRevenueTotal: 120000, paidRevenueTotal: 110000, contributionProfitTotal: 21000, averageContributionMargin: 0.19, finalResult: 15000, tacos: 0.04 },
+        competencia: competenciaFake,
+        detailedRows: [{ id: "MLB1", mc: 0.19 }],
+        unmatchedIds: [],
+      });
+      return;
+    }
     if (url.includes("/entregas-cliente")) {
+      // POST sem sufixo /:id/(des)publicar = criar entrega
+      if (req.method === "POST") {
+        const nova = { id: 900, tipo: "fechamento_mensal", cliente_slug: "n97", cliente_conta_id: 42, periodo: "2026-08", status: "rascunho", publicado: false, token_publico: null, created_at: "2026-09-06T10:00:00Z", published_at: null };
+        entregasFake = [nova, ...entregasFake];
+        await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 201, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body: Buffer.from(JSON.stringify({ ok: true, entrega: nova })).toString("base64") });
+        return;
+      }
       entregasRequestCount += 1;
       if (entregasFalham) { await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" }); return; }
       await json({ ok: true, total: entregasFake.length, entregas: entregasFake });
@@ -476,6 +499,66 @@ async function run() {
     const png2 = await cdp.send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(shot2, Buffer.from(png2.data, "base64"));
     console.log(`   screenshot: ${shot2}`);
+
+    // ═══ 2b. Conv#3 §25 — E2E do fluxo NATIVO: upload → processar → preview
+    // → salvar, com a competência divergente pedindo confirmação explícita ═══
+    const planilhaFake = path.join(SHOTS_DIR, "vendas-fake.xlsx");
+    fs.writeFileSync(planilhaFake, "planilha-de-vendas-fake");
+    competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-07", divergente: true, motivo: "As datas das vendas caem em julho/2026." };
+    fechamentoRequestCount = 0;
+    resetEntregas();
+    entregasFake = []; // agosto ainda não tem entrega
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=2b` });
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
+    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram");
+    await sleep(200);
+
+    await check("Conv#3 §25 — upload nativo processa e manda periodo + clienteContaId ao backend", async () => {
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Fechamento').click()");
+      await sleep(200);
+      await cdp.evaluate(`
+        (function(){ var s = document.getElementById('fin-novo-mk');
+          s.value = 'meli'; s.dispatchEvent(new Event('change', { bubbles: true })); })();
+      `);
+      await sleep(120);
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const inputNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: "#fin-novo-sales" });
+      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: inputNode.nodeId });
+      await sleep(150);
+      await cdp.evaluate(`
+        (function(){ Array.prototype.find.call(document.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Processar fechamento'; }).click(); })();
+      `);
+      await waitFor(cdp, "document.querySelector('.vf-fin-novo__cards') !== null", "o preview do fechamento não apareceu");
+      assert.strictEqual(fechamentoRequestCount, 1, "o processamento nativo deveria ter chamado o backend uma vez");
+    });
+
+    await check("Conv#3 §13 — competência divergente: 'Salvar' fica travado até confirmação explícita", async () => {
+      const texto = await cdp.evaluate("document.querySelector('.vf-fin-novo').innerText");
+      assert.ok(/não bate com o período em tela/.test(texto), `o aviso de divergência deveria aparecer: ${texto.slice(0, 200)}`);
+      assert.ok(/julho\/2026/i.test(texto), "o aviso deve nomear a competência detectada");
+      const travado = await cdp.evaluate(`
+        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Salvar fechamento'; }); return b ? b.disabled : null; })()
+      `);
+      assert.strictEqual(travado, true, "Salvar não pode estar habilitado antes da confirmação");
+      await cdp.evaluate(`document.querySelector('.vf-fin-novo input[type=checkbox]').click()`);
+      await sleep(80);
+      const liberado = await cdp.evaluate(`
+        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Salvar fechamento'; }); return b ? b.disabled : null; })()
+      `);
+      assert.strictEqual(liberado, false, "depois de confirmar, Salvar libera");
+    });
+
+    await check("Conv#3 §16 — salvar cria a entrega e a aba passa a oferecer publicar (sem ida ao legado)", async () => {
+      await cdp.evaluate(`
+        (function(){ Array.prototype.find.call(document.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Salvar fechamento'; }).click(); })();
+      `);
+      await waitFor(cdp, "document.querySelector('.vf-fin-novo').innerText.indexOf('Fechamento salvo') >= 0", "a confirmação de salvo não apareceu");
+      assert.strictEqual(entregasFake.length, 1, "a entrega deveria ter sido criada no backend fake");
+      assert.strictEqual(entregasFake[0].id, 900);
+      // a lista operacional foi relida e a linha da competência agora tem ação
+      await waitFor(cdp, "Array.prototype.some.call(document.querySelectorAll('.vf-fin-painel button'), function(b){ return b.textContent.trim() === 'Publicar'; })", "a entrega recém-salva não virou publicável na tela");
+    });
+    competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-08", divergente: false };
 
     // ═══ 3. REGRESSÃO P0 — sem vf-token: nunca pode ficar em branco pra
     // sempre. bootProduction() (vf-shell.js) só chama vfContext.init() se

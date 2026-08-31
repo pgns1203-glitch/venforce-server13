@@ -23,6 +23,39 @@ const {
 const {
   listarClientesAtivosFinanceiro,
 } = require("../services/fechamentoFinanceiro/clientesFinanceiroService");
+const {
+  resolverClientePorIdOuSlug,
+  obterConta,
+} = require("../services/clienteContas/clienteContaService");
+const { CODIGOS_CANONICOS } = require("../utils/erroContextoCanonico");
+
+// V3 Pós-Convergência #2 — BLOCO 8: quando o processamento se declara
+// account-aware (clienteContaId informado), o backend PROVA cliente + conta +
+// que a conta pertence a esse cliente e está ativa. Nunca aceita silenciosamente
+// uma conta de outro cliente / conta primária / primeira conta / fallback.
+async function validarContaDoCliente({ clienteSlug, clienteContaId }) {
+  if (clienteContaId == null) return null; // fluxo client-level / legado: ok
+  if (!clienteSlug) {
+    const e = new Error("Para processar um fechamento por conta (clienteContaId), informe também cliente_slug.");
+    e.statusCode = 400;
+    throw e;
+  }
+  const cliente = await resolverClientePorIdOuSlug({ clienteSlug });
+  const conta = await obterConta(clienteContaId);
+  if (Number(conta.cliente_id) !== Number(cliente.id)) {
+    const e = new Error("Esta conta não pertence ao cliente informado.");
+    e.statusCode = 409;
+    e.code = CODIGOS_CANONICOS.CONTA_NAO_PERTENCE_AO_CLIENTE;
+    throw e;
+  }
+  if (conta.ativo === false) {
+    const e = new Error(`A conta "${conta.nome}" foi desativada.`);
+    e.statusCode = 409;
+    e.code = CODIGOS_CANONICOS.CONTA_INATIVA;
+    throw e;
+  }
+  return { clienteId: cliente.id, clienteContaId: Number(clienteContaId) };
+}
 
 const CALCULATION_MODE_LABEL = {
   real_financial: "Fechamento por dados financeiros (repasse e taxas reais)",
@@ -208,6 +241,10 @@ async function processarFechamentoFinanceiroController(req, res) {
     if (marketplace !== "meli" && marketplace !== "shopee" && marketplace !== "tiktok") {
       return res.status(400).json({ ok: false, error: "Marketplace inválido. Envie exatamente 'meli', 'shopee' ou 'tiktok'." });
     }
+
+    // BLOCO 8 — se o request se declara account-aware, a conta tem que ser
+    // provada (pertence ao cliente + ativa). Erro canônico, nunca fallback.
+    await validarContaDoCliente({ clienteSlug, clienteContaId });
 
     // TikTok Shop: os custos vêm SEMPRE de uma Base TikTok escolhida
     // manualmente — não existe planilha de custos nem vínculo automático por
@@ -451,4 +488,5 @@ module.exports = {
   processarFechamentoFinanceiroController,
   buildFechamentoContextRows,
   formatSummaryValue,
+  validarContaDoCliente,
 };

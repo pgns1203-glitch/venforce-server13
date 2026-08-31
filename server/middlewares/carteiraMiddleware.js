@@ -33,6 +33,7 @@ const {
   assertClienteContaNaCarteira,
   assertBaseNaCarteira,
 } = require("../services/squads/authorizationService");
+const { captureRequestError, resolveRoute } = require("./observabilityMiddleware");
 
 // Extrai a referência de cliente da requisição conforme `source`.
 // Retorna string vazia quando nada foi informado.
@@ -63,9 +64,29 @@ function responderErro(req, res, err, contexto) {
     return res.status(500).json({ ok: false, erro: "Erro ao autorizar o acesso ao cliente." });
   }
   if (status === 403) {
-    console.warn(
-      `[carteira] acesso negado (${contexto}): user=${req.user?.id} role=${req.user?.role}`
-    );
+    // BLOCO 16 — observabilidade da negação por carteira. Estruturado, para o
+    // canário do P2.9 conseguir contar 403 por carteira/rota. SEM token, JWT,
+    // e-mail nem payload — só ids e a rota. Vai por dois caminhos:
+    //   1. o log estruturado (agregável em qualquer coletor de log);
+    //   2. `req.__vfObsError` + `req.__vfAuthzDenial`, que o
+    //      observabilityMiddleware dobra no MESMO registro do request (status
+    //      403 já é gravado lá; aqui só acrescentamos code + clienteId).
+    const denial = {
+      code: err.code || "CLIENTE_FORA_DA_CARTEIRA",
+      contexto,
+      userId: req.user?.id ?? null,
+      userRole: req.user?.role ?? null,
+      clienteId: err.clienteId ?? null,
+      clienteContaId: err.clienteContaId ?? null,
+      baseId: err.baseId ?? null,
+      rota: resolveRoute(req) || req.path || null,
+      requestId: req.requestId || null,
+    };
+    console.warn(`[carteira] 403 ${JSON.stringify(denial)}`);
+    try {
+      req.__vfAuthzDenial = denial;
+      captureRequestError(req, err, { code: denial.code });
+    } catch { /* observabilidade nunca derruba a resposta */ }
   }
   return res.status(status).json({ ok: false, code: err.code, erro: err.message });
 }

@@ -132,6 +132,11 @@ function observabilityMiddleware(req, res, next) {
           debugSession: S.sanitizeMessage(req.get ? req.get("X-VF-Debug-Session") : null, 80),
           debugTab: S.sanitizeMessage(req.get ? req.get("X-VF-Debug-Tab") : null, 80),
           tipoEvento: finalizado ? "http" : "abortada",
+          // BLOCO 16 — negação de carteira (carteiraMiddleware). Só ids + rota,
+          // nunca token/PII; sanitizado como o resto do metadata.
+          authzDenial: req.__vfAuthzDenial
+            ? S.sanitizeValue(req.__vfAuthzDenial, { maxDepth: 2, maxString: 120, maxKeys: 12 })
+            : undefined,
         },
         createdAt: new Date().toISOString(),
       });

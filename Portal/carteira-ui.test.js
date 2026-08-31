@@ -499,6 +499,63 @@ async function run() {
       assert.deepStrictEqual(labels.sort(), ["n97outlet", "n97store"]);
     });
 
+    /* ════ D3 (Convergência #2) — /me/portfolio passou a devolver
+       `clientes[].ultimaSincronizacao` de verdade (P2.6). Até aqui a fixture
+       nunca tinha o campo, porque o backend nunca o mandava: o caso "o dado
+       EXISTE" nunca foi exercido, e por isso ninguém viu que a adaptação
+       derrubava o campo pelo caminho. Sem ele em `clientesRicos`,
+       `temDadoDeSync()` é falso para sempre e a ordenação nunca reaparece —
+       a funcionalidade seguiria degradada com o bloqueio já resolvido. ══ */
+    currentFixture = {
+      portfolio: PORTFOLIO_PADRAO, contas: CONTAS_PADRAO, failPortfolio: false, failContasSlug: null,
+      mePortfolio: {
+        ...ME_PORTFOLIO,
+        clientes: ME_PORTFOLIO.clientes.map((c) =>
+          c.slug === "n97" ? { ...c, ultimaSincronizacao: "2026-08-30T09:12:00Z" }
+          : c.slug === "extra" ? { ...c, ultimaSincronizacao: "2026-08-28T09:12:00Z" }
+          : { ...c, ultimaSincronizacao: null }),
+      },
+    };
+    await goto("squads=null");
+    await waitFor(cdp, "document.querySelectorAll('.vf-portfolio-row').length === 4", "linhas não renderizaram no cenário de sync");
+    await sleep(300);
+
+    await check("D3 — com ultimaSincronizacao no payload, a ordenação 'Última sync' volta a ser oferecida", async () => {
+      const opcoes = await cdp.evaluate(`
+        Array.prototype.map.call(document.querySelectorAll('#cart-ordem option'), function(o){return o.value;})
+      `);
+      assert.ok(opcoes.includes("sync"), `a opção 'Última sync' não apareceu mesmo com o campo presente no payload: ${JSON.stringify(opcoes)}`);
+    });
+
+    await check("D3 — e ela ordena de verdade: mais recente primeiro", async () => {
+      await cdp.evaluate(`
+        (function(){
+          var sel = document.getElementById('cart-ordem');
+          sel.value = 'sync';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        })();
+      `);
+      await sleep(250);
+      const slugs = await cdp.evaluate(`
+        Array.prototype.map.call(document.querySelectorAll('.vf-portfolio-row'), function(e){return e.getAttribute('data-slug');})
+      `);
+      assert.strictEqual(slugs[0], "n97", `n97 (sync 30/08) deveria vir antes de extra (28/08); veio ${JSON.stringify(slugs)}`);
+      assert.ok(slugs.indexOf("extra") < slugs.indexOf("loja-do-pedro"),
+        `cliente com sync deveria vir antes dos sem sync; veio ${JSON.stringify(slugs)}`);
+    });
+
+    await check("D3 — cliente sem sync continua sem afirmar 'nunca sincronizou'", async () => {
+      const txt = await cdp.evaluate("document.body.innerText");
+      assert.ok(!/nunca sincroniz/i.test(txt), "ausência de dado virou afirmação sobre o cliente");
+    });
+
+    // Devolve a fixture SEM `ultimaSincronizacao` — os checks C1 seguintes
+    // (inclusive o que prova o caso negativo da ordenação) contam com ela.
+    currentFixture = { portfolio: PORTFOLIO_PADRAO, contas: CONTAS_PADRAO, failPortfolio: false, failContasSlug: null, mePortfolio: ME_PORTFOLIO };
+    await goto("squads=null");
+    await waitFor(cdp, "document.querySelectorAll('.vf-portfolio-row').length === 4", "linhas não voltaram após restaurar a fixture");
+    await sleep(300);
+
     await check("C1 — squads vêm do payload (sem getSquads injetado): agrupamento aparece e o seletor de Squad é oferecido", async () => {
       const grupos = await cdp.evaluate("document.querySelectorAll('.vf-portfolio-group').length");
       assert.ok(grupos >= 2, `esperado ≥2 cabeçalhos de squad vindos de /me/portfolio, veio ${grupos}`);

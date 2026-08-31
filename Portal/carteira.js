@@ -100,6 +100,11 @@ export function adaptarClienteDoPortfolio(c) {
     squad: c.squad || null,
     responsavelDireto: c.responsavelDireto === true,
     statusOperacional: c.statusOperacional || null,
+    // D3 — o campo passou a existir em /me/portfolio (P2.6). Derrubá-lo aqui
+    // deixava `temDadoDeSync()` falso para sempre: a ordenação "Última sync"
+    // nunca reapareceria, mesmo com o bloqueio de backend já resolvido.
+    // `null` continua `null` — ausência de dado, não "nunca sincronizou".
+    ultimaSincronizacao: c.ultimaSincronizacao || null,
     // meService devolve [{ tipo }]; o resto da tela (e o payload legado)
     // trabalha com uma lista de strings.
     pendencias: (c.pendencias || [])

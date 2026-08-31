@@ -1,4 +1,22 @@
 // Portal/ads.js — Página de Mercado Ads
+//
+// F5 — Cliente e Conta vêm do Shell V3 (data-vf-scope="account"), pelo evento
+// DOM `vf:context` (a ponte documentada para script clássico, MASTER_SPEC
+// §6.5/§15.3 — mesmo padrão de fechamentos-api.js:821). Esta tela mantinha
+// seletores próprios de Cliente e de Conta Mercado Livre e, com eles, uma
+// TERCEIRA cópia da regra de cardinalidade ("2+ contas ativas → pedir
+// escolha"). A regra mora só em vf-context.js (R8); aqui sobrou o consumo.
+//
+// Escopo CONTA: /ads/performance recebe `clienteContaId` e devolve 409
+// MULTIPLE_MARKETPLACE_ACCOUNTS sem ele quando o cliente tem 2+ contas ML.
+// Esse 409 continua tratado — mas agora é devolvido ao store
+// (signalContextError), que é quem sabe transformá-lo em estado de contexto.
+//
+// A competência deixou de ser "mês do ano corrente" (o seletor antigo montava
+// 12 opções com new Date().getFullYear(), o que tornava impossível olhar
+// dezembro do ano passado) e passou a ser a mesma competência YYYY-MM que o
+// resto do V3 carrega em `?periodo=` — preservada ao trocar de operação e ao
+// navegar entre módulos.
 
 const API_BASE    = "https://venforce-server.onrender.com";
 const STORAGE_KEY = "vf-token";
@@ -9,7 +27,8 @@ function getToken() {
   return t;
 }
 getToken();
-initLayout();
+// F5 — initLayout() saiu com o layout.js: vf-shell.js monta a navegação e
+// cuida de token ausente e do desvio de `seller`.
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -40,7 +59,6 @@ const ANUNCIOS_PAGE_SIZE = 25;
 
 // ─── Estado ───────────────────────────────────────────────────────────────────
 
-let ADS_CLIENTES_LISTA       = [];
 let ADS_ACOMPANHAMENTO_ATUAL = null;
 let ADS_CHECKLIST_ATUAL      = { semana1: {}, semana2: {}, semana3: {}, semana4: {} };
 let ADS_FEEDBACK_ATUAL       = "";
@@ -51,11 +69,6 @@ let ADS_SAVING               = false;
 let ADS_PERFORMANCE_ESTADO = "idle";
 let ADS_PERFORMANCE_ATUAL  = null; // dados reais da API ML
 let ADS_ANUNCIOS_PAGE      = 1;
-
-// Contas Mercado Livre do cliente selecionado (Cliente/Conta) — só aparece
-// seletor quando há 2+ contas ativas; com 0 ou 1, comportamento é transparente.
-let ADS_CONTAS_ML          = [];
-let ADS_MULTIPLAS_CONTAS   = false;
 
 // Resumo mensal gerencial salvo manualmente (faturamentoTotal, cancelados, devolvidos, tacos)
 // Vem do endpoint GET /ads/resumo-mensal e é totalmente separado da performance Mercado Ads.
@@ -145,21 +158,32 @@ function adsStatusTacos(t) {
 
 // ─── Leitura dos filtros ──────────────────────────────────────────────────────
 
-function adsGetFiltroMes() {
-  const sel = document.getElementById("ads-filtro-mes");
-  return sel ? Number(sel.value) || 0 : 0;
+function adsPeriodoDaUrl() {
+  try {
+    const v = new URLSearchParams(window.location.search || "").get("periodo");
+    return /^\d{4}-\d{2}$/.test(String(v || "")) ? v : null;
+  } catch {
+    return null;
+  }
 }
 
+// A competência escolhida, no formato canônico YYYY-MM. Vazio = nenhuma —
+// nunca "o mês atual": inferir período em silêncio é como se lê o mês errado.
 function adsGetFiltroMesRef() {
-  const mesNum = adsGetFiltroMes();
-  if (!mesNum) return null;
-  const ano = new Date().getFullYear();
-  return `${ano}-${String(mesNum).padStart(2, "0")}`;
+  const sel = document.getElementById("ads-filtro-mes");
+  const v = sel ? String(sel.value || "").trim() : "";
+  return /^\d{4}-\d{2}$/.test(v) ? v : null;
+}
+
+// Só o número do mês, para os rótulos que usam ADS_MESES_LABELS.
+function adsGetFiltroMes() {
+  const ref = adsGetFiltroMesRef();
+  return ref ? Number(ref.slice(5, 7)) || 0 : 0;
 }
 
 function adsGetClienteSlug() {
-  const sel = document.getElementById("ads-filtro-cliente");
-  return sel ? (sel.value || "").trim() : "";
+  const ctx = window.VF && window.VF.context ? window.VF.context.getContext() : null;
+  return ctx && ctx.clienteSlug ? ctx.clienteSlug : "";
 }
 
 function adsGetLojaCampanha() {
@@ -168,46 +192,8 @@ function adsGetLojaCampanha() {
 }
 
 function adsGetContaMlId() {
-  const wrap = document.getElementById("ads-filtro-conta-wrap");
-  if (!wrap || wrap.style.display === "none") return "";
-  const sel = document.getElementById("ads-filtro-conta");
-  return sel ? (sel.value || "").trim() : "";
-}
-
-// ─── Carregar contas Mercado Livre do cliente (Cliente/Conta) ────────────────
-
-async function adsCarregarContasMl() {
-  const wrap = document.getElementById("ads-filtro-conta-wrap");
-  const sel  = document.getElementById("ads-filtro-conta");
-  ADS_CONTAS_ML = [];
-  ADS_MULTIPLAS_CONTAS = false;
-  if (!wrap || !sel) return;
-
-  const clienteSlug = adsGetClienteSlug();
-  if (!clienteSlug) {
-    wrap.style.display = "none";
-    sel.innerHTML = `<option value="">Selecione a conta</option>`;
-    return;
-  }
-
-  try {
-    const res  = await adsFetch(`/clientes/${encodeURIComponent(clienteSlug)}/contas?marketplace=meli`);
-    const data = await res.json();
-    const contas = (Array.isArray(data.contas) ? data.contas : []).filter((c) => c.ativo !== false);
-    ADS_CONTAS_ML = contas;
-
-    if (contas.length > 1) {
-      sel.innerHTML = `<option value="">Selecione a conta</option>` +
-        contas.map((c) => `<option value="${adsEscape(c.id)}">${adsEscape(c.nome || c.id)}</option>`).join("");
-      wrap.style.display = "";
-    } else {
-      wrap.style.display = "none";
-      sel.innerHTML = `<option value="">Selecione a conta</option>`;
-    }
-  } catch (err) {
-    console.warn("[ads] falha ao carregar contas ML:", err.message);
-    wrap.style.display = "none";
-  }
+  const ctx = window.VF && window.VF.context ? window.VF.context.getContext() : null;
+  return ctx && ctx.clienteContaId ? String(ctx.clienteContaId) : "";
 }
 
 // ─── API fetch ────────────────────────────────────────────────────────────────
@@ -220,27 +206,6 @@ async function adsFetch(path, options = {}) {
     ...(options.headers || {}),
   };
   return fetch(`${API_BASE}${path}`, { ...options, headers });
-}
-
-// ─── Carregar clientes ────────────────────────────────────────────────────────
-
-async function adsCarregarClientes() {
-  const sel = document.getElementById("ads-filtro-cliente");
-  if (!sel) return;
-  try {
-    const res  = await adsFetch("/ads/clientes");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (!data.ok || !Array.isArray(data.clientes)) throw new Error("Resposta inválida");
-    ADS_CLIENTES_LISTA = data.clientes;
-    sel.innerHTML = `<option value="">Selecione o cliente</option>` +
-      data.clientes.map((c) =>
-        `<option value="${adsEscape(c.slug)}">${adsEscape(c.nome)}</option>`
-      ).join("");
-  } catch (err) {
-    console.warn("[ads] falha ao carregar clientes:", err.message);
-    sel.innerHTML = `<option value="">Todos</option>`;
-  }
 }
 
 // ─── Carregar performance via API ML ─────────────────────────────────────────
@@ -259,20 +224,9 @@ async function adsCarregarPerformance() {
     return;
   }
 
-  // Cliente com 2+ contas ML e nenhuma escolhida: pede a escolha em vez de
-  // chamar a API (que devolveria 409 MULTIPLE_MARKETPLACE_ACCOUNTS mesmo assim).
-  const precisaSelecionarConta = ADS_CONTAS_ML.length > 1 && !contaMlId;
-  if (precisaSelecionarConta) {
-    ADS_MULTIPLAS_CONTAS  = true;
-    ADS_PERFORMANCE_ATUAL  = null;
-    ADS_PERFORMANCE_ESTADO = "sem_dados";
-    const motEl = document.getElementById("ads-sem-dados-motivo");
-    if (motEl) motEl.textContent = "Este cliente possui mais de uma conta Mercado Livre; selecione qual conta consultar.";
-    adsPopularCampanhasSelect([]);
-    adsRenderPerformance();
-    return;
-  }
-  ADS_MULTIPLAS_CONTAS = false;
+  // A escolha da conta é do Shell (data-vf-scope="account"): sem ela, o
+  // conteúdo desta página nem chega a ser exibido. Nada de decidir
+  // cardinalidade aqui — essa regra mora só em vf-context.js (R8).
 
   ADS_PERFORMANCE_ESTADO = "loading";
   ADS_ANUNCIOS_PAGE = 1;
@@ -284,14 +238,15 @@ async function adsCarregarPerformance() {
     const res    = await adsFetch(`/ads/performance?${params}`);
     const data   = await res.json();
 
+    // 409 de conta ambígua é ESTADO DE CONTEXTO, não um "sem dados" desta
+    // tela: o store recebe o erro tipado e leva o shell a pedir a operação
+    // (mesmo tratamento de fechamentos-api.js:898).
     if (res.status === 409 && data.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") {
-      ADS_MULTIPLAS_CONTAS  = true;
       ADS_PERFORMANCE_ATUAL  = null;
-      ADS_PERFORMANCE_ESTADO = "sem_dados";
-      const motEl = document.getElementById("ads-sem-dados-motivo");
-      if (motEl) motEl.textContent = "Este cliente possui mais de uma conta Mercado Livre; selecione qual conta consultar.";
+      ADS_PERFORMANCE_ESTADO = "idle";
       adsPopularCampanhasSelect([]);
       adsRenderPerformance();
+      window.VF?.context?.signalContextError({ code: "CONTA_AMBIGUA" });
       return;
     }
 
@@ -367,7 +322,7 @@ function adsRenderBanner() {
   } else if (ADS_PERFORMANCE_ESTADO === "sem_dados") {
     banner.classList.add("is-warning");
     banner.setAttribute("role", "status");
-    titleEl.textContent = ADS_MULTIPLAS_CONTAS ? "Selecione a conta Mercado Livre" : "Cliente sem dados de Ads configurados";
+    titleEl.textContent = "Cliente sem dados de Ads configurados";
     // ads-sem-dados-motivo já foi preenchido em adsCarregarPerformance() com data.motivo
   } else if (ADS_PERFORMANCE_ESTADO === "error") {
     banner.classList.add("is-danger");
@@ -1122,31 +1077,43 @@ function adsCopiarFeedback() {
 // ─── Preencher selects ────────────────────────────────────────────────────────
 
 function adsFillSelects() {
-  // Meses (todos os 12)
+  // Competências: as últimas 13, da mais recente para a mais antiga — mesma
+  // lista do Financeiro V3 e da Visão. O seletor anterior montava 12 meses do
+  // ANO CORRENTE, o que tornava impossível olhar dezembro do ano passado.
   const selMes = document.getElementById("ads-filtro-mes");
   if (selMes) {
-    const anoAtual = new Date().getFullYear();
-    selMes.innerHTML = `<option value="">Selecione o mês</option>` +
-      ADS_MESES_LABELS.slice(1).map((label, i) =>
-        `<option value="${i + 1}">${adsEscape(label)} / ${anoAtual}</option>`
-      ).join("");
+    const hoje = new Date();
+    const opcoes = [];
+    for (let i = 0; i < 13; i++) {
+      const d = new Date(Date.UTC(hoje.getFullYear(), hoje.getMonth() - i, 1));
+      const ano = d.getUTCFullYear();
+      const mes = d.getUTCMonth() + 1;
+      opcoes.push(`<option value="${ano}-${String(mes).padStart(2, "0")}">${adsEscape(ADS_MESES_LABELS[mes])} / ${ano}</option>`);
+    }
+    selMes.innerHTML = `<option value="">Selecione a competência</option>` + opcoes.join("");
+    // `?periodo=` é a competência canônica do V3 (vf-context.js §8.5): ela
+    // sobrevive à troca de operação e à navegação entre módulos. Nenhum
+    // padrão é escolhido quando ela não vem — "sem competência" é um estado
+    // legítimo, e inferir o mês atual aqui seria decidir pelo operador.
+    //
+    // Lida direto da URL, não de window.VF.context: este script clássico é
+    // avaliado ANTES de vf-shell.js (module, deferido) publicar o store.
+    const daUrl = adsPeriodoDaUrl();
+    if (daUrl && Array.prototype.some.call(selMes.options, (o) => o.value === daUrl)) selMes.value = daUrl;
   }
 
   // Período do checklist
   adsAtualizarPeriodoChecklist();
 
-  // Campanhas e cliente: populados via API (adsCarregarClientes / adsPopularCampanhasSelect)
+  // Campanhas: populadas via API (adsPopularCampanhasSelect)
 }
 
 function adsAtualizarPeriodoChecklist() {
   const periodEl = document.getElementById("ads-checklist-period");
   if (!periodEl) return;
-  const mes = adsGetFiltroMes();
-  const ano = new Date().getFullYear();
-  if (!mes) {
-    periodEl.textContent = `— / ${ano}`;
-    return;
-  }
+  const ref = adsGetFiltroMesRef();
+  if (!ref) { periodEl.textContent = "—"; return; }
+  const [ano, mes] = ref.split("-").map(Number);
   const d = new Date(ano, mes - 1, 1);
   periodEl.textContent = d.toLocaleDateString("pt-BR", { month: "short", year: "numeric" })
     .replace(/^\w/, (c) => c.toUpperCase());
@@ -1161,22 +1128,38 @@ document.getElementById("ads-btn-atualizar")?.addEventListener("click", () => {
 });
 
 document.getElementById("ads-filtro-mes")?.addEventListener("change", () => {
+  // A competência é compartilhável: fica na URL, como no resto do V3.
+  window.VF?.context?.setPeriodoParam?.(adsGetFiltroMesRef());
   adsAtualizarPeriodoChecklist();
+  adsRecarregarTudo();
+});
+
+/* ── CONTEXTO (F5 — vem do Shell V3) ─────────────────────────────────────
+   Registrado enquanto este script clássico é avaliado, ou seja ANTES de
+   vf-shell.js (module, deferido) rodar: nenhum emit se perde, nem o
+   primeiro, síncrono, de dentro de vfContext.init(). A guarda por chave
+   evita refazer três requisições quando `vf:context` dispara por algo que
+   não é troca de cliente/operação (bandeira de integração, re-render). */
+let adsUltimoContexto = Symbol("contexto-nao-aplicado-ainda");
+document.addEventListener("vf:context", () => {
+  const slug = adsGetClienteSlug();
+  const conta = adsGetContaMlId();
+  // Escopo CONTA: `vf:context` emite durante a resolução das contas (cliente
+  // já conhecido, conta ainda não). Buscar aí gastaria uma requisição para um
+  // recorte que o operador não escolheu — e /ads/performance responderia 409
+  // de qualquer forma quando o cliente tem 2+ contas.
+  const chave = slug && conta ? `${slug}:${conta}` : "";
+  if (chave === adsUltimoContexto) return;
+  adsUltimoContexto = chave;
+  if (!chave) return;
+  adsRecarregarTudo();
+});
+
+function adsRecarregarTudo() {
   adsCarregarPerformance();
   adsCarregarResumoMensal();
   adsCarregarAcompanhamento();
-});
-
-document.getElementById("ads-filtro-cliente")?.addEventListener("change", async () => {
-  await adsCarregarContasMl();
-  adsCarregarPerformance();
-  adsCarregarResumoMensal();
-  adsCarregarAcompanhamento();
-});
-
-document.getElementById("ads-filtro-conta")?.addEventListener("change", () => {
-  adsCarregarPerformance();
-});
+}
 
 document.getElementById("ads-filtro-campanha")?.addEventListener("change", () => {
   ADS_ANUNCIOS_PAGE = 1;
@@ -1212,4 +1195,6 @@ document.getElementById("ads-feedback-textarea")?.addEventListener("input", (e) 
 adsFillSelects();
 adsRenderPerformance();
 adsRenderChecklist();
-adsCarregarClientes();
+// A primeira carga não é disparada aqui: ela vem do primeiro `vf:context`,
+// que só chega quando cliente E operação estão resolvidos. Chamar agora
+// buscaria com contexto vazio.

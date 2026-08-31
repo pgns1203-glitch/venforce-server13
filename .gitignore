@@ -31,3 +31,6 @@ user_client_access.json
 # Base pessoal de conhecimento
 docs/obsidian-map/
 **/.obsidian/
+
+# git worktrees locais (nao versionar)
+.worktrees/

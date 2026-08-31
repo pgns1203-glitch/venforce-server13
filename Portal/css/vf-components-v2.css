@@ -393,6 +393,22 @@ h4 {
   color: var(--vf-text-muted);
 }
 
+/* Valor DADO, não digitado — o campo cujo conteúdo vem do contexto do Shell
+   V3 em vez de um controle próprio da página (F5: toda tela que para de ter
+   seletor de Cliente/Operação precisa disto). Ocupa a mesma altura de um
+   .vf-input para não desalinhar a linha do formulário, e deliberadamente
+   NÃO desenha borda: uma caixa com cara de campo desabilitado convidaria a
+   clicar num lugar que não aceita clique. */
+.vf-field__value {
+  display: flex;
+  align-items: center;
+  min-height: var(--vf-control-h);
+  margin: 0;
+  font-size: var(--vf-control-fs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+}
+
 /* Mensagem de erro é um elemento próprio (usar role="alert") */
 .vf-field__error {
   font-size: var(--vf-fs-xs);
@@ -1030,7 +1046,15 @@ h4 {
   min-width: 0;
 }
 
-.vf-toolbar__filters .vf-search {
+/* `>` é a correção, não estilo: a regra foi escrita para o campo de busca
+   solto na barra, e `flex-basis` só significa LARGURA porque a barra é uma
+   linha. Sem o `>`, ela alcançava também o input dentro de um `.vf-field`
+   (rótulo + campo) — e ali o pai é uma COLUNA, então os mesmos 150px viram
+   ALTURA: uma caixa de 150×150 com o placeholder cortado. Acontecia em
+   anuncios-meli.html (nas duas barras) desde antes desta migração; ficou
+   visível quando a HUD virou a tela de entrada. Envolto em `.vf-field`, o
+   campo agora dimensiona como qualquer outro do formulário. */
+.vf-toolbar__filters > .vf-search {
   flex: 0 0 150px;
   max-width: 150px;
 }
@@ -2334,7 +2358,8 @@ h4 {
     justify-content: flex-end;
   }
 
-  .vf-toolbar__filters .vf-search {
+  /* Mesmo `>` da regra que este media query relaxa — ver o comentário lá. */
+  .vf-toolbar__filters > .vf-search {
     max-width: none;
   }
 }

@@ -1,10 +1,17 @@
 // frontend-react/src/pages/FinanceiroPage.jsx
 //
-// F4.1 — Financeiro V3, SÓ LEITURA. Convive com Portal/financeiro.html
-// (upload/processamento real) — não substitui nada ainda (ver
-// vite.entries.js e financeiro-v3.html). Estrutura em 5 seções (pedido
-// explícito desta rodada): Resultado, Conciliação, Fechamento, Relatórios
-// gerados, Histórico — todas vêm de um único GET /financeiro/:cliente.
+// F4.1/F4.2 — Financeiro V3. As 5 seções (Resultado, Conciliação,
+// Fechamento, Relatórios gerados, Histórico) continuam vindo de um único
+// GET /financeiro/:cliente; F4.2 acrescentou a camada OPERACIONAL sobre as
+// entregas de fechamento (GET /entregas-cliente + publicar/despublicar),
+// que o backend já suportava e nenhuma tela chamava.
+//
+// O que continua no legado (Portal/financeiro.html): upload, cálculo e
+// salvamento do fechamento. Não por falta de vontade — o endpoint que
+// processa não recebe `periodo` e a entrega salva não guarda
+// `cliente_conta_id`; migrar esses botões seria prometer, numa tela que
+// exibe cliente + operação + competência, uma garantia que o contrato não
+// dá. Ver Squads_migration/VENFORCE_V3_F4_2_DEPENDENCIAS_P2_6.md.
 //
 // Central de Vendas e Margem permanecem módulos próprios (D20 do Master
 // Spec) — o Financeiro linka para elas, não as absorve.
@@ -12,6 +19,7 @@
 import { useState } from "react";
 import { useOperacaoAtual } from "../hooks/useVfContext.js";
 import { useFinanceiro } from "../hooks/useFinanceiro.js";
+import { useEntregasFechamento } from "../hooks/useEntregasFechamento.js";
 import { competenciasRecentes, rotularCompetencia } from "../utils/dates.js";
 import { Tabs } from "../components/financeiro/Tabs.jsx";
 import { ResultadoTab } from "../components/financeiro/ResultadoTab.jsx";
@@ -32,6 +40,9 @@ const ABAS = [
 export default function FinanceiroPage() {
   const { pronta, clienteSlug, clienteContaId } = useOperacaoAtual();
   const { periodo, setPeriodo, dados, carregando, erro } = useFinanceiro({ clienteSlug, clienteContaId, pronta });
+  // Entregas são de CLIENTE (entregas_cliente não tem cliente_conta_id), por
+  // isso a chave aqui é só o slug: trocar de operação não reabre esta lista.
+  const entregas = useEntregasFechamento({ clienteSlug, habilitado: pronta });
   const [abaAtiva, setAbaAtiva] = useState("resultado");
 
   // Contexto incompleto: o Shell (data-vf-scope="account") já cuida do
@@ -48,7 +59,8 @@ export default function FinanceiroPage() {
             <p className="vf-page-header__eyebrow">Financeiro · em validação (V3)</p>
             <h1 className="vf-page-header__title">Resultado e fechamento do período</h1>
             <p className="vf-page-header__description">
-              Leitura do que já foi processado. Para gerar ou publicar um fechamento, use{" "}
+              Leitura do que já foi processado, e publicação dos fechamentos gerados. Para{" "}
+              <strong>gerar</strong> um fechamento (upload e cálculo), use{" "}
               <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>o Financeiro atual →</a>
             </p>
           </div>
@@ -90,10 +102,20 @@ export default function FinanceiroPage() {
               )}
               {abaAtiva === "conciliacao" && <ConciliacaoTab conciliacao={dados.conciliacao} />}
               {abaAtiva === "fechamento" && (
-                <FechamentoTab resultado={dados.resultado} clienteSlug={clienteSlug} periodoLabel={periodoLabel} />
+                <FechamentoTab
+                  resultado={dados.resultado}
+                  clienteSlug={clienteSlug}
+                  periodo={periodo}
+                  periodoLabel={periodoLabel}
+                  entregas={entregas}
+                />
               )}
-              {abaAtiva === "relatorios" && <RelatoriosTab relatorios={dados.relatorios} />}
-              {abaAtiva === "historico" && <HistoricoTab relatorios={dados.relatorios} />}
+              {abaAtiva === "relatorios" && (
+                <RelatoriosTab relatorios={dados.relatorios} entregas={entregas} periodo={periodo} />
+              )}
+              {abaAtiva === "historico" && (
+                <HistoricoTab relatorios={dados.relatorios} entregas={entregas} periodo={periodo} />
+              )}
             </div>
           </section>
         )}

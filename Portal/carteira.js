@@ -14,30 +14,32 @@
 // Regra de conteúdo (§10.1), dura: cada elemento visível precisa ajudar a
 // ESCOLHER. Faturamento não ajuda a escolher; "sem base vinculada" ajuda.
 //
-// A lista de clientes NÃO é buscada aqui. `vf-context.js` já fez essa
-// chamada (GET /operacao/cliente-360/clientes, a única EXISTE HOJE que
-// serve admin/user/membro — nunca GET /clientes, admin-only, M1) para
-// alimentar o dropdown "Cliente" da sidebar. A Carteira lê o mesmo
-// resultado via `context.getPortfolio()` — zero requisição duplicada, e um
-// só ponto na aplicação decide "quais clientes eu vejo".
+// FONTE DE DADOS (C1, maratona Pessoa 1) — GET /me/portfolio, uma única
+// requisição (server/routes/meRoutes.js + services/meService.js). Ela é a
+// fonte AUTORITATIVA da carteira prevista no MASTER_SPEC §18.2 e resolve de
+// uma vez o que antes exigia 1 + N chamadas: clientes autorizados, contas de
+// CADA cliente (`listarContasDeClientesAtivos`, sem N+1), `squadId`/`squad`,
+// `responsavelDireto`, `statusOperacional` e `pendencias`. Squad (D5/D7)
+// continua sendo agrupamento e filtro, nunca um passo antes do cliente.
 //
-// O que a Carteira busca por conta própria é só o "sob demanda" do §10.5
-// nível A: as OPERAÇÕES de cada cliente (GET /clientes/:slug/contas), só
-// para as linhas visíveis, com cache de sessão (nunca refaz a mesma
-// chamada) — porque `getClientesOperacional` calcula prontidão por
-// CLIENTE, não por conta (MASTER_SPEC §3.8 #4); não existe `contasAtivas`
-// no payload da carteira. Por isso cada linha nasce em estado "operações
-// carregando" e só decide sua própria cardinalidade (§10.4: 1 conta entra
-// direto, 2+ só pelo chip, 0 mostra "Configurar →") quando a resposta
-// chega — nunca antes, e nunca por um campo que o payload não tem.
+// QUEDA (ainda necessária, some em F6 quando /me/portfolio estiver
+// confirmado em produção): se a chamada falhar por qualquer motivo, a tela
+// volta exatamente ao comportamento anterior — lista via
+// `context.getPortfolio()` (que o shell já carregou) e OPERAÇÕES sob demanda
+// por linha visível (GET /clientes/:slug/contas, §10.5 nível A, com cache de
+// sessão). Nenhuma linha inventa cardinalidade: 1 conta entra direto, 2+ só
+// pelo chip, 0 mostra "Configurar →" (§10.4) — decidido só quando as contas
+// daquela linha são conhecidas, pelos dois caminhos.
 //
-// Squad (D5/D7) é agrupamento e filtro, nunca um passo antes do cliente.
-// O payload real de hoje não traz `squadId`/`responsavelDireto`
-// (CONTRATO NECESSÁRIO, §10.8) — nesse caso `getSquads()` devolve `[]` e o
-// agrupamento simplesmente não aparece. Nada é inventado; ver
-// Portal/carteira-ui.test.js para os cenários (via `getSquads` injetado)
-// que SIMULAM um payload com squad para provar que a UI funciona quando
-// o contrato existir.
+// SINCRONIZAÇÃO (D3, resolvido na Convergência #2): `/me/portfolio` passou a
+// devolver `clientes[].ultimaSincronizacao` e `contas[].ultimaSync` REAIS
+// (P2.6 — server/services/meService.js). Nada aqui precisou mudar: a tela
+// sempre foi dirigida pelo dado, não por uma suposição sobre ele. A ordenação
+// "Última sync" aparece quando ALGUM cliente tem o campo e some quando nenhum
+// tem; um `?ordem=sync` colado numa URL sem dado cai para "Atenção primeiro";
+// e o chip diz "sem dado de sync", nunca "nunca sincronizou" — porque `null`
+// continua significando ausência de dado, não ausência de sincronização.
+// Ver Squads_migration/VENFORCE_V3_F4_2_DEPENDENCIAS_P2_6.md.
 //
 // Destino ao entrar no contexto: Visão (MASTER_SPEC §11), a home operacional
 // por Cliente+Operação (F3.3). Antes de F3 existir, este destino era
@@ -55,11 +57,60 @@ const PREFETCH = 12; // §10.5 nível A — ~12 requisições no primeiro paint,
 
 function createProductionApi(api) {
   return {
+    carteiraCompleta(opts) {
+      return api.get("/me/portfolio", opts);
+    },
     contasDoCliente(slug, opts) {
       return api
         .get(`/clientes/${encodeURIComponent(slug)}/contas`, opts)
         .catch((err) => ({ ok: false, code: err && err.code, erro: err && err.message }));
     },
+  };
+}
+
+/* ── Adaptação do payload de /me/portfolio para o vocabulário da tela ─────
+   Duas divergências de nome entre meService.js e o que statusOperacao()/
+   chips() já leem em todo o resto do shell — traduzidas aqui, uma vez, em
+   vez de espalhar `conta.baseVinculada || conta.base` por cinco lugares. */
+
+export function adaptarContaDoPortfolio(conta) {
+  if (!conta) return null;
+  return {
+    id: conta.id,
+    marketplace: conta.marketplace,
+    nome: conta.nome,
+    ativo: conta.ativo !== false,
+    external_account_id: conta.external_account_id,
+    externalAccountLabel: conta.externalAccountLabel,
+    // statusOperacao() prefere este campo quando ele existe (é o backend
+    // quem confere expires_at); o objeto `grant` cru não vem neste payload.
+    grantStatus: typeof conta.grantStatus === "string" ? conta.grantStatus : null,
+    base: conta.baseVinculada ? { base_id: conta.baseVinculada.id, nome: conta.baseVinculada.nome } : null,
+    ultimaSync: conta.ultimaSync || null,
+  };
+}
+
+export function adaptarClienteDoPortfolio(c) {
+  if (!c) return null;
+  return {
+    id: c.id,
+    slug: c.slug,
+    nome: c.nome,
+    squadId: c.squadId != null ? c.squadId : null,
+    squad: c.squad || null,
+    responsavelDireto: c.responsavelDireto === true,
+    statusOperacional: c.statusOperacional || null,
+    // D3 — o campo passou a existir em /me/portfolio (P2.6). Derrubá-lo aqui
+    // deixava `temDadoDeSync()` falso para sempre: a ordenação "Última sync"
+    // nunca reapareceria, mesmo com o bloqueio de backend já resolvido.
+    // `null` continua `null` — ausência de dado, não "nunca sincronizou".
+    ultimaSincronizacao: c.ultimaSincronizacao || null,
+    // meService devolve [{ tipo }]; o resto da tela (e o payload legado)
+    // trabalha com uma lista de strings.
+    pendencias: (c.pendencias || [])
+      .map((p) => (typeof p === "string" ? p : p && p.tipo))
+      .filter(Boolean),
+    contas: (c.contas || []).map(adaptarContaDoPortfolio).filter(Boolean),
   };
 }
 
@@ -70,13 +121,23 @@ export function createCarteira(options = {}) {
   const ctxStore = options.context || vfContext;
   const api = options.api || createProductionApi(vfApi);
   const onNavigate = options.onNavigate || ((href) => { window.location.href = href; });
-  const getSquads = options.getSquads || (() => []);
 
   let host = null;
   let unsubscribe = null;
   let observer = null;
   const contasPorCliente = {}; // cache de sessão — nunca refaz a mesma chamada
   const carregandoContas = {};
+
+  /* fonte: "carregando" enquanto /me/portfolio está em voo · "rica" quando
+     ele respondeu · "queda" quando falhou (aí vale context.getPortfolio() +
+     contas sob demanda, o caminho anterior a C1, intacto). */
+  let fonte = "carregando";
+  let clientesRicos = [];
+  let squadsDoPayload = [];
+
+  const getSquads =
+    options.getSquads ||
+    (() => (squadsDoPayload.length ? squadsDoPayload : ctxStore.getSquads ? ctxStore.getSquads() : []));
 
   let busca = "";
   let filtro = "todos"; // todos · pendencia · sem-operacao
@@ -108,7 +169,51 @@ export function createCarteira(options = {}) {
   function montar(container) {
     host = container;
     lerFiltrosDaUrl();
+    carregarCarteiraCompleta();
     unsubscribe = ctxStore.subscribe(render);
+  }
+
+  /* Uma requisição para a carteira inteira (C1). Falhou? `fonte` vira
+     "queda" e o render seguinte usa exatamente o caminho anterior — a tela
+     nunca fica sem lista por causa deste endpoint. */
+  function carregarCarteiraCompleta() {
+    if (!api.carteiraCompleta) {
+      fonte = "queda";
+      return Promise.resolve();
+    }
+    return Promise.resolve()
+      .then(() => api.carteiraCompleta())
+      .then((resp) => {
+        if (!resp || resp.ok === false || !Array.isArray(resp.clientes)) {
+          fonte = "queda";
+          return;
+        }
+        clientesRicos = resp.clientes.map(adaptarClienteDoPortfolio).filter(Boolean);
+        squadsDoPayload = Array.isArray(resp.squads) ? resp.squads : [];
+        // As contas já vieram: o cache de linha nasce cheio e nenhuma
+        // chamada por cliente chega a sair (buscarContas devolve na hora).
+        clientesRicos.forEach((c) => { contasPorCliente[c.slug] = { lista: c.contas }; });
+        fonte = "rica";
+      })
+      .catch(() => {
+        fonte = "queda";
+      })
+      .then(() => {
+        if (host) render(ctxStore.getSnapshot());
+      });
+  }
+
+  /* A lista exibida. Na queda é a mesma do shell (context.getPortfolio()),
+     que já foi carregada no boot — zero requisição duplicada. */
+  function clientesVisiveisNaFonte() {
+    return fonte === "rica" ? clientesRicos : ctxStore.getPortfolio();
+  }
+
+  // "Última sync" só é oferecida quando ALGUM cliente tem o dado. O payload
+  // de /me/portfolio não traz `ultimaSincronizacao` — oferecer uma ordenação
+  // que não ordena nada seria pior do que não oferecê-la.
+  function temDadoDeSync(clientes) {
+    return (clientes || []).some((c) => !!c.ultimaSincronizacao);
   }
 
   function desmontar() {
@@ -175,8 +280,15 @@ export function createCarteira(options = {}) {
 
     if (estado === S.BOOT) { renderCarregando(); return; }
     if (estado === S.PORTFOLIO_ERROR) { renderErro(snap.error); return; }
+    // O shell já resolveu, mas a carteira completa ainda está em voo:
+    // esqueleto, nunca uma lista pobre que muda debaixo do cursor logo em
+    // seguida.
+    if (fonte === "carregando") { renderCarregando(); return; }
 
-    const clientes = ctxStore.getPortfolio();
+    // NO_PORTFOLIO é decisão do store (mesma autorização, mesma origem);
+    // uma divergência transitória entre as duas chamadas não pode virar
+    // "clique numa linha que o contexto não conhece".
+    const clientes = clientesVisiveisNaFonte();
     if (estado === S.NO_PORTFOLIO || !clientes.length) { renderVazio(false); return; }
 
     renderLista(clientes);
@@ -232,9 +344,14 @@ export function createCarteira(options = {}) {
       `${clientes.length} cliente${clientes.length === 1 ? "" : "s"}` +
       (comAtencao ? ` · ${comAtencao} precisa${comAtencao === 1 ? "" : "m"} de atenção` : "");
 
+    // Um `?ordem=sync` colado numa URL não pode deixar a tela numa
+    // ordenação que a fonte atual não sabe executar.
+    const comSync = temDadoDeSync(clientes);
+    if (ordem === "sync" && !comSync) ordem = "atencao";
+
     host.innerHTML =
       cabecalho(descricao) +
-      barraFiltros(squads) +
+      barraFiltros(squads, comSync) +
       '<div id="cart-lista" class="vf-portfolio-list"></div>';
 
     const buscaEl = host.querySelector("#cart-busca");
@@ -257,7 +374,7 @@ export function createCarteira(options = {}) {
     renderCorpo(clientes);
   }
 
-  function barraFiltros(squads) {
+  function barraFiltros(squads, comSync) {
     const filtros = [["todos", "Todos"], ["pendencia", "Com pendência"], ["sem-operacao", "Sem operação"]];
     const seletorSquad =
       squads.length > 1
@@ -279,7 +396,7 @@ export function createCarteira(options = {}) {
       '<label class="vf-toolbar__field">Ordenar <select id="cart-ordem" class="vf-select vf-select--sm">' +
       `<option value="atencao"${ordem === "atencao" ? " selected" : ""}>Atenção primeiro</option>` +
       `<option value="nome"${ordem === "nome" ? " selected" : ""}>Nome A→Z</option>` +
-      `<option value="sync"${ordem === "sync" ? " selected" : ""}>Última sync</option>` +
+      (comSync ? `<option value="sync"${ordem === "sync" ? " selected" : ""}>Última sync</option>` : "") +
       `<option value="meus"${ordem === "meus" ? " selected" : ""}>Meus clientes primeiro</option>` +
       "</select></label></div></div>"
     );
@@ -396,7 +513,10 @@ export function createCarteira(options = {}) {
       .map((conta) => {
         const st = statusOperacao(conta);
         const sub = [conta.base ? "base ok" : "sem base"];
-        sub.push(conta.ultimaSync ? fmt.desde(conta.ultimaSync) : "nunca sincronizou");
+        // "nunca sincronizou" seria uma AFIRMAÇÃO — e nenhum dos dois
+        // payloads de conta (GET /clientes/:slug/contas não tem o campo;
+        // /me/portfolio manda `null` fixo) sabe disso. Ausência é ausência.
+        sub.push(conta.ultimaSync ? fmt.desde(conta.ultimaSync) : "sem dado de sync");
         return (
           `<button type="button" class="vf-op-chip" data-conta="${conta.id}" data-cliente="${fmt.escapeHTML(c.slug)}">` +
           `<span class="vf-op-chip__top"><span class="vf-status is-${st.tone}"><span aria-hidden="true"></span>` +
@@ -489,8 +609,7 @@ export function createCarteira(options = {}) {
     if (!host) return;
     const antigo = host.querySelector(`.vf-portfolio-row[data-slug="${cssEscape(slug)}"]`);
     if (!antigo) return;
-    const clientes = ctxStore.getPortfolio();
-    const c = clientes.find((x) => x.slug === slug);
+    const c = clientesVisiveisNaFonte().find((x) => x.slug === slug);
     if (!c) return;
     const tpl = doc.createElement("template");
     tpl.innerHTML = linhaCliente(c).trim();

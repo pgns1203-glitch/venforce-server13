@@ -150,17 +150,37 @@ function safeLocalStorage() {
 }
 
 /* ── Adaptador padrão de API (real) para vf-context.init({ api }) ────────
-   MASTER_SPEC §18.1/§18.2 — "PRECISA AJUSTE"/"CONTRATO NECESSÁRIO" ainda
-   não existem; o fallback F1 já documentado é usado aqui: EXISTE HOJE. */
+   C1 (maratona Pessoa 1) — a carteira do shell passa a vir de
+   GET /me/context (server/routes/meRoutes.js + services/meService.js), a
+   fonte AUTORITATIVA por Squad prevista no MASTER_SPEC §18.2. Ela traz três
+   coisas que o endpoint anterior não tinha: `squads`, `squadPrincipalId` e
+   `contasAtivas` por cliente (o sub-rótulo "· N operações" do dropdown de
+   Cliente existia no código e nunca aparecia, porque o payload antigo não
+   tem esse campo).
+
+   /operacao/cliente-360/clientes continua como QUEDA, e só para um caso: o
+   servidor implantado ainda não conhece /me (404). Qualquer outra falha —
+   500, rede, timeout — propaga como PORTFOLIO_ERROR, porque mascarar um 500
+   atrás de um segundo endpoint esconderia um servidor doente atrás de uma
+   carteira que "quase" funciona. Os dois resolvem a mesma carteira
+   (resolvePortfolioClientes), então o fallback não muda quem o usuário vê,
+   só empobrece o payload. Remoção: F6, depois de confirmado em produção. */
 function createProductionContextApi(api) {
+  const comoErro = (err) => ({ ok: false, code: err && err.code, erro: err && err.message });
   return {
-    carteira: () => api.get("/operacao/cliente-360/clientes").catch((err) => ({ ok: false, code: err && err.code, erro: err && err.message })),
+    carteira: () =>
+      api.get("/me/context").catch((err) => {
+        if (err && err.status === 404) {
+          return api.get("/operacao/cliente-360/clientes").catch(comoErro);
+        }
+        return comoErro(err);
+      }),
     contasDoCliente: (ref, opts) =>
       api
         .get(`/clientes/${encodeURIComponent(ref)}/contas`, opts)
         .catch((err) => {
           if (err && err.name === "VfApiError" && err.status === 0 && err.code === "REDE") throw err; // deixa a rede real propagar (AbortError já é null)
-          return { ok: false, code: err && err.code, erro: err && err.message };
+          return comoErro(err);
         }),
   };
 }
@@ -451,6 +471,20 @@ export function createVfShell(options = {}) {
       a.setAttribute("aria-disabled", "true");
       a.title = motivoDesabilitado || "Ainda não disponível nesta versão";
       a.addEventListener("click", (e) => e.preventDefault());
+    } else {
+      // O href acima é um retrato do momento do render; o `periodo` pode
+      // mudar DEPOIS dele sem passar pelo store — as ilhas React escrevem
+      // `?periodo=` direto na URL (frontend-react/src/utils/periodoUrl.js) e
+      // não têm como notificar o shell. Recalcular no clique é o único jeito
+      // de o destino refletir a competência que está na tela agora.
+      //
+      // Só o clique principal: ctrl/cmd/shift/meio abrem em outra aba e ali
+      // vale o href renderizado, que continua correto para copiar o link.
+      a.addEventListener("click", (e) => {
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        onNavigate(buildHref(mod));
+      });
     }
     return a;
   }
@@ -458,12 +492,20 @@ export function createVfShell(options = {}) {
   // Links normais entre os dois mundos (§20.1): a página migrada passa
   // ?cliente=&conta= para a que ainda não migrou; ela ignora o que não
   // entende e usa o próprio seletor. Nenhuma quebra.
+  //
+  // `periodo` viaja junto (§8.5: "preservado ao trocar módulo/conta,
+  // resetado ao trocar cliente"). Faltava aqui: quem estava olhando julho na
+  // Visão e clicava em Financeiro chegava em outro mês, sem nada indicar a
+  // troca. Trocar de CLIENTE continua zerando o período — setCliente() limpa
+  // o parâmetro antes de qualquer navegação, então não há o que propagar.
   function buildHref(mod) {
     const ctx = ctxStore.getContext();
     if (!ctx || !ctx.clienteSlug) return mod.rota;
     const qs = new URLSearchParams();
     qs.set("cliente", ctx.clienteSlug);
     if (ctx.clienteContaId) qs.set("conta", String(ctx.clienteContaId));
+    const periodo = ctxStore.getPeriodoParam ? ctxStore.getPeriodoParam() : null;
+    if (periodo) qs.set("periodo", periodo);
     return `${mod.rota}?${qs.toString()}`;
   }
 
@@ -756,6 +798,44 @@ export function createVfShell(options = {}) {
   };
 }
 
+/* ── Cliente de depuração (paridade com layout.js) ───────────────────────
+   layout.js:23-64 carrega vf-debug-client.js para ADMIN quando
+   localStorage["vf-debug-enabled"] === "true" (ou ?vf_debug=1). Toda página
+   já migrada para o Shell V3 tinha perdido isso em silêncio — inclusive as
+   que existem para depurar. Portado aqui, com o mesmo gate (admin + token +
+   opt-in explícito) e a mesma tolerância a falha: o Portal segue inteiro se
+   o script não carregar. A duplicação com layout.js é deliberada e morre
+   com ele em F6 — mexer no layout.js legado afetaria 26 páginas de uma vez. */
+const DEBUG_ENABLED_KEY = "vf-debug-enabled";
+const DEBUG_CLIENT_SRC = "vf-debug-client.js";
+
+function loadDebugClientIfSafe() {
+  try {
+    const storage = safeLocalStorage();
+    if (!storage) return;
+    const urlFlag = new URLSearchParams(window.location.search || "").get("vf_debug");
+    if (urlFlag === "0" || urlFlag === "false" || urlFlag === "off") {
+      storage.setItem(DEBUG_ENABLED_KEY, "false");
+      return;
+    }
+    if (String(readUser().role || "").toLowerCase() !== "admin" || !hasToken()) return;
+    if (urlFlag === "1" || urlFlag === "true" || urlFlag === "on") storage.setItem(DEBUG_ENABLED_KEY, "true");
+    if (storage.getItem(DEBUG_ENABLED_KEY) !== "true") return;
+    if (window.__VF_DEBUG_CLIENT_LOADING__ || window.VFDebugClient) return;
+    if (document.querySelector('script[data-vf-debug-client="true"]')) return;
+
+    window.__VF_DEBUG_CLIENT_LOADING__ = true;
+    const script = document.createElement("script");
+    script.src = DEBUG_CLIENT_SRC;
+    script.async = true;
+    script.dataset.vfDebugClient = "true";
+    script.onerror = () => { window.__VF_DEBUG_CLIENT_LOADING__ = false; };
+    (document.head || document.documentElement).appendChild(script);
+  } catch {
+    /* auxiliar: nenhuma falha aqui pode derrubar o shell */
+  }
+}
+
 /* ── Boot de produção — só roda em página real, autenticada, sem admin
    próprio de teste (o teste headless usa createVfShell() diretamente com
    um `api`/`context` injetados). */
@@ -767,6 +847,13 @@ function bootProduction() {
   // sem shell/erro/loading, em vez de mandar pro login.
   if (!hasToken()) { window.location.replace("index.html"); return null; }
   const user = readUser();
+  // Paridade com layout.js:319-323 — `seller` é uma persona EXTERNA, com
+  // área própria. Sem este desvio ela veria a navegação interna inteira
+  // (Carteira, Bases, Pessoas, Administração) e só descobriria que não pode
+  // usá-la pelos 403 de cada tela. O backend continua sendo quem autoriza;
+  // isto é sobre não oferecer a porta errada.
+  if (String(user.role || "").toLowerCase() === "seller") { window.location.replace("seller.html"); return null; }
+  loadDebugClientIfSafe();
   const scope = document.body ? document.body.dataset.vfScope || "global" : "global";
 
   const shell = createVfShell({ getUser: readUser });

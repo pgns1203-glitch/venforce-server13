@@ -87,3 +87,31 @@
   min-width: 96px;
   font-weight: var(--vf-fw-medium, 500);
 }
+
+/* ── F4.2 — camada operacional das entregas ──────────────────────────────
+   A linha da competência que está no seletor da página recebe um sinal
+   discreto (borda, não fundo forte): a tabela é lida em varredura vertical
+   e um destaque pesado competiria com o próprio status de publicação, que
+   é a informação que importa aqui. */
+
+.vf-table tr.is-destacada > td:first-child,
+.vf-fin-historico__item.is-destacada {
+  box-shadow: inset 2px 0 0 0 var(--vf-primary);
+}
+
+.vf-fin-historico__item.is-destacada {
+  padding-left: var(--vf-sp-3, 12px);
+}
+
+/* Confirmação em dois tempos de publicar/despublicar. Ocupa a mesma célula
+   do botão que a abriu — a ação e a pergunta ficam no mesmo lugar, sem
+   deslocar as outras linhas da tabela. */
+.vf-fin-confirm {
+  gap: var(--vf-sp-2, 8px);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.vf-fin-confirm .vf-field__hint {
+  max-width: 32ch;
+}

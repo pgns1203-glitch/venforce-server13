@@ -22,6 +22,9 @@ async function auditoria(db = pool) {
     clientesSquadInativo,
     usuariosAgg,
     principaisDuplicados,
+    vinculosDuplicados,
+    responsaveisForaDoSquad,
+    membrosDeUsuarioInativo,
   ] = await Promise.all([
     db.query(`/* squads:AUDIT_CLIENTES */
       SELECT
@@ -79,11 +82,69 @@ async function auditoria(db = pool) {
        WHERE sm.ativo = true AND sm.is_primary = true
        GROUP BY sm.user_id
       HAVING COUNT(*) > 1`),
+
+    // P2.8 BLOCO Y — MULTIPLOS VINCULOS ATIVOS do mesmo cliente.
+    // `cliente_squad_history` modela historico: o vinculo VIGENTE e a linha com
+    // fim_em IS NULL, e so pode existir UMA. Duas linhas abertas significam que
+    // o mesmo cliente pertence a dois Squads ao mesmo tempo — a carteira fica
+    // nao-deterministica e o rollout NAO pode acontecer nesse estado.
+    db.query(`/* squads:AUDIT_VINCULOS_DUPLICADOS */
+      SELECT csh.cliente_id, c.slug, c.nome, COUNT(*)::int AS vinculos_abertos,
+             ARRAY_AGG(csh.squad_id ORDER BY csh.squad_id) AS squad_ids
+        FROM cliente_squad_history csh
+        JOIN clientes c ON c.id = csh.cliente_id
+       WHERE csh.fim_em IS NULL
+       GROUP BY csh.cliente_id, c.slug, c.nome
+      HAVING COUNT(*) > 1
+       ORDER BY c.nome ASC`),
+
+    // P2.8 BLOCO Y — RESPONSAVEL POR CLIENTE FORA DO SEU SQUAD.
+    // Isto NAO e falha de autorizacao: responsabilidade nunca concedeu acesso,
+    // e continua nao concedendo. E uma inconsistencia ORGANIZACIONAL, e o
+    // momento de ve-la e ANTES do rollout: quando o enforcement ligar, essa
+    // pessoa deixa de conseguir abrir justamente o cliente pelo qual ela e
+    // responsavel. Corrigir e decisao humana (mover o cliente de Squad ou a
+    // pessoa para o Squad) — a auditoria so mostra.
+    db.query(`/* squads:AUDIT_RESPONSAVEL_FORA_DO_SQUAD */
+      SELECT cr.cliente_id, c.slug, c.nome, cr.user_id, cr.papel,
+             u.nome AS user_nome, u.email AS user_email
+        FROM cliente_responsaveis cr
+        JOIN clientes c ON c.id = cr.cliente_id AND c.ativo = true
+        JOIN users u ON u.id = cr.user_id AND u.ativo = true
+       WHERE cr.ativo = true
+         AND LOWER(u.role) = ANY($1::text[])
+         AND NOT EXISTS (
+           SELECT 1
+             FROM cliente_squad_history csh
+             JOIN squads s ON s.id = csh.squad_id AND s.ativo = true
+             JOIN squad_members sm ON sm.squad_id = s.id
+              AND sm.user_id = cr.user_id AND sm.ativo = true
+            WHERE csh.cliente_id = cr.cliente_id AND csh.fim_em IS NULL
+         )
+       ORDER BY c.nome ASC, cr.papel ASC`, [ROLES_INTERNAS]),
+
+    // P2.8 BLOCO Y — membership ATIVA de usuario DESATIVADO. Nao concede
+    // acesso (o login ja barra), mas suja a contagem de membros do Squad e
+    // esconde que o Squad pode estar sem gente de verdade.
+    db.query(`/* squads:AUDIT_MEMBRO_USUARIO_INATIVO */
+      SELECT sm.user_id, sm.squad_id, u.nome AS user_nome, s.slug AS squad_slug
+        FROM squad_members sm
+        JOIN users u ON u.id = sm.user_id
+        JOIN squads s ON s.id = sm.squad_id
+       WHERE sm.ativo = true AND u.ativo = false
+       ORDER BY s.slug ASC`),
   ]);
 
   const c = clientesAgg.rows[0];
   const u = usuariosAgg.rows[0];
   const principalDuplicado = principaisDuplicados.rows.length;
+
+  // P2.8 BLOCO Y — o que BLOQUEIA o rollout e o que so ATRAPALHA sao coisas
+  // diferentes, e misturar as duas esconde o bloqueio.
+  //   bloqueante  = a carteira fica errada ou nao-deterministica;
+  //   atencao     = inconsistencia real que alguem precisa resolver, mas que
+  //                 nao torna a autorizacao incorreta.
+  const vinculoDuplicado = vinculosDuplicados.rows.length;
 
   const pronto =
     c.sem_squad === 0 &&
@@ -91,7 +152,8 @@ async function auditoria(db = pool) {
     u.sem_membership === 0 &&
     u.apenas_squad_inativo === 0 &&
     u.sem_principal === 0 &&
-    principalDuplicado === 0;
+    principalDuplicado === 0 &&
+    vinculoDuplicado === 0;
 
   return {
     geradoEm: new Date().toISOString(),
@@ -115,6 +177,19 @@ async function auditoria(db = pool) {
       semPrincipal: u.sem_principal,
       comPrincipalDuplicado: principalDuplicado,
       principalDuplicadoUserIds: principaisDuplicados.rows.map((r) => r.user_id),
+    },
+    // Vinculo duplicado e BLOQUEANTE: o mesmo cliente em dois Squads abertos
+    // torna a carteira nao-deterministica.
+    integridade: {
+      clientesComVinculoDuplicado: vinculoDuplicado,
+      listaVinculoDuplicado: vinculosDuplicados.rows,
+    },
+    // Atencao: nao bloqueia o rollout, mas alguem precisa resolver.
+    atencao: {
+      responsaveisForaDoSquad: responsaveisForaDoSquad.rows.length,
+      listaResponsaveisForaDoSquad: responsaveisForaDoSquad.rows,
+      membershipsDeUsuarioInativo: membrosDeUsuarioInativo.rows.length,
+      listaMembershipsDeUsuarioInativo: membrosDeUsuarioInativo.rows,
     },
     pronto,
   };

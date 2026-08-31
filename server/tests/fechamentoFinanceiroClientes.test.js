@@ -89,6 +89,19 @@ async function main() {
     ok("requisição sem token recebe 401", !nextCalled && res.statusCode === 401);
   }
 
+  // Sem usuario a lista e VAZIA (fail-closed): a rota nunca devolve a base
+  // inteira por omissao de contexto.
+  {
+    const originalQuery = pool.query;
+    try {
+      pool.query = async () => ({ rows: [{ id: 1, nome: "X", slug: "x" }] });
+      const vazio = await service.listarClientesAtivosFinanceiro();
+      ok("sem usuario a lista e vazia, nunca a base inteira", Array.isArray(vazio) && vazio.length === 0);
+    } finally {
+      pool.query = originalQuery;
+    }
+  }
+
   const originalQuery = pool.query;
   let sqlExecutado = "";
   try {
@@ -107,7 +120,10 @@ async function main() {
       };
     };
 
-    const clientes = await service.listarClientesAtivosFinanceiro();
+    // V3 P2.7 BLOCO L — a lista agora e a CARTEIRA do usuario, nao a base
+    // inteira, entao a funcao exige req.user. Admin mantem o bypass canonico,
+    // que e o comportamento que este contrato sempre exercitou.
+    const clientes = await service.listarClientesAtivosFinanceiro({ id: 1, role: "admin" });
     assert.deepStrictEqual(clientes, [{
       id: 7,
       nome: "Cliente Seguro",
@@ -116,8 +132,9 @@ async function main() {
     }]);
     checks += 1;
     console.log("  ok  resposta contém exclusivamente id, nome, slug e ativo");
-    ok("consulta limita a clientes ativos", /WHERE\s+ativo\s*=\s*true/i.test(sqlExecutado));
-    ok("consulta ordena por nome", /ORDER\s+BY\s+nome\s+ASC/i.test(sqlExecutado));
+    ok("consulta limita a clientes ativos", /WHERE\s+(?:\w+\.)?ativo\s*=\s*true/i.test(sqlExecutado));
+    ok("consulta ordena por nome", /ORDER\s+BY\s+(?:\w+\.)?nome\s+ASC/i.test(sqlExecutado));
+    ok("consulta passa pelo authorizationService (carteira, nao base inteira)", /authz:PORTFOLIO_/.test(sqlExecutado));
     ok("consulta não seleciona api_key", !/api_key/i.test(sqlExecutado));
     ok("consulta não usa SELECT *", !/SELECT\s+\*/i.test(sqlExecutado));
   } finally {

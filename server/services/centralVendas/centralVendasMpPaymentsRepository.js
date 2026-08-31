@@ -214,21 +214,39 @@ async function listMpPaymentsWithChargesTotalByRun(syncRunId, db = pool) {
   return result.rows.map(sanitizePaymentRow);
 }
 
+// V3 P2.7 BLOCO H — cinto de seguranca de CONTA na camada MP.
+// Estas tabelas TEM `cliente_conta_id` (e indice dedicado), mas o WHERE
+// filtrava so por `sync_run_id`: o isolamento entre contas era 100% transitivo
+// pelo array de runs vindo do snapshot. Qualquer erro upstream em
+// deriveSyncRunIds virava mistura de contas sem nenhuma deteccao.
+// Quando a conta e conhecida, filtramos tambem por ela. Linhas legadas
+// (cliente_conta_id NULL) continuam entrando — nao da para atribui-las a uma
+// conta e exclui-las derrubaria dado historico; o que passa a ser impossivel e
+// entrar linha de OUTRA conta identificada.
+function condicaoContaMp(coluna, clienteContaId, params) {
+  const id = Number(clienteContaId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  params.push(id);
+  return `(${coluna} IS NULL OR ${coluna} = $${params.length})`;
+}
+
 // MP3 (seção 13 do spec MP3) — mesma leitura acima, mas para VÁRIOS runs de
 // uma vez (range que cruza mais de um sync_run_id). Bulk por construção:
 // nunca 1 query por Order/por run — quem chama já resolveu o array de
 // syncRunIds via resolveRangeImports (M4/account-aware).
-async function listMpPaymentsWithChargesTotalByRunIds(syncRunIds, db = pool) {
+async function listMpPaymentsWithChargesTotalByRunIds(syncRunIds, db = pool, { clienteContaId = null } = {}) {
   const ids = Array.isArray(syncRunIds) ? syncRunIds.filter((id) => Number.isFinite(Number(id))) : [];
   if (!ids.length) return [];
+  const params = [ids];
+  const conta = condicaoContaMp("p.cliente_conta_id", clienteContaId, params);
   const result = await db.query(
     `SELECT p.*, COALESCE(SUM(c.amount_original), 0)::numeric(14,2) AS charges_total
        FROM central_vendas_mp_payments p
        LEFT JOIN central_vendas_mp_payment_charges c ON c.mp_payment_row_id = p.id
-      WHERE p.sync_run_id = ANY($1::bigint[])
+      WHERE p.sync_run_id = ANY($1::bigint[])${conta ? ` AND ${conta}` : ""}
       GROUP BY p.id
       ORDER BY p.id ASC`,
-    [ids]
+    params
   );
   return result.rows.map(sanitizePaymentRow);
 }

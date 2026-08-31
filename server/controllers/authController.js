@@ -2,8 +2,8 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const pool = require("../config/database");
 const { registrarLog, extrairIp } = require("../services/activityLogService");
-
-const JWT_SECRET = process.env.JWT_SECRET || "venforce_secret_local";
+// V3 P2.7 BLOCO Q — ver config/jwtSecret.js.
+const { getJwtSecret } = require("../config/jwtSecret");
 
 async function register(req, res) {
   try {
@@ -63,7 +63,7 @@ async function login(req, res) {
       });
       return res.status(401).json({ ok: false, erro: "Senha inválida" });
     }
-    const token = jwt.sign({ id: user.id, email: user.email, nome: user.nome, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
+    const token = jwt.sign({ id: user.id, email: user.email, nome: user.nome, role: user.role }, getJwtSecret(), { expiresIn: "7d" });
     registrarLog({
       userId: user.id,
       userEmail: user.email,

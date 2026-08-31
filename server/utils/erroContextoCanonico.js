@@ -30,6 +30,11 @@ const CODIGOS_CANONICOS = Object.freeze({
   GRANT_DESCONECTADO: "GRANT_DESCONECTADO", // 424 — falha de integração, nunca de autorização
   BASE_AUSENTE: "BASE_AUSENTE", // 424
   BASE_AMBIGUA: "BASE_AMBIGUA", // 424
+  // V3 P2.6 BLOCO C — competência explícita. Distingue "não mandou" de
+  // "mandou errado": os dois eram, antes, um fallback silencioso para o mês
+  // atual (periodoUtils.rangeFromCompetencia). Ver utils/competenciaCanonica.js.
+  PERIODO_OBRIGATORIO: "PERIODO_OBRIGATORIO", // 400
+  PERIODO_INVALIDO: "PERIODO_INVALIDO", // 400
 });
 
 // HTTP recomendado por código canônico — só como referência para quem for
@@ -46,6 +51,8 @@ const STATUS_CANONICO = Object.freeze({
   [CODIGOS_CANONICOS.GRANT_DESCONECTADO]: 424,
   [CODIGOS_CANONICOS.BASE_AUSENTE]: 424,
   [CODIGOS_CANONICOS.BASE_AMBIGUA]: 424,
+  [CODIGOS_CANONICOS.PERIODO_OBRIGATORIO]: 400,
+  [CODIGOS_CANONICOS.PERIODO_INVALIDO]: 400,
 });
 
 module.exports = { CODIGOS_CANONICOS, STATUS_CANONICO };

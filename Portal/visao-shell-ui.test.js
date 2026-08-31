@@ -108,6 +108,25 @@ function payloadShopee() {
   return p;
 }
 
+/* C1 — o Shell V3 pede GET /me/context antes de qualquer coisa (a carteira
+   autoritativa por Squad, server/services/meService.js). Este backend falso
+   passa a respondê-lo derivando do MESMO fixture de carteira já usado aqui:
+   sem isto o harness simularia um servidor sem /me, que não é o servidor
+   real que a página vai encontrar. */
+function meContextDe(portfolio) {
+  const clientes = (portfolio.clientes || []).map((c) => ({
+    id: c.id, slug: c.slug, nome: c.nome, squadId: null, responsavelDireto: false, contasAtivas: null,
+  }));
+  return {
+    ok: true,
+    user: { id: 12, nome: "Pedro Gomes", email: null, role: "user" },
+    squads: [], squadPrincipalId: null,
+    clientes,
+    portfolio: { totalClientes: clientes.length },
+    permissoes: { podeAdministrar: false },
+  };
+}
+
 function startServer() {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, "http://localhost");
@@ -202,6 +221,7 @@ function wireFetchInterception(cdp) {
     if (req.method === "OPTIONS") { await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: cors }); return; }
     const json = (obj) => respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 200, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body: Buffer.from(JSON.stringify(obj)).toString("base64") });
 
+    if (url.includes("/me/context")) { await json(meContextDe(PORTFOLIO)); return; }
     if (url.includes("/operacao/cliente-360/clientes")) { await json(PORTFOLIO); return; }
     const contasMatch = url.match(/\/clientes\/([^/?]+)\/contas/);
     if (contasMatch) { await json({ ok: true, cliente: { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true }, contas: N97_CONTAS }); return; }

@@ -105,10 +105,16 @@ function createCentralVendasMp3ReadService(
 
     // Bulk por construção (seção 13 do spec MP3): 3 queries no TOTAL,
     // nunca 1 por pedido/por run — mesmo espírito de performance do M10.
+    // V3 P2.7 BLOCO H — a conta RESOLVIDA (nao a pedida) tambem vai para as
+    // queries de MP. O isolamento entre contas era 100% transitivo pelo array
+    // de runs; agora ha um segundo filtro, na propria tabela.
+    const contaResolvidaId = context?.conta?.id || null;
+    const escopoConta = { clienteContaId: contaResolvidaId };
+
     const [payments, movements, reports] = await Promise.all([
-      mpPaymentsRepository.listMpPaymentsWithChargesTotalByRunIds(syncRunIds, db),
-      mpSettlementRepository.listSettlementMovementsByRunIds(syncRunIds, db),
-      mpSettlementRepository.listSettlementReportsByRunIds(syncRunIds, db),
+      mpPaymentsRepository.listMpPaymentsWithChargesTotalByRunIds(syncRunIds, db, escopoConta),
+      mpSettlementRepository.listSettlementMovementsByRunIds(syncRunIds, db, escopoConta),
+      mpSettlementRepository.listSettlementReportsByRunIds(syncRunIds, db, escopoConta),
     ]);
 
     // Hardening final MP3 (ponto 2) — reports já carregados em bulk acima

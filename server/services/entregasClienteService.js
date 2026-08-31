@@ -1,5 +1,7 @@
 const crypto = require("crypto");
 const pool = require("../config/database");
+const { normalizarCompetencia } = require("../utils/competenciaCanonica");
+const { CODIGOS_CANONICOS } = require("../utils/erroContextoCanonico");
 
 const TIPOS_PERMITIDOS = new Set([
   "fechamento_mensal",
@@ -23,6 +25,10 @@ function criarErroHttp(statusCode, payload) {
   const err = new Error(payload?.erro || "Erro");
   err.statusCode = statusCode;
   err.payload = payload;
+  // V3 P2.6 — o codigo canonico tambem no erro, nao so no payload: quem
+  // trata `err.code` (controllers, testes, chamadores internos) nao precisa
+  // conhecer o formato do envelope HTTP.
+  if (payload?.code) err.code = payload.code;
   return err;
 }
 
@@ -118,15 +124,107 @@ async function buscarClientePorSlugOuId({ clienteIdRaw, clienteSlugRaw }) {
   return null;
 }
 
+// V3 P2.6 BLOCO G — escrita e leitura falavam formatos diferentes: a coluna
+// `periodo` e VARCHAR(100) livre, sem validacao, e o Portal grava o texto do
+// input (placeholder literal "ex: Maio 2026"), enquanto os leitores exigiam
+// YYYY-MM. Resultado: praticamente todo relatorio real aparecia sem periodo.
+//
+// A partir daqui, tudo que der para normalizar com seguranca e GRAVADO ja em
+// YYYY-MM. O que nao der continua sendo gravado como veio (texto livre) — nao
+// rejeitamos a escrita nem inventamos competencia, so paramos de criar dado
+// novo fora do formato. Linhas historicas seguem sendo normalizadas na leitura.
+function normalizarPeriodoParaEscrita(periodoRaw) {
+  if (periodoRaw === null || periodoRaw === undefined) return null;
+  const texto = String(periodoRaw).trim();
+  if (!texto) return null;
+  return normalizarCompetencia(texto) || texto;
+}
+
+// V3 P2.6 D1 — resolve e VALIDA a operacao (ClienteConta) da entrega.
+//
+// Regra dura do modelo canonico: a conta tem que pertencer ao Cliente
+// resolvido. Sem isso, gravar `cliente_conta_id` seria pior que nao gravar —
+// criaria um vinculo mentiroso entre a entrega e uma operacao de outro cliente.
+//
+// Ausencia continua valida e significa "sem operacao registrada" (entrega
+// antiga ou fluxo legado). NUNCA escolhemos uma conta sozinhos: nem a primeira,
+// nem a is_primary, nem a do marketplace.
+async function resolverContaDaEntrega({ clienteContaIdRaw, clienteId }, db = pool) {
+  if (clienteContaIdRaw === null || clienteContaIdRaw === undefined || String(clienteContaIdRaw).trim() === "") {
+    return null;
+  }
+  const id = parseInt(clienteContaIdRaw, 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw criarErroHttp(400, { ok: false, erro: "cliente_conta_id invalido." });
+  }
+  if (clienteId == null) {
+    throw criarErroHttp(400, {
+      ok: false,
+      erro: "Informe o cliente para registrar a operacao (cliente_conta_id) da entrega.",
+    });
+  }
+  const { rows } = await db.query(
+    "SELECT id, cliente_id, nome, ativo FROM cliente_contas WHERE id = $1",
+    [id]
+  );
+  const conta = rows[0];
+  if (!conta) {
+    throw criarErroHttp(404, { ok: false, erro: "Conta nao encontrada." });
+  }
+  if (Number(conta.cliente_id) !== Number(clienteId)) {
+    throw criarErroHttp(409, {
+      ok: false,
+      code: CODIGOS_CANONICOS.CONTA_NAO_PERTENCE_AO_CLIENTE,
+      erro: "Esta conta nao pertence ao cliente informado.",
+    });
+  }
+  return conta.id;
+}
+
+// V3 P2.6 D4 — duas entregas publicadas da MESMA competencia significam DOIS
+// links publicos com numeros diferentes circulando para o mesmo cliente.
+//
+// Hoje nada no banco impede isso: nao existe UNIQUE(cliente, tipo, periodo) e
+// o INSERT nao tem ON CONFLICT. O unico anti-duplicata era `_entregaIdSalvo`,
+// uma variavel de memoria do browser que zera ao reprocessar, ao trocar de
+// cliente e a cada F5.
+//
+// A guarda vive aqui, na aplicacao, DE PROPOSITO: o indice unico parcial
+// (sql/migrations/20260828_entregas_cliente_unicidade_p26.sql) exige sanear as
+// duplicatas que ja existem em producao ANTES de ser criado, e sanear e
+// decisao humana sobre dado real. A guarda de aplicacao funciona sem o indice
+// e continua correta depois dele.
+//
+// So vale para `fechamento_mensal` com competencia conhecida: e a unica
+// combinacao com significado de unicidade. Entrega sem periodo, ou de outro
+// tipo, continua livre.
+const TIPOS_COM_COMPETENCIA_UNICA = new Set(["fechamento_mensal"]);
+
+async function encontrarEntregaDaCompetencia({ tipo, clienteId, clienteContaId, periodo }, db = pool) {
+  if (!TIPOS_COM_COMPETENCIA_UNICA.has(tipo)) return null;
+  if (clienteId == null || !periodo) return null;
+
+  const params = [tipo, clienteId, periodo];
+  const filtroConta = clienteContaId == null
+    ? "cliente_conta_id IS NULL"
+    : `cliente_conta_id = $${params.push(clienteContaId)}`;
+
+  const { rows } = await db.query(
+    `SELECT id, status, publicado, token_publico, created_at
+       FROM entregas_cliente
+      WHERE tipo = $1 AND cliente_id = $2 AND periodo = $3 AND ${filtroConta}
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    params
+  );
+  return rows[0] || null;
+}
+
 async function criarEntrega({ userId, body }) {
   const tipo = validarTipo(body?.tipo);
   const titulo = validarTitulo(body?.titulo);
 
-  const periodoRaw = body?.periodo;
-  const periodo =
-    periodoRaw === null || periodoRaw === undefined || String(periodoRaw).trim() === ""
-      ? null
-      : String(periodoRaw).trim();
+  const periodo = normalizarPeriodoParaEscrita(body?.periodo);
 
   const statusRaw = String(body?.status || "").trim().toLowerCase();
   const status = statusRaw ? statusRaw : "rascunho";
@@ -156,6 +254,38 @@ async function criarEntrega({ userId, body }) {
 
   validarIdentidadeFechamento({ payloadJson: body?.payload_json, clienteSlugResolvido: cliente_slug });
 
+  // V3 P2.6 D1 — a operacao que gerou o numero passa a ficar registrada.
+  const cliente_conta_id = await resolverContaDaEntrega({
+    clienteContaIdRaw: body?.cliente_conta_id ?? body?.clienteContaId,
+    clienteId: cliente_id,
+  });
+
+  // V3 P2.6 D4 — reprocessar nao pode duplicar em silencio.
+  const existente = await encontrarEntregaDaCompetencia({
+    tipo, clienteId: cliente_id, clienteContaId: cliente_conta_id, periodo,
+  });
+  if (existente) {
+    const querSubstituir = body?.substituir === true || String(body?.substituir || "").toLowerCase() === "true";
+    if (!querSubstituir) {
+      // Devolve o id existente para o frontend poder oferecer "substituir"
+      // em vez de criar um segundo link publico do mesmo mes.
+      throw criarErroHttp(409, {
+        ok: false,
+        code: "ENTREGA_JA_EXISTE",
+        erro: "Ja existe uma entrega desta competencia para este cliente/operacao. Use substituir=true para atualizar a existente.",
+        entregaId: existente.id,
+        publicado: !!existente.publicado,
+      });
+    }
+    // Substituicao explicita: ATUALIZA a entrega existente. O token publico e
+    // preservado por atualizarEntrega (ela nao toca em token_publico), entao o
+    // link ja divulgado nao morre numa substituicao.
+    return atualizarEntrega({
+      idRaw: existente.id,
+      body: { ...body, substituir: undefined },
+    });
+  }
+
   const payloadInput = body?.payload_json;
   const payloadVazio =
     payloadInput === null ||
@@ -177,12 +307,12 @@ async function criarEntrega({ userId, body }) {
 
   const ins = await pool.query(
     `INSERT INTO entregas_cliente
-      (tipo, cliente_id, cliente_slug, cliente_nome, titulo, periodo,
+      (tipo, cliente_id, cliente_conta_id, cliente_slug, cliente_nome, titulo, periodo,
        status, publicado, payload_json, origem_tipo, origem_id, created_by, expires_at)
      VALUES
-      ($1,$2,$3,$4,$5,$6,$7,false,$8,$9,$10,$11,$12)
+      ($1,$2,$13,$3,$4,$5,$6,$7,false,$8,$9,$10,$11,$12)
      RETURNING
-      id, tipo, cliente_id, cliente_slug, cliente_nome, titulo, periodo, status,
+      id, tipo, cliente_id, cliente_conta_id, cliente_slug, cliente_nome, titulo, periodo, status,
       token_publico, publicado, payload_json, origem_tipo, origem_id,
       created_by, created_at, updated_at, published_at, expires_at`,
     [
@@ -198,13 +328,20 @@ async function criarEntrega({ userId, body }) {
       origemId,
       userId || null,
       expiresAt,
+      cliente_conta_id, // $13
     ]
   );
 
   return { ok: true, entrega: ins.rows[0] };
 }
 
-async function listarEntregas({ query }) {
+// `clienteIdsPermitidos`: carteira do usuario aplicada EM SQL. Antes o
+// controller filtrava o array JA paginado pelo LIMIT/OFFSET e devolvia o
+// `total` sem filtro — vazamento de contagem e paginas curtas/vazias. Passando
+// a lista para ca, o COUNT e a paginacao concordam com o que o usuario pode ver.
+// `null`/`undefined` = sem restricao (admin ou chamada interna); array VAZIO =
+// carteira vazia, que devolve zero linhas (fail-closed), nunca "sem filtro".
+async function listarEntregas({ query, clienteIdsPermitidos = null }) {
   const tipo = query?.tipo ? String(query.tipo).trim() : "";
   if (tipo && !TIPOS_PERMITIDOS.has(tipo)) {
     throw criarErroHttp(400, { ok: false, erro: "tipo inválido." });
@@ -249,6 +386,33 @@ async function listarEntregas({ query }) {
     where.push(`publicado = $${params.length}`);
   }
 
+  // V3 P2.6 D1 — filtro por operacao. `incluirSemConta` (default true) mantem
+  // as entregas antigas (cliente_conta_id NULL) visiveis: elas nao pertencem a
+  // outra conta, elas nao tem conta registrada. Esconde-las seria fingir que
+  // o historico do cliente comeca na migracao.
+  const contaIdRaw = query?.cliente_conta_id ?? query?.clienteContaId;
+  const contaIdParsed =
+    contaIdRaw === null || contaIdRaw === undefined || String(contaIdRaw).trim() === ""
+      ? null
+      : parseInt(contaIdRaw, 10);
+  const contaId = Number.isFinite(contaIdParsed) && contaIdParsed > 0 ? contaIdParsed : null;
+  if (contaId !== null) {
+    params.push(contaId);
+    const semConta = String(query?.incluir_sem_conta ?? "true").toLowerCase() !== "false";
+    where.push(semConta
+      ? `(cliente_conta_id = $${params.length} OR cliente_conta_id IS NULL)`
+      : `cliente_conta_id = $${params.length}`);
+  }
+
+  if (Array.isArray(clienteIdsPermitidos)) {
+    if (!clienteIdsPermitidos.length) {
+      // Carteira vazia: nao existe entrega visivel. Nao cai em "sem filtro".
+      return { ok: true, total: 0, entregas: [] };
+    }
+    params.push(clienteIdsPermitidos);
+    where.push(`cliente_id = ANY($${params.length}::int[])`);
+  }
+
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   const totalResult = await pool.query(
@@ -263,12 +427,12 @@ async function listarEntregas({ query }) {
 
   const result = await pool.query(
     `SELECT
-        id, tipo, cliente_id, cliente_slug, cliente_nome, titulo, periodo, status,
+        id, tipo, cliente_id, cliente_conta_id, cliente_slug, cliente_nome, titulo, periodo, status,
         token_publico, publicado, origem_tipo, origem_id,
         created_by, created_at, updated_at, published_at, expires_at
        FROM entregas_cliente
        ${whereSql}
-       ORDER BY created_at DESC
+       ORDER BY created_at DESC, id DESC
        LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
     params
   );
@@ -312,12 +476,7 @@ async function atualizarEntrega({ idRaw, body }) {
   }
 
   if (Object.prototype.hasOwnProperty.call(body || {}, "periodo")) {
-    const periodoRaw = body?.periodo;
-    const periodo =
-      periodoRaw === null || periodoRaw === undefined || String(periodoRaw).trim() === ""
-        ? null
-        : String(periodoRaw).trim();
-    params.push(periodo);
+    params.push(normalizarPeriodoParaEscrita(body?.periodo));
     patches.push(`periodo = $${params.length}`);
   }
 
@@ -344,6 +503,7 @@ async function atualizarEntrega({ idRaw, body }) {
   }
 
   let cliente_slug_final = atual.rows[0].cliente_slug;
+  let clienteIdFinal = atual.rows[0].cliente_id;
 
   if (Object.prototype.hasOwnProperty.call(body || {}, "cliente_id") ||
       Object.prototype.hasOwnProperty.call(body || {}, "cliente_slug") ||
@@ -358,6 +518,8 @@ async function atualizarEntrega({ idRaw, body }) {
     const cliente_nome = cliente ? cliente.nome : (body?.cliente_nome ? String(body.cliente_nome).trim() : null);
     cliente_slug_final = cliente_slug;
 
+    clienteIdFinal = cliente_id;
+
     params.push(cliente_id);
     patches.push(`cliente_id = $${params.length}`);
     params.push(cliente_slug);
@@ -370,6 +532,31 @@ async function atualizarEntrega({ idRaw, body }) {
     ? body.payload_json
     : atual.rows[0].payload_json;
   validarIdentidadeFechamento({ payloadJson: payloadParaValidar, clienteSlugResolvido: cliente_slug_final });
+
+  // V3 P2.6 D1 — registrar (ou limpar) a operacao de uma entrega ja criada.
+  // Validado contra o cliente FINAL: se o mesmo PATCH tambem troca o cliente,
+  // a conta tem que pertencer ao cliente NOVO, nunca ao antigo.
+  if (Object.prototype.hasOwnProperty.call(body || {}, "cliente_conta_id")
+      || Object.prototype.hasOwnProperty.call(body || {}, "clienteContaId")) {
+    const bruto = Object.prototype.hasOwnProperty.call(body || {}, "cliente_conta_id")
+      ? body.cliente_conta_id
+      : body.clienteContaId;
+    const contaId = await resolverContaDaEntrega({
+      clienteContaIdRaw: bruto,
+      clienteId: clienteIdFinal,
+    });
+    params.push(contaId);
+    patches.push(`cliente_conta_id = $${params.length}`);
+  } else if (Object.prototype.hasOwnProperty.call(body || {}, "cliente_id")
+             || Object.prototype.hasOwnProperty.call(body || {}, "cliente_slug")) {
+    // Trocou o cliente sem dizer a nova conta: a operacao antiga passou a ser
+    // de outro cliente, entao ela DEIXA de valer. Limpar e a resposta honesta
+    // (mesma logica de P2.4 na transferencia de Squad).
+    if (atual.rows[0].cliente_conta_id != null && clienteIdFinal !== atual.rows[0].cliente_id) {
+      params.push(null);
+      patches.push(`cliente_conta_id = $${params.length}`);
+    }
+  }
 
   if (!patches.length) {
     throw criarErroHttp(400, { ok: false, erro: "Nenhum campo para atualizar." });

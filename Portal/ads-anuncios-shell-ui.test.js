@@ -300,6 +300,21 @@ async function run() {
       await esperarPedido(/\/anuncios-meli\/resumo.*clienteContaId=43/, desde, "o resumo não seguiu a troca de operação");
     });
 
+    await check("F5/anuncios — o campo de busca do catálogo tem altura de campo, não uma caixa de 150px", async () => {
+      // Achado OLHANDO a tela, não por asserção: `.vf-toolbar__filters
+      // .vf-search { flex: 0 0 150px }` foi escrito para o input SOLTO na
+      // barra, onde 150px é largura. Envolto num `.vf-field` (coluna), o
+      // mesmo flex-basis vira ALTURA — 150×150 com o placeholder cortado.
+      // Corrigido com `>` na regra; esta verificação impede a volta.
+      const m = await cdp.evaluate(`
+        (function(){ var e = document.getElementById('am-busca'); if (!e) return null;
+          var r = e.getBoundingClientRect(); return { h: Math.round(r.height), w: Math.round(r.width) }; })();
+      `);
+      assert.ok(m, "campo de busca do catálogo não existe");
+      assert.ok(m.h < 60, `altura do campo de busca: ${m.h}px — voltou a ser dimensionado como caixa`);
+      assert.ok(m.w > 200, `largura do campo de busca: ${m.w}px — espremido a 150px dentro do .vf-field`);
+    });
+
     await check("F5 — nenhuma exceção de JS não tratada em nenhuma das duas telas", async () => {
       const relevantes = excecoes.filter((m) => !/Failed to fetch|NetworkError|ERR_/i.test(m));
       assert.deepStrictEqual(relevantes, [], `exceções: ${JSON.stringify(relevantes)}`);

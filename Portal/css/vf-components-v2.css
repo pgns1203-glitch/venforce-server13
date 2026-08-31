@@ -1046,7 +1046,15 @@ h4 {
   min-width: 0;
 }
 
-.vf-toolbar__filters .vf-search {
+/* `>` é a correção, não estilo: a regra foi escrita para o campo de busca
+   solto na barra, e `flex-basis` só significa LARGURA porque a barra é uma
+   linha. Sem o `>`, ela alcançava também o input dentro de um `.vf-field`
+   (rótulo + campo) — e ali o pai é uma COLUNA, então os mesmos 150px viram
+   ALTURA: uma caixa de 150×150 com o placeholder cortado. Acontecia em
+   anuncios-meli.html (nas duas barras) desde antes desta migração; ficou
+   visível quando a HUD virou a tela de entrada. Envolto em `.vf-field`, o
+   campo agora dimensiona como qualquer outro do formulário. */
+.vf-toolbar__filters > .vf-search {
   flex: 0 0 150px;
   max-width: 150px;
 }
@@ -2350,7 +2358,8 @@ h4 {
     justify-content: flex-end;
   }
 
-  .vf-toolbar__filters .vf-search {
+  /* Mesmo `>` da regra que este media query relaxa — ver o comentário lá. */
+  .vf-toolbar__filters > .vf-search {
     max-width: none;
   }
 }

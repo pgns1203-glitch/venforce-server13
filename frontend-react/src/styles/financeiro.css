@@ -94,7 +94,7 @@
    e um destaque pesado competiria com o próprio status de publicação, que
    é a informação que importa aqui. */
 
-.vf-table tr.is-destacada > td,
+.vf-table tr.is-destacada > td:first-child,
 .vf-fin-historico__item.is-destacada {
   box-shadow: inset 2px 0 0 0 var(--vf-primary);
 }

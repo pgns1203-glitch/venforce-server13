@@ -38,7 +38,8 @@ const ABAS = [
 ];
 
 export default function FinanceiroPage() {
-  const { snapshot, pronta, clienteSlug, clienteNome, clienteContaId } = useOperacaoAtual();
+  const { snapshot, pronta, clienteSlug, clienteContaId } = useOperacaoAtual();
+  const clienteNome = snapshot?.context?.clienteNome ?? null;
   const { periodo, setPeriodo, dados, carregando, erro, recarregar: recarregarFinanceiro } = useFinanceiro({ clienteSlug, clienteContaId, pronta });
   // Entregas são de CLIENTE (entregas_cliente não tem cliente_conta_id), por
   // isso a chave aqui é só o slug: trocar de operação não reabre esta lista.

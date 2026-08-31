@@ -69,7 +69,6 @@ export function useOperacaoAtual() {
     pronta,
     clienteId: snapshot.context?.clienteId ?? null,
     clienteSlug: snapshot.context?.clienteSlug ?? null,
-    clienteNome: snapshot.context?.clienteNome ?? snapshot.meta?.clienteNome ?? null,
     clienteContaId: snapshot.context?.clienteContaId ?? null,
     marketplace: snapshot.meta?.marketplace ?? null,
   };

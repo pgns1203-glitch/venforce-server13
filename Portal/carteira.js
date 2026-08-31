@@ -31,11 +31,14 @@
 // pelo chip, 0 mostra "Configurar →" (§10.4) — decidido só quando as contas
 // daquela linha são conhecidas, pelos dois caminhos.
 //
-// O QUE /me/portfolio NÃO TRAZ e por isso não é exibido: `ultimaSincronizacao`
-// por cliente (existia no payload legado) e `ultimaSync` por conta (o campo
-// vem, mas literalmente `null` — meService.js:150). Ausência é mostrada como
-// ausência: a ordenação "Última sync" some quando nenhum cliente tem o dado,
-// e o chip diz "sem dado de sync" em vez de afirmar "nunca sincronizou".
+// SINCRONIZAÇÃO (D3, resolvido na Convergência #2): `/me/portfolio` passou a
+// devolver `clientes[].ultimaSincronizacao` e `contas[].ultimaSync` REAIS
+// (P2.6 — server/services/meService.js). Nada aqui precisou mudar: a tela
+// sempre foi dirigida pelo dado, não por uma suposição sobre ele. A ordenação
+// "Última sync" aparece quando ALGUM cliente tem o campo e some quando nenhum
+// tem; um `?ordem=sync` colado numa URL sem dado cai para "Atenção primeiro";
+// e o chip diz "sem dado de sync", nunca "nunca sincronizou" — porque `null`
+// continua significando ausência de dado, não ausência de sincronização.
 // Ver Squads_migration/VENFORCE_V3_F4_2_DEPENDENCIAS_P2_6.md.
 //
 // Destino ao entrar no contexto: Visão (MASTER_SPEC §11), a home operacional

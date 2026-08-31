@@ -2270,6 +2270,16 @@ async function processarFechamentoFinanceiro() {
     }
     if (contaMercadoState.contaId) formData.append("clienteContaId", contaMercadoState.contaId);
 
+    /* D2 (P2.6) — o período pedido viaja junto para o backend poder COMPARAR o
+       que foi pedido com o que os dados realmente contêm. O endpoint não
+       rejeita divergência (via declarativa): ele devolve `competencia` e a
+       decisão é da tela. Mandar o campo é o que dá ao backend o que comparar —
+       sem ele, `periodoSolicitado` é null e a divergência nunca é detectável.
+       O texto vai cru: o servidor normaliza "Maio 2026"/"05/2026"/"2026-05"
+       (server/utils/competenciaCanonica.js). */
+    const periodoPedido = document.getElementById("fin-periodo")?.value?.trim() || "";
+    if (periodoPedido) formData.append("periodo", periodoPedido);
+
     // Order.all opcional, só Shopee
     if (marketplace === "shopee") {
       const ordersAll = document.getElementById("fin-orders-all")?.files?.[0];
@@ -2352,9 +2362,35 @@ async function processarFechamentoFinanceiro() {
       ? ` Custos: base vinculada${json.costsBase?.nome ? ` "${json.costsBase.nome}"` : ""}.`
       : "";
     const entregaTxt = permiteEntrega ? "" : ` ${MSG_TIKTOK_SEM_ENTREGA}`;
+
+    /* D2 — o que a competência declarada obriga a dizer. O backend devolve
+       `competencia` sem rejeitar nada; ficar calado aqui seria deixar a tela
+       afirmar "✓ Processado com sucesso" para um mês que não é o que os dados
+       contêm. Backends antigos não mandam o bloco: sem ele, nada muda. */
+    const comp = json.competencia;
+    const competenciaSuspeita = !!comp && (comp.divergente || (comp.periodoSolicitado && !comp.periodoDetectado));
+    let avisoCompetencia = "";
+    if (competenciaSuspeita) {
+      if (comp.multiplasCompetencias && comp.competencias?.length) {
+        avisoCompetencia = ` ⚠ Os dados enviados atravessam mais de uma competência (${comp.competencias.join(", ")})`
+          + `${comp.periodoSolicitado ? `, e o período pedido foi ${comp.periodoSolicitado}` : ""}.`
+          + " Confira antes de salvar: o número não é de um mês só.";
+      } else if (comp.periodoDetectado && comp.periodoSolicitado) {
+        avisoCompetencia = ` ⚠ O período pedido foi ${comp.periodoSolicitado}, mas os dados enviados são majoritariamente de `
+          + `${comp.periodoDetectado}. O resultado abaixo é dos dados enviados, não de ${comp.periodoSolicitado}.`;
+      } else {
+        avisoCompetencia = " ⚠ Não foi possível determinar a competência dos dados enviados"
+          + `${comp.periodoSolicitado ? ` para conferir com o período pedido (${comp.periodoSolicitado})` : ""}.`;
+      }
+    }
+
     if (json.emptySales) {
       setChipProcessamento("sem vendas", "info");
-      setStatus("Planilha válida sem vendas." + origemTxt + entregaTxt, "info");
+      setStatus("Planilha válida sem vendas." + origemTxt + entregaTxt + avisoCompetencia, "info");
+    } else if (competenciaSuspeita) {
+      // Processou — mas não pode ser anunciado como o mês que o usuário pediu.
+      setChipProcessamento("processado — confira a competência", "warn");
+      setStatus("Processado." + origemTxt + entregaTxt + avisoCompetencia, "warn");
     } else {
       setStatus("✓ Processado com sucesso." + origemTxt + entregaTxt, permiteEntrega ? "success" : "warn");
     }
@@ -2411,33 +2447,77 @@ async function salvarFechamentoFinanceiro() {
     const clienteSlug = document.getElementById("fin-cliente")?.value || null;
     const periodo = document.getElementById("fin-periodo")?.value?.trim() || payload.periodo || "";
 
+    /* D1 (P2.6) — a entrega passa a registrar de qual OPERAÇÃO ela nasceu.
+       É EXATAMENTE a mesma conta que o cálculo usou logo acima
+       (`formData.append("clienteContaId", …)`): gravar uma conta diferente
+       da que produziu o número seria pior que não gravar nenhuma. Sem conta
+       escolhida vai `null` — a verdade sobre uma entrega client-level —, e
+       nunca 0, que fingiria uma operação inexistente (R7).
+       O backend valida a posse e recusa com 409 CONTA_NAO_PERTENCE_AO_CLIENTE
+       (server/services/entregasClienteService.js:152-180). */
+    const clienteContaId = contaMercadoState.contaId ? Number(contaMercadoState.contaId) : null;
+
+    const corpoEntrega = (extra) => JSON.stringify({
+      tipo: "fechamento_mensal",
+      titulo: payload.titulo || "Fechamento Financeiro",
+      periodo,
+      cliente_slug: clienteSlug,
+      cliente_conta_id: clienteContaId,
+      status: "rascunho",
+      payload_json: payload,
+      origem_tipo: "fechamento_financeiro",
+      origem_id: null,
+      ...extra,
+    });
+
     let resp;
     if (_entregaIdSalvo) {
       // Já salvo antes: atualiza o payload/período em vez de duplicar.
       resp = await fetch(`${API_BASE}/entregas-cliente/${encodeURIComponent(_entregaIdSalvo)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN },
-        body: JSON.stringify({ periodo, payload_json: payload }),
+        body: JSON.stringify({ periodo, payload_json: payload, cliente_conta_id: clienteContaId }),
       });
     } else {
       resp = await fetch(`${API_BASE}/entregas-cliente`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN },
-        body: JSON.stringify({
-          tipo: "fechamento_mensal",
-          titulo: payload.titulo || "Fechamento Financeiro",
-          periodo,
-          cliente_slug: clienteSlug,
-          status: "rascunho",
-          payload_json: payload,
-          origem_tipo: "fechamento_financeiro",
-          origem_id: null,
-        }),
+        body: corpoEntrega(),
       });
     }
 
     if (resp.status === 401) { window.location.replace("index.html"); return; }
-    const json = await resp.json();
+    let json = await resp.json();
+
+    /* D4 (P2.6) — a competência agora tem dono. Antes, um segundo "Salvar" do
+       mesmo mês criava outra linha em silêncio; se as duas fossem publicadas,
+       eram dois links públicos com números diferentes para o mesmo mês. O
+       backend passou a recusar com 409 e a devolver o id do que já existe,
+       justamente para a tela poder oferecer a saída em vez de repassar um
+       "use substituir=true" que ninguém consegue acionar por aqui.
+       Substituir preserva o `token_publico` — o link já divulgado não morre —,
+       e é por isso que o aviso precisa dizer quando o mês JÁ ESTÁ PUBLICADO:
+       aí a troca muda o número por trás de um link que o cliente pode ter
+       aberto, que é um risco diferente do de um rascunho. */
+    if (resp.status === 409 && json?.code === "ENTREGA_JA_EXISTE") {
+      const jaPublicada = json?.publicado === true;
+      const aviso = jaPublicada
+        ? `A competência ${periodo} já tem um fechamento PUBLICADO para este cliente/operação.\n\n`
+          + "Substituir troca os números por trás do link que já está com o cliente (o link continua o mesmo).\n\nSubstituir mesmo assim?"
+        : `A competência ${periodo} já tem um fechamento salvo para este cliente/operação.\n\nSubstituir pelo que acabou de ser processado?`;
+      if (!window.confirm(aviso)) {
+        setStatus(`Fechamento de ${periodo} mantido como estava.`, "info");
+        return;
+      }
+      resp = await fetch(`${API_BASE}/entregas-cliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN },
+        body: corpoEntrega({ substituir: true }),
+      });
+      if (resp.status === 401) { window.location.replace("index.html"); return; }
+      json = await resp.json();
+    }
+
     if (!resp.ok) throw new Error(json?.erro || json?.error || "Falha ao salvar fechamento.");
 
     _entregaIdSalvo = json?.entrega?.id || _entregaIdSalvo;

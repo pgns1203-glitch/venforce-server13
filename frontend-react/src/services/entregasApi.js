@@ -10,11 +10,18 @@
 // aquele bloco derruba pelo caminho — `id`, `token_publico` e
 // `published_at`, sem os quais nenhuma ação é possível.
 //
-// ESCOPO: entregas são de CLIENTE, não de operação. A tabela
-// `entregas_cliente` não tem `cliente_conta_id` (ver o INSERT em
-// entregasClienteService.js:180-187), e é por isso que o próprio backend
-// marca este bloco com `escopoConta: false`. A tela DIZ isso; não filtra
-// por conta fingindo um recorte que o dado não tem.
+// ESCOPO (atualizado na Convergência #2): `entregas_cliente` PASSOU a ter
+// `cliente_conta_id` (P2.6, aditivo e NULLABLE, sem backfill), e
+// `resultado.escopoConta` deixou de ser fixo `false` — vira `true` quando a
+// entrega registra ESTA operação, e o backend declara `origemClientLevel`
+// quando a entrega é antiga/client-level.
+//
+// Esta listagem continua DE PROPÓSITO por cliente, sem `?cliente_conta_id=`:
+// entregas anteriores ao P2.6 têm `cliente_conta_id NULL`, que é a verdade
+// sobre elas — filtrar por conta aqui esconderia o histórico do cliente e
+// faria a tela parecer mais precisa do que o dado é. Quem distingue "desta
+// operação" × "de outra" × "sem operação registrada" é o campo por linha,
+// não um filtro que apaga o resto.
 
 import { requisitar } from "./apiClient.js";
 

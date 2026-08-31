@@ -111,11 +111,39 @@ function createCentralVendasMp3ReadService(
     const contaResolvidaId = context?.conta?.id || null;
     const escopoConta = { clienteContaId: contaResolvidaId };
 
-    const [payments, movements, reports] = await Promise.all([
+    const [paymentsDoRun, movementsDoRun, reports] = await Promise.all([
       mpPaymentsRepository.listMpPaymentsWithChargesTotalByRunIds(syncRunIds, db, escopoConta),
       mpSettlementRepository.listSettlementMovementsByRunIds(syncRunIds, db, escopoConta),
       mpSettlementRepository.listSettlementReportsByRunIds(syncRunIds, db, escopoConta),
     ]);
+
+    // V3 Pós-Convergência #2 — BLOCO 11A: recorte temporal do SUMMARY.
+    // O range corta os PEDIDOS (M4/buildPayloadFromRange), mas Payments e
+    // Settlement chegam por sync_run_id INTEIRO. Um run que cobre Julho E
+    // Agosto fazia `summary.paymentsUnique` / `totalPaymentGross|Net` /
+    // `postMovementsCount` responderem pelos dois meses enquanto as `rows`
+    // (por pedido) respeitavam só o mês pedido — divergência silenciosa.
+    // Aqui recortamos Payments/movimentos ao MESMO universo de pedidos que a
+    // consulta resolveu. Isolamento por conta continua sendo dos runs +
+    // escopoConta (inalterado); este filtro é só o recorte de PERÍODO.
+    const orderIdsDoRange = new Set(pedidos.map((p) => String(p.id)));
+    const pagamentoTocaOPedidoDoRange = (p) => {
+      const ids = Array.isArray(p.orderIds) && p.orderIds.length
+        ? p.orderIds
+        : (p.orderId != null ? [p.orderId] : []);
+      return ids.some((id) => orderIdsDoRange.has(String(id)));
+    };
+    const payments = paymentsDoRun.filter(pagamentoTocaOPedidoDoRange);
+    const paymentIdsDoRange = new Set(payments.map((p) => p.paymentId));
+    const movements = movementsDoRun.filter(
+      (m) => m.sourceId != null && paymentIdsDoRange.has(m.sourceId)
+    );
+    const recorteRange = {
+      paymentsNoRun: paymentsDoRun.length,
+      paymentsNoRange: payments.length,
+      movimentosNoRun: movementsDoRun.length,
+      movimentosNoRange: movements.length,
+    };
 
     // Hardening final MP3 (ponto 2) — reports já carregados em bulk acima
     // (1 query, nunca 1 por run); propagados para reconcilePayments
@@ -163,7 +191,10 @@ function createCentralVendasMp3ReadService(
       periodo: payload.periodo,
       contexto: buildContextoPayload(context),
       mpReconciliationStatus,
-      summary,
+      // `recorteTemporal` DECLARA que Payments/movimentos foram recortados ao
+      // período (nunca escondido): se `paymentsNoRun > paymentsNoRange`, o run
+      // cobre mais que o mês pedido e o summary reflete só o mês.
+      summary: { ...summary, recorteTemporal: recorteRange },
       reports: reports.map((r) => ({
         syncRunId: r.syncRunId, status: r.status, fileName: r.fileName,
         rowsCount: r.rowsCount, errorCode: r.errorCode,

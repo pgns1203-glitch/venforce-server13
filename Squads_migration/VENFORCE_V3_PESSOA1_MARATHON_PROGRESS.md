@@ -18,19 +18,21 @@
 | **Branch** | `frontend/v3-marathon-pessoa1` |
 | **Base** | `origin/main` @ `1949c760` (confirmado por `git fetch` no início) |
 | **Missão** | `Squads_migration/VENFORCE_V3_MISSAO_MARATONA_PESSOA1_OPUS.md` |
-| **Último commit** | `baf7005` |
-| **Push** | sim |
+| **Último commit** | `05a67f1` |
+| **Push** | sim · `origin/main` seguia em `1949c760` ao final (Pessoa 2 não publicou) |
+| **Delta** | 55 arquivos · +4012 / −756 |
 
 ### Verde neste momento
 
 | Suíte | Resultado |
 |---|---|
 | Vitest (`frontend-react`) | 127/127 (era 105) |
+| **Headless (13 arquivos)** | **212 verificações · 0 falhas** (era ~118 em 10) |
 | `Portal/vf-shell-ui.test.js` | 23/23 (era 18) |
 | `Portal/carteira-ui.test.js` | 27/27 (era 17) |
-| `Portal/vf-shell-f5-lote-ui.test.js` | 49/49 (**novo**) |
+| `Portal/vf-shell-f5-lote-ui.test.js` | 52/52 (**novo**) |
 | `Portal/automacoes-shell-ui.test.js` | 7/7 (**novo**) |
-| `Portal/ads-anuncios-shell-ui.test.js` | 9/9 (**novo**) |
+| `Portal/ads-anuncios-shell-ui.test.js` | 10/10 (**novo**) |
 | `Portal/vf-shell-adoption-ui.test.js` | 5/5 |
 | `Portal/visao-shell-ui.test.js` | 8/8 |
 | `Portal/financeiro-v3-shell-ui.test.js` | 15/15 (era 9) |
@@ -38,7 +40,8 @@
 | `Portal/diagnostico-inicial-shell-ui.test.js` | 9/9 |
 | `Portal/central-margem-ui.test.js` | 24/24 |
 | `Portal/login-ui.test.js` | 7/7 |
-| `Portal/e2e-jornada-completa.test.js` | 12/12 (era 8) |
+| `Portal/e2e-jornada-completa.test.js` | 13/13 (era 8) · 3 execuções seguidas verdes |
+| Builds das ilhas | 4/4 · isolamento byte a byte |
 
 Como rodar: `cd frontend-react && npm test` · `node Portal/<arquivo>.test.js`
 (headless usa `google-chrome`, já instalado).
@@ -173,6 +176,38 @@ inexistente — 404 com cara de botão. Removido.
 **Jornada E2E 8 → 12**, agora atravessando Ads, Anúncios ML, Automações e
 Clientes e Contas por navegação REAL de sidebar.
 
+### QA real, Hub de Relatórios e limpeza ✅ (`c977005`, `0e6f16d`, `05a67f1`)
+
+**Rodei o Portal de verdade** num Chrome contra um backend local que fala os
+contratos lidos em `server/`, abri as 10 telas migradas e **olhei**. Zero
+erros de console; a publicação de um fechamento mudou estado no servidor e a
+tela releu. Dois defeitos que **nenhuma asserção pegava**:
+
+1. `.vf-toolbar__filters .vf-search { flex: 0 0 150px }` — escrito para o
+   input solto na barra, onde 150px é largura. Envolto num `.vf-field`
+   (coluna), vira **altura**: caixa de 150×150 com placeholder cortado.
+   Anterior à maratona; ficou gritante quando a HUD de Anúncios virou a tela
+   de entrada. Corrigido com `>`.
+2. Meu: o realce da linha “período em tela” desenhava em **todas** as
+   células. Agora só na primeira.
+
+Regressão de layout nova (mede altura/largura reais no navegador) —
+justamente onde asserção de conteúdo não alcança.
+
+**`relatorios.html`** era a única tela legada linkada de dentro de uma página
+V3. Migrada (escopo global; `rh-cliente` fica, é filtro sobre lista de vários
+clientes) e o filtro **nasce no cliente do contexto** — o link não leva
+`?cliente=`, quem preserva é a sessão. Sem entrada na sidebar de propósito.
+
+**`Portal/ferramenta-or.js`** removido: `ferramenta-or.html` é um redirect
+puro que não o carrega, nenhum HTML o carrega, e a Ferramenta OR vive em
+`ferramentas.js`.
+
+**E2E virou determinística**: os cliques de módulo passam por um helper que
+espera `READY` e o item sair de `is-disabled`. A intermitência não era ruído
+de ambiente — era o teste clicando num item que a sidebar desabilita de
+propósito enquanto não sabe em qual operação entrar.
+
 ---
 
 ## Auditorias concluídas (insumo, não entrega)
@@ -242,28 +277,36 @@ Relatório completo: `.../scratchpad/AUDIT_INVENTARIO_TELAS.md`.
 
 ## Em andamento
 
-Bloco J — limpeza conservadora de legado.
+Nada. A branch está em ponto de parada natural — **Convergência #2**.
 
-## Próximo item
+## Próximo item (depois da convergência)
 
-1. Bloco J: `cliente-360-v2.html` (0 referências no repo) e `ferramenta-or.js`
-   (105 linhas, o HTML redireciona sem carregá-lo).
-2. `promocoes-retorno.html` — mesma receita de `automacoes` (é a tela irmã,
-   construída do mesmo molde: `promo-cliente` + `promo-cliente-search`).
-3. `relatorios.html` — única tela legada linkada de dentro do Shell V3
-   (`automacoes.js`, 2 links). Escopo global, filtros preservados.
-4. Convergência #2.
+1. **Depende da Pessoa 2**: D1 (`cliente_conta_id` em `entregas_cliente`) e
+   D2 (período em `POST /fechamentos/financeiro`) destravam o cutover do
+   Financeiro legado — a última rota da sidebar fora do Shell V3.
+2. **Depende de decisão de produto**: onde as 10 telas restantes entram na
+   navegação V3 (ou se são aposentadas). Sem isso, migrá-las produz telas com
+   shell novo e nenhum caminho até elas.
+3. **Pronto, bloqueado por precondição**: remover o bundle órfão
+   `cliente-360-v2` (HTML + assets, sem fonte em `frontend-react/`). Quatro
+   documentos mandam removê-lo; o plano condiciona a F3.4, que não aconteceu.
+4. `promocoes-retorno.html` — mesma receita de `automacoes` (tela irmã, mesmo
+   molde: `promo-cliente` + `promo-cliente-search`). Precisa do item 2.
 
 ### Fora de escopo por decisão, não por falta de tempo
 
-11 telas seguem em `layout.js` e **não têm entrada na sidebar V3**:
-`clickup-executivo`, `cliente-360`, `cliente-operacao`, `criar-anuncios-meli`,
-`dashboard`, `design-templates`, `fechamento`, `financeiro`, `ml-tokens`,
-`promocoes-retorno`, `relatorios`. Migrá-las sem decidir **onde elas entram
-na navegação** produz telas com shell novo e nenhum caminho até elas. Isso é
-decisão de produto (o inventário B1 chama de “destino explícito: módulo,
-sub-rota ou aposentadoria”), não código. `financeiro.html` é o caso à parte:
-fica legada de propósito enquanto D1/D2 não existirem.
+**20 telas no Shell V3 · 10 ainda em `layout.js`** (eram 7 e 23).
+
+As 10 restantes — `clickup-executivo`, `cliente-360`, `cliente-operacao`,
+`criar-anuncios-meli`, `dashboard`, `design-templates`, `fechamento`,
+`financeiro`, `ml-tokens`, `promocoes-retorno` — **não têm entrada na sidebar
+V3**. Migrá-las sem decidir **onde elas entram na navegação** produz telas
+com shell novo e nenhum caminho até elas. Isso é decisão de produto (o
+inventário B1 chama de “destino explícito: módulo, sub-rota ou
+aposentadoria”), não código.
+
+`financeiro.html` é o caso à parte: fica legada de propósito enquanto D1/D2
+não existirem. É a **única rota da sidebar V3** que ainda cai fora do Shell.
 
 ---
 
@@ -310,3 +353,7 @@ documentada, e a execução segue nas unidades seguintes.
 | `89f5f75` | `docs(v3): checkpoint da maratona após F4.2 e o lote 1 de F5` |
 | `6b819e0` | `refactor(f5): Automações, Ads e Anúncios ML deixam de escolher Cliente e Conta` |
 | `baf7005` | `fix(shell-v3): período sobrevive à troca de módulo; 403 volta para a Carteira` |
+| `da44ac7` | `docs(v3): checkpoint após o lote 2 de F5 e os blocos E/F` |
+| `c977005` | `fix(ui): dois defeitos visuais que só apareceram rodando o Portal de verdade` |
+| `0e6f16d` | `chore(f6): remove Portal/ferramenta-or.js, código morto comprovado` |
+| `05a67f1` | `refactor(f5): Hub de Relatórios entra no Shell V3 e chega filtrado pelo contexto` |

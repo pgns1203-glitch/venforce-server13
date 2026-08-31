@@ -266,7 +266,7 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-tools-index .vf-tab').length"), 3);
       assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-download-extensao'))"));
       assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-download-midias'))"));
-      assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-add-mlb'))"), "ferramenta OR (ferramenta-or.js) não montou");
+      assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-add-mlb'))"), "a Ferramenta OR (ferramentas.js) não montou");
     });
 
     await check("F0.6 — sem erros de console (rede de produção interceptada, sem exceptions JS)", async () => {

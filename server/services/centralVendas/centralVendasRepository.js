@@ -656,4 +656,8 @@ module.exports = {
   insertPedido,
   insertItem,
   insertComponente,
+  // BLOCO 13 — exposta para o teste de fronteira de timezone: prova que a
+  // data do pedido é lida LITERALMENTE da string do Mercado Livre
+  // (String(x).slice(0,10)), nunca via new Date() (que deslocaria o dia).
+  asDate,
 };

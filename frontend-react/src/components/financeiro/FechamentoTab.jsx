@@ -91,7 +91,7 @@ export function FechamentoTab({ resultado, clienteSlug, periodo, periodoLabel, e
 
           <p className="vf-field__hint">
             Reprocessar ou substituir o cálculo continua no{" "}
-            <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>Financeiro atual →</a>
+            <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>Financeiro (legado) →</a>
           </p>
         </>
       )}

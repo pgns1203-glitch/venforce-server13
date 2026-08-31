@@ -32,10 +32,13 @@ function ehInterno(user) {
   return ROLES_INTERNAS.has(papel(user));
 }
 
-function erro(status, code, mensagem) {
+function erro(status, code, mensagem, extra = {}) {
   const e = new Error(mensagem);
   e.statusCode = status;
   e.code = code;
+  // BLOCO 16 — dados NÃO sensíveis para a observabilidade de negação por
+  // carteira (clienteId/clienteContaId). Nunca token, e-mail ou payload.
+  Object.assign(e, extra);
   return e;
 }
 
@@ -180,7 +183,7 @@ async function assertClienteNaCarteira(user, ref, db = pool) {
   }
   const ok = await canAccessCliente(user, cliente.id, db);
   if (!ok) {
-    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Cliente fora da sua carteira.");
+    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Cliente fora da sua carteira.", { clienteId: cliente.id });
   }
   return cliente;
 }
@@ -211,7 +214,10 @@ async function assertClienteContaNaCarteira(user, clienteContaId, db = pool) {
   }
   const ok = await canAccessCliente(user, conta.cliente_id, db);
   if (!ok) {
-    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Cliente fora da sua carteira.");
+    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Cliente fora da sua carteira.", {
+      clienteId: conta.cliente_id,
+      clienteContaId: conta.conta_id,
+    });
   }
   return {
     contaId: conta.conta_id,
@@ -272,12 +278,12 @@ async function assertBaseNaCarteira(user, baseRef, { bySlug = false } = {}, db =
     if (ehInterno(user) || ehSeller(user)) {
       return { baseId: base.id, baseSlug: base.slug, baseNome: base.nome };
     }
-    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Base fora da sua carteira.");
+    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Base fora da sua carteira.", { baseId: base.id });
   }
   const permitidos = await clientesAutorizadosSet(user, db);
   const cobre = vinc.some((v) => permitidos.has(v.cliente_id));
   if (!cobre) {
-    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Base fora da sua carteira.");
+    throw erro(403, CODIGOS_CANONICOS.CLIENTE_FORA_DA_CARTEIRA, "Base fora da sua carteira.", { baseId: base.id });
   }
   return { baseId: base.id, baseSlug: base.slug, baseNome: base.nome };
 }

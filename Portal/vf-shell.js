@@ -57,6 +57,16 @@ export const GLOBAIS = [
   { id: "bases", label: "Bases", rota: "bases.html" },
   { id: "clientes-contas", label: "Clientes e Contas", rota: "clientes.html" },
   { id: "ferramentas", label: "Ferramentas", rota: "ferramentas.html" },
+  // 05a67f1 migrou relatorios.html para o Shell V3 sem entrada na sidebar
+  // "de propósito", para não decidir arquitetura de navegação sozinho — o
+  // MASTER_SPEC (§ "absorver → Financeiro › Relatórios") ainda planeja isto
+  // como aba do Financeiro, não como item próprio. Enquanto essa absorção
+  // não existe, o Hub é uma capacidade migrada e funcional sem NENHUM
+  // caminho de navegação primário (só chegava por link direto de
+  // automacoes.js) — bug de produção. Reintroduzido aqui como global
+  // (mesmo escopo de bases.html, decidido em 05a67f1); remover quando a
+  // aba Financeiro › Relatórios existir de verdade.
+  { id: "relatorios", label: "Relatórios", rota: "relatorios.html" },
   { id: "pessoas", label: "Pessoas", rota: "usuarios.html" },
   { id: "guia", label: "Guia do Vendedor", rota: "guia-vendedor.html" },
 ];
@@ -779,6 +789,20 @@ export function createVfShell(options = {}) {
         faixaAnterior = faixa;
         render(ctxStore.getSnapshot());
       }, 120);
+    });
+  }
+
+  // Clique fora fecha o dropdown aberto (§9 — faltava: só Esc e escolher um
+  // item fechavam; clicar em qualquer outro lugar da página deixava o menu
+  // aberto por cima do conteúdo, sem jeito óbvio de sair sem usar teclado).
+  // Delegado no `document`, não em `host` — o bloco de contexto reparenta
+  // para a contextbar em telas estreitas (§19.1) e sai de dentro de `host`.
+  if (doc && typeof doc.addEventListener === "function") {
+    doc.addEventListener("click", (e) => {
+      if (!dropdownAberto) return;
+      const dentro = typeof e.target.closest === "function" && e.target.closest(".vf-shell__context");
+      if (dentro) return; // gatilhos e itens já fecham pelo próprio handler
+      abrirDropdown(null);
     });
   }
 

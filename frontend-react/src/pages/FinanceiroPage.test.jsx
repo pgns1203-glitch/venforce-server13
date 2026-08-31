@@ -91,16 +91,20 @@ describe("FinanceiroPage · Resultado/composição", () => {
     expect(screen.getByText("R$ 100.000,00")).toBeInTheDocument();
   });
 
-  it("sem fechamento processado: estado vazio com motivo e link pro legado com o cliente certo", async () => {
+  it("sem fechamento processado: estado vazio com motivo e CTA que leva para a aba Fechamento (nativo), não para o legado", async () => {
     mockarHooks({
       dados: dadosBase({ resultado: envelope(false, null, "Nenhum fechamento publicado para agosto/2026.") }),
     });
+    const usuario = userEvent.setup();
     render(<FinanceiroPage />);
 
     expect(await screen.findByText("Sem fechamento processado")).toBeInTheDocument();
     expect(screen.getByText("Nenhum fechamento publicado para agosto/2026.")).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: /Gerar no Financeiro \(legado\)/ });
-    expect(link).toHaveAttribute("href", "financeiro.html?cliente=n97");
+    // Convergência #3 §10 — o caminho normal do V3 não manda o usuário de
+    // volta para o Financeiro legado: o CTA abre a aba Fechamento nativa.
+    expect(screen.queryByRole("link", { name: /Gerar no Financeiro \(legado\)/ })).not.toBeInTheDocument();
+    await usuario.click(screen.getByRole("button", { name: "Gerar fechamento" }));
+    expect(await screen.findByText(/Gerar fechamento de/)).toBeInTheDocument();
   });
 });
 
@@ -180,7 +184,7 @@ describe("FinanceiroPage · contexto Cliente/Conta", () => {
     mockarHooks({ dados: dadosBase(), operacao: operacaoPronta({ clienteSlug: "extra-maquinas", clienteContaId: 51 }) });
     render(<FinanceiroPage />);
 
-    const link = await screen.findByRole("link", { name: /o Financeiro atual/ });
+    const link = await screen.findByRole("link", { name: /Financeiro \(legado\)/ });
     expect(link).toHaveAttribute("href", "financeiro.html?cliente=extra-maquinas");
   });
 });

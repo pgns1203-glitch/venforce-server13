@@ -6,6 +6,7 @@ const express = require("express");
 const multer = require("multer");
 const { authMiddleware } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
+const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 const {
   listarClientesFinanceiroController,
   processarFechamentoFinanceiroController,
@@ -28,11 +29,9 @@ router.get(
 router.post(
   "/financeiro",
   authMiddleware,
-  // P2.1 — este POST só tinha authMiddleware (qualquer autenticado). Agora
-  // exige role interna. É um processador stateless de planilha enviada pelo
-  // usuário; a identidade do cliente é validada contra o cliente_slug do
-  // upload (ver fechamentoFinanceiroService), não lê dados por id — carteira
-  // por Squad fica como dívida aceitável (BACKEND_V3_AUTHORIZATION_COVERAGE.md).
+  // P2.1 — exige role interna. É um processador stateless de planilha enviada
+  // pelo usuário; não lê dados por id (só custos da base, que já são scoped
+  // por cliente_slug em resolverBaseVinculada).
   requireAutomacoesAccess,
   upload.fields([
     { name: "sales", maxCount: 1 },
@@ -42,6 +41,14 @@ router.post(
     // ordersAll (Shopee), que tem semântica diferente.
     { name: "onhold", maxCount: 1 },
   ]),
+  // V3 Pós-Convergência #2 — BLOCO 8/15: a "dívida aceitável" de carteira
+  // deste POST deixa de ser dívida. DEPOIS do multer (o cliente_slug vem no
+  // corpo multipart) e antes do controller: quando `cliente_slug` é
+  // informado, ele TEM que estar na carteira do usuário (pass-through se
+  // ausente — upload legado sem slug segue funcionando; com SQUADS_ENFORCEMENT
+  // OFF, vira só "o cliente precisa existir"). A validação de que a
+  // ClienteConta pertence ao cliente é feita no controller (erro canônico).
+  requireClienteNaCarteira({ body: "cliente_slug", query: "cliente_slug" }),
   processarFechamentoFinanceiroController
 );
 

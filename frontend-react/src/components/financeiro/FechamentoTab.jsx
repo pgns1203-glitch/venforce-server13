@@ -4,20 +4,21 @@
 // server/services/financeiroVisaoService.js — e, desde F4.2, a publicação
 // do período EM TELA.
 //
-// O que continua no legado (Portal/financeiro.html) e por quê: GERAR um
-// fechamento é upload de planilha + cálculo, e o endpoint que faz isso
-// (POST /fechamentos/financeiro) não recebe `periodo` nem grava
-// `cliente_conta_id` na entrega. Migrar o botão sem esses dois campos seria
-// prometer, numa tela que exibe cliente + operação + competência, uma
-// garantia que o contrato não dá. Ver
-// Squads_migration/VENFORCE_V3_F4_2_DEPENDENCIAS_P2_6.md (D1, D2).
+// Convergência #3 — GERAR um fechamento (upload + cálculo) passou a
+// acontecer AQUI, no <NovoFechamento>: o endpoint POST /fechamentos/financeiro
+// já era o mesmo motor dos dois lados; o que faltava era o formulário V3
+// mandar `periodo` + `clienteContaId` (que o cabeçalho mostra) e tratar a
+// competência declarada + a duplicidade. Backend Readiness pós-Conv.#2 §5.
+// O Financeiro legado continua existindo como fallback (link em NovoFechamento),
+// só deixou de ser o caminho obrigatório.
 //
-// Publicar/despublicar, ao contrário, agem sobre uma entrega concreta, por
-// `id`, e cada entrega carrega o próprio período — nada é inferido.
+// Publicar/despublicar agem sobre uma entrega concreta, por `id`, e cada
+// entrega carrega o próprio período — nada é inferido.
 
 import { formatarDataHora } from "../../utils/dates.js";
 import { entregaDoPeriodo } from "../../hooks/useEntregasFechamento.js";
 import { EntregaAcoes } from "./EntregaAcoes.jsx";
+import { NovoFechamento } from "./NovoFechamento.jsx";
 
 const STATUS_INFO = {
   publicado: { label: "Publicado", tom: "success" },
@@ -25,7 +26,7 @@ const STATUS_INFO = {
   nao_gerado: { label: "Não gerado", tom: "neutral" },
 };
 
-export function FechamentoTab({ resultado, clienteSlug, periodo, periodoLabel, entregas }) {
+export function FechamentoTab({ resultado, clienteSlug, clienteNome, clienteContaId, periodo, periodoLabel, entregas, onSalvo }) {
   const dados = resultado.dados;
   const semFechamento = !resultado.disponivel || !dados || dados.status === "nao_gerado";
 
@@ -42,24 +43,30 @@ export function FechamentoTab({ resultado, clienteSlug, periodo, periodoLabel, e
         <span className="vf-field__hint">{periodoLabel}</span>
       </div>
 
-      {semFechamento ? (
+      <section className="vf-section vf-section--inset">
+        <NovoFechamento
+          clienteSlug={clienteSlug}
+          clienteNome={clienteNome}
+          clienteContaId={clienteContaId}
+          periodo={periodo}
+          periodoLabel={periodoLabel}
+          onSalvo={onSalvo}
+        />
+      </section>
+
+      {semFechamento && !entrega ? (
         <div className="vf-empty">
           <p className="vf-empty__title">Nenhum fechamento gerado</p>
           <p className="vf-empty__description">
-            {resultado.motivo || `${periodoLabel} ainda não tem fechamento processado.`}
+            {resultado.motivo || `${periodoLabel} ainda não tem fechamento processado. Use o formulário acima.`}
           </p>
-          <div className="vf-empty__actions">
-            <a className="vf-btn vf-btn--primary" href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>
-              Gerar no Financeiro (legado) →
-            </a>
-          </div>
         </div>
       ) : (
         <>
           <p className="vf-field__hint">
-            Gerado em {formatarDataHora(entrega?.created_at || dados.geradoEm)}
-            {entrega?.publicado || dados.publicadoEm
-              ? ` · publicado em ${formatarDataHora(entrega?.published_at || dados.publicadoEm)}`
+            Gerado em {formatarDataHora(entrega?.created_at || dados?.geradoEm)}
+            {entrega?.publicado || dados?.publicadoEm
+              ? ` · publicado em ${formatarDataHora(entrega?.published_at || dados?.publicadoEm)}`
               : ""}
           </p>
 
@@ -90,8 +97,8 @@ export function FechamentoTab({ resultado, clienteSlug, periodo, periodoLabel, e
           )}
 
           <p className="vf-field__hint">
-            Reprocessar ou substituir o cálculo continua no{" "}
-            <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>Financeiro atual →</a>
+            Para substituir este fechamento, processe de novo no formulário acima — o backend
+            oferece a troca preservando o link público.
           </p>
         </>
       )}

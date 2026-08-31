@@ -6,16 +6,22 @@
 import { formatarMoeda } from "../../utils/currency.js";
 import { AUSENTE } from "../../utils/numbers.js";
 
-export function ResultadoTab({ resultado, clienteSlug, periodoLabel }) {
+export function ResultadoTab({ resultado, clienteSlug, periodoLabel, onGerar }) {
   if (!resultado.disponivel) {
     return (
       <div className="vf-empty">
         <p className="vf-empty__title">Sem fechamento processado</p>
         <p className="vf-empty__description">{resultado.motivo || `Nenhum fechamento gerado para ${periodoLabel} ainda.`}</p>
         <div className="vf-empty__actions">
-          <a className="vf-btn vf-btn--primary" href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>
-            Gerar no Financeiro (legado) →
-          </a>
+          {onGerar ? (
+            <button type="button" className="vf-btn vf-btn--primary" onClick={onGerar}>
+              Gerar fechamento
+            </button>
+          ) : (
+            <a className="vf-btn vf-btn--ghost" href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>
+              Financeiro (legado) →
+            </a>
+          )}
         </div>
       </div>
     );

@@ -298,8 +298,24 @@ async function persistCentralVendasImport({
 // pode pertencer a essa conta. Com 2+ contas ativas, includeLegacy é
 // sempre false: misturar cliente_conta_id=X com NULL seria arriscar dado
 // de outra conta (ver seção 2 da spec de hardening).
+//
+// V3 Pós-Convergência #2 — BLOCO 12 (fail-safe de conta não resolvida):
+// quando `clienteContaId` chega NULL — 0 contas ativas, marketplace sem
+// resolução de conta (ex.: shopee), ou qualquer caminho em que
+// resolveMarketplaceAccountContext devolveu `conta: null` — esta função
+// ANTES retornava `null`, ou seja, NENHUM filtro de conta: a query voltava a
+// UNIÃO SILENCIOSA de todas as contas do cliente (cliente_conta_id = 5, = 6,
+// NULL, …). Um cliente que teve contas, perdeu todas (desativadas) e ainda
+// tem imports marcados por conta via essa porta enxergaria dados de contas
+// que não são mais dele. Agora o piso é `cliente_conta_id IS NULL`: só o
+// legado sem operação registrada — nunca dados atribuídos a uma conta
+// específica. Para um cliente puramente legado (tudo NULL) o resultado é
+// idêntico; para um cliente com mistura, os imports de conta ficam
+// invisíveis até uma conta ser realmente selecionada (resultado
+// explicitamente parcial em vez de vazamento). Decisão de UX restante
+// (mostrar aviso "selecione uma conta" vs. tela vazia) é da Pessoa 1.
 function condicaoContaSql(paramsList, clienteContaId, includeLegacy) {
-  if (clienteContaId == null) return null;
+  if (clienteContaId == null) return "cliente_conta_id IS NULL";
   paramsList.push(clienteContaId);
   const idx = paramsList.length;
   return includeLegacy
@@ -640,4 +656,8 @@ module.exports = {
   insertPedido,
   insertItem,
   insertComponente,
+  // BLOCO 13 — exposta para o teste de fronteira de timezone: prova que a
+  // data do pedido é lida LITERALMENTE da string do Mercado Livre
+  // (String(x).slice(0,10)), nunca via new Date() (que deslocaria o dia).
+  asDate,
 };

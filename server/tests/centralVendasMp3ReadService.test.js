@@ -228,6 +228,49 @@ async function run() {
     eq("2: ainda 1 unica query bulk (nunca 1 por run)", mp.calls.payments, 1);
   }
 
+  // 2b — BLOCO 11A: um MESMO run/import cobre pedidos de Julho E Agosto (ex.:
+  // sync que puxou um pedido datado em Agosto para uma competencia 2026-07).
+  // Consulta so Julho: as `rows` ja respeitavam o mes, mas o `summary`
+  // (paymentsUnique / totalPaymentGross|Net / postMovementsCount) respondia
+  // pelo run inteiro. Agora o summary tambem e recortado ao periodo.
+  {
+    const imp = importRow({ id: 1, competencia: "2026-07", publicationStatus: "published", coverageFrom: "2026-07-01", coverageTo: "2026-07-31", publishedAt: "2026-07-31T10:00:00Z", syncRunId: 601 });
+    const pedidos = [
+      pedidoRow({ id: 1, importId: 1, pedidoId: "O-JUL", data: "2026-07-20", faturamento: 50, resultado: 40 }),
+      pedidoRow({ id: 2, importId: 1, pedidoId: "O-AGO", data: "2026-08-03", faturamento: 70, resultado: 55 }),
+    ];
+    const componentes = [
+      componenteRow({ id: 1, importId: 1, pedidoRowId: 1, tipo: "custo_produto", valor: 5 }),
+      componenteRow({ id: 2, importId: 1, pedidoRowId: 1, tipo: "imposto_interno", valor: 0 }),
+      componenteRow({ id: 3, importId: 1, pedidoRowId: 2, tipo: "custo_produto", valor: 5 }),
+      componenteRow({ id: 4, importId: 1, pedidoRowId: 2, tipo: "imposto_interno", valor: 0 }),
+    ];
+    const db = makeDb({ imports: [imp], pedidos, componentes });
+    const mp = makeMpRepos({
+      payments: [
+        paymentFixture({ syncRunId: 601, orderId: "O-JUL", paymentId: "P-JUL", transactionAmount: 50, netReceivedAmount: 45 }),
+        paymentFixture({ syncRunId: 601, orderId: "O-AGO", paymentId: "P-AGO", transactionAmount: 70, netReceivedAmount: 65 }),
+      ],
+      movements: [
+        movementFixture({ syncRunId: 601, sourceId: "P-JUL", orderId: "O-JUL", transactionAmount: 50, feeAmount: -5, settlementNetAmount: 45 }),
+        movementFixture({ syncRunId: 601, sourceId: "P-AGO", orderId: "O-AGO", transactionAmount: 70, feeAmount: -5, settlementNetAmount: 65 }),
+      ],
+      reports: [],
+    });
+    const svc = createCentralVendasMp3ReadService(realRepositoryComDb(db), db, mp.mpPaymentsRepository, mp.mpSettlementRepository);
+
+    const julho = await svc.getMercadoPagoReconciliationForRange(cliente.slug, { dateFrom: "2026-07-01", dateTo: "2026-07-31" });
+    eq("2b: Julho — 1 row (so O-JUL)", julho.rows.length, 1);
+    eq("2b: Julho — paymentsUnique = 1 (P-AGO fora do recorte)", julho.summary.paymentsUnique, 1);
+    eq("2b: Julho — totalPaymentGross = 50 (nao 120)", julho.summary.totalPaymentGross, 50);
+    eq("2b: Julho — totalPaymentNet = 45 (nao 110)", julho.summary.totalPaymentNet, 45);
+    eq("2b: Julho — recorteTemporal declara o corte", julho.summary.recorteTemporal, { paymentsNoRun: 2, paymentsNoRange: 1, movimentosNoRun: 2, movimentosNoRange: 1 });
+
+    const agosto = await svc.getMercadoPagoReconciliationForRange(cliente.slug, { dateFrom: "2026-08-01", dateTo: "2026-08-31" });
+    // Agosto nao tem import com competencia 2026-08 → snapshot vazio → nada de MP.
+    ok("2b: Agosto != Julho — nao herda os numeros de Julho", agosto.summary.paymentsUnique !== julho.summary.paymentsUnique || agosto.summary.totalPaymentGross === 0);
+  }
+
   // 3 — account-aware: conta A nunca ve Payments/Settlement/pedidos da conta B.
   {
     const contas = [

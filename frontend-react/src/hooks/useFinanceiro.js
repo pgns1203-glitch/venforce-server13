@@ -18,6 +18,11 @@ export function useFinanceiro({ clienteSlug, clienteContaId, pronta }) {
   const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState(null);
+  // Convergência #3 — depois que o <NovoFechamento> salva uma entrega, esta
+  // leitura precisa ser refeita (o bloco `resultado`/`relatorios` do
+  // GET /financeiro/:cliente passou a ter um fechamento novo). Bumpar o nonce
+  // é um refetch autoritativo, sem tocar em periodo/conta.
+  const [nonce, setNonce] = useState(0);
 
   const seqRef = useRef(0);
   const abortRef = useRef(null);
@@ -57,9 +62,9 @@ export function useFinanceiro({ clienteSlug, clienteContaId, pronta }) {
       });
 
     return () => controlador.abort();
-  }, [clienteSlug, clienteContaId, periodo, pronta]);
+  }, [clienteSlug, clienteContaId, periodo, pronta, nonce]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  return { periodo, setPeriodo, dados, carregando, erro };
+  return { periodo, setPeriodo, dados, carregando, erro, recarregar: () => setNonce((n) => n + 1) };
 }

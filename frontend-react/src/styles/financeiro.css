@@ -115,3 +115,47 @@
 .vf-fin-confirm .vf-field__hint {
   max-width: 32ch;
 }
+
+/* ── Convergência #3 — <NovoFechamento> (gerar fechamento no V3) ──────────── */
+
+.vf-section--inset {
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-md, 8px);
+  padding: var(--vf-sp-4, 16px);
+  background: var(--vf-bg-1, transparent);
+}
+
+.vf-fin-novo {
+  gap: var(--vf-sp-4, 16px);
+}
+
+.vf-fin-novo__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--vf-sp-3, 12px);
+}
+
+.vf-fin-novo__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--vf-sp-2, 8px);
+}
+
+.vf-fin-novo__card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--vf-sp-2, 8px) var(--vf-sp-3, 12px);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm, 6px);
+}
+
+.vf-fin-novo__card-rotulo {
+  font-size: var(--vf-fs-xs, 0.75rem);
+  color: var(--vf-text-secondary);
+}
+
+.vf-fin-novo__card-valor {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--vf-fw-medium, 500);
+}

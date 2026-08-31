@@ -38,18 +38,44 @@ const ABAS = [
 ];
 
 export default function FinanceiroPage() {
-  const { pronta, clienteSlug, clienteContaId } = useOperacaoAtual();
-  const { periodo, setPeriodo, dados, carregando, erro } = useFinanceiro({ clienteSlug, clienteContaId, pronta });
+  const { snapshot, pronta, clienteSlug, clienteNome, clienteContaId } = useOperacaoAtual();
+  const { periodo, setPeriodo, dados, carregando, erro, recarregar: recarregarFinanceiro } = useFinanceiro({ clienteSlug, clienteContaId, pronta });
   // Entregas são de CLIENTE (entregas_cliente não tem cliente_conta_id), por
   // isso a chave aqui é só o slug: trocar de operação não reabre esta lista.
   const entregas = useEntregasFechamento({ clienteSlug, habilitado: pronta });
   const [abaAtiva, setAbaAtiva] = useState("resultado");
 
-  // Contexto incompleto: o Shell (data-vf-scope="account") já cuida do
-  // gating — nada a duplicar aqui.
-  if (!pronta) return null;
+  // Convergência #3 §14 — o backend virou fail-safe (conta não resolvida =
+  // legado-NULL, nunca união silenciosa). Se o contexto já está READY mas não
+  // tem conta, a tela DIZ isso — não mostra R$0/0% como se fosse dado real.
+  if (!pronta) {
+    if (snapshot?.state === "READY" && !clienteContaId) {
+      return (
+        <div className="vf-page-shell">
+          <div className="vf-page-container">
+            <div className="vf-banner is-warning" role="alert" style={{ marginTop: 24 }}>
+              <div className="vf-banner__content">
+                <p className="vf-banner__title">Operação não resolvida</p>
+                <p className="vf-banner__description">
+                  Este cliente não tem uma conta (operação) ativa selecionável. Escolha uma conta na
+                  barra de contexto para ver o Financeiro desta operação — os números por conta não
+                  aparecem enquanto nenhuma está resolvida.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    // Ainda em BOOT/LOADING: o Shell (data-vf-scope="account") cuida do gating.
+    return null;
+  }
 
   const periodoLabel = rotularCompetencia(periodo);
+  const aoSalvarFechamento = () => {
+    entregas.recarregar?.();
+    recarregarFinanceiro?.();
+  };
 
   return (
     <div className="vf-page-shell">
@@ -59,9 +85,9 @@ export default function FinanceiroPage() {
             <p className="vf-page-header__eyebrow">Financeiro · em validação (V3)</p>
             <h1 className="vf-page-header__title">Resultado e fechamento do período</h1>
             <p className="vf-page-header__description">
-              Esta tela lê o que já foi processado e publica os fechamentos gerados. Para{" "}
-              <strong>gerar</strong> um fechamento (upload e cálculo), esta versão ainda depende do{" "}
-              <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>Financeiro (legado) →</a>
+              Gera, salva e publica o fechamento do período nesta tela — aba <strong>Fechamento</strong>.
+              O <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>Financeiro (legado) →</a>{" "}
+              segue disponível como fallback (e para TikTok Shop).
             </p>
           </div>
           <div className="vf-page-header__actions">
@@ -98,16 +124,24 @@ export default function FinanceiroPage() {
             <Tabs abas={ABAS} ativa={abaAtiva} onChange={setAbaAtiva} />
             <div className="vf-fin-painel">
               {abaAtiva === "resultado" && (
-                <ResultadoTab resultado={dados.resultado} clienteSlug={clienteSlug} periodoLabel={periodoLabel} />
+                <ResultadoTab
+                  resultado={dados.resultado}
+                  clienteSlug={clienteSlug}
+                  periodoLabel={periodoLabel}
+                  onGerar={() => setAbaAtiva("fechamento")}
+                />
               )}
               {abaAtiva === "conciliacao" && <ConciliacaoTab conciliacao={dados.conciliacao} />}
               {abaAtiva === "fechamento" && (
                 <FechamentoTab
                   resultado={dados.resultado}
                   clienteSlug={clienteSlug}
+                  clienteNome={clienteNome}
+                  clienteContaId={clienteContaId}
                   periodo={periodo}
                   periodoLabel={periodoLabel}
                   entregas={entregas}
+                  onSalvo={aoSalvarFechamento}
                 />
               )}
               {abaAtiva === "relatorios" && (

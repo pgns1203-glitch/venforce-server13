@@ -453,11 +453,23 @@ async function run() {
     await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram após reload");
     await sleep(200);
 
-    await check("F4.1 — sem fechamento no período: estado vazio honesto na aba Resultado, link pro legado pra gerar", async () => {
+    await check("Conv#3 §10 — sem fechamento no período: estado vazio honesto + CTA que abre o fluxo NATIVO, não o legado", async () => {
       const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
       assert.ok(/Sem fechamento processado|Nenhum fechamento/.test(texto), `estado vazio ausente: ${texto}`);
-      const href = await cdp.evaluate(`(function(){ var a = document.querySelector('.vf-fin-painel a[href*="financeiro.html"]'); return a ? a.getAttribute('href') : null; })()`);
-      assert.ok(href, "link para gerar no legado ausente no estado vazio");
+      // O caminho normal do V3 não manda o usuário de volta para o legado.
+      const temLinkLegado = await cdp.evaluate(`document.querySelector('.vf-fin-painel a[href*="financeiro.html"]') !== null`);
+      assert.strictEqual(temLinkLegado, false, "o estado vazio não pode ter o legado como CTA de gerar");
+      await cdp.evaluate(`
+        (function(){ var p = document.querySelector('.vf-fin-painel');
+          Array.prototype.find.call(p.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Gerar fechamento'; }).click(); })();
+      `);
+      await sleep(150);
+      const fechamento = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
+      assert.ok(/Processar fechamento/.test(fechamento), `a aba Fechamento nativa deveria abrir com o formulário: ${fechamento.slice(0, 200)}`);
+      assert.ok(/Gerar fechamento de/.test(fechamento), `o formulário nativo nomeia a competência em tela: ${fechamento.slice(0, 200)}`);
+      // O legado segue existindo, mas como fallback (link secundário), não como CTA.
+      const temFallback = await cdp.evaluate(`document.querySelector('.vf-fin-painel a[href*="financeiro.html"]') !== null`);
+      assert.ok(temFallback, "o Financeiro legado deve continuar acessível como fallback");
     });
 
     const shot2 = path.join(SHOTS_DIR, "financeiro-v3-sem-fechamento.png");

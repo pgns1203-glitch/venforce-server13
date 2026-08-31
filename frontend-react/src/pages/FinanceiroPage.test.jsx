@@ -14,10 +14,28 @@ import { AUSENTE } from "../utils/numbers.js";
 const mocks = vi.hoisted(() => ({
   useOperacaoAtual: vi.fn(),
   useFinanceiro: vi.fn(),
+  useEntregasFechamento: vi.fn(),
 }));
 
 vi.mock("../hooks/useVfContext.js", () => ({ useOperacaoAtual: mocks.useOperacaoAtual }));
 vi.mock("../hooks/useFinanceiro.js", () => ({ useFinanceiro: mocks.useFinanceiro }));
+// A camada operacional (F4.2) é mockada aqui: o comportamento dela — duplo
+// clique, contexto obsoleto, GET autoritativo — tem suíte própria em
+// hooks/useEntregasFechamento.test.js. Aqui só interessa como a página
+// REAGE ao estado que o hook publica.
+vi.mock("../hooks/useEntregasFechamento.js", async (original) => ({
+  ...(await original()),
+  useEntregasFechamento: mocks.useEntregasFechamento,
+}));
+
+export function estadoDeEntregas(overrides = {}) {
+  return {
+    entregas: null, carregando: false, erro: null,
+    recarregar: vi.fn(), acaoEmCurso: null, erroDeAcao: null,
+    limparErroDeAcao: vi.fn(), publicar: vi.fn(), despublicar: vi.fn(),
+    ...overrides,
+  };
+}
 
 function operacaoPronta(overrides = {}) {
   return { pronta: true, clienteSlug: "n97", clienteContaId: 42, marketplace: "meli", ...overrides };
@@ -49,9 +67,10 @@ function dadosBase(overrides = {}) {
   };
 }
 
-function mockarHooks({ dados = null, carregando = false, erro = null, operacao = operacaoPronta() } = {}) {
+function mockarHooks({ dados = null, carregando = false, erro = null, operacao = operacaoPronta(), entregas = estadoDeEntregas(), periodo = "2026-08" } = {}) {
   mocks.useOperacaoAtual.mockReturnValue(operacao);
-  mocks.useFinanceiro.mockReturnValue({ periodo: "2026-08", setPeriodo: vi.fn(), dados, carregando, erro });
+  mocks.useFinanceiro.mockReturnValue({ periodo, setPeriodo: vi.fn(), dados, carregando, erro });
+  mocks.useEntregasFechamento.mockReturnValue(entregas);
 }
 
 beforeEach(() => {
@@ -163,5 +182,184 @@ describe("FinanceiroPage · contexto Cliente/Conta", () => {
 
     const link = await screen.findByRole("link", { name: /o Financeiro atual/ });
     expect(link).toHaveAttribute("href", "financeiro.html?cliente=extra-maquinas");
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════
+   F4.2 — camada operacional das entregas de fechamento
+   ══════════════════════════════════════════════════════════════════════ */
+
+function entrega(overrides = {}) {
+  return {
+    id: 501, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97",
+    titulo: "Fechamento", periodo: "2026-08", status: "rascunho",
+    publicado: false, token_publico: null,
+    created_at: "2026-09-01T10:00:00Z", published_at: null,
+    ...overrides,
+  };
+}
+
+describe("FinanceiroPage · F4.2 publicar/despublicar", () => {
+  it("rascunho do período em tela: oferece Publicar, e a confirmação NOMEIA a competência", async () => {
+    const publicar = vi.fn();
+    mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [entrega()], publicar }) });
+    const usuario = userEvent.setup();
+    render(<FinanceiroPage />);
+
+    await screen.findByText("Faturamento");
+    await usuario.click(screen.getByRole("tab", { name: "Fechamento" }));
+    await usuario.click(screen.getByRole("button", { name: "Publicar" }));
+
+    // Publicar o mês errado é a armadilha deste fluxo: a pergunta diz qual é.
+    expect(screen.getByText(/Publicar Agosto\/2026\?/)).toBeInTheDocument();
+    expect(publicar).not.toHaveBeenCalled(); // um clique só nunca publica
+
+    await usuario.click(screen.getByRole("button", { name: "Publicar" }));
+    expect(publicar).toHaveBeenCalledWith(501);
+  });
+
+  it("Cancelar na confirmação não publica nada", async () => {
+    const publicar = vi.fn();
+    mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [entrega()], publicar }) });
+    const usuario = userEvent.setup();
+    render(<FinanceiroPage />);
+
+    await screen.findByText("Faturamento");
+    await usuario.click(screen.getByRole("tab", { name: "Fechamento" }));
+    await usuario.click(screen.getByRole("button", { name: "Publicar" }));
+    await usuario.click(screen.getByRole("button", { name: "Cancelar" }));
+
+    expect(publicar).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Publicar Agosto\/2026\?/)).not.toBeInTheDocument();
+  });
+
+  it("entrega publicada: oferece Despublicar (a válvula que o legado nunca ligou), Abrir e Copiar link", async () => {
+    const despublicar = vi.fn();
+    mockarHooks({
+      dados: dadosBase(),
+      entregas: estadoDeEntregas({
+        entregas: [entrega({ publicado: true, status: "publicado", token_publico: "tok-abc", published_at: "2026-09-02T12:00:00Z" })],
+        despublicar,
+      }),
+    });
+    const usuario = userEvent.setup();
+    render(<FinanceiroPage />);
+
+    await screen.findByText("Faturamento");
+    await usuario.click(screen.getByRole("tab", { name: "Fechamento" }));
+
+    expect(screen.getByRole("link", { name: "Abrir" })).toHaveAttribute(
+      "href",
+      expect.stringContaining("relatorio-publico.html?token=tok-abc")
+    );
+    await usuario.click(screen.getByRole("button", { name: "Despublicar" }));
+    expect(screen.getByText(/Despublicar Agosto\/2026\?/)).toBeInTheDocument();
+    await usuario.click(screen.getByRole("button", { name: "Despublicar" }));
+    expect(despublicar).toHaveBeenCalledWith(501);
+  });
+
+  it("ação em curso numa linha desabilita a ação das OUTRAS (nada de duas escritas em voo)", async () => {
+    mockarHooks({
+      dados: dadosBase(),
+      entregas: estadoDeEntregas({
+        entregas: [entrega({ id: 501, periodo: "2026-08" }), entrega({ id: 502, periodo: "2026-07" })],
+        acaoEmCurso: 501,
+      }),
+    });
+    const usuario = userEvent.setup();
+    render(<FinanceiroPage />);
+
+    await screen.findByText("Faturamento");
+    await usuario.click(screen.getByRole("tab", { name: "Relatórios gerados" }));
+
+    const ocupada = screen.getByRole("button", { name: "Enviando…" });
+    expect(ocupada).toBeDisabled();
+    expect(ocupada).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Publicar" })).toBeDisabled();
+  });
+
+  it("erro de escrita fica NA LINHA que falhou e não derruba a lista", async () => {
+    mockarHooks({
+      dados: dadosBase(),
+      entregas: estadoDeEntregas({
+        entregas: [entrega({ id: 501, periodo: "2026-08" }), entrega({ id: 502, periodo: "2026-07" })],
+        erroDeAcao: { id: 501, mensagem: "Cliente fora da sua carteira." },
+      }),
+    });
+    const usuario = userEvent.setup();
+    render(<FinanceiroPage />);
+
+    await screen.findByText("Faturamento");
+    await usuario.click(screen.getByRole("tab", { name: "Relatórios gerados" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Cliente fora da sua carteira.");
+    expect(screen.getAllByRole("row")).toHaveLength(3); // cabeçalho + 2 entregas
+  });
+
+  it("a linha da competência em tela é marcada — a lista é do cliente inteiro, não do período", async () => {
+    mockarHooks({
+      dados: dadosBase(),
+      entregas: estadoDeEntregas({ entregas: [entrega({ id: 501, periodo: "2026-08" }), entrega({ id: 502, periodo: "2026-06" })] }),
+    });
+    const usuario = userEvent.setup();
+    render(<FinanceiroPage />);
+
+    await screen.findByText("Faturamento");
+    await usuario.click(screen.getByRole("tab", { name: "Relatórios gerados" }));
+
+    const marcadas = screen.getAllByText("período em tela");
+    expect(marcadas).toHaveLength(1);
+    expect(marcadas[0].closest("tr")).toHaveTextContent("Agosto/2026");
+    // Escopo honesto: entregas_cliente não tem cliente_conta_id.
+    expect(screen.getByText(/não[\s\S]*é filtrada por conta/)).toBeInTheDocument();
+  });
+
+  it("rascunho nunca finge uma data de publicação", async () => {
+    mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [entrega({ published_at: null })] }) });
+    const usuario = userEvent.setup();
+    render(<FinanceiroPage />);
+
+    await screen.findByText("Faturamento");
+    await usuario.click(screen.getByRole("tab", { name: "Relatórios gerados" }));
+
+    const linha = screen.getAllByRole("row")[1];
+    expect(within(linha).getAllByText("—").length).toBeGreaterThan(0);
+  });
+
+  it("lista operacional falhou: tabela continua em LEITURA, com o motivo e um retry — não some", async () => {
+    const recarregar = vi.fn();
+    mockarHooks({
+      dados: dadosBase(),
+      entregas: estadoDeEntregas({ entregas: null, erro: { codigo: "rede", mensagem: "Sem conexão com o servidor." }, recarregar }),
+    });
+    const usuario = userEvent.setup();
+    render(<FinanceiroPage />);
+
+    await screen.findByText("Faturamento");
+    await usuario.click(screen.getByRole("tab", { name: "Relatórios gerados" }));
+
+    expect(screen.getByText("Ações indisponíveis no momento")).toBeInTheDocument();
+    expect(screen.getByText("Sem conexão com o servidor.")).toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument(); // a leitura sobrevive
+    expect(screen.queryByRole("button", { name: "Publicar" })).not.toBeInTheDocument();
+
+    await usuario.click(screen.getByRole("button", { name: "Tentar novamente" }));
+    expect(recarregar).toHaveBeenCalled();
+  });
+
+  it("sem entrega para o período em tela, a aba Fechamento explica em vez de mostrar um botão inerte", async () => {
+    mockarHooks({
+      dados: dadosBase(),
+      periodo: "2026-08",
+      entregas: estadoDeEntregas({ entregas: [entrega({ id: 502, periodo: "2026-03" })] }),
+    });
+    const usuario = userEvent.setup();
+    render(<FinanceiroPage />);
+
+    await screen.findByText("Faturamento");
+    await usuario.click(screen.getByRole("tab", { name: "Fechamento" }));
+
+    expect(screen.queryByRole("button", { name: "Publicar" })).not.toBeInTheDocument();
+    expect(screen.getByText(/não apareceu na lista operacional/)).toBeInTheDocument();
   });
 });

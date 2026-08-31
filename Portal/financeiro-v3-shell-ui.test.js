@@ -85,6 +85,25 @@ function payloadSemFechamento() {
   };
 }
 
+/* C1 — o Shell V3 pede GET /me/context antes de qualquer coisa (a carteira
+   autoritativa por Squad, server/services/meService.js). Este backend falso
+   passa a respondê-lo derivando do MESMO fixture de carteira já usado aqui:
+   sem isto o harness simularia um servidor sem /me, que não é o servidor
+   real que a página vai encontrar. */
+function meContextDe(portfolio) {
+  const clientes = (portfolio.clientes || []).map((c) => ({
+    id: c.id, slug: c.slug, nome: c.nome, squadId: null, responsavelDireto: false, contasAtivas: null,
+  }));
+  return {
+    ok: true,
+    user: { id: 12, nome: "Pedro Gomes", email: null, role: "user" },
+    squads: [], squadPrincipalId: null,
+    clientes,
+    portfolio: { totalClientes: clientes.length },
+    permissoes: { podeAdministrar: false },
+  };
+}
+
 function startServer() {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, "http://localhost");
@@ -158,6 +177,26 @@ async function check(name, fn) {
 
 let financeiroPayload = payloadFeliz();
 
+/* ── F4.2 — GET/POST /entregas-cliente, no shape real de
+   server/services/entregasClienteService.js (o SELECT de `listarEntregas`
+   e o RETURNING de `publicarEntrega`). Este fake é COM ESTADO de propósito:
+   publicar/despublicar mudam o array, e é isso que permite ao teste provar
+   que a tela relê do servidor em vez de remendar o estado local. ───────── */
+let entregasFake = [];
+let entregasFalham = false; // cenário do modo degradado
+let entregasRequestCount = 0;
+
+function resetEntregas() {
+  entregasFalham = false;
+  entregasRequestCount = 0;
+  entregasFake = [
+    { id: 801, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", titulo: "Fechamento Agosto", periodo: "2026-08", status: "publicado", publicado: true, token_publico: "tok-agosto", created_at: "2026-08-26T10:00:00Z", published_at: "2026-08-26T12:00:00Z" },
+    { id: 802, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", titulo: "Fechamento Julho", periodo: "2026-07", status: "publicado", publicado: true, token_publico: "tok-julho", created_at: "2026-07-28T10:00:00Z", published_at: "2026-07-28T11:00:00Z" },
+    { id: 803, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", titulo: "Fechamento Junho", periodo: "2026-06", status: "rascunho", publicado: false, token_publico: null, created_at: "2026-06-29T10:00:00Z", published_at: null },
+  ];
+}
+resetEntregas();
+
 function wireFetchInterception(cdp) {
   const consoleErrors = [];
   const respond = async (m, p) => {
@@ -179,9 +218,36 @@ function wireFetchInterception(cdp) {
     if (req.method === "OPTIONS") { await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: cors }); return; }
     const json = (obj) => respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 200, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body: Buffer.from(JSON.stringify(obj)).toString("base64") });
 
+    if (url.includes("/me/context")) { await json(meContextDe(PORTFOLIO)); return; }
     if (url.includes("/operacao/cliente-360/clientes")) { await json(PORTFOLIO); return; }
     const contasMatch = url.match(/\/clientes\/([^/?]+)\/contas/);
     if (contasMatch) { await json({ ok: true, cliente: { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true }, contas: N97_CONTAS }); return; }
+    // F4.2 — escrita ANTES da leitura: /entregas-cliente/:id/publicar tem
+    // o mesmo prefixo da listagem.
+    const acaoMatch = url.match(/\/entregas-cliente\/(\d+)\/(publicar|despublicar)/);
+    if (acaoMatch) {
+      const alvo = entregasFake.find((e) => e.id === Number(acaoMatch[1]));
+      if (!alvo) { await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 404, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body: Buffer.from(JSON.stringify({ ok: false, erro: "Entrega não encontrada." })).toString("base64") }); return; }
+      if (acaoMatch[2] === "publicar") {
+        alvo.publicado = true;
+        alvo.status = "publicado";
+        alvo.token_publico = alvo.token_publico || `tok-${alvo.id}`;
+        alvo.published_at = "2026-09-05T09:00:00Z";
+      } else {
+        alvo.publicado = false;
+        alvo.status = "rascunho";
+        alvo.token_publico = null;
+        alvo.published_at = null;
+      }
+      await json({ ok: true, entrega: alvo });
+      return;
+    }
+    if (url.includes("/entregas-cliente")) {
+      entregasRequestCount += 1;
+      if (entregasFalham) { await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" }); return; }
+      await json({ ok: true, total: entregasFake.length, entregas: entregasFake });
+      return;
+    }
     if (url.includes("/financeiro/")) { await json(financeiroPayload); return; }
 
     await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
@@ -257,21 +323,123 @@ async function run() {
       assert.ok(/93,8%|93.8%/.test(texto), `cobertura não encontrada: ${texto}`);
     });
 
-    await check("F4.1 — aba Relatórios gerados: tabela com 3 períodos, link público só quando publicado", async () => {
+    await check("F4.2 — aba Relatórios gerados: 3 entregas, link público só quando publicado, rascunho oferece Publicar", async () => {
       await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Relatórios gerados').click()");
-      await sleep(150);
+      await sleep(200);
       const linhas = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr').length");
-      assert.strictEqual(linhas, 3, `esperado 3 relatórios, achei ${linhas}`);
-      const naoPublicado = await cdp.evaluate("document.querySelector('.vf-fin-painel tbody tr:last-child').innerText");
-      assert.ok(naoPublicado.includes("Não publicado"), `período em rascunho não deveria ter link público: ${naoPublicado}`);
+      assert.strictEqual(linhas, 3, `esperado 3 entregas, achei ${linhas}`);
+      const rascunho = await cdp.evaluate("document.querySelector('.vf-fin-painel tbody tr:last-child').innerText");
+      assert.ok(!/Abrir/.test(rascunho), `rascunho não pode oferecer link público: ${rascunho}`);
+      assert.ok(/Publicar/.test(rascunho), `rascunho deveria oferecer Publicar: ${rascunho}`);
+      // Publicado nunca finge data de publicação; rascunho mostra ausência.
+      assert.ok(/—/.test(rascunho), `rascunho deveria mostrar '—' em "Publicado em": ${rascunho}`);
+    });
+
+    await check("F4.2 — a linha da competência em tela é marcada (a lista é do cliente inteiro, não do período)", async () => {
+      const marcadas = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr.is-destacada').length");
+      assert.strictEqual(marcadas, 1, `esperado exatamente 1 linha marcada como período em tela, achei ${marcadas}`);
+      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel tbody tr.is-destacada').innerText");
+      assert.ok(/Agosto\/2026/.test(texto), `a linha marcada deveria ser a de Agosto/2026: ${texto}`);
+      const aviso = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
+      assert.ok(/não é\s*\n?\s*filtrada por conta|não\s+é\s+filtrada por conta/.test(aviso.replace(/\s+/g, " ")), `o escopo de cliente deveria estar dito na tela: ${aviso.slice(0, 200)}`);
+    });
+
+    await check("F4.2 — um clique não publica: a confirmação aparece e NOMEIA a competência", async () => {
+      const antes = entregasRequestCount;
+      await cdp.evaluate(`
+        (function(){ var tr = document.querySelector('.vf-fin-painel tbody tr:last-child');
+          Array.prototype.find.call(tr.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Publicar'; }).click(); })();
+      `);
+      await sleep(120);
+      const texto = await cdp.evaluate("document.querySelector('.vf-fin-confirm').innerText");
+      assert.ok(/Publicar Junho\/2026\?/.test(texto), `a confirmação deveria nomear a competência: ${texto}`);
+      assert.strictEqual(entregasRequestCount, antes, "um clique só não pode ter disparado nenhuma requisição");
+      assert.strictEqual(entregasFake.find((e) => e.id === 803).publicado, false, "nada podia ter sido publicado ainda");
+    });
+
+    await check("F4.2 — confirmar publica de verdade e a tela relê do servidor (estado autoritativo, não remendo local)", async () => {
+      const antes = entregasRequestCount;
+      await cdp.evaluate(`
+        (function(){ var box = document.querySelector('.vf-fin-confirm');
+          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Publicar'; }).click(); })();
+      `);
+      await waitFor(cdp, "document.querySelectorAll('.vf-fin-painel tbody tr')[2].innerText.indexOf('Despublicar') >= 0", "a linha não passou a publicada");
+      assert.strictEqual(entregasFake.find((e) => e.id === 803).publicado, true, "o servidor deveria ter registrado a publicação");
+      assert.ok(entregasRequestCount > antes, "a tela deveria ter relido a lista depois da escrita");
+      const linha = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr')[2].innerText");
+      assert.ok(/Abrir/.test(linha), `entrega publicada deveria oferecer o link público: ${linha}`);
+      assert.ok(!/—/.test(linha.split("\t").slice(3, 4).join("")), `"Publicado em" não pode continuar vazio: ${linha}`);
+    });
+
+    await check("F4.2 — despublicar revoga o link (a válvula que o Financeiro legado nunca ligou)", async () => {
+      await cdp.evaluate(`
+        (function(){ var tr = document.querySelectorAll('.vf-fin-painel tbody tr')[2];
+          Array.prototype.find.call(tr.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
+      `);
+      await sleep(120);
+      const confirm = await cdp.evaluate("document.querySelector('.vf-fin-confirm').innerText");
+      assert.ok(/Despublicar Junho\/2026\?/.test(confirm), `confirmação de despublicar deveria nomear a competência: ${confirm}`);
+      await cdp.evaluate(`
+        (function(){ var box = document.querySelector('.vf-fin-confirm');
+          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
+      `);
+      await waitFor(cdp, "document.querySelectorAll('.vf-fin-painel tbody tr')[2].innerText.indexOf('Publicar') >= 0", "a linha não voltou a rascunho");
+      const alvo = entregasFake.find((e) => e.id === 803);
+      assert.strictEqual(alvo.publicado, false);
+      assert.strictEqual(alvo.token_publico, null, "o token público precisa ser revogado");
+    });
+
+    await check("F4.2 — aba Fechamento publica o período EM TELA, com a competência nomeada", async () => {
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Fechamento').click()");
+      await sleep(200);
+      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
+      assert.ok(/Despublicar/.test(texto), `Agosto está publicado: a aba deveria oferecer Despublicar: ${texto}`);
+      await cdp.evaluate(`
+        (function(){ var p = document.querySelector('.vf-fin-painel');
+          Array.prototype.find.call(p.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
+      `);
+      await sleep(120);
+      const confirm = await cdp.evaluate("document.querySelector('.vf-fin-confirm').innerText");
+      assert.ok(/Agosto\/2026/.test(confirm), `a aba Fechamento tem que agir sobre o período em tela (Agosto/2026): ${confirm}`);
+      await cdp.evaluate(`
+        (function(){ var box = document.querySelector('.vf-fin-confirm');
+          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Cancelar'; }).click(); })();
+      `);
+      await sleep(80);
+      assert.strictEqual(entregasFake.find((e) => e.id === 801).publicado, true, "Cancelar não pode ter despublicado nada");
     });
 
     await check("F4.1 — aba Histórico: 3 períodos, mais recente primeiro", async () => {
       await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Histórico').click()");
-      await sleep(150);
+      await sleep(200);
       const primeiro = await cdp.evaluate("document.querySelector('.vf-fin-historico__item .vf-fin-historico__periodo').textContent");
       assert.ok(/Agosto/i.test(primeiro), `histórico deveria começar por Agosto/2026 (mais recente): ${primeiro}`);
     });
+
+    /* ── F4.2 — modo degradado: a lista operacional cai, a leitura fica ── */
+    entregasFalham = true;
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=deg` });
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
+    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram");
+    await sleep(200);
+
+    await check("F4.2 — /entregas-cliente fora do ar: a tabela continua em LEITURA, com motivo e retry, sem botão inerte", async () => {
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Relatórios gerados').click()");
+      await sleep(250);
+      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
+      assert.ok(/Ações indisponíveis no momento/.test(texto), `deveria explicar por que as ações sumiram: ${texto}`);
+      assert.ok(/Tentar novamente/.test(texto), "o modo degradado precisa oferecer retry");
+      assert.ok(!/Publicar/.test(texto), `sem id não existe ação — nenhum botão Publicar podia aparecer: ${texto}`);
+      const linhas = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr').length");
+      assert.strictEqual(linhas, 3, `a leitura do payload do Financeiro deveria sobreviver, achei ${linhas} linhas`);
+    });
+
+    entregasFalham = false;
+    resetEntregas();
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=1b` });
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
+    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram");
+    await sleep(200);
 
     const shot1 = path.join(SHOTS_DIR, "financeiro-v3-feliz.png");
     const png1 = await cdp.send("Page.captureScreenshot", { format: "png" });

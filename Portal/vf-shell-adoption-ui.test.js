@@ -159,6 +159,18 @@ function wireFetchInterception(cdp) {
       await cdp.send("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: corsHeaders });
       return;
     }
+    // C1 — GET /me/context é a primeira chamada do Shell V3 (carteira
+    // autoritativa por Squad, server/services/meService.js). Derivado do
+    // MESMO fixture de carteira usado abaixo.
+    if (url.includes("/me/context")) {
+      const clientes = (PORTFOLIO.clientes || []).map((c) => ({ id: c.id, slug: c.slug, nome: c.nome, squadId: null, responsavelDireto: false, contasAtivas: null }));
+      const body = Buffer.from(JSON.stringify({ ok: true, user: { id: 12, nome: "Pedro Gomes", email: null, role: "user" }, squads: [], squadPrincipalId: null, clientes, portfolio: { totalClientes: clientes.length }, permissoes: { podeAdministrar: false } })).toString("base64");
+      await cdp.send("Fetch.fulfillRequest", {
+        requestId: params.requestId, responseCode: 200,
+        responseHeaders: [...corsHeaders, { name: "content-type", value: "application/json" }], body,
+      });
+      return;
+    }
     if (url.includes("/operacao/cliente-360/clientes")) {
       const body = Buffer.from(JSON.stringify(PORTFOLIO)).toString("base64");
       await cdp.send("Fetch.fulfillRequest", {
@@ -254,7 +266,7 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-tools-index .vf-tab').length"), 3);
       assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-download-extensao'))"));
       assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-download-midias'))"));
-      assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-add-mlb'))"), "ferramenta OR (ferramenta-or.js) não montou");
+      assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-add-mlb'))"), "a Ferramenta OR (ferramentas.js) não montou");
     });
 
     await check("F0.6 — sem erros de console (rede de produção interceptada, sem exceptions JS)", async () => {

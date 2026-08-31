@@ -8,7 +8,13 @@ function getToken() {
 }
 const TOKEN = getToken();
 const user = JSON.parse(localStorage.getItem("vf-user") || "{}");
-if (user.role !== "admin") window.location.replace("dashboard.html");
+// F5/Bloco F — sem permissão volta para a CARTEIRA, não para
+// dashboard.html. O dashboard é uma tela legada, fora da navegação V3 e
+// ainda no layout.js: mandar para lá quem esbarrou num 403 dentro do
+// Shell V3 troca a sidebar debaixo do usuário e o deixa num lugar de
+// onde ele não sabe voltar. A Carteira é a home operacional do V3 e
+// trata carteira vazia honestamente (NO_PORTFOLIO).
+if (user.role !== "admin") window.location.replace("carteira.html");
 initLayout();
 
 const { classificarStatusConta, resumirContasMarketplace, criarExpansaoUnica } = window.VF_CLIENTES_CONTAS_RESUMO;

@@ -19,10 +19,12 @@
 // Não toca DOM (nenhuma referência a sidebar/elementos), não decide acesso
 // (I10 — 403 é estado, não filtro) e não conhece Cliente/ClienteConta/Grant/
 // Base do backend: `api` é injetado em init(), com o único contrato mínimo
-// { carteira(), contasDoCliente(ref, opts) } — os endpoints reais
-// (/me/portfolio, GET /clientes/:cliente/contas) ainda são "CONTRATO
-// NECESSÁRIO"/"PRECISA AJUSTE" (MASTER_SPEC §18); a fiação com vf-api.js
-// pertence a F1/F2, não a esta unidade.
+// { carteira(), contasDoCliente(ref, opts) }. Desde a maratona da Pessoa 1
+// (C1), `carteira()` de produção é GET /me/context (server/routes/meRoutes.js
+// — autoritativo por Squad), com queda para /operacao/cliente-360/clientes
+// SÓ quando o servidor ainda não expõe /me (404); ver vf-shell.js. `squads` e
+// `contasAtivas` só existem no payload novo — no fallback, ausentes, nunca
+// fabricados.
 //
 // createVfContext(deps) é a fábrica testável (mesmo padrão de
 // createVfApi(options) em vf-api.js): tudo que toca o mundo externo
@@ -68,13 +70,28 @@ const PERIODO_PATTERN = /^\d{4}-\d{2}$/;
    é grant válido; na Shopee/TikTok é base vinculada. Um grantStatus
    genérico marcaria toda conta Shopee como "sem grant". Cache de EXIBIÇÃO
    só — nunca decide nada (§6.1). */
+const GRANT_STATUS_LABEL = {
+  conectado: { code: "conectado", label: "Conectado", symbol: "●", tone: "success" },
+  atencao: { code: "atencao", label: "Grant com problema", symbol: "⚠", tone: "warning" },
+  sem_grant: { code: "sem_grant", label: "Aguardando grant", symbol: "○", tone: "empty" },
+};
+
 export function statusOperacao(conta) {
   if (!conta) return { code: "desconhecido", label: "—", symbol: "○", tone: "neutral" };
   if (conta.marketplace === "meli") {
-    if (!conta.grant) return { code: "sem_grant", label: "Aguardando grant", symbol: "○", tone: "empty" };
+    // C1 — quando o backend já resolveu o status (GET /me/portfolio devolve
+    // `grantStatus` por conta), ele VENCE a derivação local: meService.js
+    // também confere `expires_at`, coisa que a leitura de `token_status`
+    // abaixo não faz. Backend é a autoridade; o frontend só o exibe. O ramo
+    // seguinte continua sendo o caminho de GET /clientes/:cliente/contas,
+    // que devolve o objeto `grant` cru e nenhum `grantStatus`.
+    if (typeof conta.grantStatus === "string" && conta.grantStatus) {
+      return GRANT_STATUS_LABEL[conta.grantStatus] || GRANT_STATUS_LABEL.atencao;
+    }
+    if (!conta.grant) return GRANT_STATUS_LABEL.sem_grant;
     const st = String(conta.grant.token_status || "valid").toLowerCase();
-    if (st === "valid") return { code: "conectado", label: "Conectado", symbol: "●", tone: "success" };
-    return { code: "atencao", label: "Grant com problema", symbol: "⚠", tone: "warning" };
+    if (st === "valid") return GRANT_STATUS_LABEL.conectado;
+    return GRANT_STATUS_LABEL.atencao;
   }
   if (conta.base && conta.base.base_id) {
     return { code: "conectado", label: "Configurada", symbol: "●", tone: "success" };
@@ -131,6 +148,13 @@ export function createVfContext(deps = {}) {
 
   let state = STATES.BOOT;
   let portfolio = []; // clientes autorizados — o servidor já filtrou (I10)
+  // C1 — Squads do usuário, como o backend os devolve em GET /me/context.
+  // NÃO entram na identidade do contexto (D5/D7: Squad é agrupamento e
+  // filtro, nunca um passo antes do cliente); ficam aqui só porque este é o
+  // único lugar que já fala com /me/context, e a Carteira precisa deles para
+  // decidir se agrupa. Ausência é `[]`, nunca um squad fabricado.
+  let squads = [];
+  let squadPrincipalId = null;
   let accounts = []; // contas do cliente atual, deduplicadas
   let ctx = emptyContext();
   let integration = { grant: null, base: null };
@@ -495,6 +519,8 @@ export function createVfContext(deps = {}) {
     ctx = emptyContext();
     accounts = [];
     portfolio = [];
+    squads = [];
+    squadPrincipalId = null;
     integration = { grant: null, base: null };
     lastError = null;
     emit("boot");
@@ -518,6 +544,11 @@ export function createVfContext(deps = {}) {
           return;
         }
         portfolio = resp.clientes || [];
+        // GET /me/context traz `squads`/`squadPrincipalId`; o fallback
+        // legado (/operacao/cliente-360/clientes) não traz nada disso — e
+        // então continua `[]`/null, nunca inventado.
+        squads = Array.isArray(resp.squads) ? resp.squads : [];
+        squadPrincipalId = resp.squadPrincipalId != null ? resp.squadPrincipalId : null;
 
         if (!portfolio.length) {
           removeSession();
@@ -695,6 +726,8 @@ export function createVfContext(deps = {}) {
     getError: () => lastError,
     isComplete: () => state === STATES.READY,
     getPortfolio: () => portfolio.slice(),
+    getSquads: () => squads.slice(),
+    getSquadPrincipalId: () => squadPrincipalId,
     getClienteAtual,
     getAccounts,
     getSnapshot: () => snapshot("read"),

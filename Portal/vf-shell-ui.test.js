@@ -69,10 +69,30 @@ const CONTAS_MAIN = { n97: N97_CONTAS, extra: EXTRA_CONTAS, ...FILLER_CONTAS };
 
 const PORTFOLIO_SMALL = { ok: true, clientes: [N97, EXTRA] };
 
+/* ── C1 — fixture no formato real de GET /me/context (meService.js:66-90).
+   Mais pobre que o legado de propósito: sem prontidão, sem pendências. O
+   que ele tem e o outro não: `squads`, `squadPrincipalId` e `contasAtivas`
+   por cliente. ─────────────────────────────────────────────────────────── */
+const ME_CONTEXT = {
+  ok: true,
+  user: { id: 12, nome: "Pedro Gomes", email: "pedro@venforce.com", role: "user" },
+  squads: [{ id: 3, nome: "Squad Alpha", slug: "alpha", principal: true, funcao: "analista", ativo: true }],
+  squadPrincipalId: 3,
+  clientes: [
+    { id: 87, slug: "n97", nome: "N97 Comercial", squadId: 3, responsavelDireto: true, contasAtivas: 3 },
+    { id: 88, slug: "extra", nome: "Extra Máquinas", squadId: 3, responsavelDireto: false, contasAtivas: 1 },
+    ...FILLERS.map((c) => ({ id: c.id, slug: c.slug, nome: c.nome, squadId: 3, responsavelDireto: false, contasAtivas: 1 })),
+  ],
+  portfolio: { totalClientes: 9 },
+  permissoes: { podeAdministrar: false },
+};
+
 /* ── Servidor: arquivos estáticos do Portal + backend fake ──────────────── */
 
 let currentFixture = { portfolio: PORTFOLIO_MAIN, contas: CONTAS_MAIN, failPortfolio: false };
 let serverPort = 0;
+let meContextRequestCount = 0;
+let legadoPortfolioRequestCount = 0;
 
 function harnessHtml(scope, moduleId) {
   return `<!doctype html>
@@ -106,7 +126,24 @@ function startServer() {
       return;
     }
 
+    // C1 — GET /me/context é a carteira autoritativa do shell. Sem fixture,
+    // responde 404 e o shell cai para /operacao/cliente-360/clientes: é essa
+    // queda que todos os cenários S01-S13 abaixo continuam exercitando.
+    if (u.pathname === "/me/context") {
+      if (!currentFixture.meContext) { res.writeHead(404, { "Content-Type": "application/json" }); res.end('{"ok":false}'); return; }
+      meContextRequestCount += 1;
+      if (currentFixture.meContext === "erro") {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, erro: "Falha simulada em /me/context." }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(currentFixture.meContext));
+      return;
+    }
+
     if (u.pathname === "/operacao/cliente-360/clientes") {
+      legadoPortfolioRequestCount += 1;
       res.writeHead(currentFixture.failPortfolio ? 500 : 200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(currentFixture.failPortfolio ? { ok: false, erro: "Falha simulada." } : currentFixture.portfolio));
       return;
@@ -441,7 +478,61 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=financeiro]').getAttribute('aria-disabled')"), "true");
     });
 
-    console.log(`\n✓ ${checks} verificações do vf-shell (S01–S13 + responsividade)`);
+    /* ═════════════ C1 — GET /me/context é a carteira do shell ══════════ */
+    currentFixture = { portfolio: PORTFOLIO_MAIN, contas: CONTAS_MAIN, failPortfolio: false, meContext: ME_CONTEXT };
+    meContextRequestCount = 0;
+    legadoPortfolioRequestCount = 0;
+    await goto("scope=account&module=central-vendas");
+    await waitFor(cdp, "window.VF.context.getPortfolio().length === 9", "shell não resolveu a carteira por /me/context");
+
+    await check("C1 — com /me/context disponível, o shell NÃO chama mais /operacao/cliente-360/clientes", async () => {
+      assert.strictEqual(meContextRequestCount, 1, `esperado 1 GET /me/context, veio ${meContextRequestCount}`);
+      assert.strictEqual(legadoPortfolioRequestCount, 0, `o endpoint legado ainda foi chamado ${legadoPortfolioRequestCount}x`);
+      assert.strictEqual(await cdp.evaluate("window.VF.context.getPortfolio().length"), 9);
+    });
+
+    await check("C1 — squads do usuário ficam disponíveis no store (getSquads), sem inventar nada", async () => {
+      const squads = await cdp.evaluate("window.VF.context.getSquads()");
+      assert.strictEqual(squads.length, 1);
+      assert.strictEqual(squads[0].nome, "Squad Alpha");
+      assert.strictEqual(await cdp.evaluate("window.VF.context.getSquadPrincipalId()"), 3);
+    });
+
+    await check("C1 — 'N operações' aparece no dropdown de Cliente (campo que só o payload novo tem)", async () => {
+      await cdp.evaluate("document.getElementById('vf-cliente-trigger').click()");
+      await waitFor(cdp, "document.querySelector('.vf-shell__dropdown')", "dropdown de Cliente não abriu");
+      const texto = await cdp.evaluate(`
+        (function(){ var it = document.querySelector('.vf-shell__dropdown .vf-menu__item small'); return it ? it.textContent : null; })();
+      `);
+      assert.ok(texto && /3 operaç(ão|ões)/.test(texto), `esperado o sub-rótulo de operações a partir de contasAtivas, veio: ${texto}`);
+      await cdp.evaluate("document.getElementById('vf-cliente-trigger').click()");
+    });
+
+    /* Queda: servidor antigo, /me ainda não existe (404) → legado assume. */
+    currentFixture = { portfolio: PORTFOLIO_SMALL, contas: CONTAS_MAIN, failPortfolio: false };
+    meContextRequestCount = 0;
+    legadoPortfolioRequestCount = 0;
+    await goto("scope=account&module=central-vendas");
+    await waitFor(cdp, "window.VF.context.getPortfolio().length === 2", "queda não resolveu a carteira pelo endpoint legado");
+
+    await check("C1 — servidor sem /me (404): o shell cai para o endpoint legado e a carteira continua funcionando", async () => {
+      assert.strictEqual(legadoPortfolioRequestCount, 1, "a queda deveria ter chamado /operacao/cliente-360/clientes");
+      assert.strictEqual(await cdp.evaluate("window.VF.context.getPortfolio().length"), 2);
+      assert.deepStrictEqual(await cdp.evaluate("window.VF.context.getSquads()"), [], "sem /me/context não existe squad — e nada pode ser fabricado");
+    });
+
+    /* 500 NÃO cai: um servidor doente não pode se esconder atrás do legado. */
+    currentFixture = { portfolio: PORTFOLIO_SMALL, contas: CONTAS_MAIN, failPortfolio: false, meContext: "erro" };
+    legadoPortfolioRequestCount = 0;
+    await goto("scope=global&module=ferramentas");
+    await waitFor(cdp, "window.VF.context.getState() === 'PORTFOLIO_ERROR'", "500 em /me/context não virou PORTFOLIO_ERROR");
+
+    await check("C1 — 500 em /me/context vira PORTFOLIO_ERROR; NÃO é mascarado pelo endpoint legado", async () => {
+      assert.strictEqual(legadoPortfolioRequestCount, 0, "um 500 não pode ser escondido atrás de uma segunda chamada");
+      assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-cmd=retry]'))"), "estado de erro deveria oferecer 'Tentar novamente'");
+    });
+
+    console.log(`\n✓ ${checks} verificações do vf-shell (S01–S13 + responsividade + C1 /me/context)`);
   } finally {
     if (cdp) cdp.close();
     chrome.kill("SIGTERM");

@@ -25,8 +25,12 @@ const user = JSON.parse(localStorage.getItem("vf-user") || "{}");
 const role = String(user.role || "").toLowerCase();
 const canAccessAutomacoes =
   role === "admin" || role === "user" || role === "membro";
-if (!canAccessAutomacoes) window.location.replace("dashboard.html");
-initLayout();
+// F5/Bloco F — sem permissão volta para a CARTEIRA, não para dashboard.html
+// (tela legada, fora da navegação V3, ainda no layout.js): quem esbarra num
+// 403 dentro do Shell V3 não pode ser jogado num lugar de onde não sabe voltar.
+if (!canAccessAutomacoes) window.location.replace("carteira.html");
+// F5 — initLayout() saiu com o layout.js; vf-shell.js monta a navegação e
+// cuida de token ausente e do desvio de `seller`.
 
 // ═══════════════════════════════════════════════════════════════
 // ESTADO
@@ -535,7 +539,7 @@ async function carregarClientesParaFiltro() {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json().catch(() => ({}));
     CLIENTES_CACHE = Array.isArray(json.clientes) ? json.clientes : [];
@@ -545,6 +549,21 @@ async function carregarClientesParaFiltro() {
     preencherFiltroCliente();
   }
 }
+
+/* F5 — o Hub de Relatórios é uma tela GLOBAL: `rh-cliente` filtra uma lista
+   de relatórios de vários clientes, não escolhe um contexto operacional (a
+   mesma natureza dos seletores de bases.html). Por isso ele fica.
+
+   O que muda: chegando com um cliente no contexto — e é assim que se chega,
+   pelos dois links de automacoes.js — o filtro já nasce naquele cliente, em
+   vez de despejar a lista inteira e obrigar o operador a reencontrar de onde
+   veio. Continua livre para ser trocado depois; é filtro, não identidade. */
+function clienteDoContexto() {
+  const ctx = window.VF && window.VF.context ? window.VF.context.getContext() : null;
+  return ctx && ctx.clienteSlug ? String(ctx.clienteSlug).toLowerCase() : "";
+}
+
+let filtroClienteJaSemeado = false;
 
 function preencherFiltroCliente() {
   const select = document.getElementById("rh-cliente");
@@ -568,7 +587,25 @@ function preencherFiltroCliente() {
   select.innerHTML = `<option value="">Cliente: todos</option>`;
   itens.forEach((item) => select.appendChild(new Option(item.nome, item.slug)));
   if (valorAtual && itens.some((i) => i.slug === valorAtual)) select.value = valorAtual;
+
+  // Semeadura UMA vez: repetir a cada repovoamento desfaria uma troca
+  // deliberada de filtro feita pelo operador.
+  if (!filtroClienteJaSemeado && !valorAtual) {
+    const doContexto = clienteDoContexto();
+    if (doContexto && itens.some((i) => i.slug === doContexto)) {
+      select.value = doContexto;
+      filtroClienteJaSemeado = true;
+      lerFiltrosHubDoDom();
+      aplicarFiltrosHub();
+    }
+  }
 }
+
+// O contexto chega depois deste script clássico (vf-shell.js é module,
+// deferido). Quando chegar, refaz a semeadura se ainda não houve nenhuma.
+document.addEventListener("vf:context", () => {
+  if (!filtroClienteJaSemeado) preencherFiltroCliente();
+});
 
 async function carregarPastas() {
   if (!TOKEN) return;
@@ -577,7 +614,7 @@ async function carregarPastas() {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
 
@@ -603,7 +640,7 @@ async function carregarRelatorios() {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
 
@@ -1002,7 +1039,7 @@ async function baixarRelatorio(id, formato) {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
       throw new Error(json?.erro || `HTTP ${res.status}`);
@@ -1055,7 +1092,7 @@ async function confirmarExcluirRelatorio() {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
 
@@ -1116,7 +1153,7 @@ async function moverRelatorioParaPasta(relatorioId, pastaId) {
     body: JSON.stringify({ pastaId: pastaId == null ? null : pastaId }),
   });
   if (res.status === 401) { clearSession(); return; }
-  if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+  if (res.status === 403) { window.location.replace("carteira.html"); return; }
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
 }
@@ -1228,7 +1265,7 @@ async function salvarPastaModal() {
       });
     }
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
 
@@ -1279,7 +1316,7 @@ async function confirmarExcluirPasta() {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json?.ok) {
       const msg = String(json?.erro || `HTTP ${res.status}`);
@@ -1997,7 +2034,7 @@ async function abrirDetalheRelatorio(id) {
       headers: { Authorization: "Bearer " + TOKEN },
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
 
@@ -2072,7 +2109,7 @@ async function carregarPadraoCustoBase(baseSlug) {
     headers: { Authorization: "Bearer " + TOKEN },
   });
   if (res.status === 401) { clearSession(); return { imposto_percentual: 0, taxa_fixa: 0 }; }
-  if (res.status === 403) { window.location.replace("dashboard.html"); return { imposto_percentual: 0, taxa_fixa: 0 }; }
+  if (res.status === 403) { window.location.replace("carteira.html"); return { imposto_percentual: 0, taxa_fixa: 0 }; }
 
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
@@ -2191,7 +2228,7 @@ async function salvarCustoBaseRapido() {
       body: JSON.stringify(payload),
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("dashboard.html"); return; }
+    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json?.ok) throw new Error(json?.erro || `HTTP ${res.status}`);
 

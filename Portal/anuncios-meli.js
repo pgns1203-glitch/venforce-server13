@@ -21,7 +21,11 @@
   // Estado global do módulo
   var AM = {
     token: null,
+    // Fonte de PRONTIDÃO (mlConectado), não seletor — ver
+    // carregarProntidaoClientes(). `prontidaoCarregada` separa "ainda não sei"
+    // de "sei que este cliente não está na lista".
     clientes: [],
+    prontidaoCarregada: false,
     clienteAtual: null,
     resumo: null,
     anuncios: [],
@@ -29,9 +33,8 @@
     filtros: { q: "", status: "", filtro: "" },
     buscaTimer: null,
     carregandoCatalogo: false,
-    // Contas Mercado Livre do cliente atual (Cliente/Conta) — seletor só
-    // aparece com 2+ contas ativas; com 0 ou 1, comportamento é transparente.
-    contasMl: [],
+    // A operação escolhida no Shell (data-vf-scope="account"). Esta tela não
+    // decide mais cardinalidade — vf-context.js decide (R8).
     contaMlId: "",
     // Estado do detalhe aberto:
     detalheAtual: null,    // { anuncio, descricao }
@@ -193,20 +196,62 @@
         estadoHtml("error", "Sessão não encontrada", "Faça login no portal para usar os Anúncios ML.");
       return;
     }
-    if (typeof window.initLayout === "function") window.initLayout();
+    // F5 — initLayout() saiu com o layout.js; vf-shell.js monta a navegação.
     bindEventosFixos();
-    carregarClientes();
+    carregarProntidaoClientes();
+    aplicarContextoDoShell();
+  }
+
+  /* ── CONTEXTO (F5 — vem do Shell V3, não mais desta tela) ──────────────
+     A tela tinha uma VIEW inteira só para escolher o cliente e um seletor
+     de conta Mercado Livre por cima. Os dois viraram o mesmo par de
+     dropdowns do Shell, e a regra de cardinalidade voltou a existir num
+     lugar só (vf-context.js, R8).
+
+     O listener é registrado no init(), que roda enquanto este script
+     clássico é avaliado — antes de vf-shell.js (module, deferido) publicar
+     o store —, então nenhum emit se perde. */
+  function contextoDoShell() {
+    var store = window.VF && window.VF.context ? window.VF.context : null;
+    var ctx = store ? store.getContext() : null;
+    // Escopo CONTA: cliente sem operação ainda não é contexto para esta tela.
+    // `vf:context` emite durante a resolução das contas (cliente já
+    // conhecido, conta ainda não) — buscar aí gastaria uma requisição para
+    // um recorte que o operador não escolheu.
+    if (!ctx || !ctx.clienteSlug || !ctx.clienteContaId) return null;
+    var cliente = store.getClienteAtual ? store.getClienteAtual() : null;
+    return {
+      slug: ctx.clienteSlug,
+      nome: cliente ? cliente.nome : ctx.clienteSlug,
+      contaId: ctx.clienteContaId ? String(ctx.clienteContaId) : "",
+    };
+  }
+
+  var ultimoContextoAplicado = null;
+  function aplicarContextoDoShell() {
+    var ctx = contextoDoShell();
+    var chave = ctx ? ctx.slug + ":" + ctx.contaId : "";
+    if (chave === ultimoContextoAplicado) return;
+    ultimoContextoAplicado = chave;
+
+    if (!ctx) { AM.clienteAtual = null; AM.contaMlId = ""; return; }
+
+    AM.clienteAtual = { slug: ctx.slug, nome: ctx.nome };
+    AM.contaMlId = ctx.contaId;
+    AM.resumo = null;
+    AM.paginacao.page = 1;
+    AM.filtros = { q: "", status: "", filtro: "" };
+    if (el("am-busca")) el("am-busca").value = "";
+    if (el("am-filtro-status")) el("am-filtro-status").value = "";
+    if (el("am-filtro-problema")) el("am-filtro-problema").value = "";
+    atualizarIndicadorFiltros();
+    renderHudHeader();
+    carregarResumo();
+    carregarAnuncios();
   }
 
   function bindEventosFixos() {
-    el("am-busca-cliente").addEventListener("input", function (e) { renderClientes(e.target.value); });
-    el("am-voltar").addEventListener("click", function () {
-      AM.clienteAtual = null;
-      AM.resumo = null;
-      el("am-view-hud").classList.add("am-hidden");
-      el("am-view-clientes").classList.remove("am-hidden");
-      carregarClientes();
-    });
+    document.addEventListener("vf:context", aplicarContextoDoShell);
     el("am-busca").addEventListener("input", function (e) {
       AM.filtros.q = e.target.value;
       atualizarIndicadorFiltros();
@@ -219,126 +264,24 @@
     el("am-filtro-problema").addEventListener("change", function (e) {
       AM.filtros.filtro = e.target.value; AM.paginacao.page = 1; atualizarIndicadorFiltros(); carregarAnuncios();
     });
-    var selConta = el("am-filtro-conta");
-    if (selConta) selConta.addEventListener("change", function (e) {
-      AM.contaMlId = e.target.value || "";
-      AM.paginacao.page = 1;
-      carregarResumo();
-      carregarAnuncios();
-    });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") fecharDetalhe();
     });
   }
 
   // ===========================================================================
-  // Contas Mercado Livre do cliente (Cliente/Conta)
+  // Prontidão dos clientes — fonte, não seletor (F5)
   // ===========================================================================
-  function carregarContasMl() {
-    var wrap = el("am-filtro-conta-wrap");
-    var sel = el("am-filtro-conta");
-    AM.contasMl = [];
-    AM.contaMlId = "";
-    if (!wrap || !sel || !AM.clienteAtual) return Promise.resolve();
-
-    return api("/clientes/" + encodeURIComponent(AM.clienteAtual.slug) + "/contas?marketplace=meli")
-      .then(function (r) {
-        var contas = (r.data && Array.isArray(r.data.contas) ? r.data.contas : [])
-          .filter(function (c) { return c.ativo !== false; });
-        AM.contasMl = contas;
-        if (contas.length > 1) {
-          var html = '<option value="">Selecione a conta</option>';
-          contas.forEach(function (c) {
-            html += '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.nome || String(c.id)) + "</option>";
-          });
-          sel.innerHTML = html;
-          wrap.style.display = "";
-        } else {
-          wrap.style.display = "none";
-          sel.innerHTML = '<option value="">Selecione a conta</option>';
-        }
-      });
-  }
-
-  // true quando o cliente tem 2+ contas ML ativas e nenhuma foi escolhida —
-  // nesse caso a UI pede a conta em vez de deixar a API decidir sozinha.
-  function precisaSelecionarContaMl() {
-    return AM.contasMl.length > 1 && !AM.contaMlId;
-  }
-
-  // ===========================================================================
-  // VIEW 1 — Seleção de cliente
-  // ===========================================================================
-  function carregarClientes() {
-    var box = el("am-clientes-container");
-    box.innerHTML = estadoHtml("loading", "Carregando clientes…");
-
+  // GET /anuncios-meli/clientes continua sendo chamado: ele é quem sabe se a
+  // conta ML do cliente está conectada. Deixou de virar um grid clicável — a
+  // escolha é do Shell. `prontidaoCarregada` distingue "ainda não sei" de
+  // "sei que este cliente não está aqui": sem isso, o intervalo entre o boot
+  // e a resposta pareceria "Sem conexão ML", que é uma afirmação.
+  function carregarProntidaoClientes() {
     api("/anuncios-meli/clientes").then(function (r) {
-      if (!r.data || !r.data.ok) {
-        box.innerHTML = estadoHtml("error", "Não foi possível carregar",
-          (r.data && r.data.motivo) || "Erro ao buscar clientes.");
-        return;
-      }
-      AM.clientes = r.data.clientes || [];
-      renderClientes("");
-    });
-  }
-
-  function renderClientes(filtroTexto) {
-    var box = el("am-clientes-container");
-    var termo = (filtroTexto || "").trim().toLowerCase();
-    var lista = AM.clientes.filter(function (c) {
-      if (!termo) return true;
-      return (c.nome || "").toLowerCase().indexOf(termo) !== -1 ||
-             (c.slug || "").toLowerCase().indexOf(termo) !== -1;
-    });
-
-    if (!lista.length) {
-      box.innerHTML = estadoHtml("empty", "Nenhum cliente encontrado",
-        AM.clientes.length ? "Tente outro termo de busca." : "Não há clientes disponíveis para esta conta.");
-      return;
-    }
-
-    var html = '<div class="am-clientes-grid">';
-    lista.forEach(function (c) {
-      var conectado = c.mlConectado;
-      html += '<button type="button" class="am-cliente-card vf-card vf-card--interactive" data-slug="' + escapeHtml(c.slug) +
-        '" data-nome="' + escapeHtml(c.nome) + '" aria-label="Abrir anúncios de ' + escapeHtml(c.nome) + '">' +
-        '<span class="am-cliente-card__top"><span class="am-cliente-card__nome">' + escapeHtml(c.nome) + "</span>" +
-        '<span class="am-cliente-card__abrir" aria-hidden="true">Abrir →</span></span>' +
-        (c.slug ? '<span class="am-cliente-card__slug vf-mono">' + escapeHtml(c.slug) + "</span>" : "") +
-        '<div class="am-cliente-card__meta">' +
-        '<span class="vf-status ' + (conectado ? "is-success" : "is-danger") + '">' +
-        (conectado ? "ML conectado" : "Sem conexão ML") + "</span>" +
-        '<span class="vf-tag is-neutral">' + (c.totalAnuncios || 0) + " anúncios</span>" +
-        "</div></button>";
-    });
-    html += "</div>";
-    box.innerHTML = html;
-
-    var cards = box.querySelectorAll(".am-cliente-card");
-    for (var i = 0; i < cards.length; i++) {
-      cards[i].addEventListener("click", function () {
-        selecionarCliente(this.getAttribute("data-slug"), this.getAttribute("data-nome"));
-      });
-    }
-  }
-
-  function selecionarCliente(slug, nome) {
-    AM.clienteAtual = { slug: slug, nome: nome };
-    AM.resumo = null;
-    AM.paginacao.page = 1;
-    AM.filtros = { q: "", status: "", filtro: "" };
-    el("am-busca").value = "";
-    el("am-filtro-status").value = "";
-    el("am-filtro-problema").value = "";
-    atualizarIndicadorFiltros();
-    el("am-view-clientes").classList.add("am-hidden");
-    el("am-view-hud").classList.remove("am-hidden");
-    renderHudHeader();
-    carregarContasMl().then(function () {
-      carregarResumo();
-      carregarAnuncios();
+      AM.clientes = r.data && r.data.ok && Array.isArray(r.data.clientes) ? r.data.clientes : [];
+      AM.prontidaoCarregada = !!(r.data && r.data.ok);
+      if (AM.clienteAtual) renderHudHeader();
     });
   }
 
@@ -348,7 +291,14 @@
   function renderHudHeader() {
     var c = AM.clienteAtual;
     var resumo = AM.resumo;
-    var clienteCompleto = AM.clientes.find(function (item) { return item.slug === c.slug; }) || {};
+    var clienteCompleto = AM.clientes.find(function (item) { return item.slug === c.slug; }) || null;
+    // Três estados, não dois: conectado · não conectado · não sabemos ainda
+    // (ou este cliente não está na lista de Anúncios ML). Renderizar
+    // "Sem conexão ML" para o terceiro caso seria afirmar um diagnóstico
+    // que não foi feito.
+    var conexao = clienteCompleto
+      ? (clienteCompleto.mlConectado ? { cls: "is-success", txt: "ML conectado" } : { cls: "is-danger", txt: "Sem conexão ML" })
+      : (AM.prontidaoCarregada ? { cls: "is-warning", txt: "Fora da lista de Anúncios ML" } : { cls: "is-info", txt: "Verificando conexão ML…" });
     var subInfo = resumo
       ? '<span>Última sincronização: <strong>' + formatData(resumo.ultimaSync) + "</strong></span>" +
         '<span>Total sincronizado: <strong>' + (resumo.total || 0) + " anúncios</strong></span>"
@@ -360,8 +310,7 @@
           '<div class="am-cliente-contexto__title-row"><div>' +
             '<p class="am-cliente-contexto__eyebrow">Cliente selecionado</p>' +
             '<h2 id="am-cliente-contexto-titulo">' + escapeHtml(c.nome) + "</h2></div>" +
-            '<span class="vf-status ' + (clienteCompleto.mlConectado ? "is-success" : "is-danger") + '">' +
-              (clienteCompleto.mlConectado ? "ML conectado" : "Sem conexão ML") + "</span></div>" +
+            '<span class="vf-status ' + conexao.cls + '">' + conexao.txt + "</span></div>" +
           '<div class="am-hud-sub">' + subInfo + "</div>" +
         "</div>" +
         '<div class="am-sync-area">' +
@@ -379,12 +328,6 @@
 
   function carregarResumo() {
     if (!AM.clienteAtual) return;
-    if (precisaSelecionarContaMl()) {
-      AM.resumo = null;
-      renderHudHeader();
-      renderResumo();
-      return;
-    }
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
     api("/anuncios-meli/resumo?" + qs)
@@ -423,14 +366,6 @@
   function carregarAnuncios() {
     if (!AM.clienteAtual || AM.carregandoCatalogo) return;
     var box = el("am-catalogo-container");
-
-    if (precisaSelecionarContaMl()) {
-      AM.anuncios = [];
-      AM.paginacao = { page: 1, limit: AM.paginacao.limit, total: 0, totalPaginas: 1 };
-      box.innerHTML = estadoHtml("empty", "Selecione a conta Mercado Livre",
-        "Este cliente possui mais de uma conta Mercado Livre; escolha qual conta consultar acima.");
-      return;
-    }
 
     AM.carregandoCatalogo = true;
     box.innerHTML = estadoHtml("loading", "Carregando anúncios…");
@@ -1265,10 +1200,9 @@
   // Sincronização
   // ===========================================================================
   function sincronizar(modo) {
-    if (precisaSelecionarContaMl()) {
-      toast("Este cliente possui mais de uma conta Mercado Livre; selecione qual conta sincronizar.", "is-warning");
-      return;
-    }
+    // Sem operação escolhida o Shell nem exibe esta tela (scope="account"):
+    // nenhuma guarda de cardinalidade própria aqui (R8).
+    if (!AM.clienteAtual) return;
     var overlay = document.createElement("div");
     overlay.className = "am-sync-overlay vf-overlay is-open";
     overlay.id = "am-sync-overlay";

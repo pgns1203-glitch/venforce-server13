@@ -107,6 +107,8 @@ const {
 } = require("./middlewares/observabilityMiddleware");
 const { ensureObservabilityTables } = require("./repositories/observabilityRepository");
 const { ensureSquadsTables } = require("./services/squads/squadsRepository");
+const { ensureEntregasClienteSchema } = require("./services/schema/schemaEnsure");
+const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
   MARKETPLACES_SUPORTADOS,
   normalizarProdutoIdTikTok,
@@ -503,6 +505,19 @@ function gerarApiKey() {
 app.get("/", (req, res) => res.send("API VenForce rodando 🚀"));
 app.get("/health", (req, res) => res.json({ ok: true, mensagem: `VENFORCE OK porta ${PORT}` }));
 
+// BLOCO 17 — readiness de SCHEMA. Só booleanos estruturais (presença de
+// coluna/tabela) + nome da migration correspondente; NENHUM dado, token ou
+// PII. `ok=false` só quando falta algo REQUIRED. 503 nesse caso para um
+// health-check externo conseguir distinguir "no ar mas sem schema" de "ok".
+app.get("/health/schema", async (req, res) => {
+  try {
+    const r = await verificarSchemaV3();
+    res.status(r.ok ? 200 : 503).json(r);
+  } catch (err) {
+    res.status(500).json({ ok: false, checagemFalhou: true, erro: err.message });
+  }
+});
+
 // SETUP TABELAS
 app.get("/setup", async (req, res) => {
   if (process.env.ENABLE_SETUP_ROUTE !== "true") {
@@ -638,42 +653,13 @@ CREATE TABLE IF NOT EXISTS callbacks (
       );
       CREATE INDEX IF NOT EXISTS idx_relatorio_itens_relatorio ON relatorio_itens(relatorio_id);
       CREATE INDEX IF NOT EXISTS idx_relatorio_itens_diagnostico ON relatorio_itens(relatorio_id, diagnostico);
+    `);
 
-      CREATE TABLE IF NOT EXISTS entregas_cliente (
-        id SERIAL PRIMARY KEY,
-        tipo VARCHAR(50) NOT NULL,
-        cliente_id INTEGER REFERENCES clientes(id) ON DELETE SET NULL,
-        cliente_slug VARCHAR(255),
-        cliente_nome VARCHAR(255),
-        titulo VARCHAR(255) NOT NULL,
-        periodo VARCHAR(100),
-        status VARCHAR(30) DEFAULT 'rascunho',
-        token_publico VARCHAR(120) UNIQUE,
-        publicado BOOLEAN DEFAULT FALSE,
-        payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-        origem_tipo VARCHAR(50),
-        origem_id INTEGER,
-        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW(),
-        published_at TIMESTAMP,
-        expires_at TIMESTAMP
-      );
-
-      -- V3 P2.6 D1 - operacao (ClienteConta) da entrega. Aditiva e NULLABLE:
-      -- entrega antiga fica NULL, que e a verdade sobre ela (sem backfill:
-      -- escolher uma conta a posteriori seria inventar mapeamento). A FK e o
-      -- indice parcial vivem em sql/migrations/20260828_entregas_cliente_conta_p26.sql;
-      -- aqui so garantimos a COLUNA, porque a tabela cliente_contas pode ainda
-      -- nao existir nesta base e a aplicacao nao pode quebrar por isso.
-      ALTER TABLE entregas_cliente ADD COLUMN IF NOT EXISTS cliente_conta_id INTEGER;
-
-      CREATE INDEX IF NOT EXISTS idx_entregas_cliente_cliente_id ON entregas_cliente(cliente_id);
-      CREATE INDEX IF NOT EXISTS idx_entregas_cliente_conta_id ON entregas_cliente(cliente_conta_id);
-      CREATE INDEX IF NOT EXISTS idx_entregas_cliente_token_publico ON entregas_cliente(token_publico);
-      CREATE INDEX IF NOT EXISTS idx_entregas_cliente_tipo ON entregas_cliente(tipo);
-      CREATE INDEX IF NOT EXISTS idx_entregas_cliente_created_at ON entregas_cliente(created_at);
-    `);   
+    // `entregas_cliente` (tabela + coluna cliente_conta_id D1 + índices, SEM o
+    // índice UNIQUE de D4) vem de um único lugar agora — o mesmo `ensure` que
+    // roda no boot, porque `/setup` é desabilitado em produção. Ver
+    // server/services/schema/schemaEnsure.js.
+    await ensureEntregasClienteSchema(pool);
 
     await pool.query(`
   ALTER TABLE bases
@@ -1849,6 +1835,18 @@ const server = app.listen(PORT, () => {
   ensureCentralVendasTables().catch((err) => {
     console.error("[centralVendas] erro ao garantir tabelas no boot:", err.message);
   });
+
+  // BLOCO 4 — `entregas_cliente.cliente_conta_id` (V3 P2.6 D1) só existia no
+  // DDL da rota `/setup`, desabilitada em produção → a tela do Financeiro V3
+  // quebrava com `column "cliente_conta_id" does not exist`. Este ensure é o
+  // caminho automático que faltava. Idempotente, aditivo, NÃO aplica o índice
+  // UNIQUE de D4. A checagem de readiness roda LOGO DEPOIS dele para não
+  // acusar falso-positivo enquanto a coluna está sendo criada.
+  ensureEntregasClienteSchema()
+    .then(() => logReadinessNoBoot())
+    .catch((err) => {
+      console.error("[schema] erro ao garantir schema de entregas_cliente / readiness no boot:", err.message);
+    });
 
   // /setup é desabilitado em produção — as colunas novas de `custos`
   // (produto_nome, variacao_nome, updated_at) são garantidas aqui.

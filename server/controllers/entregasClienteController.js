@@ -18,14 +18,22 @@ const {
   ehAdmin,
 } = require("../services/squads/authorizationService");
 
+// V3 P2.7 BLOCO U — erro conhecido nunca vira 500 generico. Antes so dois
+// codigos eram mapeados por nome; qualquer erro novo com statusCode+code caia
+// no 500 final, escondendo um 403/404/409 legitimo do frontend.
 function responderErro(res, err) {
-  if (err?.code === "CLIENTE_FORA_DA_CARTEIRA" || err?.code === "CLIENTE_NAO_ENCONTRADO") {
-    return res.status(err.statusCode || 403).json({ ok: false, code: err.code, erro: err.message });
-  }
   if (err?.payload && err?.statusCode) {
     return res.status(err.statusCode).json(err.payload);
   }
-  return res.status(500).json({ ok: false, erro: err?.message || "Erro interno do servidor" });
+  const status = Number(err?.statusCode);
+  if (Number.isFinite(status) && status >= 400 && status < 500) {
+    const corpo = { ok: false, erro: err.message };
+    if (err.code) corpo.code = err.code;
+    return res.status(status).json(corpo);
+  }
+  // 5xx: mensagem generica para fora, detalhe tecnico so no log.
+  console.error("[entregas-cliente]", err?.message);
+  return res.status(500).json({ ok: false, erro: "Erro interno do servidor" });
 }
 
 function erroCarteira(status, code, mensagem) {
@@ -39,10 +47,25 @@ function erroCarteira(status, code, mensagem) {
 async function autorizarPorEntrega(req, idRaw) {
   const resultado = await buscarEntregaPorId({ idRaw }); // lança se não existe
   const clienteId = resultado?.entrega?.cliente_id;
-  if (clienteId != null) {
-    const ok = await canAccessCliente(req.user || {}, clienteId);
-    if (!ok) throw erroCarteira(403, "CLIENTE_FORA_DA_CARTEIRA", "Cliente fora da sua carteira.");
+
+  // V3 P2.7 BLOCO L — entrega ÓRFÃ (cliente_id NULL) pulava a autorização
+  // inteira: `if (clienteId != null)` deixava GET/PATCH/publicar/despublicar/
+  // DELETE liberados para qualquer papel de automações. E órfãs não são
+  // hipotéticas — a FK é `ON DELETE SET NULL`, então apagar um cliente
+  // CONVERTE todas as entregas dele em órfãs, e `criarEntrega` grava
+  // cliente_id NULL quando o body não traz referência de cliente.
+  //
+  // Sem cliente não há carteira contra a qual verificar, então a única regra
+  // canônica aplicável é o bypass de admin.
+  if (clienteId == null) {
+    if (!ehAdmin(req.user || {})) {
+      throw erroCarteira(403, "ENTREGA_SEM_CLIENTE", "Esta entrega não está vinculada a um cliente; só um admin pode acessá-la.");
+    }
+    return resultado;
   }
+
+  const ok = await canAccessCliente(req.user || {}, clienteId);
+  if (!ok) throw erroCarteira(403, "CLIENTE_FORA_DA_CARTEIRA", "Cliente fora da sua carteira.");
   return resultado;
 }
 
@@ -66,13 +89,16 @@ async function listarEntregasController(req, res) {
     if (ref !== undefined && ref !== null && ref !== "") {
       await assertClienteNaCarteira(user, ref);
     }
-    const resultado = await listarEntregas({ query: req.query });
-    let entregas = resultado.entregas;
-    if (!ehAdmin(user) && (ref === undefined || ref === null || ref === "")) {
-      const permitidos = new Set((await resolvePortfolioClientes(user)).map((c) => c.id));
-      entregas = entregas.filter((e) => e.cliente_id != null && permitidos.has(e.cliente_id));
-    }
-    return res.json({ ok: true, entregas, total: resultado.total });
+    // V3 P2.7 BLOCO L — a carteira agora entra NO SQL. Antes o filtro rodava
+    // sobre o array já paginado pelo LIMIT/OFFSET e o `total` devolvido era o
+    // global, sem filtro: vazava a contagem de entregas de outros Squads e
+    // produzia páginas curtas ou vazias sem indicar o porquê.
+    const clienteIdsPermitidos = ehAdmin(user)
+      ? null
+      : (await resolvePortfolioClientes(user)).map((c) => c.id);
+
+    const resultado = await listarEntregas({ query: req.query, clienteIdsPermitidos });
+    return res.json({ ok: true, entregas: resultado.entregas, total: resultado.total });
   } catch (err) {
     return responderErro(res, err);
   }

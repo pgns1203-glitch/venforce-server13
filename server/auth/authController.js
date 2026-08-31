@@ -20,7 +20,8 @@ function readClients() {
 }
 
 function generateToken(user) {
-  const secret = process.env.JWT_SECRET || "venforce_secret_local";
+  // V3 P2.7 BLOCO Q — ver config/jwtSecret.js.
+  const secret = require("../config/jwtSecret").getJwtSecret();
 
   return jwt.sign(
     {

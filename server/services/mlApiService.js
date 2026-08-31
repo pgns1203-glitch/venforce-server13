@@ -11,7 +11,8 @@ const { saveMlToken } = require("./mlTokenService");
 const ML_CLIENT_ID = process.env.ML_CLIENT_ID || "";
 const ML_CLIENT_SECRET = process.env.ML_CLIENT_SECRET || "";
 const ML_REDIRECT_URI = process.env.ML_REDIRECT_URI || "https://venforce-server.onrender.com/callback";
-const JWT_SECRET = process.env.JWT_SECRET || "venforce_secret_local";
+// V3 P2.7 BLOCO Q — ver config/jwtSecret.js.
+const { getJwtSecret } = require("../config/jwtSecret");
 
 async function buscarClienteAtivoPorSlug(slug) {
   const result = await pool.query(
@@ -36,11 +37,11 @@ function gerarMlState(cliente, { clienteContaId = null } = {}) {
     nonce: crypto.randomBytes(16).toString("hex"),
   };
   if (clienteContaId != null) payload.clienteContaId = Number(clienteContaId);
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "10m" });
+  return jwt.sign(payload, getJwtSecret(), { expiresIn: "10m" });
 }
 
 function verificarMlState(state) {
-  return jwt.verify(String(state), JWT_SECRET);
+  return jwt.verify(String(state), getJwtSecret());
 }
 
 function gerarMlAuthorizationUrl(state) {

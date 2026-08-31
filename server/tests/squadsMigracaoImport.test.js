@@ -199,8 +199,18 @@ function instalar(M, { failOnHistoryInsert = 0 } = {}) {
     if (/^INSERT INTO cliente_responsaveis /i.test(q)) {
       const [cliente_id, user_id, papel] = params;
       let r = M.responsaveis.find((x) => x.cliente_id === cliente_id && x.user_id === user_id && x.papel === papel);
-      if (r) r.ativo = true;
+      if (r) { r.ativo = true; r.encerrado_em = null; }
       else M.responsaveis.push({ id: ++M._seq, cliente_id, user_id, papel, ativo: true });
+      return { rows: [] };
+    }
+    // P2.4 — transferência encerra responsáveis sem membership no squad destino.
+    if (/^UPDATE cliente_responsaveis cr\s+SET ativo = false/i.test(q)) {
+      const [cliente_id, , squad_destino] = params;
+      for (const r of M.responsaveis) {
+        if (r.cliente_id !== cliente_id || !r.ativo) continue;
+        const temAcesso = M.members.some((m) => m.squad_id === squad_destino && m.user_id === r.user_id && m.ativo);
+        if (!temAcesso) { r.ativo = false; r.encerrado_em = new Date().toISOString(); r.motivo = "transferencia_squad"; }
+      }
       return { rows: [] };
     }
 
@@ -372,6 +382,38 @@ async function run() {
     ok("rollback: squad 'tx' NÃO persistido (rollback total)", !M.squads.some((s) => s.slug === "tx"));
     ok("rollback: nenhuma membership persistida", M.members.length === 0);
     ok("rollback: nenhum vínculo de cliente persistido", M.history.length === 0);
+    restore();
+  }
+
+  // ── 7. P2.4: transferência de squad encerra responsável sem acesso ao destino ──
+  {
+    const M = novoMundo();
+    const restore = instalar(M);
+    // estado inicial: acme em alpha; ana (só em alpha) é gestora de acme.
+    await svc.importar({
+      versao: 1,
+      squads: [{ slug: "alpha", nome: "Alpha" }, { slug: "beta", nome: "Beta" }],
+      membros: [
+        { squad: "alpha", usuario: "ana@vf.com", principal: true },
+        { squad: "beta", usuario: "bea@vf.com", principal: true },
+      ],
+      clientes: [{ cliente: "acme", squad: "alpha" }],
+      responsaveis: [{ cliente: "acme", usuario: "ana@vf.com", papel: "gestor" }],
+    }, { actorId: 1, dryRun: false });
+    ok("P2.4 setup: ana é gestora ativa de acme", M.responsaveis.some((r) => r.cliente_id === 100 && r.user_id === 1 && r.papel === "gestor" && r.ativo));
+
+    // transfere acme para beta e nomeia bea (membro de beta) como gestora.
+    const r = await svc.importar({
+      versao: 1,
+      squads: [{ slug: "beta", nome: "Beta" }],
+      clientes: [{ cliente: "acme", squad: "beta" }],
+      responsaveis: [{ cliente: "acme", usuario: "bea@vf.com", papel: "gestor" }],
+    }, { actorId: 1, dryRun: false });
+    ok("P2.4 transfer: aplicado", r.aplicado === true);
+    ok("P2.4 transfer: responsabilidade da ana ENCERRADA (sem acesso ao squad destino)",
+      M.responsaveis.some((x) => x.cliente_id === 100 && x.user_id === 1 && x.papel === "gestor" && x.ativo === false && x.motivo === "transferencia_squad"));
+    ok("P2.4 transfer: bea é a nova gestora ativa de acme",
+      M.responsaveis.some((x) => x.cliente_id === 100 && x.user_id === 2 && x.papel === "gestor" && x.ativo === true));
     restore();
   }
 

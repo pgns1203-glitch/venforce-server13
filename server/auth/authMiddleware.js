@@ -12,7 +12,8 @@ function authMiddleware(req, res, next) {
     }
 
     const token = authHeader.substring(7);
-    const secret = process.env.JWT_SECRET || "venforce_secret_local";
+    // V3 P2.7 BLOCO Q — ver config/jwtSecret.js.
+    const secret = require("../config/jwtSecret").getJwtSecret();
 
     const decoded = jwt.verify(token, secret);
 

@@ -43,6 +43,7 @@ function novoModelo() {
     members: [], // {id, squad_id, user_id, is_primary, funcao, ativo, created_at}
     clientes: [{ id: 1 }, { id: 2 }],
     history: [], // {id, cliente_id, squad_id, fim_em, ...}
+    responsaveis: [], // {cliente_id, user_id, papel, ativo}
     seqMember: 1,
     seqHistory: 1,
     seqSquad: 100,
@@ -172,6 +173,23 @@ function instalar(m) {
       return { rows: [{ id: h.id, cliente_id: h.cliente_id, squad_id: h.squad_id, inicio_em: h.inicio_em }] };
     }
 
+    // ── P2.4: limpeza de responsáveis na transferência ──
+    if (q.includes("squads:ENCERRAR_RESPONSAVEIS_SEM_ACESSO")) {
+      const [cliente_id, squad_destino] = [Number(params[0]), Number(params[1])];
+      const encerrados = [];
+      for (const r of m.responsaveis) {
+        if (r.cliente_id !== cliente_id || !r.ativo) continue;
+        const temAcesso = m.members.some((mm) => mm.squad_id === squad_destino && mm.user_id === r.user_id && mm.ativo);
+        if (!temAcesso) { r.ativo = false; r.motivo = "transferencia_squad"; encerrados.push({ user_id: r.user_id, papel: r.papel }); }
+      }
+      return { rows: encerrados };
+    }
+    if (q.includes("squads:CONTAR_RESPONSAVEIS_ATIVOS")) {
+      const [cliente_id, papel] = [Number(params[0]), String(params[1])];
+      const total = m.responsaveis.filter((r) => r.cliente_id === cliente_id && r.papel === papel && r.ativo).length;
+      return { rows: [{ total }] };
+    }
+
     return { rows: [] };
   }
 
@@ -217,11 +235,17 @@ async function run() {
     ok("atribuirCliente: cliente 1 -> squad 10 (abre histórico)", v1.squad_id === 10);
     await lanca("atribuirCliente de novo (cliente já tem squad) -> 409", () => squadService.atribuirCliente(20, 1, {}), "CLIENTE_JA_TEM_SQUAD");
 
+    // P2.4: responsável do cliente 1 (user 100 é membro só do squad 10, não do 20)
+    m.responsaveis.push({ cliente_id: 1, user_id: 100, papel: "gestor", ativo: true });
+
     // transferência
     const t = await squadService.transferirCliente(1, 20, { motivo: "realinhamento" });
     ok("transferirCliente 1: Alpha -> Beta, fecha histórico antigo", t.squad_id === 20 && t.squadOrigemId === 10);
     ok("apenas 1 histórico aberto para o cliente 1 após transferência", m.history.filter((h) => h.cliente_id === 1 && h.fim_em === null).length === 1);
     ok("histórico antigo preservado com fim_em preenchido", m.history.filter((h) => h.cliente_id === 1 && h.fim_em !== null).length === 1);
+    ok("P2.4: transferência encerra responsável sem acesso ao squad destino", m.responsaveis.find((r) => r.cliente_id === 1 && r.user_id === 100).ativo === false);
+    ok("P2.4: resultado da transferência traz pendências (lista aberta, hoje gestor_ausente)",
+      Array.isArray(t.responsabilidade.pendencias) && t.responsabilidade.pendencias.some((p) => p.tipo === "gestor_ausente"));
 
     await lanca("transferir para squad inativo (30) -> 409 SQUAD_INATIVO", () => squadService.transferirCliente(1, 30, {}), "SQUAD_INATIVO");
 

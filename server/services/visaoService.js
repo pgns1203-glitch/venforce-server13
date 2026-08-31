@@ -27,7 +27,12 @@ const {
   sanitizarConta,
 } = require("./clienteContas/clienteContaService");
 const { CODIGOS_CANONICOS } = require("../utils/erroContextoCanonico");
-const { rangeFromCompetencia, competenciaAtual, parseCompetencia } = require("../utils/periodoUtils");
+const { competenciaAtual } = require("../utils/periodoUtils");
+const {
+  normalizarCompetenciaEstrita,
+  rangeDaCompetencia,
+  mesmaCompetencia,
+} = require("../utils/competenciaCanonica");
 const { getCliente360 } = require("./cliente360/cliente360Service");
 const { getCentralVendasReadBootstrap } = require("./centralVendas/centralVendasReadService");
 const { obterResumo: obterResumoMargem } = require("./motorMargem/motorMargemService");
@@ -68,15 +73,61 @@ async function resolverContaObrigatoria({ clienteSlugRaw, clienteContaIdRaw }, d
   return { cliente, conta: deps.sanitizarConta(contaRaw) };
 }
 
+// V3 P2.5/P2.6 BLOCO C — competência nunca é inferida EM SILÊNCIO.
+//
+// Antes: `parseCompetencia(periodoRaw) || competenciaAtual()`. Isso tratava
+// "não mandou" e "mandou errado" da mesma forma — `?periodo=lixo` respondia o
+// MÊS ATUAL sem avisar. O usuário pedia Julho e recebia Agosto rotulado como
+// se fosse o que ele pediu.
+//
+// Agora:
+//   - período INVÁLIDO → 400 explícito. Não é breaking change para o frontend
+//     já mergeado: `frontend-react/src/utils/periodoUrl.js` valida com
+//     `ehCompetencia` antes de enviar, então só um cliente já quebrado manda
+//     lixo — e esse merece o 400.
+//   - período AUSENTE → segue no mês corrente (o contrato de /operacao/visao
+//     sempre permitiu omitir; exigir agora quebraria consumidores legítimos),
+//     mas isso passa a ser DECLARADO em `contexto.periodoInferido: true`.
+//     Inferir e avisar é diferente de inferir em silêncio.
 function resolverPeriodo(periodoRaw) {
-  const parsed = periodoRaw ? parseCompetencia(periodoRaw) : null;
-  const periodo = parsed || competenciaAtual();
-  const { dateFrom, dateTo } = rangeFromCompetencia(periodo.competencia);
-  return { competencia: periodo.competencia, dateFrom, dateTo };
+  const informado = periodoRaw !== undefined && periodoRaw !== null && String(periodoRaw).trim() !== "";
+
+  if (!informado) {
+    const atual = competenciaAtual();
+    return {
+      competencia: atual.competencia,
+      dateFrom: atual.dateFrom,
+      dateTo: atual.dateTo,
+      inferido: true,
+    };
+  }
+
+  if (!normalizarCompetenciaEstrita(periodoRaw)) {
+    // Mesmo erro canônico do Financeiro: PERIODO_INVALIDO / 400.
+    throw criarErroHttp(400, "periodo inválido: use o formato YYYY-MM.", {
+      code: CODIGOS_CANONICOS.PERIODO_INVALIDO,
+    });
+  }
+
+  const { competencia, dateFrom, dateTo } = rangeDaCompetencia(periodoRaw);
+  return { competencia, dateFrom, dateTo, inferido: false };
 }
 
 // Envelope uniforme de bloco — nunca lança para fora, nunca inventa dado
 // quando a fonte falha ou não existe para este marketplace.
+// Mesma ordem determinística do Financeiro (financeiroVisaoService): sem
+// UNIQUE na tabela, duplicatas existem; o que não pode existir é a resposta
+// MUDAR entre dois requests idênticos.
+function compararEntregas(a, b) {
+  const pubA = a.publicado === true || a.status === "publicado" ? 1 : 0;
+  const pubB = b.publicado === true || b.status === "publicado" ? 1 : 0;
+  if (pubA !== pubB) return pubB - pubA;
+  const tA = Date.parse(a.created_at || "") || 0;
+  const tB = Date.parse(b.created_at || "") || 0;
+  if (tA !== tB) return tB - tA;
+  return Number(b.id || 0) - Number(a.id || 0);
+}
+
 async function bloco({ escopoConta, aplicavel = true, motivoInaplicavel = null }, fn) {
   if (!aplicavel) {
     return { disponivel: false, escopoConta, motivo: motivoInaplicavel || "Não aplicável a este marketplace." };
@@ -138,8 +189,13 @@ async function obterVisao({ clienteSlugRaw, clienteContaIdRaw, periodoRaw }, dep
       const { entregas } = await d.listarEntregas({
         query: { cliente_slug: cliente.slug, tipo: "fechamento_mensal", limit: 12 },
       });
-      const doPeriodo = (entregas || []).find((e) => String(e.periodo || "").includes(periodo.competencia));
-      return doPeriodo || null;
+      // BLOCO E — era `String(e.periodo).includes(competencia)`, que fazia uma
+      // entrega gravada como "2026-07 a 2026-08" responder por Julho E por
+      // Agosto. Agora é igualdade sobre a competência normalizada, com a mesma
+      // ordem determinística do Financeiro quando há duplicata.
+      const doPeriodo = (entregas || []).filter((e) => mesmaCompetencia(e.periodo, periodo.competencia));
+      if (!doPeriodo.length) return null;
+      return doPeriodo.sort(compararEntregas)[0];
     }),
 
     // Atividade (sync runs): account-aware.
@@ -149,7 +205,7 @@ async function obterVisao({ clienteSlugRaw, clienteContaIdRaw, periodoRaw }, dep
   ]);
 
   return {
-    contexto: { clienteId: cliente.id, clienteSlug: cliente.slug, clienteContaId: conta.id, marketplace: conta.marketplace, competencia: periodo.competencia },
+    contexto: { clienteId: cliente.id, clienteSlug: cliente.slug, clienteContaId: conta.id, marketplace: conta.marketplace, competencia: periodo.competencia, periodoInferido: periodo.inferido === true },
     saude,
     resultado,
     margem,

@@ -604,7 +604,7 @@ const INTEGRACOES = [
     nome: "Autenticação JWT",
     envs: ["JWT_SECRET"],
     testavel: false,
-    nota: "Sem JWT_SECRET o servidor usa um segredo local de desenvolvimento.",
+    nota: "Sem JWT_SECRET o servidor usa um segredo local de desenvolvimento; com NODE_ENV=production ele RECUSA subir (V3 P2.7 BLOCO Q).",
   },
   {
     id: "mercadolivre",

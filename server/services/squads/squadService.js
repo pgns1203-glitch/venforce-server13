@@ -11,7 +11,33 @@
 //   - transferência atômica (BEGIN/COMMIT)
 
 const pool = require("../../config/database");
-const { ensureSquadsTables } = require("./squadsRepository");
+const {
+  ensureSquadsTables,
+  encerrarResponsaveisSemAcessoAoSquad,
+  contarResponsaveisAtivos,
+} = require("./squadsRepository");
+
+// Quando um Cliente muda de Squad, as responsabilidades (gestor/auxiliar/
+// designer) cujo titular NÃO é membro do Squad de destino são encerradas —
+// não podem seguir apontando silenciosamente para quem perdeu o acesso
+// (mission P2.4 §4). Isto NÃO é autorização: é limpeza disparada PELA
+// transferência. O "último gestor obrigatório" da remoção MANUAL não se
+// aplica aqui — a transferência é um estado de migração tratado.
+// Retorna { responsaveisEncerrados, pendencias } — `pendencias` é uma lista
+// aberta (hoje só "gestor_ausente"; preparada para novos tipos sem quebrar
+// o contrato de quem consome).
+async function limparResponsaveisAposMudancaDeSquad(clienteId, squadDestinoId, actorId, client) {
+  const encerrados = await encerrarResponsaveisSemAcessoAoSquad(
+    clienteId, squadDestinoId, { encerradoPor: actorId, motivo: "transferencia_squad" }, client
+  );
+  const gestoresVigentes = await contarResponsaveisAtivos(clienteId, "gestor", client);
+  const pendencias = [];
+  if (gestoresVigentes === 0) pendencias.push({ tipo: "gestor_ausente" });
+  return {
+    responsaveisEncerrados: encerrados.map((r) => ({ userId: r.user_id, papel: r.papel })),
+    pendencias,
+  };
+}
 
 function erro(status, code, mensagem) {
   const e = new Error(mensagem);
@@ -373,9 +399,11 @@ async function transferirCliente(clienteId, squadDestinoId, { motivo = null } = 
       [cid, destino, actorId, motivo]
     );
 
+    const responsabilidade = await limparResponsaveisAposMudancaDeSquad(cid, destino, actorId, client);
+
     await client.query("COMMIT");
-    console.log(`[squads] cliente=${cid} transferido squad ${origem} -> ${destino} por user=${actorId} motivo=${motivo || "-"}`);
-    return { ...rows[0], squadOrigemId: origem };
+    console.log(`[squads] cliente=${cid} transferido squad ${origem} -> ${destino} por user=${actorId} motivo=${motivo || "-"} responsaveisEncerrados=${responsabilidade.responsaveisEncerrados.length} pendencias=${responsabilidade.pendencias.map((p) => p.tipo).join(",") || "-"}`);
+    return { ...rows[0], squadOrigemId: origem, responsabilidade };
   } catch (e) {
     if (e.statusCode) { await client.query("ROLLBACK").catch(() => {}); throw e; }
     await client.query("ROLLBACK");

@@ -180,7 +180,7 @@ describe("FinanceiroPage · contexto Cliente/Conta", () => {
     mockarHooks({ dados: dadosBase(), operacao: operacaoPronta({ clienteSlug: "extra-maquinas", clienteContaId: 51 }) });
     render(<FinanceiroPage />);
 
-    const link = await screen.findByRole("link", { name: /o Financeiro atual/ });
+    const link = await screen.findByRole("link", { name: /Financeiro \(legado\)/ });
     expect(link).toHaveAttribute("href", "financeiro.html?cliente=extra-maquinas");
   });
 });

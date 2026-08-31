@@ -59,9 +59,9 @@ export default function FinanceiroPage() {
             <p className="vf-page-header__eyebrow">Financeiro · em validação (V3)</p>
             <h1 className="vf-page-header__title">Resultado e fechamento do período</h1>
             <p className="vf-page-header__description">
-              Leitura do que já foi processado, e publicação dos fechamentos gerados. Para{" "}
-              <strong>gerar</strong> um fechamento (upload e cálculo), use{" "}
-              <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>o Financeiro atual →</a>
+              Esta tela lê o que já foi processado e publica os fechamentos gerados. Para{" "}
+              <strong>gerar</strong> um fechamento (upload e cálculo), esta versão ainda depende do{" "}
+              <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>Financeiro (legado) →</a>
             </p>
           </div>
           <div className="vf-page-header__actions">

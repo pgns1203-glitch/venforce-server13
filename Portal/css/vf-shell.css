@@ -432,7 +432,13 @@
   padding: var(--vf-sp-2) var(--vf-sp-4);
 }
 .vf-shell__contextbar .vf-shell__context {
-  position: static;
+  /* `relative`, não `static`: precisa continuar sendo o *containing block*
+     do `.vf-shell__dropdown` (position:absolute logo abaixo). Com `static`
+     aqui, o containing block escala para `.vf-shell__contextbar` inteiro (a
+     barra toda), e o algoritmo de posição estática do abspos dentro de flex
+     erra o cálculo — medido com CDP: `top: -139.75px`, dropdown inteiro
+     nascendo ACIMA do viewport, inalcançável para clique real (Bug B). */
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--vf-sp-2);
@@ -444,7 +450,20 @@
 .vf-shell__contextbar .vf-shell__context-label { margin: 0; flex: 0 0 auto; }
 .vf-shell__contextbar .vf-ctx-selector { width: auto; min-width: 190px; flex: 0 1 auto; }
 .vf-shell__contextbar .vf-shell__integrations { flex: 1 0 100%; flex-direction: row; gap: var(--vf-sp-3); }
-.vf-shell__contextbar .vf-shell__dropdown { position: absolute; min-width: 260px; margin-top: var(--vf-sp-1); }
+.vf-shell__contextbar .vf-shell__dropdown {
+  /* `top`/`left` explícitos: sem eles o navegador cai no algoritmo de
+     "static position" (o abspos herda o lugar que ocuparia no fluxo) —
+     dentro de um flex-wrap ele erra e produz `top` negativo (medido com
+     CDP), deixando o menu parcialmente ACIMA do viewport e inalcançável
+     para clique real (Bug B). Ancorado no `.vf-shell__context` (o
+     containing block, ver regra acima), não no botão — o bloco pode
+     quebrar linha (§19.1) e isto continua correto em qualquer altura. */
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 260px;
+  margin-top: var(--vf-sp-1);
+}
 
 /* 861–1200px: rail de 64px, ícone + aria-label/title completos (rótulo
    abreviado por vf-shell.js via railEstreito() — não redundante com o
@@ -545,3 +564,17 @@
 .vf-status.is-empty { color: var(--vf-text-muted); }
 .vf-status.is-empty::before { background: transparent; border: 1.5px solid var(--vf-neutral); }
 .vf-status.is-warning::before { border-radius: 0; transform: rotate(45deg); }
+
+/* Bootstrap (atividade.html, callbacks.html, usuarios.html — telas antigas
+   que ainda dependem de componentes dele) chega como <link> SEM camada.
+   `a { color; text-decoration }` do Bootstrap tem especificidade baixíssima
+   (0,0,1), mas por estar FORA de qualquer @layer ele vence `.vf-shell__item`
+   (0,1,0) mesmo assim — mesmo mecanismo do bloco acima, achado depois com
+   screenshot real: a navegação inteira aparecia azul-Bootstrap e sublinhada
+   (Bug C, causa 2 — a 1ª era vf-tokens-v2.css/vf-components-v2.css
+   ausentes). Mesma correção: sair da camada. */
+.vf-shell__item { color: var(--vf-text-secondary); text-decoration: none; }
+.vf-shell__item:hover { color: var(--vf-text); }
+.vf-shell__item.is-active { color: var(--vf-primary-strong); }
+.vf-shell__item.is-disabled,
+.vf-shell__item.is-disabled:hover { color: var(--vf-text-disabled); }

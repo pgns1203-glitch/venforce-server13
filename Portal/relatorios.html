@@ -14,11 +14,14 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/relatorios-v2.css">
+  <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
-<body class="vf-page vf-page-relatorios">
+<body class="vf-page vf-page-relatorios" data-vf-scope="global" data-vf-module="relatorios">
 
-  <div class="vf-main-with-sidebar">
+  <!-- F5 — .vf-main-with-sidebar era a margem fixa de 240px do layout.js.
+       O Shell V3 tem grade própria (.vf-shell). Wrapper neutro. -->
+  <div>
     <main class="vf-content">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
@@ -477,7 +480,7 @@
     </div>
   </div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
   <script src="relatorios.js"></script>
 </body>
 </html>

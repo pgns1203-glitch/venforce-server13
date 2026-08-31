@@ -170,6 +170,14 @@ function wireFetchInterception(cdp) {
       return;
     }
     if (url.includes("/anuncios-meli/clientes")) { await json({ ok: true, clientes: [{ id: 87, nome: "N97 Comercial", slug: "n97", mlConectado: true, totalAnuncios: 10 }] }); return; }
+    if (url.includes("/relatorios/pastas")) { await json({ ok: true, pastas: [] }); return; }
+    if (url.includes("/automacoes/relatorios")) {
+      await json({ ok: true, relatorios: [
+        { id: 5001, cliente_slug: "n97", cliente_nome: "N97 Comercial", escopo: "loja", status: "concluido", created_at: "2026-08-20T10:00:00Z" },
+        { id: 5002, cliente_slug: "extra", cliente_nome: "Extra Máquinas", escopo: "loja", status: "concluido", created_at: "2026-08-19T10:00:00Z" },
+      ] });
+      return;
+    }
     if (url.includes("/operacao/cliente-360/clientes")) { await json(PORTFOLIO); return; }
     const contasMatch = url.match(/\/clientes\/([^/?]+)\/contas/);
     if (contasMatch) {
@@ -209,6 +217,23 @@ async function run() {
     function ctx() { return cdp.evaluate("window.VF.context.getContext()"); }
     function estado() { return cdp.evaluate("window.VF.context.getState()"); }
 
+    /* Clicar num módulo da sidebar exige o contexto COMPLETO: enquanto o
+       shell resolve as contas, todo item contextual está `aria-disabled` e o
+       clique é engolido de propósito (§9.3 — alcançável por teclado, com
+       motivo legível, mas inerte). Sem esperar por READY, este teste corria
+       contra a resolução das contas e falhava de forma intermitente — o que
+       ele mediu, e é verdade, é que a sidebar não deixa entrar num módulo
+       antes de saber em qual operação. */
+    async function clicarModulo(id, arquivo) {
+      await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'",
+        `contexto não chegou a READY antes de clicar em ${id}`);
+      await waitFor(cdp, `document.querySelector('.vf-shell__item[data-module=${id}]:not(.is-disabled)')`,
+        `item "${id}" continuou desabilitado na sidebar`);
+      await cdp.evaluate(`document.querySelector('.vf-shell__item[data-module=${id}]').click()`);
+      await waitFor(cdp, `window.location.href.indexOf('${arquivo}') >= 0`, `clique em ${id} não navegou`);
+      await waitFor(cdp, "window.VF && window.VF.context", `${arquivo} não montou o Shell`);
+    }
+
     // ═══ 1. Login (simulado: seed direto de vf-token, já coberto em
     //         login-ui.test.js) → Carteira ═══
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/carteira.html` });
@@ -242,9 +267,7 @@ async function run() {
     });
 
     // ═══ 3. Sidebar → Central de Vendas (navegação real, não deep link) ═══
-    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=central-vendas]').click()");
-    await waitFor(cdp, "window.location.href.indexOf('fechamentos-api.html') >= 0", "clique em Central de Vendas não navegou");
-    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Central de Vendas não chegou a READY vindo da Visão");
+    await clicarModulo("central-vendas", "fechamentos-api.html");
     await sleep(200);
 
     await check("3. Central de Vendas: contexto sobrevive à navegação real vinda da Visão", async () => {
@@ -254,9 +277,7 @@ async function run() {
     });
 
     // ═══ 4. Sidebar → Margem (navegação real, não deep link) ═══
-    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=margem]').click()");
-    await waitFor(cdp, "window.location.href.indexOf('central-margem.html') >= 0", "clique em Margem não navegou");
-    await waitFor(cdp, "window.VF && window.VF.context", "Margem não montou o Shell");
+    await clicarModulo("margem", "central-margem.html");
     await sleep(300);
 
     await check("4. Margem: contexto sobrevive à navegação real (sessionStorage), cliente=n97", async () => {
@@ -267,9 +288,7 @@ async function run() {
     });
 
     // ═══ 5. Sidebar → Diagnósticos ═══
-    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=diagnosticos]').click()");
-    await waitFor(cdp, "window.location.href.indexOf('diagnostico-inicial.html') >= 0", "clique em Diagnósticos não navegou");
-    await waitFor(cdp, "window.VF && window.VF.context", "Diagnósticos não montou o Shell");
+    await clicarModulo("diagnosticos", "diagnostico-inicial.html");
     await sleep(300);
 
     await check("5. Diagnósticos: contexto continua n97 após três navegações reais em sequência", async () => {
@@ -281,10 +300,10 @@ async function run() {
     // §8.5: "preservado ao trocar módulo/conta, resetado ao trocar cliente".
     // O link da sidebar levava só cliente+conta — quem olhava julho na Visão
     // e clicava em Financeiro chegava em outro mês, sem aviso.
+    await waitFor(cdp, "window.VF.context.getState() === 'READY'", "Diagnósticos não chegou a READY antes de fixar o período");
     await cdp.evaluate("window.VF.context.setPeriodoParam('2026-07')");
-    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=ads]').click()");
-    await waitFor(cdp, "window.location.href.indexOf('ads.html') >= 0", "clique em Ads não navegou");
-    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Ads não chegou a READY");
+    await clicarModulo("ads", "ads.html");
+    await waitFor(cdp, "window.VF.context.getState() === 'READY'", "Ads não chegou a READY");
     await sleep(250);
 
     await check("5b. Ads (migrada em F5): contexto n97/43 intacto E o período viajou junto", async () => {
@@ -299,9 +318,8 @@ async function run() {
     });
 
     // ═══ 5c. Sidebar → Anúncios ML (escopo conta, migrada em F5) ═══
-    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=anuncios]').click()");
-    await waitFor(cdp, "window.location.href.indexOf('anuncios-meli.html') >= 0", "clique em Anúncios não navegou");
-    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "Anúncios não chegou a READY");
+    await clicarModulo("anuncios", "anuncios-meli.html");
+    await waitFor(cdp, "window.VF.context.getState() === 'READY'", "Anúncios não chegou a READY");
     await sleep(250);
 
     await check("5c. Anúncios ML: contexto intacto, período preservado e sem VIEW própria de escolher cliente", async () => {
@@ -313,9 +331,7 @@ async function run() {
     });
 
     // ═══ 5d. Sidebar → Automações (escopo CLIENTE, migrada em F5) ═══
-    await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=automacoes]').click()");
-    await waitFor(cdp, "window.location.href.indexOf('automacoes.html') >= 0", "clique em Automações não navegou");
-    await waitFor(cdp, "window.VF && window.VF.context", "Automações não montou o Shell");
+    await clicarModulo("automacoes", "automacoes.html");
     await sleep(300);
 
     await check("5d. Automações: escopo cliente satisfeito, cliente do contexto exibido, sem seletor próprio", async () => {
@@ -327,7 +343,26 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#auto-cliente, #auto-cliente-search').length"), 0);
     });
 
+    // ═══ 5d-bis. Automações → Relatórios: a ÚNICA tela legada que uma
+    //             página V3 linkava. Migrada, ela mantém o shell E chega
+    //             com o filtro de cliente já no cliente do contexto — o
+    //             link de automacoes.js não leva ?cliente=, então quem
+    //             preserva é a sessão. ═══
+    await cdp.evaluate("window.location.href = 'relatorios.html'");
+    await waitFor(cdp, "window.location.href.indexOf('relatorios.html') >= 0", "não navegou para Relatórios");
+    await waitFor(cdp, "window.VF && window.VF.context", "Relatórios não montou o Shell");
+    await sleep(400);
+
+    await check("5d-bis. Relatórios: continua no Shell V3 e o filtro de cliente já vem no cliente do contexto", async () => {
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-sidebar').length"), 0, "a sidebar legada voltou");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('vf-shell-main').hidden"), false);
+      const c = await ctx();
+      assert.strictEqual(c.clienteSlug, "n97", "o contexto não sobreviveu à ida para Relatórios");
+      await waitFor(cdp, "document.getElementById('rh-cliente').value === 'n97'", "o filtro de cliente não foi semeado pelo contexto");
+    });
+
     // ═══ 5e. Gestão global → Clientes e Contas (migrada em F5) ═══
+    // Gestão global nunca é desabilitada por contexto — clique direto.
     await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=clientes-contas]').click()");
     await waitFor(cdp, "window.location.href.indexOf('clientes.html') >= 0", "clique em Clientes e Contas não navegou");
     await waitFor(cdp, "window.VF && window.VF.context", "Clientes e Contas não montou o Shell");
@@ -380,7 +415,7 @@ async function run() {
       assert.strictEqual(consoleErrors.length, 0, `erros: ${JSON.stringify(consoleErrors)}`);
     });
 
-    console.log(`\n✓ ${checks} verificações da jornada completa (Login→Carteira→N97→ML2→Visão→CentralDeVendas→Margem→Diagnóstico→Ads→Anúncios→Automações→ClientesEContas→Carteira→Extra→Visão)`);
+    console.log(`\n✓ ${checks} verificações da jornada completa (Login→Carteira→N97→ML2→Visão→CentralDeVendas→Margem→Diagnóstico→Ads→Anúncios→Automações→Relatórios→ClientesEContas→Carteira→Extra→Visão)`);
   } finally {
     if (cdp) { try { await cdp.send("Fetch.disable"); } catch (_) { /* já pode estar fechado */ } cdp.close(); }
     chrome.kill("SIGTERM");

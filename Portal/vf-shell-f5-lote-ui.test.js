@@ -62,6 +62,11 @@ const PAGINAS = [
   // contas dá uma conta ML ativa a n97.
   { arquivo: "ads.html", modulo: "ads", marca: "#ads-filtro-mes", escopo: "account", query: "?cliente=n97&conta=42" },
   { arquivo: "anuncios-meli.html", modulo: "anuncios", marca: "#am-view-hud", escopo: "account", query: "?cliente=n97&conta=42" },
+  // Hub de Relatórios: escopo GLOBAL (a lista é de vários clientes) e sem
+  // entrada na sidebar V3 — chega-se a ela pelos dois links de automacoes.js.
+  // Por isso `modulo: null`: não há item de navegação para ficar ativo, e
+  // fingir um seria inventar navegação.
+  { arquivo: "relatorios.html", modulo: null, marca: "#rh-cliente" },
 ];
 
 const N97 = { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };
@@ -242,7 +247,7 @@ async function run() {
         );
       });
 
-      await check(`F5 — ${pagina.arquivo}: item "${pagina.modulo}" marcado como página atual na navegação`, async () => {
+      if (pagina.modulo) await check(`F5 — ${pagina.arquivo}: item "${pagina.modulo}" marcado como página atual na navegação`, async () => {
         const ativo = await cdp.evaluate(`
           (function(){ var a = document.querySelector('.vf-shell__item[data-module=${JSON.stringify(pagina.modulo)}]');
             return a ? { current: a.getAttribute('aria-current'), classe: a.className } : null; })();

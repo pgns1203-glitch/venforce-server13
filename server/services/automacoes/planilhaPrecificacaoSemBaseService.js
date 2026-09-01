@@ -125,12 +125,13 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
   return linhas;
 }
 
-async function gerarPlanilhaPrecificacaoSemBase({ clienteSlugRaw }) {
+async function gerarPlanilhaPrecificacaoSemBase({ clienteSlugRaw, clienteContaId }) {
   const clienteSlugStr = String(clienteSlugRaw || "").trim();
   if (!clienteSlugStr) throw criarErroHttp(400, { ok: false, erro: "clienteSlug é obrigatório." });
 
   const { cliente, mlUserId, basesMeli, base } = await exigirContextoGrantMl({
     clienteSlugRaw: clienteSlugStr,
+    clienteContaId,
   });
 
   let baseStatus = "ausente";

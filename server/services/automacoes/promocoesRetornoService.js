@@ -634,6 +634,7 @@ async function gerarPreviewPromocoesRetorno({
   campanhaRaw,
   statusRaw,
   apenasComRetornoRaw,
+  clienteContaId,
 }) {
   const clienteSlugRawStr = String(clienteSlugRaw || "").trim();
   const baseSlugRawStr = String(baseSlugRaw || "").trim();
@@ -663,6 +664,7 @@ async function gerarPreviewPromocoesRetorno({
   const contexto = await exigirContextoPronto({
     clienteSlugRaw: clienteSlugRawStr,
     baseSlugRaw: baseSlugRawStr,
+    clienteContaId,
   });
   const cliente = contexto.cliente;
   const mlUserId = contexto.mlUserId;

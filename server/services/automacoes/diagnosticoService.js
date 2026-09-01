@@ -289,7 +289,15 @@ async function diagMarcarErro(relatorioId, mensagem) {
 }
 
 // Worker em background — roda dentro do mesmo processo via setImmediate.
-async function executarDiagnosticoCompleto(relatorioId) {
+//
+// options.mlUserId: a conta ML já resolvida pelo controller (via
+// exigirContextoPronto/resolveMarketplaceAccountContext) no momento do
+// POST /start, quando o cliente tem 2+ contas Mercado Livre. Sem isso, este
+// worker reconsultava o grant só por clienteId e podia usar uma conta
+// diferente da que o Shell tinha selecionado (a chamada abaixo delega a
+// resolveMlGrant, existente e inalterado — só passa a receber mlUserId
+// quando o chamador já o conhece).
+async function executarDiagnosticoCompleto(relatorioId, options = {}) {
   let cliente, base, mlUserId, margemAlvo;
   try {
     const r = await pool.query(
@@ -302,7 +310,7 @@ async function executarDiagnosticoCompleto(relatorioId) {
     const row = r.rows[0];
     cliente = { id: row.cliente_id, slug: row.cliente_slug };
     base = { id: row.base_id, slug: row.base_slug };
-    mlUserId = (await resolveMlGrant({ clienteId: row.cliente_id, requireUsable: true })).ml_user_id;
+    mlUserId = (await resolveMlGrant({ clienteId: row.cliente_id, mlUserId: options.mlUserId || undefined, requireUsable: true })).ml_user_id;
     margemAlvo = row.margem_alvo != null ? Number(row.margem_alvo) : null;
     if (!mlUserId) throw new Error("Cliente sem conta ML vinculada.");
     if (!base.id) throw new Error("Base não encontrada.");

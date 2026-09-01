@@ -135,6 +135,7 @@ async function criarJobDiagnostico({ userId, body }) {
   const { cliente, base, mlUserId } = await exigirContextoPronto({
     clienteSlugRaw: b.clienteSlug,
     baseSlugRaw: b.baseSlug,
+    clienteContaId: b.clienteContaId,
   });
 
   // Limpeza de órfãos: jobs presos em 'aguardando'/'processando' sem progresso
@@ -543,11 +544,11 @@ async function buscarStatusDiagnostico({ idRaw }) {
 }
 
 // ─── 4) Leitura do snapshot (último concluído) ───────────────────────────────
-async function buscarUltimoSnapshotPromocoes({ clienteSlugRaw, baseSlugRaw }) {
+async function buscarUltimoSnapshotPromocoes({ clienteSlugRaw, baseSlugRaw, clienteContaId }) {
   await ensurePromocoesDiagnosticoTables();
   // Cliente + grant ML + base MELI: resolução única via contextoPrecificacaoService.
   // baseSlugRaw ausente → resolve automaticamente a base MELI vinculada ao cliente.
-  const contexto = await exigirContextoPronto({ clienteSlugRaw, baseSlugRaw });
+  const contexto = await exigirContextoPronto({ clienteSlugRaw, baseSlugRaw, clienteContaId });
   const clienteSlug = contexto.cliente.slug;
   const baseSlug = contexto.base.slug;
 

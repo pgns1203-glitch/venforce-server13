@@ -1,24 +1,32 @@
 // Portal/automacoes.js
 // Otimizador de Precificação ML — fluxo único:
-//   cliente (do Shell V3) → margem-alvo → prontidão automática (grant + base
-//   MELI) → Analisar loja → diagnóstico completo assíncrono → KPIs +
-//   prioridades → encaminhar detalhes para a página Relatórios.
+//   cliente + conta (do Shell V3) → margem-alvo → prontidão automática
+//   (grant + base MELI) → Analisar loja → diagnóstico completo assíncrono →
+//   KPIs + prioridades → encaminhar detalhes para a página Relatórios.
 //
-// F5 — o CLIENTE não é mais escolhido aqui. Ele vem do Shell V3
-// (data-vf-scope="client"), pelo mesmo caminho de fechamentos-api.js: o
-// evento DOM `vf:context`, que é a ponte documentada para script clássico
-// (MASTER_SPEC §6.5/§15.3) — este arquivo roda ANTES de vf-shell.js (module,
-// deferido) terminar, então não dá para `import` nem assinar
-// window.VF.context.subscribe() na hora da avaliação.
+// F5 — o CLIENTE não é mais escolhido aqui. Ele vem do Shell V3, pelo mesmo
+// caminho de fechamentos-api.js: o evento DOM `vf:context`, que é a ponte
+// documentada para script clássico (MASTER_SPEC §6.5/§15.3) — este arquivo
+// roda ANTES de vf-shell.js (module, deferido) terminar, então não dá para
+// `import` nem assinar window.VF.context.subscribe() na hora da avaliação.
 //
-// Escopo CLIENTE, não conta: nenhuma rota de automacoesRoutes.js aceita
-// conta — o seam de carteira é `requireClienteNaCarteira({ param/query/body:
-// "clienteSlug" })`. Por isso data-vf-scope="client": exigir uma operação
-// aqui seria inventar um recorte que o backend não tem.
+// Escopo CONTA (data-vf-scope="account"): um cliente pode ter 2+ contas
+// Mercado Livre (server/services/clienteContas — Fundação de Contas). Sem
+// clienteContaId, automacoesRoutes.js escolhia um grant em silêncio
+// (resolveMlGrant({clienteId}) caía no principal/fallback) — selecionar
+// ML1 ou ML2 no Shell podia analisar a MESMA conta. Agora toda automação
+// envia `clienteContaId`, e o backend resolve o ml_user_id daquela conta
+// especificamente via resolveMarketplaceAccountContext (nunca escolhe outra
+// em silêncio; bloqueia com erro claro se a conta não for informada e o
+// cliente tiver 2+ contas ML). O Shell só libera o conteúdo desta tela
+// quando cliente E conta estão resolvidos (state READY).
 //
 // GET /automacoes/clientes continua sendo chamado, mas deixou de alimentar um
 // seletor: agora é a fonte de PRONTIDÃO (hasGrantMl, baseStatus,
-// prontoParaAnalise) do cliente que o shell escolheu.
+// prontoParaAnalise) do cliente que o shell escolheu. Esta lista ainda
+// resolve o grant por CLIENTE (fallback/principal), não pela conta
+// selecionada — é um indicador aproximado; a análise em si (abaixo) sempre
+// usa a conta exata.
 //
 // A base NÃO é escolhida manualmente: o backend resolve a base MELI vinculada
 // ao cliente (custo/imposto/taxa fixa). O grant fornece anúncios/preço/comissão/frete.
@@ -173,10 +181,18 @@ async function loadClientes() {
 }
 
 // O cliente do contexto. Nenhum fallback para "o primeiro da lista": sem
-// contexto não há cliente, e o Shell já cuida de dizer isso (scope="client").
+// contexto não há cliente, e o Shell já cuida de dizer isso (scope="account").
 function slugDoContexto() {
   const ctx = window.VF && window.VF.context ? window.VF.context.getContext() : null;
   return ctx && ctx.clienteSlug ? ctx.clienteSlug : "";
+}
+
+// A conta Mercado Livre selecionada no Shell — vai em toda chamada que
+// executa uma automação. Sem ela (state != READY), o Shell nem mostra o
+// conteúdo desta página (data-vf-scope="account").
+function contaIdDoContexto() {
+  const ctx = window.VF && window.VF.context ? window.VF.context.getContext() : null;
+  return ctx && ctx.clienteContaId ? ctx.clienteContaId : null;
 }
 
 function getClienteAtual() {
@@ -187,12 +203,15 @@ function getClienteAtual() {
 
 function renderIdentidadeCliente() {
   const nomeEl = document.getElementById("auto-cliente-nome");
+  const contaEl = document.getElementById("auto-conta-nome");
   const hintEl = document.getElementById("auto-cliente-hint");
   const store = window.VF && window.VF.context ? window.VF.context : null;
   const cliente = store && store.getClienteAtual ? store.getClienteAtual() : null;
+  const contaMeta = store && store.getAccountMeta ? store.getAccountMeta() : null;
   const slug = slugDoContexto();
 
   if (nomeEl) nomeEl.textContent = cliente ? cliente.nome : slug || "—";
+  if (contaEl) contaEl.textContent = contaMeta ? contaMeta.nome : "—";
   if (!hintEl) return;
 
   if (!slug) hintEl.textContent = "Escolha o cliente na barra lateral.";
@@ -340,18 +359,33 @@ async function analisarLoja() {
     const res = await fetch(`${API_BASE}/automacoes/diagnostico-completo/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN },
-      body: JSON.stringify({ clienteSlug: ctx.slug, margemAlvo: getMargemDecimal() }),
+      body: JSON.stringify({ clienteSlug: ctx.slug, margemAlvo: getMargemDecimal(), clienteContaId: contaIdDoContexto() }),
     });
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("carteira.html"); return; }
 
     const json = await res.json().catch(() => ({}));
+
+    // 403 de carteira (permissão) continua indo para a Carteira. 403
+    // CONTA_NAO_PERTENCE_AO_CLIENTE (Fundação de Contas) é outra coisa —
+    // tratado no bloco de erro estrutural de conta, abaixo.
+    if (res.status === 403 && json?.code !== "CONTA_NAO_PERTENCE_AO_CLIENTE") {
+      window.location.replace("carteira.html");
+      return;
+    }
 
     // Relatório já em andamento para este cliente: reaproveita o polling.
     if (res.status === 409 && json?.relatorio_id) {
       setFeedback(json?.erro || "Já existe uma análise em andamento para este cliente.", "info");
       startPolling(json.relatorio_id);
       return;
+    }
+    // Erro estrutural de conta (Fundação de Contas): a seleção do Shell
+    // ficou inconsistente entre o momento em que a página carregou e o
+    // clique (ex.: conta desativada por outra aba). O store decide o que
+    // fazer com o contexto — nunca escolher outra conta em silêncio.
+    if (json?.code && ["CONTA_AMBIGUA", "CONTA_NAO_PERTENCE_AO_CLIENTE", "MARKETPLACE_INCOMPATIVEL", "CONTA_INATIVA"].includes(json.code)) {
+      window.VF?.context?.signalContextError?.({ code: json.code });
+      throw new Error(json.erro || "A conta selecionada não é mais válida para esta operação.");
     }
     if (!res.ok || !json?.ok) {
       throw new Error(json?.erro || `HTTP ${res.status}`);
@@ -610,14 +644,20 @@ async function baixarPlanilhaPrecificacao() {
   setFeedback("Buscando anúncios ativos e gerando planilha…", "info");
 
   try {
+    const params = new URLSearchParams();
+    const contaId = contaIdDoContexto();
+    if (contaId) params.set("clienteContaId", String(contaId));
     const res = await fetch(
-      `${API_BASE}/automacoes/clientes/${encodeURIComponent(ctx.slug)}/planilha-precificacao.xlsx`,
+      `${API_BASE}/automacoes/clientes/${encodeURIComponent(ctx.slug)}/planilha-precificacao.xlsx?${params}`,
       { headers: { Authorization: "Bearer " + TOKEN } }
     );
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
+      if (res.status === 403 && json?.code !== "CONTA_NAO_PERTENCE_AO_CLIENTE") { window.location.replace("carteira.html"); return; }
+      if (json?.code && ["CONTA_AMBIGUA", "CONTA_NAO_PERTENCE_AO_CLIENTE", "MARKETPLACE_INCOMPATIVEL", "CONTA_INATIVA"].includes(json.code)) {
+        window.VF?.context?.signalContextError?.({ code: json.code });
+      }
       throw new Error(json?.erro || `HTTP ${res.status}`);
     }
     const blob = await res.blob();
@@ -657,14 +697,20 @@ async function gerarModeloBaseCustos() {
   setFeedback("Buscando IDs dos anúncios ativos e gerando modelo de base…", "info");
 
   try {
+    const params = new URLSearchParams();
+    const contaId = contaIdDoContexto();
+    if (contaId) params.set("clienteContaId", String(contaId));
     const res = await fetch(
-      `${API_BASE}/automacoes/clientes/${encodeURIComponent(ctx.slug)}/modelo-base-custos.xlsx`,
+      `${API_BASE}/automacoes/clientes/${encodeURIComponent(ctx.slug)}/modelo-base-custos.xlsx?${params}`,
       { headers: { Authorization: "Bearer " + TOKEN } }
     );
     if (res.status === 401) { clearSession(); return; }
-    if (res.status === 403) { window.location.replace("carteira.html"); return; }
     if (!res.ok) {
       const json = await res.json().catch(() => ({}));
+      if (res.status === 403 && json?.code !== "CONTA_NAO_PERTENCE_AO_CLIENTE") { window.location.replace("carteira.html"); return; }
+      if (json?.code && ["CONTA_AMBIGUA", "CONTA_NAO_PERTENCE_AO_CLIENTE", "MARKETPLACE_INCOMPATIVEL", "CONTA_INATIVA"].includes(json.code)) {
+        window.VF?.context?.signalContextError?.({ code: json.code });
+      }
       throw new Error(json?.erro || `HTTP ${res.status}`);
     }
 
@@ -701,20 +747,28 @@ function novaAnalise() {
 }
 
 /* ── CONTEXTO (F5 — vem do Shell V3, não mais desta tela) ────────────────
-   Mesmo padrão de fechamentos-api.js:821. O listener é registrado AQUI,
-   enquanto o script clássico é avaliado, ou seja ANTES de vf-shell.js
+   Mesmo padrão de fechamentos-api.js:821 / ads.js. O listener é registrado
+   AQUI, enquanto o script clássico é avaliado, ou seja ANTES de vf-shell.js
    (module, deferido) rodar — assim nenhum emit se perde, inclusive o
    primeiro, síncrono, de dentro de vfContext.init(). Sem polling.
 
    Guarda de repetição: `vf:context` também dispara por motivos que não são
-   troca de cliente (bandeira de integração, resize do shell); refazer a
-   análise nesses casos jogaria fora um resultado na tela. */
-let ultimoClienteAplicado = Symbol("cliente-nao-aplicado-ainda");
+   troca de cliente/conta (bandeira de integração, resize do shell); refazer
+   a análise nesses casos jogaria fora um resultado na tela.
+
+   Chave por CLIENTE+CONTA (não só cliente): trocar de Mercado Livre 1 para
+   Mercado Livre 2 no mesmo cliente é uma chave diferente — precisa
+   invalidar a prontidão/resultado exibidos e reconsultar, mesmo sem trocar
+   de cliente. Sem isso, o resultado da conta anterior continuaria na tela
+   como se fosse da nova (o próprio bug que esta mudança corrige). */
+let ultimoContextoAplicado = Symbol("contexto-nao-aplicado-ainda");
 document.addEventListener("vf:context", () => {
   const slug = slugDoContexto();
+  const contaId = contaIdDoContexto();
   renderIdentidadeCliente();
-  if (slug === ultimoClienteAplicado) return;
-  ultimoClienteAplicado = slug;
+  const chave = slug ? `${slug}:${contaId || ""}` : "";
+  if (chave === ultimoContextoAplicado) return;
+  ultimoContextoAplicado = chave;
   onClienteChange();
 });
 

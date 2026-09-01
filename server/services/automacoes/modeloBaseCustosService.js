@@ -98,8 +98,8 @@ function construirWorkbookModeloBaseCustos(idsMlb) {
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 }
 
-async function gerarModeloBaseCustos({ clienteSlugRaw }) {
-  const { cliente, mlUserId } = await exigirContextoGrantMl({ clienteSlugRaw });
+async function gerarModeloBaseCustos({ clienteSlugRaw, clienteContaId }) {
+  const { cliente, mlUserId } = await exigirContextoGrantMl({ clienteSlugRaw, clienteContaId });
   const idsMlb = await buscarTodosMlbsAtivos({ clienteId: cliente.id, mlUserId });
   const buffer = construirWorkbookModeloBaseCustos(idsMlb);
   const clienteSlug = normalizarSlug(cliente.slug || cliente.nome || "cliente");

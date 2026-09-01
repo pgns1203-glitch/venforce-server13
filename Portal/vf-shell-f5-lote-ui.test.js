@@ -53,10 +53,13 @@ const PAGINAS = [
   { arquivo: "financeiro-debug.html", modulo: "debug", marca: "#fdbg-main" },
   { arquivo: "design-system-lab.html", modulo: "lab", marca: "#lab-component-search" },
   { arquivo: "bases.html", modulo: "bases", marca: "#btn-abrir-importar" },
-  // Escopo CLIENTE: automacoesRoutes.js só conhece `clienteSlug`; exigir uma
-  // operação aqui inventaria um recorte que o backend não tem. Precisa de um
-  // cliente no contexto para o conteúdo sair do gating — por isso a query.
-  { arquivo: "automacoes.html", modulo: "automacoes", marca: "#auto-cliente-nome", escopo: "client", query: "?cliente=n97" },
+  // Escopo CONTA (fix/automacoes-account-scope): um cliente pode ter 2+
+  // contas Mercado Livre, e automacoesRoutes.js agora recebe clienteContaId
+  // — sem ele, com 2+ contas, o backend bloqueia com 409
+  // MULTIPLE_MARKETPLACE_ACCOUNTS em vez de escolher um grant em silêncio
+  // (o bug original). `?cliente=n97` basta para sair do gating porque a
+  // fixture só dá 1 conta ML ativa a n97 (auto-seleção de conta única).
+  { arquivo: "automacoes.html", modulo: "automacoes", marca: "#auto-cliente-nome", escopo: "account", query: "?cliente=n97" },
   // Escopo CONTA: as duas mandam `clienteContaId` e o backend responde 409
   // MULTIPLE_MARKETPLACE_ACCOUNTS sem ele. `?conta=42` porque a fixture de
   // contas dá uma conta ML ativa a n97.

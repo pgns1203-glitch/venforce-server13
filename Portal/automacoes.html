@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
-<body class="vf-page vf-page-dashboard vf-page-automacoes" data-vf-scope="client" data-vf-module="automacoes">
+<body class="vf-page vf-page-dashboard vf-page-automacoes" data-vf-scope="account" data-vf-module="automacoes">
 
   <!-- F5 — .vf-main-with-sidebar era a margem fixa de 240px do layout.js.
        O Shell V3 tem grade própria (.vf-shell). Wrapper neutro. -->
@@ -45,14 +45,20 @@
             </div>
             <div class="vf-card__body">
               <div class="vf-form-grid vf-auto-config__grid">
-                <!-- F5 — o cliente vem do Shell V3 (data-vf-scope="client"),
-                     não de um seletor próprio. As automações são
-                     client-scoped no backend (automacoesRoutes.js: só
-                     `clienteSlug`, nenhuma rota aceita conta). -->
+                <!-- Cliente e conta vêm do Shell V3 (data-vf-scope="account"):
+                     a tela é bloqueada até uma conta Mercado Livre estar
+                     selecionada, então o backend sempre recebe clienteContaId
+                     (server/services/clienteContas/clienteContaService.js
+                     resolveMarketplaceAccountContext) — nunca escolhe um
+                     grant em silêncio quando o cliente tem 2+ contas ML. -->
                 <div class="vf-field">
                   <span class="vf-field__label">Cliente</span>
                   <p class="vf-field__value" id="auto-cliente-nome">—</p>
                   <p class="vf-field__hint" id="auto-cliente-hint">Escolha o cliente na barra lateral.</p>
+                </div>
+                <div class="vf-field">
+                  <span class="vf-field__label">Conta</span>
+                  <p class="vf-field__value" id="auto-conta-nome">—</p>
                 </div>
                 <div class="vf-field">
                   <label class="vf-field__label" for="auto-margem">Margem-alvo</label>

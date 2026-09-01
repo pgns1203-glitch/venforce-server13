@@ -33,6 +33,12 @@
     filtros: { q: "", status: "", filtro: "" },
     buscaTimer: null,
     carregandoCatalogo: false,
+    // Guarda de corrida (mesma classe de bug corrigida em automacoes.js/
+    // ads.js): sem isso, a resposta LENTA da conta anterior podia chegar
+    // depois da resposta rápida da conta nova e sobrescrever resumo/catálogo
+    // em tela como se fossem da conta selecionada agora.
+    resumoToken: 0,
+    catalogoToken: 0,
     // A operação escolhida no Shell (data-vf-scope="account"). Esta tela não
     // decide mais cardinalidade — vf-context.js decide (R8).
     contaMlId: "",
@@ -328,10 +334,12 @@
 
   function carregarResumo() {
     if (!AM.clienteAtual) return;
+    var meuToken = ++AM.resumoToken;
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
     api("/anuncios-meli/resumo?" + qs)
       .then(function (r) {
+        if (meuToken !== AM.resumoToken) return; // troca de conta/cliente já disparou outra busca
         if (r.data && r.data.ok) {
           AM.resumo = r.data.resumo;
           renderHudHeader();
@@ -364,7 +372,8 @@
   }
 
   function carregarAnuncios() {
-    if (!AM.clienteAtual || AM.carregandoCatalogo) return;
+    if (!AM.clienteAtual) return;
+    var meuToken = ++AM.catalogoToken;
     var box = el("am-catalogo-container");
 
     AM.carregandoCatalogo = true;
@@ -378,6 +387,7 @@
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
 
     api("/anuncios-meli?" + qs).then(function (r) {
+      if (meuToken !== AM.catalogoToken) return; // troca de conta/cliente (ou novo filtro) já disparou outra busca
       AM.carregandoCatalogo = false;
       if (!r.data || !r.data.ok) {
         box.innerHTML = estadoHtml("error", "Erro ao carregar",

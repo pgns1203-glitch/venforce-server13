@@ -74,6 +74,15 @@ let ADS_ANUNCIOS_PAGE      = 1;
 // Vem do endpoint GET /ads/resumo-mensal e é totalmente separado da performance Mercado Ads.
 let ADS_RESUMO_MENSAL_ATUAL = null;
 
+// Guarda de corrida: sem AbortController (fechamentos-api.js/central-margem.js
+// usam), uma troca rápida de Conta podia deixar a resposta LENTA da conta
+// anterior sobrescrever o resultado da conta nova já em tela — cada
+// carregador incrementa seu próprio token ao ser chamado de novo; uma
+// resposta só aplica estado se ainda for a chamada mais recente.
+let adsPerformanceToken = 0;
+let adsResumoMensalToken = 0;
+let adsAcompanhamentoToken = 0;
+
 // ─── Helpers de formatação ────────────────────────────────────────────────────
 
 function adsFmtBRL(n) {
@@ -211,6 +220,7 @@ async function adsFetch(path, options = {}) {
 // ─── Carregar performance via API ML ─────────────────────────────────────────
 
 async function adsCarregarPerformance() {
+  const meuToken = ++adsPerformanceToken;
   const clienteSlug = adsGetClienteSlug();
   const mes         = adsGetFiltroMesRef();
   const contaMlId   = adsGetContaMlId();
@@ -237,6 +247,7 @@ async function adsCarregarPerformance() {
     if (contaMlId) params.set("clienteContaId", contaMlId);
     const res    = await adsFetch(`/ads/performance?${params}`);
     const data   = await res.json();
+    if (meuToken !== adsPerformanceToken) return; // troca de conta/cliente já disparou outra carga
 
     // 409 de conta ambígua é ESTADO DE CONTEXTO, não um "sem dados" desta
     // tela: o store recebe o erro tipado e leva o shell a pedir a operação
@@ -264,6 +275,7 @@ async function adsCarregarPerformance() {
       adsPopularCampanhasSelect(data.performance?.campanhas || []);
     }
   } catch (err) {
+    if (meuToken !== adsPerformanceToken) return;
     console.warn("[ads] falha ao carregar performance:", err.message);
     ADS_PERFORMANCE_ATUAL  = null;
     ADS_PERFORMANCE_ESTADO = "error";
@@ -719,6 +731,7 @@ function adsRenderPerformance() {
 // Independente da API Mercado Ads. Lê dados salvos manualmente em /ads/resumo-mensal.
 
 async function adsCarregarResumoMensal() {
+  const meuToken = ++adsResumoMensalToken;
   const clienteSlug = adsGetClienteSlug();
   const mes         = adsGetFiltroMesRef();
 
@@ -734,8 +747,10 @@ async function adsCarregarResumoMensal() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (!data.ok) throw new Error(data.erro || "Resposta inválida");
+    if (meuToken !== adsResumoMensalToken) return; // troca de conta/cliente já disparou outra carga
     ADS_RESUMO_MENSAL_ATUAL = data.resumo || null;
   } catch (err) {
+    if (meuToken !== adsResumoMensalToken) return;
     console.warn("[ads] falha ao carregar resumo mensal:", err.message);
     ADS_RESUMO_MENSAL_ATUAL = null;
   }
@@ -747,6 +762,7 @@ async function adsCarregarResumoMensal() {
 // ─── Checklist semanal ────────────────────────────────────────────────────────
 
 async function adsCarregarAcompanhamento() {
+  const meuToken = ++adsAcompanhamentoToken;
   const clienteSlug = adsGetClienteSlug();
   const mes         = adsGetFiltroMesRef();
 
@@ -771,6 +787,7 @@ async function adsCarregarAcompanhamento() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (!data.ok || !data.acompanhamento) throw new Error("Resposta inválida");
+    if (meuToken !== adsAcompanhamentoToken) return; // troca de conta/cliente já disparou outra carga
 
     const a = data.acompanhamento;
     ADS_ACOMPANHAMENTO_ATUAL = a;
@@ -786,6 +803,7 @@ async function adsCarregarAcompanhamento() {
     adsSetSaveStatus("Carregado", "is-success");
     setTimeout(() => adsLimparSaveStatus("is-success"), 2500);
   } catch (err) {
+    if (meuToken !== adsAcompanhamentoToken) return;
     console.warn("[ads] falha ao carregar acompanhamento:", err.message);
     ADS_CHECKLIST_ATUAL     = { semana1: {}, semana2: {}, semana3: {}, semana4: {} };
     ADS_FEEDBACK_ATUAL      = "";

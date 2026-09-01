@@ -4,11 +4,14 @@
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { ErrorBoundary } from "./components/ErrorBoundary.jsx";
 import FinanceiroPage from "./pages/FinanceiroPage.jsx";
 import "./styles/financeiro.css";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <FinanceiroPage />
+    <ErrorBoundary>
+      <FinanceiroPage />
+    </ErrorBoundary>
   </StrictMode>
 );

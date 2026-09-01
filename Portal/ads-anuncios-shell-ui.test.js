@@ -62,6 +62,8 @@ function performance(conta) {
 }
 
 let adsResponde409 = false;
+const adsAtrasoPorConta = {}; // clienteContaId -> ms de atraso artificial na resposta de /ads/performance
+const amAtrasoPorConta = {}; // clienteContaId -> ms de atraso artificial na resposta de /anuncios-meli/resumo
 const pedidos = []; // toda URL de API que a página disparou
 
 const SEMENTE = `
@@ -182,6 +184,8 @@ function wireInterception(cdp) {
     if (url.includes("/ads/performance")) {
       if (adsResponde409) { await corpo({ ok: false, code: "MULTIPLE_MARKETPLACE_ACCOUNTS", erro: "Mais de uma conta." }, 409); return; }
       const conta = new URL(url).searchParams.get("clienteContaId") || "";
+      const atraso = adsAtrasoPorConta[conta];
+      if (atraso) await sleep(atraso);
       await corpo(performance(conta));
       return;
     }
@@ -191,7 +195,13 @@ function wireInterception(cdp) {
       await corpo({ ok: true, clientes: [{ id: 87, nome: "N97 Comercial", slug: "n97", mlConectado: true, totalAnuncios: 120 }] });
       return;
     }
-    if (url.includes("/anuncios-meli/resumo")) { await corpo({ ok: true, resumo: { total: 120, ultimaSync: "2026-08-20T10:00:00Z" } }); return; }
+    if (url.includes("/anuncios-meli/resumo")) {
+      const conta = new URL(url).searchParams.get("clienteContaId") || "";
+      const atraso = amAtrasoPorConta[conta];
+      if (atraso) await sleep(atraso);
+      await corpo({ ok: true, resumo: { total: conta === "43" ? 240 : 120, ultimaSync: "2026-08-20T10:00:00Z" } });
+      return;
+    }
     if (url.includes("/anuncios-meli")) { await corpo({ ok: true, anuncios: [], total: 0, page: 1, limit: 24, totalPaginas: 1 }); return; }
 
     await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
@@ -260,6 +270,23 @@ async function run() {
       await waitFor(cdp, "document.getElementById('ads-table-body').innerText.indexOf('2.000') >= 0", "a tabela continuou com o dado da conta anterior");
     });
 
+    await check("F5/ads — resposta lenta da conta anterior não sobrescreve a conta nova em tela (guarda de corrida)", async () => {
+      // Estado atual: conta 43 em tela (teste anterior). Atrasa a resposta
+      // da conta 42 para forçar a ordem de chegada invertida: A (42) sai
+      // primeiro mas chega DEPOIS de B (43) — sem guarda, a tela acabaria
+      // mostrando o dado da conta 42 por cima da 43, mesmo com 43 selecionada.
+      adsAtrasoPorConta["42"] = 500;
+      await cdp.evaluate("window.VF.context.setConta(42)"); // dispara a busca lenta (42), não espera
+      await sleep(50); // garante que a busca de 42 já saiu antes da de 43
+      delete adsAtrasoPorConta["42"];
+      await cdp.evaluate("window.VF.context.setConta(43)"); // dispara a busca rápida (43)
+      await waitFor(cdp, "document.getElementById('ads-table-body').innerText.indexOf('2.000') >= 0", "a conta 43 (rápida) não chegou a renderizar");
+      await sleep(650); // espera a resposta lenta da conta 42 chegar de qualquer forma
+      const texto = await cdp.evaluate("document.getElementById('ads-table-body').innerText");
+      assert.ok(/R\$\s*2\.000,00/.test(texto), `a resposta atrasada da conta anterior (42) sobrescreveu a conta em tela (43): ${texto}`);
+      assert.ok(!/R\$\s*1\.000,00/.test(texto), `investimento da conta 42 vazou por cima da conta 43 em tela: ${texto}`);
+    });
+
     await check("F5/ads — 409 de conta ambígua volta ao STORE, não vira 'sem dados' local", async () => {
       adsResponde409 = true;
       await cdp.evaluate("window.VF.context.setConta(42)");
@@ -298,6 +325,20 @@ async function run() {
       await cdp.evaluate("window.VF.context.setConta(43)");
       await esperarPedido(/\/anuncios-meli\?.*clienteContaId=43/, desde, "o catálogo não seguiu a troca de operação");
       await esperarPedido(/\/anuncios-meli\/resumo.*clienteContaId=43/, desde, "o resumo não seguiu a troca de operação");
+    });
+
+    await check("F5/anuncios — resposta lenta do resumo da conta anterior não sobrescreve a conta nova em tela (guarda de corrida)", async () => {
+      // Mesmo cenário do teste equivalente em ads.html: a conta 42 sai
+      // primeiro mas responde DEPOIS da conta 43 (rápida, atual).
+      amAtrasoPorConta["42"] = 500;
+      await cdp.evaluate("window.VF.context.setConta(42)");
+      await sleep(50);
+      delete amAtrasoPorConta["42"];
+      await cdp.evaluate("window.VF.context.setConta(43)");
+      await waitFor(cdp, "document.getElementById('am-resumo').innerText.indexOf('240') >= 0", "a conta 43 (rápida) não chegou a renderizar o resumo");
+      await sleep(650);
+      const texto = await cdp.evaluate("document.getElementById('am-resumo').innerText");
+      assert.ok(texto.includes("240"), `a resposta atrasada da conta anterior (42) sobrescreveu o resumo da conta em tela (43): ${texto}`);
     });
 
     await check("F5/anuncios — o campo de busca do catálogo tem altura de campo, não uma caixa de 150px", async () => {

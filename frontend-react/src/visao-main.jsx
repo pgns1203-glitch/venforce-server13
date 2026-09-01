@@ -8,11 +8,14 @@
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { ErrorBoundary } from "./components/ErrorBoundary.jsx";
 import VisaoPage from "./pages/VisaoPage.jsx";
 import "./styles/visao.css";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <VisaoPage />
+    <ErrorBoundary>
+      <VisaoPage />
+    </ErrorBoundary>
   </StrictMode>
 );

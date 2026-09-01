@@ -108,7 +108,8 @@ async function gerarPreviewPrecificacaoMl({
   // 1) Buscar ids de itens ativos do cliente (paginado)
   const search = await mlFetch(
     cliente.id,
-    `/users/${mlUserId}/items/search?status=active&offset=${offset}&limit=${limit}`
+    `/users/${mlUserId}/items/search?status=active&offset=${offset}&limit=${limit}`,
+    { mlUserId }
   );
   if (!search.ok) {
     throw criarErroHttp(search.status, { ok: false, erro: search.data?.message || "Erro ao buscar itens no ML.", status: search.status, data: search.data });

@@ -81,7 +81,7 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
     });
     if (scrollId) params.set("scroll_id", scrollId);
 
-    const scan = await mlFetch(clienteId, `/users/${mlUserId}/items/search?${params.toString()}`);
+    const scan = await mlFetch(clienteId, `/users/${mlUserId}/items/search?${params.toString()}`, { mlUserId });
     if (!scan.ok) {
       throw criarErroHttp(scan.status >= 400 ? scan.status : 502, {
         ok: false,

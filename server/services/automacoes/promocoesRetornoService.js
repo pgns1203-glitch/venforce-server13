@@ -680,7 +680,8 @@ async function gerarPreviewPromocoesRetorno({
   // 5) Anúncios ativos do seller (paginado)
   const search = await mlFetch(
     cliente.id,
-    `/users/${mlUserId}/items/search?status=active&offset=${offset}&limit=${limit}`
+    `/users/${mlUserId}/items/search?status=active&offset=${offset}&limit=${limit}`,
+    { mlUserId }
   );
   if (!search.ok) {
     throw criarErroHttp(search.status || 502, {

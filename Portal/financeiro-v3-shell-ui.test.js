@@ -582,6 +582,58 @@ async function run() {
     });
     competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-08", divergente: false };
 
+    // ═══ 2c. Missão QA §15 — Shopee não é só MELI com outro rótulo: exige
+    // planilha de custos (MELI não), e o formulário tem que travar até ela
+    // chegar, não só validar no backend. ═══
+    fechamentoRequestCount = 0;
+    resetEntregas();
+    entregasFake = [];
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee` });
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (cenário Shopee)");
+    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (cenário Shopee)");
+    await sleep(200);
+
+    await check("Missão QA §15 — Shopee sem planilha de custos: 'Processar fechamento' fica travado com o motivo em tela", async () => {
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Fechamento').click()");
+      await sleep(200);
+      await cdp.evaluate(`
+        (function(){ var s = document.getElementById('fin-novo-mk');
+          s.value = 'shopee'; s.dispatchEvent(new Event('change', { bubbles: true })); })();
+      `);
+      await sleep(120);
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const salesNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: "#fin-novo-sales" });
+      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: salesNode.nodeId });
+      await sleep(150);
+      const texto = await cdp.evaluate("document.querySelector('.vf-fin-novo').innerText");
+      assert.ok(/Shopee exige a planilha de custos/.test(texto), `o motivo da trava deveria nomear a exigência do Shopee: ${texto.slice(0, 300)}`);
+      const travado = await cdp.evaluate(`
+        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Processar fechamento'; }); return b ? b.disabled : null; })()
+      `);
+      assert.strictEqual(travado, true, "sem a planilha de custos, Shopee não pode deixar processar");
+      assert.strictEqual(fechamentoRequestCount, 0, "nada podia ter sido enviado ao backend ainda");
+    });
+
+    await check("Missão QA §15 — Shopee com custos: processa e manda marketplace=shopee ao backend nativo", async () => {
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const costsNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: "#fin-novo-costs" });
+      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: costsNode.nodeId });
+      await sleep(150);
+      const liberado = await cdp.evaluate(`
+        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Processar fechamento'; }); return b ? b.disabled : null; })()
+      `);
+      assert.strictEqual(liberado, false, "com sales + costs, Shopee libera o processamento");
+      await cdp.evaluate(`
+        (function(){ Array.prototype.find.call(document.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Processar fechamento'; }).click(); })();
+      `);
+      await waitFor(cdp, "document.querySelector('.vf-fin-novo__cards') !== null", "o preview do fechamento Shopee não apareceu");
+      assert.strictEqual(fechamentoRequestCount, 1, "o processamento nativo do Shopee deveria ter chamado o backend uma vez");
+      // Nem FULL nem custos adicionais são campos do Shopee (são MELI): não
+      // podem aparecer no formulário depois do preview.
+      const semCamposMeli = await cdp.evaluate("document.getElementById('fin-novo-full') === null && document.getElementById('fin-novo-add') === null");
+      assert.ok(semCamposMeli, "campos exclusivos de MELI (FULL/custos adicionais) não podem aparecer no fluxo Shopee");
+    });
+
     // ═══ 3. REGRESSÃO P0 — sem vf-token: nunca pode ficar em branco pra
     // sempre. bootProduction() (vf-shell.js) só chama vfContext.init() se
     // hasToken() for true; sem isso nenhuma chamada de API acontece, então

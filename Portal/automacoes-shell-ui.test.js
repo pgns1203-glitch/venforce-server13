@@ -16,8 +16,13 @@
  *
  * Mais a troca de cliente pelo dropdown do Shell, sem recarregar a página.
  *
- * Escopo CLIENTE, não conta: nenhuma rota de automacoesRoutes.js aceita
- * conta (o seam é requireClienteNaCarteira sobre `clienteSlug`).
+ * fix/automacoes-account-scope — a tela virou escopo CONTA
+ * (data-vf-scope="account"): um cliente pode ter 2+ contas Mercado Livre, e
+ * antes desta correção automacoesRoutes.js ignorava qual conta o Shell tinha
+ * selecionado (resolveMlGrant({clienteId}) escolhia o grant principal em
+ * silêncio). A seção final deste arquivo ("WBS 2 — duas contas ML") prova o
+ * cenário do bug: trocar de conta sem reload muda qual seller a automação
+ * usa, e selecionar a conta NÃO principal explicitamente vence o is_primary.
  */
 "use strict";
 
@@ -34,19 +39,28 @@ const PROD_HOST = "venforce-server.onrender.com";
 const N97 = { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };
 const EXTRA = { id: 88, nome: "Extra Máquinas", slug: "extra", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };
 const SEM_ML = { id: 89, nome: "Só Shopee", slug: "so-shopee", ativo: true, temGrant: false, grantStatus: "ausente", temBase: true, setupScore: 50, statusOperacional: "atencao", ultimaSincronizacao: null, pendencias: ["sem_grant"] };
+// fix/automacoes-account-scope — cliente com DUAS contas Mercado Livre
+// (bug confirmado: selecionar ML1 ou ML2 podia analisar a mesma conta).
+const WBS2 = { id: 90, nome: "WBS 2", slug: "wbs-2", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };
 
 const CONTAS = {
   n97: [{ id: 42, cliente_id: 87, marketplace: "meli", nome: "Mercado Livre", ativo: true, grant: { token_status: "valid" }, base: { base_id: 9, nome: "Custo" } }],
   extra: [{ id: 51, cliente_id: 88, marketplace: "meli", nome: "Mercado Livre", ativo: true, grant: { token_status: "valid" }, base: { base_id: 11, nome: "Custo Extra" } }],
   "so-shopee": [{ id: 60, cliente_id: 89, marketplace: "shopee", nome: "Shopee", ativo: true, grant: null, base: { base_id: 14, nome: "Custo Shopee" } }],
+  // Conta B é is_primary — TESTE 3 prova que selecionar A explicitamente
+  // vence isso (o próprio bug: is_primary nunca pode desempatar seleção).
+  "wbs-2": [
+    { id: 101, cliente_id: 90, marketplace: "meli", nome: "Mercado Livre 1", ativo: true, is_primary: false, grant: { token_status: "valid" }, base: { base_id: 20, nome: "Custo WBS 2" } },
+    { id: 102, cliente_id: 90, marketplace: "meli", nome: "Mercado Livre 2", ativo: true, is_primary: true, grant: { token_status: "valid" }, base: { base_id: 20, nome: "Custo WBS 2" } },
+  ],
 };
 
 const ME_CONTEXT = {
   ok: true,
   user: { id: 12, nome: "Pedro Gomes", email: null, role: "user" },
   squads: [], squadPrincipalId: null,
-  clientes: [N97, EXTRA, SEM_ML].map((c) => ({ id: c.id, slug: c.slug, nome: c.nome, squadId: null, responsavelDireto: false, contasAtivas: 1 })),
-  portfolio: { totalClientes: 3 },
+  clientes: [N97, EXTRA, SEM_ML, WBS2].map((c) => ({ id: c.id, slug: c.slug, nome: c.nome, squadId: null, responsavelDireto: false, contasAtivas: c.slug === "wbs-2" ? 2 : 1 })),
+  portfolio: { totalClientes: 4 },
   permissoes: { podeAdministrar: false },
 };
 
@@ -58,8 +72,15 @@ const AUTOMACOES_CLIENTES = {
   clientes: [
     { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true, hasGrantMl: true, mlUserId: "182993004", baseMeli: "custo-2026", baseMeliNome: "Custo 2026", baseMeliUpdatedAt: "2026-08-20T10:00:00Z", baseStatus: "ok", basesMeliCount: 1, prontoParaAnalise: true, prontoParaExportacaoCrua: true },
     { id: 88, nome: "Extra Máquinas", slug: "extra", ativo: true, hasGrantMl: true, mlUserId: "119847221", baseMeli: null, baseMeliNome: null, baseMeliUpdatedAt: null, baseStatus: "ausente", basesMeliCount: 0, prontoParaAnalise: false, prontoParaExportacaoCrua: true },
+    { id: 90, nome: "WBS 2", slug: "wbs-2", ativo: true, hasGrantMl: true, mlUserId: "234836231", baseMeli: "custo-wbs2", baseMeliNome: "Custo WBS 2", baseMeliUpdatedAt: "2026-08-20T10:00:00Z", baseStatus: "ok", basesMeliCount: 1, prontoParaAnalise: true, prontoParaExportacaoCrua: true },
   ],
 };
+
+// fix/automacoes-account-scope — cada POST /diagnostico-completo/start
+// interceptado é registrado aqui (com o body decodificado) para provar que
+// o request enviado carrega o clienteContaId da conta selecionada no Shell.
+const DIAGNOSTICOS_INICIADOS = [];
+let proximoRelatorioId = 5000;
 
 let automacoesFalham = false;
 
@@ -178,6 +199,36 @@ function wireInterception(cdp) {
       await json(AUTOMACOES_CLIENTES);
       return;
     }
+    // fix/automacoes-account-scope — POST /diagnostico-completo/start:
+    // grava o body recebido (com clienteContaId) e devolve um relatorio_id
+    // já 'concluido', para o polling casar de primeira sem esperas reais.
+    if (url.includes("/automacoes/diagnostico-completo/start")) {
+      let body = {};
+      try { body = JSON.parse(params.request.postData || "{}"); } catch (_) { body = {}; }
+      const relatorioId = ++proximoRelatorioId;
+      DIAGNOSTICOS_INICIADOS.push({ relatorioId, body });
+      await json({ ok: true, relatorio_id: relatorioId, status: "processando", created_at: new Date().toISOString() });
+      return;
+    }
+    const status = url.match(/\/automacoes\/diagnostico-completo\/(\d+)/);
+    if (status) {
+      const relatorioId = Number(status[1]);
+      const iniciado = DIAGNOSTICOS_INICIADOS.find((d) => d.relatorioId === relatorioId);
+      await json({
+        ok: true,
+        relatorio: {
+          id: relatorioId,
+          cliente_slug: iniciado ? (iniciado.body.clienteSlug || "wbs-2") : "wbs-2",
+          status: "concluido",
+          total_itens: 0, itens_com_base: 0, itens_sem_base: 0,
+          itens_criticos: 0, itens_atencao: 0, itens_saudaveis: 0,
+          mc_media: null, observacoes: null,
+          created_at: new Date().toISOString(),
+        },
+      });
+      return;
+    }
+    if (url.includes("/automacoes/relatorios/")) { await json({ ok: true, itens: [] }); return; }
     await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
   };
   return excecoes;
@@ -260,7 +311,7 @@ async function run() {
     await waitFor(cdp, "document.querySelector('.vf-shell__sidebar')", "Shell V3 não montou");
     await sleep(300);
 
-    await check("F5 — sem cliente no contexto: escopo client bloqueia o conteúdo e pede o cliente", async () => {
+    await check("F5 — sem cliente no contexto: escopo account bloqueia o conteúdo e pede o cliente", async () => {
       assert.strictEqual(await cdp.evaluate("document.getElementById('vf-shell-main').hidden"), true);
       assert.strictEqual(await cdp.evaluate("document.body.classList.contains('vf-shell-blocked')"), true);
       const estado = await cdp.evaluate("document.querySelector('.vf-shell__state').innerText");
@@ -280,6 +331,59 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('auto-cliente-nome').textContent.trim()"), "N97 Comercial");
     });
     automacoesFalham = false;
+
+    /* ═══ 6. WBS 2 — duas contas ML: prova o bug corrigido ═══════════════
+       Cliente wbs-2, Conta A (id 101, ML1, is_primary=false) e Conta B
+       (id 102, ML2, is_primary=true). O bug confirmado: automacoesRoutes.js
+       ignorava a conta selecionada no Shell e o backend escolhia um grant
+       em silêncio (principal/fallback) — selecionar ML1 ou ML2 podia
+       analisar a mesma conta. */
+    await abrir("?cliente=wbs-2&conta=101");
+
+    await check("F5 — WBS 2 com Conta A na URL: conteúdo liberado (2 contas não bloqueiam quando uma é explícita)", async () => {
+      assert.strictEqual(await cdp.evaluate("document.body.classList.contains('vf-shell-blocked')"), false);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('auto-cliente-nome').textContent.trim()"), "WBS 2");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('auto-conta-nome').textContent.trim()"), "Mercado Livre 1");
+    });
+
+    await check("TESTE 1 — Analisar com Conta A selecionada: o request enviado carrega clienteContaId=101", async () => {
+      DIAGNOSTICOS_INICIADOS.length = 0;
+      await cdp.evaluate("document.getElementById('btn-otimizador-analisar').click()");
+      await waitFor(cdp, "document.getElementById('btn-otimizador-analisar').disabled === false", "a análise (Conta A) não terminou");
+      assert.strictEqual(DIAGNOSTICOS_INICIADOS.length, 1, "nenhum POST /diagnostico-completo/start foi capturado");
+      assert.strictEqual(DIAGNOSTICOS_INICIADOS[0].body.clienteSlug, "wbs-2");
+      assert.strictEqual(DIAGNOSTICOS_INICIADOS[0].body.clienteContaId, 101, `esperado clienteContaId 101 (Conta A), veio: ${JSON.stringify(DIAGNOSTICOS_INICIADOS[0].body)}`);
+    });
+
+    await check("TESTE 2 — trocar para Conta B pelo Shell, SEM RELOAD, e analisar de novo: clienteContaId=102", async () => {
+      await cdp.evaluate("window.__marca_wbs2 = 1");
+      DIAGNOSTICOS_INICIADOS.length = 0;
+      const trocou = await cdp.evaluate("window.VF.context.setConta(102)");
+      assert.strictEqual(trocou, true, "setConta(102) foi rejeitado");
+      await waitFor(cdp, "document.getElementById('auto-conta-nome').textContent.trim() === 'Mercado Livre 2'", "a tela não acompanhou a troca para Conta B");
+      assert.strictEqual(await cdp.evaluate("window.__marca_wbs2"), 1, "a página recarregou — a troca de conta deveria ser reativa, sem reload");
+      // O resultado da Conta A não pode continuar na tela como se fosse da B.
+      assert.strictEqual(await cdp.evaluate("document.getElementById('auto-results').hidden"), true,
+        "o resultado da Conta A ainda estava visível depois de trocar para a Conta B");
+
+      await cdp.evaluate("document.getElementById('btn-otimizador-analisar').click()");
+      await waitFor(cdp, "document.getElementById('btn-otimizador-analisar').disabled === false", "a análise (Conta B) não terminou");
+      assert.strictEqual(DIAGNOSTICOS_INICIADOS.length, 1, "nenhum POST /diagnostico-completo/start foi capturado para a Conta B");
+      assert.strictEqual(DIAGNOSTICOS_INICIADOS[0].body.clienteContaId, 102, `esperado clienteContaId 102 (Conta B), veio: ${JSON.stringify(DIAGNOSTICOS_INICIADOS[0].body)}`);
+    });
+
+    await check("TESTE 3 (regressão crítica) — voltar para Conta A explicitamente: NUNCA usa Conta B só por ela ser is_primary", async () => {
+      DIAGNOSTICOS_INICIADOS.length = 0;
+      const trocou = await cdp.evaluate("window.VF.context.setConta(101)");
+      assert.strictEqual(trocou, true, "setConta(101) foi rejeitado");
+      await waitFor(cdp, "document.getElementById('auto-conta-nome').textContent.trim() === 'Mercado Livre 1'", "a tela não acompanhou a volta para Conta A");
+
+      await cdp.evaluate("document.getElementById('btn-otimizador-analisar').click()");
+      await waitFor(cdp, "document.getElementById('btn-otimizador-analisar').disabled === false", "a análise (volta para Conta A) não terminou");
+      assert.strictEqual(DIAGNOSTICOS_INICIADOS.length, 1);
+      assert.strictEqual(DIAGNOSTICOS_INICIADOS[0].body.clienteContaId, 101,
+        `Conta B é is_primary — se o request usasse 102 aqui, seria exatamente o bug original. Veio: ${JSON.stringify(DIAGNOSTICOS_INICIADOS[0].body)}`);
+    });
 
     await check("F5 — nenhuma exceção de JS não tratada em nenhum cenário", async () => {
       const relevantes = excecoes.filter((m) => !/Failed to fetch|NetworkError|ERR_/i.test(m));

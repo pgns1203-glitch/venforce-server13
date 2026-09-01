@@ -83,6 +83,16 @@ function responderErroService(res, err) {
   if (err.payload && err.statusCode) {
     return res.status(err.statusCode).json(err.payload);
   }
+  // Erros estruturais de conta (resolveMarketplaceAccountContext, via
+  // contextoPrecificacaoService) chegam com `statusCode`/`code` direto no
+  // erro, não em `payload` — mesmo formato de controllers/adsController.js
+  // (getAdsPerformance) para MULTIPLE_MARKETPLACE_ACCOUNTS e afins.
+  if (Number.isFinite(Number(err.statusCode)) && Number(err.statusCode) >= 400) {
+    const payload = { ok: false, erro: err.message };
+    if (err.code) payload.code = err.code;
+    if (Array.isArray(err.contas)) payload.contas = err.contas;
+    return res.status(Number(err.statusCode)).json(payload);
+  }
   return res.status(500).json({ ok: false, erro: err.message });
 }
 
@@ -154,6 +164,7 @@ async function previewPrecificacaoController(req, res) {
     const resultado = await gerarPreviewPrecificacao({
       clienteSlugRaw: req.query.clienteSlug,
       baseSlugRaw: req.query.baseSlug,
+      clienteContaId: req.query.clienteContaId,
     });
 
     return res.json(resultado);
@@ -170,6 +181,7 @@ async function previewPrecificacaoMlController(req, res) {
       pageRaw: req.query.page,
       limitRaw: req.query.limit,
       margemAlvoRaw: req.query.margemAlvo,
+      clienteContaId: req.query.clienteContaId,
     });
 
     return res.json(resultado);
@@ -190,6 +202,7 @@ async function previewPromocoesRetornoController(req, res) {
       campanhaRaw: req.query.campanha,
       statusRaw: req.query.status,
       apenasComRetornoRaw: req.query.apenasComRetorno,
+      clienteContaId: req.query.clienteContaId,
     });
 
     return res.json(resultado);
@@ -261,6 +274,7 @@ async function buscarSnapshotPromocoesController(req, res) {
     const resultado = await buscarUltimoSnapshotPromocoes({
       clienteSlugRaw: req.query.clienteSlug,
       baseSlugRaw: req.query.baseSlug,
+      clienteContaId: req.query.clienteContaId,
     });
     return res.json(resultado);
   } catch (err) {
@@ -406,6 +420,7 @@ async function exportPlanilhaPrecificacaoSemBaseController(req, res) {
   try {
     const arquivo = await gerarPlanilhaPrecificacaoSemBase({
       clienteSlugRaw: req.params.clienteSlug,
+      clienteContaId: req.query.clienteContaId,
     });
     res.setHeader("Content-Type", arquivo.contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${arquivo.filename}"`);
@@ -419,6 +434,7 @@ async function exportModeloBaseCustosController(req, res) {
   try {
     const arquivo = await gerarModeloBaseCustos({
       clienteSlugRaw: req.params.clienteSlug,
+      clienteContaId: req.query.clienteContaId,
     });
     res.setHeader("Content-Type", arquivo.contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${arquivo.filename}"`);
@@ -430,14 +446,18 @@ async function exportModeloBaseCustosController(req, res) {
 
 async function iniciarDiagnosticoCompletoController(req, res) {
   try {
-    const { clienteSlug, baseSlug, margemAlvo, observacoes } = req.body || {};
+    const { clienteSlug, baseSlug, margemAlvo, observacoes, clienteContaId } = req.body || {};
     if (!clienteSlug) return res.status(400).json({ ok: false, erro: "clienteSlug é obrigatório." });
 
     // baseSlug é opcional: resolve automaticamente a base MELI vinculada ao
     // cliente (e valida grant + baseSlug informado, quando houver).
+    // clienteContaId é a conta ML selecionada no Shell V3 — sem ela (e com
+    // 2+ contas ML no cliente), exigirContextoPronto bloqueia com
+    // MULTIPLE_MARKETPLACE_ACCOUNTS em vez de escolher uma em silêncio.
     const contexto = await exigirContextoPronto({
       clienteSlugRaw: clienteSlug,
       baseSlugRaw: baseSlug,
+      clienteContaId,
     });
     const cliente = contexto.cliente;
     const base = contexto.base;
@@ -485,8 +505,13 @@ async function iniciarDiagnosticoCompletoController(req, res) {
       status: "sucesso",
     });
 
+    // mlUserId já resolvido acima (conta selecionada, ou fallback legado
+    // quando o cliente não tem cliente_contas cadastradas) viaja direto para
+    // o worker — a tabela `relatorios` não tem coluna de conta/seller, e o
+    // worker roda no mesmo processo, então não há por que persistir só para
+    // reler em seguida (ver diagnosticoService.executarDiagnosticoCompleto).
     setImmediate(() => {
-      executarDiagnosticoCompleto(relatorioId).catch((err) => {
+      executarDiagnosticoCompleto(relatorioId, { mlUserId: contexto.mlUserId }).catch((err) => {
         console.error(`[diag ${relatorioId}] falha não tratada:`, err);
       });
     });

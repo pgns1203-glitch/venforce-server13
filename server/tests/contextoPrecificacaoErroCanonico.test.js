@@ -16,19 +16,26 @@ const pool = require("../config/database");
 const Module = require("module");
 
 // resolveMlGrant é destruturado no require-time — stub antes do require.
+// contextoPrecificacaoService agora resolve conta/grant via
+// resolveMarketplaceAccountContext (clienteContaService.js), que também
+// requer "../mlTokenService" (mesma string, resolvida a partir de outro
+// diretório) e chama `createMlTokenService({ db })` — o stub precisa
+// devolver as duas formas para continuar interceptando as duas chamadas.
 const originalLoad = Module._load;
 let GRANT_CONECTADO = null; // null = sem grant; string = ml_user_id conectado
+async function resolveMlGrantStub({ clienteId, requireUsable }) {
+  if (!GRANT_CONECTADO) {
+    const err = new Error("Cliente não possui grant Mercado Livre.");
+    err.code = "ML_GRANT_NOT_FOUND";
+    throw err;
+  }
+  return { ml_user_id: GRANT_CONECTADO };
+}
 Module._load = function loadWithMlTokenStub(request, parent, isMain) {
   if (request === "../mlTokenService") {
     return {
-      async resolveMlGrant({ clienteId, requireUsable }) {
-        if (!GRANT_CONECTADO) {
-          const err = new Error("Cliente não possui grant Mercado Livre.");
-          err.code = "ML_GRANT_NOT_FOUND";
-          throw err;
-        }
-        return { ml_user_id: GRANT_CONECTADO };
-      },
+      resolveMlGrant: resolveMlGrantStub,
+      createMlTokenService: () => ({ resolveMlGrant: resolveMlGrantStub }),
     };
   }
   return originalLoad.call(this, request, parent, isMain);
@@ -63,7 +70,7 @@ async function rejeitaCom(label, promise, verificar) {
   console.log(`  ok  ${label}`);
 }
 
-const cliente = { id: 1, nome: "N97 Comercial", slug: "n97" };
+const cliente = { id: 1, nome: "N97 Comercial", slug: "n97", ativo: true };
 
 class MockDb {
   constructor({ basesMeli = [] } = {}) {
@@ -73,6 +80,20 @@ class MockDb {
     const q = String(sql).replace(/\s+/g, " ").trim();
     if (q.startsWith("SELECT id, nome, slug FROM clientes WHERE slug = $1 AND ativo = true")) {
       return { rows: cliente.slug === params[0] ? [cliente] : [] };
+    }
+    // resolveMarketplaceAccountContext (clienteContaService.js) resolve o
+    // cliente de novo, por slug, com um SELECT ligeiramente diferente (sem
+    // "AND ativo = true" no texto). Nenhuma cliente_conta cadastrada nestes
+    // cenários → cai no caminho legado (mesmo comportamento de antes desta
+    // integração): grant principal/fallback via mlTokenService.
+    if (q.startsWith("SELECT id, nome, slug, ativo FROM clientes WHERE slug = $1")) {
+      return { rows: cliente.slug === params[0] ? [cliente] : [] };
+    }
+    if (q.startsWith("SELECT id, nome, slug, ativo FROM clientes WHERE id = $1")) {
+      return { rows: cliente.id === Number(params[0]) ? [cliente] : [] };
+    }
+    if (q.startsWith("SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true")) {
+      return { rows: [] }; // nenhuma conta cadastrada → modo legado
     }
     if (q.includes("FROM base_cliente_vinculos v") && q.includes("JOIN bases b ON b.id = v.base_id AND b.ativo = true") && !q.includes("b.slug = $2")) {
       return { rows: this.basesMeli };

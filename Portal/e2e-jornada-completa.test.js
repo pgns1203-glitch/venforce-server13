@@ -330,14 +330,16 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-view-clientes, #am-filtro-conta').length"), 0);
     });
 
-    // ═══ 5d. Sidebar → Automações (escopo CLIENTE, migrada em F5) ═══
+    // ═══ 5d. Sidebar → Automações (escopo CONTA desde fix/automacoes-account-scope) ═══
     await clicarModulo("automacoes", "automacoes.html");
+    await waitFor(cdp, "window.VF.context.getState() === 'READY'", "Automações não chegou a READY");
     await sleep(300);
 
-    await check("5d. Automações: escopo cliente satisfeito, cliente do contexto exibido, sem seletor próprio", async () => {
+    await check("5d. Automações: escopo conta satisfeito, cliente E conta do contexto exibidos, sem seletor próprio", async () => {
       const c = await ctx();
       assert.strictEqual(c.clienteSlug, "n97");
-      assert.strictEqual(await cdp.evaluate("document.body.dataset.vfScope"), "client");
+      assert.strictEqual(c.clienteContaId, 43);
+      assert.strictEqual(await cdp.evaluate("document.body.dataset.vfScope"), "account");
       assert.strictEqual(await cdp.evaluate("document.getElementById('vf-shell-main').hidden"), false);
       assert.strictEqual(await cdp.evaluate("document.getElementById('auto-cliente-nome').textContent.trim()"), "N97 Comercial");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#auto-cliente, #auto-cliente-search').length"), 0);

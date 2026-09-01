@@ -13,7 +13,7 @@
 // Este arquivo apenas RESOLVE qual base/grant usar; não calcula nada.
 
 const pool = require("../../config/database");
-const { resolveMlGrant } = require("../mlTokenService");
+const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 const { CODIGOS_CANONICOS } = require("../../utils/erroContextoCanonico");
 
 function normalizarSlug(nome) {
@@ -90,8 +90,19 @@ async function buscarBasesMeliDoCliente(clienteId) {
 
 // Resolve o contexto de um cliente SEM lançar erro para condições de negócio.
 // Lança apenas 404 quando o cliente não existe. Retorna:
-// { cliente, grant:{conectado, ml_user_id}, base|null, basesMeli[], pronto, motivo, mensagem }
-async function resolverContextoPrecificacao({ clienteSlugRaw }) {
+// { cliente, conta|null, grant:{conectado, ml_user_id}, base|null, basesMeli[], pronto, motivo, mensagem }
+//
+// clienteContaId (opcional): a CONTA Mercado Livre selecionada no Shell V3.
+// Resolvida via resolveMarketplaceAccountContext (Fundação de Contas) — a
+// mesma porta de entrada usada por Central de Vendas, Ads e Anúncios ML —
+// para nunca duplicar a regra de "conta pertence ao cliente" / cardinalidade
+// (ver clienteContaService.js). Erros ESTRUTURAIS dessa resolução (conta de
+// outro cliente, marketplace incompatível, conta inativa, conta ambígua sem
+// seleção) sempre propagam intactos: nunca caem de volta no fallback
+// legado, que escolheria uma conta em silêncio (o bug que esta função existe
+// para corrigir). Sem clienteContaId e sem cliente_contas cadastradas para
+// o cliente, o comportamento é o legado (grant principal/fallback).
+async function resolverContextoPrecificacao({ clienteSlugRaw, clienteContaId = null }) {
   const clienteSlug = normalizarSlug(clienteSlugRaw);
   if (!clienteSlug) {
     throw criarErroHttp(400, { ok: false, erro: "clienteSlug é obrigatório.", codigo: "CLIENTE_SLUG_OBRIGATORIO" });
@@ -112,9 +123,33 @@ async function resolverContextoPrecificacao({ clienteSlugRaw }) {
   const cliente = c.rows[0];
 
   let mlUserId = null;
+  let conta = null;
   try {
-    mlUserId = (await resolveMlGrant({ clienteId: cliente.id, requireUsable: true })).ml_user_id;
-  } catch (_) {}
+    const accountContext = await resolveMarketplaceAccountContext({
+      clienteSlug: cliente.slug,
+      marketplace: "meli",
+      clienteContaId: clienteContaId || null,
+      // true: replica o `resolveMlGrant({..., requireUsable: true})` do
+      // comportamento original — um grant existente mas indisponível
+      // (revogado/expirado sem renovação) deve virar "não conectado", não
+      // ser devolvido como se estivesse usável. Ver o catch abaixo: esse
+      // erro (sem `statusCode`) é engolido do mesmo jeito que o try/catch
+      // original engolia.
+      requireUsableGrant: true,
+    });
+    conta = accountContext.conta;
+    mlUserId = accountContext.grant?.ml_user_id ?? null;
+  } catch (error) {
+    // Erro ESTRUTURAL de conta (403 CONTA_NAO_PERTENCE_AO_CLIENTE, 422
+    // MARKETPLACE_INCOMPATIVEL, 409 CONTA_INATIVA/CONTA_AMBIGUA, 404 conta
+    // inexistente) — nunca é engolido: bloquear é a regra, escolher outra
+    // conta em silêncio é o bug. `statusCode` só existe nesses erros
+    // estruturais (criarErroHttp em clienteContaService.js); um
+    // ML_GRANT_NOT_FOUND/ML_GRANT_UNUSABLE/ML_GRANT_REVOKED do
+    // mlTokenService não tem `statusCode` e cai no `grant.conectado = false`
+    // normal abaixo — mesmo comportamento de antes desta mudança.
+    if (error.statusCode) throw error;
+  }
   const grant = { conectado: Boolean(mlUserId), ml_user_id: mlUserId };
 
   const basesMeli = await buscarBasesMeliDoCliente(cliente.id);
@@ -136,6 +171,7 @@ async function resolverContextoPrecificacao({ clienteSlugRaw }) {
 
   return {
     cliente: { id: cliente.id, nome: cliente.nome, slug: cliente.slug },
+    conta,
     grant,
     base: base
       ? {
@@ -178,8 +214,8 @@ async function validarBaseInformada({ clienteId, baseSlugRaw }) {
 // - Se baseSlugRaw vier (compat), valida se pertence ao cliente + MELI + ativa.
 // - Se não vier, resolve automaticamente a base vinculada.
 // Lança erro controlado (statusCode + payload.codigo) quando não é possível.
-async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw }) {
-  const contexto = await resolverContextoPrecificacao({ clienteSlugRaw });
+async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw, clienteContaId = null }) {
+  const contexto = await resolverContextoPrecificacao({ clienteSlugRaw, clienteContaId });
 
   // Grant é pré-requisito em qualquer caminho.
   if (!contexto.grant.conectado) {
@@ -205,6 +241,7 @@ async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw }) {
     }
     return {
       cliente: contexto.cliente,
+      conta: contexto.conta,
       grant: contexto.grant,
       mlUserId: contexto.grant.ml_user_id,
       base,
@@ -223,6 +260,7 @@ async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw }) {
 
   return {
     cliente: contexto.cliente,
+    conta: contexto.conta,
     grant: contexto.grant,
     mlUserId: contexto.grant.ml_user_id,
     base: contexto.base,
@@ -233,8 +271,8 @@ async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw }) {
 // que não dependem de base de custos (ex.: planilha de precificação sem base).
 // Não valida nem exige base MELI vinculada; o chamador decide o que fazer com
 // basesMeli (0, 1 ou várias).
-async function exigirContextoGrantMl({ clienteSlugRaw }) {
-  const contexto = await resolverContextoPrecificacao({ clienteSlugRaw });
+async function exigirContextoGrantMl({ clienteSlugRaw, clienteContaId = null }) {
+  const contexto = await resolverContextoPrecificacao({ clienteSlugRaw, clienteContaId });
 
   if (!contexto.grant.conectado) {
     throw criarErroHttp(STATUS_POR_MOTIVO[MOTIVOS.GRANT_ML_NAO_CONECTADO], {
@@ -247,6 +285,7 @@ async function exigirContextoGrantMl({ clienteSlugRaw }) {
 
   return {
     cliente: contexto.cliente,
+    conta: contexto.conta,
     grant: contexto.grant,
     mlUserId: contexto.grant.ml_user_id,
     basesMeli: contexto.basesMeli,

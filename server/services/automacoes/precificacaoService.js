@@ -14,7 +14,7 @@ function criarErroHttp(statusCode, payload) {
   return err;
 }
 
-async function gerarPreviewPrecificacao({ clienteSlugRaw, baseSlugRaw }) {
+async function gerarPreviewPrecificacao({ clienteSlugRaw, baseSlugRaw, clienteContaId }) {
   const clienteSlugRawStr = String(clienteSlugRaw || "").trim();
   if (!clienteSlugRawStr) throw criarErroHttp(400, { ok: false, erro: "clienteSlug é obrigatório" });
 
@@ -23,6 +23,7 @@ async function gerarPreviewPrecificacao({ clienteSlugRaw, baseSlugRaw }) {
   const { cliente, base } = await exigirContextoPronto({
     clienteSlugRaw: clienteSlugRawStr,
     baseSlugRaw,
+    clienteContaId,
   });
 
   const custos = await pool.query(
@@ -60,6 +61,7 @@ async function gerarPreviewPrecificacaoMl({
   pageRaw,
   limitRaw,
   margemAlvoRaw,
+  clienteContaId,
 }) {
   const clienteSlugRawStr = String(clienteSlugRaw || "").trim();
   if (!clienteSlugRawStr) throw criarErroHttp(400, { ok: false, erro: "clienteSlug é obrigatório" });
@@ -78,6 +80,7 @@ async function gerarPreviewPrecificacaoMl({
   const { cliente, base, mlUserId } = await exigirContextoPronto({
     clienteSlugRaw: clienteSlugRawStr,
     baseSlugRaw,
+    clienteContaId,
   });
 
   const custosRes = await pool.query(

@@ -14,7 +14,7 @@
 | Data | 2026-09-01 |
 | Main base | `origin/main` @ `e6549f741302ec1010ae3e04749d0da4417ca1e5` — **bate exatamente com o SHA canônico esperado** |
 | Branch | `backend/v3-rollout-preflight-account-audit` (criada de `origin/main`) |
-| HEAD ao escrever este doc | `7fdfe6a` (após o commit deste MD: ver §17) |
+| HEAD final da branch | `aea4431` (commit deste MD). Commits: `cf50803` (porta P2.9) → `1521ab4` (fix account-scope + testes) → `7fdfe6a` (revalida P2.9) → `aea4431` (este MD) |
 | Push | `backend/v3-rollout-preflight-account-audit` → origin (sem PR para main) |
 | Frontend tocado | **NENHUM** (`git diff --name-only e6549f7 HEAD` não lista `Portal/**` nem `frontend-react/**`) |
 | Enforcement | `SQUADS_ENFORCEMENT` = **OFF** — não tocado |
@@ -702,7 +702,7 @@ Squads_migration/VENFORCE_V3_PESSOA2_ACCOUNT_AUDIT_P2_9_PREFLIGHT.md (ESTE)
 | Item | Valor |
 |---|---|
 | **Branch** | `backend/v3-rollout-preflight-account-audit` |
-| **SHA** | `<HEAD após o commit deste MD>` (era `7fdfe6a` antes) |
+| **SHA** | `aea4431` (HEAD final) — mais um commit `docs` de ajuste de auto-referência de SHA pode existir acima; use `git rev-parse origin/backend/v3-rollout-preflight-account-audit` |
 | **Ordem de merge recomendada** | 1º esta branch (backend) → main; 2º `frontend/v3-final-qa-cutover-prep` (Pessoa 1) → main. Backend primeiro porque os contratos que o FE consome (bases-elegiveis, `code` canônico, invariante) já estão aqui e são aditivos. |
 | **Só duas branches** | sim — a `backend/v3-p2-9-preflight` **não entra** (conteúdo absorvido, ver §"REAPROVEITAMENTO"). |
 | **Possíveis arquivos de conflito** | `server/services/automacoes/*`, `server/services/motorMargem/*`, `server/services/shared/marketplaceCurrentQuoteService.js` (só se a Pessoa 1 tocou backend — não deveria). `Squads_migration/` (docs novos, sem sobreposição esperada). |

@@ -107,6 +107,20 @@ Foco solicitado:
 
 ---
 
+### 8) Ferramenta OR (Ofertas Relâmpago) — removida do Portal, backend órfão
+
+- **arquivos**: `server/index.js` (`POST /download-ferramenta-or`, ~L1524), `server/downloads/v1_10_1.py`, `server/downloads/Criar_ORs.py`
+- **para que parece servir**: gerava um `.zip` com um script Python de criação automática de Ofertas Relâmpago no Mercado Livre. A UI ficava na seção "Ferramenta OR" de `Portal/ferramentas.html` + no `initFerramentaOR()` de `Portal/ferramentas.js`.
+- **ativo ou legado**: **legado a partir do redesign de `ferramentas.html`** (set/2026, branch `frontend/design-ferramentas`). A seção e o formulário de MLBs foram removidos da página a pedido do produto ("ferramenta desatualizada, não é mais funcionalidade ativa"). O stub `Portal/ferramenta-or.html` passou a redirecionar para `ferramentas.html` sem âncora.
+- **evidência**:
+  - `Portal/ferramentas.js` não tem mais nenhuma chamada à rota.
+  - `grep -rn "download-ferramenta-or" Portal/` não retorna consumidores.
+  - A extensão não usa essa rota.
+- **risco de remover**: **baixo** para o Portal; **médio** se alguém rodava o endpoint por fora (link direto / script). Não foi tocado nada no backend neste redesign (regra do GUIA_PARA_IA: não mexer em API/rotas sem autorização explícita).
+- **recomendação**: **manter por enquanto**; remover a rota + os `.py` numa limpeza de backend própria, depois de confirmar que ninguém chama `POST /download-ferramenta-or` fora do Portal.
+
+---
+
 ## Resumo executivo (curto)
 
 - **Mais claramente legado/duplicado**: `server/auth/*` (auth por `clients.json`) e `extension/options.js` (fluxo antigo sem Bearer token, desalinhado com a API).

@@ -6,7 +6,8 @@
   <title>VenforceGo — Guia do Vendedor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (códigos) -->
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
@@ -14,24 +15,27 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
   <style>
     /* ═══════════════════════════════════════════════
-       TOKENS
+       TOKENS — ilha `gv-` remapeada para a Fundação V2.
+       Nenhum valor de cor nasce aqui: tudo aponta para
+       os tokens --vf-* de css/vf-tokens-v2.css.
     ═══════════════════════════════════════════════ */
     .gv-page {
-      --gv-primary:       #7c3aed;
-      --gv-primary-d:     #6d28d9;
-      --gv-primary-l:     rgba(124,58,237,0.10);
-      --gv-primary-label: #c4b5fd;
-      --gv-coral:         #ef4444;
-      --gv-green:         #059669;
-      --gv-ink:           #09090b;
-      --gv-ink-soft:      #27272a;
-      --gv-muted:         #71717a;
-      --gv-line:          #e4e4e7;
-      --gv-bg:            #ffffff;
-      --gv-bg-warm:       #faf8ff;
-      --gv-bg-dark:       #0f0720;
-      --gv-dark-line:     rgba(255,255,255,0.08);
-      --gv-serif:         'Instrument Serif', Georgia, 'Times New Roman', serif;
+      --gv-primary:       var(--vf-primary);
+      --gv-primary-d:     var(--vf-primary-hover);
+      --gv-primary-l:     var(--vf-primary-soft);
+      --gv-primary-label: var(--vf-primary-strong);
+      --gv-coral:         var(--vf-danger);
+      --gv-coral-strong:  var(--vf-danger-strong);
+      --gv-green:         var(--vf-success);
+      --gv-ink:           var(--vf-text);
+      --gv-ink-soft:      var(--vf-text-secondary);
+      --gv-muted:         var(--vf-text-muted);
+      --gv-line:          var(--vf-border);
+      --gv-bg:            var(--vf-surface);
+      --gv-bg-warm:       var(--vf-surface-2);
+      --gv-dark-line:     var(--vf-border);
+      /* ponte: onde havia serif editorial agora entra a família display (Manrope) */
+      --gv-serif:         var(--vf-font-display);
     }
 
     /* ═══════════════════════════════════════════════
@@ -41,176 +45,282 @@
       width: 100%;
       background: var(--gv-bg);
       color: var(--gv-ink);
-      overflow-x: hidden;
+      font-family: var(--vf-font-body);
     }
 
-    .gv-inner {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 0 2rem;
-    }
+    /* mais largura útil para 2 colunas (índice + conteúdo) — padrão de
+       outras telas V3 que sobem o max-width do .vf-content por página */
+    .gv-page.vf-content { max-width: 1160px; }
+
+    /* wrapper herdado: neutralizado, o enquadramento agora é do .vf-content + .gv-layout */
+    .gv-inner { max-width: none; margin: 0; padding: 0; }
 
     /* ═══════════════════════════════════════════════
        SCROLL REVEAL
     ═══════════════════════════════════════════════ */
     .gv-reveal {
       opacity: 0;
-      transform: translateY(18px);
-      transition: opacity 0.7s cubic-bezier(0.16,1,0.3,1),
-                  transform 0.7s cubic-bezier(0.16,1,0.3,1);
+      transform: translateY(14px);
+      transition: opacity 0.6s cubic-bezier(0.16,1,0.3,1),
+                  transform 0.6s cubic-bezier(0.16,1,0.3,1);
     }
     .gv-reveal.gv-visible { opacity: 1; transform: none; }
-    .gv-d1 { transition-delay: 0.1s; }
-    .gv-d2 { transition-delay: 0.2s; }
-    .gv-d3 { transition-delay: 0.3s; }
+    .gv-d1 { transition-delay: 0.08s; }
+    .gv-d2 { transition-delay: 0.16s; }
+    .gv-d3 { transition-delay: 0.24s; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .gv-reveal { opacity: 1; transform: none; transition: none; }
+    }
 
     /* ═══════════════════════════════════════════════
-       HERO
+       CABEÇALHO DA PÁGINA
     ═══════════════════════════════════════════════ */
-    .gv-hero {
-      padding: 3rem 0 2.5rem;
+    .gv-header {
+      padding-bottom: var(--vf-sp-6);
       border-bottom: 1px solid var(--gv-line);
-      background: var(--gv-bg);
+      margin-bottom: var(--vf-sp-10);
     }
 
-    .gv-hero-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      margin-bottom: 1.5rem;
-      padding: 0.35rem 0.85rem;
-      border: 1px solid var(--gv-line);
-      border-radius: 100px;
-      font-size: 0.75rem;
-      font-weight: 500;
-      letter-spacing: 0.05em;
+    .gv-kicker {
+      font-family: var(--vf-font-mono);
+      font-size: var(--vf-fs-2xs);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
       color: var(--gv-muted);
+      margin: 0 0 var(--vf-sp-3);
     }
 
-    .gv-pulse {
-      width: 7px; height: 7px;
-      background: var(--gv-primary);
-      border-radius: 50%;
-      flex-shrink: 0;
-      animation: gvPulse 2s infinite;
-    }
-
-    @keyframes gvPulse {
-      0%   { box-shadow: 0 0 0 0 rgba(124,58,237,0.5); }
-      70%  { box-shadow: 0 0 0 8px rgba(124,58,237,0); }
-      100% { box-shadow: 0 0 0 0 rgba(124,58,237,0); }
-    }
-
-    .gv-hero-title {
-      font-family: var(--gv-serif);
-      font-size: clamp(2.8rem, 7vw, 6rem);
-      line-height: 0.95;
-      letter-spacing: -0.03em;
-      font-weight: 400;
-      margin-bottom: 2rem;
+    .gv-title {
+      font-family: var(--vf-font-display);
+      font-size: var(--vf-fs-3xl);
+      font-weight: var(--vf-fw-bold);
+      line-height: var(--vf-lh-tight);
+      letter-spacing: var(--vf-ls-tight);
       color: var(--gv-ink);
+      margin: 0 0 var(--vf-sp-3);
     }
 
-    .gv-hero-title em { font-style: italic; }
-
-    .gv-underline {
-      background: linear-gradient(transparent 65%, rgba(124,58,237,0.18) 65%);
-      padding: 0 0.1em;
-    }
-
-    .gv-hero-row {
-      display: grid;
-      grid-template-columns: 1.6fr 1fr;
-      gap: 2rem;
-      align-items: end;
-      padding-top: 1.5rem;
-      border-top: 1px solid var(--gv-line);
-    }
-
-    .gv-hero-lead {
-      font-size: 1.05rem;
+    .gv-lead {
+      font-size: var(--vf-fs-lg);
+      line-height: var(--vf-lh-normal);
       color: var(--gv-ink-soft);
-      line-height: 1.65;
+      max-width: 64ch;
+      margin: 0 0 var(--vf-sp-4);
     }
+    .gv-lead strong { color: var(--gv-ink); font-weight: var(--vf-fw-semibold); }
 
-    .gv-hero-lead strong { color: var(--gv-ink); }
-
-    .gv-hero-meta {
-      font-size: 0.78rem;
+    .gv-journey-context {
+      font-size: var(--vf-fs-md);
+      line-height: var(--vf-lh-relaxed);
       color: var(--gv-muted);
-      text-align: right;
-      line-height: 1.8;
+      max-width: 64ch;
+      margin: 0 0 var(--vf-sp-6);
     }
 
-    .gv-hero-meta strong { color: var(--gv-ink); font-weight: 600; }
+    /* Jornada do vendedor — puramente decorativa: sem links, sem estado,
+       sem "você está aqui". Só orienta onde este guia se encaixa. */
+    .gv-journey {
+      list-style: none;
+      margin: 0 0 var(--vf-sp-6);
+      padding: 0;
+      display: flex;
+      gap: var(--vf-sp-3);
+    }
+    .gv-journey li {
+      flex: 1 1 0;
+      position: relative;
+      padding-top: var(--vf-sp-4);
+      font-size: var(--vf-fs-sm);
+      font-weight: var(--vf-fw-medium);
+      color: var(--gv-ink-soft);
+      line-height: var(--vf-lh-snug);
+    }
+    .gv-journey li::before {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--gv-line);
+    }
+    .gv-journey li:first-child::before { left: 5px; border-radius: var(--vf-radius-pill) 0 0 var(--vf-radius-pill); }
+    .gv-journey li:last-child::before  { right: 5px; border-radius: 0 var(--vf-radius-pill) var(--vf-radius-pill) 0; }
+    .gv-journey-dot {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--vf-surface);
+      border: 2px solid var(--gv-muted);
+    }
 
-    @media (max-width: 720px) {
-      .gv-hero-row { grid-template-columns: 1fr; gap: 1rem; }
-      .gv-hero-meta { text-align: left; }
+    .gv-meta {
+      font-size: var(--vf-fs-xs);
+      color: var(--gv-muted);
+      margin: 0;
     }
 
     /* ═══════════════════════════════════════════════
-       SECTIONS
+       LAYOUT — índice sticky + coluna de conteúdo
     ═══════════════════════════════════════════════ */
-    .gv-section {
-      padding: 4rem 0;
-      border-top: 1px solid var(--gv-line);
-    }
-
-    .gv-section-dark {
-      background: var(--gv-bg-dark);
-      color: #f4f4f5;
-      border-top: none;
-      padding: 5rem 0;
-    }
-
-    .gv-section-warm {
-      background: var(--gv-bg-warm);
-    }
-
-    .gv-section-header {
+    .gv-layout {
       display: grid;
-      grid-template-columns: 1fr 2.2fr;
-      gap: 2rem;
-      margin-bottom: 3rem;
+      grid-template-columns: 232px minmax(0, 1fr);
+      gap: clamp(var(--vf-sp-6), 4vw, var(--vf-sp-12));
       align-items: start;
     }
 
-    .gv-chapter-num {
-      font-family: var(--gv-serif);
-      font-style: italic;
-      font-size: 1rem;
-      color: var(--gv-primary);
-      margin-bottom: 0.5rem;
+    .gv-toc {
+      position: sticky;
+      top: var(--vf-sp-6);
+      align-self: start;
     }
 
-    .gv-section-dark .gv-chapter-num { color: var(--gv-primary-label); }
+    /* "Neste guia" — no desktop é uma lista fixa; no mobile (≤860px) vira
+       <details> colapsável. O <details> não recebe [open] no markup: a
+       regra abaixo (min-width:861px) força a lista visível e neutraliza o
+       toggle; abaixo disso o comportamento nativo do <details> assume. */
+    .gv-toc-box > summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--vf-sp-2);
+      font-family: var(--vf-font-mono);
+      font-size: var(--vf-fs-2xs);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gv-muted);
+      list-style: none;
+    }
+    .gv-toc-box > summary::-webkit-details-marker { display: none; }
+    .gv-toc-box > summary::after {
+      content: "";
+      flex: none;
+      width: 7px;
+      height: 7px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(45deg);
+      transition: transform var(--vf-duration) var(--vf-ease);
+    }
+    .gv-toc-box[open] > summary::after { transform: rotate(-135deg); }
+
+    .gv-toc ol {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .gv-toc a {
+      display: block;
+      padding: 7px var(--vf-sp-2);
+      border-radius: var(--vf-radius-sm);
+      border-left: 2px solid transparent;
+      font-size: var(--vf-fs-sm);
+      line-height: var(--vf-lh-snug);
+      color: var(--gv-ink-soft);
+      text-decoration: none;
+      transition: background-color var(--vf-duration-fast) var(--vf-ease),
+                  color var(--vf-duration-fast) var(--vf-ease);
+    }
+    .gv-toc a:hover {
+      background: var(--vf-surface-hover);
+      color: var(--gv-ink);
+    }
+
+    @media (min-width: 861px) {
+      .gv-toc-box > summary { pointer-events: none; margin-bottom: var(--vf-sp-3); padding: 0 var(--vf-sp-2); }
+      .gv-toc-box > summary::after { display: none; }
+      .gv-toc-box > ol { display: flex; }
+    }
+
+    /* ═══════════════════════════════════════════════
+       CAPÍTULOS — mesmo padrão para os 8
+    ═══════════════════════════════════════════════ */
+    .gv-content {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .gv-section {
+      scroll-margin-top: var(--vf-sp-6);
+      overflow-wrap: break-word;
+    }
+    .gv-section + .gv-section {
+      margin-top: var(--vf-sp-10);
+      padding-top: var(--vf-sp-10);
+      border-top: 1px solid var(--gv-line);
+    }
+
+    .gv-section-header { margin-bottom: var(--vf-sp-6); }
+
+    .gv-chapter-num {
+      font-family: var(--vf-font-mono);
+      font-style: normal;
+      font-size: var(--vf-fs-2xs);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gv-muted);
+      margin: 0 0 var(--vf-sp-2);
+    }
 
     .gv-section-h2 {
-      font-family: var(--gv-serif);
-      font-size: clamp(2rem, 4.5vw, 3.5rem);
-      line-height: 1.0;
-      letter-spacing: -0.025em;
-      font-weight: 400;
-      margin: 0;
+      font-family: var(--vf-font-display);
+      font-size: var(--vf-fs-2xl);
+      font-weight: var(--vf-fw-bold);
+      line-height: var(--vf-lh-tight);
+      letter-spacing: var(--vf-ls-tight);
+      color: var(--gv-ink);
+      margin: 0 0 var(--vf-sp-3);
     }
-
-    .gv-section-h2 em { font-style: italic; }
-    .gv-section-dark .gv-section-h2 { color: #f4f4f5; }
+    .gv-section-h2 em { font-style: normal; }
 
     .gv-section-lead {
-      font-size: 1rem;
-      color: var(--gv-muted);
-      line-height: 1.65;
+      font-size: var(--vf-fs-md);
+      color: var(--gv-ink-soft);
+      line-height: var(--vf-lh-relaxed);
+      max-width: 68ch;
       margin: 0;
     }
+    .gv-section-lead strong { color: var(--gv-ink); font-weight: var(--vf-fw-semibold); }
 
-    .gv-section-lead strong { color: var(--gv-ink); font-weight: 600; }
-    .gv-section-dark .gv-section-lead { color: rgba(244,244,245,0.65); }
-    .gv-section-dark .gv-section-lead strong { color: #f4f4f5; }
+    /* ═══════════════════════════════════════════════
+       CALLOUT SEMÂNTICO — compartilhado (CH06, CH07)
+       Distinção por FORMA (régua à esquerda + ícone) além da cor.
+    ═══════════════════════════════════════════════ */
+    .gv-callout {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--vf-sp-3);
+      padding: var(--vf-sp-4);
+      border: 1px solid var(--gv-line);
+      border-left: 3px solid var(--gv-muted);
+      border-radius: 0 var(--vf-radius-sm) var(--vf-radius-sm) 0;
+      font-size: var(--vf-fs-sm);
+      line-height: var(--vf-lh-relaxed);
+      color: var(--gv-ink-soft);
+    }
+    .gv-callout p { margin: 0; }
+    .gv-callout strong { color: inherit; font-weight: var(--vf-fw-semibold); }
+    .gv-callout-icon { flex: none; font-size: 0.95rem; line-height: 1.5; }
 
-    @media (max-width: 720px) {
-      .gv-section-header { grid-template-columns: 1fr; gap: 1rem; margin-bottom: 2rem; }
+    .gv-callout.is-warning {
+      border-color: var(--vf-warning-border);
+      border-left-color: var(--vf-warning);
+      background: var(--vf-warning-bg);
+      color: var(--vf-warning-strong);
+    }
+    .gv-callout.is-danger {
+      border-color: var(--vf-danger-border);
+      border-left-color: var(--vf-danger);
+      background: var(--vf-danger-bg);
+      color: var(--vf-danger-strong);
     }
 
     /* ═══════════════════════════════════════════════
@@ -220,10 +330,12 @@
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       border: 1px solid var(--gv-line);
+      border-radius: var(--vf-radius);
+      overflow: hidden;
     }
 
     .gv-blocked-item {
-      padding: 2rem 1.5rem;
+      padding: 1.6rem 1.4rem;
       border-right: 1px solid var(--gv-line);
       transition: background 0.2s;
     }
@@ -232,93 +344,115 @@
     .gv-blocked-item:hover { background: var(--gv-bg-warm); }
 
     .gv-blocked-x {
-      font-family: var(--gv-serif);
-      font-size: 2.2rem;
-      color: var(--gv-coral);
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--gv-coral-strong);
       line-height: 1;
-      margin-bottom: 1rem;
+      margin-bottom: 0.75rem;
     }
 
-    .gv-blocked-item h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.3rem; }
-    .gv-blocked-item p { font-size: 0.85rem; color: var(--gv-muted); line-height: 1.5; }
+    .gv-blocked-item h3 { font-size: var(--vf-fs-md); font-weight: 700; margin: 0 0 0.3rem; }
+    .gv-blocked-item p { font-size: var(--vf-fs-sm); color: var(--gv-muted); line-height: 1.5; margin: 0; }
 
     @media (max-width: 900px) {
       .gv-blocked-grid { grid-template-columns: repeat(2, 1fr); }
       .gv-blocked-item { border-bottom: 1px solid var(--gv-line); }
       .gv-blocked-item:nth-child(2) { border-right: none; }
+      .gv-blocked-item:nth-last-child(-n+2) { border-bottom: none; }
     }
-    @media (max-width: 480px) { .gv-blocked-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 480px) {
+      .gv-blocked-grid { grid-template-columns: 1fr; }
+      .gv-blocked-item { border-right: none; }
+      .gv-blocked-item:nth-last-child(2) { border-bottom: 1px solid var(--gv-line); }
+    }
 
     /* ═══════════════════════════════════════════════
-       CH02 — MÉTRICAS
+       CH02 — MÉTRICAS + ESCALA DE REPUTAÇÃO
     ═══════════════════════════════════════════════ */
     .gv-metrics {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      border-top: 1px solid var(--gv-line);
-      margin-bottom: 2rem;
+      border: 1px solid var(--gv-line);
+      border-radius: var(--vf-radius);
+      overflow: hidden;
+      margin-bottom: var(--vf-sp-6);
     }
 
     .gv-metric {
-      padding: 2rem 1.8rem;
+      padding: 1.4rem 1.5rem;
       border-right: 1px solid var(--gv-line);
     }
-
     .gv-metric:last-child { border-right: none; }
 
-    .gv-metric-value {
-      font-family: var(--gv-serif);
-      font-size: clamp(3.5rem, 6vw, 5.5rem);
-      line-height: 1;
-      letter-spacing: -0.03em;
-      color: var(--gv-primary);
-      margin-bottom: 0.4rem;
+    .gv-metric h4 {
+      font-family: var(--vf-font-mono);
+      font-size: var(--vf-fs-2xs);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gv-muted);
+      font-weight: var(--vf-fw-semibold);
+      margin: 0 0 var(--vf-sp-2);
     }
 
+    .gv-metric-value {
+      font-family: var(--vf-font-display);
+      font-variant-numeric: tabular-nums;
+      font-size: var(--vf-fs-3xl);
+      font-weight: var(--vf-fw-bold);
+      line-height: 1;
+      letter-spacing: var(--vf-ls-tight);
+      color: var(--gv-ink);
+      margin-bottom: var(--vf-sp-2);
+    }
     .gv-metric-value sup {
-      font-size: 0.3em;
-      font-family: inherit;
-      font-weight: 400;
+      font-size: 0.4em;
+      font-weight: 600;
       vertical-align: super;
       color: var(--gv-muted);
-      margin-left: 0.2rem;
+      margin-left: 0.1rem;
     }
 
-    .gv-metric h4 { font-size: 0.95rem; font-weight: 700; margin-bottom: 0.4rem; }
-    .gv-metric p { font-size: 0.85rem; color: var(--gv-muted); line-height: 1.55; }
+    .gv-metric p { font-size: var(--vf-fs-sm); color: var(--gv-muted); line-height: 1.55; margin: 0; }
 
     @media (max-width: 720px) {
       .gv-metrics { grid-template-columns: 1fr; }
       .gv-metric { border-right: none; border-bottom: 1px solid var(--gv-line); }
+      .gv-metric:last-child { border-bottom: none; }
+    }
+
+    .gv-scale-caption {
+      font-family: var(--vf-font-mono);
+      font-size: var(--vf-fs-2xs);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--gv-muted);
+      margin: 0 0 var(--vf-sp-2);
     }
 
     .gv-color-bar {
       display: flex;
-      height: 12px;
-      border-radius: 100px;
-      overflow: hidden;
-      margin: 1.5rem 0 0.75rem;
+      gap: 3px;
+      height: 8px;
+      margin: 0 0 0.6rem;
     }
-
-    .gv-color-bar > div { flex: 1; }
-    .gv-cb-red    { background: #e63946; }
-    .gv-cb-orange { background: #ff8c42; }
-    .gv-cb-yellow { background: #f4c430; }
-    .gv-cb-lime   { background: #b5d33d; }
-    .gv-cb-green  { background: #4caf50; }
+    .gv-color-bar > div { flex: 1; border-radius: 2px; }
+    .gv-cb-red    { background: #c0392b; }
+    .gv-cb-orange { background: #d97b29; }
+    .gv-cb-yellow { background: #d9b12a; }
+    .gv-cb-lime   { background: #7ea63a; }
+    .gv-cb-green  { background: #2f8f4e; }
 
     .gv-color-labels {
       display: flex;
       justify-content: space-between;
-      font-size: 0.68rem;
+      font-size: var(--vf-fs-2xs);
       color: var(--gv-muted);
       font-weight: 500;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
+      letter-spacing: 0.03em;
     }
 
     /* ═══════════════════════════════════════════════
-       CH03 — TIMELINE
+       CH03 — PROGRESSÃO (escala neutra, sem gradiente)
     ═══════════════════════════════════════════════ */
     .gv-timeline-track {
       display: grid;
@@ -330,10 +464,10 @@
     .gv-timeline-track::before {
       content: '';
       position: absolute;
-      top: 0; left: 8px; right: 8px;
-      height: 5px;
-      background: linear-gradient(90deg, #e63946 0%, #ff8c42 25%, #f4c430 50%, #b5d33d 75%, #4caf50 100%);
-      border-radius: 100px;
+      top: 0; left: 6px; right: 6px;
+      height: 2px;
+      background: var(--gv-line);
+      border-radius: var(--vf-radius-pill);
     }
 
     .gv-timeline-stop {
@@ -344,151 +478,118 @@
     .gv-timeline-stop::before {
       content: '';
       position: absolute;
-      top: -2.8rem; left: 0;
-      width: 14px; height: 14px;
-      background: var(--gv-primary);
-      border: 3px solid var(--gv-bg);
+      top: -2.85rem; left: 0;
+      width: 12px; height: 12px;
+      background: var(--vf-primary);
+      border: 2px solid var(--vf-surface);
       border-radius: 50%;
-      box-shadow: 0 0 0 1px var(--gv-primary);
+      box-shadow: 0 0 0 1px var(--vf-primary);
     }
 
     .gv-timeline-stage {
-      font-family: var(--gv-serif);
-      font-style: italic;
-      font-size: 0.9rem;
+      font-family: var(--vf-font-mono);
+      font-size: var(--vf-fs-2xs);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
       color: var(--gv-muted);
-      margin-bottom: 0.3rem;
+      margin-bottom: 0.4rem;
     }
 
     .gv-timeline-stop h4 {
-      font-family: var(--gv-serif);
-      font-size: 1.45rem;
-      line-height: 1.15;
-      margin-bottom: 0.5rem;
-      font-weight: 400;
+      font-family: var(--vf-font-display);
+      font-size: var(--vf-fs-md);
+      font-weight: var(--vf-fw-semibold);
+      line-height: 1.25;
+      margin: 0 0 0.5rem;
     }
 
-    .gv-timeline-stop p { font-size: 0.88rem; color: var(--gv-muted); line-height: 1.6; }
+    .gv-timeline-stop p { font-size: var(--vf-fs-sm); color: var(--gv-muted); line-height: 1.6; margin: 0; }
 
     @media (max-width: 720px) {
-      .gv-timeline-track { grid-template-columns: 1fr; gap: 2rem; }
+      .gv-timeline-track { grid-template-columns: 1fr; gap: 2rem; padding-top: 0; }
       .gv-timeline-track::before { display: none; }
-      .gv-timeline-stop { padding-left: 1.5rem; padding-right: 0; border-left: 2px solid rgba(124,58,237,0.35); }
-      .gv-timeline-stop::before { left: -8px; top: 0.3rem; }
+      .gv-timeline-stop { padding-left: 1.25rem; padding-right: 0; border-left: 2px solid var(--gv-line); }
+      .gv-timeline-stop::before { left: -7px; top: 0.3rem; }
     }
 
     /* ═══════════════════════════════════════════════
-       CH04 — PROGRAMA DECOLA (dark)
+       CH04 — PROGRAMA DECOLA (mesmo bloco de dado dos demais)
     ═══════════════════════════════════════════════ */
-    .gv-decola-header {
-      display: grid;
-      grid-template-columns: 1fr 2fr;
-      gap: 2rem;
-      margin-bottom: 3.5rem;
-    }
-
-    .gv-eyebrow {
-      font-size: 0.7rem;
-      font-weight: 700;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--gv-primary-label);
-      margin-bottom: 0.75rem;
-    }
-
-    .gv-decola-h2 {
-      font-family: var(--gv-serif);
-      font-size: clamp(2.8rem, 6vw, 5rem);
-      line-height: 0.95;
-      letter-spacing: -0.03em;
-      font-weight: 400;
-      color: #f4f4f5;
-    }
-
-    .gv-decola-h2 em { font-style: italic; color: var(--gv-primary-label); }
-
-    .gv-decola-intro {
-      font-size: 1.05rem;
-      color: rgba(244,244,245,0.7);
-      line-height: 1.7;
-      align-self: end;
-    }
-
     .gv-pillars {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      border-top: 1px solid var(--gv-dark-line);
+      border: 1px solid var(--gv-line);
+      border-radius: var(--vf-radius);
+      overflow: hidden;
     }
 
     .gv-pillar {
-      padding: 2.5rem 1.8rem;
-      border-right: 1px solid var(--gv-dark-line);
+      padding: 1.5rem 1.4rem;
+      border-right: 1px solid var(--gv-line);
     }
-
     .gv-pillar:last-child { border-right: none; }
 
     .gv-pillar-label {
-      font-family: var(--gv-serif);
-      font-style: italic;
-      font-size: 0.9rem;
-      color: var(--gv-primary-label);
-      margin-bottom: 0.75rem;
+      font-family: var(--vf-font-mono);
+      font-size: var(--vf-fs-2xs);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--gv-muted);
+      font-weight: var(--vf-fw-semibold);
+      margin-bottom: var(--vf-sp-3);
     }
 
     .gv-pillar-value {
-      font-family: var(--gv-serif);
-      font-size: clamp(2.2rem, 4.5vw, 3.2rem);
-      line-height: 1.05;
-      letter-spacing: -0.02em;
-      margin-bottom: 0.75rem;
-      color: #f4f4f5;
+      font-family: var(--vf-font-display);
+      font-variant-numeric: tabular-nums;
+      font-size: var(--vf-fs-xl);
+      font-weight: var(--vf-fw-bold);
+      line-height: 1.2;
+      letter-spacing: var(--vf-ls-tight);
+      color: var(--gv-ink);
+      margin-bottom: var(--vf-sp-2);
     }
 
-    .gv-pillar p { font-size: 0.88rem; color: rgba(244,244,245,0.6); line-height: 1.6; }
+    .gv-pillar p { font-size: var(--vf-fs-sm); color: var(--gv-muted); line-height: 1.6; margin: 0; }
 
     @media (max-width: 900px) {
-      .gv-decola-header { grid-template-columns: 1fr; gap: 1.5rem; }
       .gv-pillars { grid-template-columns: 1fr; }
-      .gv-pillar { border-right: none; border-bottom: 1px solid var(--gv-dark-line); }
+      .gv-pillar { border-right: none; border-bottom: 1px solid var(--gv-line); }
       .gv-pillar:last-child { border-bottom: none; }
     }
 
     /* ═══════════════════════════════════════════════
-       CH05 — BENEFÍCIOS
+       CH05 — BENEFÍCIOS (grade operacional, sem card promocional)
     ═══════════════════════════════════════════════ */
     .gv-benefits {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 1.25rem;
+      border: 1px solid var(--gv-line);
+      border-radius: var(--vf-radius);
+      overflow: hidden;
     }
 
     .gv-benefit {
-      background: var(--gv-bg-warm);
-      padding: 1.8rem 1.6rem;
-      border-radius: 16px;
-      border: 1px solid var(--gv-line);
-      transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s;
+      padding: 1.5rem 1.4rem;
+      border-right: 1px solid var(--gv-line);
+      border-bottom: 1px solid var(--gv-line);
     }
-
-    .gv-benefit:hover {
-      transform: translateY(-3px);
-      box-shadow: 0 16px 32px -12px rgba(124,58,237,0.14);
-      border-color: rgba(124,58,237,0.22);
-    }
+    .gv-benefit:nth-child(3n) { border-right: none; }
+    .gv-benefit:nth-last-child(-n+3) { border-bottom: none; }
 
     .gv-benefit-icon {
-      width: 40px; height: 40px;
-      background: var(--gv-primary-l);
-      border-radius: 10px;
+      width: 36px; height: 36px;
+      background: var(--vf-bg-2);
+      border-radius: var(--vf-radius-sm);
       display: flex;
       align-items: center;
       justify-content: center;
-      margin-bottom: 1.2rem;
+      margin-bottom: 1rem;
     }
 
     .gv-benefit-icon svg {
-      width: 20px; height: 20px;
-      stroke: var(--gv-primary);
+      width: 18px; height: 18px;
+      stroke: var(--gv-ink-soft);
       stroke-width: 2;
       fill: none;
       stroke-linecap: round;
@@ -496,196 +597,189 @@
     }
 
     .gv-benefit h3 {
-      font-family: var(--gv-serif);
-      font-size: 1.3rem;
-      line-height: 1.15;
-      margin-bottom: 0.5rem;
-      font-weight: 400;
+      font-family: var(--vf-font-display);
+      font-size: var(--vf-fs-md);
+      font-weight: var(--vf-fw-semibold);
+      line-height: 1.3;
+      margin: 0 0 0.4rem;
     }
 
-    .gv-benefit p { font-size: 0.88rem; color: var(--gv-muted); line-height: 1.6; }
+    .gv-benefit p { font-size: var(--vf-fs-sm); color: var(--gv-muted); line-height: 1.6; margin: 0; }
 
-    @media (max-width: 900px) { .gv-benefits { grid-template-columns: repeat(2, 1fr); } }
-    @media (max-width: 540px) { .gv-benefits { grid-template-columns: 1fr; } }
+    @media (max-width: 900px) {
+      .gv-benefits { grid-template-columns: repeat(2, 1fr); }
+      .gv-benefit { border-right: 1px solid var(--gv-line); border-bottom: 1px solid var(--gv-line); }
+      .gv-benefit:nth-child(2n) { border-right: none; }
+      .gv-benefit:nth-last-child(-n+2) { border-bottom: none; }
+    }
+    @media (max-width: 540px) {
+      .gv-benefits { grid-template-columns: 1fr; }
+      .gv-benefit { border-right: none; }
+      .gv-benefit:nth-last-child(2) { border-bottom: 1px solid var(--gv-line); }
+      .gv-benefit:last-child { border-bottom: none; }
+    }
 
     /* ═══════════════════════════════════════════════
-       CH06 — REEMBOLSO
+       CH06 — REEMBOLSO (tabela operacional)
     ═══════════════════════════════════════════════ */
     .gv-refund-grid {
       display: grid;
       grid-template-columns: 1fr 1.2fr;
-      gap: 3.5rem;
+      gap: 2.5rem;
       align-items: start;
     }
 
     .gv-refund-intro h2 {
-      font-family: var(--gv-serif);
-      font-size: clamp(2rem, 4vw, 3rem);
-      line-height: 1;
-      letter-spacing: -0.02em;
-      margin-bottom: 1rem;
-      font-weight: 400;
+      font-family: var(--vf-font-display);
+      font-size: var(--vf-fs-xl);
+      font-weight: var(--vf-fw-bold);
+      line-height: 1.2;
+      letter-spacing: var(--vf-ls-tight);
+      margin: 0 0 var(--vf-sp-3);
     }
-
-    .gv-refund-intro h2 em { font-style: italic; }
+    .gv-refund-intro h2 em { font-style: normal; }
 
     .gv-refund-intro p {
       color: var(--gv-ink-soft);
-      font-size: 0.97rem;
+      font-size: var(--vf-fs-md);
       line-height: 1.7;
-      margin-bottom: 1rem;
-    }
-
-    .gv-refund-callout {
-      margin-top: 1rem;
-      padding: 0.9rem 1.1rem;
-      border-left: 3px solid var(--gv-primary);
-      background: var(--gv-primary-l);
-      font-size: 0.84rem;
-      color: var(--gv-ink-soft);
-      line-height: 1.6;
-      border-radius: 0 8px 8px 0;
+      margin: 0 0 var(--vf-sp-4);
     }
 
     .gv-refund-table {
-      background: white;
-      border-radius: 14px;
-      overflow: hidden;
       border: 1px solid var(--gv-line);
-      box-shadow: 0 4px 20px -8px rgba(124,58,237,0.10);
+      border-radius: var(--vf-radius);
+      overflow: hidden;
     }
 
     .gv-refund-row {
       display: grid;
       grid-template-columns: 1fr auto;
       align-items: center;
-      padding: 0.95rem 1.4rem;
-      border-bottom: 1px solid var(--gv-line);
-      transition: background 0.15s;
+      gap: var(--vf-sp-3);
+      padding: 0.8rem 1.1rem;
+      border-top: 1px solid var(--gv-line);
     }
-
-    .gv-refund-row:last-child { border-bottom: none; }
-    .gv-refund-row:not(.gv-refund-header):hover { background: var(--gv-bg-warm); }
+    .gv-refund-row:first-child { border-top: none; }
+    .gv-refund-row:not(.gv-refund-header):hover { background: var(--vf-surface-hover); }
 
     .gv-refund-header {
-      background: var(--gv-primary);
-      color: white;
-      font-size: 0.72rem;
-      letter-spacing: 0.1em;
+      background: var(--vf-surface-2);
+      font-family: var(--vf-font-mono);
+      font-size: var(--vf-fs-2xs);
+      letter-spacing: 0.08em;
       text-transform: uppercase;
-      font-weight: 700;
+      font-weight: var(--vf-fw-semibold);
+      color: var(--gv-muted);
     }
 
-    .gv-refund-label { font-weight: 500; font-size: 0.92rem; }
+    .gv-refund-label {
+      font-size: var(--vf-fs-md);
+      display: flex;
+      align-items: center;
+      gap: var(--vf-sp-2);
+      flex-wrap: wrap;
+    }
 
     .gv-refund-value {
-      font-family: var(--gv-serif);
-      font-size: 1.4rem;
-      font-weight: 400;
-      letter-spacing: -0.01em;
-    }
-
-    .gv-refund-row.gv-refund-best .gv-refund-value { color: var(--gv-green); }
-    .gv-refund-row.gv-refund-worst .gv-refund-value { color: var(--gv-coral); }
-
-    @media (max-width: 860px) { .gv-refund-grid { grid-template-columns: 1fr; gap: 2rem; } }
-
-    /* ═══════════════════════════════════════════════
-       CH07 — ESTRATÉGIA DE LINK
-    ═══════════════════════════════════════════════ */
-    .gv-strategy {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 2rem;
-    }
-
-    .gv-strategy-step { position: relative; isolation: isolate; }
-
-    .gv-step-num {
-      font-family: var(--gv-serif);
-      font-size: clamp(3.5rem, 6vw, 5rem);
-      line-height: 0.9;
-      letter-spacing: -0.04em;
+      font-family: var(--vf-font-display);
+      font-variant-numeric: tabular-nums;
+      font-size: var(--vf-fs-lg);
+      font-weight: var(--vf-fw-semibold);
       color: var(--gv-ink);
-      margin-bottom: 0.75rem;
-      display: inline-block;
-      padding: 0 0.1em;
-      position: relative;
     }
 
-    .gv-step-num::after {
-      content: '';
-      position: absolute;
-      bottom: 0.1em; left: 0; right: 0;
-      height: 0.28em;
-      background: rgba(124,58,237,0.16);
-      z-index: -1;
-      border-radius: 2px;
+    .gv-refund-tag {
+      display: inline-flex;
+      align-items: center;
+      height: 20px;
+      padding: 0 var(--vf-sp-2);
+      border-radius: var(--vf-radius-sm);
+      font-family: var(--vf-font-body);
+      font-size: var(--vf-fs-2xs);
+      font-weight: var(--vf-fw-semibold);
+      letter-spacing: 0.02em;
+      white-space: nowrap;
     }
 
-    .gv-strategy-step h3 {
-      font-family: var(--gv-serif);
-      font-size: 1.35rem;
-      line-height: 1.15;
-      margin-bottom: 0.6rem;
-      font-weight: 400;
+    .gv-refund-row.gv-refund-best .gv-refund-value { color: var(--vf-success-strong); }
+    .gv-refund-row.gv-refund-best .gv-refund-tag { background: var(--vf-success-bg); color: var(--vf-success-strong); }
+    .gv-refund-row.gv-refund-worst .gv-refund-value { color: var(--vf-danger-strong); }
+    .gv-refund-row.gv-refund-worst .gv-refund-tag { background: var(--vf-danger-bg); color: var(--vf-danger-strong); }
+
+    @media (max-width: 860px) {
+      .gv-refund-grid { grid-template-columns: 1fr; gap: 1.75rem; }
     }
-
-    .gv-strategy-step p { color: var(--gv-muted); font-size: 0.9rem; line-height: 1.65; }
-    .gv-strategy-step p strong { color: var(--gv-ink-soft); }
-
-    .gv-warning .gv-step-num { color: var(--gv-coral); }
-    .gv-warning .gv-step-num::after { background: rgba(239,68,68,0.12); }
-
-    @media (max-width: 900px) { .gv-strategy { grid-template-columns: 1fr; gap: 2.5rem; } }
 
     /* ═══════════════════════════════════════════════
-       CH08 — FECHAMENTO (dark)
+       CH07 — LINK DA LOJA (passos + callout)
     ═══════════════════════════════════════════════ */
-    .gv-closing-h2 {
-      font-family: var(--gv-serif);
-      font-size: clamp(2.5rem, 5.5vw, 4rem);
-      line-height: 0.95;
-      letter-spacing: -0.025em;
-      font-weight: 400;
-      margin-bottom: 1.25rem;
-      max-width: 800px;
-      color: #f4f4f5;
+    .gv-steps {
+      display: flex;
+      flex-direction: column;
+      gap: var(--vf-sp-5);
+      margin-bottom: var(--vf-sp-5);
     }
 
-    .gv-closing-h2 em { font-style: italic; color: var(--gv-primary-label); }
-
-    .gv-closing-lead {
-      font-size: 1rem;
-      color: rgba(244,244,245,0.65);
-      line-height: 1.7;
-      max-width: 620px;
-      margin-bottom: 2.5rem;
+    .gv-step {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: var(--vf-sp-3);
+      align-items: start;
     }
 
-    .gv-closing-lead strong { color: var(--gv-primary-label); }
+    .gv-step-n {
+      width: 28px; height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--vf-primary-soft);
+      color: var(--vf-primary-strong);
+      font-family: var(--vf-font-display);
+      font-size: var(--vf-fs-sm);
+      font-weight: var(--vf-fw-bold);
+      font-variant-numeric: tabular-nums;
+    }
 
+    .gv-step h3 {
+      font-family: var(--vf-font-display);
+      font-size: var(--vf-fs-md);
+      font-weight: var(--vf-fw-semibold);
+      line-height: 1.3;
+      margin: 0 0 var(--vf-sp-1);
+    }
+
+    .gv-step p { font-size: var(--vf-fs-sm); color: var(--gv-muted); line-height: 1.65; margin: 0; }
+    .gv-step p strong { color: var(--gv-ink-soft); }
+
+    /* ═══════════════════════════════════════════════
+       CH08 — MATERIAIS (checklist + download operacional)
+    ═══════════════════════════════════════════════ */
     .gv-checklist {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      border-top: 1px solid var(--gv-dark-line);
-      border-left: 1px solid var(--gv-dark-line);
-      margin-bottom: 3rem;
+      border: 1px solid var(--gv-line);
+      border-radius: var(--vf-radius);
+      overflow: hidden;
+      margin-bottom: var(--vf-sp-6);
     }
 
     .gv-check-item {
-      padding: 1.5rem;
-      border-right: 1px solid var(--gv-dark-line);
-      border-bottom: 1px solid var(--gv-dark-line);
+      padding: 1.4rem;
+      border-right: 1px solid var(--gv-line);
+      border-bottom: 1px solid var(--gv-line);
       display: flex;
       gap: 1rem;
       align-items: flex-start;
     }
+    .gv-check-item:nth-child(2n) { border-right: none; }
+    .gv-check-item:nth-last-child(-n+2) { border-bottom: none; }
 
     .gv-check-mark {
-      flex: 0 0 26px;
-      width: 26px; height: 26px;
-      background: var(--gv-primary);
+      flex: 0 0 24px;
+      width: 24px; height: 24px;
+      background: var(--vf-success-bg);
       border-radius: 50%;
       display: flex;
       align-items: center;
@@ -694,95 +788,133 @@
     }
 
     .gv-check-mark svg {
-      width: 13px; height: 13px;
-      stroke: white;
+      width: 12px; height: 12px;
+      stroke: var(--vf-success-strong);
       stroke-width: 2.5;
       fill: none;
       stroke-linecap: round;
       stroke-linejoin: round;
     }
 
-    .gv-check-item h4 { font-size: 1rem; font-weight: 700; margin-bottom: 0.3rem; color: #f4f4f5; }
-    .gv-check-item p { font-size: 0.84rem; color: rgba(244,244,245,0.55); line-height: 1.55; }
+    .gv-check-item h4 { font-size: var(--vf-fs-md); font-weight: 700; margin: 0 0 0.3rem; color: var(--gv-ink); }
+    .gv-check-item p { font-size: var(--vf-fs-sm); color: var(--gv-muted); line-height: 1.55; margin: 0; }
 
-    @media (max-width: 720px) { .gv-checklist { grid-template-columns: 1fr; } }
+    @media (max-width: 720px) {
+      .gv-checklist { grid-template-columns: 1fr; }
+      .gv-check-item { border-right: none; }
+      .gv-check-item:nth-last-child(2) { border-bottom: 1px solid var(--gv-line); }
+    }
 
-    /* ═══════════════════════════════════════════════
-       CTA DOWNLOAD
-    ═══════════════════════════════════════════════ */
-    .gv-cta {
-      padding: 2rem;
-      background: rgba(124,58,237,0.14);
-      border: 1px solid rgba(124,58,237,0.25);
-      border-radius: 18px;
+    .gv-download {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 1.5rem;
+      gap: var(--vf-sp-4);
       flex-wrap: wrap;
+      padding: var(--vf-sp-4) var(--vf-sp-5);
+      border: 1px solid var(--gv-line);
+      border-radius: var(--vf-radius);
+      background: var(--vf-surface);
     }
 
-    .gv-cta h3 {
-      font-family: var(--gv-serif);
-      font-size: clamp(1.4rem, 2.5vw, 1.9rem);
-      line-height: 1.05;
-      letter-spacing: -0.02em;
-      font-weight: 400;
-      margin-bottom: 0.3rem;
-      color: #f4f4f5;
+    .gv-download-info {
+      display: flex;
+      align-items: center;
+      gap: var(--vf-sp-3);
+      min-width: 0;
     }
 
-    .gv-cta h3 em { font-style: italic; color: var(--gv-primary-label); }
+    .gv-download-icon {
+      flex: none;
+      width: 40px; height: 40px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--vf-radius-sm);
+      background: var(--vf-bg-2);
+    }
+    .gv-download-icon svg {
+      width: 20px; height: 20px;
+      stroke: var(--gv-ink-soft);
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
 
-    .gv-cta p { color: rgba(244,244,245,0.6); font-size: 0.9rem; max-width: 420px; }
-
-    .gv-btn-row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+    .gv-download-name { font-size: var(--vf-fs-md); font-weight: var(--vf-fw-semibold); color: var(--gv-ink); margin: 0; }
+    .gv-download-meta { font-size: var(--vf-fs-xs); color: var(--gv-muted); margin: 2px 0 0; }
 
     .gv-btn {
       display: inline-flex;
       align-items: center;
       gap: 0.5rem;
-      padding: 0.8rem 1.3rem;
-      border-radius: 10px;
-      font-size: 0.88rem;
-      font-weight: 700;
-      font-family: inherit;
+      height: var(--vf-control-h);
+      padding: 0 1.1rem;
+      border-radius: var(--vf-radius-sm);
+      font-size: var(--vf-fs-sm);
+      font-weight: var(--vf-fw-semibold);
+      font-family: var(--vf-font-body);
       text-decoration: none;
       cursor: pointer;
-      border: none;
-      transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+      border: 1px solid transparent;
+      transition: background var(--vf-duration) var(--vf-ease), border-color var(--vf-duration) var(--vf-ease);
       white-space: nowrap;
     }
 
     .gv-btn-primary {
       background: var(--gv-primary);
-      color: white;
+      border-color: var(--gv-primary);
+      color: #fff;
     }
-
     .gv-btn-primary:hover {
       background: var(--gv-primary-d);
-      color: white;
-      transform: translateY(-2px);
-      box-shadow: 0 10px 24px -6px rgba(124,58,237,0.4);
+      border-color: var(--gv-primary-d);
+      color: #fff;
     }
 
     .gv-btn-ghost {
-      background: rgba(255,255,255,0.08);
-      color: #f4f4f5;
-      border: 1px solid rgba(255,255,255,0.15);
+      background: var(--vf-surface);
+      color: var(--gv-ink);
+      border: 1px solid var(--vf-border-strong);
+    }
+    .gv-btn-ghost:hover { border-color: var(--vf-border-hover); background: var(--vf-surface-hover); }
+
+    /* ═══════════════════════════════════════════════
+       RESPONSIVO — layout
+    ═══════════════════════════════════════════════ */
+    @media (max-width: 860px) {
+      .gv-layout { grid-template-columns: 1fr; gap: var(--vf-sp-6); }
+      .gv-toc { position: static; margin-bottom: var(--vf-sp-4); }
+      .gv-toc-box > summary {
+        min-height: 44px;
+        padding: var(--vf-sp-2) var(--vf-sp-3);
+        border: 1px solid var(--gv-line);
+        border-radius: var(--vf-radius-sm);
+        cursor: pointer;
+      }
+      .gv-toc-box[open] > summary { border-radius: var(--vf-radius-sm) var(--vf-radius-sm) 0 0; }
+      .gv-toc-box[open] > ol {
+        display: flex;
+        border: 1px solid var(--gv-line);
+        border-top: 0;
+        border-radius: 0 0 var(--vf-radius-sm) var(--vf-radius-sm);
+        padding: var(--vf-sp-2);
+      }
     }
 
-    .gv-btn-ghost:hover {
-      background: rgba(255,255,255,0.14);
-      color: white;
+    @media (max-width: 560px) {
+      .gv-journey { flex-direction: column; gap: 0; }
+      .gv-journey li { padding: var(--vf-sp-2) 0 var(--vf-sp-2) var(--vf-sp-5); }
+      .gv-journey li::before { top: 0; bottom: 0; left: 4px; right: auto; width: 2px; height: auto; }
+      .gv-journey li:first-child::before,
+      .gv-journey li:last-child::before { border-radius: var(--vf-radius-pill); }
+      .gv-journey-dot { top: var(--vf-sp-2); }
     }
 
     @media (max-width: 640px) {
-      .gv-hero { padding: 2rem 0; }
-      .gv-hero-title { font-size: 2.4rem; }
-      .gv-section { padding: 2.5rem 0; }
-      .gv-section-dark { padding: 3rem 0; }
-      .gv-inner { padding: 0 1rem; }
+      .gv-title { font-size: var(--vf-fs-2xl); }
+      .gv-section + .gv-section { margin-top: var(--vf-sp-8); padding-top: var(--vf-sp-8); }
     }
   </style>
 </head>
@@ -794,368 +926,380 @@
   <div>
     <main class="vf-content gv-page">
 
-      <!-- ═══ HERO ═══ -->
-      <section class="gv-hero">
-        <div class="gv-inner">
-          <div class="gv-hero-tag gv-reveal gv-visible">
-            <span class="gv-pulse"></span>
-            Guia oficial · Vendedor iniciante
-          </div>
-          <h1 class="gv-hero-title gv-reveal gv-visible gv-d1">
-            Do <em>zero</em> até<br>
-            a reputação<br>
-            <span class="gv-underline">verde.</span>
-          </h1>
-          <div class="gv-hero-row gv-reveal gv-visible gv-d2">
-            <p class="gv-hero-lead">
-              Entenda como funciona a reputação, conheça o <strong>Programa Decola</strong> e aprenda a usar o link da sua loja para conquistar as primeiras vendas no Mercado Livre.
-            </p>
-            <div class="gv-hero-meta">
-              Tempo de leitura · <strong>8 min</strong><br>
-              Atualizado em <strong>2026</strong><br>
-              Para vendedores · <strong>iniciantes</strong>
-            </div>
-          </div>
-        </div>
-      </section>
+      <!-- ═══ CABEÇALHO DA PÁGINA ═══ -->
+      <header class="gv-header">
+        <p class="gv-kicker">Guia oficial · Vendedor iniciante</p>
+        <h1 class="gv-title">Guia do Vendedor</h1>
+        <p class="gv-lead">
+          Como funciona a reputação no Mercado Livre, o que é o <strong>Programa Decola</strong> e como usar o link da sua loja para conquistar as primeiras vendas.
+        </p>
+        <p class="gv-journey-context">
+          Este guia cobre o começo da operação: da conta recém-criada, sem reputação e com ferramentas bloqueadas, até a reputação verde — quando os recursos de crescimento são liberados.
+        </p>
+        <ol class="gv-journey" aria-label="A jornada do vendedor">
+          <li><span class="gv-journey-dot" aria-hidden="true"></span>Conta</li>
+          <li><span class="gv-journey-dot" aria-hidden="true"></span>Primeiras vendas</li>
+          <li><span class="gv-journey-dot" aria-hidden="true"></span>Reputação</li>
+          <li><span class="gv-journey-dot" aria-hidden="true"></span>Crescimento</li>
+        </ol>
+        <p class="gv-meta">8 min de leitura · atualizado em 2026 · para vendedores iniciantes</p>
+      </header>
 
-      <!-- ═══ CH01: O PROBLEMA ═══ -->
-      <section class="gv-section">
-        <div class="gv-inner">
-          <div class="gv-section-header">
-            <div>
-              <div class="gv-chapter-num">— 01</div>
-              <h2 class="gv-section-h2 gv-reveal">Você é<br><em>novo</em> aqui?</h2>
-            </div>
-            <p class="gv-section-lead gv-reveal gv-d1">
-              Contas novas começam <strong>sem reputação</strong> — e isso bloqueia o acesso a ferramentas essenciais para escalar suas vendas. Sem essas ferramentas, fica difícil sair do zero.
-            </p>
-          </div>
-          <div class="gv-blocked-grid gv-reveal">
-            <div class="gv-blocked-item">
-              <div class="gv-blocked-x">✗</div>
-              <h3>ADS</h3>
-              <p>Publicidade paga totalmente bloqueada</p>
-            </div>
-            <div class="gv-blocked-item">
-              <div class="gv-blocked-x">✗</div>
-              <h3>Promoções</h3>
-              <p>Central de descontos indisponível</p>
-            </div>
-            <div class="gv-blocked-item">
-              <div class="gv-blocked-x">✗</div>
-              <h3>Cupons</h3>
-              <p>Sem acesso a cupons de desconto</p>
-            </div>
-            <div class="gv-blocked-item">
-              <div class="gv-blocked-x">✗</div>
-              <h3>Transmissões</h3>
-              <p>Listas de transmissão bloqueadas</p>
-            </div>
-          </div>
-        </div>
-      </section>
+      <div class="gv-layout">
 
-      <!-- ═══ CH02: REPUTAÇÃO ═══ -->
-      <section class="gv-section" id="reputacao">
-        <div class="gv-inner">
-          <div class="gv-section-header">
-            <div>
-              <div class="gv-chapter-num">— 02</div>
-              <h2 class="gv-section-h2 gv-reveal">Como funciona<br>a <em>reputação</em></h2>
-            </div>
-            <p class="gv-section-lead gv-reveal gv-d1">
-              A reputação é o seu <strong>cartão de visita</strong> no Mercado Livre. Ela é calculada com base em três variáveis principais — e quem chega na cor verde se torna <strong>MercadoLíder</strong> e ganha muito mais visibilidade.
-            </p>
-          </div>
-          <div class="gv-metrics gv-reveal">
-            <div class="gv-metric">
-              <div class="gv-metric-value">2<sup>%</sup></div>
-              <h4>Reclamações</h4>
-              <p>Não devem ultrapassar 2% das vendas para manter a reputação saudável.</p>
-            </div>
-            <div class="gv-metric">
-              <div class="gv-metric-value">1,5<sup>%</sup></div>
-              <h4>Cancelamentos</h4>
-              <p>Máximo de 1,5% de cancelamentos feitos por você para conquistar o verde.</p>
-            </div>
-            <div class="gv-metric">
-              <div class="gv-metric-value">10<sup>%</sup></div>
-              <h4>Envios incorretos</h4>
-              <p>Limite máximo de 10% sobre o total de entregas realizadas.</p>
-            </div>
-          </div>
-          <div class="gv-reveal">
-            <div class="gv-color-bar">
-              <div class="gv-cb-red"></div>
-              <div class="gv-cb-orange"></div>
-              <div class="gv-cb-yellow"></div>
-              <div class="gv-cb-lime"></div>
-              <div class="gv-cb-green"></div>
-            </div>
-            <div class="gv-color-labels">
-              <span>Vermelho</span>
-              <span>Laranja</span>
-              <span>Amarelo</span>
-              <span>Verde-claro</span>
-              <span>Verde</span>
-            </div>
-          </div>
-        </div>
-      </section>
+        <!-- ═══ ÍNDICE — única navegação interna funcional ═══ -->
+        <nav class="gv-toc" aria-label="Neste guia">
+          <details class="gv-toc-box" open>
+            <summary class="gv-toc-label">Neste guia</summary>
+            <ol>
+              <li><a href="#bloqueios">01 · Você é novo aqui?</a></li>
+              <li><a href="#reputacao">02 · Como funciona a reputação</a></li>
+              <li><a href="#calculo">03 · Quando ela é calculada</a></li>
+              <li><a href="#decola">04 · O Programa Decola</a></li>
+              <li><a href="#beneficios">05 · Benefícios que vêm junto</a></li>
+              <li><a href="#reembolso">06 · Como você recupera o dinheiro</a></li>
+              <li><a href="#link-loja">07 · O link da sua loja</a></li>
+              <li><a href="#materiais">08 · Encerramento e materiais</a></li>
+            </ol>
+          </details>
+        </nav>
 
-      <!-- ═══ CH03: TIMELINE ═══ -->
-      <section class="gv-section">
-        <div class="gv-inner">
-          <div class="gv-section-header">
-            <div>
-              <div class="gv-chapter-num">— 03</div>
-              <h2 class="gv-section-h2 gv-reveal">Quando ela é<br><em>calculada</em>?</h2>
-            </div>
-            <p class="gv-section-lead gv-reveal gv-d1">
-              A reputação é atualizada <strong>diariamente</strong> e de forma <strong>retroativa</strong>. Contas com menos de 10 vendas aparecem em cinza, sem classificação. É exatamente aqui que o Programa Decola faz a diferença.
-            </p>
-          </div>
-          <div class="gv-timeline-track gv-reveal">
-            <div class="gv-timeline-stop">
-              <div class="gv-timeline-stage">estágio inicial</div>
-              <h4>Primeiras 10 vendas</h4>
-              <p>Conta aparece em cinza, sem classificação. Sem dados suficientes para reputação.</p>
-            </div>
-            <div class="gv-timeline-stop">
-              <div class="gv-timeline-stage">em construção</div>
-              <h4>Menos de 60 vendas</h4>
-              <p>Primeiras métricas começam a aparecer, mas ainda sob avaliação intensa.</p>
-            </div>
-            <div class="gv-timeline-stop">
-              <div class="gv-timeline-stage">consolidado</div>
-              <h4>60+ vendas em 60 dias</h4>
-              <p>Reputação consolidada. Hora de mirar no verde e desbloquear o MercadoLíder.</p>
-            </div>
-          </div>
-        </div>
-      </section>
+        <div class="gv-content">
 
-      <!-- ═══ CH04: PROGRAMA DECOLA (dark) ═══ -->
-      <section class="gv-section gv-section-dark" id="decola">
-        <div class="gv-inner">
-          <div class="gv-decola-header gv-reveal">
-            <div>
-              <div class="gv-eyebrow">— Capítulo 04</div>
-              <h2 class="gv-decola-h2">O Programa<br><em>Decola.</em></h2>
+          <!-- ═══ CH01: O PROBLEMA ═══ -->
+          <section class="gv-section" id="bloqueios">
+            <div class="gv-inner">
+              <div class="gv-section-header">
+                <div class="gv-chapter-num">Capítulo 01</div>
+                <h2 class="gv-section-h2 gv-reveal">Você é novo aqui?</h2>
+                <p class="gv-section-lead gv-reveal gv-d1">
+                  Contas novas começam <strong>sem reputação</strong> — e isso bloqueia o acesso a ferramentas essenciais para escalar suas vendas. Sem essas ferramentas, fica difícil sair do zero.
+                </p>
+              </div>
+              <div class="gv-blocked-grid gv-reveal">
+                <div class="gv-blocked-item">
+                  <div class="gv-blocked-x" aria-hidden="true">✗</div>
+                  <h3>ADS</h3>
+                  <p>Publicidade paga totalmente bloqueada</p>
+                </div>
+                <div class="gv-blocked-item">
+                  <div class="gv-blocked-x" aria-hidden="true">✗</div>
+                  <h3>Promoções</h3>
+                  <p>Central de descontos indisponível</p>
+                </div>
+                <div class="gv-blocked-item">
+                  <div class="gv-blocked-x" aria-hidden="true">✗</div>
+                  <h3>Cupons</h3>
+                  <p>Sem acesso a cupons de desconto</p>
+                </div>
+                <div class="gv-blocked-item">
+                  <div class="gv-blocked-x" aria-hidden="true">✗</div>
+                  <h3>Transmissões</h3>
+                  <p>Listas de transmissão bloqueadas</p>
+                </div>
+              </div>
             </div>
-            <p class="gv-decola-intro gv-reveal gv-d1">
-              Resolve o dilema clássico do vendedor novo: <strong style="color:#f4f4f5;">sem vendas, sem reputação — sem reputação, sem vendas</strong>. Com o Decola, você conquista visibilidade imediata e quebra esse ciclo.
-            </p>
-          </div>
-          <div class="gv-pillars gv-reveal">
-            <div class="gv-pillar">
-              <div class="gv-pillar-label">→ Como ativar</div>
-              <div class="gv-pillar-value">R$ 250</div>
-              <p>Deixe R$ 250 no Mercado Pago como garantia. Sem saldo? Dá para solicitar um Empréstimo Pessoal para ativar o programa.</p>
-            </div>
-            <div class="gv-pillar">
-              <div class="gv-pillar-label">→ Requisitos</div>
-              <div class="gv-pillar-value">1 anúncio<br>ativo</div>
-              <p>Pelo menos um anúncio ativo nos últimos 180 dias, sem cor de reputação e sem restrições de venda na conta.</p>
-            </div>
-            <div class="gv-pillar">
-              <div class="gv-pillar-label">→ Duração</div>
-              <div class="gv-pillar-value">365 dias</div>
-              <p>Até um ano de ativação. Pode ser cancelado a qualquer momento e reativado quando precisar.</p>
-            </div>
-          </div>
-        </div>
-      </section>
+          </section>
 
-      <!-- ═══ CH05: BENEFÍCIOS ═══ -->
-      <section class="gv-section" id="beneficios">
-        <div class="gv-inner">
-          <div class="gv-section-header">
-            <div>
-              <div class="gv-chapter-num">— 05</div>
-              <h2 class="gv-section-h2 gv-reveal">Benefícios<br>que <em>vêm junto</em></h2>
+          <!-- ═══ CH02: REPUTAÇÃO ═══ -->
+          <section class="gv-section" id="reputacao">
+            <div class="gv-inner">
+              <div class="gv-section-header">
+                <div class="gv-chapter-num">Capítulo 02</div>
+                <h2 class="gv-section-h2 gv-reveal">Como funciona a reputação</h2>
+                <p class="gv-section-lead gv-reveal gv-d1">
+                  A reputação é o seu <strong>cartão de visita</strong> no Mercado Livre. Ela é calculada com base em três variáveis principais — e quem chega na cor verde se torna <strong>MercadoLíder</strong> e ganha muito mais visibilidade.
+                </p>
+              </div>
+              <div class="gv-metrics gv-reveal">
+                <div class="gv-metric">
+                  <h4>Reclamações</h4>
+                  <div class="gv-metric-value">2<sup>%</sup></div>
+                  <p>Não devem ultrapassar 2% das vendas para manter a reputação saudável.</p>
+                </div>
+                <div class="gv-metric">
+                  <h4>Cancelamentos</h4>
+                  <div class="gv-metric-value">1,5<sup>%</sup></div>
+                  <p>Máximo de 1,5% de cancelamentos feitos por você para conquistar o verde.</p>
+                </div>
+                <div class="gv-metric">
+                  <h4>Envios incorretos</h4>
+                  <div class="gv-metric-value">10<sup>%</sup></div>
+                  <p>Limite máximo de 10% sobre o total de entregas realizadas.</p>
+                </div>
+              </div>
+              <div class="gv-reveal">
+                <p class="gv-scale-caption">Escala de reputação do Mercado Livre</p>
+                <div class="gv-color-bar" aria-hidden="true">
+                  <div class="gv-cb-red"></div>
+                  <div class="gv-cb-orange"></div>
+                  <div class="gv-cb-yellow"></div>
+                  <div class="gv-cb-lime"></div>
+                  <div class="gv-cb-green"></div>
+                </div>
+                <div class="gv-color-labels">
+                  <span>Vermelho</span>
+                  <span>Laranja</span>
+                  <span>Amarelo</span>
+                  <span>Verde-claro</span>
+                  <span>Verde</span>
+                </div>
+              </div>
             </div>
-            <p class="gv-section-lead gv-reveal gv-d1">
-              Ativar o Decola libera <strong>seis ferramentas premium</strong> de uma vez, todas pensadas para acelerar suas primeiras vendas e ranquear seus anúncios nos resultados de busca.
-            </p>
-          </div>
-          <div class="gv-benefits">
-            <div class="gv-benefit gv-reveal">
-              <div class="gv-benefit-icon"><svg viewBox="0 0 24 24"><path d="M12 2v20M2 12h20"/></svg></div>
-              <h3>Reputação verde-claro</h3>
-              <p>Sua loja entra no jogo com uma posição forte nos resultados de busca e conquista a confiança dos compradores desde o primeiro dia.</p>
-            </div>
-            <div class="gv-benefit gv-reveal gv-d1">
-              <div class="gv-benefit-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 010 18"/></svg></div>
-              <h3>Visibilidade no catálogo</h3>
-              <p>Compita para ser a primeira opção de compra do produto, aparecendo com destaque para todo mundo que pesquisar.</p>
-            </div>
-            <div class="gv-benefit gv-reveal gv-d2">
-              <div class="gv-benefit-icon"><svg viewBox="0 0 24 24"><path d="M3 12l4 4 14-14"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg></div>
-              <h3>Publicidade grátis</h3>
-              <p>Receba até R$ 250 em créditos para campanhas no Product Ads e impulsione seus anúncios sem gastar do bolso.</p>
-            </div>
-            <div class="gv-benefit gv-reveal">
-              <div class="gv-benefit-icon"><svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
-              <h3>Ferramentas de Clips</h3>
-              <p>Crie vídeos atrativos dentro dos anúncios para aumentar visitas e converter mais vendas com conteúdo dinâmico.</p>
-            </div>
-            <div class="gv-benefit gv-reveal gv-d1">
-              <div class="gv-benefit-icon"><svg viewBox="0 0 24 24"><path d="M20 12V6a2 2 0 00-2-2H6a2 2 0 00-2 2v6"/><path d="M20 12l-8 8-8-8"/><path d="M12 4v16"/></svg></div>
-              <h3>Central de promoções</h3>
-              <p>Ofereça descontos estratégicos para atrair mais compradores e se destacar diante de toda a concorrência.</p>
-            </div>
-            <div class="gv-benefit gv-reveal gv-d2">
-              <div class="gv-benefit-icon"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
-              <h3>Envios Flex</h3>
-              <p>Destaque seus anúncios com a etiqueta <em>"Chega hoje"</em> e dobre suas vendas oferecendo entrega no mesmo dia.</p>
-            </div>
-          </div>
-        </div>
-      </section>
+          </section>
 
-      <!-- ═══ CH06: REEMBOLSO ═══ -->
-      <section class="gv-section gv-section-warm">
-        <div class="gv-inner">
-          <div class="gv-section-header">
-            <div>
-              <div class="gv-chapter-num">— 06</div>
-              <h2 class="gv-section-h2 gv-reveal">Como você<br><em>recupera</em><br>o dinheiro</h2>
-            </div>
-            <p class="gv-section-lead gv-reveal gv-d1">
-              Ao final do programa, o Mercado Livre analisa suas vendas por <strong>10 dias corridos</strong> e devolve parte ou todo o valor guardado, conforme seu desempenho. O saldo fica disponível imediatamente no Mercado Pago.
-            </p>
-          </div>
-          <div class="gv-refund-grid gv-reveal">
-            <div class="gv-refund-intro">
-              <h2>Tabela de<br><em>reembolso</em></h2>
-              <p>O quanto você recupera depende diretamente do número de vendas afetadas durante o período do programa.</p>
-              <div class="gv-refund-callout">
-                ⚠️ O programa é desativado ao atingir <strong>5 vendas afetadas</strong> (reclamações, cancelamentos ou envios incorretos) ou ao término dos 365 dias.
+          <!-- ═══ CH03: PROGRESSÃO ═══ -->
+          <section class="gv-section" id="calculo">
+            <div class="gv-inner">
+              <div class="gv-section-header">
+                <div class="gv-chapter-num">Capítulo 03</div>
+                <h2 class="gv-section-h2 gv-reveal">Quando ela é calculada?</h2>
+                <p class="gv-section-lead gv-reveal gv-d1">
+                  A reputação é atualizada <strong>diariamente</strong> e de forma <strong>retroativa</strong>. Contas com menos de 10 vendas aparecem em cinza, sem classificação. É exatamente aqui que o Programa Decola faz a diferença.
+                </p>
+              </div>
+              <div class="gv-timeline-track gv-reveal">
+                <div class="gv-timeline-stop">
+                  <div class="gv-timeline-stage">estágio inicial</div>
+                  <h4>Primeiras 10 vendas</h4>
+                  <p>Conta aparece em cinza, sem classificação. Sem dados suficientes para reputação.</p>
+                </div>
+                <div class="gv-timeline-stop">
+                  <div class="gv-timeline-stage">em construção</div>
+                  <h4>Menos de 60 vendas</h4>
+                  <p>Primeiras métricas começam a aparecer, mas ainda sob avaliação intensa.</p>
+                </div>
+                <div class="gv-timeline-stop">
+                  <div class="gv-timeline-stage">consolidado</div>
+                  <h4>60+ vendas em 60 dias</h4>
+                  <p>Reputação consolidada. Hora de mirar no verde e desbloquear o MercadoLíder.</p>
+                </div>
               </div>
             </div>
-            <div class="gv-refund-table">
-              <div class="gv-refund-row gv-refund-header">
-                <span>Vendas afetadas</span>
-                <span>Valor devolvido</span>
-              </div>
-              <div class="gv-refund-row gv-refund-best">
-                <span class="gv-refund-label">0 vendas afetadas</span>
-                <span class="gv-refund-value">R$ 250</span>
-              </div>
-              <div class="gv-refund-row">
-                <span class="gv-refund-label">1 venda afetada</span>
-                <span class="gv-refund-value">R$ 200</span>
-              </div>
-              <div class="gv-refund-row">
-                <span class="gv-refund-label">2 vendas afetadas</span>
-                <span class="gv-refund-value">R$ 150</span>
-              </div>
-              <div class="gv-refund-row">
-                <span class="gv-refund-label">3 vendas afetadas</span>
-                <span class="gv-refund-value">R$ 100</span>
-              </div>
-              <div class="gv-refund-row">
-                <span class="gv-refund-label">4 vendas afetadas</span>
-                <span class="gv-refund-value">R$ 50</span>
-              </div>
-              <div class="gv-refund-row gv-refund-worst">
-                <span class="gv-refund-label">5 vendas afetadas</span>
-                <span class="gv-refund-value">R$ 0</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+          </section>
 
-      <!-- ═══ CH07: LINK DA LOJA ═══ -->
-      <section class="gv-section">
-        <div class="gv-inner">
-          <div class="gv-section-header">
-            <div>
-              <div class="gv-chapter-num">— 07</div>
-              <h2 class="gv-section-h2 gv-reveal">O link<br>da sua <em>loja</em></h2>
+          <!-- ═══ CH04: PROGRAMA DECOLA ═══ -->
+          <section class="gv-section" id="decola">
+            <div class="gv-inner">
+              <div class="gv-section-header">
+                <div class="gv-chapter-num">Capítulo 04</div>
+                <h2 class="gv-section-h2 gv-reveal">O Programa Decola</h2>
+                <p class="gv-section-lead gv-reveal gv-d1">
+                  Resolve o dilema clássico do vendedor novo: <strong>sem vendas, sem reputação — sem reputação, sem vendas</strong>. Com o Decola, você conquista visibilidade imediata e quebra esse ciclo.
+                </p>
+              </div>
+              <div class="gv-pillars gv-reveal">
+                <div class="gv-pillar">
+                  <div class="gv-pillar-label">Como ativar</div>
+                  <div class="gv-pillar-value">R$ 250</div>
+                  <p>Deixe R$ 250 no Mercado Pago como garantia. Sem saldo? Dá para solicitar um Empréstimo Pessoal para ativar o programa.</p>
+                </div>
+                <div class="gv-pillar">
+                  <div class="gv-pillar-label">Requisitos</div>
+                  <div class="gv-pillar-value">1 anúncio ativo</div>
+                  <p>Pelo menos um anúncio ativo nos últimos 180 dias, sem cor de reputação e sem restrições de venda na conta.</p>
+                </div>
+                <div class="gv-pillar">
+                  <div class="gv-pillar-label">Duração</div>
+                  <div class="gv-pillar-value">365 dias</div>
+                  <p>Até um ano de ativação. Pode ser cancelado a qualquer momento e reativado quando precisar.</p>
+                </div>
+              </div>
             </div>
-            <p class="gv-section-lead gv-reveal gv-d1">
-              O link da sua página é uma ferramenta poderosa para atrair os primeiros compradores. Mas o segredo está em <strong>usá-lo com naturalidade</strong>. Veja como.
-            </p>
-          </div>
-          <div class="gv-strategy">
-            <div class="gv-strategy-step gv-reveal">
-              <div class="gv-step-num">01</div>
-              <h3>Compartilhe com contatos próximos</h3>
-              <p>Envie o link para amigos, familiares e conhecidos de confiança que possam realizar uma compra real e legítima.</p>
-            </div>
-            <div class="gv-strategy-step gv-reveal gv-d1">
-              <div class="gv-step-num">02</div>
-              <h3>Simule comportamento orgânico</h3>
-              <p>Oriente os compradores a navegar normalmente pela plataforma, pesquisar o produto e finalizar a compra de forma natural.</p>
-            </div>
-            <div class="gv-strategy-step gv-warning gv-reveal gv-d2">
-              <div class="gv-step-num">03</div>
-              <h3>Evite padrões artificiais</h3>
-              <p>Nunca simule compras falsas. O Mercado Livre identifica comportamentos suspeitos e <strong>pode penalizar sua conta</strong>.</p>
-            </div>
-          </div>
-        </div>
-      </section>
+          </section>
 
-      <!-- ═══ CH08: FECHAMENTO + DOWNLOAD (dark) ═══ -->
-      <section class="gv-section gv-section-dark" id="materiais">
-        <div class="gv-inner">
-          <div class="gv-chapter-num" style="margin-bottom:0.75rem;">— 08 · Encerramento</div>
-          <h2 class="gv-closing-h2 gv-reveal">O sucesso<br>depende <em>de você.</em></h2>
-          <p class="gv-closing-lead gv-reveal gv-d1">
-            Vendedores que ativaram o Programa Decola aumentaram suas vendas em <strong>até 20 vezes</strong>. As ferramentas estão na mesa. Agora é hora de agir.
-          </p>
-          <div class="gv-checklist gv-reveal">
-            <div class="gv-check-item">
-              <div class="gv-check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
-              <div>
-                <h4>Bom atendimento</h4>
-                <p>Evite reclamações, cancelamentos e envios incorretos.</p>
+          <!-- ═══ CH05: BENEFÍCIOS ═══ -->
+          <section class="gv-section" id="beneficios">
+            <div class="gv-inner">
+              <div class="gv-section-header">
+                <div class="gv-chapter-num">Capítulo 05</div>
+                <h2 class="gv-section-h2 gv-reveal">Benefícios que vêm junto</h2>
+                <p class="gv-section-lead gv-reveal gv-d1">
+                  Ativar o Decola libera <strong>seis ferramentas premium</strong> de uma vez, todas pensadas para acelerar suas primeiras vendas e ranquear seus anúncios nos resultados de busca.
+                </p>
+              </div>
+              <div class="gv-benefits gv-reveal">
+                <div class="gv-benefit">
+                  <div class="gv-benefit-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2v20M2 12h20"/></svg></div>
+                  <h3>Reputação verde-claro</h3>
+                  <p>Sua loja entra no jogo com uma posição forte nos resultados de busca e conquista a confiança dos compradores desde o primeiro dia.</p>
+                </div>
+                <div class="gv-benefit">
+                  <div class="gv-benefit-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 010 18"/></svg></div>
+                  <h3>Visibilidade no catálogo</h3>
+                  <p>Compita para ser a primeira opção de compra do produto, aparecendo com destaque para todo mundo que pesquisar.</p>
+                </div>
+                <div class="gv-benefit">
+                  <div class="gv-benefit-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12l4 4 14-14"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg></div>
+                  <h3>Publicidade grátis</h3>
+                  <p>Receba até R$ 250 em créditos para campanhas no Product Ads e impulsione seus anúncios sem gastar do bolso.</p>
+                </div>
+                <div class="gv-benefit">
+                  <div class="gv-benefit-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
+                  <h3>Ferramentas de Clips</h3>
+                  <p>Crie vídeos atrativos dentro dos anúncios para aumentar visitas e converter mais vendas com conteúdo dinâmico.</p>
+                </div>
+                <div class="gv-benefit">
+                  <div class="gv-benefit-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 12V6a2 2 0 00-2-2H6a2 2 0 00-2 2v6"/><path d="M20 12l-8 8-8-8"/><path d="M12 4v16"/></svg></div>
+                  <h3>Central de promoções</h3>
+                  <p>Ofereça descontos estratégicos para atrair mais compradores e se destacar diante de toda a concorrência.</p>
+                </div>
+                <div class="gv-benefit">
+                  <div class="gv-benefit-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+                  <h3>Envios Flex</h3>
+                  <p>Destaque seus anúncios com a etiqueta <em>"Chega hoje"</em> e dobre suas vendas oferecendo entrega no mesmo dia.</p>
+                </div>
               </div>
             </div>
-            <div class="gv-check-item">
-              <div class="gv-check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
-              <div>
-                <h4>Anúncios de qualidade</h4>
-                <p>Boas fotos, descrições claras e preços competitivos.</p>
+          </section>
+
+          <!-- ═══ CH06: REEMBOLSO ═══ -->
+          <section class="gv-section" id="reembolso">
+            <div class="gv-inner">
+              <div class="gv-section-header">
+                <div class="gv-chapter-num">Capítulo 06</div>
+                <h2 class="gv-section-h2 gv-reveal">Como você recupera o dinheiro</h2>
+                <p class="gv-section-lead gv-reveal gv-d1">
+                  Ao final do programa, o Mercado Livre analisa suas vendas por <strong>10 dias corridos</strong> e devolve parte ou todo o valor guardado, conforme seu desempenho. O saldo fica disponível imediatamente no Mercado Pago.
+                </p>
+              </div>
+              <div class="gv-refund-grid gv-reveal">
+                <div class="gv-refund-intro">
+                  <h2>Tabela de reembolso</h2>
+                  <p>O quanto você recupera depende diretamente do número de vendas afetadas durante o período do programa.</p>
+                  <div class="gv-callout is-warning">
+                    <span class="gv-callout-icon" aria-hidden="true">⚠</span>
+                    <p>O programa é desativado ao atingir <strong>5 vendas afetadas</strong> (reclamações, cancelamentos ou envios incorretos) ou ao término dos 365 dias.</p>
+                  </div>
+                </div>
+                <div class="gv-refund-table">
+                  <div class="gv-refund-row gv-refund-header">
+                    <span>Vendas afetadas</span>
+                    <span>Valor devolvido</span>
+                  </div>
+                  <div class="gv-refund-row gv-refund-best">
+                    <span class="gv-refund-label">0 vendas afetadas <span class="gv-refund-tag">Devolução integral</span></span>
+                    <span class="gv-refund-value">R$ 250</span>
+                  </div>
+                  <div class="gv-refund-row">
+                    <span class="gv-refund-label">1 venda afetada</span>
+                    <span class="gv-refund-value">R$ 200</span>
+                  </div>
+                  <div class="gv-refund-row">
+                    <span class="gv-refund-label">2 vendas afetadas</span>
+                    <span class="gv-refund-value">R$ 150</span>
+                  </div>
+                  <div class="gv-refund-row">
+                    <span class="gv-refund-label">3 vendas afetadas</span>
+                    <span class="gv-refund-value">R$ 100</span>
+                  </div>
+                  <div class="gv-refund-row">
+                    <span class="gv-refund-label">4 vendas afetadas</span>
+                    <span class="gv-refund-value">R$ 50</span>
+                  </div>
+                  <div class="gv-refund-row gv-refund-worst">
+                    <span class="gv-refund-label">5 vendas afetadas <span class="gv-refund-tag">Sem devolução</span></span>
+                    <span class="gv-refund-value">R$ 0</span>
+                  </div>
+                </div>
               </div>
             </div>
-            <div class="gv-check-item">
-              <div class="gv-check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
-              <div>
-                <h4>Estoque sempre disponível</h4>
-                <p>Mantenha o estoque atualizado para não perder vendas.</p>
+          </section>
+
+          <!-- ═══ CH07: LINK DA LOJA ═══ -->
+          <section class="gv-section" id="link-loja">
+            <div class="gv-inner">
+              <div class="gv-section-header">
+                <div class="gv-chapter-num">Capítulo 07</div>
+                <h2 class="gv-section-h2 gv-reveal">O link da sua loja</h2>
+                <p class="gv-section-lead gv-reveal gv-d1">
+                  O link da sua página é uma ferramenta poderosa para atrair os primeiros compradores. Mas o segredo está em <strong>usá-lo com naturalidade</strong>. Veja como.
+                </p>
+              </div>
+              <div class="gv-steps gv-reveal">
+                <div class="gv-step">
+                  <span class="gv-step-n" aria-hidden="true">1</span>
+                  <div>
+                    <h3>Compartilhe com contatos próximos</h3>
+                    <p>Envie o link para amigos, familiares e conhecidos de confiança que possam realizar uma compra real e legítima.</p>
+                  </div>
+                </div>
+                <div class="gv-step">
+                  <span class="gv-step-n" aria-hidden="true">2</span>
+                  <div>
+                    <h3>Simule comportamento orgânico</h3>
+                    <p>Oriente os compradores a navegar normalmente pela plataforma, pesquisar o produto e finalizar a compra de forma natural.</p>
+                  </div>
+                </div>
+              </div>
+              <div class="gv-callout is-danger gv-reveal gv-d1">
+                <span class="gv-callout-icon" aria-hidden="true">⚠</span>
+                <p><strong>Evite padrões artificiais.</strong> Nunca simule compras falsas. O Mercado Livre identifica comportamentos suspeitos e <strong>pode penalizar sua conta</strong>.</p>
               </div>
             </div>
-            <div class="gv-check-item">
-              <div class="gv-check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
-              <div>
-                <h4>Logística alinhada</h4>
-                <p>Cumpra os prazos de envio e evite atrasos nas entregas.</p>
+          </section>
+
+          <!-- ═══ CH08: FECHAMENTO + DOWNLOAD ═══ -->
+          <section class="gv-section" id="materiais">
+            <div class="gv-inner">
+              <div class="gv-section-header">
+                <div class="gv-chapter-num">Capítulo 08</div>
+                <h2 class="gv-section-h2 gv-reveal">Encerramento e materiais</h2>
+                <p class="gv-section-lead gv-reveal gv-d1">
+                  Vendedores que ativaram o Programa Decola aumentaram suas vendas em <strong>até 20 vezes</strong>. As ferramentas estão na mesa — agora é hora de agir.
+                </p>
+              </div>
+              <div class="gv-checklist gv-reveal">
+                <div class="gv-check-item">
+                  <div class="gv-check-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
+                  <div>
+                    <h4>Bom atendimento</h4>
+                    <p>Evite reclamações, cancelamentos e envios incorretos.</p>
+                  </div>
+                </div>
+                <div class="gv-check-item">
+                  <div class="gv-check-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
+                  <div>
+                    <h4>Anúncios de qualidade</h4>
+                    <p>Boas fotos, descrições claras e preços competitivos.</p>
+                  </div>
+                </div>
+                <div class="gv-check-item">
+                  <div class="gv-check-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
+                  <div>
+                    <h4>Estoque sempre disponível</h4>
+                    <p>Mantenha o estoque atualizado para não perder vendas.</p>
+                  </div>
+                </div>
+                <div class="gv-check-item">
+                  <div class="gv-check-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
+                  <div>
+                    <h4>Logística alinhada</h4>
+                    <p>Cumpra os prazos de envio e evite atrasos nas entregas.</p>
+                  </div>
+                </div>
+              </div>
+              <div class="gv-download gv-reveal">
+                <div class="gv-download-info">
+                  <span class="gv-download-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/><path d="M12 12v6M9 15l3 3 3-3"/></svg>
+                  </span>
+                  <div>
+                    <p class="gv-download-name">Guia do Vendedor — Mercado Livre</p>
+                    <p class="gv-download-meta">Apresentação PPTX · para consulta offline ou treinamento do time</p>
+                  </div>
+                </div>
+                <!-- "Baixar guia HTML" apontava para guia-vendedor-completo.html,
+                     que não existe em lugar nenhum do repositório: era um 404
+                     com cara de botão. Removido em vez de mantido quebrado; se
+                     o material HTML voltar a existir, o botão volta com ele. -->
+                <a href="Guia-do-Vendedor-Mercado-Livre.pptx" download class="gv-btn gv-btn-primary">Baixar apresentação</a>
               </div>
             </div>
-          </div>
-          <div class="gv-cta gv-reveal">
-            <div>
-              <h3>Material completo para <em>download</em></h3>
-              <p>Baixe o guia completo para consultar offline ou apresentar ao seu time.</p>
-            </div>
-            <div class="gv-btn-row">
-              <!-- "Baixar guia HTML" apontava para guia-vendedor-completo.html,
-                   que não existe em lugar nenhum do repositório: era um 404
-                   com cara de botão. Removido em vez de mantido quebrado; se
-                   o material HTML voltar a existir, o botão volta com ele. -->
-              <a href="Guia-do-Vendedor-Mercado-Livre.pptx" download class="gv-btn gv-btn-primary">
-                Baixar PPTX
-              </a>
-            </div>
-          </div>
+          </section>
+
         </div>
-      </section>
+      </div>
 
     </main>
   </div>

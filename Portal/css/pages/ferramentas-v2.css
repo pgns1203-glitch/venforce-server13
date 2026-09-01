@@ -1,5 +1,10 @@
 /* ============================================================
- * VenForce — Central de Ferramentas · CSS específico da página
+ * VenForce — Ferramentas · CSS específico da página
+ * ============================================================
+ * Central de acesso às ferramentas oficiais do ecossistema.
+ * Grade de cards padronizados (mesma largura/altura) + um guia
+ * de instalação compartilhado. Só tokens e componentes da
+ * Fundação V2 — nenhum token novo.
  * ============================================================ */
 
 .vf-page-ferramentas .vf-content {
@@ -19,118 +24,165 @@
   flex-basis: auto;
 }
 
-.vf-page-ferramentas .vf-tools-index {
-  padding: 0;
-  border-top: 0;
-  border-right: 0;
-  border-left: 0;
-  border-radius: 0;
-  background: transparent;
-  margin-top: calc(var(--vf-sp-2) - var(--vf-section-gap));
-  margin-bottom: 0;
-}
-
-.vf-page-ferramentas .vf-tools-index .vf-tab {
-  flex: 0 0 auto;
-  border-radius: 0;
-}
-
-.vf-page-ferramentas .vf-tools-section {
-  scroll-margin-top: calc(var(--vf-topbar-h) + var(--vf-sp-6));
-  padding-top: var(--vf-sp-2);
-}
-
+/* Uma seção por categoria de ferramenta. A régua entre seções só
+   aparece a partir da segunda — cresce sem retoque quando um novo
+   grupo (ex.: "Automações") for adicionado. */
 .vf-page-ferramentas .vf-tools-section + .vf-tools-section {
   border-top: 1px solid var(--vf-border);
   padding-top: var(--vf-sp-8);
 }
 
-.vf-page-ferramentas .vf-tools-tags {
+/* ── Grade de ferramentas ─────────────────────────────────────
+   auto-fit + minmax: hoje duas extensões dividem a linha em
+   partes iguais; uma terceira entra como mais um card idêntico,
+   sem placeholder e sem espaço reservado. */
+.vf-page-ferramentas .vf-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--vf-sp-5);
+  align-items: stretch;
+}
+
+/* ── Card de ferramenta ───────────────────────────────────────
+   CONTRATO: um card = uma ferramenta.
+     · ícone (SVG stroke, 20px)
+     · nome + versão opcional (.vf-mono)
+     · tags: natureza ("Extensão Chrome") + marketplaces (sigla)
+     · descrição objetiva (1–2 linhas)
+     · rodapé: 1 CTA primário "Baixar" + link "Como instalar"
+   Para adicionar uma ferramenta, replicar o bloco <article>. */
+.vf-page-ferramentas .vf-tool-card {
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
+  flex-direction: column;
+}
+
+.vf-page-ferramentas .vf-tool-card__body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-card-pad-y) var(--vf-card-pad-x);
+}
+
+.vf-page-ferramentas .vf-tool-card__top {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-ferramentas .vf-tool-card__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-neutral-bg);
+  color: var(--vf-neutral-strong);
+}
+
+.vf-page-ferramentas .vf-tool-card__id {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vf-page-ferramentas .vf-tool-card__namerow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   gap: var(--vf-sp-2);
 }
 
-.vf-page-ferramentas .vf-tools-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
-  gap: var(--vf-sp-5);
-  align-items: start;
+.vf-page-ferramentas .vf-tool-card__name {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
 }
 
-.vf-page-ferramentas .vf-tools-grid--or {
-  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+.vf-page-ferramentas .vf-tool-card__version {
+  flex: 0 0 auto;
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
 }
 
-.vf-page-ferramentas .vf-tools-card-main {
-  align-self: stretch;
-}
-
-.vf-page-ferramentas .vf-tools-card-body {
+.vf-page-ferramentas .vf-tool-card__tags {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--vf-sp-4);
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2);
+  margin-top: var(--vf-sp-2);
 }
 
-.vf-page-ferramentas .vf-tools-copy {
+.vf-page-ferramentas .vf-tool-card__desc {
   margin: 0;
   color: var(--vf-text-secondary);
   font-size: var(--vf-fs-sm);
   line-height: var(--vf-lh-normal);
 }
 
-.vf-page-ferramentas .vf-tools-subtitle {
-  margin: 0;
-  font-family: var(--vf-font-display);
+/* Reaproveita o rodapé do .vf-card (superfície alternativa + régua
+   superior); só troca o alinhamento para CTA à esquerda, link à
+   direita. */
+.vf-page-ferramentas .vf-tool-card .vf-card__footer {
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-ferramentas .vf-tool-card__guide-link {
+  flex: 0 0 auto;
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+  text-decoration: none;
+}
+
+.vf-page-ferramentas .vf-tool-card__guide-link:hover {
+  color: var(--vf-primary-strong);
+}
+
+/* ── Guia de instalação compartilhado ─────────────────────────
+   O procedimento no Chrome é idêntico para toda extensão — um
+   único <details> em vez de repetir os passos em cada card. */
+.vf-page-ferramentas .vf-tools-guide {
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface);
+}
+
+.vf-page-ferramentas .vf-tools-guide__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-3) var(--vf-sp-4);
   font-size: var(--vf-fs-sm);
   font-weight: var(--vf-fw-semibold);
   color: var(--vf-text);
-}
-
-.vf-page-ferramentas .vf-tools-feature-block {
-  display: flex;
-  flex-direction: column;
-  gap: var(--vf-sp-3);
-  width: 100%;
-  padding-top: var(--vf-sp-4);
-  border-top: 1px solid var(--vf-border);
-}
-
-.vf-page-ferramentas .vf-tools-features {
-  display: flex;
-  flex-direction: column;
-  gap: var(--vf-sp-2);
-  margin: 0;
-  padding: 0;
+  cursor: pointer;
   list-style: none;
 }
 
-.vf-page-ferramentas .vf-tools-feature {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--vf-sp-2);
-  color: var(--vf-text);
-  font-size: var(--vf-fs-sm);
-  line-height: var(--vf-lh-snug);
+.vf-page-ferramentas .vf-tools-guide__summary::-webkit-details-marker {
+  display: none;
 }
 
-.vf-page-ferramentas .vf-tools-feature__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.vf-page-ferramentas .vf-tools-guide__chevron {
   flex: 0 0 auto;
-  width: var(--vf-sp-5);
-  height: var(--vf-sp-5);
-  border-radius: var(--vf-radius-sm);
-  background: var(--vf-success-bg);
-  color: var(--vf-success-strong);
-  font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text-muted);
+  transition: transform var(--vf-duration) var(--vf-ease);
 }
 
+.vf-page-ferramentas .vf-tools-guide[open] .vf-tools-guide__chevron {
+  transform: rotate(90deg);
+}
+
+.vf-page-ferramentas .vf-tools-guide__body {
+  padding: var(--vf-sp-1) var(--vf-sp-4) var(--vf-sp-3);
+  border-top: 1px solid var(--vf-border);
+}
+
+/* ── Passos numerados (reaproveitados pelo guia) ──────────────── */
 .vf-page-ferramentas .vf-tools-steps {
   display: flex;
   flex-direction: column;
@@ -149,7 +201,7 @@
 }
 
 .vf-page-ferramentas .vf-tools-step:first-child {
-  padding-top: 0;
+  padding-top: var(--vf-sp-2);
 }
 
 .vf-page-ferramentas .vf-tools-step:last-child {
@@ -179,119 +231,24 @@
   line-height: var(--vf-lh-normal);
 }
 
-.vf-page-ferramentas .vf-tools-or {
-  display: flex;
-  flex-direction: column;
-  gap: var(--vf-sp-4);
-}
-
-.vf-page-ferramentas .vf-tools-or-header,
-.vf-page-ferramentas .vf-tools-or-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(92px, 0.42fr) minmax(120px, 0.58fr) var(--vf-control-h-sm);
-  gap: var(--vf-sp-2);
-  align-items: end;
-}
-
-.vf-page-ferramentas .vf-tools-or-header {
-  align-items: center;
-  color: var(--vf-text-muted);
-  font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-semibold);
-  letter-spacing: var(--vf-ls-caps);
-  text-transform: uppercase;
-}
-
-.vf-page-ferramentas .vf-tools-or-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--vf-sp-3);
-  min-width: 0;
-}
-
-.vf-page-ferramentas .vf-tools-row-label {
-  display: none;
-}
-
-.vf-page-ferramentas .vf-tools-or-row__action {
-  display: flex;
-  align-items: flex-end;
-  justify-content: flex-end;
-}
-
-.vf-page-ferramentas .vf-tools-or-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--vf-sp-3);
-  flex-wrap: wrap;
-}
-
-.vf-page-ferramentas .vf-tools-or-actions #btn-baixar {
-  min-width: 240px;
-}
-
-@media (max-width: 900px) {
-  .vf-page-ferramentas .vf-tools-grid,
-  .vf-page-ferramentas .vf-tools-grid--or {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
+/* ── Responsivo ───────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .vf-page-ferramentas .vf-page-shell {
     padding-inline: var(--vf-sp-4);
   }
-
-  .vf-page-ferramentas .vf-tools-or-header {
-    display: none;
-  }
-
-  .vf-page-ferramentas .vf-tools-row-label {
-    display: inline;
-  }
-
-  .vf-page-ferramentas .vf-tools-or-row {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) var(--vf-control-h-sm);
-    align-items: end;
-  }
-
-  .vf-page-ferramentas .vf-tools-or-row .vf-field:first-child {
-    grid-column: 1 / -1;
-  }
-
-  .vf-page-ferramentas .vf-tools-or-row__action {
-    grid-column: 3;
-  }
 }
 
 @media (max-width: 480px) {
-  .vf-page-ferramentas .vf-tools-tags {
-    justify-content: flex-start;
-  }
-
-  .vf-page-ferramentas .vf-tools-or-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .vf-page-ferramentas .vf-tools-or-row .vf-field:first-child,
-  .vf-page-ferramentas .vf-tools-or-row__action {
-    grid-column: auto;
-  }
-
-  .vf-page-ferramentas .vf-tools-or-row__action {
-    justify-content: flex-start;
-  }
-
-  .vf-page-ferramentas .vf-tools-or-actions {
+  .vf-page-ferramentas .vf-tool-card .vf-card__footer {
+    flex-direction: column;
     align-items: stretch;
   }
 
-  .vf-page-ferramentas .vf-tools-or-actions .vf-btn {
+  .vf-page-ferramentas .vf-tool-card .vf-card__footer .vf-btn {
     width: 100%;
   }
 
-  .vf-page-ferramentas .vf-tools-or-actions #btn-baixar {
-    min-width: 0;
+  .vf-page-ferramentas .vf-tool-card__guide-link {
+    text-align: center;
   }
 }

@@ -256,17 +256,21 @@ async function run() {
       assert.strictEqual(item.current, "page");
     });
 
-    await check("F0.6 — escopo global nunca bloqueia: conteúdo original da página está visível", async () => {
+    await check("F0.6 — escopo global nunca bloqueia: conteúdo da página está visível", async () => {
       assert.strictEqual(await cdp.evaluate("document.getElementById('vf-shell-main').hidden"), false);
       assert.strictEqual(await cdp.evaluate("document.body.classList.contains('vf-shell-blocked')"), false);
-      assert.ok((await cdp.evaluate("document.body.innerText")).includes("Central de Ferramentas"), "conteúdo original (H1) sumiu");
+      const texto = await cdp.evaluate("document.body.innerText");
+      assert.ok(texto.includes("Recursos desenvolvidos para acelerar sua operação."), "descrição da página sumiu");
+      assert.ok(texto.includes("Extensões do navegador"), "seção de extensões sumiu");
     });
 
-    await check("F0.6 — conteúdo original de ferramentas.js intacto: 3 abas, botões de download presentes", async () => {
-      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-tools-index .vf-tab').length"), 3);
+    await check("F0.6 — página de Ferramentas redesenhada: cards de extensão + guia, sem a Ferramenta OR", async () => {
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-tools-grid .vf-tool-card').length"), 2);
       assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-download-extensao'))"));
       assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-download-midias'))"));
-      assert.ok(await cdp.evaluate("Boolean(document.getElementById('btn-add-mlb'))"), "a Ferramenta OR (ferramentas.js) não montou");
+      assert.ok(await cdp.evaluate("Boolean(document.getElementById('instalar-no-chrome'))"), "guia de instalação compartilhado não montou");
+      assert.strictEqual(await cdp.evaluate("Boolean(document.getElementById('btn-add-mlb'))"), false, "a Ferramenta OR deveria ter sido removida");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.vf-tools-index').length"), 0, "a nav de abas-âncora deveria ter sido removida");
     });
 
     await check("F0.6 — sem erros de console (rede de produção interceptada, sem exceptions JS)", async () => {

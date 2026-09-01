@@ -41,7 +41,11 @@ const COLLAPSE_KEY = "vf-sidebar-collapsed"; // preferência de UI (§9.2) — l
    todos os marketplaces. */
 export const MODULOS = [
   { id: "visao", label: "Visão", rota: "visao.html" },
-  { id: "financeiro", label: "Financeiro", rota: "financeiro.html" },
+  // Convergência #4 §15 — Financeiro V3 é o destino para MELI/Shopee (D-8/
+  // D-9 não afetam isto: contrato já existe para os dois hoje). Marketplace
+  // não suportado por V3 (TikTok legado) ou sem conta resolvida cai em
+  // `rota` (o legado) — nunca fica sem destino algum. Ver resolverRota().
+  { id: "financeiro", label: "Financeiro", rota: "financeiro.html", rotaPorMarketplace: { meli: "financeiro-v3.html", shopee: "financeiro-v3.html" } },
   { id: "central-vendas", label: "Central de Vendas", rota: "fechamentos-api.html" },
   { id: "ads", label: "Ads", rota: "ads.html", marketplaces: ["meli"] },
   { id: "anuncios", label: "Anúncios", rota: "anuncios-meli.html", marketplaces: ["meli"] },
@@ -401,31 +405,31 @@ export function createVfShell(options = {}) {
         indisponiveis.push(mod);
         return;
       }
-      nav.appendChild(itemNav(mod, estado === "READY" ? null : "Escolha um cliente e uma operação para abrir este módulo"));
+      nav.appendChild(itemNav(mod, estado === "READY" ? null : "Escolha um cliente e uma operação para abrir este módulo", meta));
     });
 
     if (indisponiveis.length >= 3) {
       const mkt = MARKETPLACE_LABEL[meta.marketplace] || meta.marketplace;
       const det = el("details", "vf-shell__unavailable");
       det.innerHTML = `<summary>Indisponíveis para ${fmt.escapeHTML(mkt)} (${indisponiveis.length})</summary>`;
-      indisponiveis.forEach((mod) => det.appendChild(itemNav(mod, motivoIndisponivel(mod, meta))));
+      indisponiveis.forEach((mod) => det.appendChild(itemNav(mod, motivoIndisponivel(mod, meta), meta)));
       nav.appendChild(det);
     } else {
-      indisponiveis.forEach((mod) => nav.appendChild(itemNav(mod, motivoIndisponivel(mod, meta))));
+      indisponiveis.forEach((mod) => nav.appendChild(itemNav(mod, motivoIndisponivel(mod, meta), meta)));
     }
     host.appendChild(nav);
 
     host.appendChild(el("div", "vf-shell__section-label", "Gestão global"));
     const navG = el("nav", "vf-shell__nav");
     navG.setAttribute("aria-label", "Gestão global");
-    GLOBAIS.forEach((mod) => navG.appendChild(itemNav(mod, null)));
+    GLOBAIS.forEach((mod) => navG.appendChild(itemNav(mod, null, null)));
     host.appendChild(navG);
 
     if (String(user.role || "").toLowerCase() === "admin") {
       const admin = el("details", "vf-shell__admin");
       admin.innerHTML = "<summary>Administração</summary>";
       const navA = el("nav", "vf-shell__nav");
-      ADMIN.forEach((mod) => navA.appendChild(itemNav(mod, null)));
+      ADMIN.forEach((mod) => navA.appendChild(itemNav(mod, null, null)));
       admin.appendChild(navA);
       host.appendChild(admin);
     }
@@ -461,12 +465,12 @@ export function createVfShell(options = {}) {
     }
   }
 
-  function itemNav(mod, motivoDesabilitado) {
+  function itemNav(mod, motivoDesabilitado, meta) {
     const futuro = !!mod.futuro || !mod.rota;
     const desabilitado = motivoDesabilitado || futuro;
     const isActive = doc.body.dataset.vfModule === mod.id;
     const a = el("a", "vf-shell__item" + (isActive ? " is-active" : "") + (desabilitado ? " is-disabled" : ""));
-    a.href = desabilitado ? "#" : buildHref(mod);
+    a.href = desabilitado ? "#" : buildHref(mod, meta);
     const rail = railEstreito() || colapsada;
     a.textContent = rail ? abreviar(mod.label) : mod.label;
     if (rail) {
@@ -493,10 +497,23 @@ export function createVfShell(options = {}) {
       a.addEventListener("click", (e) => {
         if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
-        onNavigate(buildHref(mod));
+        onNavigate(buildHref(mod, meta));
       });
     }
     return a;
+  }
+
+  // Convergência #4 §15 — resolve a rota de um módulo pelo marketplace da
+  // conta em tela. `rotaPorMarketplace` é opcional e aditivo: um módulo sem
+  // ele (todo mundo, exceto `financeiro`) continua resolvendo `mod.rota`
+  // direto, sempre. Sem meta/marketplace resolvido, ou marketplace fora do
+  // mapa (TikTok legado), cai em `mod.rota` — nunca fica sem destino algum
+  // (§17: TikTok precisa manter um caminho funcional).
+  function resolverRota(mod, meta) {
+    if (mod.rotaPorMarketplace && meta && meta.marketplace && mod.rotaPorMarketplace[meta.marketplace]) {
+      return mod.rotaPorMarketplace[meta.marketplace];
+    }
+    return mod.rota;
   }
 
   // Links normais entre os dois mundos (§20.1): a página migrada passa
@@ -508,15 +525,16 @@ export function createVfShell(options = {}) {
   // Visão e clicava em Financeiro chegava em outro mês, sem nada indicar a
   // troca. Trocar de CLIENTE continua zerando o período — setCliente() limpa
   // o parâmetro antes de qualquer navegação, então não há o que propagar.
-  function buildHref(mod) {
+  function buildHref(mod, meta) {
+    const rota = resolverRota(mod, meta);
     const ctx = ctxStore.getContext();
-    if (!ctx || !ctx.clienteSlug) return mod.rota;
+    if (!ctx || !ctx.clienteSlug) return rota;
     const qs = new URLSearchParams();
     qs.set("cliente", ctx.clienteSlug);
     if (ctx.clienteContaId) qs.set("conta", String(ctx.clienteContaId));
     const periodo = ctxStore.getPeriodoParam ? ctxStore.getPeriodoParam() : null;
     if (periodo) qs.set("periodo", periodo);
-    return `${mod.rota}?${qs.toString()}`;
+    return `${rota}?${qs.toString()}`;
   }
 
   function blocoContexto(estado, ctx, meta, carregando, snap) {

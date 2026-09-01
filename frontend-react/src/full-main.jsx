@@ -7,6 +7,7 @@
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { ErrorBoundary } from "./components/ErrorBoundary.jsx";
 import FullApp from "./FullApp.jsx";
 import "./styles/fullGestao.css";
 
@@ -16,6 +17,8 @@ if (typeof window.initLayout === "function") {
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <FullApp />
+    <ErrorBoundary>
+      <FullApp />
+    </ErrorBoundary>
   </StrictMode>
 );

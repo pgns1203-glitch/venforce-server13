@@ -59,6 +59,14 @@ async function preencherFormularioMeli(usuario) {
   await usuario.upload(screen.getByLabelText(/Planilha de vendas/), arquivo);
 }
 
+async function preencherFormularioShopee(usuario) {
+  await usuario.selectOptions(screen.getByLabelText(/Marketplace/), "shopee");
+  const vendas = new File(["a"], "vendas.xlsx", { type: "application/vnd.ms-excel" });
+  await usuario.upload(screen.getByLabelText(/Planilha de vendas/), vendas);
+  const custos = new File(["a"], "custos.xlsx", { type: "application/vnd.ms-excel" });
+  await usuario.upload(screen.getByLabelText(/Planilha de custos/), custos);
+}
+
 describe("fechamentoPayload", () => {
   it("parseMoedaBR entende pt-BR, vazio e número simples", () => {
     expect(parseMoedaBR("3.011,00")).toBe(3011);
@@ -168,6 +176,36 @@ describe("NovoFechamento · duplicidade 409 (§15)", () => {
 
     // publicado → aviso mais forte
     expect(await screen.findByText(/já tem um fechamento PUBLICADO/)).toBeInTheDocument();
+
+    await usuario.click(screen.getByRole("button", { name: "Substituir" }));
+    await waitFor(() => expect(api.salvar).toHaveBeenCalledTimes(2));
+    expect(api.salvar.mock.calls[1][0].substituir).toBe(true);
+    expect(api.salvar.mock.calls[1][0].cliente_conta_id).toBe(42);
+    expect(props.onSalvo).toHaveBeenCalled();
+  });
+
+  // Convergência #4 §10 — a lógica de 409/substituir mora inteiramente no
+  // handler de "Salvar" (montarPayloadFechamento/salvarEntregaFechamento),
+  // sem NENHUM `if (marketplace === "meli")`. Isso já era conhecido pelo
+  // código, mas nunca tinha uma fixture Shopee provando: fecha a lacuna de
+  // evidência apontada no checkpoint da Pessoa 1 (§12) para Salvar/
+  // Duplicidade/Substituir.
+  it("Shopee: 409 ENTREGA_JA_EXISTE também vira escolha cancelar/substituir", async () => {
+    api.processar.mockResolvedValue(respostaOk({ summary: { ...SUMMARY, marketplace: "shopee" } }));
+    api.salvar
+      .mockRejectedValueOnce(
+        new FechamentoApiError("Já existe.", { status: 409, codigo: "ENTREGA_JA_EXISTE", entregaId: 78, publicado: false })
+      )
+      .mockResolvedValueOnce({ id: 78, token_publico: "tok-shopee", publicado: false });
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await preencherFormularioShopee(usuario);
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await screen.findByText(/Competência confere/);
+    await usuario.click(screen.getByRole("button", { name: "Salvar fechamento" }));
+
+    // rascunho (não publicado) → aviso, sem o reforço de "PUBLICADO"
+    expect(await screen.findByText(/já (tem|existe) um fechamento/i)).toBeInTheDocument();
 
     await usuario.click(screen.getByRole("button", { name: "Substituir" }));
     await waitFor(() => expect(api.salvar).toHaveBeenCalledTimes(2));

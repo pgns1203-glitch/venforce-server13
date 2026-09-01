@@ -46,7 +46,7 @@ async function buscarTodosMlbsAtivos({ clienteId, mlUserId, mlFetchFn = mlFetch 
     const resposta = await mlFetchFn(
       clienteId,
       `/users/${mlUserId}/items/search?${params.toString()}`,
-      { noRefresh: true }
+      { noRefresh: true, mlUserId }
     );
 
     if (!resposta.ok) {

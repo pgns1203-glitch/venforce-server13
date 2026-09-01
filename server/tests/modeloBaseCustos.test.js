@@ -51,6 +51,19 @@ async function main() {
   assert.ok(chamadas.every((c) => c.path.startsWith("/users/99/items/search?")));
   assert.ok(chamadas.every((c) => c.path.includes("status=active")));
   assert.ok(chamadas.every((c) => c.options.noRefresh === true));
+  assert.ok(chamadas.every((c) => c.options.mlUserId === "99"));
+
+  // Regressão conceitual: o seller usado no path e o mlUserId usado para
+  // escolher o token (via options.mlUserId) devem ser sempre o mesmo valor.
+  // Se divergirem, o ML responde 403 "Searching another user items is
+  // restricted" porque o token pertence a outra conta.
+  assert.ok(
+    chamadas.every((c) => {
+      const sellerNoPath = c.path.match(/^\/users\/([^/]+)\/items\/search/)?.[1];
+      return sellerNoPath != null && String(c.options.mlUserId) === sellerNoPath;
+    }),
+    "seller no path e mlUserId usado para o token devem ser o mesmo"
+  );
 
   console.log("modeloBaseCustos: ok");
 }

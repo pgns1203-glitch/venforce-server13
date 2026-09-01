@@ -107,7 +107,7 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
           if (!body?.id) return null;
           try {
             const baseRow = casarCustoDoItem(body.id, mapasCusto);
-            return await diagEnriquecerItem({ clienteId, body, baseRow, margemAlvo: null });
+            return await diagEnriquecerItem({ clienteId, body, baseRow, margemAlvo: null, mlUserId });
           } catch (_) {
             return null;
           }

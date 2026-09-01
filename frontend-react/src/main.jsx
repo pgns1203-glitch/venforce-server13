@@ -13,6 +13,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
+import { ErrorBoundary } from "./components/ErrorBoundary.jsx";
 import "./styles/cliente360.css";
 
 // Se layout.js não tiver carregado (ex.: alguém abriu o HTML fora do Portal), a
@@ -23,6 +24,8 @@ if (typeof window.initLayout === "function") {
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>
 );

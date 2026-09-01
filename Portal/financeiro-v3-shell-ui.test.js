@@ -301,6 +301,28 @@ async function run() {
     await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
     const consoleErrors = wireFetchInterception(cdp);
 
+    // As fixtures deste teste são ancoradas em Agosto/2026 ("período em
+    // tela" default, quando a URL não traz `?periodo=`, vem de
+    // competenciaAtual() = mês corrente REAL). Sem congelar o relógio da
+    // página, o teste vira uma bomba-relógio: passa enquanto "hoje" cai em
+    // agosto/2026 e falha sozinho a partir de setembro/2026, sem nenhuma
+    // regressão de produto envolvida.
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(function(){
+        var FIXED_NOW = new Date("2026-08-26T15:00:00.000Z").getTime();
+        var RealDate = Date;
+        function FakeDate() {
+          if (arguments.length === 0) return new RealDate(FIXED_NOW);
+          return new (Function.prototype.bind.apply(RealDate, [null].concat(Array.prototype.slice.call(arguments))))();
+        }
+        FakeDate.prototype = RealDate.prototype;
+        FakeDate.now = function () { return FIXED_NOW; };
+        FakeDate.parse = RealDate.parse;
+        FakeDate.UTC = RealDate.UTC;
+        window.Date = FakeDate;
+      })();`,
+    });
+
     async function seedAndGoto(qs) {
       await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html` });
       await sleep(60);
@@ -559,6 +581,166 @@ async function run() {
       await waitFor(cdp, "Array.prototype.some.call(document.querySelectorAll('.vf-fin-painel button'), function(b){ return b.textContent.trim() === 'Publicar'; })", "a entrega recém-salva não virou publicável na tela");
     });
     competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-08", divergente: false };
+
+    // ═══ 2c. Missão QA §15 — Shopee não é só MELI com outro rótulo: exige
+    // planilha de custos (MELI não), e o formulário tem que travar até ela
+    // chegar, não só validar no backend. ═══
+    fechamentoRequestCount = 0;
+    resetEntregas();
+    entregasFake = [];
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee` });
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (cenário Shopee)");
+    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (cenário Shopee)");
+    await sleep(200);
+
+    await check("Missão QA §15 — Shopee sem planilha de custos: 'Processar fechamento' fica travado com o motivo em tela", async () => {
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Fechamento').click()");
+      await sleep(200);
+      await cdp.evaluate(`
+        (function(){ var s = document.getElementById('fin-novo-mk');
+          s.value = 'shopee'; s.dispatchEvent(new Event('change', { bubbles: true })); })();
+      `);
+      await sleep(120);
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const salesNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: "#fin-novo-sales" });
+      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: salesNode.nodeId });
+      await sleep(150);
+      const texto = await cdp.evaluate("document.querySelector('.vf-fin-novo').innerText");
+      assert.ok(/Shopee exige a planilha de custos/.test(texto), `o motivo da trava deveria nomear a exigência do Shopee: ${texto.slice(0, 300)}`);
+      const travado = await cdp.evaluate(`
+        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Processar fechamento'; }); return b ? b.disabled : null; })()
+      `);
+      assert.strictEqual(travado, true, "sem a planilha de custos, Shopee não pode deixar processar");
+      assert.strictEqual(fechamentoRequestCount, 0, "nada podia ter sido enviado ao backend ainda");
+    });
+
+    await check("Missão QA §15 — Shopee com custos: processa e manda marketplace=shopee ao backend nativo", async () => {
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const costsNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: "#fin-novo-costs" });
+      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: costsNode.nodeId });
+      await sleep(150);
+      const liberado = await cdp.evaluate(`
+        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Processar fechamento'; }); return b ? b.disabled : null; })()
+      `);
+      assert.strictEqual(liberado, false, "com sales + costs, Shopee libera o processamento");
+      await cdp.evaluate(`
+        (function(){ Array.prototype.find.call(document.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Processar fechamento'; }).click(); })();
+      `);
+      await waitFor(cdp, "document.querySelector('.vf-fin-novo__cards') !== null", "o preview do fechamento Shopee não apareceu");
+      assert.strictEqual(fechamentoRequestCount, 1, "o processamento nativo do Shopee deveria ter chamado o backend uma vez");
+      // Nem FULL nem custos adicionais são campos do Shopee (são MELI): não
+      // podem aparecer no formulário depois do preview.
+      const semCamposMeli = await cdp.evaluate("document.getElementById('fin-novo-full') === null && document.getElementById('fin-novo-add') === null");
+      assert.ok(semCamposMeli, "campos exclusivos de MELI (FULL/custos adicionais) não podem aparecer no fluxo Shopee");
+    });
+
+    // ═══ 2d. Convergência #4 §10 — fecha a lacuna de evidência Shopee nas
+    // abas de LEITURA. FinanceiroPage.jsx não tem NENHUM `if (marketplace)`
+    // nas abas Resultado/Conciliação/Relatórios gerados/Histórico — é código
+    // 100% compartilhado com MELI (confirmado lendo o componente). Isso era
+    // até aqui só INFERÊNCIA ("deveria funcionar, é o mesmo código"); este
+    // bloco roda a MESMA suíte de asserções da seção 1 contra um payload
+    // marcado marketplace=shopee, convertendo em EVIDÊNCIA direta. ═══
+    financeiroPayload = {
+      ok: true,
+      contexto: { clienteId: 87, clienteSlug: "n97", clienteContaId: 42, marketplace: "shopee", periodo: "2026-08" },
+      resultado: {
+        disponivel: true, escopoConta: false,
+        dados: {
+          status: "publicado", geradoEm: "2026-08-26T10:00:00Z", publicadoEm: "2026-08-26T12:00:00Z",
+          cards: [],
+          composicao: [
+            { chave: "faturamento_bruto", rotulo: "Faturamento bruto", valor: 88400.2, disponivel: true },
+            { chave: "comissao", rotulo: "Comissão", valor: -8840.02, disponivel: true },
+            { chave: "custo_produto", rotulo: "Custo de produto", valor: null, disponivel: false },
+            { chave: "resultado", rotulo: "Resultado", valor: 41230.1, disponivel: true },
+          ],
+        },
+      },
+      conciliacao: {
+        disponivel: true, escopoConta: true,
+        dados: {
+          mpReconciliationStatus: "matched",
+          summary: {
+            ordersTotal: 400, ordersMatchedClean: 400, ordersMatchedWithEvents: 0, ordersDivergent: 0,
+            ordersSettlementPending: 0, coveragePercent: 100, paymentsUnique: 400, paymentsSettlementPending: 0,
+            totalPaymentNet: 80000,
+          },
+        },
+      },
+      relatorios: {
+        disponivel: true, escopoConta: false,
+        dados: [{ periodo: "2026-08", status: "rascunho", geradoEm: "2026-08-26T10:00:00Z", publicado: false, token: null }],
+      },
+    };
+    resetEntregas();
+    entregasFake = [
+      { id: 950, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", titulo: "Fechamento Shopee Agosto", periodo: "2026-08", status: "rascunho", publicado: false, token_publico: null, created_at: "2026-08-26T10:00:00Z", published_at: null },
+    ];
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee-leitura` });
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (Shopee leitura)");
+    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (Shopee leitura)");
+    await sleep(200);
+
+    await check("Convergência #4 §10 — Shopee: aba Resultado renderiza a composição da fixture, sem R$0 fabricado", async () => {
+      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
+      assert.ok(texto.includes("Faturamento bruto"), `composição Shopee ausente: ${texto}`);
+      assert.ok(/Custo de produto[\s\S]*—/.test(texto), `custo ausente deveria mostrar '—' também no Shopee: ${texto}`);
+      assert.ok(!texto.includes("R$ 0,00"), `nenhum valor ausente pode virar R$ 0,00 no Shopee: ${texto}`);
+    });
+
+    await check("Convergência #4 §10 — Shopee: aba Conciliação renderiza status e cobertura da fixture", async () => {
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Conciliação').click()");
+      await sleep(150);
+      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
+      assert.ok(/matched|conciliad/i.test(texto), `status de conciliação Shopee ausente: ${texto}`);
+      assert.ok(/100%|100,0%/.test(texto), `cobertura de 100% do Shopee não encontrada: ${texto}`);
+    });
+
+    await check("Convergência #4 §10 — Shopee: Relatórios gerados lista a entrega Shopee e Histórico mostra o período", async () => {
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Relatórios gerados').click()");
+      await sleep(200);
+      const linhas = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr').length");
+      assert.strictEqual(linhas, 1, `esperada 1 entrega Shopee, achei ${linhas}`);
+      const linha = await cdp.evaluate("document.querySelector('.vf-fin-painel tbody tr').innerText");
+      assert.ok(/Publicar/.test(linha), `rascunho Shopee deveria oferecer Publicar: ${linha}`);
+
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Histórico').click()");
+      await sleep(200);
+      const periodo = await cdp.evaluate("document.querySelector('.vf-fin-historico__item .vf-fin-historico__periodo').textContent");
+      assert.ok(/Agosto/i.test(periodo), `histórico Shopee deveria mostrar Agosto/2026: ${periodo}`);
+    });
+
+    await check("Convergência #4 §10 — Shopee: Publicar/Despublicar escrevem de verdade e a tela relê do servidor", async () => {
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Relatórios gerados').click()");
+      await sleep(150);
+      await cdp.evaluate(`
+        (function(){ var tr = document.querySelector('.vf-fin-painel tbody tr');
+          Array.prototype.find.call(tr.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Publicar'; }).click(); })();
+      `);
+      await sleep(120);
+      await cdp.evaluate(`
+        (function(){ var box = document.querySelector('.vf-fin-confirm');
+          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Publicar'; }).click(); })();
+      `);
+      await waitFor(cdp, "document.querySelector('.vf-fin-painel tbody tr').innerText.indexOf('Despublicar') >= 0", "a entrega Shopee não passou a publicada");
+      assert.strictEqual(entregasFake.find((e) => e.id === 950).publicado, true, "o servidor deveria ter registrado a publicação Shopee");
+      assert.ok(entregasFake.find((e) => e.id === 950).token_publico, "publicar Shopee deveria gerar token público");
+
+      await cdp.evaluate(`
+        (function(){ var tr = document.querySelector('.vf-fin-painel tbody tr');
+          Array.prototype.find.call(tr.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
+      `);
+      await sleep(120);
+      await cdp.evaluate(`
+        (function(){ var box = document.querySelector('.vf-fin-confirm');
+          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
+      `);
+      await waitFor(cdp, "document.querySelector('.vf-fin-painel tbody tr').innerText.indexOf('Publicar') >= 0", "a entrega Shopee não voltou a rascunho");
+      const alvo = entregasFake.find((e) => e.id === 950);
+      assert.strictEqual(alvo.publicado, false);
+      assert.strictEqual(alvo.token_publico, null, "despublicar Shopee precisa revogar o token público também");
+    });
 
     // ═══ 3. REGRESSÃO P0 — sem vf-token: nunca pode ficar em branco pra
     // sempre. bootProduction() (vf-shell.js) só chama vfContext.init() se

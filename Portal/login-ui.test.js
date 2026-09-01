@@ -94,25 +94,36 @@ let loginResponse = { ok: true, status: 200, body: { token: "tok-1", user: { id:
 
 function wireFetchInterception(cdp) {
   const consoleErrors = [];
+  // Uma navegação real (about:blank → index.html) pode deixar uma
+  // Fetch.requestPaused (ex.: favicon) presa entre páginas: quando a
+  // resposta chega, o Chrome já descartou aquele requestId e
+  // Fetch.continueRequest/fulfillRequest rejeita com "Invalid
+  // InterceptionId". Como onEvent roda fire-and-forget, essa rejeição virava
+  // unhandled rejection e derrubava o processo inteiro (Node >=15). Mesmo
+  // padrão de Portal/financeiro-v3-shell-ui.test.js e
+  // Portal/fechamentos-api-shell-ui.test.js: engolir só esse erro benigno.
+  const respond = async (method, params) => {
+    try { await cdp.send(method, params); } catch (err) { if (!/Invalid InterceptionId/.test(err.message || "")) throw err; }
+  };
   cdp.onEvent = async (method, params) => {
     if (method === "Runtime.consoleAPICalled" && params.type === "error") {
       consoleErrors.push((params.args || []).map((a) => (a.value !== undefined ? a.value : a.description || "")).join(" "));
     }
     if (method !== "Fetch.requestPaused") return;
     const url = params.request.url;
-    if (!url.includes(PROD_HOST)) { await cdp.send("Fetch.continueRequest", { requestId: params.requestId }); return; }
+    if (!url.includes(PROD_HOST)) { await respond("Fetch.continueRequest", { requestId: params.requestId }); return; }
     const cors = [
       { name: "access-control-allow-origin", value: "*" },
       { name: "access-control-allow-headers", value: "authorization,content-type" },
       { name: "access-control-allow-methods", value: "GET,POST,OPTIONS" },
     ];
-    if (params.request.method === "OPTIONS") { await cdp.send("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: cors }); return; }
+    if (params.request.method === "OPTIONS") { await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: cors }); return; }
     if (url.includes("/auth/login")) {
       const body = Buffer.from(JSON.stringify(loginResponse.body)).toString("base64");
-      await cdp.send("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: loginResponse.status, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body });
+      await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: loginResponse.status, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body });
       return;
     }
-    await cdp.send("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
+    await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
   };
   return consoleErrors;
 }

@@ -136,6 +136,16 @@ async function check(name, fn) {
    já precisa tolerar hoje — fora do escopo desta unidade). */
 function wireFetchInterception(cdp) {
   const consoleErrors = [];
+  // Uma navegação real pode deixar uma Fetch.requestPaused presa entre
+  // páginas: quando a resposta chega, o Chrome já descartou aquele
+  // requestId e Fetch.continueRequest/fulfillRequest/failRequest rejeita
+  // com "Invalid InterceptionId". Como onEvent roda fire-and-forget, essa
+  // rejeição virava unhandled rejection e derrubava o processo (Node
+  // >=15). Mesmo padrão de Portal/financeiro-v3-shell-ui.test.js e
+  // Portal/fechamentos-api-shell-ui.test.js: engolir só esse erro benigno.
+  const respond = async (method, params) => {
+    try { await cdp.send(method, params); } catch (err) { if (!/Invalid InterceptionId/.test(err.message || "")) throw err; }
+  };
   cdp.onEvent = async (method, params) => {
     if (method === "Runtime.consoleAPICalled" && params.type === "error") {
       consoleErrors.push((params.args || []).map((a) => a.value || a.description || "").join(" "));
@@ -144,7 +154,7 @@ function wireFetchInterception(cdp) {
     const req = params.request;
     const url = req.url;
     if (!url.includes(PROD_HOST)) {
-      await cdp.send("Fetch.continueRequest", { requestId: params.requestId });
+      await respond("Fetch.continueRequest", { requestId: params.requestId });
       return;
     }
     // fetch() cross-origin com header Authorization dispara preflight
@@ -156,7 +166,7 @@ function wireFetchInterception(cdp) {
       { name: "access-control-allow-methods", value: "GET,POST,OPTIONS" },
     ];
     if (req.method === "OPTIONS") {
-      await cdp.send("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: corsHeaders });
+      await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: corsHeaders });
       return;
     }
     // C1 — GET /me/context é a primeira chamada do Shell V3 (carteira
@@ -165,7 +175,7 @@ function wireFetchInterception(cdp) {
     if (url.includes("/me/context")) {
       const clientes = (PORTFOLIO.clientes || []).map((c) => ({ id: c.id, slug: c.slug, nome: c.nome, squadId: null, responsavelDireto: false, contasAtivas: null }));
       const body = Buffer.from(JSON.stringify({ ok: true, user: { id: 12, nome: "Pedro Gomes", email: null, role: "user" }, squads: [], squadPrincipalId: null, clientes, portfolio: { totalClientes: clientes.length }, permissoes: { podeAdministrar: false } })).toString("base64");
-      await cdp.send("Fetch.fulfillRequest", {
+      await respond("Fetch.fulfillRequest", {
         requestId: params.requestId, responseCode: 200,
         responseHeaders: [...corsHeaders, { name: "content-type", value: "application/json" }], body,
       });
@@ -173,7 +183,7 @@ function wireFetchInterception(cdp) {
     }
     if (url.includes("/operacao/cliente-360/clientes")) {
       const body = Buffer.from(JSON.stringify(PORTFOLIO)).toString("base64");
-      await cdp.send("Fetch.fulfillRequest", {
+      await respond("Fetch.fulfillRequest", {
         requestId: params.requestId, responseCode: 200,
         responseHeaders: [...corsHeaders, { name: "content-type", value: "application/json" }], body,
       });
@@ -182,14 +192,14 @@ function wireFetchInterception(cdp) {
     const contasMatch = url.match(/\/clientes\/([^/?]+)\/contas/);
     if (contasMatch && decodeURIComponent(contasMatch[1]) === "n97") {
       const body = Buffer.from(JSON.stringify({ ok: true, cliente: { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true }, contas: N97_CONTAS })).toString("base64");
-      await cdp.send("Fetch.fulfillRequest", {
+      await respond("Fetch.fulfillRequest", {
         requestId: params.requestId, responseCode: 200,
         responseHeaders: [...corsHeaders, { name: "content-type", value: "application/json" }], body,
       });
       return;
     }
     // qualquer outra chamada ao host de produção: simula rede fora do ar.
-    await cdp.send("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
+    await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
   };
   return consoleErrors;
 }

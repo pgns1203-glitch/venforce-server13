@@ -260,7 +260,7 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
     const bag = createEvidenceBag();
 
     // 1) Estado atual do anúncio (MELI_API).
-    const observado = await aplicarProjetadas(bag, { clienteId: cliente.id, body, observedAt: now }, deps);
+    const observado = await aplicarProjetadas(bag, { clienteId: cliente.id, body, observedAt: now, mlUserId }, deps);
 
     // 2) Custo/imposto/taxa fixa declarados na Base ATUAL (VENFORCE_BASE,
     // PROJETADO). O realizado histórico vem do passo 3, nunca daqui.

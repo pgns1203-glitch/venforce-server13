@@ -74,9 +74,13 @@ const CODE_POR_MOTIVO = {
 
 // Bases ATIVAS vinculadas ao cliente no marketplace MELI (vínculo ativo).
 // Fonte única desta consulta em todo o backend.
+// `v.cliente_conta_id` viaja no resultado só para permitir o narrowing por
+// conta (D-8) em resolverContextoPrecificacao — NUNCA sai no payload público
+// (o mapeamento final do `base` resolvido é uma allowlist explícita, ver
+// abaixo). NULL = vínculo legado, ainda não migrado por conta.
 async function buscarBasesMeliDoCliente(clienteId) {
   const result = await pool.query(
-    `SELECT b.id, b.slug, b.nome, b.ativo, b.created_at, b.updated_at
+    `SELECT b.id, b.slug, b.nome, b.ativo, b.created_at, b.updated_at, v.cliente_conta_id
        FROM base_cliente_vinculos v
        JOIN bases b ON b.id = v.base_id AND b.ativo = true
       WHERE v.cliente_id = $1
@@ -159,6 +163,24 @@ async function resolverContextoPrecificacao({ clienteSlugRaw, clienteContaId = n
 
   if (!grant.conectado) {
     motivo = MOTIVOS.GRANT_ML_NAO_CONECTADO;
+  } else if (conta) {
+    // D-8: a conta já foi resolvida (explícita via clienteContaId, ou
+    // auto-resolvida por ser a única ativa — legado single-account). NUNCA
+    // reabrir ambiguidade client-level pegando a base de OUTRA conta
+    // específica. Uma base é candidata para ESTA conta quando: (a) o
+    // vínculo já foi migrado para esta conta (cliente_conta_id === conta.id),
+    // ou (b) o vínculo ainda é legado/client-level (cliente_conta_id NULL —
+    // não migrado por conta, não pertence especificamente a NENHUMA conta,
+    // logo não é "roubado" de ninguém). Nunca uma base vinculada
+    // explicitamente a uma conta DIFERENTE.
+    const candidatas = basesMeli.filter((b) => b.cliente_conta_id == null || b.cliente_conta_id === conta.id);
+    if (candidatas.length === 0) {
+      motivo = MOTIVOS.BASE_MELI_NAO_VINCULADA;
+    } else if (candidatas.length > 1) {
+      motivo = MOTIVOS.MULTIPLAS_BASES_MELI;
+    } else {
+      base = candidatas[0];
+    }
   } else if (basesMeli.length === 0) {
     motivo = MOTIVOS.BASE_MELI_NAO_VINCULADA;
   } else if (basesMeli.length > 1) {

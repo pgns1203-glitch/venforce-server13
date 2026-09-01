@@ -34,7 +34,7 @@ function numOrNull(value) {
  * Qualquer falha vira `null` (ausente) — nunca 0.
  */
 async function buscarComissaoEFrete(
-  { clienteId, itemId, precoEfetivo, listingTypeId, categoryId, sellerId, logisticType },
+  { clienteId, itemId, precoEfetivo, listingTypeId, categoryId, sellerId, logisticType, mlUserId = null },
   fetchFn = mlFetch
 ) {
   const [listingPricesResp, shippingResp] = await Promise.all([
@@ -62,7 +62,10 @@ async function buscarComissaoEFrete(
         `&item_price=${encodeURIComponent(precoEfetivo)}` +
         `&listing_type_id=${encodeURIComponent(listingTypeId)}&mode=me2`;
       try {
-        return await fetchFn(clienteId, query);
+        // Path seller-scoped (/users/{seller}/…): sem mlUserId o token cai no
+        // principal e o ML pode responder 403 quando a conta selecionada não
+        // é a principal do cliente (mesmo bug do fix de Automações).
+        return await fetchFn(clienteId, query, { mlUserId });
       } catch (_) {
         return null;
       }
@@ -107,7 +110,7 @@ async function buscarComissaoEFrete(
  * @returns {Promise<object>}
  */
 async function obterCotacaoAtual(
-  { clienteId, itemId, precoListaFallback = null, listingTypeId, categoryId, sellerId, logisticType },
+  { clienteId, itemId, precoListaFallback = null, listingTypeId, categoryId, sellerId, logisticType, mlUserId = null },
   deps = {}
 ) {
   const fetchFn = deps.mlFetchFn || mlFetch;
@@ -117,10 +120,11 @@ async function obterCotacaoAtual(
     clienteId,
     itemId,
     precoListaFallback,
+    mlUserId,
   });
 
   const { comissaoValor, comissaoPercentual, fretePrevisto } = await buscarComissaoEFrete(
-    { clienteId, itemId, precoEfetivo, listingTypeId, categoryId, sellerId, logisticType },
+    { clienteId, itemId, precoEfetivo, listingTypeId, categoryId, sellerId, logisticType, mlUserId },
     fetchFn
   );
 

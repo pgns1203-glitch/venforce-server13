@@ -373,6 +373,31 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('vf-shell-main').hidden"), false, "conteúdo deveria renderizar em READY");
     });
 
+    await check("Convergência #4 §15 — Financeiro roteia para V3 com conta Shopee em tela", async () => {
+      const href = await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=financeiro]').getAttribute('href')");
+      assert.ok(href && href.startsWith("financeiro-v3.html"), `esperado financeiro-v3.html com Shopee em tela, achei: ${href}`);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=financeiro]').getAttribute('aria-disabled')"), null, "Financeiro não pode ficar desabilitado nem para Shopee");
+    });
+
+    await check("Convergência #4 §15 — Financeiro roteia para V3 com conta Mercado Livre em tela (não é hardcode de um marketplace só)", async () => {
+      await cdp.evaluate("document.getElementById('vf-op-trigger').click()");
+      await waitFor(cdp, "document.querySelector('.vf-shell__dropdown')", "dropdown de operação não abriu");
+      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-menu__item'), function(x){return x.textContent.indexOf('Mercado Livre 1')>=0;}).click()");
+      await waitFor(cdp, "window.VF.context.getState() === 'READY'", "não voltou a READY na conta Mercado Livre 1");
+      const href = await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=financeiro]').getAttribute('href')");
+      assert.ok(href && href.startsWith("financeiro-v3.html"), `esperado financeiro-v3.html com MELI em tela, achei: ${href}`);
+      const outrosItens = await cdp.evaluate(`
+        (function(){
+          var mods = ['visao', 'central-vendas', 'ads', 'anuncios', 'margem', 'diagnosticos', 'automacoes'];
+          return mods.map(function(id){
+            var a = document.querySelector('.vf-shell__item[data-module=' + id + ']');
+            return a ? a.getAttribute('href') : 'AUSENTE';
+          });
+        })();
+      `);
+      assert.ok(!outrosItens.some((h) => h === "AUSENTE" || /financeiro-v3\.html/.test(h)), `só o item Financeiro pode ter ganhado rotaPorMarketplace, os outros continuam com rota fixa: ${JSON.stringify(outrosItens)}`);
+    });
+
     await check("S01 — collapse: alterna classe e persiste em localStorage, sem escolher width em transition", async () => {
       assert.strictEqual(await cdp.evaluate("localStorage.getItem('vf-sidebar-collapsed')"), null);
       await cdp.evaluate("document.querySelector('.vf-shell__collapse').click()");

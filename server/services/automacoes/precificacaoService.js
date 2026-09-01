@@ -177,7 +177,7 @@ async function gerarPreviewPrecificacaoMl({
       precoCheio: precoOriginal,
       precoPromocional: precoPromocionado,
       precoEfetivo,
-    } = await resolverPrecosItem({ clienteId: cliente.id, itemId, precoListaFallback });
+    } = await resolverPrecosItem({ clienteId: cliente.id, itemId, precoListaFallback, mlUserId });
 
     const [listingPricesResp, shippingResp] = await Promise.all([
       (async () => {
@@ -196,7 +196,9 @@ async function gerarPreviewPrecificacaoMl({
         if (precoEfetivo === null || !sellerId || !listingTypeId || !itemId) return null;
         const query = `/users/${encodeURIComponent(sellerId)}/shipping_options/free?item_id=${encodeURIComponent(itemId)}&verbose=true&item_price=${encodeURIComponent(precoEfetivo)}&listing_type_id=${encodeURIComponent(listingTypeId)}&mode=me2`;
         try {
-          return await mlFetch(cliente.id, query);
+          // Path seller-scoped: propaga a conta ML resolvida para não cair no
+          // token principal (mesmo bug que o fix de Automações corrigiu).
+          return await mlFetch(cliente.id, query, { mlUserId });
         } catch (_) {
           return null;
         }

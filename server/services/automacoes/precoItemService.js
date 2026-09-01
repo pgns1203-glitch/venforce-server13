@@ -13,14 +13,14 @@ function numOuNull(v) {
 // Fallback legado: replica o comportamento anterior (preço do anúncio +
 // GET /items/{id}/prices) para os casos em que /sale_price falhar. Mantido
 // apenas como rede de segurança — não deve ser a fonte primária de preço.
-async function resolverPrecosLegado({ clienteId, itemId, precoListaFallback }) {
+async function resolverPrecosLegado({ clienteId, itemId, precoListaFallback, mlUserId = null }) {
   const precoBase = numOuNull(precoListaFallback);
   const precoCheioFallback = precoBase !== null && precoBase > 0 ? precoBase : null;
 
   let precoDePrices = null;
   try {
     if (itemId) {
-      const r = await mlFetch(clienteId, `/items/${encodeURIComponent(itemId)}/prices`);
+      const r = await mlFetch(clienteId, `/items/${encodeURIComponent(itemId)}/prices`, { mlUserId });
       const lista = Array.isArray(r?.data?.prices) ? r.data.prices : [];
       const promoEntry = lista.find((p) => p?.type === "promotion" && numOuNull(p?.amount) > 0);
       const standardEntry = lista.find((p) => p?.type === "standard" && numOuNull(p?.amount) > 0);
@@ -52,14 +52,19 @@ async function resolverPrecosLegado({ clienteId, itemId, precoListaFallback }) {
 // - regular_amount: preço cheio/original, presente quando há promoção ativa.
 // Promoção só é considerada quando regular_amount > amount; caso contrário
 // preço cheio = preço promocional = preço efetivo = amount.
-async function resolverPrecosItem({ clienteId, itemId, precoListaFallback = null }) {
+// mlUserId (opcional): a conta ML já resolvida account-aware pelo chamador
+// (contextoPrecificacaoService / motorMargem). Sem ele, o token cai no
+// principal/fallback do cliente — o mesmo bug de "seller B + token A" que o
+// fix de Automações corrigiu. Aditivo: chamador que não passa mantém o
+// comportamento legado.
+async function resolverPrecosItem({ clienteId, itemId, precoListaFallback = null, mlUserId = null }) {
   const id = String(itemId || "").trim();
   if (!id) {
     return { precoCheio: null, precoPromocional: null, precoEfetivo: null, fonte: "sem_item_id" };
   }
 
   try {
-    const resp = await mlFetch(clienteId, `/items/${encodeURIComponent(id)}/sale_price?context=channel_marketplace`);
+    const resp = await mlFetch(clienteId, `/items/${encodeURIComponent(id)}/sale_price?context=channel_marketplace`, { mlUserId });
     if (!resp.ok) throw new Error(`sale_price HTTP ${resp.status}`);
 
     const amount = numOuNull(resp.data?.amount);
@@ -77,7 +82,7 @@ async function resolverPrecosItem({ clienteId, itemId, precoListaFallback = null
   } catch (_) {
     // /sale_price indisponível para o item (erro de rede, 4xx/5xx ou payload
     // inesperado) — cai para a lógica legada em vez de deixar o item sem preço.
-    return resolverPrecosLegado({ clienteId, itemId: id, precoListaFallback });
+    return resolverPrecosLegado({ clienteId, itemId: id, precoListaFallback, mlUserId });
   }
 }
 

@@ -54,7 +54,10 @@ function extrairImagem(body) {
 async function buscarItensAtivos({ clienteId, mlUserId, offset = 0, limit = SEARCH_PAGE_LIMIT }, fetchFn = mlFetch) {
   const resp = await fetchFn(
     clienteId,
-    `/users/${mlUserId}/items/search?status=active&offset=${offset}&limit=${limit}`
+    `/users/${mlUserId}/items/search?status=active&offset=${offset}&limit=${limit}`,
+    // Path seller-scoped: sem mlUserId nas options o token cai no principal do
+    // cliente e o ML responde 403 quando a conta selecionada não é a principal.
+    { mlUserId }
   );
   if (!resp.ok) {
     const err = new Error(resp.data?.message || "Erro ao buscar itens no Mercado Livre.");
@@ -89,7 +92,7 @@ async function buscarDetalhesItens({ clienteId, ids }, fetchFn = mlFetch) {
  */
 async function aplicarEvidenciasProjetadas(
   bag,
-  { clienteId, body, observedAt = new Date() },
+  { clienteId, body, observedAt = new Date(), mlUserId = null },
   deps = {}
 ) {
   const itemId = String(body?.id || "").trim();
@@ -103,7 +106,7 @@ async function aplicarEvidenciasProjetadas(
 
   const cotarFn = deps.obterCotacaoAtualFn || obterCotacaoAtual;
   const cotacao = await cotarFn(
-    { clienteId, itemId, precoListaFallback, listingTypeId, categoryId, sellerId, logisticType },
+    { clienteId, itemId, precoListaFallback, listingTypeId, categoryId, sellerId, logisticType, mlUserId },
     { mlFetchFn: deps.mlFetchFn, resolverPrecosItemFn: deps.resolverPrecosItemFn }
   );
 

@@ -101,7 +101,10 @@ function diagAcaoRecomendada({ diagnostico, precoEfetivo, precoAlvo }) {
 }
 
 // Replica EXATAMENTE o pipeline de enriquecimento da rota /automacoes/precificacao/preview-ml para 1 item.
-async function diagEnriquecerItem({ clienteId, body, baseRow, margemAlvo }) {
+// mlUserId (opcional): a conta ML já resolvida account-aware por
+// executarDiagnosticoCompleto. Sem ele, o /users/{seller}/shipping_options e
+// o /items/{id}/sale_price caem no token principal — "seller B + token A".
+async function diagEnriquecerItem({ clienteId, body, baseRow, margemAlvo, mlUserId = null }) {
   const itemId = String(body?.id || "").trim();
   const sku = extrairSkuMl(body);
   const listingTypeId = body?.listing_type_id || null;
@@ -116,7 +119,7 @@ async function diagEnriquecerItem({ clienteId, body, baseRow, margemAlvo }) {
     precoCheio: precoOriginal,
     precoPromocional,
     precoEfetivo,
-  } = await resolverPrecosItem({ clienteId, itemId, precoListaFallback });
+  } = await resolverPrecosItem({ clienteId, itemId, precoListaFallback, mlUserId });
 
   const [listingPricesResp, shippingResp] = await Promise.all([
     (async () => {
@@ -136,7 +139,8 @@ async function diagEnriquecerItem({ clienteId, body, baseRow, margemAlvo }) {
       try {
         return await mlFetch(
           clienteId,
-          `/users/${encodeURIComponent(sellerId)}/shipping_options/free?item_id=${encodeURIComponent(itemId)}&verbose=true&item_price=${encodeURIComponent(precoEfetivo)}&listing_type_id=${encodeURIComponent(listingTypeId)}&mode=me2`
+          `/users/${encodeURIComponent(sellerId)}/shipping_options/free?item_id=${encodeURIComponent(itemId)}&verbose=true&item_price=${encodeURIComponent(precoEfetivo)}&listing_type_id=${encodeURIComponent(listingTypeId)}&mode=me2`,
+          { mlUserId }
         );
       } catch (_) { return null; }
     })(),
@@ -420,7 +424,7 @@ async function executarDiagnosticoCompleto(relatorioId, options = {}) {
             try {
               const baseRow = matchBase(body.id);
               return await diagEnriquecerItem({
-                clienteId: cliente.id, body, baseRow, margemAlvo,
+                clienteId: cliente.id, body, baseRow, margemAlvo, mlUserId,
               });
             } catch (err) {
               console.warn(`[diag ${relatorioId}] item ${body.id} falhou:`, err.message);

@@ -301,6 +301,28 @@ async function run() {
     await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
     const consoleErrors = wireFetchInterception(cdp);
 
+    // As fixtures deste teste são ancoradas em Agosto/2026 ("período em
+    // tela" default, quando a URL não traz `?periodo=`, vem de
+    // competenciaAtual() = mês corrente REAL). Sem congelar o relógio da
+    // página, o teste vira uma bomba-relógio: passa enquanto "hoje" cai em
+    // agosto/2026 e falha sozinho a partir de setembro/2026, sem nenhuma
+    // regressão de produto envolvida.
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(function(){
+        var FIXED_NOW = new Date("2026-08-26T15:00:00.000Z").getTime();
+        var RealDate = Date;
+        function FakeDate() {
+          if (arguments.length === 0) return new RealDate(FIXED_NOW);
+          return new (Function.prototype.bind.apply(RealDate, [null].concat(Array.prototype.slice.call(arguments))))();
+        }
+        FakeDate.prototype = RealDate.prototype;
+        FakeDate.now = function () { return FIXED_NOW; };
+        FakeDate.parse = RealDate.parse;
+        FakeDate.UTC = RealDate.UTC;
+        window.Date = FakeDate;
+      })();`,
+    });
+
     async function seedAndGoto(qs) {
       await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html` });
       await sleep(60);

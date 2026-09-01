@@ -1,8 +1,15 @@
 # 11 — O que a Convergência #2 precisa entregar para P2.9
 
-> P2.9 está em **NO-GO** enquanto a Convergência #2 não fecha. Esta lista é o
-> gate: quando cada linha estiver ✅, o item 1 e o item 3 de `08_GO_NO_GO.md`
-> viram `GO`.
+> ✅ **HISTÓRICO (2026-09-01).** As Convergências #1, #2 e #3 estão na
+> `origin/main` @ `e6549f7`, incluindo o Financeiro V3 nativo MELI/Shopee,
+> `schemaEnsure`, `/health/schema` e o hardening de autorização. O gate
+> descrito abaixo **foi satisfeito**. O item 1 de `08_GO_NO_GO.md` é **GO**; o
+> item 3 vira só "fazer o deploy da `main` atual + smoke". Mantido para
+> rastreabilidade. Ver `REVALIDACAO_2026-09-01.md` §6.
+
+> P2.9 estava em **NO-GO** enquanto a Convergência #2 não fechava. Esta lista era
+> o gate: quando cada linha estivesse ✅, o item 1 e o item 3 de
+> `08_GO_NO_GO.md` viravam `GO`.
 >
 > Fontes: `VENFORCE_V3_BACKEND_RELEASE_CANDIDATE.md` §3/§12/§13,
 > `VENFORCE_V3_CONVERGENCE_1_READINESS.md`, e os commits de

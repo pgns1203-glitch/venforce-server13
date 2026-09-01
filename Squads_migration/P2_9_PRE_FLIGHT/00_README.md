@@ -1,5 +1,12 @@
 # P2.9 — PRE-FLIGHT (preparação do rollout de Squads)
 
+> ⚠️ **REVALIDADO em 2026-09-01** contra `origin/main` @ `e6549f7` (pós
+> Convergências #1/#2/#3). Este pacote foi escrito sobre a base antiga
+> `6126ee1`. **Antes de usar qualquer item aqui, leia
+> `REVALIDACAO_2026-09-01.md`** — ele lista o que continua válido (schema,
+> tooling, queries: tudo ✅), o que virou histórico (`11`, o gate da
+> Convergência #2), e o que mudou nos riscos (R1/R3 resolvidos, +R11).
+
 > **Estado:** P2.9 **NÃO EXECUTADO**. `SQUADS_ENFORCEMENT` = **OFF**. Nenhum
 > dado real migrado, nenhum banco de produção tocado, nenhum deploy, nenhuma
 > alteração de Render/JWT_SECRET.

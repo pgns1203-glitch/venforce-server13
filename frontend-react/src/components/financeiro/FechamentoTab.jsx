@@ -32,7 +32,7 @@ export function FechamentoTab({ resultado, clienteSlug, clienteNome, clienteCont
 
   // A entrega operável do período em tela. Enquanto a lista carrega, não
   // existe ação — e o status vem do payload de leitura, que já chegou.
-  const entrega = entregaDoPeriodo(entregas?.entregas, periodo);
+  const entrega = entregaDoPeriodo(entregas?.entregas, periodo, clienteContaId);
   const statusAtual = entrega ? (entrega.publicado ? "publicado" : "rascunho") : dados?.status;
   const status = STATUS_INFO[statusAtual] || STATUS_INFO.nao_gerado;
 

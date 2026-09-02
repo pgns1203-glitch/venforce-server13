@@ -127,7 +127,24 @@ export function useEntregasFechamento({ clienteSlug, habilitado }) {
 // #fin-periodo de Portal/financeiro.js aceita qualquer coisa) — é a mesma
 // tolerância que financeiroVisaoService.js:118 já aplica, replicada aqui
 // para as duas telas concordarem sobre qual linha é a do período.
-export function entregaDoPeriodo(entregas, periodo) {
+//
+// `clienteContaId`, quando informado, desempata entre contas: a lista vem
+// SEM filtro de conta de propósito (entregasApi.js), então um cliente com
+// duas ClienteContas (V3 P2.6 D1) pode ter uma entrega por conta no MESMO
+// período. Sem esse desempate, a primeira entrega da competência que
+// aparecesse na lista virava a entrega OPERÁVEL da tela — Publicar/
+// Despublicar agiriam sobre o fechamento de OUTRA conta sem nenhum aviso.
+// A regra espelha financeiroVisaoService.js `compararEntregas`: prefere a
+// entrega desta conta; sem ela, aceita a entrega legada (sem operação
+// registrada, `cliente_conta_id` null); nunca devolve a entrega de uma
+// conta ESPECÍFICA diferente — aí é preferível declarar "sem fechamento"
+// do que oferecer uma ação sobre o dado errado.
+export function entregaDoPeriodo(entregas, periodo, clienteContaId = null) {
   if (!Array.isArray(entregas) || !periodo) return null;
-  return entregas.find((e) => String(e.periodo || "").includes(periodo)) || null;
+  const candidatas = entregas.filter((e) => String(e.periodo || "").includes(periodo));
+  if (!candidatas.length) return null;
+  if (clienteContaId == null) return candidatas[0];
+  const destaConta = candidatas.find((e) => e.cliente_conta_id != null && Number(e.cliente_conta_id) === Number(clienteContaId));
+  if (destaConta) return destaConta;
+  return candidatas.find((e) => e.cliente_conta_id == null) || null;
 }

@@ -41,6 +41,14 @@ const COLLAPSE_KEY = "vf-sidebar-collapsed"; // preferência de UI (§9.2) — l
    todos os marketplaces. */
 export const MODULOS = [
   { id: "visao", label: "Visão", rota: "visao.html" },
+  // Recuperação de navegação (VENFORCE_AUDITORIA_FORENSE_RECUPERACAO_TELAS.md
+  // §8) — cliente-360-react.html é a Cliente 360 V2 REAL (não confundir com
+  // o bundle Vue órfão `cliente-360-v2.html`, sem fonte, nunca linkado em
+  // nenhuma origem). A própria página documenta o contrato de deep-link em
+  // frontend-react/src/hooks/useCliente360.js:8-9 — por isso `linkParams`
+  // manda `slug`/`marketplace`, nunca `cliente`/`conta` (semântica
+  // diferente, o hook nem lê esses nomes).
+  { id: "cliente-360-v2", label: "Cliente 360 V2", rota: "cliente-360-react.html", linkParams: linkParamsCliente360V2 },
   // Convergência #4 §15 — Financeiro V3 é o destino para MELI/Shopee (D-8/
   // D-9 não afetam isto: contrato já existe para os dois hoje). Marketplace
   // não suportado por V3 (TikTok legado) ou sem conta resolvida cai em
@@ -59,6 +67,21 @@ export const MODULOS = [
 export const GLOBAIS = [
   { id: "carteira", label: "Carteira", rota: "carteira.html" },
   { id: "bases", label: "Bases", rota: "bases.html" },
+  // Recuperação de navegação (auditoria forense, seção 6.2/15) — estas 5
+  // telas têm arquivo, backend e lógica ativos em ATUAL; só perderam a
+  // entrada de menu quando o Shell V3 chegou. Nenhuma delas lê `cliente`/
+  // `conta`/`periodo` da URL (cada uma tem seletor de cliente próprio, na
+  // própria página) — por isso GLOBAIS, não MODULOS: exigir cliente+operação
+  // escolhidos na Carteira antes de abri-las seria uma trava nova que essas
+  // páginas nunca tiveram.
+  { id: "cliente-operacao", label: "Cliente Operação", rota: "cliente-operacao.html" },
+  { id: "cliente-360", label: "Cliente 360", rota: "cliente-360.html" },
+  { id: "promocoes-ml", label: "Promoções ML", rota: "promocoes-retorno.html" },
+  // Central Full lê `clienteContaId` (não `conta`) quando presente — ver
+  // linkParamsCentralFull. Sem ele, a própria página mostra seu seletor de
+  // cliente/conta (fallback já existente, não uma tela quebrada).
+  { id: "central-full", label: "Central Full", rota: "full-gestao.html", linkParams: linkParamsCentralFull },
+  { id: "curva-abc", label: "Curva ABC", rota: "fechamento.html" },
   { id: "clientes-contas", label: "Clientes e Contas", rota: "clientes.html" },
   { id: "ferramentas", label: "Ferramentas", rota: "ferramentas.html" },
   // 05a67f1 migrou relatorios.html para o Shell V3 sem entrada na sidebar
@@ -76,6 +99,15 @@ export const GLOBAIS = [
 ];
 
 export const ADMIN = [
+  // Tokens ML era `adminOnly` em layout.js (e ml-tokens.js:12 já redireciona
+  // sozinho quem não é admin) — recuperado só aqui, no grupo Administração,
+  // para preservar exatamente a mesma restrição de acesso que já existia.
+  // NENHUMA lógica de Tokens ML foi tocada (achado de segurança da auditoria,
+  // seção 11: a versão ATUAL já corrigiu o vazamento de access_token/
+  // refresh_token em texto puro — não regredir isso nunca).
+  { id: "ml-tokens", label: "Tokens ML", rota: "ml-tokens.html" },
+  // Criação Anúncios ML era `adminOnly` em layout.js — mesma regra aqui.
+  { id: "criar-anuncios-meli", label: "Criação Anúncios ML", rota: "criar-anuncios-meli.html" },
   { id: "atividade", label: "Atividade", rota: "atividade.html" },
   { id: "control-center", label: "Control Center", rota: "control-center.html" },
   { id: "callbacks", label: "Callbacks", rota: "callbacks.html" },
@@ -84,6 +116,30 @@ export const ADMIN = [
 ];
 
 export const MARKETPLACE_LABEL = { meli: "Mercado Livre", shopee: "Shopee", tiktok: "TikTok Shop" };
+
+/* ── linkParams — recuperação de navegação (VENFORCE_AUDITORIA_FORENSE_
+   RECUPERACAO_TELAS.md) ─────────────────────────────────────────────────
+   Válvula de escape usada por buildHref() para módulos cuja página de
+   destino NÃO fala o contrato padrão cliente/conta/periodo. Cada função só
+   lê o campo que a página de destino documenta/realmente consome — nunca
+   inventa parâmetro novo nem reaproveita um nome com outra semântica. */
+
+// frontend-react/src/hooks/useCliente360.js:8-9 documenta o contrato:
+// "cliente-360-react.html?slug=cliente-x&competencia=...". `marketplace`
+// só vai junto quando o Shell já resolveu a operação (meta real, não
+// GLOBAIS/ADMIN) — nunca um valor chutado.
+function linkParamsCliente360V2(ctx, meta) {
+  if (!ctx || !ctx.clienteSlug) return null;
+  return { slug: ctx.clienteSlug, marketplace: meta && meta.marketplace ? meta.marketplace : undefined };
+}
+
+// full-gestao.html lê só `clienteContaId` (confirmado no bundle: nenhuma
+// outra chave de querystring é lida). Sem ele, a própria página mostra o
+// seletor de cliente/conta dela — por isso null aqui não é regressão.
+function linkParamsCentralFull(ctx) {
+  if (!ctx || !ctx.clienteContaId) return null;
+  return { clienteContaId: ctx.clienteContaId };
+}
 
 /* ── Estados (MASTER_SPEC §7.2) — tabela única; nenhuma lógica duplicada. */
 const ESTADOS = {
@@ -528,6 +584,21 @@ export function createVfShell(options = {}) {
   function buildHref(mod, meta) {
     const rota = resolverRota(mod, meta);
     const ctx = ctxStore.getContext();
+    // `linkParams` é a válvula de escape para páginas que NÃO falam o
+    // contrato padrão cliente/conta/periodo (recuperação de navegação —
+    // ver linkParamsCliente360V2/linkParamsCentralFull). Nunca inventa
+    // parâmetro: cada função só lê o campo que a página de destino
+    // realmente documenta ler.
+    if (mod.linkParams) {
+      const params = mod.linkParams(ctx, meta) || {};
+      const qs = new URLSearchParams();
+      Object.keys(params).forEach((chave) => {
+        const valor = params[chave];
+        if (valor !== null && valor !== undefined && valor !== "") qs.set(chave, String(valor));
+      });
+      const s = qs.toString();
+      return s ? `${rota}?${s}` : rota;
+    }
     if (!ctx || !ctx.clienteSlug) return rota;
     const qs = new URLSearchParams();
     qs.set("cliente", ctx.clienteSlug);

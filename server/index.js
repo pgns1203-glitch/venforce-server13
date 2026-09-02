@@ -1878,32 +1878,50 @@ const server = app.listen(PORT, () => {
     console.error("[design-studio] erro ao garantir tabelas no boot:", err.message);
   });
 
-  // P2.2 — diagnóstico de rollout: estado do enforcement + prontidão da
-  // migração, num único log de boot. NÃO ativa nem bloqueia nada — só torna
-  // observável se o flag está coerente com os dados.
-  ensureSquadsTables()
-    .then(() => require("./services/squads/squadsMigracaoService").auditoria())
-    .then((a) => {
+  // P2.2 (+ HARDENING) — ROLLOUT GATE: cruza a intenção do operador
+  // (SQUADS_ENFORCEMENT) com o estado real dos dados (auditoria de migração).
+  // O arme é síncrono: enquanto a auditoria não responde, o gate mantém o
+  // enforcement OFF, então não existe janela em que o processo já atende
+  // requisições sem saber se os dados estão migrados.
+  require("./services/squads/rolloutGateBoot")
+    .armarRolloutGate({
+      ensureSquadsTables,
+      auditoria: () => require("./services/squads/squadsMigracaoService").auditoria(),
+    })
+    .then(({ auditoria: a, erro }) => {
+      if (erro) {
+        console.error("[squads] erro ao garantir tabelas / auditoria no boot:", erro.message);
+      }
       const { describeEnforcement } = require("./config/squadsEnforcement");
       const enf = describeEnforcement();
+      const dados = a
+        ? `clientes sem squad=${a.clientesAtivos.semSquad}/${a.clientesAtivos.total} | ` +
+          `internos sem membership=${a.usuariosInternos.semMembership}/${a.usuariosInternos.total} | ` +
+          `internos sem principal=${a.usuariosInternos.semPrincipal} | ` +
+          `auditoria.pronto=${a.pronto}`
+        : "auditoria indisponível";
       console.log(
         `[squads] enforcement=${enf.enabled ? "ON" : "OFF"} ` +
-        `(SQUADS_ENFORCEMENT=${enf.envRaw ?? "<ausente>"}) | ` +
-        `clientes sem squad=${a.clientesAtivos.semSquad}/${a.clientesAtivos.total} | ` +
-        `internos sem membership=${a.usuariosInternos.semMembership}/${a.usuariosInternos.total} | ` +
-        `internos sem principal=${a.usuariosInternos.semPrincipal} | ` +
-        `auditoria.pronto=${a.pronto}`
+        `(SQUADS_ENFORCEMENT=${enf.envRaw ?? "<ausente>"}, gate=${enf.gate}` +
+        `${enf.overrideAtivo ? ", override=ON" : ""}) | ${dados}`
       );
-      if (enf.enabled && !a.pronto) {
+      // Flag pede ON mas o gate segurou: o enforcement NÃO subiu. Dizer isso
+      // alto evita o diagnóstico errado de "liguei e não aconteceu nada".
+      if (enf.flagLigada && !enf.enabled) {
         console.warn(
-          "[squads] ⚠ enforcement ON com auditoria NÃO pronta: usuários internos sem " +
-          "membership receberão 403 em cascata. Complete a migração (GET /squads/migracao/auditoria) " +
-          "ou desative SQUADS_ENFORCEMENT."
+          `[squads] ⚠ SQUADS_ENFORCEMENT pede ON, mas o rollout gate está "${enf.gate}" — ` +
+          `enforcement permanece OFF. Motivo: ${enf.motivo}. Complete a migração ` +
+          `(GET /squads/migracao/auditoria); para exceções aceitas, use ` +
+          `SQUADS_ENFORCEMENT_ALLOW_INCOMPLETE=on.`
         );
       }
     })
+    // Rede de segurança: este bloco é DIAGNÓSTICO e não pode derrubar o boot.
+    // `armarRolloutGate` já não rejeita (o fail-safe do gate mora lá dentro),
+    // mas um erro no log não pode virar unhandled rejection — o Node encerra o
+    // processo nesse caso. Mesmo padrão das outras cadeias de boot aqui.
     .catch((err) => {
-      console.error("[squads] erro ao garantir tabelas / auditoria no boot:", err.message);
+      console.error("[squads] erro ao reportar o estado do rollout gate no boot:", err.message);
     });
 
   ensureObservabilityTables()

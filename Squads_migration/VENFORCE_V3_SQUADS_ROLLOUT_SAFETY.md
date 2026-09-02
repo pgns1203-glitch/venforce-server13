@@ -387,7 +387,7 @@ server/config/squadsEnforcement.js          (gate: 4 estados, override, describe
 server/services/squads/rolloutGateBoot.js   (novo — POLÍTICA de prontidão + arme síncrono)
 server/index.js                             (boot: arma o gate; log ganha gate= e o ⚠ novo)
 server/tests/squadsRolloutGate.test.js      (novo — 48 verificações)
-server/tests/squadsRolloutGateBoot.test.js  (novo — 21 verificações)
+server/tests/squadsRolloutGateBoot.test.js  (novo — 22 verificações)
 Squads_migration/VENFORCE_V3_SQUADS_ROLLOUT_SAFETY.md  (§9 + banner + §2 supersedida)
 ```
 
@@ -410,7 +410,7 @@ original. Nenhum schema, nenhum dado, nenhum arquivo de frontend.
 | admin e seller idênticos nos 4 estados de gate | `squadsRolloutGate` §9 |
 | Compat: gate nunca armado → flag governa sozinha | `squadsRolloutGate` §10 |
 | Arme síncrono; veredito; motivo nomeia a pendência; auditoria que estoura não derruba o boot | `squadsRolloutGateBoot` |
-| Wiring: `index.js` realmente arma o gate no boot | `squadsRolloutGateBoot` §6 |
+| Wiring: `index.js` realmente arma o gate no boot, e a cadeia termina em `.catch()` | `squadsRolloutGateBoot` §6 |
 
 ```
 cd server
@@ -427,7 +427,8 @@ a squads/enforcement. Baseline inalterado.
 
 | Risco | Situação |
 |---|---|
-| **`nao_armado` em produção** | Se algum entrypoint novo servir tráfego sem passar pelo boot do `index.js`, o gate fica desarmado e a flag volta a governar sozinha (= comportamento P2.2 original, não pior). Fixado por teste de wiring, mas o teste é sobre a fonte — um entrypoint alternativo futuro precisa armar o gate também. |
+| **`nao_armado` em produção** | Se algum entrypoint novo servir tráfego sem passar pelo boot do `server/index.js`, o gate fica desarmado e a flag volta a governar sozinha (= comportamento P2.2 original, não pior). Fixado por teste de wiring, mas o teste é sobre a fonte — um entrypoint alternativo futuro precisa armar o gate também. |
+| **App Express legado na RAIZ do repo** (achado na revisão) | Existe um segundo `app.listen` em `<repo>/index.js` (759 linhas, `config/database.js` próprio, serve `/auth/*`, `/clientes`, `/bases`). **Não é o entrypoint de produção** — o Render roda `node index.js` dentro de `server/` (`server/package.json`; o `package.json` da raiz é `{}`, sem `start`). Ele tem **zero** referências a Squads/carteira e é anterior à fundação de Squads (último commit `a95c5db`, 2026-08-06): não *contorna* o gate, ele nunca teve autorização por carteira. Risco **pré-existente e independente deste hardening** — se algum dia for exposto, serve `/clientes` sem P2.1 nem P2.2. Não corrigido aqui, de propósito. |
 | **Override é uma arma carregada** | `ALLOW_INCOMPLETE=on` restaura exatamente o risco que o gate remove. É explícito, avisa alto e é auditável na config do Render — mas ninguém deve deixá-lo ligado depois que a migração fechar. |
 | **Auditoria que nunca responde** | DB pendurado ⇒ gate fica `armando` ⇒ enforcement nunca sobe. Fail-safe na direção certa (ninguém perde acesso), mas é preciso ler o log para entender por que "liguei e não subiu". |
 | **O gate não valida a qualidade do mapeamento** | Ele confia em `auditoria().pronto`. Se o mapa de Squads estiver *completo porém errado*, o gate libera. Validar o mapa é papel da P2.9 (`--audit` + conferência humana). |

@@ -153,6 +153,17 @@ async function run() {
     ok("server/index.js arma o rollout gate no boot", /armarRolloutGate/.test(fonteIndex));
     ok("server/index.js não chama mais a auditoria por fora do arme",
       !/ensureSquadsTables\(\)\s*\.then\(\s*\(\)\s*=>\s*require\(["'].\/services\/squads\/squadsMigracaoService["']\)/.test(fonteIndex));
+
+    // O bloco de boot do gate é DIAGNÓSTICO: ele nunca pode derrubar o
+    // processo. `armarRolloutGate` não rejeita, mas o callback de log ainda
+    // pode lançar — e sem `.catch()` isso vira unhandled rejection, que o Node
+    // trata encerrando o processo (não há handler global neste projeto).
+    // Todas as outras cadeias de boot deste mesmo bloco têm `.catch()`.
+    const i = fonteIndex.indexOf("armarRolloutGate");
+    const fim = fonteIndex.indexOf("ensureObservabilityTables", i);
+    const bloco = fonteIndex.slice(i, fim > i ? fim : undefined);
+    ok("a cadeia de boot do rollout gate termina em .catch() (não derruba o boot)",
+      /\.catch\(/.test(bloco));
   }
 
   cfg._resetParaTeste();

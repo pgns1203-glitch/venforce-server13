@@ -1915,6 +1915,13 @@ const server = app.listen(PORT, () => {
           `SQUADS_ENFORCEMENT_ALLOW_INCOMPLETE=on.`
         );
       }
+    })
+    // Rede de segurança: este bloco é DIAGNÓSTICO e não pode derrubar o boot.
+    // `armarRolloutGate` já não rejeita (o fail-safe do gate mora lá dentro),
+    // mas um erro no log não pode virar unhandled rejection — o Node encerra o
+    // processo nesse caso. Mesmo padrão das outras cadeias de boot aqui.
+    .catch((err) => {
+      console.error("[squads] erro ao reportar o estado do rollout gate no boot:", err.message);
     });
 
   ensureObservabilityTables()

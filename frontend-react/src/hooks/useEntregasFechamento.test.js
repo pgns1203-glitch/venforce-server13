@@ -210,4 +210,25 @@ describe("entregaDoPeriodo", () => {
     expect(entregaDoPeriodo(null, "2026-08")).toBeNull();
     expect(entregaDoPeriodo([entrega()], null)).toBeNull();
   });
+
+  it("com clienteContaId, prefere a entrega desta conta mesmo se outra conta apareceu antes na lista (V3 P2.6 D1)", () => {
+    const lista = [
+      entrega({ id: 10, periodo: "2026-08", cliente_conta_id: 20 }), // Shopee, chegou primeiro na lista
+      entrega({ id: 11, periodo: "2026-08", cliente_conta_id: 10 }), // MELI — é esta conta
+    ];
+    expect(entregaDoPeriodo(lista, "2026-08", 10).id).toBe(11);
+  });
+
+  it("com clienteContaId sem entrega desta conta, cai para a entrega legada (cliente_conta_id null)", () => {
+    const lista = [
+      entrega({ id: 12, periodo: "2026-08", cliente_conta_id: 20 }), // outra conta
+      entrega({ id: 13, periodo: "2026-08", cliente_conta_id: null }), // legada, do cliente
+    ];
+    expect(entregaDoPeriodo(lista, "2026-08", 10).id).toBe(13);
+  });
+
+  it("com clienteContaId, NUNCA devolve a entrega de uma conta diferente e específica — nem por publicar/despublicar em outra conta por engano", () => {
+    const lista = [entrega({ id: 14, periodo: "2026-08", cliente_conta_id: 20 })];
+    expect(entregaDoPeriodo(lista, "2026-08", 10)).toBeNull();
+  });
 });

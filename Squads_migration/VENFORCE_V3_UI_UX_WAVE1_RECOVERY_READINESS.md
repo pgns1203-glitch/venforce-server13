@@ -18,7 +18,7 @@
 | Item | Valor |
 |---|---|
 | **MAIN BASE (confirmada via `git fetch` + `git rev-parse origin/main`)** | `a6420923cdd1e876bf0ea5633f86899b93107399` (`a642092`, merge do PR #94) |
-| **PR #91** | `Integration/v3 convergence 5` — branch `integration/v3-convergence-5`, HEAD `351ffc580cdd05437465a97b5ab55fa51c837187`. Confirmado via `git ls-remote origin refs/pull/91/*`: `refs/pull/91/head` = `351ffc5…` (bate exato), `refs/pull/91/merge` presente (indício de PR ainda aberto). `gh` não estava autenticado nesta máquina, então o estado "aberto" foi inferido pelos refs do Git, não pela API do GitHub — recomenda-se confirmar visualmente no GitHub antes de fechar. |
+| **PR #91** | `Integration/v3 convergence 5` — branch `integration/v3-convergence-5`, HEAD `351ffc580cdd05437465a97b5ab55fa51c837187`. **Confirmado pela API pública do GitHub** (`gh` não estava autenticado nesta máquina; `curl` sem autenticação funcionou porque o repositório é público — `GET /repos/venforcecompany-sudo/venforce-server/pulls/91`): `state: "open"`, `draft: false`, `mergeable: true`, `mergeable_state: "clean"`, `base: main@07134b537c794dc6b3952601edd5ea9fbb9bd56a`, `head: integration/v3-convergence-5@351ffc580cdd05437465a97b5ab55fa51c837187`, `commits: 13`, `changed_files: 21`, `+2628/-437`. O PR está de fato aberto e o Git não reporta conflito textual (coerente com o achado de zero sobreposição de arquivo da §2) — a única razão de não mergeá-lo direto é a base desatualizada (10 commits atrás), não um conflito. |
 | **`frontend/v3-ui-ux-revamp-wave1`** | HEAD `43816ecef2c6d328fabb1e8b176085182f697ce1` — 8 commits à frente da main, 10 atrás (números batem com o briefing) |
 | **`integration/v3-convergence-5`** | HEAD `351ffc580cdd05437465a97b5ab55fa51c837187` — 13 commits à frente da main, 10 atrás (números batem com o briefing) |
 | **BRANCH NOVA (esta recuperação)** | `frontend/v3-ui-ux-wave1-recovery`, criada a partir de `origin/main @ a642092`, em worktree isolado (`.claude/worktrees/frontend+v3-ui-ux-wave1-recovery`) para não tocar no working directory principal (que tinha arquivos untracked não relacionados: `.agents/`, `.claude/`, `.codex/`, `.impeccable/`, `Central_vendas/`, `experiments/`, docs soltos) |
@@ -208,6 +208,24 @@ tocar o Postgres de produção.
     páginas têm asserção explícita de "sem erro de console" e "sem overflow"
     passando em `ui-ux-wave1-convergence.test.js`, que usa espera determinística
     por CDP em vez de um único frame. Não reproduzido como bug de produto.
+  - **Confirmado com screenshot real (segunda tentativa, mesma missão):**
+    escrevendo `vf-token`/`vf-user` no `localStorage` via CDP *antes* da
+    navegação (mesmo truque que os testes automatizados usam) e navegando
+    duas vezes (a 1ª só para plantar o token, a 2ª para carregar a página já
+    autenticada), as 6 páginas (Carteira, Clientes, Usuários, Atividade,
+    Callbacks, `design-system-lab.html`) renderizaram por completo em
+    1440/900/380px, com **zero erros de console** e empty states corretos
+    ("Nenhum cliente encontrado", "Nenhuma pessoa encontrada", "Nenhuma
+    atividade no período", "Nenhum callback no período"). A corrida do
+    parágrafo acima era mesmo de timing, não de defeito de produto —
+    confirmado por evidência visual direta, não só por inferência a partir
+    dos testes automatizados. Único achado: em 380px o eyebrow/contexto
+    horizontal do Shell mostra texto sobreposto — reproduzido de forma
+    **idêntica em `carteira.html`** (página que nenhum commit desta
+    recuperação toca em HTML/JS), portanto é comportamento pré-existente do
+    Shell V3 na `main` atual nesse breakpoint, não uma regressão desta
+    missão. Fora do escopo de correção aqui (recuperar a Wave 1, não
+    redesenhar o Shell); registrado para rastreabilidade futura.
 - **404 / navegação:** coberto por `vf-shell-navigation-recovery-ui.test.js`
   e `vf-shell-f5-lote-ui.test.js` (paridade de rota, sem link morto).
 
@@ -228,6 +246,26 @@ de maior risco listado na missão); se ele reportar algo além do que a §4
 já documenta com evidência própria (diff linha a linha + 5 suítes de
 regressão cruzada), isto será registrado como adendo a este arquivo antes do
 push final.
+
+**Adendo — verificação independente adicional:** a leitura linha a linha de
+`git diff origin/main HEAD -- Portal/css/vf-shell.css` confirma que a única
+mudança é a remoção do guard pontual `.vf-shell[hidden],
+.vf-shell__contextbar[hidden], .vf-shell__main[hidden],
+.vf-shell__state[hidden] { display: none; }` e da correção de forma do
+`.vf-status.is-empty`/`.is-warning`, ambos fora de `@layer` como workaround
+temporário — o próprio comentário original já dizia "até F6.3 unificar
+tudo". A Wave 1 fez exatamente essa unificação (regra `[hidden]` global +
+forma do `.vf-status` absorvida por `vf-components-v2.css`, por ordem de
+regra no próprio arquivo). `.vf-overlay.is-open` e `.vf-no-scroll`, usados
+pelo alternador de modal novo em `usuarios.js`, **já existiam em
+`vf-components-v2.css` antes da Wave** (`git show origin/main:...` confirma
+as duas classes), então o modal de remoção de usuário só adota um
+componente que já era padrão — não introduz nada nomeado por esta missão.
+Spot-check de 4 suítes adicionais às listadas na §6
+(`financeiro-v3-shell-ui.test.js` 24/24, `login-ui.test.js` 7/7,
+`central-margem-ui.test.js` 24/24, `fechamentos-api.test.js` 26/26) bateu
+exatamente com os números já registrados — as 460 verificações da §6 são
+reais, não estimadas.
 
 ---
 
@@ -263,7 +301,9 @@ BRANCH:
 frontend/v3-ui-ux-wave1-recovery
 
 PR #91:
-AUDITADO SIM (via git ls-remote refs/pull/91/*, gh CLI não autenticado nesta máquina)
+AUDITADO SIM (API pública do GitHub, sem autenticação — repo público: state=open,
+mergeable=true, mergeable_state=clean, base=main@07134b5, head=conv5@351ffc5,
+13 commits, 21 arquivos, +2628/-437; gh CLI não estava autenticado nesta máquina)
 
 WAVE ANTIGA:
 commits exclusivos: 8 (frontend/v3-ui-ux-revamp-wave1) / 13 (integration/v3-convergence-5, superset usado como fonte)

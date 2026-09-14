@@ -66,6 +66,25 @@
                 <div class="sq-toolbar"><label for="sq-clients-search">Buscar cliente<input id="sq-clients-search" class="vf-input" type="search" placeholder="Nome ou identificador…"></label><span id="sq-clients-result" class="sq-hint" role="status"></span></div>
                 <div id="sq-clientes-wrap"></div>
               </section>
+              <section id="sq-activity-section" class="sq-section" aria-labelledby="sq-activity-title" hidden>
+                <div class="sq-section-title">
+                  <div><h3 id="sq-activity-title">Atividade <span id="sq-activity-count"></span></h3></div>
+                  <div class="sq-activity-periods" role="group" aria-label="Período da atividade">
+                    <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="hoje">Hoje</button>
+                    <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="7d">7 dias</button>
+                    <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="30d">30 dias</button>
+                  </div>
+                </div>
+                <p class="sq-hint sq-activity-explain">Esta visão mostra a atividade registrada das pessoas que pertencem a este Squad. Membros de múltiplos Squads podem aparecer em mais de uma equipe.</p>
+                <div id="sq-activity-summary" class="sq-activity-summary"></div>
+                <div id="sq-activity-people"></div>
+                <div class="sq-toolbar sq-activity-toolbar">
+                  <label for="sq-activity-filter-person">Pessoa<select id="sq-activity-filter-person" class="vf-select"><option value="all">Todos os membros</option></select></label>
+                  <label for="sq-activity-filter-status">Status<select id="sq-activity-filter-status" class="vf-select"><option value="all">Todos</option><option value="sucesso">Sucesso</option><option value="falha">Falha</option></select></label>
+                </div>
+                <h4 class="sq-activity-timeline-title">Atividade recente</h4>
+                <div id="sq-activity-timeline"></div>
+              </section>
             </section>
           </div>
         </div>

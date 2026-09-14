@@ -15,11 +15,11 @@ const STATE = {
   squads: [], membrosPorSquad: {}, clientesPorSquad: {}, errors: {}, allowed: {},
   squadAbertoId: null, usuarios: null, todosClientes: null, catalogsReady: false,
   refreshing: false, busy: false, selection: 0, modal: null, returnFocus: null, initialSelection: false,
-  activity: {
-    squadId: null, period: "hoje", status: "idle", error: null, gen: 0,
-    people: [], allEvents: [],
-    summary: { membrosTotal: 0, membrosComAtividade: 0, eventosTotal: 0, falhasTotal: 0 },
-    filterPerson: "all", filterStatus: "all",
+  view: "config",
+  activityView: {
+    period: "hoje", query: "", status: "idle", error: null, gen: 0,
+    peopleCache: {}, // user_id -> {userId,nome,email,eventosTotal,falhasTotal,ultimaAtividade,eventosRecentes} — 1 fetch por pessoa, não por Squad
+    drawer: { open: false, userId: null, status: "all" },
   },
 };
 function esc(value) {
@@ -140,106 +140,183 @@ function sortActivityPeople(list) {
     return String(a.nome).localeCompare(String(b.nome), "pt-BR");
   });
 }
-function resetActivityFilters() { STATE.activity.filterPerson = "all"; STATE.activity.filterStatus = "all"; }
-async function loadActivity(squadId) {
-  if (!ADMIN || !squadId) return;
-  const members = people(squadId);
-  const gen = ++STATE.activity.gen;
-  STATE.activity.squadId = squadId;
-  STATE.activity.status = "loading";
-  renderActivity();
-  if (!members) { STATE.activity.status = "error"; STATE.activity.error = new Error("Não foi possível determinar os membros deste Squad."); renderActivity(); return; }
-  try {
-    const range = activityRange(STATE.activity.period);
-    const resultados = {};
-    await eachLimited(members, async m => {
-      const uid = m.user_id;
-      const [recentes, falhas] = await Promise.all([
-        api(`/admin/logs?${activityQuery({ user_id: uid, de: range.de, ate: range.ate, page: 1, limit: 20 })}`),
-        api(`/admin/logs?${activityQuery({ user_id: uid, status: "falha", de: range.de, ate: range.ate, page: 1, limit: 1 })}`),
-      ]);
-      const logs = Array.isArray(recentes.logs) ? recentes.logs : [];
-      resultados[uid] = {
-        userId: uid, nome: m.user_nome, email: m.user_email, funcao: m.funcao, isPrimary: !!m.is_primary,
-        eventosTotal: Number(recentes.total || 0), falhasTotal: Number(falhas.total || 0),
-        ultimaAtividade: logs[0]?.created_at || null, eventosRecentes: logs,
-      };
-    });
-    if (gen !== STATE.activity.gen) return; // troca de Squad/período tornou esta resposta obsoleta
-    const peopleList = members.map(m => resultados[m.user_id]).filter(Boolean);
-    STATE.activity.people = sortActivityPeople(peopleList);
-    STATE.activity.allEvents = peopleList.flatMap(p => p.eventosRecentes.map(l => ({ ...l, _personId: p.userId, _personName: p.nome })))
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    STATE.activity.summary = {
-      membrosTotal: members.length,
-      membrosComAtividade: peopleList.filter(p => p.eventosTotal > 0).length,
-      eventosTotal: peopleList.reduce((s, p) => s + p.eventosTotal, 0),
-      falhasTotal: peopleList.reduce((s, p) => s + p.falhasTotal, 0),
-    };
-    STATE.activity.status = "loaded"; STATE.activity.error = null;
-  } catch (err) {
-    if (gen !== STATE.activity.gen) return;
-    STATE.activity.status = "error"; STATE.activity.error = err;
-  }
-  renderActivity();
-}
-function renderActivity() {
-  if (!ADMIN) return;
-  document.querySelectorAll(".sq-period-btn").forEach(btn => btn.classList.toggle("is-active", btn.dataset.period === STATE.activity.period));
-  const a = STATE.activity;
-  const current = String(a.squadId) === String(STATE.squadAbertoId);
-  if (!current || a.status === "loading") {
-    $("sq-activity-count").textContent = "";
-    $("sq-activity-summary").innerHTML = '<p class="sq-hint">Carregando atividade…</p>';
-    $("sq-activity-people").innerHTML = ""; $("sq-activity-timeline").innerHTML = "";
-    return;
-  }
-  if (a.status === "error") {
-    $("sq-activity-count").textContent = "";
-    $("sq-activity-summary").innerHTML = `<div class="sq-empty"><h4>Não foi possível carregar a atividade</h4><p>${esc(a.error?.message || "Tente novamente.")}</p><button type="button" class="vf-btn vf-btn--secondary" data-action="activity-retry">Tentar novamente</button></div>`;
-    $("sq-activity-people").innerHTML = ""; $("sq-activity-timeline").innerHTML = "";
-    return;
-  }
-  const { membrosTotal, membrosComAtividade, eventosTotal, falhasTotal } = a.summary;
-  $("sq-activity-count").textContent = a.status === "loaded" ? `· ${eventosTotal} ${eventosTotal === 1 ? "evento" : "eventos"}` : "";
-  $("sq-activity-summary").innerHTML = `<p class="sq-activity-stats">${membrosTotal} ${membrosTotal === 1 ? "membro" : "membros"} · ${membrosComAtividade} com atividade · ${eventosTotal} ${eventosTotal === 1 ? "evento" : "eventos"} · ${falhasTotal} ${falhasTotal === 1 ? "falha" : "falhas"}</p>`;
-  renderActivityPeople(); renderActivityFilters(); renderActivityTimeline();
-}
-function renderActivityPeople() {
-  const a = STATE.activity;
-  $("sq-activity-people").innerHTML = a.people.length ? `<ul class="sq-activity-people-list">${a.people.map(p => `
-    <li class="sq-activity-person">
-      <div class="sq-person-identity"><strong>${esc(p.nome)}</strong><span>${p.funcao === "coordenador" ? "Coordenador" : "Membro"}</span></div>
-      ${p.eventosTotal ? `<div class="sq-activity-person-stats"><span>${p.eventosTotal} ${p.eventosTotal === 1 ? "evento" : "eventos"}</span><span>${p.falhasTotal} ${p.falhasTotal === 1 ? "falha" : "falhas"}</span><span>Última ${esc(formatMomento(p.ultimaAtividade, a.period))}</span></div>`
-        : '<span class="sq-hint">Sem atividade registrada no período</span>'}
-    </li>`).join("")}</ul>` : '<p class="sq-empty">Nenhum membro neste Squad.</p>';
-}
-function renderActivityFilters() {
-  const a = STATE.activity, select = $("sq-activity-filter-person");
-  select.innerHTML = '<option value="all">Todos os membros</option>' + a.people.map(p => `<option value="${esc(p.userId)}">${esc(p.nome)}</option>`).join("");
-  select.value = [...select.options].some(o => o.value === a.filterPerson) ? a.filterPerson : "all";
-  a.filterPerson = select.value;
-  $("sq-activity-filter-status").value = a.filterStatus;
-}
-function renderActivityTimeline() {
-  const a = STATE.activity;
-  if (!a.allEvents.length) { $("sq-activity-timeline").innerHTML = '<p class="sq-empty">Nenhuma atividade registrada para os membros deste Squad no período.</p>'; return; }
-  const filtered = a.allEvents.filter(ev => (a.filterPerson === "all" || String(ev._personId) === String(a.filterPerson)) && (a.filterStatus === "all" || String(ev.status).toLowerCase() === a.filterStatus));
-  if (!filtered.length) { $("sq-activity-timeline").innerHTML = '<p class="sq-empty">Nenhum evento para este filtro.</p>'; return; }
-  $("sq-activity-timeline").innerHTML = `<ul class="sq-activity-timeline-list">${filtered.slice(0, 50).map(ev => {
+/* Timeline compartilhada — reaproveitada apenas pelo drawer da pessoa
+ * agora (a comparação por Squad não precisa mais de timeline por item). */
+function renderTimelineList(events, period) {
+  if (!events.length) return '<p class="sq-empty">Nenhum evento para este filtro.</p>';
+  return `<ul class="sq-activity-timeline-list">${events.map(ev => {
     const label = rotuloAcao(ev.acao), detPlain = detalhesPlainText(ev.detalhes);
     const preview = detPlain.length > 140 ? detPlain.slice(0, 140).trim() + "…" : detPlain;
     const statusKey = String(ev.status || "").toLowerCase();
     const statusClass = statusKey === "falha" ? "is-danger" : statusKey === "sucesso" ? "is-success" : "is-neutral";
     const statusLabel = statusKey === "falha" ? "Falha" : statusKey === "sucesso" ? "Sucesso" : (ev.status || "—");
     return `<li class="sq-activity-item">
-      <span class="sq-activity-item-time">${esc(formatMomento(ev.created_at, a.period))}</span>
-      <span class="sq-activity-item-person">${esc(ev._personName)}</span>
+      <span class="sq-activity-item-time">${esc(formatMomento(ev.created_at, period))}</span>
       <span class="sq-activity-item-action">${esc(label)}${label !== ev.acao ? `<span class="sq-activity-item-raw">${esc(ev.acao)}</span>` : ""}</span>
       <span class="vf-tag ${statusClass}">${esc(statusLabel)}</span>
       ${detPlain ? `<details class="sq-activity-detail"><summary>Ver detalhes</summary><p>${esc(preview)}</p>${ev.ip ? `<p class="sq-hint">IP: ${esc(ev.ip)}</p>` : ""}</details>` : ""}
     </li>`;
   }).join("")}</ul>`;
+}
+/* Visão ATIVIDADE — comparação lado a lado dos Squads. Um fetch por
+ * user_id único (não por vínculo de Squad): pessoa em 3 Squads é buscada
+ * 1 vez e o resultado é distribuído para os 3 cards. */
+async function loadActivityView() {
+  if (!ADMIN) return;
+  const gen = ++STATE.activityView.gen;
+  STATE.activityView.status = "loading";
+  renderActivityView();
+  try {
+    await loadSquads();
+    if (gen !== STATE.activityView.gen) return;
+    const range = activityRange(STATE.activityView.period);
+    const uniqueUsers = new Map();
+    STATE.squads.forEach(s => (people(s.id) || []).forEach(m => { if (!uniqueUsers.has(m.user_id)) uniqueUsers.set(m.user_id, m); }));
+    const usersList = [...uniqueUsers.values()];
+    const cache = {};
+    await eachLimited(usersList, async m => {
+      const uid = m.user_id;
+      const [recentes, falhas] = await Promise.all([
+        api(`/admin/logs?${activityQuery({ user_id: uid, de: range.de, ate: range.ate, page: 1, limit: 20 })}`),
+        api(`/admin/logs?${activityQuery({ user_id: uid, status: "falha", de: range.de, ate: range.ate, page: 1, limit: 1 })}`),
+      ]);
+      const logs = Array.isArray(recentes.logs) ? recentes.logs : [];
+      cache[uid] = {
+        userId: uid, nome: m.user_nome, email: m.user_email,
+        eventosTotal: Number(recentes.total || 0), falhasTotal: Number(falhas.total || 0),
+        ultimaAtividade: logs[0]?.created_at || null, eventosRecentes: logs,
+      };
+    });
+    if (gen !== STATE.activityView.gen) return; // troca de período tornou esta resposta obsoleta
+    STATE.activityView.peopleCache = cache;
+    STATE.activityView.status = "loaded"; STATE.activityView.error = null;
+  } catch (err) {
+    if (gen !== STATE.activityView.gen) return;
+    STATE.activityView.status = "error"; STATE.activityView.error = err;
+  }
+  renderActivityView();
+}
+function squadActivityData(squadId) {
+  const members = people(squadId) || [];
+  const cache = STATE.activityView.peopleCache;
+  const peopleList = members.map(m => {
+    const c = cache[m.user_id];
+    return { userId: m.user_id, nome: m.user_nome, email: m.user_email, funcao: m.funcao,
+      eventosTotal: c?.eventosTotal || 0, falhasTotal: c?.falhasTotal || 0, ultimaAtividade: c?.ultimaAtividade || null };
+  });
+  return {
+    membrosTotal: members.length,
+    membrosComAtividade: peopleList.filter(p => p.eventosTotal > 0).length,
+    eventosTotal: peopleList.reduce((s, p) => s + p.eventosTotal, 0),
+    falhasTotal: peopleList.reduce((s, p) => s + p.falhasTotal, 0),
+    people: sortActivityPeople(peopleList),
+  };
+}
+function activityGlobalSummary() {
+  const cache = STATE.activityView.peopleCache;
+  const allUserIds = new Set();
+  STATE.squads.forEach(s => (people(s.id) || []).forEach(m => allUserIds.add(m.user_id)));
+  let comAtividade = 0, eventos = 0, falhas = 0;
+  allUserIds.forEach(uid => { const c = cache[uid]; if (c) { if (c.eventosTotal > 0) comAtividade++; eventos += c.eventosTotal; falhas += c.falhasTotal; } });
+  return { squads: STATE.squads.length, pessoas: allUserIds.size, comAtividade, eventos, falhas };
+}
+function activityMatchesQuery(squad, data, query) {
+  if (!query) return true;
+  if (matches(query, squad.nome, squad.slug)) return true;
+  return data.people.some(p => matches(query, p.nome, p.email));
+}
+function renderActivityCardPerson(p, query) {
+  const highlight = !!query && matches(query, p.nome, p.email);
+  return `<li>
+    <button type="button" class="sq-activity-card-person${highlight ? " is-match" : ""}" data-action="activity-person" data-uid="${esc(p.userId)}">
+      <span class="sq-activity-card-person-name">${esc(p.nome)}</span>
+      ${p.eventosTotal ? `<span class="sq-activity-card-person-stats">${p.eventosTotal} ${p.eventosTotal === 1 ? "evento" : "eventos"}${p.falhasTotal ? ` · ${p.falhasTotal} ${p.falhasTotal === 1 ? "falha" : "falhas"}` : ""} · Última ${esc(formatMomento(p.ultimaAtividade, STATE.activityView.period))}</span>`
+        : '<span class="sq-hint">Sem atividade no período</span>'}
+    </button>
+  </li>`;
+}
+function renderActivityCard(squad, data, query) {
+  return `<article class="sq-activity-card">
+    <header class="sq-activity-card-header">
+      <h3>${esc(squad.nome)}</h3>
+      <p class="sq-activity-card-stats">${data.membrosTotal} ${data.membrosTotal === 1 ? "membro" : "membros"} · ${data.membrosComAtividade} com atividade</p>
+      <p class="sq-activity-card-totals">${data.eventosTotal} ${data.eventosTotal === 1 ? "evento" : "eventos"} · ${data.falhasTotal} ${data.falhasTotal === 1 ? "falha" : "falhas"}</p>
+    </header>
+    <ul class="sq-activity-card-people">${data.people.length ? data.people.map(p => renderActivityCardPerson(p, query)).join("") : '<li class="sq-hint">Nenhum membro neste Squad.</li>'}</ul>
+  </article>`;
+}
+function renderActivityView() {
+  if (!ADMIN) return;
+  const a = STATE.activityView;
+  document.querySelectorAll(".sq-period-btn").forEach(btn => btn.classList.toggle("is-active", btn.dataset.period === a.period));
+  $("sq-activity-state-loading").hidden = a.status !== "loading";
+  $("sq-activity-state-error").hidden = a.status !== "error";
+  $("sq-activity-grid").hidden = a.status !== "loaded";
+  if (a.status === "error") {
+    $("sq-activity-error-message").textContent = a.error?.message || "Tente novamente.";
+    $("sq-activity-global-summary").textContent = "";
+    return;
+  }
+  if (a.status !== "loaded") { $("sq-activity-global-summary").textContent = ""; return; }
+  const g = activityGlobalSummary();
+  $("sq-activity-global-summary").textContent = `${g.squads} ${g.squads === 1 ? "Squad" : "Squads"} · ${g.pessoas} ${g.pessoas === 1 ? "pessoa" : "pessoas"} · ${g.comAtividade} com atividade · ${g.eventos} ${g.eventos === 1 ? "evento" : "eventos"} · ${g.falhas} ${g.falhas === 1 ? "falha" : "falhas"}`;
+  const query = a.query;
+  const cards = STATE.squads.map(s => ({ squad: s, data: squadActivityData(s.id) })).filter(({ squad, data }) => activityMatchesQuery(squad, data, query));
+  $("sq-activity-grid").innerHTML = cards.length ? cards.map(({ squad, data }) => renderActivityCard(squad, data, query)).join("")
+    : `<div class="sq-empty"><h3>Nenhum resultado</h3><p>Ajuste a busca para encontrar um Squad ou pessoa.</p></div>`;
+  if (a.drawer.open) renderPersonDrawerBody();
+}
+/* Drawer de detalhe da pessoa — mesmo padrão de foco/Esc dos modais,
+ * mas sem inert no fundo (a grade continua legível atrás do drawer). */
+function openPersonDrawer(uid) {
+  const cache = STATE.activityView.peopleCache[Number(uid)] || STATE.activityView.peopleCache[uid];
+  if (!cache) return;
+  STATE.activityView.drawer = { open: true, userId: cache.userId, status: "all" };
+  STATE.returnFocus = document.activeElement;
+  const squadsDaPessoa = STATE.squads.filter(s => (people(s.id) || []).some(m => String(m.user_id) === String(cache.userId))).map(s => s.nome);
+  $("sq-person-drawer-title").textContent = cache.nome;
+  $("sq-person-drawer-subtitle").textContent = squadsDaPessoa.length ? `Squad${squadsDaPessoa.length > 1 ? "s" : ""}: ${squadsDaPessoa.join(", ")}` : "";
+  $("sq-person-drawer-status").value = "all";
+  renderPersonDrawerBody();
+  $("sq-person-drawer-backdrop").classList.add("is-open");
+  $("sq-person-drawer").classList.add("is-open");
+  document.body.classList.add("vf-no-scroll");
+  requestAnimationFrame(() => $("sq-person-drawer-close").focus());
+}
+function closePersonDrawer() {
+  if (!STATE.activityView.drawer.open) return;
+  STATE.activityView.drawer.open = false;
+  $("sq-person-drawer-backdrop").classList.remove("is-open");
+  $("sq-person-drawer").classList.remove("is-open");
+  document.body.classList.remove("vf-no-scroll");
+  if (STATE.returnFocus?.isConnected) STATE.returnFocus.focus();
+}
+function renderPersonDrawerBody() {
+  const uid = STATE.activityView.drawer.userId;
+  const cache = STATE.activityView.peopleCache[uid]; if (!cache) return;
+  const periodLabel = { hoje: "Hoje", "7d": "7 dias", "30d": "30 dias" }[STATE.activityView.period];
+  $("sq-person-drawer-summary").textContent = `${periodLabel} · ${cache.eventosTotal} ${cache.eventosTotal === 1 ? "evento" : "eventos"} · ${cache.falhasTotal} ${cache.falhasTotal === 1 ? "falha" : "falhas"} · Última ${formatMomento(cache.ultimaAtividade, STATE.activityView.period)}`;
+  const statusFilter = STATE.activityView.drawer.status;
+  const events = cache.eventosRecentes.filter(ev => statusFilter === "all" || String(ev.status).toLowerCase() === statusFilter);
+  $("sq-person-drawer-timeline").innerHTML = renderTimelineList(events, STATE.activityView.period);
+}
+/* Alterna Configuração ⇄ Atividade. Reflete no hash só para permitir
+ * refresh preservar a visão — não é um router. */
+function currentHashView() { return location.hash === "#activity" ? "activity" : "config"; }
+function setView(view) {
+  if (view === "activity" && !ADMIN) view = "config";
+  if (view !== "activity") closePersonDrawer();
+  STATE.view = view;
+  $("sq-view-config").hidden = view !== "config";
+  $("sq-view-activity").hidden = view !== "activity";
+  document.querySelectorAll(".sq-mode-btn").forEach(btn => {
+    const active = btn.dataset.view === view;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-selected", String(active));
+  });
+  const nextHash = view === "activity" ? "#activity" : "";
+  if (location.hash !== nextHash) history.replaceState(null, "", location.pathname + location.search + nextHash);
+  if (view === "activity" && ADMIN && STATE.activityView.status === "idle") loadActivityView();
 }
 async function readSquad(s) {
   STATE.errors[s.id] = {};
@@ -333,7 +410,6 @@ async function abrirSquad(id) {
     ["sq-people-search", "sq-clients-search"].forEach(key => $(key).value = "");
     $("sq-people-filter").value = "all";
     $("sq-edit-form").hidden = true;
-    resetActivityFilters();
   }
   $("sq-detail").style.display = "block";
   $("sq-detail-placeholder").hidden = true;
@@ -344,7 +420,6 @@ async function abrirSquad(id) {
     if (version !== STATE.selection) return;
     renderDetalhe(id); renderSquadList();
   }
-  if (ADMIN && (changed || STATE.activity.squadId !== STATE.squadAbertoId)) loadActivity(id);
   if (changed && window.matchMedia("(max-width: 700px)").matches) {
     $("sq-detail-title").focus({ preventScroll: true });
     $("sq-workspace").scrollIntoView({ block: "start" });
@@ -374,18 +449,13 @@ function renderDetalhe(id) {
   $("sq-detail-state").textContent = s.ativo === false ? "Inativo" : "Ativo";
   $("sq-detail-coord").textContent = `Coordenação · ${coordinators(s)}`;
   $("sq-legacy-note").hidden = !isLegado(s);
-  $("sq-detail-subtitle").innerHTML = `<a href="#sq-people-section"><strong>${count(s, "people")}</strong> ${Number(count(s, "people")) === 1 ? "pessoa" : "pessoas"}</a><a href="#sq-clients-section"><strong>${count(s, "clients")}</strong> ${Number(count(s, "clients")) === 1 ? "cliente" : "clientes"}</a>${ADMIN ? `<a href="#sq-activity-section">${activitySubtitleLabel(id)}</a>` : ""}${isLegado(s) ? '<span class="sq-badge-legado">Squad 8 · Legado</span>' : ""}`;
+  $("sq-detail-subtitle").innerHTML = `<a href="#sq-people-section"><strong>${count(s, "people")}</strong> ${Number(count(s, "people")) === 1 ? "pessoa" : "pessoas"}</a><a href="#sq-clients-section"><strong>${count(s, "clients")}</strong> ${Number(count(s, "clients")) === 1 ? "cliente" : "clientes"}</a>${isLegado(s) ? '<span class="sq-badge-legado">Squad 8 · Legado</span>' : ""}`;
   $("sq-edit").hidden = !canManage(id);
   $("sq-btn-add-member").hidden = !canManage(id);
   $("sq-btn-add-cliente").hidden = !canManage(id);
   $("sq-people-count").textContent = count(s, "people");
   $("sq-clients-count").textContent = count(s, "clients");
-  renderDetailStatus(); renderPeople(); renderClients(); renderActivity();
-}
-function activitySubtitleLabel(id) {
-  const a = STATE.activity;
-  if (String(a.squadId) !== String(id) || a.status !== "loaded") return "Atividade";
-  return `<strong>${a.summary.eventosTotal}</strong> ${a.summary.eventosTotal === 1 ? "evento" : "eventos"}`;
+  renderDetailStatus(); renderPeople(); renderClients();
 }
 function contentState(kind, rows) {
   const err = STATE.errors[STATE.squadAbertoId]?.[kind];
@@ -605,8 +675,10 @@ document.addEventListener("click", event => {
   if (action === "retry") loadSquads();
   if (action === "principal" || action === "remover") memberAction(action, target.dataset.uid);
   if (action === "mover") openMove(target.dataset.cid);
-  if (action === "activity-period" && ADMIN) { STATE.activity.period = target.dataset.period; loadActivity(STATE.squadAbertoId); }
-  if (action === "activity-retry" && ADMIN) loadActivity(STATE.squadAbertoId);
+  if (action === "view") setView(target.dataset.view);
+  if (action === "activity-period" && ADMIN) { STATE.activityView.period = target.dataset.period; loadActivityView(); }
+  if (action === "activity-retry" && ADMIN) loadActivityView();
+  if (action === "activity-person" && ADMIN) openPersonDrawer(target.dataset.uid);
   if (action === "assign") {
     if (STATE.squadAbertoId && canManage(STATE.squadAbertoId)) addClient(STATE.squadAbertoId);
     else { feedback("Selecione o Squad que receberá os clientes e use Adicionar cliente.", "neutral"); $("sq-search").focus(); }
@@ -645,6 +717,16 @@ $("sq-move-confirm").addEventListener("click", confirmMove);
   $(`sq-${kind}-modal`).addEventListener("click", e => { if (e.target.id === `sq-${kind}-modal`) closeModal(); });
 });
 document.addEventListener("keydown", e => {
+  if (STATE.activityView.drawer.open) {
+    if (e.key === "Escape") { e.preventDefault(); closePersonDrawer(); return; }
+    if (e.key === "Tab") {
+      const controls = [...$("sq-person-drawer").querySelectorAll("button,input,select,[tabindex]")].filter(el => !el.disabled && el.offsetParent !== null);
+      const first = controls[0], last = controls.at(-1);
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+      if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+    }
+    return;
+  }
   if (!STATE.modal) return;
   const modal = $(`sq-${STATE.modal}-modal`);
   if (e.key === "Escape") { e.preventDefault(); closeModal(); }
@@ -659,9 +741,13 @@ document.addEventListener("keydown", e => {
     if (!$(id).disabled) { e.preventDefault(); $(id).click(); }
   }
 });
-$("sq-activity-filter-person").addEventListener("change", () => { STATE.activity.filterPerson = $("sq-activity-filter-person").value; renderActivityTimeline(); });
-$("sq-activity-filter-status").addEventListener("change", () => { STATE.activity.filterStatus = $("sq-activity-filter-status").value; renderActivityTimeline(); });
+$("sq-person-drawer-close").addEventListener("click", closePersonDrawer);
+$("sq-person-drawer-backdrop").addEventListener("click", closePersonDrawer);
+$("sq-person-drawer-status").addEventListener("change", () => { STATE.activityView.drawer.status = $("sq-person-drawer-status").value; renderPersonDrawerBody(); });
+$("sq-activity-search").addEventListener("input", () => { STATE.activityView.query = $("sq-activity-search").value; renderActivityView(); });
+window.addEventListener("hashchange", () => setView(currentHashView()));
 $("sq-access-label").textContent = ADMIN ? "Administração global" : "Gestão dos seus Squads";
 $("sq-list-scope").textContent = ADMIN ? "Todos" : "Seus vínculos";
-$("sq-activity-section").hidden = !ADMIN;
-if (!TOKEN) window.location.replace("index.html"); else loadSquads();
+$("sq-mode-activity").hidden = !ADMIN;
+if (!TOKEN) window.location.replace("index.html");
+else { loadSquads(); setView(currentHashView()); }

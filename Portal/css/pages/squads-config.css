@@ -120,21 +120,46 @@
 .vf-page-squads-config .vf-modal--sm { max-width: 480px; }
 .vf-page-squads-config .vf-modal__footer { flex-shrink: 0; }
 .sq-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-/* Atividade dos membros — dados de /admin/logs, mesma linguagem visual da tela. */
+/* Modo Configuração ⇄ Atividade */
+.sq-mode-switch { display: flex; gap: 4px; padding: 3px; width: fit-content; background: var(--vf-surface-2); border: 1px solid var(--vf-border); border-radius: 6px; margin-bottom: 4px; }
+.sq-mode-btn { padding: 7px 16px; font: inherit; font-size: 13px; font-weight: 600; color: var(--vf-text-secondary); background: transparent; border: 0; border-radius: 4px; cursor: pointer; }
+.sq-mode-btn:hover { color: var(--vf-text); }
+.sq-mode-btn.is-active { background: var(--vf-surface); color: var(--vf-primary-strong); box-shadow: var(--vf-shadow-xs); }
+
+/* Atividade — comparação lado a lado, dados de /admin/logs. */
+.sq-activity-view { display: flex; flex-direction: column; }
+.sq-activity-controls { display: flex; align-items: end; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
 .sq-activity-periods { display: flex; gap: 6px; flex-shrink: 0; }
 .sq-period-btn.is-active { background: var(--vf-primary-soft); border-color: var(--vf-primary-border); color: var(--vf-primary-strong); }
-.sq-activity-explain { margin: 0 0 14px; }
+.sq-activity-search-label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--vf-text-secondary); flex: 1 1 260px; max-width: 380px; }
+.sq-activity-search-label .vf-input { width: 100%; }
+.sq-activity-explain { margin: 0 0 10px; }
+.sq-activity-global-summary { margin: 0 0 16px; padding-bottom: 14px; border-bottom: 1px solid var(--vf-border); font-size: 13px; color: var(--vf-text-secondary); font-variant-numeric: tabular-nums; }
+.sq-activity-global-summary:empty { display: none; }
+.sq-activity-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 900px) { .sq-activity-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1500px) { .sq-activity-grid { grid-template-columns: repeat(3, 1fr); } }
+.sq-activity-card { min-width: 0; border: 1px solid var(--vf-border); border-radius: 6px; background: var(--vf-surface); padding: 16px 18px; }
+.sq-activity-card-header { padding-bottom: 12px; margin-bottom: 4px; border-bottom: 1px solid var(--vf-border); }
+.sq-activity-card-header h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
+.sq-activity-card-stats,.sq-activity-card-totals { margin: 0; font-size: 12px; color: var(--vf-text-secondary); font-variant-numeric: tabular-nums; }
+.sq-activity-card-totals { color: var(--vf-text); font-weight: 500; margin-top: 2px; }
+.sq-activity-card-people { list-style: none; margin: 0; padding: 0; }
+.sq-activity-card-person { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 9px 6px; margin: 0 -6px; border: 0; border-bottom: 1px solid var(--vf-border); background: transparent; font: inherit; cursor: pointer; border-radius: 3px; }
+.sq-activity-card-people li:last-child .sq-activity-card-person { border-bottom: 0; }
+.sq-activity-card-person:hover { background: var(--vf-surface-hover); }
+.sq-activity-card-person.is-match { background: var(--vf-primary-soft); }
+.sq-activity-card-person-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.sq-activity-card-person-stats { font-size: 12px; color: var(--vf-text-secondary); font-variant-numeric: tabular-nums; }
+
+/* Compartilhado com o drawer de detalhe da pessoa */
 .sq-activity-stats { margin: 0 0 14px; font-size: 13px; color: var(--vf-text-secondary); font-variant-numeric: tabular-nums; }
-.sq-activity-people-list { list-style: none; padding: 0; margin: 0 0 18px; border-top: 1px solid var(--vf-border); }
-.sq-activity-person { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--vf-border); }
-.sq-activity-person-stats { display: flex; gap: 14px; font-size: 12px; color: var(--vf-text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sq-activity-toolbar { margin: 4px 0 0; }
 .sq-activity-timeline-title { margin: 18px 0 10px; font-size: 14px; font-weight: 600; }
 .sq-activity-timeline-list { list-style: none; padding: 0; margin: 0; }
-.sq-activity-item { display: grid; grid-template-columns: 74px 148px 1fr auto; align-items: start; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--vf-border); font-size: 13px; }
+.sq-activity-item { display: grid; grid-template-columns: 60px 1fr auto; align-items: start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--vf-border); font-size: 13px; }
 .sq-activity-item:last-child { border-bottom: 0; }
 .sq-activity-item-time { color: var(--vf-text-secondary); font-variant-numeric: tabular-nums; }
-.sq-activity-item-person { font-weight: 600; overflow-wrap: anywhere; }
 .sq-activity-item-action { overflow-wrap: anywhere; }
 .sq-activity-item-raw { display: block; font-family: var(--vf-font-mono); font-size: 11px; color: var(--vf-text-secondary); }
 .sq-activity-detail { grid-column: 1 / -1; font-size: 12px; color: var(--vf-text-secondary); }
@@ -195,14 +220,15 @@
   .sq-table .vf-btn { min-height: 40px; }
   .sq-unassigned { flex-wrap: wrap; padding: 14px; }
   .sq-transfer-route { gap: 12px; }
+  .sq-mode-switch { width: 100%; }
+  .sq-mode-btn { flex: 1; text-align: center; }
+  .sq-activity-controls { flex-direction: column; align-items: stretch; }
   .sq-activity-periods { width: 100%; }
   .sq-activity-periods .vf-btn { flex: 1; }
-  .sq-activity-person { flex-wrap: wrap; }
-  .sq-activity-person-stats { flex-basis: 100%; }
-  .sq-activity-item { grid-template-columns: 1fr auto; grid-template-areas: "time status" "person person" "action action" "detail detail"; row-gap: 4px; padding: 12px 0; }
+  .sq-activity-search-label { max-width: none; }
+  .sq-activity-item { grid-template-columns: 1fr auto; grid-template-areas: "time status" "action action" "detail detail"; row-gap: 4px; padding: 12px 0; }
   .sq-activity-item-time { grid-area: time; }
   .sq-activity-item .vf-tag { grid-area: status; justify-self: end; }
-  .sq-activity-item-person { grid-area: person; }
   .sq-activity-item-action { grid-area: action; }
   .sq-activity-detail { grid-area: detail; }
   .vf-page-squads-config .vf-modal { width: 100%; max-height: calc(100dvh - 24px); }

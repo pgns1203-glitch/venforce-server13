@@ -350,6 +350,69 @@ async function run() {
   }
   ok("descrição: texto, ausente (vazia ou 404) e erro de leitura são estados distintos no contrato");
 
+  // 9. Nome da categoria: resolvido via GET /categories/:id (achado — não
+  //    havia nenhum service que traduzisse um category_id JÁ CONHECIDO para
+  //    nome; o único existente busca categoria por TEXTO livre, para a tela
+  //    de criação). Usa o mlUserId do anúncio e é cacheado — uma segunda
+  //    abertura da MESMA categoria não bate no ML de novo.
+  await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture({ category_id: "MLB999888" })] }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (chamada.path.includes("/description")) return { ok: true, status: 200, data: { plain_text: "" } };
+      if (chamada.path === "/categories/MLB999888") return { ok: true, status: 200, data: { id: "MLB999888", name: "Celulares e Smartphones" } };
+      return { ok: true, status: 200, data: {} };
+    };
+
+    const res1 = fakeRes();
+    await ctrl.detalhe({ params: { itemId: "MLB123" }, query: { clienteSlug: "cliente-a" } }, res1);
+    assert.strictEqual(res1.corpo.categoriaNome, "Celulares e Smartphones");
+    const chamadaCategoria = mlChamadas.find((c) => c.path === "/categories/MLB999888");
+    assert.ok(chamadaCategoria, "esperava chamada a GET /categories/:id");
+    assert.strictEqual(chamadaCategoria.mlUserId, "111", "a resolução precisa usar o mlUserId do próprio anúncio");
+
+    const res2 = fakeRes();
+    await ctrl.detalhe({ params: { itemId: "MLB123" }, query: { clienteSlug: "cliente-a" } }, res2);
+    assert.strictEqual(res2.corpo.categoriaNome, "Celulares e Smartphones");
+    assert.strictEqual(
+      mlChamadas.filter((c) => c.path === "/categories/MLB999888").length, 1,
+      "categoria em cache não deveria bater no ML de novo"
+    );
+    ok("categoria resolvida via GET /categories/:id com o mlUserId do anúncio, cacheada entre aberturas");
+  });
+
+  // 10. Falha ao resolver a categoria: o detalhe segue ok, sem o nome —
+  //     quem decide o fallback (mostrar o category_id cru) é o front.
+  await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture({ category_id: "MLB777666" })] }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (chamada.path.includes("/description")) return { ok: true, status: 200, data: { plain_text: "" } };
+      if (chamada.path === "/categories/MLB777666") return { ok: false, status: 404, data: { message: "not found" } };
+      return { ok: true, status: 200, data: {} };
+    };
+    const res = fakeRes();
+    await ctrl.detalhe({ params: { itemId: "MLB123" }, query: { clienteSlug: "cliente-a" } }, res);
+    assert.strictEqual(res.corpo.ok, true, "categoria não resolvida não pode derrubar o detalhe inteiro");
+    assert.strictEqual(res.corpo.categoriaNome, null);
+    ok("categoria não resolvida (404 do ML): detalhe segue ok, categoriaNome null");
+  });
+
+  // 11. Anúncio sem categoria: nenhuma chamada desperdiçada ao Mercado Livre.
+  await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture({ category_id: null })] }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (chamada.path.includes("/description")) return { ok: true, status: 200, data: { plain_text: "" } };
+      return { ok: true, status: 200, data: {} };
+    };
+    const res = fakeRes();
+    await ctrl.detalhe({ params: { itemId: "MLB123" }, query: { clienteSlug: "cliente-a" } }, res);
+    assert.strictEqual(res.corpo.categoriaNome, null);
+    assert.strictEqual(
+      mlChamadas.filter((c) => c.path.startsWith("/categories/")).length, 0,
+      "sem category_id não faz sentido chamar o ML"
+    );
+    ok("anúncio sem categoria: nenhuma chamada ao Mercado Livre é feita");
+  });
+
   // 8. Falha de rede no meio do caminho vira resultado de campo, não 500.
   await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture()] }, async (db) => {
     mlChamadas = [];

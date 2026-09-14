@@ -15,6 +15,12 @@ const STATE = {
   squads: [], membrosPorSquad: {}, clientesPorSquad: {}, errors: {}, allowed: {},
   squadAbertoId: null, usuarios: null, todosClientes: null, catalogsReady: false,
   refreshing: false, busy: false, selection: 0, modal: null, returnFocus: null, initialSelection: false,
+  activity: {
+    squadId: null, period: "hoje", status: "idle", error: null, gen: 0,
+    people: [], allEvents: [],
+    summary: { membrosTotal: 0, membrosComAtividade: 0, eventosTotal: 0, falhasTotal: 0 },
+    filterPerson: "all", filterStatus: "all",
+  },
 };
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -65,6 +71,175 @@ async function eachLimited(items, task) {
   await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
     while (index < items.length) { const item = items[index++]; await task(item); }
   }));
+}
+/* Atividade dos membros — reaproveita GET /admin/logs (logsController.js),
+ * sem logger novo. "Atividade do Squad" = atividade pessoal de quem
+ * pertence ao squad, não uma correlação ação→Squad. */
+const ACTIVITY_ACOES = {
+  "login.sucesso": "Entrou no Portal",
+  "login.falha": "Falha ao entrar no Portal",
+  "admin.cliente.criar": "Criou cliente",
+  "admin.cliente.desativar": "Desativou cliente",
+  "admin.cliente.excluir": "Excluiu cliente",
+  "admin.cliente.purgar": "Removeu cliente permanentemente",
+  "admin.ml.conectar": "Conectou conta Mercado Livre",
+  "admin.ml.desconectar": "Desconectou conta Mercado Livre",
+  "admin.usuario.atualizar": "Atualizou usuário",
+  "admin.usuario.excluir": "Excluiu usuário",
+  "ads_acompanhamento_salvo": "Salvou acompanhamento de Ads",
+  "ads_resumo_mensal_salvo": "Salvou resumo mensal de Ads",
+  "automacoes.promocoes.diagnostico.start": "Iniciou diagnóstico de promoções",
+  "automacoes.relatorio.salvar": "Salvou relatório de automação",
+  "automacoes.diagnostico_completo.start": "Iniciou diagnóstico completo",
+  "base.custo.upsert": "Atualizou custo de Base",
+  "base.importar": "Importou Base",
+  "base.desabilitar": "Desabilitou Base",
+  "base.excluir": "Excluiu Base",
+  "seller.custo_aplicado": "Aplicou custo de vendedor",
+  "seller.custo_aprovado": "Aprovou custo de vendedor",
+  "seller.custo_rejeitado": "Rejeitou custo de vendedor",
+};
+const rotuloAcao = acao => ACTIVITY_ACOES[acao] || acao;
+/* Mesmo algoritmo de Portal/atividade.js — nunca JSON cru na interface. */
+function detalhesPlainText(raw) {
+  if (raw == null || raw === "") return "";
+  let obj = raw;
+  if (typeof raw !== "object") { try { obj = JSON.parse(String(raw)); } catch { return String(raw); } }
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    return Object.entries(obj).map(([k, v]) => `${k}: ${v != null && typeof v === "object" ? JSON.stringify(v) : String(v)}`).join(" · ");
+  }
+  return typeof obj === "string" ? obj : JSON.stringify(obj);
+}
+function localDateStr(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function activityRange(period) {
+  const today = new Date();
+  const de = new Date(today);
+  de.setDate(de.getDate() - (period === "7d" ? 6 : period === "30d" ? 29 : 0));
+  return { de: localDateStr(de), ate: localDateStr(today) };
+}
+function activityQuery(params) {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== "") qs.set(k, v); });
+  return qs.toString();
+}
+function formatMomento(value, period) {
+  if (!value) return "—";
+  const dt = new Date(value); if (Number.isNaN(dt.getTime())) return "—";
+  const hh = String(dt.getHours()).padStart(2, "0"), min = String(dt.getMinutes()).padStart(2, "0");
+  if (period === "hoje") return `${hh}:${min}`;
+  return `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")} ${hh}:${min}`;
+}
+function sortActivityPeople(list) {
+  return list.slice().sort((a, b) => {
+    const aHas = a.eventosTotal > 0, bHas = b.eventosTotal > 0;
+    if (aHas !== bHas) return aHas ? -1 : 1;
+    if (aHas) {
+      const diff = new Date(b.ultimaAtividade).getTime() - new Date(a.ultimaAtividade).getTime();
+      if (diff) return diff;
+    }
+    return String(a.nome).localeCompare(String(b.nome), "pt-BR");
+  });
+}
+function resetActivityFilters() { STATE.activity.filterPerson = "all"; STATE.activity.filterStatus = "all"; }
+async function loadActivity(squadId) {
+  if (!ADMIN || !squadId) return;
+  const members = people(squadId);
+  const gen = ++STATE.activity.gen;
+  STATE.activity.squadId = squadId;
+  STATE.activity.status = "loading";
+  renderActivity();
+  if (!members) { STATE.activity.status = "error"; STATE.activity.error = new Error("Não foi possível determinar os membros deste Squad."); renderActivity(); return; }
+  try {
+    const range = activityRange(STATE.activity.period);
+    const resultados = {};
+    await eachLimited(members, async m => {
+      const uid = m.user_id;
+      const [recentes, falhas] = await Promise.all([
+        api(`/admin/logs?${activityQuery({ user_id: uid, de: range.de, ate: range.ate, page: 1, limit: 20 })}`),
+        api(`/admin/logs?${activityQuery({ user_id: uid, status: "falha", de: range.de, ate: range.ate, page: 1, limit: 1 })}`),
+      ]);
+      const logs = Array.isArray(recentes.logs) ? recentes.logs : [];
+      resultados[uid] = {
+        userId: uid, nome: m.user_nome, email: m.user_email, funcao: m.funcao, isPrimary: !!m.is_primary,
+        eventosTotal: Number(recentes.total || 0), falhasTotal: Number(falhas.total || 0),
+        ultimaAtividade: logs[0]?.created_at || null, eventosRecentes: logs,
+      };
+    });
+    if (gen !== STATE.activity.gen) return; // troca de Squad/período tornou esta resposta obsoleta
+    const peopleList = members.map(m => resultados[m.user_id]).filter(Boolean);
+    STATE.activity.people = sortActivityPeople(peopleList);
+    STATE.activity.allEvents = peopleList.flatMap(p => p.eventosRecentes.map(l => ({ ...l, _personId: p.userId, _personName: p.nome })))
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    STATE.activity.summary = {
+      membrosTotal: members.length,
+      membrosComAtividade: peopleList.filter(p => p.eventosTotal > 0).length,
+      eventosTotal: peopleList.reduce((s, p) => s + p.eventosTotal, 0),
+      falhasTotal: peopleList.reduce((s, p) => s + p.falhasTotal, 0),
+    };
+    STATE.activity.status = "loaded"; STATE.activity.error = null;
+  } catch (err) {
+    if (gen !== STATE.activity.gen) return;
+    STATE.activity.status = "error"; STATE.activity.error = err;
+  }
+  renderActivity();
+}
+function renderActivity() {
+  if (!ADMIN) return;
+  document.querySelectorAll(".sq-period-btn").forEach(btn => btn.classList.toggle("is-active", btn.dataset.period === STATE.activity.period));
+  const a = STATE.activity;
+  const current = String(a.squadId) === String(STATE.squadAbertoId);
+  if (!current || a.status === "loading") {
+    $("sq-activity-count").textContent = "";
+    $("sq-activity-summary").innerHTML = '<p class="sq-hint">Carregando atividade…</p>';
+    $("sq-activity-people").innerHTML = ""; $("sq-activity-timeline").innerHTML = "";
+    return;
+  }
+  if (a.status === "error") {
+    $("sq-activity-count").textContent = "";
+    $("sq-activity-summary").innerHTML = `<div class="sq-empty"><h4>Não foi possível carregar a atividade</h4><p>${esc(a.error?.message || "Tente novamente.")}</p><button type="button" class="vf-btn vf-btn--secondary" data-action="activity-retry">Tentar novamente</button></div>`;
+    $("sq-activity-people").innerHTML = ""; $("sq-activity-timeline").innerHTML = "";
+    return;
+  }
+  const { membrosTotal, membrosComAtividade, eventosTotal, falhasTotal } = a.summary;
+  $("sq-activity-count").textContent = a.status === "loaded" ? `· ${eventosTotal} ${eventosTotal === 1 ? "evento" : "eventos"}` : "";
+  $("sq-activity-summary").innerHTML = `<p class="sq-activity-stats">${membrosTotal} ${membrosTotal === 1 ? "membro" : "membros"} · ${membrosComAtividade} com atividade · ${eventosTotal} ${eventosTotal === 1 ? "evento" : "eventos"} · ${falhasTotal} ${falhasTotal === 1 ? "falha" : "falhas"}</p>`;
+  renderActivityPeople(); renderActivityFilters(); renderActivityTimeline();
+}
+function renderActivityPeople() {
+  const a = STATE.activity;
+  $("sq-activity-people").innerHTML = a.people.length ? `<ul class="sq-activity-people-list">${a.people.map(p => `
+    <li class="sq-activity-person">
+      <div class="sq-person-identity"><strong>${esc(p.nome)}</strong><span>${p.funcao === "coordenador" ? "Coordenador" : "Membro"}</span></div>
+      ${p.eventosTotal ? `<div class="sq-activity-person-stats"><span>${p.eventosTotal} ${p.eventosTotal === 1 ? "evento" : "eventos"}</span><span>${p.falhasTotal} ${p.falhasTotal === 1 ? "falha" : "falhas"}</span><span>Última ${esc(formatMomento(p.ultimaAtividade, a.period))}</span></div>`
+        : '<span class="sq-hint">Sem atividade registrada no período</span>'}
+    </li>`).join("")}</ul>` : '<p class="sq-empty">Nenhum membro neste Squad.</p>';
+}
+function renderActivityFilters() {
+  const a = STATE.activity, select = $("sq-activity-filter-person");
+  select.innerHTML = '<option value="all">Todos os membros</option>' + a.people.map(p => `<option value="${esc(p.userId)}">${esc(p.nome)}</option>`).join("");
+  select.value = [...select.options].some(o => o.value === a.filterPerson) ? a.filterPerson : "all";
+  a.filterPerson = select.value;
+  $("sq-activity-filter-status").value = a.filterStatus;
+}
+function renderActivityTimeline() {
+  const a = STATE.activity;
+  if (!a.allEvents.length) { $("sq-activity-timeline").innerHTML = '<p class="sq-empty">Nenhuma atividade registrada para os membros deste Squad no período.</p>'; return; }
+  const filtered = a.allEvents.filter(ev => (a.filterPerson === "all" || String(ev._personId) === String(a.filterPerson)) && (a.filterStatus === "all" || String(ev.status).toLowerCase() === a.filterStatus));
+  if (!filtered.length) { $("sq-activity-timeline").innerHTML = '<p class="sq-empty">Nenhum evento para este filtro.</p>'; return; }
+  $("sq-activity-timeline").innerHTML = `<ul class="sq-activity-timeline-list">${filtered.slice(0, 50).map(ev => {
+    const label = rotuloAcao(ev.acao), detPlain = detalhesPlainText(ev.detalhes);
+    const preview = detPlain.length > 140 ? detPlain.slice(0, 140).trim() + "…" : detPlain;
+    const statusKey = String(ev.status || "").toLowerCase();
+    const statusClass = statusKey === "falha" ? "is-danger" : statusKey === "sucesso" ? "is-success" : "is-neutral";
+    const statusLabel = statusKey === "falha" ? "Falha" : statusKey === "sucesso" ? "Sucesso" : (ev.status || "—");
+    return `<li class="sq-activity-item">
+      <span class="sq-activity-item-time">${esc(formatMomento(ev.created_at, a.period))}</span>
+      <span class="sq-activity-item-person">${esc(ev._personName)}</span>
+      <span class="sq-activity-item-action">${esc(label)}${label !== ev.acao ? `<span class="sq-activity-item-raw">${esc(ev.acao)}</span>` : ""}</span>
+      <span class="vf-tag ${statusClass}">${esc(statusLabel)}</span>
+      ${detPlain ? `<details class="sq-activity-detail"><summary>Ver detalhes</summary><p>${esc(preview)}</p>${ev.ip ? `<p class="sq-hint">IP: ${esc(ev.ip)}</p>` : ""}</details>` : ""}
+    </li>`;
+  }).join("")}</ul>`;
 }
 async function readSquad(s) {
   STATE.errors[s.id] = {};
@@ -158,6 +333,7 @@ async function abrirSquad(id) {
     ["sq-people-search", "sq-clients-search"].forEach(key => $(key).value = "");
     $("sq-people-filter").value = "all";
     $("sq-edit-form").hidden = true;
+    resetActivityFilters();
   }
   $("sq-detail").style.display = "block";
   $("sq-detail-placeholder").hidden = true;
@@ -168,6 +344,7 @@ async function abrirSquad(id) {
     if (version !== STATE.selection) return;
     renderDetalhe(id); renderSquadList();
   }
+  if (ADMIN && (changed || STATE.activity.squadId !== STATE.squadAbertoId)) loadActivity(id);
   if (changed && window.matchMedia("(max-width: 700px)").matches) {
     $("sq-detail-title").focus({ preventScroll: true });
     $("sq-workspace").scrollIntoView({ block: "start" });
@@ -197,13 +374,18 @@ function renderDetalhe(id) {
   $("sq-detail-state").textContent = s.ativo === false ? "Inativo" : "Ativo";
   $("sq-detail-coord").textContent = `Coordenação · ${coordinators(s)}`;
   $("sq-legacy-note").hidden = !isLegado(s);
-  $("sq-detail-subtitle").innerHTML = `<a href="#sq-people-section"><strong>${count(s, "people")}</strong> ${Number(count(s, "people")) === 1 ? "pessoa" : "pessoas"}</a><a href="#sq-clients-section"><strong>${count(s, "clients")}</strong> ${Number(count(s, "clients")) === 1 ? "cliente" : "clientes"}</a>${isLegado(s) ? '<span class="sq-badge-legado">Squad 8 · Legado</span>' : ""}`;
+  $("sq-detail-subtitle").innerHTML = `<a href="#sq-people-section"><strong>${count(s, "people")}</strong> ${Number(count(s, "people")) === 1 ? "pessoa" : "pessoas"}</a><a href="#sq-clients-section"><strong>${count(s, "clients")}</strong> ${Number(count(s, "clients")) === 1 ? "cliente" : "clientes"}</a>${ADMIN ? `<a href="#sq-activity-section">${activitySubtitleLabel(id)}</a>` : ""}${isLegado(s) ? '<span class="sq-badge-legado">Squad 8 · Legado</span>' : ""}`;
   $("sq-edit").hidden = !canManage(id);
   $("sq-btn-add-member").hidden = !canManage(id);
   $("sq-btn-add-cliente").hidden = !canManage(id);
   $("sq-people-count").textContent = count(s, "people");
   $("sq-clients-count").textContent = count(s, "clients");
-  renderDetailStatus(); renderPeople(); renderClients();
+  renderDetailStatus(); renderPeople(); renderClients(); renderActivity();
+}
+function activitySubtitleLabel(id) {
+  const a = STATE.activity;
+  if (String(a.squadId) !== String(id) || a.status !== "loaded") return "Atividade";
+  return `<strong>${a.summary.eventosTotal}</strong> ${a.summary.eventosTotal === 1 ? "evento" : "eventos"}`;
 }
 function contentState(kind, rows) {
   const err = STATE.errors[STATE.squadAbertoId]?.[kind];
@@ -423,6 +605,8 @@ document.addEventListener("click", event => {
   if (action === "retry") loadSquads();
   if (action === "principal" || action === "remover") memberAction(action, target.dataset.uid);
   if (action === "mover") openMove(target.dataset.cid);
+  if (action === "activity-period" && ADMIN) { STATE.activity.period = target.dataset.period; loadActivity(STATE.squadAbertoId); }
+  if (action === "activity-retry" && ADMIN) loadActivity(STATE.squadAbertoId);
   if (action === "assign") {
     if (STATE.squadAbertoId && canManage(STATE.squadAbertoId)) addClient(STATE.squadAbertoId);
     else { feedback("Selecione o Squad que receberá os clientes e use Adicionar cliente.", "neutral"); $("sq-search").focus(); }
@@ -475,6 +659,9 @@ document.addEventListener("keydown", e => {
     if (!$(id).disabled) { e.preventDefault(); $(id).click(); }
   }
 });
+$("sq-activity-filter-person").addEventListener("change", () => { STATE.activity.filterPerson = $("sq-activity-filter-person").value; renderActivityTimeline(); });
+$("sq-activity-filter-status").addEventListener("change", () => { STATE.activity.filterStatus = $("sq-activity-filter-status").value; renderActivityTimeline(); });
 $("sq-access-label").textContent = ADMIN ? "Administração global" : "Gestão dos seus Squads";
 $("sq-list-scope").textContent = ADMIN ? "Todos" : "Seus vínculos";
+$("sq-activity-section").hidden = !ADMIN;
 if (!TOKEN) window.location.replace("index.html"); else loadSquads();

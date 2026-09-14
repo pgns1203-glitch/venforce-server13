@@ -134,15 +134,28 @@
   // em AM.filtros ao clicar (mesmo mecanismo de query string que os antigos
   // <select> de Status/Qualidade já usavam — só a forma de disparar mudou).
   // ===========================================================================
+  // `estado` colore o texto de apoio (meta); `accent` é o filete lateral
+  // (box-shadow inset) — só os KPIs de qualidade/risco têm filete, igual
+  // ao canva "modelo 1-principal" (Main.dc.html): Total/Ativos/Pausados
+  // não têm, e Mercado Full tem filete info mas texto neutro.
+  // `meta` pode ser string fixa ou function(r) para texto calculado a
+  // partir do próprio resumo (ex.: % de ativos sobre o total).
   var KPI_DEFS = [
-    { key: "total", label: "Total de anúncios", campo: "total", meta: "Catálogo sincronizado", estado: "neutral" },
-    { key: "ativos", label: "Ativos", campo: "ativos", meta: "Disponíveis no ML", estado: "neutral", tipo: "status", valor: "active" },
-    { key: "pausados", label: "Pausados", campo: "pausados", meta: "Pedem acompanhamento", estado: "neutral", tipo: "status", valor: "paused" },
-    { key: "score_muito_bom", label: "Score muito bom", campo: "scoreMuitoBom", meta: "80 pontos ou mais", estado: "success", tipo: "filtro", valor: "score_muito_bom" },
-    { key: "score_medio", label: "Score médio", campo: "scoreMedio", meta: "Média de 100 pontos", estado: "warning", tipo: "filtro", valor: "score_medio" },
-    { key: "score_baixo", label: "Score baixo", campo: "scoreBaixo", meta: "Abaixo de 60 pontos", estado: "danger", tipo: "filtro", valor: "score_baixo" },
-    { key: "mercado_full", label: "Mercado Full", campo: "full", meta: "Com logística Full", estado: "info", tipo: "filtro", valor: "mercado_full" },
-    { key: "sem_sku", label: "Sem SKU", campo: "semSku", meta: "Sem identificação interna", estado: "danger", tipo: "filtro", valor: "sem_sku" },
+    { key: "total", label: "Total de anúncios", campo: "total", meta: "Catálogo sincronizado", estado: "neutral", accent: "" },
+    {
+      key: "ativos", label: "Ativos", campo: "ativos", estado: "success", accent: "", tipo: "status", valor: "active",
+      meta: function (r) {
+        var total = r.total || 0;
+        var pct = total > 0 ? Math.round(((r.ativos || 0) / total) * 100) : 0;
+        return pct + "% do catálogo";
+      },
+    },
+    { key: "pausados", label: "Pausados", campo: "pausados", meta: "Pedem acompanhamento", estado: "warning", accent: "", tipo: "status", valor: "paused" },
+    { key: "score_muito_bom", label: "Score muito bom", campo: "scoreMuitoBom", meta: "80 pontos ou mais", estado: "success", accent: "success", tipo: "filtro", valor: "score_muito_bom" },
+    { key: "score_medio", label: "Score médio", campo: "scoreMedio", meta: "Média de 100 pontos", estado: "warning", accent: "warning", tipo: "filtro", valor: "score_medio" },
+    { key: "score_baixo", label: "Score baixo", campo: "scoreBaixo", meta: "Abaixo de 60 pontos", estado: "danger", accent: "danger", tipo: "filtro", valor: "score_baixo" },
+    { key: "mercado_full", label: "Mercado Full", campo: "full", meta: "Com logística Full", estado: "neutral", accent: "info", tipo: "filtro", valor: "mercado_full" },
+    { key: "sem_sku", label: "Sem SKU", campo: "semSku", meta: "Sem identificação interna", estado: "danger", accent: "neutral", tipo: "filtro", valor: "sem_sku" },
   ];
 
   function alternarFiltroKpi(key) {
@@ -419,12 +432,14 @@
     var html = "";
     KPI_DEFS.forEach(function (k) {
       var ativo = AM.kpiAtivo === k.key;
-      html += '<button type="button" class="vf-kpi am-kpi vf-kpi--interactive is-' + k.estado +
+      var meta = typeof k.meta === "function" ? k.meta(r) : k.meta;
+      html += '<button type="button" class="vf-metric am-kpi' +
+        (k.accent ? " is-" + k.accent : "") +
         (ativo ? " is-active" : "") + '" data-kpi="' + k.key + '"' +
         (ativo ? ' aria-pressed="true"' : ' aria-pressed="false"') + '>' +
-        '<span class="vf-kpi__label">' + k.label + "</span>" +
-        '<strong class="vf-kpi__value">' + (r[k.campo] || 0) + "</strong>" +
-        '<span class="vf-kpi__foot is-' + k.estado + '">' + k.meta + "</span></button>";
+        '<span class="vf-metric__label">' + k.label + "</span>" +
+        '<strong class="vf-metric__value">' + (r[k.campo] || 0) + "</strong>" +
+        '<span class="vf-metric__foot is-' + k.estado + '">' + meta + "</span></button>";
     });
     var box = el("am-resumo");
     box.innerHTML = html;

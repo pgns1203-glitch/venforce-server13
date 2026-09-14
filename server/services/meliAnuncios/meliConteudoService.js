@@ -66,10 +66,30 @@ async function enviarItem(clienteId, itemId, corpo, mlUserId) {
     { method: "PUT", body: JSON.stringify(corpo), mlUserId }
   );
   if (resp && resp.ok) return { ok: true, item: resp.data || null };
-  return falha(
+  // DEBUG TEMPORÁRIO — investigação do BODY_INVALID_FIELDS em título.
+  // Remover depois do diagnóstico: motivoDoErroMl/codigoDoErroMl abaixo
+  // descartam boa parte do corpo (cause[] completo, references, etc.),
+  // então aqui vai o response bruto que normalmente nunca é logado.
+  console.error(JSON.stringify({
+    event: "ml_put_item_rejected_DEBUG_TEMP",
+    itemId,
+    payloadEnviado: corpo,
+    status: resp && resp.status,
+    responseBody: resp && resp.data,
+  }, null, 2));
+  const f = falha(
     codigoDoErroMl(resp && resp.data, resp && resp.status),
     motivoDoErroMl(resp && resp.data, resp && resp.status)
   );
+  // DEBUG TEMPORÁRIO — vai junto no resultado interno; só o orquestrador
+  // decide se isso é exposto na resposta HTTP (hoje, só para título).
+  f.debugMlResponseTemp = {
+    itemId,
+    payloadEnviado: corpo,
+    status: resp && resp.status,
+    responseBody: resp && resp.data,
+  };
+  return f;
 }
 
 async function atualizarTitulo({ clienteId, itemId, titulo, mlUserId }) {
@@ -149,6 +169,12 @@ async function aplicarConteudo({ clienteId, itemId, mlUserId, campos }) {
     resultados[campo] = r.ok
       ? { ok: true }
       : { ok: false, codigo: r.codigo, motivo: r.motivo };
+    // DEBUG TEMPORÁRIO — investigação do BODY_INVALID_FIELDS em título.
+    // Só título expõe o response bruto do ML na resposta HTTP; remover
+    // este bloco (e o campo debugMlResponseTemp em enviarItem) depois.
+    if (!r.ok && campo === "titulo" && r.debugMlResponseTemp) {
+      resultados[campo].debugMlResponseTemp = r.debugMlResponseTemp;
+    }
     if (r.ok) aplicados[campo] = r.valor;
   }
 

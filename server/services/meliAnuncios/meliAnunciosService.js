@@ -361,6 +361,43 @@ async function obterAnuncio(clienteId, itemId) {
   return rows.length ? rows[0] : null;
 }
 
+// Atualiza o SNAPSHOT local de campos que o Mercado Livre já confirmou.
+// Chamado só depois da escrita no ML (meliConteudoService) — nunca antes, para
+// não existir um "salvo" local que o anúncio real desconhece. `attributes_json`
+// acompanha o modelo porque a ficha técnica lê MODEL de lá.
+async function atualizarCamposConfirmados(clienteId, itemId, campos = {}) {
+  await ensureSchema();
+
+  const sets = [];
+  const params = [clienteId, String(itemId)];
+
+  if (campos.titulo !== undefined) {
+    params.push(campos.titulo);
+    sets.push(`titulo = $${params.length}`);
+  }
+  if (campos.modelo !== undefined) {
+    params.push(campos.modelo);
+    sets.push(`modelo = $${params.length}`);
+    // jsonb_set não cria o elemento se MODEL ainda não existir no array, então
+    // o valor é recalculado em JS a partir da linha atual (ver controller).
+    if (campos.attributesJson !== undefined) {
+      params.push(JSON.stringify(campos.attributesJson || []));
+      sets.push(`attributes_json = $${params.length}::jsonb`);
+    }
+  }
+
+  if (!sets.length) return null;
+
+  const { rows } = await db.query(
+    `UPDATE meli_anuncios
+        SET ${sets.join(", ")}, updated_at = NOW()
+      WHERE cliente_id = $1 AND item_id = $2
+      RETURNING *;`,
+    params
+  );
+  return rows.length ? rows[0] : null;
+}
+
 // Marca/desmarca um anúncio como revisado.
 async function marcarRevisado(clienteId, itemId, revisado) {
   await ensureSchema();
@@ -471,6 +508,7 @@ module.exports = {
   listarAnuncios,
   obterResumo,
   obterAnuncio,
+  atualizarCamposConfirmados,
   marcarRevisado,
   upsertAnuncios,
 };

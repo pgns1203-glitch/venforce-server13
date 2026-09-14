@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Anúncios ML — VenForce</title>
 
+  <!-- Esta página declarava as fontes da Fundação V2 (via tokens) sem nunca
+       carregá-las — era a única do lote V3 sem este <link>, e por isso
+       renderizava na fonte de fallback do sistema. Mesma linha de ads.html,
+       clientes.html e carteira.html. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="css/vf-tokens-v2.css" />
   <link rel="stylesheet" href="css/vf-components-v2.css" />

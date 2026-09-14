@@ -15,6 +15,7 @@ const anunciosService = require("../services/meliAnuncios/meliAnunciosService");
 const syncService = require("../services/meliAnuncios/meliSyncService");
 const otimizadorService = require("../services/meliAnuncios/otimizadorMeliService");
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
+const conteudoService = require("../services/meliAnuncios/meliConteudoService");
 const { mlFetch } = require("../utils/mlClient");
 
 function extrairClienteContaId(valor) {
@@ -188,6 +189,54 @@ async function listar(req, res) {
 }
 
 // ----------------------------------------------------------------------------
+// Descrição ao vivo do Mercado Livre.
+//
+// Achado F-06 da auditoria: `descricao: null` significava três coisas
+// diferentes — "o anúncio não tem descrição", "a chamada ao ML falhou" e "não
+// havia token" — e a tela afirmava categoricamente a primeira. Agora o estado
+// vem junto e separado do conteúdo:
+//
+//   "ok"            → veio texto
+//   "sem_descricao" → o ML respondeu, e o anúncio não tem descrição (o ML
+//                     devolve 404 nesse caso)
+//   "erro"          → não deu para saber (falha de rede, token, 5xx do ML)
+// ----------------------------------------------------------------------------
+async function carregarDescricao(clienteId, itemId, mlUserId) {
+  try {
+    const resp = await mlFetch(
+      clienteId,
+      `/items/${encodeURIComponent(itemId)}/description`,
+      { mlUserId }
+    );
+    if (resp && resp.ok) {
+      const texto = resp.data
+        ? resp.data.plain_text || resp.data.text || null
+        : null;
+      if (texto && String(texto).trim()) {
+        return { descricao: texto, estado: "ok", erro: null };
+      }
+      return { descricao: null, estado: "sem_descricao", erro: null };
+    }
+    if (resp && resp.status === 404) {
+      return { descricao: null, estado: "sem_descricao", erro: null };
+    }
+    return {
+      descricao: null,
+      estado: "erro",
+      erro: `O Mercado Livre não devolveu a descrição (HTTP ${
+        (resp && resp.status) || "?"
+      }).`,
+    };
+  } catch (e) {
+    return {
+      descricao: null,
+      estado: "erro",
+      erro: "Não foi possível consultar a descrição no Mercado Livre.",
+    };
+  }
+}
+
+// ----------------------------------------------------------------------------
 // GET /anuncios-meli/:itemId?clienteSlug=
 // Busca o anúncio no banco e enriquece com a descrição ao vivo da API ML.
 // ----------------------------------------------------------------------------
@@ -231,26 +280,18 @@ async function detalhe(req, res) {
     }
 
     // Descrição buscada sob demanda (não é salva na sincronização em massa).
-    let descricao = null;
-    try {
-      const resp = await mlFetch(
-        cliente.id,
-        `/items/${encodeURIComponent(itemId)}/description`,
-        { mlUserId }
-      );
-      if (resp && resp.ok && resp.data) {
-        descricao = resp.data.plain_text || resp.data.text || null;
-      }
-    } catch (e) {
-      // descrição é opcional — segue sem ela
-      descricao = null;
-    }
+    const desc = await carregarDescricao(cliente.id, itemId, mlUserId);
 
     return res.json({
       ok: true,
       cliente: { slug: cliente.slug, nome: cliente.nome },
       anuncio,
-      descricao,
+      // `descricao` mantém exatamente o contrato antigo (string | null) para
+      // não quebrar consumidor nenhum; quem precisa distinguir lê os campos
+      // novos abaixo.
+      descricao: desc.descricao,
+      descricaoEstado: desc.estado,
+      descricaoErro: desc.erro,
     });
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
@@ -259,6 +300,133 @@ async function detalhe(req, res) {
       .status(500)
       .json({ ok: false, motivo: "Erro ao carregar o detalhe do anúncio." });
   }
+}
+
+// ----------------------------------------------------------------------------
+// PATCH /anuncios-meli/:itemId/conteudo
+// body: { clienteSlug, clienteContaId?, titulo?, modelo?, descricao? }
+//
+// ESCRITA REAL no Mercado Livre. É a única rota do detalhe que altera o
+// anúncio no marketplace — "Aprovar" (otimizações) continua sendo decisão
+// interna e não toca no ML.
+//
+// A conta usada é a MESMA que o detalhe leu: `anuncio.ml_user_id` gravado na
+// linha e, só quando ele é nulo (linha anterior à coluna existir), a resolução
+// por `clienteContaId`. Nunca "a conta principal".
+//
+// Responde 200 com um resultado POR CAMPO. `ok` só é true quando todos os
+// campos pedidos foram confirmados pelo ML — assim a UI não tem como dizer
+// "salvo" para um campo que o ML recusou.
+// ----------------------------------------------------------------------------
+async function atualizarConteudo(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    const { clienteSlug } = body;
+    const clienteContaId = extrairClienteContaId(body.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const campos = {};
+    if (body.titulo !== undefined) campos.titulo = body.titulo;
+    if (body.modelo !== undefined) campos.modelo = body.modelo;
+    if (body.descricao !== undefined) campos.descricao = body.descricao;
+    if (!Object.keys(campos).length) {
+      return res.status(400).json({
+        ok: false,
+        motivo: "Informe ao menos um campo (titulo, modelo ou descricao).",
+      });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo:
+          "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id,
+        clienteContaId,
+        requireUsableGrant: true,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const { resultados, aplicados } = await conteudoService.aplicarConteudo({
+      clienteId: cliente.id,
+      itemId,
+      mlUserId,
+      campos,
+    });
+
+    // Snapshot local só do que o ML confirmou.
+    const confirmados = {};
+    if (aplicados.titulo !== undefined) confirmados.titulo = aplicados.titulo;
+    if (aplicados.modelo !== undefined) {
+      confirmados.modelo = aplicados.modelo;
+      confirmados.attributesJson = comAtributoModelo(
+        anuncio.attributes_json,
+        aplicados.modelo
+      );
+    }
+    let atualizado = anuncio;
+    if (Object.keys(confirmados).length) {
+      atualizado =
+        (await anunciosService.atualizarCamposConfirmados(
+          cliente.id,
+          itemId,
+          confirmados
+        )) || anuncio;
+    }
+
+    const tudoOk = Object.keys(resultados).every((k) => resultados[k].ok);
+
+    // A descrição só volta aqui quando ELA foi o que mudou — reler do ML a
+    // cada salvamento de título gastaria uma chamada externa por nada.
+    const resposta = { ok: tudoOk, resultados, anuncio: atualizado };
+    if (aplicados.descricao !== undefined) {
+      resposta.descricao = aplicados.descricao;
+      resposta.descricaoEstado = "ok";
+      resposta.descricaoErro = null;
+    }
+    return res.json(resposta);
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] atualizarConteudo:", err.message);
+    return res.status(500).json({
+      ok: false,
+      motivo: "Erro interno ao salvar as alterações no anúncio.",
+    });
+  }
+}
+
+// Reflete o MODEL confirmado dentro do attributes_json do snapshot — a ficha
+// técnica da tela lê o modelo de lá, não da coluna.
+function comAtributoModelo(attributesJson, modelo) {
+  let attrs = attributesJson;
+  if (typeof attrs === "string") {
+    try { attrs = JSON.parse(attrs); } catch (e) { attrs = []; }
+  }
+  if (!Array.isArray(attrs)) attrs = [];
+  const copia = attrs.map((a) =>
+    a && a.id === "MODEL" ? { ...a, value: modelo, value_name: modelo } : a
+  );
+  if (!copia.some((a) => a && a.id === "MODEL")) {
+    copia.push({ id: "MODEL", name: "Modelo", value: modelo, value_name: modelo });
+  }
+  return copia;
 }
 
 // ----------------------------------------------------------------------------
@@ -693,6 +861,7 @@ module.exports = {
   resumo,
   listar,
   detalhe,
+  atualizarConteudo,
   marcarRevisado,
   otimizar,
   listarOtimizacoes,

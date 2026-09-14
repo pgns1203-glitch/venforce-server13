@@ -152,27 +152,98 @@
   gap: var(--vf-sp-2);
 }
 
+/* KPI clicável (V3): faixa única segmentada — reaproveita .vf-metric-row/
+   .vf-metric (5b em vf-components-v2.css) como estrutura de base, mas os
+   valores abaixo replicam literalmente o canva aprovado "modelo
+   1-principal" (Main.dc.html, /design), que usa padding/tamanhos próprios
+   e cores "-strong" — por isso os overrides, em vez dos tokens genéricos
+   do componente compartilhado (usado sem overrides em Atividade etc). */
 .vf-page-anuncios-meli .am-resumo {
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  box-shadow: var(--vf-shadow-xs);
 }
 
-/* KPI clicável (V3): os cards do resumo passam a ser filtros rápidos da
-   listagem via .vf-kpi--interactive (já existe em vf-components-v2.css,
-   com hover/is-active próprios) — aqui só a régua colorida por estado. */
-.vf-page-anuncios-meli .am-kpi.is-success {
-  border-left: 3px solid var(--vf-success);
+.vf-page-anuncios-meli .am-resumo .am-kpi {
+  appearance: none;
+  margin: 0;
+  padding: 12px 14px;
+  background: transparent;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s;
 }
 
-.vf-page-anuncios-meli .am-kpi.is-warning {
-  border-left: 3px solid var(--vf-warning);
+.vf-page-anuncios-meli .am-resumo .am-kpi:hover {
+  background: var(--vf-surface-hover);
 }
 
-.vf-page-anuncios-meli .am-kpi.is-danger {
-  border-left: 3px solid var(--vf-danger);
+.vf-page-anuncios-meli .am-resumo .am-kpi:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: -2px;
 }
 
-.vf-page-anuncios-meli .am-kpi.is-info {
-  border-left: 3px solid var(--vf-info);
+.vf-page-anuncios-meli .am-resumo .am-kpi.is-active {
+  background: var(--vf-primary-soft);
+}
+
+.vf-page-anuncios-meli .am-resumo .am-kpi.is-active .vf-metric__label {
+  color: var(--vf-primary-strong);
+}
+
+/* Filete lateral (accent) — só nos KPIs de qualidade/risco. */
+.vf-page-anuncios-meli .am-resumo .am-kpi.is-success {
+  box-shadow: inset 3px 0 0 var(--vf-success);
+}
+
+.vf-page-anuncios-meli .am-resumo .am-kpi.is-warning {
+  box-shadow: inset 3px 0 0 var(--vf-warning);
+}
+
+.vf-page-anuncios-meli .am-resumo .am-kpi.is-danger {
+  box-shadow: inset 3px 0 0 var(--vf-danger);
+}
+
+.vf-page-anuncios-meli .am-resumo .am-kpi.is-info {
+  box-shadow: inset 3px 0 0 var(--vf-info);
+}
+
+.vf-page-anuncios-meli .am-resumo .am-kpi.is-neutral {
+  box-shadow: inset 3px 0 0 var(--vf-neutral);
+}
+
+.vf-page-anuncios-meli .am-resumo .vf-metric__label {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+.vf-page-anuncios-meli .am-resumo .vf-metric__value {
+  font-size: 19px;
+  letter-spacing: -0.02em;
+}
+
+.vf-page-anuncios-meli .am-resumo .vf-metric__foot {
+  font-size: 10.5px;
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-anuncios-meli .am-resumo .vf-metric__foot.is-success {
+  color: var(--vf-success-strong);
+}
+
+.vf-page-anuncios-meli .am-resumo .vf-metric__foot.is-warning {
+  color: var(--vf-warning-strong);
+}
+
+.vf-page-anuncios-meli .am-resumo .vf-metric__foot.is-danger {
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-anuncios-meli .am-resumo .vf-metric__foot.is-neutral {
+  color: var(--vf-text-muted);
 }
 
 .vf-page-anuncios-meli .am-filtros {
@@ -749,12 +820,6 @@
   text-align: center;
 }
 
-@media (max-width: 1280px) {
-  .vf-page-anuncios-meli .am-resumo {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 1024px) {
   .vf-page-anuncios-meli .am-cliente-contexto {
     grid-template-columns: minmax(0, 1fr);
@@ -774,10 +839,6 @@
 
   .vf-page-anuncios-meli .am-hud-actions {
     justify-content: flex-start;
-  }
-
-  .vf-page-anuncios-meli .am-resumo {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -826,8 +887,7 @@
     padding-left: var(--vf-sp-3);
   }
 
-  .vf-page-anuncios-meli .am-clientes-grid,
-  .vf-page-anuncios-meli .am-resumo {
+  .vf-page-anuncios-meli .am-clientes-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 

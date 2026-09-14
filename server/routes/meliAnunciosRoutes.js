@@ -26,6 +26,7 @@
 //   PATCH  /anuncios-meli/otimizacoes/:id/aprovar (aprovação — admin-only)
 //   GET    /anuncios-meli/:itemId
 //   PATCH  /anuncios-meli/:itemId/revisao
+//   PATCH  /anuncios-meli/:itemId/conteudo      (edição real no Mercado Livre)
 // -----------------------------------------------------------------------------
 
 const express = require("express");
@@ -85,6 +86,13 @@ router.post("/:itemId/otimizar", requireAdmin, ctrl.otimizar);
 router.get("/:itemId/otimizacoes", requireAdmin, ctrl.listarOtimizacoes);
 
 router.patch("/:itemId/revisao", ctrl.marcarRevisado);
+
+// Edição de conteúdo do anúncio (título / modelo / descrição) NO MERCADO LIVRE.
+// Fica no acesso padrão do módulo (automações + carteira), o mesmo de
+// /criacao/publicar — que também escreve no ML. Não é admin-only: o
+// requireAdmin do otimizador existe porque a IA está em validação, não porque
+// escrever no anúncio seja privilégio de admin.
+router.patch("/:itemId/conteudo", ctrl.atualizarConteudo);
 
 router.get("/:itemId", ctrl.detalhe);
 

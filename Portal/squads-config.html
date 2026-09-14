@@ -24,7 +24,13 @@
             <div><h1>Squads</h1><p>Equipes e carteiras, no mesmo lugar.</p></div>
             <div class="sq-page-tools"><span id="sq-access-label">Administração de Squads</span><button id="sq-refresh" class="vf-btn vf-btn--secondary" type="button">Atualizar</button></div>
           </header>
+          <nav class="sq-mode-switch" role="tablist" aria-label="Modo de visualização">
+            <button type="button" class="sq-mode-btn is-active" id="sq-mode-config" data-action="view" data-view="config" role="tab" aria-selected="true">Configuração</button>
+            <button type="button" class="sq-mode-btn" id="sq-mode-activity" data-action="view" data-view="activity" role="tab" aria-selected="false" hidden>Atividade</button>
+          </nav>
           <div id="sq-feedback" class="vf-banner" role="status" aria-live="polite" hidden></div>
+
+          <div id="sq-view-config">
           <div id="sq-unassigned" class="sq-unassigned" hidden></div>
           <div id="sq-workspace" class="sq-workspace">
             <aside class="sq-master" aria-label="Selecionar Squad">
@@ -68,10 +74,48 @@
               </section>
             </section>
           </div>
+          </div>
+
+          <div id="sq-view-activity" class="sq-activity-view" hidden>
+            <div class="sq-activity-controls">
+              <div class="sq-activity-periods" role="group" aria-label="Período da atividade">
+                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="hoje">Hoje</button>
+                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="7d">7 dias</button>
+                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="30d">30 dias</button>
+              </div>
+              <label class="sq-activity-search-label" for="sq-activity-search">Buscar pessoa ou Squad<input id="sq-activity-search" class="vf-input" type="search" placeholder="Buscar pessoa ou Squad…" autocomplete="off"></label>
+            </div>
+            <p class="sq-hint sq-activity-explain">Atividade registrada das pessoas que pertencem a cada Squad. Membros de múltiplos Squads aparecem em mais de uma equipe.</p>
+            <p id="sq-activity-global-summary" class="sq-activity-global-summary" role="status"></p>
+            <div id="sq-activity-state-loading" class="sq-loading" role="status" hidden><p>Carregando atividade…</p><div class="sq-skeleton"></div><div class="sq-skeleton"></div></div>
+            <div id="sq-activity-state-error" class="sq-empty" hidden><h3>Não foi possível carregar a atividade</h3><p id="sq-activity-error-message"></p><button type="button" class="vf-btn vf-btn--secondary" data-action="activity-retry">Tentar novamente</button></div>
+            <div id="sq-activity-grid" class="sq-activity-grid" hidden></div>
+          </div>
+
         </div>
       </div>
     </main>
   </div>
+
+  <!-- Drawer: detalhe de atividade da pessoa -->
+  <div class="vf-drawer-backdrop" id="sq-person-drawer-backdrop"></div>
+  <aside class="vf-drawer vf-drawer--sm" id="sq-person-drawer" role="dialog" aria-modal="true" aria-labelledby="sq-person-drawer-title" tabindex="-1">
+    <header class="vf-drawer__header">
+      <div>
+        <h2 class="vf-drawer__title" id="sq-person-drawer-title">Pessoa</h2>
+        <p id="sq-person-drawer-subtitle" class="sq-hint"></p>
+      </div>
+      <button type="button" id="sq-person-drawer-close" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" aria-label="Fechar">×</button>
+    </header>
+    <div class="vf-drawer__body">
+      <p id="sq-person-drawer-summary" class="sq-activity-stats"></p>
+      <div class="sq-toolbar sq-activity-toolbar">
+        <label for="sq-person-drawer-status">Status<select id="sq-person-drawer-status" class="vf-select"><option value="all">Todos</option><option value="sucesso">Sucesso</option><option value="falha">Falha</option></select></label>
+      </div>
+      <h4 class="sq-activity-timeline-title">Atividade recente</h4>
+      <div id="sq-person-drawer-timeline"></div>
+    </div>
+  </aside>
 
   <!-- Modal genérico de confirmação (remover membro / definir principal) -->
   <div id="sq-confirm-modal" class="vf-overlay">

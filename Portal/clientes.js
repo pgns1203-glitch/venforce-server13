@@ -94,7 +94,7 @@ const clientesFeedback = document.getElementById("clientes-feedback");
 let CLIENTES_LISTA = [];
 let CLIENTES_CONFIRM_OPEN = false;
 let CLIENTES_CONFIRM_ACTION = null;
-let CLIENTE_DELETE_PENDENTE = null; // { slug, btn }
+let CLIENTES_CONFIRM_LABEL = "Confirmar";
 const EXPANSAO = criarExpansaoUnica(); // controla qual linha está aberta (só uma por vez)
 const EXPANDIDO_CONTAS = new Map(); // slug -> contas cruas da última carga (cache p/ sugestão de nome "+Conta")
 let BASE_PICKER_CONTA = null; // conta sendo editada no modal "Definir/Trocar base"
@@ -122,12 +122,13 @@ function abrirModalConfirmacaoClientes({ title, subtitle = "", description, conf
 
   CLIENTES_CONFIRM_OPEN = true;
   CLIENTES_CONFIRM_ACTION = typeof onConfirm === "function" ? onConfirm : null;
+  CLIENTES_CONFIRM_LABEL = confirmLabel || "Confirmar";
 
   t.textContent = title || "Confirmar";
   if (sub) sub.textContent = subtitle || "";
   desc.textContent = description || "";
 
-  ok.textContent = confirmLabel || "Confirmar";
+  ok.textContent = CLIENTES_CONFIRM_LABEL;
   ok.classList.remove("vf-btn--secondary", "vf-btn--danger");
   ok.classList.add(danger ? "vf-btn--danger" : "vf-btn--secondary");
 
@@ -139,39 +140,34 @@ function fecharModalConfirmacaoClientes() {
   document.getElementById("vf-clientes-confirm-modal")?.classList.remove("is-open");
   CLIENTES_CONFIRM_OPEN = false;
   CLIENTES_CONFIRM_ACTION = null;
-  CLIENTE_DELETE_PENDENTE = null;
 }
 
 async function confirmarModalClientes() {
   const ok = document.getElementById("vf-clientes-confirm-ok");
   const dangerBox = document.getElementById("vf-clientes-confirm-danger");
-  if (!CLIENTE_DELETE_PENDENTE && !CLIENTES_CONFIRM_ACTION) return;
+  if (!CLIENTES_CONFIRM_ACTION) return;
 
   if (dangerBox) { dangerBox.style.display = "none"; dangerBox.textContent = ""; }
-  if (ok) { ok.disabled = true; ok.textContent = CLIENTE_DELETE_PENDENTE ? "Excluindo..." : "Processando…"; }
+  if (ok) { ok.disabled = true; ok.textContent = "Processando…"; }
 
   try {
-    if (CLIENTE_DELETE_PENDENTE) {
-      const { slug, btn } = CLIENTE_DELETE_PENDENTE;
-      if (!slug) throw new Error("Cliente inválido.");
-      await deleteCliente(slug, btn);
-      CLIENTE_DELETE_PENDENTE = null;
-    } else {
-      await CLIENTES_CONFIRM_ACTION();
-    }
+    await CLIENTES_CONFIRM_ACTION();
     fecharModalConfirmacaoClientes();
   } catch (err) {
     const msg = err?.message || "Não foi possível concluir a ação.";
     const dependencias = err?.dependencias;
     if (dangerBox) {
       dangerBox.style.display = "block";
-      dangerBox.textContent = dependencias?.length
-        ? `${msg} (${dependencias.map((d) => `${d.label}: ${d.total}`).join(", ")})`
-        : msg;
+      if (dependencias?.length) {
+        const itens = dependencias.map((d) => `• ${d.label}: ${d.total}`).join("\n");
+        dangerBox.textContent = `${msg}\n\n${itens}`;
+      } else {
+        dangerBox.textContent = msg;
+      }
     } else {
       setClientesFeedback(msg, "danger");
     }
-    if (ok) { ok.disabled = false; ok.textContent = CLIENTE_DELETE_PENDENTE ? "Excluir cliente" : "Confirmar"; }
+    if (ok) { ok.disabled = false; ok.textContent = CLIENTES_CONFIRM_LABEL; }
   }
 }
 
@@ -260,9 +256,15 @@ function renderClientes(clientes) {
     tr.style.animationDelay = `${i * 0.04}s`;
     tr.dataset.slug = slug;
 
+    const squadTexto = c.squad
+      ? `${escapeHTML(c.squad.nome)}${isLegado(c.squad) ? " · Legado" : ""}`
+      : "Sem Squad";
+    const squadCls = c.squad ? "" : "is-missing";
+
     tr.innerHTML = `
       <td class="vf-cli-cell-slug">${String(i + 1).padStart(2, "0")}</td>
       <td><strong>${escapeHTML(c.nome || "—")}</strong></td>
+      <td class="vf-cli-cell-squad ${squadCls}">${squadTexto}</td>
       <td class="vf-cli-cell-slug">${escapeHTML(slug || "—")}</td>
       <td>
         <span class="vf-status ${ativo ? "is-success" : ""}">${ativo ? "Ativo" : "Inativo"}</span>
@@ -271,7 +273,7 @@ function renderClientes(clientes) {
       <td>
         <div class="vf-table__actions">
           <button class="vf-btn vf-btn--sm vf-btn--secondary vf-clientes-toggle-btn" data-action="toggle-expand" data-slug="${escapeHTML(slug)}" aria-expanded="false" title="Detalhes">⌄</button>
-          <button class="vf-btn vf-btn--sm vf-btn--secondary" data-action="delete" data-slug="${escapeHTML(slug)}">Excluir</button>
+          <button class="vf-btn vf-btn--sm vf-btn--secondary" data-action="delete" data-slug="${escapeHTML(slug)}">Remover</button>
         </div>
       </td>
     `;
@@ -287,19 +289,7 @@ function renderClientes(clientes) {
   });
 
   clientesTbody.querySelectorAll('button[data-action="delete"]').forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const slug = btn.getAttribute("data-slug") || "";
-      if (!slug) return;
-      CLIENTE_DELETE_PENDENTE = { slug, btn };
-      abrirModalConfirmacaoClientes({
-        title: "Excluir cliente",
-        subtitle: slug,
-        description: `Esta ação remove o cliente "${slug}" do portal. Se houver contas, bases ou históricos vinculados, a exclusão será bloqueada.`,
-        confirmLabel: "Excluir cliente",
-        danger: true,
-        onConfirm: null,
-      });
-    });
+    btn.addEventListener("click", () => abrirModalRemoverCliente(btn));
   });
 
   clientesTbody.querySelectorAll('button[data-action="toggle-expand"]').forEach((btn) => {
@@ -349,19 +339,170 @@ function renderResumoContasCelula(el, contas) {
     </div>`;
 }
 
-async function deleteCliente(slug, btn) {
+// Remoção de cliente (admin): o que o modal oferece é decidido ANTES,
+// checando GET /clientes/:slug/dependencias (nunca "tem certeza?" genérico,
+// nunca "não pode, tente de novo" sem alternativa):
+//   - Cliente vazio      -> modal simples, hard delete direto.
+//   - Cliente c/ histórico -> abrirModalRemoverComDependencias(): admin
+//     escolhe entre "Remover da operação" (PATCH .../desativar, preserva
+//     tudo) e "Excluir permanentemente" (2ª confirmação obrigatória —
+//     digitar nome/slug — antes do DELETE com purge real).
+async function abrirModalRemoverCliente(btn) {
+  const slug = btn.getAttribute("data-slug") || "";
+  if (!slug) return;
+  const cliente = CLIENTES_LISTA.find((c) => c.slug === slug);
+  const nomeCliente = cliente?.nome || slug;
+  const squadLabel = cliente?.squad ? cliente.squad.nome : "Sem Squad";
+
+  const textoOriginal = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Verificando…";
+  let dependencias = [];
+  try {
+    const data = await apiFetch(`/clientes/${encodeURIComponent(slug)}/dependencias`);
+    dependencias = Array.isArray(data.dependencias) ? data.dependencias : [];
+  } catch (err) {
+    setClientesFeedback(err.message || "Não foi possível verificar dependências do cliente.", "danger");
+    return;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = textoOriginal;
+  }
+
+  if (!dependencias.length) {
+    abrirModalConfirmacaoClientes({
+      title: "Excluir cliente",
+      subtitle: `${nomeCliente} · Squad: ${squadLabel}`,
+      description: `Este cliente não possui dados vinculados e pode ser excluído permanentemente. Esta ação não pode ser desfeita.`,
+      confirmLabel: "Excluir permanentemente",
+      danger: true,
+      onConfirm: async () => {
+        await apiFetch(`/clientes/${encodeURIComponent(slug)}`, { method: "DELETE" });
+        setClientesFeedback(`Cliente "${nomeCliente}" excluído permanentemente.`, "success");
+        loadClientes();
+      },
+    });
+  } else {
+    abrirModalRemoverComDependencias({ slug, nomeCliente, squadLabel, dependencias });
+  }
+}
+
+// ── Modal dedicado "Remover cliente" (cliente COM dependências) ──────────
+// Dois passos: 1) escolha entre remover da operação (soft) ou ir para a
+// exclusão permanente; 2) 2ª confirmação — digitar nome/slug — antes do
+// purge real. "Admin tem a palavra final": nunca bloqueia sem alternativa.
+let CLIENTES_REMOVER_OPEN = false;
+let CLIENTES_REMOVER_CTX = null; // { slug, nomeCliente, squadLabel }
+
+function mostrarErroRemover(msg) {
+  const erro = document.getElementById("vf-clientes-remover-erro");
+  if (!erro) return;
+  erro.style.display = "block";
+  erro.textContent = msg;
+}
+
+function limparErroRemover() {
+  const erro = document.getElementById("vf-clientes-remover-erro");
+  if (!erro) return;
+  erro.style.display = "none";
+  erro.textContent = "";
+}
+
+function atualizarBotaoPurgeHabilitado() {
+  const input = document.getElementById("vf-clientes-remover-input");
+  const btn = document.getElementById("vf-clientes-remover-btn-purge");
+  if (!input || !btn || !CLIENTES_REMOVER_CTX) return;
+  const digitado = input.value.trim().toLowerCase();
+  const alvoNome = CLIENTES_REMOVER_CTX.nomeCliente.trim().toLowerCase();
+  const alvoSlug = CLIENTES_REMOVER_CTX.slug.trim().toLowerCase();
+  btn.disabled = !digitado || (digitado !== alvoNome && digitado !== alvoSlug);
+}
+
+function mostrarPassoEscolhaRemover() {
+  document.getElementById("vf-clientes-remover-passo-escolha").style.display = "block";
+  document.getElementById("vf-clientes-remover-passo-purge").style.display = "none";
+  document.getElementById("vf-clientes-remover-rodape-escolha").style.display = "flex";
+  document.getElementById("vf-clientes-remover-rodape-purge").style.display = "none";
+  const input = document.getElementById("vf-clientes-remover-input");
+  if (input) input.value = "";
+  limparErroRemover();
+}
+
+function mostrarPassoPurgeRemover() {
+  document.getElementById("vf-clientes-remover-passo-escolha").style.display = "none";
+  document.getElementById("vf-clientes-remover-passo-purge").style.display = "block";
+  document.getElementById("vf-clientes-remover-rodape-escolha").style.display = "none";
+  document.getElementById("vf-clientes-remover-rodape-purge").style.display = "flex";
+  const alvo = document.getElementById("vf-clientes-remover-alvo");
+  if (alvo) alvo.textContent = CLIENTES_REMOVER_CTX?.nomeCliente || "";
+  const input = document.getElementById("vf-clientes-remover-input");
+  if (input) { input.value = ""; input.focus(); }
+  atualizarBotaoPurgeHabilitado();
+}
+
+function fecharModalRemoverCliente() {
+  document.getElementById("vf-clientes-remover-modal")?.classList.remove("is-open");
+  CLIENTES_REMOVER_OPEN = false;
+  CLIENTES_REMOVER_CTX = null;
+}
+
+function abrirModalRemoverComDependencias({ slug, nomeCliente, squadLabel, dependencias }) {
+  CLIENTES_REMOVER_CTX = { slug, nomeCliente, squadLabel };
+  CLIENTES_REMOVER_OPEN = true;
+
+  document.getElementById("vf-clientes-remover-subtitle").textContent = `${nomeCliente} · Squad: ${squadLabel}`;
+  document.getElementById("vf-clientes-remover-desc").textContent =
+    "Este cliente possui dados históricos e não será apagado fisicamente por padrão. Escolha o que deseja fazer:";
+  document.getElementById("vf-clientes-remover-deps").innerHTML =
+    dependencias.map((d) => `<li>${escapeHTML(d.label)}: ${d.total}</li>`).join("");
+
+  mostrarPassoEscolhaRemover();
+  document.getElementById("vf-clientes-remover-modal").classList.add("is-open");
+}
+
+async function confirmarRemoverDaOperacao() {
+  const ctx = CLIENTES_REMOVER_CTX;
+  if (!ctx) return;
+  limparErroRemover();
+  const btn = document.getElementById("vf-clientes-remover-btn-desativar");
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Removendo…";
+  try {
+    await apiFetch(`/clientes/${encodeURIComponent(ctx.slug)}/desativar`, { method: "PATCH" });
+    setClientesFeedback(`Cliente "${ctx.nomeCliente}" removido da operação ativa. Dados preservados.`, "success");
+    fecharModalRemoverCliente();
+    loadClientes();
+  } catch (err) {
+    mostrarErroRemover(err.message || "Não foi possível remover o cliente.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+async function confirmarExcluirPermanentemente() {
+  const ctx = CLIENTES_REMOVER_CTX;
+  if (!ctx) return;
+  limparErroRemover();
+  const input = document.getElementById("vf-clientes-remover-input");
+  const btn = document.getElementById("vf-clientes-remover-btn-purge");
+  const original = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Excluindo…";
   try {
-    await apiFetch(`/clientes/${encodeURIComponent(slug)}`, { method: "DELETE" });
-    setClientesFeedback(`Cliente "${slug}" excluído com sucesso.`, "success");
+    await apiFetch(`/clientes/${encodeURIComponent(ctx.slug)}?confirmarPurge=true`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmar: input.value.trim() }),
+    });
+    setClientesFeedback(`Cliente "${ctx.nomeCliente}" e todos os dados relacionados foram excluídos permanentemente.`, "success");
+    fecharModalRemoverCliente();
     loadClientes();
-    return true;
   } catch (err) {
-    if (err.code !== "CLIENTE_COM_DEPENDENCIAS") setClientesFeedback(`Erro ao excluir: ${err.message}`, "danger");
-    btn.disabled = false;
-    btn.textContent = "Excluir";
-    throw err;
+    mostrarErroRemover(err.message || "Não foi possível excluir o cliente.");
+    btn.textContent = original;
+    atualizarBotaoPurgeHabilitado();
   }
 }
 
@@ -893,6 +1034,17 @@ document.getElementById("vf-clientes-confirm-modal")?.addEventListener("click", 
   if (e.target?.id === "vf-clientes-confirm-modal") fecharModalConfirmacaoClientes();
 });
 
+document.getElementById("vf-clientes-remover-close")?.addEventListener("click", fecharModalRemoverCliente);
+document.getElementById("vf-clientes-remover-cancelar")?.addEventListener("click", fecharModalRemoverCliente);
+document.getElementById("vf-clientes-remover-modal")?.addEventListener("click", (e) => {
+  if (e.target?.id === "vf-clientes-remover-modal") fecharModalRemoverCliente();
+});
+document.getElementById("vf-clientes-remover-btn-desativar")?.addEventListener("click", confirmarRemoverDaOperacao);
+document.getElementById("vf-clientes-remover-btn-ir-purge")?.addEventListener("click", () => { limparErroRemover(); mostrarPassoPurgeRemover(); });
+document.getElementById("vf-clientes-remover-voltar")?.addEventListener("click", () => { limparErroRemover(); mostrarPassoEscolhaRemover(); });
+document.getElementById("vf-clientes-remover-btn-purge")?.addEventListener("click", confirmarExcluirPermanentemente);
+document.getElementById("vf-clientes-remover-input")?.addEventListener("input", atualizarBotaoPurgeHabilitado);
+
 document.getElementById("vf-base-picker-close")?.addEventListener("click", fecharBasePicker);
 document.getElementById("vf-base-picker-cancel")?.addEventListener("click", fecharBasePicker);
 document.getElementById("vf-base-picker-ok")?.addEventListener("click", confirmarBasePicker);
@@ -903,6 +1055,7 @@ document.getElementById("vf-base-picker-modal")?.addEventListener("click", (e) =
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (CLIENTES_CONFIRM_OPEN) fecharModalConfirmacaoClientes();
+  else if (CLIENTES_REMOVER_OPEN) fecharModalRemoverCliente();
   else if (BASE_PICKER_CONTA) fecharBasePicker();
 });
 

@@ -699,6 +699,10 @@
       descricaoErro: null,
       descricaoOrigem: null,
       descricaoOrigemHora: null,
+      // Nome legível da categoria (ex. "Celulares e Smartphones"), resolvido
+      // pelo backend. null até a resposta chegar OU quando a resolução falha
+      // — nos dois casos o render cai para o category_id cru (fallback seguro).
+      categoriaNome: null,
       original: { titulo: "", modelo: "", descricao: "" },
       rascunho: { titulo: "", modelo: "", descricao: "" },
       erros: {},
@@ -760,6 +764,7 @@
       DET.descricaoEstado = r.data.descricaoEstado ||
         (r.data.descricao ? "ok" : "sem_descricao");
       DET.descricaoErro = r.data.descricaoErro || null;
+      DET.categoriaNome = r.data.categoriaNome || null;
       DET.original = {
         titulo: a.titulo || "",
         modelo: a.modelo || "",
@@ -919,7 +924,7 @@
             'id="am-det-revert-modelo" title="Descartar alteração no modelo" ' +
             'aria-label="Descartar alteração no modelo">' + icDesfazer(12) + "</button>" +
         "</span></strong>") +
-      kvDet("Categoria", "<strong>" + escapeHtml(a.category_id || "—") + "</strong>") +
+      kvDet("Categoria", "<strong>" + escapeHtml(DET.categoriaNome || a.category_id || "—") + "</strong>") +
       kvDet("Tipo / logística", "<strong>" + escapeHtml(tipo) + " · " + escapeHtml(logistica) + "</strong>");
 
     var score = a.score_venforce == null ? 0 : Number(a.score_venforce) || 0;

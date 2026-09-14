@@ -57,7 +57,7 @@ function anuncio(conta) {
   return {
     id: 1, cliente_id: 87, cliente_slug: "n97",
     item_id: a.item_id, titulo: a.titulo, sku: a.sku, marca: a.marca, modelo: a.modelo,
-    preco: a.preco, preco_original: 249.9, moeda: "BRL", estoque: 42, vendidos: 187,
+    preco: a.preco, preco_original: precoOriginalAtivo ? 249.9 : null, moeda: "BRL", estoque: 42, vendidos: 187,
     status: "active", sub_status: null,
     listing_type_id: "gold_special", category_id: "MLB1055",
     permalink: "https://produto.mercadolivre.com.br/" + a.item_id,
@@ -108,6 +108,8 @@ const OTIMIZACOES_A = [
 // ── interruptores do cenário, ligados por cada verificação ──────────────────
 let iaProibida = false;
 let descricaoEstado = "ok";          // ok | sem_descricao | erro
+let categoriaNomeResposta = "Celulares e Smartphones"; // null = simula falha de resolução
+let precoOriginalAtivo = true;       // false = anúncio sem promoção (preco_original nulo)
 let detalheAtrasoPorItem = {};       // itemId -> ms
 let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
 const pedidos = [];                  // toda URL de API disparada
@@ -341,6 +343,7 @@ function wireInterception(cdp) {
         descricao: descricaoEstado === "ok" ? DESC_A : null,
         descricaoEstado,
         descricaoErro: descricaoEstado === "erro" ? "O Mercado Livre não devolveu a descrição (HTTP 500)." : null,
+        categoriaNome: categoriaNomeResposta,
       };
       await corpo(resposta);
       return;
@@ -432,7 +435,7 @@ async function run() {
       const esperado = [
         TITULO_A, "MLB-A1", "FN-X200-PRT", "Ativo",           // identidade
         "R$ 189,90", "R$ 249,90", "42", "187",                 // comercial
-        "Prime Audio", "X200", "MLB1055", "Clássico · Full",   // catálogo
+        "Prime Audio", "X200", "Celulares e Smartphones", "Clássico · Full", // catálogo
         "Score VenForce", "61", "Principal ponto",             // qualidade
         "Fotos", "Recomendado ter pelo menos 3 fotos",         // fotos
         "Descrição", "Ficha técnica", "Garantia do fabricante", "Vazio",
@@ -443,6 +446,41 @@ async function run() {
       // são caixa alta), então a comparação ignora caixa.
       const alvo = t.toLowerCase();
       esperado.forEach((frag) => assert.ok(alvo.includes(frag.toLowerCase()), `sumiu do detalhe: "${frag}"`));
+    });
+
+    await check("4a — preço original aparece riscado quando há promoção; some quando não há", async () => {
+      const comPromo = await cdp.evaluate("document.querySelector('.am-det-price small')");
+      assert.ok(comPromo, "com preco_original truthy, o preço original deveria aparecer riscado");
+      const textoComPromo = await cdp.evaluate("document.querySelector('.am-det-price').innerText");
+      assert.ok(/249,90/.test(textoComPromo), `preço original ausente: ${textoComPromo}`);
+      assert.strictEqual(
+        await cdp.evaluate("getComputedStyle(document.querySelector('.am-det-price small')).textDecorationLine"),
+        "line-through", "o preço original precisa aparecer riscado"
+      );
+
+      // Mesmo anúncio, agora sem promoção — a linha não deve aparecer.
+      await fecharModal(cdp);
+      precoOriginalAtivo = false;
+      await abrirPrimeiroAnuncio(cdp);
+      const semPromoElemento = await cdp.evaluate("document.querySelector('.am-det-price small')");
+      assert.strictEqual(semPromoElemento, null, "sem preco_original, nada de preço riscado deveria aparecer");
+      const textoSemPromo = await cdp.evaluate("document.querySelector('.am-det-price').innerText");
+      assert.strictEqual(textoSemPromo, "R$ 189,90", `sobrou algo do preço original: ${textoSemPromo}`);
+      precoOriginalAtivo = true;
+    });
+
+    await check("4b — categoria mostra o nome legível resolvido pelo backend, não o category_id cru", async () => {
+      const texto = await cdp.evaluate("document.getElementById('am-det-modelo').closest('.am-det-top2__col').innerText");
+      assert.ok(texto.includes("Celulares e Smartphones"), `nome da categoria ausente: ${texto}`);
+      assert.ok(!texto.includes("MLB1055"), `o category_id cru vazou para a tela: ${texto}`);
+
+      // Falha na resolução (categoriaNome null): cai para o category_id, sem quebrar o modal.
+      await fecharModal(cdp);
+      categoriaNomeResposta = null;
+      await abrirPrimeiroAnuncio(cdp);
+      const fallback = await cdp.evaluate("document.getElementById('am-det-modelo').closest('.am-det-top2__col').innerText");
+      assert.ok(fallback.includes("MLB1055"), `sem nome resolvido, deveria cair para o category_id: ${fallback}`);
+      categoriaNomeResposta = "Celulares e Smartphones";
     });
 
     /* ── 5 a 9: edição, pendência e descarte ──────────────────────────── */

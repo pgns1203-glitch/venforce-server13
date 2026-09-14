@@ -237,6 +237,47 @@ async function carregarDescricao(clienteId, itemId, mlUserId) {
 }
 
 // ----------------------------------------------------------------------------
+// Nome legível da categoria.
+//
+// `meli_anuncios` só grava `category_id` (o código técnico do ML, ex.
+// "MLB1055") — não existe coluna com o nome. O único service de categorias
+// hoje em uso (meliCriacaoService.buscarCategorias, via domain_discovery)
+// busca por TEXTO LIVRE para a tela de criação; não serve para traduzir um ID
+// que já se tem. Nenhuma outra tela do Portal faz essa tradução. O que existe
+// é o endpoint público do próprio ML, `GET /categories/:id`, que devolve
+// `{ name, ... }` — chamado aqui como enriquecimento mínimo.
+//
+// Nome de categoria não muda: um cache em memória por processo evita bater
+// na API do ML de novo a cada abertura do mesmo anúncio (ou de outro anúncio
+// da mesma categoria).
+// ----------------------------------------------------------------------------
+const _cacheCategoria = new Map(); // category_id -> { nome, expiraEm }
+const CATEGORIA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function carregarNomeCategoria(clienteId, categoryId, mlUserId) {
+  if (!categoryId) return null;
+
+  const emCache = _cacheCategoria.get(categoryId);
+  if (emCache && emCache.expiraEm > Date.now()) return emCache.nome;
+
+  try {
+    const resp = await mlFetch(
+      clienteId,
+      `/categories/${encodeURIComponent(categoryId)}`,
+      { mlUserId }
+    );
+    if (resp && resp.ok && resp.data && resp.data.name) {
+      const nome = String(resp.data.name);
+      _cacheCategoria.set(categoryId, { nome, expiraEm: Date.now() + CATEGORIA_CACHE_TTL_MS });
+      return nome;
+    }
+  } catch (e) {
+    // categoria é cosmético — o front cai para o category_id cru, nunca quebra
+  }
+  return null;
+}
+
+// ----------------------------------------------------------------------------
 // GET /anuncios-meli/:itemId?clienteSlug=
 // Busca o anúncio no banco e enriquece com a descrição ao vivo da API ML.
 // ----------------------------------------------------------------------------
@@ -279,8 +320,12 @@ async function detalhe(req, res) {
       mlUserId = contexto.mlUserId;
     }
 
-    // Descrição buscada sob demanda (não é salva na sincronização em massa).
-    const desc = await carregarDescricao(cliente.id, itemId, mlUserId);
+    // Descrição e nome da categoria buscados sob demanda, em paralelo — nenhum
+    // dos dois é salvo na sincronização em massa.
+    const [desc, categoriaNome] = await Promise.all([
+      carregarDescricao(cliente.id, itemId, mlUserId),
+      carregarNomeCategoria(cliente.id, anuncio.category_id, mlUserId),
+    ]);
 
     return res.json({
       ok: true,
@@ -292,6 +337,9 @@ async function detalhe(req, res) {
       descricao: desc.descricao,
       descricaoEstado: desc.estado,
       descricaoErro: desc.erro,
+      // null quando a chamada ao ML falhou ou o anúncio não tem categoria —
+      // o front cai para `anuncio.category_id` nesse caso, nunca quebra.
+      categoriaNome,
     });
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);

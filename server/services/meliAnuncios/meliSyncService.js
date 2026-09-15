@@ -145,6 +145,9 @@ function mapearItem(body, clienteId, clienteSlug, contaId = null, mlUserId = nul
     catalog_listing: typeof body.catalog_listing === "boolean" ? body.catalog_listing : null,
     catalog_product_id: body.catalog_product_id || null,
     family_name: body.family_name || null,
+    // Chave estável do ML (User Product) — persistida como fundação para
+    // futuramente chegar em family_id. Não agrupa nada ainda nesta fase.
+    user_product_id: body.user_product_id || null,
   };
 }
 

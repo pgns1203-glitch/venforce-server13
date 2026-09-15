@@ -427,6 +427,35 @@ async function atualizarCamposConfirmados(clienteId, itemId, campos = {}) {
   return rows.length ? rows[0] : null;
 }
 
+// Candidatos ao backfill: anúncios já gravados que ainda não têm
+// user_product_id (não passaram pelo sync novo). Não chama o ML — só lê o
+// que já está no banco.
+async function itemIdsSemUserProduct(clienteId) {
+  await ensureSchema();
+  const { rows } = await db.query(
+    `SELECT item_id FROM meli_anuncios WHERE cliente_id = $1 AND user_product_id IS NULL;`,
+    [clienteId]
+  );
+  return rows.map((r) => String(r.item_id));
+}
+
+// UPDATE estreito do backfill: só a coluna user_product_id, e só quando ela
+// ainda está NULL. Nunca sobrescreve um valor já existente (proteção contra
+// corrida com um sync normal que já tenha resolvido o item nesse intervalo).
+// Retorna true/false conforme a escrita aconteceu ou não.
+async function preencherUserProductId(clienteId, itemId, userProductId) {
+  await ensureSchema();
+  const { rows } = await db.query(
+    `UPDATE meli_anuncios
+        SET user_product_id = $3, updated_at = NOW()
+      WHERE cliente_id = $1 AND item_id = $2
+        AND user_product_id IS NULL
+      RETURNING item_id;`,
+    [clienteId, String(itemId), userProductId]
+  );
+  return rows.length > 0;
+}
+
 // Marca/desmarca um anúncio como revisado.
 async function marcarRevisado(clienteId, itemId, revisado) {
   await ensureSchema();
@@ -550,4 +579,6 @@ module.exports = {
   atualizarCamposConfirmados,
   marcarRevisado,
   upsertAnuncios,
+  itemIdsSemUserProduct,
+  preencherUserProductId,
 };

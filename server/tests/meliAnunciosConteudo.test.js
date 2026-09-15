@@ -451,6 +451,26 @@ async function run() {
     ok("anúncio de catálogo (family_name sincronizado): título recusado sem chamar o ML");
   });
 
+  // 12b. Anúncio de catálogo OFICIAL (catalog_listing=true, sem family_name):
+  //      o bloqueio de título é OR — cada sinal sozinho já trava, sem chamar
+  //      o ML. (A tag visual "Catálogo" no frontend só acende com este
+  //      catalog_listing===true; family_name é critério à parte — ver
+  //      Portal/anuncios-meli.js: ehCatalogoOficial vs tituloTravadoPorCatalogo.)
+  await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture({ catalog_listing: true, family_name: null })] }, async (db) => {
+    mlChamadas = [];
+    mlHandler = () => ({ ok: true, status: 200, data: {} });
+
+    const res = fakeRes();
+    await ctrl.atualizarConteudo({
+      params: { itemId: "MLB123" },
+      body: { clienteSlug: "cliente-a", titulo: "Título novo" },
+    }, res);
+
+    assert.strictEqual(res.corpo.resultados.titulo.codigo, "TITLE_LOCKED_BY_CATALOG");
+    assert.strictEqual(mlChamadas.length, 0, "catalog_listing=true já basta pra travar, sem chamar o ML");
+    ok("anúncio de catálogo oficial (catalog_listing=true, sem family_name): título travado sem chamar o ML");
+  });
+
   // 13. Mesmo anúncio de catálogo: modelo e descrição continuam funcionando
   //     normalmente — só o título é travado.
   await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture({ family_name: "Serum Ácido Salicílico" })] }, async (db) => {

@@ -98,12 +98,20 @@
     }
   }
 
-  // Critério único de "é catálogo": catalog_listing OU family_name. Um item
-  // pode pertencer a uma família de catálogo (título gerenciado pelo ML) sem
-  // ter catalog_listing=true na própria publicação — usar só um dos dois
-  // sinais fazia lista e detalhe divergirem (achado da investigação).
-  function ehAnuncioCatalogo(a) {
-    return !!(a && (a.catalog_listing || a.family_name));
+  // Dois critérios DIFERENTES, de propósito — não unificar de volta:
+  //  - tag visual "Catálogo": só catalog_listing===true. family_name é outro
+  //    conceito da doc do ML (família/User Products), não indica publicação
+  //    de catálogo — usá-lo aqui gerava falso positivo na tag.
+  //  - bloqueio de edição do título: mais amplo (catalog_listing OU
+  //    family_name), porque o ML já demonstrou recusar o PUT de título só
+  //    por family_name, mesmo sem catalog_listing=true (achado da
+  //    investigação do BODY_INVALID_FIELDS).
+  function ehCatalogoOficial(a) {
+    return !!(a && a.catalog_listing === true);
+  }
+
+  function tituloTravadoPorCatalogo(a) {
+    return !!(a && (a.catalog_listing === true || a.family_name));
   }
 
   function scoreClasse(s) {
@@ -554,7 +562,7 @@
   function rowAnuncioHtml(a) {
     var st = statusInfo(a.status);
     var badges = "";
-    if (ehAnuncioCatalogo(a)) badges += '<span class="vf-tag is-primary">Catálogo</span>';
+    if (ehCatalogoOficial(a)) badges += '<span class="vf-tag is-primary">Catálogo</span>';
     if (a.is_full) badges += '<span class="vf-tag is-info">Full</span>';
     if ((a.pictures_count || 0) < 3) badges += '<span class="vf-tag is-warning">' + (a.pictures_count || 0) + "/3 fotos</span>";
     if (!a.sku) badges += '<span class="vf-tag is-danger">Sem SKU</span>';
@@ -864,9 +872,11 @@
     var subStatus = a.sub_status
       ? ' <span class="am-det-head__dot">·</span> ' + escapeHtml(String(a.sub_status))
       : "";
-    // Catálogo do Mercado Livre: título é gerenciado pelo ML, não pode ser
-    // editado por aqui (PUT recusado com "family_name" — ver meliConteudoService).
-    var catalogo = ehAnuncioCatalogo(a);
+    // Bloqueio de edição é mais amplo que a tag visual — ver comentário em
+    // ehCatalogoOficial/tituloTravadoPorCatalogo. A tag só acende com
+    // catalog_listing===true; o título pode ficar travado sem ela (família).
+    var catalogoTag = ehCatalogoOficial(a);
+    var tituloTravado = tituloTravadoPorCatalogo(a);
 
     var thumb = a.thumbnail
       ? '<img src="' + escapeHtml(a.thumbnail) + '" alt="" loading="lazy" />'
@@ -878,7 +888,7 @@
         '<div class="am-det-title" id="am-det-title-wrap">' +
           '<div class="am-det-title__row">' +
             '<input class="am-det-title__input" id="am-det-titulo" maxlength="60" size="56" ' +
-              (catalogo ? 'readonly aria-readonly="true" ' : '') +
+              (tituloTravado ? 'readonly aria-readonly="true" ' : '') +
               'aria-label="Título do anúncio" value="' + escapeAttr(DET.rascunho.titulo) + '" />' +
             '<button type="button" class="am-det-revert" data-acao="reverter" data-campo="titulo" ' +
               'id="am-det-revert-titulo" title="Descartar alteração no título" ' +
@@ -887,8 +897,8 @@
           '<div class="am-det-title__meta">' +
             '<span class="am-det-dirty" id="am-det-dirty-titulo"><span class="am-det-dot"></span>Alteração não salva</span>' +
             '<span class="am-det-title__count" id="am-det-count-titulo"></span>' +
-            (catalogo
-              ? '<span class="am-det-title__locknote">Gerenciado pelo Mercado Livre (catálogo)</span>'
+            (tituloTravado
+              ? '<span class="am-det-title__locknote">Gerenciado pelo Mercado Livre</span>'
               : "") +
           "</div>" +
         "</div>" +
@@ -898,8 +908,8 @@
           '<span class="vf-mono">SKU ' + escapeHtml(a.sku || "—") + "</span>" +
           '<span class="am-det-head__dot">·</span>' +
           '<span class="vf-status ' + st.classe + '">' + escapeHtml(st.label) + "</span>" + subStatus +
-          (catalogo
-            ? '<span class="am-det-head__dot">·</span><span class="vf-tag is-primary" title="Título definido pelo catálogo do Mercado Livre">Catálogo</span>'
+          (catalogoTag
+            ? '<span class="am-det-head__dot">·</span><span class="vf-tag is-primary" title="Publicação de catálogo do Mercado Livre">Catálogo</span>'
             : "") +
           '<span class="am-det-head__dot">·</span>' +
           '<span id="am-det-revisado-chip">' + rev + "</span>" +

@@ -516,59 +516,64 @@ async function run() {
       assert.strictEqual(info.valor, DESC_A);
     });
 
-    await check("7a — anúncio de catálogo: título fica readonly, tag Catálogo aparece, modelo continua editável", async () => {
+    // A doc do ML separa os dois conceitos: catalog_listing identifica a
+    // publicação de catálogo (é o único sinal que acende a tag visual);
+    // family_name é outro conceito (família/User Products) — não deve ligar
+    // a tag, mas o Mercado Livre já demonstrou travar o título por causa dele
+    // mesmo assim, então o bloqueio de edição continua olhando os dois.
+    async function abrirComModo(modo) {
       await fecharModal(cdp);
-      catalogoModo = "ambos";
-      await abrirPrimeiroAnuncio(cdp);
+      catalogoModo = modo;
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await waitFor(cdp, "document.querySelector('.am-row')", `a lista não recarregou (modo ${modo})`);
+    }
 
+    await check("7a — catalog_listing=true: tag Catálogo aparece (lista e detalhe) e título fica travado", async () => {
+      await abrirComModo("catalog_listing");
+      const tagLista = await cdp.evaluate("(document.querySelector('.am-row .vf-tag') || {}).textContent || ''");
+      assert.ok(/Catálogo/.test(tagLista), `catalog_listing=true deveria mostrar a tag na lista: "${tagLista}"`);
+
+      await abrirPrimeiroAnuncio(cdp);
       const tituloInfo = await cdp.evaluate(`(function(){ var e = document.getElementById('am-det-titulo');
         return { readonly: e.readOnly, disabled: e.disabled }; })()`);
-      assert.ok(tituloInfo.readonly, "título de anúncio de catálogo deveria ficar readonly");
+      assert.ok(tituloInfo.readonly, "título deveria ficar readonly com catalog_listing=true");
       assert.ok(!tituloInfo.disabled, "readonly (não disabled) para continuar selecionável/copiável");
 
       const texto = await textoModal(cdp);
-      assert.ok(/Catálogo/.test(texto), `a tag/aviso de catálogo não apareceu no modal: ${texto}`);
+      assert.ok(/Catálogo/.test(texto), `a tag de catálogo não apareceu no detalhe: ${texto}`);
       assert.ok(/Gerenciado pelo Mercado Livre/.test(texto), `o aviso explicando o motivo não apareceu: ${texto}`);
 
-      const modeloInfo = await cdp.evaluate(`(function(){ var e = document.getElementById('am-det-modelo');
-        return { readonly: e.readOnly }; })()`);
-      assert.ok(!modeloInfo.readonly, "modelo deveria continuar editável mesmo em anúncio de catálogo");
-
-      await fecharModal(cdp);
-      catalogoModo = "nenhum";
-      await abrirPrimeiroAnuncio(cdp);
-      const tituloNormal = await cdp.evaluate("document.getElementById('am-det-titulo').readOnly");
-      assert.ok(!tituloNormal, "anúncio normal não deveria ter o título travado");
+      const modeloInfo = await cdp.evaluate("document.getElementById('am-det-modelo').readOnly");
+      assert.ok(!modeloInfo, "modelo deveria continuar editável");
     });
 
-    await check("7b — tag Catálogo na LISTA usa o mesmo critério do detalhe (catalog_listing OU family_name)", async () => {
-      await fecharModal(cdp);
+    await check("7b — family_name sem catalog_listing: NÃO mostra tag Catálogo, mas título continua protegido", async () => {
+      await abrirComModo("family_name");
+      const semTagLista = await cdp.evaluate("document.querySelector('.am-row .vf-tag.is-primary')");
+      assert.strictEqual(semTagLista, null, "family_name sozinho não deveria acender a tag na lista (não é catalog_listing)");
 
-      // catalog_listing=true, family_name ausente — já funcionava antes.
-      catalogoModo = "catalog_listing";
-      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
-      await waitFor(cdp, "document.querySelector('.am-row')", "a lista não recarregou (catalog_listing)");
-      let tagTexto = await cdp.evaluate("(document.querySelector('.am-row .vf-tag') || {}).textContent || ''");
-      assert.ok(/Catálogo/.test(tagTexto), `catalog_listing=true deveria mostrar a tag na lista: "${tagTexto}"`);
-
-      // family_name preenchido e catalog_listing=false — era o caso que sumia
-      // da lista (só aparecia no detalhe) antes da correção.
-      catalogoModo = "family_name";
-      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
-      await waitFor(cdp, "document.querySelector('.am-row')", "a lista não recarregou (family_name)");
-      tagTexto = await cdp.evaluate("(document.querySelector('.am-row .vf-tag') || {}).textContent || ''");
-      assert.ok(/Catálogo/.test(tagTexto), `family_name preenchido (catalog_listing=false) deveria mostrar a tag na lista: "${tagTexto}"`);
-
-      // nenhum dos dois sinais — não deveria mostrar a tag.
-      catalogoModo = "nenhum";
-      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
-      await waitFor(cdp, "document.querySelector('.am-row')", "a lista não recarregou (nenhum)");
-      const semTag = await cdp.evaluate("document.querySelector('.am-row .vf-tag.is-primary')");
-      assert.strictEqual(semTag, null, "sem catalog_listing nem family_name, a tag Catálogo não deveria aparecer");
-
-      // Deixa a página no estado que os próximos checks esperam: modal aberto,
-      // anúncio normal (sem catálogo).
       await abrirPrimeiroAnuncio(cdp);
+      const tituloInfo = await cdp.evaluate("document.getElementById('am-det-titulo').readOnly");
+      assert.ok(tituloInfo, "título deveria continuar travado por family_name, mesmo sem catalog_listing");
+
+      const texto = await textoModal(cdp);
+      assert.ok(!/Catálogo/.test(texto), `a tag "Catálogo" não deveria aparecer no detalhe só com family_name: ${texto}`);
+      assert.ok(/Gerenciado pelo Mercado Livre/.test(texto), `o aviso de bloqueio do título deveria continuar aparecendo: ${texto}`);
+
+      const modeloInfo = await cdp.evaluate("document.getElementById('am-det-modelo').readOnly");
+      assert.ok(!modeloInfo, "modelo deveria continuar editável");
+    });
+
+    await check("7c — sem catalog_listing e sem family_name: anúncio tradicional, nada travado", async () => {
+      await abrirComModo("nenhum");
+      const semTagLista = await cdp.evaluate("document.querySelector('.am-row .vf-tag.is-primary')");
+      assert.strictEqual(semTagLista, null, "sem os dois sinais, a tag não deveria aparecer");
+
+      await abrirPrimeiroAnuncio(cdp);
+      const tituloNormal = await cdp.evaluate("document.getElementById('am-det-titulo').readOnly");
+      assert.ok(!tituloNormal, "anúncio tradicional não deveria ter o título travado");
+      const texto = await textoModal(cdp);
+      assert.ok(!/Catálogo/.test(texto), `não deveria sobrar menção a catálogo: ${texto}`);
     });
 
     await check("8 — alterações pendentes são detectadas e nomeadas", async () => {

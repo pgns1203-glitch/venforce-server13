@@ -142,6 +142,9 @@ function mapearItem(body, clienteId, clienteSlug, contaId = null, mlUserId = nul
     health: typeof body.health === "number" ? body.health : null,
     score_venforce: score,
     score_motivo: motivo,
+    catalog_listing: typeof body.catalog_listing === "boolean" ? body.catalog_listing : null,
+    catalog_product_id: body.catalog_product_id || null,
+    family_name: body.family_name || null,
   };
 }
 

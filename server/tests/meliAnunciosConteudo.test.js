@@ -431,6 +431,74 @@ async function run() {
     ok("ML fora do ar vira resultado de campo com motivo, e o banco não se move");
   });
 
+  // 12. Anúncio de catálogo (family_name já sincronizado): título é recusado
+  //     LOCALMENTE, sem gastar chamada ao ML — mesma lógica do TITULO_LONGO.
+  await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture({ family_name: "Serum Ácido Salicílico" })] }, async (db) => {
+    mlChamadas = [];
+    mlHandler = () => ({ ok: true, status: 200, data: {} });
+
+    const res = fakeRes();
+    await ctrl.atualizarConteudo({
+      params: { itemId: "MLB123" },
+      body: { clienteSlug: "cliente-a", titulo: "Título novo" },
+    }, res);
+
+    assert.strictEqual(res.corpo.ok, false);
+    assert.strictEqual(res.corpo.resultados.titulo.codigo, "TITLE_LOCKED_BY_CATALOG");
+    assert.strictEqual(mlChamadas.filter((c) => c.metodo === "PUT" && c.path === "/items/MLB123" && c.body.title).length, 0,
+      "não faz sentido chamar o ML pra título sabendo que o catálogo trava");
+    assert.strictEqual(db.anuncios[0].titulo, "Título original");
+    ok("anúncio de catálogo (family_name sincronizado): título recusado sem chamar o ML");
+  });
+
+  // 13. Mesmo anúncio de catálogo: modelo e descrição continuam funcionando
+  //     normalmente — só o título é travado.
+  await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture({ family_name: "Serum Ácido Salicílico" })] }, async (db) => {
+    mlChamadas = [];
+    mlHandler = () => ({ ok: true, status: 200, data: {} });
+
+    const res = fakeRes();
+    await ctrl.atualizarConteudo({
+      params: { itemId: "MLB123" },
+      body: { clienteSlug: "cliente-a", titulo: "Título novo", modelo: "X300", descricao: "Nova descrição." },
+    }, res);
+
+    assert.strictEqual(res.corpo.resultados.titulo.ok, false);
+    assert.strictEqual(res.corpo.resultados.modelo.ok, true, "catálogo não deveria travar o modelo");
+    assert.strictEqual(res.corpo.resultados.descricao.ok, true, "catálogo não deveria travar a descrição");
+    assert.strictEqual(db.anuncios[0].modelo, "X300");
+    ok("anúncio de catálogo: modelo e descrição seguem editáveis, só o título é travado");
+  });
+
+  // 14. Linha ainda NÃO resincronizada (family_name/catalog_listing nulos no
+  //     banco), mas o ML já recusa por catálogo: fallback reconhece o texto
+  //     de `error` (formato atípico: cause é número, motivo real vem em
+  //     `error`, não em `cause[]`) e mapeia para o mesmo código de domínio —
+  //     nunca deixa vazar BODY_INVALID_FIELDS genérico pro usuário.
+  await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture()] }, async (db) => {
+    mlChamadas = [];
+    mlHandler = (c) => {
+      if (c.body && c.body.title) {
+        return {
+          ok: false, status: 400,
+          data: { cause: 374, message: "BODY_INVALID_FIELDS", error: "You cannot modify the title if the item has a family_name" },
+        };
+      }
+      return { ok: true, status: 200, data: {} };
+    };
+
+    const res = fakeRes();
+    await ctrl.atualizarConteudo({
+      params: { itemId: "MLB123" },
+      body: { clienteSlug: "cliente-a", titulo: "Título novo" },
+    }, res);
+
+    assert.strictEqual(res.corpo.resultados.titulo.codigo, "TITLE_LOCKED_BY_CATALOG");
+    assert.notStrictEqual(res.corpo.resultados.titulo.codigo, "BODY_INVALID_FIELDS");
+    assert.strictEqual(db.anuncios[0].titulo, "Título original");
+    ok("fallback: linha desatualizada + ML recusa por family_name — mapeado pro código de domínio, não BODY_INVALID_FIELDS");
+  });
+
   console.log(`\n✓ ${checks} verificações de edição de conteúdo de anúncio ML`);
 }
 

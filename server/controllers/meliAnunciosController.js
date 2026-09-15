@@ -417,6 +417,7 @@ async function atualizarConteudo(req, res) {
       itemId,
       mlUserId,
       campos,
+      anuncio,
     });
 
     // Snapshot local só do que o ML confirmou.

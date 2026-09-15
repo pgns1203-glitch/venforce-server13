@@ -56,6 +56,27 @@ function falha(codigo, motivo) {
   return { ok: false, codigo, motivo };
 }
 
+// Achado da investigação do BODY_INVALID_FIELDS: para título, o ML devolve um
+// formato atípico — `cause` é um número (não array), `message` é o código
+// genérico ("BODY_INVALID_FIELDS") e a explicação real vem em `error`:
+//   { cause: 374, message: "BODY_INVALID_FIELDS",
+//     error: "You cannot modify the title if the item has a family_name" }
+// Por isso `codigoDoErroMl`/`motivoDoErroMl` (pensados para o formato usual
+// com `cause[]`) não pegam essa explicação — ela só existe em `data.error`.
+const MOTIVO_CATALOGO =
+  "O título deste anúncio é definido pelo catálogo do Mercado Livre e não pode ser alterado por aqui.";
+
+function falhaCatalogo() {
+  return falha("TITLE_LOCKED_BY_CATALOG", MOTIVO_CATALOGO);
+}
+
+// Reconhece a recusa de catálogo a partir do corpo bruto do ML, para o caso
+// (raro) de o anúncio ainda não ter sido resincronizado com family_name.
+function ehRecusaPorCatalogo(data) {
+  const texto = String((data && data.error) || (data && data.message) || "");
+  return /family_name/i.test(texto);
+}
+
 // ---------------------------------------------------------------------------
 // PUT /items/{id} — usado por título e por modelo, um campo de cada vez.
 // ---------------------------------------------------------------------------
@@ -66,33 +87,15 @@ async function enviarItem(clienteId, itemId, corpo, mlUserId) {
     { method: "PUT", body: JSON.stringify(corpo), mlUserId }
   );
   if (resp && resp.ok) return { ok: true, item: resp.data || null };
-  // DEBUG TEMPORÁRIO — investigação do BODY_INVALID_FIELDS em título.
-  // Remover depois do diagnóstico: motivoDoErroMl/codigoDoErroMl abaixo
-  // descartam boa parte do corpo (cause[] completo, references, etc.),
-  // então aqui vai o response bruto que normalmente nunca é logado.
-  console.error(JSON.stringify({
-    event: "ml_put_item_rejected_DEBUG_TEMP",
-    itemId,
-    payloadEnviado: corpo,
-    status: resp && resp.status,
-    responseBody: resp && resp.data,
-  }, null, 2));
   const f = falha(
     codigoDoErroMl(resp && resp.data, resp && resp.status),
     motivoDoErroMl(resp && resp.data, resp && resp.status)
   );
-  // DEBUG TEMPORÁRIO — vai junto no resultado interno; só o orquestrador
-  // decide se isso é exposto na resposta HTTP (hoje, só para título).
-  f.debugMlResponseTemp = {
-    itemId,
-    payloadEnviado: corpo,
-    status: resp && resp.status,
-    responseBody: resp && resp.data,
-  };
+  f.mlData = resp && resp.data; // corpo bruto, para checagens específicas do chamador (ex.: catálogo)
   return f;
 }
 
-async function atualizarTitulo({ clienteId, itemId, titulo, mlUserId }) {
+async function atualizarTitulo({ clienteId, itemId, titulo, mlUserId, catalogoTravado }) {
   const valor = String(titulo == null ? "" : titulo).trim();
   if (!valor) return falha("TITULO_VAZIO", "O título não pode ficar vazio.");
   if (valor.length > TITULO_MAX) {
@@ -101,8 +104,15 @@ async function atualizarTitulo({ clienteId, itemId, titulo, mlUserId }) {
       `O título tem ${valor.length} caracteres — o Mercado Livre aceita até ${TITULO_MAX}.`
     );
   }
+  // Pré-checagem: o próprio anúncio já indica catálogo/família (sincronizado
+  // do ML) — nem gasta a chamada, mesma lógica do TITULO_LONGO acima.
+  if (catalogoTravado) return falhaCatalogo();
+
   const r = await enviarItem(clienteId, itemId, { title: valor }, mlUserId);
-  return r.ok ? { ok: true, valor } : r;
+  if (r.ok) return { ok: true, valor };
+  // Fallback: linha ainda não resincronizada, mas o ML confirma catálogo agora.
+  if (ehRecusaPorCatalogo(r.mlData)) return falhaCatalogo();
+  return r;
 }
 
 async function atualizarModelo({ clienteId, itemId, modelo, mlUserId }) {
@@ -143,12 +153,17 @@ async function atualizarDescricao({ clienteId, itemId, descricao, mlUserId }) {
 // título → modelo → descrição, e devolve um resultado POR CAMPO. Um campo que
 // falha não impede os outros — e não deixa o snapshot local mentir sobre ele.
 // ---------------------------------------------------------------------------
-async function aplicarConteudo({ clienteId, itemId, mlUserId, campos }) {
+async function aplicarConteudo({ clienteId, itemId, mlUserId, campos, anuncio }) {
   const resultados = {};
   const aplicados = {};
 
+  // `family_name`/`catalog_listing` vêm da sincronização (podem estar NULL
+  // em linhas antigas, até a próxima ressincronização). Se ausentes, a
+  // pré-checagem não trava nada — sobra o fallback dentro de atualizarTitulo.
+  const catalogoTravado = !!(anuncio && (anuncio.family_name || anuncio.catalog_listing));
+
   const executores = [
-    ["titulo", () => atualizarTitulo({ clienteId, itemId, titulo: campos.titulo, mlUserId })],
+    ["titulo", () => atualizarTitulo({ clienteId, itemId, titulo: campos.titulo, mlUserId, catalogoTravado })],
     ["modelo", () => atualizarModelo({ clienteId, itemId, modelo: campos.modelo, mlUserId })],
     ["descricao", () => atualizarDescricao({ clienteId, itemId, descricao: campos.descricao, mlUserId })],
   ];
@@ -169,12 +184,6 @@ async function aplicarConteudo({ clienteId, itemId, mlUserId, campos }) {
     resultados[campo] = r.ok
       ? { ok: true }
       : { ok: false, codigo: r.codigo, motivo: r.motivo };
-    // DEBUG TEMPORÁRIO — investigação do BODY_INVALID_FIELDS em título.
-    // Só título expõe o response bruto do ML na resposta HTTP; remover
-    // este bloco (e o campo debugMlResponseTemp em enviarItem) depois.
-    if (!r.ok && campo === "titulo" && r.debugMlResponseTemp) {
-      resultados[campo].debugMlResponseTemp = r.debugMlResponseTemp;
-    }
     if (r.ok) aplicados[campo] = r.valor;
   }
 

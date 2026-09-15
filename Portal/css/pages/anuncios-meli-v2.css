@@ -770,6 +770,19 @@
   color: var(--vf-text-muted);
 }
 
+.vf-page-anuncios-meli .am-det-title__locknote {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-det-title__input[readonly] {
+  cursor: default;
+}
+
+.vf-page-anuncios-meli .am-det-title__input[readonly]:hover {
+  background: transparent;
+}
+
 /* ----- Campo curto editável inline (Modelo) ----- */
 
 .vf-page-anuncios-meli .am-det-inline {

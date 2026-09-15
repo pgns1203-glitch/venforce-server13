@@ -74,6 +74,8 @@ function anuncio(conta) {
     health: 0.82, score_venforce: 61, score_motivo: "Menos de 3 fotos",
     revisado: false, cliente_conta_id: a.cliente_conta_id, ml_user_id: a.ml_user_id,
     last_synced_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+    catalog_listing: catalogoAtivo || null,
+    family_name: catalogoAtivo ? "Serum Ácido Salicílico" : null,
   };
 }
 
@@ -110,6 +112,7 @@ let iaProibida = false;
 let descricaoEstado = "ok";          // ok | sem_descricao | erro
 let categoriaNomeResposta = "Celulares e Smartphones"; // null = simula falha de resolução
 let precoOriginalAtivo = true;       // false = anúncio sem promoção (preco_original nulo)
+let catalogoAtivo = false;           // true = anúncio de catálogo (family_name/catalog_listing)
 let detalheAtrasoPorItem = {};       // itemId -> ms
 let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
 const pedidos = [];                  // toda URL de API disparada
@@ -508,6 +511,31 @@ async function run() {
       assert.strictEqual(info.tag, "TEXTAREA");
       assert.ok(!info.readonly, "a descrição deveria ser editável");
       assert.strictEqual(info.valor, DESC_A);
+    });
+
+    await check("7a — anúncio de catálogo: título fica readonly, tag Catálogo aparece, modelo continua editável", async () => {
+      await fecharModal(cdp);
+      catalogoAtivo = true;
+      await abrirPrimeiroAnuncio(cdp);
+
+      const tituloInfo = await cdp.evaluate(`(function(){ var e = document.getElementById('am-det-titulo');
+        return { readonly: e.readOnly, disabled: e.disabled }; })()`);
+      assert.ok(tituloInfo.readonly, "título de anúncio de catálogo deveria ficar readonly");
+      assert.ok(!tituloInfo.disabled, "readonly (não disabled) para continuar selecionável/copiável");
+
+      const texto = await textoModal(cdp);
+      assert.ok(/Catálogo/.test(texto), `a tag/aviso de catálogo não apareceu no modal: ${texto}`);
+      assert.ok(/Gerenciado pelo Mercado Livre/.test(texto), `o aviso explicando o motivo não apareceu: ${texto}`);
+
+      const modeloInfo = await cdp.evaluate(`(function(){ var e = document.getElementById('am-det-modelo');
+        return { readonly: e.readOnly }; })()`);
+      assert.ok(!modeloInfo.readonly, "modelo deveria continuar editável mesmo em anúncio de catálogo");
+
+      await fecharModal(cdp);
+      catalogoAtivo = false;
+      await abrirPrimeiroAnuncio(cdp);
+      const tituloNormal = await cdp.evaluate("document.getElementById('am-det-titulo').readOnly");
+      assert.ok(!tituloNormal, "anúncio normal não deveria ter o título travado");
     });
 
     await check("8 — alterações pendentes são detectadas e nomeadas", async () => {

@@ -78,6 +78,17 @@ async function ensureSchema() {
       ADD COLUMN IF NOT EXISTS ml_user_id TEXT;
   `);
 
+  // Catálogo do Mercado Livre: item com family_name (ou catalog_listing=true)
+  // tem o título gerenciado pelo ML — PUT de título é recusado (achado da
+  // investigação do BODY_INVALID_FIELDS). Nullable — linhas antigas ficam
+  // NULL até a próxima ressincronização, igual ao padrão acima.
+  await db.query(`
+    ALTER TABLE meli_anuncios
+      ADD COLUMN IF NOT EXISTS catalog_listing BOOLEAN,
+      ADD COLUMN IF NOT EXISTS catalog_product_id TEXT,
+      ADD COLUMN IF NOT EXISTS family_name TEXT;
+  `);
+
   await db.query(
     `CREATE INDEX IF NOT EXISTS idx_meli_anuncios_cliente ON meli_anuncios (cliente_id);`
   );
@@ -284,7 +295,8 @@ async function listarAnuncios({
         item_id, sku, titulo, marca, modelo, preco, preco_original, moeda,
         estoque, vendidos, status, sub_status, listing_type_id, category_id,
         permalink, thumbnail, pictures_count, logistic_type, is_full,
-        health, score_venforce, score_motivo, revisado, last_synced_at
+        health, score_venforce, score_motivo, revisado, last_synced_at,
+        catalog_listing
        FROM meli_anuncios
        WHERE ${whereSql}
        ORDER BY revisado ASC, score_venforce ASC NULLS FIRST, updated_at DESC
@@ -423,6 +435,7 @@ async function upsertAnuncios(registros) {
       listing_type_id, category_id, permalink, thumbnail, pictures_count,
       pictures_json, logistic_type, is_full, attributes_json, health,
       score_venforce, score_motivo, cliente_conta_id, ml_user_id,
+      catalog_listing, catalog_product_id, family_name,
       last_synced_at, updated_at
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7,
@@ -430,6 +443,7 @@ async function upsertAnuncios(registros) {
       $15, $16, $17, $18, $19,
       $20, $21, $22, $23, $24,
       $25, $26, $27, $28,
+      $29, $30, $31,
       NOW(), NOW()
     )
     ON CONFLICT (cliente_id, item_id) DO UPDATE SET
@@ -458,6 +472,9 @@ async function upsertAnuncios(registros) {
       score_motivo    = EXCLUDED.score_motivo,
       cliente_conta_id = EXCLUDED.cliente_conta_id,
       ml_user_id      = EXCLUDED.ml_user_id,
+      catalog_listing = EXCLUDED.catalog_listing,
+      catalog_product_id = EXCLUDED.catalog_product_id,
+      family_name     = EXCLUDED.family_name,
       last_synced_at  = NOW(),
       updated_at      = NOW();
   `;
@@ -493,6 +510,9 @@ async function upsertAnuncios(registros) {
       r.score_motivo,
       r.cliente_conta_id ?? null,
       r.ml_user_id != null ? String(r.ml_user_id) : null,
+      r.catalog_listing ?? null,
+      r.catalog_product_id ?? null,
+      r.family_name ?? null,
     ]);
     salvos++;
   }

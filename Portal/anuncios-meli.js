@@ -797,13 +797,18 @@
 
   function familiaHtml(fam, idx) {
     var painelId = "am-fam-painel-" + idx;
+    // A capa vem pronta em cover.thumbnail: o backend elege a variação que
+    // representa a família (a mais relevante para a busca, quando há busca) a
+    // cada leitura de GET /familias. O front NÃO deduz capa a partir dos
+    // itens — se fizesse isso, a imagem só apareceria depois de expandir e
+    // poderia contradizer a escolha da API.
+    var capa = (fam.cover && fam.cover.thumbnail)
+      ? '<img src="' + escapeHtml(fam.cover.thumbnail) + '" alt="" loading="lazy" />'
+      : iconeImagemSvg();
     return '<div class="am-familia" data-familia="' + escapeAttr(fam.family_id) + '">' +
       '<button type="button" class="am-familia__head" aria-expanded="false" aria-controls="' + painelId + '">' +
         '<span class="am-familia__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
-        // A listagem de famílias não traz imagem; a moldura existe desde
-        // o primeiro paint para a coluna não dançar, e é preenchida em
-        // renderFamiliaDetalhe() com a capa do primeiro item.
-        '<span class="am-familia__thumb" aria-hidden="true">' + iconeImagemSvg() + "</span>" +
+        '<span class="am-familia__thumb" aria-hidden="true">' + capa + "</span>" +
         '<span class="am-familia__cel">' +
           '<span class="am-familia__nome">' + escapeHtml(fam.family_name || "(família sem nome)") + "</span>" +
           '<span class="am-familia__id">' + escapeHtml(fam.family_id) + "</span>" +
@@ -875,26 +880,7 @@
     ups.forEach(function (up) { html += userProductHtml(up); });
     painel.innerHTML = html;
     bindLinhasMlb(painel);
-    preencherCapaDaFamilia(familia, painel);
-  }
-
-  // A linha da família ganha a capa do primeiro item assim que a família
-  // é aberta — a listagem de famílias não devolve imagem. Reabrir pelo
-  // cache reexecuta isto, então a capa persiste sem requisição nova.
-  function preencherCapaDaFamilia(familia, painel) {
-    var caixa = painel.closest(".am-familia");
-    var moldura = caixa && caixa.querySelector(".am-familia__thumb");
-    if (!moldura || moldura.querySelector("img")) return;
-    var ups = familia.user_products || [];
-    for (var i = 0; i < ups.length; i++) {
-      var itens = ups[i].itens || [];
-      for (var j = 0; j < itens.length; j++) {
-        if (itens[j].thumbnail) {
-          moldura.innerHTML = '<img src="' + escapeHtml(itens[j].thumbnail) + '" alt="" loading="lazy" />';
-          return;
-        }
-      }
-    }
+    // Expandir não mexe na capa: ela já veio decidida na listagem.
   }
 
   // Nível 2 — faixa de grupo: agrupamento visual puro, nenhum handler,

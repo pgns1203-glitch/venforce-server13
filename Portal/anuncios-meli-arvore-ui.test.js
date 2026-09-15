@@ -12,6 +12,9 @@
  *     pode reaparecer com os dados velhos (guarda de época);
  *   · um user_product com 2 MLBs aparece UMA vez, com os dois anúncios dentro;
  *   · clicar numa linha MLB da árvore abre o MESMO modal do catálogo;
+ *   · a capa da família é a que o backend escolheu (cover.thumbnail): aparece
+ *     com a família FECHADA, sobrevive à expansão e acompanha a busca — o
+ *     front nunca recalcula a capa a partir dos itens;
  *   · o badge da aba "Sem agrupamento" vem de ?filtro=sem_agrupamento (a mesma
  *     fonte da lista), nunca de sem_user_product.total — que conta menos;
  *   · os KPIs que escrevem `filtro` ficam desabilitados onde não se aplicam.
@@ -42,19 +45,43 @@ const ME_CONTEXT = {
   permissoes: { podeAdministrar: false },
 };
 
+// Capas. Quem escolhe é o backend (GET /familias devolve cover.thumbnail); o
+// front só desenha. Os endereços abaixo são distintos de propósito: é a
+// diferença entre eles que denuncia uma capa escolhida no lugar errado.
+const CAPA_FAM1 = "https://http2.mlstatic.com/capa-fam1.jpg";
+const CAPA_FAM1_BUSCA = "https://http2.mlstatic.com/capa-fam1-azul.jpg";
+const CAPA_LOJA_B = "https://http2.mlstatic.com/capa-lojab.jpg";
+const IMAGEM_DO_PRIMEIRO_ITEM = "https://http2.mlstatic.com/item-a1.jpg";
+const IMAGEM_DO_ITEM_DA_FAM2 = "https://http2.mlstatic.com/item-b9.jpg";
+
 // Fixture da árvore. FAM-1 tem o caso que motivou a modelagem inteira: um
 // user_product com DOIS MLBs (confirmado em produção nos clientes 32 e 35).
+// A capa de FAM-1 aponta de propósito para o SEGUNDO user product: a régua
+// antiga do front ("primeira imagem do primeiro item") escolheria a do
+// MLBU-100, então só quem obedece à API passa.
 const FAMILIAS_CONTA_42 = [
   { family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina", total_user_products: 2, total_itens: 3,
+    cover: { thumbnail: CAPA_FAM1, user_product_id: "MLBU-200" },
     user_products: [
       { user_product_id: "MLBU-100", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 2 },
       { user_product_id: "MLBU-200", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 1 },
     ] },
+  // Família sem capa: o backend diz que nenhuma variação serve de capa, e o
+  // front tem de respeitar isso mesmo tendo itens com imagem à mão.
   { family_id: "FAM-2", family_name: "Caneca Térmica 500ml", total_user_products: 1, total_itens: 1,
+    cover: { thumbnail: null, user_product_id: "MLBU-300" },
     user_products: [{ user_product_id: "MLBU-300", site_id: "MLB", domain_id: "MLB-MUGS", total_itens: 1 }] },
+];
+// Mesma família de FAM-1 com q="Azul": o backend troca a variação relevante,
+// e a capa da tela tem de trocar junto.
+const FAMILIAS_CONTA_42_BUSCA = [
+  Object.assign({}, FAMILIAS_CONTA_42[0], {
+    cover: { thumbnail: CAPA_FAM1_BUSCA, user_product_id: "MLBU-200" },
+  }),
 ];
 const FAMILIAS_CONTA_43 = [
   { family_id: "FAM-1", family_name: "FAMÍLIA DA LOJA B", total_user_products: 1, total_itens: 1,
+    cover: { thumbnail: CAPA_LOJA_B, user_product_id: "MLBU-900" },
     user_products: [{ user_product_id: "MLBU-900", site_id: "MLB", domain_id: "MLB-OTHER", total_itens: 1 }] },
 ];
 
@@ -70,8 +97,11 @@ const DETALHE_CONTA_42 = {
   "FAM-1": {
     family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
     user_products: [
+      // MLB-A1 tem imagem PRÓPRIA, diferente da capa: se o front voltar a
+      // deduzir a capa pelo primeiro item, é esta que apareceria no cabeçalho.
       { user_product_id: "MLBU-100", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 2,
-        itens: [item("MLB-A1", "Camiseta Dry Fit Preta P", "MLBU-100"), item("MLB-A2", "Camiseta Dry Fit Preta M", "MLBU-100")] },
+        itens: [item("MLB-A1", "Camiseta Dry Fit Preta P", "MLBU-100", { thumbnail: IMAGEM_DO_PRIMEIRO_ITEM }),
+                item("MLB-A2", "Camiseta Dry Fit Preta M", "MLBU-100")] },
       { user_product_id: "MLBU-200", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 1,
         itens: [item("MLB-A3", "Camiseta Dry Fit Azul G", "MLBU-200")] },
     ],
@@ -80,7 +110,8 @@ const DETALHE_CONTA_42 = {
     family_id: "FAM-2", family_name: "Caneca Térmica 500ml",
     user_products: [
       { user_product_id: "MLBU-300", site_id: "MLB", domain_id: "MLB-MUGS", total_itens: 1,
-        itens: [item("MLB-B9", "Caneca Térmica Inox 500ml", "MLBU-300", { family_id: "FAM-2" })] },
+        itens: [item("MLB-B9", "Caneca Térmica Inox 500ml", "MLBU-300",
+          { family_id: "FAM-2", thumbnail: IMAGEM_DO_ITEM_DA_FAM2 })] },
     ],
   },
 };
@@ -248,7 +279,10 @@ function wireInterception(cdp) {
     }
 
     if (caminho.startsWith("/anuncios-meli/familias")) {
-      const familias = conta === "43" ? FAMILIAS_CONTA_43 : FAMILIAS_CONTA_42;
+      const termo = new URL(url).searchParams.get("q");
+      const familias = conta === "43"
+        ? FAMILIAS_CONTA_43
+        : (termo ? FAMILIAS_CONTA_42_BUSCA : FAMILIAS_CONTA_42);
       await corpo({
         ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
         familias,
@@ -551,10 +585,72 @@ async function run() {
       assert.strictEqual(m.modal, "true");
     });
 
-    /* ── 15: nenhum erro de JS na página ───────────────────────────────── */
+    /* ── 15 a 18: a capa da família é a que o backend escolheu ──────────── */
 
-    await check("15 — nenhum erro de JavaScript durante os fluxos", async () => {
-      const jsErros = await cdp.evaluate("window.__erros || []");
+    // O reload devolve a tela ao contexto da conta 42 e fecha o modal do 14.
+    // Guardo os erros de JS acumulados até aqui porque o documento novo zera
+    // window.__erros e a última verificação precisa cobrir a sessão inteira.
+    const errosAteAqui = await cdp.evaluate("window.__erros || []");
+    pedidos.length = 0;
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+    await waitFor(cdp, "document.querySelector('.am-familia')", "a árvore não voltou depois do reload");
+
+    const capaDe = (familyId) => `(function(){
+      var m = document.querySelector('.am-familia[data-familia=${JSON.stringify(familyId)}] .am-familia__thumb');
+      var img = m && m.querySelector('img');
+      return { temImg: Boolean(img), src: img ? img.getAttribute('src') : null,
+               temPlaceholder: Boolean(m && m.querySelector('svg')) }; })()`;
+
+    await check("15 — a família FECHADA já mostra a capa escolhida pela API", async () => {
+      const capa = await cdp.evaluate(capaDe("FAM-1"));
+      assert.strictEqual(capa.temImg, true, "a família fechada continuou no placeholder cinza");
+      assert.strictEqual(capa.src, CAPA_FAM1, "a capa não é a que veio em cover.thumbnail");
+      assert.strictEqual(capa.temPlaceholder, false, "o ícone de placeholder ficou junto da imagem");
+      assert.strictEqual(contar(/\/familias\/FAM-1/, 0), 0, "a capa não pode custar requisição de detalhe");
+    });
+
+    await check("16 — família sem capa na API mantém o placeholder", async () => {
+      const capa = await cdp.evaluate(capaDe("FAM-2"));
+      assert.strictEqual(capa.temImg, false, "inventou imagem para uma família sem cover.thumbnail");
+      assert.strictEqual(capa.temPlaceholder, true, "sem capa a moldura precisa manter o ícone");
+    });
+
+    await check("17 — expandir não altera a capa: quem decide é o backend", async () => {
+      await clicar(cdp, '.am-familia[data-familia="FAM-1"] .am-familia__head');
+      await waitFor(cdp, "document.querySelector('.am-familia[data-familia=\"FAM-1\"] .am-up')", "FAM-1 não abriu");
+      const fam1 = await cdp.evaluate(capaDe("FAM-1"));
+      assert.strictEqual(fam1.src, CAPA_FAM1,
+        `a expansão trocou a capa pela imagem de um item (${fam1.src})`);
+
+      // FAM-2 é o caso decisivo: o item TEM imagem e a API disse que a família
+      // não tem capa. Se o front voltar a deduzir, é aqui que ele se entrega.
+      await clicar(cdp, '.am-familia[data-familia="FAM-2"] .am-familia__head');
+      await waitFor(cdp, "document.querySelector('.am-familia[data-familia=\"FAM-2\"] .am-up')", "FAM-2 não abriu");
+      const fam2 = await cdp.evaluate(capaDe("FAM-2"));
+      assert.strictEqual(fam2.temImg, false,
+        `o front recalculou a capa a partir dos itens (${fam2.src})`);
+      assert.strictEqual(fam2.temPlaceholder, true);
+    });
+
+    await check("18 — a busca troca a capa conforme a variação relevante da API", async () => {
+      const antes = pedidos.length;
+      await cdp.evaluate(`(function(){
+        var i = document.getElementById('am-busca');
+        i.value = 'Azul';
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await waitFor(cdp,
+        `(function(){ var i = document.querySelector('.am-familia[data-familia="FAM-1"] .am-familia__thumb img');
+           return i && i.getAttribute('src') === ${JSON.stringify(CAPA_FAM1_BUSCA)}; })()`,
+        "a capa não acompanhou a busca");
+      const pedido = pedidos.slice(antes).filter((u) => /^\/anuncios-meli\/familias\?/.test(u)).pop();
+      assert.ok(/[?&]q=Azul/.test(pedido || ""), `a busca não chegou ao endpoint de famílias: ${pedido}`);
+    });
+
+    /* ── 19: nenhum erro de JS na página ───────────────────────────────── */
+
+    await check("19 — nenhum erro de JavaScript durante os fluxos", async () => {
+      const jsErros = errosAteAqui.concat(await cdp.evaluate("window.__erros || []"));
       assert.deepStrictEqual(jsErros, [], `erros de JS: ${JSON.stringify(jsErros)}`);
       assert.deepStrictEqual(excecoes, [], `exceções: ${JSON.stringify(excecoes)}`);
     });

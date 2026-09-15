@@ -152,8 +152,258 @@ async function registrarUserProducts(registros) {
   return salvos;
 }
 
+// -----------------------------------------------------------------------------
+// Leitura agrupada: Família -> User Product -> Item MLB.
+//
+// Regra canônica (decisão explícita da modelagem, ver
+// docs/AUDITORIA_MELI_USER_PRODUCTS_POS_IMPLEMENTACAO.md e o diagnóstico da
+// missão de account-scope):
+//
+//   meli_anuncios       = autoridade de account-scope (cliente_conta_id)
+//   meli_user_products  = autoridade da hierarquia (user_product_id -> family_id)
+//
+// meli_user_products.cliente_conta_id NUNCA é usado como filtro de segurança
+// — sua UNIQUE é (cliente_id, user_product_id), sem a conta, e o upsert
+// sobrescreve esse campo sem COALESCE. Toda leitura abaixo parte de uma CTE
+// "escopo" sobre meli_anuncios (a mesma fonte que os 3 endpoints existentes
+// já usam) e só então junta com meli_user_products para achar a família —
+// assim uma família/UP/item que só existe para outra conta nunca aparece,
+// mesmo que meli_user_products.cliente_conta_id esteja desatualizado.
+// -----------------------------------------------------------------------------
+
+function clausulaConta({ clienteContaId, includeLegacy, paramIndex }) {
+  if (clienteContaId == null) return { sql: "", param: null };
+  const sql = includeLegacy
+    ? ` AND (a.cliente_conta_id = $${paramIndex} OR a.cliente_conta_id IS NULL)`
+    : ` AND a.cliente_conta_id = $${paramIndex}`;
+  return { sql, param: clienteContaId };
+}
+
+// Página de famílias + agregados (sem carregar nenhum MLB). Paginação por
+// família: LIMIT/OFFSET contam family_id distintos, nunca item_id.
+async function listarFamilias({
+  clienteId,
+  clienteContaId = null,
+  includeLegacy = true,
+  q = "",
+  page = 1,
+  limit = 20,
+}) {
+  await ensureSchema();
+
+  const params = [clienteId];
+  let i = 2;
+
+  const conta = clausulaConta({ clienteContaId, includeLegacy, paramIndex: i });
+  if (conta.param != null) { params.push(conta.param); i++; }
+
+  const termo = String(q || "").trim();
+  let cteMatch = "";
+  let filtroMatch = "";
+  if (termo) {
+    params.push(`%${termo}%`);
+    const qIdx = i;
+    i++;
+    cteMatch = `,
+    familias_match AS (
+      SELECT DISTINCT up.family_id
+      FROM escopo e
+      JOIN meli_user_products up ON up.cliente_id = $1 AND up.user_product_id = e.user_product_id
+      WHERE up.family_id IS NOT NULL
+        AND (up.family_name ILIKE $${qIdx} OR e.titulo ILIKE $${qIdx} OR e.sku ILIKE $${qIdx}
+             OR up.user_product_id ILIKE $${qIdx} OR e.item_id ILIKE $${qIdx})
+    )`;
+    filtroMatch = ` AND EXISTS (SELECT 1 FROM familias_match fm WHERE fm.family_id = up.family_id)`;
+  }
+
+  const lim = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+  const pag = Math.max(parseInt(page, 10) || 1, 1);
+  const offset = (pag - 1) * lim;
+  params.push(lim, offset);
+  const limIdx = i;
+  const offIdx = i + 1;
+
+  const sql = `
+    -- LISTAR_FAMILIAS_PAGINA
+    WITH escopo AS (
+      SELECT a.item_id, a.user_product_id, a.titulo, a.sku
+      FROM meli_anuncios a
+      WHERE a.cliente_id = $1
+        AND a.user_product_id IS NOT NULL
+        ${conta.sql}
+    )${cteMatch}
+    , agregado AS (
+      SELECT up.family_id, MAX(up.family_name) AS family_name,
+             COUNT(DISTINCT up.user_product_id)::int AS total_user_products,
+             COUNT(e.item_id)::int AS total_itens
+      FROM escopo e
+      JOIN meli_user_products up ON up.cliente_id = $1 AND up.user_product_id = e.user_product_id
+      WHERE up.family_id IS NOT NULL${filtroMatch}
+      GROUP BY up.family_id
+    )
+    SELECT family_id, family_name, total_user_products, total_itens,
+           COUNT(*) OVER()::int AS total_familias
+    FROM agregado
+    ORDER BY family_name ASC NULLS LAST, family_id ASC
+    LIMIT $${limIdx} OFFSET $${offIdx};
+  `;
+
+  const { rows } = await db.query(sql, params);
+  const totalFamilias = rows.length ? rows[0].total_familias : 0;
+
+  // Query 2: só os user_products das famílias desta página — nunca busca UP
+  // de família fora da página atual.
+  const familyIds = rows.map((r) => r.family_id);
+  const upsPorFamilia = new Map();
+  if (familyIds.length) {
+    const params2 = [clienteId];
+    let j = 2;
+    const conta2 = clausulaConta({ clienteContaId, includeLegacy, paramIndex: j });
+    if (conta2.param != null) { params2.push(conta2.param); j++; }
+    params2.push(familyIds);
+    const famIdx = j;
+
+    const sql2 = `
+      -- LISTAR_FAMILIAS_UPS_DA_PAGINA
+      WITH escopo AS (
+        SELECT a.item_id, a.user_product_id
+        FROM meli_anuncios a
+        WHERE a.cliente_id = $1
+          AND a.user_product_id IS NOT NULL
+          ${conta2.sql}
+      )
+      SELECT up.family_id, up.user_product_id, up.site_id, up.domain_id,
+             COUNT(e.item_id)::int AS total_itens
+      FROM escopo e
+      JOIN meli_user_products up ON up.cliente_id = $1 AND up.user_product_id = e.user_product_id
+      WHERE up.family_id = ANY($${famIdx}::text[])
+      GROUP BY up.family_id, up.user_product_id, up.site_id, up.domain_id
+      ORDER BY up.family_id, up.user_product_id;
+    `;
+    const { rows: upsRows } = await db.query(sql2, params2);
+    for (const r of upsRows) {
+      const lista = upsPorFamilia.get(r.family_id) || [];
+      lista.push({
+        user_product_id: r.user_product_id,
+        site_id: r.site_id,
+        domain_id: r.domain_id,
+        total_itens: r.total_itens,
+      });
+      upsPorFamilia.set(r.family_id, lista);
+    }
+  }
+
+  const familias = rows.map((r) => ({
+    family_id: r.family_id,
+    family_name: r.family_name,
+    total_user_products: r.total_user_products,
+    total_itens: r.total_itens,
+    user_products: upsPorFamilia.get(r.family_id) || [],
+  }));
+
+  return {
+    familias,
+    paginacao: {
+      page: pag,
+      limit: lim,
+      totalFamilias,
+      totalPaginas: Math.max(Math.ceil(totalFamilias / lim), 1),
+    },
+  };
+}
+
+// Contador de anúncios sem User Product (legado). Nunca misturado com a
+// listagem de famílias — bloco próprio na resposta do controller.
+async function contarSemUserProduct({ clienteId, clienteContaId = null, includeLegacy = true }) {
+  await ensureSchema();
+
+  const params = [clienteId];
+  const conta = clausulaConta({ clienteContaId, includeLegacy, paramIndex: 2 });
+  if (conta.param != null) params.push(conta.param);
+
+  const { rows } = await db.query(
+    `-- SEM_USER_PRODUCT_TOTAL
+     SELECT COUNT(*)::int AS total
+       FROM meli_anuncios a
+      WHERE a.cliente_id = $1 AND a.user_product_id IS NULL${conta.sql};`,
+    params
+  );
+  return rows[0] ? rows[0].total : 0;
+}
+
+// Detalhe de 1 família: User Products -> Itens MLB completos, sempre
+// escopados por meli_anuncios. Retorna null quando a família não existe
+// dentro do escopo pedido (conta errada, ou family_id inexistente) — o
+// controller responde 404 nos dois casos, sem distinguir, para nunca revelar
+// a existência de uma família de outra conta.
+async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null, includeLegacy = true }) {
+  await ensureSchema();
+
+  const params = [clienteId, familyId];
+  const conta = clausulaConta({ clienteContaId, includeLegacy, paramIndex: 3 });
+  if (conta.param != null) params.push(conta.param);
+
+  const { rows } = await db.query(
+    `-- FAMILIA_DETALHE_ITENS
+     SELECT a.item_id, a.user_product_id, a.titulo, a.status, a.preco,
+            a.estoque, a.sku, a.thumbnail, a.permalink,
+            up.site_id, up.domain_id, up.family_name
+       FROM meli_anuncios a
+       JOIN meli_user_products up
+         ON up.cliente_id = a.cliente_id AND up.user_product_id = a.user_product_id
+      WHERE a.cliente_id = $1
+        AND a.user_product_id IS NOT NULL
+        AND up.family_id = $2
+        ${conta.sql}
+      ORDER BY a.user_product_id, a.item_id;`,
+    params
+  );
+
+  if (!rows.length) return null;
+
+  const porUp = new Map();
+  let familyName = null;
+  for (const r of rows) {
+    if (r.family_name != null) familyName = r.family_name;
+    if (!porUp.has(r.user_product_id)) {
+      porUp.set(r.user_product_id, {
+        user_product_id: r.user_product_id,
+        site_id: r.site_id,
+        domain_id: r.domain_id,
+        itens: [],
+      });
+    }
+    porUp.get(r.user_product_id).itens.push({
+      item_id: r.item_id,
+      user_product_id: r.user_product_id,
+      family_id: familyId,
+      titulo: r.titulo,
+      status: r.status,
+      preco: r.preco,
+      estoque: r.estoque,
+      sku: r.sku,
+      thumbnail: r.thumbnail,
+      permalink: r.permalink,
+    });
+  }
+
+  const userProducts = Array.from(porUp.values()).map((up) => ({
+    ...up,
+    total_itens: up.itens.length,
+  }));
+
+  return {
+    family_id: familyId,
+    family_name: familyName,
+    user_products: userProducts,
+  };
+}
+
 module.exports = {
   ensureSchema,
   extrairUserProducts,
   registrarUserProducts,
+  listarFamilias,
+  contarSemUserProduct,
+  obterFamiliaDetalhe,
 };

@@ -21,8 +21,29 @@ function parseRetryAfter(res) {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
+// JSON.parse converte todo número para double: identificadores acima de
+// Number.MAX_SAFE_INTEGER (9.007.199.254.740.991) são truncados em SILÊNCIO —
+// sem erro, sem log. O family_id do Mercado Livre já chega a 99,4% desse
+// limite hoje, e a doc mostra valores na casa de 2^64.
+//
+// A saída: antes de parsear, os campos listados viram string no texto bruto.
+// Genérico por nome de campo (serve para inventory_id, family_id, o que for),
+// alcança ocorrências aninhadas e é idempotente — valor já entre aspas não
+// casa com a expressão.
+function parseJsonPreservingIds(texto, campos) {
+  let saida = String(texto);
+  for (const campo of campos) {
+    const nome = String(campo).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    saida = saida.replace(new RegExp(`("${nome}"\\s*:\\s*)(-?\\d+)`, "g"), '$1"$2"');
+  }
+  return JSON.parse(saida);
+}
+
+// options.bigIntFields: lista de campos cujo valor numérico deve chegar como
+// string íntegra (ver parseJsonPreservingIds). Opt-in — sem ele o parsing
+// segue exatamente como antes.
 async function mlFetch(clienteId, path, options = {}) {
-  const { mlUserId, noRefresh = false, ...fetchOptions } = options;
+  const { mlUserId, noRefresh = false, bigIntFields = null, ...fetchOptions } = options;
 
   async function doRequest(token) {
     return fetch(`${ML_API}${path}`, {
@@ -57,7 +78,11 @@ async function mlFetch(clienteId, path, options = {}) {
     }
 
     let data;
-    try { data = await res.json(); } catch (_) { data = null; }
+    try {
+      data = Array.isArray(bigIntFields) && bigIntFields.length
+        ? parseJsonPreservingIds(await res.text(), bigIntFields)
+        : await res.json();
+    } catch (_) { data = null; }
     return { ok: res.ok, status: res.status, data, retryAfter: parseRetryAfter(res) };
   } catch (error) {
     console.error(JSON.stringify({
@@ -75,4 +100,5 @@ module.exports = {
   getValidMlTokenByCliente,
   getMlTokenByClienteNoRefresh,
   parseRetryAfter,
+  parseJsonPreservingIds,
 };

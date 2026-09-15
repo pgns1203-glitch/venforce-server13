@@ -17,6 +17,12 @@
 
 const { mlFetch } = require("../../utils/mlClient");
 const anunciosService = require("./meliAnunciosService");
+const familiaService = require("./meliFamiliaService");
+
+// family_id do Mercado Livre estoura Number.MAX_SAFE_INTEGER. Todo multiget
+// precisa pedir o parsing que preserva o valor como string — ver
+// parseJsonPreservingIds em utils/mlClient.js.
+const CAMPOS_ID_GRANDE = ["family_id"];
 
 // Limites de segurança para não pesar o servidor / a API.
 const SCAN_LIMIT = 100; // itens por página do search scan
@@ -145,9 +151,20 @@ function mapearItem(body, clienteId, clienteSlug, contaId = null, mlUserId = nul
     catalog_listing: typeof body.catalog_listing === "boolean" ? body.catalog_listing : null,
     catalog_product_id: body.catalog_product_id || null,
     family_name: body.family_name || null,
-    // Chave estável do ML (User Product) — persistida como fundação para
-    // futuramente chegar em family_id. Não agrupa nada ainda nesta fase.
+    // Chave estável do ML (User Product) — persistida em meli_anuncios.
     user_product_id: body.user_product_id || null,
+
+    // Campos do User Product. NÃO são colunas de meli_anuncios: viajam no
+    // registro e são consumidos por meliFamiliaService.registrarUserProducts().
+    // upsertAnuncios() tem lista de colunas explícita, então os ignora.
+    //
+    // family_id só existe quando o item está no modelo UP; item legado
+    // (multivariante não migrado) não traz nenhum dos dois, e nada é inferido.
+    // Chega como string via bigIntFields — String() aqui é só defesa de tipo,
+    // não conserta um valor que já tenha sido parseado como Number.
+    family_id: body.family_id != null ? String(body.family_id) : null,
+    site_id: body.site_id || null,
+    domain_id: body.domain_id || null,
   };
 }
 
@@ -277,7 +294,7 @@ async function sincronizar({ clienteId, clienteSlug, modo, clienteContaId = null
     const resp = await mlFetch(
       clienteId,
       `/items?ids=${lote.join(",")}`,
-      { mlUserId }
+      { mlUserId, bigIntFields: CAMPOS_ID_GRANDE }
     );
 
     if (!resp || !resp.ok || !Array.isArray(resp.data)) {
@@ -295,6 +312,22 @@ async function sincronizar({ clienteId, clienteSlug, modo, clienteContaId = null
   // 4. upsert
   const totalSalvos = await anunciosService.upsertAnuncios(registros);
 
+  // 5. espelha os User Products do lote. Zero chamada extra ao Mercado Livre —
+  // family_id/site_id/domain_id já vieram no multiget acima. A tabela de UP é
+  // derivada: se falhar, o anúncio (que é o dado) continua salvo e a próxima
+  // sincronização reconstrói a linha.
+  let userProducts = 0;
+  try {
+    userProducts = await familiaService.registrarUserProducts(registros);
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "meli_user_products_falhou",
+      cliente_id: clienteId,
+      conta_id: contaId,
+      error: error && error.message,
+    }));
+  }
+
   return {
     ok: true,
     codigo: "OK",
@@ -304,6 +337,7 @@ async function sincronizar({ clienteId, clienteSlug, modo, clienteContaId = null
     totalEncontrados,
     totalProcessados: ids.length,
     totalSalvos,
+    userProducts,
     limitado,
   };
 }

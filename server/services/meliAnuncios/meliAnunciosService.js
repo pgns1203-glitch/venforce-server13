@@ -111,6 +111,14 @@ async function ensureSchema() {
     `CREATE INDEX IF NOT EXISTS idx_meli_anuncios_conta ON meli_anuncios (cliente_conta_id);`
   );
 
+  // user_product_id deixou de ser só atributo: virou a chave de relacionamento
+  // com meli_user_products (onde mora o family_id). Parcial porque anúncio
+  // legado, sem User Product, nunca participa do join.
+  await db.query(
+    `CREATE INDEX IF NOT EXISTS idx_meli_anuncios_user_product
+       ON meli_anuncios (cliente_id, user_product_id) WHERE user_product_id IS NOT NULL;`
+  );
+
   _schemaPronto = true;
 }
 

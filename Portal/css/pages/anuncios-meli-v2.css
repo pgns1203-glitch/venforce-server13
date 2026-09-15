@@ -177,8 +177,19 @@
   transition: background-color 0.12s;
 }
 
-.vf-page-anuncios-meli .am-resumo .am-kpi:hover {
+.vf-page-anuncios-meli .am-resumo .am-kpi:hover:not(:disabled) {
   background: var(--vf-surface-hover);
+}
+
+/* O card continua LEGÍVEL como número (é informação do resumo), só deixa de
+   se oferecer como filtro na aba onde o backend não aceita aquele recorte.
+   Por isso o alvo é o cursor e o hover, não a opacidade do texto inteiro. */
+.vf-page-anuncios-meli .am-resumo .am-kpi:disabled {
+  cursor: default;
+}
+
+.vf-page-anuncios-meli .am-resumo .am-kpi:disabled .vf-metric__label {
+  color: var(--vf-text-muted);
 }
 
 .vf-page-anuncios-meli .am-resumo .am-kpi:focus-visible {
@@ -366,6 +377,235 @@
   flex-wrap: wrap;
   gap: 5px;
   margin-top: 1px;
+}
+
+/* ------------------------------------------------------------
+ * Árvore Família -> User Product -> Item MLB.
+ *
+ * Três níveis com peso visual decrescente: a família é a superfície
+ * clicável, o User Product é só uma faixa de agrupamento (não é
+ * clicável de propósito — não é entidade operável) e a linha MLB é
+ * uma versão compacta da linha do catálogo, com as MESMAS ações.
+ * O recuo à esquerda é o que comunica a hierarquia.
+ * ------------------------------------------------------------ */
+.vf-page-anuncios-meli .am-modo {
+  margin-bottom: var(--vf-sp-4);
+}
+
+.vf-page-anuncios-meli .am-modo__badge {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 6px;
+  margin-left: var(--vf-sp-2);
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  line-height: 18px;
+  text-align: center;
+  background: var(--vf-surface-2);
+  border: 1px solid var(--vf-border);
+  border-radius: 999px;
+}
+
+.vf-page-anuncios-meli .am-arvore {
+  overflow: hidden;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+}
+
+.vf-page-anuncios-meli .am-familia {
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-page-anuncios-meli .am-familia:last-child {
+  border-bottom: none;
+}
+
+.vf-page-anuncios-meli .am-familia__head {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: var(--vf-sp-4);
+  align-items: center;
+  width: 100%;
+  padding: var(--vf-sp-3) var(--vf-sp-5);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+
+.vf-page-anuncios-meli .am-familia__head:hover,
+.vf-page-anuncios-meli .am-familia__head:focus-visible {
+  background: var(--vf-surface-hover);
+}
+
+.vf-page-anuncios-meli .am-familia__head:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: -2px;
+}
+
+.vf-page-anuncios-meli .am-familia__chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vf-text-muted);
+  transition: transform 120ms ease;
+}
+
+.vf-page-anuncios-meli .am-familia.is-aberta .am-familia__chevron {
+  transform: rotate(90deg);
+}
+
+.vf-page-anuncios-meli .am-familia__nome {
+  overflow: hidden;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-familia__contagem {
+  display: flex;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-anuncios-meli .am-familia__painel {
+  padding: 0 var(--vf-sp-5) var(--vf-sp-4) calc(var(--vf-sp-5) + 24px + var(--vf-sp-4));
+  background: var(--vf-surface-2);
+  border-top: 1px solid var(--vf-border);
+}
+
+/* Nível 2 — faixa de agrupamento, sem interação. */
+.vf-page-anuncios-meli .am-up {
+  margin-top: var(--vf-sp-4);
+}
+
+.vf-page-anuncios-meli .am-up__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-3);
+  align-items: baseline;
+  padding-bottom: var(--vf-sp-2);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-up__id {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-anuncios-meli .am-up__contagem {
+  margin-left: auto;
+}
+
+.vf-page-anuncios-meli .am-up__itens {
+  overflow: hidden;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+/* Nível 3 — linha MLB compacta (6 colunas, não as 8 do catálogo). */
+.vf-page-anuncios-meli .am-mlb {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 100px 108px 64px 32px;
+  gap: var(--vf-sp-3);
+  align-items: center;
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  cursor: pointer;
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-page-anuncios-meli .am-mlb:last-child {
+  border-bottom: none;
+}
+
+.vf-page-anuncios-meli .am-mlb:hover,
+.vf-page-anuncios-meli .am-mlb:focus-visible {
+  background: var(--vf-surface-hover);
+}
+
+.vf-page-anuncios-meli .am-mlb:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: -2px;
+}
+
+.vf-page-anuncios-meli .am-mlb__thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  color: var(--vf-text-placeholder, var(--vf-text-muted));
+  background: var(--vf-surface-2);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-page-anuncios-meli .am-mlb__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.vf-page-anuncios-meli .am-mlb__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-mlb__titulo {
+  overflow: hidden;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-mlb__ids {
+  display: flex;
+  gap: var(--vf-sp-3);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-mlb__preco,
+.vf-page-anuncios-meli .am-mlb__num {
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text);
+}
+
+.vf-page-anuncios-meli .am-mlb__num {
+  text-align: right;
+}
+
+.vf-page-anuncios-meli .am-mlb__acao {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 900px) {
+  .vf-page-anuncios-meli .am-familia__painel {
+    padding-left: var(--vf-sp-4);
+  }
+
+  .vf-page-anuncios-meli .am-mlb {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+  }
+
+  .vf-page-anuncios-meli .am-mlb__preco,
+  .vf-page-anuncios-meli .am-mlb__num {
+    display: none;
+  }
 }
 
 .vf-page-anuncios-meli .am-row__preco {

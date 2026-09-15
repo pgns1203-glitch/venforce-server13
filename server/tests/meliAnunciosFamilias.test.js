@@ -48,6 +48,7 @@ function anuncioFixture(over = {}) {
     sku: "SKU1",
     thumbnail: "http://thumb/1",
     permalink: "http://ml/1",
+    vendidos: 0,
     ...over,
   };
 }
@@ -228,6 +229,67 @@ class MockDb {
         porChave.get(chave).total_itens++;
       }
       return { rows: Array.from(porChave.values()) };
+    }
+
+    // --- LISTAR_FAMILIAS_CAPA_DA_PAGINA -----------------------------------
+    //
+    // Espelha o DISTINCT ON do Postgres: dentro de cada família, ordena os
+    // itens do escopo pela mesma régua da consulta real e fica com o
+    // primeiro. Com termo de busca, quem casa com o termo vem antes.
+    if (q.includes("-- LISTAR_FAMILIAS_CAPA_DA_PAGINA")) {
+      let i = 0;
+      const clienteId = params[i++];
+      const temConta = q.includes("a.cliente_conta_id = $");
+      const includeLegacy = temConta ? q.includes("OR a.cliente_conta_id IS NULL)") : true;
+      const clienteContaId = temConta ? params[i++] : null;
+      const familyIds = params[i++];
+      const temQ = q.includes("ILIKE $");
+      const qTerm = temQ ? String(params[i++]).replace(/^%|%$/g, "").toLowerCase() : null;
+
+      this.capaFamilyIds = familyIds;          // para o teste U
+      const alvo = new Set(familyIds);
+
+      const casa = (a, up) => {
+        if (!qTerm) return false;
+        return Boolean(
+          (a.titulo && a.titulo.toLowerCase().includes(qTerm)) ||
+          (a.sku && a.sku.toLowerCase().includes(qTerm)) ||
+          (a.item_id && a.item_id.toLowerCase().includes(qTerm)) ||
+          (up.user_product_id && up.user_product_id.toLowerCase().includes(qTerm))
+        );
+      };
+
+      const candidatos = this.anuncios
+        .filter((a) => a.cliente_id === clienteId && a.user_product_id != null && contaFiltro(a, clienteContaId, includeLegacy))
+        .map((a) => ({ a, up: this.upFor(clienteId, a.user_product_id) }))
+        .filter(({ up }) => up && up.family_id != null && alvo.has(up.family_id));
+
+      const num = (v) => (v == null ? -Infinity : Number(v));
+      const porFamilia = new Map();
+      for (const c of candidatos) {
+        const atual = porFamilia.get(c.up.family_id);
+        if (!atual || melhor(c, atual) < 0) porFamilia.set(c.up.family_id, c);
+      }
+
+      function melhor(x, y) {
+        const chaves = [
+          [casa(y.a, y.up) ? 1 : 0, casa(x.a, x.up) ? 1 : 0],
+          [y.a.thumbnail ? 1 : 0, x.a.thumbnail ? 1 : 0],
+          [num(y.a.vendidos), num(x.a.vendidos)],
+          [y.a.status === "active" ? 1 : 0, x.a.status === "active" ? 1 : 0],
+          [num(y.a.estoque), num(x.a.estoque)],
+        ];
+        for (const [b, a] of chaves) if (a !== b) return a - b < 0 ? 1 : -1;
+        return String(x.a.item_id).localeCompare(String(y.a.item_id));
+      }
+
+      return {
+        rows: Array.from(porFamilia.values()).map(({ a, up }) => ({
+          family_id: up.family_id,
+          user_product_id: up.user_product_id,
+          thumbnail: a.thumbnail,
+        })),
+      };
     }
 
     // --- SEM_USER_PRODUCT_TOTAL -------------------------------------------
@@ -536,6 +598,134 @@ async function run() {
       Module._load = originalLoad;
     }
     console.log("  ✓ M. leitura agrupada não chama a API do Mercado Livre");
+  });
+
+  // ── Capa da família (cover) ────────────────────────────────────────────
+  //
+  // Calculada em LEITURA a partir de meli_user_products -> meli_anuncios.
+  // Nada é persistido: nenhuma coluna nova, nenhum thumbnail gravado.
+  // Sem busca, a capa é o anúncio que melhor representa a família (o mais
+  // vendido, com imagem). Com busca, é a variação que casa com o termo.
+
+  const upsFam1 = [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })];
+
+  // N. Sem busca: manda o mais vendido, não a ordem de item_id.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", vendidos: 3, thumbnail: "http://thumb/a" }),
+      anuncioFixture({ item_id: "MLB-b", user_product_id: "UP2", vendidos: 41, thumbnail: "http://thumb/b" }),
+      anuncioFixture({ item_id: "MLB-c", user_product_id: "UP2", vendidos: 7, thumbnail: "http://thumb/c" }),
+    ],
+    userProducts: upsFam1,
+  }, async () => {
+    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
+    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
+    console.log("  ✓ N. capa sem busca = anúncio mais vendido da família");
+  });
+
+  // O. Anúncio sem imagem não vira capa, mesmo sendo disparado o mais vendido.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", vendidos: 99, thumbnail: null }),
+      anuncioFixture({ item_id: "MLB-b", user_product_id: "UP2", vendidos: 5, thumbnail: "http://thumb/b" }),
+    ],
+    userProducts: upsFam1,
+  }, async () => {
+    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
+    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
+    console.log("  ✓ O. anúncio sem imagem não vira capa");
+  });
+
+  // P. Empate em vendidos: o ativo representa melhor que o pausado.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", vendidos: 4, status: "paused", thumbnail: "http://thumb/a" }),
+      anuncioFixture({ item_id: "MLB-b", user_product_id: "UP2", vendidos: 4, status: "active", thumbnail: "http://thumb/b" }),
+    ],
+    userProducts: upsFam1,
+  }, async () => {
+    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
+    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
+    console.log("  ✓ P. empate em vendidos: ativo ganha de pausado");
+  });
+
+  // Q. Com busca: a capa é a variação relevante para o termo, não a campeã
+  //    de vendas da família.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", titulo: "Camiseta Preta P", vendidos: 50, thumbnail: "http://thumb/a" }),
+      anuncioFixture({ item_id: "MLB-b", user_product_id: "UP2", titulo: "Camiseta Azul G", vendidos: 2, thumbnail: "http://thumb/b" }),
+    ],
+    userProducts: upsFam1,
+  }, async () => {
+    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, q: "Azul" });
+    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
+    console.log("  ✓ Q. com busca, a capa é a variação que casa com o termo");
+  });
+
+  // R. Busca que casa só pelo nome da família: nenhum item é "mais
+  //    relevante", então vale a régua padrão (mais vendido).
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", titulo: "Camiseta Preta P", vendidos: 50, thumbnail: "http://thumb/a" }),
+      anuncioFixture({ item_id: "MLB-b", user_product_id: "UP2", titulo: "Camiseta Azul G", vendidos: 2, thumbnail: "http://thumb/b" }),
+    ],
+    userProducts: upsFam1,
+  }, async () => {
+    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, q: "Familia" });
+    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/a", user_product_id: "UP1" });
+    console.log("  ✓ R. busca que casa só pela família cai na régua padrão");
+  });
+
+  // S. Família sem nenhuma imagem: contrato estável — `cover` continua
+  //    objeto, com thumbnail null. O front decide o placeholder.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", vendidos: 1, thumbnail: null }),
+      anuncioFixture({ item_id: "MLB-b", user_product_id: "UP1", vendidos: 9, thumbnail: null }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" })],
+  }, async () => {
+    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
+    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: null, user_product_id: "UP1" });
+    console.log("  ✓ S. família sem imagem: cover.thumbnail null, user_product_id preenchido");
+  });
+
+  // T. A capa respeita o account-scope: o campeão de vendas da Conta B não
+  //    pode virar a capa que a Conta A enxerga.
+  await withMockDb({
+    contas: [contaA, contaB],
+    grants: [grantFixture({ id: 1, cliente_id: 1, ml_user_id: "111" })],
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", cliente_conta_id: 10, vendidos: 1, thumbnail: "http://thumb/a" }),
+      anuncioFixture({ item_id: "MLB-b", user_product_id: "UP1", cliente_conta_id: 20, vendidos: 99, thumbnail: "http://thumb/b" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" })],
+  }, async () => {
+    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
+    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/a", user_product_id: "UP1" });
+    console.log("  ✓ T. a capa nunca vem de anúncio de outra conta");
+  });
+
+  // U. A capa é buscada só para as famílias da PÁGINA — o custo não cresce
+  //    com o tamanho do catálogo.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-2", user_product_id: "UP2" }),
+      anuncioFixture({ item_id: "MLB-3", user_product_id: "UP3" }),
+    ],
+    userProducts: [
+      upFixture({ user_product_id: "UP1", family_id: "FAM1", family_name: "A familia" }),
+      upFixture({ user_product_id: "UP2", family_id: "FAM2", family_name: "B familia" }),
+      upFixture({ user_product_id: "UP3", family_id: "FAM3", family_name: "C familia" }),
+    ],
+  }, async (db) => {
+    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, page: 1, limit: 2 });
+    assert.strictEqual(r.familias.length, 2);
+    assert.deepStrictEqual(db.capaFamilyIds, ["FAM1", "FAM2"], "a capa varreu famílias fora da página");
+    for (const f of r.familias) assert.ok(f.cover, "toda família da página precisa vir com cover");
+    console.log("  ✓ U. a capa é calculada só para as famílias da página");
   });
 
   console.log("meliAnunciosFamilias.test.js passed");

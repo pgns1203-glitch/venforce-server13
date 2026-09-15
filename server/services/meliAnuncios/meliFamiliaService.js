@@ -293,11 +293,85 @@ async function listarFamilias({
     }
   }
 
+  // Query 3: a capa de cada família DESTA página.
+  //
+  // Calculada em leitura, nunca persistida: não existe coluna de thumbnail
+  // em meli_user_products e nada é gravado aqui. A régua imita o que o
+  // Mercado Livre mostra num agrupador — a variação que representa a
+  // família:
+  //
+  //   1. quando há busca, quem casa com o termo vem primeiro (a variação
+  //      relevante para AQUELA busca, não a campeã de vendas da família);
+  //   2. ter imagem — uma capa sem foto não cumpre o papel de capa;
+  //   3. mais vendido — é o "principal" observável que temos, já que
+  //      meli_user_products não guarda marca de UP principal;
+  //   4. ativo antes de pausado — desempate útil quando as vendas empatam
+  //      (o caso comum: todo mundo com 0);
+  //   5. maior estoque e, por fim, item_id, só para a escolha ser estável
+  //      entre duas chamadas iguais.
+  //
+  // O escopo é o mesmo das outras leituras: parte de meli_anuncios já
+  // filtrado pela conta, então a capa nunca vaza de outra operação.
+  const capaPorFamilia = new Map();
+  if (familyIds.length) {
+    const params3 = [clienteId];
+    let k = 2;
+    const conta3 = clausulaConta({ clienteContaId, includeLegacy, paramIndex: k });
+    if (conta3.param != null) { params3.push(conta3.param); k++; }
+    params3.push(familyIds);
+    const famIdx3 = k;
+    k++;
+
+    let relevancia = "";
+    if (termo) {
+      params3.push(`%${termo}%`);
+      const qIdx3 = k;
+      k++;
+      relevancia = `(e.titulo ILIKE $${qIdx3} OR e.sku ILIKE $${qIdx3}
+                 OR e.item_id ILIKE $${qIdx3} OR e.user_product_id ILIKE $${qIdx3}) DESC,`;
+    }
+
+    const sql3 = `
+      -- LISTAR_FAMILIAS_CAPA_DA_PAGINA
+      WITH escopo AS (
+        SELECT a.item_id, a.user_product_id, a.titulo, a.sku,
+               a.thumbnail, a.vendidos, a.estoque, a.status
+        FROM meli_anuncios a
+        WHERE a.cliente_id = $1
+          AND a.user_product_id IS NOT NULL
+          ${conta3.sql}
+      )
+      SELECT DISTINCT ON (up.family_id)
+             up.family_id, e.user_product_id, NULLIF(e.thumbnail, '') AS thumbnail
+      FROM escopo e
+      JOIN meli_user_products up ON up.cliente_id = $1 AND up.user_product_id = e.user_product_id
+      WHERE up.family_id = ANY($${famIdx3}::text[])
+      ORDER BY up.family_id,
+               ${relevancia}
+               (NULLIF(e.thumbnail, '') IS NOT NULL) DESC,
+               e.vendidos DESC NULLS LAST,
+               (e.status = 'active') DESC,
+               e.estoque DESC NULLS LAST,
+               e.item_id ASC;
+    `;
+
+    const { rows: capaRows } = await db.query(sql3, params3);
+    for (const r of capaRows) {
+      capaPorFamilia.set(r.family_id, {
+        thumbnail: r.thumbnail == null ? null : r.thumbnail,
+        user_product_id: r.user_product_id,
+      });
+    }
+  }
+
   const familias = rows.map((r) => ({
     family_id: r.family_id,
     family_name: r.family_name,
     total_user_products: r.total_user_products,
     total_itens: r.total_itens,
+    // Sempre objeto — o front testa `cover.thumbnail`, nunca a existência
+    // de `cover`. Família sem imagem devolve thumbnail null.
+    cover: capaPorFamilia.get(r.family_id) || { thumbnail: null, user_product_id: null },
     user_products: upsPorFamilia.get(r.family_id) || [],
   }));
 

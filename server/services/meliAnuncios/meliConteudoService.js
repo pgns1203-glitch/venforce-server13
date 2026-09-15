@@ -66,6 +66,14 @@ function falha(codigo, motivo) {
 const MOTIVO_CATALOGO =
   "O título deste anúncio é definido pelo catálogo do Mercado Livre e não pode ser alterado por aqui.";
 
+// Critério único de "é catálogo": catalog_listing OU family_name — o mesmo
+// usado no frontend (Portal/anuncios-meli.js: ehAnuncioCatalogo). Um item
+// pode ter family_name sem catalog_listing=true; usar só um dos dois sinais
+// foi a causa da tag "Catálogo" divergir entre lista e detalhe.
+function ehAnuncioCatalogo(anuncio) {
+  return !!(anuncio && (anuncio.family_name || anuncio.catalog_listing));
+}
+
 function falhaCatalogo() {
   return falha("TITLE_LOCKED_BY_CATALOG", MOTIVO_CATALOGO);
 }
@@ -160,7 +168,7 @@ async function aplicarConteudo({ clienteId, itemId, mlUserId, campos, anuncio })
   // `family_name`/`catalog_listing` vêm da sincronização (podem estar NULL
   // em linhas antigas, até a próxima ressincronização). Se ausentes, a
   // pré-checagem não trava nada — sobra o fallback dentro de atualizarTitulo.
-  const catalogoTravado = !!(anuncio && (anuncio.family_name || anuncio.catalog_listing));
+  const catalogoTravado = ehAnuncioCatalogo(anuncio);
 
   const executores = [
     ["titulo", () => atualizarTitulo({ clienteId, itemId, titulo: campos.titulo, mlUserId, catalogoTravado })],

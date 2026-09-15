@@ -296,7 +296,7 @@ async function listarAnuncios({
         estoque, vendidos, status, sub_status, listing_type_id, category_id,
         permalink, thumbnail, pictures_count, logistic_type, is_full,
         health, score_venforce, score_motivo, revisado, last_synced_at,
-        catalog_listing
+        catalog_listing, family_name
        FROM meli_anuncios
        WHERE ${whereSql}
        ORDER BY revisado ASC, score_venforce ASC NULLS FIRST, updated_at DESC

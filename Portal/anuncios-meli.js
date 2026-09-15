@@ -98,6 +98,14 @@
     }
   }
 
+  // Critério único de "é catálogo": catalog_listing OU family_name. Um item
+  // pode pertencer a uma família de catálogo (título gerenciado pelo ML) sem
+  // ter catalog_listing=true na própria publicação — usar só um dos dois
+  // sinais fazia lista e detalhe divergirem (achado da investigação).
+  function ehAnuncioCatalogo(a) {
+    return !!(a && (a.catalog_listing || a.family_name));
+  }
+
   function scoreClasse(s) {
     if (s >= 80) return "is-success";
     if (s >= 60) return "is-warning";
@@ -546,7 +554,7 @@
   function rowAnuncioHtml(a) {
     var st = statusInfo(a.status);
     var badges = "";
-    if (a.catalog_listing) badges += '<span class="vf-tag is-primary">Catálogo</span>';
+    if (ehAnuncioCatalogo(a)) badges += '<span class="vf-tag is-primary">Catálogo</span>';
     if (a.is_full) badges += '<span class="vf-tag is-info">Full</span>';
     if ((a.pictures_count || 0) < 3) badges += '<span class="vf-tag is-warning">' + (a.pictures_count || 0) + "/3 fotos</span>";
     if (!a.sku) badges += '<span class="vf-tag is-danger">Sem SKU</span>';
@@ -858,7 +866,7 @@
       : "";
     // Catálogo do Mercado Livre: título é gerenciado pelo ML, não pode ser
     // editado por aqui (PUT recusado com "family_name" — ver meliConteudoService).
-    var catalogo = !!(a.catalog_listing || a.family_name);
+    var catalogo = ehAnuncioCatalogo(a);
 
     var thumb = a.thumbnail
       ? '<img src="' + escapeHtml(a.thumbnail) + '" alt="" loading="lazy" />'

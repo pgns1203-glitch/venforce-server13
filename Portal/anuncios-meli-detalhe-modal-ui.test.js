@@ -74,8 +74,8 @@ function anuncio(conta) {
     health: 0.82, score_venforce: 61, score_motivo: "Menos de 3 fotos",
     revisado: false, cliente_conta_id: a.cliente_conta_id, ml_user_id: a.ml_user_id,
     last_synced_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
-    catalog_listing: catalogoAtivo || null,
-    family_name: catalogoAtivo ? "Serum Ácido Salicílico" : null,
+    catalog_listing: catalogoModo === "catalog_listing" || catalogoModo === "ambos",
+    family_name: (catalogoModo === "family_name" || catalogoModo === "ambos") ? "Serum Ácido Salicílico" : null,
   };
 }
 
@@ -112,7 +112,10 @@ let iaProibida = false;
 let descricaoEstado = "ok";          // ok | sem_descricao | erro
 let categoriaNomeResposta = "Celulares e Smartphones"; // null = simula falha de resolução
 let precoOriginalAtivo = true;       // false = anúncio sem promoção (preco_original nulo)
-let catalogoAtivo = false;           // true = anúncio de catálogo (family_name/catalog_listing)
+// "nenhum" | "catalog_listing" | "family_name" | "ambos" — os dois sinais são
+// testados em separado porque a causa raiz da tag divergente era exatamente
+// um lugar olhar só catalog_listing e o outro olhar catalog_listing||family_name.
+let catalogoModo = "nenhum";
 let detalheAtrasoPorItem = {};       // itemId -> ms
 let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
 const pedidos = [];                  // toda URL de API disparada
@@ -515,7 +518,7 @@ async function run() {
 
     await check("7a — anúncio de catálogo: título fica readonly, tag Catálogo aparece, modelo continua editável", async () => {
       await fecharModal(cdp);
-      catalogoAtivo = true;
+      catalogoModo = "ambos";
       await abrirPrimeiroAnuncio(cdp);
 
       const tituloInfo = await cdp.evaluate(`(function(){ var e = document.getElementById('am-det-titulo');
@@ -532,10 +535,40 @@ async function run() {
       assert.ok(!modeloInfo.readonly, "modelo deveria continuar editável mesmo em anúncio de catálogo");
 
       await fecharModal(cdp);
-      catalogoAtivo = false;
+      catalogoModo = "nenhum";
       await abrirPrimeiroAnuncio(cdp);
       const tituloNormal = await cdp.evaluate("document.getElementById('am-det-titulo').readOnly");
       assert.ok(!tituloNormal, "anúncio normal não deveria ter o título travado");
+    });
+
+    await check("7b — tag Catálogo na LISTA usa o mesmo critério do detalhe (catalog_listing OU family_name)", async () => {
+      await fecharModal(cdp);
+
+      // catalog_listing=true, family_name ausente — já funcionava antes.
+      catalogoModo = "catalog_listing";
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await waitFor(cdp, "document.querySelector('.am-row')", "a lista não recarregou (catalog_listing)");
+      let tagTexto = await cdp.evaluate("(document.querySelector('.am-row .vf-tag') || {}).textContent || ''");
+      assert.ok(/Catálogo/.test(tagTexto), `catalog_listing=true deveria mostrar a tag na lista: "${tagTexto}"`);
+
+      // family_name preenchido e catalog_listing=false — era o caso que sumia
+      // da lista (só aparecia no detalhe) antes da correção.
+      catalogoModo = "family_name";
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await waitFor(cdp, "document.querySelector('.am-row')", "a lista não recarregou (family_name)");
+      tagTexto = await cdp.evaluate("(document.querySelector('.am-row .vf-tag') || {}).textContent || ''");
+      assert.ok(/Catálogo/.test(tagTexto), `family_name preenchido (catalog_listing=false) deveria mostrar a tag na lista: "${tagTexto}"`);
+
+      // nenhum dos dois sinais — não deveria mostrar a tag.
+      catalogoModo = "nenhum";
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await waitFor(cdp, "document.querySelector('.am-row')", "a lista não recarregou (nenhum)");
+      const semTag = await cdp.evaluate("document.querySelector('.am-row .vf-tag.is-primary')");
+      assert.strictEqual(semTag, null, "sem catalog_listing nem family_name, a tag Catálogo não deveria aparecer");
+
+      // Deixa a página no estado que os próximos checks esperam: modal aberto,
+      // anúncio normal (sem catálogo).
+      await abrirPrimeiroAnuncio(cdp);
     });
 
     await check("8 — alterações pendentes são detectadas e nomeadas", async () => {

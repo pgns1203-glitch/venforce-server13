@@ -382,11 +382,15 @@
 /* ------------------------------------------------------------
  * Árvore Família -> User Product -> Item MLB.
  *
- * Três níveis com peso visual decrescente: a família é a superfície
- * clicável, o User Product é só uma faixa de agrupamento (não é
- * clicável de propósito — não é entidade operável) e a linha MLB é
- * uma versão compacta da linha do catálogo, com as MESMAS ações.
- * O recuo à esquerda é o que comunica a hierarquia.
+ * Listagem tabular agrupada (padrão de catálogo com agrupador), NÃO
+ * um accordion de cards: uma única moldura, uma única grade de
+ * colunas (--am-cols) compartilhada pelos três níveis, e nenhuma
+ * caixa aninhada. O que separa os níveis é peso tipográfico e uma
+ * faixa de grupo — não borda, sombra nem raio por bloco.
+ *
+ * Família = linha forte (chevron, imagem, nome, resumo à direita).
+ * User Product = faixa fina de grupo, sem interação (não é entidade
+ * operável). Item MLB = linha leve, colunas alinhadas com o cabeçalho.
  * ------------------------------------------------------------ */
 .vf-page-anuncios-meli .am-modo {
   margin-bottom: var(--vf-sp-4);
@@ -408,10 +412,33 @@
 }
 
 .vf-page-anuncios-meli .am-arvore {
+  /* Uma grade só para os três níveis: a coluna que o pai ocupa é a
+     mesma que o filho ocupa. É isso que faz a árvore ler como tabela.
+     chevron | imagem | anúncio | status | preço | estoque | ação */
+  --am-cols: 26px 40px minmax(0, 1fr) 104px 112px 68px 32px;
   overflow: hidden;
   background: var(--vf-surface);
   border: 1px solid var(--vf-border);
   border-radius: var(--vf-radius);
+}
+
+.vf-page-anuncios-meli .am-arvore__head {
+  display: grid;
+  grid-template-columns: var(--am-cols);
+  gap: var(--vf-sp-3);
+  align-items: center;
+  padding: var(--vf-sp-2) var(--vf-sp-4);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--vf-surface-2);
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-page-anuncios-meli .am-arvore__col--num {
+  text-align: right;
 }
 
 .vf-page-anuncios-meli .am-familia {
@@ -424,16 +451,20 @@
 
 .vf-page-anuncios-meli .am-familia__head {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  gap: var(--vf-sp-4);
+  grid-template-columns: var(--am-cols);
+  gap: var(--vf-sp-3);
   align-items: center;
   width: 100%;
-  padding: var(--vf-sp-3) var(--vf-sp-5);
+  padding: var(--vf-sp-3) var(--vf-sp-4);
   font: inherit;
   text-align: left;
   cursor: pointer;
   background: none;
   border: none;
+}
+
+.vf-page-anuncios-meli .am-familia.is-aberta .am-familia__head {
+  background: var(--vf-surface-2);
 }
 
 .vf-page-anuncios-meli .am-familia__head:hover,
@@ -458,6 +489,35 @@
   transform: rotate(90deg);
 }
 
+/* Imagem da família: mesma anatomia da miniatura do item, um degrau
+   maior. Enquanto a listagem não traz imagem própria, a moldura fica
+   com o ícone e é preenchida quando a família é aberta. */
+.vf-page-anuncios-meli .am-familia__thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  color: var(--vf-text-placeholder, var(--vf-text-muted));
+  background: var(--vf-surface-2);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-page-anuncios-meli .am-familia__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.vf-page-anuncios-meli .am-familia__cel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .vf-page-anuncios-meli .am-familia__nome {
   overflow: hidden;
   font-family: var(--vf-font-display);
@@ -468,60 +528,94 @@
   white-space: nowrap;
 }
 
-.vf-page-anuncios-meli .am-familia__contagem {
-  display: flex;
-  gap: var(--vf-sp-2);
-}
-
-.vf-page-anuncios-meli .am-familia__painel {
-  padding: 0 var(--vf-sp-5) var(--vf-sp-4) calc(var(--vf-sp-5) + 24px + var(--vf-sp-4));
-  background: var(--vf-surface-2);
-  border-top: 1px solid var(--vf-border);
-}
-
-/* Nível 2 — faixa de agrupamento, sem interação. */
-.vf-page-anuncios-meli .am-up {
-  margin-top: var(--vf-sp-4);
-}
-
-.vf-page-anuncios-meli .am-up__head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--vf-sp-3);
-  align-items: baseline;
-  padding-bottom: var(--vf-sp-2);
+.vf-page-anuncios-meli .am-familia__id {
+  font-family: var(--vf-font-mono);
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
 }
 
-.vf-page-anuncios-meli .am-up__id {
+/* Resumo à direita ocupando as colunas de status/preço/estoque/ação:
+   texto tabular, não chips — chip devolve a aparência de card. */
+.vf-page-anuncios-meli .am-familia__contagem {
+  display: flex;
+  grid-column: 4 / -1;
+  gap: var(--vf-sp-4);
+  justify-content: flex-end;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-anuncios-meli .am-familia__contagem b {
+  font-family: var(--vf-font-mono);
   font-weight: var(--vf-fw-semibold);
   color: var(--vf-text);
+}
+
+/* Painel sem fundo, sem recuo e sem raio: o conteúdo continua a mesma
+   tabela. O trilho é sombra interna, que não desalinha as colunas. */
+.vf-page-anuncios-meli .am-familia__painel {
+  padding: 0;
+  background: none;
+  border-top: 1px solid var(--vf-border);
+  box-shadow: inset 3px 0 0 var(--vf-primary-border);
+}
+
+/* Carregando/vazio/erro da família: o painel não tem recuo próprio,
+   então o estado carrega o seu. */
+.vf-page-anuncios-meli .am-familia__painel > .vf-loading-state,
+.vf-page-anuncios-meli .am-familia__painel > .vf-empty {
+  padding: var(--vf-sp-4);
+}
+
+/* Nível 2 — faixa de grupo, sem interação. */
+.vf-page-anuncios-meli .am-up__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2);
+  align-items: baseline;
+  padding: var(--vf-sp-1) var(--vf-sp-4) var(--vf-sp-1)
+    calc(var(--vf-sp-4) + 26px + var(--vf-sp-3));
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  background: var(--vf-surface-2);
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-page-anuncios-meli .am-up + .am-up .am-up__head {
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-page-anuncios-meli .am-up__rotulo {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.vf-page-anuncios-meli .am-up__id {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
 }
 
 .vf-page-anuncios-meli .am-up__contagem {
   margin-left: auto;
 }
 
-.vf-page-anuncios-meli .am-up__itens {
-  overflow: hidden;
-  background: var(--vf-surface);
-  border: 1px solid var(--vf-border);
-  border-radius: var(--vf-radius-sm);
-}
-
-/* Nível 3 — linha MLB compacta (6 colunas, não as 8 do catálogo). */
+/* Nível 3 — linha do item na MESMA grade do cabeçalho. A primeira
+   coluna fica vazia (o vão do chevron): é ela que dá o recuo sem
+   precisar de caixa aninhada. */
 .vf-page-anuncios-meli .am-mlb {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 100px 108px 64px 32px;
+  grid-template-columns: var(--am-cols);
   gap: var(--vf-sp-3);
   align-items: center;
-  padding: var(--vf-sp-2) var(--vf-sp-3);
+  /* O recuo do filho sai só do padding: as colunas fixas à direita
+     continuam ancoradas na borda, e quem encolhe 14px é a coluna
+     fluida do título. Cabeçalho e níveis seguem alinhados. */
+  padding: var(--vf-sp-2) var(--vf-sp-4) var(--vf-sp-2) calc(var(--vf-sp-4) + 14px);
   cursor: pointer;
   border-bottom: 1px solid var(--vf-border);
 }
 
-.vf-page-anuncios-meli .am-mlb:last-child {
+.vf-page-anuncios-meli .am-up:last-child .am-mlb:last-child {
   border-bottom: none;
 }
 
@@ -539,8 +633,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  justify-self: center;
+  width: 32px;
+  height: 32px;
   overflow: hidden;
   color: var(--vf-text-placeholder, var(--vf-text-muted));
   background: var(--vf-surface-2);
@@ -577,14 +672,13 @@
   color: var(--vf-text-muted);
 }
 
+/* Números à direita, como no cabeçalho: é o que deixa a coluna
+   varrível de cima a baixo. */
 .vf-page-anuncios-meli .am-mlb__preco,
 .vf-page-anuncios-meli .am-mlb__num {
   font-family: var(--vf-font-mono);
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text);
-}
-
-.vf-page-anuncios-meli .am-mlb__num {
   text-align: right;
 }
 
@@ -594,17 +688,20 @@
 }
 
 @media (max-width: 900px) {
-  .vf-page-anuncios-meli .am-familia__painel {
-    padding-left: var(--vf-sp-4);
+  /* A grade encolhe em um lugar só — os três níveis acompanham. */
+  .vf-page-anuncios-meli .am-arvore {
+    --am-cols: 22px 32px minmax(0, 1fr) 96px 32px;
   }
 
-  .vf-page-anuncios-meli .am-mlb {
-    grid-template-columns: 36px minmax(0, 1fr) auto;
-  }
-
+  .vf-page-anuncios-meli .am-arvore__col--preco,
+  .vf-page-anuncios-meli .am-arvore__col--estoque,
   .vf-page-anuncios-meli .am-mlb__preco,
   .vf-page-anuncios-meli .am-mlb__num {
     display: none;
+  }
+
+  .vf-page-anuncios-meli .am-up__head {
+    padding-left: calc(var(--vf-sp-4) + 22px + var(--vf-sp-3));
   }
 }
 

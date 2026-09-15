@@ -752,7 +752,16 @@
       return;
     }
 
-    var html = '<div class="am-arvore" aria-label="Famílias de anúncios">';
+    // Cabeçalho de colunas: é ele que transforma a árvore numa tabela
+    // agrupada. Os rótulos valem para a linha do item; nos níveis de
+    // cima as mesmas colunas carregam o resumo da família.
+    var html = '<div class="am-arvore" aria-label="Famílias de anúncios">' +
+      '<div class="am-arvore__head" aria-hidden="true">' +
+        "<span></span><span></span><span>Anúncio</span><span>Status</span>" +
+        '<span class="am-arvore__col--preco am-arvore__col--num">Preço</span>' +
+        '<span class="am-arvore__col--estoque am-arvore__col--num">Estoque</span>' +
+        "<span></span>" +
+      "</div>";
     AM.familias.forEach(function (fam, idx) { html += familiaHtml(fam, idx); });
     html += "</div>" + paginacaoHtml(
       { page: AM.paginacaoFamilias.page, totalPaginas: AM.paginacaoFamilias.totalPaginas, total: AM.paginacaoFamilias.totalFamilias },
@@ -779,15 +788,29 @@
     return n + " " + (n === 1 ? singular : pluralForma);
   }
 
+  // Par número+rótulo do resumo da família. Texto tabular em vez de
+  // chip: chip devolve a aparência de card que estamos tirando.
+  function contagemHtml(n, singular, pluralForma) {
+    n = n || 0;
+    return "<span><b>" + n + "</b> " + (n === 1 ? singular : pluralForma) + "</span>";
+  }
+
   function familiaHtml(fam, idx) {
     var painelId = "am-fam-painel-" + idx;
     return '<div class="am-familia" data-familia="' + escapeAttr(fam.family_id) + '">' +
       '<button type="button" class="am-familia__head" aria-expanded="false" aria-controls="' + painelId + '">' +
         '<span class="am-familia__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
-        '<span class="am-familia__nome">' + escapeHtml(fam.family_name || "(família sem nome)") + "</span>" +
+        // A listagem de famílias não traz imagem; a moldura existe desde
+        // o primeiro paint para a coluna não dançar, e é preenchida em
+        // renderFamiliaDetalhe() com a capa do primeiro item.
+        '<span class="am-familia__thumb" aria-hidden="true">' + iconeImagemSvg() + "</span>" +
+        '<span class="am-familia__cel">' +
+          '<span class="am-familia__nome">' + escapeHtml(fam.family_name || "(família sem nome)") + "</span>" +
+          '<span class="am-familia__id">' + escapeHtml(fam.family_id) + "</span>" +
+        "</span>" +
         '<span class="am-familia__contagem">' +
-          '<span class="vf-tag is-neutral">' + plural(fam.total_user_products || 0, "produto", "produtos") + "</span>" +
-          '<span class="vf-tag is-neutral">' + plural(fam.total_itens || 0, "anúncio", "anúncios") + "</span>" +
+          contagemHtml(fam.total_user_products, "produto", "produtos") +
+          contagemHtml(fam.total_itens, "anúncio", "anúncios") +
         "</span>" +
       "</button>" +
       '<div class="am-familia__painel" id="' + painelId + '" hidden></div>' +
@@ -852,14 +875,36 @@
     ups.forEach(function (up) { html += userProductHtml(up); });
     painel.innerHTML = html;
     bindLinhasMlb(painel);
+    preencherCapaDaFamilia(familia, painel);
   }
 
-  // Nível 2 — agrupamento visual puro: nenhum handler, nenhuma ação.
+  // A linha da família ganha a capa do primeiro item assim que a família
+  // é aberta — a listagem de famílias não devolve imagem. Reabrir pelo
+  // cache reexecuta isto, então a capa persiste sem requisição nova.
+  function preencherCapaDaFamilia(familia, painel) {
+    var caixa = painel.closest(".am-familia");
+    var moldura = caixa && caixa.querySelector(".am-familia__thumb");
+    if (!moldura || moldura.querySelector("img")) return;
+    var ups = familia.user_products || [];
+    for (var i = 0; i < ups.length; i++) {
+      var itens = ups[i].itens || [];
+      for (var j = 0; j < itens.length; j++) {
+        if (itens[j].thumbnail) {
+          moldura.innerHTML = '<img src="' + escapeHtml(itens[j].thumbnail) + '" alt="" loading="lazy" />';
+          return;
+        }
+      }
+    }
+  }
+
+  // Nível 2 — faixa de grupo: agrupamento visual puro, nenhum handler,
+  // nenhuma ação. Não é caixa: é uma faixa fina na largura da tabela.
   function userProductHtml(up) {
     var origem = [up.site_id, up.domain_id].filter(Boolean).join(" · ");
     var itens = up.itens || [];
     var html = '<div class="am-up">' +
       '<div class="am-up__head">' +
+        '<span class="am-up__rotulo">Produto</span>' +
         '<span class="am-up__id vf-mono">' + escapeHtml(up.user_product_id) + "</span>" +
         (origem ? '<span class="am-up__meta">' + escapeHtml(origem) + "</span>" : "") +
         '<span class="am-up__contagem">' + plural(up.total_itens || itens.length, "anúncio", "anúncios") + "</span>" +
@@ -889,6 +934,9 @@
 
     return '<div class="am-mlb" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
       'aria-label="Ver detalhes de ' + escapeAttr(a.titulo || a.item_id) + '">' +
+      // Vão do chevron: mantém o item uma coluna à direita da família
+      // sem precisar de caixa aninhada nem de padding extra.
+      '<span class="am-mlb__vao" aria-hidden="true"></span>' +
       '<span class="am-mlb__thumb" aria-hidden="true">' + img + "</span>" +
       '<span class="am-mlb__main">' +
         '<span class="am-mlb__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</span>" +

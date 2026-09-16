@@ -612,24 +612,39 @@
   }
 
   // ===========================================================================
-  // LINHA DE AGRUPADOR — e a expansão User Product -> Item MLB
+  // LINHA DE AGRUPADOR — e a expansão Agrupador -> Item MLB
   //
-  // Hierarquia oficial do Mercado Livre (family_id -> user_product_id ->
-  // item_id), persistida no backend em meli_user_products. O agrupador é uma
-  // LINHA DA MESMA LISTA, não uma aba nem uma árvore paralela: ele ocupa a
-  // mesma grade de colunas do anúncio individual e se distingue só por ter
-  // conteúdo abaixo.
+  // A hierarquia do Mercado Livre tem três níveis (family_id ->
+  // user_product_id -> item_id) e o backend continua entregando os três. A
+  // TELA mostra dois:
+  //
+  //   AGRUPADOR / PRODUTO
+  //     └── anúncios MLB
+  //
+  // e não mais:
+  //
+  //   AGRUPADOR
+  //     └── MLBU
+  //          └── MLB
+  //
+  // O User Product era um nível visível (uma faixa "Produto MLBU-…" acima dos
+  // seus MLBs) e deixou de ser: MLBU não é o identificador que o operador
+  // reconhece, e a listagem oficial do ML também não o expõe. Ele segue
+  // existindo no payload e segue organizando a expansão — os MLBs da mesma
+  // variação continuam juntos, num bloco .am-variacao que não tem cabeçalho e
+  // não mostra o MLBU. O identificador que aparece é o do agrupador, na linha
+  // principal; abaixo dela, cada filho aparece com o seu MLB.
   //
   // Nenhum agrupador abre sozinho: expandir é sempre ação explícita do
   // operador, e só a primeira expansão gasta requisição (AM.state.familyCache,
   // via GET /anuncios-meli/familias/:familyId).
   //
   // Ações por nível, de propósito:
-  //   Agrupador    -> só expandir/colapsar (a família é chave derivada do ML,
-  //                   não entidade operável: não tem preço nem status próprio);
-  //   User Product -> só agrupamento visual (nenhum handler);
-  //   Item MLB     -> abrirDetalhe(), que é o modal de sempre — com edição e
-  //                   otimização inalteradas.
+  //   Agrupador -> só expandir/colapsar (a família é chave derivada do ML, não
+  //                entidade operável: não tem preço nem status próprio);
+  //   Variação  -> nada: é caixa de agrupamento sem cabeçalho e sem handler;
+  //   Item MLB  -> abrirDetalhe(), que é o modal de sempre — com edição e
+  //                otimização inalteradas.
   // ===========================================================================
 
   function iconeChevronSvg() {
@@ -696,6 +711,12 @@
       '<div class="am-row__main">' +
         '<h3 class="am-row__titulo">' + escapeHtml(rotulo) + "</h3>" +
         '<div class="am-row__ids">' +
+          // O identificador do AGRUPADOR, na mesma posição em que a linha do
+          // anúncio individual mostra o MLB — é o "ID maior" do produto. Vem
+          // rotulado porque, ao contrário de um MLB, family_id é um número
+          // solto: sem o rótulo seria indistinguível de qualquer outro número
+          // da linha. MLBU não aparece aqui nem em lugar nenhum da UI.
+          '<span>Família <span class="vf-mono">' + escapeHtml(f.family_id) + "</span></span>" +
           "<span>" + plural(f.total_user_products || 0, "variação", "variações") + "</span>" +
           "<span>" + plural(f.total_itens || 0, "anúncio", "anúncios") + "</span>" +
         "</div>" +
@@ -771,39 +792,77 @@
       return;
     }
     var html = "";
-    ups.forEach(function (up) { html += userProductHtml(up); });
+    ups.forEach(function (up) { html += variacaoHtml(up); });
     painel.innerHTML = html;
     bindLinhasMlb(painel);
     // Expandir não mexe na capa: ela já veio decidida na listagem.
   }
 
-  // Nível 2 — faixa de grupo: agrupamento visual puro, nenhum handler,
-  // nenhuma ação. Não é caixa: é uma faixa fina na largura da tabela.
-  function userProductHtml(up) {
-    var origem = [up.site_id, up.domain_id].filter(Boolean).join(" · ");
-    var itens = up.itens || [];
-    var html = '<div class="am-up">' +
-      '<div class="am-up__head">' +
-        '<span class="am-up__rotulo">Produto</span>' +
-        '<span class="am-up__id vf-mono">' + escapeHtml(up.user_product_id) + "</span>" +
-        (origem ? '<span class="am-up__meta">' + escapeHtml(origem) + "</span>" : "") +
-        '<span class="am-up__contagem">' + plural(up.total_itens || itens.length, "anúncio", "anúncios") + "</span>" +
-      "</div>" +
-      '<div class="am-up__itens">';
-    itens.forEach(function (item) { html += rowMlbCompactaHtml(item); });
-    return html + "</div></div>";
+  // Condição comercial do anúncio: é o que distingue dois MLBs da MESMA
+  // variação, e virou informação necessária quando o nível do MLBU saiu da
+  // tela. Deriva de listing_type_id pelo mesmo mapa que o modal de detalhe já
+  // usava (TIPO_ANUNCIO) — nenhum rótulo novo, nenhuma regra nova.
+  function condicaoComercial(a) {
+    if (!a.listing_type_id) return "";
+    return TIPO_ANUNCIO[a.listing_type_id] || a.listing_type_id;
   }
 
-  // Nível 3 — a linha do MLB dentro do agrupador. Não reusa rowAnuncioHtml()
-  // (a linha da lista é mais alta, com badges e medidor), mas ocupa
-  // EXATAMENTE as mesmas 8 colunas: a expansão é a continuação da tabela, não
-  // uma tabela própria. Enquanto ela era uma árvore separada tinha grade
-  // própria, e preço/estoque caíam em colunas que não eram as do cabeçalho.
-  // O recuo sai de padding, nunca de uma coluna extra.
+  // Ordem dos filhos dentro de uma variação. O padrão operacional do negócio é
+  // Clássico + Premium por variação, e é essa a leitura que o ML dá — mas o
+  // padrão NÃO é regra: a ordem é só preferência de exibição, com desempate
+  // por item_id. Um tipo desconhecido, ou variação com 1 ou com 5 MLBs,
+  // continua funcionando sem caso especial.
+  var ORDEM_CONDICAO = { gold_special: 1, gold_pro: 2 };
+
+  function ordenarFilhos(itens) {
+    return itens.slice().sort(function (a, b) {
+      var pa = ORDEM_CONDICAO[a.listing_type_id] || 9;
+      var pb = ORDEM_CONDICAO[b.listing_type_id] || 9;
+      if (pa !== pb) return pa - pb;
+      return String(a.item_id).localeCompare(String(b.item_id));
+    });
+  }
+
+  // Bloco de uma variação: agrupamento visual PURO — sem cabeçalho, sem
+  // rótulo, sem o MLBU e sem handler. Ele existe só para manter juntos os
+  // MLBs da mesma variação (o Clássico e o Premium ficam lado a lado, como no
+  // ML) e para separar uma variação da seguinte. O user_product_id viaja em
+  // data-attribute porque continua sendo a chave do agrupamento — mas como
+  // dado, nunca como texto na tela.
+  function variacaoHtml(up) {
+    var itens = ordenarFilhos(up.itens || []);
+    // O trilho que amarra as linhas irmãs só existe quando há irmãs. Variação
+    // com um único MLB é linha solta e não ganha marca nenhuma — nem trilho,
+    // nem contorno: ela tem de ler igual a qualquer outro anúncio.
+    var classe = "am-variacao" + (itens.length > 1 ? " am-variacao--multipla" : "");
+    var html = '<div class="' + classe + '" data-user-product="' +
+      escapeAttr(up.user_product_id) + '">';
+    itens.forEach(function (item, i) {
+      // Título repetido só atrapalha: dois anúncios da mesma variação
+      // normalmente têm o MESMO título (o produto é um só) e o que os
+      // diferencia é a condição comercial. Quando os títulos de fato diferem,
+      // os dois aparecem — a supressão é comparação de dado, não suposição.
+      var repetido = i > 0 && (item.titulo || "") === (itens[0].titulo || "");
+      html += rowMlbCompactaHtml(item, { irma: i > 0, tituloRepetido: repetido });
+    });
+    return html + "</div>";
+  }
+
+  // A linha do MLB dentro do agrupador — hoje filha DIRETA dele. Não reusa
+  // rowAnuncioHtml() (a linha da lista é mais alta, com badges e medidor), mas
+  // ocupa EXATAMENTE as mesmas 8 colunas: a expansão é a continuação da
+  // tabela, não uma tabela própria. Enquanto ela era uma árvore separada tinha
+  // grade própria, e preço/estoque caíam em colunas que não eram as do
+  // cabeçalho. O recuo sai de padding, nunca de uma coluna extra.
+  //
+  // A condição comercial entra DENTRO da célula de identificação, junto do
+  // MLB — não numa coluna nova. Uma nona coluna desalinharia a expansão do
+  // cabeçalho, que é justamente o que a unificação da tabela consertou.
   //
   // O que se reusa de verdade: o modelo de dados (/familias/:familyId devolve
   // os mesmos campos) e o handler abrirDetalhe().
-  function rowMlbCompactaHtml(a) {
+  function rowMlbCompactaHtml(a, opcoes) {
+    var op = opcoes || {};
     var st = statusInfo(a.status);
     var img = a.thumbnail
       ? '<img src="' + escapeHtml(a.thumbnail) + '" alt="" loading="lazy" />'
@@ -823,12 +882,26 @@
       : '<span class="am-mlb__score ' + scoreClasse(a.score_venforce) + '" title="' +
         escapeAttr(scoreLegenda(a.score_venforce)) + '">' + a.score_venforce + "</span>";
 
-    return '<div class="am-mlb" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
-      'aria-label="Ver detalhes de ' + escapeAttr(a.titulo || a.item_id) + '">' +
+    var cond = condicaoComercial(a);
+    var condHtml = cond
+      ? '<span class="am-mlb__cond">' + escapeHtml(cond) + "</span>"
+      : "";
+    // O título só desaparece quando é IDÊNTICO ao do irmão de cima (mesma
+    // variação): aí o que sobra na linha — MLB, condição comercial e preço —
+    // é exatamente o que diferencia os dois anúncios.
+    var tituloHtml = op.tituloRepetido
+      ? ""
+      : '<span class="am-mlb__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</span>";
+
+    return '<div class="am-mlb' + (op.irma ? " am-mlb--irma" : "") +
+      '" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
+      'aria-label="Ver detalhes de ' +
+      escapeAttr((a.titulo || a.item_id) + (cond ? " — " + cond : "")) + '">' +
       '<span class="am-mlb__thumb" aria-hidden="true">' + img + "</span>" +
       '<span class="am-mlb__main">' +
-        '<span class="am-mlb__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</span>" +
-        '<span class="am-mlb__ids"><span class="vf-mono">' + escapeHtml(a.item_id) + "</span>" + sku + "</span>" +
+        tituloHtml +
+        '<span class="am-mlb__ids"><span class="vf-mono">' + escapeHtml(a.item_id) + "</span>" +
+          condHtml + sku + "</span>" +
       "</span>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
       '<span class="am-mlb__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +

@@ -559,7 +559,7 @@ async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null,
     `-- FAMILIA_DETALHE_ITENS
      SELECT a.item_id, a.user_product_id, a.titulo, a.status, a.preco, a.moeda,
             a.estoque, a.vendidos, a.score_venforce, a.sku, a.thumbnail,
-            a.permalink,
+            a.permalink, a.listing_type_id,
             up.site_id, up.domain_id, up.family_name
        FROM meli_anuncios a
        JOIN meli_user_products up
@@ -590,6 +590,13 @@ async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null,
     // continuação da mesma tabela — mesmas colunas, alinhadas ao mesmo
     // cabeçalho. Enquanto a expansão era uma árvore separada, com grade
     // própria, moeda/vendidos/score não eram lidos daqui.
+    //
+    // `listing_type_id` é projeção pura de uma coluna que já existia em
+    // meli_anuncios (a listagem plana sempre a leu): ela entrou aqui porque a
+    // expansão passou a mostrar os MLBs direto abaixo do agrupador, sem o
+    // nível do User Product, e aí a condição comercial (Clássico / Premium) é
+    // o que distingue dois anúncios da MESMA variação. Nada mais mudou na
+    // consulta — nem filtro, nem join, nem ordem, nem agregação.
     porUp.get(r.user_product_id).itens.push({
       item_id: r.item_id,
       user_product_id: r.user_product_id,
@@ -604,6 +611,7 @@ async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null,
       sku: r.sku,
       thumbnail: r.thumbnail,
       permalink: r.permalink,
+      listing_type_id: r.listing_type_id,
     });
   }
 

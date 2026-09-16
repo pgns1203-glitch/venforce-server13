@@ -24,7 +24,13 @@
  *     atrasada de A pintar o painel de B (guarda por family_id);
  *   · trocar de conta invalida o cache — o agrupador do contexto anterior não
  *     pode reaparecer com os dados velhos (guarda de época);
- *   · um user_product com 2 MLBs aparece UMA vez, com os dois anúncios dentro;
+ *   · a hierarquia da TELA tem dois níveis, agrupador -> MLB: o User Product
+ *     deixou de ser nível visível (era uma faixa "PRODUTO MLBU-…" acima dos
+ *     seus anúncios) e nenhum MLBU aparece escrito em lugar nenhum da página;
+ *   · o identificador que a linha principal mostra é o do AGRUPADOR;
+ *   · uma variação com 2 MLBs aparece UMA vez, com os dois anúncios direto
+ *     abaixo do agrupador e Clássico antes de Premium — sem depender disso: o
+ *     padrão é preferência de ordem, e 1 ou 3 MLBs continuam funcionando;
  *   · clicar numa linha MLB do agrupador abre o MESMO modal da lista;
  *   · a capa do agrupador é a que o backend escolheu (cover.thumbnail):
  *     aparece com ele FECHADO, sobrevive à expansão e acompanha a busca — o
@@ -138,6 +144,7 @@ function item(id, titulo, up, extra) {
     item_id: id, user_product_id: up, family_id: "FAM-1", titulo: titulo,
     status: "active", preco: 89.9, moeda: "BRL", estoque: 100, vendidos: 5, score_venforce: 62, sku: "SKU-" + id,
     thumbnail: null, permalink: "https://produto.mercadolivre.com.br/" + id,
+    listing_type_id: "gold_special",
   }, extra || {});
 }
 
@@ -147,13 +154,23 @@ const DETALHE_CONTA_42 = {
     user_products: [
       // MLB-A1 tem imagem PRÓPRIA, diferente da capa: se o front voltar a
       // deduzir a capa pelo primeiro item, é esta que apareceria na linha.
+      // A ordem AQUI é a do backend (por item_id) e é o Premium que vem
+      // primeiro: se a tela apenas repetir a ordem recebida, a leitura
+      // Clássico -> Premium do ML não acontece.
       { user_product_id: "MLBU-100", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 2,
-        itens: [item("MLB-A1", "Camiseta Dry Fit Azul P", "MLBU-100", { thumbnail: IMAGEM_DO_PRIMEIRO_ITEM }),
-                item("MLB-A2", "Camiseta Dry Fit Azul P (12x)", "MLBU-100")] },
+        itens: [item("MLB-A1", "Camiseta Dry Fit Azul P", "MLBU-100",
+                  { thumbnail: IMAGEM_DO_PRIMEIRO_ITEM, listing_type_id: "gold_pro" }),
+                item("MLB-A2", "Camiseta Dry Fit Azul P (12x)", "MLBU-100",
+                  { listing_type_id: "gold_special" })] },
+      // As três formas de variação, de propósito: mista (acima), só Clássico
+      // e só Premium. Nenhuma delas pode depender do padrão
+      // Clássico + Premium para renderizar.
       { user_product_id: "MLBU-200", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 1,
-        itens: [item("MLB-A3", "Camiseta Dry Fit Azul M", "MLBU-200")] },
+        itens: [item("MLB-A3", "Camiseta Dry Fit Azul M", "MLBU-200",
+          { listing_type_id: "gold_special" })] },
       { user_product_id: "MLBU-300", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 1,
-        itens: [item("MLB-A4", "Camiseta Dry Fit Azul G", "MLBU-300")] },
+        itens: [item("MLB-A4", "Camiseta Dry Fit Azul G", "MLBU-300",
+          { listing_type_id: "gold_pro" })] },
     ],
   },
   "FAM-2": {
@@ -439,6 +456,10 @@ async function run() {
           seletorDeModo: document.getElementById('am-modo'),
           containerDeFamilias: document.getElementById('am-familias-container'),
           arvore: document.querySelectorAll('.am-arvore, .am-familia').length,
+          // UMA paginação, contando GRUPOS: são 3 linhas para 6 anúncios reais
+          // (4 em FAM-1, 1 em FAM-2, 1 sem agrupador).
+          paginacoes: document.querySelectorAll('.am-paginacao').length,
+          contagem: (document.querySelector('.am-paginacao .vf-pagination__info') || {}).textContent,
         }; })()`);
       assert.strictEqual(estado.listas, 1, "existe mais de uma tabela na tela");
       assert.strictEqual(estado.linhas, 3, "3 linhas: 2 agrupadores + 1 anúncio individual");
@@ -448,6 +469,9 @@ async function run() {
       assert.strictEqual(estado.seletorDeModo, null, "o seletor de aba continua no DOM");
       assert.strictEqual(estado.containerDeFamilias, null, "o segundo container continua no DOM");
       assert.strictEqual(estado.arvore, 0, "a árvore separada continua sendo montada");
+      assert.strictEqual(estado.paginacoes, 1, "voltou a existir mais de uma paginação");
+      assert.ok(/\b3\b/.test(estado.contagem || "") && !/\b6\b/.test(estado.contagem || ""),
+        `a paginação precisa contar grupos (3), não anúncios (6): "${estado.contagem}"`);
     });
 
     await check("2 — a tela não chama mais a listagem plana (não existe segunda lista)", async () => {
@@ -520,22 +544,26 @@ async function run() {
     /* ── 8 a 10: expansão explícita, hierarquia e UP com 2 MLBs ─────────── */
 
     let antesExpandir = pedidos.length;
-    await check("8 — expandir o agrupador busca o detalhe e monta User Product -> MLB", async () => {
+    await check("8 — expandir o agrupador busca o detalhe e põe os MLBs direto abaixo dele", async () => {
       await clicar(cdp, linhaFam("FAM-1"));
-      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-up')`, "o painel do agrupador não carregou");
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "o painel do agrupador não carregou");
       const estado = await cdp.evaluate(`(function(){
         var r = document.querySelector('${linhaFam("FAM-1")}');
         var p = r.nextElementSibling;
         return {
           expandido: r.getAttribute('aria-expanded'),
           painelVisivel: !p.hidden,
-          ups: p.querySelectorAll('.am-up').length,
+          variacoes: p.querySelectorAll('.am-variacao').length,
           mlbs: p.querySelectorAll('.am-mlb').length,
+          // Os MLBs são filhos do bloco de variação, e o bloco é filho direto
+          // do painel: dois níveis de caixa, nenhum nível de tela entre eles.
+          mlbsForaDeVariacao: p.querySelectorAll('.am-mlb:not(.am-variacao .am-mlb)').length,
         }; })()`);
       assert.strictEqual(estado.expandido, "true");
       assert.strictEqual(estado.painelVisivel, true);
-      assert.strictEqual(estado.ups, 3, "o agrupador tem 3 user products");
+      assert.strictEqual(estado.variacoes, 3, "o agrupador tem 3 variações");
       assert.strictEqual(estado.mlbs, 4, "o agrupador tem 4 anúncios no total");
+      assert.strictEqual(estado.mlbsForaDeVariacao, 0);
       assert.strictEqual(contar(/\/familias\/FAM-1/, antesExpandir), 1, "deve gastar exatamente 1 requisição");
     });
 
@@ -569,25 +597,109 @@ async function run() {
         `a coluna Estoque não cai embaixo do rótulo ESTOQUE (${g.xEstoqueMae} vs ${g.xEstoqueCab})`);
     });
 
-    await check("9 — o user product com 2 MLBs aparece UMA vez, com os dois dentro", async () => {
+    await check("9 — a variação com 2 MLBs aparece UMA vez, Clássico antes de Premium", async () => {
       const up = await cdp.evaluate(`(function(){
-        var blocos = Array.from(document.querySelectorAll('${painelFam("FAM-1")} .am-up'));
-        var alvo = blocos.filter(function(b){ return b.querySelector('.am-up__id').textContent === 'MLBU-100'; });
+        var alvo = Array.from(document.querySelectorAll(
+          '${painelFam("FAM-1")} .am-variacao[data-user-product="MLBU-100"]'));
+        var linhas = alvo.length ? Array.from(alvo[0].querySelectorAll('.am-mlb')) : [];
         return {
           ocorrencias: alvo.length,
-          itens: alvo.length ? Array.from(alvo[0].querySelectorAll('.am-mlb')).map(function(r){ return r.getAttribute('data-item'); }) : [],
+          itens: linhas.map(function(r){ return r.getAttribute('data-item'); }),
+          condicoes: linhas.map(function(r){
+            var c = r.querySelector('.am-mlb__cond');
+            return c ? c.textContent : null; }),
+          // Uma variação com irmãs ganha o trilho que amarra as linhas; uma
+          // variação de um só MLB não pode ganhar marca nenhuma.
+          multipla: alvo.length ? alvo[0].classList.contains('am-variacao--multipla') : null,
+          solitariaMarcada: Boolean(document.querySelector(
+            '${painelFam("FAM-1")} .am-variacao[data-user-product="MLBU-200"].am-variacao--multipla')),
         }; })()`);
-      assert.strictEqual(up.ocorrencias, 1, "o user product foi duplicado na tela");
-      assert.deepStrictEqual(up.itens, ["MLB-A1", "MLB-A2"]);
+      assert.strictEqual(up.ocorrencias, 1, "a variação foi duplicada na tela");
+      // O backend entrega MLB-A1 (Premium) antes de MLB-A2 (Clássico): a tela
+      // reordena para a leitura do ML, sem depender de o padrão existir.
+      assert.deepStrictEqual(up.itens, ["MLB-A2", "MLB-A1"]);
+      assert.deepStrictEqual(up.condicoes, ["Clássico", "Premium"]);
+      assert.strictEqual(up.multipla, true);
+      assert.strictEqual(up.solitariaMarcada, false, "variação de 1 MLB não pode ganhar o trilho de irmãs");
     });
 
-    await check("10 — o user product não é clicável (é só agrupamento visual)", async () => {
-      const interativo = await cdp.evaluate(`(function(){
-        var head = document.querySelector('.am-up__head');
-        return { tag: head.tagName, temRole: head.hasAttribute('role'), temTabindex: head.hasAttribute('tabindex') }; })()`);
-      assert.strictEqual(interativo.tag, "DIV");
-      assert.strictEqual(interativo.temRole, false);
-      assert.strictEqual(interativo.temTabindex, false);
+    await check("9b — as três formas de variação renderizam, e só a que tem irmãs ganha o trilho", async () => {
+      // O padrão do negócio é Clássico + Premium por variação, mas NÃO é
+      // regra. As três formas precisam sair igualmente bem: mista, só
+      // Clássico, só Premium.
+      const formas = await cdp.evaluate(`(function(){
+        return Array.from(document.querySelectorAll('${painelFam("FAM-1")} .am-variacao'))
+          .map(function(b){
+            return {
+              up: b.getAttribute('data-user-product'),
+              mlbs: Array.from(b.querySelectorAll('.am-mlb')).map(function(r){ return r.getAttribute('data-item'); }),
+              condicoes: Array.from(b.querySelectorAll('.am-mlb__cond')).map(function(c){ return c.textContent; }),
+              trilho: b.classList.contains('am-variacao--multipla'),
+            }; }); })()`);
+      assert.deepStrictEqual(formas, [
+        { up: "MLBU-100", mlbs: ["MLB-A2", "MLB-A1"], condicoes: ["Clássico", "Premium"], trilho: true },
+        { up: "MLBU-200", mlbs: ["MLB-A3"], condicoes: ["Clássico"], trilho: false },
+        { up: "MLBU-300", mlbs: ["MLB-A4"], condicoes: ["Premium"], trilho: false },
+      ], `a matriz de formas de variação mudou: ${JSON.stringify(formas, null, 2)}`);
+    });
+
+    await check("9c — família de uma variação só: um MLB direto abaixo, sem trilho e sem nível", async () => {
+      await clicar(cdp, linhaFam("FAM-2"));
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")} .am-mlb')`, "FAM-2 não abriu");
+      const f2 = await cdp.evaluate(`(function(){
+        var p = document.querySelector('${painelFam("FAM-2")}');
+        var b = p.querySelector('.am-variacao');
+        return {
+          variacoes: p.querySelectorAll('.am-variacao').length,
+          mlbs: Array.from(p.querySelectorAll('.am-mlb')).map(function(r){ return r.getAttribute('data-item'); }),
+          trilho: b.classList.contains('am-variacao--multipla'),
+          irmas: p.querySelectorAll('.am-mlb--irma').length,
+          // Uma variação só não pode virar rótulo nem faixa: o painel não tem
+          // texto além do da própria linha do anúncio.
+          textoDoPainel: p.innerText.indexOf('MLBU-') === -1,
+        }; })()`);
+      assert.strictEqual(f2.variacoes, 1);
+      assert.deepStrictEqual(f2.mlbs, ["MLB-B9"]);
+      assert.strictEqual(f2.trilho, false, "variação sem irmãs não pode ganhar o trilho");
+      assert.strictEqual(f2.irmas, 0);
+      assert.strictEqual(f2.textoDoPainel, true);
+      // Volta a FAM-2 ao estado fechado para não mudar o cenário das próximas.
+      await clicar(cdp, linhaFam("FAM-2"));
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")}').hidden === true`, "FAM-2 não colapsou");
+    });
+
+    await check("10 — o MLBU não é nível visível: nenhum aparece escrito na página", async () => {
+      const estado = await cdp.evaluate(`(function(){
+        var painel = document.querySelector('${painelFam("FAM-1")}');
+        var bloco = painel.querySelector('.am-variacao');
+        return {
+          // A faixa "PRODUTO MLBU-…" que era o nível intermediário.
+          faixaAntiga: document.querySelectorAll('.am-up, .am-up__head, .am-up__id').length,
+          // O bloco de variação existe, mas não é nível: sem texto próprio,
+          // sem papel e sem foco.
+          tag: bloco.tagName,
+          temRole: bloco.hasAttribute('role'),
+          temTabindex: bloco.hasAttribute('tabindex'),
+          // A chave continua existindo como DADO, nunca como texto.
+          chaveInterna: bloco.getAttribute('data-user-product'),
+          mlbuNaTela: /MLBU-/.test(document.body.innerText),
+        }; })()`);
+      assert.strictEqual(estado.faixaAntiga, 0, "o nível visível do User Product voltou");
+      assert.strictEqual(estado.tag, "DIV");
+      assert.strictEqual(estado.temRole, false);
+      assert.strictEqual(estado.temTabindex, false);
+      assert.strictEqual(estado.chaveInterna, "MLBU-100", "o MLBU tem de seguir disponível como dado");
+      assert.strictEqual(estado.mlbuNaTela, false, "algum MLBU foi escrito na tela");
+    });
+
+    await check("10b — a linha principal do agrupador mostra o ID do agrupador", async () => {
+      const ids = await cdp.evaluate(`(function(){
+        var ids = document.querySelector('${linhaFam("FAM-1")} .am-row__ids');
+        return { texto: ids.innerText, mono: Array.from(ids.querySelectorAll('.vf-mono'))
+          .map(function(e){ return e.textContent; }) }; })()`);
+      assert.deepStrictEqual(ids.mono, ["FAM-1"],
+        `o ID maior do agrupador não aparece na linha principal: ${JSON.stringify(ids)}`);
+      assert.ok(/3 variações/.test(ids.texto), "os agregados do grupo saíram da linha principal");
     });
 
     /* ── 11: cache — colapsar e reabrir não gasta requisição ────────────── */
@@ -615,7 +727,7 @@ async function run() {
 
       await clicar(cdp, linhaFam("FAM-1"));
       await clicar(cdp, linhaFam("FAM-2"));
-      await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")} .am-up')`, "o agrupador B não carregou");
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")} .am-mlb')`, "o agrupador B não carregou");
 
       const b = await cdp.evaluate(`(function(){
         return Array.from(document.querySelectorAll('${painelFam("FAM-2")} .am-mlb'))
@@ -624,7 +736,7 @@ async function run() {
 
       // Espera a resposta atrasada de A chegar e confirma que ela foi para o
       // painel de A, sem contaminar o de B.
-      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-up')`, "o agrupador A não carregou depois do atraso");
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "o agrupador A não carregou depois do atraso");
       const depois = await cdp.evaluate(`(function(){
         return Array.from(document.querySelectorAll('${painelFam("FAM-2")} .am-mlb'))
           .map(function(r){ return r.getAttribute('data-item'); }); })()`);
@@ -635,8 +747,11 @@ async function run() {
     /* ── 13: troca de conta invalida o cache ───────────────────────────── */
 
     await check("13 — trocar de conta limpa o cache: o agrupador não volta com dados da conta anterior", async () => {
-      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-up')`, "FAM-1 precisa estar carregada antes da troca");
-      const antesTroca = await cdp.evaluate(`document.querySelector('${painelFam("FAM-1")} .am-up__id').textContent`);
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "FAM-1 precisa estar carregada antes da troca");
+      // O MLBU saiu da tela mas continua sendo a chave do agrupamento: é por
+      // ele que se comprova QUAL conta pintou o painel.
+      const antesTroca = await cdp.evaluate(
+        `document.querySelector('${painelFam("FAM-1")} .am-variacao').getAttribute('data-user-product')`);
       assert.strictEqual(antesTroca, "MLBU-100");
 
       await cdp.evaluate("window.VF.context.setConta('43')");
@@ -649,8 +764,9 @@ async function run() {
 
       const antes = pedidos.length;
       await clicar(cdp, linhaFam("FAM-1"));
-      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-up')`, "o agrupador da nova conta não carregou");
-      const up = await cdp.evaluate(`document.querySelector('${painelFam("FAM-1")} .am-up__id').textContent`);
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "o agrupador da nova conta não carregou");
+      const up = await cdp.evaluate(
+        `document.querySelector('${painelFam("FAM-1")} .am-variacao').getAttribute('data-user-product')`);
       assert.strictEqual(up, "MLBU-900", "veio o dado cacheado da conta anterior");
       assert.strictEqual(contar(/\/familias\/FAM-1/, antes), 1, "o cache velho impediu a busca na conta nova");
     });
@@ -687,10 +803,28 @@ async function run() {
 
     /* ── 16 e 17: as duas formas de linha abrem o mesmo modal ───────────── */
 
-    await check("16 — clicar numa linha MLB do agrupador abre o modal de sempre", async () => {
+    await check("16 — clicar numa linha MLB do agrupador abre o modal do MLB CERTO", async () => {
       await clicar(cdp, linhaFam("FAM-1"));
       await waitFor(cdp, "document.querySelector('.am-mlb')", "o agrupador não trouxe linhas MLB");
-      await clicar(cdp, ".am-mlb");
+
+      // A ação do filho tem de sair do item_id DELE. Alvo escolhido de
+      // propósito: a segunda linha de MLBU-100 (a irmã, MLB-A1) — se alguma
+      // ação usasse o identificador do grupo ou o do primeiro filho, é aqui
+      // que apareceria.
+      const alvo = await cdp.evaluate(`(function(){
+        var linhas = document.querySelectorAll('.am-variacao[data-user-product="MLBU-100"] .am-mlb');
+        var r = linhas[1];
+        var link = r.querySelector('.am-row__link');
+        return { item: r.getAttribute('data-item'), href: link ? link.getAttribute('href') : null,
+                 irma: r.classList.contains('am-mlb--irma') }; })()`);
+      assert.strictEqual(alvo.item, "MLB-A1");
+      assert.strictEqual(alvo.irma, true);
+      // "Abrir no Mercado Livre" é permalink por ITEM, nunca do grupo.
+      assert.strictEqual(alvo.href, "https://produto.mercadolivre.com.br/MLB-A1",
+        `o link externo do filho não aponta para o próprio MLB: ${alvo.href}`);
+
+      const antes = pedidos.length;
+      await clicar(cdp, '.am-variacao[data-user-product="MLBU-100"] .am-mlb--irma');
       await waitFor(cdp, "document.querySelector('.am-det-modal')", "o modal não abriu pela linha do agrupador");
       await waitFor(cdp, "document.getElementById('am-det-titulo')", "o modal não terminou de carregar");
       const m = await cdp.evaluate(`(function(){
@@ -698,6 +832,11 @@ async function run() {
         return { role: e.getAttribute('role'), modal: e.getAttribute('aria-modal') }; })()`);
       assert.strictEqual(m.role, "dialog");
       assert.strictEqual(m.modal, "true");
+      assert.strictEqual(contar(/^\/anuncios-meli\/MLB-A1\?/, antes), 1,
+        "o modal precisa pedir o detalhe do MLB clicado");
+      // Nenhuma requisição de detalhe pode sair com o identificador do grupo.
+      assert.strictEqual(contar(/^\/anuncios-meli\/FAM-/, 0), 0,
+        "alguma ação de item saiu com family_id no lugar do item_id");
     });
 
     await check("17 — clicar no anúncio individual abre o MESMO modal, direto", async () => {
@@ -743,7 +882,7 @@ async function run() {
 
     await check("20 — expandir não altera a capa: quem decide é o backend", async () => {
       await clicar(cdp, linhaFam("FAM-1"));
-      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-up')`, "FAM-1 não abriu");
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "FAM-1 não abriu");
       const fam1 = await cdp.evaluate(capaDe("FAM-1"));
       assert.strictEqual(fam1.src, CAPA_FAM1,
         `a expansão trocou a capa pela imagem de um item (${fam1.src})`);
@@ -751,7 +890,7 @@ async function run() {
       // FAM-2 é o caso decisivo: o item TEM imagem e a API disse que o
       // agrupador não tem capa. Se o front voltar a deduzir, se entrega aqui.
       await clicar(cdp, linhaFam("FAM-2"));
-      await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")} .am-up')`, "FAM-2 não abriu");
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")} .am-mlb')`, "FAM-2 não abriu");
       const fam2 = await cdp.evaluate(capaDe("FAM-2"));
       assert.strictEqual(fam2.temImg, false,
         `o front recalculou a capa a partir dos itens (${fam2.src})`);

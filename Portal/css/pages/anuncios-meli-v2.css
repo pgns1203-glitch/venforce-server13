@@ -461,54 +461,62 @@
   padding: var(--vf-sp-4);
 }
 
-/* Nível 2 — faixa de grupo, sem interação. */
-.vf-page-anuncios-meli .am-up__head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--vf-sp-2);
-  align-items: baseline;
-  /* Alinhada com o recuo da linha filha (os 20px que a miniatura
-     deixa livre na sua coluna), não com uma coluna própria. */
-  padding: var(--vf-sp-1) var(--vf-sp-5) var(--vf-sp-1) calc(var(--vf-sp-5) + 20px);
-  font-size: var(--vf-fs-2xs);
-  color: var(--vf-text-muted);
-  background: var(--vf-surface-2);
-  border-bottom: 1px solid var(--vf-border);
-}
-
-.vf-page-anuncios-meli .am-up + .am-up .am-up__head {
+/* Bloco de variação (User Product) — agrupamento visual PURO.
+ *
+ * Aqui existia uma faixa "PRODUTO MLBU-123 · 2 anúncios" acima de cada
+ * grupo de MLBs: um terceiro nível visível na árvore. Ela saiu. MLBU
+ * não é identificador que o operador reconheça, e a listagem oficial
+ * do ML não o expõe — o ID que aparece é o do agrupador, na linha
+ * principal. O bloco continua existindo sem cabeçalho e sem nome de
+ * classe que sugira nível: ele só mantém juntos os MLBs da mesma
+ * variação (o par Clássico/Premium do padrão operacional) e separa uma
+ * variação da seguinte.
+ *
+ * Toda a separação vive AQUI, não na linha: dentro da variação as
+ * linhas ficam encostadas (leem como um par), e o filete divide
+ * variações. Era o contrário antes — filete em toda linha e faixa
+ * entre grupos. */
+.vf-page-anuncios-meli .am-variacao + .am-variacao {
   border-top: 1px solid var(--vf-border);
 }
 
-.vf-page-anuncios-meli .am-up__rotulo {
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+/* Variação com mais de um anúncio (o caso Clássico + Premium): um
+   trilho vertical no VÃO da miniatura amarra as linhas irmãs. O trilho
+   é background do bloco, não borda e não pseudo-elemento: borda
+   empurraria o conteúdo e desalinharia a grade, e ::before entraria na
+   grade da linha como se fosse uma célula. Desenhado no vão de 20px
+   que a miniatura de 32px deixa livre na coluna de 52px — o mesmo vão
+   que dá o recuo do nível, então não custa coluna nenhuma.
+
+   2px em --vf-border-strong, não 1px em --vf-border: no vão claro, o
+   filete de divisória some e o trilho fica sendo CSS morto — se ele não
+   se lê, não está amarrando nada. */
+.vf-page-anuncios-meli .am-variacao--multipla {
+  background-repeat: no-repeat;
+  background-image: linear-gradient(to bottom, var(--vf-border-strong), var(--vf-border-strong));
+  background-position: calc(var(--vf-sp-5) + 9px) 14px;
+  background-size: 2px calc(100% - 28px);
 }
 
-.vf-page-anuncios-meli .am-up__id {
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text-secondary);
-}
-
-.vf-page-anuncios-meli .am-up__contagem {
-  margin-left: auto;
-}
-
-/* Nível 3 — linha do item na MESMA grade do cabeçalho (--am-cols de
-   .am-listagem, na regra compartilhada lá em cima). O padding
-   horizontal é IDÊNTICO ao de .am-row de propósito: é o que faz cada
-   coluna do filho cair exatamente embaixo da coluna do cabeçalho.
-   Quem dá o recuo é a miniatura, encostada à direita da sua própria
-   coluna (ver .am-mlb__thumb) — nunca o padding da linha, que
-   deslocaria a grade inteira. */
+/* Linha do item na MESMA grade do cabeçalho (--am-cols de .am-listagem,
+   na regra compartilhada lá em cima). O padding horizontal é IDÊNTICO
+   ao de .am-row de propósito: é o que faz cada coluna do filho cair
+   exatamente embaixo da coluna do cabeçalho. Quem dá o recuo é a
+   miniatura, encostada à direita da sua própria coluna (ver
+   .am-mlb__thumb) — nunca o padding da linha, que deslocaria a grade
+   inteira. */
 .vf-page-anuncios-meli .am-mlb {
   padding: var(--vf-sp-2) var(--vf-sp-5);
   cursor: pointer;
-  border-bottom: 1px solid var(--vf-border);
 }
 
-.vf-page-anuncios-meli .am-up:last-child .am-mlb:last-child {
-  border-bottom: none;
+/* Irmã de variação: o segundo (terceiro, quarto…) anúncio da MESMA
+   variação. Encosta na linha de cima — sem filete entre elas — porque é
+   isso que faz o par Clássico/Premium ler como um bloco em vez de duas
+   linhas soltas. Mexe só na altura: padding vertical, nunca horizontal,
+   que deslocaria a grade. */
+.vf-page-anuncios-meli .am-mlb--irma {
+  padding-top: var(--vf-sp-1);
 }
 
 .vf-page-anuncios-meli .am-mlb:hover,
@@ -562,9 +570,26 @@
 
 .vf-page-anuncios-meli .am-mlb__ids {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--vf-sp-3);
+  align-items: center;
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
+}
+
+/* Condição comercial (Clássico / Premium). Quando o nível do MLBU
+   estava na tela, o par de anúncios da mesma variação era identificado
+   pela faixa acima dele; sem a faixa, é ESTE rótulo que diz por que
+   duas linhas parecidas são anúncios diferentes do mesmo produto. Fica
+   dentro da célula de identificação, ao lado do MLB — nunca numa coluna
+   nova, que desalinharia a expansão do cabeçalho. */
+.vf-page-anuncios-meli .am-mlb__cond {
+  padding: 1px var(--vf-sp-2);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+  background: var(--vf-surface-2);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-pill, 999px);
 }
 
 /* Números na MESMA orientação das colunas da linha-mãe (.am-row__preco

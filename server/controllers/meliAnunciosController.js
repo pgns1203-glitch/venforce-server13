@@ -311,7 +311,7 @@ async function detalheFamilia(req, res) {
 
 // ----------------------------------------------------------------------------
 // GET /anuncios-meli/performance?clienteSlug=&itemIds=A,B,C&clienteContaId=
-//                                &incluirMetricas=&incluirMargem=
+//                                &incluirMetricas=&incluirMargem=&incluirComposicao=
 //
 // Enriquecimento AO VIVO desta tela: métricas dos últimos 7 dias
 // (meliMetricas7dService — views/vendas/conversão) e margem por MLB
@@ -328,11 +328,19 @@ async function detalheFamilia(req, res) {
 // Margem para preencher a soma automática de um agrupador ainda fechado).
 // "0"/"false" desliga o bloco: o serviço de baixo nem é chamado.
 //
-// Métricas e margem são blocos INDEPENDENTES: falha de um nunca derruba o
-// outro (Promise.allSettled). Base de Custos não vinculada (ou qualquer
-// outro motivo de contexto do Motor de Margem não estar pronto) vira
-// `margemIndisponivel` com o MESMO texto que contextoPrecificacaoService.js
-// já usa — nunca um erro genérico, nunca um 500.
+// `incluirComposicao` (default **"0"**, ao contrário dos outros dois —
+// opt-in): só o modal de detalhe do MLB pede, ao abrir a seção "Composição
+// da margem". Exige `incluirMargem=1` junto (senão fica sempre vazio) e só
+// monta composição para o item cuja margem exibida for `computable` — nos
+// outros casos (contexto indisponível, item não-computável) a chave nem
+// aparece em `composicao`, e o front reaproveita a MESMA mensagem/rótulo
+// que já usa para a margem da lista (`margem[itemId]`/`margemIndisponivel`).
+//
+// Métricas, margem e composição são blocos INDEPENDENTES: falha de um nunca
+// derruba o outro (Promise.allSettled). Base de Custos não vinculada (ou
+// qualquer outro motivo de contexto do Motor de Margem não estar pronto)
+// vira `margemIndisponivel` com o MESMO texto que
+// contextoPrecificacaoService.js já usa — nunca um erro genérico, nunca 500.
 // ----------------------------------------------------------------------------
 const PERFORMANCE_MAX_ITENS = 24; // teto de abuso da rota — independente da paginação da tela, não é a mesma coisa
 
@@ -340,23 +348,92 @@ function flagLigada(valor) {
   return valor === undefined || valor === null || (valor !== "0" && valor !== "false");
 }
 
-function montarMapaMargem(itens) {
-  const mapa = {};
+// Ao contrário de flagLigada() (default ligado), composição é OPT-IN —
+// ausente/qualquer coisa que não seja "1"/"true" significa desligado.
+function flagOptIn(valor) {
+  return valor === "1" || valor === "true";
+}
+
+// Um termo da evidência bruta do Motor (`{value, source, quality,
+// observedAt}` ou `null` quando a variável não tem fonte nenhuma) — o
+// mesmo formato usado em `pricing.current/sold` e
+// `marketplaceCosts.commission*/freight*`.
+function valorEvidencia(entrada) {
+  return entrada && entrada.value != null ? entrada.value : null;
+}
+
+// ----------------------------------------------------------------------------
+// Composição da margem — SÓ para o modal de detalhe (§ incluirComposicao).
+//
+// Não é um segundo cálculo de margem: é a decomposição dos MESMOS insumos
+// que `motorMargemService`/`marginEngine.computeMargin` já usou para chegar
+// no número de `item.margin.<origem>` (ver core/marginItem.js e
+// core/marginEngine.js). Fórmula real, para referência (nunca reimplementada
+// aqui): lucro = venda − (venda × imposto%) − comissão − frete − taxaFixa
+// − custo. Não existe um "outros custos" no Motor — só estes 5 descontos.
+//
+// A ÚNICA conta feita aqui é `impostoValor = venda × impostoPercentual`:
+// o Motor guarda imposto como PERCENTUAL (nunca em R$ pronto), então essa
+// multiplicação é só para a linha "Imposto" da composição ficar em R$ como
+// as demais — a margem final exibida (`margin`/`marginPercent`, abaixo)
+// continua sendo, sempre e só, o valor que o Motor já calculou. Nenhuma
+// linha é ajustada para a soma "fechar" contra esse número.
+function montarComposicaoDoItem(item, origem) {
+  const custosOrigem = origem === "realized" ? "realized" : "projected";
+  const venda = valorEvidencia(
+    origem === "realized" ? item.pricing.sold : item.pricing.current
+  );
+  const custoProduto = valorEvidencia(item.costs.cost[custosOrigem]);
+  const taxaFixa = valorEvidencia(item.costs.fixedFee[custosOrigem]); // realizada: sempre null (sem histórico) — linha some sozinha no front
+  const impostoPercentual = valorEvidencia(item.costs.taxRate[custosOrigem]);
+  const comissaoMl = valorEvidencia(
+    origem === "realized" ? item.marketplaceCosts.commissionRealized : item.marketplaceCosts.commissionProjected
+  );
+  const frete = valorEvidencia(
+    origem === "realized" ? item.marketplaceCosts.freightRealized : item.marketplaceCosts.freightProjected
+  );
+  const impostoValor =
+    venda != null && impostoPercentual != null
+      ? Math.round(venda * impostoPercentual * 100) / 100
+      : null;
+
+  return { venda, custoProduto, comissaoMl, frete, taxaFixa, impostoPercentual, impostoValor };
+}
+
+function montarMapaMargem(itens, incluirComposicao) {
+  const margem = {};
+  const composicao = {};
   for (const item of itens || []) {
     const realized = item.margin && item.margin.realized;
     const projected = item.margin && item.margin.projected;
     const usaRealizada = !!(realized && realized.computable);
     const exibida = usaRealizada ? realized : projected;
-    mapa[item.identity.itemId] = {
-      origem: usaRealizada ? "realized" : "projected",
+    const origem = usaRealizada ? "realized" : "projected";
+    const itemId = item.identity.itemId;
+
+    margem[itemId] = {
+      origem,
       margin: exibida ? exibida.margin : null,
       marginPercent: exibida ? exibida.marginPercent : null,
+      // Lucro em R$ (o Motor já calcula — `margin`/`marginPercent` acima são
+      // só a RAZÃO/percentual). Aditivo: a lista nunca leu este campo, só a
+      // seção "Composição da margem" do modal precisa dele para a linha
+      // final "= Margem" em moeda.
+      profit: exibida ? exibida.profit : null,
       status: item.quality.status,
       statusLabel: item.quality.statusLabel,
       statusReasons: item.quality.statusReasons,
     };
+
+    // Só monta composição quando a margem exibida É computável — item sem
+    // margem (Base ausente, UNVALIDATED etc.) não tem nada pra decompor, e
+    // o front reaproveita o mesmo statusLabel/statusReasons acima, nunca
+    // uma composição parcial.
+    if (incluirComposicao && exibida && exibida.computable) {
+      composicao[itemId] = montarComposicaoDoItem(item, origem);
+    }
   }
-  return mapa;
+  return { margem, composicao };
 }
 
 async function performance(req, res) {
@@ -379,8 +456,9 @@ async function performance(req, res) {
     }
     const incluirMetricas = flagLigada(req.query && req.query.incluirMetricas);
     const incluirMargem = flagLigada(req.query && req.query.incluirMargem);
+    const incluirComposicao = flagOptIn(req.query && req.query.incluirComposicao);
     if (!itemIds.length || (!incluirMetricas && !incluirMargem)) {
-      return res.json({ ok: true, metricas7d: {}, margem: {}, margemIndisponivel: null });
+      return res.json({ ok: true, metricas7d: {}, margem: {}, margemIndisponivel: null, composicao: {} });
     }
 
     const cliente = await anunciosService.resolverCliente(clienteSlug);
@@ -418,24 +496,28 @@ async function performance(req, res) {
     }
 
     let margem = {};
+    let composicao = {};
     let margemIndisponivel = null;
     if (!incluirMargem) {
       // desligado por pedido do frontend (soma automática do agrupador ainda
       // fechado — margem só é buscada quando o operador realmente expande).
     } else if (margemResultado.status === "fulfilled") {
-      margem = montarMapaMargem(margemResultado.value.itens);
+      const resultado = montarMapaMargem(margemResultado.value.itens, incluirComposicao);
+      margem = resultado.margem;
+      composicao = resultado.composicao;
     } else {
       const err = margemResultado.reason;
       if (err && err.statusCode && err.payload && err.payload.codigo) {
         // Contexto do Motor não está pronto (Base não vinculada, múltiplas
         // bases, grant caído) — mensagem REAL do Motor, não tradução própria.
+        // Composição some junto: sem contexto pronto não há item pra decompor.
         margemIndisponivel = { codigo: err.payload.codigo, mensagem: err.payload.erro };
       } else {
         console.error("[anuncios-meli] performance margem:", err && err.message);
       }
     }
 
-    return res.json({ ok: true, metricas7d, margem, margemIndisponivel });
+    return res.json({ ok: true, metricas7d, margem, margemIndisponivel, composicao });
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] performance:", err.message);

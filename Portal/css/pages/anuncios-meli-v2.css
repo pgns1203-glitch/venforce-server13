@@ -811,6 +811,100 @@
   margin-left: 2px;
 }
 
+/* ---------------------------------------------------------------------
+   Composição da margem — seção secundária do modal de detalhe (<details>
+   nativo). Fica por último, discreta: nenhuma cor nova, nenhum destaque
+   que compita com título/preço/estoque no topo do modal.
+--------------------------------------------------------------------- */
+.vf-page-anuncios-meli .am-margem-comp {
+  margin-top: 32px;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__summary::-webkit-details-marker {
+  display: none;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__summary:focus-visible {
+  outline: 2px solid var(--vf-border-strong);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__chevron {
+  display: inline-flex;
+  color: var(--vf-text-muted);
+  transition: transform 0.15s ease;
+}
+
+.vf-page-anuncios-meli .am-margem-comp[open] > .am-margem-comp__summary .am-margem-comp__chevron {
+  transform: rotate(90deg);
+}
+
+.vf-page-anuncios-meli .am-margem-comp__body {
+  margin-top: 12px;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__dica {
+  margin: 0;
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-margem-comp__badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__ladder {
+  border: 1px solid var(--vf-border);
+  border-radius: 8px;
+  padding: 4px 14px;
+  max-width: 360px;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__linha {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  font-size: var(--vf-fs-sm);
+}
+
+.vf-page-anuncios-meli .am-margem-comp__linha + .am-margem-comp__linha {
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-page-anuncios-meli .am-margem-comp__rotulo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-margem-comp__valor {
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text);
+}
+
+.vf-page-anuncios-meli .am-margem-comp__total {
+  border-top: 2px solid var(--vf-border-strong) !important;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__total .am-margem-comp__rotulo,
+.vf-page-anuncios-meli .am-margem-comp__total .am-margem-comp__valor {
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text);
+}
+
 .vf-page-anuncios-meli .am-mlb__acao {
   display: flex;
   justify-content: flex-end;

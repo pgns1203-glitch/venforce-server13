@@ -121,6 +121,18 @@ let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
 const pedidos = [];                  // toda URL de API disparada
 const corpos = [];                   // { url, body } de toda escrita
 
+// GET /anuncios-meli/performance — só a seção "Composição da margem" do
+// modal chama isto (a lista tem arquivo de teste próprio). `performanceHandler`,
+// quando setado, substitui a resposta padrão inteira; `chamadasPerformance`
+// registra cada chamada com os flags exatos que vieram na query string.
+let performanceHandler = null;
+const chamadasPerformance = [];
+// MLB-A1 (item padrão desta suíte, conta 42): margem REALIZADA saudável,
+// com ladder completo — taxa fixa ausente de propósito (realizada nunca
+// tem, por desenho do Motor).
+const MARGEM_MLA1 = { origem: "realized", margin: 0.35, marginPercent: 35, profit: 70, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+const COMPOSICAO_MLA1 = { venda: 200, custoProduto: 80, comissaoMl: 25, frete: 15, taxaFixa: null, impostoPercentual: 0.05, impostoValor: 10 };
+
 const SEMENTE = `
   try {
     localStorage.setItem("vf-token", "detalhe-modal-token");
@@ -248,6 +260,20 @@ async function abrirPrimeiroAnuncio(cdp) {
   await waitFor(cdp, "document.getElementById('am-det-titulo')", "o modal não terminou de carregar o detalhe");
 }
 
+// Texto de cada linha da composição, SEM o tooltip do vf-info-dot (a linha
+// do Imposto tem um selo de explicação cujo texto vive num <span> sempre no
+// DOM — só escondido por CSS até o hover; ler .textContent puro contaminaria
+// a asserção com esse texto). Clona antes de remover, então a página real
+// não perde o tooltip.
+async function lerLinhasComposicao(cdp) {
+  return cdp.evaluate(`Array.from(document.querySelectorAll('#am-det-margem-body .am-margem-comp__linha')).map(function(e){
+    var rotulo = e.querySelector('.am-margem-comp__rotulo').cloneNode(true);
+    rotulo.querySelectorAll('.vf-info__tip').forEach(function(t){ t.remove(); });
+    var valor = e.querySelector('.am-margem-comp__valor').textContent.trim();
+    return rotulo.textContent.replace(/\\s+/g, ' ').trim() + ' ' + valor;
+  })`);
+}
+
 async function fecharModal(cdp) {
   await cdp.evaluate(`(function(){
     var b = document.querySelector('.am-det-modal [data-acao="descartar-e-fechar"]');
@@ -321,6 +347,30 @@ function wireInterception(cdp) {
         })],
         paginacao: { page: 1, limit: 20, total: 1, totalPaginas: 1 },
       });
+      return;
+    }
+
+    // GET /anuncios-meli/performance — precisa vir ANTES do matcher genérico
+    // de detalhe (mDetalhe, abaixo), senão "performance" seria lido como um
+    // itemId. Só a seção "Composição da margem" do modal chama isto.
+    if (caminho.startsWith("/anuncios-meli/performance")) {
+      const qs = new URL(url).searchParams;
+      const idsPedidos = (qs.get("itemIds") || "").split(",").filter(Boolean);
+      const incluirMetricas = qs.get("incluirMetricas") !== "0";
+      const incluirMargem = qs.get("incluirMargem") !== "0";
+      const incluirComposicao = qs.get("incluirComposicao") === "1";
+      chamadasPerformance.push({ itemIds: idsPedidos, incluirMetricas, incluirMargem, incluirComposicao });
+      if (performanceHandler) { await corpo(performanceHandler(idsPedidos, { incluirMetricas, incluirMargem, incluirComposicao })); return; }
+
+      const metricas7d = {};
+      const margem = {};
+      const composicao = {};
+      idsPedidos.forEach((id) => {
+        if (incluirMetricas) metricas7d[id] = { views: 10, vendas: 1, conversao: 10 };
+        if (incluirMargem) margem[id] = id === "MLB-A1" ? MARGEM_MLA1 : { origem: "projected", margin: 0.2, marginPercent: 20, profit: 30, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+        if (incluirComposicao) composicao[id] = id === "MLB-A1" ? COMPOSICAO_MLA1 : { venda: 150, custoProduto: 60, comissaoMl: 18, frete: 12, taxaFixa: 3, impostoPercentual: 0.04, impostoValor: 6 };
+      });
+      await corpo({ ok: true, metricas7d, margem, margemIndisponivel: null, composicao });
       return;
     }
 
@@ -867,6 +917,209 @@ async function run() {
         "o rascunho de modelo do anúncio A vazou para o anúncio B");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-savebar').length"), 0,
         "o anúncio B abriu já 'sujo' com a pendência do anúncio A");
+    });
+
+    /* ── 25 a 31: "Composição da margem" — seção secundária do modal ────── */
+
+    await check("25 — a seção 'Composição da margem' nasce fechada, sem chamada de rede", async () => {
+      await fecharModal(cdp);
+      await cdp.evaluate("window.VF.context.setConta(42)");
+      await waitFor(cdp, "document.querySelector('.am-row')", "o catálogo da conta 42 não voltou");
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      await abrirPrimeiroAnuncio(cdp);
+      const estado = await cdp.evaluate(`(function(){
+        var d = document.getElementById('am-det-margem');
+        return { existe: Boolean(d), aberta: d ? d.open : null,
+                 texto: d ? d.querySelector('.am-margem-comp__body').textContent.trim() : null }; })()`);
+      assert.ok(estado.existe, "a seção de composição da margem não foi renderizada");
+      assert.strictEqual(estado.aberta, false, "a seção não pode nascer aberta");
+      assert.match(estado.texto || "", /Toque para ver/, "o corpo fechado devia mostrar a dica, não carregar nada sozinho");
+      assert.strictEqual(chamadasPerformance.length, 0, "abrir o modal não pode gastar chamada de /performance");
+    });
+
+    await check("26 — abrir a seção busca a composição (1 chamada) e mostra o ladder certo (margem realizada)", async () => {
+      await clicar(cdp, "#am-det-margem summary");
+      await waitFor(cdp, `(function(){
+        var b = document.querySelector('#am-det-margem-body');
+        return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou depois de abrir a seção");
+
+      assert.strictEqual(chamadasPerformance.length, 1, "abrir a seção devia disparar exatamente 1 chamada");
+      assert.deepStrictEqual(chamadasPerformance[0].itemIds, ["MLB-A1"]);
+      assert.strictEqual(chamadasPerformance[0].incluirComposicao, true);
+      assert.strictEqual(chamadasPerformance[0].incluirMargem, true, "composição sempre pede margem junto");
+
+      const linhas = await lerLinhasComposicao(cdp);
+      assert.deepStrictEqual(linhas, [
+        "Venda R$ 200,00",
+        "Custo do produto R$ 80,00",
+        "Comissão Mercado Livre R$ 25,00",
+        "Frete R$ 15,00",
+        "Imposto (5,0%) R$ 10,00",
+        "Margem R$ 70,00 (35,0%)",
+      ], JSON.stringify(linhas));
+      assert.ok(!/Taxa fixa/.test(linhas.join(" ")),
+        "taxa fixa não pode aparecer na margem REALIZADA (sem histórico) — a linha devia sumir, nunca virar '—'");
+
+      const badge = await cdp.evaluate("document.querySelector('#am-det-margem-body .am-margem-comp__badge').textContent");
+      assert.match(badge, /Realizada/, `o badge tem de dizer que é margem realizada: ${badge}`);
+    });
+
+    await check("27 — colapsar e reabrir a MESMA seção reaproveita o cache (0 chamada nova)", async () => {
+      const antes = chamadasPerformance.length;
+      await clicar(cdp, "#am-det-margem summary"); // colapsa
+      await waitFor(cdp, "document.getElementById('am-det-margem').open === false", "não colapsou");
+      await clicar(cdp, "#am-det-margem summary"); // reabre
+      await waitFor(cdp, "document.getElementById('am-det-margem').open === true", "não reabriu");
+      const temLadder = await cdp.evaluate("/Custo do produto/.test(document.getElementById('am-det-margem-body').textContent)");
+      assert.strictEqual(temLadder, true, "reabrir devia mostrar o ladder na hora, sem 'carregando'");
+      assert.strictEqual(chamadasPerformance.length, antes, "colapsar/reabrir a mesma seção gastou uma chamada nova — cache não funcionou");
+    });
+
+    await check("28 — fechar o modal e reabrir o do MESMO MLB reaproveita o cache (0 chamada nova, mesmo sem clicar)", async () => {
+      const antes = chamadasPerformance.length;
+      await fecharModal(cdp);
+      await abrirPrimeiroAnuncio(cdp); // ainda conta 42 -> MLB-A1
+      const corpoAntesDeClicar = await cdp.evaluate(`(function(){
+        var b = document.getElementById('am-det-margem-body');
+        return b ? b.textContent.replace(/\\s+/g, ' ').trim() : null; })()`);
+      assert.match(corpoAntesDeClicar || "", /Custo do produtoR\$ 80,00/,
+        "reabrir o modal do MESMO item_id devia mostrar o ladder JÁ PRONTO (cache), mesmo com a seção ainda fechada");
+      assert.strictEqual(chamadasPerformance.length, antes,
+        "reabrir o modal do mesmo MLB gastou uma chamada nova de /performance — o cache não é por item_id");
+    });
+
+    await check("29 — fechar e abrir o modal de OUTRO MLB NÃO herda a composição anterior (cache é por item_id)", async () => {
+      await fecharModal(cdp);
+      await cdp.evaluate("window.VF.context.setConta(43)");
+      await waitFor(cdp, "document.querySelector('.am-row')", "o catálogo da conta 43 não voltou");
+      const antes = chamadasPerformance.length;
+      await abrirPrimeiroAnuncio(cdp); // MLB-B1
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-titulo').value"), TITULO_B);
+
+      const corpoFechado = await cdp.evaluate(`(function(){
+        var b = document.getElementById('am-det-margem-body');
+        return b ? b.textContent.trim() : null; })()`);
+      assert.match(corpoFechado || "", /Toque para ver/,
+        "o modal de OUTRO MLB não pode abrir já mostrando uma composição — a de MLB-A1 vazou");
+
+      await clicar(cdp, "#am-det-margem summary");
+      await waitFor(cdp, `(function(){
+        var b = document.querySelector('#am-det-margem-body');
+        return b && /Custo do produto/.test(b.textContent); })()`, "o ladder de MLB-B1 não carregou");
+
+      assert.strictEqual(chamadasPerformance.length, antes + 1, "MLB-B1 precisa de 1 chamada própria — não pode reaproveitar a de MLB-A1");
+      assert.deepStrictEqual(chamadasPerformance[chamadasPerformance.length - 1].itemIds, ["MLB-B1"]);
+
+      const linhas = await lerLinhasComposicao(cdp);
+      assert.deepStrictEqual(linhas, [
+        "Venda R$ 150,00",
+        "Custo do produto R$ 60,00",
+        "Comissão Mercado Livre R$ 18,00",
+        "Frete R$ 12,00",
+        "Taxa fixa R$ 3,00",
+        "Imposto (4,0%) R$ 6,00",
+        "Margem R$ 30,00 (20,0%)",
+      ], `MLB-B1 mostrou dados de outro item: ${JSON.stringify(linhas)}`);
+    });
+
+    await check("29b — voltar para o MLB-A1 continua com a composição DELE (as duas entradas de cache coexistem, por item_id)", async () => {
+      const antes = chamadasPerformance.length;
+      await fecharModal(cdp);
+      await cdp.evaluate("window.VF.context.setConta(42)");
+      await waitFor(cdp, "document.querySelector('.am-row')", "o catálogo da conta 42 não voltou");
+      await abrirPrimeiroAnuncio(cdp); // MLB-A1 de novo
+      const corpo = await cdp.evaluate(`(function(){
+        var b = document.getElementById('am-det-margem-body');
+        return b ? b.textContent.replace(/\\s+/g, ' ').trim() : null; })()`);
+      assert.match(corpo || "", /Custo do produtoR\$ 80,00/,
+        "MLB-A1 devia continuar com a própria composição (R$ 80,00 de custo) — não a de MLB-B1 (R$ 60,00)");
+      assert.ok(!/R\$ 60,00/.test(corpo || ""), "a composição de MLB-B1 vazou para MLB-A1");
+      assert.strictEqual(chamadasPerformance.length, antes,
+        "MLB-A1 já tinha sido carregado antes — abrir os dois em sequência não pode custar chamada nova para nenhum dos dois");
+    });
+
+    await check("30 — margem indisponível no nível de CONTEXTO: mensagem real do backend, sem ladder", async () => {
+      performanceHandler = (ids) => ({
+        ok: true, metricas7d: {}, margem: {}, composicao: {},
+        margemIndisponivel: { codigo: "BASE_MELI_NAO_VINCULADA", mensagem: "Base de custos MELI não vinculada para esta operação." },
+      });
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await clicar(cdp, "#am-det-margem summary");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('#am-det-margem-body');
+          return b && /Base de custos MELI não vinculada/.test(b.textContent); })()`, "a mensagem de contexto não apareceu");
+        const semLadder = await cdp.evaluate("document.querySelectorAll('#am-det-margem-body .am-margem-comp__linha').length");
+        assert.strictEqual(semLadder, 0, "contexto indisponível não pode mostrar nenhuma linha de composição, nem parcial");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
+    await check("31 — item não-computável (UNVALIDADO): rótulo real do Motor, sem ladder", async () => {
+      performanceHandler = (ids) => {
+        const margem = {};
+        ids.forEach((id) => { margem[id] = { origem: "projected", margin: null, marginPercent: null, profit: null, status: "UNVALIDATED", statusLabel: "Não validado", statusReasons: ["Variáveis obrigatórias ausentes: custo."] }; });
+        return { ok: true, metricas7d: {}, margem, composicao: {}, margemIndisponivel: null };
+      };
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await clicar(cdp, "#am-det-margem summary");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('#am-det-margem-body');
+          return b && /Não validado/.test(b.textContent); })()`, "o rótulo real do Motor não apareceu");
+        const semLadder = await cdp.evaluate("document.querySelectorAll('#am-det-margem-body .am-margem-comp__linha').length");
+        assert.strictEqual(semLadder, 0, "item não-computável não pode mostrar nenhuma linha de composição, nem parcial");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
+    await check("32 — prejuízo (LOSS): o ladder aparece COMPLETO, a margem final destaca a cor de risco", async () => {
+      performanceHandler = (ids) => {
+        const margem = {};
+        const composicao = {};
+        ids.forEach((id) => {
+          margem[id] = { origem: "realized", margin: -0.05, marginPercent: -5, profit: -10, status: "LOSS", statusLabel: "Prejuízo", statusReasons: ["Margem negativa (-5.00%)."] };
+          composicao[id] = { venda: 200, custoProduto: 150, comissaoMl: 30, frete: 20, taxaFixa: null, impostoPercentual: 0.05, impostoValor: 10 };
+        });
+        return { ok: true, metricas7d: {}, margem, composicao, margemIndisponivel: null };
+      };
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await clicar(cdp, "#am-det-margem summary");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('#am-det-margem-body');
+          return b && /Custo do produto/.test(b.textContent); })()`, "o ladder do prejuízo não carregou");
+
+        const linhas = await lerLinhasComposicao(cdp);
+        assert.deepStrictEqual(linhas, [
+          "Venda R$ 200,00",
+          "Custo do produto R$ 150,00",
+          "Comissão Mercado Livre R$ 30,00",
+          "Frete R$ 20,00",
+          "Imposto (5,0%) R$ 10,00",
+          "Margem R$ -10,00 (-5,0%)",
+        ], `o prejuízo escondeu o ladder em vez de mostrá-lo completo: ${JSON.stringify(linhas)}`);
+
+        const badgeClasse = await cdp.evaluate("document.querySelector('#am-det-margem-body .am-margem__valor, #am-det-margem-body .am-margem__estado').className");
+        assert.match(badgeClasse, /is-danger/, `prejuízo tem de usar a cor de risco no badge: ${badgeClasse}`);
+      } finally {
+        performanceHandler = null;
+      }
     });
 
     await check("— nenhuma exceção de JS não tratada durante todo o percurso", async () => {

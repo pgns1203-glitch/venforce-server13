@@ -567,3 +567,62 @@ os itens avulsos (métricas + margem juntas) e uma vez por agrupador visível
 em background (só métricas). `AM.state.performanceCache` (sessão, nunca
 persistido) garante que reabrir uma família, ou repintar uma linha depois de
 editar o estoque, não refaz chamada nenhuma.
+
+### 4.8 Composição da margem — seção secundária do MODAL de detalhe
+
+Pedido seguinte: mostrar, dentro do modal de UM MLB, como a margem dele foi
+calculada (venda, custo do produto, comissão ML, frete, imposto → margem
+final) — transparência, não um segundo motor de cálculo. `GET
+/anuncios-meli/:itemId` (o endpoint que alimenta o modal) nunca chamou o
+Motor de Margem; a composição entra pelo MESMO `GET
+/anuncios-meli/performance` que a lista já usa, com um terceiro flag:
+`incluirComposicao` (default **"0"**, opt-in — ao contrário de
+`incluirMetricas`/`incluirMargem`, que default ligados, já que só o modal
+pede e é mais pesado).
+
+**O item completo do Motor** (`server/services/motorMargem/core/marginItem.js`)
+já carrega `pricing` (`current`/`sold`), `costs` (`cost`/`taxRate`/
+`fixedFee`) e `marketplaceCosts` (`commission*`/`freight*`) — os insumos
+exatos da fórmula real (`core/marginEngine.js:computeMargin`): `lucro =
+venda − (venda × imposto%) − comissão − frete − taxaFixa − custo`. **Não
+existe "outros custos"** no Motor — só estes 5 descontos; um mockup inicial
+do pedido tinha essa linha e ela foi removida por não corresponder a campo
+nenhum (regra do próprio pedido: não inventar campo, mostrar só o que
+existe). `taxaFixa` do lado REALIZADO é **sempre ausente** por desenho do
+Motor (sem contrapartida histórica) — a linha some sozinha da composição,
+nunca vira "—".
+
+`montarComposicaoDoItem` (no controller) decompõe os MESMOS insumos que o
+Motor já escolheu (`realized` quando computável, senão `projected` — a
+MESMA decisão que já escolhe o `origem` do badge da lista). A ÚNICA conta
+nova é `impostoValor = venda × impostoPercentual`: o Motor guarda imposto
+como percentual, nunca em R$, então essa multiplicação (sobre os dois
+valores que o próprio Motor já usou) existe só para a linha "Imposto" virar
+moeda como as demais. A margem final exibida (`profit`/`marginPercent`, um
+campo novo e aditivo em `margem[itemId]` — a lista nunca lia `profit`) é
+**sempre** o número pronto do Motor, nunca a soma das linhas da composição.
+
+**Disponibilidade idêntica à da lista, nunca um caminho alternativo:**
+`composicao[itemId]` só é montada quando `item.margin.<origem>.computable`
+é `true`. Contexto inteiro não-pronto (Base não vinculada etc.) já derruba
+a chamada inteira ao Motor — nenhum item ganha composição. Item específico
+não-computável (`UNVALIDATED` etc.) fica de fora do mapa `composicao` — o
+front reaproveita `margemConteudoHtml` (a MESMA função da lista) para
+mostrar a mensagem/rótulo real, sem ladder, sem número parcial. Margem
+negativa (`LOSS`) **é** computável — o ladder aparece completo, só o selo
+final muda de cor.
+
+**Frontend, reaproveitando a infraestrutura de cache já existente:**
+`AM.state.performanceCache[itemId]` ganhou um terceiro aspecto independente
+(`composicao`/`temComposicao`, ao lado de `temMetricas`/`temMargem`), e
+`carregarPerformance` passou a dedupar também por `composicaoEmVoo`. A
+seção "Composição da margem" é um `<details>` NATIVO no modal
+(`Portal/anuncios-meli.js`, `margemComposicaoSecaoHtml`/
+`bindMargemComposicao`), nasce fechada e só dispara
+`garantirComposicaoDoItem` (que força `incluirMargem:true` junto, para
+cobrir o item que nunca passou pela lista) na PRIMEIRA vez que é aberta —
+nunca ao abrir o modal. Guardado por `DET.token` (mesmo padrão de
+`carregarHistoricoOtimizacoes`): fechar o modal e abrir o de outro MLB
+nunca herda a composição do anterior, e o `<details>` preserva o estado
+aberto/fechado entre re-renders do modal (salvar, descartar, aprovar
+sugestão de IA todos chamam `renderDetalhe()` de novo).

@@ -166,15 +166,46 @@ function reset() {
   margemHandler = null;
 }
 
-function itemDeMargem({ itemId, realizedComputable, realizedMargin, projectedMargin, status, statusLabel, statusReasons }) {
-  return {
+// `composicao`, quando informado, monta o shape REAL de pricing/costs/
+// marketplaceCosts que core/marginItem.js produz (ver montarComposicaoDoItem
+// no controller) — só os campos que o item precisa pra decompor a margem.
+function evid(valor) {
+  return valor == null ? null : { value: valor };
+}
+
+function itemDeMargem({
+  itemId, realizedComputable, realizedMargin, realizedProfit, projectedMargin, projectedProfit, projectedComputable = true,
+  status, statusLabel, statusReasons, composicao,
+}) {
+  const item = {
     identity: { itemId },
     margin: {
-      realized: { computable: !!realizedComputable, margin: realizedMargin ?? null, marginPercent: realizedMargin != null ? realizedMargin * 100 : null },
-      projected: { computable: true, margin: projectedMargin ?? null, marginPercent: projectedMargin != null ? projectedMargin * 100 : null },
+      realized: {
+        computable: !!realizedComputable, margin: realizedMargin ?? null,
+        marginPercent: realizedMargin != null ? realizedMargin * 100 : null, profit: realizedProfit ?? null,
+      },
+      projected: {
+        computable: projectedComputable, margin: projectedMargin ?? null,
+        marginPercent: projectedMargin != null ? projectedMargin * 100 : null, profit: projectedProfit ?? null,
+      },
     },
     quality: { status, statusLabel, statusReasons: statusReasons || [] },
   };
+  if (composicao) {
+    item.pricing = { current: evid(composicao.vendaProjetada), sold: evid(composicao.vendaRealizada) };
+    item.costs = {
+      cost: { projected: evid(composicao.custoProjetado), realized: evid(composicao.custoRealizado) },
+      taxRate: { projected: evid(composicao.impostoProjetado), realized: evid(composicao.impostoRealizado) },
+      fixedFee: { projected: evid(composicao.taxaFixaProjetada), realized: evid(composicao.taxaFixaRealizada) },
+    };
+    item.marketplaceCosts = {
+      commissionProjected: evid(composicao.comissaoProjetada),
+      commissionRealized: evid(composicao.comissaoRealizada),
+      freightProjected: evid(composicao.freteProjetado),
+      freightRealized: evid(composicao.freteRealizado),
+    };
+  }
+  return item;
 }
 
 let checks = 0;
@@ -374,6 +405,120 @@ async function run() {
     assert.strictEqual(chamadasMetricas.length, 0);
     assert.strictEqual(chamadasMargem.length, 0);
     ok("incluirMetricas=0 e incluirMargem=0 juntos: zero chamadas aos dois serviços, mesmo com itemIds preenchido");
+  });
+
+  // 12. incluirComposicao=1 + margem REALIZADA computável: ladder completo,
+  //     taxa fixa ausente (realizada nunca tem, por desenho — ver
+  //     marginItem.js), imposto em R$ = venda × percentual (a ÚNICA conta
+  //     nova, sobre os MESMOS dois valores que o Motor já usou).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({
+      itens: [itemDeMargem({
+        itemId: "MLB-R1", realizedComputable: true, realizedMargin: 0.32, realizedProfit: 64, status: "HEALTHY", statusLabel: "Saudável",
+        composicao: { vendaRealizada: 200, custoRealizado: 80, impostoRealizado: 0.05, comissaoRealizada: 25, freteRealizado: 15 },
+      })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-R1", incluirComposicao: "1" } }, res);
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.margem["MLB-R1"].origem, "realized");
+    assert.strictEqual(res.corpo.margem["MLB-R1"].profit, 64,
+      "profit (R$) precisa vir junto — a composição usa este número pronto do Motor, nunca soma as linhas pra chegar nele");
+    assert.deepStrictEqual(res.corpo.composicao["MLB-R1"], {
+      venda: 200, custoProduto: 80, comissaoMl: 25, frete: 15, taxaFixa: null, impostoPercentual: 0.05, impostoValor: 10,
+    }, JSON.stringify(res.corpo.composicao));
+    ok("incluirComposicao=1 + margem realizada: ladder completo, taxa fixa ausente (sem histórico), imposto R$ = venda × percentual");
+  });
+
+  // 13. incluirComposicao=1 + margem PROJETADA (sem venda realizada): usa os
+  //     campos projetados, incluindo taxa fixa (que só existe do lado
+  //     projetado).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({
+      itens: [itemDeMargem({
+        itemId: "MLB-P1", realizedComputable: false, projectedMargin: 0.20, projectedProfit: 30, status: "HEALTHY", statusLabel: "Saudável",
+        composicao: { vendaProjetada: 150, custoProjetado: 60, impostoProjetado: 0.04, comissaoProjetada: 18, freteProjetado: 12, taxaFixaProjetada: 3 },
+      })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-P1", incluirComposicao: "1" } }, res);
+
+    assert.strictEqual(res.corpo.margem["MLB-P1"].origem, "projected");
+    assert.strictEqual(res.corpo.margem["MLB-P1"].profit, 30);
+    assert.deepStrictEqual(res.corpo.composicao["MLB-P1"], {
+      venda: 150, custoProduto: 60, comissaoMl: 18, frete: 12, taxaFixa: 3, impostoPercentual: 0.04, impostoValor: 6,
+    }, JSON.stringify(res.corpo.composicao));
+    ok("incluirComposicao=1 + margem projetada: ladder completo, incluindo taxa fixa (só existe do lado projetado)");
+  });
+
+  // 14. Item NÃO computável (nem realizada nem projetada — ex. UNVALIDATED):
+  //     composicao fica de fora, o front cai no statusLabel/statusReasons
+  //     de sempre. Nunca uma composição parcial.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({
+      itens: [itemDeMargem({
+        itemId: "MLB-U1", realizedComputable: false, projectedComputable: false, projectedMargin: null,
+        status: "UNVALIDATED", statusLabel: "Não validado", statusReasons: ["Variáveis obrigatórias ausentes: custo."],
+      })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-U1", incluirComposicao: "1" } }, res);
+
+    assert.strictEqual(res.corpo.margem["MLB-U1"].statusLabel, "Não validado");
+    assert.strictEqual(res.corpo.composicao["MLB-U1"], undefined, "item não-computável não pode ter composição, nem parcial");
+    ok("item não-computável (UNVALIDATED): composicao fica de fora — sem número, sem estimativa, só o rótulo real do Motor");
+  });
+
+  // 15. incluirComposicao ausente (default "0"): composicao vem vazia mesmo
+  //     com item perfeitamente computável — é opt-in, ao contrário de
+  //     incluirMetricas/incluirMargem.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({
+      itens: [itemDeMargem({
+        itemId: "MLB-R2", realizedComputable: true, realizedMargin: 0.30, status: "HEALTHY", statusLabel: "Saudável",
+        composicao: { vendaRealizada: 100, custoRealizado: 50, impostoRealizado: 0.05, comissaoRealizada: 10, freteRealizado: 5 },
+      })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-R2" } }, res);
+
+    assert.strictEqual(res.corpo.margem["MLB-R2"].marginPercent, 30, "margem continua vindo normalmente");
+    assert.deepStrictEqual(res.corpo.composicao, {}, "composicao é opt-in — sem incluirComposicao=1, fica sempre vazia");
+    ok("incluirComposicao ausente: default desligado (opt-in), composicao vazia mesmo com item computável");
+  });
+
+  // 16. incluirComposicao=1 mas incluirMargem=0: composicao depende de
+  //     margem ter sido buscada — sem margem, não tem o que decompor.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({ "MLB-R3": { views: 10, vendas: 1, conversao: 10 } });
+    margemHandler = () => ({
+      itens: [itemDeMargem({
+        itemId: "MLB-R3", realizedComputable: true, realizedMargin: 0.30, status: "HEALTHY", statusLabel: "Saudável",
+        composicao: { vendaRealizada: 100, custoRealizado: 50, impostoRealizado: 0.05, comissaoRealizada: 10, freteRealizado: 5 },
+      })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-R3", incluirMargem: "0", incluirComposicao: "1" } }, res);
+
+    assert.deepStrictEqual(res.corpo.margem, {}, "margem desligada continua vazia");
+    assert.deepStrictEqual(res.corpo.composicao, {}, "composicao sem margem não tem o que decompor — fica vazia também");
+    assert.strictEqual(chamadasMargem.length, 0, "o Motor de Margem não pode ser chamado quando incluirMargem=0, mesmo pedindo composicao");
+    ok("incluirComposicao=1 com incluirMargem=0: composicao vazia, Motor de Margem não é chamado");
   });
 }
 

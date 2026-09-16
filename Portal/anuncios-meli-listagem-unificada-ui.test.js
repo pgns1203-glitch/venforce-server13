@@ -60,9 +60,15 @@
  *     expandida — nenhuma chamada para MLB dentro de um agrupador ainda
  *     fechado. Reabrir uma família já carregada, ou repintar uma linha
  *     depois de editar o estoque, lê do cache — não refaz a chamada;
- *   · margem NUNCA aparece na linha do agrupador (só existe por MLB), e o
- *     texto de estado (quando não há número) é o vocabulário REAL do Motor
- *     de Margem — nunca um rótulo inventado nesta tela.
+ *   · margem NUNCA aparece na linha do agrupador (só existe por MLB, sem
+ *     exceção para soma nem média — margem enganosa é pior que ausente), e
+ *     o texto de estado (quando não há número) é o vocabulário REAL do
+ *     Motor de Margem — nunca um rótulo inventado nesta tela;
+ *   · métricas últ. 7 dias JÁ agregam no agrupador — mas só DEPOIS que ele
+ *     é expandido pelo menos uma vez (é quando os filhos passam a ser
+ *     conhecidos): antes disso é "—", nunca uma soma parcial. O agregado
+ *     sobrevive a colapsar o painel — ele não depende de o painel estar
+ *     visível, só de o cache já conhecer todos os filhos.
  */
 "use strict";
 
@@ -1448,7 +1454,13 @@ async function run() {
         "reabrir a mesma família gastou uma chamada de performance nova — o cache não funcionou");
     });
 
-    await check("34 — a linha do AGRUPADOR nunca mostra número de margem, mesmo expandida", async () => {
+    await check("34 — a linha do AGRUPADOR nunca mostra número de margem, mas mostra a SOMA das métricas 7d dos filhos", async () => {
+      // MLB-A1 (views null) + MLB-A2 (100) + MLB-A3/A4 (10 cada, default do
+      // fixture) = 120 views; vendas 0+0+1+1 = 2; conversão 2/120 = 1,7%.
+      await waitFor(cdp, `(function(){
+        var t = document.querySelector('${linhaFam("FAM-1")} .am-metricas7d');
+        return t && !t.classList.contains('am-metricas7d--indisponivel'); })()`,
+        "a linha-mãe não repintou com a soma das métricas depois da expansão");
       const estado = await cdp.evaluate(`(function(){
         var r = document.querySelector('${linhaFam("FAM-1")}');
         var m = r.querySelector('.am-margem');
@@ -1456,13 +1468,37 @@ async function run() {
         return {
           margemTexto: m.textContent.trim(), margemTemValor: Boolean(r.querySelector('.am-margem__valor')),
           margemClasse: m.className,
-          metricasTexto: t.textContent.trim(), metricasClasse: t.className,
+          metricasLinhas: Array.from(t.querySelectorAll('.am-metricas7d__linha')).map(function(e){ return e.textContent; }),
         }; })()`);
+      // Margem: NUNCA agrega, mesmo expandida — regra do usuário sem exceção.
       assert.strictEqual(estado.margemTexto, "—");
       assert.strictEqual(estado.margemTemValor, false, "a linha do agrupador não pode mostrar número de margem");
       assert.ok(/am-margem--indisponivel/.test(estado.margemClasse));
-      assert.strictEqual(estado.metricasTexto, "—", "métricas do agrupador também ficam de fora — só existem por MLB");
-      assert.ok(/am-metricas7d--indisponivel/.test(estado.metricasClasse));
+      // Métricas 7d: soma dos 4 filhos, depois que todos responderam.
+      assert.deepStrictEqual(estado.metricasLinhas, ["👁 120", "🛒 2 · 1,7%"],
+        `a linha-mãe não somou as métricas 7d dos filhos: ${JSON.stringify(estado.metricasLinhas)}`);
+    });
+
+    await check("34b — a linha do AGRUPADOR ainda expandida com o painel colapsado continua com a soma", async () => {
+      // Colapsar não pode apagar o agregado que a linha-mãe já mostra — ele
+      // não depende do painel estar visível, só do cache já conhecer os filhos.
+      await clicar(cdp, linhaFam("FAM-1"));
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")}').hidden === true`, "FAM-1 não colapsou");
+      const texto = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-metricas7d').textContent.trim()`);
+      assert.notStrictEqual(texto, "—", "colapsar não pode apagar a soma das métricas já conhecida");
+      // Reabre para não alterar o estado esperado pelas próximas verificações.
+      await clicar(cdp, linhaFam("FAM-1"));
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")}').hidden === false`, "FAM-1 não reabriu");
+    });
+
+    await check("34c — o agrupador AINDA NÃO expandido continua mostrando '—' nas métricas 7d", async () => {
+      // FAM-2 nunca foi expandida neste bloco: sem filhos conhecidos, a soma
+      // não pode aparecer — mostrar um agregado parcial seria enganoso.
+      const estado = await cdp.evaluate(`(function(){
+        var t = document.querySelector('${linhaFam("FAM-2")} .am-metricas7d');
+        return { texto: t.textContent.trim(), classe: t.className }; })()`);
+      assert.strictEqual(estado.texto, "—");
+      assert.ok(/am-metricas7d--indisponivel/.test(estado.classe));
     });
 
     await check("35 — conversão nunca é NaN/Infinity: '—' sem views, número real (inclusive 0%) com views", async () => {

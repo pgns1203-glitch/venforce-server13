@@ -746,10 +746,12 @@
         escapeAttr(plural(f.total_user_products || 0, "variação", "variações")) + '">' +
         (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
       '<span class="am-row__num">' + (f.vendidos_total != null ? f.vendidos_total : "—") + "</span>" +
-      // Métricas 7d e margem SÓ existem por MLB — nem agregadas, nem uma
-      // média do agrupador (regra explícita: margem enganosa é pior que
-      // margem ausente). Expandir mostra o número real de cada variação.
-      '<span class="am-metricas7d am-metricas7d--indisponivel" title="Expanda para ver as métricas de cada variação">—</span>' +
+      // Métricas 7d: soma dos filhos, mas só depois de expandir pelo menos
+      // uma vez (é quando os filhos são conhecidos e o /performance deles
+      // já respondeu) — ver metricas7dAgregadoCelulaHtml. Margem NUNCA
+      // agrega: fica "—" sempre, mesmo expandida (margem enganosa é pior
+      // que margem ausente — regra do usuário, sem exceção para soma).
+      metricas7dAgregadoCelulaHtml(f.family_id) +
       '<span class="am-margem am-margem--indisponivel" title="A margem é calculada só por anúncio (MLB) — não existe uma margem do agrupador">—</span>' +
       scoreGaugeHtml(f.score_min) +
       '<div class="am-row__acao">' +
@@ -811,7 +813,13 @@
       (r.data.familia.user_products || []).forEach(function (up) {
         (up.itens || []).forEach(function (item) { idsFamilia.push(item.item_id); });
       });
-      carregarPerformance(idsFamilia);
+      // Quando os filhos terminam de responder (sucesso OU falha — o que
+      // importa é não estar mais em voo), a linha-mãe repinta com a SOMA
+      // das métricas 7d. A margem nunca agrega (ver rowGrupoHtml) — só as
+      // métricas de tráfego/venda fazem sentido somadas.
+      carregarPerformance(idsFamilia).then(function () {
+        repintarLinhaDoGrupo(familyId);
+      });
     });
   }
 
@@ -1075,6 +1083,54 @@
       '" data-metricas-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
   }
 
+  // Soma das métricas 7d dos FILHOS — só do agrupador, nunca da margem (ver
+  // rowGrupoHtml). Mesma régua "—" do backend: sem views não há conversão,
+  // vendas ausente (chamada falhou) nunca vira 0 fingido.
+  function agregarConversao(vendas, views) {
+    if (views === null || views === undefined || views === 0) return null;
+    if (vendas === null || vendas === undefined) return null;
+    var pct = (vendas / views) * 100;
+    if (!isFinite(pct)) return null;
+    return Math.round(pct * 10) / 10;
+  }
+
+  // null enquanto a família nunca foi expandida (filhos desconhecidos) OU
+  // enquanto algum filho ainda está "carregando" — um agregado parcial
+  // enganaria tanto quanto uma margem em média simples. Só some quando TODOS
+  // os filhos já responderam a /performance (sucesso ou falha, tanto faz —
+  // o que importa é não estar mais em voo).
+  function metricas7dAgregadoDoGrupo(familyId) {
+    var familia = AM.state.familyCache[familyId];
+    if (!familia) return null;
+    var ids = [];
+    (familia.user_products || []).forEach(function (up) {
+      (up.itens || []).forEach(function (item) { ids.push(item.item_id); });
+    });
+    if (!ids.length) return null;
+    if (!ids.every(function (id) { return !!AM.state.performanceCache[id]; })) return null;
+
+    var somaViews = 0, temViews = false;
+    var somaVendas = 0, temVendas = true;
+    ids.forEach(function (id) {
+      var m = AM.state.performanceCache[id].metricas7d;
+      if (m && m.views != null) { somaViews += m.views; temViews = true; }
+      if (m && m.vendas != null) somaVendas += m.vendas; else temVendas = false;
+    });
+
+    var views = temViews ? somaViews : null;
+    var vendas = temVendas ? somaVendas : null;
+    return { views: views, vendas: vendas, conversao: agregarConversao(vendas, views) };
+  }
+
+  function metricas7dAgregadoCelulaHtml(familyId) {
+    var agregado = metricas7dAgregadoDoGrupo(familyId);
+    if (!agregado) {
+      return '<span class="am-metricas7d am-metricas7d--indisponivel" title="Expanda para ver a soma das métricas dos últimos 7 dias">—</span>';
+    }
+    return '<span class="am-metricas7d" title="Soma dos últimos 7 dias de todas as variações">' +
+      metricas7dConteudoHtml(agregado) + "</span>";
+  }
+
   // Cor por STATUS real do Motor de Margem (marginStatus.js) — nunca um
   // limiar próprio reinventado aqui sobre o percentual.
   var MARGEM_CLASSE = {
@@ -1137,8 +1193,12 @@
   // não estão em AM.state.performanceCache (reabrir/repintar não refaz
   // chamada nenhuma). Nunca bloqueia quem chamou: é sempre disparada DEPOIS
   // que a linha já está pintada na tela.
+  // Devolve a Promise da leitura (resolvida de imediato quando não há nada
+  // pendente — tudo já em cache): quem chama e precisa saber "os filhos
+  // desta família já são conhecidos" (ver repintarLinhaDoGrupo) encadeia
+  // nela em vez de reimplementar a mesma espera.
   function carregarPerformance(itemIds) {
-    if (!AM.clienteAtual) return;
+    if (!AM.clienteAtual) return Promise.resolve();
     var vistos = {};
     var pendentes = [];
     (itemIds || []).forEach(function (id) {
@@ -1146,13 +1206,13 @@
       vistos[id] = true;
       pendentes.push(id);
     });
-    if (!pendentes.length) return;
+    if (!pendentes.length) return Promise.resolve();
 
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
       "&itemIds=" + encodeURIComponent(pendentes.join(","));
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
 
-    api("/anuncios-meli/performance?" + qs).then(function (r) {
+    return api("/anuncios-meli/performance?" + qs).then(function (r) {
       var dados = r.data;
       if (!dados || !dados.ok) { pintarPerformanceIndisponivel(pendentes); return; }
       pendentes.forEach(function (id) {
@@ -1164,6 +1224,32 @@
       });
       pintarPerformanceEmCelulas(pendentes);
     });
+  }
+
+  // Repinta SÓ a linha-mãe (nunca o painel, nunca renderCatalogo — fechar
+  // todos os agrupadores abertos seria o mesmo bug que atualizarAgregadosDoGrupo
+  // já evita). metricas7dAgregadoCelulaHtml lê o agregado do cache — não há
+  // estado próprio para sincronizar, só um novo render a partir da MESMA
+  // fonte de sempre (AM.state.familyCache + AM.state.performanceCache).
+  function repintarLinhaDoGrupo(familyId) {
+    var linha = document.querySelector('.am-row--grupo[data-familia="' + familyId + '"]');
+    if (!linha) return;
+    for (var i = 0; i < AM.anuncios.length; i++) {
+      var g = AM.anuncios[i];
+      if (g.tipo !== "familia" || String(g.family_id) !== String(familyId)) continue;
+      var nova = document.createElement("div");
+      nova.innerHTML = rowGrupoHtml(g, i);
+      var substituta = nova.firstElementChild;
+      var aberta = linha.getAttribute("aria-expanded") === "true";
+      substituta.setAttribute("aria-expanded", aberta ? "true" : "false");
+      if (aberta) substituta.classList.add("is-aberta");
+      linha.parentNode.replaceChild(substituta, linha);
+      substituta.addEventListener("click", function () { alternarGrupo(substituta); });
+      substituta.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(substituta); }
+      });
+      return;
+    }
   }
 
   // Só pinta células que ainda existem no DOM (trocar de página/cliente no

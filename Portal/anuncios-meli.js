@@ -62,21 +62,35 @@
     // a família é forma de agrupamento interno do ML, não categoria de tela.
     // Ver docs/AUDITORIA_ANUNCIOS_ML_LISTAGEM_UNIFICADA.md.
     //
-    // Cache dos agrupadores já expandidos: family_id -> detalhe. Reabrir um
-    // agrupador não gasta requisição. `performanceCache` é o mesmo tipo de
-    // cache, por item_id: métricas últ. 7 dias + margem já respondidas por
-    // GET /performance (ver carregarPerformance) — reabrir uma família ou
-    // repintar uma linha depois de uma edição de estoque lê daqui, nunca
-    // refaz a chamada ao Mercado Livre/Motor de Margem.
-    state: { familyCache: {}, performanceCache: {} },
-    // Guardas de corrida em dois níveis:
-    //  - familiaEpoca: invalida de uma vez TODAS as expansões em voo quando o
-    //    cliente/conta muda (senão o detalhe do cliente A pintaria a tela do B);
-    //  - familiaTokens[familyId]: abrir -> colapsar -> reabrir o MESMO
-    //    agrupador deixa duas respostas em voo; só a última pode escrever.
+    // Cache dos agrupadores já conhecidos: family_id -> detalhe. Reabrir um
+    // agrupador não gasta requisição — e, desde o pré-carregamento em
+    // background (ver garantirFamiliaDetalhe/carregarMetricasDosGruposVisiveis),
+    // a família pode já estar aqui ANTES do primeiro clique.
+    //
+    // `performanceCache` é o mesmo tipo de cache, por item_id, mas com dois
+    // aspectos independentes (`temMetricas`/`temMargem`): o pré-carregamento
+    // só pede metricas7d (nunca margem, que fica cara — Motor de Margem — e
+    // só faz sentido quando o operador realmente abre o agrupador). Ao
+    // expandir, só o aspecto que falta é buscado — metricas7d já cacheado
+    // NUNCA é pedido de novo.
+    //
+    // `familyFetchEmVoo`/`metricasEmVoo`/`margemEmVoo` deduplicam chamadas
+    // concorrentes para o MESMO family_id/item_id: o pré-carregamento em
+    // background e um clique do operador na mesma família nunca disparam
+    // duas requisições — o segundo pedido reaproveita a Promise já em voo do
+    // primeiro (ver garantirFamiliaDetalhe/carregarPerformance).
+    state: {
+      familyCache: {},
+      familyFetchEmVoo: {},
+      familyFetchFalhou: {},
+      performanceCache: {},
+      metricasEmVoo: {},
+      margemEmVoo: {},
+    },
+    // familiaEpoca invalida de uma vez toda expansão/pré-carregamento em voo
+    // quando o cliente/conta muda (senão o detalhe do cliente A pintaria a
+    // tela do B, ou escreveria no cache do B usando a época do A).
     familiaEpoca: 0,
-    familiaTokens: {},
-    familiaTokenSeq: 0,
     // Estado do detalhe aberto:
     detalheAtual: null,    // { anuncio, descricao }
     otimizacoes: {         // últimas otimizações por tipo (rascunho ou aprovada)
@@ -405,10 +419,15 @@
     carregarAnuncios();
   }
 
-  // Zera o cache de agrupadores expandidos. Chamado na troca de contexto.
+  // Zera o cache de agrupadores expandidos/pré-carregados. Chamado na troca
+  // de contexto. `familyFetchEmVoo` some junto: sem isso, uma família com o
+  // MESMO family_id na conta nova reaproveitaria a Promise da conta velha
+  // (fechada sobre a query string errada). performanceCache NÃO é zerado —
+  // item_id é global no Mercado Livre, então o cache continua válido.
   function resetarExpansoes() {
     AM.state.familyCache = {};
-    AM.familiaTokens = {};
+    AM.state.familyFetchEmVoo = {};
+    AM.state.familyFetchFalhou = {};
     AM.familiaEpoca++;
   }
 
@@ -601,13 +620,15 @@
     });
 
     // Métricas últ. 7 dias + margem chegam DEPOIS que a lista já está na
-    // tela — nunca atrasam este render. Só os anúncios avulsos (tipo
-    // "item") têm linha própria aqui; os que estão dentro de um agrupador
-    // ainda fechado não existem no DOM, então não entram nesta busca (ver
-    // carregarPerformance/§2 da auditoria).
+    // tela — nunca atrasam este render. Anúncios avulsos (tipo "item") pedem
+    // as DUAS (metricas7d + margem, como sempre). Agrupadores pedem só
+    // metricas7d dos filhos, em background, para preencher a SOMA na
+    // linha-mãe sem exigir clique (ver carregarMetricasDosGruposVisiveis) —
+    // a margem continua reservada para quando o operador realmente expande.
     carregarPerformance(
       AM.anuncios.filter(function (l) { return l.tipo === "item"; }).map(function (l) { return l.item_id; })
     );
+    carregarMetricasDosGruposVisiveis();
   }
 
   // Linhas de anúncio da lista principal (tipo "item"). As linhas de MLB
@@ -659,9 +680,13 @@
   //                abrir o modal, porque no ML ele pertence à variação e não
   //                ao anúncio (ver salvarEstoque).
   //
-  // Nenhum agrupador abre sozinho: expandir é sempre ação explícita do
-  // operador, e só a primeira expansão gasta requisição (AM.state.familyCache,
-  // via GET /anuncios-meli/familias/:familyId).
+  // Nenhum PAINEL abre sozinho — expandir (ver MLBs, editar estoque) é sempre
+  // ação explícita do operador. O DETALHE da família, porém, é buscado
+  // sozinho em BACKGROUND assim que a família aparece na página (ver
+  // carregarMetricasDosGruposVisiveis), só para somar as métricas 7d na
+  // linha-mãe — a primeira expansão de verdade (clique) reaproveita esse
+  // cache (AM.state.familyCache, via GET /anuncios-meli/familias/:familyId) e
+  // só então busca a margem, que o pré-carregamento nunca pede.
   // ===========================================================================
 
   function iconeChevronSvg() {
@@ -746,11 +771,12 @@
         escapeAttr(plural(f.total_user_products || 0, "variação", "variações")) + '">' +
         (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
       '<span class="am-row__num">' + (f.vendidos_total != null ? f.vendidos_total : "—") + "</span>" +
-      // Métricas 7d: soma dos filhos, mas só depois de expandir pelo menos
-      // uma vez (é quando os filhos são conhecidos e o /performance deles
-      // já respondeu) — ver metricas7dAgregadoCelulaHtml. Margem NUNCA
-      // agrega: fica "—" sempre, mesmo expandida (margem enganosa é pior
-      // que margem ausente — regra do usuário, sem exceção para soma).
+      // Métricas 7d: soma dos filhos, buscada sozinha em BACKGROUND assim
+      // que a família aparece na página — não depende de expandir (ver
+      // carregarMetricasDosGruposVisiveis/metricas7dAgregadoCelulaHtml).
+      // Margem NUNCA agrega: fica "—" sempre, mesmo expandida (margem
+      // enganosa é pior que margem ausente — regra do usuário, sem exceção
+      // para soma, e sem gastar o Motor de Margem para um filho oculto).
       metricas7dAgregadoCelulaHtml(f.family_id) +
       '<span class="am-margem am-margem--indisponivel" title="A margem é calculada só por anúncio (MLB) — não existe uma margem do agrupador">—</span>' +
       scoreGaugeHtml(f.score_min) +
@@ -759,6 +785,83 @@
       "</div>" +
     "</div>" +
     '<div class="am-grupo-painel" id="' + painelId + '" hidden></div>';
+  }
+
+  // Ponto ÚNICO de leitura do detalhe de uma família: cache -> Promise já em
+  // voo (o pré-carregamento em background e um clique do operador na MESMA
+  // família nunca disparam duas requisições) -> requisição nova. `época`
+  // continua protegendo contra resposta tardia depois de trocar
+  // cliente/conta — uma resposta cuja época não bate nunca escreve no cache
+  // nem é devolvida (resolve pra null, e quem chamou trata como falha).
+  function garantirFamiliaDetalhe(familyId) {
+    var cache = AM.state.familyCache[familyId];
+    if (cache) return Promise.resolve(cache);
+    var emVoo = AM.state.familyFetchEmVoo[familyId];
+    if (emVoo) return emVoo;
+
+    var minhaEpoca = AM.familiaEpoca;
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+
+    var promessa = api("/anuncios-meli/familias/" + encodeURIComponent(familyId) + "?" + qs).then(function (r) {
+      delete AM.state.familyFetchEmVoo[familyId];
+      if (minhaEpoca !== AM.familiaEpoca) return null; // outro cliente/conta assumiu a tela
+      if (!r.data || !r.data.ok || !r.data.familia) return null;
+      AM.state.familyCache[familyId] = r.data.familia;
+      return r.data.familia;
+    });
+    AM.state.familyFetchEmVoo[familyId] = promessa;
+    return promessa;
+  }
+
+  // Garante metricas7d (+ margem, quando pedida) dos filhos de UMA família já
+  // conhecida (precisa estar em AM.state.familyCache — quem ainda não tem
+  // detalhe usa garantirFamiliaDetalhe antes). Delega a carregarPerformance,
+  // que já dedupe por item/aspecto — chamar isto de novo sem nada pendente
+  // não gasta requisição nenhuma.
+  function garantirPerformanceDaFamilia(familyId, incluirMargem) {
+    var familia = AM.state.familyCache[familyId];
+    if (!familia) return Promise.resolve();
+    var ids = [];
+    (familia.user_products || []).forEach(function (up) {
+      (up.itens || []).forEach(function (item) { ids.push(item.item_id); });
+    });
+    if (!ids.length) return Promise.resolve();
+    return carregarPerformance(ids, { incluirMargem: incluirMargem });
+  }
+
+  // Depois do primeiro paint (nunca atrasa o render — mesmo padrão da busca
+  // de performance dos itens avulsos), busca em BACKGROUND o detalhe de cada
+  // agrupador VISÍVEL nesta página e, com os filhos já conhecidos, as
+  // métricas 7d deles — só para preencher a SOMA na linha-mãe sem exigir
+  // clique. Margem NUNCA entra aqui (incluirMargem: false): filho ainda
+  // oculto não pode gastar o Motor de Margem só para calcular um agregado
+  // que nem existe (ver rowGrupoHtml — margem é só por MLB). O resultado
+  // fica em AM.state.familyCache/performanceCache — expandir depois lê
+  // daqui, nunca refaz a chamada.
+  function carregarMetricasDosGruposVisiveis() {
+    AM.anuncios.forEach(function (l) {
+      if (l.tipo !== "familia") return;
+      var familyId = l.family_id;
+      garantirFamiliaDetalhe(familyId).then(function (familia) {
+        if (!familia) {
+          // Detalhe não veio (rede, 404, época trocou): sem filhos conhecidos
+          // não há soma possível — marca para a célula sair de "carregando"
+          // e virar "—" em vez de ficar presa para sempre.
+          AM.state.familyFetchFalhou[familyId] = true;
+          repintarLinhaDoGrupo(familyId);
+          return;
+        }
+        return garantirPerformanceDaFamilia(familyId, false).then(function () {
+          // Cobre tanto o caminho feliz quanto a falha da chamada de
+          // metricas7d: se o agregado ainda não é computável depois desta
+          // tentativa, marca como falhou — mesma régua "—" de qualquer
+          // célula desta tela, nunca um spinner permanente.
+          AM.state.familyFetchFalhou[familyId] = !metricas7dAgregadoDoGrupo(familyId);
+          repintarLinhaDoGrupo(familyId);
+        });
+      });
+    });
   }
 
   // Expandir/colapsar. Colapsar NÃO descarta o que já foi renderizado, e
@@ -775,49 +878,40 @@
     if (!abrindo) return;
 
     var cache = AM.state.familyCache[familyId];
-    if (cache) { renderFamiliaDetalhe(cache, painel); return; }
-    if (painel.getAttribute("data-carregando") === "1") return; // já tem uma em voo
+    if (cache) {
+      // Já conhecida (clique repetido, ou o pré-carregamento em background já
+      // respondeu): pinta na hora. A margem dos filhos, porém, só é buscada
+      // AGORA — o pré-carregamento nunca a pede (ver carregarMetricasDosGruposVisiveis).
+      renderFamiliaDetalhe(cache, painel);
+      garantirPerformanceDaFamilia(familyId, true).then(function () { repintarLinhaDoGrupo(familyId); });
+      return;
+    }
+    if (painel.getAttribute("data-carregando") === "1") return; // já tem um clique em voo
     carregarFamiliaDetalhe(familyId, painel);
   }
 
   function carregarFamiliaDetalhe(familyId, painel) {
-    // Duas guardas: a época morre quando o cliente/conta muda; o token por
-    // família morre quando a MESMA família é pedida de novo (abrir, colapsar,
-    // reabrir antes da primeira resposta chegar).
-    var minhaEpoca = AM.familiaEpoca;
-    var meuToken = ++AM.familiaTokenSeq;
-    AM.familiaTokens[familyId] = meuToken;
-
     painel.setAttribute("data-carregando", "1");
     painel.innerHTML = estadoHtml("loading", "Carregando produtos da família…");
 
-    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
-    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
-
-    api("/anuncios-meli/familias/" + encodeURIComponent(familyId) + "?" + qs).then(function (r) {
-      if (minhaEpoca !== AM.familiaEpoca) return;            // outro cliente/conta assumiu a tela
-      if (AM.familiaTokens[familyId] !== meuToken) return;   // resposta velha da mesma família
+    // Reaproveita a MESMA Promise do pré-carregamento em background, se
+    // houver uma em voo para esta família — nunca duas requisições para o
+    // mesmo family_id só porque uma partiu sozinha e a outra veio de um
+    // clique.
+    garantirFamiliaDetalhe(familyId).then(function (familia) {
       painel.removeAttribute("data-carregando");
-      if (!r.data || !r.data.ok || !r.data.familia) {
-        painel.innerHTML = estadoHtml("error", "Erro ao carregar a família",
-          (r.data && r.data.motivo) || "Tente novamente.");
+      if (!familia) {
+        painel.innerHTML = estadoHtml("error", "Erro ao carregar a família", "Tente novamente.");
         return;
       }
-      AM.state.familyCache[familyId] = r.data.familia;
-      renderFamiliaDetalhe(r.data.familia, painel);
+      renderFamiliaDetalhe(familia, painel);
 
-      // Só AGORA, com os MLBs da família já pintados: busca métricas 7d +
-      // margem SÓ deles. Reabrir esta família mais tarde lê do cache (ver
-      // carregarPerformance) — não dispara esta chamada de novo.
-      var idsFamilia = [];
-      (r.data.familia.user_products || []).forEach(function (up) {
-        (up.itens || []).forEach(function (item) { idsFamilia.push(item.item_id); });
-      });
-      // Quando os filhos terminam de responder (sucesso OU falha — o que
-      // importa é não estar mais em voo), a linha-mãe repinta com a SOMA
-      // das métricas 7d. A margem nunca agrega (ver rowGrupoHtml) — só as
-      // métricas de tráfego/venda fazem sentido somadas.
-      carregarPerformance(idsFamilia).then(function () {
+      // Métricas 7d (se o pré-carregamento ainda não tiver respondido) +
+      // margem (que o pré-carregamento NUNCA pede) dos filhos. Quando os
+      // dois terminam (sucesso OU falha — o que importa é não estar mais em
+      // voo), a linha-mãe repinta com a soma. Margem nunca agrega (ver
+      // rowGrupoHtml) — só as métricas de tráfego/venda fazem sentido somadas.
+      garantirPerformanceDaFamilia(familyId, true).then(function () {
         repintarLinhaDoGrupo(familyId);
       });
     });
@@ -1076,10 +1170,11 @@
 
   function metricas7dCelulaHtml(itemId) {
     var cache = AM.state.performanceCache[itemId];
-    var conteudo = cache
+    var pronto = cache && cache.temMetricas;
+    var conteudo = pronto
       ? metricas7dConteudoHtml(cache.metricas7d)
       : '<span class="am-metricas7d__linha am-metricas7d__vazio">carregando…</span>';
-    return '<span class="am-metricas7d' + (cache ? "" : " am-metricas7d--carregando") +
+    return '<span class="am-metricas7d' + (pronto ? "" : " am-metricas7d--carregando") +
       '" data-metricas-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
   }
 
@@ -1094,11 +1189,12 @@
     return Math.round(pct * 10) / 10;
   }
 
-  // null enquanto a família nunca foi expandida (filhos desconhecidos) OU
-  // enquanto algum filho ainda está "carregando" — um agregado parcial
-  // enganaria tanto quanto uma margem em média simples. Só some quando TODOS
-  // os filhos já responderam a /performance (sucesso ou falha, tanto faz —
-  // o que importa é não estar mais em voo).
+  // null enquanto os filhos ainda são desconhecidos (família sem detalhe em
+  // cache — o pré-carregamento em background ainda não respondeu) OU
+  // enquanto algum filho ainda não tem metricas7d — um agregado parcial
+  // enganaria tanto quanto uma margem em média simples. Só sai quando TODOS
+  // os filhos já responderam (sucesso ou falha, tanto faz — o que importa é
+  // não estar mais em voo).
   function metricas7dAgregadoDoGrupo(familyId) {
     var familia = AM.state.familyCache[familyId];
     if (!familia) return null;
@@ -1107,7 +1203,10 @@
       (up.itens || []).forEach(function (item) { ids.push(item.item_id); });
     });
     if (!ids.length) return null;
-    if (!ids.every(function (id) { return !!AM.state.performanceCache[id]; })) return null;
+    if (!ids.every(function (id) {
+      var c = AM.state.performanceCache[id];
+      return !!(c && c.temMetricas);
+    })) return null;
 
     var somaViews = 0, temViews = false;
     var somaVendas = 0, temVendas = true;
@@ -1124,11 +1223,20 @@
 
   function metricas7dAgregadoCelulaHtml(familyId) {
     var agregado = metricas7dAgregadoDoGrupo(familyId);
-    if (!agregado) {
-      return '<span class="am-metricas7d am-metricas7d--indisponivel" title="Expanda para ver a soma das métricas dos últimos 7 dias">—</span>';
+    if (agregado) {
+      return '<span class="am-metricas7d" title="Soma dos últimos 7 dias de todas as variações">' +
+        metricas7dConteudoHtml(agregado) + "</span>";
     }
-    return '<span class="am-metricas7d" title="Soma dos últimos 7 dias de todas as variações">' +
-      metricas7dConteudoHtml(agregado) + "</span>";
+    // Ainda não: o pré-carregamento em background falhou de verdade (mostra
+    // "—", igual à falha de qualquer célula de item) ou simplesmente ainda
+    // está em voo (mostra "carregando…", nunca um "—" definitivo — a soma
+    // chega sozinha quando a resposta voltar).
+    if (AM.state.familyFetchFalhou[familyId]) {
+      return '<span class="am-metricas7d am-metricas7d--indisponivel" title="Não foi possível calcular a soma agora">—</span>';
+    }
+    return '<span class="am-metricas7d am-metricas7d--carregando" title="Calculando a soma dos últimos 7 dias…">' +
+      '<span class="am-metricas7d__linha am-metricas7d__vazio">carregando…</span>' +
+    "</span>";
   }
 
   // Cor por STATUS real do Motor de Margem (marginStatus.js) — nunca um
@@ -1182,47 +1290,93 @@
 
   function margemCelulaHtml(itemId) {
     var cache = AM.state.performanceCache[itemId];
-    var conteudo = cache
+    var pronto = cache && cache.temMargem;
+    var conteudo = pronto
       ? margemConteudoHtml(cache.margem, cache.margemIndisponivel)
       : '<span class="am-margem__vazio">carregando…</span>';
-    return '<span class="am-margem' + (cache ? "" : " am-margem--carregando") +
+    return '<span class="am-margem' + (pronto ? "" : " am-margem--carregando") +
       '" data-margem-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
   }
 
-  // Busca métricas 7d + margem para os item_id pedidos — só os que ainda
-  // não estão em AM.state.performanceCache (reabrir/repintar não refaz
-  // chamada nenhuma). Nunca bloqueia quem chamou: é sempre disparada DEPOIS
-  // que a linha já está pintada na tela.
-  // Devolve a Promise da leitura (resolvida de imediato quando não há nada
-  // pendente — tudo já em cache): quem chama e precisa saber "os filhos
-  // desta família já são conhecidos" (ver repintarLinhaDoGrupo) encadeia
-  // nela em vez de reimplementar a mesma espera.
-  function carregarPerformance(itemIds) {
+  // Busca metricas7d e/ou margem para os item_id pedidos — só o aspecto que
+  // FALTA em cada um (AM.state.performanceCache guarda os dois de forma
+  // independente: `temMetricas`/`temMargem`). Isso é o que permite ao
+  // pré-carregamento em background pedir só metricas7d dos filhos ocultos
+  // (opcoes.incluirMargem: false) e, quando o operador expande de verdade, a
+  // expansão pedir só a margem que falta — sem repetir a métrica que o
+  // pré-carregamento já trouxe.
+  //
+  // `metricasEmVoo`/`margemEmVoo` (por item_id) dedupem chamadas concorrentes
+  // para o MESMO item/aspecto: o pré-carregamento em background e um clique
+  // do operador na mesma família não disparam duas requisições.
+  //
+  // Nunca bloqueia quem chamou: é sempre disparada DEPOIS que a linha já
+  // está pintada na tela. Devolve a Promise da leitura (resolvida de
+  // imediato quando não há nada pendente — tudo já em cache/em voo): quem
+  // precisa saber "os filhos desta família já são conhecidos" (ver
+  // repintarLinhaDoGrupo) encadeia nela em vez de reimplementar a espera.
+  function carregarPerformance(itemIds, opcoes) {
     if (!AM.clienteAtual) return Promise.resolve();
+    var incluirMargem = !opcoes || opcoes.incluirMargem !== false;
+
     var vistos = {};
-    var pendentes = [];
+    var pendentesMetricas = [];
+    var pendentesMargem = [];
     (itemIds || []).forEach(function (id) {
-      if (!id || vistos[id] || AM.state.performanceCache[id]) return;
+      if (!id || vistos[id]) return;
       vistos[id] = true;
-      pendentes.push(id);
+      var cache = AM.state.performanceCache[id];
+      if ((!cache || !cache.temMetricas) && !AM.state.metricasEmVoo[id]) pendentesMetricas.push(id);
+      if (incluirMargem && (!cache || !cache.temMargem) && !AM.state.margemEmVoo[id]) pendentesMargem.push(id);
     });
-    if (!pendentes.length) return Promise.resolve();
+    if (!pendentesMetricas.length && !pendentesMargem.length) return Promise.resolve();
+
+    var idsUniao = [];
+    var vistosUniao = {};
+    pendentesMetricas.concat(pendentesMargem).forEach(function (id) {
+      if (vistosUniao[id]) return;
+      vistosUniao[id] = true;
+      idsUniao.push(id);
+    });
+
+    var pendentesMetricasSet = {};
+    pendentesMetricas.forEach(function (id) { pendentesMetricasSet[id] = true; AM.state.metricasEmVoo[id] = true; });
+    var pendentesMargemSet = {};
+    pendentesMargem.forEach(function (id) { pendentesMargemSet[id] = true; AM.state.margemEmVoo[id] = true; });
 
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
-      "&itemIds=" + encodeURIComponent(pendentes.join(","));
+      "&itemIds=" + encodeURIComponent(idsUniao.join(",")) +
+      "&incluirMetricas=" + (pendentesMetricas.length ? "1" : "0") +
+      "&incluirMargem=" + (pendentesMargem.length ? "1" : "0");
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
 
     return api("/anuncios-meli/performance?" + qs).then(function (r) {
+      pendentesMetricas.forEach(function (id) { delete AM.state.metricasEmVoo[id]; });
+      pendentesMargem.forEach(function (id) { delete AM.state.margemEmVoo[id]; });
+
       var dados = r.data;
-      if (!dados || !dados.ok) { pintarPerformanceIndisponivel(pendentes); return; }
-      pendentes.forEach(function (id) {
-        AM.state.performanceCache[id] = {
-          metricas7d: (dados.metricas7d && dados.metricas7d[id]) || null,
-          margem: (dados.margem && dados.margem[id]) || null,
-          margemIndisponivel: dados.margemIndisponivel || null,
-        };
-      });
-      pintarPerformanceEmCelulas(pendentes);
+      if (dados && dados.ok) {
+        idsUniao.forEach(function (id) {
+          var atual = AM.state.performanceCache[id] || {
+            metricas7d: null, temMetricas: false, margem: null, margemIndisponivel: null, temMargem: false,
+          };
+          if (pendentesMetricasSet[id]) {
+            atual.metricas7d = (dados.metricas7d && dados.metricas7d[id]) || null;
+            atual.temMetricas = true;
+          }
+          if (pendentesMargemSet[id]) {
+            atual.margem = (dados.margem && dados.margem[id]) || null;
+            atual.margemIndisponivel = dados.margemIndisponivel || null;
+            atual.temMargem = true;
+          }
+          AM.state.performanceCache[id] = atual;
+        });
+      }
+      // Falha da chamada inteira: nada é marcado como resolvido (permite
+      // uma tentativa futura), e as células pedidas só repintam com o que
+      // JÁ está no cache — nunca apagam um aspecto que outra chamada
+      // independente já tinha trazido com sucesso.
+      pintarPerformanceEmCelulas(idsUniao);
     });
   }
 
@@ -1273,26 +1427,6 @@
       var cache = AM.state.performanceCache[id];
       cel.classList.remove("am-margem--carregando");
       cel.innerHTML = margemConteudoHtml(cache ? cache.margem : null, cache ? cache.margemIndisponivel : null);
-    });
-  }
-
-  // Falha de rede/servidor na chamada inteira: resolve o "carregando…" para
-  // "—" nas células pedidas, sem escrever no cache — assim uma tentativa
-  // futura (reabrir a família, voltar à página) tem uma chance nova em vez
-  // de ficar presa num "—" permanente por causa de uma falha passageira.
-  function pintarPerformanceIndisponivel(ids) {
-    var alvo = {};
-    ids.forEach(function (id) { alvo[id] = true; });
-
-    document.querySelectorAll(".am-metricas7d[data-metricas-item]").forEach(function (cel) {
-      if (!alvo[cel.getAttribute("data-metricas-item")]) return;
-      cel.classList.remove("am-metricas7d--carregando");
-      cel.innerHTML = metricas7dConteudoHtml(null);
-    });
-    document.querySelectorAll(".am-margem[data-margem-item]").forEach(function (cel) {
-      if (!alvo[cel.getAttribute("data-margem-item")]) return;
-      cel.classList.remove("am-margem--carregando");
-      cel.innerHTML = margemConteudoHtml(null, null);
     });
   }
 

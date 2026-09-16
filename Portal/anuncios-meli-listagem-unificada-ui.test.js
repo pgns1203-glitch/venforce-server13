@@ -18,7 +18,12 @@
  *     fixture tem um MLBU com 2 anúncios de propósito, então somar por MLB
  *     daria 400 onde o certo é 300;
  *   · só o agrupador expande; o anúncio individual abre o modal direto;
- *   · nenhum agrupador abre sozinho, e expandir gasta exatamente 1 requisição;
+ *   · nenhum PAINEL abre sozinho (ver MLBs, editar estoque continuam exigindo
+ *     clique) — mas o DETALHE de cada agrupador visível é buscado sozinho em
+ *     BACKGROUND assim que a página pinta, só para somar as métricas 7d na
+ *     linha-mãe sem exigir clique nenhum; a primeira expansão de verdade
+ *     reaproveita esse cache (gasta 0 requisições de detalhe) e busca só a
+ *     margem, que o pré-carregamento NUNCA pede;
  *   · colapsar e reabrir o mesmo agrupador NÃO gasta requisição (cache);
  *   · abrir o agrupador A e o B antes de A responder não deixa a resposta
  *     atrasada de A pintar o painel de B (guarda por family_id);
@@ -55,20 +60,23 @@
  *     bloqueiam a abertura da página nem a expansão de um agrupador. A
  *     célula nasce "carregando" e se resolve sozinha quando a resposta
  *     chega; falha vira "—", nunca fica presa;
- *   · a busca de performance só pede os item_id VISÍVEIS: os avulsos da
- *     página atual no boot, e só os filhos de uma família quando ela é
- *     expandida — nenhuma chamada para MLB dentro de um agrupador ainda
- *     fechado. Reabrir uma família já carregada, ou repintar uma linha
- *     depois de editar o estoque, lê do cache — não refaz a chamada;
+ *   · a busca de performance dos itens AVULSOS só pede os visíveis da
+ *     página atual, sempre métricas + margem juntas;
+ *   · a soma de métricas 7d do AGRUPADOR aparece sozinha, em background,
+ *     assim que a família aparece na página — sem exigir clique. Ela nasce
+ *     "carregando" (nunca uma soma parcial) e vira "—" só se a busca
+ *     realmente falhar. Expandir de verdade não refaz essa chamada — só
+ *     busca a margem que falta, e só dos filhos daquela família (nenhuma
+ *     chamada de margem para MLB dentro de um agrupador ainda fechado).
+ *     Reabrir uma família já conhecida, ou repintar uma linha depois de
+ *     editar o estoque, lê do cache — não refaz chamada nenhuma;
  *   · margem NUNCA aparece na linha do agrupador (só existe por MLB, sem
- *     exceção para soma nem média — margem enganosa é pior que ausente), e
- *     o texto de estado (quando não há número) é o vocabulário REAL do
- *     Motor de Margem — nunca um rótulo inventado nesta tela;
- *   · métricas últ. 7 dias JÁ agregam no agrupador — mas só DEPOIS que ele
- *     é expandido pelo menos uma vez (é quando os filhos passam a ser
- *     conhecidos): antes disso é "—", nunca uma soma parcial. O agregado
- *     sobrevive a colapsar o painel — ele não depende de o painel estar
- *     visível, só de o cache já conhecer todos os filhos.
+ *     exceção para soma nem média — margem enganosa é pior que ausente, e
+ *     nunca é buscada para um filho ainda oculto), e o texto de estado
+ *     (quando não há número) é o vocabulário REAL do Motor de Margem —
+ *     nunca um rótulo inventado nesta tela;
+ *   · a soma de métricas 7d sobrevive a colapsar o painel — ela não depende
+ *     de o painel estar visível, só de o cache já conhecer todos os filhos.
  */
 "use strict";
 
@@ -353,6 +361,16 @@ async function waitFor(cdp, expression, message) {
   throw new Error(message || `Timeout: ${expression}`);
 }
 
+// Mesma ideia de waitFor, mas para uma condição do lado do NODE (ex.:
+// chamadasPerformance, que vive no interceptor — não no navegador).
+async function waitForNode(fn, message) {
+  for (let i = 0; i < 200; i++) {
+    if (fn()) return;
+    await sleep(50);
+  }
+  throw new Error(message || "Timeout (condição do lado do Node)");
+}
+
 function contar(padrao, desde) {
   return pedidos.slice(desde).filter((u) => padrao.test(u)).length;
 }
@@ -454,15 +472,21 @@ function wireInterception(cdp) {
     if (caminho.startsWith("/anuncios-meli/performance")) {
       const qs = new URL(url).searchParams;
       const idsPedidos = (qs.get("itemIds") || "").split(",").filter(Boolean);
-      chamadasPerformance.push({ itemIds: idsPedidos, conta });
+      // O front SEMPRE manda os dois flags de forma explícita (nunca omite):
+      // é o que prova, do lado do teste, se uma chamada pediu só métricas
+      // (pré-carregamento em background de agrupador ainda fechado) ou só
+      // margem (expansão depois que o pré-carregamento já trouxe a métrica).
+      const incluirMetricas = qs.get("incluirMetricas") !== "0";
+      const incluirMargem = qs.get("incluirMargem") !== "0";
+      chamadasPerformance.push({ itemIds: idsPedidos, conta, incluirMetricas, incluirMargem });
       if (atrasoPerformance) await sleep(atrasoPerformance);
       if (performanceHandler) { await corpo(performanceHandler(idsPedidos, conta)); return; }
 
       const metricas7d = {};
       const margem = {};
       idsPedidos.forEach((id) => {
-        metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
-        margem[id] = MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+        if (incluirMetricas) metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
+        if (incluirMargem) margem[id] = MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
       });
       await corpo({ ok: true, metricas7d, margem, margemIndisponivel: null });
       return;
@@ -660,12 +684,20 @@ async function run() {
 
     /* ── 6 e 7: nada abre sozinho; só o agrupador expande ───────────────── */
 
-    await check("6 — nenhum agrupador abre sozinho", async () => {
+    await check("6 — nenhum PAINEL abre sozinho, mas o detalhe de cada agrupador é pré-carregado em background", async () => {
+      // O pré-carregamento (para somar métricas 7d na linha-mãe) busca o
+      // detalhe de CADA agrupador visível — 1 chamada por família, sem
+      // clique nenhum. É o oposto do que esta verificação testava antes: a
+      // ausência de chamada virou a REGRA NOVA (exatamente 1 por família).
+      await waitForNode(() => contar(/\/familias\/FAM-1/, 0) >= 1 && contar(/\/familias\/FAM-2/, 0) >= 1,
+        "o pré-carregamento em background não buscou o detalhe dos dois agrupadores");
+
       const abertas = await cdp.evaluate("document.querySelectorAll('.am-row--grupo[aria-expanded=\"true\"]').length");
       assert.strictEqual(abertas, 0, "algum agrupador já veio expandido");
       const mlbs = await cdp.evaluate("document.querySelectorAll('.am-mlb').length");
-      assert.strictEqual(mlbs, 0, "houve carga de detalhe sem o usuário pedir");
-      assert.strictEqual(contar(/\/familias\/FAM/, 0), 0, "gastou requisição de detalhe sem clique");
+      assert.strictEqual(mlbs, 0, "o pré-carregamento não pode pintar o painel — só busca dado em background");
+      assert.strictEqual(contar(/\/familias\/FAM-1/, 0), 1, "o pré-carregamento não pode gastar mais de 1 chamada por família");
+      assert.strictEqual(contar(/\/familias\/FAM-2/, 0), 1);
     });
 
     await check("7 — o anúncio individual não tem painel para expandir", async () => {
@@ -685,7 +717,7 @@ async function run() {
     /* ── 8 a 10: expansão explícita, hierarquia e UP com 2 MLBs ─────────── */
 
     let antesExpandir = pedidos.length;
-    await check("8 — expandir o agrupador busca o detalhe e põe os MLBs direto abaixo dele", async () => {
+    await check("8 — expandir o agrupador põe os MLBs direto abaixo dele, reaproveitando o pré-carregamento (0 requisição nova de detalhe)", async () => {
       await clicar(cdp, linhaFam("FAM-1"));
       await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "o painel do agrupador não carregou");
       const estado = await cdp.evaluate(`(function(){
@@ -705,7 +737,10 @@ async function run() {
       assert.strictEqual(estado.variacoes, 3, "o agrupador tem 3 variações");
       assert.strictEqual(estado.mlbs, 4, "o agrupador tem 4 anúncios no total");
       assert.strictEqual(estado.mlbsForaDeVariacao, 0);
-      assert.strictEqual(contar(/\/familias\/FAM-1/, antesExpandir), 1, "deve gastar exatamente 1 requisição");
+      // A família já tinha sido pré-carregada em background na verificação 6
+      // — expandir de verdade não pode buscar o detalhe de novo.
+      assert.strictEqual(contar(/\/familias\/FAM-1/, antesExpandir), 0,
+        "expandir refez a chamada de detalhe que o pré-carregamento em background já tinha feito");
     });
 
     await check("8b — a expansão é a continuação da tabela: colunas alinhadas ao cabeçalho", async () => {
@@ -992,13 +1027,19 @@ async function run() {
       const abertas = await cdp.evaluate("document.querySelectorAll('.am-row--grupo[aria-expanded=\"true\"]').length");
       assert.strictEqual(abertas, 0, "o agrupador continuou expandido depois da troca de conta");
 
-      const antes = pedidos.length;
+      // O cache velho (family_id="FAM-1" da conta 42) foi limpo na troca — o
+      // pré-carregamento em background da conta NOVA busca de novo, mesmo o
+      // family_id sendo o MESMO texto nas duas contas do fixture.
+      await waitFor(cdp, `(function(){
+        var t = document.querySelector('${linhaFam("FAM-1")} .am-metricas7d');
+        return t && !t.classList.contains('am-metricas7d--carregando'); })()`,
+        "o pré-carregamento em background da conta nova não terminou");
+
       await clicar(cdp, linhaFam("FAM-1"));
       await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "o agrupador da nova conta não carregou");
       const up = await cdp.evaluate(
         `document.querySelector('${painelFam("FAM-1")} .am-variacao').getAttribute('data-user-product')`);
-      assert.strictEqual(up, "MLBU-900", "veio o dado cacheado da conta anterior");
-      assert.strictEqual(contar(/\/familias\/FAM-1/, antes), 1, "o cache velho impediu a busca na conta nova");
+      assert.strictEqual(up, "MLBU-900", "veio o dado cacheado da conta anterior — o cache velho vazou para a conta nova");
     });
 
     /* ── 14 e 15: os cards de KPI valem para a lista inteira ────────────── */
@@ -1101,11 +1142,15 @@ async function run() {
                temPlaceholder: Boolean(m && m.querySelector('svg')) }; })()`;
 
     await check("18 — o agrupador FECHADO já mostra a capa escolhida pela API", async () => {
+      // A capa vem PRONTA na lista (cover.thumbnail) — não depende da busca
+      // de detalhe, que agora roda sozinha em BACKGROUND para todo
+      // agrupador visível (é dali que vêm as métricas 7d agregadas, nunca a
+      // capa). Por isso a verificação não é mais "zero chamada de detalhe":
+      // é "a capa certa aparece MESMO SEM esperar essa chamada responder".
       const capa = await cdp.evaluate(capaDe("FAM-1"));
       assert.strictEqual(capa.temImg, true, "o agrupador fechado continuou no placeholder cinza");
       assert.strictEqual(capa.src, CAPA_FAM1, "a capa não é a que veio em cover.thumbnail");
       assert.strictEqual(capa.temPlaceholder, false, "o ícone de placeholder ficou junto da imagem");
-      assert.strictEqual(contar(/\/familias\/FAM-1/, 0), 0, "a capa não pode custar requisição de detalhe");
     });
 
     await check("19 — agrupador sem capa na API mantém o placeholder", async () => {
@@ -1382,22 +1427,28 @@ async function run() {
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
     await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não voltou depois do reload");
 
-    await check("29 — a linha já está completa (título, preço) ANTES de /performance responder", async () => {
+    await check("29 — a linha já está completa (título, preço) ANTES de /performance responder — inclusive a soma do agrupador", async () => {
       const estado = await cdp.evaluate(`(function(){
         var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        var fam1 = document.querySelector('${linhaFam("FAM-1")} .am-metricas7d');
         return {
           tituloExiste: Boolean(r.querySelector('.am-row__titulo')),
           precoExiste: /49,90/.test(r.querySelector('.am-row__preco').textContent),
           metricasCarregando: r.querySelector('.am-metricas7d').classList.contains('am-metricas7d--carregando'),
           margemCarregando: r.querySelector('.am-margem').classList.contains('am-margem--carregando'),
+          agrupadorCarregando: fam1.classList.contains('am-metricas7d--carregando'),
+          agrupadorMargemTexto: document.querySelector('${linhaFam("FAM-1")} .am-margem').textContent.trim(),
         }; })()`);
       assert.strictEqual(estado.tituloExiste, true, "a lista não pode esperar /performance para renderizar o resto da linha");
       assert.strictEqual(estado.precoExiste, true);
       assert.strictEqual(estado.metricasCarregando, true, "a célula tem de nascer 'carregando', não vazia nem quebrada");
       assert.strictEqual(estado.margemCarregando, true);
+      assert.strictEqual(estado.agrupadorCarregando, true,
+        "a soma do agrupador também nasce 'carregando' — nunca uma soma parcial antes de todos os filhos responderem");
+      assert.strictEqual(estado.agrupadorMargemTexto, "—", "a margem do agrupador nunca aparece, nem durante o carregamento");
     });
 
-    await check("30 — depois que /performance responde, a célula pinta os números reais", async () => {
+    await check("30 — depois que /performance responde, a célula do item avulso pinta os números reais", async () => {
       atrasoPerformance = 0;
       await waitFor(cdp, `(function(){
         var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
@@ -1416,26 +1467,91 @@ async function run() {
       assert.strictEqual(dados.margemOrigem, "Realizada");
     });
 
-    await check("31 — régua: 1 chamada de performance no boot, só com os item_id avulsos VISÍVEIS", async () => {
-      assert.strictEqual(chamadasPerformance.length, 1, "o boot da página deveria disparar 1 chamada de performance");
-      assert.deepStrictEqual(chamadasPerformance[0].itemIds.slice().sort(), ["MLB-SEMUP"],
-        "só o anúncio avulso está visível no boot — nenhum filho de agrupador ainda fechado pode entrar no lote");
+    await check("30b — o agrupador mostra a SOMA das métricas 7d dos filhos SOZINHO, sem precisar expandir", async () => {
+      // MLB-A1 (views null) + MLB-A2 (100) + MLB-A3/A4 (10 cada, default do
+      // fixture) = 120 views; vendas 0+0+1+1 = 2; conversão 2/120 = 1,7%.
+      await waitFor(cdp, `(function(){
+        var t = document.querySelector('${linhaFam("FAM-1")} .am-metricas7d');
+        return t && !t.classList.contains('am-metricas7d--carregando'); })()`,
+        "a soma do agrupador não resolveu depois da resposta do pré-carregamento");
+      const estado = await cdp.evaluate(`(function(){
+        var r = document.querySelector('${linhaFam("FAM-1")}');
+        return {
+          linhas: Array.from(r.querySelectorAll('.am-metricas7d .am-metricas7d__linha')).map(function(e){ return e.textContent; }),
+          margemTexto: r.querySelector('.am-margem').textContent.trim(),
+          expandido: r.getAttribute('aria-expanded'),
+          mlbsRenderizados: document.querySelectorAll('${painelFam("FAM-1")} .am-mlb').length,
+        }; })()`);
+      assert.deepStrictEqual(estado.linhas, ["👁 120", "🛒 2 · 1,7%"],
+        `o agrupador não somou os filhos automaticamente: ${JSON.stringify(estado.linhas)}`);
+      assert.strictEqual(estado.margemTexto, "—", "a margem do agrupador continua ausente mesmo com a soma pronta");
+      assert.strictEqual(estado.expandido, "false", "a soma automática não pode expandir o painel sozinha");
+      assert.strictEqual(estado.mlbsRenderizados, 0, "a soma automática só busca dado — não pinta os MLBs no painel");
     });
 
-    await check("32 — expandir a família dispara performance SÓ para os filhos dela, e só então", async () => {
-      const antes = chamadasPerformance.length;
+    await check("31 — régua do boot: 1 chamada com métricas+margem (avulso) + 1 chamada só de métricas por agrupador visível", async () => {
+      assert.strictEqual(contar(/\/familias\/FAM-1/, 0), 1, "o pré-carregamento de FAM-1 devia ter gastado exatamente 1 chamada de detalhe");
+      assert.strictEqual(contar(/\/familias\/FAM-2/, 0), 1, "o pré-carregamento de FAM-2 devia ter gastado exatamente 1 chamada de detalhe");
+
+      assert.strictEqual(chamadasPerformance.length, 3,
+        `o boot deveria disparar 3 chamadas de performance (1 avulso + 1 por agrupador): ${JSON.stringify(chamadasPerformance)}`);
+
+      const doAvulso = chamadasPerformance.find((c) => c.itemIds.includes("MLB-SEMUP"));
+      assert.ok(doAvulso, "não achei a chamada dos itens avulsos");
+      assert.deepStrictEqual(doAvulso.itemIds.slice().sort(), ["MLB-SEMUP"],
+        "só o anúncio avulso está visível como ITEM no boot");
+      assert.strictEqual(doAvulso.incluirMetricas, true);
+      assert.strictEqual(doAvulso.incluirMargem, true, "o item avulso pede métricas E margem juntas, como sempre");
+
+      const doFam1 = chamadasPerformance.find((c) => c.itemIds.includes("MLB-A1"));
+      assert.ok(doFam1, "não achei a chamada em background dos filhos de FAM-1");
+      assert.deepStrictEqual(doFam1.itemIds.slice().sort(), ["MLB-A1", "MLB-A2", "MLB-A3", "MLB-A4"],
+        "o pré-carregamento de FAM-1 precisa pedir exatamente os 4 filhos — nem mais, nem menos");
+      assert.strictEqual(doFam1.incluirMetricas, true);
+      assert.strictEqual(doFam1.incluirMargem, false,
+        "o pré-carregamento em background NUNCA pode pedir margem de um filho ainda oculto");
+
+      const doFam2 = chamadasPerformance.find((c) => c.itemIds.includes("MLB-B9"));
+      assert.ok(doFam2, "não achei a chamada em background do filho de FAM-2");
+      assert.deepStrictEqual(doFam2.itemIds.slice().sort(), ["MLB-B9"]);
+      assert.strictEqual(doFam2.incluirMargem, false);
+    });
+
+    await check("32 — expandir a família pinta as métricas dos filhos NA HORA (já vinham do pré-carregamento) e busca só a margem que faltava", async () => {
+      const antesPerformance = chamadasPerformance.length;
+      const antesPedidos = pedidos.length;
       await clicar(cdp, linhaFam("FAM-1"));
       await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "FAM-1 não expandiu");
+
+      // As métricas do filho já pintam no PRIMEIRO frame da expansão — nunca
+      // passam por "carregando": o pré-carregamento em background já tinha
+      // trazido a resposta antes mesmo do clique.
+      const metricasNaAbertura = await cdp.evaluate(`(function(){
+        var c = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-metricas7d');
+        return { carregando: c.classList.contains('am-metricas7d--carregando'),
+                 linhas: Array.from(c.querySelectorAll('.am-metricas7d__linha')).map(function(e){ return e.textContent; }) }; })()`);
+      assert.strictEqual(metricasNaAbertura.carregando, false,
+        "as métricas do filho não podiam nascer 'carregando' na expansão — já estavam no cache do pré-carregamento");
+      assert.deepStrictEqual(metricasNaAbertura.linhas, ["👁 100", "🛒 0 · 0,0%"]);
+
       await waitFor(cdp, `(function(){
         var c = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-margem');
         return c && !c.classList.contains('am-margem--carregando'); })()`, "a margem dos filhos não resolveu");
 
-      assert.strictEqual(chamadasPerformance.length, antes + 1, "expandir devia disparar exatamente 1 chamada nova");
+      assert.strictEqual(contar(/\/familias\/FAM-1/, antesPedidos), 0,
+        "a família já tinha sido pré-carregada em background — expandir não pode buscar o detalhe de novo");
+      assert.strictEqual(chamadasPerformance.length, antesPerformance + 1, "expandir devia disparar exatamente 1 chamada nova de performance");
       const ultima = chamadasPerformance[chamadasPerformance.length - 1];
       assert.deepStrictEqual(ultima.itemIds.slice().sort(), ["MLB-A1", "MLB-A2", "MLB-A3", "MLB-A4"],
         "a chamada da expansão precisa ter exatamente os 4 filhos de FAM-1 — nem mais, nem menos");
-      assert.ok(!chamadasPerformance.some((c) => c.itemIds.includes("MLB-B9")),
-        "nenhuma chamada pode incluir item de FAM-2, que continua fechada");
+      assert.strictEqual(ultima.incluirMargem, true, "a expansão de verdade tem de pedir a margem");
+      assert.strictEqual(ultima.incluirMetricas, false,
+        "as métricas 7d já vieram do pré-carregamento em background — expandir não pode refazer essa chamada");
+      // MLB-B9 (filho de FAM-2) já apareceu no histórico ANTES desta
+      // verificação — é o pré-carregamento em background da verificação 31,
+      // legítimo mesmo com FAM-2 fechada. O que não pode acontecer é ele
+      // aparecer numa chamada NOVA disparada por clicar em FAM-1, e a
+      // asserção acima (o conteúdo exato de `ultima`) já garante isso.
     });
 
     await check("33 — reabrir a MESMA família não refaz a chamada de performance (cache)", async () => {
@@ -1454,29 +1570,18 @@ async function run() {
         "reabrir a mesma família gastou uma chamada de performance nova — o cache não funcionou");
     });
 
-    await check("34 — a linha do AGRUPADOR nunca mostra número de margem, mas mostra a SOMA das métricas 7d dos filhos", async () => {
-      // MLB-A1 (views null) + MLB-A2 (100) + MLB-A3/A4 (10 cada, default do
-      // fixture) = 120 views; vendas 0+0+1+1 = 2; conversão 2/120 = 1,7%.
-      await waitFor(cdp, `(function(){
-        var t = document.querySelector('${linhaFam("FAM-1")} .am-metricas7d');
-        return t && !t.classList.contains('am-metricas7d--indisponivel'); })()`,
-        "a linha-mãe não repintou com a soma das métricas depois da expansão");
+    await check("34 — a linha do AGRUPADOR continua sem número de margem mesmo depois de expandida e com os filhos resolvidos", async () => {
       const estado = await cdp.evaluate(`(function(){
         var r = document.querySelector('${linhaFam("FAM-1")}');
         var m = r.querySelector('.am-margem');
-        var t = r.querySelector('.am-metricas7d');
         return {
           margemTexto: m.textContent.trim(), margemTemValor: Boolean(r.querySelector('.am-margem__valor')),
           margemClasse: m.className,
-          metricasLinhas: Array.from(t.querySelectorAll('.am-metricas7d__linha')).map(function(e){ return e.textContent; }),
         }; })()`);
       // Margem: NUNCA agrega, mesmo expandida — regra do usuário sem exceção.
       assert.strictEqual(estado.margemTexto, "—");
       assert.strictEqual(estado.margemTemValor, false, "a linha do agrupador não pode mostrar número de margem");
       assert.ok(/am-margem--indisponivel/.test(estado.margemClasse));
-      // Métricas 7d: soma dos 4 filhos, depois que todos responderam.
-      assert.deepStrictEqual(estado.metricasLinhas, ["👁 120", "🛒 2 · 1,7%"],
-        `a linha-mãe não somou as métricas 7d dos filhos: ${JSON.stringify(estado.metricasLinhas)}`);
     });
 
     await check("34b — a linha do AGRUPADOR ainda expandida com o painel colapsado continua com a soma", async () => {
@@ -1491,14 +1596,21 @@ async function run() {
       await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")}').hidden === false`, "FAM-1 não reabriu");
     });
 
-    await check("34c — o agrupador AINDA NÃO expandido continua mostrando '—' nas métricas 7d", async () => {
-      // FAM-2 nunca foi expandida neste bloco: sem filhos conhecidos, a soma
-      // não pode aparecer — mostrar um agregado parcial seria enganoso.
+    await check("34c — o agrupador FAM-2 (nunca expandido pelo operador) TAMBÉM mostra a soma automática", async () => {
+      // FAM-2 nunca recebeu um clique de expandir neste bloco — mas o
+      // pré-carregamento em background já buscou o único filho dela (a régua
+      // da verificação 31 prova isso), então a soma aparece sozinha, igual à
+      // de FAM-1. Isto é o oposto do comportamento antigo (que exigia
+      // expandir): mostrar "—" aqui seria a REGRESSÃO agora.
       const estado = await cdp.evaluate(`(function(){
         var t = document.querySelector('${linhaFam("FAM-2")} .am-metricas7d');
-        return { texto: t.textContent.trim(), classe: t.className }; })()`);
-      assert.strictEqual(estado.texto, "—");
-      assert.ok(/am-metricas7d--indisponivel/.test(estado.classe));
+        return {
+          linhas: Array.from(t.querySelectorAll('.am-metricas7d__linha')).map(function(e){ return e.textContent; }),
+          classe: t.className,
+        }; })()`);
+      assert.deepStrictEqual(estado.linhas, ["👁 10", "🛒 1 · 10,0%"],
+        `FAM-2 (1 filho, MLB-B9, sem fixture específica) devia mostrar a soma automática: ${JSON.stringify(estado.linhas)}`);
+      assert.ok(!/am-metricas7d--indisponivel|am-metricas7d--carregando/.test(estado.classe), estado.classe);
     });
 
     await check("35 — conversão nunca é NaN/Infinity: '—' sem views, número real (inclusive 0%) com views", async () => {
@@ -1582,7 +1694,7 @@ async function run() {
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
     await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não voltou depois do reload");
 
-    await check("39 — falha total de /performance resolve para '—', a lista continua usável", async () => {
+    await check("39 — falha total de /performance resolve para '—', a lista continua usável — inclusive a soma do agrupador", async () => {
       await waitFor(cdp, `(function(){
         var c = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-metricas7d');
         return c && !c.classList.contains('am-metricas7d--carregando'); })()`,
@@ -1597,6 +1709,19 @@ async function run() {
       assert.strictEqual(estado.metricas, "—", "falha total tem de virar travessão, nunca ficar preso em 'carregando'");
       assert.strictEqual(estado.margem, "—");
       assert.strictEqual(estado.linhaAindaClicavel, true, "a falha de performance não pode quebrar a linha em si");
+
+      // A falha alcança IGUALMENTE o pré-carregamento em background: a soma
+      // do agrupador também não pode ficar presa em "carregando" para sempre.
+      await waitFor(cdp, `(function(){
+        var t = document.querySelector('${linhaFam("FAM-1")} .am-metricas7d');
+        return t && !t.classList.contains('am-metricas7d--carregando'); })()`,
+        "a falha do pré-carregamento em background nunca resolveu o estado de carregamento da soma do agrupador");
+      const agrupador = await cdp.evaluate(`(function(){
+        var t = document.querySelector('${linhaFam("FAM-1")} .am-metricas7d');
+        return { texto: t.textContent.trim(), classe: t.className }; })()`);
+      assert.strictEqual(agrupador.texto, "—", "falha do pré-carregamento tem de virar travessão, nunca ficar presa em 'carregando'");
+      assert.ok(/am-metricas7d--indisponivel/.test(agrupador.classe), agrupador.classe);
+
       performanceHandler = null;
     });
 

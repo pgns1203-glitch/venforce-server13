@@ -21,8 +21,12 @@ const TIPO = {
 
 // Responsável costuma ser um e-mail corporativo: o domínio é sempre o mesmo e
 // só rouba largura. Mostra a parte local; o e-mail inteiro fica no `title`.
+// Nem toda fonte resolve pra e-mail: entregas_cliente.created_by é o INTEGER
+// (FK de users.id) cru, nunca um e-mail — só cliente_360_acoes.autor é TEXT.
+// Sem o guard de tipo, um `ator` numérico quebrava `.includes` no render.
 function curtoAtor(ator) {
   if (!ator) return "sistema";
+  if (typeof ator !== "string") return String(ator);
   return ator.includes("@") ? ator.split("@")[0] : ator;
 }
 

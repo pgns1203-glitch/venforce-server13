@@ -150,6 +150,9 @@ const ICONS = {
   visao: '<path d="M3 3v18h18"></path><path d="M7 15l4-4 3 3 6-6"></path>',
   carteira: '<rect x="2" y="7" width="20" height="13" rx="2"></rect><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"></path><path d="M2 13h20"></path>',
   "cliente-360-v2": '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
+  // Mesmo ícone das outras superfícies de Cliente 360 (v2, Operação, V1) —
+  // é a mesma família de tela, não um módulo novo.
+  "cliente-360-v3": '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
   "cliente-operacao": '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
   "cliente-360": '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
   "central-vendas": '<circle cx="9" cy="21" r="1"></circle><circle cx="19" cy="21" r="1"></circle><path d="M2.5 3h2l2.4 12.4a2 2 0 0 0 2 1.6h8.2a2 2 0 0 0 2-1.6L21 8H6"></path>',
@@ -179,7 +182,7 @@ const ICONS = {
 };
 
 export const GRUPOS_NAV = [
-  { titulo: "Operação", ids: ["visao", "carteira", "cliente-360-v2", "cliente-operacao", "cliente-360"] },
+  { titulo: "Operação", ids: ["visao", "carteira", "cliente-360-v2", "cliente-360-v3", "cliente-operacao", "cliente-360"] },
   { titulo: "Performance", ids: ["central-vendas", "financeiro", "margem", "ads", "anuncios", "central-full", "curva-abc"] },
   { titulo: "Execução", ids: ["automacoes", "diagnosticos", "promocoes-ml"] },
   { titulo: "Gestão", ids: ["pessoas", "clientes-contas", "relatorios", "bases"] },

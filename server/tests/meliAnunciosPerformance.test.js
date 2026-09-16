@@ -323,6 +323,58 @@ async function run() {
     assert.strictEqual(res.statusCode, 409, "duas contas sem seleção não pode resolver sozinho — é ambiguidade");
     ok("duas contas sem clienteContaId: 409 (ambiguidade), nunca uma conta escolhida em silêncio");
   });
+
+  // 9. incluirMargem=0 — usado pelo pré-carregamento em background do
+  //    agrupador ainda fechado: métricas rodam normalmente, o Motor de
+  //    Margem NUNCA é chamado (zero chamadas ao motorMargemService).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({ "MLB-A": { views: 10, vendas: 1, conversao: 10 } });
+    margemHandler = () => ({ itens: [itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.3, status: "HEALTHY", statusLabel: "Saudável" })] });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMargem: "0" } }, res);
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.metricas7d["MLB-A"].views, 10, "métricas continuam vindo com incluirMargem=0");
+    assert.deepStrictEqual(res.corpo.margem, {}, "margem some da resposta quando incluirMargem=0");
+    assert.strictEqual(res.corpo.margemIndisponivel, null);
+    assert.strictEqual(chamadasMargem.length, 0, "o Motor de Margem não pode ser chamado quando incluirMargem=0");
+    assert.strictEqual(chamadasMetricas.length, 1, "métricas seguem chamadas normalmente");
+    ok("incluirMargem=0: zero chamadas ao Motor de Margem, métricas intactas — o pré-carregamento do agrupador fechado nunca gasta margem");
+  });
+
+  // 10. incluirMetricas=0 — usado quando a expansão só precisa da margem
+  //     (as métricas já vieram do pré-carregamento em background).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({ "MLB-A": { views: 10, vendas: 1, conversao: 10 } });
+    margemHandler = () => ({ itens: [itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.3, status: "HEALTHY", statusLabel: "Saudável" })] });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMetricas: "0" } }, res);
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.deepStrictEqual(res.corpo.metricas7d, {}, "métricas somem da resposta quando incluirMetricas=0");
+    assert.strictEqual(res.corpo.margem["MLB-A"].marginPercent, 30, "margem continua vindo com incluirMetricas=0");
+    assert.strictEqual(chamadasMetricas.length, 0, "meliMetricas7dService não pode ser chamado quando incluirMetricas=0");
+    assert.strictEqual(chamadasMargem.length, 1, "margem segue chamada normalmente");
+    ok("incluirMetricas=0: zero chamadas a meliMetricas7dService, margem intacta — expandir depois do pré-carregamento não refaz a métrica");
+  });
+
+  // 11. Os dois desligados ao mesmo tempo: 200 com mapas vazios, zero
+  //     chamadas aos dois serviços — mesmo com itemIds preenchido.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMetricas: "0", incluirMargem: "0" } }, res);
+    assert.strictEqual(res.corpo.ok, true);
+    assert.deepStrictEqual(res.corpo.metricas7d, {});
+    assert.deepStrictEqual(res.corpo.margem, {});
+    assert.strictEqual(chamadasMetricas.length, 0);
+    assert.strictEqual(chamadasMargem.length, 0);
+    ok("incluirMetricas=0 e incluirMargem=0 juntos: zero chamadas aos dois serviços, mesmo com itemIds preenchido");
+  });
 }
 
 run()

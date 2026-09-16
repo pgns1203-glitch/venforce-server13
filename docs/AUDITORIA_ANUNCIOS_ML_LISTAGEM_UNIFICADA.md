@@ -419,7 +419,7 @@ esperar por chamadas ao Mercado Livre que a listagem nunca precisou.
 | `GET /anuncios-meli/familias` | Mesma rota, mesma autorização. Passa a devolver a **lista unificada**: `{ ok, cliente, anuncios: [linha…], paginacao }`, onde cada linha tem `tipo`. Sai `sem_user_product` (existia só para o badge da aba). |
 | `GET /anuncios-meli/familias/:familyId` | Mesma rota, mesmo formato, mesma autorização. Só o `SELECT` ganhou `moeda`, `vendidos`, `score_venforce` e `listing_type_id`: a expansão deixou de ser uma tabela separada e virou a continuação da lista, então precisa preencher as MESMAS colunas do cabeçalho — sem esses campos, colunas do filho ficariam vazias embaixo de rótulos preenchidos. Acréscimos de **projeção**: filtro, join, ordem e agregação intactos. |
 | `PATCH /anuncios-meli/:itemId/estoque` | **NOVO** (entrega anterior). Corpo `{ clienteSlug, clienteContaId?, estoque }`; responde `{ ok, estoque, anuncio, itens_sincronizados, user_product_id }`. Mesma proteção do módulo (automações + carteira), a mesma de `/conteudo` e `/criacao/publicar` — que também escrevem no ML. Não é admin-only: o `requireAdmin` do otimizador existe porque a IA está em validação, não porque escrever no anúncio seja privilégio de admin. Precisa ser declarada **antes** de `GET /:itemId`, como as outras sub-rotas. |
-| `GET /anuncios-meli/performance` | **NOVO** (§4.7). Query `?clienteSlug=&itemIds=A,B,C&clienteContaId=`; responde `{ ok, metricas7d, margem, margemIndisponivel }`. Mesma proteção do módulo. Read-only nos dois sentidos: só lê o Mercado Livre e o Motor de Margem já existentes. Precisa ser declarada **antes** de `GET /:itemId` (senão "performance" seria lido como itemId). |
+| `GET /anuncios-meli/performance` | **NOVO** (§4.7). Query `?clienteSlug=&itemIds=A,B,C&clienteContaId=&incluirMetricas=&incluirMargem=`; responde `{ ok, metricas7d, margem, margemIndisponivel }`. `incluirMetricas`/`incluirMargem` (default "1", os dois) deixam o frontend ligar só o bloco que falta — "0"/"false" desliga, e o serviço de baixo correspondente nem é chamado. Mesma proteção do módulo. Read-only nos dois sentidos: só lê o Mercado Livre e o Motor de Margem já existentes. Precisa ser declarada **antes** de `GET /:itemId` (senão "performance" seria lido como itemId). |
 | `GET /anuncios-meli` | **Inalterado** — é o contrato plano por item que `Portal/central-margem-api.js` consome como fallback do Motor de Margem. Mexer nele quebraria a Central de Margem. O filtro `sem_agrupamento` continua existindo ali como recorte de diagnóstico; deixa de ser identidade de aba. |
 
 ### 4.5.1 Dívida de nomenclatura de `GET /anuncios-meli/familias`
@@ -513,30 +513,57 @@ nem agregado, nem média, mesmo expandida (agregar enganaria: a régua do
 usuário foi explícita e sem exceção — margem errada é pior que margem
 ausente).
 
-**Métricas 7d, ao contrário da margem, agregam no agrupador — mas só
-DEPOIS de expandido.** Views/vendas somam (conversão recalculada sobre a
-soma, mesma regra "—"/nunca NaN de sempre); a soma só aparece quando TODOS
-os filhos daquela família já são conhecidos (`AM.state.familyCache`) e já
-responderam a `/performance` (`AM.state.performanceCache`) — um agregado
-parcial enganaria tanto quanto a média de margem que o usuário vetou. Antes
-da primeira expansão é "—", igual à margem. O agregado é **compute-on-render**
-(`metricas7dAgregadoDoGrupo`, dentro de `rowGrupoHtml`) a partir das MESMAS
-duas caches de sempre — não há um terceiro estado para manter sincronizado,
-e por isso sobrevive a colapsar o painel (o número não depende do painel
-estar visível) e a uma edição de estoque que repinte a linha-mãe
-(`atualizarAgregadosDoGrupo` já chama `rowGrupoHtml`, que recalcula o
-agregado de métricas do mesmo jeito). O gatilho do primeiro cálculo é
-`carregarPerformance(idsFamilia).then(repintarLinhaDoGrupo)`, em
-`carregarFamiliaDetalhe` — por isso `carregarPerformance` passou a devolver
-uma Promise (antes não devolvia nada).
+**Métricas 7d, ao contrário da margem, agregam no agrupador — E aparecem
+SOZINHAS, sem exigir clique.** Views/vendas somam (conversão recalculada
+sobre a soma, mesma regra "—"/nunca NaN de sempre). Um agregado **parcial**
+(nem todos os filhos respondidos ainda) enganaria tanto quanto a média de
+margem que o usuário vetou — por isso a soma só aparece quando TODOS os
+filhos daquela família já são conhecidos (`AM.state.familyCache`) e já
+respondeu `temMetricas: true` em `AM.state.performanceCache` para cada um
+deles. O agregado é **compute-on-render** (`metricas7dAgregadoDoGrupo`,
+dentro de `rowGrupoHtml`) a partir das MESMAS duas caches de sempre — não há
+um terceiro estado para manter sincronizado, e por isso sobrevive a colapsar
+o painel (o número não depende do painel estar visível) e a uma edição de
+estoque que repinte a linha-mãe (`atualizarAgregadosDoGrupo` já chama
+`rowGrupoHtml`, que recalcula o agregado de métricas do mesmo jeito).
+
+**Pré-carregamento em background (`carregarMetricasDosGruposVisiveis`):**
+depois do primeiro paint, para CADA agrupador visível na página, o front
+busca o detalhe da família (`garantirFamiliaDetalhe`, mesmo
+`GET /familias/:familyId` da expansão manual) e, com os filhos conhecidos,
+as métricas 7d deles (`garantirPerformanceDaFamilia(familyId, false)`) — sem
+esperar nenhum clique. **Margem NUNCA entra nesse pré-carregamento**
+(`incluirMargem: false`): calcular margem para um filho ainda oculto
+gastaria o Motor de Margem por um número que nem existe na tela (a linha do
+agrupador nunca mostra margem — ver acima). Falha silenciosa: se o detalhe
+ou as métricas não vierem, a célula sai de "carregando" para "—"
+(`AM.state.familyFetchFalhou`), nunca fica presa.
+
+**Dedupe de chamada concorrente.** `garantirFamiliaDetalhe` é o ÚNICO ponto
+de leitura do detalhe de uma família: cache → Promise já em voo
+(`AM.state.familyFetchEmVoo`) → requisição nova. Isso é o que garante que o
+pré-carregamento em background e um clique do operador na MESMA família
+nunca disparem duas requisições — o clique reaproveita a Promise que o
+pré-carregamento já tinha iniciado. O mesmo vale por item/aspecto em
+`carregarPerformance` (`AM.state.metricasEmVoo`/`margemEmVoo`).
+
+**A expansão de verdade busca só o que falta.** `AM.state.performanceCache`
+guarda os dois aspectos de forma independente (`temMetricas`/`temMargem`):
+quando o operador expande uma família cujo pré-carregamento já trouxe as
+métricas, a expansão pede **só a margem** (`incluirMetricas=0`) — as
+métricas 7d dos filhos já pintam no primeiro frame da expansão, sem passar
+por "carregando" de novo. `GET /anuncios-meli/performance` ganhou os
+parâmetros `incluirMetricas`/`incluirMargem` (default "1", ligados) para
+sustentar isso: cada bloco só roda no backend quando o frontend pede — item
+que já tem métricas em cache não aciona `meliMetricas7dService` de novo, e
+um pré-carregamento nunca aciona `motorMargemService`.
 
 **Nunca bloqueia a abertura da página.** `GET /anuncios-meli/familias` e
 `/familias/:familyId` continuam **inalterados** — DB-only, sem chamada ao
-ML. Um endpoint novo e só leitura, `GET /anuncios-meli/performance
-?clienteSlug=&itemIds=A,B,C&clienteContaId=`, é chamado pelo FRONTEND
-DEPOIS que a linha já pintou: uma vez no boot (só os `item_id` tipo "item"
-da página atual) e uma vez por família, só quando ela é expandida (só os
-`item_id` dela). `AM.state.performanceCache` (sessão, nunca persistido)
-garante que reabrir uma família, ou repintar uma linha depois de editar o
-estoque, não refaz a chamada. Zero chamada para item dentro de um agrupador
-ainda colapsado.
+ML. `GET /anuncios-meli/performance
+?clienteSlug=&itemIds=A,B,C&clienteContaId=&incluirMetricas=&incluirMargem=`
+é chamado pelo FRONTEND DEPOIS que a linha já pintou: uma vez no boot para
+os itens avulsos (métricas + margem juntas) e uma vez por agrupador visível
+em background (só métricas). `AM.state.performanceCache` (sessão, nunca
+persistido) garante que reabrir uma família, ou repintar uma linha depois de
+editar o estoque, não refaz chamada nenhuma.

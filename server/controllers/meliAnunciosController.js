@@ -311,6 +311,7 @@ async function detalheFamilia(req, res) {
 
 // ----------------------------------------------------------------------------
 // GET /anuncios-meli/performance?clienteSlug=&itemIds=A,B,C&clienteContaId=
+//                                &incluirMetricas=&incluirMargem=
 //
 // Enriquecimento AO VIVO desta tela: métricas dos últimos 7 dias
 // (meliMetricas7dService — views/vendas/conversão) e margem por MLB
@@ -320,6 +321,13 @@ async function detalheFamilia(req, res) {
 // de `itemIds` vem do cliente — este endpoint nunca decide sozinho o que
 // buscar, e é isso que torna "zero chamada para item oculto" auditável.
 //
+// `incluirMetricas`/`incluirMargem` (default "1", os dois): o frontend liga
+// cada bloco só quando falta — item que já tem métricas em cache não pede
+// métricas de novo ao expandir a família (só a margem, que fica reservada
+// para quando o agrupador é realmente aberto — nunca gasta o Motor de
+// Margem para preencher a soma automática de um agrupador ainda fechado).
+// "0"/"false" desliga o bloco: o serviço de baixo nem é chamado.
+//
 // Métricas e margem são blocos INDEPENDENTES: falha de um nunca derruba o
 // outro (Promise.allSettled). Base de Custos não vinculada (ou qualquer
 // outro motivo de contexto do Motor de Margem não estar pronto) vira
@@ -327,6 +335,10 @@ async function detalheFamilia(req, res) {
 // já usa — nunca um erro genérico, nunca um 500.
 // ----------------------------------------------------------------------------
 const PERFORMANCE_MAX_ITENS = 24; // teto de abuso da rota — independente da paginação da tela, não é a mesma coisa
+
+function flagLigada(valor) {
+  return valor === undefined || valor === null || (valor !== "0" && valor !== "false");
+}
 
 function montarMapaMargem(itens) {
   const mapa = {};
@@ -365,7 +377,9 @@ async function performance(req, res) {
         `[anuncios-meli] performance: itemIds cortado de ${brutos.length} para ${itemIds.length} (teto PERFORMANCE_MAX_ITENS).`
       );
     }
-    if (!itemIds.length) {
+    const incluirMetricas = flagLigada(req.query && req.query.incluirMetricas);
+    const incluirMargem = flagLigada(req.query && req.query.incluirMargem);
+    if (!itemIds.length || (!incluirMetricas && !incluirMargem)) {
       return res.json({ ok: true, metricas7d: {}, margem: {}, margemIndisponivel: null });
     }
 
@@ -381,16 +395,23 @@ async function performance(req, res) {
     });
 
     const [metricasResultado, margemResultado] = await Promise.allSettled([
-      metricas7dService.montarMetricas7d({ clienteId: cliente.id, mlUserId: contexto.mlUserId, itemIds }),
-      motorMargemService.montarItens({
-        clienteSlug: cliente.slug,
-        clienteContaId: contexto.contaId,
-        itemIds,
-      }),
+      incluirMetricas
+        ? metricas7dService.montarMetricas7d({ clienteId: cliente.id, mlUserId: contexto.mlUserId, itemIds })
+        : Promise.resolve(null),
+      incluirMargem
+        ? motorMargemService.montarItens({
+            clienteSlug: cliente.slug,
+            clienteContaId: contexto.contaId,
+            itemIds,
+          })
+        : Promise.resolve(null),
     ]);
 
     let metricas7d = {};
-    if (metricasResultado.status === "fulfilled") {
+    if (!incluirMetricas) {
+      // desligado por pedido do frontend (item já tem métricas em cache) —
+      // meliMetricas7dService nem chega a ser chamado.
+    } else if (metricasResultado.status === "fulfilled") {
       metricas7d = metricasResultado.value;
     } else {
       console.error("[anuncios-meli] performance metricas7d:", metricasResultado.reason && metricasResultado.reason.message);
@@ -398,7 +419,10 @@ async function performance(req, res) {
 
     let margem = {};
     let margemIndisponivel = null;
-    if (margemResultado.status === "fulfilled") {
+    if (!incluirMargem) {
+      // desligado por pedido do frontend (soma automática do agrupador ainda
+      // fechado — margem só é buscada quando o operador realmente expande).
+    } else if (margemResultado.status === "fulfilled") {
       margem = montarMapaMargem(margemResultado.value.itens);
     } else {
       const err = margemResultado.reason;

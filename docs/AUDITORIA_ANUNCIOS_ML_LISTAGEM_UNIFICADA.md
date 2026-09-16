@@ -5,8 +5,10 @@ Auditoria de conformidade entre a implementação atual da página
 Mercado Livre, seguida da especificação da mudança.
 
 Fonte exclusiva das afirmações sobre o modelo do ML: os `.md` de documentação
-oficial deste repositório, em `documentacao_api_meli/`. Nenhuma inferência —
-cada regra abaixo cita o arquivo e o trecho.
+oficial deste repositório, em `documentacao_api_meli/` — snapshot datado da
+documentação pública do Mercado Livre, versionado junto para que as citações
+abaixo sejam verificáveis (ver `documentacao_api_meli/README.md`). Nenhuma
+inferência — cada regra abaixo cita o arquivo e o trecho.
 
 ---
 
@@ -266,9 +268,36 @@ mais uma aba que monopolize o parâmetro `filtro`.
 | `GET /anuncios-meli/familias/:familyId` | Mesma rota, mesmo formato, mesma autorização. Só o `SELECT` ganhou `moeda`, `vendidos` e `score_venforce`: a expansão deixou de ser uma tabela separada e virou a continuação da lista, então precisa preencher as MESMAS colunas do cabeçalho — sem esses três campos, três colunas do filho ficariam vazias embaixo de rótulos preenchidos. |
 | `GET /anuncios-meli` | **Inalterado** — é o contrato plano por item que `Portal/central-margem-api.js` consome como fallback do Motor de Margem. Mexer nele quebraria a Central de Margem. O filtro `sem_agrupamento` continua existindo ali como recorte de diagnóstico; deixa de ser identidade de aba. |
 
-A rota `/familias` fica com o nome vencido (ela agora lista anúncios, não
-famílias). Dívida de nomenclatura registrada e **não** paga aqui: renomear a
-rota seria criar um endpoint e remover outro, fora das restrições da missão.
+### 4.5.1 Dívida de nomenclatura de `GET /anuncios-meli/familias`
+
+Registrada, **não** paga. Também documentada no próprio call site
+(`server/routes/meliAnunciosRoutes.js`) e no controller.
+
+**O que a rota era.** Nasceu listando **famílias**, para servir a aba
+"Anúncios em Família". Devolvia `{ familias: [], sem_user_product: {} }` — o
+segundo bloco existia só para o badge da outra aba.
+
+**O que a rota é.** Depois da unificação devolve **grupos de anúncios**, em
+`{ ok, cliente, anuncios: [], paginacao }`. Cada grupo é uma de duas formas, e
+`tipo` é o único campo que as distingue:
+
+| `tipo` | O que o grupo representa | Expansível |
+| --- | --- | --- |
+| `"familia"` | Família com `user_products` → `items` abaixo. Agregados do grupo inteiro (§4.2). | Sim, por `GET /familias/:familyId` |
+| `"item"` | Anúncio individual, sem agrupamento. Traz o registro inteiro de `meli_anuncios`. | Não — no modelo do ML a relação ali é 1:1 (§1.3) |
+
+**Por que não foi renomeada.** Não é um alias: renomear exige **migração dos
+consumidores** — criar o caminho novo, migrar `Portal/anuncios-meli.js` (hoje o
+único consumidor da listagem e da expansão) e só então remover o antigo. Isso
+é criar um endpoint e remover outro, o que a missão proibiu explicitamente; e a
+alteração ficou limitada a tratamento de dados e renderização.
+
+**Não confundir com `GET /anuncios-meli`** (a raiz): aquela é a listagem
+**plana** por item, segue sendo contrato do Motor de Margem
+(`Portal/central-margem-api.js`) e **não** mudou. A dívida é só do caminho
+`/familias`.
+
+O comportamento da rota não foi alterado por este registro.
 
 ### 4.6 Fora de escopo, por restrição explícita da missão
 

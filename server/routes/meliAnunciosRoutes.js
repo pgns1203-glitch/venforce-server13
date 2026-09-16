@@ -55,13 +55,34 @@ router.post("/sync", ctrl.sincronizar);
 router.get("/resumo", ctrl.resumo);
 router.get("/", ctrl.listar);
 
-// Listagem UNIFICADA da tela de anúncios (uma lista só, com agrupador quando
-// existe family_id) e a expansão de um agrupador em User Products -> MLBs.
-// Precisam vir ANTES de "/:itemId" (linha mais abaixo) — senão a rota
-// dinâmica captura "/familias" como se fosse um itemId.
+// DÍVIDA DE NOMENCLATURA — o caminho "/familias" está vencido.
 //
-// O caminho "/familias" ficou vencido — a rota lista anúncios, não famílias.
-// Mantido de propósito: renomear seria criar um endpoint e remover outro.
+// Histórico: a rota nasceu listando FAMÍLIAS. A tela tinha duas abas
+// ("Anúncios em Família" e "Anúncios sem agrupamento") e esta rota servia a
+// primeira, devolvendo `{ familias: [], sem_user_product: {} }`.
+//
+// Hoje: depois da unificação da listagem, ela devolve GRUPOS DE ANÚNCIOS —
+// uma lista só, em `{ anuncios: [], paginacao }`. Cada grupo é uma de duas
+// formas, e `tipo` é o único campo que as distingue:
+//
+//   tipo: "familia"  -> família com user_products/items abaixo (expansível
+//                       por GET /familias/:familyId);
+//   tipo: "item"     -> anúncio individual, sem agrupamento (o registro
+//                       inteiro de meli_anuncios; nada para expandir, porque
+//                       no modelo do ML a relação ali é 1:1).
+//
+// Renomear exige MIGRAÇÃO DOS CONSUMIDORES, não um alias: criar o caminho
+// novo, migrar Portal/anuncios-meli.js (hoje o único consumidor da listagem
+// e da expansão) e só então remover o antigo — ou seja, criar um endpoint e
+// remover outro. Fora do escopo desta entrega, que se limitou a tratamento
+// de dados e renderização. Não confundir com GET /anuncios-meli (raiz), que
+// é a listagem PLANA e segue sendo contrato do Motor de Margem
+// (Portal/central-margem-api.js) — aquela não mudou.
+//
+// Ver docs/AUDITORIA_ANUNCIOS_ML_LISTAGEM_UNIFICADA.md (§4.5, contrato).
+//
+// Ambas precisam vir ANTES de "/:itemId" (linha mais abaixo) — senão a rota
+// dinâmica captura "/familias" como se fosse um itemId.
 router.get("/familias", ctrl.listarAgrupado);
 router.get("/familias/:familyId", ctrl.detalheFamilia);
 

@@ -200,10 +200,17 @@ async function listar(req, res) {
 // Somente leitura, não chama a API do Mercado Livre (dados já persistidos em
 // meli_anuncios / meli_user_products).
 //
-// O caminho da rota (/familias) ficou vencido: ela lista anúncios, não
-// famílias. Dívida de nomenclatura registrada e NÃO paga — renomear seria
-// criar um endpoint e remover outro. O bloco `sem_user_product` saiu: existia
+// Responde `{ ok, cliente, anuncios, paginacao }`. Cada linha de `anuncios` é
+// um GRUPO, e `tipo` é o único campo que distingue as duas formas:
+// "familia" (tem user_products/items abaixo, expansível por
+// /familias/:familyId) e "item" (anúncio individual sem agrupamento, com o
+// registro inteiro de meli_anuncios). O bloco `sem_user_product` saiu: existia
 // só para rotular a aba "Sem agrupamento", que deixou de existir.
+//
+// O caminho da rota (/familias) ficou vencido: ela lista anúncios, não
+// famílias. Dívida registrada e NÃO paga — renomear exige migrar os
+// consumidores, não um alias. Histórico completo e caminho de migração no
+// call site (server/routes/meliAnunciosRoutes.js) e na auditoria §4.5.1.
 // ----------------------------------------------------------------------------
 async function listarAgrupado(req, res) {
   try {

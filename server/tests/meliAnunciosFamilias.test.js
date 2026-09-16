@@ -1,13 +1,27 @@
 // server/tests/meliAnunciosFamilias.test.js
 //
-// Nova visão somente leitura: Família -> User Product -> Item MLB.
+// LISTAGEM UNIFICADA de anúncios ML — uma lista só, com agrupador quando o
+// Mercado Livre agrupou o produto.
 //
-//   GET /anuncios-meli/familias
-//   GET /anuncios-meli/familias/:familyId
+//   GET /anuncios-meli/familias            -> a lista (linhas familia|item)
+//   GET /anuncios-meli/familias/:familyId  -> a expansão de um agrupador
 //
-// Regra canônica desta modelagem (decisão explícita, não presumida):
+// Ver docs/AUDITORIA_ANUNCIOS_ML_LISTAGEM_UNIFICADA.md. O que estes testes
+// protegem, além do que já protegiam antes:
+//
+//   · anúncio agrupado e anúncio sem agrupamento vivem na MESMA lista, na
+//     mesma paginação — nunca em dois blocos;
+//   · estoque do agrupador soma por USER PRODUCT distinto, não por MLB. Um UP
+//     com 3 MLBs conta o estoque UMA vez. É a regra que a doc do ML fixa
+//     (available_quantity é sincronizado entre os itens de um mesmo UP);
+//   · vendidos, ao contrário, soma por ITEM — sold_quantity não está na lista
+//     de campos sincronizados por UP;
+//   · busca/status/filtro casam por item e trazem o GRUPO inteiro, com os
+//     agregados do grupo inteiro (filtrar não muda o estoque do produto).
+//
+// Regra canônica da modelagem (decisão explícita, não presumida):
 //   meli_anuncios        = autoridade de account-scope (cliente_conta_id)
-//   meli_user_products    = autoridade da hierarquia (user_product_id -> family_id)
+//   meli_user_products   = autoridade da hierarquia (user_product_id -> family_id)
 //
 // meli_user_products.cliente_conta_id NUNCA é usado como fronteira de
 // segurança — toda leitura parte de meli_anuncios já filtrado pela conta, e
@@ -44,11 +58,20 @@ function anuncioFixture(over = {}) {
     titulo: "Produto 1",
     status: "active",
     preco: 10,
+    moeda: "BRL",
     estoque: 5,
+    vendidos: 0,
     sku: "SKU1",
     thumbnail: "http://thumb/1",
     permalink: "http://ml/1",
-    vendidos: 0,
+    pictures_count: 5,
+    is_full: false,
+    revisado: false,
+    score_venforce: null,
+    score_motivo: null,
+    catalog_listing: false,
+    family_name: null,
+    updated_at: null,
     ...over,
   };
 }
@@ -67,16 +90,46 @@ function upFixture(over = {}) {
 
 // ── MockDb ──────────────────────────────────────────────────────────────────
 //
-// Os 4 novos acessos de leitura usam CTEs (WITH escopo AS (...)) que seriam
-// frágeis de casar por texto exato. Cada query real carrega uma tag única
-// (comentário SQL) só para o mock reconhecer QUAL consulta é — a lógica de
-// junção/filtragem é recalculada aqui em memória, espelhando exatamente o que
-// o Postgres faria com os mesmos dados.
+// As leituras usam CTEs que seriam frágeis de casar por texto exato. Cada
+// query real carrega uma tag única (comentário SQL) só para o mock reconhecer
+// QUAL consulta é — a lógica de junção/agregação é recalculada aqui em
+// memória, espelhando exatamente o que o Postgres faria com os mesmos dados.
 
 function contaFiltro(a, clienteContaId, includeLegacy) {
   if (clienteContaId == null) return true;
   if (includeLegacy) return a.cliente_conta_id === clienteContaId || a.cliente_conta_id == null;
   return a.cliente_conta_id === clienteContaId;
+}
+
+// Espelha os predicados de `selecionados` (busca + status + card de KPI). Em
+// vez de adivinhar o filtro pelo texto da query inteira — onde
+// `b.status = 'paused'` aparece também nos COUNT(*) FILTER dos agregados —, o
+// mock extrai só o WHERE daquela CTE e testa contra ele. Sem isso, um
+// agregado passaria por filtro.
+function casaSelecionado(whereMatch, linha, qTerm, statusParam) {
+  const a = linha.a;
+  const contem = (v) => Boolean(v && String(v).toLowerCase().includes(qTerm));
+
+  if (whereMatch.includes("b.titulo ILIKE")) {
+    const casou = contem(a.titulo) || contem(a.item_id) || contem(a.sku) ||
+      contem(linha.up_family_name) || contem(a.user_product_id);
+    if (!casou) return false;
+  }
+  if (whereMatch.includes("b.status = $") && a.status !== statusParam) return false;
+
+  if (whereMatch.includes("COALESCE(b.pictures_count, 0) < 3") && (a.pictures_count || 0) >= 3) return false;
+  if (whereMatch.includes("COALESCE(b.score_venforce, 0) < 60") && (a.score_venforce || 0) >= 60) return false;
+  if (whereMatch.includes("(b.sku IS NULL OR b.sku = '')") && a.sku) return false;
+  if (whereMatch.includes("b.score_motivo = 'Ficha técnica incompleta'") &&
+      a.score_motivo !== "Ficha técnica incompleta") return false;
+  if (whereMatch.includes("b.status = 'paused'") && a.status !== "paused") return false;
+  if (whereMatch.includes("COALESCE(b.score_venforce, 0) >= 80") && (a.score_venforce || 0) < 80) return false;
+  if (whereMatch.includes("COALESCE(b.score_venforce, 0) >= 60 AND") &&
+      !((a.score_venforce || 0) >= 60 && (a.score_venforce || 0) < 80)) return false;
+  if (whereMatch.includes("b.is_full = true") && a.is_full !== true) return false;
+  if (whereMatch.includes("b.family_id IS NULL") && linha.family_id != null) return false;
+
+  return true;
 }
 
 class MockDb {
@@ -95,6 +148,23 @@ class MockDb {
     return this.userProducts.find(
       (u) => u.cliente_id === clienteId && u.user_product_id === userProductId
     );
+  }
+
+  // A CTE `base` da consulta unificada: meli_anuncios já filtrado pela conta,
+  // com LEFT JOIN em meli_user_products e a chave de grupo derivada.
+  baseCte(clienteId, clienteContaId, includeLegacy) {
+    return this.anuncios
+      .filter((a) => a.cliente_id === clienteId && contaFiltro(a, clienteContaId, includeLegacy))
+      .map((a) => {
+        const up = a.user_product_id ? this.upFor(clienteId, a.user_product_id) : null;
+        const familyId = up && up.family_id != null ? up.family_id : null;
+        return {
+          a,
+          family_id: familyId,
+          up_family_name: up ? up.family_name : null,
+          grupo_key: familyId != null ? `fam:${familyId}` : `item:${a.item_id}`,
+        };
+      });
   }
 
   async query(sql, params = []) {
@@ -132,103 +202,147 @@ class MockDb {
       return { rows: [] };
     }
 
-    // --- LISTAR_FAMILIAS_PAGINA ------------------------------------------
-    if (q.includes("-- LISTAR_FAMILIAS_PAGINA")) {
+    // --- LISTAR_AGRUPADO_PAGINA -------------------------------------------
+    if (q.includes("-- LISTAR_AGRUPADO_PAGINA")) {
       let i = 0;
       const clienteId = params[i++];
       const temConta = q.includes("a.cliente_conta_id = $");
       const includeLegacy = temConta ? q.includes("OR a.cliente_conta_id IS NULL)") : true;
       const clienteContaId = temConta ? params[i++] : null;
-      const temQ = q.includes("ILIKE $");
+      const temQ = q.includes("b.titulo ILIKE $");
       const qTerm = temQ ? String(params[i++]).replace(/^%|%$/g, "").toLowerCase() : null;
+      const temStatus = q.includes("b.status = $");
+      const statusParam = temStatus ? params[i++] : null;
       const lim = params[i++];
       const offset = params[i++];
 
-      const escopo = this.anuncios.filter(
-        (a) => a.cliente_id === clienteId && a.user_product_id != null && contaFiltro(a, clienteContaId, includeLegacy)
+      const whereMatch = (q.match(/FROM base b WHERE (.*?) \), grupos AS/) || [])[1] || "TRUE";
+      this.matchWhere = whereMatch; // exposto para os testes de predicado
+
+      const base = this.baseCte(clienteId, clienteContaId, includeLegacy);
+
+      // estoque_por_up -> estoque_grupo: colapsa por UP distinto ANTES de
+      // somar. É o coração da regra de estoque.
+      const estoquePorGrupo = new Map();
+      for (const linha of base) {
+        const upKey = linha.a.user_product_id || `item:${linha.a.item_id}`;
+        const porUp = estoquePorGrupo.get(linha.grupo_key) || new Map();
+        const atual = porUp.has(upKey) ? porUp.get(upKey) : null;
+        const valor = linha.a.estoque == null ? null : Number(linha.a.estoque);
+        porUp.set(upKey, atual == null ? valor : (valor == null ? atual : Math.max(atual, valor)));
+        estoquePorGrupo.set(linha.grupo_key, porUp);
+      }
+
+      const selecionados = new Set(
+        base.filter((l) => casaSelecionado(whereMatch, l, qTerm, statusParam)).map((l) => l.grupo_key)
       );
 
-      let joined = escopo
-        .map((a) => ({ a, up: this.upFor(clienteId, a.user_product_id) }))
-        .filter(({ up }) => up && up.family_id != null);
-
-      if (qTerm) {
-        const familiasComMatch = new Set(
-          joined
-            .filter(({ a, up }) =>
-              (up.family_name && up.family_name.toLowerCase().includes(qTerm)) ||
-              (a.titulo && a.titulo.toLowerCase().includes(qTerm)) ||
-              (a.sku && a.sku.toLowerCase().includes(qTerm)) ||
-              (up.user_product_id && up.user_product_id.toLowerCase().includes(qTerm)) ||
-              (a.item_id && a.item_id.toLowerCase().includes(qTerm))
-            )
-            .map(({ up }) => up.family_id)
-        );
-        joined = joined.filter(({ up }) => familiasComMatch.has(up.family_id));
-      }
-
-      const porFamilia = new Map();
-      for (const { up } of joined) {
-        if (!porFamilia.has(up.family_id)) {
-          porFamilia.set(up.family_id, { family_id: up.family_id, family_name: up.family_name, ups: new Set(), totalItens: 0 });
+      const num = (v) => (v == null ? null : Number(v));
+      const grupos = new Map();
+      for (const linha of base) {
+        const g = grupos.get(linha.grupo_key) || {
+          grupo_key: linha.grupo_key,
+          family_id: linha.family_id,
+          family_name: null,
+          item_id: null,
+          total_itens: 0,
+          ups: new Set(),
+          vendidos_total: 0,
+          preco_min: null, preco_max: null, moeda: null,
+          score_min: null,
+          total_ativos: 0, total_pausados: 0, total_encerrados: 0,
+          ord_revisado: null, ord_score: null, ord_updated: null,
+        };
+        const a = linha.a;
+        g.total_itens++;
+        if (a.user_product_id) g.ups.add(a.user_product_id);
+        if (linha.up_family_name != null) {
+          g.family_name = g.family_name == null || linha.up_family_name > g.family_name
+            ? linha.up_family_name : g.family_name;
         }
-        const g = porFamilia.get(up.family_id);
-        g.ups.add(up.user_product_id);
-        g.totalItens++;
-        if (up.family_name != null) g.family_name = up.family_name;
+        g.item_id = g.item_id == null || String(a.item_id) < g.item_id ? String(a.item_id) : g.item_id;
+        g.vendidos_total += Number(a.vendidos || 0);
+        if (num(a.preco) != null) {
+          g.preco_min = g.preco_min == null ? num(a.preco) : Math.min(g.preco_min, num(a.preco));
+          g.preco_max = g.preco_max == null ? num(a.preco) : Math.max(g.preco_max, num(a.preco));
+        }
+        if (a.moeda != null) g.moeda = g.moeda == null || a.moeda < g.moeda ? a.moeda : g.moeda;
+        if (num(a.score_venforce) != null) {
+          g.score_min = g.score_min == null ? num(a.score_venforce) : Math.min(g.score_min, num(a.score_venforce));
+        }
+        if (a.status === "active") g.total_ativos++;
+        if (a.status === "paused") g.total_pausados++;
+        if (a.status === "closed") g.total_encerrados++;
+        const rev = a.revisado ? 1 : 0;
+        g.ord_revisado = g.ord_revisado == null ? rev : Math.min(g.ord_revisado, rev);
+        const sc = a.score_venforce == null ? -1 : Number(a.score_venforce);
+        g.ord_score = g.ord_score == null ? sc : Math.min(g.ord_score, sc);
+        const upd = a.updated_at ? new Date(a.updated_at).getTime() : null;
+        if (upd != null) g.ord_updated = g.ord_updated == null ? upd : Math.max(g.ord_updated, upd);
+        grupos.set(linha.grupo_key, g);
       }
 
-      let familias = Array.from(porFamilia.values()).map((g) => ({
-        family_id: g.family_id,
-        family_name: g.family_name,
-        total_user_products: g.ups.size,
-        total_itens: g.totalItens,
-      }));
+      let lista = Array.from(grupos.values()).filter((g) => selecionados.has(g.grupo_key));
 
-      familias.sort((x, y) => {
-        if (x.family_name == null && y.family_name != null) return 1;
-        if (y.family_name == null && x.family_name != null) return -1;
-        const xn = x.family_name || "";
-        const yn = y.family_name || "";
-        if (xn === yn) return String(x.family_id).localeCompare(String(y.family_id));
-        return xn.localeCompare(yn);
+      lista.sort((x, y) => {
+        if (x.ord_revisado !== y.ord_revisado) return x.ord_revisado - y.ord_revisado;
+        if (x.ord_score !== y.ord_score) return x.ord_score - y.ord_score;
+        // DESC NULLS LAST
+        const xu = x.ord_updated, yu = y.ord_updated;
+        if (xu !== yu) {
+          if (xu == null) return 1;
+          if (yu == null) return -1;
+          return yu - xu;
+        }
+        return String(x.grupo_key).localeCompare(String(y.grupo_key));
       });
 
-      const totalFamilias = familias.length;
-      const pagina = familias.slice(offset, offset + lim).map((f) => ({ ...f, total_familias: totalFamilias }));
+      const totalGrupos = lista.length;
+      const pagina = lista.slice(offset, offset + lim).map((g) => {
+        const porUp = estoquePorGrupo.get(g.grupo_key) || new Map();
+        let estoqueTotal = null;
+        for (const v of porUp.values()) {
+          if (v == null) continue;
+          estoqueTotal = (estoqueTotal == null ? 0 : estoqueTotal) + v;
+        }
+        return {
+          grupo_key: g.grupo_key,
+          family_id: g.family_id,
+          family_name: g.family_name,
+          item_id: g.item_id,
+          total_itens: g.total_itens,
+          total_user_products: g.ups.size,
+          vendidos_total: g.vendidos_total,
+          preco_min: g.preco_min,
+          preco_max: g.preco_max,
+          moeda: g.moeda,
+          score_min: g.score_min,
+          total_ativos: g.total_ativos,
+          total_pausados: g.total_pausados,
+          total_encerrados: g.total_encerrados,
+          estoque_total: estoqueTotal,
+          total_grupos: totalGrupos,
+        };
+      });
       return { rows: pagina };
     }
 
-    // --- LISTAR_FAMILIAS_UPS_DA_PAGINA -----------------------------------
-    if (q.includes("-- LISTAR_FAMILIAS_UPS_DA_PAGINA")) {
+    // --- LISTAR_AGRUPADO_ITENS_DA_PAGINA -----------------------------------
+    if (q.includes("-- LISTAR_AGRUPADO_ITENS_DA_PAGINA")) {
       let i = 0;
       const clienteId = params[i++];
       const temConta = q.includes("a.cliente_conta_id = $");
       const includeLegacy = temConta ? q.includes("OR a.cliente_conta_id IS NULL)") : true;
       const clienteContaId = temConta ? params[i++] : null;
-      const familyIds = new Set(params[i++]);
+      const itemIds = new Set(params[i++]);
 
-      const escopo = this.anuncios.filter(
-        (a) => a.cliente_id === clienteId && a.user_product_id != null && contaFiltro(a, clienteContaId, includeLegacy)
-      );
+      this.itensPedidos = Array.from(itemIds); // para o teste de custo por página
 
-      const porChave = new Map();
-      for (const a of escopo) {
-        const up = this.upFor(clienteId, a.user_product_id);
-        if (!up || !familyIds.has(up.family_id)) continue;
-        const chave = `${up.family_id}|${up.user_product_id}`;
-        if (!porChave.has(chave)) {
-          porChave.set(chave, {
-            family_id: up.family_id,
-            user_product_id: up.user_product_id,
-            site_id: up.site_id,
-            domain_id: up.domain_id,
-            total_itens: 0,
-          });
-        }
-        porChave.get(chave).total_itens++;
-      }
-      return { rows: Array.from(porChave.values()) };
+      const rows = this.anuncios
+        .filter((a) => a.cliente_id === clienteId && itemIds.has(a.item_id) &&
+                       contaFiltro(a, clienteContaId, includeLegacy))
+        .map((a) => ({ ...a }));
+      return { rows };
     }
 
     // --- LISTAR_FAMILIAS_CAPA_DA_PAGINA -----------------------------------
@@ -246,7 +360,7 @@ class MockDb {
       const temQ = q.includes("ILIKE $");
       const qTerm = temQ ? String(params[i++]).replace(/^%|%$/g, "").toLowerCase() : null;
 
-      this.capaFamilyIds = familyIds;          // para o teste U
+      this.capaFamilyIds = familyIds;          // para o teste de custo por página
       const alvo = new Set(familyIds);
 
       const casa = (a, up) => {
@@ -292,19 +406,6 @@ class MockDb {
       };
     }
 
-    // --- SEM_USER_PRODUCT_TOTAL -------------------------------------------
-    if (q.includes("-- SEM_USER_PRODUCT_TOTAL")) {
-      let i = 0;
-      const clienteId = params[i++];
-      const temConta = q.includes("a.cliente_conta_id = $");
-      const includeLegacy = temConta ? q.includes("OR a.cliente_conta_id IS NULL)") : true;
-      const clienteContaId = temConta ? params[i++] : null;
-      const total = this.anuncios.filter(
-        (a) => a.cliente_id === clienteId && a.user_product_id == null && contaFiltro(a, clienteContaId, includeLegacy)
-      ).length;
-      return { rows: [{ total }] };
-    }
-
     // --- FAMILIA_DETALHE_ITENS --------------------------------------------
     if (q.includes("-- FAMILIA_DETALHE_ITENS")) {
       let i = 0;
@@ -328,7 +429,10 @@ class MockDb {
           titulo: a.titulo,
           status: a.status,
           preco: a.preco,
+          moeda: a.moeda,
           estoque: a.estoque,
+          vendidos: a.vendidos,
+          score_venforce: a.score_venforce,
           sku: a.sku,
           thumbnail: a.thumbnail,
           permalink: a.permalink,
@@ -375,8 +479,15 @@ function fakeRes() {
 const contaA = { id: 10, cliente_id: 1, marketplace: "meli", external_account_id: "111", nome: "Conta A", ativo: true, is_primary: true };
 const contaB = { id: 20, cliente_id: 1, marketplace: "meli", external_account_id: "222", nome: "Conta B", ativo: true, is_primary: false };
 
+const porChave = (r) => {
+  const m = new Map();
+  for (const linha of r.anuncios) m.set(linha.key, linha);
+  return m;
+};
+
 async function run() {
-  // A. Hierarquia normal: Família -> múltiplos UPs -> múltiplos MLBs.
+  // A. Hierarquia normal: Família -> múltiplos UPs -> múltiplos MLBs, tudo
+  //    colapsado em UMA linha de agrupador.
   await withMockDb({
     anuncios: [
       anuncioFixture({ item_id: "MLB1a", user_product_id: "UP1" }),
@@ -389,80 +500,318 @@ async function run() {
       upFixture({ user_product_id: "UP2" }),
     ],
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
-    assert.strictEqual(r.familias.length, 1);
-    const fam = r.familias[0];
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.strictEqual(r.anuncios.length, 1, "4 MLBs de 1 família = 1 linha");
+    const fam = r.anuncios[0];
+    assert.strictEqual(fam.tipo, "familia");
+    assert.strictEqual(fam.key, "fam:FAM1");
     assert.strictEqual(fam.family_id, "FAM1");
     assert.strictEqual(fam.total_user_products, 2);
     assert.strictEqual(fam.total_itens, 4);
-    assert.strictEqual(fam.user_products.length, 2);
-    for (const up of fam.user_products) assert.strictEqual(up.total_itens, 2);
-    console.log("  ✓ A. hierarquia Família -> UPs -> MLBs");
+    console.log("  ✓ A. Família -> UPs -> MLBs colapsa em uma linha de agrupador");
   });
 
-  // B. Múltiplos MLBs no mesmo UP: não duplica o UP no payload.
+  // ── A LISTA É UMA SÓ ───────────────────────────────────────────────────
+  //
+  // O bug de produto que motivou a missão: a tela tinha duas listagens, e um
+  // anúncio mudava de bloco quando o ML migrava o item para o modelo de User
+  // Products, sem nada ter mudado no anúncio.
+
+  // B. Agrupados e não agrupados na MESMA lista e na MESMA paginação.
   await withMockDb({
     anuncios: [
-      anuncioFixture({ item_id: "MLB1a", user_product_id: "UP1" }),
-      anuncioFixture({ item_id: "MLB1b", user_product_id: "UP1" }),
-      anuncioFixture({ item_id: "MLB1c", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-FAM-1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-FAM-2", user_product_id: "UP2" }),
+      // sem User Product: legado nunca migrado (relação 1:1, diz a doc)
+      anuncioFixture({ item_id: "MLB-SOLO", user_product_id: null }),
+      // com UP, mas o UP não tem família
+      anuncioFixture({ item_id: "MLB-SEM-FAM", user_product_id: "UP-SF" }),
+      // com UP referenciado que não existe em meli_user_products (órfão)
+      anuncioFixture({ item_id: "MLB-ORFAO", user_product_id: "UP-FANTASMA" }),
     ],
-    userProducts: [upFixture({ user_product_id: "UP1" })],
+    userProducts: [
+      upFixture({ user_product_id: "UP1" }),
+      upFixture({ user_product_id: "UP2" }),
+      upFixture({ user_product_id: "UP-SF", family_id: null, family_name: null }),
+    ],
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
-    assert.strictEqual(r.familias[0].user_products.length, 1, "UP1 não pode aparecer 3x");
-    assert.strictEqual(r.familias[0].user_products[0].total_itens, 3);
-    console.log("  ✓ B. UP com 3 MLBs não duplica no payload");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.strictEqual(r.anuncios.length, 4, "1 agrupador + 3 individuais = 4 linhas");
+    assert.strictEqual(r.paginacao.total, 4, "o total é de LINHAS, uma contagem só");
+
+    const chaves = porChave(r);
+    assert.strictEqual(chaves.get("fam:FAM1").tipo, "familia");
+    assert.strictEqual(chaves.get("fam:FAM1").total_itens, 2);
+    for (const id of ["MLB-SOLO", "MLB-SEM-FAM", "MLB-ORFAO"]) {
+      const linha = chaves.get("item:" + id);
+      assert.ok(linha, id + " precisa estar na MESMA lista");
+      assert.strictEqual(linha.tipo, "item");
+      assert.strictEqual(linha.family_id, null);
+      assert.strictEqual(linha.item_id, id);
+    }
+    console.log("  ✓ B. os 3 caminhos de 'sem agrupamento' entram na mesma lista dos agrupados");
   });
 
-  // C. Paginação conta famílias, nunca itens.
+  // C. A linha individual carrega os campos completos do anúncio — a tela não
+  //    precisa de um renderizador mais pobre para ela.
+  await withMockDb({
+    anuncios: [anuncioFixture({
+      item_id: "MLB-SOLO", user_product_id: null, titulo: "Solo", sku: "SKU-SOLO",
+      preco: 42.5, estoque: 7, vendidos: 3, score_venforce: 71, is_full: true,
+      thumbnail: "http://thumb/solo", permalink: "http://ml/solo", pictures_count: 2,
+    })],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    const linha = r.anuncios[0];
+    assert.strictEqual(linha.tipo, "item");
+    assert.strictEqual(linha.titulo, "Solo");
+    assert.strictEqual(linha.sku, "SKU-SOLO");
+    assert.strictEqual(linha.score_venforce, 71);
+    assert.strictEqual(linha.is_full, true);
+    assert.strictEqual(linha.pictures_count, 2);
+    assert.strictEqual(linha.permalink, "http://ml/solo");
+    assert.strictEqual(linha.estoque, 7, "o anúncio individual mantém o próprio estoque");
+    assert.strictEqual(linha.estoque_total, 7, "e o total do grupo de um é o próprio estoque");
+    console.log("  ✓ C. a linha individual traz o registro completo do anúncio");
+  });
+
+  // ── ESTOQUE: SOMA POR USER PRODUCT, NUNCA POR MLB ──────────────────────
+  //
+  // user-products.md lista available_quantity entre os campos que o ML
+  // SINCRONIZA em todos os itens do mesmo user_product_id, e
+  // estoque-distribuido.md trata o estoque como propriedade do UP. Somar item
+  // a item duplicaria.
+
+  // D. O exemplo do pedido: 3 MLBUs × 100 = 300.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-AZUL-P", user_product_id: "MLBU-P", estoque: 100 }),
+      anuncioFixture({ item_id: "MLB-AZUL-M", user_product_id: "MLBU-M", estoque: 100 }),
+      anuncioFixture({ item_id: "MLB-AZUL-G", user_product_id: "MLBU-G", estoque: 100 }),
+    ],
+    userProducts: [
+      upFixture({ user_product_id: "MLBU-P", family_name: "Kit 2 Camisetas De Pesca Tucunaré" }),
+      upFixture({ user_product_id: "MLBU-M", family_name: "Kit 2 Camisetas De Pesca Tucunaré" }),
+      upFixture({ user_product_id: "MLBU-G", family_name: "Kit 2 Camisetas De Pesca Tucunaré" }),
+    ],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.strictEqual(r.anuncios.length, 1);
+    assert.strictEqual(r.anuncios[0].total_user_products, 3);
+    assert.strictEqual(r.anuncios[0].estoque_total, 300, "3 MLBUs × 100 = 300");
+    console.log("  ✓ D. estoque do agrupador = soma dos MLBUs (3 × 100 = 300)");
+  });
+
+  // E. O caso que um SUM ingênuo erraria: UP com 3 MLBs. O estoque do UP vale
+  //    UMA vez (o ML replica available_quantity entre os itens dele).
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a1", user_product_id: "UP1", estoque: 100 }),
+      anuncioFixture({ item_id: "MLB-a2", user_product_id: "UP1", estoque: 100 }),
+      anuncioFixture({ item_id: "MLB-a3", user_product_id: "UP1", estoque: 100 }),
+      anuncioFixture({ item_id: "MLB-b1", user_product_id: "UP2", estoque: 40 }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.strictEqual(r.anuncios[0].total_itens, 4);
+    assert.strictEqual(r.anuncios[0].total_user_products, 2);
+    assert.strictEqual(
+      r.anuncios[0].estoque_total, 140,
+      "UP1 (3 MLBs a 100) conta 100 UMA vez, não 300; + UP2 40 = 140"
+    );
+    console.log("  ✓ E. UP com 3 MLBs não multiplica o estoque (140, não 340)");
+  });
+
+  // F. Vendidos segue a regra OPOSTA, e de propósito: sold_quantity não está
+  //    entre os campos sincronizados por UP, então soma item a item.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a1", user_product_id: "UP1", estoque: 10, vendidos: 4 }),
+      anuncioFixture({ item_id: "MLB-a2", user_product_id: "UP1", estoque: 10, vendidos: 6 }),
+      anuncioFixture({ item_id: "MLB-b1", user_product_id: "UP2", estoque: 10, vendidos: 1 }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.strictEqual(r.anuncios[0].estoque_total, 20, "estoque colapsa por UP: 10 + 10");
+    assert.strictEqual(r.anuncios[0].vendidos_total, 11, "vendidos soma por item: 4 + 6 + 1");
+    console.log("  ✓ F. estoque soma por UP, vendidos soma por item");
+  });
+
+  // G. Estoque desconhecido em todo o grupo devolve null (a tela mostra "—"),
+  //    não 0: "não sei" não é "zero".
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", estoque: null }),
+      anuncioFixture({ item_id: "MLB-b", user_product_id: "UP2", estoque: null }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.strictEqual(r.anuncios[0].estoque_total, null, "sem estoque conhecido = null, não 0");
+    console.log("  ✓ G. estoque desconhecido em todo o grupo devolve null, não 0");
+  });
+
+  // ── AGREGADOS RESTANTES DA LINHA DE AGRUPADOR ──────────────────────────
+
+  // H. Preço: faixa (min/max), porque "preço por variação" é a iniciativa.
+  //    Status: consenso, ou "misto" — a família não tem status no ML.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", preco: 89.9, status: "active", score_venforce: 88 }),
+      anuncioFixture({ item_id: "MLB-b", user_product_id: "UP2", preco: 129.9, status: "paused", score_venforce: 42 }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })],
+  }, async () => {
+    const fam = (await meliFamiliaService.listarAgrupado({ clienteId: 1 })).anuncios[0];
+    assert.strictEqual(Number(fam.preco_min), 89.9);
+    assert.strictEqual(Number(fam.preco_max), 129.9);
+    assert.strictEqual(fam.moeda, "BRL");
+    assert.strictEqual(fam.score_min, 42, "o score do agrupador é o PIOR do grupo");
+    assert.deepStrictEqual(fam.status_contagem, { ativos: 1, pausados: 1, encerrados: 0 });
+    console.log("  ✓ H. preço em faixa, score mínimo e contagem de status por agrupador");
+  });
+
+  // ── ORDENAÇÃO ÚNICA ────────────────────────────────────────────────────
+
+  // I. Agrupador e anúncio individual disputam a MESMA ordem: a ordem
+  //    operacional (não revisado primeiro, pior score primeiro) vale para os
+  //    dois, e o grupo sobe tanto quanto o seu pior item.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-BOM", user_product_id: null, score_venforce: 95, revisado: true }),
+      anuncioFixture({ item_id: "MLB-RUIM", user_product_id: null, score_venforce: 20, revisado: false }),
+      // a família tem um item ótimo e um péssimo: ela precisa subir pelo péssimo
+      anuncioFixture({ item_id: "MLB-F-OK", user_product_id: "UP1", score_venforce: 99, revisado: false }),
+      anuncioFixture({ item_id: "MLB-F-MAL", user_product_id: "UP2", score_venforce: 10, revisado: false }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    const ordem = r.anuncios.map((l) => l.key);
+    assert.deepStrictEqual(ordem, ["fam:FAM1", "item:MLB-RUIM", "item:MLB-BOM"],
+      "a família (pior score 10) vem antes do individual de score 20, e o revisado fica por último");
+    console.log("  ✓ I. uma ordenação só: o grupo sobe pelo seu pior item");
+  });
+
+  // J. Paginação conta LINHAS (grupos), misturando os dois tipos.
   await withMockDb({
     anuncios: [
       ...Array.from({ length: 10 }, (_, i) => anuncioFixture({ item_id: `MLB-F1-${i}`, user_product_id: "UP1" })),
-      anuncioFixture({ item_id: "MLB-F2", user_product_id: "UP2" }),
-      ...Array.from({ length: 5 }, (_, i) => anuncioFixture({ item_id: `MLB-F3-${i}`, user_product_id: "UP3" })),
+      anuncioFixture({ item_id: "MLB-SOLO-1", user_product_id: null }),
+      anuncioFixture({ item_id: "MLB-SOLO-2", user_product_id: null }),
     ],
-    userProducts: [
-      upFixture({ user_product_id: "UP1", family_id: "FAM1", family_name: "AAA" }),
-      upFixture({ user_product_id: "UP2", family_id: "FAM2", family_name: "BBB" }),
-      upFixture({ user_product_id: "UP3", family_id: "FAM3", family_name: "CCC" }),
-    ],
+    userProducts: [upFixture({ user_product_id: "UP1" })],
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, page: 1, limit: 2 });
-    assert.strictEqual(r.familias.length, 2, "limit=2 deve trazer 2 famílias, não itens");
-    assert.strictEqual(r.paginacao.totalFamilias, 3);
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, page: 1, limit: 2 });
+    assert.strictEqual(r.anuncios.length, 2, "limit=2 traz 2 LINHAS, não 2 itens");
+    assert.strictEqual(r.paginacao.total, 3, "1 agrupador + 2 individuais = 3 linhas");
     assert.strictEqual(r.paginacao.totalPaginas, 2);
-    console.log("  ✓ C. paginação por família, independente do total de itens");
+    const p2 = await meliFamiliaService.listarAgrupado({ clienteId: 1, page: 2, limit: 2 });
+    assert.strictEqual(p2.anuncios.length, 1);
+    const todas = r.anuncios.concat(p2.anuncios).map((l) => l.key);
+    assert.strictEqual(new Set(todas).size, 3, "nenhuma linha repete nem desaparece entre páginas");
+    console.log("  ✓ J. paginação conta linhas, agrupadas e individuais juntas");
   });
 
-  // D. Busca por family_name, titulo, sku, user_product_id, item_id.
-  const fixturesD = {
+  // ── BUSCA E FILTROS SOBRE A LISTA INTEIRA ──────────────────────────────
+
+  // K. Busca por family_name, titulo, sku, user_product_id, item_id — e o
+  //    grupo inteiro vem, nunca só o item que casou.
+  const fixturesK = {
     anuncios: [
       anuncioFixture({ item_id: "MLB-CAMISA", user_product_id: "UP-CAMISA", titulo: "Camisa Azul", sku: "SKU-A" }),
+      anuncioFixture({ item_id: "MLB-CAMISA-2", user_product_id: "UP-CAMISA-2", titulo: "Camisa Preta", sku: "SKU-A2" }),
       anuncioFixture({ item_id: "MLB-CALCA", user_product_id: "UP-CALCA", titulo: "Calça Preta", sku: "SKU-B" }),
     ],
     userProducts: [
       upFixture({ user_product_id: "UP-CAMISA", family_id: "FAM-CAMISA", family_name: "Familia Camisas" }),
+      upFixture({ user_product_id: "UP-CAMISA-2", family_id: "FAM-CAMISA", family_name: "Familia Camisas" }),
       upFixture({ user_product_id: "UP-CALCA", family_id: "FAM-CALCA", family_name: "Familia Calcas" }),
     ],
   };
-  const casosD = [
-    ["Familia Camisas", "FAM-CAMISA"],
-    ["Azul", "FAM-CAMISA"],
-    ["SKU-B", "FAM-CALCA"],
-    ["UP-CALCA", "FAM-CALCA"],
-    ["MLB-CAMISA", "FAM-CAMISA"],
+  const casosK = [
+    ["Familia Camisas", "fam:FAM-CAMISA"],
+    ["Azul", "fam:FAM-CAMISA"],
+    ["SKU-B", "fam:FAM-CALCA"],
+    ["UP-CALCA", "fam:FAM-CALCA"],
+    ["MLB-CAMISA", "fam:FAM-CAMISA"],
   ];
-  for (const [termo, esperado] of casosD) {
-    await withMockDb(fixturesD, async () => {
-      const r = await meliFamiliaService.listarFamilias({ clienteId: 1, q: termo });
-      assert.strictEqual(r.familias.length, 1, `q="${termo}" deveria achar exatamente 1 família`);
-      assert.strictEqual(r.familias[0].family_id, esperado, `q="${termo}" deveria achar ${esperado}`);
+  for (const [termo, esperado] of casosK) {
+    await withMockDb(fixturesK, async () => {
+      const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, q: termo });
+      assert.strictEqual(r.anuncios.length, 1, `q="${termo}" deveria achar exatamente 1 linha`);
+      assert.strictEqual(r.anuncios[0].key, esperado, `q="${termo}" deveria achar ${esperado}`);
     });
   }
-  console.log("  ✓ D. busca por family_name/titulo/sku/user_product_id/item_id");
+  // "Azul" casa só MLB-CAMISA, mas a linha traz a família inteira (2 itens).
+  await withMockDb(fixturesK, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, q: "Azul" });
+    assert.strictEqual(r.anuncios[0].total_itens, 2,
+      "busca casa por item, mas a linha é do GRUPO inteiro");
+  });
+  console.log("  ✓ K. busca por family_name/titulo/sku/user_product_id/item_id traz o grupo inteiro");
 
-  // E. Família exclusiva da Conta B não aparece na listagem da Conta A.
+  // L. Os cards de KPI valem para a lista inteira — e um deles casando dentro
+  //    de uma família traz a família.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-F-OK", user_product_id: "UP1", pictures_count: 8, estoque: 10 }),
+      anuncioFixture({ item_id: "MLB-F-POBRE", user_product_id: "UP2", pictures_count: 1, estoque: 10 }),
+      anuncioFixture({ item_id: "MLB-SOLO-OK", user_product_id: null, pictures_count: 6 }),
+      anuncioFixture({ item_id: "MLB-SOLO-POBRE", user_product_id: null, pictures_count: 0 }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, filtro: "sem_fotos" });
+    const chaves = r.anuncios.map((l) => l.key).sort();
+    assert.deepStrictEqual(chaves, ["fam:FAM1", "item:MLB-SOLO-POBRE"],
+      "o filtro alcança os dois tipos de linha");
+    // E o agregado NÃO encolhe para o subconjunto que casou.
+    const fam = r.anuncios.find((l) => l.key === "fam:FAM1");
+    assert.strictEqual(fam.total_itens, 2, "o agrupador continua contando os 2 itens");
+    assert.strictEqual(fam.estoque_total, 20, "estoque de um produto é do produto, não do filtro");
+    console.log("  ✓ L. filtro de KPI alcança as duas formas de linha e não encolhe agregados");
+  });
+
+  // M. Filtro por status idem, e no mesmo parâmetro de sempre.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-F-ATIVO", user_product_id: "UP1", status: "active" }),
+      anuncioFixture({ item_id: "MLB-SOLO-PAUSADO", user_product_id: null, status: "paused" }),
+      anuncioFixture({ item_id: "MLB-SOLO-ATIVO", user_product_id: null, status: "active" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" })],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, status: "paused" });
+    assert.deepStrictEqual(r.anuncios.map((l) => l.key), ["item:MLB-SOLO-PAUSADO"]);
+    console.log("  ✓ M. status recorta a lista unificada");
+  });
+
+  // N. O recorte "sem_agrupamento" continua existindo como diagnóstico, agora
+  //    como um filtro qualquer — e cobre os três caminhos num predicado só.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-FAM", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-SOLO", user_product_id: null }),
+      anuncioFixture({ item_id: "MLB-SEM-FAM", user_product_id: "UP-SF" }),
+      anuncioFixture({ item_id: "MLB-ORFAO", user_product_id: "UP-FANTASMA" }),
+    ],
+    userProducts: [
+      upFixture({ user_product_id: "UP1" }),
+      upFixture({ user_product_id: "UP-SF", family_id: null }),
+    ],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, filtro: "sem_agrupamento" });
+    const chaves = r.anuncios.map((l) => l.key).sort();
+    assert.deepStrictEqual(chaves, ["item:MLB-ORFAO", "item:MLB-SEM-FAM", "item:MLB-SOLO"]);
+    console.log("  ✓ N. filtro sem_agrupamento cobre os 3 caminhos e não é mais uma aba");
+  });
+
+  // ── ACCOUNT-SCOPE (invariantes preservadas) ────────────────────────────
+
+  // O. Família exclusiva da Conta B não aparece na listagem da Conta A.
   await withMockDb({
     anuncios: [
       anuncioFixture({ item_id: "MLB-A", user_product_id: "UP-A", cliente_conta_id: 10 }),
@@ -473,14 +822,41 @@ async function run() {
       upFixture({ user_product_id: "UP-B", family_id: "FAM-B" }),
     ],
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
-    const ids = r.familias.map((f) => f.family_id);
-    assert.ok(ids.includes("FAM-A"), "FAM-A (da própria conta) deve aparecer");
-    assert.ok(!ids.includes("FAM-B"), "FAM-B (exclusiva da Conta B) não pode aparecer para a Conta A");
-    console.log("  ✓ E. família exclusiva da Conta B fica fora da listagem da Conta A");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
+    const chaves = r.anuncios.map((l) => l.key);
+    assert.ok(chaves.includes("fam:FAM-A"), "FAM-A (da própria conta) deve aparecer");
+    assert.ok(!chaves.includes("fam:FAM-B"), "FAM-B (exclusiva da Conta B) não pode aparecer para a Conta A");
+    console.log("  ✓ O. família exclusiva da Conta B fica fora da listagem da Conta A");
   });
 
-  // F. Detalhe cross-account: Conta A pede familyId exclusivo da B -> 404.
+  // P. O LEFT JOIN não alarga o escopo: anúncio individual de outra conta
+  //    também fica fora. (A regressão possível era justamente esta.)
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-SOLO-A", user_product_id: null, cliente_conta_id: 10 }),
+      anuncioFixture({ item_id: "MLB-SOLO-B", user_product_id: null, cliente_conta_id: 20 }),
+    ],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
+    assert.deepStrictEqual(r.anuncios.map((l) => l.key), ["item:MLB-SOLO-A"]);
+    console.log("  ✓ P. o LEFT JOIN não vaza anúncio individual de outra conta");
+  });
+
+  // Q. Estoque de outra conta não entra na soma do agrupador.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A", user_product_id: "UP1", cliente_conta_id: 10, estoque: 10 }),
+      anuncioFixture({ item_id: "MLB-B", user_product_id: "UP2", cliente_conta_id: 20, estoque: 999 }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })],
+  }, async () => {
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
+    assert.strictEqual(r.anuncios[0].estoque_total, 10, "o UP da Conta B não pode somar no estoque da Conta A");
+    assert.strictEqual(r.anuncios[0].total_user_products, 1);
+    console.log("  ✓ Q. a soma de estoque respeita o account-scope");
+  });
+
+  // R. Detalhe cross-account: Conta A pede familyId exclusivo da B -> 404.
   await withMockDb({
     anuncios: [anuncioFixture({ item_id: "MLB-B", user_product_id: "UP-B", cliente_conta_id: 20 })],
     userProducts: [upFixture({ user_product_id: "UP-B", family_id: "FAM-B" })],
@@ -494,10 +870,10 @@ async function run() {
     const res = fakeRes();
     await ctrl.detalheFamilia(req, res);
     assert.strictEqual(res.statusCode, 404, "o endpoint HTTP deve responder 404, não vazar a família da outra conta");
-    console.log("  ✓ F. detalhe cross-account responde 404 (service e HTTP)");
+    console.log("  ✓ R. detalhe cross-account responde 404 (service e HTTP)");
   });
 
-  // G. Família compartilhada entre contas: Conta A só recebe os MLBs do escopo A.
+  // S. Família compartilhada entre contas: Conta A só recebe os MLBs do escopo A.
   await withMockDb({
     anuncios: [
       anuncioFixture({ item_id: "MLB-A", user_product_id: "UP-S", cliente_conta_id: 10 }),
@@ -510,57 +886,54 @@ async function run() {
     const todosItens = familia.user_products.flatMap((up) => up.itens);
     assert.strictEqual(todosItens.length, 1, "só o item da Conta A pode aparecer");
     assert.strictEqual(todosItens[0].item_id, "MLB-A");
-    console.log("  ✓ G. família compartilhada: Conta A só vê os MLBs do seu escopo");
+    console.log("  ✓ S. família compartilhada: Conta A só vê os MLBs do seu escopo");
   });
 
-  // H. includeLegacy=true inclui linhas com cliente_conta_id NULL.
+  // T. includeLegacy=true inclui linhas com cliente_conta_id NULL.
   await withMockDb({
     anuncios: [anuncioFixture({ item_id: "MLB-LEG", user_product_id: "UP-LEG", cliente_conta_id: null })],
     userProducts: [upFixture({ user_product_id: "UP-LEG", family_id: "FAM-LEG" })],
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, clienteContaId: 10, includeLegacy: true });
-    assert.ok(r.familias.some((f) => f.family_id === "FAM-LEG"), "includeLegacy=true deve incluir item com conta NULL");
-    console.log("  ✓ H. includeLegacy=true inclui linhas legadas (cliente_conta_id NULL)");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, clienteContaId: 10, includeLegacy: true });
+    assert.ok(r.anuncios.some((l) => l.key === "fam:FAM-LEG"), "includeLegacy=true deve incluir item com conta NULL");
+    console.log("  ✓ T. includeLegacy=true inclui linhas legadas (cliente_conta_id NULL)");
   });
 
-  // I. includeLegacy=false não inclui linhas NULL.
+  // U. includeLegacy=false não inclui linhas NULL.
   await withMockDb({
     anuncios: [anuncioFixture({ item_id: "MLB-LEG", user_product_id: "UP-LEG", cliente_conta_id: null })],
     userProducts: [upFixture({ user_product_id: "UP-LEG", family_id: "FAM-LEG" })],
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
-    assert.ok(!r.familias.some((f) => f.family_id === "FAM-LEG"), "includeLegacy=false não pode incluir item com conta NULL");
-    console.log("  ✓ I. includeLegacy=false exclui linhas legadas (cliente_conta_id NULL)");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
+    assert.ok(!r.anuncios.some((l) => l.key === "fam:FAM-LEG"), "includeLegacy=false não pode incluir item com conta NULL");
+    console.log("  ✓ U. includeLegacy=false exclui linhas legadas (cliente_conta_id NULL)");
   });
 
-  // J. sem_user_product respeita ClienteConta/includeLegacy.
+  // ── CONTRATO HTTP E ROTEAMENTO ─────────────────────────────────────────
+
+  // V. O endpoint devolve UMA lista (`anuncios`) e nenhum bloco separado.
   await withMockDb({
     anuncios: [
-      anuncioFixture({ item_id: "MLB-A", user_product_id: null, cliente_conta_id: 10 }),
-      anuncioFixture({ item_id: "MLB-NULL", user_product_id: null, cliente_conta_id: null }),
-      anuncioFixture({ item_id: "MLB-B", user_product_id: null, cliente_conta_id: 20 }),
+      anuncioFixture({ item_id: "MLB-FAM", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-SOLO", user_product_id: null }),
     ],
+    userProducts: [upFixture({ user_product_id: "UP1" })],
+    contas: [contaA],
+    grants: [grantFixture({ id: 1, cliente_id: 1, ml_user_id: "111" })],
   }, async () => {
-    const comLegado = await meliFamiliaService.contarSemUserProduct({ clienteId: 1, clienteContaId: 10, includeLegacy: true });
-    assert.strictEqual(comLegado, 2, "conta 10 + NULL = 2");
-    const semLegado = await meliFamiliaService.contarSemUserProduct({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
-    assert.strictEqual(semLegado, 1, "só conta 10 = 1");
-    const semFiltro = await meliFamiliaService.contarSemUserProduct({ clienteId: 1 });
-    assert.strictEqual(semFiltro, 3, "sem clienteContaId conta tudo");
-    console.log("  ✓ J. sem_user_product respeita ClienteConta/includeLegacy");
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", clienteContaId: "10" } }, res);
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.corpo.ok, true);
+    assert.ok(Array.isArray(res.corpo.anuncios), "a resposta expõe `anuncios`");
+    assert.strictEqual(res.corpo.anuncios.length, 2);
+    assert.ok(!("familias" in res.corpo), "não pode existir um bloco `familias` separado");
+    assert.ok(!("sem_user_product" in res.corpo), "não pode existir um bloco `sem_user_product`");
+    assert.strictEqual(res.corpo.paginacao.total, 2, "uma paginação só, de linhas");
+    console.log("  ✓ V. GET /familias responde uma lista só, sem blocos separados");
   });
 
-  // K. UP sem family_id não aparece como família.
-  await withMockDb({
-    anuncios: [anuncioFixture({ item_id: "MLB-ORFAO", user_product_id: "UP-ORFAO" })],
-    userProducts: [upFixture({ user_product_id: "UP-ORFAO", family_id: null })],
-  }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
-    assert.strictEqual(r.familias.length, 0, "UP sem family_id não pode virar família");
-    console.log("  ✓ K. UP sem family_id não aparece como família");
-  });
-
-  // L. Ordem de rota: GET /familias nunca cai em detalhe(itemId="familias").
+  // W. Ordem de rota: GET /familias nunca cai em detalhe(itemId="familias").
   {
     const router = require("../routes/meliAnunciosRoutes");
     const rotasGet = router.stack
@@ -574,33 +947,35 @@ async function run() {
     assert.ok(idxItemId !== -1, "GET /:itemId (rota existente) precisa continuar registrada");
     assert.ok(idxFamilias < idxItemId, "GET /familias precisa vir ANTES de GET /:itemId");
     assert.ok(idxFamiliaDetalhe < idxItemId, "GET /familias/:familyId precisa vir ANTES de GET /:itemId");
-    console.log("  ✓ L. /familias e /familias/:familyId registradas antes de /:itemId");
+    console.log("  ✓ W. /familias e /familias/:familyId registradas antes de /:itemId");
   }
 
-  // M. Nenhuma rota nova chama a API do Mercado Livre.
+  // X. A listagem unificada não chama a API do Mercado Livre.
   await withMockDb({
-    anuncios: [anuncioFixture({ item_id: "MLB1", user_product_id: "UP1" })],
+    anuncios: [
+      anuncioFixture({ item_id: "MLB1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-SOLO", user_product_id: null }),
+    ],
     userProducts: [upFixture({ user_product_id: "UP1" })],
   }, async () => {
     const Module = require("module");
     const originalLoad = Module._load;
     Module._load = function loadThatThrows(request, parent, isMain) {
       if (request === "../../utils/mlClient" || request === "../utils/mlClient") {
-        throw new Error("mlFetch não pode ser chamado pela leitura agrupada de famílias");
+        throw new Error("mlFetch não pode ser chamado pela listagem unificada");
       }
       return originalLoad.call(this, request, parent, isMain);
     };
     try {
-      await meliFamiliaService.listarFamilias({ clienteId: 1 });
-      await meliFamiliaService.contarSemUserProduct({ clienteId: 1 });
+      await meliFamiliaService.listarAgrupado({ clienteId: 1 });
       await meliFamiliaService.obterFamiliaDetalhe({ clienteId: 1, familyId: "FAM1" });
     } finally {
       Module._load = originalLoad;
     }
-    console.log("  ✓ M. leitura agrupada não chama a API do Mercado Livre");
+    console.log("  ✓ X. a listagem unificada não chama a API do Mercado Livre");
   });
 
-  // ── Capa da família (cover) ────────────────────────────────────────────
+  // ── Capa do agrupador (cover) ──────────────────────────────────────────
   //
   // Calculada em LEITURA a partir de meli_user_products -> meli_anuncios.
   // Nada é persistido: nenhuma coluna nova, nenhum thumbnail gravado.
@@ -609,7 +984,7 @@ async function run() {
 
   const upsFam1 = [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })];
 
-  // N. Sem busca: manda o mais vendido, não a ordem de item_id.
+  // Y. Sem busca: manda o mais vendido, não a ordem de item_id.
   await withMockDb({
     anuncios: [
       anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", vendidos: 3, thumbnail: "http://thumb/a" }),
@@ -618,12 +993,12 @@ async function run() {
     ],
     userProducts: upsFam1,
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
-    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
-    console.log("  ✓ N. capa sem busca = anúncio mais vendido da família");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.deepStrictEqual(r.anuncios[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
+    console.log("  ✓ Y. capa sem busca = anúncio mais vendido da família");
   });
 
-  // O. Anúncio sem imagem não vira capa, mesmo sendo disparado o mais vendido.
+  // Z. Anúncio sem imagem não vira capa, mesmo sendo disparado o mais vendido.
   await withMockDb({
     anuncios: [
       anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", vendidos: 99, thumbnail: null }),
@@ -631,12 +1006,12 @@ async function run() {
     ],
     userProducts: upsFam1,
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
-    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
-    console.log("  ✓ O. anúncio sem imagem não vira capa");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.deepStrictEqual(r.anuncios[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
+    console.log("  ✓ Z. anúncio sem imagem não vira capa");
   });
 
-  // P. Empate em vendidos: o ativo representa melhor que o pausado.
+  // AA. Empate em vendidos: o ativo representa melhor que o pausado.
   await withMockDb({
     anuncios: [
       anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", vendidos: 4, status: "paused", thumbnail: "http://thumb/a" }),
@@ -644,13 +1019,13 @@ async function run() {
     ],
     userProducts: upsFam1,
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
-    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
-    console.log("  ✓ P. empate em vendidos: ativo ganha de pausado");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.deepStrictEqual(r.anuncios[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
+    console.log("  ✓ AA. empate em vendidos: ativo ganha de pausado");
   });
 
-  // Q. Com busca: a capa é a variação relevante para o termo, não a campeã
-  //    de vendas da família.
+  // AB. Com busca: a capa é a variação relevante para o termo, não a campeã
+  //     de vendas da família.
   await withMockDb({
     anuncios: [
       anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", titulo: "Camiseta Preta P", vendidos: 50, thumbnail: "http://thumb/a" }),
@@ -658,13 +1033,13 @@ async function run() {
     ],
     userProducts: upsFam1,
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, q: "Azul" });
-    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
-    console.log("  ✓ Q. com busca, a capa é a variação que casa com o termo");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, q: "Azul" });
+    assert.deepStrictEqual(r.anuncios[0].cover, { thumbnail: "http://thumb/b", user_product_id: "UP2" });
+    console.log("  ✓ AB. com busca, a capa é a variação que casa com o termo");
   });
 
-  // R. Busca que casa só pelo nome da família: nenhum item é "mais
-  //    relevante", então vale a régua padrão (mais vendido).
+  // AC. Busca que casa só pelo nome da família: nenhum item é "mais
+  //     relevante", então vale a régua padrão (mais vendido).
   await withMockDb({
     anuncios: [
       anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", titulo: "Camiseta Preta P", vendidos: 50, thumbnail: "http://thumb/a" }),
@@ -672,13 +1047,13 @@ async function run() {
     ],
     userProducts: upsFam1,
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, q: "Familia" });
-    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/a", user_product_id: "UP1" });
-    console.log("  ✓ R. busca que casa só pela família cai na régua padrão");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, q: "Familia" });
+    assert.deepStrictEqual(r.anuncios[0].cover, { thumbnail: "http://thumb/a", user_product_id: "UP1" });
+    console.log("  ✓ AC. busca que casa só pela família cai na régua padrão");
   });
 
-  // S. Família sem nenhuma imagem: contrato estável — `cover` continua
-  //    objeto, com thumbnail null. O front decide o placeholder.
+  // AD. Família sem nenhuma imagem: contrato estável — `cover` continua
+  //     objeto, com thumbnail null. O front decide o placeholder.
   await withMockDb({
     anuncios: [
       anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", vendidos: 1, thumbnail: null }),
@@ -686,13 +1061,13 @@ async function run() {
     ],
     userProducts: [upFixture({ user_product_id: "UP1" })],
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1 });
-    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: null, user_product_id: "UP1" });
-    console.log("  ✓ S. família sem imagem: cover.thumbnail null, user_product_id preenchido");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1 });
+    assert.deepStrictEqual(r.anuncios[0].cover, { thumbnail: null, user_product_id: "UP1" });
+    console.log("  ✓ AD. família sem imagem: cover.thumbnail null, user_product_id preenchido");
   });
 
-  // T. A capa respeita o account-scope: o campeão de vendas da Conta B não
-  //    pode virar a capa que a Conta A enxerga.
+  // AE. A capa respeita o account-scope: o campeão de vendas da Conta B não
+  //     pode virar a capa que a Conta A enxerga.
   await withMockDb({
     contas: [contaA, contaB],
     grants: [grantFixture({ id: 1, cliente_id: 1, ml_user_id: "111" })],
@@ -702,18 +1077,22 @@ async function run() {
     ],
     userProducts: [upFixture({ user_product_id: "UP1" })],
   }, async () => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
-    assert.deepStrictEqual(r.familias[0].cover, { thumbnail: "http://thumb/a", user_product_id: "UP1" });
-    console.log("  ✓ T. a capa nunca vem de anúncio de outra conta");
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, clienteContaId: 10, includeLegacy: false });
+    assert.deepStrictEqual(r.anuncios[0].cover, { thumbnail: "http://thumb/a", user_product_id: "UP1" });
+    console.log("  ✓ AE. a capa nunca vem de anúncio de outra conta");
   });
 
-  // U. A capa é buscada só para as famílias da PÁGINA — o custo não cresce
-  //    com o tamanho do catálogo.
+  // AF. Capa e campos de item são buscados só para as linhas da PÁGINA — o
+  //     custo não cresce com o tamanho do catálogo.
   await withMockDb({
     anuncios: [
-      anuncioFixture({ item_id: "MLB-1", user_product_id: "UP1" }),
-      anuncioFixture({ item_id: "MLB-2", user_product_id: "UP2" }),
-      anuncioFixture({ item_id: "MLB-3", user_product_id: "UP3" }),
+      // 3 famílias (nomes crescentes) + 2 individuais, tudo com score
+      // controlado para a ordem ser previsível.
+      anuncioFixture({ item_id: "MLB-1", user_product_id: "UP1", score_venforce: 10 }),
+      anuncioFixture({ item_id: "MLB-2", user_product_id: "UP2", score_venforce: 20 }),
+      anuncioFixture({ item_id: "MLB-3", user_product_id: "UP3", score_venforce: 30 }),
+      anuncioFixture({ item_id: "MLB-SOLO-1", user_product_id: null, score_venforce: 40 }),
+      anuncioFixture({ item_id: "MLB-SOLO-2", user_product_id: null, score_venforce: 50 }),
     ],
     userProducts: [
       upFixture({ user_product_id: "UP1", family_id: "FAM1", family_name: "A familia" }),
@@ -721,11 +1100,16 @@ async function run() {
       upFixture({ user_product_id: "UP3", family_id: "FAM3", family_name: "C familia" }),
     ],
   }, async (db) => {
-    const r = await meliFamiliaService.listarFamilias({ clienteId: 1, page: 1, limit: 2 });
-    assert.strictEqual(r.familias.length, 2);
+    const r = await meliFamiliaService.listarAgrupado({ clienteId: 1, page: 1, limit: 2 });
+    assert.deepStrictEqual(r.anuncios.map((l) => l.key), ["fam:FAM1", "fam:FAM2"]);
     assert.deepStrictEqual(db.capaFamilyIds, ["FAM1", "FAM2"], "a capa varreu famílias fora da página");
-    for (const f of r.familias) assert.ok(f.cover, "toda família da página precisa vir com cover");
-    console.log("  ✓ U. a capa é calculada só para as famílias da página");
+    assert.strictEqual(db.itensPedidos, undefined,
+      "página sem linha individual não deve nem disparar a consulta de itens");
+
+    const p3 = await meliFamiliaService.listarAgrupado({ clienteId: 1, page: 3, limit: 2 });
+    assert.deepStrictEqual(p3.anuncios.map((l) => l.key), ["item:MLB-SOLO-2"]);
+    assert.deepStrictEqual(db.itensPedidos, ["MLB-SOLO-2"], "a consulta de itens varreu fora da página");
+    console.log("  ✓ AF. capa e campos de item são buscados só para as linhas da página");
   });
 
   console.log("meliAnunciosFamilias.test.js passed");

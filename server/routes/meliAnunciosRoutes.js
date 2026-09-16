@@ -14,8 +14,8 @@
 //   GET    /anuncios-meli/clientes
 //   POST   /anuncios-meli/sync
 //   GET    /anuncios-meli/resumo
-//   GET    /anuncios-meli/familias
-//   GET    /anuncios-meli/familias/:familyId
+//   GET    /anuncios-meli/familias            (listagem unificada da tela)
+//   GET    /anuncios-meli/familias/:familyId  (expansão de um agrupador)
 //   GET    /anuncios-meli
 //   GET    /anuncios-meli/criacao/status
 //   GET    /anuncios-meli/criacao/categorias
@@ -55,10 +55,35 @@ router.post("/sync", ctrl.sincronizar);
 router.get("/resumo", ctrl.resumo);
 router.get("/", ctrl.listar);
 
-// Visão agrupada Família -> User Product -> Item MLB. Precisam vir ANTES de
-// "/:itemId" (linha mais abaixo) — senão a rota dinâmica captura "/familias"
-// como se fosse um itemId.
-router.get("/familias", ctrl.listarFamilias);
+// DÍVIDA DE NOMENCLATURA — o caminho "/familias" está vencido.
+//
+// Histórico: a rota nasceu listando FAMÍLIAS. A tela tinha duas abas
+// ("Anúncios em Família" e "Anúncios sem agrupamento") e esta rota servia a
+// primeira, devolvendo `{ familias: [], sem_user_product: {} }`.
+//
+// Hoje: depois da unificação da listagem, ela devolve GRUPOS DE ANÚNCIOS —
+// uma lista só, em `{ anuncios: [], paginacao }`. Cada grupo é uma de duas
+// formas, e `tipo` é o único campo que as distingue:
+//
+//   tipo: "familia"  -> família com user_products/items abaixo (expansível
+//                       por GET /familias/:familyId);
+//   tipo: "item"     -> anúncio individual, sem agrupamento (o registro
+//                       inteiro de meli_anuncios; nada para expandir, porque
+//                       no modelo do ML a relação ali é 1:1).
+//
+// Renomear exige MIGRAÇÃO DOS CONSUMIDORES, não um alias: criar o caminho
+// novo, migrar Portal/anuncios-meli.js (hoje o único consumidor da listagem
+// e da expansão) e só então remover o antigo — ou seja, criar um endpoint e
+// remover outro. Fora do escopo desta entrega, que se limitou a tratamento
+// de dados e renderização. Não confundir com GET /anuncios-meli (raiz), que
+// é a listagem PLANA e segue sendo contrato do Motor de Margem
+// (Portal/central-margem-api.js) — aquela não mudou.
+//
+// Ver docs/AUDITORIA_ANUNCIOS_ML_LISTAGEM_UNIFICADA.md (§4.5, contrato).
+//
+// Ambas precisam vir ANTES de "/:itemId" (linha mais abaixo) — senão a rota
+// dinâmica captura "/familias" como se fosse um itemId.
+router.get("/familias", ctrl.listarAgrupado);
 router.get("/familias/:familyId", ctrl.detalheFamilia);
 
 // Criação de anúncios (escrita no Mercado Livre via POST /items).

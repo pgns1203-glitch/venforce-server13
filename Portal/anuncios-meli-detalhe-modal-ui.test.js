@@ -228,28 +228,21 @@ async function digitar(cdp, seletor, valor) {
   })()`);
 }
 
-// A tela passou a abrir na aba "Famílias" (árvore Família -> User Product ->
-// Item MLB). Este arquivo testa o MODAL a partir do catálogo em lista, que
-// agora vive na aba "Sem agrupamento" — então o primeiro passo é ir para lá.
-// O modal em si é o mesmo nas duas abas (ver anuncios-meli-arvore-ui.test.js,
-// verificação 14, que o abre pela linha da árvore).
-async function irParaCatalogoEmLista(cdp) {
-  // Esperar o Shell liberar a tela antes de clicar: logo depois de um
-  // Page.navigate o clique cairia no documento anterior, e a página nova
-  // voltaria para a aba default.
+// A tela tem UMA lista: anúncio agrupado e anúncio individual são linhas da
+// mesma listagem, sem aba. Havia aqui um passo extra para trocar da aba
+// "Famílias" para a aba "Sem agrupamento" antes de achar uma linha; o
+// seletor de modo não existe mais. O modal aberto pela linha de MLB dentro
+// de um agrupador é o mesmo e está em anuncios-meli-listagem-unificada-ui.test.js.
+async function esperarLista(cdp) {
+  // Esperar o Shell liberar a tela: logo depois de um Page.navigate a
+  // consulta cairia no documento anterior.
   await waitFor(cdp, "document.querySelector('.vf-shell__sidebar')", "Shell V3 não montou");
   await waitFor(cdp, "document.getElementById('vf-shell-main').hidden === false", "gating de conta não liberou a tela");
-  await waitFor(cdp, "document.querySelector('#am-modo [data-modo=\"sem_agrupamento\"]')", "o seletor de modo não montou");
-  await cdp.evaluate(`(function(){
-    var b = document.querySelector('#am-modo [data-modo="sem_agrupamento"]');
-    if (b && !b.classList.contains('is-active')) b.click();
-  })()`);
-  await waitFor(cdp, "document.getElementById('am-catalogo-container').hidden === false", "a aba do catálogo em lista não abriu");
+  await waitFor(cdp, "document.querySelector('.am-row')", "a lista não renderizou nenhuma linha");
 }
 
 async function abrirPrimeiroAnuncio(cdp) {
-  await irParaCatalogoEmLista(cdp);
-  await waitFor(cdp, "document.querySelector('.am-row')", "o catálogo não renderizou nenhuma linha");
+  await esperarLista(cdp);
   await clicar(cdp, ".am-row");
   await waitFor(cdp, "document.querySelector('.am-det-modal')", "o modal de detalhe não abriu");
   await waitFor(cdp, "document.getElementById('am-det-titulo')", "o modal não terminou de carregar o detalhe");
@@ -310,14 +303,23 @@ function wireInterception(cdp) {
       return;
     }
 
-    // A visão agrupada não é assunto deste arquivo, mas a tela abre nela: sem
-    // um handler explícito, /anuncios-meli/familias cairia no matcher genérico
-    // de detalhe abaixo e receberia um anúncio como resposta.
+    // A LISTA da tela. GET /anuncios-meli/familias devolve a listagem
+    // unificada: cada linha é um agrupador (tipo "familia") ou o próprio
+    // anúncio (tipo "item"). Aqui só interessa o anúncio individual — o
+    // agrupador tem arquivo próprio (anuncios-meli-listagem-unificada-ui.test.js).
+    // Precisa vir ANTES do matcher genérico de detalhe, senão /familias
+    // receberia um anúncio como resposta.
     if (caminho.startsWith("/anuncios-meli/familias")) {
+      const conta = new URL(url).searchParams.get("clienteContaId") || "42";
+      const a = anuncio(conta);
       await corpo({
         ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
-        familias: [], sem_user_product: { total: 0 },
-        paginacao: { page: 1, limit: 20, totalFamilias: 0, totalPaginas: 1 },
+        anuncios: [Object.assign({}, a, {
+          tipo: "item", key: "item:" + a.item_id, family_id: null,
+          total_itens: 1, total_user_products: 0,
+          estoque_total: a.estoque, vendidos_total: a.vendidos,
+        })],
+        paginacao: { page: 1, limit: 20, total: 1, totalPaginas: 1 },
       });
       return;
     }
@@ -557,10 +559,7 @@ async function run() {
       await fecharModal(cdp);
       catalogoModo = modo;
       await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
-      // O reload volta para a aba default ("Famílias"): a lista só existe
-      // depois de trocar de volta para o catálogo em lista.
-      await irParaCatalogoEmLista(cdp);
-      await waitFor(cdp, "document.querySelector('.am-row')", `a lista não recarregou (modo ${modo})`);
+      await esperarLista(cdp);
     }
 
     await check("7a — catalog_listing=true: tag Catálogo aparece (lista e detalhe) e título fica travado", async () => {

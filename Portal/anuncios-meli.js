@@ -2,11 +2,17 @@
    Anúncios Meli — lógica do módulo (JavaScript puro, sem dependências)
    Central operacional + Agente Otimizador Textual IA.
 
+   A listagem é UMA SÓ (ver docs/AUDITORIA_ANUNCIOS_ML_LISTAGEM_UNIFICADA.md):
+   anúncio agrupado e anúncio individual dividem a mesma lista, a mesma
+   ordenação e a mesma paginação. A família é forma de agrupamento interno do
+   Mercado Livre, não uma categoria de tela — não existe aba.
+
    Endpoints consumidos:
      GET   /anuncios-meli/clientes
      POST  /anuncios-meli/sync
      GET   /anuncios-meli/resumo?clienteSlug=
-     GET   /anuncios-meli?clienteSlug=...
+     GET   /anuncios-meli/familias?clienteSlug=...    (A LISTA unificada)
+     GET   /anuncios-meli/familias/:familyId          (expansão do agrupador)
      GET   /anuncios-meli/:itemId?clienteSlug=
      PATCH /anuncios-meli/:itemId/conteudo         (escreve no Mercado Livre)
      PATCH /anuncios-meli/:itemId/revisao
@@ -48,31 +54,21 @@
     // A operação escolhida no Shell (data-vf-scope="account"). Esta tela não
     // decide mais cardinalidade — vf-context.js decide (R8).
     contaMlId: "",
-    // ── Visão agrupada Família -> User Product -> Item MLB ─────────────────
-    // "familias" (default) | "sem_agrupamento". O modo decide QUAL container
-    // está visível e qual endpoint alimenta a tela; nenhum dos dois refaz
-    // requisição só por alternar a aba.
-    modo: "familias",
-    familias: [],
-    paginacaoFamilias: { page: 1, limit: 20, totalFamilias: 0, totalPaginas: 1 },
-    familiasCarregadas: false,
-    catalogoCarregado: false,
-    // Total da aba "Sem agrupamento". Vem do MESMO endpoint que alimenta a
-    // lista (?filtro=sem_agrupamento), nunca de sem_user_product.total — aquele
-    // conta só user_product_id NULL e ignora UP sem family_id e UP órfão, então
-    // o badge mostraria um número menor que a própria lista.
-    semAgrupamentoTotal: null,
-    semAgrupamentoToken: 0,
-    // Cache das famílias já expandidas: family_id -> detalhe. Reabrir uma
-    // família não gasta requisição.
+    // ── Listagem UNIFICADA ─────────────────────────────────────────────────
+    // Uma lista só. `AM.anuncios` guarda linhas, e cada linha é um agrupador
+    // (tipo "familia", quando o Mercado Livre agrupou aquele produto) ou o
+    // próprio anúncio (tipo "item"). Não existe modo, aba nem segunda lista:
+    // a família é forma de agrupamento interno do ML, não categoria de tela.
+    // Ver docs/AUDITORIA_ANUNCIOS_ML_LISTAGEM_UNIFICADA.md.
+    //
+    // Cache dos agrupadores já expandidos: family_id -> detalhe. Reabrir um
+    // agrupador não gasta requisição.
     state: { familyCache: {} },
     // Guardas de corrida em dois níveis:
-    //  - familiasToken: a LISTA de famílias (busca/paginação/troca de contexto);
     //  - familiaEpoca: invalida de uma vez TODAS as expansões em voo quando o
     //    cliente/conta muda (senão o detalhe do cliente A pintaria a tela do B);
-    //  - familiaTokens[familyId]: abrir -> colapsar -> reabrir a MESMA família
-    //    deixa duas respostas em voo; só a última pode escrever.
-    familiasToken: 0,
+    //  - familiaTokens[familyId]: abrir -> colapsar -> reabrir o MESMO
+    //    agrupador deixa duas respostas em voo; só a última pode escrever.
     familiaEpoca: 0,
     familiaTokens: {},
     familiaTokenSeq: 0,
@@ -209,25 +205,14 @@
     { key: "sem_sku", label: "Sem SKU", campo: "semSku", meta: "Sem identificação interna", estado: "danger", accent: "neutral", tipo: "filtro", valor: "sem_sku" },
   ];
 
-  // Por que um KPI pode estar indisponível:
-  //  - na aba "Famílias", GET /anuncios-meli/familias aceita só `q` — status e
-  //    qualidade não existem lá, então NENHUM card filtra;
-  //  - na aba "Sem agrupamento", o parâmetro `filtro` já está ocupado pelo
-  //    próprio recorte da aba e o backend aceita um valor só, então os cards de
-  //    tipo "filtro" ficam fora; os de tipo "status" usam outro parâmetro e
-  //    continuam valendo.
-  // Retorna o motivo (string) ou "" quando o card está disponível.
-  function motivoKpiIndisponivel(def) {
-    if (!def || !def.tipo) return "";
-    if (AM.modo === "familias") return "Filtro disponível na aba Sem agrupamento.";
-    if (def.tipo === "filtro") return "Indisponível nesta aba: o recorte já é “sem agrupamento”.";
-    return "";
-  }
-
+  // Todo card de KPI vale para a lista inteira. Enquanto a tela tinha duas
+  // abas, metade dos cards ficava desabilitada em cada uma — a aba "Sem
+  // agrupamento" monopolizava o parâmetro `filtro`, e a aba "Famílias" lia um
+  // endpoint que só aceitava `q`. Com uma lista só, o recorte deixou de
+  // disputar o slot do filtro e nenhum card fica indisponível.
   function alternarFiltroKpi(key) {
     var def = null;
     for (var i = 0; i < KPI_DEFS.length; i++) if (KPI_DEFS[i].key === key) def = KPI_DEFS[i];
-    if (motivoKpiIndisponivel(def)) return;
 
     if (AM.kpiAtivo === key || key === "total" || !def || !def.tipo) {
       // clicar de novo no mesmo card (ou em "Total") limpa o filtro
@@ -393,39 +378,33 @@
       else fecharDetalhe(true);
     }
 
-    // Trocar de cliente/conta invalida a árvore inteira: o cache é indexado só
-    // por family_id, então sem isso uma família do cliente anterior reapareceria
-    // para o cliente novo. A época sobe junto para descartar toda expansão que
-    // ainda esteja em voo.
-    resetarArvoreFamilias();
+    // Trocar de cliente/conta invalida o cache de expansões: ele é indexado só
+    // por family_id, então sem isso um agrupador do cliente anterior
+    // reapareceria para o cliente novo. A época sobe junto para descartar toda
+    // expansão que ainda esteja em voo.
+    resetarExpansoes();
 
     if (!ctx) { AM.clienteAtual = null; AM.contaMlId = ""; return; }
 
     AM.clienteAtual = { slug: ctx.slug, nome: ctx.nome };
     AM.contaMlId = ctx.contaId;
     AM.resumo = null;
+    AM.anuncios = [];
     AM.paginacao.page = 1;
     AM.filtros = { q: "", status: "", filtro: "" };
     AM.kpiAtivo = null;
     if (el("am-busca")) el("am-busca").value = "";
     atualizarIndicadorFiltros();
     renderHudHeader();
-    renderModo();
     carregarResumo();
-    carregarBadgeSemAgrupamento();
-    carregarModoAtual();
+    carregarAnuncios();
   }
 
-  // Zera tudo que pertence à árvore agrupada. Chamado na troca de contexto.
-  function resetarArvoreFamilias() {
+  // Zera o cache de agrupadores expandidos. Chamado na troca de contexto.
+  function resetarExpansoes() {
     AM.state.familyCache = {};
     AM.familiaTokens = {};
     AM.familiaEpoca++;
-    AM.familias = [];
-    AM.familiasCarregadas = false;
-    AM.catalogoCarregado = false;
-    AM.paginacaoFamilias = { page: 1, limit: 20, totalFamilias: 0, totalPaginas: 1 };
-    AM.semAgrupamentoTotal = null;
   }
 
   function bindEventosFixos() {
@@ -435,19 +414,12 @@
       atualizarIndicadorFiltros();
       if (AM.buscaTimer) clearTimeout(AM.buscaTimer);
       AM.buscaTimer = setTimeout(function () {
-        // A busca vale para a aba ativa: em "Famílias" ela vai para
-        // /familias?q= (o backend casa por nome da família, título, SKU, UP ou
-        // MLB e devolve a família inteira); em "Sem agrupamento", para a
-        // listagem de sempre.
+        // Uma busca, uma lista. O backend casa o termo por item (título, MLB,
+        // SKU, MLBU ou nome da família) e devolve o GRUPO inteiro de quem
+        // casou — um anúncio nunca aparece órfão do seu agrupador.
         AM.paginacao.page = 1;
-        AM.paginacaoFamilias.page = 1;
-        if (AM.modo === "familias") carregarFamilias();
-        else carregarAnuncios();
+        carregarAnuncios();
       }, 350);
-    });
-    el("am-modo").addEventListener("click", function (e) {
-      var btn = e.target.closest("[data-modo]");
-      if (btn) alternarModo(btn.getAttribute("data-modo"));
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") fecharDetalhe();
@@ -533,11 +505,9 @@
     KPI_DEFS.forEach(function (k) {
       var ativo = AM.kpiAtivo === k.key;
       var meta = typeof k.meta === "function" ? k.meta(r) : k.meta;
-      var indisponivel = motivoKpiIndisponivel(k);
       html += '<button type="button" class="vf-metric am-kpi' +
         (k.accent ? " is-" + k.accent : "") +
         (ativo ? " is-active" : "") + '" data-kpi="' + k.key + '"' +
-        (indisponivel ? ' disabled title="' + escapeAttr(indisponivel) + '"' : "") +
         (ativo ? ' aria-pressed="true"' : ' aria-pressed="false"') + '>' +
         '<span class="vf-metric__label">' + k.label + "</span>" +
         '<strong class="vf-metric__value">' + (r[k.campo] || 0) + "</strong>" +
@@ -550,6 +520,10 @@
     });
   }
 
+  // A LISTA. Uma requisição, uma ordenação, uma paginação — para anúncios
+  // agrupados e não agrupados. O endpoint devolve linhas já resolvidas em
+  // grupo (ver docs/AUDITORIA_ANUNCIOS_ML_LISTAGEM_UNIFICADA.md §4.5); a tela
+  // não intercala nada e não decide quem agrupa com quem.
   function carregarAnuncios() {
     if (!AM.clienteAtual) return;
     var meuToken = ++AM.catalogoToken;
@@ -562,18 +536,12 @@
              "&page=" + AM.paginacao.page + "&limit=" + AM.paginacao.limit;
     if (AM.filtros.q) qs += "&q=" + encodeURIComponent(AM.filtros.q);
     if (AM.filtros.status) qs += "&status=" + encodeURIComponent(AM.filtros.status);
-    // O recorte da aba "Sem agrupamento" NÃO mora em AM.filtros: ele é a
-    // identidade da aba, não um filtro que o operador ligou. Guardá-lo ali
-    // faria o indicador "1 filtro ativo" mentir e disputaria o mesmo slot com
-    // os cards de KPI.
-    var filtroEfetivo = AM.modo === "sem_agrupamento" ? "sem_agrupamento" : AM.filtros.filtro;
-    if (filtroEfetivo) qs += "&filtro=" + encodeURIComponent(filtroEfetivo);
+    if (AM.filtros.filtro) qs += "&filtro=" + encodeURIComponent(AM.filtros.filtro);
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
 
-    api("/anuncios-meli?" + qs).then(function (r) {
+    api("/anuncios-meli/familias?" + qs).then(function (r) {
       if (meuToken !== AM.catalogoToken) return; // troca de conta/cliente (ou novo filtro) já disparou outra busca
       AM.carregandoCatalogo = false;
-      AM.catalogoCarregado = true;
       if (!r.data || !r.data.ok) {
         box.innerHTML = estadoHtml("error", "Erro ao carregar",
           (r.data && r.data.motivo) || "Tente novamente.");
@@ -589,11 +557,6 @@
     var box = el("am-catalogo-container");
     if (!AM.anuncios.length) {
       var temFiltro = AM.filtros.q || AM.filtros.status || AM.filtros.filtro;
-      if (AM.modo === "sem_agrupamento" && !temFiltro) {
-        box.innerHTML = estadoHtml("empty", "Nenhum anúncio sem agrupamento",
-          "Todos os anúncios deste cliente estão em alguma família. Veja a aba Famílias.");
-        return;
-      }
       box.innerHTML = estadoHtml("empty",
         temFiltro ? "Nenhum anúncio para esse filtro" : "Nenhum anúncio sincronizado",
         temFiltro ? "Ajuste a busca ou os filtros acima."
@@ -606,24 +569,24 @@
         "<span></span><span>Anúncio</span><span>Status</span><span>Preço</span>" +
         "<span>Estoque</span><span>Vendidos</span><span>Score VenForce</span><span></span>" +
       "</div>";
-    AM.anuncios.forEach(function (a) { html += rowAnuncioHtml(a); });
+    // Mesma grade, mesmas colunas, mesma densidade para os dois tipos de
+    // linha. O que muda é só o que existe embaixo: um agrupador abre, um
+    // anúncio individual não tem nada para abrir (no modelo do ML a relação
+    // ali é 1:1). Nenhuma moldura, cor ou seção separa os dois.
+    AM.anuncios.forEach(function (linha, idx) {
+      html += linha.tipo === "familia" ? rowGrupoHtml(linha, idx) : rowAnuncioHtml(linha);
+    });
     html += "</div>" + paginacaoHtml(AM.paginacao, "am-pag", "anúncio");
     box.innerHTML = html;
 
-    var rows = box.querySelectorAll(".am-row[data-item]");
-    for (var i = 0; i < rows.length; i++) {
-      (function (row) {
-        function abrir() { abrirDetalhe(row.getAttribute("data-item"), row); }
-        row.addEventListener("click", function (e) {
-          if (e.target.closest(".am-row__link")) return; // ação externa não abre o drawer
-          abrir();
-        });
-        row.addEventListener("keydown", function (e) {
-          if (e.target.closest(".am-row__link")) return; // deixa o link nativo agir (Enter = navegar)
-          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(); }
-        });
-      })(rows[i]);
-    }
+    bindLinhasAnuncio(box);
+
+    box.querySelectorAll(".am-row--grupo[data-familia]").forEach(function (row) {
+      row.addEventListener("click", function () { alternarGrupo(row); });
+      row.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(row); }
+      });
+    });
 
     bindPaginacao("am-pag", AM.paginacao, function (pagina) {
       AM.paginacao.page = pagina;
@@ -631,153 +594,43 @@
     });
   }
 
+  // Linhas de anúncio da lista principal (tipo "item"). As linhas de MLB
+  // dentro de um agrupador expandido têm o seu próprio bind (bindLinhasMlb),
+  // porque são outra classe — mas abrem o MESMO modal.
+  function bindLinhasAnuncio(raiz) {
+    raiz.querySelectorAll(".am-row[data-item]").forEach(function (row) {
+      function abrir() { abrirDetalhe(row.getAttribute("data-item"), row); }
+      row.addEventListener("click", function (e) {
+        if (e.target.closest(".am-row__link")) return; // ação externa não abre o modal
+        abrir();
+      });
+      row.addEventListener("keydown", function (e) {
+        if (e.target.closest(".am-row__link")) return; // deixa o link nativo agir (Enter = navegar)
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(); }
+      });
+    });
+  }
+
   // ===========================================================================
-  // VISÃO AGRUPADA — Família -> User Product -> Item MLB
+  // LINHA DE AGRUPADOR — e a expansão User Product -> Item MLB
   //
-  // Hierarquia oficial do Mercado Livre, agora persistida no backend
-  // (meli_user_products). A tela consome duas rotas somente-leitura:
-  //   GET /anuncios-meli/familias            -> a página de famílias (sem MLBs)
-  //   GET /anuncios-meli/familias/:familyId  -> UPs + MLBs de UMA família
+  // Hierarquia oficial do Mercado Livre (family_id -> user_product_id ->
+  // item_id), persistida no backend em meli_user_products. O agrupador é uma
+  // LINHA DA MESMA LISTA, não uma aba nem uma árvore paralela: ele ocupa a
+  // mesma grade de colunas do anúncio individual e se distingue só por ter
+  // conteúdo abaixo.
   //
-  // Nenhuma família abre sozinha: expandir é sempre ação explícita do
-  // operador, e só a primeira expansão gasta requisição (AM.state.familyCache).
+  // Nenhum agrupador abre sozinho: expandir é sempre ação explícita do
+  // operador, e só a primeira expansão gasta requisição (AM.state.familyCache,
+  // via GET /anuncios-meli/familias/:familyId).
   //
   // Ações por nível, de propósito:
-  //   Família      -> só expandir/colapsar (não é entidade operável);
+  //   Agrupador    -> só expandir/colapsar (a família é chave derivada do ML,
+  //                   não entidade operável: não tem preço nem status próprio);
   //   User Product -> só agrupamento visual (nenhum handler);
   //   Item MLB     -> abrirDetalhe(), que é o modal de sempre — com edição e
   //                   otimização inalteradas.
   // ===========================================================================
-
-  function renderModo() {
-    var nav = el("am-modo");
-    if (!nav) return;
-    nav.querySelectorAll("[data-modo]").forEach(function (btn) {
-      var ativo = btn.getAttribute("data-modo") === AM.modo;
-      btn.classList.toggle("is-active", ativo);
-      btn.setAttribute("aria-pressed", ativo ? "true" : "false");
-    });
-    var badge = el("am-modo-badge");
-    if (badge) {
-      var tem = AM.semAgrupamentoTotal !== null && AM.semAgrupamentoTotal !== undefined;
-      badge.textContent = tem ? String(AM.semAgrupamentoTotal) : "";
-      badge.hidden = !tem;
-    }
-    var boxFam = el("am-familias-container");
-    var boxCat = el("am-catalogo-container");
-    if (boxFam) boxFam.hidden = AM.modo !== "familias";
-    if (boxCat) boxCat.hidden = AM.modo !== "sem_agrupamento";
-  }
-
-  function alternarModo(modo) {
-    if (!modo || modo === AM.modo) return;
-    AM.modo = modo;
-    // Os cards de KPI mudam de disponibilidade entre as abas; um KPI ligado na
-    // aba anterior não pode continuar valendo numa aba onde ele nem existe.
-    var def = null;
-    for (var i = 0; i < KPI_DEFS.length; i++) if (KPI_DEFS[i].key === AM.kpiAtivo) def = KPI_DEFS[i];
-    if (def && motivoKpiIndisponivel(def)) {
-      AM.kpiAtivo = null;
-      AM.filtros.status = "";
-      AM.filtros.filtro = "";
-      AM.catalogoCarregado = false;
-      atualizarIndicadorFiltros();
-    }
-    renderModo();
-    renderResumo();
-    carregarModoAtual();
-  }
-
-  // Carrega só o lado visível, e só se ele ainda não tiver conteúdo — alternar
-  // as abas de ida e volta não gasta requisição nenhuma.
-  function carregarModoAtual() {
-    if (!AM.clienteAtual) return;
-    if (AM.modo === "familias") {
-      if (!AM.familiasCarregadas) carregarFamilias();
-    } else if (!AM.catalogoCarregado) {
-      carregarAnuncios();
-    }
-  }
-
-  // Badge da aba. Fonte deliberadamente igual à da LISTA (?filtro=sem_agrupamento
-  // com limit=1, só para ler paginacao.total) — sem_user_product.total contaria
-  // apenas user_product_id NULL e deixaria de fora UP sem family_id e UP órfão,
-  // fazendo o badge divergir da própria lista que ele rotula.
-  function carregarBadgeSemAgrupamento() {
-    if (!AM.clienteAtual) return;
-    var meuToken = ++AM.semAgrupamentoToken;
-    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
-             "&filtro=sem_agrupamento&page=1&limit=1";
-    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
-    api("/anuncios-meli?" + qs).then(function (r) {
-      if (meuToken !== AM.semAgrupamentoToken) return;
-      if (!r.data || !r.data.ok || !r.data.paginacao) return;
-      AM.semAgrupamentoTotal = r.data.paginacao.total;
-      renderModo();
-    });
-  }
-
-  function carregarFamilias() {
-    if (!AM.clienteAtual) return;
-    var meuToken = ++AM.familiasToken;
-    var box = el("am-familias-container");
-    box.innerHTML = estadoHtml("loading", "Carregando famílias…");
-
-    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
-             "&page=" + AM.paginacaoFamilias.page + "&limit=" + AM.paginacaoFamilias.limit;
-    if (AM.filtros.q) qs += "&q=" + encodeURIComponent(AM.filtros.q);
-    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
-
-    api("/anuncios-meli/familias?" + qs).then(function (r) {
-      if (meuToken !== AM.familiasToken) return; // busca/página/contexto mais novo já assumiu
-      if (!r.data || !r.data.ok) {
-        box.innerHTML = estadoHtml("error", "Erro ao carregar famílias",
-          (r.data && r.data.motivo) || "Tente novamente.");
-        return;
-      }
-      AM.familias = r.data.familias || [];
-      AM.paginacaoFamilias = r.data.paginacao || AM.paginacaoFamilias;
-      AM.familiasCarregadas = true;
-      renderFamilias();
-    });
-  }
-
-  function renderFamilias() {
-    var box = el("am-familias-container");
-    if (!AM.familias.length) {
-      box.innerHTML = AM.filtros.q
-        ? estadoHtml("empty", "Nenhuma família para essa busca", "Ajuste o termo buscado acima.")
-        : estadoHtml("empty", "Nenhuma família agrupada",
-            "Os anúncios deste cliente ainda não têm agrupamento do Mercado Livre. Veja a aba Sem agrupamento.");
-      return;
-    }
-
-    // Cabeçalho de colunas: é ele que transforma a árvore numa tabela
-    // agrupada. Os rótulos valem para a linha do item; nos níveis de
-    // cima as mesmas colunas carregam o resumo da família.
-    var html = '<div class="am-arvore" aria-label="Famílias de anúncios">' +
-      '<div class="am-arvore__head" aria-hidden="true">' +
-        "<span></span><span></span><span>Anúncio</span><span>Status</span>" +
-        '<span class="am-arvore__col--preco am-arvore__col--num">Preço</span>' +
-        '<span class="am-arvore__col--estoque am-arvore__col--num">Estoque</span>' +
-        "<span></span>" +
-      "</div>";
-    AM.familias.forEach(function (fam, idx) { html += familiaHtml(fam, idx); });
-    html += "</div>" + paginacaoHtml(
-      { page: AM.paginacaoFamilias.page, totalPaginas: AM.paginacaoFamilias.totalPaginas, total: AM.paginacaoFamilias.totalFamilias },
-      "am-fpag", "família"
-    );
-    box.innerHTML = html;
-
-    box.querySelectorAll(".am-familia__head").forEach(function (btn) {
-      btn.addEventListener("click", function () { alternarFamilia(btn); });
-    });
-
-    bindPaginacao("am-fpag", AM.paginacaoFamilias, function (pagina) {
-      AM.paginacaoFamilias.page = pagina;
-      carregarFamilias();
-    });
-  }
 
   function iconeChevronSvg() {
     return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" ' +
@@ -788,50 +641,91 @@
     return n + " " + (n === 1 ? singular : pluralForma);
   }
 
-  // Par número+rótulo do resumo da família. Texto tabular em vez de
-  // chip: chip devolve a aparência de card que estamos tirando.
-  function contagemHtml(n, singular, pluralForma) {
-    n = n || 0;
-    return "<span><b>" + n + "</b> " + (n === 1 ? singular : pluralForma) + "</span>";
+  // Status do agrupador. A família não tem status no Mercado Livre — ela é
+  // uma chave derivada de atributos. O que existe é o status de cada anúncio
+  // dela, então a linha mostra o consenso e admite "Misto" quando não há:
+  // inventar um status único seria afirmar algo que a API não diz.
+  function statusGrupo(f) {
+    var c = f.status_contagem || {};
+    var total = f.total_itens || 0;
+    if (total && c.ativos === total) return { label: "Ativo", classe: "is-success", titulo: "" };
+    if (total && c.pausados === total) return { label: "Pausado", classe: "is-warning", titulo: "" };
+    if (total && c.encerrados === total) return { label: "Encerrado", classe: "is-danger", titulo: "" };
+    return {
+      label: "Misto",
+      classe: "is-info",
+      titulo: (c.ativos || 0) + " ativos · " + (c.pausados || 0) + " pausados · " +
+              (c.encerrados || 0) + " encerrados",
+    };
   }
 
-  function familiaHtml(fam, idx) {
-    var painelId = "am-fam-painel-" + idx;
+  // Preço do agrupador. "Preço por variação" é o nome da própria iniciativa do
+  // ML: uma família existe justamente para ter preços diferentes por variação.
+  // Faixa quando os extremos diferem, valor único quando coincidem.
+  function precoGrupoHtml(f) {
+    var min = f.preco_min, max = f.preco_max;
+    if (min === null || min === undefined) return "—";
+    if (max === null || max === undefined || Number(min) === Number(max)) {
+      return escapeHtml(formatMoeda(min, f.moeda));
+    }
+    return '<span class="am-row__faixa">' + escapeHtml(formatMoeda(min, f.moeda)) +
+      "<small>até " + escapeHtml(formatMoeda(max, f.moeda)) + "</small></span>";
+  }
+
+  // Uma linha de agrupador, na MESMA grade de 8 colunas de rowAnuncioHtml.
+  // O painel de expansão é irmão da linha (não filho): .am-listagem é bloco,
+  // não grade, então o painel simplesmente ocupa a largura inteira sem
+  // precisar de caixa aninhada e sem desalinhar coluna nenhuma.
+  function rowGrupoHtml(f, idx) {
+    var painelId = "am-grupo-painel-" + idx;
     // A capa vem pronta em cover.thumbnail: o backend elege a variação que
     // representa a família (a mais relevante para a busca, quando há busca) a
-    // cada leitura de GET /familias. O front NÃO deduz capa a partir dos
-    // itens — se fizesse isso, a imagem só apareceria depois de expandir e
-    // poderia contradizer a escolha da API.
-    var capa = (fam.cover && fam.cover.thumbnail)
-      ? '<img src="' + escapeHtml(fam.cover.thumbnail) + '" alt="" loading="lazy" />'
+    // cada leitura. O front NÃO deduz capa a partir dos itens — se fizesse
+    // isso, a imagem só apareceria depois de expandir e poderia contradizer a
+    // escolha da API.
+    var capa = (f.cover && f.cover.thumbnail)
+      ? '<img src="' + escapeHtml(f.cover.thumbnail) + '" alt="" loading="lazy" />'
       : iconeImagemSvg();
-    return '<div class="am-familia" data-familia="' + escapeAttr(fam.family_id) + '">' +
-      '<button type="button" class="am-familia__head" aria-expanded="false" aria-controls="' + painelId + '">' +
-        '<span class="am-familia__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
-        '<span class="am-familia__thumb" aria-hidden="true">' + capa + "</span>" +
-        '<span class="am-familia__cel">' +
-          '<span class="am-familia__nome">' + escapeHtml(fam.family_name || "(família sem nome)") + "</span>" +
-          '<span class="am-familia__id">' + escapeHtml(fam.family_id) + "</span>" +
-        "</span>" +
-        '<span class="am-familia__contagem">' +
-          contagemHtml(fam.total_user_products, "produto", "produtos") +
-          contagemHtml(fam.total_itens, "anúncio", "anúncios") +
-        "</span>" +
-      "</button>" +
-      '<div class="am-familia__painel" id="' + painelId + '" hidden></div>' +
-    "</div>";
+    var st = statusGrupo(f);
+    var rotulo = f.family_name || "(família sem nome)";
+
+    return '<div class="am-row am-row--grupo" data-familia="' + escapeAttr(f.family_id) + '" ' +
+      'tabindex="0" role="button" aria-expanded="false" aria-controls="' + painelId + '" ' +
+      'aria-label="Ver as variações de ' + escapeAttr(rotulo) + '">' +
+      '<div class="am-row__thumb" aria-hidden="true">' + capa + "</div>" +
+      '<div class="am-row__main">' +
+        '<h3 class="am-row__titulo">' + escapeHtml(rotulo) + "</h3>" +
+        '<div class="am-row__ids">' +
+          "<span>" + plural(f.total_user_products || 0, "variação", "variações") + "</span>" +
+          "<span>" + plural(f.total_itens || 0, "anúncio", "anúncios") + "</span>" +
+        "</div>" +
+      "</div>" +
+      '<span class="vf-status ' + st.classe + '"' +
+        (st.titulo ? ' title="' + escapeAttr(st.titulo) + '"' : "") + ">" + st.label + "</span>" +
+      '<span class="am-row__preco">' + precoGrupoHtml(f) + "</span>" +
+      // A soma que dá sentido ao agrupador: estoque por User Product distinto.
+      '<span class="am-row__num" title="Soma do estoque das ' +
+        escapeAttr(plural(f.total_user_products || 0, "variação", "variações")) + '">' +
+        (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
+      '<span class="am-row__num">' + (f.vendidos_total != null ? f.vendidos_total : "—") + "</span>" +
+      scoreGaugeHtml(f.score_min) +
+      '<div class="am-row__acao">' +
+        '<span class="am-row__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
+      "</div>" +
+    "</div>" +
+    '<div class="am-grupo-painel" id="' + painelId + '" hidden></div>';
   }
 
   // Expandir/colapsar. Colapsar NÃO descarta o que já foi renderizado, e
   // reabrir lê AM.state.familyCache — nenhuma requisição nova.
-  function alternarFamilia(botao) {
-    var caixa = botao.closest(".am-familia");
-    var painel = caixa.querySelector(".am-familia__painel");
-    var familyId = caixa.getAttribute("data-familia");
-    var abrindo = botao.getAttribute("aria-expanded") !== "true";
+  function alternarGrupo(linha) {
+    var painel = linha.nextElementSibling;
+    if (!painel || !painel.classList.contains("am-grupo-painel")) return;
+    var familyId = linha.getAttribute("data-familia");
+    var abrindo = linha.getAttribute("aria-expanded") !== "true";
 
-    botao.setAttribute("aria-expanded", abrindo ? "true" : "false");
-    caixa.classList.toggle("is-aberta", abrindo);
+    linha.setAttribute("aria-expanded", abrindo ? "true" : "false");
+    linha.classList.toggle("is-aberta", abrindo);
     painel.hidden = !abrindo;
     if (!abrindo) return;
 
@@ -900,10 +794,15 @@
     return html + "</div></div>";
   }
 
-  // Nível 3 — linha MLB compacta, PRÓPRIA da árvore. Não reusa rowAnuncioHtml():
-  // aquela é um grid de 8 colunas do catálogo em largura cheia e ficaria
-  // quebrada dois níveis adentro. O que se reusa é o modelo de dados (o
-  // /familias/:familyId devolve os mesmos campos) e o handler abrirDetalhe().
+  // Nível 3 — a linha do MLB dentro do agrupador. Não reusa rowAnuncioHtml()
+  // (a linha da lista é mais alta, com badges e medidor), mas ocupa
+  // EXATAMENTE as mesmas 8 colunas: a expansão é a continuação da tabela, não
+  // uma tabela própria. Enquanto ela era uma árvore separada tinha grade
+  // própria, e preço/estoque caíam em colunas que não eram as do cabeçalho.
+  // O recuo sai de padding, nunca de uma coluna extra.
+  //
+  // O que se reusa de verdade: o modelo de dados (/familias/:familyId devolve
+  // os mesmos campos) e o handler abrirDetalhe().
   function rowMlbCompactaHtml(a) {
     var st = statusInfo(a.status);
     var img = a.thumbnail
@@ -917,12 +816,15 @@
         'aria-label="Abrir ' + escapeAttr(a.titulo || a.item_id) + ' no Mercado Livre" title="Abrir no Mercado Livre">' +
         iconeExternoSvg() + "</a>"
       : "";
+    // Score em número, não no medidor semicircular: o medidor tem altura
+    // própria e engordaria a linha filha até a altura da linha-mãe.
+    var score = a.score_venforce === null || a.score_venforce === undefined
+      ? '<span class="am-mlb__score">—</span>'
+      : '<span class="am-mlb__score ' + scoreClasse(a.score_venforce) + '" title="' +
+        escapeAttr(scoreLegenda(a.score_venforce)) + '">' + a.score_venforce + "</span>";
 
     return '<div class="am-mlb" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
       'aria-label="Ver detalhes de ' + escapeAttr(a.titulo || a.item_id) + '">' +
-      // Vão do chevron: mantém o item uma coluna à direita da família
-      // sem precisar de caixa aninhada nem de padding extra.
-      '<span class="am-mlb__vao" aria-hidden="true"></span>' +
       '<span class="am-mlb__thumb" aria-hidden="true">' + img + "</span>" +
       '<span class="am-mlb__main">' +
         '<span class="am-mlb__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</span>" +
@@ -931,6 +833,8 @@
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
       '<span class="am-mlb__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +
       '<span class="am-mlb__num">' + (a.estoque != null ? a.estoque : "—") + "</span>" +
+      '<span class="am-mlb__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
+      score +
       '<span class="am-mlb__acao">' + linkMl + "</span>" +
     "</div>";
   }

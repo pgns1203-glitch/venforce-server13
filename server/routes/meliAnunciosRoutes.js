@@ -14,8 +14,8 @@
 //   GET    /anuncios-meli/clientes
 //   POST   /anuncios-meli/sync
 //   GET    /anuncios-meli/resumo
-//   GET    /anuncios-meli/familias
-//   GET    /anuncios-meli/familias/:familyId
+//   GET    /anuncios-meli/familias            (listagem unificada da tela)
+//   GET    /anuncios-meli/familias/:familyId  (expansão de um agrupador)
 //   GET    /anuncios-meli
 //   GET    /anuncios-meli/criacao/status
 //   GET    /anuncios-meli/criacao/categorias
@@ -55,10 +55,14 @@ router.post("/sync", ctrl.sincronizar);
 router.get("/resumo", ctrl.resumo);
 router.get("/", ctrl.listar);
 
-// Visão agrupada Família -> User Product -> Item MLB. Precisam vir ANTES de
-// "/:itemId" (linha mais abaixo) — senão a rota dinâmica captura "/familias"
-// como se fosse um itemId.
-router.get("/familias", ctrl.listarFamilias);
+// Listagem UNIFICADA da tela de anúncios (uma lista só, com agrupador quando
+// existe family_id) e a expansão de um agrupador em User Products -> MLBs.
+// Precisam vir ANTES de "/:itemId" (linha mais abaixo) — senão a rota
+// dinâmica captura "/familias" como se fosse um itemId.
+//
+// O caminho "/familias" ficou vencido — a rota lista anúncios, não famílias.
+// Mantido de propósito: renomear seria criar um endpoint e remover outro.
+router.get("/familias", ctrl.listarAgrupado);
 router.get("/familias/:familyId", ctrl.detalheFamilia);
 
 // Criação de anúncios (escrita no Mercado Livre via POST /items).

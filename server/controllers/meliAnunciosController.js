@@ -190,15 +190,24 @@ async function listar(req, res) {
 }
 
 // ----------------------------------------------------------------------------
-// GET /anuncios-meli/familias?clienteSlug=&q=&page=&limit=
+// GET /anuncios-meli/familias?clienteSlug=&q=&status=&filtro=&page=&limit=
 //
-// Visão agrupada Família -> User Product -> Item MLB. Somente leitura, não
-// chama a API do Mercado Livre (dados já persistidos em meli_anuncios /
-// meli_user_products). Não retorna nenhum MLB — só agregados por família.
+// LISTAGEM UNIFICADA de anúncios, como a listagem do Mercado Livre: uma lista
+// só, em que cada linha é um agrupador (quando existe family_id) ou o próprio
+// anúncio (quando não existe). Ver
+// docs/AUDITORIA_ANUNCIOS_ML_LISTAGEM_UNIFICADA.md.
+//
+// Somente leitura, não chama a API do Mercado Livre (dados já persistidos em
+// meli_anuncios / meli_user_products).
+//
+// O caminho da rota (/familias) ficou vencido: ela lista anúncios, não
+// famílias. Dívida de nomenclatura registrada e NÃO paga — renomear seria
+// criar um endpoint e remover outro. O bloco `sem_user_product` saiu: existia
+// só para rotular a aba "Sem agrupamento", que deixou de existir.
 // ----------------------------------------------------------------------------
-async function listarFamilias(req, res) {
+async function listarAgrupado(req, res) {
   try {
-    const { clienteSlug, q, page, limit } = req.query || {};
+    const { clienteSlug, q, status, filtro, page, limit } = req.query || {};
     const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
@@ -219,22 +228,21 @@ async function listarFamilias(req, res) {
       includeLegacy = contexto.includeLegacy;
     }
 
-    const [resultado, semUserProduct] = await Promise.all([
-      familiaService.listarFamilias({ clienteId: cliente.id, clienteContaId: contaId, includeLegacy, q, page, limit }),
-      familiaService.contarSemUserProduct({ clienteId: cliente.id, clienteContaId: contaId, includeLegacy }),
-    ]);
+    const resultado = await familiaService.listarAgrupado({
+      clienteId: cliente.id, clienteContaId: contaId, includeLegacy,
+      q, status, filtro, page, limit,
+    });
 
     return res.json({
       ok: true,
       cliente: { slug: cliente.slug, nome: cliente.nome },
-      familias: resultado.familias,
-      sem_user_product: { total: semUserProduct },
+      anuncios: resultado.anuncios,
       paginacao: resultado.paginacao,
     });
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
-    console.error("[anuncios-meli] listarFamilias:", err.message);
-    return res.status(500).json({ ok: false, motivo: "Erro ao listar as famílias." });
+    console.error("[anuncios-meli] listarAgrupado:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao listar os anúncios." });
   }
 }
 
@@ -1010,7 +1018,7 @@ module.exports = {
   sincronizar,
   resumo,
   listar,
-  listarFamilias,
+  listarAgrupado,
   detalheFamilia,
   detalhe,
   atualizarConteudo,

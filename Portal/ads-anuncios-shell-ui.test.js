@@ -314,7 +314,10 @@ async function run() {
       const hud = await cdp.evaluate("document.getElementById('am-hud-top').innerText");
       assert.ok(/N97 Comercial/.test(hud), `a HUD deveria mostrar o cliente do contexto: ${hud}`);
       assert.ok(/ML conectado/.test(hud), `mlConectado real deveria aparecer: ${hud}`);
-      const catalogo = await esperarPedido(/\/anuncios-meli\?/, 0, "nenhuma busca de catálogo");
+      // A listagem da tela é GET /anuncios-meli/familias (a lista unificada:
+      // agrupador quando existe family_id, anúncio individual quando não).
+      // Era /anuncios-meli? enquanto a tela tinha duas listagens.
+      const catalogo = await esperarPedido(/\/anuncios-meli\/familias\?/, 0, "nenhuma busca de catálogo");
       assert.ok(catalogo[catalogo.length - 1].includes("clienteContaId=42"), `catálogo sem a conta do contexto: ${catalogo[catalogo.length - 1]}`);
       const resumo = await esperarPedido(/\/anuncios-meli\/resumo/, 0, "nenhuma busca de resumo");
       assert.ok(resumo[resumo.length - 1].includes("clienteContaId=42"), `resumo sem a conta do contexto: ${resumo[resumo.length - 1]}`);
@@ -323,7 +326,7 @@ async function run() {
     await check("F5/anuncios — trocar de Operação refaz resumo e catálogo na conta nova", async () => {
       const desde = pedidos.length;
       await cdp.evaluate("window.VF.context.setConta(43)");
-      await esperarPedido(/\/anuncios-meli\?.*clienteContaId=43/, desde, "o catálogo não seguiu a troca de operação");
+      await esperarPedido(/\/anuncios-meli\/familias\?.*clienteContaId=43/, desde, "o catálogo não seguiu a troca de operação");
       await esperarPedido(/\/anuncios-meli\/resumo.*clienteContaId=43/, desde, "o resumo não seguiu a troca de operação");
     });
 

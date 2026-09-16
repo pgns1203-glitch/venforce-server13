@@ -49,7 +49,20 @@
  *     aparece com ele FECHADO, sobrevive à expansão e acompanha a busca — o
  *     front nunca recalcula a capa a partir dos itens;
  *   · NENHUM card de KPI fica desabilitado (era metade deles, em cada aba), e
- *     clicar num card recorta a lista única.
+ *     clicar num card recorta a lista única;
+ *   · Métricas últ. 7 dias (views/vendas/conversão) e Margem são colunas
+ *     PRÓPRIAS, carregadas DEPOIS que a linha já está na tela — nunca
+ *     bloqueiam a abertura da página nem a expansão de um agrupador. A
+ *     célula nasce "carregando" e se resolve sozinha quando a resposta
+ *     chega; falha vira "—", nunca fica presa;
+ *   · a busca de performance só pede os item_id VISÍVEIS: os avulsos da
+ *     página atual no boot, e só os filhos de uma família quando ela é
+ *     expandida — nenhuma chamada para MLB dentro de um agrupador ainda
+ *     fechado. Reabrir uma família já carregada, ou repintar uma linha
+ *     depois de editar o estoque, lê do cache — não refaz a chamada;
+ *   · margem NUNCA aparece na linha do agrupador (só existe por MLB), e o
+ *     texto de estado (quando não há número) é o vocabulário REAL do Motor
+ *     de Margem — nunca um rótulo inventado nesta tela.
  */
 "use strict";
 
@@ -231,6 +244,33 @@ const pedidos = [];
 const escritasEstoque = [];
 let estoqueHandler = null;
 
+// GET /anuncios-meli/performance (métricas últ. 7 dias + margem — sempre
+// DEPOIS do primeiro paint, nunca bloqueia). `chamadasPerformance` registra
+// cada chamada com os item_id EXATOS que vieram na query string — é o que
+// prova "zero chamada para item oculto". `atrasoPerformance` simula a janela
+// em que a linha já está na tela mas a resposta ainda não chegou.
+// `performanceHandler`, quando setado, substitui a resposta padrão inteira
+// (para simular indisponibilidade de margem ou falha total).
+let atrasoPerformance = 0;
+let performanceHandler = null;
+const chamadasPerformance = [];
+
+// Views nulo em MLB-A1 (sem dado) e vendas=0 real em MLB-A2 (fato, não
+// ausência de dado) são o par que prova a régua de "—" vs "0" vs NaN.
+const METRICAS_FIXTURE = {
+  "MLB-SEMUP": { views: 259, vendas: 3, conversao: 1.2 },
+  "MLB-A1": { views: null, vendas: 0, conversao: null },
+  "MLB-A2": { views: 100, vendas: 0, conversao: 0 },
+};
+// MLB-A2 fica UNVALIDATED (sem custo na Base) de propósito — é o caso sem
+// número, só rótulo. MLB-A1 fica LOSS (prejuízo) — cor de risco. MLB-SEMUP
+// fica HEALTHY realizada — o caminho feliz.
+const MARGEM_FIXTURE = {
+  "MLB-SEMUP": { origem: "realized", margin: 0.25, marginPercent: 25, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
+  "MLB-A1": { origem: "realized", margin: -0.05, marginPercent: -5, status: "LOSS", statusLabel: "Prejuízo", statusReasons: ["Margem negativa (-5.00%)."] },
+  "MLB-A2": { origem: "projected", margin: null, marginPercent: null, status: "UNVALIDATED", statusLabel: "Não validado", statusReasons: ["Variáveis obrigatórias ausentes: custo."] },
+};
+
 const SEMENTE = `
   try {
     localStorage.setItem("vf-token", "lista-token");
@@ -399,6 +439,26 @@ function wireInterception(cdp) {
         anuncios,
         paginacao: { page: 1, limit: 20, total: anuncios.length, totalPaginas: 1 },
       });
+      return;
+    }
+
+    // GET /anuncios-meli/performance — precisa vir ANTES do detalhe genérico
+    // /anuncios-meli/:itemId, senão "performance" seria lido como um itemId
+    // (o mesmo cuidado de ordem que /familias/:familyId já tem acima).
+    if (caminho.startsWith("/anuncios-meli/performance")) {
+      const qs = new URL(url).searchParams;
+      const idsPedidos = (qs.get("itemIds") || "").split(",").filter(Boolean);
+      chamadasPerformance.push({ itemIds: idsPedidos, conta });
+      if (atrasoPerformance) await sleep(atrasoPerformance);
+      if (performanceHandler) { await corpo(performanceHandler(idsPedidos, conta)); return; }
+
+      const metricas7d = {};
+      const margem = {};
+      idsPedidos.forEach((id) => {
+        metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
+        margem[id] = MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+      });
+      await corpo({ ok: true, metricas7d, margem, margemIndisponivel: null });
       return;
     }
 
@@ -670,6 +730,29 @@ async function run() {
         `a coluna Estoque do MLB não cai embaixo da coluna Estoque da lista (${g.xEstoqueFilho} vs ${g.xEstoqueMae})`);
       assert.strictEqual(g.xEstoqueMae, g.xEstoqueCab,
         `a coluna Estoque não cai embaixo do rótulo ESTOQUE (${g.xEstoqueMae} vs ${g.xEstoqueCab})`);
+      // Métricas últ. 7 dias + Margem são 2 colunas NOVAS (grade 8 -> 10): a
+      // grade tem de ter exatamente 10 faixas, e as duas novas colunas
+      // precisam alinhar entre cabeçalho/mãe/filho tanto quanto Estoque já
+      // alinha — senão a expansão desalinharia bem no ponto que se corrigiu.
+      const largurasCab = g.cab.cols.split(" ").filter(Boolean);
+      assert.strictEqual(largurasCab.length, 10, `a grade precisa ter 10 colunas: ${g.cab.cols}`);
+    });
+
+    await check("8c — Métricas últ. 7 dias e Margem alinham entre cabeçalho, mãe e filho", async () => {
+      const x = await cdp.evaluate(`(function(){
+        var cab = document.querySelector('.am-listagem__head');
+        var mae = document.querySelector('.am-row[data-item]');
+        var filho = document.querySelector('.am-mlb');
+        var col = function(e, sel, n){ var c = e.querySelectorAll(sel)[n];
+          return c ? Math.round(c.getBoundingClientRect().left) : null; };
+        return {
+          metricasCab: col(cab, 'span', 6), metricasMae: col(mae, '.am-metricas7d', 0), metricasFilho: col(filho, '.am-metricas7d', 0),
+          margemCab: col(cab, 'span', 7), margemMae: col(mae, '.am-margem', 0), margemFilho: col(filho, '.am-margem', 0),
+        }; })()`);
+      assert.strictEqual(x.metricasMae, x.metricasCab, "coluna Métricas últ. 7 dias não cai sob o rótulo do cabeçalho");
+      assert.strictEqual(x.metricasFilho, x.metricasMae, "coluna Métricas últ. 7 dias do MLB não alinha com a linha-mãe");
+      assert.strictEqual(x.margemMae, x.margemCab, "coluna Margem não cai sob o rótulo do cabeçalho");
+      assert.strictEqual(x.margemFilho, x.margemMae, "coluna Margem do MLB não alinha com a linha-mãe");
     });
 
     await check("9 — a variação com 2 MLBs aparece UMA vez, Clássico antes de Premium", async () => {
@@ -996,7 +1079,11 @@ async function run() {
     // O reload devolve a tela ao contexto da conta 42 e fecha o modal do 17.
     // Guardo os erros de JS acumulados até aqui porque o documento novo zera
     // window.__erros e a última verificação precisa cobrir a sessão inteira.
-    const errosAteAqui = await cdp.evaluate("window.__erros || []");
+    // Acumulador de erros de JS entre os vários reloads deste arquivo: cada
+    // Page.navigate reinicia window.__erros (o script que o zera roda de
+    // novo em todo documento novo), então cada reload precisa somar o que já
+    // tinha antes de navegar — a checagem final soma tudo + o que sobrou.
+    let errosAcumulados = await cdp.evaluate("window.__erros || []");
     pedidos.length = 0;
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
     await waitFor(cdp, "document.querySelector('.am-row--grupo')", "a lista não voltou depois do reload");
@@ -1275,10 +1362,212 @@ async function run() {
       assert.strictEqual(depois.modalAberto, false, "editar o estoque abriu o modal do anúncio");
     });
 
-    /* ── 28: nenhum erro de JS na página (sempre a última) ─────────────── */
+    /* ── 29 a 38: Métricas últ. 7 dias + Margem ─────────────────────────
+     *
+     * Bloco isolado com reload próprio: as verificações de "antes/depois da
+     * resposta" precisam de uma página recém-carregada, sem cache de
+     * performance de nenhuma verificação anterior.
+     */
 
-    await check("28 — nenhum erro de JavaScript durante os fluxos", async () => {
-      const jsErros = errosAteAqui.concat(await cdp.evaluate("window.__erros || []"));
+    errosAcumulados = errosAcumulados.concat(await cdp.evaluate("window.__erros || []"));
+    pedidos.length = 0;
+    chamadasPerformance.length = 0;
+    atrasoPerformance = 400; // atraso proposital: dá tempo de observar o "carregando" antes da resposta
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+    await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não voltou depois do reload");
+
+    await check("29 — a linha já está completa (título, preço) ANTES de /performance responder", async () => {
+      const estado = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        return {
+          tituloExiste: Boolean(r.querySelector('.am-row__titulo')),
+          precoExiste: /49,90/.test(r.querySelector('.am-row__preco').textContent),
+          metricasCarregando: r.querySelector('.am-metricas7d').classList.contains('am-metricas7d--carregando'),
+          margemCarregando: r.querySelector('.am-margem').classList.contains('am-margem--carregando'),
+        }; })()`);
+      assert.strictEqual(estado.tituloExiste, true, "a lista não pode esperar /performance para renderizar o resto da linha");
+      assert.strictEqual(estado.precoExiste, true);
+      assert.strictEqual(estado.metricasCarregando, true, "a célula tem de nascer 'carregando', não vazia nem quebrada");
+      assert.strictEqual(estado.margemCarregando, true);
+    });
+
+    await check("30 — depois que /performance responde, a célula pinta os números reais", async () => {
+      atrasoPerformance = 0;
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        return r && !r.querySelector('.am-metricas7d').classList.contains('am-metricas7d--carregando'); })()`,
+        "as métricas não resolveram depois da resposta");
+      const dados = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        var linhas = Array.from(r.querySelectorAll('.am-metricas7d .am-metricas7d__linha')).map(function(e){ return e.textContent; });
+        return {
+          linhas: linhas,
+          margemValor: (r.querySelector('.am-margem__valor') || {}).textContent || null,
+          margemOrigem: (r.querySelector('.am-margem__origem') || {}).textContent || null,
+        }; })()`);
+      assert.deepStrictEqual(dados.linhas, ["👁 259", "🛒 3 · 1,2%"], JSON.stringify(dados.linhas));
+      assert.strictEqual(dados.margemValor, "25,0%");
+      assert.strictEqual(dados.margemOrigem, "Realizada");
+    });
+
+    await check("31 — régua: 1 chamada de performance no boot, só com os item_id avulsos VISÍVEIS", async () => {
+      assert.strictEqual(chamadasPerformance.length, 1, "o boot da página deveria disparar 1 chamada de performance");
+      assert.deepStrictEqual(chamadasPerformance[0].itemIds.slice().sort(), ["MLB-SEMUP"],
+        "só o anúncio avulso está visível no boot — nenhum filho de agrupador ainda fechado pode entrar no lote");
+    });
+
+    await check("32 — expandir a família dispara performance SÓ para os filhos dela, e só então", async () => {
+      const antes = chamadasPerformance.length;
+      await clicar(cdp, linhaFam("FAM-1"));
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "FAM-1 não expandiu");
+      await waitFor(cdp, `(function(){
+        var c = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-margem');
+        return c && !c.classList.contains('am-margem--carregando'); })()`, "a margem dos filhos não resolveu");
+
+      assert.strictEqual(chamadasPerformance.length, antes + 1, "expandir devia disparar exatamente 1 chamada nova");
+      const ultima = chamadasPerformance[chamadasPerformance.length - 1];
+      assert.deepStrictEqual(ultima.itemIds.slice().sort(), ["MLB-A1", "MLB-A2", "MLB-A3", "MLB-A4"],
+        "a chamada da expansão precisa ter exatamente os 4 filhos de FAM-1 — nem mais, nem menos");
+      assert.ok(!chamadasPerformance.some((c) => c.itemIds.includes("MLB-B9")),
+        "nenhuma chamada pode incluir item de FAM-2, que continua fechada");
+    });
+
+    await check("33 — reabrir a MESMA família não refaz a chamada de performance (cache)", async () => {
+      const antes = chamadasPerformance.length;
+      await clicar(cdp, linhaFam("FAM-1")); // colapsa
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")}').hidden === true`, "não colapsou");
+      await clicar(cdp, linhaFam("FAM-1")); // reabre
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")}').hidden === false`, "não reabriu");
+
+      const semCarregando = await cdp.evaluate(`(function(){
+        var c = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-margem');
+        return c ? c.classList.contains('am-margem--carregando') : true; })()`);
+      assert.strictEqual(semCarregando, false,
+        "reabrir precisa mostrar os dados já conhecidos de imediato, sem voltar a 'carregando'");
+      assert.strictEqual(chamadasPerformance.length, antes,
+        "reabrir a mesma família gastou uma chamada de performance nova — o cache não funcionou");
+    });
+
+    await check("34 — a linha do AGRUPADOR nunca mostra número de margem, mesmo expandida", async () => {
+      const estado = await cdp.evaluate(`(function(){
+        var r = document.querySelector('${linhaFam("FAM-1")}');
+        var m = r.querySelector('.am-margem');
+        var t = r.querySelector('.am-metricas7d');
+        return {
+          margemTexto: m.textContent.trim(), margemTemValor: Boolean(r.querySelector('.am-margem__valor')),
+          margemClasse: m.className,
+          metricasTexto: t.textContent.trim(), metricasClasse: t.className,
+        }; })()`);
+      assert.strictEqual(estado.margemTexto, "—");
+      assert.strictEqual(estado.margemTemValor, false, "a linha do agrupador não pode mostrar número de margem");
+      assert.ok(/am-margem--indisponivel/.test(estado.margemClasse));
+      assert.strictEqual(estado.metricasTexto, "—", "métricas do agrupador também ficam de fora — só existem por MLB");
+      assert.ok(/am-metricas7d--indisponivel/.test(estado.metricasClasse));
+    });
+
+    await check("35 — conversão nunca é NaN/Infinity: '—' sem views, número real (inclusive 0%) com views", async () => {
+      const linhas = await cdp.evaluate(`(function(){
+        function ler(item){
+          return Array.from(document.querySelectorAll('.am-mlb[data-item="' + item + '"] .am-metricas7d .am-metricas7d__linha'))
+            .map(function(e){ return e.textContent; });
+        }
+        return { a1: ler("MLB-A1"), a2: ler("MLB-A2") }; })()`);
+      assert.deepStrictEqual(linhas.a1, ["👁 —", "🛒 0"],
+        "sem views (dado desconhecido), a conversão some — mas vendas=0 real ainda aparece como número");
+      assert.deepStrictEqual(linhas.a2, ["👁 100", "🛒 0 · 0,0%"],
+        "vendas=0 real COM views>0 é uma conversão real de 0,0% — nunca um travessão escondendo o fato");
+      const semNan = await cdp.evaluate(`!/NaN|Infinity/.test(document.querySelector('${painelFam("FAM-1")}').innerText)`);
+      assert.strictEqual(semNan, true, "NaN/Infinity nunca pode vazar para a tela");
+    });
+
+    await check("36 — margem sem número (UNVALIDATED): rótulo REAL do Motor, com a razão real como tooltip", async () => {
+      const estado = await cdp.evaluate(`(function(){
+        var c = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-margem');
+        var e = c.querySelector('.am-margem__estado');
+        return { texto: e ? e.textContent : null, title: e ? e.getAttribute('title') : null,
+                 temValor: Boolean(c.querySelector('.am-margem__valor')) }; })()`);
+      assert.strictEqual(estado.texto, "Não validado", "o texto tem de ser o rótulo real do Motor (LABELS.UNVALIDATED)");
+      assert.match(estado.title || "", /custo/i, "a razão real (statusReasons) precisa estar acessível");
+      assert.strictEqual(estado.temValor, false, "sem margem computável não pode inventar número");
+    });
+
+    await check("37 — margem negativa usa cor de risco; o selo mostra a origem certa", async () => {
+      const estado = await cdp.evaluate(`(function(){
+        var c = document.querySelector('.am-mlb[data-item="MLB-A1"] .am-margem');
+        var v = c.querySelector('.am-margem__valor');
+        return { texto: v ? v.textContent : null, classe: v ? v.className : null,
+                 origem: (c.querySelector('.am-margem__origem') || {}).textContent || null,
+                 temDot: Boolean(c.querySelector('.vf-info-dot')),
+                 tipTexto: (c.querySelector('.vf-info__tip') || {}).textContent || null }; })()`);
+      assert.strictEqual(estado.texto, "-5,0%");
+      assert.ok(/is-danger/.test(estado.classe), `prejuízo tem de usar a cor de risco: ${estado.classe}`);
+      assert.strictEqual(estado.origem, "Realizada");
+      assert.strictEqual(estado.temDot, true, "precisa existir o selo discreto de explicação (vf-info-dot)");
+      assert.match(estado.tipTexto || "", /Calculada pelo Motor de Margem/,
+        "o tooltip discreto tem de dizer que a margem vem do Motor de Margem");
+    });
+
+    await check("38 — margem indisponível no nível de CONTEXTO: mensagem real do backend, em vez de número ou 'Não validado'", async () => {
+      performanceHandler = (ids) => {
+        const metricas7d = {};
+        ids.forEach((id) => { metricas7d[id] = { views: 5, vendas: 0, conversao: null }; });
+        return {
+          ok: true, metricas7d, margem: {},
+          margemIndisponivel: { codigo: "BASE_MELI_NAO_VINCULADA", mensagem: "Base de custos MELI não vinculada para esta operação." },
+        };
+      };
+      try {
+        await clicar(cdp, linhaFam("FAM-2"));
+        await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")} .am-mlb')`, "FAM-2 não expandiu");
+        await waitFor(cdp, `(function(){
+          var c = document.querySelector('.am-mlb[data-item="MLB-B9"] .am-margem');
+          return c && !c.classList.contains('am-margem--carregando'); })()`, "a margem de FAM-2 não resolveu");
+        const estado = await cdp.evaluate(`(function(){
+          var c = document.querySelector('.am-mlb[data-item="MLB-B9"] .am-margem');
+          var e = c.querySelector('.am-margem__estado');
+          return { texto: e ? e.textContent : c.textContent.trim(), temValor: Boolean(c.querySelector('.am-margem__valor')) }; })()`);
+        assert.match(estado.texto, /Base de custos MELI não vinculada/,
+          "tem de mostrar a MESMA mensagem que o backend mandou — nunca uma tradução própria");
+        assert.strictEqual(estado.temValor, false);
+        // Fecha para não contaminar o próximo bloco.
+        await clicar(cdp, linhaFam("FAM-2"));
+        await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")}').hidden === true`, "FAM-2 não colapsou");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
+    /* ── 39: resiliência — falha total nunca deixa a célula presa ───────── */
+
+    errosAcumulados = errosAcumulados.concat(await cdp.evaluate("window.__erros || []"));
+    pedidos.length = 0;
+    chamadasPerformance.length = 0;
+    performanceHandler = () => ({ ok: false, motivo: "Falha simulada de /performance" });
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+    await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não voltou depois do reload");
+
+    await check("39 — falha total de /performance resolve para '—', a lista continua usável", async () => {
+      await waitFor(cdp, `(function(){
+        var c = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-metricas7d');
+        return c && !c.classList.contains('am-metricas7d--carregando'); })()`,
+        "a falha nunca resolveu o estado de carregamento — a célula ficou presa");
+      const estado = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        return {
+          metricas: r.querySelector('.am-metricas7d').textContent.trim(),
+          margem: r.querySelector('.am-margem').textContent.trim(),
+          linhaAindaClicavel: r.getAttribute('role') === 'button',
+        }; })()`);
+      assert.strictEqual(estado.metricas, "—", "falha total tem de virar travessão, nunca ficar preso em 'carregando'");
+      assert.strictEqual(estado.margem, "—");
+      assert.strictEqual(estado.linhaAindaClicavel, true, "a falha de performance não pode quebrar a linha em si");
+      performanceHandler = null;
+    });
+
+    /* ── 40: nenhum erro de JS na página (sempre a última) ──────────────── */
+
+    await check("40 — nenhum erro de JavaScript durante os fluxos", async () => {
+      const jsErros = errosAcumulados.concat(await cdp.evaluate("window.__erros || []"));
       assert.deepStrictEqual(jsErros, [], `erros de JS: ${JSON.stringify(jsErros)}`);
       assert.deepStrictEqual(excecoes, [], `exceções: ${JSON.stringify(excecoes)}`);
     });

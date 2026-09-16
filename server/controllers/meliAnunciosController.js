@@ -20,6 +20,8 @@ const otimizadorService = require("../services/meliAnuncios/otimizadorMeliServic
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const conteudoService = require("../services/meliAnuncios/meliConteudoService");
 const estoqueService = require("../services/meliAnuncios/meliEstoqueService");
+const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
+const motorMargemService = require("../services/motorMargem/motorMargemService");
 const { mlFetch } = require("../utils/mlClient");
 
 function extrairClienteContaId(valor) {
@@ -304,6 +306,116 @@ async function detalheFamilia(req, res) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] detalheFamilia:", err.message);
     return res.status(500).json({ ok: false, motivo: "Erro ao carregar o detalhe da família." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/performance?clienteSlug=&itemIds=A,B,C&clienteContaId=
+//
+// Enriquecimento AO VIVO desta tela: métricas dos últimos 7 dias
+// (meliMetricas7dService — views/vendas/conversão) e margem por MLB
+// (motorMargemService, o Motor de Margem já existente — nunca recalculado
+// aqui). Chamado pelo FRONTEND depois que a lista já pintou na tela: nunca
+// bloqueia /familias nem /familias/:familyId, que continuam DB-only. A lista
+// de `itemIds` vem do cliente — este endpoint nunca decide sozinho o que
+// buscar, e é isso que torna "zero chamada para item oculto" auditável.
+//
+// Métricas e margem são blocos INDEPENDENTES: falha de um nunca derruba o
+// outro (Promise.allSettled). Base de Custos não vinculada (ou qualquer
+// outro motivo de contexto do Motor de Margem não estar pronto) vira
+// `margemIndisponivel` com o MESMO texto que contextoPrecificacaoService.js
+// já usa — nunca um erro genérico, nunca um 500.
+// ----------------------------------------------------------------------------
+const PERFORMANCE_MAX_ITENS = 24; // teto de abuso da rota — independente da paginação da tela, não é a mesma coisa
+
+function montarMapaMargem(itens) {
+  const mapa = {};
+  for (const item of itens || []) {
+    const realized = item.margin && item.margin.realized;
+    const projected = item.margin && item.margin.projected;
+    const usaRealizada = !!(realized && realized.computable);
+    const exibida = usaRealizada ? realized : projected;
+    mapa[item.identity.itemId] = {
+      origem: usaRealizada ? "realized" : "projected",
+      margin: exibida ? exibida.margin : null,
+      marginPercent: exibida ? exibida.marginPercent : null,
+      status: item.quality.status,
+      statusLabel: item.quality.statusLabel,
+      statusReasons: item.quality.statusReasons,
+    };
+  }
+  return mapa;
+}
+
+async function performance(req, res) {
+  try {
+    const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const brutos = String((req.query && req.query.itemIds) || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const itemIds = brutos.slice(0, PERFORMANCE_MAX_ITENS);
+    if (brutos.length > itemIds.length) {
+      console.warn(
+        `[anuncios-meli] performance: itemIds cortado de ${brutos.length} para ${itemIds.length} (teto PERFORMANCE_MAX_ITENS).`
+      );
+    }
+    if (!itemIds.length) {
+      return res.json({ ok: true, metricas7d: {}, margem: {}, margemIndisponivel: null });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const contexto = await anunciosService.resolverContextoConta({
+      clienteId: cliente.id,
+      clienteContaId,
+      requireUsableGrant: true,
+    });
+
+    const [metricasResultado, margemResultado] = await Promise.allSettled([
+      metricas7dService.montarMetricas7d({ clienteId: cliente.id, mlUserId: contexto.mlUserId, itemIds }),
+      motorMargemService.montarItens({
+        clienteSlug: cliente.slug,
+        clienteContaId: contexto.contaId,
+        itemIds,
+      }),
+    ]);
+
+    let metricas7d = {};
+    if (metricasResultado.status === "fulfilled") {
+      metricas7d = metricasResultado.value;
+    } else {
+      console.error("[anuncios-meli] performance metricas7d:", metricasResultado.reason && metricasResultado.reason.message);
+    }
+
+    let margem = {};
+    let margemIndisponivel = null;
+    if (margemResultado.status === "fulfilled") {
+      margem = montarMapaMargem(margemResultado.value.itens);
+    } else {
+      const err = margemResultado.reason;
+      if (err && err.statusCode && err.payload && err.payload.codigo) {
+        // Contexto do Motor não está pronto (Base não vinculada, múltiplas
+        // bases, grant caído) — mensagem REAL do Motor, não tradução própria.
+        margemIndisponivel = { codigo: err.payload.codigo, mensagem: err.payload.erro };
+      } else {
+        console.error("[anuncios-meli] performance margem:", err && err.message);
+      }
+    }
+
+    return res.json({ ok: true, metricas7d, margem, margemIndisponivel });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] performance:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao carregar métricas e margem." });
   }
 }
 
@@ -1129,6 +1241,7 @@ module.exports = {
   listar,
   listarAgrupado,
   detalheFamilia,
+  performance,
   detalhe,
   atualizarConteudo,
   atualizarEstoque,

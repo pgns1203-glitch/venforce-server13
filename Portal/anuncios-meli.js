@@ -13,6 +13,7 @@
      GET   /anuncios-meli/resumo?clienteSlug=
      GET   /anuncios-meli/familias?clienteSlug=...    (A LISTA unificada)
      GET   /anuncios-meli/familias/:familyId          (expansão do agrupador)
+     GET   /anuncios-meli/performance                 (métricas 7d + margem, assíncrono — nunca bloqueia a lista)
      GET   /anuncios-meli/:itemId?clienteSlug=
      PATCH /anuncios-meli/:itemId/conteudo         (escreve no Mercado Livre)
      PATCH /anuncios-meli/:itemId/revisao
@@ -62,8 +63,12 @@
     // Ver docs/AUDITORIA_ANUNCIOS_ML_LISTAGEM_UNIFICADA.md.
     //
     // Cache dos agrupadores já expandidos: family_id -> detalhe. Reabrir um
-    // agrupador não gasta requisição.
-    state: { familyCache: {} },
+    // agrupador não gasta requisição. `performanceCache` é o mesmo tipo de
+    // cache, por item_id: métricas últ. 7 dias + margem já respondidas por
+    // GET /performance (ver carregarPerformance) — reabrir uma família ou
+    // repintar uma linha depois de uma edição de estoque lê daqui, nunca
+    // refaz a chamada ao Mercado Livre/Motor de Margem.
+    state: { familyCache: {}, performanceCache: {} },
     // Guardas de corrida em dois níveis:
     //  - familiaEpoca: invalida de uma vez TODAS as expansões em voo quando o
     //    cliente/conta muda (senão o detalhe do cliente A pintaria a tela do B);
@@ -567,7 +572,8 @@
     var html = '<div class="am-listagem" aria-label="Lista de anúncios">' +
       '<div class="am-listagem__head" aria-hidden="true">' +
         "<span></span><span>Anúncio</span><span>Status</span><span>Preço</span>" +
-        "<span>Estoque</span><span>Vendidos</span><span>Score VenForce</span><span></span>" +
+        "<span>Estoque</span><span>Vendidos</span><span>Métricas últ. 7 dias</span>" +
+        "<span>Margem</span><span>Score VenForce</span><span></span>" +
       "</div>";
     // Mesma grade, mesmas colunas, mesma densidade para os dois tipos de
     // linha. O que muda é só o que existe embaixo: um agrupador abre, um
@@ -593,6 +599,15 @@
       AM.paginacao.page = pagina;
       carregarAnuncios();
     });
+
+    // Métricas últ. 7 dias + margem chegam DEPOIS que a lista já está na
+    // tela — nunca atrasam este render. Só os anúncios avulsos (tipo
+    // "item") têm linha própria aqui; os que estão dentro de um agrupador
+    // ainda fechado não existem no DOM, então não entram nesta busca (ver
+    // carregarPerformance/§2 da auditoria).
+    carregarPerformance(
+      AM.anuncios.filter(function (l) { return l.tipo === "item"; }).map(function (l) { return l.item_id; })
+    );
   }
 
   // Linhas de anúncio da lista principal (tipo "item"). As linhas de MLB
@@ -689,7 +704,7 @@
       "<small>até " + escapeHtml(formatMoeda(max, f.moeda)) + "</small></span>";
   }
 
-  // Uma linha de agrupador, na MESMA grade de 8 colunas de rowAnuncioHtml.
+  // Uma linha de agrupador, na MESMA grade de 10 colunas de rowAnuncioHtml.
   // O painel de expansão é irmão da linha (não filho): .am-listagem é bloco,
   // não grade, então o painel simplesmente ocupa a largura inteira sem
   // precisar de caixa aninhada e sem desalinhar coluna nenhuma.
@@ -731,6 +746,11 @@
         escapeAttr(plural(f.total_user_products || 0, "variação", "variações")) + '">' +
         (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
       '<span class="am-row__num">' + (f.vendidos_total != null ? f.vendidos_total : "—") + "</span>" +
+      // Métricas 7d e margem SÓ existem por MLB — nem agregadas, nem uma
+      // média do agrupador (regra explícita: margem enganosa é pior que
+      // margem ausente). Expandir mostra o número real de cada variação.
+      '<span class="am-metricas7d am-metricas7d--indisponivel" title="Expanda para ver as métricas de cada variação">—</span>' +
+      '<span class="am-margem am-margem--indisponivel" title="A margem é calculada só por anúncio (MLB) — não existe uma margem do agrupador">—</span>' +
       scoreGaugeHtml(f.score_min) +
       '<div class="am-row__acao">' +
         '<span class="am-row__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
@@ -783,6 +803,15 @@
       }
       AM.state.familyCache[familyId] = r.data.familia;
       renderFamiliaDetalhe(r.data.familia, painel);
+
+      // Só AGORA, com os MLBs da família já pintados: busca métricas 7d +
+      // margem SÓ deles. Reabrir esta família mais tarde lê do cache (ver
+      // carregarPerformance) — não dispara esta chamada de novo.
+      var idsFamilia = [];
+      (r.data.familia.user_products || []).forEach(function (up) {
+        (up.itens || []).forEach(function (item) { idsFamilia.push(item.item_id); });
+      });
+      carregarPerformance(idsFamilia);
     });
   }
 
@@ -933,7 +962,7 @@
 
   // A linha do MLB dentro do agrupador — hoje filha DIRETA dele. Não reusa
   // rowAnuncioHtml() (a linha da lista é mais alta, com badges e medidor), mas
-  // ocupa EXATAMENTE as mesmas 8 colunas: a expansão é a continuação da
+  // ocupa EXATAMENTE as mesmas 10 colunas: a expansão é a continuação da
   // tabela, não uma tabela própria. Enquanto ela era uma árvore separada tinha
   // grade própria, e preço/estoque caíam em colunas que não eram as do
   // cabeçalho. O recuo sai de padding, nunca de uma coluna extra.
@@ -990,9 +1019,195 @@
       '<span class="am-mlb__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +
       celulaEstoqueHtml(a, "am-mlb__num") +
       '<span class="am-mlb__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
+      metricas7dCelulaHtml(a.item_id) +
+      margemCelulaHtml(a.item_id) +
       score +
       '<span class="am-mlb__acao">' + linkMl + "</span>" +
     "</div>";
+  }
+
+  // ===========================================================================
+  // MÉTRICAS ÚLT. 7 DIAS + MARGEM — enriquecimento AO VIVO e ASSÍNCRONO
+  //
+  // Duas colunas novas, GET /anuncios-meli/performance. Nunca bloqueiam a
+  // abertura da página nem a expansão de um agrupador: a linha nasce com a
+  // célula em "carregando…" e carregarPerformance() a resolve depois, só
+  // para os item_id que estão de fato visíveis — nunca um recorte decidido
+  // aqui, sempre a lista exata que o render acabou de montar.
+  //
+  // AM.state.performanceCache é o cache de sessão (por item_id, nunca
+  // persistido): reabrir uma família já expandida antes, ou repintar uma
+  // linha depois de editar o estoque, lê daqui — nenhuma das duas gasta uma
+  // chamada nova ao Mercado Livre/Motor de Margem.
+  //
+  // Margem é coluna PRÓPRIA, separada das métricas de tráfego/venda — nunca
+  // misturada na mesma célula. Só existe por MLB: a linha do agrupador
+  // mostra "—" fixo (ver rowGrupoHtml), mesmo depois de expandida.
+  // ===========================================================================
+
+  function formatarInteiroOuTraco(v) {
+    if (v === null || v === undefined) return "—";
+    return Number(v).toLocaleString("pt-BR");
+  }
+
+  function formatarPercentualCompacto(v) {
+    if (v === null || v === undefined) return "—";
+    return Number(v).toFixed(1).replace(".", ",") + "%";
+  }
+
+  function metricas7dConteudoHtml(m) {
+    if (!m) return '<span class="am-metricas7d__linha am-metricas7d__vazio">—</span>';
+    var conv = m.conversao == null ? "" : " · " + formatarPercentualCompacto(m.conversao);
+    return (
+      '<span class="am-metricas7d__linha" title="Visualizações nos últimos 7 dias">👁 ' +
+        formatarInteiroOuTraco(m.views) + "</span>" +
+      '<span class="am-metricas7d__linha" title="Vendas (e conversão) nos últimos 7 dias">🛒 ' +
+        formatarInteiroOuTraco(m.vendas) + conv + "</span>"
+    );
+  }
+
+  function metricas7dCelulaHtml(itemId) {
+    var cache = AM.state.performanceCache[itemId];
+    var conteudo = cache
+      ? metricas7dConteudoHtml(cache.metricas7d)
+      : '<span class="am-metricas7d__linha am-metricas7d__vazio">carregando…</span>';
+    return '<span class="am-metricas7d' + (cache ? "" : " am-metricas7d--carregando") +
+      '" data-metricas-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
+  }
+
+  // Cor por STATUS real do Motor de Margem (marginStatus.js) — nunca um
+  // limiar próprio reinventado aqui sobre o percentual.
+  var MARGEM_CLASSE = {
+    HEALTHY: "is-success",
+    LOW_MARGIN: "is-warning",
+    SUSPECT_DATA: "is-warning",
+    RECONCILING: "is-info",
+    LOSS: "is-danger",
+    UNVALIDATED: "is-neutral",
+  };
+
+  // Selo discreto de explicação — mesmo componente vf-info/vf-info-dot da
+  // Fundação (o ROAS em Ads usa o mesmo), não uma tooltip nova inventada.
+  function infoDotHtml(texto) {
+    return '<span class="vf-info am-margem__info">' +
+      '<button type="button" class="vf-info-dot" aria-label="Sobre esta margem"></button>' +
+      '<span class="vf-info__tip" role="tooltip">' + escapeHtml(texto) + "</span>" +
+    "</span>";
+  }
+
+  function margemConteudoHtml(m, margemIndisponivel) {
+    // Nível de CONTEXTO (Base não vinculada, múltiplas bases, grant caído):
+    // mesma mensagem que o Motor já gera — nunca um "Sem custo na Base"
+    // genérico inventado aqui.
+    if (margemIndisponivel) {
+      return '<span class="am-margem__estado" title="' + escapeAttr(margemIndisponivel.mensagem || "") + '">' +
+        escapeHtml(margemIndisponivel.mensagem || "Indisponível") + "</span>";
+    }
+    if (!m) return '<span class="am-margem__vazio">—</span>';
+
+    var classe = MARGEM_CLASSE[m.status] || "is-neutral";
+    // Precedência REALIZADA > PROJETADA — mesma regra que o próprio Motor já
+    // usa para ordenar (motorMargemService.valorOrdenacao).
+    var origemRotulo = m.origem === "realized" ? "Realizada" : "Projetada";
+    var tip = "Calculada pelo Motor de Margem — margem " + origemRotulo.toLowerCase() + ".";
+
+    if (m.marginPercent != null) {
+      return '<span class="am-margem__valor ' + classe + '">' + formatarPercentualCompacto(m.marginPercent) + "</span>" +
+        '<span class="am-margem__origem">' + origemRotulo + "</span>" +
+        infoDotHtml(tip);
+    }
+    // Sem número (ex.: UNVALIDATED) — rótulo REAL do Motor, com a razão real
+    // (statusReasons[0], já gerada por classifyStatus) como tooltip.
+    var motivo = (m.statusReasons && m.statusReasons[0]) || "";
+    return '<span class="am-margem__estado ' + classe + '" title="' + escapeAttr(motivo) + '">' +
+      escapeHtml(m.statusLabel || "Indisponível") + "</span>" +
+      infoDotHtml(tip);
+  }
+
+  function margemCelulaHtml(itemId) {
+    var cache = AM.state.performanceCache[itemId];
+    var conteudo = cache
+      ? margemConteudoHtml(cache.margem, cache.margemIndisponivel)
+      : '<span class="am-margem__vazio">carregando…</span>';
+    return '<span class="am-margem' + (cache ? "" : " am-margem--carregando") +
+      '" data-margem-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
+  }
+
+  // Busca métricas 7d + margem para os item_id pedidos — só os que ainda
+  // não estão em AM.state.performanceCache (reabrir/repintar não refaz
+  // chamada nenhuma). Nunca bloqueia quem chamou: é sempre disparada DEPOIS
+  // que a linha já está pintada na tela.
+  function carregarPerformance(itemIds) {
+    if (!AM.clienteAtual) return;
+    var vistos = {};
+    var pendentes = [];
+    (itemIds || []).forEach(function (id) {
+      if (!id || vistos[id] || AM.state.performanceCache[id]) return;
+      vistos[id] = true;
+      pendentes.push(id);
+    });
+    if (!pendentes.length) return;
+
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+      "&itemIds=" + encodeURIComponent(pendentes.join(","));
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+
+    api("/anuncios-meli/performance?" + qs).then(function (r) {
+      var dados = r.data;
+      if (!dados || !dados.ok) { pintarPerformanceIndisponivel(pendentes); return; }
+      pendentes.forEach(function (id) {
+        AM.state.performanceCache[id] = {
+          metricas7d: (dados.metricas7d && dados.metricas7d[id]) || null,
+          margem: (dados.margem && dados.margem[id]) || null,
+          margemIndisponivel: dados.margemIndisponivel || null,
+        };
+      });
+      pintarPerformanceEmCelulas(pendentes);
+    });
+  }
+
+  // Só pinta células que ainda existem no DOM (trocar de página/cliente no
+  // meio do caminho não pinta a tela errada — o item simplesmente não é
+  // mais encontrado) e só as que fazem parte DESTE lote (`alvo`), nunca
+  // sobrescrevendo a célula de um item de outra leitura em andamento.
+  function pintarPerformanceEmCelulas(ids) {
+    var alvo = {};
+    ids.forEach(function (id) { alvo[id] = true; });
+
+    document.querySelectorAll(".am-metricas7d[data-metricas-item]").forEach(function (cel) {
+      var id = cel.getAttribute("data-metricas-item");
+      if (!alvo[id]) return;
+      var cache = AM.state.performanceCache[id];
+      cel.classList.remove("am-metricas7d--carregando");
+      cel.innerHTML = metricas7dConteudoHtml(cache ? cache.metricas7d : null);
+    });
+    document.querySelectorAll(".am-margem[data-margem-item]").forEach(function (cel) {
+      var id = cel.getAttribute("data-margem-item");
+      if (!alvo[id]) return;
+      var cache = AM.state.performanceCache[id];
+      cel.classList.remove("am-margem--carregando");
+      cel.innerHTML = margemConteudoHtml(cache ? cache.margem : null, cache ? cache.margemIndisponivel : null);
+    });
+  }
+
+  // Falha de rede/servidor na chamada inteira: resolve o "carregando…" para
+  // "—" nas células pedidas, sem escrever no cache — assim uma tentativa
+  // futura (reabrir a família, voltar à página) tem uma chance nova em vez
+  // de ficar presa num "—" permanente por causa de uma falha passageira.
+  function pintarPerformanceIndisponivel(ids) {
+    var alvo = {};
+    ids.forEach(function (id) { alvo[id] = true; });
+
+    document.querySelectorAll(".am-metricas7d[data-metricas-item]").forEach(function (cel) {
+      if (!alvo[cel.getAttribute("data-metricas-item")]) return;
+      cel.classList.remove("am-metricas7d--carregando");
+      cel.innerHTML = metricas7dConteudoHtml(null);
+    });
+    document.querySelectorAll(".am-margem[data-margem-item]").forEach(function (cel) {
+      if (!alvo[cel.getAttribute("data-margem-item")]) return;
+      cel.classList.remove("am-margem--carregando");
+      cel.innerHTML = margemConteudoHtml(null, null);
+    });
   }
 
   // ===========================================================================
@@ -1360,6 +1575,8 @@
       // no Mercado Livre para ser escrito (ver rowGrupoHtml).
       celulaEstoqueHtml(a, "am-row__num") +
       '<span class="am-row__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
+      metricas7dCelulaHtml(a.item_id) +
+      margemCelulaHtml(a.item_id) +
       scoreGaugeHtml(a.score_venforce) +
       '<div class="am-row__acao">' + linkMl + "</div>" +
     "</div>";

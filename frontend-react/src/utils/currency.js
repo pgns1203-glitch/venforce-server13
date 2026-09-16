@@ -20,6 +20,19 @@ export function formatarVariacaoMoeda(valor, casas = 2) {
   return formatarMoeda(valor, { casas, sinalPositivo: true });
 }
 
+// Versão CURTA, para rótulos de navegação e badges — onde um valor completo
+// não cabe sem quebrar a linha. Nunca substitui o valor exato: quem usa isto
+// mantém o número completo por perto (title, tabela ou drawer).
+export function formatarMoedaCurta(valor) {
+  if (ehAusente(valor)) return AUSENTE;
+  const n = Number(valor);
+  const abs = Math.abs(n);
+  const sinal = n < 0 ? "−" : "";
+  if (abs >= 1_000_000) return `${sinal}R$ ${(abs / 1_000_000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} mi`;
+  if (abs >= 1000) return `${sinal}R$ ${(abs / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}k`;
+  return formatarMoeda(n, { casas: 0 });
+}
+
 // Versão compacta para KPIs muito largos.
 export function formatarMoedaCompacta(valor) {
   if (ehAusente(valor)) return AUSENTE;

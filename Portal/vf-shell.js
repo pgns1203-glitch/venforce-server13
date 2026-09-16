@@ -49,6 +49,13 @@ export const MODULOS = [
   // manda `slug`/`marketplace`, nunca `cliente`/`conta` (semântica
   // diferente, o hook nem lê esses nomes).
   { id: "cliente-360-v2", label: "Cliente 360 V2", rota: "cliente-360-react.html", linkParams: linkParamsCliente360V2 },
+  // FASE 1 (Projeto_cliente360) — fundação da nova Cliente 360 V3, sobre o
+  // mesmo Shell V3 desta sidebar (vf-context/vf-shell) — mesmo padrão de
+  // "visao" acima: nasce de Cliente+Operação já escolhidos aqui, não
+  // precisa de linkParams (contexto vem de vf-context.js, não da URL).
+  // Aditivo: V1 ("cliente-360") e V2 ("cliente-360-v2") acima continuam
+  // linkadas e intactas até o cutover (master prompt Fase 8).
+  { id: "cliente-360-v3", label: "Cliente 360 V3", rota: "cliente-360-v3.html" },
   // Convergência #4 §15 — Financeiro V3 é o destino para MELI/Shopee (D-8/
   // D-9 não afetam isto: contrato já existe para os dois hoje). Marketplace
   // não suportado por V3 (TikTok legado) ou sem conta resolvida cai em

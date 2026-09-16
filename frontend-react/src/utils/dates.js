@@ -21,6 +21,15 @@ export function rotularCompetencia(competencia) {
   return nome ? `${nome[0].toUpperCase()}${nome.slice(1)}/${ano}` : competencia;
 }
 
+// Versão curta para célula de tabela e chip: "ago/2026". O rótulo por extenso
+// continua em `rotularCompetencia` para cabeçalho e régua.
+export function rotularCompetenciaCurta(competencia) {
+  if (!ehCompetencia(competencia)) return AUSENTE;
+  const [ano, mes] = competencia.split("-");
+  const nome = MESES[Number(mes) - 1];
+  return nome ? `${nome.slice(0, 3)}/${ano}` : competencia;
+}
+
 export function competenciaAnterior(competencia) {
   const [ano, mes] = String(competencia).split("-").map(Number);
   const d = new Date(Date.UTC(ano, mes - 2, 1));

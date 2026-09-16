@@ -126,10 +126,10 @@ export function payloadCliente360({ ads = 4100, adsStatus = "carregado", ponteFe
           produtos: [{ mlb: "MLB1", titulo: "Produto 1", impacto: 900, unidadesAnterior: 250, unidadesAtual: 300, unitario: { anterior: 130, atual: 133 } }],
         },
         {
-          chave: "custo", label: "Custo do produto", impacto: -500, material: true,
+          chave: "custo", label: "Custo do produto", impacto: -613, material: true,
           descricao: "O custo unitário dos produtos comparáveis mudou.",
           formula: "− Σ unidades atuais × (custo unitário atual − custo unitário anterior)",
-          produtos: [{ mlb: "MLB2", titulo: "Produto 2", impacto: -500, unidadesAnterior: 100, unidadesAtual: 100, unitario: { anterior: 150, atual: 155 } }],
+          produtos: [{ mlb: "MLB2", titulo: "Produto 2", impacto: -613, unidadesAnterior: 100, unidadesAtual: 100, unitario: { anterior: 150, atual: 156.13 } }],
         },
         {
           chave: "outros", label: "Outros", impacto: 113, material: false,
@@ -145,10 +145,10 @@ export function payloadCliente360({ ads = 4100, adsStatus = "carregado", ponteFe
     },
 
     produtos: {
-      ajudaram: [{ mlb: "MLB1", titulo: "Produto 1", contribuicao: 1500, faturamento: 40000, unidadesAtual: 300, motivoDominante: "volume", margem: 0.25 }],
-      prejudicaram: [{ mlb: "MLB2", titulo: "Produto 2", contribuicao: -500, faturamento: 20000, unidadesAtual: 100, motivoDominante: "custo", margem: 0.05 }],
-      noVermelho: [{ mlb: "MLB3", titulo: "Produto 3", unidades: 50, faturamento: 5000, resultado: -1550, margemUnitaria: -31, margem: -0.31, precoMedio: 100, curvaA: false }],
-      abaixoDaMargem: [{ mlb: "MLB2", titulo: "Produto 2", unidades: 100, faturamento: 20000, margem: 0.05, gapMargemPp: 10, recuperavelAteAlvo: 2000, curvaA: true }],
+      ajudaram: [{ mlb: "MLB1", titulo: "Produto 1", contribuicao: 1500, faturamento: 40000, unidadesAtual: 300, motivoDominante: "volume", margem: 0.25, curvaA: true, curvaAbc: "A" }],
+      prejudicaram: [{ mlb: "MLB2", titulo: "Produto 2", contribuicao: -500, faturamento: 20000, unidadesAtual: 100, motivoDominante: "custo", margem: 0.05, curvaA: true, curvaAbc: "A" }],
+      noVermelho: [{ mlb: "MLB3", titulo: "Produto 3", unidades: 50, faturamento: 5000, resultado: -1550, margemUnitaria: -31, margem: -0.31, precoMedio: 100, curvaA: false, curvaAbc: "C", motivoRisco: "resultado_negativo" }],
+      abaixoDaMargem: [{ mlb: "MLB2", titulo: "Produto 2", unidades: 100, faturamento: 20000, margem: 0.05, gapMargemPp: 10, recuperavelAteAlvo: 2000, curvaA: true, curvaAbc: "A", motivoRisco: "margem_abaixo_alvo" }],
       curvaAEmRisco: [],
       totais: { noVermelho: 1, abaixoDaMargem: 1, analisados: 3 },
     },

@@ -23,8 +23,8 @@ const ROTULO_DELTA = {
   deltaFretePct: "Variação de frete",
 };
 
-export default function SimuladorResultado({ simulacao, slug, competencia, marketplace }) {
-  const sim = useCliente360Simulation({ slug, competencia, marketplace });
+export default function SimuladorResultado({ simulacao, slug, competencia, marketplace, clienteContaId }) {
+  const sim = useCliente360Simulation({ slug, competencia, marketplace, clienteContaId });
   const [busca, setBusca] = useState("");
   const [somenteAjustados, setSomenteAjustados] = useState(false);
 

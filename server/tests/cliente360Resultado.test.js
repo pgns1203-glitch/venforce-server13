@@ -66,8 +66,25 @@ const fakeCentralRepo = {
   },
 };
 
+// V3 FASE 0 — fake de resolução de conta: reusa o MESMO repo (getClienteBySlug +
+// getCentralVendasByRange) desta suíte, sem tocar banco. context sempre null — estas
+// fixtures não têm ClienteConta (universo legado por construção). O isolamento
+// multiconta real (conta A nunca lê B, rejeições 403/409/422) é coberto em
+// cliente360ContaScoped.test.js, com a resolução REAL (resolveMarketplaceAccountContext).
+function fakeResolveRangeContext(repo) {
+  return async (clienteSlug, { dateFrom, dateTo, marketplace }) => {
+    const cliente = await repo.getClienteBySlug(clienteSlug);
+    const snapshot = await repo.getCentralVendasByRange({ clienteSlug, dateFrom, dateTo, marketplace });
+    return { cliente, context: null, snapshot, dateFrom, dateTo, marketplace };
+  };
+}
+
 function adapterCom(repo = fakeCentralRepo) {
-  return createFechamentoAdapter({ centralRepo: repo, buildPayloadFromRange: fakeBuild });
+  return createFechamentoAdapter({
+    centralRepo: repo,
+    buildPayloadFromRange: fakeBuild,
+    resolveRangeContext: fakeResolveRangeContext(repo),
+  });
 }
 
 function adsFake(mapa = adsPorComp, status = STATUS.CARREGADO) {

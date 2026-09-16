@@ -212,7 +212,7 @@ ordenação e na mesma paginação.
 UP deveriam ter o mesmo valor (§1.5); `MAX` é determinístico se uma
 sincronização assíncrona os pegar momentaneamente divergentes.
 
-### 4.2.1 Uma tabela, um cabeçalho, três níveis
+### 4.2.1 Uma tabela, um cabeçalho, dois níveis visíveis
 
 A linha do agrupador, a linha do anúncio individual e a linha de MLB dentro do
 agrupador expandido usam a **mesma grade de 8 colunas** (`--am-cols`, declarada
@@ -229,6 +229,48 @@ lista, ela herdaria o cabeçalho da lista e contradiria as colunas dele.
 Uma diferença deliberada permanece: o Score do filho é número, não o medidor
 semicircular da linha-mãe — o medidor tem altura própria e igualaria a altura
 das duas linhas, apagando a hierarquia que o recuo estabelece.
+
+**Os três níveis do §1.1 são do modelo de dados; a tela mostra dois.** A
+primeira versão desta entrega desenhou os três, com o User Product como faixa
+"PRODUTO MLBU-… · 2 anúncios" acima dos seus MLBs. Esse nível saiu: o MLBU não
+é identificador que o operador reconheça, a listagem oficial do ML não o expõe,
+e o efeito prático era um degrau a mais entre o produto e o anúncio. A tela
+hoje é:
+
+```
+AGRUPADOR / PRODUTO   (título consolidado + family_id + agregados)
+  └── anúncios MLB    (item_id + condição comercial + preço + métricas)
+```
+
+O `user_product_id` **continua** governando a expansão — os MLBs da mesma
+variação seguem juntos, num bloco `.am-variacao` sem cabeçalho, que amarra as
+linhas irmãs com um trilho no vão da miniatura e separa uma variação da
+seguinte. Ele viaja em `data-user-product`: chave de agrupamento como dado,
+nunca como texto na tela. As agregações do §4.2 não mudaram — o estoque
+continua somando por MLBU distinto, que é a razão de o nível existir nos dados.
+
+Com a faixa do MLBU fora, dois anúncios da MESMA variação (o padrão
+Clássico + Premium) ficariam indistinguíveis: por isso a **condição comercial**
+entra na célula de identificação do filho, ao lado do MLB, derivada de
+`listing_type_id` pelo mapa `TIPO_ANUNCIO` que o modal de detalhe já usava.
+Dentro da variação a ordem preferida é Clássico → Premium, com desempate por
+`item_id` — preferência de exibição, não regra: variação com 1, 3 ou 5 MLBs, ou
+com tipo fora do mapa, cai no desempate e continua funcionando.
+
+Uma consequência no payload: `GET /anuncios-meli/familias/:familyId` passou a
+projetar `a.listing_type_id`, coluna que já existia em `meli_anuncios` e que a
+listagem plana sempre leu. É acréscimo de projeção — filtro, join, ordem e
+agregação da consulta estão intactos.
+
+**O que NÃO foi possível mostrar:** os atributos que identificam a variação
+(cor, tamanho). O ML os marca com `hierarchy: "CHILD_PK"` e a tag
+`variation_attribute` (`documentacao_api_meli/atributos.md`), mas
+`meli_anuncios.attributes_json` guarda apenas `{id, name, value}` — a sincronização
+descarta `tags` e `hierarchy`. Sem esses campos não há como saber QUAL atributo
+define a variação, e adivinhar por uma lista fixa de IDs (`COLOR`, `SIZE`, …)
+seria inventar regra: o conjunto é dependente de categoria. Identificar a
+variação fica com o que já existe e é fiel — a foto dela, o SKU e o título do
+anúncio.
 
 ### 4.3 Ordenação única
 

@@ -436,6 +436,10 @@ class MockDb {
           sku: a.sku,
           thumbnail: a.thumbnail,
           permalink: a.permalink,
+          // Coluna que já existia em meli_anuncios e passou a ser projetada
+          // também aqui: sem o nível do MLBU na tela, a condição comercial
+          // (Clássico / Premium) é o que distingue dois MLBs da mesma variação.
+          listing_type_id: a.listing_type_id == null ? null : a.listing_type_id,
           site_id: up.site_id,
           domain_id: up.domain_id,
           family_name: up.family_name,
@@ -876,7 +880,7 @@ async function run() {
   // S. Família compartilhada entre contas: Conta A só recebe os MLBs do escopo A.
   await withMockDb({
     anuncios: [
-      anuncioFixture({ item_id: "MLB-A", user_product_id: "UP-S", cliente_conta_id: 10 }),
+      anuncioFixture({ item_id: "MLB-A", user_product_id: "UP-S", cliente_conta_id: 10, listing_type_id: "gold_pro" }),
       anuncioFixture({ item_id: "MLB-B", user_product_id: "UP-S", cliente_conta_id: 20 }),
     ],
     userProducts: [upFixture({ user_product_id: "UP-S", family_id: "FAM-S" })],
@@ -886,7 +890,12 @@ async function run() {
     const todosItens = familia.user_products.flatMap((up) => up.itens);
     assert.strictEqual(todosItens.length, 1, "só o item da Conta A pode aparecer");
     assert.strictEqual(todosItens[0].item_id, "MLB-A");
-    console.log("  ✓ S. família compartilhada: Conta A só vê os MLBs do seu escopo");
+    // A expansão mostra os MLBs direto abaixo do agrupador, sem o nível do
+    // MLBU: a condição comercial é o que diferencia dois anúncios da mesma
+    // variação, então listing_type_id tem de chegar ao front.
+    assert.strictEqual(todosItens[0].listing_type_id, "gold_pro",
+      "o detalhe da família precisa trazer a condição comercial do anúncio");
+    console.log("  ✓ S. família compartilhada: Conta A só vê os MLBs do seu escopo (com condição comercial)");
   });
 
   // T. includeLegacy=true inclui linhas com cliente_conta_id NULL.

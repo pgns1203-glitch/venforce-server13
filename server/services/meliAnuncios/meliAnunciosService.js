@@ -453,6 +453,70 @@ async function atualizarCamposConfirmados(clienteId, itemId, campos = {}) {
   return rows.length ? rows[0] : null;
 }
 
+// Snapshot local do estoque JÁ CONFIRMADO pelo Mercado Livre.
+//
+// Duas escritas, porque são duas afirmações diferentes:
+//
+//  1. o item editado recebe o estoque confirmado e, quando o ML devolveu,
+//     também o status/sub_status que ELE reportou (available_quantity = 0
+//     pausa o anúncio, e um valor acima de 0 reativa o que estava
+//     out_of_stock — ver meliEstoqueService);
+//  2. os IRMÃOS do mesmo user_product_id recebem SÓ o estoque. É a regra
+//     documentada do ML ("available_quantity" está na lista de campos
+//     replicados por User Product), e a réplica lá é assíncrona: gravar aqui
+//     o valor final evita que a tela mostre números diferentes para o mesmo
+//     produto físico enquanto o ML converge. `status` NÃO entra na propagação
+//     — ele não está na lista de campos sincronizados por UP, então supor a
+//     transição do irmão seria inventar.
+//
+// Sem user_product_id (anúncio individual, relação UP:item 1:1 antes da tag
+// user_product_seller) a segunda escrita simplesmente não acontece.
+async function aplicarEstoqueConfirmado(
+  clienteId,
+  itemId,
+  { estoque, status = null, subStatus = null, definirSubStatus = false, userProductId = null } = {}
+) {
+  await ensureSchema();
+
+  const params = [clienteId, String(itemId), estoque];
+  const sets = ["estoque = $3"];
+  if (status) {
+    params.push(status);
+    sets.push(`status = $${params.length}`);
+  }
+  if (definirSubStatus) {
+    params.push(subStatus);
+    sets.push(`sub_status = $${params.length}`);
+  }
+
+  const { rows } = await db.query(
+    `-- ESTOQUE_CONFIRMADO_ITEM
+     UPDATE meli_anuncios
+        SET ${sets.join(", ")}, updated_at = NOW()
+      WHERE cliente_id = $1 AND item_id = $2
+      RETURNING *;`,
+    params
+  );
+  const anuncio = rows.length ? rows[0] : null;
+
+  let sincronizados = [];
+  if (userProductId) {
+    const { rows: irmaos } = await db.query(
+      `-- ESTOQUE_CONFIRMADO_IRMAOS_DO_UP
+       UPDATE meli_anuncios
+          SET estoque = $4, updated_at = NOW()
+        WHERE cliente_id = $1
+          AND user_product_id = $2
+          AND item_id <> $3
+        RETURNING item_id;`,
+      [clienteId, String(userProductId), String(itemId), estoque]
+    );
+    sincronizados = irmaos.map((r) => String(r.item_id));
+  }
+
+  return { anuncio, sincronizados };
+}
+
 // Candidatos ao backfill: anúncios já gravados que ainda não têm
 // user_product_id (não passaram pelo sync novo). Não chama o ML — só lê o
 // que já está no banco.
@@ -603,6 +667,7 @@ module.exports = {
   obterResumo,
   obterAnuncio,
   atualizarCamposConfirmados,
+  aplicarEstoqueConfirmado,
   marcarRevisado,
   upsertAnuncios,
   itemIdsSemUserProduct,

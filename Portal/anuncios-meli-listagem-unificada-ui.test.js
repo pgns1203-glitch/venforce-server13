@@ -24,14 +24,27 @@
  *     atrasada de A pintar o painel de B (guarda por family_id);
  *   · trocar de conta invalida o cache — o agrupador do contexto anterior não
  *     pode reaparecer com os dados velhos (guarda de época);
- *   · a hierarquia da TELA tem dois níveis, agrupador -> MLB: o User Product
- *     deixou de ser nível visível (era uma faixa "PRODUTO MLBU-…" acima dos
- *     seus anúncios) e nenhum MLBU aparece escrito em lugar nenhum da página;
+ *   · a hierarquia da TELA é a da listagem oficial do ML, agrupador ->
+ *     variação -> MLB, e o peso de cada nível importa: a variação se chama
+ *     pelo NOME amigável ("Azul P") e o MLBU é legenda do tamanho de um SKU.
+ *     Já houve os dois extremos aqui — uma faixa "PRODUTO MLBU-…" com o MLBU
+ *     de manchete, e nenhum cabeçalho — e nenhum dos dois é o que se quer;
+ *   · o nome da variação sai do TÍTULO, pela composição que o ML documenta
+ *     (title = family_name + valores dos atributos que variam), e quando o
+ *     título não está nessa forma o nome é o título INTEIRO — nunca um recorte
+ *     adivinhado;
  *   · o identificador que a linha principal mostra é o do AGRUPADOR;
- *   · uma variação com 2 MLBs aparece UMA vez, com os dois anúncios direto
- *     abaixo do agrupador e Clássico antes de Premium — sem depender disso: o
- *     padrão é preferência de ordem, e 1 ou 3 MLBs continuam funcionando;
+ *   · uma variação com 2 MLBs aparece UMA vez, com os dois anúncios abaixo
+ *     dela e Clássico antes de Premium — sem depender disso: o padrão é
+ *     preferência de ordem, e 1 ou 3 MLBs continuam funcionando;
  *   · clicar numa linha MLB do agrupador abre o MESMO modal da lista;
+ *   · o estoque se edita NA LINHA do MLB, e o efeito respeita a regra do ML:
+ *     available_quantity é replicado entre os itens do mesmo user_product_id,
+ *     então salvar pelo Clássico move o Premium da mesma variação junto — e
+ *     só ele, nunca outra variação da família. A lista de irmãos vem do
+ *     servidor; o agregado do agrupador é recalculado somando por MLBU;
+ *   · sair do campo de estoque NÃO salva (só Enter salva): é escrita num
+ *     anúncio real, e uma recusa do ML devolve a célula ao valor anterior;
  *   · a capa do agrupador é a que o backend escolheu (cover.thumbnail):
  *     aparece com ele FECHADO, sobrevive à expansão e acompanha a busca — o
  *     front nunca recalcula a capa a partir dos itens;
@@ -148,28 +161,46 @@ function item(id, titulo, up, extra) {
   }, extra || {});
 }
 
+// Os títulos de FAM-1 estão na forma que o ML documenta para o modelo de User
+// Products: título do item = family_name + os valores dos atributos que variam
+// ("Apple iPhone 256GB" -> "Apple iPhone 256GB Rojo", preco-variacao.md). É
+// dela que sai o nome amigável da variação ("Azul P"), e é por isso que o
+// fixture tem de respeitá-la — com títulos fora dessa forma, o teste validaria
+// só o caminho de fallback.
+//
+// FAM-2 é o contrário DE PROPÓSITO: "Caneca Térmica Inox 500ml" não começa por
+// "Caneca Térmica 500ml". É o título legado/editado, em que não existe sufixo
+// para extrair — e o nome da variação tem de ser o título inteiro, nunca um
+// recorte adivinhado.
+const NOME_FAM1 = "Camiseta Dry Fit Masculina";
 const DETALHE_CONTA_42 = {
   "FAM-1": {
-    family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
+    family_id: "FAM-1", family_name: NOME_FAM1,
     user_products: [
       // MLB-A1 tem imagem PRÓPRIA, diferente da capa: se o front voltar a
       // deduzir a capa pelo primeiro item, é esta que apareceria na linha.
       // A ordem AQUI é a do backend (por item_id) e é o Premium que vem
       // primeiro: se a tela apenas repetir a ordem recebida, a leitura
       // Clássico -> Premium do ML não acontece.
+      //
+      // Os dois títulos DIVERGEM de propósito. Pelo ML eles seriam iguais
+      // (title é campo sincronizado por User Product), então esta variação é o
+      // snapshot desatualizado: quem nomeia a variação é o primeiro item da
+      // ordem de exibição (o Clássico), e o irmão com título diferente tem de
+      // mostrar o seu na própria linha em vez de deixá-lo invisível.
       { user_product_id: "MLBU-100", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 2,
-        itens: [item("MLB-A1", "Camiseta Dry Fit Azul P", "MLBU-100",
+        itens: [item("MLB-A1", NOME_FAM1 + " Azul P (12 parcelas)", "MLBU-100",
                   { thumbnail: IMAGEM_DO_PRIMEIRO_ITEM, listing_type_id: "gold_pro" }),
-                item("MLB-A2", "Camiseta Dry Fit Azul P (12x)", "MLBU-100",
+                item("MLB-A2", NOME_FAM1 + " Azul P", "MLBU-100",
                   { listing_type_id: "gold_special" })] },
       // As três formas de variação, de propósito: mista (acima), só Clássico
       // e só Premium. Nenhuma delas pode depender do padrão
       // Clássico + Premium para renderizar.
       { user_product_id: "MLBU-200", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 1,
-        itens: [item("MLB-A3", "Camiseta Dry Fit Azul M", "MLBU-200",
+        itens: [item("MLB-A3", NOME_FAM1 + " Azul M", "MLBU-200",
           { listing_type_id: "gold_special" })] },
       { user_product_id: "MLBU-300", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 1,
-        itens: [item("MLB-A4", "Camiseta Dry Fit Azul G", "MLBU-300",
+        itens: [item("MLB-A4", NOME_FAM1 + " Azul G", "MLBU-300",
           { listing_type_id: "gold_pro" })] },
     ],
   },
@@ -195,6 +226,10 @@ const DETALHE_CONTA_43 = {
 // ── interruptores do cenário ───────────────────────────────────────────────
 let atrasoDetalheFamilia = {};   // family_id -> ms
 const pedidos = [];
+// Escritas de estoque que chegaram ao "servidor", e o gancho para forçar uma
+// resposta específica (recusa do ML, por exemplo).
+const escritasEstoque = [];
+let estoqueHandler = null;
 
 const SEMENTE = `
   try {
@@ -363,6 +398,46 @@ function wireInterception(cdp) {
         ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
         anuncios,
         paginacao: { page: 1, limit: 20, total: anuncios.length, totalPaginas: 1 },
+      });
+      return;
+    }
+
+    // PATCH /anuncios-meli/:itemId/estoque — a escrita de estoque.
+    //
+    // A resposta imita o backend real: devolve o valor CONFIRMADO (que pode
+    // não ser o enviado) e `itens_sincronizados`, os outros MLBs do mesmo
+    // user_product_id que o ML replica. A tela não pode deduzir essa lista —
+    // ela vem daqui.
+    const mEstoque = caminho.match(/^\/anuncios-meli\/([^/?]+)\/estoque/);
+    if (mEstoque) {
+      const itemId = decodeURIComponent(mEstoque[1]);
+      const enviado = JSON.parse(params.request.postData || "{}");
+      escritasEstoque.push({ itemId, corpo: enviado });
+      if (estoqueHandler) { await corpo(estoqueHandler(itemId, enviado)); return; }
+
+      const irmaos = [];
+      let upDoItem = null;
+      Object.keys(DETALHE_CONTA_42).forEach((fam) => {
+        DETALHE_CONTA_42[fam].user_products.forEach((up) => {
+          if (!up.itens.some((i) => i.item_id === itemId)) return;
+          upDoItem = up.user_product_id;
+          up.itens.forEach((i) => { if (i.item_id !== itemId) irmaos.push(i.item_id); });
+        });
+      });
+      const quantidade = Number(enviado.estoque);
+      await corpo({
+        ok: true,
+        estoque: quantidade,
+        // available_quantity = 0 pausa o anúncio no ML (out_of_stock). O status
+        // vem do servidor porque é o ML que o reporta.
+        anuncio: {
+          item_id: itemId,
+          estoque: quantidade,
+          status: quantidade === 0 ? "paused" : "active",
+          sub_status: quantidade === 0 ? "out_of_stock" : null,
+        },
+        itens_sincronizados: irmaos,
+        user_product_id: upDoItem,
       });
       return;
     }
@@ -608,42 +683,69 @@ async function run() {
           condicoes: linhas.map(function(r){
             var c = r.querySelector('.am-mlb__cond');
             return c ? c.textContent : null; }),
-          // Uma variação com irmãs ganha o trilho que amarra as linhas; uma
-          // variação de um só MLB não pode ganhar marca nenhuma.
-          multipla: alvo.length ? alvo[0].classList.contains('am-variacao--multipla') : null,
-          solitariaMarcada: Boolean(document.querySelector(
-            '${painelFam("FAM-1")} .am-variacao[data-user-product="MLBU-200"].am-variacao--multipla')),
         }; })()`);
       assert.strictEqual(up.ocorrencias, 1, "a variação foi duplicada na tela");
       // O backend entrega MLB-A1 (Premium) antes de MLB-A2 (Clássico): a tela
       // reordena para a leitura do ML, sem depender de o padrão existir.
       assert.deepStrictEqual(up.itens, ["MLB-A2", "MLB-A1"]);
       assert.deepStrictEqual(up.condicoes, ["Clássico", "Premium"]);
-      assert.strictEqual(up.multipla, true);
-      assert.strictEqual(up.solitariaMarcada, false, "variação de 1 MLB não pode ganhar o trilho de irmãs");
     });
 
-    await check("9b — as três formas de variação renderizam, e só a que tem irmãs ganha o trilho", async () => {
+    await check("9b — cada variação é nome amigável + MLBU discreto, e o nome sai do título do ML", async () => {
       // O padrão do negócio é Clássico + Premium por variação, mas NÃO é
       // regra. As três formas precisam sair igualmente bem: mista, só
-      // Clássico, só Premium.
+      // Clássico, só Premium — e as três precisam ter NOME.
+      //
+      // O nome vem da composição que o ML documenta (título = family_name +
+      // valores dos atributos que variam): subtraindo "Camiseta Dry Fit
+      // Masculina" do título sobra "Azul P" / "Azul M" / "Azul G", que é
+      // exatamente o rótulo da listagem oficial.
       const formas = await cdp.evaluate(`(function(){
         return Array.from(document.querySelectorAll('${painelFam("FAM-1")} .am-variacao'))
           .map(function(b){
+            var nome = b.querySelector('.am-variacao__nome');
+            var id = b.querySelector('.am-variacao__id');
             return {
               up: b.getAttribute('data-user-product'),
+              nome: nome ? nome.textContent : null,
+              mlbu: id ? id.textContent : null,
+              origem: b.getAttribute('data-nome-origem'),
               mlbs: Array.from(b.querySelectorAll('.am-mlb')).map(function(r){ return r.getAttribute('data-item'); }),
               condicoes: Array.from(b.querySelectorAll('.am-mlb__cond')).map(function(c){ return c.textContent; }),
-              trilho: b.classList.contains('am-variacao--multipla'),
             }; }); })()`);
       assert.deepStrictEqual(formas, [
-        { up: "MLBU-100", mlbs: ["MLB-A2", "MLB-A1"], condicoes: ["Clássico", "Premium"], trilho: true },
-        { up: "MLBU-200", mlbs: ["MLB-A3"], condicoes: ["Clássico"], trilho: false },
-        { up: "MLBU-300", mlbs: ["MLB-A4"], condicoes: ["Premium"], trilho: false },
-      ], `a matriz de formas de variação mudou: ${JSON.stringify(formas, null, 2)}`);
+        { up: "MLBU-100", nome: "Azul P", mlbu: "MLBU-100", origem: "sufixo",
+          mlbs: ["MLB-A2", "MLB-A1"], condicoes: ["Clássico", "Premium"] },
+        { up: "MLBU-200", nome: "Azul M", mlbu: "MLBU-200", origem: "sufixo",
+          mlbs: ["MLB-A3"], condicoes: ["Clássico"] },
+        { up: "MLBU-300", nome: "Azul G", mlbu: "MLBU-300", origem: "sufixo",
+          mlbs: ["MLB-A4"], condicoes: ["Premium"] },
+      ], `a matriz de variações mudou: ${JSON.stringify(formas, null, 2)}`);
     });
 
-    await check("9c — família de uma variação só: um MLB direto abaixo, sem trilho e sem nível", async () => {
+    await check("9b2 — o nome da variação é MAIS destacado que o MLBU ao lado dele", async () => {
+      // A regra do pedido: nome em destaque, MLBU pequeno/discreto. Sem isso o
+      // nível volta a ser "o nível do MLBU", que é o que se corrigiu. Medido
+      // no estilo computado, não na classe: é o tamanho que o operador vê.
+      const peso = await cdp.evaluate(`(function(){
+        var b = document.querySelector('${painelFam("FAM-1")} .am-variacao');
+        var n = getComputedStyle(b.querySelector('.am-variacao__nome'));
+        var i = getComputedStyle(b.querySelector('.am-variacao__id'));
+        var t = getComputedStyle(document.querySelector('${painelFam("FAM-1")} .am-mlb .am-mlb__ids'));
+        return {
+          nome: parseFloat(n.fontSize), pesoNome: Number(n.fontWeight),
+          mlbu: parseFloat(i.fontSize), pesoMlbu: Number(i.fontWeight),
+          legendaDaLinha: parseFloat(t.fontSize),
+        }; })()`);
+      assert.ok(peso.nome > peso.mlbu,
+        `o nome da variação tem de ser maior que o MLBU (${peso.nome} vs ${peso.mlbu})`);
+      assert.ok(peso.pesoNome > peso.pesoMlbu,
+        `o nome da variação tem de ser mais pesado que o MLBU (${peso.pesoNome} vs ${peso.pesoMlbu})`);
+      assert.strictEqual(peso.mlbu, peso.legendaDaLinha,
+        "o MLBU tem de ter o tamanho de legenda da linha (o mesmo do MLB/SKU), não um tamanho próprio");
+    });
+
+    await check("9c — variação única com título fora da forma do ML: nome é o título inteiro", async () => {
       await clicar(cdp, linhaFam("FAM-2"));
       await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")} .am-mlb')`, "FAM-2 não abriu");
       const f2 = await cdp.evaluate(`(function(){
@@ -652,44 +754,62 @@ async function run() {
         return {
           variacoes: p.querySelectorAll('.am-variacao').length,
           mlbs: Array.from(p.querySelectorAll('.am-mlb')).map(function(r){ return r.getAttribute('data-item'); }),
-          trilho: b.classList.contains('am-variacao--multipla'),
+          nome: b.querySelector('.am-variacao__nome').textContent,
+          mlbu: b.querySelector('.am-variacao__id').textContent,
+          origem: b.getAttribute('data-nome-origem'),
           irmas: p.querySelectorAll('.am-mlb--irma').length,
-          // Uma variação só não pode virar rótulo nem faixa: o painel não tem
-          // texto além do da própria linha do anúncio.
-          textoDoPainel: p.innerText.indexOf('MLBU-') === -1,
         }; })()`);
       assert.strictEqual(f2.variacoes, 1);
       assert.deepStrictEqual(f2.mlbs, ["MLB-B9"]);
-      assert.strictEqual(f2.trilho, false, "variação sem irmãs não pode ganhar o trilho");
+      // "Caneca Térmica Inox 500ml" NÃO começa por "Caneca Térmica 500ml": não
+      // há sufixo para extrair, então o nome é o título inteiro. Um recorte
+      // parcial aqui ("Inox", "Inox 500ml") seria regra inventada.
+      assert.strictEqual(f2.nome, "Caneca Térmica Inox 500ml");
+      assert.strictEqual(f2.origem, "titulo", "o nome deveria ter caído no fallback do título inteiro");
+      assert.strictEqual(f2.mlbu, "MLBU-300C");
       assert.strictEqual(f2.irmas, 0);
-      assert.strictEqual(f2.textoDoPainel, true);
       // Volta a FAM-2 ao estado fechado para não mudar o cenário das próximas.
       await clicar(cdp, linhaFam("FAM-2"));
       await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")}').hidden === true`, "FAM-2 não colapsou");
     });
 
-    await check("10 — o MLBU não é nível visível: nenhum aparece escrito na página", async () => {
+    await check("10 — a variação é subtítulo, não entidade: o MLBU aparece só como legenda dela", async () => {
       const estado = await cdp.evaluate(`(function(){
         var painel = document.querySelector('${painelFam("FAM-1")}');
         var bloco = painel.querySelector('.am-variacao');
+        // Todo texto "MLBU-…" visível na página, e onde ele mora.
+        var ondeApareceMlbu = Array.from(document.querySelectorAll('body *'))
+          .filter(function(e){
+            if (e.children.length) return false;                 // só folhas
+            return /MLBU-/.test(e.textContent || '');
+          })
+          .map(function(e){ return e.className || e.tagName; });
         return {
-          // A faixa "PRODUTO MLBU-…" que era o nível intermediário.
-          faixaAntiga: document.querySelectorAll('.am-up, .am-up__head, .am-up__id').length,
-          // O bloco de variação existe, mas não é nível: sem texto próprio,
-          // sem papel e sem foco.
+          // A faixa "PRODUTO MLBU-… · 2 anúncios" que era o nível intermediário
+          // não pode voltar: o nível agora se chama pelo NOME da variação.
+          faixaAntiga: document.querySelectorAll('.am-up, .am-up__head, .am-up__contagem').length,
           tag: bloco.tagName,
           temRole: bloco.hasAttribute('role'),
           temTabindex: bloco.hasAttribute('tabindex'),
-          // A chave continua existindo como DADO, nunca como texto.
           chaveInterna: bloco.getAttribute('data-user-product'),
-          mlbuNaTela: /MLBU-/.test(document.body.innerText),
+          ondeApareceMlbu: ondeApareceMlbu,
+          // Um MLBU por variação — nem zero (perdeu a legenda), nem repetido
+          // em cada linha de anúncio.
+          quantosMlbu: document.querySelectorAll('.am-variacao__id').length,
+          quantasVariacoes: document.querySelectorAll('.am-variacao').length,
         }; })()`);
-      assert.strictEqual(estado.faixaAntiga, 0, "o nível visível do User Product voltou");
+      assert.strictEqual(estado.faixaAntiga, 0, "a faixa antiga do User Product voltou");
       assert.strictEqual(estado.tag, "DIV");
-      assert.strictEqual(estado.temRole, false);
-      assert.strictEqual(estado.temTabindex, false);
+      assert.strictEqual(estado.temRole, false, "a variação não pode ser controle: ela não abre nada");
+      assert.strictEqual(estado.temTabindex, false, "a variação não pode receber foco: não há ação nela");
       assert.strictEqual(estado.chaveInterna, "MLBU-100", "o MLBU tem de seguir disponível como dado");
-      assert.strictEqual(estado.mlbuNaTela, false, "algum MLBU foi escrito na tela");
+      assert.strictEqual(estado.quantosMlbu, estado.quantasVariacoes,
+        "cada variação mostra exatamente um MLBU");
+      assert.deepStrictEqual(
+        Array.from(new Set(estado.ondeApareceMlbu)),
+        ["am-variacao__id vf-mono"],
+        `MLBU escrito fora da legenda da variação: ${JSON.stringify(estado.ondeApareceMlbu)}`
+      );
     });
 
     await check("10b — a linha principal do agrupador mostra o ID do agrupador", async () => {
@@ -700,6 +820,27 @@ async function run() {
       assert.deepStrictEqual(ids.mono, ["FAM-1"],
         `o ID maior do agrupador não aparece na linha principal: ${JSON.stringify(ids)}`);
       assert.ok(/3 variações/.test(ids.texto), "os agregados do grupo saíram da linha principal");
+    });
+
+    await check("10c — o título não é repetido na linha quando a variação já o disse", async () => {
+      // Com o nome da variação acima, o título na linha do anúncio seria a
+      // terceira repetição da mesma frase. Ele volta a aparecer SÓ quando
+      // difere de verdade — o que no fixture é o caso do Premium de MLBU-100,
+      // que está com título divergente no snapshot.
+      const titulos = await cdp.evaluate(`(function(){
+        return Array.from(document.querySelectorAll(
+          '${painelFam("FAM-1")} .am-variacao[data-user-product="MLBU-100"] .am-mlb'))
+          .map(function(r){
+            var t = r.querySelector('.am-mlb__titulo');
+            return { item: r.getAttribute('data-item'), titulo: t ? t.textContent : null };
+          }); })()`);
+      assert.deepStrictEqual(titulos, [
+        // Clássico: o título nomeou a variação, então não se repete na linha.
+        { item: "MLB-A2", titulo: null },
+        // Premium: título divergente no snapshot — aparece, porque esconder
+        // seria esconder um dado real.
+        { item: "MLB-A1", titulo: "Camiseta Dry Fit Masculina Azul P (12 parcelas)" },
+      ], JSON.stringify(titulos));
     });
 
     /* ── 11: cache — colapsar e reabrir não gasta requisição ────────────── */
@@ -913,9 +1054,230 @@ async function run() {
       assert.strictEqual(contar(/^\/anuncios-meli\?/, antes), 0, "a busca também disparou a listagem plana");
     });
 
-    /* ── 22: nenhum erro de JS na página ───────────────────────────────── */
+    /* ── 23 a 27: estoque editável na linha do MLB ──────────────────────── */
 
-    await check("22 — nenhum erro de JavaScript durante os fluxos", async () => {
+    // O cenário volta ao estado sem busca (a 21 deixou q=Azul, e com ele a
+    // lista só tem FAM-1).
+    const abrirFam1Limpo = async () => {
+      await cdp.evaluate(`(function(){
+        var i = document.getElementById('am-busca');
+        i.value = '';
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-2")}')`, "a lista não voltou ao estado sem busca");
+      if (!(await cdp.evaluate(`document.querySelector('${painelFam("FAM-1")} .am-mlb') !== null`))) {
+        await clicar(cdp, linhaFam("FAM-1"));
+      }
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "FAM-1 não reabriu");
+    };
+
+    const celEstoque = (item) => `.am-mlb[data-item="${item}"] .am-estoque`;
+
+    await check("23 — a célula de estoque do MLB é editável e NÃO abre o modal", async () => {
+      await abrirFam1Limpo();
+      const antes = pedidos.length;
+      await clicar(cdp, `${celEstoque("MLB-A2")} .am-estoque__btn`);
+      await waitFor(cdp, `document.querySelector('${celEstoque("MLB-A2")} .am-estoque__input')`,
+        "o clique no estoque não abriu o campo");
+      const estado = await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoque("MLB-A2")} .am-estoque__input');
+        var cel = document.querySelector('${celEstoque("MLB-A2")}');
+        var col = function(sel){ var e = document.querySelector(sel);
+          return e ? Math.round(e.getBoundingClientRect().left) : null; };
+        return {
+          valor: inp.value,
+          focado: document.activeElement === inp,
+          modalAberto: Boolean(document.getElementById('am-det-titulo')),
+          // Editar não pode mexer na grade: a célula continua na coluna de
+          // estoque, alinhada ao cabeçalho.
+          xCelula: Math.round(cel.getBoundingClientRect().left),
+          xCabecalho: col('.am-listagem__head span:nth-child(5)'),
+        }; })()`);
+      assert.strictEqual(estado.valor, "100", "o campo tem de abrir com o estoque atual");
+      assert.strictEqual(estado.focado, true, "o campo tem de receber o foco para o operador digitar direto");
+      assert.strictEqual(estado.modalAberto, false,
+        "o clique na célula de estoque abriu o modal do anúncio — a célula é controle próprio da linha");
+      assert.strictEqual(estado.xCelula, estado.xCabecalho,
+        `editar deslocou a coluna de estoque (${estado.xCelula} vs ${estado.xCabecalho})`);
+      assert.strictEqual(contar(/\/estoque/, antes), 0, "abrir o campo não pode escrever nada");
+    });
+
+    await check("24 — Esc cancela sem escrever no Mercado Livre", async () => {
+      const antes = pedidos.length;
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoque("MLB-A2")} .am-estoque__input');
+        inp.value = '77';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${celEstoque("MLB-A2")} .am-estoque__btn')`,
+        "Esc não devolveu a célula ao estado de leitura");
+      const estado = await cdp.evaluate(`(function(){
+        return {
+          texto: document.querySelector('${celEstoque("MLB-A2")} .am-estoque__btn').textContent.trim(),
+          modalAberto: Boolean(document.getElementById('am-det-titulo')),
+        }; })()`);
+      assert.strictEqual(estado.texto, "100", "Esc tem de restaurar o valor anterior");
+      assert.strictEqual(estado.modalAberto, false, "o Esc dentro do campo não pode vazar para a linha");
+      assert.strictEqual(contar(/\/estoque/, antes), 0, "Esc não pode ter escrito no Mercado Livre");
+    });
+
+    await check("25 — Enter salva, e o irmão do MESMO MLBU acompanha o estoque", async () => {
+      // A regra do ML: available_quantity é replicado em todos os itens do
+      // mesmo user_product_id. Salvar a partir do Clássico tem de mover o
+      // Premium junto — e a lista de irmãos vem do servidor, não é deduzida.
+      const antes = pedidos.length;
+      escritasEstoque.length = 0;
+      await clicar(cdp, `${celEstoque("MLB-A2")} .am-estoque__btn`);
+      await waitFor(cdp, `document.querySelector('${celEstoque("MLB-A2")} .am-estoque__input')`, "o campo não abriu");
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoque("MLB-A2")} .am-estoque__input');
+        inp.value = '55';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      })()`);
+      await waitFor(cdp,
+        `(function(){ var b = document.querySelector('${celEstoque("MLB-A2")} .am-estoque__btn');
+           return b && b.textContent.trim() === '55'; })()`,
+        "o estoque salvo não apareceu na célula");
+
+      assert.strictEqual(escritasEstoque.length, 1, "esperava exatamente uma escrita");
+      assert.strictEqual(escritasEstoque[0].itemId, "MLB-A2");
+      assert.strictEqual(escritasEstoque[0].corpo.estoque, 55);
+      assert.strictEqual(escritasEstoque[0].corpo.clienteSlug, "n97");
+      assert.strictEqual(contar(/^\/anuncios-meli\/MLB-A2\/estoque/, antes), 1);
+
+      const depois = await cdp.evaluate(`(function(){
+        var ler = function(item){
+          var b = document.querySelector('.am-mlb[data-item="' + item + '"] .am-estoque .am-estoque__btn');
+          return b ? b.textContent.trim() : null; };
+        return {
+          editado: ler('MLB-A2'),
+          irmao: ler('MLB-A1'),
+          outraVariacao: ler('MLB-A3'),
+          // O Enter que salva não pode subir para a linha, que trata Enter
+          // como "abrir o modal". Salvar substitui o conteudo da celula e
+          // desliga o campo do documento, entao um guard que dependa de
+          // closest() a partir do alvo ja nao acha a celula: a barreira tem
+          // de vir ANTES de mexer no DOM.
+          modalAberto: Boolean(document.getElementById('am-det-titulo')),
+        }; })()`);
+      assert.strictEqual(depois.modalAberto, false, "o Enter de salvar abriu o modal do anúncio");
+      assert.strictEqual(depois.editado, "55");
+      assert.strictEqual(depois.irmao, "55",
+        "o irmão do mesmo MLBU tem de acompanhar: o ML replica available_quantity por User Product");
+      assert.strictEqual(depois.outraVariacao, "100",
+        "outra variação (outro MLBU) não pode se mover — a replicação é por UP, não por família");
+    });
+
+    await check("26 — o estoque agregado do agrupador acompanha, somando por MLBU", async () => {
+      // 55 (MLBU-100, que tem 2 MLBs) + 100 + 100 = 255. Se a tela somasse
+      // item a item daria 310, que é o bug que a listagem unificada corrigiu.
+      const agregado = await cdp.evaluate(`(function(){
+        var c = document.querySelectorAll('${linhaFam("FAM-1")} .am-row__num');
+        return { estoque: c[0].textContent.trim(), vendidos: c[1].textContent.trim() }; })()`);
+      assert.strictEqual(agregado.estoque, "255",
+        `o agregado do agrupador não acompanhou a edição somando por MLBU: ${agregado.estoque}`);
+      assert.strictEqual(agregado.vendidos, "31", "vendidos não tem nada a ver com a edição de estoque");
+      // A expansão continua aberta: repintar a linha-mãe não pode fechar o
+      // painel e tirar o operador de onde ele estava.
+      const aberto = await cdp.evaluate(
+        `(function(){ var p = document.querySelector('${painelFam("FAM-1")}');
+           return { visivel: p && !p.hidden, mlbs: p ? p.querySelectorAll('.am-mlb').length : 0,
+                    aria: document.querySelector('${linhaFam("FAM-1")}').getAttribute('aria-expanded') }; })()`);
+      assert.deepStrictEqual(aberto, { visivel: true, mlbs: 4, aria: "true" },
+        "salvar o estoque fechou ou esvaziou a expansão");
+    });
+
+    await check("27 — recusa do Mercado Livre: a célula volta ao valor anterior e o motivo aparece", async () => {
+      estoqueHandler = () => ({
+        ok: false,
+        codigo: "item.available_quantity.invalid",
+        motivo: "O Mercado Livre recusou esta quantidade para o anúncio.",
+      });
+      try {
+        // O aviso de sucesso da 25 ainda pode estar na tela (os toasts vivem
+        // ~3s): limpar a pilha é o que garante que o aviso lido aqui é O desta
+        // verificação.
+        await cdp.evaluate(`(function(){
+          var s = document.getElementById('am-toast-stack');
+          if (s) s.innerHTML = '';
+        })()`);
+        await clicar(cdp, `${celEstoque("MLB-A2")} .am-estoque__btn`);
+        await waitFor(cdp, `document.querySelector('${celEstoque("MLB-A2")} .am-estoque__input')`, "o campo não abriu");
+        await cdp.evaluate(`(function(){
+          var inp = document.querySelector('${celEstoque("MLB-A2")} .am-estoque__input');
+          inp.value = '9';
+          inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        })()`);
+        await waitFor(cdp, "document.querySelector('.vf-toast')", "a recusa do ML não virou aviso na tela");
+        const estado = await cdp.evaluate(`(function(){
+          return {
+            texto: document.querySelector('${celEstoque("MLB-A2")} .am-estoque__btn').textContent.trim(),
+            irmao: document.querySelector('.am-mlb[data-item="MLB-A1"] .am-estoque__btn').textContent.trim(),
+            aviso: document.querySelector('.vf-toast').innerText,
+            toastDeErro: Boolean(document.querySelector('.vf-toast.is-danger')),
+          }; })()`);
+        assert.strictEqual(estado.texto, "55",
+          "recusado pelo ML, o número na tela tem de ser o de antes — nunca o que o operador digitou");
+        assert.strictEqual(estado.irmao, "55", "uma recusa não pode mover o irmão");
+        assert.match(estado.aviso, /recusou esta quantidade/,
+          `o motivo do ML precisa chegar ao operador: ${estado.aviso}`);
+        assert.strictEqual(estado.toastDeErro, true, "a recusa tem de ser sinalizada como erro");
+      } finally {
+        estoqueHandler = null;
+      }
+    });
+
+    await check("27b — o anúncio individual também edita estoque; o agrupador NÃO", async () => {
+      // "Cada linha MLB" inclui o anúncio sem agrupamento: ele é um MLB como
+      // qualquer outro. A linha do AGRUPADOR é a exceção, e não por esquecimento:
+      // o estoque dela é a soma das variações, não um número que exista no
+      // Mercado Livre para ser escrito.
+      const onde = await cdp.evaluate(`(function(){
+        return {
+          individual: Boolean(document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-estoque')),
+          agrupador: Boolean(document.querySelector('${linhaFam("FAM-1")} .am-estoque')),
+        }; })()`);
+      assert.strictEqual(onde.individual, true, "o anúncio individual precisa ter estoque editável");
+      assert.strictEqual(onde.agrupador, false,
+        "a linha do agrupador não pode ter estoque editável: o número dela é soma, não dado do ML");
+
+      const antes = pedidos.length;
+      escritasEstoque.length = 0;
+      await clicar(cdp, '.am-row[data-item="MLB-SEMUP"] .am-estoque .am-estoque__btn');
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-estoque__input')`,
+        "o campo não abriu no anúncio individual");
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-estoque__input');
+        inp.value = '0';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      })()`);
+      await waitFor(cdp,
+        `(function(){ var b = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-estoque__btn');
+           return b && b.textContent.trim() === '0'; })()`,
+        "o estoque 0 não apareceu na linha do anúncio individual");
+
+      assert.strictEqual(escritasEstoque.length, 1);
+      assert.strictEqual(escritasEstoque[0].corpo.estoque, 0, "zero tem de chegar ao servidor como 0");
+      assert.strictEqual(contar(/^\/anuncios-meli\/MLB-SEMUP\/estoque/, antes), 1);
+
+      // available_quantity = 0 pausa o anúncio no ML. O status na linha vem do
+      // que o servidor reportou — deixá-la "Ativo" seria a tela mentindo.
+      const depois = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        return {
+          status: r.querySelector('.vf-status').textContent.trim(),
+          estoque: r.querySelector('.am-estoque__btn').textContent.trim(),
+          modalAberto: Boolean(document.getElementById('am-det-titulo')),
+        }; })()`);
+      assert.strictEqual(depois.estoque, "0");
+      assert.strictEqual(depois.status, "Pausado",
+        "estoque 0 pausa o anúncio no ML: a linha tem de acompanhar o status que o servidor devolveu");
+      assert.strictEqual(depois.modalAberto, false, "editar o estoque abriu o modal do anúncio");
+    });
+
+    /* ── 28: nenhum erro de JS na página (sempre a última) ─────────────── */
+
+    await check("28 — nenhum erro de JavaScript durante os fluxos", async () => {
       const jsErros = errosAteAqui.concat(await cdp.evaluate("window.__erros || []"));
       assert.deepStrictEqual(jsErros, [], `erros de JS: ${JSON.stringify(jsErros)}`);
       assert.deepStrictEqual(excecoes, [], `exceções: ${JSON.stringify(excecoes)}`);

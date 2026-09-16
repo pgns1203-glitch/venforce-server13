@@ -29,6 +29,7 @@
 //   GET    /anuncios-meli/:itemId
 //   PATCH  /anuncios-meli/:itemId/revisao
 //   PATCH  /anuncios-meli/:itemId/conteudo      (edição real no Mercado Livre)
+//   PATCH  /anuncios-meli/:itemId/estoque       (edição real no Mercado Livre)
 // -----------------------------------------------------------------------------
 
 const express = require("express");
@@ -126,6 +127,13 @@ router.patch("/:itemId/revisao", ctrl.marcarRevisado);
 // requireAdmin do otimizador existe porque a IA está em validação, não porque
 // escrever no anúncio seja privilégio de admin.
 router.patch("/:itemId/conteudo", ctrl.atualizarConteudo);
+
+// Edição de ESTOQUE do anúncio NO MERCADO LIVRE (PUT /items { available_quantity }).
+// Mesmo acesso de /conteudo, pelo mesmo motivo: é escrita no anúncio, não
+// privilégio de admin. O estoque no ML pertence ao User Product, então esta
+// rota também devolve os irmãos do mesmo MLBU que passam a valer o mesmo
+// número — ver meliEstoqueService para a regra e a fonte na doc do ML.
+router.patch("/:itemId/estoque", ctrl.atualizarEstoque);
 
 router.get("/:itemId", ctrl.detalhe);
 

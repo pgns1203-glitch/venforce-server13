@@ -580,6 +580,7 @@
     box.innerHTML = html;
 
     bindLinhasAnuncio(box);
+    bindEstoqueEditavel(box);
 
     box.querySelectorAll(".am-row--grupo[data-familia]").forEach(function (row) {
       row.addEventListener("click", function () { alternarGrupo(row); });
@@ -600,12 +601,17 @@
   function bindLinhasAnuncio(raiz) {
     raiz.querySelectorAll(".am-row[data-item]").forEach(function (row) {
       function abrir() { abrirDetalhe(row.getAttribute("data-item"), row); }
+      // Mesmas duas exceções da linha filha (ver bindLinhasMlb): controles
+      // próprios da linha não podem abrir o modal por cima deles.
+      function ehControleProprio(e) {
+        return !!(e.target.closest(".am-row__link") || e.target.closest(".am-estoque"));
+      }
       row.addEventListener("click", function (e) {
-        if (e.target.closest(".am-row__link")) return; // ação externa não abre o modal
+        if (ehControleProprio(e)) return; // ação externa não abre o modal
         abrir();
       });
       row.addEventListener("keydown", function (e) {
-        if (e.target.closest(".am-row__link")) return; // deixa o link nativo agir (Enter = navegar)
+        if (ehControleProprio(e)) return; // deixa o link nativo agir (Enter = navegar)
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(); }
       });
     });
@@ -615,36 +621,32 @@
   // LINHA DE AGRUPADOR — e a expansão Agrupador -> Item MLB
   //
   // A hierarquia do Mercado Livre tem três níveis (family_id ->
-  // user_product_id -> item_id) e o backend continua entregando os três. A
-  // TELA mostra dois:
+  // user_product_id -> item_id) e a tela mostra os três, como a listagem
+  // oficial do ML:
   //
-  //   AGRUPADOR / PRODUTO
-  //     └── anúncios MLB
+  //   AGRUPADOR / FAMÍLIA
+  //     └── VARIAÇÃO   (nome amigável + MLBU discreto)
+  //          ├── MLB Clássico
+  //          └── MLB Premium
   //
-  // e não mais:
-  //
-  //   AGRUPADOR
-  //     └── MLBU
-  //          └── MLB
-  //
-  // O User Product era um nível visível (uma faixa "Produto MLBU-…" acima dos
-  // seus MLBs) e deixou de ser: MLBU não é o identificador que o operador
-  // reconhece, e a listagem oficial do ML também não o expõe. Ele segue
-  // existindo no payload e segue organizando a expansão — os MLBs da mesma
-  // variação continuam juntos, num bloco .am-variacao que não tem cabeçalho e
-  // não mostra o MLBU. O identificador que aparece é o do agrupador, na linha
-  // principal; abaixo dela, cada filho aparece com o seu MLB.
-  //
-  // Nenhum agrupador abre sozinho: expandir é sempre ação explícita do
-  // operador, e só a primeira expansão gasta requisição (AM.state.familyCache,
-  // via GET /anuncios-meli/familias/:familyId).
+  // A variação voltou a ser nível visível, mas com o peso trocado: antes ela
+  // era uma faixa "PRODUTO MLBU-123 · 2 anúncios" — o MLBU como manchete de um
+  // nível. Agora a manchete é o NOME da variação ("Azul P") e o MLBU é
+  // legenda, do tamanho de um SKU. O MLBU não é entidade operável: o nível não
+  // tem handler, não expande, não abre nada.
   //
   // Ações por nível, de propósito:
   //   Agrupador -> só expandir/colapsar (a família é chave derivada do ML, não
   //                entidade operável: não tem preço nem status próprio);
-  //   Variação  -> nada: é caixa de agrupamento sem cabeçalho e sem handler;
-  //   Item MLB  -> abrirDetalhe(), que é o modal de sempre — com edição e
-  //                otimização inalteradas.
+  //   Variação  -> nada: é subtítulo dos MLBs, sem handler;
+  //   Item MLB  -> abrirDetalhe() (o modal de sempre) e edição de ESTOQUE na
+  //                própria linha — o único dado do anúncio que se escreve sem
+  //                abrir o modal, porque no ML ele pertence à variação e não
+  //                ao anúncio (ver salvarEstoque).
+  //
+  // Nenhum agrupador abre sozinho: expandir é sempre ação explícita do
+  // operador, e só a primeira expansão gasta requisição (AM.state.familyCache,
+  // via GET /anuncios-meli/familias/:familyId).
   // ===========================================================================
 
   function iconeChevronSvg() {
@@ -792,9 +794,10 @@
       return;
     }
     var html = "";
-    ups.forEach(function (up) { html += variacaoHtml(up); });
+    ups.forEach(function (up) { html += variacaoHtml(up, familia); });
     painel.innerHTML = html;
     bindLinhasMlb(painel);
+    bindEstoqueEditavel(painel);
     // Expandir não mexe na capa: ela já veio decidida na listagem.
   }
 
@@ -823,27 +826,107 @@
     });
   }
 
-  // Bloco de uma variação: agrupamento visual PURO — sem cabeçalho, sem
-  // rótulo, sem o MLBU e sem handler. Ele existe só para manter juntos os
-  // MLBs da mesma variação (o Clássico e o Premium ficam lado a lado, como no
-  // ML) e para separar uma variação da seguinte. O user_product_id viaja em
-  // data-attribute porque continua sendo a chave do agrupamento — mas como
-  // dado, nunca como texto na tela.
-  function variacaoHtml(up) {
+  // ---------------------------------------------------------------------------
+  // NOME AMIGÁVEL DA VARIAÇÃO — o "Azul 36" da listagem oficial do ML.
+  //
+  // Sai do TÍTULO do próprio anúncio. No modelo de User Products o ML compõe o
+  // título do item como family_name + os valores dos atributos que variam:
+  //
+  //     family_name : "Apple iPhone 256GB"
+  //     title       : "Apple iPhone 256GB Rojo"   ->  variação: "Rojo"
+  //
+  // (documentacao_api_meli/preco-variacao.md, resposta de criação de item; e
+  // "se o family_name for modificado, o título do item será recalculado").
+  // E `title` está na lista de campos SINCRONIZADOS por User Product
+  // (user-products.md): o título pertence à VARIAÇÃO, não à condição de venda.
+  // É isso que autoriza o título a nomeá-la — os dois MLBs de uma variação têm
+  // o mesmo título por definição do ML.
+  //
+  // Por que NÃO pelos atributos: quem define a variação são os atributos com
+  // hierarchy CHILD_PK / tag variation_attribute, e meliSyncService grava
+  // attributes_json só como {id, name, value} — descarta `tags` e `hierarchy`.
+  // Sem eles não há como saber qual atributo varia, e o conjunto depende da
+  // categoria: cravar COLOR/SIZE seria regra inventada. O caminho documentado
+  // para resolver isso de verdade é GET /user-products-families/{family_id},
+  // que devolve `child_attributes_ids` — mas é chamada e persistência novas,
+  // ou seja, reabrir a sincronização. Fica registrado, não feito.
+  //
+  // Quando o título não começa pelo family_name (título legado, family_name
+  // trocado depois, item que nunca passou por UPtin) não existe sufixo para
+  // extrair — e aí o nome é o título INTEIRO, que é o melhor identificador
+  // fiel do payload. Nunca um recorte adivinhado.
+  // ---------------------------------------------------------------------------
+
+  // O título que representa a variação. É o do primeiro item com título: eles
+  // são iguais entre irmãos por sincronização do ML, e quando um difere (linha
+  // velha no snapshot) esse item mostra o seu na própria linha.
+  function tituloDaVariacao(itens) {
+    for (var i = 0; i < itens.length; i++) {
+      if (itens[i] && itens[i].titulo) return itens[i].titulo;
+    }
+    return "";
+  }
+
+  function skuDaVariacao(itens) {
+    for (var i = 0; i < itens.length; i++) {
+      if (itens[i] && itens[i].sku) return itens[i].sku;
+    }
+    return "";
+  }
+
+  function nomeVariacao(itens, familyName) {
+    var base = tituloDaVariacao(itens);
+    if (!base) {
+      // Sem título, o próximo identificador fiel é o SKU. Sem nenhum dos dois
+      // não se inventa nome: o MLBU já está na legenda, abaixo.
+      var sku = skuDaVariacao(itens);
+      return sku
+        ? { nome: sku, origem: "sku" }
+        : { nome: "Variação sem nome", origem: "vazio" };
+    }
+    var fam = String(familyName || "").trim();
+    if (fam && base.length > fam.length &&
+        base.slice(0, fam.length).toLowerCase() === fam.toLowerCase()) {
+      // Separadores que o vendedor costuma pôr entre o nome do produto e a
+      // variação ("Camiseta - Azul P"): saem do começo do sufixo para o rótulo
+      // não abrir com pontuação solta.
+      var sufixo = base.slice(fam.length).replace(/^[\s\-–—,:;/|]+/, "").trim();
+      if (sufixo) return { nome: sufixo, origem: "sufixo" };
+    }
+    return { nome: base, origem: "titulo" };
+  }
+
+  // Bloco de uma variação: nome amigável em destaque, MLBU como legenda, e os
+  // MLBs logo abaixo — a leitura da listagem oficial do ML.
+  //
+  // O nível é SUBTÍTULO, não entidade: não tem handler, não expande, não abre
+  // nada e não é foco de teclado. O que se opera continua sendo o anúncio (a
+  // linha abaixo) e o agrupador (a linha acima). O user_product_id aparece
+  // como texto porque é o endereço do produto físico no ML — mas em tamanho de
+  // legenda, nunca como manchete do nível.
+  function variacaoHtml(up, familia) {
     var itens = ordenarFilhos(up.itens || []);
-    // O trilho que amarra as linhas irmãs só existe quando há irmãs. Variação
-    // com um único MLB é linha solta e não ganha marca nenhuma — nem trilho,
-    // nem contorno: ela tem de ler igual a qualquer outro anúncio.
-    var classe = "am-variacao" + (itens.length > 1 ? " am-variacao--multipla" : "");
-    var html = '<div class="' + classe + '" data-user-product="' +
-      escapeAttr(up.user_product_id) + '">';
+    var base = tituloDaVariacao(itens);
+    var v = nomeVariacao(itens, familia && familia.family_name);
+
+    var html = '<div class="am-variacao" data-user-product="' +
+      escapeAttr(up.user_product_id) + '" data-nome-origem="' + v.origem + '">' +
+      '<div class="am-variacao__head">' +
+        '<span class="am-variacao__nome">' + escapeHtml(v.nome) + "</span>" +
+        '<span class="am-variacao__id vf-mono" title="User Product — o produto físico do Mercado Livre que reúne estas condições de venda">' +
+          escapeHtml(up.user_product_id) + "</span>" +
+      "</div>";
+
     itens.forEach(function (item, i) {
-      // Título repetido só atrapalha: dois anúncios da mesma variação
-      // normalmente têm o MESMO título (o produto é um só) e o que os
-      // diferencia é a condição comercial. Quando os títulos de fato diferem,
-      // os dois aparecem — a supressão é comparação de dado, não suposição.
-      var repetido = i > 0 && (item.titulo || "") === (itens[0].titulo || "");
-      html += rowMlbCompactaHtml(item, { irma: i > 0, tituloRepetido: repetido });
+      html += rowMlbCompactaHtml(item, {
+        irma: i > 0,
+        // O título só aparece na linha quando DIFERE do que nomeou a variação.
+        // No caso normal ele seria a terceira repetição da mesma frase (linha
+        // do agrupador, cabeçalho da variação, linha do anúncio) e o que
+        // distingue os irmãos é a condição comercial e o preço. Quando difere,
+        // aparece — é comparação de dado, não suposição.
+        tituloProprio: (item.titulo || "") !== base,
+      });
     });
     return html + "</div>";
   }
@@ -886,12 +969,12 @@
     var condHtml = cond
       ? '<span class="am-mlb__cond">' + escapeHtml(cond) + "</span>"
       : "";
-    // O título só desaparece quando é IDÊNTICO ao do irmão de cima (mesma
-    // variação): aí o que sobra na linha — MLB, condição comercial e preço —
-    // é exatamente o que diferencia os dois anúncios.
-    var tituloHtml = op.tituloRepetido
-      ? ""
-      : '<span class="am-mlb__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</span>";
+    // Título na linha só quando ele NÃO é o que já nomeou a variação logo
+    // acima (ver variacaoHtml): aí o que sobra — MLB, condição comercial e
+    // preço — é exatamente o que diferencia dois anúncios do mesmo produto.
+    var tituloHtml = op.tituloProprio
+      ? '<span class="am-mlb__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</span>"
+      : "";
 
     return '<div class="am-mlb' + (op.irma ? " am-mlb--irma" : "") +
       '" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
@@ -905,11 +988,299 @@
       "</span>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
       '<span class="am-mlb__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +
-      '<span class="am-mlb__num">' + (a.estoque != null ? a.estoque : "—") + "</span>" +
+      celulaEstoqueHtml(a, "am-mlb__num") +
       '<span class="am-mlb__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
       score +
       '<span class="am-mlb__acao">' + linkMl + "</span>" +
     "</div>";
+  }
+
+  // ===========================================================================
+  // ESTOQUE EDITÁVEL NA LINHA DO MLB
+  //
+  // A edição parte de um anúncio, mas o estoque NÃO é do anúncio: no modelo de
+  // User Products o ML replica `available_quantity` em todos os itens do mesmo
+  // user_product_id (documentacao_api_meli/user-products.md). Então salvar a
+  // partir do Clássico muda o Premium da mesma variação junto — e a tela mostra
+  // isso na hora, nos dois, porque é o que o ML garante. Quem faz a escrita é
+  // PATCH /anuncios-meli/:itemId/estoque -> PUT /items { available_quantity };
+  // os irmãos afetados voltam na resposta (itens_sincronizados), nunca são
+  // deduzidos aqui.
+  //
+  // A célula ocupa a MESMA coluna de estoque de sempre. Nenhuma coluna nova:
+  // a grade --am-cols é compartilhada com o cabeçalho e com a linha-mãe.
+  // ===========================================================================
+
+  function botaoEstoqueHtml(rotulo) {
+    return '<button type="button" class="am-estoque__btn" ' +
+      'title="Editar o estoque desta variação no Mercado Livre" ' +
+      'aria-label="Estoque ' + escapeAttr(rotulo) + ' — editar no Mercado Livre">' +
+      escapeHtml(rotulo) + "</button>";
+  }
+
+  // `classeColuna` é a classe de coluna do nível que está desenhando a linha
+  // (.am-mlb__num no filho, .am-row__num no anúncio individual): a célula se
+  // comporta igual nos dois, mas continua vestida como a coluna do seu nível.
+  // `.am-estoque` é o que marca "esta célula é editável" — é por ela que o
+  // bind acha as células e que os handlers de linha sabem não abrir o modal.
+  function celulaEstoqueHtml(a, classeColuna) {
+    var tem = a.estoque != null;
+    return '<span class="' + (classeColuna || "am-mlb__num") + ' am-estoque" data-estoque-item="' +
+      escapeAttr(a.item_id) + '" data-estoque-valor="' +
+      escapeAttr(tem ? a.estoque : "") + '">' +
+      botaoEstoqueHtml(tem ? String(a.estoque) : "—") + "</span>";
+  }
+
+  function bindEstoqueEditavel(raiz) {
+    raiz.querySelectorAll(".am-estoque").forEach(function (cel) {
+      cel.addEventListener("click", function (e) {
+        // A célula fica DENTRO da linha, que abre o modal. O clique aqui é
+        // sempre da célula — nunca escala para a linha.
+        e.stopPropagation();
+        if (e.target.closest(".am-estoque__btn")) abrirEditorEstoque(cel);
+      });
+    });
+  }
+
+  // Estados da célula, todos nela mesma: leitura -> edição -> salvando ->
+  // leitura. O `data-estoque-valor` é a memória do valor de leitura, e é o que
+  // o Esc restaura.
+  function pintarEstoqueLeitura(cel) {
+    var bruto = cel.getAttribute("data-estoque-valor");
+    cel.removeAttribute("data-estoque-editando");
+    cel.classList.remove("is-editando", "is-salvando");
+    cel.innerHTML = botaoEstoqueHtml(bruto === "" || bruto === null ? "—" : bruto);
+  }
+
+  function abrirEditorEstoque(cel) {
+    if (cel.getAttribute("data-estoque-editando") === "1") return;
+    if (cel.classList.contains("is-salvando")) return;
+    var atual = cel.getAttribute("data-estoque-valor") || "";
+    cel.setAttribute("data-estoque-editando", "1");
+    cel.classList.add("is-editando");
+    // O campo é `number` com min 0 e sem casas: 0 é valor válido e
+    // significativo (o ML pausa o anúncio por falta de estoque), então nada
+    // aqui pode tratar 0 como "vazio".
+    cel.innerHTML = '<input type="number" class="am-estoque__input" min="0" step="1" ' +
+      'inputmode="numeric" value="' + escapeAttr(atual) + '" ' +
+      'title="Enter salva no Mercado Livre, Esc cancela" ' +
+      'aria-label="Estoque em unidades. Enter salva no Mercado Livre, Esc cancela." />';
+    var input = cel.querySelector(".am-estoque__input");
+    if (!input) return;
+    input.focus();
+    input.select();
+
+    input.addEventListener("keydown", function (e) {
+      // stopPropagation PRIMEIRO, antes de qualquer coisa que mexa no DOM.
+      //
+      // A linha é role="button" e trata Enter como "abrir o modal"; o guard
+      // dela ignora eventos vindos da célula via `e.target.closest('.am-estoque')`.
+      // Só que salvar/cancelar substitui o innerHTML da célula, o que
+      // DESLIGA o input do documento — e um nó solto não tem `closest` que
+      // chegue à célula. O guard passava a falhar e o Enter de salvar abria o
+      // modal por cima. Barrar a subida antes de mexer no DOM é o que fecha
+      // isso, e não depende de ordem de listener.
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        salvarEstoque(cel, input.value);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        pintarEstoqueLeitura(cel);
+      }
+    });
+
+    // Sair do campo CANCELA — nunca salva. Escrever num anúncio real por
+    // distração (um clique fora, um Tab) seria efeito colateral inaceitável
+    // numa tela que lista centenas de anúncios. Salvar é sempre Enter.
+    input.addEventListener("blur", function () {
+      if (cel.classList.contains("is-salvando")) return;
+      pintarEstoqueLeitura(cel);
+    });
+  }
+
+  function salvarEstoque(cel, bruto) {
+    var itemId = cel.getAttribute("data-estoque-item");
+    var anterior = cel.getAttribute("data-estoque-valor") || "";
+    var texto = String(bruto == null ? "" : bruto).trim();
+
+    // Nada mudou: não gasta uma escrita no Mercado Livre.
+    if (texto === anterior) { pintarEstoqueLeitura(cel); return; }
+    if (!/^\d+$/.test(texto)) {
+      toast("O estoque precisa ser um número inteiro igual ou maior que zero.", "is-danger");
+      pintarEstoqueLeitura(cel);
+      return;
+    }
+
+    cel.classList.remove("is-editando");
+    cel.classList.add("is-salvando");
+    cel.removeAttribute("data-estoque-editando");
+    cel.innerHTML = '<span class="am-estoque__salvando" aria-live="polite">salvando…</span>';
+
+    var corpo = { clienteSlug: AM.clienteAtual.slug, estoque: Number(texto) };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+
+    api("/anuncios-meli/" + encodeURIComponent(itemId) + "/estoque", {
+      method: "PATCH",
+      body: corpo,
+    }).then(function (r) {
+      var dados = r.data || {};
+      if (!dados.ok) {
+        // O snapshot não mudou no servidor, então a célula volta ao valor de
+        // antes. A recusa do ML é mostrada como ela veio — não é traduzida
+        // nem resumida em "erro ao salvar".
+        cel.classList.remove("is-salvando");
+        pintarEstoqueLeitura(cel);
+        toast(dados.motivo || "Não foi possível salvar o estoque.", "is-danger");
+        return;
+      }
+      cel.classList.remove("is-salvando");
+      aplicarEstoqueConfirmado(cel, itemId, dados);
+    });
+  }
+
+  // Reflete na tela o que o ML CONFIRMOU: o item editado, os irmãos do mesmo
+  // MLBU (regra do ML, lista vinda do SERVIDOR — nunca deduzida aqui) e o
+  // estoque agregado do agrupador. Sem reconsultar a lista, que colapsaria as
+  // expansões e tiraria o operador do lugar onde ele estava.
+  function aplicarEstoqueConfirmado(cel, itemId, dados) {
+    var afetados = {};
+    afetados[itemId] = true;
+    (dados.itens_sincronizados || []).forEach(function (id) { afetados[id] = true; });
+
+    var painel = cel.closest(".am-grupo-painel");
+    var linha = painel && painel.previousElementSibling;
+    var familyId = linha && linha.getAttribute("data-familia");
+    var familia = familyId ? AM.state.familyCache[familyId] : null;
+
+    if (familia) {
+      // Dentro de um agrupador: o cache é a fonte do painel e do agregado, e
+      // por isso é ele que tem de mudar primeiro — colapsar e reabrir lê o
+      // cache, não a rede.
+      (familia.user_products || []).forEach(function (up) {
+        (up.itens || []).forEach(function (item) {
+          if (!afetados[item.item_id]) return;
+          item.estoque = dados.estoque;
+          // Status só do item editado, e só o que o servidor devolveu: o ML
+          // pausa/reativa por falta de estoque, mas `status` NÃO está na lista
+          // de campos que ele replica por User Product — supor a transição do
+          // irmão seria inventar.
+          if (item.item_id === itemId && dados.anuncio && dados.anuncio.status) {
+            item.status = dados.anuncio.status;
+          }
+        });
+      });
+      renderFamiliaDetalhe(familia, painel);
+      atualizarAgregadosDoGrupo(familyId, familia, linha);
+    }
+
+    // Linhas de anúncio individual da lista (tipo "item"): o estado da lista
+    // também tem de acompanhar, senão uma troca de página repinta o número
+    // velho. Um anúncio individual não tem irmão de variação na prática (a
+    // relação UP:item ali é 1:1), mas se o servidor disser que tem, o que ele
+    // disse é que vale.
+    AM.anuncios.forEach(function (g) {
+      if (g.tipo !== "item" || !afetados[g.item_id]) return;
+      g.estoque = dados.estoque;
+      g.estoque_total = dados.estoque;
+      var statusNovo = g.item_id === itemId && dados.anuncio && dados.anuncio.status;
+      if (!statusNovo || statusNovo === g.status) return;
+      // O ML pausa o anúncio quando o estoque vai a zero (e reativa quando
+      // volta): deixar a linha dizendo "Ativo" seria a tela mentindo sobre o
+      // que acabou de acontecer. Repinta a linha inteira, no lugar.
+      g.status = statusNovo;
+      var alvo = document.querySelector('.am-row[data-item="' + g.item_id + '"]');
+      if (!alvo) return;
+      var caixa = document.createElement("div");
+      caixa.innerHTML = rowAnuncioHtml(g);
+      // Vincula com a linha ainda DENTRO da caixa temporária: os binds varrem
+      // os descendentes da raiz, então passar o container da lista aqui
+      // duplicaria os listeners de todas as outras linhas — e um clique
+      // passaria a abrir o modal duas vezes. Listener sobrevive a mover o nó.
+      bindLinhasAnuncio(caixa);
+      bindEstoqueEditavel(caixa);
+      alvo.parentNode.replaceChild(caixa.firstElementChild, alvo);
+    });
+
+    // Por último, qualquer célula ainda visível dos itens afetados que o
+    // repinte acima não tenha alcançado (o irmão numa outra linha da lista, a
+    // própria célula quando a edição partiu de um anúncio individual).
+    pintarCelulasDeEstoque(afetados, dados.estoque);
+
+    var irmaos = (dados.itens_sincronizados || []).length;
+    toast(
+      irmaos
+        ? "Estoque atualizado no Mercado Livre — e nos outros " +
+          plural(irmaos, "anúncio desta variação", "anúncios desta variação") + "."
+        : "Estoque atualizado no Mercado Livre.",
+      "is-success"
+    );
+  }
+
+  function pintarCelulasDeEstoque(afetados, valor) {
+    document.querySelectorAll(".am-estoque[data-estoque-item]").forEach(function (c) {
+      if (!afetados[c.getAttribute("data-estoque-item")]) return;
+      c.setAttribute("data-estoque-valor", String(valor));
+      c.classList.remove("is-salvando");
+      pintarEstoqueLeitura(c);
+    });
+  }
+
+  // Recalcula os agregados da linha-mãe a partir do cache da família, pela
+  // MESMA régua do banco:
+  //
+  //   estoque_total   = soma do estoque por User Product DISTINTO
+  //                     (CTE estoque_por_up usa MAX(estoque) por UP, porque o
+  //                     ML replica o valor entre os itens do UP — somar item a
+  //                     item duplicaria);
+  //   status_contagem = contagem por status sobre TODOS os itens do grupo.
+  //
+  // É legítimo recalcular aqui porque o detalhe da família cobre exatamente o
+  // mesmo conjunto que a linha agrega: os agregados da listagem são do grupo
+  // inteiro e NÃO sofrem o filtro/busca (ver meliFamiliaService, CTE `grupos`
+  // vs `selecionados`).
+  function atualizarAgregadosDoGrupo(familyId, familia, linha) {
+    var estoqueTotal = 0;
+    var contagem = { ativos: 0, pausados: 0, encerrados: 0 };
+    var totalItens = 0;
+
+    (familia.user_products || []).forEach(function (up) {
+      var maior = null;
+      (up.itens || []).forEach(function (item) {
+        totalItens++;
+        if (item.status === "active") contagem.ativos++;
+        else if (item.status === "paused") contagem.pausados++;
+        else if (item.status === "closed") contagem.encerrados++;
+        if (item.estoque != null && (maior === null || item.estoque > maior)) maior = item.estoque;
+      });
+      if (maior !== null) estoqueTotal += maior;
+    });
+
+    for (var i = 0; i < AM.anuncios.length; i++) {
+      var g = AM.anuncios[i];
+      if (g.tipo !== "familia" || String(g.family_id) !== String(familyId)) continue;
+      g.estoque_total = estoqueTotal;
+      g.status_contagem = contagem;
+      g.total_itens = totalItens;
+      if (linha) {
+        // Repinta só a linha-mãe, no lugar: renderCatalogo() inteiro fecharia
+        // todos os painéis abertos.
+        var nova = document.createElement("div");
+        nova.innerHTML = rowGrupoHtml(g, i);
+        var substituta = nova.firstElementChild;
+        var aberta = linha.getAttribute("aria-expanded") === "true";
+        substituta.setAttribute("aria-expanded", aberta ? "true" : "false");
+        if (aberta) substituta.classList.add("is-aberta");
+        linha.parentNode.replaceChild(substituta, linha);
+        substituta.addEventListener("click", function () { alternarGrupo(substituta); });
+        substituta.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(substituta); }
+        });
+      }
+      break;
+    }
   }
 
   // Mesmo contrato de interação da linha do catálogo: clique ou Enter/Espaço
@@ -917,12 +1288,19 @@
   function bindLinhasMlb(raiz) {
     raiz.querySelectorAll(".am-mlb[data-item]").forEach(function (row) {
       function abrir() { abrirDetalhe(row.getAttribute("data-item"), row); }
+      // Duas exceções, e o motivo é o mesmo: são controles PRÓPRIOS dentro da
+      // linha. O link externo é do navegador; a célula de estoque edita no
+      // lugar. Nenhum dos dois pode abrir o modal por cima do que o operador
+      // estava fazendo.
+      function ehControleProprio(e) {
+        return !!(e.target.closest(".am-row__link") || e.target.closest(".am-estoque"));
+      }
       row.addEventListener("click", function (e) {
-        if (e.target.closest(".am-row__link")) return;
+        if (ehControleProprio(e)) return;
         abrir();
       });
       row.addEventListener("keydown", function (e) {
-        if (e.target.closest(".am-row__link")) return;
+        if (ehControleProprio(e)) return;
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(); }
       });
     });
@@ -976,7 +1354,11 @@
       "</div>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
       '<span class="am-row__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +
-      '<span class="am-row__num">' + (a.estoque != null ? a.estoque : "—") + "</span>" +
+      // O anúncio individual também é um MLB, e o estoque dele se edita aqui
+      // pelo mesmo caminho da linha filha. A linha do AGRUPADOR não tem esta
+      // célula: o estoque dela é soma de variações, não um número que exista
+      // no Mercado Livre para ser escrito (ver rowGrupoHtml).
+      celulaEstoqueHtml(a, "am-row__num") +
       '<span class="am-row__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
       scoreGaugeHtml(a.score_venforce) +
       '<div class="am-row__acao">' + linkMl + "</div>" +

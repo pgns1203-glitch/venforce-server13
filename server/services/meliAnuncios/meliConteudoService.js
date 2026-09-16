@@ -206,4 +206,10 @@ module.exports = {
   atualizarModelo,
   atualizarDescricao,
   TITULO_MAX,
+  // Leitores do corpo de erro do ML. Exportados para que outro service que
+  // escreve no MESMO ML (meliEstoqueService) leia a recusa exatamente igual —
+  // o formato de erro é da API, não deste módulo, e duas cópias da leitura
+  // divergiriam na primeira vez que o ML mudasse o formato.
+  motivoDoErroMl,
+  codigoDoErroMl,
 };

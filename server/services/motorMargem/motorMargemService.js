@@ -180,14 +180,20 @@ async function obterContextoMargem({ clienteSlug, dateFrom, dateTo }, deps = {})
 // contrato de sempre (usado por `listarItens`/`obterItem`, que são
 // naturalmente de 1 lote só); `carregarWorkspace` passa a preparar uma vez e
 // enriquecer N lotes sobre o mesmo contexto.
-async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo }, deps = {}) {
+async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo, clienteContaId = null }, deps = {}) {
   const db = deps.db;
   const now = deps.now || new Date();
   const periodo = resolverPeriodo({ dateFrom, dateTo, now });
 
+  // clienteContaId: opcional, default null — preserva o comportamento de
+  // sempre (resolução "automática" da conta) para todo chamador existente
+  // (Central de Margem). Passar explicitamente é o que permite a um
+  // consumidor multi-conta (Anúncios ML) calcular a margem da MESMA conta
+  // que está selecionada na tela, em vez da conta "automática" do cliente.
   const { cliente, base, mlUserId } = await (deps.exigirContexto || exigirContextoPronto)({
     clienteSlugRaw: clienteSlug,
     baseSlugRaw: baseSlug,
+    clienteContaId,
   });
 
   const custos = await (deps.carregarCustos || baseCustos.carregarCustosDaBase)(
@@ -337,11 +343,11 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
 // ---------------------------------------------------------------------------
 
 async function montarItens(
-  { clienteSlug, baseSlug, dateFrom, dateTo, offset, limit, targetMargin, itemIds },
+  { clienteSlug, baseSlug, dateFrom, dateTo, offset, limit, targetMargin, itemIds, clienteContaId = null },
   deps = {}
 ) {
   const prepared = await (deps.prepareWorkspaceContext || prepareWorkspaceContext)(
-    { clienteSlug, baseSlug, dateFrom, dateTo },
+    { clienteSlug, baseSlug, dateFrom, dateTo, clienteContaId },
     deps
   );
   const { totalItensMl, itens } = await (deps.enrichBatch || enrichBatch)(

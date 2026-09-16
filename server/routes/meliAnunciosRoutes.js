@@ -16,6 +16,7 @@
 //   GET    /anuncios-meli/resumo
 //   GET    /anuncios-meli/familias            (listagem unificada da tela)
 //   GET    /anuncios-meli/familias/:familyId  (expansão de um agrupador)
+//   GET    /anuncios-meli/performance         (métricas 7d + margem, assíncrono)
 //   GET    /anuncios-meli
 //   GET    /anuncios-meli/criacao/status
 //   GET    /anuncios-meli/criacao/categorias
@@ -86,6 +87,12 @@ router.get("/", ctrl.listar);
 // dinâmica captura "/familias" como se fosse um itemId.
 router.get("/familias", ctrl.listarAgrupado);
 router.get("/familias/:familyId", ctrl.detalheFamilia);
+
+// Enriquecimento assíncrono de performance (métricas últ. 7 dias + margem por
+// MLB) — chamado pelo frontend DEPOIS que a listagem já pintou, nunca antes.
+// Read-only nos dois sentidos: só lê o Mercado Livre e o Motor de Margem já
+// existentes, não escreve em nada. Ver meliMetricas7dService/motorMargemService.
+router.get("/performance", ctrl.performance);
 
 // Criação de anúncios (escrita no Mercado Livre via POST /items).
 router.get("/criacao/status", ctrl.criacaoStatus);

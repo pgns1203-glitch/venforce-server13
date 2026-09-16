@@ -279,8 +279,13 @@
   /* UMA grade para a tabela inteira: cabeçalho, linha de anúncio, linha de
      agrupador e a linha de MLB dentro do agrupador expandido. É isso que faz
      a expansão ler como continuação da tabela em vez de outra tabela.
-     imagem | anúncio | status | preço | estoque | vendidos | score | ação */
-  --am-cols: 52px minmax(220px, 2.2fr) 116px 92px 84px 80px 150px 40px;
+     imagem | anúncio | status | preço | estoque | vendidos | métricas 7d |
+     margem | score | ação — 10 colunas. Métricas 7d e margem são as únicas
+     que nascem "carregando" e se resolvem DEPOIS (GET /performance), mas
+     ocupam a MESMA grade desde o primeiro render — nunca uma coluna que
+     aparece só quando o dado chega, ou a expansão desalinharia do
+     cabeçalho. */
+  --am-cols: 52px minmax(220px, 2.2fr) 116px 92px 84px 80px 104px 100px 150px 40px;
   overflow: hidden;
   background: var(--vf-surface);
   border: 1px solid var(--vf-border);
@@ -394,7 +399,7 @@
  * família é forma de agrupamento interno do ML, não categoria de
  * tela, e o pedido é explícito — "nenhuma distinção visual entre
  * família e não família". O agrupador agora é um .am-row como
- * qualquer outro, na MESMA grade de 8 colunas de .am-listagem.
+ * qualquer outro, na MESMA grade de 10 colunas de .am-listagem.
  *
  * A única diferença de forma é o chevron na coluna de ação, porque é
  * a única diferença de comportamento: o agrupador tem conteúdo
@@ -714,6 +719,97 @@
 .vf-page-anuncios-meli .am-mlb__score.is-success { color: var(--vf-success-strong); }
 .vf-page-anuncios-meli .am-mlb__score.is-warning { color: var(--vf-warning-strong); }
 .vf-page-anuncios-meli .am-mlb__score.is-danger  { color: var(--vf-danger-strong); }
+
+/* ---- Métricas últ. 7 dias + Margem ------------------------------------
+ *
+ * Duas colunas AO VIVO e ASSÍNCRONAS (GET /anuncios-meli/performance — ver
+ * carregarPerformance em anuncios-meli.js): nascem "carregando" e se
+ * resolvem depois que a linha já está na tela, sem nunca bloquear a
+ * abertura da página nem a expansão de um agrupador.
+ *
+ * Margem é coluna PRÓPRIA, deliberadamente SEM nenhum estilo compartilhado
+ * com .am-metricas7d — não pode ler como uma 4ª métrica de tráfego dentro
+ * do mesmo bloco. As duas linhas existem por MLB apenas: a linha do
+ * agrupador usa o modificador --indisponivel (mais abaixo), nunca um número
+ * agregado ou uma média. */
+.vf-page-anuncios-meli .am-metricas7d,
+.vf-page-anuncios-meli .am-margem {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-anuncios-meli .am-metricas7d__linha {
+  overflow: hidden;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-metricas7d__vazio,
+.vf-page-anuncios-meli .am-margem__vazio {
+  color: var(--vf-text-muted);
+  font-style: italic;
+}
+
+.vf-page-anuncios-meli .am-metricas7d--carregando .am-metricas7d__linha,
+.vf-page-anuncios-meli .am-margem--carregando {
+  font-style: italic;
+  color: var(--vf-text-muted);
+}
+
+/* Linha do agrupador: "—" fixo, sem cache, sem estado de carregamento — a
+   métrica/margem simplesmente não existe nesse nível (ver rowGrupoHtml). */
+.vf-page-anuncios-meli .am-metricas7d--indisponivel,
+.vf-page-anuncios-meli .am-margem--indisponivel {
+  color: var(--vf-text-muted);
+  cursor: help;
+}
+
+.vf-page-anuncios-meli .am-margem__valor {
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-bold);
+}
+
+.vf-page-anuncios-meli .am-margem__valor.is-success { color: var(--vf-success-strong); }
+.vf-page-anuncios-meli .am-margem__valor.is-warning { color: var(--vf-warning-strong); }
+.vf-page-anuncios-meli .am-margem__valor.is-danger  { color: var(--vf-danger-strong); }
+.vf-page-anuncios-meli .am-margem__valor.is-info    { color: var(--vf-info-strong); }
+.vf-page-anuncios-meli .am-margem__valor.is-neutral { color: var(--vf-text); }
+
+/* "Realizada"/"Projetada" — o selo que diz qual margem é essa. Legenda de
+   SKU, mesmo peso visual do resto da tela. */
+.vf-page-anuncios-meli .am-margem__origem {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+/* Estado por extenso (sem número) — vocabulário REAL do Motor de Margem
+   (LABELS de marginStatus.js): "Prejuízo", "Em conciliação", "Não
+   validado", "Dado suspeito", ou a mensagem de contexto não-pronto (Base
+   não vinculada etc.). Nunca um texto inventado aqui. */
+.vf-page-anuncios-meli .am-margem__estado {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-anuncios-meli .am-margem__estado.is-danger  { color: var(--vf-danger-strong); }
+.vf-page-anuncios-meli .am-margem__estado.is-warning { color: var(--vf-warning-strong); }
+.vf-page-anuncios-meli .am-margem__estado.is-info    { color: var(--vf-info-strong); }
+.vf-page-anuncios-meli .am-margem__estado.is-neutral { color: var(--vf-text-muted); }
+
+/* Selo de explicação — mesmo componente .vf-info/.vf-info-dot da Fundação
+   (vf-components-v2.css; o ROAS em Ads usa o mesmo), não uma tooltip nova. */
+.vf-page-anuncios-meli .am-margem__info {
+  margin-left: 2px;
+}
 
 .vf-page-anuncios-meli .am-mlb__acao {
   display: flex;

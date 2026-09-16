@@ -405,16 +405,21 @@ mais uma aba que monopolize o parâmetro `filtro`.
 
 ### 4.5 Contrato dos endpoints
 
-A unificação da listagem (§4.1 a §4.4) não criou endpoint nenhum. O **único**
-endpoint novo desta tela é o de escrita de estoque (§4.2.2): ele existe porque
-não havia caminho para escrever `available_quantity` — `/conteudo` cobre
-título/modelo/descrição e mais nada.
+A unificação da listagem (§4.1 a §4.4) não criou endpoint nenhum. Os
+**dois** endpoints novos desta tela são o de escrita de estoque (§4.2.2) e o
+de enriquecimento assíncrono de performance (§4.7): o primeiro existe porque
+não havia caminho para escrever `available_quantity` (`/conteudo` cobre
+título/modelo/descrição e mais nada); o segundo existe porque métricas
+externas do ML (visitas) e margem (Motor de Margem) não podem entrar na
+MESMA resposta que a listagem — misturar os dois faria a abertura da página
+esperar por chamadas ao Mercado Livre que a listagem nunca precisou.
 
 | Endpoint | O que muda |
 | --- | --- |
 | `GET /anuncios-meli/familias` | Mesma rota, mesma autorização. Passa a devolver a **lista unificada**: `{ ok, cliente, anuncios: [linha…], paginacao }`, onde cada linha tem `tipo`. Sai `sem_user_product` (existia só para o badge da aba). |
 | `GET /anuncios-meli/familias/:familyId` | Mesma rota, mesmo formato, mesma autorização. Só o `SELECT` ganhou `moeda`, `vendidos`, `score_venforce` e `listing_type_id`: a expansão deixou de ser uma tabela separada e virou a continuação da lista, então precisa preencher as MESMAS colunas do cabeçalho — sem esses campos, colunas do filho ficariam vazias embaixo de rótulos preenchidos. Acréscimos de **projeção**: filtro, join, ordem e agregação intactos. |
-| `PATCH /anuncios-meli/:itemId/estoque` | **NOVO.** Corpo `{ clienteSlug, clienteContaId?, estoque }`; responde `{ ok, estoque, anuncio, itens_sincronizados, user_product_id }`. Mesma proteção do módulo (automações + carteira), a mesma de `/conteudo` e `/criacao/publicar` — que também escrevem no ML. Não é admin-only: o `requireAdmin` do otimizador existe porque a IA está em validação, não porque escrever no anúncio seja privilégio de admin. Precisa ser declarada **antes** de `GET /:itemId`, como as outras sub-rotas. |
+| `PATCH /anuncios-meli/:itemId/estoque` | **NOVO** (entrega anterior). Corpo `{ clienteSlug, clienteContaId?, estoque }`; responde `{ ok, estoque, anuncio, itens_sincronizados, user_product_id }`. Mesma proteção do módulo (automações + carteira), a mesma de `/conteudo` e `/criacao/publicar` — que também escrevem no ML. Não é admin-only: o `requireAdmin` do otimizador existe porque a IA está em validação, não porque escrever no anúncio seja privilégio de admin. Precisa ser declarada **antes** de `GET /:itemId`, como as outras sub-rotas. |
+| `GET /anuncios-meli/performance` | **NOVO** (§4.7). Query `?clienteSlug=&itemIds=A,B,C&clienteContaId=`; responde `{ ok, metricas7d, margem, margemIndisponivel }`. Mesma proteção do módulo. Read-only nos dois sentidos: só lê o Mercado Livre e o Motor de Margem já existentes. Precisa ser declarada **antes** de `GET /:itemId` (senão "performance" seria lido como itemId). |
 | `GET /anuncios-meli` | **Inalterado** — é o contrato plano por item que `Portal/central-margem-api.js` consome como fallback do Motor de Margem. Mexer nele quebraria a Central de Margem. O filtro `sem_agrupamento` continua existindo ali como recorte de diagnóstico; deixa de ser identidade de aba. |
 
 ### 4.5.1 Dívida de nomenclatura de `GET /anuncios-meli/familias`
@@ -455,3 +460,65 @@ Não foram tocados: autorização (`authMiddleware`, `requireAutomacoesAccess`,
 `registrarUserProducts`), estrutura de banco (nenhum `CREATE`/`ALTER` novo), e
 nenhum relacionamento entre anúncios foi inventado — só `user_product_id` e
 `family_id`, que vêm do próprio multiget `/items`.
+
+### 4.7 Métricas últ. 7 dias + Margem — duas colunas, ao vivo, assíncronas
+
+Aproxima a tela do modelo mental do Mercado Livre (período recente, não só
+acumulado) e responde 4 perguntas por MLB: tem tráfego? está vendendo? está
+convertendo? está dando margem? Grade **8 → 10 colunas**
+(`--am-cols`, `anuncios-meli-v2.css`).
+
+**Fontes, sem sync novo:**
+
+- **Views (últ. 7 dias):** não existe endpoint em lote por item na API do ML
+  (`documentacao_api_meli/recurso-visits.md`) — só agregado do vendedor
+  inteiro (`users/{id}/items_visits/time_window`, inútil aqui) ou 1 chamada
+  por item (`items/{id}/visits/time_window`). `meliMetricas7dService` faz 1
+  chamada por item, via `mapWithConcurrency` (reaproveitado do Motor de
+  Margem, limite 5) — falha isolada de 1 item vira `null`, nunca derruba o
+  lote.
+- **Vendas (últ. 7 dias):** reaproveita o MESMO padrão de
+  `metricasService.js` (`fetchAllOrders`, agora exportada) —
+  `GET /orders/search` por `seller` + janela de datas, agregado por
+  `item_id` em JS. **1 chamada cobre o lote inteiro**, não é por item. NUNCA
+  usa `sold_quantity` acumulado (é vitalício, não é "últimos 7 dias").
+  `vendas = 0` real (busca respondeu, nenhum pedido bateu) é diferente de
+  `vendas = null` (a busca falhou por completo) — só o primeiro é fato.
+- **Conversão:** `vendas7d / views7d`. `null` ("—") quando `views` é 0/nulo
+  ou `vendas` é desconhecido; um número real (inclusive `0,0%`) sempre que
+  dá pra calcular — nunca `NaN`/`Infinity`.
+- **Margem:** consumida do Motor de Margem já existente
+  (`motorMargemService.montarItens({ clienteSlug, clienteContaId, itemIds })`)
+  — **nunca recalculada aqui**. Mostra `margin.realized` quando
+  `computable`, senão `margin.projected` (mesma precedência que o próprio
+  Motor usa para ordenar, `valorOrdenacao`), com um selo dizendo qual é
+  ("Realizada"/"Projetada") e um tooltip discreto fixo ("Calculada pelo
+  Motor de Margem", `vf-info`/`vf-info-dot` — mesmo componente que o ROAS em
+  Ads já usa). Sem número computável, mostra `item.quality.statusLabel` (o
+  rótulo REAL de `marginStatus.js`: "Prejuízo", "Em conciliação", "Não
+  validado", "Dado suspeito") com `statusReasons[0]` como tooltip — nunca um
+  texto inventado. Contexto inteiro não-pronto (Base não vinculada,
+  múltiplas bases, grant caído) vira `margemIndisponivel` com a MESMA
+  mensagem que `contextoPrecificacaoService.js` já gera.
+- **Gap corrigido no Motor:** `prepareWorkspaceContext`/`montarItens` não
+  aceitavam `clienteContaId` — sempre resolviam a conta "automática" do
+  cliente. Cliente multi-conta calcularia a margem da conta ERRADA. Agora
+  aceitam o parâmetro (opcional, default `null` — aditivo, não quebra a
+  Central de Margem).
+
+**Margem é coluna PRÓPRIA**, sem nenhum estilo/leitura compartilhada com
+Métricas 7d — não pode ler como uma 4ª métrica de tráfego. **Só existe por
+MLB**: a linha do agrupador mostra "—" fixo nas duas colunas, mesmo
+expandida — nem agregado, nem média (agregar enganaria: a régua do usuário
+foi explícita — margem errada é pior que margem ausente).
+
+**Nunca bloqueia a abertura da página.** `GET /anuncios-meli/familias` e
+`/familias/:familyId` continuam **inalterados** — DB-only, sem chamada ao
+ML. Um endpoint novo e só leitura, `GET /anuncios-meli/performance
+?clienteSlug=&itemIds=A,B,C&clienteContaId=`, é chamado pelo FRONTEND
+DEPOIS que a linha já pintou: uma vez no boot (só os `item_id` tipo "item"
+da página atual) e uma vez por família, só quando ela é expandida (só os
+`item_id` dela). `AM.state.performanceCache` (sessão, nunca persistido)
+garante que reabrir uma família, ou repintar uma linha depois de editar o
+estoque, não refaz a chamada. Zero chamada para item dentro de um agrupador
+ainda colapsado.

@@ -318,4 +318,4 @@ async function buscarResumo({ clienteSlug, clienteContaId = null, dateFrom, date
   return payload;
 }
 
-module.exports = { listarClientesComML, buscarResumo };
+module.exports = { listarClientesComML, buscarResumo, fetchAllOrders };

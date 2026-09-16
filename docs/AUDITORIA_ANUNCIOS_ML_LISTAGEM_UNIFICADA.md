@@ -508,9 +508,27 @@ convertendo? está dando margem? Grade **8 → 10 colunas**
 
 **Margem é coluna PRÓPRIA**, sem nenhum estilo/leitura compartilhada com
 Métricas 7d — não pode ler como uma 4ª métrica de tráfego. **Só existe por
-MLB**: a linha do agrupador mostra "—" fixo nas duas colunas, mesmo
-expandida — nem agregado, nem média (agregar enganaria: a régua do usuário
-foi explícita — margem errada é pior que margem ausente).
+MLB**: a linha do agrupador mostra "—" fixo na coluna de Margem, SEMPRE —
+nem agregado, nem média, mesmo expandida (agregar enganaria: a régua do
+usuário foi explícita e sem exceção — margem errada é pior que margem
+ausente).
+
+**Métricas 7d, ao contrário da margem, agregam no agrupador — mas só
+DEPOIS de expandido.** Views/vendas somam (conversão recalculada sobre a
+soma, mesma regra "—"/nunca NaN de sempre); a soma só aparece quando TODOS
+os filhos daquela família já são conhecidos (`AM.state.familyCache`) e já
+responderam a `/performance` (`AM.state.performanceCache`) — um agregado
+parcial enganaria tanto quanto a média de margem que o usuário vetou. Antes
+da primeira expansão é "—", igual à margem. O agregado é **compute-on-render**
+(`metricas7dAgregadoDoGrupo`, dentro de `rowGrupoHtml`) a partir das MESMAS
+duas caches de sempre — não há um terceiro estado para manter sincronizado,
+e por isso sobrevive a colapsar o painel (o número não depende do painel
+estar visível) e a uma edição de estoque que repinte a linha-mãe
+(`atualizarAgregadosDoGrupo` já chama `rowGrupoHtml`, que recalcula o
+agregado de métricas do mesmo jeito). O gatilho do primeiro cálculo é
+`carregarPerformance(idsFamilia).then(repintarLinhaDoGrupo)`, em
+`carregarFamiliaDetalhe` — por isso `carregarPerformance` passou a devolver
+uma Promise (antes não devolvia nada).
 
 **Nunca bloqueia a abertura da página.** `GET /anuncios-meli/familias` e
 `/familias/:familyId` continuam **inalterados** — DB-only, sem chamada ao

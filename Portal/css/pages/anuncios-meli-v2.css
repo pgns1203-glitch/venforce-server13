@@ -461,41 +461,57 @@
   padding: var(--vf-sp-4);
 }
 
-/* Bloco de variação (User Product) — agrupamento visual PURO.
+/* Bloco de variação (User Product) — o nível do meio, como na
+ * listagem oficial do ML: nome amigável ("Azul P") em destaque, MLBU
+ * em legenda, e os anúncios da variação logo abaixo.
  *
- * Aqui existia uma faixa "PRODUTO MLBU-123 · 2 anúncios" acima de cada
- * grupo de MLBs: um terceiro nível visível na árvore. Ela saiu. MLBU
- * não é identificador que o operador reconheça, e a listagem oficial
- * do ML não o expõe — o ID que aparece é o do agrupador, na linha
- * principal. O bloco continua existindo sem cabeçalho e sem nome de
- * classe que sugira nível: ele só mantém juntos os MLBs da mesma
- * variação (o par Clássico/Premium do padrão operacional) e separa uma
- * variação da seguinte.
+ * Aqui já houve os dois extremos: uma faixa "PRODUTO MLBU-123 ·
+ * 2 anúncios" (o MLBU como manchete de um nível, que ninguém
+ * reconhece) e, depois, bloco nenhum — sem cabeçalho, só um trilho
+ * vertical amarrando as linhas irmãs. O trilho saiu junto com a volta
+ * do cabeçalho: ele existia para dizer "estas linhas são do mesmo
+ * produto", que é exatamente o que o cabeçalho diz agora, e com nome.
+ * Dois sinais para a mesma coisa é ruído.
  *
- * Toda a separação vive AQUI, não na linha: dentro da variação as
- * linhas ficam encostadas (leem como um par), e o filete divide
- * variações. Era o contrário antes — filete em toda linha e faixa
- * entre grupos. */
+ * Toda a separação vive no BLOCO, não na linha: dentro da variação as
+ * linhas ficam encostadas (leem como um par Clássico/Premium), e o
+ * filete divide variações. */
 .vf-page-anuncios-meli .am-variacao + .am-variacao {
   border-top: 1px solid var(--vf-border);
 }
 
-/* Variação com mais de um anúncio (o caso Clássico + Premium): um
-   trilho vertical no VÃO da miniatura amarra as linhas irmãs. O trilho
-   é background do bloco, não borda e não pseudo-elemento: borda
-   empurraria o conteúdo e desalinharia a grade, e ::before entraria na
-   grade da linha como se fosse uma célula. Desenhado no vão de 20px
-   que a miniatura de 32px deixa livre na coluna de 52px — o mesmo vão
-   que dá o recuo do nível, então não custa coluna nenhuma.
+/* Cabeçalho da variação. NÃO é linha da grade: é subtítulo, e entrar
+   em --am-cols o transformaria numa linha de tabela com colunas
+   vazias. O recuo à esquerda é calculado para o nome cair exatamente
+   sob a coluna "Anúncio" (padding da linha + coluna da miniatura +
+   gap), o que alinha o nome da variação com os títulos dos MLBs
+   abaixo dele sem custar coluna nenhuma. */
+.vf-page-anuncios-meli .am-variacao__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2) var(--vf-sp-3);
+  align-items: baseline;
+  padding: var(--vf-sp-3) var(--vf-sp-5) var(--vf-sp-1)
+           calc(var(--vf-sp-5) + 52px + var(--vf-sp-4));
+}
 
-   2px em --vf-border-strong, não 1px em --vf-border: no vão claro, o
-   filete de divisória some e o trilho fica sendo CSS morto — se ele não
-   se lê, não está amarrando nada. */
-.vf-page-anuncios-meli .am-variacao--multipla {
-  background-repeat: no-repeat;
-  background-image: linear-gradient(to bottom, var(--vf-border-strong), var(--vf-border-strong));
-  background-position: calc(var(--vf-sp-5) + 9px) 14px;
-  background-size: 2px calc(100% - 28px);
+/* O nome é a manchete do nível: mesmo peso do título de um anúncio,
+   um passo acima dele em tamanho. É o "Azul 36" do ML. */
+.vf-page-anuncios-meli .am-variacao__nome {
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+/* O MLBU em legenda — tamanho de SKU, cor de texto secundário. Ele é
+   o endereço do produto físico no ML e precisa estar acessível, mas
+   quem manda na leitura é o nome acima. Se este rótulo crescer até
+   competir com o nome, o nível volta a ser "o nível do MLBU", que é
+   justamente o que se corrigiu. */
+.vf-page-anuncios-meli .am-variacao__id {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  cursor: help;
 }
 
 /* Linha do item na MESMA grade do cabeçalho (--am-cols de .am-listagem,
@@ -607,6 +623,85 @@
   font-family: var(--vf-font-display);
   font-weight: var(--vf-fw-semibold);
   color: var(--vf-text);
+}
+
+/* ---- Estoque editável -----------------------------------------------
+ *
+ * Vale nas duas linhas que representam um MLB: a filha do agrupador
+ * (.am-mlb) e o anúncio individual (.am-row). NÃO vale na linha do
+ * agrupador, cujo estoque é soma de variações — não existe no Mercado
+ * Livre um número desses para ser escrito.
+ *
+ * A célula é a MESMA da coluna "Estoque": editar não ganha coluna
+ * própria nem largura própria, senão a expansão desalinharia do
+ * cabeçalho — que é a grade compartilhada --am-cols.
+ *
+ * Em repouso o número tem de ler como número, não como botão: sem
+ * moldura, sem cor de link. A moldura só aparece no hover/foco, que é
+ * onde o convite a editar cabe. Um campo de formulário aceso em cada
+ * linha de uma lista de centenas de anúncios viraria uma tela de
+ * formulário, não uma listagem. */
+.vf-page-anuncios-meli .am-estoque {
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-estoque__btn {
+  padding: 2px var(--vf-sp-1);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--vf-radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-anuncios-meli .am-estoque__btn:hover {
+  color: var(--vf-text);
+  background: var(--vf-surface);
+  border-color: var(--vf-border-strong);
+}
+
+.vf-page-anuncios-meli .am-estoque__btn:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 1px;
+}
+
+/* O campo ocupa a coluna inteira (84px) e não mais que ela. As setas
+   nativas do input[type=number] são removidas porque roubariam a
+   metade da largura — o teclado continua funcionando. */
+.vf-page-anuncios-meli .am-estoque__input {
+  width: 100%;
+  padding: 1px var(--vf-sp-1);
+  font: inherit;
+  color: var(--vf-text);
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-primary-border, var(--vf-border-strong));
+  border-radius: var(--vf-radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-anuncios-meli .am-estoque__input::-webkit-outer-spin-button,
+.vf-page-anuncios-meli .am-estoque__input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.vf-page-anuncios-meli .am-estoque__input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Enquanto o Mercado Livre não confirma, a célula não mostra número
+   nenhum: nem o antigo (que já não vale) nem o novo (que ainda não
+   valeu). Mostrar o novo aqui seria o falso sucesso que o resto deste
+   módulo evita. */
+.vf-page-anuncios-meli .am-estoque__salvando {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  font-style: italic;
 }
 
 /* O score do filho é número, não medidor: o medidor da linha-mãe tem

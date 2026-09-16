@@ -212,7 +212,7 @@ ordenação e na mesma paginação.
 UP deveriam ter o mesmo valor (§1.5); `MAX` é determinístico se uma
 sincronização assíncrona os pegar momentaneamente divergentes.
 
-### 4.2.1 Uma tabela, um cabeçalho, dois níveis visíveis
+### 4.2.1 Uma tabela, um cabeçalho, os três níveis do ML
 
 A linha do agrupador, a linha do anúncio individual e a linha de MLB dentro do
 agrupador expandido usam a **mesma grade de 8 colunas** (`--am-cols`, declarada
@@ -230,47 +230,148 @@ Uma diferença deliberada permanece: o Score do filho é número, não o medidor
 semicircular da linha-mãe — o medidor tem altura própria e igualaria a altura
 das duas linhas, apagando a hierarquia que o recuo estabelece.
 
-**Os três níveis do §1.1 são do modelo de dados; a tela mostra dois.** A
-primeira versão desta entrega desenhou os três, com o User Product como faixa
-"PRODUTO MLBU-… · 2 anúncios" acima dos seus MLBs. Esse nível saiu: o MLBU não
-é identificador que o operador reconheça, a listagem oficial do ML não o expõe,
-e o efeito prático era um degrau a mais entre o produto e o anúncio. A tela
-hoje é:
+**A tela mostra os três níveis do §1.1, mas o que importa é o PESO de cada
+um.** Este ponto teve três desenhos, e os dois primeiros erraram em direções
+opostas:
+
+1. o User Product como faixa **"PRODUTO MLBU-… · 2 anúncios"** — o MLBU de
+   manchete, um identificador que o operador não reconhece;
+2. **nenhum cabeçalho** — o bloco de variação existia só para agrupar, amarrando
+   as linhas irmãs com um trilho no vão da miniatura. Sumiu o MLBU, mas sumiu
+   também o nome do que estava ali;
+3. o desenho atual, que é o da listagem oficial do ML: a variação se chama pelo
+   **nome amigável** e o MLBU fica em legenda do tamanho de um SKU.
 
 ```
-AGRUPADOR / PRODUTO   (título consolidado + family_id + agregados)
-  └── anúncios MLB    (item_id + condição comercial + preço + métricas)
+AGRUPADOR / FAMÍLIA      (título consolidado + family_id + agregados)
+  └── VARIAÇÃO           ("Azul P" em destaque + MLBU discreto)
+       ├── MLB Clássico  (item_id + condição comercial + preço + métricas)
+       └── MLB Premium
 ```
 
-O `user_product_id` **continua** governando a expansão — os MLBs da mesma
-variação seguem juntos, num bloco `.am-variacao` sem cabeçalho, que amarra as
-linhas irmãs com um trilho no vão da miniatura e separa uma variação da
-seguinte. Ele viaja em `data-user-product`: chave de agrupamento como dado,
-nunca como texto na tela. As agregações do §4.2 não mudaram — o estoque
-continua somando por MLBU distinto, que é a razão de o nível existir nos dados.
+O trilho saiu junto com a volta do cabeçalho: ele dizia "estas linhas são do
+mesmo produto", que é exatamente o que o cabeçalho diz — e com nome. Dois sinais
+para a mesma coisa é ruído.
 
-Com a faixa do MLBU fora, dois anúncios da MESMA variação (o padrão
-Clássico + Premium) ficariam indistinguíveis: por isso a **condição comercial**
-entra na célula de identificação do filho, ao lado do MLB, derivada de
-`listing_type_id` pelo mapa `TIPO_ANUNCIO` que o modal de detalhe já usava.
-Dentro da variação a ordem preferida é Clássico → Premium, com desempate por
-`item_id` — preferência de exibição, não regra: variação com 1, 3 ou 5 MLBs, ou
-com tipo fora do mapa, cai no desempate e continua funcionando.
+A variação é **subtítulo, não entidade**: o bloco não tem `role`, não tem
+`tabindex`, não expande e não abre nada. O que se opera continua sendo o
+agrupador (expandir) e o anúncio (modal + estoque). As agregações do §4.2 não
+mudaram — o estoque continua somando por MLBU distinto, que é a razão de o nível
+existir nos dados.
+
+#### De onde sai o nome da variação
+
+Do **título do anúncio**. No modelo de User Products o ML compõe o título do
+item como `family_name` + os valores dos atributos que variam:
+
+| campo         | valor                        |
+| ------------- | ---------------------------- |
+| `family_name` | `Apple iPhone 256GB`         |
+| `title`       | `Apple iPhone 256GB Rojo`    |
+| → variação    | `Rojo`                       |
+
+(`documentacao_api_meli/preco-variacao.md`, resposta de criação de item; e
+"se o `family_name` for modificado, o título do item será recalculado".) E
+`title` está na lista de campos **sincronizados por User Product**
+(`user-products.md`): o título pertence à variação, não à condição de venda — é
+isso que autoriza o título a nomeá-la, e é por isso que os dois MLBs de uma
+variação têm o mesmo título por definição do ML.
+
+Quando o título **não** começa pelo `family_name` (título legado, `family_name`
+trocado depois, item que nunca passou por UPtin), não existe sufixo para
+extrair: o nome passa a ser o título **inteiro**. Um recorte parcial aí seria
+adivinhação. Sem título, cai no SKU. A origem escolhida fica em
+`data-nome-origem` (`sufixo` | `titulo` | `sku` | `vazio`), que é como o teste
+distingue os caminhos.
+
+**O que ainda NÃO é possível:** nomear a variação pelos atributos (`Cor: Azul`,
+`Tamanho: P`) em vez do título. O ML marca os atributos que definem a variação
+com `hierarchy: "CHILD_PK"` e a tag `variation_attribute`
+(`documentacao_api_meli/atributos.md`), mas `meli_anuncios.attributes_json`
+guarda apenas `{id, name, value}` — a sincronização descarta `tags` e
+`hierarchy`. Sem esses campos não há como saber QUAL atributo define a variação,
+e adivinhar por lista fixa de IDs (`COLOR`, `SIZE`, …) seria inventar regra: o
+conjunto é dependente de categoria. O caminho documentado para resolver isso de
+verdade é `GET /user-products-families/{family_id}`, que devolve
+`child_attributes_ids: ["COLOR", "SIZE"]` (`preco-variacao.md`) — mas é chamada e
+persistência novas, ou seja, reabrir a sincronização. Registrado, não feito.
+
+#### Condição comercial
+
+Dois anúncios da MESMA variação (o padrão Clássico + Premium) precisam se
+distinguir na linha: por isso a **condição comercial** entra na célula de
+identificação do filho, ao lado do MLB, derivada de `listing_type_id` pelo mapa
+`TIPO_ANUNCIO` que o modal de detalhe já usava. Dentro da variação a ordem
+preferida é Clássico → Premium, com desempate por `item_id` — preferência de
+exibição, não regra: variação com 1, 3 ou 5 MLBs, ou com tipo fora do mapa, cai
+no desempate e continua funcionando.
+
+O título do filho, por sua vez, **desaparece** quando é o mesmo que nomeou a
+variação: seria a terceira repetição da mesma frase na tela. Volta a aparecer
+quando difere de verdade — comparação de dado, não suposição.
 
 Uma consequência no payload: `GET /anuncios-meli/familias/:familyId` passou a
 projetar `a.listing_type_id`, coluna que já existia em `meli_anuncios` e que a
 listagem plana sempre leu. É acréscimo de projeção — filtro, join, ordem e
 agregação da consulta estão intactos.
 
-**O que NÃO foi possível mostrar:** os atributos que identificam a variação
-(cor, tamanho). O ML os marca com `hierarchy: "CHILD_PK"` e a tag
-`variation_attribute` (`documentacao_api_meli/atributos.md`), mas
-`meli_anuncios.attributes_json` guarda apenas `{id, name, value}` — a sincronização
-descarta `tags` e `hierarchy`. Sem esses campos não há como saber QUAL atributo
-define a variação, e adivinhar por uma lista fixa de IDs (`COLOR`, `SIZE`, …)
-seria inventar regra: o conjunto é dependente de categoria. Identificar a
-variação fica com o que já existe e é fiel — a foto dela, o SKU e o título do
-anúncio.
+### 4.2.2 Estoque editável na linha do MLB
+
+A única escrita que a listagem faz. Endpoint próprio, e o service que fala com o
+ML é `meliEstoqueService`:
+
+```
+PATCH /anuncios-meli/:itemId/estoque  { clienteSlug, clienteContaId?, estoque }
+   -> PUT https://api.mercadolibre.com/items/{itemId}  { available_quantity }
+```
+
+**Por que `PUT /items` e não `/user-products/.../stock`.** A doc tem três
+caminhos de estoque (`estoque-distribuido.md`, "Gerir estoque"):
+
+| cenário do vendedor                            | endpoint                                            |
+| ---------------------------------------------- | --------------------------------------------------- |
+| sem multi origem                               | `PUT /items` `{ available_quantity }`               |
+| Full/Flex com estoque distribuído (MLA, MLC)   | `PUT /user-products/stock/type/selling_address`     |
+| multi origem (`warehouse_management`)          | `PUT /user-products/{up}/stock/type/seller_warehouse` |
+
+Os dois últimos exigem o header `x-version` (400 sem ele, 409 se vier velho) e
+pressupõem depósitos/localizações que esta tela não conhece — ela não lê
+`/user-products/{up}/stock` nem guarda `network_node_id`. O implementado é o
+primeiro, que é o documentado para vendedor sem multi origem.
+
+**A regra que não pode ser inventada: o estoque é do User Product.** "A
+modificação dos itens através do PUT ao recurso /items será replicada pelo
+Mercado Livre de forma assíncrona em todos os itens associados ao mesmo User
+Product. Os campos […] sincronizados são: […] `available_quantity`"
+(`user-products.md`). Daí:
+
+- a edição **pode** partir de qualquer MLB da variação — o ML não tem "estoque do
+  anúncio", tem estoque do produto físico;
+- confirmado o valor, ele vale para **todos os irmãos do mesmo
+  `user_product_id`**. O snapshot local propaga isso, e a resposta devolve
+  `itens_sincronizados` para a tela mover as linhas irmãs sem deduzir nada;
+- outra variação da mesma família **não** se move: a replicação é por UP, não
+  por família;
+- `status` **não** está na lista de campos replicados por UP. `available_quantity`
+  = 0 pausa o anúncio editado (`out_of_stock`) e um valor acima de 0 reativa o
+  que estava pausado assim (`produto-sincronizacao-de-publicacoes.md`), mas isso
+  é lido da resposta do ML — o irmão recebe só o número.
+
+Consequências na UI, todas herdadas do desenho de `/conteudo`: o snapshot local
+só muda depois do ML confirmar; uma recusa devolve a célula ao valor anterior e
+mostra o motivo que o ML deu; enquanto a chamada está em voo a célula não mostra
+número nenhum (nem o antigo, que já não vale, nem o novo, que ainda não valeu).
+**Sair do campo cancela — só Enter salva**: é escrita em anúncio real numa tela
+que lista centenas deles, e salvar por distração seria efeito colateral
+inaceitável.
+
+O agregado do agrupador é recalculado no cliente pela mesma régua do banco
+(soma do estoque por UP distinto, `MAX(estoque)` dentro do UP), a partir do
+cache do detalhe da família. Isso é legítimo porque os agregados da listagem são
+do grupo **inteiro** e não sofrem filtro nem busca (CTE `grupos` vs
+`selecionados`, §4.4) — ou seja, o detalhe cobre exatamente o mesmo conjunto que
+a linha agrega. Recalcular no lugar, em vez de recarregar a lista, é o que
+mantém as expansões abertas e o operador onde ele estava.
 
 ### 4.3 Ordenação única
 
@@ -302,12 +403,18 @@ não efeito colateral.
 Com isso, D-3 desaparece: nenhum card de KPI fica desabilitado, porque não há
 mais uma aba que monopolize o parâmetro `filtro`.
 
-### 4.5 Contrato dos endpoints — sem endpoint novo
+### 4.5 Contrato dos endpoints
+
+A unificação da listagem (§4.1 a §4.4) não criou endpoint nenhum. O **único**
+endpoint novo desta tela é o de escrita de estoque (§4.2.2): ele existe porque
+não havia caminho para escrever `available_quantity` — `/conteudo` cobre
+título/modelo/descrição e mais nada.
 
 | Endpoint | O que muda |
 | --- | --- |
 | `GET /anuncios-meli/familias` | Mesma rota, mesma autorização. Passa a devolver a **lista unificada**: `{ ok, cliente, anuncios: [linha…], paginacao }`, onde cada linha tem `tipo`. Sai `sem_user_product` (existia só para o badge da aba). |
-| `GET /anuncios-meli/familias/:familyId` | Mesma rota, mesmo formato, mesma autorização. Só o `SELECT` ganhou `moeda`, `vendidos` e `score_venforce`: a expansão deixou de ser uma tabela separada e virou a continuação da lista, então precisa preencher as MESMAS colunas do cabeçalho — sem esses três campos, três colunas do filho ficariam vazias embaixo de rótulos preenchidos. |
+| `GET /anuncios-meli/familias/:familyId` | Mesma rota, mesmo formato, mesma autorização. Só o `SELECT` ganhou `moeda`, `vendidos`, `score_venforce` e `listing_type_id`: a expansão deixou de ser uma tabela separada e virou a continuação da lista, então precisa preencher as MESMAS colunas do cabeçalho — sem esses campos, colunas do filho ficariam vazias embaixo de rótulos preenchidos. Acréscimos de **projeção**: filtro, join, ordem e agregação intactos. |
+| `PATCH /anuncios-meli/:itemId/estoque` | **NOVO.** Corpo `{ clienteSlug, clienteContaId?, estoque }`; responde `{ ok, estoque, anuncio, itens_sincronizados, user_product_id }`. Mesma proteção do módulo (automações + carteira), a mesma de `/conteudo` e `/criacao/publicar` — que também escrevem no ML. Não é admin-only: o `requireAdmin` do otimizador existe porque a IA está em validação, não porque escrever no anúncio seja privilégio de admin. Precisa ser declarada **antes** de `GET /:itemId`, como as outras sub-rotas. |
 | `GET /anuncios-meli` | **Inalterado** — é o contrato plano por item que `Portal/central-margem-api.js` consome como fallback do Motor de Margem. Mexer nele quebraria a Central de Margem. O filtro `sem_agrupamento` continua existindo ali como recorte de diagnóstico; deixa de ser identidade de aba. |
 
 ### 4.5.1 Dívida de nomenclatura de `GET /anuncios-meli/familias`

@@ -8,7 +8,9 @@
 //   - falha "esperada" de sync . HTTP 200 + { ok: false, codigo, motivo }
 //
 // Sincronização, detalhe e otimizador são read-only no Mercado Livre.
-// A criação de anúncios (meliCriacaoService) é a única escrita intencional.
+// As escritas intencionais no ML são três, e cada uma tem o seu service:
+// criação de anúncio (meliCriacaoService), conteúdo do anúncio
+// (meliConteudoService) e estoque (meliEstoqueService).
 // -----------------------------------------------------------------------------
 
 const anunciosService = require("../services/meliAnuncios/meliAnunciosService");
@@ -17,6 +19,7 @@ const syncService = require("../services/meliAnuncios/meliSyncService");
 const otimizadorService = require("../services/meliAnuncios/otimizadorMeliService");
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const conteudoService = require("../services/meliAnuncios/meliConteudoService");
+const estoqueService = require("../services/meliAnuncios/meliEstoqueService");
 const { mlFetch } = require("../utils/mlClient");
 
 function extrairClienteContaId(valor) {
@@ -577,6 +580,105 @@ async function atualizarConteudo(req, res) {
   }
 }
 
+// ----------------------------------------------------------------------------
+// PATCH /anuncios-meli/:itemId/estoque
+//   body: { clienteSlug, clienteContaId?, estoque }
+//
+// A escrita é PUT /items/{id} { available_quantity } (ver meliEstoqueService);
+// o PATCH aqui é do NOSSO endpoint, alinhado aos vizinhos /conteudo e /revisao.
+//
+// A resposta diz três coisas que a tela precisa distinguir:
+//   estoque ............... o valor que o ML confirmou (não o digitado);
+//   anuncio ............... a linha do item já atualizada;
+//   itens_sincronizados ... os OUTROS MLBs do mesmo User Product que passam a
+//                           valer o mesmo estoque. Vem vazio no anúncio sem
+//                           agrupamento, e é o que permite à tela atualizar a
+//                           variação inteira sem reconsultar nada.
+// ----------------------------------------------------------------------------
+async function atualizarEstoque(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    const { clienteSlug } = body;
+    const clienteContaId = extrairClienteContaId(body.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    // Validação ANTES de resolver cliente/conta/token: um valor inválido não
+    // merece uma consulta ao banco nem uma chamada externa.
+    const quantidade = estoqueService.normalizarQuantidade(body.estoque);
+    if (!quantidade.ok) {
+      return res.status(400).json({ ok: false, codigo: quantidade.codigo, motivo: quantidade.motivo });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo:
+          "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    // Mesma regra de conta de /conteudo: a linha sabe de qual conta veio, e é
+    // essa. Sem isso, resolverContextoConta decide — e recusa (409) quando há
+    // mais de uma conta e nenhuma indicação.
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id,
+        clienteContaId,
+        requireUsableGrant: true,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const r = await estoqueService.atualizarEstoque({
+      clienteId: cliente.id,
+      itemId,
+      estoque: body.estoque,
+      mlUserId,
+    });
+
+    // Recusa do ML: 200 com ok:false, como as outras falhas "esperadas" deste
+    // controller — e o snapshot local NÃO é tocado.
+    if (!r.ok) {
+      return res.json({ ok: false, codigo: r.codigo, motivo: r.motivo });
+    }
+
+    const { anuncio: atualizado, sincronizados } =
+      await anunciosService.aplicarEstoqueConfirmado(cliente.id, itemId, {
+        estoque: r.estoque,
+        status: r.status,
+        subStatus: r.subStatus,
+        definirSubStatus: r.temSubStatus,
+        userProductId: anuncio.user_product_id || null,
+      });
+
+    return res.json({
+      ok: true,
+      estoque: r.estoque,
+      anuncio: atualizado || anuncio,
+      itens_sincronizados: sincronizados,
+      user_product_id: anuncio.user_product_id || null,
+    });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] atualizarEstoque:", err.message);
+    return res.status(500).json({
+      ok: false,
+      motivo: "Erro interno ao salvar o estoque do anúncio.",
+    });
+  }
+}
+
 // Reflete o MODEL confirmado dentro do attributes_json do snapshot — a ficha
 // técnica da tela lê o modelo de lá, não da coluna.
 function comAtributoModelo(attributesJson, modelo) {
@@ -1029,6 +1131,7 @@ module.exports = {
   detalheFamilia,
   detalhe,
   atualizarConteudo,
+  atualizarEstoque,
   marcarRevisado,
   otimizar,
   listarOtimizacoes,

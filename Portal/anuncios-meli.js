@@ -48,6 +48,34 @@
     // A operação escolhida no Shell (data-vf-scope="account"). Esta tela não
     // decide mais cardinalidade — vf-context.js decide (R8).
     contaMlId: "",
+    // ── Visão agrupada Família -> User Product -> Item MLB ─────────────────
+    // "familias" (default) | "sem_agrupamento". O modo decide QUAL container
+    // está visível e qual endpoint alimenta a tela; nenhum dos dois refaz
+    // requisição só por alternar a aba.
+    modo: "familias",
+    familias: [],
+    paginacaoFamilias: { page: 1, limit: 20, totalFamilias: 0, totalPaginas: 1 },
+    familiasCarregadas: false,
+    catalogoCarregado: false,
+    // Total da aba "Sem agrupamento". Vem do MESMO endpoint que alimenta a
+    // lista (?filtro=sem_agrupamento), nunca de sem_user_product.total — aquele
+    // conta só user_product_id NULL e ignora UP sem family_id e UP órfão, então
+    // o badge mostraria um número menor que a própria lista.
+    semAgrupamentoTotal: null,
+    semAgrupamentoToken: 0,
+    // Cache das famílias já expandidas: family_id -> detalhe. Reabrir uma
+    // família não gasta requisição.
+    state: { familyCache: {} },
+    // Guardas de corrida em dois níveis:
+    //  - familiasToken: a LISTA de famílias (busca/paginação/troca de contexto);
+    //  - familiaEpoca: invalida de uma vez TODAS as expansões em voo quando o
+    //    cliente/conta muda (senão o detalhe do cliente A pintaria a tela do B);
+    //  - familiaTokens[familyId]: abrir -> colapsar -> reabrir a MESMA família
+    //    deixa duas respostas em voo; só a última pode escrever.
+    familiasToken: 0,
+    familiaEpoca: 0,
+    familiaTokens: {},
+    familiaTokenSeq: 0,
     // Estado do detalhe aberto:
     detalheAtual: null,    // { anuncio, descricao }
     otimizacoes: {         // últimas otimizações por tipo (rascunho ou aprovada)
@@ -181,9 +209,25 @@
     { key: "sem_sku", label: "Sem SKU", campo: "semSku", meta: "Sem identificação interna", estado: "danger", accent: "neutral", tipo: "filtro", valor: "sem_sku" },
   ];
 
+  // Por que um KPI pode estar indisponível:
+  //  - na aba "Famílias", GET /anuncios-meli/familias aceita só `q` — status e
+  //    qualidade não existem lá, então NENHUM card filtra;
+  //  - na aba "Sem agrupamento", o parâmetro `filtro` já está ocupado pelo
+  //    próprio recorte da aba e o backend aceita um valor só, então os cards de
+  //    tipo "filtro" ficam fora; os de tipo "status" usam outro parâmetro e
+  //    continuam valendo.
+  // Retorna o motivo (string) ou "" quando o card está disponível.
+  function motivoKpiIndisponivel(def) {
+    if (!def || !def.tipo) return "";
+    if (AM.modo === "familias") return "Filtro disponível na aba Sem agrupamento.";
+    if (def.tipo === "filtro") return "Indisponível nesta aba: o recorte já é “sem agrupamento”.";
+    return "";
+  }
+
   function alternarFiltroKpi(key) {
     var def = null;
     for (var i = 0; i < KPI_DEFS.length; i++) if (KPI_DEFS[i].key === key) def = KPI_DEFS[i];
+    if (motivoKpiIndisponivel(def)) return;
 
     if (AM.kpiAtivo === key || key === "total" || !def || !def.tipo) {
       // clicar de novo no mesmo card (ou em "Total") limpa o filtro
@@ -349,6 +393,12 @@
       else fecharDetalhe(true);
     }
 
+    // Trocar de cliente/conta invalida a árvore inteira: o cache é indexado só
+    // por family_id, então sem isso uma família do cliente anterior reapareceria
+    // para o cliente novo. A época sobe junto para descartar toda expansão que
+    // ainda esteja em voo.
+    resetarArvoreFamilias();
+
     if (!ctx) { AM.clienteAtual = null; AM.contaMlId = ""; return; }
 
     AM.clienteAtual = { slug: ctx.slug, nome: ctx.nome };
@@ -360,8 +410,22 @@
     if (el("am-busca")) el("am-busca").value = "";
     atualizarIndicadorFiltros();
     renderHudHeader();
+    renderModo();
     carregarResumo();
-    carregarAnuncios();
+    carregarBadgeSemAgrupamento();
+    carregarModoAtual();
+  }
+
+  // Zera tudo que pertence à árvore agrupada. Chamado na troca de contexto.
+  function resetarArvoreFamilias() {
+    AM.state.familyCache = {};
+    AM.familiaTokens = {};
+    AM.familiaEpoca++;
+    AM.familias = [];
+    AM.familiasCarregadas = false;
+    AM.catalogoCarregado = false;
+    AM.paginacaoFamilias = { page: 1, limit: 20, totalFamilias: 0, totalPaginas: 1 };
+    AM.semAgrupamentoTotal = null;
   }
 
   function bindEventosFixos() {
@@ -370,7 +434,20 @@
       AM.filtros.q = e.target.value;
       atualizarIndicadorFiltros();
       if (AM.buscaTimer) clearTimeout(AM.buscaTimer);
-      AM.buscaTimer = setTimeout(function () { AM.paginacao.page = 1; carregarAnuncios(); }, 350);
+      AM.buscaTimer = setTimeout(function () {
+        // A busca vale para a aba ativa: em "Famílias" ela vai para
+        // /familias?q= (o backend casa por nome da família, título, SKU, UP ou
+        // MLB e devolve a família inteira); em "Sem agrupamento", para a
+        // listagem de sempre.
+        AM.paginacao.page = 1;
+        AM.paginacaoFamilias.page = 1;
+        if (AM.modo === "familias") carregarFamilias();
+        else carregarAnuncios();
+      }, 350);
+    });
+    el("am-modo").addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-modo]");
+      if (btn) alternarModo(btn.getAttribute("data-modo"));
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") fecharDetalhe();
@@ -456,9 +533,11 @@
     KPI_DEFS.forEach(function (k) {
       var ativo = AM.kpiAtivo === k.key;
       var meta = typeof k.meta === "function" ? k.meta(r) : k.meta;
+      var indisponivel = motivoKpiIndisponivel(k);
       html += '<button type="button" class="vf-metric am-kpi' +
         (k.accent ? " is-" + k.accent : "") +
         (ativo ? " is-active" : "") + '" data-kpi="' + k.key + '"' +
+        (indisponivel ? ' disabled title="' + escapeAttr(indisponivel) + '"' : "") +
         (ativo ? ' aria-pressed="true"' : ' aria-pressed="false"') + '>' +
         '<span class="vf-metric__label">' + k.label + "</span>" +
         '<strong class="vf-metric__value">' + (r[k.campo] || 0) + "</strong>" +
@@ -483,12 +562,18 @@
              "&page=" + AM.paginacao.page + "&limit=" + AM.paginacao.limit;
     if (AM.filtros.q) qs += "&q=" + encodeURIComponent(AM.filtros.q);
     if (AM.filtros.status) qs += "&status=" + encodeURIComponent(AM.filtros.status);
-    if (AM.filtros.filtro) qs += "&filtro=" + encodeURIComponent(AM.filtros.filtro);
+    // O recorte da aba "Sem agrupamento" NÃO mora em AM.filtros: ele é a
+    // identidade da aba, não um filtro que o operador ligou. Guardá-lo ali
+    // faria o indicador "1 filtro ativo" mentir e disputaria o mesmo slot com
+    // os cards de KPI.
+    var filtroEfetivo = AM.modo === "sem_agrupamento" ? "sem_agrupamento" : AM.filtros.filtro;
+    if (filtroEfetivo) qs += "&filtro=" + encodeURIComponent(filtroEfetivo);
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
 
     api("/anuncios-meli?" + qs).then(function (r) {
       if (meuToken !== AM.catalogoToken) return; // troca de conta/cliente (ou novo filtro) já disparou outra busca
       AM.carregandoCatalogo = false;
+      AM.catalogoCarregado = true;
       if (!r.data || !r.data.ok) {
         box.innerHTML = estadoHtml("error", "Erro ao carregar",
           (r.data && r.data.motivo) || "Tente novamente.");
@@ -504,6 +589,11 @@
     var box = el("am-catalogo-container");
     if (!AM.anuncios.length) {
       var temFiltro = AM.filtros.q || AM.filtros.status || AM.filtros.filtro;
+      if (AM.modo === "sem_agrupamento" && !temFiltro) {
+        box.innerHTML = estadoHtml("empty", "Nenhum anúncio sem agrupamento",
+          "Todos os anúncios deste cliente estão em alguma família. Veja a aba Famílias.");
+        return;
+      }
       box.innerHTML = estadoHtml("empty",
         temFiltro ? "Nenhum anúncio para esse filtro" : "Nenhum anúncio sincronizado",
         temFiltro ? "Ajuste a busca ou os filtros acima."
@@ -517,7 +607,7 @@
         "<span>Estoque</span><span>Vendidos</span><span>Score VenForce</span><span></span>" +
       "</div>";
     AM.anuncios.forEach(function (a) { html += rowAnuncioHtml(a); });
-    html += "</div>" + paginacaoHtml();
+    html += "</div>" + paginacaoHtml(AM.paginacao, "am-pag", "anúncio");
     box.innerHTML = html;
 
     var rows = box.querySelectorAll(".am-row[data-item]");
@@ -535,12 +625,329 @@
       })(rows[i]);
     }
 
-    var btnPrev = el("am-pag-prev"), btnNext = el("am-pag-next");
-    if (btnPrev) btnPrev.addEventListener("click", function () {
-      if (AM.paginacao.page > 1) { AM.paginacao.page--; carregarAnuncios(); window.scrollTo({ top: 0, behavior: "smooth" }); }
+    bindPaginacao("am-pag", AM.paginacao, function (pagina) {
+      AM.paginacao.page = pagina;
+      carregarAnuncios();
     });
-    if (btnNext) btnNext.addEventListener("click", function () {
-      if (AM.paginacao.page < AM.paginacao.totalPaginas) { AM.paginacao.page++; carregarAnuncios(); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  }
+
+  // ===========================================================================
+  // VISÃO AGRUPADA — Família -> User Product -> Item MLB
+  //
+  // Hierarquia oficial do Mercado Livre, agora persistida no backend
+  // (meli_user_products). A tela consome duas rotas somente-leitura:
+  //   GET /anuncios-meli/familias            -> a página de famílias (sem MLBs)
+  //   GET /anuncios-meli/familias/:familyId  -> UPs + MLBs de UMA família
+  //
+  // Nenhuma família abre sozinha: expandir é sempre ação explícita do
+  // operador, e só a primeira expansão gasta requisição (AM.state.familyCache).
+  //
+  // Ações por nível, de propósito:
+  //   Família      -> só expandir/colapsar (não é entidade operável);
+  //   User Product -> só agrupamento visual (nenhum handler);
+  //   Item MLB     -> abrirDetalhe(), que é o modal de sempre — com edição e
+  //                   otimização inalteradas.
+  // ===========================================================================
+
+  function renderModo() {
+    var nav = el("am-modo");
+    if (!nav) return;
+    nav.querySelectorAll("[data-modo]").forEach(function (btn) {
+      var ativo = btn.getAttribute("data-modo") === AM.modo;
+      btn.classList.toggle("is-active", ativo);
+      btn.setAttribute("aria-pressed", ativo ? "true" : "false");
+    });
+    var badge = el("am-modo-badge");
+    if (badge) {
+      var tem = AM.semAgrupamentoTotal !== null && AM.semAgrupamentoTotal !== undefined;
+      badge.textContent = tem ? String(AM.semAgrupamentoTotal) : "";
+      badge.hidden = !tem;
+    }
+    var boxFam = el("am-familias-container");
+    var boxCat = el("am-catalogo-container");
+    if (boxFam) boxFam.hidden = AM.modo !== "familias";
+    if (boxCat) boxCat.hidden = AM.modo !== "sem_agrupamento";
+  }
+
+  function alternarModo(modo) {
+    if (!modo || modo === AM.modo) return;
+    AM.modo = modo;
+    // Os cards de KPI mudam de disponibilidade entre as abas; um KPI ligado na
+    // aba anterior não pode continuar valendo numa aba onde ele nem existe.
+    var def = null;
+    for (var i = 0; i < KPI_DEFS.length; i++) if (KPI_DEFS[i].key === AM.kpiAtivo) def = KPI_DEFS[i];
+    if (def && motivoKpiIndisponivel(def)) {
+      AM.kpiAtivo = null;
+      AM.filtros.status = "";
+      AM.filtros.filtro = "";
+      AM.catalogoCarregado = false;
+      atualizarIndicadorFiltros();
+    }
+    renderModo();
+    renderResumo();
+    carregarModoAtual();
+  }
+
+  // Carrega só o lado visível, e só se ele ainda não tiver conteúdo — alternar
+  // as abas de ida e volta não gasta requisição nenhuma.
+  function carregarModoAtual() {
+    if (!AM.clienteAtual) return;
+    if (AM.modo === "familias") {
+      if (!AM.familiasCarregadas) carregarFamilias();
+    } else if (!AM.catalogoCarregado) {
+      carregarAnuncios();
+    }
+  }
+
+  // Badge da aba. Fonte deliberadamente igual à da LISTA (?filtro=sem_agrupamento
+  // com limit=1, só para ler paginacao.total) — sem_user_product.total contaria
+  // apenas user_product_id NULL e deixaria de fora UP sem family_id e UP órfão,
+  // fazendo o badge divergir da própria lista que ele rotula.
+  function carregarBadgeSemAgrupamento() {
+    if (!AM.clienteAtual) return;
+    var meuToken = ++AM.semAgrupamentoToken;
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+             "&filtro=sem_agrupamento&page=1&limit=1";
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+    api("/anuncios-meli?" + qs).then(function (r) {
+      if (meuToken !== AM.semAgrupamentoToken) return;
+      if (!r.data || !r.data.ok || !r.data.paginacao) return;
+      AM.semAgrupamentoTotal = r.data.paginacao.total;
+      renderModo();
+    });
+  }
+
+  function carregarFamilias() {
+    if (!AM.clienteAtual) return;
+    var meuToken = ++AM.familiasToken;
+    var box = el("am-familias-container");
+    box.innerHTML = estadoHtml("loading", "Carregando famílias…");
+
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+             "&page=" + AM.paginacaoFamilias.page + "&limit=" + AM.paginacaoFamilias.limit;
+    if (AM.filtros.q) qs += "&q=" + encodeURIComponent(AM.filtros.q);
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+
+    api("/anuncios-meli/familias?" + qs).then(function (r) {
+      if (meuToken !== AM.familiasToken) return; // busca/página/contexto mais novo já assumiu
+      if (!r.data || !r.data.ok) {
+        box.innerHTML = estadoHtml("error", "Erro ao carregar famílias",
+          (r.data && r.data.motivo) || "Tente novamente.");
+        return;
+      }
+      AM.familias = r.data.familias || [];
+      AM.paginacaoFamilias = r.data.paginacao || AM.paginacaoFamilias;
+      AM.familiasCarregadas = true;
+      renderFamilias();
+    });
+  }
+
+  function renderFamilias() {
+    var box = el("am-familias-container");
+    if (!AM.familias.length) {
+      box.innerHTML = AM.filtros.q
+        ? estadoHtml("empty", "Nenhuma família para essa busca", "Ajuste o termo buscado acima.")
+        : estadoHtml("empty", "Nenhuma família agrupada",
+            "Os anúncios deste cliente ainda não têm agrupamento do Mercado Livre. Veja a aba Sem agrupamento.");
+      return;
+    }
+
+    // Cabeçalho de colunas: é ele que transforma a árvore numa tabela
+    // agrupada. Os rótulos valem para a linha do item; nos níveis de
+    // cima as mesmas colunas carregam o resumo da família.
+    var html = '<div class="am-arvore" aria-label="Famílias de anúncios">' +
+      '<div class="am-arvore__head" aria-hidden="true">' +
+        "<span></span><span></span><span>Anúncio</span><span>Status</span>" +
+        '<span class="am-arvore__col--preco am-arvore__col--num">Preço</span>' +
+        '<span class="am-arvore__col--estoque am-arvore__col--num">Estoque</span>' +
+        "<span></span>" +
+      "</div>";
+    AM.familias.forEach(function (fam, idx) { html += familiaHtml(fam, idx); });
+    html += "</div>" + paginacaoHtml(
+      { page: AM.paginacaoFamilias.page, totalPaginas: AM.paginacaoFamilias.totalPaginas, total: AM.paginacaoFamilias.totalFamilias },
+      "am-fpag", "família"
+    );
+    box.innerHTML = html;
+
+    box.querySelectorAll(".am-familia__head").forEach(function (btn) {
+      btn.addEventListener("click", function () { alternarFamilia(btn); });
+    });
+
+    bindPaginacao("am-fpag", AM.paginacaoFamilias, function (pagina) {
+      AM.paginacaoFamilias.page = pagina;
+      carregarFamilias();
+    });
+  }
+
+  function iconeChevronSvg() {
+    return '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+  }
+
+  function plural(n, singular, pluralForma) {
+    return n + " " + (n === 1 ? singular : pluralForma);
+  }
+
+  // Par número+rótulo do resumo da família. Texto tabular em vez de
+  // chip: chip devolve a aparência de card que estamos tirando.
+  function contagemHtml(n, singular, pluralForma) {
+    n = n || 0;
+    return "<span><b>" + n + "</b> " + (n === 1 ? singular : pluralForma) + "</span>";
+  }
+
+  function familiaHtml(fam, idx) {
+    var painelId = "am-fam-painel-" + idx;
+    // A capa vem pronta em cover.thumbnail: o backend elege a variação que
+    // representa a família (a mais relevante para a busca, quando há busca) a
+    // cada leitura de GET /familias. O front NÃO deduz capa a partir dos
+    // itens — se fizesse isso, a imagem só apareceria depois de expandir e
+    // poderia contradizer a escolha da API.
+    var capa = (fam.cover && fam.cover.thumbnail)
+      ? '<img src="' + escapeHtml(fam.cover.thumbnail) + '" alt="" loading="lazy" />'
+      : iconeImagemSvg();
+    return '<div class="am-familia" data-familia="' + escapeAttr(fam.family_id) + '">' +
+      '<button type="button" class="am-familia__head" aria-expanded="false" aria-controls="' + painelId + '">' +
+        '<span class="am-familia__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
+        '<span class="am-familia__thumb" aria-hidden="true">' + capa + "</span>" +
+        '<span class="am-familia__cel">' +
+          '<span class="am-familia__nome">' + escapeHtml(fam.family_name || "(família sem nome)") + "</span>" +
+          '<span class="am-familia__id">' + escapeHtml(fam.family_id) + "</span>" +
+        "</span>" +
+        '<span class="am-familia__contagem">' +
+          contagemHtml(fam.total_user_products, "produto", "produtos") +
+          contagemHtml(fam.total_itens, "anúncio", "anúncios") +
+        "</span>" +
+      "</button>" +
+      '<div class="am-familia__painel" id="' + painelId + '" hidden></div>' +
+    "</div>";
+  }
+
+  // Expandir/colapsar. Colapsar NÃO descarta o que já foi renderizado, e
+  // reabrir lê AM.state.familyCache — nenhuma requisição nova.
+  function alternarFamilia(botao) {
+    var caixa = botao.closest(".am-familia");
+    var painel = caixa.querySelector(".am-familia__painel");
+    var familyId = caixa.getAttribute("data-familia");
+    var abrindo = botao.getAttribute("aria-expanded") !== "true";
+
+    botao.setAttribute("aria-expanded", abrindo ? "true" : "false");
+    caixa.classList.toggle("is-aberta", abrindo);
+    painel.hidden = !abrindo;
+    if (!abrindo) return;
+
+    var cache = AM.state.familyCache[familyId];
+    if (cache) { renderFamiliaDetalhe(cache, painel); return; }
+    if (painel.getAttribute("data-carregando") === "1") return; // já tem uma em voo
+    carregarFamiliaDetalhe(familyId, painel);
+  }
+
+  function carregarFamiliaDetalhe(familyId, painel) {
+    // Duas guardas: a época morre quando o cliente/conta muda; o token por
+    // família morre quando a MESMA família é pedida de novo (abrir, colapsar,
+    // reabrir antes da primeira resposta chegar).
+    var minhaEpoca = AM.familiaEpoca;
+    var meuToken = ++AM.familiaTokenSeq;
+    AM.familiaTokens[familyId] = meuToken;
+
+    painel.setAttribute("data-carregando", "1");
+    painel.innerHTML = estadoHtml("loading", "Carregando produtos da família…");
+
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+
+    api("/anuncios-meli/familias/" + encodeURIComponent(familyId) + "?" + qs).then(function (r) {
+      if (minhaEpoca !== AM.familiaEpoca) return;            // outro cliente/conta assumiu a tela
+      if (AM.familiaTokens[familyId] !== meuToken) return;   // resposta velha da mesma família
+      painel.removeAttribute("data-carregando");
+      if (!r.data || !r.data.ok || !r.data.familia) {
+        painel.innerHTML = estadoHtml("error", "Erro ao carregar a família",
+          (r.data && r.data.motivo) || "Tente novamente.");
+        return;
+      }
+      AM.state.familyCache[familyId] = r.data.familia;
+      renderFamiliaDetalhe(r.data.familia, painel);
+    });
+  }
+
+  function renderFamiliaDetalhe(familia, painel) {
+    var ups = familia.user_products || [];
+    if (!ups.length) {
+      painel.innerHTML = estadoHtml("empty", "Família sem produtos visíveis",
+        "Nenhum anúncio desta família pertence à operação selecionada.");
+      return;
+    }
+    var html = "";
+    ups.forEach(function (up) { html += userProductHtml(up); });
+    painel.innerHTML = html;
+    bindLinhasMlb(painel);
+    // Expandir não mexe na capa: ela já veio decidida na listagem.
+  }
+
+  // Nível 2 — faixa de grupo: agrupamento visual puro, nenhum handler,
+  // nenhuma ação. Não é caixa: é uma faixa fina na largura da tabela.
+  function userProductHtml(up) {
+    var origem = [up.site_id, up.domain_id].filter(Boolean).join(" · ");
+    var itens = up.itens || [];
+    var html = '<div class="am-up">' +
+      '<div class="am-up__head">' +
+        '<span class="am-up__rotulo">Produto</span>' +
+        '<span class="am-up__id vf-mono">' + escapeHtml(up.user_product_id) + "</span>" +
+        (origem ? '<span class="am-up__meta">' + escapeHtml(origem) + "</span>" : "") +
+        '<span class="am-up__contagem">' + plural(up.total_itens || itens.length, "anúncio", "anúncios") + "</span>" +
+      "</div>" +
+      '<div class="am-up__itens">';
+    itens.forEach(function (item) { html += rowMlbCompactaHtml(item); });
+    return html + "</div></div>";
+  }
+
+  // Nível 3 — linha MLB compacta, PRÓPRIA da árvore. Não reusa rowAnuncioHtml():
+  // aquela é um grid de 8 colunas do catálogo em largura cheia e ficaria
+  // quebrada dois níveis adentro. O que se reusa é o modelo de dados (o
+  // /familias/:familyId devolve os mesmos campos) e o handler abrirDetalhe().
+  function rowMlbCompactaHtml(a) {
+    var st = statusInfo(a.status);
+    var img = a.thumbnail
+      ? '<img src="' + escapeHtml(a.thumbnail) + '" alt="" loading="lazy" />'
+      : iconeImagemSvg();
+    var sku = a.sku
+      ? '<span class="vf-mono">' + escapeHtml(a.sku) + "</span>"
+      : '<span class="vf-mono am-row__sem-sku">sem SKU</span>';
+    var linkMl = a.permalink
+      ? '<a class="am-row__link" href="' + escapeHtml(a.permalink) + '" target="_blank" rel="noopener" ' +
+        'aria-label="Abrir ' + escapeAttr(a.titulo || a.item_id) + ' no Mercado Livre" title="Abrir no Mercado Livre">' +
+        iconeExternoSvg() + "</a>"
+      : "";
+
+    return '<div class="am-mlb" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
+      'aria-label="Ver detalhes de ' + escapeAttr(a.titulo || a.item_id) + '">' +
+      // Vão do chevron: mantém o item uma coluna à direita da família
+      // sem precisar de caixa aninhada nem de padding extra.
+      '<span class="am-mlb__vao" aria-hidden="true"></span>' +
+      '<span class="am-mlb__thumb" aria-hidden="true">' + img + "</span>" +
+      '<span class="am-mlb__main">' +
+        '<span class="am-mlb__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</span>" +
+        '<span class="am-mlb__ids"><span class="vf-mono">' + escapeHtml(a.item_id) + "</span>" + sku + "</span>" +
+      "</span>" +
+      '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
+      '<span class="am-mlb__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +
+      '<span class="am-mlb__num">' + (a.estoque != null ? a.estoque : "—") + "</span>" +
+      '<span class="am-mlb__acao">' + linkMl + "</span>" +
+    "</div>";
+  }
+
+  // Mesmo contrato de interação da linha do catálogo: clique ou Enter/Espaço
+  // abrem o modal de sempre; o link externo continua sendo do navegador.
+  function bindLinhasMlb(raiz) {
+    raiz.querySelectorAll(".am-mlb[data-item]").forEach(function (row) {
+      function abrir() { abrirDetalhe(row.getAttribute("data-item"), row); }
+      row.addEventListener("click", function (e) {
+        if (e.target.closest(".am-row__link")) return;
+        abrir();
+      });
+      row.addEventListener("keydown", function (e) {
+        if (e.target.closest(".am-row__link")) return;
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(); }
+      });
     });
   }
 
@@ -599,15 +1006,33 @@
     "</div>";
   }
 
-  function paginacaoHtml() {
-    var p = AM.paginacao;
-    if (p.totalPaginas <= 1) return '<nav class="vf-pagination am-paginacao" aria-label="Paginação do catálogo"><span class="vf-pagination__info">' + p.total + " anúncio(s)</span></nav>";
-    return '<nav class="vf-pagination am-paginacao" aria-label="Paginação do catálogo">' +
-      '<span class="vf-pagination__info">Página ' + p.page + " de " + p.totalPaginas + " · " + p.total + " anúncios</span>" +
+  // Uma implementação de paginação para as DUAS listas (anúncios e famílias).
+  // `pag` é sempre { page, totalPaginas, total }; `prefixo` dá os ids dos
+  // botões e `rotulo` o substantivo contado.
+  function paginacaoHtml(pag, prefixo, rotulo) {
+    var p = pag || { page: 1, totalPaginas: 1, total: 0 };
+    var nome = rotulo || "anúncio";
+    var aria = 'aria-label="Paginação de ' + nome + 's"';
+    if (p.totalPaginas <= 1) {
+      return '<nav class="vf-pagination am-paginacao" ' + aria + '><span class="vf-pagination__info">' +
+        p.total + " " + nome + "(s)</span></nav>";
+    }
+    return '<nav class="vf-pagination am-paginacao" ' + aria + ">" +
+      '<span class="vf-pagination__info">Página ' + p.page + " de " + p.totalPaginas + " · " + p.total + " " + nome + "s</span>" +
       '<div class="vf-pagination__actions">' +
-      '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="am-pag-prev"' + (p.page <= 1 ? " disabled" : "") + ">← Anterior</button>" +
-      '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="am-pag-next"' + (p.page >= p.totalPaginas ? " disabled" : "") + ">Próxima →</button></div>" +
+      '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="' + prefixo + '-prev"' + (p.page <= 1 ? " disabled" : "") + ">← Anterior</button>" +
+      '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="' + prefixo + '-next"' + (p.page >= p.totalPaginas ? " disabled" : "") + ">Próxima →</button></div>" +
       "</nav>";
+  }
+
+  function bindPaginacao(prefixo, pag, irPara) {
+    var prev = el(prefixo + "-prev"), next = el(prefixo + "-next");
+    if (prev) prev.addEventListener("click", function () {
+      if (pag.page > 1) { irPara(pag.page - 1); window.scrollTo({ top: 0, behavior: "smooth" }); }
+    });
+    if (next) next.addEventListener("click", function () {
+      if (pag.page < pag.totalPaginas) { irPara(pag.page + 1); window.scrollTo({ top: 0, behavior: "smooth" }); }
+    });
   }
 
   // ===========================================================================

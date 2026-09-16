@@ -65,7 +65,23 @@
                 </div>
               </div>
 
-              <div id="am-catalogo-container" aria-live="polite"></div>
+              <!-- Modo de visualização. "Famílias" é o default e mostra a
+                   árvore Família -> User Product -> Item MLB; "Sem agrupamento"
+                   é o catálogo em lista, recortado pelo filtro do backend.
+                   Os dois containers são IRMÃOS (alternados por [hidden]) e não
+                   um só reaproveitado: assim trocar de aba preserva o que cada
+                   lado já carregou, sem refazer requisição. -->
+              <div class="vf-segmented am-modo" id="am-modo" role="group"
+                   aria-label="Modo de visualização do catálogo">
+                <button type="button" class="vf-segmented__item is-active"
+                        data-modo="familias" aria-pressed="true">Famílias</button>
+                <button type="button" class="vf-segmented__item"
+                        data-modo="sem_agrupamento" aria-pressed="false">Sem agrupamento<span
+                        class="am-modo__badge" id="am-modo-badge" hidden></span></button>
+              </div>
+
+              <div id="am-familias-container" aria-live="polite"></div>
+              <div id="am-catalogo-container" aria-live="polite" hidden></div>
             </section>
           </section>
         </div>

@@ -12,6 +12,7 @@
 // -----------------------------------------------------------------------------
 
 const anunciosService = require("../services/meliAnuncios/meliAnunciosService");
+const familiaService = require("../services/meliAnuncios/meliFamiliaService");
 const syncService = require("../services/meliAnuncios/meliSyncService");
 const otimizadorService = require("../services/meliAnuncios/otimizadorMeliService");
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
@@ -185,6 +186,106 @@ async function listar(req, res) {
     return res
       .status(500)
       .json({ ok: false, motivo: "Erro ao listar os anúncios." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/familias?clienteSlug=&q=&page=&limit=
+//
+// Visão agrupada Família -> User Product -> Item MLB. Somente leitura, não
+// chama a API do Mercado Livre (dados já persistidos em meli_anuncios /
+// meli_user_products). Não retorna nenhum MLB — só agregados por família.
+// ----------------------------------------------------------------------------
+async function listarFamilias(req, res) {
+  try {
+    const { clienteSlug, q, page, limit } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    let contaId = null;
+    let includeLegacy = true;
+    if (clienteContaId != null) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      contaId = contexto.contaId;
+      includeLegacy = contexto.includeLegacy;
+    }
+
+    const [resultado, semUserProduct] = await Promise.all([
+      familiaService.listarFamilias({ clienteId: cliente.id, clienteContaId: contaId, includeLegacy, q, page, limit }),
+      familiaService.contarSemUserProduct({ clienteId: cliente.id, clienteContaId: contaId, includeLegacy }),
+    ]);
+
+    return res.json({
+      ok: true,
+      cliente: { slug: cliente.slug, nome: cliente.nome },
+      familias: resultado.familias,
+      sem_user_product: { total: semUserProduct },
+      paginacao: resultado.paginacao,
+    });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] listarFamilias:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao listar as famílias." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/familias/:familyId?clienteSlug=
+//
+// Detalhe de 1 família: User Products -> Itens MLB completos. Responde 404
+// tanto para family_id inexistente quanto para família que só existe em
+// outra ClienteConta do mesmo cliente — os dois casos são indistinguíveis de
+// propósito, para nunca revelar a existência de dados de outra conta.
+// ----------------------------------------------------------------------------
+async function detalheFamilia(req, res) {
+  try {
+    const { familyId } = req.params;
+    const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    let contaId = null;
+    let includeLegacy = true;
+    if (clienteContaId != null) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      contaId = contexto.contaId;
+      includeLegacy = contexto.includeLegacy;
+    }
+
+    const familia = await familiaService.obterFamiliaDetalhe({
+      clienteId: cliente.id, familyId, clienteContaId: contaId, includeLegacy,
+    });
+    if (!familia) {
+      return res.status(404).json({ ok: false, motivo: "Família não encontrada." });
+    }
+
+    return res.json({
+      ok: true,
+      cliente: { slug: cliente.slug, nome: cliente.nome },
+      familia,
+    });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] detalheFamilia:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao carregar o detalhe da família." });
   }
 }
 
@@ -909,6 +1010,8 @@ module.exports = {
   sincronizar,
   resumo,
   listar,
+  listarFamilias,
+  detalheFamilia,
   detalhe,
   atualizarConteudo,
   marcarRevisado,

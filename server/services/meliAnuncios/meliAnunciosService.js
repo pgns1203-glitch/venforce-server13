@@ -22,6 +22,10 @@ const db =
     ? _dbModule
     : _dbModule.pool || _dbModule.default || _dbModule;
 const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
+// Só para garantir o schema de meli_user_products antes do filtro
+// "sem_agrupamento" consultá-la. A tabela é de meliFamiliaService — este
+// serviço lê dela, nunca escreve.
+const familiaService = require("./meliFamiliaService");
 
 // -----------------------------------------------------------------------------
 // Schema
@@ -223,9 +227,10 @@ async function itemIdsExistentes(clienteId) {
 
 // Listagem paginada com filtros. Filtros possíveis em `filtro`:
 //   sem_fotos | score_baixo | sem_sku | ficha_incompleta | pausados |
-//   score_muito_bom | score_medio | mercado_full
-// (os três últimos foram adicionados junto com os cards de KPI clicáveis
-// da listagem — mesmos limiares 60/80 já usados em scoreClasse() no front.)
+//   score_muito_bom | score_medio | mercado_full | sem_agrupamento
+// (score_muito_bom/score_medio/mercado_full foram adicionados junto com os
+// cards de KPI clicáveis da listagem — mesmos limiares 60/80 já usados em
+// scoreClasse() no front; sem_agrupamento alimenta a aba da visão agrupada.)
 async function listarAnuncios({
   clienteId,
   clienteContaId = null,
@@ -263,6 +268,11 @@ async function listarAnuncios({
     i++;
   }
 
+  // O predicado de "sem_agrupamento" correlaciona com meli_user_products, que
+  // pertence a meliFamiliaService. Num deploy novo (sync ainda não rodado) a
+  // tabela pode não existir — garantir o schema aqui evita um 500 na aba.
+  if (filtro === "sem_agrupamento") await familiaService.ensureSchema();
+
   switch (filtro) {
     case "sem_fotos":
       where.push(`COALESCE(pictures_count, 0) < 3`);
@@ -287,6 +297,22 @@ async function listarAnuncios({
       break;
     case "mercado_full":
       where.push(`is_full = true`);
+      break;
+    // "Sem agrupamento" NÃO é "sem família": são os anúncios que a visão
+    // Família -> User Product -> Item não alcança, por três caminhos —
+    //   1. anúncio sem user_product_id (legado, nunca migrado ao modelo UP);
+    //   2. UP existe mas o ML não devolveu family_id (não agrupado);
+    //   3. UP referenciado sem linha em meli_user_products (órfão).
+    // O caso 3 não acontece hoje em produção (auditoria dos clientes 32 e 35:
+    // zero órfão), mas está no predicado de propósito: sem ele, um órfão
+    // futuro sumiria das DUAS abas em vez de aparecer em uma.
+    case "sem_agrupamento":
+      where.push(`(user_product_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM meli_user_products up
+         WHERE up.cliente_id = meli_anuncios.cliente_id
+           AND up.user_product_id = meli_anuncios.user_product_id
+           AND up.family_id IS NOT NULL
+      ))`);
       break;
     default:
       break;

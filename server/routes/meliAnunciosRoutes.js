@@ -14,6 +14,8 @@
 //   GET    /anuncios-meli/clientes
 //   POST   /anuncios-meli/sync
 //   GET    /anuncios-meli/resumo
+//   GET    /anuncios-meli/familias
+//   GET    /anuncios-meli/familias/:familyId
 //   GET    /anuncios-meli
 //   GET    /anuncios-meli/criacao/status
 //   GET    /anuncios-meli/criacao/categorias
@@ -52,6 +54,12 @@ router.get("/clientes", ctrl.listarClientes);
 router.post("/sync", ctrl.sincronizar);
 router.get("/resumo", ctrl.resumo);
 router.get("/", ctrl.listar);
+
+// Visão agrupada Família -> User Product -> Item MLB. Precisam vir ANTES de
+// "/:itemId" (linha mais abaixo) — senão a rota dinâmica captura "/familias"
+// como se fosse um itemId.
+router.get("/familias", ctrl.listarFamilias);
+router.get("/familias/:familyId", ctrl.detalheFamilia);
 
 // Criação de anúncios (escrita no Mercado Livre via POST /items).
 router.get("/criacao/status", ctrl.criacaoStatus);

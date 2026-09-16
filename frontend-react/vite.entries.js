@@ -64,6 +64,17 @@ export const ENTRIES = {
     port: 5184,
     apiRoutes: ["/financeiro", "/operacao", "/auth", "/health"],
   },
+  // FASE 1 (Projeto_cliente360) — fundação da nova Cliente 360 V3, sobre o
+  // mesmo Shell V3 da Visão (vf-context/vf-shell) — ver
+  // src/hooks/useCliente360V3.js. Coexiste com Cliente 360 V1
+  // (cliente-360.html, vanilla) e V2 (cliente-360-react.html, entrada
+  // "cliente-360-react" acima) — nenhuma das duas é tocada.
+  "cliente-360-v3": {
+    html: "cliente-360-v3.html",
+    assetsDir: "assets/cliente-360-v3",
+    port: 5185,
+    apiRoutes: ["/operacao", "/auth", "/health"],
+  },
 };
 
 export function resolveEntry(mode) {

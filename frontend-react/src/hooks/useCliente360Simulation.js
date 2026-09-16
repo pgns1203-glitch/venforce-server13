@@ -15,7 +15,7 @@ import { montarIntervencoes, ajustesDoCenarioRapido, ajusteVazio } from "../util
 
 const DEBOUNCE_MS = 350;
 
-export function useCliente360Simulation({ slug, competencia, marketplace }) {
+export function useCliente360Simulation({ slug, competencia, marketplace, clienteContaId }) {
   const [ajustes, setAjustes] = useState({});
   const [resultado, setResultado] = useState(null);
   const [processando, setProcessando] = useState(false);
@@ -41,6 +41,7 @@ export function useCliente360Simulation({ slug, competencia, marketplace }) {
       const resposta = await simularApi(slug, {
         competencia,
         marketplace,
+        clienteContaId,
         cenario: { intervencoes: intervencoesManuais || intervencoes },
         cenarioRapido,
         elasticidades: elasticidades || undefined,
@@ -55,7 +56,7 @@ export function useCliente360Simulation({ slug, competencia, marketplace }) {
     } finally {
       if (!controlador.signal.aborted) setProcessando(false);
     }
-  }, [slug, competencia, marketplace, intervencoes, elasticidades]);
+  }, [slug, competencia, marketplace, clienteContaId, intervencoes, elasticidades]);
 
   // Debounce: o consultor digita em vários campos seguidos; só a última versão
   // do cenário vira requisição.
@@ -81,12 +82,12 @@ export function useCliente360Simulation({ slug, competencia, marketplace }) {
     setResultado(null);
     setCenarioRapidoAtivo(null);
 
-    obterElasticidades(slug, { meses: 6, ate: competencia, marketplace, signal: controlador.signal })
+    obterElasticidades(slug, { meses: 6, ate: competencia, marketplace, clienteContaId, signal: controlador.signal })
       .then((resposta) => { if (vivo) setElasticidades(resposta?.elasticidades || null); })
       .catch(() => { if (vivo) setElasticidades(null); });
 
     return () => { vivo = false; controlador.abort(); };
-  }, [slug, competencia, marketplace]);
+  }, [slug, competencia, marketplace, clienteContaId]);
 
   useEffect(() => () => {
     clearTimeout(timerRef.current);

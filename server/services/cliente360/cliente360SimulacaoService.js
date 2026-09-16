@@ -37,11 +37,12 @@ function intervencoesDoCenarioRapido(chave, perfil) {
 function createSimulacaoService({
   centralRepo = require("../centralVendas/centralVendasRepository"),
   fechamentoAdapter = null,
+  resolveRangeContext = null,
   adsService = null,
   agora = null,
 } = {}) {
   const fechamento = fechamentoAdapter
-    || require("./cliente360FechamentoAdapter").createFechamentoAdapter({ centralRepo });
+    || require("./cliente360FechamentoAdapter").createFechamentoAdapter({ centralRepo, resolveRangeContext });
   const ads = adsService || adsEngine.createAdsService();
 
   async function simular(clienteSlug, {
@@ -50,6 +51,7 @@ function createSimulacaoService({
     cenarioRapido = null,
     elasticidades = null,
     marketplace = "meli",
+    clienteContaId = null,
   } = {}) {
     const slug = String(clienteSlug || "").trim().toLowerCase();
     if (!slug) { const e = new Error("slug é obrigatório."); e.statusCode = 400; throw e; }
@@ -63,7 +65,7 @@ function createSimulacaoService({
       : periodoUtils.competenciaAnteriorDe(periodoUtils.competenciaAtual(hoje));
 
     const { atual: range } = periodoUtils.resolverPeriodos(comp, null, hoje);
-    const dados = await fechamento.lerPeriodo(cliente, range, marketplace);
+    const dados = await fechamento.lerPeriodo(cliente, range, marketplace, { clienteContaId });
 
     if (!dados.temFechamento) {
       const e = new Error("Não há fechamento sincronizado para esta competência.");
@@ -113,6 +115,7 @@ function createSimulacaoService({
     return {
       ok: true,
       cliente: { slug: cliente.slug, nome: cliente.nome || cliente.slug },
+      clienteContaId: dados.clienteContaId, // V3 FASE 0 — conta efetivamente usada (null = legado)
       competencia: comp,
       periodo: range,
       cenarioRapido: cenarioRapido || null,

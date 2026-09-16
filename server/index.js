@@ -83,6 +83,7 @@ const operacaoRoutes = require("./routes/operacaoRoutes");
 const fullRoutes = require("./routes/fullRoutes");
 const cliente360Routes = require("./routes/cliente360Routes");
 const cliente360ResultadoRoutes = require("./routes/cliente360ResultadoRoutes");
+const cliente360V3Routes = require("./routes/cliente360V3Routes");
 const centralVendasRoutes = require("./routes/centralVendasRoutes");
 const motorMargemRoutes = require("./routes/motorMargemRoutes");
 const diagnosticoInicialRoutes = require("./routes/diagnosticoInicialRoutes");
@@ -811,6 +812,10 @@ app.use("/operacao/central-margem", motorMargemRoutes);
 // Financeiro por periodo/conta — nao confundir com /fechamentos (upload).
 app.use("/operacao/visao", visaoRoutes);
 app.use("/financeiro", financeiroVisaoRoutes);
+// Cliente 360 V3 (Projeto_cliente360, FASE 1) - ilha nova, prefixo proprio,
+// nao aninhado em /operacao/cliente-360: contrato aditivo, nao altera o
+// cockpit V2 acima.
+app.use("/operacao/cliente-360-v3", cliente360V3Routes);
 app.use("/operacao/diagnosticos-iniciais", diagnosticoInicialRoutes);
 // Central de Gestao Full — ja linkada no menu do Portal (Marketplace >
 // Central Full), mas o namespace inteiro so responde com FULL_CENTRAL_ENABLED=true

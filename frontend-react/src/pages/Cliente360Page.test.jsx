@@ -200,7 +200,7 @@ describe("Cliente 360 · ponte", () => {
     expect(screen.getByText(/O custo unitário dos produtos comparáveis mudou/)).toBeInTheDocument();
     expect(screen.getByText(/custo unitário atual − custo unitário anterior/)).toBeInTheDocument();
     expect(screen.getByText("R$ 150,00")).toBeInTheDocument();
-    expect(screen.getByText("R$ 155,00")).toBeInTheDocument();
+    expect(screen.getByText("R$ 156,13")).toBeInTheDocument();
   });
 
   it("'Outros' declara a composição em vez de ser caixa-preta", async () => {

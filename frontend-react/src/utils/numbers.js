@@ -37,3 +37,10 @@ export function somaEstrita(...valores) {
   if (valores.some(ehAusente)) return null;
   return valores.reduce((s, v) => s + Number(v), 0);
 }
+
+// "12 itens" / "1 item" — português de gente, não "item(ns)". Recebe já o
+// número formatado quando precisa de separador de milhar.
+export function plural(quantidade, singular, plural_) {
+  const n = Number(quantidade) || 0;
+  return `${formatarNumero(n)} ${n === 1 ? singular : plural_}`;
+}

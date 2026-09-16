@@ -57,11 +57,65 @@
 
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import fs from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import { resolveEntry } from "./vite.entries.js";
 
 const portalDir = fileURLToPath(new URL("../Portal", import.meta.url));
 const BACKEND_DEV = process.env.VITE_BACKEND_ORIGIN || "http://localhost:3333";
+
+// `publicDir = portalDir` (decisão acima) e `build.outDir = portalDir`
+// escrevem no MESMO lugar de onde `vite dev` serve estático — então depois
+// do primeiro `npm run build:<ilha>`, `Portal/<ilha>.html` (a saída, com o
+// bundle final já hasheado) e `frontend-react/<ilha>.html` (a fonte, que
+// o dev deveria transformar) têm o MESMO nome. Vite regista o middleware de
+// publicDir ANTES do de HTML (doc: "avoid duplicate filenames in publicDir
+// and in your root index.html") — sem este plugin, todo `vite dev`/`--mode
+// <ilha>` depois de um build serve pra sempre o bundle de produção
+// congelado (inclusive `import.meta.env.DEV` já resolvido pra `false` nele),
+// nunca a fonte. Sintoma exato que motivou este plugin: a Cliente 360 V3 em
+// localhost:5185 chamando https://venforce-server.onrender.com em vez do
+// proxy — não é bug de resolução de API base (`apiClient.js` já está
+// correto), é o dev server nunca alcançando a fonte.
+//
+// Dev-only (`apply: "serve"`): registra o middleware DENTRO do corpo de
+// `configureServer` (sem retornar função) para entrar na fila ANTES dos
+// middlewares internos do Vite — inclusive o de publicDir — e devolve a
+// MESMA página que a fonte serviria, via `server.transformIndexHtml` (API
+// pública do Vite pra isso). Não toca `build.*`: a saída de produção
+// continua idêntica, byte a byte, à de antes deste plugin.
+//
+// `previewHtml` (opcional, só a ilha cliente-360-v3 usa) — quando a MESMA
+// URL (`/${entry.html}`) chega com `?preview=1`, serve esse outro arquivo em
+// vez da fonte real. Existe só porque este middleware já intercepta ANTES
+// do publicDir (ver acima); nenhum entry de build (vite.entries.js)
+// referencia esse arquivo, então build de produção nunca o alcança —
+// "impossível fora do dev server" por construção, não por checagem em
+// runtime.
+function forcarHtmlDaFonteSobrePublicDir(entry, { previewHtml } = {}) {
+  const htmlPath = fileURLToPath(new URL(`./${entry.html}`, import.meta.url));
+  const previewHtmlPath = previewHtml ? fileURLToPath(new URL(`./${previewHtml}`, import.meta.url)) : null;
+  return {
+    name: "vf-forcar-html-da-fonte-sobre-public-dir",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        const [url, query] = req.url ? req.url.split("?") : [""];
+        if (url !== `/${entry.html}`) return next();
+        const isPreview = previewHtmlPath && new URLSearchParams(query || "").get("preview") === "1";
+        try {
+          const bruto = fs.readFileSync(isPreview ? previewHtmlPath : htmlPath, "utf-8");
+          const html = await server.transformIndexHtml(req.url, bruto, req.originalUrl);
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/html");
+          res.end(html);
+        } catch (err) {
+          next(err);
+        }
+      });
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   // `vitest` chama este config com mode="test" — não é uma ilha, é a suíte
@@ -85,7 +139,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     base: "./",
-    plugins: [react()],
+    plugins: [
+      react(),
+      forcarHtmlDaFonteSobrePublicDir(entry, {
+        previewHtml: mode === "cliente-360-v3" ? "cliente-360-v3-preview.html" : undefined,
+      }),
+    ],
     publicDir: portalDir,
     resolve: {
       alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },

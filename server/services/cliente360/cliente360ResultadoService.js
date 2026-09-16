@@ -219,11 +219,12 @@ function estadoDoPeriodo(atual, anterior) {
 function createResultadoService({
   centralRepo = require("../centralVendas/centralVendasRepository"),
   fechamentoAdapter = null,
+  resolveRangeContext = null,
   adsService = null,
   agora = null,
 } = {}) {
   const fechamento = fechamentoAdapter
-    || require("./cliente360FechamentoAdapter").createFechamentoAdapter({ centralRepo });
+    || require("./cliente360FechamentoAdapter").createFechamentoAdapter({ centralRepo, resolveRangeContext });
   const ads = adsService || adsEngine.createAdsService();
 
   async function getResultado(clienteSlug, options = {}) {
@@ -234,6 +235,11 @@ function createResultadoService({
     if (!cliente) { const e = new Error("Cliente não encontrado."); e.statusCode = 404; throw e; }
 
     const marketplace = String(options.marketplace || "meli").toLowerCase();
+    // V3 FASE 0 — conta explícita (opcional): thread controller → aqui →
+    // FechamentoAdapter → resolveRangeContext → repository. null deixa o
+    // resolver decidir (conta única ativa resolve sozinha; 2+ exige a conta
+    // explícita; nunca "primeira conta").
+    const clienteContaId = options.clienteContaId ?? null;
     const hoje = agora || new Date();
 
     // Competência padrão = último mês fechado (evita abrir a tela num mês vazio).
@@ -255,8 +261,8 @@ function createResultadoService({
     // ── dados ───────────────────────────────────────────────────────────────
     // Ads roda em paralelo, mas sua falha NUNCA derruba a análise operacional.
     const [dadosAtual, dadosAnterior, adsAtual, adsAnterior] = await Promise.all([
-      fechamento.lerPeriodo(cliente, rangeAtual, marketplace),
-      fechamento.lerPeriodo(cliente, rangeComparado, marketplace),
+      fechamento.lerPeriodo(cliente, rangeAtual, marketplace, { clienteContaId }),
+      fechamento.lerPeriodo(cliente, rangeComparado, marketplace, { clienteContaId }),
       ads.getInvestimento(slug, compAtual, { range: rangeAtual })
         .catch((err) => ({ valor: null, status: adsEngine.STATUS.ERRO, fonte: null, competencia: compAtual, periodo: null, atualizadoEm: null, motivo: err?.message || "Falha ao obter Ads." })),
       ads.getInvestimento(slug, compComparado, { range: rangeComparado })
@@ -311,6 +317,15 @@ function createResultadoService({
     return sanitizarParaJson({
       ok: true,
       cliente: { slug: cliente.slug, nome: cliente.nome || cliente.slug, id: cliente.id ?? null },
+      // V3 FASE 0 — conta efetivamente usada no período atual (null = universo
+      // legado). O comparado pode, em teoria, resolver para outra conta se o
+      // caller não travar clienteContaId; exposto para o front/telemetria
+      // detectarem essa divergência sem adivinhar pelo payload.
+      contexto: {
+        clienteContaId: dadosAtual.clienteContaId,
+        clienteContaIdComparado: dadosAnterior.clienteContaId,
+        marketplace,
+      },
       periodo: { ...rangeAtual, marketplace },
       comparacao: { ...rangeComparado, marketplace },
       estado: estadoDoPeriodo(dadosAtual, dadosAnterior),

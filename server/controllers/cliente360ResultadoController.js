@@ -36,7 +36,7 @@ function tratarErro(res, err, ctx) {
 }
 
 // GET /operacao/cliente-360/:slug/resultado
-//   ?competencia=YYYY-MM&compararCom=YYYY-MM&marketplace=meli&margemAlvo=0.15
+//   ?competencia=YYYY-MM&compararCom=YYYY-MM&marketplace=meli&margemAlvo=0.15&clienteContaId=123
 async function obterResultado(req, res) {
   try {
     const slug = slugParam(req);
@@ -46,19 +46,22 @@ async function obterResultado(req, res) {
       compararCom: req.query.compararCom,
       margemAlvo: req.query.margemAlvo,
       marketplace: req.query.marketplace,
+      // V3 FASE 0 — conta explícita (opcional). null deixa o resolver decidir
+      // (conta única ativa resolve sozinha; 2+ exige a conta explícita).
+      clienteContaId: req.query.clienteContaId || null,
     });
     return responder(res, 200, data);
   } catch (err) { return tratarErro(res, err, "obterResultado"); }
 }
 
 // POST /operacao/cliente-360/:slug/resultado/simular
-// body: { competencia, cenario: { intervencoes: [...] }, cenarioRapido, elasticidades }
+// body: { competencia, cenario: { intervencoes: [...] }, cenarioRapido, elasticidades, clienteContaId }
 // Campos de Ads no cenário são ignorados de propósito (ver simulador).
 async function simularResultado(req, res) {
   try {
     const slug = slugParam(req);
     if (!slug) return responder(res, 400, { ok: false, erro: "slug é obrigatório." });
-    const { competencia, cenario, cenarioRapido, elasticidades, marketplace } = req.body || {};
+    const { competencia, cenario, cenarioRapido, elasticidades, marketplace, clienteContaId } = req.body || {};
     if (cenario && typeof cenario !== "object") {
       return responder(res, 400, { ok: false, erro: "cenario deve ser um objeto." });
     }
@@ -67,12 +70,13 @@ async function simularResultado(req, res) {
     }
     const data = await simulacaoService.simular(slug, {
       competencia, cenario, cenarioRapido, elasticidades, marketplace,
+      clienteContaId: clienteContaId || null,
     });
     return responder(res, 200, data);
   } catch (err) { return tratarErro(res, err, "simularResultado"); }
 }
 
-// GET /operacao/cliente-360/:slug/elasticidades?meses=6&ate=YYYY-MM
+// GET /operacao/cliente-360/:slug/elasticidades?meses=6&ate=YYYY-MM&clienteContaId=123
 async function obterElasticidades(req, res) {
   try {
     const slug = slugParam(req);
@@ -80,6 +84,7 @@ async function obterElasticidades(req, res) {
     const meses = Math.max(2, Math.min(24, Number(req.query.meses) || 6));
     const data = await serieService.getElasticidades(slug, {
       meses, marketplace: req.query.marketplace, ate: req.query.ate,
+      clienteContaId: req.query.clienteContaId || null,
     });
     return responder(res, 200, data);
   } catch (err) { return tratarErro(res, err, "obterElasticidades"); }

@@ -12,12 +12,13 @@ const periodoUtils = require("./cliente360Periodo");
 function createSerieService({
   centralRepo = require("../centralVendas/centralVendasRepository"),
   fechamentoAdapter = null,
+  resolveRangeContext = null,
   agora = null,
 } = {}) {
   const fechamento = fechamentoAdapter
-    || require("./cliente360FechamentoAdapter").createFechamentoAdapter({ centralRepo });
+    || require("./cliente360FechamentoAdapter").createFechamentoAdapter({ centralRepo, resolveRangeContext });
 
-  async function getSerie(clienteSlug, { meses = 6, marketplace = "meli", ate = null } = {}) {
+  async function getSerie(clienteSlug, { meses = 6, marketplace = "meli", ate = null, clienteContaId = null } = {}) {
     const slug = String(clienteSlug || "").trim().toLowerCase();
     const cliente = await centralRepo.getClienteBySlug(slug);
     if (!cliente) { const e = new Error("Cliente não encontrado."); e.statusCode = 404; throw e; }
@@ -30,9 +31,12 @@ function createSerieService({
     const comps = periodoUtils.competenciasAnteriores(referencia, meses);
     const serie = [];
 
+    // V3 FASE 0 — mesma conta explícita resolvida em cada competência do
+    // laço (custo já documentado: N leituras, uma por mês — otimização de
+    // cache/lineage fica para depois, fora do escopo desta fase).
     for (const comp of comps) {
       const range = periodoUtils.rangeDaCompetencia(comp);
-      const dados = await fechamento.lerPeriodo(cliente, range, marketplace);
+      const dados = await fechamento.lerPeriodo(cliente, range, marketplace, { clienteContaId });
       if (!dados.temFechamento) continue;
 
       const perfil = ponteEngine.agregarProdutos(dados.pedidos);

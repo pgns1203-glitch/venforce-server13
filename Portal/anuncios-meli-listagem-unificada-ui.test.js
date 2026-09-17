@@ -1846,6 +1846,54 @@ async function run() {
       }
     });
 
+    await check("38e — precoOriginal ao vivo IGUAL ao precoAtual não é promoção: mostra só o preço atual, sem riscado", async () => {
+      // Bug reportado após 38c/38d: quando sale_price.regular_amount volta
+      // igual a amount (não é mais um desconto — o ML pode devolver os dois
+      // iguais fora de promoção), o código antigo ainda tratava
+      // `precoOriginal != null` como "tem promoção" e riscava o MESMO valor
+      // do preço atual (ex.: "R$ 98,00" riscado sobre "R$ 98,00" atual).
+      // MLB-SEMUP TEM preco_original no snapshot (69.90) — prova que o Motor
+      // ao vivo (dizendo "sem diferença real") também vence o snapshot aqui,
+      // igual 38d já provava para precoOriginal null.
+      performanceHandler = (ids) => {
+        const metricas7d = {};
+        const margem = {};
+        ids.forEach((id) => {
+          metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
+          margem[id] = Object.assign(
+            {},
+            MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
+            id === "MLB-SEMUP" ? { precoAtual: 98, precoOriginal: 98 } : {}
+          );
+        });
+        return { ok: true, metricas7d, margem, margemIndisponivel: null };
+      };
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
+        await waitFor(cdp, `(function(){
+          var el = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__preco');
+          return el && /98,00/.test(el.textContent);
+        })()`, "o preço 'atual' não atualizou ao vivo");
+
+        const estado = await cdp.evaluate(`(function(){
+          var cel = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__preco');
+          return {
+            classe: cel.className,
+            temOriginal: Boolean(cel.querySelector('.am-row__preco-original')),
+            texto: cel.textContent.trim(),
+          };
+        })()`);
+        assert.ok(!/--promo\b/.test(estado.classe), `precoOriginal igual ao atual não é promoção — classe: ${estado.classe}`);
+        assert.strictEqual(estado.temOriginal, false, "não pode riscar o mesmo valor que já é o preço atual");
+        assert.strictEqual(estado.texto, "R$ 98,00");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
     /* ── 39: resiliência — falha total nunca deixa a célula presa ───────── */
 
     errosAcumulados = errosAcumulados.concat(await cdp.evaluate("window.__erros || []"));

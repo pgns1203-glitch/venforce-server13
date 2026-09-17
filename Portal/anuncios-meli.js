@@ -1496,9 +1496,10 @@
       var syncAttr = cel.getAttribute("data-preco-sync");
       var syncOriginalAttr = cel.getAttribute("data-preco-original-db");
       var atual = m && m.precoAtual != null ? m.precoAtual : (syncAttr !== "" ? Number(syncAttr) : null);
-      var cheio = cache && cache.temMargem
+      var cheioBruto = cache && cache.temMargem
         ? (m && m.precoOriginal != null ? m.precoOriginal : null)
         : (syncOriginalAttr !== "" ? Number(syncOriginalAttr) : null);
+      var cheio = precoCheioReal(atual, cheioBruto);
       cel.className = classe + (cheio ? " " + classe + "--promo" : "");
       cel.innerHTML = precoCelulaConteudoHtml(classe, atual, cheio, moeda);
     });
@@ -1535,6 +1536,13 @@
   // render (celulaPrecoHtml) e o repaint ao vivo (pintarPerformanceEmCelulas),
   // que precisa poder reconstruir a MESMA estrutura sem ter `a` à mão (só o
   // que ficou gravado em data-* na própria célula — ver celulaPrecoHtml).
+  // Só é promoção de verdade quando existe diferença real de preço — sem
+  // isso, `regular_amount` voltando igual (ou menor, por atraso de cotação)
+  // a `amount` riscaria o MESMO valor que já é exibido como atual.
+  function precoCheioReal(atual, cheio) {
+    return cheio != null && atual != null && cheio > atual ? cheio : null;
+  }
+
   function precoCelulaConteudoHtml(classe, atual, cheio, moeda) {
     if (!cheio) return formatMoeda(atual, moeda);
     return '<span class="' + classe + '-original">' + formatMoeda(cheio, moeda) + "</span>" +
@@ -1560,9 +1568,10 @@
     var cache = AM.state.performanceCache[a.item_id];
     var m = cache && cache.margem;
     var atual = m && m.precoAtual != null ? m.precoAtual : a.preco;
-    var cheio = cache && cache.temMargem
+    var cheioBruto = cache && cache.temMargem
       ? (m && m.precoOriginal != null ? m.precoOriginal : null)
       : (a.preco_original || null);
+    var cheio = precoCheioReal(atual, cheioBruto);
 
     return '<span class="' + classe + (cheio ? " " + classe + "--promo" : "") +
       '" data-preco-item="' + escapeAttr(a.item_id) +
@@ -2300,9 +2309,10 @@
     var cache = AM.state.performanceCache[a.item_id];
     var m = cache && cache.margem;
     var atual = m && m.precoAtual != null ? m.precoAtual : a.preco;
-    var cheio = cache && cache.temMargem
+    var cheioBruto = cache && cache.temMargem
       ? (m && m.precoOriginal != null ? m.precoOriginal : null)
       : (a.preco_original || null);
+    var cheio = precoCheioReal(atual, cheioBruto);
     return '<strong class="am-det-price" id="am-det-price">' + formatMoeda(atual, a.moeda) +
       (cheio ? "<small>" + formatMoeda(cheio, a.moeda) + "</small>" : "") + "</strong>";
   }

@@ -646,6 +646,33 @@ async function run() {
       precoOriginalAtivo = true;
     });
 
+    await check("4c — preço original ao vivo IGUAL ao atual não é promoção: cabeçalho mostra só o preço atual", async () => {
+      // Bug reportado após a auditoria de preço cheio: sale_price.regular_amount
+      // pode voltar igual a amount (sem ser mais um desconto) — o código antigo
+      // só checava `precoOriginal != null`, então riscava "R$ 189,90" sobre o
+      // próprio "R$ 189,90" atual. Precisa existir DIFERENÇA real (cheio > atual).
+      performanceHandler = (ids) => {
+        const margem = {};
+        ids.forEach((id) => {
+          margem[id] = id === "MLB-A1"
+            ? Object.assign({}, MARGEM_MLA1, { precoAtual: 189.9, precoOriginal: 189.9 })
+            : { origem: "projected", margin: 0.2, marginPercent: 20, profit: 30, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+        });
+        return { ok: true, metricas7d: {}, margem, margemIndisponivel: null, composicao: {} };
+      };
+      try {
+        await fecharModal(cdp);
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await abrirPrimeiroAnuncio(cdp);
+        const semPromoElemento = await cdp.evaluate("document.querySelector('.am-det-price small')");
+        assert.strictEqual(semPromoElemento, null, "precoOriginal igual ao precoAtual não é promoção — não pode riscar");
+        const texto = await cdp.evaluate("document.querySelector('.am-det-price').innerText");
+        assert.strictEqual(texto, "R$ 189,90", `sobrou algo do preço original: ${texto}`);
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
     await check("4b — categoria mostra o nome legível resolvido pelo backend, não o category_id cru", async () => {
       const texto = await cdp.evaluate("document.getElementById('am-det-modelo').closest('.am-det-top2__col').innerText");
       assert.ok(texto.includes("Celulares e Smartphones"), `nome da categoria ausente: ${texto}`);

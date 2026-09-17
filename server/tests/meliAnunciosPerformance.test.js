@@ -175,7 +175,7 @@ function evid(valor) {
 
 function itemDeMargem({
   itemId, realizedComputable, realizedMargin, realizedProfit, projectedMargin, projectedProfit, projectedComputable = true,
-  status, statusLabel, statusReasons, composicao, precoAtual, precoAlvo,
+  status, statusLabel, statusReasons, composicao, precoAtual, precoAlvo, precoOriginal,
 }) {
   const item = {
     identity: { itemId },
@@ -196,8 +196,10 @@ function itemDeMargem({
     },
     quality: { status, statusLabel, statusReasons: statusReasons || [] },
   };
-  if (precoAtual !== undefined) {
-    item.pricing = { current: evid(precoAtual) };
+  if (precoAtual !== undefined || precoOriginal !== undefined) {
+    item.pricing = {};
+    if (precoAtual !== undefined) item.pricing.current = evid(precoAtual);
+    if (precoOriginal !== undefined) item.pricing.list = evid(precoOriginal);
   }
   if (composicao) {
     item.pricing = { current: evid(composicao.vendaProjetada), sold: evid(composicao.vendaRealizada) };
@@ -276,6 +278,34 @@ async function run() {
     assert.strictEqual(res.corpo.margem["MLB-B"].precoAtual, null, "sem pricing no item, precoAtual é null — nunca 0");
     assert.strictEqual(res.corpo.margem["MLB-B"].precoAlvo, null, "target não-computável vira null — nunca um preço inventado");
     ok("precoAtual/precoAlvo do Motor chegam em margem[itemId], com null (nunca 0) quando o Motor não resolveu");
+  });
+
+  // 1c. precoOriginal (preço cheio/regular AO VIVO, item.pricing.list —
+  //     sale_price.regular_amount via resolverPrecosItem) chega em
+  //     margem[itemId] — a MESMA fonte que a composição já usa. Sem
+  //     evidência (sem promoção ativa, ou Motor não resolveu), fica `null`,
+  //     nunca 0 e nunca um valor "inventado" a partir de outro campo.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    margemHandler = () => ({
+      itens: [
+        itemDeMargem({
+          itemId: "MLB-A", realizedComputable: false, projectedMargin: 0.18, status: "HEALTHY", statusLabel: "Saudável",
+          precoAtual: 89.9, precoOriginal: 129.9,
+        }),
+        itemDeMargem({
+          itemId: "MLB-B", realizedComputable: false, projectedMargin: 0.18, status: "HEALTHY", statusLabel: "Saudável",
+          precoAtual: 89.9,
+        }),
+      ],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-A,MLB-B", incluirMetricas: "0" } }, res);
+
+    assert.strictEqual(res.corpo.margem["MLB-A"].precoOriginal, 129.9, "precoOriginal vem de item.pricing.list (sale_price.regular_amount)");
+    assert.strictEqual(res.corpo.margem["MLB-B"].precoOriginal, null, "sem promoção/evidência de list price, precoOriginal é null — nunca inventado a partir do preço atual");
+    ok("precoOriginal (preço cheio ao vivo, sale_price.regular_amount) chega em margem[itemId], null quando o Motor não tem a evidência");
   });
 
   // 2. Contexto do Motor não-pronto (Base não vinculada) vira

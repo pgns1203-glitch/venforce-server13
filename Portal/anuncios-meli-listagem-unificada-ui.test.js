@@ -283,7 +283,10 @@ const METRICAS_FIXTURE = {
 // número, só rótulo. MLB-A1 fica LOSS (prejuízo) — cor de risco. MLB-SEMUP
 // fica HEALTHY realizada — o caminho feliz.
 const MARGEM_FIXTURE = {
-  "MLB-SEMUP": { origem: "realized", margin: 0.25, marginPercent: 25, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
+  // precoOriginal confirma AO VIVO a mesma promoção que o snapshot
+  // (preco_original: 69.9 no fixture da linha) já sinalizava — item usado
+  // em vários testes como "o caminho feliz com promoção".
+  "MLB-SEMUP": { origem: "realized", margin: 0.25, marginPercent: 25, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [], precoOriginal: 69.9 },
   "MLB-A1": { origem: "realized", margin: -0.05, marginPercent: -5, status: "LOSS", statusLabel: "Prejuízo", statusReasons: ["Margem negativa (-5.00%)."] },
   "MLB-A2": { origem: "projected", margin: null, marginPercent: null, status: "UNVALIDATED", statusLabel: "Não validado", statusReasons: ["Variáveis obrigatórias ausentes: custo."] },
 };
@@ -1709,18 +1712,22 @@ async function run() {
       }
     });
 
-    await check("38b — precoAtual (ao vivo, do Motor) atualiza in-place só o valor 'atual', sem apagar o preço riscado (preco_original)", async () => {
+    await check("38b — precoAtual (ao vivo, do Motor) atualiza in-place o valor 'atual', sem apagar o preço riscado (agora também ao vivo)", async () => {
       // achado do merge com feat/anuncios-motor-margem-pausados: a célula de
-      // preço tem DOIS donos (preco_original riscado + precoAtual ao vivo) e
-      // uma resolução de conflito ingênua no GitHub (accept current/incoming
-      // inteiro) apaga um dos dois. Aqui provamos que os dois convivem.
+      // preço tem DOIS donos (riscado + atual ao vivo) e uma resolução de
+      // conflito ingênua no GitHub (accept current/incoming inteiro) apaga
+      // um dos dois. Aqui provamos que os dois convivem — o riscado, desde a
+      // auditoria de preço cheio, também vem do Motor (item.pricing.list /
+      // margem[itemId].precoOriginal), não mais congelado no snapshot
+      // (a.preco_original) enquanto o Motor CONTINUA confirmando a mesma
+      // promoção (ver 38c/38d para os casos em que o Motor diverge do snapshot).
       performanceHandler = (ids) => {
         const margem = {};
         ids.forEach((id) => {
           margem[id] = Object.assign(
             {},
             MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
-            id === "MLB-SEMUP" ? { precoAtual: 44.9 } : {}
+            id === "MLB-SEMUP" ? { precoAtual: 44.9, precoOriginal: 69.9 } : {}
           );
         });
         return { ok: true, metricas7d: {}, margem, margemIndisponivel: null };
@@ -1744,6 +1751,96 @@ async function run() {
         })()`);
         assert.strictEqual(estado.original, "R$ 69,90", "o preço riscado não pode sumir quando o preço ao vivo chega");
         assert.strictEqual(estado.atual, "R$ 44,90", "o valor atual precisa refletir precoAtual (ao vivo), não mais o sincronizado (R$ 49,90)");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
+    await check("38c — precoOriginal (ao vivo, do Motor) FAZ NASCER o preço riscado num item que NÃO tinha promoção na sincronização", async () => {
+      // Auditoria de preço cheio: até aqui, uma promoção que só existe no
+      // sale_price (automação de preço, por exemplo — original_price do
+      // /items fica null nesse caso, ver documentacao_api_meli) nunca
+      // aparecia riscada, porque a lista só lia o snapshot (a.preco_original)
+      // do momento da sincronização. MLB-A2 (filha de FAM-1) nasce SEM
+      // preco_original no fixture — aqui o Motor traz a promoção ao vivo.
+      performanceHandler = (ids) => {
+        const metricas7d = {};
+        const margem = {};
+        ids.forEach((id) => {
+          metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
+          margem[id] = Object.assign(
+            {},
+            MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
+            id === "MLB-A2" ? { precoAtual: 79.9, precoOriginal: 99.9 } : {}
+          );
+        });
+        return { ok: true, metricas7d, margem, margemIndisponivel: null };
+      };
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
+        await clicar(cdp, linhaFam("FAM-1"));
+        await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "FAM-1 não expandiu");
+        await waitFor(cdp, `(function(){
+          var cel = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-mlb__preco');
+          return cel && cel.classList.contains('am-mlb__preco--promo');
+        })()`, "a filha MLB-A2 não ganhou o preço riscado ao vivo");
+
+        const estado = await cdp.evaluate(`(function(){
+          var cel = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-mlb__preco');
+          var original = cel.querySelector('.am-mlb__preco-original');
+          var atual = cel.querySelector('.am-mlb__preco-atual');
+          return {
+            original: original ? original.textContent.trim() : null,
+            atual: atual ? atual.textContent.trim() : null,
+          };
+        })()`);
+        assert.strictEqual(estado.original, "R$ 99,90", "o preço cheio ao vivo (sale_price.regular_amount) precisa aparecer mesmo sem promoção no snapshot");
+        assert.strictEqual(estado.atual, "R$ 79,90");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
+    await check("38d — precoOriginal ausente ao vivo APAGA o preço riscado que só existia no snapshot da sincronização", async () => {
+      // Espelho de 38c: a promoção pode ter ACABADO desde a última
+      // sincronização (preco_original do banco ainda é 69.90) — o Motor, ao
+      // vivo, não traz mais regular_amount, e a lista não pode continuar
+      // mostrando um preço cheio que já não existe no Mercado Livre.
+      performanceHandler = (ids) => {
+        const metricas7d = {};
+        const margem = {};
+        ids.forEach((id) => {
+          metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
+          margem[id] = Object.assign(
+            {},
+            MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
+            id === "MLB-SEMUP" ? { precoAtual: 49.9, precoOriginal: null } : {}
+          );
+        });
+        return { ok: true, metricas7d, margem, margemIndisponivel: null };
+      };
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
+        await waitFor(cdp, `(function(){
+          var cel = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__preco');
+          return cel && !cel.classList.contains('am-row__preco--promo');
+        })()`, "o preço riscado do snapshot não sumiu quando o Motor deixou de confirmar a promoção");
+
+        const estado = await cdp.evaluate(`(function(){
+          var cel = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__preco');
+          return {
+            temOriginal: Boolean(cel.querySelector('.am-row__preco-original')),
+            texto: cel.textContent.trim(),
+          };
+        })()`);
+        assert.strictEqual(estado.temOriginal, false, "sem regular_amount ao vivo, o riscado não pode continuar vindo só do snapshot");
+        assert.strictEqual(estado.texto, "R$ 49,90");
       } finally {
         performanceHandler = null;
       }

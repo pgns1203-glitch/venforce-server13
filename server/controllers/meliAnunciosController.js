@@ -20,8 +20,10 @@ const otimizadorService = require("../services/meliAnuncios/otimizadorMeliServic
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const conteudoService = require("../services/meliAnuncios/meliConteudoService");
 const estoqueService = require("../services/meliAnuncios/meliEstoqueService");
+const precoService = require("../services/meliAnuncios/meliPrecoService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
 const motorMargemService = require("../services/motorMargem/motorMargemService");
+const marginEngine = require("../services/motorMargem/core/marginEngine");
 const { mlFetch } = require("../utils/mlClient");
 
 function extrairClienteContaId(valor) {
@@ -360,6 +362,25 @@ function flagOptIn(valor) {
 // `marketplaceCosts.commission*/freight*`.
 function valorEvidencia(entrada) {
   return entrada && entrada.value != null ? entrada.value : null;
+}
+
+// Mesma leitura de campos por origem que montarComposicaoDoItem usa para
+// exibição — aqui em nome de variável cru (price/cost/taxRate/fixedFee/
+// commission/freight), o vocabulário que marginEngine.computeMargin espera.
+function extrairValoresBaseParaSimulacao(item, origem) {
+  const custosOrigem = origem === "realized" ? "realized" : "projected";
+  return {
+    price: valorEvidencia(origem === "realized" ? item.pricing.sold : item.pricing.current),
+    cost: valorEvidencia(item.costs.cost[custosOrigem]),
+    taxRate: valorEvidencia(item.costs.taxRate[custosOrigem]),
+    fixedFee: valorEvidencia(item.costs.fixedFee[custosOrigem]),
+    commission: valorEvidencia(
+      origem === "realized" ? item.marketplaceCosts.commissionRealized : item.marketplaceCosts.commissionProjected
+    ),
+    freight: valorEvidencia(
+      origem === "realized" ? item.marketplaceCosts.freightRealized : item.marketplaceCosts.freightProjected
+    ),
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -897,6 +918,188 @@ async function atualizarEstoque(req, res) {
   }
 }
 
+// ----------------------------------------------------------------------------
+// PATCH /anuncios-meli/:itemId/preco
+//   body: { clienteSlug, clienteContaId?, preco }
+//
+// A escrita é a API dedicada de Preços do ML (ver meliPrecoService): o preço
+// devolvido é sempre o CONFIRMADO na releitura pós-escrita, nunca o valor
+// enviado. O snapshot local (`meli_anuncios.preco`) só muda depois disso.
+// ----------------------------------------------------------------------------
+async function atualizarPreco(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    const { clienteSlug } = body;
+    const clienteContaId = extrairClienteContaId(body.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    // Validação ANTES de resolver cliente/conta/token, mesmo padrão de /estoque.
+    const preco = precoService.normalizarPreco(body.preco);
+    if (!preco.ok) {
+      return res.status(400).json({ ok: false, codigo: preco.codigo, motivo: preco.motivo });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id,
+        clienteContaId,
+        requireUsableGrant: true,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const r = await precoService.atualizarPreco({
+      clienteId: cliente.id,
+      itemId,
+      novoPreco: body.preco,
+      mlUserId,
+    });
+
+    // Recusa (ou confirmação frustrada): 200 com ok:false, snapshot intacto.
+    if (!r.ok) {
+      return res.json({ ok: false, codigo: r.codigo, motivo: r.motivo });
+    }
+
+    const atualizado = await anunciosService.atualizarCamposConfirmados(cliente.id, itemId, {
+      preco: r.preco,
+    });
+
+    return res.json({
+      ok: true,
+      preco: r.preco,
+      moeda: r.moeda,
+      anuncio: atualizado || anuncio,
+    });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] atualizarPreco:", err.message);
+    return res.status(500).json({
+      ok: false,
+      motivo: "Erro interno ao salvar o preço do anúncio.",
+    });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// POST /anuncios-meli/:itemId/simular-margem
+//   body: { clienteSlug, clienteContaId?, origem?, preco?, custoProduto?, custosAdicionais? }
+//
+// Simulação PURA para a "Composição da margem" do modal: reaproveita o MESMO
+// núcleo do Motor (marginEngine.computeMargin — nunca uma segunda fórmula)
+// com os overrides informados. Nunca escreve no Mercado Livre, nunca grava
+// na Base de Custos, nunca persiste nada — cada chamada é local ao pedido.
+//
+// Comissão, frete e imposto NÃO têm override: são sempre os do Motor. Só
+// preço, custo (`cost`) e "custos adicionais" (contrato existente `fixedFee`
+// do Motor, só renomeado na UI) podem ser simulados.
+// ----------------------------------------------------------------------------
+const SIMULACAO_CAMPOS = [
+  ["preco", "price"],
+  ["custoProduto", "cost"],
+  ["custosAdicionais", "fixedFee"],
+];
+
+async function simularMargem(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    const { clienteSlug } = body;
+    const clienteContaId = extrairClienteContaId(body.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const overrides = {};
+    for (const [campo, chave] of SIMULACAO_CAMPOS) {
+      if (body[campo] === undefined) continue;
+      const n = Number(body[campo]);
+      const invalido = !Number.isFinite(n) || n < 0 || (campo === "preco" && n <= 0);
+      if (invalido) {
+        return res.status(400).json({
+          ok: false,
+          motivo: `O campo ${campo} precisa ser um número ${campo === "preco" ? "maior que" : "maior ou igual a"} zero.`,
+        });
+      }
+      overrides[chave] = n;
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    let resultadoMotor;
+    try {
+      resultadoMotor = await motorMargemService.montarItens({
+        clienteSlug: cliente.slug,
+        clienteContaId,
+        itemIds: [itemId],
+      });
+    } catch (err) {
+      if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+      if (err.statusCode && err.payload && err.payload.codigo) {
+        return res.status(err.statusCode).json({ ok: false, codigo: err.payload.codigo, motivo: err.payload.erro });
+      }
+      throw err;
+    }
+
+    const item = (resultadoMotor.itens || []).find((it) => it.identity.itemId === String(itemId));
+    if (!item) {
+      return res.status(404).json({ ok: false, motivo: "Item não encontrado no Motor de Margem." });
+    }
+
+    const origem = body.origem === "realized" ? "realized" : "projected";
+    const base = extrairValoresBaseParaSimulacao(item, origem);
+    const entrada = {
+      price: overrides.price !== undefined ? overrides.price : base.price,
+      cost: overrides.cost !== undefined ? overrides.cost : base.cost,
+      taxRate: base.taxRate,
+      fixedFee: overrides.fixedFee !== undefined ? overrides.fixedFee : base.fixedFee,
+      commission: base.commission,
+      freight: base.freight,
+    };
+
+    const resultado = marginEngine.computeMargin(entrada);
+
+    return res.json({
+      ok: true,
+      simulado: true,
+      origem,
+      entradas: entrada,
+      resultado: {
+        computable: resultado.computable,
+        profit: resultado.profit,
+        margin: resultado.margin,
+        marginPercent: resultado.margin != null ? resultado.margin * 100 : null,
+        missing: resultado.missing,
+        assumed: resultado.assumed,
+      },
+    });
+  } catch (err) {
+    console.error("[anuncios-meli] simularMargem:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro interno ao simular a margem." });
+  }
+}
+
 // Reflete o MODEL confirmado dentro do attributes_json do snapshot — a ficha
 // técnica da tela lê o modelo de lá, não da coluna.
 function comAtributoModelo(attributesJson, modelo) {
@@ -1351,6 +1554,8 @@ module.exports = {
   detalhe,
   atualizarConteudo,
   atualizarEstoque,
+  atualizarPreco,
+  simularMargem,
   marcarRevisado,
   otimizar,
   listarOtimizacoes,

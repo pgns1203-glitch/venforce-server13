@@ -400,6 +400,13 @@
 @media print {
   html, body { width: 210mm !important; margin: 0 !important; padding: 0 !important; background: #fff !important; }
   body.vf-printing-diagnostic-report { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body.vf-printing-diagnostic-report,
+  body.vf-printing-diagnostic-report #diag-print-block,
+  body.vf-printing-diagnostic-report .vf-diagnostic-report {
+    animation: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
   body.vf-printing-diagnostic-report > *:not(#diag-print-block) { display: none !important; }
   body.vf-printing-diagnostic-report #diag-print-block { display: block !important; position: static !important; width: 210mm !important; margin: 0 !important; padding: 0 !important; }
   body.vf-printing-diagnostic-report .vf-diagnostic-report { display: block !important; width: 210mm; }

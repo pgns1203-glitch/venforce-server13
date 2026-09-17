@@ -905,6 +905,92 @@
   color: var(--vf-text);
 }
 
+/* Preço / Custo do produto / Custos adicionais — mesma moldura discreta do
+   .am-estoque da lista (some até o hover/foco, aparece como convite a
+   editar, nunca como campo de formulário aberto o tempo todo). */
+.vf-page-anuncios-meli .am-margem-edit__btn {
+  padding: 2px var(--vf-sp-1);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-page-anuncios-meli .am-margem-edit__btn:hover {
+  color: var(--vf-text);
+  background: var(--vf-surface);
+  border-color: var(--vf-border-strong);
+}
+
+.vf-page-anuncios-meli .am-margem-edit__btn:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 1px;
+}
+
+.vf-page-anuncios-meli .am-margem-edit__input {
+  width: 110px;
+  padding: 1px var(--vf-sp-1);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text);
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-primary-border, var(--vf-border-strong));
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-page-anuncios-meli .am-margem-edit__input::-webkit-outer-spin-button,
+.vf-page-anuncios-meli .am-margem-edit__input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.vf-page-anuncios-meli .am-margem-edit__input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Preço em voo: nenhum número na tela (nem o antigo, que já não vale
+   necessariamente, nem o novo, que ainda não foi confirmado pelo ML). */
+.vf-page-anuncios-meli .am-margem-edit__salvando {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  font-style: italic;
+}
+
+/* Margem simulada — cor de atenção (âmbar), nunca a mesma cor da margem
+   real: uma projeção que ainda não foi gravada em lugar nenhum não pode se
+   confundir visualmente com o número que o Motor já confirmou. */
+.vf-page-anuncios-meli .am-margem-comp__total--simulada {
+  border-top-color: var(--vf-warning-strong) !important;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__total--simulada .am-margem-comp__rotulo,
+.vf-page-anuncios-meli .am-margem-comp__total--simulada .am-margem-comp__valor {
+  color: var(--vf-warning-strong);
+}
+
+.vf-page-anuncios-meli .am-margem-comp__restaurar {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
+  cursor: pointer;
+  background: none;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-page-anuncios-meli .am-margem-comp__restaurar:hover {
+  color: var(--vf-text);
+  border-color: var(--vf-border-strong);
+}
+
 .vf-page-anuncios-meli .am-mlb__acao {
   display: flex;
   justify-content: flex-end;

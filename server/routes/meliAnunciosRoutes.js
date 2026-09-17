@@ -31,6 +31,8 @@
 //   PATCH  /anuncios-meli/:itemId/revisao
 //   PATCH  /anuncios-meli/:itemId/conteudo      (edição real no Mercado Livre)
 //   PATCH  /anuncios-meli/:itemId/estoque       (edição real no Mercado Livre)
+//   PATCH  /anuncios-meli/:itemId/preco         (edição real no Mercado Livre)
+//   POST   /anuncios-meli/:itemId/simular-margem (simulação local, sem escrita)
 // -----------------------------------------------------------------------------
 
 const express = require("express");
@@ -141,6 +143,15 @@ router.patch("/:itemId/conteudo", ctrl.atualizarConteudo);
 // rota também devolve os irmãos do mesmo MLBU que passam a valer o mesmo
 // número — ver meliEstoqueService para a regra e a fonte na doc do ML.
 router.patch("/:itemId/estoque", ctrl.atualizarEstoque);
+
+// Edição de PREÇO do anúncio NO MERCADO LIVRE (API dedicada de Preços — ver
+// meliPrecoService para o motivo de não ser um PUT genérico em /items).
+// Mesmo acesso de /conteudo e /estoque.
+router.patch("/:itemId/preco", ctrl.atualizarPreco);
+
+// Simulação pura de margem (preço/custo/custos adicionais) para a composição
+// do modal — sem escrita no Mercado Livre, sem persistência na Base.
+router.post("/:itemId/simular-margem", ctrl.simularMargem);
 
 router.get("/:itemId", ctrl.detalhe);
 

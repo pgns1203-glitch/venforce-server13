@@ -118,6 +118,10 @@ let precoOriginalAtivo = true;       // false = anúncio sem promoção (preco_o
 let catalogoModo = "nenhum";
 let detalheAtrasoPorItem = {};       // itemId -> ms
 let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
+let precoResultado = null;           // resposta forçada do PATCH /preco
+const precoChamadas = [];            // { itemId, body } de todo PATCH /preco
+let simularMargemHandler = null;     // (itemId, body) => resposta do POST /simular-margem
+const simularMargemChamadas = [];    // { itemId, body } de todo POST /simular-margem
 const pedidos = [];                  // toda URL de API disparada
 const corpos = [];                   // { url, body } de toda escrita
 
@@ -238,6 +242,30 @@ async function digitar(cdp, seletor, valor) {
     e.value = ${JSON.stringify(valor)};
     e.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
+}
+
+// Os campos editáveis da composição da margem (Preço/Custo do produto/Custos
+// adicionais) só confirmam no Enter — sair do campo CANCELA (mesma regra do
+// estoque da lista). `digitar` sozinho não basta: precisa do keydown real.
+async function digitarEConfirmar(cdp, seletor, valor) {
+  await cdp.evaluate(`(function(){
+    var e = document.querySelector(${JSON.stringify(seletor)});
+    e.value = ${JSON.stringify(valor)};
+    e.dispatchEvent(new Event('input', { bubbles: true }));
+    e.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  })()`);
+}
+
+async function abrirEdicaoMargem(cdp, campo) {
+  await clicar(cdp, `#am-det-margem-body [data-margem-campo="${campo}"] .am-margem-edit__btn`,
+    `botão de editar "${campo}" não encontrado na composição`);
+  await waitFor(cdp, `document.querySelector('#am-det-margem-body [data-margem-campo="${campo}"] .am-margem-edit__input')`,
+    `o input de edição de "${campo}" não apareceu`);
+}
+
+async function confirmarEdicaoMargem(cdp, campo, valor) {
+  await abrirEdicaoMargem(cdp, campo);
+  await digitarEConfirmar(cdp, `#am-det-margem-body [data-margem-campo="${campo}"] .am-margem-edit__input`, valor);
 }
 
 // A tela tem UMA lista: anúncio agrupado e anúncio individual são linhas da
@@ -415,6 +443,31 @@ function wireInterception(cdp) {
       const id = Number(caminho.match(/otimizacoes\/(\d+)\/aprovar/)[1]);
       const base = OTIMIZACOES_A.find((o) => o.id === id) || OTIMIZACOES_A[0];
       await corpo({ ok: true, otimizacao: { ...base, status: "aprovado", aprovado_at: "2026-09-12T09:14:00Z" } });
+      return;
+    }
+
+    // PATCH /anuncios-meli/:itemId/preco — escrita REAL de preço (API dedicada
+    // de Preços do ML por baixo, ver meliPrecoService). O resultado devolvido
+    // aqui NUNCA precisa ser o valor enviado — o service real relê do ML antes
+    // de responder, e é isso que `precoResultado` simula quando setado.
+    const mPreco = caminho.match(/\/anuncios-meli\/([^/?]+)\/preco$/);
+    if (mPreco) {
+      precoChamadas.push({ itemId: mPreco[1], body });
+      if (precoResultado) { await corpo(precoResultado.corpo, precoResultado.status); return; }
+      await corpo({ ok: true, preco: (body && body.preco) || 0, moeda: "BRL" });
+      return;
+    }
+
+    // POST /anuncios-meli/:itemId/simular-margem — simulação pura de
+    // custo/custos adicionais (nunca escreve no ML, nunca grava na Base).
+    const mSimular = caminho.match(/\/anuncios-meli\/([^/?]+)\/simular-margem$/);
+    if (mSimular) {
+      simularMargemChamadas.push({ itemId: mSimular[1], body });
+      if (simularMargemHandler) { await corpo(simularMargemHandler(mSimular[1], body)); return; }
+      await corpo({
+        ok: true, simulado: true, origem: "realized",
+        resultado: { computable: true, profit: 99, margin: 0.33, marginPercent: 33, missing: [], assumed: [] },
+      });
       return;
     }
 
@@ -951,15 +1004,14 @@ async function run() {
 
       const linhas = await lerLinhasComposicao(cdp);
       assert.deepStrictEqual(linhas, [
-        "Venda R$ 200,00",
+        "Preço R$ 200,00",
         "Custo do produto R$ 80,00",
         "Comissão Mercado Livre R$ 25,00",
         "Frete R$ 15,00",
+        "Custos adicionais —",
         "Imposto (5,0%) R$ 10,00",
         "Margem R$ 70,00 (35,0%)",
       ], JSON.stringify(linhas));
-      assert.ok(!/Taxa fixa/.test(linhas.join(" ")),
-        "taxa fixa não pode aparecer na margem REALIZADA (sem histórico) — a linha devia sumir, nunca virar '—'");
 
       const badge = await cdp.evaluate("document.querySelector('#am-det-margem-body .am-margem-comp__badge').textContent");
       assert.match(badge, /Realizada/, `o badge tem de dizer que é margem realizada: ${badge}`);
@@ -1013,11 +1065,11 @@ async function run() {
 
       const linhas = await lerLinhasComposicao(cdp);
       assert.deepStrictEqual(linhas, [
-        "Venda R$ 150,00",
+        "Preço R$ 150,00",
         "Custo do produto R$ 60,00",
         "Comissão Mercado Livre R$ 18,00",
         "Frete R$ 12,00",
-        "Taxa fixa R$ 3,00",
+        "Custos adicionais R$ 3,00",
         "Imposto (4,0%) R$ 6,00",
         "Margem R$ 30,00 (20,0%)",
       ], `MLB-B1 mostrou dados de outro item: ${JSON.stringify(linhas)}`);
@@ -1107,10 +1159,11 @@ async function run() {
 
         const linhas = await lerLinhasComposicao(cdp);
         assert.deepStrictEqual(linhas, [
-          "Venda R$ 200,00",
+          "Preço R$ 200,00",
           "Custo do produto R$ 150,00",
           "Comissão Mercado Livre R$ 30,00",
           "Frete R$ 20,00",
+          "Custos adicionais —",
           "Imposto (5,0%) R$ 10,00",
           "Margem R$ -10,00 (-5,0%)",
         ], `o prejuízo escondeu o ladder em vez de mostrá-lo completo: ${JSON.stringify(linhas)}`);
@@ -1120,6 +1173,151 @@ async function run() {
       } finally {
         performanceHandler = null;
       }
+    });
+
+    /* ── 33 a 37: evolução da composição — Preço real, Custo/Custos
+       adicionais como simulação ──────────────────────────────────────── */
+
+    await check("33 — Preço é editável: sucesso grava no ML e a tela mostra o preço CONFIRMADO, não o digitado", async () => {
+      let precoConfirmado = false;
+      performanceHandler = (ids) => {
+        const margem = {}; const composicao = {};
+        ids.forEach((id) => {
+          margem[id] = MARGEM_MLA1;
+          composicao[id] = precoConfirmado ? Object.assign({}, COMPOSICAO_MLA1, { venda: 205 }) : COMPOSICAO_MLA1;
+        });
+        return { ok: true, metricas7d: {}, margem, composicao, margemIndisponivel: null };
+      };
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      precoChamadas.length = 0;
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await esperarLista(cdp);
+      await abrirPrimeiroAnuncio(cdp);
+      await clicar(cdp, "#am-det-margem summary");
+      await waitFor(cdp, `(function(){
+        var b = document.querySelector('#am-det-margem-body');
+        return b && /Custo do produto/.test(b.textContent); })()`, "o ladder inicial não carregou");
+
+      precoResultado = { status: 200, corpo: { ok: true, preco: 205, moeda: "BRL" } };
+      precoConfirmado = true;
+      await confirmarEdicaoMargem(cdp, "preco", "210");
+
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/preco$/, 0, "o PATCH de preço não saiu");
+      const envio = precoChamadas[precoChamadas.length - 1];
+      assert.strictEqual(envio.body.clienteSlug, "n97");
+      assert.strictEqual(String(envio.body.clienteContaId), "42");
+      assert.strictEqual(envio.body.preco, 210, "o valor digitado precisa ir no PATCH");
+
+      await waitFor(cdp, `(function(){
+        var b = document.querySelector('#am-det-margem-body [data-margem-campo="preco"] .am-margem-edit__btn');
+        return b && /205/.test(b.textContent); })()`,
+        "a tela deveria mostrar o preço CONFIRMADO pelo ML (205), não o digitado (210)");
+      const botaoPreco = await cdp.evaluate(`document.querySelector('#am-det-margem-body [data-margem-campo="preco"] .am-margem-edit__btn').textContent`);
+      assert.ok(!/210/.test(botaoPreco), `o valor digitado (210) não pode ficar exibido como se fosse o confirmado: ${botaoPreco}`);
+
+      precoResultado = null;
+      performanceHandler = null;
+    });
+
+    await check("34 — falha do Mercado Livre ao alterar preço mantém o valor anterior na tela", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      precoChamadas.length = 0;
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await esperarLista(cdp);
+      await abrirPrimeiroAnuncio(cdp);
+      await clicar(cdp, "#am-det-margem summary");
+      await waitFor(cdp, `(function(){
+        var b = document.querySelector('#am-det-margem-body');
+        return b && /Custo do produto/.test(b.textContent); })()`, "o ladder inicial não carregou");
+
+      precoResultado = {
+        status: 200,
+        corpo: { ok: false, codigo: "item.price.not_modifiable", motivo: "Este anúncio tem automatização de preço ativa no Mercado Livre." },
+      };
+      await confirmarEdicaoMargem(cdp, "preco", "999");
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/preco$/, 0, "o PATCH de preço não saiu");
+
+      await waitFor(cdp, `(function(){
+        var b = document.querySelector('#am-det-margem-body [data-margem-campo="preco"] .am-margem-edit__btn');
+        return b && /200/.test(b.textContent); })()`,
+        "recusa do Mercado Livre deveria manter o preço anterior (200) na tela");
+      const botaoPreco = await cdp.evaluate(`document.querySelector('#am-det-margem-body [data-margem-campo="preco"] .am-margem-edit__btn').textContent`);
+      assert.ok(!/999/.test(botaoPreco), "o valor recusado não pode ficar exibido como se tivesse sido salvo");
+
+      precoResultado = null;
+    });
+
+    await check("35 — simular Custo do produto e Custos adicionais mostra 'Margem simulada', sem chamar o ML nem a Base", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      simularMargemChamadas.length = 0;
+      precoChamadas.length = 0;
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await esperarLista(cdp);
+      await abrirPrimeiroAnuncio(cdp);
+      await clicar(cdp, "#am-det-margem summary");
+      await waitFor(cdp, `(function(){
+        var b = document.querySelector('#am-det-margem-body');
+        return b && /Custo do produto/.test(b.textContent); })()`, "o ladder inicial não carregou");
+
+      simularMargemHandler = () => ({
+        ok: true, simulado: true, origem: "realized",
+        resultado: { computable: true, profit: 55, margin: 0.275, marginPercent: 27.5, missing: [], assumed: [] },
+      });
+
+      await confirmarEdicaoMargem(cdp, "custoProduto", "50");
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/simular-margem$/, 0, "a simulação de custo não chamou o backend");
+      let envio = simularMargemChamadas[simularMargemChamadas.length - 1];
+      assert.strictEqual(envio.body.custoProduto, 50);
+      assert.strictEqual(envio.body.custosAdicionais, undefined, "sem override de custos adicionais, o campo não deveria ir no corpo");
+
+      await waitFor(cdp, `/Margem simulada/.test(document.getElementById('am-det-margem-body').textContent)`,
+        "o rótulo 'Margem simulada' não apareceu");
+      let texto = await cdp.evaluate("document.getElementById('am-det-margem-body').textContent");
+      assert.match(texto, /R\$\s*55,00/, `a margem simulada não apareceu: ${texto}`);
+      assert.match(texto, /27,5%/, `o percentual simulado não apareceu: ${texto}`);
+
+      // Combinar os dois overrides: a segunda chamada precisa levar AMBOS.
+      const antesChamadas = simularMargemChamadas.length;
+      await confirmarEdicaoMargem(cdp, "custosAdicionais", "8");
+      for (let i = 0; i < 100 && simularMargemChamadas.length <= antesChamadas; i++) await sleep(50);
+      assert.ok(simularMargemChamadas.length > antesChamadas, "a simulação de custos adicionais não disparou uma nova chamada");
+      envio = simularMargemChamadas[simularMargemChamadas.length - 1];
+      assert.strictEqual(envio.body.custoProduto, 50, "o override de custo já ativo precisa continuar indo junto");
+      assert.strictEqual(envio.body.custosAdicionais, 8);
+
+      assert.strictEqual(precoChamadas.length, 0, "simular custo/custos adicionais não pode chamar PATCH de preço");
+      assert.ok(!pedidos.some((u) => /\/bases\//.test(u)), "simulação não pode gravar na Base de Custos");
+
+      simularMargemHandler = null;
+    });
+
+    await check("36 — 'Restaurar' descarta a simulação e volta para a margem real do Motor", async () => {
+      await clicar(cdp, '#am-det-margem-body [data-acao="restaurar-simulacao-margem"]', "botão de restaurar não encontrado");
+      await waitFor(cdp, `!/Margem simulada/.test(document.getElementById('am-det-margem-body').textContent)`,
+        "a simulação não foi descartada");
+      const texto = await cdp.evaluate("document.getElementById('am-det-margem-body').textContent");
+      assert.match(texto, /R\$\s*70,00/, `a margem real (do Motor) deveria voltar a aparecer: ${texto}`);
+    });
+
+    await check("37 — item com variações bloqueia a edição de preço com mensagem clara (recusa do backend)", async () => {
+      pedidos.length = 0;
+      precoChamadas.length = 0;
+      precoResultado = {
+        status: 200,
+        corpo: {
+          ok: false, codigo: "PRECO_ITEM_COM_VARIACAO",
+          motivo: "Este anúncio tem variações — a edição de preço por variação ainda não está disponível nesta tela.",
+        },
+      };
+      await confirmarEdicaoMargem(cdp, "preco", "150");
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/preco$/, 0, "o PATCH de preço não saiu");
+      // A UI mostra a mensagem real devolvida pelo backend — não uma tradução própria.
+      await waitFor(cdp, "!document.querySelector('#am-det-margem-body [data-margem-campo=\"preco\"] .am-margem-edit__salvando')",
+        "a célula deveria sair do estado 'salvando' depois da recusa");
+      precoResultado = null;
     });
 
     await check("— nenhuma exceção de JS não tratada durante todo o percurso", async () => {

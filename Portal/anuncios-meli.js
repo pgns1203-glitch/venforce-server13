@@ -2024,6 +2024,15 @@
       iaBloqueada: false,
       alternativasAbertas: false,
       carregado: false,
+      // Preço: escrita REAL no Mercado Livre (PATCH .../preco). `salvando`
+      // trava contra clique duplo/Enter duplo e contra o campo virar
+      // editável de novo durante a chamada.
+      precoMargem: { salvando: false },
+      // Custo do produto / Custos adicionais: overrides de SIMULAÇÃO — nunca
+      // persistidos, nunca enviados ao Mercado Livre. `resultado` é a última
+      // resposta de POST .../simular-margem; null enquanto nenhum dos dois
+      // campos estiver com override ativo (a composição usa a margem REAL).
+      simulacaoMargem: { custoProduto: null, custosAdicionais: null, resultado: null },
     };
     chipUsadaAtual = null;
 
@@ -2158,7 +2167,8 @@
     bindCamposEditaveis();
     aplicarEstadosEdicao(); // já redesenha a barra de alterações
     bindMargemComposicao();
-
+    bindMargemEditavel(el("am-det-margem-body"));
+    bindRestaurarSimulacaoMargem(el("am-det-margem-body"), a.item_id);
   }
 
   // ----- Cabeçalho: identidade + título editável (representação única) -------
@@ -2760,9 +2770,11 @@
     return '<p class="am-margem-comp__dica">Carregando composição…</p>';
   }
 
-  // Uma linha da "escada" da composição — omitida por completo quando o
+  // Uma linha SOMENTE LEITURA da "escada" — omitida por completo quando o
   // valor não existe (nunca um "—" no lugar dela): é a régua pedida
-  // ("mostrar apenas o que existe").
+  // ("mostrar apenas o que existe"). Usada por Comissão/Frete/Imposto —
+  // valores calculados/determinados pelo Motor ou pelo Mercado Livre, nunca
+  // editáveis nesta tela.
   function margemComposicaoLinhaHtml(rotulo, valor, moeda, tooltip) {
     if (valor == null) return "";
     return '<div class="am-margem-comp__linha">' +
@@ -2772,13 +2784,46 @@
     "</div>";
   }
 
-  function margemComposicaoLadderHtml(comp, cacheMargem, moeda) {
+  function botaoMargemEditHtml(rotulo, tituloBotao) {
+    return '<button type="button" class="am-margem-edit__btn" title="' + escapeAttr(tituloBotao) + '">' +
+      escapeHtml(rotulo) + "</button>";
+  }
+
+  // Uma linha EDITÁVEL (Preço/Custo do produto/Custos adicionais) — ao
+  // contrário das somente-leitura, NUNCA some por valor ausente: é assim que
+  // o operador simula um custo que a Base não tem, ou vê o preço mesmo antes
+  // de qualquer composição existir. `campo` é o nome usado pelo clique/teclado
+  // (bindMargemEditavel) e pelo contrato de PATCH .../preco e POST
+  // .../simular-margem ("preco" | "custoProduto" | "custosAdicionais").
+  function margemComposicaoLinhaEditavelHtml(rotulo, campo, valor, moeda, itemId, tituloBotao) {
+    return '<div class="am-margem-comp__linha am-margem-comp__linha--editavel">' +
+      '<span class="am-margem-comp__rotulo">' + escapeHtml(rotulo) + "</span>" +
+      '<span class="am-margem-comp__valor am-margem-edit" data-margem-item="' + escapeAttr(itemId) +
+        '" data-margem-campo="' + escapeAttr(campo) + '" data-margem-valor="' + escapeAttr(valor == null ? "" : valor) + '">' +
+        botaoMargemEditHtml(formatMoeda(valor, moeda), tituloBotao) +
+      "</span>" +
+    "</div>";
+  }
+
+  function margemComposicaoLadderHtml(comp, cacheMargem, moeda, itemId) {
+    var sim = (DET && DET.itemId === itemId) ? DET.simulacaoMargem : null;
+    var simulando = !!(sim && (sim.custoProduto != null || sim.custosAdicionais != null));
+
+    // Custo do produto e Custos adicionais mostram o OVERRIDE de simulação
+    // quando ativo — nunca o valor real por baixo dele, para não sugerir que
+    // o número simulado foi gravado em algum lugar.
+    var custoExibido = sim && sim.custoProduto != null ? sim.custoProduto : comp.custoProduto;
+    var custosAdicionaisExibido = sim && sim.custosAdicionais != null ? sim.custosAdicionais : comp.taxaFixa;
+
     var linhas =
-      margemComposicaoLinhaHtml("Venda", comp.venda, moeda) +
-      margemComposicaoLinhaHtml("Custo do produto", comp.custoProduto, moeda) +
+      margemComposicaoLinhaEditavelHtml("Preço", "preco", comp.venda, moeda, itemId,
+        "Alterar grava direto no Mercado Livre") +
+      margemComposicaoLinhaEditavelHtml("Custo do produto", "custoProduto", custoExibido, moeda, itemId,
+        "Simular outro custo — não altera a Base de Custos") +
       margemComposicaoLinhaHtml("Comissão Mercado Livre", comp.comissaoMl, moeda) +
       margemComposicaoLinhaHtml("Frete", comp.frete, moeda) +
-      margemComposicaoLinhaHtml("Taxa fixa", comp.taxaFixa, moeda);
+      margemComposicaoLinhaEditavelHtml("Custos adicionais", "custosAdicionais", custosAdicionaisExibido, moeda, itemId,
+        "Simular embalagem, operação ou outro custo extra — não é cobrado pelo Mercado Livre");
 
     if (comp.impostoValor != null) {
       var rotuloImposto = "Imposto" +
@@ -2787,11 +2832,26 @@
         "Guardado como percentual pelo Motor de Margem — este valor em R$ é só para exibição.");
     }
 
-    // "= Margem": SEMPRE o valor pronto do Motor (profit em R$ + percentual)
-    // — nunca a soma das linhas acima. Se por arredondamento a soma visual
-    // não bater centavo a centavo, o número que vale é este.
+    // "= Margem": o valor REAL do Motor por padrão — nunca a soma das linhas
+    // acima. Só vira "Margem simulada" enquanto Custo do produto ou Custos
+    // adicionais tiverem um override ativo — e aí o número é sempre o que
+    // veio de POST .../simular-margem, nunca recalculado aqui no front.
     var totalHtml = "";
-    if (cacheMargem && cacheMargem.profit != null) {
+    if (simulando && sim.resultado) {
+      var r = sim.resultado;
+      totalHtml = '<div class="am-margem-comp__linha am-margem-comp__total am-margem-comp__total--simulada">' +
+        '<span class="am-margem-comp__rotulo">Margem simulada' + infoDotHtml(
+          "Projeção com os valores digitados acima — nada foi gravado no Mercado Livre nem na Base de Custos."
+        ) + "</span>" +
+        '<span class="am-margem-comp__valor">' +
+          (r.computable
+            ? formatMoeda(r.profit, moeda) + (r.marginPercent != null ? " (" + formatarPercentualCompacto(r.marginPercent) + ")" : "")
+            : "Sem dados suficientes para simular") +
+          ' <button type="button" class="am-margem-comp__restaurar" data-acao="restaurar-simulacao-margem" ' +
+            'title="Descartar a simulação e voltar para a margem real">↺ real</button>' +
+        "</span>" +
+      "</div>";
+    } else if (cacheMargem && cacheMargem.profit != null) {
       totalHtml = '<div class="am-margem-comp__linha am-margem-comp__total">' +
         '<span class="am-margem-comp__rotulo">Margem</span>' +
         '<span class="am-margem-comp__valor">' + formatMoeda(cacheMargem.profit, moeda) +
@@ -2822,7 +2882,7 @@
     if (!cache.temComposicao) return badge + margemComposicaoCarregandoHtml();
     if (!cache.composicao) return badge; // contexto indisponível / item não-computável — sem ladder, sem número parcial
 
-    return badge + margemComposicaoLadderHtml(cache.composicao, cache.margem, moeda);
+    return badge + margemComposicaoLadderHtml(cache.composicao, cache.margem, moeda, itemId);
   }
 
   // Resumo compacto no <summary>, à direita do título — só aparece quando a
@@ -2888,6 +2948,225 @@
     if (corpo) corpo.innerHTML = margemComposicaoConteudoHtml(itemId, DET.anuncio.moeda);
     var resumo = el("am-det-margem-resumo");
     if (resumo) resumo.innerHTML = margemComposicaoResumoHtml(itemId);
+    bindMargemEditavel(corpo);
+    bindRestaurarSimulacaoMargem(corpo, itemId);
+  }
+
+  // ===========================================================================
+  // Composição da margem — EDIÇÃO (Preço real no ML; Custo/Custos adicionais
+  // como simulação local). Ver docs da seção acima para o contrato dos dois
+  // endpoints (PATCH .../preco e POST .../simular-margem).
+  // ===========================================================================
+
+  var CAMPOS_MARGEM_ROTULO = {
+    preco: "Preço", custoProduto: "Custo do produto", custosAdicionais: "Custos adicionais",
+  };
+
+  function bindMargemEditavel(raiz) {
+    (raiz || document).querySelectorAll(".am-margem-edit").forEach(function (cel) {
+      cel.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (e.target.closest(".am-margem-edit__btn")) abrirEditorMargemCampo(cel);
+      });
+    });
+  }
+
+  function bindRestaurarSimulacaoMargem(raiz, itemId) {
+    var botao = (raiz || document).querySelector('[data-acao="restaurar-simulacao-margem"]');
+    if (!botao) return;
+    botao.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (!DET || DET.itemId !== itemId) return;
+      DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, resultado: null };
+      repintarComposicaoDoItem(itemId);
+    });
+  }
+
+  // Valor de LEITURA de uma célula editável: o override de simulação quando
+  // existe (custo/custos adicionais), senão o valor REAL do cache. O preço
+  // não tem override persistente — ou está salvo, ou a edição foi cancelada.
+  function valorLeituraMargemCampo(campo, itemId) {
+    var cache = AM.state.performanceCache[itemId];
+    var comp = cache && cache.composicao;
+    var sim = DET && DET.itemId === itemId ? DET.simulacaoMargem : null;
+    if (campo === "preco") return comp ? comp.venda : null;
+    if (campo === "custoProduto") {
+      if (sim && sim.custoProduto != null) return sim.custoProduto;
+      return comp ? comp.custoProduto : null;
+    }
+    if (campo === "custosAdicionais") {
+      if (sim && sim.custosAdicionais != null) return sim.custosAdicionais;
+      return comp ? comp.taxaFixa : null;
+    }
+    return null;
+  }
+
+  function pintarMargemCampoLeitura(cel) {
+    var campo = cel.getAttribute("data-margem-campo");
+    var itemId = cel.getAttribute("data-margem-item");
+    var valor = valorLeituraMargemCampo(campo, itemId);
+    cel.setAttribute("data-margem-valor", valor == null ? "" : valor);
+    cel.classList.remove("is-editando", "is-salvando");
+    var tituloBotao = campo === "preco"
+      ? "Alterar grava direto no Mercado Livre"
+      : "Simular — não altera a Base de Custos nem o Mercado Livre";
+    cel.innerHTML = botaoMargemEditHtml(formatMoeda(valor, DET.anuncio.moeda), tituloBotao);
+  }
+
+  function abrirEditorMargemCampo(cel) {
+    if (!DET) return;
+    if (cel.classList.contains("is-editando") || cel.classList.contains("is-salvando")) return;
+    if (DET.precoMargem.salvando) return; // um PUT de preço em voo trava a seção até resolver
+
+    var campo = cel.getAttribute("data-margem-campo");
+    var atual = cel.getAttribute("data-margem-valor") || "";
+    cel.classList.add("is-editando");
+    var dica = campo === "preco" ? "Enter grava no Mercado Livre, Esc cancela" : "Enter simula a margem, Esc cancela";
+    cel.innerHTML = '<input type="number" step="0.01" min="0" class="am-margem-edit__input" ' +
+      'value="' + escapeAttr(atual) + '" title="' + escapeAttr(dica) + '" aria-label="' +
+      escapeAttr((CAMPOS_MARGEM_ROTULO[campo] || campo) + ". " + dica) + '" />';
+    var input = cel.querySelector(".am-margem-edit__input");
+    if (!input) return;
+    input.focus();
+    input.select();
+
+    // Mesma regra dos outros campos editáveis desta tela (estoque, título):
+    // Enter confirma, Esc cancela, sair do campo CANCELA — nunca confirma
+    // por acidente (um clique fora, um Tab).
+    input.addEventListener("keydown", function (e) {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (campo === "preco") confirmarPrecoMargem(cel, input.value);
+        else confirmarSimulacaoMargem(cel, campo, input.value);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        pintarMargemCampoLeitura(cel);
+      }
+    });
+    input.addEventListener("blur", function () {
+      if (cel.classList.contains("is-salvando")) return;
+      pintarMargemCampoLeitura(cel);
+    });
+  }
+
+  // Custo do produto / Custos adicionais: só SIMULA. Nunca chama o Mercado
+  // Livre, nunca grava na Base de Custos — só alimenta POST .../simular-margem
+  // com o núcleo do Motor (marginEngine.computeMargin), o mesmo de sempre.
+  function confirmarSimulacaoMargem(cel, campo, bruto) {
+    var itemId = cel.getAttribute("data-margem-item");
+    var anterior = cel.getAttribute("data-margem-valor") || "";
+    var texto = String(bruto == null ? "" : bruto).trim();
+
+    if (texto === anterior) { pintarMargemCampoLeitura(cel); return; }
+
+    if (texto === "") {
+      // Campo esvaziado: o override some — volta a valer o número real do Motor.
+      DET.simulacaoMargem[campo] = null;
+      pintarMargemCampoLeitura(cel);
+      dispararSimulacaoMargem(itemId);
+      return;
+    }
+
+    var n = Number(texto);
+    if (!isFinite(n) || n < 0) {
+      toast("Informe um número maior ou igual a zero.", "is-danger");
+      pintarMargemCampoLeitura(cel);
+      return;
+    }
+
+    DET.simulacaoMargem[campo] = Math.round((n + Number.EPSILON) * 100) / 100;
+    pintarMargemCampoLeitura(cel);
+    dispararSimulacaoMargem(itemId);
+  }
+
+  function dispararSimulacaoMargem(itemId) {
+    if (!DET || DET.itemId !== itemId) return;
+    var sim = DET.simulacaoMargem;
+    if (sim.custoProduto == null && sim.custosAdicionais == null) {
+      // Nenhum override ativo: some a projeção e volta para a margem real,
+      // sem gastar chamada nenhuma.
+      sim.resultado = null;
+      repintarComposicaoDoItem(itemId);
+      return;
+    }
+
+    var cache = AM.state.performanceCache[itemId];
+    var origem = cache && cache.margem ? cache.margem.origem : "projected";
+    var corpo = { clienteSlug: AM.clienteAtual.slug, origem: origem };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    if (sim.custoProduto != null) corpo.custoProduto = sim.custoProduto;
+    if (sim.custosAdicionais != null) corpo.custosAdicionais = sim.custosAdicionais;
+
+    var meuToken = DET.token;
+    api("/anuncios-meli/" + encodeURIComponent(itemId) + "/simular-margem", { method: "POST", body: corpo })
+      .then(function (r) {
+        if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB no meio do caminho
+        var d = r.data || {};
+        if (!d.ok) {
+          toast(d.motivo || "Não foi possível simular a margem.", "is-danger");
+          return;
+        }
+        DET.simulacaoMargem.resultado = d.resultado;
+        repintarComposicaoDoItem(itemId);
+      });
+  }
+
+  // Preço: escrita REAL no Mercado Livre (PATCH .../preco). O valor exibido
+  // depois do sucesso NUNCA é o digitado — vem de reconsultar a composição
+  // (que por sua vez relê o preço confirmado, ver meliPrecoService no
+  // backend), então esta função nunca escreve um número "confiado" na tela.
+  function confirmarPrecoMargem(cel, bruto) {
+    if (!DET || DET.precoMargem.salvando) return;
+    var itemId = cel.getAttribute("data-margem-item");
+    var anterior = cel.getAttribute("data-margem-valor") || "";
+    var texto = String(bruto == null ? "" : bruto).trim();
+
+    if (texto === anterior) { pintarMargemCampoLeitura(cel); return; }
+
+    var n = Number(texto);
+    if (!isFinite(n) || n <= 0) {
+      toast("O preço precisa ser um número maior que zero.", "is-danger");
+      pintarMargemCampoLeitura(cel);
+      return;
+    }
+
+    DET.precoMargem.salvando = true;
+    cel.classList.remove("is-editando");
+    cel.classList.add("is-salvando");
+    cel.innerHTML = '<span class="am-margem-edit__salvando" aria-live="polite">gravando no Mercado Livre…</span>';
+
+    var corpo = { clienteSlug: AM.clienteAtual.slug, preco: n };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+
+    var meuToken = DET.token;
+    api("/anuncios-meli/" + encodeURIComponent(itemId) + "/preco", { method: "PATCH", body: corpo })
+      .then(function (r) {
+        if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB no meio do caminho
+        DET.precoMargem.salvando = false;
+        var d = r.data || {};
+        if (!d.ok) {
+          cel.classList.remove("is-salvando");
+          pintarMargemCampoLeitura(cel);
+          toast(d.motivo || "Não foi possível atualizar o preço.", "is-danger");
+          return;
+        }
+
+        // Preço real mudou: qualquer simulação de custo/custos adicionais em
+        // cima do preço antigo deixa de fazer sentido — some, e a composição
+        // é reconsultada do zero (nunca assume o valor enviado).
+        DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, resultado: null };
+        var cache = AM.state.performanceCache[itemId];
+        if (cache) { cache.temComposicao = false; cache.temMargem = false; }
+
+        garantirComposicaoDoItem(itemId).then(function () {
+          if (!DET || DET.token !== meuToken) return;
+          repintarComposicaoDoItem(itemId);
+        });
+        toast("Preço atualizado no Mercado Livre.");
+      });
   }
 
   // ---------------------------------------------------------------------------

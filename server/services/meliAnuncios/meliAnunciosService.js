@@ -430,6 +430,10 @@ async function atualizarCamposConfirmados(clienteId, itemId, campos = {}) {
     params.push(campos.titulo);
     sets.push(`titulo = $${params.length}`);
   }
+  if (campos.preco !== undefined) {
+    params.push(campos.preco);
+    sets.push(`preco = $${params.length}`);
+  }
   if (campos.modelo !== undefined) {
     params.push(campos.modelo);
     sets.push(`modelo = $${params.length}`);

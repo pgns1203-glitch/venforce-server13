@@ -43,7 +43,7 @@ function validarPercentuaisMatriz(label, valorEntrada, valorEsperado) {
     imposto: valorEntrada,
     margem: valorEntrada,
   });
-  for (const address of ["G4", "I4", "S4"]) {
+  for (const address of ["L4", "N4", "X4"]) {
     const cell = celula(workbook, "Matriz Mercado Livre", address);
     if (valorEsperado === null) {
       ok(`${label} — ${address} fica vazia`, ehVazia(cell));

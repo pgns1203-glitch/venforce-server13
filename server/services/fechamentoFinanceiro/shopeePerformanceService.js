@@ -24,6 +24,8 @@ const {
   isShopeeFinancialOrderSheet,
   classifyShopeeOrderStatus,
   processShopeeFinancialOrders,
+  tokenizeShopeeSkuText,
+  shopeeSkuTokenSetKey,
 } = require("./shopeeOrderAllService");
 const {
   buildCoverage,
@@ -364,12 +366,21 @@ function buildShopeeCostBridge(performanceRowsRaw) {
   // variações aos candidatos deste Map.
   const variationSkuIndex = new Map();
   const principalSkuIndex = new Map();
+  // Índices por CONJUNTO de tokens do SKU (separador/ordem/repetição não
+  // importam) — ver selectShopeeBridgeIdentityBySkuTokenSet/Fuzzy em
+  // shopeeOrderAllService.js. Construídos a partir do valor BRUTO da coluna
+  // (antes de normalizeShopeeId remover os espaços), para que "KAIAK BRANCO"
+  // continue sendo dois tokens e não vire "KAIAKBRANCO".
+  const variationSkuTokenIndex = new Map();
+  const principalSkuTokenIndex = new Map();
   const bridge = variationSkuIndex;
   const records = [];
   for (const [property, value] of [
     ["records", records],
     ["variationSkuIndex", variationSkuIndex],
     ["principalSkuIndex", principalSkuIndex],
+    ["variationSkuTokenIndex", variationSkuTokenIndex],
+    ["principalSkuTokenIndex", principalSkuTokenIndex],
   ]) {
     Object.defineProperty(bridge, property, {
       value,
@@ -414,12 +425,10 @@ function buildShopeeCostBridge(performanceRowsRaw) {
 
     // SKU é TEXTO: normalizeShopeeId preserva zeros à esquerda ("0007654352998"
     // continua "0007654352998"); Number() jamais é usado aqui.
-    const variationSkus = [
-      findField(row, ["sku da variacao", "sku da variação"]),
-    ].map(identity).filter(Boolean);
-    const principalSkus = [
-      findField(row, ["sku principle", "sku principal"]),
-    ].map(identity).filter(Boolean);
+    const variationSkuRaw = findField(row, ["sku da variacao", "sku da variação"]);
+    const principalSkuRaw = findField(row, ["sku principle", "sku principal"]);
+    const variationSkus = [variationSkuRaw].map(identity).filter(Boolean);
+    const principalSkus = [principalSkuRaw].map(identity).filter(Boolean);
 
     const normalizedVariationId = identity(variationId);
     const record = {
@@ -450,6 +459,19 @@ function buildShopeeCostBridge(performanceRowsRaw) {
         entry.itemIds.push(record.itemId);
       }
     };
+
+    const addToTokenIndex = (index, tokens) => {
+      const key = shopeeSkuTokenSetKey(tokens);
+      if (!key) return;
+      if (!index.has(key)) {
+        index.set(key, { tokens: Array.from(new Set(tokens)).sort(), records: [] });
+      }
+      index.get(key).records.push(record);
+    };
+    const variationTokens = tokenizeShopeeSkuText(variationSkuRaw);
+    if (variationTokens.length >= 2) addToTokenIndex(variationSkuTokenIndex, variationTokens);
+    const principalTokens = tokenizeShopeeSkuText(principalSkuRaw);
+    if (principalTokens.length >= 2) addToTokenIndex(principalSkuTokenIndex, principalTokens);
 
     for (const sku of variationSkus) addToIndex(variationSkuIndex, sku);
     for (const sku of principalSkus) addToIndex(principalSkuIndex, sku);

@@ -343,6 +343,12 @@ async function detalheFamilia(req, res) {
 // qualquer outro motivo de contexto do Motor de Margem não estar pronto)
 // vira `margemIndisponivel` com o MESMO texto que
 // contextoPrecificacaoService.js já usa — nunca um erro genérico, nunca 500.
+//
+// `margem[itemId]` também carrega `precoAtual` (preço OBTIDO ao vivo pelo
+// Motor, `item.pricing.current`) e `precoAlvo` (preço CALCULADO pelo Motor
+// para a margem-alvo, `item.margin.target`) — ver montarMapaMargem. Os dois
+// são `null` quando o Motor não tem o dado, nunca 0: o front mantém o preço
+// sincronizado da listagem (`a.preco`) como fallback nesse caso.
 // ----------------------------------------------------------------------------
 const PERFORMANCE_MAX_ITENS = 24; // teto de abuso da rota — independente da paginação da tela, não é a mesma coisa
 
@@ -452,6 +458,20 @@ function montarMapaMargem(itens, incluirComposicao) {
       status: item.quality.status,
       statusLabel: item.quality.statusLabel,
       statusReasons: item.quality.statusReasons,
+      // Preço OBTIDO pelo Motor ao vivo (sale_price no momento desta chamada,
+      // mesmo `item.pricing.current` que a composição já usa como `venda`) —
+      // independe de origem realizada/projetada, é sempre "o que o anúncio
+      // vale agora". `null` quando o Motor não trouxe evidência de preço
+      // (nunca 0): o front mantém o preço sincronizado (`a.preco`) nesse caso.
+      precoAtual: valorEvidencia(item.pricing && item.pricing.current),
+      // Preço CALCULADO pelo Motor para bater a margem alvo da Central
+      // (`item.margin.target`, mesma fórmula de `computeTargetPrice`). Só
+      // vem preenchido quando o próprio Motor considera o cálculo possível
+      // (custo/frete/imposto/comissão% disponíveis) — nunca um palpite.
+      precoAlvo:
+        item.margin.target && item.margin.target.computable
+          ? item.margin.target.price
+          : null,
     };
 
     // Só monta composição quando a margem exibida É computável — item sem

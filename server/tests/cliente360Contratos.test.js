@@ -123,10 +123,10 @@ const check = (n, c) => { assert.ok(c, `FALHOU: ${n}`); passed++; console.log(` 
   };
 
   const adapter = createFechamentoAdapter({
-    centralRepo: {
-      getClienteBySlug: async (slug) => ({ slug, nome: "Cliente Teste", id: 1 }),
-      getCentralVendasByRange: async () => snapshotFake,
-    },
+    // V3 FASE 0 — resolveRangeContext substitui a resolução de conta (que por
+    // padrão tocaria o banco real via resolveMarketplaceAccountContext) pelo
+    // mesmo motivo que centralRepo é trocado: nada de infra neste teste.
+    resolveRangeContext: async () => ({ context: null, snapshot: snapshotFake }),
     // buildPayloadFromRange NÃO é injetado de propósito — usa o require real.
   });
 
@@ -153,6 +153,9 @@ const check = (n, c) => { assert.ok(c, `FALHOU: ${n}`); passed++; console.log(` 
       getClienteBySlug: async (slug) => ({ slug, nome: "ADB Supply", id: 1 }),
       getCentralVendasByRange: async () => snapshotFake,
     },
+    // V3 FASE 0 — mesmo motivo do adapter acima: evita que a resolução de
+    // conta (default) toque o banco real dentro deste teste de fiação.
+    resolveRangeContext: async () => ({ context: null, snapshot: snapshotFake }),
     adsService: {
       getInvestimento: async (_slug, competencia) => ({
         valor: null, status: STATUS.SEM_DADOS, fonte: null, competencia,

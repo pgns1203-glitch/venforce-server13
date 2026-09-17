@@ -238,7 +238,7 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
   const { cliente, base, mlUserId, custos, porMlb, reembolsoPorMlb, fallbackObservedAt, now } = prepared;
 
   // Lista de anúncios: ou os IDs pedidos explicitamente (detalhe de item), ou
-  // uma página dos ativos do vendedor.
+  // uma página dos ativos + pausados do vendedor (ver buscarItensAtivos).
   let ids;
   let totalItensMl;
   if (Array.isArray(itemIds) && itemIds.length) {

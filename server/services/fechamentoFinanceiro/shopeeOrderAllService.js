@@ -837,11 +837,342 @@ function selectShopeeBridgeIdentityByTitleVariation(line, allRecords) {
   };
 }
 
+// FIN-24 — segunda classe de falha da ponte de identidade: além do TÍTULO
+// mudar/reordenar (FIN-21), a NOTAÇÃO da variação também muda entre as
+// planilhas. Ex.: Order.all traz "Pink,G" (produto já é "... 2 Blusas ...
+// Kit") e a Performance traz a mesma peça como "2 Pink,G" — o kit é o
+// mesmo, só a forma de escrever a quantidade mudou.
+//
+// A decomposição abaixo NUNCA normaliza a variação "às cegas": ela separa
+// uma quantidade EXPLÍCITA (um número isolado no início de um segmento, ou
+// a soma de uma combinação "N cor + M cor") dos atributos restantes. Só a
+// quantidade é removida da comparação — os atributos (cor/tamanho/etc)
+// continuam exigindo igualdade exata após a normalização de acentos/caixa
+// já usada no restante do arquivo.
+function decomposeShopeeVariationAttributes(variationName) {
+  const raw = String(variationName || "").trim();
+  if (!raw) return { quantityHint: null, attributes: [] };
+
+  const normalized = normalizeText(raw).replace(/\s*\+\s*/g, " + ");
+  const segments = normalized.split(",").map((s) => s.trim()).filter(Boolean);
+  if (segments.length === 0) return { quantityHint: null, attributes: [] };
+
+  let quantityHint = null;
+  const attributes = [];
+
+  for (const segment of segments) {
+    // "1 pink + 1 preta" — combinação de DUAS cores distintas no mesmo kit.
+    // A quantidade é a soma, mas os atributos permanecem os dois valores
+    // (nunca colapsam num só, para não confundir combo com cor única).
+    const combo = segment.match(/^(\d{1,2})\s+(.+?)\s*\+\s*(\d{1,2})\s+(.+)$/);
+    if (combo) {
+      const qty = Number(combo[1]) + Number(combo[3]);
+      if (quantityHint === null) quantityHint = qty;
+      attributes.push(`${combo[2].trim()}+${combo[4].trim()}`);
+      continue;
+    }
+
+    // "2 pink" — quantidade isolada no início do segmento.
+    const simple = segment.match(/^(\d{1,2})\s+(.+)$/);
+    if (simple) {
+      if (quantityHint === null) quantityHint = Number(simple[1]);
+      attributes.push(simple[2].trim());
+      continue;
+    }
+
+    attributes.push(segment);
+  }
+
+  return { quantityHint, attributes };
+}
+
+function shopeeVariationAttributesKey(attributes) {
+  return attributes.slice().sort().join("|");
+}
+
+// Extrai packSize (quantas peças o anúncio representa) do TÍTULO, só em
+// padrões inequívocos ("kit N", "kit de N", "N blusas/regatas/..." no
+// início do título). NUNCA interpreta número de REF, tamanho (P/M/G/GG) ou
+// qualquer outro dígito solto — se o padrão não é claramente uma contagem
+// de peças/kit, retorna null (sem inventar).
+const SHOPEE_PACK_NOUNS =
+  "blusas?|regatas?|camisetas?|camisas?|calcinhas?|cuecas?|pecas?|unidades?|conjuntos?|shorts?|vestidos?";
+
+function extractShopeePackSizeFromTitle(title) {
+  const normalized = normalizeText(title);
+  if (!normalized) return null;
+
+  const kitMatch = normalized.match(/\bkit\s*(?:de\s*|com\s*)?(\d{1,2})\b/);
+  if (kitMatch) return Number(kitMatch[1]);
+
+  const leadingMatch = normalized.match(
+    new RegExp(`^(\\d{1,2})\\s+(?:${SHOPEE_PACK_NOUNS})\\b`)
+  );
+  if (leadingMatch) return Number(leadingMatch[1]);
+
+  return null;
+}
+
+// Último recurso da ponte de título/variação, só tentado quando NEM o
+// SKU/produto+variação exatos NEM o fallback do FIN-21 (variação exata +
+// título) resolveram nada. Aqui a variação em si também pode ter mudado de
+// notação — por isso o corte de segurança é mais rígido que o do FIN-21:
+//   1. atributos da variação (sem a quantidade) têm que ser EXATAMENTE
+//      iguais — nunca normalização de plural/gênero ("Preto" != "Pretas");
+//   2. produto do Order.all e da Performance continuam exigindo o mesmo
+//      corte de título do FIN-21 (SHOPEE_TITLE_OVERLAP_THRESHOLD);
+//   3. quando os dois lados têm evidência de quantidade/kit (da própria
+//      variação ou do título), ela NÃO pode divergir — um candidato sem
+//      nenhuma marca de kit é tratado como unidade (packSize 1), o que
+//      bloqueia um produto unitário de ser escolhido para um kit;
+//   4. candidato único no topo do corte -> resolve; empate -> equivalência
+//      financeira (custo+imposto iguais) ou AMBIGUOUS, igual ao FIN-21.
+function selectShopeeBridgeIdentityByTitleVariationAlias(line, allRecords) {
+  const lineDecomp = decomposeShopeeVariationAttributes(line.variationName);
+  if (lineDecomp.attributes.length === 0) return null;
+  const lineAttrKey = shopeeVariationAttributesKey(lineDecomp.attributes);
+
+  const productTokens = normalizeShopeeTitleTokens(line.product);
+  if (productTokens.length === 0) return null;
+
+  const lineTitlePack = extractShopeePackSizeFromTitle(line.product);
+  const lineEffectivePack =
+    lineDecomp.quantityHint !== null ? lineDecomp.quantityHint : lineTitlePack;
+
+  const scored = [];
+  for (const record of allRecords) {
+    const recordDecomp = decomposeShopeeVariationAttributes(record.variationName);
+    if (recordDecomp.attributes.length === 0) continue;
+    if (shopeeVariationAttributesKey(recordDecomp.attributes) !== lineAttrKey) continue;
+
+    // Sem nenhuma evidência de kit (nem na variação, nem no título), o
+    // candidato é tratado como peça UNITÁRIA — packSize 1. É essa regra que
+    // impede um produto unitário de "Pink,G" vencer para um pedido de kit.
+    const recordTitlePack = extractShopeePackSizeFromTitle(record.productName);
+    const recordEffectivePack =
+      recordDecomp.quantityHint !== null
+        ? recordDecomp.quantityHint
+        : recordTitlePack !== null
+        ? recordTitlePack
+        : 1;
+
+    if (
+      lineEffectivePack !== null &&
+      recordEffectivePack !== null &&
+      lineEffectivePack !== recordEffectivePack
+    ) {
+      continue;
+    }
+
+    const score = shopeeTitleOverlapScore(
+      productTokens,
+      normalizeShopeeTitleTokens(record.productName)
+    );
+    if (score < SHOPEE_TITLE_OVERLAP_THRESHOLD) continue;
+
+    scored.push({ record, score });
+  }
+
+  if (scored.length === 0) return null;
+
+  const maxScore = Math.max(...scored.map((entry) => entry.score));
+  const topRecords = uniqueBridgeRecords(
+    scored.filter((entry) => entry.score === maxScore).map((entry) => entry.record)
+  );
+  const ambiguityKey = `${line.product} / ${line.variationName}`;
+
+  if (topRecords.length === 1) {
+    return {
+      ambiguous: false,
+      record: topRecords[0],
+      records: topRecords,
+      source: "title_variation_alias",
+      bridgeSku: null,
+      ambiguityKey,
+      titleScore: maxScore,
+    };
+  }
+
+  return {
+    ambiguous: true,
+    record: null,
+    records: topRecords,
+    source: "title_variation_alias",
+    bridgeSku: null,
+    ambiguityKey,
+    titleScore: maxScore,
+  };
+}
+
+// ── Identidade histórica por CONJUNTO de tokens do SKU ──────────────────────
+//
+// FIN-21/FIN-24 resolvem o caso "o título/a variação mudou, mas o SKU é o
+// mesmo". O caso CARMINA mostrou a classe complementar: "o SKU mudou de
+// FORMATO, mas continua descrevendo o mesmo produto" — separadores
+// diferentes ("/" virou "+"), ordem diferente, palavra repetida removida, ou
+// uma palavra abreviada/truncada — em produtos que muitas vezes NÃO têm
+// variação (Nome da Variação vazio/"-"), onde o fallback de título+variação
+// acima nem chega a ser tentado.
+//
+// Tokenização é só um GERADOR DE CANDIDATOS: qualquer caractere não
+// alfanumérico (/, +, -, espaço, ...) é um separador equivalente. O
+// resultado nunca decide sozinho — passa pela mesma narrowing por
+// produto/variação, ambiguidade e equivalência financeira que as demais
+// estratégias já usam (selectShopeeIdentityFromRecords).
+function tokenizeShopeeSkuText(value) {
+  const normalized = normalizeText(value).replace(/[^a-z0-9]+/g, " ").trim();
+  if (!normalized) return [];
+  return normalized
+    .split(" ")
+    .filter(Boolean)
+    .map((token) => token.toUpperCase());
+}
+
+// Chave estável de um CONJUNTO de tokens (duplicatas colapsam, ordem não
+// importa) — usada tanto para indexar a ponte quanto para consultar.
+function shopeeSkuTokenSetKey(tokens) {
+  if (!tokens.length) return "";
+  return Array.from(new Set(tokens)).sort().join("|");
+}
+
+// Compatibilidade "quase exata" entre dois conjuntos de tokens: mesma
+// contagem, e no MÁXIMO um par divergente — esse par só é aceito quando é
+// claramente um truncamento (um token é prefixo do outro, ambos com pelo
+// menos 4 caracteres e diferença de até 2 caracteres, ex.: BRANC/BRANCO).
+// Dois ou mais tokens divergentes nunca são aceitos: entra em ambíguo/miss,
+// nunca em "o mais parecido".
+function shopeeSkuTokensFuzzyCompatible(tokensA, tokensB) {
+  if (tokensA.length < 3 || tokensB.length < 3) return false;
+  if (tokensA.length !== tokensB.length) return false;
+
+  const remainingB = [...tokensB];
+  const leftoverA = [];
+  for (const token of tokensA) {
+    const idx = remainingB.indexOf(token);
+    if (idx >= 0) {
+      remainingB.splice(idx, 1);
+    } else {
+      leftoverA.push(token);
+    }
+  }
+
+  if (leftoverA.length !== 1 || remainingB.length !== 1) return false;
+
+  const [a] = leftoverA;
+  const [b] = remainingB;
+  if (a.length < 4 || b.length < 4) return false;
+  if (Math.abs(a.length - b.length) > 2) return false;
+  return a.startsWith(b) || b.startsWith(a);
+}
+
+function getShopeeCostBridgeTokenIndex(costBridge, type) {
+  if (!costBridge) return null;
+  if (type === "variation") {
+    return costBridge.variationSkuTokenIndex instanceof Map
+      ? costBridge.variationSkuTokenIndex
+      : null;
+  }
+  return costBridge.principalSkuTokenIndex instanceof Map
+    ? costBridge.principalSkuTokenIndex
+    : null;
+}
+
+// Tokens de cada valor não vazio/não placeholder dos campos indicados, na
+// ordem de prioridade de sempre, deduplicados por conjunto de tokens.
+function lineSkuTokenCandidates(line, fields) {
+  const seen = new Set();
+  const out = [];
+  for (const field of fields) {
+    const raw = line[field];
+    if (!raw) continue;
+    const tokens = tokenizeShopeeSkuText(raw);
+    if (tokens.length < 2) continue;
+    const key = shopeeSkuTokenSetKey(tokens);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ raw, tokens, key });
+  }
+  return out;
+}
+
+// Estágio adicional entre o fallback de sufixo histórico e produto+variação:
+// identidade por CONJUNTO EXATO de tokens do SKU. Separadores, ordem e
+// palavras repetidas não importam — mas o conjunto tem que ser IDÊNTICO.
+// Resolve, por exemplo, "FB+FR+KAIAK-BRANC+MLBC" (Order.all) == "FB+FR+KAIAK
+// BRANC+MLBC" (Performance): mesma composição, formatação diferente. É tão
+// seguro quanto o match de SKU exato de sempre — só tolera a formatação.
+function selectShopeeBridgeIdentityBySkuTokenSet(line, costBridge) {
+  const variationTokenIndex = getShopeeCostBridgeTokenIndex(costBridge, "variation");
+  const principalTokenIndex = getShopeeCostBridgeTokenIndex(costBridge, "principal");
+
+  const variationFields = costBridge.variationSkuIndex instanceof Map
+    ? ["skuRefNumber", "skuVariation", "sku"]
+    : SHOPEE_BRIDGE_SKU_FIELDS;
+
+  if (variationTokenIndex) {
+    for (const { key, raw } of lineSkuTokenCandidates(line, variationFields)) {
+      const entry = variationTokenIndex.get(key);
+      if (!entry) continue;
+      return selectShopeeIdentityFromRecords(entry.records, line, "sku_token_set", raw);
+    }
+  }
+
+  if (principalTokenIndex) {
+    for (const { key, raw } of lineSkuTokenCandidates(line, ["skuMainRef", "skuPrinciple"])) {
+      const entry = principalTokenIndex.get(key);
+      if (!entry) continue;
+      return selectShopeeIdentityFromRecords(entry.records, line, "sku_token_set", raw);
+    }
+  }
+
+  return null;
+}
+
+// Último recurso da ponte (depois de título+variação): tolera exatamente UM
+// token truncado/abreviado quando todos os demais tokens do SKU batem
+// exatamente. Cobre o caso dominante do CARMINA ("KAIAK BRANCO" -> "KAIAK
+// BRANC") em produtos sem variação, onde o fallback de título não se aplica
+// (variação vazia). Nunca decide sozinho quando há mais de um candidato
+// divergente compatível — cai em ambíguo/equivalência financeira como as
+// demais estratégias.
+function selectShopeeBridgeIdentityBySkuTokenFuzzy(line, costBridge) {
+  const variationTokenIndex = getShopeeCostBridgeTokenIndex(costBridge, "variation");
+  const principalTokenIndex = getShopeeCostBridgeTokenIndex(costBridge, "principal");
+
+  const allFields = Array.from(
+    new Set([...SHOPEE_BRIDGE_SKU_FIELDS, "skuMainRef"])
+  );
+  const lineCandidates = lineSkuTokenCandidates(line, allFields);
+  if (!lineCandidates.length) return null;
+
+  for (const index of [variationTokenIndex, principalTokenIndex]) {
+    if (!(index instanceof Map)) continue;
+    for (const { tokens, raw } of lineCandidates) {
+      const matchedRecords = [];
+      for (const entry of index.values()) {
+        if (shopeeSkuTokensFuzzyCompatible(tokens, entry.tokens)) {
+          matchedRecords.push(...entry.records);
+        }
+      }
+      if (matchedRecords.length > 0) {
+        return selectShopeeIdentityFromRecords(matchedRecords, line, "sku_token_fuzzy", raw);
+      }
+    }
+  }
+
+  return null;
+}
+
 // Ordem estrita da ponte:
 //   1. Número de referência SKU -> índice SKU da Variação;
-//   2. produto + variação exatos (preserva identidade quando o SKU mudou);
-//   3. SKU principal, em índice separado e somente se for inequívoco;
-//   4. variação exata + evidência de título (último recurso, ver acima).
+//   2. sufixo histórico controlado (-V / -0);
+//   3. conjunto exato de tokens do SKU (formatação mudou, composição não);
+//   4. produto + variação exatos (preserva identidade quando o SKU mudou);
+//   5. SKU principal, em índice separado e somente se for inequívoco;
+//   6. variação exata + evidência de título (FIN-21);
+//   7. atributos da variação (sem quantidade) + título + pack compatível
+//      (FIN-24, só tentado quando o item 6 não resolveu nada);
+//   8. conjunto de tokens do SKU com UM token truncado (último recurso).
 function selectShopeeBridgeIdentity(line, costBridge) {
   const allRecords = getShopeeCostBridgeRecords(costBridge);
   if (allRecords.length === 0) return null;
@@ -893,6 +1224,9 @@ function selectShopeeBridgeIdentity(line, costBridge) {
     );
   }
 
+  const tokenSetIdentity = selectShopeeBridgeIdentityBySkuTokenSet(line, costBridge);
+  if (tokenSetIdentity) return tokenSetIdentity;
+
   const productKey = normalizeShopeeIdentityText(line.product);
   const variationKey = normalizeShopeeIdentityText(line.variationName);
   if (productKey && variationKey) {
@@ -916,7 +1250,144 @@ function selectShopeeBridgeIdentity(line, costBridge) {
     return selectShopeeIdentityFromRecords(entry.records, line, "principal_sku", sku);
   }
 
-  return selectShopeeBridgeIdentityByTitleVariation(line, allRecords);
+  const titleVariationIdentity = selectShopeeBridgeIdentityByTitleVariation(line, allRecords);
+  if (titleVariationIdentity) return titleVariationIdentity;
+
+  const titleVariationAliasIdentity = selectShopeeBridgeIdentityByTitleVariationAlias(
+    line,
+    allRecords
+  );
+  if (titleVariationAliasIdentity) return titleVariationAliasIdentity;
+
+  return selectShopeeBridgeIdentityBySkuTokenFuzzy(line, costBridge);
+}
+
+// ── Equivalência financeira POR ITEM ────────────────────────────────────────
+//
+// Último recurso de todos, só tentado quando NENHUMA estratégia de
+// identidade acima resolveu Model ID/variação nenhum. Diferente de todas as
+// outras, esta função NUNCA afirma qual variação foi vendida — ela resolve
+// só o RESULTADO FINANCEIRO, quando ele é o mesmo não importa qual variação
+// do item tenha sido: o ITEM da Performance é identificado de forma segura
+// e única pelo título, mas TODOS os seus Model IDs custam e tributam
+// exatamente igual, então a variação exata deixa de ser financeiramente
+// relevante.
+//
+// Guardas (TODAS obrigatórias — qualquer uma falhando, não resolve):
+//   1. o item da Performance precisa ser identificado de forma inequívoca
+//      (título acima do corte de sempre, SHOPEE_TITLE_OVERLAP_THRESHOLD);
+//   2. produto/título/pack não podem estar em conflito (mesma checagem de
+//      pack usada no fallback de alias — nunca cruza Kit 2 com Kit 4);
+//   3. só UM item pode estar no topo do corte — empate entre ITENS
+//      diferentes nunca resolve (itens diferentes podem ter preços
+//      diferentes; empate entre VARIAÇÕES do MESMO item é o caso que esta
+//      função existe para cobrir);
+//   4. usa o conjunto COMPLETO de Model IDs/variações desse item
+//      (uniqueBridgeRecords — nunca um subconjunto escolhido a dedo);
+//   5-7. TODOS os candidatos desse conjunto precisam existir na base de
+//      custos, com costValid !== false e custo > 0 — um único ausente ou
+//      inválido (#N/A, vazio, <=0) derruba a equivalência inteira;
+//   8-9. TODOS precisam ter EXATAMENTE o mesmo custo e o mesmo taxPercent
+//      (arredondado a 2 casas, igual ao resto do arquivo) — um único
+//      divergente derruba a equivalência inteira;
+//   10. nunca depende de ordem: usa Math.max/every sobre o conjunto
+//      completo, nunca a primeira ou última entrada iterada.
+//
+// Nunca atribui um Model ID (nunca "candidates[0]") e nunca normaliza
+// vocabulário de variação (sem "Preto"="Pretas", sem "Multicolorido"=combo
+// nenhum) — a causa que este resolvedor ataca é financeira, não linguística.
+function selectShopeeBridgeItemFinancialEquivalence(line, costBridge, costMap) {
+  if (!costMap || typeof costMap.get !== "function") return null;
+
+  const allRecords = getShopeeCostBridgeRecords(costBridge);
+  if (allRecords.length === 0) return null;
+
+  const productTokens = normalizeShopeeTitleTokens(line.product);
+  if (productTokens.length === 0) return null;
+
+  const byItem = new Map();
+  for (const record of allRecords) {
+    const itemId = normalizeShopeeId(record.itemId);
+    if (!itemId) continue;
+    if (!byItem.has(itemId)) byItem.set(itemId, []);
+    byItem.get(itemId).push(record);
+  }
+  if (byItem.size === 0) return null;
+
+  const lineTitlePack = extractShopeePackSizeFromTitle(line.product);
+  const lineVariationDecomp = decomposeShopeeVariationAttributes(line.variationName);
+  const lineEffectivePack =
+    lineVariationDecomp.quantityHint !== null ? lineVariationDecomp.quantityHint : lineTitlePack;
+
+  const scoredItems = [];
+  for (const [itemId, records] of byItem.entries()) {
+    const productName = records[0].productName;
+    const score = shopeeTitleOverlapScore(
+      productTokens,
+      normalizeShopeeTitleTokens(productName)
+    );
+    if (score < SHOPEE_TITLE_OVERLAP_THRESHOLD) continue;
+
+    const itemTitlePack = extractShopeePackSizeFromTitle(productName);
+    if (
+      lineEffectivePack !== null &&
+      itemTitlePack !== null &&
+      lineEffectivePack !== itemTitlePack
+    ) {
+      continue;
+    }
+
+    scoredItems.push({ itemId, records, score });
+  }
+
+  if (scoredItems.length === 0) return null;
+
+  const maxScore = Math.max(...scoredItems.map((entry) => entry.score));
+  const topItems = scoredItems.filter((entry) => entry.score === maxScore);
+  if (topItems.length !== 1) return null;
+
+  const { itemId, records } = topItems[0];
+  const uniqueRecords = uniqueBridgeRecords(records);
+  // Com um candidato SÓ, não há "variação indeterminada" — há uma variação
+  // específica que as estratégias de atributo/título acima já viram e
+  // recusaram. Essa função nunca serve de segunda chance para esse caso:
+  // ela só existe para quando o item tem MÚLTIPLAS variações e nenhuma
+  // pôde ser escolhida entre elas.
+  if (uniqueRecords.length < 2) return null;
+
+  const costRows = [];
+  for (const record of uniqueRecords) {
+    const modelId = normalizeShopeeId(record.modelId || record.variationId);
+    const recordItemId = normalizeShopeeId(record.itemId);
+    const matchedId = modelId || recordItemId;
+    if (!matchedId) return null;
+    const costRow = costMap.get(normalizeMatchKey(matchedId)) || null;
+    if (!costRow || costRow.costValid === false || !(Number(costRow.cost) > 0)) {
+      return null;
+    }
+    costRows.push(costRow);
+  }
+
+  const first = costRows[0];
+  const firstCost = round2(Number(first.cost || 0));
+  const firstTax = round2(Number(first.taxPercent || 0));
+  const allEqual = costRows.every(
+    (row) =>
+      round2(Number(row.cost || 0)) === firstCost &&
+      round2(Number(row.taxPercent || 0)) === firstTax
+  );
+  if (!allEqual) return null;
+
+  return {
+    ambiguous: false,
+    record: null,
+    records: uniqueRecords,
+    source: "item_financial_equivalent",
+    bridgeSku: null,
+    ambiguityKey: `${line.product} / ${line.variationName}`,
+    itemId,
+    costRow: first,
+  };
 }
 
 // Conciliação de custo de UMA linha do Order.all.
@@ -964,6 +1435,32 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
   const identity = selectShopeeBridgeIdentity(line, costBridge);
 
   if (!identity) {
+    const itemEquivalence = selectShopeeBridgeItemFinancialEquivalence(line, costBridge, costMap);
+    if (itemEquivalence) {
+      const bridgeIds = bridgeIdsFromRecords(itemEquivalence.records);
+      if (debugCollector) {
+        debugCollector.recordMatchAttempt({
+          engine: "shopee_real",
+          stage: "cost_bridge_identity",
+          orderId: line.id,
+          field: itemEquivalence.source,
+          rawValue: [line.product, line.variationName].filter(Boolean).join(" | "),
+          normalizedKey: itemEquivalence.itemId,
+          result: "hit",
+        });
+      }
+      return {
+        costRow: itemEquivalence.costRow,
+        source: "bridge_item_financial_equivalent",
+        bridgeUsed: true,
+        bridgeIds,
+        identitySource: itemEquivalence.source,
+        identityAmbiguous: false,
+        financiallyEquivalent: true,
+        variationUndetermined: true,
+        ambiguous: false,
+      };
+    }
     return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds: null, skuTried, ambiguous: false };
   }
 
@@ -988,6 +1485,8 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
         source:
           identity.source === "title_variation"
             ? "bridge_title_variation_equivalent"
+            : identity.source === "title_variation_alias"
+            ? "bridge_title_variation_alias_equivalent"
             : "bridge_equivalent_cost",
         bridgeUsed: true,
         bridgeIds,
@@ -1021,6 +1520,8 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
   const sourceName =
     identity.source === "title_variation"
       ? "bridge_title_variation"
+      : identity.source === "title_variation_alias"
+      ? "bridge_title_variation_alias"
       : modelId
       ? "bridge_variation_id"
       : "bridge_item_id";
@@ -1219,6 +1720,10 @@ function processShopeeFinancialOrders({
   let bridgeEquivalentCostMatchCount = 0;
   let bridgeHistoricalSkuMatchCount = 0;
   let bridgeTitleVariationMatchCount = 0;
+  let bridgeTitleVariationAliasMatchCount = 0;
+  let bridgeSkuTokenSetMatchCount = 0;
+  let bridgeSkuTokenFuzzyMatchCount = 0;
+  let bridgeItemFinancialEquivalentMatchCount = 0;
   let bridgeMissCount = 0;
   let bridgeAmbiguousCount = 0;
   let zeroCostRowsCount = 0;
@@ -1409,6 +1914,18 @@ function processShopeeFinancialOrders({
           if (costMatch.identitySource === "title_variation") {
             bridgeTitleVariationMatchCount += 1;
           }
+          if (costMatch.identitySource === "title_variation_alias") {
+            bridgeTitleVariationAliasMatchCount += 1;
+          }
+          if (costMatch.identitySource === "sku_token_set") {
+            bridgeSkuTokenSetMatchCount += 1;
+          }
+          if (costMatch.identitySource === "sku_token_fuzzy") {
+            bridgeSkuTokenFuzzyMatchCount += 1;
+          }
+          if (costMatch.identitySource === "item_financial_equivalent") {
+            bridgeItemFinancialEquivalentMatchCount += 1;
+          }
           revenueBridgeMatched = round2(revenueBridgeMatched + lineGross);
         } else {
           costSource = "base_custos";
@@ -1522,6 +2039,36 @@ function processShopeeFinancialOrders({
       "produto continuam os mesmos)."
     );
   }
+  if (bridgeTitleVariationAliasMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_TITLE_VARIATION_ALIAS: ${bridgeTitleVariationAliasMatchCount} linha(s) foram conciliadas pelos ` +
+      "atributos da variação (cor/tamanho, sem a quantidade) mais evidência de título e de pack/kit — a notação da " +
+      "variação mudou entre as planilhas (ex.: \"Pink,G\" no Order.all e \"2 Pink,G\" na Performance), mas produto, " +
+      "atributos e quantidade de peças continuam batendo."
+    );
+  }
+  if (bridgeSkuTokenSetMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_SKU_ALIAS: ${bridgeSkuTokenSetMatchCount} linha(s) foram conciliadas por um SKU histórico com ` +
+      "formatação diferente (separadores, ordem ou repetição de palavras mudaram, mas o conjunto de termos do SKU " +
+      "é idêntico ao da performance)."
+    );
+  }
+  if (bridgeSkuTokenFuzzyMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_SKU_ALIAS_FUZZY: ${bridgeSkuTokenFuzzyMatchCount} linha(s) foram conciliadas por um SKU histórico ` +
+      "abreviado/truncado (um único termo do SKU foi encurtado, todos os demais termos batem exatamente e o " +
+      "candidato era único)."
+    );
+  }
+  if (bridgeItemFinancialEquivalentMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_ITEM_FINANCIAL_EQUIVALENT: ${bridgeItemFinancialEquivalentMatchCount} linha(s) foram conciliadas ` +
+      "sem determinar a variação histórica exata — o item da Performance foi identificado de forma única e segura " +
+      "pelo título, e todas as suas variações têm custo e imposto financeiramente equivalentes na base, então a " +
+      "variação exata não altera o resultado financeiro."
+    );
+  }
   if (coverage.financialConfidence !== "confiavel") {
     executiveNotes.push(
       "Fechamento parcial: existem vendas sem custo cadastrado. O faturamento total está completo; LC e MC cobrem apenas a receita com custo identificado."
@@ -1609,6 +2156,10 @@ function processShopeeFinancialOrders({
       bridgeEquivalentCostMatchCount,
       bridgeHistoricalSkuMatchCount,
       bridgeTitleVariationMatchCount,
+      bridgeTitleVariationAliasMatchCount,
+      bridgeSkuTokenSetMatchCount,
+      bridgeSkuTokenFuzzyMatchCount,
+      bridgeItemFinancialEquivalentMatchCount,
       bridgeMissCount,
       bridgeAmbiguousCount,
       bridgeAmbiguousKeys,
@@ -1658,4 +2209,8 @@ module.exports = {
   SHOPEE_DIRECT_MATCH_SOURCE,
   isShopeeOrderAllTotalRow,
   describeShopeeCostGap,
+  tokenizeShopeeSkuText,
+  shopeeSkuTokenSetKey,
+  shopeeSkuTokensFuzzyCompatible,
+  selectShopeeBridgeIdentity,
 };

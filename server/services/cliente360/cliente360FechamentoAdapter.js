@@ -120,18 +120,32 @@ function totaisOperacionais(pedidos) {
   };
 }
 
+// V3 FASE 0 — resolução de conta DELEGADA a centralVendasService.resolveRangeContext,
+// a MESMA função que já governa Visão e a Read API da Central de Vendas (M7/M10):
+// resolve cliente, valida/rejeita clienteContaId (conta de outro cliente, inativa,
+// marketplace incompatível — nunca escolhe a primeira conta quando há 2+ ativas) e
+// decide includeLegacy pela contagem real de contas ativas. Nenhuma segunda
+// implementação da regra de conta nasce aqui.
 function createFechamentoAdapter({
   centralRepo = require("../centralVendas/centralVendasRepository"),
   buildPayloadFromRange = require("../centralVendas/centralVendasService").buildPayloadFromRange,
+  resolveRangeContext = null,
 } = {}) {
+  const resolverContexto = resolveRangeContext
+    || require("../centralVendas/centralVendasService").createCentralVendasService(centralRepo).resolveRangeContext;
 
   // Lê um intervalo e devolve o pacote que os motores consomem.
-  async function lerPeriodo(cliente, range, marketplace = "meli") {
-    const snapshot = await centralRepo.getCentralVendasByRange({
-      clienteSlug: cliente.slug,
+  // clienteContaId: conta explícita, ou null para deixar o resolver decidir
+  // (conta única ativa resolve sozinha; 2+ ativas exige a conta explícita;
+  // 0 ativas cai no universo legado `cliente_conta_id IS NULL`). Conta de
+  // outro cliente/inativa/marketplace incompatível joga erro com statusCode,
+  // propagado ao controller — nunca escolhida silenciosamente.
+  async function lerPeriodo(cliente, range, marketplace = "meli", { clienteContaId = null } = {}) {
+    const { context, snapshot } = await resolverContexto(cliente.slug, {
       dateFrom: range.inicio,
       dateTo: range.fim,
       marketplace,
+      clienteContaId,
     });
 
     const payload = buildPayloadFromRange(
@@ -151,6 +165,11 @@ function createFechamentoAdapter({
       resumoOficial: payload?.resumo || {},
       totais: totaisOperacionais(pedidos),
       reconciliacao: reconciliar(pedidos),
+      // V3 FASE 0 — conta efetivamente usada nesta leitura (null = universo
+      // legado, sem ClienteConta). Os motores puros (Ponte/Produtos/
+      // Confiança/Recuperação) não leem isto; é para o orquestrador/telemetria.
+      contexto: context,
+      clienteContaId: context?.conta?.id || null,
     };
   }
 

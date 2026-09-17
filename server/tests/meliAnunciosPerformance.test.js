@@ -175,7 +175,7 @@ function evid(valor) {
 
 function itemDeMargem({
   itemId, realizedComputable, realizedMargin, realizedProfit, projectedMargin, projectedProfit, projectedComputable = true,
-  status, statusLabel, statusReasons, composicao,
+  status, statusLabel, statusReasons, composicao, precoAtual, precoAlvo,
 }) {
   const item = {
     identity: { itemId },
@@ -188,9 +188,17 @@ function itemDeMargem({
         computable: projectedComputable, margin: projectedMargin ?? null,
         marginPercent: projectedMargin != null ? projectedMargin * 100 : null, profit: projectedProfit ?? null,
       },
+      // Preço alvo — mesmo shape de core/marginItem.js (margin.target). Só
+      // `computable` quando o teste passa `precoAlvo` explicitamente; do
+      // contrário fica exatamente como o Motor devolve quando não consegue
+      // calcular (nunca um preço inventado).
+      target: precoAlvo != null ? { computable: true, price: precoAlvo } : { computable: false, price: null },
     },
     quality: { status, statusLabel, statusReasons: statusReasons || [] },
   };
+  if (precoAtual !== undefined) {
+    item.pricing = { current: evid(precoAtual) };
+  }
   if (composicao) {
     item.pricing = { current: evid(composicao.vendaProjetada), sold: evid(composicao.vendaRealizada) };
     item.costs = {
@@ -239,6 +247,35 @@ async function run() {
     assert.strictEqual(res.corpo.margem["MLB-B"].statusLabel, "Margem baixa");
     assert.strictEqual(res.corpo.margemIndisponivel, null);
     ok("caminho feliz: métricas + margem combinadas, realized > projected na precedência de exibição");
+  });
+
+  // 1b. precoAtual (obtido ao vivo) e precoAlvo (calculado p/ margem-alvo) do
+  //     Motor chegam em margem[itemId] — a Tela de Anúncios lê exatamente
+  //     esses dois campos para alimentar o preço da linha (ver
+  //     Portal/anuncios-meli.js precoCelulaHtml/margemConteudoHtml). Item sem
+  //     nenhum dos dois (Motor não resolveu) fica `null`, nunca 0.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    margemHandler = () => ({
+      itens: [
+        itemDeMargem({
+          itemId: "MLB-A", realizedComputable: false, projectedMargin: 0.18, status: "HEALTHY", statusLabel: "Saudável",
+          precoAtual: 129.9, precoAlvo: 139.5,
+        }),
+        itemDeMargem({
+          itemId: "MLB-B", realizedComputable: false, projectedComputable: false, status: "UNVALIDATED", statusLabel: "Sem custo",
+        }),
+      ],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-A,MLB-B", incluirMetricas: "0" } }, res);
+
+    assert.strictEqual(res.corpo.margem["MLB-A"].precoAtual, 129.9, "precoAtual vem de item.pricing.current (obtido pelo Motor)");
+    assert.strictEqual(res.corpo.margem["MLB-A"].precoAlvo, 139.5, "precoAlvo vem de item.margin.target (calculado pelo Motor)");
+    assert.strictEqual(res.corpo.margem["MLB-B"].precoAtual, null, "sem pricing no item, precoAtual é null — nunca 0");
+    assert.strictEqual(res.corpo.margem["MLB-B"].precoAlvo, null, "target não-computável vira null — nunca um preço inventado");
+    ok("precoAtual/precoAlvo do Motor chegam em margem[itemId], com null (nunca 0) quando o Motor não resolveu");
   });
 
   // 2. Contexto do Motor não-pronto (Base não vinculada) vira

@@ -467,6 +467,7 @@ async function run() {
       "profit (R$) precisa vir junto — a composição usa este número pronto do Motor, nunca soma as linhas pra chegar nele");
     assert.deepStrictEqual(res.corpo.composicao["MLB-R1"], {
       venda: 200, custoProduto: 80, comissaoMl: 25, frete: 15, taxaFixa: null, impostoPercentual: 0.05, impostoValor: 10,
+      precoPromocionalAtivo: false,
     }, JSON.stringify(res.corpo.composicao));
     ok("incluirComposicao=1 + margem realizada: ladder completo, taxa fixa ausente (sem histórico), imposto R$ = venda × percentual");
   });
@@ -491,6 +492,7 @@ async function run() {
     assert.strictEqual(res.corpo.margem["MLB-P1"].profit, 30);
     assert.deepStrictEqual(res.corpo.composicao["MLB-P1"], {
       venda: 150, custoProduto: 60, comissaoMl: 18, frete: 12, taxaFixa: 3, impostoPercentual: 0.04, impostoValor: 6,
+      precoPromocionalAtivo: false,
     }, JSON.stringify(res.corpo.composicao));
     ok("incluirComposicao=1 + margem projetada: ladder completo, incluindo taxa fixa (só existe do lado projetado)");
   });

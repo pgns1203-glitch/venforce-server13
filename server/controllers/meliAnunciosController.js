@@ -418,7 +418,15 @@ function montarComposicaoDoItem(item, origem) {
       ? Math.round(venda * impostoPercentual * 100) / 100
       : null;
 
-  return { venda, custoProduto, comissaoMl, frete, taxaFixa, impostoPercentual, impostoValor };
+  // `venda` (item.pricing.current) é o preço EFETIVO — com promoção ativa no
+  // Mercado Livre, é o preço PROMOCIONAL, não o standard (ver
+  // meliApiEvidenceAdapter/marketplaceCurrentQuoteService). O front usa este
+  // flag só para BLOQUEAR a edição de preço nesse caso — hoje não existe
+  // endpoint de escrita para o preço promocional (ver meliPrecoService), e
+  // editar sem bloquear faria a tela mostrar um valor e gravar outro.
+  const precoPromocionalAtivo = valorEvidencia(item.pricing.promo) != null;
+
+  return { venda, custoProduto, comissaoMl, frete, taxaFixa, impostoPercentual, impostoValor, precoPromocionalAtivo };
 }
 
 function montarMapaMargem(itens, incluirComposicao) {
@@ -922,9 +930,11 @@ async function atualizarEstoque(req, res) {
 // PATCH /anuncios-meli/:itemId/preco
 //   body: { clienteSlug, clienteContaId?, preco }
 //
-// A escrita é a API dedicada de Preços do ML (ver meliPrecoService): o preço
-// devolvido é sempre o CONFIRMADO na releitura pós-escrita, nunca o valor
-// enviado. O snapshot local (`meli_anuncios.preco`) só muda depois disso.
+// A escrita é PUT /items/{id} { price } (ver meliPrecoService — a API dedicada
+// de Preços do ML ainda não está disponível, por doc). Bloqueia ANTES de
+// escrever quando há variação ou promoção ativa. O preço devolvido é sempre o
+// que veio na RESPOSTA do PUT, nunca o valor enviado. O snapshot local
+// (`meli_anuncios.preco`) só muda depois da confirmação.
 // ----------------------------------------------------------------------------
 async function atualizarPreco(req, res) {
   try {

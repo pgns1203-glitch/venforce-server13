@@ -5,20 +5,33 @@
 // Mesmo contrato dos irmãos (meliConteudoService, meliEstoqueService): escreve
 // no ANÚNCIO REAL, e o snapshot local só é atualizado depois do ML CONFIRMAR.
 //
-// Por que NÃO é um PUT /items/{id} { price }:
-// desde 18/03/2026 o ML rejeita (400, "item.price.not_modifiable") um PUT que
-// altera SÓ o preço quando o item tem automatização de preço (dynamic
-// pricing) ativa — e se o preço vier junto de outros campos, o valor de
-// price é silenciosamente IGNORADO com um warning. Nenhum dos dois
-// comportamentos serve para uma tela que promete escrever o preço real.
-// O caminho correto é a API dedicada de Preços:
+// Por que é PUT /items/{id} { price } (e não a API dedicada de Preços):
+// documentacao_api_meli/api-de-precos.md, seção "Editar preços tipo standard",
+// é explícita: "Esta API ainda não está disponível. Em breve substituirá o
+// PUT de itens para editar preços." — POST /items/{id}/prices/standard é uma
+// rota documentada mas que o Mercado Livre ainda não serve (404 em produção,
+// achado desta rodada). Até ela existir, o próprio doc orienta continuar
+// usando /items para editar preço.
 //
-//   GET  /items/{id}/prices           -> localizar o preço "standard" atual
-//   POST /items/{id}/prices/standard  -> gravar o novo valor nesse MESMO id
-//   GET  /items/{id}/prices           -> reler o que o ML confirmou
+// Isso implica dois bloqueios ANTES do PUT, cada um por um motivo diferente:
 //
-// A releitura final NUNCA é pulada: o valor exibido é sempre o CONFIRMADO,
-// nunca o que foi enviado — mesmo quando o POST responde 200.
+//   1. Automação de preço ativa (dynamic pricing) — desde 18/03/2026 (doc
+//      automatizacoes-de-precos.md) um PUT que só altera "price" é rejeitado
+//      com 400 "item.price.not_modifiable". Tratado reativamente: tentamos o
+//      PUT e traduzimos o erro, em vez de gastar uma chamada extra de
+//      pré-checagem.
+//
+//   2. Promoção ativa (GET /items/{id}/sale_price: regular_amount > amount,
+//      doc api-de-precos.md) — o valor EXIBIDO nesta tela (item.pricing.current
+//      no Motor de Margem) é o preço EFETIVO, que nesse caso é o promocional,
+//      não o standard. PUT /items altera o preço STANDARD. Editar sem
+//      bloquear faria a tela mostrar um valor e gravar outro — bloqueado
+//      ANTES do PUT, com mensagem explicando o motivo.
+//
+// O valor confirmado após sucesso é sempre o que vem na RESPOSTA do PUT (a
+// representação do item que o próprio Mercado Livre devolve), nunca o valor
+// bruto enviado — mesmo contrato de atualizarTitulo/atualizarModelo em
+// meliConteudoService.enviarItem.
 //
 // Itens com variações nativas do ML têm preço por variação, fluxo que esta
 // tela não implementa — bloqueado ANTES de qualquer chamada de preço, com
@@ -27,6 +40,7 @@
 
 const { mlFetch } = require("../../utils/mlClient");
 const { motivoDoErroMl, codigoDoErroMl } = require("./meliConteudoService");
+const { resolverPrecosItem } = require("../automacoes/precoItemService");
 
 function falha(codigo, motivo) {
   return { ok: false, codigo, motivo };
@@ -43,31 +57,14 @@ function normalizarPreco(bruto) {
   return { ok: true, valor: Math.round((n + Number.EPSILON) * 100) / 100 };
 }
 
-// O preço "standard" é o preço-base sem restrição de canal/quantidade mínima
-// (faixas de atacado e outros contextos têm `conditions` preenchido — ver
-// meliCriacaoService.obterPrecoStandardBase, mesma leitura).
-function obterPrecoStandard(data) {
-  const prices = Array.isArray(data && data.prices) ? data.prices : [];
-  return (
-    prices.find((price) => {
-      if (!price || price.type !== "standard" || !price.id) return false;
-      const conditions = price.conditions || {};
-      const contexts = Array.isArray(conditions.context_restrictions)
-        ? conditions.context_restrictions
-        : [];
-      return (
-        contexts.length === 0 &&
-        (conditions.min_purchase_unit == null || conditions.min_purchase_unit === "")
-      );
-    }) || null
-  );
-}
-
 const MOTIVO_VARIACAO =
   "Este anúncio tem variações — a edição de preço por variação ainda não está disponível nesta tela.";
 
 const MOTIVO_AUTOMACAO =
   "Este anúncio tem automatização de preço (preço dinâmico) ativa no Mercado Livre — a alteração manual de preço não é permitida enquanto ela estiver ligada.";
+
+const MOTIVO_PROMOCAO =
+  "Este anúncio está com uma promoção ativa no Mercado Livre — o valor mostrado é o preço promocional vigente, que esta tela ainda não edita. Ajuste a promoção diretamente no Mercado Livre.";
 
 // Falha de rede/token na CHECAGEM de variação não pode travar a tela inteira
 // por um motivo que não é o dela: se algo estiver errado com a conta, a
@@ -82,6 +79,14 @@ async function temVariacao(clienteId, itemId, mlUserId) {
   return Array.isArray(resp.data && resp.data.variations) && resp.data.variations.length > 0;
 }
 
+// Mesma leitura de preço que o Motor de Margem usa para "item.pricing.current"
+// (GET /items/{id}/sale_price) — reaproveitada aqui só para decidir se há
+// promoção ativa, nunca para calcular nada.
+async function temPromocaoAtiva(clienteId, itemId, mlUserId) {
+  const cotacao = await resolverPrecosItem({ clienteId, itemId, mlUserId });
+  return cotacao.precoPromocional != null;
+}
+
 async function atualizarPreco({ clienteId, itemId, novoPreco, mlUserId }) {
   const v = normalizarPreco(novoPreco);
   if (!v.ok) return falha(v.codigo, v.motivo);
@@ -93,26 +98,13 @@ async function atualizarPreco({ clienteId, itemId, novoPreco, mlUserId }) {
     return falha("PRECO_ITEM_COM_VARIACAO", MOTIVO_VARIACAO);
   }
 
-  const precosResp = await mlFetch(clienteId, `/items/${encodeURIComponent(id)}/prices`, {
-    headers: { "show-all-prices": "true" },
-    mlUserId,
-  });
-  if (!precosResp || !precosResp.ok) {
-    return falha(
-      codigoDoErroMl(precosResp && precosResp.data, precosResp && precosResp.status),
-      motivoDoErroMl(precosResp && precosResp.data, precosResp && precosResp.status)
-    );
-  }
-  const standard = obterPrecoStandard(precosResp.data);
-  if (!standard) {
-    return falha("PRECO_STANDARD_NAO_ENCONTRADO", "O preço padrão deste anúncio não foi encontrado.");
+  if (await temPromocaoAtiva(clienteId, id, mlUserId)) {
+    return falha("PRECO_ITEM_COM_PROMOCAO", MOTIVO_PROMOCAO);
   }
 
-  const writeResp = await mlFetch(clienteId, `/items/${encodeURIComponent(id)}/prices/standard`, {
-    method: "POST",
-    body: JSON.stringify({
-      prices: [{ id: String(standard.id), amount: v.valor, currency_id: standard.currency_id }],
-    }),
+  const writeResp = await mlFetch(clienteId, `/items/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify({ price: v.valor }),
     mlUserId,
   });
   if (!writeResp || !writeResp.ok) {
@@ -121,26 +113,23 @@ async function atualizarPreco({ clienteId, itemId, novoPreco, mlUserId }) {
     return falha(codigo, motivoDoErroMl(writeResp && writeResp.data, writeResp && writeResp.status));
   }
 
-  // Regra que não pode ser pulada: nunca assumir o valor enviado.
-  const confirmResp = await mlFetch(clienteId, `/items/${encodeURIComponent(id)}/prices`, {
-    headers: { "show-all-prices": "true" },
-    mlUserId,
-  });
-  const confirmado = confirmResp && confirmResp.ok ? obterPrecoStandard(confirmResp.data) : null;
-  if (!confirmado || !Number.isFinite(Number(confirmado.amount))) {
+  // Regra que não pode ser pulada: nunca assumir o valor enviado — o
+  // confirmado é sempre o que a RESPOSTA do PUT devolve.
+  const confirmado = Number(writeResp.data && writeResp.data.price);
+  if (!Number.isFinite(confirmado)) {
     return falha(
       "PRECO_CONFIRMACAO_FALHOU",
       "O preço pode ter sido alterado, mas não foi possível confirmar o valor com o Mercado Livre."
     );
   }
 
-  return { ok: true, preco: Number(confirmado.amount), moeda: confirmado.currency_id || null };
+  return { ok: true, preco: confirmado, moeda: (writeResp.data && writeResp.data.currency_id) || null };
 }
 
 module.exports = {
   atualizarPreco,
   normalizarPreco,
-  obterPrecoStandard,
   MOTIVO_VARIACAO,
   MOTIVO_AUTOMACAO,
+  MOTIVO_PROMOCAO,
 };

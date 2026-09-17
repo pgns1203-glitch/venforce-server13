@@ -244,9 +244,10 @@ async function digitar(cdp, seletor, valor) {
   })()`);
 }
 
-// Os campos editáveis da composição da margem (Preço/Custo do produto/Custos
-// adicionais) só confirmam no Enter — sair do campo CANCELA (mesma regra do
-// estoque da lista). `digitar` sozinho não basta: precisa do keydown real.
+// Custo do produto/Custos adicionais (simulação) só confirmam no Enter —
+// sair do campo CANCELA (mesma regra do estoque da lista). `digitar` sozinho
+// não basta: precisa do keydown real. Preço NÃO usa mais esse caminho —
+// tem botão próprio, ver salvarPreco/abrirEdicaoPreco abaixo.
 async function digitarEConfirmar(cdp, seletor, valor) {
   await cdp.evaluate(`(function(){
     var e = document.querySelector(${JSON.stringify(seletor)});
@@ -266,6 +267,28 @@ async function abrirEdicaoMargem(cdp, campo) {
 async function confirmarEdicaoMargem(cdp, campo, valor) {
   await abrirEdicaoMargem(cdp, campo);
   await digitarEConfirmar(cdp, `#am-det-margem-body [data-margem-campo="${campo}"] .am-margem-edit__input`, valor);
+}
+
+// Preço: fluxo próprio, sem Enter-submit — abrir o editor, digitar, clicar
+// em "Salvar no Mercado Livre" (ou "Cancelar"). Célula é `.am-margem-preco`,
+// não `[data-margem-campo]` (esse atributo só existe nos campos de simulação).
+async function abrirEdicaoPreco(cdp) {
+  await clicar(cdp, "#am-det-margem-body .am-margem-preco .am-margem-edit__btn",
+    "botão de editar preço não encontrado na composição");
+  await waitFor(cdp, "document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__input')",
+    "o input de edição de preço não apareceu");
+}
+
+async function salvarPreco(cdp, valor) {
+  await abrirEdicaoPreco(cdp);
+  await digitar(cdp, "#am-det-margem-body .am-margem-preco .am-margem-edit__input", valor);
+  await clicar(cdp, '#am-det-margem-body .am-margem-preco [data-acao="salvar-preco"]',
+    "botão \"Salvar no Mercado Livre\" não encontrado");
+}
+
+async function cancelarEdicaoPreco(cdp) {
+  await clicar(cdp, '#am-det-margem-body .am-margem-preco [data-acao="cancelar-preco"]',
+    "botão \"Cancelar\" não encontrado");
 }
 
 // A tela tem UMA lista: anúncio agrupado e anúncio individual são linhas da
@@ -1004,7 +1027,7 @@ async function run() {
 
       const linhas = await lerLinhasComposicao(cdp);
       assert.deepStrictEqual(linhas, [
-        "Preço R$ 200,00",
+        "Preço Altera no Mercado Livre R$ 200,00",
         "Custo do produto R$ 80,00",
         "Comissão Mercado Livre R$ 25,00",
         "Frete R$ 15,00",
@@ -1065,7 +1088,7 @@ async function run() {
 
       const linhas = await lerLinhasComposicao(cdp);
       assert.deepStrictEqual(linhas, [
-        "Preço R$ 150,00",
+        "Preço Altera no Mercado Livre R$ 150,00",
         "Custo do produto R$ 60,00",
         "Comissão Mercado Livre R$ 18,00",
         "Frete R$ 12,00",
@@ -1159,7 +1182,7 @@ async function run() {
 
         const linhas = await lerLinhasComposicao(cdp);
         assert.deepStrictEqual(linhas, [
-          "Preço R$ 200,00",
+          "Preço Altera no Mercado Livre R$ 200,00",
           "Custo do produto R$ 150,00",
           "Comissão Mercado Livre R$ 30,00",
           "Frete R$ 20,00",
@@ -1201,7 +1224,7 @@ async function run() {
 
       precoResultado = { status: 200, corpo: { ok: true, preco: 205, moeda: "BRL" } };
       precoConfirmado = true;
-      await confirmarEdicaoMargem(cdp, "preco", "210");
+      await salvarPreco(cdp, "210");
 
       await esperarPedido(/\/anuncios-meli\/MLB-A1\/preco$/, 0, "o PATCH de preço não saiu");
       const envio = precoChamadas[precoChamadas.length - 1];
@@ -1210,14 +1233,32 @@ async function run() {
       assert.strictEqual(envio.body.preco, 210, "o valor digitado precisa ir no PATCH");
 
       await waitFor(cdp, `(function(){
-        var b = document.querySelector('#am-det-margem-body [data-margem-campo="preco"] .am-margem-edit__btn');
+        var b = document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__btn');
         return b && /205/.test(b.textContent); })()`,
         "a tela deveria mostrar o preço CONFIRMADO pelo ML (205), não o digitado (210)");
-      const botaoPreco = await cdp.evaluate(`document.querySelector('#am-det-margem-body [data-margem-campo="preco"] .am-margem-edit__btn').textContent`);
+      const botaoPreco = await cdp.evaluate(`document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__btn').textContent`);
       assert.ok(!/210/.test(botaoPreco), `o valor digitado (210) não pode ficar exibido como se fosse o confirmado: ${botaoPreco}`);
 
       precoResultado = null;
       performanceHandler = null;
+    });
+
+    await check("33b — Enter no campo de preço NÃO salva mais sozinho; só o botão \"Salvar no Mercado Livre\" grava", async () => {
+      pedidos.length = 0;
+      precoChamadas.length = 0;
+      await abrirEdicaoPreco(cdp);
+      await digitarEConfirmar(cdp, "#am-det-margem-body .am-margem-preco .am-margem-edit__input", "777");
+      // Um tick pra qualquer chamada indevida ter chance de sair antes da checagem.
+      await new Promise((r) => setTimeout(r, 100));
+      assert.strictEqual(precoChamadas.length, 0, "Enter não pode disparar PATCH de preço — só o clique em \"Salvar no Mercado Livre\"");
+      const aindaEditando = await cdp.evaluate(
+        "!!document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__input')"
+      );
+      assert.ok(aindaEditando, "o editor de preço deveria continuar aberto depois do Enter (Enter não confirma nem cancela)");
+      await cancelarEdicaoPreco(cdp);
+      await waitFor(cdp, "!document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__input')",
+        "\"Cancelar\" deveria fechar o editor de preço sem salvar");
+      assert.strictEqual(precoChamadas.length, 0, "cancelar não pode gerar PATCH de preço");
     });
 
     await check("34 — falha do Mercado Livre ao alterar preço mantém o valor anterior na tela", async () => {
@@ -1236,14 +1277,14 @@ async function run() {
         status: 200,
         corpo: { ok: false, codigo: "item.price.not_modifiable", motivo: "Este anúncio tem automatização de preço ativa no Mercado Livre." },
       };
-      await confirmarEdicaoMargem(cdp, "preco", "999");
+      await salvarPreco(cdp, "999");
       await esperarPedido(/\/anuncios-meli\/MLB-A1\/preco$/, 0, "o PATCH de preço não saiu");
 
       await waitFor(cdp, `(function(){
-        var b = document.querySelector('#am-det-margem-body [data-margem-campo="preco"] .am-margem-edit__btn');
+        var b = document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__btn');
         return b && /200/.test(b.textContent); })()`,
         "recusa do Mercado Livre deveria manter o preço anterior (200) na tela");
-      const botaoPreco = await cdp.evaluate(`document.querySelector('#am-det-margem-body [data-margem-campo="preco"] .am-margem-edit__btn').textContent`);
+      const botaoPreco = await cdp.evaluate(`document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__btn').textContent`);
       assert.ok(!/999/.test(botaoPreco), "o valor recusado não pode ficar exibido como se tivesse sido salvo");
 
       precoResultado = null;
@@ -1312,12 +1353,53 @@ async function run() {
           motivo: "Este anúncio tem variações — a edição de preço por variação ainda não está disponível nesta tela.",
         },
       };
-      await confirmarEdicaoMargem(cdp, "preco", "150");
+      await salvarPreco(cdp, "150");
       await esperarPedido(/\/anuncios-meli\/MLB-A1\/preco$/, 0, "o PATCH de preço não saiu");
       // A UI mostra a mensagem real devolvida pelo backend — não uma tradução própria.
-      await waitFor(cdp, "!document.querySelector('#am-det-margem-body [data-margem-campo=\"preco\"] .am-margem-edit__salvando')",
+      await waitFor(cdp, "!document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__salvando')",
         "a célula deveria sair do estado 'salvando' depois da recusa");
       precoResultado = null;
+    });
+
+    await check("38 — item com promoção ativa: edição de preço vem BLOQUEADA de cara, sem tag \"Altera no Mercado Livre\", com motivo explicado", async () => {
+      performanceHandler = (ids) => {
+        const margem = {}; const composicao = {};
+        ids.forEach((id) => {
+          margem[id] = MARGEM_MLA1;
+          composicao[id] = Object.assign({}, COMPOSICAO_MLA1, { precoPromocionalAtivo: true });
+        });
+        return { ok: true, metricas7d: {}, margem, composicao, margemIndisponivel: null };
+      };
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        precoChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await clicar(cdp, "#am-det-margem summary");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('#am-det-margem-body');
+          return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
+
+        const estado = await cdp.evaluate(`(function(){
+          var linha = document.querySelector('#am-det-margem-body .am-margem-comp__linha--editavel');
+          return {
+            temBotaoEditar: !!document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__btn'),
+            temTagAltera: /Altera no Mercado Livre/.test(document.getElementById('am-det-margem-body').textContent),
+            temInfoDot: !!linha.querySelector('.vf-info-dot'),
+            valor: document.querySelector('#am-det-margem-body .am-margem-comp__valor--bloqueado').textContent.trim(),
+          };
+        })()`);
+        assert.strictEqual(estado.temBotaoEditar, false, "promoção ativa não pode oferecer botão de editar preço");
+        assert.strictEqual(estado.temTagAltera, false, "a tag \"Altera no Mercado Livre\" não faz sentido num campo bloqueado");
+        assert.ok(estado.temInfoDot, "o motivo do bloqueio precisa aparecer (ⓘ), não sumir em silêncio");
+        assert.strictEqual(estado.valor, "R$ 200,00", "o valor exibido continua sendo o preço efetivo/promocional, só não editável");
+
+        assert.strictEqual(precoChamadas.length, 0, "nenhuma tentativa de PATCH pode ter acontecido — nem foi oferecida a edição");
+      } finally {
+        performanceHandler = null;
+      }
     });
 
     await check("— nenhuma exceção de JS não tratada durante todo o percurso", async () => {

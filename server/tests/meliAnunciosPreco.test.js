@@ -1,31 +1,42 @@
 // server/tests/meliAnunciosPreco.test.js
 //
-// Edição real de PREÇO de um anúncio ML
-// (PATCH /anuncios-meli/:itemId/preco -> POST /items/{id}/prices/standard).
+// Edição real de PREÇO de um anúncio ML (PATCH /anuncios-meli/:itemId/preco).
+//
+// Escrita: PUT /items/{id} { price } — o mesmo padrão de título/modelo em
+// meliConteudoService.enviarItem, um campo sozinho. NÃO é a API dedicada de
+// Preços (POST /items/{id}/prices/standard): essa API está documentada em
+// documentacao_api_meli/api-de-precos.md como "ainda não disponível" — usá-la
+// como escrita gera 404 em produção (achado desta rodada).
 //
 // Regras protegidas por este teste:
 //
-//  1. a escrita usa a API dedicada de Preços, não o PUT genérico de /items:
-//     desde 18/03/2026 um PUT de /items que só altera "price" é rejeitado
-//     quando o item tem automatização de preço (dynamic pricing) ativa;
+//  1. a escrita é sempre PUT /items/{id} com SÓ o campo price — nunca junto
+//     de outros campos (o ML ignora price silenciosamente nesse caso quando
+//     há automação, por doc — ver automatizacoes-de-precos.md);
 //
-//  2. antes de escrever, o preço padrão (`standard`) atual é lido via
-//     GET /items/{id}/prices — é o `id` dessa entrada que identifica QUAL
-//     preço estamos alterando no POST;
+//  2. o preço devolvido é sempre o que veio na RESPOSTA do PUT (a
+//     representação do item que o próprio ML confirma ter gravado), nunca o
+//     valor bruto que foi enviado — mesma garantia de "nunca assumir o valor
+//     enviado", só que sem precisar de uma segunda chamada de releitura,
+//     porque PUT /items/{id} já devolve o item atualizado (mesmo contrato de
+//     atualizarTitulo/atualizarModelo);
 //
-//  3. depois do POST, o valor exibido NUNCA é o que foi enviado — é sempre
-//     relido via um segundo GET /items/{id}/prices. Nunca assumir sucesso
-//     silencioso;
+//  3. antes de escrever, dois bloqueios possíveis, cada um com sua chamada:
+//     a) item com variações nativas do ML — esta tela não edita preço por
+//        variação;
+//     b) item com PROMOÇÃO ativa (sale_price.regular_amount > amount) — o
+//        valor exibido na tela é o preço promocional, e não existe hoje
+//        endpoint de escrita separado para ele (mesma doc acima). Editar
+//        aqui alteraria o preço STANDARD, não o promocional exibido —
+//        divergência entre exibição e gravação que a tela não pode ter;
 //
-//  4. item com variações nativas do ML bloqueia ANTES de qualquer chamada
-//     de preço — esta tela não sabe (ainda) editar preço por variação;
+//  4. automação de preço ativa (dynamic pricing): o PUT com só "price" é
+//     rejeitado desde 18/03/2026 com 400 "item.price.not_modifiable" — a
+//     mensagem tem de deixar isso explícito, não um erro genérico;
 //
-//  5. recusa do ML (automação ativa, ou qualquer outra) é mensagem REAL,
-//     e o snapshot local (`meli_anuncios.preco`) só muda depois da
-//     confirmação — nunca antes, nunca em cima de uma falha;
-//
-//  6. se o ML confirma a escrita mas a releitura de confirmação falha, o
-//     resultado é "não foi possível confirmar" — nunca um sucesso mascarado.
+//  5. qualquer recusa do ML (automação ou outra) é mensagem REAL, e o
+//     snapshot local (`meli_anuncios.preco`) só muda depois da confirmação —
+//     nunca antes, nunca em cima de uma falha.
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
 
@@ -191,31 +202,24 @@ function linha(db, itemId) {
   return db.anuncios.find((a) => a.item_id === itemId);
 }
 
-// Handler-fábrica: monta as respostas dos 4 passos possíveis
-// (variação, prices-pré, POST standard, prices-confirmação) a partir de um
-// mapa de overrides por path+método.
+// Handler-fábrica: monta as respostas dos 3 passos possíveis (variação,
+// sale_price, PUT de escrita) a partir de overrides.
 function handlerPadrao({
   variations = [],
-  standardId = "PRICE1",
-  standardAmountAntes = 100,
+  amount = 100,
+  regularAmount = null, // != null e > amount => promoção ativa
   moeda = "BRL",
-  postResposta = { ok: true, status: 200, data: {} },
-  standardAmountDepois,
+  putResposta,
 } = {}) {
   return (chamada) => {
     if (chamada.metodo === "GET" && /variations/.test(chamada.path)) {
       return { ok: true, status: 200, data: { id: "MLB-X", variations } };
     }
-    if (chamada.metodo === "GET" && /\/prices$/.test(chamada.path)) {
-      const jaEscreveu = mlChamadas.some((c) => c.metodo === "POST");
-      const amount = jaEscreveu && standardAmountDepois !== undefined ? standardAmountDepois : standardAmountAntes;
-      return {
-        ok: true, status: 200,
-        data: { id: "MLB-X", prices: [{ id: standardId, type: "standard", amount, currency_id: moeda, conditions: {} }] },
-      };
+    if (chamada.metodo === "GET" && /sale_price/.test(chamada.path)) {
+      return { ok: true, status: 200, data: { amount, regular_amount: regularAmount, currency_id: moeda } };
     }
-    if (chamada.metodo === "POST" && /prices\/standard$/.test(chamada.path)) {
-      return postResposta;
+    if (chamada.metodo === "PUT" && /^\/items\/[^/]+$/.test(chamada.path)) {
+      return putResposta || { ok: true, status: 200, data: { price: chamada.body && chamada.body.price, currency_id: moeda } };
     }
     return { ok: true, status: 200, data: {} };
   };
@@ -225,47 +229,42 @@ let checks = 0;
 function ok(msg) { checks += 1; console.log(`  ✓ ${msg}`); }
 
 async function run() {
-  // 1. Caminho feliz: preço confirmado é o da RELEITURA, não o enviado.
+  // 1. Caminho feliz: preço confirmado é o que veio na RESPOSTA do PUT.
   await withMockDb({ ...UMA_CONTA, anuncios: anunciosFixture() }, async (db) => {
     mlChamadas = [];
-    mlHandler = handlerPadrao({ standardAmountAntes: 100, standardAmountDepois: 119.9 });
+    mlHandler = handlerPadrao({
+      putResposta: { ok: true, status: 200, data: { price: 120, currency_id: "BRL" } },
+    });
 
     const res = fakeRes();
     await ctrl.atualizarPreco(
-      { params: { itemId: "MLB-X" }, body: { clienteSlug: "cliente-a", preco: 120 } },
+      { params: { itemId: "MLB-X" }, body: { clienteSlug: "cliente-a", preco: 120.5 } },
       res
     );
 
     assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
-    assert.strictEqual(res.corpo.preco, 119.9, "o preço devolvido tem de ser o CONFIRMADO na releitura, não o enviado");
+    assert.strictEqual(res.corpo.preco, 120, "o preço devolvido tem de ser o da RESPOSTA do PUT, não o enviado (120.5)");
 
-    const posts = mlChamadas.filter((c) => c.metodo === "POST");
-    assert.strictEqual(posts.length, 1, "esperava exatamente um POST de escrita de preço");
-    assert.strictEqual(posts[0].path, "/items/MLB-X/prices/standard");
-    assert.deepStrictEqual(
-      posts[0].body,
-      { prices: [{ id: "PRICE1", amount: 120, currency_id: "BRL" }] },
-      "o corpo do POST referencia o id do preço standard atual e o valor pedido"
-    );
-    assert.strictEqual(posts[0].mlUserId, "111");
+    const puts = mlChamadas.filter((c) => c.metodo === "PUT");
+    assert.strictEqual(puts.length, 1, "esperava exatamente um PUT de escrita de preço");
+    assert.strictEqual(puts[0].path, "/items/MLB-X");
+    assert.deepStrictEqual(puts[0].body, { price: 120.5 }, "o PUT só pode enviar o campo price, sozinho");
+    assert.strictEqual(puts[0].mlUserId, "111");
 
-    const gets = mlChamadas.filter((c) => c.metodo === "GET" && /\/prices$/.test(c.path));
-    assert.strictEqual(gets.length, 2, "esperava uma leitura ANTES e uma DEPOIS da escrita (confirmação)");
-
-    assert.strictEqual(linha(db, "MLB-X").preco, 119.9, "o snapshot local grava o valor CONFIRMADO");
-    ok("caminho feliz: POST em /prices/standard, e o preço final é sempre o da releitura pós-escrita");
+    assert.strictEqual(linha(db, "MLB-X").preco, 120, "o snapshot local grava o valor confirmado pela resposta do ML");
+    ok("caminho feliz: PUT /items/{id} só com price, e o preço final é o da resposta do ML");
   });
 
-  // 2. Automação de preço ativa: recusa real, sem tocar no banco, sem
-  //    confirmar nada (a escrita nem aconteceu).
+  // 2. Automação de preço ativa: recusa real, sem tocar no banco.
   await withMockDb({ ...UMA_CONTA, anuncios: anunciosFixture() }, async (db) => {
     mlChamadas = [];
     mlHandler = handlerPadrao({
-      postResposta: {
+      putResposta: {
         ok: false, status: 400,
         data: {
-          message: "Validation error",
-          cause: [{ code: "item.price.not_modifiable", message: "Cannot modify price on items with dynamic pricing" }],
+          message: "Cannot modify price on items with dynamic pricing",
+          error: "item.price.not_modifiable",
+          cause: [],
         },
       },
     });
@@ -280,11 +279,8 @@ async function run() {
     assert.strictEqual(res.corpo.ok, false);
     assert.strictEqual(res.corpo.codigo, "item.price.not_modifiable");
     assert.match(res.corpo.motivo, /automat/i, "a mensagem precisa explicar que é automatização de preço, não um erro genérico");
-
-    const gets = mlChamadas.filter((c) => c.metodo === "GET" && /\/prices$/.test(c.path));
-    assert.strictEqual(gets.length, 1, "sem escrita bem-sucedida, não pode haver releitura de confirmação");
     assert.strictEqual(linha(db, "MLB-X").preco, 100, "preço local não pode mudar quando o ML recusa");
-    ok("automação de preço ativa: código e mensagem reais, nenhuma releitura, banco intacto");
+    ok("automação de preço ativa: código e mensagem reais, banco intacto");
   });
 
   // 3. Item com variação: bloqueia ANTES de qualquer chamada de preço.
@@ -302,20 +298,16 @@ async function run() {
     assert.strictEqual(res.corpo.codigo, "PRECO_ITEM_COM_VARIACAO");
     assert.match(res.corpo.motivo, /variaç/i);
     assert.match(res.corpo.motivo, /não está disponível|ainda não/i);
-    assert.strictEqual(mlChamadas.length, 1, "bloqueio tem de acontecer só com a checagem de variação — nenhuma chamada de preço");
+    assert.strictEqual(mlChamadas.length, 1, "bloqueio tem de acontecer só com a checagem de variação — nenhuma outra chamada");
     assert.strictEqual(linha(db, "MLB-X").preco, 100);
     ok("item com variação: bloqueado antes de qualquer chamada de preço, mensagem explica o motivo");
   });
 
-  // 4. Falha ao LER o preço padrão (antes de escrever): erro real, nada
-  //    gravado, nenhum POST tentado.
+  // 4. Item com promoção ativa: bloqueia ANTES de escrever — o valor exibido
+  //    é o promocional, e não há endpoint de escrita para ele hoje.
   await withMockDb({ ...UMA_CONTA, anuncios: anunciosFixture() }, async (db) => {
     mlChamadas = [];
-    mlHandler = (chamada) => {
-      if (/variations/.test(chamada.path)) return { ok: true, status: 200, data: { variations: [] } };
-      if (/\/prices$/.test(chamada.path)) return { ok: false, status: 500, data: { message: "Internal error" } };
-      return { ok: true, status: 200, data: {} };
-    };
+    mlHandler = handlerPadrao({ amount: 90, regularAmount: 100 });
 
     const res = fakeRes();
     await ctrl.atualizarPreco(
@@ -324,28 +316,34 @@ async function run() {
     );
 
     assert.strictEqual(res.corpo.ok, false);
-    assert.strictEqual(mlChamadas.filter((c) => c.metodo === "POST").length, 0, "sem preço padrão lido, não há o que escrever");
+    assert.strictEqual(res.corpo.codigo, "PRECO_ITEM_COM_PROMOCAO");
+    assert.match(res.corpo.motivo, /promoç/i);
+    assert.strictEqual(mlChamadas.filter((c) => c.metodo === "PUT").length, 0, "promoção ativa não pode gerar nenhuma escrita");
     assert.strictEqual(linha(db, "MLB-X").preco, 100);
-    ok("falha ao ler o preço padrão: erro real repassado, nenhum POST tentado, banco intacto");
+    ok("item com promoção ativa: bloqueado antes de escrever, nenhum PUT tentado, banco intacto");
   });
 
-  // 5. POST confirma, mas a releitura de confirmação falha: não é sucesso
-  //    mascarado — nem o banco pode ser tocado sem saber o valor real.
+  // 5. Sem promoção (regular_amount ausente ou igual ao amount): edição livre.
   await withMockDb({ ...UMA_CONTA, anuncios: anunciosFixture() }, async (db) => {
     mlChamadas = [];
-    let jaLeuAntes = false;
-    mlHandler = (chamada) => {
-      if (/variations/.test(chamada.path)) return { ok: true, status: 200, data: { variations: [] } };
-      if (chamada.metodo === "GET" && /\/prices$/.test(chamada.path)) {
-        if (!jaLeuAntes) {
-          jaLeuAntes = true;
-          return { ok: true, status: 200, data: { prices: [{ id: "PRICE1", type: "standard", amount: 100, currency_id: "BRL", conditions: {} }] } };
-        }
-        return { ok: false, status: 500, data: {} }; // releitura de confirmação falha
-      }
-      if (chamada.metodo === "POST") return { ok: true, status: 200, data: {} };
-      return { ok: true, status: 200, data: {} };
-    };
+    mlHandler = handlerPadrao({ amount: 100, regularAmount: 100 });
+
+    const res = fakeRes();
+    await ctrl.atualizarPreco(
+      { params: { itemId: "MLB-X" }, body: { clienteSlug: "cliente-a", preco: 130 } },
+      res
+    );
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    ok("regular_amount igual ao amount não é promoção — edição segue normal");
+  });
+
+  // 6. Falha genérica do ML na escrita: erro real repassado, banco intacto.
+  await withMockDb({ ...UMA_CONTA, anuncios: anunciosFixture() }, async (db) => {
+    mlChamadas = [];
+    mlHandler = handlerPadrao({
+      putResposta: { ok: false, status: 500, data: { message: "Internal error" } },
+    });
 
     const res = fakeRes();
     await ctrl.atualizarPreco(
@@ -353,14 +351,33 @@ async function run() {
       res
     );
 
-    assert.strictEqual(res.corpo.ok, false, "sem confirmação, não pode devolver sucesso");
-    assert.strictEqual(res.corpo.codigo, "PRECO_CONFIRMACAO_FALHOU");
-    assert.match(res.corpo.motivo, /confirmar/i);
-    assert.strictEqual(linha(db, "MLB-X").preco, 100, "sem saber o valor real, o banco não pode ser tocado");
-    ok("escrita aceita mas confirmação falha: erro explícito de confirmação, banco intacto (nunca um chute)");
+    assert.strictEqual(res.corpo.ok, false);
+    assert.strictEqual(res.corpo.motivo, "Internal error");
+    assert.strictEqual(linha(db, "MLB-X").preco, 100);
+    ok("falha genérica do ML: mensagem real repassada, banco intacto");
   });
 
-  // 6. Validação local: preço ausente/zero/negativo/não numérico é 400 sem
+  // 7. PUT "sucesso" mas sem price numérico na resposta: não é sucesso
+  //    mascarado.
+  await withMockDb({ ...UMA_CONTA, anuncios: anunciosFixture() }, async (db) => {
+    mlChamadas = [];
+    mlHandler = handlerPadrao({
+      putResposta: { ok: true, status: 200, data: { currency_id: "BRL" } }, // sem price
+    });
+
+    const res = fakeRes();
+    await ctrl.atualizarPreco(
+      { params: { itemId: "MLB-X" }, body: { clienteSlug: "cliente-a", preco: 150 } },
+      res
+    );
+
+    assert.strictEqual(res.corpo.ok, false, "sem price confirmado na resposta, não pode devolver sucesso");
+    assert.strictEqual(res.corpo.codigo, "PRECO_CONFIRMACAO_FALHOU");
+    assert.strictEqual(linha(db, "MLB-X").preco, 100, "sem saber o valor real, o banco não pode ser tocado");
+    ok("PUT ok mas sem price na resposta: erro explícito de confirmação, banco intacto (nunca um chute)");
+  });
+
+  // 8. Validação local: preço ausente/zero/negativo/não numérico é 400 sem
   //    gastar nenhuma chamada ao Mercado Livre.
   for (const [valor, codigo] of [
     [null, "PRECO_AUSENTE"],
@@ -383,7 +400,7 @@ async function run() {
   }
   ok("preço ausente, zero, negativo e não numérico: 400 sem tocar no Mercado Livre");
 
-  // 7. clienteSlug ausente e anúncio inexistente: 400/404 sem chamar o ML.
+  // 9. clienteSlug ausente e anúncio inexistente: 400/404 sem chamar o ML.
   await withMockDb({ ...UMA_CONTA, anuncios: anunciosFixture() }, async () => {
     mlChamadas = [];
     const res = fakeRes();
@@ -400,10 +417,12 @@ async function run() {
     ok("clienteSlug ausente é 400 e anúncio inexistente é 404, sem chamada ao Mercado Livre");
   });
 
-  // 8. A conta ML vem da linha do anúncio.
+  // 10. A conta ML vem da linha do anúncio.
   await withMockDb({ ...UMA_CONTA, anuncios: anunciosFixture() }, async (db) => {
     mlChamadas = [];
-    mlHandler = handlerPadrao({ standardAmountAntes: 100, standardAmountDepois: 130 });
+    mlHandler = handlerPadrao({
+      putResposta: { ok: true, status: 200, data: { price: 130, currency_id: "BRL" } },
+    });
 
     const res = fakeRes();
     await ctrl.atualizarPreco(
@@ -415,7 +434,7 @@ async function run() {
     ok("a conta ML usada em todas as chamadas é a da própria linha do anúncio");
   });
 
-  // 9. O normalizador, direto.
+  // 11. O normalizador, direto.
   assert.strictEqual(precoService.normalizarPreco(150).ok, true);
   assert.strictEqual(precoService.normalizarPreco(150).valor, 150);
   assert.strictEqual(precoService.normalizarPreco("150.5").valor, 150.5);

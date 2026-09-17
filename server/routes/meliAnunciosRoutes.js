@@ -144,9 +144,10 @@ router.patch("/:itemId/conteudo", ctrl.atualizarConteudo);
 // número — ver meliEstoqueService para a regra e a fonte na doc do ML.
 router.patch("/:itemId/estoque", ctrl.atualizarEstoque);
 
-// Edição de PREÇO do anúncio NO MERCADO LIVRE (API dedicada de Preços — ver
-// meliPrecoService para o motivo de não ser um PUT genérico em /items).
-// Mesmo acesso de /conteudo e /estoque.
+// Edição de PREÇO do anúncio NO MERCADO LIVRE (PUT /items/{id} { price } —
+// ver meliPrecoService: a API dedicada de Preços ainda não está disponível
+// por doc do ML; bloqueia antes de escrever quando há variação ou promoção
+// ativa). Mesmo acesso de /conteudo e /estoque.
 router.patch("/:itemId/preco", ctrl.atualizarPreco);
 
 // Simulação pura de margem (preço/custo/custos adicionais) para a composição

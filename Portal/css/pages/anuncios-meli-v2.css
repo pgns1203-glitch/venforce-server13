@@ -991,6 +991,37 @@
   border-color: var(--vf-border-strong);
 }
 
+/* Tag ao lado do rótulo "Preço" — só aparece quando a edição é uma escrita
+   REAL no Mercado Livre (nunca ao lado de Custo do produto/Custos
+   adicionais, que são só simulação). */
+.vf-page-anuncios-meli .am-margem-comp__ml-tag {
+  height: 18px;
+  padding: 0 6px;
+}
+
+/* Editor de Preço tem botões próprios ("Salvar no Mercado Livre"/
+   "Cancelar") em vez de confirmar no Enter — a linha vira coluna pra caber
+   o input e as ações sem estourar a largura da "escada". */
+.vf-page-anuncios-meli .am-margem-preco__editor {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.vf-page-anuncios-meli .am-margem-comp__acoes {
+  display: flex;
+  gap: 6px;
+}
+
+/* Preço bloqueado (promoção ativa no Mercado Livre) — valor em texto puro,
+   sem moldura de botão: não é um convite a editar, é informativo, igual ao
+   título travado por catálogo. */
+.vf-page-anuncios-meli .am-margem-comp__valor--bloqueado {
+  color: var(--vf-text-muted);
+  cursor: default;
+}
+
 .vf-page-anuncios-meli .am-mlb__acao {
   display: flex;
   justify-content: flex-end;

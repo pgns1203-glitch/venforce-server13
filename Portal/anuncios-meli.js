@@ -2135,6 +2135,7 @@
     aplicarEstadosEdicao(); // já redesenha a barra de alterações
     bindMargemComposicao();
     bindMargemEditavel(el("am-det-margem-body"));
+    bindPrecoEditavel(el("am-det-margem-body"));
     bindRestaurarSimulacaoMargem(el("am-det-margem-body"), a.item_id);
   }
 
@@ -2756,12 +2757,13 @@
       escapeHtml(rotulo) + "</button>";
   }
 
-  // Uma linha EDITÁVEL (Preço/Custo do produto/Custos adicionais) — ao
+  // Uma linha de SIMULAÇÃO (Custo do produto/Custos adicionais) — ao
   // contrário das somente-leitura, NUNCA some por valor ausente: é assim que
-  // o operador simula um custo que a Base não tem, ou vê o preço mesmo antes
-  // de qualquer composição existir. `campo` é o nome usado pelo clique/teclado
-  // (bindMargemEditavel) e pelo contrato de PATCH .../preco e POST
-  // .../simular-margem ("preco" | "custoProduto" | "custosAdicionais").
+  // o operador simula um custo que a Base não tem. `campo` é o nome usado
+  // pelo clique/teclado (bindMargemEditavel) e pelo contrato de POST
+  // .../simular-margem ("custoProduto" | "custosAdicionais"). Nunca chama o
+  // Mercado Livre — Preço tem seu próprio HTML/fluxo, ver
+  // margemComposicaoLinhaPrecoHtml.
   function margemComposicaoLinhaEditavelHtml(rotulo, campo, valor, moeda, itemId, tituloBotao) {
     return '<div class="am-margem-comp__linha am-margem-comp__linha--editavel">' +
       '<span class="am-margem-comp__rotulo">' + escapeHtml(rotulo) + "</span>" +
@@ -2770,6 +2772,38 @@
         botaoMargemEditHtml(formatMoeda(valor, moeda), tituloBotao) +
       "</span>" +
     "</div>";
+  }
+
+  // Linha de PREÇO — a única que grava de verdade no Mercado Livre. Por isso
+  // tem HTML e fluxo próprios (nunca dividido com a simulação de
+  // custo/custos adicionais):
+  //  - sempre carrega a tag "Altera no Mercado Livre" quando editável, pra
+  //    deixar claro que não é simulação;
+  //  - quando `bloqueado` (promoção ativa no ML — o valor exibido é o
+  //    promocional, e não existe hoje endpoint de escrita pra ele, ver
+  //    meliPrecoService), a tag some, o valor vira texto puro (sem botão) e
+  //    o motivo aparece num ⓘ ao lado do rótulo — mesmo padrão do título
+  //    travado por catálogo, adaptado pra tooltip por causa do espaço da
+  //    "escada".
+  function margemComposicaoLinhaPrecoHtml(valor, moeda, itemId, bloqueado, motivoBloqueio) {
+    var rotulo = '<span class="am-margem-comp__rotulo">Preço' +
+      (bloqueado
+        ? infoDotHtml(motivoBloqueio)
+        : ' <span class="vf-tag is-warning am-margem-comp__ml-tag" title="Uma alteração aqui grava direto no Mercado Livre">Altera no Mercado Livre</span>') +
+      "</span>";
+
+    var valorHtml;
+    if (bloqueado) {
+      valorHtml = '<span class="am-margem-comp__valor am-margem-comp__valor--bloqueado" title="' +
+        escapeAttr(motivoBloqueio) + '">' + formatMoeda(valor, moeda) + "</span>";
+    } else {
+      valorHtml = '<span class="am-margem-comp__valor am-margem-preco" data-margem-item="' + escapeAttr(itemId) +
+        '" data-margem-valor="' + escapeAttr(valor == null ? "" : valor) + '">' +
+        botaoMargemEditHtml(formatMoeda(valor, moeda), "Alterar grava direto no Mercado Livre") +
+      "</span>";
+    }
+
+    return '<div class="am-margem-comp__linha am-margem-comp__linha--editavel">' + rotulo + valorHtml + "</div>";
   }
 
   function margemComposicaoLadderHtml(comp, cacheMargem, moeda, itemId) {
@@ -2783,8 +2817,9 @@
     var custosAdicionaisExibido = sim && sim.custosAdicionais != null ? sim.custosAdicionais : comp.taxaFixa;
 
     var linhas =
-      margemComposicaoLinhaEditavelHtml("Preço", "preco", comp.venda, moeda, itemId,
-        "Alterar grava direto no Mercado Livre") +
+      margemComposicaoLinhaPrecoHtml(comp.venda, moeda, itemId, !!comp.precoPromocionalAtivo,
+        "Este anúncio está com uma promoção ativa no Mercado Livre — o valor mostrado é o preço promocional vigente, " +
+        "que esta tela ainda não edita. Ajuste a promoção diretamente no Mercado Livre.") +
       margemComposicaoLinhaEditavelHtml("Custo do produto", "custoProduto", custoExibido, moeda, itemId,
         "Simular outro custo — não altera a Base de Custos") +
       margemComposicaoLinhaHtml("Comissão Mercado Livre", comp.comissaoMl, moeda) +
@@ -2916,17 +2951,26 @@
     var resumo = el("am-det-margem-resumo");
     if (resumo) resumo.innerHTML = margemComposicaoResumoHtml(itemId);
     bindMargemEditavel(corpo);
+    bindPrecoEditavel(corpo);
     bindRestaurarSimulacaoMargem(corpo, itemId);
   }
 
   // ===========================================================================
-  // Composição da margem — EDIÇÃO (Preço real no ML; Custo/Custos adicionais
-  // como simulação local). Ver docs da seção acima para o contrato dos dois
-  // endpoints (PATCH .../preco e POST .../simular-margem).
+  // Composição da margem — EDIÇÃO. Dois fluxos deliberadamente SEPARADOS,
+  // nunca compartilhando código de confirmação:
+  //
+  //  - Preço: escrita REAL no Mercado Livre (PATCH .../preco). Editar exige
+  //    um clique explícito em "Salvar no Mercado Livre" — Enter NUNCA
+  //    submete aqui, só Esc/Cancelar descartam. Ver bindPrecoEditavel e
+  //    confirmarPrecoMargem.
+  //  - Custo do produto / Custos adicionais: simulação local (POST
+  //    .../simular-margem) — Enter confirma, Esc cancela, igual aos outros
+  //    campos editáveis desta tela (estoque, título). Ver bindMargemEditavel
+  //    e confirmarSimulacaoMargem.
   // ===========================================================================
 
   var CAMPOS_MARGEM_ROTULO = {
-    preco: "Preço", custoProduto: "Custo do produto", custosAdicionais: "Custos adicionais",
+    custoProduto: "Custo do produto", custosAdicionais: "Custos adicionais",
   };
 
   function bindMargemEditavel(raiz) {
@@ -2949,14 +2993,12 @@
     });
   }
 
-  // Valor de LEITURA de uma célula editável: o override de simulação quando
-  // existe (custo/custos adicionais), senão o valor REAL do cache. O preço
-  // não tem override persistente — ou está salvo, ou a edição foi cancelada.
+  // Valor de LEITURA de uma célula de simulação: o override quando existe,
+  // senão o valor REAL do cache.
   function valorLeituraMargemCampo(campo, itemId) {
     var cache = AM.state.performanceCache[itemId];
     var comp = cache && cache.composicao;
     var sim = DET && DET.itemId === itemId ? DET.simulacaoMargem : null;
-    if (campo === "preco") return comp ? comp.venda : null;
     if (campo === "custoProduto") {
       if (sim && sim.custoProduto != null) return sim.custoProduto;
       return comp ? comp.custoProduto : null;
@@ -2974,21 +3016,20 @@
     var valor = valorLeituraMargemCampo(campo, itemId);
     cel.setAttribute("data-margem-valor", valor == null ? "" : valor);
     cel.classList.remove("is-editando", "is-salvando");
-    var tituloBotao = campo === "preco"
-      ? "Alterar grava direto no Mercado Livre"
-      : "Simular — não altera a Base de Custos nem o Mercado Livre";
-    cel.innerHTML = botaoMargemEditHtml(formatMoeda(valor, DET.anuncio.moeda), tituloBotao);
+    cel.innerHTML = botaoMargemEditHtml(
+      formatMoeda(valor, DET.anuncio.moeda),
+      "Simular — não altera a Base de Custos nem o Mercado Livre"
+    );
   }
 
   function abrirEditorMargemCampo(cel) {
     if (!DET) return;
     if (cel.classList.contains("is-editando") || cel.classList.contains("is-salvando")) return;
-    if (DET.precoMargem.salvando) return; // um PUT de preço em voo trava a seção até resolver
 
     var campo = cel.getAttribute("data-margem-campo");
     var atual = cel.getAttribute("data-margem-valor") || "";
     cel.classList.add("is-editando");
-    var dica = campo === "preco" ? "Enter grava no Mercado Livre, Esc cancela" : "Enter simula a margem, Esc cancela";
+    var dica = "Enter simula a margem, Esc cancela";
     cel.innerHTML = '<input type="number" step="0.01" min="0" class="am-margem-edit__input" ' +
       'value="' + escapeAttr(atual) + '" title="' + escapeAttr(dica) + '" aria-label="' +
       escapeAttr((CAMPOS_MARGEM_ROTULO[campo] || campo) + ". " + dica) + '" />';
@@ -2997,15 +3038,14 @@
     input.focus();
     input.select();
 
-    // Mesma regra dos outros campos editáveis desta tela (estoque, título):
-    // Enter confirma, Esc cancela, sair do campo CANCELA — nunca confirma
-    // por acidente (um clique fora, um Tab).
+    // Mesma regra dos outros campos de simulação desta tela: Enter confirma,
+    // Esc cancela, sair do campo CANCELA — nunca confirma por acidente (um
+    // clique fora, um Tab).
     input.addEventListener("keydown", function (e) {
       e.stopPropagation();
       if (e.key === "Enter") {
         e.preventDefault();
-        if (campo === "preco") confirmarPrecoMargem(cel, input.value);
-        else confirmarSimulacaoMargem(cel, campo, input.value);
+        confirmarSimulacaoMargem(cel, campo, input.value);
         return;
       }
       if (e.key === "Escape") {
@@ -3081,22 +3121,88 @@
       });
   }
 
+  // ===========================================================================
+  // Preço — fluxo próprio, sem Enter-submit. Editar → digitar → clicar em
+  // "Salvar no Mercado Livre" (ou Esc/"Cancelar" pra descartar). O valor
+  // exibido depois do sucesso NUNCA é o digitado — vem da resposta do PUT
+  // que o próprio Mercado Livre confirma (ver meliPrecoService no backend),
+  // repintada a partir de reconsultar a composição do zero.
+  // ===========================================================================
+
+  function bindPrecoEditavel(raiz) {
+    (raiz || document).querySelectorAll(".am-margem-preco").forEach(function (cel) {
+      cel.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (e.target.closest(".am-margem-edit__btn")) abrirEditorPreco(cel);
+        else if (e.target.closest('[data-acao="salvar-preco"]')) confirmarPrecoMargem(cel);
+        else if (e.target.closest('[data-acao="cancelar-preco"]')) pintarPrecoLeitura(cel);
+      });
+    });
+  }
+
+  function pintarPrecoLeitura(cel) {
+    var cache = AM.state.performanceCache[cel.getAttribute("data-margem-item")];
+    var comp = cache && cache.composicao;
+    var valor = comp ? comp.venda : null;
+    cel.setAttribute("data-margem-valor", valor == null ? "" : valor);
+    cel.classList.remove("is-editando", "is-salvando");
+    cel.innerHTML = botaoMargemEditHtml(formatMoeda(valor, DET.anuncio.moeda), "Alterar grava direto no Mercado Livre");
+  }
+
+  function abrirEditorPreco(cel) {
+    if (!DET) return;
+    if (cel.classList.contains("is-editando") || cel.classList.contains("is-salvando")) return;
+    if (DET.precoMargem.salvando) return; // um PUT de preço em voo trava a seção até resolver
+
+    var atual = cel.getAttribute("data-margem-valor") || "";
+    cel.classList.add("is-editando");
+    cel.innerHTML = '<span class="am-margem-preco__editor">' +
+      '<input type="number" step="0.01" min="0" class="am-margem-edit__input" value="' + escapeAttr(atual) + '" ' +
+        'aria-label="Novo preço no Mercado Livre" />' +
+      '<span class="am-margem-comp__acoes">' +
+        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="salvar-preco">Salvar no Mercado Livre</button>' +
+        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="cancelar-preco">Cancelar</button>' +
+      "</span>" +
+    "</span>";
+    var input = cel.querySelector(".am-margem-edit__input");
+    if (!input) return;
+    input.focus();
+    input.select();
+
+    // Preço não faz auto-submit no Enter — o fluxo principal é clicar em
+    // "Salvar no Mercado Livre" (é uma escrita real, não uma simulação).
+    // Diferente dos outros campos editáveis desta tela, sair do campo (blur)
+    // NÃO cancela mais sozinho: o editor tem botões próprios ("Salvar
+    // no Mercado Livre"/"Cancelar") dentro da célula, e blur dispara antes
+    // do click do botão ser processado — cancelar no blur fecharia o editor
+    // antes do clique em "Salvar" chegar a acontecer. Só Esc ou o clique
+    // explícito em "Cancelar" descartam.
+    input.addEventListener("keydown", function (e) {
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        pintarPrecoLeitura(cel);
+      }
+    });
+  }
+
   // Preço: escrita REAL no Mercado Livre (PATCH .../preco). O valor exibido
   // depois do sucesso NUNCA é o digitado — vem de reconsultar a composição
-  // (que por sua vez relê o preço confirmado, ver meliPrecoService no
-  // backend), então esta função nunca escreve um número "confiado" na tela.
-  function confirmarPrecoMargem(cel, bruto) {
+  // (que por sua vez lê o preço confirmado pela resposta do PUT, ver
+  // meliPrecoService no backend), então esta função nunca escreve um número
+  // "confiado" na tela.
+  function confirmarPrecoMargem(cel) {
     if (!DET || DET.precoMargem.salvando) return;
     var itemId = cel.getAttribute("data-margem-item");
+    var input = cel.querySelector(".am-margem-edit__input");
     var anterior = cel.getAttribute("data-margem-valor") || "";
-    var texto = String(bruto == null ? "" : bruto).trim();
+    var texto = String((input && input.value) == null ? "" : input.value).trim();
 
-    if (texto === anterior) { pintarMargemCampoLeitura(cel); return; }
+    if (texto === anterior) { pintarPrecoLeitura(cel); return; }
 
     var n = Number(texto);
     if (!isFinite(n) || n <= 0) {
       toast("O preço precisa ser um número maior que zero.", "is-danger");
-      pintarMargemCampoLeitura(cel);
       return;
     }
 
@@ -3116,7 +3222,7 @@
         var d = r.data || {};
         if (!d.ok) {
           cel.classList.remove("is-salvando");
-          pintarMargemCampoLeitura(cel);
+          pintarPrecoLeitura(cel);
           toast(d.motivo || "Não foi possível atualizar o preço.", "is-danger");
           return;
         }

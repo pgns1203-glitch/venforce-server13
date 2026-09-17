@@ -127,7 +127,8 @@ async function diagEnriquecerItem({ clienteId, body, baseRow, margemAlvo, mlUser
       try {
         return await mlFetch(
           clienteId,
-          `/sites/MLB/listing_prices?price=${encodeURIComponent(precoEfetivo)}&listing_type_id=${encodeURIComponent(listingTypeId)}&category_id=${encodeURIComponent(categoryId)}`
+          `/sites/MLB/listing_prices?price=${encodeURIComponent(precoEfetivo)}&listing_type_id=${encodeURIComponent(listingTypeId)}&category_id=${encodeURIComponent(categoryId)}`,
+          { mlUserId }
         );
       } catch (_) { return null; }
     })(),

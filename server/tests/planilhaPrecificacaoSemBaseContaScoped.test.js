@@ -1,13 +1,9 @@
 // server/tests/planilhaPrecificacaoSemBaseContaScoped.test.js
 //
-// Regressão do bug real de produção: gerarPlanilhaPrecificacaoSemBase monta o
-// path do ML com o mlUserId da conta selecionada
-// (`/users/${mlUserId}/items/search`) mas chamava `mlFetch` sem `{ mlUserId
-// }` nas options — a escolha do TOKEN caía no fallback/principal do
-// cliente. Cliente com 2 contas ML e a Conta 1 como principal: pedir a
-// Conta 2 buscava os anúncios do seller da Conta 2 só que autenticado com o
-// token da Conta 1, e o Mercado Livre responde 403 "Searching another user
-// items is restricted."
+// Regressão do bug real de produção: o search preservava a conta selecionada,
+// mas o batch `/items?ids=...` perdia o mlUserId e caía no grant principal.
+// Este teste percorre o pipeline real até o XLSX, incluindo sale_price,
+// fallback /prices, listing_prices e shipping_options/free.
 //
 // Não usa DI: mlTokenService/clienteContaService/contextoPrecificacaoService/
 // mlClient usam o `pool`/`fetch` globais — mesmo padrão de mock das outras
@@ -16,6 +12,7 @@
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
 
 const assert = require("assert");
+const XLSX = require("xlsx");
 
 let checks = 0;
 function ok(label, condition) {
@@ -105,6 +102,113 @@ class MemoryDb {
   }
 }
 
+function resposta(status, data) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => null },
+    json: async () => data,
+  };
+}
+
+function sellerDoItem(itemId) {
+  return String(itemId).match(/^MLB(111|222)/)?.[1] || null;
+}
+
+function criarFetchFake(chamadas) {
+  return async (url, options) => {
+    const urlStr = String(url);
+    const parsed = new URL(urlStr);
+    chamadas.push({ url: urlStr, authorization: options.headers.Authorization });
+
+    const searchMatch = parsed.pathname.match(/^\/users\/(111|222)\/items\/search$/);
+    if (searchMatch) {
+      const seller = searchMatch[1];
+      return resposta(200, {
+        results: [`MLB${seller}001`, `MLB${seller}002`],
+        scroll_id: null,
+      });
+    }
+
+    if (parsed.pathname === "/items" && parsed.searchParams.has("ids")) {
+      const ids = parsed.searchParams.get("ids").split(",");
+      return resposta(200, ids.map((id) => {
+        const seller = sellerDoItem(id);
+        return {
+          code: 200,
+          body: {
+            id,
+            title: `Produto ${id}`,
+            seller_id: Number(seller),
+            seller_custom_field: `SKU-${id}`,
+            status: "active",
+            listing_type_id: "gold_special",
+            category_id: "MLB1234",
+            price: id.endsWith("002") ? 80 : 150,
+            shipping: { logistic_type: "cross_docking" },
+          },
+        };
+      }));
+    }
+
+    const salePriceMatch = parsed.pathname.match(/^\/items\/(MLB(?:111|222)\d+)\/sale_price$/);
+    if (salePriceMatch) {
+      if (salePriceMatch[1].endsWith("002")) {
+        return resposta(500, { message: "sale_price indisponível no fixture" });
+      }
+      return resposta(200, { amount: 120, regular_amount: 150 });
+    }
+
+    const pricesMatch = parsed.pathname.match(/^\/items\/(MLB(?:111|222)\d+)\/prices$/);
+    if (pricesMatch) {
+      return resposta(200, { prices: [{ type: "standard", amount: 80 }] });
+    }
+
+    if (parsed.pathname === "/sites/MLB/listing_prices") {
+      return resposta(200, {
+        sale_fee_amount: 12,
+        sale_fee_details: { percentage_fee: 10 },
+      });
+    }
+
+    if (/^\/users\/(111|222)\/shipping_options\/free$/.test(parsed.pathname)) {
+      return resposta(200, { coverage: { all_country: { list_cost: 18 } } });
+    }
+
+    throw new Error(`URL ML não mapeada no fake: ${urlStr}`);
+  };
+}
+
+function validarPipelineConta({ label, resultado, chamadas, seller, bearer }) {
+  const buscar = (trecho) => chamadas.filter((c) => c.url.includes(trecho));
+
+  const search = buscar(`/users/${seller}/items/search`);
+  ok(`${label} — search usa ${bearer}`, search.length === 1 && search[0].authorization === bearer);
+
+  const batch = chamadas.filter((c) => new URL(c.url).pathname === "/items");
+  ok(`${label} — batch usa ${bearer}`, batch.length === 1 && batch[0].authorization === bearer);
+
+  const salePrice = buscar("/sale_price");
+  ok(`${label} — sale_price usa ${bearer}`, salePrice.length === 2 && salePrice.every((c) => c.authorization === bearer));
+
+  const prices = chamadas.filter((c) => /\/items\/[^/]+\/prices(?:\?|$)/.test(c.url));
+  ok(`${label} — fallback /prices usa ${bearer}`, prices.length === 1 && prices[0].authorization === bearer);
+
+  const listingPrices = buscar("/sites/MLB/listing_prices");
+  ok(`${label} — listing_prices usa ${bearer}`, listingPrices.length === 2 && listingPrices.every((c) => c.authorization === bearer));
+
+  const shipping = buscar(`/users/${seller}/shipping_options/free`);
+  ok(`${label} — shipping_options/free usa ${bearer}`, shipping.length === 2 && shipping.every((c) => c.authorization === bearer));
+
+  ok(`${label} — todas as chamadas autenticadas usam somente ${bearer}`, chamadas.length > 0 && chamadas.every((c) => c.authorization === bearer));
+
+  const workbook = XLSX.read(resultado.buffer, { type: "buffer" });
+  const sheet = workbook.Sheets["Matriz Mercado Livre"];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+  ok(`${label} — workbook contém os dois IDs`, rows.some((row) => row[0] === `MLB${seller}001`) && rows.some((row) => row[0] === `MLB${seller}002`));
+  ok(`${label} — workbook contém os títulos do fake`, rows.some((row) => row[2] === `Produto MLB${seller}001`) && rows.some((row) => row[2] === `Produto MLB${seller}002`));
+}
+
 async function run() {
   const originalQuery = pool.query;
   const originalConnect = pool.connect;
@@ -114,15 +218,7 @@ async function run() {
   pool.connect = () => db.connect();
 
   const chamadasFetch = [];
-  global.fetch = async (url, options) => {
-    chamadasFetch.push({ url: String(url), authorization: options.headers.Authorization });
-    return {
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => ({ results: [], scroll_id: null }),
-    };
-  };
+  global.fetch = criarFetchFake(chamadasFetch);
 
   try {
     delete require.cache[require.resolve("../services/mlTokenService")];
@@ -134,34 +230,26 @@ async function run() {
 
     // ── Conta 2 (não principal): nunca pode cair no token da Conta 1 ─────
     chamadasFetch.length = 0;
-    await gerarPlanilhaPrecificacaoSemBase({ clienteSlugRaw: "cliente-x", clienteContaId: 102 });
-    ok("Conta 2 — pelo menos uma chamada ao ML", chamadasFetch.length >= 1);
-    const buscaConta2 = chamadasFetch.find((c) => c.url.includes("/users/222/items/search"));
-    ok("Conta 2 — path usa o seller 222", Boolean(buscaConta2));
-    ok("Conta 2 — usa o access_token de 222 (não o principal 111)", buscaConta2.authorization === "Bearer access-222");
-    ok("Conta 2 — nenhuma chamada usou o token principal (access-111)", !chamadasFetch.some((c) => c.authorization === "Bearer access-111"));
+    const resultadoConta2 = await gerarPlanilhaPrecificacaoSemBase({ clienteSlugRaw: "cliente-x", clienteContaId: 102 });
+    validarPipelineConta({
+      label: "Conta 2",
+      resultado: resultadoConta2,
+      chamadas: chamadasFetch,
+      seller: "222",
+      bearer: "Bearer access-222",
+    });
+    ok("Conta 2 — nenhuma chamada usou o grant principal A", !chamadasFetch.some((c) => c.authorization === "Bearer access-111"));
 
     // ── Conta 1 (principal): comportamento existente continua funcionando ─
     chamadasFetch.length = 0;
-    await gerarPlanilhaPrecificacaoSemBase({ clienteSlugRaw: "cliente-x", clienteContaId: 101 });
-    const buscaConta1 = chamadasFetch.find((c) => c.url.includes("/users/111/items/search"));
-    ok("Conta 1 — path usa o seller 111", Boolean(buscaConta1));
-    ok("Conta 1 — usa o access_token de 111", buscaConta1.authorization === "Bearer access-111");
-
-    // ── Regressão conceitual: em toda chamada de busca por seller, o id do
-    //    seller no path bate com o mlUserId que decidiu o token usado. ────
-    const todasBuscas = [
-      { conta: 102, resp: buscaConta2 },
-      { conta: 101, resp: buscaConta1 },
-    ];
-    for (const { conta, resp } of todasBuscas) {
-      const sellerNoPath = resp.url.match(/\/users\/([^/]+)\/items\/search/)?.[1];
-      const grantDoSeller = db.grants.find((g) => g.ml_user_id === sellerNoPath);
-      ok(
-        `conta ${conta} — seller do path (${sellerNoPath}) e token usado (${resp.authorization}) pertencem ao mesmo grant`,
-        grantDoSeller && resp.authorization === `Bearer ${grantDoSeller.access_token}`
-      );
-    }
+    const resultadoConta1 = await gerarPlanilhaPrecificacaoSemBase({ clienteSlugRaw: "cliente-x", clienteContaId: 101 });
+    validarPipelineConta({
+      label: "Conta 1",
+      resultado: resultadoConta1,
+      chamadas: chamadasFetch,
+      seller: "111",
+      bearer: "Bearer access-111",
+    });
 
     console.log(`\n✓ planilhaPrecificacaoSemBaseContaScoped: ${checks} verificações`);
   } finally {

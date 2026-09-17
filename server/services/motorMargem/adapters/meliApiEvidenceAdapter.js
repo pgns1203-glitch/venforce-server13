@@ -5,7 +5,7 @@
 // estoque é escrito no Mercado Livre nesta rodada.
 //
 // Endpoints usados (os mesmos que o Otimizador de Precificação já consome):
-//   GET /users/{ml_user_id}/items/search?status=active   → ids dos anúncios
+//   GET /users/{ml_user_id}/items/search?status=active|paused → ids dos anúncios
 //   GET /items?ids=…                                     → título, listing_type, categoria
 //   GET /items/{id}/sale_price                           → preço cheio/promo/efetivo
 //   GET /sites/MLB/listing_prices                        → comissão (R$ e %)
@@ -50,23 +50,67 @@ function extrairImagem(body) {
   return null;
 }
 
-/** Página de anúncios ativos do vendedor. Somente leitura. */
-async function buscarItensAtivos({ clienteId, mlUserId, offset = 0, limit = SEARCH_PAGE_LIMIT }, fetchFn = mlFetch) {
+/** Uma página de `/items/search` filtrada por UM status. Somente leitura. */
+async function buscarItensPorStatus({ clienteId, mlUserId, status, offset = 0, limit = SEARCH_PAGE_LIMIT }, fetchFn = mlFetch) {
   const resp = await fetchFn(
     clienteId,
-    `/users/${mlUserId}/items/search?status=active&offset=${offset}&limit=${limit}`,
+    `/users/${mlUserId}/items/search?status=${status}&offset=${offset}&limit=${limit}`,
     // Path seller-scoped: sem mlUserId nas options o token cai no principal do
     // cliente e o ML responde 403 quando a conta selecionada não é a principal.
     { mlUserId }
   );
   if (!resp.ok) {
-    const err = new Error(resp.data?.message || "Erro ao buscar itens no Mercado Livre.");
+    const err = new Error(resp.data?.message || `Erro ao buscar itens (${status}) no Mercado Livre.`);
     err.statusCode = resp.status === 401 || resp.status === 403 ? 422 : 502;
     throw err;
   }
   return {
     ids: Array.isArray(resp.data?.results) ? resp.data.results : [],
     total: resp.data?.paging?.total ?? 0,
+  };
+}
+
+/**
+ * Página combinada de anúncios ATIVOS + PAUSADOS do vendedor, na MESMA
+ * paginação offset/limit que o Motor já usava só para ativos — pré-requisito
+ * de `enrichBatch`/`carregarWorkspace`, que decidem quantos lotes encadear a
+ * partir do `total` devolvido aqui.
+ *
+ * O Mercado Livre não tem um único `/items/search` que junte os dois status
+ * com um offset contínuo (cada chamada filtra UM status), então esta função
+ * concatena os dois universos numa ordem estável — ativos primeiro, pausados
+ * depois — fazendo a MESMA conta de página que faria se fosse uma lista só:
+ * a fatia [offset, offset+limit) nunca repete nem pula um id, e nunca vira
+ * "página 1 de ativos + página 1 de pausados" (o bug que uma paginação
+ * ingênua causaria). Sempre consulta os dois status, mesmo quando a página
+ * sai inteira de um só: sem o `total` do outro, a varredura em lotes
+ * (`carregarWorkspace`) pararia cedo demais e nunca chegaria aos pausados.
+ *
+ * Dedup por item_id como cinto de segurança: os dois status são mutuamente
+ * exclusivos no Mercado Livre, então só colidiriam se um anúncio mudasse de
+ * status EXATAMENTE entre as duas chamadas — cenário raro que, se acontecer,
+ * não pode duplicar o item na lista.
+ */
+async function buscarItensAtivos({ clienteId, mlUserId, offset = 0, limit = SEARCH_PAGE_LIMIT }, fetchFn = mlFetch) {
+  const ativos = await buscarItensPorStatus({ clienteId, mlUserId, status: "active", offset, limit }, fetchFn);
+
+  const faltam = Math.max(0, limit - ativos.ids.length);
+  const offsetPausados = Math.max(0, offset - ativos.total);
+  const pausados = await buscarItensPorStatus(
+    { clienteId, mlUserId, status: "paused", offset: offsetPausados, limit: Math.max(faltam, 1) },
+    fetchFn
+  );
+
+  const vistos = new Set();
+  const ids = [...ativos.ids, ...pausados.ids.slice(0, faltam)].filter((id) => {
+    if (vistos.has(id)) return false;
+    vistos.add(id);
+    return true;
+  });
+
+  return {
+    ids,
+    total: ativos.total + pausados.total,
   };
 }
 

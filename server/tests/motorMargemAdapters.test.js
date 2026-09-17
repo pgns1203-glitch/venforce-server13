@@ -636,6 +636,103 @@ cenario("aplicarEvidenciasProjetadas devolve image null quando o ML não trouxe 
   assert.strictEqual(observado.image, null);
 });
 
+// ── buscarItensAtivos (ativos + pausados, mesma paginação) ──────────────────
+
+// Fake de /users/{id}/items/search: dispatcha por status, cada um com seu
+// próprio universo de ids e total — como o Mercado Livre faz de verdade (uma
+// chamada nunca vê o total do outro status).
+function fakeSearchPorStatus({ ativos = [], pausados = [] }) {
+  const chamadas = [];
+  const fetchFn = async (clienteId, path) => {
+    chamadas.push(path);
+    const url = new URL("https://ml.local" + path);
+    const status = url.searchParams.get("status");
+    const offset = Number(url.searchParams.get("offset"));
+    const limit = Number(url.searchParams.get("limit"));
+    const universo = status === "paused" ? pausados : ativos;
+    return {
+      ok: true,
+      data: { results: universo.slice(offset, offset + limit), paging: { total: universo.length } },
+    };
+  };
+  return { fetchFn, chamadas };
+}
+
+cenario("buscarItensAtivos: página cheia só de ativos ainda soma o total de pausados (varredura não para cedo)", async () => {
+  const ativos = ["A1", "A2", "A3"];
+  const pausados = ["P1", "P2"];
+  const { fetchFn } = fakeSearchPorStatus({ ativos, pausados });
+
+  const pagina = await meliApi.buscarItensAtivos({ clienteId: 1, mlUserId: "9", offset: 0, limit: 3 }, fetchFn);
+
+  assert.deepStrictEqual(pagina.ids, ["A1", "A2", "A3"], "página fecha só com ativos, sem pausados de sobra");
+  assert.strictEqual(pagina.total, 5, "total combinado inclui os pausados mesmo sem tocar nos ids deles");
+});
+
+cenario("buscarItensAtivos: página que cruza a fronteira ativos→pausados completa com pausados a partir do início deles", async () => {
+  const ativos = ["A1", "A2", "A3"];
+  const pausados = ["P1", "P2", "P3"];
+  const { fetchFn } = fakeSearchPorStatus({ ativos, pausados });
+
+  // offset 2, limit 3 -> pede A3 (único ativo restante) + P1, P2 (início dos pausados).
+  const pagina = await meliApi.buscarItensAtivos({ clienteId: 1, mlUserId: "9", offset: 2, limit: 3 }, fetchFn);
+
+  assert.deepStrictEqual(pagina.ids, ["A3", "P1", "P2"]);
+  assert.strictEqual(pagina.total, 6);
+});
+
+cenario("buscarItensAtivos: offset inteiramente dentro do universo de pausados pagina só neles", async () => {
+  const ativos = ["A1", "A2"];
+  const pausados = ["P1", "P2", "P3", "P4"];
+  const { fetchFn } = fakeSearchPorStatus({ ativos, pausados });
+
+  // offset 3 (2 ativos + 1º pausado já "gasto") -> P2, P3.
+  const pagina = await meliApi.buscarItensAtivos({ clienteId: 1, mlUserId: "9", offset: 3, limit: 2 }, fetchFn);
+
+  assert.deepStrictEqual(pagina.ids, ["P2", "P3"]);
+  assert.strictEqual(pagina.total, 6);
+});
+
+cenario("buscarItensAtivos: varredura completa em lotes cobre ativos E pausados sem pular nem repetir id", async () => {
+  const ativos = ["A1", "A2", "A3", "A4", "A5"];
+  const pausados = ["P1", "P2", "P3"];
+  const { fetchFn } = fakeSearchPorStatus({ ativos, pausados });
+
+  const vistos = [];
+  for (let offset = 0; offset < 8; offset += 3) {
+    const pagina = await meliApi.buscarItensAtivos({ clienteId: 1, mlUserId: "9", offset, limit: 3 }, fetchFn);
+    vistos.push(...pagina.ids);
+    if (offset + 3 >= pagina.total) break;
+  }
+
+  assert.deepStrictEqual(vistos, [...ativos, ...pausados], "cobre os 8 ids, ativos antes de pausados, sem lacuna nem duplicata");
+});
+
+cenario("buscarItensAtivos: deduplica por item_id se o mesmo anúncio aparecer nos dois status (troca de status em voo)", async () => {
+  // Cenário de corrida: MLB9 aparece como ativo E como pausado (mudou de
+  // status entre as duas chamadas sequenciais) — nunca pode duplicar na lista.
+  const ativos = ["A1", "MLB9"];
+  const pausados = ["MLB9", "P1"];
+  const { fetchFn } = fakeSearchPorStatus({ ativos, pausados });
+
+  const pagina = await meliApi.buscarItensAtivos({ clienteId: 1, mlUserId: "9", offset: 0, limit: 4 }, fetchFn);
+
+  const ocorrencias = pagina.ids.filter((id) => id === "MLB9").length;
+  assert.strictEqual(ocorrencias, 1, "MLB9 aparece uma única vez mesmo vindo dos dois status");
+});
+
+cenario("buscarItensAtivos: erro 403 na busca de pausados propaga como falha de contexto (422), igual à de ativos", async () => {
+  const fetchFn = async (clienteId, path) => {
+    if (path.includes("status=paused")) return { ok: false, status: 403, data: { message: "sem permissão" } };
+    return { ok: true, data: { results: ["A1"], paging: { total: 1 } } };
+  };
+
+  await assert.rejects(
+    () => meliApi.buscarItensAtivos({ clienteId: 1, mlUserId: "9", offset: 0, limit: 5 }, fetchFn),
+    (err) => err.statusCode === 422
+  );
+});
+
 // ── Runner ───────────────────────────────────────────────────────────────────
 
 async function main() {

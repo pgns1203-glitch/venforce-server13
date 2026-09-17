@@ -557,7 +557,8 @@ async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null,
 
   const { rows } = await db.query(
     `-- FAMILIA_DETALHE_ITENS
-     SELECT a.item_id, a.user_product_id, a.titulo, a.status, a.preco, a.moeda,
+     SELECT a.item_id, a.user_product_id, a.titulo, a.status, a.preco,
+            a.preco_original, a.moeda,
             a.estoque, a.vendidos, a.score_venforce, a.sku, a.thumbnail,
             a.permalink, a.listing_type_id,
             up.site_id, up.domain_id, up.family_name
@@ -604,6 +605,7 @@ async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null,
       titulo: r.titulo,
       status: r.status,
       preco: r.preco,
+      preco_original: r.preco_original,
       moeda: r.moeda,
       estoque: r.estoque,
       vendidos: r.vendidos,

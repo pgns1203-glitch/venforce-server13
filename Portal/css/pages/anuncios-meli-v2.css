@@ -1041,6 +1041,26 @@
   color: var(--vf-text);
 }
 
+/* Com promoção ativa: preço cheio riscado EM CIMA, preço vigente embaixo —
+   os dois herdam fonte/cor da própria célula (.am-row__preco/.am-mlb__preco),
+   só o valor original ganha estilo próprio. Mesma convenção de
+   `preco_original` do cabeçalho do modal (ver top2Html), só em coluna em vez
+   de lado a lado — a lista é estreita demais pros dois caberem na mesma linha. */
+.vf-page-anuncios-meli .am-row__preco--promo,
+.vf-page-anuncios-meli .am-mlb__preco--promo {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.vf-page-anuncios-meli .am-row__preco-original,
+.vf-page-anuncios-meli .am-mlb__preco-original {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
+  text-decoration: line-through;
+}
+
 .vf-page-anuncios-meli .am-row__num {
   font-variant-numeric: tabular-nums;
   font-size: var(--vf-fs-sm);

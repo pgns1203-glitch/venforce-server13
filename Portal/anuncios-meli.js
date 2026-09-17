@@ -1126,7 +1126,7 @@
           condHtml + sku + "</span>" +
       "</span>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
-      '<span class="am-mlb__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +
+      celulaPrecoHtml(a, "am-mlb__preco") +
       celulaEstoqueHtml(a, "am-mlb__num") +
       '<span class="am-mlb__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
       metricas7dCelulaHtml(a.item_id) +
@@ -1500,6 +1500,23 @@
   // comporta igual nos dois, mas continua vestida como a coluna do seu nível.
   // `.am-estoque` é o que marca "esta célula é editável" — é por ela que o
   // bind acha as células e que os handlers de linha sabem não abrir o modal.
+  // Célula de preço da lista (linha do agrupador e linha da expansão
+  // compartilham a mesma grade --am-cols, ver rowMlbCompactaHtml/rowAnuncioHtml)
+  // — mesmo padrão de celulaEstoqueHtml(a, classeColuna) logo abaixo.
+  // `preco_original` só vem preenchido quando há promoção ativa (mesma
+  // convenção do backend usada no cabeçalho do modal, ver top2Html); sem
+  // promoção a célula é só o preço, sem o valor riscado em cima.
+  function celulaPrecoHtml(a, classeColuna) {
+    var classe = classeColuna || "am-mlb__preco";
+    if (!a.preco_original) {
+      return '<span class="' + classe + '">' + formatMoeda(a.preco, a.moeda) + "</span>";
+    }
+    return '<span class="' + classe + " " + classe + '--promo">' +
+      '<span class="' + classe + '-original">' + formatMoeda(a.preco_original, a.moeda) + "</span>" +
+      '<span class="' + classe + '-atual">' + formatMoeda(a.preco, a.moeda) + "</span>" +
+    "</span>";
+  }
+
   function celulaEstoqueHtml(a, classeColuna) {
     var tem = a.estoque != null;
     return '<span class="' + (classeColuna || "am-mlb__num") + ' am-estoque" data-estoque-item="' +
@@ -1830,7 +1847,7 @@
         '<div class="am-row__badges">' + badges + "</div>" +
       "</div>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
-      '<span class="am-row__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +
+      celulaPrecoHtml(a, "am-row__preco") +
       // O anúncio individual também é um MLB, e o estoque dele se edita aqui
       // pelo mesmo caminho da linha filha. A linha do AGRUPADOR não tem esta
       // célula: o estoque dela é soma de variações, não um número que exista

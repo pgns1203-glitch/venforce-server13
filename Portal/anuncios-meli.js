@@ -74,11 +74,18 @@
     // expandir, só o aspecto que falta é buscado — metricas7d já cacheado
     // NUNCA é pedido de novo.
     //
-    // `familyFetchEmVoo`/`metricasEmVoo`/`margemEmVoo` deduplicam chamadas
-    // concorrentes para o MESMO family_id/item_id: o pré-carregamento em
-    // background e um clique do operador na mesma família nunca disparam
-    // duas requisições — o segundo pedido reaproveita a Promise já em voo do
-    // primeiro (ver garantirFamiliaDetalhe/carregarPerformance).
+    // `familyFetchEmVoo`/`metricasEmVoo`/`margemEmVoo`/`composicaoEmVoo`
+    // deduplicam chamadas concorrentes para o MESMO family_id/item_id: o
+    // pré-carregamento em background e um clique do operador na mesma
+    // família (ou abrir o modal de um item que já está em voo) nunca
+    // disparam duas requisições — o segundo pedido reaproveita a Promise já
+    // em voo do primeiro (ver garantirFamiliaDetalhe/carregarPerformance).
+    //
+    // `composicao`/`temComposicao` (por item_id, dentro de
+    // `performanceCache[itemId]`): a decomposição da margem (venda, custo,
+    // comissão, frete, taxa fixa, imposto) que alimenta a seção "Composição
+    // da margem" do modal de detalhe — só pedida quando o operador abre
+    // aquela seção (ver garantirComposicaoDoItem), nunca junto do resto.
     state: {
       familyCache: {},
       familyFetchEmVoo: {},
@@ -86,6 +93,7 @@
       performanceCache: {},
       metricasEmVoo: {},
       margemEmVoo: {},
+      composicaoEmVoo: {},
     },
     // familiaEpoca invalida de uma vez toda expansão/pré-carregamento em voo
     // quando o cliente/conta muda (senão o detalhe do cliente A pintaria a
@@ -1298,42 +1306,50 @@
       '" data-margem-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
   }
 
-  // Busca metricas7d e/ou margem para os item_id pedidos — só o aspecto que
-  // FALTA em cada um (AM.state.performanceCache guarda os dois de forma
-  // independente: `temMetricas`/`temMargem`). Isso é o que permite ao
-  // pré-carregamento em background pedir só metricas7d dos filhos ocultos
-  // (opcoes.incluirMargem: false) e, quando o operador expande de verdade, a
-  // expansão pedir só a margem que falta — sem repetir a métrica que o
-  // pré-carregamento já trouxe.
+  // Busca metricas7d, margem e/ou composição da margem para os item_id
+  // pedidos — só o aspecto que FALTA em cada um (AM.state.performanceCache
+  // guarda os três de forma independente: `temMetricas`/`temMargem`/
+  // `temComposicao`). Isso é o que permite ao pré-carregamento em
+  // background pedir só metricas7d dos filhos ocultos (opcoes.incluirMargem:
+  // false), a expansão da família pedir só a margem que falta (sem repetir
+  // a métrica que o pré-carregamento já trouxe), e o modal de detalhe pedir
+  // só a composição (sem repetir margem/métricas já conhecidas da lista).
   //
-  // `metricasEmVoo`/`margemEmVoo` (por item_id) dedupem chamadas concorrentes
-  // para o MESMO item/aspecto: o pré-carregamento em background e um clique
-  // do operador na mesma família não disparam duas requisições.
+  // `metricasEmVoo`/`margemEmVoo`/`composicaoEmVoo` (por item_id) dedupem
+  // chamadas concorrentes para o MESMO item/aspecto: o pré-carregamento em
+  // background, um clique do operador na mesma família, e abrir o modal de
+  // um item já em voo nunca disparam duas requisições.
   //
-  // Nunca bloqueia quem chamou: é sempre disparada DEPOIS que a linha já
-  // está pintada na tela. Devolve a Promise da leitura (resolvida de
-  // imediato quando não há nada pendente — tudo já em cache/em voo): quem
-  // precisa saber "os filhos desta família já são conhecidos" (ver
-  // repintarLinhaDoGrupo) encadeia nela em vez de reimplementar a espera.
+  // Nunca bloqueia quem chamou: é sempre disparada DEPOIS que a linha (ou o
+  // modal) já está pintada na tela. Devolve a Promise da leitura (resolvida
+  // de imediato quando não há nada pendente — tudo já em cache/em voo):
+  // quem precisa saber "os filhos desta família já são conhecidos" (ver
+  // repintarLinhaDoGrupo) ou "a composição já chegou" (ver
+  // garantirComposicaoDoItem) encadeia nela em vez de reimplementar a espera.
   function carregarPerformance(itemIds, opcoes) {
     if (!AM.clienteAtual) return Promise.resolve();
     var incluirMargem = !opcoes || opcoes.incluirMargem !== false;
+    // Composição é OPT-IN (ao contrário de métricas/margem): só o modal de
+    // detalhe pede, explicitamente, ao abrir a seção "Composição da margem".
+    var incluirComposicao = !!(opcoes && opcoes.incluirComposicao);
 
     var vistos = {};
     var pendentesMetricas = [];
     var pendentesMargem = [];
+    var pendentesComposicao = [];
     (itemIds || []).forEach(function (id) {
       if (!id || vistos[id]) return;
       vistos[id] = true;
       var cache = AM.state.performanceCache[id];
       if ((!cache || !cache.temMetricas) && !AM.state.metricasEmVoo[id]) pendentesMetricas.push(id);
       if (incluirMargem && (!cache || !cache.temMargem) && !AM.state.margemEmVoo[id]) pendentesMargem.push(id);
+      if (incluirComposicao && (!cache || !cache.temComposicao) && !AM.state.composicaoEmVoo[id]) pendentesComposicao.push(id);
     });
-    if (!pendentesMetricas.length && !pendentesMargem.length) return Promise.resolve();
+    if (!pendentesMetricas.length && !pendentesMargem.length && !pendentesComposicao.length) return Promise.resolve();
 
     var idsUniao = [];
     var vistosUniao = {};
-    pendentesMetricas.concat(pendentesMargem).forEach(function (id) {
+    pendentesMetricas.concat(pendentesMargem, pendentesComposicao).forEach(function (id) {
       if (vistosUniao[id]) return;
       vistosUniao[id] = true;
       idsUniao.push(id);
@@ -1343,31 +1359,46 @@
     pendentesMetricas.forEach(function (id) { pendentesMetricasSet[id] = true; AM.state.metricasEmVoo[id] = true; });
     var pendentesMargemSet = {};
     pendentesMargem.forEach(function (id) { pendentesMargemSet[id] = true; AM.state.margemEmVoo[id] = true; });
+    var pendentesComposicaoSet = {};
+    pendentesComposicao.forEach(function (id) { pendentesComposicaoSet[id] = true; AM.state.composicaoEmVoo[id] = true; });
 
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
       "&itemIds=" + encodeURIComponent(idsUniao.join(",")) +
       "&incluirMetricas=" + (pendentesMetricas.length ? "1" : "0") +
-      "&incluirMargem=" + (pendentesMargem.length ? "1" : "0");
+      "&incluirMargem=" + (pendentesMargem.length || pendentesComposicao.length ? "1" : "0") +
+      "&incluirComposicao=" + (pendentesComposicao.length ? "1" : "0");
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
 
     return api("/anuncios-meli/performance?" + qs).then(function (r) {
       pendentesMetricas.forEach(function (id) { delete AM.state.metricasEmVoo[id]; });
       pendentesMargem.forEach(function (id) { delete AM.state.margemEmVoo[id]; });
+      pendentesComposicao.forEach(function (id) { delete AM.state.composicaoEmVoo[id]; });
 
       var dados = r.data;
       if (dados && dados.ok) {
         idsUniao.forEach(function (id) {
           var atual = AM.state.performanceCache[id] || {
-            metricas7d: null, temMetricas: false, margem: null, margemIndisponivel: null, temMargem: false,
+            metricas7d: null, temMetricas: false,
+            margem: null, margemIndisponivel: null, temMargem: false,
+            composicao: null, temComposicao: false,
           };
           if (pendentesMetricasSet[id]) {
             atual.metricas7d = (dados.metricas7d && dados.metricas7d[id]) || null;
             atual.temMetricas = true;
           }
-          if (pendentesMargemSet[id]) {
+          // A composição pediu margem "de carona" (qs acima): se ISSO foi
+          // quem ligou incluirMargem=1 para este id (pendentesMargemSet não
+          // tinha o id, mas pendentesComposicaoSet tem), a margem também
+          // chega nesta resposta e precisa ser gravada — senão o badge da
+          // seção ficaria "carregando" para sempre.
+          if (pendentesMargemSet[id] || pendentesComposicaoSet[id]) {
             atual.margem = (dados.margem && dados.margem[id]) || null;
             atual.margemIndisponivel = dados.margemIndisponivel || null;
             atual.temMargem = true;
+          }
+          if (pendentesComposicaoSet[id]) {
+            atual.composicao = (dados.composicao && dados.composicao[id]) || null;
+            atual.temComposicao = true;
           }
           AM.state.performanceCache[id] = atual;
         });
@@ -1378,6 +1409,17 @@
       // independente já tinha trazido com sucesso.
       pintarPerformanceEmCelulas(idsUniao);
     });
+  }
+
+  // Ponto único do modal de detalhe para buscar a composição da margem de
+  // UM item — chamado só quando o operador abre a seção "Composição da
+  // margem" (nunca ao abrir o modal). Força incluirMargem:true junto: o
+  // item pode nunca ter passado pela lista (aberto direto, ou a lista não
+  // tinha buscado a margem dele ainda), então a composição não pode supor
+  // que a margem já está em cache. O dedupe de carregarPerformance garante
+  // que isso não gasta chamada nova quando já está tudo pronto.
+  function garantirComposicaoDoItem(itemId) {
+    return carregarPerformance([itemId], { incluirMargem: true, incluirComposicao: true });
   }
 
   // Repinta SÓ a linha-mãe (nunca o painel, nunca renderCatalogo — fechar
@@ -2066,18 +2108,23 @@
     var pics = tryParseJSON(a.pictures_json, []) || [];
     var attrs = tryParseJSON(a.attributes_json, []) || [];
 
+    var margemSecaoAtual = el("am-det-margem");
+    var margemAberta = !!(margemSecaoAtual && margemSecaoAtual.open);
+
     var html =
       headHtml(a) +
       top2Html(a, pics, attrs) +
       fotosHtml(pics) +
       tituloEModeloHtml(a) +
       descricaoHtml() +
-      fichaHtml(attrs);
+      fichaHtml(attrs) +
+      margemComposicaoSecaoHtml(a, margemAberta);
 
     var scroll = el("am-det-scroll");
     scroll.innerHTML = html;
     bindCamposEditaveis();
     aplicarEstadosEdicao(); // já redesenha a barra de alterações
+    bindMargemComposicao();
 
   }
 
@@ -2649,6 +2696,165 @@
         (descobertos.length === 1 ? " segue" : " seguem") + " sem sugestão";
     }
     return '<span class="am-det-compare__scoreline">' + escapeHtml(txt) + "</span>";
+  }
+
+  // ===========================================================================
+  // COMPOSIÇÃO DA MARGEM — seção secundária do modal de detalhe.
+  //
+  // Transparência sobre como a margem do MLB foi calculada, sem recalcular
+  // nada: todo número vem do Motor de Margem (GET /anuncios-meli/performance
+  // ?incluirComposicao=1 — mesmo endpoint que a lista já usa para a coluna
+  // Margem, ver carregarPerformance/garantirComposicaoDoItem). A ÚNICA conta
+  // feita fora do Motor é "venda × imposto%" no BACKEND (o Motor guarda
+  // imposto como percentual, nunca em R$) — só para a linha Imposto virar
+  // moeda como as demais; a margem final exibida é sempre
+  // item.margin.<origem>.margin/profit, o número pronto do Motor, nunca uma
+  // soma das linhas desta tela.
+  //
+  // Nasce FECHADA (<details> nativo, sem `open`) e SEM nenhuma chamada de
+  // rede — só busca ao ser aberta pela primeira vez (ver
+  // bindMargemComposicao). Reabrir o MESMO MLB (mesma seção, ou reabrir o
+  // modal do mesmo item_id) lê do cache; fechar o modal e abrir OUTRO MLB
+  // nunca herda a composição do anterior — a seção nasce muda de novo,
+  // porque o cache é indexado por item_id, não por sessão de modal.
+  // ===========================================================================
+
+  function margemComposicaoDicaHtml() {
+    return '<p class="am-margem-comp__dica">Toque para ver como a margem foi calculada.</p>';
+  }
+
+  function margemComposicaoCarregandoHtml() {
+    return '<p class="am-margem-comp__dica">Carregando composição…</p>';
+  }
+
+  // Uma linha da "escada" da composição — omitida por completo quando o
+  // valor não existe (nunca um "—" no lugar dela): é a régua pedida
+  // ("mostrar apenas o que existe").
+  function margemComposicaoLinhaHtml(rotulo, valor, moeda, tooltip) {
+    if (valor == null) return "";
+    return '<div class="am-margem-comp__linha">' +
+      '<span class="am-margem-comp__rotulo">' + escapeHtml(rotulo) +
+        (tooltip ? infoDotHtml(tooltip) : "") + "</span>" +
+      '<span class="am-margem-comp__valor">' + formatMoeda(valor, moeda) + "</span>" +
+    "</div>";
+  }
+
+  function margemComposicaoLadderHtml(comp, cacheMargem, moeda) {
+    var linhas =
+      margemComposicaoLinhaHtml("Venda", comp.venda, moeda) +
+      margemComposicaoLinhaHtml("Custo do produto", comp.custoProduto, moeda) +
+      margemComposicaoLinhaHtml("Comissão Mercado Livre", comp.comissaoMl, moeda) +
+      margemComposicaoLinhaHtml("Frete", comp.frete, moeda) +
+      margemComposicaoLinhaHtml("Taxa fixa", comp.taxaFixa, moeda);
+
+    if (comp.impostoValor != null) {
+      var rotuloImposto = "Imposto" +
+        (comp.impostoPercentual != null ? " (" + formatarPercentualCompacto(comp.impostoPercentual * 100) + ")" : "");
+      linhas += margemComposicaoLinhaHtml(rotuloImposto, comp.impostoValor, moeda,
+        "Guardado como percentual pelo Motor de Margem — este valor em R$ é só para exibição.");
+    }
+
+    // "= Margem": SEMPRE o valor pronto do Motor (profit em R$ + percentual)
+    // — nunca a soma das linhas acima. Se por arredondamento a soma visual
+    // não bater centavo a centavo, o número que vale é este.
+    var totalHtml = "";
+    if (cacheMargem && cacheMargem.profit != null) {
+      totalHtml = '<div class="am-margem-comp__linha am-margem-comp__total">' +
+        '<span class="am-margem-comp__rotulo">Margem</span>' +
+        '<span class="am-margem-comp__valor">' + formatMoeda(cacheMargem.profit, moeda) +
+          (cacheMargem.marginPercent != null ? " (" + formatarPercentualCompacto(cacheMargem.marginPercent) + ")" : "") +
+        "</span>" +
+      "</div>";
+    }
+
+    return '<div class="am-margem-comp__ladder">' + linhas + totalHtml + "</div>";
+  }
+
+  // Conteúdo pronto da seção — usado tanto no primeiro paint (quando o item
+  // já estava em cache, ex.: reabrir o modal do mesmo MLB) quanto depois que
+  // a busca sob demanda resolve (ver repintarComposicaoDoItem).
+  function margemComposicaoConteudoHtml(itemId, moeda) {
+    var cache = AM.state.performanceCache[itemId];
+    if (!cache || !cache.temMargem) return margemComposicaoDicaHtml();
+
+    // Badge de estado — a MESMA função que já pinta a célula de margem da
+    // lista (mesmo rótulo, mesma cor, mesmo vocabulário real do Motor).
+    // Cobre sozinha os dois casos de "sem número": contexto indisponível
+    // (margemIndisponivel) e item não-computável (statusLabel/statusReasons)
+    // — a composição segue exatamente a mesma disponibilidade da lista,
+    // nunca um caminho alternativo.
+    var badge = '<div class="am-margem-comp__badge">' +
+      margemConteudoHtml(cache.margem, cache.margemIndisponivel) + "</div>";
+
+    if (!cache.temComposicao) return badge + margemComposicaoCarregandoHtml();
+    if (!cache.composicao) return badge; // contexto indisponível / item não-computável — sem ladder, sem número parcial
+
+    return badge + margemComposicaoLadderHtml(cache.composicao, cache.margem, moeda);
+  }
+
+  // Resumo compacto no <summary>, à direita do título — só aparece quando a
+  // composição JÁ foi carregada (a seção fica muda até ser aberta).
+  function margemComposicaoResumoHtml(itemId) {
+    var cache = AM.state.performanceCache[itemId];
+    if (!cache || !cache.temComposicao || !cache.margem || cache.margem.marginPercent == null) return "";
+    var origemRotulo = cache.margem.origem === "realized" ? "Realizada" : "Projetada";
+    return escapeHtml(formatarPercentualCompacto(cache.margem.marginPercent) + " · " + origemRotulo);
+  }
+
+  // `aberta` preserva o estado do <details> entre re-renders do modal
+  // inteiro (salvar, descartar, aprovar sugestão de IA todos chamam
+  // renderDetalhe() de novo) — sem isso, o operador que tinha a seção
+  // aberta a veria fechar sozinha a cada ação no resto do modal.
+  function margemComposicaoSecaoHtml(a, aberta) {
+    var itemId = a.item_id;
+    var cache = AM.state.performanceCache[itemId];
+    var corpo;
+    if (cache && cache.temComposicao) corpo = margemComposicaoConteudoHtml(itemId, a.moeda);
+    else if (aberta) corpo = margemComposicaoCarregandoHtml(); // reaberta enquanto a busca ainda estava em voo
+    else corpo = margemComposicaoDicaHtml();
+
+    return '<details class="am-det-section am-margem-comp" id="am-det-margem"' + (aberta ? " open" : "") +
+      ' data-item="' + escapeAttr(itemId) + '">' +
+      '<summary class="am-det-section__head am-margem-comp__summary">' +
+        '<h3 class="am-det-section__title">' +
+          '<span class="am-margem-comp__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
+          "Composição da margem" +
+        "</h3>" +
+        '<span class="am-det-section__meta" id="am-det-margem-resumo">' + margemComposicaoResumoHtml(itemId) + "</span>" +
+      "</summary>" +
+      '<div class="am-margem-comp__body" id="am-det-margem-body">' + corpo + "</div>" +
+    "</details>";
+  }
+
+  // Busca a composição só na PRIMEIRA vez que a seção é aberta — nunca ao
+  // abrir o modal. Guardado por DET.token, mesmo padrão de
+  // carregarHistoricoOtimizacoes: uma resposta tardia depois de fechar o
+  // modal (ou abrir o de outro MLB) nunca escreve na tela errada.
+  function bindMargemComposicao() {
+    var secao = el("am-det-margem");
+    if (!secao) return;
+    secao.addEventListener("toggle", function () {
+      if (!secao.open) return;
+      var itemId = secao.getAttribute("data-item");
+      var cache = AM.state.performanceCache[itemId];
+      if (cache && cache.temComposicao) return; // já pronta — nada a buscar
+
+      var corpo = el("am-det-margem-body");
+      if (corpo) corpo.innerHTML = margemComposicaoCarregandoHtml();
+
+      var meuToken = DET.token;
+      garantirComposicaoDoItem(itemId).then(function () {
+        if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB aberto no meio do caminho
+        repintarComposicaoDoItem(itemId);
+      });
+    });
+  }
+
+  function repintarComposicaoDoItem(itemId) {
+    var corpo = el("am-det-margem-body");
+    if (corpo) corpo.innerHTML = margemComposicaoConteudoHtml(itemId, DET.anuncio.moeda);
+    var resumo = el("am-det-margem-resumo");
+    if (resumo) resumo.innerHTML = margemComposicaoResumoHtml(itemId);
   }
 
   // ---------------------------------------------------------------------------

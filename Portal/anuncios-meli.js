@@ -1126,7 +1126,7 @@
           condHtml + sku + "</span>" +
       "</span>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
-      '<span class="am-mlb__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +
+      precoCelulaHtml(a, "am-mlb__preco") +
       celulaEstoqueHtml(a, "am-mlb__num") +
       '<span class="am-mlb__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
       metricas7dCelulaHtml(a.item_id) +
@@ -1282,6 +1282,12 @@
     // usa para ordenar (motorMargemService.valorOrdenacao).
     var origemRotulo = m.origem === "realized" ? "Realizada" : "Projetada";
     var tip = "Calculada pelo Motor de Margem — margem " + origemRotulo.toLowerCase() + ".";
+    // Preço alvo é aditivo à explicação da margem (mesmo infoDot) — nunca um
+    // segundo cálculo aqui, só o texto do que o Motor já resolveu em
+    // item.margin.target (ver montarMapaMargem/computeTargetPrice).
+    if (m.precoAlvo != null) {
+      tip += " Preço alvo p/ bater a margem configurada: " + formatMoeda(m.precoAlvo) + ".";
+    }
 
     if (m.marginPercent != null) {
       return '<span class="am-margem__valor ' + classe + '">' + formatarPercentualCompacto(m.marginPercent) + "</span>" +
@@ -1304,6 +1310,21 @@
       : '<span class="am-margem__vazio">carregando…</span>';
     return '<span class="am-margem' + (pronto ? "" : " am-margem--carregando") +
       '" data-margem-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
+  }
+
+  // Preço da linha — alimentado pelo MESMO GET /anuncios-meli/performance da
+  // margem (margem[itemId].precoAtual, `item.pricing.current` do Motor: a
+  // cotação ao vivo do sale_price, não recalculada aqui). Enquanto a
+  // performance não chegou, ou quando o Motor não tem evidência de preço
+  // (`precoAtual == null` — nunca 0), mostra o preço já sincronizado
+  // (`a.preco`) que a listagem sempre teve — o Motor só substitui quando
+  // tem algo melhor para mostrar, nunca esvazia o preço da tela.
+  function precoCelulaHtml(a, classe) {
+    var cache = AM.state.performanceCache[a.item_id];
+    var m = cache && cache.margem;
+    var preco = m && m.precoAtual != null ? m.precoAtual : a.preco;
+    return '<span class="' + classe + '" data-preco-item="' + escapeAttr(a.item_id) + '">' +
+      formatMoeda(preco, a.moeda) + "</span>";
   }
 
   // Busca metricas7d, margem e/ou composição da margem para os item_id
@@ -1469,6 +1490,18 @@
       var cache = AM.state.performanceCache[id];
       cel.classList.remove("am-margem--carregando");
       cel.innerHTML = margemConteudoHtml(cache ? cache.margem : null, cache ? cache.margemIndisponivel : null);
+    });
+    // Preço: só troca a célula quando o Motor realmente trouxe precoAtual —
+    // sem evidência (null) a célula fica exatamente como nasceu, mostrando
+    // o preço sincronizado (a.preco). Nunca zera nem apaga o que já tinha.
+    document.querySelectorAll("[data-preco-item]").forEach(function (cel) {
+      var id = cel.getAttribute("data-preco-item");
+      if (!alvo[id]) return;
+      var cache = AM.state.performanceCache[id];
+      var m = cache && cache.margem;
+      if (m && m.precoAtual != null) {
+        cel.textContent = formatMoeda(m.precoAtual);
+      }
     });
   }
 
@@ -1830,7 +1863,7 @@
         '<div class="am-row__badges">' + badges + "</div>" +
       "</div>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
-      '<span class="am-row__preco">' + formatMoeda(a.preco, a.moeda) + "</span>" +
+      precoCelulaHtml(a, "am-row__preco") +
       // O anúncio individual também é um MLB, e o estoque dele se edita aqui
       // pelo mesmo caminho da linha filha. A linha do AGRUPADOR não tem esta
       // célula: o estoque dela é soma de variações, não um número que exista

@@ -150,7 +150,10 @@ const LINHAS_CONTA_42 = [
   {
     tipo: "item", key: "item:MLB-SEMUP", item_id: "MLB-SEMUP", family_id: null,
     titulo: "Anúncio legado sem agrupamento", sku: null,
-    preco: 49.9, moeda: "BRL", estoque: 3, vendidos: 1, status: "active",
+    // preco_original só vem preenchido quando há promoção ativa no Mercado
+    // Livre (mesma convenção do cabeçalho do modal) — usado pra provar que a
+    // lista risca o preço cheio em cima do vigente (ver celulaPrecoHtml).
+    preco: 49.9, preco_original: 69.9, moeda: "BRL", estoque: 3, vendidos: 1, status: "active",
     permalink: null, thumbnail: null, pictures_count: 1, is_full: false,
     catalog_listing: false, family_name: null,
     score_venforce: 40, revisado: false,
@@ -1487,6 +1490,27 @@ async function run() {
       assert.strictEqual(estado.margemTexto, "—", "a margem do agrupador continua ausente mesmo com a soma pronta");
       assert.strictEqual(estado.expandido, "false", "a soma automática não pode expandir o painel sozinha");
       assert.strictEqual(estado.mlbsRenderizados, 0, "a soma automática só busca dado — não pinta os MLBs no painel");
+    });
+
+    await check("30c — item com promoção ativa (preco_original) mostra o preço cheio riscado ACIMA do preço vigente", async () => {
+      const preco = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        var cel = r.querySelector('.am-row__preco');
+        var original = cel.querySelector('.am-row__preco-original');
+        var atual = cel.querySelector('.am-row__preco-atual');
+        return {
+          temClassePromo: cel.classList.contains('am-row__preco--promo'),
+          original: original ? original.textContent.trim() : null,
+          atual: atual ? atual.textContent.trim() : null,
+          // "acima": no DOM (coluna via flex-direction:column) o original vem
+          // ANTES do atual — é essa ordem que a CSS empilha de cima pra baixo.
+          ordemDom: Array.from(cel.children).map(function(e){ return e.className; }),
+        };
+      })()`);
+      assert.strictEqual(preco.temClassePromo, true, "a célula precisa sinalizar o estado de promoção");
+      assert.strictEqual(preco.original, "R$ 69,90", "o preço cheio (preco_original) precisa aparecer");
+      assert.strictEqual(preco.atual, "R$ 49,90", "o preço vigente continua sendo o mesmo de sempre");
+      assert.ok(/preco-original/.test(preco.ordemDom[0]), `o preço cheio riscado precisa vir ANTES (acima) do vigente no DOM: ${JSON.stringify(preco.ordemDom)}`);
     });
 
     await check("31 — régua do boot: 1 chamada com métricas+margem (avulso) + 1 chamada só de métricas por agrupador visível", async () => {

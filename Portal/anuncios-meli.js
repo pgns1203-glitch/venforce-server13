@@ -1476,22 +1476,31 @@
       cel.classList.remove("am-margem--carregando");
       cel.innerHTML = margemConteudoHtml(cache ? cache.margem : null, cache ? cache.margemIndisponivel : null);
     });
-    // Preço: só troca quando o Motor realmente trouxe precoAtual — sem
-    // evidência (null) a célula fica exatamente como nasceu, mostrando o
-    // preço sincronizado (a.preco). Nunca zera nem apaga o que já tinha.
-    // Repinta só o valor "atual" (o span próprio, quando existe — ver
-    // celulaPrecoHtml), nunca a célula inteira: com promoção ativa, a célula
-    // também guarda o preço cheio riscado, e sobrescrever o innerHTML/
-    // textContent inteiro apagaria essa linha.
+    // Preço: atual e cheio têm a MESMA regra de prioridade (ver
+    // celulaPrecoHtml) — quando a margem já resolveu (`temMargem`), os dois
+    // vêm ao vivo do Motor (precoAtual/precoOriginal, sale_price via
+    // resolverPrecosItem); antes disso, ou quando o Motor não tem preço,
+    // caem no snapshot sincronizado (data-preco-sync/data-preco-original-db).
+    // Reconstrói a célula inteira (não só o span "atual") porque o riscado
+    // pode NASCER ou SUMIR ao vivo — uma promoção que só existe no
+    // sale_price (ex. automação de preço) não tinha `preco_original` no
+    // snapshot, e uma promoção que já acabou não pode continuar riscada só
+    // porque o snapshot é antigo.
     document.querySelectorAll("[data-preco-item]").forEach(function (cel) {
       var id = cel.getAttribute("data-preco-item");
       if (!alvo[id]) return;
       var cache = AM.state.performanceCache[id];
       var m = cache && cache.margem;
-      if (m && m.precoAtual != null) {
-        var celAtual = cel.querySelector(".am-row__preco-atual, .am-mlb__preco-atual") || cel;
-        celAtual.textContent = formatMoeda(m.precoAtual);
-      }
+      var classe = cel.getAttribute("data-preco-classe") || "am-mlb__preco";
+      var moeda = cel.getAttribute("data-moeda") || "";
+      var syncAttr = cel.getAttribute("data-preco-sync");
+      var syncOriginalAttr = cel.getAttribute("data-preco-original-db");
+      var atual = m && m.precoAtual != null ? m.precoAtual : (syncAttr !== "" ? Number(syncAttr) : null);
+      var cheio = cache && cache.temMargem
+        ? (m && m.precoOriginal != null ? m.precoOriginal : null)
+        : (syncOriginalAttr !== "" ? Number(syncOriginalAttr) : null);
+      cel.className = classe + (cheio ? " " + classe + "--promo" : "");
+      cel.innerHTML = precoCelulaConteudoHtml(classe, atual, cheio, moeda);
     });
   }
 
@@ -1522,35 +1531,46 @@
   // compartilham a mesma grade --am-cols, ver rowMlbCompactaHtml/rowAnuncioHtml)
   // — mesmo padrão de celulaEstoqueHtml(a, classeColuna) logo abaixo.
   //
+  // Conteúdo interno da célula de preço — compartilhado entre o primeiro
+  // render (celulaPrecoHtml) e o repaint ao vivo (pintarPerformanceEmCelulas),
+  // que precisa poder reconstruir a MESMA estrutura sem ter `a` à mão (só o
+  // que ficou gravado em data-* na própria célula — ver celulaPrecoHtml).
+  function precoCelulaConteudoHtml(classe, atual, cheio, moeda) {
+    if (!cheio) return formatMoeda(atual, moeda);
+    return '<span class="' + classe + '-original">' + formatMoeda(cheio, moeda) + "</span>" +
+      '<span class="' + classe + '-atual">' + formatMoeda(atual, moeda) + "</span>";
+  }
+
   // O valor "atual" prioriza `margem[itemId].precoAtual` (`item.pricing.current`,
   // obtido AO VIVO pelo Motor de Margem via GET /performance — mesma cotação
   // de sale_price que a composição do modal usa como `venda`) sobre o preço
-  // sincronizado (`a.preco`). Enquanto a performance não chegou, ou quando o
-  // Motor não tem evidência (`precoAtual == null` — nunca 0), fica o
-  // sincronizado. `data-preco-item` é o que permite repintarPerformanceEmCelulas
-  // atualizar só esse valor in-place quando a chamada resolve depois da linha
-  // já estar na tela — nunca reescrevendo a célula inteira (isso apagaria o
-  // preço riscado abaixo).
+  // sincronizado (`a.preco`). O preço "cheio" riscado segue a MESMA regra,
+  // com `margem[itemId].precoOriginal` (`item.pricing.list`,
+  // sale_price.regular_amount) sobre `a.preco_original` — as duas fontes só
+  // divergem enquanto a performance ainda não chegou, ou quando o Motor não
+  // tem evidência de nenhum dos dois (nunca 0, nunca copiado de outro campo).
   //
-  // `preco_original` só vem preenchido quando havia promoção ativa NO MOMENTO
-  // DA SINCRONIZAÇÃO (mesma convenção do backend usada no cabeçalho do modal,
-  // ver top2Html) — o Motor não expõe um "preço cheio" ao vivo, só o efetivo,
-  // então o riscado continua vindo do snapshot mesmo quando o valor abaixo
-  // dele já foi atualizado para o mais recente. Sem promoção, a célula é só o
-  // preço, sem o valor riscado em cima.
+  // `data-preco-item`/`data-preco-classe`/`data-preco-sync`/
+  // `data-preco-original-db`/`data-moeda` são o que permite
+  // pintarPerformanceEmCelulas reconstruir esta MESMA célula ao vivo sem
+  // precisar de `a` de novo — necessário porque agora o riscado também pode
+  // NASCER ou SUMIR quando a performance resolve (antes só o "atual" mudava).
   function celulaPrecoHtml(a, classeColuna) {
     var classe = classeColuna || "am-mlb__preco";
     var cache = AM.state.performanceCache[a.item_id];
     var m = cache && cache.margem;
     var atual = m && m.precoAtual != null ? m.precoAtual : a.preco;
+    var cheio = cache && cache.temMargem
+      ? (m && m.precoOriginal != null ? m.precoOriginal : null)
+      : (a.preco_original || null);
 
-    if (!a.preco_original) {
-      return '<span class="' + classe + '" data-preco-item="' + escapeAttr(a.item_id) + '">' +
-        formatMoeda(atual, a.moeda) + "</span>";
-    }
-    return '<span class="' + classe + " " + classe + '--promo" data-preco-item="' + escapeAttr(a.item_id) + '">' +
-      '<span class="' + classe + '-original">' + formatMoeda(a.preco_original, a.moeda) + "</span>" +
-      '<span class="' + classe + '-atual">' + formatMoeda(atual, a.moeda) + "</span>" +
+    return '<span class="' + classe + (cheio ? " " + classe + "--promo" : "") +
+      '" data-preco-item="' + escapeAttr(a.item_id) +
+      '" data-preco-classe="' + escapeAttr(classe) +
+      '" data-preco-sync="' + (a.preco == null ? "" : escapeAttr(a.preco)) +
+      '" data-preco-original-db="' + (a.preco_original == null ? "" : escapeAttr(a.preco_original)) +
+      '" data-moeda="' + escapeAttr(a.moeda || "") + '">' +
+      precoCelulaConteudoHtml(classe, atual, cheio, a.moeda) +
     "</span>";
   }
 
@@ -2268,10 +2288,28 @@
     "</div>";
   }
 
+  // Preço do cabeçalho do modal — MESMA fonte da lista (celulaPrecoHtml) e da
+  // composição (`precoPromocionalAtivo`): margem[itemId].precoAtual/
+  // precoOriginal (item.pricing.current/list, sale_price via
+  // resolverPrecosItem) sobre o snapshot sincronizado (a.preco/
+  // a.preco_original) enquanto a margem deste item não foi buscada — a
+  // composição é OPT-IN, só busca ao abrir a seção (ver bindMargemComposicao).
+  // `id="am-det-price"` é o que permite repintarComposicaoDoItem atualizar
+  // este valor junto do resto quando a margem chega depois do modal já aberto.
+  function precoDetalheHtml(a) {
+    var cache = AM.state.performanceCache[a.item_id];
+    var m = cache && cache.margem;
+    var atual = m && m.precoAtual != null ? m.precoAtual : a.preco;
+    var cheio = cache && cache.temMargem
+      ? (m && m.precoOriginal != null ? m.precoOriginal : null)
+      : (a.preco_original || null);
+    return '<strong class="am-det-price" id="am-det-price">' + formatMoeda(atual, a.moeda) +
+      (cheio ? "<small>" + formatMoeda(cheio, a.moeda) + "</small>" : "") + "</strong>";
+  }
+
   // ----- Topo em 2 colunas: comercial/catálogo | qualidade ------------------
   function top2Html(a, pics, attrs) {
-    var preco = '<strong class="am-det-price">' + formatMoeda(a.preco, a.moeda) +
-      (a.preco_original ? "<small>" + formatMoeda(a.preco_original, a.moeda) + "</small>" : "") + "</strong>";
+    var preco = precoDetalheHtml(a);
 
     var tipo = TIPO_ANUNCIO[a.listing_type_id] || a.listing_type_id || "—";
     var logistica = a.is_full ? "Full" : (a.logistic_type || "—");
@@ -3009,6 +3047,11 @@
     if (corpo) corpo.innerHTML = margemComposicaoConteudoHtml(itemId, DET.anuncio.moeda);
     var resumo = el("am-det-margem-resumo");
     if (resumo) resumo.innerHTML = margemComposicaoResumoHtml(itemId);
+    // O preço do CABEÇALHO usa a mesma fonte que acabou de chegar — sem isso
+    // ele ficaria preso ao snapshot (a.preco/a.preco_original) mesmo depois
+    // da composição já mostrar o valor ao vivo do Motor logo abaixo.
+    var precoWrap = el("am-det-price");
+    if (precoWrap && DET.anuncio) precoWrap.outerHTML = precoDetalheHtml(DET.anuncio);
     bindMargemEditavel(corpo);
     bindPrecoEditavel(corpo);
     bindRestaurarSimulacaoMargem(corpo, itemId);

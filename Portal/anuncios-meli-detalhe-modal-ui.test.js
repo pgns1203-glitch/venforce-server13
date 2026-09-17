@@ -418,7 +418,13 @@ function wireInterception(cdp) {
       const composicao = {};
       idsPedidos.forEach((id) => {
         if (incluirMetricas) metricas7d[id] = { views: 10, vendas: 1, conversao: 10 };
-        if (incluirMargem) margem[id] = id === "MLB-A1" ? MARGEM_MLA1 : { origem: "projected", margin: 0.2, marginPercent: 20, profit: 30, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+        // precoOriginal segue o MESMO toggle do corpo do item (precoOriginalAtivo)
+        // — sem isso, o preço cheio ao vivo (agora a mesma fonte do cabeçalho,
+        // ver Portal/anuncios-meli.js precoDetalheHtml) ficaria dessincronizado
+        // do snapshot que o mock do item devolve.
+        if (incluirMargem) margem[id] = id === "MLB-A1"
+          ? Object.assign({}, MARGEM_MLA1, { precoOriginal: precoOriginalAtivo ? 249.9 : null })
+          : { origem: "projected", margin: 0.2, marginPercent: 20, profit: 30, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
         if (incluirComposicao) composicao[id] = id === "MLB-A1" ? COMPOSICAO_MLA1 : { venda: 150, custoProduto: 60, comissaoMl: 18, frete: 12, taxaFixa: 3, impostoPercentual: 0.04, impostoValor: 6 };
       });
       await corpo({ ok: true, metricas7d, margem, margemIndisponivel: null, composicao });
@@ -624,9 +630,14 @@ async function run() {
         "line-through", "o preço original precisa aparecer riscado"
       );
 
-      // Mesmo anúncio, agora sem promoção — a linha não deve aparecer.
+      // Mesmo anúncio, agora sem promoção — a linha não deve aparecer. Recarrega
+      // a página (não só fecha/reabre o modal): o preço cheio do cabeçalho
+      // agora também é cacheado ao vivo por item_id (mesma fonte da lista,
+      // ver Portal/anuncios-meli.js precoDetalheHtml/AM.state.performanceCache)
+      // — sem reload, o valor da chamada anterior continuaria em cache.
       await fecharModal(cdp);
       precoOriginalAtivo = false;
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
       await abrirPrimeiroAnuncio(cdp);
       const semPromoElemento = await cdp.evaluate("document.querySelector('.am-det-price small')");
       assert.strictEqual(semPromoElemento, null, "sem preco_original, nada de preço riscado deveria aparecer");

@@ -345,10 +345,14 @@ async function detalheFamilia(req, res) {
 // contextoPrecificacaoService.js já usa — nunca um erro genérico, nunca 500.
 //
 // `margem[itemId]` também carrega `precoAtual` (preço OBTIDO ao vivo pelo
-// Motor, `item.pricing.current`) e `precoAlvo` (preço CALCULADO pelo Motor
-// para a margem-alvo, `item.margin.target`) — ver montarMapaMargem. Os dois
-// são `null` quando o Motor não tem o dado, nunca 0: o front mantém o preço
-// sincronizado da listagem (`a.preco`) como fallback nesse caso.
+// Motor, `item.pricing.current`), `precoOriginal` (preço cheio/regular AO
+// VIVO quando há promoção, `item.pricing.list` — mesma evidência
+// sale_price.regular_amount via resolverPrecosItem que a composição usa
+// para `precoPromocionalAtivo`) e `precoAlvo` (preço CALCULADO pelo Motor
+// para a margem-alvo, `item.margin.target`) — ver montarMapaMargem. Os três
+// são `null` quando o Motor não tem o dado, nunca 0: o front mantém o
+// snapshot sincronizado da listagem (`a.preco`/`a.preco_original`) como
+// fallback nesse caso.
 // ----------------------------------------------------------------------------
 const PERFORMANCE_MAX_ITENS = 24; // teto de abuso da rota — independente da paginação da tela, não é a mesma coisa
 
@@ -464,6 +468,14 @@ function montarMapaMargem(itens, incluirComposicao) {
       // vale agora". `null` quando o Motor não trouxe evidência de preço
       // (nunca 0): o front mantém o preço sincronizado (`a.preco`) nesse caso.
       precoAtual: valorEvidencia(item.pricing && item.pricing.current),
+      // Preço CHEIO/regular AO VIVO (`item.pricing.list`, mesma evidência
+      // sale_price.regular_amount via resolverPrecosItem que a composição já
+      // usa) — só vem preenchido quando há promoção ativa no momento desta
+      // chamada. `null` (nunca 0, nunca copiado de outro campo) quando não
+      // há promoção ou o Motor não tem a evidência: a lista/modal mantêm o
+      // `preco_original` sincronizado (snapshot) como fallback nesse caso —
+      // ver Portal/anuncios-meli.js celulaPrecoHtml/precoDetalheHtml.
+      precoOriginal: valorEvidencia(item.pricing && item.pricing.list),
       // Preço CALCULADO pelo Motor para bater a margem alvo da Central
       // (`item.margin.target`, mesma fórmula de `computeTargetPrice`). Só
       // vem preenchido quando o próprio Motor considera o cálculo possível

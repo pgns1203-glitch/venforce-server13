@@ -31,6 +31,8 @@ function baseBody(id, extras = {}) {
   };
 }
 
+// 3 variations, SELLER_SKU presente em 2 e fallback seller_custom_field na 3ª
+// (attributes ausente) — obriga o multiget complementar include_attributes=all.
 const legadoIncompleto = baseBody("MLBLEGACY1", {
   title: "Calça Legada",
   variations: [
@@ -74,6 +76,23 @@ const legadoCompleto = baseBody("MLBLEGACY1", {
   ],
 });
 
+// 2 variations com o MESMO SELLER_SKU — dedup só na célula, Variações continua 2.
+const legadoSkuDuplicado = baseBody("MLBDUP1", {
+  title: "Camiseta Duplicada",
+  variations: [
+    { id: 8001, attributes: [sellerSku("SKU-REPETIDO")], attribute_combinations: [{ value_name: "P" }] },
+    { id: 8002, attributes: [sellerSku("SKU-REPETIDO")], attribute_combinations: [{ value_name: "M" }] },
+  ],
+});
+
+// Variation sem SKU (nem SELLER_SKU nem seller_custom_field) — continua gerando linha.
+const legadoSemSku = baseBody("MLBSEMSKU1", {
+  title: "Produto Sem SKU",
+  variations: [
+    { id: 9001, attributes: [], attribute_combinations: [{ value_name: "Único" }] },
+  ],
+});
+
 const simples = baseBody("MLBSIMPLE1", {
   title: "Produto Simples",
   attributes: [sellerSku("SKU-SIMPLES")],
@@ -111,7 +130,9 @@ async function mlFetchFake(clienteId, path, options = {}) {
       data: {
         results: cenario === "legado"
           ? ["MLBLEGACY1", "MLBSIMPLE1"]
-          : cenario === "legado_completo" ? ["MLBLEGACY1"] : ["MLBUP1", "MLBUP2"],
+          : cenario === "legado_completo" ? ["MLBLEGACY1"]
+          : cenario === "dup_sem_sku" ? ["MLBDUP1", "MLBSEMSKU1"]
+          : ["MLBUP1", "MLBUP2"],
         scroll_id: null,
       },
     };
@@ -120,7 +141,9 @@ async function mlFetchFake(clienteId, path, options = {}) {
   if (path.startsWith("/items?ids=")) {
     const bodies = cenario === "legado"
       ? [legadoIncompleto, simples]
-      : cenario === "legado_completo" ? [legadoCompleto] : [up1, up2];
+      : cenario === "legado_completo" ? [legadoCompleto]
+      : cenario === "dup_sem_sku" ? [legadoSkuDuplicado, legadoSemSku]
+      : [up1, up2];
     return { ok: true, status: 200, data: bodies.map((body) => ({ code: 200, body })) };
   }
 
@@ -133,6 +156,8 @@ async function mlFetchFake(clienteId, path, options = {}) {
     const amount = {
       MLBLEGACY1: 120,
       MLBSIMPLE1: 80,
+      MLBDUP1: 60,
+      MLBSEMSKU1: 70,
       MLBUP1: 90,
       MLBUP2: 140,
     }[salePrice[1]];
@@ -225,21 +250,22 @@ async function run() {
     const dataRows = legado.matrizRows.slice(3);
     const linhasLegado = dataRows.filter((row) => row[0] === "MLBLEGACY1");
 
-    ok("Workbook adota as 9 colunas iniciais exigidas", JSON.stringify(headers.slice(0, 9)) === JSON.stringify([
-      "MLB", "MLBU", "ID Variação Legada", "SKU", "Variação", "Título", "Family ID", "Marketplace", "Chave Base",
+    ok("Workbook adota as 6 colunas iniciais exigidas", JSON.stringify(headers.slice(0, 6)) === JSON.stringify([
+      "MLB", "MLBU", "SKU(s)", "Variações", "Título", "Marketplace",
     ]));
-    ok("MLB legado com 3 variations gera 3 linhas", linhasLegado.length === 3);
-    ok("as 3 linhas repetem o mesmo MLB", linhasLegado.every((row) => row[0] === "MLBLEGACY1"));
-    ok("variation.id distintos são preservados", JSON.stringify(linhasLegado.map((row) => String(row[2]))) === JSON.stringify(["7001", "7002", "7003"]));
-    ok("SELLER_SKU e fallback aparecem na ordem esperada", JSON.stringify(linhasLegado.map((row) => row[3])) === JSON.stringify(["SKU-36", "SKU-38", "LEGACY-40"]));
-    ok("rótulos de variação são montados por attribute_combinations", JSON.stringify(linhasLegado.map((row) => row[4])) === JSON.stringify(["Bege | 36", "Bege | 38", "Bege | 40"]));
-    ok("preço efetivo é repetido nas variações", linhasLegado.every((row) => row[18] === 120));
-    ok("comissão percentual é repetida nas variações", linhasLegado.every((row) => row[13] === 0.1));
-    ok("frete é repetido nas variações", linhasLegado.every((row) => row[12] === 18));
-    ok("Chave Base continua sendo o MLB", linhasLegado.every((row) => row[8] === "MLBLEGACY1"));
-    ok("custo da Base por MLB é repetido nas variações", linhasLegado.every((row) => row[10] === 25));
-    ok("imposto da Base por MLB é repetido nas variações", linhasLegado.every((row) => row[11] === 0.08));
-    ok("taxa fixa da Base por MLB é repetida nas variações", linhasLegado.every((row) => row[14] === 3));
+    ok("ID Variação Legada não aparece mais na planilha", !headers.includes("ID Variação Legada"));
+    ok("Family ID não aparece mais na planilha", !headers.includes("Family ID"));
+    ok("Chave Base não aparece mais na planilha", !headers.includes("Chave Base"));
+
+    ok("MLB legado com 3 variations gera 1 linha (não 3)", linhasLegado.length === 1);
+    ok("SKU(s) contém os 3 SKUs na ordem das variations", linhasLegado[0][2] === "SKU-36; SKU-38; LEGACY-40");
+    ok("Variações reporta a quantidade real (3)", linhasLegado[0][3] === 3);
+    ok("preço efetivo é o único valor do MLB", linhasLegado[0][15] === 120);
+    ok("comissão percentual é o único valor do MLB", linhasLegado[0][10] === 0.1);
+    ok("frete é o único valor do MLB", linhasLegado[0][9] === 18);
+    ok("custo da Base por MLB é aplicado uma vez", linhasLegado[0][7] === 25);
+    ok("imposto da Base por MLB é aplicado uma vez", linhasLegado[0][8] === 0.08);
+    ok("taxa fixa da Base por MLB é aplicada uma vez", linhasLegado[0][11] === 3);
 
     ok("fallback include_attributes=all ocorre uma vez para o MLB afetado", chamadasDe("/items/MLBLEGACY1?include_attributes=all").length === 1);
     ok("sale_price ocorre uma vez para o MLB legado", chamadasDe("/items/MLBLEGACY1/sale_price").length === 1);
@@ -250,43 +276,56 @@ async function run() {
     ok("consulta complementar preserva family_id via bigIntFields", chamadas.find((call) => call.path.includes("include_attributes=all"))?.options.bigIntFields?.includes("family_id"));
 
     ok("Resumo separa 2 MLBs ativos", valorResumo(legado.resumoRows, "Total de MLBs ativos") === 2);
-    ok("Resumo separa 4 linhas de precificação", valorResumo(legado.resumoRows, "Total de linhas de precificação") === 4);
+    ok("Resumo agora conta 1 linha por MLB (2, não 4)", valorResumo(legado.resumoRows, "Total de linhas de precificação") === 2);
     ok("Resumo conta o MLB legado multivariante", valorResumo(legado.resumoRows, "MLBs legados multivariantes") === 1);
     ok("Resumo expõe a quantidade de linhas sem SKU", valorResumo(legado.resumoRows, "Linhas sem SKU") === 0);
-    ok("Resumo não chama linhas expandidas de anúncios ativos", !legado.resumoRows.some((row) => String(row[0] || "").toLowerCase().includes("anúncios ativos")));
 
     const formulasEsperadas = {
-      U4: 'IFERROR(S4-S4*L4-S4*N4-M4-K4-O4,"")',
-      V4: 'IFERROR(U4/S4,"")',
-      Y4: 'IFERROR((K4+M4+O4)/(1-L4-N4-X4),"")',
-      Z4: 'IFERROR(Y4*X4,"")',
-      AB4: 'IF(AF4="sem_base","Revisar custo/base",IF(AF4="sem_frete","Revisar frete",IF(AF4="sem_comissao","Revisar comissão",IF(S4<Y4,"Subir preço",IF(S4>Y4,"Avaliar redução","Manter")))))',
-      AC4: 'IF(AB4="Subir preço",Y4,S4)',
-      AD4: 'IFERROR(AC4-S4,"")',
-      AE4: 'IFERROR(AD4/S4,"")',
+      R4: 'IFERROR(P4-P4*I4-P4*K4-J4-H4-L4,"")',
+      S4: 'IFERROR(R4/P4,"")',
+      V4: 'IFERROR((H4+J4+L4)/(1-I4-K4-U4),"")',
+      W4: 'IFERROR(V4*U4,"")',
+      Y4: 'IF(AC4="sem_base","Revisar custo/base",IF(AC4="sem_frete","Revisar frete",IF(AC4="sem_comissao","Revisar comissão",IF(P4<V4,"Subir preço",IF(P4>V4,"Avaliar redução","Manter")))))',
+      Z4: 'IF(Y4="Subir preço",V4,P4)',
+      AA4: 'IFERROR(Z4-P4,"")',
+      AB4: 'IFERROR(AA4/P4,"")',
     };
     Object.entries(formulasEsperadas).forEach(([address, formula]) => {
-      ok(`fórmula ${address} foi deslocada sem mudar a matemática`, legado.matriz[address]?.f === formula);
+      ok(`fórmula ${address} preserva a mesma matemática nas novas colunas`, legado.matriz[address]?.f === formula);
     });
     const formulas = Object.values(legado.matriz).map((cell) => cell?.f).filter(Boolean);
-    ok("não há SUM/AVG/COUNT financeiro sobre linhas expandidas", formulas.every((formula) => !/\b(?:SUM|AVG|COUNT)\s*\(/i.test(formula)));
-    ok("autofilter cobre a nova última coluna AH", legado.matriz["!autofilter"]?.ref === "A3:AH7");
+    ok("não há SUM/AVG/COUNT financeiro sobre linhas", formulas.every((formula) => !/\b(?:SUM|AVG|COUNT)\s*\(/i.test(formula)));
+    ok("autofilter cobre a nova última coluna AE", legado.matriz["!autofilter"]?.ref === "A3:AE5");
 
     cenario = "legado_completo";
     const resultadoLegadoCompleto = await gerar(gerarPlanilhaPrecificacaoSemBase);
     const legadoJaCompleto = lerWorkbook(resultadoLegadoCompleto.buffer);
-    ok("multiget legado já completo mantém as 3 variations", legadoJaCompleto.matrizRows.slice(3).length === 3);
+    ok("multiget legado já completo também consolida em 1 linha", legadoJaCompleto.matrizRows.slice(3).length === 1);
     ok("multiget legado já completo não dispara chamada complementar", chamadasDe("include_attributes=all").length === 0);
     ok("multiget legado já completo ainda enriquece finanças só uma vez", chamadasDe("/sale_price").length === 1 && chamadasDe("/sites/MLB/listing_prices").length === 1 && chamadasDe("/shipping_options/free").length === 1);
+
+    cenario = "dup_sem_sku";
+    const resultadoDupSemSku = await gerar(gerarPlanilhaPrecificacaoSemBase);
+    const dupSemSku = lerWorkbook(resultadoDupSemSku.buffer);
+    const linhasDupSemSkuRows = dupSemSku.matrizRows.slice(3);
+    const linhaDup = linhasDupSemSkuRows.find((row) => row[0] === "MLBDUP1");
+    const linhaSemSku = linhasDupSemSkuRows.find((row) => row[0] === "MLBSEMSKU1");
+
+    ok("SKU duplicado aparece uma vez na célula SKU(s)", linhaDup[2] === "SKU-REPETIDO");
+    ok("Variações continua contando as 2 variations reais mesmo com SKU repetido", linhaDup[3] === 2);
+    ok("item sem SKU continua gerando linha", !!linhaSemSku);
+    ok("SKU ausente não é inventado na célula SKU(s)", linhaSemSku[2] === "");
+    ok("Variações do item sem SKU é 1 (1 variation, sem SKU)", linhaSemSku[3] === 1);
+    ok("Resumo conta a linha sem SKU", valorResumo(dupSemSku.resumoRows, "Linhas sem SKU") === 1);
 
     cenario = "up";
     const resultadoUp = await gerar(gerarPlanilhaPrecificacaoSemBase);
     const up = lerWorkbook(resultadoUp.buffer);
     const upRows = up.matrizRows.slice(3);
     ok("dois MLBs do mesmo MLBU continuam duas linhas", upRows.length === 2 && new Set(upRows.map((row) => row[0])).size === 2);
-    ok("MLBU e SKU iguais não colapsam os MLBs", upRows.every((row) => row[1] === "MLBU9000" && row[3] === "SKU-UP"));
-    ok("family_id grande permanece string íntegra", upRows.every((row) => row[6] === familyIdGrande && typeof row[6] === "string"));
-    ok("preços diferentes permanecem por MLB", JSON.stringify(upRows.map((row) => row[18])) === JSON.stringify([90, 140]));
+    ok("MLBU e SKU iguais não colapsam os MLBs", upRows.every((row) => row[1] === "MLBU9000" && row[2] === "SKU-UP"));
+    ok("User Product sem variations reporta Variações = 1", upRows.every((row) => row[3] === 1));
+    ok("preços diferentes permanecem por MLB", JSON.stringify(upRows.map((row) => row[15])) === JSON.stringify([90, 140]));
     ok("User Products sem variations não disparam consulta complementar", chamadasDe("include_attributes=all").length === 0);
     ok("User Products continuam com enriquecimento financeiro uma vez por MLB", chamadasDe("/sale_price").length === 2 && chamadasDe("/sites/MLB/listing_prices").length === 2 && chamadasDe("/shipping_options/free").length === 2);
     ok("requests do cenário UP também preservam mlUserId da Conta B", chamadas.every((call) => call.options.mlUserId === "222"));

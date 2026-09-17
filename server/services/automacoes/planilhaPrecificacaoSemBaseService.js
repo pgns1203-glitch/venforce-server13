@@ -95,7 +95,7 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
     for (const lote of diagChunk(ids, DIAG_BATCH_DETAILS)) {
       let detalhes = [];
       try {
-        const batch = await mlFetch(clienteId, `/items?ids=${lote.join(",")}`);
+        const batch = await mlFetch(clienteId, `/items?ids=${lote.join(",")}`, { mlUserId });
         if (batch.ok && Array.isArray(batch.data)) detalhes = batch.data;
       } catch (_) {
         detalhes = [];

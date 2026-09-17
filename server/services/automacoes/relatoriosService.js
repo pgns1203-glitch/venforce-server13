@@ -512,6 +512,7 @@ async function gerarExportRelatorioCsv({ idRaw }) {
 // estrutura, mesmas fórmulas, mesma formatação em ambos os casos.
 function construirWorkbookMatrizPrecificacao({ resumoRows, resumoPctCells = [], itens, margemAlvoPadrao = null }) {
   const paraDecimalPct = (v) => {
+    if (v === null || v === undefined || v === "") return null;
     const n = Number(v);
     if (!Number.isFinite(n)) return null;
     return n > 1 ? n / 100 : n;
@@ -722,6 +723,7 @@ async function gerarExportRelatorioXlsx({ idRaw }) {
   const { relatorio, itens } = dados;
 
   const paraDecimalPct = (v) => {
+    if (v === null || v === undefined || v === "") return null;
     const n = Number(v);
     if (!Number.isFinite(n)) return null;
     return n > 1 ? n / 100 : n;

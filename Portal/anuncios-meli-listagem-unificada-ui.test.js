@@ -1709,6 +1709,46 @@ async function run() {
       }
     });
 
+    await check("38b — precoAtual (ao vivo, do Motor) atualiza in-place só o valor 'atual', sem apagar o preço riscado (preco_original)", async () => {
+      // achado do merge com feat/anuncios-motor-margem-pausados: a célula de
+      // preço tem DOIS donos (preco_original riscado + precoAtual ao vivo) e
+      // uma resolução de conflito ingênua no GitHub (accept current/incoming
+      // inteiro) apaga um dos dois. Aqui provamos que os dois convivem.
+      performanceHandler = (ids) => {
+        const margem = {};
+        ids.forEach((id) => {
+          margem[id] = Object.assign(
+            {},
+            MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
+            id === "MLB-SEMUP" ? { precoAtual: 44.9 } : {}
+          );
+        });
+        return { ok: true, metricas7d: {}, margem, margemIndisponivel: null };
+      };
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
+        await waitFor(cdp, `(function(){
+          var el = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__preco-atual');
+          return el && /44,90/.test(el.textContent);
+        })()`, "o preço 'atual' não atualizou ao vivo (precoAtual do Motor)");
+
+        const estado = await cdp.evaluate(`(function(){
+          var cel = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__preco');
+          return {
+            original: cel.querySelector('.am-row__preco-original').textContent.trim(),
+            atual: cel.querySelector('.am-row__preco-atual').textContent.trim(),
+          };
+        })()`);
+        assert.strictEqual(estado.original, "R$ 69,90", "o preço riscado não pode sumir quando o preço ao vivo chega");
+        assert.strictEqual(estado.atual, "R$ 44,90", "o valor atual precisa refletir precoAtual (ao vivo), não mais o sincronizado (R$ 49,90)");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
     /* ── 39: resiliência — falha total nunca deixa a célula presa ───────── */
 
     errosAcumulados = errosAcumulados.concat(await cdp.evaluate("window.__erros || []"));

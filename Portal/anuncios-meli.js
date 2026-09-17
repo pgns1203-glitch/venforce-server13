@@ -1312,21 +1312,6 @@
       '" data-margem-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
   }
 
-  // Preço da linha — alimentado pelo MESMO GET /anuncios-meli/performance da
-  // margem (margem[itemId].precoAtual, `item.pricing.current` do Motor: a
-  // cotação ao vivo do sale_price, não recalculada aqui). Enquanto a
-  // performance não chegou, ou quando o Motor não tem evidência de preço
-  // (`precoAtual == null` — nunca 0), mostra o preço já sincronizado
-  // (`a.preco`) que a listagem sempre teve — o Motor só substitui quando
-  // tem algo melhor para mostrar, nunca esvazia o preço da tela.
-  function precoCelulaHtml(a, classe) {
-    var cache = AM.state.performanceCache[a.item_id];
-    var m = cache && cache.margem;
-    var preco = m && m.precoAtual != null ? m.precoAtual : a.preco;
-    return '<span class="' + classe + '" data-preco-item="' + escapeAttr(a.item_id) + '">' +
-      formatMoeda(preco, a.moeda) + "</span>";
-  }
-
   // Busca metricas7d, margem e/ou composição da margem para os item_id
   // pedidos — só o aspecto que FALTA em cada um (AM.state.performanceCache
   // guarda os três de forma independente: `temMetricas`/`temMargem`/
@@ -1491,16 +1476,21 @@
       cel.classList.remove("am-margem--carregando");
       cel.innerHTML = margemConteudoHtml(cache ? cache.margem : null, cache ? cache.margemIndisponivel : null);
     });
-    // Preço: só troca a célula quando o Motor realmente trouxe precoAtual —
-    // sem evidência (null) a célula fica exatamente como nasceu, mostrando
-    // o preço sincronizado (a.preco). Nunca zera nem apaga o que já tinha.
+    // Preço: só troca quando o Motor realmente trouxe precoAtual — sem
+    // evidência (null) a célula fica exatamente como nasceu, mostrando o
+    // preço sincronizado (a.preco). Nunca zera nem apaga o que já tinha.
+    // Repinta só o valor "atual" (o span próprio, quando existe — ver
+    // celulaPrecoHtml), nunca a célula inteira: com promoção ativa, a célula
+    // também guarda o preço cheio riscado, e sobrescrever o innerHTML/
+    // textContent inteiro apagaria essa linha.
     document.querySelectorAll("[data-preco-item]").forEach(function (cel) {
       var id = cel.getAttribute("data-preco-item");
       if (!alvo[id]) return;
       var cache = AM.state.performanceCache[id];
       var m = cache && cache.margem;
       if (m && m.precoAtual != null) {
-        cel.textContent = formatMoeda(m.precoAtual);
+        var celAtual = cel.querySelector(".am-row__preco-atual, .am-mlb__preco-atual") || cel;
+        celAtual.textContent = formatMoeda(m.precoAtual);
       }
     });
   }
@@ -1528,28 +1518,47 @@
       escapeHtml(rotulo) + "</button>";
   }
 
+  // Célula de preço da lista (linha do agrupador/avulso e linha da expansão
+  // compartilham a mesma grade --am-cols, ver rowMlbCompactaHtml/rowAnuncioHtml)
+  // — mesmo padrão de celulaEstoqueHtml(a, classeColuna) logo abaixo.
+  //
+  // O valor "atual" prioriza `margem[itemId].precoAtual` (`item.pricing.current`,
+  // obtido AO VIVO pelo Motor de Margem via GET /performance — mesma cotação
+  // de sale_price que a composição do modal usa como `venda`) sobre o preço
+  // sincronizado (`a.preco`). Enquanto a performance não chegou, ou quando o
+  // Motor não tem evidência (`precoAtual == null` — nunca 0), fica o
+  // sincronizado. `data-preco-item` é o que permite repintarPerformanceEmCelulas
+  // atualizar só esse valor in-place quando a chamada resolve depois da linha
+  // já estar na tela — nunca reescrevendo a célula inteira (isso apagaria o
+  // preço riscado abaixo).
+  //
+  // `preco_original` só vem preenchido quando havia promoção ativa NO MOMENTO
+  // DA SINCRONIZAÇÃO (mesma convenção do backend usada no cabeçalho do modal,
+  // ver top2Html) — o Motor não expõe um "preço cheio" ao vivo, só o efetivo,
+  // então o riscado continua vindo do snapshot mesmo quando o valor abaixo
+  // dele já foi atualizado para o mais recente. Sem promoção, a célula é só o
+  // preço, sem o valor riscado em cima.
+  function celulaPrecoHtml(a, classeColuna) {
+    var classe = classeColuna || "am-mlb__preco";
+    var cache = AM.state.performanceCache[a.item_id];
+    var m = cache && cache.margem;
+    var atual = m && m.precoAtual != null ? m.precoAtual : a.preco;
+
+    if (!a.preco_original) {
+      return '<span class="' + classe + '" data-preco-item="' + escapeAttr(a.item_id) + '">' +
+        formatMoeda(atual, a.moeda) + "</span>";
+    }
+    return '<span class="' + classe + " " + classe + '--promo" data-preco-item="' + escapeAttr(a.item_id) + '">' +
+      '<span class="' + classe + '-original">' + formatMoeda(a.preco_original, a.moeda) + "</span>" +
+      '<span class="' + classe + '-atual">' + formatMoeda(atual, a.moeda) + "</span>" +
+    "</span>";
+  }
+
   // `classeColuna` é a classe de coluna do nível que está desenhando a linha
   // (.am-mlb__num no filho, .am-row__num no anúncio individual): a célula se
   // comporta igual nos dois, mas continua vestida como a coluna do seu nível.
   // `.am-estoque` é o que marca "esta célula é editável" — é por ela que o
   // bind acha as células e que os handlers de linha sabem não abrir o modal.
-  // Célula de preço da lista (linha do agrupador e linha da expansão
-  // compartilham a mesma grade --am-cols, ver rowMlbCompactaHtml/rowAnuncioHtml)
-  // — mesmo padrão de celulaEstoqueHtml(a, classeColuna) logo abaixo.
-  // `preco_original` só vem preenchido quando há promoção ativa (mesma
-  // convenção do backend usada no cabeçalho do modal, ver top2Html); sem
-  // promoção a célula é só o preço, sem o valor riscado em cima.
-  function celulaPrecoHtml(a, classeColuna) {
-    var classe = classeColuna || "am-mlb__preco";
-    if (!a.preco_original) {
-      return '<span class="' + classe + '">' + formatMoeda(a.preco, a.moeda) + "</span>";
-    }
-    return '<span class="' + classe + " " + classe + '--promo">' +
-      '<span class="' + classe + '-original">' + formatMoeda(a.preco_original, a.moeda) + "</span>" +
-      '<span class="' + classe + '-atual">' + formatMoeda(a.preco, a.moeda) + "</span>" +
-    "</span>";
-  }
-
   function celulaEstoqueHtml(a, classeColuna) {
     var tem = a.estoque != null;
     return '<span class="' + (classeColuna || "am-mlb__num") + ' am-estoque" data-estoque-item="' +

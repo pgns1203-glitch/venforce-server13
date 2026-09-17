@@ -93,9 +93,38 @@ function expandirItemEmReferencias(body) {
   }];
 }
 
+// Consolida as referências (uma por variation, ou uma só para item sem
+// variations/User Product) de volta em UMA linha por MLB: SKUs distintos
+// concatenados para exibição, e Variações sempre com a contagem real de
+// referências — mesmo quando o SKU se repete entre elas.
+function consolidarReferenciasEmLinha(referencias) {
+  const refs = Array.isArray(referencias) ? referencias : [];
+  if (!refs.length) return null;
+
+  const skusVistos = new Set();
+  const skusUnicos = [];
+  refs.forEach((ref) => {
+    const sku = textoOuNulo(ref?.sku);
+    if (sku && !skusVistos.has(sku)) {
+      skusVistos.add(sku);
+      skusUnicos.push(sku);
+    }
+  });
+
+  const primeira = refs[0];
+  return {
+    item_id: primeira.item_id,
+    user_product_id: primeira.user_product_id,
+    family_id: primeira.family_id,
+    skus: skusUnicos.join("; "),
+    variacoes: refs.length,
+  };
+}
+
 module.exports = {
   extrairSellerSku,
   rotuloVariation,
   expandirItemEmReferencias,
+  consolidarReferenciasEmLinha,
   nomeVariacaoUserProduct,
 };

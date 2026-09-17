@@ -3,6 +3,7 @@ const {
   extrairSellerSku,
   rotuloVariation,
   expandirItemEmReferencias,
+  consolidarReferenciasEmLinha,
   nomeVariacaoUserProduct,
 } = require("../services/meli/meliItemIdentityService");
 
@@ -96,6 +97,26 @@ function run() {
   ok("G — MLBU é enriquecimento e MLB não é substituído", userProduct[0].item_id === "MLB300" && userProduct[0].user_product_id === "MLBU999");
   ok("G — nome amigável de UP usa sufixo seguro", userProduct[0].variacao_label === "Bege 36" && nomeVariacaoUserProduct({ title: "Produto" }) === "Produto");
   ok("H — family_id grande permanece string íntegra", userProduct[0].family_id === familyId && typeof userProduct[0].family_id === "string");
+
+  const consolidadoLegado = consolidarReferenciasEmLinha(legado);
+  ok("I — consolidar 3 referências vira 1 linha", consolidadoLegado.variacoes === 3);
+  ok("I — SKU(s) concatena os 3 SKUs distintos", consolidadoLegado.skus === "SKU-36; SKU-38; SKU-40");
+  ok("I — MLB da linha consolidada é o do item", consolidadoLegado.item_id === "MLB200");
+
+  const consolidadoDuplicado = consolidarReferenciasEmLinha(duplicado);
+  ok("J — SKU duplicado aparece uma vez na célula", consolidadoDuplicado.skus === "SKU-REPETIDO");
+  ok("J — Variações continua contando as 2 variations reais", consolidadoDuplicado.variacoes === 2);
+
+  const consolidadoSemSku = consolidarReferenciasEmLinha(semSku);
+  ok("K — variation sem SKU continua gerando linha consolidada", consolidadoSemSku.variacoes === 1);
+  ok("K — SKU ausente não é inventado na consolidação", consolidadoSemSku.skus === "");
+
+  const consolidadoSimples = consolidarReferenciasEmLinha(simples);
+  ok("L — item simples consolida para 1 linha com 1 variação", consolidadoSimples.variacoes === 1 && consolidadoSimples.skus === "SKU-SIMPLES");
+
+  const consolidadoUserProduct = consolidarReferenciasEmLinha(userProduct);
+  ok("M — User Product consolida para 1 linha por MLB", consolidadoUserProduct.item_id === "MLB300" && consolidadoUserProduct.user_product_id === "MLBU999");
+  ok("N — consolidarReferenciasEmLinha de lista vazia retorna null", consolidarReferenciasEmLinha([]) === null);
 
   console.log(`\n✓ meliItemIdentityService: ${checks} verificações`);
 }

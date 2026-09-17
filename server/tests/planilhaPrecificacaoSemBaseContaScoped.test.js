@@ -207,7 +207,7 @@ function validarPipelineConta({ label, resultado, chamadas, seller, bearer }) {
   const sheet = workbook.Sheets["Matriz Mercado Livre"];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
   ok(`${label} — workbook contém os dois IDs`, rows.some((row) => row[0] === `MLB${seller}001`) && rows.some((row) => row[0] === `MLB${seller}002`));
-  ok(`${label} — workbook contém os títulos do fake`, rows.some((row) => row[5] === `Produto MLB${seller}001`) && rows.some((row) => row[5] === `Produto MLB${seller}002`));
+  ok(`${label} — workbook contém os títulos do fake`, rows.some((row) => row[4] === `Produto MLB${seller}001`) && rows.some((row) => row[4] === `Produto MLB${seller}002`));
 }
 
 async function run() {

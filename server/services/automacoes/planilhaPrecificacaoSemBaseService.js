@@ -12,7 +12,7 @@ const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
 const { exigirContextoGrantMl } = require("./contextoPrecificacaoService");
 const { construirWorkbookMatrizPrecificacao, normalizarSlug } = require("./relatoriosService");
-const { expandirItemEmReferencias } = require("../meli/meliItemIdentityService");
+const { expandirItemEmReferencias, consolidarReferenciasEmLinha } = require("../meli/meliItemIdentityService");
 const {
   diagEnriquecerItem,
   diagChunk,
@@ -144,6 +144,7 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
             body = await completarVariacoesLegadas({ clienteId, mlUserId, body });
             const referencias = expandirItemEmReferencias(body);
             if (!referencias.length) return null;
+            const consolidado = consolidarReferenciasEmLinha(referencias);
             const baseRow = casarCustoDoItem(body.id, mapasCusto);
             const financeiro = await diagEnriquecerItem({
               clienteId,
@@ -154,12 +155,18 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
             });
             return {
               legadoMultivariante: Array.isArray(body.variations) && body.variations.length > 0,
-              linhas: referencias.map((referencia) => ({
+              // 1 MLB = 1 linha: as N referências por variation viram uma só
+              // linha com SKUs consolidados; o financeiro continua único por MLB.
+              linhas: [{
                 ...financeiro,
-                ...referencia,
+                item_id: consolidado.item_id,
+                user_product_id: consolidado.user_product_id,
+                family_id: consolidado.family_id,
+                skus: consolidado.skus,
+                variacoes: consolidado.variacoes,
                 titulo: body.title || null,
                 chave_base: String(body.id),
-              })),
+              }],
             };
           } catch (_) {
             return null;
@@ -184,7 +191,7 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
     linhas,
     totalMlbsAtivos: mlbsAtivos.size,
     mlbsLegadosMultivariantes: mlbsLegadosMultivariantes.size,
-    linhasSemSku: linhas.filter((linha) => !linha.sku).length,
+    linhasSemSku: linhas.filter((linha) => !linha.skus).length,
   };
 }
 

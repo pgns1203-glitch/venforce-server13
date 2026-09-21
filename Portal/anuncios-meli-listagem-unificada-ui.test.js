@@ -293,6 +293,12 @@ const pedidos = [];
 const escritasEstoque = [];
 let estoqueHandler = null;
 
+// Escritas de estoque de VARIAÇÃO LEGADA (PATCH .../variacoes-legado/:id/estoque)
+// e o gancho para forçar uma resposta específica (recusa comum ou perda
+// crítica de variação).
+const escritasEstoqueVariacaoLegado = [];
+let estoqueVariacaoLegadoHandler = null;
+
 // GET /anuncios-meli/performance (métricas últ. 7 dias + margem — sempre
 // DEPOIS do primeiro paint, nunca bloqueia). `chamadasPerformance` registra
 // cada chamada com os item_id EXATOS que vieram na query string — é o que
@@ -527,6 +533,34 @@ function wireInterception(cdp) {
         if (incluirMargem) margem[id] = MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
       });
       await corpo({ ok: true, metricas7d, margem, margemIndisponivel: null });
+      return;
+    }
+
+    // PATCH /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque —
+    // escrita real de estoque de uma variação legada. Precisa vir ANTES do
+    // GET .../variacoes-legado logo abaixo: o regex dele casaria este mesmo
+    // caminho (é um prefixo dele) e devolveria a resposta de LEITURA para um
+    // PATCH de ESCRITA.
+    const mEstoqueVariacaoLegado = caminho.match(/^\/anuncios-meli\/([^/?]+)\/variacoes-legado\/([^/?]+)\/estoque/);
+    if (mEstoqueVariacaoLegado) {
+      const itemId = decodeURIComponent(mEstoqueVariacaoLegado[1]);
+      const variationId = Number(decodeURIComponent(mEstoqueVariacaoLegado[2]));
+      const enviado = JSON.parse(params.request.postData || "{}");
+      escritasEstoqueVariacaoLegado.push({ itemId, variationId, corpo: enviado });
+      if (estoqueVariacaoLegadoHandler) { await corpo(estoqueVariacaoLegadoHandler(itemId, variationId, enviado)); return; }
+
+      const base = itemId === "MLB-SEMUP" ? VARIACOES_LEGADO_MLB_SEMUP : [];
+      const atualizadas = base.map((v) =>
+        v.id === variationId ? { ...v, available_quantity: Number(enviado.estoque) } : v
+      );
+      await corpo({
+        ok: true,
+        variacoes: atualizadas.map((v) => ({
+          id: v.id,
+          atributos: v.attribute_combinations.map((ac) => ({ nome: ac.name, valor: ac.value_name })),
+          preco: v.price, estoque: v.available_quantity, vendidos: v.sold_quantity,
+        })),
+      });
       return;
     }
 
@@ -834,6 +868,96 @@ async function run() {
       assert.strictEqual(contar(/^\/anuncios-meli\/MLB-SEMUP\?/, antes), 1, "o modal precisa buscar o detalhe do item");
       // Fecha o modal para não atrapalhar as próximas verificações.
       await clicar(cdp, '#am-det-modal [data-acao="fechar"]');
+    });
+
+    const celEstoqueVariacaoLegado = (variationId) =>
+      `.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel .am-mlb--variacao-legado[data-variacao="${variationId}"] .am-estoque`;
+
+    await check("7f — editar o estoque de UMA variação legada: PATCH por variação, painel repintado com os dados frescos do backend", async () => {
+      escritasEstoqueVariacaoLegado.length = 0;
+      const antesGets = chamadasVariacoesLegado.length;
+
+      await clicar(cdp, `${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input')`,
+        "o campo de edição da variação não abriu");
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input');
+        inp.value = '9';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn')`,
+        "a variação não voltou ao estado de leitura após salvar");
+
+      const estado = await cdp.evaluate(`(function(){
+        var painel = document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel');
+        var linhas = Array.from(painel.querySelectorAll('.am-mlb--variacao-legado'));
+        return {
+          totalLinhas: linhas.length,
+          estoqueAlvo: document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn').textContent.trim(),
+          estoqueOutra: document.querySelector('${celEstoqueVariacaoLegado(15092589431)} .am-estoque__btn').textContent.trim(),
+        }; })()`);
+
+      assert.strictEqual(escritasEstoqueVariacaoLegado.length, 1, "esperava exatamente 1 PATCH");
+      assert.strictEqual(escritasEstoqueVariacaoLegado[0].itemId, "MLB-SEMUP");
+      assert.strictEqual(escritasEstoqueVariacaoLegado[0].variationId, 15092589430);
+      assert.strictEqual(escritasEstoqueVariacaoLegado[0].corpo.estoque, 9);
+      assert.strictEqual(estado.totalLinhas, 2, "o painel continua com as 2 variações depois de repintar");
+      assert.strictEqual(estado.estoqueAlvo, "9", "a variação editada precisa refletir o valor confirmado pelo backend");
+      assert.strictEqual(estado.estoqueOutra, "1", "a OUTRA variação não pode mudar — cada edição é por variação, sem propagação");
+      assert.strictEqual(chamadasVariacoesLegado.length, antesGets,
+        "sucesso não pode disparar um novo GET — o backend já devolveu as variações frescas na resposta do PATCH");
+    });
+
+    await check("7g — recusa comum do Mercado Livre: a variação volta ao valor anterior, sem sucesso silencioso", async () => {
+      estoqueVariacaoLegadoHandler = () => ({ ok: false, codigo: "VARIACAO_GERENCIADA_EXTERNAMENTE", motivo: "Estoque gerenciado externamente." });
+
+      await clicar(cdp, `${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input')`,
+        "o campo de edição da variação não abriu");
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input');
+        inp.value = '77';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      })()`);
+      await waitFor(cdp, "document.querySelector('.vf-toast.is-danger')", "a recusa do backend não virou aviso na tela");
+
+      const estoqueAlvo = await cdp.evaluate(
+        `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn').textContent.trim()`
+      );
+      assert.strictEqual(estoqueAlvo, "9", "recusa comum não pode alterar o valor exibido — continua o da verificação 7f");
+      estoqueVariacaoLegadoHandler = null;
+    });
+
+    await check("7h — perda crítica de variação: nunca sucesso, o painel é recarregado do zero (cache descartado)", async () => {
+      // O GET de recarregamento (.../variacoes-legado) não passa por este
+      // handler — só o PATCH. Por isso não precisa "desarmar" nada depois: a
+      // releitura forçada sempre cai no fixture padrão.
+      estoqueVariacaoLegadoHandler = () => ({
+        ok: false, codigo: "PERDA_DE_VARIACAO", critico: true,
+        motivo: "Uma ou mais variações podem ter sido removidas. Confira no Mercado Livre.",
+      });
+      const antesGets = chamadasVariacoesLegado.length;
+
+      await clicar(cdp, `${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input')`,
+        "o campo de edição da variação não abriu");
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input');
+        inp.value = '3';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      })()`);
+      await waitFor(cdp, "document.querySelector('.vf-toast.is-danger')", "a perda crítica não virou aviso na tela");
+
+      // A releitura forçada é assíncrona: espera o painel voltar a mostrar as
+      // 2 variações (prova de que o GET de recarregamento completou).
+      await waitFor(cdp, `(function(){
+        var painel = document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel');
+        return painel && painel.querySelectorAll('.am-mlb--variacao-legado').length === 2;
+      })()`, "o painel não recarregou depois da perda crítica");
+
+      assert.ok(chamadasVariacoesLegado.length > antesGets,
+        "perda crítica precisa forçar uma NOVA leitura — o cache local não é mais confiável");
+      estoqueVariacaoLegadoHandler = null;
     });
 
     /* ── 8 a 10: expansão explícita, hierarquia e UP com 2 MLBs ─────────── */

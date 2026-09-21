@@ -1042,16 +1042,18 @@
     var anuncio = AM.anuncios.find(function (a) { return a.item_id === itemId; });
     var moeda = anuncio && anuncio.moeda;
     var html = "";
-    variacoes.forEach(function (v) { html += rowVariacaoLegadoHtml(v, moeda); });
+    variacoes.forEach(function (v) { html += rowVariacaoLegadoHtml(v, moeda, itemId); });
     painel.innerHTML = html;
+    bindEstoqueVariacaoLegadoEditavel(painel);
   }
 
   // Uma variação do modelo LEGADO — MESMA grade de rowMlbCompactaHtml (nunca
   // desalinha o cabeçalho), mas as células que o ML não reporta por variação
   // (status, métricas 7d, margem, score) ficam "—" explicado por título, em
-  // vez de inventar um valor. A ação de editar fica vazia de propósito: ver o
-  // comentário do bloco acima.
-  function rowVariacaoLegadoHtml(v, moeda) {
+  // vez de inventar um valor. O estoque é editável (ver bloco "ESTOQUE
+  // EDITÁVEL DE VARIAÇÃO LEGADA" mais abaixo); as demais colunas sem dado por
+  // variação continuam sem ação, porque não há o que editar nelas.
+  function rowVariacaoLegadoHtml(v, moeda, itemId) {
     var rotulo = (v.atributos || []).length
       ? v.atributos.map(function (at) { return at.valor; }).join(" · ")
       : "Variação sem atributos";
@@ -1063,7 +1065,7 @@
       "</span>" +
       '<span class="vf-status is-empty" title="O Mercado Livre não reporta status por variação — só por anúncio (MLB)">—</span>' +
       '<span class="am-mlb__preco">' + escapeHtml(formatMoeda(v.preco, moeda)) + "</span>" +
-      '<span class="am-mlb__num">' + (v.estoque != null ? v.estoque : "—") + "</span>" +
+      celulaEstoqueVariacaoLegadoHtml(v, itemId) +
       '<span class="am-mlb__num">' + (v.vendidos != null ? v.vendidos : "—") + "</span>" +
       '<span class="am-metricas7d am-metricas7d--indisponivel" title="Métricas últ. 7 dias são só por anúncio (MLB) — o Mercado Livre não as reporta por variação">—</span>' +
       '<span class="am-margem am-margem--indisponivel" title="Margem é só por anúncio (MLB) — o Mercado Livre não reporta custo por variação">—</span>' +
@@ -1934,6 +1936,146 @@
       c.setAttribute("data-estoque-valor", String(valor));
       c.classList.remove("is-salvando");
       pintarEstoqueLeitura(c);
+    });
+  }
+
+  // ===========================================================================
+  // ESTOQUE EDITÁVEL DE VARIAÇÃO LEGADA (item_id -> variations[])
+  //
+  // Mesma interação do bloco "ESTOQUE EDITÁVEL NA LINHA DO MLB" acima (clique
+  // no número, Enter salva, Esc/perder foco cancela, `botaoEstoqueHtml`
+  // compartilhado) — mas a escrita e a reação a sucesso são outras:
+  //
+  //   PATCH /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque
+  //   -> meliVariacoesLegadoEstoqueService: GET fresco -> PUT /items com a
+  //      propriedade `variations` INTEIRA -> GET de confirmação.
+  //
+  // Não existe replicação por User Product aqui (o modelo legado não tem
+  // User Product) e não existe patch otimista de uma célula só: a escrita
+  // reenvia o array inteiro de variações, então em caso de sucesso o PAINEL
+  // INTEIRO é substituído pelas variações FRESCAS que o backend acabou de
+  // confirmar (`dados.variacoes`) — nunca um número isolado calculado aqui.
+  //
+  // `dados.critico` (perda de variação detectada pelo backend DEPOIS do PUT)
+  // nunca é tratado como falha comum: o cache local é descartado e o painel é
+  // recarregado do zero, porque a tela não pode continuar mostrando um estado
+  // que pode não existir mais no Mercado Livre.
+  // ===========================================================================
+
+  function celulaEstoqueVariacaoLegadoHtml(v, itemId) {
+    var tem = v.estoque != null;
+    return '<span class="am-mlb__num am-estoque" data-variacao-item="' + escapeAttr(itemId) +
+      '" data-variacao-id="' + escapeAttr(v.id) +
+      '" data-estoque-valor="' + escapeAttr(tem ? v.estoque : "") + '">' +
+      botaoEstoqueHtml(tem ? String(v.estoque) : "—") + "</span>";
+  }
+
+  function bindEstoqueVariacaoLegadoEditavel(painel) {
+    painel.querySelectorAll(".am-estoque[data-variacao-id]").forEach(function (cel) {
+      cel.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (e.target.closest(".am-estoque__btn")) abrirEditorEstoqueVariacaoLegado(cel);
+      });
+    });
+  }
+
+  function pintarEstoqueVariacaoLegadoLeitura(cel) {
+    var bruto = cel.getAttribute("data-estoque-valor");
+    cel.removeAttribute("data-estoque-editando");
+    cel.classList.remove("is-editando", "is-salvando");
+    cel.innerHTML = botaoEstoqueHtml(bruto === "" || bruto === null ? "—" : bruto);
+  }
+
+  function abrirEditorEstoqueVariacaoLegado(cel) {
+    if (cel.getAttribute("data-estoque-editando") === "1") return;
+    if (cel.classList.contains("is-salvando")) return;
+    var atual = cel.getAttribute("data-estoque-valor") || "";
+    cel.setAttribute("data-estoque-editando", "1");
+    cel.classList.add("is-editando");
+    cel.innerHTML = '<input type="number" class="am-estoque__input" min="0" step="1" ' +
+      'inputmode="numeric" value="' + escapeAttr(atual) + '" ' +
+      'title="Enter salva no Mercado Livre, Esc cancela" ' +
+      'aria-label="Estoque em unidades. Enter salva no Mercado Livre, Esc cancela." />';
+    var input = cel.querySelector(".am-estoque__input");
+    if (!input) return;
+    input.focus();
+    input.select();
+
+    input.addEventListener("keydown", function (e) {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        salvarEstoqueVariacaoLegado(cel, input.value);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        pintarEstoqueVariacaoLegadoLeitura(cel);
+      }
+    });
+
+    // Sair do campo CANCELA — nunca salva (mesma decisão do editor do MLB).
+    input.addEventListener("blur", function () {
+      if (cel.classList.contains("is-salvando")) return;
+      pintarEstoqueVariacaoLegadoLeitura(cel);
+    });
+  }
+
+  function salvarEstoqueVariacaoLegado(cel, bruto) {
+    var itemId = cel.getAttribute("data-variacao-item");
+    var variationId = cel.getAttribute("data-variacao-id");
+    var anterior = cel.getAttribute("data-estoque-valor") || "";
+    var texto = String(bruto == null ? "" : bruto).trim();
+
+    if (texto === anterior) { pintarEstoqueVariacaoLegadoLeitura(cel); return; }
+    if (!/^\d+$/.test(texto)) {
+      toast("O estoque precisa ser um número inteiro igual ou maior que zero.", "is-danger");
+      pintarEstoqueVariacaoLegadoLeitura(cel);
+      return;
+    }
+
+    cel.classList.remove("is-editando");
+    cel.classList.add("is-salvando");
+    cel.removeAttribute("data-estoque-editando");
+    cel.innerHTML = '<span class="am-estoque__salvando" aria-live="polite">salvando…</span>';
+
+    var corpo = { clienteSlug: AM.clienteAtual.slug, estoque: Number(texto) };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+
+    api(
+      "/anuncios-meli/" + encodeURIComponent(itemId) +
+      "/variacoes-legado/" + encodeURIComponent(variationId) + "/estoque",
+      { method: "PATCH", body: corpo }
+    ).then(function (r) {
+      var dados = r.data || {};
+      var painel = cel.closest(".am-grupo-painel");
+
+      if (!dados.ok) {
+        cel.classList.remove("is-salvando");
+        pintarEstoqueVariacaoLegadoLeitura(cel);
+        if (dados.critico) {
+          // O backend detectou que a contagem de variações pode ter caído
+          // depois do PUT: o cache local não é confiável. Descarta e força
+          // uma releitura, em vez de deixar a tela mentir por omissão.
+          delete AM.state.variacoesLegadoCache[itemId];
+          toast(
+            dados.motivo || "Uma ou mais variações deste anúncio podem ter sido alteradas de forma inesperada. Confira no Mercado Livre.",
+            "is-danger"
+          );
+          if (painel) carregarVariacoesLegado(itemId, painel);
+        } else {
+          toast(dados.motivo || "Não foi possível salvar o estoque desta variação.", "is-danger");
+        }
+        return;
+      }
+
+      cel.classList.remove("is-salvando");
+      // Sucesso: o painel inteiro é substituído pelas variações FRESCAS que o
+      // backend acabou de confirmar — a escrita reenviou o array inteiro, e
+      // qualquer variação pode ter mudado entre a leitura e a confirmação.
+      AM.state.variacoesLegadoCache[itemId] = dados.variacoes;
+      if (painel) renderVariacoesLegadoDetalhe(dados.variacoes, painel, itemId);
+      toast("Estoque da variação atualizado no Mercado Livre.", "is-success");
     });
   }
 

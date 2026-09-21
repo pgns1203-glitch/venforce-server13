@@ -29,6 +29,7 @@
 //   PATCH  /anuncios-meli/otimizacoes/:id/aprovar (aprovação — admin-only)
 //   GET    /anuncios-meli/:itemId
 //   GET    /anuncios-meli/:itemId/variacoes-legado (expansão do modelo legado)
+//   PATCH  /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque (escrita real)
 //   PATCH  /anuncios-meli/:itemId/revisao
 //   PATCH  /anuncios-meli/:itemId/conteudo      (edição real no Mercado Livre)
 //   PATCH  /anuncios-meli/:itemId/estoque       (edição real no Mercado Livre)
@@ -158,6 +159,11 @@ router.post("/:itemId/simular-margem", ctrl.simularMargem);
 // Expansão do modelo LEGADO de variações (ver meliVariacoesLegadoService) —
 // precisa vir ANTES de "/:itemId" pelo mesmo motivo de sempre.
 router.get("/:itemId/variacoes-legado", ctrl.variacoesLegado);
+
+// Edição de ESTOQUE de uma variação do modelo LEGADO NO MERCADO LIVRE (ver
+// meliVariacoesLegadoEstoqueService — GET fresco -> PUT /items { variations
+// inteiro } -> GET de confirmação). Mesmo acesso de /estoque e /conteudo.
+router.patch("/:itemId/variacoes-legado/:variationId/estoque", ctrl.atualizarEstoqueVariacaoLegado);
 
 router.get("/:itemId", ctrl.detalhe);
 

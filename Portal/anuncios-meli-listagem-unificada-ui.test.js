@@ -167,6 +167,10 @@ const LINHAS_CONTA_42 = [
     preco: 49.9, preco_original: 69.9, moeda: "BRL", estoque: 3, vendidos: 1, status: "active",
     permalink: null, thumbnail: null, pictures_count: 1, is_full: false,
     catalog_listing: false, family_name: null, variations_count: 24,
+    // No modelo legado (item_id -> variations[]) não há MLBU por variação —
+    // o tipo comercial é do ANÚNCIO inteiro, então entra aqui, no card
+    // principal (ver condicaoComercial/rowAnuncioHtml).
+    listing_type_id: "gold_special",
     score_venforce: 40, revisado: false,
     total_itens: 1, total_user_products: 0, estoque_total: 3, vendidos_total: 1,
     cover: { thumbnail: null, user_product_id: null },
@@ -199,6 +203,9 @@ const VARIACOES_LEGADO_MLB_SEMUP = [
   { id: 15092589431, attribute_combinations: [{ id: "COLOR", name: "Color", value_id: "52049", value_name: "Nude" }, { id: "SIZE", name: "Talla", value_id: "10", value_name: "35 BR" }], price: 49.9, available_quantity: 1, sold_quantity: 3, image_url: "https://http2.mlstatic.com/D_preto-O.jpg" },
 ];
 let chamadasVariacoesLegado = [];
+// Gancho para um teste substituir a resposta do GET .../variacoes-legado sem
+// mexer no fixture compartilhado por 7c/7d/7f/7h (que dependem de preco 49.9).
+let variacoesLegadoHandler = null;
 // Mesma lista com q="Azul": o backend troca a variação relevante, e a capa da
 // tela tem de trocar junto.
 const LINHAS_CONTA_42_BUSCA = [
@@ -578,7 +585,9 @@ function wireInterception(cdp) {
     if (mVariacoesLegado) {
       const itemId = decodeURIComponent(mVariacoesLegado[1]);
       chamadasVariacoesLegado.push(itemId);
-      const bruto = itemId === "MLB-SEMUP" ? VARIACOES_LEGADO_MLB_SEMUP : [];
+      const bruto = itemId === "MLB-SEMUP"
+        ? (variacoesLegadoHandler ? variacoesLegadoHandler() : VARIACOES_LEGADO_MLB_SEMUP)
+        : [];
       await corpo({ ok: true, variacoes: bruto.map((v) => ({
         id: v.id,
         atributos: v.attribute_combinations.map((ac) => ({ nome: ac.name, valor: ac.value_name })),
@@ -811,19 +820,35 @@ async function run() {
 
     /* ── 7b: variações do modelo LEGADO (auditoria MLB2652739620) ───────── */
 
-    await check("7b — anúncio legado com variations_count > 0 mostra o aviso e ganha um toggle", async () => {
+    await check("7b — anúncio legado com variations_count > 0 mostra a contagem (estrutural, sem cara de badge) e ganha um toggle", async () => {
       const estado = await cdp.evaluate(`(function(){
         var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
         var toggle = r.querySelector('.am-row__variacoes-toggle');
+        var info = r.querySelector('.am-row__variacoes-info');
         return {
-          texto: r.querySelector('.am-row__badges').textContent,
+          infoTexto: info ? info.textContent : null,
+          infoEhBadge: Boolean(info && info.closest('.am-row__badges')),
+          badgesTexto: r.querySelector('.am-row__badges').textContent,
           temToggleNaLinha: Boolean(toggle),
           toggleAriaExpanded: toggle && toggle.getAttribute('aria-expanded'),
         }; })()`);
-      assert.ok(/24 variaç/i.test(estado.texto),
-        `o anúncio legado com 24 variações no ML precisa avisar isso na linha: ${JSON.stringify(estado.texto)}`);
+      assert.strictEqual(estado.infoTexto, "24 variações",
+        `a contagem precisa aparecer como informação estrutural, sem o "no ML" redundante: ${JSON.stringify(estado.infoTexto)}`);
+      assert.strictEqual(estado.infoEhBadge, false, "a contagem não pode morar em .am-row__badges (não é status como Full/Sem SKU)");
+      assert.ok(!/variaç/i.test(estado.badgesTexto),
+        `a contagem de variações saiu de .am-row__badges, não pode sobrar lá: ${JSON.stringify(estado.badgesTexto)}`);
       assert.strictEqual(estado.temToggleNaLinha, true, "variations_count > 0 precisa ganhar um botão de expandir");
       assert.strictEqual(estado.toggleAriaExpanded, "false", "começa fechado");
+    });
+
+    await check("7b2 — anúncio legado mostra o tipo (Clássico/Premium) no card principal, reaproveitando .am-mlb__cond", async () => {
+      const estado = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        var cond = r.querySelector('.am-mlb__cond');
+        return { texto: cond ? cond.textContent : null };
+      })()`);
+      assert.strictEqual(estado.texto, "Clássico",
+        `listing_type_id "gold_special" precisa virar "Clássico" no card principal: ${JSON.stringify(estado.texto)}`);
     });
 
     await check("7c — clicar no toggle expande as variações DIRETO abaixo da linha do item (sem UP/família fake)", async () => {
@@ -847,7 +872,8 @@ async function run() {
             var img = l.querySelector('.am-mlb__thumb img');
             return img ? img.getAttribute('src') : null;
           }),
-          temNotaPreco: Boolean(linhas[0].querySelector('.am-mlb__preco-nota')),
+          temPromo: Boolean(linhas[0].querySelector('.am-mlb__preco--promo')),
+          temCondNaVariacao: Boolean(linhas[0].querySelector('.am-mlb__cond')),
         }; })()`);
       assert.strictEqual(estado.toggleAriaExpanded, "true");
       assert.strictEqual(estado.painelEscondido, false);
@@ -857,8 +883,10 @@ async function run() {
       assert.ok(/49,90/.test(estado.primeira), "a variação precisa mostrar o preço");
       assert.strictEqual(estado.temAgrupadorFake, false,
         "não pode existir nível de família/User Product entre o item e suas variações legadas");
-      assert.strictEqual(estado.temNotaPreco, false,
-        "sem precoAtual ao vivo (fixture padrão de margem não traz), não pode aparecer nota de promoção do anúncio");
+      assert.strictEqual(estado.temPromo, false,
+        "sem precoAtual ao vivo (fixture padrão de margem não traz), não pode aparecer o par cheio riscado/atual em destaque");
+      assert.strictEqual(estado.temCondNaVariacao, false,
+        "o tipo do anúncio (Clássico/Premium) é só do card principal — não pode repetir em cada linha expandida");
       assert.strictEqual(chamadasVariacoesLegado.length, 1, "exatamente 1 chamada ao expandir");
       assert.deepStrictEqual(chamadasVariacoesLegado, ["MLB-SEMUP"]);
       assert.deepStrictEqual(
@@ -2187,12 +2215,13 @@ async function run() {
       }
     });
 
-    await check("38f — variação legada: preço da variação continua sendo o PRÓPRIO (variation.price); promoção do anúncio vira nota secundária, nunca substitui nem risca", async () => {
+    await check("38f — variação legada: cheio riscado (variation.price) + vigente em destaque (preço ao vivo do anúncio), MESMO componente visual da linha principal", async () => {
       // Investigação confirmou: o ML não documenta sale_price/promoção por
-      // variação (só por ANÚNCIO). Reforço explícito pedido depois da
-      // investigação: a variação não pode parecer ter preço promocional
-      // próprio — o preço ao vivo do Motor só pode aparecer como CONTEXTO
-      // rotulado, nunca substituindo nem riscando variation.price.
+      // variação (só por ANÚNCIO). A origem dos dados não mudou — só a
+      // apresentação: agora usa o MESMO par "cheio riscado / atual em
+      // destaque" da linha principal (ver celulaPrecoHtml), com
+      // variation.price sempre no papel de "cheio" e o preço ao vivo do
+      // anúncio sempre no papel de "atual" — nunca o contrário.
       performanceHandler = (ids) => {
         const margem = {};
         ids.forEach((id) => {
@@ -2204,13 +2233,18 @@ async function run() {
         });
         return { ok: true, metricas7d: {}, margem, margemIndisponivel: null };
       };
+      // variation.price precisa ser MAIOR que o preço ao vivo do anúncio
+      // (89.9) para o par riscado/destaque nascer — replica o exemplo pedido
+      // (R$ 99,00 riscado / R$ 89,90 em destaque), sem mexer no fixture
+      // compartilhado por 7c/7d/7f/7h (que dependem de price 49.9).
+      variacoesLegadoHandler = () => VARIACOES_LEGADO_MLB_SEMUP.map((v) => Object.assign({}, v, { price: 99.9 }));
       try {
         pedidos.length = 0;
         chamadasVariacoesLegado = [];
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
         // Confirma que a promoção do ANÚNCIO (linha-mãe) já chegou antes de
-        // expandir — senão a variação não teria de onde tirar a nota.
+        // expandir — senão a variação não teria de onde tirar o "atual".
         await waitFor(cdp, `(function(){
           var el = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__preco-atual');
           return el && /89,90/.test(el.textContent);
@@ -2224,30 +2258,30 @@ async function run() {
           var linhas = Array.from(document.querySelectorAll('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel .am-mlb--variacao-legado'));
           return linhas.map(function (l) {
             var cel = l.querySelector('.am-mlb__preco');
-            var valor = cel.querySelector('.am-mlb__preco-valor');
-            var nota = cel.querySelector('.am-mlb__preco-nota');
+            var original = cel.querySelector('.am-mlb__preco-original');
+            var atual = cel.querySelector('.am-mlb__preco-atual');
             var img = l.querySelector('.am-mlb__thumb img');
             return {
-              temOriginalRiscado: Boolean(cel.querySelector('.am-mlb__preco-original')),
-              valorProprio: (valor || cel).textContent.trim(),
-              nota: nota ? nota.textContent.trim() : null,
+              temPromo: cel.classList.contains('am-mlb__preco--promo'),
+              cheioRiscado: original ? original.textContent.trim() : null,
+              atualDestaque: atual ? atual.textContent.trim() : null,
               thumbSrc: img ? img.getAttribute('src') : null,
             };
           }); })()`);
 
         assert.strictEqual(estado.length, 2, "o fixture continua com 2 variações");
         estado.forEach(function (linha, i) {
-          assert.strictEqual(linha.valorProprio, "R$ 49,90",
-            `variação ${i}: o preço PRÓPRIO (variation.price) não pode ser substituído pelo preço do anúncio`);
-          assert.strictEqual(linha.temOriginalRiscado, false,
-            `variação ${i}: variation.price não pode ser riscado — isso é reservado ao preço do ANÚNCIO na linha-mãe`);
-          assert.ok(linha.nota && /Promoção do anúncio/.test(linha.nota) && /89,90/.test(linha.nota),
-            `variação ${i}: precisa mostrar a promoção do anúncio como nota secundária rotulada: ${JSON.stringify(linha.nota)}`);
+          assert.strictEqual(linha.temPromo, true, `variação ${i}: precisa ganhar a classe --promo (mesmo componente da linha principal)`);
+          assert.strictEqual(linha.cheioRiscado, "R$ 99,90",
+            `variação ${i}: o valor riscado precisa ser o PRÓPRIO da variação (variation.price), nunca um preço inventado`);
+          assert.strictEqual(linha.atualDestaque, "R$ 89,90",
+            `variação ${i}: o valor em destaque precisa ser o preço ao vivo do ANÚNCIO, nunca um sale_price fabricado por variação`);
           assert.strictEqual(linha.thumbSrc, "https://http2.mlstatic.com/D_preto-O.jpg",
             `variação ${i}: a melhoria de preço não pode ter quebrado a imagem da variação`);
         });
       } finally {
         performanceHandler = null;
+        variacoesLegadoHandler = null;
       }
     });
 

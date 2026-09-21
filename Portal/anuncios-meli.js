@@ -1728,36 +1728,39 @@
   // ---------------------------------------------------------------------------
   // PREÇO DE UMA VARIAÇÃO LEGADA — investigação confirmou que o ML não
   // documenta sale_price/promoção por variação (só por ANÚNCIO, via
-  // GET /items/{id}/sale_price). Por isso o preço PRIMÁRIO desta célula é
-  // SEMPRE variation.price, cru — nunca substituído pelo preço ao vivo do
-  // Motor. Quando o Motor já resolveu uma promoção REAL do anúncio (mesmo
-  // critério de sempre, precoCheioReal), ela aparece só como nota
-  // secundária/contextual, claramente rotulada "Promoção do anúncio" — nunca
-  // risca nem troca o valor da variação, pra não sugerir que a variation tem
-  // um sale_price próprio que o ML não garante.
+  // GET /items/{id}/sale_price). A origem dos dados não muda: variation.price
+  // continua sendo o preço base da variação, e o preço promocional continua
+  // vindo do contexto do anúncio (Motor de Margem) — nada novo é inventado
+  // aqui, nenhum sale_price por variação é criado.
+  //
+  // O que mudou é só a APRESENTAÇÃO: em vez de uma nota secundária por
+  // extenso, esta célula agora usa o MESMO componente visual da linha
+  // principal (precoCheioReal + precoCelulaConteudoHtml, ver celulaPrecoHtml)
+  // — cheio riscado em cima, vigente em destaque embaixo. A diferença é só
+  // QUAL valor entra em cada papel: aqui é sempre variation.price no papel de
+  // "cheio" e o preço ao vivo do anúncio no papel de "atual", nunca o
+  // contrário — por isso variation.price nunca é riscado nem substituído
+  // (precoCheioReal só risca o valor MAIOR, e variation.price é sempre >= o
+  // preço promocional vigente do anúncio, nunca o contrário).
   //
   // Reaproveita só leitura de AM.state.performanceCache/precoCheioReal — não
   // participa do repaint ao vivo de pintarPerformanceEmCelulas (que usa
-  // [data-preco-item] para RECONSTRUIR a célula no formato "cheio riscado +
-  // atual"; aplicar esse seletor aqui apagaria a nota e o preço próprio da
-  // variação). Sem problema: o painel de variações é sempre repintado do
-  // zero (reabrir o toggle, ou depois de uma edição de estoque), e a essa
-  // altura a performance do item já veio do pré-carregamento em background.
+  // [data-preco-item] para RECONSTRUIR a célula a partir de a.preco/
+  // a.preco_original, que não existem numa variação). Sem problema: o painel
+  // de variações é sempre repintado do zero (reabrir o toggle, ou depois de
+  // uma edição de estoque), e a essa altura a performance do item já veio do
+  // pré-carregamento em background.
   function celulaPrecoVariacaoLegadoHtml(v, itemId, moeda) {
-    var valorProprio = formatMoeda(v.preco, moeda);
+    var classe = "am-mlb__preco";
     var cache = AM.state.performanceCache[itemId];
     var m = cache && cache.temMargem && cache.margem;
     var atual = m && m.precoAtual != null ? m.precoAtual : null;
-    var cheioBruto = m && m.precoOriginal != null ? m.precoOriginal : null;
-    var cheio = precoCheioReal(atual, cheioBruto);
+    var cheio = precoCheioReal(atual, v.preco);
 
-    if (!cheio) return '<span class="am-mlb__preco">' + escapeHtml(valorProprio) + "</span>";
+    if (!cheio) return '<span class="' + classe + '">' + escapeHtml(formatMoeda(v.preco, moeda)) + "</span>";
 
-    return '<span class="am-mlb__preco am-mlb__preco--com-nota">' +
-      '<span class="am-mlb__preco-valor">' + escapeHtml(valorProprio) + "</span>" +
-      '<span class="am-mlb__preco-nota" title="Preço vigente do anúncio no Mercado Livre agora — não é um preço promocional próprio desta variação">' +
-        "Promoção do anúncio: " + escapeHtml(formatMoeda(atual, moeda)) +
-      "</span>" +
+    return '<span class="' + classe + " " + classe + '--promo">' +
+      precoCelulaConteudoHtml(classe, atual, cheio, moeda) +
     "</span>";
   }
 
@@ -2231,10 +2234,15 @@
     // não ganha chevron nem painel nenhum: nada para expandir.
     var temVariacoesLegado = (a.variations_count || 0) > 0;
     var painelLegadoId = "am-legado-painel-" + idx;
-    if (temVariacoesLegado) {
-      badges += '<span class="vf-tag is-info" title="Anúncio com variações no modelo antigo do Mercado Livre (sem User Product) — a edição de preço desta tela trata isso à parte.">' +
-        plural(a.variations_count, "variação no ML", "variações no ML") + "</span>";
-    }
+    // "N variações" NÃO é status do anúncio (não é Full, não é Sem SKU) —
+    // é informação estrutural do próprio anúncio pai, do mesmo jeito que
+    // item_id/SKU são: por isso mora junto deles em .am-row__ids, texto
+    // plano sem aparência de badge, e sem o "no ML" redundante (a tela
+    // inteira já é do Mercado Livre).
+    var variacoesInfoHtml = temVariacoesLegado
+      ? '<span class="am-row__variacoes-info" title="Este anúncio tem variações no modelo antigo do Mercado Livre (sem User Product) — a edição de preço desta tela trata isso à parte.">' +
+        plural(a.variations_count, "variação", "variações") + "</span>"
+      : "";
     if (ehCatalogoOficial(a)) badges += '<span class="vf-tag is-primary">Catálogo</span>';
     if (a.is_full) badges += '<span class="vf-tag is-info">Full</span>';
     if ((a.pictures_count || 0) < 3) badges += '<span class="vf-tag is-warning">' + (a.pictures_count || 0) + "/3 fotos</span>";
@@ -2248,6 +2256,16 @@
     var skuHtml = a.sku
       ? '<span>SKU <span class="vf-mono">' + escapeHtml(a.sku) + "</span></span>"
       : '<span>SKU <span class="vf-mono am-row__sem-sku">—</span></span>';
+
+    // Tipo do anúncio (Premium/Clássico) só existe no card PRINCIPAL: no
+    // modelo legado (item_id -> variations[]) não há MLBU por variação —
+    // todas as variações são o MESMO anúncio, logo o MESMO tipo (ver
+    // condicaoComercial). Mesmo rótulo/classe (.am-mlb__cond) já usado para
+    // a condição comercial no modelo de família — nenhum estilo novo.
+    var cond = condicaoComercial(a);
+    var condHtml = cond
+      ? '<span class="am-mlb__cond">' + escapeHtml(cond) + "</span>"
+      : "";
 
     var linkMl = a.permalink
       ? '<a class="am-row__link" href="' + escapeHtml(a.permalink) + '" target="_blank" rel="noopener" ' +
@@ -2271,7 +2289,8 @@
       '<div class="am-row__thumb" aria-hidden="true">' + img + "</div>" +
       '<div class="am-row__main">' +
         '<h3 class="am-row__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</h3>" +
-        '<div class="am-row__ids"><span class="vf-mono">' + escapeHtml(a.item_id) + "</span>" + skuHtml + "</div>" +
+        '<div class="am-row__ids"><span class="vf-mono">' + escapeHtml(a.item_id) + "</span>" +
+          condHtml + skuHtml + variacoesInfoHtml + "</div>" +
         '<div class="am-row__badges">' + badges + "</div>" +
       "</div>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +

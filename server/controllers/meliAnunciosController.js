@@ -20,6 +20,8 @@ const otimizadorService = require("../services/meliAnuncios/otimizadorMeliServic
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const conteudoService = require("../services/meliAnuncios/meliConteudoService");
 const estoqueService = require("../services/meliAnuncios/meliEstoqueService");
+const variacoesLegadoService = require("../services/meliAnuncios/meliVariacoesLegadoService");
+const variacoesLegadoEstoqueService = require("../services/meliAnuncios/meliVariacoesLegadoEstoqueService");
 const precoService = require("../services/meliAnuncios/meliPrecoService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
 const motorMargemService = require("../services/motorMargem/motorMargemService");
@@ -745,6 +747,148 @@ async function detalhe(req, res) {
     return res
       .status(500)
       .json({ ok: false, motivo: "Erro ao carregar o detalhe do anúncio." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/:itemId/variacoes-legado?clienteSlug=&clienteContaId=
+//
+// Expansão do modelo LEGADO do ML (item_id -> variations[]), para um anúncio
+// sem family_id que mesmo assim tem cor/tamanho reais (variations_count > 0,
+// ver meliSyncService/meliFamiliaService). Read-only: só GET no Mercado
+// Livre, nada persistido — ver meliVariacoesLegadoService para o porquê de a
+// edição ficar de fora.
+// ----------------------------------------------------------------------------
+async function variacoesLegado(req, res) {
+  try {
+    const { itemId } = req.params;
+    const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    // Mesma regra de conta do vizinho GET /:itemId: a linha já sabe de qual
+    // conta veio; só resolve de novo quando essa coluna ainda está vazia.
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const r = await variacoesLegadoService.buscarVariacoesLegado({
+      clienteId: cliente.id, itemId, mlUserId,
+    });
+
+    if (!r.ok) {
+      return res.json({ ok: false, codigo: r.codigo, motivo: r.motivo });
+    }
+
+    return res.json({ ok: true, variacoes: r.variacoes });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] variacoesLegado:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao carregar as variações do anúncio." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// PATCH /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque
+//   body: { clienteSlug, clienteContaId?, estoque }
+//
+// ESCRITA REAL no Mercado Livre de uma variação do modelo LEGADO. Não existe
+// PUT dedicado a uma variação isolada — o service (meliVariacoesLegadoEstoqueService)
+// faz GET fresco do item + variations, monta o PUT /items com a propriedade
+// `variations` INTEIRA (só o alvo muda) e confirma com outro GET depois.
+// Ver o cabeçalho do service para a razão de cada passo — aqui é só fiação:
+// mesma regra de conta dos vizinhos /estoque e /conteudo (a linha manda; sem
+// ela e com 2+ contas, 409 em vez de chute), e a resposta segue o mesmo
+// contrato de falha "esperada" (200 + ok:false + codigo/motivo).
+//
+// `critico:true` (perda de variação detectada após o PUT) é repassado tal
+// como veio do service, para a tela orientar conferência manual no ML —
+// nunca é tratado como um erro comum recuperável com nova tentativa.
+// ----------------------------------------------------------------------------
+async function atualizarEstoqueVariacaoLegado(req, res) {
+  try {
+    const { itemId, variationId } = req.params;
+    const body = req.body || {};
+    const { clienteSlug } = body;
+    const clienteContaId = extrairClienteContaId(body.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    // Validação local ANTES de resolver cliente/conta/token — mesmo motivo
+    // do vizinho /estoque: valor inválido não merece consulta ao banco nem
+    // chamada externa.
+    const quantidade = estoqueService.normalizarQuantidade(body.estoque);
+    if (!quantidade.ok) {
+      return res.status(400).json({ ok: false, codigo: quantidade.codigo, motivo: quantidade.motivo });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id,
+        clienteContaId,
+        requireUsableGrant: true,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const r = await variacoesLegadoEstoqueService.atualizarEstoqueVariacaoLegado({
+      clienteId: cliente.id,
+      itemId,
+      variationId,
+      estoque: body.estoque,
+      mlUserId,
+    });
+
+    if (!r.ok) {
+      const resposta = { ok: false, codigo: r.codigo, motivo: r.motivo };
+      if (r.critico) resposta.critico = true;
+      return res.json(resposta);
+    }
+
+    return res.json({ ok: true, variacoes: r.variacoes });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] atualizarEstoqueVariacaoLegado:", err.message);
+    return res.status(500).json({
+      ok: false,
+      motivo: "Erro interno ao salvar o estoque da variação.",
+    });
   }
 }
 
@@ -1594,6 +1738,8 @@ module.exports = {
   detalheFamilia,
   performance,
   detalhe,
+  variacoesLegado,
+  atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
   atualizarEstoque,
   atualizarPreco,

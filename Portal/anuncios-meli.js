@@ -94,6 +94,11 @@
       metricasEmVoo: {},
       margemEmVoo: {},
       composicaoEmVoo: {},
+      // Variações do modelo LEGADO do ML (item_id -> variations[], ver
+      // rowAnuncioHtml/badge "N variações no ML") — mesmo padrão de cache e
+      // dedupe de garantirFamiliaDetalhe, por item_id em vez de family_id.
+      variacoesLegadoCache: {},
+      variacoesLegadoFetchEmVoo: {},
     },
     // familiaEpoca invalida de uma vez toda expansão/pré-carregamento em voo
     // quando o cliente/conta muda (senão o detalhe do cliente A pintaria a
@@ -607,7 +612,7 @@
     // anúncio individual não tem nada para abrir (no modelo do ML a relação
     // ali é 1:1). Nenhuma moldura, cor ou seção separa os dois.
     AM.anuncios.forEach(function (linha, idx) {
-      html += linha.tipo === "familia" ? rowGrupoHtml(linha, idx) : rowAnuncioHtml(linha);
+      html += linha.tipo === "familia" ? rowGrupoHtml(linha, idx) : rowAnuncioHtml(linha, idx);
     });
     html += "</div>" + paginacaoHtml(AM.paginacao, "am-pag", "anúncio");
     box.innerHTML = html;
@@ -648,15 +653,21 @@
       // Mesmas duas exceções da linha filha (ver bindLinhasMlb): controles
       // próprios da linha não podem abrir o modal por cima deles.
       function ehControleProprio(e) {
-        return !!(e.target.closest(".am-row__link") || e.target.closest(".am-estoque"));
+        return !!(e.target.closest(".am-row__link") || e.target.closest(".am-estoque") ||
+          e.target.closest(".am-row__variacoes-toggle"));
       }
       row.addEventListener("click", function (e) {
         if (ehControleProprio(e)) return; // ação externa não abre o modal
         abrir();
       });
       row.addEventListener("keydown", function (e) {
-        if (ehControleProprio(e)) return; // deixa o link nativo agir (Enter = navegar)
+        if (ehControleProprio(e)) return; // deixa o botão/link nativo agir (Enter = ativar)
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(); }
+      });
+      var toggle = row.querySelector(".am-row__variacoes-toggle");
+      if (toggle) toggle.addEventListener("click", function (e) {
+        e.stopPropagation();
+        alternarVariacoesLegado(row, toggle);
       });
     });
   }
@@ -938,6 +949,129 @@
     bindLinhasMlb(painel);
     bindEstoqueEditavel(painel);
     // Expandir não mexe na capa: ela já veio decidida na listagem.
+  }
+
+  // ===========================================================================
+  // EXPANSÃO DO MODELO LEGADO — item_id -> variations[] do Mercado Livre
+  //
+  // Um anúncio "item" com variations_count > 0 (ver rowAnuncioHtml) não tem
+  // User Product: no ML a hierarquia dele é só item_id -> variations[], sem
+  // nível intermediário. Por isso a expansão pinta as variações DIRETO como
+  // filhas da própria linha do item — nunca um agrupador/família/MLBU fake
+  // entre elas.
+  //
+  //   Anúncio (item_id)
+  //     ├─ Preto · 34 BR
+  //     ├─ Preto · 35 BR
+  //     └─ Nude · 34 BR
+  //
+  // Mesmo padrão de cache/dedupe de garantirFamiliaDetalhe, só que por
+  // item_id em vez de family_id, e SEM pré-carregamento em background: a
+  // família pré-carrega para somar métricas na linha-mãe (ver
+  // carregarMetricasDosGruposVisiveis); o item avulso não tem soma nenhuma
+  // para fazer, então só busca quando o operador clica.
+  //
+  // Só LEITURA: preço/estoque de cada variação vêm como estão agora no ML,
+  // sem ação de editar aqui — ver meliVariacoesLegadoService (backend) para o
+  // porquê: o ML não documenta um jeito seguro de editar uma variação
+  // isolada sem risco de apagar as outras (PUT /items/{id} com a propriedade
+  // `variations` incompleta remove as que faltarem).
+  // ===========================================================================
+
+  function garantirVariacoesLegado(itemId) {
+    var cache = AM.state.variacoesLegadoCache[itemId];
+    if (cache) return Promise.resolve(cache);
+    var emVoo = AM.state.variacoesLegadoFetchEmVoo[itemId];
+    if (emVoo) return emVoo;
+
+    var minhaEpoca = AM.familiaEpoca;
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+
+    var promessa = api("/anuncios-meli/" + encodeURIComponent(itemId) + "/variacoes-legado?" + qs).then(function (r) {
+      delete AM.state.variacoesLegadoFetchEmVoo[itemId];
+      if (minhaEpoca !== AM.familiaEpoca) return null; // outro cliente/conta assumiu a tela
+      if (!r.data || !r.data.ok || !Array.isArray(r.data.variacoes)) return null;
+      AM.state.variacoesLegadoCache[itemId] = r.data.variacoes;
+      return r.data.variacoes;
+    });
+    AM.state.variacoesLegadoFetchEmVoo[itemId] = promessa;
+    return promessa;
+  }
+
+  // Expandir/colapsar o painel do item. O CLIQUE fica no botão (toggle), não
+  // na linha inteira: a linha continua abrindo o modal de detalhe, como
+  // qualquer outro anúncio (ver bindLinhasAnuncio/ehControleProprio).
+  function alternarVariacoesLegado(row, toggle) {
+    var painel = row.nextElementSibling;
+    if (!painel || !painel.classList.contains("am-grupo-painel")) return;
+    var itemId = row.getAttribute("data-item");
+    var abrindo = toggle.getAttribute("aria-expanded") !== "true";
+
+    toggle.setAttribute("aria-expanded", abrindo ? "true" : "false");
+    row.classList.toggle("is-aberta", abrindo);
+    painel.hidden = !abrindo;
+    if (!abrindo) return;
+
+    var cache = AM.state.variacoesLegadoCache[itemId];
+    if (cache) { renderVariacoesLegadoDetalhe(cache, painel, itemId); return; }
+    if (painel.getAttribute("data-carregando") === "1") return; // já tem um clique em voo
+    carregarVariacoesLegado(itemId, painel);
+  }
+
+  function carregarVariacoesLegado(itemId, painel) {
+    painel.setAttribute("data-carregando", "1");
+    painel.innerHTML = estadoHtml("loading", "Carregando variações do Mercado Livre…");
+
+    garantirVariacoesLegado(itemId).then(function (variacoes) {
+      painel.removeAttribute("data-carregando");
+      if (!variacoes) {
+        painel.innerHTML = estadoHtml("error", "Erro ao carregar as variações", "Tente novamente.");
+        return;
+      }
+      renderVariacoesLegadoDetalhe(variacoes, painel, itemId);
+    });
+  }
+
+  function renderVariacoesLegadoDetalhe(variacoes, painel, itemId) {
+    if (!variacoes.length) {
+      painel.innerHTML = estadoHtml("empty", "Nenhuma variação encontrada",
+        "O Mercado Livre não devolveu variações para este anúncio.");
+      return;
+    }
+    var anuncio = AM.anuncios.find(function (a) { return a.item_id === itemId; });
+    var moeda = anuncio && anuncio.moeda;
+    var html = "";
+    variacoes.forEach(function (v) { html += rowVariacaoLegadoHtml(v, moeda, itemId); });
+    painel.innerHTML = html;
+    bindEstoqueVariacaoLegadoEditavel(painel);
+  }
+
+  // Uma variação do modelo LEGADO — MESMA grade de rowMlbCompactaHtml (nunca
+  // desalinha o cabeçalho), mas as células que o ML não reporta por variação
+  // (status, métricas 7d, margem, score) ficam "—" explicado por título, em
+  // vez de inventar um valor. O estoque é editável (ver bloco "ESTOQUE
+  // EDITÁVEL DE VARIAÇÃO LEGADA" mais abaixo); as demais colunas sem dado por
+  // variação continuam sem ação, porque não há o que editar nelas.
+  function rowVariacaoLegadoHtml(v, moeda, itemId) {
+    var rotulo = (v.atributos || []).length
+      ? v.atributos.map(function (at) { return at.valor; }).join(" · ")
+      : "Variação sem atributos";
+    return '<div class="am-mlb am-mlb--variacao-legado" data-variacao="' + escapeAttr(v.id) + '">' +
+      '<span class="am-mlb__thumb" aria-hidden="true">' + iconeImagemSvg() + "</span>" +
+      '<span class="am-mlb__main">' +
+        '<span class="am-mlb__titulo">' + escapeHtml(rotulo) + "</span>" +
+        '<span class="am-mlb__ids"><span class="vf-mono">Variação ' + escapeHtml(String(v.id)) + "</span></span>" +
+      "</span>" +
+      '<span class="vf-status is-empty" title="O Mercado Livre não reporta status por variação — só por anúncio (MLB)">—</span>' +
+      '<span class="am-mlb__preco">' + escapeHtml(formatMoeda(v.preco, moeda)) + "</span>" +
+      celulaEstoqueVariacaoLegadoHtml(v, itemId) +
+      '<span class="am-mlb__num">' + (v.vendidos != null ? v.vendidos : "—") + "</span>" +
+      '<span class="am-metricas7d am-metricas7d--indisponivel" title="Métricas últ. 7 dias são só por anúncio (MLB) — o Mercado Livre não as reporta por variação">—</span>' +
+      '<span class="am-margem am-margem--indisponivel" title="Margem é só por anúncio (MLB) — o Mercado Livre não reporta custo por variação">—</span>' +
+      '<span class="am-mlb__score">—</span>' +
+      '<span class="am-mlb__acao"></span>' +
+    "</div>";
   }
 
   // Condição comercial do anúncio: é o que distingue dois MLBs da MESMA
@@ -1758,15 +1892,27 @@
       g.status = statusNovo;
       var alvo = document.querySelector('.am-row[data-item="' + g.item_id + '"]');
       if (!alvo) return;
+      // O painel de variações legadas (irmão de alvo, quando existe) NÃO é
+      // tocado por este replaceChild — só a linha troca. Só falta repor o
+      // aria-expanded do NOVO botão-toggle se o painel já estava aberto,
+      // senão o chevron voltaria a "fechado" com o conteúdo ainda visível.
+      var painelLegadoAberto = alvo.nextElementSibling &&
+        alvo.nextElementSibling.classList.contains("am-grupo-painel") &&
+        !alvo.nextElementSibling.hidden;
       var caixa = document.createElement("div");
-      caixa.innerHTML = rowAnuncioHtml(g);
+      caixa.innerHTML = rowAnuncioHtml(g, AM.anuncios.indexOf(g));
       // Vincula com a linha ainda DENTRO da caixa temporária: os binds varrem
       // os descendentes da raiz, então passar o container da lista aqui
       // duplicaria os listeners de todas as outras linhas — e um clique
       // passaria a abrir o modal duas vezes. Listener sobrevive a mover o nó.
       bindLinhasAnuncio(caixa);
       bindEstoqueEditavel(caixa);
-      alvo.parentNode.replaceChild(caixa.firstElementChild, alvo);
+      var novaLinha = caixa.firstElementChild;
+      if (painelLegadoAberto) {
+        var novoToggle = novaLinha.querySelector(".am-row__variacoes-toggle");
+        if (novoToggle) { novoToggle.setAttribute("aria-expanded", "true"); novaLinha.classList.add("is-aberta"); }
+      }
+      alvo.parentNode.replaceChild(novaLinha, alvo);
     });
 
     // Por último, qualquer célula ainda visível dos itens afetados que o
@@ -1790,6 +1936,146 @@
       c.setAttribute("data-estoque-valor", String(valor));
       c.classList.remove("is-salvando");
       pintarEstoqueLeitura(c);
+    });
+  }
+
+  // ===========================================================================
+  // ESTOQUE EDITÁVEL DE VARIAÇÃO LEGADA (item_id -> variations[])
+  //
+  // Mesma interação do bloco "ESTOQUE EDITÁVEL NA LINHA DO MLB" acima (clique
+  // no número, Enter salva, Esc/perder foco cancela, `botaoEstoqueHtml`
+  // compartilhado) — mas a escrita e a reação a sucesso são outras:
+  //
+  //   PATCH /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque
+  //   -> meliVariacoesLegadoEstoqueService: GET fresco -> PUT /items com a
+  //      propriedade `variations` INTEIRA -> GET de confirmação.
+  //
+  // Não existe replicação por User Product aqui (o modelo legado não tem
+  // User Product) e não existe patch otimista de uma célula só: a escrita
+  // reenvia o array inteiro de variações, então em caso de sucesso o PAINEL
+  // INTEIRO é substituído pelas variações FRESCAS que o backend acabou de
+  // confirmar (`dados.variacoes`) — nunca um número isolado calculado aqui.
+  //
+  // `dados.critico` (perda de variação detectada pelo backend DEPOIS do PUT)
+  // nunca é tratado como falha comum: o cache local é descartado e o painel é
+  // recarregado do zero, porque a tela não pode continuar mostrando um estado
+  // que pode não existir mais no Mercado Livre.
+  // ===========================================================================
+
+  function celulaEstoqueVariacaoLegadoHtml(v, itemId) {
+    var tem = v.estoque != null;
+    return '<span class="am-mlb__num am-estoque" data-variacao-item="' + escapeAttr(itemId) +
+      '" data-variacao-id="' + escapeAttr(v.id) +
+      '" data-estoque-valor="' + escapeAttr(tem ? v.estoque : "") + '">' +
+      botaoEstoqueHtml(tem ? String(v.estoque) : "—") + "</span>";
+  }
+
+  function bindEstoqueVariacaoLegadoEditavel(painel) {
+    painel.querySelectorAll(".am-estoque[data-variacao-id]").forEach(function (cel) {
+      cel.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (e.target.closest(".am-estoque__btn")) abrirEditorEstoqueVariacaoLegado(cel);
+      });
+    });
+  }
+
+  function pintarEstoqueVariacaoLegadoLeitura(cel) {
+    var bruto = cel.getAttribute("data-estoque-valor");
+    cel.removeAttribute("data-estoque-editando");
+    cel.classList.remove("is-editando", "is-salvando");
+    cel.innerHTML = botaoEstoqueHtml(bruto === "" || bruto === null ? "—" : bruto);
+  }
+
+  function abrirEditorEstoqueVariacaoLegado(cel) {
+    if (cel.getAttribute("data-estoque-editando") === "1") return;
+    if (cel.classList.contains("is-salvando")) return;
+    var atual = cel.getAttribute("data-estoque-valor") || "";
+    cel.setAttribute("data-estoque-editando", "1");
+    cel.classList.add("is-editando");
+    cel.innerHTML = '<input type="number" class="am-estoque__input" min="0" step="1" ' +
+      'inputmode="numeric" value="' + escapeAttr(atual) + '" ' +
+      'title="Enter salva no Mercado Livre, Esc cancela" ' +
+      'aria-label="Estoque em unidades. Enter salva no Mercado Livre, Esc cancela." />';
+    var input = cel.querySelector(".am-estoque__input");
+    if (!input) return;
+    input.focus();
+    input.select();
+
+    input.addEventListener("keydown", function (e) {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        salvarEstoqueVariacaoLegado(cel, input.value);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        pintarEstoqueVariacaoLegadoLeitura(cel);
+      }
+    });
+
+    // Sair do campo CANCELA — nunca salva (mesma decisão do editor do MLB).
+    input.addEventListener("blur", function () {
+      if (cel.classList.contains("is-salvando")) return;
+      pintarEstoqueVariacaoLegadoLeitura(cel);
+    });
+  }
+
+  function salvarEstoqueVariacaoLegado(cel, bruto) {
+    var itemId = cel.getAttribute("data-variacao-item");
+    var variationId = cel.getAttribute("data-variacao-id");
+    var anterior = cel.getAttribute("data-estoque-valor") || "";
+    var texto = String(bruto == null ? "" : bruto).trim();
+
+    if (texto === anterior) { pintarEstoqueVariacaoLegadoLeitura(cel); return; }
+    if (!/^\d+$/.test(texto)) {
+      toast("O estoque precisa ser um número inteiro igual ou maior que zero.", "is-danger");
+      pintarEstoqueVariacaoLegadoLeitura(cel);
+      return;
+    }
+
+    cel.classList.remove("is-editando");
+    cel.classList.add("is-salvando");
+    cel.removeAttribute("data-estoque-editando");
+    cel.innerHTML = '<span class="am-estoque__salvando" aria-live="polite">salvando…</span>';
+
+    var corpo = { clienteSlug: AM.clienteAtual.slug, estoque: Number(texto) };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+
+    api(
+      "/anuncios-meli/" + encodeURIComponent(itemId) +
+      "/variacoes-legado/" + encodeURIComponent(variationId) + "/estoque",
+      { method: "PATCH", body: corpo }
+    ).then(function (r) {
+      var dados = r.data || {};
+      var painel = cel.closest(".am-grupo-painel");
+
+      if (!dados.ok) {
+        cel.classList.remove("is-salvando");
+        pintarEstoqueVariacaoLegadoLeitura(cel);
+        if (dados.critico) {
+          // O backend detectou que a contagem de variações pode ter caído
+          // depois do PUT: o cache local não é confiável. Descarta e força
+          // uma releitura, em vez de deixar a tela mentir por omissão.
+          delete AM.state.variacoesLegadoCache[itemId];
+          toast(
+            dados.motivo || "Uma ou mais variações deste anúncio podem ter sido alteradas de forma inesperada. Confira no Mercado Livre.",
+            "is-danger"
+          );
+          if (painel) carregarVariacoesLegado(itemId, painel);
+        } else {
+          toast(dados.motivo || "Não foi possível salvar o estoque desta variação.", "is-danger");
+        }
+        return;
+      }
+
+      cel.classList.remove("is-salvando");
+      // Sucesso: o painel inteiro é substituído pelas variações FRESCAS que o
+      // backend acabou de confirmar — a escrita reenviou o array inteiro, e
+      // qualquer variação pode ter mudado entre a leitura e a confirmação.
+      AM.state.variacoesLegadoCache[itemId] = dados.variacoes;
+      if (painel) renderVariacoesLegadoDetalhe(dados.variacoes, painel, itemId);
+      toast("Estoque da variação atualizado no Mercado Livre.", "is-success");
     });
   }
 
@@ -1886,16 +2172,22 @@
   // badges, status, preço, estoque, vendidos, score em medidor semicircular
   // e ação externa para o Mercado Livre. A linha inteira abre o drawer
   // existente (abrirDetalhe) — mesmo endpoint/handler de sempre.
-  function rowAnuncioHtml(a) {
+  function rowAnuncioHtml(a, idx) {
     var st = statusInfo(a.status);
     var badges = "";
     // Modelo LEGADO de variações do ML (item_id -> variations[]), distinto do
     // agrupador família/User Product (rowGrupoHtml). Um anúncio nesta forma
     // ("item", sem family_id) pode mesmo assim ter variações reais de cor e
-    // tamanho no Mercado Livre — o caso que motivou este aviso é real
-    // (MLB2652739620, 24 variações, nunca migrado ao modelo novo). Só avisa;
-    // não vira agrupador nem ganha árvore de cor/tamanho aqui.
-    if ((a.variations_count || 0) > 0) {
+    // tamanho no Mercado Livre — o caso que motivou isto é real
+    // (MLB2652739620, 24 variações, nunca migrado ao modelo novo). Aqui NÃO
+    // existe User Product: a hierarquia do ML é só item_id -> variations[],
+    // então a expansão (ver alternarVariacoesLegado) pinta as variações
+    // DIRETO abaixo da própria linha do item — nenhum nível de família/UP
+    // fake entre elas. Um item sem variações (variations_count 0 ou ausente)
+    // não ganha chevron nem painel nenhum: nada para expandir.
+    var temVariacoesLegado = (a.variations_count || 0) > 0;
+    var painelLegadoId = "am-legado-painel-" + idx;
+    if (temVariacoesLegado) {
       badges += '<span class="vf-tag is-info" title="Anúncio com variações no modelo antigo do Mercado Livre (sem User Product) — a edição de preço desta tela trata isso à parte.">' +
         plural(a.variations_count, "variação no ML", "variações no ML") + "</span>";
     }
@@ -1919,6 +2211,17 @@
         iconeExternoSvg() + "</a>"
       : "";
 
+    // O toggle de variações é um BOTÃO próprio dentro da linha, não a linha
+    // inteira (que continua abrindo o modal, como sempre) — mesma exceção de
+    // .am-row__link/.am-estoque em bindLinhasAnuncio (ehControleProprio).
+    var toggleLegado = temVariacoesLegado
+      ? '<button type="button" class="am-row__variacoes-toggle" aria-expanded="false" ' +
+        'aria-controls="' + painelLegadoId + '" aria-label="Ver as ' +
+        escapeAttr(plural(a.variations_count, "variação", "variações")) + ' deste anúncio no Mercado Livre">' +
+        '<span class="am-row__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
+      "</button>"
+      : "";
+
     return '<div class="am-row" data-item="' + escapeHtml(a.item_id) + '" tabindex="0" role="button" ' +
       'aria-label="Ver detalhes de ' + escapeHtml(a.titulo || a.item_id) + '">' +
       '<div class="am-row__thumb" aria-hidden="true">' + img + "</div>" +
@@ -1938,8 +2241,11 @@
       metricas7dCelulaHtml(a.item_id) +
       margemCelulaHtml(a.item_id) +
       scoreGaugeHtml(a.score_venforce) +
-      '<div class="am-row__acao">' + linkMl + "</div>" +
-    "</div>";
+      '<div class="am-row__acao">' + toggleLegado + linkMl + "</div>" +
+    "</div>" +
+    (temVariacoesLegado
+      ? '<div class="am-grupo-painel" id="' + painelLegadoId + '" hidden></div>'
+      : "");
   }
 
   // Uma implementação de paginação para as DUAS listas (anúncios e famílias).

@@ -17,7 +17,12 @@
  *   · o estoque do agrupador é a SOMA dos MLBUs, e não a soma dos MLBs: o
  *     fixture tem um MLBU com 2 anúncios de propósito, então somar por MLB
  *     daria 400 onde o certo é 300;
- *   · só o agrupador expande; o anúncio individual abre o modal direto;
+ *   · só o agrupador e o anúncio LEGADO com variações (variations_count > 0)
+ *     expandem; um anúncio simples abre o modal direto, sem chevron nenhum;
+ *   · o anúncio legado (item_id -> variations[] do ML, sem User Product)
+ *     expande as variações DIRETO como filhas da própria linha — nenhum
+ *     nível de família/UP fake entre elas. O clique fica no botão-toggle, não
+ *     na linha (que continua abrindo o modal como qualquer outra);
  *   · nenhum PAINEL abre sozinho (ver MLBs, editar estoque continuam exigindo
  *     clique) — mas o DETALHE de cada agrupador visível é buscado sozinho em
  *     BACKGROUND assim que a página pinta, só para somar as métricas 7d na
@@ -166,7 +171,28 @@ const LINHAS_CONTA_42 = [
     total_itens: 1, total_user_products: 0, estoque_total: 3, vendidos_total: 1,
     cover: { thumbnail: null, user_product_id: null },
   },
+  // Item avulso SEM variações no ML (variations_count 0/ausente) — controle
+  // negativo do 7b: sem isto, um teste que só olhasse MLB-SEMUP não provaria
+  // que a ausência do campo é o que desliga o chevron/painel.
+  {
+    tipo: "item", key: "item:MLB-SEMVAR", item_id: "MLB-SEMVAR", family_id: null,
+    titulo: "Anúncio simples, sem variações no ML", sku: "SKU-SEMVAR",
+    preco: 29.9, preco_original: null, moeda: "BRL", estoque: 8, vendidos: 0, status: "active",
+    permalink: null, thumbnail: null, pictures_count: 3, is_full: false,
+    catalog_listing: false, family_name: null, variations_count: 0,
+    score_venforce: 55, revisado: false,
+    total_itens: 1, total_user_products: 0, estoque_total: 8, vendidos_total: 0,
+    cover: { thumbnail: null, user_product_id: null },
+  },
 ];
+// As variações REAIS do modelo legado de MLB-SEMUP (GET .../variacoes-legado),
+// espelhando o payload que documentacao_api_meli/variacoes.md documenta para
+// GET /items/{id}/variations — 2 das 24 "variações no ML" do fixture acima.
+const VARIACOES_LEGADO_MLB_SEMUP = [
+  { id: 15092589430, attribute_combinations: [{ id: "COLOR", name: "Color", value_id: "52005", value_name: "Preto" }, { id: "SIZE", name: "Talla", value_id: "9", value_name: "34 BR" }], price: 49.9, available_quantity: 2, sold_quantity: 5 },
+  { id: 15092589431, attribute_combinations: [{ id: "COLOR", name: "Color", value_id: "52049", value_name: "Nude" }, { id: "SIZE", name: "Talla", value_id: "10", value_name: "35 BR" }], price: 49.9, available_quantity: 1, sold_quantity: 3 },
+];
+let chamadasVariacoesLegado = [];
 // Mesma lista com q="Azul": o backend troca a variação relevante, e a capa da
 // tela tem de trocar junto.
 const LINHAS_CONTA_42_BUSCA = [
@@ -266,6 +292,12 @@ const pedidos = [];
 // resposta específica (recusa do ML, por exemplo).
 const escritasEstoque = [];
 let estoqueHandler = null;
+
+// Escritas de estoque de VARIAÇÃO LEGADA (PATCH .../variacoes-legado/:id/estoque)
+// e o gancho para forçar uma resposta específica (recusa comum ou perda
+// crítica de variação).
+const escritasEstoqueVariacaoLegado = [];
+let estoqueVariacaoLegadoHandler = null;
 
 // GET /anuncios-meli/performance (métricas últ. 7 dias + margem — sempre
 // DEPOIS do primeiro paint, nunca bloqueia). `chamadasPerformance` registra
@@ -504,6 +536,50 @@ function wireInterception(cdp) {
       return;
     }
 
+    // PATCH /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque —
+    // escrita real de estoque de uma variação legada. Precisa vir ANTES do
+    // GET .../variacoes-legado logo abaixo: o regex dele casaria este mesmo
+    // caminho (é um prefixo dele) e devolveria a resposta de LEITURA para um
+    // PATCH de ESCRITA.
+    const mEstoqueVariacaoLegado = caminho.match(/^\/anuncios-meli\/([^/?]+)\/variacoes-legado\/([^/?]+)\/estoque/);
+    if (mEstoqueVariacaoLegado) {
+      const itemId = decodeURIComponent(mEstoqueVariacaoLegado[1]);
+      const variationId = Number(decodeURIComponent(mEstoqueVariacaoLegado[2]));
+      const enviado = JSON.parse(params.request.postData || "{}");
+      escritasEstoqueVariacaoLegado.push({ itemId, variationId, corpo: enviado });
+      if (estoqueVariacaoLegadoHandler) { await corpo(estoqueVariacaoLegadoHandler(itemId, variationId, enviado)); return; }
+
+      const base = itemId === "MLB-SEMUP" ? VARIACOES_LEGADO_MLB_SEMUP : [];
+      const atualizadas = base.map((v) =>
+        v.id === variationId ? { ...v, available_quantity: Number(enviado.estoque) } : v
+      );
+      await corpo({
+        ok: true,
+        variacoes: atualizadas.map((v) => ({
+          id: v.id,
+          atributos: v.attribute_combinations.map((ac) => ({ nome: ac.name, valor: ac.value_name })),
+          preco: v.price, estoque: v.available_quantity, vendidos: v.sold_quantity,
+        })),
+      });
+      return;
+    }
+
+    // GET /anuncios-meli/:itemId/variacoes-legado — expansão do modelo LEGADO
+    // (item_id -> variations[]). Precisa vir ANTES do detalhe genérico, mesmo
+    // cuidado de /familias/:familyId e /performance acima.
+    const mVariacoesLegado = caminho.match(/^\/anuncios-meli\/([^/?]+)\/variacoes-legado/);
+    if (mVariacoesLegado) {
+      const itemId = decodeURIComponent(mVariacoesLegado[1]);
+      chamadasVariacoesLegado.push(itemId);
+      const bruto = itemId === "MLB-SEMUP" ? VARIACOES_LEGADO_MLB_SEMUP : [];
+      await corpo({ ok: true, variacoes: bruto.map((v) => ({
+        id: v.id,
+        atributos: v.attribute_combinations.map((ac) => ({ nome: ac.name, valor: ac.value_name })),
+        preco: v.price, estoque: v.available_quantity, vendidos: v.sold_quantity,
+      })) });
+      return;
+    }
+
     // PATCH /anuncios-meli/:itemId/estoque — a escrita de estoque.
     //
     // A resposta imita o backend real: devolve o valor CONFIRMADO (que pode
@@ -633,22 +709,23 @@ async function run() {
           seletorDeModo: document.getElementById('am-modo'),
           containerDeFamilias: document.getElementById('am-familias-container'),
           arvore: document.querySelectorAll('.am-arvore, .am-familia').length,
-          // UMA paginação, contando GRUPOS: são 3 linhas para 6 anúncios reais
-          // (4 em FAM-1, 1 em FAM-2, 1 sem agrupador).
+          // UMA paginação, contando GRUPOS: são 4 linhas para 7 anúncios reais
+          // (4 em FAM-1, 1 em FAM-2, 2 sem agrupador — um deles com variações
+          // legadas, ver MLB-SEMUP/MLB-SEMVAR).
           paginacoes: document.querySelectorAll('.am-paginacao').length,
           contagem: (document.querySelector('.am-paginacao .vf-pagination__info') || {}).textContent,
         }; })()`);
       assert.strictEqual(estado.listas, 1, "existe mais de uma tabela na tela");
-      assert.strictEqual(estado.linhas, 3, "3 linhas: 2 agrupadores + 1 anúncio individual");
+      assert.strictEqual(estado.linhas, 4, "4 linhas: 2 agrupadores + 2 anúncios individuais");
       assert.strictEqual(estado.grupos, 2);
-      assert.strictEqual(estado.itens, 1);
+      assert.strictEqual(estado.itens, 2);
       assert.strictEqual(estado.todasNaMesmaLista, true);
       assert.strictEqual(estado.seletorDeModo, null, "o seletor de aba continua no DOM");
       assert.strictEqual(estado.containerDeFamilias, null, "o segundo container continua no DOM");
       assert.strictEqual(estado.arvore, 0, "a árvore separada continua sendo montada");
       assert.strictEqual(estado.paginacoes, 1, "voltou a existir mais de uma paginação");
-      assert.ok(/\b3\b/.test(estado.contagem || "") && !/\b6\b/.test(estado.contagem || ""),
-        `a paginação precisa contar grupos (3), não anúncios (6): "${estado.contagem}"`);
+      assert.ok(/\b4\b/.test(estado.contagem || "") && !/\b7\b/.test(estado.contagem || ""),
+        `a paginação precisa contar grupos (4), não anúncios (7): "${estado.contagem}"`);
     });
 
     await check("2 — a tela não chama mais a listagem plana (não existe segunda lista)", async () => {
@@ -712,36 +789,175 @@ async function run() {
       assert.strictEqual(contar(/\/familias\/FAM-2/, 0), 1);
     });
 
-    await check("7 — o anúncio individual não tem painel para expandir", async () => {
+    await check("7 — um anúncio SEM variações no ML não tem toggle nem painel", async () => {
       const estado = await cdp.evaluate(`(function(){
-        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        var r = document.querySelector('.am-row[data-item="MLB-SEMVAR"]');
         var prox = r.nextElementSibling;
         return {
-          temAriaExpanded: r.hasAttribute('aria-expanded'),
-          temChevron: Boolean(r.querySelector('.am-row__chevron')),
+          temToggle: Boolean(r.querySelector('.am-row__variacoes-toggle')),
           proxEhPainel: Boolean(prox && prox.classList.contains('am-grupo-painel')),
         }; })()`);
-      assert.strictEqual(estado.temAriaExpanded, false, "anúncio individual não expande nada");
-      assert.strictEqual(estado.temChevron, false);
+      assert.strictEqual(estado.temToggle, false, "anúncio sem variações não pode ganhar botão de expandir");
       assert.strictEqual(estado.proxEhPainel, false, "criou painel para uma linha sem nada dentro");
     });
 
     /* ── 7b: variações do modelo LEGADO (auditoria MLB2652739620) ───────── */
 
-    await check("7b — anúncio legado com variations_count > 0 mostra o aviso, sem virar agrupador", async () => {
+    await check("7b — anúncio legado com variations_count > 0 mostra o aviso e ganha um toggle", async () => {
       const estado = await cdp.evaluate(`(function(){
         var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        var toggle = r.querySelector('.am-row__variacoes-toggle');
         return {
           texto: r.querySelector('.am-row__badges').textContent,
-          temAriaExpanded: r.hasAttribute('aria-expanded'),
-          temChevron: Boolean(r.querySelector('.am-row__chevron')),
+          temToggleNaLinha: Boolean(toggle),
+          toggleAriaExpanded: toggle && toggle.getAttribute('aria-expanded'),
         }; })()`);
       assert.ok(/24 variaç/i.test(estado.texto),
         `o anúncio legado com 24 variações no ML precisa avisar isso na linha: ${JSON.stringify(estado.texto)}`);
-      // O aviso é só informativo — continua sendo uma linha "item", nunca vira
-      // um agrupador fake (nada de família/UP inventado a partir disso).
-      assert.strictEqual(estado.temAriaExpanded, false, "variations_count não pode virar agrupador expansível");
-      assert.strictEqual(estado.temChevron, false);
+      assert.strictEqual(estado.temToggleNaLinha, true, "variations_count > 0 precisa ganhar um botão de expandir");
+      assert.strictEqual(estado.toggleAriaExpanded, "false", "começa fechado");
+    });
+
+    await check("7c — clicar no toggle expande as variações DIRETO abaixo da linha do item (sem UP/família fake)", async () => {
+      chamadasVariacoesLegado = [];
+      await clicar(cdp, '.am-row[data-item="MLB-SEMUP"] .am-row__variacoes-toggle');
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel .am-mlb--variacao-legado')`,
+        "o painel de variações legadas não carregou");
+
+      const estado = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        var toggle = r.querySelector('.am-row__variacoes-toggle');
+        var painel = r.nextElementSibling;
+        var linhas = Array.from(painel.querySelectorAll('.am-mlb--variacao-legado'));
+        return {
+          toggleAriaExpanded: toggle.getAttribute('aria-expanded'),
+          painelEscondido: painel.hidden,
+          totalLinhas: linhas.length,
+          primeira: linhas[0].innerText,
+          temAgrupadorFake: Boolean(painel.querySelector('.am-row--grupo, .am-variacao')),
+        }; })()`);
+      assert.strictEqual(estado.toggleAriaExpanded, "true");
+      assert.strictEqual(estado.painelEscondido, false);
+      assert.strictEqual(estado.totalLinhas, 2, "o fixture devolveu 2 variações");
+      assert.ok(/Preto/.test(estado.primeira) && /34 BR/.test(estado.primeira),
+        `a variação precisa mostrar a combinação de atributos: ${JSON.stringify(estado.primeira)}`);
+      assert.ok(/49,90/.test(estado.primeira), "a variação precisa mostrar o preço");
+      assert.strictEqual(estado.temAgrupadorFake, false,
+        "não pode existir nível de família/User Product entre o item e suas variações legadas");
+      assert.strictEqual(chamadasVariacoesLegado.length, 1, "exatamente 1 chamada ao expandir");
+      assert.deepStrictEqual(chamadasVariacoesLegado, ["MLB-SEMUP"]);
+    });
+
+    await check("7d — reabrir (colapsar/expandir) o mesmo item NÃO refaz a chamada (cache)", async () => {
+      await clicar(cdp, '.am-row[data-item="MLB-SEMUP"] .am-row__variacoes-toggle'); // fecha
+      const escondidoAoFechar = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel').hidden`);
+      assert.strictEqual(escondidoAoFechar, true, "fechar o toggle precisa esconder o painel");
+
+      await clicar(cdp, '.am-row[data-item="MLB-SEMUP"] .am-row__variacoes-toggle'); // reabre
+      const visivel = await cdp.evaluate(`!document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel').hidden`);
+      assert.strictEqual(visivel, true);
+      assert.strictEqual(chamadasVariacoesLegado.length, 1, "reabrir não pode gastar uma segunda chamada");
+    });
+
+    await check("7e — clicar no TÍTULO do item ainda abre o modal de detalhe (o toggle não tomou a linha inteira)", async () => {
+      const antes = pedidos.length;
+      await clicar(cdp, '.am-row[data-item="MLB-SEMUP"] .am-row__titulo');
+      await waitFor(cdp, "document.getElementById('am-det-modal')",
+        "clicar no título do item legado precisa continuar abrindo o modal");
+      await waitFor(cdp, "document.getElementById('am-det-titulo')", "o modal não terminou de carregar");
+      assert.strictEqual(contar(/^\/anuncios-meli\/MLB-SEMUP\?/, antes), 1, "o modal precisa buscar o detalhe do item");
+      // Fecha o modal para não atrapalhar as próximas verificações.
+      await clicar(cdp, '#am-det-modal [data-acao="fechar"]');
+    });
+
+    const celEstoqueVariacaoLegado = (variationId) =>
+      `.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel .am-mlb--variacao-legado[data-variacao="${variationId}"] .am-estoque`;
+
+    await check("7f — editar o estoque de UMA variação legada: PATCH por variação, painel repintado com os dados frescos do backend", async () => {
+      escritasEstoqueVariacaoLegado.length = 0;
+      const antesGets = chamadasVariacoesLegado.length;
+
+      await clicar(cdp, `${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input')`,
+        "o campo de edição da variação não abriu");
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input');
+        inp.value = '9';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn')`,
+        "a variação não voltou ao estado de leitura após salvar");
+
+      const estado = await cdp.evaluate(`(function(){
+        var painel = document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel');
+        var linhas = Array.from(painel.querySelectorAll('.am-mlb--variacao-legado'));
+        return {
+          totalLinhas: linhas.length,
+          estoqueAlvo: document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn').textContent.trim(),
+          estoqueOutra: document.querySelector('${celEstoqueVariacaoLegado(15092589431)} .am-estoque__btn').textContent.trim(),
+        }; })()`);
+
+      assert.strictEqual(escritasEstoqueVariacaoLegado.length, 1, "esperava exatamente 1 PATCH");
+      assert.strictEqual(escritasEstoqueVariacaoLegado[0].itemId, "MLB-SEMUP");
+      assert.strictEqual(escritasEstoqueVariacaoLegado[0].variationId, 15092589430);
+      assert.strictEqual(escritasEstoqueVariacaoLegado[0].corpo.estoque, 9);
+      assert.strictEqual(estado.totalLinhas, 2, "o painel continua com as 2 variações depois de repintar");
+      assert.strictEqual(estado.estoqueAlvo, "9", "a variação editada precisa refletir o valor confirmado pelo backend");
+      assert.strictEqual(estado.estoqueOutra, "1", "a OUTRA variação não pode mudar — cada edição é por variação, sem propagação");
+      assert.strictEqual(chamadasVariacoesLegado.length, antesGets,
+        "sucesso não pode disparar um novo GET — o backend já devolveu as variações frescas na resposta do PATCH");
+    });
+
+    await check("7g — recusa comum do Mercado Livre: a variação volta ao valor anterior, sem sucesso silencioso", async () => {
+      estoqueVariacaoLegadoHandler = () => ({ ok: false, codigo: "VARIACAO_GERENCIADA_EXTERNAMENTE", motivo: "Estoque gerenciado externamente." });
+
+      await clicar(cdp, `${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input')`,
+        "o campo de edição da variação não abriu");
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input');
+        inp.value = '77';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      })()`);
+      await waitFor(cdp, "document.querySelector('.vf-toast.is-danger')", "a recusa do backend não virou aviso na tela");
+
+      const estoqueAlvo = await cdp.evaluate(
+        `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn').textContent.trim()`
+      );
+      assert.strictEqual(estoqueAlvo, "9", "recusa comum não pode alterar o valor exibido — continua o da verificação 7f");
+      estoqueVariacaoLegadoHandler = null;
+    });
+
+    await check("7h — perda crítica de variação: nunca sucesso, o painel é recarregado do zero (cache descartado)", async () => {
+      // O GET de recarregamento (.../variacoes-legado) não passa por este
+      // handler — só o PATCH. Por isso não precisa "desarmar" nada depois: a
+      // releitura forçada sempre cai no fixture padrão.
+      estoqueVariacaoLegadoHandler = () => ({
+        ok: false, codigo: "PERDA_DE_VARIACAO", critico: true,
+        motivo: "Uma ou mais variações podem ter sido removidas. Confira no Mercado Livre.",
+      });
+      const antesGets = chamadasVariacoesLegado.length;
+
+      await clicar(cdp, `${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input')`,
+        "o campo de edição da variação não abriu");
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input');
+        inp.value = '3';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      })()`);
+      await waitFor(cdp, "document.querySelector('.vf-toast.is-danger')", "a perda crítica não virou aviso na tela");
+
+      // A releitura forçada é assíncrona: espera o painel voltar a mostrar as
+      // 2 variações (prova de que o GET de recarregamento completou).
+      await waitFor(cdp, `(function(){
+        var painel = document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel');
+        return painel && painel.querySelectorAll('.am-mlb--variacao-legado').length === 2;
+      })()`, "o painel não recarregou depois da perda crítica");
+
+      assert.ok(chamadasVariacoesLegado.length > antesGets,
+        "perda crítica precisa forçar uma NOVA leitura — o cache local não é mais confiável");
+      estoqueVariacaoLegadoHandler = null;
     });
 
     /* ── 8 a 10: expansão explícita, hierarquia e UP com 2 MLBs ─────────── */
@@ -1088,7 +1304,7 @@ async function run() {
     await check("15 — clicar num card de KPI recorta a lista única", async () => {
       // Volta para a conta 42, que tem os três tipos de linha.
       await cdp.evaluate("window.VF.context.setConta('42')");
-      await waitFor(cdp, "document.querySelectorAll('.am-listagem > .am-row').length === 3", "a lista da conta 42 não voltou");
+      await waitFor(cdp, "document.querySelectorAll('.am-listagem > .am-row').length === 4", "a lista da conta 42 não voltou");
       const antes = pedidos.length;
       await clicar(cdp, '#am-resumo [data-kpi="sem_sku"]');
       await waitFor(cdp, "document.querySelectorAll('.am-listagem > .am-row').length === 1", "o filtro não recortou a lista");
@@ -1099,7 +1315,7 @@ async function run() {
       assert.strictEqual(indicador, false, "o filtro ligado pelo operador precisa contar como filtro ativo");
       // Desliga para não contaminar as verificações seguintes.
       await clicar(cdp, '#am-resumo [data-kpi="sem_sku"]');
-      await waitFor(cdp, "document.querySelectorAll('.am-listagem > .am-row').length === 3", "o filtro não foi desligado");
+      await waitFor(cdp, "document.querySelectorAll('.am-listagem > .am-row').length === 4", "o filtro não foi desligado");
     });
 
     /* ── 16 e 17: as duas formas de linha abrem o mesmo modal ───────────── */
@@ -1549,8 +1765,8 @@ async function run() {
 
       const doAvulso = chamadasPerformance.find((c) => c.itemIds.includes("MLB-SEMUP"));
       assert.ok(doAvulso, "não achei a chamada dos itens avulsos");
-      assert.deepStrictEqual(doAvulso.itemIds.slice().sort(), ["MLB-SEMUP"],
-        "só o anúncio avulso está visível como ITEM no boot");
+      assert.deepStrictEqual(doAvulso.itemIds.slice().sort(), ["MLB-SEMUP", "MLB-SEMVAR"],
+        "os dois anúncios avulsos (com e sem variações legadas) estão visíveis como ITEM no boot");
       assert.strictEqual(doAvulso.incluirMetricas, true);
       assert.strictEqual(doAvulso.incluirMargem, true, "o item avulso pede métricas E margem juntas, como sempre");
 

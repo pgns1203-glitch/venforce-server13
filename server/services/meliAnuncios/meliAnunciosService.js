@@ -102,6 +102,16 @@ async function ensureSchema() {
       ADD COLUMN IF NOT EXISTS user_product_id TEXT;
   `);
 
+  // Sinal do modelo LEGADO de variações (item_id -> variations[] do ML),
+  // paralelo a user_product_id/family_name (modelo novo) acima — os dois
+  // convivem porque são dois modelos legítimos e mutuamente exclusivos por
+  // item no Mercado Livre. Nullable, sem índice, sem backfill: linha antiga
+  // fica NULL até a próxima ressincronização, mesmo padrão de sempre.
+  await db.query(`
+    ALTER TABLE meli_anuncios
+      ADD COLUMN IF NOT EXISTS variations_count INTEGER;
+  `);
+
   await db.query(
     `CREATE INDEX IF NOT EXISTS idx_meli_anuncios_cliente ON meli_anuncios (cliente_id);`
   );
@@ -576,6 +586,7 @@ async function upsertAnuncios(registros) {
       pictures_json, logistic_type, is_full, attributes_json, health,
       score_venforce, score_motivo, cliente_conta_id, ml_user_id,
       catalog_listing, catalog_product_id, family_name, user_product_id,
+      variations_count,
       last_synced_at, updated_at
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7,
@@ -584,6 +595,7 @@ async function upsertAnuncios(registros) {
       $20, $21, $22, $23, $24,
       $25, $26, $27, $28,
       $29, $30, $31, $32,
+      $33,
       NOW(), NOW()
     )
     ON CONFLICT (cliente_id, item_id) DO UPDATE SET
@@ -616,6 +628,7 @@ async function upsertAnuncios(registros) {
       catalog_product_id = EXCLUDED.catalog_product_id,
       family_name     = EXCLUDED.family_name,
       user_product_id = EXCLUDED.user_product_id,
+      variations_count = EXCLUDED.variations_count,
       last_synced_at  = NOW(),
       updated_at      = NOW();
   `;
@@ -655,6 +668,7 @@ async function upsertAnuncios(registros) {
       r.catalog_product_id ?? null,
       r.family_name ?? null,
       r.user_product_id ?? null,
+      r.variations_count ?? null,
     ]);
     salvos++;
   }

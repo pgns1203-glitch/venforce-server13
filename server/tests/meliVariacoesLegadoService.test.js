@@ -14,10 +14,16 @@
 //  2. estoque/preço/vendidos refletem exatamente o que veio — 0 é valor
 //     válido, ausência vira null, nunca 0 fabricado;
 //  3. buscarVariacoesLegado() chama GET /items/{id}/variations (a MESMA lista
-//     que a VIP oficial do ML usa) — nenhuma chamada extra, nenhum POST/PUT
-//     (este módulo é só leitura: editar uma variação isolada não tem contrato
-//     seguro documentado, ver o comentário do módulo);
-//  4. uma recusa do ML vira { ok:false, codigo, motivo } legível, nunca lança.
+//     que a VIP oficial do ML usa), e um segundo GET /items/{id}?attributes=
+//     pictures só para relacionar picture_ids -> pictures[].secure_url —
+//     nenhum POST/PUT (este módulo é só leitura: editar uma variação isolada
+//     não tem contrato seguro documentado, ver o comentário do módulo);
+//  4. uma recusa do ML vira { ok:false, codigo, motivo } legível, nunca lança;
+//  5. image_url é resolvida por relação DOCUMENTADA (picture_ids -> pictures
+//     por id), nunca inventada: sem match vira o fallback da imagem principal
+//     do item, e sem nenhum dos dois vira null — jamais uma URL fabricada;
+//  6. falha ao buscar pictures não derruba a leitura das variações (é uma
+//     melhoria visual, não um dado crítico).
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
 
@@ -70,7 +76,65 @@ async function run() {
     assert.strictEqual(r.preco, 189.9);
     assert.strictEqual(r.estoque, 4);
     assert.strictEqual(r.vendidos, 12);
+    assert.strictEqual(r.image_url, null, "sem imagens passadas, image_url é null — nunca inventado");
     ok("mapearVariacaoLegado extrai atributos, preço, estoque e vendidos do payload real");
+  }
+
+  // 1b. image_url — picture_ids da variação tem match em item.pictures: usa a
+  // URL correspondente ao PRIMEIRO id de picture_ids (mesma convenção de capa
+  // já usada para a família — ordem, não uma flag do ML, que não existe).
+  {
+    const bruta = {
+      id: 1, attribute_combinations: [], price: 100, available_quantity: 4, sold_quantity: 0,
+      picture_ids: ["PIC-A", "PIC-B"],
+    };
+    const imagens = {
+      pictureUrlById: { "PIC-A": "https://img/a.jpg", "PIC-B": "https://img/b.jpg" },
+      imagemPrincipalItem: "https://img/principal.jpg",
+    };
+    const r = service.mapearVariacaoLegado(bruta, imagens);
+    assert.strictEqual(r.image_url, "https://img/a.jpg", "usa o match do PRIMEIRO picture_id, não o principal do item");
+    ok("mapearVariacaoLegado resolve image_url pelo primeiro picture_id com match em item.pictures");
+  }
+
+  // 1c. picture_ids presente mas SEM match em item.pictures (anomalia) -> cai
+  // pro fallback da imagem principal do item, nunca fica preso a um id que
+  // não existe mais.
+  {
+    const bruta = {
+      id: 1, attribute_combinations: [], price: 100, available_quantity: 4, sold_quantity: 0,
+      picture_ids: ["PIC-INEXISTENTE"],
+    };
+    const imagens = { pictureUrlById: { "PIC-A": "https://img/a.jpg" }, imagemPrincipalItem: "https://img/principal.jpg" };
+    const r = service.mapearVariacaoLegado(bruta, imagens);
+    assert.strictEqual(r.image_url, "https://img/principal.jpg");
+    ok("mapearVariacaoLegado cai para a imagem principal do item quando o picture_id da variação não tem match");
+  }
+
+  // 1d. picture_ids ausente/vazio -> fallback direto pra imagem principal.
+  {
+    const semPictureIds = service.mapearVariacaoLegado(
+      { id: 1, attribute_combinations: [], price: 100, available_quantity: 4, sold_quantity: 0 },
+      { pictureUrlById: {}, imagemPrincipalItem: "https://img/principal.jpg" }
+    );
+    assert.strictEqual(semPictureIds.image_url, "https://img/principal.jpg");
+    const vazio = service.mapearVariacaoLegado(
+      { id: 1, attribute_combinations: [], price: 100, available_quantity: 4, sold_quantity: 0, picture_ids: [] },
+      { pictureUrlById: {}, imagemPrincipalItem: "https://img/principal.jpg" }
+    );
+    assert.strictEqual(vazio.image_url, "https://img/principal.jpg");
+    ok("mapearVariacaoLegado usa a imagem principal do item quando a variação não tem picture_ids");
+  }
+
+  // 1e. Nem picture_ids resolve, nem há imagem principal -> null, nunca
+  // fabricado.
+  {
+    const r = service.mapearVariacaoLegado(
+      { id: 1, attribute_combinations: [], price: 100, available_quantity: 4, sold_quantity: 0, picture_ids: ["X"] },
+      { pictureUrlById: {}, imagemPrincipalItem: null }
+    );
+    assert.strictEqual(r.image_url, null);
+    ok("mapearVariacaoLegado devolve image_url null quando não há match nem imagem principal");
   }
 
   // 2. Característica personalizada: sem `id` fixo do catálogo, só name/value_name.
@@ -108,34 +172,82 @@ async function run() {
     ok("mapearVariacaoLegado nunca inventa valor de atributo ou número ausente");
   }
 
-  // 5. buscarVariacoesLegado — caminho feliz: GET /items/{id}/variations.
+  // 5. buscarVariacoesLegado — caminho feliz: GET /items/{id}/variations +
+  // GET /items/{id}?attributes=pictures (para relacionar picture_ids), e o
+  // image_url de cada variação sai desse relacionamento — nada inventado.
   {
     mlChamadas = [];
-    mlHandler = async () => ({
-      ok: true, status: 200,
-      data: [
-        { id: 1, attribute_combinations: [{ name: "Color", value_name: "Preto" }], price: 100, available_quantity: 4, sold_quantity: 0 },
-        { id: 2, attribute_combinations: [{ name: "Color", value_name: "Nude" }], price: 100, available_quantity: 6, sold_quantity: 2 },
-      ],
-    });
+    mlHandler = async (chamada) => {
+      if (chamada.path.endsWith("/variations")) {
+        return {
+          ok: true, status: 200,
+          data: [
+            {
+              id: 1, attribute_combinations: [{ name: "Color", value_name: "Preto" }],
+              price: 100, available_quantity: 4, sold_quantity: 0, picture_ids: ["PIC-PRETO"],
+            },
+            {
+              id: 2, attribute_combinations: [{ name: "Color", value_name: "Nude" }],
+              price: 100, available_quantity: 6, sold_quantity: 2, picture_ids: [],
+            },
+          ],
+        };
+      }
+      return {
+        ok: true, status: 200,
+        data: {
+          pictures: [
+            { id: "PIC-CAPA", secure_url: "https://img/capa.jpg" },
+            { id: "PIC-PRETO", secure_url: "https://img/preto.jpg" },
+          ],
+        },
+      };
+    };
     const r = await service.buscarVariacoesLegado({ clienteId: 48, itemId: "MLB2652739620", mlUserId: "649359720" });
     assert.strictEqual(r.ok, true);
     assert.strictEqual(r.variacoes.length, 2);
     assert.strictEqual(r.variacoes[0].atributos[0].valor, "Preto");
-    assert.strictEqual(mlChamadas.length, 1, "tem de ser exatamente 1 chamada ao ML");
+    assert.strictEqual(r.variacoes[0].image_url, "https://img/preto.jpg", "variação com picture_ids próprio usa o match");
+    assert.strictEqual(r.variacoes[1].image_url, "https://img/capa.jpg", "variação sem picture_ids usa a imagem principal (primeira do item)");
+
+    assert.strictEqual(mlChamadas.length, 2, "2 chamadas: variations + item (pictures)");
     assert.strictEqual(mlChamadas[0].metodo, "GET", "esta leitura nunca escreve");
     assert.strictEqual(mlChamadas[0].path, "/items/MLB2652739620/variations");
-    assert.strictEqual(mlChamadas[0].mlUserId, "649359720");
-    ok("buscarVariacoesLegado faz GET /items/{id}/variations e mapeia a lista, sem escrita");
+    assert.strictEqual(mlChamadas[1].path, "/items/MLB2652739620?attributes=pictures");
+    assert.ok(mlChamadas.every((c) => c.mlUserId === "649359720"), "as duas chamadas usam o mesmo mlUserId, sem fallback de conta");
+    ok("buscarVariacoesLegado faz GET /variations + GET /items?attributes=pictures e resolve image_url por relação real, sem escrita");
   }
 
-  // 6. Recusa do ML vira falha legível, nunca lança.
+  // 5b. Falha ao buscar as imagens do item (GET pictures recusado) NÃO derruba
+  // a leitura das variações — é degradação (image_url null em todas), nunca
+  // bloqueio, porque imagem é melhoria visual, não dado crítico.
   {
+    mlChamadas = [];
+    mlHandler = async (chamada) => {
+      if (chamada.path.endsWith("/variations")) {
+        return {
+          ok: true, status: 200,
+          data: [{ id: 1, attribute_combinations: [], price: 100, available_quantity: 4, sold_quantity: 0, picture_ids: ["PIC-1"] }],
+        };
+      }
+      return { ok: false, status: 500, data: { message: "erro interno" } };
+    };
+    const r = await service.buscarVariacoesLegado({ clienteId: 48, itemId: "MLB1", mlUserId: "1" });
+    assert.strictEqual(r.ok, true, "GET de pictures falhando não pode derrubar a leitura das variações");
+    assert.strictEqual(r.variacoes[0].image_url, null, "sem pictures resolvidas, image_url degrada pra null, nunca quebra");
+    ok("buscarVariacoesLegado: falha ao buscar pictures do item degrada para image_url null, sem bloquear a leitura");
+  }
+
+  // 6. Recusa do ML na leitura das variações vira falha legível, nunca lança,
+  // e nem chega a buscar as imagens (a leitura principal já falhou).
+  {
+    mlChamadas = [];
     mlHandler = async () => ({ ok: false, status: 404, data: { message: "Item not found" } });
     const r = await service.buscarVariacoesLegado({ clienteId: 48, itemId: "MLB-INEXISTENTE", mlUserId: "649359720" });
     assert.strictEqual(r.ok, false);
     assert.ok(r.motivo && r.codigo, "falha precisa vir com motivo e código legíveis");
-    ok("buscarVariacoesLegado devolve falha legível quando o ML recusa/erra");
+    assert.strictEqual(mlChamadas.length, 1, "variations falhando não deve tentar buscar pictures");
+    ok("buscarVariacoesLegado devolve falha legível quando o ML recusa/erra a leitura de variations, sem chamada extra");
   }
 
   console.log(`\n${checks} verificações passaram.`);

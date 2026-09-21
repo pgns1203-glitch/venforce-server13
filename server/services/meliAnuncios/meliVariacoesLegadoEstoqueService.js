@@ -29,7 +29,7 @@
 const { mlFetch } = require("../../utils/mlClient");
 const { motivoDoErroMl, codigoDoErroMl } = require("./meliConteudoService");
 const { normalizarQuantidade } = require("./meliEstoqueService");
-const { mapearVariacaoLegado } = require("./meliVariacoesLegadoService");
+const { mapearVariacaoLegado, construirMapaImagensDoItem } = require("./meliVariacoesLegadoService");
 
 function falha(codigo, motivo) {
   return { ok: false, codigo, motivo };
@@ -64,6 +64,9 @@ async function atualizarEstoqueVariacaoLegado({ clienteId, itemId, variationId, 
     );
   }
   const item = itemResp.data || {};
+  // item.pictures já veio de graça neste GET (resposta padrão, sem filtro de
+  // attributes) — usado só na resposta final (image_url), zero chamada extra.
+  const imagens = construirMapaImagensDoItem(item);
   if (item.user_product_id) {
     return falha(
       "USER_PRODUCT_MIGRADO",
@@ -154,7 +157,7 @@ async function atualizarEstoqueVariacaoLegado({ clienteId, itemId, variationId, 
     );
   }
 
-  return { ok: true, variacoes: listaDepois.map(mapearVariacaoLegado) };
+  return { ok: true, variacoes: listaDepois.map((v) => mapearVariacaoLegado(v, imagens)) };
 }
 
 module.exports = {

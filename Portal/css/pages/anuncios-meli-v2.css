@@ -1088,6 +1088,24 @@
   text-decoration: line-through;
 }
 
+/* Nota de preço nas variações do modelo LEGADO: variation.price continua
+   sendo o valor PRIMÁRIO (linha de cima, sem risco) — o ML não documenta
+   sale_price por variação. A promoção do ANÚNCIO (quando o Motor confirma
+   uma real) vira só contexto secundário embaixo, rotulada por extenso —
+   nunca risca nem troca o valor de cima, pra não sugerir que a variation
+   tem preço promocional próprio. */
+.vf-page-anuncios-meli .am-mlb__preco--com-nota {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.vf-page-anuncios-meli .am-mlb__preco-nota {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
+}
+
 .vf-page-anuncios-meli .am-row__num {
   font-variant-numeric: tabular-nums;
   font-size: var(--vf-fs-sm);

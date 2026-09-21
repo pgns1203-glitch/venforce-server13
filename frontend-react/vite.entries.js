@@ -75,6 +75,17 @@ export const ENTRIES = {
     port: 5185,
     apiRoutes: ["/operacao", "/auth", "/health"],
   },
+  // Painel de Controle de Contas por Squad — carteira agrupada por Squad,
+  // hierarquia Cliente → Mês → Semana. Escopo GLOBAL (como "visao" é escopo
+  // "account"): não depende de Cliente+Operação escolhidos no Shell, lê sua
+  // própria carteira via GET /painel-contas (ver Auditoria
+  // Painel_Controle_Contas_Squads).
+  "painel-contas": {
+    html: "painel-contas.html",
+    assetsDir: "assets/painel-contas",
+    port: 5186,
+    apiRoutes: ["/painel-contas", "/squads", "/auth", "/health"],
+  },
 };
 
 export function resolveEntry(mode) {

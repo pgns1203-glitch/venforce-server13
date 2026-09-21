@@ -1,0 +1,18 @@
+/* frontend-react/src/styles/painel-contas.css
+   Painel de Controle de Contas por Squad — só o layout específico desta
+   tela. Componentes compartilhados (.vf-page-header, .vf-field, .vf-input,
+   .vf-select, .vf-banner, .vf-empty, .vf-skeleton, .vf-tag...) vêm da
+   Fundação Global V2. Só var(--vf-*), nenhum token novo. */
+
+.vf-ph-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--vf-sp-3, 12px);
+  margin-top: var(--vf-sp-3, 12px);
+}
+
+.vf-ph-filtro-busca {
+  flex: 1 1 220px;
+  min-width: 200px;
+}

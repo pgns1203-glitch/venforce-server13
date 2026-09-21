@@ -1057,14 +1057,22 @@
     var rotulo = (v.atributos || []).length
       ? v.atributos.map(function (at) { return at.valor; }).join(" · ")
       : "Variação sem atributos";
+    // image_url vem do backend já resolvida (variation.picture_ids ->
+    // item.pictures, com fallback pra capa do item) — ver
+    // meliVariacoesLegadoService.construirMapaImagensDoItem. Duas variações
+    // podem legitimamente compartilhar a mesma URL (mesma capa do item); isso
+    // não é bug, é o fallback documentado funcionando.
+    var img = v.image_url
+      ? '<img src="' + escapeHtml(v.image_url) + '" alt="" loading="lazy" />'
+      : iconeImagemSvg();
     return '<div class="am-mlb am-mlb--variacao-legado" data-variacao="' + escapeAttr(v.id) + '">' +
-      '<span class="am-mlb__thumb" aria-hidden="true">' + iconeImagemSvg() + "</span>" +
+      '<span class="am-mlb__thumb" aria-hidden="true">' + img + "</span>" +
       '<span class="am-mlb__main">' +
         '<span class="am-mlb__titulo">' + escapeHtml(rotulo) + "</span>" +
         '<span class="am-mlb__ids"><span class="vf-mono">Variação ' + escapeHtml(String(v.id)) + "</span></span>" +
       "</span>" +
       '<span class="vf-status is-empty" title="O Mercado Livre não reporta status por variação — só por anúncio (MLB)">—</span>' +
-      '<span class="am-mlb__preco">' + escapeHtml(formatMoeda(v.preco, moeda)) + "</span>" +
+      celulaPrecoVariacaoLegadoHtml(v, itemId, moeda) +
       celulaEstoqueVariacaoLegadoHtml(v, itemId) +
       '<span class="am-mlb__num">' + (v.vendidos != null ? v.vendidos : "—") + "</span>" +
       '<span class="am-metricas7d am-metricas7d--indisponivel" title="Métricas últ. 7 dias são só por anúncio (MLB) — o Mercado Livre não as reporta por variação">—</span>' +
@@ -1714,6 +1722,42 @@
       '" data-preco-original-db="' + (a.preco_original == null ? "" : escapeAttr(a.preco_original)) +
       '" data-moeda="' + escapeAttr(a.moeda || "") + '">' +
       precoCelulaConteudoHtml(classe, atual, cheio, a.moeda) +
+    "</span>";
+  }
+
+  // ---------------------------------------------------------------------------
+  // PREÇO DE UMA VARIAÇÃO LEGADA — investigação confirmou que o ML não
+  // documenta sale_price/promoção por variação (só por ANÚNCIO, via
+  // GET /items/{id}/sale_price). Por isso o preço PRIMÁRIO desta célula é
+  // SEMPRE variation.price, cru — nunca substituído pelo preço ao vivo do
+  // Motor. Quando o Motor já resolveu uma promoção REAL do anúncio (mesmo
+  // critério de sempre, precoCheioReal), ela aparece só como nota
+  // secundária/contextual, claramente rotulada "Promoção do anúncio" — nunca
+  // risca nem troca o valor da variação, pra não sugerir que a variation tem
+  // um sale_price próprio que o ML não garante.
+  //
+  // Reaproveita só leitura de AM.state.performanceCache/precoCheioReal — não
+  // participa do repaint ao vivo de pintarPerformanceEmCelulas (que usa
+  // [data-preco-item] para RECONSTRUIR a célula no formato "cheio riscado +
+  // atual"; aplicar esse seletor aqui apagaria a nota e o preço próprio da
+  // variação). Sem problema: o painel de variações é sempre repintado do
+  // zero (reabrir o toggle, ou depois de uma edição de estoque), e a essa
+  // altura a performance do item já veio do pré-carregamento em background.
+  function celulaPrecoVariacaoLegadoHtml(v, itemId, moeda) {
+    var valorProprio = formatMoeda(v.preco, moeda);
+    var cache = AM.state.performanceCache[itemId];
+    var m = cache && cache.temMargem && cache.margem;
+    var atual = m && m.precoAtual != null ? m.precoAtual : null;
+    var cheioBruto = m && m.precoOriginal != null ? m.precoOriginal : null;
+    var cheio = precoCheioReal(atual, cheioBruto);
+
+    if (!cheio) return '<span class="am-mlb__preco">' + escapeHtml(valorProprio) + "</span>";
+
+    return '<span class="am-mlb__preco am-mlb__preco--com-nota">' +
+      '<span class="am-mlb__preco-valor">' + escapeHtml(valorProprio) + "</span>" +
+      '<span class="am-mlb__preco-nota" title="Preço vigente do anúncio no Mercado Livre agora — não é um preço promocional próprio desta variação">' +
+        "Promoção do anúncio: " + escapeHtml(formatMoeda(atual, moeda)) +
+      "</span>" +
     "</span>";
   }
 

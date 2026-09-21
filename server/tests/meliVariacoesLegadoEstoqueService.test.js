@@ -377,6 +377,38 @@ async function run() {
     ok("GET fresco do item falhando (404): fail closed, nenhum PUT");
   }
 
+  // 16. image_url nas variações devolvidas reaproveita o item.pictures que o
+  // PRIMEIRO GET (item, passo 1) já trouxe de graça — nenhuma chamada nova ao
+  // ML só por causa da imagem (ver meliVariacoesLegadoService.construirMapaImagensDoItem).
+  {
+    mlChamadas = [];
+    const itemComPictures = {
+      ...ITEM_LEGADO,
+      pictures: [
+        { id: "PIC-CAPA", secure_url: "https://img/capa.jpg" },
+        { id: "PIC-3", secure_url: "https://img/tres.jpg" },
+      ],
+    };
+    const variacoesComPicIds = [
+      { id: 1, available_quantity: 4, attribute_combinations: [], picture_ids: [] },
+      { id: 2, available_quantity: 6, attribute_combinations: [] },
+      { id: 3, available_quantity: 9, attribute_combinations: [], picture_ids: ["PIC-3"] },
+    ];
+    mlHandler = handlerFeliz({ alvoId: 3, novaQtd: 40, item: itemComPictures, variacoesAntes: variacoesComPicIds });
+    const r = await service.atualizarEstoqueVariacaoLegado({
+      clienteId: 1, itemId: "MLB1", variationId: 3, estoque: 40, mlUserId: "111",
+    });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.strictEqual(r.variacoes.find((v) => v.id === 1).image_url, "https://img/capa.jpg", "sem picture_ids próprio, cai pra imagem principal do item");
+    assert.strictEqual(r.variacoes.find((v) => v.id === 3).image_url, "https://img/tres.jpg", "com picture_ids próprio, usa o match");
+    assert.strictEqual(
+      mlChamadas.filter((c) => c.metodo === "GET" && !c.path.endsWith("/variations")).length,
+      1,
+      "image_url não pode gerar nenhum GET de item extra — reaproveita o GET do passo 1"
+    );
+    ok("sucesso devolve image_url reaproveitando item.pictures do GET já feito no passo 1, sem chamada extra");
+  }
+
   console.log(`\n${checks} verificações passaram.`);
 }
 

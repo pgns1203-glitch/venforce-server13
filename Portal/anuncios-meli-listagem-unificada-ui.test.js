@@ -188,9 +188,15 @@ const LINHAS_CONTA_42 = [
 // As variações REAIS do modelo legado de MLB-SEMUP (GET .../variacoes-legado),
 // espelhando o payload que documentacao_api_meli/variacoes.md documenta para
 // GET /items/{id}/variations — 2 das 24 "variações no ML" do fixture acima.
+// image_url já reflete o RESULTADO do relacionamento picture_ids ->
+// item.pictures que o backend real resolve (meliVariacoesLegadoService —
+// coberto pela suíte Node); este mock só simula o resultado já pronto. As
+// duas variações compartilharem a mesma URL (fallback pra capa do item,
+// já que 15092589431 não tem imagem própria) é o comportamento esperado, não
+// um bug de dedupe.
 const VARIACOES_LEGADO_MLB_SEMUP = [
-  { id: 15092589430, attribute_combinations: [{ id: "COLOR", name: "Color", value_id: "52005", value_name: "Preto" }, { id: "SIZE", name: "Talla", value_id: "9", value_name: "34 BR" }], price: 49.9, available_quantity: 2, sold_quantity: 5 },
-  { id: 15092589431, attribute_combinations: [{ id: "COLOR", name: "Color", value_id: "52049", value_name: "Nude" }, { id: "SIZE", name: "Talla", value_id: "10", value_name: "35 BR" }], price: 49.9, available_quantity: 1, sold_quantity: 3 },
+  { id: 15092589430, attribute_combinations: [{ id: "COLOR", name: "Color", value_id: "52005", value_name: "Preto" }, { id: "SIZE", name: "Talla", value_id: "9", value_name: "34 BR" }], price: 49.9, available_quantity: 2, sold_quantity: 5, image_url: "https://http2.mlstatic.com/D_preto-O.jpg" },
+  { id: 15092589431, attribute_combinations: [{ id: "COLOR", name: "Color", value_id: "52049", value_name: "Nude" }, { id: "SIZE", name: "Talla", value_id: "10", value_name: "35 BR" }], price: 49.9, available_quantity: 1, sold_quantity: 3, image_url: "https://http2.mlstatic.com/D_preto-O.jpg" },
 ];
 let chamadasVariacoesLegado = [];
 // Mesma lista com q="Azul": o backend troca a variação relevante, e a capa da
@@ -559,6 +565,7 @@ function wireInterception(cdp) {
           id: v.id,
           atributos: v.attribute_combinations.map((ac) => ({ nome: ac.name, valor: ac.value_name })),
           preco: v.price, estoque: v.available_quantity, vendidos: v.sold_quantity,
+          image_url: v.image_url || null,
         })),
       });
       return;
@@ -576,6 +583,7 @@ function wireInterception(cdp) {
         id: v.id,
         atributos: v.attribute_combinations.map((ac) => ({ nome: ac.name, valor: ac.value_name })),
         preco: v.price, estoque: v.available_quantity, vendidos: v.sold_quantity,
+        image_url: v.image_url || null,
       })) });
       return;
     }
@@ -835,6 +843,11 @@ async function run() {
           totalLinhas: linhas.length,
           primeira: linhas[0].innerText,
           temAgrupadorFake: Boolean(painel.querySelector('.am-row--grupo, .am-variacao')),
+          thumbSrcs: linhas.map(function (l) {
+            var img = l.querySelector('.am-mlb__thumb img');
+            return img ? img.getAttribute('src') : null;
+          }),
+          temNotaPreco: Boolean(linhas[0].querySelector('.am-mlb__preco-nota')),
         }; })()`);
       assert.strictEqual(estado.toggleAriaExpanded, "true");
       assert.strictEqual(estado.painelEscondido, false);
@@ -844,8 +857,15 @@ async function run() {
       assert.ok(/49,90/.test(estado.primeira), "a variação precisa mostrar o preço");
       assert.strictEqual(estado.temAgrupadorFake, false,
         "não pode existir nível de família/User Product entre o item e suas variações legadas");
+      assert.strictEqual(estado.temNotaPreco, false,
+        "sem precoAtual ao vivo (fixture padrão de margem não traz), não pode aparecer nota de promoção do anúncio");
       assert.strictEqual(chamadasVariacoesLegado.length, 1, "exatamente 1 chamada ao expandir");
       assert.deepStrictEqual(chamadasVariacoesLegado, ["MLB-SEMUP"]);
+      assert.deepStrictEqual(
+        estado.thumbSrcs,
+        ["https://http2.mlstatic.com/D_preto-O.jpg", "https://http2.mlstatic.com/D_preto-O.jpg"],
+        "as duas variações mostram thumbnail — compartilhar a mesma URL (fallback pra capa do item) é esperado, não quebra a linha"
+      );
     });
 
     await check("7d — reabrir (colapsar/expandir) o mesmo item NÃO refaz a chamada (cache)", async () => {
@@ -957,6 +977,39 @@ async function run() {
 
       assert.ok(chamadasVariacoesLegado.length > antesGets,
         "perda crítica precisa forçar uma NOVA leitura — o cache local não é mais confiável");
+      estoqueVariacaoLegadoHandler = null;
+    });
+
+    await check("7i — variação sem image_url mantém o ícone de fallback, sem quebrar a irmã com imagem", async () => {
+      estoqueVariacaoLegadoHandler = () => ({
+        ok: true,
+        variacoes: [
+          { id: 15092589430, atributos: [{ nome: "Color", valor: "Preto" }], preco: 49.9, estoque: 5, vendidos: 5, image_url: null },
+          { id: 15092589431, atributos: [{ nome: "Color", valor: "Nude" }], preco: 49.9, estoque: 1, vendidos: 3, image_url: "https://http2.mlstatic.com/D_preto-O.jpg" },
+        ],
+      });
+
+      await clicar(cdp, `${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input')`,
+        "o campo de edição da variação não abriu");
+      await cdp.evaluate(`(function(){
+        var inp = document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__input');
+        inp.value = '5';
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${celEstoqueVariacaoLegado(15092589430)} .am-estoque__btn')`,
+        "a variação não voltou ao estado de leitura após salvar");
+
+      const estado = await cdp.evaluate(`(function(){
+        var painel = document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel');
+        var linhas = Array.from(painel.querySelectorAll('.am-mlb--variacao-legado'));
+        return linhas.map(function (l) {
+          var thumb = l.querySelector('.am-mlb__thumb');
+          return { temImg: Boolean(thumb.querySelector('img')), temSvg: Boolean(thumb.querySelector('svg')) };
+        }); })()`);
+      assert.strictEqual(estado[0].temImg, false, "sem image_url, a linha não pode renderizar <img>");
+      assert.strictEqual(estado[0].temSvg, true, "sem image_url, cai no mesmo ícone de fallback já usado em anúncios sem foto");
+      assert.strictEqual(estado[1].temImg, true, "a variação irmã com image_url continua mostrando a própria imagem");
       estoqueVariacaoLegadoHandler = null;
     });
 
@@ -2129,6 +2182,70 @@ async function run() {
         assert.ok(!/--promo\b/.test(estado.classe), `precoOriginal igual ao atual não é promoção — classe: ${estado.classe}`);
         assert.strictEqual(estado.temOriginal, false, "não pode riscar o mesmo valor que já é o preço atual");
         assert.strictEqual(estado.texto, "R$ 98,00");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
+    await check("38f — variação legada: preço da variação continua sendo o PRÓPRIO (variation.price); promoção do anúncio vira nota secundária, nunca substitui nem risca", async () => {
+      // Investigação confirmou: o ML não documenta sale_price/promoção por
+      // variação (só por ANÚNCIO). Reforço explícito pedido depois da
+      // investigação: a variação não pode parecer ter preço promocional
+      // próprio — o preço ao vivo do Motor só pode aparecer como CONTEXTO
+      // rotulado, nunca substituindo nem riscando variation.price.
+      performanceHandler = (ids) => {
+        const margem = {};
+        ids.forEach((id) => {
+          margem[id] = Object.assign(
+            {},
+            MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
+            id === "MLB-SEMUP" ? { precoAtual: 89.9, precoOriginal: 99.9 } : {}
+          );
+        });
+        return { ok: true, metricas7d: {}, margem, margemIndisponivel: null };
+      };
+      try {
+        pedidos.length = 0;
+        chamadasVariacoesLegado = [];
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
+        // Confirma que a promoção do ANÚNCIO (linha-mãe) já chegou antes de
+        // expandir — senão a variação não teria de onde tirar a nota.
+        await waitFor(cdp, `(function(){
+          var el = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__preco-atual');
+          return el && /89,90/.test(el.textContent);
+        })()`, "a promoção do anúncio não chegou na linha-mãe antes da expansão");
+
+        await clicar(cdp, '.am-row[data-item="MLB-SEMUP"] .am-row__variacoes-toggle');
+        await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel .am-mlb--variacao-legado')`,
+          "o painel de variações legadas não carregou");
+
+        const estado = await cdp.evaluate(`(function(){
+          var linhas = Array.from(document.querySelectorAll('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel .am-mlb--variacao-legado'));
+          return linhas.map(function (l) {
+            var cel = l.querySelector('.am-mlb__preco');
+            var valor = cel.querySelector('.am-mlb__preco-valor');
+            var nota = cel.querySelector('.am-mlb__preco-nota');
+            var img = l.querySelector('.am-mlb__thumb img');
+            return {
+              temOriginalRiscado: Boolean(cel.querySelector('.am-mlb__preco-original')),
+              valorProprio: (valor || cel).textContent.trim(),
+              nota: nota ? nota.textContent.trim() : null,
+              thumbSrc: img ? img.getAttribute('src') : null,
+            };
+          }); })()`);
+
+        assert.strictEqual(estado.length, 2, "o fixture continua com 2 variações");
+        estado.forEach(function (linha, i) {
+          assert.strictEqual(linha.valorProprio, "R$ 49,90",
+            `variação ${i}: o preço PRÓPRIO (variation.price) não pode ser substituído pelo preço do anúncio`);
+          assert.strictEqual(linha.temOriginalRiscado, false,
+            `variação ${i}: variation.price não pode ser riscado — isso é reservado ao preço do ANÚNCIO na linha-mãe`);
+          assert.ok(linha.nota && /Promoção do anúncio/.test(linha.nota) && /89,90/.test(linha.nota),
+            `variação ${i}: precisa mostrar a promoção do anúncio como nota secundária rotulada: ${JSON.stringify(linha.nota)}`);
+          assert.strictEqual(linha.thumbSrc, "https://http2.mlstatic.com/D_preto-O.jpg",
+            `variação ${i}: a melhoria de preço não pode ter quebrado a imagem da variação`);
+        });
       } finally {
         performanceHandler = null;
       }

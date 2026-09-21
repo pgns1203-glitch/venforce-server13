@@ -1889,6 +1889,16 @@
   function rowAnuncioHtml(a) {
     var st = statusInfo(a.status);
     var badges = "";
+    // Modelo LEGADO de variações do ML (item_id -> variations[]), distinto do
+    // agrupador família/User Product (rowGrupoHtml). Um anúncio nesta forma
+    // ("item", sem family_id) pode mesmo assim ter variações reais de cor e
+    // tamanho no Mercado Livre — o caso que motivou este aviso é real
+    // (MLB2652739620, 24 variações, nunca migrado ao modelo novo). Só avisa;
+    // não vira agrupador nem ganha árvore de cor/tamanho aqui.
+    if ((a.variations_count || 0) > 0) {
+      badges += '<span class="vf-tag is-info" title="Anúncio com variações no modelo antigo do Mercado Livre (sem User Product) — a edição de preço desta tela trata isso à parte.">' +
+        plural(a.variations_count, "variação no ML", "variações no ML") + "</span>";
+    }
     if (ehCatalogoOficial(a)) badges += '<span class="vf-tag is-primary">Catálogo</span>';
     if (a.is_full) badges += '<span class="vf-tag is-info">Full</span>';
     if ((a.pictures_count || 0) < 3) badges += '<span class="vf-tag is-warning">' + (a.pictures_count || 0) + "/3 fotos</span>";

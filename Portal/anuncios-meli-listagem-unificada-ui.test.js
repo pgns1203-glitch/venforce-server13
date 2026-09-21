@@ -147,6 +147,12 @@ const LINHAS_CONTA_42 = [
     cover: { thumbnail: null, user_product_id: "MLBU-300" },
   },
   // Anúncio SEM agrupamento, na MESMA lista. Antes ele morava na outra aba.
+  //
+  // variations_count: 24 espelha o caso real da auditoria (MLB2652739620,
+  // tênis com 24 variações reais de Cor x Tamanho no Mercado Livre, mas
+  // family_id/user_product_id nulos — modelo legado, nunca migrado ao User
+  // Products). É o caso que motivou este campo: sem ele, esta linha seria
+  // indistinguível de um SKU único de verdade.
   {
     tipo: "item", key: "item:MLB-SEMUP", item_id: "MLB-SEMUP", family_id: null,
     titulo: "Anúncio legado sem agrupamento", sku: null,
@@ -155,7 +161,7 @@ const LINHAS_CONTA_42 = [
     // lista risca o preço cheio em cima do vigente (ver celulaPrecoHtml).
     preco: 49.9, preco_original: 69.9, moeda: "BRL", estoque: 3, vendidos: 1, status: "active",
     permalink: null, thumbnail: null, pictures_count: 1, is_full: false,
-    catalog_listing: false, family_name: null,
+    catalog_listing: false, family_name: null, variations_count: 24,
     score_venforce: 40, revisado: false,
     total_itens: 1, total_user_products: 0, estoque_total: 3, vendidos_total: 1,
     cover: { thumbnail: null, user_product_id: null },
@@ -718,6 +724,24 @@ async function run() {
       assert.strictEqual(estado.temAriaExpanded, false, "anúncio individual não expande nada");
       assert.strictEqual(estado.temChevron, false);
       assert.strictEqual(estado.proxEhPainel, false, "criou painel para uma linha sem nada dentro");
+    });
+
+    /* ── 7b: variações do modelo LEGADO (auditoria MLB2652739620) ───────── */
+
+    await check("7b — anúncio legado com variations_count > 0 mostra o aviso, sem virar agrupador", async () => {
+      const estado = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        return {
+          texto: r.querySelector('.am-row__badges').textContent,
+          temAriaExpanded: r.hasAttribute('aria-expanded'),
+          temChevron: Boolean(r.querySelector('.am-row__chevron')),
+        }; })()`);
+      assert.ok(/24 variaç/i.test(estado.texto),
+        `o anúncio legado com 24 variações no ML precisa avisar isso na linha: ${JSON.stringify(estado.texto)}`);
+      // O aviso é só informativo — continua sendo uma linha "item", nunca vira
+      // um agrupador fake (nada de família/UP inventado a partir disso).
+      assert.strictEqual(estado.temAriaExpanded, false, "variations_count não pode virar agrupador expansível");
+      assert.strictEqual(estado.temChevron, false);
     });
 
     /* ── 8 a 10: expansão explícita, hierarquia e UP com 2 MLBs ─────────── */

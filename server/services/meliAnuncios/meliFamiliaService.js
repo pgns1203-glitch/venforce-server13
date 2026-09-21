@@ -396,7 +396,7 @@ async function listarAgrupado({
               a.thumbnail, a.pictures_count, a.logistic_type, a.is_full,
               a.health, a.score_venforce, a.score_motivo, a.revisado,
               a.last_synced_at, a.catalog_listing, a.family_name,
-              a.user_product_id
+              a.user_product_id, a.variations_count
          FROM meli_anuncios a
         WHERE a.cliente_id = $1${conta2.sql}
           AND a.item_id = ANY($${j}::text[]);`,
@@ -529,6 +529,13 @@ async function listarAgrupado({
       estoque_total: r.estoque_total,
       vendidos_total: r.vendidos_total,
       cover: { thumbnail: item.thumbnail == null ? null : item.thumbnail, user_product_id: item.user_product_id || null },
+      // Modelo LEGADO (item_id -> variations[] do ML) — só existe nesta
+      // forma "item" porque family_id já é null aqui por construção. Nunca
+      // aparece na forma "família": lá a hierarquia é 100% de
+      // meli_user_products, e variations_count não participa dela. NULL
+      // (linha sincronizada antes desta coluna existir) normaliza para 0 —
+      // o front só testa "> 0", nunca precisa distinguir NULL de zero.
+      variations_count: item.variations_count || 0,
     });
   });
 

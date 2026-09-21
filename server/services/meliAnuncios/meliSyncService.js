@@ -165,6 +165,13 @@ function mapearItem(body, clienteId, clienteSlug, contaId = null, mlUserId = nul
     family_id: body.family_id != null ? String(body.family_id) : null,
     site_id: body.site_id || null,
     domain_id: body.domain_id || null,
+
+    // Sinal do modelo LEGADO (item_id -> variations[]), independente do
+    // sinal do modelo novo acima. Os dois convivem no mesmo registro porque
+    // são fatos do payload, não uma decisão de qual "vale" — quem decide
+    // isso é a leitura agrupada (meliFamiliaService), nunca o mapeamento.
+    // Já vem no multiget que esta sincronização já faz: zero chamada extra.
+    variations_count: Array.isArray(body.variations) ? body.variations.length : 0,
   };
 }
 

@@ -20,6 +20,7 @@ const otimizadorService = require("../services/meliAnuncios/otimizadorMeliServic
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const conteudoService = require("../services/meliAnuncios/meliConteudoService");
 const estoqueService = require("../services/meliAnuncios/meliEstoqueService");
+const variacoesLegadoService = require("../services/meliAnuncios/meliVariacoesLegadoService");
 const precoService = require("../services/meliAnuncios/meliPrecoService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
 const motorMargemService = require("../services/motorMargem/motorMargemService");
@@ -745,6 +746,64 @@ async function detalhe(req, res) {
     return res
       .status(500)
       .json({ ok: false, motivo: "Erro ao carregar o detalhe do anúncio." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/:itemId/variacoes-legado?clienteSlug=&clienteContaId=
+//
+// Expansão do modelo LEGADO do ML (item_id -> variations[]), para um anúncio
+// sem family_id que mesmo assim tem cor/tamanho reais (variations_count > 0,
+// ver meliSyncService/meliFamiliaService). Read-only: só GET no Mercado
+// Livre, nada persistido — ver meliVariacoesLegadoService para o porquê de a
+// edição ficar de fora.
+// ----------------------------------------------------------------------------
+async function variacoesLegado(req, res) {
+  try {
+    const { itemId } = req.params;
+    const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    // Mesma regra de conta do vizinho GET /:itemId: a linha já sabe de qual
+    // conta veio; só resolve de novo quando essa coluna ainda está vazia.
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const r = await variacoesLegadoService.buscarVariacoesLegado({
+      clienteId: cliente.id, itemId, mlUserId,
+    });
+
+    if (!r.ok) {
+      return res.json({ ok: false, codigo: r.codigo, motivo: r.motivo });
+    }
+
+    return res.json({ ok: true, variacoes: r.variacoes });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] variacoesLegado:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao carregar as variações do anúncio." });
   }
 }
 
@@ -1594,6 +1653,7 @@ module.exports = {
   detalheFamilia,
   performance,
   detalhe,
+  variacoesLegado,
   atualizarConteudo,
   atualizarEstoque,
   atualizarPreco,

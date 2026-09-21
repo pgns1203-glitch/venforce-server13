@@ -28,6 +28,7 @@
 //   GET    /anuncios-meli/:itemId/otimizacoes     (histórico — admin-only)
 //   PATCH  /anuncios-meli/otimizacoes/:id/aprovar (aprovação — admin-only)
 //   GET    /anuncios-meli/:itemId
+//   GET    /anuncios-meli/:itemId/variacoes-legado (expansão do modelo legado)
 //   PATCH  /anuncios-meli/:itemId/revisao
 //   PATCH  /anuncios-meli/:itemId/conteudo      (edição real no Mercado Livre)
 //   PATCH  /anuncios-meli/:itemId/estoque       (edição real no Mercado Livre)
@@ -153,6 +154,10 @@ router.patch("/:itemId/preco", ctrl.atualizarPreco);
 // Simulação pura de margem (preço/custo/custos adicionais) para a composição
 // do modal — sem escrita no Mercado Livre, sem persistência na Base.
 router.post("/:itemId/simular-margem", ctrl.simularMargem);
+
+// Expansão do modelo LEGADO de variações (ver meliVariacoesLegadoService) —
+// precisa vir ANTES de "/:itemId" pelo mesmo motivo de sempre.
+router.get("/:itemId/variacoes-legado", ctrl.variacoesLegado);
 
 router.get("/:itemId", ctrl.detalhe);
 

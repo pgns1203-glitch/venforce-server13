@@ -410,7 +410,8 @@
  * bloco (só .am-row e .am-listagem__head são grades), então o painel
  * ocupa a largura inteira sem caixa aninhada e sem desalinhar coluna.
  * ------------------------------------------------------------ */
-.vf-page-anuncios-meli .am-row--grupo.is-aberta {
+.vf-page-anuncios-meli .am-row--grupo.is-aberta,
+.vf-page-anuncios-meli .am-row.is-aberta {
   background: var(--vf-surface-2);
 }
 
@@ -425,6 +426,32 @@
 }
 
 .vf-page-anuncios-meli .am-row--grupo.is-aberta .am-row__chevron {
+  transform: rotate(90deg);
+}
+
+/* Botão de expandir as variações do modelo LEGADO (item_id -> variations[])
+ * na linha do anúncio individual — ver rowAnuncioHtml/alternarVariacoesLegado.
+ * É um <button> de verdade dentro da linha (a linha continua abrindo o
+ * modal de detalhe), então reseta a aparência nativa e reusa o mesmo
+ * tamanho/cor do chevron do agrupador. */
+.vf-page-anuncios-meli .am-row__variacoes-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-row__variacoes-toggle:hover {
+  color: var(--vf-primary);
+}
+
+.vf-page-anuncios-meli .am-row.is-aberta .am-row__variacoes-toggle .am-row__chevron {
   transform: rotate(90deg);
 }
 

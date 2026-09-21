@@ -73,6 +73,11 @@ export const MODULOS = [
 
 export const GLOBAIS = [
   { id: "carteira", label: "Carteira", rota: "carteira.html" },
+  // Painel de Controle de Contas por Squad — carteira agrupada por Squad,
+  // hierarquia Cliente → Mês → Semana (lazy). GLOBAL como Carteira: tem
+  // seletor próprio (ano/squad/busca), nunca exige Cliente+Operação
+  // escolhidos antes (Auditoria Painel_Controle_Contas_Squads §13/§16).
+  { id: "painel-contas", label: "Painel de Contas", rota: "painel-contas.html" },
   { id: "bases", label: "Bases", rota: "bases.html" },
   // Recuperação de navegação (auditoria forense, seção 6.2/15) — estas 5
   // telas têm arquivo, backend e lógica ativos em ATUAL; só perderam a
@@ -149,6 +154,7 @@ function requerContexto(id) {
 const ICONS = {
   visao: '<path d="M3 3v18h18"></path><path d="M7 15l4-4 3 3 6-6"></path>',
   carteira: '<rect x="2" y="7" width="20" height="13" rx="2"></rect><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"></path><path d="M2 13h20"></path>',
+  "painel-contas": '<rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="9" x2="9" y2="21"></line>',
   "cliente-360-v2": '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
   // Mesmo ícone das outras superfícies de Cliente 360 (v2, Operação, V1) —
   // é a mesma família de tela, não um módulo novo.
@@ -182,7 +188,7 @@ const ICONS = {
 };
 
 export const GRUPOS_NAV = [
-  { titulo: "Operação", ids: ["visao", "carteira", "cliente-360-v2", "cliente-360-v3", "cliente-operacao", "cliente-360"] },
+  { titulo: "Operação", ids: ["visao", "carteira", "painel-contas", "cliente-360-v2", "cliente-360-v3", "cliente-operacao", "cliente-360"] },
   { titulo: "Performance", ids: ["central-vendas", "financeiro", "margem", "ads", "anuncios", "central-full", "curva-abc"] },
   { titulo: "Execução", ids: ["automacoes", "diagnosticos", "promocoes-ml"] },
   { titulo: "Gestão", ids: ["pessoas", "clientes-contas", "relatorios", "bases"] },

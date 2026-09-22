@@ -86,6 +86,17 @@ function normalizarPromocao(promo, index) {
   const descontoPercentual =
     descontoReais != null && precoOriginal ? round2((descontoReais / precoOriginal) * 100) : null;
 
+  // Subsídio ML em R$ — só quando o ML manda meli_percentage E há desconto
+  // real calculável. Fórmula fixa (desconto_total * meli_percentage/100),
+  // sem envolver seller_percentage nem os campos de boost (discount_meli_
+  // boost_amount é redução de CUSTO de venda, outra coisa — nunca somar
+  // aqui). Coluna só informativa: não alimenta motor de margem/simulação.
+  const meliPercentage = fin(promo && promo.meli_percentage);
+  const subsidioMl =
+    descontoReais != null && meliPercentage != null
+      ? round2(descontoReais * (meliPercentage / 100))
+      : null;
+
   return {
     id:
       (promo && (promo.id || promo.ref_id)) ||
@@ -101,8 +112,9 @@ function normalizarPromocao(promo, index) {
     precoFinal,
     descontoReais,
     descontoPercentual,
-    meliPercentage: fin(promo && promo.meli_percentage),
+    meliPercentage,
     sellerPercentage: fin(promo && promo.seller_percentage),
+    subsidioMl,
     // A célula "Preço final" é sempre uma SIMULAÇÃO local (nunca escreve no
     // ML) — não depende de o ML ter enviado preço/sugestão pronta, por isso é
     // sempre editável, mesmo quando precoFinal nasce null.

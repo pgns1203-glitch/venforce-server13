@@ -259,6 +259,50 @@ async function run() {
   assert.strictEqual(promocoesService.rotuloTipoPromocao("DOD"), "Oferta do dia");
   assert.strictEqual(promocoesService.rotuloTipoPromocao("TIPO_DESCONHECIDO"), "TIPO_DESCONHECIDO");
   ok("normalizarPromocao: started com price=0 não vira preço real; statusLabel e rótulo de tipo corretos");
+
+  // 10. subsidioMl — valor monetário, nunca percentual: desconto_total *
+  //     (meli_percentage / 100). Exemplo do pedido: original 100, final 80,
+  //     meli_percentage 50 -> desconto 20 -> subsídio 10.
+  {
+    const comMeli = promocoesService.normalizarPromocao(
+      { status: "started", price: 80, original_price: 100, meli_percentage: 50 }, 0
+    );
+    assert.strictEqual(comMeli.subsidioMl, 10, "subsídio ML = desconto_total * (meli_percentage/100), em R$");
+  }
+  ok("subsidioMl: calculado como valor monetário (desconto_total * meli_percentage/100), nunca percentual");
+
+  // 11. subsidioMl ausente quando o ML não manda meli_percentage — nunca "—"
+  //     por acidente quando o dado existe, nem inventado quando não existe.
+  {
+    const semMeli = promocoesService.normalizarPromocao(
+      { status: "started", price: 82, original_price: 100 }, 0
+    );
+    assert.strictEqual(semMeli.subsidioMl, null, "sem meli_percentage do ML, subsidioMl fica null (UI mostra —)");
+  }
+  ok("subsidioMl: null quando o ML não devolve meli_percentage para o tipo de promoção");
+
+  // 12. subsidioMl null quando não há desconto calculável (candidate sem
+  //     suggested_discounted_price), mesmo que meli_percentage venha.
+  {
+    const semDesconto = promocoesService.normalizarPromocao(
+      { status: "candidate", price: 0, original_price: 100, meli_percentage: 20 }, 0
+    );
+    assert.strictEqual(semDesconto.subsidioMl, null, "sem descontoReais calculável, subsidioMl não pode ser inventado");
+  }
+  ok("subsidioMl: null quando descontoReais é null (candidate sem sugestão do ML)");
+
+  // 13. subsidioMl nunca usa seller_percentage nem discount_meli_boost_amount
+  //     — só meli_percentage sobre o desconto real.
+  {
+    const linha = promocoesService.normalizarPromocao(
+      {
+        status: "started", price: 80, original_price: 100, meli_percentage: 50,
+        seller_percentage: 999, boosted_offer: true, discount_meli_boost_amount: 12345,
+      }, 0
+    );
+    assert.strictEqual(linha.subsidioMl, 10, "subsidioMl ignora seller_percentage e discount_meli_boost_amount");
+  }
+  ok("subsidioMl: ignora seller_percentage e discount_meli_boost_amount, usa só meli_percentage");
 }
 
 run()

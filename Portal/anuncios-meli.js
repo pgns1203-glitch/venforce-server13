@@ -1529,6 +1529,14 @@
       "&incluirMargem=" + (pendentesMargem.length || pendentesComposicao.length ? "1" : "0") +
       "&incluirComposicao=" + (pendentesComposicao.length ? "1" : "0");
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+    // Rebate ML da promoção ATIVA (ver garantirComposicaoDoItem) — só entra
+    // na querystring quando o item alvo faz parte deste próprio pedido
+    // (nunca aplicado num id de outra chamada em voo). Zero chamada nova ao
+    // Mercado Livre: o valor já está em AM.state.promocoesCache.
+    if (opcoes && opcoes.subsidioMl && idsUniao.indexOf(opcoes.subsidioMl.itemId) !== -1) {
+      qs += "&subsidioMlItemId=" + encodeURIComponent(opcoes.subsidioMl.itemId) +
+        "&subsidioMl=" + encodeURIComponent(opcoes.subsidioMl.valor);
+    }
 
     return api("/anuncios-meli/performance?" + qs).then(function (r) {
       pendentesMetricas.forEach(function (id) { delete AM.state.metricasEmVoo[id]; });
@@ -1580,7 +1588,14 @@
   // que a margem já está em cache. O dedupe de carregarPerformance garante
   // que isso não gasta chamada nova quando já está tudo pronto.
   function garantirComposicaoDoItem(itemId) {
-    return carregarPerformance([itemId], { incluirMargem: true, incluirComposicao: true });
+    var opcoes = { incluirMargem: true, incluirComposicao: true };
+    // Rebate ML da promoção ATIVA (ver promocaoAtivaComSubsidioDoItem) — só
+    // existe se garantirPromocoesDoItem já resolveu (ver DET.promocoesPronto
+    // em bindMargemComposicao); sem isso, composição segue sem rebate, exata-
+    // mente como antes.
+    var ativa = promocaoAtivaComSubsidioDoItem(itemId);
+    if (ativa) opcoes.subsidioMl = { itemId: itemId, valor: ativa.subsidioMl };
+    return carregarPerformance([itemId], opcoes);
   }
 
   // Repinta SÓ a linha-mãe (nunca o painel, nunca renderCatalogo — fechar
@@ -2586,7 +2601,12 @@
       // Promoções: lazy, em segundo plano — NUNCA atrasa a abertura do modal
       // (que já pintou acima). A seção nasce com "Carregando…" e se repinta
       // sozinha quando a resposta chega (ver promocoesSecaoHtml/repintarPromocoesDoItem).
-      garantirPromocoesDoItem(a.item_id).then(function () {
+      // Guardada em DET.promocoesPronto: é o que permite à composição da
+      // margem (ver bindMargemComposicao) saber se existe uma promoção ATIVA
+      // com subsidioMl ANTES de pedir a margem — sem esperar por ela, a
+      // composição poderia nascer sem o rebate quando o operador abre a
+      // seção rápido demais.
+      DET.promocoesPronto = garantirPromocoesDoItem(a.item_id).then(function () {
         if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB no meio do caminho
         repintarPromocoesDoItem(a.item_id);
       });
@@ -3403,6 +3423,18 @@
       margemComposicaoLinhaEditavelHtml("Custos adicionais", "custosAdicionais", custosAdicionaisExibido, moeda, itemId,
         "Simular embalagem, operação ou outro custo extra — não é cobrado pelo Mercado Livre");
 
+    // "Taxa de rebate": só aparece quando o anúncio tem uma promoção ATIVA
+    // com retorno ML conhecido (subsidioMl, ver promocaoAtivaComSubsidioDoItem
+    // / meliPromocoesService.normalizarPromocao) — some sozinha nos demais
+    // casos, mesmo padrão de Imposto/taxaFixa. É SOMADA ao lucro (nunca
+    // deduzida) — a "Margem" abaixo já vem do backend com esse valor
+    // incluído (ver marginEngine.computeMargin`rebate`), esta linha só
+    // explica de onde vem a diferença.
+    if (comp.rebate != null) {
+      linhas += margemComposicaoLinhaHtml("Taxa de rebate", comp.rebate, moeda,
+        "Retorno ML da promoção ativa — somado ao lucro, não é um custo.");
+    }
+
     if (comp.impostoValor != null) {
       var rotuloImposto = "Imposto" +
         (comp.impostoPercentual != null ? " (" + formatarPercentualCompacto(comp.impostoPercentual * 100) + ")" : "");
@@ -3514,9 +3546,19 @@
       if (corpo) corpo.innerHTML = margemComposicaoCarregandoHtml();
 
       var meuToken = DET.token;
-      garantirComposicaoDoItem(itemId).then(function () {
-        if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB aberto no meio do caminho
-        repintarComposicaoDoItem(itemId);
+      // Espera promoções (já em voo desde a abertura do modal — ver
+      // DET.promocoesPronto em abrirDetalhe) ANTES de pedir a composição:
+      // garante que, se houver promoção ATIVA com subsidioMl, a margem
+      // inicial já nasce com o rebate — sem depender de qual dos dois
+      // pedidos volta primeiro. `promocoesPronto` nunca rejeita (ver
+      // garantirPromocoesDoItem), então não precisa de tratamento de erro.
+      var promocoesProntas = (DET && DET.promocoesPronto) || Promise.resolve();
+      promocoesProntas.then(function () {
+        if (!DET || DET.token !== meuToken) return;
+        garantirComposicaoDoItem(itemId).then(function () {
+          if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB aberto no meio do caminho
+          repintarComposicaoDoItem(itemId);
+        });
       });
     });
   }
@@ -3934,6 +3976,20 @@
     if (!cache || !cache.promocoes) return null;
     for (var i = 0; i < cache.promocoes.length; i++) {
       if (String(cache.promocoes[i].id) === String(promoId)) return cache.promocoes[i];
+    }
+    return null;
+  }
+
+  // Promoção ATIVA do item (statusExibicao === "ATIVA" — mesma regra que já
+  // libera a edição de promoção) com subsidioMl conhecido — fonte do rebate
+  // da composição da margem (ver garantirComposicaoDoItem). Só lê o cache que
+  // garantirPromocoesDoItem já preencheu; nunca dispara chamada nova.
+  function promocaoAtivaComSubsidioDoItem(itemId) {
+    var cache = AM.state.promocoesCache[itemId];
+    if (!cache || !cache.promocoes) return null;
+    for (var i = 0; i < cache.promocoes.length; i++) {
+      var p = cache.promocoes[i];
+      if (p.statusExibicao === "ATIVA" && p.subsidioMl != null) return p;
     }
     return null;
   }

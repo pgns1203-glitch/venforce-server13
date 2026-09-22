@@ -2496,11 +2496,13 @@
       // trava contra clique duplo/Enter duplo e contra o campo virar
       // editável de novo durante a chamada.
       precoMargem: { salvando: false },
-      // Custo do produto / Custos adicionais: overrides de SIMULAÇÃO — nunca
-      // persistidos, nunca enviados ao Mercado Livre. `resultado` é a última
-      // resposta de POST .../simular-margem; null enquanto nenhum dos dois
-      // campos estiver com override ativo (a composição usa a margem REAL).
-      simulacaoMargem: { custoProduto: null, custosAdicionais: null, resultado: null },
+      // Custo do produto / Custos adicionais / Preço (só para item legado com
+      // variations[] reais no ML — ver margemComposicaoLadderHtml): overrides
+      // de SIMULAÇÃO — nunca persistidos, nunca enviados ao Mercado Livre.
+      // `resultado` é a última resposta de POST .../simular-margem; null
+      // enquanto nenhum dos três campos estiver com override ativo (a
+      // composição usa a margem REAL).
+      simulacaoMargem: { custoProduto: null, custosAdicionais: null, preco: null, resultado: null },
     };
     chipUsadaAtual = null;
 
@@ -3326,9 +3328,25 @@
     return '<div class="am-margem-comp__linha am-margem-comp__linha--editavel">' + rotulo + valorHtml + "</div>";
   }
 
+  // Prioridade de bloqueio da linha "Preço", do mais forte para o mais fraco
+  // (decisão de produto — ver auditoria):
+  //   1. promoção ativa (comp.precoPromocionalAtivo) — sem edição nenhuma,
+  //      nem real nem simulada (ver margemComposicaoLinhaPrecoHtml);
+  //   2. item legado com variations[] reais no ML (variations_count > 0) —
+  //      PUT real NUNCA é tentado aqui (o backend recusaria com
+  //      PRECO_ITEM_COM_VARIACAO, ver meliPrecoService.MOTIVO_VARIACAO,
+  //      inalterado). A linha vira SIMULAÇÃO, reaproveitando o MESMO
+  //      mecanismo de Custo do produto/Custos adicionais (POST
+  //      .../simular-margem já aceita `preco` como override);
+  //   3. caso normal — PUT real de verdade, ver margemComposicaoLinhaPrecoHtml.
+  function precoBloqueadoPorVariacoesLegado(comp) {
+    if (comp.precoPromocionalAtivo) return false;
+    return !!(DET && DET.anuncio && (DET.anuncio.variations_count || 0) > 0);
+  }
+
   function margemComposicaoLadderHtml(comp, cacheMargem, moeda, itemId) {
     var sim = (DET && DET.itemId === itemId) ? DET.simulacaoMargem : null;
-    var simulando = !!(sim && (sim.custoProduto != null || sim.custosAdicionais != null));
+    var simulando = !!(sim && (sim.custoProduto != null || sim.custosAdicionais != null || sim.preco != null));
 
     // Custo do produto e Custos adicionais mostram o OVERRIDE de simulação
     // quando ativo — nunca o valor real por baixo dele, para não sugerir que
@@ -3336,10 +3354,20 @@
     var custoExibido = sim && sim.custoProduto != null ? sim.custoProduto : comp.custoProduto;
     var custosAdicionaisExibido = sim && sim.custosAdicionais != null ? sim.custosAdicionais : comp.taxaFixa;
 
-    var linhas =
-      margemComposicaoLinhaPrecoHtml(comp.venda, moeda, itemId, !!comp.precoPromocionalAtivo,
+    var linhaPreco;
+    if (precoBloqueadoPorVariacoesLegado(comp)) {
+      var precoExibido = sim && sim.preco != null ? sim.preco : comp.venda;
+      linhaPreco = margemComposicaoLinhaEditavelHtml("Preço de venda", "preco", precoExibido, moeda, itemId,
+        "Simular outro preço — não grava no Mercado Livre; este anúncio possui variações e o preço deve ser " +
+        "alterado no nível do anúncio.");
+    } else {
+      linhaPreco = margemComposicaoLinhaPrecoHtml(comp.venda, moeda, itemId, !!comp.precoPromocionalAtivo,
         "Este anúncio está com uma promoção ativa no Mercado Livre — o valor mostrado é o preço promocional vigente, " +
-        "que esta tela ainda não edita. Ajuste a promoção diretamente no Mercado Livre.") +
+        "que esta tela ainda não edita. Ajuste a promoção diretamente no Mercado Livre.");
+    }
+
+    var linhas =
+      linhaPreco +
       margemComposicaoLinhaEditavelHtml("Custo do produto", "custoProduto", custoExibido, moeda, itemId,
         "Simular outro custo — não altera a Base de Custos") +
       margemComposicaoLinhaHtml("Comissão Mercado Livre", comp.comissaoMl, moeda) +
@@ -3495,7 +3523,7 @@
   // ===========================================================================
 
   var CAMPOS_MARGEM_ROTULO = {
-    custoProduto: "Custo do produto", custosAdicionais: "Custos adicionais",
+    custoProduto: "Custo do produto", custosAdicionais: "Custos adicionais", preco: "Preço de venda",
   };
 
   function bindMargemEditavel(raiz) {
@@ -3513,7 +3541,7 @@
     botao.addEventListener("click", function (e) {
       e.stopPropagation();
       if (!DET || DET.itemId !== itemId) return;
-      DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, resultado: null };
+      DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, preco: null, resultado: null };
       repintarComposicaoDoItem(itemId);
     });
   }
@@ -3531,6 +3559,10 @@
     if (campo === "custosAdicionais") {
       if (sim && sim.custosAdicionais != null) return sim.custosAdicionais;
       return comp ? comp.taxaFixa : null;
+    }
+    if (campo === "preco") {
+      if (sim && sim.preco != null) return sim.preco;
+      return comp ? comp.venda : null;
     }
     return null;
   }
@@ -3617,7 +3649,7 @@
   function dispararSimulacaoMargem(itemId) {
     if (!DET || DET.itemId !== itemId) return;
     var sim = DET.simulacaoMargem;
-    if (sim.custoProduto == null && sim.custosAdicionais == null) {
+    if (sim.custoProduto == null && sim.custosAdicionais == null && sim.preco == null) {
       // Nenhum override ativo: some a projeção e volta para a margem real,
       // sem gastar chamada nenhuma.
       sim.resultado = null;
@@ -3631,6 +3663,7 @@
     if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
     if (sim.custoProduto != null) corpo.custoProduto = sim.custoProduto;
     if (sim.custosAdicionais != null) corpo.custosAdicionais = sim.custosAdicionais;
+    if (sim.preco != null) corpo.preco = sim.preco;
 
     var meuToken = DET.token;
     api("/anuncios-meli/" + encodeURIComponent(itemId) + "/simular-margem", { method: "POST", body: corpo })
@@ -3755,7 +3788,7 @@
         // Preço real mudou: qualquer simulação de custo/custos adicionais em
         // cima do preço antigo deixa de fazer sentido — some, e a composição
         // é reconsultada do zero (nunca assume o valor enviado).
-        DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, resultado: null };
+        DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, preco: null, resultado: null };
         var cache = AM.state.performanceCache[itemId];
         if (cache) { cache.temComposicao = false; cache.temMargem = false; }
 

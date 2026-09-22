@@ -1061,6 +1061,110 @@
   cursor: default;
 }
 
+/* ---------------------------------------------------------------------
+   Promoções disponíveis — ao lado da Composição da margem (mesmo canva).
+   Ao contrário dela, NÃO é <details> recolhível: nasce visível, com
+   "Carregando…" até a resposta de GET /:itemId/promocoes chegar (busca em
+   segundo plano, nunca atrasa a abertura do modal — ver
+   garantirPromocoesDoItem em anuncios-meli.js).
+--------------------------------------------------------------------- */
+.vf-page-anuncios-meli .am-det-margem-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  align-items: start;
+}
+
+.vf-page-anuncios-meli .am-det-margem-grid .am-margem-comp,
+.vf-page-anuncios-meli .am-det-margem-grid .am-promo {
+  margin-top: 0;
+}
+
+.vf-page-anuncios-meli .am-promo__body {
+  margin-top: 12px;
+}
+
+.vf-page-anuncios-meli .am-promo__dica {
+  margin: 0;
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-promo__scroll {
+  overflow-x: auto;
+}
+
+.vf-page-anuncios-meli .am-promo__tabela {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--vf-fs-sm);
+}
+
+.vf-page-anuncios-meli .am-promo__tabela th {
+  padding: 6px 10px;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-bold);
+  text-align: left;
+  color: var(--vf-text-muted);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--vf-border-strong);
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-promo__tabela td {
+  padding: 8px 10px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-page-anuncios-meli .am-promo__tabela tr:last-child td {
+  border-bottom: none;
+}
+
+.vf-page-anuncios-meli .am-promo__col-nome {
+  min-width: 160px;
+}
+
+.vf-page-anuncios-meli .am-promo__nome {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-anuncios-meli .am-promo__meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-promo__desconto,
+.vf-page-anuncios-meli .am-promo__recebe {
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text);
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-promo__desconto-pct,
+.vf-page-anuncios-meli .am-promo__recebe-pct {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-2xs);
+}
+
+.vf-page-anuncios-meli .am-promo__desconto--vazio,
+.vf-page-anuncios-meli .am-promo__recebe--vazio {
+  color: var(--vf-text-muted);
+  font-style: italic;
+  font-size: var(--vf-fs-2xs);
+}
+
+.vf-page-anuncios-meli .am-promo__acao {
+  white-space: nowrap;
+}
+
 .vf-page-anuncios-meli .am-mlb__acao {
   display: flex;
   justify-content: flex-end;
@@ -2073,6 +2177,11 @@
   .vf-page-anuncios-meli .am-det-top2 {
     grid-template-columns: 1fr;
     gap: 0;
+  }
+
+  .vf-page-anuncios-meli .am-det-margem-grid {
+    grid-template-columns: 1fr;
+    gap: 24px;
   }
 
   .vf-page-anuncios-meli .am-det-top2__col + .am-det-top2__col {

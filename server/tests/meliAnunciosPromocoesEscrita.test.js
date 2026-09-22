@@ -138,6 +138,7 @@ async function run() {
   await withMockDb({ anuncios: anunciosFixture() }, async () => {
     mlChamadas = [];
     mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
       if (chamada.metodo === "GET") {
         return { ok: true, status: 200, data: [{ id: "P-1", type: "DEAL", status: "candidate", original_price: 100, suggested_discounted_price: 90 }] };
       }
@@ -159,10 +160,11 @@ async function run() {
     ok("DEAL candidate: POST com {promotion_id, promotion_type, deal_price}, preço confirmado vem da resposta do ML");
   });
 
-  // 2. SELLER_CAMPAIGN started → PUT (alterar).
+  // 2. SELLER_CAMPAIGN started + ATIVA (sale_price aponta pra ela) → PUT (alterar).
   await withMockDb({ anuncios: anunciosFixture() }, async () => {
     mlChamadas = [];
     mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: { metadata: { promotion_id: "C-1" } } };
       if (chamada.metodo === "GET") {
         return { ok: true, status: 200, data: [{ id: "C-1", type: "SELLER_CAMPAIGN", status: "started", price: 95, original_price: 100 }] };
       }
@@ -176,21 +178,32 @@ async function run() {
     const escritas = mlChamadas.filter((c) => c.metodo === "PUT");
     assert.strictEqual(escritas.length, 1, "started/pending altera com PUT, nunca POST");
     assert.deepStrictEqual(escritas[0].body, { promotion_id: "C-1", promotion_type: "SELLER_CAMPAIGN", deal_price: 88 });
-    ok("SELLER_CAMPAIGN started: PUT com o mesmo corpo, usado para alterar");
+    ok("SELLER_CAMPAIGN started + ATIVA: PUT com o mesmo corpo, usado para alterar");
   });
 
-  // 2b. pending também usa PUT (alterar), mesma regra de started.
+  // 2b. pending é bloqueada ESTRUTURALMENTE: `pending` não está em
+  //     STATUS_ALTERAVEL (só started/active), então `podeAlterar` é sempre
+  //     false pra ela — mesmo aqui, com o promotion_id do sale_price batendo
+  //     de propósito com o id da própria promoção (o que faria um pending
+  //     "parecer" ATIVA se o gate dependesse só de statusExibicao). Prova
+  //     que o bloqueio não depende de pending nunca virar "ATIVA" no
+  //     normalizador — depende do Set, que é a garantia estrutural pedida.
   await withMockDb({ anuncios: anunciosFixture() }, async () => {
     mlChamadas = [];
     mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: { metadata: { promotion_id: "P-2" } } };
       if (chamada.metodo === "GET") {
         return { ok: true, status: 200, data: [{ id: "P-2", type: "DEAL", status: "pending", original_price: 100 }] };
       }
       return { ok: true, status: 200, data: { price: 85, original_price: 100 } };
     };
     const res = await chamar("MLB-X", "P-2", { precoNovo: 85 });
-    assert.strictEqual(res.corpo.metodo, "PUT");
-    ok("DEAL pending: também altera com PUT (mesma regra de started)");
+    assert.strictEqual(res.corpo.ok, false);
+    assert.strictEqual(res.corpo.codigo, "PROMOCAO_NAO_APLICADA");
+    assert.strictEqual(res.corpo.motivo, "Esta promoção ainda não começou no Mercado Livre — ainda não é possível alterá-la.");
+    assert.strictEqual(mlChamadas.filter((c) => c.metodo === "PUT" || c.metodo === "POST").length, 0,
+      "pending/PROGRAMADA bloqueada antes de qualquer escrita, mesmo com promotion_id batendo com o próprio id");
+    ok("DEAL pending (PROGRAMADA): bloqueada estruturalmente (fora de STATUS_ALTERAVEL) — 'alterar' vira apenas simulação");
   });
 
   // 3. Tipo fora do escopo (MARKETPLACE_CAMPAIGN): recusado, zero escrita.
@@ -294,6 +307,79 @@ async function run() {
     await chamar("MLB-X", "P-1", { precoNovo: 90 });
     assert.ok(mlChamadas.every((c) => c.mlUserId === "111"), "todas as chamadas precisam usar o ml_user_id da própria linha do anúncio");
     ok("a conta ML usada em todas as chamadas é a da própria linha do anúncio");
+  });
+
+  // ── Defesa em profundidade: promo.statusExibicao (10-12) ──────────────────
+  // O frontend já barra o clique (bindPromocoesAcoes/abrirConfirmacaoPromocao),
+  // mas este endpoint pode ser chamado por qualquer cliente HTTP — a garantia
+  // real tem de estar aqui, releitura ao vivo incluída (mesmo espírito do
+  // "GET fresco -> PUT" do resto do arquivo).
+
+  // 10. started + ATIVA (promotion_id do sale_price bate): PUT permitido.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: { metadata: { promotion_id: "D-1" } } };
+      if (chamada.metodo === "GET") {
+        return { ok: true, status: 200, data: [{ id: "D-1", type: "DEAL", status: "started", price: 90, original_price: 100 }] };
+      }
+      return { ok: true, status: 200, data: { price: 85, original_price: 100 } };
+    };
+
+    const res = await chamar("MLB-X", "D-1", { precoNovo: 85 });
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.metodo, "PUT");
+    ok("started + ATIVA: PUT permitido (promotion_id do sale_price bate com a promoção)");
+  });
+
+  // 11. started + NÃO APLICADA (promotion_id do sale_price aponta pra OUTRA
+  //     promoção): bloqueio PROMOCAO_NAO_APLICADA, zero escrita — é
+  //     exatamente o cenário do bug relatado (duas started, só uma manda).
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: { metadata: { promotion_id: "D-3" } } };
+      if (chamada.metodo === "GET") {
+        return {
+          ok: true, status: 200,
+          data: [
+            { id: "D-2", type: "DEAL", status: "started", price: 90, original_price: 100 },
+            { id: "D-3", type: "DEAL", status: "started", price: 88, original_price: 100 },
+          ],
+        };
+      }
+      return { ok: true, status: 200, data: { price: 85, original_price: 100 } };
+    };
+
+    const res = await chamar("MLB-X", "D-2", { precoNovo: 85 });
+
+    assert.strictEqual(res.corpo.ok, false);
+    assert.strictEqual(res.corpo.codigo, "PROMOCAO_NAO_APLICADA");
+    assert.strictEqual(mlChamadas.filter((c) => c.metodo === "PUT" || c.metodo === "POST").length, 0,
+      "D-2 está started mas D-3 é quem define o preço — D-2 não pode ser alterada, zero escrita");
+    ok("started + NÃO APLICADA: bloqueado com PROMOCAO_NAO_APLICADA, zero POST/PUT");
+  });
+
+  // 12. candidate + ELEGÍVEL: POST permitido — `podeParticipar` é decidido
+  //     só por `promo.status === "candidate"`, independente de
+  //     STATUS_ALTERAVEL/statusExibicao, então participar numa promoção
+  //     nova continua livre, sem depender do sale_price.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (chamada.metodo === "GET") {
+        return { ok: true, status: 200, data: [{ id: "D-4", type: "DEAL", status: "candidate", original_price: 100, suggested_discounted_price: 90 }] };
+      }
+      return { ok: true, status: 200, data: { price: 90, original_price: 100 } };
+    };
+
+    const res = await chamar("MLB-X", "D-4", { precoNovo: 90 });
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.metodo, "POST");
+    ok("candidate + ELEGÍVEL: POST permitido, statusExibicao não bloqueia participação nova");
   });
 }
 

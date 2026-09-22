@@ -206,9 +206,12 @@ async function run() {
     assert.strictEqual(res.corpo.ok, true);
     assert.ok(mlChamadas.length >= 1, "esperava pelo menos uma chamada ao Mercado Livre");
     assert.ok(mlChamadas.every((c) => c.metodo === "GET"), "o endpoint de promoções nunca pode fazer POST/PUT/DELETE");
-    assert.ok(mlChamadas.every((c) => /seller-promotions\/items\//.test(c.path)), "só pode chamar /seller-promotions/items/{id}");
-    assert.strictEqual(mlChamadas[0].mlUserId, "111", "a conta ML usada é a da própria linha do anúncio");
-    ok("read-only: só GET /seller-promotions/items/{id}, usando a conta ML da linha do anúncio");
+    assert.ok(
+      mlChamadas.every((c) => /seller-promotions\/items\//.test(c.path) || /\/sale_price/.test(c.path)),
+      "só pode chamar /seller-promotions/items/{id} e /items/{id}/sale_price (fonte da promoção ATIVA)"
+    );
+    assert.ok(mlChamadas.every((c) => c.mlUserId === "111"), "a conta ML usada é a da própria linha do anúncio, nas duas chamadas");
+    ok("read-only: só GET /seller-promotions/items/{id} e /items/{id}/sale_price, usando a conta ML da linha do anúncio");
   });
 
   // 6. ML sem promoção nenhuma para o item: lista vazia, sem quebrar.
@@ -260,49 +263,146 @@ async function run() {
   assert.strictEqual(promocoesService.rotuloTipoPromocao("TIPO_DESCONHECIDO"), "TIPO_DESCONHECIDO");
   ok("normalizarPromocao: started com price=0 não vira preço real; statusLabel e rótulo de tipo corretos");
 
-  // 10. subsidioMl — valor monetário, nunca percentual: desconto_total *
-  //     (meli_percentage / 100). Exemplo do pedido: original 100, final 80,
-  //     meli_percentage 50 -> desconto 20 -> subsídio 10.
+  // 10. subsidioMl — vem direto de discount_meli_boost_amount (redução real
+  //     de tarifa que o ML mostra como "Reduzimos R$ X das suas tarifas"),
+  //     nunca mais calculado a partir de meli_percentage/desconto.
   {
-    const comMeli = promocoesService.normalizarPromocao(
-      { status: "started", price: 80, original_price: 100, meli_percentage: 50 }, 0
+    const linha = promocoesService.normalizarPromocao(
+      { status: "started", price: 80, original_price: 100, discount_meli_boost_amount: 0.61 }, 0
     );
-    assert.strictEqual(comMeli.subsidioMl, 10, "subsídio ML = desconto_total * (meli_percentage/100), em R$");
+    assert.strictEqual(linha.subsidioMl, 0.61, "subsidioMl = discount_meli_boost_amount, em R$, sem conversão de unidade");
   }
-  ok("subsidioMl: calculado como valor monetário (desconto_total * meli_percentage/100), nunca percentual");
+  ok("subsidioMl: vem de discount_meli_boost_amount (redução de tarifa), não mais de meli_percentage*desconto");
 
-  // 11. subsidioMl ausente quando o ML não manda meli_percentage — nunca "—"
-  //     por acidente quando o dado existe, nem inventado quando não existe.
+  // 11. subsidioMl ausente quando o ML não manda discount_meli_boost_amount
+  //     (ex.: boosted_offer nunca veio true para este tipo/item).
   {
-    const semMeli = promocoesService.normalizarPromocao(
-      { status: "started", price: 82, original_price: 100 }, 0
+    const linha = promocoesService.normalizarPromocao(
+      { status: "started", price: 82, original_price: 100, meli_percentage: 3 }, 0
     );
-    assert.strictEqual(semMeli.subsidioMl, null, "sem meli_percentage do ML, subsidioMl fica null (UI mostra —)");
+    assert.strictEqual(linha.subsidioMl, null, "sem discount_meli_boost_amount do ML, subsidioMl fica null (UI mostra —)");
   }
-  ok("subsidioMl: null quando o ML não devolve meli_percentage para o tipo de promoção");
+  ok("subsidioMl: null quando o ML não devolve discount_meli_boost_amount para o tipo de promoção");
 
-  // 12. subsidioMl null quando não há desconto calculável (candidate sem
-  //     suggested_discounted_price), mesmo que meli_percentage venha.
+  // 12. discount_meli_boost_amount = 0 é um valor válido (R$ 0,00) — não é
+  //     ausência de dado, então não pode virar null/"—".
   {
-    const semDesconto = promocoesService.normalizarPromocao(
-      { status: "candidate", price: 0, original_price: 100, meli_percentage: 20 }, 0
+    const linha = promocoesService.normalizarPromocao(
+      { status: "started", price: 80, original_price: 100, discount_meli_boost_amount: 0 }, 0
     );
-    assert.strictEqual(semDesconto.subsidioMl, null, "sem descontoReais calculável, subsidioMl não pode ser inventado");
+    assert.strictEqual(linha.subsidioMl, 0, "discount_meli_boost_amount = 0 é válido, não é ausência de dado");
   }
-  ok("subsidioMl: null quando descontoReais é null (candidate sem sugestão do ML)");
+  ok("subsidioMl: 0 é tratado como valor válido (R$ 0,00), nunca como ausência");
 
-  // 13. subsidioMl nunca usa seller_percentage nem discount_meli_boost_amount
-  //     — só meli_percentage sobre o desconto real.
+  // 13. subsidioMl ignora meli_percentage/seller_percentage — eles continuam
+  //     expostos como campos próprios da promoção, só não alimentam mais R$.
   {
     const linha = promocoesService.normalizarPromocao(
       {
-        status: "started", price: 80, original_price: 100, meli_percentage: 50,
-        seller_percentage: 999, boosted_offer: true, discount_meli_boost_amount: 12345,
+        status: "started", price: 80, original_price: 100,
+        meli_percentage: 50, seller_percentage: 999, discount_meli_boost_amount: 0.61,
       }, 0
     );
-    assert.strictEqual(linha.subsidioMl, 10, "subsidioMl ignora seller_percentage e discount_meli_boost_amount");
+    assert.strictEqual(linha.subsidioMl, 0.61, "subsidioMl ignora meli_percentage e seller_percentage");
+    assert.strictEqual(linha.meliPercentage, 50, "meli_percentage continua exposto como dado da promoção");
+    assert.strictEqual(linha.sellerPercentage, 999, "seller_percentage continua exposto como dado da promoção");
   }
-  ok("subsidioMl: ignora seller_percentage e discount_meli_boost_amount, usa só meli_percentage");
+  ok("subsidioMl: ignora meli_percentage/seller_percentage; ambos continuam expostos como campos próprios");
+
+  // 14. statusExibicao — casamento por id: só a promoção cujo id bate com o
+  //     promotion_id do sale_price vira ATIVA; outra started vira NÃO APLICADA.
+  {
+    const ativa = promocoesService.normalizarPromocao({ id: "123", status: "started" }, 0, "123");
+    const naoAplicada = promocoesService.normalizarPromocao({ id: "456", status: "started" }, 1, "123");
+    assert.strictEqual(ativa.statusExibicao, "ATIVA", "id bate com sale_price.metadata.promotion_id");
+    assert.strictEqual(naoAplicada.statusExibicao, "NÃO APLICADA", "started que não bate com o promotion_id não pode ser ATIVA");
+  }
+  ok("statusExibicao: só a promoção cujo id casa com promotion_id vira ATIVA; as demais started viram NÃO APLICADA");
+
+  // 15. statusExibicao — casamento por ref_id, quando a promoção não expõe id.
+  {
+    const ativa = promocoesService.normalizarPromocao({ ref_id: "abc", status: "started" }, 0, "abc");
+    assert.strictEqual(ativa.statusExibicao, "ATIVA", "casamento também funciona por ref_id");
+  }
+  ok("statusExibicao: casamento por ref_id (quando a promoção não tem id) também identifica a ATIVA");
+
+  // 16. statusExibicao — sem promotion_id (sale_price sem metadata ou falhou):
+  //     nenhuma promoção started pode virar ATIVA por eliminação.
+  {
+    const linha1 = promocoesService.normalizarPromocao({ id: "123", status: "started" }, 0, null);
+    const linha2 = promocoesService.normalizarPromocao({ ref_id: "abc", status: "started" }, 1, null);
+    assert.strictEqual(linha1.statusExibicao, "NÃO APLICADA");
+    assert.strictEqual(linha2.statusExibicao, "NÃO APLICADA");
+  }
+  ok("statusExibicao: sem promotion_id, nenhuma promoção started vira ATIVA — nunca por eliminação/heurística");
+
+  // 17. statusExibicao — pending e candidate seguem vocabulário próprio,
+  //     independente de promotion_id.
+  {
+    const agendada = promocoesService.normalizarPromocao({ status: "pending" }, 0, "qualquer");
+    const elegivel = promocoesService.normalizarPromocao({ status: "candidate" }, 0, "qualquer");
+    assert.strictEqual(agendada.statusExibicao, "PROGRAMADA");
+    assert.strictEqual(elegivel.statusExibicao, "ELEGÍVEL");
+  }
+  ok("statusExibicao: pending vira PROGRAMADA e candidate vira ELEGÍVEL, sempre — não dependem de promotion_id");
+
+  // 18. Fluxo completo via controller: /seller-promotions/items e /sale_price
+  //     rodam em paralelo; só a promoção apontada por metadata.promotion_id
+  //     vira ATIVA, a outra started vira NÃO APLICADA.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) {
+        return { ok: true, status: 200, data: { amount: 80, regular_amount: 100, metadata: { promotion_id: "P-3" } } };
+      }
+      return {
+        ok: true, status: 200,
+        data: [
+          { id: "P-2", type: "DEAL", status: "started", price: 82, original_price: 100, meli_percentage: 3, discount_meli_boost_amount: 1.2 },
+          { id: "P-3", type: "PRE_NEGOTIATED", status: "started", price: 80, original_price: 100, meli_percentage: 8, discount_meli_boost_amount: 0.61 },
+        ],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    const porId = {};
+    res.corpo.promocoes.forEach((p) => { porId[p.id] = p; });
+    assert.strictEqual(porId["P-3"].statusExibicao, "ATIVA", "P-3 é a que o sale_price aponta — só ela vira ATIVA");
+    assert.strictEqual(porId["P-2"].statusExibicao, "NÃO APLICADA", "P-2 está started mas não define o preço atual");
+    assert.strictEqual(porId["P-3"].subsidioMl, 0.61);
+    assert.strictEqual(porId["P-2"].subsidioMl, 1.2);
+    assert.ok(mlChamadas.some((c) => /seller-promotions\/items\//.test(c.path)), "precisa ter chamado /seller-promotions/items/{id}");
+    assert.ok(mlChamadas.some((c) => /\/sale_price/.test(c.path)), "precisa ter chamado /items/{id}/sale_price em paralelo");
+    assert.ok(mlChamadas.every((c) => c.metodo === "GET"), "as duas chamadas continuam GET, nunca escrita");
+    ok("fluxo completo: /sale_price roda em paralelo com /seller-promotions/items e decide qual promoção é ATIVA");
+  });
+
+  // 19. Fallback: sale_price sem metadata/promotion_id — nenhuma promoção
+  //     vira ATIVA, mesmo com duas started (nunca inferir pelo menor preço).
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      return {
+        ok: true, status: 200,
+        data: [
+          { id: "P-2", type: "DEAL", status: "started", price: 82, original_price: 100 },
+          { id: "P-3", type: "PRE_NEGOTIATED", status: "started", price: 80, original_price: 100 },
+        ],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.ok(
+      res.corpo.promocoes.every((p) => p.statusExibicao !== "ATIVA"),
+      "sem metadata.promotion_id, nenhuma promoção started pode virar ATIVA"
+    );
+    ok("fallback: sale_price sem metadata.promotion_id — nenhuma promoção vira ATIVA, mesmo com duas started");
+  });
 }
 
 run()

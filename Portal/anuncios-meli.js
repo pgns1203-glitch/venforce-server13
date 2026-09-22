@@ -3950,14 +3950,19 @@
   }
 
   // Vocabulário por FORMA (mesma régua do resto da Fundação, ver .vf-status)
-  // além de cor: ATIVA (bolinha cheia), AGENDADA (losango), ELEGÍVEL (contorno).
-  var PROMO_STATUS_CLASSE = { started: "is-success", active: "is-success", pending: "is-info", candidate: "is-empty" };
-  function promocaoStatusClasse(status) { return PROMO_STATUS_CLASSE[status] || "is-empty"; }
+  // além de cor: ATIVA (bolinha cheia) · NÃO APLICADA (losango — started mas
+  // não é a que define o preço atual) · PROGRAMADA (círculo azul) · ELEGÍVEL
+  // (contorno vazio). Chave é statusExibicao (backend), nunca o status bruto
+  // do ML — só o backend sabe qual promoção o sale_price aponta como ATIVA.
+  var PROMO_STATUS_CLASSE = { "ATIVA": "is-success", "NÃO APLICADA": "is-warning", "PROGRAMADA": "is-info", "ELEGÍVEL": "is-empty" };
+  function promocaoStatusClasse(statusExibicao) { return PROMO_STATUS_CLASSE[statusExibicao] || "is-empty"; }
 
   // Coluna "Subsídio ML" — só informativa (não alimenta motor de margem/
   // simulação, nunca é usada em "Você recebe"). Vem pronta do backend
-  // (meliPromocoesService: descontoReais * meli_percentage/100, em R$).
-  // "—" quando o ML não manda meli_percentage para o tipo de promoção.
+  // (meliPromocoesService: discount_meli_boost_amount, em R$ — a mesma
+  // redução de tarifa que a UI do ML mostra como "Reduzimos R$ X das suas
+  // tarifas"). "—" quando o ML não manda discount_meli_boost_amount para o
+  // tipo de promoção.
   function promocaoSubsidioMlHtml(p, moeda) {
     if (p.subsidioMl == null) {
       return '<span class="am-promo__subsidio am-promo__subsidio--vazio">—</span>';
@@ -4016,17 +4021,26 @@
     return !!(sim && DET.promoLinhaSelecionada === p.id && sim.preco != null);
   }
 
-  // Rótulo por STATUS e por TIPO (decisão de produto — ver auditoria):
+  // Rótulo por statusExibicao e por TIPO (decisão de produto — ver
+  // auditoria). A decisão usa statusExibicao, NUNCA o status bruto do ML:
+  // uma promoção "started" pode não ser a que define o preço atual
+  // (NÃO APLICADA) — só ATIVA pode ser "alterada" de verdade.
   //  - tipo fora do escopo de escrita (nesta v1): sempre "Simular" — o botão
-  //    nunca vai além de selecionar + simular, nos dois status.
-  //  - tipo com escrita, ainda não simulado: "Alterar" (started/pending,
-  //    quem já participa) ou "Participar" (candidate, quem é só elegível).
+  //    nunca vai além de selecionar + simular, em qualquer statusExibicao.
+  //  - tipo com escrita, mas statusExibicao NÃO APLICADA/PROGRAMADA: sempre
+  //    "Simular" — nunca oferece "Alterar" pra quem não controla o preço
+  //    atual (NÃO APLICADA) nem pra quem ainda nem começou (PROGRAMADA).
+  //  - tipo com escrita, ainda não simulado: "Alterar" (ATIVA, quem já
+  //    participa e define o preço) ou "Participar" (ELEGÍVEL, candidate).
   //  - tipo com escrita, já simulado nesta linha: "Confirmar alteração"/
   //    "Confirmar participação" — o próximo clique abre o diálogo de
   //    confirmação e só then escreve de verdade (ver bindPromocoesAcoes).
+  function promocaoPodeEscrever(p) {
+    return p.statusExibicao === "ATIVA" || p.statusExibicao === "ELEGÍVEL";
+  }
   function promocaoTarefaRotulo(p, itemId) {
-    var ativa = p.status === "started" || p.status === "active" || p.status === "pending";
-    if (!promocaoSuportaEscrita(p)) return "Simular";
+    if (!promocaoSuportaEscrita(p) || !promocaoPodeEscrever(p)) return "Simular";
+    var ativa = p.statusExibicao === "ATIVA";
     if (promocaoJaSimulada(p, itemId)) return ativa ? "Confirmar alteração" : "Confirmar participação";
     return ativa ? "Alterar" : "Participar";
   }
@@ -4046,7 +4060,7 @@
         '<div class="am-promo__nome">' + escapeHtml(p.nome || p.tipoLabel) + "</div>" +
         '<div class="am-promo__meta">' +
           (periodo ? escapeHtml(periodo) + " · " : "") +
-          '<span class="vf-status ' + promocaoStatusClasse(p.status) + '">' + escapeHtml(p.statusLabel) + "</span>" +
+          '<span class="vf-status ' + promocaoStatusClasse(p.statusExibicao) + '">' + escapeHtml(p.statusExibicao) + "</span>" +
         "</div>" +
       "</td>" +
       '<td>' + promocaoDescontoHtml(p, moeda) + "</td>" +
@@ -4118,7 +4132,7 @@
         var linha = promocaoPorId(itemId, promoId);
         if (!linha) return;
 
-        if (promocaoSuportaEscrita(linha) && promocaoJaSimulada(linha, itemId)) {
+        if (promocaoSuportaEscrita(linha) && promocaoPodeEscrever(linha) && promocaoJaSimulada(linha, itemId)) {
           abrirConfirmacaoPromocao(itemId, linha);
           return;
         }
@@ -4144,13 +4158,18 @@
     });
   }
 
+  // Defesa em profundidade (mesma régua do gate em bindPromocoesAcoes): só
+  // ATIVA (alterar) ou ELEGÍVEL (participar) podem abrir este diálogo — uma
+  // NÃO APLICADA/PROGRAMADA nunca chega a escrever, mesmo se esta função for
+  // chamada de outro lugar no futuro.
   function abrirConfirmacaoPromocao(itemId, linha) {
     if (!DET || DET.itemId !== itemId) return;
+    if (!promocaoPodeEscrever(linha)) return;
     var sim = DET.simulacaoMargem;
     if (!sim || sim.preco == null) return;
 
     var moeda = DET.anuncio.moeda;
-    var ativa = linha.status === "started" || linha.status === "active" || linha.status === "pending";
+    var ativa = linha.statusExibicao === "ATIVA";
     var margemSimulada = (sim.resultado && sim.resultado.computable && sim.resultado.marginPercent != null)
       ? formatarPercentualCompacto(sim.resultado.marginPercent) : "—";
 

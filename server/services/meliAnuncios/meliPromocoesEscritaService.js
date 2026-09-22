@@ -36,7 +36,21 @@ const { listarPromocoesDoItem } = require("./meliPromocoesService");
 
 const TIPOS_COM_ESCRITA = new Set(["DEAL", "SELLER_CAMPAIGN"]);
 
-const STATUS_ATIVO = new Set(["started", "active", "pending"]);
+// Status BRUTOS do ML que podem virar PUT (alteração de preço de uma
+// participação em andamento). `pending` é DELIBERADAMENTE excluído daqui:
+// uma promoção agendada nunca é a que define o preço atual do anúncio — o
+// próprio normalizador (meliPromocoesService) sempre marca pending como
+// statusExibicao "PROGRAMADA", nunca "ATIVA" — então "alterar" algo que
+// ainda não começou não faz sentido de produto (regra: PROGRAMADA → só
+// Simular, nunca Alterar). Separado de propósito da classificação de status
+// bruto que outros módulos usam pra rótulo/exibição (ver STATUS_LABEL em
+// meliPromocoesService.js, que inclui pending como "AGENDADA") — aqui é
+// estritamente "pode isto virar uma escrita real", não "como isto aparece
+// na tela". Excluir pending do Set torna o bloqueio estrutural: mesmo que
+// um bug futuro fizesse o normalizador marcar um pending como "ATIVA" por
+// engano, este Set continuaria impedindo o PUT, porque a decisão não
+// depende só de statusExibicao.
+const STATUS_ALTERAVEL = new Set(["started", "active"]);
 
 function falha(codigo, motivo) {
   return { ok: false, codigo, motivo };
@@ -76,7 +90,32 @@ async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, preco
     );
   }
 
-  const metodo = STATUS_ATIVO.has(promo.status) ? "PUT" : "POST";
+  // Decisão de escrita — regra final por statusExibicao (ver auditoria):
+  //   ATIVA        → PUT  (só quem está started/active E é a que o ML aponta
+  //                        via sale_price.metadata.promotion_id como a que
+  //                        define o preço atual)
+  //   ELEGÍVEL     → POST (candidate — participação nova)
+  //   NÃO APLICADA → bloqueado (started/active que não é a vencedora)
+  //   PROGRAMADA   → bloqueado (pending — nem começou; nunca fica ATIVA)
+  // `promo.statusExibicao` já vem calculado por listarPromocoesDoItem (mesma
+  // releitura ao vivo de cima, não uma segunda chamada). `podeAlterar` exige
+  // as DUAS condições (status bruto em STATUS_ALTERAVEL E statusExibicao
+  // ATIVA) — nunca confia só numa das duas — para que nem um bug futuro no
+  // normalizador nem uma reclassificação de status bruto sozinhos consigam
+  // liberar um PUT indevido. Defesa em profundidade: o frontend já bloqueia
+  // isso na UI, mas este endpoint pode ser chamado por qualquer cliente HTTP.
+  const podeAlterar = STATUS_ALTERAVEL.has(promo.status) && promo.statusExibicao === "ATIVA";
+  const podeParticipar = promo.status === "candidate";
+
+  if (!podeAlterar && !podeParticipar) {
+    const motivo =
+      promo.status === "pending"
+        ? "Esta promoção ainda não começou no Mercado Livre — ainda não é possível alterá-la."
+        : "Esta promoção existe no Mercado Livre, mas não é a que está definindo o preço atual do anúncio — atualize a tela e confira qual promoção está realmente aplicada.";
+    return falha("PROMOCAO_NAO_APLICADA", motivo);
+  }
+
+  const metodo = podeAlterar ? "PUT" : "POST";
 
   const writeResp = await mlFetch(
     clienteId,

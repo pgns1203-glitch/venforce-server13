@@ -971,11 +971,15 @@
   // carregarMetricasDosGruposVisiveis); o item avulso não tem soma nenhuma
   // para fazer, então só busca quando o operador clica.
   //
-  // Só LEITURA: preço/estoque de cada variação vêm como estão agora no ML,
-  // sem ação de editar aqui — ver meliVariacoesLegadoService (backend) para o
-  // porquê: o ML não documenta um jeito seguro de editar uma variação
-  // isolada sem risco de apagar as outras (PUT /items/{id} com a propriedade
-  // `variations` incompleta remove as que faltarem).
+  // Preço é só leitura aqui (ver celulaPrecoVariacaoLegadoHtml). Estoque É
+  // editável por variação (ver bloco "ESTOQUE DE VARIAÇÃO LEGADA" abaixo) —
+  // o card PRINCIPAL do item, esse sim, nunca edita estoque quando há
+  // variações (rowAnuncioHtml): o ML trata available_quantity da raiz como
+  // agregado quando existe variations[] (variacoes.md, "Modificar estoque"),
+  // então a única escrita seria por variação de qualquer forma.
+  // podeEditarEstoque/motivoBloqueio já vêm decididos pelo backend
+  // (mapearVariacaoLegado -> avaliarBloqueioEdicaoVariacaoLegado) — esta tela
+  // nunca interpreta inventory_id/logistic_type sozinha.
   // ===========================================================================
 
   function garantirVariacoesLegado(itemId) {
@@ -1402,9 +1406,11 @@
 
   // Selo discreto de explicação — mesmo componente vf-info/vf-info-dot da
   // Fundação (o ROAS em Ads usa o mesmo), não uma tooltip nova inventada.
-  function infoDotHtml(texto) {
+  // `ariaLabel` é opcional pra reaproveitar o mesmo selo fora do contexto de
+  // margem (ex.: estoque de variação bloqueado) sem herdar um rótulo errado.
+  function infoDotHtml(texto, ariaLabel) {
     return '<span class="vf-info am-margem__info">' +
-      '<button type="button" class="vf-info-dot" aria-label="Sobre esta margem"></button>' +
+      '<button type="button" class="vf-info-dot" aria-label="' + escapeAttr(ariaLabel || "Sobre esta margem") + '"></button>' +
       '<span class="vf-info__tip" role="tooltip">' + escapeHtml(texto) + "</span>" +
     "</span>";
   }
@@ -2009,12 +2015,26 @@
   // que pode não existir mais no Mercado Livre.
   // ===========================================================================
 
+  // podeEditarEstoque/motivoBloqueioTexto vêm PRONTOS do backend
+  // (mapearVariacaoLegado -> avaliarBloqueioEdicaoVariacaoLegado): esta função
+  // NUNCA interpreta inventory_id/logistic_type — só desenha o que o service
+  // já decidiu. Bloqueada: valor em texto puro (sem botão, mesmo padrão do
+  // preço travado por promoção em margemComposicaoLinhaPrecoHtml) + o motivo
+  // visível de cara, nunca só descoberto depois de tentar salvar.
   function celulaEstoqueVariacaoLegadoHtml(v, itemId) {
     var tem = v.estoque != null;
+    var valorHtml = tem ? String(v.estoque) : "—";
+    if (v.podeEditarEstoque === false) {
+      var motivo = v.motivoBloqueioTexto || "O estoque desta variação não pode ser editado aqui.";
+      return '<span class="am-mlb__num am-estoque am-estoque--bloqueado" title="' + escapeAttr(motivo) + '">' +
+        '<span class="am-estoque__valor">' + escapeHtml(valorHtml) + "</span>" +
+        infoDotHtml(motivo, "Por que este estoque não pode ser editado") +
+      "</span>";
+    }
     return '<span class="am-mlb__num am-estoque" data-variacao-item="' + escapeAttr(itemId) +
       '" data-variacao-id="' + escapeAttr(v.id) +
       '" data-estoque-valor="' + escapeAttr(tem ? v.estoque : "") + '">' +
-      botaoEstoqueHtml(tem ? String(v.estoque) : "—") + "</span>";
+      botaoEstoqueHtml(valorHtml) + "</span>";
   }
 
   function bindEstoqueVariacaoLegadoEditavel(painel) {
@@ -2284,6 +2304,18 @@
       "</button>"
       : "";
 
+    // Item legado COM variações: estoque não é editável no card principal. O
+    // ML trata available_quantity da raiz do item como agregado quando existe
+    // variations[] (documentacao_api_meli/variacoes.md, "Modificar estoque")
+    // — a escrita de verdade é só por variação (ver rowVariacaoLegadoHtml /
+    // celulaEstoqueVariacaoLegadoHtml). Sem .am-estoque aqui: nem botão, nem
+    // listener (bindEstoqueEditavel só encontra `.am-estoque`), só o número.
+    // Mesma decisão já tomada pra linha do AGRUPADOR (ver comentário abaixo).
+    var estoqueItemHtml = temVariacoesLegado
+      ? '<span class="am-row__num" title="O estoque deste anúncio é por variação — abra as variações para editar.">' +
+        (a.estoque != null ? escapeHtml(String(a.estoque)) : "—") + "</span>"
+      : celulaEstoqueHtml(a, "am-row__num");
+
     return '<div class="am-row" data-item="' + escapeHtml(a.item_id) + '" tabindex="0" role="button" ' +
       'aria-label="Ver detalhes de ' + escapeHtml(a.titulo || a.item_id) + '">' +
       '<div class="am-row__thumb" aria-hidden="true">' + img + "</div>" +
@@ -2295,11 +2327,13 @@
       "</div>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
       celulaPrecoHtml(a, "am-row__preco") +
-      // O anúncio individual também é um MLB, e o estoque dele se edita aqui
-      // pelo mesmo caminho da linha filha. A linha do AGRUPADOR não tem esta
-      // célula: o estoque dela é soma de variações, não um número que exista
-      // no Mercado Livre para ser escrito (ver rowGrupoHtml).
-      celulaEstoqueHtml(a, "am-row__num") +
+      // O anúncio individual SEM variações também é um MLB, e o estoque dele
+      // se edita aqui pelo mesmo caminho da linha filha. A linha do
+      // AGRUPADOR não tem esta célula: o estoque dela é soma de variações,
+      // não um número que exista no Mercado Livre para ser escrito (ver
+      // rowGrupoHtml). O item legado COM variações é a mesma exceção, pela
+      // mesma razão de fundo (ver estoqueItemHtml acima).
+      estoqueItemHtml +
       '<span class="am-row__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
       metricas7dCelulaHtml(a.item_id) +
       margemCelulaHtml(a.item_id) +

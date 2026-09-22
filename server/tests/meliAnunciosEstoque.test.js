@@ -117,6 +117,16 @@ function anunciosFixture() {
       estoque: 1, status: "active", sub_status: null,
       cliente_conta_id: null, ml_user_id: null,
     },
+    // Item LEGADO (item_id -> variations[], sem User Product) com variações
+    // reais no ML: estoque é por variação (ver PATCH .../variacoes-legado/
+    // :variationId/estoque), a raiz do item NUNCA pode ser o alvo do PUT —
+    // guard em atualizarEstoque tem de recusar antes de chamar o ML.
+    {
+      id: 12, cliente_id: 1, cliente_slug: "cliente-a", item_id: "MLB-LEGADO-VAR",
+      titulo: "Item legado com variações", user_product_id: null,
+      estoque: 24, status: "active", sub_status: null,
+      cliente_conta_id: 10, ml_user_id: "111", variations_count: 3,
+    },
   ];
 }
 
@@ -522,6 +532,25 @@ async function run() {
     assert.strictEqual(res2.statusCode, 400);
     assert.strictEqual(mlChamadas.length, 0);
     ok("anúncio inexistente é 404 e clienteSlug ausente é 400, sem chamada ao Mercado Livre");
+  });
+
+  // 10b. Item legado com variações (variations_count > 0): a raiz do item não
+  //      é editável por aqui — guard recusa ANTES de chamar o Mercado Livre,
+  //      mesmo que a chamada venha direto na API (sem passar pelo botão que o
+  //      frontend já não desenha mais para este caso).
+  await withMockDb({ ...UMA_CONTA, anuncios: anunciosFixture() }, async (db) => {
+    mlChamadas = [];
+    const res = fakeRes();
+    await ctrl.atualizarEstoque(
+      { params: { itemId: "MLB-LEGADO-VAR" }, body: { clienteSlug: "cliente-a", estoque: 30 } },
+      res
+    );
+    assert.strictEqual(res.statusCode, 400, "item com variações recusa o PATCH na raiz, 400");
+    assert.strictEqual(res.corpo.ok, false);
+    assert.strictEqual(res.corpo.codigo, "ESTOQUE_POR_VARIACAO");
+    assert.strictEqual(mlChamadas.length, 0, "guard bloqueia antes de qualquer chamada ao Mercado Livre");
+    assert.strictEqual(db.updates.length, 0, "banco não pode se mover quando o guard recusa");
+    ok("item legado com variations_count > 0: PATCH /:itemId/estoque recusa com ESTOQUE_POR_VARIACAO, sem tocar o ML nem o banco");
   });
 
   // 11. O normalizador, direto: é ele que garante que 0 passa e que o teto

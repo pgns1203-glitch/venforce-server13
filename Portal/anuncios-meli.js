@@ -3959,10 +3959,11 @@
 
   // Coluna "Subsídio ML" — só informativa (não alimenta motor de margem/
   // simulação, nunca é usada em "Você recebe"). Vem pronta do backend
-  // (meliPromocoesService: discount_meli_boost_amount, em R$ — a mesma
-  // redução de tarifa que a UI do ML mostra como "Reduzimos R$ X das suas
-  // tarifas"). "—" quando o ML não manda discount_meli_boost_amount para o
-  // tipo de promoção.
+  // (meliPromocoesService: original_price*(meli_percentage/100) — fórmula
+  // validada pela tela "Promoções com Retorno ML", server/services/
+  // automacoes/promocoesRetornoService.js. Nome do campo mantido por
+  // compatibilidade; semanticamente é "Retorno ML", não uma redução de
+  // tarifa/comissão). "—" quando falta original_price ou meli_percentage.
   function promocaoSubsidioMlHtml(p, moeda) {
     if (p.subsidioMl == null) {
       return '<span class="am-promo__subsidio am-promo__subsidio--vazio">—</span>';

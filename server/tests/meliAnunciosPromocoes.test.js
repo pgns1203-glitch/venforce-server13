@@ -263,51 +263,69 @@ async function run() {
   assert.strictEqual(promocoesService.rotuloTipoPromocao("TIPO_DESCONHECIDO"), "TIPO_DESCONHECIDO");
   ok("normalizarPromocao: started com price=0 não vira preço real; statusLabel e rótulo de tipo corretos");
 
-  // 10. subsidioMl — vem direto de discount_meli_boost_amount (redução real
-  //     de tarifa que o ML mostra como "Reduzimos R$ X das suas tarifas"),
-  //     nunca mais calculado a partir de meli_percentage/desconto.
+  // 10. subsidioMl — fórmula validada (auditoria de promocoesRetornoService.js,
+  //     tela "Promoções com Retorno ML"): original_price * (meli_percentage/100).
+  //     Caso real confirmado: item MLB4147165927, promoção "Impulsione suas
+  //     vendas" (SMART), original_price=119.90, meli_percentage=0.5 →
+  //     0.5995 → R$0,60, a 1 centavo do "Reduzimos R$0,61" mostrado pelo ML
+  //     (diferença compatível com a precisão de 1 casa decimal da API).
   {
     const linha = promocoesService.normalizarPromocao(
-      { status: "started", price: 80, original_price: 100, discount_meli_boost_amount: 0.61 }, 0
+      { status: "started", price: 110.48, original_price: 119.9, meli_percentage: 0.5 }, 0
     );
-    assert.strictEqual(linha.subsidioMl, 0.61, "subsidioMl = discount_meli_boost_amount, em R$, sem conversão de unidade");
+    assert.ok(Math.abs(linha.subsidioMl - 0.5995) < 0.01, `subsidioMl esperado ≈0.60, veio ${linha.subsidioMl}`);
+    assert.strictEqual(linha.subsidioMl, 0.6, "arredondado para 2 casas, igual ao formato de moeda exibido");
   }
-  ok("subsidioMl: vem de discount_meli_boost_amount (redução de tarifa), não mais de meli_percentage*desconto");
+  ok("subsidioMl: fórmula original_price*(meli_percentage/100) — caso real MLB4147165927 dá ≈R$0,60, a 1 centavo do R$0,61 do ML");
 
-  // 11. subsidioMl ausente quando o ML não manda discount_meli_boost_amount
-  //     (ex.: boosted_offer nunca veio true para este tipo/item).
+  // 11. subsidioMl null quando falta meli_percentage — nunca inventa a
+  //     partir de outro campo.
   {
     const linha = promocoesService.normalizarPromocao(
-      { status: "started", price: 82, original_price: 100, meli_percentage: 3 }, 0
+      { status: "started", price: 82, original_price: 100 }, 0
     );
-    assert.strictEqual(linha.subsidioMl, null, "sem discount_meli_boost_amount do ML, subsidioMl fica null (UI mostra —)");
+    assert.strictEqual(linha.subsidioMl, null, "sem meli_percentage, subsidioMl fica null (UI mostra —)");
   }
-  ok("subsidioMl: null quando o ML não devolve discount_meli_boost_amount para o tipo de promoção");
+  ok("subsidioMl: null quando a promoção não tem meli_percentage");
 
-  // 12. discount_meli_boost_amount = 0 é um valor válido (R$ 0,00) — não é
-  //     ausência de dado, então não pode virar null/"—".
+  // 12. subsidioMl null quando falta original_price (mesmo com meli_percentage
+  //     presente) — os DOIS campos são exigidos, nunca um cálculo parcial.
   {
     const linha = promocoesService.normalizarPromocao(
-      { status: "started", price: 80, original_price: 100, discount_meli_boost_amount: 0 }, 0
+      { status: "started", price: 82, meli_percentage: 3 }, 0
     );
-    assert.strictEqual(linha.subsidioMl, 0, "discount_meli_boost_amount = 0 é válido, não é ausência de dado");
+    assert.strictEqual(linha.subsidioMl, null, "sem original_price, subsidioMl fica null mesmo com meli_percentage presente");
   }
-  ok("subsidioMl: 0 é tratado como valor válido (R$ 0,00), nunca como ausência");
+  ok("subsidioMl: null quando falta original_price, mesmo com meli_percentage presente");
 
-  // 13. subsidioMl ignora meli_percentage/seller_percentage — eles continuam
-  //     expostos como campos próprios da promoção, só não alimentam mais R$.
+  // 13. subsidioMl NUNCA usa seller_percentage — nem como fonte alternativa,
+  //     nem somado ao meli_percentage.
+  {
+    const soSeller = promocoesService.normalizarPromocao(
+      { status: "started", price: 80, original_price: 100, seller_percentage: 30 }, 0
+    );
+    assert.strictEqual(soSeller.subsidioMl, null, "só seller_percentage (sem meli_percentage) nunca calcula subsídio");
+
+    const ambos = promocoesService.normalizarPromocao(
+      { status: "started", price: 80, original_price: 100, meli_percentage: 3, seller_percentage: 30 }, 0
+    );
+    assert.strictEqual(ambos.subsidioMl, 3, "usa só meli_percentage (100*0.03=3) — nunca soma com seller_percentage (que daria 33)");
+  }
+  ok("subsidioMl: nunca usa seller_percentage como fonte nem soma com meli_percentage");
+
+  // 13b. discount_meli_boost_amount/boosted_offer/benefits NUNCA mais
+  //      alimentam subsidioMl (fonte trocada pela auditoria) — mesmo
+  //      presentes, são ignorados.
   {
     const linha = promocoesService.normalizarPromocao(
       {
-        status: "started", price: 80, original_price: 100,
-        meli_percentage: 50, seller_percentage: 999, discount_meli_boost_amount: 0.61,
+        status: "started", price: 110.48, original_price: 119.9, meli_percentage: 0.5,
+        boosted_offer: true, discount_meli_boost_amount: 999, benefits: { type: "REBATE", meli_percent: 999 },
       }, 0
     );
-    assert.strictEqual(linha.subsidioMl, 0.61, "subsidioMl ignora meli_percentage e seller_percentage");
-    assert.strictEqual(linha.meliPercentage, 50, "meli_percentage continua exposto como dado da promoção");
-    assert.strictEqual(linha.sellerPercentage, 999, "seller_percentage continua exposto como dado da promoção");
+    assert.strictEqual(linha.subsidioMl, 0.6, "discount_meli_boost_amount/boosted_offer/benefits são ignorados, mesmo presentes");
   }
-  ok("subsidioMl: ignora meli_percentage/seller_percentage; ambos continuam expostos como campos próprios");
+  ok("subsidioMl: discount_meli_boost_amount/boosted_offer/benefits nunca mais são a fonte, mesmo presentes no payload");
 
   // 14. statusExibicao — casamento por id: só a promoção cujo id bate com o
   //     promotion_id do sale_price vira ATIVA; outra started vira NÃO APLICADA.
@@ -371,12 +389,203 @@ async function run() {
     res.corpo.promocoes.forEach((p) => { porId[p.id] = p; });
     assert.strictEqual(porId["P-3"].statusExibicao, "ATIVA", "P-3 é a que o sale_price aponta — só ela vira ATIVA");
     assert.strictEqual(porId["P-2"].statusExibicao, "NÃO APLICADA", "P-2 está started mas não define o preço atual");
-    assert.strictEqual(porId["P-3"].subsidioMl, 0.61);
-    assert.strictEqual(porId["P-2"].subsidioMl, 1.2);
+    // subsidioMl = original_price*(meli_percentage/100) — 100*8/100=8, 100*3/100=3.
+    // discount_meli_boost_amount (0.61/1.2) fica no fixture só pra provar que é ignorado.
+    assert.strictEqual(porId["P-3"].subsidioMl, 8, "100*(8/100)=8 — discount_meli_boost_amount (0.61) é ignorado");
+    assert.strictEqual(porId["P-2"].subsidioMl, 3, "100*(3/100)=3 — discount_meli_boost_amount (1.2) é ignorado");
     assert.ok(mlChamadas.some((c) => /seller-promotions\/items\//.test(c.path)), "precisa ter chamado /seller-promotions/items/{id}");
     assert.ok(mlChamadas.some((c) => /\/sale_price/.test(c.path)), "precisa ter chamado /items/{id}/sale_price em paralelo");
     assert.ok(mlChamadas.every((c) => c.metodo === "GET"), "as duas chamadas continuam GET, nunca escrita");
     ok("fluxo completo: /sale_price roda em paralelo com /seller-promotions/items e decide qual promoção é ATIVA");
+  });
+
+  // 19b. Enriquecimento de vigência: promoção chega SEM start_date/finish_date
+  //      do endpoint principal, mas tem id+type — busca em
+  //      /seller-promotions/promotions/{id}?promotion_type={tipo} e preenche
+  //      inicio/fim com o que essa segunda chamada devolver.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) {
+        assert.ok(/\/seller-promotions\/promotions\/P-9/.test(chamada.path), "precisa consultar pelo promotion_id certo");
+        assert.ok(/promotion_type=SMART/.test(chamada.path), "precisa mandar promotion_type na consulta de detalhe");
+        return {
+          ok: true, status: 200,
+          data: { id: "P-9", type: "SMART", status: "started", start_date: "2026-04-22T01:00:00Z", finish_date: "2026-05-22T01:00:00Z" },
+        };
+      }
+      return {
+        ok: true, status: 200,
+        data: [{ id: "P-9", type: "SMART", status: "started", price: 80, original_price: 100 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    const linha = res.corpo.promocoes[0];
+    assert.strictEqual(linha.inicio, "2026-04-22T01:00:00Z", "vigência enriquecida via /seller-promotions/promotions/{id}");
+    assert.strictEqual(linha.fim, "2026-05-22T01:00:00Z");
+    assert.ok(
+      mlChamadas.some((c) => /seller-promotions\/promotions\/P-9/.test(c.path)),
+      "precisa ter chamado o detalhe da campanha para a promoção sem data"
+    );
+    ok("enriquecimento de vigência: promoção SMART sem data no endpoint principal recebe inicio/fim do detalhe da campanha");
+  });
+
+  // 19c. Enriquecimento falha (ok:false ou exceção) — não derruba a
+  //      listagem; a promoção continua com inicio/fim null, nunca inventado.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) {
+        return { ok: false, status: 500, data: { message: "erro" } };
+      }
+      return {
+        ok: true, status: 200,
+        data: [{ id: "P-9", type: "SMART", status: "started", price: 80, original_price: 100 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.ok, true, "falha no enriquecimento não pode derrubar a listagem inteira");
+    const linha = res.corpo.promocoes[0];
+    assert.strictEqual(linha.inicio, null, "sem detalhe disponível, inicio continua null (nunca inventado)");
+    assert.strictEqual(linha.fim, null, "sem detalhe disponível, fim continua null (nunca inventado)");
+    ok("enriquecimento de vigência: falha (ok:false) do detalhe da campanha não derruba a listagem, inicio/fim seguem null");
+  });
+
+  // 19d. Enriquecimento lança exceção (ex.: erro de rede) — mesma garantia
+  //      de resiliência, via try/catch.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) throw new Error("timeout");
+      return {
+        ok: true, status: 200,
+        data: [{ id: "P-9", type: "SMART", status: "started", price: 80, original_price: 100 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.ok, true, "exceção no enriquecimento não pode derrubar a listagem inteira");
+    assert.strictEqual(res.corpo.promocoes[0].inicio, null);
+    ok("enriquecimento de vigência: exceção de rede no detalhe da campanha não derruba a listagem");
+  });
+
+  // 19e. Promoção que já veio com start_date/finish_date do endpoint
+  //      principal NÃO dispara a chamada extra de enriquecimento.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      return {
+        ok: true, status: 200,
+        data: [{
+          id: "P-9", type: "DEAL", status: "started", price: 80, original_price: 100,
+          start_date: "2026-01-01T00:00:00Z", finish_date: "2026-01-31T23:59:59Z",
+        }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.promocoes[0].inicio, "2026-01-01T00:00:00Z");
+    assert.strictEqual(res.corpo.promocoes[0].fim, "2026-01-31T23:59:59Z");
+    assert.ok(
+      !mlChamadas.some((c) => /seller-promotions\/promotions\//.test(c.path)),
+      "promoção que já tem data não pode disparar a chamada extra de enriquecimento"
+    );
+    ok("enriquecimento de vigência: promoção que já tem start_date/finish_date não faz chamada extra");
+  });
+
+  // 19f. Sem promotion_id (id ausente) ou sem type: nunca tenta enriquecer
+  //      (não há como montar a consulta de detalhe da campanha).
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      return {
+        ok: true, status: 200,
+        data: [{ type: "PRICE_DISCOUNT", status: "candidate", price: 0, original_price: 100, suggested_discounted_price: 90 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.promocoes[0].inicio, null);
+    assert.ok(
+      !mlChamadas.some((c) => /seller-promotions\/promotions\//.test(c.path)),
+      "sem id de promoção não há como montar a consulta de detalhe — não deve nem tentar"
+    );
+    ok("enriquecimento de vigência: promoção sem id não dispara tentativa de enriquecimento");
+  });
+
+  // 19h. Promoção sem `id` (campanha) mas com `ref_id` (oferta/candidato):
+  //      fallback defensivo usa ref_id como promotion_id — nenhum caso
+  //      documentado do ML faz isso sozinho (ref_id sempre vem junto de id
+  //      nos exemplos oficiais), mas o fallback é seguro: se o ref_id não
+  //      servir como promotion_id, o ML só devolve erro/ok:false, que já é
+  //      tratado sem quebrar a listagem.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) {
+        assert.ok(/\/seller-promotions\/promotions\/OFFER-MLB1-999/.test(chamada.path), "precisa usar o ref_id quando não há id");
+        return { ok: true, status: 200, data: { start_date: "2026-02-01T00:00:00Z", finish_date: "2026-02-10T00:00:00Z" } };
+      }
+      return {
+        ok: true, status: 200,
+        data: [{ ref_id: "OFFER-MLB1-999", type: "SMART", status: "started", price: 80, original_price: 100 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.promocoes[0].inicio, "2026-02-01T00:00:00Z", "fallback por ref_id preenche a vigência quando não há id");
+    assert.strictEqual(res.corpo.promocoes[0].fim, "2026-02-10T00:00:00Z");
+    ok("enriquecimento de vigência: sem id, cai para ref_id como promotion_id (fallback defensivo)");
+  });
+
+  // 19i. Deduplicação: duas promoções diferentes (mesmo id+type) sem data —
+  //      só UMA chamada a /seller-promotions/promotions/{id}, e as DUAS
+  //      recebem a mesma vigência. Nunca cache persistente — só dentro
+  //      desta execução de listarPromocoesDoItem.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    let chamadasDetalhe = 0;
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) {
+        chamadasDetalhe += 1;
+        return { ok: true, status: 200, data: { start_date: "2026-03-01T00:00:00Z", finish_date: "2026-03-10T00:00:00Z" } };
+      }
+      return {
+        ok: true, status: 200,
+        data: [
+          { id: "P-9", type: "SMART", status: "started", price: 80, original_price: 100 },
+          { id: "P-9", type: "SMART", status: "pending", price: 82, original_price: 100 },
+        ],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(chamadasDetalhe, 1, "mesmo id+type entre duas promoções deve gerar só UMA chamada de detalhe");
+    assert.ok(res.corpo.promocoes.every((p) => p.inicio === "2026-03-01T00:00:00Z"), "as duas promoções recebem a mesma vigência deduplicada");
+    ok("enriquecimento de vigência: duas promoções com o mesmo id+type deduplicam em uma única chamada ao detalhe da campanha");
   });
 
   // 19. Fallback: sale_price sem metadata/promotion_id — nenhuma promoção

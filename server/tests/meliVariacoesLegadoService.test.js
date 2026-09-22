@@ -210,12 +210,12 @@ async function run() {
     assert.strictEqual(r.variacoes[0].image_url, "https://img/preto.jpg", "variação com picture_ids próprio usa o match");
     assert.strictEqual(r.variacoes[1].image_url, "https://img/capa.jpg", "variação sem picture_ids usa a imagem principal (primeira do item)");
 
-    assert.strictEqual(mlChamadas.length, 2, "2 chamadas: variations + item (pictures)");
+    assert.strictEqual(mlChamadas.length, 2, "2 chamadas: variations + item (pictures+shipping)");
     assert.strictEqual(mlChamadas[0].metodo, "GET", "esta leitura nunca escreve");
     assert.strictEqual(mlChamadas[0].path, "/items/MLB2652739620/variations");
-    assert.strictEqual(mlChamadas[1].path, "/items/MLB2652739620?attributes=pictures");
+    assert.strictEqual(mlChamadas[1].path, "/items/MLB2652739620?attributes=pictures,shipping");
     assert.ok(mlChamadas.every((c) => c.mlUserId === "649359720"), "as duas chamadas usam o mesmo mlUserId, sem fallback de conta");
-    ok("buscarVariacoesLegado faz GET /variations + GET /items?attributes=pictures e resolve image_url por relação real, sem escrita");
+    ok("buscarVariacoesLegado faz GET /variations + GET /items?attributes=pictures,shipping e resolve image_url por relação real, sem escrita");
   }
 
   // 5b. Falha ao buscar as imagens do item (GET pictures recusado) NÃO derruba
@@ -248,6 +248,107 @@ async function run() {
     assert.ok(r.motivo && r.codigo, "falha precisa vir com motivo e código legíveis");
     assert.strictEqual(mlChamadas.length, 1, "variations falhando não deve tentar buscar pictures");
     ok("buscarVariacoesLegado devolve falha legível quando o ML recusa/erra a leitura de variations, sem chamada extra");
+  }
+
+  // 7. avaliarBloqueioEdicaoVariacaoLegado — regra ÚNICA de bloqueio,
+  //    compartilhada entre esta leitura e a escrita (meliVariacoesLegadoEstoqueService).
+  //    Sem item nem inventory_id: editável.
+  {
+    const r = service.avaliarBloqueioEdicaoVariacaoLegado(null, { id: 1, available_quantity: 4 });
+    assert.strictEqual(r.podeEditar, true);
+    assert.strictEqual(r.motivo, null);
+    assert.strictEqual(r.motivoTexto, null);
+    ok("avaliarBloqueioEdicaoVariacaoLegado: sem item e sem inventory_id, editável");
+  }
+
+  // 7b. Variação com inventory_id -> bloqueada, motivo INVENTORY_ID.
+  {
+    const item = { shipping: { logistic_type: "me2" } };
+    const r = service.avaliarBloqueioEdicaoVariacaoLegado(item, { id: 1, inventory_id: "INV-1" });
+    assert.strictEqual(r.podeEditar, false);
+    assert.strictEqual(r.motivo, "INVENTORY_ID");
+    assert.ok(r.motivoTexto && /gerenciado externamente/.test(r.motivoTexto));
+    ok("avaliarBloqueioEdicaoVariacaoLegado: variação com inventory_id bloqueia com motivo INVENTORY_ID");
+  }
+
+  // 7c. Item inteiro em Full (logistic_type fulfillment) -> bloqueia mesmo sem
+  //     inventory_id na variação (o item inteiro está fora do alcance do PUT).
+  {
+    const item = { shipping: { logistic_type: "fulfillment" } };
+    const r = service.avaliarBloqueioEdicaoVariacaoLegado(item, { id: 1 });
+    assert.strictEqual(r.podeEditar, false);
+    assert.strictEqual(r.motivo, "FULL");
+    assert.ok(r.motivoTexto && /Full/.test(r.motivoTexto));
+    ok("avaliarBloqueioEdicaoVariacaoLegado: item em Full bloqueia com motivo FULL, mesmo sem inventory_id na variação");
+  }
+
+  // 8. mapearVariacaoLegado propaga o sinal de bloqueio quando o item é
+  //    passado — sem item, os campos ainda saem (null-safe), nunca "undefined".
+  {
+    const livre = service.mapearVariacaoLegado(
+      { id: 1, attribute_combinations: [], price: 10, available_quantity: 4, sold_quantity: 0 },
+      null,
+      { shipping: { logistic_type: "me2" } }
+    );
+    assert.strictEqual(livre.podeEditarEstoque, true);
+    assert.strictEqual(livre.motivoBloqueio, null);
+    assert.strictEqual(livre.motivoBloqueioTexto, null);
+
+    const bloqueada = service.mapearVariacaoLegado(
+      { id: 2, attribute_combinations: [], price: 10, available_quantity: 4, sold_quantity: 0, inventory_id: "INV-2" },
+      null,
+      { shipping: { logistic_type: "me2" } }
+    );
+    assert.strictEqual(bloqueada.podeEditarEstoque, false);
+    assert.strictEqual(bloqueada.motivoBloqueio, "INVENTORY_ID");
+    assert.ok(bloqueada.motivoBloqueioTexto);
+    ok("mapearVariacaoLegado expõe podeEditarEstoque/motivoBloqueio/motivoBloqueioTexto quando o item é informado");
+  }
+
+  // 9. buscarVariacoesLegado busca shipping junto com pictures (mesma chamada,
+  //    sem custo extra de rede) e usa isso para marcar TODAS as variações como
+  //    bloqueadas quando o item inteiro está em Full.
+  {
+    mlChamadas = [];
+    mlHandler = async (chamada) => {
+      if (chamada.path.endsWith("/variations")) {
+        return {
+          ok: true, status: 200,
+          data: [
+            { id: 1, attribute_combinations: [], price: 100, available_quantity: 4, sold_quantity: 0 },
+            { id: 2, attribute_combinations: [], price: 100, available_quantity: 6, sold_quantity: 0, inventory_id: "INV-9" },
+          ],
+        };
+      }
+      return { ok: true, status: 200, data: { pictures: [], shipping: { logistic_type: "me2" } } };
+    };
+    const r = await service.buscarVariacoesLegado({ clienteId: 1, itemId: "MLB-A", mlUserId: "1" });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.variacoes[0].podeEditarEstoque, true, "sem inventory_id e item fora do Full: editável");
+    assert.strictEqual(r.variacoes[0].motivoBloqueio, null);
+    assert.strictEqual(r.variacoes[1].podeEditarEstoque, false, "com inventory_id: bloqueada");
+    assert.strictEqual(r.variacoes[1].motivoBloqueio, "INVENTORY_ID");
+    assert.ok(r.variacoes[1].motivoBloqueioTexto, "motivo não pode ficar escondido do operador");
+    ok("buscarVariacoesLegado sinaliza podeEditarEstoque por variação, sem chamada extra de rede");
+  }
+
+  // 9b. Item inteiro em Full: TODAS as variações nascem bloqueadas, mesmo as
+  //     que não têm inventory_id individual.
+  {
+    mlChamadas = [];
+    mlHandler = async (chamada) => {
+      if (chamada.path.endsWith("/variations")) {
+        return {
+          ok: true, status: 200,
+          data: [{ id: 1, attribute_combinations: [], price: 100, available_quantity: 4, sold_quantity: 0 }],
+        };
+      }
+      return { ok: true, status: 200, data: { pictures: [], shipping: { logistic_type: "fulfillment" } } };
+    };
+    const r = await service.buscarVariacoesLegado({ clienteId: 1, itemId: "MLB-FULL", mlUserId: "1" });
+    assert.strictEqual(r.variacoes[0].podeEditarEstoque, false);
+    assert.strictEqual(r.variacoes[0].motivoBloqueio, "FULL");
+    ok("buscarVariacoesLegado: item inteiro em Full bloqueia toda variação, mesmo sem inventory_id individual");
   }
 
   console.log(`\n${checks} verificações passaram.`);

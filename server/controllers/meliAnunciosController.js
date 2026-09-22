@@ -1050,6 +1050,22 @@ async function atualizarEstoque(req, res) {
       });
     }
 
+    // Guard fail-closed: um item legado com variações reais no ML
+    // (item_id -> variations[], sem User Product) não tem estoque próprio na
+    // raiz — o ML trata available_quantity do item como agregado das
+    // variações (documentacao_api_meli/variacoes.md, "Modificar estoque"), e
+    // a única escrita documentada é por variação (ver
+    // PATCH /:itemId/variacoes-legado/:variationId/estoque). Recusa aqui,
+    // ANTES de resolver conta/token e chamar o ML — protege mesmo uma
+    // chamada direta à API, sem depender do frontend não desenhar o botão.
+    if ((anuncio.variations_count || 0) > 0) {
+      return res.status(400).json({
+        ok: false,
+        codigo: "ESTOQUE_POR_VARIACAO",
+        motivo: "Este anúncio tem variações no Mercado Livre — edite o estoque de cada variação, não o anúncio inteiro.",
+      });
+    }
+
     // Mesma regra de conta de /conteudo: a linha sabe de qual conta veio, e é
     // essa. Sem isso, resolverContextoConta decide — e recusa (409) quando há
     // mais de uma conta e nenhuma indicação.

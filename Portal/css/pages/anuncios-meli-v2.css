@@ -700,6 +700,18 @@
   outline-offset: 1px;
 }
 
+/* Estoque de variação legada bloqueado (gerenciado pelo Full/inventory_id) —
+   valor em texto puro, sem moldura de botão: não é um convite a editar, é
+   informativo. Mesmo tratamento do preço travado por promoção
+   (.am-margem-comp__valor--bloqueado). */
+.vf-page-anuncios-meli .am-estoque--bloqueado {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vf-sp-1);
+  color: var(--vf-text-muted);
+  cursor: default;
+}
+
 /* O campo ocupa a coluna inteira (84px) e não mais que ela. As setas
    nativas do input[type=number] são removidas porque roubariam a
    metade da largura — o teclado continua funcionando. */

@@ -202,6 +202,20 @@ const VARIACOES_LEGADO_MLB_SEMUP = [
   { id: 15092589430, attribute_combinations: [{ id: "COLOR", name: "Color", value_id: "52005", value_name: "Preto" }, { id: "SIZE", name: "Talla", value_id: "9", value_name: "34 BR" }], price: 49.9, available_quantity: 2, sold_quantity: 5, image_url: "https://http2.mlstatic.com/D_preto-O.jpg" },
   { id: 15092589431, attribute_combinations: [{ id: "COLOR", name: "Color", value_id: "52049", value_name: "Nude" }, { id: "SIZE", name: "Talla", value_id: "10", value_name: "35 BR" }], price: 49.9, available_quantity: 1, sold_quantity: 3, image_url: "https://http2.mlstatic.com/D_preto-O.jpg" },
 ];
+// Espelha avaliarBloqueioEdicaoVariacaoLegado (server/services/meliAnuncios/
+// meliVariacoesLegadoService.js) — este mock simula a RESPOSTA que o backend
+// real já entrega pronta; nenhum teste de frontend decide sozinho o que
+// inventory_id significa.
+function bloqueioVariacaoLegadoMock(v) {
+  if (v.inventory_id) {
+    return {
+      podeEditarEstoque: false,
+      motivoBloqueio: "INVENTORY_ID",
+      motivoBloqueioTexto: "O estoque desta variação é gerenciado externamente (inventory_id) — a edição manual não é permitida.",
+    };
+  }
+  return { podeEditarEstoque: true, motivoBloqueio: null, motivoBloqueioTexto: null };
+}
 let chamadasVariacoesLegado = [];
 // Gancho para um teste substituir a resposta do GET .../variacoes-legado sem
 // mexer no fixture compartilhado por 7c/7d/7f/7h (que dependem de preco 49.9).
@@ -568,12 +582,12 @@ function wireInterception(cdp) {
       );
       await corpo({
         ok: true,
-        variacoes: atualizadas.map((v) => ({
+        variacoes: atualizadas.map((v) => Object.assign({
           id: v.id,
           atributos: v.attribute_combinations.map((ac) => ({ nome: ac.name, valor: ac.value_name })),
           preco: v.price, estoque: v.available_quantity, vendidos: v.sold_quantity,
           image_url: v.image_url || null,
-        })),
+        }, bloqueioVariacaoLegadoMock(v))),
       });
       return;
     }
@@ -588,12 +602,12 @@ function wireInterception(cdp) {
       const bruto = itemId === "MLB-SEMUP"
         ? (variacoesLegadoHandler ? variacoesLegadoHandler() : VARIACOES_LEGADO_MLB_SEMUP)
         : [];
-      await corpo({ ok: true, variacoes: bruto.map((v) => ({
+      await corpo({ ok: true, variacoes: bruto.map((v) => Object.assign({
         id: v.id,
         atributos: v.attribute_combinations.map((ac) => ({ nome: ac.name, valor: ac.value_name })),
         preco: v.price, estoque: v.available_quantity, vendidos: v.sold_quantity,
         image_url: v.image_url || null,
-      })) });
+      }, bloqueioVariacaoLegadoMock(v))) });
       return;
     }
 
@@ -1692,43 +1706,52 @@ async function run() {
       }
     });
 
-    await check("27b — o anúncio individual também edita estoque; o agrupador NÃO", async () => {
+    await check("27b — o anúncio individual também edita estoque; o agrupador e o item legado COM variações NÃO", async () => {
       // "Cada linha MLB" inclui o anúncio sem agrupamento: ele é um MLB como
-      // qualquer outro. A linha do AGRUPADOR é a exceção, e não por esquecimento:
-      // o estoque dela é a soma das variações, não um número que exista no
-      // Mercado Livre para ser escrito.
+      // qualquer outro. A linha do AGRUPADOR é uma exceção, e não por
+      // esquecimento: o estoque dela é a soma das variações, não um número
+      // que exista no Mercado Livre para ser escrito. O item LEGADO COM
+      // variações (MLB-SEMUP, variations_count 24) é a OUTRA exceção, pela
+      // mesma razão de fundo: o ML trata available_quantity da raiz do item
+      // como agregado quando há variations[] (variacoes.md, "Modificar
+      // estoque") — só a linha de cada variação (ver checks 7f/38f) pode
+      // escrever. MLB-SEMVAR (mesmo "sem UP", mas SEM variações no ML) é quem
+      // prova o caso individual editável de verdade.
       const onde = await cdp.evaluate(`(function(){
         return {
-          individual: Boolean(document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-estoque')),
+          individual: Boolean(document.querySelector('.am-row[data-item="MLB-SEMVAR"] .am-estoque')),
           agrupador: Boolean(document.querySelector('${linhaFam("FAM-1")} .am-estoque')),
+          itemLegadoComVariacoes: Boolean(document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-estoque')),
         }; })()`);
-      assert.strictEqual(onde.individual, true, "o anúncio individual precisa ter estoque editável");
+      assert.strictEqual(onde.individual, true, "o anúncio individual sem variações precisa ter estoque editável");
       assert.strictEqual(onde.agrupador, false,
         "a linha do agrupador não pode ter estoque editável: o número dela é soma, não dado do ML");
+      assert.strictEqual(onde.itemLegadoComVariacoes, false,
+        "item legado COM variações não pode editar estoque no card principal: isso é por variação (ver 7f/38f)");
 
       const antes = pedidos.length;
       escritasEstoque.length = 0;
-      await clicar(cdp, '.am-row[data-item="MLB-SEMUP"] .am-estoque .am-estoque__btn');
-      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-estoque__input')`,
+      await clicar(cdp, '.am-row[data-item="MLB-SEMVAR"] .am-estoque .am-estoque__btn');
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMVAR"] .am-estoque__input')`,
         "o campo não abriu no anúncio individual");
       await cdp.evaluate(`(function(){
-        var inp = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-estoque__input');
+        var inp = document.querySelector('.am-row[data-item="MLB-SEMVAR"] .am-estoque__input');
         inp.value = '0';
         inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       })()`);
       await waitFor(cdp,
-        `(function(){ var b = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-estoque__btn');
+        `(function(){ var b = document.querySelector('.am-row[data-item="MLB-SEMVAR"] .am-estoque__btn');
            return b && b.textContent.trim() === '0'; })()`,
         "o estoque 0 não apareceu na linha do anúncio individual");
 
       assert.strictEqual(escritasEstoque.length, 1);
       assert.strictEqual(escritasEstoque[0].corpo.estoque, 0, "zero tem de chegar ao servidor como 0");
-      assert.strictEqual(contar(/^\/anuncios-meli\/MLB-SEMUP\/estoque/, antes), 1);
+      assert.strictEqual(contar(/^\/anuncios-meli\/MLB-SEMVAR\/estoque/, antes), 1);
 
       // available_quantity = 0 pausa o anúncio no ML. O status na linha vem do
       // que o servidor reportou — deixá-la "Ativo" seria a tela mentindo.
       const depois = await cdp.evaluate(`(function(){
-        var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
+        var r = document.querySelector('.am-row[data-item="MLB-SEMVAR"]');
         return {
           status: r.querySelector('.vf-status').textContent.trim(),
           estoque: r.querySelector('.am-estoque__btn').textContent.trim(),
@@ -2281,6 +2304,63 @@ async function run() {
         });
       } finally {
         performanceHandler = null;
+        variacoesLegadoHandler = null;
+      }
+    });
+
+    await check("38g — variação com inventory_id nasce BLOQUEADA (sem botão, motivo visível de cara); a livre continua editável", async () => {
+      // O contrato vem PRONTO do backend (podeEditarEstoque/motivoBloqueio) —
+      // esta tela nunca decide sozinha se inventory_id bloqueia. A variação
+      // 15092589430 ganha inventory_id só nesta checagem (via
+      // variacoesLegadoHandler, sem mexer no fixture compartilhado por
+      // 7c/7d/7f/7h); a 15092589431 continua livre.
+      variacoesLegadoHandler = () => VARIACOES_LEGADO_MLB_SEMUP.map((v) =>
+        v.id === 15092589430 ? Object.assign({}, v, { inventory_id: "INV-BLOQ-1" }) : v
+      );
+      try {
+        pedidos.length = 0;
+        chamadasVariacoesLegado = [];
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
+
+        await clicar(cdp, '.am-row[data-item="MLB-SEMUP"] .am-row__variacoes-toggle');
+        await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel .am-mlb--variacao-legado')`,
+          "o painel de variações legadas não carregou");
+
+        const estado = await cdp.evaluate(`(function(){
+          var linhas = Array.from(document.querySelectorAll('.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel .am-mlb--variacao-legado'));
+          return linhas.map(function (l) {
+            var cel = l.querySelector('.am-estoque');
+            var valorEl = cel.querySelector('.am-estoque__valor') || cel.querySelector('.am-estoque__btn');
+            return {
+              bloqueada: cel.classList.contains('am-estoque--bloqueado'),
+              temBotao: Boolean(cel.querySelector('.am-estoque__btn')),
+              temInfoDot: Boolean(cel.querySelector('.vf-info-dot')),
+              titulo: cel.getAttribute('title') || '',
+              valor: valorEl ? valorEl.textContent.trim() : '',
+            };
+          }); })()`);
+
+        assert.strictEqual(estado.length, 2, "o fixture continua com 2 variações");
+        // 15092589430 é a PRIMEIRA linha (mesma ordem do fixture) e a que
+        // ganhou inventory_id nesta checagem.
+        assert.strictEqual(estado[0].bloqueada, true, "variação com inventory_id precisa nascer bloqueada, sem esperar clique");
+        assert.strictEqual(estado[0].temBotao, false, "bloqueada não pode ter botão de editar");
+        assert.strictEqual(estado[0].temInfoDot, true, "o motivo do bloqueio precisa estar visível, não escondido");
+        assert.match(estado[0].titulo, /gerenciado externamente/i, `o motivo do ML não pode ser escondido: "${estado[0].titulo}"`);
+        assert.strictEqual(estado[0].valor, "2", "o valor do estoque continua visível mesmo bloqueada");
+
+        assert.strictEqual(estado[1].bloqueada, false, "variação sem inventory_id continua editável");
+        assert.strictEqual(estado[1].temBotao, true, "editável precisa ter o botão de sempre");
+        assert.strictEqual(estado[1].temInfoDot, false, "editável não ganha selo de bloqueio");
+
+        // Clicar na variação editável ainda abre o editor normalmente —
+        // a mudança não pode ter quebrado o caminho que já funcionava.
+        const celEditavel = '.am-row[data-item="MLB-SEMUP"] + .am-grupo-painel .am-mlb--variacao-legado[data-variacao="15092589431"] .am-estoque';
+        await clicar(cdp, `${celEditavel} .am-estoque__btn`);
+        await waitFor(cdp, `document.querySelector('${celEditavel} .am-estoque__input')`,
+          "a variação livre deveria continuar abrindo o editor normalmente");
+      } finally {
         variacoesLegadoHandler = null;
       }
     });

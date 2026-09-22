@@ -29,7 +29,11 @@
 const { mlFetch } = require("../../utils/mlClient");
 const { motivoDoErroMl, codigoDoErroMl } = require("./meliConteudoService");
 const { normalizarQuantidade } = require("./meliEstoqueService");
-const { mapearVariacaoLegado, construirMapaImagensDoItem } = require("./meliVariacoesLegadoService");
+const {
+  mapearVariacaoLegado,
+  construirMapaImagensDoItem,
+  avaliarBloqueioEdicaoVariacaoLegado,
+} = require("./meliVariacoesLegadoService");
 
 function falha(codigo, motivo) {
   return { ok: false, codigo, motivo };
@@ -73,8 +77,12 @@ async function atualizarEstoqueVariacaoLegado({ clienteId, itemId, variationId, 
       "Este anúncio já está no modelo novo (User Product) — a edição por variação legada não se aplica mais."
     );
   }
-  if (item.shipping && item.shipping.logistic_type === "fulfillment") {
-    return falha("FULL_INCOMPATIVEL", "Estoque gerenciado pelo Full — a edição manual não é permitida.");
+  // Mesma regra usada pela LEITURA (buscarVariacoesLegado) para sinalizar
+  // podeEditarEstoque — mas aqui, fresca, é quem decide de verdade: a leitura
+  // pode estar desatualizada, esta checagem nunca confia nela sozinha.
+  const bloqueioItem = avaliarBloqueioEdicaoVariacaoLegado(item, null);
+  if (!bloqueioItem.podeEditar) {
+    return falha("FULL_INCOMPATIVEL", bloqueioItem.motivoTexto);
   }
 
   // 2) Variações ao vivo — a fonte autoritativa para montar o PUT. Chamada
@@ -100,11 +108,9 @@ async function atualizarEstoqueVariacaoLegado({ clienteId, itemId, variationId, 
   if (!alvo) {
     return falha("VARIACAO_INEXISTENTE", "Esta variação não existe mais no Mercado Livre.");
   }
-  if (alvo.inventory_id) {
-    return falha(
-      "VARIACAO_GERENCIADA_EXTERNAMENTE",
-      "O estoque desta variação é gerenciado externamente (inventory_id) — a edição manual não é permitida."
-    );
+  const bloqueioVariacao = avaliarBloqueioEdicaoVariacaoLegado(item, alvo);
+  if (!bloqueioVariacao.podeEditar) {
+    return falha("VARIACAO_GERENCIADA_EXTERNAMENTE", bloqueioVariacao.motivoTexto);
   }
 
   const nAntes = listaAntes.length;
@@ -157,7 +163,7 @@ async function atualizarEstoqueVariacaoLegado({ clienteId, itemId, variationId, 
     );
   }
 
-  return { ok: true, variacoes: listaDepois.map((v) => mapearVariacaoLegado(v, imagens)) };
+  return { ok: true, variacoes: listaDepois.map((v) => mapearVariacaoLegado(v, imagens, item)) };
 }
 
 module.exports = {

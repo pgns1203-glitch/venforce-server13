@@ -74,14 +74,51 @@ function resolverImagemVariacao(v, imagens) {
   return (imagens && imagens.imagemPrincipalItem) || null;
 }
 
+// Regra ÚNICA de bloqueio de edição de estoque de uma variação legada,
+// compartilhada entre esta LEITURA (sinaliza podeEditarEstoque antes de
+// desenhar o botão) e a ESCRITA (meliVariacoesLegadoEstoqueService, que
+// recusa o PUT mesmo que este sinal diga que podia — a leitura pode estar
+// desatualizada, a escrita nunca confia nela sozinha e refaz esta mesma
+// checagem com dados frescos imediatamente antes do PUT).
+//
+// Duas fontes documentadas de bloqueio (auditoria PUT de estoque legado):
+//   · item.shipping.logistic_type === "fulfillment": o item INTEIRO está no
+//     Full — nenhuma variação é editável por aqui, mesmo sem inventory_id
+//     individual (documentacao_api_meli/mercado-envios.md);
+//   · variacao.inventory_id: só ESSA variação está no Full (convivência
+//     Full+Flex por variação — documentacao_api_meli/envios-fulfillment.md,
+//     "Quando o item possui variações, terá uma identificação de
+//     inventory_id por variação"), as demais continuam editáveis.
+function avaliarBloqueioEdicaoVariacaoLegado(item, variacao) {
+  if (item && item.shipping && item.shipping.logistic_type === "fulfillment") {
+    return {
+      podeEditar: false,
+      motivo: "FULL",
+      motivoTexto: "Estoque gerenciado pelo Full — a edição manual não é permitida.",
+    };
+  }
+  if (variacao && variacao.inventory_id) {
+    return {
+      podeEditar: false,
+      motivo: "INVENTORY_ID",
+      motivoTexto: "O estoque desta variação é gerenciado externamente (inventory_id) — a edição manual não é permitida.",
+    };
+  }
+  return { podeEditar: true, motivo: null, motivoTexto: null };
+}
+
 // Uma variação crua do ML -> forma que a listagem consome. `estoque`, `preco`
 // e `vendidos` refletem exatamente o que o ML devolveu (0 é valor válido);
 // ausência vira null, nunca 0 fabricado. `imagens` é opcional (ver
-// construirMapaImagensDoItem) — sem ele, image_url é sempre null.
-function mapearVariacaoLegado(v, imagens) {
+// construirMapaImagensDoItem) — sem ele, image_url é sempre null. `item` é
+// opcional (contexto para avaliarBloqueioEdicaoVariacaoLegado) — sem ele, os
+// três campos de bloqueio ainda saem (null-safe), nunca "undefined": o
+// chamador que não tem o item ainda não decidiu nada, só não afirma "pode".
+function mapearVariacaoLegado(v, imagens, item) {
   const atributos = (Array.isArray(v.attribute_combinations) ? v.attribute_combinations : [])
     .map(mapearAtributoCombinacao)
     .filter(Boolean);
+  const bloqueio = avaliarBloqueioEdicaoVariacaoLegado(item || null, v);
   return {
     id: v.id,
     atributos,
@@ -89,22 +126,29 @@ function mapearVariacaoLegado(v, imagens) {
     estoque: typeof v.available_quantity === "number" ? v.available_quantity : null,
     vendidos: typeof v.sold_quantity === "number" ? v.sold_quantity : null,
     image_url: resolverImagemVariacao(v, imagens),
+    podeEditarEstoque: bloqueio.podeEditar,
+    motivoBloqueio: bloqueio.motivo,
+    motivoBloqueioTexto: bloqueio.motivoTexto,
   };
 }
 
-// GET /items/{itemId}?attributes=pictures — só para relacionar picture_ids
-// com item.pictures. Falha aqui NUNCA derruba a leitura das variações: imagem
-// é melhoria visual, não dado crítico. Degrada para "sem imagem" (null em
-// todas), nunca bloqueia a expansão do painel.
-async function resolverImagensDoItem({ clienteId, itemId, mlUserId }) {
+// GET /items/{itemId}?attributes=pictures,shipping — pictures para relacionar
+// picture_ids com item.pictures (ver resolverImagemVariacao), shipping para
+// avaliarBloqueioEdicaoVariacaoLegado (só precisa de logistic_type — pedir os
+// dois na MESMA chamada evita uma segunda ida à rede). Falha aqui NUNCA
+// derruba a leitura das variações: degrada para "sem imagem" (null em todas)
+// e "sem contexto de Full" (só o inventory_id de cada variação decide o
+// bloqueio nesse caso) — a escrita real revalida tudo de novo antes do PUT,
+// então subestimar o bloqueio aqui nunca vira uma escrita indevida.
+async function resolverContextoDoItem({ clienteId, itemId, mlUserId }) {
   try {
-    const resp = await mlFetch(clienteId, `/items/${encodeURIComponent(itemId)}?attributes=pictures`, {
+    const resp = await mlFetch(clienteId, `/items/${encodeURIComponent(itemId)}?attributes=pictures,shipping`, {
       mlUserId,
     });
-    if (!resp || !resp.ok) return { pictureUrlById: {}, imagemPrincipalItem: null };
-    return construirMapaImagensDoItem(resp.data);
+    if (!resp || !resp.ok) return { pictureUrlById: {}, imagemPrincipalItem: null, item: null };
+    return { ...construirMapaImagensDoItem(resp.data), item: resp.data || null };
   } catch (_) {
-    return { pictureUrlById: {}, imagemPrincipalItem: null };
+    return { pictureUrlById: {}, imagemPrincipalItem: null, item: null };
   }
 }
 
@@ -124,12 +168,13 @@ async function buscarVariacoesLegado({ clienteId, itemId, mlUserId }) {
   }
 
   const lista = Array.isArray(resp.data) ? resp.data : [];
-  const imagens = await resolverImagensDoItem({ clienteId, itemId, mlUserId });
-  return { ok: true, variacoes: lista.map((v) => mapearVariacaoLegado(v, imagens)) };
+  const contexto = await resolverContextoDoItem({ clienteId, itemId, mlUserId });
+  return { ok: true, variacoes: lista.map((v) => mapearVariacaoLegado(v, contexto, contexto.item)) };
 }
 
 module.exports = {
   mapearVariacaoLegado,
   buscarVariacoesLegado,
   construirMapaImagensDoItem,
+  avaliarBloqueioEdicaoVariacaoLegado,
 };

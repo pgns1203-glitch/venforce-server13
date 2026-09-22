@@ -65,29 +65,6 @@ function round2(n) {
   return Number.isFinite(n) ? Math.round((n + Number.EPSILON) * 100) / 100 : null;
 }
 
-// diagnóstico temporário para validar payload real do ML.
-// remover após confirmação do campo correto de subsídio.
-//
-// (ver auditoria AUDITORIA_PROMOCOES_SUBSIDIO_DATAS — investigação de por
-// que algumas promoções mostram "Reduzimos R$ X das suas tarifas" no
-// Mercado Livre mas chegam aqui sem discount_meli_boost_amount). Só loga
-// com os DOIS gates ligados ao mesmo tempo — NODE_ENV=test E a flag
-// explícita VENFORCE_PROMO_DEBUG=1 — nenhum dos dois sozinho é suficiente,
-// de propósito: NODE_ENV=test sozinho já rodaria em qualquer CI que exporte
-// essa variável, e isso poluiria a suíte inteira de testes com log a mais.
-// Nunca roda em produção (NODE_ENV nunca é "test" lá).
-function logDiagnosticoSubsidioSeAtivo(promo) {
-  if (process.env.NODE_ENV !== "test" || process.env.VENFORCE_PROMO_DEBUG !== "1") return;
-  console.log("[promo-diagnostico-subsidio]", JSON.stringify({
-    type: promo && promo.type,
-    status: promo && promo.status,
-    boosted_offer: promo && promo.boosted_offer,
-    discount_meli_boost_amount: promo && promo.discount_meli_boost_amount,
-    meli_percentage: promo && promo.meli_percentage,
-    seller_percentage: promo && promo.seller_percentage,
-  }));
-}
-
 // Normaliza UMA promoção crua do ML. Nunca inventa desconto: quando o ML não
 // fornece preço utilizável — started/pending sem `price` > 0, ou candidate
 // sem `suggested_discounted_price` — `precoFinal` fica null e a UI mostra
@@ -98,8 +75,6 @@ function logDiagnosticoSubsidioSeAtivo(promo) {
 // metadata.promotion_id, ver obterPromotionIdAtivo). Usado só para decidir
 // `statusExibicao` — nunca para recalcular preço/desconto/margem.
 function normalizarPromocao(promo, index, promotionIdAtivo = null) {
-  logDiagnosticoSubsidioSeAtivo(promo);
-
   const status = String((promo && promo.status) || "").toLowerCase().trim();
   const precoOriginal = fin(promo && promo.original_price);
 
@@ -116,16 +91,30 @@ function normalizarPromocao(promo, index, promotionIdAtivo = null) {
   const descontoPercentual =
     descontoReais != null && precoOriginal ? round2((descontoReais / precoOriginal) * 100) : null;
 
-  // Subsídio ML em R$ — vem direto de discount_meli_boost_amount: redução
-  // real de tarifa/comissão que o ML concede ao vendedor (doc "Campos de
-  // descontos automáticos (boost)"), o mesmo valor que a UI do ML mostra
-  // como "Reduzimos R$ X das suas tarifas por cada venda". meli_percentage
-  // descreve outra coisa (divisão do DESCONTO PROMOCIONAL entre ML e
-  // vendedor) e não alimenta mais este campo — segue exposto abaixo como
-  // dado próprio. fin(0) é 0 (finite), então boost=0 vira R$ 0,00, nunca "—".
+  // Subsídio ML em R$ — NÃO vem de discount_meli_boost_amount/boosted_offer/
+  // benefits (auditoria ao vivo: 101 promoções reais de 15 clientes em
+  // produção, ZERO com boosted_offer:true — inclusive as 2 SMART reais do
+  // item que mostrava "Reduzimos R$0,61" no Mercado Livre). Fonte real:
+  // fórmula já validada em produção pela tela "Promoções com Retorno ML"
+  // (server/services/automacoes/promocoesRetornoService.js, campo
+  // "Retorno ML") — original_price * (meli_percentage/100). Caso real
+  // confirmado: item MLB4147165927, promoção "Impulsione suas vendas"
+  // (SMART), original_price=119.90, meli_percentage=0.5 → R$0,60, a 1
+  // centavo do R$0,61 mostrado pelo ML (diferença compatível com a
+  // precisão de 1 casa decimal do meli_percentage retornado pela API).
+  // Nome do campo interno (subsidioMl) mantido para não exigir refactor
+  // grande no frontend — semanticamente é "Retorno ML" (a fatia do
+  // desconto promocional que o Mercado Livre banca), não uma redução de
+  // tarifa/comissão. Exige os DOIS campos (original_price E
+  // meli_percentage); nunca usa seller_percentage como fonte nem soma os
+  // dois percentuais — um cálculo parcial vira null, nunca um valor
+  // inventado.
   const meliPercentage = fin(promo && promo.meli_percentage);
   const sellerPercentage = fin(promo && promo.seller_percentage);
-  const subsidioMl = fin(promo && promo.discount_meli_boost_amount);
+  const subsidioMl =
+    precoOriginal !== null && meliPercentage !== null
+      ? round2(precoOriginal * (meliPercentage / 100))
+      : null;
 
   const idPromo = promo && promo.id;
   const refIdPromo = promo && promo.ref_id;

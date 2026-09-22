@@ -263,51 +263,69 @@ async function run() {
   assert.strictEqual(promocoesService.rotuloTipoPromocao("TIPO_DESCONHECIDO"), "TIPO_DESCONHECIDO");
   ok("normalizarPromocao: started com price=0 não vira preço real; statusLabel e rótulo de tipo corretos");
 
-  // 10. subsidioMl — vem direto de discount_meli_boost_amount (redução real
-  //     de tarifa que o ML mostra como "Reduzimos R$ X das suas tarifas"),
-  //     nunca mais calculado a partir de meli_percentage/desconto.
+  // 10. subsidioMl — fórmula validada (auditoria de promocoesRetornoService.js,
+  //     tela "Promoções com Retorno ML"): original_price * (meli_percentage/100).
+  //     Caso real confirmado: item MLB4147165927, promoção "Impulsione suas
+  //     vendas" (SMART), original_price=119.90, meli_percentage=0.5 →
+  //     0.5995 → R$0,60, a 1 centavo do "Reduzimos R$0,61" mostrado pelo ML
+  //     (diferença compatível com a precisão de 1 casa decimal da API).
   {
     const linha = promocoesService.normalizarPromocao(
-      { status: "started", price: 80, original_price: 100, discount_meli_boost_amount: 0.61 }, 0
+      { status: "started", price: 110.48, original_price: 119.9, meli_percentage: 0.5 }, 0
     );
-    assert.strictEqual(linha.subsidioMl, 0.61, "subsidioMl = discount_meli_boost_amount, em R$, sem conversão de unidade");
+    assert.ok(Math.abs(linha.subsidioMl - 0.5995) < 0.01, `subsidioMl esperado ≈0.60, veio ${linha.subsidioMl}`);
+    assert.strictEqual(linha.subsidioMl, 0.6, "arredondado para 2 casas, igual ao formato de moeda exibido");
   }
-  ok("subsidioMl: vem de discount_meli_boost_amount (redução de tarifa), não mais de meli_percentage*desconto");
+  ok("subsidioMl: fórmula original_price*(meli_percentage/100) — caso real MLB4147165927 dá ≈R$0,60, a 1 centavo do R$0,61 do ML");
 
-  // 11. subsidioMl ausente quando o ML não manda discount_meli_boost_amount
-  //     (ex.: boosted_offer nunca veio true para este tipo/item).
+  // 11. subsidioMl null quando falta meli_percentage — nunca inventa a
+  //     partir de outro campo.
   {
     const linha = promocoesService.normalizarPromocao(
-      { status: "started", price: 82, original_price: 100, meli_percentage: 3 }, 0
+      { status: "started", price: 82, original_price: 100 }, 0
     );
-    assert.strictEqual(linha.subsidioMl, null, "sem discount_meli_boost_amount do ML, subsidioMl fica null (UI mostra —)");
+    assert.strictEqual(linha.subsidioMl, null, "sem meli_percentage, subsidioMl fica null (UI mostra —)");
   }
-  ok("subsidioMl: null quando o ML não devolve discount_meli_boost_amount para o tipo de promoção");
+  ok("subsidioMl: null quando a promoção não tem meli_percentage");
 
-  // 12. discount_meli_boost_amount = 0 é um valor válido (R$ 0,00) — não é
-  //     ausência de dado, então não pode virar null/"—".
+  // 12. subsidioMl null quando falta original_price (mesmo com meli_percentage
+  //     presente) — os DOIS campos são exigidos, nunca um cálculo parcial.
   {
     const linha = promocoesService.normalizarPromocao(
-      { status: "started", price: 80, original_price: 100, discount_meli_boost_amount: 0 }, 0
+      { status: "started", price: 82, meli_percentage: 3 }, 0
     );
-    assert.strictEqual(linha.subsidioMl, 0, "discount_meli_boost_amount = 0 é válido, não é ausência de dado");
+    assert.strictEqual(linha.subsidioMl, null, "sem original_price, subsidioMl fica null mesmo com meli_percentage presente");
   }
-  ok("subsidioMl: 0 é tratado como valor válido (R$ 0,00), nunca como ausência");
+  ok("subsidioMl: null quando falta original_price, mesmo com meli_percentage presente");
 
-  // 13. subsidioMl ignora meli_percentage/seller_percentage — eles continuam
-  //     expostos como campos próprios da promoção, só não alimentam mais R$.
+  // 13. subsidioMl NUNCA usa seller_percentage — nem como fonte alternativa,
+  //     nem somado ao meli_percentage.
+  {
+    const soSeller = promocoesService.normalizarPromocao(
+      { status: "started", price: 80, original_price: 100, seller_percentage: 30 }, 0
+    );
+    assert.strictEqual(soSeller.subsidioMl, null, "só seller_percentage (sem meli_percentage) nunca calcula subsídio");
+
+    const ambos = promocoesService.normalizarPromocao(
+      { status: "started", price: 80, original_price: 100, meli_percentage: 3, seller_percentage: 30 }, 0
+    );
+    assert.strictEqual(ambos.subsidioMl, 3, "usa só meli_percentage (100*0.03=3) — nunca soma com seller_percentage (que daria 33)");
+  }
+  ok("subsidioMl: nunca usa seller_percentage como fonte nem soma com meli_percentage");
+
+  // 13b. discount_meli_boost_amount/boosted_offer/benefits NUNCA mais
+  //      alimentam subsidioMl (fonte trocada pela auditoria) — mesmo
+  //      presentes, são ignorados.
   {
     const linha = promocoesService.normalizarPromocao(
       {
-        status: "started", price: 80, original_price: 100,
-        meli_percentage: 50, seller_percentage: 999, discount_meli_boost_amount: 0.61,
+        status: "started", price: 110.48, original_price: 119.9, meli_percentage: 0.5,
+        boosted_offer: true, discount_meli_boost_amount: 999, benefits: { type: "REBATE", meli_percent: 999 },
       }, 0
     );
-    assert.strictEqual(linha.subsidioMl, 0.61, "subsidioMl ignora meli_percentage e seller_percentage");
-    assert.strictEqual(linha.meliPercentage, 50, "meli_percentage continua exposto como dado da promoção");
-    assert.strictEqual(linha.sellerPercentage, 999, "seller_percentage continua exposto como dado da promoção");
+    assert.strictEqual(linha.subsidioMl, 0.6, "discount_meli_boost_amount/boosted_offer/benefits são ignorados, mesmo presentes");
   }
-  ok("subsidioMl: ignora meli_percentage/seller_percentage; ambos continuam expostos como campos próprios");
+  ok("subsidioMl: discount_meli_boost_amount/boosted_offer/benefits nunca mais são a fonte, mesmo presentes no payload");
 
   // 14. statusExibicao — casamento por id: só a promoção cujo id bate com o
   //     promotion_id do sale_price vira ATIVA; outra started vira NÃO APLICADA.
@@ -371,8 +389,10 @@ async function run() {
     res.corpo.promocoes.forEach((p) => { porId[p.id] = p; });
     assert.strictEqual(porId["P-3"].statusExibicao, "ATIVA", "P-3 é a que o sale_price aponta — só ela vira ATIVA");
     assert.strictEqual(porId["P-2"].statusExibicao, "NÃO APLICADA", "P-2 está started mas não define o preço atual");
-    assert.strictEqual(porId["P-3"].subsidioMl, 0.61);
-    assert.strictEqual(porId["P-2"].subsidioMl, 1.2);
+    // subsidioMl = original_price*(meli_percentage/100) — 100*8/100=8, 100*3/100=3.
+    // discount_meli_boost_amount (0.61/1.2) fica no fixture só pra provar que é ignorado.
+    assert.strictEqual(porId["P-3"].subsidioMl, 8, "100*(8/100)=8 — discount_meli_boost_amount (0.61) é ignorado");
+    assert.strictEqual(porId["P-2"].subsidioMl, 3, "100*(3/100)=3 — discount_meli_boost_amount (1.2) é ignorado");
     assert.ok(mlChamadas.some((c) => /seller-promotions\/items\//.test(c.path)), "precisa ter chamado /seller-promotions/items/{id}");
     assert.ok(mlChamadas.some((c) => /\/sale_price/.test(c.path)), "precisa ter chamado /items/{id}/sale_price em paralelo");
     assert.ok(mlChamadas.every((c) => c.metodo === "GET"), "as duas chamadas continuam GET, nunca escrita");
@@ -567,53 +587,6 @@ async function run() {
     assert.ok(res.corpo.promocoes.every((p) => p.inicio === "2026-03-01T00:00:00Z"), "as duas promoções recebem a mesma vigência deduplicada");
     ok("enriquecimento de vigência: duas promoções com o mesmo id+type deduplicam em uma única chamada ao detalhe da campanha");
   });
-
-  // 19g. Diagnóstico temporário de subsídio — log só roda com os DOIS
-  //      gates explicitamente ligados (NODE_ENV=test E VENFORCE_PROMO_DEBUG=1);
-  //      nunca por conta própria, nunca em produção.
-  {
-    const originalNodeEnv = process.env.NODE_ENV;
-    const originalDebugFlag = process.env.VENFORCE_PROMO_DEBUG;
-    const originalConsoleLog = console.log;
-    let logs = [];
-    console.log = (...args) => { logs.push(args); };
-    try {
-      // Nenhum dos dois gates ligado: não loga.
-      delete process.env.NODE_ENV;
-      delete process.env.VENFORCE_PROMO_DEBUG;
-      logs = [];
-      promocoesService.normalizarPromocao({ type: "SMART", status: "started", meli_percentage: 3 }, 0);
-      assert.strictEqual(logs.length, 0, "sem nenhum gate ligado, não deve logar nada");
-
-      // Só NODE_ENV=test, sem a flag: ainda não loga (evita ruído em toda a suíte).
-      process.env.NODE_ENV = "test";
-      delete process.env.VENFORCE_PROMO_DEBUG;
-      logs = [];
-      promocoesService.normalizarPromocao({ type: "SMART", status: "started", meli_percentage: 3 }, 0);
-      assert.strictEqual(logs.length, 0, "NODE_ENV=test sozinho não deve logar — precisa também da flag explícita");
-
-      // Os dois gates ligados: loga os campos de diagnóstico.
-      process.env.NODE_ENV = "test";
-      process.env.VENFORCE_PROMO_DEBUG = "1";
-      logs = [];
-      promocoesService.normalizarPromocao(
-        { type: "SMART", status: "started", boosted_offer: false, meli_percentage: 3, seller_percentage: 8 }, 0
-      );
-      assert.strictEqual(logs.length, 1, "com os dois gates ligados, deve logar exatamente uma linha por promoção normalizada");
-      const payload = JSON.parse(logs[0][1]);
-      assert.strictEqual(payload.type, "SMART");
-      assert.strictEqual(payload.status, "started");
-      assert.strictEqual(payload.boosted_offer, false);
-      assert.strictEqual(payload.discount_meli_boost_amount, undefined);
-      assert.strictEqual(payload.meli_percentage, 3);
-      assert.strictEqual(payload.seller_percentage, 8);
-    } finally {
-      console.log = originalConsoleLog;
-      if (originalNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = originalNodeEnv;
-      if (originalDebugFlag === undefined) delete process.env.VENFORCE_PROMO_DEBUG; else process.env.VENFORCE_PROMO_DEBUG = originalDebugFlag;
-    }
-  }
-  ok("diagnóstico temporário de subsídio: só loga type/status/boosted_offer/discount_meli_boost_amount/meli_percentage/seller_percentage com os dois gates (NODE_ENV=test + VENFORCE_PROMO_DEBUG=1) ligados");
 
   // 19. Fallback: sale_price sem metadata/promotion_id — nenhuma promoção
   //     vira ATIVA, mesmo com duas started (nunca inferir pelo menor preço).

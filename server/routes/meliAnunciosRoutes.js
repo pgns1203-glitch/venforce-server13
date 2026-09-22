@@ -29,6 +29,7 @@
 //   PATCH  /anuncios-meli/otimizacoes/:id/aprovar (aprovação — admin-only)
 //   GET    /anuncios-meli/:itemId
 //   GET    /anuncios-meli/:itemId/variacoes-legado (expansão do modelo legado)
+//   GET    /anuncios-meli/:itemId/promocoes    (promoções oficiais do item, read-only)
 //   PATCH  /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque (escrita real)
 //   PATCH  /anuncios-meli/:itemId/revisao
 //   PATCH  /anuncios-meli/:itemId/conteudo      (edição real no Mercado Livre)
@@ -159,6 +160,11 @@ router.post("/:itemId/simular-margem", ctrl.simularMargem);
 // Expansão do modelo LEGADO de variações (ver meliVariacoesLegadoService) —
 // precisa vir ANTES de "/:itemId" pelo mesmo motivo de sempre.
 router.get("/:itemId/variacoes-legado", ctrl.variacoesLegado);
+
+// Promoções oficiais do item (GET /seller-promotions/items/{id}, ver
+// meliPromocoesService) — bloco "Promoções disponíveis" do modal. Read-only;
+// precisa vir ANTES de "/:itemId" pelo mesmo motivo de sempre.
+router.get("/:itemId/promocoes", ctrl.promocoes);
 
 // Edição de ESTOQUE de uma variação do modelo LEGADO NO MERCADO LIVRE (ver
 // meliVariacoesLegadoEstoqueService — GET fresco -> PUT /items { variations

@@ -123,6 +123,12 @@ let precoResultado = null;           // resposta forçada do PATCH /preco
 const precoChamadas = [];            // { itemId, body } de todo PATCH /preco
 let simularMargemHandler = null;     // (itemId, body) => resposta do POST /simular-margem
 const simularMargemChamadas = [];    // { itemId, body } de todo POST /simular-margem
+// GET /anuncios-meli/:itemId/promocoes — bloco "Promoções disponíveis". Lista
+// já no formato NORMALIZADO que o backend devolve (a normalização em si é
+// coberta por server/tests/meliAnunciosPromocoes.test.js; aqui só interessa
+// como o FRONTEND renderiza e edita o que o backend já entregou).
+let promocoesRespostaPadrao = [];
+const promocoesChamadas = [];        // itemId de cada GET /promocoes
 const pedidos = [];                  // toda URL de API disparada
 const corpos = [];                   // { url, body } de toda escrita
 
@@ -137,6 +143,21 @@ const chamadasPerformance = [];
 // tem, por desenho do Motor).
 const MARGEM_MLA1 = { origem: "realized", margin: 0.35, marginPercent: 35, profit: 70, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
 const COMPOSICAO_MLA1 = { venda: 200, custoProduto: 80, comissaoMl: 25, frete: 15, taxaFixa: null, impostoPercentual: 0.05, impostoValor: 10 };
+
+// Fixtures do bloco "Promoções disponíveis" — já no formato normalizado que
+// GET /:itemId/promocoes devolve (ver server/services/meliAnuncios/meliPromocoesService.js).
+const PROMO_ATIVA = {
+  id: "P-1", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "HOTSALE",
+  status: "started", statusLabel: "ATIVA", inicio: "2026-09-01T12:00:00Z", fim: "2026-09-30T12:00:00Z",
+  precoOriginal: 249.9, precoFinal: 199.9, descontoReais: 50, descontoPercentual: 20,
+  meliPercentage: 5, sellerPercentage: 10, editavelPrecoFinal: true,
+};
+const PROMO_CANDIDATE = {
+  id: "PD-1", tipo: "PRICE_DISCOUNT", tipoLabel: "Desconto individual", nome: null,
+  status: "candidate", statusLabel: "ELEGÍVEL", inicio: null, fim: null,
+  precoOriginal: 249.9, precoFinal: 224.9, descontoReais: 25, descontoPercentual: 10,
+  meliPercentage: null, sellerPercentage: null, editavelPrecoFinal: true,
+};
 
 const SEMENTE = `
   try {
@@ -285,6 +306,22 @@ async function salvarPreco(cdp, valor) {
   await digitar(cdp, "#am-det-margem-body .am-margem-preco .am-margem-edit__input", valor);
   await clicar(cdp, '#am-det-margem-body .am-margem-preco [data-acao="salvar-preco"]',
     "botão \"Salvar no Mercado Livre\" não encontrado");
+}
+
+// Promoções disponíveis: célula "Preço final" reaproveita a MESMA moldura de
+// edição da composição (.am-margem-edit), só que com data-promo-id extra —
+// os helpers abaixo só trocam o seletor, a mecânica é idêntica a
+// abrirEdicaoMargem/confirmarEdicaoMargem.
+async function abrirEdicaoPromoPreco(cdp, promoId) {
+  await clicar(cdp, `.am-promo__linha[data-promo-id="${promoId}"] .am-promo__preco .am-margem-edit__btn`,
+    `botão de editar o preço final da promoção ${promoId} não encontrado`);
+  await waitFor(cdp, `document.querySelector('.am-promo__linha[data-promo-id="${promoId}"] .am-promo__preco .am-margem-edit__input')`,
+    `o input de edição do preço final da promoção ${promoId} não apareceu`);
+}
+
+async function confirmarEdicaoPromoPreco(cdp, promoId, valor) {
+  await abrirEdicaoPromoPreco(cdp, promoId);
+  await digitarEConfirmar(cdp, `.am-promo__linha[data-promo-id="${promoId}"] .am-promo__preco .am-margem-edit__input`, valor);
 }
 
 async function cancelarEdicaoPreco(cdp) {
@@ -498,6 +535,16 @@ function wireInterception(cdp) {
         ok: true, simulado: true, origem: "realized",
         resultado: { computable: true, profit: 99, margin: 0.33, marginPercent: 33, missing: [], assumed: [] },
       });
+      return;
+    }
+
+    // GET /anuncios-meli/:itemId/promocoes — precisa vir ANTES do matcher
+    // genérico de detalhe (mDetalhe, abaixo), senão "promocoes" seria lido
+    // como querystring de um itemId.
+    const mPromocoes = caminho.match(/^\/anuncios-meli\/([^/?]+)\/promocoes/);
+    if (mPromocoes) {
+      promocoesChamadas.push(mPromocoes[1]);
+      await corpo({ ok: true, itemId: mPromocoes[1], promocoes: promocoesRespostaPadrao });
       return;
     }
 
@@ -1570,6 +1617,165 @@ async function run() {
       } finally {
         performanceHandler = null;
       }
+    });
+
+    await check("39 — 'Promoções disponíveis' carrega em segundo plano (sem bloquear a abertura do modal) e mostra ATIVA + ELEGÍVEL lado a lado", async () => {
+      promocoesRespostaPadrao = [PROMO_ATIVA, PROMO_CANDIDATE];
+      try {
+        pedidos.length = 0;
+        promocoesChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        // O modal (título já carregado) existe antes de garantirmos que as
+        // promoções chegaram — prova de que a busca não atrasou a abertura.
+        assert.ok(await cdp.evaluate("!!document.getElementById('am-det-promo')"),
+          "a seção 'Promoções disponíveis' precisa existir assim que o modal abre");
+
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
+          "as duas linhas de promoção não apareceram");
+        assert.ok(promocoesChamadas.includes("MLB-A1"), "GET /:itemId/promocoes não foi chamado");
+
+        const linhas = await cdp.evaluate(`Array.from(document.querySelectorAll('#am-det-promo-body .am-promo__linha')).map(function (tr) {
+          return {
+            nome: tr.querySelector('.am-promo__nome').textContent.trim(),
+            status: tr.querySelector('.vf-status').textContent.trim(),
+            desconto: tr.querySelector('td:nth-child(2)').textContent.replace(/\\s+/g, ' ').trim(),
+            precoFinal: tr.querySelector('.am-promo__preco').textContent.trim(),
+            acao: tr.querySelector('[data-acao="promo-acao"]').textContent.trim(),
+          };
+        })`);
+
+        assert.strictEqual(linhas[0].nome, "HOTSALE");
+        assert.strictEqual(linhas[0].status, "ATIVA");
+        assert.ok(/R\$ 50,00/.test(linhas[0].desconto) && /20,0%/.test(linhas[0].desconto), `desconto da ativa inesperado: ${linhas[0].desconto}`);
+        assert.strictEqual(linhas[0].precoFinal, "R$ 199,90");
+        assert.strictEqual(linhas[0].acao, "Alterar", "promoção ativa/agendada precisa oferecer 'Alterar'");
+
+        assert.strictEqual(linhas[1].nome, "Desconto individual", "sem nome próprio, cai para o rótulo do tipo");
+        assert.strictEqual(linhas[1].status, "ELEGÍVEL");
+        assert.ok(/R\$ 25,00/.test(linhas[1].desconto) && /10,0%/.test(linhas[1].desconto), `desconto da candidate inesperado: ${linhas[1].desconto}`);
+        assert.strictEqual(linhas[1].precoFinal, "R$ 224,90");
+        assert.strictEqual(linhas[1].acao, "Participar", "promoção candidate precisa oferecer 'Participar', nunca 'Alterar'");
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("39b — editar 'Preço final' de uma linha ATIVA dispara SIMULAÇÃO (nunca PATCH de preço), e 'Você recebe' acompanha só a linha selecionada", async () => {
+      promocoesRespostaPadrao = [PROMO_ATIVA, PROMO_CANDIDATE];
+      try {
+        pedidos.length = 0;
+        simularMargemChamadas.length = 0;
+        precoChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
+          "as linhas de promoção não apareceram");
+
+        await confirmarEdicaoPromoPreco(cdp, "P-1", "180");
+
+        for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
+        assert.strictEqual(simularMargemChamadas.length, 1, "editar o preço final da promoção precisa chamar POST /simular-margem");
+        assert.strictEqual(simularMargemChamadas[0].body.preco, 180, "o override enviado precisa ser o preço final digitado");
+        assert.strictEqual(precoChamadas.length, 0, "editar o preço final da promoção NUNCA pode chamar PATCH /:itemId/preco");
+
+        await waitFor(cdp, `(function(){
+          var el = document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__recebe');
+          return el && /R\\$\\s*99,00/.test(el.textContent);
+        })()`, "'Você recebe' da linha simulada não apareceu");
+
+        const recebeCandidate = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-id="PD-1"] .am-promo__recebe').textContent.trim()`
+        );
+        assert.strictEqual(recebeCandidate, "—", "a linha NÃO selecionada não pode mostrar 'Você recebe' de outra simulação");
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("39c — 'Participar' numa linha ELEGÍVEL seleciona e aplica o preço sugerido na simulação, sem nenhuma escrita no Mercado Livre", async () => {
+      promocoesRespostaPadrao = [PROMO_ATIVA, PROMO_CANDIDATE];
+      try {
+        pedidos.length = 0;
+        simularMargemChamadas.length = 0;
+        precoChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
+          "as linhas de promoção não apareceram");
+
+        await clicar(cdp, '.am-promo__linha[data-promo-id="PD-1"] [data-acao="promo-acao"]', "botão 'Participar' não encontrado");
+
+        for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
+        assert.strictEqual(simularMargemChamadas.length, 1);
+        assert.strictEqual(simularMargemChamadas[0].body.preco, 224.9, "'Participar' precisa aplicar o precoFinal (sugerido) da própria linha");
+        assert.strictEqual(precoChamadas.length, 0, "'Participar' NUNCA pode escrever no Mercado Livre (sem PATCH de preço, sem adesão real)");
+
+        await waitFor(cdp, `(function(){
+          var el = document.querySelector('.am-promo__linha[data-promo-id="PD-1"] .am-promo__recebe');
+          return el && /R\\$\\s*99,00/.test(el.textContent);
+        })()`, "'Você recebe' da linha elegível selecionada não apareceu");
+
+        const recebeAtiva = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__recebe').textContent.trim()`
+        );
+        assert.strictEqual(recebeAtiva, "—", "selecionar outra linha move o 'Você recebe' — a anterior some");
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("39d — restaurar a simulação limpa a seleção da promoção e o preço final volta ao valor do Mercado Livre", async () => {
+      promocoesRespostaPadrao = [PROMO_ATIVA, PROMO_CANDIDATE];
+      try {
+        pedidos.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
+          "as linhas de promoção não apareceram");
+
+        await confirmarEdicaoPromoPreco(cdp, "P-1", "180");
+        await waitFor(cdp, `(function(){
+          var el = document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__preco');
+          return el && el.textContent.trim() === 'R$ 180,00';
+        })()`, "o preço final simulado não foi exibido");
+
+        await clicar(cdp, "#am-det-margem summary");
+        await waitFor(cdp, "document.querySelector('[data-acao=\"restaurar-simulacao-margem\"]')",
+          "o botão '↺ real' não apareceu na composição");
+        await clicar(cdp, '[data-acao="restaurar-simulacao-margem"]');
+
+        await waitFor(cdp, `(function(){
+          var el = document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__preco');
+          return el && el.textContent.trim() === 'R$ 199,90';
+        })()`, "restaurar não devolveu o preço final ao valor do Mercado Livre");
+
+        const recebe = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__recebe').textContent.trim()`
+        );
+        assert.strictEqual(recebe, "—", "restaurar precisa limpar a seleção — 'Você recebe' some");
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("39e — sem nenhuma promoção disponível: estado vazio explicado, sem tabela", async () => {
+      promocoesRespostaPadrao = [];
+      pedidos.length = 0;
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await esperarLista(cdp);
+      await abrirPrimeiroAnuncio(cdp);
+
+      await waitFor(cdp, `(function(){
+        var b = document.getElementById('am-det-promo-body');
+        return b && /Nenhuma promoç/i.test(b.textContent);
+      })()`, "o estado vazio de promoções não apareceu");
+      const temTabela = await cdp.evaluate("!!document.querySelector('#am-det-promo-body table')");
+      assert.strictEqual(temTabela, false, "sem promoção nenhuma, a tabela não pode aparecer");
     });
 
     await check("— nenhuma exceção de JS não tratada durante todo o percurso", async () => {

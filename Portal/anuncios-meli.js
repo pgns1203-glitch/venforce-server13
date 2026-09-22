@@ -99,6 +99,13 @@
       // dedupe de garantirFamiliaDetalhe, por item_id em vez de family_id.
       variacoesLegadoCache: {},
       variacoesLegadoFetchEmVoo: {},
+      // Promoções oficiais do item (GET /:itemId/promocoes, ver
+      // meliPromocoesService) — mesmo padrão de cache/dedupe por item_id dos
+      // vizinhos acima. `promocoesCache[itemId]` é `{ ok, promocoes }` depois
+      // de resolvida; `undefined` enquanto não foi pedida ainda (a seção
+      // mostra "Carregando…" nesse caso — ver promocoesSecaoHtml).
+      promocoesCache: {},
+      promocoesFetchEmVoo: {},
     },
     // familiaEpoca invalida de uma vez toda expansão/pré-carregamento em voo
     // quando o cliente/conta muda (senão o detalhe do cliente A pintaria a
@@ -2503,6 +2510,11 @@
       // enquanto nenhum dos três campos estiver com override ativo (a
       // composição usa a margem REAL).
       simulacaoMargem: { custoProduto: null, custosAdicionais: null, preco: null, resultado: null },
+      // Qual linha da tabela "Promoções disponíveis" está com o preço final
+      // alimentando a simulação acima agora (id da promoção, ou null). Só
+      // controla QUAL linha mostra "Você recebe" — nunca decide o valor em
+      // si, que continua vindo inteiro de simulacaoMargem.resultado.
+      promoLinhaSelecionada: null,
     };
     chipUsadaAtual = null;
 
@@ -2571,6 +2583,13 @@
       AM.detalheAtual = { anuncio: a, descricao: DET.descricao };
       renderDetalhe();
       carregarHistoricoOtimizacoes(a.item_id, meuToken);
+      // Promoções: lazy, em segundo plano — NUNCA atrasa a abertura do modal
+      // (que já pintou acima). A seção nasce com "Carregando…" e se repinta
+      // sozinha quando a resposta chega (ver promocoesSecaoHtml/repintarPromocoesDoItem).
+      garantirPromocoesDoItem(a.item_id).then(function () {
+        if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB no meio do caminho
+        repintarPromocoesDoItem(a.item_id);
+      });
     });
   }
 
@@ -2630,7 +2649,10 @@
       tituloEModeloHtml(a) +
       descricaoHtml() +
       fichaHtml(attrs) +
-      margemComposicaoSecaoHtml(a, margemAberta);
+      '<div class="am-det-margem-grid">' +
+        margemComposicaoSecaoHtml(a, margemAberta) +
+        promocoesSecaoHtml(a.item_id, a.moeda) +
+      "</div>";
 
     var scroll = el("am-det-scroll");
     scroll.innerHTML = html;
@@ -2640,6 +2662,8 @@
     bindMargemEditavel(el("am-det-margem-body"));
     bindPrecoEditavel(el("am-det-margem-body"));
     bindRestaurarSimulacaoMargem(el("am-det-margem-body"), a.item_id);
+    bindMargemEditavel(el("am-det-promo-body"));
+    bindPromocoesAcoes(el("am-det-promo-body"), a.item_id);
   }
 
   // ----- Cabeçalho: identidade + título editável (representação única) -------
@@ -3542,7 +3566,9 @@
       e.stopPropagation();
       if (!DET || DET.itemId !== itemId) return;
       DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, preco: null, resultado: null };
+      DET.promoLinhaSelecionada = null;
       repintarComposicaoDoItem(itemId);
+      repintarPromocoesDoItem(itemId);
     });
   }
 
@@ -3621,6 +3647,10 @@
   // com o núcleo do Motor (marginEngine.computeMargin), o mesmo de sempre.
   function confirmarSimulacaoMargem(cel, campo, bruto) {
     var itemId = cel.getAttribute("data-margem-item");
+    // Só existe em células da tabela "Promoções disponíveis" (ver
+    // promocaoLinhaHtml) — null em todas as outras (composição). Marca QUAL
+    // linha passa a mostrar "Você recebe" quando o campo é "preco".
+    var promoId = cel.getAttribute("data-promo-id");
     var anterior = cel.getAttribute("data-margem-valor") || "";
     var texto = String(bruto == null ? "" : bruto).trim();
 
@@ -3629,6 +3659,7 @@
     if (texto === "") {
       // Campo esvaziado: o override some — volta a valer o número real do Motor.
       DET.simulacaoMargem[campo] = null;
+      if (promoId != null && campo === "preco") DET.promoLinhaSelecionada = null;
       pintarMargemCampoLeitura(cel);
       dispararSimulacaoMargem(itemId);
       return;
@@ -3642,6 +3673,7 @@
     }
 
     DET.simulacaoMargem[campo] = Math.round((n + Number.EPSILON) * 100) / 100;
+    if (promoId != null && campo === "preco") DET.promoLinhaSelecionada = promoId;
     pintarMargemCampoLeitura(cel);
     dispararSimulacaoMargem(itemId);
   }
@@ -3653,7 +3685,9 @@
       // Nenhum override ativo: some a projeção e volta para a margem real,
       // sem gastar chamada nenhuma.
       sim.resultado = null;
+      DET.promoLinhaSelecionada = null;
       repintarComposicaoDoItem(itemId);
+      repintarPromocoesDoItem(itemId);
       return;
     }
 
@@ -3676,6 +3710,7 @@
         }
         DET.simulacaoMargem.resultado = d.resultado;
         repintarComposicaoDoItem(itemId);
+        repintarPromocoesDoItem(itemId);
       });
   }
 
@@ -3789,6 +3824,7 @@
         // cima do preço antigo deixa de fazer sentido — some, e a composição
         // é reconsultada do zero (nunca assume o valor enviado).
         DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, preco: null, resultado: null };
+        DET.promoLinhaSelecionada = null;
         var cache = AM.state.performanceCache[itemId];
         if (cache) { cache.temComposicao = false; cache.temMargem = false; }
 
@@ -3796,8 +3832,234 @@
           if (!DET || DET.token !== meuToken) return;
           repintarComposicaoDoItem(itemId);
         });
+        repintarPromocoesDoItem(itemId);
         toast("Preço atualizado no Mercado Livre.");
       });
+  }
+
+  // ===========================================================================
+  // PROMOÇÕES DISPONÍVEIS — bloco ao lado da composição da margem, inspirado
+  // na tabela de promoções do próprio Mercado Livre.
+  //
+  // Fonte: GET /:itemId/promocoes (meliPromocoesService, que por sua vez lê
+  // GET /seller-promotions/items/{id} — dado oficial do ML, nunca uma
+  // estimativa própria). Lazy: buscado em segundo plano assim que o detalhe
+  // termina de carregar (ver abrirDetalhe), NUNCA atrasando a abertura do
+  // modal; cacheado por item_id (mesmo padrão de AM.state.performanceCache).
+  //
+  // A célula "Preço final" é SEMPRE simulação — reaproveita 100% do mecanismo
+  // de Custo do produto/Custos adicionais da composição (mesma classe
+  // .am-margem-edit, mesmo bindMargemEditavel/abrirEditorMargemCampo/
+  // confirmarSimulacaoMargem, mesmo override DET.simulacaoMargem.preco e
+  // mesmo POST .../simular-margem) — nunca grava nada no Mercado Livre, nunca
+  // inscreve o anúncio em promoção nenhuma. `DET.promoLinhaSelecionada`
+  // guarda só qual LINHA mostra o resultado em "Você recebe" — o valor em si
+  // sempre vem de DET.simulacaoMargem.resultado.profit (o mesmo Motor da
+  // composição, nunca a fórmula da tela "Promoções com Retorno ML").
+  // ===========================================================================
+
+  function garantirPromocoesDoItem(itemId) {
+    var cache = AM.state.promocoesCache[itemId];
+    if (cache) return Promise.resolve(cache);
+    var emVoo = AM.state.promocoesFetchEmVoo[itemId];
+    if (emVoo) return emVoo;
+
+    var url = "/anuncios-meli/" + encodeURIComponent(itemId) + "/promocoes" +
+      "?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+      (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
+
+    var p = api(url).then(function (r) {
+      delete AM.state.promocoesFetchEmVoo[itemId];
+      var d = r.data || {};
+      var resultado = { ok: !!(d && d.ok), promocoes: (d && d.ok && Array.isArray(d.promocoes)) ? d.promocoes : [] };
+      AM.state.promocoesCache[itemId] = resultado;
+      return resultado;
+    }).catch(function () {
+      delete AM.state.promocoesFetchEmVoo[itemId];
+      var resultado = { ok: false, promocoes: [] };
+      AM.state.promocoesCache[itemId] = resultado;
+      return resultado;
+    });
+    AM.state.promocoesFetchEmVoo[itemId] = p;
+    return p;
+  }
+
+  function promocaoPorId(itemId, promoId) {
+    var cache = AM.state.promocoesCache[itemId];
+    if (!cache || !cache.promocoes) return null;
+    for (var i = 0; i < cache.promocoes.length; i++) {
+      if (String(cache.promocoes[i].id) === String(promoId)) return cache.promocoes[i];
+    }
+    return null;
+  }
+
+  function promocoesDicaHtml(texto) {
+    return '<p class="am-promo__dica">' + escapeHtml(texto) + "</p>";
+  }
+
+  // dd/mm/aaaa compacto — a tabela não tem espaço para o horário que
+  // formatData() (usado no resto do modal) inclui.
+  function promocaoDataCompacta(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString("pt-BR");
+  }
+
+  function promocaoPeriodoTexto(p) {
+    var ini = promocaoDataCompacta(p.inicio);
+    var fim = promocaoDataCompacta(p.fim);
+    if (ini && fim) return ini + " – " + fim;
+    if (fim) return "até " + fim;
+    if (ini) return "desde " + ini;
+    return "";
+  }
+
+  // Vocabulário por FORMA (mesma régua do resto da Fundação, ver .vf-status)
+  // além de cor: ATIVA (bolinha cheia), AGENDADA (losango), ELEGÍVEL (contorno).
+  var PROMO_STATUS_CLASSE = { started: "is-success", active: "is-success", pending: "is-info", candidate: "is-empty" };
+  function promocaoStatusClasse(status) { return PROMO_STATUS_CLASSE[status] || "is-empty"; }
+
+  function promocaoDescontoHtml(p, moeda) {
+    if (p.descontoReais == null || p.descontoPercentual == null) {
+      return '<span class="am-promo__desconto am-promo__desconto--vazio">Sem sugestão do Mercado Livre</span>';
+    }
+    return '<span class="am-promo__desconto">' + formatMoeda(p.descontoReais, moeda) +
+      ' <span class="am-promo__desconto-pct">(' + formatarPercentualCompacto(p.descontoPercentual) + ")</span></span>";
+  }
+
+  // "Preço final": mostra o override de simulação quando ESTA linha é a
+  // selecionada; senão o valor que o próprio ML devolveu (real quando
+  // ativa/agendada, sugerido quando candidata — pode ser null, nunca
+  // inventado, ver meliPromocoesService).
+  function precoFinalExibidoDaLinha(p, itemId) {
+    var sim = DET && DET.itemId === itemId ? DET.simulacaoMargem : null;
+    if (sim && DET.promoLinhaSelecionada === p.id && sim.preco != null) return sim.preco;
+    return p.precoFinal;
+  }
+
+  function promocaoVoceRecebeHtml(p) {
+    var sim = DET && DET.simulacaoMargem;
+    var selecionada = !!(sim && DET.promoLinhaSelecionada === p.id && sim.preco != null);
+    if (!selecionada) return '<span class="am-promo__recebe am-promo__recebe--vazio">—</span>';
+    if (!sim.resultado) return '<span class="am-promo__recebe am-promo__recebe--vazio">Simulando…</span>';
+    var r = sim.resultado;
+    if (!r.computable) return '<span class="am-promo__recebe am-promo__recebe--vazio">Sem dados suficientes</span>';
+    return '<span class="am-promo__recebe">' + formatMoeda(r.profit, DET.anuncio.moeda) +
+      (r.marginPercent != null
+        ? ' <span class="am-promo__recebe-pct">(' + formatarPercentualCompacto(r.marginPercent) + ")</span>"
+        : "") +
+    "</span>";
+  }
+
+  // Rótulo por STATUS, não por linha genérica (decisão de produto): quem já
+  // participa (started/pending) pode "Alterar" a simulação; quem só é
+  // elegível (candidate) ainda não está na promoção, então é "Participar" —
+  // que também NUNCA inscreve de verdade, só seleciona + simula (ver
+  // bindPromocoesAcoes).
+  function promocaoTarefaRotulo(status) {
+    return (status === "started" || status === "active" || status === "pending") ? "Alterar" : "Participar";
+  }
+
+  function promocaoLinhaHtml(p, itemId, moeda) {
+    var precoExibido = precoFinalExibidoDaLinha(p, itemId);
+    var precoCel = '<span class="am-margem-comp__valor am-margem-edit am-promo__preco" ' +
+      'data-margem-item="' + escapeAttr(itemId) + '" data-margem-campo="preco" ' +
+      'data-promo-id="' + escapeAttr(p.id) + '" ' +
+      'data-margem-valor="' + escapeAttr(precoExibido == null ? "" : precoExibido) + '">' +
+      botaoMargemEditHtml(formatMoeda(precoExibido, moeda), "Simular — não grava no Mercado Livre nem inscreve na promoção") +
+    "</span>";
+
+    var periodo = promocaoPeriodoTexto(p);
+    return '<tr class="am-promo__linha" data-promo-id="' + escapeAttr(p.id) + '">' +
+      '<td class="am-promo__col-nome">' +
+        '<div class="am-promo__nome">' + escapeHtml(p.nome || p.tipoLabel) + "</div>" +
+        '<div class="am-promo__meta">' +
+          (periodo ? escapeHtml(periodo) + " · " : "") +
+          '<span class="vf-status ' + promocaoStatusClasse(p.status) + '">' + escapeHtml(p.statusLabel) + "</span>" +
+        "</div>" +
+      "</td>" +
+      '<td>' + promocaoDescontoHtml(p, moeda) + "</td>" +
+      '<td>' + precoCel + "</td>" +
+      '<td>' + promocaoVoceRecebeHtml(p) + "</td>" +
+      '<td><button type="button" class="vf-btn vf-btn--ghost vf-btn--sm am-promo__acao" ' +
+        'data-acao="promo-acao" data-promo-id="' + escapeAttr(p.id) + '">' +
+        promocaoTarefaRotulo(p.status) + "</button></td>" +
+    "</tr>";
+  }
+
+  function promocoesTabelaHtml(lista, itemId, moeda) {
+    var linhas = lista.map(function (p) { return promocaoLinhaHtml(p, itemId, moeda); }).join("");
+    return '<div class="am-promo__scroll"><table class="am-promo__tabela">' +
+      "<thead><tr><th>Promoção</th><th>Desconto</th><th>Preço final</th><th>Você recebe</th><th>Tarefas</th></tr></thead>" +
+      "<tbody>" + linhas + "</tbody>" +
+    "</table></div>";
+  }
+
+  function promocoesCorpoHtml(itemId, moeda) {
+    var cache = AM.state.promocoesCache[itemId];
+    if (!cache) return promocoesDicaHtml("Carregando promoções…");
+    if (!cache.ok) return promocoesDicaHtml("Não foi possível carregar as promoções deste anúncio agora.");
+    if (!cache.promocoes.length) return promocoesDicaHtml("Nenhuma promoção disponível para este anúncio no momento.");
+    return promocoesTabelaHtml(cache.promocoes, itemId, moeda);
+  }
+
+  // Seção NÃO recolhível (ao contrário da composição da margem): a tabela já
+  // nasce visível, lado a lado com a composição (ver .am-det-margem-grid no
+  // CSS) — só o CONTEÚDO troca de "Carregando…" para a tabela quando a
+  // resposta chega, sem exigir um clique extra do operador.
+  function promocoesSecaoHtml(itemId, moeda) {
+    return '<div class="am-det-section am-promo" id="am-det-promo" data-item="' + escapeAttr(itemId) + '">' +
+      '<div class="am-det-section__head">' +
+        '<h3 class="am-det-section__title">Promoções disponíveis</h3>' +
+      "</div>" +
+      '<div class="am-promo__body" id="am-det-promo-body">' + promocoesCorpoHtml(itemId, moeda) + "</div>" +
+    "</div>";
+  }
+
+  function repintarPromocoesDoItem(itemId) {
+    if (!DET || DET.itemId !== itemId || !DET.anuncio) return;
+    var corpo = el("am-det-promo-body");
+    if (!corpo) return;
+    corpo.innerHTML = promocoesCorpoHtml(itemId, DET.anuncio.moeda);
+    bindMargemEditavel(corpo);
+    bindPromocoesAcoes(corpo, itemId);
+  }
+
+  // "Alterar"/"Participar": nos dois casos, o botão NUNCA grava nada no
+  // Mercado Livre — só seleciona a linha e aplica o preço final dela (real
+  // quando já ativa, sugerido quando candidata) na MESMA simulação de
+  // margem de sempre. Quando o ML não deu preço nenhum para aquela linha
+  // (candidate sem sugestão), só seleciona e abre o editor da célula para o
+  // operador digitar um valor — nunca inventa um número.
+  function bindPromocoesAcoes(raiz, itemId) {
+    (raiz || document).querySelectorAll('[data-acao="promo-acao"]').forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (!DET || DET.itemId !== itemId) return;
+        var promoId = btn.getAttribute("data-promo-id");
+        var linha = promocaoPorId(itemId, promoId);
+        if (!linha) return;
+
+        // "Selecionar a promoção" é incondicional (ver instrução de
+        // produto); só o "aplicar preço sugerido" depende de o ML ter
+        // devolvido um preço utilizável para esta linha.
+        DET.promoLinhaSelecionada = promoId;
+
+        if (linha.precoFinal != null) {
+          DET.simulacaoMargem.preco = linha.precoFinal;
+          repintarPromocoesDoItem(itemId);
+          dispararSimulacaoMargem(itemId);
+          return;
+        }
+
+        repintarPromocoesDoItem(itemId);
+        var cel = document.querySelector(
+          '#am-det-promo-body [data-promo-id="' + promoId + '"] .am-promo__preco'
+        );
+        if (cel) abrirEditorMargemCampo(cel);
+      });
+    });
   }
 
   // ---------------------------------------------------------------------------

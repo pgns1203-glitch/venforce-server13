@@ -23,6 +23,7 @@ const estoqueService = require("../services/meliAnuncios/meliEstoqueService");
 const variacoesLegadoService = require("../services/meliAnuncios/meliVariacoesLegadoService");
 const variacoesLegadoEstoqueService = require("../services/meliAnuncios/meliVariacoesLegadoEstoqueService");
 const precoService = require("../services/meliAnuncios/meliPrecoService");
+const promocoesService = require("../services/meliAnuncios/meliPromocoesService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
 const motorMargemService = require("../services/motorMargem/motorMargemService");
 const marginEngine = require("../services/motorMargem/core/marginEngine");
@@ -805,6 +806,61 @@ async function variacoesLegado(req, res) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] variacoesLegado:", err.message);
     return res.status(500).json({ ok: false, motivo: "Erro ao carregar as variações do anúncio." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/:itemId/promocoes?clienteSlug=&clienteContaId=
+//
+// Promoções OFICIAIS do Mercado Livre para o item (GET /seller-promotions/
+// items/{id}?app_version=v2, ver meliPromocoesService) — alimenta o bloco
+// "Promoções disponíveis" do modal, ao lado da composição da margem.
+// Read-only nos dois sentidos: só lê o Mercado Livre, nunca inscreve o item
+// em promoção nenhuma nem grava preço nenhum. O preço final de cada linha é
+// consumido pelo FRONTEND como override de POST /:itemId/simular-margem —
+// este endpoint não calcula margem nenhuma.
+// ----------------------------------------------------------------------------
+async function promocoes(req, res) {
+  try {
+    const { itemId } = req.params;
+    const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    // Mesma regra de conta dos vizinhos GET /:itemId e /:itemId/variacoes-legado.
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const promocoesItem = await promocoesService.listarPromocoesDoItem({
+      clienteId: cliente.id, itemId, mlUserId,
+    });
+
+    return res.json({ ok: true, itemId: String(itemId), promocoes: promocoesItem });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] promocoes:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao carregar as promoções do anúncio." });
   }
 }
 
@@ -1755,6 +1811,7 @@ module.exports = {
   performance,
   detalhe,
   variacoesLegado,
+  promocoes,
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
   atualizarEstoque,

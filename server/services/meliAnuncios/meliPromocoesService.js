@@ -65,6 +65,29 @@ function round2(n) {
   return Number.isFinite(n) ? Math.round((n + Number.EPSILON) * 100) / 100 : null;
 }
 
+// diagnóstico temporário para validar payload real do ML.
+// remover após confirmação do campo correto de subsídio.
+//
+// (ver auditoria AUDITORIA_PROMOCOES_SUBSIDIO_DATAS — investigação de por
+// que algumas promoções mostram "Reduzimos R$ X das suas tarifas" no
+// Mercado Livre mas chegam aqui sem discount_meli_boost_amount). Só loga
+// com os DOIS gates ligados ao mesmo tempo — NODE_ENV=test E a flag
+// explícita VENFORCE_PROMO_DEBUG=1 — nenhum dos dois sozinho é suficiente,
+// de propósito: NODE_ENV=test sozinho já rodaria em qualquer CI que exporte
+// essa variável, e isso poluiria a suíte inteira de testes com log a mais.
+// Nunca roda em produção (NODE_ENV nunca é "test" lá).
+function logDiagnosticoSubsidioSeAtivo(promo) {
+  if (process.env.NODE_ENV !== "test" || process.env.VENFORCE_PROMO_DEBUG !== "1") return;
+  console.log("[promo-diagnostico-subsidio]", JSON.stringify({
+    type: promo && promo.type,
+    status: promo && promo.status,
+    boosted_offer: promo && promo.boosted_offer,
+    discount_meli_boost_amount: promo && promo.discount_meli_boost_amount,
+    meli_percentage: promo && promo.meli_percentage,
+    seller_percentage: promo && promo.seller_percentage,
+  }));
+}
+
 // Normaliza UMA promoção crua do ML. Nunca inventa desconto: quando o ML não
 // fornece preço utilizável — started/pending sem `price` > 0, ou candidate
 // sem `suggested_discounted_price` — `precoFinal` fica null e a UI mostra
@@ -75,6 +98,8 @@ function round2(n) {
 // metadata.promotion_id, ver obterPromotionIdAtivo). Usado só para decidir
 // `statusExibicao` — nunca para recalcular preço/desconto/margem.
 function normalizarPromocao(promo, index, promotionIdAtivo = null) {
+  logDiagnosticoSubsidioSeAtivo(promo);
+
   const status = String((promo && promo.status) || "").toLowerCase().trim();
   const precoOriginal = fin(promo && promo.original_price);
 
@@ -192,6 +217,77 @@ async function obterPromotionIdAtivo({ clienteId, itemId, mlUserId }) {
   }
 }
 
+// Enriquecimento de vigência — /seller-promotions/items/{itemId} (fonte
+// principal) só manda start_date/finish_date de forma confiável para DEAL;
+// para SMART, PRICE_MATCHING, PRE_NEGOTIATED, LIGHTNING, UNHEALTHY_STOCK (e
+// parte dos PRICE_DISCOUNT) o próprio Mercado Livre só expõe a vigência via
+// GET /seller-promotions/promotions/{promotion_id}?promotion_type={tipo}
+// (ver auditoria: campanhas-smart-price-matching.md, desconto-pre-acordado-
+// por-item.md, ofertas-relampago.md). Chamada OPCIONAL, uma por promoção sem
+// data — nunca bloqueia a listagem: falha (ok:false ou exceção) mantém
+// inicio/fim como vieram (null), nunca inventa.
+async function obterVigenciaCampanha({ clienteId, promotionId, tipo, mlUserId }) {
+  try {
+    const resp = await mlFetch(
+      clienteId,
+      `/seller-promotions/promotions/${encodeURIComponent(promotionId)}?promotion_type=${encodeURIComponent(tipo)}&app_version=v2`,
+      { mlUserId }
+    );
+    if (!resp || !resp.ok) return null;
+    const inicio = (resp.data && resp.data.start_date) || null;
+    const fim = (resp.data && resp.data.finish_date) || null;
+    return inicio || fim ? { inicio, fim } : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Só dispara para promoções que chegaram SEM start_date e SEM finish_date da
+// fonte principal E que têm promotion_id + type suficientes para montar a
+// consulta de detalhe.
+//
+// promotion_id: prioriza `bruta.id` (id da CAMPANHA, formato "P-.../LGH-...",
+// é o que todos os exemplos oficiais do ML usam em
+// /seller-promotions/promotions/{promotion_id} — ver gerenciar-ofertas.md,
+// campanhas-smart-price-matching.md, desconto-pre-acordado-por-item.md,
+// ofertas-relampago.md). `bruta.ref_id` é documentado como "id da oferta ou
+// candidato" (formato "OFFER-..."), um recurso DIFERENTE — em todo exemplo
+// oficial onde ref_id aparece, id também aparece junto, nunca sozinho.
+// Mesmo assim, cai para ref_id como fallback defensivo quando id vier
+// ausente: se ref_id não servir como promotion_id nesse endpoint, o ML só
+// devolve erro/ok:false — já tratado, nunca quebra a listagem.
+//
+// Deduplicação: duas promoções diferentes na mesma lista podem apontar para
+// o mesmo id+type (ex.: uma entrada started e outra pending da mesma
+// campanha) — `cache` (Map local, recriado a cada chamada de
+// listarPromocoesDoItem, NUNCA persistente entre requisições) garante uma
+// única chamada de rede por id+type, guardando a PROMISE (não o valor já
+// resolvido) para que chamadas concorrentes dentro do mesmo Promise.all
+// compartilhem a mesma requisição em voo.
+//
+// Roda em paralelo (Promise.all) — mutação in-place dos objetos
+// normalizados, que acabaram de ser criados aqui dentro (sem referência
+// externa ainda).
+async function enriquecerVigencia({ clienteId, mlUserId, paresBrutoNormalizado }) {
+  const cache = new Map();
+  await Promise.all(
+    paresBrutoNormalizado.map(async ([bruta, p]) => {
+      if (p.inicio != null || p.fim != null) return;
+      const promotionId = (bruta && bruta.id) || (bruta && bruta.ref_id);
+      const tipo = bruta && bruta.type;
+      if (!promotionId || !tipo) return;
+      const chave = `${promotionId}::${tipo}`;
+      if (!cache.has(chave)) {
+        cache.set(chave, obterVigenciaCampanha({ clienteId, promotionId, tipo, mlUserId }));
+      }
+      const detalhe = await cache.get(chave);
+      if (!detalhe) return;
+      if (detalhe.inicio != null) p.inicio = detalhe.inicio;
+      if (detalhe.fim != null) p.fim = detalhe.fim;
+    })
+  );
+}
+
 async function listarPromocoesDoItem({ clienteId, itemId, mlUserId }) {
   const [resp, promotionIdAtivo] = await Promise.all([
     mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(itemId)}?app_version=v2`, { mlUserId }),
@@ -206,7 +302,16 @@ async function listarPromocoesDoItem({ clienteId, itemId, mlUserId }) {
       : [];
   lista = lista.filter((p) => p && typeof p === "object");
 
-  return ordenarPorPrioridade(lista).map((p, i) => normalizarPromocao(p, i, promotionIdAtivo));
+  const ordenada = ordenarPorPrioridade(lista);
+  const normalizadas = ordenada.map((p, i) => normalizarPromocao(p, i, promotionIdAtivo));
+
+  await enriquecerVigencia({
+    clienteId,
+    mlUserId,
+    paresBrutoNormalizado: ordenada.map((p, i) => [p, normalizadas[i]]),
+  });
+
+  return normalizadas;
 }
 
 module.exports = {

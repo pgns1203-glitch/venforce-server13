@@ -379,6 +379,242 @@ async function run() {
     ok("fluxo completo: /sale_price roda em paralelo com /seller-promotions/items e decide qual promoção é ATIVA");
   });
 
+  // 19b. Enriquecimento de vigência: promoção chega SEM start_date/finish_date
+  //      do endpoint principal, mas tem id+type — busca em
+  //      /seller-promotions/promotions/{id}?promotion_type={tipo} e preenche
+  //      inicio/fim com o que essa segunda chamada devolver.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) {
+        assert.ok(/\/seller-promotions\/promotions\/P-9/.test(chamada.path), "precisa consultar pelo promotion_id certo");
+        assert.ok(/promotion_type=SMART/.test(chamada.path), "precisa mandar promotion_type na consulta de detalhe");
+        return {
+          ok: true, status: 200,
+          data: { id: "P-9", type: "SMART", status: "started", start_date: "2026-04-22T01:00:00Z", finish_date: "2026-05-22T01:00:00Z" },
+        };
+      }
+      return {
+        ok: true, status: 200,
+        data: [{ id: "P-9", type: "SMART", status: "started", price: 80, original_price: 100 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    const linha = res.corpo.promocoes[0];
+    assert.strictEqual(linha.inicio, "2026-04-22T01:00:00Z", "vigência enriquecida via /seller-promotions/promotions/{id}");
+    assert.strictEqual(linha.fim, "2026-05-22T01:00:00Z");
+    assert.ok(
+      mlChamadas.some((c) => /seller-promotions\/promotions\/P-9/.test(c.path)),
+      "precisa ter chamado o detalhe da campanha para a promoção sem data"
+    );
+    ok("enriquecimento de vigência: promoção SMART sem data no endpoint principal recebe inicio/fim do detalhe da campanha");
+  });
+
+  // 19c. Enriquecimento falha (ok:false ou exceção) — não derruba a
+  //      listagem; a promoção continua com inicio/fim null, nunca inventado.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) {
+        return { ok: false, status: 500, data: { message: "erro" } };
+      }
+      return {
+        ok: true, status: 200,
+        data: [{ id: "P-9", type: "SMART", status: "started", price: 80, original_price: 100 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.ok, true, "falha no enriquecimento não pode derrubar a listagem inteira");
+    const linha = res.corpo.promocoes[0];
+    assert.strictEqual(linha.inicio, null, "sem detalhe disponível, inicio continua null (nunca inventado)");
+    assert.strictEqual(linha.fim, null, "sem detalhe disponível, fim continua null (nunca inventado)");
+    ok("enriquecimento de vigência: falha (ok:false) do detalhe da campanha não derruba a listagem, inicio/fim seguem null");
+  });
+
+  // 19d. Enriquecimento lança exceção (ex.: erro de rede) — mesma garantia
+  //      de resiliência, via try/catch.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) throw new Error("timeout");
+      return {
+        ok: true, status: 200,
+        data: [{ id: "P-9", type: "SMART", status: "started", price: 80, original_price: 100 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.ok, true, "exceção no enriquecimento não pode derrubar a listagem inteira");
+    assert.strictEqual(res.corpo.promocoes[0].inicio, null);
+    ok("enriquecimento de vigência: exceção de rede no detalhe da campanha não derruba a listagem");
+  });
+
+  // 19e. Promoção que já veio com start_date/finish_date do endpoint
+  //      principal NÃO dispara a chamada extra de enriquecimento.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      return {
+        ok: true, status: 200,
+        data: [{
+          id: "P-9", type: "DEAL", status: "started", price: 80, original_price: 100,
+          start_date: "2026-01-01T00:00:00Z", finish_date: "2026-01-31T23:59:59Z",
+        }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.promocoes[0].inicio, "2026-01-01T00:00:00Z");
+    assert.strictEqual(res.corpo.promocoes[0].fim, "2026-01-31T23:59:59Z");
+    assert.ok(
+      !mlChamadas.some((c) => /seller-promotions\/promotions\//.test(c.path)),
+      "promoção que já tem data não pode disparar a chamada extra de enriquecimento"
+    );
+    ok("enriquecimento de vigência: promoção que já tem start_date/finish_date não faz chamada extra");
+  });
+
+  // 19f. Sem promotion_id (id ausente) ou sem type: nunca tenta enriquecer
+  //      (não há como montar a consulta de detalhe da campanha).
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      return {
+        ok: true, status: 200,
+        data: [{ type: "PRICE_DISCOUNT", status: "candidate", price: 0, original_price: 100, suggested_discounted_price: 90 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.promocoes[0].inicio, null);
+    assert.ok(
+      !mlChamadas.some((c) => /seller-promotions\/promotions\//.test(c.path)),
+      "sem id de promoção não há como montar a consulta de detalhe — não deve nem tentar"
+    );
+    ok("enriquecimento de vigência: promoção sem id não dispara tentativa de enriquecimento");
+  });
+
+  // 19h. Promoção sem `id` (campanha) mas com `ref_id` (oferta/candidato):
+  //      fallback defensivo usa ref_id como promotion_id — nenhum caso
+  //      documentado do ML faz isso sozinho (ref_id sempre vem junto de id
+  //      nos exemplos oficiais), mas o fallback é seguro: se o ref_id não
+  //      servir como promotion_id, o ML só devolve erro/ok:false, que já é
+  //      tratado sem quebrar a listagem.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) {
+        assert.ok(/\/seller-promotions\/promotions\/OFFER-MLB1-999/.test(chamada.path), "precisa usar o ref_id quando não há id");
+        return { ok: true, status: 200, data: { start_date: "2026-02-01T00:00:00Z", finish_date: "2026-02-10T00:00:00Z" } };
+      }
+      return {
+        ok: true, status: 200,
+        data: [{ ref_id: "OFFER-MLB1-999", type: "SMART", status: "started", price: 80, original_price: 100 }],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.promocoes[0].inicio, "2026-02-01T00:00:00Z", "fallback por ref_id preenche a vigência quando não há id");
+    assert.strictEqual(res.corpo.promocoes[0].fim, "2026-02-10T00:00:00Z");
+    ok("enriquecimento de vigência: sem id, cai para ref_id como promotion_id (fallback defensivo)");
+  });
+
+  // 19i. Deduplicação: duas promoções diferentes (mesmo id+type) sem data —
+  //      só UMA chamada a /seller-promotions/promotions/{id}, e as DUAS
+  //      recebem a mesma vigência. Nunca cache persistente — só dentro
+  //      desta execução de listarPromocoesDoItem.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    let chamadasDetalhe = 0;
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: {} };
+      if (/seller-promotions\/promotions\//.test(chamada.path)) {
+        chamadasDetalhe += 1;
+        return { ok: true, status: 200, data: { start_date: "2026-03-01T00:00:00Z", finish_date: "2026-03-10T00:00:00Z" } };
+      }
+      return {
+        ok: true, status: 200,
+        data: [
+          { id: "P-9", type: "SMART", status: "started", price: 80, original_price: 100 },
+          { id: "P-9", type: "SMART", status: "pending", price: 82, original_price: 100 },
+        ],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(chamadasDetalhe, 1, "mesmo id+type entre duas promoções deve gerar só UMA chamada de detalhe");
+    assert.ok(res.corpo.promocoes.every((p) => p.inicio === "2026-03-01T00:00:00Z"), "as duas promoções recebem a mesma vigência deduplicada");
+    ok("enriquecimento de vigência: duas promoções com o mesmo id+type deduplicam em uma única chamada ao detalhe da campanha");
+  });
+
+  // 19g. Diagnóstico temporário de subsídio — log só roda com os DOIS
+  //      gates explicitamente ligados (NODE_ENV=test E VENFORCE_PROMO_DEBUG=1);
+  //      nunca por conta própria, nunca em produção.
+  {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalDebugFlag = process.env.VENFORCE_PROMO_DEBUG;
+    const originalConsoleLog = console.log;
+    let logs = [];
+    console.log = (...args) => { logs.push(args); };
+    try {
+      // Nenhum dos dois gates ligado: não loga.
+      delete process.env.NODE_ENV;
+      delete process.env.VENFORCE_PROMO_DEBUG;
+      logs = [];
+      promocoesService.normalizarPromocao({ type: "SMART", status: "started", meli_percentage: 3 }, 0);
+      assert.strictEqual(logs.length, 0, "sem nenhum gate ligado, não deve logar nada");
+
+      // Só NODE_ENV=test, sem a flag: ainda não loga (evita ruído em toda a suíte).
+      process.env.NODE_ENV = "test";
+      delete process.env.VENFORCE_PROMO_DEBUG;
+      logs = [];
+      promocoesService.normalizarPromocao({ type: "SMART", status: "started", meli_percentage: 3 }, 0);
+      assert.strictEqual(logs.length, 0, "NODE_ENV=test sozinho não deve logar — precisa também da flag explícita");
+
+      // Os dois gates ligados: loga os campos de diagnóstico.
+      process.env.NODE_ENV = "test";
+      process.env.VENFORCE_PROMO_DEBUG = "1";
+      logs = [];
+      promocoesService.normalizarPromocao(
+        { type: "SMART", status: "started", boosted_offer: false, meli_percentage: 3, seller_percentage: 8 }, 0
+      );
+      assert.strictEqual(logs.length, 1, "com os dois gates ligados, deve logar exatamente uma linha por promoção normalizada");
+      const payload = JSON.parse(logs[0][1]);
+      assert.strictEqual(payload.type, "SMART");
+      assert.strictEqual(payload.status, "started");
+      assert.strictEqual(payload.boosted_offer, false);
+      assert.strictEqual(payload.discount_meli_boost_amount, undefined);
+      assert.strictEqual(payload.meli_percentage, 3);
+      assert.strictEqual(payload.seller_percentage, 8);
+    } finally {
+      console.log = originalConsoleLog;
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = originalNodeEnv;
+      if (originalDebugFlag === undefined) delete process.env.VENFORCE_PROMO_DEBUG; else process.env.VENFORCE_PROMO_DEBUG = originalDebugFlag;
+    }
+  }
+  ok("diagnóstico temporário de subsídio: só loga type/status/boosted_offer/discount_meli_boost_amount/meli_percentage/seller_percentage com os dois gates (NODE_ENV=test + VENFORCE_PROMO_DEBUG=1) ligados");
+
   // 19. Fallback: sale_price sem metadata/promotion_id — nenhuma promoção
   //     vira ATIVA, mesmo com duas started (nunca inferir pelo menor preço).
   await withMockDb({ anuncios: anunciosFixture() }, async () => {

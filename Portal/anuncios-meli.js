@@ -2660,7 +2660,7 @@
     aplicarEstadosEdicao(); // já redesenha a barra de alterações
     bindMargemComposicao();
     bindMargemEditavel(el("am-det-margem-body"));
-    bindPrecoEditavel(el("am-det-margem-body"));
+    bindAplicarPreco(el("am-det-margem-body"), a.item_id);
     bindRestaurarSimulacaoMargem(el("am-det-margem-body"), a.item_id);
     bindMargemEditavel(el("am-det-promo-body"));
     bindPromocoesAcoes(el("am-det-promo-body"), a.item_id);
@@ -3320,35 +3320,18 @@
     "</div>";
   }
 
-  // Linha de PREÇO — a única que grava de verdade no Mercado Livre. Por isso
-  // tem HTML e fluxo próprios (nunca dividido com a simulação de
-  // custo/custos adicionais):
-  //  - sempre carrega a tag "Altera no Mercado Livre" quando editável, pra
-  //    deixar claro que não é simulação;
-  //  - quando `bloqueado` (promoção ativa no ML — o valor exibido é o
-  //    promocional, e não existe hoje endpoint de escrita pra ele, ver
-  //    meliPrecoService), a tag some, o valor vira texto puro (sem botão) e
-  //    o motivo aparece num ⓘ ao lado do rótulo — mesmo padrão do título
-  //    travado por catálogo, adaptado pra tooltip por causa do espaço da
-  //    "escada".
-  function margemComposicaoLinhaPrecoHtml(valor, moeda, itemId, bloqueado, motivoBloqueio) {
-    var rotulo = '<span class="am-margem-comp__rotulo">Preço' +
-      (bloqueado
-        ? infoDotHtml(motivoBloqueio)
-        : ' <span class="vf-tag is-warning am-margem-comp__ml-tag" title="Uma alteração aqui grava direto no Mercado Livre">Altera no Mercado Livre</span>') +
-      "</span>";
-
-    var valorHtml;
-    if (bloqueado) {
-      valorHtml = '<span class="am-margem-comp__valor am-margem-comp__valor--bloqueado" title="' +
-        escapeAttr(motivoBloqueio) + '">' + formatMoeda(valor, moeda) + "</span>";
-    } else {
-      valorHtml = '<span class="am-margem-comp__valor am-margem-preco" data-margem-item="' + escapeAttr(itemId) +
-        '" data-margem-valor="' + escapeAttr(valor == null ? "" : valor) + '">' +
-        botaoMargemEditHtml(formatMoeda(valor, moeda), "Alterar grava direto no Mercado Livre") +
-      "</span>";
-    }
-
+  // Linha de PREÇO quando está BLOQUEADA (promoção ativa no Mercado Livre —
+  // o valor exibido é o promocional, e não existe hoje endpoint de escrita
+  // pra ele, ver meliPrecoService): texto puro, sem botão nenhum (nem de
+  // simulação) — o motivo aparece num ⓘ ao lado do rótulo, mesmo padrão do
+  // título travado por catálogo. Fora deste caso, a linha de preço é só mais
+  // uma célula de simulação (ver margemComposicaoLinhaEditavelHtml) — a
+  // escrita real só acontece pela ação "Aplicar preço" + diálogo de
+  // confirmação (ver abrirConfirmacaoAplicarPreco), nunca direto no clique.
+  function margemComposicaoLinhaPrecoBloqueadoHtml(valor, moeda, motivoBloqueio) {
+    var rotulo = '<span class="am-margem-comp__rotulo">Preço' + infoDotHtml(motivoBloqueio) + "</span>";
+    var valorHtml = '<span class="am-margem-comp__valor am-margem-comp__valor--bloqueado" title="' +
+      escapeAttr(motivoBloqueio) + '">' + formatMoeda(valor, moeda) + "</span>";
     return '<div class="am-margem-comp__linha am-margem-comp__linha--editavel">' + rotulo + valorHtml + "</div>";
   }
 
@@ -3378,20 +3361,41 @@
     var custoExibido = sim && sim.custoProduto != null ? sim.custoProduto : comp.custoProduto;
     var custosAdicionaisExibido = sim && sim.custosAdicionais != null ? sim.custosAdicionais : comp.taxaFixa;
 
+    // Escrita real de preço só é possível fora dos dois bloqueios abaixo —
+    // usado tanto para escolher o HTML da linha quanto para decidir se a
+    // ação "Aplicar preço" pode aparecer.
+    var podeAplicarPrecoReal = !comp.precoPromocionalAtivo && !precoBloqueadoPorVariacoesLegado(comp);
+
     var linhaPreco;
-    if (precoBloqueadoPorVariacoesLegado(comp)) {
-      var precoExibido = sim && sim.preco != null ? sim.preco : comp.venda;
-      linhaPreco = margemComposicaoLinhaEditavelHtml("Preço de venda", "preco", precoExibido, moeda, itemId,
-        "Simular outro preço — não grava no Mercado Livre; este anúncio possui variações e o preço deve ser " +
-        "alterado no nível do anúncio.");
-    } else {
-      linhaPreco = margemComposicaoLinhaPrecoHtml(comp.venda, moeda, itemId, !!comp.precoPromocionalAtivo,
+    if (comp.precoPromocionalAtivo) {
+      linhaPreco = margemComposicaoLinhaPrecoBloqueadoHtml(comp.venda, moeda,
         "Este anúncio está com uma promoção ativa no Mercado Livre — o valor mostrado é o preço promocional vigente, " +
         "que esta tela ainda não edita. Ajuste a promoção diretamente no Mercado Livre.");
+    } else {
+      var precoExibido = sim && sim.preco != null ? sim.preco : comp.venda;
+      var dicaPreco = podeAplicarPrecoReal
+        ? 'Simular outro preço — clique em "Aplicar preço" abaixo para gravar no Mercado Livre'
+        : "Simular outro preço — não grava no Mercado Livre; este anúncio possui variações e o preço deve ser " +
+          "alterado no nível do anúncio.";
+      linhaPreco = margemComposicaoLinhaEditavelHtml("Preço de venda", "preco", precoExibido, moeda, itemId, dicaPreco);
     }
+
+    // "Aplicar preço": só aparece quando há uma simulação de preço PENDENTE
+    // (diferente do preço real) E a escrita real é possível — nunca para
+    // promoção ativa nem item com variações legado, nos dois casos porque o
+    // PUT real seria recusado (ou já está sendo mostrado outro preço).
+    var precoSimuladoPendente = podeAplicarPrecoReal && sim && sim.preco != null &&
+      Number(sim.preco) !== Number(comp.venda);
+    var aplicarPrecoHtml = precoSimuladoPendente
+      ? '<div class="am-margem-comp__linha am-margem-comp__linha--acao">' +
+          '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="aplicar-preco" ' +
+            'data-margem-item="' + escapeAttr(itemId) + '">Aplicar preço no Mercado Livre</button>' +
+        "</div>"
+      : "";
 
     var linhas =
       linhaPreco +
+      aplicarPrecoHtml +
       margemComposicaoLinhaEditavelHtml("Custo do produto", "custoProduto", custoExibido, moeda, itemId,
         "Simular outro custo — não altera a Base de Custos") +
       margemComposicaoLinhaHtml("Comissão Mercado Livre", comp.comissaoMl, moeda) +
@@ -3528,22 +3532,22 @@
     var precoWrap = el("am-det-price");
     if (precoWrap && DET.anuncio) precoWrap.outerHTML = precoDetalheHtml(DET.anuncio);
     bindMargemEditavel(corpo);
-    bindPrecoEditavel(corpo);
+    bindAplicarPreco(corpo, itemId);
     bindRestaurarSimulacaoMargem(corpo, itemId);
   }
 
   // ===========================================================================
-  // Composição da margem — EDIÇÃO. Dois fluxos deliberadamente SEPARADOS,
-  // nunca compartilhando código de confirmação:
-  //
-  //  - Preço: escrita REAL no Mercado Livre (PATCH .../preco). Editar exige
-  //    um clique explícito em "Salvar no Mercado Livre" — Enter NUNCA
-  //    submete aqui, só Esc/Cancelar descartam. Ver bindPrecoEditavel e
-  //    confirmarPrecoMargem.
-  //  - Custo do produto / Custos adicionais: simulação local (POST
-  //    .../simular-margem) — Enter confirma, Esc cancela, igual aos outros
-  //    campos editáveis desta tela (estoque, título). Ver bindMargemEditavel
-  //    e confirmarSimulacaoMargem.
+  // Composição da margem — EDIÇÃO. Preço de venda, Custo do produto e Custos
+  // adicionais são TODOS simulação local primeiro (POST .../simular-margem,
+  // via bindMargemEditavel/confirmarSimulacaoMargem — Enter confirma, Esc
+  // cancela). A escrita REAL de preço no Mercado Livre (PATCH .../preco)
+  // nunca acontece nesse clique: só quando existe uma simulação de preço
+  // pendente aparece a ação "Aplicar preço no Mercado Livre" (ver
+  // margemComposicaoLadderHtml), que abre um diálogo de confirmação
+  // (Preço atual/Novo preço/Margem atual/Margem simulada — ver
+  // abrirConfirmacaoEscrita) e só grava no clique explícito em "Confirmar"
+  // dentro dele. Ver bindAplicarPreco/abrirConfirmacaoAplicarPreco/
+  // aplicarPrecoReal.
   // ===========================================================================
 
   var CAMPOS_MARGEM_ROTULO = {
@@ -3715,108 +3719,137 @@
   }
 
   // ===========================================================================
-  // Preço — fluxo próprio, sem Enter-submit. Editar → digitar → clicar em
-  // "Salvar no Mercado Livre" (ou Esc/"Cancelar" pra descartar). O valor
-  // exibido depois do sucesso NUNCA é o digitado — vem da resposta do PUT
-  // que o próprio Mercado Livre confirma (ver meliPrecoService no backend),
-  // repintada a partir de reconsultar a composição do zero.
+  // Diálogo de confirmação — o único caminho pra qualquer escrita real que
+  // nasce de uma simulação desta tela (preço da composição e
+  // participação/alteração de promoção, ver mais abaixo). Sempre mostra o
+  // "antes/depois" pedido pela auditoria; só age no clique explícito em
+  // "Confirmar" dentro do diálogo — Cancelar (ou X) nunca envia nada.
   // ===========================================================================
 
-  function bindPrecoEditavel(raiz) {
-    (raiz || document).querySelectorAll(".am-margem-preco").forEach(function (cel) {
-      cel.addEventListener("click", function (e) {
-        e.stopPropagation();
-        if (e.target.closest(".am-margem-edit__btn")) abrirEditorPreco(cel);
-        else if (e.target.closest('[data-acao="salvar-preco"]')) confirmarPrecoMargem(cel);
-        else if (e.target.closest('[data-acao="cancelar-preco"]')) pintarPrecoLeitura(cel);
+  // opts: { titulo, linhas: [{rotulo, valor}], textoConfirmar, aoConfirmar(concluir) }
+  // `aoConfirmar` recebe `concluir(mensagemErro)` — chame sem argumento pra
+  // fechar o diálogo com sucesso, ou com uma mensagem pra mostrar o erro e
+  // deixar o diálogo aberto (o operador tenta de novo ou cancela).
+  function abrirConfirmacaoEscrita(opts) {
+    var overlay = document.createElement("div");
+    overlay.className = "am-confirm-overlay vf-overlay is-open";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "am-confirm-titulo");
+
+    var linhasHtml = opts.linhas.map(function (l) {
+      return '<div class="am-confirm__linha"><span class="am-confirm__rotulo">' + escapeHtml(l.rotulo) +
+        '</span><span class="am-confirm__valor">' + escapeHtml(l.valor) + "</span></div>";
+    }).join("");
+
+    function pintarCorpo(bannerErroHtml) {
+      var box = overlay.querySelector(".am-confirm-box");
+      if (!box) return;
+      box.innerHTML =
+        '<div class="vf-modal__body">' +
+          '<h3 id="am-confirm-titulo" class="am-confirm__titulo">' + escapeHtml(opts.titulo) + "</h3>" +
+          '<div class="am-confirm__linhas">' + linhasHtml + "</div>" +
+          (bannerErroHtml || "") +
+        "</div>" +
+        '<div class="vf-modal__footer">' +
+          '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="confirm-cancelar">Cancelar</button>' +
+          '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="confirm-ok">' +
+            escapeHtml(opts.textoConfirmar || "Confirmar") + "</button>" +
+        "</div>";
+    }
+
+    overlay.innerHTML = '<div class="am-confirm-box vf-modal vf-modal--sm"></div>';
+    pintarCorpo();
+    document.body.appendChild(overlay);
+    document.body.classList.add("vf-no-scroll");
+
+    function fechar() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.body.classList.remove("vf-no-scroll");
+    }
+
+    overlay.addEventListener("click", function (e) {
+      if (e.target.closest('[data-acao="confirm-cancelar"]')) { fechar(); return; }
+      if (!e.target.closest('[data-acao="confirm-ok"]')) return;
+
+      var okBtn = overlay.querySelector('[data-acao="confirm-ok"]');
+      var cancelBtn = overlay.querySelector('[data-acao="confirm-cancelar"]');
+      if (okBtn) { okBtn.disabled = true; okBtn.classList.add("is-loading"); okBtn.textContent = "Confirmando…"; }
+      if (cancelBtn) cancelBtn.disabled = true;
+
+      opts.aoConfirmar(function (mensagemErro) {
+        if (mensagemErro) {
+          pintarCorpo(
+            '<div class="vf-banner is-danger" role="alert"><div class="vf-banner__content">' +
+              '<p class="vf-banner__description">' + escapeHtml(mensagemErro) + "</p>" +
+            "</div></div>"
+          );
+          return;
+        }
+        fechar();
       });
     });
   }
 
-  function pintarPrecoLeitura(cel) {
-    var cache = AM.state.performanceCache[cel.getAttribute("data-margem-item")];
-    var comp = cache && cache.composicao;
-    var valor = comp ? comp.venda : null;
-    cel.setAttribute("data-margem-valor", valor == null ? "" : valor);
-    cel.classList.remove("is-editando", "is-salvando");
-    cel.innerHTML = botaoMargemEditHtml(formatMoeda(valor, DET.anuncio.moeda), "Alterar grava direto no Mercado Livre");
-  }
+  // ===========================================================================
+  // Preço — escrita REAL no Mercado Livre (PATCH .../preco), mas só depois de
+  // simular (ver campo "preco" acima) e confirmar no diálogo. O valor exibido
+  // depois do sucesso NUNCA é o digitado — vem de reconsultar a composição
+  // (que por sua vez lê o preço confirmado pela resposta do PUT, ver
+  // meliPrecoService no backend).
+  // ===========================================================================
 
-  function abrirEditorPreco(cel) {
-    if (!DET) return;
-    if (cel.classList.contains("is-editando") || cel.classList.contains("is-salvando")) return;
-    if (DET.precoMargem.salvando) return; // um PUT de preço em voo trava a seção até resolver
-
-    var atual = cel.getAttribute("data-margem-valor") || "";
-    cel.classList.add("is-editando");
-    cel.innerHTML = '<span class="am-margem-preco__editor">' +
-      '<input type="number" step="0.01" min="0" class="am-margem-edit__input" value="' + escapeAttr(atual) + '" ' +
-        'aria-label="Novo preço no Mercado Livre" />' +
-      '<span class="am-margem-comp__acoes">' +
-        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="salvar-preco">Salvar no Mercado Livre</button>' +
-        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="cancelar-preco">Cancelar</button>' +
-      "</span>" +
-    "</span>";
-    var input = cel.querySelector(".am-margem-edit__input");
-    if (!input) return;
-    input.focus();
-    input.select();
-
-    // Preço não faz auto-submit no Enter — o fluxo principal é clicar em
-    // "Salvar no Mercado Livre" (é uma escrita real, não uma simulação).
-    // Diferente dos outros campos editáveis desta tela, sair do campo (blur)
-    // NÃO cancela mais sozinho: o editor tem botões próprios ("Salvar
-    // no Mercado Livre"/"Cancelar") dentro da célula, e blur dispara antes
-    // do click do botão ser processado — cancelar no blur fecharia o editor
-    // antes do clique em "Salvar" chegar a acontecer. Só Esc ou o clique
-    // explícito em "Cancelar" descartam.
-    input.addEventListener("keydown", function (e) {
+  function bindAplicarPreco(raiz, itemId) {
+    var botao = (raiz || document).querySelector('[data-acao="aplicar-preco"]');
+    if (!botao) return;
+    botao.addEventListener("click", function (e) {
       e.stopPropagation();
-      if (e.key === "Escape") {
-        e.preventDefault();
-        pintarPrecoLeitura(cel);
-      }
+      abrirConfirmacaoAplicarPreco(itemId);
     });
   }
 
-  // Preço: escrita REAL no Mercado Livre (PATCH .../preco). O valor exibido
-  // depois do sucesso NUNCA é o digitado — vem de reconsultar a composição
-  // (que por sua vez lê o preço confirmado pela resposta do PUT, ver
-  // meliPrecoService no backend), então esta função nunca escreve um número
-  // "confiado" na tela.
-  function confirmarPrecoMargem(cel) {
-    if (!DET || DET.precoMargem.salvando) return;
-    var itemId = cel.getAttribute("data-margem-item");
-    var input = cel.querySelector(".am-margem-edit__input");
-    var anterior = cel.getAttribute("data-margem-valor") || "";
-    var texto = String((input && input.value) == null ? "" : input.value).trim();
+  function abrirConfirmacaoAplicarPreco(itemId) {
+    if (!DET || DET.itemId !== itemId) return;
+    var cache = AM.state.performanceCache[itemId];
+    var comp = cache && cache.composicao;
+    var sim = DET.simulacaoMargem;
+    if (!comp || !sim || sim.preco == null) return;
 
-    if (texto === anterior) { pintarPrecoLeitura(cel); return; }
+    var moeda = DET.anuncio.moeda;
+    var margemAtual = cache.margem && cache.margem.marginPercent != null ? cache.margem.marginPercent : null;
+    var margemSimulada = (sim.resultado && sim.resultado.computable && sim.resultado.marginPercent != null)
+      ? sim.resultado.marginPercent : null;
 
-    var n = Number(texto);
-    if (!isFinite(n) || n <= 0) {
-      toast("O preço precisa ser um número maior que zero.", "is-danger");
-      return;
-    }
+    abrirConfirmacaoEscrita({
+      titulo: "Aplicar novo preço no Mercado Livre",
+      textoConfirmar: "Confirmar",
+      linhas: [
+        { rotulo: "Preço atual", valor: formatMoeda(comp.venda, moeda) },
+        { rotulo: "Novo preço", valor: formatMoeda(sim.preco, moeda) },
+        { rotulo: "Margem atual", valor: margemAtual != null ? formatarPercentualCompacto(margemAtual) : "—" },
+        { rotulo: "Margem simulada", valor: margemSimulada != null ? formatarPercentualCompacto(margemSimulada) : "—" },
+      ],
+      aoConfirmar: function (concluir) { aplicarPrecoReal(itemId, sim.preco, concluir); },
+    });
+  }
 
+  // Nunca chamada fora do "Confirmar" do diálogo acima — sem clique
+  // explícito, nada é enviado ao Mercado Livre.
+  function aplicarPrecoReal(itemId, novoPreco, concluir) {
+    if (!DET || DET.precoMargem.salvando) { concluir("Já existe uma gravação de preço em andamento."); return; }
     DET.precoMargem.salvando = true;
-    cel.classList.remove("is-editando");
-    cel.classList.add("is-salvando");
-    cel.innerHTML = '<span class="am-margem-edit__salvando" aria-live="polite">gravando no Mercado Livre…</span>';
 
-    var corpo = { clienteSlug: AM.clienteAtual.slug, preco: n };
+    var corpo = { clienteSlug: AM.clienteAtual.slug, preco: novoPreco };
     if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
 
     var meuToken = DET.token;
     api("/anuncios-meli/" + encodeURIComponent(itemId) + "/preco", { method: "PATCH", body: corpo })
       .then(function (r) {
-        if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB no meio do caminho
+        if (!DET || DET.token !== meuToken) { concluir(); return; } // modal fechado, ou outro MLB no meio do caminho
         DET.precoMargem.salvando = false;
         var d = r.data || {};
         if (!d.ok) {
-          cel.classList.remove("is-salvando");
-          pintarPrecoLeitura(cel);
-          toast(d.motivo || "Não foi possível atualizar o preço.", "is-danger");
+          concluir(d.motivo || "Não foi possível atualizar o preço.");
           return;
         }
 
@@ -3834,6 +3867,7 @@
         });
         repintarPromocoesDoItem(itemId);
         toast("Preço atualizado no Mercado Livre.");
+        concluir();
       });
   }
 
@@ -3952,13 +3986,38 @@
     "</span>";
   }
 
-  // Rótulo por STATUS, não por linha genérica (decisão de produto): quem já
-  // participa (started/pending) pode "Alterar" a simulação; quem só é
-  // elegível (candidate) ainda não está na promoção, então é "Participar" —
-  // que também NUNCA inscreve de verdade, só seleciona + simula (ver
-  // bindPromocoesAcoes).
-  function promocaoTarefaRotulo(status) {
-    return (status === "started" || status === "active" || status === "pending") ? "Alterar" : "Participar";
+  // Escopo desta v1 (decisão de produto, ver auditoria de
+  // documentacao_api_meli/*, mesmo escopo do backend — meliPromocoesEscritaService.
+  // TIPOS_COM_ESCRITA): só DEAL e SELLER_CAMPAIGN têm um contrato de escrita
+  // simétrico (POST participa/PUT altera) com preço escolhido pelo vendedor.
+  // Todos os outros tipos continuam só simulação — o backend recusaria a
+  // escrita mesmo que o botão tentasse, mas a UI já não oferece a opção pra
+  // não sugerir uma ação que vai falhar.
+  var PROMO_TIPOS_COM_ESCRITA = { DEAL: true, SELLER_CAMPAIGN: true };
+  function promocaoSuportaEscrita(p) { return !!PROMO_TIPOS_COM_ESCRITA[p.tipo]; }
+
+  // Verdadeiro quando ESTA linha já tem uma simulação de preço pendente
+  // (mesmo sinal usado por precoFinalExibidoDaLinha/promocaoVoceRecebeHtml)
+  // — é o que muda "Participar"/"Alterar" para "Confirmar participação"/
+  // "Confirmar alteração".
+  function promocaoJaSimulada(p, itemId) {
+    var sim = DET && DET.itemId === itemId ? DET.simulacaoMargem : null;
+    return !!(sim && DET.promoLinhaSelecionada === p.id && sim.preco != null);
+  }
+
+  // Rótulo por STATUS e por TIPO (decisão de produto — ver auditoria):
+  //  - tipo fora do escopo de escrita (nesta v1): sempre "Simular" — o botão
+  //    nunca vai além de selecionar + simular, nos dois status.
+  //  - tipo com escrita, ainda não simulado: "Alterar" (started/pending,
+  //    quem já participa) ou "Participar" (candidate, quem é só elegível).
+  //  - tipo com escrita, já simulado nesta linha: "Confirmar alteração"/
+  //    "Confirmar participação" — o próximo clique abre o diálogo de
+  //    confirmação e só then escreve de verdade (ver bindPromocoesAcoes).
+  function promocaoTarefaRotulo(p, itemId) {
+    var ativa = p.status === "started" || p.status === "active" || p.status === "pending";
+    if (!promocaoSuportaEscrita(p)) return "Simular";
+    if (promocaoJaSimulada(p, itemId)) return ativa ? "Confirmar alteração" : "Confirmar participação";
+    return ativa ? "Alterar" : "Participar";
   }
 
   function promocaoLinhaHtml(p, itemId, moeda) {
@@ -3984,7 +4043,7 @@
       '<td>' + promocaoVoceRecebeHtml(p) + "</td>" +
       '<td><button type="button" class="vf-btn vf-btn--ghost vf-btn--sm am-promo__acao" ' +
         'data-acao="promo-acao" data-promo-id="' + escapeAttr(p.id) + '">' +
-        promocaoTarefaRotulo(p.status) + "</button></td>" +
+        promocaoTarefaRotulo(p, itemId) + "</button></td>" +
     "</tr>";
   }
 
@@ -4026,12 +4085,18 @@
     bindPromocoesAcoes(corpo, itemId);
   }
 
-  // "Alterar"/"Participar": nos dois casos, o botão NUNCA grava nada no
-  // Mercado Livre — só seleciona a linha e aplica o preço final dela (real
-  // quando já ativa, sugerido quando candidata) na MESMA simulação de
-  // margem de sempre. Quando o ML não deu preço nenhum para aquela linha
-  // (candidate sem sugestão), só seleciona e abre o editor da célula para o
-  // operador digitar um valor — nunca inventa um número.
+  // "Alterar"/"Participar": primeiro clique NUNCA grava nada no Mercado
+  // Livre — só seleciona a linha e aplica o preço final dela (real quando já
+  // ativa, sugerido quando candidata) na MESMA simulação de margem de
+  // sempre. Quando o ML não deu preço nenhum para aquela linha (candidate
+  // sem sugestão), só seleciona e abre o editor da célula para o operador
+  // digitar um valor — nunca inventa um número.
+  //
+  // "Confirmar participação"/"Confirmar alteração": só aparece (ver
+  // promocaoTarefaRotulo) depois desse primeiro clique, e só para
+  // DEAL/SELLER_CAMPAIGN (promocaoSuportaEscrita) — abre o diálogo de
+  // confirmação e só ESCREVE de verdade no clique em "Confirmar" dentro
+  // dele (ver abrirConfirmacaoPromocao/aplicarPromocaoReal).
   function bindPromocoesAcoes(raiz, itemId) {
     (raiz || document).querySelectorAll('[data-acao="promo-acao"]').forEach(function (btn) {
       btn.addEventListener("click", function (e) {
@@ -4040,6 +4105,11 @@
         var promoId = btn.getAttribute("data-promo-id");
         var linha = promocaoPorId(itemId, promoId);
         if (!linha) return;
+
+        if (promocaoSuportaEscrita(linha) && promocaoJaSimulada(linha, itemId)) {
+          abrirConfirmacaoPromocao(itemId, linha);
+          return;
+        }
 
         // "Selecionar a promoção" é incondicional (ver instrução de
         // produto); só o "aplicar preço sugerido" depende de o ML ter
@@ -4059,6 +4129,65 @@
         );
         if (cel) abrirEditorMargemCampo(cel);
       });
+    });
+  }
+
+  function abrirConfirmacaoPromocao(itemId, linha) {
+    if (!DET || DET.itemId !== itemId) return;
+    var sim = DET.simulacaoMargem;
+    if (!sim || sim.preco == null) return;
+
+    var moeda = DET.anuncio.moeda;
+    var ativa = linha.status === "started" || linha.status === "active" || linha.status === "pending";
+    var margemSimulada = (sim.resultado && sim.resultado.computable && sim.resultado.marginPercent != null)
+      ? formatarPercentualCompacto(sim.resultado.marginPercent) : "—";
+
+    abrirConfirmacaoEscrita({
+      titulo: ativa ? "Alterar participação na promoção" : "Participar da promoção",
+      textoConfirmar: "Confirmar",
+      linhas: [
+        { rotulo: "Promoção", valor: linha.nome || linha.tipoLabel },
+        { rotulo: "Preço atual", valor: formatMoeda(linha.precoOriginal, moeda) },
+        { rotulo: "Novo preço", valor: formatMoeda(sim.preco, moeda) },
+        { rotulo: "Impacto estimado na margem", valor: margemSimulada },
+      ],
+      aoConfirmar: function (concluir) { aplicarPromocaoReal(itemId, linha, sim.preco, concluir); },
+    });
+  }
+
+  // Nunca chamada fora do "Confirmar" do diálogo acima. O backend relê o
+  // estado AO VIVO da promoção antes de decidir POST (participar) x PUT
+  // (alterar) — nunca confia no status que esta tela guardou em cache (ver
+  // meliPromocoesEscritaService).
+  function aplicarPromocaoReal(itemId, linha, precoNovo, concluir) {
+    var corpo = { clienteSlug: AM.clienteAtual.slug, precoNovo: precoNovo };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+
+    var meuToken = DET ? DET.token : null;
+    api(
+      "/anuncios-meli/" + encodeURIComponent(itemId) + "/promocoes/" + encodeURIComponent(linha.id) + "/aplicar",
+      { method: "POST", body: corpo }
+    ).then(function (r) {
+      if (!DET || DET.token !== meuToken) { concluir(); return; } // modal fechado, ou outro MLB no meio do caminho
+      var d = r.data || {};
+      if (!d.ok) {
+        concluir(d.motivo || "Não foi possível aplicar a promoção.");
+        return;
+      }
+
+      // A promoção pode ter mudado de status (candidate -> started) e de
+      // preço — descarta o cache e relê do zero, nunca assume o que foi
+      // enviado.
+      DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, preco: null, resultado: null };
+      DET.promoLinhaSelecionada = null;
+      delete AM.state.promocoesCache[itemId];
+
+      garantirPromocoesDoItem(itemId).then(function () {
+        if (!DET || DET.token !== meuToken) return;
+        repintarPromocoesDoItem(itemId);
+      });
+      toast(d.metodo === "POST" ? "Participação confirmada no Mercado Livre." : "Promoção alterada no Mercado Livre.");
+      concluir();
     });
   }
 

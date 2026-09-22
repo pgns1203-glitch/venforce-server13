@@ -153,13 +153,13 @@ const COMPOSICAO_MLA1 = { venda: 200, custoProduto: 80, comissaoMl: 25, frete: 1
 // GET /:itemId/promocoes devolve (ver server/services/meliAnuncios/meliPromocoesService.js).
 const PROMO_ATIVA = {
   id: "P-1", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "HOTSALE",
-  status: "started", statusLabel: "ATIVA", inicio: "2026-09-01T12:00:00Z", fim: "2026-09-30T12:00:00Z",
+  status: "started", statusLabel: "ATIVA", statusExibicao: "ATIVA", inicio: "2026-09-01T12:00:00Z", fim: "2026-09-30T12:00:00Z",
   precoOriginal: 249.9, precoFinal: 199.9, descontoReais: 50, descontoPercentual: 20,
   meliPercentage: 5, sellerPercentage: 10, subsidioMl: 2.5, editavelPrecoFinal: true,
 };
 const PROMO_CANDIDATE = {
   id: "PD-1", tipo: "PRICE_DISCOUNT", tipoLabel: "Desconto individual", nome: null,
-  status: "candidate", statusLabel: "ELEGÍVEL", inicio: null, fim: null,
+  status: "candidate", statusLabel: "ELEGÍVEL", statusExibicao: "ELEGÍVEL", inicio: null, fim: null,
   precoOriginal: 249.9, precoFinal: 224.9, descontoReais: 25, descontoPercentual: 10,
   meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
 };
@@ -168,8 +168,26 @@ const PROMO_CANDIDATE = {
 // escopo de escrita desta v1 (ver meliPromocoesEscritaService.TIPOS_COM_ESCRITA).
 const PROMO_CANDIDATE_DEAL = {
   id: "P-2", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "Semana do Cliente",
-  status: "candidate", statusLabel: "ELEGÍVEL", inicio: null, fim: null,
+  status: "candidate", statusLabel: "ELEGÍVEL", statusExibicao: "ELEGÍVEL", inicio: null, fim: null,
   precoOriginal: 249.9, precoFinal: 224.9, descontoReais: 25, descontoPercentual: 10,
+  meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
+};
+// DEAL started (tipo com escrita), mas o sale_price aponta pra OUTRA
+// promoção — statusExibicao: NÃO APLICADA. Usada para provar que "Alterar"
+// não pode aparecer, e que o clique nunca chega a chamar o endpoint de
+// escrita (ver check 41).
+const PROMO_NAO_APLICADA = {
+  id: "P-3", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "Campanha Paralela",
+  status: "started", statusLabel: "ATIVA", statusExibicao: "NÃO APLICADA", inicio: null, fim: null,
+  precoOriginal: 249.9, precoFinal: 219.9, descontoReais: 30, descontoPercentual: 12,
+  meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
+};
+// DEAL pending (tipo com escrita) — statusExibicao: PROGRAMADA. Mesma prova
+// que PROMO_NAO_APLICADA, para o outro caso que o gate também bloqueia.
+const PROMO_PROGRAMADA = {
+  id: "P-4", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "Campanha Futura",
+  status: "pending", statusLabel: "AGENDADA", statusExibicao: "PROGRAMADA", inicio: "2026-10-01T00:00:00Z", fim: "2026-10-31T00:00:00Z",
+  precoOriginal: 249.9, precoFinal: 199.9, descontoReais: 50, descontoPercentual: 20,
   meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
 };
 
@@ -2027,6 +2045,53 @@ async function run() {
         await cancelarDialogoEscrita(cdp);
       } finally {
         aplicarPromocaoResultado = null;
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("41 — statusExibicao decide a ação: NÃO APLICADA e PROGRAMADA mostram 'Simular', nunca 'Alterar', e o clique nunca chega a escrever", async () => {
+      promocoesRespostaPadrao = [PROMO_NAO_APLICADA, PROMO_PROGRAMADA];
+      try {
+        pedidos.length = 0;
+        simularMargemChamadas.length = 0;
+        aplicarPromocaoChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
+          "as duas linhas (NÃO APLICADA + PROGRAMADA) não apareceram");
+
+        const acaoNaoAplicada = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]').textContent.trim()`
+        );
+        assert.strictEqual(acaoNaoAplicada, "Simular", "started+NÃO APLICADA não pode mostrar 'Alterar' — não é a promoção que define o preço atual");
+
+        const acaoProgramada = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-id="P-4"] [data-acao="promo-acao"]').textContent.trim()`
+        );
+        assert.strictEqual(acaoProgramada, "Simular", "pending+PROGRAMADA não pode mostrar 'Alterar' — ainda não começou");
+
+        // Clicar simula localmente (comportamento normal de qualquer linha
+        // sem escrita), mas o botão TEM de continuar "Simular" depois —
+        // nunca pode virar "Confirmar alteração" para uma NÃO APLICADA.
+        await clicar(cdp, '.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]', "botão da linha NÃO APLICADA não encontrado");
+        for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
+        assert.strictEqual(simularMargemChamadas.length, 1, "clicar ainda pode simular localmente (não escreve nada)");
+
+        const acaoDepoisDoClique = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]').textContent.trim()`
+        );
+        assert.strictEqual(acaoDepoisDoClique, "Simular", "depois de simular, NÃO APLICADA continua 'Simular' — nunca 'Confirmar alteração'");
+
+        // Segundo clique: se o gate de clique estivesse ausente, isto abriria
+        // o diálogo de confirmação. Tem de continuar sem abrir nada e sem
+        // jamais chamar o endpoint de escrita.
+        await clicar(cdp, '.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]', "botão da linha NÃO APLICADA não encontrado (2º clique)");
+        await sleep(200);
+        assert.strictEqual(await cdp.evaluate("!!document.querySelector('.am-confirm-overlay')"), false,
+          "NÃO APLICADA jamais pode abrir o diálogo de confirmação de escrita");
+        assert.strictEqual(aplicarPromocaoChamadas.length, 0, "NÃO APLICADA jamais pode chamar o endpoint de escrita de promoção");
+      } finally {
         promocoesRespostaPadrao = [];
       }
     });

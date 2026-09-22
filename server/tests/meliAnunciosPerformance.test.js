@@ -497,7 +497,7 @@ async function run() {
       "profit (R$) precisa vir junto — a composição usa este número pronto do Motor, nunca soma as linhas pra chegar nele");
     assert.deepStrictEqual(res.corpo.composicao["MLB-R1"], {
       venda: 200, custoProduto: 80, comissaoMl: 25, frete: 15, taxaFixa: null, impostoPercentual: 0.05, impostoValor: 10,
-      precoPromocionalAtivo: false,
+      precoPromocionalAtivo: false, rebate: null,
     }, JSON.stringify(res.corpo.composicao));
     ok("incluirComposicao=1 + margem realizada: ladder completo, taxa fixa ausente (sem histórico), imposto R$ = venda × percentual");
   });
@@ -522,7 +522,7 @@ async function run() {
     assert.strictEqual(res.corpo.margem["MLB-P1"].profit, 30);
     assert.deepStrictEqual(res.corpo.composicao["MLB-P1"], {
       venda: 150, custoProduto: 60, comissaoMl: 18, frete: 12, taxaFixa: 3, impostoPercentual: 0.04, impostoValor: 6,
-      precoPromocionalAtivo: false,
+      precoPromocionalAtivo: false, rebate: null,
     }, JSON.stringify(res.corpo.composicao));
     ok("incluirComposicao=1 + margem projetada: ladder completo, incluindo taxa fixa (só existe do lado projetado)");
   });
@@ -588,6 +588,120 @@ async function run() {
     assert.deepStrictEqual(res.corpo.composicao, {}, "composicao sem margem não tem o que decompor — fica vazia também");
     assert.strictEqual(chamadasMargem.length, 0, "o Motor de Margem não pode ser chamado quando incluirMargem=0, mesmo pedindo composicao");
     ok("incluirComposicao=1 com incluirMargem=0: composicao vazia, Motor de Margem não é chamado");
+  });
+
+  // 17. subsidioMl/subsidioMlItemId (promoção ATIVA do modal, ver
+  //     meliPromocoesService.normalizarPromocao) — o front já tem esse valor
+  //     em cache (garantirPromocoesDoItem roda ao abrir o modal, antes da
+  //     composição), então chega pronto na querystring — zero chamada ML
+  //     nova aqui. Reaproveita EXATAMENTE marginEngine.computeMargin (mesmo
+  //     campo `rebate` de POST .../simular-margem), nunca uma fórmula
+  //     paralela: profit/marginPercent do item recalculados COM rebate,
+  //     "Taxa de rebate" aparece na composição com o valor aplicado.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({
+      itens: [itemDeMargem({
+        itemId: "MLB-REB1", realizedComputable: true, realizedMargin: 0.35, realizedProfit: 35, status: "HEALTHY", statusLabel: "Saudável",
+        composicao: { vendaRealizada: 100, custoRealizado: 40, impostoRealizado: 0.05, comissaoRealizada: 12, freteRealizado: 8 },
+      })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: {
+        clienteSlug: "cliente-a", itemIds: "MLB-REB1", incluirComposicao: "1",
+        subsidioMlItemId: "MLB-REB1", subsidioMl: "1.35",
+      },
+    }, res);
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.margem["MLB-REB1"].profit, 36.35, "profit final precisa somar o rebate (35 + 1.35)");
+    assert.strictEqual(res.corpo.margem["MLB-REB1"].marginPercent, 36.35, "marginPercent recalculado com o lucro já com rebate (36.35/100)");
+    assert.strictEqual(res.corpo.composicao["MLB-REB1"].rebate, 1.35, "composição mostra a Taxa de rebate aplicada");
+    ok("subsidioMl da promoção ATIVA: margem inicial (sem clicar em Simular) já soma o rebate, composição ganha a linha Taxa de rebate");
+  });
+
+  // 18. Sem subsidioMl (nenhuma promoção ativa, ou modal fora do fluxo de
+  //     rebate): comportamento idêntico ao anterior — rebate: null na
+  //     composição, margem sem alteração nenhuma.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({
+      itens: [itemDeMargem({
+        itemId: "MLB-REB2", realizedComputable: true, realizedMargin: 0.35, realizedProfit: 35, status: "HEALTHY", statusLabel: "Saudável",
+        composicao: { vendaRealizada: 100, custoRealizado: 40, impostoRealizado: 0.05, comissaoRealizada: 12, freteRealizado: 8 },
+      })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-REB2", incluirComposicao: "1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.margem["MLB-REB2"].profit, 35, "sem subsidioMl, profit continua o valor real do Motor — comportamento anterior preservado");
+    assert.strictEqual(res.corpo.composicao["MLB-REB2"].rebate, null, "sem promoção ativa, a linha Taxa de rebate não aparece (rebate: null)");
+    ok("sem subsidioMl: comportamento idêntico ao anterior, rebate: null na composição");
+  });
+
+  // 19. subsidioMl negativo: 400, sem gastar chamada nenhuma (mesma postura
+  //     de validação de POST .../simular-margem).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A", subsidioMlItemId: "MLB-A", subsidioMl: "-1" },
+    }, res);
+
+    assert.strictEqual(res.statusCode, 400, "subsidioMl negativo precisa ser rejeitado");
+    assert.strictEqual(chamadasMargem.length, 0, "validação falha antes de qualquer chamada ao Motor");
+    ok("subsidioMl negativo: 400, zero chamada ao Motor de Margem");
+  });
+
+  // 20. subsidioMlItemId aponta para um item que não está no lote pedido:
+  //     nunca aplica o rebate em outro item por engano — margem do item
+  //     realmente pedido fica intacta.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({
+      itens: [itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.3, realizedProfit: 30, status: "HEALTHY", statusLabel: "Saudável" })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A", subsidioMlItemId: "MLB-OUTRO", subsidioMl: "1.35" },
+    }, res);
+
+    assert.strictEqual(res.corpo.margem["MLB-A"].profit, 30, "subsidioMlItemId de outro item nunca contamina a margem do item pedido");
+    ok("subsidioMlItemId que não bate com nenhum item do lote: rebate não é aplicado em lugar nenhum");
+  });
+
+  // 21. Item não-computável: subsidioMl presente não força um cálculo —
+  //     continua sem composição, sem margem inventada (mesma regra do teste 14).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({
+      itens: [itemDeMargem({
+        itemId: "MLB-U2", realizedComputable: false, projectedComputable: false, projectedMargin: null,
+        status: "UNVALIDATED", statusLabel: "Não validado", statusReasons: ["Variáveis obrigatórias ausentes: custo."],
+      })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: {
+        clienteSlug: "cliente-a", itemIds: "MLB-U2", incluirComposicao: "1",
+        subsidioMlItemId: "MLB-U2", subsidioMl: "1.35",
+      },
+    }, res);
+
+    assert.strictEqual(res.corpo.margem["MLB-U2"].statusLabel, "Não validado");
+    assert.strictEqual(res.corpo.composicao["MLB-U2"], undefined, "item não-computável não ganha composição só porque subsidioMl foi passado");
+    ok("item não-computável + subsidioMl presente: sem composição, sem margem inventada — mesma regra de sempre");
   });
 }
 

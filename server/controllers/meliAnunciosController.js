@@ -413,7 +413,7 @@ function extrairValoresBaseParaSimulacao(item, origem) {
 // as demais — a margem final exibida (`margin`/`marginPercent`, abaixo)
 // continua sendo, sempre e só, o valor que o Motor já calculou. Nenhuma
 // linha é ajustada para a soma "fechar" contra esse número.
-function montarComposicaoDoItem(item, origem) {
+function montarComposicaoDoItem(item, origem, rebate = null) {
   const custosOrigem = origem === "realized" ? "realized" : "projected";
   const venda = valorEvidencia(
     origem === "realized" ? item.pricing.sold : item.pricing.current
@@ -440,10 +440,32 @@ function montarComposicaoDoItem(item, origem) {
   // editar sem bloquear faria a tela mostrar um valor e gravar outro.
   const precoPromocionalAtivo = valorEvidencia(item.pricing.promo) != null;
 
-  return { venda, custoProduto, comissaoMl, frete, taxaFixa, impostoPercentual, impostoValor, precoPromocionalAtivo };
+  // `rebate` (retorno ML da promoção ATIVA, ver performance() §subsidioMl):
+  // null quando não há promoção ativa (ou o front não pediu) — a linha
+  // "Taxa de rebate" some sozinha na composição nesse caso, mesmo padrão de
+  // `taxaFixa`. Nunca calculado aqui — só repassado por quem já recalculou
+  // `margem[itemId]` com este mesmo valor (ver montarMapaMargem).
+  return {
+    venda, custoProduto, comissaoMl, frete, taxaFixa, impostoPercentual, impostoValor,
+    precoPromocionalAtivo, rebate,
+  };
 }
 
-function montarMapaMargem(itens, incluirComposicao) {
+// Recalcula margem/composição de UM item somando o rebate ML da promoção
+// ATIVA — reaproveita EXATAMENTE `extrairValoresBaseParaSimulacao` +
+// `marginEngine.computeMargin` (mesmo par usado por `anexarVoceRecebe`),
+// nunca uma fórmula paralela. `null` quando não há rebate para aplicar (sem
+// `rebateAlvo` para este item, ou item não-computável) — quem chama usa a
+// margem original do Motor nesse caso.
+function calcularMargemComRebate(item, origem, exibida, rebateAlvo) {
+  if (!exibida || !exibida.computable || !rebateAlvo) return null;
+  if (String(item.identity.itemId) !== String(rebateAlvo.itemId)) return null;
+  const base = extrairValoresBaseParaSimulacao(item, origem);
+  const resultado = marginEngine.computeMargin({ ...base, rebate: rebateAlvo.valor });
+  return resultado.computable ? resultado : null;
+}
+
+function montarMapaMargem(itens, incluirComposicao, rebateAlvo) {
   const margem = {};
   const composicao = {};
   for (const item of itens || []) {
@@ -454,15 +476,19 @@ function montarMapaMargem(itens, incluirComposicao) {
     const origem = usaRealizada ? "realized" : "projected";
     const itemId = item.identity.itemId;
 
+    const comRebate = calcularMargemComRebate(item, origem, exibida, rebateAlvo);
+
     margem[itemId] = {
       origem,
-      margin: exibida ? exibida.margin : null,
-      marginPercent: exibida ? exibida.marginPercent : null,
+      margin: comRebate ? comRebate.margin : (exibida ? exibida.margin : null),
+      marginPercent: comRebate
+        ? (comRebate.margin === null ? null : Math.round(comRebate.margin * 10000) / 100)
+        : (exibida ? exibida.marginPercent : null),
       // Lucro em R$ (o Motor já calcula — `margin`/`marginPercent` acima são
       // só a RAZÃO/percentual). Aditivo: a lista nunca leu este campo, só a
       // seção "Composição da margem" do modal precisa dele para a linha
       // final "= Margem" em moeda.
-      profit: exibida ? exibida.profit : null,
+      profit: comRebate ? comRebate.profit : (exibida ? exibida.profit : null),
       status: item.quality.status,
       statusLabel: item.quality.statusLabel,
       statusReasons: item.quality.statusReasons,
@@ -495,7 +521,7 @@ function montarMapaMargem(itens, incluirComposicao) {
     // o front reaproveita o mesmo statusLabel/statusReasons acima, nunca
     // uma composição parcial.
     if (incluirComposicao && exibida && exibida.computable) {
-      composicao[itemId] = montarComposicaoDoItem(item, origem);
+      composicao[itemId] = montarComposicaoDoItem(item, origem, comRebate ? rebateAlvo.valor : null);
     }
   }
   return { margem, composicao };
@@ -522,6 +548,27 @@ async function performance(req, res) {
     const incluirMetricas = flagLigada(req.query && req.query.incluirMetricas);
     const incluirMargem = flagLigada(req.query && req.query.incluirMargem);
     const incluirComposicao = flagOptIn(req.query && req.query.incluirComposicao);
+
+    // subsidioMl/subsidioMlItemId: rebate ML da promoção ATIVA selecionada
+    // no modal (mesmo campo `subsidioMl` de POST .../simular-margem) — o
+    // front já tem esse valor em cache (garantirPromocoesDoItem roda ao
+    // abrir o modal, antes da composição), então chega pronto aqui, sem
+    // nenhuma chamada nova ao Mercado Livre. Opcional: ausente = comporta-
+    // mento idêntico ao anterior. Só é aplicado ao item cujo itemId bate com
+    // `subsidioMlItemId` (ver montarMapaMargem/calcularMargemComRebate) —
+    // nunca contamina outros itens do mesmo lote.
+    let rebateAlvo = null;
+    if (req.query && req.query.subsidioMl !== undefined) {
+      const n = Number(req.query.subsidioMl);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({ ok: false, motivo: "O campo subsidioMl precisa ser um número maior ou igual a zero." });
+      }
+      const subsidioMlItemId = req.query.subsidioMlItemId;
+      if (subsidioMlItemId != null && String(subsidioMlItemId).trim() !== "") {
+        rebateAlvo = { itemId: String(subsidioMlItemId).trim(), valor: n };
+      }
+    }
+
     if (!itemIds.length || (!incluirMetricas && !incluirMargem)) {
       return res.json({ ok: true, metricas7d: {}, margem: {}, margemIndisponivel: null, composicao: {} });
     }
@@ -567,7 +614,7 @@ async function performance(req, res) {
       // desligado por pedido do frontend (soma automática do agrupador ainda
       // fechado — margem só é buscada quando o operador realmente expande).
     } else if (margemResultado.status === "fulfilled") {
-      const resultado = montarMapaMargem(margemResultado.value.itens, incluirComposicao);
+      const resultado = montarMapaMargem(margemResultado.value.itens, incluirComposicao, rebateAlvo);
       margem = resultado.margem;
       composicao = resultado.composicao;
     } else {

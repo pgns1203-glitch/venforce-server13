@@ -799,6 +799,147 @@ async function run() {
     assert.ok(mlChamadas.every((c) => c.metodo === "GET"), "voceRecebe não pode introduzir nenhuma chamada de escrita ao ML");
     ok("Você recebe: continua read-only mesmo com o Motor de Margem ligado no carregamento das promoções");
   });
+
+  // ── Deduplicação por id+type (auditoria: "Vendex - Setembro" aparecia com
+  // subsidioMl null na tabela, mas o clique em Alterar resolvia por id e
+  // caía numa OUTRA entrada duplicada com subsidioMl preenchido, disparando
+  // o aviso de rebate indevidamente — promocaoPorId no frontend sempre
+  // resolve pela PRIMEIRA ocorrência do id no array, então duas entradas
+  // com o mesmo id+type é uma inconsistência visual-vs-lógica garantida).
+  // Prioridade de desempate (nunca junta campos das duas, só ESCOLHE uma):
+  // 1) statusExibicao ATIVA, 2) subsidioMl preenchido, 3) datas preenchidas,
+  // 4) maior quantidade de campos preenchidos.
+
+  // 27. Prioridade 2 isolada: nenhuma das duas é ATIVA (nenhuma bate com o
+  //     promotion_id do sale_price) — a com subsidioMl preenchido vence.
+  {
+    const semSubsidio = promocoesService.normalizarPromocao(
+      { id: "P-VDX", type: "SELLER_CAMPAIGN", status: "started", price: 149.9, original_price: 149.9 }, 0
+    );
+    const comSubsidio = promocoesService.normalizarPromocao(
+      { id: "P-VDX", type: "SELLER_CAMPAIGN", status: "started", price: 134.9, original_price: 149.9, meli_percentage: 0.5 }, 1
+    );
+    const resultado = promocoesService.deduplicarPromocoes([semSubsidio, comSubsidio]);
+    assert.strictEqual(resultado.length, 1, "id+type repetido deve colapsar em uma única promoção");
+    assert.strictEqual(resultado[0].subsidioMl, 0.75, "prioridade 2 (subsidioMl preenchido) vence quando nenhuma é ATIVA");
+  }
+  ok("deduplicarPromocoes: sem nenhuma ATIVA, vence a duplicata com subsidioMl preenchido");
+
+  // 28. Prioridade 1 vence a 2: entre duas entradas com o mesmo id (mesma
+  //     campanha, uma started e outra pending — caso real documentado em
+  //     enriquecerVigencia), a ATIVA (started, id bate com promotion_id do
+  //     sale_price) vence mesmo sem subsidioMl, sobre a pending (nunca vira
+  //     ATIVA, independente do id) que tem subsidioMl preenchido.
+  {
+    const ativaSemSubsidio = promocoesService.normalizarPromocao(
+      { id: "P-77", type: "SELLER_CAMPAIGN", status: "started", price: 90, original_price: 100 }, 0, "P-77"
+    );
+    const pendingComSubsidio = promocoesService.normalizarPromocao(
+      { id: "P-77", type: "SELLER_CAMPAIGN", status: "pending", price: 85, original_price: 100, meli_percentage: 4 }, 1, "P-77"
+    );
+    assert.strictEqual(ativaSemSubsidio.statusExibicao, "ATIVA");
+    assert.strictEqual(pendingComSubsidio.statusExibicao, "PROGRAMADA", "pending nunca vira ATIVA, mesmo com id igual ao promotion_id ativo");
+
+    const resultado = promocoesService.deduplicarPromocoes([ativaSemSubsidio, pendingComSubsidio]);
+    assert.strictEqual(resultado.length, 1);
+    assert.strictEqual(resultado[0].statusExibicao, "ATIVA", "prioridade 1 (statusExibicao ATIVA) vence a prioridade 2 (subsidioMl)");
+    assert.strictEqual(resultado[0].subsidioMl, null, "a vencedora é a ATIVA, mesmo sem subsidioMl — nunca junta o subsidioMl da outra");
+  }
+  ok("deduplicarPromocoes: statusExibicao ATIVA vence subsidioMl preenchido quando as duas competem");
+
+  // 29. Empate nas 3 primeiras prioridades: vence quem tem mais campos
+  //     preenchidos (nome presente é o campo extra que desempata aqui).
+  {
+    const semNome = promocoesService.normalizarPromocao(
+      { id: "P-88", type: "DEAL", status: "candidate", suggested_discounted_price: 90, original_price: 100 }, 0
+    );
+    const comNome = promocoesService.normalizarPromocao(
+      { id: "P-88", type: "DEAL", status: "candidate", suggested_discounted_price: 90, original_price: 100, name: "Campanha X" }, 1
+    );
+    const resultado = promocoesService.deduplicarPromocoes([semNome, comNome]);
+    assert.strictEqual(resultado.length, 1);
+    assert.strictEqual(resultado[0].nome, "Campanha X", "empatadas nas 3 primeiras prioridades, vence quem tem mais campos preenchidos");
+  }
+  ok("deduplicarPromocoes: em empate total, vence a duplicata com mais campos preenchidos");
+
+  // ── Revisão de segurança da deduplicação ───────────────────────────────────
+
+  // 29b. A chave é id+type, NUNCA só id — mesmo id com tipos diferentes é
+  //      duas promoções REALMENTE diferentes (ex.: uma DEAL e uma
+  //      SELLER_CAMPAIGN podem coincidir de id por acaso), nunca podem
+  //      colapsar em uma só.
+  {
+    const tipoA = promocoesService.normalizarPromocao(
+      { id: "X-1", type: "DEAL", status: "candidate", suggested_discounted_price: 90, original_price: 100 }, 0
+    );
+    const tipoB = promocoesService.normalizarPromocao(
+      { id: "X-1", type: "SELLER_CAMPAIGN", status: "candidate", suggested_discounted_price: 85, original_price: 100 }, 1
+    );
+    const resultado = promocoesService.deduplicarPromocoes([tipoA, tipoB]);
+    assert.strictEqual(resultado.length, 2, "mesmo id com tipos diferentes não pode colapsar — a chave é id+type, não só id");
+  }
+  ok("deduplicarPromocoes: mesmo id com tipos diferentes nunca colapsa — confirma que a chave é id+type");
+
+  // 29c. Promoções SEM id (fallback sintético do normalizador inclui o índice
+  //      da posição — ver normalizarPromocao) nunca podem ser removidas pela
+  //      deduplicação: cada uma nasce com uma chave sintética própria, então
+  //      nunca colidem entre si por engano.
+  {
+    const semId1 = promocoesService.normalizarPromocao(
+      { type: "PRICE_DISCOUNT", status: "candidate", suggested_discounted_price: 90, original_price: 100 }, 0
+    );
+    const semId2 = promocoesService.normalizarPromocao(
+      { type: "PRICE_DISCOUNT", status: "candidate", suggested_discounted_price: 85, original_price: 100 }, 1
+    );
+    assert.notStrictEqual(semId1.id, semId2.id, "sem id/ref_id, o fallback usa o índice da posição — nunca pode colidir entre duas promoções diferentes");
+    const resultado = promocoesService.deduplicarPromocoes([semId1, semId2]);
+    assert.strictEqual(resultado.length, 2, "promoções sem id nunca podem ser removidas pela deduplicação");
+  }
+  ok("deduplicarPromocoes: promoções sem id (fallback por índice da posição) nunca são removidas");
+
+  // 30. Fim a fim via endpoint real: duplicata sem rebate + duplicata com
+  //     rebate (mesmo id+type) — a tabela e o botão "Alterar" passam a ver
+  //     uma ÚNICA promoção, com o subsidioMl correto (nunca "—" com um clique
+  //     que discorda do que a tela mostrou).
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = () => ({
+      ok: true, status: 200,
+      data: [
+        { id: "P-VDX-E2E", type: "SELLER_CAMPAIGN", status: "started", price: 149.9, original_price: 149.9, name: "Vendex - Setembro" },
+        { id: "P-VDX-E2E", type: "SELLER_CAMPAIGN", status: "started", price: 134.9, original_price: 149.9, meli_percentage: 0.5, name: "Vendex - Setembro" },
+      ],
+    });
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.promocoes.length, 1, "o endpoint nunca pode devolver duas linhas para a mesma promoção (mesmo id+type)");
+    assert.strictEqual(res.corpo.promocoes[0].subsidioMl, 0.75, "a versão mantida é a que tem subsidioMl preenchido — a UI mostra o valor real, não '—'");
+    ok("endpoint: duplicata sem rebate + duplicata com rebate (mesmo id+type) colapsa em uma linha só, com o subsidioMl real");
+  });
+
+  // 31. Fim a fim: duplicata sem rebate em AMBAS as entradas — resultado
+  //     continua com subsidioMl null, então o gate de escrita do frontend
+  //     (jaParticipada && subsidioMl != null, ver anuncios-meli.js) não tem
+  //     motivo pra bloquear "Alterar" com o aviso de rebate.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = () => ({
+      ok: true, status: 200,
+      data: [
+        { id: "P-VDX2-E2E", type: "SELLER_CAMPAIGN", status: "started", price: 149.9, original_price: 149.9, name: "Vendex - Outubro" },
+        { id: "P-VDX2-E2E", type: "SELLER_CAMPAIGN", status: "active", price: 149.9, original_price: 149.9, name: "Vendex - Outubro" },
+      ],
+    });
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.promocoes.length, 1, "duas entradas sem rebate para a mesma promoção também colapsam em uma só");
+    assert.strictEqual(res.corpo.promocoes[0].subsidioMl, null, "sem subsidioMl em nenhuma duplicata, o resultado continua null — Alterar não deve ser bloqueado");
+    ok("endpoint: duplicata sem rebate nas duas entradas colapsa em uma só, subsidioMl continua null (Alterar não é bloqueado)");
+  });
 }
 
 run()

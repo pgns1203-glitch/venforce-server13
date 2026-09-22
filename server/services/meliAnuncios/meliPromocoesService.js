@@ -277,6 +277,57 @@ async function enriquecerVigencia({ clienteId, mlUserId, paresBrutoNormalizado }
   );
 }
 
+// Duas entradas cruas do ML podem repetir a mesma campanha com o mesmo
+// id+type (ex.: uma started e outra pending da mesma campanha — já
+// documentado em enriquecerVigencia) mas com campos diferentes preenchidos
+// (ex.: uma sem meli_percentage → subsidioMl null, outra completa). Sem
+// deduplicar, a tabela do frontend desenha uma linha por entrada, mas
+// promocaoPorId (Portal/anuncios-meli.js) resolve o clique pela PRIMEIRA
+// ocorrência do id no array — podendo abrir a confirmação usando os dados
+// de uma linha diferente da que o operador está olhando (caso real:
+// "Vendex - Setembro" mostrava Subsídio ML "—", mas o clique em "Alterar"
+// resolvia pra a outra entrada duplicada, com subsidioMl preenchido, e
+// disparava o aviso de rebate indevidamente).
+//
+// Nunca junta/soma campos das duas entradas — só ESCOLHE uma, pela mesma
+// régua de "mais completa" nesta ordem: 1) statusExibicao ATIVA (é a que
+// realmente forma o preço agora), 2) subsidioMl preenchido, 3) datas
+// preenchidas, 4) maior quantidade de campos preenchidos.
+function contarCamposPreenchidos(p) {
+  return Object.keys(p).filter((k) => p[k] !== null && p[k] !== undefined).length;
+}
+
+function promocaoMaisCompleta(a, b) {
+  const aAtiva = a.statusExibicao === "ATIVA";
+  const bAtiva = b.statusExibicao === "ATIVA";
+  if (aAtiva !== bAtiva) return aAtiva ? a : b;
+
+  const aSubsidio = a.subsidioMl != null;
+  const bSubsidio = b.subsidioMl != null;
+  if (aSubsidio !== bSubsidio) return aSubsidio ? a : b;
+
+  const aData = a.inicio != null || a.fim != null;
+  const bData = b.inicio != null || b.fim != null;
+  if (aData !== bData) return aData ? a : b;
+
+  return contarCamposPreenchidos(a) >= contarCamposPreenchidos(b) ? a : b;
+}
+
+function deduplicarPromocoes(lista) {
+  const porChave = new Map();
+  const ordemChaves = [];
+  lista.forEach((p) => {
+    const chave = `${p.id}::${p.tipo}`;
+    if (!porChave.has(chave)) {
+      porChave.set(chave, p);
+      ordemChaves.push(chave);
+    } else {
+      porChave.set(chave, promocaoMaisCompleta(porChave.get(chave), p));
+    }
+  });
+  return ordemChaves.map((chave) => porChave.get(chave));
+}
+
 async function listarPromocoesDoItem({ clienteId, itemId, mlUserId }) {
   const [resp, promotionIdAtivo] = await Promise.all([
     mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(itemId)}?app_version=v2`, { mlUserId }),
@@ -300,13 +351,14 @@ async function listarPromocoesDoItem({ clienteId, itemId, mlUserId }) {
     paresBrutoNormalizado: ordenada.map((p, i) => [p, normalizadas[i]]),
   });
 
-  return normalizadas;
+  return deduplicarPromocoes(normalizadas);
 }
 
 module.exports = {
   listarPromocoesDoItem,
   normalizarPromocao,
   ordenarPorPrioridade,
+  deduplicarPromocoes,
   rotuloTipoPromocao,
   statusLabelPromocao,
 };

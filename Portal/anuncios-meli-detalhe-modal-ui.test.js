@@ -157,6 +157,17 @@ const PROMO_ATIVA = {
   precoOriginal: 249.9, precoFinal: 199.9, descontoReais: 50, descontoPercentual: 20,
   meliPercentage: 5, sellerPercentage: 10, subsidioMl: 2.5, editavelPrecoFinal: true,
 };
+// Igual a PROMO_ATIVA, mas SEM subsidioMl — usada para provar que a escrita
+// real (Alterar → PUT) continua funcionando quando não há retorno ML (ver
+// check 40b). PROMO_ATIVA (com subsidioMl) passou a testar o AVISO de
+// bloqueio em vez da escrita (ver check 40e — regra revisada: rebate nunca
+// pode chegar a um PUT real).
+const PROMO_ATIVA_SEM_REBATE = {
+  id: "P-1", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "HOTSALE",
+  status: "started", statusLabel: "ATIVA", statusExibicao: "ATIVA", inicio: "2026-09-01T12:00:00Z", fim: "2026-09-30T12:00:00Z",
+  precoOriginal: 249.9, precoFinal: 199.9, descontoReais: 50, descontoPercentual: 20,
+  meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
+};
 const PROMO_CANDIDATE = {
   id: "PD-1", tipo: "PRICE_DISCOUNT", tipoLabel: "Desconto individual", nome: null,
   status: "candidate", statusLabel: "ELEGÍVEL", statusExibicao: "ELEGÍVEL", inicio: null, fim: null,
@@ -173,9 +184,12 @@ const PROMO_CANDIDATE_DEAL = {
   meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
 };
 // DEAL started (tipo com escrita), mas o sale_price aponta pra OUTRA
-// promoção — statusExibicao: NÃO APLICADA. Usada para provar que "Alterar"
-// não pode aparecer, e que o clique nunca chega a chamar o endpoint de
-// escrita (ver check 41).
+// promoção — statusExibicao: NÃO APLICADA. Regra revisada: o vendedor já
+// PARTICIPA desta promoção (status bruto started/active) mesmo que ela não
+// seja a que forma o preço atual agora — "Alterar" tem de aparecer e a
+// escrita real precisa funcionar do mesmo jeito que PROMO_ATIVA_SEM_REBATE
+// (ver check 41b). Só PROGRAMADA (pending, ainda não começou) continua
+// bloqueada (ver check 41).
 const PROMO_NAO_APLICADA = {
   id: "P-3", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "Campanha Paralela",
   status: "started", statusLabel: "ATIVA", statusExibicao: "NÃO APLICADA", inicio: null, fim: null,
@@ -190,6 +204,23 @@ const PROMO_PROGRAMADA = {
   precoOriginal: 249.9, precoFinal: 199.9, descontoReais: 50, descontoPercentual: 20,
   meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
 };
+// Tipos SEM contrato de escrita simétrico nesta v1 (ver PROMO_TIPOS_COM_ESCRITA
+// em anuncios-meli.js) — mesmo já PARTICIPADOS (started/ATIVA) pelo vendedor,
+// nunca podem oferecer "Alterar": o backend recusaria o PUT mesmo que o botão
+// tentasse (ver meliPromocoesEscritaService.TIPOS_COM_ESCRITA). subsidioMl
+// fica null de propósito, para isolar este teste do bloqueio de rebate (ver
+// check 40e) — aqui o bloqueio tem de vir só do TIPO (ver checks 42/42b).
+const PROMO_TIPOS_SEM_ESCRITA_JA_PARTICIPADOS = [
+  { id: "T-SMART", tipo: "SMART", tipoLabel: "Campanha cofinanciada automatizada" },
+  { id: "T-PD", tipo: "PRICE_DISCOUNT", tipoLabel: "Desconto individual" },
+  { id: "T-PN", tipo: "PRE_NEGOTIATED", tipoLabel: "Desconto pré-acordado" },
+  { id: "T-PM", tipo: "PRICE_MATCHING", tipoLabel: "Preços competitivos" },
+  { id: "T-LN", tipo: "LIGHTNING", tipoLabel: "Oferta relâmpago" },
+].map((base) => Object.assign({
+  nome: null, status: "started", statusLabel: "ATIVA", statusExibicao: "ATIVA", inicio: null, fim: null,
+  precoOriginal: 249.9, precoFinal: 199.9, descontoReais: 50, descontoPercentual: 20,
+  meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
+}, base));
 
 const SEMENTE = `
   try {
@@ -1955,8 +1986,8 @@ async function run() {
       }
     });
 
-    await check("40b — DEAL started: 'Alterar' simula, vira 'Confirmar alteração', e confirmar chama o mesmo endpoint de escrita", async () => {
-      promocoesRespostaPadrao = [PROMO_ATIVA];
+    await check("40b — DEAL started sem rebate: 'Alterar' simula, vira 'Confirmar alteração', e confirmar chama o mesmo endpoint de escrita", async () => {
+      promocoesRespostaPadrao = [PROMO_ATIVA_SEM_REBATE];
       try {
         pedidos.length = 0;
         simularMargemChamadas.length = 0;
@@ -2049,8 +2080,8 @@ async function run() {
       }
     });
 
-    await check("41 — statusExibicao decide a ação: NÃO APLICADA e PROGRAMADA mostram 'Simular', nunca 'Alterar', e o clique nunca chega a escrever", async () => {
-      promocoesRespostaPadrao = [PROMO_NAO_APLICADA, PROMO_PROGRAMADA];
+    await check("40e — DEAL started COM rebate (subsidioMl): 'Alterar' simula normalmente, mas 'Confirmar alteração' mostra o aviso e NUNCA chama o endpoint de escrita", async () => {
+      promocoesRespostaPadrao = [PROMO_ATIVA];
       try {
         pedidos.length = 0;
         simularMargemChamadas.length = 0;
@@ -2058,13 +2089,45 @@ async function run() {
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await esperarLista(cdp);
         await abrirPrimeiroAnuncio(cdp);
-        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
-          "as duas linhas (NÃO APLICADA + PROGRAMADA) não apareceram");
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1",
+          "a linha da promoção DEAL ativa com rebate não apareceu");
 
-        const acaoNaoAplicada = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]').textContent.trim()`
+        const acaoInicial = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-id="P-1"] [data-acao="promo-acao"]').textContent.trim()`
         );
-        assert.strictEqual(acaoNaoAplicada, "Simular", "started+NÃO APLICADA não pode mostrar 'Alterar' — não é a promoção que define o preço atual");
+        assert.strictEqual(acaoInicial, "Alterar", "com subsidioMl o botão continua mostrando 'Alterar' normalmente");
+
+        await confirmarEdicaoPromoPreco(cdp, "P-1", "180");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('.am-promo__linha[data-promo-id="P-1"] [data-acao="promo-acao"]');
+          return b && b.textContent.trim() === "Confirmar alteração";
+        })()`, "o botão não virou 'Confirmar alteração' depois de editar o preço final");
+
+        await clicar(cdp, '.am-promo__linha[data-promo-id="P-1"] [data-acao="promo-acao"]', "botão 'Confirmar alteração' não encontrado");
+        await waitFor(cdp, "document.querySelector('.vf-toast.is-warning')", "o aviso de rebate não apareceu");
+        const aviso = await cdp.evaluate("document.querySelector('.vf-toast.is-warning').innerText");
+        assert.ok(/participação do Mercado Livre \(rebate\)/.test(aviso), `aviso inesperado: ${aviso}`);
+        assert.ok(/alteração de valores ainda não está disponível/.test(aviso), `aviso inesperado: ${aviso}`);
+
+        assert.strictEqual(await cdp.evaluate("!!document.querySelector('.am-confirm-overlay')"), false,
+          "promoção com rebate jamais pode abrir o diálogo de confirmação de escrita");
+        assert.strictEqual(aplicarPromocaoChamadas.length, 0, "promoção com rebate jamais pode chamar o endpoint de escrita de promoção");
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("41 — PROGRAMADA (pending) sempre mostra 'Simular', nunca 'Alterar', e o clique nunca chega a escrever", async () => {
+      promocoesRespostaPadrao = [PROMO_PROGRAMADA];
+      try {
+        pedidos.length = 0;
+        simularMargemChamadas.length = 0;
+        aplicarPromocaoChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1",
+          "a linha PROGRAMADA não apareceu");
 
         const acaoProgramada = await cdp.evaluate(
           `document.querySelector('.am-promo__linha[data-promo-id="P-4"] [data-acao="promo-acao"]').textContent.trim()`
@@ -2073,24 +2136,119 @@ async function run() {
 
         // Clicar simula localmente (comportamento normal de qualquer linha
         // sem escrita), mas o botão TEM de continuar "Simular" depois —
-        // nunca pode virar "Confirmar alteração" para uma NÃO APLICADA.
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]', "botão da linha NÃO APLICADA não encontrado");
+        // nunca pode virar "Confirmar alteração" para uma PROGRAMADA.
+        await clicar(cdp, '.am-promo__linha[data-promo-id="P-4"] [data-acao="promo-acao"]', "botão da linha PROGRAMADA não encontrado");
         for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
         assert.strictEqual(simularMargemChamadas.length, 1, "clicar ainda pode simular localmente (não escreve nada)");
 
         const acaoDepoisDoClique = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-id="P-4"] [data-acao="promo-acao"]').textContent.trim()`
         );
-        assert.strictEqual(acaoDepoisDoClique, "Simular", "depois de simular, NÃO APLICADA continua 'Simular' — nunca 'Confirmar alteração'");
+        assert.strictEqual(acaoDepoisDoClique, "Simular", "depois de simular, PROGRAMADA continua 'Simular' — nunca 'Confirmar alteração'");
 
         // Segundo clique: se o gate de clique estivesse ausente, isto abriria
         // o diálogo de confirmação. Tem de continuar sem abrir nada e sem
         // jamais chamar o endpoint de escrita.
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]', "botão da linha NÃO APLICADA não encontrado (2º clique)");
+        await clicar(cdp, '.am-promo__linha[data-promo-id="P-4"] [data-acao="promo-acao"]', "botão da linha PROGRAMADA não encontrado (2º clique)");
         await sleep(200);
         assert.strictEqual(await cdp.evaluate("!!document.querySelector('.am-confirm-overlay')"), false,
-          "NÃO APLICADA jamais pode abrir o diálogo de confirmação de escrita");
-        assert.strictEqual(aplicarPromocaoChamadas.length, 0, "NÃO APLICADA jamais pode chamar o endpoint de escrita de promoção");
+          "PROGRAMADA jamais pode abrir o diálogo de confirmação de escrita");
+        assert.strictEqual(aplicarPromocaoChamadas.length, 0, "PROGRAMADA jamais pode chamar o endpoint de escrita de promoção");
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("41b — started + statusExibicao NÃO APLICADA + sem rebate: já participada mostra 'Alterar' e a escrita real funciona, mesmo não sendo a promoção que forma o preço atual", async () => {
+      promocoesRespostaPadrao = [PROMO_NAO_APLICADA];
+      try {
+        pedidos.length = 0;
+        simularMargemChamadas.length = 0;
+        aplicarPromocaoChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1",
+          "a linha NÃO APLICADA não apareceu");
+
+        const acaoInicial = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]').textContent.trim()`
+        );
+        assert.strictEqual(acaoInicial, "Alterar",
+          "started+NÃO APLICADA já tem participação do vendedor — precisa mostrar 'Alterar' (regra revisada)");
+
+        await confirmarEdicaoPromoPreco(cdp, "P-3", "180");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]');
+          return b && b.textContent.trim() === "Confirmar alteração";
+        })()`, "o botão não virou 'Confirmar alteração' depois de editar o preço final");
+
+        await clicar(cdp, '.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]', "botão 'Confirmar alteração' não encontrado");
+        const linhasDialogo = await lerLinhasDialogoEscrita(cdp);
+        assert.strictEqual(linhasDialogo.find((l) => l.rotulo === "Novo preço").valor, "R$ 180,00");
+
+        await confirmarDialogoEscrita(cdp);
+        for (let i = 0; i < 100 && aplicarPromocaoChamadas.length === 0; i++) await sleep(50);
+        assert.strictEqual(aplicarPromocaoChamadas.length, 1, "NÃO APLICADA sem rebate precisa completar a escrita real, como qualquer outra 'Alterar'");
+        assert.strictEqual(aplicarPromocaoChamadas[0].promotionId, "P-3");
+        assert.strictEqual(aplicarPromocaoChamadas[0].body.precoNovo, 180);
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("42 — tipos fora do escopo de escrita V1 (SMART, PRICE_DISCOUNT, PRE_NEGOTIATED, PRICE_MATCHING, LIGHTNING), mesmo já participados (started/ATIVA), continuam 'Simular' — nunca 'Alterar'", async () => {
+      promocoesRespostaPadrao = PROMO_TIPOS_SEM_ESCRITA_JA_PARTICIPADOS;
+      try {
+        pedidos.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp,
+          `document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === ${PROMO_TIPOS_SEM_ESCRITA_JA_PARTICIPADOS.length}`,
+          "as linhas dos tipos fora do escopo de escrita não apareceram");
+
+        for (const p of PROMO_TIPOS_SEM_ESCRITA_JA_PARTICIPADOS) {
+          const acao = await cdp.evaluate(
+            `document.querySelector('.am-promo__linha[data-promo-id="${p.id}"] [data-acao="promo-acao"]').textContent.trim()`
+          );
+          assert.strictEqual(acao, "Simular",
+            `${p.tipo} (started/ATIVA, já participada) não pode mostrar 'Alterar' — fora do escopo de escrita V1`);
+        }
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("42b — SMART (fora do escopo de escrita), mesmo já participada (started/ATIVA), nunca abre o diálogo de confirmação nem chama o endpoint de escrita, mesmo depois de simular", async () => {
+      const smart = PROMO_TIPOS_SEM_ESCRITA_JA_PARTICIPADOS.find((p) => p.tipo === "SMART");
+      promocoesRespostaPadrao = [smart];
+      try {
+        pedidos.length = 0;
+        simularMargemChamadas.length = 0;
+        aplicarPromocaoChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1",
+          "a linha SMART não apareceu");
+
+        await clicar(cdp, `.am-promo__linha[data-promo-id="${smart.id}"] [data-acao="promo-acao"]`,
+          "botão da linha SMART não encontrado");
+        for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
+        assert.strictEqual(simularMargemChamadas.length, 1, "clicar ainda pode simular localmente (não escreve nada)");
+
+        const acaoDepoisDoClique = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-id="${smart.id}"] [data-acao="promo-acao"]').textContent.trim()`
+        );
+        assert.strictEqual(acaoDepoisDoClique, "Simular", "depois de simular, SMART continua 'Simular' — nunca 'Confirmar alteração'");
+
+        await clicar(cdp, `.am-promo__linha[data-promo-id="${smart.id}"] [data-acao="promo-acao"]`,
+          "botão da linha SMART não encontrado (2º clique)");
+        await sleep(200);
+        assert.strictEqual(await cdp.evaluate("!!document.querySelector('.am-confirm-overlay')"), false,
+          "SMART jamais pode abrir o diálogo de confirmação de escrita");
+        assert.strictEqual(aplicarPromocaoChamadas.length, 0, "SMART jamais pode chamar o endpoint de escrita de promoção");
       } finally {
         promocoesRespostaPadrao = [];
       }

@@ -4101,28 +4101,38 @@
     return !!(sim && DET.promoLinhaSelecionada === p.id && sim.preco != null);
   }
 
-  // Rótulo por statusExibicao e por TIPO (decisão de produto — ver
-  // auditoria). A decisão usa statusExibicao, NUNCA o status bruto do ML:
-  // uma promoção "started" pode não ser a que define o preço atual
-  // (NÃO APLICADA) — só ATIVA pode ser "alterada" de verdade.
+  // Rótulo por STATUS BRUTO do ML e por TIPO (decisão de produto revisada —
+  // ver auditoria). A decisão NÃO usa mais statusExibicao sozinho:
+  // statusExibicao só diz qual promoção está formando o preço AGORA, não se
+  // o vendedor já participa dela. Uma promoção "started"/"active" já foi
+  // aceita pelo vendedor e pode ser alterada de verdade — mesmo quando
+  // statusExibicao é NÃO APLICADA (não é a que está formando o preço atual
+  // neste momento).
   //  - tipo fora do escopo de escrita (nesta v1): sempre "Simular" — o botão
-  //    nunca vai além de selecionar + simular, em qualquer statusExibicao.
-  //  - tipo com escrita, mas statusExibicao NÃO APLICADA/PROGRAMADA: sempre
-  //    "Simular" — nunca oferece "Alterar" pra quem não controla o preço
-  //    atual (NÃO APLICADA) nem pra quem ainda nem começou (PROGRAMADA).
-  //  - tipo com escrita, ainda não simulado: "Alterar" (ATIVA, quem já
-  //    participa e define o preço) ou "Participar" (ELEGÍVEL, candidate).
-  //  - tipo com escrita, já simulado nesta linha: "Confirmar alteração"/
-  //    "Confirmar participação" — o próximo clique abre o diálogo de
-  //    confirmação e só then escreve de verdade (ver bindPromocoesAcoes).
+  //    nunca vai além de selecionar + simular, em qualquer status.
+  //  - tipo com escrita, status "pending" (PROGRAMADA — ainda não começou):
+  //    sempre "Simular", nunca escreve.
+  //  - tipo com escrita, status "started"/"active" (já participada, ATIVA ou
+  //    NÃO APLICADA): "Alterar", ainda não simulado; "Confirmar alteração",
+  //    já simulado nesta linha — o próximo clique abre o diálogo de
+  //    confirmação (ver bindPromocoesAcoes/abrirConfirmacaoPromocao). Se a
+  //    promoção tem subsidioMl (retorno ML/rebate), o botão continua
+  //    "Alterar" normalmente — o bloqueio (aviso, sem PUT) acontece só ao
+  //    confirmar, dentro de abrirConfirmacaoPromocao.
+  //  - tipo com escrita, status "candidate" (ELEGÍVEL): "Participar", ainda
+  //    não simulado; "Confirmar participação", já simulado — fluxo normal
+  //    de POST, nunca afetado pelo bloqueio de rebate acima.
+  function promocaoJaParticipada(p) {
+    return p.status === "started" || p.status === "active";
+  }
   function promocaoPodeEscrever(p) {
-    return p.statusExibicao === "ATIVA" || p.statusExibicao === "ELEGÍVEL";
+    return promocaoJaParticipada(p) || p.status === "candidate";
   }
   function promocaoTarefaRotulo(p, itemId) {
     if (!promocaoSuportaEscrita(p) || !promocaoPodeEscrever(p)) return "Simular";
-    var ativa = p.statusExibicao === "ATIVA";
-    if (promocaoJaSimulada(p, itemId)) return ativa ? "Confirmar alteração" : "Confirmar participação";
-    return ativa ? "Alterar" : "Participar";
+    var jaParticipada = promocaoJaParticipada(p);
+    if (promocaoJaSimulada(p, itemId)) return jaParticipada ? "Confirmar alteração" : "Confirmar participação";
+    return jaParticipada ? "Alterar" : "Participar";
   }
 
   function promocaoLinhaHtml(p, itemId, moeda) {
@@ -4238,23 +4248,45 @@
     });
   }
 
-  // Defesa em profundidade (mesma régua do gate em bindPromocoesAcoes): só
-  // ATIVA (alterar) ou ELEGÍVEL (participar) podem abrir este diálogo — uma
-  // NÃO APLICADA/PROGRAMADA nunca chega a escrever, mesmo se esta função for
-  // chamada de outro lugar no futuro.
+  // Defesa em profundidade (MESMA régua do gate em bindPromocoesAcoes,
+  // tipo + status): só tipo com contrato de escrita nesta v1 (DEAL/
+  // SELLER_CAMPAIGN — ver promocaoSuportaEscrita/PROMO_TIPOS_COM_ESCRITA) E
+  // já-participada (Alterar) ou candidate (Participar) podem abrir este
+  // diálogo — uma PROGRAMADA (pending) nunca chega a escrever, e um tipo fora
+  // do escopo (SMART, PRICE_DISCOUNT, PRE_NEGOTIATED, PRICE_MATCHING,
+  // LIGHTNING, ...) nunca chega a escrever mesmo se já participado
+  // (started/active), mesmo se esta função for chamada de outro lugar no
+  // futuro.
   function abrirConfirmacaoPromocao(itemId, linha) {
     if (!DET || DET.itemId !== itemId) return;
-    if (!promocaoPodeEscrever(linha)) return;
+    if (!promocaoSuportaEscrita(linha) || !promocaoPodeEscrever(linha)) return;
     var sim = DET.simulacaoMargem;
     if (!sim || sim.preco == null) return;
 
+    var jaParticipada = promocaoJaParticipada(linha);
+
+    // Promoção "started"/"active" com retorno ML (subsidioMl != null): o
+    // Mercado Livre já participa financeiramente dela, e a escrita de
+    // "alterar" (PUT) para esse tipo ainda não está disponível (ver
+    // auditoria). Mostra o aviso e para aqui — aplicarPromocaoReal (o único
+    // lugar que chama POST/PUT real) nunca chega a ser referenciado neste
+    // caminho, então nenhuma escrita pode ocorrer. Nunca afeta "Participar"
+    // (candidate): o bloqueio é só para alteração de uma participação já
+    // existente.
+    if (jaParticipada && linha.subsidioMl != null) {
+      toast(
+        "Esta promoção possui participação do Mercado Livre (rebate). A alteração de valores ainda não está disponível para este tipo de promoção.",
+        "is-warning"
+      );
+      return;
+    }
+
     var moeda = DET.anuncio.moeda;
-    var ativa = linha.statusExibicao === "ATIVA";
     var margemSimulada = (sim.resultado && sim.resultado.computable && sim.resultado.marginPercent != null)
       ? formatarPercentualCompacto(sim.resultado.marginPercent) : "—";
 
     abrirConfirmacaoEscrita({
-      titulo: ativa ? "Alterar participação na promoção" : "Participar da promoção",
+      titulo: jaParticipada ? "Alterar participação na promoção" : "Participar da promoção",
       textoConfirmar: "Confirmar",
       linhas: [
         { rotulo: "Promoção", valor: linha.nome || linha.tipoLabel },

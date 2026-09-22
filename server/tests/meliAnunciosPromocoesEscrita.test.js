@@ -381,6 +381,49 @@ async function run() {
     assert.strictEqual(res.corpo.metodo, "POST");
     ok("candidate + ELEGÍVEL: POST permitido, statusExibicao não bloqueia participação nova");
   });
+
+  // 13. Deduplicação por id+type integrada à escrita real (auditoria: "Vendex
+  //     - Setembro" duplicada no ML, uma entrada sem subsidioMl e outra com).
+  //     listarPromocoesDoItem (reaproveitado aqui dentro de aplicarPromocao
+  //     para a releitura ao vivo) precisa devolver só a versão correta, e a
+  //     escrita real precisa usar exatamente ESSE objeto deduplicado — nunca
+  //     pode ficar ambígua entre as duas entradas cruas do ML nem gerar mais
+  //     de uma escrita.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: { metadata: { promotion_id: "C-DUP" } } };
+      if (chamada.metodo === "GET") {
+        return {
+          ok: true, status: 200,
+          data: [
+            { id: "C-DUP", type: "SELLER_CAMPAIGN", status: "started", price: 149.9, original_price: 149.9, name: "Vendex - Setembro" },
+            { id: "C-DUP", type: "SELLER_CAMPAIGN", status: "started", price: 134.9, original_price: 149.9, meli_percentage: 0.5, name: "Vendex - Setembro" },
+          ],
+        };
+      }
+      return { ok: true, status: 200, data: { price: 134.9, original_price: 149.9 } };
+    };
+
+    // Primeiro confirma que a LISTAGEM (GET /promocoes) já expõe só a versão
+    // correta — mesma garantia que corrige a tabela do frontend.
+    const resLista = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, resLista);
+    assert.strictEqual(resLista.corpo.promocoes.length, 1, "a listagem nunca pode expor as duas entradas duplicadas do ML");
+    assert.strictEqual(resLista.corpo.promocoes[0].subsidioMl, 0.75, "a versão exposta é a mais completa (com subsidioMl), não '—'");
+
+    // Agora a escrita real, usando o mesmo id — precisa ler o mesmo objeto
+    // deduplicado, sem ambiguidade entre as duas entradas cruas.
+    mlChamadas = [];
+    const res = await chamar("MLB-X", "C-DUP", { precoNovo: 134.9 });
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.metodo, "PUT", "SELLER_CAMPAIGN started + ATIVA altera com PUT, independente de qual entrada bruta duplicada");
+    const escritas = mlChamadas.filter((c) => c.metodo === "PUT" || c.metodo === "POST");
+    assert.strictEqual(escritas.length, 1, "duas entradas duplicadas no ML não podem virar duas escritas, nem uma escrita ambígua");
+    assert.deepStrictEqual(escritas[0].body, { promotion_id: "C-DUP", promotion_type: "SELLER_CAMPAIGN", deal_price: 134.9 });
+    ok("integração: duplicata sem rebate + com rebate (mesmo id) — listagem expõe só a versão correta, e aplicarPromocao escreve usando exatamente esse objeto deduplicado");
+  });
 }
 
 run()

@@ -112,6 +112,7 @@ let iaProibida = false;
 let descricaoEstado = "ok";          // ok | sem_descricao | erro
 let categoriaNomeResposta = "Celulares e Smartphones"; // null = simula falha de resolução
 let precoOriginalAtivo = true;       // false = anúncio sem promoção (preco_original nulo)
+let variationsCountAtivo = 0;        // > 0 = item legado com variations[] reais no ML (ver anuncio.variations_count)
 // "nenhum" | "catalog_listing" | "family_name" | "ambos" — os dois sinais são
 // testados em separado porque a causa raiz da tag divergente era exatamente
 // um lugar olhar só catalog_listing e o outro olhar catalog_listing||family_name.
@@ -510,6 +511,7 @@ function wireInterception(cdp) {
       const base = anuncio(conta);
       base.item_id = itemId;
       base.titulo = itemId === "MLB-B1" ? TITULO_B : TITULO_A;
+      base.variations_count = variationsCountAtivo;
       const resposta = {
         ok: true, cliente: { slug: "n97", nome: "N97 Comercial" }, anuncio: base,
         descricao: descricaoEstado === "ok" ? DESC_A : null,
@@ -1381,22 +1383,152 @@ async function run() {
       assert.match(texto, /R\$\s*70,00/, `a margem real (do Motor) deveria voltar a aparecer: ${texto}`);
     });
 
-    await check("37 — item com variações bloqueia a edição de preço com mensagem clara (recusa do backend)", async () => {
-      pedidos.length = 0;
-      precoChamadas.length = 0;
-      precoResultado = {
-        status: 200,
-        corpo: {
-          ok: false, codigo: "PRECO_ITEM_COM_VARIACAO",
-          motivo: "Este anúncio tem variações — a edição de preço por variação ainda não está disponível nesta tela.",
-        },
+    await check("37 — item legado com variações (sem promoção): preço vira SIMULAÇÃO, nunca tenta PUT", async () => {
+      variationsCountAtivo = 3;
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        precoChamadas.length = 0;
+        simularMargemChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await clicar(cdp, "#am-det-margem summary");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('#am-det-margem-body');
+          return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
+
+        const estado = await cdp.evaluate(`(function(){
+          return {
+            temTagAltera: /Altera no Mercado Livre/.test(document.getElementById('am-det-margem-body').textContent),
+            temCelulaPutReal: !!document.querySelector('#am-det-margem-body .am-margem-preco'),
+            temCampoSimulacao: !!document.querySelector('#am-det-margem-body [data-margem-campo="preco"]'),
+            motivo: (document.querySelector('#am-det-margem-body [data-margem-campo="preco"] .am-margem-edit__btn') || {}).title || "",
+          };
+        })()`);
+        assert.strictEqual(estado.temTagAltera, false, "item com variações não pode anunciar que altera no Mercado Livre");
+        assert.strictEqual(estado.temCelulaPutReal, false, "não pode sobrar a célula de PUT real (.am-margem-preco) para este item");
+        assert.ok(estado.temCampoSimulacao, "a linha de preço precisa virar um campo de simulação ([data-margem-campo=\"preco\"])");
+        assert.match(estado.motivo, /não grava no Mercado Livre/i, `o motivo não explica que é só simulação: ${estado.motivo}`);
+        assert.match(estado.motivo, /variações/i, `o motivo não menciona variações: ${estado.motivo}`);
+
+        await confirmarEdicaoMargem(cdp, "preco", "250");
+        await esperarPedido(/\/anuncios-meli\/MLB-A1\/simular-margem$/, 0, "a simulação de preço não chamou o backend");
+        const envio = simularMargemChamadas[simularMargemChamadas.length - 1];
+        assert.strictEqual(envio.body.preco, 250, "o preço digitado precisa ir como override em /simular-margem");
+        assert.strictEqual(precoChamadas.length, 0, "simular preço NUNCA pode chamar PATCH /:itemId/preco");
+
+        await waitFor(cdp, `/Margem simulada/.test(document.getElementById('am-det-margem-body').textContent)`,
+          "o rótulo 'Margem simulada' não apareceu depois de simular o preço");
+      } finally {
+        variationsCountAtivo = 0;
+      }
+    });
+
+    await check("37b — item legado: combinar preço + custo + custos adicionais envia os TRÊS overrides", async () => {
+      variationsCountAtivo = 3;
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        simularMargemChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await clicar(cdp, "#am-det-margem summary");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('#am-det-margem-body');
+          return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
+
+        await confirmarEdicaoMargem(cdp, "preco", "250");
+        await esperarPedido(/\/anuncios-meli\/MLB-A1\/simular-margem$/, 0, "a simulação de preço não chamou o backend");
+
+        let antesChamadas = simularMargemChamadas.length;
+        await confirmarEdicaoMargem(cdp, "custoProduto", "50");
+        for (let i = 0; i < 100 && simularMargemChamadas.length <= antesChamadas; i++) await sleep(50);
+        assert.ok(simularMargemChamadas.length > antesChamadas, "a simulação de custo não disparou uma nova chamada");
+
+        antesChamadas = simularMargemChamadas.length;
+        await confirmarEdicaoMargem(cdp, "custosAdicionais", "8");
+        for (let i = 0; i < 100 && simularMargemChamadas.length <= antesChamadas; i++) await sleep(50);
+        assert.ok(simularMargemChamadas.length > antesChamadas, "a simulação de custos adicionais não disparou uma nova chamada");
+
+        const envio = simularMargemChamadas[simularMargemChamadas.length - 1];
+        assert.strictEqual(envio.body.preco, 250, "o override de preço já ativo precisa continuar indo junto");
+        assert.strictEqual(envio.body.custoProduto, 50, "o override de custo já ativo precisa continuar indo junto");
+        assert.strictEqual(envio.body.custosAdicionais, 8);
+        assert.strictEqual(precoChamadas.length, 0, "combinar overrides de simulação NUNCA pode chamar PATCH de preço");
+      } finally {
+        variationsCountAtivo = 0;
+      }
+    });
+
+    await check("37c — item legado: 'Restaurar' descarta o override de preço junto com os demais", async () => {
+      variationsCountAtivo = 3;
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await clicar(cdp, "#am-det-margem summary");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('#am-det-margem-body');
+          return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
+
+        await confirmarEdicaoMargem(cdp, "preco", "250");
+        await esperarPedido(/\/anuncios-meli\/MLB-A1\/simular-margem$/, 0, "a simulação de preço não chamou o backend");
+        await waitFor(cdp, `/Margem simulada/.test(document.getElementById('am-det-margem-body').textContent)`,
+          "a simulação não ativou");
+
+        await clicar(cdp, '#am-det-margem-body [data-acao="restaurar-simulacao-margem"]', "botão de restaurar não encontrado");
+        await waitFor(cdp, `!/Margem simulada/.test(document.getElementById('am-det-margem-body').textContent)`,
+          "restaurar não descartou a simulação");
+
+        const valorCampo = await cdp.evaluate(
+          `document.querySelector('#am-det-margem-body [data-margem-campo="preco"]').getAttribute('data-margem-valor')`
+        );
+        assert.strictEqual(valorCampo, "200", "depois de restaurar, o campo precisa voltar a mostrar o preço REAL (200), sem o override");
+      } finally {
+        variationsCountAtivo = 0;
+      }
+    });
+
+    await check("38b — promoção ativa vence variações: mesmo com variations_count > 0, o preço fica só bloqueado (sem simulação)", async () => {
+      variationsCountAtivo = 3;
+      performanceHandler = (ids) => {
+        const margem = {}; const composicao = {};
+        ids.forEach((id) => {
+          margem[id] = MARGEM_MLA1;
+          composicao[id] = Object.assign({}, COMPOSICAO_MLA1, { precoPromocionalAtivo: true });
+        });
+        return { ok: true, metricas7d: {}, margem, composicao, margemIndisponivel: null };
       };
-      await salvarPreco(cdp, "150");
-      await esperarPedido(/\/anuncios-meli\/MLB-A1\/preco$/, 0, "o PATCH de preço não saiu");
-      // A UI mostra a mensagem real devolvida pelo backend — não uma tradução própria.
-      await waitFor(cdp, "!document.querySelector('#am-det-margem-body .am-margem-preco .am-margem-edit__salvando')",
-        "a célula deveria sair do estado 'salvando' depois da recusa");
-      precoResultado = null;
+      try {
+        pedidos.length = 0;
+        chamadasPerformance.length = 0;
+        precoChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await clicar(cdp, "#am-det-margem summary");
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('#am-det-margem-body');
+          return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
+
+        const estado = await cdp.evaluate(`(function(){
+          return {
+            temCampoSimulacao: !!document.querySelector('#am-det-margem-body [data-margem-campo="preco"]'),
+            temCelulaPutReal: !!document.querySelector('#am-det-margem-body .am-margem-preco'),
+            valor: document.querySelector('#am-det-margem-body .am-margem-comp__valor--bloqueado').textContent.trim(),
+          };
+        })()`);
+        assert.strictEqual(estado.temCampoSimulacao, false, "promoção ativa vence — não pode virar campo de simulação de preço");
+        assert.strictEqual(estado.temCelulaPutReal, false, "promoção ativa vence — também não pode ser a célula de PUT real");
+        assert.strictEqual(estado.valor, "R$ 200,00", "o valor bloqueado continua sendo o efetivo/promocional");
+      } finally {
+        variationsCountAtivo = 0;
+        performanceHandler = null;
+      }
     });
 
     await check("38 — item com promoção ativa: edição de preço vem BLOQUEADA de cara, sem tag \"Altera no Mercado Livre\", com motivo explicado", async () => {

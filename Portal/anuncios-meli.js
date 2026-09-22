@@ -3702,6 +3702,13 @@
     if (sim.custoProduto != null) corpo.custoProduto = sim.custoProduto;
     if (sim.custosAdicionais != null) corpo.custosAdicionais = sim.custosAdicionais;
     if (sim.preco != null) corpo.preco = sim.preco;
+    // Simulação manual nascida de uma linha de promoção: soma o mesmo
+    // retorno ML (subsidioMl) já mostrado na coluna "Subsídio ML" dessa
+    // linha, pelo mesmo campo `rebate` do Motor — nunca uma conta à parte.
+    if (DET.promoLinhaSelecionada != null) {
+      var promoAtual = promocaoPorId(itemId, DET.promoLinhaSelecionada);
+      if (promoAtual && promoAtual.subsidioMl != null) corpo.subsidioMl = promoAtual.subsidioMl;
+    }
 
     var meuToken = DET.token;
     api("/anuncios-meli/" + encodeURIComponent(itemId) + "/simular-margem", { method: "POST", body: corpo })
@@ -3887,9 +3894,13 @@
   // confirmarSimulacaoMargem, mesmo override DET.simulacaoMargem.preco e
   // mesmo POST .../simular-margem) — nunca grava nada no Mercado Livre, nunca
   // inscreve o anúncio em promoção nenhuma. `DET.promoLinhaSelecionada`
-  // guarda só qual LINHA mostra o resultado em "Você recebe" — o valor em si
-  // sempre vem de DET.simulacaoMargem.resultado.profit (o mesmo Motor da
-  // composição, nunca a fórmula da tela "Promoções com Retorno ML").
+  // guarda só qual LINHA está com uma simulação MANUAL ativa — enquanto
+  // nenhuma está selecionada, cada linha já chega com "Você recebe"
+  // auto-preenchido em `p.voceRecebe` (calculado no backend, mesmo Motor,
+  // ver ctrl.anexarVoceRecebe); ao selecionar uma linha, o valor manual de
+  // DET.simulacaoMargem.resultado.profit passa a ter prioridade sobre o
+  // auto-preenchido (ver promocaoVoceRecebeHtml). Nunca a fórmula da tela
+  // "Promoções com Retorno ML".
   // ===========================================================================
 
   function garantirPromocoesDoItem(itemId) {
@@ -3989,16 +4000,28 @@
     return p.precoFinal;
   }
 
+  // Auto-preenchida ao abrir o modal (backend: ctrl.anexarVoceRecebe, mesmo
+  // Motor de .../simular-margem, price=precoFinal + rebate=subsidioMl) —
+  // "Simular" só existe pra alterações manuais; quando a linha está com uma
+  // simulação ativa, ela sempre tem prioridade sobre o valor auto-preenchido.
   function promocaoVoceRecebeHtml(p) {
     var sim = DET && DET.simulacaoMargem;
     var selecionada = !!(sim && DET.promoLinhaSelecionada === p.id && sim.preco != null);
-    if (!selecionada) return '<span class="am-promo__recebe am-promo__recebe--vazio">—</span>';
-    if (!sim.resultado) return '<span class="am-promo__recebe am-promo__recebe--vazio">Simulando…</span>';
-    var r = sim.resultado;
-    if (!r.computable) return '<span class="am-promo__recebe am-promo__recebe--vazio">Sem dados suficientes</span>';
-    return '<span class="am-promo__recebe">' + formatMoeda(r.profit, DET.anuncio.moeda) +
-      (r.marginPercent != null
-        ? ' <span class="am-promo__recebe-pct">(' + formatarPercentualCompacto(r.marginPercent) + ")</span>"
+    if (selecionada) {
+      if (!sim.resultado) return '<span class="am-promo__recebe am-promo__recebe--vazio">Simulando…</span>';
+      var r = sim.resultado;
+      if (!r.computable) return '<span class="am-promo__recebe am-promo__recebe--vazio">Sem dados suficientes</span>';
+      return '<span class="am-promo__recebe">' + formatMoeda(r.profit, DET.anuncio.moeda) +
+        (r.marginPercent != null
+          ? ' <span class="am-promo__recebe-pct">(' + formatarPercentualCompacto(r.marginPercent) + ")</span>"
+          : "") +
+      "</span>";
+    }
+    if (!p.voceRecebe) return '<span class="am-promo__recebe am-promo__recebe--vazio">—</span>';
+    if (!p.voceRecebe.computable) return '<span class="am-promo__recebe am-promo__recebe--vazio">Sem dados suficientes</span>';
+    return '<span class="am-promo__recebe">' + formatMoeda(p.voceRecebe.profit, DET.anuncio.moeda) +
+      (p.voceRecebe.marginPercent != null
+        ? ' <span class="am-promo__recebe-pct">(' + formatarPercentualCompacto(p.voceRecebe.marginPercent) + ")</span>"
         : "") +
     "</span>";
   }

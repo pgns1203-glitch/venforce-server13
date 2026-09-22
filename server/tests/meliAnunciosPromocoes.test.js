@@ -27,6 +27,16 @@ const Module = require("module");
 let mlChamadas = [];
 let mlHandler = null;
 
+// ── stub do Motor de Margem — mesmo padrão de meliAnunciosSimularMargem.
+// test.js: evita que "Você recebe" dispare I/O real (banco/ML) por baixo do
+// motorMargemService; controla por teste só o que cada cenário precisa.
+// Default (margemHandler null) = { itens: [] }, ou seja "Motor sem dado
+// nenhum pro item" — voceRecebe fica null em todos os testes que não setam
+// margemHandler, sem gerar nenhuma chamada extra ao Mercado Livre (o que
+// quebraria a asserção read-only do teste 5, que audita mlChamadas).
+let margemHandler = null;
+let chamadasMargem = [];
+
 const originalLoad = Module._load;
 Module._load = function loadWithMlFetchStub(request, parent, isMain) {
   if (request === "../../utils/mlClient" || request === "../utils/mlClient") {
@@ -35,6 +45,15 @@ Module._load = function loadWithMlFetchStub(request, parent, isMain) {
         const chamada = { clienteId, path, metodo: options.method || "GET", mlUserId: options.mlUserId };
         mlChamadas.push(chamada);
         return mlHandler ? mlHandler(chamada) : { ok: true, status: 200, data: [] };
+      },
+    };
+  }
+  if (request === "../services/motorMargem/motorMargemService") {
+    return {
+      async montarItens(args) {
+        chamadasMargem.push(args);
+        if (!margemHandler) return { itens: [] };
+        return margemHandler(args);
       },
     };
   }
@@ -59,6 +78,26 @@ function anunciosFixture() {
       cliente_conta_id: 10, ml_user_id: "111",
     },
   ];
+}
+
+// Mesmo shape de item que o Motor de Margem produz (ver meliAnunciosSimularMargem.test.js).
+function evid(valor) {
+  return valor == null ? null : { value: valor };
+}
+function itemFixtureMotor({ itemId, venda, custo, imposto, comissao, frete }) {
+  return {
+    identity: { itemId },
+    pricing: { current: evid(venda), sold: evid(venda) },
+    costs: {
+      cost: { projected: evid(custo), realized: evid(custo) },
+      taxRate: { projected: evid(imposto), realized: evid(imposto) },
+      fixedFee: { projected: evid(0), realized: null },
+    },
+    marketplaceCosts: {
+      commissionProjected: evid(comissao), commissionRealized: evid(comissao),
+      freightProjected: evid(frete), freightRealized: evid(frete),
+    },
+  };
 }
 
 class MockDb {
@@ -611,6 +650,154 @@ async function run() {
       "sem metadata.promotion_id, nenhuma promoção started pode virar ATIVA"
     );
     ok("fallback: sale_price sem metadata.promotion_id — nenhuma promoção vira ATIVA, mesmo com duas started");
+  });
+
+  // ── "Você recebe" auto-preenchido (sem clicar em Simular) ─────────────────
+  // Ao abrir o modal, cada promoção já vem com voceRecebe calculado usando o
+  // MESMO Motor (motorMargemService.montarItens + marginEngine.computeMargin)
+  // que .../simular-margem usa — nunca uma fórmula paralela. O botão
+  // "Simular" continua existindo só para alterações manuais.
+
+  // 20. Promoção ATIVA com preço final: voceRecebe vem preenchido, sem
+  //     precisar de nenhum clique em Simular.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    chamadasMargem = [];
+    mlHandler = () => ({
+      ok: true, status: 200,
+      data: [{ id: "P-1", type: "DEAL", status: "started", price: 82, original_price: 100 }],
+    });
+    margemHandler = () => ({ itens: [itemFixtureMotor({ itemId: "MLB-X", venda: 100, custo: 40, imposto: 0.05, comissao: 12, frete: 8 })] });
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    const linha = res.corpo.promocoes[0];
+    // lucro = 82 - 82*0.05 - 12 - 8 - 0 - 40 = 17.9
+    assert.ok(linha.voceRecebe, "voceRecebe precisa vir preenchido sem clicar em Simular");
+    assert.strictEqual(linha.voceRecebe.computable, true, JSON.stringify(linha.voceRecebe));
+    assert.strictEqual(linha.voceRecebe.profit, 17.9);
+    assert.strictEqual(chamadasMargem.length, 1, "reaproveita uma única chamada ao Motor pro item, não uma por promoção");
+    ok("Você recebe: preenchido automaticamente ao abrir o modal, usando o preço final da promoção e o mesmo Motor");
+  });
+
+  // 21. Promoção com subsidioMl: o resultado de margem soma o retorno ML
+  //     (mesmo campo `rebate` de computeMargin usado em simular-margem).
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    chamadasMargem = [];
+    mlHandler = () => ({
+      ok: true, status: 200,
+      data: [{ id: "P-1", type: "SMART", status: "started", price: 112.42, original_price: 119.9, meli_percentage: 0.5 }],
+    });
+    margemHandler = () => ({ itens: [itemFixtureMotor({ itemId: "MLB-X", venda: 112.42, custo: 40, imposto: 0.05, comissao: 12, frete: 8 })] });
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    const linha = res.corpo.promocoes[0];
+    // subsidioMl = 119.9*(0.5/100) = 0.5995 → 0.6 (arredondado)
+    assert.strictEqual(linha.subsidioMl, 0.6);
+    // lucro = 112.42 - 112.42*0.05 - 12 - 8 - 40 + 0.6 = 47.399
+    assert.ok(Math.abs(linha.voceRecebe.profit - 47.4) < 0.01, `profit inesperado: ${linha.voceRecebe.profit}`);
+    ok("Você recebe: com subsidioMl, o cálculo reflete o retorno ML somado ao lucro");
+  });
+
+  // 22. Promoção sem rebate (subsidioMl null): voceRecebe calculado sem
+  //     nenhum benefício somado — comportamento equivalente a rebate=0.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    chamadasMargem = [];
+    mlHandler = () => ({
+      ok: true, status: 200,
+      data: [{ id: "P-1", type: "DEAL", status: "started", price: 82, original_price: 100 }],
+    });
+    margemHandler = () => ({ itens: [itemFixtureMotor({ itemId: "MLB-X", venda: 100, custo: 40, imposto: 0.05, comissao: 12, frete: 8 })] });
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    const linha = res.corpo.promocoes[0];
+    assert.strictEqual(linha.subsidioMl, null, "sem meli_percentage, subsidioMl continua null");
+    assert.strictEqual(linha.voceRecebe.profit, 17.9, "sem rebate, resultado idêntico ao cenário sem promoção com retorno ML");
+    ok("Você recebe: promoção sem rebate preserva o comportamento atual (nenhum benefício somado)");
+  });
+
+  // 23. Candidate sem preço final (precoFinal null): voceRecebe fica null —
+  //     nunca inventa um preço pra calcular margem.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    chamadasMargem = [];
+    mlHandler = () => ({
+      ok: true, status: 200,
+      data: [{ type: "PRICE_DISCOUNT", status: "candidate", price: 0, original_price: 100 }],
+    });
+    margemHandler = () => ({ itens: [itemFixtureMotor({ itemId: "MLB-X", venda: 100, custo: 40, imposto: 0.05, comissao: 12, frete: 8 })] });
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.promocoes[0].voceRecebe, null, "sem precoFinal, voceRecebe não pode ser calculado");
+    ok("Você recebe: candidate sem preço final (nunca inventado) fica com voceRecebe null");
+  });
+
+  // 24. Motor sem custo/Base vinculada: voceRecebe fica não-computável, sem
+  //     derrubar a listagem de promoções.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    chamadasMargem = [];
+    mlHandler = () => ({
+      ok: true, status: 200,
+      data: [{ id: "P-1", type: "DEAL", status: "started", price: 82, original_price: 100 }],
+    });
+    margemHandler = () => ({ itens: [itemFixtureMotor({ itemId: "MLB-X", venda: 100, custo: null, imposto: 0.05, comissao: 12, frete: 8 })] });
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.ok, true, "Motor sem custo não pode derrubar a listagem de promoções");
+    const linha = res.corpo.promocoes[0];
+    assert.ok(linha.voceRecebe, "voceRecebe vem preenchido mesmo não-computável, pra frontend distinguir de precoFinal ausente");
+    assert.strictEqual(linha.voceRecebe.computable, false);
+    ok("Você recebe: Motor sem Base de Custos não derruba a listagem — voceRecebe fica não-computável");
+  });
+
+  // 25. Motor lança exceção (ex.: contexto não-pronto): não derruba a
+  //     listagem de promoções — mesma garantia de resiliência do enriquecimento
+  //     de vigência.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    chamadasMargem = [];
+    mlHandler = () => ({
+      ok: true, status: 200,
+      data: [{ id: "P-1", type: "DEAL", status: "started", price: 82, original_price: 100 }],
+    });
+    margemHandler = () => { throw new Error("Base de custos MELI não vinculada."); };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.ok, true, "exceção do Motor não pode derrubar a listagem de promoções");
+    assert.strictEqual(res.corpo.promocoes[0].voceRecebe, null);
+    ok("Você recebe: exceção do Motor (contexto não-pronto) não derruba a listagem — voceRecebe fica null");
+  });
+
+  // 26. Read-only continua valendo com o Motor ligado: nenhuma chamada de
+  //     escrita nasce do cálculo de voceRecebe.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    chamadasMargem = [];
+    mlHandler = () => ({
+      ok: true, status: 200,
+      data: [{ id: "P-1", type: "DEAL", status: "started", price: 82, original_price: 100 }],
+    });
+    margemHandler = () => ({ itens: [itemFixtureMotor({ itemId: "MLB-X", venda: 100, custo: 40, imposto: 0.05, comissao: 12, frete: 8 })] });
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.ok(mlChamadas.every((c) => c.metodo === "GET"), "voceRecebe não pode introduzir nenhuma chamada de escrita ao ML");
+    ok("Você recebe: continua read-only mesmo com o Motor de Margem ligado no carregamento das promoções");
   });
 }
 

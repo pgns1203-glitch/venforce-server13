@@ -230,6 +230,49 @@ async function run() {
     ok("margem negativa (LOSS): computable=true, profit negativo — resultado válido, não um erro");
   });
 
+  // 6b. subsidioMl (retorno ML da promoção selecionada): soma ao lucro sem
+  //     alterar comissão/frete/imposto/custo — mesmo motor, sem fórmula paralela.
+  await withMockDb(async () => {
+    reset();
+    margemHandler = () => ({ itens: [itemFixture({ itemId: "MLB-A", venda: 112.42, custo: 40, imposto: 0.05, comissao: 12, frete: 8 })] });
+
+    const res = fakeRes();
+    await ctrl.simularMargem(
+      { params: { itemId: "MLB-A" }, body: { clienteSlug: "cliente-a", subsidioMl: 1.35 } },
+      res
+    );
+
+    // lucro = 112.42 - 112.42*0.05 - 12 - 8 - 40 + 1.35 = 48.149
+    assert.strictEqual(res.corpo.resultado.computable, true, JSON.stringify(res.corpo));
+    assert.ok(Math.abs(res.corpo.resultado.profit - 48.15) < 0.01, `profit inesperado: ${res.corpo.resultado.profit}`);
+    ok("subsidioMl informado: soma ao lucro (mesmo Motor, campo rebate do computeMargin)");
+  });
+
+  // 6c. Sem subsidioMl: comportamento atual preservado (rebate=0, igual ao teste 1).
+  await withMockDb(async () => {
+    reset();
+    margemHandler = () => ({ itens: [itemFixture({ itemId: "MLB-A", venda: 100, custo: 40, imposto: 0.05, comissao: 12, frete: 8 })] });
+
+    const res = fakeRes();
+    await ctrl.simularMargem({ params: { itemId: "MLB-A" }, body: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(res.corpo.resultado.profit, 35, "sem subsidioMl, resultado idêntico ao cenário sem overrides");
+    ok("sem subsidioMl: resultado idêntico ao comportamento anterior (nenhum rebate aplicado)");
+  });
+
+  // 6d. subsidioMl inválido (negativo): 400 sem chamar o Motor.
+  await withMockDb(async () => {
+    reset();
+    const res = fakeRes();
+    await ctrl.simularMargem(
+      { params: { itemId: "MLB-A" }, body: { clienteSlug: "cliente-a", subsidioMl: -1 } },
+      res
+    );
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(chamadasMargem.length, 0, "subsidioMl inválido não pode gastar chamada ao Motor");
+    ok("subsidioMl negativo: 400 sem chamar o Motor de Margem");
+  });
+
   // 7. Item não encontrado no Motor: 404.
   await withMockDb(async () => {
     reset();

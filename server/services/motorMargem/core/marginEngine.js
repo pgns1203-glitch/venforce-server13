@@ -51,8 +51,13 @@ function round6(value) {
 /**
  * Lucro e margem de contribuição a partir de um jogo de variáveis.
  *
- *   lucro  = preço − (preço × imposto) − comissão − frete − taxaFixa − custo
+ *   lucro  = preço − (preço × imposto) − comissão − frete − taxaFixa − custo + rebate
  *   margem = lucro / preço
+ *
+ * `rebate` é opcional (default 0) — retorno ML de uma promoção (subsidioMl),
+ * somado UMA vez ao lucro, nunca alterando a base de imposto/comissão. Sua
+ * ausência não é uma variável faltante: não rebaixa `assumed`/`strict`, só
+ * significa "nenhuma promoção selecionada".
  *
  * @returns {{
  *   computable: boolean, profit: number|null, margin: number|null,
@@ -66,6 +71,7 @@ function computeMargin(input = {}) {
   const fixedFee = num(input[FIELDS.FIXED_FEE] ?? input.fixedFee);
   const commission = num(input[FIELDS.COMMISSION] ?? input.commission);
   const freight = num(input[FIELDS.FREIGHT] ?? input.freight);
+  const rebate = num(input.rebate) ?? 0;
 
   const values = {
     [FIELDS.PRICE]: price,
@@ -93,12 +99,12 @@ function computeMargin(input = {}) {
       missing,
       assumed,
       strict: false,
-      inputs: values,
+      inputs: { ...values, rebate },
     };
   }
 
   const profit =
-    price - price * (taxRate ?? 0) - (commission ?? 0) - (freight ?? 0) - (fixedFee ?? 0) - cost;
+    price - price * (taxRate ?? 0) - (commission ?? 0) - (freight ?? 0) - (fixedFee ?? 0) - cost + rebate;
 
   return {
     computable: true,
@@ -108,7 +114,7 @@ function computeMargin(input = {}) {
     assumed,
     // strict = nenhuma variável foi assumida como zero.
     strict: assumed.length === 0,
-    inputs: values,
+    inputs: { ...values, rebate },
   };
 }
 

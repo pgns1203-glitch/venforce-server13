@@ -810,16 +810,62 @@ async function variacoesLegado(req, res) {
   }
 }
 
+// Coluna "Você recebe" pré-calculada por promoção, sem esperar o clique em
+// "Simular" — reaproveita EXATAMENTE o mesmo Motor de POST .../simular-margem
+// (motorMargemService.montarItens + marginEngine.computeMargin), nunca uma
+// fórmula paralela: para cada promoção, price=precoFinal e rebate=subsidioMl
+// (mesmo campo usado por simularMargem quando o operador seleciona a linha).
+// custo/imposto/comissão/frete vêm sempre da origem "projected" do item, uma
+// única chamada ao Motor pro item inteiro — nunca uma por promoção.
+//
+// Nunca bloqueia a listagem: se o Motor falhar (Base não vinculada, conta
+// ambígua, item não encontrado) ou não houver precoFinal, a linha volta com
+// voceRecebe: null — mesma postura de resiliência do enriquecimento de
+// vigência (ver meliPromocoesService.enriquecerVigencia).
+async function anexarVoceRecebe({ cliente, clienteContaId, itemId, promocoesItem }) {
+  let base = null;
+  try {
+    const resultadoMotor = await motorMargemService.montarItens({
+      clienteSlug: cliente.slug, clienteContaId, itemIds: [itemId],
+    });
+    const item = (resultadoMotor.itens || []).find((it) => it.identity.itemId === String(itemId));
+    if (item) base = extrairValoresBaseParaSimulacao(item, "projected");
+  } catch (_) {
+    base = null;
+  }
+
+  return promocoesItem.map((p) => {
+    if (!base || p.precoFinal == null) return { ...p, voceRecebe: null };
+    const resultado = marginEngine.computeMargin({
+      price: p.precoFinal,
+      cost: base.cost,
+      taxRate: base.taxRate,
+      fixedFee: base.fixedFee,
+      commission: base.commission,
+      freight: base.freight,
+      rebate: p.subsidioMl,
+    });
+    return {
+      ...p,
+      voceRecebe: {
+        computable: resultado.computable,
+        profit: resultado.profit,
+        marginPercent: resultado.margin != null ? resultado.margin * 100 : null,
+      },
+    };
+  });
+}
+
 // ----------------------------------------------------------------------------
 // GET /anuncios-meli/:itemId/promocoes?clienteSlug=&clienteContaId=
 //
 // Promoções OFICIAIS do Mercado Livre para o item (GET /seller-promotions/
 // items/{id}?app_version=v2, ver meliPromocoesService) — alimenta o bloco
-// "Promoções disponíveis" do modal, ao lado da composição da margem.
+// "Promoções disponíveis" do modal, ao lado da composição da margem. Cada
+// linha já chega com "Você recebe" pré-calculado (ver anexarVoceRecebe) —
+// "Simular" no frontend só serve pra alterações manuais do preço/custo.
 // Read-only nos dois sentidos: só lê o Mercado Livre, nunca inscreve o item
-// em promoção nenhuma nem grava preço nenhum. O preço final de cada linha é
-// consumido pelo FRONTEND como override de POST /:itemId/simular-margem —
-// este endpoint não calcula margem nenhuma.
+// em promoção nenhuma nem grava preço nenhum.
 // ----------------------------------------------------------------------------
 async function promocoes(req, res) {
   try {
@@ -857,7 +903,9 @@ async function promocoes(req, res) {
       clienteId: cliente.id, itemId, mlUserId,
     });
 
-    return res.json({ ok: true, itemId: String(itemId), promocoes: promocoesItem });
+    const comMargem = await anexarVoceRecebe({ cliente, clienteContaId, itemId, promocoesItem });
+
+    return res.json({ ok: true, itemId: String(itemId), promocoes: comMargem });
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] promocoes:", err.message);
@@ -1378,6 +1426,22 @@ async function simularMargem(req, res) {
       overrides[chave] = n;
     }
 
+    // subsidioMl: retorno ML da promoção selecionada na linha (ver
+    // meliPromocoesService.normalizarPromocao) — soma ao lucro via o campo
+    // `rebate` do próprio marginEngine.computeMargin, nunca uma fórmula
+    // paralela. Opcional: ausente = 0, comportamento idêntico ao anterior.
+    let rebate = 0;
+    if (body.subsidioMl !== undefined) {
+      const n = Number(body.subsidioMl);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({
+          ok: false,
+          motivo: "O campo subsidioMl precisa ser um número maior ou igual a zero.",
+        });
+      }
+      rebate = n;
+    }
+
     const cliente = await anunciosService.resolverCliente(clienteSlug);
     if (!cliente) {
       return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
@@ -1412,6 +1476,7 @@ async function simularMargem(req, res) {
       fixedFee: overrides.fixedFee !== undefined ? overrides.fixedFee : base.fixedFee,
       commission: base.commission,
       freight: base.freight,
+      rebate,
     };
 
     const resultado = marginEngine.computeMargin(entrada);

@@ -419,6 +419,33 @@ cenario("preço zero não vira margem 0 — vira variável obrigatória ausente"
   assert.strictEqual(resultado.margin, null);
 });
 
+// `rebate` é o retorno ML de uma promoção (subsidioMl) — soma UMA vez ao
+// lucro, nunca entra na base de imposto/comissão (mesmo princípio de
+// server/services/automacoes/promocoesRetornoService.js, agora dentro do
+// núcleo único em vez de reimplementado por fora).
+cenario("rebate soma ao lucro sem alterar imposto/comissão/frete", () => {
+  const semRebate = C.computeMargin({ price: 100, cost: 40, taxRate: 0.05, commission: 12, freight: 8 });
+  // lucro = 100 - 5 - 12 - 8 - 40 = 35
+  assert.strictEqual(semRebate.profit, 35);
+
+  const comRebate = C.computeMargin({ price: 100, cost: 40, taxRate: 0.05, commission: 12, freight: 8, rebate: 1.35 });
+  assert.strictEqual(comRebate.computable, true);
+  assert.strictEqual(comRebate.profit, 36.35, "rebate soma uma única vez ao lucro, denominador continua o preço");
+  assert.ok(Math.abs(comRebate.margin - 0.3635) < 0.0001);
+});
+
+cenario("rebate ausente é tratado como zero — comportamento atual preservado", () => {
+  const semCampo = C.computeMargin({ price: 100, cost: 40, taxRate: 0.05, commission: 12, freight: 8 });
+  const comZero = C.computeMargin({ price: 100, cost: 40, taxRate: 0.05, commission: 12, freight: 8, rebate: 0 });
+  assert.strictEqual(semCampo.profit, comZero.profit);
+});
+
+cenario("rebate não mascara variável obrigatória ausente", () => {
+  const resultado = C.computeMargin({ price: 100, rebate: 50 });
+  assert.strictEqual(resultado.computable, false, "custo ausente continua não-computável mesmo com rebate informado");
+  assert.ok(resultado.missing.includes(C.FIELDS.COST));
+});
+
 cenario("houve venda mas nenhuma evidência realizada de frete → rebaixa a variável", () => {
   const bag = C.createEvidenceBag();
   base(bag, { cost: 40 });

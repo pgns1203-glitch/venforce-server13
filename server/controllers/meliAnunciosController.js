@@ -24,6 +24,7 @@ const variacoesLegadoService = require("../services/meliAnuncios/meliVariacoesLe
 const variacoesLegadoEstoqueService = require("../services/meliAnuncios/meliVariacoesLegadoEstoqueService");
 const precoService = require("../services/meliAnuncios/meliPrecoService");
 const promocoesService = require("../services/meliAnuncios/meliPromocoesService");
+const promocoesEscritaService = require("../services/meliAnuncios/meliPromocoesEscritaService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
 const motorMargemService = require("../services/motorMargem/motorMargemService");
 const marginEngine = require("../services/motorMargem/core/marginEngine");
@@ -861,6 +862,83 @@ async function promocoes(req, res) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] promocoes:", err.message);
     return res.status(500).json({ ok: false, motivo: "Erro ao carregar as promoções do anúncio." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// POST /anuncios-meli/:itemId/promocoes/:promotionId/aplicar
+//   body: { clienteSlug, clienteContaId?, precoNovo }
+//
+// ESCRITA REAL de participação (candidate -> POST) ou alteração
+// (started/pending -> PUT) numa promoção — ver meliPromocoesEscritaService
+// para o porquê do escopo ficar restrito a DEAL/SELLER_CAMPAIGN nesta v1.
+// Nunca chamado sem clique explícito do operador no diálogo de confirmação
+// (Preço atual / Novo preço / Impacto na margem) do frontend. Não toca
+// meli_anuncios — só a API de promoções do Mercado Livre.
+// ----------------------------------------------------------------------------
+async function aplicarPromocao(req, res) {
+  try {
+    const { itemId, promotionId } = req.params;
+    const body = req.body || {};
+    const { clienteSlug } = body;
+    const clienteContaId = extrairClienteContaId(body.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    // Validação local ANTES de resolver cliente/conta/token — mesmo padrão
+    // de PATCH /:itemId/preco.
+    const precoCheck = promocoesEscritaService.normalizarPrecoPromocao(body.precoNovo);
+    if (!precoCheck.ok) {
+      return res.status(400).json({ ok: false, codigo: precoCheck.codigo, motivo: precoCheck.motivo });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: true,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const r = await promocoesEscritaService.aplicarPromocao({
+      clienteId: cliente.id,
+      itemId,
+      mlUserId,
+      promotionId,
+      precoNovo: body.precoNovo,
+    });
+
+    if (!r.ok) {
+      return res.json({ ok: false, codigo: r.codigo, motivo: r.motivo });
+    }
+
+    return res.json({
+      ok: true,
+      metodo: r.metodo,
+      promotionId: r.promotionId,
+      tipo: r.tipo,
+      precoConfirmado: r.precoConfirmado,
+      precoOriginal: r.precoOriginal,
+    });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] aplicarPromocao:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro interno ao aplicar a promoção." });
   }
 }
 
@@ -1812,6 +1890,7 @@ module.exports = {
   detalhe,
   variacoesLegado,
   promocoes,
+  aplicarPromocao,
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
   atualizarEstoque,

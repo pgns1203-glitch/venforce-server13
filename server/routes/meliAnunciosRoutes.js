@@ -30,6 +30,7 @@
 //   GET    /anuncios-meli/:itemId
 //   GET    /anuncios-meli/:itemId/variacoes-legado (expansão do modelo legado)
 //   GET    /anuncios-meli/:itemId/promocoes    (promoções oficiais do item, read-only)
+//   POST   /anuncios-meli/:itemId/promocoes/:promotionId/aplicar (escrita real, DEAL/SELLER_CAMPAIGN)
 //   PATCH  /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque (escrita real)
 //   PATCH  /anuncios-meli/:itemId/revisao
 //   PATCH  /anuncios-meli/:itemId/conteudo      (edição real no Mercado Livre)
@@ -165,6 +166,12 @@ router.get("/:itemId/variacoes-legado", ctrl.variacoesLegado);
 // meliPromocoesService) — bloco "Promoções disponíveis" do modal. Read-only;
 // precisa vir ANTES de "/:itemId" pelo mesmo motivo de sempre.
 router.get("/:itemId/promocoes", ctrl.promocoes);
+
+// Escrita REAL de participação (POST)/alteração (PUT) numa promoção — só
+// DEAL/SELLER_CAMPAIGN nesta v1 (ver meliPromocoesEscritaService). Nunca
+// chamado sem confirmação explícita do operador no frontend. Precisa vir
+// ANTES de "/:itemId" pelo mesmo motivo de sempre.
+router.post("/:itemId/promocoes/:promotionId/aplicar", ctrl.aplicarPromocao);
 
 // Edição de ESTOQUE de uma variação do modelo LEGADO NO MERCADO LIVRE (ver
 // meliVariacoesLegadoEstoqueService — GET fresco -> PUT /items { variations

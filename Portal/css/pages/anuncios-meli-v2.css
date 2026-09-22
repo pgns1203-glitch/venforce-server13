@@ -1038,19 +1038,17 @@
   padding: 0 6px;
 }
 
-/* Editor de Preço tem botões próprios ("Salvar no Mercado Livre"/
-   "Cancelar") em vez de confirmar no Enter — a linha vira coluna pra caber
-   o input e as ações sem estourar a largura da "escada". */
-.vf-page-anuncios-meli .am-margem-preco__editor {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-}
-
 .vf-page-anuncios-meli .am-margem-comp__acoes {
   display: flex;
   gap: 6px;
+}
+
+/* "Aplicar preço no Mercado Livre" — linha de ação sozinha, sem rótulo à
+   esquerda, alinhada à direita como o resto dos valores da "escada". Só
+   aparece quando há uma simulação de preço pendente (ver
+   margemComposicaoLadderHtml). */
+.vf-page-anuncios-meli .am-margem-comp__linha--acao {
+  justify-content: flex-end;
 }
 
 /* Preço bloqueado (promoção ativa no Mercado Livre) — valor em texto puro,
@@ -2321,4 +2319,44 @@
   .vf-page-anuncios-meli .vf-toast {
     min-width: 0;
   }
+}
+
+/* ---------------------------------------------------------------------
+   Diálogo de confirmação — Aplicar preço / Participar-Alterar promoção.
+   O overlay/box em si é .vf-overlay/.vf-modal--sm (ver vf-components-v2.css);
+   aqui só o conteúdo interno (título + linhas "rótulo: valor").
+--------------------------------------------------------------------- */
+.am-confirm__titulo {
+  margin: 0 0 var(--vf-sp-3);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text);
+}
+
+.am-confirm__linhas {
+  display: flex;
+  flex-direction: column;
+}
+
+.am-confirm__linha {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  font-size: var(--vf-fs-sm);
+}
+
+.am-confirm__linha + .am-confirm__linha {
+  border-top: 1px solid var(--vf-border);
+}
+
+.am-confirm__rotulo {
+  color: var(--vf-text-muted);
+}
+
+.am-confirm__valor {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
 }

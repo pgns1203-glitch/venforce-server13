@@ -155,13 +155,13 @@ const PROMO_ATIVA = {
   id: "P-1", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "HOTSALE",
   status: "started", statusLabel: "ATIVA", inicio: "2026-09-01T12:00:00Z", fim: "2026-09-30T12:00:00Z",
   precoOriginal: 249.9, precoFinal: 199.9, descontoReais: 50, descontoPercentual: 20,
-  meliPercentage: 5, sellerPercentage: 10, editavelPrecoFinal: true,
+  meliPercentage: 5, sellerPercentage: 10, subsidioMl: 2.5, editavelPrecoFinal: true,
 };
 const PROMO_CANDIDATE = {
   id: "PD-1", tipo: "PRICE_DISCOUNT", tipoLabel: "Desconto individual", nome: null,
   status: "candidate", statusLabel: "ELEGÍVEL", inicio: null, fim: null,
   precoOriginal: 249.9, precoFinal: 224.9, descontoReais: 25, descontoPercentual: 10,
-  meliPercentage: null, sellerPercentage: null, editavelPrecoFinal: true,
+  meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
 };
 // Mesmo tipo de PROMO_ATIVA (DEAL) mas candidate — usada nos testes de
 // escrita real (POST participar), já que PD-1 (PRICE_DISCOUNT) está fora do
@@ -170,7 +170,7 @@ const PROMO_CANDIDATE_DEAL = {
   id: "P-2", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "Semana do Cliente",
   status: "candidate", statusLabel: "ELEGÍVEL", inicio: null, fim: null,
   precoOriginal: 249.9, precoFinal: 224.9, descontoReais: 25, descontoPercentual: 10,
-  meliPercentage: null, sellerPercentage: null, editavelPrecoFinal: true,
+  meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
 };
 
 const SEMENTE = `
@@ -1730,6 +1730,7 @@ async function run() {
             status: tr.querySelector('.vf-status').textContent.trim(),
             desconto: tr.querySelector('td:nth-child(2)').textContent.replace(/\\s+/g, ' ').trim(),
             precoFinal: tr.querySelector('.am-promo__preco').textContent.trim(),
+            subsidioMl: tr.querySelector('.am-promo__subsidio').textContent.trim(),
             acao: tr.querySelector('[data-acao="promo-acao"]').textContent.trim(),
           };
         })`);
@@ -1738,12 +1739,14 @@ async function run() {
         assert.strictEqual(linhas[0].status, "ATIVA");
         assert.ok(/R\$ 50,00/.test(linhas[0].desconto) && /20,0%/.test(linhas[0].desconto), `desconto da ativa inesperado: ${linhas[0].desconto}`);
         assert.strictEqual(linhas[0].precoFinal, "R$ 199,90");
+        assert.strictEqual(linhas[0].subsidioMl, "R$ 2,50", "Subsídio ML precisa vir em R$, nunca em percentual");
         assert.strictEqual(linhas[0].acao, "Alterar", "promoção ativa/agendada precisa oferecer 'Alterar'");
 
         assert.strictEqual(linhas[1].nome, "Desconto individual", "sem nome próprio, cai para o rótulo do tipo");
         assert.strictEqual(linhas[1].status, "ELEGÍVEL");
         assert.ok(/R\$ 25,00/.test(linhas[1].desconto) && /10,0%/.test(linhas[1].desconto), `desconto da candidate inesperado: ${linhas[1].desconto}`);
         assert.strictEqual(linhas[1].precoFinal, "R$ 224,90");
+        assert.strictEqual(linhas[1].subsidioMl, "—", "sem meli_percentage do ML, a coluna mostra — (nunca um valor inventado)");
         // PRICE_DISCOUNT está fora do escopo de escrita desta v1 (só
         // DEAL/SELLER_CAMPAIGN — ver auditoria) — o rótulo nunca pode
         // sugerir uma participação real que a tela não sabe fazer.

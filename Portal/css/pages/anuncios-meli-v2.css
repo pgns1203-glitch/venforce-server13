@@ -1140,7 +1140,8 @@
 }
 
 .vf-page-anuncios-meli .am-promo__desconto,
-.vf-page-anuncios-meli .am-promo__recebe {
+.vf-page-anuncios-meli .am-promo__recebe,
+.vf-page-anuncios-meli .am-promo__subsidio {
   font-variant-numeric: tabular-nums;
   color: var(--vf-text);
   white-space: nowrap;
@@ -1153,7 +1154,8 @@
 }
 
 .vf-page-anuncios-meli .am-promo__desconto--vazio,
-.vf-page-anuncios-meli .am-promo__recebe--vazio {
+.vf-page-anuncios-meli .am-promo__recebe--vazio,
+.vf-page-anuncios-meli .am-promo__subsidio--vazio {
   color: var(--vf-text-muted);
   font-style: italic;
   font-size: var(--vf-fs-2xs);

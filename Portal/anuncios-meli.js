@@ -3954,6 +3954,17 @@
   var PROMO_STATUS_CLASSE = { started: "is-success", active: "is-success", pending: "is-info", candidate: "is-empty" };
   function promocaoStatusClasse(status) { return PROMO_STATUS_CLASSE[status] || "is-empty"; }
 
+  // Coluna "Subsídio ML" — só informativa (não alimenta motor de margem/
+  // simulação, nunca é usada em "Você recebe"). Vem pronta do backend
+  // (meliPromocoesService: descontoReais * meli_percentage/100, em R$).
+  // "—" quando o ML não manda meli_percentage para o tipo de promoção.
+  function promocaoSubsidioMlHtml(p, moeda) {
+    if (p.subsidioMl == null) {
+      return '<span class="am-promo__subsidio am-promo__subsidio--vazio">—</span>';
+    }
+    return '<span class="am-promo__subsidio">' + formatMoeda(p.subsidioMl, moeda) + "</span>";
+  }
+
   function promocaoDescontoHtml(p, moeda) {
     if (p.descontoReais == null || p.descontoPercentual == null) {
       return '<span class="am-promo__desconto am-promo__desconto--vazio">Sem sugestão do Mercado Livre</span>';
@@ -4040,6 +4051,7 @@
       "</td>" +
       '<td>' + promocaoDescontoHtml(p, moeda) + "</td>" +
       '<td>' + precoCel + "</td>" +
+      '<td>' + promocaoSubsidioMlHtml(p, moeda) + "</td>" +
       '<td>' + promocaoVoceRecebeHtml(p) + "</td>" +
       '<td><button type="button" class="vf-btn vf-btn--ghost vf-btn--sm am-promo__acao" ' +
         'data-acao="promo-acao" data-promo-id="' + escapeAttr(p.id) + '">' +
@@ -4050,7 +4062,7 @@
   function promocoesTabelaHtml(lista, itemId, moeda) {
     var linhas = lista.map(function (p) { return promocaoLinhaHtml(p, itemId, moeda); }).join("");
     return '<div class="am-promo__scroll"><table class="am-promo__tabela">' +
-      "<thead><tr><th>Promoção</th><th>Desconto</th><th>Preço final</th><th>Você recebe</th><th>Tarefas</th></tr></thead>" +
+      "<thead><tr><th>Promoção</th><th>Desconto</th><th>Preço final</th><th>Subsídio ML</th><th>Você recebe</th><th>Tarefas</th></tr></thead>" +
       "<tbody>" + linhas + "</tbody>" +
     "</table></div>";
   }

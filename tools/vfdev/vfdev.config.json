@@ -1,0 +1,29 @@
+{
+  "portalDir": "Portal",
+  "port": 5190,
+  "backend": null,
+  "protectedFiles": ["style.css", "layout.js"],
+  "globalFiles": [
+    "css/vf-tokens-v2.css",
+    "css/vf-components-v2.css",
+    "css/vf-shell.css",
+    "venforce-ui-v2.css"
+  ],
+  "builtDirs": ["assets/"],
+  "viteSources": {
+    "assets/cliente-360-react/": ["frontend-react/src/styles/cliente360.css"],
+    "assets/full-gestao/": ["frontend-react/src/styles/fullGestao.css"],
+    "assets/visao/": ["frontend-react/src/styles/visao.css"],
+    "assets/financeiro-v3/": ["frontend-react/src/styles/financeiro.css"],
+    "assets/cliente-360-v3/": ["frontend-react/src/styles/cliente360.css", "frontend-react/src/styles/cliente360V3.css"],
+    "assets/painel-contas/": ["frontend-react/src/styles/painel-contas.css"],
+    "assets/cliente-360-v2/": []
+  },
+  "tokens": {
+    "space": "--vf-sp-",
+    "radius": "--vf-radius",
+    "fontSize": "--vf-fs-"
+  },
+  "tokensFile": "css/vf-tokens-v2.css",
+  "minFontPx": 11
+}

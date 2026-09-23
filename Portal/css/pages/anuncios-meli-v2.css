@@ -625,6 +625,15 @@
   color: var(--vf-text-muted);
 }
 
+/* Mesmos badges do card legado (.am-row__badges) — o MLB dentro da família
+   é o mesmo anúncio, só que num contexto de agrupador. */
+.vf-page-anuncios-meli .am-mlb__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 1px;
+}
+
 /* Condição comercial (Clássico / Premium). Quando o nível do MLBU
    estava na tela, o par de anúncios da mesma variação era identificado
    pela faixa acima dele; sem a faixa, é ESTE rótulo que diz por que

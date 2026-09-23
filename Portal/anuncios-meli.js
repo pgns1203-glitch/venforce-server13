@@ -177,6 +177,22 @@
     return !!(a && (a.catalog_listing === true || a.family_name));
   }
 
+  // Badges de status do anúncio (Catálogo/Full/fotos/Sem SKU/Revisado) —
+  // compartilhado entre o card legado (rowAnuncioHtml) e o card do MLB
+  // dentro de agrupador/família (rowMlbCompactaHtml). Os dois representam o
+  // MESMO anúncio (mesmas colunas de meli_anuncios), então o mesmo anúncio
+  // não pode mostrar um badge fora da família e escondê-lo dentro dela —
+  // ver auditoria "padronizar card MLB dentro de agrupadores".
+  function badgesAnuncioHtml(a) {
+    var badges = "";
+    if (ehCatalogoOficial(a)) badges += '<span class="vf-tag is-primary">Catálogo</span>';
+    if (a.is_full) badges += '<span class="vf-tag is-info">Full</span>';
+    if ((a.pictures_count || 0) < 3) badges += '<span class="vf-tag is-warning">' + (a.pictures_count || 0) + "/3 fotos</span>";
+    if (!a.sku) badges += '<span class="vf-tag is-danger">Sem SKU</span>';
+    if (a.revisado) badges += '<span class="vf-tag is-success">Revisado</span>';
+    return badges;
+  }
+
   function scoreClasse(s) {
     if (s >= 80) return "is-success";
     if (s >= 60) return "is-warning";
@@ -1250,12 +1266,11 @@
         'aria-label="Abrir ' + escapeAttr(a.titulo || a.item_id) + ' no Mercado Livre" title="Abrir no Mercado Livre">' +
         iconeExternoSvg() + "</a>"
       : "";
-    // Score em número, não no medidor semicircular: o medidor tem altura
-    // própria e engordaria a linha filha até a altura da linha-mãe.
-    var score = a.score_venforce === null || a.score_venforce === undefined
-      ? '<span class="am-mlb__score">—</span>'
-      : '<span class="am-mlb__score ' + scoreClasse(a.score_venforce) + '" title="' +
-        escapeAttr(scoreLegenda(a.score_venforce)) + '">' + a.score_venforce + "</span>";
+    // Mesmo medidor semicircular do card legado (rowAnuncioHtml) — o card do
+    // MLB dentro da família precisa ter exatamente a mesma aparência, e um
+    // número simples aqui seria um segundo estilo de score para o mesmo
+    // dado (ver auditoria "padronizar card MLB dentro de agrupadores").
+    var score = scoreGaugeHtml(a.score_venforce);
 
     var cond = condicaoComercial(a);
     var condHtml = cond
@@ -1267,6 +1282,11 @@
     var tituloHtml = op.tituloProprio
       ? '<span class="am-mlb__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</span>"
       : "";
+    // Mesmos badges do card legado (Catálogo/Full/fotos/Sem SKU/Revisado) —
+    // é o MESMO anúncio, só que dentro de uma família; escondê-los aqui
+    // seria o card de família mostrar menos informação que o avulso.
+    var badges = badgesAnuncioHtml(a);
+    var badgesHtml = badges ? '<span class="am-mlb__badges">' + badges + "</span>" : "";
 
     return '<div class="am-mlb' + (op.irma ? " am-mlb--irma" : "") +
       '" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
@@ -1277,6 +1297,7 @@
         tituloHtml +
         '<span class="am-mlb__ids"><span class="vf-mono">' + escapeHtml(a.item_id) + "</span>" +
           condHtml + sku + "</span>" +
+        badgesHtml +
       "</span>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
       celulaPrecoHtml(a, "am-mlb__preco") +
@@ -2263,7 +2284,7 @@
   // existente (abrirDetalhe) — mesmo endpoint/handler de sempre.
   function rowAnuncioHtml(a, idx) {
     var st = statusInfo(a.status);
-    var badges = "";
+    var badges = badgesAnuncioHtml(a);
     // Modelo LEGADO de variações do ML (item_id -> variations[]), distinto do
     // agrupador família/User Product (rowGrupoHtml). Um anúncio nesta forma
     // ("item", sem family_id) pode mesmo assim ter variações reais de cor e
@@ -2285,11 +2306,6 @@
       ? '<span class="am-row__variacoes-info" title="Este anúncio tem variações no modelo antigo do Mercado Livre (sem User Product) — a edição de preço desta tela trata isso à parte.">' +
         plural(a.variations_count, "variação", "variações") + "</span>"
       : "";
-    if (ehCatalogoOficial(a)) badges += '<span class="vf-tag is-primary">Catálogo</span>';
-    if (a.is_full) badges += '<span class="vf-tag is-info">Full</span>';
-    if ((a.pictures_count || 0) < 3) badges += '<span class="vf-tag is-warning">' + (a.pictures_count || 0) + "/3 fotos</span>";
-    if (!a.sku) badges += '<span class="vf-tag is-danger">Sem SKU</span>';
-    if (a.revisado) badges += '<span class="vf-tag is-success">Revisado</span>';
 
     var img = a.thumbnail
       ? '<img src="' + escapeHtml(a.thumbnail) + '" alt="" loading="lazy" />'

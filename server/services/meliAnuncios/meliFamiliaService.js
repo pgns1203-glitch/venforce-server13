@@ -568,6 +568,7 @@ async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null,
             a.preco_original, a.moeda,
             a.estoque, a.vendidos, a.score_venforce, a.sku, a.thumbnail,
             a.permalink, a.listing_type_id,
+            a.pictures_count, a.is_full, a.revisado, a.catalog_listing,
             up.site_id, up.domain_id, up.family_name
        FROM meli_anuncios a
        JOIN meli_user_products up
@@ -621,6 +622,13 @@ async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null,
       thumbnail: r.thumbnail,
       permalink: r.permalink,
       listing_type_id: r.listing_type_id,
+      // Mesmas colunas que a listagem plana já lê para o card avulso
+      // (rowAnuncioHtml) — sem elas o card do MLB dentro da família não
+      // consegue montar os mesmos badges (Catálogo/Full/fotos/Revisado).
+      pictures_count: r.pictures_count,
+      is_full: r.is_full,
+      revisado: r.revisado,
+      catalog_listing: r.catalog_listing,
     });
   }
 

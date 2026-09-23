@@ -94,6 +94,16 @@
       metricasEmVoo: {},
       margemEmVoo: {},
       composicaoEmVoo: {},
+      // % faturamento e Curva ABC (por item_id/family_id) — ao contrário de
+      // metricas7d/margem, NÃO há pré-carregamento em background para estes
+      // dois: só chegam ao cache quando o operador ordena por eles (ver
+      // aplicarOrdenacaoPerformance). Uma chave ausente aqui é "nunca
+      // pedido" (célula mostra "—" fixo); uma chave presente com valor null
+      // é "pedido, mas o backend não tem o dado para esta linha".
+      faturamentoCache: {},
+      faturamentoPorFamiliaCache: {},
+      curvaAbcCache: {},
+      curvaAbcPorFamiliaCache: {},
       // Variações do modelo LEGADO do ML (item_id -> variations[], ver
       // rowAnuncioHtml/badge "N variações no ML") — mesmo padrão de cache e
       // dedupe de garantirFamiliaDetalhe, por item_id em vez de family_id.
@@ -183,6 +193,18 @@
   // MESMO anúncio (mesmas colunas de meli_anuncios), então o mesmo anúncio
   // não pode mostrar um badge fora da família e escondê-lo dentro dela —
   // ver auditoria "padronizar card MLB dentro de agrupadores".
+  // Curva ABC (classificação por Pareto de receita, últ. 30d) como TAG, não
+  // coluna — mesmo componente vf-tag das demais (Catálogo/Full/Sem SKU/...),
+  // nunca um padrão novo de badge (ver auditoria "Ajuste visual — métricas
+  // de performance"). Só existe quando o operador já ordenou por Curva ABC
+  // nesta sessão (ver aplicarOrdenacaoPerformance/AM.state.curvaAbcCache) —
+  // sem isso, `classe` é undefined e a função devolve "" (nenhuma tag).
+  var CURVA_ABC_TAG_CLASSE = { A: "is-success", B: "is-warning", C: "is-danger" };
+  function curvaAbcBadgeHtml(classe) {
+    if (!classe) return "";
+    return '<span class="vf-tag ' + (CURVA_ABC_TAG_CLASSE[classe] || "is-neutral") + '">ABC ' + escapeHtml(classe) + "</span>";
+  }
+
   function badgesAnuncioHtml(a) {
     var badges = "";
     if (ehCatalogoOficial(a)) badges += '<span class="vf-tag is-primary">Catálogo</span>';
@@ -190,6 +212,9 @@
     if ((a.pictures_count || 0) < 3) badges += '<span class="vf-tag is-warning">' + (a.pictures_count || 0) + "/3 fotos</span>";
     if (!a.sku) badges += '<span class="vf-tag is-danger">Sem SKU</span>';
     if (a.revisado) badges += '<span class="vf-tag is-success">Revisado</span>';
+    // Classe do próprio MLB (nunca a da família mesmo quando exibido dentro
+    // de um agrupador — a consolidada é só na linha-mãe, ver rowGrupoHtml).
+    badges += curvaAbcBadgeHtml(AM.state.curvaAbcCache[a.item_id]);
     return badges;
   }
 
@@ -638,7 +663,7 @@
     var html = '<div class="am-listagem" aria-label="Lista de anúncios">' +
       '<div class="am-listagem__head" aria-hidden="true">' +
         "<span></span><span>Anúncio</span><span>Status</span><span>Preço</span>" +
-        "<span>Estoque</span><span>Vendidos</span><span>Métricas últ. 7 dias</span>" +
+        "<span>Estoque</span><span>Vendidos</span><span>Faturamento</span><span>Métricas últ. 7 dias</span>" +
         "<span>Margem</span><span>Score VenForce</span><span></span>" +
       "</div>";
     // Mesma grade, mesmas colunas, mesma densidade para os dois tipos de
@@ -782,7 +807,7 @@
       "<small>até " + escapeHtml(formatMoeda(max, f.moeda)) + "</small></span>";
   }
 
-  // Uma linha de agrupador, na MESMA grade de 10 colunas de rowAnuncioHtml.
+  // Uma linha de agrupador, na MESMA grade de 11 colunas de rowAnuncioHtml.
   // O painel de expansão é irmão da linha (não filho): .am-listagem é bloco,
   // não grade, então o painel simplesmente ocupa a largura inteira sem
   // precisar de caixa aninhada e sem desalinhar coluna nenhuma.
@@ -798,6 +823,12 @@
       : iconeImagemSvg();
     var st = statusGrupo(f);
     var rotulo = f.family_name || "(família sem nome)";
+    // Curva ABC CONSOLIDADA da família (Pareto sobre a receita somada dos
+    // filhos, últ. 30d) — mesma tag/componente do card individual, nunca o
+    // rótulo de um filho isolado. "" quando o operador ainda não ordenou por
+    // Curva ABC nesta sessão (ver AM.state.curvaAbcPorFamiliaCache).
+    var abcBadge = curvaAbcBadgeHtml(AM.state.curvaAbcPorFamiliaCache[f.family_id]);
+    var badgesHtml = abcBadge ? '<div class="am-row__badges">' + abcBadge + "</div>" : "";
 
     return '<div class="am-row am-row--grupo" data-familia="' + escapeAttr(f.family_id) + '" ' +
       'tabindex="0" role="button" aria-expanded="false" aria-controls="' + painelId + '" ' +
@@ -815,6 +846,7 @@
           "<span>" + plural(f.total_user_products || 0, "variação", "variações") + "</span>" +
           "<span>" + plural(f.total_itens || 0, "anúncio", "anúncios") + "</span>" +
         "</div>" +
+        badgesHtml +
       "</div>" +
       '<span class="vf-status ' + st.classe + '"' +
         (st.titulo ? ' title="' + escapeAttr(st.titulo) + '"' : "") + ">" + st.label + "</span>" +
@@ -824,6 +856,10 @@
         escapeAttr(plural(f.total_user_products || 0, "variação", "variações")) + '">' +
         (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
       '<span class="am-row__num">' + (f.vendidos_total != null ? f.vendidos_total : "—") + "</span>" +
+      // % faturamento CONSOLIDADO da família — vem pronto do backend
+      // (dados.faturamento.porFamilia), mesma regra da Curva ABC acima:
+      // nunca o percentual de um filho isolado.
+      faturamentoAgregadoCelulaHtml(f.family_id) +
       // Métricas 7d: soma dos filhos, buscada sozinha em BACKGROUND assim
       // que a família aparece na página — não depende de expandir (ver
       // carregarMetricasDosGruposVisiveis/metricas7dAgregadoCelulaHtml).
@@ -1113,6 +1149,7 @@
       celulaPrecoVariacaoLegadoHtml(v, itemId, moeda) +
       celulaEstoqueVariacaoLegadoHtml(v, itemId) +
       '<span class="am-mlb__num">' + (v.vendidos != null ? v.vendidos : "—") + "</span>" +
+      '<span class="am-faturamento am-faturamento--indisponivel" title="O faturamento é calculado só por anúncio (MLB) — não existe um percentual por variação">—</span>' +
       '<span class="am-metricas7d am-metricas7d--indisponivel" title="Métricas últ. 7 dias são só por anúncio (MLB) — o Mercado Livre não as reporta por variação">—</span>' +
       '<span class="am-margem am-margem--indisponivel" title="Margem é só por anúncio (MLB) — o Mercado Livre não reporta custo por variação">—</span>' +
       '<span class="am-mlb__score">—</span>' +
@@ -1252,14 +1289,15 @@
 
   // A linha do MLB dentro do agrupador — hoje filha DIRETA dele. Não reusa
   // rowAnuncioHtml() (a linha da lista é mais alta, com badges e medidor), mas
-  // ocupa EXATAMENTE as mesmas 10 colunas: a expansão é a continuação da
+  // ocupa EXATAMENTE as mesmas 11 colunas: a expansão é a continuação da
   // tabela, não uma tabela própria. Enquanto ela era uma árvore separada tinha
   // grade própria, e preço/estoque caíam em colunas que não eram as do
   // cabeçalho. O recuo sai de padding, nunca de uma coluna extra.
   //
   // A condição comercial entra DENTRO da célula de identificação, junto do
-  // MLB — não numa coluna nova. Uma nona coluna desalinharia a expansão do
-  // cabeçalho, que é justamente o que a unificação da tabela consertou.
+  // MLB — não numa coluna nova. Uma coluna fora da grade compartilhada
+  // desalinharia a expansão do cabeçalho, que é justamente o que a
+  // unificação da tabela consertou.
   //
   // O que se reusa de verdade: o modelo de dados (/familias/:familyId devolve
   // os mesmos campos) e o handler abrirDetalhe().
@@ -1314,6 +1352,7 @@
       celulaPrecoHtml(a, "am-mlb__preco") +
       celulaEstoqueHtml(a, "am-mlb__num") +
       '<span class="am-mlb__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
+      faturamentoCelulaHtml(a.item_id) +
       metricas7dCelulaHtml(a.item_id) +
       margemCelulaHtml(a.item_id) +
       score +
@@ -1497,6 +1536,36 @@
       : '<span class="am-margem__vazio">carregando…</span>';
     return '<span class="am-margem' + (pronto ? "" : " am-margem--carregando") +
       '" data-margem-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
+  }
+
+  // % do faturamento — coluna própria (ver auditoria "Ajuste visual —
+  // métricas de performance"). Ao contrário de metricas7d/margem, não tem
+  // pré-carregamento em background nem estado "carregando": o valor só entra
+  // no cache quando o operador ordena por ele (ver
+  // aplicarOrdenacaoPerformance/AM.state.faturamentoCache), e a célula fica
+  // "—" fixo até lá — nunca um spinner para um dado que ninguém pediu ainda.
+  function faturamentoConteudoHtml(v) {
+    if (v === null || v === undefined) return '<span class="am-faturamento__vazio">—</span>';
+    return '<span class="am-faturamento__valor">' + formatarPercentualCompacto(v) + "</span>" +
+      '<span class="am-faturamento__legenda">do faturamento</span>';
+  }
+
+  function faturamentoCelulaHtml(itemId) {
+    var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, itemId)
+      ? AM.state.faturamentoCache[itemId] : null;
+    return '<span class="am-faturamento" data-faturamento-item="' + escapeAttr(itemId) + '">' +
+      faturamentoConteudoHtml(v) + "</span>";
+  }
+
+  // Percentual CONSOLIDADO da família — soma dos filhos sobre o faturamento
+  // total do período, calculada pelo backend (dados.faturamento.porFamilia).
+  // Nunca o percentual de um filho isolado.
+  function faturamentoAgregadoCelulaHtml(familyId) {
+    var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId)
+      ? AM.state.faturamentoPorFamiliaCache[familyId] : null;
+    return '<span class="am-faturamento" data-faturamento-familia="' + escapeAttr(familyId) +
+      '" title="Percentual consolidado da família sobre o faturamento total do período">' +
+      faturamentoConteudoHtml(v) + "</span>";
   }
 
   // Busca metricas7d, margem e/ou composição da margem para os item_id
@@ -1763,6 +1832,33 @@
           atual.margemIndisponivel = dados.margemIndisponivel || null;
           atual.temMargem = true;
           AM.state.performanceCache[itemId] = atual;
+        });
+      }
+
+      // Mesma lógica para % faturamento e Curva ABC: escreve no cache que as
+      // CÉLULAS da lista leem (faturamentoCelulaHtml/badgesAnuncioHtml), para
+      // o valor usado na ordenação ficar visível na linha — nunca um número
+      // diferente do que decidiu a posição (ver auditoria "Ajuste visual —
+      // métricas de performance"). Família usa o agregado pronto do backend
+      // (porFamilia), nunca o de um filho isolado.
+      if (config.campo === "faturamento" && dados.faturamento) {
+        itemIdsIndividuais.forEach(function (itemId) {
+          var porItem = dados.faturamento.porItem || {};
+          AM.state.faturamentoCache[itemId] = porItem[itemId] != null ? porItem[itemId] : null;
+        });
+        familyIds.forEach(function (familyId) {
+          var porFamilia = dados.faturamento.porFamilia || {};
+          AM.state.faturamentoPorFamiliaCache[familyId] = porFamilia[familyId] != null ? porFamilia[familyId] : null;
+        });
+      }
+      if (config.campo === "curvaAbc" && dados.curvaAbc) {
+        itemIdsIndividuais.forEach(function (itemId) {
+          var porItem = dados.curvaAbc.porItem || {};
+          AM.state.curvaAbcCache[itemId] = porItem[itemId] || null;
+        });
+        familyIds.forEach(function (familyId) {
+          var porFamilia = dados.curvaAbc.porFamilia || {};
+          AM.state.curvaAbcPorFamiliaCache[familyId] = porFamilia[familyId] || null;
         });
       }
 
@@ -2537,6 +2633,7 @@
       // mesma razão de fundo (ver estoqueItemHtml acima).
       estoqueItemHtml +
       '<span class="am-row__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
+      faturamentoCelulaHtml(a.item_id) +
       metricas7dCelulaHtml(a.item_id) +
       margemCelulaHtml(a.item_id) +
       scoreGaugeHtml(a.score_venforce) +

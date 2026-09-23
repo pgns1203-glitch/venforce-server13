@@ -89,17 +89,33 @@ function normalizarPromocao(promo, index, promotionIdAtivo = null) {
     } else {
       // Campanhas cofinanciadas automáticas (SMART, PRICE_MATCHING) nunca
       // enviam suggested_discounted_price em candidate — só original_price +
-      // meli_percentage (a mesma dupla que já alimenta subsidioMl abaixo).
-      // Caso real: "Impulsione suas vendas" (SMART, item MLB4147165927)
-      // aparecia com subsidioMl preenchido mas precoFinal/voceRecebe vazios.
-      // Reaproveita a MESMA fórmula do subsidioMl (nunca uma heurística
-      // nova) só como fallback — suggested_discounted_price do ML, quando
-      // vier, sempre tem prioridade. Continua uma simulação local
+      // meli_percentage/seller_percentage. Caso real: "Impulsione suas
+      // vendas" (SMART, item MLB4147165927/MLB4162633919) aparecia com
+      // subsidioMl preenchido mas precoFinal/voceRecebe vazios.
+      //
+      // O desconto REAL pago pelo comprador é meli_percentage + seller_
+      // percentage somados — nunca só a fatia do ML (confirmado em 3
+      // exemplos oficiais independentes: campanha-com-co-participacao.md,
+      // 1000→700 com meli=5+seller=25=30%; campanhas-smart-price-
+      // matching.md PRICE_MATCHING_MELI_ALL, 135→121,5 com meli=10+
+      // seller=0=10%; e o exemplo com boost, 76287→73001≈4,3%). Usar só
+      // meli_percentage (== subsidioMl) subestima o desconto sempre que
+      // seller_percentage > 0. seller_percentage ausente conta como 0 (é
+      // aditivo, opcional); meli_percentage continua obrigatório — sem ele,
+      // precoFinal fica null, nunca inventa desconto.
+      //
+      // subsidioMl (abaixo) continua só meli_percentage — é "quanto o
+      // vendedor recebe de volta", nunca o desconto total do comprador; as
+      // duas fórmulas são propositalmente diferentes e o subsídio nunca é
+      // subtraído uma segunda vez em cima do desconto já calculado aqui.
+      // suggested_discounted_price do ML, quando vier, sempre tem
+      // prioridade sobre este cálculo. Continua uma simulação local
       // (editavelPrecoFinal), nunca escreve no ML nem no motor de margem.
       const meliPercentageCandidata = fin(promo && promo.meli_percentage);
+      const sellerPercentageCandidata = fin(promo && promo.seller_percentage) ?? 0;
       precoFinal =
         precoOriginal != null && meliPercentageCandidata != null
-          ? round2(precoOriginal * (1 - meliPercentageCandidata / 100))
+          ? round2(precoOriginal * (1 - (meliPercentageCandidata + sellerPercentageCandidata) / 100))
           : null;
     }
   }

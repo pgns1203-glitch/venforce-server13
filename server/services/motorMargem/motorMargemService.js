@@ -362,6 +362,12 @@ async function montarItens(
     periodo: prepared.periodo,
     totalItensMl,
     itens,
+    // Agregado do PERÍODO INTEIRO por MLB (não só o lote de `itemIds`) — já
+    // montado por `prepareWorkspaceContext` para o cálculo de margem, e
+    // reaproveitado por Anúncios ML para % faturamento/Curva ABC (que
+    // precisam da receita de TODOS os anúncios do período, não só da página
+    // pedida). Ver server/controllers/meliAnunciosController.js (performance).
+    porMlb: prepared.porMlb,
     vendas: {
       sincronizado: prepared.vendasRaw.sincronizado,
       pedidosNoPeriodo: prepared.vendasRaw.pedidos.length,

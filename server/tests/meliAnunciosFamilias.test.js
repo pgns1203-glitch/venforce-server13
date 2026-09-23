@@ -460,6 +460,28 @@ class MockDb {
       return { rows };
     }
 
+    // --- FAMILIAS_ITENS_BULK ------------------------------------------------
+    if (q.includes("-- FAMILIAS_ITENS_BULK")) {
+      let i = 0;
+      const clienteId = params[i++];
+      const familyIds = params[i++];
+      const temConta = q.includes("a.cliente_conta_id = $");
+      const includeLegacy = temConta ? q.includes("OR a.cliente_conta_id IS NULL)") : true;
+      const clienteContaId = temConta ? params[i++] : null;
+
+      const escopo = this.anuncios.filter(
+        (a) => a.cliente_id === clienteId && a.user_product_id != null && contaFiltro(a, clienteContaId, includeLegacy)
+      );
+
+      const rows = [];
+      for (const a of escopo) {
+        const up = this.upFor(clienteId, a.user_product_id);
+        if (!up || !familyIds.includes(up.family_id)) continue;
+        rows.push({ item_id: a.item_id, family_id: up.family_id });
+      }
+      return { rows };
+    }
+
     return { rows: [] };
   }
 }
@@ -1150,6 +1172,56 @@ async function run() {
     assert.deepStrictEqual(p3.anuncios.map((l) => l.key), ["item:MLB-SOLO-2"]);
     assert.deepStrictEqual(db.itensPedidos, ["MLB-SOLO-2"], "a consulta de itens varreu fora da página");
     console.log("  ✓ AF. capa e campos de item são buscados só para as linhas da página");
+  });
+
+  // ── resolverItensDeFamilias — resolução bulk p/ ordenação por família ─────
+  // (auditoria "Anúncios ML — filtros de performance": o front manda só
+  // `familias=FAM1|FAM2`, o backend resolve os MLBs filhos.)
+
+  // AG. Resolve os itens de VÁRIAS famílias em uma consulta só, agrupados por
+  //     family_id — nunca mistura os filhos de duas famílias.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B1", user_product_id: "UP2" }),
+      anuncioFixture({ item_id: "MLB-FORA", user_product_id: "UP3" }), // família não pedida
+    ],
+    userProducts: [
+      upFixture({ user_product_id: "UP1", family_id: "FAM1" }),
+      upFixture({ user_product_id: "UP2", family_id: "FAM2" }),
+      upFixture({ user_product_id: "UP3", family_id: "FAM3" }),
+    ],
+  }, async () => {
+    const r = await meliFamiliaService.resolverItensDeFamilias({ clienteId: 1, familyIds: ["FAM1", "FAM2"] });
+    assert.deepStrictEqual(r.get("FAM1").sort(), ["MLB-A1", "MLB-A2"]);
+    assert.deepStrictEqual(r.get("FAM2").sort(), ["MLB-B1"]);
+    assert.strictEqual(r.get("FAM3"), undefined, "família não pedida não pode aparecer no resultado");
+    console.log("  ✓ AG. resolverItensDeFamilias: resolve várias famílias em 1 consulta, sem misturar filhos");
+  });
+
+  // AH. clienteContaId isola a resolução — MLB de outra conta não pode
+  //     aparecer como filho da família nesta conta.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-CONTA10", user_product_id: "UP1", cliente_conta_id: 10 }),
+      anuncioFixture({ item_id: "MLB-CONTA11", user_product_id: "UP1", cliente_conta_id: 11 }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    const r = await meliFamiliaService.resolverItensDeFamilias({
+      clienteId: 1, clienteContaId: 10, includeLegacy: false, familyIds: ["FAM1"],
+    });
+    assert.deepStrictEqual(r.get("FAM1"), ["MLB-CONTA10"], "não pode vazar item de outra conta");
+    console.log("  ✓ AH. resolverItensDeFamilias isola por clienteContaId — nunca mistura contas");
+  });
+
+  // AI. familyIds vazio: zero consulta, Map vazio (mesma postura de itemIds
+  //     vazio no resto do módulo).
+  await withMockDb({ anuncios: [], userProducts: [] }, async () => {
+    const r = await meliFamiliaService.resolverItensDeFamilias({ clienteId: 1, familyIds: [] });
+    assert.strictEqual(r.size, 0);
+    console.log("  ✓ AI. resolverItensDeFamilias com familyIds vazio: Map vazio, sem consulta");
   });
 
   console.log("meliAnunciosFamilias.test.js passed");

@@ -484,6 +484,11 @@
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") fecharDetalhe();
     });
+    if (el("am-ordenacao")) {
+      el("am-ordenacao").addEventListener("change", function (e) {
+        aplicarOrdenacaoPerformance(e.target.value);
+      });
+    }
   }
 
   // ===========================================================================
@@ -609,6 +614,12 @@
       }
       AM.anuncios = r.data.anuncios || [];
       AM.paginacao = r.data.paginacao || AM.paginacao;
+      // Nova busca no backend já vem na ordem padrão — a ordem "original"
+      // capturada por aplicarOrdenacaoPerformance para a página anterior não
+      // serve mais, e qualquer ordenação ativa deixa de fazer sentido até o
+      // operador escolher de novo.
+      AM_ordemOriginalAnuncios = null;
+      if (el("am-ordenacao")) el("am-ordenacao").value = "";
       renderCatalogo();
     });
   }
@@ -1617,6 +1628,159 @@
     var ativa = promocaoAtivaComSubsidioDoItem(itemId);
     if (ativa) opcoes.subsidioMl = { itemId: itemId, valor: ativa.subsidioMl };
     return carregarPerformance([itemId], opcoes);
+  }
+
+  // ===========================================================================
+  // Ordenação por performance (margem / % faturamento / unidades vendidas
+  // últ. 7d / Curva ABC últ. 30d) — ver auditoria "Anúncios ML — filtros de
+  // performance". Escopo desta etapa: ordena só a PÁGINA ATUAL (≤24 linhas-
+  // topo, mesmo teto de GET /anuncios-meli/performance) — nenhuma busca em
+  // outras páginas, nenhum filtro de faixa/período.
+  //
+  // Família participa como entidade AGREGADA, nunca herda o valor de 1 filho:
+  // margem/faturamento/Curva ABC vêm prontos do backend (`margemPorFamilia`/
+  // `faturamento.porFamilia`/`curvaAbc.porFamilia` — ver
+  // meliAnunciosController.performance), porque os três dependem do contexto
+  // financeiro inteiro (receita do período/Base de custos). Unidades vendidas
+  // é soma simples e fica só no cliente, a partir dos filhos já conhecidos
+  // via garantirFamiliaDetalhe (mesmo ponto único de sempre — nunca refaz a
+  // busca se a família já está em cache).
+  // ===========================================================================
+
+  var CURVA_ABC_ORDEM = { A: 0, B: 1, C: 2 };
+
+  var ORDENACOES_PERFORMANCE = {
+    margem_asc: { campo: "margem", direcao: "asc" },
+    margem_desc: { campo: "margem", direcao: "desc" },
+    faturamento_asc: { campo: "faturamento", direcao: "asc" },
+    faturamento_desc: { campo: "faturamento", direcao: "desc" },
+    unidades_asc: { campo: "unidades", direcao: "asc" },
+    unidades_desc: { campo: "unidades", direcao: "desc" },
+    curvaAbc_asc: { campo: "curvaAbc", direcao: "asc" },
+    curvaAbc_desc: { campo: "curvaAbc", direcao: "desc" },
+  };
+
+  // Soma unidadesVendidas.porItem dos filhos já conhecidos da família — null
+  // enquanto a família não tem detalhe em cache (chamador garante isso antes
+  // via garantirFamiliaDetalhe), não 0 fingido.
+  function somarUnidadesDaFamilia(familyId, unidadesPorItem) {
+    var familia = AM.state.familyCache[familyId];
+    if (!familia) return null;
+    var soma = null;
+    (familia.user_products || []).forEach(function (up) {
+      (up.itens || []).forEach(function (item) {
+        var v = unidadesPorItem[item.item_id];
+        if (v != null) soma = (soma || 0) + v;
+      });
+    });
+    return soma;
+  }
+
+  // null (nunca 0/menor classe fingidos) sempre que o dado não existe para
+  // esta linha — quem ordena trata null como "vai para o fim", nos dois
+  // sentidos.
+  function valorOrdenacaoDaLinha(linha, campo, dados) {
+    if (linha.tipo === "familia") {
+      var familyId = linha.family_id;
+      if (campo === "margem") return dados.margemPorFamilia ? dados.margemPorFamilia[familyId] : null;
+      if (campo === "faturamento") return dados.faturamento && dados.faturamento.porFamilia ? dados.faturamento.porFamilia[familyId] : null;
+      if (campo === "curvaAbc") {
+        var classeFam = dados.curvaAbc && dados.curvaAbc.porFamilia ? dados.curvaAbc.porFamilia[familyId] : null;
+        return classeFam != null ? CURVA_ABC_ORDEM[classeFam] : null;
+      }
+      if (campo === "unidades") return somarUnidadesDaFamilia(familyId, (dados.unidadesVendidas && dados.unidadesVendidas.porItem) || {});
+      return null;
+    }
+    var itemId = linha.item_id;
+    if (campo === "margem") return dados.margem && dados.margem[itemId] ? dados.margem[itemId].profit : null;
+    if (campo === "faturamento") return dados.faturamento && dados.faturamento.porItem ? dados.faturamento.porItem[itemId] : null;
+    if (campo === "curvaAbc") {
+      var classeItem = dados.curvaAbc && dados.curvaAbc.porItem ? dados.curvaAbc.porItem[itemId] : null;
+      return classeItem != null ? CURVA_ABC_ORDEM[classeItem] : null;
+    }
+    if (campo === "unidades") return dados.unidadesVendidas && dados.unidadesVendidas.porItem ? dados.unidadesVendidas.porItem[itemId] : null;
+    return null;
+  }
+
+  // Ordem original da página (a que o backend devolveu) — capturada na
+  // primeira vez que o operador ordena, restaurada ao voltar para "Padrão"
+  // sem recarregar do backend. Zerada a cada nova busca de página (ver
+  // carregarAnuncios) — a ordem "original" de uma página velha não serve
+  // para a página nova.
+  var AM_ordemOriginalAnuncios = null;
+
+  function aplicarOrdenacaoPerformance(criterio) {
+    if (!AM.clienteAtual || !AM.anuncios.length) return;
+    if (!AM_ordemOriginalAnuncios) AM_ordemOriginalAnuncios = AM.anuncios.slice();
+
+    if (!criterio) {
+      AM.anuncios = AM_ordemOriginalAnuncios.slice();
+      renderCatalogo();
+      return;
+    }
+
+    var config = ORDENACOES_PERFORMANCE[criterio];
+    if (!config) return;
+
+    var itemIdsIndividuais = [];
+    var familyIds = [];
+    AM.anuncios.forEach(function (l) {
+      if (l.tipo === "familia") familyIds.push(l.family_id);
+      else if (l.item_id) itemIdsIndividuais.push(l.item_id);
+    });
+
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+      "&itemIds=" + encodeURIComponent(itemIdsIndividuais.join(",")) +
+      "&incluirMetricas=0" +
+      "&incluirMargem=" + (config.campo === "margem" ? "1" : "0") +
+      "&incluirFaturamento=" + (config.campo === "faturamento" ? "1" : "0") +
+      "&incluirCurvaAbc=" + (config.campo === "curvaAbc" ? "1" : "0") +
+      "&incluirUnidades=" + (config.campo === "unidades" ? "1" : "0");
+    if (familyIds.length) qs += "&familias=" + encodeURIComponent(familyIds.join("|"));
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+
+    // Unidades por família precisa dos filhos já conhecidos (a única das 4
+    // métricas que agrega no cliente) — garante o detalhe antes de somar.
+    // Nos outros 3 critérios a família já vem agregada pronta do backend.
+    var prontoFilhos = config.campo === "unidades" && familyIds.length
+      ? Promise.all(familyIds.map(garantirFamiliaDetalhe))
+      : Promise.resolve();
+
+    prontoFilhos.then(function () {
+      return api("/anuncios-meli/performance?" + qs);
+    }).then(function (r) {
+      var dados = (r.data && r.data.ok) ? r.data : {};
+
+      // Escreve margem no MESMO cache que a célula da lista já lê — a coluna
+      // Margem repinta com o valor real, sem duplicar estado.
+      if (config.campo === "margem" && dados.margem) {
+        itemIdsIndividuais.forEach(function (itemId) {
+          var atual = AM.state.performanceCache[itemId] || {
+            metricas7d: null, temMetricas: false, margem: null, margemIndisponivel: null, temMargem: false,
+            composicao: null, temComposicao: false,
+          };
+          atual.margem = dados.margem[itemId] || null;
+          atual.margemIndisponivel = dados.margemIndisponivel || null;
+          atual.temMargem = true;
+          AM.state.performanceCache[itemId] = atual;
+        });
+      }
+
+      var comValor = AM.anuncios.map(function (linha) {
+        return { linha: linha, valor: valorOrdenacaoDaLinha(linha, config.campo, dados) };
+      });
+      // Sem valor conhecido sempre vai para o fim, nas duas direções — "não
+      // sei" não pode competir com um valor real, em nenhum sentido.
+      comValor.sort(function (a, b) {
+        if (a.valor == null && b.valor == null) return 0;
+        if (a.valor == null) return 1;
+        if (b.valor == null) return -1;
+        return config.direcao === "asc" ? a.valor - b.valor : b.valor - a.valor;
+      });
+
+      AM.anuncios = comValor.map(function (x) { return x.linha; });
+      renderCatalogo();
+    });
   }
 
   // Repinta SÓ a linha-mãe (nunca o painel, nunca renderCatalogo — fechar

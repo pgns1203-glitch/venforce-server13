@@ -552,15 +552,22 @@ function wireInterception(cdp) {
     if (caminho.startsWith("/anuncios-meli/performance")) {
       const qs = new URL(url).searchParams;
       const idsPedidos = (qs.get("itemIds") || "").split(",").filter(Boolean);
+      const familiasPedidas = (qs.get("familias") || "").split("|").filter(Boolean);
       // O front SEMPRE manda os dois flags de forma explícita (nunca omite):
       // é o que prova, do lado do teste, se uma chamada pediu só métricas
       // (pré-carregamento em background de agrupador ainda fechado) ou só
       // margem (expansão depois que o pré-carregamento já trouxe a métrica).
       const incluirMetricas = qs.get("incluirMetricas") !== "0";
       const incluirMargem = qs.get("incluirMargem") !== "0";
-      chamadasPerformance.push({ itemIds: idsPedidos, conta, incluirMetricas, incluirMargem });
+      const incluirFaturamento = qs.get("incluirFaturamento") === "1";
+      const incluirUnidades = qs.get("incluirUnidades") === "1";
+      const incluirCurvaAbc = qs.get("incluirCurvaAbc") === "1";
+      chamadasPerformance.push({
+        itemIds: idsPedidos, familias: familiasPedidas, conta,
+        incluirMetricas, incluirMargem, incluirFaturamento, incluirUnidades, incluirCurvaAbc,
+      });
       if (atrasoPerformance) await sleep(atrasoPerformance);
-      if (performanceHandler) { await corpo(performanceHandler(idsPedidos, conta)); return; }
+      if (performanceHandler) { await corpo(performanceHandler(idsPedidos, conta, familiasPedidas)); return; }
 
       const metricas7d = {};
       const margem = {};
@@ -568,7 +575,10 @@ function wireInterception(cdp) {
         if (incluirMetricas) metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
         if (incluirMargem) margem[id] = MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
       });
-      await corpo({ ok: true, metricas7d, margem, margemIndisponivel: null });
+      await corpo({
+        ok: true, metricas7d, margem, margemIndisponivel: null,
+        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+      });
       return;
     }
 
@@ -2400,6 +2410,133 @@ async function run() {
       } finally {
         variacoesLegadoHandler = null;
       }
+    });
+
+    /* ── 39a-c: ordenação por performance (margem/unidades) ─────────────── */
+    // Ver auditoria "Anúncios ML — filtros de performance". Os 3 cenários
+    // pedidos: MLB individual, família agregada (não expandida) e família
+    // expandida (filhos já em cache).
+
+    await check("39a — ordenar por margem (MLB individual): maior profit (R$) vai para o topo", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null,
+        margem: { "MLB-SEMUP": { profit: 50 }, "MLB-SEMVAR": { profit: 10 } },
+        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'margem_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-item') === 'MLB-SEMUP';
+      })()`, "MLB-SEMUP (profit 50) deveria ir para o topo ao ordenar por margem decrescente");
+
+      const ordem = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-listagem > .am-row')).map(function(r){
+        return r.getAttribute('data-item') || r.getAttribute('data-familia'); })`);
+      assert.deepStrictEqual(ordem.slice(0, 2), ["MLB-SEMUP", "MLB-SEMVAR"],
+        "maior profit (50) antes do menor (10) — famílias sem margemPorFamilia (null) ficam no fim");
+      assert.strictEqual(chamadasPerformance[0].incluirMargem, true);
+      assert.deepStrictEqual(chamadasPerformance[0].familias.sort(), ["FAM-1", "FAM-2"],
+        "as famílias da página inteira precisam ir junto — o backend resolve/agrega os filhos delas");
+      performanceHandler = null;
+    });
+
+    await check("39b — ordenar por margem (família agregada, NÃO expandida): margemPorFamilia alta leva a família ao topo, sem buscar os filhos", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null,
+        margem: { "MLB-SEMUP": { profit: 5 }, "MLB-SEMVAR": { profit: 1 } },
+        margemPorFamilia: { "FAM-1": 999, "FAM-2": 0.5 },
+        faturamento: null, unidadesVendidas: null, curvaAbc: null,
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'margem_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-familia') === 'FAM-1';
+      })()`, "FAM-1 (margemPorFamilia 999) deveria ir para o topo, acima dos itens avulsos");
+
+      assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
+        "margem por família já vem agregada do backend — ordenar por margem NUNCA busca o detalhe/filhos da família");
+      performanceHandler = null;
+    });
+
+    await check("39c — ordenar por unidades vendidas (família JÁ EXPANDIDA): soma os filhos do cache, sem buscar o detalhe de novo", async () => {
+      await clicar(cdp, linhaFam("FAM-1"));
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "FAM-1 não expandiu para o teste de cache");
+
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
+        // FAM-1 (MLB-A1..A4, ver DETALHE_CONTA_42): 2+3+1+1 = 7 unidades.
+        unidadesVendidas: { periodoDias: 7, porItem: { "MLB-A1": 2, "MLB-A2": 3, "MLB-A3": 1, "MLB-A4": 1, "MLB-SEMUP": 20, "MLB-SEMVAR": 0 } },
+        faturamento: null, curvaAbc: null, margemPorFamilia: null,
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'unidades_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-item') === 'MLB-SEMUP';
+      })()`, "MLB-SEMUP (20 unidades) deveria vir antes da família (soma 7)");
+
+      const ordem = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-listagem > .am-row')).map(function(r){
+        return r.getAttribute('data-item') || r.getAttribute('data-familia'); })`);
+      assert.strictEqual(ordem[0], "MLB-SEMUP");
+      assert.strictEqual(ordem[1], "FAM-1", "FAM-1 (soma 2+3+1+1=7) fica acima de FAM-2 (sem cache, vai para o fim) e de MLB-SEMVAR (0)");
+
+      assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
+        "a família já estava expandida/em cache — ordenar por unidades reaproveita, nunca busca o detalhe de novo");
+      performanceHandler = null;
+    });
+
+    await check("39d — ordenar por Curva ABC (família FECHADA — FAM-2, nunca clicada pelo operador): classe agregada do backend decide a posição, sem depender do painel/DOM", async () => {
+      // FAM-2 nunca foi expandida por clique em nenhum teste anterior desta
+      // suíte (só FAM-1 foi, em 39c) — o painel dela continua fechado agora.
+      assert.strictEqual(
+        await cdp.evaluate(`(function(){ var p = document.querySelector('${painelFam("FAM-2")}'); return !p || p.hidden; })()`),
+        true, "pré-condição do teste: o painel de FAM-2 precisa continuar FECHADO"
+      );
+
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
+        curvaAbc: { periodoDias: 30, porItem: {}, porFamilia: { "FAM-1": "C", "FAM-2": "A" } },
+        faturamento: null, unidadesVendidas: null, margemPorFamilia: null,
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'curvaAbc_asc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-familia') === 'FAM-2';
+      })()`, "FAM-2 (classe A, fechada) deveria ir para o topo em Curva ABC A→C");
+
+      assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-2")),
+        "curvaAbc.porFamilia já vem agregado do backend — família FECHADA nunca precisa do painel/detalhe para ordenar");
+      performanceHandler = null;
     });
 
     /* ── 39: resiliência — falha total nunca deixa a célula presa ───────── */

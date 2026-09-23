@@ -644,10 +644,53 @@ async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null,
   };
 }
 
+// Resolução BULK de família -> [item_id] — o chamador manda só os family_id
+// (nunca os MLBs filhos: o front não é dono dessa lista, e mandar item_ids
+// soltos exigiria o front já ter expandido toda família da página antes de
+// ordenar). Usada por GET /anuncios-meli/performance (ordenação com família
+// agregada — ver auditoria "Anúncios ML — filtros de performance"): uma
+// consulta só resolve TODAS as famílias pedidas, nunca 1 por família.
+//
+// Só os dois campos que o Motor de Margem/vendas7d precisam (item_id) — não
+// é o detalhe completo da família (sem preço/estoque/badges): quem quiser o
+// card inteiro continua usando obterFamiliaDetalhe.
+async function resolverItensDeFamilias({ clienteId, clienteContaId = null, familyIds, includeLegacy = true }) {
+  const ids = Array.from(new Set((familyIds || []).map(String).filter(Boolean)));
+  if (!ids.length) return new Map();
+
+  await ensureSchema();
+
+  const params = [clienteId, ids];
+  const conta = clausulaConta({ clienteContaId, includeLegacy, paramIndex: 3 });
+  if (conta.param != null) params.push(conta.param);
+
+  const { rows } = await db.query(
+    `-- FAMILIAS_ITENS_BULK
+     SELECT a.item_id, up.family_id
+       FROM meli_anuncios a
+       JOIN meli_user_products up
+         ON up.cliente_id = a.cliente_id AND up.user_product_id = a.user_product_id
+      WHERE a.cliente_id = $1
+        AND a.user_product_id IS NOT NULL
+        AND up.family_id = ANY($2::text[])
+        ${conta.sql}
+      ORDER BY up.family_id, a.item_id;`,
+    params
+  );
+
+  const porFamilia = new Map();
+  for (const r of rows) {
+    if (!porFamilia.has(r.family_id)) porFamilia.set(r.family_id, []);
+    porFamilia.get(r.family_id).push(r.item_id);
+  }
+  return porFamilia;
+}
+
 module.exports = {
   ensureSchema,
   extrairUserProducts,
   registrarUserProducts,
   listarAgrupado,
   obterFamiliaDetalhe,
+  resolverItensDeFamilias,
 };

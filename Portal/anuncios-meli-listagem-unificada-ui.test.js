@@ -2612,9 +2612,15 @@ async function run() {
       chamadasPerformance.length = 0;
       performanceHandler = () => ({
         ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
+        // Contrato REAL do backend: fração 0–1 (receita/receitaTotalPeriodo),
+        // nunca já em escala 0–100 — ver montarFaturamento no controller.
+        // Um fixture com número já "pronto" (ex.: 12.4) mascara o bug de
+        // escala do frontend (ver auditoria "Validação participação
+        // faturamento"): passa direto por toFixed(1) sem multiplicar por 100
+        // e o teste passaria mesmo com o × 100 faltando.
         faturamento: {
           periodoDias: 30,
-          porItem: { "MLB-SEMUP": 12.4, "MLB-SEMVAR": 3.1 },
+          porItem: { "MLB-SEMUP": 0.124, "MLB-SEMVAR": 0.031 },
           porFamilia: { "FAM-1": 0, "FAM-2": 0 },
         },
         unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
@@ -2648,10 +2654,11 @@ async function run() {
       chamadasPerformance.length = 0;
       performanceHandler = () => ({
         ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
+        // Fração 0–1 (mesmo motivo do fixture de 39e acima).
         faturamento: {
           periodoDias: 30,
-          porItem: { "MLB-SEMUP": 1, "MLB-SEMVAR": 1 },
-          porFamilia: { "FAM-1": 47.5, "FAM-2": 0.2 },
+          porItem: { "MLB-SEMUP": 0.01, "MLB-SEMVAR": 0.01 },
+          porFamilia: { "FAM-1": 0.475, "FAM-2": 0.002 },
         },
         unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
       });
@@ -2765,10 +2772,11 @@ async function run() {
         });
         return {
           ok: true, metricas7d, margem, margemIndisponivel: null,
+          // Fração 0–1 (mesmo motivo do fixture de 39e acima).
           faturamento: {
             periodoDias: 30,
-            porItem: { "MLB-SEMUP": 9.5, "MLB-SEMVAR": 1.1 },
-            porFamilia: { "FAM-1": 33.3, "FAM-2": 4.4 },
+            porItem: { "MLB-SEMUP": 0.095, "MLB-SEMVAR": 0.011 },
+            porFamilia: { "FAM-1": 0.333, "FAM-2": 0.044 },
           },
           unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
         };
@@ -2793,6 +2801,48 @@ async function run() {
           "o preenchimento do item avulso tem de vir BUNDLADO na mesma chamada de métricas/margem do carregamento automático — nunca uma chamada extra só para faturamento");
         assert.ok(chamadasPerformance.some((c) => c.incluirFaturamento === true && c.familias.length > 0 && !c.itemIds.length),
           "o consolidado da família precisa de uma chamada própria, com familias= — não itera os filhos um a um");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
+    // BUG: faturamentoConteudoHtml passava a fração crua do backend (0–1)
+    // direto para formatarPercentualCompacto, que espera um número já em
+    // escala 0–100 (é o contrato de marginPercent/conversao) — 0.3 (30%)
+    // virava "0,3%" em vez de "30,0%". Ver auditoria "Validação participação
+    // faturamento". Caso mínimo, item E família, exatamente como reportado.
+    await check("39j — escala do percentual: fração 0.3 do backend renderiza 30,0% (item e família), nunca 0,3%", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = (ids) => {
+        const metricas7d = {}, margem = {};
+        ids.forEach((id) => {
+          metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
+          margem[id] = MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+        });
+        return {
+          ok: true, metricas7d, margem, margemIndisponivel: null,
+          faturamento: {
+            periodoDias: 30,
+            porItem: { "MLB-SEMUP": 0.3, "MLB-SEMVAR": 0.01 },
+            porFamilia: { "FAM-1": 0.3, "FAM-2": 0.01 },
+          },
+          unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+        };
+      };
+      try {
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
+
+        await waitFor(cdp, `(function(){
+          var c = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento__valor');
+          return c && c.textContent.trim() === '30,0%';
+        })()`, "item: backend mandou 0.3 (fração) — a célula tem de mostrar 30,0%, nunca 0,3%");
+
+        await waitFor(cdp, `(function(){
+          var c = document.querySelector('${linhaFam("FAM-1")} .am-faturamento__valor');
+          return c && c.textContent.trim() === '30,0%';
+        })()`, "família: porFamilia também é fração — mesma escala do item, mesmo bug, mesma correção");
       } finally {
         performanceHandler = null;
       }

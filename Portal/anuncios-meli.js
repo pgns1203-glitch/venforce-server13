@@ -1566,7 +1566,13 @@
   // "—" fixo até lá — nunca um spinner para um dado que ninguém pediu ainda.
   function faturamentoConteudoHtml(v) {
     if (v === null || v === undefined) return '<span class="am-faturamento__vazio">—</span>';
-    return '<span class="am-faturamento__valor">' + formatarPercentualCompacto(v) + "</span>" +
+    // Backend manda FRAÇÃO 0–1 (receita/receitaTotalPeriodo — ver
+    // montarFaturamento no controller), não um número já em escala 0–100
+    // como marginPercent/conversao. formatarPercentualCompacto() é
+    // compartilhada com esses dois campos e espera 0–100 — não mexer nela
+    // (quebraria margem/conversão); o × 100 é só deste call site (ver
+    // auditoria "Validação participação faturamento").
+    return '<span class="am-faturamento__valor">' + formatarPercentualCompacto(v * 100) + "</span>" +
       '<span class="am-faturamento__legenda">do faturamento</span>';
   }
 

@@ -1106,6 +1106,68 @@ async function run() {
     assert.strictEqual(linha.precoFinal, 82, "started continua usando price bruto do ML, nunca o cálculo derivado (que daria 92)");
   }
   ok("precoFinal: started continua inteiramente pelo caminho antigo (price bruto), fallback não se aplica");
+
+  // ── precoFinal do fallback de candidate precisa do desconto TOTAL (meli+
+  // seller), nunca só a fatia do subsídio ML (auditoria: item MLB4162633919,
+  // "Impulsione suas vendas" — hipótese inicial era subtração dupla
+  // desconto+subsídio, mas a causa real é o fallback anterior usar só
+  // meli_percentage como se fosse o desconto inteiro, ignorando
+  // seller_percentage. Confirmado com 3 exemplos oficiais independentes:
+  // campanha-com-co-participacao.md (1000→700, meli=5+seller=25=30% real),
+  // campanhas-smart-price-matching.md PRICE_MATCHING_MELI_ALL (135→121,5,
+  // meli=10+seller=0=10%) e o exemplo com boost (76287→73001, ≈4,3%).
+  // subsidioMl continua só meli_percentage — é "quanto o vendedor recebe de
+  // volta", nunca o desconto total; as duas fórmulas são propositalmente
+  // diferentes e nenhuma delas soma a outra por cima do resultado final.
+
+  // Caso 1: promoção normal, sem subsídio nenhum — o campo oficial (price)
+  // é usado como está, nenhuma matemática entra em jogo.
+  {
+    const linha = promocoesService.normalizarPromocao(
+      { type: "DEAL", status: "started", price: 56.9, original_price: 79.9 }, 0
+    );
+    assert.strictEqual(linha.precoFinal, 56.9, "promoção normal: price oficial do ML usado como está, sem cálculo");
+  }
+  ok("precoFinal: Caso 1 — promoção normal sem subsídio, price oficial intocado (79.90 → 56.90)");
+
+  // Caso 2: candidate SMART com subsídio 100% do ML (seller_percentage=0,
+  // mesmo shape do exemplo real "Impulsione suas vendas") — confirma que o
+  // subsídio NÃO é subtraído uma segunda vez em cima do desconto (o desconto
+  // aqui É o subsídio inteiro, então 77.70 é o valor certo, nunca 75.50 como
+  // uma subtração dupla desconto+subsídio produziria).
+  {
+    const linha = promocoesService.normalizarPromocao(
+      { type: "SMART", status: "candidate", original_price: 79.9, meli_percentage: 2.75, seller_percentage: 0 }, 0
+    );
+    assert.strictEqual(linha.subsidioMl, 2.2, "subsidioMl (100*2.75/100 sobre 79.90) continua 2.20, fórmula do subsídio intocada");
+    assert.strictEqual(linha.precoFinal, 77.7, "precoFinal correto é 77.70 (desconto real = subsídio, seller_percentage=0)");
+    assert.notStrictEqual(linha.precoFinal, 75.5, "nunca 75.50 — isso seria subtrair o subsídio uma segunda vez em cima do desconto");
+  }
+  ok("precoFinal: Caso 2 — subsídio 100% ML não é subtraído duas vezes (79.90 → 77.70, nunca 75.50)");
+
+  // Caso 2b: candidate com seller_percentage > 0 — a fatia do vendedor
+  // TAMBÉM reduz o preço pago pelo comprador (é desconto real, só não é
+  // "subsídio ML"). Números iguais ao exemplo oficial de campanha com
+  // co-participação (1000→700, meli=5+seller=25=30%) para validar contra
+  // dado real da doc, não um número inventado.
+  {
+    const linha = promocoesService.normalizarPromocao(
+      { type: "SMART", status: "candidate", original_price: 100, meli_percentage: 5, seller_percentage: 25 }, 0
+    );
+    assert.strictEqual(linha.subsidioMl, 5, "subsidioMl continua só a fatia do ML (100*5/100=5), nunca soma seller_percentage");
+    assert.strictEqual(linha.precoFinal, 70, "precoFinal usa o desconto TOTAL (5+25=30%): 100*(1-30/100)=70, igual ao exemplo real da doc (1000→700)");
+  }
+  ok("precoFinal: Caso 2b — seller_percentage também compõe o desconto real, provado contra exemplo oficial da doc (1000→700)");
+
+  // Caso 3: sem suggested_discounted_price e sem meli_percentage — fallback
+  // não tem dado nenhum pra calcular, precoFinal continua null.
+  {
+    const linha = promocoesService.normalizarPromocao(
+      { type: "SMART", status: "candidate", original_price: 79.9, seller_percentage: 10 }, 0
+    );
+    assert.strictEqual(linha.precoFinal, null, "sem meli_percentage (mesmo com seller_percentage presente), precoFinal continua null");
+  }
+  ok("precoFinal: Caso 3 — sem campo oficial e sem meli_percentage, fallback não inventa desconto");
 }
 
 run()

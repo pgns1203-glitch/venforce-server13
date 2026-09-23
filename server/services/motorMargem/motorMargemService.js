@@ -201,8 +201,17 @@ async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo
     db
   );
 
+  // clienteContaId precisa chegar até a Central de Vendas (não só até
+  // exigirContextoPronto acima) — senão a leitura do realizado cai sempre no
+  // ramo "sem conta" e um cliente multi-conta nunca encontra o próprio
+  // import (ver centralVendasEvidenceAdapter.carregarVendasDoPeriodo).
+  // includeLegacy: true — decisão da auditoria "Investigação backend —
+  // faturamento Anúncios ML retornando null": prioriza o import da conta
+  // atual, aceita fallback para import legado (cliente_conta_id NULL, dado
+  // anterior à fundação multi-conta), nunca lê o import de outra conta
+  // (garantido por condicaoContaSql, que nunca soma OR de outro id).
   const vendasRaw = await (deps.carregarVendas || centralVendas.carregarVendasDoPeriodo)(
-    { clienteSlug: cliente.slug, dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, marketplace: MARKETPLACE },
+    { clienteSlug: cliente.slug, dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, marketplace: MARKETPLACE, clienteContaId, includeLegacy: true },
     db
   );
 

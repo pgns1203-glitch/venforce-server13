@@ -247,6 +247,9 @@ function item(id, titulo, up, extra) {
     status: "active", preco: 89.9, moeda: "BRL", estoque: 100, vendidos: 5, score_venforce: 62, sku: "SKU-" + id,
     thumbnail: null, permalink: "https://produto.mercadolivre.com.br/" + id,
     listing_type_id: "gold_special",
+    // Mesmos campos que o card avulso (LINHAS_CONTA_42) já usa para montar
+    // badges — default "sem badge nenhum", como o item comum da família.
+    pictures_count: 5, is_full: false, revisado: false, catalog_listing: false,
   }, extra || {});
 }
 
@@ -279,7 +282,13 @@ const DETALHE_CONTA_42 = {
       // mostrar o seu na própria linha em vez de deixá-lo invisível.
       { user_product_id: "MLBU-100", site_id: "MLB", domain_id: "MLB-T_SHIRTS", total_itens: 2,
         itens: [item("MLB-A1", NOME_FAM1 + " Azul P (12 parcelas)", "MLBU-100",
-                  { thumbnail: IMAGEM_DO_PRIMEIRO_ITEM, listing_type_id: "gold_pro" }),
+                  {
+                    thumbnail: IMAGEM_DO_PRIMEIRO_ITEM, listing_type_id: "gold_pro",
+                    // Os 4 badges de propósito, para provar que o card do MLB
+                    // dentro da família monta os mesmos badges do card legado
+                    // (ver "8d" mais abaixo).
+                    pictures_count: 1, is_full: true, revisado: true, catalog_listing: true,
+                  }),
                 item("MLB-A2", NOME_FAM1 + " Azul P", "MLBU-100",
                   { listing_type_id: "gold_special" })] },
       // As três formas de variação, de propósito: mista (acima), só Clássico
@@ -1135,6 +1144,34 @@ async function run() {
       assert.strictEqual(x.metricasFilho, x.metricasMae, "coluna Métricas últ. 7 dias do MLB não alinha com a linha-mãe");
       assert.strictEqual(x.margemMae, x.margemCab, "coluna Margem não cai sob o rótulo do cabeçalho");
       assert.strictEqual(x.margemFilho, x.margemMae, "coluna Margem do MLB não alinha com a linha-mãe");
+    });
+
+    await check("8d — o card do MLB dentro da família tem os mesmos badges e o mesmo medidor de score do card legado", async () => {
+      // MLB-A1 tem os 4 badges do fixture (Catálogo/Full/fotos/Revisado). Se
+      // o card da família ainda escondesse essas informações (auditoria
+      // "padronizar card MLB dentro de agrupadores"), .am-mlb__badges nem
+      // existiria.
+      const estado = await cdp.evaluate(`(function(){
+        var filho = document.querySelector('.am-mlb[data-item="MLB-A1"]');
+        var badges = filho.querySelector('.am-mlb__badges');
+        var gauge = filho.querySelector('.am-gauge');
+        return {
+          temBadges: Boolean(badges),
+          badgesTexto: badges ? badges.textContent : null,
+          temTagCatalogo: Boolean(badges && badges.querySelector('.vf-tag.is-primary')),
+          temTagFull: Boolean(badges && badges.querySelector('.vf-tag.is-info')),
+          temTagFotos: Boolean(badges && badges.querySelector('.vf-tag.is-warning')),
+          temTagRevisado: Boolean(badges && badges.querySelector('.vf-tag.is-success')),
+          temGauge: Boolean(gauge),
+          temScoreSimplesTambem: Boolean(filho.querySelector('.am-mlb__score')),
+        }; })()`);
+      assert.strictEqual(estado.temBadges, true, "o MLB dentro da família precisa ter .am-mlb__badges, igual ao card legado");
+      assert.strictEqual(estado.temTagCatalogo, true, `faltou a tag Catálogo: ${estado.badgesTexto}`);
+      assert.strictEqual(estado.temTagFull, true, `faltou a tag Full: ${estado.badgesTexto}`);
+      assert.strictEqual(estado.temTagFotos, true, `faltou a tag de fotos: ${estado.badgesTexto}`);
+      assert.strictEqual(estado.temTagRevisado, true, `faltou a tag Revisado: ${estado.badgesTexto}`);
+      assert.strictEqual(estado.temGauge, true, "o MLB dentro da família precisa usar o mesmo medidor semicircular (.am-gauge) do card legado");
+      assert.strictEqual(estado.temScoreSimplesTambem, false, "não pode sobrar o número simples de score junto do medidor");
     });
 
     await check("9 — a variação com 2 MLBs aparece UMA vez, Clássico antes de Premium", async () => {

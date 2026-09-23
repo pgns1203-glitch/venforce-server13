@@ -440,6 +440,13 @@ class MockDb {
           // também aqui: sem o nível do MLBU na tela, a condição comercial
           // (Clássico / Premium) é o que distingue dois MLBs da mesma variação.
           listing_type_id: a.listing_type_id == null ? null : a.listing_type_id,
+          // Mesmas colunas que a listagem plana já lê para o card avulso —
+          // sem elas o card do MLB dentro da família não consegue montar os
+          // mesmos badges (Catálogo/Full/fotos/Revisado) do card legado.
+          pictures_count: a.pictures_count,
+          is_full: a.is_full,
+          revisado: a.revisado,
+          catalog_listing: a.catalog_listing,
           site_id: up.site_id,
           domain_id: up.domain_id,
           family_name: up.family_name,
@@ -896,6 +903,30 @@ async function run() {
     assert.strictEqual(todosItens[0].listing_type_id, "gold_pro",
       "o detalhe da família precisa trazer a condição comercial do anúncio");
     console.log("  ✓ S. família compartilhada: Conta A só vê os MLBs do seu escopo (com condição comercial)");
+  });
+
+  // S2. O card do MLB dentro da família precisa dos mesmos campos de badge
+  //     que o card legado (Catálogo/Full/fotos/Revisado) — ver auditoria
+  //     "padronizar card MLB dentro de agrupadores". Sem eles no detalhe da
+  //     família, o front nunca consegue montar os badges, mesmo tendo a
+  //     lógica pronta (são as mesmas colunas que já existem em meli_anuncios
+  //     e a listagem plana já lê para o card avulso).
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({
+        item_id: "MLB-BADGE", user_product_id: "UP-BADGE",
+        pictures_count: 1, is_full: true, revisado: true, catalog_listing: true,
+      }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP-BADGE", family_id: "FAM-BADGE" })],
+  }, async () => {
+    const familia = await meliFamiliaService.obterFamiliaDetalhe({ clienteId: 1, familyId: "FAM-BADGE", clienteContaId: 10, includeLegacy: false });
+    const item = familia.user_products.flatMap((up) => up.itens)[0];
+    assert.strictEqual(item.pictures_count, 1, "pictures_count precisa chegar ao front para o badge de fotos");
+    assert.strictEqual(item.is_full, true, "is_full precisa chegar ao front para o badge Full");
+    assert.strictEqual(item.revisado, true, "revisado precisa chegar ao front para o badge Revisado");
+    assert.strictEqual(item.catalog_listing, true, "catalog_listing precisa chegar ao front para o badge Catálogo");
+    console.log("  ✓ S2. detalhe da família traz pictures_count/is_full/revisado/catalog_listing (mesmos badges do card legado)");
   });
 
   // T. includeLegacy=true inclui linhas com cliente_conta_id NULL.

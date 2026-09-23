@@ -27,6 +27,7 @@ const promocoesService = require("../services/meliAnuncios/meliPromocoesService"
 const promocoesEscritaService = require("../services/meliAnuncios/meliPromocoesEscritaService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
 const motorMargemService = require("../services/motorMargem/motorMargemService");
+const cliente360ProdutosEngine = require("../services/cliente360/cliente360ProdutosEngine");
 const marginEngine = require("../services/motorMargem/core/marginEngine");
 const { mlFetch } = require("../utils/mlClient");
 
@@ -465,6 +466,132 @@ function calcularMargemComRebate(item, origem, exibida, rebateAlvo) {
   return resultado.computable ? resultado : null;
 }
 
+// ----------------------------------------------------------------------------
+// Filtros de performance (% faturamento / unidades vendidas / Curva ABC) —
+// ver auditoria "Anúncios ML — análise de viabilidade de novos filtros de
+// performance". Escopo desta etapa: ORDENAÇÃO, sem filtro de faixa/período.
+//
+// Os três campos abaixo carregam `periodoDias` (contexto de período) no
+// próprio corpo, em vez de embutir o número no nome do campo/flag
+// (`unidadesVendidas7d`, `curvaAbc30d`) — o período pode virar configurável
+// no futuro sem exigir um contrato novo.
+// ----------------------------------------------------------------------------
+
+function diasNoPeriodo(periodo) {
+  if (!periodo || !periodo.dateFrom || !periodo.dateTo) return null;
+  const de = new Date(periodo.dateFrom + "T00:00:00Z");
+  const ate = new Date(periodo.dateTo + "T00:00:00Z");
+  const dias = Math.round((ate.getTime() - de.getTime()) / 86400000) + 1;
+  return Number.isFinite(dias) && dias > 0 ? dias : null;
+}
+
+// % que a receita do item representa sobre a receita de TODO o período
+// (porMlb inteiro, do Motor de Margem/Central de Vendas — mesma fonte que já
+// alimenta `margem[itemId]`) — nunca só a receita do lote de itemIds pedido,
+// que mudaria a cada página/rolagem sem o total do período mudar junto.
+// null (nunca 0%) quando o item não tem receita no período: sem venda não há
+// participação, é ausência de fato, não zero.
+// `porFamiliaItens` (mesmo Map de montarCurvaAbc): o percentual da família é
+// a receita SOMADA dos filhos sobre o MESMO receitaTotalPeriodo — nunca a
+// soma dos percentuais prontos de cada filho (mesmo resultado matemático
+// aqui, porque o denominador é o mesmo para todos, mas recalcular a partir
+// da receita bruta não depende dessa coincidência se o denominador um dia
+// mudar por item).
+function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
+  let receitaTotalPeriodo = 0;
+  for (const agregado of porMlb.values()) receitaTotalPeriodo += agregado.receita || 0;
+  receitaTotalPeriodo = Math.round(receitaTotalPeriodo * 100) / 100;
+
+  const porItem = {};
+  for (const itemId of itemIds) {
+    const agregado = porMlb.get(String(itemId));
+    const receita = agregado ? agregado.receita : null;
+    porItem[itemId] =
+      receita != null && receitaTotalPeriodo > 0
+        ? Math.round((receita / receitaTotalPeriodo) * 10000) / 10000
+        : null;
+  }
+
+  const porFamilia = {};
+  for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
+    let receitaFamilia = 0;
+    let teveReceita = false;
+    for (const itemId of itensDaFamilia) {
+      const agregado = porMlb.get(String(itemId));
+      if (agregado && agregado.receita) { receitaFamilia += agregado.receita; teveReceita = true; }
+    }
+    porFamilia[familyId] =
+      teveReceita && receitaTotalPeriodo > 0
+        ? Math.round((receitaFamilia / receitaTotalPeriodo) * 10000) / 10000
+        : null;
+  }
+
+  return { periodoDias: diasNoPeriodo(periodo), receitaTotalPeriodo, porItem, porFamilia };
+}
+
+// Reaproveita cliente360ProdutosEngine.classificarCurvaAbc (mesmo critério de
+// Pareto do Cliente 360, A=80%/B=95%/resto=C) — não duplica a fórmula, só
+// adapta o Map que o Motor de Margem já monta (porMlb, chave `receita`) para
+// o shape que a função espera (`perfil`, chave `rec`). Precisa do porMlb
+// INTEIRO: classificar um item olhando só para o lote da tela o classificaria
+// contra um catálogo errado (um item mediano pareceria "A" numa página cheia
+// de itens fracos).
+//
+// `porFamiliaItens` (Map família -> [item_id filhos], de
+// meliFamiliaService.resolverItensDeFamilias): quando presente, cada família
+// colapsa em UMA entrada no Pareto (receita somada dos filhos) — a família
+// nunca herda a classe do filho mais forte, ela É um produto próprio com
+// receita própria. MLBs fora de qualquer família pedida mantêm sua entrada
+// individual, sem nenhuma mudança de comportamento.
+function montarCurvaAbc(porMlb, itemIds, periodo, porFamiliaItens) {
+  const itemParaFamilia = new Map();
+  for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
+    for (const itemId of itensDaFamilia) itemParaFamilia.set(String(itemId), familyId);
+  }
+
+  const perfil = new Map();
+  for (const [mlb, agregado] of porMlb) {
+    const chave = itemParaFamilia.get(mlb) || mlb;
+    if (!perfil.has(chave)) perfil.set(chave, { mlb: chave, rec: 0 });
+    perfil.get(chave).rec += agregado.receita || 0;
+  }
+  const classe = cliente360ProdutosEngine.classificarCurvaAbc(perfil);
+
+  const porItem = {};
+  for (const itemId of itemIds) porItem[itemId] = classe.get(String(itemId)) || null;
+  const porFamilia = {};
+  for (const familyId of (porFamiliaItens || new Map()).keys()) porFamilia[familyId] = classe.get(familyId) || null;
+
+  return { periodoDias: diasNoPeriodo(periodo), porItem, porFamilia };
+}
+
+// Soma o PROFIT (R$, absoluto — nunca a margem percentual, que não é
+// somável) dos filhos já resolvidos de cada família. Lê de `margem`, o mapa
+// PLANO que montarMapaMargem já construiu — os filhos só têm entrada ali
+// porque entraram no MESMO lote pedido ao Motor (ver performance()).
+function montarMargemPorFamilia(porFamiliaItens, margem) {
+  const porFamilia = {};
+  for (const [familyId, itensDaFamilia] of porFamiliaItens) {
+    let soma = null;
+    for (const itemId of itensDaFamilia) {
+      const m = margem[itemId];
+      if (!m || m.profit == null) continue;
+      soma = (soma == null ? 0 : soma) + m.profit;
+    }
+    porFamilia[familyId] = soma != null ? Math.round(soma * 100) / 100 : null;
+  }
+  return porFamilia;
+}
+
+// `obterVendasDoItem(itemId)` decide a fonte (metricas7d.vendas reaproveitado
+// ou buscarVendas7dPorItens direto) — esta função só monta o envelope com
+// periodoDias, mesmo padrão de montarFaturamento/montarCurvaAbc.
+function montarUnidadesVendidas(itemIds, obterVendasDoItem) {
+  const porItem = {};
+  for (const itemId of itemIds) porItem[itemId] = obterVendasDoItem(itemId);
+  return { periodoDias: metricas7dService.JANELA_DIAS, porItem };
+}
+
 function montarMapaMargem(itens, incluirComposicao, rebateAlvo) {
   const margem = {};
   const composicao = {};
@@ -548,6 +675,18 @@ async function performance(req, res) {
     const incluirMetricas = flagLigada(req.query && req.query.incluirMetricas);
     const incluirMargem = flagLigada(req.query && req.query.incluirMargem);
     const incluirComposicao = flagOptIn(req.query && req.query.incluirComposicao);
+    // Opt-in, mesmo padrão de incluirComposicao — "Somente buscar/calcular
+    // dados adicionais quando solicitado" (auditoria de filtros de performance).
+    const incluirFaturamento = flagOptIn(req.query && req.query.incluirFaturamento);
+    const incluirUnidades = flagOptIn(req.query && req.query.incluirUnidades);
+    const incluirCurvaAbc = flagOptIn(req.query && req.query.incluirCurvaAbc);
+    // Famílias a agregar (ordenação com família agregada) — o front manda só
+    // o family_id, nunca os MLBs filhos: o backend resolve (ver
+    // meliFamiliaService.resolverItensDeFamilias).
+    const familiasBrutas = String((req.query && req.query.familias) || "")
+      .split("|")
+      .map((s) => s.trim())
+      .filter(Boolean);
 
     // subsidioMl/subsidioMlItemId: rebate ML da promoção ATIVA selecionada
     // no modal (mesmo campo `subsidioMl` de POST .../simular-margem) — o
@@ -569,8 +708,21 @@ async function performance(req, res) {
       }
     }
 
-    if (!itemIds.length || (!incluirMetricas && !incluirMargem)) {
-      return res.json({ ok: true, metricas7d: {}, margem: {}, margemIndisponivel: null, composicao: {} });
+    // % faturamento e Curva ABC precisam do porMlb (agregado do período
+    // inteiro) que só `motorMargemService.montarItens` monta — então o Motor
+    // roda mesmo com incluirMargem=0, se qualquer um dos dois foi pedido.
+    // `margem`/`composicao` continuam obedecendo só a incluirMargem (nenhuma
+    // mudança de comportamento nesse campo).
+    const precisaMotor = incluirMargem || incluirFaturamento || incluirCurvaAbc;
+    // incluirUnidades sem incluirMetricas busca só vendas (mais barato,
+    // sem visitas) — nunca duplica a chamada quando os dois pedem o mesmo dado.
+    const precisaVendasSo = incluirUnidades && !incluirMetricas;
+
+    if ((!itemIds.length && !familiasBrutas.length) || (!incluirMetricas && !precisaMotor && !precisaVendasSo)) {
+      return res.json({
+        ok: true, metricas7d: {}, margem: {}, margemIndisponivel: null, composicao: {},
+        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+      });
     }
 
     const cliente = await anunciosService.resolverCliente(clienteSlug);
@@ -584,15 +736,51 @@ async function performance(req, res) {
       requireUsableGrant: true,
     });
 
-    const [metricasResultado, margemResultado] = await Promise.allSettled([
+    // Resolve família -> filhos ANTES do lote ir para os serviços de baixo:
+    // os filhos entram no MESMO pedido ao Motor de Margem/vendas7d, nunca uma
+    // segunda rodada de chamadas (ver auditoria "filtros de performance").
+    let porFamiliaItens = new Map();
+    if (familiasBrutas.length) {
+      porFamiliaItens = await familiaService.resolverItensDeFamilias({
+        clienteId: cliente.id,
+        clienteContaId: contexto.contaId,
+        includeLegacy: false,
+        familyIds: familiasBrutas,
+      });
+    }
+
+    // União itemIds + filhos resolvidos, com o MESMO teto de sempre — agora
+    // aplicado ao conjunto inteiro (nunca só ao itemIds explícito), porque é
+    // esse conjunto inteiro que vai para os serviços de baixo.
+    let itemIdsCompletos = itemIds;
+    if (porFamiliaItens.size) {
+      const vistos = new Set(itemIds);
+      const uniao = itemIds.slice();
+      for (const filhos of porFamiliaItens.values()) {
+        for (const id of filhos) {
+          if (!vistos.has(id)) { vistos.add(id); uniao.push(id); }
+        }
+      }
+      itemIdsCompletos = uniao.slice(0, PERFORMANCE_MAX_ITENS);
+      if (uniao.length > itemIdsCompletos.length) {
+        console.warn(
+          `[anuncios-meli] performance: itemIds+filhos de família cortado de ${uniao.length} para ${itemIdsCompletos.length} (teto PERFORMANCE_MAX_ITENS).`
+        );
+      }
+    }
+
+    const [metricasResultado, vendasSoResultado, margemResultado] = await Promise.allSettled([
       incluirMetricas
-        ? metricas7dService.montarMetricas7d({ clienteId: cliente.id, mlUserId: contexto.mlUserId, itemIds })
+        ? metricas7dService.montarMetricas7d({ clienteId: cliente.id, mlUserId: contexto.mlUserId, itemIds: itemIdsCompletos })
         : Promise.resolve(null),
-      incluirMargem
+      precisaVendasSo
+        ? metricas7dService.buscarVendas7dPorItens({ clienteId: cliente.id, mlUserId: contexto.mlUserId, itemIds: itemIdsCompletos })
+        : Promise.resolve(null),
+      precisaMotor
         ? motorMargemService.montarItens({
             clienteSlug: cliente.slug,
             clienteContaId: contexto.contaId,
-            itemIds,
+            itemIds: itemIdsCompletos,
           })
         : Promise.resolve(null),
     ]);
@@ -610,26 +798,52 @@ async function performance(req, res) {
     let margem = {};
     let composicao = {};
     let margemIndisponivel = null;
-    if (!incluirMargem) {
-      // desligado por pedido do frontend (soma automática do agrupador ainda
-      // fechado — margem só é buscada quando o operador realmente expande).
+    let faturamento = null;
+    let curvaAbc = null;
+    let margemPorFamilia = null;
+    if (!precisaMotor) {
+      // nenhum dos três campos que dependem do Motor foi pedido.
     } else if (margemResultado.status === "fulfilled") {
-      const resultado = montarMapaMargem(margemResultado.value.itens, incluirComposicao, rebateAlvo);
-      margem = resultado.margem;
-      composicao = resultado.composicao;
+      const { porMlb } = margemResultado.value;
+      if (incluirMargem) {
+        const resultado = montarMapaMargem(margemResultado.value.itens, incluirComposicao, rebateAlvo);
+        margem = resultado.margem;
+        composicao = resultado.composicao;
+        if (porFamiliaItens.size) margemPorFamilia = montarMargemPorFamilia(porFamiliaItens, margem);
+      }
+      if (incluirFaturamento) faturamento = montarFaturamento(porMlb, itemIdsCompletos, margemResultado.value.periodo, porFamiliaItens);
+      if (incluirCurvaAbc) curvaAbc = montarCurvaAbc(porMlb, itemIdsCompletos, margemResultado.value.periodo, porFamiliaItens);
     } else {
       const err = margemResultado.reason;
       if (err && err.statusCode && err.payload && err.payload.codigo) {
         // Contexto do Motor não está pronto (Base não vinculada, múltiplas
         // bases, grant caído) — mensagem REAL do Motor, não tradução própria.
-        // Composição some junto: sem contexto pronto não há item pra decompor.
+        // Composição/faturamento/Curva ABC somem junto: sem contexto pronto
+        // não há porMlb nenhum pra decompor ou classificar.
         margemIndisponivel = { codigo: err.payload.codigo, mensagem: err.payload.erro };
       } else {
         console.error("[anuncios-meli] performance margem:", err && err.message);
       }
     }
 
-    return res.json({ ok: true, metricas7d, margem, margemIndisponivel, composicao });
+    let unidadesVendidas = null;
+    if (incluirUnidades && incluirMetricas) {
+      // reaproveita metricas7d[itemId].vendas — já buscado acima, mesma régua
+      // (0 = fato, null = não sabemos porque a busca falhou) de meliMetricas7dService.
+      unidadesVendidas = montarUnidadesVendidas(itemIdsCompletos, (itemId) => {
+        const m = metricas7d[itemId];
+        return m ? m.vendas : null;
+      });
+    } else if (precisaVendasSo && vendasSoResultado.status === "fulfilled") {
+      const r = vendasSoResultado.value;
+      unidadesVendidas = montarUnidadesVendidas(itemIdsCompletos, (itemId) =>
+        !r.ok ? null : (Object.prototype.hasOwnProperty.call(r.porItem, itemId) ? r.porItem[itemId] : 0)
+      );
+    } else if (precisaVendasSo) {
+      console.error("[anuncios-meli] performance unidadesVendidas:", vendasSoResultado.reason && vendasSoResultado.reason.message);
+    }
+
+    return res.json({ ok: true, metricas7d, margem, margemIndisponivel, composicao, faturamento, unidadesVendidas, curvaAbc, margemPorFamilia });
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] performance:", err.message);

@@ -30,17 +30,36 @@ const Module = require("module");
 
 let metricasHandler = null; // ({clienteId, mlUserId, itemIds}) => valor ou throw
 let margemHandler = null;   // ({clienteSlug, clienteContaId, itemIds}) => valor ou throw
+let vendasSoHandler = null; // ({clienteId, mlUserId, itemIds}) => {ok, porItem} ou throw — só vendas, sem visitas
+let familiaHandler = null;  // ({clienteId, clienteContaId, familyIds}) => Map(familyId -> [itemId]) ou throw
 let chamadasMetricas = [];
 let chamadasMargem = [];
+let chamadasVendasSo = [];
+let chamadasFamilia = [];
 
 const originalLoad = Module._load;
 Module._load = function loadWithStubs(request, parent, isMain) {
   if (request === "../services/meliAnuncios/meliMetricas7dService") {
     return {
+      JANELA_DIAS: 7,
       async montarMetricas7d(args) {
         chamadasMetricas.push(args);
         if (!metricasHandler) return {};
         return metricasHandler(args);
+      },
+      async buscarVendas7dPorItens(args) {
+        chamadasVendasSo.push(args);
+        if (!vendasSoHandler) return { ok: true, porItem: {} };
+        return vendasSoHandler(args);
+      },
+    };
+  }
+  if (request === "../services/meliAnuncios/meliFamiliaService") {
+    return {
+      async resolverItensDeFamilias(args) {
+        chamadasFamilia.push(args);
+        if (!familiaHandler) return new Map();
+        return familiaHandler(args);
       },
     };
   }
@@ -162,8 +181,12 @@ function fakeRes() {
 function reset() {
   chamadasMetricas = [];
   chamadasMargem = [];
+  chamadasVendasSo = [];
+  chamadasFamilia = [];
   metricasHandler = null;
   margemHandler = null;
+  vendasSoHandler = null;
+  familiaHandler = null;
 }
 
 // `composicao`, quando informado, monta o shape REAL de pricing/costs/
@@ -702,6 +725,340 @@ async function run() {
     assert.strictEqual(res.corpo.margem["MLB-U2"].statusLabel, "Não validado");
     assert.strictEqual(res.corpo.composicao["MLB-U2"], undefined, "item não-computável não ganha composição só porque subsidioMl foi passado");
     ok("item não-computável + subsidioMl presente: sem composição, sem margem inventada — mesma regra de sempre");
+  });
+
+  // ── Filtros de performance (% faturamento / unidades vendidas / Curva ABC) ─
+  // Ver docs da auditoria "Anúncios ML — análise de viabilidade de novos
+  // filtros de performance": as 3 capacidades novas são opt-in (mesmo padrão
+  // de incluirComposicao) e carregam CONTEXTO DE PERÍODO no próprio campo
+  // (periodoDias), em vez de nomes como "unidadesVendidas7d"/"curvaAbc30d" —
+  // o período pode mudar no futuro sem quebrar o contrato.
+
+  // 22. incluirFaturamento=1: percentual = receita do item / receita de TODO
+  //     o período (porMlb inteiro do Motor de Margem), nunca só do lote de
+  //     itemIds pedido — Curva ABC depende da mesma base, então os dois
+  //     precisam do catálogo inteiro, não de uma fatia arbitrária da tela.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    margemHandler = () => ({
+      itens: [],
+      porMlb: new Map([
+        ["MLB-A", { receita: 300 }],
+        ["MLB-B", { receita: 100 }],
+        ["MLB-OUTRO", { receita: 600 }], // fora do lote pedido — ainda assim conta no total
+      ]),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A,MLB-B", incluirMetricas: "0", incluirFaturamento: "1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.faturamento.receitaTotalPeriodo, 1000, "total é o porMlb INTEIRO (300+100+600), não só o lote pedido (300+100)");
+    assert.strictEqual(res.corpo.faturamento.porItem["MLB-A"], 0.3, "300/1000");
+    assert.strictEqual(res.corpo.faturamento.porItem["MLB-B"], 0.1, "100/1000");
+    assert.strictEqual(res.corpo.faturamento.periodoDias, 30, "01/08 a 30/08 inclusive = 30 dias");
+    ok("incluirFaturamento=1: percentual usa o total do PERÍODO INTEIRO (porMlb), não só o lote de itemIds");
+  });
+
+  // 23. incluirFaturamento ausente (default off, opt-in como incluirComposicao).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    margemHandler = () => ({ itens: [], porMlb: new Map([["MLB-A", { receita: 100 }]]), periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" } });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMetricas: "0" } }, res);
+
+    assert.strictEqual(res.corpo.faturamento, null, "incluirFaturamento é opt-in — ausente, fica null");
+    ok("incluirFaturamento ausente: default desligado, faturamento null");
+  });
+
+  // 24. incluirCurvaAbc=1: reaproveita cliente360ProdutosEngine.classificarCurvaAbc
+  //     (Pareto 80/95), nunca uma fórmula paralela.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    margemHandler = () => ({
+      itens: [],
+      porMlb: new Map([
+        ["MLB-A", { receita: 800 }],
+        ["MLB-B", { receita: 150 }],
+        ["MLB-C", { receita: 50 }],
+      ]),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A,MLB-B,MLB-C", incluirMetricas: "0", incluirCurvaAbc: "1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.curvaAbc.porItem["MLB-A"], "A", "80% acumulado — classe A");
+    assert.strictEqual(res.corpo.curvaAbc.porItem["MLB-B"], "B", "95% acumulado — classe B");
+    assert.strictEqual(res.corpo.curvaAbc.porItem["MLB-C"], "C", "resto — classe C");
+    assert.strictEqual(res.corpo.curvaAbc.periodoDias, 30);
+    ok("incluirCurvaAbc=1: classificação A/B/C via cliente360ProdutosEngine.classificarCurvaAbc, mesmo critério do Cliente 360");
+  });
+
+  // 25. incluirUnidades=1 COM incluirMetricas=1: reaproveita metricas7d.vendas
+  //     já buscado — zero chamada extra a buscarVendas7dPorItens.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({ "MLB-A": { views: 10, vendas: 5, conversao: 50 } });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMargem: "0", incluirUnidades: "1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.unidadesVendidas.porItem["MLB-A"], 5, "reaproveita metricas7d[itemId].vendas");
+    assert.strictEqual(res.corpo.unidadesVendidas.periodoDias, 7);
+    assert.strictEqual(chamadasVendasSo.length, 0, "incluirMetricas já trouxe vendas — buscarVendas7dPorItens não pode ser chamado de novo");
+    ok("incluirUnidades=1 com incluirMetricas=1: reaproveita metricas7d.vendas, zero chamada extra");
+  });
+
+  // 26. incluirUnidades=1 SEM incluirMetricas: chama só buscarVendas7dPorItens
+  //     (sem visitas — mais barato para listas grandes).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    vendasSoHandler = () => ({ ok: true, porItem: { "MLB-A": 3 } });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMetricas: "0", incluirMargem: "0", incluirUnidades: "1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.unidadesVendidas.porItem["MLB-A"], 3);
+    assert.deepStrictEqual(res.corpo.metricas7d, {}, "incluirMetricas=0 continua sem devolver metricas7d");
+    assert.strictEqual(chamadasMetricas.length, 0, "montarMetricas7d (que também busca visitas) não pode ser chamado só por causa de incluirUnidades");
+    assert.strictEqual(chamadasVendasSo.length, 1, "busca só as vendas, sem visitas");
+    ok("incluirUnidades=1 sem incluirMetricas: busca só vendas (buscarVendas7dPorItens), nunca as visitas");
+  });
+
+  // 27. Anúncio sem venda no período: unidadesVendidas = 0 (fato, não
+  //     ausência); faturamento/curvaAbc = null (sem receita não tem % nem
+  //     classe — 0% e "C" seriam inventados).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    vendasSoHandler = () => ({ ok: true, porItem: {} });
+    margemHandler = () => ({
+      itens: [],
+      porMlb: new Map([["MLB-OUTRO", { receita: 500 }]]),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: {
+        clienteSlug: "cliente-a", itemIds: "MLB-Z", incluirMetricas: "0",
+        incluirUnidades: "1", incluirFaturamento: "1", incluirCurvaAbc: "1",
+      },
+    }, res);
+
+    assert.strictEqual(res.corpo.unidadesVendidas.porItem["MLB-Z"], 0, "sem pedido no período é fato: 0 unidades");
+    assert.strictEqual(res.corpo.faturamento.porItem["MLB-Z"], null, "sem receita no período — null, nunca 0% inventado");
+    assert.strictEqual(res.corpo.curvaAbc.porItem["MLB-Z"], null, "sem receita no período — sem classe, nunca 'C' inventado");
+    ok("anúncio sem venda no período: unidadesVendidas=0 (fato), faturamento/curvaAbc=null (nada a classificar)");
+  });
+
+  // 28. Falha na busca de vendas (ok:false — pedidos indisponíveis):
+  //     unidadesVendidas vira null (não sabemos), mesma régua do metricas7d.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    vendasSoHandler = () => ({ ok: false, porItem: {} });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-Z", incluirMetricas: "0", incluirMargem: "0", incluirUnidades: "1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.unidadesVendidas.porItem["MLB-Z"], null, "busca de pedidos falhou — não sabemos, nunca 0 fingido");
+    ok("falha ao buscar vendas do período: unidadesVendidas vira null, nunca 0 fingido");
+  });
+
+  // 29. incluirFaturamento=1 com incluirMargem=0: o Motor de Margem AINDA
+  //     PRECISA rodar (é dali que vem o porMlb), mas `margem` continua vazio
+  //     — o comportamento de incluirMargem=0 sobre o campo `margem` não muda.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    margemHandler = () => ({
+      itens: [itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.3, status: "HEALTHY", statusLabel: "Saudável" })],
+      porMlb: new Map([["MLB-A", { receita: 100 }]]),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMetricas: "0", incluirMargem: "0", incluirFaturamento: "1" },
+    }, res);
+
+    assert.strictEqual(chamadasMargem.length, 1, "faturamento depende do porMlb do Motor — precisa chamar montarItens mesmo com incluirMargem=0");
+    assert.deepStrictEqual(res.corpo.margem, {}, "margem continua vazia — incluirMargem=0 não muda de comportamento");
+    assert.strictEqual(res.corpo.faturamento.porItem["MLB-A"], 1, "100/100 — único item do período");
+    ok("incluirFaturamento=1 com incluirMargem=0: Motor roda (porMlb), mas campo margem continua vazio");
+  });
+
+  // ── família agregada (familias=FAM1|FAM2) ───────────────────────────────
+  // Backend resolve os MLBs filhos por family_id (o front nunca enumera) e
+  // agrega margem/faturamento/Curva ABC — nunca soma percentuais prontos,
+  // nunca herda a classe de 1 filho só.
+
+  // 30. familias=FAM1: os filhos resolvidos entram no MESMO pedido ao Motor
+  //     de Margem/vendas — nunca uma segunda rodada de chamadas.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    familiaHandler = () => new Map([["FAM1", ["MLB-F1", "MLB-F2"]]]);
+    margemHandler = () => ({
+      itens: [itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.3, realizedProfit: 30, status: "HEALTHY", statusLabel: "Saudável" })],
+      porMlb: new Map(),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMetricas: "0", familias: "FAM1" },
+    }, res);
+
+    assert.strictEqual(chamadasFamilia.length, 1, "resolverItensDeFamilias precisa ser chamado quando familias= é passado");
+    assert.deepStrictEqual(chamadasFamilia[0].familyIds, ["FAM1"]);
+    assert.deepStrictEqual(chamadasMargem[0].itemIds.slice().sort(), ["MLB-A", "MLB-F1", "MLB-F2"],
+      "os filhos resolvidos entram no MESMO lote pedido ao Motor — nunca uma segunda chamada");
+    ok("familias=FAM1: filhos resolvidos entram no mesmo lote do Motor de Margem, uma chamada só");
+  });
+
+  // 31. margemPorFamilia: soma o PROFIT (R$, absoluto) dos filhos — nunca a
+  //     margem percentual (não é somável).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    familiaHandler = () => new Map([["FAM1", ["MLB-F1", "MLB-F2"]]]);
+    margemHandler = () => ({
+      itens: [
+        itemDeMargem({ itemId: "MLB-F1", realizedComputable: true, realizedMargin: 0.25, realizedProfit: 100, status: "HEALTHY", statusLabel: "Saudável" }),
+        itemDeMargem({ itemId: "MLB-F2", realizedComputable: true, realizedMargin: 0.10, realizedProfit: 50, status: "HEALTHY", statusLabel: "Saudável" }),
+      ],
+      porMlb: new Map(),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "", incluirMetricas: "0", familias: "FAM1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.margemPorFamilia["FAM1"], 150, "soma de profit: 100 + 50 = 150");
+    ok("margemPorFamilia: soma o profit (R$) dos filhos, nunca a margem percentual");
+  });
+
+  // 32. faturamento.porFamilia: receita SOMADA dos filhos / receita TOTAL do
+  //     período (mesmo total de faturamento.porItem) — nunca soma percentuais.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    familiaHandler = () => new Map([["FAM1", ["MLB-F1", "MLB-F2"]]]);
+    margemHandler = () => ({
+      itens: [],
+      porMlb: new Map([
+        ["MLB-F1", { receita: 200 }],
+        ["MLB-F2", { receita: 100 }],
+        ["MLB-OUTRO", { receita: 700 }],
+      ]),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "", incluirMetricas: "0", incluirFaturamento: "1", familias: "FAM1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.faturamento.receitaTotalPeriodo, 1000);
+    assert.strictEqual(res.corpo.faturamento.porFamilia["FAM1"], 0.3, "(200+100)/1000 — receita somada dos filhos sobre o total do período");
+    ok("faturamento.porFamilia: receita somada dos filhos / receita total do período");
+  });
+
+  // 33. curvaAbc.porFamilia: a família vira 1 produto (receita SOMADA) no
+  //     Pareto — o teste é desenhado para provar SOMA de verdade, não só
+  //     "devolveu uma classe plausível": A=300, B=250, C=200, F1=140, F2=140
+  //     (total 1030). Se os filhos NÃO fossem somados (ex.: bug que usasse a
+  //     classe do primeiro filho isolado), o resultado seria "B" (F1 sozinho,
+  //     890/1030=86%) — nunca "A". A família consolidada (F1+F2=280) reordena
+  //     ACIMA de B/C (300+280=580/1030=56%) e vira "A" — um resultado que
+  //     NENHUM filho isolado alcançaria sozinho, prova de soma real.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    familiaHandler = () => new Map([["FAM1", ["MLB-F1", "MLB-F2"]]]);
+    margemHandler = () => ({
+      itens: [],
+      porMlb: new Map([
+        ["MLB-A", { receita: 300 }],
+        ["MLB-B", { receita: 250 }],
+        ["MLB-C", { receita: 200 }],
+        ["MLB-F1", { receita: 140 }],
+        ["MLB-F2", { receita: 140 }],
+      ]),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A,MLB-B,MLB-C", incluirMetricas: "0", incluirCurvaAbc: "1", familias: "FAM1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.curvaAbc.porFamilia["FAM1"], "A",
+      "consolidada (140+140=280) reordena acima de B/C e vira classe A — nenhum filho isolado (B ou C) chegaria lá sozinho");
+    assert.strictEqual(res.corpo.curvaAbc.porItem["MLB-B"], "B",
+      "com a família consolidada à frente, B (250) cai para depois dos 80% acumulados — prova que a família realmente entrou na ordenação, não só ganhou um rótulo");
+    ok("curvaAbc.porFamilia: soma real dos filhos muda a ORDEM do Pareto (não só o rótulo) — resultado inatingível por qualquer filho isolado");
+  });
+
+  // 34. unidadesVendidas nunca ganha porFamilia do backend — é soma simples,
+  //     o front agrega a partir de porItem (nenhuma regra financeira aqui).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    familiaHandler = () => new Map([["FAM1", ["MLB-F1", "MLB-F2"]]]);
+    vendasSoHandler = () => ({ ok: true, porItem: { "MLB-F1": 2, "MLB-F2": 3 } });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "", incluirMetricas: "0", incluirMargem: "0", incluirUnidades: "1", familias: "FAM1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.unidadesVendidas.porItem["MLB-F1"], 2);
+    assert.strictEqual(res.corpo.unidadesVendidas.porItem["MLB-F2"], 3);
+    assert.strictEqual(res.corpo.unidadesVendidas.porFamilia, undefined, "unidadesVendidas não tem agregação no backend — soma é responsabilidade do front");
+    ok("unidadesVendidas: filhos vêm em porItem, sem porFamilia — agregação simples fica no front");
+  });
+
+  // 35. Teto PERFORMANCE_MAX_ITENS aplica-se à UNIÃO (itemIds + filhos de
+  //     família resolvidos) — nunca só ao itemIds explícito.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    const muitosFilhos = Array.from({ length: 30 }, (_, i) => `MLB-F${i}`);
+    familiaHandler = () => new Map([["FAM1", muitosFilhos]]);
+    margemHandler = () => ({ itens: [], porMlb: new Map(), periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" } });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMetricas: "0", familias: "FAM1" },
+    }, res);
+
+    assert.ok(chamadasMargem[0].itemIds.length <= 24, "união de itemIds+filhos de família nunca pode passar do teto");
+    ok("teto PERFORMANCE_MAX_ITENS aplica-se à união de itemIds explícitos + filhos de família resolvidos");
+  });
+
+  // 36. familias ausente: zero chamada a resolverItensDeFamilias, comporta-
+  //     mento idêntico ao anterior (nenhuma regressão nos testes 1-29).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    margemHandler = () => ({
+      itens: [itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.3, status: "HEALTHY", statusLabel: "Saudável" })],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMetricas: "0" } }, res);
+
+    assert.strictEqual(chamadasFamilia.length, 0, "sem familias=, resolverItensDeFamilias não pode ser chamado");
+    assert.strictEqual(res.corpo.margemPorFamilia, null);
+    ok("familias ausente: zero chamada a resolverItensDeFamilias, margemPorFamilia null");
   });
 }
 

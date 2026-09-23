@@ -564,6 +564,22 @@ cenario("prepareWorkspaceContext expõe o contexto para enrichBatch reaproveitar
   assert.strictEqual(lote2.itens.length, 0, "lote 2 não encontra mais nada — não recarrega contexto para saber isso");
 });
 
+// ── porMlb chega até montarItens() ──────────────────────────────────────────
+// Anúncios ML (filtros de % faturamento/Curva ABC) precisa do agregado POR
+// CONTA (todo o porMlb do período), não só dos itens do lote pedido — só
+// `montarItens()` (o ponto de entrada usado por GET /anuncios-meli/performance)
+// não expunha isso, embora `prepareWorkspaceContext` já monte o Map inteiro.
+cenario("montarItens() expõe porMlb (agregado do período inteiro, não só o lote de itemIds)", async () => {
+  const { deps, catalogo } = depsWorkspace({ n: 3, total: 3 });
+  const resultado = await service.montarItens(
+    { clienteSlug: params.clienteSlug, itemIds: [catalogo.ids[0]] },
+    deps
+  );
+
+  assert.ok(resultado.porMlb instanceof Map, "montarItens precisa devolver o porMlb inteiro do workspace");
+  assert.strictEqual(resultado.itens.length, 1, "itens continua só o lote pedido — porMlb é o único campo de escopo diferente");
+});
+
 // ── Filtro/busca/paginação/drawer não chamam o Mercado Livre ────────────────
 // Uma vez que o workspace foi carregado, interações do operador (trocar
 // página, filtrar por status/confiança, buscar, abrir o drawer de um item)

@@ -2848,6 +2848,74 @@ async function run() {
       }
     });
 
+    // BUG/lacuna: expandir uma família nunca pedia incluirFaturamento para os
+    // filhos (só incluirMargem) — a célula de Faturamento de um MLB dentro do
+    // painel aberto ficava presa em "—" para sempre. Ver auditoria "Anúncios
+    // ML — participação no faturamento em famílias". porFamilia (0.4) é
+    // deliberadamente DIFERENTE da soma dos porItem dos filhos (0.05+0.02+
+    // 0.03+0.01=0.11) — se o frontend algum dia passar a somar percentuais de
+    // filho para "completar" o agrupador, este teste denuncia (esperaria
+    // 40,0% e receberia 11,0%).
+    await check("39k — família expandida: cada filho mostra sua participação INDIVIDUAL (porItem); o agrupador mantém a CONSOLIDADA (porFamilia), nunca a soma dos filhos", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      const PORITEM_FILHOS = { "MLB-A1": 0.05, "MLB-A2": 0.02, "MLB-A3": 0.03, "MLB-A4": 0.01 };
+      performanceHandler = (ids) => {
+        const metricas7d = {}, margem = {}, porItem = {};
+        ids.forEach((id) => {
+          metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
+          margem[id] = MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+          if (PORITEM_FILHOS[id] != null) porItem[id] = PORITEM_FILHOS[id];
+        });
+        return {
+          ok: true, metricas7d, margem, margemIndisponivel: null,
+          faturamento: { periodoDias: 30, porItem, porFamilia: { "FAM-1": 0.4, "FAM-2": 0.01 } },
+          unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+        };
+      };
+      try {
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
+
+        // 1. Família FECHADA: o agrupador já mostra o consolidado, sem precisar expandir.
+        await waitFor(cdp, `(function(){
+          var c = document.querySelector('${linhaFam("FAM-1")} .am-faturamento__valor');
+          return c && c.textContent.trim() === '40,0%';
+        })()`, "família fechada: o agrupador precisa mostrar o percentual consolidado (porFamilia)");
+
+        const antes = chamadasPerformance.length;
+        await clicar(cdp, linhaFam("FAM-1"));
+        await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "FAM-1 não expandiu");
+
+        await waitForNode(() => chamadasPerformance.length > antes, "expandir a família não disparou uma nova chamada de performance");
+        const daExpansao = chamadasPerformance.slice(antes).find((c) => c.itemIds.indexOf("MLB-A1") !== -1);
+        assert.ok(daExpansao, "não encontrei a chamada de performance disparada pela expansão de FAM-1");
+        assert.strictEqual(daExpansao.incluirFaturamento, true,
+          "expandir a família precisa pedir incluirFaturamento=true para os filhos (bundlado com a margem, mesmo Motor)");
+
+        // 2. Família EXPANDIDA: cada filho mostra o SEU PRÓPRIO percentual.
+        await waitFor(cdp, `(function(){
+          var c = document.querySelector('.am-mlb[data-item="MLB-A1"] .am-faturamento__valor');
+          return c && c.textContent.trim() === '5,0%';
+        })()`, "MLB-A1 (filho) tem de mostrar sua participação INDIVIDUAL (porItem), nunca a da família");
+        const a2 = await cdp.evaluate(`document.querySelector('.am-mlb[data-item="MLB-A2"] .am-faturamento__valor').textContent.trim()`);
+        assert.strictEqual(a2, "2,0%");
+        const a3 = await cdp.evaluate(`document.querySelector('.am-mlb[data-item="MLB-A3"] .am-faturamento__valor').textContent.trim()`);
+        assert.strictEqual(a3, "3,0%");
+        const a4 = await cdp.evaluate(`document.querySelector('.am-mlb[data-item="MLB-A4"] .am-faturamento__valor').textContent.trim()`);
+        assert.strictEqual(a4, "1,0%");
+
+        // 3. O agrupador expandido continua com o CONSOLIDADO do backend —
+        //    nunca vira a soma dos filhos (5+2+3+1 = 11%, valor que provaria
+        //    soma de percentuais no frontend, proibida pela regra do usuário).
+        const familia = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-faturamento__valor').textContent.trim()`);
+        assert.strictEqual(familia, "40,0%",
+          "o agrupador expandido não pode virar a soma dos filhos (11%) — tem de continuar com porFamilia (40%)");
+      } finally {
+        performanceHandler = null;
+      }
+    });
+
     /* ── 39: resiliência — falha total nunca deixa a célula presa ───────── */
 
     errosAcumulados = errosAcumulados.concat(await cdp.evaluate("window.__erros || []"));

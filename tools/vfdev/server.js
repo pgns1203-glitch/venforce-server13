@@ -12,7 +12,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { indexCss, applyPatches, PatchError } = require('./cssIndex');
-const { SessionStore, ACOES, ACOES_COM_RELACAO, CRITERIOS } = require('./sessao');
+const { SessionStore, ACOES, ACOES_COM_RELACAO, CRITERIOS, ID_RE } = require('./sessao');
+const { gerarMissao, rascunhoObjetivo } = require('./missao');
 
 const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, 'vfdev.config.json'), 'utf8'));
 const REPO = path.resolve(__dirname, '..', '..');
@@ -23,6 +24,8 @@ const BACKEND = process.env.VFDEV_BACKEND || CFG.backend || null;
 const TOKEN = crypto.randomBytes(16).toString('hex');
 const CLIENT = path.join(__dirname, 'client', 'vf-devtools.js');
 const SESSOES = new SessionStore(path.resolve(process.env.VFDEV_SESSOES_DIR || path.join(__dirname, 'sessoes')));
+const MISSOES = path.resolve(process.env.VFDEV_MISSOES_DIR || path.join(__dirname, 'missoes'));
+const relTool = abs => path.relative(REPO, abs).split(path.sep).join('/');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -120,6 +123,45 @@ async function handleVfdev(req, res, url) {
     if (!fs.existsSync(abs)) return json(res, 404, { error: `Não existe: ${rel}` });
     const r = relOf(abs);
     return json(res, 200, { file: r, ...classify(r), rules: indexCss(fs.readFileSync(abs, 'utf8')) });
+  }
+
+  m = p.match(/^\/__vfdev\/missoes\/([^/]+?)(\.md)?(\/rascunho)?$/);
+  if (m) {
+    checkAuth(req);
+    const id = decodeURIComponent(m[1]);
+    if (m[2]) {
+      const f = path.join(MISSOES, (ID_RE.test(id) ? id : '_') + '.md');
+      if (!ID_RE.test(id) || req.method !== 'GET') throw new PatchError(400, 'Use GET /__vfdev/missoes/<id>.md');
+      if (!fs.existsSync(f)) throw new PatchError(404, `A missão da sessão "${id}" ainda não foi gerada.`);
+      return send(res, 200, fs.readFileSync(f, 'utf8'), 'text/markdown; charset=utf-8');
+    }
+    if (!ID_RE.test(id)) throw new PatchError(400, `id de sessão inválido: "${id}".`);
+    const mdFile = path.join(MISSOES, id + '.md'), jsonFile = path.join(MISSOES, id + '.json');
+    if (m[3]) {
+      if (req.method !== 'GET') throw new PatchError(405, 'Use GET para o rascunho.');
+      return json(res, 200, { objetivo: rascunhoObjetivo(SESSOES.get(id)) });
+    }
+    if (req.method === 'GET') {
+      if (!fs.existsSync(jsonFile)) throw new PatchError(404, `A missão da sessão "${id}" ainda não foi gerada.`);
+      return json(res, 200, JSON.parse(fs.readFileSync(jsonFile, 'utf8')));
+    }
+    if (req.method !== 'POST') throw new PatchError(405, `Método ${req.method} não aceito em ${p}.`);
+    let body = {};
+    try { const raw = await readBody(req); body = raw ? JSON.parse(raw) : {}; } catch (e) { throw new PatchError(400, 'JSON inválido.'); }
+    const ses = SESSOES.get(id);
+    if (typeof body.objetivo === 'string') ses.objetivo = body.objetivo.trim();
+    if (!ses.objetivo || !ses.objetivo.trim()) throw new PatchError(400, 'Defina o Objetivo em 1 frase antes de gerar a missão.');
+    if (ses.status === 'descartada') throw new PatchError(409, 'Sessão descartada — continue ou duplique antes de gerar a missão.');
+    const { md, json: mj } = gerarMissao(ses, { protectedFiles: CFG.protectedFiles });
+    mj.geradaEm = new Date().toISOString();
+    fs.mkdirSync(MISSOES, { recursive: true });
+    fs.writeFileSync(mdFile, md, 'utf8');
+    fs.writeFileSync(jsonFile, JSON.stringify(mj, null, 2) + '\n', 'utf8');
+    ses.status = 'missao_gerada';
+    ses.missao = { geradaEm: mj.geradaEm, md: relTool(mdFile), json: relTool(jsonFile), verificacoes: mj.verificacoes.length };
+    ses.verificacao = null;
+    const saved = SESSOES.put(id, ses);
+    return json(res, 200, { md, missao: mj, sessao: saved, arquivos: [relTool(mdFile), relTool(jsonFile)] });
   }
 
   if (p === '/__vfdev/patch' && req.method === 'POST') {

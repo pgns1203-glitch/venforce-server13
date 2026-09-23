@@ -1,0 +1,43 @@
+{
+  "id": "2026-09-23-cliente-360-v3-revisao",
+  "titulo": "Cliente 360 — revisão visual 23/09",
+  "pagina": "cliente-360-v3.html",
+  "url": "/cliente-360-v3.html?periodo=2026-08",
+  "status": "em_andamento",
+  "objetivo": "Compactar a primeira dobra sem perder a leitura dos indicadores",
+  "criadaEm": "2026-09-23T12:00:00.000Z",
+  "atualizadaEm": "2026-09-23T12:30:00.000Z",
+  "larguras": [1440, 768, 390],
+  "estados": [],
+  "regressoes": [],
+  "itens": [
+    {
+      "id": "i1", "tipo": "css", "criadoEm": "2026-09-23T12:01:00.000Z", "nota": "os indicadores parecem soltos",
+      "alvo": { "seletor": ".c360d-inds", "indice": 0, "contagem": 1, "nome": "Indicadores", "caminhoDom": "#root > main > section.c360d-inds:nth-child(2)", "texto": "Faturamento R$ 20.136", "rect": { "x": 24, "y": 180, "w": 1100, "h": 120 }, "larguraTela": 1440,
+        "fonteCss": { "arquivo": "Portal/assets/cliente-360-v3/cliente-360-v3-DQuuTabR.css", "linha": 1, "coluna": 5120, "seletor": ".c360d-inds", "evidencia": "regra `.c360d-inds` casa com o elemento e contém a classe principal .c360d-inds — CSS gerado pelo Vite" },
+        "componente": null, "componenteMotivo": "não pesquisado (busca de componente ainda não disponível)", "inicial": { "gap": "24px" } },
+      "css": { "arquivo": "frontend-react/src/styles/cliente360V3.css", "linha": null, "seletor": ".c360d-inds", "seletorRegra": ".c360d-inds", "prop": "gap", "antes": "var(--vf-sp-6)", "depois": "var(--vf-sp-4)", "destino": "prompt", "kind": "scratch", "novo": true, "motivo": "gerado pelo Vite — fonte: frontend-react/src/styles/cliente360V3.css", "computado": "16px" }
+    },
+    {
+      "id": "i2", "tipo": "css", "criadoEm": "2026-09-23T12:02:00.000Z",
+      "alvo": { "seletor": ".vf-page-cliente-360-v3 .c360d-head", "indice": 0, "contagem": 1, "nome": "Cabeçalho", "caminhoDom": "#root > main > header.c360d-head:nth-child(1)", "texto": "Cliente 360", "rect": { "x": 24, "y": 24, "w": 1100, "h": 96 }, "larguraTela": 1440, "fonteCss": null, "fonteCssMotivo": "não resolvido: nenhuma regra de arquivo CSS casa com o elemento (estilo do navegador, herdado ou inline)", "componente": null, "componenteMotivo": "não pesquisado (busca de componente ainda não disponível)", "inicial": { "padding": "32px" } },
+      "css": { "arquivo": "Portal/css/pages/cliente-360-v3.css", "linha": 12, "seletor": ".vf-page-cliente-360-v3 .c360d-head", "seletorRegra": ".vf-page-cliente-360-v3 .c360d-head", "prop": "padding", "antes": "var(--vf-sp-8)", "depois": "var(--vf-sp-5)", "destino": "gravado", "kind": "page", "novo": false, "regra": { "linha": 11, "coluna": 1 }, "computado": "20px", "gravadoEm": "2026-09-23T12:10:00.000Z" }
+    },
+    {
+      "id": "i3", "tipo": "estrutural", "criadoEm": "2026-09-23T12:03:00.000Z", "nota": "ninguém usa essa navegação",
+      "alvo": { "seletor": ".c360d-nav", "indice": 0, "contagem": 1, "nome": "Navegação", "caminhoDom": "#root > main > nav.c360d-nav:nth-child(3)", "texto": "Resumo Vendas Ads Produtos", "rect": { "x": 24, "y": 320, "w": 1100, "h": 48 }, "larguraTela": 1440, "fonteCss": { "arquivo": "Portal/assets/cliente-360-v3/cliente-360-v3-DQuuTabR.css", "linha": 1, "coluna": 6002, "seletor": ".c360d-nav", "evidencia": "regra `.c360d-nav` casa com o elemento e contém a classe principal .c360d-nav — CSS gerado pelo Vite" }, "componente": null, "componenteMotivo": "não pesquisado (busca de componente ainda não disponível)",
+        "contexto": { "pai": "main", "irmaos": [".c360d-head", ".c360d-inds"], "posicao": 3, "total": 3 } },
+      "estrutural": { "acao": "remover", "criterios": ["não usar display:none", "remover a renderização do componente", "remover container vazio e estilos exclusivos (altura, sticky, borda)", "preservar as demais seções"] }
+    },
+    {
+      "id": "i4", "tipo": "comentario", "criadoEm": "2026-09-23T12:04:00.000Z",
+      "alvo": { "seletor": ".c360d-inds", "indice": 0, "contagem": 1, "nome": "Indicadores", "caminhoDom": "#root > main > section.c360d-inds:nth-child(2)", "texto": "Faturamento R$ 20.136", "rect": { "x": 24, "y": 180, "w": 1100, "h": 120 }, "larguraTela": 1440, "fonteCss": null, "fonteCssMotivo": "x", "componente": null, "componenteMotivo": "não pesquisado (busca de componente ainda não disponível)" },
+      "comentario": { "texto": "desconectado, parece vazio", "ponto": { "x": 1100, "y": 190 }, "resolvido": false }
+    },
+    {
+      "id": "i5", "tipo": "comentario", "criadoEm": "2026-09-23T12:05:00.000Z",
+      "alvo": { "seletor": ".c360d-ind__valor", "indice": 2, "contagem": 4, "nome": "Valor", "caminhoDom": "#root > main > section.c360d-inds:nth-child(2) > div.c360d-ind:nth-child(3) > p.c360d-ind__valor:nth-child(2)", "texto": "R$ 1.240", "rect": { "x": 600, "y": 230, "w": 232, "h": 23 }, "larguraTela": 1440, "fonteCss": null, "fonteCssMotivo": "não resolvido: nenhuma regra de arquivo CSS casa com o elemento (estilo do navegador, herdado ou inline)", "componente": null, "componenteMotivo": "não pesquisado (busca de componente ainda não disponível)" },
+      "comentario": { "texto": "quero mais destaque", "ponto": { "x": 820, "y": 240 }, "resolvido": false }
+    }
+  ]
+}

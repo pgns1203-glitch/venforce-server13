@@ -56,7 +56,7 @@ A aba **Sessão** é a primeira do painel. Cada sessão fica em `tools/vfdev/ses
 | `css` | qualquer ajuste no Painel, `Ctrl K`, Problemas… (espelho da aba Alterações) | patch (se gravável) ou missão |
 | `comentario` | `C` / **Falar sobre isso** / `Shift`+arrastar — vira um pin numerado na página | missão |
 | `estrutural` | menu **Estrutura** do Painel (remover, mover, agrupar, aproximar, igual a…) | **só** missão — nunca CSS |
-| `referencia`, `estranho` | fases seguintes | missão |
+| `referencia`, `estranho` | "ficar igual àquele" · "está estranho" | missão |
 
 - **Na mesma aba**, F5 retoma a sessão sozinho. Numa aba nova, o painel **oferece** "Continuar sessão …" ou "Nova".
 - Ao continuar, as alterações CSS pendentes são **reaplicadas**. Se a regra mudou no disco (saiu da linha:coluna ou o valor de origem mudou), o item vira `descartada: regra mudou em arquivo:linha` — nunca é aplicado "perto".
@@ -65,6 +65,14 @@ A aba **Sessão** é a primeira do painel. Cada sessão fica em `tools/vfdev/ses
 - Ações estruturais têm **prévia** só em runtime (remover esconde com hachura, mover reordena) com o selo "prévia — não será gravada". Prévia nunca entra no patch.
 - O alvo é capturado sem pergunta técnica: seletor estável (classe principal > id > caminho) + índice, caminho DOM, texto, retângulo, largura, regra CSS com `arquivo:linha` e evidência (ou "não resolvido" com o motivo), pai/irmãos e valores computados iniciais.
 
+## Missão e verificação
+
+- **Gerar missão** (aba Sessão) pede o **Objetivo** em 1 frase e sugere um rascunho montado **por regras** a partir dos itens (sem IA): direção medida nos valores computados (reduzido/aumentado), remoções, aproximações, comentários. Você confirma ou edita.
+- Grava `tools/vfdev/missoes/<id>.md` (para colar, ou para o agente ler do disco) e `tools/vfdev/missoes/<id>.json` (verificações executáveis), e marca a sessão como `missao_gerada`. O botão **Prompt** antigo continua existindo.
+- O `.md` tem 13 seções, sempre nesta ordem: título, resumo, Objetivo, Intenções, Mudanças CSS confirmadas (arquivo:linha, antes → depois, nota, destino), Mudanças estruturais (critérios e componente provável com evidência), Comentários sem implementação direta, Fontes prováveis, Restrições, Critérios de aceite, Estados, Larguras, Como verificar. CSS já gravado aparece como **✅ feito, não refazer**; CSS descartado não entra.
+- Verificações (`verificacoes` no `.json`): `computado` (seletor + índice, prop, esperado, largura), `ausente` (remover), `presente` (irmãos preservados), `ordem` (mover), `igual` (igual a / referência), `sem-overflow` (por largura).
+- **Verificar missão** carrega a página **limpa** (sem o editor e sem as alterações pendentes, lendo o que está no disco) em iframes fora da tela, um por largura, e mostra ✓/✗ com o valor obtido × esperado. O resultado fica salvo na sessão; ela vira `verificada` quando tudo passa (e todos os estados registrados estão validados).
+
 API local (token + origem em todas):
 
 | Rota | O que faz |
@@ -72,6 +80,9 @@ API local (token + origem em todas):
 | `GET /__vfdev/sessoes?pagina=` | lista as sessões (resumo) |
 | `GET · PUT · DELETE /__vfdev/sessoes/:id` | lê, grava (validação por schema, mensagem clara) e apaga |
 | `POST /__vfdev/sessoes/:id/duplicar` | cria `<id>-copia` em andamento |
+| `GET /__vfdev/missoes/:id/rascunho` | rascunho do objetivo, por regras |
+| `POST /__vfdev/missoes/:id` `{ objetivo }` | gera `.md` + `.json` (400 sem objetivo) |
+| `GET /__vfdev/missoes/:id` · `GET /__vfdev/missoes/:id.md` | lê as verificações · lê o texto da missão |
 
 ## Segurança do patch
 

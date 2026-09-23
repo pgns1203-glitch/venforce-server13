@@ -44,7 +44,24 @@ No Painel, abra **Estrutura** e escolha a ação. As que envolvem outro elemento
 - Estrutura **nunca** vira CSS: vai para a missão, com critérios padrão que você pode editar na aba Sessão (um por linha).
 - **Ver prévia** (remover e mover): mostra o efeito só na tela, com o selo "prévia — não será gravada". Desligue para voltar ao normal. Nenhum arquivo é tocado.
 
-## 6. O que nunca acontece
+## 6. Gere a missão e entregue ao agente
+
+1. Na aba **Sessão**, clique em **Gerar missão**.
+2. Escreva o **Objetivo** em uma frase. A ferramenta sugere um rascunho a partir do que você fez (por exemplo, "Compactar a primeira dobra: 3 gaps reduzidos, 1 item marcado para remoção"). Confirme ou reescreva do seu jeito.
+3. A missão abre na gaveta. **Copiar** leva o texto para colar no Claude/Codex. Você também pode mandar o agente ler `tools/vfdev/missoes/<id>.md` direto do disco.
+
+A missão diz o que já foi feito (CSS gravado: "não refazer"), o que falta, o porquê de cada coisa, onde provavelmente mexer e o que **não** tocar.
+
+## 7. Verifique o que o agente fez
+
+Quando o agente terminar, volte para a tela e clique em **Verificar missão**. A ferramenta abre a página limpa, do jeito que está no disco, em cada largura da sessão e confere cada critério:
+
+- ✓ quando o valor obtido é o esperado;
+- ✗ com o valor real, por exemplo "esperado 16px · obtido 32px".
+
+Se tudo passar (e os estados registrados estiverem validados), a sessão fica **verificada**.
+
+## 8. O que nunca acontece
 
 - Nada é gravado sem você clicar em **Gravar**, e **Gravar** só escreve CSS com patch mínimo (sem `!important`, sem subir especificidade).
 - `style.css`, `layout.js`, o backend, os `.html`/`.js`/`.jsx` e os assets compilados nunca são alterados.

@@ -102,7 +102,7 @@ const LONG = {
   'border-radius': ['border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius']
 };
 function comp(el, prop) {
-  const cs = getComputedStyle(el);
+  const cs = (el.ownerDocument.defaultView || window).getComputedStyle(el);
   if (LONG[prop]) { const v = LONG[prop].map(p => cs.getPropertyValue(p).trim()); return v.every(x => x === v[0]) ? v[0] : v.join(' '); }
   return cs.getPropertyValue(prop).trim();
 }
@@ -829,6 +829,11 @@ async function openDrawer(tab) {
   d.hidden = false; d.dataset.tab = tab;
   root.querySelectorAll('#dtabs button').forEach(b => b.setAttribute('aria-pressed', b.dataset.tab === tab));
   if (tab === 'prompt') { body.innerHTML = `<p class="note">Formato cirúrgico: arquivo, linha, antes/depois e critério medível.</p><pre class="prompt" id="ptext">${esc(promptText())}</pre>`; return; }
+  if (tab === 'missao') {
+    if (!S.missaoMd && SES && SES.missao) { body.innerHTML = '<p class="note">Carregando a missão…</p>'; try { S.missaoMd = await (await fetch('/__vfdev/missoes/' + encodeURIComponent(SES.id) + '.md', { headers: { 'X-VFDEV-Token': TOKEN } })).text(); } catch (e) {} }
+    body.innerHTML = S.missaoMd ? `<p class="note">Cole no agente, ou mande ele ler <code>${esc(SES.missao.md)}</code>. Depois clique em <b>Verificar missão</b>.</p><pre class="prompt" id="ptext">${esc(S.missaoMd)}</pre>` : '<p class="note">Nenhuma missão gerada nesta sessão. Use <b>Gerar missão</b> na aba Sessão.</p>';
+    return;
+  }
   body.innerHTML = '<p class="note">Calculando o diff real no disco…</p>';
   const files = buildPatch(), prompts = groupChanges().filter(g => !g.info.writable);
   let h = '';
@@ -1001,8 +1006,8 @@ function stableSel(el) {
   if (c) cands.push('.' + CSS.escape(c));
   if (el.id) cands.push('#' + CSS.escape(el.id));
   cands.push(domPath(el));
-  for (const sel of cands) { let l = []; try { l = [...doc.querySelectorAll(sel)]; } catch (e) {} const i = l.indexOf(el); if (i >= 0) return { seletor: sel, indice: i }; }
-  return { seletor: domPath(el), indice: 0 };
+  for (const sel of cands) { let l = []; try { l = [...doc.querySelectorAll(sel)].filter(e => e !== host); } catch (e) {} const i = l.indexOf(el); if (i >= 0) return { seletor: sel, indice: i, contagem: l.length }; }
+  return { seletor: domPath(el), indice: 0, contagem: 1 };
 }
 function domPath(el) {
   const segs = [];
@@ -1025,11 +1030,11 @@ function fonteCssOf(el) {
   return { fonteCss: { arquivo: repoRel(i.file), linha: i.line, coluna: i.column, seletor: i.selectorSrc || r.selectorText, evidencia: `regra \`${i.selectorSrc || r.selectorText}\` casa com o elemento${own.length ? ` e contém a classe principal .${c}` : ' (a classe principal não aparece em nenhuma regra)'}${extra}` } };
 }
 function captureAlvo(el, reg, inicial) {
-  const { seletor, indice } = stableSel(el), r = el.getBoundingClientRect(), par = el.parentElement;
-  const a = { seletor, indice, nome: nameOf(el), caminhoDom: domPath(el), texto: texto60(el), larguraTela: window.innerWidth,
+  const { seletor, indice, contagem } = stableSel(el), r = el.getBoundingClientRect(), par = el.parentElement;
+  const a = { seletor, indice, contagem, nome: nameOf(el), caminhoDom: domPath(el), texto: texto60(el), larguraTela: window.innerWidth,
     rect: { x: Math.round(r.left + scrollX), y: Math.round(r.top + scrollY), w: Math.round(r.width), h: Math.round(r.height) },
     ...fonteCssOf(el), componente: null, componenteMotivo: 'não pesquisado (busca de componente ainda não disponível)',
-    contexto: par && inPage(par) ? { pai: selOf(par), irmaos: realKids(par).filter(k => k !== el).slice(0, 6).map(selOf), posicao: realKids(par).indexOf(el) + 1, total: realKids(par).length } : {},
+    contexto: par && inPage(par) ? { pai: stableSel(par).seletor, irmaos: realKids(par).filter(k => k !== el).slice(0, 6).map(k => stableSel(k).seletor), posicao: realKids(par).indexOf(el) + 1, total: realKids(par).length } : {},
     inicial: inicial || snapInicial(el) };
   if (reg) {
     a.regiao = true;
@@ -1070,7 +1075,7 @@ function clearLive() {
   for (const id of [...previews.keys()]) previewOff(id);
   for (const c of changes.values()) setDecl(c.rule, c.prop, c.before, c.prio);
   changes.clear(); undoS.length = 0; redoS.length = 0; cssItemKey.clear(); changeEl.clear(); resetCache();
-  reapplyInfo = null; S.sesCompare = false;
+  reapplyInfo = null; S.sesCompare = false; S.missaoMd = null; S.objDraft = null;
 }
 async function continuarSessao(id, quiet) {
   let s; try { s = await getJSON('/__vfdev/sessoes/' + encodeURIComponent(id)); } catch (e) { toast('Não abriu a sessão: ' + e.message, 6000); return; }
@@ -1250,6 +1255,113 @@ function diffInicio(it) {
   return out;
 }
 
+/* ---- missão: objetivo, geração e verificação ---- */
+async function pedirObjetivo() {
+  if (!SES) return;
+  await saveNow();
+  let draft = SES.objetivo || '';
+  if (!draft) { try { draft = (await getJSON(`/__vfdev/missoes/${encodeURIComponent(SES.id)}/rascunho`)).objetivo; } catch (e) { toast('Rascunho indisponível: ' + e.message); } }
+  S.objDraft = { texto: draft, sugerido: !SES.objetivo && !!draft };
+  S.tab = 'session'; render();
+  const t = root.getElementById('obj-text'); if (t) { t.focus(); t.select(); }
+}
+async function gerarMissao(objetivo) {
+  objetivo = String(objetivo || '').trim();
+  if (!objetivo) { toast('Escreva o Objetivo em 1 frase antes de gerar.'); return null; }
+  SES.objetivo = objetivo; await saveNow();
+  let r; try { r = await postJSON(`/__vfdev/missoes/${encodeURIComponent(SES.id)}`, { objetivo }); } catch (e) { toast('Missão não gerada: ' + e.message, 6000); return null; }
+  Object.assign(SES, { status: r.sessao.status, missao: r.sessao.missao, verificacao: null, objetivo: r.sessao.objetivo, atualizadaEm: r.sessao.atualizadaEm });
+  S.objDraft = null; S.missaoMd = r.md; S.verif = null;
+  render(); openDrawer('missao');
+  toast(`Missão gerada: ${r.arquivos.join(' e ')}.`, 5000);
+  return r;
+}
+/** Carrega a página, sem o editor e sem as alterações pendentes, num iframe fora da tela com a largura pedida. */
+function frameAt(width, url) {
+  return new Promise(resolve => {
+    let box = root.getElementById('vbox');
+    if (!box) { box = document.createElement('div'); box.id = 'vbox'; box.className = 'vbox'; root.querySelector('.wrap').appendChild(box); }
+    const f = document.createElement('iframe');
+    const u = new URL(url || location.href, location.href); u.searchParams.set('vfdev', 'off');
+    f.style.cssText = `width:${width}px;height:900px;border:0`; f.src = u.href; f.title = `verificação ${width}px`;
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(f); } };
+    f.addEventListener('load', () => {
+      let doc; try { doc = f.contentDocument; } catch (e) { return finish(); }
+      let quiet = 0, t0 = Date.now();
+      const mo = new f.contentWindow.MutationObserver(() => { quiet = Date.now(); }); mo.observe(doc.documentElement, { subtree: true, childList: true, attributes: true });
+      quiet = Date.now();
+      const tick = () => { if (Date.now() - quiet > 350 || Date.now() - t0 > 6000) { mo.disconnect(); finish(); } else setTimeout(tick, 100); };
+      setTimeout(tick, 150);
+    }, { once: true });
+    setTimeout(finish, 15000);
+    box.appendChild(f);
+  });
+}
+function runCheck(v, doc) {
+  const q = sel => { try { return [...doc.querySelectorAll(sel)]; } catch (e) { return null; } };
+  const byText = (l, t) => t ? l.filter(e => texto60(e).startsWith(String(t).slice(0, 20))) : l;
+  if (v.tipo === 'computado') {
+    const l = q(v.seletor); if (!l) return { ok: false, obtido: 'seletor inválido' };
+    const el = l[v.indice || 0]; if (!el) return { ok: false, obtido: `elemento não encontrado (${l.length} com esse seletor)` };
+    const o = comp(el, v.prop); return { ok: o === v.esperado, obtido: o };
+  }
+  if (v.tipo === 'ausente' || v.tipo === 'presente') {
+    const l = q(v.seletor); if (!l) return { ok: false, obtido: 'seletor inválido' };
+    const n = byText(l, v.texto).length;
+    return v.tipo === 'ausente' ? { ok: n === 0, obtido: n ? `${n} ainda na página` : 'ausente' } : { ok: n > 0, obtido: n ? `${n} na página` : 'não encontrado' };
+  }
+  if (v.tipo === 'ordem') {
+    const els = v.seletores.map((sel, i) => { const l = q(sel) || []; return byText(l, (v.textos || [])[i])[0] || null; });
+    if (els.some(e => !e)) return { ok: false, obtido: `não encontrado: ${v.seletores.filter((_, i) => !els[i]).join(', ')}` };
+    if (v.pai && !els.every(e => e.closest(v.pai))) return { ok: false, obtido: `fora de \`${v.pai}\`` };
+    const ok = els.every((e, i) => i === 0 || (els[i - 1].compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING));
+    return { ok, obtido: ok ? 'na ordem' : 'fora de ordem' };
+  }
+  if (v.tipo === 'igual') {
+    const A = (q(v.a) || [])[0], B = (q(v.b) || [])[0];
+    if (!A || !B) return { ok: false, obtido: `não encontrado: ${!A ? v.a : v.b}` };
+    const d = v.props.filter(p => comp(A, p) !== comp(B, p));
+    return { ok: !d.length, obtido: d.length ? d.map(p => `${p}: ${comp(B, p)} ≠ ${comp(A, p)}`).join('; ') : 'iguais' };
+  }
+  if (v.tipo === 'sem-overflow') {
+    const e = doc.documentElement, over = e.scrollWidth - e.clientWidth;
+    return { ok: over <= 1, obtido: over > 1 ? `${over}px de rolagem horizontal` : 'sem overflow' };
+  }
+  return { ok: false, obtido: `tipo desconhecido: ${v.tipo}` };
+}
+async function verificarMissao() {
+  if (!SES || !SES.missao) return toast('Gere a missão antes de verificar.');
+  let m; try { m = await getJSON(`/__vfdev/missoes/${encodeURIComponent(SES.id)}`); } catch (e) { return toast('Missão não encontrada: ' + e.message, 6000); }
+  S.verificando = true; render();
+  const W = window.innerWidth, groups = new Map();
+  for (const v of m.verificacoes) { const w = v.largura || W; if (!groups.has(w)) groups.set(w, []); groups.get(w).push(v); }
+  const resultados = [];
+  for (const [w, list] of [...groups].sort((a, b) => b[0] - a[0])) {
+    const f = await frameAt(w);
+    let doc = null; try { doc = f.contentDocument; } catch (e) {}
+    for (const v of list) resultados.push({ ...v, largura: w, ...(doc ? runCheck(v, doc) : { ok: false, obtido: 'página não carregou no iframe' }) });
+    f.remove();
+  }
+  resultados.sort((a, b) => +a.id.slice(1) - +b.id.slice(1));
+  const falhas = resultados.filter(r => !r.ok).length, est = SES.estados || [];
+  const estadosOk = est.every(e => e.validadoEm);
+  SES.verificacao = { em: nowIso(), largura: W, ok: resultados.length - falhas, falhas, estadosPendentes: est.filter(e => !e.validadoEm).length, resultados };
+  SES.status = !falhas && estadosOk ? 'verificada' : 'missao_gerada';
+  S.verificando = false;
+  await saveNow(); render();
+  toast(falhas ? `Verificação: ${resultados.length - falhas} ✓ · ${falhas} ✗` : estadosOk ? `Tudo verificado ✓ (${resultados.length})` : `Verificações ✓, mas ${est.filter(e => !e.validadoEm).length} estado(s) sem validar.`, 5000);
+  return SES.verificacao;
+}
+function verificacaoHTML() {
+  const V = SES.verificacao; if (!V) return '';
+  const it = id => { const k = SES.itens.findIndex(i => i.id === id); return k < 0 ? '' : `#${k + 1} `; };
+  let h = `<div class="verif"><div class="eyebrow">Verificação · ${new Date(V.em).toLocaleString()} · ${V.ok} ✓ · ${V.falhas} ✗</div>`;
+  for (const r of V.resultados) h += `<div class="vr ${r.ok ? 'ok' : 'ko'}"><span class="vmark">${r.ok ? '✓' : '✗'}</span><span>${esc(it(r.item))}${esc(r.descricao || r.tipo)}${r.tipo !== 'sem-overflow' ? ` <small>(${r.largura}px)</small>` : ''}<br><small>obtido: <b>${esc(r.obtido)}</b>${!r.ok && r.esperado ? ` · esperado: <b>${esc(r.esperado)}</b>` : ''}</small></span></div>`;
+  if (V.estadosPendentes) h += `<div class="warnline">${V.estadosPendentes} estado(s) ainda sem validar — a sessão só fica “verificada” com todos validados.</div>`;
+  return h + '</div>';
+}
+
 /* ---- aba Sessão ---- */
 function counters() {
   const n = t => SES.itens.filter(i => i.tipo === t && !(t === 'css' && i.css.destino === 'descartada')).length;
@@ -1306,6 +1418,11 @@ function sessionPanel() {
   let h = `<div class="ses-head"><input id="ses-title" class="ses-title" value="${esc(SES.titulo)}" aria-label="Título da sessão"><span class="badge st-${SES.status}">${STATUS_LABEL[SES.status]}</span></div>`;
   h += `<div class="counters">${counters().map(([l, v]) => `<div><b>${v}</b><span>${l}</span></div>`).join('')}</div>`;
   h += `<div class="actions"><button class="btn sm" data-act="ses-save">Salvar</button><button class="btn sm" data-act="ses-switch">Continuar outra</button><button class="btn sm" data-act="ses-dup">Duplicar</button><button class="btn sm" data-act="ses-ren">Renomear</button><button class="btn sm" data-act="ses-disc">Descartar</button><button class="btn sm${S.sesCompare ? ' on' : ''}" data-act="ses-cmp">Comparar com o início</button></div>`;
+  h += `<div class="actions"><button class="btn sm pri" data-act="mis-gerar">${SES.missao ? 'Gerar missão de novo' : 'Gerar missão'}</button><button class="btn sm" data-act="mis-ver"${SES.missao ? '' : ' disabled'}>Ver missão</button><button class="btn sm" data-act="mis-verif"${SES.missao && !S.verificando ? '' : ' disabled'}>${S.verificando ? 'Verificando…' : 'Verificar missão'}</button></div>`;
+  if (S.objDraft) h += `<div class="obj"><label for="obj-text"><b>Objetivo</b> — 1 frase${S.objDraft.sugerido ? ' · <small>rascunho montado por regras a partir dos itens; confirme ou edite</small>' : ''}</label><textarea id="obj-text" rows="3">${esc(S.objDraft.texto)}</textarea><div class="actions"><button class="btn sm pri" data-act="obj-ok">Confirmar e gerar</button><button class="btn sm" data-act="obj-cancel">Cancelar</button></div></div>`;
+  else if (SES.objetivo) h += `<div class="meta">Objetivo: <b>${esc(SES.objetivo)}</b></div>`;
+  if (SES.missao) h += `<div class="meta">Missão: <span class="mono">${esc(SES.missao.md)}</span> · ${SES.missao.verificacoes} verificações</div>`;
+  h += verificacaoHTML();
   h += `<div class="meta">Salva em <span class="mono">tools/vfdev/sessoes/${esc(SES.id)}.json</span>${SES.atualizadaEm ? ` · ${new Date(SES.atualizadaEm).toLocaleTimeString()}` : ''}</div>`;
   if (sesErr) h += `<div class="warnline">${esc(sesErr)}</div>`;
   if (!SES.itens.length) h += `<div class="ok">Sessão vazia. Selecione algo e aperte <kbd>C</kbd> para falar sobre ele, use <b>Estrutura</b> no Painel, ou ajuste o CSS.</div>`;
@@ -1501,6 +1618,12 @@ details.more[open]{display:flex;flex-direction:column;gap:10px}
 .warnline{font-size:11.5px;color:var(--warn);background:var(--warn-bg);border-radius:6px;padding:4px 8px}
 .cmpini{font-size:11.5px;border-left:3px solid var(--acc);padding:2px 8px;color:var(--mut)}
 .facts{margin:0;padding-left:18px;font-size:12px}
+.obj{border:1px solid var(--acc);border-radius:9px;padding:9px 11px;display:flex;flex-direction:column;gap:6px;background:var(--soft)}
+.obj textarea{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px;font:inherit;color:inherit;resize:vertical}
+.verif{border:1px solid var(--line);border-radius:9px;padding:9px 11px;display:flex;flex-direction:column;gap:5px}
+.vr{display:flex;gap:8px;align-items:flex-start;font-size:12px}.vr small{color:var(--mut)}
+.vmark{font-weight:800;width:14px;flex:none}.vr.ok .vmark{color:var(--add)}.vr.ko .vmark{color:var(--del)}
+.vbox{position:fixed;left:-30000px;top:0;visibility:hidden;pointer-events:none}
 .estr-grid{display:flex;flex-wrap:wrap;gap:4px;padding-top:6px}
 @media (prefers-reduced-motion:reduce){.row.flash{animation:none}}
 `;
@@ -1520,7 +1643,7 @@ const HTML = `
     <div class="foot"><div class="foot-count" id="foot-count"></div>
       <div class="foot-r"><button class="btn sm" id="undo">↶</button><button class="btn sm" id="redo">↷</button><button class="btn sm" id="before">Ver antes</button><button class="btn sm" id="cmpbtn">Larguras</button><button class="btn sm" id="diff">Diff</button><button class="btn sm" id="prompt">Prompt</button><button class="btn sm pri" id="apply">Gravar</button></div></div>
   </section>
-  <div class="sheet" id="drawer" hidden><div class="sheet-in"><div class="sheet-top"><div class="seg" id="dtabs"><button data-tab="diff">Diff real</button><button data-tab="prompt">Prompt pro Codex</button></div><button class="btn" id="dcopy">Copiar</button><button class="btn" id="dclose">Fechar</button></div><div class="sheet-body" id="dbody"></div></div></div>
+  <div class="sheet" id="drawer" hidden><div class="sheet-in"><div class="sheet-top"><div class="seg" id="dtabs"><button data-tab="diff">Diff real</button><button data-tab="prompt">Prompt pro Codex</button><button data-tab="missao">Missão</button></div><button class="btn" id="dcopy">Copiar</button><button class="btn" id="dclose">Fechar</button></div><div class="sheet-body" id="dbody"></div></div></div>
   <div class="cmd" id="cmd" hidden><div class="cmd-in"><input id="cmd-input" placeholder="Escreva do seu jeito: menos espaço, 3 colunas, centralizar…" autocomplete="off" spellcheck="false"><div class="cmd-target" id="cmd-target"></div><div class="cmd-list" id="cmd-list"></div><div class="cmd-foot"><span><kbd>↑</kbd><kbd>↓</kbd> escolher</span><span><kbd>Enter</kbd> aplicar</span><span><kbd>Esc</kbd> fechar</span><span>Aceita CSS direto: <code>gap 8</code></span></div></div></div>
   <div class="cmp" id="cmp" hidden><div class="cmp-top"><b>Comparar larguras — mesma página, sem o editor, com as alterações pendentes aplicadas</b><button class="btn" id="cmp-reload">Recarregar</button><button class="btn" id="cmp-close">Fechar</button></div><div class="cmp-frames" id="cmp-frames"></div></div>
   <div class="talk" id="talk" hidden role="dialog" aria-label="Falar sobre isso"><div class="talk-h" id="talk-h"></div><textarea id="talk-text" rows="3" placeholder="o que te incomoda aqui?"></textarea><div class="chips" id="talk-chips">${CHIPS.map(c => `<button data-chip="${c}">${c}</button>`).join('')}</div><div class="actions"><button class="btn sm pri" id="talk-save">Salvar</button><button class="btn sm" id="talk-resolve" hidden>Resolver</button><button class="btn sm" id="talk-del" hidden>Apagar</button><button class="btn sm" id="talk-cancel">Cancelar</button><span class="hint">Ctrl+Enter salva · Esc cancela</span></div></div>
@@ -1550,7 +1673,7 @@ function buildUI() {
   $('dtabs').onclick = e => { const b = e.target.closest('button'); if (b) openDrawer(b.dataset.tab); };
   $('dclose').onclick = () => $('drawer').hidden = true;
   $('drawer').onclick = e => { if (e.target.id === 'drawer') $('drawer').hidden = true; };
-  $('dcopy').onclick = () => copy($('drawer').dataset.tab === 'prompt' ? promptText() : [...root.querySelectorAll('#dbody .diff')].map(d => d.innerText).join('\n\n'));
+  $('dcopy').onclick = () => copy($('drawer').dataset.tab === 'prompt' ? promptText() : $('drawer').dataset.tab === 'missao' ? (S.missaoMd || '') : [...root.querySelectorAll('#dbody .diff')].map(d => d.innerText).join('\n\n'));
   $('cmd').onclick = e => { if (e.target.id === 'cmd') return closeCmd(); const b = e.target.closest('.cmd-item'); if (b) runCmd(+b.dataset.i); };
   $('cmd-input').addEventListener('input', () => { cmdIdx = 0; renderCmd(); });
   $('cmd-input').addEventListener('keydown', e => {
@@ -1592,6 +1715,11 @@ function buildUI() {
     else if (act === 'ses-cmp') { S.sesCompare = !S.sesCompare; render(); }
     else if (act === 'item-ver') { const it = SES.itens.find(i => i.id === b.dataset.id); const r = it && resolveAlvo(it.alvo); if (r && r.el) { r.el.scrollIntoView({ block: 'center' }); S.tab = 'props'; select(r.el); } }
     else if (act === 'item-del') delItem(b.dataset.id);
+    else if (act === 'mis-gerar') pedirObjetivo();
+    else if (act === 'obj-ok') gerarMissao(root.getElementById('obj-text').value);
+    else if (act === 'obj-cancel') { S.objDraft = null; render(); }
+    else if (act === 'mis-ver') openDrawer('missao');
+    else if (act === 'mis-verif') verificarMissao();
     else if (act === 'previa') { previews.has(b.dataset.id) ? previewOff(b.dataset.id) : previewOn(b.dataset.id); render(); }
     else if (act === 'revert') { const c = [...changes.values()].find(x => keyOf(x.rule, x.prop) === b.dataset.k); if (c) { prep(); if (setRule(c.rule, c.prop, c.before)) render(); } }
   });
@@ -1730,7 +1858,7 @@ async function boot() {
   if (S.open) S.problems = scan();
   render();
   window.__VFDEV__.api = { select, edit, findSource, ruleInfo, changes, buildPatch, apply, scan, state: S,
-    sessao: () => SES, erroSessao: () => sesErr, novaSessao, continuarSessao, saveNow, comentar, estrutural, previewOn, previewOff, previews, resolveAlvo, captureAlvo, openCompare, setTab, render, delItem };
+    sessao: () => SES, erroSessao: () => sesErr, pedirObjetivo, gerarMissao, verificarMissao, runCheck, novaSessao, continuarSessao, saveNow, comentar, estrutural, previewOn, previewOff, previews, resolveAlvo, captureAlvo, openCompare, setTab, render, delItem };
   window.__VFDEV__.ready = true;
 }
 if (document.readyState === 'complete') boot(); else window.addEventListener('load', boot, { once: true });

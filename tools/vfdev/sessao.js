@@ -66,7 +66,7 @@ function fonte(v, where) {
   num(v, 'linha', where, { nullable: true });
   str(v, 'evidencia', where, { max: 600 });
 }
-const ALVO_KEYS = ['seletor', 'indice', 'caminhoDom', 'texto', 'rect', 'larguraTela', 'fonteCss', 'fonteCssMotivo', 'componente', 'componenteMotivo', 'regiao', 'offset', 'contexto', 'inicial', 'nome'];
+const ALVO_KEYS = ['seletor', 'indice', 'contagem', 'caminhoDom', 'texto', 'rect', 'larguraTela', 'fonteCss', 'fonteCssMotivo', 'componente', 'componenteMotivo', 'regiao', 'offset', 'contexto', 'inicial', 'nome'];
 function alvo(v, where, required = true) {
   if (v === undefined || v === null) { if (required) fail(`${where} é obrigatório.`); return; }
   if (!isObj(v)) fail(`${where} deve ser objeto.`);

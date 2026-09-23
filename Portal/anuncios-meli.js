@@ -94,14 +94,21 @@
       metricasEmVoo: {},
       margemEmVoo: {},
       composicaoEmVoo: {},
-      // % faturamento e Curva ABC (por item_id/family_id) — ao contrário de
-      // metricas7d/margem, NÃO há pré-carregamento em background para estes
-      // dois: só chegam ao cache quando o operador ordena por eles (ver
-      // aplicarOrdenacaoPerformance). Uma chave ausente aqui é "nunca
-      // pedido" (célula mostra "—" fixo); uma chave presente com valor null
-      // é "pedido, mas o backend não tem o dado para esta linha".
+      // % faturamento — coluna SEMPRE visível, então tem pré-carregamento
+      // automático (ver carregarPerformance/carregarFaturamentoDasFamiliasVisiveis,
+      // chamados no fim de renderCatalogo): item avulso é bundlado na MESMA
+      // chamada de metricas7d/margem; família consolidada leva uma chamada
+      // própria com `familias=`, dedupe por faturamentoFamiliaEmVoo. Curva
+      // ABC continua SÓ sob demanda (tag, não coluna permanente) — só chega
+      // ao cache quando o operador ordena por ela (ver
+      // aplicarOrdenacaoPerformance). Em qualquer um dos quatro caches, uma
+      // chave ausente é "nunca pedido" (célula mostra "—"/sem tag); uma
+      // chave presente com valor null é "pedido, mas o backend não tem o
+      // dado para esta linha".
       faturamentoCache: {},
+      faturamentoEmVoo: {},
       faturamentoPorFamiliaCache: {},
+      faturamentoFamiliaEmVoo: {},
       curvaAbcCache: {},
       curvaAbcPorFamiliaCache: {},
       // Variações do modelo LEGADO do ML (item_id -> variations[], ver
@@ -483,12 +490,18 @@
   // Zera o cache de agrupadores expandidos/pré-carregados. Chamado na troca
   // de contexto. `familyFetchEmVoo` some junto: sem isso, uma família com o
   // MESMO family_id na conta nova reaproveitaria a Promise da conta velha
-  // (fechada sobre a query string errada). performanceCache NÃO é zerado —
-  // item_id é global no Mercado Livre, então o cache continua válido.
+  // (fechada sobre a query string errada). performanceCache/faturamentoCache
+  // (por item_id) NÃO são zerados — item_id é global no Mercado Livre. Já
+  // faturamentoPorFamiliaCache é indexado por family_id, o MESMO problema de
+  // familyCache (não é global) — precisa zerar junto, senão o percentual
+  // consolidado da conta anterior vazaria para uma família de mesmo id na
+  // conta nova.
   function resetarExpansoes() {
     AM.state.familyCache = {};
     AM.state.familyFetchEmVoo = {};
     AM.state.familyFetchFalhou = {};
+    AM.state.faturamentoPorFamiliaCache = {};
+    AM.state.faturamentoFamiliaEmVoo = {};
     AM.familiaEpoca++;
   }
 
@@ -691,16 +704,23 @@
       carregarAnuncios();
     });
 
-    // Métricas últ. 7 dias + margem chegam DEPOIS que a lista já está na
-    // tela — nunca atrasam este render. Anúncios avulsos (tipo "item") pedem
-    // as DUAS (metricas7d + margem, como sempre). Agrupadores pedem só
-    // metricas7d dos filhos, em background, para preencher a SOMA na
-    // linha-mãe sem exigir clique (ver carregarMetricasDosGruposVisiveis) —
-    // a margem continua reservada para quando o operador realmente expande.
+    // Métricas últ. 7 dias + margem + % faturamento chegam DEPOIS que a lista
+    // já está na tela — nunca atrasam este render. Anúncios avulsos (tipo
+    // "item") pedem as três NA MESMA chamada (faturamento é bundlado de
+    // graça: o Motor de Margem já roda para a margem, então calcular
+    // faturamento em cima do MESMO resultado não custa uma segunda
+    // invocação — ver auditoria "Correção — ordenação margem e carregamento
+    // faturamento"). Agrupadores pedem metricas7d dos filhos em background
+    // (ver carregarMetricasDosGruposVisiveis) — a margem continua reservada
+    // para quando o operador expande; o % faturamento CONSOLIDADO da família
+    // é outra chamada, própria (ver carregarFaturamentoDasFamiliasVisiveis),
+    // porque exige `familias=` no Motor, não os filhos individuais.
     carregarPerformance(
-      AM.anuncios.filter(function (l) { return l.tipo === "item"; }).map(function (l) { return l.item_id; })
+      AM.anuncios.filter(function (l) { return l.tipo === "item"; }).map(function (l) { return l.item_id; }),
+      { incluirFaturamento: true }
     );
     carregarMetricasDosGruposVisiveis();
+    carregarFaturamentoDasFamiliasVisiveis();
   }
 
   // Linhas de anúncio da lista principal (tipo "item"). As linhas de MLB
@@ -1594,11 +1614,18 @@
     // Composição é OPT-IN (ao contrário de métricas/margem): só o modal de
     // detalhe pede, explicitamente, ao abrir a seção "Composição da margem".
     var incluirComposicao = !!(opcoes && opcoes.incluirComposicao);
+    // % faturamento também é OPT-IN aqui: só quem pede (o carregamento
+    // automático da lista, ver renderCatalogo) liga a flag — o
+    // pré-carregamento em background de filhos ocultos (incluirMargem:false,
+    // ver carregarMetricasDosGruposVisiveis) continua sem gastar o Motor de
+    // Margem para uma família ainda fechada.
+    var incluirFaturamento = !!(opcoes && opcoes.incluirFaturamento);
 
     var vistos = {};
     var pendentesMetricas = [];
     var pendentesMargem = [];
     var pendentesComposicao = [];
+    var pendentesFaturamento = [];
     (itemIds || []).forEach(function (id) {
       if (!id || vistos[id]) return;
       vistos[id] = true;
@@ -1606,12 +1633,16 @@
       if ((!cache || !cache.temMetricas) && !AM.state.metricasEmVoo[id]) pendentesMetricas.push(id);
       if (incluirMargem && (!cache || !cache.temMargem) && !AM.state.margemEmVoo[id]) pendentesMargem.push(id);
       if (incluirComposicao && (!cache || !cache.temComposicao) && !AM.state.composicaoEmVoo[id]) pendentesComposicao.push(id);
+      if (incluirFaturamento && !Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id) &&
+          !AM.state.faturamentoEmVoo[id]) pendentesFaturamento.push(id);
     });
-    if (!pendentesMetricas.length && !pendentesMargem.length && !pendentesComposicao.length) return Promise.resolve();
+    if (!pendentesMetricas.length && !pendentesMargem.length && !pendentesComposicao.length && !pendentesFaturamento.length) {
+      return Promise.resolve();
+    }
 
     var idsUniao = [];
     var vistosUniao = {};
-    pendentesMetricas.concat(pendentesMargem, pendentesComposicao).forEach(function (id) {
+    pendentesMetricas.concat(pendentesMargem, pendentesComposicao, pendentesFaturamento).forEach(function (id) {
       if (vistosUniao[id]) return;
       vistosUniao[id] = true;
       idsUniao.push(id);
@@ -1623,12 +1654,15 @@
     pendentesMargem.forEach(function (id) { pendentesMargemSet[id] = true; AM.state.margemEmVoo[id] = true; });
     var pendentesComposicaoSet = {};
     pendentesComposicao.forEach(function (id) { pendentesComposicaoSet[id] = true; AM.state.composicaoEmVoo[id] = true; });
+    var pendentesFaturamentoSet = {};
+    pendentesFaturamento.forEach(function (id) { pendentesFaturamentoSet[id] = true; AM.state.faturamentoEmVoo[id] = true; });
 
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
       "&itemIds=" + encodeURIComponent(idsUniao.join(",")) +
       "&incluirMetricas=" + (pendentesMetricas.length ? "1" : "0") +
       "&incluirMargem=" + (pendentesMargem.length || pendentesComposicao.length ? "1" : "0") +
-      "&incluirComposicao=" + (pendentesComposicao.length ? "1" : "0");
+      "&incluirComposicao=" + (pendentesComposicao.length ? "1" : "0") +
+      "&incluirFaturamento=" + (pendentesFaturamento.length ? "1" : "0");
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
     // Rebate ML da promoção ATIVA (ver garantirComposicaoDoItem) — só entra
     // na querystring quando o item alvo faz parte deste próprio pedido
@@ -1643,6 +1677,7 @@
       pendentesMetricas.forEach(function (id) { delete AM.state.metricasEmVoo[id]; });
       pendentesMargem.forEach(function (id) { delete AM.state.margemEmVoo[id]; });
       pendentesComposicao.forEach(function (id) { delete AM.state.composicaoEmVoo[id]; });
+      pendentesFaturamento.forEach(function (id) { delete AM.state.faturamentoEmVoo[id]; });
 
       var dados = r.data;
       if (dados && dados.ok) {
@@ -1672,12 +1707,54 @@
           }
           AM.state.performanceCache[id] = atual;
         });
+        if (pendentesFaturamento.length) {
+          var porItem = (dados.faturamento && dados.faturamento.porItem) || {};
+          pendentesFaturamento.forEach(function (id) {
+            AM.state.faturamentoCache[id] = porItem[id] != null ? porItem[id] : null;
+          });
+        }
       }
       // Falha da chamada inteira: nada é marcado como resolvido (permite
       // uma tentativa futura), e as células pedidas só repintam com o que
       // JÁ está no cache — nunca apagam um aspecto que outra chamada
       // independente já tinha trazido com sucesso.
       pintarPerformanceEmCelulas(idsUniao);
+    });
+  }
+
+  // Faturamento CONSOLIDADO das famílias visíveis na página — chamada
+  // própria (não passa por carregarPerformance, que é por item_id): o
+  // backend resolve os filhos pela family_id e soma a receita deles
+  // (ver meliAnunciosController.performance/familias=). Dedupe por
+  // faturamentoFamiliaEmVoo, mesmo padrão dos demais caches — reabrir a
+  // página ou reordenar sem famílias novas não gasta chamada nenhuma.
+  function carregarFaturamentoDasFamiliasVisiveis() {
+    if (!AM.clienteAtual) return Promise.resolve();
+    var pendentes = [];
+    AM.anuncios.forEach(function (l) {
+      if (l.tipo !== "familia") return;
+      var familyId = l.family_id;
+      if (!Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId) &&
+          !AM.state.faturamentoFamiliaEmVoo[familyId]) {
+        pendentes.push(familyId);
+      }
+    });
+    if (!pendentes.length) return Promise.resolve();
+    pendentes.forEach(function (familyId) { AM.state.faturamentoFamiliaEmVoo[familyId] = true; });
+
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+      "&itemIds=&incluirMetricas=0&incluirMargem=0&incluirComposicao=0&incluirFaturamento=1" +
+      "&familias=" + encodeURIComponent(pendentes.join("|"));
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+
+    return api("/anuncios-meli/performance?" + qs).then(function (r) {
+      pendentes.forEach(function (familyId) { delete AM.state.faturamentoFamiliaEmVoo[familyId]; });
+      var dados = r.data;
+      var porFamilia = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamilia) || {};
+      pendentes.forEach(function (familyId) {
+        AM.state.faturamentoPorFamiliaCache[familyId] = porFamilia[familyId] != null ? porFamilia[familyId] : null;
+        repintarLinhaDoGrupo(familyId);
+      });
     });
   }
 
@@ -1761,7 +1838,13 @@
       return null;
     }
     var itemId = linha.item_id;
-    if (campo === "margem") return dados.margem && dados.margem[itemId] ? dados.margem[itemId].profit : null;
+    // marginPercent — o MESMO valor que a coluna Margem mostra
+    // (margemConteudoHtml lê esse campo do idêntico objeto dados.margem[itemId]).
+    // NUNCA `profit` (R$ absoluto): profit não é o que o operador vê na tela,
+    // e ordenar por ele produzia uma lista que parecia fora de ordem (bug
+    // relatado — ver auditoria "Correção — ordenação margem e carregamento
+    // faturamento").
+    if (campo === "margem") return dados.margem && dados.margem[itemId] ? dados.margem[itemId].marginPercent : null;
     if (campo === "faturamento") return dados.faturamento && dados.faturamento.porItem ? dados.faturamento.porItem[itemId] : null;
     if (campo === "curvaAbc") {
       var classeItem = dados.curvaAbc && dados.curvaAbc.porItem ? dados.curvaAbc.porItem[itemId] : null;
@@ -1926,6 +2009,12 @@
       var cache = AM.state.performanceCache[id];
       cel.classList.remove("am-margem--carregando");
       cel.innerHTML = margemConteudoHtml(cache ? cache.margem : null, cache ? cache.margemIndisponivel : null);
+    });
+    document.querySelectorAll(".am-faturamento[data-faturamento-item]").forEach(function (cel) {
+      var id = cel.getAttribute("data-faturamento-item");
+      if (!alvo[id]) return;
+      var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id) ? AM.state.faturamentoCache[id] : null;
+      cel.innerHTML = faturamentoConteudoHtml(v);
     });
     // Preço: atual e cheio têm a MESMA regra de prioridade (ver
     // celulaPrecoHtml) — quando a margem já resolveu (`temMargem`), os dois

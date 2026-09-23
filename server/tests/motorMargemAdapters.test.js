@@ -166,6 +166,60 @@ cenario("carregarVendasDoPeriodo delega para a projeção canônica da Central d
   assert.ok(db.chamadas[0].sql.includes("publication_status IN ('published', 'legacy')"));
 });
 
+// BUG: prepareWorkspaceContext recebe clienteContaId (usado para resolver o
+// contexto) mas nunca o repassava para a leitura da Central de Vendas — a
+// query caía sempre em "cliente_conta_id IS NULL" (nenhuma conta informada),
+// e uma conta multi-conta com import corretamente vinculado ao
+// cliente_conta_id nunca era encontrada (realizado ficava vazio: % Faturamento
+// sempre null, margem "realized" sempre indisponível — mascarado pelo
+// fallback "projected"). Ver auditoria "Investigação backend — faturamento
+// Anúncios ML retornando null".
+cenario("carregarVendasDoPeriodo repassa clienteContaId e includeLegacy até a query de imports", async () => {
+  const db = fakeDb({
+    "FROM central_vendas_imports": [
+      { id: 100, competencia: "2026-08", cliente_conta_id: 42, fonte: "orders_api", created_at: "2026-08-10T12:00:00Z", publication_status: "legacy" },
+    ],
+    "FROM central_vendas_pedidos": PEDIDOS,
+    "FROM central_vendas_pedido_itens": ITENS,
+    "FROM central_vendas_componentes": COMPONENTES,
+  });
+
+  await centralVendas.carregarVendasDoPeriodo(
+    { clienteSlug: "c", dateFrom: "2026-08-01", dateTo: "2026-08-31", clienteContaId: 42, includeLegacy: true },
+    db
+  );
+
+  const chamadaImports = db.chamadas.find((c) => c.sql.includes("FROM central_vendas_imports"));
+  assert.ok(chamadaImports, "consulta de imports precisa ter acontecido");
+  assert.ok(
+    chamadaImports.sql.includes("cliente_conta_id = $5") && chamadaImports.sql.includes("OR cliente_conta_id IS NULL"),
+    "condição de conta (com fallback legado) precisa chegar até a query — SQL foi: " + chamadaImports.sql
+  );
+  assert.strictEqual(chamadaImports.params[4], 42, "clienteContaId vai como parâmetro da query, nunca hardcoded/perdido");
+});
+
+cenario("carregarVendasDoPeriodo sem clienteContaId continua no comportamento legado (cliente_conta_id IS NULL)", async () => {
+  const db = fakeDb({
+    "FROM central_vendas_imports": [
+      { id: 100, competencia: "2026-08", cliente_conta_id: null, fonte: "orders_api", created_at: "2026-08-10T12:00:00Z", publication_status: "legacy" },
+    ],
+    "FROM central_vendas_pedidos": PEDIDOS,
+    "FROM central_vendas_pedido_itens": ITENS,
+    "FROM central_vendas_componentes": COMPONENTES,
+  });
+
+  await centralVendas.carregarVendasDoPeriodo(
+    { clienteSlug: "c", dateFrom: "2026-08-01", dateTo: "2026-08-31" },
+    db
+  );
+
+  const chamadaImports = db.chamadas.find((c) => c.sql.includes("FROM central_vendas_imports"));
+  assert.ok(
+    chamadaImports.sql.includes("cliente_conta_id IS NULL") && !chamadaImports.sql.includes("cliente_conta_id = $"),
+    "sem clienteContaId, comportamento anterior (só legado) é preservado — SQL foi: " + chamadaImports.sql
+  );
+});
+
 cenario("sem import no período → realizado inexistente, não zerado", async () => {
   const db = fakeDb({ "FROM central_vendas_imports": [] });
   const vendas = await centralVendas.carregarVendasDoPeriodo(

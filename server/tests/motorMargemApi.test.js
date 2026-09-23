@@ -548,6 +548,51 @@ cenario("obterResumo (mesmo helper de workspace) também resolve o contexto 1x",
   assert.strictEqual(contadores.exigirContexto, 1, "3 lotes, 1 contexto só");
 });
 
+// BUG: clienteContaId chegava em prepareWorkspaceContext (usado para
+// exigirContexto) mas nunca era repassado para carregarVendas — a leitura da
+// Central de Vendas sempre caía no ramo "sem conta" (cliente_conta_id IS
+// NULL), então um cliente multi-conta com vendas importadas com
+// cliente_conta_id preenchido nunca tinha o realizado encontrado (porMlb
+// vazio → % Faturamento sempre null, margem "realized" sempre indisponível,
+// mascarado pelo fallback "projected"). Ver auditoria "Investigação backend
+// — faturamento Anúncios ML retornando null".
+cenario("prepareWorkspaceContext repassa clienteContaId para a leitura da Central de Vendas", async () => {
+  const { deps } = depsWorkspace({ n: 3, total: 3 });
+  const chamadasCarregarVendas = [];
+  const instrumentado = {
+    ...deps,
+    carregarVendas: async (args) => {
+      chamadasCarregarVendas.push(args);
+      return deps.carregarVendas(args);
+    },
+  };
+
+  await service.prepareWorkspaceContext({ ...params, clienteContaId: 42 }, instrumentado);
+
+  assert.strictEqual(chamadasCarregarVendas.length, 1);
+  assert.strictEqual(
+    chamadasCarregarVendas[0].clienteContaId,
+    42,
+    "clienteContaId precisa chegar até a Central de Vendas — sem isso o realizado lê a conta errada (ou nenhuma)"
+  );
+});
+
+cenario("prepareWorkspaceContext sem clienteContaId não quebra (continua null, comportamento anterior)", async () => {
+  const { deps } = depsWorkspace({ n: 3, total: 3 });
+  const chamadasCarregarVendas = [];
+  const instrumentado = {
+    ...deps,
+    carregarVendas: async (args) => {
+      chamadasCarregarVendas.push(args);
+      return deps.carregarVendas(args);
+    },
+  };
+
+  await service.prepareWorkspaceContext(params, instrumentado);
+
+  assert.strictEqual(chamadasCarregarVendas[0].clienteContaId, null);
+});
+
 cenario("prepareWorkspaceContext expõe o contexto para enrichBatch reaproveitar entre lotes", async () => {
   const { deps } = depsWorkspace({ n: 5, total: 5 });
   const prepared = await service.prepareWorkspaceContext(params, deps);

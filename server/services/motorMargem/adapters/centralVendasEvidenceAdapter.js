@@ -81,8 +81,15 @@ function toIso(value) {
  * `itens`/`componentes` também cobrem TODOS os pedidos do período: a
  * separação "entra no resultado ou não" acontece depois, em `agregarPorMlb`.
  */
-async function carregarVendasDoPeriodo({ clienteSlug, dateFrom, dateTo, marketplace = "meli" }, db = pool) {
-  const bruto = await getCentralVendasByRange({ clienteSlug, dateFrom, dateTo, marketplace }, db);
+// `clienteContaId`/`includeLegacy`: mesmo contrato de getCentralVendasByRange
+// (ver centralVendasRepository.condicaoContaSql) — precisam chegar até aqui
+// para que um cliente multi-conta leia o realizado da CONTA CERTA, nunca de
+// outra. Sem isso a query cai sempre em "cliente_conta_id IS NULL" (nenhuma
+// conta informada) e um import corretamente vinculado a uma conta nunca é
+// encontrado — o realizado inteiro (receita/% faturamento/margem "realized")
+// fica vazio em silêncio (ver motorMargemService.prepareWorkspaceContext).
+async function carregarVendasDoPeriodo({ clienteSlug, dateFrom, dateTo, marketplace = "meli", clienteContaId = null, includeLegacy = false }, db = pool) {
+  const bruto = await getCentralVendasByRange({ clienteSlug, dateFrom, dateTo, marketplace, clienteContaId, includeLegacy }, db);
 
   if (!bruto) {
     return {

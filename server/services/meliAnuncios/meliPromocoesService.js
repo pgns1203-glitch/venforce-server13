@@ -83,7 +83,25 @@ function normalizarPromocao(promo, index, promotionIdAtivo = null) {
     const p = fin(promo && promo.price);
     precoFinal = p != null && p > 0 ? p : null;
   } else if (status === "candidate") {
-    precoFinal = fin(promo && promo.suggested_discounted_price);
+    const sugerido = fin(promo && promo.suggested_discounted_price);
+    if (sugerido != null) {
+      precoFinal = sugerido;
+    } else {
+      // Campanhas cofinanciadas automáticas (SMART, PRICE_MATCHING) nunca
+      // enviam suggested_discounted_price em candidate — só original_price +
+      // meli_percentage (a mesma dupla que já alimenta subsidioMl abaixo).
+      // Caso real: "Impulsione suas vendas" (SMART, item MLB4147165927)
+      // aparecia com subsidioMl preenchido mas precoFinal/voceRecebe vazios.
+      // Reaproveita a MESMA fórmula do subsidioMl (nunca uma heurística
+      // nova) só como fallback — suggested_discounted_price do ML, quando
+      // vier, sempre tem prioridade. Continua uma simulação local
+      // (editavelPrecoFinal), nunca escreve no ML nem no motor de margem.
+      const meliPercentageCandidata = fin(promo && promo.meli_percentage);
+      precoFinal =
+        precoOriginal != null && meliPercentageCandidata != null
+          ? round2(precoOriginal * (1 - meliPercentageCandidata / 100))
+          : null;
+    }
   }
 
   const descontoReais =

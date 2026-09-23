@@ -1043,6 +1043,69 @@ async function run() {
     );
     ok("fim a fim: fallback por preço corrige statusExibicao de SELLER_CAMPAIGN real, sem tocar escrita/motor de margem");
   });
+
+  // ── precoFinal de candidatas SMART/PRICE_MATCHING sem suggested_discounted_
+  // price (auditoria: "Impulsione suas vendas", SMART, item MLB4147165927 —
+  // essas campanhas cofinanciadas automáticas nunca enviam
+  // suggested_discounted_price em candidate, só original_price+meli_percentage,
+  // que já são a fonte do subsidioMl. precoFinal ficava null → "Preço final"
+  // e "Você recebe" vazios, mesmo com subsidioMl preenchido). Fallback usa a
+  // MESMA fórmula já validada do subsidioMl, só quando suggested_discounted_
+  // price não vier — nunca sobrepõe o valor do ML quando ele existe.
+
+  // 38. SMART candidate sem suggested_discounted_price: precoFinal derivado
+  //     de original_price*(1-meli_percentage/100).
+  {
+    const linha = promocoesService.normalizarPromocao(
+      { type: "SMART", status: "candidate", original_price: 100, meli_percentage: 8 }, 0
+    );
+    assert.strictEqual(linha.precoFinal, 92, "sem suggested_discounted_price, cai para 100*(1-8/100)=92");
+    assert.strictEqual(linha.subsidioMl, 8, "subsidioMl continua pela mesma fórmula, sem relação com o cálculo novo");
+  }
+  ok("precoFinal candidate: SMART sem suggested_discounted_price deriva do mesmo par original_price/meli_percentage do subsidioMl");
+
+  // 39. PRICE_MATCHING candidate segue a mesma regra.
+  {
+    const linha = promocoesService.normalizarPromocao(
+      { type: "PRICE_MATCHING", status: "candidate", original_price: 100, meli_percentage: 1.3 }, 0
+    );
+    assert.strictEqual(linha.precoFinal, 98.7, "sem suggested_discounted_price, cai para 100*(1-1.3/100)=98.7");
+  }
+  ok("precoFinal candidate: PRICE_MATCHING segue a mesma regra de fallback do SMART");
+
+  // 40. suggested_discounted_price tem prioridade sobre o cálculo — nunca
+  //     sobrepõe o valor que o próprio ML mandou.
+  {
+    const linha = promocoesService.normalizarPromocao(
+      {
+        type: "SMART", status: "candidate", original_price: 100, meli_percentage: 8,
+        suggested_discounted_price: 95,
+      },
+      0
+    );
+    assert.strictEqual(linha.precoFinal, 95, "suggested_discounted_price do ML (95) vence o cálculo derivado (que daria 92)");
+  }
+  ok("precoFinal candidate: suggested_discounted_price do ML tem prioridade sobre o cálculo derivado");
+
+  // 41. candidate sem meli_percentage (e sem suggested_discounted_price)
+  //     continua sem precoFinal — nunca inventa desconto sem nenhum dado.
+  {
+    const linha = promocoesService.normalizarPromocao(
+      { type: "SMART", status: "candidate", original_price: 100 }, 0
+    );
+    assert.strictEqual(linha.precoFinal, null, "sem meli_percentage nem suggested_discounted_price, precoFinal continua null");
+  }
+  ok("precoFinal candidate: sem meli_percentage, continua null — nunca inventa desconto");
+
+  // 42. started continua usando price existente — fallback é exclusivo de
+  //     candidate, não pode mudar o caminho já validado das ativas.
+  {
+    const linha = promocoesService.normalizarPromocao(
+      { type: "SMART", status: "started", price: 82, original_price: 100, meli_percentage: 8 }, 0
+    );
+    assert.strictEqual(linha.precoFinal, 82, "started continua usando price bruto do ML, nunca o cálculo derivado (que daria 92)");
+  }
+  ok("precoFinal: started continua inteiramente pelo caminho antigo (price bruto), fallback não se aplica");
 }
 
 run()

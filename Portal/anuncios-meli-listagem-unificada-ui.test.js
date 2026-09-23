@@ -1131,15 +1131,15 @@ async function run() {
         `a coluna Estoque do MLB não cai embaixo da coluna Estoque da lista (${g.xEstoqueFilho} vs ${g.xEstoqueMae})`);
       assert.strictEqual(g.xEstoqueMae, g.xEstoqueCab,
         `a coluna Estoque não cai embaixo do rótulo ESTOQUE (${g.xEstoqueMae} vs ${g.xEstoqueCab})`);
-      // Métricas últ. 7 dias + Margem são 2 colunas NOVAS (grade 8 -> 10): a
-      // grade tem de ter exatamente 10 faixas, e as duas novas colunas
+      // Métricas últ. 7 dias + Margem + Faturamento são 3 colunas NOVAS (grade
+      // 8 -> 11): a grade tem de ter exatamente 11 faixas, e as três colunas
       // precisam alinhar entre cabeçalho/mãe/filho tanto quanto Estoque já
       // alinha — senão a expansão desalinharia bem no ponto que se corrigiu.
       const largurasCab = g.cab.cols.split(" ").filter(Boolean);
-      assert.strictEqual(largurasCab.length, 10, `a grade precisa ter 10 colunas: ${g.cab.cols}`);
+      assert.strictEqual(largurasCab.length, 11, `a grade precisa ter 11 colunas: ${g.cab.cols}`);
     });
 
-    await check("8c — Métricas últ. 7 dias e Margem alinham entre cabeçalho, mãe e filho", async () => {
+    await check("8c — Faturamento, Métricas últ. 7 dias e Margem alinham entre cabeçalho, mãe e filho", async () => {
       const x = await cdp.evaluate(`(function(){
         var cab = document.querySelector('.am-listagem__head');
         var mae = document.querySelector('.am-row[data-item]');
@@ -1147,9 +1147,12 @@ async function run() {
         var col = function(e, sel, n){ var c = e.querySelectorAll(sel)[n];
           return c ? Math.round(c.getBoundingClientRect().left) : null; };
         return {
-          metricasCab: col(cab, 'span', 6), metricasMae: col(mae, '.am-metricas7d', 0), metricasFilho: col(filho, '.am-metricas7d', 0),
-          margemCab: col(cab, 'span', 7), margemMae: col(mae, '.am-margem', 0), margemFilho: col(filho, '.am-margem', 0),
+          faturamentoCab: col(cab, 'span', 6), faturamentoMae: col(mae, '.am-faturamento', 0), faturamentoFilho: col(filho, '.am-faturamento', 0),
+          metricasCab: col(cab, 'span', 7), metricasMae: col(mae, '.am-metricas7d', 0), metricasFilho: col(filho, '.am-metricas7d', 0),
+          margemCab: col(cab, 'span', 8), margemMae: col(mae, '.am-margem', 0), margemFilho: col(filho, '.am-margem', 0),
         }; })()`);
+      assert.strictEqual(x.faturamentoMae, x.faturamentoCab, "coluna Faturamento não cai sob o rótulo do cabeçalho");
+      assert.strictEqual(x.faturamentoFilho, x.faturamentoMae, "coluna Faturamento do MLB não alinha com a linha-mãe");
       assert.strictEqual(x.metricasMae, x.metricasCab, "coluna Métricas últ. 7 dias não cai sob o rótulo do cabeçalho");
       assert.strictEqual(x.metricasFilho, x.metricasMae, "coluna Métricas últ. 7 dias do MLB não alinha com a linha-mãe");
       assert.strictEqual(x.margemMae, x.margemCab, "coluna Margem não cai sob o rótulo do cabeçalho");
@@ -2536,6 +2539,156 @@ async function run() {
 
       assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-2")),
         "curvaAbc.porFamilia já vem agregado do backend — família FECHADA nunca precisa do painel/detalhe para ordenar");
+      performanceHandler = null;
+    });
+
+    /* ── 39e-h: camada visual das métricas de performance ───────────────── */
+    // Ver auditoria "Ajuste visual — métricas de performance na lista de
+    // anúncios ML". Toda métrica usada para ordenar precisa estar visível na
+    // linha: % faturamento ganha coluna própria, Curva ABC vira tag/badge
+    // junto das existentes (Full/Sem SKU/...). Nenhuma regra de cálculo muda
+    // — só consome os campos que o backend já entrega.
+
+    await check("39e — ordenar por % faturamento (MLB individual): o percentual usado para ordenar aparece na coluna Faturamento", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
+        faturamento: {
+          periodoDias: 30,
+          porItem: { "MLB-SEMUP": 12.4, "MLB-SEMVAR": 3.1 },
+          porFamilia: { "FAM-1": 0, "FAM-2": 0 },
+        },
+        unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+      });
+
+      const antes = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento').textContent.trim()`);
+      assert.strictEqual(antes, "—", "antes de ordenar por faturamento a coluna não pode inventar um valor");
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'faturamento_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-item') === 'MLB-SEMUP';
+      })()`, "MLB-SEMUP (12,4%) deveria ir para o topo ao ordenar por % faturamento decrescente");
+
+      const cel = await cdp.evaluate(`(function(){
+        var c = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento');
+        return { texto: c.textContent.trim(), valor: (c.querySelector('.am-faturamento__valor') || {}).textContent || null,
+          legenda: (c.querySelector('.am-faturamento__legenda') || {}).textContent || null }; })()`);
+      assert.strictEqual(cel.valor, "12,4%", `a coluna Faturamento tem de mostrar o MESMO valor usado para ordenar: ${cel.texto}`);
+      assert.strictEqual(cel.legenda, "do faturamento");
+      performanceHandler = null;
+    });
+
+    await check("39f — ordenar por % faturamento (família agregada, NÃO expandida): a linha da família mostra o percentual CONSOLIDADO, não o de um filho", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
+        faturamento: {
+          periodoDias: 30,
+          porItem: { "MLB-SEMUP": 1, "MLB-SEMVAR": 1 },
+          porFamilia: { "FAM-1": 47.5, "FAM-2": 0.2 },
+        },
+        unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'faturamento_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-familia') === 'FAM-1';
+      })()`, "FAM-1 (47,5% consolidado) deveria ir para o topo");
+
+      const texto = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-faturamento .am-faturamento__valor').textContent.trim()`);
+      assert.strictEqual(texto, "47,5%", "a linha do agrupador tem de mostrar o percentual CONSOLIDADO da família (porFamilia), nunca o de um filho isolado");
+      assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
+        "% faturamento já vem agregado do backend — mostrar a coluna não pode buscar os filhos");
+      performanceHandler = null;
+    });
+
+    await check("39g — ordenar por Curva ABC (MLB individual): a classe usada para ordenar aparece como tag junto das demais (Full/Sem SKU/...)", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
+        curvaAbc: { periodoDias: 30, porItem: { "MLB-SEMUP": "A", "MLB-SEMVAR": "C" }, porFamilia: { "FAM-1": "C", "FAM-2": "C" } },
+        faturamento: null, unidadesVendidas: null, margemPorFamilia: null,
+      });
+
+      const antes = await cdp.evaluate(`(function(){
+        var b = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__badges');
+        return /ABC/.test(b.textContent); })()`);
+      assert.strictEqual(antes, false, "antes de ordenar por Curva ABC não pode existir tag ABC nenhuma");
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'curvaAbc_asc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-item') === 'MLB-SEMUP';
+      })()`, "MLB-SEMUP (classe A) deveria ir para o topo em Curva ABC A→C");
+
+      const estado = await cdp.evaluate(`(function(){
+        var badges = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__badges');
+        var tag = Array.from(badges.querySelectorAll('.vf-tag')).find(function(t){ return /ABC/.test(t.textContent); });
+        return {
+          temTagAbc: Boolean(tag),
+          textoTagAbc: tag ? tag.textContent.trim() : null,
+          mesmoComponente: tag ? tag.classList.contains('vf-tag') : false,
+          outrosBadgesAindaExistem: badges.querySelectorAll('.vf-tag').length > 1,
+        }; })()`);
+      assert.strictEqual(estado.temTagAbc, true, "a classe usada para ordenar tem de aparecer como tag na linha");
+      assert.strictEqual(estado.textoTagAbc, "ABC A", `a tag tem de mostrar a MESMA classe usada para ordenar: ${estado.textoTagAbc}`);
+      assert.strictEqual(estado.mesmoComponente, true, "a tag ABC tem de usar o MESMO componente .vf-tag das demais — nenhum padrão novo de badge");
+      assert.strictEqual(estado.outrosBadgesAindaExistem, true, "a tag ABC não pode substituir/esconder os badges existentes (Full/Sem SKU/...)");
+      performanceHandler = null;
+    });
+
+    await check("39h — ordenar por Curva ABC (família FECHADA — FAM-2): a linha da família mostra a tag da classe CONSOLIDADA, sem depender do painel/DOM", async () => {
+      assert.strictEqual(
+        await cdp.evaluate(`(function(){ var p = document.querySelector('${painelFam("FAM-2")}'); return !p || p.hidden; })()`),
+        true, "pré-condição do teste: o painel de FAM-2 precisa continuar FECHADO"
+      );
+
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
+        curvaAbc: { periodoDias: 30, porItem: {}, porFamilia: { "FAM-1": "C", "FAM-2": "A" } },
+        faturamento: null, unidadesVendidas: null, margemPorFamilia: null,
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'curvaAbc_asc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-familia') === 'FAM-2';
+      })()`, "FAM-2 (classe A, fechada) deveria ir para o topo em Curva ABC A→C");
+
+      const texto = await cdp.evaluate(`(function(){
+        var badges = document.querySelector('${linhaFam("FAM-2")} .am-row__badges');
+        var tag = badges && Array.from(badges.querySelectorAll('.vf-tag')).find(function(t){ return /ABC/.test(t.textContent); });
+        return tag ? tag.textContent.trim() : null; })()`);
+      assert.strictEqual(texto, "ABC A", "a linha da família fechada tem de mostrar a classe CONSOLIDADA (porFamilia), sem abrir o painel");
+      assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-2")),
+        "curvaAbc.porFamilia já vem agregado do backend — mostrar a tag não pode buscar o detalhe/filhos");
       performanceHandler = null;
     });
 

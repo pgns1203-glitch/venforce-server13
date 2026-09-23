@@ -3695,8 +3695,9 @@
     var itemId = cel.getAttribute("data-margem-item");
     // Só existe em células da tabela "Promoções disponíveis" (ver
     // promocaoLinhaHtml) — null em todas as outras (composição). Marca QUAL
-    // linha passa a mostrar "Você recebe" quando o campo é "preco".
-    var promoId = cel.getAttribute("data-promo-id");
+    // linha passa a mostrar "Você recebe" quando o campo é "preco". Chave
+    // composta id::tipo (ver promocaoChave) — nunca só o id.
+    var promoChave = cel.getAttribute("data-promo-key");
     var anterior = cel.getAttribute("data-margem-valor") || "";
     var texto = String(bruto == null ? "" : bruto).trim();
 
@@ -3705,7 +3706,7 @@
     if (texto === "") {
       // Campo esvaziado: o override some — volta a valer o número real do Motor.
       DET.simulacaoMargem[campo] = null;
-      if (promoId != null && campo === "preco") DET.promoLinhaSelecionada = null;
+      if (promoChave != null && campo === "preco") DET.promoLinhaSelecionada = null;
       pintarMargemCampoLeitura(cel);
       dispararSimulacaoMargem(itemId);
       return;
@@ -3719,7 +3720,7 @@
     }
 
     DET.simulacaoMargem[campo] = Math.round((n + Number.EPSILON) * 100) / 100;
-    if (promoId != null && campo === "preco") DET.promoLinhaSelecionada = promoId;
+    if (promoChave != null && campo === "preco") DET.promoLinhaSelecionada = promoChave;
     pintarMargemCampoLeitura(cel);
     dispararSimulacaoMargem(itemId);
   }
@@ -3747,8 +3748,11 @@
     // Simulação manual nascida de uma linha de promoção: soma o mesmo
     // retorno ML (subsidioMl) já mostrado na coluna "Subsídio ML" dessa
     // linha, pelo mesmo campo `rebate` do Motor — nunca uma conta à parte.
+    // promocaoPorChave (id+tipo) — nunca só o id, pra nunca somar o
+    // subsidioMl de uma promoção DIFERENTE que coincida de id (ver
+    // promocaoChave).
     if (DET.promoLinhaSelecionada != null) {
-      var promoAtual = promocaoPorId(itemId, DET.promoLinhaSelecionada);
+      var promoAtual = promocaoPorChave(itemId, DET.promoLinhaSelecionada);
       if (promoAtual && promoAtual.subsidioMl != null) corpo.subsidioMl = promoAtual.subsidioMl;
     }
 
@@ -3971,11 +3975,24 @@
     return p;
   }
 
-  function promocaoPorId(itemId, promoId) {
+  // Identidade de UMA promoção nesta tela: id sozinho NÃO é garantido único
+  // pelo Mercado Livre (o id só é único dentro do namespace de cada TIPO de
+  // campanha — duas promoções de tipos diferentes podem coincidir de id por
+  // acaso). O backend já deduplica por id+tipo (meliPromocoesService.
+  // deduplicarPromocoes) — esta chave espelha a MESMA identidade no
+  // frontend, pra nunca resolver o clique numa linha errada, nunca somar o
+  // subsidioMl de uma promoção diferente na simulação de margem, e nunca
+  // disparar o aviso de rebate por engano (ver auditoria: bug real com duas
+  // promoções de tipos diferentes compartilhando o mesmo id).
+  function promocaoChave(p) {
+    return p.id + "::" + p.tipo;
+  }
+
+  function promocaoPorChave(itemId, chave) {
     var cache = AM.state.promocoesCache[itemId];
     if (!cache || !cache.promocoes) return null;
     for (var i = 0; i < cache.promocoes.length; i++) {
-      if (String(cache.promocoes[i].id) === String(promoId)) return cache.promocoes[i];
+      if (promocaoChave(cache.promocoes[i]) === chave) return cache.promocoes[i];
     }
     return null;
   }
@@ -4052,7 +4069,7 @@
   // inventado, ver meliPromocoesService).
   function precoFinalExibidoDaLinha(p, itemId) {
     var sim = DET && DET.itemId === itemId ? DET.simulacaoMargem : null;
-    if (sim && DET.promoLinhaSelecionada === p.id && sim.preco != null) return sim.preco;
+    if (sim && DET.promoLinhaSelecionada === promocaoChave(p) && sim.preco != null) return sim.preco;
     return p.precoFinal;
   }
 
@@ -4062,7 +4079,7 @@
   // simulação ativa, ela sempre tem prioridade sobre o valor auto-preenchido.
   function promocaoVoceRecebeHtml(p) {
     var sim = DET && DET.simulacaoMargem;
-    var selecionada = !!(sim && DET.promoLinhaSelecionada === p.id && sim.preco != null);
+    var selecionada = !!(sim && DET.promoLinhaSelecionada === promocaoChave(p) && sim.preco != null);
     if (selecionada) {
       if (!sim.resultado) return '<span class="am-promo__recebe am-promo__recebe--vazio">Simulando…</span>';
       var r = sim.resultado;
@@ -4098,7 +4115,7 @@
   // "Confirmar alteração".
   function promocaoJaSimulada(p, itemId) {
     var sim = DET && DET.itemId === itemId ? DET.simulacaoMargem : null;
-    return !!(sim && DET.promoLinhaSelecionada === p.id && sim.preco != null);
+    return !!(sim && DET.promoLinhaSelecionada === promocaoChave(p) && sim.preco != null);
   }
 
   // Rótulo por STATUS BRUTO do ML e por TIPO (decisão de produto revisada —
@@ -4137,15 +4154,16 @@
 
   function promocaoLinhaHtml(p, itemId, moeda) {
     var precoExibido = precoFinalExibidoDaLinha(p, itemId);
+    var chave = promocaoChave(p);
     var precoCel = '<span class="am-margem-comp__valor am-margem-edit am-promo__preco" ' +
       'data-margem-item="' + escapeAttr(itemId) + '" data-margem-campo="preco" ' +
-      'data-promo-id="' + escapeAttr(p.id) + '" ' +
+      'data-promo-key="' + escapeAttr(chave) + '" ' +
       'data-margem-valor="' + escapeAttr(precoExibido == null ? "" : precoExibido) + '">' +
       botaoMargemEditHtml(formatMoeda(precoExibido, moeda), "Simular — não grava no Mercado Livre nem inscreve na promoção") +
     "</span>";
 
     var periodo = promocaoPeriodoTexto(p);
-    return '<tr class="am-promo__linha" data-promo-id="' + escapeAttr(p.id) + '">' +
+    return '<tr class="am-promo__linha" data-promo-key="' + escapeAttr(chave) + '">' +
       '<td class="am-promo__col-nome">' +
         '<div class="am-promo__nome">' + escapeHtml(p.nome || p.tipoLabel) + "</div>" +
         '<div class="am-promo__meta">' +
@@ -4158,7 +4176,7 @@
       '<td>' + promocaoSubsidioMlHtml(p, moeda) + "</td>" +
       '<td>' + promocaoVoceRecebeHtml(p) + "</td>" +
       '<td><button type="button" class="vf-btn vf-btn--ghost vf-btn--sm am-promo__acao" ' +
-        'data-acao="promo-acao" data-promo-id="' + escapeAttr(p.id) + '">' +
+        'data-acao="promo-acao" data-promo-key="' + escapeAttr(chave) + '">' +
         promocaoTarefaRotulo(p, itemId) + "</button></td>" +
     "</tr>";
   }
@@ -4218,8 +4236,8 @@
       btn.addEventListener("click", function (e) {
         e.stopPropagation();
         if (!DET || DET.itemId !== itemId) return;
-        var promoId = btn.getAttribute("data-promo-id");
-        var linha = promocaoPorId(itemId, promoId);
+        var chave = btn.getAttribute("data-promo-key");
+        var linha = promocaoPorChave(itemId, chave);
         if (!linha) return;
 
         if (promocaoSuportaEscrita(linha) && promocaoPodeEscrever(linha) && promocaoJaSimulada(linha, itemId)) {
@@ -4230,7 +4248,7 @@
         // "Selecionar a promoção" é incondicional (ver instrução de
         // produto); só o "aplicar preço sugerido" depende de o ML ter
         // devolvido um preço utilizável para esta linha.
-        DET.promoLinhaSelecionada = promoId;
+        DET.promoLinhaSelecionada = chave;
 
         if (linha.precoFinal != null) {
           DET.simulacaoMargem.preco = linha.precoFinal;
@@ -4241,7 +4259,7 @@
 
         repintarPromocoesDoItem(itemId);
         var cel = document.querySelector(
-          '#am-det-promo-body [data-promo-id="' + promoId + '"] .am-promo__preco'
+          '#am-det-promo-body [data-promo-key="' + chave + '"] .am-promo__preco'
         );
         if (cel) abrirEditorMargemCampo(cel);
       });

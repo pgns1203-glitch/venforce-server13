@@ -222,6 +222,12 @@ const PROMO_TIPOS_SEM_ESCRITA_JA_PARTICIPADOS = [
   meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
 }, base));
 
+// Identidade de uma linha de promoção na tela — mesma chave de
+// anuncios-meli.js (promocaoChave): id sozinho não é único entre TIPOS
+// diferentes de campanha (ver auditoria de deduplicação no backend), então
+// data-promo-key sempre carrega id+tipo, nunca só o id.
+function chave(p) { return p.id + "::" + p.tipo; }
+
 const SEMENTE = `
   try {
     localStorage.setItem("vf-token", "detalhe-modal-token");
@@ -355,7 +361,7 @@ async function confirmarEdicaoMargem(cdp, campo, valor) {
 }
 
 // Preço da composição: hoje é só mais um campo de simulação
-// ([data-margem-campo="preco"], sem data-promo-id) — usar
+// ([data-margem-campo="preco"], sem data-promo-key) — usar
 // abrirEdicaoMargem/confirmarEdicaoMargem("preco", ...) direto. A escrita
 // real só acontece via "Aplicar preço" + diálogo de confirmação, abaixo.
 async function clicarAplicarPreco(cdp) {
@@ -382,19 +388,20 @@ async function cancelarDialogoEscrita(cdp) {
 }
 
 // Promoções disponíveis: célula "Preço final" reaproveita a MESMA moldura de
-// edição da composição (.am-margem-edit), só que com data-promo-id extra —
+// edição da composição (.am-margem-edit), só que com data-promo-key extra —
 // os helpers abaixo só trocam o seletor, a mecânica é idêntica a
-// abrirEdicaoMargem/confirmarEdicaoMargem.
-async function abrirEdicaoPromoPreco(cdp, promoId) {
-  await clicar(cdp, `.am-promo__linha[data-promo-id="${promoId}"] .am-promo__preco .am-margem-edit__btn`,
-    `botão de editar o preço final da promoção ${promoId} não encontrado`);
-  await waitFor(cdp, `document.querySelector('.am-promo__linha[data-promo-id="${promoId}"] .am-promo__preco .am-margem-edit__input')`,
-    `o input de edição do preço final da promoção ${promoId} não apareceu`);
+// abrirEdicaoMargem/confirmarEdicaoMargem. `promoChave` é sempre "id::tipo"
+// (ver função chave() acima), nunca só o id.
+async function abrirEdicaoPromoPreco(cdp, promoChave) {
+  await clicar(cdp, `.am-promo__linha[data-promo-key="${promoChave}"] .am-promo__preco .am-margem-edit__btn`,
+    `botão de editar o preço final da promoção ${promoChave} não encontrado`);
+  await waitFor(cdp, `document.querySelector('.am-promo__linha[data-promo-key="${promoChave}"] .am-promo__preco .am-margem-edit__input')`,
+    `o input de edição do preço final da promoção ${promoChave} não apareceu`);
 }
 
-async function confirmarEdicaoPromoPreco(cdp, promoId, valor) {
-  await abrirEdicaoPromoPreco(cdp, promoId);
-  await digitarEConfirmar(cdp, `.am-promo__linha[data-promo-id="${promoId}"] .am-promo__preco .am-margem-edit__input`, valor);
+async function confirmarEdicaoPromoPreco(cdp, promoChave, valor) {
+  await abrirEdicaoPromoPreco(cdp, promoChave);
+  await digitarEConfirmar(cdp, `.am-promo__linha[data-promo-key="${promoChave}"] .am-promo__preco .am-margem-edit__input`, valor);
 }
 
 // A tela tem UMA lista: anúncio agrupado e anúncio individual são linhas da
@@ -1817,7 +1824,7 @@ async function run() {
         await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
           "as linhas de promoção não apareceram");
 
-        await confirmarEdicaoPromoPreco(cdp, "P-1", "180");
+        await confirmarEdicaoPromoPreco(cdp, "P-1::DEAL", "180");
 
         for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
         assert.strictEqual(simularMargemChamadas.length, 1, "editar o preço final da promoção precisa chamar POST /simular-margem");
@@ -1825,12 +1832,12 @@ async function run() {
         assert.strictEqual(precoChamadas.length, 0, "editar o preço final da promoção NUNCA pode chamar PATCH /:itemId/preco");
 
         await waitFor(cdp, `(function(){
-          var el = document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__recebe');
+          var el = document.querySelector('.am-promo__linha[data-promo-key="P-1::DEAL"] .am-promo__recebe');
           return el && /R\\$\\s*99,00/.test(el.textContent);
         })()`, "'Você recebe' da linha simulada não apareceu");
 
         const recebeCandidate = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="PD-1"] .am-promo__recebe').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="PD-1::PRICE_DISCOUNT"] .am-promo__recebe').textContent.trim()`
         );
         assert.strictEqual(recebeCandidate, "—", "a linha NÃO selecionada não pode mostrar 'Você recebe' de outra simulação");
       } finally {
@@ -1851,7 +1858,7 @@ async function run() {
         await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
           "as linhas de promoção não apareceram");
 
-        await clicar(cdp, '.am-promo__linha[data-promo-id="PD-1"] [data-acao="promo-acao"]', "botão 'Simular' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="PD-1::PRICE_DISCOUNT"] [data-acao="promo-acao"]', "botão 'Simular' não encontrado");
 
         for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
         assert.strictEqual(simularMargemChamadas.length, 1);
@@ -1860,19 +1867,19 @@ async function run() {
         assert.strictEqual(aplicarPromocaoChamadas.length, 0, "NUNCA pode chamar o endpoint de escrita de promoção");
 
         await waitFor(cdp, `(function(){
-          var el = document.querySelector('.am-promo__linha[data-promo-id="PD-1"] .am-promo__recebe');
+          var el = document.querySelector('.am-promo__linha[data-promo-key="PD-1::PRICE_DISCOUNT"] .am-promo__recebe');
           return el && /R\\$\\s*99,00/.test(el.textContent);
         })()`, "'Você recebe' da linha elegível selecionada não apareceu");
 
         const recebeAtiva = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__recebe').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="P-1::DEAL"] .am-promo__recebe').textContent.trim()`
         );
         assert.strictEqual(recebeAtiva, "—", "selecionar outra linha move o 'Você recebe' — a anterior some");
 
         // Mesmo depois de simulado, PRICE_DISCOUNT continua "Simular" — nunca
         // "Confirmar participação" (fora do escopo de escrita desta v1).
         const acaoDepois = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="PD-1"] [data-acao="promo-acao"]').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="PD-1::PRICE_DISCOUNT"] [data-acao="promo-acao"]').textContent.trim()`
         );
         assert.strictEqual(acaoDepois, "Simular", "tipo fora do escopo de escrita não pode virar 'Confirmar participação' mesmo depois de simulado");
       } finally {
@@ -1890,9 +1897,9 @@ async function run() {
         await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
           "as linhas de promoção não apareceram");
 
-        await confirmarEdicaoPromoPreco(cdp, "P-1", "180");
+        await confirmarEdicaoPromoPreco(cdp, "P-1::DEAL", "180");
         await waitFor(cdp, `(function(){
-          var el = document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__preco');
+          var el = document.querySelector('.am-promo__linha[data-promo-key="P-1::DEAL"] .am-promo__preco');
           return el && el.textContent.trim() === 'R$ 180,00';
         })()`, "o preço final simulado não foi exibido");
 
@@ -1902,12 +1909,12 @@ async function run() {
         await clicar(cdp, '[data-acao="restaurar-simulacao-margem"]');
 
         await waitFor(cdp, `(function(){
-          var el = document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__preco');
+          var el = document.querySelector('.am-promo__linha[data-promo-key="P-1::DEAL"] .am-promo__preco');
           return el && el.textContent.trim() === 'R$ 199,90';
         })()`, "restaurar não devolveu o preço final ao valor do Mercado Livre");
 
         const recebe = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="P-1"] .am-promo__recebe').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="P-1::DEAL"] .am-promo__recebe').textContent.trim()`
         );
         assert.strictEqual(recebe, "—", "restaurar precisa limpar a seleção — 'Você recebe' some");
       } finally {
@@ -1949,21 +1956,21 @@ async function run() {
           "a linha da promoção DEAL candidate não apareceu");
 
         const acaoInicial = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]').textContent.trim()`
         );
         assert.strictEqual(acaoInicial, "Participar");
 
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]', "botão 'Participar' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]', "botão 'Participar' não encontrado");
         for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
         assert.strictEqual(simularMargemChamadas.length, 1, "'Participar' precisa simular antes de qualquer escrita");
         assert.strictEqual(aplicarPromocaoChamadas.length, 0, "o primeiro clique NUNCA pode escrever — só seleciona e simula");
 
         await waitFor(cdp, `(function(){
-          var b = document.querySelector('.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]');
+          var b = document.querySelector('.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]');
           return b && b.textContent.trim() === "Confirmar participação";
         })()`, "o botão não virou 'Confirmar participação' depois de simular");
 
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]', "botão 'Confirmar participação' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]', "botão 'Confirmar participação' não encontrado");
         const linhasDialogo = await lerLinhasDialogoEscrita(cdp);
         assert.strictEqual(linhasDialogo.find((l) => l.rotulo === "Promoção").valor, "Semana do Cliente");
         assert.strictEqual(linhasDialogo.find((l) => l.rotulo === "Preço atual").valor, "R$ 249,90");
@@ -1998,13 +2005,13 @@ async function run() {
         await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1",
           "a linha da promoção DEAL ativa não apareceu");
 
-        await confirmarEdicaoPromoPreco(cdp, "P-1", "180");
+        await confirmarEdicaoPromoPreco(cdp, "P-1::DEAL", "180");
         await waitFor(cdp, `(function(){
-          var b = document.querySelector('.am-promo__linha[data-promo-id="P-1"] [data-acao="promo-acao"]');
+          var b = document.querySelector('.am-promo__linha[data-promo-key="P-1::DEAL"] [data-acao="promo-acao"]');
           return b && b.textContent.trim() === "Confirmar alteração";
         })()`, "o botão não virou 'Confirmar alteração' depois de editar o preço final");
 
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-1"] [data-acao="promo-acao"]', "botão 'Confirmar alteração' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-1::DEAL"] [data-acao="promo-acao"]', "botão 'Confirmar alteração' não encontrado");
         const linhasDialogo = await lerLinhasDialogoEscrita(cdp);
         assert.strictEqual(linhasDialogo.find((l) => l.rotulo === "Novo preço").valor, "R$ 180,00");
 
@@ -2029,12 +2036,12 @@ async function run() {
         await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1",
           "a linha da promoção DEAL candidate não apareceu");
 
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]', "botão 'Participar' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]', "botão 'Participar' não encontrado");
         await waitFor(cdp, `(function(){
-          var b = document.querySelector('.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]');
+          var b = document.querySelector('.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]');
           return b && b.textContent.trim() === "Confirmar participação";
         })()`, "não virou 'Confirmar participação'");
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]', "botão 'Confirmar participação' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]', "botão 'Confirmar participação' não encontrado");
         await lerLinhasDialogoEscrita(cdp);
 
         await cancelarDialogoEscrita(cdp);
@@ -2055,12 +2062,12 @@ async function run() {
         await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1",
           "a linha da promoção DEAL candidate não apareceu");
 
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]', "botão 'Participar' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]', "botão 'Participar' não encontrado");
         await waitFor(cdp, `(function(){
-          var b = document.querySelector('.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]');
+          var b = document.querySelector('.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]');
           return b && b.textContent.trim() === "Confirmar participação";
         })()`, "não virou 'Confirmar participação'");
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-2"] [data-acao="promo-acao"]', "botão 'Confirmar participação' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-2::DEAL"] [data-acao="promo-acao"]', "botão 'Confirmar participação' não encontrado");
         await lerLinhasDialogoEscrita(cdp);
 
         aplicarPromocaoResultado = {
@@ -2093,17 +2100,17 @@ async function run() {
           "a linha da promoção DEAL ativa com rebate não apareceu");
 
         const acaoInicial = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="P-1"] [data-acao="promo-acao"]').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="P-1::DEAL"] [data-acao="promo-acao"]').textContent.trim()`
         );
         assert.strictEqual(acaoInicial, "Alterar", "com subsidioMl o botão continua mostrando 'Alterar' normalmente");
 
-        await confirmarEdicaoPromoPreco(cdp, "P-1", "180");
+        await confirmarEdicaoPromoPreco(cdp, "P-1::DEAL", "180");
         await waitFor(cdp, `(function(){
-          var b = document.querySelector('.am-promo__linha[data-promo-id="P-1"] [data-acao="promo-acao"]');
+          var b = document.querySelector('.am-promo__linha[data-promo-key="P-1::DEAL"] [data-acao="promo-acao"]');
           return b && b.textContent.trim() === "Confirmar alteração";
         })()`, "o botão não virou 'Confirmar alteração' depois de editar o preço final");
 
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-1"] [data-acao="promo-acao"]', "botão 'Confirmar alteração' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-1::DEAL"] [data-acao="promo-acao"]', "botão 'Confirmar alteração' não encontrado");
         await waitFor(cdp, "document.querySelector('.vf-toast.is-warning')", "o aviso de rebate não apareceu");
         const aviso = await cdp.evaluate("document.querySelector('.vf-toast.is-warning').innerText");
         assert.ok(/participação do Mercado Livre \(rebate\)/.test(aviso), `aviso inesperado: ${aviso}`);
@@ -2130,26 +2137,26 @@ async function run() {
           "a linha PROGRAMADA não apareceu");
 
         const acaoProgramada = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="P-4"] [data-acao="promo-acao"]').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="P-4::DEAL"] [data-acao="promo-acao"]').textContent.trim()`
         );
         assert.strictEqual(acaoProgramada, "Simular", "pending+PROGRAMADA não pode mostrar 'Alterar' — ainda não começou");
 
         // Clicar simula localmente (comportamento normal de qualquer linha
         // sem escrita), mas o botão TEM de continuar "Simular" depois —
         // nunca pode virar "Confirmar alteração" para uma PROGRAMADA.
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-4"] [data-acao="promo-acao"]', "botão da linha PROGRAMADA não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-4::DEAL"] [data-acao="promo-acao"]', "botão da linha PROGRAMADA não encontrado");
         for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
         assert.strictEqual(simularMargemChamadas.length, 1, "clicar ainda pode simular localmente (não escreve nada)");
 
         const acaoDepoisDoClique = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="P-4"] [data-acao="promo-acao"]').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="P-4::DEAL"] [data-acao="promo-acao"]').textContent.trim()`
         );
         assert.strictEqual(acaoDepoisDoClique, "Simular", "depois de simular, PROGRAMADA continua 'Simular' — nunca 'Confirmar alteração'");
 
         // Segundo clique: se o gate de clique estivesse ausente, isto abriria
         // o diálogo de confirmação. Tem de continuar sem abrir nada e sem
         // jamais chamar o endpoint de escrita.
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-4"] [data-acao="promo-acao"]', "botão da linha PROGRAMADA não encontrado (2º clique)");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-4::DEAL"] [data-acao="promo-acao"]', "botão da linha PROGRAMADA não encontrado (2º clique)");
         await sleep(200);
         assert.strictEqual(await cdp.evaluate("!!document.querySelector('.am-confirm-overlay')"), false,
           "PROGRAMADA jamais pode abrir o diálogo de confirmação de escrita");
@@ -2172,18 +2179,18 @@ async function run() {
           "a linha NÃO APLICADA não apareceu");
 
         const acaoInicial = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="P-3::DEAL"] [data-acao="promo-acao"]').textContent.trim()`
         );
         assert.strictEqual(acaoInicial, "Alterar",
           "started+NÃO APLICADA já tem participação do vendedor — precisa mostrar 'Alterar' (regra revisada)");
 
-        await confirmarEdicaoPromoPreco(cdp, "P-3", "180");
+        await confirmarEdicaoPromoPreco(cdp, "P-3::DEAL", "180");
         await waitFor(cdp, `(function(){
-          var b = document.querySelector('.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]');
+          var b = document.querySelector('.am-promo__linha[data-promo-key="P-3::DEAL"] [data-acao="promo-acao"]');
           return b && b.textContent.trim() === "Confirmar alteração";
         })()`, "o botão não virou 'Confirmar alteração' depois de editar o preço final");
 
-        await clicar(cdp, '.am-promo__linha[data-promo-id="P-3"] [data-acao="promo-acao"]', "botão 'Confirmar alteração' não encontrado");
+        await clicar(cdp, '.am-promo__linha[data-promo-key="P-3::DEAL"] [data-acao="promo-acao"]', "botão 'Confirmar alteração' não encontrado");
         const linhasDialogo = await lerLinhasDialogoEscrita(cdp);
         assert.strictEqual(linhasDialogo.find((l) => l.rotulo === "Novo preço").valor, "R$ 180,00");
 
@@ -2210,7 +2217,7 @@ async function run() {
 
         for (const p of PROMO_TIPOS_SEM_ESCRITA_JA_PARTICIPADOS) {
           const acao = await cdp.evaluate(
-            `document.querySelector('.am-promo__linha[data-promo-id="${p.id}"] [data-acao="promo-acao"]').textContent.trim()`
+            `document.querySelector('.am-promo__linha[data-promo-key="${chave(p)}"] [data-acao="promo-acao"]').textContent.trim()`
           );
           assert.strictEqual(acao, "Simular",
             `${p.tipo} (started/ATIVA, já participada) não pode mostrar 'Alterar' — fora do escopo de escrita V1`);
@@ -2233,22 +2240,99 @@ async function run() {
         await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1",
           "a linha SMART não apareceu");
 
-        await clicar(cdp, `.am-promo__linha[data-promo-id="${smart.id}"] [data-acao="promo-acao"]`,
+        await clicar(cdp, `.am-promo__linha[data-promo-key="${chave(smart)}"] [data-acao="promo-acao"]`,
           "botão da linha SMART não encontrado");
         for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
         assert.strictEqual(simularMargemChamadas.length, 1, "clicar ainda pode simular localmente (não escreve nada)");
 
         const acaoDepoisDoClique = await cdp.evaluate(
-          `document.querySelector('.am-promo__linha[data-promo-id="${smart.id}"] [data-acao="promo-acao"]').textContent.trim()`
+          `document.querySelector('.am-promo__linha[data-promo-key="${chave(smart)}"] [data-acao="promo-acao"]').textContent.trim()`
         );
         assert.strictEqual(acaoDepoisDoClique, "Simular", "depois de simular, SMART continua 'Simular' — nunca 'Confirmar alteração'");
 
-        await clicar(cdp, `.am-promo__linha[data-promo-id="${smart.id}"] [data-acao="promo-acao"]`,
+        await clicar(cdp, `.am-promo__linha[data-promo-key="${chave(smart)}"] [data-acao="promo-acao"]`,
           "botão da linha SMART não encontrado (2º clique)");
         await sleep(200);
         assert.strictEqual(await cdp.evaluate("!!document.querySelector('.am-confirm-overlay')"), false,
           "SMART jamais pode abrir o diálogo de confirmação de escrita");
         assert.strictEqual(aplicarPromocaoChamadas.length, 0, "SMART jamais pode chamar o endpoint de escrita de promoção");
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    // Colisão de id entre TIPOS diferentes (auditoria: o id do Mercado Livre só
+    // é único dentro do namespace de cada tipo de campanha — duas promoções de
+    // tipos diferentes podem coincidir de id por acaso). Antes da correção,
+    // data-promo-id/promocaoPorId identificavam a linha só pelo id, e o clique
+    // numa linha podia resolver os dados da OUTRA (bug real relatado: "Vendex -
+    // Setembro" mostrava Subsídio ML "—" mas o clique em "Alterar" abria o
+    // aviso de rebate da outra promoção com o mesmo id). data-promo-key/
+    // promocaoPorChave (id+tipo) tornam isso impossível.
+    const PROMO_COLISAO_SELLER_CAMPAIGN = {
+      id: "X-1", tipo: "SELLER_CAMPAIGN", tipoLabel: "Campanha própria", nome: "Colisão SC",
+      status: "started", statusLabel: "ATIVA", statusExibicao: "NÃO APLICADA", inicio: null, fim: null,
+      precoOriginal: 249.9, precoFinal: 170, descontoReais: 79.9, descontoPercentual: 32,
+      meliPercentage: 5, sellerPercentage: null, subsidioMl: 12.5, editavelPrecoFinal: true,
+    };
+    const PROMO_COLISAO_DEAL = {
+      id: "X-1", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "Colisão DEAL",
+      status: "started", statusLabel: "ATIVA", statusExibicao: "NÃO APLICADA", inicio: null, fim: null,
+      precoOriginal: 249.9, precoFinal: 190, descontoReais: 59.9, descontoPercentual: 24,
+      meliPercentage: null, sellerPercentage: null, subsidioMl: null, editavelPrecoFinal: true,
+    };
+
+    await check("43 — id colidindo entre tipos diferentes: cada linha resolve os PRÓPRIOS dados (id+tipo), nunca os da outra promoção com o mesmo id", async () => {
+      // SELLER_CAMPAIGN (com rebate) vem PRIMEIRO de propósito — sob a
+      // identificação antiga (só id), promocaoPorId("X-1") teria resolvido
+      // esta linha mesmo clicando na linha DEAL (sem rebate) abaixo.
+      promocoesRespostaPadrao = [PROMO_COLISAO_SELLER_CAMPAIGN, PROMO_COLISAO_DEAL];
+      try {
+        pedidos.length = 0;
+        simularMargemChamadas.length = 0;
+        aplicarPromocaoChamadas.length = 0;
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await esperarLista(cdp);
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2",
+          "as duas linhas com id colidindo não apareceram");
+
+        assert.ok(await cdp.evaluate(`!!document.querySelector('.am-promo__linha[data-promo-key="${chave(PROMO_COLISAO_SELLER_CAMPAIGN)}"]')`),
+          "a linha SELLER_CAMPAIGN precisa ter sua própria chave (id+tipo)");
+        assert.ok(await cdp.evaluate(`!!document.querySelector('.am-promo__linha[data-promo-key="${chave(PROMO_COLISAO_DEAL)}"]')`),
+          "a linha DEAL precisa ter sua própria chave (id+tipo), distinta da SELLER_CAMPAIGN mesmo com o id igual");
+
+        // Clicar na linha DEAL (sem rebate) precisa selecionar/simular com os
+        // dados DELA — nunca com o precoFinal/subsidioMl da SELLER_CAMPAIGN.
+        await clicar(cdp, `.am-promo__linha[data-promo-key="${chave(PROMO_COLISAO_DEAL)}"] [data-acao="promo-acao"]`,
+          "botão 'Alterar' da linha DEAL não encontrado");
+        for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
+        assert.strictEqual(simularMargemChamadas.length, 1);
+        assert.strictEqual(simularMargemChamadas[0].body.preco, 190, "precisa simular com o precoFinal da linha DEAL (190), nunca o da SELLER_CAMPAIGN (170)");
+        assert.strictEqual(simularMargemChamadas[0].body.subsidioMl, undefined,
+          "a linha DEAL não tem subsidioMl — nunca pode herdar o rebate (12.5) da SELLER_CAMPAIGN só por coincidência de id");
+
+        await waitFor(cdp, `(function(){
+          var b = document.querySelector('.am-promo__linha[data-promo-key="${chave(PROMO_COLISAO_DEAL)}"] [data-acao="promo-acao"]');
+          return b && b.textContent.trim() === "Confirmar alteração";
+        })()`, "o botão da linha DEAL não virou 'Confirmar alteração' depois de simular");
+
+        // Confirmar a linha DEAL (sem rebate) precisa abrir o diálogo normal
+        // — NUNCA o aviso de rebate, mesmo com a SELLER_CAMPAIGN (com rebate)
+        // compartilhando o mesmo id.
+        await clicar(cdp, `.am-promo__linha[data-promo-key="${chave(PROMO_COLISAO_DEAL)}"] [data-acao="promo-acao"]`,
+          "botão 'Confirmar alteração' da linha DEAL não encontrado");
+        await waitFor(cdp, "document.querySelector('.am-confirm-overlay')", "o diálogo de confirmação da linha DEAL não abriu");
+        assert.strictEqual(await cdp.evaluate("!!document.querySelector('.vf-toast.is-warning')"), false,
+          "a linha DEAL não tem rebate — jamais pode mostrar o aviso de rebate da outra promoção com o mesmo id");
+
+        await cancelarDialogoEscrita(cdp);
+
+        // A linha SELLER_CAMPAIGN continua intocada — nunca foi selecionada.
+        const acaoSellerCampaign = await cdp.evaluate(
+          `document.querySelector('.am-promo__linha[data-promo-key="${chave(PROMO_COLISAO_SELLER_CAMPAIGN)}"] [data-acao="promo-acao"]').textContent.trim()`
+        );
+        assert.strictEqual(acaoSellerCampaign, "Alterar", "a linha SELLER_CAMPAIGN não pode ser afetada por um clique na linha DEAL");
       } finally {
         promocoesRespostaPadrao = [];
       }

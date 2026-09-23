@@ -68,6 +68,7 @@ function indexCss(text) {
  * patches:
  *   { op: 'set', line, column, selector, prop, value }   // value '' remove a declaração
  *   { op: 'new', selector, decls: [{ prop, value }] }      // regra nova no fim do arquivo
+ *   { op: 'new', selector, decls, media: '(max-width: 900px)' }  // regra nova dentro de @media, no fim do arquivo
  * Tudo é resolvido ANTES de mutar: se uma regra não estiver mais na posição, nada é alterado.
  */
 function applyPatches(text, patches) {
@@ -78,6 +79,7 @@ function applyPatches(text, patches) {
   const resolved = patches.map(p => {
     if (p.op === 'new') {
       if (!p.selector || !Array.isArray(p.decls) || !p.decls.length) throw new PatchError(400, 'Regra nova sem seletor ou sem declarações.');
+      if (p.media != null && !/^\((min|max)-(width|height):\s*\d+(\.\d+)?(px|em|rem)\)( and \((min|max)-(width|height):\s*\d+(\.\d+)?(px|em|rem)\))?$/.test(String(p.media))) throw new PatchError(400, `@media não aceito: ${p.media}`);
       return { p };
     }
     if (p.op !== 'set') throw new PatchError(400, `Operação desconhecida: ${p.op}`);
@@ -117,15 +119,20 @@ function applyPatches(text, patches) {
     } else {
       const nr = postcss.rule({ selector: p.selector });
       for (const d of p.decls) nr.append(postcss.decl({ prop: d.prop, value: String(d.value) }));
-      root.append(nr);
-      created.push(nr);
+      if (p.media) {
+        const mr = postcss.atRule({ name: 'media', params: String(p.media) });
+        mr.append(nr); root.append(mr); created.push(mr);
+        mr.raws.between = ' '; mr.raws.after = '\n'; mr.raws.before = '\n';
+        nr.raws.before = '\n  '; nr.raws.between = ' '; nr.raws.after = ' '; nr.raws.semicolon = true;
+        nr.each(d => { d.raws.before = ' '; d.raws.between = ': '; });
+      } else { root.append(nr); created.push(nr); }
     }
   }
 
   const out = root.toString();
   const changes = [];
   for (const [r, info] of touched) changes.push({ kind: 'set', line: info.line, selector: r.selector, before: info.before, after: r.toString() });
-  for (const nr of created) changes.push({ kind: 'new', selector: nr.selector, before: '', after: nr.toString() });
+  for (const nr of created) changes.push({ kind: 'new', selector: nr.type === 'atrule' ? nr.first.selector : nr.selector, media: nr.type === 'atrule' ? nr.params : undefined, before: '', after: nr.toString() });
   return { text: out, changes };
 }
 

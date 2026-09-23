@@ -77,3 +77,13 @@ test('round-trip sem patch devolve o arquivo idêntico', () => {
   assert.equal(applyPatches(PAGE, []).text, PAGE);
   assert.equal(applyPatches(MIN, []).text, MIN);
 });
+
+test('regra nova dentro de @media vai para o fim do arquivo; @media fora do formato é recusado', () => {
+  const { text, changes } = applyPatches(PAGE, [{ op: 'new', selector: '.vf-page-fechamentos-api .fapi-table', media: '(max-width: 900px)', decls: [{ prop: 'width', value: 'auto' }] }]);
+  assert.ok(text.startsWith(PAGE.trimEnd()));
+  assert.ok(text.trimEnd().endsWith('@media (max-width: 900px) {\n  .vf-page-fechamentos-api .fapi-table { width: auto; }\n}'));
+  assert.equal(changes[0].media, '(max-width: 900px)');
+  const r = indexCss(text).pop();
+  assert.equal(r.cond, '@media (max-width: 900px)');
+  assert.throws(() => applyPatches(PAGE, [{ op: 'new', selector: '.x', media: 'screen { } .y', decls: [{ prop: 'width', value: '1px' }] }]), e => e.status === 400);
+});

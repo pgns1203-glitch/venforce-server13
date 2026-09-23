@@ -96,7 +96,29 @@ Se a classe é montada dinamicamente e não aparece escrita no código, a respos
 
 Depois de 4 ou mais itens, a aba Sessão arrisca um resumo do que você parece querer ("Parece que você está simplificando o dossiê, removendo a navegação e aproximando o resultado das mudanças"). Se fizer sentido, **Sim** transforma o resumo no Objetivo da missão. **Editar** abre o texto para ajustar. **Não** esconde o resumo.
 
-## 14. O que nunca acontece
+## 15. "Está estranho, mas não sei o quê"
+
+Selecione o elemento e clique em **Está estranho**. A ferramenta mede, sem alterar nada, e devolve fatos, por exemplo:
+
+- "Este card usa 32px de padding; os 3 equivalentes usam 16px"
+- "O espaço acima deste bloco é 96px; a mediana entre blocos irmãos da página é 16px"
+- "O texto 'Receita' tem contraste 2.1:1 (mínimo 4.5:1)"
+
+Ela não diz o que está certo ou errado. Você decide. Cada fato vira comentário com um clique (**virar comentário**).
+
+## 16. "Quebrou no celular — foi o quê?"
+
+Na aba Sessão, **Checar regressões nas larguras** testa cada largura da sessão com e sem as suas alterações. Quando alguma alteração quebra a tela numa largura, a ferramenta liga e desliga metades até achar a culpada e mostra, por exemplo, "Regressão em 768px · causa provável: alteração #3 … · overflow de 36px". Daí você escolhe:
+
+- **Corrigir só ≤900px**: a mudança continua valendo nas telas grandes e é desfeita a partir do breakpoint real mais próximo;
+- **Reverter alteração**: desfaz a mudança;
+- **Ignorar**: deixa como está.
+
+## 17. Estados (mês sem dados, filtro aberto…)
+
+Para a missão cobrir mais de uma situação da tela, deixe a página no estado desejado (período, filtro, aba) e use **Registrar estado atual** na aba Sessão. Se a URL não basta para reproduzir, descreva os passos. A missão manda validar todos os estados. Os que abrem só pela URL também entram na **Verificar missão**. Marque cada um como **validado** depois de conferir. A sessão só fica verificada com todos validados.
+
+## 18. O que nunca acontece
 
 - Nada é gravado sem você clicar em **Gravar**, e **Gravar** só escreve CSS com patch mínimo (sem `!important`, sem subir especificidade).
 - `style.css`, `layout.js`, o backend, os `.html`/`.js`/`.jsx` e os assets compilados nunca são alterados pela ferramenta. O CSS só é gravado em `Portal/**/*.css` (exceto os protegidos) e em `frontend-react/src/styles/*.css`. Os assets mudam apenas quando **você** pede um Rebuild, que roda o build oficial da ilha.

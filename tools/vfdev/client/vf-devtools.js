@@ -190,6 +190,7 @@ function readTokens() {
 const rootVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const tokVal = t => t.name === '0' ? '0' : `var(${t.name})`;
 const tokenOf = v => { const m = String(v).match(/^var\((--[\w-]+)\)$/); return m ? m[1] : null; };
+const pxSum = v => { const p = String(v || '').trim().split(/\s+/).map(toPx); return p.some(x => x == null) ? null : p.reduce((a, b) => a + b, 0); };
 const tokenLabelFor = px => { const f = SPACE.find(s => s.name !== '0' && Math.abs(s.px - px) < 0.5); return f ? f.label : null; };
 
 /* ================= 4. Nomes humanos ================= */
@@ -685,7 +686,7 @@ function propsPanel() {
   const short = chain.length > 6 ? [chain[0], null, ...chain.slice(-5)] : chain;
   let h = `<div class="el"><div class="el-name">${esc(nameOf(el))}</div><div class="el-sub"><code>${esc(selOf(el))}</code><span class="mono">${Math.round(el.getBoundingClientRect().width)} × ${Math.round(el.getBoundingClientRect().height)}</span><span>${isGrid(cs) ? 'grade' : isFlex(cs) ? 'flex' : cs.display}</span></div>`;
   h += `<nav class="crumbs">${short.map((n, k) => n ? `${k ? '<span>›</span>' : ''}<button data-act="sel" data-t="${T(n)}" title="${esc(selOf(n))}"${n === el ? ' aria-current="true"' : ''}>${esc(nameOf(n))}</button>` : '<span>› …</span>').join('')}</nav>`;
-  h += `<div class="actions">${el !== document.body ? `<button class="btn sm" data-act="sel" data-t="${T(el.parentElement)}">↑ Selecionar o pai</button>` : ''}<button class="btn sm pri" data-act="talk" title="C">Falar sobre isso</button>${S.ref && S.ref !== el && S.ref.isConnected ? `<button class="btn sm" data-act="ref-igual">Deixar igual à referência (${esc(nameOf(S.ref))})</button>` : ''}<button class="btn sm${S.ref === el ? ' on' : ''}" data-act="ref-usar">${S.ref === el ? 'É a referência' : 'Usar como referência'}</button><button class="btn sm" data-act="copycss">Copiar CSS</button><button class="btn sm" data-act="copysel">Copiar seletor</button></div></div>`;
+  h += `<div class="actions">${el !== document.body ? `<button class="btn sm" data-act="sel" data-t="${T(el.parentElement)}">↑ Selecionar o pai</button>` : ''}<button class="btn sm pri" data-act="talk" title="C">Falar sobre isso</button>${S.ref && S.ref !== el && S.ref.isConnected ? `<button class="btn sm" data-act="ref-igual">Deixar igual à referência (${esc(nameOf(S.ref))})</button>` : ''}<button class="btn sm${S.ref === el ? ' on' : ''}" data-act="ref-usar">${S.ref === el ? 'É a referência' : 'Usar como referência'}</button><button class="btn sm" data-act="estranho">Está estranho</button><button class="btn sm" data-act="copycss">Copiar CSS</button><button class="btn sm" data-act="copysel">Copiar seletor</button></div></div>`;
   h += refHTML(el);
   h += origemHTML(el);
   h += estruturaHTML(el);
@@ -720,7 +721,7 @@ function issuesPanel() {
   const lab = { alta: 'alta', media: 'média', baixa: 'baixa' };
   const card = (p, i) => `<div class="issue" data-issue="${i}"><div class="issue-h"><span class="sev ${p.sev}">${lab[p.sev]}</span>${esc(p.title)}</div><p>${p.text}</p><div class="actions">${p.el ? `<button class="btn sm" data-act="sel" data-t="${T(p.el)}">Selecionar</button>` : ''}${p.fix ? `<button class="btn sm pri" data-act="fix" data-i="${i}">${esc(p.fix.label)}</button>` : ''}</div></div>`;
   const idx = S.problems.map((p, i) => [p, i]), top = idx.filter(([p]) => p.sev !== 'baixa'), low = idx.filter(([p]) => p.sev === 'baixa');
-  let h = `<div class="empty"><span>Checagem em <b>${window.innerWidth}px</b>. Passe o mouse pra ver onde é. <button class="link" data-act="rescan">Checar de novo</button></span></div>`;
+  let h = `<div class="empty"><span>Checagem em <b>${window.innerWidth}px</b>. Passe o mouse pra ver onde é. <button class="link" data-act="rescan">Checar de novo</button>${changes.size && S.problems.some(p => /vazando|cortado/i.test(p.title)) ? ` · <button class="link" data-act="reg-here">Achar a alteração causadora (bissecção)</button>` : ''}</span></div>` + regressHTML();
   h += top.length ? top.map(([p, i]) => card(p, i)).join('') : `<div class="ok">Nada quebrando em ${window.innerWidth}px.</div>`;
   if (low.length) h += `<details class="more"><summary>${low.length} valores fora da escala de espaço (não quebram nada, mas fogem da fundação)</summary>${low.map(([p, i]) => card(p, i)).join('')}</details>`;
   return h;
@@ -789,7 +790,7 @@ function buildPatch() {
     if (!info.writable) continue;
     if (!files.has(info.file)) files.set(info.file, []);
     const P = files.get(info.file);
-    if (info.isNew) P.push({ op: 'new', selector: info.selectorSrc || rule.selectorText, decls: list.filter(c => c.after).map(c => ({ prop: c.prop, value: c.after + (c.prio ? ' !important' : '') })) });
+    if (info.isNew) P.push({ op: 'new', selector: info.selectorSrc || rule.selectorText, ...(info.media ? { media: info.media } : {}), decls: list.filter(c => c.after).map(c => ({ prop: c.prop, value: c.after + (c.prio ? ' !important' : '') })) });
     else for (const c of list) P.push({ op: 'set', line: info.line, column: info.column, selector: info.selectorSrc, prop: c.prop, value: c.after });
   }
   return [...files].map(([file, patches]) => ({ file, patches: patches.filter(p => p.op !== 'new' || p.decls.length) })).filter(f => f.patches.length);
@@ -1360,14 +1361,16 @@ async function verificarMissao() {
   S.verificando = true; render();
   const W = window.innerWidth, groups = new Map();
   for (const v of m.verificacoes) { const w = v.largura || W; if (!groups.has(w)) groups.set(w, []); groups.get(w).push(v); }
+  // estado padrão (a URL atual) + estados reproduzíveis só pela URL; os demais ficam como checklist manual
+  const alvosUrl = [{ estado: null, url: location.href }, ...(SES.estados || []).filter(e => !String(e.reproducao || '').trim() && e.url).map(e => ({ estado: e.nome, url: e.url }))];
   const resultados = [];
-  for (const [w, list] of [...groups].sort((a, b) => b[0] - a[0])) {
-    const f = await frameAt(w);
+  for (const { estado, url } of alvosUrl) for (const [w, list] of [...groups].sort((a, b) => b[0] - a[0])) {
+    const f = await frameAt(w, url);
     let doc = null; try { doc = f.contentDocument; } catch (e) {}
-    for (const v of list) resultados.push({ ...v, largura: w, ...(doc ? runCheck(v, doc) : { ok: false, obtido: 'página não carregou no iframe' }) });
+    for (const v of list) resultados.push({ ...v, largura: w, ...(estado ? { estado } : {}), ...(doc ? runCheck(v, doc) : { ok: false, obtido: 'página não carregou no iframe' }) });
     f.remove();
   }
-  resultados.sort((a, b) => +a.id.slice(1) - +b.id.slice(1));
+  resultados.sort((a, b) => (a.estado || '').localeCompare(b.estado || '') || +a.id.slice(1) - +b.id.slice(1));
   const falhas = resultados.filter(r => !r.ok).length, est = SES.estados || [];
   const estadosOk = est.every(e => e.validadoEm);
   SES.verificacao = { em: nowIso(), largura: W, ok: resultados.length - falhas, falhas, estadosPendentes: est.filter(e => !e.validadoEm).length, resultados };
@@ -1381,7 +1384,7 @@ function verificacaoHTML() {
   const V = SES.verificacao; if (!V) return '';
   const it = id => { const k = SES.itens.findIndex(i => i.id === id); return k < 0 ? '' : `#${k + 1} `; };
   let h = `<div class="verif"><div class="eyebrow">Verificação · ${new Date(V.em).toLocaleString()} · ${V.ok} ✓ · ${V.falhas} ✗</div>`;
-  for (const r of V.resultados) h += `<div class="vr ${r.ok ? 'ok' : 'ko'}"><span class="vmark">${r.ok ? '✓' : '✗'}</span><span>${esc(it(r.item))}${esc(r.descricao || r.tipo)}${r.tipo !== 'sem-overflow' ? ` <small>(${r.largura}px)</small>` : ''}<br><small>obtido: <b>${esc(r.obtido)}</b>${!r.ok && r.esperado ? ` · esperado: <b>${esc(r.esperado)}</b>` : ''}</small></span></div>`;
+  for (const r of V.resultados) h += `<div class="vr ${r.ok ? 'ok' : 'ko'}"><span class="vmark">${r.ok ? '✓' : '✗'}</span><span>${esc(it(r.item))}${esc(r.descricao || r.tipo)}${r.tipo !== 'sem-overflow' ? ` <small>(${r.largura}px)</small>` : ''}${r.estado ? ` <small>· estado “${esc(r.estado)}”</small>` : ''}<br><small>obtido: <b>${esc(r.obtido)}</b>${!r.ok && r.esperado ? ` · esperado: <b>${esc(r.esperado)}</b>` : ''}</small></span></div>`;
   if (V.estadosPendentes) h += `<div class="warnline">${V.estadosPendentes} estado(s) ainda sem validar — a sessão só fica “verificada” com todos validados.</div>`;
   return h + '</div>';
 }
@@ -1415,7 +1418,7 @@ function itemCard(it, n) {
   } else if (it.tipo === 'referencia') {
     h += `<div>${it.referencia.diferencas.length} diferença(s) em relação a ${esc(it.referencia.a.nome || it.referencia.a.seletor)}</div>`;
   } else if (it.tipo === 'estranho') {
-    h += `<ul class="facts">${it.estranho.achados.map(f => `<li>${esc(f.fato)}</li>`).join('')}</ul>`;
+    h += `<ul class="facts">${it.estranho.achados.map((f, k) => `<li>${esc(f.fato)} ${f.virouComentario ? '<small>(virou comentário)</small>' : `<button class="link" data-act="fato-com" data-id="${esc(it.id)}" data-k="${k}">virar comentário</button>`}</li>`).join('')}</ul>`;
   }
   if (it.tipo !== 'css' && it.tipo !== 'comentario') h += `<input class="why" data-why-item="${esc(it.id)}" placeholder="Por quê? (opcional)" value="${esc(it.nota || '')}" aria-label="Por quê?">`;
   if (it.tipo !== 'referencia') {
@@ -1448,6 +1451,8 @@ function sessionPanel() {
   else if (SES.objetivo) h += `<div class="meta">Objetivo: <b>${esc(SES.objetivo)}</b></div>`;
   if (SES.missao) h += `<div class="meta">Missão: <span class="mono">${esc(SES.missao.md)}</span> · ${SES.missao.verificacoes} verificações</div>`;
   h += verificacaoHTML();
+  h += estadosHTML();
+  h += `<div class="actions"><button class="btn sm" data-act="reg-check"${changes.size && !S.bissectando ? '' : ' disabled'}>${S.bissectando ? 'Checando…' : 'Checar regressões nas larguras'}</button></div>` + regressHTML();
   h += `<div class="meta">Salva em <span class="mono">tools/vfdev/sessoes/${esc(SES.id)}.json</span>${SES.atualizadaEm ? ` · ${new Date(SES.atualizadaEm).toLocaleTimeString()}` : ''}</div>`;
   if (sesErr) h += `<div class="warnline">${esc(sesErr)}</div>`;
   if (!SES.itens.length) h += `<div class="ok">Sessão vazia. Selecione algo e aperte <kbd>C</kbd> para falar sobre ele, use <b>Estrutura</b> no Painel, ou ajuste o CSS.</div>`;
@@ -1739,6 +1744,194 @@ function intencaoHTML() {
   return `<div class="intencao"><div class="eyebrow">O que estou tentando fazer?</div><p>${esc(intencaoCache.texto)}</p><div class="actions"><button class="btn sm pri" data-act="int-sim">Sim, usar como objetivo</button><button class="btn sm" data-act="int-edit">Editar</button><button class="btn sm" data-act="int-nao">Não</button></div><small>Montado por regras a partir dos itens (sem IA).</small></div>`;
 }
 
+/* ================= 14e. "Está estranho", causalidade responsiva e estados ================= */
+/* "Está estranho" só MEDE: lista fatos com número, ranqueados pelo tamanho do desvio. Nunca dá veredito e nunca altera nada. */
+const visivel = n => n && n.getClientRects().length && getComputedStyle(n).visibility !== 'hidden';
+const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : null; };
+function lum(rgb) { const m = String(rgb).match(/[\d.]+/g); if (!m) return null; const [r, g, b] = m.slice(0, 3).map(v => { v = +v / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; }
+function fundoEfetivo(el) { for (let n = el; n && n.nodeType === 1; n = n.parentElement) { const c = getComputedStyle(n).backgroundColor, m = c.match(/[\d.]+/g); if (m && (m.length < 4 || +m[3] > 0.5)) return c; } return 'rgb(255, 255, 255)'; }
+const contraste = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+const pesoVisual = n => { const L = textLeaves(n); const f = L.length ? Math.max(...L.map(t => pf(getComputedStyle(t).fontSize) * (+getComputedStyle(t).fontWeight || 400) / 400)) : 0; return f + (boxed(n) ? 4 : 0); };
+function estranho(el) {
+  const out = [], nm0 = nameOf(el), add = (checagem, fato, desvio, medida = {}) => out.push({ fato, medida: { checagem, desvio: Math.round(desvio * 100) / 100, ...medida } });
+  const r = el.getBoundingClientRect(), par = el.parentElement, cs = getComputedStyle(el);
+  // 1. padding/gap/raio/borda diferente dos equivalentes (mesma classe principal ou mesmo papel entre irmãos)
+  const mc = mainClass(el);
+  let eq = mc ? matchesOf('.' + CSS.escape(mc)).filter(e => e !== el && visivel(e)) : [];
+  if (eq.length < 2 && par) eq = realKids(par).filter(k => k !== el && k.tagName === el.tagName && [...k.classList].join(' ') === [...el.classList].join(' '));
+  if (eq.length >= 2) for (const [prop, label] of [['padding', 'padding'], ['gap', 'gap'], ['border-radius', 'arredondamento'], ['border-top-width', 'borda']]) {
+    if (prop === 'gap' && !isFG(cs)) continue;
+    const mine = comp(el, prop), vals = eq.map(e => comp(e, prop));
+    const moda = [...vals.reduce((m, v) => m.set(v, (m.get(v) || 0) + 1), new Map())].sort((a, b) => b[1] - a[1])[0];
+    if (moda && moda[0] !== mine && moda[1] >= Math.ceil(eq.length * 0.6)) add('equivalentes', `${nm0} usa ${mine} de ${label}; ${moda[1] === eq.length ? `os ${eq.length} equivalentes` : `${moda[1]} de ${eq.length} equivalentes`} usam ${moda[0]}`, Math.abs((pxSum(mine) ?? 0) - (pxSum(moda[0]) ?? 0)) || 4, { prop, valor: mine, referencia: moda[0] });
+  }
+  // 2. espaço vertical entre blocos irmãos fora do padrão da página (mediana)
+  if (par && inPage(par)) {
+    const gapsDe = p => { const ks = realKids(p).map(k => k.getBoundingClientRect()).filter(q => q.height > 0); const g = []; for (let i = 1; i < ks.length; i++) { const d = ks[i].top - ks[i - 1].bottom; if (d >= 0 && ks[i].top >= ks[i - 1].bottom - 0.5) g.push(Math.round(d)); } return g; };
+    const pagina = [];
+    for (const p of [...document.body.querySelectorAll('*')].filter(n => n !== host && realKids(n).length > 1).slice(0, 600)) pagina.push(...gapsDe(p));
+    const med = median(pagina.filter(g => g > 0));
+    const ks = realKids(par), i = ks.indexOf(el);
+    if (med != null && i > 0) {
+      const d = Math.round(r.top - ks[i - 1].getBoundingClientRect().bottom);
+      if (d >= 0 && Math.abs(d - med) > Math.max(8, med * 0.5)) add('espaco-vertical', `O espaço acima de ${nm0} é ${d}px; a mediana entre blocos irmãos da página é ${med}px`, Math.abs(d - med), { valor: d, referencia: med });
+    }
+  }
+  // 3. conteúdo ocupando menos de 65% da largura da região
+  const B = boxes(el), ks = realKids(el);
+  if (B.content.width > 80 && !/^(inline|contents)/.test(cs.display)) {
+    let w = 0;
+    if (ks.length) { const L = Math.min(...ks.map(k => k.getBoundingClientRect().left)), R = Math.max(...ks.map(k => k.getBoundingClientRect().right)); w = R - L; }
+    else if (el.textContent.trim()) { const rg = document.createRange(); rg.selectNodeContents(el); const rs = [...rg.getClientRects()]; if (rs.length) w = Math.max(...rs.map(x => x.right)) - Math.min(...rs.map(x => x.left)); }
+    const ratio = w / B.content.width;
+    if (w > 0 && ratio < 0.65) add('largura-conteudo', `O conteúdo ocupa ${Math.round(ratio * 100)}% da largura de ${nm0} (${Math.round(w)} de ${Math.round(B.content.width)}px)`, (0.65 - ratio) * 100, { valor: Math.round(ratio * 100), referencia: 65 });
+  }
+  // 4. hierarquia fraca: título e valor com razão de tamanho < 1,25 e mesmo peso
+  const tp = tipoPartes(el);
+  if (tp['título'] && tp.valor) {
+    const ft = pf(getComputedStyle(tp['título']).fontSize), fv = pf(getComputedStyle(tp.valor).fontSize), wt = getComputedStyle(tp['título']).fontWeight, wv = getComputedStyle(tp.valor).fontWeight;
+    const ratio = Math.max(ft, fv) / Math.min(ft, fv);
+    if (ratio < 1.25 && wt === wv) add('hierarquia', `Título e valor de ${nm0} têm tamanhos parecidos (${ft}px e ${fv}px, razão ${ratio.toFixed(2)}) e o mesmo peso (${wt})`, (1.25 - ratio) * 40, { valor: +ratio.toFixed(2), referencia: 1.25 });
+  }
+  // 5. irmãos com peso visual parecido e papéis diferentes
+  if (par && inPage(par)) {
+    const pw = pesoVisual(el), area = r.width * r.height;
+    for (const k of realKids(par).filter(k => k !== el)) {
+      const kc = mainClass(k);
+      if (!mc || !kc || kc === mc) continue;
+      const kr = k.getBoundingClientRect(), ka = kr.width * kr.height, kw = pesoVisual(k);
+      if (area && Math.abs(ka - area) / area < 0.15 && pw && Math.abs(kw - pw) / pw < 0.1) { add('peso-irmaos', `${nm0} (.${mc}) e ${nameOf(k)} (.${kc}) têm papéis diferentes, mas o mesmo tamanho (±15%) e peso visual (±10%)`, 10, { valor: pw, referencia: kw }); break; }
+    }
+  }
+  // 6. containers aninhados com borda/fundo (card dentro de card)
+  if (boxed(el)) for (let n = el.parentElement, k = 1; n && n !== document.body && k <= 4; n = n.parentElement, k++) if (boxed(n)) { add('aninhado', `${nm0} tem borda/fundo e está dentro de ${nameOf(n)}, que também tem (${k} nível(is) acima)`, 12 / k, { valor: k }); break; }
+  // 7. bordas/raios fora dos tokens
+  if (RADII.length) { const rad = pf(cs.borderTopLeftRadius); if (rad > 0 && !RADII.some(t => Math.abs(t.px - rad) < 0.5) && rad < 500) add('fora-dos-tokens', `${nm0} usa raio de ${rad}px, que não existe na escala (${RADII.map(t => t.px + 'px').join(', ')})`, Math.min(...RADII.map(t => Math.abs(t.px - rad))), { valor: rad }); }
+  const bw = pf(cs.borderTopWidth); if (bw > 2 && cs.borderTopStyle !== 'none') add('fora-dos-tokens', `${nm0} usa borda de ${bw}px (a fundação usa 1–2px)`, bw - 2, { valor: bw });
+  // 8. contraste abaixo de 4.5:1
+  for (const t of textLeaves(el).slice(0, 12)) { const c = contraste(getComputedStyle(t).color, fundoEfetivo(t)); if (c < 4.5) { add('contraste', `O texto "${texto60(t).slice(0, 24)}" tem contraste ${c.toFixed(2)}:1 (mínimo 4.5:1)`, (4.5 - c) * 10, { valor: +c.toFixed(2), referencia: 4.5 }); break; } }
+  // 9. alvo clicável menor que 32×32
+  for (const c of [el, ...el.querySelectorAll('a,button,[role=button],input,select,summary')].filter(n => n.matches('a,button,[role=button],input,select,summary') && visivel(n)).slice(0, 20)) { const q = c.getBoundingClientRect(); if (q.width < 32 || q.height < 32) { add('alvo-pequeno', `${nameOf(c)} é clicável e mede ${Math.round(q.width)}×${Math.round(q.height)}px (mínimo 32×32)`, 32 - Math.min(q.width, q.height), { valor: [Math.round(q.width), Math.round(q.height)] }); break; } }
+  // 10. desalinhamento com o vizinho (bordas a até 3px)
+  if (par) for (const v of [el.previousElementSibling, el.nextElementSibling].filter(n => n && visivel(n) && n !== host)) {
+    const q = v.getBoundingClientRect(), empilhado = q.top >= r.bottom - 0.5 || r.top >= q.bottom - 0.5;
+    const d = empilhado ? r.left - q.left : r.top - q.top;
+    if (Math.abs(d) > 0.5 && Math.abs(d) <= 3) { add('desalinhamento', `A borda ${empilhado ? 'esquerda' : 'de cima'} de ${nm0} está ${Math.abs(Math.round(d * 10) / 10)}px deslocada em relação a ${nameOf(v)}`, 3, { valor: Math.round(d * 10) / 10 }); break; }
+  }
+  return out.sort((a, b) => b.medida.desvio - a.medida.desvio);
+}
+function estranhoItem(el) {
+  const achados = estranho(el);
+  if (!achados.length) { toast(`Nada fora do padrão medido em ${nameOf(el)}.`); return null; }
+  ensureSession();
+  const it = { id: uid(), tipo: 'estranho', criadoEm: nowIso(), alvo: captureAlvo(el), estranho: { achados } };
+  SES.itens.push(it); saveSoon(0); S.tab = 'session'; render();
+  return it;
+}
+function fatoParaComentario(id, k) {
+  const it = SES && SES.itens.find(i => i.id === id); if (!it) return;
+  const f = it.estranho.achados[k]; if (!f) return;
+  SES.itens.push({ id: uid(), tipo: 'comentario', criadoEm: nowIso(), alvo: it.alvo, comentario: { texto: f.fato, ponto: null, resolvido: false } });
+  f.virouComentario = true; saveSoon(0); render();
+}
+
+/* ---- causalidade responsiva: bissecta as alterações pendentes num iframe daquela largura ---- */
+function changeCSS(c) {
+  const i = ruleInfo.get(c.rule), body = `${c.rule.selectorText} { ${c.prop}: ${c.after}${c.prio ? ' !important' : ''}; }`;
+  const m = i && i.cond && i.cond.match(/^@media (.+)$/);
+  return m ? `@media ${m[1]} { ${body} }` : body;
+}
+const medirOverflow = doc => { const e = doc.documentElement; return Math.max(0, e.scrollWidth - e.clientWidth); };
+async function bissectar(W) {
+  const lista = [...changes.entries()].filter(([, c]) => c.after).map(([k, c]) => ({ k, c, it: cssItemOf(k) }));
+  if (!lista.length) return { erro: 'nenhuma alteração pendente para testar' };
+  const f = await frameAt(W); let doc; try { doc = f.contentDocument; } catch (e) {}
+  if (!doc) { f.remove(); return { erro: 'a página não carregou no iframe' }; }
+  const st = doc.createElement('style'); doc.head.appendChild(st);
+  const teste = async sub => { st.textContent = sub.map(x => changeCSS(x.c)).join('\n'); await new Promise(r => f.contentWindow.requestAnimationFrame(() => f.contentWindow.requestAnimationFrame(r))); return medirOverflow(doc); };
+  const base = await teste([]), todas = await teste(lista);
+  let out;
+  if (todas <= base + 1) out = { largura: W, regressao: false, base, todas };
+  else if (base > 1) out = { largura: W, regressao: true, jaExistia: true, base, todas, texto: `Já havia ${base}px de overflow em ${W}px sem as alterações; com elas vai a ${todas}px.` };
+  else {
+    let cand = lista;
+    while (cand.length > 1) {
+      const meio = Math.ceil(cand.length / 2), a = cand.slice(0, meio), b = cand.slice(meio);
+      if (await teste(a) > 1) cand = a; else if (await teste(b) > 1) cand = b; else break;
+    }
+    const sozinha = cand.length === 1 ? await teste(cand) : 0;
+    const x = cand[0], num = x.it ? SES.itens.indexOf(x.it) + 1 : null;
+    out = cand.length === 1 && sozinha > 1
+      ? { largura: W, regressao: true, base, todas, overflow: sozinha, causa: { key: x.k, item: x.it ? x.it.id : null, numero: num, seletor: x.c.rule.selectorText, prop: x.c.prop, antes: x.c.before || '(não existia)', depois: x.c.after },
+        texto: `Regressão em ${W}px · causa provável: alteração ${num ? '#' + num + ' ' : ''}\`${x.c.rule.selectorText}\` ${x.c.prop}: ${x.c.before || '(não existia)'} → ${x.c.after} · overflow de ${sozinha}px` }
+      : { largura: W, regressao: true, base, todas, combinada: cand.map(y => `${y.c.rule.selectorText} ${y.c.prop}`), texto: `Regressão em ${W}px (${todas}px de overflow) só aparece com a combinação de ${cand.length} alterações: ${cand.map(y => `\`${y.c.rule.selectorText}\` ${y.c.prop}`).join(', ')}` };
+  }
+  f.remove();
+  return out;
+}
+/** Breakpoints reais: os max-width das @media de todo CSS indexado. */
+function breakpoints() { const s = new Set(); for (const [, i] of ruleInfo) { const m = i.cond && i.cond.match(/max-width:\s*(\d+)px|width\s*<=\s*(\d+)px/); if (m) s.add(+(m[1] || m[2])); } return [...s].sort((a, b) => a - b); }
+async function checarRegressoes(larguras) {
+  const ws = larguras || (SES && SES.larguras) || [390, 768, 1280];
+  const res = [];
+  for (const w of ws) { const r = await bissectar(w); if (r.regressao) res.push(r); }
+  if (SES) { SES.regressoes = res.map(r => ({ largura: r.largura, texto: r.texto, causa: r.causa || null, status: 'aberta', em: nowIso() })); saveSoon(0); }
+  S.regress = res; render();
+  return res;
+}
+/** "Corrigir só ≤ BP": no @media do breakpoint real mais próximo (≥ largura), a alteração não vale — ou vale só acima. */
+function corrigirAte(r) {
+  const bp = breakpoints().find(b => b >= r.largura) || r.largura;
+  const c = changes.get(r.causa.key); if (!c) return toast('A alteração não está mais pendente.');
+  const info = ruleInfo.get(c.rule) || {};
+  const sel = info.selectorSrc || c.rule.selectorText, gravavel = info.writable && (info.kind === 'page' || info.kind === 'react-source' || info.isNew);
+  const alvoFile = gravavel ? info.file : null;
+  const media = c.before ? `(max-width: ${bp}px)` : `(min-width: ${bp + 1}px)`;
+  // sem valor anterior na mesma regra, a alteração passa a valer só acima do breakpoint
+  if (!c.before) { prep(); setRule(c.rule, c.prop, ''); }
+  const rule = mediaRule(alvoFile, sel, media, c.rule.selectorText);
+  setRule(rule, c.prop, c.before || c.after, gravavel ? null : 'important');
+  r.corrigida = `${media}: ${c.prop}: ${c.before || c.after}`;
+  toast(`${c.prop} ${c.before ? `volta a ${c.before}` : `só vale acima de ${bp}px`} em telas ${c.before ? '≤ ' + bp : '> ' + bp}px (${alvoFile || 'só prompt'}).`, 6000);
+  render(); return rule;
+}
+function mediaRule(file, sel, media, cssomSel) {
+  const cond = '@media ' + media;
+  for (const [r, i] of ruleInfo) if (i.cond === cond && normSel(i.selectorSrc || r.selectorText) === normSel(sel) && (file ? i.file === file : i.kind === 'scratch')) return r;
+  let sheet;
+  if (file) { const m = fileMeta.get(file) || [...fileMeta.values()].find(x => (x.sources || []).includes(file)); sheet = m && m.sheet; }
+  if (!sheet) { if (!scratchSheet) scratchRule(cssomSel, 'prompt'); sheet = scratchSheet; file = null; }
+  const mr = sheet.cssRules[sheet.insertRule(`@media ${media} { ${cssomSel} {} }`, sheet.cssRules.length)], rule = mr.cssRules[0];
+  ruleInfo.set(rule, file ? { file, kind: fileMeta.has(file) ? 'page' : 'react-source', writable: true, isNew: true, selectorSrc: sel, media, cond, line: null, decls: {} } : { file: 'prompt', kind: 'scratch', writable: false, isNew: true, selectorSrc: sel, media, cond, line: null, decls: {}, reason: 'só vai no prompt' });
+  resetCache(); return rule;
+}
+function regressHTML() {
+  if (!S.regress) return '';
+  if (!S.regress.length) return `<div class="ok">Sem regressão de overflow causada pelas alterações pendentes nas larguras ${((SES && SES.larguras) || []).join(', ')}.</div>`;
+  return S.regress.map((r, i) => `<div class="issue"><div class="issue-h"><span class="sev alta">regressão</span>${esc(r.largura)}px</div><p>${esc(r.texto)}</p>${r.causa && !r.corrigida ? `<div class="actions"><button class="btn sm pri" data-act="reg-fix" data-i="${i}">Corrigir só ≤${breakpoints().find(b => b >= r.largura) || r.largura}px</button><button class="btn sm" data-act="reg-rev" data-i="${i}">Reverter alteração</button><button class="btn sm" data-act="reg-ign" data-i="${i}">Ignorar</button></div>` : r.corrigida ? `<small>corrigida: ${esc(r.corrigida)}</small>` : ''}</div>`).join('');
+}
+
+/* ---- estados da sessão ---- */
+function registrarEstado(nome, reproducao) {
+  ensureSession();
+  const e = { id: uid('s'), nome: String(nome || '').trim() || `Estado ${SES.estados.length + 1}`, url: location.pathname + location.search + location.hash, reproducao: String(reproducao || '').trim(), largura: window.innerWidth, validadoEm: null };
+  SES.estados.push(e); saveSoon(0); render();
+  return e;
+}
+function validarEstado(id, sim = true) {
+  const e = SES && SES.estados.find(x => x.id === id); if (!e) return;
+  e.validadoEm = sim ? nowIso() : null; e.validadoLargura = sim ? window.innerWidth : null;
+  if (SES.verificacao) { const pend = SES.estados.filter(x => !x.validadoEm).length; SES.verificacao.estadosPendentes = pend; SES.status = !SES.verificacao.falhas && !pend ? 'verificada' : (SES.missao ? 'missao_gerada' : SES.status); }
+  saveSoon(0); render();
+}
+function estadosHTML() {
+  const est = SES.estados || [];
+  let h = `<details class="more"${est.length ? ' open' : ''}><summary>Estados (${est.filter(e => e.validadoEm).length}/${est.length} validados)</summary>`;
+  for (const e of est) h += `<div class="chg"><div class="chg-main"><b>${esc(e.nome)}</b><span class="mono">${esc(e.url)}</span>${e.reproducao ? `<small>${esc(e.reproducao)} · checklist manual</small>` : '<small>reproduzível só pela URL — a verificação roda neste estado</small>'}${e.validadoEm ? `<small>✓ validado em ${new Date(e.validadoEm).toLocaleString()} (${e.validadoLargura}px)</small>` : ''}</div><button class="btn sm" data-act="est-vis" data-id="${esc(e.id)}">Visitar</button><button class="btn sm${e.validadoEm ? ' on' : ''}" data-act="est-val" data-id="${esc(e.id)}">${e.validadoEm ? 'Validado' : 'Marcar validado'}</button></div>`;
+  h += `<div class="estado-novo"><input id="est-nome" placeholder="Nome do estado (ex.: Agosto sem dados)"><input id="est-rep" placeholder="Como reproduzir (opcional — deixe vazio se a URL basta)"><button class="btn sm" data-act="est-add">Registrar estado atual</button></div></details>`;
+  return h;
+}
+
 /* ================= 15. UI (shadow DOM) ================= */
 const CSS_TEXT = `
 :host{all:initial}
@@ -1924,6 +2117,7 @@ details.more[open]{display:flex;flex-direction:column;gap:10px}
 .trecho{display:block;white-space:pre-wrap;word-break:break-all;background:var(--bg2);border-radius:5px;padding:3px 6px;margin-top:2px;font-size:11px}
 .refbox,.intencao{border:1px solid var(--acc);border-radius:9px;padding:9px 11px;display:flex;flex-direction:column;gap:6px;background:var(--soft)}
 .intencao p{margin:0;font-weight:600}
+.estado-novo{display:flex;flex-direction:column;gap:4px;margin-top:6px}.estado-novo input{border:1px solid var(--line);background:var(--bg2);border-radius:6px;padding:4px 8px;font:inherit;color:inherit}
 .estr-grid{display:flex;flex-wrap:wrap;gap:4px;padding-top:6px}
 @media (prefers-reduced-motion:reduce){.row.flash{animation:none}}
 `;
@@ -2016,6 +2210,16 @@ function buildUI() {
     else if (act === 'item-ver') { const it = SES.itens.find(i => i.id === b.dataset.id); const r = it && resolveAlvo(it.alvo); if (r && r.el) { r.el.scrollIntoView({ block: 'center' }); S.tab = 'props'; select(r.el); } }
     else if (act === 'item-del') delItem(b.dataset.id);
     else if (act === 'mis-gerar') pedirObjetivo();
+    else if (act === 'estranho') estranhoItem(S.selected);
+    else if (act === 'fato-com') fatoParaComentario(b.dataset.id, +b.dataset.k);
+    else if (act === 'reg-check') { S.bissectando = true; render(); checarRegressoes().finally(() => { S.bissectando = false; render(); }); }
+    else if (act === 'reg-here') { bissectar(window.innerWidth).then(r => { S.regress = r.regressao ? [r] : []; if (r.erro) toast(r.erro); render(); }); }
+    else if (act === 'reg-fix') { const r = S.regress[+b.dataset.i]; if (r) corrigirAte(r); }
+    else if (act === 'reg-rev') { const r = S.regress[+b.dataset.i]; const c = r && changes.get(r.causa.key); if (c) { prep(); setRule(c.rule, c.prop, c.before); r.corrigida = 'alteração revertida'; render(); } }
+    else if (act === 'reg-ign') { S.regress.splice(+b.dataset.i, 1); render(); }
+    else if (act === 'est-add') registrarEstado(root.getElementById('est-nome').value, root.getElementById('est-rep').value);
+    else if (act === 'est-val') { const e = SES.estados.find(x => x.id === b.dataset.id); validarEstado(b.dataset.id, !(e && e.validadoEm)); }
+    else if (act === 'est-vis') { const e = SES.estados.find(x => x.id === b.dataset.id); if (e) saveNow().then(() => { location.href = e.url; }); }
     else if (act === 'ref-usar') usarComoReferencia(S.selected);
     else if (act === 'ref-igual') deixarIgual(S.selected);
     else if (act === 'ref-apl') registrarReferencia(true);
@@ -2171,7 +2375,7 @@ async function boot() {
   if (S.open) S.problems = scan();
   render();
   window.__VFDEV__.api = { select, edit, findSource, ruleInfo, changes, buildPatch, apply, scan, state: S,
-    sessao: () => SES, erroSessao: () => sesErr, pedirObjetivo, gerarMissao, verificarMissao, runCheck, origemOf, reactTree, usarComoReferencia, deixarIgual, registrarReferencia, compararRef, rebuildIlha, desfazerGravacao, loadHist, gitCmds, fileMeta, novaSessao, continuarSessao, saveNow, comentar, estrutural, previewOn, previewOff, previews, resolveAlvo, captureAlvo, openCompare, setTab, render, delItem };
+    sessao: () => SES, erroSessao: () => sesErr, pedirObjetivo, gerarMissao, verificarMissao, runCheck, estranho, estranhoItem, fatoParaComentario, bissectar, checarRegressoes, corrigirAte, breakpoints, registrarEstado, validarEstado, origemOf, reactTree, usarComoReferencia, deixarIgual, registrarReferencia, compararRef, rebuildIlha, desfazerGravacao, loadHist, gitCmds, fileMeta, novaSessao, continuarSessao, saveNow, comentar, estrutural, previewOn, previewOff, previews, resolveAlvo, captureAlvo, openCompare, setTab, render, delItem };
   window.__VFDEV__.ready = true;
 }
 if (document.readyState === 'complete') boot(); else window.addEventListener('load', boot, { once: true });

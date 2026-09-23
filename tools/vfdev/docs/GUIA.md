@@ -61,10 +61,24 @@ Quando o agente terminar, volte para a tela e clique em **Verificar missão**. A
 
 Se tudo passar (e os estados registrados estiverem validados), a sessão fica **verificada**.
 
-## 8. O que nunca acontece
+## 8. Telas React (Cliente 360, Visão, Financeiro, Full)
+
+O CSS dessas telas é gerado pelo Vite. Quando a regra que você está mexendo tem par na fonte, o Painel mostra **fonte React** e o `arquivo:linha` em `frontend-react/src/styles/`. **Gravar** muda só aquela linha da fonte. A tela passa a vir do arquivo novo depois de **Rebuild** (link na própria linha do Painel ou na aba Alterações). O rebuild troca o CSS sem recarregar a página.
+
+Quando não há par (a regra foi fundida pelo minificador ou vem de um componente fora de `src/styles/`), a mudança vai para a missão com o motivo.
+
+## 9. Deixe o painel aberto enquanto o agente trabalha
+
+Se um `.css` muda no disco, seja por você, pelo Claude ou pelo Codex, a tela se atualiza sozinha em menos de 1 s, sem F5. Quando o agente terminar, é só clicar em **Verificar missão**.
+
+## 10. Desfazer e git
+
+Cada **Gravar** aparece em **Alterações → Gravações**, com o status do git de cada arquivo. **Desfazer gravação** volta o arquivo exatamente ao que era, byte a byte, e se recusa se alguém mexeu no arquivo depois. **Copiar comandos git** copia um `git add` por arquivo e uma mensagem de commit sugerida. Quem roda o git é você.
+
+## 11. O que nunca acontece
 
 - Nada é gravado sem você clicar em **Gravar**, e **Gravar** só escreve CSS com patch mínimo (sem `!important`, sem subir especificidade).
-- `style.css`, `layout.js`, o backend, os `.html`/`.js`/`.jsx` e os assets compilados nunca são alterados.
+- `style.css`, `layout.js`, o backend, os `.html`/`.js`/`.jsx` e os assets compilados nunca são alterados pela ferramenta. O CSS só é gravado em `Portal/**/*.css` (exceto os protegidos) e em `frontend-react/src/styles/*.css`. Os assets mudam apenas quando **você** pede um Rebuild, que roda o build oficial da ilha.
 - Quando a ferramenta não consegue achar algo (regra, arquivo, elemento), ela escreve **"não resolvido"** com o motivo. Ela não chuta.
 
 ## Onde ficam as coisas
@@ -73,3 +87,4 @@ Se tudo passar (e os estados registrados estiverem validados), a sessão fica **
 |---|---|
 | Sessões | `tools/vfdev/sessoes/<id>.json` (fora do git) |
 | Missões | `tools/vfdev/missoes/` (fora do git) |
+| Histórico de gravações | `tools/vfdev/.history/` (fora do git) |

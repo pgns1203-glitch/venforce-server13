@@ -16,7 +16,8 @@ const pf = v => parseFloat(v) || 0;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const norm = s => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
-const normSel = s => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, '').replace(/::/g, ':').replace(/["']/g, '').toLowerCase();
+const normSel = s => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, '').replace(/::/g, ':').replace(/["']/g, '').toLowerCase()
+  .replace(/:nth-(child|of-type|last-child|last-of-type)\(even\)/g, ':nth-$1(2n)').replace(/:nth-(child|of-type|last-child|last-of-type)\(odd\)/g, ':nth-$1(2n+1)');
 const LS = {
   get(k, d) { try { const v = localStorage.getItem('vfdev:' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('vfdev:' + k, JSON.stringify(v)); } catch (e) {} }
@@ -80,18 +81,28 @@ async function indexSheet(sheet, force) {
   let meta;
   try { meta = await getJSON('/__vfdev/index?file=' + encodeURIComponent(file)); }
   catch (e) { list.forEach(r => ruleInfo.set(r, { file, kind: 'unknown', writable: false, reason: e.message, line: null, decls: {} })); return; }
-  fileMeta.set(file, { kind: meta.kind, writable: meta.writable, reason: meta.reason, sources: meta.sources || [], sheet });
+  const ilha = meta.kind === 'built' ? (file.split('/')[1] || null) : null;
+  fileMeta.set(file, { kind: meta.kind, writable: meta.writable, reason: meta.reason, sources: meta.sources || [], sheet, ilha, pareadas: meta.pareadas || 0 });
   for (const [r, src] of pair(list, meta.rules)) {
-    ruleInfo.set(r, src
-      ? { file, kind: meta.kind, writable: meta.writable, reason: meta.reason, line: src.line, column: src.column, selectorSrc: src.selector, cond: src.cond, decls: src.decls }
-      : { file, kind: meta.kind, writable: false, reason: 'regra não localizada no arquivo (recarregue)', line: null, decls: {} });
+    if (!src) { ruleInfo.set(r, { file, kind: meta.kind, writable: false, reason: 'regra não localizada no arquivo (recarregue)', line: null, decls: {} }); continue; }
+    const S2 = src.src;
+    if (S2 && S2.writable) {
+      ruleInfo.set(r, { file: S2.file, kind: 'react-source', writable: true, bundle: file, ilha, line: S2.line, column: S2.column, selectorSrc: S2.selector, cond: S2.cond, decls: S2.decls,
+        reason: `fonte React${S2.porOrdem ? ' (pareada pela ordem de ocorrência)' : ''}; o CSS da tela vem de ${file} e só muda depois do rebuild da ilha` });
+      continue;
+    }
+    ruleInfo.set(r, { file, kind: meta.kind, writable: meta.writable, ilha, reason: meta.kind === 'built' && src.srcMotivo ? `gerado pelo Vite — ${src.srcMotivo}` : meta.reason,
+      line: src.line, column: src.column, selectorSrc: src.selector, cond: src.cond, decls: src.decls, srcFile: S2 && S2.file, srcLine: S2 && S2.line });
   }
 }
 async function syncSheets() { for (const s of [...document.styleSheets]) await indexSheet(s); }
 async function reindexFile(file) {
-  const m = fileMeta.get(file); if (!m) return;
-  for (const [r, i] of [...ruleInfo]) if (i.file === file) ruleInfo.delete(r);
-  await indexSheet(m.sheet, true);
+  const metas = fileMeta.has(file) ? [[file, fileMeta.get(file)]] : [...fileMeta].filter(([, m]) => (m.sources || []).includes(file));
+  for (const [f, m] of metas) {
+    for (const [r, i] of [...ruleInfo]) if (i.file === f || i.bundle === f) ruleInfo.delete(r);
+    await indexSheet(m.sheet, true);
+  }
+  resetCache();
 }
 
 /* ================= 2. Qual regra REALMENTE controla a propriedade ================= */
@@ -265,7 +276,7 @@ function overrideRuleFor(file, sel) {
   return rule;
 }
 function sourceHint(src) {
-  if (src && src.info && src.info.kind === 'built') { const m = fileMeta.get(src.info.file); return (m && m.sources && m.sources.length) ? m.sources.join(' ou ') : `${src.info.file} (fonte não versionada)`; }
+  if (src && src.info && src.info.kind === 'built') { if (src.info.srcFile) return `${src.info.srcFile}:${src.info.srcLine}`; const m = fileMeta.get(src.info.file); return (m && m.sources && m.sources.length) ? m.sources.join(' ou ') : `${src.info.file} (fonte não versionada)`; }
   if (src && src.info && src.info.kind === 'inline') return `${htmlFile()} (<style> inline)`;
   if (src && src.inline) return `${htmlFile()} (atributo style="")`;
   return pageFile() || htmlFile();
@@ -284,7 +295,7 @@ function scratchRule(sel, hint) {
 function targetFor(el, prop) {
   const src = findSource(el, prop), info = src.rule && src.info;
   if (info && info.isNew) return { rule: src.rule };
-  if (info && info.writable && info.line && (info.kind === 'page' || (info.kind === 'global' && S.scope === 'global'))) return { rule: src.rule };
+  if (info && info.writable && info.line && (info.kind === 'page' || info.kind === 'react-source' || (info.kind === 'global' && S.scope === 'global'))) return { rule: src.rule };
   if (info && info.kind === 'built') return { rule: getScratch(el, src), scratch: true, src };
   if (!src.important) { const o = getOverride(el); if (o) return { rule: o, override: true, src }; }
   return { rule: getScratch(el, src), scratch: true, src };
@@ -610,10 +621,11 @@ function locOf(src) {
   if (i.kind === 'scratch') return 'só no prompt';
   if (i.isNew) return `${i.file} · regra nova`;
   const d = i.decls && i.decls[src.prop];
+  if (i.kind === 'built' && i.srcFile) return `${i.file} ← fonte ${i.srcFile}:${i.srcLine}`;
   return i.line ? `${i.file}:${d ? d.line : i.line}${d && i.kind === 'built' ? ':' + d.column : ''}` : i.file;
 }
 function condLabel(c) { const m = c && c.match(/max-width:\s*(\d+)px/); const n = c && c.match(/min-width:\s*(\d+)px/); return m ? `só em telas ≤ ${m[1]}px` : n ? `só em telas ≥ ${n[1]}px` : c; }
-const KIND = { page: '', global: '<span class="badge warn">global</span>', protected: '<span class="badge lock">protegido</span>', built: '<span class="badge lock">gerado pelo Vite</span>', inline: '<span class="badge lock">inline no HTML</span>', scratch: '<span class="badge">só prompt</span>', unknown: '<span class="badge lock">?</span>' };
+const KIND = { 'react-source': '<span class="badge warn">fonte React</span>', page: '', global: '<span class="badge warn">global</span>', protected: '<span class="badge lock">protegido</span>', built: '<span class="badge lock">gerado pelo Vite</span>', inline: '<span class="badge lock">inline no HTML</span>', scratch: '<span class="badge">só prompt</span>', unknown: '<span class="badge lock">?</span>' };
 function rowHTML(t, def, src) {
   const i = T(t), val = src.rule || src.inline ? src.value : '', id = `in-${def.prop}-${i}`;
   const flash = S.lastEdit && S.lastEdit.el === t && S.lastEdit.prop === def.prop ? ' flash' : '';
@@ -637,6 +649,7 @@ function rowHTML(t, def, src) {
     let warn;
     if (k === 'protected') warn = 'Arquivo protegido: editar cria um override no CSS desta tela.';
     else if (k === 'built') warn = `CSS gerado pelo Vite (${esc(src.info.reason || '')}). Editar aqui vira só prompt — a correção vai na fonte React.`;
+    else if (k === 'react-source') warn = `Grava na fonte <span class="mono">${esc(src.info.file)}</span>. A tela só muda “de verdade” depois do rebuild da ilha <b>${esc(src.info.ilha)}</b>. <button class="link" data-act="rebuild" data-ilha="${esc(src.info.ilha)}">Rebuild agora</button>`;
     else if (k === 'inline') warn = 'Estilo dentro do HTML: editar vira só prompt.';
     else if (k === 'global' && S.scope === 'page') warn = 'Regra global: editar cria um override só nesta tela.';
     else warn = `Afeta ${src.affects} elemento${src.affects === 1 ? '' : 's'} nesta tela.`;
@@ -711,7 +724,7 @@ function issuesPanel() {
   return h;
 }
 function changesPanel() {
-  if (!changes.size) return `<div class="ok">Nenhuma alteração pendente. Tudo que você mexer aparece aqui, e dá pra reverter um por um antes de gravar.</div>`;
+  if (!changes.size) return `<div class="ok">Nenhuma alteração pendente. Tudo que você mexer aparece aqui, e dá pra reverter um por um antes de gravar.</div>` + liveHTML() + histHTML();
   let h = '';
   for (const { rule, info, list } of groupChanges()) {
     h += `<div class="chg-file">${esc(info.file)}${info.kind === 'scratch' ? ' · só prompt' : info.isNew ? ' · override novo' : ` · linha ${info.line}`}</div>`;
@@ -721,8 +734,9 @@ function changesPanel() {
       h += `<div class="chg"><div class="chg-main"><code>${esc(rule.selectorText)}</code><span class="mono">${c.prop}: ${sb ? `<span class="del">${esc(sb)}</span> → ` : ''}<span class="add">${esc(c.after || '(remover)')}</span></span></div>${el ? `<button class="btn sm" data-act="sel" data-t="${T(el)}">Ver</button>` : ''}<button class="btn sm" data-act="revert" data-k="${k}">Reverter</button><input class="why" data-why-key="${esc(k)}" placeholder="Por quê? (opcional)" value="${esc(it && it.nota || '')}" aria-label="Por quê?"></div>`;
     }
   }
-  return h;
+  return h + liveHTML() + histHTML();
 }
+function liveHTML() { return S.live && Date.now() - S.live.em < 60000 ? `<div class="meta">Ao vivo: <span class="mono">${esc(S.live.file)}</span> — ${esc(S.live.msg)} (${new Date(S.live.em).toLocaleTimeString()})</div>` : ''; }
 function renderTabs() {
   root.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === S.tab));
   const ci = root.getElementById('cnt-issues'); ci.textContent = S.problems.length; ci.classList.toggle('hot', S.problems.some(p => p.sev !== 'baixa'));
@@ -788,14 +802,16 @@ async function apply(dry) {
     const done = new Set(files.map(f => f.file));
     syncCssItems();
     for (const [k, c] of [...changes]) if (ruleInfo.get(c.rule).writable && done.has(ruleInfo.get(c.rule).file)) {
-      const it = cssItemOf(k); if (it) { it.css.destino = 'gravado'; it.css.gravadoEm = nowIso(); }
+      const it = cssItemOf(k); if (it) { it.css.destino = 'gravado'; it.css.gravadoEm = nowIso(); if (res.historico) it.css.historico = res.historico; }
       cssItemKey.delete(k); changeEl.delete(k); changes.delete(k);
     }
     saveSoon();
     undoS.length = 0; redoS.length = 0;
     for (const f of done) await reindexFile(f);
     overrides.clear();
-    toast(`Gravado: ${[...done].join(', ')}. Confira com git diff.`);
+    const ilhas = [...new Set([...done].filter(f => f.startsWith('frontend-react/')).flatMap(f => [...fileMeta.values()].filter(m => (m.sources || []).includes(f)).map(m => m.ilha)))];
+    S.hist = null;
+    toast(`Gravado: ${[...done].join(', ')}.${ilhas.length ? ` Fonte React: rode o rebuild de ${ilhas.join(', ')} para o bundle refletir.` : ''} Dá para desfazer na aba Alterações.`, 6000);
     render(); rescanSoon();
   } catch (e) { toast('Não gravou: ' + e.message, 6000); }
 }
@@ -829,6 +845,11 @@ async function openDrawer(tab) {
   d.hidden = false; d.dataset.tab = tab;
   root.querySelectorAll('#dtabs button').forEach(b => b.setAttribute('aria-pressed', b.dataset.tab === tab));
   if (tab === 'prompt') { body.innerHTML = `<p class="note">Formato cirúrgico: arquivo, linha, antes/depois e critério medível.</p><pre class="prompt" id="ptext">${esc(promptText())}</pre>`; return; }
+  if (tab === 'build') {
+    const f = S.buildFim;
+    body.innerHTML = `<p class="note">${S.building ? `Rebuild de <b>${esc(S.building)}</b> em andamento…` : f ? (f.ok ? `Rebuild de <b>${esc(f.ilha)}</b> ok (${(f.ms / 1000).toFixed(1)} s).` : `<span class="err">Rebuild de <b>${esc(f.ilha)}</b> falhou (código ${esc(f.codigo)}). Últimas 30 linhas:</span>`) : 'Nenhum rebuild nesta aba.'}</p><pre class="prompt" id="blog">${esc((f && !f.ok ? f.ultimas : S.buildLog || []).join('\n'))}</pre>`;
+    return;
+  }
   if (tab === 'missao') {
     if (!S.missaoMd && SES && SES.missao) { body.innerHTML = '<p class="note">Carregando a missão…</p>'; try { S.missaoMd = await (await fetch('/__vfdev/missoes/' + encodeURIComponent(SES.id) + '.md', { headers: { 'X-VFDEV-Token': TOKEN } })).text(); } catch (e) {} }
     body.innerHTML = S.missaoMd ? `<p class="note">Cole no agente, ou mande ele ler <code>${esc(SES.missao.md)}</code>. Depois clique em <b>Verificar missão</b>.</p><pre class="prompt" id="ptext">${esc(S.missaoMd)}</pre>` : '<p class="note">Nenhuma missão gerada nesta sessão. Use <b>Gerar missão</b> na aba Sessão.</p>';
@@ -1444,6 +1465,124 @@ function showWhy(key, el, prop) {
   }, 6000);
 }
 
+/* ================= 14c. CSS ao vivo, rebuild das ilhas e histórico de gravações ================= */
+/* O servidor avisa (SSE) quando um .css muda no disco — inclusive quando o agente edita os arquivos.
+ * A página troca o href do <link> (com ?v=) e reindexa, sem F5. */
+let evs = null;
+const pendentesEm = file => [...changes.values()].filter(c => { const i = ruleInfo.get(c.rule) || {}; return i.file === file || i.bundle === file; }).length;
+function linksOf(test) { return [...document.querySelectorAll('link[rel~="stylesheet"]')].filter(l => { if (l.dataset.vfdevLoading) return false; const f = relFromHref(l.href); return f && test(f); }); }
+function swapLink(link, href) {
+  return new Promise(resolve => {
+    const u = new URL(href || link.getAttribute('href'), location.href); u.searchParams.set('v', Date.now().toString(36));
+    const nl = link.cloneNode(); nl.href = u.href; nl.dataset.vfdevLoading = '1';
+    const done = async ok => {
+      delete nl.dataset.vfdevLoading;
+      if (!ok) { nl.remove(); return resolve(false); }
+      const old = link.sheet;
+      for (const [r] of [...ruleInfo]) if (r.parentStyleSheet === old) ruleInfo.delete(r);
+      link.remove(); overrides.clear();
+      await indexSheet(nl.sheet, true); readTokens(); resetCache(); render();
+      resolve(true);
+    };
+    nl.addEventListener('load', () => done(true), { once: true });
+    nl.addEventListener('error', () => done(false), { once: true });
+    link.after(nl);
+  });
+}
+/* eventos de CSS são tratados em fila: uma gravação seguida de um desfazer não pode trocar o <link> fora de ordem */
+let liveQueue = Promise.resolve();
+function onCssChanged(file) { liveQueue = liveQueue.then(() => handleCssChanged(file)).catch(e => console.warn('[vfdev] CSS ao vivo:', e)); return liveQueue; }
+async function handleCssChanged(file) {
+  if (S.building && file.startsWith(`assets/${S.building}/`)) return;   // o rebuild troca o bundle no fim
+  if (file.startsWith('frontend-react/')) {
+    const ms = [...fileMeta.values()].filter(m => (m.sources || []).includes(file));
+    if (!ms.length) return;
+    await reindexFile(file); render();
+    S.live = { file, em: Date.now(), msg: `fonte mudou — a tela só reflete depois do rebuild de ${[...new Set(ms.map(m => m.ilha))].join(', ')}` };
+    return;
+  }
+  const links = linksOf(f => f === file); if (!links.length) return;
+  const n = pendentesEm(file);
+  if (n) { toast(`${file} mudou no disco, mas você tem ${n} alteração(ões) pendente(s) nele. Grave ou reverta e use “Recarregar CSS”.`, 6000); S.live = { file, em: Date.now(), msg: 'mudou no disco — recarga adiada (há alterações pendentes)' }; return; }
+  for (const l of links) await swapLink(l);
+  S.live = { file, em: Date.now(), msg: 'recarregado do disco' };
+  window.__VFDEV__.lastLive = S.live;
+}
+function connectEvents() {
+  if (evs || typeof EventSource === 'undefined') return;
+  evs = new EventSource('/__vfdev/events?t=' + encodeURIComponent(TOKEN));
+  evs.addEventListener('css', e => { try { onCssChanged(JSON.parse(e.data).file); } catch (x) {} });
+  evs.addEventListener('rebuild', e => { const d = JSON.parse(e.data); S.buildLog = (S.buildLog || []).concat(d.linha).slice(-300); const b = root.getElementById('dbody'); if (b && root.getElementById('drawer').dataset.tab === 'build' && !root.getElementById('drawer').hidden) { const pre = root.getElementById('blog'); if (pre) { pre.textContent = S.buildLog.join('\n'); pre.scrollTop = pre.scrollHeight; } } });
+  evs.addEventListener('rebuild-fim', e => onRebuildFim(JSON.parse(e.data)));
+}
+async function rebuildIlha(ilha) {
+  if (!ilha) return toast('Esta regra não pertence a uma ilha React.');
+  S.buildLog = []; S.buildFim = null;
+  try { await postJSON('/__vfdev/rebuild', { ilha }); } catch (e) { toast('Rebuild não iniciou: ' + e.message, 7000); return false; }
+  S.building = ilha; openDrawer('build'); render();
+  return true;
+}
+async function onRebuildFim(d) {
+  S.building = null; S.buildFim = d;
+  const dr = root.getElementById('drawer'); if (!dr.hidden && dr.dataset.tab === 'build') openDrawer('build');
+  if (!d.ok) { toast(`Rebuild de ${d.ilha} falhou (código ${d.codigo}). Veja as últimas linhas na gaveta.`, 8000); openDrawer('build'); render(); return; }
+  const n = linksOf(f => f.startsWith(`assets/${d.ilha}/`)).reduce((a, l) => a + pendentesEm(relFromHref(l.href)), 0);
+  let html = '';
+  try { const u = new URL(location.href); u.searchParams.set('vfdev', 'off'); html = await (await fetch(u.href, { cache: 'no-store' })).text(); } catch (e) {}
+  const novo = [...new DOMParser().parseFromString(html, 'text/html').querySelectorAll('link[rel~="stylesheet"]')].map(l => l.getAttribute('href')).filter(h => relFromHref(h) && relFromHref(h).startsWith(`assets/${d.ilha}/`));
+  const atuais = linksOf(f => f.startsWith(`assets/${d.ilha}/`));
+  if (!novo.length || !atuais.length) { toast(`Rebuild ok, mas não achei o <link> do CSS de ${d.ilha} ${!novo.length ? 'no .html novo' : 'nesta página'}.`, 7000); render(); return; }
+  if (n) { toast(`Rebuild ok, mas há ${n} alteração(ões) pendente(s) no CSS desta ilha — grave ou reverta antes de trocar o bundle.`, 8000); render(); return; }
+  await swapLink(atuais[0], novo[0]);
+  for (const l of atuais.slice(1)) l.remove();
+  toast(`Rebuild de ${d.ilha} ok em ${(d.ms / 1000).toFixed(1)} s — CSS trocado sem F5.`, 5000);
+  window.__VFDEV__.lastRebuild = { ...d, href: novo[0] };
+  render();
+}
+async function loadHist() {
+  try {
+    const h = (await getJSON('/__vfdev/historico')).gravacoes;
+    const files = [...new Set(h.filter(g => !g.desfeitoEm).flatMap(g => g.arquivos))];
+    let git = { arquivos: [] };
+    if (files.length) try { git = await getJSON('/__vfdev/git?files=' + encodeURIComponent(files.join(','))); } catch (e) { git = { erro: e.message, arquivos: [] }; }
+    S.hist = { gravacoes: h, git };
+  } catch (e) { S.hist = { erro: e.message, gravacoes: [], git: { arquivos: [] } }; }
+  if (S.tab === 'changes') renderBody();
+}
+async function desfazerGravacao(id) {
+  let r; try { r = await postJSON(`/__vfdev/historico/${encodeURIComponent(id)}/desfazer`, {}); } catch (e) { toast('Não desfez: ' + e.message, 7000); return null; }
+  if (SES) { for (const it of SES.itens) if (it.tipo === 'css' && it.css.historico === id) { it.css.destino = 'descartada'; it.css.motivo = `gravação desfeita em ${r.desfeitoEm.slice(0, 16).replace('T', ' ')}`; } saveSoon(0); }
+  for (const f of r.arquivos) {
+    const bundles = f.startsWith('frontend-react/') ? [...fileMeta].filter(([, m]) => (m.sources || []).includes(f)).map(([b]) => b) : [];
+    for (const b of bundles) if (!pendentesEm(b)) for (const l of linksOf(x => x === b)) await swapLink(l);
+  }
+  S.hist = null; toast(`Gravação desfeita: ${r.arquivos.join(', ')} voltou ao conteúdo anterior.`, 5000); render();
+  return r;
+}
+function gitCmds() {
+  const g = S.hist && S.hist.git;
+  const files = (g && g.arquivos || []).filter(a => a.status !== '').map(a => a.repo);
+  if (!files.length) return '';
+  const msg = `style(${htmlFile().replace(/\.html$/, '')}): ${SES && SES.objetivo ? SES.objetivo : 'ajustes visuais via VF DevTools'}`.replace(/"/g, "'");
+  return files.map(f => `git add ${f}`).join('\n') + `\ngit commit -m "${msg}"`;
+}
+function histHTML() {
+  if (!S.hist) { loadHist(); return '<div class="meta">Carregando gravações…</div>'; }
+  const H = S.hist; if (H.erro) return `<div class="warnline">Histórico indisponível: ${esc(H.erro)}</div>`;
+  if (!H.gravacoes.length) return '';
+  const st = new Map((H.git.arquivos || []).map(a => [a.file, a]));
+  const GIT = { ' M': 'modificado', 'M ': 'no stage', 'MM': 'modificado (parte no stage)', '??': 'novo', '': 'sem mudança no git' };
+  let h = `<div class="group">Gravações</div>${H.git.erro ? `<div class="warnline">${esc(H.git.erro)}</div>` : ''}`;
+  for (const g of H.gravacoes.slice(0, 12)) {
+    h += `<div class="chg"><div class="chg-main"><span class="mono">${new Date(g.em).toLocaleTimeString()} · ${g.arquivos.map(f => { const a = st.get(f); return `${esc(f)}${a && a.status != null && !g.desfeitoEm ? ` <span class="badge">${esc(GIT[a.status] || a.status)}</span>` : ''}`; }).join('<br>')}</span></div>${g.desfeitoEm ? '<span class="badge">desfeita</span>' : `<button class="btn sm" data-act="undo-grav" data-id="${esc(g.id)}">Desfazer gravação</button>`}</div>`;
+  }
+  const cmds = gitCmds();
+  if (cmds) h += `<button class="btn sm" data-act="git-cmds">Copiar comandos git</button>`;
+  const ilhas = [...new Set(H.gravacoes.filter(g => !g.desfeitoEm).flatMap(g => g.arquivos).filter(f => f.startsWith('frontend-react/')).flatMap(f => [...fileMeta.values()].filter(m => (m.sources || []).includes(f)).map(m => m.ilha)))];
+  for (const il of ilhas) h += `<button class="btn sm" data-act="rebuild" data-ilha="${esc(il)}"${S.building ? ' disabled' : ''}>${S.building === il ? 'Reconstruindo…' : `Rebuild ${esc(il)}`}</button>`;
+  return h;
+}
+
 /* ================= 15. UI (shadow DOM) ================= */
 const CSS_TEXT = `
 :host{all:initial}
@@ -1643,7 +1782,7 @@ const HTML = `
     <div class="foot"><div class="foot-count" id="foot-count"></div>
       <div class="foot-r"><button class="btn sm" id="undo">↶</button><button class="btn sm" id="redo">↷</button><button class="btn sm" id="before">Ver antes</button><button class="btn sm" id="cmpbtn">Larguras</button><button class="btn sm" id="diff">Diff</button><button class="btn sm" id="prompt">Prompt</button><button class="btn sm pri" id="apply">Gravar</button></div></div>
   </section>
-  <div class="sheet" id="drawer" hidden><div class="sheet-in"><div class="sheet-top"><div class="seg" id="dtabs"><button data-tab="diff">Diff real</button><button data-tab="prompt">Prompt pro Codex</button><button data-tab="missao">Missão</button></div><button class="btn" id="dcopy">Copiar</button><button class="btn" id="dclose">Fechar</button></div><div class="sheet-body" id="dbody"></div></div></div>
+  <div class="sheet" id="drawer" hidden><div class="sheet-in"><div class="sheet-top"><div class="seg" id="dtabs"><button data-tab="diff">Diff real</button><button data-tab="prompt">Prompt pro Codex</button><button data-tab="missao">Missão</button><button data-tab="build">Build</button></div><button class="btn" id="dcopy">Copiar</button><button class="btn" id="dclose">Fechar</button></div><div class="sheet-body" id="dbody"></div></div></div>
   <div class="cmd" id="cmd" hidden><div class="cmd-in"><input id="cmd-input" placeholder="Escreva do seu jeito: menos espaço, 3 colunas, centralizar…" autocomplete="off" spellcheck="false"><div class="cmd-target" id="cmd-target"></div><div class="cmd-list" id="cmd-list"></div><div class="cmd-foot"><span><kbd>↑</kbd><kbd>↓</kbd> escolher</span><span><kbd>Enter</kbd> aplicar</span><span><kbd>Esc</kbd> fechar</span><span>Aceita CSS direto: <code>gap 8</code></span></div></div></div>
   <div class="cmp" id="cmp" hidden><div class="cmp-top"><b>Comparar larguras — mesma página, sem o editor, com as alterações pendentes aplicadas</b><button class="btn" id="cmp-reload">Recarregar</button><button class="btn" id="cmp-close">Fechar</button></div><div class="cmp-frames" id="cmp-frames"></div></div>
   <div class="talk" id="talk" hidden role="dialog" aria-label="Falar sobre isso"><div class="talk-h" id="talk-h"></div><textarea id="talk-text" rows="3" placeholder="o que te incomoda aqui?"></textarea><div class="chips" id="talk-chips">${CHIPS.map(c => `<button data-chip="${c}">${c}</button>`).join('')}</div><div class="actions"><button class="btn sm pri" id="talk-save">Salvar</button><button class="btn sm" id="talk-resolve" hidden>Resolver</button><button class="btn sm" id="talk-del" hidden>Apagar</button><button class="btn sm" id="talk-cancel">Cancelar</button><span class="hint">Ctrl+Enter salva · Esc cancela</span></div></div>
@@ -1716,6 +1855,9 @@ function buildUI() {
     else if (act === 'item-ver') { const it = SES.itens.find(i => i.id === b.dataset.id); const r = it && resolveAlvo(it.alvo); if (r && r.el) { r.el.scrollIntoView({ block: 'center' }); S.tab = 'props'; select(r.el); } }
     else if (act === 'item-del') delItem(b.dataset.id);
     else if (act === 'mis-gerar') pedirObjetivo();
+    else if (act === 'rebuild') rebuildIlha(b.dataset.ilha);
+    else if (act === 'undo-grav') desfazerGravacao(b.dataset.id);
+    else if (act === 'git-cmds') copy(gitCmds(), 'Comandos git copiados.');
     else if (act === 'obj-ok') gerarMissao(root.getElementById('obj-text').value);
     else if (act === 'obj-cancel') { S.objDraft = null; render(); }
     else if (act === 'mis-ver') openDrawer('missao');
@@ -1851,6 +1993,7 @@ async function boot() {
     sheetTimer = setTimeout(async () => { const n = ruleInfo.size; await syncSheets(); if (ruleInfo.size !== n) { readTokens(); resetCache(); } rescanSoon(); }, 300);
   }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'open'] });
   window.addEventListener('pointerup', onUp, true);
+  connectEvents();
   await loadOffer();
   let auto = null; try { auto = sessionStorage.getItem(SSKEY); } catch (e) {}
   if (auto && sesOffer.some(s => s.id === auto && s.status !== 'descartada')) await continuarSessao(auto, true);
@@ -1858,7 +2001,7 @@ async function boot() {
   if (S.open) S.problems = scan();
   render();
   window.__VFDEV__.api = { select, edit, findSource, ruleInfo, changes, buildPatch, apply, scan, state: S,
-    sessao: () => SES, erroSessao: () => sesErr, pedirObjetivo, gerarMissao, verificarMissao, runCheck, novaSessao, continuarSessao, saveNow, comentar, estrutural, previewOn, previewOff, previews, resolveAlvo, captureAlvo, openCompare, setTab, render, delItem };
+    sessao: () => SES, erroSessao: () => sesErr, pedirObjetivo, gerarMissao, verificarMissao, runCheck, rebuildIlha, desfazerGravacao, loadHist, gitCmds, fileMeta, novaSessao, continuarSessao, saveNow, comentar, estrutural, previewOn, previewOff, previews, resolveAlvo, captureAlvo, openCompare, setTab, render, delItem };
   window.__VFDEV__.ready = true;
 }
 if (document.readyState === 'complete') boot(); else window.addEventListener('load', boot, { once: true });

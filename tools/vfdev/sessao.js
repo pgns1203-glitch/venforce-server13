@@ -109,7 +109,7 @@ function item(it, i) {
   if (!isObj(b)) fail(`${w}.${it.tipo} é obrigatório para itens do tipo "${it.tipo}".`);
   const bw = `${w}.${it.tipo}`;
   if (it.tipo === 'css') {
-    only(b, ['arquivo', 'linha', 'coluna', 'seletor', 'seletorRegra', 'prop', 'antes', 'depois', 'destino', 'motivo', 'kind', 'cond', 'novo', 'computado', 'gravadoEm', 'regra'], bw);
+    only(b, ['arquivo', 'linha', 'coluna', 'seletor', 'seletorRegra', 'prop', 'antes', 'depois', 'destino', 'motivo', 'kind', 'cond', 'novo', 'computado', 'gravadoEm', 'regra', 'historico'], bw);
     str(b, 'arquivo', bw, { required: true, max: 400 });
     num(b, 'linha', bw, { nullable: true }); num(b, 'coluna', bw, { nullable: true });
     str(b, 'seletor', bw, { required: true, max: 600 });

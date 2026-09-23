@@ -41,7 +41,8 @@ Abra `http://127.0.0.1:5190/index.html`, faça login uma vez e depois vá para q
 | CSS da página (`css/pages/*.css`, `fechamentos-api.css`…) | troca **só o valor** naquela declaração |
 | CSS global (`vf-tokens-v2`, `vf-components-v2`, `vf-shell`, `venforce-ui-v2`) | padrão: cria override no fim do CSS da página, prefixado com `.vf-page-<tela>`. Com "Todas as telas", edita a regra global |
 | `style.css` (protegido) | override no CSS da página. **Nunca grava no `style.css`** |
-| `assets/**` (gerado pelo Vite) | **não grava**. Vai para o prompt, apontando a fonte em `frontend-react/src/styles/…` |
+| `assets/**` (gerado pelo Vite), regra **pareada** com a fonte | grava **na fonte** `frontend-react/src/styles/…:linha` (tipo `react-source`). O bundle só muda depois do **Rebuild** da ilha |
+| `assets/**`, regra **sem par** (ambígua, fundida pelo minificador ou fora de `src/styles/`) | **não grava**. Vai para o prompt/missão, com o motivo explícito |
 | `<style>` ou `style=""` no HTML | não grava. Vai para o prompt |
 | Tela sem CSS próprio ou sem classe `vf-page-*` no `<body>` | não grava. Vai para o prompt |
 
@@ -83,11 +84,24 @@ API local (token + origem em todas):
 | `GET /__vfdev/missoes/:id/rascunho` | rascunho do objetivo, por regras |
 | `POST /__vfdev/missoes/:id` `{ objetivo }` | gera `.md` + `.json` (400 sem objetivo) |
 | `GET /__vfdev/missoes/:id` · `GET /__vfdev/missoes/:id.md` | lê as verificações · lê o texto da missão |
+| `GET /__vfdev/events?t=<token>` | SSE: `css` (arquivo mudou), `rebuild` (linha de log), `rebuild-fim` |
+| `POST /__vfdev/rebuild` `{ ilha }` | rebuild da ilha (202; 400 com o motivo; 409 se já houver um rodando) |
+| `GET /__vfdev/historico` · `POST /__vfdev/historico/:id/desfazer` | gravações · desfazer (409 se o arquivo mudou) |
+| `GET /__vfdev/git?files=a,b` | `git status --porcelain` dos arquivos |
+
+## Ilhas React, CSS ao vivo e desfazer
+
+- **Bundle → fonte.** Ao indexar `Portal/assets/<ilha>/*.css`, o servidor também indexa as fontes de `viteSources` e pareia cada regra por **seletor normalizado + `@media` + conjunto de propriedades** (tolera minificação: espaços, `even`→`2n`, `(max-width:N)`→`(width<=N)`, prefixos de fornecedor). Chave repetida N vezes dos dois lados pareia pela ordem. Nos arquivos reais da Cliente 360 V3, 451 de 454 regras pareiam; as 3 restantes são seletores que o minificador fundiu ou reescreveu, e aparecem com o motivo.
+- A escrita em runtime na fonte é **restrita a `frontend-react/src/styles/`**. CSS de componente (ex.: `src/components/ui/VFMonthYearSelector/*.css`) é pareado só para dar `arquivo:linha` como evidência na missão.
+- **Rebuild** (`POST /__vfdev/rebuild { ilha }`): roda `npm run <script>` em `frontend-react/` (spawn sem shell, timeout de 180 s), com o log na gaveta **Build** via SSE. Com sucesso, relê o `.html` e troca o `<link>` do CSS pelo hash novo **sem F5** (o JS da ilha só muda com F5). Com falha, mostra as últimas 30 linhas. O mapa ilha → script fica em `vfdev.config.json` (`ilhas`). `cliente-360-v2` não tem script (fonte Vue não versionada), e `painel-contas` aponta `build:painel-contas`, que **ainda não existe** no `package.json` (a ferramenta diz isso em vez de tentar).
+- **CSS ao vivo** (`GET /__vfdev/events`, SSE): um `fs.watch` por diretório no Portal e em `frontend-react/src`. Quando um `.css` muda no disco (inclusive quando o agente edita), a página troca o `href` com `?v=` e reindexa, em fila e sem F5. Se houver alterações pendentes naquele arquivo, a recarga é adiada e a ferramenta avisa. Mudança numa fonte React só reindexa as linhas; a tela muda depois do rebuild.
+- **Desfazer gravação**: cada Gravar fica em `tools/vfdev/.history/<data>.jsonl` (fora do git). Na aba **Alterações**, **Desfazer gravação** devolve o conteúdo anterior **byte a byte**, com a mesma validação de caminho, e responde 409 se o arquivo mudou depois da gravação. O item da sessão vira "descartada: gravação desfeita em …".
+- **Git**: a aba Alterações mostra o `git status --porcelain` (spawn sem shell) de cada arquivo gravado, e **Copiar comandos git** gera um `git add <arquivo>` por linha mais uma mensagem de commit sugerida. A ferramenta **não** roda `git add` nem `git commit`.
 
 ## Segurança do patch
 
 - O servidor escuta só em `127.0.0.1`, e o `POST /__vfdev/patch` exige o token gerado no boot, além de conferir a origem.
-- O patch só grava em `.css` dentro de `Portal/`. Recusa `style.css`, `assets/**` e qualquer caminho fora do Portal.
+- O patch só grava em `.css` dentro de `Portal/` e em `frontend-react/src/styles/*.css`. Recusa `style.css`, `layout.js`, `assets/**` e qualquer outro caminho.
 - Tudo é validado antes de gravar. Se uma regra saiu da linha:coluna esperada (por exemplo, porque o arquivo foi editado por fora), responde 409 e não grava nada.
 - O postcss preserva o arquivo byte a byte fora da declaração alterada, inclusive em regras de uma linha.
 - Revise sempre com `git diff` antes de commitar.

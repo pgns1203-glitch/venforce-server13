@@ -19,6 +19,8 @@ const sessao = async page => {
 };
 const inside = (p, r) => p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
 async function pinOverTarget(page, id, sel, idx = 0) {
+  await page.waitForFunction(id => document.querySelector('vf-devtools').shadowRoot.querySelector(`.pin[data-pin="${id}"]`), id, { timeout: 3000 }).catch(() => {});
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
   return page.evaluate(([id, sel, idx]) => {
     const pin = document.querySelector('vf-devtools').shadowRoot.querySelector(`.pin[data-pin="${id}"]`);
     if (!pin) return { ok: false, why: 'sem pin' };

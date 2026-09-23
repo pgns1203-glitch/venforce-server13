@@ -17,7 +17,9 @@ function normSel(s) {
     .replace(/\s+/g, '')
     .replace(/::/g, ':')
     .replace(/["']/g, '')
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/:nth-(child|of-type|last-child|last-of-type)\(even\)/g, ':nth-$1(2n)')
+    .replace(/:nth-(child|of-type|last-child|last-of-type)\(odd\)/g, ':nth-$1(2n+1)');
 }
 
 function insideKeyframes(node) {
@@ -127,4 +129,44 @@ function applyPatches(text, patches) {
   return { text: out, changes };
 }
 
-module.exports = { indexCss, applyPatches, normSel, PatchError };
+/** @media normalizada: sem espaço, minúscula, e (max-width:N) ≡ (width<=N) — o minificador pode trocar a sintaxe. */
+function normCond(c) {
+  if (!c) return '';
+  return String(c).toLowerCase().replace(/\s+/g, '')
+    .replace(/\(max-width:([^)]+)\)/g, '(width<=$1)').replace(/\(min-width:([^)]+)\)/g, '(width>=$1)')
+    .replace(/\(max-height:([^)]+)\)/g, '(height<=$1)').replace(/\(min-height:([^)]+)\)/g, '(height>=$1)')
+    .replace(/@mediaall and/g, '@media').replace(/@mediascreenand/g, '@media');
+}
+/** Conjunto de propriedades de uma regra, sem prefixos de fornecedor (o minificador pode acrescentá-los). */
+const propSet = decls => Object.keys(decls).filter(p => p.startsWith('--') || !/^-(webkit|moz|ms|o)-/.test(p)).sort().join(',');
+
+/**
+ * Pareia cada regra de um CSS gerado pelo Vite (bundle) com a regra de origem em frontend-react/src/styles/*.css.
+ * Chave: seletor normalizado + @media normalizada + conjunto de propriedades. Tolera a minificação.
+ * Quando a mesma chave aparece N vezes no bundle e N vezes nas fontes, pareia pela ordem de ocorrência.
+ * Devolve, para cada regra do bundle (mesma ordem de indexCss), { src } ou { motivo }.
+ */
+function pairBundle(bundleRules, sources) {
+  const key = r => normSel(r.selector) + '|' + normCond(r.cond) + '|' + propSet(r.decls);
+  const selKey = r => normSel(r.selector) + '|' + normCond(r.cond);
+  const byKey = new Map(), bySel = new Map();
+  for (const { file, rules } of sources) for (const r of rules) {
+    const k = key(r), sk = selKey(r), e = { file, ...r };
+    if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(e);
+    if (!bySel.has(sk)) bySel.set(sk, []); bySel.get(sk).push(e);
+  }
+  const seen = new Map(), total = new Map();
+  for (const r of bundleRules) { const k = key(r); total.set(k, (total.get(k) || 0) + 1); }
+  return bundleRules.map(r => {
+    const k = key(r), cands = byKey.get(k) || [], n = seen.get(k) || 0;
+    seen.set(k, n + 1);
+    if (cands.length === 1 && total.get(k) === 1) return { src: cands[0] };
+    if (cands.length > 1 && cands.length === total.get(k)) return { src: cands[n], porOrdem: true };
+    if (cands.length > 1) return { motivo: `ambíguo: ${cands.length} regras iguais nas fontes (${[...new Set(cands.map(c => `${c.file}:${c.line}`))].slice(0, 3).join(', ')}) para ${total.get(k)} no bundle` };
+    const mesmoSel = bySel.get(selKey(r)) || [];
+    if (mesmoSel.length) return { motivo: `sem par exato: o seletor existe nas fontes (${mesmoSel.slice(0, 2).map(c => `${c.file}:${c.line}`).join(', ')}) mas com outras propriedades — o minificador pode ter juntado ou reescrito a regra` };
+    return { motivo: 'sem par: o seletor não aparece nas fontes versionadas desta ilha' };
+  });
+}
+
+module.exports = { indexCss, applyPatches, normSel, normCond, pairBundle, PatchError };

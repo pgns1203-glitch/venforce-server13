@@ -22,10 +22,46 @@ function tmpPortal(extra) {
   return dir;
 }
 
+/**
+ * Repositório descartável completo: Portal/ (cópia do fixture) + frontend-react/ com a FONTE do bundle da ilha
+ * Visão do fixture, um package.json com scripts de build simulados e, opcionalmente, cópias dos arquivos REAIS
+ * da Cliente 360 V3 (bundle + fontes) — só leitura no repo de verdade.
+ */
+const REAL = path.resolve(ROOT, '..', '..');
+function tmpRepo({ real = false } = {}) {
+  const dir = tmpPortal();
+  const fr = path.join(dir, 'frontend-react');
+  fs.mkdirSync(path.join(fr, 'src', 'styles'), { recursive: true });
+  fs.writeFileSync(path.join(fr, 'src', 'styles', 'visao.css'), '/* fonte da ilha Visão (fixture) */\n.vz-box {\n  padding: 18px;\n  border-radius: 8px;\n  background: #eeeeff;\n}\n\n.vz-title {\n  font-size: 13px;\n  margin: 0;\n}\n');
+  fs.writeFileSync(path.join(fr, 'package.json'), JSON.stringify({ name: 'fr-fixture', private: true, scripts: { 'build:visao': 'node build.js', 'build:financeiro': 'node falha.js' } }, null, 2));
+  // build simulado: gera um bundle com hash novo a partir da fonte, troca o <link> no .html e apaga o antigo
+  fs.writeFileSync(path.join(fr, 'build.js'), `
+const fs = require('fs'), path = require('path');
+const P = path.join(__dirname, '..', 'Portal'), dir = path.join(P, 'assets', 'visao');
+const src = fs.readFileSync(path.join(__dirname, 'src', 'styles', 'visao.css'), 'utf8');
+const min = src.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '').replace(/\\s*([{};:,])\\s*/g, '$1').replace(/;}/g, '}').replace(/\\n/g, '').trim();
+const hash = Date.now().toString(36).slice(-8);
+for (const f of fs.readdirSync(dir)) fs.unlinkSync(path.join(dir, f));
+fs.writeFileSync(path.join(dir, 'visao-' + hash + '.css'), min);
+const h = path.join(P, 'fechamentos-api.html');
+fs.writeFileSync(h, fs.readFileSync(h, 'utf8').replace(/assets\\/visao\\/visao-[\\w-]+\\.css/, 'assets/visao/visao-' + hash + '.css'));
+console.log('vite v6 building for production...');
+console.log('✓ built visao-' + hash + '.css');
+`);
+  fs.writeFileSync(path.join(fr, 'falha.js'), 'for (let i = 1; i <= 40; i++) console.log("linha " + i);\nconsole.error("Erro: sintaxe inválida em src/styles/financeiro.css:12");\nprocess.exit(2);\n');
+  if (real) {
+    const b = path.join(dir, 'Portal', 'assets', 'cliente-360-v3');
+    fs.mkdirSync(b, { recursive: true });
+    for (const f of fs.readdirSync(path.join(REAL, 'Portal', 'assets', 'cliente-360-v3')).filter(f => f.endsWith('.css'))) fs.copyFileSync(path.join(REAL, 'Portal', 'assets', 'cliente-360-v3', f), path.join(b, f));
+    for (const f of ['cliente360.css', 'cliente360V3.css']) fs.copyFileSync(path.join(REAL, 'frontend-react', 'src', 'styles', f), path.join(fr, 'src', 'styles', f));
+  }
+  return dir;
+}
+
 function startServer(dir, port, env = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(process.execPath, [path.join(ROOT, 'server.js')], {
-      env: { ...process.env, VFDEV_PORTAL_DIR: path.join(dir, 'Portal'), VFDEV_SESSOES_DIR: path.join(dir, 'sessoes'), VFDEV_MISSOES_DIR: path.join(dir, 'missoes'), VFDEV_HISTORY_DIR: path.join(dir, 'history'), VFDEV_PORT: String(port), ...env },
+      env: { ...process.env, VFDEV_PORTAL_DIR: path.join(dir, 'Portal'), VFDEV_SESSOES_DIR: path.join(dir, 'sessoes'), VFDEV_MISSOES_DIR: path.join(dir, 'missoes'), VFDEV_HISTORY_DIR: path.join(dir, 'history'), VFDEV_PORT: String(port), ...(fs.existsSync(path.join(dir, 'frontend-react')) ? { VFDEV_REPO_DIR: dir } : {}), ...env },
       stdio: ['ignore', 'pipe', 'pipe']
     });
     let out = '';
@@ -56,4 +92,4 @@ async function openPage(base, file, width = 1440, ctx) {
 }
 async function closeBrowser() { const b = browserP && await browserP; if (b) await b.close(); browserP = null; }
 
-module.exports = { tmpPortal, startServer, openPage, browser, skipMotivo, closeBrowser, ROOT };
+module.exports = { tmpPortal, tmpRepo, REAL, startServer, openPage, browser, skipMotivo, closeBrowser, ROOT };

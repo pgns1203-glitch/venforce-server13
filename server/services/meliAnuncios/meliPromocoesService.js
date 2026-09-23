@@ -198,11 +198,12 @@ async function obterPromotionIdAtivo({ clienteId, itemId, mlUserId }) {
       `/items/${encodeURIComponent(itemId)}/sale_price?context=channel_marketplace`,
       { mlUserId }
     );
-    if (!resp || !resp.ok) return null;
+    if (!resp || !resp.ok) return { promotionId: null, amount: null };
     const promotionId = resp.data && resp.data.metadata && resp.data.metadata.promotion_id;
-    return promotionId != null ? String(promotionId) : null;
+    const amount = fin(resp.data && resp.data.amount);
+    return { promotionId: promotionId != null ? String(promotionId) : null, amount };
   } catch (_) {
-    return null;
+    return { promotionId: null, amount: null };
   }
 }
 
@@ -328,8 +329,41 @@ function deduplicarPromocoes(lista) {
   return ordemChaves.map((chave) => porChave.get(chave));
 }
 
+// Fallback secundário de statusExibicao — cobre tipos como SELLER_CAMPAIGN,
+// que não seguem o mecanismo de "oferta" (ref_id no formato OFFER-...) que os
+// outros 5 tipos usam para bater com sale_price.metadata.promotion_id (ver
+// documentacao_api_meli/campanhas-do-vendedor.md vs. gerenciar-ofertas.md):
+// a campanha pode estar realmente formando o preço de venda sem que
+// promotion_id case com id/ref_id, deixando uma promoção real ficar presa em
+// NÃO APLICADA (caso real: "Vendex - Setembro").
+//
+// Só roda quando o casamento primário (promotionIdAtivo) não elegeu NENHUMA
+// ATIVA na lista inteira. Critério: status started/active com precoFinal
+// (promo.price) igual, em centavos (round2), ao amount do sale_price — nunca
+// percentual de desconto, meli_percentage, maior desconto ou prioridade de
+// campanha. Ambiguidade (duas ou mais batendo no mesmo preço) nunca escolhe
+// arbitrariamente: nenhuma vira ATIVA. Muta os objetos in-place, mesmo
+// padrão de enriquecerVigencia — chamado antes de deduplicarPromocoes.
+function aplicarFallbackPrecoAtivo(normalizadas, saleAmount) {
+  if (normalizadas.some((p) => p.statusExibicao === "ATIVA")) return;
+
+  const amount = fin(saleAmount);
+  if (amount == null) return;
+
+  const candidatas = normalizadas.filter(
+    (p) =>
+      (p.status === "started" || p.status === "active") &&
+      p.precoFinal != null &&
+      round2(p.precoFinal) === round2(amount)
+  );
+
+  if (candidatas.length === 1) {
+    candidatas[0].statusExibicao = "ATIVA";
+  }
+}
+
 async function listarPromocoesDoItem({ clienteId, itemId, mlUserId }) {
-  const [resp, promotionIdAtivo] = await Promise.all([
+  const [resp, saleInfo] = await Promise.all([
     mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(itemId)}?app_version=v2`, { mlUserId }),
     obterPromotionIdAtivo({ clienteId, itemId, mlUserId }),
   ]);
@@ -343,7 +377,9 @@ async function listarPromocoesDoItem({ clienteId, itemId, mlUserId }) {
   lista = lista.filter((p) => p && typeof p === "object");
 
   const ordenada = ordenarPorPrioridade(lista);
-  const normalizadas = ordenada.map((p, i) => normalizarPromocao(p, i, promotionIdAtivo));
+  const normalizadas = ordenada.map((p, i) => normalizarPromocao(p, i, saleInfo && saleInfo.promotionId));
+
+  aplicarFallbackPrecoAtivo(normalizadas, saleInfo && saleInfo.amount);
 
   await enriquecerVigencia({
     clienteId,
@@ -359,6 +395,7 @@ module.exports = {
   normalizarPromocao,
   ordenarPorPrioridade,
   deduplicarPromocoes,
+  aplicarFallbackPrecoAtivo,
   rotuloTipoPromocao,
   statusLabelPromocao,
 };

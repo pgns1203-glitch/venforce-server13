@@ -75,7 +75,28 @@ Se um `.css` muda no disco, seja por você, pelo Claude ou pelo Codex, a tela se
 
 Cada **Gravar** aparece em **Alterações → Gravações**, com o status do git de cada arquivo. **Desfazer gravação** volta o arquivo exatamente ao que era, byte a byte, e se recusa se alguém mexeu no arquivo depois. **Copiar comandos git** copia um `git add` por arquivo e uma mensagem de commit sugerida. Quem roda o git é você.
 
-## 11. O que nunca acontece
+## 11. "De onde vem isso?"
+
+Ao clicar num elemento, o bloco **Origem** do Painel mostra de onde ele vem:
+
+- **CSS**: a regra que casa com o elemento e o `arquivo:linha`;
+- **Componente provável**: o arquivo `.jsx` (ou o `.js` da página) onde a classe aparece escrita, com o trecho da linha como prova;
+- **Árvore**: a cadeia de componentes React, só quando os nomes estão legíveis.
+
+Se a classe é montada dinamicamente e não aparece escrita no código, a resposta é **"não resolvido"**, com o motivo.
+
+## 12. "Quero que fique igual àquele"
+
+1. Selecione o elemento que já está do jeito que você gosta e clique em **Usar como referência**.
+2. Selecione o que deve ficar igual e clique em **Deixar igual à referência**.
+3. Aparecem só as diferenças que importam, em português ("B usa 24px de respiro; A usa sp-4").
+4. **Aplicar as de CSS** faz os ajustes um por um. O que não é CSS (por exemplo, card dentro de card) vai para a missão como critério.
+
+## 13. "O que eu estou tentando fazer?"
+
+Depois de 4 ou mais itens, a aba Sessão arrisca um resumo do que você parece querer ("Parece que você está simplificando o dossiê, removendo a navegação e aproximando o resultado das mudanças"). Se fizer sentido, **Sim** transforma o resumo no Objetivo da missão. **Editar** abre o texto para ajustar. **Não** esconde o resumo.
+
+## 14. O que nunca acontece
 
 - Nada é gravado sem você clicar em **Gravar**, e **Gravar** só escreve CSS com patch mínimo (sem `!important`, sem subir especificidade).
 - `style.css`, `layout.js`, o backend, os `.html`/`.js`/`.jsx` e os assets compilados nunca são alterados pela ferramenta. O CSS só é gravado em `Portal/**/*.css` (exceto os protegidos) e em `frontend-react/src/styles/*.css`. Os assets mudam apenas quando **você** pede um Rebuild, que roda o build oficial da ilha.

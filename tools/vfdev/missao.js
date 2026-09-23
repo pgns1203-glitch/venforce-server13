@@ -97,7 +97,7 @@ function verificacoes(s) {
         add(it.id, { tipo: 'presente', seletor: a.seletor });
       }
     } else if (it.tipo === 'referencia') {
-      const props = (it.referencia.diferencas || []).map(d => d.prop).filter(Boolean);
+      const props = (it.referencia.diferencas || []).filter(d => d.prop && d.css !== false && (!d.papel || d.papel === 'b')).map(d => d.prop);
       if (props.length) add(it.id, { tipo: 'igual', a: it.referencia.a.seletor, b: it.referencia.b.seletor, props });
     }
   }
@@ -228,4 +228,39 @@ function gerarMissao(s, cfg = {}) {
   return { md: L.join('\n'), json };
 }
 
-module.exports = { rascunhoObjetivo, gerarMissao, verificacoes, descreveVerificacao, direcao };
+/**
+ * "O que estou tentando fazer?" — com 4+ itens, um rascunho de intenção MAIOR, só com regras:
+ * agrupa por região (pai), detecta as direções (reduções de espaço, remoções, aproximações, destaque…)
+ * e redige "Parece que você está …". Sem IA; o usuário aceita, edita ou recusa.
+ */
+function rascunhoIntencao(s) {
+  const its = ativos(s);
+  if (its.length < 4) return '';
+  const regiao = list => {
+    const n = new Map();
+    for (const i of list) { const a = i.alvo || {}; const k = (a.contexto && a.contexto.paiNome) || a.nome; if (k) n.set(k, (n.get(k) || 0) + 1); }
+    const top = [...n].sort((a, b) => b[1] - a[1])[0];
+    return top ? low(top[0]) : 'a tela';
+  };
+  const css = its.filter(i => i.tipo === 'css' && SPACE_PROPS.test(i.css.prop));
+  const reducoes = css.filter(i => direcao(i) === 'reduzido'), aumentos = css.filter(i => direcao(i) === 'aumentado');
+  const est = its.filter(i => i.tipo === 'estrutural');
+  const rem = est.filter(i => i.estrutural.acao === 'remover');
+  const aprox = est.filter(i => ['aproximar_de', 'agrupar_com', 'alinhar_com'].includes(i.estrutural.acao));
+  const sep = est.filter(i => i.estrutural.acao === 'separar_de');
+  const mov = est.filter(i => /^mover_/.test(i.estrutural.acao));
+  const dest = est.filter(i => /destaque$/.test(i.estrutural.acao));
+  const partes = [];
+  if (reducoes.length) partes.push(`simplificando ${regiao(reducoes)} (${plural(reducoes.length, ['redução de espaço', 'reduções de espaço'])})`);
+  if (aumentos.length) partes.push(`dando mais respiro a ${regiao(aumentos)} (${plural(aumentos.length, ['aumento de espaço', 'aumentos de espaço'])})`);
+  if (rem.length) partes.push(`removendo ${rem.map(i => low(nomeAlvo(i.alvo))).join(', ')}`);
+  for (const i of aprox) partes.push(`${i.estrutural.acao === 'agrupar_com' ? 'agrupando' : i.estrutural.acao === 'alinhar_com' ? 'alinhando' : 'aproximando'} ${low(nomeAlvo(i.alvo))} ${i.estrutural.acao === 'agrupar_com' || i.estrutural.acao === 'alinhar_com' ? 'com' : 'de'} ${low(nomeAlvo(i.estrutural.relacionado))}`);
+  for (const i of sep) partes.push(`separando ${low(nomeAlvo(i.alvo))} de ${low(nomeAlvo(i.estrutural.relacionado))}`);
+  for (const i of mov) partes.push(`reordenando ${low(nomeAlvo(i.alvo))}`);
+  for (const i of dest) partes.push(`${i.estrutural.acao === 'mais_destaque' ? 'destacando' : 'tirando o destaque de'} ${low(nomeAlvo(i.alvo))}`);
+  if (!partes.length) return '';
+  const frase = partes.length === 1 ? partes[0] : partes.slice(0, -1).join(', ') + ' e ' + partes[partes.length - 1];
+  return `Parece que você está ${frase}.`;
+}
+
+module.exports = { rascunhoIntencao, rascunhoObjetivo, gerarMissao, verificacoes, descreveVerificacao, direcao };

@@ -81,13 +81,14 @@ API local (token + origem em todas):
 | `GET /__vfdev/sessoes?pagina=` | lista as sessões (resumo) |
 | `GET · PUT · DELETE /__vfdev/sessoes/:id` | lê, grava (validação por schema, mensagem clara) e apaga |
 | `POST /__vfdev/sessoes/:id/duplicar` | cria `<id>-copia` em andamento |
-| `GET /__vfdev/missoes/:id/rascunho` | rascunho do objetivo, por regras |
+| `GET /__vfdev/missoes/:id/rascunho` | rascunho do objetivo e da intenção maior, por regras |
 | `POST /__vfdev/missoes/:id` `{ objetivo }` | gera `.md` + `.json` (400 sem objetivo) |
 | `GET /__vfdev/missoes/:id` · `GET /__vfdev/missoes/:id.md` | lê as verificações · lê o texto da missão |
 | `GET /__vfdev/events?t=<token>` | SSE: `css` (arquivo mudou), `rebuild` (linha de log), `rebuild-fim` |
 | `POST /__vfdev/rebuild` `{ ilha }` | rebuild da ilha (202; 400 com o motivo; 409 se já houver um rodando) |
 | `GET /__vfdev/historico` · `POST /__vfdev/historico/:id/desfazer` | gravações · desfazer (409 se o arquivo mudou) |
 | `GET /__vfdev/git?files=a,b` | `git status --porcelain` dos arquivos |
+| `GET /__vfdev/origem?classes=a,b&texto=` | componente provável, com `arquivo:linha` e trecho, ou "não resolvido" com o motivo |
 
 ## Ilhas React, CSS ao vivo e desfazer
 
@@ -97,6 +98,12 @@ API local (token + origem em todas):
 - **CSS ao vivo** (`GET /__vfdev/events`, SSE): um `fs.watch` por diretório no Portal e em `frontend-react/src`. Quando um `.css` muda no disco (inclusive quando o agente edita), a página troca o `href` com `?v=` e reindexa, em fila e sem F5. Se houver alterações pendentes naquele arquivo, a recarga é adiada e a ferramenta avisa. Mudança numa fonte React só reindexa as linhas; a tela muda depois do rebuild.
 - **Desfazer gravação**: cada Gravar fica em `tools/vfdev/.history/<data>.jsonl` (fora do git). Na aba **Alterações**, **Desfazer gravação** devolve o conteúdo anterior **byte a byte**, com a mesma validação de caminho, e responde 409 se o arquivo mudou depois da gravação. O item da sessão vira "descartada: gravação desfeita em …".
 - **Git**: a aba Alterações mostra o `git status --porcelain` (spawn sem shell) de cada arquivo gravado, e **Copiar comandos git** gera um `git add <arquivo>` por linha mais uma mensagem de commit sugerida. A ferramenta **não** roda `git add` nem `git commit`.
+
+## Menos interpretação manual
+
+- **Nasceu onde?** O Painel tem o bloco **Origem**: **CSS** (a regra que casa, com `arquivo:linha`), **Componente provável** e **Árvore**. `GET /__vfdev/origem?classes=a,b&texto=` procura as classes do elemento, da mais específica (BEM `__`/`--`) para as utilitárias, como texto literal em `frontend-react/src/**/*.{jsx,tsx,js}` (className literal, template, `cx()`/`clsx()`) e em `Portal/*.js` (class em template string/`innerHTML`, `classList`). Arquivos de teste ficam de fora. Cada candidato traz `arquivo:linha`, o trecho da linha e a evidência. Sem ocorrência: "não resolvido: … (provável composição dinâmica)". A árvore vem das fibras do React **só** se os nomes estiverem legíveis (bundle de dev). Nomes minificados não são exibidos. O componente provável também é gravado no alvo de cada item da sessão.
+- **Ficar igual àquele.** **Usar como referência** (A) e, noutro elemento, **Deixar igual à referência** (B). A ferramenta compara padding, gap, borda, raio, fundo, `min-height`, alinhamento, a tipografia do título e do valor, a profundidade de containers com borda/fundo e a densidade (só quando não é explicada por padding ou `min-height`), e mostra **só o que diverge**, em linguagem humana e token ("B (Card) usa 24px (= sp-6) de respiro interno; A (Card) usa sp-4 (16px)"). **Aplicar as de CSS** cria itens `css` normais, um por um, com o valor de A (o token, quando A usa token). O conjunto vira um item `referencia`, e o que não é CSS vira critério estrutural na missão.
+- **O que estou tentando fazer?** Com 4 ou mais itens, a aba Sessão mostra um rascunho de intenção maior, montado **por regras**: agrupa por região (o pai), detecta as direções (reduções/aumentos de espaço, remoções, aproximações, reordenações, destaque) e redige "Parece que você está simplificando X, removendo Y e aproximando Z de W". Botões: **Sim, usar como objetivo** · **Editar** · **Não**.
 
 ## Segurança do patch
 

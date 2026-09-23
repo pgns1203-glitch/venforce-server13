@@ -15,7 +15,8 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { indexCss, applyPatches, pairBundle, PatchError } = require('./cssIndex');
 const { SessionStore, ACOES, ACOES_COM_RELACAO, CRITERIOS, ID_RE } = require('./sessao');
-const { gerarMissao, rascunhoObjetivo } = require('./missao');
+const { gerarMissao, rascunhoObjetivo, rascunhoIntencao } = require('./missao');
+const { buscarOrigem } = require('./origem');
 
 const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, 'vfdev.config.json'), 'utf8'));
 const REPO = path.resolve(process.env.VFDEV_REPO_DIR || path.join(__dirname, '..', '..'));
@@ -225,6 +226,12 @@ async function handleVfdev(req, res, url) {
     return;
   }
 
+  if (p === '/__vfdev/origem' && req.method === 'GET') {
+    checkAuth(req);
+    const classes = String(url.searchParams.get('classes') || '').split(',').filter(Boolean).slice(0, 20);
+    return json(res, 200, buscarOrigem({ classes, texto: url.searchParams.get('texto') || '', reactSrc: path.join(REACT_DIR, 'src'), portalDir: PORTAL, repo: REPO }));
+  }
+
   if (p === '/__vfdev/rebuild' && req.method === 'POST') {
     checkAuth(req);
     const body = await jsonBody(req);
@@ -329,7 +336,8 @@ async function handleVfdev(req, res, url) {
     const mdFile = path.join(MISSOES, id + '.md'), jsonFile = path.join(MISSOES, id + '.json');
     if (m[3]) {
       if (req.method !== 'GET') throw new PatchError(405, 'Use GET para o rascunho.');
-      return json(res, 200, { objetivo: rascunhoObjetivo(SESSOES.get(id)) });
+      const ses = SESSOES.get(id);
+      return json(res, 200, { objetivo: rascunhoObjetivo(ses), intencao: rascunhoIntencao(ses) });
     }
     if (req.method === 'GET') {
       if (!fs.existsSync(jsonFile)) throw new PatchError(404, `A missão da sessão "${id}" ainda não foi gerada.`);

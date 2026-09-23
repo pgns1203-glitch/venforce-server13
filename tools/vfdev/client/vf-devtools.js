@@ -685,7 +685,9 @@ function propsPanel() {
   const short = chain.length > 6 ? [chain[0], null, ...chain.slice(-5)] : chain;
   let h = `<div class="el"><div class="el-name">${esc(nameOf(el))}</div><div class="el-sub"><code>${esc(selOf(el))}</code><span class="mono">${Math.round(el.getBoundingClientRect().width)} × ${Math.round(el.getBoundingClientRect().height)}</span><span>${isGrid(cs) ? 'grade' : isFlex(cs) ? 'flex' : cs.display}</span></div>`;
   h += `<nav class="crumbs">${short.map((n, k) => n ? `${k ? '<span>›</span>' : ''}<button data-act="sel" data-t="${T(n)}" title="${esc(selOf(n))}"${n === el ? ' aria-current="true"' : ''}>${esc(nameOf(n))}</button>` : '<span>› …</span>').join('')}</nav>`;
-  h += `<div class="actions">${el !== document.body ? `<button class="btn sm" data-act="sel" data-t="${T(el.parentElement)}">↑ Selecionar o pai</button>` : ''}<button class="btn sm pri" data-act="talk" title="C">Falar sobre isso</button><button class="btn sm" data-act="copycss">Copiar CSS</button><button class="btn sm" data-act="copysel">Copiar seletor</button></div></div>`;
+  h += `<div class="actions">${el !== document.body ? `<button class="btn sm" data-act="sel" data-t="${T(el.parentElement)}">↑ Selecionar o pai</button>` : ''}<button class="btn sm pri" data-act="talk" title="C">Falar sobre isso</button>${S.ref && S.ref !== el && S.ref.isConnected ? `<button class="btn sm" data-act="ref-igual">Deixar igual à referência (${esc(nameOf(S.ref))})</button>` : ''}<button class="btn sm${S.ref === el ? ' on' : ''}" data-act="ref-usar">${S.ref === el ? 'É a referência' : 'Usar como referência'}</button><button class="btn sm" data-act="copycss">Copiar CSS</button><button class="btn sm" data-act="copysel">Copiar seletor</button></div></div>`;
+  h += refHTML(el);
+  h += origemHTML(el);
   h += estruturaHTML(el);
   h += boxModelHTML(el);
   const rows = [], more = [];
@@ -1054,9 +1056,10 @@ function captureAlvo(el, reg, inicial) {
   const { seletor, indice, contagem } = stableSel(el), r = el.getBoundingClientRect(), par = el.parentElement;
   const a = { seletor, indice, contagem, nome: nameOf(el), caminhoDom: domPath(el), texto: texto60(el), larguraTela: window.innerWidth,
     rect: { x: Math.round(r.left + scrollX), y: Math.round(r.top + scrollY), w: Math.round(r.width), h: Math.round(r.height) },
-    ...fonteCssOf(el), componente: null, componenteMotivo: 'não pesquisado (busca de componente ainda não disponível)',
-    contexto: par && inPage(par) ? { pai: stableSel(par).seletor, irmaos: realKids(par).filter(k => k !== el).slice(0, 6).map(k => stableSel(k).seletor), posicao: realKids(par).indexOf(el) + 1, total: realKids(par).length } : {},
+    ...fonteCssOf(el), componente: null,
+    contexto: par && inPage(par) ? { pai: stableSel(par).seletor, paiNome: nameOf(par), irmaos: realKids(par).filter(k => k !== el).slice(0, 6).map(k => stableSel(k).seletor), posicao: realKids(par).indexOf(el) + 1, total: realKids(par).length } : {},
     inicial: inicial || snapInicial(el) };
+  enrichAlvo(a, el);
   if (reg) {
     a.regiao = true;
     a.rect = { x: Math.round(reg.left + scrollX), y: Math.round(reg.top + scrollY), w: Math.round(reg.width), h: Math.round(reg.height) };
@@ -1440,7 +1443,8 @@ function sessionPanel() {
   h += `<div class="counters">${counters().map(([l, v]) => `<div><b>${v}</b><span>${l}</span></div>`).join('')}</div>`;
   h += `<div class="actions"><button class="btn sm" data-act="ses-save">Salvar</button><button class="btn sm" data-act="ses-switch">Continuar outra</button><button class="btn sm" data-act="ses-dup">Duplicar</button><button class="btn sm" data-act="ses-ren">Renomear</button><button class="btn sm" data-act="ses-disc">Descartar</button><button class="btn sm${S.sesCompare ? ' on' : ''}" data-act="ses-cmp">Comparar com o início</button></div>`;
   h += `<div class="actions"><button class="btn sm pri" data-act="mis-gerar">${SES.missao ? 'Gerar missão de novo' : 'Gerar missão'}</button><button class="btn sm" data-act="mis-ver"${SES.missao ? '' : ' disabled'}>Ver missão</button><button class="btn sm" data-act="mis-verif"${SES.missao && !S.verificando ? '' : ' disabled'}>${S.verificando ? 'Verificando…' : 'Verificar missão'}</button></div>`;
-  if (S.objDraft) h += `<div class="obj"><label for="obj-text"><b>Objetivo</b> — 1 frase${S.objDraft.sugerido ? ' · <small>rascunho montado por regras a partir dos itens; confirme ou edite</small>' : ''}</label><textarea id="obj-text" rows="3">${esc(S.objDraft.texto)}</textarea><div class="actions"><button class="btn sm pri" data-act="obj-ok">Confirmar e gerar</button><button class="btn sm" data-act="obj-cancel">Cancelar</button></div></div>`;
+  h += intencaoHTML();
+  if (S.objDraft) h += `<div class="obj"><label for="obj-text"><b>Objetivo</b> — 1 frase${S.objDraft.sugerido ? ' · <small>rascunho montado por regras a partir dos itens; confirme ou edite</small>' : ''}</label><textarea id="obj-text" rows="3">${esc(S.objDraft.texto)}</textarea><div class="actions"><button class="btn sm pri" data-act="obj-ok">Confirmar e gerar</button><button class="btn sm" data-act="obj-save">Só salvar o objetivo</button><button class="btn sm" data-act="obj-cancel">Cancelar</button></div></div>`;
   else if (SES.objetivo) h += `<div class="meta">Objetivo: <b>${esc(SES.objetivo)}</b></div>`;
   if (SES.missao) h += `<div class="meta">Missão: <span class="mono">${esc(SES.missao.md)}</span> · ${SES.missao.verificacoes} verificações</div>`;
   h += verificacaoHTML();
@@ -1581,6 +1585,158 @@ function histHTML() {
   const ilhas = [...new Set(H.gravacoes.filter(g => !g.desfeitoEm).flatMap(g => g.arquivos).filter(f => f.startsWith('frontend-react/')).flatMap(f => [...fileMeta.values()].filter(m => (m.sources || []).includes(f)).map(m => m.ilha)))];
   for (const il of ilhas) h += `<button class="btn sm" data-act="rebuild" data-ilha="${esc(il)}"${S.building ? ' disabled' : ''}>${S.building === il ? 'Reconstruindo…' : `Rebuild ${esc(il)}`}</button>`;
   return h;
+}
+
+/* ================= 14d. "Nasceu onde?", referência visual e intenção maior ================= */
+const origemCache = new WeakMap();   // elemento -> Promise<{ candidatos, motivo }>
+function origemOf(el) {
+  if (!origemCache.has(el)) {
+    const classes = [...el.classList].filter(c => !/^vf-page/.test(c));
+    const q = `/__vfdev/origem?classes=${encodeURIComponent(classes.join(','))}&texto=${encodeURIComponent(texto60(el).slice(0, 40))}`;
+    origemCache.set(el, getJSON(q).catch(e => ({ candidatos: [], motivo: 'não resolvido: busca falhou — ' + e.message })));
+  }
+  return origemCache.get(el);
+}
+/** Preenche alvo.componente depois (a busca é assíncrona). Sem candidato, grava o motivo. */
+function enrichAlvo(alvo, el) {
+  if (!alvo || !el) return;
+  alvo.componenteMotivo = 'busca de componente em andamento';
+  origemOf(el).then(r => {
+    const c = r.candidatos && r.candidatos[0];
+    if (c) { alvo.componente = { arquivo: c.arquivo, linha: c.linha, evidencia: c.evidencia, trecho: c.trecho }; delete alvo.componenteMotivo; }
+    else { alvo.componente = null; alvo.componenteMotivo = r.motivo || 'não resolvido'; }
+    if (SES) saveSoon();
+  });
+}
+/** Árvore de componentes React a partir das fibras — só quando os nomes NÃO estão minificados. */
+function reactTree(el) {
+  let n = el, key = null;
+  for (; n && n !== document.documentElement; n = n.parentElement) { key = Object.keys(n).find(k => k.startsWith('__reactFiber$')); if (key) break; }
+  if (!key) return { motivo: 'sem React nesta parte da página' };
+  const names = [];
+  for (let f = n[key]; f && names.length < 40; f = f.return) {
+    const t = f.type; let nm = null;
+    if (typeof t === 'function') nm = t.displayName || t.name;
+    else if (t && typeof t === 'object') nm = t.displayName || (t.render && (t.render.displayName || t.render.name)) || (t.type && (t.type.displayName || t.type.name));
+    if (nm && names[names.length - 1] !== nm) names.push(nm);
+  }
+  if (!names.length) return { motivo: 'fibra React sem componentes nomeados' };
+  const legiveis = names.filter(x => x.length >= 3 && /^[A-Z]/.test(x));
+  if (legiveis.length < names.length * 0.8 || !names.some(x => x.length >= 5)) return { motivo: `nomes minificados (bundle de produção: ${names.slice(0, 4).join(', ')}…) — árvore omitida` };
+  return { nomes: names.slice(0, 10) };
+}
+function origemHTML(el) {
+  const f = fonteCssOf(el).fonteCss, tr = reactTree(el);
+  const cssL = f ? `<span class="mono">${esc(f.arquivo)}:${f.linha}</span> <small>${esc(f.evidencia)}</small>` : esc(fonteCssOf(el).fonteCssMotivo);
+  const arv = tr.nomes ? `<span class="mono">${tr.nomes.map(esc).join(' ‹ ')}</span>` : `<small>${esc(tr.motivo)}</small>`;
+  origemOf(el).then(r => { const b = root.getElementById('orig-comp'); if (b && S.selected === el) b.innerHTML = compHTML(r); });
+  return `<div class="origem"><div class="group">Origem</div><div class="meta"><b>CSS</b> ${cssL}</div><div class="meta" id="orig-comp"><b>Componente provável</b> <small>buscando…</small></div><div class="meta"><b>Árvore</b> ${arv}</div></div>`;
+}
+function compHTML(r) {
+  if (!r.candidatos || !r.candidatos.length) return `<b>Componente provável</b> <span class="warnline">${esc(r.motivo || 'não resolvido')}</span>`;
+  const [c, ...rest] = r.candidatos;
+  const one = x => `<span class="mono">${esc(x.arquivo)}:${x.linha}</span> <small>${esc(x.como)}</small><code class="trecho">${esc(x.trecho)}</code>`;
+  return `<b>Componente provável</b> ${one(c)}<small>${esc(c.evidencia)}</small>${rest.length ? `<details class="more"><summary>mais ${rest.length} candidato(s)</summary>${rest.map(one).join('<br>')}</details>` : ''}`;
+}
+
+/* ---- "Ficar igual àquele": compara B com a referência A e só mostra o que diverge ---- */
+const REF_PROPS = [['padding', 'respiro interno'], ['gap', 'espaço entre os itens'], ['border-width', 'espessura da borda'], ['border-style', 'estilo da borda'], ['border-color', 'cor da borda'], ['border-radius', 'arredondamento'], ['background-color', 'fundo'], ['min-height', 'altura mínima'], ['align-items', 'alinhamento dos itens'], ['text-align', 'alinhamento do texto']];
+const TYPO = [['font-size', 'tamanho'], ['font-weight', 'peso'], ['line-height', 'altura de linha']];
+function textLeaves(el) { return [el, ...el.querySelectorAll('*')].filter(n => n.getClientRects().length && [...n.childNodes].some(t => t.nodeType === 3 && t.textContent.trim())).slice(0, 30); }
+function tipoPartes(el) {
+  const L = textLeaves(el); if (!L.length) return {};
+  const fs = n => pf(getComputedStyle(n).fontSize);
+  const valor = L.reduce((a, b) => fs(b) > fs(a) ? b : a, L[0]);
+  const titulo = L.find(n => n !== valor) || null;
+  return titulo ? { 'título': titulo, valor } : { texto: valor };
+}
+const boxed = n => { const c = getComputedStyle(n); return pf(c.borderTopWidth) > 0 && c.borderTopStyle !== 'none' || !/rgba\(0, 0, 0, 0\)|transparent/.test(c.backgroundColor); };
+function profundidade(el) {
+  let max = 0;
+  for (const leaf of textLeaves(el)) { let d = 0; for (let n = leaf; n && n !== el; n = n.parentElement) if (n !== leaf && boxed(n)) d++; max = Math.max(max, d); }
+  return max;
+}
+function densidade(el) {
+  const r = el.getBoundingClientRect(), ks = realKids(el);
+  if (!ks.length || !r.height) return null;
+  const top = Math.min(...ks.map(k => k.getBoundingClientRect().top)), bot = Math.max(...ks.map(k => k.getBoundingClientRect().bottom));
+  return bot > top ? r.height / (bot - top) : null;
+}
+function fmtVal(el, prop, computed) {
+  const s = findSource(el, prop), tk = s.rule && tokenOf(s.srcValue || s.value);
+  if (tk) return `${tk.replace(/^--vf-/, '')} (${computed})`;
+  const px = toPx(computed), tl = px != null && px > 0 ? tokenLabelFor(px) : null;
+  return tl ? `${computed} (= sp-${tl})` : computed;
+}
+function valorParaAplicar(A, prop) { const s = findSource(A, prop); return s.rule && tokenOf(s.srcValue || s.value) ? (s.srcValue || s.value) : comp(A, prop); }
+function compararRef(A, B) {
+  const out = [], nA = `A (${nameOf(A)})`, nB = `B (${nameOf(B)})`;
+  const csA = getComputedStyle(A), csB = getComputedStyle(B);
+  for (const [prop, label] of REF_PROPS) {
+    if (prop === 'gap' && !(isFG(csA) && isFG(csB))) continue;
+    if (prop.startsWith('border-') && prop !== 'border-radius' && pf(csA.borderTopWidth) === 0 && pf(csB.borderTopWidth) === 0) continue;
+    const a = comp(A, prop), b = comp(B, prop);
+    if (a === b) continue;
+    out.push({ aspecto: label, prop, alvo: 'b', a, b, css: true, texto: `${nB} usa ${fmtVal(B, prop, b)} de ${label}; ${nA} usa ${fmtVal(A, prop, a)}`, aplicar: { el: B, prop, valor: valorParaAplicar(A, prop) } });
+  }
+  const pa = tipoPartes(A), pb = tipoPartes(B);
+  for (const papel of Object.keys(pa)) {
+    const x = pa[papel], y = pb[papel]; if (!x || !y) continue;
+    for (const [prop, label] of TYPO) {
+      const a = comp(x, prop), b = comp(y, prop);
+      if (a !== b) out.push({ aspecto: `${label} do ${papel}`, prop, alvo: papel, a, b, css: true, texto: `${papel} de ${nB}: ${label} ${fmtVal(y, prop, b)}; em ${nA}: ${fmtVal(x, prop, a)}`, aplicar: { el: y, prop, valor: valorParaAplicar(x, prop) } });
+    }
+  }
+  const dA = profundidade(A), dB = profundidade(B);
+  if (dA !== dB) out.push({ aspecto: 'profundidade de containers', a: String(dA), b: String(dB), css: false, texto: `${nB} tem ${dB} nível(is) com borda/fundo entre ele e o conteúdo; ${nA} tem ${dA}`, criterio: `${nB}: deixar ${dA} nível(is) de container com borda/fundo até o conteúdo, como ${nA} (sem card dentro de card)` });
+  const explicada = out.some(d => d.prop === 'padding' || d.prop === 'min-height');
+  const eA = densidade(A), eB = densidade(B);
+  if (eA && eB && !explicada && Math.abs(eA - eB) / eA > 0.15) out.push({ aspecto: 'densidade', a: eA.toFixed(2), b: eB.toFixed(2), css: false, texto: `${nB} ocupa ${eB.toFixed(2)}× a altura do conteúdo; ${nA} ocupa ${eA.toFixed(2)}×`, criterio: `${nB}: mesma densidade de ${nA} (altura ÷ conteúdo ≈ ${eA.toFixed(2)})` });
+  return out;
+}
+function usarComoReferencia(el) { S.ref = el; S.refDiff = null; toast(`${nameOf(el)} é a referência. Selecione outro elemento e use “Deixar igual à referência”.`, 4500); render(); }
+function deixarIgual(B) {
+  const A = S.ref; if (!A || !A.isConnected) { S.ref = null; return toast('A referência sumiu da página — marque de novo.'); }
+  if (A === B) return toast('Selecione outro elemento (não a própria referência).');
+  S.refDiff = { A, B, diffs: compararRef(A, B) }; render();
+  return S.refDiff;
+}
+function registrarReferencia(aplicar) {
+  const R = S.refDiff; if (!R) return null;
+  if (aplicar) for (const d of R.diffs.filter(x => x.css)) edit(d.aplicar.el, d.aplicar.prop, d.aplicar.valor);
+  ensureSession();
+  const it = { id: uid(), tipo: 'referencia', criadoEm: nowIso(), referencia: { a: captureAlvo(R.A), b: captureAlvo(R.B),
+    diferencas: R.diffs.map(d => ({ aspecto: d.aspecto, ...(d.prop ? { prop: d.prop } : {}), papel: d.alvo, a: d.a, b: d.b, css: d.css, aplicada: !!(aplicar && d.css), texto: d.texto })),
+    criterios: R.diffs.filter(d => !d.css).map(d => d.criterio) } };
+  SES.itens.push(it); S.refDiff = null;
+  saveSoon(0); render();
+  toast(aplicar ? `${R.diffs.filter(d => d.css).length} ajuste(s) de CSS aplicados um por um; o conjunto ficou registrado como referência.` : 'Referência registrada na sessão (nada aplicado).', 5000);
+  return it;
+}
+function refHTML(el) {
+  let h = '';
+  if (S.refDiff && S.refDiff.B === el) {
+    const R = S.refDiff, css = R.diffs.filter(d => d.css), nao = R.diffs.filter(d => !d.css);
+    h += `<div class="refbox"><div class="eyebrow">Igual à referência: ${esc(nameOf(R.A))}</div>`;
+    h += R.diffs.length ? `<ul class="facts">${R.diffs.map(d => `<li>${esc(d.texto)}${d.css ? '' : ' <span class="badge">estrutura</span>'}</li>`).join('')}</ul>` : '<div class="ok">Nenhuma diferença relevante.</div>';
+    h += `<div class="actions">${css.length ? `<button class="btn sm pri" data-act="ref-apl">Aplicar as de CSS (${css.length})</button>` : ''}${R.diffs.length ? '<button class="btn sm" data-act="ref-reg">Só registrar</button>' : ''}<button class="btn sm" data-act="ref-x">Fechar</button></div>${nao.length ? '<small>O que não é CSS vira critério estrutural na missão.</small>' : ''}</div>`;
+  }
+  return h;
+}
+
+/* ---- "O que estou tentando fazer?" ---- */
+let intencaoCache = { sig: '', texto: '' }, intencaoPend = false;
+const itensSig = () => SES ? SES.itens.map(i => i.id + (i.css ? i.css.depois + i.css.destino : '')).join('|') : '';
+function intencaoHTML() {
+  if (!SES || SES.itens.length < 4) return '';
+  const sig = itensSig();
+  if (S.intencaoNao === sig) return '';
+  if (intencaoCache.sig !== sig) {
+    if (!intencaoPend) { intencaoPend = true; saveNow().then(() => getJSON(`/__vfdev/missoes/${encodeURIComponent(SES.id)}/rascunho`)).then(r => { intencaoCache = { sig, texto: r.intencao || '' }; }).catch(() => { intencaoCache = { sig, texto: '' }; }).finally(() => { intencaoPend = false; if (S.tab === 'session') renderBody(); }); }
+    return '';
+  }
+  if (!intencaoCache.texto) return '';
+  return `<div class="intencao"><div class="eyebrow">O que estou tentando fazer?</div><p>${esc(intencaoCache.texto)}</p><div class="actions"><button class="btn sm pri" data-act="int-sim">Sim, usar como objetivo</button><button class="btn sm" data-act="int-edit">Editar</button><button class="btn sm" data-act="int-nao">Não</button></div><small>Montado por regras a partir dos itens (sem IA).</small></div>`;
 }
 
 /* ================= 15. UI (shadow DOM) ================= */
@@ -1763,6 +1919,11 @@ details.more[open]{display:flex;flex-direction:column;gap:10px}
 .vr{display:flex;gap:8px;align-items:flex-start;font-size:12px}.vr small{color:var(--mut)}
 .vmark{font-weight:800;width:14px;flex:none}.vr.ok .vmark{color:var(--add)}.vr.ko .vmark{color:var(--del)}
 .vbox{position:fixed;left:-30000px;top:0;visibility:hidden;pointer-events:none}
+.origem{border:1px solid var(--line);border-radius:9px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}.origem .group{margin:0}
+.origem .meta{display:block}.origem small{color:var(--mut);display:block}
+.trecho{display:block;white-space:pre-wrap;word-break:break-all;background:var(--bg2);border-radius:5px;padding:3px 6px;margin-top:2px;font-size:11px}
+.refbox,.intencao{border:1px solid var(--acc);border-radius:9px;padding:9px 11px;display:flex;flex-direction:column;gap:6px;background:var(--soft)}
+.intencao p{margin:0;font-weight:600}
 .estr-grid{display:flex;flex-wrap:wrap;gap:4px;padding-top:6px}
 @media (prefers-reduced-motion:reduce){.row.flash{animation:none}}
 `;
@@ -1855,6 +2016,15 @@ function buildUI() {
     else if (act === 'item-ver') { const it = SES.itens.find(i => i.id === b.dataset.id); const r = it && resolveAlvo(it.alvo); if (r && r.el) { r.el.scrollIntoView({ block: 'center' }); S.tab = 'props'; select(r.el); } }
     else if (act === 'item-del') delItem(b.dataset.id);
     else if (act === 'mis-gerar') pedirObjetivo();
+    else if (act === 'ref-usar') usarComoReferencia(S.selected);
+    else if (act === 'ref-igual') deixarIgual(S.selected);
+    else if (act === 'ref-apl') registrarReferencia(true);
+    else if (act === 'ref-reg') registrarReferencia(false);
+    else if (act === 'ref-x') { S.refDiff = null; render(); }
+    else if (act === 'int-sim') { SES.objetivo = intencaoCache.texto; saveSoon(0); toast('Objetivo definido.'); render(); }
+    else if (act === 'int-edit') { S.objDraft = { texto: intencaoCache.texto, sugerido: true }; render(); }
+    else if (act === 'int-nao') { S.intencaoNao = itensSig(); render(); }
+    else if (act === 'obj-save') { const v = root.getElementById('obj-text').value.trim(); if (v) { SES.objetivo = v; S.objDraft = null; saveSoon(0); render(); } }
     else if (act === 'rebuild') rebuildIlha(b.dataset.ilha);
     else if (act === 'undo-grav') desfazerGravacao(b.dataset.id);
     else if (act === 'git-cmds') copy(gitCmds(), 'Comandos git copiados.');
@@ -2001,7 +2171,7 @@ async function boot() {
   if (S.open) S.problems = scan();
   render();
   window.__VFDEV__.api = { select, edit, findSource, ruleInfo, changes, buildPatch, apply, scan, state: S,
-    sessao: () => SES, erroSessao: () => sesErr, pedirObjetivo, gerarMissao, verificarMissao, runCheck, rebuildIlha, desfazerGravacao, loadHist, gitCmds, fileMeta, novaSessao, continuarSessao, saveNow, comentar, estrutural, previewOn, previewOff, previews, resolveAlvo, captureAlvo, openCompare, setTab, render, delItem };
+    sessao: () => SES, erroSessao: () => sesErr, pedirObjetivo, gerarMissao, verificarMissao, runCheck, origemOf, reactTree, usarComoReferencia, deixarIgual, registrarReferencia, compararRef, rebuildIlha, desfazerGravacao, loadHist, gitCmds, fileMeta, novaSessao, continuarSessao, saveNow, comentar, estrutural, previewOn, previewOff, previews, resolveAlvo, captureAlvo, openCompare, setTab, render, delItem };
   window.__VFDEV__.ready = true;
 }
 if (document.readyState === 'complete') boot(); else window.addEventListener('load', boot, { once: true });

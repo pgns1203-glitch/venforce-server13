@@ -1910,12 +1910,12 @@ async function run() {
       assert.ok(/preco-original/.test(preco.ordemDom[0]), `o preço cheio riscado precisa vir ANTES (acima) do vigente no DOM: ${JSON.stringify(preco.ordemDom)}`);
     });
 
-    await check("31 — régua do boot: 1 chamada com métricas+margem (avulso) + 1 chamada só de métricas por agrupador visível", async () => {
+    await check("31 — régua do boot: 1 chamada com métricas+margem+faturamento (avulso) + 1 chamada só de métricas por agrupador visível + 1 chamada de faturamento consolidado das famílias", async () => {
       assert.strictEqual(contar(/\/familias\/FAM-1/, 0), 1, "o pré-carregamento de FAM-1 devia ter gastado exatamente 1 chamada de detalhe");
       assert.strictEqual(contar(/\/familias\/FAM-2/, 0), 1, "o pré-carregamento de FAM-2 devia ter gastado exatamente 1 chamada de detalhe");
 
-      assert.strictEqual(chamadasPerformance.length, 3,
-        `o boot deveria disparar 3 chamadas de performance (1 avulso + 1 por agrupador): ${JSON.stringify(chamadasPerformance)}`);
+      assert.strictEqual(chamadasPerformance.length, 4,
+        `o boot deveria disparar 4 chamadas de performance (1 avulso + 1 por agrupador + 1 de faturamento consolidado): ${JSON.stringify(chamadasPerformance)}`);
 
       const doAvulso = chamadasPerformance.find((c) => c.itemIds.includes("MLB-SEMUP"));
       assert.ok(doAvulso, "não achei a chamada dos itens avulsos");
@@ -1923,6 +1923,8 @@ async function run() {
         "os dois anúncios avulsos (com e sem variações legadas) estão visíveis como ITEM no boot");
       assert.strictEqual(doAvulso.incluirMetricas, true);
       assert.strictEqual(doAvulso.incluirMargem, true, "o item avulso pede métricas E margem juntas, como sempre");
+      assert.strictEqual(doAvulso.incluirFaturamento, true,
+        "o % faturamento do item avulso é bundlado na MESMA chamada de métricas+margem — não é uma chamada à parte");
 
       const doFam1 = chamadasPerformance.find((c) => c.itemIds.includes("MLB-A1"));
       assert.ok(doFam1, "não achei a chamada em background dos filhos de FAM-1");
@@ -1931,11 +1933,21 @@ async function run() {
       assert.strictEqual(doFam1.incluirMetricas, true);
       assert.strictEqual(doFam1.incluirMargem, false,
         "o pré-carregamento em background NUNCA pode pedir margem de um filho ainda oculto");
+      assert.strictEqual(doFam1.incluirFaturamento, false,
+        "o pré-carregamento por filho NUNCA pede faturamento — o consolidado da família vem de outra chamada, por familias=");
 
       const doFam2 = chamadasPerformance.find((c) => c.itemIds.includes("MLB-B9"));
       assert.ok(doFam2, "não achei a chamada em background do filho de FAM-2");
       assert.deepStrictEqual(doFam2.itemIds.slice().sort(), ["MLB-B9"]);
       assert.strictEqual(doFam2.incluirMargem, false);
+
+      const doFaturamentoFamilias = chamadasPerformance.find((c) => c.familias.length && !c.itemIds.length);
+      assert.ok(doFaturamentoFamilias, "não achei a chamada de faturamento consolidado das famílias visíveis");
+      assert.deepStrictEqual(doFaturamentoFamilias.familias.slice().sort(), ["FAM-1", "FAM-2"],
+        "as duas famílias visíveis na página precisam ir na MESMA chamada — nunca uma por família");
+      assert.strictEqual(doFaturamentoFamilias.incluirFaturamento, true);
+      assert.strictEqual(doFaturamentoFamilias.incluirMargem, false,
+        "a chamada de faturamento consolidado não pode gastar o Motor de Margem para mais nada além do faturamento");
     });
 
     await check("32 — expandir a família pinta as métricas dos filhos NA HORA (já vinham do pré-carregamento) e busca só a margem que faltava", async () => {
@@ -2420,12 +2432,18 @@ async function run() {
     // pedidos: MLB individual, família agregada (não expandida) e família
     // expandida (filhos já em cache).
 
-    await check("39a — ordenar por margem (MLB individual): maior profit (R$) vai para o topo", async () => {
+    await check("39a — ordenar por margem (MLB individual): marginPercent decide a ordem — o MESMO valor que a coluna Margem mostra, NUNCA profit (R$) — sem margem fica no fim", async () => {
       pedidos.length = 0;
       chamadasPerformance.length = 0;
+      // profit é o OPOSTO de marginPercent de propósito: se o código ainda
+      // usasse profit (o bug relatado), SEMVAR (profit 999) venceria SEMUP
+      // (profit 1) e a ordem sairia invertida.
       performanceHandler = () => ({
         ok: true, metricas7d: {}, margemIndisponivel: null,
-        margem: { "MLB-SEMUP": { profit: 50 }, "MLB-SEMVAR": { profit: 10 } },
+        margem: {
+          "MLB-SEMUP": { marginPercent: 30, profit: 1 },
+          "MLB-SEMVAR": { marginPercent: 20, profit: 999 },
+        },
         faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
       });
 
@@ -2438,15 +2456,55 @@ async function run() {
       await waitFor(cdp, `(function(){
         var r = document.querySelector('.am-listagem > .am-row');
         return r && r.getAttribute('data-item') === 'MLB-SEMUP';
-      })()`, "MLB-SEMUP (profit 50) deveria ir para o topo ao ordenar por margem decrescente");
+      })()`, "MLB-SEMUP (marginPercent 30) deveria ir para o topo ao ordenar por margem decrescente");
 
       const ordem = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-listagem > .am-row')).map(function(r){
         return r.getAttribute('data-item') || r.getAttribute('data-familia'); })`);
       assert.deepStrictEqual(ordem.slice(0, 2), ["MLB-SEMUP", "MLB-SEMVAR"],
-        "maior profit (50) antes do menor (10) — famílias sem margemPorFamilia (null) ficam no fim");
+        "maior marginPercent (30%) antes do menor (20%), mesmo com profit invertido — famílias sem margemPorFamilia (null) ficam no fim");
+
+      const margemTexto = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-margem__valor').textContent.trim()`);
+      assert.strictEqual(margemTexto, "30,0%", "a coluna Margem tem de mostrar o MESMO valor usado para decidir a ordem");
+
       assert.strictEqual(chamadasPerformance[0].incluirMargem, true);
       assert.deepStrictEqual(chamadasPerformance[0].familias.sort(), ["FAM-1", "FAM-2"],
         "as famílias da página inteira precisam ir junto — o backend resolve/agrega os filhos delas");
+      performanceHandler = null;
+    });
+
+    await check("39a2 — ordenar por margem (MLB com margem + família com margem + sem margem, juntos): maiores primeiro, sem margem sempre no fim", async () => {
+      // Cenário pedido na correção: MLB A 30%, MLB B 20%, "C" sem margem —
+      // aqui C é representado por FAM-2 (sem entrada em margemPorFamilia),
+      // e FAM-1 entra como a família COM margem, para provar que family e
+      // item competem pelo MESMO critério de ordenação (maior primeiro).
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null,
+        margem: {
+          "MLB-SEMUP": { marginPercent: 30 },   // "A"
+          "MLB-SEMVAR": { marginPercent: 20 },  // "B"
+        },
+        margemPorFamilia: { "FAM-1": 25 },      // família COM margem, entre A e B
+        // FAM-2 fica de fora de propósito — "C: sem margem".
+        faturamento: null, unidadesVendidas: null, curvaAbc: null,
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'margem_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-item') === 'MLB-SEMUP';
+      })()`, "MLB-SEMUP (30%) deveria ir para o topo");
+
+      const ordem = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-listagem > .am-row')).map(function(r){
+        return r.getAttribute('data-item') || r.getAttribute('data-familia'); })`);
+      assert.deepStrictEqual(ordem, ["MLB-SEMUP", "FAM-1", "MLB-SEMVAR", "FAM-2"],
+        `esperado A(30%), família(25), B(20%), sem margem por último: ${JSON.stringify(ordem)}`);
       performanceHandler = null;
     });
 
@@ -2690,6 +2748,54 @@ async function run() {
       assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-2")),
         "curvaAbc.porFamilia já vem agregado do backend — mostrar a tag não pode buscar o detalhe/filhos");
       performanceHandler = null;
+    });
+
+    await check("39i — carregar a listagem (SEM ordenar) já preenche a coluna Faturamento sozinha — individual bundlado na 1ª chamada, família numa chamada própria", async () => {
+      // Recarrega do zero: precisa provar que o preenchimento acontece no
+      // PRIMEIRO carregamento, não por causa de cache deixado por um teste
+      // de ordenação anterior (ver bug relatado — "todos os anúncios
+      // mostram '—'" mesmo sem o operador nunca ter tocado no dropdown).
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = (ids, conta, familias) => {
+        const metricas7d = {}, margem = {};
+        ids.forEach((id) => {
+          metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
+          margem[id] = MARGEM_FIXTURE[id] || { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+        });
+        return {
+          ok: true, metricas7d, margem, margemIndisponivel: null,
+          faturamento: {
+            periodoDias: 30,
+            porItem: { "MLB-SEMUP": 9.5, "MLB-SEMVAR": 1.1 },
+            porFamilia: { "FAM-1": 33.3, "FAM-2": 4.4 },
+          },
+          unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+        };
+      };
+      try {
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não recarregou");
+
+        await waitFor(cdp, `(function(){
+          var c = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento__valor');
+          return c && c.textContent.trim() === '9,5%';
+        })()`, "a coluna Faturamento do item avulso não preencheu sozinha, sem o operador ordenar");
+        await waitFor(cdp, `(function(){
+          var c = document.querySelector('${linhaFam("FAM-1")} .am-faturamento__valor');
+          return c && c.textContent.trim() === '33,3%';
+        })()`, "a coluna Faturamento da família não preencheu sozinha, sem o operador ordenar");
+
+        const semup = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMVAR"] .am-faturamento__valor').textContent.trim()`);
+        assert.strictEqual(semup, "1,1%");
+
+        assert.ok(chamadasPerformance.some((c) => c.incluirFaturamento === true && !c.familias.length && c.itemIds.includes("MLB-SEMUP")),
+          "o preenchimento do item avulso tem de vir BUNDLADO na mesma chamada de métricas/margem do carregamento automático — nunca uma chamada extra só para faturamento");
+        assert.ok(chamadasPerformance.some((c) => c.incluirFaturamento === true && c.familias.length > 0 && !c.itemIds.length),
+          "o consolidado da família precisa de uma chamada própria, com familias= — não itera os filhos um a um");
+      } finally {
+        performanceHandler = null;
+      }
     });
 
     /* ── 39: resiliência — falha total nunca deixa a célula presa ───────── */

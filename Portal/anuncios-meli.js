@@ -936,7 +936,15 @@
       (up.itens || []).forEach(function (item) { ids.push(item.item_id); });
     });
     if (!ids.length) return Promise.resolve();
-    return carregarPerformance(ids, { incluirMargem: incluirMargem });
+    // % faturamento INDIVIDUAL do filho segue a MESMA porta que a margem: só
+    // quando a família é EXPANDIDA (incluirMargem=true) — bundlado de graça
+    // no mesmo lote, já que o Motor de Margem já vai rodar para a margem
+    // (ver auditoria "Anúncios ML — participação no faturamento em
+    // famílias"). Filho ainda oculto (pré-carregamento em background,
+    // incluirMargem=false) continua sem gastar o Motor. A consolidada da
+    // família (porFamilia) não passa por aqui — vem de
+    // carregarFaturamentoDasFamiliasVisiveis, sem relação com isto.
+    return carregarPerformance(ids, { incluirMargem: incluirMargem, incluirFaturamento: incluirMargem });
   }
 
   // Depois do primeiro paint (nunca atrasa o render — mesmo padrão da busca

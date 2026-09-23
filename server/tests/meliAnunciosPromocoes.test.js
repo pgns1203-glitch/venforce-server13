@@ -940,6 +940,109 @@ async function run() {
     assert.strictEqual(res.corpo.promocoes[0].subsidioMl, null, "sem subsidioMl em nenhuma duplicata, o resultado continua null — Alterar não deve ser bloqueado");
     ok("endpoint: duplicata sem rebate nas duas entradas colapsa em uma só, subsidioMl continua null (Alterar não é bloqueado)");
   });
+
+  // ── Fallback secundário por preço (auditoria: "Vendex - Setembro" é
+  // SELLER_CAMPAIGN — esse tipo não segue o mecanismo de "oferta" (ref_id no
+  // formato OFFER-...) que os outros 5 tipos usam para bater com
+  // sale_price.metadata.promotion_id, então nunca casa por id/ref_id mesmo
+  // sendo a promoção que o ML realmente aplicou no preço). Quando NENHUMA
+  // promoção started/active bate por promotion_id, usa igualdade EXATA entre
+  // precoFinal (promo.price) e sale_price.amount — nunca percentual de
+  // desconto, meli_percentage, maior desconto ou prioridade de campanha.
+  // Ambiguidade (duas batendo no mesmo preço) nunca escolhe arbitrariamente:
+  // nenhuma vira ATIVA.
+
+  // 32. Fallback ativa quando não há match de promotion_id mas o preço bate.
+  {
+    const semMatch = promocoesService.normalizarPromocao(
+      { id: "C-VDX-SET", type: "SELLER_CAMPAIGN", status: "started", price: 56.05, original_price: 79.9 },
+      0,
+      "OFFER-MLB-X-999"
+    );
+    assert.strictEqual(semMatch.statusExibicao, "NÃO APLICADA", "id não bate com o promotion_id (formatos de mecanismos diferentes)");
+    promocoesService.aplicarFallbackPrecoAtivo([semMatch], 56.05);
+    assert.strictEqual(semMatch.statusExibicao, "ATIVA", "fallback: price bate com sale_price.amount, mesmo sem match de promotion_id");
+  }
+  ok("fallback por preço: SELLER_CAMPAIGN sem match de promotion_id vira ATIVA quando price == sale_price.amount");
+
+  // 33. Caminho antigo (ref_id) intocado — e uma vez já ATIVA por
+  //     promotion_id, o fallback não reavalia nem desfaz.
+  {
+    const ativaPorRefId = promocoesService.normalizarPromocao(
+      { id: "P-SMART-1", type: "SMART", ref_id: "OFFER-MLB-X-777", status: "started", price: 120, original_price: 150 },
+      0,
+      "OFFER-MLB-X-777"
+    );
+    assert.strictEqual(ativaPorRefId.statusExibicao, "ATIVA", "ref_id bate com promotion_id — caminho antigo intocado");
+    promocoesService.aplicarFallbackPrecoAtivo([ativaPorRefId], 999);
+    assert.strictEqual(ativaPorRefId.statusExibicao, "ATIVA", "já havia ATIVA por promotion_id — fallback não reavalia nem desfaz, mesmo com amount que não bateria");
+  }
+  ok("fallback por preço: promoção já ATIVA por ref_id/id não é reavaliada pelo fallback");
+
+  // 34. Empate: duas started batem no mesmo preço — ambíguo, nenhuma vira
+  //     ATIVA por acaso (nunca escolhe arbitrariamente).
+  {
+    const a = promocoesService.normalizarPromocao(
+      { id: "C-A", type: "SELLER_CAMPAIGN", status: "started", price: 56.05, original_price: 79.9 }, 0
+    );
+    const b = promocoesService.normalizarPromocao(
+      { id: "C-B", type: "SELLER_CAMPAIGN", status: "started", price: 56.05, original_price: 90 }, 1
+    );
+    promocoesService.aplicarFallbackPrecoAtivo([a, b], 56.05);
+    assert.strictEqual(a.statusExibicao, "NÃO APLICADA", "duas promoções batem no mesmo preço — ambíguo, nenhuma vira ATIVA");
+    assert.strictEqual(b.statusExibicao, "NÃO APLICADA", "idem — o fallback nunca escolhe arbitrariamente entre empatadas");
+  }
+  ok("fallback por preço: empate entre duas started no mesmo preço é ambíguo — comportamento definido é NÃO ativar nenhuma");
+
+  // 35. candidate nunca vira ATIVA pelo fallback, mesmo com preço igual ao
+  //     amount (fallback só considera started/active).
+  {
+    const cand = promocoesService.normalizarPromocao(
+      { id: "C-CAND", type: "SELLER_CAMPAIGN", status: "candidate", suggested_discounted_price: 90, original_price: 100 }, 0
+    );
+    assert.strictEqual(cand.statusExibicao, "ELEGÍVEL");
+    promocoesService.aplicarFallbackPrecoAtivo([cand], 90);
+    assert.strictEqual(cand.statusExibicao, "ELEGÍVEL", "candidate nunca vira ATIVA pelo fallback de preço, mesmo com price/suggested igual ao amount");
+  }
+  ok("fallback por preço: candidate nunca vira ATIVA, mesmo com preço igual ao sale_price.amount");
+
+  // 36. Sem amount (sale_price falhou ou veio sem o campo): comportamento
+  //     atual preservado, fallback não pode ativar nada.
+  {
+    const p = promocoesService.normalizarPromocao(
+      { id: "C-X", type: "SELLER_CAMPAIGN", status: "started", price: 56.05, original_price: 79.9 }, 0
+    );
+    promocoesService.aplicarFallbackPrecoAtivo([p], null);
+    assert.strictEqual(p.statusExibicao, "NÃO APLICADA", "sem amount, o fallback não pode ativar nada — comportamento atual preservado");
+  }
+  ok("fallback por preço: sem amount, comportamento atual é preservado (nenhuma ativação)");
+
+  // 37. Fim a fim via endpoint real: obterPromotionIdAtivo passa a capturar
+  //     amount e listarPromocoesDoItem aplica o fallback antes de deduplicar.
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) {
+        return { ok: true, status: 200, data: { amount: 56.05, regular_amount: 79.9, metadata: { promotion_id: "OFFER-MLB-X-999" } } };
+      }
+      return {
+        ok: true, status: 200,
+        data: [
+          { id: "C-VDX-SET", type: "SELLER_CAMPAIGN", status: "started", price: 56.05, original_price: 79.9, name: "Vendex - Setembro" },
+        ],
+      };
+    };
+
+    const res = fakeRes();
+    await ctrl.promocoes({ params: { itemId: "MLB-X" }, query: { clienteSlug: "cliente-a" } }, res);
+
+    assert.strictEqual(
+      res.corpo.promocoes[0].statusExibicao,
+      "ATIVA",
+      "fim a fim: SELLER_CAMPAIGN sem match de promotion_id (mecanismo OFFER- é de outros tipos) mas com price == sale_price.amount vira ATIVA"
+    );
+    ok("fim a fim: fallback por preço corrige statusExibicao de SELLER_CAMPAIGN real, sem tocar escrita/motor de margem");
+  });
 }
 
 run()

@@ -1,6 +1,8 @@
 # VF Visual DevTools (`tools/vfdev`)
 
-Editor visual para o Portal. Roda **só na sua máquina** e **nunca entra no deploy**: o editor é injetado na resposta HTML em tempo de execução, e nenhum arquivo do Portal recebe `<script>`.
+Editor visual e **camada de intenção** para o Portal. Você aponta, fala do seu jeito e experimenta; a ferramenta captura o contexto técnico (seletor, caminho DOM, `arquivo:linha`, largura) e junta tudo numa **sessão**, que vira a missão para o agente (Claude/Codex). Roda **só na sua máquina** e **nunca entra no deploy**: o editor é injetado na resposta HTML em tempo de execução, e nenhum arquivo do Portal recebe `<script>`.
+
+Guia de uso passo a passo: [`docs/GUIA.md`](docs/GUIA.md).
 
 ## Rodar
 
@@ -28,6 +30,9 @@ Abra `http://127.0.0.1:5190/index.html`, faça login uma vez e depois vá para q
 | `B` | ver antes/depois |
 | `G` | grade de 8px |
 | `Ctrl Z` / `Ctrl Shift Z` | desfazer / refazer (antes de gravar) |
+| `C` | falar sobre o elemento selecionado (ou a região marcada) |
+| `Shift` + arrastar | marcar uma região retangular e falar sobre ela |
+| `Esc` | cancela a ação estrutural à espera do 2º clique · fecha o comentário |
 
 ## Onde cada mudança vai parar
 
@@ -42,6 +47,32 @@ Abra `http://127.0.0.1:5190/index.html`, faça login uma vez e depois vá para q
 
 Se o override não vencer a cascata (especificidade), o editor desfaz a mudança e a manda para o prompt, sem subir especificidade e sem usar `!important`.
 
+## Sessão (camada de intenção)
+
+A aba **Sessão** é a primeira do painel. Cada sessão fica em `tools/vfdev/sessoes/<id>.json` (fora do git) e sobrevive a F5, a fechar a aba e a reiniciar o servidor.
+
+| Item | Como nasce | Vai para |
+|---|---|---|
+| `css` | qualquer ajuste no Painel, `Ctrl K`, Problemas… (espelho da aba Alterações) | patch (se gravável) ou missão |
+| `comentario` | `C` / **Falar sobre isso** / `Shift`+arrastar — vira um pin numerado na página | missão |
+| `estrutural` | menu **Estrutura** do Painel (remover, mover, agrupar, aproximar, igual a…) | **só** missão — nunca CSS |
+| `referencia`, `estranho` | fases seguintes | missão |
+
+- **Na mesma aba**, F5 retoma a sessão sozinho. Numa aba nova, o painel **oferece** "Continuar sessão …" ou "Nova".
+- Ao continuar, as alterações CSS pendentes são **reaplicadas**. Se a regra mudou no disco (saiu da linha:coluna ou o valor de origem mudou), o item vira `descartada: regra mudou em arquivo:linha` — nunca é aplicado "perto".
+- **Comparar com o início** mostra, por item, os valores computados da primeira captura → agora.
+- Todo ajuste CSS tem o campo **Por quê?** (na linha, logo após editar — some em 6 s se ficar vazio — e na aba Alterações).
+- Ações estruturais têm **prévia** só em runtime (remover esconde com hachura, mover reordena) com o selo "prévia — não será gravada". Prévia nunca entra no patch.
+- O alvo é capturado sem pergunta técnica: seletor estável (classe principal > id > caminho) + índice, caminho DOM, texto, retângulo, largura, regra CSS com `arquivo:linha` e evidência (ou "não resolvido" com o motivo), pai/irmãos e valores computados iniciais.
+
+API local (token + origem em todas):
+
+| Rota | O que faz |
+|---|---|
+| `GET /__vfdev/sessoes?pagina=` | lista as sessões (resumo) |
+| `GET · PUT · DELETE /__vfdev/sessoes/:id` | lê, grava (validação por schema, mensagem clara) e apaga |
+| `POST /__vfdev/sessoes/:id/duplicar` | cria `<id>-copia` em andamento |
+
 ## Segurança do patch
 
 - O servidor escuta só em `127.0.0.1`, e o `POST /__vfdev/patch` exige o token gerado no boot, além de conferir a origem.
@@ -53,5 +84,16 @@ Se o override não vencer a cascata (especificidade), o editor desfaz a mudança
 ## Testes
 
 ```bash
-npm test   # 20 testes: parser, patch, classificação, token, origem, 409, path traversal
+npm test   # parser, patch, classificação, token, origem, 409, path traversal, schema/API de sessão e e2e no navegador
 ```
+
+Os testes `test/e2e-*.test.js` sobem o servidor como processo filho sobre uma cópia descartável de `test/fixture/` e dirigem a página num Chromium via `playwright-core` (**dependência opcional**, versão exata). Sem ela ou sem navegador, esses testes são pulados com o motivo — nada falha em silêncio.
+
+## Próximos passos (backlog — ainda não feito)
+
+- Alças de arrastar no overlay.
+- Cores e sombras com tokens.
+- Estados `:hover` forçados.
+- Seleção múltipla + Igualar.
+- Painel arrastável/redimensionável.
+- IA opcional (com `ANTHROPIC_API_KEY`), saída restrita a JSON validado e nunca aplicada sem clique.

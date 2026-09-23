@@ -21,11 +21,12 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem('vfdev:' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('vfdev:' + k, JSON.stringify(v)); } catch (e) {} }
 };
-async function getJSON(url) { const r = await fetch(url, { cache: 'no-store' }); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; }
-async function postJSON(url, body) {
-  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-VFDEV-Token': TOKEN }, body: JSON.stringify(body) });
+async function api(method, url, body) {
+  const headers = { 'X-VFDEV-Token': TOKEN }; if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const r = await fetch(url, { method, cache: 'no-store', headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j;
 }
+const getJSON = url => api('GET', url), postJSON = (url, body) => api('POST', url, body);
 const htmlFile = () => decodeURIComponent(location.pathname.replace(/^\/+/, '')) || 'index.html';
 const relFromHref = href => { try { const u = new URL(href, location.href); if (u.origin !== location.origin) return null; return decodeURIComponent(u.pathname.replace(/^\/+/, '')); } catch (e) { return null; } };
 
@@ -34,7 +35,8 @@ let CFG = null, host, root, ov, panel, launcher;
 const S = {
   open: LS.get('open', true), dock: LS.get('dock', 'right'), mode: 'select', tab: 'props', scope: LS.get('scope', 'page'),
   selected: null, hoverEl: null, hoverDiag: null, pinned: null, hoverIssue: null, altDown: false, affected: null,
-  lastEdit: null, problems: [], targets: [], beforeMode: false, grid: false
+  lastEdit: null, problems: [], targets: [], beforeMode: false, grid: false,
+  drag: null, dragEnded: false, region: null, talk: null, pick: null, why: null, sesCompare: false
 };
 
 /* ================= 1. Índice: regra do CSSOM -> arquivo:linha:coluna ================= */
@@ -250,9 +252,9 @@ function overrideSelector(el) {
   return sel === 'body' ? `body${pre}` : `${pre} ${sel}`;
 }
 const overrides = new Map();
-function getOverride(el) {
-  const file = pageFile(), sel = overrideSelector(el);
-  if (!file || !sel) return null;
+function getOverride(el) { return overrideRuleFor(pageFile(), overrideSelector(el)); }
+function overrideRuleFor(file, sel) {
+  if (!file || !sel || !fileMeta.get(file)) return null;
   const key = file + '|' + sel;
   if (overrides.has(key) && overrides.get(key).parentStyleSheet) return overrides.get(key);
   for (const [r, i] of ruleInfo) if (i.file === file && !i.cond && normSel(r.selectorText) === normSel(sel)) { overrides.set(key, r); return r; }
@@ -269,11 +271,13 @@ function sourceHint(src) {
   return pageFile() || htmlFile();
 }
 function getScratch(el, src) {
+  return scratchRule(src && src.rule && src.info.kind === 'built' ? src.selector : (overrideSelector(el) || newSel(el)), sourceHint(src));
+}
+function scratchRule(sel, hint) {
   if (!scratchSheet) { const st = document.createElement('style'); st.id = 'vfdev-scratch'; document.head.appendChild(st); scratchSheet = st.sheet; }
-  const sel = src && src.rule && src.info.kind === 'built' ? src.selector : (overrideSelector(el) || newSel(el));
-  for (const [r, i] of ruleInfo) if (i.kind === 'scratch' && r.selectorText === sel) return r;
+  for (const [r, i] of ruleInfo) if (i.kind === 'scratch' && normSel(r.selectorText) === normSel(sel)) return r;
   const rule = scratchSheet.cssRules[scratchSheet.insertRule(`${sel} {}`, scratchSheet.cssRules.length)];
-  ruleInfo.set(rule, { file: sourceHint(src), kind: 'scratch', writable: false, isNew: true, selectorSrc: sel, line: null, decls: {}, reason: 'só vai no prompt' });
+  ruleInfo.set(rule, { file: hint, kind: 'scratch', writable: false, isNew: true, selectorSrc: sel, line: null, decls: {}, reason: 'só vai no prompt' });
   resetCache();
   return rule;
 }
@@ -306,19 +310,24 @@ function prep() { endPreview(); if (S.beforeMode) toggleBefore(true); }
 function edit(el, prop, val) {
   if (!el) return toast('Selecione um elemento primeiro.');
   prep(); val = String(val).trim(); if (!val) return;
+  const inicial = snapInicial(el, prop);
   const t = targetFor(el, prop);
   if (!setRule(t.rule, prop, val, t.scratch ? 'important' : null)) return;
+  let rule = t.rule;
   if (t.override) {
     resetCache();
     const now = findSource(el, prop);
     if (now.rule !== t.rule) {
       undo(true);
-      const s = getScratch(el, t.src);
-      setRule(s, prop, val, 'important');
+      rule = getScratch(el, t.src);
+      setRule(rule, prop, val, 'important');
       toast('O override desta tela perdeu na cascata (especificidade). A mudança ficou só no prompt.');
     }
   }
+  const key = keyOf(rule, prop);
+  if (!changeEl.has(key)) changeEl.set(key, { el, inicial });
   S.lastEdit = { el, prop };
+  showWhy(key, el, prop);
   render();
 }
 function nextValue(el, prop, dir) {
@@ -490,6 +499,20 @@ function drawMeasure(a, b) {
   if (B.left >= A.right) seg(A.right, y, B.left, y); else if (A.left >= B.right) seg(B.right, y, A.left, y);
   if (B.top >= A.bottom) seg(x, A.bottom, x, B.top); else if (A.top >= B.bottom) seg(x, B.bottom, x, A.top);
 }
+function drawIntent() {
+  if (S.drag) { const d = S.drag; box(mk(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1), Math.max(d.x0, d.x1), Math.max(d.y0, d.y1)), 'region'); }
+  if (S.region) box(S.region.rect, 'region', null, 'região');
+  for (const [, p] of previews) if (p.kind === 'hide' && p.el.isConnected) box(p.el.getBoundingClientRect(), 'gone', null, 'prévia: remover');
+  if (previews.size) { const b = document.createElement('div'); b.className = 'previa'; b.textContent = 'prévia — não será gravada'; ov.appendChild(b); }
+  comentarios().forEach((it, i) => {
+    const { el } = resolveAlvo(it.alvo); if (!el || !el.getClientRects().length) return;
+    const p = pinPoint(it.alvo, el);
+    if (it.alvo.regiao && it.alvo.offset && it.alvo.offset.fw) { const r = el.getBoundingClientRect(), w = it.alvo.offset.fw * r.width, h = it.alvo.offset.fh * r.height; box(mk(p.x - w / 2, p.y - h / 2, p.x + w / 2, p.y + h / 2), 'region pinreg'); }
+    const b = document.createElement('button'); b.className = 'pin' + (it.comentario.resolvido ? ' done' : ''); b.dataset.pin = it.id; b.textContent = i + 1;
+    b.title = it.comentario.texto; Object.assign(b.style, { left: (p.x - 11) + 'px', top: (p.y - 11) + 'px' });
+    ov.appendChild(b);
+  });
+}
 function drawDiag(d) { const e = explain(d), c = COLORS[d.type]; box(e.target.getBoundingClientRect(), 'culprit', c); box(regionOf(d), 'd', c, e.short); }
 let rafId = 0;
 function draw() { if (rafId) return; rafId = requestAnimationFrame(() => { rafId = 0; drawNow(); }); }
@@ -500,6 +523,7 @@ function drawNow() {
   resetCache();
   if (S.affected && Date.now() < S.affected.until) matchesOf(S.affected.sel).slice(0, 200).forEach(el => box(el.getBoundingClientRect(), 'aff'));
   if (S.hoverIssue && S.hoverIssue.isConnected) box(S.hoverIssue.getBoundingClientRect(), 'issue', null, nameOf(S.hoverIssue));
+  drawIntent();
   if (S.mode === 'use') return;
   if (S.mode === 'space') {
     if (S.pinned && S.pinned.el.isConnected) drawDiag(S.pinned);
@@ -623,7 +647,8 @@ function rowHTML(t, def, src) {
     const os = overrideSelector(t);
     meta += `<div class="meta">Sem regra no seu CSS (padrão do navegador ou herdado). ${os && pageFile() ? `Editar cria <code>${esc(os)}</code> em ${esc(pageFile())}.` : 'Editar vira só prompt.'}</div>`;
   }
-  return `<div class="row${flash}"><div class="row-head"><div class="label">${esc(def.label)}${def.hint ? `<small>${esc(def.hint)}</small>` : ''}</div><span class="computed">${esc(src.computed)}</span></div>${ctrl}${meta}</div>`;
+  const why = S.why && S.why.el === t && S.why.prop === def.prop ? `<input class="why" data-why-key="${esc(S.why.key)}" placeholder="Por quê? (opcional — some em 6 s se ficar vazio)" value="${esc((cssItemOf(S.why.key) || {}).nota || '')}" aria-label="Por quê?">` : '';
+  return `<div class="row${flash}"><div class="row-head"><div class="label">${esc(def.label)}${def.hint ? `<small>${esc(def.hint)}</small>` : ''}</div><span class="computed">${esc(src.computed)}</span></div>${ctrl}${why}${meta}</div>`;
 }
 function boxModelHTML(el) {
   const cs = getComputedStyle(el), r = el.getBoundingClientRect();
@@ -647,7 +672,8 @@ function propsPanel() {
   const short = chain.length > 6 ? [chain[0], null, ...chain.slice(-5)] : chain;
   let h = `<div class="el"><div class="el-name">${esc(nameOf(el))}</div><div class="el-sub"><code>${esc(selOf(el))}</code><span class="mono">${Math.round(el.getBoundingClientRect().width)} × ${Math.round(el.getBoundingClientRect().height)}</span><span>${isGrid(cs) ? 'grade' : isFlex(cs) ? 'flex' : cs.display}</span></div>`;
   h += `<nav class="crumbs">${short.map((n, k) => n ? `${k ? '<span>›</span>' : ''}<button data-act="sel" data-t="${T(n)}" title="${esc(selOf(n))}"${n === el ? ' aria-current="true"' : ''}>${esc(nameOf(n))}</button>` : '<span>› …</span>').join('')}</nav>`;
-  h += `<div class="actions">${el !== document.body ? `<button class="btn sm" data-act="sel" data-t="${T(el.parentElement)}">↑ Selecionar o pai</button>` : ''}<button class="btn sm" data-act="copycss">Copiar CSS</button><button class="btn sm" data-act="copysel">Copiar seletor</button></div></div>`;
+  h += `<div class="actions">${el !== document.body ? `<button class="btn sm" data-act="sel" data-t="${T(el.parentElement)}">↑ Selecionar o pai</button>` : ''}<button class="btn sm pri" data-act="talk" title="C">Falar sobre isso</button><button class="btn sm" data-act="copycss">Copiar CSS</button><button class="btn sm" data-act="copysel">Copiar seletor</button></div></div>`;
+  h += estruturaHTML(el);
   h += boxModelHTML(el);
   const rows = [], more = [];
   for (const def of DEFS) {
@@ -691,7 +717,8 @@ function changesPanel() {
     h += `<div class="chg-file">${esc(info.file)}${info.kind === 'scratch' ? ' · só prompt' : info.isNew ? ' · override novo' : ` · linha ${info.line}`}</div>`;
     for (const c of list) {
       const el = matchesOf(rule.selectorText)[0], sb = srcBefore(c);
-      h += `<div class="chg"><div class="chg-main"><code>${esc(rule.selectorText)}</code><span class="mono">${c.prop}: ${sb ? `<span class="del">${esc(sb)}</span> → ` : ''}<span class="add">${esc(c.after || '(remover)')}</span></span></div>${el ? `<button class="btn sm" data-act="sel" data-t="${T(el)}">Ver</button>` : ''}<button class="btn sm" data-act="revert" data-k="${keyOf(c.rule, c.prop)}">Reverter</button></div>`;
+      const k = keyOf(c.rule, c.prop), it = cssItemOf(k);
+      h += `<div class="chg"><div class="chg-main"><code>${esc(rule.selectorText)}</code><span class="mono">${c.prop}: ${sb ? `<span class="del">${esc(sb)}</span> → ` : ''}<span class="add">${esc(c.after || '(remover)')}</span></span></div>${el ? `<button class="btn sm" data-act="sel" data-t="${T(el)}">Ver</button>` : ''}<button class="btn sm" data-act="revert" data-k="${k}">Reverter</button><input class="why" data-why-key="${esc(k)}" placeholder="Por quê? (opcional)" value="${esc(it && it.nota || '')}" aria-label="Por quê?"></div>`;
     }
   }
   return h;
@@ -700,12 +727,13 @@ function renderTabs() {
   root.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === S.tab));
   const ci = root.getElementById('cnt-issues'); ci.textContent = S.problems.length; ci.classList.toggle('hot', S.problems.some(p => p.sev !== 'baixa'));
   root.getElementById('cnt-changes').textContent = changes.size;
+  root.getElementById('cnt-session').textContent = SES ? SES.itens.length : '–';
 }
 function renderBody() {
   S.targets = []; resetCache();
   const b = root.getElementById('body');
   const st = b.scrollTop;
-  b.innerHTML = S.tab === 'tree' ? treePanel() : S.tab === 'issues' ? issuesPanel() : S.tab === 'changes' ? changesPanel() : propsPanel();
+  b.innerHTML = S.tab === 'session' ? sessionPanel() : S.tab === 'tree' ? treePanel() : S.tab === 'issues' ? issuesPanel() : S.tab === 'changes' ? changesPanel() : propsPanel();
   b.scrollTop = st;
   S.lastEdit = null;
 }
@@ -724,6 +752,7 @@ function render() {
   panel.hidden = !S.open; launcher.hidden = S.open;
   panel.classList.toggle('left', S.dock === 'left');
   root.querySelectorAll('#modes button').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === S.mode));
+  sesSync();
   if (S.open) { renderTabs(); renderBody(); renderFooter(); }
   draw();
   if (S.open) rescanSoon();
@@ -757,7 +786,12 @@ async function apply(dry) {
     const res = await postJSON('/__vfdev/patch', { dryRun: dry, files });
     if (dry) return res;
     const done = new Set(files.map(f => f.file));
-    for (const [k, c] of [...changes]) if (ruleInfo.get(c.rule).writable && done.has(ruleInfo.get(c.rule).file)) changes.delete(k);
+    syncCssItems();
+    for (const [k, c] of [...changes]) if (ruleInfo.get(c.rule).writable && done.has(ruleInfo.get(c.rule).file)) {
+      const it = cssItemOf(k); if (it) { it.css.destino = 'gravado'; it.css.gravadoEm = nowIso(); }
+      cssItemKey.delete(k); changeEl.delete(k); changes.delete(k);
+    }
+    saveSoon();
     undoS.length = 0; redoS.length = 0;
     for (const f of done) await reindexFile(f);
     overrides.clear();
@@ -829,12 +863,34 @@ function pendingCSS() {
 function openCompare() {
   const m = root.getElementById('cmp'); m.hidden = false;
   const u = new URL(location.href); u.searchParams.set('vfdev', 'off');
-  const widths = [390, 768, 1280];
+  const widths = SES && SES.larguras && SES.larguras.length ? [...SES.larguras].sort((a, b) => a - b) : [390, 768, 1280];
   const wrap = root.getElementById('cmp-frames');
   const avail = wrap.clientWidth - 24 * (widths.length - 1), total = widths.reduce((a, b) => a + b, 0), s = Math.min(1, avail / total);
   const hgt = wrap.clientHeight - 30;
   wrap.innerHTML = widths.map(w => `<div class="cmp-col"><div class="cap"><b>${w}px</b> · ${Math.round(s * 100)}%</div><div class="cmp-box" style="width:${w * s}px;height:${hgt}px"><iframe src="${esc(u.href)}" style="width:${w}px;height:${hgt / s}px;transform:scale(${s})" title="${w}px"></iframe></div></div>`).join('');
-  wrap.querySelectorAll('iframe').forEach(f => f.addEventListener('load', () => { try { const st = f.contentDocument.createElement('style'); st.id = 'vfdev-pending'; st.textContent = pendingCSS(); f.contentDocument.head.appendChild(st); } catch (e) {} }));
+  wrap.querySelectorAll('iframe').forEach(f => f.addEventListener('load', () => { try { const st = f.contentDocument.createElement('style'); st.id = 'vfdev-pending'; st.textContent = pendingCSS(); f.contentDocument.head.appendChild(st); } catch (e) {} pinsIntoFrame(f); }));
+}
+
+/** Pins dos comentários dentro do iframe da comparação: o mesmo alvo resolvido naquela largura. */
+function pinsIntoFrame(f) {
+  let doc; try { doc = f.contentDocument; } catch (e) { return; }
+  if (!doc || !doc.body) return;
+  const win = doc.defaultView;
+  const place = () => {
+    let layer = doc.getElementById('vfdev-pins');
+    if (!layer) { layer = doc.createElement('div'); layer.id = 'vfdev-pins'; layer.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;z-index:2147483000;pointer-events:none'; doc.documentElement.appendChild(layer); }
+    layer.innerHTML = '';
+    comentarios().forEach((it, i) => {
+      const { el } = resolveAlvo(it.alvo, doc); if (!el || !el.getClientRects().length) return;
+      const p = pinPoint(it.alvo, el), d = doc.createElement('div');
+      d.setAttribute('data-vfdev-pin', it.id); d.textContent = i + 1; d.title = it.comentario.texto;
+      d.style.cssText = `position:absolute;left:${p.x + win.scrollX - 11}px;top:${p.y + win.scrollY - 11}px;width:22px;height:22px;border-radius:50%;background:#e04a74;color:#fff;font:700 11px/22px system-ui,sans-serif;text-align:center;box-shadow:0 0 0 2px #fff,0 2px 6px rgba(0,0,0,.3)`;
+      layer.appendChild(d);
+    });
+  };
+  place();
+  let t; new win.MutationObserver(() => { clearTimeout(t); t = setTimeout(place, 80); }).observe(doc.body, { subtree: true, childList: true, attributes: true });
+  win.addEventListener('resize', place);
 }
 
 /* ================= 13. Paleta de comandos ================= */
@@ -916,6 +972,360 @@ function select(el) { if (!inPage(el)) return; S.selected = el; S.affected = nul
 function setTab(t) { S.tab = t; if (t === 'issues') S.problems = scan(); render(); }
 function setMode(m) { S.mode = m; S.hoverDiag = null; S.hoverEl = null; S.tab = 'props'; render(); }
 function setOpen(o) { S.open = o; LS.set('open', o); if (o) { S.problems = scan(); } render(); }
+
+/* ================= 14b. Sessão — a camada de intenção ================= */
+/* A sessão junta ajustes CSS, ações estruturais, comentários e referências. Fica no servidor
+ * (tools/vfdev/sessoes/<id>.json) e sobrevive a F5, fechar a aba e reiniciar o servidor. */
+const SSKEY = 'vfdev:sessao:' + htmlFile();
+let SES = null, sesOffer = [], sesErr = '', sesSig = '', saveTimer = 0, reapplyInfo = null;
+const cssItemKey = new Map();   // keyOf(rule, prop) -> id do item css
+const changeEl = new Map();     // keyOf(rule, prop) -> { el, inicial } (elemento editado + valores antes da 1ª mudança)
+const previews = new Map();     // id do item estrutural -> { off() }
+const nowIso = () => new Date().toISOString();
+const uid = p => (p || 'i') + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const repoRel = f => !f ? f : /^(frontend-react|Portal)\//.test(f) || / ou |\(/.test(f) ? f : 'Portal/' + f;
+const portalRel = f => String(f || '').replace(/^Portal\//, '');
+const ACAO_LABEL = { remover: 'Remover', mover_antes: 'Mover para antes de…', mover_depois: 'Mover para depois de…', agrupar_com: 'Agrupar com…', desagrupar: 'Desagrupar', compactar: 'Compactar', expandir: 'Expandir', mais_destaque: 'Mais destaque', menos_destaque: 'Menos destaque', aproximar_de: 'Aproximar de…', separar_de: 'Separar de…', alinhar_com: 'Alinhar com…', igual_a: 'Igual a…', virar_drawer: 'Virar drawer', virar_colapsavel: 'Virar colapsável' };
+const TIPO_LABEL = { css: 'Ajuste CSS', estrutural: 'Estrutura', comentario: 'Comentário', referencia: 'Referência', estranho: 'Está estranho' };
+const CHIPS = ['grande demais', 'chama atenção demais', 'parece vazio', 'desconectado', 'quero mais destaque', 'simplificar', 'não quero isso'];
+const INICIAL_PROPS = ['width', 'height', 'padding', 'gap', 'margin-top', 'margin-bottom', 'font-size', 'font-weight', 'line-height', 'border-radius', 'min-height'];
+
+/* ---- alvo: tudo que o agente precisa para achar o elemento, capturado sem o usuário escolher nada ---- */
+function snapInicial(el, extra) {
+  const o = {}; for (const p of INICIAL_PROPS) o[p] = comp(el, p);
+  if (extra && !o[extra]) o[extra] = comp(el, extra);
+  return o;
+}
+function stableSel(el) {
+  const doc = el.ownerDocument, c = mainClass(el), cands = [];
+  if (c) cands.push('.' + CSS.escape(c));
+  if (el.id) cands.push('#' + CSS.escape(el.id));
+  cands.push(domPath(el));
+  for (const sel of cands) { let l = []; try { l = [...doc.querySelectorAll(sel)]; } catch (e) {} const i = l.indexOf(el); if (i >= 0) return { seletor: sel, indice: i }; }
+  return { seletor: domPath(el), indice: 0 };
+}
+function domPath(el) {
+  const segs = [];
+  for (let n = el; n && n.nodeType === 1 && n !== n.ownerDocument.documentElement; n = n.parentElement) {
+    if (n === n.ownerDocument.body) { segs.unshift('body'); break; }
+    if (n.id && !/\d{4,}/.test(n.id)) { segs.unshift('#' + CSS.escape(n.id)); break; }
+    const c = mainClass(n), k = [...n.parentElement.children].indexOf(n) + 1;
+    segs.unshift(n.tagName.toLowerCase() + (c ? '.' + CSS.escape(c) : '') + `:nth-child(${k})`);
+  }
+  return segs.join(' > ');
+}
+const texto60 = el => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+function fonteCssOf(el) {
+  const c = mainClass(el);
+  const m = matchedRules(el).filter(([, i]) => i.line && i.kind !== 'scratch' && !i.isNew);
+  if (!m.length) return { fonteCss: null, fonteCssMotivo: 'não resolvido: nenhuma regra de arquivo CSS casa com o elemento (estilo do navegador, herdado ou inline)' };
+  const own = c ? m.filter(([r]) => r.selectorText.includes(c)) : [];
+  const [r, i] = (own.length ? own : m)[(own.length ? own : m).length - 1];
+  const extra = i.kind === 'built' ? ` — CSS gerado pelo Vite; ${i.reason}` : i.kind === 'protected' ? ' — arquivo protegido' : '';
+  return { fonteCss: { arquivo: repoRel(i.file), linha: i.line, coluna: i.column, seletor: i.selectorSrc || r.selectorText, evidencia: `regra \`${i.selectorSrc || r.selectorText}\` casa com o elemento${own.length ? ` e contém a classe principal .${c}` : ' (a classe principal não aparece em nenhuma regra)'}${extra}` } };
+}
+function captureAlvo(el, reg, inicial) {
+  const { seletor, indice } = stableSel(el), r = el.getBoundingClientRect(), par = el.parentElement;
+  const a = { seletor, indice, nome: nameOf(el), caminhoDom: domPath(el), texto: texto60(el), larguraTela: window.innerWidth,
+    rect: { x: Math.round(r.left + scrollX), y: Math.round(r.top + scrollY), w: Math.round(r.width), h: Math.round(r.height) },
+    ...fonteCssOf(el), componente: null, componenteMotivo: 'não pesquisado (busca de componente ainda não disponível)',
+    contexto: par && inPage(par) ? { pai: selOf(par), irmaos: realKids(par).filter(k => k !== el).slice(0, 6).map(selOf), posicao: realKids(par).indexOf(el) + 1, total: realKids(par).length } : {},
+    inicial: inicial || snapInicial(el) };
+  if (reg) {
+    a.regiao = true;
+    a.rect = { x: Math.round(reg.left + scrollX), y: Math.round(reg.top + scrollY), w: Math.round(reg.width), h: Math.round(reg.height) };
+    a.offset = { fx: r.width ? (reg.left + reg.width / 2 - r.left) / r.width : 0.5, fy: r.height ? (reg.top + reg.height / 2 - r.top) / r.height : 0.5, fw: r.width ? reg.width / r.width : 1, fh: r.height ? reg.height / r.height : 1 };
+  }
+  return a;
+}
+/** Acha o elemento de um alvo em qualquer documento (a página ou um iframe da comparação). Sem palpite: ou acha, ou diz por quê. */
+function resolveAlvo(alvo, doc = document) {
+  if (!alvo) return { el: null, motivo: 'sem alvo' };
+  try { const l = doc.querySelectorAll(alvo.seletor); const el = l[alvo.indice || 0]; if (el) return { el, via: 'seletor' }; } catch (e) {}
+  try { const el = alvo.caminhoDom && doc.querySelector(alvo.caminhoDom); if (el) return { el, via: 'caminho DOM' }; } catch (e) {}
+  return { el: null, motivo: `não resolvido: \`${alvo.seletor}\`${alvo.indice ? ` (nº ${alvo.indice + 1})` : ''} não existe nesta tela agora, e o caminho DOM também não` };
+}
+function pinPoint(alvo, el) {
+  const r = el.getBoundingClientRect();
+  if (alvo.regiao && alvo.offset) return { x: r.left + alvo.offset.fx * r.width, y: r.top + alvo.offset.fy * r.height };
+  return { x: r.right - Math.min(12, r.width / 2), y: r.top + Math.min(12, r.height / 2) };
+}
+
+/* ---- ciclo de vida ---- */
+function novaSessao(auto) {
+  // não limpa a página: alterações feitas antes de existir sessão são adotadas por ela (quem troca de sessão limpa antes)
+  const d = new Date(), dd = String(d.getDate()).padStart(2, '0'), mm = String(d.getMonth() + 1).padStart(2, '0');
+  const slug = htmlFile().replace(/\.html$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+  SES = { id: `${d.toISOString().slice(0, 10)}-${slug}-${Math.random().toString(36).slice(2, 6)}`, titulo: `${(document.title || htmlFile()).trim().slice(0, 120)} — revisão visual ${dd}/${mm}`,
+    pagina: htmlFile(), url: location.pathname + location.search + location.hash, status: 'em_andamento', objetivo: '', criadaEm: nowIso(), atualizadaEm: nowIso(),
+    larguras: [1440, 768, 390], estados: [], itens: [], regressoes: [], verificacao: null, missao: null };
+  try { sessionStorage.setItem(SSKEY, SES.id); } catch (e) {}
+  sesSig = '';
+  if (auto) toast(`Sessão nova criada: “${SES.titulo}”. Veja na aba Sessão.`, 4500);
+  saveSoon(0);
+}
+function ensureSession() { if (!SES) novaSessao(true); return SES; }
+/** Desfaz na página tudo o que está vivo (ao trocar de sessão), sem gravar nada. */
+function clearLive() {
+  for (const id of [...previews.keys()]) previewOff(id);
+  for (const c of changes.values()) setDecl(c.rule, c.prop, c.before, c.prio);
+  changes.clear(); undoS.length = 0; redoS.length = 0; cssItemKey.clear(); changeEl.clear(); resetCache();
+  reapplyInfo = null; S.sesCompare = false;
+}
+async function continuarSessao(id, quiet) {
+  let s; try { s = await getJSON('/__vfdev/sessoes/' + encodeURIComponent(id)); } catch (e) { toast('Não abriu a sessão: ' + e.message, 6000); return; }
+  clearLive();
+  SES = s; if (SES.status === 'descartada') SES.status = 'em_andamento';
+  try { sessionStorage.setItem(SSKEY, SES.id); } catch (e) {}
+  reapplyCss();
+  sesSig = ''; S.tab = S.tab === 'session' || !quiet ? 'session' : S.tab;
+  render();
+  const r = reapplyInfo;
+  if (!quiet || (r && r.descartadas)) toast(`Sessão “${SES.titulo}”: ${SES.itens.length} itens${r && (r.ok || r.descartadas) ? ` · ${r.ok} ajuste(s) reaplicado(s)${r.descartadas ? ` · ${r.descartadas} descartado(s) porque a regra mudou` : ''}` : ''}.`, 5000);
+}
+function saveSoon(ms = 600) { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, ms); }
+async function saveNow() {
+  clearTimeout(saveTimer);
+  if (!SES) return null;
+  syncCssItems();
+  try { const r = await api('PUT', '/__vfdev/sessoes/' + encodeURIComponent(SES.id), SES); SES.criadaEm = r.criadaEm; SES.atualizadaEm = r.atualizadaEm; sesErr = ''; }
+  catch (e) { sesErr = e.message; toast('Sessão não salva: ' + e.message, 6000); }
+  if (S.tab === 'session' && S.open && !(root.activeElement && root.activeElement.closest && root.activeElement.closest('#body'))) renderBody();
+  return SES;
+}
+function sesSync() {
+  const sig = [...changes].map(([k, c]) => k + '=' + c.after).join('|');
+  if (sig === sesSig) return;
+  sesSig = sig;
+  if (!SES) { if (!changes.size) return; novaSessao(true); }
+  syncCssItems(); saveSoon();
+}
+
+/* ---- itens css: espelho das alterações pendentes ---- */
+const cssItemOf = key => { const id = cssItemKey.get(key); return id && SES ? SES.itens.find(i => i.id === id) : null; };
+function cssBlock(c) {
+  const info = ruleInfo.get(c.rule) || {}, d = info.decls && info.decls[c.prop];
+  const b = { arquivo: info.kind === 'scratch' ? info.file : repoRel(info.file), linha: info.isNew || info.kind === 'scratch' ? null : (d ? d.line : info.line || null),
+    seletor: c.rule.selectorText, seletorRegra: info.selectorSrc || c.rule.selectorText, prop: c.prop, antes: srcBefore(c) || '', depois: c.after || '',
+    destino: info.writable ? 'pendente' : 'prompt', kind: info.kind || 'unknown', novo: !!info.isNew };
+  if (info.line && !info.isNew) b.regra = { linha: info.line, coluna: info.column };
+  if (info.cond) b.cond = info.cond;
+  if (!info.writable && info.reason) b.motivo = info.reason;
+  return b;
+}
+function syncCssItems() {
+  if (!SES) return;
+  const live = new Set();
+  for (const [key, c] of changes) {
+    let it = cssItemOf(key);
+    const ce = changeEl.get(key), el = (ce && ce.el && ce.el.isConnected && ce.el) || matchesOf(c.rule.selectorText)[0];
+    if (!it) {
+      if (!el) continue;
+      it = { id: uid(), tipo: 'css', criadoEm: nowIso(), alvo: captureAlvo(el, null, ce && ce.inicial) };
+      SES.itens.push(it); cssItemKey.set(key, it.id);
+    }
+    it.css = { ...cssBlock(c), ...(el ? { computado: comp(el, c.prop) } : {}) };
+    live.add(it.id);
+  }
+  SES.itens = SES.itens.filter(i => i.tipo !== 'css' || live.has(i.id) || ['gravado', 'descartada'].includes(i.css.destino));
+}
+/** Recoloca as alterações CSS pendentes de uma sessão salva. Se a regra mudou no disco, descarta com o motivo — nunca aplica "perto". */
+function reapplyCss() {
+  const out = { ok: 0, descartadas: 0, divergentes: [] };
+  for (const it of SES.itens.filter(i => i.tipo === 'css' && ['pendente', 'prompt'].includes(i.css.destino))) {
+    const c = it.css, found = ruleForCss(c);
+    if (!found.rule) { c.destino = 'descartada'; c.motivo = found.motivo; out.descartadas++; continue; }
+    const prio = ruleInfo.get(found.rule).kind === 'scratch' ? 'important' : null;
+    const before = found.rule.style.getPropertyValue(c.prop).trim();
+    if (before !== c.depois && !setRule(found.rule, c.prop, c.depois, prio)) { c.destino = 'descartada'; c.motivo = `descartada: “${c.depois}” não é aceito para ${c.prop}`; out.descartadas++; continue; }
+    const key = keyOf(found.rule, c.prop); cssItemKey.set(key, it.id);
+    const r = resolveAlvo(it.alvo);
+    if (r.el) { changeEl.set(key, { el: r.el, inicial: it.alvo.inicial }); const now = comp(r.el, c.prop); if (c.computado && now !== c.computado) out.divergentes.push({ id: it.id, prop: c.prop, era: c.computado, agora: now }); }
+    out.ok++;
+  }
+  undoS.length = 0; redoS.length = 0; resetCache();
+  reapplyInfo = out;
+  return out;
+}
+function ruleForCss(c) {
+  const mudou = `descartada: regra mudou em ${c.arquivo}:${c.linha ?? (c.regra && c.regra.linha) ?? '?'}`;
+  if (c.kind === 'scratch') return { rule: scratchRule(c.seletor, c.arquivo) };
+  const file = portalRel(c.arquivo);
+  if (c.novo) { const r = overrideRuleFor(file, c.seletorRegra); return r ? { rule: r } : { motivo: `descartada: ${c.arquivo} não está carregado nesta tela` }; }
+  if (!c.regra) return { motivo: mudou };
+  for (const [rule, i] of ruleInfo) {
+    if (i.file !== file || i.line !== c.regra.linha || i.column !== c.regra.coluna || normSel(i.selectorSrc || '') !== normSel(c.seletorRegra)) continue;
+    const cur = (i.decls[c.prop] || {}).value || '';
+    if (cur !== (c.antes || '')) return { motivo: `${mudou} (no disco agora: ${c.prop}: ${cur || '(não existe)'}; esperado: ${c.antes || '(não existe)'})` };
+    return { rule };
+  }
+  return { motivo: mudou };
+}
+
+/* ---- comentários ("aponta e fala") ---- */
+const comentarios = () => SES ? SES.itens.filter(i => i.tipo === 'comentario') : [];
+function openTalk(target) {
+  const t = root.getElementById('talk');
+  S.talk = target;
+  const it = target.itemId && SES && SES.itens.find(i => i.id === target.itemId);
+  const el = target.el || (it && resolveAlvo(it.alvo).el);
+  root.getElementById('talk-h').innerHTML = it ? `Comentário <b>#${comentarios().indexOf(it) + 1}</b> · ${esc(it.alvo.nome || it.alvo.seletor)}${it.comentario.resolvido ? ' · <span class="badge">resolvido</span>' : ''}` : `Falar sobre <b>${esc(target.region ? 'esta região' : nameOf(el))}</b>`;
+  const ta = root.getElementById('talk-text'); ta.value = it ? it.comentario.texto : '';
+  root.getElementById('talk-del').hidden = !it; root.getElementById('talk-resolve').hidden = !it;
+  root.getElementById('talk-resolve').textContent = it && it.comentario.resolvido ? 'Reabrir' : 'Resolver';
+  const r = target.region ? target.region.rect : el ? el.getBoundingClientRect() : { left: 100, bottom: 100, top: 100 };
+  const w = Math.min(340, innerWidth - 24), below = r.bottom + 190 < innerHeight;
+  Object.assign(t.style, { left: clamp(r.left, 12, innerWidth - w - 12) + 'px', top: (below ? r.bottom + 8 : Math.max(12, r.top - 200)) + 'px', width: w + 'px' });
+  t.hidden = false; ta.focus();
+  draw();
+}
+function closeTalk() { root.getElementById('talk').hidden = true; S.talk = null; S.region = null; draw(); }
+function saveTalk() {
+  const txt = root.getElementById('talk-text').value.trim(), T0 = S.talk;
+  if (!T0) return;
+  if (T0.itemId) { const it = SES.itens.find(i => i.id === T0.itemId); if (it && txt) it.comentario.texto = txt; }
+  else {
+    if (!txt) return toast('Escreva o que te incomoda (ou use um dos atalhos).');
+    const el = T0.el; if (!inPage(el)) return toast('O elemento sumiu da página.');
+    ensureSession();
+    const alvo = captureAlvo(el, T0.region && T0.region.rect);
+    const p = pinPoint(alvo, el);
+    SES.itens.push({ id: uid(), tipo: 'comentario', criadoEm: nowIso(), alvo, comentario: { texto: txt, ponto: { x: Math.round(p.x + scrollX), y: Math.round(p.y + scrollY) }, resolvido: false } });
+  }
+  closeTalk(); saveSoon(0); render();
+}
+function comentar(el, texto, rect) { S.talk = { el, region: rect ? { rect } : null }; root.getElementById('talk-text').value = texto; saveTalk(); return SES.itens[SES.itens.length - 1]; }
+/** Região marcada com Shift+arrastar: o alvo é o menor elemento que contém a região inteira. */
+function regionContainer(rect) {
+  let el = pageElementAt(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  while (inPage(el) && el !== document.body) {
+    const r = el.getBoundingClientRect();
+    if (r.left <= rect.left + 2 && r.top <= rect.top + 2 && r.right >= rect.right - 2 && r.bottom >= rect.bottom - 2) return el;
+    el = el.parentElement;
+  }
+  return document.body;
+}
+
+/* ---- ações estruturais: sempre missão, nunca CSS ---- */
+function estrutural(el, acao, rel) {
+  const E = CFG.estrutura || { comRelacao: [], criterios: {} };
+  if (E.comRelacao.includes(acao) && !rel) { S.pick = { acao, el }; toast(`${ACAO_LABEL[acao]} — agora clique no elemento relacionado na página (Esc cancela).`, 6000); render(); return null; }
+  ensureSession();
+  const it = { id: uid(), tipo: 'estrutural', criadoEm: nowIso(), alvo: captureAlvo(el), estrutural: { acao, criterios: [...(E.criterios[acao] || [])] } };
+  if (rel) it.estrutural.relacionado = captureAlvo(rel);
+  SES.itens.push(it); S.pick = null;
+  saveSoon(0); render();
+  toast(`Registrado: ${ACAO_LABEL[acao].replace('…', '')} ${nameOf(el)}${rel ? ' / ' + nameOf(rel) : ''}. Vai para a missão — nada foi gravado.`, 4500);
+  return it;
+}
+const temPrevia = acao => acao === 'remover' || acao === 'mover_antes' || acao === 'mover_depois';
+function previewOn(id) {
+  const it = SES && SES.itens.find(i => i.id === id); if (!it || previews.has(id)) return false;
+  const { el } = resolveAlvo(it.alvo); if (!el) { toast('Prévia indisponível: ' + resolveAlvo(it.alvo).motivo); return false; }
+  const a = it.estrutural.acao;
+  if (a === 'remover') {
+    const had = el.hasAttribute('style'), old = el.getAttribute('style');
+    el.style.setProperty('visibility', 'hidden');
+    previews.set(id, { el, kind: 'hide', off: () => { if (had && old) el.setAttribute('style', old); else el.removeAttribute('style'); } });
+  } else if (a === 'mover_antes' || a === 'mover_depois') {
+    const rel = resolveAlvo(it.estrutural.relacionado).el; if (!rel || rel.contains(el) || el.contains(rel)) { toast('Prévia indisponível: elemento relacionado não resolvido.'); return false; }
+    const par = el.parentNode, next = el.nextSibling;
+    rel.parentNode.insertBefore(el, a === 'mover_antes' ? rel : rel.nextSibling);
+    previews.set(id, { el, kind: 'move', off: () => { if (par.isConnected) par.insertBefore(el, next && next.parentNode === par ? next : null); } });
+  } else return false;
+  render(); return true;
+}
+function previewOff(id) { const p = previews.get(id); if (!p) return; previews.delete(id); p.off(); draw(); }
+
+/* ---- comparar com o início ---- */
+function diffInicio(it) {
+  const alvos = it.tipo === 'referencia' ? [] : [it.alvo];
+  const out = [];
+  for (const a of alvos) {
+    if (!a || !a.inicial) continue;
+    const { el, motivo } = resolveAlvo(a);
+    if (!el) { out.push({ motivo }); continue; }
+    for (const [p, v] of Object.entries(a.inicial)) { const now = comp(el, p); if (now !== v) out.push({ prop: p, antes: v, agora: now }); }
+  }
+  return out;
+}
+
+/* ---- aba Sessão ---- */
+function counters() {
+  const n = t => SES.itens.filter(i => i.tipo === t && !(t === 'css' && i.css.destino === 'descartada')).length;
+  const est = SES.estados || [];
+  return [['Ajustes CSS', n('css')], ['Estruturais', n('estrutural')], ['Comentários', n('comentario')], ['Referências', n('referencia')], ['Estados validados', `${est.filter(e => e.validadoEm).length}/${est.length}`], ['Regressões', (SES.regressoes || []).length]];
+}
+const STATUS_LABEL = { em_andamento: 'em andamento', missao_gerada: 'missão gerada', verificada: 'verificada', descartada: 'descartada' };
+function itemCard(it, n) {
+  const a = it.alvo || (it.referencia && it.referencia.b) || {};
+  const r = it.tipo === 'referencia' ? { el: null } : resolveAlvo(a);
+  let h = `<div class="item" data-item="${esc(it.id)}"><div class="item-h"><span class="num">${n}</span><span class="badge">${TIPO_LABEL[it.tipo]}</span><b>${esc(a.nome || a.seletor || '')}</b>`;
+  h += `<span class="grow"></span>${r.el ? `<button class="btn sm" data-act="item-ver" data-id="${esc(it.id)}">Ver</button>` : ''}<button class="btn sm" data-act="item-del" data-id="${esc(it.id)}">Apagar</button></div>`;
+  if (it.tipo === 'css') {
+    const c = it.css, dest = { gravado: 'feito — já gravado', pendente: 'pendente (gravável)', prompt: 'a fazer (só prompt)', descartada: 'descartada' }[c.destino];
+    h += `<div class="mono">${esc(c.arquivo)}${c.linha ? ':' + c.linha : ''} · <code>${esc(c.seletorRegra)}</code></div><div class="mono">${esc(c.prop)}: <span class="del">${esc(c.antes || '(não existe)')}</span> → <span class="add">${esc(c.depois || '(remover)')}</span> · ${esc(dest)}</div>`;
+    if (c.destino === 'descartada') h += `<div class="warnline">${esc(c.motivo || '')}</div>`;
+    const dv = reapplyInfo && reapplyInfo.divergentes.find(d => d.id === it.id);
+    if (dv) h += `<div class="warnline">Reaplicado, mas o valor computado agora é ${esc(dv.agora)} (na captura era ${esc(dv.era)}).</div>`;
+    h += `<input class="why" data-why-item="${esc(it.id)}" placeholder="Por quê? (opcional)" value="${esc(it.nota || '')}" aria-label="Por quê?">`;
+  } else if (it.tipo === 'comentario') {
+    h += `<p class="quote${it.comentario.resolvido ? ' done' : ''}">“${esc(it.comentario.texto)}”</p>`;
+  } else if (it.tipo === 'estrutural') {
+    const e = it.estrutural;
+    h += `<div><b>${esc(ACAO_LABEL[e.acao].replace('…', ''))}</b>${e.relacionado ? ` → ${esc(e.relacionado.nome || e.relacionado.seletor)} <code>${esc(e.relacionado.seletor)}</code>` : ''}</div>`;
+    h += `<label class="crit">Critérios (um por linha, editáveis)<textarea data-crit="${esc(it.id)}" rows="${Math.max(2, e.criterios.length)}">${esc(e.criterios.join('\n'))}</textarea></label>`;
+    if (temPrevia(e.acao)) h += `<div class="actions"><button class="btn sm${previews.has(it.id) ? ' on' : ''}" data-act="previa" data-id="${esc(it.id)}">${previews.has(it.id) ? 'Desligar prévia' : 'Ver prévia'}</button><span class="hint">prévia — não será gravada</span></div>`;
+  } else if (it.tipo === 'referencia') {
+    h += `<div>${it.referencia.diferencas.length} diferença(s) em relação a ${esc(it.referencia.a.nome || it.referencia.a.seletor)}</div>`;
+  } else if (it.tipo === 'estranho') {
+    h += `<ul class="facts">${it.estranho.achados.map(f => `<li>${esc(f.fato)}</li>`).join('')}</ul>`;
+  }
+  if (it.tipo !== 'css' && it.tipo !== 'comentario') h += `<input class="why" data-why-item="${esc(it.id)}" placeholder="Por quê? (opcional)" value="${esc(it.nota || '')}" aria-label="Por quê?">`;
+  if (it.tipo !== 'referencia') {
+    if (!r.el) h += `<div class="warnline">${esc(r.motivo)}</div>`;
+    const f = a.fonteCss;
+    h += `<div class="meta">CSS: ${f ? `<span class="mono">${esc(f.arquivo)}:${f.linha}</span>` : esc(a.fonteCssMotivo || 'não resolvido')}</div>`;
+  }
+  if (S.sesCompare && it.tipo !== 'referencia') {
+    const d = diffInicio(it);
+    h += `<div class="cmpini">${d.length ? d.map(x => x.motivo ? esc(x.motivo) : `<span class="mono">${esc(x.prop)}: <span class="del">${esc(x.antes)}</span> → <span class="add">${esc(x.agora)}</span></span>`).join('<br>') : 'sem diferença desde a primeira captura'}</div>`;
+  }
+  return h + '</div>';
+}
+function sessionPanel() {
+  if (!SES) {
+    const vivas = sesOffer.filter(s => s.status === 'em_andamento'), outras = sesOffer.filter(s => s.status !== 'em_andamento' && s.status !== 'descartada');
+    let h = `<div class="empty"><b>Sessão de revisão</b><span>Tudo o que você apontar, comentar ou ajustar fica numa sessão salva no servidor. Ela vira a <b>missão</b> para o agente.</span></div>`;
+    if (sesErr) h += `<div class="warnline">${esc(sesErr)}</div>`;
+    for (const s of vivas) h += `<button class="btn pri wide" data-act="ses-cont" data-id="${esc(s.id)}">Continuar sessão “${esc(s.titulo)}” <small>${s.itens} itens</small></button>`;
+    h += `<button class="btn wide" data-act="ses-new">Nova sessão</button>`;
+    if (outras.length) h += `<details class="more"><summary>${outras.length} sessão(ões) com missão gerada/verificada</summary>${outras.map(s => `<button class="btn wide" data-act="ses-cont" data-id="${esc(s.id)}">${esc(s.titulo)} <small>${STATUS_LABEL[s.status]}</small></button>`).join('')}</details>`;
+    return h;
+  }
+  let h = `<div class="ses-head"><input id="ses-title" class="ses-title" value="${esc(SES.titulo)}" aria-label="Título da sessão"><span class="badge st-${SES.status}">${STATUS_LABEL[SES.status]}</span></div>`;
+  h += `<div class="counters">${counters().map(([l, v]) => `<div><b>${v}</b><span>${l}</span></div>`).join('')}</div>`;
+  h += `<div class="actions"><button class="btn sm" data-act="ses-save">Salvar</button><button class="btn sm" data-act="ses-switch">Continuar outra</button><button class="btn sm" data-act="ses-dup">Duplicar</button><button class="btn sm" data-act="ses-ren">Renomear</button><button class="btn sm" data-act="ses-disc">Descartar</button><button class="btn sm${S.sesCompare ? ' on' : ''}" data-act="ses-cmp">Comparar com o início</button></div>`;
+  h += `<div class="meta">Salva em <span class="mono">tools/vfdev/sessoes/${esc(SES.id)}.json</span>${SES.atualizadaEm ? ` · ${new Date(SES.atualizadaEm).toLocaleTimeString()}` : ''}</div>`;
+  if (sesErr) h += `<div class="warnline">${esc(sesErr)}</div>`;
+  if (!SES.itens.length) h += `<div class="ok">Sessão vazia. Selecione algo e aperte <kbd>C</kbd> para falar sobre ele, use <b>Estrutura</b> no Painel, ou ajuste o CSS.</div>`;
+  const cc = comentarios();
+  SES.itens.forEach((it, k) => { h += itemCard(it, it.tipo === 'comentario' ? '💬' + (cc.indexOf(it) + 1) : '#' + (k + 1)); });
+  return h;
+}
+function estruturaHTML(el) {
+  const E = CFG.estrutura; if (!E) return '';
+  return `<details class="more estr"${S.pick ? ' open' : ''}><summary>Estrutura — vira missão, nunca CSS</summary><div class="estr-grid">${E.acoes.map(a => `<button class="btn sm" data-act="estr" data-acao="${a}" data-t="${T(el)}">${esc(ACAO_LABEL[a])}</button>`).join('')}</div>${S.pick ? `<div class="warnline">Esperando o clique no elemento relacionado para “${esc(ACAO_LABEL[S.pick.acao])}” (Esc cancela).</div>` : ''}</details>`;
+}
+function showWhy(key, el, prop) {
+  S.why = { key, el, prop };
+  setTimeout(() => {
+    if (!S.why || S.why.key !== key) return;
+    const i = root.querySelector(`input.why[data-why-key="${CSS.escape(key)}"]`);
+    if (i && (i.value.trim() || root.activeElement === i)) return;
+    S.why = null; if (i && i.closest('.row')) i.remove();
+  }, 6000);
+}
 
 /* ================= 15. UI (shadow DOM) ================= */
 const CSS_TEXT = `
@@ -1063,6 +1473,35 @@ details.more[open]{display:flex;flex-direction:column;gap:10px}
 .cmp-box{overflow:hidden;background:#fff;border-radius:6px;box-shadow:0 8px 30px rgba(0,0,0,.35)}
 .cmp-box iframe{border:0;transform-origin:0 0;display:block;background:#fff}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:6;max-width:calc(100% - 32px);padding:9px 14px;border-radius:8px;background:var(--ink);color:var(--bg);font-size:12.5px;box-shadow:0 8px 24px rgba(0,0,0,.25);pointer-events:none}
+.ov.region{border:2px dashed var(--o-text);background:rgba(63,143,214,.08)}
+.ov.pinreg{border-color:rgba(224,74,116,.6);background:rgba(224,74,116,.06)}
+.ov.gone{background:repeating-linear-gradient(-45deg,rgba(224,74,116,.5) 0 6px,rgba(224,74,116,.12) 6px 12px);outline:2px solid var(--o-sobra)}
+.previa{position:fixed;left:50%;top:10px;transform:translateX(-50%);padding:4px 12px;border-radius:999px;background:var(--o-sobra);color:#fff;font:700 12px/1.4 var(--mono);box-shadow:0 4px 14px rgba(0,0,0,.25)}
+.pin{position:fixed;width:22px;height:22px;border-radius:50%;border:0;background:var(--o-sobra);color:#fff;font:700 11px/22px var(--mono);text-align:center;padding:0;pointer-events:auto;box-shadow:0 0 0 2px #fff,0 2px 6px rgba(0,0,0,.3);cursor:pointer}
+.pin.done{background:#8a8594}
+.talk{position:fixed;z-index:5;pointer-events:auto;background:var(--bg);border:1px solid var(--line);border-radius:12px;box-shadow:0 16px 48px rgba(20,10,40,.3);padding:12px;display:flex;flex-direction:column;gap:8px}
+.talk textarea,.crit textarea{width:100%;border:1px solid var(--line);background:var(--bg2);border-radius:8px;padding:8px;font:inherit;color:inherit;resize:vertical}
+.chips{display:flex;flex-wrap:wrap;gap:4px}.chips button{border:1px solid var(--line);background:var(--bg2);border-radius:999px;padding:2px 9px;font-size:11.5px}.chips button:hover{border-color:var(--acc)}
+.hint{font-size:11px;color:var(--mut)}
+.why{width:100%;border:1px dashed var(--line);background:transparent;border-radius:6px;padding:4px 8px;font-size:12px;color:inherit}
+.why:focus{border-style:solid;background:var(--bg2)}
+.wide{width:100%;text-align:left;display:flex;justify-content:space-between;gap:8px}.wide small{opacity:.75}
+.ses-head{display:flex;gap:8px;align-items:center}
+.ses-title{flex:1;min-width:0;font:700 15px/1.3 inherit;border:1px solid transparent;border-radius:6px;padding:4px 6px;background:transparent;color:inherit}
+.ses-title:hover,.ses-title:focus{border-color:var(--line);background:var(--bg2)}
+.st-verificada{background:var(--add-bg);color:var(--add)}.st-descartada{background:var(--lock-bg);color:var(--lock)}
+.counters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.counters div{border:1px solid var(--line);border-radius:8px;padding:6px 8px;display:flex;flex-direction:column}.counters b{font-size:16px}.counters span{font-size:11px;color:var(--mut)}
+.item{border:1px solid var(--line);border-radius:9px;padding:9px 11px;display:flex;flex-direction:column;gap:6px}
+.item-h{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.item-h b{overflow-wrap:anywhere}.grow{flex:1}
+.num{font:700 11px var(--mono);color:var(--mut)}
+.item .del{color:var(--del);text-decoration:line-through}.item .add{color:var(--add);font-weight:600}
+.quote{margin:0;font-size:13px}.quote.done{text-decoration:line-through;color:var(--mut)}
+.crit{display:flex;flex-direction:column;gap:4px;font-size:11.5px;color:var(--mut)}
+.warnline{font-size:11.5px;color:var(--warn);background:var(--warn-bg);border-radius:6px;padding:4px 8px}
+.cmpini{font-size:11.5px;border-left:3px solid var(--acc);padding:2px 8px;color:var(--mut)}
+.facts{margin:0;padding-left:18px;font-size:12px}
+.estr-grid{display:flex;flex-wrap:wrap;gap:4px;padding-top:6px}
 @media (prefers-reduced-motion:reduce){.row.flash{animation:none}}
 `;
 const HTML = `
@@ -1076,7 +1515,7 @@ const HTML = `
       <div class="seg" id="modes"><button data-mode="select" title="1">Selecionar</button><button data-mode="space" title="2">Espaço?</button><button data-mode="measure" title="3">Medir</button><button data-mode="use" title="0">Usar</button></div>
       <button class="cmdbtn" id="cmdbtn"><span>O que você quer fazer?</span><kbd>Ctrl K</kbd></button>
     </div>
-    <div class="tabs" id="tabs"><button data-tab="props">Painel</button><button data-tab="tree">Árvore</button><button data-tab="issues">Problemas<span class="count" id="cnt-issues">0</span></button><button data-tab="changes">Alterações<span class="count" id="cnt-changes">0</span></button></div>
+    <div class="tabs" id="tabs"><button data-tab="session">Sessão<span class="count" id="cnt-session">–</span></button><button data-tab="props">Painel</button><button data-tab="tree">Árvore</button><button data-tab="issues">Problemas<span class="count" id="cnt-issues">0</span></button><button data-tab="changes">Alterações<span class="count" id="cnt-changes">0</span></button></div>
     <div class="body" id="body"></div>
     <div class="foot"><div class="foot-count" id="foot-count"></div>
       <div class="foot-r"><button class="btn sm" id="undo">↶</button><button class="btn sm" id="redo">↷</button><button class="btn sm" id="before">Ver antes</button><button class="btn sm" id="cmpbtn">Larguras</button><button class="btn sm" id="diff">Diff</button><button class="btn sm" id="prompt">Prompt</button><button class="btn sm pri" id="apply">Gravar</button></div></div>
@@ -1084,6 +1523,7 @@ const HTML = `
   <div class="sheet" id="drawer" hidden><div class="sheet-in"><div class="sheet-top"><div class="seg" id="dtabs"><button data-tab="diff">Diff real</button><button data-tab="prompt">Prompt pro Codex</button></div><button class="btn" id="dcopy">Copiar</button><button class="btn" id="dclose">Fechar</button></div><div class="sheet-body" id="dbody"></div></div></div>
   <div class="cmd" id="cmd" hidden><div class="cmd-in"><input id="cmd-input" placeholder="Escreva do seu jeito: menos espaço, 3 colunas, centralizar…" autocomplete="off" spellcheck="false"><div class="cmd-target" id="cmd-target"></div><div class="cmd-list" id="cmd-list"></div><div class="cmd-foot"><span><kbd>↑</kbd><kbd>↓</kbd> escolher</span><span><kbd>Enter</kbd> aplicar</span><span><kbd>Esc</kbd> fechar</span><span>Aceita CSS direto: <code>gap 8</code></span></div></div></div>
   <div class="cmp" id="cmp" hidden><div class="cmp-top"><b>Comparar larguras — mesma página, sem o editor, com as alterações pendentes aplicadas</b><button class="btn" id="cmp-reload">Recarregar</button><button class="btn" id="cmp-close">Fechar</button></div><div class="cmp-frames" id="cmp-frames"></div></div>
+  <div class="talk" id="talk" hidden role="dialog" aria-label="Falar sobre isso"><div class="talk-h" id="talk-h"></div><textarea id="talk-text" rows="3" placeholder="o que te incomoda aqui?"></textarea><div class="chips" id="talk-chips">${CHIPS.map(c => `<button data-chip="${c}">${c}</button>`).join('')}</div><div class="actions"><button class="btn sm pri" id="talk-save">Salvar</button><button class="btn sm" id="talk-resolve" hidden>Resolver</button><button class="btn sm" id="talk-del" hidden>Apagar</button><button class="btn sm" id="talk-cancel">Cancelar</button><span class="hint">Ctrl+Enter salva · Esc cancela</span></div></div>
   <div class="toast" id="toast" hidden></div>
 </div>`;
 
@@ -1121,6 +1561,12 @@ function buildUI() {
     else if (e.key === 'Escape') { e.preventDefault(); closeCmd(); }
   });
 
+  ov.addEventListener('click', e => { const p = e.target.closest('.pin'); if (p) openTalk({ itemId: p.dataset.pin }); });
+  $('talk-chips').onclick = e => { const b = e.target.closest('[data-chip]'); if (!b) return; const ta = $('talk-text'); ta.value = ta.value.trim() ? ta.value.trim() + ', ' + b.dataset.chip : b.dataset.chip; ta.focus(); };
+  $('talk-save').onclick = saveTalk; $('talk-cancel').onclick = closeTalk;
+  $('talk-del').onclick = () => { if (S.talk && S.talk.itemId) delItem(S.talk.itemId); closeTalk(); };
+  $('talk-resolve').onclick = () => { const it = S.talk && SES.itens.find(i => i.id === S.talk.itemId); if (it) { it.comentario.resolvido = !it.comentario.resolvido; saveSoon(0); } closeTalk(); render(); };
+  $('talk-text').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); closeTalk(); } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveTalk(); } });
   const body = $('body');
   body.addEventListener('click', e => {
     const b = e.target.closest('[data-act]'); if (!b || b.disabled) return;
@@ -1134,6 +1580,19 @@ function buildUI() {
     else if (act === 'copysel') copy(newSel(S.selected), 'Seletor copiado.');
     else if (act === 'fix') { const p = S.problems[+b.dataset.i]; if (p && p.fix) p.fix.run(); }
     else if (act === 'rescan') { S.problems = scan(); render(); }
+    else if (act === 'talk') openTalk({ el: S.selected });
+    else if (act === 'estr') estrutural(t, b.dataset.acao);
+    else if (act === 'ses-new') { novaSessao(false); S.tab = 'session'; render(); }
+    else if (act === 'ses-cont') continuarSessao(b.dataset.id);
+    else if (act === 'ses-save') saveNow().then(() => toast('Sessão salva.'));
+    else if (act === 'ses-switch') { saveNow().then(async () => { clearLive(); SES = null; try { sessionStorage.removeItem(SSKEY); } catch (e) {} await loadOffer(); render(); }); }
+    else if (act === 'ses-dup') { saveNow().then(async () => { try { const c = await postJSON('/__vfdev/sessoes/' + encodeURIComponent(SES.id) + '/duplicar', {}); await continuarSessao(c.id, true); toast(`Duplicada: agora você está em “${c.titulo}”.`); } catch (e) { toast('Não duplicou: ' + e.message, 6000); } }); }
+    else if (act === 'ses-ren') { const i = root.getElementById('ses-title'); i.focus(); i.select(); }
+    else if (act === 'ses-disc') { SES.status = 'descartada'; saveNow().then(async () => { clearLive(); SES = null; try { sessionStorage.removeItem(SSKEY); } catch (e) {} await loadOffer(); render(); toast('Sessão descartada (o arquivo continua em tools/vfdev/sessoes/).'); }); }
+    else if (act === 'ses-cmp') { S.sesCompare = !S.sesCompare; render(); }
+    else if (act === 'item-ver') { const it = SES.itens.find(i => i.id === b.dataset.id); const r = it && resolveAlvo(it.alvo); if (r && r.el) { r.el.scrollIntoView({ block: 'center' }); S.tab = 'props'; select(r.el); } }
+    else if (act === 'item-del') delItem(b.dataset.id);
+    else if (act === 'previa') { previews.has(b.dataset.id) ? previewOff(b.dataset.id) : previewOn(b.dataset.id); render(); }
     else if (act === 'revert') { const c = [...changes.values()].find(x => keyOf(x.rule, x.prop) === b.dataset.k); if (c) { prep(); if (setRule(c.rule, c.prop, c.before)) render(); } }
   });
   body.addEventListener('pointerover', e => {
@@ -1148,8 +1607,19 @@ function buildUI() {
     if (e.target.closest('[data-hov]') && !(rel && rel.closest && rel.closest('[data-hov]'))) { S.hoverEl = null; draw(); }
     if (e.target.closest('[data-issue]') && !(rel && rel.closest && rel.closest('[data-issue]'))) { S.hoverIssue = null; draw(); }
   });
+  body.addEventListener('input', e => {
+    const i = e.target;
+    if (i.dataset.whyKey || i.dataset.whyItem) {
+      if (i.dataset.whyKey) sesSync();
+      const it = i.dataset.whyItem ? SES && SES.itens.find(x => x.id === i.dataset.whyItem) : cssItemOf(i.dataset.whyKey);
+      if (it) { if (i.value.trim()) it.nota = i.value; else delete it.nota; saveSoon(); }
+    }
+  });
   body.addEventListener('change', e => {
     const i = e.target;
+    if (i.id === 'ses-title') { if (i.value.trim()) { SES.titulo = i.value.trim(); saveSoon(0); } return; }
+    if (i.dataset.crit) { const it = SES.itens.find(x => x.id === i.dataset.crit); if (it) { it.estrutural.criterios = i.value.split('\n').map(x => x.trim()).filter(Boolean); saveSoon(0); } return; }
+    if (i.dataset.whyKey || i.dataset.whyItem) return;
     if (i.name === 'scope') { S.scope = i.value; LS.set('scope', S.scope); render(); return; }
     if (!i.dataset.prop) return;
     let v = i.value.trim(); if (i.dataset.bm && /^-?\d+(\.\d+)?$/.test(v)) v += 'px';
@@ -1164,15 +1634,36 @@ const active = () => S.open && S.mode !== 'use';
 function onMove(e) {
   if (!active() || fromTool(e)) return;
   const el = pageElementAt(e.clientX, e.clientY); if (!inPage(el)) return;
+  if (S.drag) { S.drag.x1 = e.clientX; S.drag.y1 = e.clientY; draw(); return; }
   if (S.mode === 'space') { resetCache(); S.hoverDiag = diagnose(e.clientX, e.clientY); draw(); }
   else if (S.hoverEl !== el) { S.hoverEl = el; draw(); }
 }
 function block(e) {
   if (!active() || fromTool(e)) return;
   e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+  if (e.type === 'pointerdown' && e.shiftKey && e.button === 0 && S.mode === 'select') { S.drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY }; return; }
   if (e.type !== 'click') return;
+  if (S.dragEnded) { S.dragEnded = false; return; }
+  if (S.pick) { const rel = pageElementAt(e.clientX, e.clientY); if (inPage(rel) && rel !== S.pick.el) estrutural(S.pick.el, S.pick.acao, rel); return; }
   if (S.mode === 'space') { resetCache(); const d = diagnose(e.clientX, e.clientY); if (d) { S.pinned = d; S.hoverDiag = null; render(); } }
   else select(pageElementAt(e.clientX, e.clientY));
+}
+function onUp() {
+  const d = S.drag; if (!d) return; S.drag = null;
+  const rect = mk(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1), Math.max(d.x0, d.x1), Math.max(d.y0, d.y1));
+  if (rect.width < 8 || rect.height < 8) { draw(); return; }
+  S.dragEnded = true; setTimeout(() => { S.dragEnded = false; }, 400);
+  const el = regionContainer(rect);
+  S.region = { rect, el };
+  openTalk({ el, region: S.region });
+}
+function delItem(id) {
+  if (!SES) return;
+  const it = SES.itens.find(i => i.id === id); if (!it) return;
+  previewOff(id);
+  if (it.tipo === 'css') for (const [k, v] of cssItemKey) if (v === id) { const c = changes.get(k); if (c) { prep(); setRule(c.rule, c.prop, c.before); } cssItemKey.delete(k); }
+  SES.itens = SES.itens.filter(i => i.id !== id);
+  saveSoon(0); render();
 }
 function onKey(e) {
   if (e.altKey && e.shiftKey && (e.key === 'V' || e.key === 'v' || e.code === 'KeyV')) { e.preventDefault(); setOpen(!S.open); return; }
@@ -1187,7 +1678,8 @@ function onKey(e) {
   const nav = el => { if (inPage(el) && el !== host) { e.preventDefault(); select(el); } };
   const sel = S.selected && S.selected.isConnected ? S.selected : null;
   switch (e.key) {
-    case 'Escape': if (!root.getElementById('drawer').hidden) root.getElementById('drawer').hidden = true; else if (!root.getElementById('cmp').hidden) root.getElementById('cmp-close').click(); else { S.selected = null; S.pinned = null; render(); } break;
+    case 'c': case 'C': if (S.region) { e.preventDefault(); openTalk({ el: S.region.el, region: S.region }); } else if (sel && S.mode !== 'use') { e.preventDefault(); openTalk({ el: sel }); } break;
+    case 'Escape': if (S.pick) { S.pick = null; toast('Ação estrutural cancelada.'); render(); } else if (!root.getElementById('talk').hidden) closeTalk(); else if (!root.getElementById('drawer').hidden) root.getElementById('drawer').hidden = true; else if (!root.getElementById('cmp').hidden) root.getElementById('cmp-close').click(); else { S.selected = null; S.pinned = null; render(); } break;
     case '/': e.preventDefault(); openCmd(); break;
     case '0': setMode('use'); break;
     case '1': setMode('select'); break;
@@ -1205,6 +1697,10 @@ function onKey(e) {
 }
 
 /* ================= 17. Boot ================= */
+async function loadOffer() {
+  try { sesOffer = (await getJSON('/__vfdev/sessoes?pagina=' + encodeURIComponent(htmlFile()))).sessoes; sesErr = ''; }
+  catch (e) { sesOffer = []; sesErr = 'Não listou as sessões: ' + e.message; }
+}
 async function boot() {
   try { CFG = await getJSON('/__vfdev/config'); } catch (e) { console.warn('[vfdev] servidor do VF DevTools não respondeu:', e); return; }
   await new Promise(r => setTimeout(r, 150)); // deixa layout.js / vf-shell.js montarem a moldura
@@ -1226,9 +1722,16 @@ async function boot() {
     clearTimeout(sheetTimer);
     sheetTimer = setTimeout(async () => { const n = ruleInfo.size; await syncSheets(); if (ruleInfo.size !== n) { readTokens(); resetCache(); } rescanSoon(); }, 300);
   }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'open'] });
+  window.addEventListener('pointerup', onUp, true);
+  await loadOffer();
+  let auto = null; try { auto = sessionStorage.getItem(SSKEY); } catch (e) {}
+  if (auto && sesOffer.some(s => s.id === auto && s.status !== 'descartada')) await continuarSessao(auto, true);
+  else if (sesOffer.some(s => s.status === 'em_andamento')) S.tab = 'session';
   if (S.open) S.problems = scan();
   render();
-  window.__VFDEV__.api = { select, edit, findSource, ruleInfo, changes, buildPatch, apply, scan, state: S };
+  window.__VFDEV__.api = { select, edit, findSource, ruleInfo, changes, buildPatch, apply, scan, state: S,
+    sessao: () => SES, erroSessao: () => sesErr, novaSessao, continuarSessao, saveNow, comentar, estrutural, previewOn, previewOff, previews, resolveAlvo, captureAlvo, openCompare, setTab, render, delItem };
+  window.__VFDEV__.ready = true;
 }
 if (document.readyState === 'complete') boot(); else window.addEventListener('load', boot, { once: true });
 })();

@@ -39,3 +39,8 @@ docs/obsidian-map/
 
 # git worktrees locais (nao versionar)
 .worktrees/
+
+# VF DevTools (tools/vfdev): dados locais de runtime — sessões, missões e histórico de gravações
+tools/vfdev/sessoes/
+tools/vfdev/missoes/
+tools/vfdev/.history/

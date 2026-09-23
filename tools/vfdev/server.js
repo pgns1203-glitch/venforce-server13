@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { indexCss, applyPatches, PatchError } = require('./cssIndex');
+const { SessionStore, ACOES, ACOES_COM_RELACAO, CRITERIOS } = require('./sessao');
 
 const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, 'vfdev.config.json'), 'utf8'));
 const REPO = path.resolve(__dirname, '..', '..');
@@ -21,6 +22,7 @@ const HOST = '127.0.0.1';
 const BACKEND = process.env.VFDEV_BACKEND || CFG.backend || null;
 const TOKEN = crypto.randomBytes(16).toString('hex');
 const CLIENT = path.join(__dirname, 'client', 'vf-devtools.js');
+const SESSOES = new SessionStore(path.resolve(process.env.VFDEV_SESSOES_DIR || path.join(__dirname, 'sessoes')));
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -83,8 +85,32 @@ async function handleVfdev(req, res, url) {
   if (p === '/__vfdev/config') {
     return json(res, 200, {
       protectedFiles: CFG.protectedFiles, globalFiles: CFG.globalFiles, builtDirs: CFG.builtDirs,
-      viteSources: CFG.viteSources, tokens: CFG.tokens, tokensFile: CFG.tokensFile, minFontPx: CFG.minFontPx || 11
+      viteSources: CFG.viteSources, tokens: CFG.tokens, tokensFile: CFG.tokensFile, minFontPx: CFG.minFontPx || 11,
+      estrutura: { acoes: ACOES, comRelacao: ACOES_COM_RELACAO, criterios: CRITERIOS }
     });
+  }
+
+  if (p === '/__vfdev/sessoes' && req.method === 'GET') {
+    checkAuth(req);
+    return json(res, 200, { sessoes: SESSOES.list(url.searchParams.get('pagina') || null) });
+  }
+
+  let m = p.match(/^\/__vfdev\/sessoes\/([^/]+)(\/duplicar)?$/);
+  if (m) {
+    checkAuth(req);
+    const id = decodeURIComponent(m[1]);
+    if (m[2]) {
+      if (req.method !== 'POST') throw new PatchError(405, 'Use POST para duplicar.');
+      return json(res, 201, SESSOES.duplicate(id));
+    }
+    if (req.method === 'GET') return json(res, 200, SESSOES.get(id));
+    if (req.method === 'DELETE') { SESSOES.delete(id); return json(res, 200, { ok: true, id }); }
+    if (req.method === 'PUT') {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch (e) { throw new PatchError(400, 'JSON inválido.'); }
+      return json(res, 200, SESSOES.put(id, body));
+    }
+    throw new PatchError(405, `Método ${req.method} não aceito em ${p}.`);
   }
 
   if (p === '/__vfdev/index') {
@@ -192,4 +218,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { server, classify, portalPath, TOKEN, PORT, HOST };
+module.exports = { server, classify, portalPath, TOKEN, PORT, HOST, SESSOES };

@@ -26,6 +26,15 @@ const { calcularTacos } = require("../services/cliente360/cliente360SyncService"
 const { deriveResumo, normalizarMcFracao } = require("../services/painelContas/painelContasMetricas");
 
 let checks = 0;
+// Uma promise pendurada esvazia o event loop e o Node sai com 0 sem terminar
+// o teste — aqui isso vira falha.
+let concluido = false;
+process.on("exit", () => {
+  if (!concluido) {
+    console.error(`centralVendasCliente360Adapter.test.js: NÃO concluiu (parou após ${checks} verificações)`);
+    process.exitCode = 1;
+  }
+});
 function ok(label, condition) {
   assert.ok(condition, `FALHOU: ${label}`);
   checks += 1;
@@ -357,6 +366,7 @@ async function run() {
     ok("sem HTTP: adaptador não dispara sync", !fonte.includes("sincronizarVendasMeli") && !fonte.includes("executarSyncRun") && !fonte.includes("criarSyncRun"));
   }
 
+  concluido = true;
   console.log(`centralVendasCliente360Adapter.test.js: ${checks} verificacoes OK`);
 }
 

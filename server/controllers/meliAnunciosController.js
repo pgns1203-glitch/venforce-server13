@@ -2233,4 +2233,6 @@ module.exports = {
   criacaoListingTypes,
   publicarAnuncio,
   retryPrecosAtacado,
+  montarFaturamento,
+  montarCurvaAbc,
 };

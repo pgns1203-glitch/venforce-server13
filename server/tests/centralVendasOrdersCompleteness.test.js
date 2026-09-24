@@ -179,11 +179,13 @@ async function run() {
   }
 
   // 10. HTTP error na Orders API → lança, nunca devolve sucesso parcial.
+  // (500 persistente: esgota os retries — sleep no-op para não esperar o
+  // backoff real; o retry em si é coberto em centralVendasOrdersRetry.test.js.)
   {
     const svc = carregarComPaginas([{ erro: true, status: 500 }]);
     let lancou = false;
     try {
-      await svc.fetchAllOrders(1, "seller1", "2026-08-01", "2026-08-31");
+      await svc.fetchAllOrders(1, "seller1", "2026-08-01", "2026-08-31", { sleepFn: async () => {} });
     } catch (err) {
       lancou = true;
       ok("10: mlStatus preservado", err.mlStatus === 500);

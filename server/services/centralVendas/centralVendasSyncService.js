@@ -114,12 +114,89 @@ function criarErroHttp(statusCode, mensagem) {
 // (mesmo padrao de metricasService.fetchAllOrders, replicado para nao acoplar)
 // ---------------------------------------------------------------------------
 
+// Retry da Orders API (Auditoria Sync Noturno §14): Shipments/Claims/Payments
+// já toleravam 429/5xx com backoff, mas uma única página de /orders/search
+// com 429 derrubava o run inteiro da conta. Mesmo padrão de
+// centralVendasFreteService (status retryável + Retry-After), com espera um
+// pouco maior: aqui uma falha não perde um shipment, perde o run todo.
+// 401/403/404 continuam falhando na hora (mlFetch já refaz o 401 uma vez
+// após refresh do grant) — não é algo que se resolve tentando de novo.
+const ORDERS_MAX_ATTEMPTS = 4; // 1 inicial + 3 retries
+const ORDERS_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const ORDERS_RETRY_AFTER_MAX_MS = 30000;
+
+// Falha de rede/timeout do fetch (undici) — transitória. Erros de negócio do
+// mlTokenService (grant revogado/inexistente, refresh falhou: `code` ML_* e/ou
+// `statusCode`) são permanentes e propagam sem retry.
+const ORDERS_TRANSIENT_NETWORK_CODES = new Set([
+  "ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "ECONNABORTED", "EPIPE", "EAI_AGAIN", "ENOTFOUND",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET",
+]);
+
+function isErroTransitorioDeRede(err) {
+  if (!err) return false;
+  if (err.statusCode) return false;
+  if (typeof err.code === "string" && err.code.startsWith("ML_")) return false;
+  if (err.name === "AbortError" || err.name === "TimeoutError") return true;
+  const code = err.code || err.cause?.code;
+  if (code && ORDERS_TRANSIENT_NETWORK_CODES.has(code)) return true;
+  return err.name === "TypeError" && /fetch failed/i.test(String(err.message || ""));
+}
+
+function ordersBackoffDelayMs(attempt, retryAfterSeconds) {
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.min(retryAfterSeconds * 1000, ORDERS_RETRY_AFTER_MAX_MS);
+  }
+  const base = 1000 * 2 ** (attempt - 1); // 1s, 2s, 4s
+  const jitter = Math.floor(Math.random() * 250);
+  return Math.min(base + jitter, 8000);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Uma página de /orders/search com retry limitado. Devolve a MESMA forma de
+// mlFetch ({ ok, status, data }) — quem chama decide o erro final, então o
+// contrato de fetchAllOrders para respostas não-ok não muda.
+async function fetchOrdersPageComRetry(clienteId, path, sellerId, { mlFetchFn, sleepFn, maxAttempts }) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let resp;
+    try {
+      resp = await mlFetchFn(clienteId, path, { mlUserId: sellerId });
+    } catch (err) {
+      if (isErroTransitorioDeRede(err) && attempt < maxAttempts) {
+        const delay = ordersBackoffDelayMs(attempt, null);
+        console.warn(`[centralVendas] orders retry ${attempt}/${maxAttempts - 1} apos erro de rede (${err.code || err.cause?.code || err.name}) — aguardando ${delay}ms`);
+        await sleepFn(delay);
+        continue;
+      }
+      throw err;
+    }
+
+    const status = resp?.status;
+    if (!resp?.ok && ORDERS_RETRYABLE_STATUS.has(status) && attempt < maxAttempts) {
+      const delay = ordersBackoffDelayMs(attempt, resp?.retryAfter);
+      console.warn(`[centralVendas] orders retry ${attempt}/${maxAttempts - 1} apos HTTP ${status} — aguardando ${delay}ms`);
+      await sleepFn(delay);
+      continue;
+    }
+    return { ...resp, attempts: attempt };
+  }
+  // Inalcançável (o último attempt sempre retorna ou lança), mantido por clareza.
+  throw new Error("fetchOrdersPageComRetry: tentativas esgotadas sem resposta.");
+}
+
 // Contrato de completude (M3, seção 11 da spec): nunca devolve sucesso
 // silencioso quando o universo pretendido (paging.total) não foi coberto.
 // `expectedCount` usa a estratégia conservadora "maior total já reportado"
 // (maxReportedTotal) — se a API variar o total entre páginas, não ignora,
 // registra em metadata e usa o maior valor visto (seção 18).
-async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo) {
+//
+// O 5º argumento é só ponto de injeção de teste (mlFetch/sleep/tentativas).
+async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo, {
+  mlFetchFn = mlFetch, sleepFn = sleep, maxAttempts = ORDERS_MAX_ATTEMPTS,
+} = {}) {
   const seen = new Map();
   let receivedRaw = 0;
   let firstReportedTotal = null;
@@ -139,7 +216,9 @@ async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo) {
       offset: String(offset),
     });
 
-    const { ok, status, data } = await mlFetch(clienteId, `/orders/search?${qs}`, { mlUserId: sellerId });
+    const { ok, status, data, attempts } = await fetchOrdersPageComRetry(
+      clienteId, `/orders/search?${qs}`, sellerId, { mlFetchFn, sleepFn, maxAttempts }
+    );
 
     if (!ok) {
       const statusCode = status === 401 || status === 403 ? 422 : 502;
@@ -151,6 +230,7 @@ async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo) {
       );
       err.mlStatus = status;
       err.code = "ORDERS_HTTP_ERROR";
+      err.attempts = attempts;
       throw err;
     }
 
@@ -1324,6 +1404,9 @@ module.exports = {
   getCost,
   buscarCustosPorBaseId,
   fetchAllOrders,
+  isErroTransitorioDeRede,
+  ordersBackoffDelayMs,
+  ORDERS_MAX_ATTEMPTS,
   computeBaseStats,
   SETTLEMENT_AUTOSTART_ENABLED,
 };

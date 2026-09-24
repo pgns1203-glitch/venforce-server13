@@ -348,7 +348,7 @@ const chamadasPerformance = [];
 
 // GET /anuncios-meli/familias — `chamadasFamilias` registra page/ordenarPor
 // de CADA chamada (prova que a paginação reenvia o mesmo critério global —
-// ver testes 39d-g). `ordenarPorGlobalHandler`, quando setado, substitui a
+// ver testes 39d-h). `ordenarPorGlobalHandler`, quando setado, substitui a
 // resposta padrão inteira sempre que a query trouxer um `ordenarPor` (o
 // próprio backend só aplica esse campo quando o critério é global —
 // faturamento_*/curvaAbc_* — nunca para margem_*/unidades_*, que continuam
@@ -2596,7 +2596,7 @@ async function run() {
       performanceHandler = null;
     });
 
-    /* ── 39d-g: ordenação GLOBAL por %Faturamento/Curva ABC (ordenarPor no
+    /* ── 39d-h: ordenação GLOBAL por %Faturamento/Curva ABC (ordenarPor no
        backend, sobrevive à troca de página) ──────────────────────────────
        SUBSTITUI os antigos testes "39d-h" desta suíte, que exercitavam
        faturamento_desc/curvaAbc_asc via aplicarOrdenacaoPerformance (GET
@@ -2606,16 +2606,19 @@ async function run() {
        ORDENACOES_GLOBAIS em anuncios-meli.js) — os testes antigos ficaram
        incompatíveis com o novo contrato (aplicarOrdenacaoPerformance() nunca
        mais é chamada para esses dois critérios, ver Garantia de aceite #2) e
-       foram substituídos pelos quatro abaixo. A cobertura visual que os
-       antigos tinham (coluna Faturamento/tag ABC mostrando o mesmo valor
-       usado para ordenar, família fechada usando o consolidado) continua
-       coberta: os dois critérios escrevem nos MESMOS caches
-       (faturamentoCache/curvaAbcCache/*PorFamiliaCache) que essas células já
-       liam antes — só a origem do valor mudou (resposta de /familias, não
-       de /performance). Curva ABC não ganhou um teste de UI dedicado nesta
-       rodada porque percorre o EXATO MESMO branch de carregarAnuncios que
-       %Faturamento (nenhuma lógica própria não coberta); a ordenação em si
-       já tem cobertura de backend (Task 5). */
+       foram substituídos pelos cinco abaixo (39d-h). Os dois critérios
+       escrevem nos MESMOS caches (faturamentoCache/curvaAbcCache/
+       *PorFamiliaCache) que as células da lista já liam antes — só a origem
+       do valor mudou (resposta de /familias, não de /performance). A linha
+       de FAMÍLIA fechada é um branch de produção à parte (chaveia pelo cache
+       "PorFamilia", por family_id, não pelo cache de item) — coberta
+       EXECUTADAMENTE pelo teste 39h abaixo (misto item+família), não só por
+       leitura de código: 39h prova que o valor consolidado pinta na célula
+       certa e que nenhuma chamada de detalhe de família dispara à toa. Curva
+       ABC não ganhou um teste de UI dedicado nesta rodada porque percorre o
+       EXATO MESMO branch de carregarAnuncios que %Faturamento (incluindo o
+       mesmo branch de família que 39h exercita — nenhuma lógica própria não
+       coberta); a ordenação em si já tem cobertura de backend (Task 5). */
 
     await check("39d — faturamento_desc: front manda ordenarPor e PINTA direto da resposta, sem 2ª chamada a /performance", async () => {
       chamadasFamilias.length = 0;
@@ -2783,6 +2786,64 @@ async function run() {
         s.dispatchEvent(new Event('change'));
       })()`);
       console.log("  ✓ 39g");
+    });
+
+    await check("39h — faturamento_desc com FAMÍLIA fechada misturada a item: pinta o consolidado na chave certa (family_id, não item_id), sem abrir/buscar detalhe da família", async () => {
+      // FAM-1 é reaproveitada de propósito (já usada e cacheada por dezenas de
+      // testes anteriores desta suíte) — é o que prova que NENHUM detalhe de
+      // família é buscado por causa da ordenação global: se o front tentasse
+      // abrir/expandir a família só porque ela veio na resposta, haveria uma
+      // chamada NOVA a /anuncios-meli/familias/FAM-1, e não há (o cache já
+      // resolve garantirFamiliaDetalhe sem rede — mesmo raciocínio do 39d
+      // reaproveitar MLB-SEMUP/MLB-SEMVAR já cacheados).
+      pedidos.length = 0;
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          // Família primeiro, de propósito: se o código escrevesse o valor
+          // consolidado no cache ERRADO (faturamentoCache, o de ITEM, em vez
+          // de faturamentoPorFamiliaCache) chaveado por family_id, a célula
+          // da família ficaria em "—" e a deste teste pegaria isso.
+          { tipo: "familia", key: "fam:FAM-1", family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
+            titulo: "Camiseta Dry Fit Masculina", faturamentoPercentual: 0.42, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-SEMUP", key: "item:MLB-SEMUP", titulo: "Item A", status: "active",
+            faturamentoPercentual: 0.15, cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'faturamento_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-1")}')`, "a linha da família não renderizou");
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"]')`, "a linha do item não renderizou");
+
+      // Painel de FAM-1 tem de continuar FECHADO — a asserção é sobre a linha
+      // FECHADA do agrupador, nunca sobre o painel expandido.
+      const painelAberto = await cdp.evaluate(`(function(){ var p = document.querySelector('${painelFam("FAM-1")}'); return Boolean(p && !p.hidden); })()`);
+      assert.strictEqual(painelAberto, false, "pré-condição do teste: o painel de FAM-1 precisa estar FECHADO (renderCatalogo reconstrói a lista do zero a cada ordenação global)");
+
+      const textoFamilia = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-faturamento .am-faturamento__valor')?.textContent.trim() || ''`);
+      assert.strictEqual(textoFamilia, "42,0%",
+        `a linha FECHADA da família tem de mostrar o consolidado (faturamentoPorFamiliaCache["FAM-1"]) — se o valor tivesse ido pro cache de ITEM por engano, a célula ficaria em "—": recebido "${textoFamilia}"`);
+
+      const textoItem = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento .am-faturamento__valor')?.textContent.trim() || ''`);
+      assert.strictEqual(textoItem, "15,0%", `a linha do item individual tem de mostrar o seu próprio percentual: recebido "${textoItem}"`);
+
+      assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
+        "nenhuma chamada de detalhe de família pode ter disparado só por causa da ordenação global — o consolidado já veio pronto na resposta da listagem");
+      ordenarPorGlobalHandler = null;
+      // Devolve o dropdown/AM.ordenarPor a "Padrão" antes de 39i em diante
+      // (mesmo cuidado de 39f/39g).
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      console.log("  ✓ 39h");
     });
 
     await check("39i — carregar a listagem (SEM ordenar) já preenche a coluna Faturamento sozinha — individual bundlado na 1ª chamada, família numa chamada própria", async () => {

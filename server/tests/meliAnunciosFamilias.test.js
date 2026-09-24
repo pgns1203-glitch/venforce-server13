@@ -353,6 +353,79 @@ class MockDb {
       return { rows: Array.from(grupos.values()) };
     }
 
+
+    // --- LISTAR_AGRUPADO_POR_CHAVES -----------------------------------------
+    if (q.includes("-- LISTAR_AGRUPADO_POR_CHAVES")) {
+      let i = 0;
+      const clienteId = params[i++];
+      const temConta = q.includes("a.cliente_conta_id = $");
+      const includeLegacy = temConta ? q.includes("OR a.cliente_conta_id IS NULL)") : true;
+      const clienteContaId = temConta ? params[i++] : null;
+      const grupoKeysAlvo = new Set(params[i++]);
+
+      const base = this.baseCte(clienteId, clienteContaId, includeLegacy)
+        .filter((l) => grupoKeysAlvo.has(l.grupo_key));
+
+      const estoquePorGrupo = new Map();
+      for (const linha of base) {
+        const upKey = linha.a.user_product_id || `item:${linha.a.item_id}`;
+        const porUp = estoquePorGrupo.get(linha.grupo_key) || new Map();
+        const atual = porUp.has(upKey) ? porUp.get(upKey) : null;
+        const valor = linha.a.estoque == null ? null : Number(linha.a.estoque);
+        porUp.set(upKey, atual == null ? valor : (valor == null ? atual : Math.max(atual, valor)));
+        estoquePorGrupo.set(linha.grupo_key, porUp);
+      }
+
+      const num = (v) => (v == null ? null : Number(v));
+      const grupos = new Map();
+      for (const linha of base) {
+        const g = grupos.get(linha.grupo_key) || {
+          grupo_key: linha.grupo_key, family_id: linha.family_id, family_name: null, item_id: null,
+          total_itens: 0, ups: new Set(), vendidos_total: 0,
+          preco_min: null, preco_max: null, moeda: null, score_min: null,
+          total_ativos: 0, total_pausados: 0, total_encerrados: 0,
+        };
+        const a = linha.a;
+        g.total_itens++;
+        if (a.user_product_id) g.ups.add(a.user_product_id);
+        if (linha.up_family_name != null) {
+          g.family_name = g.family_name == null || linha.up_family_name > g.family_name
+            ? linha.up_family_name : g.family_name;
+        }
+        g.item_id = g.item_id == null || String(a.item_id) < g.item_id ? String(a.item_id) : g.item_id;
+        g.vendidos_total += Number(a.vendidos || 0);
+        if (num(a.preco) != null) {
+          g.preco_min = g.preco_min == null ? num(a.preco) : Math.min(g.preco_min, num(a.preco));
+          g.preco_max = g.preco_max == null ? num(a.preco) : Math.max(g.preco_max, num(a.preco));
+        }
+        if (a.moeda != null) g.moeda = g.moeda == null || a.moeda < g.moeda ? a.moeda : g.moeda;
+        if (num(a.score_venforce) != null) {
+          g.score_min = g.score_min == null ? num(a.score_venforce) : Math.min(g.score_min, num(a.score_venforce));
+        }
+        if (a.status === "active") g.total_ativos++;
+        if (a.status === "paused") g.total_pausados++;
+        if (a.status === "closed") g.total_encerrados++;
+        grupos.set(linha.grupo_key, g);
+      }
+
+      const rows = Array.from(grupos.values()).map((g) => {
+        const porUp = estoquePorGrupo.get(g.grupo_key) || new Map();
+        let estoqueTotal = null;
+        for (const v of porUp.values()) {
+          if (v == null) continue;
+          estoqueTotal = (estoqueTotal == null ? 0 : estoqueTotal) + v;
+        }
+        return {
+          grupo_key: g.grupo_key, family_id: g.family_id, family_name: g.family_name, item_id: g.item_id,
+          total_itens: g.total_itens, total_user_products: g.ups.size, vendidos_total: g.vendidos_total,
+          preco_min: g.preco_min, preco_max: g.preco_max, moeda: g.moeda, score_min: g.score_min,
+          total_ativos: g.total_ativos, total_pausados: g.total_pausados, total_encerrados: g.total_encerrados,
+          estoque_total: estoqueTotal,
+        };
+      });
+      return { rows };
+    }
+
     // --- LISTAR_AGRUPADO_ITENS_DA_PAGINA -----------------------------------
     if (q.includes("-- LISTAR_AGRUPADO_ITENS_DA_PAGINA")) {
       let i = 0;
@@ -1296,6 +1369,36 @@ async function run() {
     });
     assert.deepStrictEqual(chaves.map((c) => c.item_id), ["MLB-C10"]);
     console.log("  ✓ AL. listarChavesFiltradas isola por clienteContaId");
+  });
+
+
+  // AM. listarAgrupadoPorChaves hidrata SÓ as chaves pedidas, com os mesmos
+  //     agregados de listarAgrupado (estoque por UP distinto, vendidos por
+  //     item) — nenhum grupo fora da lista aparece.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB1", user_product_id: null, vendidos: 3 }),
+      anuncioFixture({ item_id: "MLB2", user_product_id: "UP1", estoque: 5 }),
+      anuncioFixture({ item_id: "MLB3", user_product_id: "UP1", estoque: 5 }), // mesmo UP: não duplica estoque
+      anuncioFixture({ item_id: "MLB-FORA", user_product_id: null }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    const rows = await meliFamiliaService.listarAgrupadoPorChaves({
+      clienteId: 1, grupoKeys: ["item:MLB1", "fam:FAM1"],
+    });
+    const porChave = new Map(rows.map((r) => [r.grupo_key, r]));
+    assert.strictEqual(rows.length, 2, "MLB-FORA não pode aparecer — não estava em grupoKeys");
+    assert.strictEqual(porChave.get("item:MLB1").vendidos_total, 3);
+    assert.strictEqual(porChave.get("fam:FAM1").estoque_total, 5, "UP1 tem 2 MLBs — estoque conta 1 vez");
+    console.log("  ✓ AM. listarAgrupadoPorChaves: hidrata só as chaves pedidas, agregados corretos");
+  });
+
+  // AN. grupoKeys vazio: zero linhas, sem quebrar.
+  await withMockDb({ anuncios: [], userProducts: [] }, async () => {
+    const rows = await meliFamiliaService.listarAgrupadoPorChaves({ clienteId: 1, grupoKeys: [] });
+    assert.deepStrictEqual(rows, []);
+    console.log("  ✓ AN. listarAgrupadoPorChaves com grupoKeys vazio: array vazio");
   });
 
   console.log("meliAnunciosFamilias.test.js passed");

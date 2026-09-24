@@ -686,6 +686,86 @@ async function listarChavesFiltradas({ clienteId, clienteContaId = null, include
   return rows;
 }
 
+// Hidrata os AGREGADOS completos (estoque por UP distinto, vendidos por
+// item, preço/score/status) de um conjunto EXPLÍCITO de grupo_key — usado
+// quando quem decide a ordem/página não é o SQL (ORDER BY/LIMIT/OFFSET de
+// listarAgrupado), e sim um ranking já calculado em JS (ver
+// meliAnunciosController.listarAgrupadoOrdenadoPorMotor). Mesma forma de
+// linha de LISTAR_AGRUPADO_PAGINA, sem total_grupos (quem chama já sabe o
+// total pelo tamanho do ranking).
+async function listarAgrupadoPorChaves({ clienteId, clienteContaId = null, includeLegacy = true, grupoKeys }) {
+  if (!grupoKeys || !grupoKeys.length) return [];
+  await ensureSchema();
+
+  const params = [clienteId];
+  let i = 2;
+  const conta = clausulaConta({ clienteContaId, includeLegacy, paramIndex: i });
+  if (conta.param != null) { params.push(conta.param); i++; }
+  params.push(grupoKeys);
+  const chavesIdx = i;
+
+  const sql = `
+    -- LISTAR_AGRUPADO_POR_CHAVES
+    WITH base AS (
+      SELECT a.item_id, a.user_product_id, a.titulo, a.sku, a.status,
+             a.preco, a.moeda, a.estoque, a.vendidos, a.score_venforce,
+             up.family_id,
+             up.family_name AS up_family_name,
+             CASE WHEN up.family_id IS NOT NULL
+                  THEN 'fam:' || up.family_id
+                  ELSE 'item:' || a.item_id
+             END AS grupo_key
+        FROM meli_anuncios a
+        LEFT JOIN meli_user_products up
+               ON up.cliente_id = a.cliente_id
+              AND up.user_product_id = a.user_product_id
+       WHERE a.cliente_id = $1${conta.sql}
+    ),
+    estoque_por_up AS (
+      SELECT b.grupo_key,
+             COALESCE(b.user_product_id, 'item:' || b.item_id) AS up_key,
+             MAX(b.estoque) AS estoque
+        FROM base b
+       WHERE b.grupo_key = ANY($${chavesIdx}::text[])
+       GROUP BY b.grupo_key, COALESCE(b.user_product_id, 'item:' || b.item_id)
+    ),
+    estoque_grupo AS (
+      SELECT grupo_key, SUM(estoque)::int AS estoque_total
+        FROM estoque_por_up
+       GROUP BY grupo_key
+    ),
+    grupos AS (
+      SELECT b.grupo_key,
+             MIN(b.family_id)                                AS family_id,
+             MAX(b.up_family_name)                           AS family_name,
+             MIN(b.item_id)                                  AS item_id,
+             COUNT(*)::int                                   AS total_itens,
+             COUNT(DISTINCT b.user_product_id)::int          AS total_user_products,
+             SUM(COALESCE(b.vendidos, 0))::int               AS vendidos_total,
+             MIN(b.preco)                                    AS preco_min,
+             MAX(b.preco)                                    AS preco_max,
+             MIN(b.moeda)                                    AS moeda,
+             MIN(b.score_venforce)                           AS score_min,
+             COUNT(*) FILTER (WHERE b.status = 'active')::int AS total_ativos,
+             COUNT(*) FILTER (WHERE b.status = 'paused')::int AS total_pausados,
+             COUNT(*) FILTER (WHERE b.status = 'closed')::int AS total_encerrados
+        FROM base b
+       WHERE b.grupo_key = ANY($${chavesIdx}::text[])
+       GROUP BY b.grupo_key
+    )
+    SELECT g.grupo_key, g.family_id, g.family_name, g.item_id,
+           g.total_itens, g.total_user_products, g.vendidos_total,
+           g.preco_min, g.preco_max, g.moeda, g.score_min,
+           g.total_ativos, g.total_pausados, g.total_encerrados,
+           e.estoque_total
+      FROM grupos g
+      LEFT JOIN estoque_grupo e ON e.grupo_key = g.grupo_key;
+  `;
+
+  const { rows } = await db.query(sql, params);
+  return rows;
+}
+
 module.exports = {
   ensureSchema,
   extrairUserProducts,
@@ -696,4 +776,5 @@ module.exports = {
   construirFiltroBase,
   montarAnunciosDeRows,
   listarChavesFiltradas,
+  listarAgrupadoPorChaves,
 };

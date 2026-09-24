@@ -225,9 +225,17 @@ const CURVA_ABC_ORDEM = { A: 1, B: 2, C: 3 };
 // Custo: uma query leve (só chaves, sem os agregados pesados) sobre o
 // catálogo inteiro filtrado + UMA chamada ao Motor com itemIds:[] — o Motor
 // monta `porMlb` (receita por MLB) pro PERÍODO INTEIRO independente de
-// itemIds (ver motorMargemService.prepareWorkspaceContext), então isso não
-// paga o custo por-item de enrichBatch. Só a página final (após ordenar e
-// cortar) é hidratada com detalhe completo (título/preço/capa).
+// itemIds, via `prepareWorkspaceContext` (já completo ANTES de enrichBatch
+// rodar, e intocado por esta injeção). O que torna a chamada barata NÃO é
+// `itemIds: []` sozinho — em `enrichBatch`, `itemIds: []` cai no `else`
+// (array vazio falha `Array.isArray(itemIds) && itemIds.length`) e dispara
+// `buscarItensAtivos` + `buscarDetalhesItens` (3 chamadas AO VIVO ao Mercado
+// Livre) e o pipeline de enriquecimento inteiro — tudo descartado, porque
+// esta função só lê `porMlb`/`periodo` de `prepared`. Por isso o `enrichBatch`
+// é substituído por um no-op via injeção de dependência (`montarItens` já
+// repassa `deps` para `enrichBatch` — ver motorMargemService.js): só a página
+// final (após ordenar e cortar) é hidratada com detalhe completo
+// (título/preço/capa), nunca aqui.
 async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit, config }) {
   const chaves = await familiaService.listarChavesFiltradas({
     clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro,
@@ -245,21 +253,37 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
 
   let motorResultado;
   try {
-    motorResultado = await motorMargemService.montarItens({
-      clienteSlug: cliente.slug, clienteContaId, itemIds: [],
-    });
+    motorResultado = await motorMargemService.montarItens(
+      { clienteSlug: cliente.slug, clienteContaId, itemIds: [] },
+      // No-op: esta função só precisa de `porMlb`/`periodo`, montados pelo
+      // `prepareWorkspaceContext` que roda ANTES de `enrichBatch` — dispensar
+      // o enriquecimento por item evita 3 chamadas AO VIVO ao Mercado Livre
+      // que este caminho nunca usaria (ver comentário acima).
+      { enrichBatch: async () => ({ totalItensMl: 0, itens: [] }) }
+    );
   } catch (err) {
-    if (err.statusCode && err.payload && err.payload.codigo) {
-      const fallback = await familiaService.listarAgrupado({
-        clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro, page, limit,
-      });
-      return {
-        ...fallback,
-        ordenacaoAplicada: false,
-        ordenacaoIndisponivel: { codigo: err.payload.codigo, mensagem: err.payload.erro },
-      };
+    // Qualquer falha aqui — típica (Base não vinculada etc., com
+    // err.payload.codigo) ou inesperada (timeout, erro de rede, bug) — cai
+    // pro SQL padrão em vez de virar 500: Restrição Global #5 do plano
+    // ("Motor indisponível nunca pode virar erro 500"). A distinção só muda
+    // o LOG e a mensagem exposta, nunca o comportamento de fallback.
+    const tipada = err.statusCode && err.payload && err.payload.codigo;
+    if (!tipada) {
+      console.error(
+        "[anuncios-meli] listarAgrupadoOrdenadoPorMotor: erro inesperado do Motor, caindo para ordem padrão:",
+        err.message
+      );
     }
-    throw err;
+    const fallback = await familiaService.listarAgrupado({
+      clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+    });
+    return {
+      ...fallback,
+      ordenacaoAplicada: false,
+      ordenacaoIndisponivel: tipada
+        ? { codigo: err.payload.codigo, mensagem: err.payload.erro }
+        : { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." },
+    };
   }
 
   const { porMlb, periodo } = motorResultado;
@@ -280,11 +304,23 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
     return { chave: c, valorBruto, valorOrdenacao };
   });
 
+  // Tie-break por grupo_key: sem isso, dois grupos empatados (ex.: mesma
+  // Curva ABC, ou ambos sem faturamento no período) dependem da ordem que
+  // `listarChavesFiltradas` devolveu — e essa query é um `GROUP BY` SEM
+  // `ORDER BY` (ver LISTAR_CHAVES_FILTRADAS em meliFamiliaService.js), então
+  // o Postgres não garante a mesma ordem entre a chamada da página 1 e a da
+  // página 2 (cada uma roda a query de novo). Um reshuffle na zona de empate
+  // reproduz o bug exato que este plano existe para corrigir (item duplicado
+  // ou sumido entre páginas). Mesmo desempate (`grupo_key ASC`) que
+  // LISTAR_AGRUPADO_PAGINA já usa como estabilizador final.
   comValor.sort((x, y) => {
-    if (x.valorOrdenacao == null && y.valorOrdenacao == null) return 0;
-    if (x.valorOrdenacao == null) return 1;
-    if (y.valorOrdenacao == null) return -1;
-    return config.direcao === "asc" ? x.valorOrdenacao - y.valorOrdenacao : y.valorOrdenacao - x.valorOrdenacao;
+    let cmp;
+    if (x.valorOrdenacao == null && y.valorOrdenacao == null) cmp = 0;
+    else if (x.valorOrdenacao == null) cmp = 1;
+    else if (y.valorOrdenacao == null) cmp = -1;
+    else cmp = config.direcao === "asc" ? x.valorOrdenacao - y.valorOrdenacao : y.valorOrdenacao - x.valorOrdenacao;
+    if (cmp !== 0) return cmp;
+    return x.chave.grupo_key < y.chave.grupo_key ? -1 : (x.chave.grupo_key > y.chave.grupo_key ? 1 : 0);
   });
 
   const total = comValor.length;

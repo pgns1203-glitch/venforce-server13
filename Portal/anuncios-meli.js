@@ -531,7 +531,20 @@
       el("am-ordenacao").addEventListener("change", function (e) {
         var criterio = e.target.value;
         if (!criterio) {
+          // Se o critério anterior era GLOBAL (faturamento/Curva ABC), voltar
+          // a "Padrão" precisa reconsultar o backend (a ordem padrão nunca
+          // existiu em memória — AM_ordemOriginalAnuncios fica null durante
+          // ordenação global, de propósito, ver carregarAnuncios) — nunca
+          // restaurar um snapshot local (que ou é a própria ordem global, ou
+          // é uma ordem local antiga já obsoleta). Se era LOCAL (Margem/
+          // Unidades) ou nenhum, o restore em memória de sempre continua.
+          var eraGlobal = !!AM.ordenarPor;
           AM.ordenarPor = null;
+          if (eraGlobal) {
+            AM.paginacao.page = 1;
+            carregarAnuncios();
+            return;
+          }
           aplicarOrdenacaoPerformance(null);
           return;
         }
@@ -681,6 +694,13 @@
       // sem uma 2ª chamada a /performance (ver auditoria "ordenação global
       // limitada à página atual").
       if (AM.ordenarPor) {
+        // Qualquer snapshot local (AM_ordemOriginalAnuncios) que ainda
+        // existisse só poderia descrever a página ANTERIOR — nunca esta que
+        // acabou de chegar. Zera aqui também (não só no branch "sem
+        // ordenarPor" abaixo): sem isso, uma sequência local -> global ->
+        // "Padrão" restauraria o snapshot congelado do momento da ordenação
+        // LOCAL, mostrando itens que não batem com a paginação global atual.
+        AM_ordemOriginalAnuncios = null;
         AM.anuncios.forEach(function (linha) {
           if (linha.faturamentoPercentual === undefined && linha.curvaAbc === undefined) return;
           var cacheItem = linha.tipo === "familia" ? AM.state.faturamentoPorFamiliaCache : AM.state.faturamentoCache;

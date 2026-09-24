@@ -21,15 +21,23 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-
 const assert = require("assert");
 const Module = require("module");
 
-let motorHandler = null; // ({ clienteSlug, clienteContaId, itemIds }) => { porMlb, periodo } ou throw
+let motorHandler = null; // ({ clienteSlug, clienteContaId, itemIds }, deps) => { porMlb, periodo } ou throw
+
+// Toda chamada real a montarItens() feita pelo controller, com os DOIS
+// argumentos (args, deps) — usado pelo Teste I (Finding 1) pra provar que o
+// controller injeta um enrichBatch no-op, em vez de deixar itemIds:[] cair no
+// enrichBatch real (que dispara 3 chamadas AO VIVO ao Mercado Livre — ver
+// motorMargemService.enrichBatch).
+let chamadasMontarItens = [];
 
 const originalLoad = Module._load;
 Module._load = function loadWithStubs(request, parent, isMain) {
   if (request === "../services/motorMargem/motorMargemService") {
     return {
-      async montarItens(args) {
+      async montarItens(args, deps) {
+        chamadasMontarItens.push({ args, deps });
         if (!motorHandler) return { porMlb: new Map(), periodo: {} };
-        return motorHandler(args);
+        return motorHandler(args, deps);
       },
     };
   }
@@ -399,6 +407,97 @@ async function run() {
     );
     motorHandler = null;
     console.log("  ✓ H. curvaAbc_desc: monotônico cruzando página 1 -> 2 (ponta a ponta: sort -> paginate -> hydrate)");
+  });
+
+  // I. Finding 1: montarItens() é chamado com um `deps.enrichBatch` no-op —
+  //    é ISSO que torna itemIds:[] barato, não o array vazio sozinho (ver
+  //    motorMargemService.enrichBatch: itemIds:[] cai no `else` e dispara 3
+  //    chamadas AO VIVO ao Mercado Livre se ninguém substituir enrichBatch).
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" })],
+  }, async () => {
+    chamadasMontarItens.length = 0;
+    motorHandler = () => ({ porMlb: new Map([["MLB1", { receita: 10 }]]), periodo: {} });
+
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "faturamento_desc" } }, res);
+    assert.strictEqual(res.corpo.ok, true);
+    assert.strictEqual(chamadasMontarItens.length, 1, "listarAgrupadoOrdenadoPorMotor chama montarItens exatamente uma vez");
+
+    const { args, deps } = chamadasMontarItens[0];
+    assert.deepStrictEqual(args.itemIds, [], "continua pedindo itemIds:[] — o Motor monta porMlb pro período inteiro independente disso");
+    assert.strictEqual(typeof deps, "object", "montarItens precisa receber um segundo argumento (deps)");
+    assert.strictEqual(typeof deps.enrichBatch, "function", "deps.enrichBatch precisa ser injetado — é o que evita o enrichBatch REAL (3 chamadas ao vivo ao ML) rodar para itemIds:[]");
+
+    const noop = await deps.enrichBatch();
+    assert.deepStrictEqual(noop, { totalItensMl: 0, itens: [] }, "o enrichBatch injetado precisa ser um no-op inofensivo, nunca chamar nada de verdade");
+    motorHandler = null;
+    console.log("  ✓ I. montarItens recebe deps.enrichBatch no-op (Finding 1: itemIds:[] sozinho NÃO é barato, a injeção é que torna)");
+  });
+
+  // J. Finding 3: tie-break determinístico por grupo_key quando o valor de
+  //    ranking empata (aqui: TODOS sem receita no período, o pior caso —
+  //    curvaAbc só tem 3 classes e faturamento manda todo item sem venda pro
+  //    mesmo grupo `null`, então a zona empatada é grande na prática). A
+  //    query real (LISTAR_CHAVES_FILTRADAS) não tem ORDER BY — cada chamada
+  //    de página pode devolver as linhas em ordem diferente do Postgres.
+  //    Simulamos isso aqui com DUAS instâncias de MockDb, cada uma com as
+  //    MESMAS 4 chaves em ordem diferente — sem o tie-break, essa
+  //    reordenação faria a página 2 repetir/pular grupo_key.
+  {
+    const itemsEmpatados = [
+      anuncioFixture({ item_id: "MLB-D" }), anuncioFixture({ item_id: "MLB-B" }),
+      anuncioFixture({ item_id: "MLB-A" }), anuncioFixture({ item_id: "MLB-C" }),
+    ];
+    const itemsEmpatadosOutraOrdem = [
+      anuncioFixture({ item_id: "MLB-C" }), anuncioFixture({ item_id: "MLB-A" }),
+      anuncioFixture({ item_id: "MLB-D" }), anuncioFixture({ item_id: "MLB-B" }),
+    ];
+    // grupo_key = "item:MLB-<X>" — nenhum tem porMlb (nenhuma venda no
+    // período), então valorOrdenacao é null pros 4, um empate total.
+    motorHandler = () => ({ porMlb: new Map(), periodo: {} });
+
+    let pag1;
+    await withMockDb({ ...UMA_CONTA, anuncios: itemsEmpatados }, async () => {
+      const res = fakeRes();
+      await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "2", ordenarPor: "faturamento_desc" } }, res);
+      pag1 = res.corpo.anuncios.map((a) => a.item_id);
+    });
+
+    let pag2;
+    await withMockDb({ ...UMA_CONTA, anuncios: itemsEmpatadosOutraOrdem }, async () => {
+      const res = fakeRes();
+      await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "2", limit: "2", ordenarPor: "faturamento_desc" } }, res);
+      pag2 = res.corpo.anuncios.map((a) => a.item_id);
+    });
+
+    motorHandler = null;
+    assert.deepStrictEqual(pag1, ["MLB-A", "MLB-B"], "página 1, ordenada por grupo_key ASC como tie-break, sempre traz A e B primeiro, não importa a ordem que o SQL devolveu");
+    assert.deepStrictEqual(pag2, ["MLB-C", "MLB-D"], "página 2 continua exatamente onde a 1 parou (C e D), mesmo com o SQL da 2ª chamada devolvendo em ordem diferente da 1ª");
+    const uniao = new Set([...pag1, ...pag2]);
+    assert.strictEqual(uniao.size, 4, "as duas páginas juntas são uma partição limpa do conjunto empatado — nenhum item_id duplicado nem sumido");
+    console.log("  ✓ J. tie-break por grupo_key: partição estável entre páginas mesmo com o SQL devolvendo em ordem diferente a cada chamada");
+  }
+
+  // K. Finding 4: erro NÃO tipado do Motor (sem .statusCode/.payload.codigo —
+  //    ex.: timeout de rede, TypeError) também cai no fallback, nunca 500 —
+  //    Restrição Global #5 do plano ("Motor indisponível nunca pode virar
+  //    erro 500"). Antes desta correção só o erro TIPADO (o mesmo shape que
+  //    exigirContextoPronto lança) tinha fallback; qualquer outro rethrowava.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" })],
+  }, async () => {
+    motorHandler = () => { throw new Error("ECONNRESET simulado — sem statusCode nem payload"); };
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "faturamento_desc" } }, res);
+    assert.strictEqual(res.corpo.ok, true, "erro não tipado também precisa cair no fallback, nunca virar exceção não tratada / 500");
+    assert.strictEqual(res.corpo.ordenacaoAplicada, false);
+    assert.deepStrictEqual(res.corpo.ordenacaoIndisponivel, { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." });
+    assert.strictEqual(res.corpo.anuncios.length, 2, "SQL padrão continua respondendo a página normalmente");
+    motorHandler = null;
+    console.log("  ✓ K. erro NÃO tipado do Motor: fallback pro SQL padrão com ordenacaoIndisponivel genérico, nunca 500/exceção");
   });
 
   console.log("meliAnunciosOrdenacaoGlobal.test.js passed");

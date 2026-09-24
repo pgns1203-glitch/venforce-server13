@@ -2846,6 +2846,70 @@ async function run() {
       console.log("  ✓ 39h");
     });
 
+    // BUG (achado na revisão final do plano): aplicarOrdenacaoPerformance(null)
+    // (chamada pelo branch "sem critério" do dropdown) restaura
+    // AM_ordemOriginalAnuncios em memória — mas esse snapshot fica null
+    // durante ordenação GLOBAL de propósito (ver carregarAnuncios), então
+    // "Padrão" depois de um critério global snapshotava a PRÓPRIA ordem
+    // global corrente e a "restaurava" — a lista ficava presa na ordem
+    // global mesmo com o dropdown voltando a mostrar "Padrão", sem nenhuma
+    // requisição nova ao backend. O fix: quando o critério anterior era
+    // global, voltar a "Padrão" tem de refazer a busca (sem ordenarPor=),
+    // nunca restaurar snapshot.
+    await check("39h2 — voltar para 'Padrão' depois de ordenação global refaz a busca ao backend (sem ordenarPor) e a lista volta à ordem padrão real, não à ordem global 'congelada'", async () => {
+      chamadasFamilias.length = 0;
+      // Ordem DELIBERADAMENTE diferente da ordem padrão (LINHAS_CONTA_42
+      // começa com FAM-1) — se o bug estivesse presente, "Padrão" continuaria
+      // mostrando esta ordem (MLB-SEMVAR primeiro), nunca a de LINHAS_CONTA_42.
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "item", item_id: "MLB-SEMVAR", key: "item:MLB-SEMVAR", titulo: "Anúncio simples, sem variações no ML", status: "active", faturamentoPercentual: 0.40, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-SEMUP", key: "item:MLB-SEMUP", titulo: "Anúncio legado sem agrupamento", status: "active", faturamentoPercentual: 0.10, cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'faturamento_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r && r.getAttribute('data-item') === 'MLB-SEMVAR';
+      })()`, "ordenação global não aplicou (pré-condição do teste)");
+
+      ordenarPorGlobalHandler = null;
+      chamadasFamilias.length = 0;
+
+      // O gesto do operador: selecionar "Padrão" no dropdown.
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+
+      // Precisa vir uma NOVA requisição a /anuncios-meli/familias, sem
+      // ordenarPor — nunca um restore silencioso em memória.
+      await waitForNode(() => chamadasFamilias.some((c) => !c.ordenarPor),
+        "voltar a 'Padrão' depois de um critério global tem de disparar uma nova busca ao backend sem ordenarPor= — não pode só restaurar um snapshot em memória");
+
+      // A lista renderizada tem de ser a ordem PADRÃO real (LINHAS_CONTA_42:
+      // FAM-1 primeiro), não a ordem global "congelada" (MLB-SEMVAR primeiro).
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-1")}')`, "a família FAM-1 (1ª linha da ordem padrão) não voltou a aparecer");
+      const primeiraLinha = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r ? (r.getAttribute('data-familia') ? 'fam:' + r.getAttribute('data-familia') : 'item:' + r.getAttribute('data-item')) : null;
+      })()`);
+      assert.strictEqual(primeiraLinha, "fam:FAM-1", `a 1ª linha depois de 'Padrão' tem de ser FAM-1 (ordem real de LINHAS_CONTA_42), não a ordem global congelada: recebido "${primeiraLinha}"`);
+
+      const valorDropdown = await cdp.evaluate(`document.getElementById('am-ordenacao').value`);
+      assert.strictEqual(valorDropdown, "", "dropdown precisa continuar mostrando 'Padrão'");
+      console.log("  ✓ 39h2");
+    });
+
     await check("39i — carregar a listagem (SEM ordenar) já preenche a coluna Faturamento sozinha — individual bundlado na 1ª chamada, família numa chamada própria", async () => {
       // Recarrega do zero: precisa provar que o preenchimento acontece no
       // PRIMEIRO carregamento, não por causa de cache deixado por um teste

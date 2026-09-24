@@ -209,6 +209,165 @@ function predicadoFiltroItem(filtro) {
   }
 }
 
+// Monta os predicados COMUNS a qualquer leitura do catálogo agrupado
+// (LISTAR_AGRUPADO_PAGINA, LISTAR_CHAVES_FILTRADAS): filtro de conta
+// (clausulaConta) + busca/status/filtro (match por item, o grupo entra se
+// QUALQUER item dele casar). Devolve `nextParamIndex` para quem monta a
+// query poder continuar empilhando params próprios (ex.: limit/offset).
+function construirFiltroBase({ clienteId, clienteContaId = null, includeLegacy = true, q = "", status = "", filtro = "" }) {
+  const params = [clienteId];
+  let i = 2;
+
+  const conta = clausulaConta({ clienteContaId, includeLegacy, paramIndex: i });
+  if (conta.param != null) { params.push(conta.param); i++; }
+
+  const match = [];
+  const termo = String(q || "").trim();
+  if (termo) {
+    params.push(`%${termo}%`);
+    const qIdx = i;
+    i++;
+    match.push(`(b.titulo ILIKE $${qIdx} OR b.item_id ILIKE $${qIdx} OR b.sku ILIKE $${qIdx}
+                 OR b.up_family_name ILIKE $${qIdx} OR b.user_product_id ILIKE $${qIdx})`);
+  }
+  if (status) {
+    params.push(String(status));
+    match.push(`b.status = $${i}`);
+    i++;
+  }
+  const predFiltro = predicadoFiltroItem(filtro);
+  if (predFiltro) match.push(predFiltro);
+  const matchSql = match.length ? match.join(" AND ") : "TRUE";
+
+  return { params, nextParamIndex: i, conta, matchSql };
+}
+
+// Hidrata um conjunto de linhas já agregadas (grupo_key/family_id/item_id +
+// agregados) com os detalhes completos que a tela precisa: item avulso
+// (query 2) e capa de família (query 3). Não decide QUAIS grupos entram —
+// só enche o que já foi decidido por quem chamou (paginação SQL comum ou
+// ranking do Motor, ver listarAgrupadoOrdenadoPorMotor).
+async function montarAnunciosDeRows(rows, { clienteId, clienteContaId = null, includeLegacy = true, termo = "" } = {}) {
+  const familyIds = rows.filter((r) => r.family_id != null).map((r) => r.family_id);
+  const itemIds = rows.filter((r) => r.family_id == null).map((r) => r.item_id);
+
+  const itemPorId = new Map();
+  if (itemIds.length) {
+    const params2 = [clienteId];
+    let j = 2;
+    const conta2 = clausulaConta({ clienteContaId, includeLegacy, paramIndex: j });
+    if (conta2.param != null) { params2.push(conta2.param); j++; }
+    params2.push(itemIds);
+
+    const { rows: itemRows } = await db.query(
+      `-- LISTAR_AGRUPADO_ITENS_DA_PAGINA
+       SELECT a.item_id, a.sku, a.titulo, a.marca, a.modelo, a.preco,
+              a.preco_original, a.moeda, a.estoque, a.vendidos, a.status,
+              a.sub_status, a.listing_type_id, a.category_id, a.permalink,
+              a.thumbnail, a.pictures_count, a.logistic_type, a.is_full,
+              a.health, a.score_venforce, a.score_motivo, a.revisado,
+              a.last_synced_at, a.catalog_listing, a.family_name,
+              a.user_product_id, a.variations_count
+         FROM meli_anuncios a
+        WHERE a.cliente_id = $1${conta2.sql}
+          AND a.item_id = ANY($${j}::text[]);`,
+      params2
+    );
+    for (const r of itemRows) itemPorId.set(r.item_id, r);
+  }
+
+  const capaPorFamilia = new Map();
+  if (familyIds.length) {
+    const params3 = [clienteId];
+    let k = 2;
+    const conta3 = clausulaConta({ clienteContaId, includeLegacy, paramIndex: k });
+    if (conta3.param != null) { params3.push(conta3.param); k++; }
+    params3.push(familyIds);
+    const famIdx3 = k;
+    k++;
+
+    let relevancia = "";
+    if (termo) {
+      params3.push(`%${termo}%`);
+      const qIdx3 = k;
+      k++;
+      relevancia = `(e.titulo ILIKE $${qIdx3} OR e.sku ILIKE $${qIdx3}
+                 OR e.item_id ILIKE $${qIdx3} OR e.user_product_id ILIKE $${qIdx3}) DESC,`;
+    }
+
+    const sql3 = `
+      -- LISTAR_FAMILIAS_CAPA_DA_PAGINA
+      WITH escopo AS (
+        SELECT a.item_id, a.user_product_id, a.titulo, a.sku,
+               a.thumbnail, a.vendidos, a.estoque, a.status
+        FROM meli_anuncios a
+        WHERE a.cliente_id = $1
+          AND a.user_product_id IS NOT NULL
+          ${conta3.sql}
+      )
+      SELECT DISTINCT ON (up.family_id)
+             up.family_id, e.user_product_id, NULLIF(e.thumbnail, '') AS thumbnail
+      FROM escopo e
+      JOIN meli_user_products up ON up.cliente_id = $1 AND up.user_product_id = e.user_product_id
+      WHERE up.family_id = ANY($${famIdx3}::text[])
+      ORDER BY up.family_id,
+               ${relevancia}
+               (NULLIF(e.thumbnail, '') IS NOT NULL) DESC,
+               e.vendidos DESC NULLS LAST,
+               (e.status = 'active') DESC,
+               e.estoque DESC NULLS LAST,
+               e.item_id ASC;
+    `;
+
+    const { rows: capaRows } = await db.query(sql3, params3);
+    for (const r of capaRows) {
+      capaPorFamilia.set(r.family_id, {
+        thumbnail: r.thumbnail == null ? null : r.thumbnail,
+        user_product_id: r.user_product_id,
+      });
+    }
+  }
+
+  return rows.map((r) => {
+    if (r.family_id != null) {
+      return {
+        tipo: "familia",
+        key: r.grupo_key,
+        family_id: r.family_id,
+        family_name: r.family_name,
+        titulo: r.family_name,
+        total_user_products: r.total_user_products,
+        total_itens: r.total_itens,
+        estoque_total: r.estoque_total,
+        vendidos_total: r.vendidos_total,
+        preco_min: r.preco_min,
+        preco_max: r.preco_max,
+        moeda: r.moeda,
+        score_min: r.score_min,
+        status_contagem: {
+          ativos: r.total_ativos,
+          pausados: r.total_pausados,
+          encerrados: r.total_encerrados,
+        },
+        cover: capaPorFamilia.get(r.family_id) || { thumbnail: null, user_product_id: null },
+      };
+    }
+
+    const item = itemPorId.get(r.item_id) || { item_id: r.item_id };
+    return Object.assign({}, item, {
+      tipo: "item",
+      key: r.grupo_key,
+      family_id: null,
+      total_itens: 1,
+      total_user_products: r.total_user_products,
+      estoque_total: r.estoque_total,
+      vendidos_total: r.vendidos_total,
+      cover: { thumbnail: item.thumbnail == null ? null : item.thumbnail, user_product_id: item.user_product_id || null },
+      variations_count: item.variations_count || 0,
+    });
+  });
+}
+
 // -----------------------------------------------------------------------------
 // LISTAGEM UNIFICADA (uma lista só, como a listagem de anúncios do ML)
 //
@@ -248,41 +407,12 @@ async function listarAgrupado({
   limit = 20,
 }) {
   await ensureSchema();
-  // meli_anuncios é de meliAnunciosService, e esta consulta lê colunas que
-  // entraram por ALTER TABLE ... ADD COLUMN IF NOT EXISTS (user_product_id,
-  // catalog_listing, family_name). Num deploy novo, em que /familias for a
-  // primeira leitura do módulo, elas podem ainda não existir — e o require é
-  // tardio só porque meliAnunciosService já requer ESTE módulo (o require
-  // circular no topo deixaria um dos dois pela metade).
   await require("./meliAnunciosService").ensureSchema();
 
-  const params = [clienteId];
-  let i = 2;
-
-  const conta = clausulaConta({ clienteContaId, includeLegacy, paramIndex: i });
-  if (conta.param != null) { params.push(conta.param); i++; }
-
-  // Busca/status/filtro casam por ITEM; o grupo entra na lista se QUALQUER
-  // item dele casar. Os agregados, porém, continuam sendo do grupo inteiro
-  // (ver `grupos`, que não conhece estes predicados): estoque de um produto é
-  // estoque do produto — filtrar por "Ativos" não muda o estoque total.
-  const match = [];
-  const termo = String(q || "").trim();
-  if (termo) {
-    params.push(`%${termo}%`);
-    const qIdx = i;
-    i++;
-    match.push(`(b.titulo ILIKE $${qIdx} OR b.item_id ILIKE $${qIdx} OR b.sku ILIKE $${qIdx}
-                 OR b.up_family_name ILIKE $${qIdx} OR b.user_product_id ILIKE $${qIdx})`);
-  }
-  if (status) {
-    params.push(String(status));
-    match.push(`b.status = $${i}`);
-    i++;
-  }
-  const predFiltro = predicadoFiltroItem(filtro);
-  if (predFiltro) match.push(predFiltro);
-  const matchSql = match.length ? match.join(" AND ") : "TRUE";
+  const { params, nextParamIndex, conta, matchSql } = construirFiltroBase({
+    clienteId, clienteContaId, includeLegacy, q, status, filtro,
+  });
+  let i = nextParamIndex;
 
   const lim = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
   const pag = Math.max(parseInt(page, 10) || 1, 1);
@@ -291,12 +421,6 @@ async function listarAgrupado({
   const limIdx = i;
   const offIdx = i + 1;
 
-  // A ordem operacional da listagem plana (revisado ASC, score ASC NULLS
-  // FIRST, updated_at DESC) sobe para o nível de grupo mantendo o
-  // significado: o grupo aparece tão alto quanto o seu PIOR item. Para um
-  // grupo de um item só, é literalmente a ordem de antes — nenhuma regressão
-  // para quem não tem família. O COALESCE(score, -1) é o que preserva o
-  // "NULLS FIRST" depois do MIN (que descartaria os nulos).
   const sql = `
     -- LISTAR_AGRUPADO_PAGINA
     WITH base AS (
@@ -371,172 +495,8 @@ async function listarAgrupado({
   const { rows } = await db.query(sql, params);
   const totalGrupos = rows.length ? rows[0].total_grupos : 0;
 
-  const familyIds = rows.filter((r) => r.family_id != null).map((r) => r.family_id);
-  const itemIds = rows.filter((r) => r.family_id == null).map((r) => r.item_id);
-
-  // Query 2: os campos completos dos anúncios INDIVIDUAIS desta página. Um
-  // grupo 'item:' tem exatamente um MLB, então a linha da lista é a linha do
-  // anúncio — e o front a renderiza com o mesmo `rowAnuncioHtml` de sempre,
-  // com badges, score e link externo. Sem esta consulta, o anúncio individual
-  // viraria uma linha mais pobre que a do agrupador, que é o contrário do
-  // pedido ("nenhuma distinção visual").
-  const itemPorId = new Map();
-  if (itemIds.length) {
-    const params2 = [clienteId];
-    let j = 2;
-    const conta2 = clausulaConta({ clienteContaId, includeLegacy, paramIndex: j });
-    if (conta2.param != null) { params2.push(conta2.param); j++; }
-    params2.push(itemIds);
-
-    const { rows: itemRows } = await db.query(
-      `-- LISTAR_AGRUPADO_ITENS_DA_PAGINA
-       SELECT a.item_id, a.sku, a.titulo, a.marca, a.modelo, a.preco,
-              a.preco_original, a.moeda, a.estoque, a.vendidos, a.status,
-              a.sub_status, a.listing_type_id, a.category_id, a.permalink,
-              a.thumbnail, a.pictures_count, a.logistic_type, a.is_full,
-              a.health, a.score_venforce, a.score_motivo, a.revisado,
-              a.last_synced_at, a.catalog_listing, a.family_name,
-              a.user_product_id, a.variations_count
-         FROM meli_anuncios a
-        WHERE a.cliente_id = $1${conta2.sql}
-          AND a.item_id = ANY($${j}::text[]);`,
-      params2
-    );
-    for (const r of itemRows) itemPorId.set(r.item_id, r);
-  }
-
-  // Query 3: a capa de cada família DESTA página.
-  //
-  // Calculada em leitura, nunca persistida: não existe coluna de thumbnail
-  // em meli_user_products e nada é gravado aqui. A régua imita o que o
-  // Mercado Livre mostra num agrupador — a variação que representa a
-  // família:
-  //
-  //   1. quando há busca, quem casa com o termo vem primeiro (a variação
-  //      relevante para AQUELA busca, não a campeã de vendas da família);
-  //   2. ter imagem — uma capa sem foto não cumpre o papel de capa;
-  //   3. mais vendido — é o "principal" observável que temos, já que
-  //      meli_user_products não guarda marca de UP principal;
-  //   4. ativo antes de pausado — desempate útil quando as vendas empatam
-  //      (o caso comum: todo mundo com 0);
-  //   5. maior estoque e, por fim, item_id, só para a escolha ser estável
-  //      entre duas chamadas iguais.
-  //
-  // O escopo é o mesmo das outras leituras: parte de meli_anuncios já
-  // filtrado pela conta, então a capa nunca vaza de outra operação.
-  const capaPorFamilia = new Map();
-  if (familyIds.length) {
-    const params3 = [clienteId];
-    let k = 2;
-    const conta3 = clausulaConta({ clienteContaId, includeLegacy, paramIndex: k });
-    if (conta3.param != null) { params3.push(conta3.param); k++; }
-    params3.push(familyIds);
-    const famIdx3 = k;
-    k++;
-
-    let relevancia = "";
-    if (termo) {
-      params3.push(`%${termo}%`);
-      const qIdx3 = k;
-      k++;
-      relevancia = `(e.titulo ILIKE $${qIdx3} OR e.sku ILIKE $${qIdx3}
-                 OR e.item_id ILIKE $${qIdx3} OR e.user_product_id ILIKE $${qIdx3}) DESC,`;
-    }
-
-    const sql3 = `
-      -- LISTAR_FAMILIAS_CAPA_DA_PAGINA
-      WITH escopo AS (
-        SELECT a.item_id, a.user_product_id, a.titulo, a.sku,
-               a.thumbnail, a.vendidos, a.estoque, a.status
-        FROM meli_anuncios a
-        WHERE a.cliente_id = $1
-          AND a.user_product_id IS NOT NULL
-          ${conta3.sql}
-      )
-      SELECT DISTINCT ON (up.family_id)
-             up.family_id, e.user_product_id, NULLIF(e.thumbnail, '') AS thumbnail
-      FROM escopo e
-      JOIN meli_user_products up ON up.cliente_id = $1 AND up.user_product_id = e.user_product_id
-      WHERE up.family_id = ANY($${famIdx3}::text[])
-      ORDER BY up.family_id,
-               ${relevancia}
-               (NULLIF(e.thumbnail, '') IS NOT NULL) DESC,
-               e.vendidos DESC NULLS LAST,
-               (e.status = 'active') DESC,
-               e.estoque DESC NULLS LAST,
-               e.item_id ASC;
-    `;
-
-    const { rows: capaRows } = await db.query(sql3, params3);
-    for (const r of capaRows) {
-      capaPorFamilia.set(r.family_id, {
-        thumbnail: r.thumbnail == null ? null : r.thumbnail,
-        user_product_id: r.user_product_id,
-      });
-    }
-  }
-
-  // Uma lista, duas formas de linha. `tipo` é o ÚNICO campo que as distingue
-  // no payload — e ele não descreve uma categoria de tela, descreve se existe
-  // ou não um agrupador abaixo da linha (o que decide apenas se ela expande).
-  const anuncios = rows.map((r) => {
-    if (r.family_id != null) {
-      return {
-        tipo: "familia",
-        key: r.grupo_key,
-        family_id: r.family_id,
-        family_name: r.family_name,
-        titulo: r.family_name,
-        total_user_products: r.total_user_products,
-        total_itens: r.total_itens,
-        // Estoque somado por UP distinto; vendas somadas por item. Ver o
-        // cabeçalho de listarAgrupado: a doc do ML define os dois em níveis
-        // diferentes, então eles agregam de formas diferentes.
-        estoque_total: r.estoque_total,
-        vendidos_total: r.vendidos_total,
-        // A família não tem um preço: "preço por variação" é o nome da
-        // iniciativa. Os dois extremos vão para a tela decidir faixa ou valor.
-        preco_min: r.preco_min,
-        preco_max: r.preco_max,
-        moeda: r.moeda,
-        // O pior score do grupo — mesmo critério que ordena a lista.
-        score_min: r.score_min,
-        status_contagem: {
-          ativos: r.total_ativos,
-          pausados: r.total_pausados,
-          encerrados: r.total_encerrados,
-        },
-        // Sempre objeto — o front testa `cover.thumbnail`, nunca a existência
-        // de `cover`. Família sem imagem devolve thumbnail null.
-        cover: capaPorFamilia.get(r.family_id) || { thumbnail: null, user_product_id: null },
-      };
-    }
-
-    // Anúncio individual: a linha É o anúncio. Devolve o registro inteiro de
-    // meli_anuncios (mesmo contrato de campos de GET /anuncios-meli) para que
-    // a tela não precise de um renderizador mais pobre só para ele.
-    const item = itemPorId.get(r.item_id) || { item_id: r.item_id };
-    return Object.assign({}, item, {
-      tipo: "item",
-      key: r.grupo_key,
-      // Sem family_id: ou o anúncio não tem User Product, ou o UP não tem
-      // família. `family_name` NÃO é zerado — ele vem de meli_anuncios e é o
-      // sinal que trava a edição de título (achado do BODY_INVALID_FIELDS);
-      // sobrescrevê-lo aqui seria apagar um dado real.
-      family_id: null,
-      total_itens: 1,
-      total_user_products: r.total_user_products,
-      estoque_total: r.estoque_total,
-      vendidos_total: r.vendidos_total,
-      cover: { thumbnail: item.thumbnail == null ? null : item.thumbnail, user_product_id: item.user_product_id || null },
-      // Modelo LEGADO (item_id -> variations[] do ML) — só existe nesta
-      // forma "item" porque family_id já é null aqui por construção. Nunca
-      // aparece na forma "família": lá a hierarquia é 100% de
-      // meli_user_products, e variations_count não participa dela. NULL
-      // (linha sincronizada antes desta coluna existir) normaliza para 0 —
-      // o front só testa "> 0", nunca precisa distinguir NULL de zero.
-      variations_count: item.variations_count || 0,
-    });
+  const anuncios = await montarAnunciosDeRows(rows, {
+    clienteId, clienteContaId, includeLegacy, termo: String(q || "").trim(),
   });
 
   return {
@@ -693,4 +653,6 @@ module.exports = {
   listarAgrupado,
   obterFamiliaDetalhe,
   resolverItensDeFamilias,
+  construirFiltroBase,
+  montarAnunciosDeRows,
 };

@@ -63,12 +63,12 @@
                     <label class="vf-field__label" for="am-ordenacao">Ordenar por</label>
                     <select id="am-ordenacao" class="vf-select">
                       <option value="">Padrão</option>
-                      <option value="margem_asc">Margem: menor → maior</option>
-                      <option value="margem_desc">Margem: maior → menor</option>
+                      <option value="margem_asc">Margem (nesta página): menor → maior</option>
+                      <option value="margem_desc">Margem (nesta página): maior → menor</option>
                       <option value="faturamento_asc">% Faturamento: menor → maior</option>
                       <option value="faturamento_desc">% Faturamento: maior → menor</option>
-                      <option value="unidades_asc">Unidades vendidas (7d): menor → maior</option>
-                      <option value="unidades_desc">Unidades vendidas (7d): maior → menor</option>
+                      <option value="unidades_asc">Unidades vendidas 7d (nesta página): menor → maior</option>
+                      <option value="unidades_desc">Unidades vendidas 7d (nesta página): maior → menor</option>
                       <option value="curvaAbc_asc">Curva ABC: A → C</option>
                       <option value="curvaAbc_desc">Curva ABC: C → A</option>
                     </select>
@@ -78,6 +78,7 @@
                   <span class="vf-tag is-primary am-hidden" id="am-filtros-ativos">Filtros ativos</span>
                 </div>
               </div>
+              <div id="am-ordenacao-aviso" class="vf-alert is-warning" role="status" hidden></div>
 
               <!-- UMA lista. Havia aqui um seletor de modo ("Famílias" /
                    "Sem agrupamento") e dois containers irmãos alternados por

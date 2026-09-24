@@ -479,6 +479,24 @@ async function executarRodada(opts, depsOverride = {}) {
   return resumo;
 }
 
+// Rodada noturna PADRÃO (período do dia + concorrência do env). Ponto único
+// usado pelo job CLI (jobs/syncCentralVendasNoturno.js — Render Cron/manual) e
+// pelo scheduler interno do Web Service (centralVendasNoturnoScheduler), para
+// os dois nunca divergirem de configuração.
+async function executarRodadaNoturna(
+  { env = process.env, dataReferencia = null, clientes = null, dryRun = false, origem = "cron-central" } = {},
+  depsOverride = {}
+) {
+  const hoje = dataReferencia || hojeNoFuso();
+  return executarRodada({
+    periodos: calcularPeriodosNoturnos(hoje),
+    concorrencia: resolverConcorrencia(env.SYNC_CENTRAL_CONCURRENCY),
+    clientes,
+    dryRun,
+    origem,
+  }, depsOverride);
+}
+
 function contarPor(lista, campo) {
   return lista.reduce((acc, item) => {
     const k = item[campo] || "desconhecido";
@@ -526,6 +544,7 @@ function exitCodeDoResumo(resumo) {
 
 module.exports = {
   executarRodada,
+  executarRodadaNoturna,
   processarUnidade,
   executarComConcorrencia,
   classificarContas,

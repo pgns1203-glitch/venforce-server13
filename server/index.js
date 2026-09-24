@@ -101,6 +101,7 @@ const tiktokShopRoutes = require("./routes/tiktokShopRoutes");
 const shopeeRoutes = require("./routes/shopeeRoutes");
 const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
+const centralVendasNoturnoScheduler = require("./services/centralVendas/centralVendasNoturnoScheduler");
 const { ensureDiagnosticoInicialTables } = require("./services/diagnosticoInicial/diagnosticoInicialRepository");
 const observabilityRoutes = require("./routes/observabilityRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
@@ -1980,9 +1981,18 @@ try {
 const server = app.listen(PORT, () => {
   console.log(`VenForce rodando em http://localhost:${PORT}`);
 
-  ensureCentralVendasTables().catch((err) => {
-    console.error("[centralVendas] erro ao garantir tabelas no boot:", err.message);
-  });
+  // Scheduler noturno da Central de Vendas: só depois do schema da Central
+  // pronto, e só com CENTRAL_VENDAS_NOTURNO_ENABLED=true. Não roda no boot —
+  // apenas agenda o próximo horário (ver centralVendasNoturnoScheduler).
+  ensureCentralVendasTables().then(
+    () => centralVendasNoturnoScheduler.iniciar(),
+    (err) => {
+      console.error("[centralVendas] erro ao garantir tabelas no boot:", err.message);
+      if (centralVendasNoturnoScheduler.habilitado()) {
+        console.error("[sync-scheduler] não iniciado: schema da Central indisponível no boot");
+      }
+    }
+  );
 
   // BLOCO 4 — `entregas_cliente.cliente_conta_id` (V3 P2.6 D1) só existia no
   // DDL da rota `/setup`, desabilitada em produção → a tela do Financeiro V3
@@ -2082,6 +2092,7 @@ function encerrarComGraca(sinal) {
   if (encerrando) return;
   encerrando = true;
   console.log(`[server] ${sinal} recebido, encerrando…`);
+  centralVendasNoturnoScheduler.parar();
   const prazo = setTimeout(() => process.exit(0), 5000);
   if (typeof prazo.unref === "function") prazo.unref();
 

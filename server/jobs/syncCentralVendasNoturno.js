@@ -34,10 +34,9 @@ async function main(argv = process.argv.slice(2), env = process.env) {
     exitCodeDoResumo: service.exitCodeDoResumo,
     executar: async () => {
       const args = parseArgs(argv);
-      const hoje = args.dataReferencia || service.hojeNoFuso();
-      return service.executarRodada({
-        periodos: service.calcularPeriodosNoturnos(hoje),
-        concorrencia: service.resolverConcorrencia(env.SYNC_CENTRAL_CONCURRENCY),
+      return service.executarRodadaNoturna({
+        env,
+        dataReferencia: args.dataReferencia,
         clientes: args.clientes,
         dryRun: args.dryRun,
         origem: "cron-central",

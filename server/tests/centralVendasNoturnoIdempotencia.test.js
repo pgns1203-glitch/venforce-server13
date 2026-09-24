@@ -19,6 +19,15 @@ const runService = require("../services/centralVendas/centralVendasSyncRunServic
 const svc = require("../services/centralVendas/centralVendasNoturnoService");
 
 let checks = 0;
+// Uma promise pendurada esvazia o event loop e o Node sai com 0 sem terminar
+// o teste — aqui isso vira falha.
+let concluido = false;
+process.on("exit", () => {
+  if (!concluido) {
+    console.error(`centralVendasNoturnoIdempotencia.test.js: NÃO concluiu (parou após ${checks} verificações)`);
+    process.exitCode = 1;
+  }
+});
 function ok(label, condition) {
   assert.ok(condition, `FALHOU: ${label}`);
   checks += 1;
@@ -216,6 +225,7 @@ async function run() {
     eq("sequencial: nenhum run preso em queued/running", db.runs.map((r) => r.status), ["completed", "completed"]);
   }
 
+  concluido = true;
   console.log(`centralVendasNoturnoIdempotencia.test.js: ${checks} verificacoes OK`);
 }
 

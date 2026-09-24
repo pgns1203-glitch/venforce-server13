@@ -10,6 +10,15 @@ const assert = require("assert");
 const svc = require("../services/centralVendas/centralVendasSyncService");
 
 let checks = 0;
+// Uma promise pendurada esvazia o event loop e o Node sai com 0 sem terminar
+// o teste — aqui isso vira falha.
+let concluido = false;
+process.on("exit", () => {
+  if (!concluido) {
+    console.error(`centralVendasOrdersRetry.test.js: NÃO concluiu (parou após ${checks} verificações)`);
+    process.exitCode = 1;
+  }
+});
 function ok(label, condition) {
   assert.ok(condition, `FALHOU: ${label}`);
   checks += 1;
@@ -213,6 +222,7 @@ async function run() {
     ok("12: log sem segredo", linhas.every((l) => !/bearer|access_token|refresh_token|authorization|secret/i.test(l)));
   }
 
+  concluido = true;
   console.log(`centralVendasOrdersRetry.test.js: ${checks} verificacoes OK`);
 }
 

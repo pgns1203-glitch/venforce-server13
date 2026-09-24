@@ -201,6 +201,123 @@ async function listar(req, res) {
   }
 }
 
+// Critérios com ranking GLOBAL (contra o catálogo filtrado inteiro, via
+// Motor de Margem) — margem_*/unidades_* NÃO entram aqui de propósito:
+// continuam ordenação local de página no frontend (aplicarOrdenacaoPerformance
+// em Portal/anuncios-meli.js), decisão explícita da auditoria "ordenação
+// global limitada à página atual" — margem/unidades exigiriam recalcular o
+// Motor pro catálogo inteiro a cada ordenação, sem cache, custo não aceito.
+const ORDENACOES_GLOBAIS = {
+  faturamento_asc: { campo: "faturamento", direcao: "asc" },
+  faturamento_desc: { campo: "faturamento", direcao: "desc" },
+  curvaAbc_asc: { campo: "curvaAbc", direcao: "asc" },
+  curvaAbc_desc: { campo: "curvaAbc", direcao: "desc" },
+};
+const CURVA_ABC_ORDEM = { A: 1, B: 2, C: 3 };
+
+// Ranking GLOBAL contra o catálogo FILTRADO inteiro (q/status/filtro/conta),
+// não só a página pedida — corrige o bug em que ordenar por %Faturamento ou
+// Curva ABC só valia dentro da página atual (auditoria "ordenação global
+// limitada à página atual"). Só entra aqui quando `ordenarPor` bate um dos
+// ORDENACOES_GLOBAIS; caminho de sempre (listarAgrupado do service) fica
+// intocado para qualquer outro valor.
+//
+// Custo: uma query leve (só chaves, sem os agregados pesados) sobre o
+// catálogo inteiro filtrado + UMA chamada ao Motor com itemIds:[] — o Motor
+// monta `porMlb` (receita por MLB) pro PERÍODO INTEIRO independente de
+// itemIds (ver motorMargemService.prepareWorkspaceContext), então isso não
+// paga o custo por-item de enrichBatch. Só a página final (após ordenar e
+// cortar) é hidratada com detalhe completo (título/preço/capa).
+async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit, config }) {
+  const chaves = await familiaService.listarChavesFiltradas({
+    clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro,
+  });
+
+  const familyIds = Array.from(new Set(chaves.filter((c) => c.family_id != null).map((c) => c.family_id)));
+  const itemIdsIndividuais = chaves.filter((c) => c.family_id == null).map((c) => c.item_id);
+
+  let porFamiliaItens = new Map();
+  if (familyIds.length) {
+    porFamiliaItens = await familiaService.resolverItensDeFamilias({
+      clienteId: cliente.id, clienteContaId, includeLegacy, familyIds,
+    });
+  }
+
+  let motorResultado;
+  try {
+    motorResultado = await motorMargemService.montarItens({
+      clienteSlug: cliente.slug, clienteContaId, itemIds: [],
+    });
+  } catch (err) {
+    if (err.statusCode && err.payload && err.payload.codigo) {
+      const fallback = await familiaService.listarAgrupado({
+        clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+      });
+      return {
+        ...fallback,
+        ordenacaoAplicada: false,
+        ordenacaoIndisponivel: { codigo: err.payload.codigo, mensagem: err.payload.erro },
+      };
+    }
+    throw err;
+  }
+
+  const { porMlb, periodo } = motorResultado;
+  const uniao = new Set(itemIdsIndividuais);
+  for (const filhos of porFamiliaItens.values()) for (const id of filhos) uniao.add(id);
+  const todosItemIds = Array.from(uniao);
+
+  const ranking = config.campo === "faturamento"
+    ? montarFaturamento(porMlb, todosItemIds, periodo, porFamiliaItens)
+    : montarCurvaAbc(porMlb, todosItemIds, periodo, porFamiliaItens);
+  const campoResposta = config.campo === "faturamento" ? "faturamentoPercentual" : "curvaAbc";
+
+  const comValor = chaves.map((c) => {
+    const valorBruto = c.family_id != null ? ranking.porFamilia[c.family_id] : ranking.porItem[c.item_id];
+    const valorOrdenacao = config.campo === "curvaAbc"
+      ? (valorBruto != null ? CURVA_ABC_ORDEM[valorBruto] : null)
+      : valorBruto;
+    return { chave: c, valorBruto, valorOrdenacao };
+  });
+
+  comValor.sort((x, y) => {
+    if (x.valorOrdenacao == null && y.valorOrdenacao == null) return 0;
+    if (x.valorOrdenacao == null) return 1;
+    if (y.valorOrdenacao == null) return -1;
+    return config.direcao === "asc" ? x.valorOrdenacao - y.valorOrdenacao : y.valorOrdenacao - x.valorOrdenacao;
+  });
+
+  const total = comValor.length;
+  const lim = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+  const pag = Math.max(parseInt(page, 10) || 1, 1);
+  const offset = (pag - 1) * lim;
+  const paginaComValor = comValor.slice(offset, offset + lim);
+
+  const grupoKeysDaPagina = paginaComValor.map((x) => x.chave.grupo_key);
+  const rows = await familiaService.listarAgrupadoPorChaves({
+    clienteId: cliente.id, clienteContaId, includeLegacy, grupoKeys: grupoKeysDaPagina,
+  });
+  const rowsPorChave = new Map(rows.map((r) => [r.grupo_key, r]));
+  const rowsOrdenadas = grupoKeysDaPagina.map((k) => rowsPorChave.get(k)).filter(Boolean);
+
+  const anuncios = await familiaService.montarAnunciosDeRows(rowsOrdenadas, {
+    clienteId: cliente.id, clienteContaId, includeLegacy, termo: String(q || "").trim(),
+  });
+
+  const valorPorChave = new Map(paginaComValor.map((x) => [x.chave.grupo_key, x.valorBruto]));
+  for (const anuncio of anuncios) {
+    const chave = anuncio.tipo === "familia" ? `fam:${anuncio.family_id}` : `item:${anuncio.item_id}`;
+    anuncio[campoResposta] = valorPorChave.has(chave) ? valorPorChave.get(chave) : null;
+  }
+
+  return {
+    anuncios,
+    paginacao: { page: pag, limit: lim, total, totalPaginas: Math.max(Math.ceil(total / lim), 1) },
+    ordenacaoAplicada: true,
+    ordenacaoIndisponivel: null,
+  };
+}
+
 // ----------------------------------------------------------------------------
 // GET /anuncios-meli/familias?clienteSlug=&q=&status=&filtro=&page=&limit=
 //
@@ -226,7 +343,7 @@ async function listar(req, res) {
 // ----------------------------------------------------------------------------
 async function listarAgrupado(req, res) {
   try {
-    const { clienteSlug, q, status, filtro, page, limit } = req.query || {};
+    const { clienteSlug, q, status, filtro, page, limit, ordenarPor } = req.query || {};
     const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
     if (!clienteSlug) {
       return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
@@ -247,17 +364,26 @@ async function listarAgrupado(req, res) {
       includeLegacy = contexto.includeLegacy;
     }
 
-    const resultado = await familiaService.listarAgrupado({
-      clienteId: cliente.id, clienteContaId: contaId, includeLegacy,
-      q, status, filtro, page, limit,
-    });
+    const configGlobal = ORDENACOES_GLOBAIS[ordenarPor];
+    const resultado = configGlobal
+      ? await listarAgrupadoOrdenadoPorMotor({
+          cliente, clienteContaId: contaId, includeLegacy, q, status, filtro, page, limit, config: configGlobal,
+        })
+      : await familiaService.listarAgrupado({
+          clienteId: cliente.id, clienteContaId: contaId, includeLegacy, q, status, filtro, page, limit,
+        });
 
-    return res.json({
+    const resposta = {
       ok: true,
       cliente: { slug: cliente.slug, nome: cliente.nome },
       anuncios: resultado.anuncios,
       paginacao: resultado.paginacao,
-    });
+    };
+    if (configGlobal) {
+      resposta.ordenacaoAplicada = resultado.ordenacaoAplicada;
+      resposta.ordenacaoIndisponivel = resultado.ordenacaoIndisponivel;
+    }
+    return res.json(resposta);
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] listarAgrupado:", err.message);

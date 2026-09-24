@@ -646,6 +646,46 @@ async function resolverItensDeFamilias({ clienteId, clienteContaId = null, famil
   return porFamilia;
 }
 
+// Todo o catálogo filtrado (mesmo predicado de listarAgrupado), SEM
+// LIMIT/OFFSET e sem os agregados pesados (estoque/vendidos/preço) — só as
+// chaves que o ranking do Motor precisa (ver meliAnunciosController.
+// listarAgrupadoOrdenadoPorMotor). Aggregados completos de uma chave
+// específica vêm depois, só para a página final, via listarAgrupadoPorChaves.
+async function listarChavesFiltradas({ clienteId, clienteContaId = null, includeLegacy = true, q = "", status = "", filtro = "" }) {
+  await ensureSchema();
+
+  const { params, conta, matchSql } = construirFiltroBase({
+    clienteId, clienteContaId, includeLegacy, q, status, filtro,
+  });
+
+  const sql = `
+    -- LISTAR_CHAVES_FILTRADAS
+    WITH base AS (
+      SELECT a.item_id, a.user_product_id, a.titulo, a.sku, a.status,
+             up.family_id, up.family_name AS up_family_name,
+             CASE WHEN up.family_id IS NOT NULL
+                  THEN 'fam:' || up.family_id
+                  ELSE 'item:' || a.item_id
+             END AS grupo_key
+        FROM meli_anuncios a
+        LEFT JOIN meli_user_products up
+               ON up.cliente_id = a.cliente_id
+              AND up.user_product_id = a.user_product_id
+       WHERE a.cliente_id = $1${conta.sql}
+    ),
+    selecionados AS (
+      SELECT DISTINCT b.grupo_key FROM base b WHERE ${matchSql}
+    )
+    SELECT b.grupo_key, MIN(b.family_id) AS family_id, MIN(b.item_id) AS item_id
+      FROM base b
+      JOIN selecionados s ON s.grupo_key = b.grupo_key
+     GROUP BY b.grupo_key;
+  `;
+
+  const { rows } = await db.query(sql, params);
+  return rows;
+}
+
 module.exports = {
   ensureSchema,
   extrairUserProducts,
@@ -655,4 +695,5 @@ module.exports = {
   resolverItensDeFamilias,
   construirFiltroBase,
   montarAnunciosDeRows,
+  listarChavesFiltradas,
 };

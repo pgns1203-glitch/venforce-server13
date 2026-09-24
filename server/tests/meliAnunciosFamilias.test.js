@@ -327,6 +327,32 @@ class MockDb {
       return { rows: pagina };
     }
 
+    // --- LISTAR_CHAVES_FILTRADAS --------------------------------------------
+    if (q.includes("-- LISTAR_CHAVES_FILTRADAS")) {
+      let i = 0;
+      const clienteId = params[i++];
+      const temConta = q.includes("a.cliente_conta_id = $");
+      const includeLegacy = temConta ? q.includes("OR a.cliente_conta_id IS NULL)") : true;
+      const clienteContaId = temConta ? params[i++] : null;
+      const temQ = q.includes("b.titulo ILIKE $");
+      const qTerm = temQ ? String(params[i++]).replace(/^%|%$/g, "").toLowerCase() : null;
+      const temStatus = q.includes("b.status = $");
+      const statusParam = temStatus ? params[i++] : null;
+
+      const whereMatch = (q.match(/FROM base b WHERE (.*?) \)/) || [])[1] || "TRUE";
+      const base = this.baseCte(clienteId, clienteContaId, includeLegacy);
+      const selecionados = base.filter((l) => casaSelecionado(whereMatch, l, qTerm, statusParam));
+
+      const grupos = new Map();
+      for (const linha of selecionados) {
+        const g = grupos.get(linha.grupo_key) || { grupo_key: linha.grupo_key, family_id: null, item_id: null };
+        if (g.family_id == null) g.family_id = linha.family_id;
+        if (g.item_id == null || String(linha.a.item_id) < g.item_id) g.item_id = String(linha.a.item_id);
+        grupos.set(linha.grupo_key, g);
+      }
+      return { rows: Array.from(grupos.values()) };
+    }
+
     // --- LISTAR_AGRUPADO_ITENS_DA_PAGINA -----------------------------------
     if (q.includes("-- LISTAR_AGRUPADO_ITENS_DA_PAGINA")) {
       let i = 0;
@@ -1222,6 +1248,54 @@ async function run() {
     const r = await meliFamiliaService.resolverItensDeFamilias({ clienteId: 1, familyIds: [] });
     assert.strictEqual(r.size, 0);
     console.log("  ✓ AI. resolverItensDeFamilias com familyIds vazio: Map vazio, sem consulta");
+  });
+
+  // AJ. listarChavesFiltradas devolve TODO o catálogo filtrado, sem
+  //     LIMIT/OFFSET — é a base do ranking global (ver Task 5).
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB1", user_product_id: null }),
+      anuncioFixture({ item_id: "MLB2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB3", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB4", user_product_id: null, status: "paused" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    const chaves = await meliFamiliaService.listarChavesFiltradas({ clienteId: 1 });
+    const porChave = new Map(chaves.map((c) => [c.grupo_key, c]));
+    assert.strictEqual(chaves.length, 3, "MLB2+MLB3 colapsam em 1 grupo (FAM1); MLB1 e MLB4 ficam avulsos");
+    assert.strictEqual(porChave.get("fam:FAM1").item_id, "MLB2");
+    assert.strictEqual(porChave.get("item:MLB1").family_id, null);
+    console.log("  ✓ AJ. listarChavesFiltradas: catálogo inteiro, sem paginação, família colapsada");
+  });
+
+  // AK. listarChavesFiltradas respeita status/q — mesmo predicado de
+  //     listarAgrupado (casaSelecionado), nunca lista item fora do filtro.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB1", status: "active" }),
+      anuncioFixture({ item_id: "MLB2", status: "paused" }),
+    ],
+    userProducts: [],
+  }, async () => {
+    const chaves = await meliFamiliaService.listarChavesFiltradas({ clienteId: 1, status: "paused" });
+    assert.deepStrictEqual(chaves.map((c) => c.item_id), ["MLB2"]);
+    console.log("  ✓ AK. listarChavesFiltradas: filtro de status restringe o catálogo inteiro");
+  });
+
+  // AL. clienteContaId isola o catálogo — mesma garantia de sempre.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-C10", cliente_conta_id: 10 }),
+      anuncioFixture({ item_id: "MLB-C11", cliente_conta_id: 11 }),
+    ],
+    userProducts: [],
+  }, async () => {
+    const chaves = await meliFamiliaService.listarChavesFiltradas({
+      clienteId: 1, clienteContaId: 10, includeLegacy: false,
+    });
+    assert.deepStrictEqual(chaves.map((c) => c.item_id), ["MLB-C10"]);
+    console.log("  ✓ AL. listarChavesFiltradas isola por clienteContaId");
   });
 
   console.log("meliAnunciosFamilias.test.js passed");

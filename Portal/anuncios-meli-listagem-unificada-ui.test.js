@@ -346,6 +346,16 @@ let atrasoPerformance = 0;
 let performanceHandler = null;
 const chamadasPerformance = [];
 
+// GET /anuncios-meli/familias — `chamadasFamilias` registra page/ordenarPor
+// de CADA chamada (prova que a paginação reenvia o mesmo critério global —
+// ver testes 39d-h). `ordenarPorGlobalHandler`, quando setado, substitui a
+// resposta padrão inteira sempre que a query trouxer um `ordenarPor` (o
+// próprio backend só aplica esse campo quando o critério é global —
+// faturamento_*/curvaAbc_* — nunca para margem_*/unidades_*, que continuam
+// ordenação LOCAL de página, resolvida no frontend).
+let chamadasFamilias = [];
+let ordenarPorGlobalHandler = null; // (qs) => resposta completa de /anuncios-meli/familias
+
 // Views nulo em MLB-A1 (sem dado) e vendas=0 real em MLB-A2 (fato, não
 // ausência de dado) são o par que prova a régua de "—" vs "0" vs NaN.
 const METRICAS_FIXTURE = {
@@ -451,6 +461,21 @@ async function waitForNode(fn, message) {
   throw new Error(message || "Timeout (condição do lado do Node)");
 }
 
+// aplicarOrdenacaoPerformance SEMPRE manda incluirMetricas=0 explícito (ver
+// anuncios-meli.js) — é a única chamada a /performance que faz isso. O
+// pré-carregamento automático de renderCatalogo (carregarPerformance,
+// disparado depois de QUALQUER render, inclusive um catálogo vindo de
+// ordenarPor GLOBAL) sempre pede métricas quando o item é novo, e por isso
+// NÃO pode ser distinguido de aplicarOrdenacaoPerformance por um simples
+// "chamadasPerformance.length === 0": itens já cacheados (reaproveitados de
+// testes anteriores) não geram chamada nenhuma, mas itens NOVOS geram uma
+// chamada de pré-carregamento legítima mesmo sob um critério global — essa
+// chamada tem sempre incluirMetricas=true (nunca 0), o que a distingue de
+// aplicarOrdenacaoPerformance de forma confiável.
+function disparouOrdenacaoLocal(chamadas) {
+  return chamadas.some((c) => c.incluirMetricas === false);
+}
+
 function contar(padrao, desde) {
   return pedidos.slice(desde).filter((u) => padrao.test(u)).length;
 }
@@ -533,6 +558,9 @@ function wireInterception(cdp) {
       const qs = new URL(url).searchParams;
       const termo = qs.get("q");
       const filtro = qs.get("filtro");
+      const ordenarPor = qs.get("ordenarPor");
+      chamadasFamilias.push({ page: qs.get("page"), ordenarPor });
+      if (ordenarPorGlobalHandler && ordenarPor) { await corpo(ordenarPorGlobalHandler(qs)); return; }
       let anuncios;
       if (conta === "43") anuncios = LINHAS_CONTA_43;
       else if (filtro) anuncios = LINHAS_CONTA_42_FILTRO;
@@ -2568,99 +2596,85 @@ async function run() {
       performanceHandler = null;
     });
 
-    await check("39d — ordenar por Curva ABC (família FECHADA — FAM-2, nunca clicada pelo operador): classe agregada do backend decide a posição, sem depender do painel/DOM", async () => {
-      // FAM-2 nunca foi expandida por clique em nenhum teste anterior desta
-      // suíte (só FAM-1 foi, em 39c) — o painel dela continua fechado agora.
-      assert.strictEqual(
-        await cdp.evaluate(`(function(){ var p = document.querySelector('${painelFam("FAM-2")}'); return !p || p.hidden; })()`),
-        true, "pré-condição do teste: o painel de FAM-2 precisa continuar FECHADO"
-      );
+    /* ── 39d-h: ordenação GLOBAL por %Faturamento/Curva ABC (ordenarPor no
+       backend, sobrevive à troca de página) ──────────────────────────────
+       SUBSTITUI os antigos testes "39d-h" desta suíte, que exercitavam
+       faturamento_desc/curvaAbc_asc via aplicarOrdenacaoPerformance (GET
+       /performance, ordenação LOCAL da página). A partir da Task 5/6 esses
+       dois critérios viraram GLOBAIS (ordenarPor= em /anuncios-meli/familias,
+       ranking contra o catálogo inteiro, não só a página atual — ver
+       ORDENACOES_GLOBAIS em anuncios-meli.js) — os testes antigos ficaram
+       incompatíveis com o novo contrato (aplicarOrdenacaoPerformance() nunca
+       mais é chamada para esses dois critérios, ver Garantia de aceite #2) e
+       foram substituídos pelos cinco abaixo (39d-h). Os dois critérios
+       escrevem nos MESMOS caches (faturamentoCache/curvaAbcCache/
+       *PorFamiliaCache) que as células da lista já liam antes — só a origem
+       do valor mudou (resposta de /familias, não de /performance). A linha
+       de FAMÍLIA fechada é um branch de produção à parte (chaveia pelo cache
+       "PorFamilia", por family_id, não pelo cache de item) — coberta
+       EXECUTADAMENTE pelo teste 39h abaixo (misto item+família), não só por
+       leitura de código: 39h prova que o valor consolidado pinta na célula
+       certa e que nenhuma chamada de detalhe de família dispara à toa. Curva
+       ABC não ganhou um teste de UI dedicado nesta rodada porque percorre o
+       EXATO MESMO branch de carregarAnuncios que %Faturamento (incluindo o
+       mesmo branch de família que 39h exercita — nenhuma lógica própria não
+       coberta); a ordenação em si já tem cobertura de backend (Task 5). */
 
-      pedidos.length = 0;
+    await check("39d — faturamento_desc: front manda ordenarPor e PINTA direto da resposta, sem 2ª chamada a /performance", async () => {
+      chamadasFamilias.length = 0;
       chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
-        curvaAbc: { periodoDias: 30, porItem: {}, porFamilia: { "FAM-1": "C", "FAM-2": "A" } },
-        faturamento: null, unidadesVendidas: null, margemPorFamilia: null,
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "item", item_id: "MLB-SEMUP", key: "item:MLB-SEMUP", titulo: "Item A", status: "active", faturamentoPercentual: 0.30, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-SEMVAR", key: "item:MLB-SEMVAR", titulo: "Item B", status: "active", faturamentoPercentual: 0.10, cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
       });
-
-      await cdp.evaluate(`(function(){
-        var s = document.getElementById('am-ordenacao');
-        s.value = 'curvaAbc_asc';
-        s.dispatchEvent(new Event('change'));
-      })()`);
-      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
-      await waitFor(cdp, `(function(){
-        var r = document.querySelector('.am-listagem > .am-row');
-        return r && r.getAttribute('data-familia') === 'FAM-2';
-      })()`, "FAM-2 (classe A, fechada) deveria ir para o topo em Curva ABC A→C");
-
-      assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-2")),
-        "curvaAbc.porFamilia já vem agregado do backend — família FECHADA nunca precisa do painel/detalhe para ordenar");
-      performanceHandler = null;
-    });
-
-    /* ── 39e-h: camada visual das métricas de performance ───────────────── */
-    // Ver auditoria "Ajuste visual — métricas de performance na lista de
-    // anúncios ML". Toda métrica usada para ordenar precisa estar visível na
-    // linha: % faturamento ganha coluna própria, Curva ABC vira tag/badge
-    // junto das existentes (Full/Sem SKU/...). Nenhuma regra de cálculo muda
-    // — só consome os campos que o backend já entrega.
-
-    await check("39e — ordenar por % faturamento (MLB individual): o percentual usado para ordenar aparece na coluna Faturamento", async () => {
-      pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
-        // Contrato REAL do backend: fração 0–1 (receita/receitaTotalPeriodo),
-        // nunca já em escala 0–100 — ver montarFaturamento no controller.
-        // Um fixture com número já "pronto" (ex.: 12.4) mascara o bug de
-        // escala do frontend (ver auditoria "Validação participação
-        // faturamento"): passa direto por toFixed(1) sem multiplicar por 100
-        // e o teste passaria mesmo com o × 100 faltando.
-        faturamento: {
-          periodoDias: 30,
-          porItem: { "MLB-SEMUP": 0.124, "MLB-SEMVAR": 0.031 },
-          porFamilia: { "FAM-1": 0, "FAM-2": 0 },
-        },
-        unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
-      });
-
-      const antes = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento').textContent.trim()`);
-      assert.strictEqual(antes, "—", "antes de ordenar por faturamento a coluna não pode inventar um valor");
 
       await cdp.evaluate(`(function(){
         var s = document.getElementById('am-ordenacao');
         s.value = 'faturamento_desc';
         s.dispatchEvent(new Event('change'));
       })()`);
-      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
       await waitFor(cdp, `(function(){
         var r = document.querySelector('.am-listagem > .am-row');
         return r && r.getAttribute('data-item') === 'MLB-SEMUP';
-      })()`, "MLB-SEMUP (12,4%) deveria ir para o topo ao ordenar por % faturamento decrescente");
+      })()`, "MLB-SEMUP (30%) deveria vir primeiro");
 
-      const cel = await cdp.evaluate(`(function(){
-        var c = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento');
-        return { texto: c.textContent.trim(), valor: (c.querySelector('.am-faturamento__valor') || {}).textContent || null,
-          legenda: (c.querySelector('.am-faturamento__legenda') || {}).textContent || null }; })()`);
-      assert.strictEqual(cel.valor, "12,4%", `a coluna Faturamento tem de mostrar o MESMO valor usado para ordenar: ${cel.texto}`);
-      assert.strictEqual(cel.legenda, "do faturamento");
-      performanceHandler = null;
+      // NÃO é chamadasPerformance.length === 0: MLB-SEMUP/MLB-SEMVAR são
+      // reaproveitados de testes anteriores desta suíte, então o
+      // pré-carregamento automático de renderCatalogo nem chega a bater na
+      // rede para eles (cache já completo) — o length ser 0 aqui é
+      // consequência disso, não prova por si só que aplicarOrdenacaoPerformance
+      // não rodou. A prova robusta é o fingerprint (ver disparouOrdenacaoLocal).
+      assert.ok(!disparouOrdenacaoLocal(chamadasPerformance),
+        "ordenação global não pode ter disparado aplicarOrdenacaoPerformance (fingerprint incluirMetricas=0) — o valor já veio na listagem");
+      const texto = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento__valor, .am-row[data-item="MLB-SEMUP"] [data-faturamento]')?.textContent || ''`);
+      assert.ok(texto.includes("30"), `célula de %Faturamento deveria pintar 30% direto da resposta da listagem: "${texto}"`);
+      ordenarPorGlobalHandler = null;
+      console.log("  ✓ 39d");
     });
 
-    await check("39f — ordenar por % faturamento (família agregada, NÃO expandida): a linha da família mostra o percentual CONSOLIDADO, não o de um filho", async () => {
-      pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
-        // Fração 0–1 (mesmo motivo do fixture de 39e acima).
-        faturamento: {
-          periodoDias: 30,
-          porItem: { "MLB-SEMUP": 0.01, "MLB-SEMVAR": 0.01 },
-          porFamilia: { "FAM-1": 0.475, "FAM-2": 0.002 },
-        },
-        unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+    await check("39e — trocar de página com faturamento_desc ativo: ordenarPor viaja para a página 2, dropdown continua mostrando o critério, e o ranking NÃO reinicia (último da pág.1 > primeiro da pág.2)", async () => {
+      chamadasFamilias.length = 0;
+      // 2 itens por página, valores DECRESCENTES cruzando a borda — é o
+      // cenário exato do relato original (10/9/8 -> 20/15/12 seria o bug; o
+      // esperado é 30/20 -> 10/5, sempre caindo).
+      ordenarPorGlobalHandler = (qs) => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: qs.get("page") === "2"
+          ? [
+              { tipo: "item", item_id: "MLB-PAG2-A", key: "item:MLB-PAG2-A", titulo: "Item pág2 A", status: "active", faturamentoPercentual: 0.10, cover: { thumbnail: null } },
+              { tipo: "item", item_id: "MLB-PAG2-B", key: "item:MLB-PAG2-B", titulo: "Item pág2 B", status: "active", faturamentoPercentual: 0.05, cover: { thumbnail: null } },
+            ]
+          : [
+              { tipo: "item", item_id: "MLB-PAG1-A", key: "item:MLB-PAG1-A", titulo: "Item pág1 A", status: "active", faturamentoPercentual: 0.30, cover: { thumbnail: null } },
+              { tipo: "item", item_id: "MLB-PAG1-B", key: "item:MLB-PAG1-B", titulo: "Item pág1 B", status: "active", faturamentoPercentual: 0.20, cover: { thumbnail: null } },
+            ],
+        paginacao: { page: Number(qs.get("page") || 1), limit: 2, total: 4, totalPaginas: 2 },
       });
 
       await cdp.evaluate(`(function(){
@@ -2668,93 +2682,232 @@ async function run() {
         s.value = 'faturamento_desc';
         s.dispatchEvent(new Event('change'));
       })()`);
-      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
-      await waitFor(cdp, `(function(){
-        var r = document.querySelector('.am-listagem > .am-row');
-        return r && r.getAttribute('data-familia') === 'FAM-1';
-      })()`, "FAM-1 (47,5% consolidado) deveria ir para o topo");
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-PAG1-A"]')`, "página 1 não carregou");
+      const ultimaPag1 = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-PAG1-B"] [data-faturamento], .am-row[data-item="MLB-PAG1-B"] .am-faturamento__valor')?.textContent || ''`);
 
-      const texto = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-faturamento .am-faturamento__valor').textContent.trim()`);
-      assert.strictEqual(texto, "47,5%", "a linha do agrupador tem de mostrar o percentual CONSOLIDADO da família (porFamilia), nunca o de um filho isolado");
+      // A UI desta tela pagina com Anterior/Próxima (am-pag-prev/am-pag-next),
+      // sem botões de número de página — "página 2" aqui é "clicar Próxima".
+      await clicar(cdp, '#am-pag-next');
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-PAG2-A"]')`, "página 2 não carregou");
+      const primeiraPag2 = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-PAG2-A"] [data-faturamento], .am-row[data-item="MLB-PAG2-A"] .am-faturamento__valor')?.textContent || ''`);
+
+      assert.ok(chamadasFamilias.some((c) => c.page === "2" && c.ordenarPor === "faturamento_desc"),
+        "a chamada da página 2 tem de levar ordenarPor=faturamento_desc — é exatamente o bug relatado (ordenação reiniciava ao trocar de página)");
+      const valorDropdown = await cdp.evaluate(`document.getElementById('am-ordenacao').value`);
+      assert.strictEqual(valorDropdown, "faturamento_desc", "trocar de página NÃO pode resetar o dropdown quando o critério é global");
+
+      // VALIDAÇÃO ESPECÍFICA pedida: último item da página 1 (20%) tem de
+      // valer MAIS que o primeiro item da página 2 (10%) — nunca o ranking
+      // "reiniciando" (o que apareceria como pág.2 > pág.1, ex.: 10% -> 30%).
+      const paraNumero = (t) => parseFloat(String(t).replace(",", ".").replace("%", "").trim());
+      assert.ok(paraNumero(ultimaPag1) > paraNumero(primeiraPag2),
+        `último item da página 1 (${ultimaPag1}) tem de ser MAIOR que o primeiro da página 2 (${primeiraPag2}) — faturamento_desc nunca reinicia o ranking na borda de página`);
+      ordenarPorGlobalHandler = null;
+      console.log("  ✓ 39e");
+    });
+
+    await check("39f — ordenacaoIndisponivel: mostra aviso inline, não quebra a lista", async () => {
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: false,
+        ordenacaoIndisponivel: { codigo: "BASE_NAO_VINCULADA", mensagem: "Vincule uma Base para ordenar por Faturamento." },
+        anuncios: [{ tipo: "item", item_id: "MLB-SEMUP", key: "item:MLB-SEMUP", titulo: "Item A", status: "active", cover: { thumbnail: null } }],
+        paginacao: { page: 1, limit: 20, total: 1, totalPaginas: 1 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'faturamento_asc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"]')`, "lista tem de continuar respondendo mesmo sem ordenação");
+      await waitFor(cdp, `(function(){
+        var el = document.getElementById('am-ordenacao-aviso');
+        return el && !el.hidden && el.textContent.includes('Vincule uma Base');
+      })()`, "aviso de ordenacaoIndisponivel deveria aparecer com a mensagem do backend");
+      ordenarPorGlobalHandler = null;
+      // Devolve o dropdown a "Padrão" antes do próximo teste — sem isso
+      // AM.ordenarPor fica preso em 'faturamento_asc' e vaza para 39g/39i em
+      // diante (mesma classe de cuidado de estado global entre testes já
+      // documentada nesta suíte).
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      console.log("  ✓ 39f");
+    });
+
+    await check("39g — front NUNCA reordena AM.anuncios localmente para critério global: renderiza EXATAMENTE a ordem que o backend mandou, mesmo que pareça 'fora de ordem'", async () => {
+      // Backend de propósito NÃO manda os valores em ordem decrescente
+      // (30% depois de 10%) — se o front ainda tivesse QUALQUER resquício do
+      // comportamento antigo (reordenar AM.anuncios em memória, como
+      // aplicarOrdenacaoPerformance fazia), a tela corrigiria essa "ordem
+      // errada" e o teste pegaria isso. O contrato correto é: pra critério
+      // global, o front confia cegamente na ordem do backend.
+      chamadasPerformance.length = 0;
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "item", item_id: "MLB-FORA-1", key: "item:MLB-FORA-1", titulo: "X", status: "active", faturamentoPercentual: 0.10, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-FORA-2", key: "item:MLB-FORA-2", titulo: "Y", status: "active", faturamentoPercentual: 0.30, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-FORA-3", key: "item:MLB-FORA-3", titulo: "Z", status: "active", faturamentoPercentual: 0.20, cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 3, totalPaginas: 1 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'faturamento_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-FORA-1"]')`, "lista não carregou");
+
+      const ordemRenderizada = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-listagem > .am-row')).map(function(r){
+        return r.getAttribute('data-item'); })`);
+      assert.deepStrictEqual(ordemRenderizada, ["MLB-FORA-1", "MLB-FORA-2", "MLB-FORA-3"],
+        `o front reordenou localmente (ordem renderizada: ${JSON.stringify(ordemRenderizada)}) — para critério global, a ordem tem de ser EXATAMENTE a que o backend mandou, nunca recalculada em memória`);
+      // MLB-FORA-1/2/3 são NOVOS (propositalmente, pra provar a ordem "fora
+      // de ordem"): o pré-carregamento automático de renderCatalogo VAI
+      // bater em /performance para eles (métricas/margem ainda não
+      // cacheadas) — isso é esperado e não tem relação com
+      // aplicarOrdenacaoPerformance. A prova real é o fingerprint
+      // (incluirMetricas=0, ver disparouOrdenacaoLocal acima).
+      assert.ok(!disparouOrdenacaoLocal(chamadasPerformance),
+        "nenhuma chamada com o fingerprint de aplicarOrdenacaoPerformance (incluirMetricas=0) pode ter disparado para um critério global");
+      ordenarPorGlobalHandler = null;
+      // Idem 39f: devolve o dropdown/AM.ordenarPor a "Padrão" antes dos
+      // testes seguintes (39i em diante), que esperam a listagem padrão da
+      // conta 42 (LINHAS_CONTA_42), não os 3 itens fabricados aqui.
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      console.log("  ✓ 39g");
+    });
+
+    await check("39h — faturamento_desc com FAMÍLIA fechada misturada a item: pinta o consolidado na chave certa (family_id, não item_id), sem abrir/buscar detalhe da família", async () => {
+      // FAM-1 é reaproveitada de propósito (já usada e cacheada por dezenas de
+      // testes anteriores desta suíte) — é o que prova que NENHUM detalhe de
+      // família é buscado por causa da ordenação global: se o front tentasse
+      // abrir/expandir a família só porque ela veio na resposta, haveria uma
+      // chamada NOVA a /anuncios-meli/familias/FAM-1, e não há (o cache já
+      // resolve garantirFamiliaDetalhe sem rede — mesmo raciocínio do 39d
+      // reaproveitar MLB-SEMUP/MLB-SEMVAR já cacheados).
+      pedidos.length = 0;
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          // Família primeiro, de propósito: se o código escrevesse o valor
+          // consolidado no cache ERRADO (faturamentoCache, o de ITEM, em vez
+          // de faturamentoPorFamiliaCache) chaveado por family_id, a célula
+          // da família ficaria em "—" e a deste teste pegaria isso.
+          { tipo: "familia", key: "fam:FAM-1", family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
+            titulo: "Camiseta Dry Fit Masculina", faturamentoPercentual: 0.42, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-SEMUP", key: "item:MLB-SEMUP", titulo: "Item A", status: "active",
+            faturamentoPercentual: 0.15, cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'faturamento_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-1")}')`, "a linha da família não renderizou");
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"]')`, "a linha do item não renderizou");
+
+      // Painel de FAM-1 tem de continuar FECHADO — a asserção é sobre a linha
+      // FECHADA do agrupador, nunca sobre o painel expandido.
+      const painelAberto = await cdp.evaluate(`(function(){ var p = document.querySelector('${painelFam("FAM-1")}'); return Boolean(p && !p.hidden); })()`);
+      assert.strictEqual(painelAberto, false, "pré-condição do teste: o painel de FAM-1 precisa estar FECHADO (renderCatalogo reconstrói a lista do zero a cada ordenação global)");
+
+      const textoFamilia = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-faturamento .am-faturamento__valor')?.textContent.trim() || ''`);
+      assert.strictEqual(textoFamilia, "42,0%",
+        `a linha FECHADA da família tem de mostrar o consolidado (faturamentoPorFamiliaCache["FAM-1"]) — se o valor tivesse ido pro cache de ITEM por engano, a célula ficaria em "—": recebido "${textoFamilia}"`);
+
+      const textoItem = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento .am-faturamento__valor')?.textContent.trim() || ''`);
+      assert.strictEqual(textoItem, "15,0%", `a linha do item individual tem de mostrar o seu próprio percentual: recebido "${textoItem}"`);
+
       assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
-        "% faturamento já vem agregado do backend — mostrar a coluna não pode buscar os filhos");
-      performanceHandler = null;
-    });
-
-    await check("39g — ordenar por Curva ABC (MLB individual): a classe usada para ordenar aparece como tag junto das demais (Full/Sem SKU/...)", async () => {
-      pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
-        curvaAbc: { periodoDias: 30, porItem: { "MLB-SEMUP": "A", "MLB-SEMVAR": "C" }, porFamilia: { "FAM-1": "C", "FAM-2": "C" } },
-        faturamento: null, unidadesVendidas: null, margemPorFamilia: null,
-      });
-
-      const antes = await cdp.evaluate(`(function(){
-        var b = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__badges');
-        return /ABC/.test(b.textContent); })()`);
-      assert.strictEqual(antes, false, "antes de ordenar por Curva ABC não pode existir tag ABC nenhuma");
-
+        "nenhuma chamada de detalhe de família pode ter disparado só por causa da ordenação global — o consolidado já veio pronto na resposta da listagem");
+      ordenarPorGlobalHandler = null;
+      // Devolve o dropdown/AM.ordenarPor a "Padrão" antes de 39i em diante
+      // (mesmo cuidado de 39f/39g).
       await cdp.evaluate(`(function(){
         var s = document.getElementById('am-ordenacao');
-        s.value = 'curvaAbc_asc';
+        s.value = '';
         s.dispatchEvent(new Event('change'));
       })()`);
-      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
-      await waitFor(cdp, `(function(){
-        var r = document.querySelector('.am-listagem > .am-row');
-        return r && r.getAttribute('data-item') === 'MLB-SEMUP';
-      })()`, "MLB-SEMUP (classe A) deveria ir para o topo em Curva ABC A→C");
-
-      const estado = await cdp.evaluate(`(function(){
-        var badges = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-row__badges');
-        var tag = Array.from(badges.querySelectorAll('.vf-tag')).find(function(t){ return /ABC/.test(t.textContent); });
-        return {
-          temTagAbc: Boolean(tag),
-          textoTagAbc: tag ? tag.textContent.trim() : null,
-          mesmoComponente: tag ? tag.classList.contains('vf-tag') : false,
-          outrosBadgesAindaExistem: badges.querySelectorAll('.vf-tag').length > 1,
-        }; })()`);
-      assert.strictEqual(estado.temTagAbc, true, "a classe usada para ordenar tem de aparecer como tag na linha");
-      assert.strictEqual(estado.textoTagAbc, "ABC A", `a tag tem de mostrar a MESMA classe usada para ordenar: ${estado.textoTagAbc}`);
-      assert.strictEqual(estado.mesmoComponente, true, "a tag ABC tem de usar o MESMO componente .vf-tag das demais — nenhum padrão novo de badge");
-      assert.strictEqual(estado.outrosBadgesAindaExistem, true, "a tag ABC não pode substituir/esconder os badges existentes (Full/Sem SKU/...)");
-      performanceHandler = null;
+      console.log("  ✓ 39h");
     });
 
-    await check("39h — ordenar por Curva ABC (família FECHADA — FAM-2): a linha da família mostra a tag da classe CONSOLIDADA, sem depender do painel/DOM", async () => {
-      assert.strictEqual(
-        await cdp.evaluate(`(function(){ var p = document.querySelector('${painelFam("FAM-2")}'); return !p || p.hidden; })()`),
-        true, "pré-condição do teste: o painel de FAM-2 precisa continuar FECHADO"
-      );
-
-      pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
-        curvaAbc: { periodoDias: 30, porItem: {}, porFamilia: { "FAM-1": "C", "FAM-2": "A" } },
-        faturamento: null, unidadesVendidas: null, margemPorFamilia: null,
+    // BUG (achado na revisão final do plano): aplicarOrdenacaoPerformance(null)
+    // (chamada pelo branch "sem critério" do dropdown) restaura
+    // AM_ordemOriginalAnuncios em memória — mas esse snapshot fica null
+    // durante ordenação GLOBAL de propósito (ver carregarAnuncios), então
+    // "Padrão" depois de um critério global snapshotava a PRÓPRIA ordem
+    // global corrente e a "restaurava" — a lista ficava presa na ordem
+    // global mesmo com o dropdown voltando a mostrar "Padrão", sem nenhuma
+    // requisição nova ao backend. O fix: quando o critério anterior era
+    // global, voltar a "Padrão" tem de refazer a busca (sem ordenarPor=),
+    // nunca restaurar snapshot.
+    await check("39h2 — voltar para 'Padrão' depois de ordenação global refaz a busca ao backend (sem ordenarPor) e a lista volta à ordem padrão real, não à ordem global 'congelada'", async () => {
+      chamadasFamilias.length = 0;
+      // Ordem DELIBERADAMENTE diferente da ordem padrão (LINHAS_CONTA_42
+      // começa com FAM-1) — se o bug estivesse presente, "Padrão" continuaria
+      // mostrando esta ordem (MLB-SEMVAR primeiro), nunca a de LINHAS_CONTA_42.
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "item", item_id: "MLB-SEMVAR", key: "item:MLB-SEMVAR", titulo: "Anúncio simples, sem variações no ML", status: "active", faturamentoPercentual: 0.40, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-SEMUP", key: "item:MLB-SEMUP", titulo: "Anúncio legado sem agrupamento", status: "active", faturamentoPercentual: 0.10, cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
       });
 
       await cdp.evaluate(`(function(){
         var s = document.getElementById('am-ordenacao');
-        s.value = 'curvaAbc_asc';
+        s.value = 'faturamento_desc';
         s.dispatchEvent(new Event('change'));
       })()`);
-      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
       await waitFor(cdp, `(function(){
         var r = document.querySelector('.am-listagem > .am-row');
-        return r && r.getAttribute('data-familia') === 'FAM-2';
-      })()`, "FAM-2 (classe A, fechada) deveria ir para o topo em Curva ABC A→C");
+        return r && r.getAttribute('data-item') === 'MLB-SEMVAR';
+      })()`, "ordenação global não aplicou (pré-condição do teste)");
 
-      const texto = await cdp.evaluate(`(function(){
-        var badges = document.querySelector('${linhaFam("FAM-2")} .am-row__badges');
-        var tag = badges && Array.from(badges.querySelectorAll('.vf-tag')).find(function(t){ return /ABC/.test(t.textContent); });
-        return tag ? tag.textContent.trim() : null; })()`);
-      assert.strictEqual(texto, "ABC A", "a linha da família fechada tem de mostrar a classe CONSOLIDADA (porFamilia), sem abrir o painel");
-      assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-2")),
-        "curvaAbc.porFamilia já vem agregado do backend — mostrar a tag não pode buscar o detalhe/filhos");
-      performanceHandler = null;
+      ordenarPorGlobalHandler = null;
+      chamadasFamilias.length = 0;
+
+      // O gesto do operador: selecionar "Padrão" no dropdown.
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+
+      // Precisa vir uma NOVA requisição a /anuncios-meli/familias, sem
+      // ordenarPor — nunca um restore silencioso em memória.
+      await waitForNode(() => chamadasFamilias.some((c) => !c.ordenarPor),
+        "voltar a 'Padrão' depois de um critério global tem de disparar uma nova busca ao backend sem ordenarPor= — não pode só restaurar um snapshot em memória");
+
+      // A lista renderizada tem de ser a ordem PADRÃO real (LINHAS_CONTA_42:
+      // FAM-1 primeiro), não a ordem global "congelada" (MLB-SEMVAR primeiro).
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-1")}')`, "a família FAM-1 (1ª linha da ordem padrão) não voltou a aparecer");
+      const primeiraLinha = await cdp.evaluate(`(function(){
+        var r = document.querySelector('.am-listagem > .am-row');
+        return r ? (r.getAttribute('data-familia') ? 'fam:' + r.getAttribute('data-familia') : 'item:' + r.getAttribute('data-item')) : null;
+      })()`);
+      assert.strictEqual(primeiraLinha, "fam:FAM-1", `a 1ª linha depois de 'Padrão' tem de ser FAM-1 (ordem real de LINHAS_CONTA_42), não a ordem global congelada: recebido "${primeiraLinha}"`);
+
+      const valorDropdown = await cdp.evaluate(`document.getElementById('am-ordenacao').value`);
+      assert.strictEqual(valorDropdown, "", "dropdown precisa continuar mostrando 'Padrão'");
+      console.log("  ✓ 39h2");
     });
 
     await check("39i — carregar a listagem (SEM ordenar) já preenche a coluna Faturamento sozinha — individual bundlado na 1ª chamada, família numa chamada própria", async () => {
@@ -2772,7 +2925,9 @@ async function run() {
         });
         return {
           ok: true, metricas7d, margem, margemIndisponivel: null,
-          // Fração 0–1 (mesmo motivo do fixture de 39e acima).
+          // Fração 0–1 (receita/receitaTotalPeriodo) — nunca já em escala
+          // 0–100 pronta, mesmo contrato usado nos testes de ordenação
+          // global por faturamento acima.
           faturamento: {
             periodoDias: 30,
             porItem: { "MLB-SEMUP": 0.095, "MLB-SEMVAR": 0.011 },

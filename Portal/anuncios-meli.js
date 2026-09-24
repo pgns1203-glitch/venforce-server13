@@ -39,6 +39,11 @@
     anuncios: [],
     paginacao: { page: 1, limit: 24, total: 0, totalPaginas: 1 },
     filtros: { q: "", status: "", filtro: "" },
+    // Critério GLOBAL ativo (faturamento_*/curvaAbc_*) — sobrevive à troca de
+    // página, ao contrário da ordenação LOCAL (AM_ordemOriginalAnuncios, que
+    // reseta a cada carregarAnuncios porque só faz sentido pra página que
+    // acabou de sair de cena). null = nenhum critério global ativo.
+    ordenarPor: null,
     // Card de KPI atualmente selecionado como filtro rápido (V3 — os cards
     // do resumo substituem os antigos <select> de Status/Qualidade). Guarda
     // só a CHAVE do KPI; o valor real que vai para AM.filtros.status/filtro
@@ -524,7 +529,36 @@
     });
     if (el("am-ordenacao")) {
       el("am-ordenacao").addEventListener("change", function (e) {
-        aplicarOrdenacaoPerformance(e.target.value);
+        var criterio = e.target.value;
+        if (!criterio) {
+          // Se o critério anterior era GLOBAL (faturamento/Curva ABC), voltar
+          // a "Padrão" precisa reconsultar o backend (a ordem padrão nunca
+          // existiu em memória — AM_ordemOriginalAnuncios fica null durante
+          // ordenação global, de propósito, ver carregarAnuncios) — nunca
+          // restaurar um snapshot local (que ou é a própria ordem global, ou
+          // é uma ordem local antiga já obsoleta). Se era LOCAL (Margem/
+          // Unidades) ou nenhum, o restore em memória de sempre continua.
+          var eraGlobal = !!AM.ordenarPor;
+          AM.ordenarPor = null;
+          if (eraGlobal) {
+            AM.paginacao.page = 1;
+            carregarAnuncios();
+            return;
+          }
+          aplicarOrdenacaoPerformance(null);
+          return;
+        }
+        if (ORDENACOES_GLOBAIS[criterio]) {
+          AM.ordenarPor = criterio;
+          AM.paginacao.page = 1;
+          carregarAnuncios();
+          return;
+        }
+        // Margem/Unidades: ordenação LOCAL de sempre, nunca junto com uma
+        // ordenação global ativa — as duas são mutuamente exclusivas no
+        // mesmo <select>.
+        AM.ordenarPor = null;
+        aplicarOrdenacaoPerformance(criterio);
       });
     }
   }
@@ -641,6 +675,7 @@
     if (AM.filtros.status) qs += "&status=" + encodeURIComponent(AM.filtros.status);
     if (AM.filtros.filtro) qs += "&filtro=" + encodeURIComponent(AM.filtros.filtro);
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+    if (AM.ordenarPor) qs += "&ordenarPor=" + encodeURIComponent(AM.ordenarPor);
 
     api("/anuncios-meli/familias?" + qs).then(function (r) {
       if (meuToken !== AM.catalogoToken) return; // troca de conta/cliente (ou novo filtro) já disparou outra busca
@@ -652,12 +687,47 @@
       }
       AM.anuncios = r.data.anuncios || [];
       AM.paginacao = r.data.paginacao || AM.paginacao;
-      // Nova busca no backend já vem na ordem padrão — a ordem "original"
-      // capturada por aplicarOrdenacaoPerformance para a página anterior não
-      // serve mais, e qualquer ordenação ativa deixa de fazer sentido até o
-      // operador escolher de novo.
-      AM_ordemOriginalAnuncios = null;
-      if (el("am-ordenacao")) el("am-ordenacao").value = "";
+
+      // Ordenação GLOBAL: o backend já manda o valor que decidiu a posição
+      // (faturamentoPercentual/curvaAbc) — escreve nos MESMOS caches que as
+      // células da lista já leem (faturamentoCelulaHtml/badgesAnuncioHtml),
+      // sem uma 2ª chamada a /performance (ver auditoria "ordenação global
+      // limitada à página atual").
+      if (AM.ordenarPor) {
+        // Qualquer snapshot local (AM_ordemOriginalAnuncios) que ainda
+        // existisse só poderia descrever a página ANTERIOR — nunca esta que
+        // acabou de chegar. Zera aqui também (não só no branch "sem
+        // ordenarPor" abaixo): sem isso, uma sequência local -> global ->
+        // "Padrão" restauraria o snapshot congelado do momento da ordenação
+        // LOCAL, mostrando itens que não batem com a paginação global atual.
+        AM_ordemOriginalAnuncios = null;
+        AM.anuncios.forEach(function (linha) {
+          if (linha.faturamentoPercentual === undefined && linha.curvaAbc === undefined) return;
+          var cacheItem = linha.tipo === "familia" ? AM.state.faturamentoPorFamiliaCache : AM.state.faturamentoCache;
+          var cacheAbc = linha.tipo === "familia" ? AM.state.curvaAbcPorFamiliaCache : AM.state.curvaAbcCache;
+          var chave = linha.tipo === "familia" ? linha.family_id : linha.item_id;
+          if (linha.faturamentoPercentual !== undefined) cacheItem[chave] = linha.faturamentoPercentual;
+          if (linha.curvaAbc !== undefined) cacheAbc[chave] = linha.curvaAbc;
+        });
+        var aviso = el("am-ordenacao-aviso");
+        if (aviso) {
+          if (r.data.ordenacaoAplicada === false && r.data.ordenacaoIndisponivel) {
+            aviso.textContent = r.data.ordenacaoIndisponivel.mensagem || "Não foi possível ordenar globalmente.";
+            aviso.hidden = false;
+          } else {
+            aviso.hidden = true;
+          }
+        }
+      } else {
+        // Nova busca no backend já vem na ordem padrão — a ordem "original"
+        // capturada por aplicarOrdenacaoPerformance para a página anterior não
+        // serve mais, e qualquer ordenação LOCAL ativa deixa de fazer sentido
+        // até o operador escolher de novo.
+        AM_ordemOriginalAnuncios = null;
+        if (el("am-ordenacao")) el("am-ordenacao").value = "";
+        var avisoLimpo = el("am-ordenacao-aviso");
+        if (avisoLimpo) avisoLimpo.hidden = true;
+      }
       renderCatalogo();
     });
   }
@@ -1808,6 +1878,12 @@
   // ===========================================================================
 
   var CURVA_ABC_ORDEM = { A: 0, B: 1, C: 2 };
+
+  // Critérios GLOBAIS (ordenam o catálogo inteiro no backend via
+  // ordenarPor= na query de /anuncios-meli/familias — ver carregarAnuncios).
+  // Margem/Unidades NÃO entram aqui: continuam sendo ordenação LOCAL da
+  // página atual, via ORDENACOES_PERFORMANCE/aplicarOrdenacaoPerformance.
+  var ORDENACOES_GLOBAIS = { faturamento_asc: 1, faturamento_desc: 1, curvaAbc_asc: 1, curvaAbc_desc: 1 };
 
   var ORDENACOES_PERFORMANCE = {
     margem_asc: { campo: "margem", direcao: "asc" },

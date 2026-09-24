@@ -346,6 +346,61 @@ async function run() {
     console.log("  ✓ G. clienteContaId isola o catálogo e o Motor — nunca mistura contas");
   });
 
+  // H. curvaAbc_desc: mesma prova de ponta a ponta (sort -> paginate ->
+  //    hydrate) que o Teste A fez para faturamento_desc, agora para Curva
+  //    ABC — cruzando a fronteira de página 1 -> 2 sem reiniciar.
+  //    ORDEM_ABC (A=1,B=2,C=3) é a mesma tabela de CURVA_ABC_ORDEM do
+  //    controller, só para comparar a ordem numericamente aqui no teste: o
+  //    comparador de "desc" é reaproveitado (mesmo código de
+  //    faturamento_desc) contra o ORDINAL da classe, então "desc" ordena
+  //    pelo ordinal NUMÉRICO decrescente (C=3 primeiro, A=1 por último) —
+  //    não precisa ler como "melhor pra pior" em português.
+  const ORDEM_ABC = { A: 1, B: 2, C: 3 };
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" }),
+      anuncioFixture({ item_id: "MLB3" }), anuncioFixture({ item_id: "MLB4" }),
+    ],
+  }, async () => {
+    // Pareto 80/95 (cliente360ProdutosEngine.classificarCurvaAbc) sobre
+    // receitas 1000/500/100/1 (total 1601, share acumulado descendente):
+    // MLB1 62,5% -> A; MLB2 93,7% -> B; MLB3 99,9% -> C; MLB4 100% -> C.
+    // 3 classes distintas nos 4 itens — confirmado empiricamente rodando
+    // este teste (ver saída do comando no report da task).
+    motorHandler = () => ({
+      porMlb: new Map([
+        ["MLB1", { receita: 1000 }], ["MLB2", { receita: 500 }],
+        ["MLB3", { receita: 100 }], ["MLB4", { receita: 1 }],
+      ]),
+      periodo: { dateFrom: "2026-09-01", dateTo: "2026-09-24" },
+    });
+
+    const res1 = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "2", ordenarPor: "curvaAbc_desc" } }, res1);
+    assert.strictEqual(res1.corpo.ok, true);
+    assert.strictEqual(res1.corpo.ordenacaoAplicada, true);
+    assert.deepStrictEqual(res1.corpo.anuncios.map((a) => a.item_id), ["MLB3", "MLB4"]);
+    assert.deepStrictEqual(res1.corpo.anuncios.map((a) => a.curvaAbc), ["C", "C"]);
+    assert.strictEqual(res1.corpo.anuncios[0].faturamentoPercentual, undefined, "curvaAbc_desc não anexa faturamentoPercentual");
+
+    const res2 = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "2", limit: "2", ordenarPor: "curvaAbc_desc" } }, res2);
+    assert.strictEqual(res2.corpo.ok, true);
+    assert.deepStrictEqual(res2.corpo.anuncios.map((a) => a.item_id), ["MLB2", "MLB1"]);
+    assert.deepStrictEqual(res2.corpo.anuncios.map((a) => a.curvaAbc), ["B", "A"]);
+
+    const todasClasses = new Set([...res1.corpo.anuncios, ...res2.corpo.anuncios].map((a) => a.curvaAbc));
+    assert.ok(todasClasses.size >= 2, "precisa de pelo menos 2 classes distintas pra provar o ranking, não um empate geral disfarçado");
+
+    assert.ok(
+      ORDEM_ABC[res1.corpo.anuncios[1].curvaAbc] >= ORDEM_ABC[res2.corpo.anuncios[0].curvaAbc],
+      "o último item da página 1 não pode ter ordinal MENOR que o primeiro da página 2 — nunca reinicia na fronteira"
+    );
+    motorHandler = null;
+    console.log("  ✓ H. curvaAbc_desc: monotônico cruzando página 1 -> 2 (ponta a ponta: sort -> paginate -> hydrate)");
+  });
+
   console.log("meliAnunciosOrdenacaoGlobal.test.js passed");
 }
 

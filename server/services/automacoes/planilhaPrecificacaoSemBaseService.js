@@ -12,6 +12,7 @@ const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
 const { exigirContextoGrantMl } = require("./contextoPrecificacaoService");
 const { construirWorkbookMatrizPrecificacao, normalizarSlug } = require("./relatoriosService");
+const { expandirItemEmReferencias, consolidarReferenciasEmLinha } = require("../meli/meliItemIdentityService");
 const {
   diagEnriquecerItem,
   diagChunk,
@@ -64,13 +65,38 @@ function casarCustoDoItem(itemId, mapas) {
   return baseRow;
 }
 
+function itemLegadoPrecisaAtributosCompletos(body) {
+  const variations = Array.isArray(body?.variations) ? body.variations : [];
+  return variations.length > 0 && variations.some((variation) => !Array.isArray(variation?.attributes));
+}
+
+async function completarVariacoesLegadas({ clienteId, mlUserId, body }) {
+  if (!itemLegadoPrecisaAtributosCompletos(body)) return body;
+
+  try {
+    const itemId = encodeURIComponent(String(body.id));
+    const completo = await mlFetch(
+      clienteId,
+      `/items/${itemId}?include_attributes=all`,
+      { mlUserId, bigIntFields: ["family_id"] }
+    );
+    if (completo.ok && completo.data?.id) return completo.data;
+  } catch (_) {
+    // O multiget ainda permite gerar as linhas com fallback/sem SKU.
+  }
+
+  return body;
+}
+
 // Busca TODOS os anúncios ativos do cliente via scroll (mesmo padrão do
-// diagnóstico completo) e devolve as linhas já enriquecidas pelo pipeline
-// somente-leitura padrão (preço, promoção, comissão, frete + custo da base,
-// quando houver).
+// diagnóstico completo) e devolve as linhas já enriquecidas e seus contadores.
+// O pipeline somente-leitura padrão (preço, promoção, comissão, frete + custo
+// da base, quando houver) continua sendo executado uma vez por MLB.
 async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto }) {
   const limitar = diagPLimit(DIAG_ENRICH_CONCURRENCY);
   const linhas = [];
+  const mlbsAtivos = new Set();
+  const mlbsLegadosMultivariantes = new Set();
   let scrollId = null;
 
   while (true) {
@@ -91,11 +117,19 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
 
     const ids = Array.isArray(scan.data?.results) ? scan.data.results : [];
     if (!ids.length) break;
+    ids.forEach((id) => {
+      const itemId = String(id || "").trim();
+      if (itemId) mlbsAtivos.add(itemId);
+    });
 
     for (const lote of diagChunk(ids, DIAG_BATCH_DETAILS)) {
       let detalhes = [];
       try {
-        const batch = await mlFetch(clienteId, `/items?ids=${lote.join(",")}`, { mlUserId });
+        const batch = await mlFetch(
+          clienteId,
+          `/items?ids=${lote.join(",")}`,
+          { mlUserId, bigIntFields: ["family_id"] }
+        );
         if (batch.ok && Array.isArray(batch.data)) detalhes = batch.data;
       } catch (_) {
         detalhes = [];
@@ -103,11 +137,37 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
 
       const tarefas = detalhes.map((entry) =>
         limitar(async () => {
-          const body = entry?.body || null;
+          if (entry?.code !== 200) return null;
+          let body = entry?.body || null;
           if (!body?.id) return null;
           try {
+            body = await completarVariacoesLegadas({ clienteId, mlUserId, body });
+            const referencias = expandirItemEmReferencias(body);
+            if (!referencias.length) return null;
+            const consolidado = consolidarReferenciasEmLinha(referencias);
             const baseRow = casarCustoDoItem(body.id, mapasCusto);
-            return await diagEnriquecerItem({ clienteId, body, baseRow, margemAlvo: null, mlUserId });
+            const financeiro = await diagEnriquecerItem({
+              clienteId,
+              body,
+              baseRow,
+              margemAlvo: null,
+              mlUserId,
+            });
+            return {
+              legadoMultivariante: Array.isArray(body.variations) && body.variations.length > 0,
+              // 1 MLB = 1 linha: as N referências por variation viram uma só
+              // linha com SKUs consolidados; o financeiro continua único por MLB.
+              linhas: [{
+                ...financeiro,
+                item_id: consolidado.item_id,
+                user_product_id: consolidado.user_product_id,
+                family_id: consolidado.family_id,
+                skus: consolidado.skus,
+                variacoes: consolidado.variacoes,
+                titulo: body.title || null,
+                chave_base: String(body.id),
+              }],
+            };
           } catch (_) {
             return null;
           }
@@ -115,14 +175,24 @@ async function buscarTodosItensEnriquecidos({ clienteId, mlUserId, mapasCusto })
       );
 
       const resultado = (await Promise.all(tarefas)).filter(Boolean);
-      linhas.push(...resultado);
+      resultado.forEach((item) => {
+        if (item.legadoMultivariante && item.linhas[0]?.item_id) {
+          mlbsLegadosMultivariantes.add(item.linhas[0].item_id);
+        }
+        linhas.push(...item.linhas);
+      });
     }
 
     if (!scan.data?.scroll_id) break;
     scrollId = scan.data.scroll_id;
   }
 
-  return linhas;
+  return {
+    linhas,
+    totalMlbsAtivos: mlbsAtivos.size,
+    mlbsLegadosMultivariantes: mlbsLegadosMultivariantes.size,
+    linhasSemSku: linhas.filter((linha) => !linha.skus).length,
+  };
 }
 
 async function gerarPlanilhaPrecificacaoSemBase({ clienteSlugRaw, clienteContaId }) {
@@ -140,7 +210,12 @@ async function gerarPlanilhaPrecificacaoSemBase({ clienteSlugRaw, clienteContaId
 
   const mapasCusto = await carregarMapaCustosBase(baseStatus === "ok" ? base.id : null);
 
-  const itens = await buscarTodosItensEnriquecidos({ clienteId: cliente.id, mlUserId, mapasCusto });
+  const {
+    linhas: itens,
+    totalMlbsAtivos,
+    mlbsLegadosMultivariantes,
+    linhasSemSku,
+  } = await buscarTodosItensEnriquecidos({ clienteId: cliente.id, mlUserId, mapasCusto });
 
   const baseLabel =
     baseStatus === "ok"
@@ -153,7 +228,10 @@ async function gerarPlanilhaPrecificacaoSemBase({ clienteSlugRaw, clienteContaId
     ["Planilha de precificação", ""],
     ["Cliente", cliente.nome || cliente.slug || "—"],
     ["Base de custos", baseLabel],
-    ["Total de anúncios ativos", itens.length],
+    ["Total de MLBs ativos", totalMlbsAtivos],
+    ["Total de linhas de precificação", itens.length],
+    ["MLBs legados multivariantes", mlbsLegadosMultivariantes],
+    ["Linhas sem SKU", linhasSemSku],
     ["Gerado em", new Date().toLocaleString("pt-BR")],
     ["Instrução", "Preencha custo, imposto e frete nas colunas em branco. As fórmulas recalculam automaticamente."],
   ];

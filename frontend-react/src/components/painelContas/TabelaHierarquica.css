@@ -1,0 +1,432 @@
+/* frontend-react/src/components/painelContas/TabelaHierarquica.css
+   Tabela hierárquica Cliente → Mês → Semana. Sobre `.vf-table` +
+   `.vf-table--compact` (Fundação Global V2, Portal/css/vf-components-v2.css)
+   — aqui só o que é específico deste padrão. Só var(--vf-*), nenhum token
+   novo, nenhum hex solto. Prefixo .vf-ph- (Painel de Contas — Hierarquia). */
+
+.vf-ph-wrap {
+  /* A tabela é o elemento dominante da tela: ocupa o que sobrar da altura da
+     janela e rola DENTRO do próprio wrapper, com o cabeçalho preso no topo.
+     Sem uma altura máxima o thead sticky não tem contra o que grudar e a
+     página inteira rola, levando o cabeçalho embora.
+     O valor real é MEDIDO no componente (ver "Altura do corpo rolável" em
+     TabelaHierarquica.jsx); este aqui é só o que vale antes do primeiro
+     layout — uma conta fixa em CSS não enxerga o rodapé e o cortava. */
+  max-height: 70vh;
+  overscroll-behavior: contain;
+}
+
+/* Larguras das duas colunas-âncora. São fixas porque o deslocamento sticky da
+   segunda coluna depende da largura exata da primeira — uma coluna elástica
+   deixaria a segunda flutuando sobre a primeira no scroll horizontal. */
+.vf-ph-table {
+  --vf-ph-col-cliente: 300px;
+  --vf-ph-col-contexto: 150px;
+  width: 100%;
+}
+
+.vf-ph-table .vf-ph-th-ancora,
+.vf-ph-table .vf-ph-ancora {
+  width: var(--vf-ph-col-cliente);
+  min-width: var(--vf-ph-col-cliente);
+  max-width: var(--vf-ph-col-cliente);
+}
+
+.vf-ph-table .vf-ph-th-contexto,
+.vf-ph-table .vf-ph-contexto {
+  width: var(--vf-ph-col-contexto);
+  min-width: var(--vf-ph-col-contexto);
+  max-width: var(--vf-ph-col-contexto);
+}
+
+/* Coluna de folga: recolhe toda a largura excedente num lugar só. Sem ela, a
+   tabela em `width: 100%` reparte a sobra entre as colunas numéricas e, num
+   monitor de 1920px, cada métrica fica com ~170px — o número acaba longe do
+   próprio cabeçalho e a linha vira uma ponte longa demais para o olho. */
+.vf-ph-table .vf-ph-folga {
+  width: 100%;
+  padding: 0;
+  border-left: none;
+}
+
+/* A folga sozinha resolvia demais: em 1920px ela virava ~630px de vazio à
+   direita e a tabela passava a parecer inacabada. A sobra é repartida antes
+   de chegar nela — a coluna do cliente cresce (nome longo é o conteúdo que
+   mais se beneficia de espaço) e as métricas ganham um piso maior. O que
+   resta na folga vira uma canaleta normal de tabela administrativa. */
+.vf-ph-th-metrica,
+.vf-ph-table td.num {
+  min-width: 96px;
+}
+
+@media (min-width: 1500px) {
+  .vf-ph-table {
+    --vf-ph-col-cliente: 380px;
+  }
+
+  .vf-ph-th-metrica,
+  .vf-ph-table td.num {
+    min-width: 118px;
+  }
+}
+
+@media (min-width: 1800px) {
+  .vf-ph-table {
+    --vf-ph-col-cliente: 440px;
+  }
+
+  .vf-ph-th-metrica,
+  .vf-ph-table td.num {
+    min-width: 132px;
+  }
+}
+
+/* ── Cabeçalho em dois níveis ───────────────────────────────────────────
+   A primeira linha agrupa (FINANCEIRO / ADS / OPERAÇÃO) e a segunda nomeia a
+   métrica. As duas ficam presas no topo: `--vf-ph-head-2` é a altura REAL da
+   primeira linha, medida no componente — densidade, zoom e fonte do sistema
+   mudam esse valor, e um número fixo aqui descolaria as duas no scroll. */
+.vf-ph-table thead .vf-ph-thead-metricas th {
+  top: var(--vf-ph-head-2, 26px);
+}
+
+.vf-ph-th-grupo {
+  text-align: center !important;
+  border-left: 1px solid var(--vf-border);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-th-grupo__nota {
+  margin-left: var(--vf-sp-1);
+  padding: 0 4px;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-neutral-bg);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-2xs);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: help;
+}
+
+.vf-ph-th-metrica {
+  border-left: 1px solid transparent;
+}
+
+/* A borda do grupo continua descendo pela primeira métrica de cada grupo,
+   para o olho não perder onde um bloco termina e o outro começa. */
+.vf-ph-thead-metricas th:nth-child(1),
+.vf-ph-thead-metricas th.is-primeira-do-grupo {
+  border-left-color: var(--vf-border);
+}
+
+.vf-ph-th-grupo.is-indisponivel,
+.vf-ph-th-metrica.is-indisponivel {
+  color: var(--vf-text-disabled);
+}
+
+.vf-ph-th-metrica abbr {
+  text-decoration: none;
+  border-bottom: 1px dotted currentColor;
+  cursor: help;
+}
+
+.vf-ph-table .vf-table__sort {
+  cursor: pointer;
+}
+
+/* O cabeçalho ordenável da coluna numérica encosta à direita, junto do
+   número que ele descreve. */
+.vf-ph-th-metrica .vf-table__sort {
+  flex-direction: row;
+}
+
+/* ── Colunas-âncora fixas no scroll horizontal ──────────────────────────
+   Com onze colunas o scroll lateral é rotina; perder de vista de QUEM é a
+   linha torna a tabela ilegível. As duas primeiras colunas ficam. A sombra
+   marca a divisão só quando há conteúdo rolando sob elas. */
+.vf-ph-table .vf-ph-contexto,
+.vf-ph-table .vf-ph-th-contexto {
+  left: var(--vf-ph-col-cliente);
+  box-shadow: inset -1px 0 0 var(--vf-border), 6px 0 6px -6px rgb(0 0 0 / 0.12);
+}
+
+/* A camada das âncoras do cabeçalho já vem certa da Fundação V2
+   (`.vf-table thead th.vf-table__sticky-cell` = z-index 3, contra 2 do thead
+   comum e 1 da coluna fixa do corpo). Havia aqui um `z-index: 4` que nunca
+   chegava a valer — a regra da V2 é mais específica — e que só daria a
+   impressão de estar sustentando um empilhamento que na verdade é dela.
+   Conferido com scroll real nos dois eixos: 1 / 2 / 3, nessa ordem. */
+
+/* ── Âncora: a célula inteira é o alvo de clique ────────────────────────
+   Mirar um chevron de 10px era o pedágio de toda interação da tela. O botão
+   preenche a célula; o padding vem do próprio botão para que a área clicável
+   inclua a borda da célula, não só o texto. */
+.vf-ph-ancora {
+  padding: 0 !important;
+  font-weight: inherit;
+  text-align: left;
+}
+
+.vf-ph-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vf-sp-2);
+  width: 100%;
+  padding: var(--vf-sp-2) var(--vf-table-cell-px);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-ph-toggle:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: -2px;
+}
+
+.vf-ph-ancora__conteudo {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.vf-ph-chevron {
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 12px;
+  margin-top: 1px;
+  transition: transform var(--vf-duration-fast) var(--vf-ease);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-ph-chevron[data-aberto="true"] {
+  transform: rotate(90deg);
+  color: var(--vf-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vf-ph-chevron { transition: none; }
+}
+
+/* ── Nível 1 — CLIENTE: resumo executivo ────────────────────────────────
+   Linha mais alta, nome em peso forte, metadados de período e sincronização
+   logo abaixo do nome. Recolhida, esta linha sozinha já responde "como este
+   cliente está" — é o que o §18 pede e o que a versão anterior não tinha,
+   porque período e sincronização só apareciam um nível abaixo. */
+.vf-ph-row--cliente > th,
+.vf-ph-row--cliente > td {
+  --vf-table-cell-py: var(--vf-sp-2);
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-ph-row--cliente .vf-ph-toggle {
+  padding-top: var(--vf-sp-2);
+  padding-bottom: var(--vf-sp-2);
+}
+
+.vf-ph-cliente {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.vf-ph-cliente__nome {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-ph-cliente__meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+}
+
+.vf-ph-row--cliente:hover .vf-ph-cliente__nome {
+  color: var(--vf-primary-strong);
+}
+
+.vf-ph-row--cliente.is-sem-dado .vf-ph-cliente__nome {
+  color: var(--vf-text-secondary);
+}
+
+/* ── Nível 2 — MÊS: análise histórica ───────────────────────────────────
+   Recuo evidente, fundo distinto e altura menor que a do cliente. */
+.vf-ph-row--mes > th,
+.vf-ph-row--mes > td {
+  --vf-table-cell-py: 3px;
+  background: var(--vf-surface-2);
+}
+
+/* `--vf-surface-2` sozinho quase não separava o nível 2 do nível 1 na tela
+   real (visto na primeira passada). A régua vertical marca o bloco aberto
+   sem escurecer a tabela inteira — e continua funcionando em alto contraste,
+   porque é geometria, não tonalidade. */
+.vf-ph-row--mes > .vf-ph-ancora,
+.vf-ph-row--semana > .vf-ph-ancora,
+.vf-ph-row--estado > td,
+.vf-ph-row--esqueleto > td {
+  box-shadow: inset 3px 0 0 var(--vf-primary-border), inset -1px 0 0 var(--vf-border);
+}
+
+.vf-ph-row--mes .vf-ph-toggle {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.vf-ph-row--mes:hover > th,
+.vf-ph-row--mes:hover > td {
+  background: var(--vf-surface-hover);
+}
+
+.vf-ph-mes__rotulo {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+}
+
+/* ── Nível 3 — SEMANA: drilldown ────────────────────────────────────────
+   O mais compacto e o mais discreto dos três; o intervalo de dias fica
+   explícito ao lado do rótulo (S3 não significa nada sozinho). */
+.vf-ph-row--semana > th,
+.vf-ph-row--semana > td {
+  --vf-table-cell-py: 2px;
+  background: var(--vf-surface);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-row--semana:hover > th,
+.vf-ph-row--semana:hover > td {
+  background: var(--vf-surface-hover);
+}
+
+.vf-ph-semana__rotulo {
+  font-weight: var(--vf-fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-semana__dias {
+  margin-left: var(--vf-sp-2);
+  color: var(--vf-text-muted);
+}
+
+/* Recuo por nível — o degrau é grande o bastante para ser lido de relance,
+   não um detalhe de 4px. */
+.vf-ph-indent {
+  display: inline-block;
+  padding-left: var(--vf-sp-5);
+}
+
+.vf-ph-indent--3 {
+  padding-left: calc(var(--vf-sp-5) * 2);
+}
+
+/* A semana não tem botão, então o padding horizontal que o botão daria
+   precisa vir da própria célula. */
+.vf-ph-row--semana > .vf-ph-ancora {
+  padding: 2px var(--vf-table-cell-px) !important;
+}
+
+/* ── Contexto (Squad / sincronização do mês) ────────────────────────────── */
+.vf-ph-contexto {
+  vertical-align: middle;
+}
+
+.vf-ph-meta {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-meta.is-vazio {
+  color: var(--vf-text-disabled);
+  font-style: italic;
+}
+
+/* ── Valor + variação ───────────────────────────────────────────────────── */
+.vf-ph-valor {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-delta {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--vf-fs-2xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.vf-ph-delta__simbolo {
+  margin-right: 2px;
+}
+
+/* A cor é a TERCEIRA pista, nunca a primeira: símbolo (▲▼=) e sinal no
+   número já dizem tudo sem ela. E o tom vem da semântica da métrica, não do
+   sinal — ACOS subindo é vermelho, Ads subindo é neutro (ver colunas.js). */
+.vf-ph-delta.is-positivo { color: var(--vf-success-strong); }
+.vf-ph-delta.is-negativo { color: var(--vf-danger-strong); }
+.vf-ph-delta.is-neutro   { color: var(--vf-text-muted); }
+.vf-ph-delta.is-ausente  { color: var(--vf-text-disabled); }
+
+/* Coluna sem fonte de dado: presente, legível, e visivelmente sem peso. */
+.vf-ph-indisponivel .vf-ph-valor {
+  color: var(--vf-text-disabled);
+}
+
+/* ── Linhas de estado (erro/vazio/esqueleto) ────────────────────────────── */
+.vf-ph-row--estado > td {
+  padding-left: calc(var(--vf-table-cell-px) + var(--vf-sp-5));
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-2xs);
+  background: var(--vf-surface-2);
+}
+
+.vf-ph-row--estado.is-erro > td {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  color: var(--vf-danger-strong);
+  background: var(--vf-danger-bg);
+}
+
+.vf-ph-erro__texto {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Esqueleto de expansão: ocupa a altura que as linhas reais vão ocupar, para
+   a tabela não saltar quando a resposta chega. */
+.vf-ph-row--esqueleto > td {
+  padding: 3px calc(var(--vf-table-cell-px) + var(--vf-sp-5));
+  background: var(--vf-surface-2);
+}
+
+.vf-ph-row--esqueleto .vf-skeleton--row {
+  height: 14px;
+  max-width: 420px;
+}
+
+/* ── Atualização de filtro sem piscar (§22) ─────────────────────────────
+   Os dados anteriores continuam na tela enquanto a resposta nova não chega,
+   mas atenuados e inertes — nunca dá para clicar num dado velho achando que
+   é o novo. A toolbar diz "Atualizando…" ao mesmo tempo, então o estado é
+   afirmado em texto, não só em opacidade. */
+.vf-ph-wrap.is-atualizando {
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity var(--vf-duration) var(--vf-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vf-ph-wrap.is-atualizando { transition: none; }
+}

@@ -400,7 +400,30 @@
 @media print {
   html, body { width: 210mm !important; margin: 0 !important; padding: 0 !important; background: #fff !important; }
   body.vf-printing-diagnostic-report { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  body.vf-printing-diagnostic-report > *:not(#diag-print-block) { display: none !important; }
+  body.vf-printing-diagnostic-report,
+  body.vf-printing-diagnostic-report #diag-print-block,
+  body.vf-printing-diagnostic-report .vf-diagnostic-report {
+    animation: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+  /* vf-shell.js (buildShellDom) move TODO o conteúdo original de <body> —
+     incluindo #diag-print-block — para dentro de
+     .vf-shell > .vf-shell__body > .vf-shell__main (Portal/vf-shell.js:359-398).
+     #diag-print-block deixa de ser filho direto de <body>: a regra de baixo
+     não pode mais escondê-lo escondendo essa cadeia de ancestrais junto. */
+  body.vf-printing-diagnostic-report > *:not(#diag-print-block):not(.vf-shell) { display: none !important; }
+  body.vf-printing-diagnostic-report .vf-shell,
+  body.vf-printing-diagnostic-report .vf-shell__body,
+  body.vf-printing-diagnostic-report .vf-shell__main {
+    display: block !important;
+  }
+  body.vf-printing-diagnostic-report .vf-shell__sidebar,
+  body.vf-printing-diagnostic-report .vf-shell__contextbar,
+  body.vf-printing-diagnostic-report .vf-shell__state {
+    display: none !important;
+  }
+  body.vf-printing-diagnostic-report .vf-shell__main > *:not(#diag-print-block) { display: none !important; }
   body.vf-printing-diagnostic-report #diag-print-block { display: block !important; position: static !important; width: 210mm !important; margin: 0 !important; padding: 0 !important; }
   body.vf-printing-diagnostic-report .vf-diagnostic-report { display: block !important; width: 210mm; }
   body.vf-printing-diagnostic-report .vf-sidebar,

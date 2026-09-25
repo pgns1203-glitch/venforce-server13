@@ -1,0 +1,229 @@
+/* frontend-react/src/styles/painel-contas.css
+   Painel de Contas — console administrativo da carteira. Só o layout desta
+   tela; componentes compartilhados (.vf-page-header, .vf-toolbar, .vf-input,
+   .vf-select, .vf-menu, .vf-banner, .vf-empty, .vf-skeleton, .vf-tag…) vêm
+   da Fundação Global V2. Só var(--vf-*), nenhum token novo. */
+
+/* ── Enquadramento ──────────────────────────────────────────────────────
+   Cabeçalho e barra de controle têm altura FIXA; só a tabela cresce. O
+   respiro vertical padrão da Fundação (--vf-section-gap = 24px em compacto)
+   é generoso demais para uma tela cujo trabalho inteiro acontece na tabela —
+   aqui cada bloco encosta no seguinte, sem virar aperto. */
+.vf-ph-shell {
+  padding: var(--vf-sp-5) var(--vf-sp-5) var(--vf-sp-6);
+}
+
+.vf-ph-page {
+  gap: var(--vf-sp-3);
+}
+
+.vf-ph-header {
+  align-items: baseline;
+}
+
+.vf-ph-header .vf-page-header__description {
+  margin-top: 2px;
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-ph-esqueleto {
+  gap: var(--vf-sp-2);
+}
+
+/* ── Barra de controle ──────────────────────────────────────────────────
+   Duas faixas costuradas numa peça só: controles em cima, contagem embaixo.
+   Antes eram três campos de formulário soltos, com rótulo flutuante em cima
+   de cada um — numa tela administrativa o filtro é instrumento, não
+   formulário a preencher. */
+.vf-ph-barra {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface);
+}
+
+.vf-ph-barra__controles {
+  border: none;
+  border-radius: var(--vf-radius) var(--vf-radius) 0 0;
+  padding-bottom: var(--vf-sp-2);
+}
+
+/* A busca é o controle principal da tela: é por ela que se chega a um cliente
+   numa carteira de dezenas. Ganha a largura que sobra, ao contrário do
+   `flex: 0 0 150px` que a Fundação aplica a `.vf-search` solta na toolbar. */
+.vf-ph-barra .vf-toolbar__filters > .vf-search.vf-ph-busca {
+  flex: 1 1 260px;
+  max-width: 420px;
+  min-width: 180px;
+  height: var(--vf-control-h-sm);
+  font-size: var(--vf-control-fs-sm);
+}
+
+.vf-ph-filtro {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 132px;
+}
+
+.vf-ph-filtro--ano {
+  min-width: 88px;
+}
+
+/* ── Resumo da carteira (§24) ───────────────────────────────────────────
+   Linha de texto, não cards de KPI: dá a sensação administrativa sem roubar
+   altura da tabela. Tudo é DERIVADO do payload já carregado — nenhuma
+   requisição nova, nenhum indicador de saúde inventado. */
+.vf-ph-resumo {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-1) var(--vf-sp-3);
+  margin: 0;
+  padding: var(--vf-sp-2) var(--vf-toolbar-px);
+  border-top: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+  border-radius: 0 0 var(--vf-radius) var(--vf-radius);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-resumo > span + span::before {
+  content: "·";
+  margin-right: var(--vf-sp-3);
+  color: var(--vf-border-strong);
+}
+
+.vf-ph-resumo__forte {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-resumo__alerta {
+  color: var(--vf-warning-strong);
+}
+
+.vf-ph-resumo__atualizando {
+  color: var(--vf-primary-strong);
+  font-weight: var(--vf-fw-medium);
+}
+
+/* ── Menu de colunas ────────────────────────────────────────────────────── */
+.vf-ph-colunas {
+  position: relative;
+}
+
+.vf-ph-colunas__gatilho {
+  gap: var(--vf-sp-1);
+}
+
+.vf-ph-colunas__contador {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-ph-colunas__seta {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-colunas__menu {
+  position: absolute;
+  top: calc(100% + var(--vf-sp-1));
+  right: 0;
+  min-width: 220px;
+}
+
+.vf-ph-colunas__fieldset {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.vf-ph-colunas__item {
+  cursor: pointer;
+}
+
+.vf-ph-colunas__item input {
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--vf-primary);
+}
+
+.vf-ph-colunas__item input:disabled {
+  cursor: not-allowed;
+}
+
+.vf-ph-colunas__item:focus-within {
+  background: var(--vf-surface-hover);
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: -2px;
+}
+
+.vf-ph-colunas__rotulo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.vf-ph-colunas__nota {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
+  white-space: normal;
+}
+
+/* ── Rodapé de contexto ─────────────────────────────────────────────────
+   Onde o detalhe técnico ajuda: fora do cabeçalho, perto do dado que ele
+   explica, e discreto o bastante para não competir com a tabela. */
+.vf-ph-rodape {
+  margin: 0;
+  max-width: 940px;
+  font-size: var(--vf-fs-2xs);
+  line-height: var(--vf-lh-snug);
+  color: var(--vf-text-muted);
+}
+
+/* ── Telas menores ──────────────────────────────────────────────────────
+   Desktop-first de propósito: onze colunas numéricas não viram cards no
+   celular sem deixar de ser comparáveis. O que se preserva é a coluna-âncora
+   e o scroll horizontal; o que encolhe é o cromo em volta. */
+@media (max-width: 1100px) {
+  .vf-ph-barra .vf-toolbar__filters > .vf-search.vf-ph-busca {
+    max-width: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .vf-ph-shell {
+    padding: var(--vf-sp-3) var(--vf-sp-3) var(--vf-sp-5);
+  }
+
+  .vf-ph-barra .vf-toolbar__filters {
+    width: 100%;
+  }
+
+  .vf-ph-barra .vf-toolbar__filters > .vf-search.vf-ph-busca {
+    flex: 1 1 100%;
+  }
+
+  .vf-ph-barra__controles {
+    align-items: stretch;
+  }
+
+  .vf-ph-barra .vf-toolbar__actions {
+    justify-content: flex-end;
+    width: 100%;
+  }
+}

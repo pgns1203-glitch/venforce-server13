@@ -85,7 +85,12 @@
                           <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
                         </svg>
                       </button>
-                      <button type="button" class="vf-input-suffix am-ordenacao-dir" id="am-ordenacao-dir" disabled>—</button>
+                      <button type="button" class="vf-input-suffix am-ordenacao-dir" id="am-ordenacao-dir" disabled aria-label="—">
+                        <svg class="am-ordenacao-dir__icone" width="10" height="13" viewBox="0 0 10 13" fill="none" aria-hidden="true">
+                          <path class="am-ordenacao-dir__seta am-ordenacao-dir__seta--asc" d="M5 0L9.33 5H0.67L5 0Z" />
+                          <path class="am-ordenacao-dir__seta am-ordenacao-dir__seta--desc" d="M5 13L0.67 8H9.33L5 13Z" />
+                        </svg>
+                      </button>
                       <div class="am-ordenacao-menu vf-menu" id="am-ordenacao-menu" role="listbox" aria-label="Ordenar por" hidden></div>
                     </div>
                   </div>

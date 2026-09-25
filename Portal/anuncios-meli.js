@@ -1894,8 +1894,14 @@
     el("am-ordenacao-trigger-label").textContent = filtro.label;
 
     var dirBtn = el("am-ordenacao-dir");
-    dirBtn.textContent = rotuloDirecaoOrdenacao(filtro, dir);
+    // Sem texto visível — vira ícone (2 setas, ver CSS). O rótulo continua
+    // existindo, só que como aria-label/title (leitor de tela + tooltip).
+    var rotulo = rotuloDirecaoOrdenacao(filtro, dir);
+    dirBtn.setAttribute("aria-label", rotulo);
+    dirBtn.title = rotulo;
     dirBtn.disabled = filtro.dirType === "none";
+    if (filtro.dirType === "none") dirBtn.removeAttribute("data-dir");
+    else dirBtn.setAttribute("data-dir", dir);
 
     var menu = el("am-ordenacao-menu");
     if (menu) {

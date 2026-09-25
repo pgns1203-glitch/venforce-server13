@@ -467,6 +467,13 @@ async function clicar(cdp, seletor, mensagem) {
   assert.ok(ok, mensagem || `não achei ${seletor} para clicar`);
 }
 
+// Combo de ordenação novo (gatilho + popover + botão de direção) — abre o
+// popover e clica no filtro pedido. base="" seleciona "Padrão".
+async function selecionarOrdenacao(cdp, base) {
+  await clicar(cdp, "#am-ordenacao-trigger", "não achei o gatilho de ordenação");
+  await clicar(cdp, `.am-ordenacao-menu__item[data-base="${base}"]`, `não achei o item de ordenação "${base}" no menu`);
+}
+
 // Seletores da UI nova. O agrupador é uma linha .am-row como qualquer outra;
 // o painel de expansão é o IRMÃO seguinte dela.
 const linhaFam = (id) => `.am-row--grupo[data-familia=${JSON.stringify(id)}]`;
@@ -2953,6 +2960,190 @@ async function run() {
       assert.strictEqual(agrupador.texto, "—", "falha do pré-carregamento tem de virar travessão, nunca ficar presa em 'carregando'");
       assert.ok(/am-metricas7d--indisponivel/.test(agrupador.classe), agrupador.classe);
 
+      performanceHandler = null;
+    });
+
+    /* ── 39l–39s: combo de ordenação (filtro + direção) — UI nova ────────── */
+
+    await check("39l — estado inicial: combo mostra Padrão com a direção desabilitada", async () => {
+      const estado = await cdp.evaluate(`(function(){
+        var dir = document.getElementById('am-ordenacao-dir');
+        return {
+          rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
+          dirTexto: dir.textContent.trim(),
+          dirDesabilitado: dir.disabled,
+          valorSelect: document.getElementById('am-ordenacao').value,
+        }; })()`);
+      assert.strictEqual(estado.rotulo, "Padrão");
+      assert.strictEqual(estado.dirTexto, "—");
+      assert.strictEqual(estado.dirDesabilitado, true);
+      assert.strictEqual(estado.valorSelect, "");
+    });
+
+    await check("39m — escolher 'Margem' no menu aplica a direção padrão dela (maior → menor) no select oculto", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null,
+        margem: { "MLB-SEMUP": { marginPercent: 10 }, "MLB-SEMVAR": { marginPercent: 5 } },
+        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+      });
+      await selecionarOrdenacao(cdp, "margem");
+      await waitForNode(() => chamadasPerformance.length >= 1, "escolher Margem no combo não disparou a ordenação");
+      const estado = await cdp.evaluate(`(function(){
+        var dir = document.getElementById('am-ordenacao-dir');
+        var menu = document.getElementById('am-ordenacao-menu');
+        return {
+          valorSelect: document.getElementById('am-ordenacao').value,
+          rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
+          dirTexto: dir.textContent.trim(),
+          menuFechado: menu.hasAttribute('hidden'),
+        }; })()`);
+      assert.strictEqual(estado.valorSelect, "margem_desc", "direção padrão de Margem é maior → menor (desc)");
+      assert.strictEqual(estado.rotulo, "Margem");
+      assert.strictEqual(estado.dirTexto, "Maior → menor");
+      assert.strictEqual(estado.menuFechado, true, "escolher um filtro tem de fechar o popover");
+      performanceHandler = null;
+    });
+
+    await check("39n — o botão de direção alterna sem trocar de filtro", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null,
+        margem: { "MLB-SEMUP": { marginPercent: 10 }, "MLB-SEMVAR": { marginPercent: 5 } },
+        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+      });
+      await clicar(cdp, "#am-ordenacao-dir", "não achei o botão de direção");
+      await waitForNode(() => chamadasPerformance.length >= 1, "alternar a direção não disparou a ordenação");
+      const estado = await cdp.evaluate(`(function(){
+        return {
+          valorSelect: document.getElementById('am-ordenacao').value,
+          rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
+          dirTexto: document.getElementById('am-ordenacao-dir').textContent.trim(),
+        }; })()`);
+      assert.strictEqual(estado.valorSelect, "margem_asc");
+      assert.strictEqual(estado.rotulo, "Margem", "alternar a direção não pode trocar o filtro");
+      assert.strictEqual(estado.dirTexto, "Menor → maior");
+      performanceHandler = null;
+    });
+
+    await check("39o — trocar de filtro (Margem → Curva ABC) usa a direção padrão dele (A → C), não herda a direção anterior", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null,
+        margem: null, faturamento: null, unidadesVendidas: null,
+        curvaAbc: { porItem: { "MLB-SEMUP": "A", "MLB-SEMVAR": "C" }, porFamilia: {} },
+        margemPorFamilia: null,
+      });
+      await selecionarOrdenacao(cdp, "curvaAbc");
+      await waitForNode(() => chamadasPerformance.length >= 1, "escolher Curva ABC não disparou a ordenação");
+      const estado = await cdp.evaluate(`(function(){
+        return {
+          valorSelect: document.getElementById('am-ordenacao').value,
+          rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
+          dirTexto: document.getElementById('am-ordenacao-dir').textContent.trim(),
+        }; })()`);
+      assert.strictEqual(estado.valorSelect, "curvaAbc_asc", "veio de Margem:asc, mas Curva ABC tem direção padrão própria (A → C)");
+      assert.strictEqual(estado.rotulo, "Curva ABC");
+      assert.strictEqual(estado.dirTexto, "A → C");
+      performanceHandler = null;
+    });
+
+    await check("39p — clicar de novo no filtro já ativo preserva a direção atual (não reseta pra padrão)", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null,
+        margem: null, faturamento: null, unidadesVendidas: null,
+        curvaAbc: { porItem: { "MLB-SEMUP": "A", "MLB-SEMVAR": "C" }, porFamilia: {} },
+        margemPorFamilia: null,
+      });
+      // Curva ABC está em "asc" (A → C) — alterna pra "desc" (C → A) antes de reselecionar.
+      await clicar(cdp, "#am-ordenacao-dir", "não achei o botão de direção");
+      await waitForNode(() => chamadasPerformance.length >= 1, "alternar a direção não disparou a ordenação");
+      assert.strictEqual(
+        await cdp.evaluate(`document.getElementById('am-ordenacao').value`),
+        "curvaAbc_desc"
+      );
+
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      await selecionarOrdenacao(cdp, "curvaAbc");
+      // Mesmo filtro, mesma direção — não é uma mudança de valor, então o
+      // <select> não dispara "change" de novo (nenhuma chamada nova esperada).
+      await sleep(150);
+      const estado = await cdp.evaluate(`(function(){
+        return {
+          valorSelect: document.getElementById('am-ordenacao').value,
+          dirTexto: document.getElementById('am-ordenacao-dir').textContent.trim(),
+        }; })()`);
+      assert.strictEqual(estado.valorSelect, "curvaAbc_desc", "reselecionar o filtro já ativo tem de manter a direção (C → A), não voltar pro padrão (A → C)");
+      assert.strictEqual(estado.dirTexto, "C → A");
+      assert.strictEqual(chamadasPerformance.length, 0, "reselecionar o mesmo filtro/direção não deveria refazer a chamada");
+      performanceHandler = null;
+    });
+
+    await check("39q — escolher 'Padrão' desabilita e apaga a direção", async () => {
+      pedidos.length = 0;
+      await selecionarOrdenacao(cdp, "");
+      await waitFor(cdp, `document.getElementById('am-ordenacao').value === ""`,
+        "escolher Padrão não voltou o select para o valor vazio");
+      const estado = await cdp.evaluate(`(function(){
+        var dir = document.getElementById('am-ordenacao-dir');
+        return {
+          rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
+          dirTexto: dir.textContent.trim(),
+          dirDesabilitado: dir.disabled,
+        }; })()`);
+      assert.strictEqual(estado.rotulo, "Padrão");
+      assert.strictEqual(estado.dirTexto, "—");
+      assert.strictEqual(estado.dirDesabilitado, true);
+    });
+
+    await check("39r — clicar fora do combo fecha o popover sem aplicar nada", async () => {
+      await clicar(cdp, "#am-ordenacao-trigger", "não achei o gatilho de ordenação");
+      const abertoAntes = await cdp.evaluate(`!document.getElementById('am-ordenacao-menu').hasAttribute('hidden')`);
+      assert.strictEqual(abertoAntes, true, "clicar no gatilho deveria abrir o popover");
+      const valorAntes = await cdp.evaluate(`document.getElementById('am-ordenacao').value`);
+      await clicar(cdp, "#am-catalogo-titulo", "não achei um alvo fora do combo para clicar");
+      const estado = await cdp.evaluate(`(function(){
+        return {
+          fechado: document.getElementById('am-ordenacao-menu').hasAttribute('hidden'),
+          valorSelect: document.getElementById('am-ordenacao').value,
+        }; })()`);
+      assert.strictEqual(estado.fechado, true, "clicar fora tem de fechar o popover");
+      assert.strictEqual(estado.valorSelect, valorAntes, "clicar fora não pode mudar a ordenação");
+    });
+
+    await check("39s — uma nova busca reseta a ordenação: o combo volta a mostrar 'Padrão'", async () => {
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      performanceHandler = () => ({
+        ok: true, metricas7d: {}, margemIndisponivel: null,
+        margem: { "MLB-SEMUP": { marginPercent: 10 }, "MLB-SEMVAR": { marginPercent: 5 } },
+        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+      });
+      await selecionarOrdenacao(cdp, "margem");
+      await waitForNode(() => chamadasPerformance.length >= 1, "escolher Margem não disparou a ordenação");
+      assert.strictEqual(await cdp.evaluate(`document.getElementById('am-ordenacao').value`), "margem_desc");
+
+      await cdp.evaluate(`(function(){
+        var busca = document.getElementById('am-busca');
+        busca.value = 'variação';
+        busca.dispatchEvent(new Event('input'));
+      })()`);
+      await waitFor(cdp, `document.getElementById('am-ordenacao').value === ""`,
+        "uma nova busca tem de zerar a ordenação (comportamento antigo, ver carregarAnuncios)");
+      const estado = await cdp.evaluate(`(function(){
+        var dir = document.getElementById('am-ordenacao-dir');
+        return {
+          rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
+          dirDesabilitado: dir.disabled,
+        }; })()`);
+      assert.strictEqual(estado.rotulo, "Padrão", "o combo tem de ressincronizar visualmente com o select depois do reset");
+      assert.strictEqual(estado.dirDesabilitado, true);
       performanceHandler = null;
     });
 

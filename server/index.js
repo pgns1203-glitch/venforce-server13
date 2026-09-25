@@ -115,7 +115,10 @@ const { ensureFechamentoIncidenteTables } = require("./repositories/fechamentoIn
 const fechamentoIncidentStorageService = require("./services/fechamentoFinanceiro/incidente/fechamentoIncidentStorageService");
 const { ensureSquadsTables, squadsAtivosDeClientes } = require("./services/squads/squadsRepository");
 const squadService = require("./services/squads/squadService");
-const { ensureEntregasClienteSchema } = require("./services/schema/schemaEnsure");
+const {
+  ensureEntregasClienteSchema,
+  ensureAnunciosMargemProjetadaSnapshotSchema,
+} = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
   MARKETPLACES_SUPORTADOS,
@@ -668,6 +671,11 @@ CREATE TABLE IF NOT EXISTS callbacks (
     // roda no boot, porque `/setup` é desabilitado em produção. Ver
     // server/services/schema/schemaEnsure.js.
     await ensureEntregasClienteSchema(pool);
+
+    // `anuncios_margem_projetada_snapshot` (FASE 1 do plano de margem
+    // projetada global) — mesmo motivo: `/setup` e o boot nunca podem
+    // divergir sobre qual DDL aplicam.
+    await ensureAnunciosMargemProjetadaSnapshotSchema(pool);
 
     await pool.query(`
   ALTER TABLE bases
@@ -2005,6 +2013,16 @@ const server = app.listen(PORT, () => {
     .catch((err) => {
       console.error("[schema] erro ao garantir schema de entregas_cliente / readiness no boot:", err.message);
     });
+
+  // FASE 1 do plano de ordenação global por margem PROJETADA (Anúncios ML) —
+  // ver docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_GLOBAL_PLANO_TECNICO.md.
+  // Só cria a fundação de persistência (tabela vazia, sem consumidor ainda) —
+  // registrado aqui para não repetir o erro histórico de `entregas_cliente`
+  // (migration existindo só em documentação/`/setup`, nunca aplicada em
+  // produção).
+  ensureAnunciosMargemProjetadaSnapshotSchema().catch((err) => {
+    console.error("[schema] erro ao garantir schema de anuncios_margem_projetada_snapshot no boot:", err.message);
+  });
 
   // /setup é desabilitado em produção — as colunas novas de `custos`
   // (produto_nome, variacao_nome, updated_at) são garantidas aqui.

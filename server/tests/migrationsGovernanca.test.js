@@ -13,7 +13,12 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
-const { MIGRATIONS_INVENTARIO, MIGRATIONS_AUTO, migrationsDir } = require("../services/schema/schemaEnsure");
+const {
+  MIGRATIONS_INVENTARIO,
+  MIGRATIONS_AUTO,
+  migrationsDir,
+  ensureAnunciosMargemProjetadaSnapshotSchema,
+} = require("../services/schema/schemaEnsure");
 const { migrationFiles: SQUADS_MIGRATION_FILES } = (() => {
   // squadsRepository não exporta a lista; lemos o fonte para provar o conteúdo.
   const src = fs.readFileSync(path.join(__dirname, "..", "services", "squads", "squadsRepository.js"), "utf8");
@@ -30,6 +35,7 @@ function ok(label, cond) {
 
 const D4 = "20260828_entregas_cliente_unicidade_p26.sql";
 const D1 = "20260828_entregas_cliente_conta_p26.sql";
+const AMPS = "20260925_anuncios_margem_projetada_snapshot.sql";
 
 async function run() {
   // ---------- inventário íntegro ----------
@@ -60,6 +66,16 @@ async function run() {
   ok("D1 está marcada auto:true", d1.auto === true);
   ok("D1 aponta o runner schemaEnsure.ensureEntregasClienteSchema", /ensureEntregasClienteSchema/.test(d1.runner));
   ok("D1 está em MIGRATIONS_AUTO", MIGRATIONS_AUTO.includes(D1));
+
+  // ---------- AMPS (anuncios_margem_projetada_snapshot): automática de verdade ----------
+  const amps = MIGRATIONS_INVENTARIO.find((m) => m.arquivo === AMPS);
+  ok("AMPS (anuncios_margem_projetada_snapshot) está no inventário", !!amps);
+  ok("AMPS está marcada auto:true", amps.auto === true);
+  ok("AMPS aponta o runner schemaEnsure.ensureAnunciosMargemProjetadaSnapshotSchema",
+    /ensureAnunciosMargemProjetadaSnapshotSchema/.test(amps.runner));
+  ok("AMPS está em MIGRATIONS_AUTO", MIGRATIONS_AUTO.includes(AMPS));
+  ok("o runner de AMPS existe de fato e é uma função (não só um nome no inventário)",
+    typeof ensureAnunciosMargemProjetadaSnapshotSchema === "function");
 
   // ---------- runner de Squads inalterado ----------
   ok("runner de Squads aplica squads_foundation", SQUADS_MIGRATION_FILES.includes("20260827_squads_foundation.sql"));

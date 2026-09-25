@@ -2569,17 +2569,25 @@ async function run() {
       performanceHandler = null;
     });
 
-    await check("39c — ordenar por unidades vendidas (família JÁ EXPANDIDA): soma os filhos do cache, sem buscar o detalhe de novo", async () => {
-      await clicar(cdp, linhaFam("FAM-1"));
-      await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")} .am-mlb')`, "FAM-1 não expandiu para o teste de cache");
-
+    await check("39c — unidades_desc (GLOBAL): família usa o valor consolidado que o backend manda, sem buscar detalhe nem reordenar localmente", async () => {
+      // Unidades vendidas 7d virou critério GLOBAL (decisão "globalizar
+      // Unidades vendidas 7d / manter Margem local" — buscarVendas7dPorItens
+      // já busca a conta inteira, então globalizar não custa chamada extra).
+      // SUBSTITUI o teste antigo desta suíte, que exercitava agregação
+      // CLIENT-SIDE via GET /performance (aplicarOrdenacaoPerformance nunca
+      // mais é chamada pra este critério) — mesmo raciocínio da substituição
+      // de 39d-h abaixo para %Faturamento/Curva ABC.
       pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null, margem: {},
-        // FAM-1 (MLB-A1..A4, ver DETALHE_CONTA_42): 2+3+1+1 = 7 unidades.
-        unidadesVendidas: { periodoDias: 7, porItem: { "MLB-A1": 2, "MLB-A2": 3, "MLB-A3": 1, "MLB-A4": 1, "MLB-SEMUP": 20, "MLB-SEMVAR": 0 } },
-        faturamento: null, curvaAbc: null, margemPorFamilia: null,
+      chamadasFamilias.length = 0;
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "item", item_id: "MLB-SEMUP", key: "item:MLB-SEMUP", titulo: "Item A", status: "active", unidadesVendidas7d: 20, cover: { thumbnail: null } },
+          { tipo: "familia", family_id: "FAM-1", key: "fam:FAM-1", family_name: "Camiseta Dry Fit Masculina", titulo: "Camiseta Dry Fit Masculina", unidadesVendidas7d: 7, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-SEMVAR", key: "item:MLB-SEMVAR", titulo: "Item B", status: "active", unidadesVendidas7d: 0, cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 3, totalPaginas: 1 },
       });
 
       await cdp.evaluate(`(function(){
@@ -2587,20 +2595,23 @@ async function run() {
         s.value = 'unidades_desc';
         s.dispatchEvent(new Event('change'));
       })()`);
-      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
-      await waitFor(cdp, `(function(){
-        var r = document.querySelector('.am-listagem > .am-row');
-        return r && r.getAttribute('data-item') === 'MLB-SEMUP';
-      })()`, "MLB-SEMUP (20 unidades) deveria vir antes da família (soma 7)");
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"]')`, "a lista (unidades_desc) não carregou");
 
       const ordem = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-listagem > .am-row')).map(function(r){
         return r.getAttribute('data-item') || r.getAttribute('data-familia'); })`);
-      assert.strictEqual(ordem[0], "MLB-SEMUP");
-      assert.strictEqual(ordem[1], "FAM-1", "FAM-1 (soma 2+3+1+1=7) fica acima de FAM-2 (sem cache, vai para o fim) e de MLB-SEMVAR (0)");
+      assert.deepStrictEqual(ordem, ["MLB-SEMUP", "FAM-1", "MLB-SEMVAR"],
+        "o front confia na ordem que o backend mandou (20, 7, 0) — nenhum reshuffle local");
 
       assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
-        "a família já estava expandida/em cache — ordenar por unidades reaproveita, nunca busca o detalhe de novo");
-      performanceHandler = null;
+        "o valor consolidado da família já vem pronto na resposta — nunca busca o detalhe pra ordenar");
+      ordenarPorGlobalHandler = null;
+      // Devolve ao Padrão antes dos testes seguintes (mesmo cuidado de 39f/39g/39p).
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.getElementById('am-ordenacao').value === ""`, "reset pós-teste não voltou pra Padrão");
     });
 
     /* ── 39d-h: ordenação GLOBAL por %Faturamento/Curva ABC (ordenarPor no
@@ -3187,7 +3198,7 @@ async function run() {
           menuFechado: menu.hasAttribute('hidden'),
         }; })()`);
       assert.strictEqual(estado.valorSelect, "margem_desc", "direção padrão de Margem é maior → menor (desc)");
-      assert.strictEqual(estado.rotulo, "Margem (nesta página)");
+      assert.strictEqual(estado.rotulo, "Margem", "o dropdown não pode revelar detalhe de implementação (page-local vs. global)");
       assert.strictEqual(estado.dirRotulo, "Maior → menor");
       assert.strictEqual(estado.dirAtributo, "desc", "data-dir='desc' é o que acende a seta de baixo no ícone");
       assert.strictEqual(estado.menuFechado, true, "escolher um filtro tem de fechar o popover");
@@ -3213,7 +3224,7 @@ async function run() {
           dirAtributo: dir.getAttribute('data-dir'),
         }; })()`);
       assert.strictEqual(estado.valorSelect, "margem_asc");
-      assert.strictEqual(estado.rotulo, "Margem (nesta página)", "alternar a direção não pode trocar o filtro");
+      assert.strictEqual(estado.rotulo, "Margem", "alternar a direção não pode trocar o filtro");
       assert.strictEqual(estado.dirRotulo, "Menor → maior");
       assert.strictEqual(estado.dirAtributo, "asc", "a seta de cima tem de acender depois do toggle");
       performanceHandler = null;
@@ -3350,6 +3361,56 @@ async function run() {
       assert.strictEqual(estado.rotulo, "Padrão", "o combo tem de ressincronizar visualmente com o select depois do reset");
       assert.strictEqual(estado.dirDesabilitado, true);
       performanceHandler = null;
+    });
+
+    await check("39t — trocar de página com unidades_desc ativo: ordenarPor viaja para a página 2 e o dropdown continua mostrando o critério (Unidades vendidas 7d virou GLOBAL)", async () => {
+      chamadasFamilias.length = 0;
+      ordenarPorGlobalHandler = (qs) => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: qs.get("page") === "2"
+          ? [
+              { tipo: "item", item_id: "MLB-UN-PAG2-A", key: "item:MLB-UN-PAG2-A", titulo: "Item pág2 A", status: "active", unidadesVendidas7d: 5, cover: { thumbnail: null } },
+              { tipo: "item", item_id: "MLB-UN-PAG2-B", key: "item:MLB-UN-PAG2-B", titulo: "Item pág2 B", status: "active", unidadesVendidas7d: 2, cover: { thumbnail: null } },
+            ]
+          : [
+              { tipo: "item", item_id: "MLB-UN-PAG1-A", key: "item:MLB-UN-PAG1-A", titulo: "Item pág1 A", status: "active", unidadesVendidas7d: 40, cover: { thumbnail: null } },
+              { tipo: "item", item_id: "MLB-UN-PAG1-B", key: "item:MLB-UN-PAG1-B", titulo: "Item pág1 B", status: "active", unidadesVendidas7d: 20, cover: { thumbnail: null } },
+            ],
+        paginacao: { page: Number(qs.get("page") || 1), limit: 2, total: 4, totalPaginas: 2 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'unidades_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-UN-PAG1-A"]')`, "página 1 (unidades_desc) não carregou");
+
+      await clicar(cdp, '#am-pag-next');
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-UN-PAG2-A"]')`, "página 2 (unidades_desc) não carregou");
+
+      assert.ok(chamadasFamilias.some((c) => c.page === "2" && c.ordenarPor === "unidades_desc"),
+        "a chamada da página 2 tem de levar ordenarPor=unidades_desc — Unidades vendidas 7d agora é GLOBAL, mesmo bug que já foi corrigido pra %Faturamento/Curva ABC");
+      const valorDropdown = await cdp.evaluate(`document.getElementById('am-ordenacao').value`);
+      assert.strictEqual(valorDropdown, "unidades_desc", "trocar de página não pode resetar o dropdown pra um critério global");
+
+      const ordemPag2 = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-listagem > .am-row')).map(function(r){
+        return r.getAttribute('data-item'); })`);
+      assert.deepStrictEqual(ordemPag2, ["MLB-UN-PAG2-A", "MLB-UN-PAG2-B"],
+        "página 2 renderiza EXATAMENTE a ordem que o backend mandou (40/20 -> 5/2, nunca reiniciando)");
+      ordenarPorGlobalHandler = null;
+      console.log("  ✓ 39t");
+    });
+
+    await check("39u — nenhum rótulo do combo revela o detalhe local/global (nem 'nesta página', nem qualquer variação)", async () => {
+      const rotulos = await cdp.evaluate(`Array.from(document.querySelectorAll('#am-ordenacao-menu .am-ordenacao-menu__item')).map(function(b){
+        return b.textContent.trim(); })`);
+      assert.ok(rotulos.length >= 5, `esperava pelo menos 5 itens no menu, achei ${rotulos.length}`);
+      rotulos.forEach((r) => {
+        assert.ok(!/nesta página/i.test(r), `rótulo "${r}" não pode revelar detalhe de implementação (nesta página)`);
+      });
+      assert.deepStrictEqual(rotulos, ["Padrão", "Margem", "% Faturamento", "Unidades vendidas 7d", "Curva ABC"]);
     });
 
     /* ── 40: nenhum erro de JS na página (sempre a última) ──────────────── */

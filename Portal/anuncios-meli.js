@@ -1965,9 +1965,9 @@
 
   var ORDENACAO_FILTROS = [
     { base: "", label: "Padrão", dirType: "none" },
-    { base: "margem", label: "Margem (nesta página)", dirType: "num", dirPadrao: "desc" },
+    { base: "margem", label: "Margem", dirType: "num", dirPadrao: "desc" },
     { base: "faturamento", label: "% Faturamento", dirType: "num", dirPadrao: "desc" },
-    { base: "unidades", label: "Unidades vendidas 7d (nesta página)", dirType: "num", dirPadrao: "desc" },
+    { base: "unidades", label: "Unidades vendidas 7d", dirType: "num", dirPadrao: "desc" },
     { base: "curvaAbc", label: "Curva ABC", dirType: "abc", dirPadrao: "asc" },
   ];
 
@@ -2105,19 +2105,21 @@
 
   // Critérios GLOBAIS (ordenam o catálogo inteiro no backend via
   // ordenarPor= na query de /anuncios-meli/familias — ver carregarAnuncios).
-  // Margem/Unidades NÃO entram aqui: continuam sendo ordenação LOCAL da
-  // página atual, via ORDENACOES_PERFORMANCE/aplicarOrdenacaoPerformance.
-  var ORDENACOES_GLOBAIS = { faturamento_asc: 1, faturamento_desc: 1, curvaAbc_asc: 1, curvaAbc_desc: 1 };
+  // Unidades vendidas 7d entrou aqui porque buscarVendas7dPorItens já busca
+  // a CONTA INTEIRA no período (globalizar não custa chamada extra — ver
+  // ORDENACOES_GLOBAIS no controller). Margem NÃO entra: continua ordenação
+  // LOCAL da página atual, via ORDENACOES_PERFORMANCE/aplicarOrdenacaoPerformance
+  // (passaria pelo enrichBatch do Motor — custo/rate-limit não aceito pro
+  // catálogo inteiro).
+  var ORDENACOES_GLOBAIS = {
+    faturamento_asc: 1, faturamento_desc: 1,
+    curvaAbc_asc: 1, curvaAbc_desc: 1,
+    unidades_asc: 1, unidades_desc: 1,
+  };
 
   var ORDENACOES_PERFORMANCE = {
     margem_asc: { campo: "margem", direcao: "asc" },
     margem_desc: { campo: "margem", direcao: "desc" },
-    faturamento_asc: { campo: "faturamento", direcao: "asc" },
-    faturamento_desc: { campo: "faturamento", direcao: "desc" },
-    unidades_asc: { campo: "unidades", direcao: "asc" },
-    unidades_desc: { campo: "unidades", direcao: "desc" },
-    curvaAbc_asc: { campo: "curvaAbc", direcao: "asc" },
-    curvaAbc_desc: { campo: "curvaAbc", direcao: "desc" },
   };
 
   // Soma unidadesVendidas.porItem dos filhos já conhecidos da família — null

@@ -39,6 +39,11 @@
     anuncios: [],
     paginacao: { page: 1, limit: 24, total: 0, totalPaginas: 1 },
     filtros: { q: "", status: "", filtro: "" },
+    // Critério GLOBAL ativo (faturamento_*/curvaAbc_*) — sobrevive à troca de
+    // página, ao contrário da ordenação LOCAL (AM_ordemOriginalAnuncios, que
+    // reseta a cada carregarAnuncios porque só faz sentido pra página que
+    // acabou de sair de cena). null = nenhum critério global ativo.
+    ordenarPor: null,
     // Card de KPI atualmente selecionado como filtro rápido (V3 — os cards
     // do resumo substituem os antigos <select> de Status/Qualidade). Guarda
     // só a CHAVE do KPI; o valor real que vai para AM.filtros.status/filtro
@@ -94,22 +99,27 @@
       metricasEmVoo: {},
       margemEmVoo: {},
       composicaoEmVoo: {},
-      // % faturamento — coluna SEMPRE visível, então tem pré-carregamento
-      // automático (ver carregarPerformance/carregarFaturamentoDasFamiliasVisiveis,
-      // chamados no fim de renderCatalogo): item avulso é bundlado na MESMA
-      // chamada de metricas7d/margem; família consolidada leva uma chamada
-      // própria com `familias=`, dedupe por faturamentoFamiliaEmVoo. Curva
-      // ABC continua SÓ sob demanda (tag, não coluna permanente) — só chega
-      // ao cache quando o operador ordena por ela (ver
-      // aplicarOrdenacaoPerformance). Em qualquer um dos quatro caches, uma
-      // chave ausente é "nunca pedido" (célula mostra "—"/sem tag); uma
-      // chave presente com valor null é "pedido, mas o backend não tem o
-      // dado para esta linha".
+      // % faturamento e Curva ABC — coluna/tag SEMPRE visíveis, então têm
+      // pré-carregamento automático (ver
+      // carregarPerformance/carregarFaturamentoDasFamiliasVisiveis, chamados
+      // no fim de renderCatalogo): item avulso é bundlado na MESMA chamada
+      // de metricas7d/margem (os dois vêm do MESMO porMlb, zero custo
+      // extra); família consolidada leva uma chamada própria com
+      // `familias=`, dedupe por faturamentoFamiliaEmVoo. MLB filho de uma
+      // família ainda fechada só ganha Curva ABC ao expandir (mesma regra
+      // de custo já aplicada à margem — nunca gasta Motor para filho
+      // oculto, ver garantirPerformanceDaFamilia). Em qualquer um dos
+      // caches, uma chave ausente é "nunca pedido" (célula mostra
+      // "—"/sem tag); uma chave presente com valor null é "pedido, mas o
+      // backend não tem o dado para esta linha".
       faturamentoCache: {},
+      faturamentoValorCache: {},
       faturamentoEmVoo: {},
       faturamentoPorFamiliaCache: {},
+      faturamentoValorPorFamiliaCache: {},
       faturamentoFamiliaEmVoo: {},
       curvaAbcCache: {},
+      curvaAbcEmVoo: {},
       curvaAbcPorFamiliaCache: {},
       // Variações do modelo LEGADO do ML (item_id -> variations[], ver
       // rowAnuncioHtml/badge "N variações no ML") — mesmo padrão de cache e
@@ -202,14 +212,19 @@
   // ver auditoria "padronizar card MLB dentro de agrupadores".
   // Curva ABC (classificação por Pareto de receita, últ. 30d) como TAG, não
   // coluna — mesmo componente vf-tag das demais (Catálogo/Full/Sem SKU/...),
-  // nunca um padrão novo de badge (ver auditoria "Ajuste visual — métricas
-  // de performance"). Só existe quando o operador já ordenou por Curva ABC
-  // nesta sessão (ver aplicarOrdenacaoPerformance/AM.state.curvaAbcCache) —
-  // sem isso, `classe` é undefined e a função devolve "" (nenhuma tag).
+  // nunca um padrão novo de badge. Renderizada em SPAN PRÓPRIA (data-abc-*),
+  // separada de badgesAnuncioHtml: os badges estáticos (Catálogo/Full/...)
+  // nunca mudam depois do primeiro paint, mas a Curva ABC chega assíncrona
+  // (ver carregarPerformance/carregarFaturamentoDasFamiliasVisiveis) e
+  // precisa de um alvo próprio pra repintar sem reconstruir a linha inteira
+  // (ver pintarPerformanceEmCelulas). Sempre visível quando existe dado —
+  // não depende mais de o operador ter ordenado por ela nesta sessão (ver
+  // auditoria "Curva ABC sempre visível + faturamento absoluto"). `classe`
+  // ausente (cache ainda não pedido/resolvido) devolve "" (nenhuma tag).
   var CURVA_ABC_TAG_CLASSE = { A: "is-success", B: "is-warning", C: "is-danger" };
   function curvaAbcBadgeHtml(classe) {
     if (!classe) return "";
-    return '<span class="vf-tag ' + (CURVA_ABC_TAG_CLASSE[classe] || "is-neutral") + '">ABC ' + escapeHtml(classe) + "</span>";
+    return '<span class="vf-tag ' + (CURVA_ABC_TAG_CLASSE[classe] || "is-neutral") + '">' + escapeHtml(classe) + "</span>";
   }
 
   function badgesAnuncioHtml(a) {
@@ -219,9 +234,6 @@
     if ((a.pictures_count || 0) < 3) badges += '<span class="vf-tag is-warning">' + (a.pictures_count || 0) + "/3 fotos</span>";
     if (!a.sku) badges += '<span class="vf-tag is-danger">Sem SKU</span>';
     if (a.revisado) badges += '<span class="vf-tag is-success">Revisado</span>';
-    // Classe do próprio MLB (nunca a da família mesmo quando exibido dentro
-    // de um agrupador — a consolidada é só na linha-mãe, ver rowGrupoHtml).
-    badges += curvaAbcBadgeHtml(AM.state.curvaAbcCache[a.item_id]);
     return badges;
   }
 
@@ -527,7 +539,36 @@
     });
     if (el("am-ordenacao")) {
       el("am-ordenacao").addEventListener("change", function (e) {
-        aplicarOrdenacaoPerformance(e.target.value);
+        var criterio = e.target.value;
+        if (!criterio) {
+          // Se o critério anterior era GLOBAL (faturamento/Curva ABC), voltar
+          // a "Padrão" precisa reconsultar o backend (a ordem padrão nunca
+          // existiu em memória — AM_ordemOriginalAnuncios fica null durante
+          // ordenação global, de propósito, ver carregarAnuncios) — nunca
+          // restaurar um snapshot local (que ou é a própria ordem global, ou
+          // é uma ordem local antiga já obsoleta). Se era LOCAL (Margem/
+          // Unidades) ou nenhum, o restore em memória de sempre continua.
+          var eraGlobal = !!AM.ordenarPor;
+          AM.ordenarPor = null;
+          if (eraGlobal) {
+            AM.paginacao.page = 1;
+            carregarAnuncios();
+            return;
+          }
+          aplicarOrdenacaoPerformance(null);
+          return;
+        }
+        if (ORDENACOES_GLOBAIS[criterio]) {
+          AM.ordenarPor = criterio;
+          AM.paginacao.page = 1;
+          carregarAnuncios();
+          return;
+        }
+        // Margem/Unidades: ordenação LOCAL de sempre, nunca junto com uma
+        // ordenação global ativa — as duas são mutuamente exclusivas no
+        // mesmo <select>.
+        AM.ordenarPor = null;
+        aplicarOrdenacaoPerformance(criterio);
       });
     }
     if (el("am-ordenacao-trigger")) {
@@ -657,6 +698,7 @@
     if (AM.filtros.status) qs += "&status=" + encodeURIComponent(AM.filtros.status);
     if (AM.filtros.filtro) qs += "&filtro=" + encodeURIComponent(AM.filtros.filtro);
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+    if (AM.ordenarPor) qs += "&ordenarPor=" + encodeURIComponent(AM.ordenarPor);
 
     api("/anuncios-meli/familias?" + qs).then(function (r) {
       if (meuToken !== AM.catalogoToken) return; // troca de conta/cliente (ou novo filtro) já disparou outra busca
@@ -668,13 +710,49 @@
       }
       AM.anuncios = r.data.anuncios || [];
       AM.paginacao = r.data.paginacao || AM.paginacao;
-      // Nova busca no backend já vem na ordem padrão — a ordem "original"
-      // capturada por aplicarOrdenacaoPerformance para a página anterior não
-      // serve mais, e qualquer ordenação ativa deixa de fazer sentido até o
-      // operador escolher de novo.
-      AM_ordemOriginalAnuncios = null;
-      if (el("am-ordenacao")) el("am-ordenacao").value = "";
-      sincronizarComboOrdenacao();
+
+      // Ordenação GLOBAL: o backend já manda o valor que decidiu a posição
+      // (faturamentoPercentual/curvaAbc) — escreve nos MESMOS caches que as
+      // células da lista já leem (faturamentoCelulaHtml/badgesAnuncioHtml),
+      // sem uma 2ª chamada a /performance (ver auditoria "ordenação global
+      // limitada à página atual").
+      if (AM.ordenarPor) {
+        // Qualquer snapshot local (AM_ordemOriginalAnuncios) que ainda
+        // existisse só poderia descrever a página ANTERIOR — nunca esta que
+        // acabou de chegar. Zera aqui também (não só no branch "sem
+        // ordenarPor" abaixo): sem isso, uma sequência local -> global ->
+        // "Padrão" restauraria o snapshot congelado do momento da ordenação
+        // LOCAL, mostrando itens que não batem com a paginação global atual.
+        AM_ordemOriginalAnuncios = null;
+        AM.anuncios.forEach(function (linha) {
+          if (linha.faturamentoPercentual === undefined && linha.curvaAbc === undefined) return;
+          var cacheItem = linha.tipo === "familia" ? AM.state.faturamentoPorFamiliaCache : AM.state.faturamentoCache;
+          var cacheValor = linha.tipo === "familia" ? AM.state.faturamentoValorPorFamiliaCache : AM.state.faturamentoValorCache;
+          var cacheAbc = linha.tipo === "familia" ? AM.state.curvaAbcPorFamiliaCache : AM.state.curvaAbcCache;
+          var chave = linha.tipo === "familia" ? linha.family_id : linha.item_id;
+          if (linha.faturamentoPercentual !== undefined) cacheItem[chave] = linha.faturamentoPercentual;
+          if (linha.faturamentoValor !== undefined) cacheValor[chave] = linha.faturamentoValor;
+          if (linha.curvaAbc !== undefined) cacheAbc[chave] = linha.curvaAbc;
+        });
+        var aviso = el("am-ordenacao-aviso");
+        if (aviso) {
+          if (r.data.ordenacaoAplicada === false && r.data.ordenacaoIndisponivel) {
+            aviso.textContent = r.data.ordenacaoIndisponivel.mensagem || "Não foi possível ordenar globalmente.";
+            aviso.hidden = false;
+          } else {
+            aviso.hidden = true;
+          }
+        }
+      } else {
+        // Nova busca no backend já vem na ordem padrão — a ordem "original"
+        // capturada por aplicarOrdenacaoPerformance para a página anterior não
+        // serve mais, e qualquer ordenação LOCAL ativa deixa de fazer sentido
+        // até o operador escolher de novo.
+        AM_ordemOriginalAnuncios = null;
+        if (el("am-ordenacao")) el("am-ordenacao").value = "";
+        var avisoLimpo = el("am-ordenacao-aviso");
+        if (avisoLimpo) avisoLimpo.hidden = true;
+      }
       renderCatalogo();
     });
   }
@@ -734,7 +812,7 @@
     // porque exige `familias=` no Motor, não os filhos individuais.
     carregarPerformance(
       AM.anuncios.filter(function (l) { return l.tipo === "item"; }).map(function (l) { return l.item_id; }),
-      { incluirFaturamento: true }
+      { incluirFaturamento: true, incluirCurvaAbc: true }
     );
     carregarMetricasDosGruposVisiveis();
     carregarFaturamentoDasFamiliasVisiveis();
@@ -862,10 +940,11 @@
     var rotulo = f.family_name || "(família sem nome)";
     // Curva ABC CONSOLIDADA da família (Pareto sobre a receita somada dos
     // filhos, últ. 30d) — mesma tag/componente do card individual, nunca o
-    // rótulo de um filho isolado. "" quando o operador ainda não ordenou por
-    // Curva ABC nesta sessão (ver AM.state.curvaAbcPorFamiliaCache).
-    var abcBadge = curvaAbcBadgeHtml(AM.state.curvaAbcPorFamiliaCache[f.family_id]);
-    var badgesHtml = abcBadge ? '<div class="am-row__badges">' + abcBadge + "</div>" : "";
+    // rótulo de um filho isolado. Wrapper SEMPRE renderizado (mesmo sem
+    // classe ainda resolvida) para repintarLinhaDoGrupo/carregarFaturamento-
+    // DasFamiliasVisiveis terem um alvo estável (ver AM.state.curvaAbcPorFamiliaCache).
+    var badgesHtml = '<div class="am-row__badges"><span data-abc-familia="' + escapeAttr(f.family_id) + '">' +
+      curvaAbcBadgeHtml(AM.state.curvaAbcPorFamiliaCache[f.family_id]) + "</span></div>";
 
     return '<div class="am-row am-row--grupo" data-familia="' + escapeAttr(f.family_id) + '" ' +
       'tabindex="0" role="button" aria-expanded="false" aria-controls="' + painelId + '" ' +
@@ -953,15 +1032,16 @@
       (up.itens || []).forEach(function (item) { ids.push(item.item_id); });
     });
     if (!ids.length) return Promise.resolve();
-    // % faturamento INDIVIDUAL do filho segue a MESMA porta que a margem: só
-    // quando a família é EXPANDIDA (incluirMargem=true) — bundlado de graça
-    // no mesmo lote, já que o Motor de Margem já vai rodar para a margem
-    // (ver auditoria "Anúncios ML — participação no faturamento em
-    // famílias"). Filho ainda oculto (pré-carregamento em background,
+    // % faturamento e Curva ABC INDIVIDUAIS do filho seguem a MESMA porta que
+    // a margem: só quando a família é EXPANDIDA (incluirMargem=true) —
+    // bundlados de graça no mesmo lote, já que o Motor de Margem já vai
+    // rodar para a margem (ver auditoria "Anúncios ML — participação no
+    // faturamento em famílias" e "Curva ABC sempre visível + faturamento
+    // absoluto"). Filho ainda oculto (pré-carregamento em background,
     // incluirMargem=false) continua sem gastar o Motor. A consolidada da
-    // família (porFamilia) não passa por aqui — vem de
+    // família (porFamilia/curvaAbc.porFamilia) não passa por aqui — vem de
     // carregarFaturamentoDasFamiliasVisiveis, sem relação com isto.
-    return carregarPerformance(ids, { incluirMargem: incluirMargem, incluirFaturamento: incluirMargem });
+    return carregarPerformance(ids, { incluirMargem: incluirMargem, incluirFaturamento: incluirMargem, incluirCurvaAbc: incluirMargem });
   }
 
   // Depois do primeiro paint (nunca atrasa o render — mesmo padrão da busca
@@ -1379,8 +1459,15 @@
     // Mesmos badges do card legado (Catálogo/Full/fotos/Sem SKU/Revisado) —
     // é o MESMO anúncio, só que dentro de uma família; escondê-los aqui
     // seria o card de família mostrar menos informação que o avulso.
+    // Wrapper SEMPRE renderizado (mesmo sem nenhum badge estático) porque a
+    // Curva ABC do filho chega depois (só ao expandir, ver
+    // garantirPerformanceDaFamilia) e precisa de um alvo já existente no DOM
+    // para pintarPerformanceEmCelulas encontrar — um span vazio não aparece
+    // visualmente, então não muda nada quando não há badge nenhum.
     var badges = badgesAnuncioHtml(a);
-    var badgesHtml = badges ? '<span class="am-mlb__badges">' + badges + "</span>" : "";
+    var badgesHtml = '<span class="am-mlb__badges">' + badges +
+      '<span data-abc-item="' + escapeAttr(a.item_id) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcCache[a.item_id]) + "</span>" +
+    "</span>";
 
     return '<div class="am-mlb' + (op.irma ? " am-mlb--irma" : "") +
       '" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
@@ -1589,7 +1676,7 @@
   // no cache quando o operador ordena por ele (ver
   // aplicarOrdenacaoPerformance/AM.state.faturamentoCache), e a célula fica
   // "—" fixo até lá — nunca um spinner para um dado que ninguém pediu ainda.
-  function faturamentoConteudoHtml(v) {
+  function faturamentoConteudoHtml(v, valorAbsoluto) {
     if (v === null || v === undefined) return '<span class="am-faturamento__vazio">—</span>';
     // Backend manda FRAÇÃO 0–1 (receita/receitaTotalPeriodo — ver
     // montarFaturamento no controller), não um número já em escala 0–100
@@ -1597,26 +1684,36 @@
     // compartilhada com esses dois campos e espera 0–100 — não mexer nela
     // (quebraria margem/conversão); o × 100 é só deste call site (ver
     // auditoria "Validação participação faturamento").
+    // 2ª linha: valor ABSOLUTO (R$) que o backend já manda pronto
+    // (faturamento.porItemValor/porFamiliaValor) — nunca derivado do
+    // percentual aqui (perderia centavos por causa do arredondamento a 4
+    // casas do percentual, ver auditoria "Curva ABC sempre visível +
+    // faturamento absoluto").
     return '<span class="am-faturamento__valor">' + formatarPercentualCompacto(v * 100) + "</span>" +
-      '<span class="am-faturamento__legenda">do faturamento</span>';
+      '<span class="am-faturamento__legenda">' + formatMoeda(valorAbsoluto) + "</span>";
   }
 
   function faturamentoCelulaHtml(itemId) {
     var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, itemId)
       ? AM.state.faturamentoCache[itemId] : null;
+    var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorCache, itemId)
+      ? AM.state.faturamentoValorCache[itemId] : null;
     return '<span class="am-faturamento" data-faturamento-item="' + escapeAttr(itemId) + '">' +
-      faturamentoConteudoHtml(v) + "</span>";
+      faturamentoConteudoHtml(v, valor) + "</span>";
   }
 
   // Percentual CONSOLIDADO da família — soma dos filhos sobre o faturamento
   // total do período, calculada pelo backend (dados.faturamento.porFamilia).
-  // Nunca o percentual de um filho isolado.
+  // Nunca o percentual de um filho isolado. Valor absoluto segue a mesma
+  // regra (dados.faturamento.porFamiliaValor).
   function faturamentoAgregadoCelulaHtml(familyId) {
     var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId)
       ? AM.state.faturamentoPorFamiliaCache[familyId] : null;
+    var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorPorFamiliaCache, familyId)
+      ? AM.state.faturamentoValorPorFamiliaCache[familyId] : null;
     return '<span class="am-faturamento" data-faturamento-familia="' + escapeAttr(familyId) +
       '" title="Percentual consolidado da família sobre o faturamento total do período">' +
-      faturamentoConteudoHtml(v) + "</span>";
+      faturamentoConteudoHtml(v, valor) + "</span>";
   }
 
   // Busca metricas7d, margem e/ou composição da margem para os item_id
@@ -1651,12 +1748,19 @@
     // ver carregarMetricasDosGruposVisiveis) continua sem gastar o Motor de
     // Margem para uma família ainda fechada.
     var incluirFaturamento = !!(opcoes && opcoes.incluirFaturamento);
+    // Curva ABC segue a MESMA regra de opt-in do faturamento: quem pede liga
+    // a flag. O carregamento automático da lista (renderCatalogo) e a
+    // expansão de família (garantirPerformanceDaFamilia) ligam os dois
+    // juntos, sempre — ambos vêm do MESMO porMlb que a margem já buscou,
+    // então pedir a Curva ABC junto não gasta uma chamada extra ao Motor.
+    var incluirCurvaAbc = !!(opcoes && opcoes.incluirCurvaAbc);
 
     var vistos = {};
     var pendentesMetricas = [];
     var pendentesMargem = [];
     var pendentesComposicao = [];
     var pendentesFaturamento = [];
+    var pendentesCurvaAbc = [];
     (itemIds || []).forEach(function (id) {
       if (!id || vistos[id]) return;
       vistos[id] = true;
@@ -1666,14 +1770,17 @@
       if (incluirComposicao && (!cache || !cache.temComposicao) && !AM.state.composicaoEmVoo[id]) pendentesComposicao.push(id);
       if (incluirFaturamento && !Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id) &&
           !AM.state.faturamentoEmVoo[id]) pendentesFaturamento.push(id);
+      if (incluirCurvaAbc && !Object.prototype.hasOwnProperty.call(AM.state.curvaAbcCache, id) &&
+          !AM.state.curvaAbcEmVoo[id]) pendentesCurvaAbc.push(id);
     });
-    if (!pendentesMetricas.length && !pendentesMargem.length && !pendentesComposicao.length && !pendentesFaturamento.length) {
+    if (!pendentesMetricas.length && !pendentesMargem.length && !pendentesComposicao.length &&
+        !pendentesFaturamento.length && !pendentesCurvaAbc.length) {
       return Promise.resolve();
     }
 
     var idsUniao = [];
     var vistosUniao = {};
-    pendentesMetricas.concat(pendentesMargem, pendentesComposicao, pendentesFaturamento).forEach(function (id) {
+    pendentesMetricas.concat(pendentesMargem, pendentesComposicao, pendentesFaturamento, pendentesCurvaAbc).forEach(function (id) {
       if (vistosUniao[id]) return;
       vistosUniao[id] = true;
       idsUniao.push(id);
@@ -1687,13 +1794,16 @@
     pendentesComposicao.forEach(function (id) { pendentesComposicaoSet[id] = true; AM.state.composicaoEmVoo[id] = true; });
     var pendentesFaturamentoSet = {};
     pendentesFaturamento.forEach(function (id) { pendentesFaturamentoSet[id] = true; AM.state.faturamentoEmVoo[id] = true; });
+    var pendentesCurvaAbcSet = {};
+    pendentesCurvaAbc.forEach(function (id) { pendentesCurvaAbcSet[id] = true; AM.state.curvaAbcEmVoo[id] = true; });
 
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
       "&itemIds=" + encodeURIComponent(idsUniao.join(",")) +
       "&incluirMetricas=" + (pendentesMetricas.length ? "1" : "0") +
       "&incluirMargem=" + (pendentesMargem.length || pendentesComposicao.length ? "1" : "0") +
       "&incluirComposicao=" + (pendentesComposicao.length ? "1" : "0") +
-      "&incluirFaturamento=" + (pendentesFaturamento.length ? "1" : "0");
+      "&incluirFaturamento=" + (pendentesFaturamento.length ? "1" : "0") +
+      "&incluirCurvaAbc=" + (pendentesCurvaAbc.length ? "1" : "0");
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
     // Rebate ML da promoção ATIVA (ver garantirComposicaoDoItem) — só entra
     // na querystring quando o item alvo faz parte deste próprio pedido
@@ -1709,6 +1819,7 @@
       pendentesMargem.forEach(function (id) { delete AM.state.margemEmVoo[id]; });
       pendentesComposicao.forEach(function (id) { delete AM.state.composicaoEmVoo[id]; });
       pendentesFaturamento.forEach(function (id) { delete AM.state.faturamentoEmVoo[id]; });
+      pendentesCurvaAbc.forEach(function (id) { delete AM.state.curvaAbcEmVoo[id]; });
 
       var dados = r.data;
       if (dados && dados.ok) {
@@ -1740,8 +1851,16 @@
         });
         if (pendentesFaturamento.length) {
           var porItem = (dados.faturamento && dados.faturamento.porItem) || {};
+          var porItemValor = (dados.faturamento && dados.faturamento.porItemValor) || {};
           pendentesFaturamento.forEach(function (id) {
             AM.state.faturamentoCache[id] = porItem[id] != null ? porItem[id] : null;
+            AM.state.faturamentoValorCache[id] = porItemValor[id] != null ? porItemValor[id] : null;
+          });
+        }
+        if (pendentesCurvaAbc.length) {
+          var porItemAbc = (dados.curvaAbc && dados.curvaAbc.porItem) || {};
+          pendentesCurvaAbc.forEach(function (id) {
+            AM.state.curvaAbcCache[id] = porItemAbc[id] || null;
           });
         }
       }
@@ -1753,20 +1872,26 @@
     });
   }
 
-  // Faturamento CONSOLIDADO das famílias visíveis na página — chamada
-  // própria (não passa por carregarPerformance, que é por item_id): o
-  // backend resolve os filhos pela family_id e soma a receita deles
-  // (ver meliAnunciosController.performance/familias=). Dedupe por
-  // faturamentoFamiliaEmVoo, mesmo padrão dos demais caches — reabrir a
-  // página ou reordenar sem famílias novas não gasta chamada nenhuma.
+  // Faturamento CONSOLIDADO + Curva ABC CONSOLIDADA das famílias visíveis na
+  // página — chamada própria (não passa por carregarPerformance, que é por
+  // item_id): o backend resolve os filhos pela family_id e soma a receita
+  // deles (ver meliAnunciosController.performance/familias=). Os dois vêm
+  // do MESMO porMlb, então pedir Curva ABC junto não gasta uma 2ª chamada ao
+  // Motor (mesma razão de sempre — ver auditoria "Curva ABC sempre visível +
+  // faturamento absoluto"). "Pendente" é OU faltando: uma família que já tem
+  // faturamento mas ainda não tem Curva ABC (ou vice-versa) continua entrando
+  // no lote. Dedupe por faturamentoFamiliaEmVoo, mesmo padrão dos demais
+  // caches — reabrir a página ou reordenar sem famílias novas não gasta
+  // chamada nenhuma.
   function carregarFaturamentoDasFamiliasVisiveis() {
     if (!AM.clienteAtual) return Promise.resolve();
     var pendentes = [];
     AM.anuncios.forEach(function (l) {
       if (l.tipo !== "familia") return;
       var familyId = l.family_id;
-      if (!Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId) &&
-          !AM.state.faturamentoFamiliaEmVoo[familyId]) {
+      var faltaFaturamento = !Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId);
+      var faltaCurvaAbc = !Object.prototype.hasOwnProperty.call(AM.state.curvaAbcPorFamiliaCache, familyId);
+      if ((faltaFaturamento || faltaCurvaAbc) && !AM.state.faturamentoFamiliaEmVoo[familyId]) {
         pendentes.push(familyId);
       }
     });
@@ -1774,7 +1899,7 @@
     pendentes.forEach(function (familyId) { AM.state.faturamentoFamiliaEmVoo[familyId] = true; });
 
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
-      "&itemIds=&incluirMetricas=0&incluirMargem=0&incluirComposicao=0&incluirFaturamento=1" +
+      "&itemIds=&incluirMetricas=0&incluirMargem=0&incluirComposicao=0&incluirFaturamento=1&incluirCurvaAbc=1" +
       "&familias=" + encodeURIComponent(pendentes.join("|"));
     if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
 
@@ -1782,8 +1907,12 @@
       pendentes.forEach(function (familyId) { delete AM.state.faturamentoFamiliaEmVoo[familyId]; });
       var dados = r.data;
       var porFamilia = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamilia) || {};
+      var porFamiliaValor = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamiliaValor) || {};
+      var porFamiliaAbc = (dados && dados.ok && dados.curvaAbc && dados.curvaAbc.porFamilia) || {};
       pendentes.forEach(function (familyId) {
         AM.state.faturamentoPorFamiliaCache[familyId] = porFamilia[familyId] != null ? porFamilia[familyId] : null;
+        AM.state.faturamentoValorPorFamiliaCache[familyId] = porFamiliaValor[familyId] != null ? porFamiliaValor[familyId] : null;
+        AM.state.curvaAbcPorFamiliaCache[familyId] = porFamiliaAbc[familyId] || null;
         repintarLinhaDoGrupo(familyId);
       });
     });
@@ -1966,6 +2095,12 @@
   }
 
   var CURVA_ABC_ORDEM = { A: 0, B: 1, C: 2 };
+
+  // Critérios GLOBAIS (ordenam o catálogo inteiro no backend via
+  // ordenarPor= na query de /anuncios-meli/familias — ver carregarAnuncios).
+  // Margem/Unidades NÃO entram aqui: continuam sendo ordenação LOCAL da
+  // página atual, via ORDENACOES_PERFORMANCE/aplicarOrdenacaoPerformance.
+  var ORDENACOES_GLOBAIS = { faturamento_asc: 1, faturamento_desc: 1, curvaAbc_asc: 1, curvaAbc_desc: 1 };
 
   var ORDENACOES_PERFORMANCE = {
     margem_asc: { campo: "margem", direcao: "asc" },
@@ -2186,7 +2321,16 @@
       var id = cel.getAttribute("data-faturamento-item");
       if (!alvo[id]) return;
       var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id) ? AM.state.faturamentoCache[id] : null;
-      cel.innerHTML = faturamentoConteudoHtml(v);
+      var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorCache, id) ? AM.state.faturamentoValorCache[id] : null;
+      cel.innerHTML = faturamentoConteudoHtml(v, valor);
+    });
+    // Curva ABC — tag própria (data-abc-item), separada dos badges estáticos
+    // (ver curvaAbcBadgeHtml/badgesAnuncioHtml): chega assíncrona, então
+    // precisa deste repaint pontual pra aparecer sem reconstruir a linha.
+    document.querySelectorAll("[data-abc-item]").forEach(function (cel) {
+      var id = cel.getAttribute("data-abc-item");
+      if (!alvo[id]) return;
+      cel.innerHTML = curvaAbcBadgeHtml(AM.state.curvaAbcCache[id]);
     });
     // Preço: atual e cheio têm a MESMA regra de prioridade (ver
     // celulaPrecoHtml) — quando a margem já resolveu (`temMargem`), os dois
@@ -2882,7 +3026,9 @@
         '<h3 class="am-row__titulo">' + escapeHtml(a.titulo || "(sem título)") + "</h3>" +
         '<div class="am-row__ids"><span class="vf-mono">' + escapeHtml(a.item_id) + "</span>" +
           condHtml + skuHtml + variacoesInfoHtml + "</div>" +
-        '<div class="am-row__badges">' + badges + "</div>" +
+        '<div class="am-row__badges">' + badges +
+          '<span data-abc-item="' + escapeAttr(a.item_id) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcCache[a.item_id]) + "</span>" +
+        "</div>" +
       "</div>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
       celulaPrecoHtml(a, "am-row__preco") +

@@ -1,39 +1,60 @@
 // server/jobs/margemProjetadaGlobal.js
 // -----------------------------------------------------------------------------
 // FASE 2 do plano de ordenação global por margem PROJETADA (Anúncios ML) — ver
-// docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_FASE2_JOB_MANUAL.md. Este é o
-// PRIMEIRO experimento: uma CLI manual, SOMENTE dry-run, para medir o custo
-// real de calcular margem projetada com o Motor de Margem existente — antes
-// de decidir qualquer teto de itens, scheduler ou escrita real no snapshot.
+// docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_FASE2_JOB_MANUAL.md. Fase 2B
+// (persistência controlada): a CLI ganha `--persist`, que grava o que o Motor
+// já calculou em `anuncios_margem_projetada_snapshot` (tabela do commit
+// 876749e) via UPSERT. `--dry-run` continua existindo e não escreve nada.
 //
 // O Motor de Margem (server/services/motorMargem/) continua sendo a ÚNICA
 // fonte de verdade da margem. Este arquivo NÃO calcula margem, NÃO chama o
 // Mercado Livre diretamente, NÃO replica fórmula de comissão/frete/custo —
 // só chama `motorMargemService.carregarWorkspace`, lê `item.margin.projected`
-// e `item.quality.status` do contrato que o Motor já devolve, e agrega em
-// métricas. Nenhuma escrita em `anuncios_margem_projetada_snapshot` (ou em
-// qualquer tabela) acontece aqui — nem em dry-run, nem fora dele: esta
-// primeira versão só sabe medir, `--dry-run` é obrigatório.
+// e `item.quality.status` do contrato que o Motor já devolve, agrega em
+// métricas e (só com `--persist`) delega a escrita para
+// `margemProjetadaSnapshotRepository.upsertSnapshot` — a ÚNICA peça deste
+// fluxo que sabe SQL, e mesmo ali só grava o que já veio pronto, não
+// recalcula nada.
 //
 // Fluxo (nenhum salto de camada):
 //   CLI → motorMargemService.carregarWorkspace → prepareWorkspaceContext →
-//   enrichBatch → marginEngine (já existente) → item.margin.projected → métricas
+//   enrichBatch → marginEngine (já existente) → item.margin.projected →
+//   métricas [+ upsertSnapshot só com --persist]
 //
 // Uso:
-//   node server/jobs/margemProjetadaGlobal.js --clienteSlug=<slug> --dry-run [opções]
+//   node server/jobs/margemProjetadaGlobal.js --clienteSlug=<slug> (--dry-run | --persist) [opções]
 //
 // Opções:
 //   --clienteConta=<id>   Restringe a uma conta ML específica (default: resolução automática)
 //   --maxItens=N          Teto de itens varridos nesta rodada (default: 20 — 1 lote do Motor;
 //                          NUNCA assume catálogo inteiro)
 //   --json                Imprime também o resumo completo em JSON
-//   --dry-run             OBRIGATÓRIO nesta versão — nenhuma escrita é suportada ainda
+//   --dry-run             Calcula e imprime, NENHUMA escrita
+//   --persist             Calcula e grava (UPSERT) em anuncios_margem_projetada_snapshot
+//
+// Exatamente um de --dry-run/--persist é obrigatório — nunca os dois, nunca
+// nenhum (comportamento seguro: omitir a intenção é erro de uso, não default
+// silencioso para escrita nem para leitura).
+//
+// LIMITAÇÃO CONHECIDA (registrada, não resolvida aqui — fora do escopo desta
+// etapa): `carregarWorkspace` não expõe a conta AUTO-resolvida quando o job
+// roda sem `--clienteConta` — o snapshot grava `cliente_conta_id` = o que foi
+// PEDIDO (null, se omitido), não necessariamente a conta que o Motor de fato
+// usou internamente. Para clientes single-conta (todo o universo testado até
+// agora) isso não causa ambiguidade — mas não é o mesmo que "a conta
+// realmente usada" ficar registrada.
 // -----------------------------------------------------------------------------
 
 require("dotenv").config();
 
 const motorMargemService = require("../services/motorMargem/motorMargemService");
+const snapshotRepository = require("../services/motorMargem/margemProjetadaSnapshotRepository");
 const { encerrar } = require("./centralVendasJobCli");
+
+// Valor estável de proveniência — nunca o nome de uma fase de desenvolvimento
+// (a fase passa, o dado persistido fica). Job futuro com scheduler usaria um
+// valor diferente (ex.: "scheduler-interno"), nunca este.
+const ORIGEM_JOB = "manual_cli";
 
 // Mesmo teto de lote que o Motor usa hoje (PAGE_LIMIT_MAX, não exportado por
 // motorMargemService) — só para a ESTIMATIVA de chamadas ML abaixo, nunca
@@ -47,7 +68,7 @@ function round2(value) {
 }
 
 function parseArgs(argv) {
-  const args = { clienteSlug: null, clienteConta: null, maxItens: null, dryRun: false, json: false };
+  const args = { clienteSlug: null, clienteConta: null, maxItens: null, dryRun: false, persist: false, json: false };
   for (const raw of argv) {
     const [chave, ...resto] = String(raw).split("=");
     const valor = resto.join("=");
@@ -56,6 +77,7 @@ function parseArgs(argv) {
       case "--clienteConta": args.clienteConta = valor; break;
       case "--maxItens": args.maxItens = valor; break;
       case "--dry-run": args.dryRun = true; break;
+      case "--persist": args.persist = true; break;
       case "--json": args.json = true; break;
       default: throw Object.assign(new Error(`Argumento desconhecido: ${raw}`), { codigo: "ARGUMENTO_DESCONHECIDO" });
     }
@@ -127,8 +149,44 @@ function montarResumoMargemProjetada({
     margemMediaPercent,
     status,
     chamadasMlAproximadas,
+    snapshotsCriados: 0,
+    snapshotsAtualizados: 0,
+    snapshotsFalhos: 0,
     erros: [],
   };
+}
+
+// Grava (UPSERT) o que o Motor já calculou — SEM recalcular nada. Sequencial
+// (mesma decisão já registrada no doc da Fase 2: nenhuma camada de
+// concorrência nova além da que `enrichBatch` já usa internamente). Erro por
+// item é isolado (conta como falha, não derruba o restante do lote) — mesma
+// filosofia que `enrichBatch` já aplica a erros de evidência por item.
+// `deps.upsertSnapshot` é injetável só para teste.
+async function persistirSnapshots({ itens, clienteId, clienteContaId, origemJob }, deps = {}) {
+  const upsertSnapshot = deps.upsertSnapshot || snapshotRepository.upsertSnapshot;
+  let snapshotsCriados = 0;
+  let snapshotsAtualizados = 0;
+  let snapshotsFalhos = 0;
+  const erros = [];
+
+  for (const item of itens) {
+    try {
+      const { inserted } = await upsertSnapshot({
+        clienteId,
+        clienteContaId,
+        itemId: item.identity.itemId,
+        item,
+        origemJob,
+      });
+      if (inserted) snapshotsCriados += 1;
+      else snapshotsAtualizados += 1;
+    } catch (err) {
+      snapshotsFalhos += 1;
+      erros.push(`${item.identity.itemId || "?"}: ${err.message}`);
+    }
+  }
+
+  return { snapshotsCriados, snapshotsAtualizados, snapshotsFalhos, erros };
 }
 
 function formatarRelatorio(r) {
@@ -152,6 +210,12 @@ function formatarRelatorio(r) {
   }
   linhas.push("");
   linhas.push(`[estimativa, não medido] chamadas ao Mercado Livre: ~${r.chamadasMlAproximadas}`);
+  if (!r.dryRun) {
+    linhas.push("");
+    linhas.push(`Snapshots criados: ${r.snapshotsCriados}`);
+    linhas.push(`Snapshots atualizados: ${r.snapshotsAtualizados}`);
+    linhas.push(`Snapshots com falha: ${r.snapshotsFalhos}`);
+  }
   if (r.erros.length) {
     linhas.push("");
     linhas.push(`Erros: ${r.erros.length}`);
@@ -179,10 +243,16 @@ async function main(argv = process.argv.slice(2), deps = {}) {
     if (!args.clienteSlug) {
       throw Object.assign(new Error("--clienteSlug é obrigatório."), { codigo: "CLIENTE_SLUG_OBRIGATORIO" });
     }
-    if (!args.dryRun) {
+    if (!args.dryRun && !args.persist) {
       throw Object.assign(
-        new Error("--dry-run é obrigatório nesta primeira versão do job — nenhuma escrita é suportada ainda."),
-        { codigo: "DRY_RUN_OBRIGATORIO" }
+        new Error("Informe --dry-run ou --persist (exatamente um) — nunca um default silencioso."),
+        { codigo: "MODO_OBRIGATORIO" }
+      );
+    }
+    if (args.dryRun && args.persist) {
+      throw Object.assign(
+        new Error("Informe --dry-run OU --persist, nunca os dois."),
+        { codigo: "MODO_AMBIGUO" }
       );
     }
 
@@ -190,6 +260,14 @@ async function main(argv = process.argv.slice(2), deps = {}) {
     const maxItens = args.maxItens != null ? Number(args.maxItens) : MAX_ITENS_DEFAULT;
 
     const workspace = await executar({ clienteSlug: args.clienteSlug, clienteContaId, maxItens }, deps);
+
+    let persistResumo = { snapshotsCriados: 0, snapshotsAtualizados: 0, snapshotsFalhos: 0, erros: [] };
+    if (args.persist) {
+      persistResumo = await persistirSnapshots(
+        { itens: workspace.itens, clienteId: workspace.cliente.id, clienteContaId, origemJob: ORIGEM_JOB },
+        deps
+      );
+    }
 
     const fimTs = Date.now();
     const resumo = montarResumoMargemProjetada({
@@ -203,13 +281,20 @@ async function main(argv = process.argv.slice(2), deps = {}) {
       fim: new Date(fimTs).toISOString(),
       duracaoMs: fimTs - inicioTs,
     });
+    resumo.snapshotsCriados = persistResumo.snapshotsCriados;
+    resumo.snapshotsAtualizados = persistResumo.snapshotsAtualizados;
+    resumo.snapshotsFalhos = persistResumo.snapshotsFalhos;
+    resumo.erros = [...resumo.erros, ...persistResumo.erros];
 
     console.log(formatarRelatorio(resumo));
     if (args.json) {
       console.log("\n--- JSON ---");
       console.log(JSON.stringify(resumo, null, 2));
     }
-    return 0;
+    // Persistência com falhas parciais é sinal de problema real (linha
+    // específica não gravou) — o job completou, mas quem rodou precisa saber
+    // sem precisar ler o resumo inteiro.
+    return resumo.snapshotsFalhos > 0 ? 1 : 0;
   } catch (err) {
     console.error(`[margem-projetada] erro${err.codigo ? ` [${err.codigo}]` : ""}: ${err.message}`);
     return 1;
@@ -230,7 +315,9 @@ if (require.main === module) {
 module.exports = {
   parseArgs,
   montarResumoMargemProjetada,
+  persistirSnapshots,
   formatarRelatorio,
   executar,
   main,
+  ORIGEM_JOB,
 };

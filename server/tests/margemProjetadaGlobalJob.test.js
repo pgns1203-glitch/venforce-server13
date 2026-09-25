@@ -10,8 +10,11 @@
 // Prova (pedido explícito do usuário):
 //   1. CLI repassa clienteContaId corretamente para carregarWorkspace.
 //   2. CLI de fato chama carregarWorkspace (única fonte de margem).
-//   3. CLI não tem NENHUM código de escrita em anuncios_margem_projetada_snapshot
-//      (checagem estática do próprio arquivo-fonte).
+//   3. O arquivo-fonte da CLI não embute SQL de escrita — o UPSERT mora só
+//      em margemProjetadaSnapshotRepository (checagem estática); em modo
+//      --dry-run, nenhuma escrita acontece (ver
+//      margemProjetadaGlobalPersist.test.js para o comportamento de escrita
+//      de --persist).
 //   4. O resumo usa item.margin.projected / item.quality.status devolvidos
 //      pelo Motor — nenhuma fórmula de margem nova.
 //   5. Erro do Motor (carregarWorkspace rejeita) produz exit code 1.
@@ -54,8 +57,12 @@ async function run() {
   }
   {
     const args = parseArgs(["--clienteSlug=cliente-a", "--dry-run"]);
-    ok("parseArgs: clienteConta/maxItens ausentes ficam null, json fica false",
-      args.clienteConta === null && args.maxItens === null && args.json === false);
+    ok("parseArgs: clienteConta/maxItens ausentes ficam null, json fica false, persist fica false",
+      args.clienteConta === null && args.maxItens === null && args.json === false && args.persist === false);
+  }
+  {
+    const args = parseArgs(["--clienteSlug=cliente-a", "--persist"]);
+    ok("parseArgs lê --persist e mantém dryRun false", args.persist === true && args.dryRun === false);
   }
   {
     assert.throws(() => parseArgs(["--clienteSlug=x", "--argumento-inexistente=1"]), /Argumento desconhecido/);
@@ -99,22 +106,34 @@ async function run() {
 
   {
     const fonte = fs.readFileSync(path.join(__dirname, "..", "jobs", "margemProjetadaGlobal.js"), "utf8");
-    ok("o arquivo da CLI não tem nenhum INSERT/UPDATE (nenhuma escrita, nem em dry-run nem fora)",
-      !/\bINSERT\b/i.test(fonte) && !/\bUPDATE\b/i.test(fonte) && !/\bUPSERT\b/i.test(fonte));
+    ok("o arquivo-fonte da CLI nunca chama .query() diretamente — toda escrita/leitura de banco passa por motorMargemService/snapshotRepository",
+      !/\.query\s*\(/.test(fonte));
     ok("o arquivo da CLI não faz require() de adapters do Motor diretamente (só de motorMargemService, a fachada)",
       !/require\([^)]*(marketplaceCurrentQuoteService|meliApiEvidenceAdapter|marginEngine|centralVendasEvidenceAdapter|baseCustosEvidenceAdapter)[^)]*\)/i.test(fonte));
   }
 
   {
-    // --dry-run ausente: falha ANTES de chamar o Motor (nenhuma tentativa de I/O).
+    // Nem --dry-run nem --persist: falha ANTES de chamar o Motor (nenhuma tentativa de I/O).
     const chamadas = [];
     const deps = {
       carregarWorkspace: async (args) => { chamadas.push(args); return { itens: [], totalItensMl: 0 }; },
       pool: { end: async () => {} },
     };
     const codigo = await main(["--clienteSlug=cliente-a"], deps);
-    ok("main() sem --dry-run: exit code 1, erro de uso", codigo === 1);
-    ok("main() sem --dry-run: carregarWorkspace NUNCA é chamado (falha antes)", chamadas.length === 0);
+    ok("main() sem --dry-run nem --persist: exit code 1, erro de uso (MODO_OBRIGATORIO)", codigo === 1);
+    ok("main() sem --dry-run nem --persist: carregarWorkspace NUNCA é chamado (falha antes)", chamadas.length === 0);
+  }
+
+  {
+    // --dry-run E --persist juntos: ambíguo, também falha antes de chamar o Motor.
+    const chamadas = [];
+    const deps = {
+      carregarWorkspace: async (args) => { chamadas.push(args); return { itens: [], totalItensMl: 0 }; },
+      pool: { end: async () => {} },
+    };
+    const codigo = await main(["--clienteSlug=cliente-a", "--dry-run", "--persist"], deps);
+    ok("main() com --dry-run E --persist juntos: exit code 1, erro de uso (MODO_AMBIGUO)", codigo === 1);
+    ok("main() com os dois flags: carregarWorkspace NUNCA é chamado (falha antes)", chamadas.length === 0);
   }
 
   // ── 4: resumo usa item.margin.projected / item.quality.status do Motor ──

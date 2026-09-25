@@ -532,7 +532,10 @@
       }, 350);
     });
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") fecharDetalhe();
+      if (e.key === "Escape") {
+        fecharDetalhe();
+        fecharMenuOrdenacao();
+      }
     });
     if (el("am-ordenacao")) {
       el("am-ordenacao").addEventListener("change", function (e) {
@@ -566,6 +569,19 @@
         // mesmo <select>.
         AM.ordenarPor = null;
         aplicarOrdenacaoPerformance(criterio);
+      });
+    }
+    if (el("am-ordenacao-trigger")) {
+      montarMenuOrdenacao();
+      sincronizarComboOrdenacao();
+      el("am-ordenacao-trigger").addEventListener("click", function (e) {
+        e.stopPropagation();
+        alternarMenuOrdenacao();
+      });
+      el("am-ordenacao-dir").addEventListener("click", alternarDirecaoOrdenacao);
+      document.addEventListener("click", function (e) {
+        var combo = el("am-ordenacao-combo");
+        if (combo && !combo.contains(e.target)) fecharMenuOrdenacao();
       });
     }
   }
@@ -1936,6 +1952,147 @@
   // via garantirFamiliaDetalhe (mesmo ponto único de sempre — nunca refaz a
   // busca se a família já está em cache).
   // ===========================================================================
+
+  // ===========================================================================
+  // Combo de ordenação (filtro + direção) — UI apenas. O <select id="am-
+  // ordenacao"> escondido continua sendo a fonte da verdade: este bloco só
+  // lê/escreve o valor dele e dispara "change", nunca decide ordenação
+  // sozinho. Cada filtro carrega sua direção PADRÃO (decisão aprovada);
+  // trocar de filtro reseta pra ela, reselecionar o filtro já ativo preserva
+  // a direção atual (ver selecionarFiltroOrdenacao).
+  // ===========================================================================
+
+  var ORDENACAO_FILTROS = [
+    { base: "", label: "Padrão", dirType: "none" },
+    { base: "margem", label: "Margem", dirType: "num", dirPadrao: "desc" },
+    { base: "faturamento", label: "% Faturamento", dirType: "num", dirPadrao: "desc" },
+    { base: "unidades", label: "Unidades vendidas (7d)", dirType: "num", dirPadrao: "desc" },
+    { base: "curvaAbc", label: "Curva ABC", dirType: "abc", dirPadrao: "asc" },
+  ];
+
+  function filtroOrdenacaoPorBase(base) {
+    for (var i = 0; i < ORDENACAO_FILTROS.length; i++) {
+      if (ORDENACAO_FILTROS[i].base === base) return ORDENACAO_FILTROS[i];
+    }
+    return ORDENACAO_FILTROS[0];
+  }
+
+  // "margem_desc" -> { base: "margem", dir: "desc" }; "" -> { base: "", dir: null }.
+  function parseValorOrdenacao(value) {
+    if (!value) return { base: "", dir: null };
+    var idx = value.lastIndexOf("_");
+    return { base: value.slice(0, idx), dir: value.slice(idx + 1) };
+  }
+
+  function rotuloDirecaoOrdenacao(filtro, dir) {
+    if (filtro.dirType === "none") return "—";
+    if (filtro.dirType === "abc") return dir === "asc" ? "A → C" : "C → A";
+    return dir === "desc" ? "Maior → menor" : "Menor → maior";
+  }
+
+  function montarMenuOrdenacao() {
+    var menu = el("am-ordenacao-menu");
+    if (!menu) return;
+    menu.innerHTML = ORDENACAO_FILTROS.map(function (f) {
+      return '<button type="button" class="am-ordenacao-menu__item vf-menu__item" role="option" data-base="' +
+        f.base + '">' +
+        "<span>" + f.label + "</span>" +
+        '<svg class="am-ordenacao-menu__check" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">' +
+        '<path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>' +
+        "</button>";
+    }).join("");
+    menu.querySelectorAll("[data-base]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        selecionarFiltroOrdenacao(btn.getAttribute("data-base"));
+      });
+    });
+  }
+
+  // Repinta o combo a partir do <select> — chamado no boot, depois de
+  // qualquer mudança de valor, e no reset de carregarAnuncios (o "Padrão"
+  // forçado a cada busca/página nova precisa aparecer no combo também).
+  function sincronizarComboOrdenacao() {
+    var select = el("am-ordenacao");
+    var trigger = el("am-ordenacao-trigger");
+    if (!select || !trigger) return;
+
+    var atual = parseValorOrdenacao(select.value);
+    var filtro = filtroOrdenacaoPorBase(atual.base);
+    var dir = atual.dir || filtro.dirPadrao || "desc";
+
+    el("am-ordenacao-trigger-label").textContent = filtro.label;
+
+    var dirBtn = el("am-ordenacao-dir");
+    dirBtn.textContent = rotuloDirecaoOrdenacao(filtro, dir);
+    dirBtn.disabled = filtro.dirType === "none";
+
+    var menu = el("am-ordenacao-menu");
+    if (menu) {
+      menu.querySelectorAll("[data-base]").forEach(function (btn) {
+        var ativo = btn.getAttribute("data-base") === filtro.base;
+        btn.classList.toggle("is-active", ativo);
+        btn.setAttribute("aria-selected", ativo ? "true" : "false");
+      });
+    }
+  }
+
+  function aplicarValorOrdenacao(novoValor) {
+    var select = el("am-ordenacao");
+    if (!select) return;
+    if (select.value === novoValor) {
+      sincronizarComboOrdenacao();
+      return;
+    }
+    select.value = novoValor;
+    sincronizarComboOrdenacao();
+    select.dispatchEvent(new Event("change"));
+  }
+
+  function selecionarFiltroOrdenacao(base) {
+    fecharMenuOrdenacao();
+    var select = el("am-ordenacao");
+    if (!select) return;
+    var atual = parseValorOrdenacao(select.value);
+    var filtro = filtroOrdenacaoPorBase(base);
+
+    if (filtro.dirType === "none") {
+      aplicarValorOrdenacao("");
+      return;
+    }
+
+    var dir = (atual.base === base && atual.dir) ? atual.dir : filtro.dirPadrao;
+    aplicarValorOrdenacao(base + "_" + dir);
+  }
+
+  function alternarDirecaoOrdenacao() {
+    var select = el("am-ordenacao");
+    if (!select) return;
+    var atual = parseValorOrdenacao(select.value);
+    var filtro = filtroOrdenacaoPorBase(atual.base);
+    if (filtro.dirType === "none") return;
+    var dirAtual = atual.dir || filtro.dirPadrao;
+    aplicarValorOrdenacao(atual.base + "_" + (dirAtual === "asc" ? "desc" : "asc"));
+  }
+
+  function alternarMenuOrdenacao() {
+    var menu = el("am-ordenacao-menu");
+    var trigger = el("am-ordenacao-trigger");
+    if (!menu || !trigger) return;
+    if (menu.hasAttribute("hidden")) {
+      menu.removeAttribute("hidden");
+      trigger.setAttribute("aria-expanded", "true");
+    } else {
+      fecharMenuOrdenacao();
+    }
+  }
+
+  function fecharMenuOrdenacao() {
+    var menu = el("am-ordenacao-menu");
+    var trigger = el("am-ordenacao-trigger");
+    if (!menu || !trigger) return;
+    menu.setAttribute("hidden", "");
+    trigger.setAttribute("aria-expanded", "false");
+  }
 
   var CURVA_ABC_ORDEM = { A: 0, B: 1, C: 2 };
 

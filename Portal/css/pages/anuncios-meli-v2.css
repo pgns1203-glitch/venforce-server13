@@ -271,6 +271,94 @@
 }
 
 /* ------------------------------------------------------------
+ * Ordenação (filtro + direção) — combo anexado.
+ *
+ * O <select id="am-ordenacao"> real fica hidden (ver anuncios-meli.html);
+ * este bloco é só a casca visual. Reaproveita .vf-input-group/.vf-input/
+ * .vf-input-suffix (fusão de borda já pronta na Fundação, usada em campo
+ * com prefixo/sufixo) para o par gatilho+direção, e .vf-menu/.vf-menu__item
+ * para o popover — nenhuma cor, raio ou sombra novos.
+ * ------------------------------------------------------------ */
+.vf-page-anuncios-meli .am-filtro-ordenacao {
+  min-width: 220px;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-combo {
+  position: relative;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2);
+  cursor: pointer;
+  text-align: left;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-trigger span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-trigger__chev {
+  flex: 0 0 auto;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-ordenacao-trigger[aria-expanded="true"] {
+  border-color: var(--vf-primary);
+}
+
+.vf-page-anuncios-meli .am-ordenacao-dir {
+  flex: 0 0 auto;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary-strong);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-dir:hover:not(:disabled) {
+  background: var(--vf-primary-soft);
+}
+
+.vf-page-anuncios-meli .am-ordenacao-dir:focus-visible {
+  outline: none;
+  box-shadow: var(--vf-focus-ring);
+  z-index: 1;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-dir:disabled {
+  color: var(--vf-text-disabled);
+  cursor: not-allowed;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-menu {
+  position: absolute;
+  top: calc(100% + var(--vf-sp-1));
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-menu__item {
+  justify-content: space-between;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-menu__check {
+  flex: 0 0 auto;
+  color: var(--vf-primary);
+  visibility: hidden;
+}
+
+.vf-page-anuncios-meli .am-ordenacao-menu__item.is-active .am-ordenacao-menu__check {
+  visibility: visible;
+}
+
+/* ------------------------------------------------------------
  * Listagem em linhas (V3) — substitui o grid de cards (.am-catalogo/
  * .am-card acima). Mesma lógica de dados de sempre (rowAnuncioHtml em
  * anuncios-meli.js), só a apresentação virou tabela operacional.

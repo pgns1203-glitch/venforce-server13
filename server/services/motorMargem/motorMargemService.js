@@ -18,6 +18,7 @@
 const {
   exigirContextoPronto,
   resolverContextoPrecificacao,
+  contarContasMeliAtivas,
 } = require("../automacoes/contextoPrecificacaoService");
 const { createEvidenceBag, FIELDS } = require("./core/marginEvidence");
 const { buildMarginItem } = require("./core/marginItem");
@@ -87,6 +88,23 @@ async function mapWithConcurrency(items, limit, fn) {
 // Contexto: quais fontes estão disponíveis para este cliente/período
 // ---------------------------------------------------------------------------
 
+// `includeLegacy` segue a MESMA política já usada pela Central de Vendas
+// (centralVendasService.js:990-1004, replicada 3x lá): um import legado
+// (cliente_conta_id IS NULL) só pode ser lido como fallback da conta
+// resolvida quando essa conta é COMPROVADAMENTE a única ativa do cliente no
+// marketplace. Com 2+ contas ativas, o legado é ambíguo — pode pertencer a
+// QUALQUER uma delas — e nunca pode ser atribuído silenciosamente à conta
+// selecionada (isso reabriria a mistura de contas que condicaoContaSql foi
+// desenhada para impedir). Sem conta resolvida (cliente 100% legado, 0
+// contas ativas), a pergunta não se aplica: condicaoContaSql cai direto em
+// `cliente_conta_id IS NULL` incondicional, então `includeLegacy` é
+// irrelevante e o padrão seguro é `true`.
+async function resolverIncludeLegacy({ clienteId, contaId }, deps = {}) {
+  if (!contaId) return true;
+  const total = await (deps.contarContasAtivas || contarContasMeliAtivas)(clienteId);
+  return total <= 1;
+}
+
 /**
  * Diagnóstico barato (nenhuma chamada de item ao ML). É o que a Central deve
  * consultar primeiro para explicar uma tela vazia em vez de mostrar zero.
@@ -98,10 +116,28 @@ async function obterContextoMargem({ clienteSlug, dateFrom, dateTo }, deps = {})
     clienteSlugRaw: clienteSlug,
   });
 
+  // `contexto.conta` pode vir preenchida mesmo sem clienteContaId explícito
+  // (resolveMarketplaceAccountContext auto-resolve quando o cliente tem
+  // exatamente 1 conta ML ativa). Sem repassar esse id aqui, a leitura da
+  // Central de Vendas cai em cliente_conta_id IS NULL e o diagnóstico reporta
+  // MELI_ORDER indisponível mesmo com import válido da conta (ver
+  // prepareWorkspaceContext, mesma causa).
+  const clienteContaIdDiagnostico = contexto.conta?.id ?? null;
+  const includeLegacyDiagnostico = await resolverIncludeLegacy(
+    { clienteId: contexto.cliente.id, contaId: clienteContaIdDiagnostico },
+    deps
+  );
   let vendas = { sincronizado: false, pedidos: [], itens: [], componentes: [], imports: [] };
   try {
     vendas = await (deps.carregarVendas || centralVendas.carregarVendasDoPeriodo)(
-      { clienteSlug, dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, marketplace: MARKETPLACE },
+      {
+        clienteSlug,
+        dateFrom: periodo.dateFrom,
+        dateTo: periodo.dateTo,
+        marketplace: MARKETPLACE,
+        clienteContaId: clienteContaIdDiagnostico,
+        includeLegacy: includeLegacyDiagnostico,
+      },
       db
     );
   } catch (err) {
@@ -190,7 +226,7 @@ async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo
   // (Central de Margem). Passar explicitamente é o que permite a um
   // consumidor multi-conta (Anúncios ML) calcular a margem da MESMA conta
   // que está selecionada na tela, em vez da conta "automática" do cliente.
-  const { cliente, base, mlUserId } = await (deps.exigirContexto || exigirContextoPronto)({
+  const { cliente, conta, base, mlUserId } = await (deps.exigirContexto || exigirContextoPronto)({
     clienteSlugRaw: clienteSlug,
     baseSlugRaw: baseSlug,
     clienteContaId,
@@ -201,17 +237,31 @@ async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo
     db
   );
 
-  // clienteContaId precisa chegar até a Central de Vendas (não só até
-  // exigirContextoPronto acima) — senão a leitura do realizado cai sempre no
-  // ramo "sem conta" e um cliente multi-conta nunca encontra o próprio
-  // import (ver centralVendasEvidenceAdapter.carregarVendasDoPeriodo).
-  // includeLegacy: true — decisão da auditoria "Investigação backend —
-  // faturamento Anúncios ML retornando null": prioriza o import da conta
-  // atual, aceita fallback para import legado (cliente_conta_id NULL, dado
-  // anterior à fundação multi-conta), nunca lê o import de outra conta
-  // (garantido por condicaoContaSql, que nunca soma OR de outro id).
+  // `conta` é a resolução REAL feita por exigirContextoPronto — pode ser a
+  // MESMA conta recebida em `clienteContaId`, ou uma conta AUTO-RESOLVIDA
+  // quando `clienteContaId` chega null e o cliente tem exatamente 1 conta ML
+  // ativa (resolveMarketplaceAccountContext, D-8). Usar o `clienteContaId` de
+  // entrada aqui (em vez do id resolvido) reabre o bug real: cliente com 1
+  // conta ativa resolve catálogo/grant/base para ela, mas a leitura de vendas
+  // cai sempre em cliente_conta_id IS NULL porque o parâmetro de entrada
+  // nunca chegou preenchido — o import da conta nunca é encontrado (ver
+  // centralVendasEvidenceAdapter.carregarVendasDoPeriodo).
+  // includeLegacy: calculado por resolverIncludeLegacy — decisão da
+  // auditoria "Investigação backend — faturamento Anúncios ML retornando
+  // null": prioriza o import da conta atual, aceita fallback para import
+  // legado (cliente_conta_id NULL, dado anterior à fundação multi-conta)
+  // SOMENTE quando a conta resolvida é a única ativa do cliente (mesma
+  // política de centralVendasService.js — nunca fixo em true, senão um
+  // legado ambíguo seria atribuído à conta escolhida num cliente
+  // multi-conta). Nunca lê o import de outra conta (garantido por
+  // condicaoContaSql, que nunca soma OR de outro id, independente disto).
+  const clienteContaIdResolvido = conta?.id ?? clienteContaId;
+  const includeLegacyResolvido = await resolverIncludeLegacy(
+    { clienteId: cliente.id, contaId: clienteContaIdResolvido },
+    deps
+  );
   const vendasRaw = await (deps.carregarVendas || centralVendas.carregarVendasDoPeriodo)(
-    { clienteSlug: cliente.slug, dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, marketplace: MARKETPLACE, clienteContaId, includeLegacy: true },
+    { clienteSlug: cliente.slug, dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, marketplace: MARKETPLACE, clienteContaId: clienteContaIdResolvido, includeLegacy: includeLegacyResolvido },
     db
   );
 

@@ -561,6 +561,10 @@ cenario("prepareWorkspaceContext repassa clienteContaId para a leitura da Centra
   const chamadasCarregarVendas = [];
   const instrumentado = {
     ...deps,
+    // Cliente com só esta conta ativa — não é o foco deste teste (que é só a
+    // propagação do id), mas precisa de um valor determinístico: sem mock,
+    // o default real bateria num Postgres de verdade.
+    contarContasAtivas: async () => 1,
     carregarVendas: async (args) => {
       chamadasCarregarVendas.push(args);
       return deps.carregarVendas(args);
@@ -591,6 +595,88 @@ cenario("prepareWorkspaceContext sem clienteContaId não quebra (continua null, 
   await service.prepareWorkspaceContext(params, instrumentado);
 
   assert.strictEqual(chamadasCarregarVendas[0].clienteContaId, null);
+});
+
+// BUG real (cliente adb_supply, conta 6): quando o chamador NÃO informa
+// clienteContaId (Central de Margem não manda esse parâmetro hoje —
+// data-vf-scope="client"), exigirContexto ainda assim pode AUTO-RESOLVER
+// `conta` quando o cliente tem exatamente 1 conta ML ativa
+// (resolveMarketplaceAccountContext, D-8). Antes desta correção,
+// prepareWorkspaceContext ignorava esse `conta` resolvido e continuava
+// chamando a Central de Vendas com clienteContaId null — a leitura caía em
+// cliente_conta_id IS NULL e nunca encontrava o import da conta 6, mesmo com
+// catálogo/grant/base corretos (Mercado Livre API: OK, Base: OK,
+// vendas.sincronizado: false). O import correto da conta precisa ser
+// encontrado usando a MESMA conta que o resto do contexto já resolveu.
+cenario("prepareWorkspaceContext usa a conta AUTO-RESOLVIDA por exigirContexto quando clienteContaId não foi informado", async () => {
+  const { deps } = depsWorkspace({ n: 3, total: 3 });
+  const chamadasCarregarVendas = [];
+  const instrumentado = {
+    ...deps,
+    exigirContexto: async () => ({
+      cliente: CLIENTE,
+      conta: { id: 6, nome: "Conta 6" },
+      base: BASE,
+      mlUserId: "99",
+    }),
+    // Auto-resolvida SÓ porque é a única ativa (regra D-8 de
+    // resolveMarketplaceAccountContext) — este cenário é precisamente o de 1
+    // conta ativa: includeLegacy precisa continuar true (mesma política
+    // canônica de centralVendasService.js).
+    contarContasAtivas: async () => 1,
+    carregarVendas: async (args) => {
+      chamadasCarregarVendas.push(args);
+      return deps.carregarVendas(args);
+    },
+  };
+
+  await service.prepareWorkspaceContext(params, instrumentado);
+
+  assert.strictEqual(
+    chamadasCarregarVendas[0].clienteContaId,
+    6,
+    "a conta auto-resolvida (única conta ML ativa do cliente) precisa chegar até a Central de Vendas, não ficar null"
+  );
+  assert.strictEqual(
+    chamadasCarregarVendas[0].includeLegacy,
+    true,
+    "com 1 única conta ativa, a política canônica libera o fallback de legado"
+  );
+});
+
+// Política canônica (centralVendasService.js:990-1004): includeLegacy só é
+// true quando a conta resolvida é comprovadamente a ÚNICA conta ML ativa do
+// cliente. Antes desta correção, o Motor fixava includeLegacy=true sempre —
+// num cliente com 2+ contas ativas e conta 6 selecionada, um import legado
+// ambíguo (cliente_conta_id IS NULL) seria silenciosamente atribuído à conta
+// 6 (ver condicaoContaSql). Isso é exatamente o que a Central de Vendas
+// nunca permite fora daqui.
+cenario("prepareWorkspaceContext usa includeLegacy=false quando a conta resolvida NÃO é a única ativa (2+ contas — nunca herda legado ambíguo)", async () => {
+  const { deps } = depsWorkspace({ n: 3, total: 3 });
+  const chamadasCarregarVendas = [];
+  const instrumentado = {
+    ...deps,
+    exigirContexto: async () => ({
+      cliente: CLIENTE,
+      conta: { id: 6, nome: "Conta 6" },
+      base: BASE,
+      mlUserId: "99",
+    }),
+    contarContasAtivas: async () => 2,
+    carregarVendas: async (args) => {
+      chamadasCarregarVendas.push(args);
+      return deps.carregarVendas(args);
+    },
+  };
+
+  await service.prepareWorkspaceContext({ ...params, clienteContaId: 6 }, instrumentado);
+
+  assert.strictEqual(chamadasCarregarVendas[0].clienteContaId, 6, "a conta explícita continua chegando à leitura");
+  assert.strictEqual(
+    chamadasCarregarVendas[0].includeLegacy,
+    false,
+    "com 2+ contas ativas, o legado ambíguo (cliente_conta_id IS NULL) nunca pode ser atribuído à conta selecionada"
+  );
 });
 
 cenario("prepareWorkspaceContext expõe o contexto para enrichBatch reaproveitar entre lotes", async () => {
@@ -795,6 +881,69 @@ cenario("contexto reporta cada fonte e por que ela está (in)disponível", async
   assert.strictEqual(resposta.fontes.MERCADO_PAGO.disponivel, false);
   assert.strictEqual(resposta.fontes.EXTENSION_DOM.disponivel, false);
   assert.ok(resposta.fontes.MERCADO_PAGO.detalhe.includes("Mercado Pago"));
+});
+
+// Mesmo BUG do teste acima, no caminho do diagnóstico (GET .../contexto —
+// o payload que a Central usa pra explicar tela vazia). obterContextoMargem
+// chama carregarVendas diretamente (não passa por prepareWorkspaceContext) e
+// também ignorava `contexto.conta` ao montar essa chamada.
+cenario("contexto usa a conta auto-resolvida para consultar a Central de Vendas (evita MELI_ORDER.disponivel=false com 1 conta ativa)", async () => {
+  const chamadasCarregarVendas = [];
+  const resposta = await service.obterContextoMargem(params, {
+    resolverContexto: async () => ({
+      cliente: CLIENTE,
+      conta: { id: 6, nome: "Conta 6" },
+      grant: { conectado: true, ml_user_id: "99" },
+      base: BASE,
+      basesMeli: [BASE],
+      pronto: true,
+      motivo: "OK",
+      mensagem: null,
+    }),
+    carregarCustos: async () => ({ index: CUSTOS, total: 2 }),
+    contarContasAtivas: async () => 1,
+    carregarVendas: async (args) => {
+      chamadasCarregarVendas.push(args);
+      return { sincronizado: true, imports: [{ id: 1 }], pedidos: [{ id: 1 }], itens: [], componentes: [] };
+    },
+  });
+
+  assert.strictEqual(chamadasCarregarVendas.length, 1);
+  assert.strictEqual(
+    chamadasCarregarVendas[0].clienteContaId,
+    6,
+    "a conta auto-resolvida precisa chegar até a Central de Vendas no diagnóstico também"
+  );
+  assert.strictEqual(chamadasCarregarVendas[0].includeLegacy, true, "1 única conta ativa: legado continua liberado");
+  assert.strictEqual(resposta.fontes.MELI_ORDER.disponivel, true);
+});
+
+cenario("contexto usa includeLegacy=false no diagnóstico quando a conta resolvida não é a única ativa (2+ contas)", async () => {
+  const chamadasCarregarVendas = [];
+  await service.obterContextoMargem(params, {
+    resolverContexto: async () => ({
+      cliente: CLIENTE,
+      conta: { id: 6, nome: "Conta 6" },
+      grant: { conectado: true, ml_user_id: "99" },
+      base: BASE,
+      basesMeli: [BASE],
+      pronto: true,
+      motivo: "OK",
+      mensagem: null,
+    }),
+    carregarCustos: async () => ({ index: CUSTOS, total: 2 }),
+    contarContasAtivas: async () => 2,
+    carregarVendas: async (args) => {
+      chamadasCarregarVendas.push(args);
+      return { sincronizado: true, imports: [{ id: 1 }], pedidos: [{ id: 1 }], itens: [], componentes: [] };
+    },
+  });
+
+  assert.strictEqual(
+    chamadasCarregarVendas[0].includeLegacy,
+    false,
+    "2+ contas ativas: o diagnóstico não pode fingir que um legado ambíguo pertence à conta 6"
+  );
 });
 
 cenario("contexto não quebra quando a Central de Vendas falha", async () => {

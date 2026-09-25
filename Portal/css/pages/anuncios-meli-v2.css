@@ -292,6 +292,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--vf-sp-2);
+  background: var(--vf-surface);
   cursor: pointer;
   text-align: left;
 }
@@ -314,15 +315,15 @@
 
 .vf-page-anuncios-meli .am-ordenacao-dir {
   flex: 0 0 auto;
-  font-size: var(--vf-fs-xs);
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-primary-strong);
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--vf-surface);
   cursor: pointer;
 }
 
 .vf-page-anuncios-meli .am-ordenacao-dir:hover:not(:disabled) {
-  background: var(--vf-primary-soft);
+  border-color: var(--vf-border-hover);
 }
 
 .vf-page-anuncios-meli .am-ordenacao-dir:focus-visible {
@@ -332,8 +333,25 @@
 }
 
 .vf-page-anuncios-meli .am-ordenacao-dir:disabled {
-  color: var(--vf-text-disabled);
   cursor: not-allowed;
+}
+
+/* Ícone de ordenação (duas setas) — a ativa fica em --vf-primary-strong, a
+   inativa em --vf-text-disabled. "asc"/"desc" mapeiam pra seta de cima/baixo
+   sempre da mesma forma, mesmo pra Curva ABC (asc=A→C, desc=C→A) — o
+   significado textual vive só no aria-label/title do botão. */
+.vf-page-anuncios-meli .am-ordenacao-dir__seta {
+  fill: var(--vf-text-disabled);
+  transition: fill var(--vf-duration-fast) var(--vf-ease);
+}
+
+.vf-page-anuncios-meli .am-ordenacao-dir[data-dir="asc"] .am-ordenacao-dir__seta--asc,
+.vf-page-anuncios-meli .am-ordenacao-dir[data-dir="desc"] .am-ordenacao-dir__seta--desc {
+  fill: var(--vf-primary-strong);
+}
+
+.vf-page-anuncios-meli .am-ordenacao-dir:disabled .am-ordenacao-dir__seta {
+  fill: var(--vf-text-disabled);
 }
 
 .vf-page-anuncios-meli .am-ordenacao-menu {

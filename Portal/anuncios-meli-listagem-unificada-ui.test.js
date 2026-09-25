@@ -3149,17 +3149,19 @@ async function run() {
 
     /* ── 39l–39s: combo de ordenação (filtro + direção) — UI nova ────────── */
 
-    await check("39l — estado inicial: combo mostra Padrão com a direção desabilitada", async () => {
+    await check("39l — estado inicial: combo mostra Padrão, direção desabilitada e sem seta ativa (ícone, não texto)", async () => {
       const estado = await cdp.evaluate(`(function(){
         var dir = document.getElementById('am-ordenacao-dir');
         return {
           rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
-          dirTexto: dir.textContent.trim(),
+          dirRotulo: dir.getAttribute('aria-label'),
+          dirAtributo: dir.getAttribute('data-dir'),
           dirDesabilitado: dir.disabled,
           valorSelect: document.getElementById('am-ordenacao').value,
         }; })()`);
       assert.strictEqual(estado.rotulo, "Padrão");
-      assert.strictEqual(estado.dirTexto, "—");
+      assert.strictEqual(estado.dirRotulo, "—");
+      assert.strictEqual(estado.dirAtributo, null, "sem filtro ativo não pode haver seta destacada");
       assert.strictEqual(estado.dirDesabilitado, true);
       assert.strictEqual(estado.valorSelect, "");
     });
@@ -3180,12 +3182,14 @@ async function run() {
         return {
           valorSelect: document.getElementById('am-ordenacao').value,
           rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
-          dirTexto: dir.textContent.trim(),
+          dirRotulo: dir.getAttribute('aria-label'),
+          dirAtributo: dir.getAttribute('data-dir'),
           menuFechado: menu.hasAttribute('hidden'),
         }; })()`);
       assert.strictEqual(estado.valorSelect, "margem_desc", "direção padrão de Margem é maior → menor (desc)");
-      assert.strictEqual(estado.rotulo, "Margem");
-      assert.strictEqual(estado.dirTexto, "Maior → menor");
+      assert.strictEqual(estado.rotulo, "Margem (nesta página)");
+      assert.strictEqual(estado.dirRotulo, "Maior → menor");
+      assert.strictEqual(estado.dirAtributo, "desc", "data-dir='desc' é o que acende a seta de baixo no ícone");
       assert.strictEqual(estado.menuFechado, true, "escolher um filtro tem de fechar o popover");
       performanceHandler = null;
     });
@@ -3201,72 +3205,87 @@ async function run() {
       await clicar(cdp, "#am-ordenacao-dir", "não achei o botão de direção");
       await waitForNode(() => chamadasPerformance.length >= 1, "alternar a direção não disparou a ordenação");
       const estado = await cdp.evaluate(`(function(){
+        var dir = document.getElementById('am-ordenacao-dir');
         return {
           valorSelect: document.getElementById('am-ordenacao').value,
           rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
-          dirTexto: document.getElementById('am-ordenacao-dir').textContent.trim(),
+          dirRotulo: dir.getAttribute('aria-label'),
+          dirAtributo: dir.getAttribute('data-dir'),
         }; })()`);
       assert.strictEqual(estado.valorSelect, "margem_asc");
-      assert.strictEqual(estado.rotulo, "Margem", "alternar a direção não pode trocar o filtro");
-      assert.strictEqual(estado.dirTexto, "Menor → maior");
+      assert.strictEqual(estado.rotulo, "Margem (nesta página)", "alternar a direção não pode trocar o filtro");
+      assert.strictEqual(estado.dirRotulo, "Menor → maior");
+      assert.strictEqual(estado.dirAtributo, "asc", "a seta de cima tem de acender depois do toggle");
       performanceHandler = null;
     });
 
     await check("39o — trocar de filtro (Margem → Curva ABC) usa a direção padrão dele (A → C), não herda a direção anterior", async () => {
-      pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null,
-        margem: null, faturamento: null, unidadesVendidas: null,
-        curvaAbc: { porItem: { "MLB-SEMUP": "A", "MLB-SEMVAR": "C" }, porFamilia: {} },
-        margemPorFamilia: null,
-      });
+      // Curva ABC virou critério GLOBAL nesta branch (ordenarPor em
+      // /anuncios-meli/familias, ver ORDENACOES_GLOBAIS) — não passa mais por
+      // GET /performance. A asserção aqui é só sobre o ESTADO VISUAL do
+      // combo, que é síncrono ao clique (aplicarValorOrdenacao resolve label/
+      // data-dir ANTES de disparar "change"); o resultado da ordenação em si
+      // já tem cobertura própria (39d-h acima).
       await selecionarOrdenacao(cdp, "curvaAbc");
-      await waitForNode(() => chamadasPerformance.length >= 1, "escolher Curva ABC não disparou a ordenação");
+      await waitFor(cdp, `document.getElementById('am-ordenacao').value === "curvaAbc_asc"`,
+        "escolher Curva ABC não atualizou o select oculto");
       const estado = await cdp.evaluate(`(function(){
+        var dir = document.getElementById('am-ordenacao-dir');
         return {
           valorSelect: document.getElementById('am-ordenacao').value,
           rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
-          dirTexto: document.getElementById('am-ordenacao-dir').textContent.trim(),
+          dirRotulo: dir.getAttribute('aria-label'),
+          dirAtributo: dir.getAttribute('data-dir'),
         }; })()`);
       assert.strictEqual(estado.valorSelect, "curvaAbc_asc", "veio de Margem:asc, mas Curva ABC tem direção padrão própria (A → C)");
       assert.strictEqual(estado.rotulo, "Curva ABC");
-      assert.strictEqual(estado.dirTexto, "A → C");
-      performanceHandler = null;
+      assert.strictEqual(estado.dirRotulo, "A → C");
+      assert.strictEqual(estado.dirAtributo, "asc", "Curva ABC usa o MESMO ícone/mapeamento asc/desc dos demais filtros");
     });
 
     await check("39p — clicar de novo no filtro já ativo preserva a direção atual (não reseta pra padrão)", async () => {
-      pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null,
-        margem: null, faturamento: null, unidadesVendidas: null,
-        curvaAbc: { porItem: { "MLB-SEMUP": "A", "MLB-SEMVAR": "C" }, porFamilia: {} },
-        margemPorFamilia: null,
-      });
-      // Curva ABC está em "asc" (A → C) — alterna pra "desc" (C → A) antes de reselecionar.
+      // Curva ABC está em "asc" (A → C) — alterna pra "desc" (C → A) antes de
+      // reselecionar. O toggle de direção é síncrono (mesmo raciocínio de 39o).
+      // Alternar a direção de um critério GLOBAL também dispara carregarAnuncios
+      // (assíncrono) — precisa esperar essa busca TERMINAR antes de zerar o
+      // contador (baseline por CONTAGEM, não por ">= 1": chamadasFamilias já
+      // acumula chamadas de testes anteriores nesta suíte, então "houve pelo
+      // menos 1" já seria verdade ANTES do clique, e a espera resolveria cedo
+      // demais — a busca deste clique chegaria atrasada e seria contada como
+      // se fosse do PRÓXIMO passo, corrompendo a asserção abaixo).
+      const antesToggle = chamadasFamilias.length;
       await clicar(cdp, "#am-ordenacao-dir", "não achei o botão de direção");
-      await waitForNode(() => chamadasPerformance.length >= 1, "alternar a direção não disparou a ordenação");
-      assert.strictEqual(
-        await cdp.evaluate(`document.getElementById('am-ordenacao').value`),
-        "curvaAbc_desc"
-      );
+      await waitFor(cdp, `document.getElementById('am-ordenacao').value === "curvaAbc_desc"`,
+        "alternar a direção não atualizou o select oculto");
+      await waitForNode(() => chamadasFamilias.length > antesToggle, "alternar a direção (critério global) não disparou a busca");
 
-      pedidos.length = 0;
-      chamadasPerformance.length = 0;
+      chamadasFamilias.length = 0;
       await selecionarOrdenacao(cdp, "curvaAbc");
       // Mesmo filtro, mesma direção — não é uma mudança de valor, então o
-      // <select> não dispara "change" de novo (nenhuma chamada nova esperada).
+      // <select> não dispara "change" de novo (nenhuma chamada global nova).
       await sleep(150);
       const estado = await cdp.evaluate(`(function(){
+        var dir = document.getElementById('am-ordenacao-dir');
         return {
           valorSelect: document.getElementById('am-ordenacao').value,
-          dirTexto: document.getElementById('am-ordenacao-dir').textContent.trim(),
+          dirRotulo: dir.getAttribute('aria-label'),
+          dirAtributo: dir.getAttribute('data-dir'),
         }; })()`);
       assert.strictEqual(estado.valorSelect, "curvaAbc_desc", "reselecionar o filtro já ativo tem de manter a direção (C → A), não voltar pro padrão (A → C)");
-      assert.strictEqual(estado.dirTexto, "C → A");
-      assert.strictEqual(chamadasPerformance.length, 0, "reselecionar o mesmo filtro/direção não deveria refazer a chamada");
-      performanceHandler = null;
+      assert.strictEqual(estado.dirRotulo, "C → A");
+      assert.strictEqual(estado.dirAtributo, "desc", "seta de baixo continua acesa — não voltou pro padrão (asc)");
+      assert.strictEqual(chamadasFamilias.length, 0, "reselecionar o mesmo filtro/direção não deveria refazer a chamada global (ordenarPor)");
+
+      // Devolve pro Padrão antes do próximo teste — sem isso AM.ordenarPor
+      // fica preso em 'curvaAbc_desc' e vaza pra 39q em diante (mesmo cuidado
+      // de estado global já documentado em 39f/39g acima).
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.getElementById('am-ordenacao').value === ""`,
+        "reset pós-teste não voltou o select para Padrão");
     });
 
     await check("39q — escolher 'Padrão' desabilita e apaga a direção", async () => {
@@ -3278,11 +3297,13 @@ async function run() {
         var dir = document.getElementById('am-ordenacao-dir');
         return {
           rotulo: document.getElementById('am-ordenacao-trigger-label').textContent.trim(),
-          dirTexto: dir.textContent.trim(),
+          dirRotulo: dir.getAttribute('aria-label'),
+          dirAtributo: dir.getAttribute('data-dir'),
           dirDesabilitado: dir.disabled,
         }; })()`);
       assert.strictEqual(estado.rotulo, "Padrão");
-      assert.strictEqual(estado.dirTexto, "—");
+      assert.strictEqual(estado.dirRotulo, "—");
+      assert.strictEqual(estado.dirAtributo, null, "voltar pro Padrão apaga a seta destacada");
       assert.strictEqual(estado.dirDesabilitado, true);
     });
 

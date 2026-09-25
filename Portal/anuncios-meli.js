@@ -750,6 +750,7 @@
         // até o operador escolher de novo.
         AM_ordemOriginalAnuncios = null;
         if (el("am-ordenacao")) el("am-ordenacao").value = "";
+        sincronizarComboOrdenacao();
         var avisoLimpo = el("am-ordenacao-aviso");
         if (avisoLimpo) avisoLimpo.hidden = true;
       }
@@ -1964,9 +1965,9 @@
 
   var ORDENACAO_FILTROS = [
     { base: "", label: "Padrão", dirType: "none" },
-    { base: "margem", label: "Margem", dirType: "num", dirPadrao: "desc" },
+    { base: "margem", label: "Margem (nesta página)", dirType: "num", dirPadrao: "desc" },
     { base: "faturamento", label: "% Faturamento", dirType: "num", dirPadrao: "desc" },
-    { base: "unidades", label: "Unidades vendidas (7d)", dirType: "num", dirPadrao: "desc" },
+    { base: "unidades", label: "Unidades vendidas 7d (nesta página)", dirType: "num", dirPadrao: "desc" },
     { base: "curvaAbc", label: "Curva ABC", dirType: "abc", dirPadrao: "asc" },
   ];
 
@@ -2023,8 +2024,14 @@
     el("am-ordenacao-trigger-label").textContent = filtro.label;
 
     var dirBtn = el("am-ordenacao-dir");
-    dirBtn.textContent = rotuloDirecaoOrdenacao(filtro, dir);
+    // Sem texto visível — vira ícone (2 setas, ver CSS). O rótulo continua
+    // existindo, só que como aria-label/title (leitor de tela + tooltip).
+    var rotulo = rotuloDirecaoOrdenacao(filtro, dir);
+    dirBtn.setAttribute("aria-label", rotulo);
+    dirBtn.title = rotulo;
     dirBtn.disabled = filtro.dirType === "none";
+    if (filtro.dirType === "none") dirBtn.removeAttribute("data-dir");
+    else dirBtn.setAttribute("data-dir", dir);
 
     var menu = el("am-ordenacao-menu");
     if (menu) {

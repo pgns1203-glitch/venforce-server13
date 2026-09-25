@@ -1,0 +1,179 @@
+// server/services/motorMargem/marginSnapshotRunRepository.js
+// Margin Snapshot — repository de margin_snapshot_runs (M1 da fundação, ver
+// docs/AUDITORIA_WORKERS_E_PLANO_MARGIN_SNAPSHOT.md).
+//
+// M1 é só persistência/fundação: NÃO existe claim, worker loop, SKIP LOCKED,
+// heartbeat scheduler ou recovery automático aqui — isso é M2 (ver §13 do
+// prompt de M1). createRun faz um INSERT simples; o índice único parcial
+// (uq_margin_snapshot_runs_ativo) é quem impede dois runs ativos
+// equivalentes, devolvendo erro Postgres 23505 em caso de corrida — a
+// lógica de "devolver o run existente em vez de propagar o erro" (mesmo
+// espírito de centralVendasSyncRunService.buscarRunAtivoEquivalente) fica
+// para M2, deliberadamente fora desta rodada.
+
+const pool = require("../../config/database");
+
+async function ensureTables(db = pool) {
+  const repository = require("./marginSnapshotRepository");
+  await repository.ensureMarginSnapshotTables(db);
+}
+
+// Transições válidas — mesma disciplina de central_vendas_sync_runs: nunca
+// terminal -> terminal, nunca pula estado. queued -> running -> (completed |
+// failed). PARTIAL/CANCELLED não existem nesta máquina de estados (D5/§9.1
+// do plano) — sucesso parcial é sinalizado por failed_items > 0 num run
+// completed, não por um status novo.
+const TRANSICOES = {
+  running: "queued",
+  completed: "running",
+  failed: "running",
+};
+
+function sanitizeRun(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    clienteId: Number(row.cliente_id),
+    clienteSlug: row.cliente_slug,
+    clienteContaId: Number(row.cliente_conta_id),
+    marketplace: row.marketplace,
+    baseId: row.base_id != null ? Number(row.base_id) : null,
+    reason: row.reason,
+    status: row.status,
+    totalItems: row.total_items != null ? Number(row.total_items) : null,
+    processedItems: Number(row.processed_items),
+    successItems: Number(row.success_items),
+    failedItems: Number(row.failed_items),
+    cursorOffset: Number(row.cursor_offset),
+    requestedBy: row.requested_by != null ? Number(row.requested_by) : null,
+    createdAt: row.created_at,
+    startedAt: row.started_at,
+    heartbeatAt: row.heartbeat_at,
+    finishedAt: row.finished_at,
+    errorCode: row.error_code || null,
+    errorMessage: row.error_message || null,
+    metadata: row.metadata_json || {},
+    updatedAt: row.updated_at,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Criação
+// ---------------------------------------------------------------------------
+
+async function createRun({
+  clienteId, clienteSlug, clienteContaId, marketplace = "meli", baseId = null,
+  reason, requestedBy = null, db = pool,
+}) {
+  if (!clienteId) throw new Error("createRun: clienteId é obrigatório.");
+  if (!clienteContaId) throw new Error("createRun: clienteContaId é obrigatório (ver decisão em margin_snapshot_schema.sql).");
+  if (!reason) throw new Error("createRun: reason é obrigatório.");
+
+  await ensureTables(db);
+
+  const result = await db.query(
+    `INSERT INTO margin_snapshot_runs
+      (cliente_id, cliente_slug, cliente_conta_id, marketplace, base_id, reason, status, requested_by)
+     VALUES ($1,$2,$3,$4,$5,$6,'queued',$7)
+     RETURNING *`,
+    [clienteId, clienteSlug, clienteContaId, marketplace, baseId, reason, requestedBy]
+  );
+  return sanitizeRun(result.rows[0]);
+}
+
+// ---------------------------------------------------------------------------
+// Leitura — sempre escopada por conta (nunca vaza run de outra conta do
+// mesmo cliente, nem de outro cliente).
+// ---------------------------------------------------------------------------
+
+async function getRunById({ runId, clienteContaId, db = pool }) {
+  if (!runId) throw new Error("getRunById: runId é obrigatório.");
+  if (!clienteContaId) throw new Error("getRunById: clienteContaId é obrigatório (leitura sempre account-scoped).");
+
+  const result = await db.query(
+    `SELECT * FROM margin_snapshot_runs WHERE id = $1 AND cliente_conta_id = $2 LIMIT 1`,
+    [runId, clienteContaId]
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
+async function findActiveRunForAccount({ clienteId, clienteContaId, marketplace = "meli", db = pool }) {
+  if (!clienteId) throw new Error("findActiveRunForAccount: clienteId é obrigatório.");
+  if (!clienteContaId) throw new Error("findActiveRunForAccount: clienteContaId é obrigatório.");
+
+  const result = await db.query(
+    `SELECT * FROM margin_snapshot_runs
+      WHERE cliente_id = $1 AND cliente_conta_id = $2 AND marketplace = $3
+        AND status IN ('queued','running')
+      ORDER BY id DESC
+      LIMIT 1`,
+    [clienteId, clienteContaId, marketplace]
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Transições de estado — guarda estrita (WHERE status = <estado de origem
+// esperado>), nunca "status <> X" (mesmo bug já corrigido em
+// centralVendasSyncRunService: essa negação deixaria passar failed->
+// completed e completed->failed).
+// ---------------------------------------------------------------------------
+
+async function updateRunStatus({ runId, status, errorCode = null, errorMessage = null, db = pool }) {
+  const fromStatus = TRANSICOES[status];
+  if (!fromStatus) {
+    throw new Error(`updateRunStatus: transição para status "${status}" não é suportada por esta fundação (M1).`);
+  }
+
+  if (status === "running") {
+    const result = await db.query(
+      `UPDATE margin_snapshot_runs
+          SET status = 'running', started_at = NOW(), heartbeat_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'queued'
+        RETURNING *`,
+      [runId]
+    );
+    return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+  }
+
+  // completed | failed
+  const result = await db.query(
+    `UPDATE margin_snapshot_runs
+        SET status = $2, finished_at = NOW(), updated_at = NOW(),
+            error_code = $3, error_message = $4
+      WHERE id = $1 AND status = 'running'
+      RETURNING *`,
+    [runId, status, errorCode, errorMessage ? String(errorMessage).slice(0, 2000) : null]
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
+// Progresso só faz sentido num run em andamento — guarda WHERE status =
+// 'running' evita gravar progresso num run já finalizado ou ainda não
+// iniciado. Atualiza heartbeat_at a cada chamada (base para o teto de
+// staleness de recovery, que é trabalho de M2 — aqui só a coluna existe).
+async function updateRunProgress({
+  runId, processedItems, successItems, failedItems, cursorOffset, totalItems = undefined, db = pool,
+}) {
+  const result = await db.query(
+    `UPDATE margin_snapshot_runs
+        SET processed_items = $2, success_items = $3, failed_items = $4, cursor_offset = $5,
+            total_items = COALESCE($6, total_items),
+            heartbeat_at = NOW(), updated_at = NOW()
+      WHERE id = $1 AND status = 'running'
+      RETURNING *`,
+    [runId, processedItems, successItems, failedItems, cursorOffset, totalItems ?? null]
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
+module.exports = {
+  ensureTables,
+  createRun,
+  getRunById,
+  findActiveRunForAccount,
+  updateRunStatus,
+  updateRunProgress,
+  sanitizeRun,
+  TRANSICOES,
+};

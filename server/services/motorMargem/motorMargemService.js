@@ -626,13 +626,24 @@ function resumoVazio() {
  * `prepareWorkspaceContext`, ANTES do loop — não a cada lote. Cada lote só
  * chama `enrichBatch`, que reaproveita esse contexto e faz apenas o que
  * depende do lote: buscar os IDs da página e os detalhes desses itens.
+ *
+ * `clienteContaId` (opcional, default `null`): mesmo contrato de
+ * `prepareWorkspaceContext` (linha 183) — antes desta correção, esta função
+ * não o repassava, então um consumidor multi-conta (ex.: futuro job de
+ * margem projetada, ver FASE 2 de
+ * docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_FASE2_JOB_MANUAL.md) não tinha
+ * como pedir o workspace de UMA conta específica — `resolveMarketplaceAccountContext`
+ * reabria a resolução "automática", que rejeita com 409
+ * MULTIPLE_MARKETPLACE_ACCOUNTS qualquer cliente com 2+ contas ativas. Sem
+ * `clienteContaId` informado o comportamento é idêntico a antes (resolução
+ * automática, inalterada).
  */
 async function carregarWorkspace(
-  { clienteSlug, baseSlug, dateFrom, dateTo, targetMargin, maxItens },
+  { clienteSlug, baseSlug, dateFrom, dateTo, targetMargin, maxItens, clienteContaId = null },
   deps = {}
 ) {
   const prepared = await (deps.prepareWorkspaceContext || prepareWorkspaceContext)(
-    { clienteSlug, baseSlug, dateFrom, dateTo },
+    { clienteSlug, baseSlug, dateFrom, dateTo, clienteContaId },
     deps
   );
   const enrich = deps.enrichBatch || enrichBatch;

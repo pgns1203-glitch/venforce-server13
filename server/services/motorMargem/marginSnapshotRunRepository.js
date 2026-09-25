@@ -2,14 +2,14 @@
 // Margin Snapshot — repository de margin_snapshot_runs (M1 da fundação, ver
 // docs/AUDITORIA_WORKERS_E_PLANO_MARGIN_SNAPSHOT.md).
 //
-// M1 é só persistência/fundação: NÃO existe claim, worker loop, SKIP LOCKED,
-// heartbeat scheduler ou recovery automático aqui — isso é M2 (ver §13 do
-// prompt de M1). createRun faz um INSERT simples; o índice único parcial
-// (uq_margin_snapshot_runs_ativo) é quem impede dois runs ativos
-// equivalentes, devolvendo erro Postgres 23505 em caso de corrida — a
-// lógica de "devolver o run existente em vez de propagar o erro" (mesmo
-// espírito de centralVendasSyncRunService.buscarRunAtivoEquivalente) fica
-// para M2, deliberadamente fora desta rodada.
+// M1 foi só persistência/fundação: createRun fazia um INSERT simples; o
+// índice único parcial (uq_margin_snapshot_runs_ativo) é quem impede dois
+// runs ativos equivalentes, devolvendo erro Postgres 23505 em caso de
+// corrida. M2 adiciona aqui SOMENTE claimNextQueuedRun/touchHeartbeat — o
+// claim atômico multi-instance (§16/§23 de
+// docs/AUDITORIA_WORKERS_E_PLANO_MARGIN_SNAPSHOT.md) e o heartbeat
+// explícito. Dedupe/enqueue idempotente vive em
+// marginSnapshotRunService.js (M2), não aqui.
 
 const pool = require("../../config/database");
 
@@ -167,6 +167,47 @@ async function updateRunProgress({
   return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
 }
 
+// ---------------------------------------------------------------------------
+// Claim atômico (M2, §8/§16/§23 do plano) — um worker (nesta instância ou em
+// outra) pega o run QUEUED mais antigo sem que outro worker concorrente
+// pegue o mesmo. Postgres não permite ORDER BY/LIMIT direto num UPDATE;
+// por isso o candidato é escolhido numa subquery com FOR UPDATE SKIP
+// LOCKED (trava a linha candidata, pula linhas já travadas por outra
+// transação) e o UPDATE externo transiciona queued -> running na mesma
+// instrução. Isto é uma única instrução SQL: o lock de linha do Postgres já
+// serializa duas chamadas concorrentes na mesma linha — a segunda nunca
+// vê o candidato que a primeira já reivindicou (§16: "não é necessário
+// nenhum mecanismo novo de lock" além disto).
+async function claimNextQueuedRun({ db = pool } = {}) {
+  const result = await db.query(
+    `UPDATE margin_snapshot_runs
+        SET status = 'running', started_at = NOW(), heartbeat_at = NOW(), updated_at = NOW()
+      WHERE id = (
+        SELECT id FROM margin_snapshot_runs
+         WHERE status = 'queued'
+         ORDER BY created_at ASC, id ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT 1
+      )
+      RETURNING *`,
+    []
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
+// Heartbeat explícito (§17 do plano) — só a coluna/função; recovery
+// automático de run abandonado por staleness é M8 (não implementado aqui).
+async function touchHeartbeat(runId, db = pool) {
+  const result = await db.query(
+    `UPDATE margin_snapshot_runs
+        SET heartbeat_at = NOW(), updated_at = NOW()
+      WHERE id = $1 AND status = 'running'
+      RETURNING *`,
+    [runId]
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
 module.exports = {
   ensureTables,
   createRun,
@@ -174,6 +215,8 @@ module.exports = {
   findActiveRunForAccount,
   updateRunStatus,
   updateRunProgress,
+  claimNextQueuedRun,
+  touchHeartbeat,
   sanitizeRun,
   TRANSICOES,
 };

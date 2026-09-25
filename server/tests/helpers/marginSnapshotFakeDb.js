@@ -1,9 +1,11 @@
 // server/tests/helpers/marginSnapshotFakeDb.js
 // Fake db em memória para exercitar marginSnapshotRepository/
-// marginSnapshotRunRepository (M1) sem Postgres real — mesmo espírito de
+// marginSnapshotRunRepository (M1) e marginSnapshotRunService/
+// marginSnapshotWorker (M2) sem Postgres real — mesmo espírito de
 // tests/helpers/mpSettlementFakeDb.js, mas implementando de verdade a
-// semântica de UNIQUE INDEX/UPSERT/transição de estado que os testes de M1
-// precisam provar (idempotência, isolamento de conta, dedupe de run ativo).
+// semântica de UNIQUE INDEX/UPSERT/transição de estado/claim atômico que os
+// testes precisam provar (idempotência, isolamento de conta, dedupe de run
+// ativo, claim exclusivo).
 //
 // Não é executado como teste (run-all.js só roda *.test.js na raiz de
 // tests/, não em subpastas).
@@ -69,12 +71,39 @@ function makeMarginSnapshotFakeDb() {
       return { rows: candidatos.length ? [{ ...candidatos[0] }] : [] };
     }
 
-    if (sql.includes("UPDATE margin_snapshot_runs") && sql.includes("SET status = 'running'")) {
+    if (sql.includes("UPDATE margin_snapshot_runs") && sql.includes("SET status = 'running'")
+        && !sql.includes("FOR UPDATE SKIP LOCKED")) {
       const [runId] = params;
       const row = runs.find((r) => r.id === runId && r.status === "queued");
       if (!row) return { rows: [] };
       const now = new Date();
       row.status = "running"; row.started_at = now; row.heartbeat_at = now; row.updated_at = now;
+      return { rows: [{ ...row }] };
+    }
+
+    // ── M2: claim atômico ────────────────────────────────────────────────
+    // Espelha `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED
+    // LIMIT 1) RETURNING *` — busca + mutação num único bloco síncrono (sem
+    // `await` entre achar o candidato e marcá-lo `running`), a mesma
+    // garantia que o Postgres dá com uma única instrução UPDATE: nenhuma
+    // outra chamada pode "enxergar" o candidato entre o SELECT e o UPDATE.
+    if (sql.includes("UPDATE margin_snapshot_runs") && sql.includes("FOR UPDATE SKIP LOCKED")) {
+      const candidatos = runs
+        .filter((r) => r.status === "queued")
+        .sort((a, b) => a.created_at - b.created_at || a.id - b.id);
+      const row = candidatos[0];
+      if (!row) return { rows: [] };
+      const now = new Date();
+      row.status = "running"; row.started_at = now; row.heartbeat_at = now; row.updated_at = now;
+      return { rows: [{ ...row }] };
+    }
+
+    // ── M2: heartbeat explícito ──────────────────────────────────────────
+    if (sql.includes("UPDATE margin_snapshot_runs") && sql.includes("SET heartbeat_at = NOW()")) {
+      const [runId] = params;
+      const row = runs.find((r) => r.id === runId && r.status === "running");
+      if (!row) return { rows: [] };
+      row.heartbeat_at = new Date(); row.updated_at = new Date();
       return { rows: [{ ...row }] };
     }
 

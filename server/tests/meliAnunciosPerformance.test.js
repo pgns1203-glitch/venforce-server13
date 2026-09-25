@@ -858,6 +858,7 @@ async function run() {
 
     assert.strictEqual(res.corpo.unidadesVendidas.porItem["MLB-Z"], 0, "sem pedido no período é fato: 0 unidades");
     assert.strictEqual(res.corpo.faturamento.porItem["MLB-Z"], null, "sem receita no período — null, nunca 0% inventado");
+    assert.strictEqual(res.corpo.faturamento.porItemValor["MLB-Z"], null, "sem receita no período — null, nunca 0 inventado (mesma regra do percentual)");
     assert.strictEqual(res.corpo.curvaAbc.porItem["MLB-Z"], null, "sem receita no período — sem classe, nunca 'C' inventado");
     ok("anúncio sem venda no período: unidadesVendidas=0 (fato), faturamento/curvaAbc=null (nada a classificar)");
   });
@@ -1045,7 +1046,62 @@ async function run() {
     ok("teto PERFORMANCE_MAX_ITENS aplica-se à união de itemIds explícitos + filhos de família resolvidos");
   });
 
-  // 36. familias ausente: zero chamada a resolverItensDeFamilias, comporta-
+  // 37. faturamento.porItemValor: valor ABSOLUTO (R$) que a receita do item
+  //     representa no período — mesma fonte (porMlb.receita) que já monta
+  //     porItem (percentual), campo ADITIVO: porItem continua exatamente
+  //     como antes (ver auditoria "Curva ABC sempre visível + faturamento
+  //     absoluto"). Nunca derivado do percentual arredondado (perderia
+  //     precisão de centavos).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    margemHandler = () => ({
+      itens: [],
+      porMlb: new Map([
+        ["MLB-A", { receita: 300 }],
+        ["MLB-B", { receita: 100 }],
+        ["MLB-OUTRO", { receita: 600 }],
+      ]),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-A,MLB-B", incluirMetricas: "0", incluirFaturamento: "1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.faturamento.porItemValor["MLB-A"], 300, "valor absoluto real (receita), não percentual × total");
+    assert.strictEqual(res.corpo.faturamento.porItemValor["MLB-B"], 100);
+    assert.strictEqual(res.corpo.faturamento.porItem["MLB-A"], 0.3, "percentual continua exatamente como antes — campo aditivo, não substituição");
+    ok("faturamento.porItemValor: valor absoluto (R$) por item, aditivo ao percentual existente");
+  });
+
+  // 38. faturamento.porFamiliaValor: receita SOMADA (R$) dos filhos — mesma
+  //     soma que já alimenta porFamilia (percentual), nunca derivada de
+  //     receitaTotalPeriodo × porFamilia (arredondaria diferente).
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    familiaHandler = () => new Map([["FAM1", ["MLB-F1", "MLB-F2"]]]);
+    margemHandler = () => ({
+      itens: [],
+      porMlb: new Map([
+        ["MLB-F1", { receita: 200 }],
+        ["MLB-F2", { receita: 100 }],
+        ["MLB-OUTRO", { receita: 700 }],
+      ]),
+      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "", incluirMetricas: "0", incluirFaturamento: "1", familias: "FAM1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.faturamento.porFamiliaValor["FAM1"], 300, "200+100 — soma bruta dos filhos, não derivada do percentual");
+    assert.strictEqual(res.corpo.faturamento.porFamilia["FAM1"], 0.3, "percentual continua igual ao teste 32");
+    ok("faturamento.porFamiliaValor: soma bruta (R$) dos filhos, aditivo ao percentual existente");
+  });
+
+  // 39. familias ausente: zero chamada a resolverItensDeFamilias, comporta-
   //     mento idêntico ao anterior (nenhuma regressão nos testes 1-29).
   await withMockDb(UMA_CONTA, async () => {
     reset();

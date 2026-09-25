@@ -30,6 +30,13 @@ let motorHandler = null; // ({ clienteSlug, clienteContaId, itemIds }, deps) => 
 // motorMargemService.enrichBatch).
 let chamadasMontarItens = [];
 
+// unidadesVendidas7d_* (GLOBAL) não passa pelo Motor — usa
+// buscarVendas7dPorItens direto (ver meliMetricas7dService.js). Registra
+// cada chamada (itemIds pedidos) pro teste N provar que o lote é o
+// CATÁLOGO INTEIRO filtrado, nunca só a página.
+let vendasHandler = null; // ({ clienteId, mlUserId, itemIds }) => { ok, porItem } ou { ok:false }
+let chamadasVendas7d = [];
+
 const originalLoad = Module._load;
 Module._load = function loadWithStubs(request, parent, isMain) {
   if (request === "../services/motorMargem/motorMargemService") {
@@ -38,6 +45,16 @@ Module._load = function loadWithStubs(request, parent, isMain) {
         chamadasMontarItens.push({ args, deps });
         if (!motorHandler) return { porMlb: new Map(), periodo: {} };
         return motorHandler(args, deps);
+      },
+    };
+  }
+  if (request === "../services/meliAnuncios/meliMetricas7dService") {
+    return {
+      JANELA_DIAS: 7,
+      async buscarVendas7dPorItens(args) {
+        chamadasVendas7d.push(args);
+        if (!vendasHandler) return { ok: true, porItem: {} };
+        return vendasHandler(args);
       },
     };
   }
@@ -512,6 +529,106 @@ async function run() {
     assert.strictEqual(res.corpo.anuncios.length, 2, "SQL padrão continua respondendo a página normalmente");
     motorHandler = null;
     console.log("  ✓ K. erro NÃO tipado do Motor: fallback pro SQL padrão com ordenacaoIndisponivel genérico, nunca 500/exceção");
+  });
+
+  // ── L-O: unidadesVendidas7d (GLOBAL) — decisão "globalizar Unidades
+  //    vendidas 7d / manter Margem local" (buscarVendas7dPorItens já busca
+  //    os pedidos da CONTA INTEIRA no período, então globalizar não custa
+  //    chamada extra — ver comentário de ORDENACOES_GLOBAIS). ──────────────
+
+  // L. unidades_desc: sequência monotônica cruzando página 1 -> 2, e o lote
+  //    pedido a buscarVendas7dPorItens é o CATÁLOGO INTEIRO filtrado, nunca
+  //    só a página — mesmo bug/mesma correção de faturamento_desc (teste A).
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" }),
+      anuncioFixture({ item_id: "MLB3" }), anuncioFixture({ item_id: "MLB4" }),
+    ],
+  }, async () => {
+    chamadasVendas7d.length = 0;
+    vendasHandler = () => ({ ok: true, porItem: { MLB1: 40, MLB2: 30, MLB3: 20, MLB4: 10 } });
+
+    const res1 = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "2", ordenarPor: "unidades_desc" } }, res1);
+    assert.strictEqual(res1.corpo.ok, true);
+    assert.deepStrictEqual(res1.corpo.anuncios.map((a) => a.item_id), ["MLB1", "MLB2"]);
+    assert.strictEqual(res1.corpo.ordenacaoAplicada, true);
+    assert.strictEqual(res1.corpo.anuncios[0].unidadesVendidas7d, 40);
+
+    const res2 = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "2", limit: "2", ordenarPor: "unidades_desc" } }, res2);
+    assert.deepStrictEqual(res2.corpo.anuncios.map((a) => a.item_id), ["MLB3", "MLB4"]);
+    assert.ok(res1.corpo.anuncios[1].unidadesVendidas7d > res2.corpo.anuncios[0].unidadesVendidas7d,
+      "último da página 1 (30) tem de valer MAIS que o primeiro da página 2 (20) — nunca reinicia");
+
+    assert.ok(chamadasVendas7d.length >= 2, "cada página faz sua própria busca (mesmo padrão do Motor pra faturamento)");
+    const idsDaChamada = new Set(chamadasVendas7d[0].itemIds);
+    assert.ok(["MLB1", "MLB2", "MLB3", "MLB4"].every((id) => idsDaChamada.has(id)),
+      "o lote pedido é o CATÁLOGO INTEIRO filtrado, nunca só a página — é isso que garante o ranking global");
+    vendasHandler = null;
+    console.log("  ✓ L. unidades_desc: monotônico cruzando página 1 -> 2, lote pedido é o catálogo inteiro");
+  });
+
+  // M. unidades_desc: família usa a SOMA dos filhos, nunca o filho isolado —
+  //    mesmo raciocínio do teste B (faturamento).
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B", user_product_id: null }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    vendasHandler = () => ({ ok: true, porItem: { "MLB-A1": 5, "MLB-A2": 5, "MLB-B": 8 } });
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "unidades_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.ok(familia, "FAM1 precisa aparecer como família");
+    assert.strictEqual(res.corpo.anuncios[0].family_id, "FAM1", "FAM1 (5+5=10) > MLB-B (8) — família vence pelo agregado, não pelo filho isolado");
+    assert.strictEqual(familia.unidadesVendidas7d, 10, "família usa a soma dos filhos, nunca o filho isolado");
+    const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");
+    assert.strictEqual(itemAvulso.unidadesVendidas7d, 8);
+    vendasHandler = null;
+    console.log("  ✓ M. unidades_desc: família usa a soma dos filhos (porFamilia agregado)");
+  });
+
+  // N. busca de vendas 7d falhou (ok:false — token, rede, erro do ML):
+  //    fallback pro SQL padrão, ordenacaoAplicada:false, nunca 500 — mesma
+  //    garantia do Motor indisponível (teste D), agora pro caminho que não
+  //    usa o Motor de Margem.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" })],
+  }, async () => {
+    vendasHandler = () => ({ ok: false, porItem: {} });
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "unidades_asc" } }, res);
+    assert.strictEqual(res.corpo.ok, true, "fallback nunca é 500");
+    assert.strictEqual(res.corpo.ordenacaoAplicada, false);
+    assert.deepStrictEqual(res.corpo.ordenacaoIndisponivel, { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." });
+    assert.strictEqual(res.corpo.anuncios.length, 2, "SQL padrão continua respondendo a página normalmente");
+    vendasHandler = null;
+    console.log("  ✓ N. busca de vendas 7d falhou: fallback pro SQL padrão, ordenacaoAplicada:false, nunca 500");
+  });
+
+  // O. conta sem external_account_id (mlUserId nunca chega a existir — ver
+  //    resolveMarketplaceAccountContext, que lê `conta.external_account_id`
+  //    direto, sem depender de grant): fallback pro SQL padrão, nunca 500 —
+  //    mesma garantia, motivo diferente (nenhuma conta ML utilizável, não
+  //    uma falha de rede).
+  await withMockDb({
+    contas: [{ id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", external_account_id: null, is_primary: true, ativo: true }],
+    grants: [],
+    anuncios: [anuncioFixture({ item_id: "MLB1" })],
+  }, async () => {
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "unidades_desc" } }, res);
+    assert.strictEqual(res.corpo.ok, true, "fallback nunca é 500");
+    assert.strictEqual(res.corpo.ordenacaoAplicada, false);
+    assert.strictEqual(res.corpo.ordenacaoIndisponivel.codigo, "CONTA_ML_INDISPONIVEL");
+    console.log("  ✓ O. sem conta ML resolvível: fallback pro SQL padrão, ordenacaoAplicada:false, nunca 500");
   });
 
   console.log("meliAnunciosOrdenacaoGlobal.test.js passed");

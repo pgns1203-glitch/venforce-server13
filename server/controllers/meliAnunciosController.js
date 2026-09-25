@@ -201,17 +201,27 @@ async function listar(req, res) {
   }
 }
 
-// Critérios com ranking GLOBAL (contra o catálogo filtrado inteiro, via
-// Motor de Margem) — margem_*/unidades_* NÃO entram aqui de propósito:
-// continuam ordenação local de página no frontend (aplicarOrdenacaoPerformance
-// em Portal/anuncios-meli.js), decisão explícita da auditoria "ordenação
-// global limitada à página atual" — margem/unidades exigiriam recalcular o
-// Motor pro catálogo inteiro a cada ordenação, sem cache, custo não aceito.
+// Critérios com ranking GLOBAL (contra o catálogo filtrado inteiro).
+// margem_* NÃO entra aqui de propósito — continua ordenação local de página
+// no frontend (aplicarOrdenacaoPerformance em Portal/anuncios-meli.js):
+// margem passa pelo `enrichBatch` do Motor (chamadas AO VIVO ao Mercado
+// Livre por página, ver motorMargemService.js), e rodar isso pro catálogo
+// inteiro a cada ordenação teria custo/risco de rate limit não aceito —
+// precisaria de uma camada de cache/pré-cálculo, que é um projeto à parte
+// (auditoria "globalizar Unidades vendidas 7d / manter Margem local").
+//
+// unidadesVendidas7d_* virou GLOBAL: `buscarVendas7dPorItens`
+// (meliMetricas7dService.js) já busca os pedidos da CONTA INTEIRA no período
+// e só agrega por item em JS — mesmo truque de custo do `porMlb` do Motor
+// (faturamento/curvaAbc), então globalizar não adiciona chamada nenhuma além
+// da que já seria feita pro lote da página.
 const ORDENACOES_GLOBAIS = {
   faturamento_asc: { campo: "faturamento", direcao: "asc" },
   faturamento_desc: { campo: "faturamento", direcao: "desc" },
   curvaAbc_asc: { campo: "curvaAbc", direcao: "asc" },
   curvaAbc_desc: { campo: "curvaAbc", direcao: "desc" },
+  unidades_asc: { campo: "unidadesVendidas7d", direcao: "asc" },
+  unidades_desc: { campo: "unidadesVendidas7d", direcao: "desc" },
 };
 const CURVA_ABC_ORDEM = { A: 1, B: 2, C: 3 };
 
@@ -236,6 +246,43 @@ const CURVA_ABC_ORDEM = { A: 1, B: 2, C: 3 };
 // repassa `deps` para `enrichBatch` — ver motorMargemService.js): só a página
 // final (após ordenar e cortar) é hidratada com detalhe completo
 // (título/preço/capa), nunca aqui.
+// Fallback comum a QUALQUER motivo de a ordenação global não poder rodar
+// (Motor indisponível, conta ML não resolvida, busca de vendas 7d falhou —
+// ver chamadores) — Restrição Global #5 do plano ("nunca vira erro 500 nem
+// ordenação quebrada"): cai pro SQL padrão da página pedida, só sinalizando
+// `ordenacaoAplicada:false` pro frontend mostrar o aviso.
+async function fallbackOrdenacaoIndisponivel({ cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit, indisponivel }) {
+  const fallback = await familiaService.listarAgrupado({
+    clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+  });
+  return { ...fallback, ordenacaoAplicada: false, ordenacaoIndisponivel: indisponivel };
+}
+
+// unidadesVendidas7d é GLOBAL mas NÃO passa pelo Motor de Margem — só
+// precisa do mlUserId da conta (pra buscar os pedidos) e da MESMA busca
+// "conta inteira" que `buscarVendas7dPorItens` já faz pro endpoint de
+// performance (ver comentário de ORDENACOES_GLOBAIS acima). null (nunca 0)
+// quando a busca falhou — "não sabemos", igual ao endpoint de performance.
+function montarUnidadesVendidasGlobal(resultadoVendas, itemIds, porFamiliaItens) {
+  const falhou = !resultadoVendas || !resultadoVendas.ok;
+  const porItemBruto = falhou ? {} : resultadoVendas.porItem;
+
+  const porItem = {};
+  for (const itemId of itemIds) {
+    porItem[itemId] = falhou ? null : (porItemBruto[itemId] || 0);
+  }
+
+  const porFamilia = {};
+  for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
+    if (falhou) { porFamilia[familyId] = null; continue; }
+    let soma = 0;
+    for (const itemId of itensDaFamilia) soma += porItemBruto[itemId] || 0;
+    porFamilia[familyId] = soma;
+  }
+
+  return { periodoDias: metricas7dService.JANELA_DIAS, porItem, porFamilia };
+}
+
 async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit, config }) {
   const chaves = await familiaService.listarChavesFiltradas({
     clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro,
@@ -251,50 +298,86 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
     });
   }
 
-  let motorResultado;
-  try {
-    motorResultado = await motorMargemService.montarItens(
-      { clienteSlug: cliente.slug, clienteContaId, itemIds: [] },
-      // No-op: esta função só precisa de `porMlb`/`periodo`, montados pelo
-      // `prepareWorkspaceContext` que roda ANTES de `enrichBatch` — dispensar
-      // o enriquecimento por item evita 3 chamadas AO VIVO ao Mercado Livre
-      // que este caminho nunca usaria (ver comentário acima).
-      { enrichBatch: async () => ({ totalItensMl: 0, itens: [] }) }
-    );
-  } catch (err) {
-    // Qualquer falha aqui — típica (Base não vinculada etc., com
-    // err.payload.codigo) ou inesperada (timeout, erro de rede, bug) — cai
-    // pro SQL padrão em vez de virar 500: Restrição Global #5 do plano
-    // ("Motor indisponível nunca pode virar erro 500"). A distinção só muda
-    // o LOG e a mensagem exposta, nunca o comportamento de fallback.
-    const tipada = err.statusCode && err.payload && err.payload.codigo;
-    if (!tipada) {
-      console.error(
-        "[anuncios-meli] listarAgrupadoOrdenadoPorMotor: erro inesperado do Motor, caindo para ordem padrão:",
-        err.message
-      );
-    }
-    const fallback = await familiaService.listarAgrupado({
-      clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro, page, limit,
-    });
-    return {
-      ...fallback,
-      ordenacaoAplicada: false,
-      ordenacaoIndisponivel: tipada
-        ? { codigo: err.payload.codigo, mensagem: err.payload.erro }
-        : { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." },
-    };
-  }
-
-  const { porMlb, periodo } = motorResultado;
   const uniao = new Set(itemIdsIndividuais);
   for (const filhos of porFamiliaItens.values()) for (const id of filhos) uniao.add(id);
   const todosItemIds = Array.from(uniao);
 
-  const ranking = config.campo === "faturamento"
-    ? montarFaturamento(porMlb, todosItemIds, periodo, porFamiliaItens)
-    : montarCurvaAbc(porMlb, todosItemIds, periodo, porFamiliaItens);
-  const campoResposta = config.campo === "faturamento" ? "faturamentoPercentual" : "curvaAbc";
+  let ranking;
+  let campoResposta;
+
+  if (config.campo === "unidadesVendidas7d") {
+    campoResposta = "unidadesVendidas7d";
+
+    let mlUserId = null;
+    try {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      mlUserId = contexto.mlUserId;
+    } catch (err) {
+      // Mesma filosofia do Motor indisponível: uma ambiguidade/erro estrutural
+      // aqui não pode quebrar a LISTAGEM (que funcionaria normalmente sem
+      // ordenação) — vira aviso, nunca 500 nem o fluxo de escolha de conta.
+      return fallbackOrdenacaoIndisponivel({
+        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        indisponivel: { codigo: "CONTA_ML_INDISPONIVEL", mensagem: "Não foi possível determinar a conta do Mercado Livre para ordenar por Unidades vendidas." },
+      });
+    }
+    if (!mlUserId) {
+      return fallbackOrdenacaoIndisponivel({
+        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        indisponivel: { codigo: "CONTA_ML_INDISPONIVEL", mensagem: "Não foi possível determinar a conta do Mercado Livre para ordenar por Unidades vendidas." },
+      });
+    }
+
+    const resultadoVendas = await metricas7dService.buscarVendas7dPorItens({
+      clienteId: cliente.id, mlUserId, itemIds: todosItemIds,
+    });
+    if (!resultadoVendas || !resultadoVendas.ok) {
+      return fallbackOrdenacaoIndisponivel({
+        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        indisponivel: { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." },
+      });
+    }
+    ranking = montarUnidadesVendidasGlobal(resultadoVendas, todosItemIds, porFamiliaItens);
+  } else {
+    let motorResultado;
+    try {
+      motorResultado = await motorMargemService.montarItens(
+        { clienteSlug: cliente.slug, clienteContaId, itemIds: [] },
+        // No-op: esta função só precisa de `porMlb`/`periodo`, montados pelo
+        // `prepareWorkspaceContext` que roda ANTES de `enrichBatch` — dispensar
+        // o enriquecimento por item evita 3 chamadas AO VIVO ao Mercado Livre
+        // que este caminho nunca usaria (ver comentário acima).
+        { enrichBatch: async () => ({ totalItensMl: 0, itens: [] }) }
+      );
+    } catch (err) {
+      // Qualquer falha aqui — típica (Base não vinculada etc., com
+      // err.payload.codigo) ou inesperada (timeout, erro de rede, bug) — cai
+      // pro SQL padrão em vez de virar 500: Restrição Global #5 do plano
+      // ("Motor indisponível nunca pode virar erro 500"). A distinção só muda
+      // o LOG e a mensagem exposta, nunca o comportamento de fallback.
+      const tipada = err.statusCode && err.payload && err.payload.codigo;
+      if (!tipada) {
+        console.error(
+          "[anuncios-meli] listarAgrupadoOrdenadoPorMotor: erro inesperado do Motor, caindo para ordem padrão:",
+          err.message
+        );
+      }
+      return fallbackOrdenacaoIndisponivel({
+        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        indisponivel: tipada
+          ? { codigo: err.payload.codigo, mensagem: err.payload.erro }
+          : { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." },
+      });
+    }
+
+    const { porMlb, periodo } = motorResultado;
+    ranking = config.campo === "faturamento"
+      ? montarFaturamento(porMlb, todosItemIds, periodo, porFamiliaItens)
+      : montarCurvaAbc(porMlb, todosItemIds, periodo, porFamiliaItens);
+    campoResposta = config.campo === "faturamento" ? "faturamentoPercentual" : "curvaAbc";
+  }
 
   const comValor = chaves.map((c) => {
     const valorBruto = c.family_id != null ? ranking.porFamilia[c.family_id] : ranking.porItem[c.item_id];

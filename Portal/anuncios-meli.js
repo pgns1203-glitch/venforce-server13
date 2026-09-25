@@ -750,6 +750,7 @@
         // até o operador escolher de novo.
         AM_ordemOriginalAnuncios = null;
         if (el("am-ordenacao")) el("am-ordenacao").value = "";
+        sincronizarComboOrdenacao();
         var avisoLimpo = el("am-ordenacao-aviso");
         if (avisoLimpo) avisoLimpo.hidden = true;
       }
@@ -1964,9 +1965,9 @@
 
   var ORDENACAO_FILTROS = [
     { base: "", label: "Padrão", dirType: "none" },
-    { base: "margem", label: "Margem", dirType: "num", dirPadrao: "desc" },
+    { base: "margem", label: "Margem (nesta página)", dirType: "num", dirPadrao: "desc" },
     { base: "faturamento", label: "% Faturamento", dirType: "num", dirPadrao: "desc" },
-    { base: "unidades", label: "Unidades vendidas (7d)", dirType: "num", dirPadrao: "desc" },
+    { base: "unidades", label: "Unidades vendidas 7d (nesta página)", dirType: "num", dirPadrao: "desc" },
     { base: "curvaAbc", label: "Curva ABC", dirType: "abc", dirPadrao: "asc" },
   ];
 

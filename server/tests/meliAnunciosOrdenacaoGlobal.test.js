@@ -228,12 +228,17 @@ async function run() {
     assert.deepStrictEqual(res1.corpo.anuncios.map((a) => a.item_id), ["MLB1", "MLB2"]);
     assert.strictEqual(res1.corpo.ordenacaoAplicada, true);
     assert.ok(res1.corpo.anuncios[0].faturamentoPercentual > res1.corpo.anuncios[1].faturamentoPercentual);
+    // faturamentoValor: valor ABSOLUTO (R$) junto do percentual que decidiu
+    // a posição — a receita real de cada MLB, nunca derivada do percentual.
+    assert.strictEqual(res1.corpo.anuncios[0].faturamentoValor, 400, "MLB1: receita real, não percentual × total");
+    assert.strictEqual(res1.corpo.anuncios[1].faturamentoValor, 300);
 
     const res2 = fakeRes();
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "2", limit: "2", ordenarPor: "faturamento_desc" } }, res2);
     assert.deepStrictEqual(res2.corpo.anuncios.map((a) => a.item_id), ["MLB3", "MLB4"]);
     assert.ok(res1.corpo.anuncios[1].faturamentoPercentual > res2.corpo.anuncios[0].faturamentoPercentual,
       "o último da página 1 tem de valer MAIS que o primeiro da página 2 — nunca reinicia");
+    assert.strictEqual(res2.corpo.anuncios[0].faturamentoValor, 200, "MLB3: valor absoluto sobrevive à paginação, igual ao percentual");
     motorHandler = null;
     console.log("  ✓ A. faturamento_desc: monotônico cruzando página 1 -> 2");
   });
@@ -258,6 +263,11 @@ async function run() {
     const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
     assert.ok(familia, "FAM1 precisa aparecer como família");
     assert.strictEqual(res.corpo.anuncios[0].family_id, "FAM1", "FAM1 (50+50=100) > MLB-B (80) — família vence pelo agregado, não pelo filho isolado");
+    // faturamentoValor da família é o CONSOLIDADO dos filhos (50+50=100),
+    // nunca o de um filho isolado (50) — mesma regra do percentual (porFamilia).
+    assert.strictEqual(familia.faturamentoValor, 100, "família usa o valor consolidado (soma dos filhos), não o de um filho isolado");
+    const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");
+    assert.strictEqual(itemAvulso.faturamentoValor, 80, "MLB-B avulso: valor absoluto próprio, sem agregação de família");
     motorHandler = null;
     console.log("  ✓ B. família usa porFamilia agregado (soma dos filhos), não o filho mais forte");
   });
@@ -277,6 +287,8 @@ async function run() {
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "faturamento_desc" } }, desc);
     assert.deepStrictEqual(desc.corpo.anuncios.map((a) => a.item_id), ["MLB-COM-VENDA", "MLB-SEM-VENDA"],
       "sem receita fica no fim mesmo em DESC — não pode competir com um valor real");
+    const semVenda = desc.corpo.anuncios.find((a) => a.item_id === "MLB-SEM-VENDA");
+    assert.strictEqual(semVenda.faturamentoValor, null, "sem receita no período — null, nunca 0 inventado");
     motorHandler = null;
     console.log("  ✓ C. item sem receita no período: sempre no fim, nas duas direções");
   });
@@ -313,6 +325,7 @@ async function run() {
     assert.strictEqual(res.corpo.ok, true);
     assert.strictEqual(res.corpo.ordenacaoAplicada, undefined, "sem ordenarPor não deve nem existir o campo — path antigo não conhece esse contrato");
     assert.strictEqual(res.corpo.anuncios[0].faturamentoPercentual, undefined);
+    assert.strictEqual(res.corpo.anuncios[0].faturamentoValor, undefined);
     console.log("  ✓ E. sem ordenarPor: resposta idêntica ao path antigo, sem campos novos");
   });
 
@@ -391,6 +404,7 @@ async function run() {
     assert.deepStrictEqual(res1.corpo.anuncios.map((a) => a.item_id), ["MLB3", "MLB4"]);
     assert.deepStrictEqual(res1.corpo.anuncios.map((a) => a.curvaAbc), ["C", "C"]);
     assert.strictEqual(res1.corpo.anuncios[0].faturamentoPercentual, undefined, "curvaAbc_desc não anexa faturamentoPercentual");
+    assert.strictEqual(res1.corpo.anuncios[0].faturamentoValor, undefined, "curvaAbc_desc não anexa faturamentoValor — Curva ABC não tem valor absoluto");
 
     const res2 = fakeRes();
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "2", limit: "2", ordenarPor: "curvaAbc_desc" } }, res2);

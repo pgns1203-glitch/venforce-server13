@@ -345,6 +345,16 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
     const chave = anuncio.tipo === "familia" ? `fam:${anuncio.family_id}` : `item:${anuncio.item_id}`;
     anuncio[campoResposta] = valorPorChave.has(chave) ? valorPorChave.get(chave) : null;
   }
+  // Valor absoluto (R$) junto do percentual que decidiu a posição — mesma
+  // fonte (ranking.porItemValor/porFamiliaValor), nunca um recálculo. Só
+  // existe quando o critério é faturamento (Curva ABC não tem "valor").
+  if (config.campo === "faturamento") {
+    for (const anuncio of anuncios) {
+      anuncio.faturamentoValor = anuncio.tipo === "familia"
+        ? (ranking.porFamiliaValor[anuncio.family_id] != null ? ranking.porFamiliaValor[anuncio.family_id] : null)
+        : (ranking.porItemValor[anuncio.item_id] != null ? ranking.porItemValor[anuncio.item_id] : null);
+    }
+  }
 
   return {
     anuncios,
@@ -659,12 +669,19 @@ function diasNoPeriodo(periodo) {
 // aqui, porque o denominador é o mesmo para todos, mas recalcular a partir
 // da receita bruta não depende dessa coincidência se o denominador um dia
 // mudar por item).
+// `porItemValor`/`porFamiliaValor`: valor ABSOLUTO (R$) que já estava
+// calculado aqui dentro (`receita`/`receitaFamilia`) e era descartado depois
+// de virar percentual. Campos ADITIVOS — `porItem`/`porFamilia` continuam
+// exatamente como estavam, e o valor absoluto nunca é derivado do percentual
+// (que já chega arredondado a 4 casas) porque isso perderia centavos (ver
+// auditoria "Curva ABC sempre visível + faturamento absoluto").
 function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
   let receitaTotalPeriodo = 0;
   for (const agregado of porMlb.values()) receitaTotalPeriodo += agregado.receita || 0;
   receitaTotalPeriodo = Math.round(receitaTotalPeriodo * 100) / 100;
 
   const porItem = {};
+  const porItemValor = {};
   for (const itemId of itemIds) {
     const agregado = porMlb.get(String(itemId));
     const receita = agregado ? agregado.receita : null;
@@ -672,9 +689,11 @@ function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
       receita != null && receitaTotalPeriodo > 0
         ? Math.round((receita / receitaTotalPeriodo) * 10000) / 10000
         : null;
+    porItemValor[itemId] = receita != null ? Math.round(receita * 100) / 100 : null;
   }
 
   const porFamilia = {};
+  const porFamiliaValor = {};
   for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
     let receitaFamilia = 0;
     let teveReceita = false;
@@ -686,9 +705,10 @@ function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
       teveReceita && receitaTotalPeriodo > 0
         ? Math.round((receitaFamilia / receitaTotalPeriodo) * 10000) / 10000
         : null;
+    porFamiliaValor[familyId] = teveReceita ? Math.round(receitaFamilia * 100) / 100 : null;
   }
 
-  return { periodoDias: diasNoPeriodo(periodo), receitaTotalPeriodo, porItem, porFamilia };
+  return { periodoDias: diasNoPeriodo(periodo), receitaTotalPeriodo, porItem, porFamilia, porItemValor, porFamiliaValor };
 }
 
 // Reaproveita cliente360ProdutosEngine.classificarCurvaAbc (mesmo critério de

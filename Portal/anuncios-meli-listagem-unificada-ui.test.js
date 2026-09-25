@@ -2910,11 +2910,14 @@ async function run() {
       console.log("  ✓ 39h2");
     });
 
-    await check("39i — carregar a listagem (SEM ordenar) já preenche a coluna Faturamento sozinha — individual bundlado na 1ª chamada, família numa chamada própria", async () => {
+    await check("39i — carregar a listagem (SEM ordenar) já preenche a coluna Faturamento (percentual + valor absoluto) e a tag Curva ABC sozinhas — individual bundlado na 1ª chamada, família numa chamada própria", async () => {
       // Recarrega do zero: precisa provar que o preenchimento acontece no
       // PRIMEIRO carregamento, não por causa de cache deixado por um teste
       // de ordenação anterior (ver bug relatado — "todos os anúncios
       // mostram '—'" mesmo sem o operador nunca ter tocado no dropdown).
+      // Curva ABC entra no MESMO carregamento automático (ver auditoria
+      // "Curva ABC sempre visível + faturamento absoluto") — não depende
+      // mais de o operador ter ordenado por ela.
       pedidos.length = 0;
       chamadasPerformance.length = 0;
       performanceHandler = (ids, conta, familias) => {
@@ -2927,13 +2930,22 @@ async function run() {
           ok: true, metricas7d, margem, margemIndisponivel: null,
           // Fração 0–1 (receita/receitaTotalPeriodo) — nunca já em escala
           // 0–100 pronta, mesmo contrato usado nos testes de ordenação
-          // global por faturamento acima.
+          // global por faturamento acima. porItemValor/porFamiliaValor: R$
+          // absoluto, aditivo ao percentual — nunca derivado dele aqui no
+          // mock (mesma regra do backend real).
           faturamento: {
             periodoDias: 30,
             porItem: { "MLB-SEMUP": 0.095, "MLB-SEMVAR": 0.011 },
             porFamilia: { "FAM-1": 0.333, "FAM-2": 0.044 },
+            porItemValor: { "MLB-SEMUP": 950.5, "MLB-SEMVAR": 11 },
+            porFamiliaValor: { "FAM-1": 3330, "FAM-2": 44 },
           },
-          unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
+          curvaAbc: {
+            periodoDias: 30,
+            porItem: { "MLB-SEMUP": "A", "MLB-SEMVAR": "C" },
+            porFamilia: { "FAM-1": "B", "FAM-2": "C" },
+          },
+          unidadesVendidas: null, margemPorFamilia: null,
         };
       };
       try {
@@ -2952,10 +2964,27 @@ async function run() {
         const semup = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMVAR"] .am-faturamento__valor').textContent.trim()`);
         assert.strictEqual(semup, "1,1%");
 
-        assert.ok(chamadasPerformance.some((c) => c.incluirFaturamento === true && !c.familias.length && c.itemIds.includes("MLB-SEMUP")),
-          "o preenchimento do item avulso tem de vir BUNDLADO na mesma chamada de métricas/margem do carregamento automático — nunca uma chamada extra só para faturamento");
-        assert.ok(chamadasPerformance.some((c) => c.incluirFaturamento === true && c.familias.length > 0 && !c.itemIds.length),
-          "o consolidado da família precisa de uma chamada própria, com familias= — não itera os filhos um a um");
+        // Valor absoluto (2ª linha da célula) — nunca mais "do faturamento".
+        const valorAbsolutoSemup = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento__legenda').textContent.trim()`);
+        assert.strictEqual(valorAbsolutoSemup, "R$ 950,50", `célula precisa mostrar o valor absoluto (R$), nunca o texto antigo "do faturamento": recebido "${valorAbsolutoSemup}"`);
+        const valorAbsolutoFam = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-faturamento__legenda').textContent.trim()`);
+        assert.strictEqual(valorAbsolutoFam, "R$ 3.330,00", "família usa o valor ABSOLUTO consolidado (porFamiliaValor, soma dos filhos), nunca o de um filho isolado");
+
+        // Curva ABC: tag SEMPRE visível quando existe dado — sem nenhuma
+        // ordenação selecionada — e SEM o prefixo "ABC" (só a letra).
+        await waitFor(cdp, `(function(){
+          var t = document.querySelector('.am-row[data-item="MLB-SEMUP"] [data-abc-item] .vf-tag');
+          return t && t.textContent.trim() === 'A';
+        })()`, "a tag de Curva ABC do item avulso deveria aparecer sozinha, sem o operador ordenar por ela");
+        const textoTagAbc = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] [data-abc-item] .vf-tag').textContent.trim()`);
+        assert.strictEqual(textoTagAbc, "A", `a tag tem de mostrar só a letra, nunca "ABC A": recebido "${textoTagAbc}"`);
+        const textoTagAbcFam = await cdp.evaluate(`(function(){ var t = document.querySelector('${linhaFam("FAM-1")} [data-abc-familia] .vf-tag'); return t ? t.textContent.trim() : null; })()`);
+        assert.strictEqual(textoTagAbcFam, "B", "a família fechada mostra a Curva ABC CONSOLIDADA (porFamilia), nunca a de um filho isolado");
+
+        assert.ok(chamadasPerformance.some((c) => c.incluirFaturamento === true && c.incluirCurvaAbc === true && !c.familias.length && c.itemIds.includes("MLB-SEMUP")),
+          "o preenchimento do item avulso tem de vir BUNDLADO na mesma chamada de métricas/margem do carregamento automático — Curva ABC junto, nunca uma chamada extra");
+        assert.ok(chamadasPerformance.some((c) => c.incluirFaturamento === true && c.incluirCurvaAbc === true && c.familias.length > 0 && !c.itemIds.length),
+          "o consolidado da família (faturamento + Curva ABC) precisa de uma chamada própria, com familias= — não itera os filhos um a um");
       } finally {
         performanceHandler = null;
       }

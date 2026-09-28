@@ -19,6 +19,15 @@
 // mesma razão do precedente: o scheduler viria com QUALQUER boot do
 // servidor, inclusive um boot local apontando para produção.
 //
+// ENABLED=true sozinho NÃO autoriza processar nenhuma conta — só diz "o
+// scheduler pode funcionar". Escopo é um opt-in SEPARADO e OBRIGATÓRIO:
+//   - MARGEM_PROJETADA_SCHEDULER_CLIENTES=slug1,slug2  → só esses clientes;
+//   - MARGEM_PROJETADA_SCHEDULER_ALL=true              → carteira elegível
+//     inteira (mesmo "--all" da CLI manual, nunca implícito).
+// Os dois juntos são configuração AMBÍGUA (nenhum é escolhido em silêncio);
+// nenhum dos dois é configuração AUSENTE — em ambos os casos o scheduler não
+// agenda execução operacional (ver resolverEscopoScheduler).
+//
 // Não roda no boot: deploy/restart só recalcula o próximo horário.
 //
 // Proteção de rodada (mesmo padrão do precedente):
@@ -70,6 +79,54 @@ function parseHorario(env = process.env, logger = console) {
     else logger.warn(`${LOG} MARGEM_PROJETADA_SCHEDULER_MINUTE inválida (${JSON.stringify(String(brutoMinuto))}) — usando ${MINUTO_PADRAO}`);
   }
   return { hora, minuto };
+}
+
+// ---------------------------------------------------------------------------
+// Escopo: quais contas o scheduler pode processar quando disparar
+// ---------------------------------------------------------------------------
+//
+// MARGEM_PROJETADA_SCHEDULER_CLIENTES: mesmo formato de --clientes na CLI
+// manual (comma-separated slugs), mas com parsing mais estrito aqui —
+// trim + remove vazios + DEDUPLICA (a CLI não deduplica; não precisa, o
+// orquestrador não se importa com duplicata na lista de filtro, mas a
+// dedup deixa o log/relatório do scheduler mais legível). NÃO faz
+// lowercase: quem compara case-insensitive é
+// margemProjetadaOrquestradorService.classificarContas, não o chamador —
+// não duplicamos essa regra aqui.
+function parseClientesEnv(bruto) {
+  if (bruto == null) return null; // env ausente — distinto de "presente e vazio"
+  const lista = String(bruto).split(",").map((s) => s.trim()).filter(Boolean);
+  return [...new Set(lista)];
+}
+
+// Mesma semântica de `habilitado`: só "true" (trim + case-insensitive)
+// autoriza. "1"/"yes"/"on" NÃO contam — precisa ser o valor exato usado no
+// resto do repositório para opt-in booleano.
+function todaCarteiraAtivada(env = process.env) {
+  return String(env.MARGEM_PROJETADA_SCHEDULER_ALL ?? "").trim().toLowerCase() === "true";
+}
+
+// Única fonte de verdade sobre QUAIS contas o scheduler pode tocar. Nunca
+// escolhe um lado em silêncio: ausência de escopo e ambiguidade de escopo
+// são os DOIS jeitos de "não processar nada", com motivo distinto para log.
+// Mesmos códigos de motivo da barreira da CLI manual
+// (margemProjetadaOrquestrador.js:validarEscopo) — convergência de
+// vocabulário, não coincidência.
+function resolverEscopoScheduler(env = process.env) {
+  const clientes = parseClientesEnv(env.MARGEM_PROJETADA_SCHEDULER_CLIENTES);
+  const temClientes = Array.isArray(clientes) && clientes.length > 0;
+  const all = todaCarteiraAtivada(env);
+
+  if (temClientes && all) {
+    return { valido: false, motivo: "ESCOPO_AMBIGUO" };
+  }
+  if (temClientes) {
+    return { valido: true, tipo: "clientes", clientes };
+  }
+  if (all) {
+    return { valido: true, tipo: "all", clientes: null };
+  }
+  return { valido: false, motivo: "ESCOPO_OBRIGATORIO" };
 }
 
 // ---------------------------------------------------------------------------
@@ -127,9 +184,9 @@ function createScheduler(depsOverride = {}) {
     setTimeoutFn: (fn, ms) => setTimeout(fn, ms),
     clearTimeoutFn: (t) => clearTimeout(t),
     getPool: () => require("../../config/database"),
-    // API REAL do orquestrador — mesma função que a CLI manual usa. Sem
-    // filtro (clientes: null) = carteira elegível completa; o próprio
-    // service decide, via listarContasElegiveis, quem é elegível.
+    // API REAL do orquestrador — mesma função que a CLI manual usa. O opts
+    // passado em cada disparo vem de resolverEscopoScheduler (clientes: [...]
+    // para subset, clientes: null só quando ALL=true foi ligado explicitamente).
     executarRodada: (opts) => require("./margemProjetadaOrquestradorService").executarRodada(opts),
     adquirirLockGlobal,
     logger: console,
@@ -172,6 +229,20 @@ function createScheduler(depsOverride = {}) {
       deps.logger.warn(`${LOG} rodada já em andamento neste processo — disparo ignorado`);
       return { executada: false, motivo: "EM_ANDAMENTO_NESTE_PROCESSO" };
     }
+    // Resolvido de novo aqui (não só em iniciar()) para o disparo continuar
+    // seguro mesmo chamado direto (testes de concorrência) e como defesa
+    // extra caso o processo tivesse, por algum motivo, um escopo desatualizado
+    // guardado. Escopo inválido é tratado IGUAL a emExecucao: recusa ANTES de
+    // tocar lock/pool/orquestrador.
+    const escopo = resolverEscopoScheduler(deps.env);
+    if (!escopo.valido) {
+      if (escopo.motivo === "ESCOPO_AMBIGUO") {
+        deps.logger.error(`${LOG} scheduler_scope_ambiguous — disparo ignorado`);
+      } else {
+        deps.logger.warn(`${LOG} scheduler_scope_missing — disparo ignorado`);
+      }
+      return { executada: false, motivo: escopo.motivo };
+    }
     estado.emExecucao = true;
     const inicio = deps.agora();
     try {
@@ -188,7 +259,9 @@ function createScheduler(depsOverride = {}) {
       }
       try {
         deps.logger.log(`${LOG} scheduler_run_started`);
-        const resumo = await deps.executarRodada({ clientes: null, plano: false });
+        // Shape IDÊNTICO ao que a CLI manual já valida e usa — nenhuma
+        // segunda representação de filtro é inventada aqui.
+        const resumo = await deps.executarRodada({ clientes: escopo.clientes, plano: false });
         deps.logger.log(
           `${LOG} scheduler_run_completed: elegíveis=${resumo?.elegiveis ?? "?"} sucessos=${resumo?.sucessos ?? "?"}`
             + ` parciais=${resumo?.parciais ?? "?"} falhas=${resumo?.falhas ?? "?"} ignoradas=${resumo?.ignoradas ?? "?"}`
@@ -217,11 +290,29 @@ function createScheduler(depsOverride = {}) {
       deps.logger.log(`${LOG} scheduler_disabled (MARGEM_PROJETADA_SCHEDULER_ENABLED != true)`);
       return false;
     }
+    // ENABLED=true sozinho não basta: sem escopo válido, o scheduler fica
+    // inerte — nenhum timer operacional, nenhum lock, nenhuma chamada ao
+    // orquestrador. Resolvido aqui (não a cada disparo) pelo mesmo motivo do
+    // horário: reinício de processo é o único jeito de mudar a configuração.
+    const escopo = resolverEscopoScheduler(deps.env);
+    if (!escopo.valido) {
+      if (escopo.motivo === "ESCOPO_AMBIGUO") {
+        deps.logger.error(`${LOG} scheduler_scope_ambiguous — MARGEM_PROJETADA_SCHEDULER_CLIENTES e MARGEM_PROJETADA_SCHEDULER_ALL=true não podem estar definidos ao mesmo tempo`);
+      } else {
+        deps.logger.warn(`${LOG} scheduler_scope_missing — defina MARGEM_PROJETADA_SCHEDULER_CLIENTES=slug1,slug2 ou MARGEM_PROJETADA_SCHEDULER_ALL=true`);
+      }
+      return false;
+    }
     estado.horario = parseHorario(deps.env, deps.logger);
     estado.iniciado = true;
     estado.parado = false;
     try {
       deps.logger.log(`${LOG} scheduler_started`);
+      if (escopo.tipo === "clientes") {
+        deps.logger.log(`${LOG} scheduler_scope_clients: ${escopo.clientes.length} cliente(s) — ${escopo.clientes.join(",")}`);
+      } else {
+        deps.logger.log(`${LOG} scheduler_scope_all`);
+      }
       agendar();
     } catch (err) {
       estado.iniciado = false;
@@ -269,6 +360,9 @@ module.exports = {
   formatarNoFuso,
   parseHorario,
   habilitado,
+  parseClientesEnv,
+  todaCarteiraAtivada,
+  resolverEscopoScheduler,
   adquirirLockGlobal,
   HORA_PADRAO,
   MINUTO_PADRAO,

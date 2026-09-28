@@ -59,7 +59,9 @@ function fakeTimers() {
   };
 }
 
-function makeScheduler({ env = { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true" }, agoraInicial, rodada, lock } = {}) {
+// ALL=true por padrão nos testes que não são sobre escopo — foco desses
+// testes é horário/lock/erro, não a matriz de escopo (testada à parte).
+function makeScheduler({ env = { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_ALL: "true" }, agoraInicial, rodada, lock } = {}) {
   let agora = T(agoraInicial || "2026-09-24T07:00:00Z"); // 04:00 em SP
   const timers = fakeTimers();
   const logs = [];
@@ -170,7 +172,7 @@ async function run() {
     eq("boot depois do horário: agenda para amanhã", iso(h.s.estado().proximoEm), "2026-09-25T08:30:00.000Z");
   }
   {
-    const h = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_HOUR: "6", MARGEM_PROJETADA_SCHEDULER_MINUTE: "45" } });
+    const h = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_ALL: "true", MARGEM_PROJETADA_SCHEDULER_HOUR: "6", MARGEM_PROJETADA_SCHEDULER_MINUTE: "45" } });
     h.s.iniciar();
     eq("horário customizado: 06:45 SP", iso(h.s.estado().proximoEm), "2026-09-24T09:45:00.000Z");
   }
@@ -265,7 +267,7 @@ async function run() {
     let liberar;
     const bloqueio = new Promise((r) => { liberar = r; });
     const mk = () => sched.createScheduler({
-      env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true" },
+      env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_ALL: "true" },
       getPool: () => pool,
       executarRodada: async () => { rodadas += 1; await bloqueio; return {}; },
       logger: { log() {}, warn() {}, error() {} },
@@ -379,6 +381,116 @@ async function run() {
   }
 
   // =========================================================================
+  // 11. Escopo — matriz ENABLED / CLIENTES / ALL (PASSO 13)
+  // =========================================================================
+  //
+  // ENABLED=true sozinho NUNCA autoriza processar carteira nenhuma — precisa
+  // de um escopo explícito (CLIENTES ou ALL=true), e os dois juntos são
+  // ambíguos (nenhum é escolhido em silêncio).
+  {
+    // 3. CLIENTES com espaços: trim correto.
+    eq("parseClientesEnv: trim", sched.parseClientesEnv(" comprou_enviou_chegou , red_fish "), ["comprou_enviou_chegou", "red_fish"]);
+    // 4. CLIENTES duplicados: deduplicados.
+    eq("parseClientesEnv: dedup", sched.parseClientesEnv("red_fish,red_fish"), ["red_fish"]);
+    // 5. CLIENTES com entradas vazias: removidas.
+    eq("parseClientesEnv: entradas vazias removidas", sched.parseClientesEnv(" comprou_enviou_chegou , , red_fish,red_fish , "), ["comprou_enviou_chegou", "red_fish"]);
+    eq("parseClientesEnv: ausente → null", sched.parseClientesEnv(undefined), null);
+    eq("parseClientesEnv: só vírgulas/espaços → []", sched.parseClientesEnv(" , , "), []);
+    // Exemplo exato do PASSO 2.
+    eq("parseClientesEnv: exemplo do enunciado", sched.parseClientesEnv(" comprou_enviou_chegou , red_fish,red_fish "), ["comprou_enviou_chegou", "red_fish"]);
+  }
+  {
+    // 9-12. ALL só aceita "true" (trim + case-insensitive) — nunca 1/yes/on.
+    eq("todaCarteiraAtivada: ausente → false", sched.todaCarteiraAtivada({}), false);
+    for (const v of ["false", "1", "yes", "on", "0", ""]) {
+      eq(`todaCarteiraAtivada: '${v}' → false`, sched.todaCarteiraAtivada({ MARGEM_PROJETADA_SCHEDULER_ALL: v }), false);
+    }
+    eq("todaCarteiraAtivada: 'true' → true", sched.todaCarteiraAtivada({ MARGEM_PROJETADA_SCHEDULER_ALL: "true" }), true);
+    eq("todaCarteiraAtivada: ' TRUE ' → true", sched.todaCarteiraAtivada({ MARGEM_PROJETADA_SCHEDULER_ALL: " TRUE " }), true);
+  }
+  {
+    // 2. CLIENTES definido → subset válido.
+    eq("resolverEscopoScheduler: subset válido",
+      sched.resolverEscopoScheduler({ MARGEM_PROJETADA_SCHEDULER_CLIENTES: "comprou_enviou_chegou,red_fish" }),
+      { valido: true, tipo: "clientes", clientes: ["comprou_enviou_chegou", "red_fish"] });
+    // 6. ALL=true → escopo "all" válido.
+    eq("resolverEscopoScheduler: all válido",
+      sched.resolverEscopoScheduler({ MARGEM_PROJETADA_SCHEDULER_ALL: "true" }),
+      { valido: true, tipo: "all", clientes: null });
+    // 7. Nem CLIENTES nem ALL → inválido (ESCOPO_OBRIGATORIO).
+    eq("resolverEscopoScheduler: nenhum dos dois → ESCOPO_OBRIGATORIO",
+      sched.resolverEscopoScheduler({}),
+      { valido: false, motivo: "ESCOPO_OBRIGATORIO" });
+    eq("resolverEscopoScheduler: CLIENTES vazio (só vírgulas) conta como ausente",
+      sched.resolverEscopoScheduler({ MARGEM_PROJETADA_SCHEDULER_CLIENTES: " , , " }),
+      { valido: false, motivo: "ESCOPO_OBRIGATORIO" });
+    // 8. CLIENTES + ALL=true → ambíguo, nenhum lado escolhido em silêncio.
+    eq("resolverEscopoScheduler: CLIENTES + ALL=true → ESCOPO_AMBIGUO",
+      sched.resolverEscopoScheduler({ MARGEM_PROJETADA_SCHEDULER_CLIENTES: "red_fish", MARGEM_PROJETADA_SCHEDULER_ALL: "true" }),
+      { valido: false, motivo: "ESCOPO_AMBIGUO" });
+  }
+  {
+    // 1. ENABLED=false: nada muda (mesmo com escopo presente).
+    const h = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "false", MARGEM_PROJETADA_SCHEDULER_ALL: "true" } });
+    eq("ENABLED=false com escopo presente: ainda desligado", [h.s.iniciar(), h.timers.timers.length], [false, 0]);
+  }
+  {
+    // 7 + 13/14/15. ENABLED=true sem CLIENTES e sem ALL: inválido — nenhum
+    // timer, nenhum lock, nenhuma chamada ao orquestrador.
+    const h = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true" } });
+    eq("escopo ausente: iniciar → false", h.s.iniciar(), false);
+    eq("escopo ausente: nenhum timer operacional", h.timers.timers.length, 0);
+    ok("escopo ausente: log scheduler_scope_missing", h.logs.some((l) => l.includes("scheduler_scope_missing")));
+    const disparo = await h.s.dispararRodada();
+    eq("escopo ausente: dispararRodada direto também recusa", disparo, { executada: false, motivo: "ESCOPO_OBRIGATORIO" });
+    eq("escopo ausente: nenhuma aquisição de lock", h.chamadas.lock, 0);
+    eq("escopo ausente: executarRodada 0 chamadas", h.chamadas.rodada.length, 0);
+  }
+  {
+    // 8. ENABLED=true + CLIENTES + ALL=true: inválido/ambíguo.
+    const h = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_CLIENTES: "red_fish", MARGEM_PROJETADA_SCHEDULER_ALL: "true" } });
+    eq("escopo ambíguo: iniciar → false", h.s.iniciar(), false);
+    eq("escopo ambíguo: nenhum timer operacional", h.timers.timers.length, 0);
+    ok("escopo ambíguo: log scheduler_scope_ambiguous", h.logs.some((l) => l.startsWith("ERROR") && l.includes("scheduler_scope_ambiguous")));
+    const disparo = await h.s.dispararRodada();
+    eq("escopo ambíguo: dispararRodada direto também recusa", disparo, { executada: false, motivo: "ESCOPO_AMBIGUO" });
+    eq("escopo ambíguo: nenhuma aquisição de lock", h.chamadas.lock, 0);
+    eq("escopo ambíguo: executarRodada 0 chamadas", h.chamadas.rodada.length, 0);
+  }
+  {
+    // 16 + 18. subset: executarRodada recebe exatamente os clientes
+    // esperados, nunca processa um terceiro cliente (o filtro é aplicado
+    // dentro do orquestrador — o scheduler só repassa a lista).
+    const h = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_CLIENTES: " comprou_enviou_chegou , red_fish " } });
+    eq("subset: iniciar → true", h.s.iniciar(), true);
+    ok("subset: log scheduler_scope_clients com contagem", h.logs.some((l) => l.includes("scheduler_scope_clients: 2 cliente(s) — comprou_enviou_chegou,red_fish")));
+    await h.disparar();
+    eq("subset: executarRodada recebeu exatamente os 2 clientes", h.chamadas.rodada[0], { clientes: ["comprou_enviou_chegou", "red_fish"], plano: false });
+    ok("subset: nenhum terceiro cliente na lista repassada", h.chamadas.rodada[0].clientes.length === 2);
+  }
+  {
+    // 17. all: executarRodada recebe clientes:null (carteira elegível
+    // completa é decidida pelo orquestrador, nunca listada aqui).
+    const h = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_ALL: "true" } });
+    eq("all: iniciar → true", h.s.iniciar(), true);
+    ok("all: log scheduler_scope_all", h.logs.some((l) => l.includes("scheduler_scope_all")));
+    await h.disparar();
+    eq("all: executarRodada recebeu clientes:null", h.chamadas.rodada[0], { clientes: null, plano: false });
+  }
+  {
+    // 19-22. Lock/timezone/iniciar()/parar() continuam intactos com subset
+    // configurado (não só com ALL — a matriz de escopo não deve interferir
+    // no resto do comportamento já validado nas seções 2-10).
+    const h = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_CLIENTES: "red_fish", MARGEM_PROJETADA_SCHEDULER_HOUR: "6", MARGEM_PROJETADA_SCHEDULER_MINUTE: "45" } });
+    h.s.iniciar();
+    eq("subset: timezone/horário intactos (06:45 SP)", iso(h.s.estado().proximoEm), "2026-09-24T09:45:00.000Z");
+    eq("subset: iniciar() 2x não duplica timer", [h.s.iniciar(), h.timers.timers.length], [true, 1]);
+    h.s.parar();
+    eq("subset: parar() cancela o timer", h.timers.ativos().length, 0);
+    eq("subset: lock não foi tocado (nunca chegou a disparar)", h.chamadas.lock, 0);
+  }
+
+  // =========================================================================
   // 11. Scheduler não conhece meliSyncService/motorMargemService/repository
   //     (cenários 20, 21, 22 do PASSO 16)
   // =========================================================================
@@ -403,10 +515,29 @@ async function run() {
     const encerrar = index.slice(index.indexOf("function encerrarComGraca"), index.indexOf('process.on("SIGTERM"'));
     ok("index: encerrarComGraca para o scheduler", encerrar.includes("margemProjetadaScheduler.parar()"));
     ok("index: boot não chama executarRodada nem processa carteira diretamente", !/margemProjetadaScheduler\.executarRodada/.test(index));
-    // Boot com ENABLED=false: iniciar() não agenda nada, então nenhuma
-    // chamada a executarRodada/ML/lock é possível nesse caminho.
-    const h = makeScheduler({ env: {} });
-    eq("boot ENABLED=false: iniciar → false, 0 timers, 0 rodadas, 0 locks", [h.s.iniciar(), h.timers.timers.length, h.chamadas.rodada.length, h.chamadas.lock], [false, 0, 0, 0]);
+    // PASSO 14-A: ENABLED ausente → inerte.
+    const hA = makeScheduler({ env: {} });
+    eq("boot A (ENABLED ausente): iniciar → false, 0 timers, 0 rodadas, 0 locks", [hA.s.iniciar(), hA.timers.timers.length, hA.chamadas.rodada.length, hA.chamadas.lock], [false, 0, 0, 0]);
+
+    // PASSO 14-B: ENABLED=true, CLIENTES ausente, ALL ausente → servidor
+    // sobe normalmente (iniciar() só retorna false, não lança), scheduler
+    // não executa, nenhuma chamada ML, configuração inválida é logada.
+    const hB = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true" } });
+    let lancouB = false;
+    let resultadoB;
+    try { resultadoB = hB.s.iniciar(); } catch (_) { lancouB = true; }
+    eq("boot B (ENABLED=true sem escopo): iniciar não lança", lancouB, false);
+    eq("boot B: iniciar → false, 0 timers, 0 rodadas, 0 locks", [resultadoB, hB.timers.timers.length, hB.chamadas.rodada.length, hB.chamadas.lock], [false, 0, 0, 0]);
+    ok("boot B: configuração inválida logada", hB.logs.some((l) => l.includes("scheduler_scope_missing")));
+
+    // PASSO 14-C: ENABLED=true + CLIENTES=comprou_enviou_chegou,red_fish →
+    // só agenda; NÃO executa imediatamente no boot (fake timer, sem esperar
+    // horário real).
+    const hC = makeScheduler({ env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_CLIENTES: "comprou_enviou_chegou,red_fish" } });
+    eq("boot C (subset): iniciar → true", hC.s.iniciar(), true);
+    eq("boot C: agendou 1 timer", hC.timers.ativos().length, 1);
+    await flush();
+    eq("boot C: NÃO executou imediatamente no boot", [hC.chamadas.rodada.length, hC.chamadas.lock], [0, 0]);
   }
 
   eq("nenhuma unhandled rejection", unhandled, 0);

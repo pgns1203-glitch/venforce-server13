@@ -33,6 +33,9 @@ function avaliarCondicao(cond, row, params) {
   if ((m = cond.match(/^(\w+) IS NULL$/))) return row[m[1]] === null || row[m[1]] === undefined;
   if ((m = cond.match(/^(\w+) IS NOT NULL$/))) return row[m[1]] !== null && row[m[1]] !== undefined;
   if ((m = cond.match(/^(\w+) = ANY\(\$(\d+)::text\[\]\)$/))) return p(m[2]).includes(row[m[1]]);
+  if ((m = cond.match(/^\(quality_json->>'statusAnuncio'\) = ANY\(\$(\d+)::text\[\]\)$/))) {
+    return p(m[1]).includes(row.quality_json && row.quality_json.statusAnuncio);
+  }
   if ((m = cond.match(/^(\w+) (>=|<=|<|>) \$(\d+)$/))) {
     const v = row[m[1]];
     if (v === null || v === undefined) return false;
@@ -126,6 +129,9 @@ function makeMarginSnapshotFakeDb() {
       const row = { total: linhas.length, com_margem: linhas.filter((r) => r.margin !== null && r.margin !== undefined).length };
       for (const m of sql.matchAll(/COUNT\(\*\) FILTER \(WHERE (\w+) = '([^']+)'\)::int AS "(\w+)"/g)) {
         row[m[3]] = linhas.filter((r) => r[m[1]] === m[2]).length;
+      }
+      for (const m of sql.matchAll(/COUNT\(\*\) FILTER \(WHERE quality_json->>'statusAnuncio' = '([^']+)'\)::int AS (\w+)/g)) {
+        row[m[2]] = linhas.filter((r) => r.quality_json && r.quality_json.statusAnuncio === m[1]).length;
       }
       row.ultimo_calculo = linhas.reduce((max, r) => (!max || r.calculated_at > max ? r.calculated_at : max), null);
       return { rows: [row] };

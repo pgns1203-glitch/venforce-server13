@@ -221,6 +221,8 @@
   padding: var(--vf-sp-3) var(--vf-sp-4);
 }
 
+.vf-page-central-margem .cm-summary-panel--listing { grid-column: 1 / -1; }
+
 .vf-page-central-margem .cm-summary-head {
   display: flex;
   align-items: baseline;
@@ -247,6 +249,10 @@
 }
 
 .vf-page-central-margem .cm-kpi-grid--data {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.vf-page-central-margem .cm-kpi-grid--listing {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
@@ -569,6 +575,17 @@
   font-family: var(--vf-font-mono);
   font-size: var(--vf-fs-2xs);
 }
+
+.vf-page-central-margem .cm-listing-status {
+  display: block;
+  margin-top: 3px;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-central-margem .cm-listing-status.is-active { color: var(--vf-success); }
+.vf-page-central-margem .cm-listing-status.is-paused { color: var(--vf-warning-strong); }
 
 /* Cabeçalho de variável: nome + seletor de fonte ─────────────────────── */
 

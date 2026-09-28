@@ -83,6 +83,7 @@ function lerFiltros(params = {}, repo = snapshotRepository) {
     status: listaDeEnum(params.status, repo.STATUS_VALIDOS, { nome: "status" }),
     refreshStatus: listaDeEnum(params.refreshStatus, repo.REFRESH_STATUS_VALIDOS, { maiusculo: false, nome: "refreshStatus" }),
     confianca: listaDeEnum(params.confianca, repo.CONFIANCA_VALIDOS, { nome: "confianca" }),
+    statusAnuncio: listaDeEnum(params.statusAnuncio, repo.STATUS_ANUNCIO_VALIDOS, { maiusculo: false, nome: "statusAnuncio" }),
     busca: busca || null,
   };
 }

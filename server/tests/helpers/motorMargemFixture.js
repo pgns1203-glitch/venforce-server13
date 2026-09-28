@@ -85,7 +85,7 @@ function motorDeps({ comVendas = true, anuncios = ANUNCIOS, chamadas = {} } = {}
       chamadas.detalhes = (chamadas.detalhes || 0) + 1;
       return pedidos.filter((id) => anuncios[id]).map((id) => ({
         id, title: anuncios[id].titulo, price: anuncios[id].price, listing_type_id: "gold_special",
-        category_id: "MLB1234", seller_id: "99", status: "active", shipping: { logistic_type: "drop_off" },
+        category_id: "MLB1234", seller_id: "99", status: anuncios[id].status || "active", shipping: { logistic_type: "drop_off" },
         thumbnail: `https://img.exemplo/${id}.jpg`,
       }));
     },
@@ -98,7 +98,7 @@ function motorDeps({ comVendas = true, anuncios = ANUNCIOS, chamadas = {} } = {}
       bag.add(C.FIELDS.COMMISSION_RATE, { ...comum, value: anuncio.commissionRate });
       bag.add(C.FIELDS.FREIGHT, { ...comum, value: anuncio.freight });
       return {
-        itemId: body.id, titulo: anuncio.titulo, sku: null, status: "active", image: body.thumbnail || null,
+        itemId: body.id, titulo: anuncio.titulo, sku: null, status: body.status || null, image: body.thumbnail || null,
         listingTypeId: "gold_special", logisticType: "drop_off",
         precoEfetivo: anuncio.price, precoCheio: anuncio.price, precoPromocional: null,
         commission: anuncio.commission, commissionRate: anuncio.commissionRate, freight: anuncio.freight,

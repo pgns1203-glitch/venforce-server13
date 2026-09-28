@@ -295,6 +295,7 @@ async function countProjectionSnapshots({ clienteContaId, marketplace = "meli", 
 const STATUS_VALIDOS = ["HEALTHY", "LOW_MARGIN", "LOSS", "UNVALIDATED", "SUSPECT_DATA", "RECONCILING"];
 const REFRESH_STATUS_VALIDOS = ["fresh", "stale", "processing", "failed", "missing"];
 const CONFIANCA_VALIDOS = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"];
+const STATUS_ANUNCIO_VALIDOS = ["active", "paused"];
 
 // Busca v1 (§8.4 do plano): ILIKE substring depois do escopo por conta, sem
 // extensão nova (sem pg_trgm). `%`, `_` e `\` do usuário são escapados — a
@@ -305,7 +306,7 @@ function padraoBusca(termo) {
 
 function montarFiltroSnapshots({
   clienteId, clienteContaId, marketplace = "meli", incluirForaDoCatalogo = false, somenteForaDoCatalogo = false,
-  status = null, refreshStatus = null, confianca = null, busca = null,
+  status = null, refreshStatus = null, confianca = null, statusAnuncio = null, busca = null,
 }) {
   if (!clienteId) throw new Error("montarFiltroSnapshots: clienteId é obrigatório.");
   if (!clienteContaId) throw new Error("montarFiltroSnapshots: clienteContaId é obrigatório.");
@@ -323,6 +324,10 @@ function montarFiltroSnapshots({
   lista("status", status, STATUS_VALIDOS);
   lista("refresh_status", refreshStatus, REFRESH_STATUS_VALIDOS);
   lista("confidence_level", confianca, CONFIANCA_VALIDOS);
+  // O escopo indexado de cliente+conta+marketplace é aplicado antes deste
+  // predicado e a página tem teto de 200. Para a escala atual, ler a chave já
+  // persistida no JSONB evita duplicação de dado e uma migration prematura.
+  lista("(quality_json->>'statusAnuncio')", statusAnuncio, STATUS_ANUNCIO_VALIDOS);
 
   const termo = typeof busca === "string" ? busca.trim() : "";
   if (termo) {
@@ -399,8 +404,8 @@ async function countProjectionSnapshotsFiltrado({ filtro, db = pool }) {
 }
 
 // KPIs (M6) — UMA agregação no banco sobre o escopo inteiro da conta (nunca
-// contando uma página em JS). Só os placares que a Central exibe: total,
-// contagem por status, frescor do snapshot e quantos têm margem calculável.
+// contando uma página em JS). Inclui os estados financeiro/refresh, anúncios
+// ativos/pausados e quantos têm margem calculável.
 async function summarizeProjectionSnapshots({ filtro, db = pool }) {
   const porStatus = STATUS_VALIDOS
     .map((s) => `COUNT(*) FILTER (WHERE status = '${s}')::int AS "status_${s}"`)
@@ -412,6 +417,8 @@ async function summarizeProjectionSnapshots({ filtro, db = pool }) {
     `/* ms:kpis */ SELECT COUNT(*)::int AS total,
             ${porStatus},
             ${porRefresh},
+            COUNT(*) FILTER (WHERE quality_json->>'statusAnuncio' = 'active')::int AS anuncios_ativos,
+            COUNT(*) FILTER (WHERE quality_json->>'statusAnuncio' = 'paused')::int AS anuncios_pausados,
             COUNT(*) FILTER (WHERE margin IS NOT NULL)::int AS com_margem,
             MAX(calculated_at) AS ultimo_calculo
        FROM margin_projection_snapshots
@@ -424,6 +431,7 @@ async function summarizeProjectionSnapshots({ filtro, db = pool }) {
     total: n(row.total),
     porStatus: Object.fromEntries(STATUS_VALIDOS.map((s) => [s, n(row[`status_${s}`])])),
     porRefreshStatus: { fresh: n(row.refresh_fresh), stale: n(row.refresh_stale), failed: n(row.refresh_failed) },
+    anuncios: { total: n(row.total), ativos: n(row.anuncios_ativos), pausados: n(row.anuncios_pausados) },
     comMargem: n(row.com_margem),
     ultimoCalculoEm: row.ultimo_calculo || null,
   };
@@ -433,6 +441,7 @@ module.exports = {
   STATUS_VALIDOS,
   REFRESH_STATUS_VALIDOS,
   CONFIANCA_VALIDOS,
+  STATUS_ANUNCIO_VALIDOS,
   resolverOrdenacao,
   padraoBusca,
   summarizeProjectionSnapshots,

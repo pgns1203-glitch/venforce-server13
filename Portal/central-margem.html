@@ -91,6 +91,13 @@
               </div>
               <div class="cm-kpi-grid cm-kpi-grid--data" id="cm-kpis-integrity"></div>
             </div>
+            <div class="vf-card cm-summary-panel cm-summary-panel--listing" id="cm-listing-summary" hidden>
+              <div class="cm-summary-head">
+                <strong>Status do anúncio</strong>
+                <span>situação atual no Mercado Livre</span>
+              </div>
+              <div class="cm-kpi-grid cm-kpi-grid--listing" id="cm-kpis-listing"></div>
+            </div>
           </section>
           <p class="cm-summary-scope" id="cm-summary-scope">Selecione um cliente para iniciar a análise.</p>
 
@@ -126,6 +133,14 @@
                       <option value="SUSPECT">Suspeito</option>
                       <option value="MISSING">Não validado</option>
                       <option value="RECONCILING">Em conciliação</option>
+                    </select>
+                  </label>
+                  <label class="vf-filter-group" id="cm-listing-status-filter-wrap" hidden>
+                    <span class="vf-visually-hidden">Filtrar por status do anúncio</span>
+                    <select class="vf-select vf-select--sm" id="cm-listing-status-filter">
+                      <option value="">Status do anúncio: todos</option>
+                      <option value="active">Ativos</option>
+                      <option value="paused">Pausados</option>
                     </select>
                   </label>
                   <div class="vf-active-filters" id="cm-active-filters"></div>

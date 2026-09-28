@@ -332,8 +332,13 @@ cenario("cobertura parcial de frete vira evidência ESTIMATED; custo/imposto com
   assert.strictEqual(resumo.impostoCobertura, 1, "2 de 2 linhas com imposto histórico");
 
   const frete = bag.list(C.FIELDS.FREIGHT)[0];
-  assert.strictEqual(frete.value, 40 / 3, "frete total rateado por unidade");
+  // Frete R$ 40 existe só na linha de 2 unidades (a linha de 1 unidade veio
+  // sem frete). Valor por unidade = 40 / 2 unidades COBERTAS — dividir por 3
+  // faria a unidade sem frete contar como frete zero (lucro artificial).
+  assert.strictEqual(frete.value, 20, "frete ÷ unidades com frete, nunca ÷ unidades totais");
   assert.strictEqual(frete.quality, C.EVIDENCE_QUALITY.ESTIMATED, "cobertura parcial rebaixa");
+  assert.strictEqual(resumo.cobertura.frete.fracao, 0.6667, "2 de 3 unidades com frete");
+  assert.strictEqual(resumo.cobertura.frete.completa, false);
 
   const comissao = bag.list(C.FIELDS.COMMISSION)[0];
   assert.strictEqual(comissao.quality, C.EVIDENCE_QUALITY.DERIVED, "cobertura total");

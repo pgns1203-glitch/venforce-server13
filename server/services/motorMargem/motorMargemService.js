@@ -190,7 +190,7 @@ async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo
   // (Central de Margem). Passar explicitamente é o que permite a um
   // consumidor multi-conta (Anúncios ML) calcular a margem da MESMA conta
   // que está selecionada na tela, em vez da conta "automática" do cliente.
-  const { cliente, base, mlUserId } = await (deps.exigirContexto || exigirContextoPronto)({
+  const { cliente, base, mlUserId, conta } = await (deps.exigirContexto || exigirContextoPronto)({
     clienteSlugRaw: clienteSlug,
     baseSlugRaw: baseSlug,
     clienteContaId,
@@ -227,6 +227,11 @@ async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo
     cliente,
     base,
     mlUserId,
+    // Conta MELI efetivamente resolvida por `exigirContextoPronto` (via
+    // resolveMarketplaceAccountContext) — `null` só no modo legado (cliente
+    // sem nenhuma cliente_contas cadastrada). Propagada tal-e-qual, nunca
+    // re-resolvida: é o mesmo objeto que decidiu `mlUserId`/`base` acima.
+    conta: conta || null,
     periodo,
     custos,
     vendasRaw,
@@ -626,13 +631,24 @@ function resumoVazio() {
  * `prepareWorkspaceContext`, ANTES do loop — não a cada lote. Cada lote só
  * chama `enrichBatch`, que reaproveita esse contexto e faz apenas o que
  * depende do lote: buscar os IDs da página e os detalhes desses itens.
+ *
+ * `clienteContaId` (opcional, default `null`): mesmo contrato de
+ * `prepareWorkspaceContext` (linha 183) — antes desta correção, esta função
+ * não o repassava, então um consumidor multi-conta (ex.: futuro job de
+ * margem projetada, ver FASE 2 de
+ * docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_FASE2_JOB_MANUAL.md) não tinha
+ * como pedir o workspace de UMA conta específica — `resolveMarketplaceAccountContext`
+ * reabria a resolução "automática", que rejeita com 409
+ * MULTIPLE_MARKETPLACE_ACCOUNTS qualquer cliente com 2+ contas ativas. Sem
+ * `clienteContaId` informado o comportamento é idêntico a antes (resolução
+ * automática, inalterada).
  */
 async function carregarWorkspace(
-  { clienteSlug, baseSlug, dateFrom, dateTo, targetMargin, maxItens },
+  { clienteSlug, baseSlug, dateFrom, dateTo, targetMargin, maxItens, clienteContaId = null },
   deps = {}
 ) {
   const prepared = await (deps.prepareWorkspaceContext || prepareWorkspaceContext)(
-    { clienteSlug, baseSlug, dateFrom, dateTo },
+    { clienteSlug, baseSlug, dateFrom, dateTo, clienteContaId },
     deps
   );
   const enrich = deps.enrichBatch || enrichBatch;
@@ -652,6 +668,11 @@ async function carregarWorkspace(
 
   return {
     cliente: prepared.cliente,
+    // Conta efetivamente USADA pelo Motor (auto-resolvida ou a pedida via
+    // clienteContaId, tanto faz) — nunca o valor "pedido" no argv de um
+    // chamador; vem pronta de `prepared.conta`, sem segunda resolução. `null`
+    // só no modo legado (cliente sem cliente_contas cadastrada).
+    clienteContaId: prepared.conta ? prepared.conta.id : null,
     base: prepared.base,
     periodo: prepared.periodo,
     vendas: {

@@ -121,6 +121,99 @@ async function ensureEntregasClienteSchema(db = pool) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// FASE 1 — Snapshot de margem PROJETADA (Anúncios ML), fundação de
+// persistência para a futura ordenação global por margem. Ver
+// docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_GLOBAL_PLANO_TECNICO.md.
+//
+// Só o ÚLTIMO snapshot por (cliente_id, item_id) — decisão §5.4 do plano:
+// margem projetada é reamostragem periódica do mesmo cálculo ao vivo, não um
+// fato econômico com valor de auditoria por si (diferente do realizado).
+//
+// CHAVE NATURAL = (cliente_id, item_id), sem `cliente_conta_id` na UNIQUE:
+// `meli_anuncios` já tem `UNIQUE (cliente_id, item_id)` (auditado nesta
+// sessão via information_schema — não presumido) e NÃO inclui
+// `cliente_conta_id` nessa chave. Ou seja, cada item_id já pertence a no
+// máximo 1 linha de `meli_anuncios` (e por extensão, a no máximo 1
+// cliente_conta_id). Incluir `cliente_conta_id` na UNIQUE deste snapshot só
+// reintroduziria o problema "NULL não é igual a NULL" (2 linhas legado
+// coexistindo) sem nenhum ganho de integridade — a coluna aqui é uma cópia
+// desnormalizada para filtro de leitura (mesmo padrão de `clausulaConta`),
+// nunca parte da chave.
+//
+// FK COMPOSTA para meli_anuncios(cliente_id, item_id): auditado nesta sessão
+// que o índice único que a viabiliza já existe em produção
+// (`meli_anuncios_cliente_id_item_id_key`) — a suposição do plano de que "não
+// há chave única para referenciar" estava desatualizada/incompleta; corrigida
+// aqui. ON DELETE CASCADE é seguro porque `meli_anuncios` nunca tem DELETE no
+// código (upsert-only, confirmado por grep) — a linha só desapareceria se o
+// próprio anúncio fosse removido do catálogo, e aí o snapshot órfão realmente
+// não deveria sobreviver.
+//
+// GUARDAS via to_regclass (mesmo padrão de ENTREGAS_CLIENTE_DDL): tanto
+// `meli_anuncios` (schema criado sob demanda por
+// `meliAnunciosService.ensureSchema`, NUNCA chamado no boot) quanto
+// `cliente_contas` (migration `auto:false`, aplicação manual) podem não
+// existir ainda no instante em que este `ensure` roda no boot — sem a guarda,
+// a FK falharia numa base nova/de teste antes de qualquer request tocar
+// nessas tabelas.
+const ANUNCIOS_MARGEM_PROJETADA_SNAPSHOT_DDL = `
+  CREATE TABLE IF NOT EXISTS anuncios_margem_projetada_snapshot (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+    cliente_conta_id INTEGER,
+    item_id TEXT NOT NULL,
+    margin_percent NUMERIC,
+    profit NUMERIC,
+    computable BOOLEAN NOT NULL DEFAULT FALSE,
+    status VARCHAR(30),
+    preco_atual NUMERIC,
+    preco_original NUMERIC,
+    faltantes_json JSONB,
+    calculado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    origem_job VARCHAR(30) NOT NULL,
+    UNIQUE (cliente_id, item_id)
+  );
+
+  DO $$
+  BEGIN
+    IF to_regclass('public.meli_anuncios') IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_amps_meli_anuncio')
+    THEN
+      ALTER TABLE anuncios_margem_projetada_snapshot
+        ADD CONSTRAINT fk_amps_meli_anuncio
+        FOREIGN KEY (cliente_id, item_id) REFERENCES meli_anuncios(cliente_id, item_id) ON DELETE CASCADE;
+    END IF;
+  END
+  $$;
+
+  DO $$
+  BEGIN
+    IF to_regclass('public.cliente_contas') IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_amps_cliente_conta')
+    THEN
+      ALTER TABLE anuncios_margem_projetada_snapshot
+        ADD CONSTRAINT fk_amps_cliente_conta
+        FOREIGN KEY (cliente_conta_id) REFERENCES cliente_contas(id) ON DELETE SET NULL;
+    END IF;
+  END
+  $$;
+
+  CREATE INDEX IF NOT EXISTS idx_amps_cliente_conta ON anuncios_margem_projetada_snapshot(cliente_id, cliente_conta_id);
+  CREATE INDEX IF NOT EXISTS idx_amps_margin_percent ON anuncios_margem_projetada_snapshot(margin_percent);
+  CREATE INDEX IF NOT EXISTS idx_amps_calculado_em ON anuncios_margem_projetada_snapshot(calculado_em);
+`;
+
+let _ensuredAmps = false;
+
+// Idempotente. `db` injetável para teste (mesmo padrão de ensureEntregasClienteSchema).
+// Sem consumidor ainda — a tabela fica vazia até a Fase 2 (job) existir.
+async function ensureAnunciosMargemProjetadaSnapshotSchema(db = pool) {
+  if (_ensuredAmps && db === pool) return;
+  await db.query(ANUNCIOS_MARGEM_PROJETADA_SNAPSHOT_DDL);
+  if (db === pool) _ensuredAmps = true;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // BLOCO 18 — GOVERNANÇA DE MIGRATIONS (inventário legível por máquina)
 // ───────────────────────────────────────────────────────────────────────────
 // `auto: true`  → aplicada por um `ensure*` no boot (idempotente, aditiva).
@@ -194,6 +287,20 @@ const MIGRATIONS_INVENTARIO = [
       "Enquanto o índice não existe, a unicidade é garantida na aplicação " +
       "(409 ENTREGA_JA_EXISTE + substituir:true). NÃO auto-aplicar.",
   },
+  {
+    arquivo: "20260925_anuncios_margem_projetada_snapshot.sql",
+    descricao:
+      "cria anuncios_margem_projetada_snapshot — fundação de persistência da margem " +
+      "projetada (FASE 1 do plano de ordenação global por margem). Tabela nasce vazia, " +
+      "sem consumidor nesta fase.",
+    tipo: "estrutural-aditiva",
+    auto: true,
+    runner: "schemaEnsure.ensureAnunciosMargemProjetadaSnapshotSchema",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito: "nenhum (FKs para meli_anuncios/cliente_contas são guardadas por to_regclass)",
+    rollback: "DROP TABLE anuncios_margem_projetada_snapshot (nenhum consumidor depende dela ainda)",
+  },
 ];
 
 // Arquivos que QUALQUER runner automático tem permissão de aplicar. Usado por
@@ -203,8 +310,11 @@ const MIGRATIONS_AUTO = MIGRATIONS_INVENTARIO.filter((m) => m.auto).map((m) => m
 module.exports = {
   ensureEntregasClienteSchema,
   ENTREGAS_CLIENTE_DDL,
+  ensureAnunciosMargemProjetadaSnapshotSchema,
+  ANUNCIOS_MARGEM_PROJETADA_SNAPSHOT_DDL,
   MIGRATIONS_INVENTARIO,
   MIGRATIONS_AUTO,
   migrationsDir,
   _resetEnsuredParaTeste: () => { _ensured = false; },
+  _resetAmpsEnsuredParaTeste: () => { _ensuredAmps = false; },
 };

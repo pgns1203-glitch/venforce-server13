@@ -102,6 +102,7 @@ const shopeeRoutes = require("./routes/shopeeRoutes");
 const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 const centralVendasNoturnoScheduler = require("./services/centralVendas/centralVendasNoturnoScheduler");
+const margemProjetadaScheduler = require("./services/motorMargem/margemProjetadaScheduler");
 const { ensureDiagnosticoInicialTables } = require("./services/diagnosticoInicial/diagnosticoInicialRepository");
 const observabilityRoutes = require("./routes/observabilityRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
@@ -115,7 +116,10 @@ const { ensureFechamentoIncidenteTables } = require("./repositories/fechamentoIn
 const fechamentoIncidentStorageService = require("./services/fechamentoFinanceiro/incidente/fechamentoIncidentStorageService");
 const { ensureSquadsTables, squadsAtivosDeClientes } = require("./services/squads/squadsRepository");
 const squadService = require("./services/squads/squadService");
-const { ensureEntregasClienteSchema } = require("./services/schema/schemaEnsure");
+const {
+  ensureEntregasClienteSchema,
+  ensureAnunciosMargemProjetadaSnapshotSchema,
+} = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
   MARKETPLACES_SUPORTADOS,
@@ -668,6 +672,11 @@ CREATE TABLE IF NOT EXISTS callbacks (
     // roda no boot, porque `/setup` é desabilitado em produção. Ver
     // server/services/schema/schemaEnsure.js.
     await ensureEntregasClienteSchema(pool);
+
+    // `anuncios_margem_projetada_snapshot` (FASE 1 do plano de margem
+    // projetada global) — mesmo motivo: `/setup` e o boot nunca podem
+    // divergir sobre qual DDL aplicam.
+    await ensureAnunciosMargemProjetadaSnapshotSchema(pool);
 
     await pool.query(`
   ALTER TABLE bases
@@ -2013,6 +2022,27 @@ const server = app.listen(PORT, () => {
       console.error("[schema] erro ao garantir schema de entregas_cliente / readiness no boot:", err.message);
     });
 
+  // FASE 1 do plano de ordenação global por margem PROJETADA (Anúncios ML) —
+  // ver docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_GLOBAL_PLANO_TECNICO.md.
+  // Só cria a fundação de persistência (tabela vazia, sem consumidor ainda) —
+  // registrado aqui para não repetir o erro histórico de `entregas_cliente`
+  // (migration existindo só em documentação/`/setup`, nunca aplicada em
+  // produção).
+  // Scheduler interno da margem projetada global: só depois do schema do
+  // snapshot pronto, e só com MARGEM_PROJETADA_SCHEDULER_ENABLED=true. Não
+  // roda no boot — apenas agenda o próximo horário (ver
+  // margemProjetadaScheduler). Desligado por padrão; não ativado em produção
+  // nesta missão.
+  ensureAnunciosMargemProjetadaSnapshotSchema().then(
+    () => margemProjetadaScheduler.iniciar(),
+    (err) => {
+      console.error("[schema] erro ao garantir schema de anuncios_margem_projetada_snapshot no boot:", err.message);
+      if (margemProjetadaScheduler.habilitado()) {
+        console.error("[margem-projetada-scheduler] não iniciado: schema do snapshot indisponível no boot");
+      }
+    }
+  );
+
   // /setup é desabilitado em produção — as colunas novas de `custos`
   // (produto_nome, variacao_nome, updated_at) são garantidas aqui.
   ensureColunasCustos().catch((err) => {
@@ -2105,6 +2135,13 @@ async function encerrarComGraca(sinal) {
   const servidorFechado = new Promise((resolve) => server.close(resolve));
   await Promise.allSettled([
     centralVendasNoturnoScheduler.parar({ aguardarMs: 20000 }),
+    // margemProjetadaScheduler.parar() é síncrona (só cancela o timer
+    // pendente, sem rodada em andamento para drenar — diferente do scheduler
+    // de Central de Vendas, que tem progresso/promessaAtiva) — nunca aceitou
+    // nem precisa de {aguardarMs}. Envolvida em Promise.resolve().then(...)
+    // só para entrar no allSettled: um erro nela vira rejeição isolada desta
+    // entrada, sem impedir os outros itens do shutdown.
+    Promise.resolve().then(() => margemProjetadaScheduler.parar()),
     observabilityService.shutdown(),
     servidorFechado,
   ]);

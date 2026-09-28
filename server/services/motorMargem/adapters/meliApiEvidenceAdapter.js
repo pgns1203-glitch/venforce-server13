@@ -31,6 +31,35 @@ function numOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+// Erro de UMA chamada abortiva ao Mercado Livre (busca de ids / multiget de
+// detalhes) — as únicas duas chamadas desta camada cujo erro hoje interrompe
+// o lote inteiro (não há fallback "item sem dado", o Motor não tem IDs/corpo
+// para seguir). ANTES desta função, resp.status===429 caía no `else: 502`
+// genérico — a mesma etiqueta de "ML fora do ar"/erro estrutural qualquer,
+// então quem chamava (job/orquestrador) não conseguia distinguir rate limit
+// de qualquer outra falha. 401/403→422 e "qualquer outro status"→502
+// continuam EXATAMENTE como antes; só 429 ganha um terceiro ramo, com o
+// status HTTP real preservado (nunca reescrito) e `retryAfter` (já parseado
+// por mlFetch a partir do header Retry-After) passado adiante sem
+// reinterpretar — nenhum sleep/retry acontece aqui, é só preservação de
+// informação para quem decidir o que fazer com ela.
+function criarErroMeliApi(resp, mensagemPadrao) {
+  if (resp.status === 429) {
+    const err = new Error(
+      resp.data?.message
+        ? `Rate limit do Mercado Livre (429): ${resp.data.message}`
+        : "Rate limit do Mercado Livre (429)."
+    );
+    err.statusCode = 429;
+    err.codigo = "MELI_RATE_LIMIT";
+    err.retryAfter = resp.retryAfter ?? null;
+    return err;
+  }
+  const err = new Error(resp.data?.message || mensagemPadrao);
+  err.statusCode = resp.status === 401 || resp.status === 403 ? 422 : 502;
+  return err;
+}
+
 /**
  * Imagem do anúncio — extraída do MESMO `body` que `/items?ids=` já devolve.
  * ZERO chamada nova: é metadado de identidade/apresentação, não evidência
@@ -60,9 +89,7 @@ async function buscarItensPorStatus({ clienteId, mlUserId, status, offset = 0, l
     { mlUserId }
   );
   if (!resp.ok) {
-    const err = new Error(resp.data?.message || `Erro ao buscar itens (${status}) no Mercado Livre.`);
-    err.statusCode = resp.status === 401 || resp.status === 403 ? 422 : 502;
-    throw err;
+    throw criarErroMeliApi(resp, `Erro ao buscar itens (${status}) no Mercado Livre.`);
   }
   return {
     ids: Array.isArray(resp.data?.results) ? resp.data.results : [],
@@ -119,9 +146,7 @@ async function buscarDetalhesItens({ clienteId, ids }, fetchFn = mlFetch) {
   if (!ids || ids.length === 0) return [];
   const resp = await fetchFn(clienteId, `/items?ids=${ids.join(",")}`);
   if (!resp.ok) {
-    const err = new Error(resp.data?.message || "Erro ao buscar detalhes dos itens no Mercado Livre.");
-    err.statusCode = resp.status === 401 || resp.status === 403 ? 422 : 502;
-    throw err;
+    throw criarErroMeliApi(resp, "Erro ao buscar detalhes dos itens no Mercado Livre.");
   }
   const entries = Array.isArray(resp.data) ? resp.data : [];
   return entries.map((entry) => entry?.body || null).filter(Boolean);
@@ -210,4 +235,5 @@ module.exports = {
   buscarDetalhesItens,
   aplicarEvidenciasProjetadas,
   extrairImagem,
+  criarErroMeliApi,
 };

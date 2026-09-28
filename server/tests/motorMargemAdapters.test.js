@@ -787,6 +787,89 @@ cenario("buscarItensAtivos: erro 403 na busca de pausados propaga como falha de 
   );
 });
 
+// ── Observabilidade de 429 (não perder a identidade do rate limit) ──────────
+//
+// Antes desta auditoria, qualquer resp.status que não fosse 401/403 caía no
+// `else: 502` genérico — um 429 real do Mercado Livre virava indistinguível
+// de "ML fora do ar"/qualquer outro erro estrutural. Estes testes provam que
+// SÓ 429 ganhou um terceiro ramo (statusCode=429 real, nunca reescrito,
+// codigo="MELI_RATE_LIMIT", retryAfter repassado tal-e-qual) e que 401/403→422
+// e "qualquer outro status"→502 continuam EXATAMENTE como antes.
+
+cenario("criarErroMeliApi: 429 preserva statusCode=429 real (não vira 502)", () => {
+  const err = meliApi.criarErroMeliApi({ status: 429, data: null, retryAfter: 60 }, "erro padrão");
+  assert.strictEqual(err.statusCode, 429);
+});
+
+cenario("criarErroMeliApi: 429 ganha código semântico MELI_RATE_LIMIT", () => {
+  const err = meliApi.criarErroMeliApi({ status: 429, data: null, retryAfter: 60 }, "erro padrão");
+  assert.strictEqual(err.codigo, "MELI_RATE_LIMIT");
+});
+
+cenario("criarErroMeliApi: retryAfter presente chega intacto (mesmo valor, sem reinterpretar)", () => {
+  const err = meliApi.criarErroMeliApi({ status: 429, data: null, retryAfter: 37 }, "erro padrão");
+  assert.strictEqual(err.retryAfter, 37);
+});
+
+cenario("criarErroMeliApi: retryAfter ausente vira null (nunca omitido, nunca inventado)", () => {
+  const err = meliApi.criarErroMeliApi({ status: 429, data: null, retryAfter: null }, "erro padrão");
+  assert.strictEqual(err.retryAfter, null);
+});
+
+cenario("criarErroMeliApi: 403 mantém o contrato pré-existente (422, sem MELI_RATE_LIMIT)", () => {
+  const err = meliApi.criarErroMeliApi({ status: 403, data: null, retryAfter: null }, "erro padrão");
+  assert.strictEqual(err.statusCode, 422);
+  assert.strictEqual(err.codigo, undefined, "403 nunca ganha codigo MELI_RATE_LIMIT");
+});
+
+cenario("criarErroMeliApi: 401 mantém o contrato pré-existente (422)", () => {
+  const err = meliApi.criarErroMeliApi({ status: 401, data: null, retryAfter: null }, "erro padrão");
+  assert.strictEqual(err.statusCode, 422);
+});
+
+cenario("criarErroMeliApi: 500 continua erro genérico (502), nunca vira rate limit", () => {
+  const err = meliApi.criarErroMeliApi({ status: 500, data: null, retryAfter: null }, "erro padrão");
+  assert.strictEqual(err.statusCode, 502);
+  assert.strictEqual(err.codigo, undefined);
+});
+
+cenario("criarErroMeliApi: 502 real continua 502 genérico", () => {
+  const err = meliApi.criarErroMeliApi({ status: 502, data: null, retryAfter: null }, "erro padrão");
+  assert.strictEqual(err.statusCode, 502);
+  assert.strictEqual(err.codigo, undefined);
+});
+
+cenario("buscarDetalhesItens: 429 do multiget propaga statusCode/codigo/retryAfter intactos", async () => {
+  const fetchFn = async () => ({ ok: false, status: 429, data: { message: "Too many requests" }, retryAfter: 15 });
+
+  await assert.rejects(
+    () => meliApi.buscarDetalhesItens({ clienteId: 1, ids: ["MLB1"] }, fetchFn),
+    (err) => err.statusCode === 429 && err.codigo === "MELI_RATE_LIMIT" && err.retryAfter === 15
+  );
+});
+
+cenario("buscarItensAtivos: 429 na busca de ativos propaga statusCode=429 (não vira 502)", async () => {
+  const fetchFn = async (clienteId, path) => {
+    if (path.includes("status=active")) return { ok: false, status: 429, data: null, retryAfter: 20 };
+    return { ok: true, data: { results: [], paging: { total: 0 } } };
+  };
+
+  await assert.rejects(
+    () => meliApi.buscarItensAtivos({ clienteId: 1, mlUserId: "9", offset: 0, limit: 5 }, fetchFn),
+    (err) => err.statusCode === 429 && err.codigo === "MELI_RATE_LIMIT" && err.retryAfter === 20
+  );
+});
+
+cenario("buscarDetalhesItens: falha de REDE (fetchFn lança) não vira 429 — propaga o erro original intacto", async () => {
+  const erroOriginal = Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" });
+  const fetchFn = async () => { throw erroOriginal; };
+
+  await assert.rejects(
+    () => meliApi.buscarDetalhesItens({ clienteId: 1, ids: ["MLB1"] }, fetchFn),
+    (err) => err === erroOriginal && err.statusCode === undefined && err.codigo === undefined
+  );
+});
+
 // ── Runner ───────────────────────────────────────────────────────────────────
 
 async function main() {

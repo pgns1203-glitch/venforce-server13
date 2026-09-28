@@ -954,6 +954,16 @@
 .vf-page-anuncios-meli .am-margem__valor.is-info    { color: var(--vf-info-strong); }
 .vf-page-anuncios-meli .am-margem__valor.is-neutral { color: var(--vf-text); }
 
+/* Faixa de margem do agrupador (família): mínimo discreto em cima, máximo
+   (.am-margem__valor) em destaque embaixo — mesmo espírito visual do preço
+   em promoção (.am-mlb__preco-original/-atual), só sem risco: não é um
+   valor "de antes", é o extremo inferior da faixa. */
+.vf-page-anuncios-meli .am-margem__min {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
+}
+
 /* "Realizada"/"Projetada" — o selo que diz qual margem é essa. Legenda de
    SKU, mesmo peso visual do resto da tela. */
 .vf-page-anuncios-meli .am-margem__origem {

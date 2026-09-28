@@ -28,6 +28,8 @@ const naCarteira = requireClienteNaCarteira("clienteSlug");
 // antes de `/:clienteSlug/itens/:itemId` e da raiz.
 router.get("/:clienteSlug/snapshot/resumo", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.obterResumo);
 router.get("/:clienteSlug/snapshot/itens", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.listarItens);
+// Realizado da CONTA no período (KPIs, cobertura, freshness) — só leitura.
+router.get("/:clienteSlug/snapshot/realizado", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.obterRealizado);
 router.post("/:clienteSlug/snapshot/refresh", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.solicitarRefresh);
 router.get("/:clienteSlug/snapshot/refresh/:runId", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.obterStatusRefresh);
 

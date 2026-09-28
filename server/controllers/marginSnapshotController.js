@@ -52,6 +52,7 @@ function createMarginSnapshotController({ service = defaultService, readService 
         limit: req.query.limit,
         dateFrom: req.query.dateFrom,
         dateTo: req.query.dateTo,
+        periodo: req.query.periodo,
         status: req.query.status,
         statusAnuncio: req.query.statusAnuncio,
         refreshStatus: req.query.refreshStatus,
@@ -63,6 +64,24 @@ function createMarginSnapshotController({ service = defaultService, readService 
       return responder(res, 200, data);
     } catch (err) {
       return tratarErro(res, err, "listarItens");
+    }
+  }
+
+  /** GET /:clienteSlug/snapshot/realizado?clienteContaId=&periodo=|dateFrom=&dateTo= — KPIs realizados da conta. */
+  async function obterRealizado(req, res) {
+    try {
+      const clienteSlug = slugParam(req);
+      if (!clienteSlug) return responder(res, 400, { ok: false, erro: "clienteSlug é obrigatório." });
+      const data = await readService.obterRealizado({
+        clienteSlug,
+        clienteContaId: req.query.clienteContaId,
+        dateFrom: req.query.dateFrom,
+        dateTo: req.query.dateTo,
+        periodo: req.query.periodo,
+      });
+      return responder(res, 200, data);
+    } catch (err) {
+      return tratarErro(res, err, "obterRealizado");
     }
   }
 
@@ -98,7 +117,7 @@ function createMarginSnapshotController({ service = defaultService, readService 
     }
   }
 
-  return { obterResumo, listarItens, solicitarRefresh, obterStatusRefresh };
+  return { obterResumo, listarItens, obterRealizado, solicitarRefresh, obterStatusRefresh };
 }
 
 module.exports = { createMarginSnapshotController, ...createMarginSnapshotController() };

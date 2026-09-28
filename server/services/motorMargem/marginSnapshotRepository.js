@@ -437,7 +437,39 @@ async function summarizeProjectionSnapshots({ filtro, db = pool }) {
   };
 }
 
+// Projeção persistida de um LOTE de anúncios (os que tiveram venda no
+// período) — UMA query com `item_id = ANY`, nunca uma por anúncio. Inclui
+// itens fora do catálogo atual: eles venderam no período e o desvio
+// previsto × realizado continua valendo para eles.
+async function mapProjectionsForItems({ clienteId, clienteContaId, marketplace = "meli", itemIds, db = pool }) {
+  if (!clienteId) throw new Error("mapProjectionsForItems: clienteId é obrigatório.");
+  if (!clienteContaId) throw new Error("mapProjectionsForItems: clienteContaId é obrigatório.");
+  const ids = Array.from(new Set((itemIds || []).filter(Boolean).map(String)));
+  if (!ids.length) return new Map();
+  const result = await db.query(
+    `/* ms:projecoes */ SELECT item_id, titulo, price, profit, margin, margin_percent, status, calculated_at
+       FROM margin_projection_snapshots
+      WHERE cliente_id = $1 AND cliente_conta_id = $2 AND marketplace = $3 AND item_id = ANY($4::text[])`,
+    [clienteId, clienteContaId, marketplace, ids]
+  );
+  const mapa = new Map();
+  for (const row of result.rows) {
+    mapa.set(row.item_id, {
+      itemId: row.item_id,
+      titulo: row.titulo || null,
+      price: row.price != null ? Number(row.price) : null,
+      profit: row.profit != null ? Number(row.profit) : null,
+      margin: row.margin != null ? Number(row.margin) : null,
+      marginPercent: row.margin_percent != null ? Number(row.margin_percent) : null,
+      status: row.status || null,
+      calculatedAt: row.calculated_at || null,
+    });
+  }
+  return mapa;
+}
+
 module.exports = {
+  mapProjectionsForItems,
   STATUS_VALIDOS,
   REFRESH_STATUS_VALIDOS,
   CONFIANCA_VALIDOS,

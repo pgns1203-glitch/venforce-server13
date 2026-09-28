@@ -7,10 +7,13 @@
 // simplesmente não existe.
 //
 // REÚSO: a leitura em si (último import por competência, intervalo de datas,
-// pedidos/itens/componentes) é `centralVendasRepository.getCentralVendasByRange`
+// pedidos/itens/componentes) é a de `centralVendasRepository.getCentralVendasByRange`
 // — a MESMA consulta que o Cliente 360 já usa via `cliente360FechamentoAdapter`.
-// Este adapter NÃO tem SQL próprio; ele só traduz o resultado para o contrato
-// de evidências do Motor.
+// Aqui ela é chamada pelas duas metades que a compõem (resolveImportsForRange
+// + loadPedidosByImportIds, M10) só para também devolver o diagnóstico de
+// cobertura por competência (`competencias`) — mesma seleção M4, mesmas
+// queries. Este adapter NÃO tem SQL próprio; ele só traduz o resultado para o
+// contrato de evidências do Motor.
 //
 // ── AGREGAÇÃO POR ANÚNCIO ───────────────────────────────────────────────────
 // A Central de Vendas raciocina por PEDIDO; a Central de Margem raciocina por
@@ -52,7 +55,7 @@
 
 const pool = require("../../../config/database");
 const { normalizeId } = require("../../../utils/textUtils");
-const { getCentralVendasByRange } = require("../../centralVendas/centralVendasRepository");
+const { resolveImportsForRange, loadPedidosByImportIds } = require("../../centralVendas/centralVendasRepository");
 const { pedidoEntraNoResultado } = require("../../centralVendas/centralVendasService");
 const { SOURCES, EVIDENCE_KINDS, EVIDENCE_QUALITY } = require("../core/marginSources");
 const { FIELDS } = require("../core/marginEvidence");
@@ -100,9 +103,10 @@ function toIso(value) {
 // encontrado — o realizado inteiro (receita/% faturamento/margem "realized")
 // fica vazio em silêncio (ver motorMargemService.prepareWorkspaceContext).
 async function carregarVendasDoPeriodo({ clienteSlug, dateFrom, dateTo, marketplace = "meli", clienteContaId = null, includeLegacy = false }, db = pool) {
-  const bruto = await getCentralVendasByRange({ clienteSlug, dateFrom, dateTo, marketplace, clienteContaId, includeLegacy }, db);
+  const selecao = await resolveImportsForRange({ clienteSlug, dateFrom, dateTo, marketplace, clienteContaId, includeLegacy }, db);
+  const competencias = selecao.competencias || [];
 
-  if (!bruto) {
+  if (!selecao.imports.length) {
     return {
       imports: [],
       pedidos: [],
@@ -111,8 +115,12 @@ async function carregarVendasDoPeriodo({ clienteSlug, dateFrom, dateTo, marketpl
       componentes: [],
       sincronizado: false,
       importSnapshotAt: null,
+      competencias,
     };
   }
+
+  const carga = await loadPedidosByImportIds({ importIds: selecao.importIds, dateFrom, dateTo }, db);
+  const bruto = { imports: selecao.imports, ...carga };
 
   const pedidosTodos = bruto.pedidos || [];
   const pedidos = pedidosTodos.filter(pedidoEntraNoResultado);
@@ -133,6 +141,7 @@ async function carregarVendasDoPeriodo({ clienteSlug, dateFrom, dateTo, marketpl
     componentes: bruto.componentes || [],
     sincronizado: true,
     importSnapshotAt,
+    competencias,
   };
 }
 

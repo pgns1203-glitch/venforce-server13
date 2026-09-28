@@ -292,24 +292,28 @@ function montarUnidadesVendidasGlobal(resultadoVendas, itemIds, porFamiliaItens)
 // snapshot já persistido (`margemProjetadaSnapshotRepository.lerSnapshotPorItens`,
 // ver comentário de ORDENACOES_GLOBAIS acima).
 //
-// `porItem`/`porFamilia` carregam o valor USADO PARA ORDENAR
-// (`margin_percent`, igual à unidade do item — nunca lucro em R$): mesma
-// unidade nos dois níveis é o que faz `x.valorOrdenacao - y.valorOrdenacao`
-// (comparador genérico de `listarAgrupadoOrdenadoPorMotor`) fazer sentido
-// numericamente, mesmo invariante que `montarFaturamento`/`montarCurvaAbc`
-// já mantêm (percentual/classe em ambos os níveis, nunca um R$ vs. outro %).
+// Contrato de família auditado (não escolhido de novo) contra o que já está
+// EM PRODUÇÃO: `performance()`/`montarMargemPorFamilia` (linha 837+) e o sort
+// LOCAL do Portal (`Portal/anuncios-meli.js:2147`, `valorOrdenacaoDaLinha`)
+// já usam `dados.margemPorFamilia[familyId]` = SOMA de `profit` (R$) dos
+// filhos, NUNCA média/herança de `marginPercent`. E o CARD da família nunca
+// mostra número nenhum de margem — sempre "—", com o comentário explícito
+// "Margem NUNCA agrega... margem enganosa é pior que margem ausente — regra
+// do usuário, sem exceção para soma" (`anuncios-meli.js:983-987`). Ou seja: a
+// soma de profit já é usada hoje como CHAVE DE ORDENAÇÃO interna, mas NUNCA
+// rotulada/exibida como percentual — exatamente o padrão que este branch
+// reproduz: `porFamilia` (valorOrdenacao, mesmo papel de `margemPorFamilia`)
+// é a soma de profit dos filhos com profit conhecido (mesma condição de
+// `montarMargemPorFamilia`: `profit != null`, independente de `computable` —
+// reaproveitado, não reinventado); `margemProjetadaPercent` da família fica
+// SEMPRE null (nunca a soma nem uma média rotulados como "Percent" — isso
+// seria "soma de profit como se fosse margin_percent", o erro que este
+// contrato existe pra evitar) e `margemProjetadaComputable` da família fica
+// SEMPRE false (não existe margem % de família, ponto — mesma frase do
+// comentário do card).
 //
-// Família = MÉDIA do `marginPercent` dos filhos COMPUTÁVEIS (nunca herda do
-// filho mais forte/mais fraco isolado, mesmo espírito de "agregado, não
-// filho isolado" que os outros 3 critérios já aplicam) — decisão desta
-// missão, não a nota tentativa do plano técnico (§8.2, "soma de profit"):
-// soma de profit e média de percentual são unidades DIFERENTES, e o profit
-// (R$) não pode ser comparado com o marginPercent (%) de um item avulso no
-// mesmo ORDER BY. `profit` continua exposto (soma dos filhos computáveis),
-// mas só como dado INFORMATIVO — nunca decide a posição.
-// Filho sem `marginPercent` computável não entra na média (nem no
-// denominador); família sem NENHUM filho computável fica null (vai para o
-// fim, mesma regra NULLS LAST dos itens avulsos).
+// Item usa `marginPercent` direto (mesmo valor que `margemConteudoHtml` já
+// exibe hoje, `anuncios-meli.js:1651`) — sem mudança desta correção.
 function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) {
   const porItem = {};
   const porItemProfit = {};
@@ -327,32 +331,26 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
     porItemOrigemJob[itemId] = (s && s.origemJob) || null;
   }
 
+  // Família: SOMA de profit dos filhos com profit conhecido — mesma condição
+  // de montarMargemPorFamilia (`s.profit != null`, sem exigir `computable`).
   const porFamilia = {};
-  const porFamiliaProfit = {};
-  const porFamiliaComputable = {};
   const porFamiliaCalculadoEm = {};
   for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
-    let somaPercent = 0;
-    let qtdComputavel = 0;
-    let somaProfit = 0;
-    let teveProfit = false;
+    let soma = null;
     let maisRecente = null;
     for (const itemId of itensDaFamilia) {
       const s = snapshotPorItem.get(String(itemId));
       if (!s) continue;
-      if (s.computable && s.marginPercent != null) { somaPercent += s.marginPercent; qtdComputavel++; }
-      if (s.profit != null) { somaProfit += s.profit; teveProfit = true; }
+      if (s.profit != null) soma = (soma == null ? 0 : soma) + s.profit;
       if (s.calculadoEm && (!maisRecente || new Date(s.calculadoEm) > new Date(maisRecente))) maisRecente = s.calculadoEm;
     }
-    porFamilia[familyId] = qtdComputavel > 0 ? Math.round((somaPercent / qtdComputavel) * 100) / 100 : null;
-    porFamiliaProfit[familyId] = teveProfit ? Math.round(somaProfit * 100) / 100 : null;
-    porFamiliaComputable[familyId] = qtdComputavel > 0;
+    porFamilia[familyId] = soma != null ? Math.round(soma * 100) / 100 : null;
     porFamiliaCalculadoEm[familyId] = maisRecente;
   }
 
   return {
     porItem, porItemProfit, porItemComputable, porItemStatus, porItemCalculadoEm, porItemOrigemJob,
-    porFamilia, porFamiliaProfit, porFamiliaComputable, porFamiliaCalculadoEm,
+    porFamilia, porFamiliaCalculadoEm,
   };
 }
 
@@ -435,14 +433,20 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
     }
 
     // Cobertura ZERO (job nunca rodou para este cliente/catálogo filtrado) é
-    // diferente de cobertura PARCIAL: com zero linha computável, "ordenar por
-    // margem" seria só o tie-break por grupo_key disfarçado de ordenação —
-    // cai no fallback (ordenacaoAplicada:false), igual a Motor indisponível.
-    // Cobertura PARCIAL não cai aqui: os itens sem snapshot só vão para o
-    // fim via NULLS LAST (mesma regra de "sem receita no período").
-    const temAlgumComputavel = Array.from(snapshotPorItem.values())
-      .some((s) => s.computable && s.marginPercent != null);
-    if (!temAlgumComputavel) {
+    // diferente de cobertura PARCIAL: sem NENHUM sinal de ranking (nem
+    // marginPercent de item computável, nem profit que alimentaria a soma de
+    // alguma família), "ordenar por margem" seria só o tie-break por
+    // grupo_key disfarçado de ordenação — cai no fallback
+    // (ordenacaoAplicada:false), igual a Motor indisponível. `s.profit`
+    // entra na checagem porque a família ranqueia por soma de profit, não
+    // por `computable` (ver montarMargemProjetadaGlobal) — um catálogo onde
+    // todo item é `computable:false` mas tem `profit` não-nulo ainda teria
+    // família ranqueável, então não é cobertura zero de verdade.
+    // Cobertura PARCIAL não cai aqui: os itens/famílias sem sinal só vão
+    // para o fim via NULLS LAST (mesma regra de "sem receita no período").
+    const temAlgumSinal = Array.from(snapshotPorItem.values())
+      .some((s) => (s.computable && s.marginPercent != null) || s.profit != null);
+    if (!temAlgumSinal) {
       return fallbackOrdenacaoIndisponivel({
         cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
         indisponivel: {
@@ -551,23 +555,25 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
         : (ranking.porItemValor[anuncio.item_id] != null ? ranking.porItemValor[anuncio.item_id] : null);
     }
   }
-  // Campos extras da margem projetada — `margemProjetadaPercent` (o valor
-  // usado pra ordenar) já foi atribuído acima via `campoResposta`; os demais
-  // são só informativos (nunca decidem posição). `profit` de família é a
-  // SOMA dos filhos computáveis (mesma regra de "agregado, não filho
-  // isolado" — unidade R$, comparável entre si, mas NUNCA usada como
-  // valorOrdenacao, ver comentário de montarMargemProjetadaGlobal).
+  // Campos extras da margem projetada. Para família, o valor genérico que
+  // `campoResposta` acabou de escrever em `margemProjetadaPercent` (linha
+  // ~503) é na verdade a SOMA de profit (R$) — é o `valorOrdenacao` real da
+  // família (ver montarMargemProjetadaGlobal), não um percentual. Sobrescrito
+  // aqui: `margemProjetadaProfit` recebe esse mesmo valor (rotulado
+  // corretamente como profit) e `margemProjetadaPercent`/`margemProjetadaComputable`
+  // voltam para null/false — família NUNCA tem margem % exibível, mesma regra
+  // do card do Portal ("Margem NUNCA agrega", `anuncios-meli.js:983-987`).
   // `status`/`origemJob` de família ficam null de propósito: são
   // classificações POR ITEM (não existe "status agregado" sem inventar uma
   // regra nova) — `calculadoEm` de família é o MAIS RECENTE entre os filhos
-  // computáveis (freshness do grupo, mesmo padrão de `MAX(b.updated_at)` já
-  // usado em LISTAR_AGRUPADO_PAGINA).
+  // com profit conhecido (freshness do grupo, mesmo padrão de
+  // `MAX(b.updated_at)` já usado em LISTAR_AGRUPADO_PAGINA).
   if (config.campo === "margemProjetada") {
     for (const anuncio of anuncios) {
       if (anuncio.tipo === "familia") {
-        anuncio.margemProjetadaProfit = ranking.porFamiliaProfit[anuncio.family_id] != null
-          ? ranking.porFamiliaProfit[anuncio.family_id] : null;
-        anuncio.margemProjetadaComputable = ranking.porFamiliaComputable[anuncio.family_id] || false;
+        anuncio.margemProjetadaProfit = anuncio.margemProjetadaPercent;
+        anuncio.margemProjetadaPercent = null;
+        anuncio.margemProjetadaComputable = false;
         anuncio.margemProjetadaStatus = null;
         anuncio.margemProjetadaCalculadaEm = ranking.porFamiliaCalculadoEm[anuncio.family_id] || null;
         anuncio.margemProjetadaOrigemJob = null;

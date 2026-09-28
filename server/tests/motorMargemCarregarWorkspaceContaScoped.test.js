@@ -236,6 +236,8 @@ async function testeIntegracao() {
       const workspace = await service.carregarWorkspace({ ...PARAMS_BASE }, depsSemNegocio(capturado));
       ok("single-account: carregarWorkspace resolve sem clienteContaId (comportamento anterior preservado)",
         capturado.mlUserId === "AAA" && workspace.base.id === 7001);
+      ok("single-account: workspace.clienteContaId expõe a conta AUTO-resolvida (501), mesmo sem --clienteConta informado",
+        workspace.clienteContaId === 501);
     }
   );
 
@@ -263,6 +265,8 @@ async function testeIntegracao() {
         workspace.base.id === 7001);
       ok("multi-account, clienteContaId=A: Central de Vendas recebe o MESMO clienteContaId (501), nunca outro",
         capturado.carregarVendasArgs?.clienteContaId === 501);
+      ok("multi-account, clienteContaId=A: workspace.clienteContaId confirma a conta efetivamente resolvida (501)",
+        workspace.clienteContaId === 501);
     }
   );
 
@@ -278,6 +282,8 @@ async function testeIntegracao() {
         workspace.base.id === 7002);
       ok("multi-account, clienteContaId=B: Central de Vendas recebe o MESMO clienteContaId (502), nunca outro",
         capturado.carregarVendasArgs?.clienteContaId === 502);
+      ok("multi-account, clienteContaId=B: workspace.clienteContaId confirma a conta efetivamente resolvida (502), não a A",
+        workspace.clienteContaId === 502);
     }
   );
 

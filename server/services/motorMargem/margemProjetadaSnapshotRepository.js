@@ -34,12 +34,11 @@ function valorEvidencia(entrada) {
  *
  * @param {object} params
  *  - clienteId        cliente_id resolvido (workspace.cliente.id)
- *  - clienteContaId    cliente_conta_id — o mesmo valor que foi PEDIDO ao
- *                       Motor (não recalcula/reresolve conta aqui). Se o job
- *                       rodou sem `--clienteConta`, fica `null` mesmo quando
- *                       o cliente só tem 1 conta (limitação conhecida: o
- *                       Motor não expõe hoje a conta AUTO-resolvida em
- *                       `carregarWorkspace`'s workspace de retorno).
+ *  - clienteContaId    cliente_conta_id EFETIVAMENTE resolvida pelo Motor
+ *                       (workspace.clienteContaId — auto-resolvida ou a
+ *                       pedida via --clienteConta, tanto faz; só `null` no
+ *                       modo legado, cliente sem cliente_contas cadastrada).
+ *                       Nenhuma resolução de conta acontece neste repository.
  *  - itemId           item.identity.itemId
  *  - item             item completo do Motor (`buildMarginItem`)
  *  - origemJob        string estável identificando quem escreveu (ex.: "manual_cli")

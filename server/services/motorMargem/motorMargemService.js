@@ -190,7 +190,7 @@ async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo
   // (Central de Margem). Passar explicitamente é o que permite a um
   // consumidor multi-conta (Anúncios ML) calcular a margem da MESMA conta
   // que está selecionada na tela, em vez da conta "automática" do cliente.
-  const { cliente, base, mlUserId } = await (deps.exigirContexto || exigirContextoPronto)({
+  const { cliente, base, mlUserId, conta } = await (deps.exigirContexto || exigirContextoPronto)({
     clienteSlugRaw: clienteSlug,
     baseSlugRaw: baseSlug,
     clienteContaId,
@@ -227,6 +227,11 @@ async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo
     cliente,
     base,
     mlUserId,
+    // Conta MELI efetivamente resolvida por `exigirContextoPronto` (via
+    // resolveMarketplaceAccountContext) — `null` só no modo legado (cliente
+    // sem nenhuma cliente_contas cadastrada). Propagada tal-e-qual, nunca
+    // re-resolvida: é o mesmo objeto que decidiu `mlUserId`/`base` acima.
+    conta: conta || null,
     periodo,
     custos,
     vendasRaw,
@@ -663,6 +668,11 @@ async function carregarWorkspace(
 
   return {
     cliente: prepared.cliente,
+    // Conta efetivamente USADA pelo Motor (auto-resolvida ou a pedida via
+    // clienteContaId, tanto faz) — nunca o valor "pedido" no argv de um
+    // chamador; vem pronta de `prepared.conta`, sem segunda resolução. `null`
+    // só no modo legado (cliente sem cliente_contas cadastrada).
+    clienteContaId: prepared.conta ? prepared.conta.id : null,
     base: prepared.base,
     periodo: prepared.periodo,
     vendas: {

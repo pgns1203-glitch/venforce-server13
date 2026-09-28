@@ -36,13 +36,13 @@
 // nenhum (comportamento seguro: omitir a intenção é erro de uso, não default
 // silencioso para escrita nem para leitura).
 //
-// LIMITAÇÃO CONHECIDA (registrada, não resolvida aqui — fora do escopo desta
-// etapa): `carregarWorkspace` não expõe a conta AUTO-resolvida quando o job
-// roda sem `--clienteConta` — o snapshot grava `cliente_conta_id` = o que foi
-// PEDIDO (null, se omitido), não necessariamente a conta que o Motor de fato
-// usou internamente. Para clientes single-conta (todo o universo testado até
-// agora) isso não causa ambiguidade — mas não é o mesmo que "a conta
-// realmente usada" ficar registrada.
+// cliente_conta_id persistido = a conta EFETIVAMENTE resolvida pelo Motor
+// (`workspace.clienteContaId`, propagada por `carregarWorkspace` a partir do
+// contexto que `resolveMarketplaceAccountContext` já resolveu), nunca o
+// valor cru do argv `--clienteConta` — que serve só para SELECIONAR a conta
+// quando o cliente é multi-conta. Sem `--clienteConta`, o Motor resolve
+// sozinho (single-conta ou modo legado) e é esse resultado que vai para o
+// snapshot. Nenhuma segunda resolução de conta acontece nesta CLI.
 // -----------------------------------------------------------------------------
 
 require("dotenv").config();
@@ -256,10 +256,16 @@ async function main(argv = process.argv.slice(2), deps = {}) {
       );
     }
 
-    const clienteContaId = args.clienteConta != null ? Number(args.clienteConta) : null;
+    // `clienteContaIdSelecionado`: só SELECIONA a conta a pedir ao Motor
+    // (null = resolução automática). Nunca é o que vai para o snapshot.
+    const clienteContaIdSelecionado = args.clienteConta != null ? Number(args.clienteConta) : null;
     const maxItens = args.maxItens != null ? Number(args.maxItens) : MAX_ITENS_DEFAULT;
 
-    const workspace = await executar({ clienteSlug: args.clienteSlug, clienteContaId, maxItens }, deps);
+    const workspace = await executar({ clienteSlug: args.clienteSlug, clienteContaId: clienteContaIdSelecionado, maxItens }, deps);
+
+    // Conta EFETIVAMENTE usada pelo Motor — vem pronta em workspace.clienteContaId
+    // (carregarWorkspace → prepared.conta.id). Nenhuma resolução nova aqui.
+    const clienteContaId = workspace.clienteContaId != null ? workspace.clienteContaId : null;
 
     let persistResumo = { snapshotsCriados: 0, snapshotsAtualizados: 0, snapshotsFalhos: 0, erros: [] };
     if (args.persist) {

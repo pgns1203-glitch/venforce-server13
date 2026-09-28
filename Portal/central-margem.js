@@ -1568,9 +1568,12 @@
   /** Vendas do período na célula do produto: unidades · pedidos · receita. */
   function salesLineHtml(item) {
     var sales = item.sales || {};
-    if (!item.hasOrders || sales.units === null || sales.units === undefined) {
+    if (!item.hasOrders) {
       return '<span class="cm-prod-sales is-empty" data-cm-sales="none">sem venda no período</span>';
     }
+    // Vendeu, mas o contrato não trouxe as quantidades (adaptador legado):
+    // não afirmar nada em vez de dizer "sem venda".
+    if (sales.units === null || sales.units === undefined) return "";
     var parcial = partialCoverage(sales.coverage);
     return '<span class="cm-prod-sales" data-cm-sales="' + escapeHtml(String(sales.units)) + '">' +
       "<span>" + escapeHtml(formatInt(sales.units) + " un · " + formatInt(sales.orders || 0) + " ped.") + "</span>" +

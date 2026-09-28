@@ -238,13 +238,14 @@ function depsRealizado(db, { vendas = cenarioVendas(), competencias = [], contar
 }
 
 function contadorDeQueries(db) {
-  const original = db.query.bind(db);
+  const original = (db.query.__original || db.query).bind(db);
   const contagem = {};
   db.query = async (sql, params) => {
     const tag = (String(sql).match(/\/\* ([\w:-]+) \*\//) || [])[1] || "outra";
     contagem[tag] = (contagem[tag] || 0) + 1;
     return original(sql, params);
   };
+  db.query.__original = original;
   return contagem;
 }
 
@@ -328,6 +329,55 @@ cenario("mapProjectionsForItems: lote vazio não consulta; lote com ids usa item
   assert.ok(chamadas[0].sql.includes("cliente_conta_id = $2"), "sempre escopado pela conta");
   assert.deepStrictEqual(chamadas[0].params[3], ["MLB1", "MLB2"], "ids deduplicados");
   assert.strictEqual(mapa.get("MLB1").price, 100);
+});
+
+cenario("página do snapshot: nº de queries e de leituras de vendas NÃO cresce com o tamanho da página (sem N+1)", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const runRepository = require("../services/motorMargem/marginSnapshotRunRepository");
+  const runService = require("../services/motorMargem/marginSnapshotRunService");
+  const { run } = await runService.enqueueMarginSnapshotRun({ clienteId: 1, clienteSlug: "loja-a", clienteContaId: 5, reason: "manual_refresh", db });
+  await runRepository.updateRunStatus({ runId: run.id, status: "running", db });
+  for (let i = 0; i < 120; i += 1) {
+    await snapshotRepository.upsertProjectionSnapshot({
+      clienteId: 1, clienteContaId: 5, marketplace: "meli", itemId: `MLB${1000 + i}`, sku: `S${i}`, titulo: `Produto ${i}`,
+      price: 100, cost: 40, taxRate: 0.06, fixedFee: 0, commission: 14, freight: 20, profit: 20, margin: 0.2, marginPercent: 20,
+      status: "HEALTHY", confidenceLevel: "HIGH", quality: { evidencias: {} }, missing: [], assumed: [], divergences: [], runId: run.id,
+    }, db);
+  }
+  await runRepository.updateRunStatus({ runId: run.id, status: "completed", db });
+
+  // Vendas para os 120 anúncios (1 pedido cada).
+  const pedidos = [];
+  const itens = [];
+  for (let i = 0; i < 120; i += 1) {
+    pedidos.push({ id: 900 + i, status: "paid", data_pedido: "2026-09-10" });
+    itens.push({ id: 7000 + i, pedido_row_id: 900 + i, mlb: `MLB${1000 + i}`, quantidade: 1, valor_unitario: 100, receita_produto: 100, custo_produto: 40, imposto_interno: 6, resultado: 20 });
+  }
+  async function medir(limit) {
+    const contagem = contadorDeQueries(db);
+    const { deps, chamadas } = depsRealizado(db, { vendas: { pedidos, itens, componentes: [] } });
+    const r = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, limit }, deps);
+    db.query = db.query.__original || db.query;
+    return { r, total: Object.values(contagem).reduce((a, b) => a + b, 0), vendas: chamadas.carregarVendas.length };
+  }
+  const pequeno = await medir(10);
+  const grande = await medir(100);
+  assert.strictEqual(pequeno.r.itens.length, 10);
+  assert.strictEqual(grande.r.itens.length, 100);
+  assert.ok(grande.r.itens.every((item) => item.projectedVsRealized.status === "COMPARABLE"), "todas as linhas com realizado composto");
+  assert.strictEqual(pequeno.vendas, 1);
+  assert.strictEqual(grande.vendas, 1, "a Central de Vendas é lida UMA vez por página, nunca por linha");
+  assert.strictEqual(grande.total, pequeno.total, `queries por página constantes (${pequeno.total} × ${grande.total})`);
+});
+
+cenario("allowlist: MARGIN_SNAPSHOT_READ_CLIENTES libera /realizado só para os clientes listados", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const { deps } = depsRealizado(db);
+  const env = { MARGIN_SNAPSHOT_READ_CLIENTES: "loja-a" };
+  const liberado = await read.obterRealizado({ clienteSlug: "loja-a", clienteContaId: 5 }, { ...deps, env });
+  assert.strictEqual(liberado.habilitado, true);
+  const bloqueado = await read.obterRealizado({ clienteSlug: "loja-b", clienteContaId: 7 }, { ...deps, env });
+  assert.deepStrictEqual(bloqueado, { ok: true, habilitado: false, modo: "legacy" });
 });
 
 cenario("leitura do realizado é ENXUTA: sem payload_json/SELECT *, só os 3 tipos de componente usados", async () => {

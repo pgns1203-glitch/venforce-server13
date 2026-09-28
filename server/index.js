@@ -102,6 +102,7 @@ const shopeeRoutes = require("./routes/shopeeRoutes");
 const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 const centralVendasNoturnoScheduler = require("./services/centralVendas/centralVendasNoturnoScheduler");
+const margemProjetadaScheduler = require("./services/motorMargem/margemProjetadaScheduler");
 const { ensureDiagnosticoInicialTables } = require("./services/diagnosticoInicial/diagnosticoInicialRepository");
 const observabilityRoutes = require("./routes/observabilityRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
@@ -2020,9 +2021,20 @@ const server = app.listen(PORT, () => {
   // registrado aqui para não repetir o erro histórico de `entregas_cliente`
   // (migration existindo só em documentação/`/setup`, nunca aplicada em
   // produção).
-  ensureAnunciosMargemProjetadaSnapshotSchema().catch((err) => {
-    console.error("[schema] erro ao garantir schema de anuncios_margem_projetada_snapshot no boot:", err.message);
-  });
+  // Scheduler interno da margem projetada global: só depois do schema do
+  // snapshot pronto, e só com MARGEM_PROJETADA_SCHEDULER_ENABLED=true. Não
+  // roda no boot — apenas agenda o próximo horário (ver
+  // margemProjetadaScheduler). Desligado por padrão; não ativado em produção
+  // nesta missão.
+  ensureAnunciosMargemProjetadaSnapshotSchema().then(
+    () => margemProjetadaScheduler.iniciar(),
+    (err) => {
+      console.error("[schema] erro ao garantir schema de anuncios_margem_projetada_snapshot no boot:", err.message);
+      if (margemProjetadaScheduler.habilitado()) {
+        console.error("[margem-projetada-scheduler] não iniciado: schema do snapshot indisponível no boot");
+      }
+    }
+  );
 
   // /setup é desabilitado em produção — as colunas novas de `custos`
   // (produto_nome, variacao_nome, updated_at) são garantidas aqui.
@@ -2111,6 +2123,7 @@ function encerrarComGraca(sinal) {
   encerrando = true;
   console.log(`[server] ${sinal} recebido, encerrando…`);
   centralVendasNoturnoScheduler.parar();
+  margemProjetadaScheduler.parar();
   const prazo = setTimeout(() => process.exit(0), 5000);
   if (typeof prazo.unref === "function") prazo.unref();
 

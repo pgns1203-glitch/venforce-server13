@@ -375,3 +375,32 @@ run recém-concluído.
   venda), não o projetado puro — diferente do Margin Snapshot.
 - Ligadas as duas, a mesma conta recebe duas varreduras completas do ML por noite.
 Plano em `docs/PLANO_FONTE_CANONICA_MARGEM.md`.
+
+---
+
+## 5. Status dos achados após a rodada (mesma branch)
+
+| ID | Status | Onde |
+|---|---|---|
+| R-01 | **Corrigido** — padrão "30 dias até ontem" (fuso SP) no Motor e na tela; `?periodo=YYYY-MM`; lacuna por mês declarada (`resumirCobertura`); regra M4 intacta | `marginRealizadoPeriodo.js`, `motorMargemService.resolverPeriodo`, `centralVendasRepository.diagnosticarCompetencias` |
+| R-02 | **Corrigido** — slot = fonte + momento (`VENFORCE_BASE` × `VENFORCE_BASE_HIST`); preset Realizado usa o histórico; taxa fixa sem histórico fica indisponível | `Portal/central-margem-api.js` (`SLOT_DEFS`, `buildSourceMap`) |
+| R-03 | **Corrigido** — `simulationInputs` sempre do momento projetado | `Portal/central-margem-api.js` |
+| R-04 | **Corrigido** — valor/un. sobre unidades cobertas; alíquota sobre a receita das linhas com imposto; cobertura por linha/unidade; frete rateado = ESTIMATED | `centralVendasEvidenceAdapter.js` |
+| R-05 | **Corrigido** — `projectedVsRealized` (núcleo), `margin.projectionError`, `sales.{cobertura,reembolso,resultadoPersistido,resultadoRecalculado,precoMedio}`, `vendas.cobertura`, `/snapshot/realizado` | `core/marginComparison.js`, `marginSnapshotReadService.js`, `marginRealizadoKpis.js` |
+| R-06 | **Corrigido** — textos do preset Realizado, explicações de indisponível e "por quê" das evidências | `Portal/central-margem.js`, `central-margem-api.js` |
+| R-07 | **Mitigado** — leitura enxuta (sem `payload_json`, 3 tipos de componente); carga por página continua sendo o período inteiro (ver §6) | `centralVendasRepository.loadRealizadoByImportIds` |
+| R-08 | **Corrigido** — cooldown do gatilho pós-sync (padrão 6 h, `0` = anterior) | `marginSnapshotTriggers.js`, `marginSnapshotConfig.js` |
+
+Fora do escopo (registrado): Central de Vendas "Mês atual" também termina hoje
+(mesma lacuna R-01 naquela tela); teto de 5.000 pedidos por run; reprocesso do
+mês anterior só até o dia 5; Mercado Pago não conectado ao Motor.
+
+## 6. Performance (medida + estimativa)
+
+| Operação | Queries | Chamadas ML | Custo |
+|---|---|---|---|
+| Abrir a Central (modo persistido) | resumo: 4 (contagem, runs) + KPIs 2 · página: 2 (lista + contagem) + runs 3 + imports 1 + vendas 3 · realizado: imports 1 + vendas 3 + projeções 1 + sync ativo 1 | **0** | memória: agregação ~30 ms e ~7 MB (5k pedidos, 4k anúncios — `scripts/benchRealizadoMargem.js`) |
+| Paginar / filtrar / buscar | página (as mesmas da abertura, sem o /realizado) | **0** | nº de queries constante, independe do tamanho da página (teste `marginRealizadoPeriodoKpis`) |
+| Trocar período | página + /realizado | **0** | não enfileira refresh do projetado |
+| Linhas lidas por página (estimativa, 5k pedidos ≈ 5,5k itens) | pedidos 5k × 4 colunas · itens 5,5k × 12 colunas · componentes ~11k × 4 colunas (antes: 5k pedidos com `payload_json` + ~30k componentes) | — | leitura enxuta lê ~1/3 dos componentes (11/30 no check em Postgres real) e nenhum `payload_json` |
+| 2k / 4k+ anúncios | a página nunca traz o catálogo; KPIs de anúncio agregados no banco; projeções dos vendidos em 1 query `item_id = ANY` | **0** | browser recebe ≤ 200 linhas por vez |

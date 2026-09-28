@@ -399,8 +399,8 @@ mês anterior só até o dia 5; Mercado Pago não conectado ao Motor.
 
 | Operação | Queries | Chamadas ML | Custo |
 |---|---|---|---|
-| Abrir a Central (modo persistido) | resumo: 4 (contagem, runs) + KPIs 2 · página: 2 (lista + contagem) + runs 3 + imports 1 + vendas 3 · realizado: imports 1 + vendas 3 + projeções 1 + sync ativo 1 | **0** | memória: agregação ~30 ms e ~7 MB (5k pedidos, 4k anúncios — `scripts/benchRealizadoMargem.js`) |
-| Paginar / filtrar / buscar | página (as mesmas da abertura, sem o /realizado) | **0** | nº de queries constante, independe do tamanho da página (teste `marginRealizadoPeriodoKpis`) |
+| Abrir a Central (modo persistido) — medido com os fakes instrumentados | `/resumo`: 2 (conta) + 6 (contagem, 3 runs, KPIs, fora do catálogo) = **8** · `/itens`: 2 (conta) + 7 (contagem, 3 runs, lista, contagem, contas ativas) + 4 (imports + pedidos/itens/componentes enxutos) = **13** · `/realizado`: 2 (conta) + 1 (contas ativas) + 4 (vendas) + 1 (projeções, só se houve venda) + 1 (sync ativo) = **9** | **0** | memória: agregação ~30 ms e ~7 MB (5k pedidos, 4k anúncios — `scripts/benchRealizadoMargem.js`) |
+| Paginar / filtrar / buscar | só `/itens` (13) | **0** | nº de queries constante, independe do tamanho da página (teste `marginRealizadoPeriodoKpis`) |
 | Trocar período | página + /realizado | **0** | não enfileira refresh do projetado |
 | Linhas lidas por página (estimativa, 5k pedidos ≈ 5,5k itens) | pedidos 5k × 4 colunas · itens 5,5k × 12 colunas · componentes ~11k × 4 colunas (antes: 5k pedidos com `payload_json` + ~30k componentes) | — | leitura enxuta lê ~1/3 dos componentes (11/30 no check em Postgres real) e nenhum `payload_json` |
 | 2k / 4k+ anúncios | a página nunca traz o catálogo; KPIs de anúncio agregados no banco; projeções dos vendidos em 1 query `item_id = ANY` | **0** | browser recebe ≤ 200 linhas por vez |

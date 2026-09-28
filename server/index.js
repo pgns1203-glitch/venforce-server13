@@ -102,6 +102,7 @@ const shopeeRoutes = require("./routes/shopeeRoutes");
 const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 const centralVendasNoturnoScheduler = require("./services/centralVendas/centralVendasNoturnoScheduler");
+const marginSnapshotRuntime = require("./services/motorMargem/marginSnapshotRuntime");
 const margemProjetadaScheduler = require("./services/motorMargem/margemProjetadaScheduler");
 const { ensureDiagnosticoInicialTables } = require("./services/diagnosticoInicial/diagnosticoInicialRepository");
 const observabilityRoutes = require("./routes/observabilityRoutes");
@@ -1108,6 +1109,16 @@ app.post("/importar-base", authMiddleware, requireAutomacoesAccess, upload.singl
       clienteContaId,
       userId: req.user?.id,
     });
+
+    // Margin Snapshot (M4): base MELI nova já vinculada → enfileira refresh
+    // das contas afetadas. Fire-and-forget, atrás de
+    // MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED; nunca atrasa esta resposta.
+    if (resultado.vinculo && resultado.marketplace === "meli") {
+      const marginTriggers = require("./services/motorMargem/marginSnapshotTriggers");
+      marginTriggers.dispararSemBloquear(() =>
+        marginTriggers.enfileirarPorMudancaDeBase({ baseId: resultado.baseId, requestedBy: req.user?.id ?? null })
+      );
+    }
 
     registrarLog({
       ...dadosUsuarioDeReq(req),
@@ -2121,6 +2132,14 @@ const server = app.listen(PORT, () => {
     });
 
   startTokenRefreshWorker();
+
+  // Margin Snapshot Worker (Central de Margem lida do banco): só sobe com
+  // MARGIN_SNAPSHOT_WORKER_ENABLED=true EXPLÍCITO. Sem a flag, nada roda —
+  // nenhuma tabela garantida, nenhum timer. Com a flag: garante o schema
+  // (margin_snapshot_schema.sql, idempotente) e inicia o polling de runs.
+  marginSnapshotRuntime.iniciarSeHabilitado().catch((err) => {
+    console.error("[marginSnapshot] worker não iniciado:", err.message);
+  });
 });
 
 // Encerramento: tenta drenar a fila de observabilidade sem travar o processo.
@@ -2142,6 +2161,9 @@ async function encerrarComGraca(sinal) {
     // só para entrar no allSettled: um erro nela vira rejeição isolada desta
     // entrada, sem impedir os outros itens do shutdown.
     Promise.resolve().then(() => margemProjetadaScheduler.parar()),
+    // Aborta runs de Margin Snapshot no próximo ponto seguro e aguarda a
+    // drenagem dentro do mesmo prazo único usado pelos demais componentes.
+    Promise.resolve().then(() => marginSnapshotRuntime.parar()),
     observabilityService.shutdown(),
     servidorFechado,
   ]);

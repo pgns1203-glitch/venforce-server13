@@ -616,6 +616,55 @@ async function loadPedidosByImportIds({ importIds, dateFrom, dateTo }, db = pool
   return { pedidos, itens: itensResult.rows, componentes: componentesResult.rows };
 }
 
+// Leitura ENXUTA para o REALIZADO do Motor de Margem
+// (centralVendasEvidenceAdapter.agregarPorMlb). Mesmos imports (já
+// resolvidos por resolveImportsForRange — seleção M4 única), mesmo filtro de
+// data e a MESMA ordem de itens de loadPedidosByImportIds (a ordem decide
+// qual sku/título "primeiro" o agregado guarda) — só lê as colunas que a
+// agregação usa e só os 3 tipos de componente que entram nela. Sem isso,
+// cada página/filtro da Central de Margem transferia `payload_json` de todos
+// os pedidos do período e 4 tipos de componente que a agregação descarta.
+const TIPOS_COMPONENTE_REALIZADO = ["tarifa_venda", "frete_seller", "cancelamento_reembolso"];
+
+async function loadRealizadoByImportIds({ importIds, dateFrom, dateTo }, db = pool) {
+  if (!Array.isArray(importIds) || !importIds.length) {
+    return { pedidos: [], itens: [], componentes: [] };
+  }
+
+  const pedidosResult = await db.query(
+    `/* cv:realizado-pedidos */ SELECT id, pedido_id, data_pedido, status
+       FROM central_vendas_pedidos
+      WHERE import_id = ANY($1::bigint[])
+        AND data_pedido BETWEEN $2 AND $3
+      ORDER BY data_pedido ASC NULLS LAST, pedido_id ASC, id ASC`,
+    [importIds, dateFrom, dateTo]
+  );
+  const pedidos = pedidosResult.rows;
+  const pedidoRowIds = pedidos.map((row) => row.id);
+  if (!pedidoRowIds.length) return { pedidos: [], itens: [], componentes: [] };
+
+  const [itensResult, componentesResult] = await Promise.all([
+    db.query(
+      `/* cv:realizado-itens */ SELECT id, pedido_row_id, pedido_id, mlb, sku, titulo, quantidade, valor_unitario,
+              receita_produto, custo_produto, imposto_interno, resultado
+         FROM central_vendas_pedido_itens
+        WHERE pedido_row_id = ANY($1::bigint[])
+        ORDER BY pedido_id ASC, id ASC`,
+      [pedidoRowIds]
+    ),
+    db.query(
+      `/* cv:realizado-componentes */ SELECT item_row_id, pedido_row_id, tipo, valor
+         FROM central_vendas_componentes
+        WHERE pedido_row_id = ANY($1::bigint[])
+          AND tipo = ANY($2::text[])
+        ORDER BY pedido_id ASC, item_id ASC NULLS LAST, id ASC`,
+      [pedidoRowIds, TIPOS_COMPONENTE_REALIZADO]
+    ),
+  ]);
+
+  return { pedidos, itens: itensResult.rows, componentes: componentesResult.rows };
+}
+
 // Lê pedidos por INTERVALO de datas (não preso a um mês). Para cada competência
 // que toca o intervalo, usa o ÚLTIMO import (evita duplicar re-sincronizações) e
 // retorna só os pedidos com data_pedido dentro de [dateFrom, dateTo]. Itens e
@@ -708,6 +757,8 @@ module.exports = {
   // M10 — leitura otimizada (ver comentários acima das funções).
   resolveImportsForRange,
   loadPedidosByImportIds,
+  loadRealizadoByImportIds,
+  TIPOS_COMPONENTE_REALIZADO,
   getPedidoDetailByRowId,
   promoverCandidatesDoRun,
   selecionarMelhorImportPorCompetencia,

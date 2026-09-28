@@ -9,11 +9,12 @@
 // REÚSO: a leitura em si (último import por competência, intervalo de datas,
 // pedidos/itens/componentes) é a de `centralVendasRepository.getCentralVendasByRange`
 // — a MESMA consulta que o Cliente 360 já usa via `cliente360FechamentoAdapter`.
-// Aqui ela é chamada pelas duas metades que a compõem (resolveImportsForRange
-// + loadPedidosByImportIds, M10) só para também devolver o diagnóstico de
-// cobertura por competência (`competencias`) — mesma seleção M4, mesmas
-// queries. Este adapter NÃO tem SQL próprio; ele só traduz o resultado para o
-// contrato de evidências do Motor.
+// Aqui ela é chamada pelas metades que a compõem: resolveImportsForRange (a
+// MESMA seleção M4, que também devolve o diagnóstico de cobertura por
+// competência) + loadRealizadoByImportIds (a carga de loadPedidosByImportIds
+// só com as colunas/tipos de componente que agregarPorMlb lê — mesmos
+// pedidos, mesma ordem). Este adapter NÃO tem SQL próprio; ele só traduz o
+// resultado para o contrato de evidências do Motor.
 //
 // ── AGREGAÇÃO POR ANÚNCIO ───────────────────────────────────────────────────
 // A Central de Vendas raciocina por PEDIDO; a Central de Margem raciocina por
@@ -55,7 +56,7 @@
 
 const pool = require("../../../config/database");
 const { normalizeId } = require("../../../utils/textUtils");
-const { resolveImportsForRange, loadPedidosByImportIds } = require("../../centralVendas/centralVendasRepository");
+const { resolveImportsForRange, loadRealizadoByImportIds } = require("../../centralVendas/centralVendasRepository");
 const { pedidoEntraNoResultado } = require("../../centralVendas/centralVendasService");
 const { SOURCES, EVIDENCE_KINDS, EVIDENCE_QUALITY } = require("../core/marginSources");
 const { FIELDS } = require("../core/marginEvidence");
@@ -119,7 +120,7 @@ async function carregarVendasDoPeriodo({ clienteSlug, dateFrom, dateTo, marketpl
     };
   }
 
-  const carga = await loadPedidosByImportIds({ importIds: selecao.importIds, dateFrom, dateTo }, db);
+  const carga = await loadRealizadoByImportIds({ importIds: selecao.importIds, dateFrom, dateTo }, db);
   const bruto = { imports: selecao.imports, ...carga };
 
   const pedidosTodos = bruto.pedidos || [];

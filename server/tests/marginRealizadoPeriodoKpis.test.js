@@ -330,6 +330,31 @@ cenario("mapProjectionsForItems: lote vazio não consulta; lote com ids usa item
   assert.strictEqual(mapa.get("MLB1").price, 100);
 });
 
+cenario("leitura do realizado é ENXUTA: sem payload_json/SELECT *, só os 3 tipos de componente usados", async () => {
+  const chamadas = [];
+  const db = {
+    async query(sql, params) {
+      chamadas.push({ sql, params });
+      if (sql.includes("FROM central_vendas_imports")) {
+        return { rows: [{ id: 11, competencia: "2026-09", publication_status: "published", coverage_date_from: "2026-09-01", coverage_date_to: "2026-09-27", published_at: "2026-09-28T06:00:00Z" }] };
+      }
+      if (sql.includes("FROM central_vendas_pedidos")) return { rows: [{ id: 1, pedido_id: "P1", data_pedido: "2026-09-10", status: "paid" }] };
+      return { rows: [] };
+    },
+  };
+  const vendas = await cv.carregarVendasDoPeriodo({ clienteSlug: "loja-a", dateFrom: "2026-09-01", dateTo: "2026-09-27", clienteContaId: 5 }, db);
+  assert.strictEqual(vendas.sincronizado, true);
+  assert.strictEqual(vendas.competencias.length, 1);
+  const leitura = chamadas.filter((c) => !c.sql.includes("FROM central_vendas_imports"));
+  assert.strictEqual(leitura.length, 3, "pedidos + itens + componentes");
+  for (const c of leitura) {
+    assert.ok(!/SELECT \*/.test(c.sql), "nunca SELECT * na leitura do realizado");
+    assert.ok(!c.sql.includes("payload_json"), "payload_json nunca é transferido");
+  }
+  const comp = leitura.find((c) => c.sql.includes("FROM central_vendas_componentes"));
+  assert.deepStrictEqual(comp.params[1], ["tarifa_venda", "frete_seller", "cancelamento_reembolso"]);
+});
+
 (async () => {
   let falhas = 0;
   for (const { nome, fn } of casos) {

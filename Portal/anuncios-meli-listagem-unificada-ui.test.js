@@ -2595,7 +2595,7 @@ async function run() {
       console.log("  ✓ 39a");
     });
 
-    await check("39a2 — margem_desc: família mostra a FAIXA (mín–máx) de margem projetada dos filhos, sem buscar detalhe/filhos", async () => {
+    await check("39a2 — margem_desc: família mostra a FAIXA (mín EM CIMA, máx EMBAIXO) de margem projetada dos filhos, sem buscar detalhe/filhos", async () => {
       // FAM-1 é reaproveitada de propósito (já usada e cacheada por dezenas
       // de testes anteriores desta suíte, mesmo raciocínio de 39h/39d) — é o
       // que prova que NENHUM detalhe de família é buscado por causa da
@@ -2633,12 +2633,21 @@ async function run() {
 
       const estado = await cdp.evaluate(`(function(){
         var itemC = document.querySelector('.am-row[data-item="MLB-MARG-C"] .am-margem__valor');
-        var famValor = document.querySelector('${linhaFam("FAM-1")} .am-margem__valor');
+        var famMin = document.querySelector('${linhaFam("FAM-1")} .am-margem__min');
+        var famMax = document.querySelector('${linhaFam("FAM-1")} .am-margem__valor');
+        var famCelula = document.querySelector('${linhaFam("FAM-1")} .am-margem');
         return {
-          familiaTexto: famValor ? famValor.textContent.trim() : null,
+          minTexto: famMin ? famMin.textContent.trim() : null,
+          maxTexto: famMax ? famMax.textContent.trim() : null,
+          // ordem no DOM: min precisa vir ANTES de max (linha de cima), nunca o contrário.
+          minAntesDeMax: !!(famMin && famMax && (famMin.compareDocumentPosition(famMax) & Node.DOCUMENT_POSITION_FOLLOWING)),
+          duasLinhas: famCelula.querySelectorAll('.am-margem__min, .am-margem__valor').length === 2,
           itemCTexto: itemC ? itemC.textContent.trim() : null,
         }; })()`);
-      assert.strictEqual(estado.familiaTexto, "12,5% – 34,8%", "família mostra a FAIXA mín–máx dos filhos computáveis — nunca margemProjetadaProfit (999) como se fosse número de margem");
+      assert.strictEqual(estado.minTexto, "12,5%", "linha de CIMA (discreta) é o MÍNIMO — nunca o máximo");
+      assert.strictEqual(estado.maxTexto, "34,8%", "linha de BAIXO (destacada) é o MÁXIMO — nunca o mínimo");
+      assert.ok(estado.minAntesDeMax, "mínimo precisa estar ANTES do máximo no DOM (linha de cima)");
+      assert.ok(estado.duasLinhas, "faixa real renderiza DUAS linhas empilhadas, nunca 'min – max' numa string só");
       assert.strictEqual(estado.itemCTexto, "30,0%", "item avulso ao lado continua mostrando o próprio valor do snapshot normalmente");
 
       assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
@@ -2699,11 +2708,13 @@ async function run() {
       })()`);
       await waitFor(cdp, `document.querySelector('${linhaFam("FAM-1")}')`, "a linha da família não renderizou");
 
-      const texto = await cdp.evaluate(`(function(){
+      const estado = await cdp.evaluate(`(function(){
         var v = document.querySelector('${linhaFam("FAM-1")} .am-margem__valor');
-        return v ? v.textContent.trim() : null;
+        var min = document.querySelector('${linhaFam("FAM-1")} .am-margem__min');
+        return { texto: v ? v.textContent.trim() : null, temLinhaMin: !!min };
       })()`);
-      assert.strictEqual(texto, "18,0%", "min===max (18/18): mostra o valor único, NUNCA '18,0% – 18,0%'");
+      assert.strictEqual(estado.texto, "18,0%", "min===max (18/18): mostra o valor único, NUNCA '18,0% – 18,0%'");
+      assert.strictEqual(estado.temLinhaMin, false, "min===max: NÃO duplica em duas linhas iguais — só a linha de baixo (.am-margem__valor) existe");
       ordenarPorGlobalHandler = null;
       console.log("  ✓ 39a4");
     });

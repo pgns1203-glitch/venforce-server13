@@ -1759,17 +1759,31 @@
   // quando a família aparece via ordenarPor=margem_asc/margem_desc — nos
   // demais sorts o backend não resolve os filhos (custo extra evitado de
   // propósito, ver anexarMargemProjetadaNaPagina), então a célula cai no
-  // "—" de sempre. Min === Max (1 único filho computável) mostra o valor
-  // único, sem repetir. Mesmo componente/classe `.am-margem`, nenhum estilo
-  // novo — só o texto muda.
+  // "—" de sempre.
+  //
+  // Empilhado em DUAS linhas (mínimo discreto em cima, máximo em destaque
+  // embaixo) em vez de "min – max" numa linha só — mesmo espírito visual do
+  // preço em promoção (`.am-mlb__preco-original`/`-atual`, ver
+  // celulaPrecoHtml): valor secundário pequeno/apagado acima, valor
+  // principal no tamanho/peso normal da coluna abaixo. `.am-margem__min` é
+  // uma classe NOVA, deliberadamente inspirada em `.am-mlb__preco-original`
+  // (mesmo fs-2xs/peso médio/cor apagada), mas SEM risco (`text-decoration:
+  // line-through` não faz sentido aqui — não é um preço "de antes", é só o
+  // extremo inferior da faixa). O valor de baixo reaproveita
+  // `.am-margem__valor` (mesma classe do item avulso) — sem CSS novo pra
+  // ele. Min === Max (1 único filho computável) mostra só UM valor, nunca
+  // duas linhas iguais.
   function margemFaixaFamiliaHtml(f) {
     if (f.margemProjetadaMinPercent != null && f.margemProjetadaMaxPercent != null) {
       var min = formatarPercentualCompacto(f.margemProjetadaMinPercent);
       var max = formatarPercentualCompacto(f.margemProjetadaMaxPercent);
-      var texto = min === max ? min : (min + " – " + max);
+      var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo–máximo). A ordenação por margem usa a média.";
+      var linhas = min === max
+        ? '<span class="am-margem__valor is-neutral">' + max + "</span>"
+        : '<span class="am-margem__min">' + min + "</span>" +
+          '<span class="am-margem__valor is-neutral">' + max + "</span>";
       return '<span class="am-margem" data-margem-familia="' + escapeAttr(f.family_id) + '">' +
-        '<span class="am-margem__valor is-neutral">' + texto + "</span>" +
-        infoDotHtml("Faixa de Margem Projetada dos anúncios desta família (mínimo–máximo). A ordenação por margem usa a média.") +
+        linhas + infoDotHtml(tip) +
       "</span>";
     }
     return '<span class="am-margem am-margem--indisponivel" ' +

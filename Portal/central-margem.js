@@ -561,12 +561,22 @@
   function decideMode(manual) {
     state.requestSequence += 1;
     var sequence = state.requestSequence;
+    var clienteNoInicio = state.client && state.client.slug;
+    var contaNoInicio = state.contaId;
     state.loading = true;
     state.error = null;
     state.errorCode = null;
     renderAll();
-    return api.getSnapshotResumo({ clientSlug: state.client.slug, clienteContaId: state.contaId }).then(function (resumo) {
+    return api.getSnapshotResumo({ clientSlug: clienteNoInicio, clienteContaId: contaNoInicio }).then(function (resumo) {
       if (sequence !== state.requestSequence) return;
+      // O vf-context pode resolver/trocar a conta enquanto a descoberta do
+      // modo ainda está em voo. A resposta pertence ao contexto capturado
+      // acima e nunca pode decidir o modo nem colocar a conta atual em espera.
+      // Repassar por loadCentral() preserva o vf-context como única autoridade
+      // e refaz imediatamente o resumo com a conta que ele já resolveu.
+      if (!state.client || state.client.slug !== clienteNoInicio || state.contaId !== contaNoInicio) {
+        return state.client ? loadCentral(manual) : undefined;
+      }
       if (!resumo.ok && (resumo.status === 404 || resumo.type === "network")) {
         // Backend sem a rota de snapshot (deploy anterior/rollback) ou rede
         // indisponível: a tela segue exatamente o caminho de sempre.

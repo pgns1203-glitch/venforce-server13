@@ -159,6 +159,10 @@ const MOCK_CLIENT = `
     window.__cmMissing = { "901": true };
     window.__cmRuns = {};            // conta -> run
     window.__cmOutcome = "completed"; // completed | failed | slow
+    window.__cmHoldResumoSemConta = sessionStorage.getItem("cmSkipHoldSemConta") !== "1";
+    window.__cmResolveResumoSemConta = null;
+    window.__cmHoldResumoConta = null;
+    window.__cmResolveResumoConta = null;
 
     function runPublico(run) {
       return run ? { runId: run.runId, status: run.status, totalItems: run.totalItems, processedItems: run.processedItems,
@@ -177,7 +181,17 @@ const MOCK_CLIENT = `
           return Promise.resolve({ ok: false, status: 404, error: "not found", type: "not-found" });
         }
         if (!params.clienteContaId) {
-          return Promise.resolve({ ok: false, status: 400, code: "CLIENTE_CONTA_ID_OBRIGATORIO", error: "clienteContaId é obrigatório" });
+          var semConta = { ok: false, status: 400, code: "CLIENTE_CONTA_ID_OBRIGATORIO", error: "clienteContaId é obrigatório" };
+          if (window.__cmHoldResumoSemConta) {
+            return new Promise(function (resolve) {
+              window.__cmResolveResumoSemConta = function () {
+                window.__cmHoldResumoSemConta = false;
+                window.__cmResolveResumoSemConta = null;
+                resolve(semConta);
+              };
+            });
+          }
+          return Promise.resolve(semConta);
         }
         var conta = String(params.clienteContaId);
         var missing = window.__cmMissing[conta] === true;
@@ -191,7 +205,17 @@ const MOCK_CLIENT = `
           kpis: missing ? null : { total: TOTAL, porStatus: porStatus, porRefreshStatus: { fresh: TOTAL - 1, stale: 0, failed: 1 }, comMargem: TOTAL - porStatus.UNVALIDATED },
           refresh: { runAtivo: runPublico(ativo(conta)), ultimoRun: runPublico(ultimo(conta)) },
         };
-        return Promise.resolve(window.VFCentralMargemApi.normalizeSnapshotResumo(payload));
+        var normalizado = window.VFCentralMargemApi.normalizeSnapshotResumo(payload);
+        if (window.__cmHoldResumoConta === conta) {
+          return new Promise(function (resolve) {
+            window.__cmResolveResumoConta = function () {
+              window.__cmHoldResumoConta = null;
+              window.__cmResolveResumoConta = null;
+              resolve(normalizado);
+            };
+          });
+        }
+        return Promise.resolve(normalizado);
       },
       getSnapshotItens: function (params) {
         window.__cmCalls.itens.push(JSON.parse(JSON.stringify(params)));
@@ -274,9 +298,10 @@ async function run() {
     await cdp.send("Runtime.enable");
 
     // Shell V3 contra o host de produção hardcoded — interceptado via CDP
-    // Fetch, nunca toca a rede real. O cliente tem DUAS contas MELI ativas:
+    // Fetch, nunca toca a rede real. O cliente tem MÚLTIPLAS contas MELI ativas:
     // o Shell nunca escolhe sozinho (ACCOUNT_CHOICE_REQUIRED).
     const PROD_HOST = "venforce-server.onrender.com";
+    let contasFixture = "multiple";
     await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
     cdp.onEvent = async (method, params) => {
       if (method !== "Fetch.requestPaused") return;
@@ -313,7 +338,10 @@ async function run() {
       }
       if (/\/clientes\/[^/?]+\/contas/.test(url)) {
         const conta = (id, nome) => ({ id, cliente_id: 1, marketplace: "meli", nome, slug: `ml-${id}`, external_account_id: String(id * 1000), externalAccountLabel: nome, is_primary: id === 900, ativo: true, grant: { id, token_status: "valid" }, base: { vinculo_id: id, base_id: id, nome: "Base " + id }, ultimaSync: null });
-        await json({ ok: true, cliente: { id: 1, nome: "Loja Teste", slug: "loja-teste", ativo: true }, contas: [conta(900, "Loja principal"), conta(901, "Loja outlet")] });
+        const contas = contasFixture === "single"
+          ? [conta(10, "Loja piloto")]
+          : [conta(10, "Loja piloto"), conta(11, "Loja secundária"), conta(900, "Loja principal"), conta(901, "Loja outlet")];
+        await json({ ok: true, cliente: { id: 1, nome: "Loja Teste", slug: "loja-teste", ativo: true }, contas });
         return;
       }
       await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
@@ -333,12 +361,33 @@ async function run() {
     const pageState = () => cdp.evaluate("document.getElementById('cm-page-state').innerText");
     const ultimaChamadaItens = () => cdp.evaluate("window.__cmCalls.itens[window.__cmCalls.itens.length-1]");
     const esperarCarregado = (msg) => waitFor(cdp, "window.VFCentralMargemUi && window.VFCentralMargemUi.getState().data && !window.VFCentralMargemUi.getState().loading", msg);
+    let itensAoLimparConta = 0;
+
+    await check("conta resolvida durante resumo sem conta: resposta antiga refaz a leitura com a conta atual", async () => {
+      await waitFor(cdp, "typeof window.__cmResolveResumoSemConta === 'function'", "resumo inicial sem conta não ficou pendente");
+      assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo.length"), 1);
+      assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo[0].clienteContaId"), null);
+
+      await cdp.evaluate("window.VF.context.setConta(10)");
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 10", "contexto não entregou a conta durante a request");
+      assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo.length"), 1, "a resposta sem conta ainda estava pendente");
+
+      await cdp.evaluate("window.__cmResolveResumoSemConta()");
+      await esperarCarregado("a Central não refez automaticamente a leitura com a conta resolvida");
+      const chamadas = await cdp.evaluate("window.__cmCalls.resumo.map(function (c) { return c.clienteContaId; })");
+      assert.deepStrictEqual(chamadas.slice(0, 2), [null, 10]);
+      assert.strictEqual(await st("s.awaitingAccount"), false);
+
+      await cdp.evaluate("window.VF.context.clearConta()");
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === null && window.VFCentralMargemUi.getState().awaitingAccount", "contexto sem escolha não foi restaurado");
+      itensAoLimparConta = await cdp.evaluate("window.__cmCalls.itens.length");
+    });
 
     await check("2+ contas sem escolha: modo persistido pede a operação e nunca escolhe conta sozinho", async () => {
       await waitFor(cdp, "document.querySelector('[data-cm-snapshot-state=\"conta\"]')", "banner de escolha de conta não apareceu");
       assert.strictEqual(await st("s.mode"), "snapshot");
       assert.strictEqual(await st("s.contaId"), null);
-      assert.strictEqual(await cdp.evaluate("window.__cmCalls.itens.length"), 0, "nenhuma página lida sem conta");
+      assert.strictEqual(await cdp.evaluate("window.__cmCalls.itens.length"), itensAoLimparConta, "nenhuma página adicional lida sem conta");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-refresh').disabled"), true);
     });
 
@@ -357,6 +406,22 @@ async function run() {
       assert.ok(kpis.includes("5000") && kpis.includes("1000"), "placar da conta inteira (5.000; 1.000 por status), não da página");
       assert.ok((await pageState()).includes("não puderam ser recalculados"), "aviso de itens com refresh falho");
       assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-cm-refresh-failed]'))"), "linha marcada com valor anterior");
+    });
+
+    await check("troca 10 → 11 durante request: resposta antiga não substitui a conta nova", async () => {
+      await cdp.evaluate("window.VF.context.setConta(10)");
+      await esperarCarregado("conta 10 não carregou antes do teste stale");
+      await cdp.evaluate("window.__cmHoldResumoConta='10';window.VFCentralMargemUi.reload();void 0");
+      await waitFor(cdp, "typeof window.__cmResolveResumoConta === 'function'", "resumo da conta 10 não ficou pendente");
+      await cdp.evaluate("window.VF.context.setConta(11)");
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 11 && !window.VFCentralMargemUi.getState().loading", "conta 11 não venceu a request anterior");
+      await cdp.evaluate("window.__cmResolveResumoConta()");
+      await sleep(150);
+      assert.strictEqual(await st("s.contaId"), 11);
+      assert.strictEqual(await st("s.snapshot.account.id"), 11);
+
+      await cdp.evaluate("window.VF.context.setConta(900)");
+      await esperarCarregado("conta 900 não foi restaurada depois do teste stale");
     });
 
     await check("5.000 itens navegados sem carregar tudo: próxima página, 200 por página, nunca > 1 página no DOM", async () => {
@@ -447,6 +512,19 @@ async function run() {
       await waitFor(cdp, "window.__cmCalls && window.__cmCalls.workspace === 1", "workspace legado não foi chamado após 404 do resumo");
       assert.strictEqual(await st("s.mode"), "legacy");
       await cdp.evaluate("sessionStorage.removeItem('cmResumo404')");
+    });
+
+    await check("1 conta ativa: vf-context auto-resolve e a Central carrega o snapshot da conta", async () => {
+      contasFixture = "single";
+      await cdp.evaluate("sessionStorage.removeItem('vf-ctx');sessionStorage.setItem('cmSkipHoldSemConta','1')");
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/central-margem.html?cliente=loja-teste` });
+      await esperarCarregado("snapshot da conta única não carregou");
+      assert.strictEqual(await cdp.evaluate("window.VF.context.getContext().clienteContaId"), 10);
+      assert.strictEqual(await st("s.contaId"), 10);
+      assert.strictEqual(await st("s.mode"), "snapshot");
+      assert.strictEqual(await st("s.awaitingAccount"), false);
+      assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo[window.__cmCalls.resumo.length-1].clienteContaId"), 10);
+      assert.strictEqual((await ultimaChamadaItens()).clienteContaId, 10);
     });
 
     console.log(`# ${checks} smoke tests de UI (leitura persistida) concluídos`);

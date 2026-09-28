@@ -92,6 +92,21 @@ async function buscarBasesMeliDoCliente(clienteId) {
   return result.rows;
 }
 
+// Quantas cliente_contas ATIVAS o cliente tem no marketplace MELI. MESMA
+// consulta que centralVendasService.js já roda (3x) para decidir
+// `includeLegacy` — não existe hoje um único ponto exportado no
+// código-fonte (cada consumidor duplica esta query, ver também
+// meliAnunciosService.js e clienteContaService.obterBaseDaConta); replicada
+// aqui para o Motor de Margem seguir a MESMA política, nunca uma regra
+// paralela (ver motorMargemService.resolverIncludeLegacy).
+async function contarContasMeliAtivas(clienteId) {
+  const result = await pool.query(
+    "SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = 'meli' AND ativo = true",
+    [clienteId]
+  );
+  return result.rows[0]?.total || 0;
+}
+
 // Resolve o contexto de um cliente SEM lançar erro para condições de negócio.
 // Lança apenas 404 quando o cliente não existe. Retorna:
 // { cliente, conta|null, grant:{conectado, ml_user_id}, base|null, basesMeli[], pronto, motivo, mensagem }
@@ -322,6 +337,7 @@ module.exports = {
   normalizarSlug,
   criarErroHttp,
   buscarBasesMeliDoCliente,
+  contarContasMeliAtivas,
   resolverContextoPrecificacao,
   exigirContextoPronto,
   exigirContextoGrantMl,

@@ -44,6 +44,7 @@ function numOrNull(value) {
 // reinterpretar — nenhum sleep/retry acontece aqui, é só preservação de
 // informação para quem decidir o que fazer com ela.
 function criarErroMeliApi(resp, mensagemPadrao) {
+  const mlStatus = Number.isFinite(Number(resp.status)) ? Number(resp.status) : null;
   if (resp.status === 429) {
     const err = new Error(
       resp.data?.message
@@ -52,11 +53,14 @@ function criarErroMeliApi(resp, mensagemPadrao) {
     );
     err.statusCode = 429;
     err.codigo = "MELI_RATE_LIMIT";
+    err.mlStatus = mlStatus;
     err.retryAfter = resp.retryAfter ?? null;
     return err;
   }
   const err = new Error(resp.data?.message || mensagemPadrao);
   err.statusCode = resp.status === 401 || resp.status === 403 ? 422 : 502;
+  err.mlStatus = mlStatus;
+  err.retryAfter = resp.retryAfter ?? null;
   return err;
 }
 
@@ -139,6 +143,77 @@ async function buscarItensAtivos({ clienteId, mlUserId, offset = 0, limit = SEAR
     ids,
     total: ativos.total + pausados.total,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Catálogo INTEIRO por scan (Margin Snapshot Worker)
+// ---------------------------------------------------------------------------
+//
+// `buscarItensAtivos` pagina por offset, e o Mercado Livre não aceita offset
+// além de 1000 em /users/{id}/items/search — acima disso a doc exige
+// `search_type=scan` + `scroll_id` (mesmo padrão já usado por
+// meliSyncService.coletarItemIds, modeloBaseCustosService e
+// planilhaPrecificacaoSemBaseService). O worker de snapshot precisa do
+// catálogo inteiro (5.000+ itens), então lista os IDs por scan e entrega os
+// lotes ao Motor via `enrichBatch(prepared, { itemIds })` — a leitura por
+// offset da tela (teto 200) continua intocada.
+//
+// Mesma ordem de `buscarItensAtivos`: ativos primeiro, pausados depois, sem
+// repetir id. Falha de página lança com o status REAL do ML (`mlStatus`) e o
+// `retryAfter` em segundos (quando o ML mandou), para o worker decidir o
+// retry — este adapter nunca dorme nem re-tenta sozinho.
+
+const SCAN_PAGE_LIMIT = 100; // máximo aceito pelo ML por página de scan
+
+function erroDeRespostaMl(resp, mensagemPadrao) {
+  return criarErroMeliApi(resp, mensagemPadrao);
+}
+
+async function listarIdsPorStatusScan({ clienteId, mlUserId, status, maxItens }, fetchFn = mlFetch) {
+  const ids = [];
+  let scrollId = null;
+  // Cada volta acrescenta >= 1 id ou encerra; o teto `maxItens` garante fim.
+  for (;;) {
+    const params = new URLSearchParams({ search_type: "scan", status, limit: String(SCAN_PAGE_LIMIT) });
+    if (scrollId) params.set("scroll_id", scrollId);
+    const resp = await fetchFn(clienteId, `/users/${mlUserId}/items/search?${params.toString()}`, { mlUserId });
+    if (!resp.ok) throw erroDeRespostaMl(resp, `Erro ao listar anúncios (${status}) no Mercado Livre.`);
+
+    const resultados = Array.isArray(resp.data?.results) ? resp.data.results : [];
+    if (!resultados.length) break;
+    ids.push(...resultados);
+    if (ids.length > maxItens) {
+      const err = new Error(`Catálogo maior que o teto de segurança do snapshot (${maxItens} itens).`);
+      err.code = "MARGIN_SNAPSHOT_CATALOGO_EXCEDE_TETO";
+      err.statusCode = 422;
+      throw err;
+    }
+    const proximo = String(resp.data?.scroll_id || "").trim();
+    if (!proximo) break;
+    scrollId = proximo;
+  }
+  return ids;
+}
+
+async function listarIdsCatalogo({ clienteId, mlUserId, maxItens = 20000 }, fetchFn = mlFetch) {
+  const ativos = await listarIdsPorStatusScan({ clienteId, mlUserId, status: "active", maxItens }, fetchFn);
+  const pausados = await listarIdsPorStatusScan({ clienteId, mlUserId, status: "paused", maxItens }, fetchFn);
+
+  const vistos = new Set();
+  const ids = [];
+  for (const bruto of [...ativos, ...pausados]) {
+    const id = String(bruto ?? "").trim();
+    if (!id || vistos.has(id)) continue;
+    vistos.add(id);
+    ids.push(id);
+  }
+  if (ids.length > maxItens) {
+    const err = new Error(`Catálogo maior que o teto de segurança do snapshot (${maxItens} itens).`);
+    err.code = "MARGIN_SNAPSHOT_CATALOGO_EXCEDE_TETO";
+    err.statusCode = 422;
+    throw err;
+  }
+  return { ids, totalAtivos: ativos.length, totalPausados: pausados.length };
 }
 
 /** Detalhes em lote. Devolve os `body` já desembrulhados do multiget. */
@@ -231,7 +306,10 @@ async function aplicarEvidenciasProjetadas(
 
 module.exports = {
   SEARCH_PAGE_LIMIT,
+  SCAN_PAGE_LIMIT,
   buscarItensAtivos,
+  listarIdsCatalogo,
+  erroDeRespostaMl,
   buscarDetalhesItens,
   aplicarEvidenciasProjetadas,
   extrairImagem,

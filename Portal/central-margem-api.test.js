@@ -678,6 +678,109 @@ async function run() {
     assert.strictEqual(item.status, "HEALTHY");
   });
 
+  // ── Leitura persistida (Margin Snapshot) ─────────────────────────────────
+
+  await test("snapshot: resumo desabilitado vira enabled:false (a tela segue o workspace ao vivo)", () => {
+    assert.deepStrictEqual(api.normalizeSnapshotResumo({ ok: true, habilitado: false, modo: "legacy" }), { ok: true, enabled: false });
+  });
+
+  await test("snapshot: resumo 'missing' mantém totais e KPIs nulos (nunca zero)", () => {
+    const r = api.normalizeSnapshotResumo({
+      ok: true, habilitado: true, estado: "missing", acao: "refresh", mensagem: "sem leitura",
+      snapshot: { totalItens: null, ultimoCalculoEm: null, foraDoCatalogo: null }, kpis: null,
+      refresh: { runAtivo: null, ultimoRun: null },
+    });
+    assert.strictEqual(r.state, "missing");
+    assert.strictEqual(r.action, "refresh");
+    assert.strictEqual(r.totalItems, null);
+    assert.strictEqual(r.kpis, null);
+  });
+
+  await test("snapshot: resumo 'ready' normaliza KPIs por status e o run ativo", () => {
+    const r = api.normalizeSnapshotResumo({
+      ok: true, habilitado: true, estado: "ready", snapshot: { totalItens: 10, ultimoCalculoEm: "2026-09-27T10:00:00Z", foraDoCatalogo: 2 },
+      kpis: { total: 10, porStatus: { HEALTHY: 6, LOSS: 4 }, porRefreshStatus: { fresh: 9, failed: 1 }, comMargem: 10 },
+      refresh: { runAtivo: { runId: 7, status: "running", totalItems: 5000, processedItems: 820 }, ultimoRun: null },
+    });
+    assert.strictEqual(r.kpis.total, 10);
+    assert.strictEqual(r.kpis.counts.HEALTHY, 6);
+    assert.strictEqual(r.kpis.counts.LOW_MARGIN, 0);
+    assert.strictEqual(r.outsideCatalog, 2);
+    assert.strictEqual(r.activeRun.processedItems, 820);
+    assert.strictEqual(r.activeRun.totalItems, 5000);
+  });
+
+  await test("snapshot: página normalizada pelo MESMO normalizador canônico (fontes/variáveis) + paginação do servidor", () => {
+    const evidence = (source, value) => ({ source, kind: "PROJECTED", value, quality: "MEASURED", observedAt: "2026-09-27T10:00:00Z" });
+    const field = (e) => ({ present: true, selectedValue: e.value, selectedSource: e.source, selectedKind: "PROJECTED", projected: e, realized: null, evidences: [e], divergences: [] });
+    const payload = {
+      estado: "ready",
+      paginacao: { page: 3, limit: 20, total: 5000, totalPaginas: 250 },
+      itens: [{
+        itemId: "MLB1", titulo: "Produto 1", sku: "S1", status: "LOSS", confidence: "HIGH",
+        fields: { price: field(evidence("MELI_API", 100)), cost: field(evidence("VENFORCE_BASE", 90)) },
+        projected: { margin: -0.1, profit: -10 }, realized: { margin: null, profit: null, pending: true },
+        quality: { statusReasons: ["Margem negativa."] },
+        snapshot: { refreshStatus: "failed", lastError: "ML 503" }, statusBase: "projected",
+      }],
+      refresh: { runAtivo: null, ultimoRun: { runId: 3, status: "completed" } },
+    };
+    const r = api.normalizeSnapshotItens(payload, context());
+    assert.strictEqual(r.sourceMode, "snapshot");
+    assert.strictEqual(r.pagination.page, 3);
+    assert.strictEqual(r.pagination.total, 5000);
+    assert.strictEqual(r.pagination.totalPages, 250);
+    assert.strictEqual(r.items.length, 1);
+    assert.strictEqual(r.items[0].sources.price.entries.MELI_API.value, 100);
+    assert.strictEqual(r.items[0].variables.cost.value, 90);
+    assert.strictEqual(r.items[0].snapshot.refreshStatus, "failed");
+    assert.strictEqual(r.refresh.lastRun.status, "completed");
+  });
+
+  await test("snapshot: filtros da planilha viram status canônicos; combinação impossível = []", () => {
+    assert.strictEqual(api.snapshotStatusFilter("", ""), null);
+    assert.deepStrictEqual(api.snapshotStatusFilter("LOSS", ""), ["LOSS"]);
+    assert.deepStrictEqual(api.snapshotStatusFilter("", "RELIABLE"), ["HEALTHY", "LOW_MARGIN", "LOSS"]);
+    assert.deepStrictEqual(api.snapshotStatusFilter("LOSS", "RELIABLE"), ["LOSS"]);
+    assert.deepStrictEqual(api.snapshotStatusFilter("UNKNOWN", "MISSING"), ["UNVALIDATED"]);
+    assert.deepStrictEqual(api.snapshotStatusFilter("LOSS", "SUSPECT"), []);
+    assert.strictEqual(api.isRunTerminal("completed"), true);
+    assert.strictEqual(api.isRunTerminal("failed"), true);
+    assert.strictEqual(api.isRunTerminal("running"), false);
+  });
+
+  await test("snapshot: client monta as rotas por conta (resumo, página, refresh 202, status) sem carregar o catálogo", async () => {
+    const calls = [];
+    const client = api.createClient({
+      request(pathQuery, options) {
+        calls.push({ path: pathQuery, method: options.method || "GET", body: options.body });
+        if (pathQuery.includes("/snapshot/resumo")) return { ok: true, status: 200, data: { ok: true, habilitado: true, estado: "ready", kpis: null, refresh: {} } };
+        if (pathQuery.includes("/snapshot/itens")) return { ok: true, status: 200, data: { ok: true, estado: "ready", itens: [], paginacao: { page: 2, limit: 50, total: 0 } } };
+        if (pathQuery.endsWith("/snapshot/refresh")) return { ok: true, status: 202, data: { ok: true, runId: 9, reaproveitado: true, run: { runId: 9, status: "running" } } };
+        if (pathQuery.includes("/snapshot/refresh/9")) return { ok: true, status: 200, data: { ok: true, run: { runId: 9, status: "completed", processedItems: 5000, totalItems: 5000 } } };
+        throw new Error(`rota inesperada: ${pathQuery}`);
+      },
+    });
+    await client.getSnapshotResumo({ clientSlug: "loja-teste", clienteContaId: 900 });
+    await client.getSnapshotItens({ clientSlug: "loja-teste", clienteContaId: 900, page: 2, limit: 50, status: ["LOSS", "LOW_MARGIN"], search: "kit" });
+    const refresh = await client.requestSnapshotRefresh({ clientSlug: "loja-teste", clienteContaId: 900 });
+    const status = await client.getSnapshotRefreshStatus({ clientSlug: "loja-teste", clienteContaId: 900, runId: 9 });
+
+    assert.ok(calls[0].path.startsWith("/operacao/central-margem/loja-teste/snapshot/resumo?"));
+    assert.ok(calls[0].path.includes("clienteContaId=900"));
+    const itensPath = calls[1].path;
+    assert.ok(itensPath.startsWith("/operacao/central-margem/loja-teste/snapshot/itens?"));
+    for (const trecho of ["clienteContaId=900", "page=2", "limit=50", "status=LOSS%2CLOW_MARGIN", "busca=kit"]) {
+      assert.ok(itensPath.includes(trecho), `falta ${trecho} em ${itensPath}`);
+    }
+    assert.strictEqual(calls[2].method, "POST");
+    assert.deepStrictEqual(calls[2].body, { clienteContaId: 900 });
+    assert.strictEqual(refresh.reused, true);
+    assert.ok(calls[3].path.includes("/snapshot/refresh/9?clienteContaId=900"));
+    assert.strictEqual(status.run.status, "completed");
+    assert.ok(!calls.some((c) => c.path.includes("/workspace")), "modo persistido nunca pede o workspace ao vivo");
+  });
+
   console.log(`# ${passed} testes concluídos`);
 }
 

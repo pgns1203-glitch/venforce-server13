@@ -76,7 +76,26 @@
     scenario: null,
     scenarioItemId: null,
     previousFocus: null,
+
+    // Leitura persistida (Margin Snapshot). O backend decide o modo em
+    // /snapshot/resumo: "legacy" = workspace ao vivo (comportamento de
+    // sempre); "snapshot" = projetada lida do banco, paginada/filtrada no
+    // servidor, por CONTA (clienteContaId do Shell).
+    mode: null,
+    contaId: null,
+    awaitingAccount: false,
+    snapshot: null,
+    serverPage: 1,
+    serverLimit: 50,
+    refreshRun: null,
+    refreshError: null,
+    pollTimer: null,
+    pollSequence: 0,
   };
+
+  // Intervalo moderado de polling do run. O override existe só para o
+  // smoke test de UI (mesmo padrão de __VF_CENTRAL_MARGEM_API_CLIENT__).
+  var SNAPSHOT_POLL_MS = Number(root.__VF_CENTRAL_MARGEM_POLL_MS__) || 4000;
 
   var refs = {};
 
@@ -252,22 +271,30 @@
     // vem do Shell V3 (aplicarContextoDoShell(), assinado via evento
     // 'vf:context' no fim do arquivo).
 
-    // Busca é PURAMENTE local: filtra o workspace já carregado, sem nova
-    // leitura. Alcança todo item carregado, não só a página visual atual.
+    // Modo legado: busca PURAMENTE local sobre o workspace carregado.
+    // Modo persistido: a busca vai ao servidor (debounce), página 1.
     refs.search.addEventListener("input", function () {
       state.search = refs.search.value.trim();
       state.visiblePage = 1;
       if (state.searchTimer) root.clearTimeout(state.searchTimer);
       state.searchTimer = root.setTimeout(function () {
+        if (isSnapshotMode()) {
+          state.serverPage = 1;
+          loadSnapshotPage();
+          return;
+        }
         renderSummary();
         renderSheet();
         renderDivergences();
-      }, 150);
+      }, isSnapshotMode() ? 300 : 150);
     });
 
     refs.refresh.addEventListener("click", function () {
-      if (state.client) loadCentral(true);
-      else renderAll();
+      if (!state.client) { renderAll(); return; }
+      // Persistido: "Atualizar leitura" enfileira o recálculo em background
+      // (202) — nunca congela a tela esperando o cálculo.
+      if (isSnapshotMode()) { requestSnapshotRefresh(); return; }
+      loadCentral(true);
     });
 
     refs.presets.addEventListener("click", function (event) {
@@ -286,20 +313,12 @@
 
     refs.financialFilter.addEventListener("change", function () {
       state.financial = refs.financialFilter.value;
-      state.visiblePage = 1;
-      renderSummary();
-      renderSheet();
-      renderDivergences();
-      renderActiveFilters();
+      onFiltersChanged();
     });
 
     refs.integrityFilter.addEventListener("change", function () {
       state.integrity = refs.integrityFilter.value;
-      state.visiblePage = 1;
-      renderSummary();
-      renderSheet();
-      renderDivergences();
-      renderActiveFilters();
+      onFiltersChanged();
     });
 
     refs.activeFilters.addEventListener("click", function (event) {
@@ -308,11 +327,7 @@
       var target = button.getAttribute("data-clear-filter");
       if (target === "financial") { state.financial = ""; refs.financialFilter.value = ""; }
       if (target === "integrity") { state.integrity = ""; refs.integrityFilter.value = ""; }
-      state.visiblePage = 1;
-      renderSummary();
-      renderSheet();
-      renderDivergences();
-      renderActiveFilters();
+      onFiltersChanged();
     });
 
     refs.kpisFinancial.addEventListener("click", function (event) {
@@ -321,11 +336,7 @@
       var value = button.getAttribute("data-financial-filter");
       state.financial = state.financial === value ? "" : value;
       refs.financialFilter.value = state.financial;
-      state.visiblePage = 1;
-      renderSummary();
-      renderSheet();
-      renderDivergences();
-      renderActiveFilters();
+      onFiltersChanged();
     });
 
     refs.kpisIntegrity.addEventListener("click", function (event) {
@@ -334,12 +345,11 @@
       var value = button.getAttribute("data-integrity-filter");
       state.integrity = state.integrity === value ? "" : value;
       refs.integrityFilter.value = state.integrity;
-      state.visiblePage = 1;
-      renderSummary();
-      renderSheet();
-      renderDivergences();
-      renderActiveFilters();
+      onFiltersChanged();
     });
+
+    // Sai da tela: nenhum timer de polling fica vivo.
+    root.addEventListener("pagehide", stopPolling);
 
     refs.criticalOnly.addEventListener("click", function () {
       state.criticalOnly = !state.criticalOnly;
@@ -413,6 +423,22 @@
     });
   }
 
+  // Legado: filtros re-renderizam o workspace carregado. Persistido: nova
+  // página 1 no servidor (o filtro vale para o catálogo inteiro da conta).
+  function onFiltersChanged() {
+    state.visiblePage = 1;
+    if (isSnapshotMode()) {
+      state.serverPage = 1;
+      renderActiveFilters();
+      loadSnapshotPage();
+      return;
+    }
+    renderSummary();
+    renderSheet();
+    renderDivergences();
+    renderActiveFilters();
+  }
+
   /** O drawer é modal: o Tab não pode escapar para a página atrás dele. */
   function trapFocus(event) {
     var focusable = refs.drawer.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
@@ -482,13 +508,29 @@
     var temCliente = ctx && snap.context && snap.context.clienteId;
     var clienteAtual = temCliente ? ctx.getClienteAtual() : null;
     var chave = clienteAtual ? clienteAtual.slug : null;
+    var contaId = temCliente && snap.context.clienteContaId ? snap.context.clienteContaId : null;
 
     state.client = clienteAtual ? { id: clienteAtual.id, slug: clienteAtual.slug, name: clienteAtual.nome } : null;
 
-    if (chave === ultimoClienteAplicado) return;
+    var clienteMudou = chave !== ultimoClienteAplicado;
+    var contaMudou = contaId !== state.contaId;
+    state.contaId = contaId;
+    // O workspace legado é client-level: trocar/resolver a conta NÃO relê
+    // (evita uma 2ª varredura ao vivo do Motor). Só a leitura persistida é
+    // por conta — nela, trocar de conta troca o dataset.
+    if (!clienteMudou && !(contaMudou && (state.mode === "snapshot" || state.awaitingAccount))) return;
     ultimoClienteAplicado = chave;
 
+    stopPolling();
     state.visiblePage = 1;
+    state.serverPage = 1;
+    state.refreshRun = null;
+    state.refreshError = null;
+    if (clienteMudou) {
+      state.mode = null;
+      state.snapshot = null;
+      state.data = null;
+    }
     closeDrawer();
     if (state.client) {
       loadCentral();
@@ -500,7 +542,225 @@
     }
   }
 
+  function isSnapshotMode() { return state.mode === "snapshot"; }
+
   function loadCentral(manual) {
+    if (!state.client) return;
+    if (state.mode === "snapshot") return loadSnapshot(manual);
+    if (state.mode === "legacy" || typeof api.getSnapshotResumo !== "function") {
+      state.mode = "legacy";
+      return loadWorkspace(manual);
+    }
+    return decideMode(manual);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Leitura persistida (Margin Snapshot)
+  // ---------------------------------------------------------------------------
+
+  function decideMode(manual) {
+    state.requestSequence += 1;
+    var sequence = state.requestSequence;
+    state.loading = true;
+    state.error = null;
+    state.errorCode = null;
+    renderAll();
+    return api.getSnapshotResumo({ clientSlug: state.client.slug, clienteContaId: state.contaId }).then(function (resumo) {
+      if (sequence !== state.requestSequence) return;
+      if (!resumo.ok && (resumo.status === 404 || resumo.type === "network")) {
+        // Backend sem a rota de snapshot (deploy anterior/rollback) ou rede
+        // indisponível: a tela segue exatamente o caminho de sempre.
+        state.mode = "legacy";
+        return loadWorkspace(manual);
+      }
+      if (!resumo.ok) {
+        if (resumo.code === "CLIENTE_CONTA_ID_OBRIGATORIO") {
+          // Leitura persistida ligada, mas o Shell ainda não tem conta
+          // (cliente com 2+ contas sem escolha): nunca escolher por ele.
+          state.mode = "snapshot";
+          state.awaitingAccount = true;
+          state.loading = false;
+          state.data = null;
+          renderAll();
+          return;
+        }
+        state.loading = false;
+        state.error = resumo.error || "Não foi possível ler o estado da Central.";
+        state.errorCode = resumo.code || null;
+        renderAll();
+        return;
+      }
+      if (!resumo.enabled) {
+        state.mode = "legacy";
+        return loadWorkspace(manual);
+      }
+      state.mode = "snapshot";
+      state.awaitingAccount = false;
+      applySnapshotResumo(resumo);
+      return loadSnapshotPage();
+    }).catch(function (error) {
+      if (sequence !== state.requestSequence) return;
+      state.loading = false;
+      state.error = error && error.message || "Falha inesperada ao carregar a Central.";
+      renderAll();
+    });
+  }
+
+  function applySnapshotResumo(resumo) {
+    state.snapshot = resumo;
+    if (resumo.activeRun && !contract.isRunTerminal(resumo.activeRun.status)) {
+      state.refreshRun = resumo.activeRun;
+      startPolling(resumo.activeRun.runId);
+    }
+  }
+
+  // Resumo (estado + KPIs) e página atual. Usado na entrada e depois que um
+  // run de atualização termina.
+  function loadSnapshot() {
+    if (!state.contaId) {
+      state.awaitingAccount = true;
+      state.data = null;
+      renderAll();
+      return Promise.resolve();
+    }
+    state.requestSequence += 1;
+    var sequence = state.requestSequence;
+    state.loading = !state.data;
+    renderAll();
+    return api.getSnapshotResumo({ clientSlug: state.client.slug, clienteContaId: state.contaId }).then(function (resumo) {
+      if (sequence !== state.requestSequence) return;
+      if (!resumo.ok) {
+        state.loading = false;
+        state.error = resumo.error;
+        state.errorCode = resumo.code || null;
+        renderAll();
+        return;
+      }
+      if (!resumo.enabled) {
+        state.mode = "legacy";
+        state.snapshot = null;
+        return loadWorkspace();
+      }
+      state.awaitingAccount = false;
+      applySnapshotResumo(resumo);
+      return loadSnapshotPage();
+    });
+  }
+
+  /** Busca UMA página no servidor — nunca o catálogo inteiro. */
+  function loadSnapshotPage() {
+    if (!state.client || !state.contaId) return Promise.resolve();
+    state.requestSequence += 1;
+    var sequence = state.requestSequence;
+    if (state.abortController) state.abortController.abort();
+    state.abortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+    state.loading = true;
+    state.error = null;
+    state.errorCode = null;
+    renderAll();
+
+    var statuses = contract.snapshotStatusFilter(state.financial, state.integrity);
+    if (statuses && !statuses.length) {
+      // Combinação de filtros impossível: resultado vazio sem ir ao servidor.
+      state.loading = false;
+      state.data = Object.assign({}, state.data || {}, { items: [], pagination: { page: 1, limit: state.serverLimit, total: 0, totalPages: 1 } });
+      renderAll();
+      return Promise.resolve();
+    }
+
+    return api.getSnapshotItens({
+      clientSlug: state.client.slug,
+      clientName: state.client.name,
+      marketplace: state.marketplace,
+      clienteContaId: state.contaId,
+      page: state.serverPage,
+      limit: state.serverLimit,
+      status: statuses,
+      search: state.search || undefined,
+    }, state.abortController && state.abortController.signal).then(function (result) {
+      if (sequence !== state.requestSequence || result.aborted) return;
+      state.loading = false;
+      if (!result.ok) {
+        state.error = result.error || "Não foi possível carregar os itens.";
+        state.errorCode = result.code || null;
+        renderAll();
+        return;
+      }
+      state.data = result;
+      if (result.refresh && result.refresh.activeRun && !contract.isRunTerminal(result.refresh.activeRun.status) && !state.pollTimer) {
+        state.refreshRun = result.refresh.activeRun;
+        startPolling(result.refresh.activeRun.runId);
+      }
+      renderAll();
+    }).catch(function (error) {
+      if (sequence !== state.requestSequence) return;
+      state.loading = false;
+      state.error = error && error.message || "Falha inesperada ao carregar os itens.";
+      renderAll();
+    });
+  }
+
+  /** "Atualizar leitura" no modo persistido: enfileira (202) e acompanha. */
+  function requestSnapshotRefresh() {
+    if (!state.client || !state.contaId) return;
+    state.refreshError = null;
+    refs.refresh.disabled = true;
+    return api.requestSnapshotRefresh({ clientSlug: state.client.slug, clienteContaId: state.contaId }).then(function (result) {
+      if (!result.ok) {
+        state.refreshError = result.error;
+        toast(result.error || "Não foi possível iniciar a atualização.", "is-danger");
+        renderAll();
+        return;
+      }
+      state.refreshRun = result.run || { runId: result.runId, status: "queued", processedItems: 0, totalItems: null };
+      toast(result.reused ? "Já existe uma atualização em andamento; acompanhando o progresso." : "Atualização iniciada. A leitura atual continua visível.", "is-info");
+      startPolling(result.runId);
+      renderAll();
+    });
+  }
+
+  // Polling leve do run: um único timer por vez, cancelado ao trocar de
+  // cliente/conta ou sair da página; para em completed/failed.
+  function startPolling(runId) {
+    stopPolling();
+    if (!runId) return;
+    state.pollSequence += 1;
+    var pollSequence = state.pollSequence;
+    var contaNoInicio = state.contaId;
+    var slugNoInicio = state.client && state.client.slug;
+    function tick() {
+      state.pollTimer = null;
+      if (pollSequence !== state.pollSequence) return;
+      api.getSnapshotRefreshStatus({ clientSlug: slugNoInicio, clienteContaId: contaNoInicio, runId: runId }).then(function (result) {
+        if (pollSequence !== state.pollSequence) return;
+        if (!result.ok) {
+          // Falha pontual de rede não encerra o acompanhamento.
+          state.pollTimer = root.setTimeout(tick, SNAPSHOT_POLL_MS);
+          return;
+        }
+        state.refreshRun = result.run;
+        if (contract.isRunTerminal(result.run.status)) {
+          state.pollTimer = null;
+          if (result.run.status === "completed") {
+            toast("Leitura atualizada: " + (result.run.successItems || 0) + " item(ns) recalculado(s). Nenhum preço foi alterado.", "is-success");
+          }
+          loadSnapshot();
+          return;
+        }
+        renderPageState();
+        state.pollTimer = root.setTimeout(tick, SNAPSHOT_POLL_MS);
+      });
+    }
+    state.pollTimer = root.setTimeout(tick, SNAPSHOT_POLL_MS);
+  }
+
+  function stopPolling() {
+    state.pollSequence += 1;
+    if (state.pollTimer) root.clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+
+  function loadWorkspace(manual) {
     if (!state.client) return;
     state.requestSequence += 1;
     var sequence = state.requestSequence;
@@ -548,9 +808,13 @@
   // Render
   // ---------------------------------------------------------------------------
 
+  function runEmAndamento() {
+    return Boolean(state.refreshRun && !contract.isRunTerminal(state.refreshRun.status));
+  }
+
   function renderAll() {
-    refs.refresh.disabled = state.loading || !state.client;
-    refs.refresh.classList.toggle("is-loading", state.loading);
+    refs.refresh.disabled = state.loading || !state.client || (isSnapshotMode() && (state.awaitingAccount || runEmAndamento()));
+    refs.refresh.classList.toggle("is-loading", state.loading || (isSnapshotMode() && runEmAndamento()));
     refs.search.disabled = !state.client;
     renderContext();
     renderPageState();
@@ -564,6 +828,23 @@
 
   function renderContext() {
     var data = state.data;
+    if (isSnapshotMode()) {
+      var snap = state.snapshot || {};
+      refs.updated.innerHTML = '<span class="cm-updated__label">Último cálculo</span><strong>' +
+        escapeHtml(formatDateTime(snap.lastCalculatedAt) || "—") + "</strong>";
+      refs.monitoredTag.textContent = snap.totalItems === null || snap.totalItems === undefined ? "—" : snap.totalItems + " itens";
+      refs.sourceTag.textContent = "Leitura persistida";
+      var contaMeta = root.VF && root.VF.context && root.VF.context.getAccountMeta ? root.VF.context.getAccountMeta() : null;
+      refs.contextMeta.innerHTML = state.client
+        ? '<span><strong>Cliente:</strong> ' + escapeHtml(state.client.name) + "</span>" +
+          (contaMeta ? '<span><strong>Conta:</strong> ' + escapeHtml(contaMeta.nome || contaMeta.externalAccountLabel || state.contaId) + "</span>" : "") +
+          '<span><strong>Marketplace:</strong> Mercado Livre</span>' +
+          '<span><strong>Projetada:</strong> snapshot calculado em background</span>' +
+          '<span><strong>Realizado:</strong> ' + escapeHtml((data && data.period && data.period.label) || "últimos 30 dias") + "</span>" +
+          '<span><strong>Modo:</strong> somente leitura</span>'
+        : "";
+      return;
+    }
     refs.updated.innerHTML = '<span class="cm-updated__label">Última atualização</span><strong>' +
       escapeHtml((data && formatDateTime(data.lastUpdated)) || "—") + "</strong>";
     refs.monitoredTag.textContent = data ? coverageLabel(data.coverage) : "—";
@@ -584,7 +865,57 @@
       escapeHtml(coverageLabel(coverage)) + (coverage.partial ? " · parcial" : "") + "</span>";
   }
 
+  function progressoRun(run) {
+    var total = run.totalItems;
+    var feitos = run.processedItems || 0;
+    var pct = total ? Math.min(100, Math.round((feitos / total) * 100)) : null;
+    return { total: total, feitos: feitos, pct: pct };
+  }
+
+  // Banners do modo persistido — nunca escondem falha nem fingem leitura.
+  function renderSnapshotPageState() {
+    var partes = [];
+    if (state.awaitingAccount) {
+      refs.pageState.innerHTML = '<div class="vf-banner is-info" data-cm-snapshot-state="conta"><div class="vf-banner__content"><p class="vf-banner__title">Escolha a operação (conta Mercado Livre)</p><p class="vf-banner__description">A leitura persistida da margem é por conta. Este cliente tem mais de uma conta ativa — selecione a operação no seletor do topo.</p></div></div>';
+      return;
+    }
+    var snap = state.snapshot || {};
+    var run = state.refreshRun;
+    if (run && !contract.isRunTerminal(run.status)) {
+      var p = progressoRun(run);
+      var texto = run.status === "queued"
+        ? "Na fila para atualizar…"
+        : "Atualizando leitura · " + p.feitos + (p.total !== null ? " / " + p.total : "") + " itens";
+      partes.push('<div class="vf-banner is-info" data-cm-snapshot-state="' + escapeHtml(run.status) + '" role="status"><div class="vf-banner__content"><p class="vf-banner__title">' + escapeHtml(texto) + "</p>" +
+        (p.pct !== null ? '<div class="cm-progress" aria-hidden="true"><span style="width:' + p.pct + '%"></span></div>' : "") +
+        '<p class="vf-banner__description">' + (snap.state === "ready"
+          ? "O último snapshot continua visível enquanto a atualização roda em background."
+          : "A primeira leitura desta conta está sendo calculada em background.") + "</p></div></div>");
+    } else if (snap.state === "missing") {
+      partes.push('<div class="vf-banner is-warning" data-cm-snapshot-state="missing"><div class="vf-banner__content"><p class="vf-banner__title">Leitura ainda não calculada para esta conta</p><p class="vf-banner__description">' +
+        escapeHtml(snap.message || "Clique em \"Atualizar leitura\" para calcular a margem projetada em background.") +
+        '</p></div><div class="vf-banner__actions"><button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-snapshot-start">Atualizar leitura</button></div></div>');
+    }
+    var ultimo = run && contract.isRunTerminal(run.status) ? run : snap.lastRun;
+    if (ultimo && ultimo.status === "failed" && !runEmAndamento()) {
+      partes.push('<div class="vf-banner is-danger" data-cm-snapshot-state="failed" role="alert"><div class="vf-banner__content"><p class="vf-banner__title">A última atualização falhou</p><p class="vf-banner__description">' +
+        escapeHtml(ultimo.errorMessage || "Erro não informado.") +
+        (snap.state === "ready" ? " Os valores exibidos são do último snapshot válido — nada foi zerado." : "") + "</p></div></div>");
+    }
+    if (snap.kpis && snap.kpis.refresh && snap.kpis.refresh.failed > 0) {
+      partes.push('<div class="vf-banner is-info" data-cm-snapshot-state="itens-falhos"><div class="vf-banner__content"><p class="vf-banner__description">' +
+        snap.kpis.refresh.failed + " item(ns) não puderam ser recalculados na última atualização e mostram o valor anterior (marcados na linha).</p></div></div>");
+    }
+    refs.pageState.innerHTML = partes.join("");
+    var start = el("cm-snapshot-start");
+    if (start) start.addEventListener("click", requestSnapshotRefresh);
+  }
+
   function renderPageState() {
+    if (isSnapshotMode() && !state.error) {
+      renderSnapshotPageState();
+      return;
+    }
     if (!state.client && !state.error) {
       // F2.3 — o Shell (data-vf-scope="client") já bloqueia esta tela
       // enquanto nenhum cliente estiver escolhido; isto é rede de segurança.
@@ -685,7 +1016,23 @@
     if (state.previousFocus && state.previousFocus.focus) state.previousFocus.focus();
   }
 
+  // Modo persistido: placar da CONTA INTEIRA calculado no banco (não da
+  // página), pelo status canônico projetado. `null` (missing) vira "—".
+  function snapshotKpiValue(key) {
+    var kpis = state.snapshot && state.snapshot.kpis;
+    if (!kpis) return "—";
+    return key === "total" ? kpis.total : kpis.counts[key] || 0;
+  }
+
   function financialCards() {
+    if (isSnapshotMode()) {
+      return [
+        { filter: null, label: "Itens da conta", value: snapshotKpiValue("total"), foot: "leitura persistida", modifier: "" },
+        { filter: "HEALTHY", label: "Saudáveis", value: snapshotKpiValue("HEALTHY"), foot: "sem ação imediata", modifier: "is-success" },
+        { filter: "LOW_MARGIN", label: "Margem baixa", value: snapshotKpiValue("LOW_MARGIN"), foot: "abaixo da meta", modifier: "is-warning" },
+        { filter: "LOSS", label: "Prejuízo", value: snapshotKpiValue("LOSS"), foot: "ação prioritária", modifier: "is-danger" },
+      ];
+    }
     var summary = state.data ? contract.summarizeItems(state.data.items) : { financial: {} };
     var counts = summary.financial || {};
     var coverage = state.data ? state.data.coverage || {} : {};
@@ -699,6 +1046,13 @@
   }
 
   function integrityCards() {
+    if (isSnapshotMode()) {
+      return [
+        { filter: "MISSING", label: "Não validados", value: snapshotKpiValue("UNVALIDATED"), foot: "dado obrigatório ausente", modifier: "" },
+        { filter: "SUSPECT", label: "Dados suspeitos", value: snapshotKpiValue("SUSPECT_DATA"), foot: "fontes em conflito", modifier: "is-warning" },
+        { filter: "RECONCILING", label: "Em conciliação", value: snapshotKpiValue("RECONCILING"), foot: "realizado ainda aberto", modifier: "is-info" },
+      ];
+    }
     var summary = state.data ? contract.summarizeItems(state.data.items) : { integrity: {} };
     var counts = summary.integrity || {};
     return [
@@ -728,6 +1082,11 @@
     }).join("");
 
     if (!state.client) refs.summaryScope.textContent = "Selecione um cliente para iniciar a análise.";
+    else if (isSnapshotMode()) {
+      refs.summaryScope.textContent = state.snapshot && state.snapshot.kpis
+        ? "Placar da conta inteira (" + state.snapshot.kpis.total + " itens), calculado no banco pelo status projetado do Motor — não depende da página nem dos filtros da planilha. O realizado aparece por item, no período."
+        : "O placar aparece depois da primeira leitura calculada desta conta.";
+    }
     else if (state.loading) refs.summaryScope.textContent = "Atualizando a leitura…";
     else if (!state.data) refs.summaryScope.textContent = "";
     else {
@@ -757,6 +1116,8 @@
    */
   function filteredItems() {
     var items = state.data ? state.data.items || [] : [];
+    // Persistido: a página JÁ veio filtrada/buscada pelo servidor.
+    if (isSnapshotMode()) return items;
     var term = state.search ? state.search.trim().toLowerCase() : "";
     return items.filter(function (item) {
       if (state.financial && contract.financialResult(item).key !== state.financial) return false;
@@ -918,7 +1279,12 @@
     var estadoCellHtml = '<div class="cm-state-stack">' + statusTag(financial) + statusTag(integrity) + "</div>";
 
     // Diagnóstico: problema → próxima ação, sem duas colunas largas de texto.
-    var diagCellHtml = '<p class="cm-diag-problem">' + escapeHtml(item.problem || "Sem problema informado") + "</p>" +
+    // Persistido: item que falhou na última atualização mostra o valor
+    // anterior — sinalizado, nunca zerado.
+    var snapshotNote = item.snapshot && item.snapshot.refreshStatus === "failed"
+      ? '<p class="cm-diag-problem" data-cm-refresh-failed title="' + escapeHtml(item.snapshot.lastError || "") + '">Valor da leitura anterior: a última atualização não recalculou este item.</p>'
+      : "";
+    var diagCellHtml = snapshotNote + '<p class="cm-diag-problem">' + escapeHtml(item.problem || "Sem problema informado") + "</p>" +
       '<div class="cm-diag-action" title="' + escapeHtml(action.detail) + '"><span class="cm-diag-arrow" aria-hidden="true">→</span><strong>' +
       escapeHtml(action.title) + "</strong></div>";
 
@@ -961,6 +1327,10 @@
       refs.resultCount.textContent = "Erro";
       return;
     }
+    if (isSnapshotMode()) {
+      renderSnapshotSheet();
+      return;
+    }
     var items = filteredItems();
     var coverage = (state.data && state.data.coverage) || {};
     refs.resultCount.textContent = items.length + (items.length === 1 ? " resultado" : " resultados") +
@@ -982,6 +1352,70 @@
     renderPagination(items.length);
   }
 
+  // Planilha do modo persistido: a página do servidor como veio (já
+  // filtrada/buscada/ordenada), paginação real no servidor.
+  function renderSnapshotSheet() {
+    if (state.awaitingAccount) {
+      refs.tableHost.innerHTML = stateHtml("empty", "Escolha a operação", "A leitura persistida é por conta Mercado Livre.");
+      refs.pagination.hidden = true;
+      refs.resultCount.textContent = "—";
+      return;
+    }
+    if (state.snapshot && state.snapshot.state === "missing") {
+      refs.tableHost.innerHTML = stateHtml("empty", "Leitura ainda não calculada",
+        runEmAndamento() ? "O cálculo desta conta está em andamento. Os itens aparecem ao final." : "Use \"Atualizar leitura\" para calcular a margem projetada desta conta em background.");
+      refs.pagination.hidden = true;
+      refs.resultCount.textContent = "sem leitura";
+      return;
+    }
+    var items = state.data ? state.data.items || [] : [];
+    var pagination = (state.data && state.data.pagination) || {};
+    var total = pagination.total === null || pagination.total === undefined ? items.length : pagination.total;
+    refs.resultCount.textContent = total + (total === 1 ? " resultado" : " resultados");
+    if (!items.length) {
+      var hasFilters = state.search || state.financial || state.integrity;
+      refs.tableHost.innerHTML = stateHtml("empty", hasFilters ? "Nenhum resultado" : "Nenhum item na leitura desta conta",
+        hasFilters ? "Ajuste a busca ou remova os filtros operacionais." : "O último cálculo não encontrou anúncios ativos ou pausados nesta conta.",
+        hasFilters ? '<div class="vf-empty__actions"><button class="vf-btn vf-btn--secondary" type="button" id="cm-clear-all">Limpar filtros</button></div>' : "");
+      var clear = el("cm-clear-all");
+      if (clear) clear.addEventListener("click", clearAllFilters);
+      refs.pagination.hidden = true;
+      return;
+    }
+    refs.tableHost.innerHTML = '<div class="vf-table-wrap cm-table-wrap"><table class="cm-table"><thead>' +
+      sheetHead() + "</thead><tbody>" + items.map(rowHtml).join("") + "</tbody></table></div>";
+    renderServerPagination(pagination, total);
+  }
+
+  function renderServerPagination(pagination, total) {
+    var page = pagination.page || 1;
+    var limit = pagination.limit || state.serverLimit;
+    var totalPages = pagination.totalPages || Math.max(Math.ceil(total / limit), 1);
+    var start = total ? (page - 1) * limit + 1 : 0;
+    var end = Math.min(page * limit, total);
+    refs.pagination.hidden = false;
+    refs.pagination.innerHTML = '<span class="vf-pagination__info">' + start + "–" + end + " de " + total +
+      '</span><label class="vf-page-size">Por página <select class="vf-select vf-select--sm" id="cm-page-size">' +
+      '<option value="50">50</option><option value="100">100</option><option value="200">200</option>' +
+      '</select></label><div class="vf-pagination__actions"><button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-page-prev"' +
+      (page <= 1 ? " disabled" : "") + '>Anterior</button><span class="vf-tag is-neutral">Página ' +
+      page + " de " + totalPages + '</span><button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-page-next"' +
+      (page >= totalPages ? " disabled" : "") + ">Próxima</button></div>";
+    var sizeSelect = el("cm-page-size");
+    sizeSelect.value = String(limit);
+    sizeSelect.addEventListener("change", function () {
+      state.serverLimit = Number(sizeSelect.value) || 50;
+      state.serverPage = 1;
+      loadSnapshotPage();
+    });
+    el("cm-page-prev").addEventListener("click", function () {
+      if (state.serverPage > 1) { state.serverPage -= 1; loadSnapshotPage(); }
+    });
+    el("cm-page-next").addEventListener("click", function () {
+      if (state.serverPage < totalPages) { state.serverPage += 1; loadSnapshotPage(); }
+    });
+  }
+
   function clearAllFilters() {
     state.financial = "";
     state.integrity = "";
@@ -990,6 +1424,10 @@
     refs.search.value = "";
     refs.financialFilter.value = "";
     refs.integrityFilter.value = "";
+    if (isSnapshotMode()) {
+      onFiltersChanged();
+      return;
+    }
     renderSummary();
     renderSheet();
     renderDivergences();
@@ -1053,7 +1491,7 @@
     var rows = divergenceRows();
     var coverage = (state.data && state.data.coverage) || {};
     refs.divergenceCount.textContent = rows.length + (rows.length === 1 ? " divergência" : " divergências") +
-      (coverage.loaded ? " nos " + coverage.loaded + " carregados" : "");
+      (isSnapshotMode() ? " nesta página" : coverage.loaded ? " nos " + coverage.loaded + " carregados" : "");
     if (!rows.length) {
       refs.divergences.innerHTML = stateHtml("empty", "Nenhuma divergência no workspace carregado",
         state.criticalOnly ? "Nenhuma divergência crítica no recorte atual." : "As fontes disponíveis concordam dentro da tolerância do Motor.");

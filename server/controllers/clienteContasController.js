@@ -112,6 +112,17 @@ async function basesElegiveis(req, res) {
 async function vincularBase(req, res) {
   try {
     const resultado = await vincularBaseNaConta(req.params.id, req.body?.base_id);
+
+    // Margin Snapshot (M4): Base da conta mudou → enfileira refresh das
+    // contas que usam a nova base. Fire-and-forget, atrás de
+    // MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED; nunca falha esta rota.
+    if (resultado?.base?.id && String(resultado?.conta?.marketplace || "").toLowerCase() === "meli") {
+      const marginTriggers = require("../services/motorMargem/marginSnapshotTriggers");
+      marginTriggers.dispararSemBloquear(() =>
+        marginTriggers.enfileirarPorMudancaDeBase({ baseId: resultado.base.id, requestedBy: req.user?.id ?? null })
+      );
+    }
+
     return res.json({ ok: true, ...resultado });
   } catch (err) {
     return responderErro(res, err);

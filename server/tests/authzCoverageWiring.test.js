@@ -80,6 +80,8 @@ function run() {
       ["get", "/:clienteSlug/itens/:itemId/evidencias"],
       ["get", "/:clienteSlug/itens/:itemId"],
       ["get", "/:clienteSlug"],
+      ["get", "/:clienteSlug/snapshot/resumo"],
+      ["get", "/:clienteSlug/snapshot/itens"],
       ["post", "/:clienteSlug/snapshot/refresh"],
       ["get", "/:clienteSlug/snapshot/refresh/:runId"],
     ];

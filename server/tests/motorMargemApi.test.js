@@ -971,27 +971,36 @@ cenario("contexto não quebra quando a Central de Vendas falha", async () => {
 
 // ── Rotas e controller ───────────────────────────────────────────────────────
 
-cenario("todas as rotas montadas são GET (API read-only)", () => {
+cenario("rotas da Central são GET — a única exceção é o refresh do snapshot, que só enfileira", () => {
   const router = require("../routes/motorMargemRoutes");
   const rotas = router.stack.filter((layer) => layer.route).map((layer) => ({
     path: layer.route.path,
     methods: Object.keys(layer.route.methods),
   }));
 
-  assert.strictEqual(rotas.length, 7);
+  // Margin Snapshot (M4): POST .../snapshot/refresh só cria um run de
+  // atualização da leitura (202) — não escreve preço, promoção nem Base.
+  const NAO_GET_PERMITIDAS = new Set(["post /:clienteSlug/snapshot/refresh"]);
   for (const rota of rotas) {
-    assert.deepStrictEqual(rota.methods, ["get"], `${rota.path} precisa ser somente GET`);
+    for (const metodo of rota.methods) {
+      if (metodo === "get") continue;
+      assert.ok(NAO_GET_PERMITIDAS.has(`${metodo} ${rota.path}`), `${metodo.toUpperCase()} ${rota.path} não é uma escrita permitida`);
+    }
   }
   assert.deepStrictEqual(
-    rotas.map((r) => r.path).sort(),
+    rotas.map((r) => `${r.methods.join(",")} ${r.path}`).sort(),
     [
-      "/:clienteSlug",
-      "/:clienteSlug/contexto",
-      "/:clienteSlug/itens",
-      "/:clienteSlug/itens/:itemId",
-      "/:clienteSlug/itens/:itemId/evidencias",
-      "/:clienteSlug/resumo",
-      "/:clienteSlug/workspace",
+      "get /:clienteSlug",
+      "get /:clienteSlug/contexto",
+      "get /:clienteSlug/itens",
+      "get /:clienteSlug/itens/:itemId",
+      "get /:clienteSlug/itens/:itemId/evidencias",
+      "get /:clienteSlug/resumo",
+      "get /:clienteSlug/snapshot/itens",
+      "get /:clienteSlug/snapshot/refresh/:runId",
+      "get /:clienteSlug/snapshot/resumo",
+      "get /:clienteSlug/workspace",
+      "post /:clienteSlug/snapshot/refresh",
     ]
   );
   // A raiz é curinga: registrada por último, não pode engolir os subcaminhos.

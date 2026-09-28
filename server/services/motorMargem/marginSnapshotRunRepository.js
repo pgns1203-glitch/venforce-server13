@@ -112,6 +112,37 @@ async function findActiveRunForAccount({ clienteId, clienteContaId, marketplace 
   return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
 }
 
+// M5 — último run TERMINADO da conta (completed ou failed): a leitura da
+// Central mostra "última atualização" e, se falhou, o motivo — sem nunca
+// esconder a falha atrás do snapshot anterior.
+async function findLatestFinishedRunForAccount({ clienteId, clienteContaId, marketplace = "meli", db = pool }) {
+  if (!clienteId) throw new Error("findLatestFinishedRunForAccount: clienteId é obrigatório.");
+  if (!clienteContaId) throw new Error("findLatestFinishedRunForAccount: clienteContaId é obrigatório.");
+  const result = await db.query(
+    `SELECT * FROM margin_snapshot_runs
+      WHERE cliente_id = $1 AND cliente_conta_id = $2 AND marketplace = $3
+        AND status IN ('completed','failed')
+      ORDER BY finished_at DESC NULLS LAST, id DESC
+      LIMIT 1`,
+    [clienteId, clienteContaId, marketplace]
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
+// Último run COMPLETED da conta — distingue "catálogo vazio de verdade"
+// (completou com 0 itens) de "nunca calculado" (missing).
+async function findLatestCompletedRunForAccount({ clienteId, clienteContaId, marketplace = "meli", db = pool }) {
+  const result = await db.query(
+    `SELECT * FROM margin_snapshot_runs
+      WHERE cliente_id = $1 AND cliente_conta_id = $2 AND marketplace = $3
+        AND status = 'completed'
+      ORDER BY finished_at DESC NULLS LAST, id DESC
+      LIMIT 1`,
+    [clienteId, clienteContaId, marketplace]
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Transições de estado — guarda estrita (WHERE status = <estado de origem
 // esperado>), nunca "status <> X" (mesmo bug já corrigido em
@@ -256,6 +287,8 @@ module.exports = {
   createRun,
   getRunById,
   findActiveRunForAccount,
+  findLatestFinishedRunForAccount,
+  findLatestCompletedRunForAccount,
   updateRunStatus,
   updateRunProgress,
   claimNextQueuedRun,

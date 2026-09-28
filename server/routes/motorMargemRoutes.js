@@ -26,6 +26,8 @@ const naCarteira = requireClienteNaCarteira("clienteSlug");
 // Margin Snapshot (M4+) — leitura persistida da margem projetada, sempre por
 // conta (`clienteContaId`), validada contra o cliente no service. Registradas
 // antes de `/:clienteSlug/itens/:itemId` e da raiz.
+router.get("/:clienteSlug/snapshot/resumo", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.obterResumo);
+router.get("/:clienteSlug/snapshot/itens", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.listarItens);
 router.post("/:clienteSlug/snapshot/refresh", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.solicitarRefresh);
 router.get("/:clienteSlug/snapshot/refresh/:runId", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.obterStatusRefresh);
 

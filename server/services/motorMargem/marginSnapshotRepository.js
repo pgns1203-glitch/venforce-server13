@@ -283,11 +283,60 @@ async function countProjectionSnapshots({ clienteContaId, marketplace = "meli", 
   return result.rows[0]?.total || 0;
 }
 
+// ---------------------------------------------------------------------------
+// Leitura da Central (M5) — SEMPRE escopada por cliente + conta + marketplace
+// (P0: conta 6 nunca lê linha da conta 5). O filtro é montado como lista de
+// condições com parâmetros posicionais — nenhum valor do usuário é
+// interpolado no SQL. Linhas fora do catálogo ficam fora da leitura padrão.
+// ---------------------------------------------------------------------------
+
+function montarFiltroSnapshots({ clienteId, clienteContaId, marketplace = "meli", incluirForaDoCatalogo = false }) {
+  if (!clienteId) throw new Error("montarFiltroSnapshots: clienteId é obrigatório.");
+  if (!clienteContaId) throw new Error("montarFiltroSnapshots: clienteContaId é obrigatório.");
+  const params = [clienteId, clienteContaId, marketplace];
+  const condicoes = ["cliente_id = $1", "cliente_conta_id = $2", "marketplace = $3"];
+  if (!incluirForaDoCatalogo) condicoes.push("catalog_missing_since IS NULL");
+  return { condicoes, params };
+}
+
+// Ordem padrão da leitura: piores margens primeiro (mesma intenção de
+// ORDENACOES.margem_asc do Motor ao vivo); sem margem vai para o fim; item_id
+// desempata para a paginação ser estável (nunca repete/pula item entre
+// páginas).
+const ORDEM_PADRAO = "margin_percent ASC NULLS LAST, item_id ASC";
+
+async function queryProjectionSnapshotsPage({ filtro, orderBy = ORDEM_PADRAO, limit, offset, db = pool }) {
+  const params = [...filtro.params, limit, offset];
+  const result = await db.query(
+    `/* ms:list */ SELECT * FROM margin_projection_snapshots
+      WHERE ${filtro.condicoes.join(" AND ")}
+      ORDER BY ${orderBy}
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+  return result.rows.map(sanitizeSnapshot);
+}
+
+async function countProjectionSnapshotsFiltrado({ filtro, db = pool }) {
+  const result = await db.query(
+    `/* ms:count */ SELECT COUNT(*)::int AS total, MAX(calculated_at) AS ultimo_calculo
+       FROM margin_projection_snapshots
+      WHERE ${filtro.condicoes.join(" AND ")}`,
+    filtro.params
+  );
+  const row = result.rows[0] || {};
+  return { total: Number(row.total || 0), ultimoCalculoEm: row.ultimo_calculo || null };
+}
+
 module.exports = {
   ensureMarginSnapshotTables,
   upsertProjectionSnapshot,
   markSnapshotsRefreshFailed,
   markSnapshotsOutsideCatalog,
+  montarFiltroSnapshots,
+  queryProjectionSnapshotsPage,
+  countProjectionSnapshotsFiltrado,
+  ORDEM_PADRAO,
   getProjectionSnapshot,
   listProjectionSnapshots,
   countProjectionSnapshots,

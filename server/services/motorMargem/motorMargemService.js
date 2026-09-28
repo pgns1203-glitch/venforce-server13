@@ -901,6 +901,9 @@ module.exports = {
   carregarWorkspace,
   aplicarFiltros,
   resolverPeriodo,
+  // Exportado para a leitura por snapshot (marginSnapshotReadService) seguir
+  // a MESMA política de import legado da leitura ao vivo — nunca uma cópia.
+  resolverIncludeLegacy,
   parseTargetMargin,
   mapWithConcurrency,
   criarErroHttp,

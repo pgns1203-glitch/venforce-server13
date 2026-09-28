@@ -8,6 +8,7 @@
 
 const { maskSensitiveData } = require("./motorMargemController");
 const defaultService = require("../services/motorMargem/marginSnapshotApiService");
+const defaultReadService = require("../services/motorMargem/marginSnapshotReadService");
 
 function responder(res, statusCode, payload) {
   return res.status(statusCode).json(maskSensitiveData(payload));
@@ -26,7 +27,38 @@ function slugParam(req) {
   return String(req.params.clienteSlug || "").trim().toLowerCase();
 }
 
-function createMarginSnapshotController({ service = defaultService } = {}) {
+function createMarginSnapshotController({ service = defaultService, readService = defaultReadService } = {}) {
+  /** GET /:clienteSlug/snapshot/resumo?clienteContaId= — estado da leitura. */
+  async function obterResumo(req, res) {
+    try {
+      const clienteSlug = slugParam(req);
+      if (!clienteSlug) return responder(res, 400, { ok: false, erro: "clienteSlug é obrigatório." });
+      const data = await readService.obterResumo({ clienteSlug, clienteContaId: req.query.clienteContaId });
+      return responder(res, 200, data);
+    } catch (err) {
+      return tratarErro(res, err, "obterResumo");
+    }
+  }
+
+  /** GET /:clienteSlug/snapshot/itens?clienteContaId=&page=&limit=… — página do snapshot. */
+  async function listarItens(req, res) {
+    try {
+      const clienteSlug = slugParam(req);
+      if (!clienteSlug) return responder(res, 400, { ok: false, erro: "clienteSlug é obrigatório." });
+      const data = await readService.listarItens({
+        clienteSlug,
+        clienteContaId: req.query.clienteContaId,
+        page: req.query.page,
+        limit: req.query.limit,
+        dateFrom: req.query.dateFrom,
+        dateTo: req.query.dateTo,
+      });
+      return responder(res, 200, data);
+    } catch (err) {
+      return tratarErro(res, err, "listarItens");
+    }
+  }
+
   /** POST /:clienteSlug/snapshot/refresh — 202 + runId, nunca espera o cálculo. */
   async function solicitarRefresh(req, res) {
     try {
@@ -59,7 +91,7 @@ function createMarginSnapshotController({ service = defaultService } = {}) {
     }
   }
 
-  return { solicitarRefresh, obterStatusRefresh };
+  return { obterResumo, listarItens, solicitarRefresh, obterStatusRefresh };
 }
 
 module.exports = { createMarginSnapshotController, ...createMarginSnapshotController() };

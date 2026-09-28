@@ -10,6 +10,77 @@
 // Não é executado como teste (run-all.js só roda *.test.js na raiz de
 // tests/, não em subpastas).
 
+// ── Avaliador das condições geradas por marginSnapshotRepository.
+// montarFiltroSnapshots (M5/M6). O builder SÓ produz estes formatos; o fake
+// os interpreta com a mesma semântica do Postgres (NULL nunca casa em
+// comparação, ILIKE com escape por barra invertida, NULLS LAST).
+function likeParaRegex(padrao) {
+  let re = "";
+  for (let i = 0; i < padrao.length; i += 1) {
+    const ch = padrao[i];
+    if (ch === "\\" && i + 1 < padrao.length) { re += padrao[i + 1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); i += 1; }
+    else if (ch === "%") re += ".*";
+    else if (ch === "_") re += ".";
+    else re += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`, "is");
+}
+
+function avaliarCondicao(cond, row, params) {
+  let m;
+  const p = (n) => params[Number(n) - 1];
+  if ((m = cond.match(/^(\w+) = \$(\d+)$/))) return row[m[1]] === p(m[2]);
+  if ((m = cond.match(/^(\w+) IS NULL$/))) return row[m[1]] === null || row[m[1]] === undefined;
+  if ((m = cond.match(/^(\w+) IS NOT NULL$/))) return row[m[1]] !== null && row[m[1]] !== undefined;
+  if ((m = cond.match(/^(\w+) = ANY\(\$(\d+)::text\[\]\)$/))) return p(m[2]).includes(row[m[1]]);
+  if ((m = cond.match(/^(\w+) (>=|<=|<|>) \$(\d+)$/))) {
+    const v = row[m[1]];
+    if (v === null || v === undefined) return false;
+    const alvo = Number(p(m[3]));
+    return m[2] === ">=" ? v >= alvo : m[2] === "<=" ? v <= alvo : m[2] === "<" ? v < alvo : v > alvo;
+  }
+  if ((m = cond.match(/^\((.+)\)$/)) && / ILIKE \$\d+/.test(cond)) {
+    return m[1].split(" OR ").some((parte) => {
+      const mm = parte.trim().match(/^(\w+) ILIKE \$(\d+)$/);
+      if (!mm) throw new Error(`marginSnapshotFakeDb: ILIKE não suportado -> ${parte}`);
+      const v = row[mm[1]];
+      return v !== null && v !== undefined && likeParaRegex(p(mm[2])).test(String(v));
+    });
+  }
+  throw new Error(`marginSnapshotFakeDb: condição não suportada -> ${cond}`);
+}
+
+function filtrarPorWhere(sql, linhas, params) {
+  const where = sql.match(/WHERE ([\s\S]+?)(?:\s+ORDER BY|\s+GROUP BY|\s+LIMIT|$)/);
+  if (!where) return linhas;
+  const condicoes = where[1].split(/\s+AND\s+/).map((c) => c.trim());
+  return linhas.filter((row) => condicoes.every((c) => avaliarCondicao(c, row, params)));
+}
+
+function ordenarPorOrderBy(sql, linhas) {
+  const m = sql.match(/ORDER BY ([\s\S]+?)\s+LIMIT/);
+  if (!m) return linhas;
+  const chaves = m[1].split(",").map((parte) => {
+    const mm = parte.trim().match(/^(\w+) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
+    if (!mm) throw new Error(`marginSnapshotFakeDb: ORDER BY não suportado -> ${parte}`);
+    return { coluna: mm[1], dir: mm[2], nulls: mm[3] || (mm[2] === "ASC" ? "LAST" : "FIRST") };
+  });
+  return linhas.slice().sort((a, b) => {
+    for (const { coluna, dir, nulls } of chaves) {
+      const va = a[coluna]; const vb = b[coluna];
+      const na = va === null || va === undefined; const nb = vb === null || vb === undefined;
+      if (na && nb) continue;
+      if (na) return nulls === "LAST" ? 1 : -1;
+      if (nb) return nulls === "LAST" ? -1 : 1;
+      const x = va instanceof Date ? va.getTime() : va;
+      const y = vb instanceof Date ? vb.getTime() : vb;
+      if (x < y) return dir === "ASC" ? -1 : 1;
+      if (x > y) return dir === "ASC" ? 1 : -1;
+    }
+    return 0;
+  });
+}
+
 function makeMarginSnapshotFakeDb() {
   const runs = [];
   const snapshots = [];
@@ -18,6 +89,30 @@ function makeMarginSnapshotFakeDb() {
 
   async function query(sqlBruto, params = []) {
     const sql = String(sqlBruto);
+
+    // ── M5/M6: leitura da Central (condições do builder) ─────────────────
+    if (sql.includes("/* ms:list */")) {
+      const limit = params[params.length - 2];
+      const offset = params[params.length - 1];
+      const linhas = ordenarPorOrderBy(sql, filtrarPorWhere(sql, snapshots, params));
+      return { rows: linhas.slice(offset, offset + limit).map((r) => ({ ...r })) };
+    }
+    if (sql.includes("/* ms:count */")) {
+      const linhas = filtrarPorWhere(sql, snapshots, params);
+      const ultimo = linhas.reduce((max, r) => (!max || r.calculated_at > max ? r.calculated_at : max), null);
+      return { rows: [{ total: linhas.length, ultimo_calculo: ultimo }] };
+    }
+
+    // ── M5: último run terminado / completo da conta ─────────────────────
+    if (sql.includes("FROM margin_snapshot_runs") && (sql.includes("status IN ('completed','failed')") || sql.includes("AND status = 'completed'"))) {
+      const [clienteId, clienteContaId, marketplace] = params;
+      const aceitos = sql.includes("status IN ('completed','failed')") ? ["completed", "failed"] : ["completed"];
+      const candidatos = runs
+        .filter((r) => r.cliente_id === clienteId && r.cliente_conta_id === clienteContaId
+          && r.marketplace === marketplace && aceitos.includes(r.status))
+        .sort((a, b) => (b.finished_at || 0) - (a.finished_at || 0) || b.id - a.id);
+      return { rows: candidatos.length ? [{ ...candidatos[0] }] : [] };
+    }
 
     // Bootstrap idempotente (ensureMarginSnapshotTables lê o .sql inteiro e
     // manda como uma única string) — no-op no fake, as tabelas já "existem"

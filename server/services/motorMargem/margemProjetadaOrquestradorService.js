@@ -126,11 +126,20 @@ function rotuloConta(conta) {
 
 // Mesmo espírito de centralVendasNoturnoService.resumirErro: só code +
 // mensagem curta no log/resumo, nunca o objeto de erro inteiro.
+//
+// statusCode/retryAfter: propagados SE E SOMENTE SE o erro já os carregava
+// (ver meliApiEvidenceAdapter.criarErroMeliApi — 429 chega com
+// err.statusCode=429, err.codigo="MELI_RATE_LIMIT", err.retryAfter). Nunca
+// inferidos aqui a partir de status/timeout/ECONNRESET — só repassados
+// tal-e-qual quando já existem no erro original. Ausentes → null, nunca
+// omitidos (o chamador não precisa checar `in`).
 function resumirErro(err) {
   const { sanitizeErrorMessage } = require("../mlTokenService");
   const code = err?.code != null ? String(err.code) : (err?.codigo != null ? String(err.codigo) : null);
   const msg = sanitizeErrorMessage(String(err?.message || "erro desconhecido")).slice(0, 300);
-  return { code, message: msg };
+  const statusCode = Number.isInteger(err?.statusCode) ? err.statusCode : null;
+  const retryAfter = err?.retryAfter != null ? err.retryAfter : null;
+  return { code, message: msg, statusCode, retryAfter };
 }
 
 function contarPor(lista, campo) {
@@ -191,7 +200,13 @@ async function processarConta(conta, deps) {
     return { ...base, status: "falha", duracaoMs: deps.agora() - inicio, erro };
   }
   if (!syncResultado.ok) {
-    const erro = { code: syncResultado.codigo || null, message: syncResultado.motivo || "sync não retornou ok" };
+    // meliSyncService.sincronizar (fora do escopo desta auditoria de 429 —
+    // ver ENTREGA) não expõe status/retryAfter estruturado hoje: uma falha de
+    // rate limit NA FASE DE SYNC ainda chega aqui só como texto livre dentro
+    // de `motivo` (ex.: "...HTTP 429)."), nunca como statusCode=429
+    // estruturado. Mantido null explícito (nunca inferido do texto) para o
+    // formato do erro ser sempre o mesmo, com ou sem essa informação.
+    const erro = { code: syncResultado.codigo || null, message: syncResultado.motivo || "sync não retornou ok", statusCode: null, retryAfter: null };
     deps.logger.error(`${LOG} conta ${rotulo} erro no sync: ${erro.code ? `${erro.code} ` : ""}${erro.message}`);
     return { ...base, status: "falha", duracaoMs: deps.agora() - inicio, sync: syncResultado, erro };
   }

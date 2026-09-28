@@ -329,6 +329,32 @@ async function run() {
     ok("main() --persist com falha PARCIAL: exit code 1 (pelo menos 1 falha)", codigo === 1);
   }
 
+  // ── 429: CLI individual retorna exit code de falha e não esconde o motivo ─
+  // (auditoria de observabilidade de 429 — ver
+  // meliApiEvidenceAdapter.criarErroMeliApi) ───────────────────────────────
+
+  {
+    const deps = {
+      carregarWorkspace: async () => {
+        throw Object.assign(new Error("Rate limit do Mercado Livre (429)."), {
+          statusCode: 429, codigo: "MELI_RATE_LIMIT", retryAfter: 30,
+        });
+      },
+      pool: { end: async () => {} },
+    };
+    const linhasErro = [];
+    const errOriginal = console.error;
+    console.error = (msg) => linhasErro.push(String(msg));
+    let codigo;
+    try {
+      codigo = await main(["--clienteSlug=cliente-a", "--dry-run"], deps);
+    } finally {
+      console.error = errOriginal;
+    }
+    ok("429: main() retorna exit code 1 (mesmo contrato de qualquer erro estrutural)", codigo === 1);
+    ok("429: mensagem de erro no stderr identifica MELI_RATE_LIMIT", linhasErro.some((l) => l.includes("MELI_RATE_LIMIT")));
+  }
+
   console.log(`\nmargemProjetadaGlobalPersist.test.js: ${checks} verificações passaram.`);
 }
 

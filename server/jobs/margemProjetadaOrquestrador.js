@@ -102,7 +102,8 @@ function formatarRelatorio(r) {
           + ` atualizados=${res.margem?.snapshotsAtualizados ?? "?"} falhos=${res.margem?.snapshotsFalhos ?? "?"}`
       );
     } else {
-      linhas.push(`  ${rotulo} FALHA (${res.duracaoMs}ms) — ${res.erro?.code ? `${res.erro.code}: ` : ""}${res.erro?.message || "erro desconhecido"}`);
+      const retry = res.erro?.retryAfter != null ? ` (retryAfter=${res.erro.retryAfter}s)` : "";
+      linhas.push(`  ${rotulo} FALHA (${res.duracaoMs}ms) — ${res.erro?.code ? `${res.erro.code}: ` : ""}${res.erro?.message || "erro desconhecido"}${retry}`);
     }
   }
   return linhas.join("\n");

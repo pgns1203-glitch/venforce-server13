@@ -240,6 +240,101 @@ async function run() {
     ok("11: nenhuma terceira conta processada", resumo.resultados.length === 2);
   }
 
+  // ── observabilidade de 429: conta A recebe rate limit, B ainda executa ────
+  //
+  // Simula o Motor (carregarWorkspace) rejeitando com o MESMO shape de erro
+  // que meliApiEvidenceAdapter.criarErroMeliApi produz de verdade
+  // (statusCode=429, codigo="MELI_RATE_LIMIT", retryAfter) — prova que
+  // resumirErro() propaga os 3 campos até o resultado por conta, sem
+  // reinterpretar nem inventar retry.
+  {
+    const chamadasMotor = [];
+    const contaA = { clienteId: 1, clienteSlug: "rate-a", clienteContaId: 701, externalAccountId: "MLUA" };
+    const contaB = { clienteId: 2, clienteSlug: "rate-b", clienteContaId: 702, externalAccountId: "MLUB" };
+    const tabela = fakeUpsert();
+
+    const depsOverride = {
+      listarContasElegiveis: async () => [
+        contaRow({ contaId: 701, clienteId: 1, slug: "rate-a" }),
+        contaRow({ contaId: 702, clienteId: 2, slug: "rate-b" }),
+      ],
+      sincronizar: async () => ({ ok: true, codigo: "OK", totalEncontrados: 1, totalProcessados: 1, totalSalvos: 1 }),
+      carregarWorkspace: async ({ clienteContaId }) => {
+        chamadasMotor.push(clienteContaId);
+        if (clienteContaId === 701) {
+          throw Object.assign(new Error("Rate limit do Mercado Livre (429)."), {
+            statusCode: 429, codigo: "MELI_RATE_LIMIT", retryAfter: 45,
+          });
+        }
+        return { cliente: { id: 2 }, clienteContaId, totalItensMl: 1, itens: [itemFixture({ itemId: "MLB-702" })] };
+      },
+      persistirSnapshots: require("../jobs/margemProjetadaGlobal").persistirSnapshots,
+      upsertSnapshot: tabela.upsertSnapshot,
+      logger: logSilencioso,
+    };
+
+    const resumo = await svc.executarRodada({}, depsOverride);
+    const resultadoA = resumo.resultados.find((r) => r.clienteContaId === 701);
+    const resultadoB = resumo.resultados.find((r) => r.clienteContaId === 702);
+
+    ok("429: conta A vira status 'falha'", resultadoA.status === "falha");
+    ok("429: erro.code = MELI_RATE_LIMIT propagado até o resultado da conta", resultadoA.erro.code === "MELI_RATE_LIMIT");
+    ok("429: erro.statusCode = 429 propagado (não 502 genérico)", resultadoA.erro.statusCode === 429);
+    ok("429: erro.retryAfter propagado intacto (45)", resultadoA.erro.retryAfter === 45);
+    ok("429: conta B ainda é executada (rodada não é abortada)", resultadoB.status === "sucesso");
+    ok("429: resumo agregado conta a falha corretamente (falhas=1, sucessos=1)", resumo.falhas === 1 && resumo.sucessos === 1);
+    ok("429: nenhum retry automático — carregarWorkspace chamado EXATAMENTE 1x por conta (701 e 702)",
+      chamadasMotor.filter((c) => c === 701).length === 1 && chamadasMotor.filter((c) => c === 702).length === 1);
+  }
+
+  // ── 429 sem retryAfter → propagado como null, nunca inventado ────────────
+  {
+    const deps = {
+      sincronizar: async () => ({ ok: true, codigo: "OK", totalEncontrados: 1, totalProcessados: 1, totalSalvos: 1 }),
+      carregarWorkspace: async () => {
+        throw Object.assign(new Error("Rate limit do Mercado Livre (429)."), {
+          statusCode: 429, codigo: "MELI_RATE_LIMIT", retryAfter: null,
+        });
+      },
+      origemJob: "teste",
+      maxItens: 20000,
+      agora: () => Date.now(),
+      logger: logSilencioso,
+    };
+    const resultado = await svc.processarConta({ clienteId: 1, clienteSlug: "rate-c", clienteContaId: 703, externalAccountId: "MLUC" }, deps);
+    ok("429 sem retryAfter: campo fica null (não omitido, não inventado)", resultado.erro.retryAfter === null);
+    ok("429 sem retryAfter: statusCode/codigo continuam presentes", resultado.erro.statusCode === 429 && resultado.erro.code === "MELI_RATE_LIMIT");
+  }
+
+  // ── erro genérico (não-429) não ganha statusCode/retryAfter inventados ───
+  {
+    const deps = {
+      sincronizar: async () => ({ ok: true, codigo: "OK", totalEncontrados: 1, totalProcessados: 1, totalSalvos: 1 }),
+      carregarWorkspace: async () => { throw new Error("erro estrutural qualquer, sem statusCode"); },
+      origemJob: "teste",
+      maxItens: 20000,
+      agora: () => Date.now(),
+      logger: logSilencioso,
+    };
+    const resultado = await svc.processarConta({ clienteId: 1, clienteSlug: "generico", clienteContaId: 704, externalAccountId: "MLUD" }, deps);
+    ok("erro sem statusCode não vira 429 por acidente — statusCode fica null", resultado.erro.statusCode === null);
+    ok("erro sem statusCode não vira 429 por acidente — code não é MELI_RATE_LIMIT", resultado.erro.code !== "MELI_RATE_LIMIT");
+  }
+
+  // ── nenhum sleep/backoff/retry foi introduzido (checagem estática) ───────
+  {
+    const fonteService = fs.readFileSync(
+      path.join(__dirname, "..", "services", "motorMargem", "margemProjetadaOrquestradorService.js"),
+      "utf8"
+    );
+    const fonteAdapter = fs.readFileSync(
+      path.join(__dirname, "..", "services", "motorMargem", "adapters", "meliApiEvidenceAdapter.js"),
+      "utf8"
+    );
+    ok("orquestrador: nenhum setTimeout/sleep/backoff", !/setTimeout|sleep\(|backoff/i.test(fonteService));
+    ok("adapter: nenhum setTimeout/sleep/backoff/retry automático", !/setTimeout|sleep\(|backoff|for\s*\(.*retry/i.test(fonteAdapter));
+  }
+
   // ── 14: modo --plano não chama sync/Motor/persistência ───────────────────
   {
     const depsOverride = {

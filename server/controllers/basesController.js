@@ -129,6 +129,16 @@ async function upsertCustoBaseController(req, res) {
       // falha de log não derruba a rota
     }
 
+    // Margin Snapshot (M4): custo/imposto/taxa da Base mudou → só enfileira
+    // refresh das contas MELI que usam esta base. Assíncrono, atrás de
+    // MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED; nunca atrasa nem falha esta rota.
+    if (base.marketplace === "meli") {
+      const marginTriggers = require("../services/motorMargem/marginSnapshotTriggers");
+      marginTriggers.dispararSemBloquear(() =>
+        marginTriggers.enfileirarPorMudancaDeBase({ baseId: base.id, requestedBy: req.user?.id ?? null })
+      );
+    }
+
     return res.json({
       ok: true,
       acao: resultado.acao,

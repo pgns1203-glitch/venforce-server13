@@ -80,6 +80,8 @@ function run() {
       ["get", "/:clienteSlug/itens/:itemId/evidencias"],
       ["get", "/:clienteSlug/itens/:itemId"],
       ["get", "/:clienteSlug"],
+      ["post", "/:clienteSlug/snapshot/refresh"],
+      ["get", "/:clienteSlug/snapshot/refresh/:runId"],
     ];
     for (const [m, p] of rotas) {
       const names = handlersDe(r, m, p);

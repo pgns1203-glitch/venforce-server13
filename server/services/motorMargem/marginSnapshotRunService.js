@@ -25,6 +25,24 @@ function assertIdentidadeMinima({ clienteId, clienteContaId, reason }) {
   if (!reason) throw new Error("enqueueMarginSnapshotRun: reason é obrigatório.");
 }
 
+// M4 — mudança de Base durante um run JÁ em execução: o run atual pode ter
+// lido a Base antes da mudança (a Base é carregada uma vez por run). O índice
+// único impede um 2º run ativo, então o run `running` é marcado e o worker
+// re-enfileira UMA vez quando ele concluir. N mudanças durante o mesmo run
+// viram 1 rerun (nunca tempestade). Motivos que não mudam o que o run lê
+// (sync da Central de Vendas, clique manual) não pedem rerun.
+const REASONS_QUE_PEDEM_RERUN = new Set(["base_changed"]);
+
+async function marcarRerunSeNecessario(runAtivo, reason, db) {
+  if (!runAtivo || runAtivo.status !== "running" || !REASONS_QUE_PEDEM_RERUN.has(reason)) return runAtivo;
+  const marcado = await runRepo.mergeRunMetadata({
+    runId: runAtivo.id,
+    patch: { rerunSolicitado: { reason, solicitadoEm: new Date().toISOString() } },
+    db,
+  });
+  return marcado || runAtivo;
+}
+
 // ---------------------------------------------------------------------------
 // Enqueue idempotente (§7/§9.2 do plano): procura/reutiliza run ativo antes
 // de tentar criar; se uma corrida real vencer a checagem prévia, o índice
@@ -42,7 +60,7 @@ async function enqueueMarginSnapshotRun({
   const ativoAntes = await runRepo.findActiveRunForAccount({
     clienteId, clienteContaId, marketplace: marketplaceNorm, db,
   });
-  if (ativoAntes) return { run: ativoAntes, reaproveitado: true };
+  if (ativoAntes) return { run: await marcarRerunSeNecessario(ativoAntes, reason, db), reaproveitado: true };
 
   try {
     const run = await runRepo.createRun({
@@ -56,7 +74,7 @@ async function enqueueMarginSnapshotRun({
       const ativoDepois = await runRepo.findActiveRunForAccount({
         clienteId, clienteContaId, marketplace: marketplaceNorm, db,
       });
-      if (ativoDepois) return { run: ativoDepois, reaproveitado: true };
+      if (ativoDepois) return { run: await marcarRerunSeNecessario(ativoDepois, reason, db), reaproveitado: true };
     }
     throw err;
   }
@@ -85,6 +103,7 @@ async function markRunFailed(runId, { code = null, message = null } = {}, db = p
 }
 
 module.exports = {
+  REASONS_QUE_PEDEM_RERUN,
   enqueueMarginSnapshotRun,
   getRunStatus,
   claimNextQueuedRun,

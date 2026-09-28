@@ -67,7 +67,10 @@ function resumoDoResultado(resultado) {
 // `db` e `sincronizarVendasMeli` são pontos de injeção só para teste (mesmo
 // espírito de createCentralVendasSyncService(repo, db)) — em produção usam
 // sempre os defaults reais (pool global, motor de sync real).
-async function executarSyncRun({ run, context, params, db = pool, sincronizarVendasMeli: syncFnOverride = null }) {
+async function executarSyncRun({
+  run, context, params, db = pool, sincronizarVendasMeli: syncFnOverride = null,
+  marginSnapshotEnqueue: marginSnapshotEnqueueOverride = null,
+}) {
   const marcado = await runService.marcarRunRunning(run.id, db);
   if (!marcado) {
     // Já estava running/completed/failed (corrida entre a fila e uma chamada
@@ -132,6 +135,23 @@ async function executarSyncRun({ run, context, params, db = pool, sincronizarVen
       );
     } catch (publishErr) {
       console.error(`[centralVendas] sync-run #${run.id} erro ao tentar publicar:`, publishErr?.message);
+    }
+
+    // Margin Snapshot (M4) — SÓ enfileira um refresh de margem da conta; a
+    // Central de Vendas nunca calcula margem. Depois do run completed e da
+    // tentativa de publicação, em try/catch PRÓPRIO: uma falha aqui nunca
+    // reabre/falha o sync já concluído (mesma disciplina da publicação).
+    // Desligado sem MARGIN_SNAPSHOT_WORKER_ENABLED=true.
+    try {
+      const marginTriggers = require("../motorMargem/marginSnapshotTriggers");
+      const enqueue = await (marginSnapshotEnqueueOverride || marginTriggers.enfileirarAposSyncCentralVendas)({ run }, { db });
+      if (enqueue?.enfileirado) {
+        console.log(
+          `[centralVendas] sync-run #${run.id} → margin snapshot run #${enqueue.runId}${enqueue.reaproveitado ? " (reaproveitado)" : ""}`
+        );
+      }
+    } catch (marginErr) {
+      console.error(`[centralVendas] sync-run #${run.id} erro ao enfileirar margin snapshot (ignorado):`, marginErr?.message);
     }
 
     return resultado;

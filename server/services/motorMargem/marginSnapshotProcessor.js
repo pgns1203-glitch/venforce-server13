@@ -46,6 +46,7 @@ const meliApi = require("./adapters/meliApiEvidenceAdapter");
 const { FIELDS } = require("./core/marginEvidence");
 const { resolveMarginSnapshotConfig } = require("./marginSnapshotConfig");
 const { executarComRetry, esperar, MarginSnapshotStopError } = require("./marginSnapshotRetry");
+const { redigirSegredos } = require("./marginSnapshotSanitize");
 
 // Mesmo teto do multiget /items?ids= que rege enrichBatch (PAGE_LIMIT_MAX).
 const BATCH_SIZE = motorMargem.PAGE_LIMIT_MAX;
@@ -186,8 +187,9 @@ function mapItemParaSnapshot({ item, run, base, observedAt }) {
   };
 }
 
+// Vai para log, last_error e error_message: truncada e sem segredo.
 function mensagemCurta(err) {
-  return String(err?.message || "Erro desconhecido.").slice(0, 500);
+  return redigirSegredos(err?.message || "Erro desconhecido.", 500);
 }
 
 // ---------------------------------------------------------------------------

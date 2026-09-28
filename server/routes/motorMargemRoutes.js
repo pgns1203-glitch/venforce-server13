@@ -1,9 +1,11 @@
 // server/routes/motorMargemRoutes.js
-// Rotas READ-ONLY da Central de Margem. Montadas em /operacao/central-margem.
+// Rotas da Central de Margem. Montadas em /operacao/central-margem.
 //
-// Apenas GET. Escrita de preço/promoção não existe nesta fase — quando existir,
-// será uma rota separada, com admin + validação de backend (ver
-// CENTRAL_MARGEM_API_CONTRACT §Fora de escopo).
+// Nenhuma rota escreve preço, promoção ou Base — quando existir, será uma
+// rota separada, com admin + validação de backend (ver
+// CENTRAL_MARGEM_API_CONTRACT §Fora de escopo). A única escrita aqui é
+// `POST .../snapshot/refresh` (Margin Snapshot, M4): enfileira um run de
+// atualização da leitura (202) — não altera nada no marketplace nem na Base.
 //
 // Auth: mesmo par usado pela Central de Vendas e pelas automações
 // (JWT + requireAutomacoesAccess → admin/user/membro).
@@ -13,12 +15,19 @@ const { authMiddleware } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
 const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 const controller = require("../controllers/motorMargemController");
+const snapshotController = require("../controllers/marginSnapshotController");
 
 const router = express.Router();
 
 // P2.1 — autorização por carteira. Todas as rotas são client-scoped por
 // `:clienteSlug`. Grant/Base continuam sendo integração, não autorização.
 const naCarteira = requireClienteNaCarteira("clienteSlug");
+
+// Margin Snapshot (M4+) — leitura persistida da margem projetada, sempre por
+// conta (`clienteContaId`), validada contra o cliente no service. Registradas
+// antes de `/:clienteSlug/itens/:itemId` e da raiz.
+router.post("/:clienteSlug/snapshot/refresh", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.solicitarRefresh);
+router.get("/:clienteSlug/snapshot/refresh/:runId", authMiddleware, requireAutomacoesAccess, naCarteira, snapshotController.obterStatusRefresh);
 
 router.get("/:clienteSlug/contexto", authMiddleware, requireAutomacoesAccess, naCarteira, controller.obterContexto);
 router.get("/:clienteSlug/resumo", authMiddleware, requireAutomacoesAccess, naCarteira, controller.obterResumo);

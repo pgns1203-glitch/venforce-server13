@@ -102,6 +102,7 @@ const shopeeRoutes = require("./routes/shopeeRoutes");
 const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 const centralVendasNoturnoScheduler = require("./services/centralVendas/centralVendasNoturnoScheduler");
+const marginSnapshotRuntime = require("./services/motorMargem/marginSnapshotRuntime");
 const { ensureDiagnosticoInicialTables } = require("./services/diagnosticoInicial/diagnosticoInicialRepository");
 const observabilityRoutes = require("./routes/observabilityRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
@@ -1100,6 +1101,16 @@ app.post("/importar-base", authMiddleware, requireAutomacoesAccess, upload.singl
       userId: req.user?.id,
     });
 
+    // Margin Snapshot (M4): base MELI nova já vinculada → enfileira refresh
+    // das contas afetadas. Fire-and-forget, atrás de
+    // MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED; nunca atrasa esta resposta.
+    if (resultado.vinculo && resultado.marketplace === "meli") {
+      const marginTriggers = require("./services/motorMargem/marginSnapshotTriggers");
+      marginTriggers.dispararSemBloquear(() =>
+        marginTriggers.enfileirarPorMudancaDeBase({ baseId: resultado.baseId, requestedBy: req.user?.id ?? null })
+      );
+    }
+
     registrarLog({
       ...dadosUsuarioDeReq(req),
       acao: "base.importar",
@@ -2084,6 +2095,14 @@ const server = app.listen(PORT, () => {
     });
 
   startTokenRefreshWorker();
+
+  // Margin Snapshot Worker (Central de Margem lida do banco): só sobe com
+  // MARGIN_SNAPSHOT_WORKER_ENABLED=true EXPLÍCITO. Sem a flag, nada roda —
+  // nenhuma tabela garantida, nenhum timer. Com a flag: garante o schema
+  // (margin_snapshot_schema.sql, idempotente) e inicia o polling de runs.
+  marginSnapshotRuntime.iniciarSeHabilitado().catch((err) => {
+    console.error("[marginSnapshot] worker não iniciado:", err.message);
+  });
 });
 
 // Encerramento: tenta drenar a fila de observabilidade sem travar o processo.
@@ -2093,6 +2112,9 @@ function encerrarComGraca(sinal) {
   encerrando = true;
   console.log(`[server] ${sinal} recebido, encerrando…`);
   centralVendasNoturnoScheduler.parar();
+  // Aborta runs de margem em curso: param no próximo ponto seguro e terminam
+  // failed (MARGIN_SNAPSHOT_WORKER_STOPPED), com os lotes já gravados intactos.
+  marginSnapshotRuntime.parar().catch(() => {});
   const prazo = setTimeout(() => process.exit(0), 5000);
   if (typeof prazo.unref === "function") prazo.unref();
 

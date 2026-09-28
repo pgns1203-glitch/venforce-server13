@@ -20,11 +20,12 @@
 
 const pool = require("../../config/database");
 const defaultRunService = require("./marginSnapshotRunService");
+const { redigirSegredos } = require("./marginSnapshotSanitize");
 
-// Nunca persistir stack trace — só a mensagem, truncada.
+// Nunca persistir stack trace — só a mensagem, truncada e sem segredo.
 function sanitizeErrorMessage(err) {
   const mensagem = err?.message || "Erro desconhecido no processor.";
-  return String(mensagem).slice(0, 2000);
+  return redigirSegredos(mensagem, 2000);
 }
 
 function createMarginSnapshotWorker({
@@ -51,12 +52,33 @@ function createMarginSnapshotWorker({
     return Array.from(ativos.values()).map((a) => a.contaId);
   }
 
+  // M4 — uma mudança de Base chegou enquanto este run rodava (ver
+  // marginSnapshotRunService.REASONS_QUE_PEDEM_RERUN): enfileira UM run novo
+  // para a mesma conta. Falha aqui nunca reabre o run já concluído.
+  async function reenfileirarSeSolicitado(runFinal) {
+    const pedido = runFinal?.metadata?.rerunSolicitado;
+    if (!pedido || typeof runService.enqueueMarginSnapshotRun !== "function") return;
+    try {
+      await runService.enqueueMarginSnapshotRun({
+        clienteId: runFinal.clienteId,
+        clienteSlug: runFinal.clienteSlug,
+        clienteContaId: runFinal.clienteContaId,
+        marketplace: runFinal.marketplace,
+        reason: pedido.reason || "base_changed",
+        db,
+      });
+    } catch (err) {
+      logger.error?.(`[marginSnapshot] run #${runFinal.id}: falha ao re-enfileirar após mudança de Base: ${sanitizeErrorMessage(err)}`);
+    }
+  }
+
   async function processarRun(run) {
     const registro = { contaId: run.clienteContaId, promise: null };
     ativos.set(run.id, registro);
     try {
       await processor(run, { db, signal: controller.signal, logger });
       const completado = await runService.markRunCompleted(run.id, db);
+      await reenfileirarSeSolicitado(completado);
       return { claimed: true, run: completado, status: "completed" };
     } catch (err) {
       const errorMessage = sanitizeErrorMessage(err);

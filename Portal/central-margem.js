@@ -92,6 +92,15 @@
     refreshError: null,
     pollTimer: null,
     pollSequence: 0,
+
+    // Período do REALIZADO na leitura persistida: null = "últimos 30 dias
+    // até ontem" (padrão do servidor); "YYYY-MM" = o parâmetro global
+    // ?periodo= do Shell (vf-context), nunca um store novo.
+    periodParam: null,
+    realizado: null,
+    realizadoError: null,
+    realizadoLoading: false,
+    realizadoSequence: 0,
   };
 
   // Intervalo moderado de polling do run. O override existe só para o
@@ -272,6 +281,13 @@
     refs.scenarioReset = el("cm-scenario-reset");
     refs.applyScenario = el("cm-apply-scenario");
     refs.toasts = el("cm-toasts");
+    refs.periodWrap = el("cm-period-wrap");
+    refs.period = el("cm-period");
+    refs.realized = el("cm-realized");
+    refs.realizedPeriod = el("cm-realized-period");
+    refs.realizedFresh = el("cm-realized-fresh");
+    refs.kpisRealized = el("cm-kpis-realized");
+    refs.realizedNotes = el("cm-realized-notes");
   }
 
   // ---------------------------------------------------------------------------
@@ -282,6 +298,22 @@
     // F2.3 — Cliente/Marketplace não são mais seletores locais: o contexto
     // vem do Shell V3 (aplicarContextoDoShell(), assinado via evento
     // 'vf:context' no fim do arquivo).
+
+    // Período do realizado: relê a página e o realizado da conta. O
+    // projetado (snapshot) NÃO é recalculado — nenhum refresh é pedido.
+    if (refs.period) {
+      refs.period.addEventListener("change", function () {
+        var valor = refs.period.value || null;
+        if (valor === state.periodParam) return;
+        state.periodParam = valor;
+        var ctx = root.VF && root.VF.context;
+        if (ctx && typeof ctx.setPeriodoParam === "function") ctx.setPeriodoParam(valor);
+        if (!isSnapshotMode()) return;
+        state.serverPage = 1;
+        loadSnapshotPage();
+        loadRealizado();
+      });
+    }
 
     // Modo legado: busca PURAMENTE local sobre o workspace carregado.
     // Modo persistido: a busca vai ao servidor (debounce), página 1.
@@ -553,6 +585,13 @@
     state.serverPage = 1;
     state.refreshRun = null;
     state.refreshError = null;
+    // Troca de cliente/conta invalida o realizado em voo (resposta velha
+    // nunca sobrescreve o contexto novo — ver loadRealizado).
+    state.realizadoSequence += 1;
+    state.realizado = null;
+    state.realizadoError = null;
+    state.realizadoLoading = false;
+    state.periodParam = lerPeriodoDoShell();
     if (clienteMudou) {
       state.mode = null;
       state.snapshot = null;
@@ -570,6 +609,52 @@
   }
 
   function isSnapshotMode() { return state.mode === "snapshot"; }
+
+  function lerPeriodoDoShell() {
+    var ctx = root.VF && root.VF.context;
+    var valor = ctx && typeof ctx.getPeriodoParam === "function" ? ctx.getPeriodoParam() : null;
+    return /^\d{4}-\d{2}$/.test(String(valor || "")) ? valor : null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Realizado da CONTA no período (KPIs, cobertura, freshness)
+  // ---------------------------------------------------------------------------
+
+  /** Uma leitura por (cliente, conta, período); resposta de contexto velho é descartada. */
+  function loadRealizado() {
+    if (!isSnapshotMode() || !state.client || !state.contaId || typeof api.getSnapshotRealizado !== "function") {
+      state.realizado = null;
+      renderRealized();
+      return Promise.resolve();
+    }
+    state.realizadoSequence += 1;
+    var sequence = state.realizadoSequence;
+    var slug = state.client.slug;
+    var conta = state.contaId;
+    var periodo = state.periodParam || null;
+    state.realizadoLoading = true;
+    state.realizadoError = null;
+    renderRealized();
+    return api.getSnapshotRealizado({ clientSlug: slug, clienteContaId: conta, periodo: periodo || undefined }).then(function (result) {
+      if (sequence !== state.realizadoSequence) return;
+      if (!state.client || state.client.slug !== slug || state.contaId !== conta || (state.periodParam || null) !== periodo) return;
+      state.realizadoLoading = false;
+      if (!result.ok) {
+        state.realizado = null;
+        state.realizadoError = result.error || "Não foi possível carregar o realizado do período.";
+      } else {
+        state.realizado = result.enabled === false ? null : result;
+      }
+      renderRealized();
+      renderContext();
+    }).catch(function (error) {
+      if (sequence !== state.realizadoSequence) return;
+      state.realizadoLoading = false;
+      state.realizado = null;
+      state.realizadoError = error && error.message || "Falha inesperada ao carregar o realizado.";
+      renderRealized();
+    });
+  }
 
   function loadCentral(manual) {
     if (!state.client) return;
@@ -634,6 +719,7 @@
       state.mode = "snapshot";
       state.awaitingAccount = false;
       applySnapshotResumo(resumo);
+      loadRealizado();
       return loadSnapshotPage();
     }).catch(function (error) {
       if (sequence !== state.requestSequence) return;
@@ -680,6 +766,7 @@
       }
       state.awaitingAccount = false;
       applySnapshotResumo(resumo);
+      loadRealizado();
       return loadSnapshotPage();
     });
   }
@@ -715,6 +802,7 @@
       status: statuses,
       statusAnuncio: state.listingStatus || undefined,
       search: state.search || undefined,
+      periodo: state.periodParam || undefined,
     }, state.abortController && state.abortController.signal).then(function (result) {
       if (sequence !== state.requestSequence || result.aborted) return;
       state.loading = false;
@@ -856,13 +944,150 @@
     refs.search.disabled = !state.client;
     refs.listingStatusFilterWrap.hidden = !isSnapshotMode();
     renderContext();
+    renderPeriodSelect();
     renderPageState();
     syncPresetButtons();
     renderSourceStrip();
     renderSummary();
+    renderRealized();
     renderActiveFilters();
     renderSheet();
     renderDivergences();
+  }
+
+  var MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+
+  function formatDateBr(iso) {
+    if (!iso) return null;
+    var parts = String(iso).slice(0, 10).split("-");
+    return parts.length === 3 ? parts[2] + "/" + parts[1] + "/" + parts[0] : String(iso);
+  }
+
+  /** Opções do período: padrão (30 dias até ontem), mês atual e 3 anteriores. */
+  function periodOptions() {
+    var hoje = new Date();
+    var opts = [{ value: "", label: "Últimos 30 dias (até ontem)" }];
+    for (var i = 0; i < 4; i += 1) {
+      var d = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+      var key = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+      opts.push({ value: key, label: i === 0 ? "Mês atual (até ontem)" : MESES_CURTOS[d.getMonth()] + "/" + d.getFullYear() });
+    }
+    if (state.periodParam && !opts.some(function (o) { return o.value === state.periodParam; })) {
+      opts.push({ value: state.periodParam, label: state.periodParam });
+    }
+    return opts;
+  }
+
+  function renderPeriodSelect() {
+    if (!refs.periodWrap || !refs.period) return;
+    var visivel = isSnapshotMode() && !state.awaitingAccount && Boolean(state.client);
+    refs.periodWrap.hidden = !visivel;
+    if (!visivel) return;
+    var atual = state.periodParam || "";
+    refs.period.innerHTML = periodOptions().map(function (o) {
+      return '<option value="' + escapeHtml(o.value) + '"' + (o.value === atual ? " selected" : "") + ">" + escapeHtml(o.label) + "</option>";
+    }).join("");
+    refs.period.value = atual;
+    refs.period.disabled = state.loading;
+  }
+
+  var FRESHNESS_META = {
+    ATUAL: { label: "Atual", tone: "is-success", copy: "todo o período coberto por sincronização publicada" },
+    PARCIAL: { label: "Parcial", tone: "is-warning", copy: "parte do período não está coberta pela sincronização publicada" },
+    NAO_DECLARADA: { label: "Cobertura não declarada", tone: "is-neutral", copy: "dados de importação anterior à publicação por cobertura" },
+    SEM_SINCRONIZACAO: { label: "Sem sincronização", tone: "is-neutral", copy: "nenhuma venda sincronizada neste período" },
+  };
+
+  function realizedKpi(label, valueHtml, foot, modifier) {
+    return '<div class="cm-kpi cm-kpi--static ' + (modifier || "") + '"><span class="cm-kpi__label">' + escapeHtml(label) + "</span>" +
+      '<strong class="cm-kpi__value">' + valueHtml + "</strong>" +
+      (foot ? '<span class="cm-kpi__foot">' + escapeHtml(foot) + "</span>" : "") + "</div>";
+  }
+
+  function formatInt(value) {
+    return value === null || value === undefined ? null : Number(value).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+  }
+
+  function gapCopy(gap) {
+    var mes = gap.month || "";
+    if (gap.reason === "COBERTURA_INSUFICIENTE") {
+      return mes + ": vendas publicadas só até " + (formatDateBr(gap.publishedUntil) || "—") +
+        " — o período pede até " + (formatDateBr(gap.to) || "—") + ". Este mês ficou fora do realizado (nada foi zerado).";
+    }
+    return mes + ": nenhuma sincronização publicada cobre " + (formatDateBr(gap.from) || "—") + " a " + (formatDateBr(gap.to) || "—") + ".";
+  }
+
+  /** Bloco "Realizado no período": só EXIBE o que o backend calculou. */
+  function renderRealized() {
+    if (!refs.realized) return;
+    var visivel = isSnapshotMode() && !state.awaitingAccount && Boolean(state.client && state.contaId);
+    refs.realized.hidden = !visivel;
+    if (!visivel) return;
+    var r = state.realizado;
+    if (state.realizadoLoading && !r) {
+      refs.realizedPeriod.textContent = "carregando…";
+      refs.realizedFresh.innerHTML = "";
+      refs.kpisRealized.innerHTML = '<div class="vf-skeleton vf-skeleton--row"></div>';
+      refs.realizedNotes.innerHTML = "";
+      return;
+    }
+    if (!r) {
+      refs.realizedPeriod.textContent = "—";
+      refs.realizedFresh.innerHTML = state.realizadoError
+        ? '<p class="cm-realized__error" role="alert">' + escapeHtml(state.realizadoError) + "</p>"
+        : '<p class="cm-realized__muted">O realizado da conta aparece depois da primeira leitura.</p>';
+      refs.kpisRealized.innerHTML = "";
+      refs.realizedNotes.innerHTML = "";
+      return;
+    }
+    var fresh = r.freshness || {};
+    var meta = FRESHNESS_META[fresh.state] || FRESHNESS_META.SEM_SINCRONIZACAO;
+    refs.realizedPeriod.textContent = (r.period && r.period.label) || "—";
+    refs.realizedFresh.innerHTML =
+      '<span class="vf-status ' + meta.tone + '" data-cm-realized-state="' + escapeHtml(fresh.state || "") + '" title="' + escapeHtml(meta.copy) + '">' + escapeHtml(meta.label) + "</span>" +
+      (fresh.syncInProgress ? '<span class="vf-status is-info" data-cm-sync-running>Sincronização em andamento</span>' : "") +
+      '<span class="cm-realized__fact">Vendas sincronizadas até <strong>' + escapeHtml(formatDateBr(fresh.syncedUntil) || "—") + "</strong></span>" +
+      (fresh.lastPublishedAt ? '<span class="cm-realized__fact">publicado em ' + escapeHtml(formatDateTime(fresh.lastPublishedAt)) + "</span>" : "") +
+      '<span class="cm-realized__fact">Projetado calculado em ' + escapeHtml(formatDateTime(state.snapshot && state.snapshot.lastCalculatedAt) || "—") + "</span>";
+
+    var k = r.kpis || {};
+    var m = k.margin || {};
+    var d = k.drift || {};
+    var margemFoot = m.state === "completa"
+      ? "Σ lucro ÷ Σ receita · cobertura total"
+      : m.state === "parcial"
+        ? "parcial · " + (m.revenueCoverage === null ? "—" : formatPercent(m.revenueCoverage)) + " da receita sustenta o número"
+        : "nenhum produto com margem realizada calculável";
+    refs.kpisRealized.innerHTML = [
+      realizedKpi("Receita realizada", escapeHtml(formatMoney(k.revenue) || "—"), k.revenueWithoutListing ? "inclui " + formatMoney(k.revenueWithoutListing) + " sem MLB" : "pedidos que entram no resultado"),
+      realizedKpi("Unidades", escapeHtml(formatInt(k.units) || "0"), null),
+      realizedKpi("Pedidos", escapeHtml(formatInt(k.orders) || "0"), "distintos"),
+      realizedKpi("Produtos com venda", escapeHtml(formatInt(k.productsWithSales) || "0"), null),
+      realizedKpi("Lucro realizado", k.profit === null ? unavailable("Indisponível", "Nenhum produto com margem realizada calculável no período.") : escapeHtml(formatMoney(k.profit)),
+        k.profit === null ? null : "sem taxa fixa (sem histórico)", k.profit !== null && k.profit < 0 ? "is-danger" : ""),
+      realizedKpi("Margem realizada", m.percent === null ? unavailable("Indisponível", margemFoot) : escapeHtml(formatPercent(m.percent / 100)), margemFoot,
+        m.state === "parcial" ? "is-warning" : ""),
+      realizedKpi("Desvio de margem", d.pp === null ? unavailable("Indisponível", "Sem produto com projetado e realizado calculáveis.") : escapeHtml(formatPp(d.pp)),
+        d.available ? "realizado " + formatPercent(d.realizedMixPercent / 100) + " × projetado " + formatPercent(d.projectedMixPercent / 100) + " no mesmo mix" : null,
+        d.pp !== null && d.pp < 0 ? "is-danger" : ""),
+      realizedKpi("Desvio negativo relevante", escapeHtml(formatInt(d.negative) || "0"), "produtos com Δ ≤ −" + (d.thresholdPp || 2) + " p.p.", d.negative ? "is-warning" : ""),
+    ].join("");
+
+    var notas = [];
+    var cov = r.coverage || {};
+    (cov.gaps || []).forEach(function (gap) { notas.push('<li data-cm-gap="' + escapeHtml(gap.month) + '">' + escapeHtml(gapCopy(gap)) + "</li>"); });
+    if (m.productsWithoutMargin) {
+      notas.push("<li>" + escapeHtml(m.productsWithoutMargin + " produto(s) venderam sem margem realizada calculável (ex.: sem custo histórico na venda) — fora do lucro e da margem, contados na receita.") + "</li>");
+    }
+    if (m.estimatedProducts) {
+      notas.push("<li>" + escapeHtml(m.estimatedProducts + " produto(s) com componente estimado (cobertura parcial de comissão/frete/custo/imposto ou frete rateado de pedido multi-item).") + "</li>");
+    }
+    if (d.worst && d.worst.length) {
+      notas.push("<li>Maiores desvios: " + d.worst.map(function (w) {
+        return escapeHtml((w.titulo || w.itemId) + " " + formatPp(w.driftPp));
+      }).join(" · ") + "</li>");
+    }
+    refs.realizedNotes.innerHTML = notas.length ? '<ul class="cm-realized__list">' + notas.join("") + "</ul>" : "";
   }
 
   function renderContext() {
@@ -878,8 +1103,11 @@
         ? '<span><strong>Cliente:</strong> ' + escapeHtml(state.client.name) + "</span>" +
           (contaMeta ? '<span><strong>Conta:</strong> ' + escapeHtml(contaMeta.nome || contaMeta.externalAccountLabel || state.contaId) + "</span>" : "") +
           '<span><strong>Marketplace:</strong> Mercado Livre</span>' +
-          '<span><strong>Projetada:</strong> snapshot calculado em background</span>' +
-          '<span><strong>Realizado:</strong> ' + escapeHtml((data && data.period && data.period.label) || "últimos 30 dias") + "</span>" +
+          '<span><strong>Projetado:</strong> snapshot calculado em ' + escapeHtml(formatDateTime(snap.lastCalculatedAt) || "—") + "</span>" +
+          '<span><strong>Realizado:</strong> ' + escapeHtml((data && data.period && data.period.label) || (state.realizado && state.realizado.period && state.realizado.period.label) || "últimos 30 dias (até ontem)") +
+          (state.realizado && state.realizado.freshness && state.realizado.freshness.syncedUntil
+            ? " · sincronizado até " + escapeHtml(formatDateBr(state.realizado.freshness.syncedUntil))
+            : "") + "</span>" +
           '<span><strong>Modo:</strong> somente leitura</span>'
         : "";
       return;
@@ -898,7 +1126,7 @@
       '<span><strong>Cliente:</strong> ' + escapeHtml(state.client.name) + "</span>" +
       '<span><strong>Marketplace:</strong> Mercado Livre</span>' +
       '<span><strong>Fonte:</strong> ' + escapeHtml(data.sourceLabel) + "</span>" +
-      '<span><strong>Realizado:</strong> ' + escapeHtml(period.label || "últimos 30 dias") + "</span>" +
+      '<span><strong>Realizado:</strong> ' + escapeHtml(period.label || "últimos 30 dias (até ontem)") + "</span>" +
       '<span><strong>Modo:</strong> somente leitura</span>' +
       '<span class="cm-coverage' + (coverage.partial ? " is-partial" : "") + '"><strong>Cobertura:</strong> ' +
       escapeHtml(coverageLabel(coverage)) + (coverage.partial ? " · parcial" : "") + "</span>";
@@ -1314,8 +1542,70 @@
     return '<td class="cm-product-cell' + (stripeTone ? " " + stripeTone : "") + '">' +
       '<div class="cm-product">' + productThumbHtml(item) +
       '<div class="cm-product__info"><span class="cm-prod-title">' + escapeHtml(item.title) + "</span>" +
-      '<span class="cm-prod-meta">' + escapeHtml(item.itemId || "—") + " · " + escapeHtml(item.sku || "sem SKU") + "</span>" + listingStatus + "</div>" +
+      '<span class="cm-prod-meta">' + escapeHtml(item.itemId || "—") + " · " + escapeHtml(item.sku || "sem SKU") + "</span>" + listingStatus +
+      salesLineHtml(item) + "</div>" +
       "</div></td>";
+  }
+
+  // Componentes do realizado com cobertura incompleta (backend: cobertura por
+  // componente do adapter da Central de Vendas). Só lê — nada é recalculado.
+  var COVERAGE_LABELS = { preco: "preço", comissao: "comissão", frete: "frete", custo: "custo", imposto: "imposto" };
+
+  function partialCoverage(coverage) {
+    if (!coverage) return [];
+    return Object.keys(COVERAGE_LABELS).filter(function (key) {
+      var c = coverage[key];
+      return c && (c.completa === false || (c.linhasRateadas || 0) > 0);
+    }).map(function (key) {
+      var c = coverage[key];
+      var parte = COVERAGE_LABELS[key] + " " + (c.linhasComValor || 0) + "/" + (c.linhas || 0) + " linhas";
+      if (c.fracao !== null && c.fracao !== undefined) parte += " (" + formatPercent(c.fracao) + " das unidades)";
+      if (c.linhasRateadas) parte += ", " + c.linhasRateadas + " com frete rateado";
+      return parte;
+    });
+  }
+
+  /** Vendas do período na célula do produto: unidades · pedidos · receita. */
+  function salesLineHtml(item) {
+    var sales = item.sales || {};
+    if (!item.hasOrders || sales.units === null || sales.units === undefined) {
+      return '<span class="cm-prod-sales is-empty" data-cm-sales="none">sem venda no período</span>';
+    }
+    var parcial = partialCoverage(sales.coverage);
+    return '<span class="cm-prod-sales" data-cm-sales="' + escapeHtml(String(sales.units)) + '">' +
+      "<span>" + escapeHtml(formatInt(sales.units) + " un · " + formatInt(sales.orders || 0) + " ped.") + "</span>" +
+      "<span>" + escapeHtml(formatMoney(sales.revenue) || "—") + "</span>" +
+      (parcial.length ? '<span class="cm-cell-diff" data-cm-coverage-partial title="' + escapeHtml("Cobertura parcial: " + parcial.join("; ")) + '"></span>' : "") +
+      "</span>";
+  }
+
+  var COMPARISON_COPY = {
+    NO_SALES: "sem venda",
+    REALIZED_NOT_COMPUTABLE: "realizado indisponível",
+  };
+
+  /**
+   * Linha compacta Projetado × Realizado na célula de Margem. Os números são
+   * os do Motor (projectedVsRealized); a composição da planilha continua
+   * sendo o número principal da célula.
+   */
+  function comparisonLineHtml(item) {
+    var cmp = item.comparison;
+    if (!cmp) return "";
+    if (cmp.status === "NO_SALES" || cmp.status === "REALIZED_NOT_COMPUTABLE") {
+      var titulo = cmp.status === "REALIZED_NOT_COMPUTABLE"
+        ? "Houve venda, mas falta " + (cmp.realized.missing || []).map(variableLabel).join(", ") + " histórico para calcular a margem realizada."
+        : "Nenhuma venda deste anúncio no período do realizado.";
+      return '<span class="cm-cmp-line is-muted" data-cm-cmp="' + escapeHtml(cmp.status) + '" title="' + escapeHtml(titulo) + '">' + escapeHtml(COMPARISON_COPY[cmp.status]) + "</span>";
+    }
+    var mostrarProjetado = state.preset === "realized";
+    var alvo = mostrarProjetado ? cmp.projected : cmp.realized;
+    var rotulo = mostrarProjetado ? "proj." : "real.";
+    var drift = cmp.drift && cmp.drift.marginPp;
+    var tone = drift === null || drift === undefined ? "" : drift < 0 ? " is-negative" : drift > 0 ? " is-positive" : "";
+    return '<span class="cm-cmp-line' + tone + '" data-cm-cmp="' + escapeHtml(cmp.status) + '" title="Margem projetada × realizada no período (Δ = realizado − projetado).">' +
+      "<span>" + escapeHtml(rotulo + " " + (alvo.margin === null ? "—" : formatPercent(alvo.margin))) + "</span>" +
+      (drift === null || drift === undefined ? "" : "<span>" + escapeHtml(formatPp(drift)) + "</span>") + "</span>";
   }
 
   function rowHtml(item) {
@@ -1331,10 +1621,11 @@
     // Margem: MC é o número que importa (principal, maior); LC é o valor em
     // R$ que sustenta a MC (secundário). Os dois continuam presentes — só
     // compartilham uma coluna em vez de duas.
-    var margemCellHtml = composition.computable
+    var margemCellHtml = (composition.computable
       ? '<span class="cm-cell-value cm-mc-value ' + marginClass(composition.margin, item) + '">' + escapeHtml(formatPercent(composition.margin)) + "</span>" +
         '<span class="cm-cell-sub cm-lc-value"><span class="cm-cell-meta">LC ' + escapeHtml(formatMoney(composition.profit)) + "</span></span>" + assumed
-      : unavailable("Indisponível", "Falta " + composition.missing.map(variableLabel).join(", ") + " na composição selecionada.");
+      : unavailable("Indisponível", "Falta " + composition.missing.map(variableLabel).join(", ") + " na composição selecionada.")) +
+      comparisonLineHtml(item);
 
     // Estado: resultado financeiro + integridade do dado continuam sendo DOIS
     // conceitos e dois status — só agrupados visualmente numa coluna.
@@ -1799,6 +2090,79 @@
     return rows;
   }
 
+  var COMPARISON_ROWS = [
+    { key: "price", label: "Preço (médio vendido no realizado)", format: "money" },
+    { key: "commission", label: "Comissão / un.", format: "money" },
+    { key: "freight", label: "Frete / un.", format: "money" },
+    { key: "cost", label: "Custo / un.", format: "money" },
+    { key: "taxRate", label: "Imposto", format: "percent" },
+    { key: "fixedFee", label: "Taxa fixa / un.", format: "money" },
+  ];
+
+  function cmpValue(format, value) {
+    if (value === null || value === undefined) return null;
+    return format === "percent" ? formatPercent(value) : formatMoney(value);
+  }
+
+  function cmpDrift(format, row, drift) {
+    if (!drift) return null;
+    if (format === "percent") return drift.taxRatePp === null || drift.taxRatePp === undefined ? null : formatPp(drift.taxRatePp);
+    var v = drift[row.key];
+    return v === null || v === undefined ? null : formatMoney(v, true);
+  }
+
+  /** Painel Projetado × Realizado — exibe o bloco do Motor, sem recalcular. */
+  function comparisonPanelHtml(item) {
+    var cmp = item.comparison;
+    var periodo = (state.data && state.data.period && state.data.period.label) || (state.realizado && state.realizado.period && state.realizado.period.label) || "período do realizado";
+    if (!cmp) {
+      return panel("Projetado × Realizado", periodo, '<p class="cm-empty-note">O backend não enviou a comparação para este item.</p>');
+    }
+    if (cmp.status === "NO_SALES") {
+      return panel("Projetado × Realizado", periodo,
+        '<p class="cm-empty-note" data-cm-cmp-panel="NO_SALES">Sem venda deste anúncio no período. O realizado não existe — não é zero. Projetado atual: ' +
+        escapeHtml(cmp.projected.margin === null ? "indisponível" : formatPercent(cmp.projected.margin)) + ".</p>");
+    }
+    var drift = cmp.drift || {};
+    var linhas = COMPARISON_ROWS.map(function (row) {
+      var proj = cmpValue(row.format, cmp.projected[row.key]);
+      var real = cmpValue(row.format, cmp.realized[row.key]);
+      var semHistorico = row.key === "fixedFee" && cmp.notComparable.some(function (n) { return n.field === "fixedFee"; });
+      return "<tr><td>" + escapeHtml(row.label) + '</td><td class="num">' + (proj === null ? unavailable("—") : escapeHtml(proj)) +
+        '</td><td class="num">' + (real === null ? unavailable(semHistorico ? "sem histórico" : "—", semHistorico ? "A Central de Vendas não guarda taxa fixa histórica: o realizado não a desconta." : null) : escapeHtml(real)) +
+        '</td><td class="num">' + escapeHtml(cmpDrift(row.format, row, drift) || "—") + "</td></tr>";
+    }).join("");
+    var margemRow = '<tr class="cm-cmp-total"><td>Lucro / un.</td><td class="num">' + escapeHtml(formatMoney(cmp.projected.profit) || "—") +
+      '</td><td class="num">' + escapeHtml(formatMoney(cmp.realized.profit) || "—") + '</td><td class="num">' + escapeHtml(formatMoney(drift.profit, true) || "—") + "</td></tr>" +
+      '<tr class="cm-cmp-total"><td>Margem</td><td class="num">' + escapeHtml(cmp.projected.margin === null ? "—" : formatPercent(cmp.projected.margin)) +
+      '</td><td class="num">' + escapeHtml(cmp.realized.margin === null ? "—" : formatPercent(cmp.realized.margin)) +
+      '</td><td class="num"><strong>' + escapeHtml(formatPp(drift.marginPp) || "—") + "</strong></td></tr>";
+    var sales = item.sales || {};
+    var parcial = partialCoverage(cmp.realized.coverage);
+    var fatos = [
+      "<li>" + escapeHtml(formatInt(cmp.realized.units) + " unidade(s) · " + formatInt(cmp.realized.orders || 0) + " pedido(s) · receita " + (formatMoney(cmp.realized.revenue) || "—") +
+        (cmp.realized.lastSaleAt ? " · última venda " + formatDateBr(cmp.realized.lastSaleAt) : "")) + "</li>",
+    ];
+    if (cmp.status === "REALIZED_NOT_COMPUTABLE") {
+      fatos.push("<li>Margem realizada indisponível: falta " + escapeHtml((cmp.realized.missing || []).map(variableLabel).join(", ")) + " histórico nas vendas do período.</li>");
+    }
+    if (cmp.realized.assumed && cmp.realized.assumed.length) {
+      fatos.push("<li>Assumido 0 no realizado: " + escapeHtml(cmp.realized.assumed.map(variableLabel).join(", ")) + ".</li>");
+    }
+    fatos.push("<li>" + escapeHtml(parcial.length ? "Cobertura parcial — " + parcial.join("; ") + ". Valores por unidade são a média das vendas com o dado." : "Cobertura completa dos componentes nas vendas do período.") + "</li>");
+    if (sales.refund && sales.refund.total) {
+      fatos.push("<li>Reembolso atribuído ao anúncio: " + escapeHtml(formatMoney(sales.refund.total) + " em " + sales.refund.pedidos + " pedido(s)") + " — conciliação, fora da margem.</li>");
+    }
+    if (sales.persistedResult !== null && sales.persistedResult !== undefined) {
+      fatos.push("<li>Contraprova: resultado persistido pela Central de Vendas " + escapeHtml(formatMoney(sales.persistedResult)) +
+        " × recalculado pelo Motor " + escapeHtml(formatMoney(sales.recalculatedResult) || "—") + " (a Central de Vendas não desconta taxa fixa).</li>");
+    }
+    return panel("Projetado × Realizado", periodo,
+      '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-cmp-table" data-cm-cmp-panel="' + escapeHtml(cmp.status) + '"><thead><tr><th>Componente</th><th class="num">Projetado</th><th class="num">Realizado</th><th class="num">Desvio</th></tr></thead><tbody>' +
+      linhas + margemRow + "</tbody></table></div>" +
+      '<ul class="cm-cmp-facts">' + fatos.join("") + "</ul>");
+  }
+
   function renderSummaryTab(item, financial, integrity) {
     var composition = contract.resolveComposition(item, state.selection);
     var decision = motorDecision(item, financial, integrity, composition);
@@ -1830,6 +2194,8 @@
         }).join("") + "</div>") +
       panel("Gates de segurança", "antes de qualquer ação", gatesHtml(item, composition, false)) +
       "</div>" +
+
+      comparisonPanelHtml(item) +
 
       panel("Recebimento e conciliação", "o que a venda entregou", '<div class="cm-receipt-grid">' +
         miniKpi("Valor vendido", item.variables.soldValue.value === null ? unavailable("Sem venda") : escapeHtml(formatMoney(item.variables.soldValue.value))) +

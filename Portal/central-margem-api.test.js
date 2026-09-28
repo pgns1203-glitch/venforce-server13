@@ -837,6 +837,104 @@ async function run() {
     assert.ok(!calls.some((c) => c.path.includes("/workspace")), "modo persistido nunca pede o workspace ao vivo");
   });
 
+  // =========================================================================
+  // Projetado × Realizado, período e realizado da conta
+  // =========================================================================
+
+  await test("comparação do Motor é normalizada sem recalcular (null preservado, taxa fixa não comparável)", () => {
+    const item = normalizedItem({
+      projectedVsRealized: {
+        status: "COMPARABLE",
+        projected: { price: 100, commission: 16, freight: 18, cost: 45, taxRate: 0.03, fixedFee: 2, profit: 16, margin: 0.16, marginPercent: 16, computable: true, assumed: [] },
+        realized: { available: true, price: 96.4, commission: 16.8, freight: 21.3, cost: 44.5, taxRate: 0.03, fixedFee: null, profit: 10.91, margin: 0.113154, marginPercent: 11.32, computable: true, assumed: ["fixedFee"], missing: [], units: 73, orders: 62, revenue: 7037.2, lastSaleAt: "2026-09-20", totalProfit: 796.43, coverage: { frete: { linhas: 3, linhasComValor: 2, fracao: 0.6667, completa: false } } },
+        drift: { price: -3.6, commission: 0.8, freight: 3.3, cost: -0.5, taxRate: 0, taxRatePp: 0, fixedFee: null, profit: -5.09, marginPercentagePoints: -4.68 },
+        notComparable: [{ field: "fixedFee", reason: "SEM_HISTORICO", projectedValue: 2 }],
+      },
+      sales: { hasOrders: true, unidades: 73, pedidos: 62, receita: 7037.2, precoMedio: 96.4, cobertura: { frete: { completa: false } }, reembolso: { total: 5, pedidos: 1 }, resultadoPersistido: 800, resultadoRecalculado: 796.43 },
+    });
+    const cmp = item.comparison;
+    assert.strictEqual(cmp.status, "COMPARABLE");
+    assert.strictEqual(cmp.drift.marginPp, -4.68);
+    assert.strictEqual(cmp.drift.freight, 3.3);
+    assert.strictEqual(cmp.drift.fixedFee, null);
+    assert.strictEqual(cmp.realized.fixedFee, null, "sem histórico continua null");
+    assert.strictEqual(cmp.realized.units, 73);
+    assert.strictEqual(cmp.realized.coverage.frete.fracao, 0.6667);
+    assert.deepStrictEqual(cmp.notComparable, [{ field: "fixedFee", reason: "SEM_HISTORICO", projectedValue: 2 }]);
+    assert.strictEqual(item.sales.avgPrice, 96.4);
+    assert.deepStrictEqual(item.sales.refund, { total: 5, pedidos: 1 });
+    assert.strictEqual(item.sales.persistedResult, 800);
+    // Sem o bloco (backend antigo): null, nunca uma comparação inventada.
+    assert.strictEqual(normalizedItem().comparison, null);
+  });
+
+  await test("realizado da conta: KPIs, cobertura e freshness normalizados; flag desligada = enabled false", () => {
+    const r = api.normalizeSnapshotRealizado({
+      ok: true, habilitado: true,
+      periodo: { dateFrom: "2026-08-29", dateTo: "2026-09-27", modo: "ultimos30", periodo: null, rotulo: "Últimos 30 dias (até 27/09/2026)" },
+      cobertura: { estado: "PARCIAL", origem: "published", sincronizadoAte: "2026-09-27", ultimaPublicacaoEm: "2026-09-28T06:10:00.000Z", meses: 2, mesesComImport: 1,
+        lacunas: [{ competencia: "2026-09", segmento: { dateFrom: "2026-09-01", dateTo: "2026-09-28" }, motivo: "COBERTURA_INSUFICIENTE", publicadoDe: "2026-09-01", publicadoAte: "2026-09-27", publicadoEm: "x" }] },
+      freshness: { estado: "PARCIAL", sincronizadoAte: "2026-09-27", ultimaPublicacaoEm: "2026-09-28T06:10:00.000Z", syncEmAndamento: true, syncAtivo: { runId: 7 } },
+      kpis: { receita: 1220, receitaSemMlb: 20, unidades: 14, pedidos: 4, produtosComVenda: 3, lucro: { valor: 410, produtos: 2 },
+        margem: { percent: 37.27, estado: "parcial", coberturaReceita: 0.9016, produtosCalculaveis: 2, produtosSemMargem: 1, produtosEstimados: 0, semMargemPorMotivo: { cost: 1 } },
+        drift: { disponivel: true, pp: -4.55, margemRealizadaMixPercent: 37.27, margemProjetadaMixPercent: 41.82, produtosComparados: 2, limitePp: 2, produtosNegativos: 1, piores: [{ itemId: "MLB1", driftPp: -5 }] } },
+    });
+    assert.strictEqual(r.enabled, true);
+    assert.strictEqual(r.period.label, "Últimos 30 dias (até 27/09/2026)");
+    assert.strictEqual(r.coverage.state, "PARCIAL");
+    assert.strictEqual(r.coverage.gaps[0].publishedUntil, "2026-09-27");
+    assert.strictEqual(r.freshness.syncInProgress, true);
+    assert.strictEqual(r.kpis.orders, 4);
+    assert.strictEqual(r.kpis.margin.percent, 37.27);
+    assert.strictEqual(r.kpis.margin.state, "parcial");
+    assert.strictEqual(r.kpis.drift.pp, -4.55);
+    assert.strictEqual(r.kpis.drift.worst[0].itemId, "MLB1");
+    assert.deepStrictEqual(api.normalizeSnapshotRealizado({ ok: true, habilitado: false }), { ok: true, enabled: false });
+  });
+
+  await test("snapshot: período vem do SERVIDOR; client manda periodo=YYYY-MM e nunca inventa datas", async () => {
+    const calls = [];
+    const client = api.createClient({
+      request(pathQuery) {
+        calls.push(pathQuery);
+        if (pathQuery.includes("/snapshot/itens")) {
+          return { ok: true, status: 200, data: { ok: true, estado: "ready", itens: [], paginacao: { page: 1, limit: 50, total: 0 },
+            periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-31", modo: "mes", periodo: "2026-08", rotulo: "agosto/2026" },
+            vendas: { sincronizado: true, pedidosNoPeriodo: 0, cobertura: { estado: "ATUAL", sincronizadoAte: "2026-08-31", lacunas: [] } } } };
+        }
+        if (pathQuery.includes("/snapshot/realizado")) return { ok: true, status: 200, data: { ok: true, habilitado: true, kpis: {} } };
+        throw new Error(`rota inesperada: ${pathQuery}`);
+      },
+    });
+    const page = await client.getSnapshotItens({ clientSlug: "loja-teste", clienteContaId: 900, periodo: "2026-08" });
+    assert.ok(calls[0].includes("periodo=2026-08"), calls[0]);
+    assert.ok(!calls[0].includes("dateFrom"), "sem período personalizado, o browser não calcula datas");
+    assert.deepStrictEqual([page.period.inicio, page.period.fim, page.period.mode, page.period.label], ["2026-08-01", "2026-08-31", "mes", "agosto/2026"]);
+    assert.strictEqual(page.salesCoverage.state, "ATUAL");
+
+    await client.getSnapshotItens({ clientSlug: "loja-teste", clienteContaId: 900 });
+    assert.ok(!calls[1].includes("periodo=") && !calls[1].includes("dateTo="), "padrão resolvido no servidor: " + calls[1]);
+
+    await client.getSnapshotRealizado({ clientSlug: "loja-teste", clienteContaId: 900, periodo: "2026-08" });
+    assert.ok(calls[2].startsWith("/operacao/central-margem/loja-teste/snapshot/realizado?"), calls[2]);
+    assert.ok(calls[2].includes("clienteContaId=900") && calls[2].includes("periodo=2026-08"), calls[2]);
+  });
+
+  await test("workspace ao vivo (legado): período padrão termina ONTEM (o que o sync publica)", async () => {
+    const calls = [];
+    const client = api.createClient({
+      request(pathQuery) {
+        calls.push(pathQuery);
+        return { ok: true, status: 200, data: { ok: true, itens: [], resumo: {}, cobertura: {} } };
+      },
+    });
+    await client.getWorkspace({ clientSlug: "loja-teste" });
+    const ontem = new Date();
+    ontem.setDate(ontem.getDate() - 1);
+    const iso = ontem.getFullYear() + "-" + String(ontem.getMonth() + 1).padStart(2, "0") + "-" + String(ontem.getDate()).padStart(2, "0");
+    assert.ok(calls[0].includes("dateTo=" + iso), `${calls[0]} deveria terminar em ${iso}`);
+  });
+
   console.log(`# ${passed} testes concluídos`);
 }
 

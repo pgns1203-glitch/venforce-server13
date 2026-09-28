@@ -679,6 +679,7 @@
     var salesBlock = raw.sales || raw.vendas || {};
     var settlementBlock = raw.settlement || raw.conciliacaoFinanceira || {};
     var marginBlock = raw.margin || {};
+    var comparison = normalizeComparison(raw.projectedVsRealized);
 
     return {
       id: itemId,
@@ -711,6 +712,21 @@
       confidenceByVariable: confidenceByVariable,
       divergences: divergences,
       hasOrders: salesBlock.hasOrders === true || numberOrNull(salesBlock.pedidos) > 0,
+      // Projetado × Realizado calculado pelo núcleo do Motor
+      // (core/marginComparison). A tela só EXIBE — nenhum desvio é
+      // recalculado aqui. null quando o backend ainda não envia o bloco.
+      comparison: comparison,
+      sales: {
+        units: numberOrNull(salesBlock.unidades),
+        orders: numberOrNull(salesBlock.pedidos),
+        revenue: numberOrNull(salesBlock.receita),
+        avgPrice: numberOrNull(salesBlock.precoMedio),
+        lastSaleAt: firstValue(salesBlock.ultimaVendaEm, salesBlock.lastSoldAt),
+        coverage: salesBlock.cobertura || null,
+        refund: salesBlock.reembolso || null,
+        persistedResult: numberOrNull(salesBlock.resultadoPersistido),
+        recalculatedResult: numberOrNull(salesBlock.resultadoRecalculado),
+      },
       settlementAvailable: settlementBlock.available === true,
       settlementReason: firstValue(settlementBlock.motivo, settlementBlock.reason),
       reconciliation: firstValue(raw.reconciliation, raw.conciliacao, realizedMargin === null ? "Pendente" : "Disponível"),
@@ -738,6 +754,52 @@
         units: numberOrNull(salesBlock.unidades),
       },
       raw: raw,
+    };
+  }
+
+  /*
+   * Bloco `projectedVsRealized` do Motor (core/marginComparison) no formato
+   * da tela. Nenhuma conta nova: só normaliza nomes e preserva null.
+   */
+  var COMPARISON_FIELDS = ["price", "commission", "freight", "cost", "taxRate", "fixedFee"];
+
+  function normalizeComparison(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    function lado(block) {
+      block = block || {};
+      var out = {};
+      COMPARISON_FIELDS.forEach(function (key) { out[key] = numberOrNull(block[key]); });
+      out.profit = numberOrNull(block.profit);
+      out.margin = numberOrNull(block.margin);
+      out.marginPercent = numberOrNull(block.marginPercent);
+      out.computable = block.computable === true;
+      out.assumed = arrayOf(block.assumed);
+      return out;
+    }
+    var realized = lado(raw.realized);
+    var r = raw.realized || {};
+    realized.available = r.available === true;
+    realized.missing = arrayOf(r.missing);
+    realized.units = numberOrNull(r.units);
+    realized.orders = numberOrNull(r.orders);
+    realized.revenue = numberOrNull(r.revenue);
+    realized.lastSaleAt = r.lastSaleAt || null;
+    realized.totalProfit = numberOrNull(r.totalProfit);
+    realized.coverage = r.coverage || null;
+    var drift = null;
+    if (raw.drift && typeof raw.drift === "object") {
+      drift = {};
+      COMPARISON_FIELDS.forEach(function (key) { drift[key] = numberOrNull(raw.drift[key]); });
+      drift.taxRatePp = numberOrNull(raw.drift.taxRatePp);
+      drift.profit = numberOrNull(raw.drift.profit);
+      drift.marginPp = numberOrNull(raw.drift.marginPercentagePoints);
+    }
+    return {
+      status: String(raw.status || "NO_SALES"),
+      projected: lado(raw.projected),
+      realized: realized,
+      drift: drift,
+      notComparable: arrayOf(raw.notComparable),
     };
   }
 
@@ -1810,13 +1872,98 @@
       },
       summary: { counts: countStatuses(items), scope: "page" },
       lastUpdated: payload.ultimoCalculoEm || null,
-      period: periodo ? { inicio: periodo.dateFrom, fim: periodo.dateTo, label: context.period && context.period.label || null } : (context.period || null),
+      // Período resolvido pelo SERVIDOR (fuso da operação, padrão até ontem).
+      period: periodo
+        ? { inicio: periodo.dateFrom, fim: periodo.dateTo, mode: periodo.modo || null, value: periodo.periodo || null, label: periodo.rotulo || (context.period && context.period.label) || null }
+        : (context.period || null),
+      salesCoverage: normalizeSalesCoverage(payload.vendas && payload.vendas.cobertura),
       refresh: {
         activeRun: snapshotRun(payload.refresh && payload.refresh.runAtivo),
         lastRun: snapshotRun(payload.refresh && payload.refresh.ultimoRun),
       },
       warnings: [],
       gaps: [],
+    };
+  }
+
+  function normalizeSalesCoverage(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    return {
+      state: raw.estado || null,
+      origin: raw.origem || null,
+      syncedUntil: raw.sincronizadoAte || null,
+      lastPublishedAt: raw.ultimaPublicacaoEm || null,
+      lastImportAt: raw.ultimoImportEm || null,
+      months: numberOrNull(raw.meses),
+      monthsWithImport: numberOrNull(raw.mesesComImport),
+      gaps: arrayOf(raw.lacunas).map(function (gap) {
+        return {
+          month: gap.competencia,
+          from: gap.segmento && gap.segmento.dateFrom,
+          to: gap.segmento && gap.segmento.dateTo,
+          reason: gap.motivo,
+          publishedFrom: gap.publicadoDe || null,
+          publishedUntil: gap.publicadoAte || null,
+          publishedAt: gap.publicadoEm || null,
+        };
+      }),
+    };
+  }
+
+  /* Realizado da CONTA no período (GET .../snapshot/realizado). */
+  function normalizeSnapshotRealizado(payload) {
+    payload = payload || {};
+    if (payload.habilitado === false) return { ok: true, enabled: false };
+    var periodo = payload.periodo || {};
+    var fresh = payload.freshness || {};
+    var k = payload.kpis || {};
+    var margem = k.margem || {};
+    var drift = k.drift || {};
+    var lucro = k.lucro || {};
+    return {
+      ok: true,
+      enabled: true,
+      period: { inicio: periodo.dateFrom || null, fim: periodo.dateTo || null, mode: periodo.modo || null, value: periodo.periodo || null, label: periodo.rotulo || null, reference: periodo.referencia || null },
+      coverage: normalizeSalesCoverage(payload.cobertura),
+      freshness: {
+        state: fresh.estado || null,
+        syncedUntil: fresh.sincronizadoAte || null,
+        lastPublishedAt: fresh.ultimaPublicacaoEm || null,
+        lastImportAt: fresh.ultimoImportEm || null,
+        syncInProgress: fresh.syncEmAndamento === true,
+        activeSync: fresh.syncAtivo || null,
+      },
+      kpis: {
+        revenue: numberOrNull(k.receita),
+        revenueWithoutListing: numberOrNull(k.receitaSemMlb),
+        units: numberOrNull(k.unidades),
+        orders: numberOrNull(k.pedidos),
+        productsWithSales: numberOrNull(k.produtosComVenda),
+        profit: numberOrNull(lucro.valor),
+        margin: {
+          percent: numberOrNull(margem.percent),
+          state: margem.estado || "indisponivel",
+          revenueCoverage: numberOrNull(margem.coberturaReceita),
+          computableProducts: numberOrNull(margem.produtosCalculaveis),
+          productsWithoutMargin: numberOrNull(margem.produtosSemMargem),
+          estimatedProducts: numberOrNull(margem.produtosEstimados),
+          reasons: margem.semMargemPorMotivo || {},
+          formula: margem.formula || null,
+          fixedFeeNote: margem.taxaFixa || null,
+        },
+        drift: {
+          available: drift.disponivel === true,
+          pp: numberOrNull(drift.pp),
+          realizedMixPercent: numberOrNull(drift.margemRealizadaMixPercent),
+          projectedMixPercent: numberOrNull(drift.margemProjetadaMixPercent),
+          compared: numberOrNull(drift.produtosComparados),
+          withoutProjection: numberOrNull(drift.produtosSemProjecao),
+          thresholdPp: numberOrNull(drift.limitePp),
+          negative: numberOrNull(drift.produtosNegativos),
+          worst: arrayOf(drift.piores),
+          formula: drift.formula || null,
+        },
+      },
     };
   }
 
@@ -1891,9 +2038,15 @@
       });
     }
 
+    // Leitura AO VIVO (workspace legado): últimos 30 dias ATÉ ONTEM. O sync
+    // noturno da Central de Vendas publica o mês corrente só até ontem e um
+    // período até hoje faria o backend recusar o import do mês (ver
+    // server/services/motorMargem/marginRealizadoPeriodo.js). No modo
+    // persistido o período é resolvido pelo SERVIDOR (fuso da operação).
     function dateRange(params) {
       if (params.dateFrom && params.dateTo) return { dateFrom: params.dateFrom, dateTo: params.dateTo };
       var end = new Date();
+      end.setDate(end.getDate() - 1);
       var start = new Date(end.getTime());
       start.setDate(start.getDate() - 29);
       function iso(date) {
@@ -1916,7 +2069,7 @@
         limit: params.limit || 20,
       };
       var range = dateRange(params);
-      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias" };
+      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias (até ontem)" };
       var canonicalQuery = buildQuery({
         marketplace: context.marketplace,
         q: params.search,
@@ -1974,7 +2127,7 @@
         marketplace: params.marketplace || "meli",
       };
       var range = dateRange(params);
-      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias" };
+      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias (até ontem)" };
       var workspaceQuery = buildQuery({
         marketplace: context.marketplace,
         dateFrom: range.dateFrom,
@@ -2059,8 +2212,6 @@
       var slug = String(params.clientSlug || "").trim();
       if (!slug) return Promise.resolve({ ok: false, status: 400, error: "Selecione um cliente.", type: "no-client" });
       var context = { client: { slug: slug, name: params.clientName || slug }, marketplace: params.marketplace || "meli" };
-      var range = dateRange(params);
-      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias" };
       var query = buildQuery({
         clienteContaId: params.clienteContaId,
         page: params.page,
@@ -2070,12 +2221,27 @@
         busca: params.search,
         ordenacao: params.sort,
         direcao: params.direction,
-        dateFrom: range.dateFrom,
-        dateTo: range.dateTo,
+        // Período do REALIZADO: `periodo=YYYY-MM` (parâmetro global do Shell)
+        // ou datas explícitas; sem nada, o servidor usa "30 dias até ontem".
+        periodo: params.periodo,
+        dateFrom: params.dateFrom,
+        dateTo: params.dateTo,
       });
       return call(snapshotBase(slug) + "/itens" + query, { signal: signal }).then(function (result) {
         if (!result.ok) return apiError(result, "Não foi possível carregar os itens da leitura persistida.");
         return normalizeSnapshotItens(result.data, context);
+      });
+    }
+
+    /* Realizado da CONTA no período: KPIs, cobertura e freshness. */
+    function getSnapshotRealizado(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      if (!slug) return Promise.resolve({ ok: false, status: 400, error: "Selecione um cliente.", type: "no-client" });
+      var query = buildQuery({ clienteContaId: params.clienteContaId, periodo: params.periodo, dateFrom: params.dateFrom, dateTo: params.dateTo });
+      return call(snapshotBase(slug) + "/realizado" + query, { signal: signal }).then(function (result) {
+        if (!result.ok) return apiError(result, "Não foi possível carregar o realizado do período.");
+        return normalizeSnapshotRealizado(result.data);
       });
     }
 
@@ -2106,6 +2272,7 @@
       getWorkspace: getWorkspace,
       getSnapshotResumo: getSnapshotResumo,
       getSnapshotItens: getSnapshotItens,
+      getSnapshotRealizado: getSnapshotRealizado,
       requestSnapshotRefresh: requestSnapshotRefresh,
       getSnapshotRefreshStatus: getSnapshotRefreshStatus,
       call: call,
@@ -2155,6 +2322,9 @@
     snapshotStatusFilter: snapshotStatusFilter,
     normalizeSnapshotResumo: normalizeSnapshotResumo,
     normalizeSnapshotItens: normalizeSnapshotItens,
+    normalizeSnapshotRealizado: normalizeSnapshotRealizado,
+    normalizeSalesCoverage: normalizeSalesCoverage,
+    normalizeComparison: normalizeComparison,
     createClient: createClient,
     numberOrNull: numberOrNull,
     marginFraction: marginFraction,

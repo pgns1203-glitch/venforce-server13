@@ -368,6 +368,64 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
   };
 }
 
+// Anexa os campos de Margem Projetada a uma página JÁ MONTADA de `anuncios`
+// (tipo "item"/"familia", ver montarAnunciosDeRows) — fonte ÚNICA da CÉLULA
+// visual da listagem, independente do `ordenarPor` ativo (decisão "célula e
+// sort usam a MESMA fonte" — ver missão "migrar exibição de margem projetada
+// para o snapshot"). Lê SÓ os item_id desta página (nunca o catálogo
+// filtrado inteiro) — o mesmo `lerSnapshotPorItens` batch que o ranking
+// global de margem já usa, só que aqui limitado ao lote pequeno da página
+// (tipicamente ≤100 itens, teto de `limit`), então o custo extra sobre
+// qualquer sort (padrão/faturamento/curvaAbc/unidades) é o de UM SELECT
+// pequeno — nunca a leitura do catálogo inteiro que só o ranking por margem
+// precisa (ver lerSnapshotPorItens/EXPLAIN ANALYZE, índice
+// anuncios_margem_projetada_snapshot_cliente_id_item_id_key).
+//
+// Família NUNCA tem margem % exibível (mesma regra de sempre, "Margem NUNCA
+// agrega") — aqui isso é resolvido SEM nenhuma leitura extra (nunca resolve
+// filhos/soma profit pra família, ao contrário do ranking global de margem):
+// os 6 campos ficam null/false estáticos, porque a listagem nunca mostra
+// nada de margem para a linha da família, só "—".
+//
+// Falha de leitura (erro de banco, timeout) nunca derruba a listagem: os
+// campos ficam ausentes/null (mesma filosofia de fallback dos outros
+// critérios) — nunca um 500 só porque a célula de margem não conseguiu
+// carregar.
+async function anexarMargemProjetadaNaPagina(anuncios, clienteId) {
+  const itemIds = anuncios.filter((a) => a.tipo === "item").map((a) => a.item_id);
+
+  let snapshotPorItem = new Map();
+  if (itemIds.length) {
+    try {
+      snapshotPorItem = await margemProjetadaSnapshotRepository.lerSnapshotPorItens({ clienteId, itemIds });
+    } catch (err) {
+      console.error(
+        "[anuncios-meli] anexarMargemProjetadaNaPagina: erro ao ler snapshot, campos de margem ficam ausentes:",
+        err.message
+      );
+    }
+  }
+
+  for (const anuncio of anuncios) {
+    if (anuncio.tipo === "familia") {
+      anuncio.margemProjetadaPercent = null;
+      anuncio.margemProjetadaProfit = null;
+      anuncio.margemProjetadaComputable = false;
+      anuncio.margemProjetadaStatus = null;
+      anuncio.margemProjetadaCalculadaEm = null;
+      anuncio.margemProjetadaOrigemJob = null;
+    } else {
+      const s = snapshotPorItem.get(String(anuncio.item_id));
+      anuncio.margemProjetadaPercent = s && s.computable && s.marginPercent != null ? s.marginPercent : null;
+      anuncio.margemProjetadaProfit = s && s.profit != null ? s.profit : null;
+      anuncio.margemProjetadaComputable = !!(s && s.computable);
+      anuncio.margemProjetadaStatus = (s && s.status) || null;
+      anuncio.margemProjetadaCalculadaEm = (s && s.calculadoEm) || null;
+      anuncio.margemProjetadaOrigemJob = (s && s.origemJob) || null;
+    }
+  }
+}
+
 async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit, config }) {
   const chaves = await familiaService.listarChavesFiltradas({
     clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro,
@@ -582,6 +640,9 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
   // com profit conhecido (freshness do grupo, mesmo padrão de
   // `MAX(b.updated_at)` já usado em LISTAR_AGRUPADO_PAGINA).
   if (config.campo === "margemProjetada") {
+    // Reaproveita o `ranking` já computado acima (cobre `todosItemIds`, o
+    // catálogo FILTRADO inteiro) — nunca uma 2ª leitura do snapshot só para
+    // anexar os campos na página (PASSO "não duplicar leitura").
     for (const anuncio of anuncios) {
       if (anuncio.tipo === "familia") {
         anuncio.margemProjetadaProfit = ranking.porFamiliaProfit[anuncio.family_id] != null
@@ -600,6 +661,12 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
         anuncio.margemProjetadaOrigemJob = ranking.porItemOrigemJob[anuncio.item_id] || null;
       }
     }
+  } else {
+    // Demais critérios (faturamento/curvaAbc/unidades): a célula de margem
+    // precisa dos campos de qualquer forma (fonte única, independente do
+    // ordenarPor ativo) — batch NOVO, mas só dos item_id desta PÁGINA
+    // (nunca `todosItemIds`, o catálogo inteiro), ver anexarMargemProjetadaNaPagina.
+    await anexarMargemProjetadaNaPagina(anuncios, cliente.id);
   }
 
   return {
@@ -665,6 +732,15 @@ async function listarAgrupado(req, res) {
           clienteId: cliente.id, clienteContaId: contaId, includeLegacy, q, status, filtro, page, limit,
         });
 
+    // Ordenação "Padrão" (sem ordenarPor) não passa por
+    // listarAgrupadoOrdenadoPorMotor — ainda assim a célula de margem
+    // precisa dos campos de snapshot (fonte única, independente do sort
+    // ativo). listarAgrupadoOrdenadoPorMotor já anexa isso sozinho para os
+    // 4 critérios globais (ver anexarMargemProjetadaNaPagina).
+    if (!configGlobal) {
+      await anexarMargemProjetadaNaPagina(resultado.anuncios, cliente.id);
+    }
+
     const resposta = {
       ok: true,
       cliente: { slug: cliente.slug, nome: cliente.nome },
@@ -720,6 +796,35 @@ async function detalheFamilia(req, res) {
     });
     if (!familia) {
       return res.status(404).json({ ok: false, motivo: "Família não encontrada." });
+    }
+
+    // Filhos expandidos usam os MESMOS campos de snapshot que a listagem
+    // (fonte única, nunca /performance — ver anexarMargemProjetadaNaPagina).
+    // Cada filho É um item de verdade (nunca uma família aninhada), então o
+    // batch é direto — sem o branch tipo:"familia" do helper da listagem.
+    const todosOsFilhos = familia.user_products.flatMap((up) => up.itens);
+    const itemIdsFilhos = todosOsFilhos.map((it) => it.item_id);
+    let snapshotDosFilhos = new Map();
+    if (itemIdsFilhos.length) {
+      try {
+        snapshotDosFilhos = await margemProjetadaSnapshotRepository.lerSnapshotPorItens({
+          clienteId: cliente.id, itemIds: itemIdsFilhos,
+        });
+      } catch (err) {
+        console.error(
+          "[anuncios-meli] detalheFamilia: erro ao ler snapshot dos filhos, campos de margem ficam ausentes:",
+          err.message
+        );
+      }
+    }
+    for (const filho of todosOsFilhos) {
+      const s = snapshotDosFilhos.get(String(filho.item_id));
+      filho.margemProjetadaPercent = s && s.computable && s.marginPercent != null ? s.marginPercent : null;
+      filho.margemProjetadaProfit = s && s.profit != null ? s.profit : null;
+      filho.margemProjetadaComputable = !!(s && s.computable);
+      filho.margemProjetadaStatus = (s && s.status) || null;
+      filho.margemProjetadaCalculadaEm = (s && s.calculadoEm) || null;
+      filho.margemProjetadaOrigemJob = (s && s.origemJob) || null;
     }
 
     return res.json({

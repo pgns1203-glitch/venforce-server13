@@ -807,16 +807,20 @@
     });
 
     // Métricas últ. 7 dias + margem + % faturamento chegam DEPOIS que a lista
-    // já está na tela — nunca atrasam este render. Anúncios avulsos (tipo
-    // "item") pedem as três NA MESMA chamada (faturamento é bundlado de
-    // graça: o Motor de Margem já roda para a margem, então calcular
-    // faturamento em cima do MESMO resultado não custa uma segunda
-    // invocação — ver auditoria "Correção — ordenação margem e carregamento
-    // faturamento"). Agrupadores pedem metricas7d dos filhos em background
-    // (ver carregarMetricasDosGruposVisiveis) — a margem continua reservada
-    // para quando o operador expande; o % faturamento CONSOLIDADO da família
-    // é outra chamada, própria (ver carregarFaturamentoDasFamiliasVisiveis),
-    // porque exige `familias=` no Motor, não os filhos individuais.
+    // já está na tela — nunca atrasam este render. A CÉLULA de margem
+    // (percentual/status) já chegou PRONTA na própria resposta da listagem
+    // (margemProjetadaPercent, ver anexarMargemProjetadaNaPagina no
+    // controller/margemCelulaHtml) — fonte única, nunca mais lida daqui.
+    // `incluirMargem` continua pedido porque `margem[itemId]` (a resposta
+    // desta chamada) TAMBÉM carrega `precoAtual`/`precoOriginal` (preço AO
+    // VIVO do Motor, ver celulaPrecoHtml) — efeito colateral do mesmo lote,
+    // não uma chamada própria só de preço. Anúncios avulsos (tipo "item")
+    // pedem as três NA MESMA chamada (faturamento reaproveita o mesmo porMlb
+    // do Motor). Agrupadores pedem metricas7d dos filhos em background (ver
+    // carregarMetricasDosGruposVisiveis); o % faturamento CONSOLIDADO da
+    // família é outra chamada, própria (ver
+    // carregarFaturamentoDasFamiliasVisiveis), porque exige `familias=` no
+    // Motor, não os filhos individuais.
     carregarPerformance(
       AM.anuncios.filter(function (l) { return l.tipo === "item"; }).map(function (l) { return l.item_id; }),
       { incluirFaturamento: true, incluirCurvaAbc: true }
@@ -1031,6 +1035,14 @@
   // detalhe usa garantirFamiliaDetalhe antes). Delega a carregarPerformance,
   // que já dedupe por item/aspecto — chamar isto de novo sem nada pendente
   // não gasta requisição nenhuma.
+  //
+  // A CÉLULA de margem (percentual/status) NUNCA lê o resultado desta chamada
+  // — já vem PRONTA no próprio detalhe da família (item.margemProjetadaPercent,
+  // ver garantirFamiliaDetalhe/margemCelulaHtml). `incluirMargem` continua
+  // pedido aqui só ao expandir porque `margem[itemId]` (a resposta de
+  // /performance) TAMBÉM carrega `precoAtual`/`precoOriginal` (preço AO VIVO
+  // do Motor, ver celulaPrecoHtml) — efeito colateral do mesmo lote, não
+  // duplicado por uma chamada própria só de preço.
   function garantirPerformanceDaFamilia(familyId, incluirMargem) {
     var familia = AM.state.familyCache[familyId];
     if (!familia) return Promise.resolve();
@@ -1040,14 +1052,13 @@
     });
     if (!ids.length) return Promise.resolve();
     // % faturamento e Curva ABC INDIVIDUAIS do filho seguem a MESMA porta que
-    // a margem: só quando a família é EXPANDIDA (incluirMargem=true) —
-    // bundlados de graça no mesmo lote, já que o Motor de Margem já vai
-    // rodar para a margem (ver auditoria "Anúncios ML — participação no
-    // faturamento em famílias" e "Curva ABC sempre visível + faturamento
-    // absoluto"). Filho ainda oculto (pré-carregamento em background,
-    // incluirMargem=false) continua sem gastar o Motor. A consolidada da
-    // família (porFamilia/curvaAbc.porFamilia) não passa por aqui — vem de
-    // carregarFaturamentoDasFamiliasVisiveis, sem relação com isto.
+    // o preço ao vivo: só quando a família é EXPANDIDA (incluirMargem=true) —
+    // bundlados de graça no mesmo lote (ver auditoria "Anúncios ML —
+    // participação no faturamento em famílias" e "Curva ABC sempre visível +
+    // faturamento absoluto"). Filho ainda oculto (pré-carregamento em
+    // background, incluirMargem=false) continua sem gastar o Motor. A
+    // consolidada da família (porFamilia/curvaAbc.porFamilia) não passa por
+    // aqui — vem de carregarFaturamentoDasFamiliasVisiveis, sem relação com isto.
     return carregarPerformance(ids, { incluirMargem: incluirMargem, incluirFaturamento: incluirMargem, incluirCurvaAbc: incluirMargem });
   }
 
@@ -1493,29 +1504,34 @@
       '<span class="am-mlb__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
       faturamentoCelulaHtml(a.item_id) +
       metricas7dCelulaHtml(a.item_id) +
-      margemCelulaHtml(a.item_id) +
+      margemCelulaHtml(a) +
       score +
       '<span class="am-mlb__acao">' + linkMl + "</span>" +
     "</div>";
   }
 
   // ===========================================================================
-  // MÉTRICAS ÚLT. 7 DIAS + MARGEM — enriquecimento AO VIVO e ASSÍNCRONO
+  // MÉTRICAS ÚLT. 7 DIAS — enriquecimento AO VIVO e ASSÍNCRONO
   //
-  // Duas colunas novas, GET /anuncios-meli/performance. Nunca bloqueiam a
-  // abertura da página nem a expansão de um agrupador: a linha nasce com a
-  // célula em "carregando…" e carregarPerformance() a resolve depois, só
-  // para os item_id que estão de fato visíveis — nunca um recorte decidido
-  // aqui, sempre a lista exata que o render acabou de montar.
+  // Coluna própria, GET /anuncios-meli/performance. Nunca bloqueia a abertura
+  // da página nem a expansão de um agrupador: a linha nasce com a célula em
+  // "carregando…" e carregarPerformance() a resolve depois, só para os
+  // item_id que estão de fato visíveis — nunca um recorte decidido aqui,
+  // sempre a lista exata que o render acabou de montar.
   //
   // AM.state.performanceCache é o cache de sessão (por item_id, nunca
   // persistido): reabrir uma família já expandida antes, ou repintar uma
   // linha depois de editar o estoque, lê daqui — nenhuma das duas gasta uma
   // chamada nova ao Mercado Livre/Motor de Margem.
   //
-  // Margem é coluna PRÓPRIA, separada das métricas de tráfego/venda — nunca
-  // misturada na mesma célula. Só existe por MLB: a linha do agrupador
-  // mostra "—" fixo (ver rowGrupoHtml), mesmo depois de expandida.
+  // Margem projetada NÃO passa mais por aqui (migrou pro snapshot — ver
+  // margemCelulaHtml/anexarMargemProjetadaNaPagina): a célula é PRÓPRIA,
+  // separada das métricas de tráfego/venda, nasce pronta (sem "carregando"),
+  // e só existe por MLB — a linha do agrupador mostra "—" fixo (ver
+  // rowGrupoHtml), mesmo depois de expandida. `performanceCache[id].margem`
+  // (deste bloco) continua existindo só para a seção "Composição da margem"
+  // do MODAL e para o preço ao vivo (celulaPrecoHtml/precoDetalheHtml) —
+  // nunca mais para a célula da listagem.
   // ===========================================================================
 
   function formatarInteiroOuTraco(v) {
@@ -1666,14 +1682,73 @@
       infoDotHtml(tip);
   }
 
-  function margemCelulaHtml(itemId) {
-    var cache = AM.state.performanceCache[itemId];
-    var pronto = cache && cache.temMargem;
-    var conteudo = pronto
-      ? margemConteudoHtml(cache.margem, cache.margemIndisponivel)
-      : '<span class="am-margem__vazio">carregando…</span>';
-    return '<span class="am-margem' + (pronto ? "" : " am-margem--carregando") +
-      '" data-margem-item="' + escapeAttr(itemId) + '">' + conteudo + "</span>";
+  // Rótulos REAIS do Motor de Margem (mesmas 6 chaves/textos de
+  // server/services/motorMargem/core/marginStatus.js LABELS) — mapeados
+  // aqui porque o snapshot só grava o CÓDIGO (margemProjetadaStatus), nunca
+  // o rótulo pronto nem os motivos detalhados (statusReasons não existe na
+  // tabela anuncios_margem_projetada_snapshot).
+  var MARGEM_LABEL = {
+    HEALTHY: "Saudável",
+    LOW_MARGIN: "Margem baixa",
+    SUSPECT_DATA: "Dado suspeito",
+    RECONCILING: "Em conciliação",
+    LOSS: "Prejuízo",
+    UNVALIDATED: "Não validado",
+  };
+
+  // "há 2 h", "há 3 dias" — mesmo vocabulário de vf-format.js `desde()`
+  // (Shell V3/Carteira), reimplementado pontualmente aqui porque esta
+  // página não carrega o módulo ES (vf-format.js só é importado onde já há
+  // bundler) — só a MENOR versão necessária para a freshness da margem
+  // projetada (PASSO 12: "não criar UI chamativa").
+  function margemFreshnessTexto(calculadoEm) {
+    if (!calculadoEm) return null;
+    var t = new Date(calculadoEm).getTime();
+    if (isNaN(t)) return null;
+    var min = Math.floor((Date.now() - t) / 60000);
+    if (min < 1) return "agora";
+    if (min < 60) return "há " + min + " min";
+    var h = Math.floor(min / 60);
+    if (h < 24) return "há " + h + " h";
+    var dias = Math.floor(h / 24);
+    return dias === 1 ? "ontem" : "há " + dias + " dias";
+  }
+
+  // Célula de Margem da LISTAGEM (linha avulsa e filho expandido de
+  // família) — fonte ÚNICA é o snapshot de margem projetada que já vem
+  // PRONTO no próprio `anuncio` (margemProjetadaPercent/Computable/Status/
+  // CalculadaEm, ver anexarMargemProjetadaNaPagina no controller e
+  // garantirFamiliaDetalhe). NUNCA lê AM.state.performanceCache/dados.margem
+  // de GET /performance — esse endpoint continua vivo só para
+  // faturamento/Curva ABC/métricas 7d e para a seção "Composição da margem"
+  // do MODAL (live, Motor de Margem — ver margemConteudoHtml, função
+  // irmã desta, usada só pelo modal).
+  //
+  // Sem "carregando": ao contrário de métricas/faturamento (assíncronos,
+  // chegam DEPOIS do primeiro paint), o snapshot já está no MESMO objeto
+  // que desenhou a linha — a célula nasce PRONTA.
+  function margemProjetadaConteudoHtml(a) {
+    var classe = MARGEM_CLASSE[a.margemProjetadaStatus] || "is-neutral";
+    if (a.margemProjetadaComputable === true && a.margemProjetadaPercent != null) {
+      var tip = "Margem projetada com base no preço atual e custos configurados.";
+      var fresh = margemFreshnessTexto(a.margemProjetadaCalculadaEm);
+      if (fresh) tip += " Calculada " + fresh + ".";
+      return '<span class="am-margem__valor ' + classe + '">' + formatarPercentualCompacto(a.margemProjetadaPercent) + "</span>" +
+        infoDotHtml(tip);
+    }
+    // Sem snapshot (job nunca rodou) e sem status algum: "—" simples, sem
+    // rótulo/selo — não há nada real do Motor pra comunicar aqui.
+    if (!a.margemProjetadaStatus) return '<span class="am-margem__vazio">—</span>';
+    // Snapshot existe mas não é computável (ex.: UNVALIDATED) — rótulo REAL
+    // do Motor (mesmo vocabulário de marginStatus.js), sem inventar motivo
+    // detalhado (statusReasons não existe no snapshot).
+    return '<span class="am-margem__estado ' + classe + '">' +
+      escapeHtml(MARGEM_LABEL[a.margemProjetadaStatus] || "Indisponível") + "</span>";
+  }
+
+  function margemCelulaHtml(a) {
+    return '<span class="am-margem" data-margem-item="' + escapeAttr(a.item_id) + '">' +
+      margemProjetadaConteudoHtml(a) + "</span>";
   }
 
   // % do faturamento — coluna própria (ver auditoria "Ajuste visual —
@@ -2340,13 +2415,9 @@
       cel.classList.remove("am-metricas7d--carregando");
       cel.innerHTML = metricas7dConteudoHtml(cache ? cache.metricas7d : null);
     });
-    document.querySelectorAll(".am-margem[data-margem-item]").forEach(function (cel) {
-      var id = cel.getAttribute("data-margem-item");
-      if (!alvo[id]) return;
-      var cache = AM.state.performanceCache[id];
-      cel.classList.remove("am-margem--carregando");
-      cel.innerHTML = margemConteudoHtml(cache ? cache.margem : null, cache ? cache.margemIndisponivel : null);
-    });
+    // Margem projetada NÃO repinta mais aqui: a célula nasce pronta a partir
+    // do snapshot (margemCelulaHtml lê direto do `anuncio`, sem estado
+    // "carregando") — nada em /performance decide o valor dela nunca mais.
     document.querySelectorAll(".am-faturamento[data-faturamento-item]").forEach(function (cel) {
       var id = cel.getAttribute("data-faturamento-item");
       if (!alvo[id]) return;
@@ -3072,7 +3143,7 @@
       '<span class="am-row__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
       faturamentoCelulaHtml(a.item_id) +
       metricas7dCelulaHtml(a.item_id) +
-      margemCelulaHtml(a.item_id) +
+      margemCelulaHtml(a) +
       scoreGaugeHtml(a.score_venforce) +
       '<div class="am-row__acao">' + toggleLegado + linkMl + "</div>" +
     "</div>" +

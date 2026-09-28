@@ -355,18 +355,80 @@ async function run() {
     console.log("  ✓ D. Motor indisponível: fallback pro SQL padrão, ordenacaoAplicada:false, nunca 500");
   });
 
-  // E. sem ordenarPor: comportamento idêntico ao path antigo (regressão).
+  // E. sem ordenarPor: path antigo intacto (ordenacaoAplicada/faturamento*
+  //    continuam ausentes — regressão zero), mas AGORA carrega os campos de
+  //    margem projetada da PÁGINA (fonte única da célula — ver missão
+  //    "migrar exibição de margem projetada para o snapshot"). Isso não é
+  //    regressão: é o objetivo desta missão — a célula precisa da margem
+  //    independentemente do sort ativo.
   await withMockDb({
     ...UMA_CONTA,
     anuncios: [anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" })],
   }, async () => {
+    chamadasSnapshot.length = 0;
+    chamadasMontarItens.length = 0;
+    snapshotHandler = () => new Map([
+      ["MLB1", { marginPercent: 22.5, profit: 12, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T10:00:00Z", origemJob: "manual_cli" }],
+      // MLB2: sem entrada — snapshot ausente.
+    ]);
     const res = fakeRes();
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10" } }, res);
     assert.strictEqual(res.corpo.ok, true);
     assert.strictEqual(res.corpo.ordenacaoAplicada, undefined, "sem ordenarPor não deve nem existir o campo — path antigo não conhece esse contrato");
     assert.strictEqual(res.corpo.anuncios[0].faturamentoPercentual, undefined);
     assert.strictEqual(res.corpo.anuncios[0].faturamentoValor, undefined);
-    console.log("  ✓ E. sem ordenarPor: resposta idêntica ao path antigo, sem campos novos");
+
+    const mlb1 = res.corpo.anuncios.find((a) => a.item_id === "MLB1");
+    const mlb2 = res.corpo.anuncios.find((a) => a.item_id === "MLB2");
+    assert.strictEqual(mlb1.margemProjetadaPercent, 22.5, "MLB1 com snapshot: campo vem preenchido mesmo sem ordenarPor");
+    assert.strictEqual(mlb1.margemProjetadaProfit, 12);
+    assert.strictEqual(mlb1.margemProjetadaComputable, true);
+    assert.strictEqual(mlb1.margemProjetadaStatus, "HEALTHY");
+    assert.strictEqual(mlb1.margemProjetadaCalculadaEm, "2026-09-28T10:00:00Z");
+    assert.strictEqual(mlb1.margemProjetadaOrigemJob, "manual_cli");
+    assert.strictEqual(mlb2.margemProjetadaPercent, null, "MLB2 sem snapshot: null, nunca 0/inventado");
+    assert.strictEqual(mlb2.margemProjetadaComputable, false);
+
+    assert.strictEqual(chamadasSnapshot.length, 1, "exatamente 1 leitura de snapshot para anexar a página");
+    assert.deepStrictEqual(chamadasSnapshot[0].itemIds.sort(), ["MLB1", "MLB2"], "lote pedido é só os item_id DESTA PÁGINA, nunca o catálogo inteiro");
+    assert.strictEqual(chamadasMontarItens.length, 0, "anexar margem projetada ao path padrão NUNCA chama o Motor de Margem");
+    snapshotHandler = null;
+    console.log("  ✓ E. sem ordenarPor: path antigo intacto + campos de margem projetada da página (fonte única da célula)");
+  });
+
+  // E2. sem ordenarPor: família NUNCA tem margemProjetadaPercent (mesma
+  //     regra de sempre) — e SEM nenhuma leitura extra de filhos/soma de
+  //     profit (a listagem nunca mostra profit de família, só "—").
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B", user_product_id: null }), // avulso, força o batch a existir
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    chamadasSnapshot.length = 0;
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 90, profit: 999, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-B", { marginPercent: 15, profit: 3, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.ok(familia, "FAM1 precisa aparecer como família");
+    assert.strictEqual(familia.margemProjetadaPercent, null, "família NUNCA tem margemProjetadaPercent, mesmo com filho de 90%");
+    assert.strictEqual(familia.margemProjetadaProfit, null, "path padrão não resolve soma de profit de família — não é exibida na listagem, nunca gastar essa leitura à toa");
+    assert.strictEqual(familia.margemProjetadaComputable, false);
+    const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");
+    assert.strictEqual(itemAvulso.margemProjetadaPercent, 15, "item avulso: batch funcionou normalmente");
+    // A linha de família montada por montarAnunciosDeRows não tem `item_id`
+    // (só tipo/family_id/...) — anexarMargemProjetadaNaPagina filtra por
+    // `tipo === "item"` antes de montar o batch, então a família nunca entra
+    // nele, e nenhum filho (MLB-A1/MLB-A2) é resolvido/pedido à toa.
+    assert.deepStrictEqual(chamadasSnapshot[0].itemIds, ["MLB-B"], "família não resolve filhos — o batch só pede o item_id do avulso, nunca os filhos da família");
+    snapshotHandler = null;
+    console.log("  ✓ E2. sem ordenarPor: família margemProjetadaPercent SEMPRE null, sem resolver filhos/soma de profit");
   });
 
   // F. margem_desc virou GLOBAL (lê o snapshot, nunca o Motor) — MUDA de
@@ -1004,6 +1066,101 @@ async function run() {
       "família fica na ÚLTIMA posição, mesmo com um filho de marginPercent=100 — profit de família nunca compete com marginPercent de item");
     snapshotHandler = null;
     console.log("  ✓ AB. valor exposto na resposta === valor usado no ranking (item: margemProjetadaPercent, mesma unidade comparável; família: sempre última, margemProjetadaProfit só informativo)");
+  });
+
+  // AD. faturamento_desc TAMBÉM anexa os campos de margem projetada — fonte
+  //     única da célula, independente do critério de ordenação ativo. Batch
+  //     é só da PÁGINA retornada (2 de 4 itens do catálogo filtrado, ver
+  //     PASSO "sort normal continua barato") — nunca o catálogo inteiro que
+  //     `todosItemIds` already resolveu pro ranking de faturamento.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" }),
+      anuncioFixture({ item_id: "MLB3" }), anuncioFixture({ item_id: "MLB4" }),
+    ],
+  }, async () => {
+    chamadasSnapshot.length = 0;
+    motorHandler = () => ({
+      porMlb: new Map([["MLB1", { receita: 400 }], ["MLB2", { receita: 300 }], ["MLB3", { receita: 200 }], ["MLB4", { receita: 100 }]]),
+      periodo: {},
+    });
+    snapshotHandler = () => new Map([["MLB1", { marginPercent: 12, profit: 5, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T00:00:00Z", origemJob: "manual_cli" }]]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "2", ordenarPor: "faturamento_desc" } }, res);
+    assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB1", "MLB2"], "pré-condição: página 1 de 2, MLB1/MLB2 (maior faturamento)");
+    assert.strictEqual(res.corpo.anuncios[0].margemProjetadaPercent, 12, "MLB1: campo de margem projetada vem junto, mesmo ordenando por faturamento");
+    assert.strictEqual(res.corpo.anuncios[1].margemProjetadaPercent, null, "MLB2: sem snapshot, null");
+    assert.strictEqual(chamadasSnapshot.length, 1);
+    assert.deepStrictEqual(chamadasSnapshot[0].itemIds.sort(), ["MLB1", "MLB2"],
+      "batch pede só os 2 item_id DESTA PÁGINA — MLB3/MLB4 (resto do catálogo, usados só pro ranking de faturamento) nunca entram nesta leitura");
+    motorHandler = null; snapshotHandler = null;
+    console.log("  ✓ AD. faturamento_desc: também anexa margem projetada, batch só da página (2), nunca o catálogo filtrado inteiro (4)");
+  });
+
+  // AE. curvaAbc_asc TAMBÉM anexa — mesmo comportamento de AD, critério
+  //     diferente (prova que não é hardcoded só pro branch de faturamento).
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" })],
+  }, async () => {
+    chamadasSnapshot.length = 0;
+    motorHandler = () => ({ porMlb: new Map([["MLB1", { receita: 900 }], ["MLB2", { receita: 100 }]]), periodo: {} });
+    snapshotHandler = () => new Map([["MLB2", { marginPercent: 7, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }]]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "curvaAbc_asc" } }, res);
+    const mlb2 = res.corpo.anuncios.find((a) => a.item_id === "MLB2");
+    assert.strictEqual(mlb2.margemProjetadaPercent, 7, "curvaAbc_asc também anexa margem projetada");
+    assert.strictEqual(chamadasSnapshot.length, 1);
+    motorHandler = null; snapshotHandler = null;
+    console.log("  ✓ AE. curvaAbc_asc: também anexa margem projetada da página");
+  });
+
+  // AF. unidades_desc TAMBÉM anexa — mesmo comportamento, critério que nem
+  //     passa pelo Motor (usa buscarVendas7dPorItens).
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" })],
+  }, async () => {
+    chamadasSnapshot.length = 0;
+    vendasHandler = () => ({ ok: true, porItem: { MLB1: 10, MLB2: 5 } });
+    snapshotHandler = () => new Map([["MLB1", { marginPercent: 33, profit: 9, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }]]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "unidades_desc" } }, res);
+    const mlb1 = res.corpo.anuncios.find((a) => a.item_id === "MLB1");
+    assert.strictEqual(mlb1.margemProjetadaPercent, 33, "unidades_desc também anexa margem projetada");
+    assert.strictEqual(chamadasSnapshot.length, 1);
+    vendasHandler = null; snapshotHandler = null;
+    console.log("  ✓ AF. unidades_desc: também anexa margem projetada da página");
+  });
+
+  // AG. margem_desc NÃO faz uma 2ª leitura de snapshot para anexar os campos
+  //     na página — reaproveita o `ranking` (snapshot do catálogo FILTRADO
+  //     inteiro) já carregado pro ranking global (PASSO "não duplicar leitura").
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" }),
+      anuncioFixture({ item_id: "MLB3" }), anuncioFixture({ item_id: "MLB4" }),
+    ],
+  }, async () => {
+    chamadasSnapshot.length = 0;
+    snapshotHandler = () => new Map([
+      ["MLB1", { marginPercent: 40, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB2", { marginPercent: 30, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB3", { marginPercent: 20, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB4", { marginPercent: 10, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "2", ordenarPor: "margem_desc" } }, res);
+    assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB1", "MLB2"]);
+    assert.strictEqual(res.corpo.anuncios[0].margemProjetadaPercent, 40);
+    assert.strictEqual(chamadasSnapshot.length, 1,
+      "exatamente 1 leitura de snapshot (a do ranking global, contra o catálogo filtrado inteiro) — os campos da página são recortados dela, nunca uma 2ª query");
+    assert.deepStrictEqual(chamadasSnapshot[0].itemIds.sort(), ["MLB1", "MLB2", "MLB3", "MLB4"],
+      "a ÚNICA leitura pede o catálogo FILTRADO inteiro (necessário pro ranking global) — não é 'só a página', é reaproveitamento, não coincidência");
+    snapshotHandler = null;
+    console.log("  ✓ AG. margem_desc: 1 única leitura de snapshot (reaproveitada do ranking), nunca uma 2ª pra anexar a página");
   });
 
   // AC. Checagem ESTÁTICA (arquitetural, não só o spy em runtime dos testes

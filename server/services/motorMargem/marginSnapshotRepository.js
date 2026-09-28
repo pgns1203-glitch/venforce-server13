@@ -68,6 +68,9 @@ function sanitizeSnapshot(row) {
     refreshStatus: row.refresh_status,
     lastError: row.last_error || null,
 
+    imageUrl: row.image_url || null,
+    catalogMissingSince: row.catalog_missing_since || null,
+
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -87,6 +90,7 @@ async function upsertProjectionSnapshot(dados, db = pool) {
     confidenceLevel, quality, missing, assumed, divergences,
     observedAt, calculatedAt, sourceUpdatedAt,
     runId, refreshStatus = "fresh", lastError,
+    imageUrl,
   } = dados;
 
   if (!clienteId) throw new Error("upsertProjectionSnapshot: clienteId é obrigatório.");
@@ -101,14 +105,16 @@ async function upsertProjectionSnapshot(dados, db = pool) {
        profit, margin, margin_percent, status,
        confidence_level, quality_json, missing_json, assumed_json, divergences_json,
        observed_at, calculated_at, source_updated_at,
-       run_id, refresh_status, last_error
+       run_id, refresh_status, last_error,
+       image_url, catalog_missing_since
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,
        $8,$9,$10,$11,$12,$13,$14,$15,$16,
        $17,$18,$19,$20,
        $21,$22::jsonb,$23::jsonb,$24::jsonb,$25::jsonb,
        $26,COALESCE($27, NOW()),$28,
-       $29,$30,$31
+       $29,$30,$31,
+       $32,NULL
      )
      ON CONFLICT (cliente_id, cliente_conta_id, marketplace, item_id) DO UPDATE SET
        sku = EXCLUDED.sku,
@@ -138,6 +144,8 @@ async function upsertProjectionSnapshot(dados, db = pool) {
        run_id = EXCLUDED.run_id,
        refresh_status = EXCLUDED.refresh_status,
        last_error = EXCLUDED.last_error,
+       image_url = EXCLUDED.image_url,
+       catalog_missing_since = NULL,
        updated_at = NOW()
      RETURNING *`,
     [
@@ -149,9 +157,63 @@ async function upsertProjectionSnapshot(dados, db = pool) {
       ausenteParaNull(confidenceLevel), asJsonb(quality, {}), asJsonb(missing, []), asJsonb(assumed, []), asJsonb(divergences, []),
       ausenteParaNull(observedAt), ausenteParaNull(calculatedAt), ausenteParaNull(sourceUpdatedAt),
       ausenteParaNull(runId), refreshStatus, ausenteParaNull(lastError),
+      ausenteParaNull(imageUrl),
     ]
   );
   return sanitizeSnapshot(result.rows[0]);
+}
+
+// ---------------------------------------------------------------------------
+// Falha parcial (M3, §9.4 do plano) — o item NÃO pôde ser recalculado neste
+// run. Só marca as linhas que JÁ existem: valores financeiros anteriores
+// ficam intactos (nunca zerados/apagados), só refresh_status/last_error/
+// run_id mudam. Item que nunca teve snapshot continua sem linha — nenhuma
+// linha financeira falsa é criada para ele.
+// ---------------------------------------------------------------------------
+
+async function markSnapshotsRefreshFailed({
+  clienteId, clienteContaId, marketplace = "meli", itemIds, runId = null, lastError = null, db = pool,
+}) {
+  if (!clienteId) throw new Error("markSnapshotsRefreshFailed: clienteId é obrigatório.");
+  if (!clienteContaId) throw new Error("markSnapshotsRefreshFailed: clienteContaId é obrigatório.");
+  const ids = (Array.isArray(itemIds) ? itemIds : []).map((id) => String(id)).filter(Boolean);
+  if (!ids.length) return [];
+
+  const result = await db.query(
+    `UPDATE margin_projection_snapshots
+        SET refresh_status = 'failed', last_error = $5, run_id = $6, updated_at = NOW()
+      WHERE cliente_id = $1 AND cliente_conta_id = $2 AND marketplace = $3
+        AND item_id = ANY($4::text[])
+      RETURNING item_id`,
+    [clienteId, clienteContaId, marketplace, ids, lastError ? String(lastError).slice(0, 2000) : null, runId]
+  );
+  return result.rows.map((row) => row.item_id);
+}
+
+// Itens da conta que NÃO estavam na listagem completa do catálogo deste run
+// (encerrados/excluídos no ML). Não apaga: marca `catalog_missing_since` e
+// `refresh_status='stale'` — a leitura padrão da Central filtra essas linhas.
+// Só deve ser chamado depois de uma listagem de catálogo BEM-SUCEDIDA
+// (listagem que falhou nunca pode "sumir" com itens).
+async function markSnapshotsOutsideCatalog({
+  clienteId, clienteContaId, marketplace = "meli", catalogItemIds, runId = null, db = pool,
+}) {
+  if (!clienteId) throw new Error("markSnapshotsOutsideCatalog: clienteId é obrigatório.");
+  if (!clienteContaId) throw new Error("markSnapshotsOutsideCatalog: clienteContaId é obrigatório.");
+  if (!Array.isArray(catalogItemIds)) throw new Error("markSnapshotsOutsideCatalog: catalogItemIds é obrigatório.");
+
+  const result = await db.query(
+    `UPDATE margin_projection_snapshots
+        SET catalog_missing_since = NOW(), refresh_status = 'stale',
+            last_error = 'Item fora do catálogo (ativos + pausados) na última listagem completa.',
+            run_id = $5, updated_at = NOW()
+      WHERE cliente_id = $1 AND cliente_conta_id = $2 AND marketplace = $3
+        AND catalog_missing_since IS NULL
+        AND NOT (item_id = ANY($4::text[]))
+      RETURNING item_id`,
+    [clienteId, clienteContaId, marketplace, catalogItemIds.map((id) => String(id)), runId]
+  );
+  return result.rows.map((row) => row.item_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +286,8 @@ async function countProjectionSnapshots({ clienteContaId, marketplace = "meli", 
 module.exports = {
   ensureMarginSnapshotTables,
   upsertProjectionSnapshot,
+  markSnapshotsRefreshFailed,
+  markSnapshotsOutsideCatalog,
   getProjectionSnapshot,
   listProjectionSnapshots,
   countProjectionSnapshots,

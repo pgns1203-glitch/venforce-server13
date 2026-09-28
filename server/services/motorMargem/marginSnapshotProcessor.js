@@ -1,60 +1,87 @@
 // server/services/motorMargem/marginSnapshotProcessor.js
 // Margin Snapshot — Processor real (M3, ver
-// docs/AUDITORIA_WORKERS_E_PLANO_MARGIN_SNAPSHOT.md §5/§8/§9/§10, e
-// PROMPT_M3_MARGIN_SNAPSHOT_PROCESSOR_REAL_BATCHES.md).
+// docs/AUDITORIA_WORKERS_E_PLANO_MARGIN_SNAPSHOT.md §5/§8/§9/§10).
 //
-// Este é o processor que o worker de M2 (marginSnapshotWorker.createMarginSnapshotWorker)
-// chama por injeção depois de reivindicar (`claim`) um run `running`. M2 não tinha
-// processor real algum — só um fake nos testes. M3 entrega o primeiro processor que
-// de fato:
+// É o processor que o worker (marginSnapshotWorker) chama depois de
+// reivindicar um run `running`:
 //
-//   run claimado (running, cliente_conta_id sempre presente — §6 do prompt)
-//     → prepareWorkspaceContext UMA VEZ (Motor de Margem, motorMargemService.js)
-//     → loop SEQUENCIAL de lotes de 20 itens (mesmo teto natural do multiget
-//       /items?ids= do ML — PAGE_LIMIT_MAX em motorMargemService.js)
-//     → enrichBatch por lote (reaproveita o Motor, ZERO fórmula nova de margem)
-//     → mapeia margem PROJETADA (nunca realizada) para o contrato de
-//       margin_projection_snapshots
-//     → upsertProjectionSnapshot por item dentro do lote
-//     → updateRunProgress uma vez por lote (heartbeat_at é atualizado pela MESMA
-//       query — não existe chamada extra a touchHeartbeat por lote, ver nota
-//       abaixo)
+//   run claimado (cliente_conta_id sempre presente, nunca auto-resolvido)
+//     → prepareWorkspaceContext UMA VEZ (Motor de Margem), SEM fonte de vendas
+//     → lista o catálogo inteiro da conta por scan (ativos + pausados)
+//     → lotes SEQUENCIAIS de 20 itens → enrichBatch(prepared, { itemIds })
+//       (o mesmo Motor da tela — ZERO fórmula nova de margem)
+//     → retry por LOTE (backoff exponencial com teto + Retry-After)
+//     → upsert do snapshot projetado por item; lote que falhou de vez marca
+//       como `failed` só as linhas que já existiam (valores preservados)
+//     → progresso + heartbeat persistidos a cada lote
+//     → itens que saíram do catálogo são marcados (nunca apagados)
 //
-// NÃO usa `carregarWorkspace`: essa função tem o teto de leitura de tela
-// (RESUMO_MAX_ITENS_TETO=200, motorMargemService.js) e não persiste nada por
-// lote. Este processor caminha o catálogo inteiro (offset < totalItensMl),
-// sem clamp — o próprio ponto de M3 é provar que o catálogo inteiro pode ser
-// atualizado em background.
+// DECISÕES (sustentadas por código, não inventadas):
 //
-// NÃO refaz nenhuma conta do Motor: profit/margin/marginPercent/status vêm
-// prontos de `item.margin.projected`/`item.quality`, só copiados.
+// 1. Listagem por scan, não por offset. /users/{id}/items/search não aceita
+//    offset > 1000 (doc do ML; o repo já usa scan em meliSyncService,
+//    modeloBaseCustosService e planilhaPrecificacaoSemBaseService). Com offset
+//    o worker quebraria exatamente nos catálogos grandes que motivam o
+//    snapshot. O Motor continua sendo quem calcula: enrichBatch aceita
+//    `itemIds` (mesmo caminho do detalhe de item).
+//
+// 2. Snapshot = margem PROJETADA pura. O Motor classifica status/confiança
+//    pela margem EXIBIDA (realizada quando há venda no período). Persistir
+//    isso congelaria o realizado de uma janela arbitrária (30 dias do momento
+//    do run) dentro do snapshot — o que o plano §12 proíbe. Por isso o
+//    contexto é preparado com a fonte de vendas VAZIA (injeção explícita):
+//    preço/comissão/frete/custo/imposto/taxa e a margem projetada são
+//    idênticos aos da leitura ao vivo; status/confiança passam a depender só
+//    das fontes projetadas. A realizada é combinada na LEITURA, pelo período
+//    pedido pela tela (M5).
+//
+// 3. Unidade de retry = lote. A cotação por item nunca lança (o Motor engole
+//    e devolve null) — então nenhum item é "corrigido" aqui.
 
 const pool = require("../../config/database");
 const motorMargem = require("./motorMargemService");
 const snapshotRepository = require("./marginSnapshotRepository");
 const runRepository = require("./marginSnapshotRunRepository");
+const meliApi = require("./adapters/meliApiEvidenceAdapter");
 const { FIELDS } = require("./core/marginEvidence");
+const { resolveMarginSnapshotConfig } = require("./marginSnapshotConfig");
+const { executarComRetry, esperar, MarginSnapshotStopError } = require("./marginSnapshotRetry");
 
-// Mesmo valor de PAGE_LIMIT_MAX do Motor (motorMargemService.js) — teto do
-// multiget /items?ids= do Mercado Livre. Não é um número novo inventado por
-// M3: é o próprio teto que já rege enrichBatch (§3.B do prompt: "não
-// inventar lote de 100/500").
+// Mesmo teto do multiget /items?ids= que rege enrichBatch (PAGE_LIMIT_MAX).
 const BATCH_SIZE = motorMargem.PAGE_LIMIT_MAX;
 
-// M3 só implementa Mercado Livre (§7 do prompt). O schema aceita outros
-// marketplaces por arquitetura futura (coluna TEXT livre, sem CHECK), mas o
-// processor não tenta rodar nenhum adapter que não seja o do Motor de Margem
-// atual — que hoje só sabe falar com o ML.
 const MARKETPLACES_SUPORTADOS = ["meli"];
 
 class MarginSnapshotMarketplaceNaoSuportadoError extends Error {
   constructor(marketplace) {
     super(
-      `Margin Snapshot: marketplace "${marketplace}" não suportado pelo processor (M3 só implementa "meli").`
+      `Margin Snapshot: marketplace "${marketplace}" não suportado pelo processor (só "meli" é implementado).`
     );
     this.name = "MarginSnapshotMarketplaceNaoSuportadoError";
     this.code = "MARGIN_SNAPSHOT_MARKETPLACE_NAO_SUPORTADO";
   }
+}
+
+function erroTipado(code, message, extra = {}) {
+  const err = new Error(message);
+  err.code = code;
+  Object.assign(err, extra);
+  return err;
+}
+
+// Fonte de vendas vazia (ver decisão 2 do cabeçalho). Mesmo formato que
+// centralVendasEvidenceAdapter.carregarVendasDoPeriodo/agregarPorMlb devolvem.
+async function carregarVendasVazias() {
+  return { sincronizado: false, pedidos: [], pedidosTodos: [], itens: [], componentes: [], imports: [], importSnapshotAt: null };
+}
+
+function agregadoVazio() {
+  return {
+    porMlb: new Map(),
+    reembolsoPorMlb: new Map(),
+    naoAtribuido: { reembolso: 0 },
+    reembolsos: { atribuidoMlb: 0, atribuidoPedido: 0, naoAtribuivel: 0 },
+  };
 }
 
 function isoOrNull(value) {
@@ -63,33 +90,50 @@ function isoOrNull(value) {
   return value;
 }
 
-// Valor PROJETADO de uma variável do Motor — nunca `valor || 0` (§12 do
-// prompt): campo ausente (`.projected` null) vira `null`, nunca 0. `?? null`
-// não confunde 0 real com ausência porque só reage a null/undefined.
+// Valor PROJETADO de uma variável — nunca `valor || 0`: ausente fica null.
 function valorProjetado(item, fieldKey) {
   const field = item.fields[fieldKey];
   const projetado = field && field.projected ? field.projected.value : undefined;
   return projetado ?? null;
 }
 
+// Evidências projetadas do Motor, compactas, para a leitura reconstruir o
+// mesmo contrato `fields` (fonte, qualidade, observedAt, nota) sem chamar o
+// ML. Como o snapshot é preparado sem vendas, só há evidência PROJECTED.
+function evidenciasProjetadas(item) {
+  const out = {};
+  for (const [key, field] of Object.entries(item.fields || {})) {
+    const lista = (field && Array.isArray(field.evidences) ? field.evidences : [])
+      .filter((e) => e && e.kind === "PROJECTED" && e.value !== null && e.value !== undefined)
+      .map((e) => ({
+        source: e.source,
+        value: e.value,
+        quality: e.quality,
+        observedAt: e.observedAt || null,
+        note: e.note || null,
+      }));
+    if (lista.length) out[key] = lista;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
-// Mapeamento item canônico do Motor -> snapshot (§10/§11/§12/§13/§14 do prompt)
+// Mapeamento item canônico do Motor -> snapshot
 // ---------------------------------------------------------------------------
 //
-// Só a fotografia PROJETADA/atual. Nunca `pricing.sold`, `item.margin.realized`,
-// `item.sales`, reembolso ou pedido — isso continua vivendo só na Central de
-// Vendas por período (§11).
+// Só a fotografia PROJETADA/atual. Nunca `pricing.sold`, `margin.realized`,
+// `sales`, reembolso ou pedido — isso vive na Central de Vendas por período.
 function mapItemParaSnapshot({ item, run, base, observedAt }) {
   return {
     clienteId: run.clienteId,
-    // §6: SEMPRE a conta explícita do run — nunca `prepared.cliente`/`conta`
-    // auto-resolvida. Conta 5 nunca pode produzir snapshot da conta 6.
+    // SEMPRE a conta explícita do run — nunca auto-resolvida.
     clienteContaId: run.clienteContaId,
     marketplace: run.marketplace,
     itemId: item.identity.itemId,
     sku: item.identity.sku,
     titulo: item.identity.titulo,
     baseId: base ? base.id : null,
+    imageUrl: item.identity.image || null,
 
     price: valorProjetado(item, FIELDS.PRICE),
     listPrice: valorProjetado(item, FIELDS.LIST_PRICE),
@@ -101,14 +145,13 @@ function mapItemParaSnapshot({ item, run, base, observedAt }) {
     commissionRate: valorProjetado(item, FIELDS.COMMISSION_RATE),
     freight: valorProjetado(item, FIELDS.FREIGHT),
 
-    // Copiado do núcleo — nunca recalculado aqui (§10).
+    // Copiado do núcleo — nunca recalculado aqui.
     profit: item.margin.projected.profit,
     margin: item.margin.projected.margin,
     marginPercent: item.margin.projected.marginPercent,
     status: item.quality.status,
 
     confidenceLevel: item.quality.confidence,
-    // Só o que o schema M1 define — nunca o item inteiro (§13).
     quality: {
       confidence: item.quality.confidence,
       confidenceByField: item.quality.confidenceByField,
@@ -118,27 +161,23 @@ function mapItemParaSnapshot({ item, run, base, observedAt }) {
       statusLabel: item.quality.statusLabel,
       statusSeverity: item.quality.statusSeverity,
       statusReasons: item.quality.statusReasons,
+      // Meta usada na classificação — a leitura precisa saber com qual meta
+      // o status projetado foi julgado.
+      targetMargin: item.margin.target ? item.margin.target.marginTarget : null,
+      evidencias: evidenciasProjetadas(item),
+      faltantesMeliApi: item.diagnostico ? item.diagnostico.faltantesMeliApi || [] : [],
+      temCustoNaBase: item.diagnostico ? item.diagnostico.temCustoNaBase === true : null,
+      statusAnuncio: item.diagnostico ? item.diagnostico.statusAnuncio || null : null,
     },
-    // missing/assumed são os da margem PROJETADA (a única persistida) — nunca
-    // os da realizada.
     missing: item.margin.projected.missing,
     assumed: item.margin.projected.assumed,
     divergences: item.quality.divergences,
 
-    // observed_at: o mesmo `now` que o Motor carimbou em toda evidência
-    // MELI_API deste run (prepareWorkspaceContext → enrichBatch →
-    // aplicarEvidenciasProjetadas). É evidência real do Motor, nunca
-    // inventada (§14).
     observedAt,
-    // calculated_at: null → o repository/DB preenche com NOW() no momento do
-    // upsert (COALESCE($27, NOW()) em marginSnapshotRepository), que É o
-    // "momento do cálculo atual do processor" (§14).
+    // null → o repository preenche com NOW() (COALESCE) no momento do upsert.
     calculatedAt: null,
-    // source_updated_at: DECISÃO PENDENTE do plano (§8.2 da auditoria) — o
-    // body de /items?ids= do ML pode trazer `last_updated`, mas
-    // `meliApiEvidenceAdapter.aplicarEvidenciasProjetadas` não repassa esse
-    // campo no contrato hoje, e M3 optou por ZERO refatoração estrutural do
-    // Motor nesta rodada (§2 do prompt). Não inventar timestamp — fica null.
+    // DECISÃO PENDENTE do plano (§8.2): o adapter não repassa `last_updated`
+    // do ML no contrato; não inventar timestamp.
     sourceUpdatedAt: null,
 
     runId: run.id,
@@ -147,133 +186,233 @@ function mapItemParaSnapshot({ item, run, base, observedAt }) {
   };
 }
 
+function mensagemCurta(err) {
+  return String(err?.message || "Erro desconhecido.").slice(0, 500);
+}
+
 // ---------------------------------------------------------------------------
 // Processor
 // ---------------------------------------------------------------------------
 //
-// Assinatura compatível com o que marginSnapshotWorker.runOnce() já chama:
-// `processor(run, { db })`. `deps` aceita overrides de TODAS as peças
-// injetáveis (prepareWorkspaceContext, enrichBatch, upsertProjectionSnapshot,
-// updateRunProgress) — é assim que os testes evitam qualquer chamada real ao
-// Mercado Livre ou ao Postgres.
+// Assinatura compatível com marginSnapshotWorker: `processor(run, { db, signal,
+// logger })`. `deps` aceita override de TODAS as peças (Motor, adapter,
+// repositories, sleep, config) — é assim que os testes evitam ML/Postgres.
 async function processMarginSnapshotRun(run, deps = {}) {
   if (!run || !run.id) {
     throw new Error("processMarginSnapshotRun: run é obrigatório.");
   }
-  // §6: nunca depender de auto-resolução — o run já É a conta.
   if (!run.clienteContaId) {
     throw new Error("processMarginSnapshotRun: run.clienteContaId é obrigatório (nunca auto-resolver).");
   }
 
   const marketplace = String(run.marketplace || "").trim().toLowerCase();
   if (!MARKETPLACES_SUPORTADOS.includes(marketplace)) {
-    // Falha tipada/controlada (§7) — nunca tenta rodar um adapter errado.
-    // Propaga para o worker, que marca o run FAILED (mesmo caminho de
-    // qualquer erro estrutural, §17).
     throw new MarginSnapshotMarketplaceNaoSuportadoError(run.marketplace);
   }
 
   const db = deps.db || pool;
+  const logger = deps.logger || console;
+  const signal = deps.signal || null;
+  const config = deps.config || resolveMarginSnapshotConfig(deps.env);
+  const sleep = deps.sleep || esperar;
+  const clock = deps.clock || (() => Date.now());
   const prepareWorkspaceContext = deps.prepareWorkspaceContext || motorMargem.prepareWorkspaceContext;
   const enrichBatch = deps.enrichBatch || motorMargem.enrichBatch;
+  const listarIdsCatalogo = deps.listarIdsCatalogo || meliApi.listarIdsCatalogo;
   const upsertProjectionSnapshot = deps.upsertProjectionSnapshot || snapshotRepository.upsertProjectionSnapshot;
+  const markSnapshotsRefreshFailed = deps.markSnapshotsRefreshFailed || snapshotRepository.markSnapshotsRefreshFailed;
+  const markSnapshotsOutsideCatalog = deps.markSnapshotsOutsideCatalog || snapshotRepository.markSnapshotsOutsideCatalog;
   const updateRunProgress = deps.updateRunProgress || runRepository.updateRunProgress;
+  const mergeRunMetadata = deps.mergeRunMetadata || runRepository.mergeRunMetadata;
 
-  // Contexto resolvido UMA VEZ por run (§5): cliente/grant/Base, custos,
-  // Central de Vendas do período e agregação por MLB. Nunca repetido por
-  // lote. A conta é passada explicitamente — exigirContextoPronto (dentro de
-  // prepareWorkspaceContext) valida que ela pertence ao cliente e propaga
-  // qualquer erro estrutural (conta de outro cliente, marketplace
-  // incompatível, conta inativa) sem engolir.
+  const inicio = clock();
+  const LOG = `[marginSnapshot] run #${run.id} conta=${run.clienteContaId}`;
+  const stats = { retries: 0, rateLimitedRetries: 0, lotesFalhos: 0, itensNaoRetornados: 0, itensForaDoCatalogo: 0 };
+
+  function verificarParada() {
+    if (signal?.aborted) throw new MarginSnapshotStopError();
+  }
+
+  // Um run que deixou de estar `running` (reconciliado como stale por outra
+  // instância, M8) não pode continuar escrevendo: updateRunProgress devolve
+  // null quando o UPDATE ... WHERE status='running' não casa.
+  async function registrarProgresso(dados) {
+    const atualizado = await updateRunProgress({ runId: run.id, db, ...dados });
+    if (atualizado === null) {
+      throw erroTipado(
+        "MARGIN_SNAPSHOT_RUN_NAO_ESTA_MAIS_RUNNING",
+        "O run deixou de estar em execução (provável reconciliação por heartbeat); processamento interrompido."
+      );
+    }
+    return atualizado;
+  }
+
+  // ── 1. Contexto UMA VEZ, sem vendas (decisão 2) ─────────────────────────
+  // Conta explícita: exigirContextoPronto valida que ela pertence ao cliente,
+  // é do marketplace e está ativa — erro estrutural propaga (run failed).
   const prepared = await prepareWorkspaceContext(
     { clienteSlug: run.clienteSlug, clienteContaId: run.clienteContaId },
-    { ...deps, db }
+    { ...deps, db, carregarVendas: carregarVendasVazias, agregarPorMlb: agregadoVazio }
   );
-
-  // Timestamp único de observação do MELI_API para todo o run — é
-  // literalmente o `now` que o Motor carimba em cada evidência projetada
-  // (ver nota em mapItemParaSnapshot).
+  verificarParada();
   const observedAt = isoOrNull(prepared.now);
 
-  const limit = BATCH_SIZE;
-  let offset = run.cursorOffset || 0;
-  let processedItems = run.processedItems || 0;
-  let successItems = run.successItems || 0;
-  let failedItems = run.failedItems || 0;
-  let totalItensMl = run.totalItems ?? null;
-
-  // Loop de lotes — SEMPRE sequencial (§22: nunca Promise.all do catálogo
-  // inteiro, nunca paralelizar lotes). Continua enquanto offset < total do
-  // catálogo real do ML — nunca um `for` com teto hardcoded (§9), nunca o
-  // clamp de 200 de RESUMO_MAX_ITENS_TETO (§4/§28).
-  // eslint-disable-next-line no-constant-condition
-  while (totalItensMl === null || offset < totalItensMl) {
-    // Falha de LOTE (fetch de catálogo/detalhe no ML) é estrutural — nunca
-    // capturada aqui. Propaga, o worker marca o run FAILED (§17: "não
-    // transformar erro estrutural em 5.000 missing").
-    const resultado = await enrichBatch(prepared, { offset, limit }, { ...deps, db });
-    totalItensMl = resultado.totalItensMl;
-
-    if (!resultado.itens.length) {
-      // Lote vazio encerra de forma segura (§9/§21) — sem avançar o cursor
-      // (nada foi persistido), mas ainda registra o total/heartbeat mais
-      // recente conhecido.
-      await updateRunProgress({
-        runId: run.id,
-        processedItems,
-        successItems,
-        failedItems,
-        cursorOffset: offset,
-        totalItems: totalItensMl,
-        db,
-      });
-      break;
+  // ── 2. Catálogo inteiro (scan) com retry ────────────────────────────────
+  const listagem = await executarComRetry(
+    () => listarIdsCatalogo(
+      { clienteId: prepared.cliente.id, mlUserId: prepared.mlUserId, maxItens: config.maxCatalogItems },
+      deps.mlFetchCatalogo
+    ),
+    {
+      config, sleep, signal,
+      onRetry: ({ tentativa, delayMs, classificacao }) => {
+        stats.retries += 1;
+        if (classificacao.rateLimited) stats.rateLimitedRetries += 1;
+        logger.warn?.(`${LOG} listagem do catálogo: nova tentativa ${tentativa + 1} em ${delayMs}ms (status=${classificacao.status ?? "rede"})`);
+      },
     }
+  );
+  if (!listagem.ok) {
+    // Sem catálogo não existe lote para processar: falha estrutural do run.
+    const err = erroTipado(
+      listagem.error?.code || "MARGIN_SNAPSHOT_CATALOGO_FALHOU",
+      `Falha ao listar o catálogo após ${listagem.attempts} tentativa(s): ${mensagemCurta(listagem.error)}`
+    );
+    throw err;
+  }
 
-    for (const item of resultado.itens) {
-      processedItems += 1;
-      try {
-        // §18: item UNVALIDATED (dado ausente, sem exceção) é um snapshot
-        // válido — persiste normalmente, conta como sucesso. Só uma exceção
-        // real (falha técnica) cai no catch abaixo.
-        const dados = mapItemParaSnapshot({ item, run, base: prepared.base, observedAt });
-        await upsertProjectionSnapshot(dados, db);
-        successItems += 1;
-      } catch (err) {
-        // §17/§19: erro isolado de item nunca derruba o lote nem apaga o
-        // snapshot anterior — o UPSERT desse item simplesmente não
-        // aconteceu; a linha antiga (se existir) permanece intocada.
-        failedItems += 1;
-        (deps.logger || console).error?.(
-          `[marginSnapshot] run #${run.id} — item ${item?.identity?.itemId || "?"} falhou ao persistir snapshot:`,
-          err?.message
+  const ids = listagem.value.ids;
+  const total = ids.length;
+  logger.log?.(`${LOG} catálogo listado: ${total} item(ns) (ativos=${listagem.value.totalAtivos ?? "?"}, pausados=${listagem.value.totalPausados ?? "?"})`);
+
+  // Só contadores e ids — nunca payload do ML, token ou dado financeiro.
+  function resumoMetadata() {
+    return {
+      processor: {
+        catalogo: { total, ativos: listagem.value.totalAtivos ?? null, pausados: listagem.value.totalPausados ?? null },
+        retries: stats.retries,
+        rateLimitedRetries: stats.rateLimitedRetries,
+        lotesFalhos: stats.lotesFalhos,
+        itensNaoRetornados: stats.itensNaoRetornados,
+        itensForaDoCatalogo: stats.itensForaDoCatalogo,
+        duracaoMs: clock() - inicio,
+      },
+    };
+  }
+
+  let processedItems = 0;
+  let successItems = 0;
+  let failedItems = 0;
+  let falhasConsecutivas = 0;
+
+  await registrarProgresso({ processedItems, successItems, failedItems, cursorOffset: 0, totalItems: total });
+
+  // ── 3. Lotes sequenciais ────────────────────────────────────────────────
+  // Nunca Promise.all de lotes; nunca teto de 200. Um lote termina (sucesso
+  // ou falha definitiva) antes do próximo começar.
+  for (let offset = 0; offset < total; offset += BATCH_SIZE) {
+    verificarParada();
+    const loteIds = ids.slice(offset, offset + BATCH_SIZE);
+
+    const tentativa = await executarComRetry(
+      () => enrichBatch(prepared, { itemIds: loteIds }, { ...deps, db }),
+      {
+        config, sleep, signal,
+        onRetry: ({ tentativa: n, delayMs, classificacao }) => {
+          stats.retries += 1;
+          if (classificacao.rateLimited) stats.rateLimitedRetries += 1;
+          logger.warn?.(`${LOG} lote offset=${offset}: nova tentativa ${n + 1} em ${delayMs}ms (status=${classificacao.status ?? "rede"}${classificacao.rateLimited ? ", rate limit" : ""})`);
+        },
+      }
+    );
+
+    if (tentativa.ok) {
+      falhasConsecutivas = 0;
+      const retornados = new Set();
+      for (const item of tentativa.value.itens || []) {
+        const itemId = item?.identity?.itemId ? String(item.identity.itemId) : "";
+        // O multiget pode devolver entrada de erro sem id (item excluído entre
+        // a listagem e o detalhe): não é snapshot, é "não retornado" abaixo.
+        if (!itemId || !loteIds.includes(itemId) || retornados.has(itemId)) continue;
+        retornados.add(itemId);
+        try {
+          const dados = mapItemParaSnapshot({ item, run, base: prepared.base, observedAt });
+          await upsertProjectionSnapshot(dados, db);
+          successItems += 1;
+        } catch (err) {
+          // Falha técnica isolada de persistência: a linha anterior (se
+          // existir) fica intocada — o UPSERT simplesmente não aconteceu.
+          failedItems += 1;
+          logger.error?.(`${LOG} item ${itemId} falhou ao persistir snapshot: ${mensagemCurta(err)}`);
+        }
+      }
+
+      const naoRetornados = loteIds.filter((id) => !retornados.has(id));
+      if (naoRetornados.length) {
+        stats.itensNaoRetornados += naoRetornados.length;
+        failedItems += naoRetornados.length;
+        await markSnapshotsRefreshFailed({
+          clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
+          itemIds: naoRetornados, runId: run.id,
+          lastError: "Item listado no catálogo, mas não retornado pelo detalhe do Mercado Livre nesta leitura.",
+          db,
+        });
+      }
+    } else {
+      // Falha DEFINITIVA do lote: falha parcial do run, não exceção. As
+      // linhas que já existiam ficam com valores anteriores + status failed.
+      falhasConsecutivas += 1;
+      stats.lotesFalhos += 1;
+      failedItems += loteIds.length;
+      const motivo = `Lote não pôde ser recalculado (${tentativa.motivo}, ${tentativa.attempts} tentativa(s)): ${mensagemCurta(tentativa.error)}`;
+      logger.error?.(`${LOG} lote offset=${offset} falhou definitivamente: ${motivo}`);
+      await markSnapshotsRefreshFailed({
+        clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
+        itemIds: loteIds, runId: run.id, lastError: motivo, db,
+      });
+
+      if (falhasConsecutivas >= config.maxConsecutiveBatchFailures) {
+        processedItems += loteIds.length;
+        await registrarProgresso({ processedItems, successItems, failedItems, cursorOffset: offset + loteIds.length, totalItems: total });
+        await mergeRunMetadata({ runId: run.id, patch: resumoMetadata(), db });
+        throw erroTipado(
+          "MARGIN_SNAPSHOT_LOTES_FALHANDO",
+          `${falhasConsecutivas} lote(s) seguidos falharam; run interrompido. Último erro: ${mensagemCurta(tentativa.error)}`
         );
       }
     }
 
-    // Cursor só avança DEPOIS de todo o lote persistido (§16: "não avançar
-    // cursor antes de persistir").
-    const proximoOffset = offset + limit;
+    processedItems += loteIds.length;
+    // Cursor só avança DEPOIS de todo o lote persistido/marcado. O mesmo
+    // UPDATE renova heartbeat_at (é o heartbeat "por lote").
+    await registrarProgresso({ processedItems, successItems, failedItems, cursorOffset: offset + loteIds.length, totalItems: total });
 
-    // updateRunProgress também atualiza heartbeat_at = NOW() na mesma query
-    // (marginSnapshotRunRepository.js) — é o heartbeat "por lote" do §21;
-    // não existe uma segunda chamada a touchHeartbeat aqui para não gastar
-    // um round-trip extra por lote fazendo a mesma coisa duas vezes.
-    await updateRunProgress({
-      runId: run.id,
-      processedItems,
-      successItems,
-      failedItems,
-      cursorOffset: proximoOffset,
-      totalItems: totalItensMl,
-      db,
-    });
-
-    if (proximoOffset >= totalItensMl) break;
-    offset = proximoOffset;
+    if (config.batchPauseMs > 0 && offset + BATCH_SIZE < total) {
+      await sleep(config.batchPauseMs, signal);
+    }
   }
 
-  return { processedItems, successItems, failedItems, totalItensMl, cursorOffset: offset };
+  // ── 4. Itens fora do catálogo (listagem completa e bem-sucedida) ────────
+  const foraDoCatalogo = await markSnapshotsOutsideCatalog({
+    clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
+    catalogItemIds: ids, runId: run.id, db,
+  });
+  stats.itensForaDoCatalogo = foraDoCatalogo.length;
+
+  await mergeRunMetadata({ runId: run.id, patch: resumoMetadata(), db });
+
+  // Nenhum item calculado num catálogo não vazio = nada foi atualizado: o
+  // run não pode terminar "completed" fingindo sucesso.
+  if (total > 0 && successItems === 0) {
+    throw erroTipado(
+      "MARGIN_SNAPSHOT_NENHUM_ITEM_CALCULADO",
+      `Nenhum dos ${total} item(ns) do catálogo pôde ser recalculado neste run.`
+    );
+  }
+
+  logger.log?.(`${LOG} concluído: ${successItems}/${total} ok, ${failedItems} falha(s), ${stats.retries} retry(s), ${stats.itensForaDoCatalogo} fora do catálogo, ${clock() - inicio}ms`);
+
+  return { processedItems, successItems, failedItems, totalItensMl: total, cursorOffset: total, stats };
 }
 
 module.exports = {
@@ -281,5 +420,8 @@ module.exports = {
   MARKETPLACES_SUPORTADOS,
   MarginSnapshotMarketplaceNaoSuportadoError,
   mapItemParaSnapshot,
+  evidenciasProjetadas,
+  carregarVendasVazias,
+  agregadoVazio,
   processMarginSnapshotRun,
 };

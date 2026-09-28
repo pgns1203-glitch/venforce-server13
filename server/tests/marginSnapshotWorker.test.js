@@ -142,6 +142,55 @@ cenario("runOnce processa só 1 run por chamada — chamar de novo processa o pr
   assert.strictEqual(r3.claimed, false, "não há um terceiro run — idle, não erro");
 });
 
+// ── M3: loop de produção (start/kick/stop) ──────────────────────────────
+
+cenario("start(): faz pickup de run QUEUED sem chamada explícita; stop() limpa o timer e drena", async () => {
+  const db = novoDb();
+  await runService.enqueueMarginSnapshotRun({ clienteId: 1, clienteSlug: "cliente-a", clienteContaId: 5, reason: "manual_refresh", db });
+  const processados = [];
+  const worker = createMarginSnapshotWorker({ processor: async (run) => { processados.push(run.id); }, db, logger: { error() {} } });
+
+  worker.start(60000); // intervalo longo: o 1º tick é imediato (setImmediate)
+  for (let i = 0; i < 20 && !processados.length; i += 1) await new Promise((r) => setImmediate(r));
+  assert.deepStrictEqual(processados, [1]);
+  assert.strictEqual(worker.status().running, true);
+
+  await worker.stop();
+  assert.strictEqual(worker.status().running, false, "timer limpo no stop");
+  assert.strictEqual(worker.status().ativos, 0);
+});
+
+cenario("kick(): um run enfileirado depois do start é processado sem esperar o intervalo", async () => {
+  const db = novoDb();
+  const processados = [];
+  const worker = createMarginSnapshotWorker({ processor: async (run) => { processados.push(run.id); }, db, logger: { error() {} } });
+  worker.start(60000);
+  await new Promise((r) => setImmediate(r));
+
+  const { run } = await runService.enqueueMarginSnapshotRun({ clienteId: 1, clienteSlug: "cliente-a", clienteContaId: 5, reason: "manual_refresh", db });
+  worker.kick();
+  for (let i = 0; i < 20 && !processados.length; i += 1) await new Promise((r) => setImmediate(r));
+  assert.deepStrictEqual(processados, [run.id]);
+  await worker.stop();
+});
+
+cenario("runOnce() saturado (limite atingido) não reivindica run novo", async () => {
+  const db = novoDb();
+  await runService.enqueueMarginSnapshotRun({ clienteId: 1, clienteSlug: "cliente-a", clienteContaId: 5, reason: "manual_refresh", db });
+  await runService.enqueueMarginSnapshotRun({ clienteId: 1, clienteSlug: "cliente-a", clienteContaId: 6, reason: "manual_refresh", db });
+  let liberar;
+  const worker = createMarginSnapshotWorker({
+    processor: () => new Promise((r) => { liberar = r; }), db, maxConcurrentRuns: 1, logger: { error() {} },
+  });
+  const primeiro = worker.runOnce();
+  await new Promise((r) => setImmediate(r));
+  const segundo = await worker.runOnce();
+  assert.strictEqual(segundo.saturated, true);
+  assert.strictEqual(db.runs.filter((r) => r.status === "queued").length, 1);
+  liberar();
+  await primeiro;
+});
+
 // ── processor precisa ser injetável e é obrigatório ─────────────────────
 
 cenario("createMarginSnapshotWorker exige um processor (nenhum default real de ML)", () => {

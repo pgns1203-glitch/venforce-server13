@@ -178,19 +178,62 @@ async function updateRunProgress({
 // serializa duas chamadas concorrentes na mesma linha — a segunda nunca
 // vê o candidato que a primeira já reivindicou (§16: "não é necessário
 // nenhum mecanismo novo de lock" além disto).
-async function claimNextQueuedRun({ db = pool } = {}) {
+//
+// M3 — `excludeContaIds`: contas que ESTE processo já está processando. O
+// índice único já impede 2 runs ativos da mesma conta, mas um run declarado
+// stale por heartbeat (M8) pode ter sido substituído enquanto o processo
+// original ainda executa; excluir as contas locais garante que um mesmo
+// processo nunca rode lotes de uma conta em paralelo. Array vazio = sem
+// exclusão (`<> ALL('{}')` é sempre verdadeiro).
+async function claimNextQueuedRun({ db = pool, excludeContaIds = [] } = {}) {
+  const excluir = (Array.isArray(excludeContaIds) ? excludeContaIds : [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id));
   const result = await db.query(
     `UPDATE margin_snapshot_runs
         SET status = 'running', started_at = NOW(), heartbeat_at = NOW(), updated_at = NOW()
       WHERE id = (
         SELECT id FROM margin_snapshot_runs
          WHERE status = 'queued'
+           AND cliente_conta_id <> ALL($1::bigint[])
          ORDER BY created_at ASC, id ASC
          FOR UPDATE SKIP LOCKED
          LIMIT 1
       )
+        AND status = 'queued'
       RETURNING *`,
-    []
+    [excluir]
+  );
+  return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
+}
+
+// M3 — metadado de observabilidade do run (contadores de retry/429, lotes
+// falhos, duração). Merge raso (`||`) só enquanto running. Nunca aceita campo
+// sensível (mesma guarda de centralVendasSyncRunService.assertNoSecrets).
+const CAMPOS_SENSIVEIS = new Set([
+  "access_token", "refresh_token", "api_key", "apikey", "password",
+  "authorization", "token", "secret", "client_secret",
+]);
+
+function assertNoSecrets(obj, caminho = "metadata_json") {
+  if (!obj || typeof obj !== "object") return;
+  for (const [key, value] of Object.entries(obj)) {
+    if (CAMPOS_SENSIVEIS.has(String(key).toLowerCase())) {
+      throw new Error(`Tentativa de persistir campo sensivel "${key}" em ${caminho}.`);
+    }
+    if (value && typeof value === "object") assertNoSecrets(value, `${caminho}.${key}`);
+  }
+}
+
+async function mergeRunMetadata({ runId, patch, db = pool }) {
+  if (!runId) throw new Error("mergeRunMetadata: runId é obrigatório.");
+  assertNoSecrets(patch);
+  const result = await db.query(
+    `UPDATE margin_snapshot_runs
+        SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $2::jsonb, updated_at = NOW()
+      WHERE id = $1 AND status = 'running'
+      RETURNING *`,
+    [runId, JSON.stringify(patch || {})]
   );
   return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
 }
@@ -217,6 +260,8 @@ module.exports = {
   updateRunProgress,
   claimNextQueuedRun,
   touchHeartbeat,
+  mergeRunMetadata,
+  assertNoSecrets,
   sanitizeRun,
   TRANSICOES,
 };

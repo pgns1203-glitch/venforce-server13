@@ -72,8 +72,8 @@ async function getRunStatus({ runId, clienteContaId, db = pool }) {
 // ---------------------------------------------------------------------------
 // Claim/lifecycle — usados pelo worker (M2, seção C do prompt).
 // ---------------------------------------------------------------------------
-async function claimNextQueuedRun(db = pool) {
-  return runRepo.claimNextQueuedRun({ db });
+async function claimNextQueuedRun(db = pool, { excludeContaIds = [] } = {}) {
+  return runRepo.claimNextQueuedRun({ db, excludeContaIds });
 }
 
 async function markRunCompleted(runId, db = pool) {

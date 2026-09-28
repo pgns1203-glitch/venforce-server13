@@ -88,8 +88,10 @@ function makeMarginSnapshotFakeDb() {
     // garantia que o Postgres dá com uma única instrução UPDATE: nenhuma
     // outra chamada pode "enxergar" o candidato entre o SELECT e o UPDATE.
     if (sql.includes("UPDATE margin_snapshot_runs") && sql.includes("FOR UPDATE SKIP LOCKED")) {
+      // M3: $1 = contas excluídas do claim (em execução neste processo).
+      const excluir = new Set((Array.isArray(params[0]) ? params[0] : []).map(Number));
       const candidatos = runs
-        .filter((r) => r.status === "queued")
+        .filter((r) => r.status === "queued" && !excluir.has(Number(r.cliente_conta_id)))
         .sort((a, b) => a.created_at - b.created_at || a.id - b.id);
       const row = candidatos[0];
       if (!row) return { rows: [] };
@@ -117,6 +119,16 @@ function makeMarginSnapshotFakeDb() {
       return { rows: [{ ...row }] };
     }
 
+    // ── M3: metadata merge (jsonb ||) ────────────────────────────────────
+    if (sql.includes("UPDATE margin_snapshot_runs") && sql.includes("SET metadata_json")) {
+      const [runId, patchJson] = params;
+      const row = runs.find((r) => r.id === runId && r.status === "running");
+      if (!row) return { rows: [] };
+      row.metadata_json = { ...(row.metadata_json || {}), ...JSON.parse(patchJson || "{}") };
+      row.updated_at = new Date();
+      return { rows: [{ ...row }] };
+    }
+
     if (sql.includes("UPDATE margin_snapshot_runs") && sql.includes("SET processed_items")) {
       const [runId, processedItems, successItems, failedItems, cursorOffset, totalItems] = params;
       const row = runs.find((r) => r.id === runId && r.status === "running");
@@ -138,6 +150,7 @@ function makeMarginSnapshotFakeDb() {
         confidenceLevel, qualityJson, missingJson, assumedJson, divergencesJson,
         observedAt, calculatedAt, sourceUpdatedAt,
         runId, refreshStatus, lastError,
+        imageUrl,
       ] = params;
 
       let row = snapshots.find((r) =>
@@ -177,8 +190,37 @@ function makeMarginSnapshotFakeDb() {
       row.run_id = runId ?? null;
       row.refresh_status = refreshStatus;
       row.last_error = lastError ?? null;
+      row.image_url = imageUrl ?? null;
+      row.catalog_missing_since = null;
       row.updated_at = now;
       return { rows: [{ ...row }] };
+    }
+
+    // ── M3: falha parcial (preserva valores) ─────────────────────────────
+    if (sql.includes("UPDATE margin_projection_snapshots") && sql.includes("SET refresh_status = 'failed'")) {
+      const [clienteId, clienteContaId, marketplace, itemIds, lastError, runId] = params;
+      const alvo = new Set(itemIds);
+      const afetadas = snapshots.filter((r) => r.cliente_id === clienteId && r.cliente_conta_id === clienteContaId
+        && r.marketplace === marketplace && alvo.has(r.item_id));
+      for (const r of afetadas) {
+        r.refresh_status = "failed"; r.last_error = lastError ?? null; r.run_id = runId ?? null; r.updated_at = new Date();
+      }
+      return { rows: afetadas.map((r) => ({ item_id: r.item_id })) };
+    }
+
+    // ── M3: fora do catálogo (marca, nunca apaga) ────────────────────────
+    if (sql.includes("UPDATE margin_projection_snapshots") && sql.includes("SET catalog_missing_since = NOW()")) {
+      const [clienteId, clienteContaId, marketplace, catalogo, runId] = params;
+      const noCatalogo = new Set(catalogo);
+      const afetadas = snapshots.filter((r) => r.cliente_id === clienteId && r.cliente_conta_id === clienteContaId
+        && r.marketplace === marketplace && !r.catalog_missing_since && !noCatalogo.has(r.item_id));
+      const now = new Date();
+      for (const r of afetadas) {
+        r.catalog_missing_since = now; r.refresh_status = "stale";
+        r.last_error = "Item fora do catálogo (ativos + pausados) na última listagem completa.";
+        r.run_id = runId ?? null; r.updated_at = now;
+      }
+      return { rows: afetadas.map((r) => ({ item_id: r.item_id })) };
     }
 
     if (sql.includes("FROM margin_projection_snapshots") && sql.includes("item_id = $3")) {

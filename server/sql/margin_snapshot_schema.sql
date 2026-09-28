@@ -159,9 +159,23 @@ CREATE TABLE IF NOT EXISTS margin_projection_snapshots (
     CHECK (refresh_status IN ('fresh', 'stale', 'processing', 'failed', 'missing')),
   last_error TEXT,
 
+  -- M3: miniatura do anúncio (metadado de apresentação, mesmo body do
+  -- multiget /items?ids= que o Motor já lê — nunca entra em cálculo).
+  image_url TEXT,
+  -- M3: preenchido quando um run COMPLETOU a listagem do catálogo (ativos +
+  -- pausados) e este item não estava nela (encerrado/excluído no ML). A linha
+  -- não é apagada — só sai da leitura padrão da Central. Volta a NULL se o
+  -- item reaparecer num run posterior (o UPSERT limpa a coluna).
+  catalog_missing_since TIMESTAMPTZ,
+
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- M3: colunas aditivas para instalações que criaram a tabela com a versão M1
+-- deste arquivo. Idempotente (ADD COLUMN IF NOT EXISTS).
+ALTER TABLE margin_projection_snapshots ADD COLUMN IF NOT EXISTS image_url TEXT;
+ALTER TABLE margin_projection_snapshots ADD COLUMN IF NOT EXISTS catalog_missing_since TIMESTAMPTZ;
 
 -- Chave canônica (D6/§8.1 do plano) — nunca cliente_slug+MLB, sempre conta
 -- explícita. Suporta o UPSERT idempotente (§11) via ON CONFLICT.

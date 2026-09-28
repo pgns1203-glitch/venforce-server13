@@ -290,20 +290,90 @@ async function countProjectionSnapshots({ clienteContaId, marketplace = "meli", 
 // interpolado no SQL. Linhas fora do catálogo ficam fora da leitura padrão.
 // ---------------------------------------------------------------------------
 
-function montarFiltroSnapshots({ clienteId, clienteContaId, marketplace = "meli", incluirForaDoCatalogo = false }) {
+// Enums aceitos nos filtros (M6) — os mesmos CHECKs do schema. Valor fora
+// daqui nunca chega ao SQL (o service valida antes; o builder re-filtra).
+const STATUS_VALIDOS = ["HEALTHY", "LOW_MARGIN", "LOSS", "UNVALIDATED", "SUSPECT_DATA", "RECONCILING"];
+const REFRESH_STATUS_VALIDOS = ["fresh", "stale", "processing", "failed", "missing"];
+const CONFIANCA_VALIDOS = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"];
+
+// Busca v1 (§8.4 do plano): ILIKE substring depois do escopo por conta, sem
+// extensão nova (sem pg_trgm). `%`, `_` e `\` do usuário são escapados — a
+// busca é sempre literal.
+function padraoBusca(termo) {
+  return `%${String(termo).replace(/[\\%_]/g, "\\$&")}%`;
+}
+
+function montarFiltroSnapshots({
+  clienteId, clienteContaId, marketplace = "meli", incluirForaDoCatalogo = false, somenteForaDoCatalogo = false,
+  status = null, refreshStatus = null, confianca = null, busca = null,
+}) {
   if (!clienteId) throw new Error("montarFiltroSnapshots: clienteId é obrigatório.");
   if (!clienteContaId) throw new Error("montarFiltroSnapshots: clienteContaId é obrigatório.");
   const params = [clienteId, clienteContaId, marketplace];
   const condicoes = ["cliente_id = $1", "cliente_conta_id = $2", "marketplace = $3"];
-  if (!incluirForaDoCatalogo) condicoes.push("catalog_missing_since IS NULL");
+  if (somenteForaDoCatalogo) condicoes.push("catalog_missing_since IS NOT NULL");
+  else if (!incluirForaDoCatalogo) condicoes.push("catalog_missing_since IS NULL");
+
+  function lista(coluna, valores, validos) {
+    const aceitos = (Array.isArray(valores) ? valores : []).filter((v) => validos.includes(v));
+    if (!aceitos.length) return;
+    params.push(aceitos);
+    condicoes.push(`${coluna} = ANY($${params.length}::text[])`);
+  }
+  lista("status", status, STATUS_VALIDOS);
+  lista("refresh_status", refreshStatus, REFRESH_STATUS_VALIDOS);
+  lista("confidence_level", confianca, CONFIANCA_VALIDOS);
+
+  const termo = typeof busca === "string" ? busca.trim() : "";
+  if (termo) {
+    params.push(padraoBusca(termo));
+    const n = params.length;
+    condicoes.push(`(item_id ILIKE $${n} OR sku ILIKE $${n} OR titulo ILIKE $${n})`);
+  }
   return { condicoes, params };
+}
+
+// Ordenação por WHITELIST (M6). A chave pública vira um fragmento SQL fixo;
+// nada enviado pelo usuário é interpolado. Toda ordem termina em
+// `item_id ASC` (paginação estável) e manda nulos para o fim nos dois
+// sentidos (item sem margem nunca "vence" por falta de dado). `status` segue
+// a precedência de AÇÃO do Motor (core/marginStatus.STATUS_PRECEDENCE),
+// não a ordem alfabética.
+const ORDENACOES = {
+  margin_percent: "margin_percent",
+  profit: "profit",
+  status: "array_position(ARRAY['UNVALIDATED','SUSPECT_DATA','LOSS','LOW_MARGIN','RECONCILING','HEALTHY']::text[], status)",
+  updated_at: "updated_at",
+  calculated_at: "calculated_at",
+  titulo: "titulo",
+};
+
+// Aliases do contrato ao vivo (motorMargemService.ORDENACOES).
+const ALIASES_ORDENACAO = {
+  margem_asc: ["margin_percent", "ASC"],
+  margem_desc: ["margin_percent", "DESC"],
+  titulo_asc: ["titulo", "ASC"],
+};
+
+function resolverOrdenacao({ ordenacao = null, direcao = null } = {}) {
+  let chave = ordenacao ? String(ordenacao).trim() : "margin_percent";
+  let dir = direcao ? String(direcao).trim().toUpperCase() : null;
+  if (ALIASES_ORDENACAO[chave]) {
+    const [col, dirAlias] = ALIASES_ORDENACAO[chave];
+    chave = col;
+    dir = dir || dirAlias;
+  }
+  if (!Object.prototype.hasOwnProperty.call(ORDENACOES, chave)) return null;
+  if (!dir) dir = chave === "updated_at" || chave === "calculated_at" ? "DESC" : "ASC";
+  if (dir !== "ASC" && dir !== "DESC") return null;
+  return { chave, direcao: dir, orderBy: `${ORDENACOES[chave]} ${dir} NULLS LAST, item_id ASC` };
 }
 
 // Ordem padrão da leitura: piores margens primeiro (mesma intenção de
 // ORDENACOES.margem_asc do Motor ao vivo); sem margem vai para o fim; item_id
 // desempata para a paginação ser estável (nunca repete/pula item entre
 // páginas).
-const ORDEM_PADRAO = "margin_percent ASC NULLS LAST, item_id ASC";
+const ORDEM_PADRAO = resolverOrdenacao().orderBy;
 
 async function queryProjectionSnapshotsPage({ filtro, orderBy = ORDEM_PADRAO, limit, offset, db = pool }) {
   const params = [...filtro.params, limit, offset];
@@ -328,7 +398,44 @@ async function countProjectionSnapshotsFiltrado({ filtro, db = pool }) {
   return { total: Number(row.total || 0), ultimoCalculoEm: row.ultimo_calculo || null };
 }
 
+// KPIs (M6) — UMA agregação no banco sobre o escopo inteiro da conta (nunca
+// contando uma página em JS). Só os placares que a Central exibe: total,
+// contagem por status, frescor do snapshot e quantos têm margem calculável.
+async function summarizeProjectionSnapshots({ filtro, db = pool }) {
+  const porStatus = STATUS_VALIDOS
+    .map((s) => `COUNT(*) FILTER (WHERE status = '${s}')::int AS "status_${s}"`)
+    .join(",\n            ");
+  const porRefresh = ["fresh", "stale", "failed"]
+    .map((s) => `COUNT(*) FILTER (WHERE refresh_status = '${s}')::int AS "refresh_${s}"`)
+    .join(",\n            ");
+  const result = await db.query(
+    `/* ms:kpis */ SELECT COUNT(*)::int AS total,
+            ${porStatus},
+            ${porRefresh},
+            COUNT(*) FILTER (WHERE margin IS NOT NULL)::int AS com_margem,
+            MAX(calculated_at) AS ultimo_calculo
+       FROM margin_projection_snapshots
+      WHERE ${filtro.condicoes.join(" AND ")}`,
+    filtro.params
+  );
+  const row = result.rows[0] || {};
+  const n = (v) => Number(v || 0);
+  return {
+    total: n(row.total),
+    porStatus: Object.fromEntries(STATUS_VALIDOS.map((s) => [s, n(row[`status_${s}`])])),
+    porRefreshStatus: { fresh: n(row.refresh_fresh), stale: n(row.refresh_stale), failed: n(row.refresh_failed) },
+    comMargem: n(row.com_margem),
+    ultimoCalculoEm: row.ultimo_calculo || null,
+  };
+}
+
 module.exports = {
+  STATUS_VALIDOS,
+  REFRESH_STATUS_VALIDOS,
+  CONFIANCA_VALIDOS,
+  resolverOrdenacao,
+  padraoBusca,
+  summarizeProjectionSnapshots,
   ensureMarginSnapshotTables,
   upsertProjectionSnapshot,
   markSnapshotsRefreshFailed,

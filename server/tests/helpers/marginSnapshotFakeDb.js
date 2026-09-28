@@ -51,23 +51,47 @@ function avaliarCondicao(cond, row, params) {
 }
 
 function filtrarPorWhere(sql, linhas, params) {
-  const where = sql.match(/WHERE ([\s\S]+?)(?:\s+ORDER BY|\s+GROUP BY|\s+LIMIT|$)/);
+  // O WHERE principal é o que vem depois do FROM (os `FILTER (WHERE …)` dos
+  // KPIs ficam antes dele).
+  const where = sql.match(/FROM margin_projection_snapshots\s+WHERE ([\s\S]+?)(?:\s+ORDER BY|\s+GROUP BY|\s+LIMIT|$)/);
   if (!where) return linhas;
   const condicoes = where[1].split(/\s+AND\s+/).map((c) => c.trim());
   return linhas.filter((row) => condicoes.every((c) => avaliarCondicao(c, row, params)));
 }
 
+// Divide por vírgula fora de parênteses/colchetes (ARRAY[...] tem vírgulas).
+function dividirNivelZero(texto) {
+  const partes = [];
+  let nivel = 0;
+  let atual = "";
+  for (const ch of texto) {
+    if (ch === "(" || ch === "[") nivel += 1;
+    if (ch === ")" || ch === "]") nivel -= 1;
+    if (ch === "," && nivel === 0) { partes.push(atual); atual = ""; } else atual += ch;
+  }
+  if (atual.trim()) partes.push(atual);
+  return partes;
+}
+
 function ordenarPorOrderBy(sql, linhas) {
   const m = sql.match(/ORDER BY ([\s\S]+?)\s+LIMIT/);
   if (!m) return linhas;
-  const chaves = m[1].split(",").map((parte) => {
-    const mm = parte.trim().match(/^(\w+) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
-    if (!mm) throw new Error(`marginSnapshotFakeDb: ORDER BY não suportado -> ${parte}`);
-    return { coluna: mm[1], dir: mm[2], nulls: mm[3] || (mm[2] === "ASC" ? "LAST" : "FIRST") };
+  const chaves = dividirNivelZero(m[1]).map((parte) => {
+    const texto = parte.trim();
+    // array_position(ARRAY['A','B',...]::text[], coluna) — ranking por enum.
+    const ap = texto.match(/^array_position\(ARRAY\[([^\]]+)\]::text\[\], (\w+)\) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
+    if (ap) {
+      const ordem = ap[1].split(",").map((v) => v.trim().replace(/^'|'$/g, ""));
+      const idx = (row) => { const i = ordem.indexOf(row[ap[2]]); return i === -1 ? null : i + 1; };
+      return { valor: idx, dir: ap[3], nulls: ap[4] || (ap[3] === "ASC" ? "LAST" : "FIRST") };
+    }
+    const mm = texto.match(/^(\w+) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
+    if (!mm) throw new Error(`marginSnapshotFakeDb: ORDER BY não suportado -> ${texto}`);
+    return { valor: (row) => row[mm[1]], dir: mm[2], nulls: mm[3] || (mm[2] === "ASC" ? "LAST" : "FIRST") };
   });
   return linhas.slice().sort((a, b) => {
-    for (const { coluna, dir, nulls } of chaves) {
-      const va = a[coluna]; const vb = b[coluna];
+    for (const { valor, dir, nulls } of chaves) {
+      const va = valor(a); const vb = valor(b);
       const na = va === null || va === undefined; const nb = vb === null || vb === undefined;
       if (na && nb) continue;
       if (na) return nulls === "LAST" ? 1 : -1;
@@ -96,6 +120,15 @@ function makeMarginSnapshotFakeDb() {
       const offset = params[params.length - 1];
       const linhas = ordenarPorOrderBy(sql, filtrarPorWhere(sql, snapshots, params));
       return { rows: linhas.slice(offset, offset + limit).map((r) => ({ ...r })) };
+    }
+    if (sql.includes("/* ms:kpis */")) {
+      const linhas = filtrarPorWhere(sql, snapshots, params);
+      const row = { total: linhas.length, com_margem: linhas.filter((r) => r.margin !== null && r.margin !== undefined).length };
+      for (const m of sql.matchAll(/COUNT\(\*\) FILTER \(WHERE (\w+) = '([^']+)'\)::int AS "(\w+)"/g)) {
+        row[m[3]] = linhas.filter((r) => r[m[1]] === m[2]).length;
+      }
+      row.ultimo_calculo = linhas.reduce((max, r) => (!max || r.calculated_at > max ? r.calculated_at : max), null);
+      return { rows: [row] };
     }
     if (sql.includes("/* ms:count */")) {
       const linhas = filtrarPorWhere(sql, snapshots, params);

@@ -59,6 +59,47 @@ function paginacao({ page, limit }) {
 }
 
 // ---------------------------------------------------------------------------
+// Filtros e ordenação da lista (M6) — validados aqui, montados no builder do
+// repository. Valor fora do enum/whitelist = 400 explícito, nunca ignorado
+// em silêncio (um filtro ignorado mostraria "tudo" como se fosse o filtro).
+// ---------------------------------------------------------------------------
+
+const BUSCA_MAX = 100;
+
+function listaDeEnum(raw, validos, { maiusculo = true, nome }) {
+  if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+  const valores = String(raw).split(",").map((v) => v.trim()).filter(Boolean).map((v) => (maiusculo ? v.toUpperCase() : v.toLowerCase()));
+  const invalidos = valores.filter((v) => !validos.includes(v));
+  if (invalidos.length) {
+    throw api.criarErroHttp(400, `Filtro "${nome}" inválido. Aceitos: ${validos.join(", ")}.`, "FILTRO_INVALIDO");
+  }
+  return Array.from(new Set(valores));
+}
+
+function lerFiltros(params = {}, repo = snapshotRepository) {
+  const buscaBruta = params.busca ?? params.q ?? null;
+  const busca = typeof buscaBruta === "string" ? buscaBruta.trim().slice(0, BUSCA_MAX) : null;
+  return {
+    status: listaDeEnum(params.status, repo.STATUS_VALIDOS, { nome: "status" }),
+    refreshStatus: listaDeEnum(params.refreshStatus, repo.REFRESH_STATUS_VALIDOS, { maiusculo: false, nome: "refreshStatus" }),
+    confianca: listaDeEnum(params.confianca, repo.CONFIANCA_VALIDOS, { nome: "confianca" }),
+    busca: busca || null,
+  };
+}
+
+function lerOrdenacao(params = {}, repo = snapshotRepository) {
+  const ordem = repo.resolverOrdenacao({ ordenacao: params.ordenacao, direcao: params.direcao });
+  if (!ordem) {
+    throw api.criarErroHttp(
+      400,
+      "Ordenação inválida. Aceitas: margin_percent, profit, status, updated_at, calculated_at, titulo (ASC|DESC).",
+      "ORDENACAO_INVALIDA"
+    );
+  }
+  return ordem;
+}
+
+// ---------------------------------------------------------------------------
 // Estado da leitura da conta
 // ---------------------------------------------------------------------------
 
@@ -93,8 +134,27 @@ async function obterResumo({ clienteSlug, clienteContaId }, deps = {}) {
   if (!leituraHabilitada({ clienteSlug }, env)) {
     return { ok: true, habilitado: false, modo: "legacy" };
   }
+  const db = deps.db || pool;
+  const repo = deps.snapshotRepository || snapshotRepository;
   const { cliente, conta } = await api.resolverContaDoCliente({ clienteSlug, clienteContaId }, deps);
-  const { estado, contagem, runAtivo, ultimoRun } = await carregarEstado({ cliente, conta }, deps);
+  const { estado, contagem, runAtivo, ultimoRun, filtro } = await carregarEstado({ cliente, conta }, deps);
+
+  // KPIs: agregação no banco sobre a conta inteira (independe de página ou
+  // filtro da lista). `missing` → null: nunca placar zerado fingindo leitura.
+  let kpis = null;
+  let foraDoCatalogo = null;
+  if (estado === "ready") {
+    const filtroFora = repo.montarFiltroSnapshots({
+      clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, somenteForaDoCatalogo: true,
+    });
+    const [agregado, fora] = await Promise.all([
+      repo.summarizeProjectionSnapshots({ filtro, db }),
+      repo.countProjectionSnapshotsFiltrado({ filtro: filtroFora, db }),
+    ]);
+    const { ultimoCalculoEm, ...placar } = agregado;
+    kpis = placar;
+    foraDoCatalogo = fora.total;
+  }
 
   return {
     ok: true,
@@ -109,7 +169,9 @@ async function obterResumo({ clienteSlug, clienteContaId }, deps = {}) {
     snapshot: {
       totalItens: estado === "missing" ? null : contagem.total,
       ultimoCalculoEm: contagem.ultimoCalculoEm,
+      foraDoCatalogo,
     },
+    kpis,
     refresh: {
       runAtivo: api.runPublico(runAtivo),
       ultimoRun: api.runPublico(ultimoRun),
@@ -313,9 +375,15 @@ async function listarItens(params = {}, deps = {}) {
 
   const db = deps.db || pool;
   const repo = deps.snapshotRepository || snapshotRepository;
+  // Filtros/ordenação validados ANTES de qualquer consulta.
+  const filtros = lerFiltros(params, repo);
+  const ordem = lerOrdenacao(params, repo);
   const { cliente, conta } = await api.resolverContaDoCliente({ clienteSlug, clienteContaId }, deps);
   const pag = paginacao(params);
-  const { estado, runAtivo, ultimoRun, filtro } = await carregarEstado({ cliente, conta }, deps);
+  const { estado, runAtivo, ultimoRun } = await carregarEstado({ cliente, conta }, deps);
+  const filtro = repo.montarFiltroSnapshots({
+    clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, ...filtros,
+  });
 
   const base = {
     ok: true,
@@ -324,6 +392,8 @@ async function listarItens(params = {}, deps = {}) {
     conta,
     marketplace: MARKETPLACE,
     estado,
+    filtros,
+    ordenacao: { chave: ordem.chave, direcao: ordem.direcao },
     refresh: { runAtivo: api.runPublico(runAtivo), ultimoRun: api.runPublico(ultimoRun) },
   };
 
@@ -339,7 +409,7 @@ async function listarItens(params = {}, deps = {}) {
   }
 
   const [linhas, contagem] = await Promise.all([
-    repo.queryProjectionSnapshotsPage({ filtro, limit: pag.limit, offset: pag.offset, db }),
+    repo.queryProjectionSnapshotsPage({ filtro, orderBy: ordem.orderBy, limit: pag.limit, offset: pag.offset, db }),
     repo.countProjectionSnapshotsFiltrado({ filtro, db }),
   ]);
   const realizada = await carregarRealizadaDoPeriodo({ cliente, conta, dateFrom: params.dateFrom, dateTo: params.dateTo }, deps);

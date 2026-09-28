@@ -52,6 +52,12 @@ function createMarginSnapshotController({ service = defaultService, readService 
         limit: req.query.limit,
         dateFrom: req.query.dateFrom,
         dateTo: req.query.dateTo,
+        status: req.query.status,
+        refreshStatus: req.query.refreshStatus,
+        confianca: req.query.confianca,
+        busca: req.query.busca ?? req.query.q,
+        ordenacao: req.query.ordenacao,
+        direcao: req.query.direcao,
       });
       return responder(res, 200, data);
     } catch (err) {

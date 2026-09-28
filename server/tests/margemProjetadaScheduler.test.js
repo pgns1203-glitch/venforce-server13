@@ -18,6 +18,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const sched = require("../services/motorMargem/margemProjetadaScheduler");
+const orquestradorReal = require("../services/motorMargem/margemProjetadaOrquestradorService");
 
 let checks = 0;
 function ok(label, condition) {
@@ -538,6 +539,55 @@ async function run() {
     eq("boot C: agendou 1 timer", hC.timers.ativos().length, 1);
     await flush();
     eq("boot C: NÃO executou imediatamente no boot", [hC.chamadas.rodada.length, hC.chamadas.lock], [0, 0]);
+  }
+
+  // =========================================================================
+  // 13. Integração REAL com margemProjetadaOrquestradorService (PASSO 12) —
+  //     não o mock de chamadas.rodada usado no resto do arquivo: aqui o
+  //     scheduler chama o service de verdade (só sync/Motor/persist são
+  //     injetados), provando que a correção da brecha de escopo (validação
+  //     em validarEscopoClientes) não quebrou nem subset nem all através do
+  //     scheduler.
+  // =========================================================================
+  {
+    const contasFixture = [
+      { cliente_conta_id: 501, cliente_id: 1, marketplace: "meli", external_account_id: "MLUA", conta_ativa: true, conta_nome: "Conta 501", cliente_slug: "comprou_enviou_chegou", cliente_nome: "Cliente A", cliente_ativo: true, base_meli_vinculada: true },
+      { cliente_conta_id: 502, cliente_id: 2, marketplace: "meli", external_account_id: "MLUB", conta_ativa: true, conta_nome: "Conta 502", cliente_slug: "red_fish", cliente_nome: "Cliente B", cliente_ativo: true, base_meli_vinculada: true },
+      { cliente_conta_id: 503, cliente_id: 3, marketplace: "meli", external_account_id: "MLUC", conta_ativa: true, conta_nome: "Conta 503", cliente_slug: "zenite_loja", cliente_nome: "Cliente C", cliente_ativo: true, base_meli_vinculada: true },
+    ];
+    function depsOrquestradorReal(processadas) {
+      return {
+        listarContasElegiveis: async () => contasFixture,
+        sincronizar: async ({ clienteContaId }) => { processadas.push(clienteContaId); return { ok: true, codigo: "OK", totalEncontrados: 0, totalProcessados: 0, totalSalvos: 0 }; },
+        carregarWorkspace: async ({ clienteContaId }) => ({ cliente: { id: clienteContaId }, clienteContaId, totalItensMl: 0, itens: [] }),
+        persistirSnapshots: async () => ({ snapshotsCriados: 0, snapshotsAtualizados: 0, snapshotsFalhos: 0, erros: [] }),
+        logger: { log() {}, warn() {}, error() {} },
+      };
+    }
+    {
+      // Subset real: só as 2 contas do escopo são processadas, nunca a 3ª.
+      const processadas = [];
+      const h = makeScheduler({
+        env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_CLIENTES: "comprou_enviou_chegou,red_fish" },
+        rodada: (opts) => orquestradorReal.executarRodada(opts, depsOrquestradorReal(processadas)),
+      });
+      h.s.iniciar();
+      await h.disparar();
+      eq("integração real — subset: 1 rodada executada sem lançar", h.chamadas.rodada.length, 1);
+      eq("integração real — subset: só as 2 contas do escopo (nunca a 3ª)", processadas.sort(), [501, 502]);
+    }
+    {
+      // All real: as 3 contas elegíveis são processadas.
+      const processadas = [];
+      const h = makeScheduler({
+        env: { MARGEM_PROJETADA_SCHEDULER_ENABLED: "true", MARGEM_PROJETADA_SCHEDULER_ALL: "true" },
+        rodada: (opts) => orquestradorReal.executarRodada(opts, depsOrquestradorReal(processadas)),
+      });
+      h.s.iniciar();
+      await h.disparar();
+      eq("integração real — all: 1 rodada executada sem lançar", h.chamadas.rodada.length, 1);
+      eq("integração real — all: as 3 contas elegíveis processadas", processadas.sort(), [501, 502, 503]);
+    }
   }
 
   eq("nenhuma unhandled rejection", unhandled, 0);

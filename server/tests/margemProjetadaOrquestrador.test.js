@@ -231,7 +231,10 @@ async function run() {
       logger: logSilencioso,
     };
 
-    const resumo = await svc.executarRodada({}, depsOverride);
+    // clientes: null é EXPLÍCITO (carteira inteira autorizada pelo teste) —
+    // nunca omitido: desde a correção da brecha de escopo, omitir a chave
+    // (equivalente a undefined) é invalido (ESCOPO_OBRIGATORIO), não "sem filtro".
+    const resumo = await svc.executarRodada({ clientes: null }, depsOverride);
     ok("10: sequencial — conta A termina ANTES de conta B começar (sync-fim-501 antes de sync-inicio-502)",
       ordem.indexOf("sync-fim-501") < ordem.indexOf("sync-inicio-502"));
     ok("10: nenhuma chamada de conta B começou antes do fim de conta A", ordem.indexOf("motor-502") > ordem.indexOf("sync-fim-501"));
@@ -273,7 +276,10 @@ async function run() {
       logger: logSilencioso,
     };
 
-    const resumo = await svc.executarRodada({}, depsOverride);
+    // clientes: null é EXPLÍCITO (carteira inteira autorizada pelo teste) —
+    // nunca omitido: desde a correção da brecha de escopo, omitir a chave
+    // (equivalente a undefined) é invalido (ESCOPO_OBRIGATORIO), não "sem filtro".
+    const resumo = await svc.executarRodada({ clientes: null }, depsOverride);
     const resultadoA = resumo.resultados.find((r) => r.clienteContaId === 701);
     const resultadoB = resumo.resultados.find((r) => r.clienteContaId === 702);
 
@@ -344,7 +350,7 @@ async function run() {
       persistirSnapshots: async () => { throw new Error("NÃO deveria ser chamado em modo plano"); },
       logger: logSilencioso,
     };
-    const resumo = await svc.executarRodada({ plano: true }, depsOverride);
+    const resumo = await svc.executarRodada({ clientes: null, plano: true }, depsOverride);
     ok("14: modo --plano não lança (sync/Motor/persist nunca chamados)", resumo.plano === true);
     ok("14: modo --plano lista as contas elegíveis do plano", resumo.contasElegiveisPlano.length === 1);
     ok("14: modo --plano não produz 'resultados' de processamento", resumo.resultados.length === 0);
@@ -379,6 +385,78 @@ async function run() {
     let lancouAmbiguo = false;
     try { cli.validarEscopo({ plano: false, all: true, clientes: ["zenite_loja"] }); } catch (e) { lancouAmbiguo = e.codigo === "ESCOPO_AMBIGUO"; }
     ok("--all + --clientes juntos → ESCOPO_AMBIGUO", lancouAmbiguo);
+  }
+
+  // ── brecha de escopo fechada: --clientes= vazio NUNCA vira "carteira toda" ─
+  //
+  // Achado da missão anterior: parseArgs("--clientes=") produz clientes=[]
+  // (array, não null) — [] é truthy em JS, então a checagem antiga
+  // `!args.clientes` deixava passar a barreira e classificarContas tratava
+  // [] como "sem filtro" (mesmo efeito de null). Casos A-H do PASSO 3.
+  {
+    const codigoDe = (argv) => { try { cli.validarEscopo(cli.parseArgs(argv)); return null; } catch (e) { return e.codigo; } };
+
+    ok("A: --clientes=comprou_enviou_chegou → válido", codigoDe(["--clientes=comprou_enviou_chegou"]) === null);
+    ok("B: --clientes=a,b → válido", codigoDe(["--clientes=a,b"]) === null);
+    ok("C: --clientes= (vazio) → ESCOPO_OBRIGATORIO (brecha fechada)", codigoDe(["--clientes="]) === "ESCOPO_OBRIGATORIO");
+    ok("D: --clientes=,,, → ESCOPO_OBRIGATORIO (vazio após trim/filter)", codigoDe(["--clientes=,,,"]) === "ESCOPO_OBRIGATORIO");
+    ok("E: sem --clientes e sem --all → ESCOPO_OBRIGATORIO", codigoDe([]) === "ESCOPO_OBRIGATORIO");
+    ok("F: --all → válido", codigoDe(["--all"]) === null);
+    ok("G: --all + --clientes=a → ESCOPO_AMBIGUO", codigoDe(["--all", "--clientes=a"]) === "ESCOPO_AMBIGUO");
+    ok("H: --all + --clientes= (vazio) → ESCOPO_AMBIGUO, nunca vira --all silenciosamente", codigoDe(["--all", "--clientes="]) === "ESCOPO_AMBIGUO");
+
+    const argsEsp = cli.parseArgs(["--clientes= a , b "]);
+    ok('9: --clientes=" a , b " → ["a","b"] (trim)', JSON.stringify(argsEsp.clientes) === JSON.stringify(["a", "b"]));
+
+    const argsDup = cli.parseArgs(["--clientes=a,a,b"]);
+    ok("10: CLI mantém duplicados como estão (não deduplica — comportamento atual documentado, quem deduplica é o scheduler)", JSON.stringify(argsDup.clientes) === JSON.stringify(["a", "a", "b"]));
+  }
+
+  // ── validarEscopoClientes: fronteira do SERVICE (PASSO 11), independente
+  //    da CLI — mesmo se um chamador futuro pular a CLI, [] e undefined
+  //    continuam inválidos aqui. ────────────────────────────────────────────
+  {
+    let lancou;
+    lancou = null; try { svc.validarEscopoClientes(null); } catch (e) { lancou = e; }
+    ok("11: clientes=null → permitido (ALL)", lancou === null);
+
+    lancou = null; try { svc.validarEscopoClientes(["a"]); } catch (e) { lancou = e; }
+    ok("12: clientes=['a'] → permitido (subset)", lancou === null);
+
+    lancou = null; try { svc.validarEscopoClientes([]); } catch (e) { lancou = e; }
+    ok("13: clientes=[] → ESCOPO_OBRIGATORIO", lancou?.codigo === "ESCOPO_OBRIGATORIO");
+
+    lancou = null; try { svc.validarEscopoClientes(undefined); } catch (e) { lancou = e; }
+    ok("14: clientes=undefined → ESCOPO_OBRIGATORIO", lancou?.codigo === "ESCOPO_OBRIGATORIO");
+
+    lancou = null; try { svc.validarEscopoClientes("zenite_loja"); } catch (e) { lancou = e; }
+    ok("15: clientes='zenite_loja' (string) → ESCOPO_INVALIDO (rejeitado)", lancou?.codigo === "ESCOPO_INVALIDO");
+
+    lancou = null; try { svc.validarEscopoClientes({ slug: "zenite_loja" }); } catch (e) { lancou = e; }
+    ok("16: clientes={...} (object) → ESCOPO_INVALIDO (rejeitado)", lancou?.codigo === "ESCOPO_INVALIDO");
+
+    lancou = null; try { svc.validarEscopoClientes([""]); } catch (e) { lancou = e; }
+    ok("17: clientes=[''] (array só com string vazia) → NÃO promovido a 'all' (length>0 passa a checagem estrutural; conteúdo semântico é responsabilidade de quem monta a lista, já barrado na fronteira da CLI/scheduler)", lancou === null);
+  }
+
+  // ── 18: erro de escopo acontece ANTES de qualquer operação externa ───────
+  {
+    let listarChamado = false;
+    const depsOverride = {
+      listarContasElegiveis: async () => { listarChamado = true; return []; },
+      sincronizar: async () => { throw new Error("NÃO deveria ser chamado"); },
+      carregarWorkspace: async () => { throw new Error("NÃO deveria ser chamado"); },
+      persistirSnapshots: async () => { throw new Error("NÃO deveria ser chamado"); },
+      logger: logSilencioso,
+    };
+    let codigo = null;
+    try { await svc.executarRodada({ clientes: [] }, depsOverride); } catch (e) { codigo = e.codigo; }
+    ok("18: executarRodada({clientes:[]}) → ESCOPO_OBRIGATORIO, lançado ANTES de listarContasElegiveis", codigo === "ESCOPO_OBRIGATORIO" && listarChamado === false);
+
+    listarChamado = false;
+    codigo = null;
+    try { await svc.executarRodada({}, depsOverride); } catch (e) { codigo = e.codigo; }
+    ok("18b: executarRodada({}) (clientes omitido) → ESCOPO_OBRIGATORIO, nenhuma operação externa", codigo === "ESCOPO_OBRIGATORIO" && listarChamado === false);
   }
 
   // ── 17: nenhuma fórmula de margem/SQL de escrita nova é duplicada ────────

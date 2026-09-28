@@ -53,6 +53,14 @@ function parseArgs(argv) {
 
 // Barreira PASSO 15: sem --clientes e sem --all, recusa — nunca processa
 // (nem em modo --plano) a carteira inteira "por engano" de um argv vazio.
+//
+// "--clientes=" (nada depois do =) faz parseArgs produzir args.clientes=[]
+// (array vazio, não null) — []  é TRUTHY em JS, então checar só
+// `!args.clientes` deixava passar. temClientes exige length>0: só um array
+// com pelo menos 1 slug conta como escopo de fato informado. A checagem de
+// ambiguidade (--all + --clientes, mesmo vazio) continua na presença bruta
+// da flag — "--all --clientes=" é configuração confusa o bastante para
+// recusar, não para silenciosamente virar --all sozinho.
 function validarEscopo(args) {
   if (args.all && args.clientes) {
     throw Object.assign(
@@ -60,9 +68,10 @@ function validarEscopo(args) {
       { codigo: "ESCOPO_AMBIGUO" }
     );
   }
-  if (!args.all && !args.clientes) {
+  const temClientes = Array.isArray(args.clientes) && args.clientes.length > 0;
+  if (!args.all && !temClientes) {
     throw Object.assign(
-      new Error("Escopo obrigatório: informe --clientes=slug1,slug2 ou --all explicitamente. Sem filtro, esta CLI recusa a execução (proteção contra rodar a carteira inteira por acidente)."),
+      new Error("Escopo obrigatório: informe --clientes=slug1,slug2 (lista não vazia) ou --all explicitamente. Sem filtro, esta CLI recusa a execução (proteção contra rodar a carteira inteira por acidente)."),
       { codigo: "ESCOPO_OBRIGATORIO" }
     );
   }

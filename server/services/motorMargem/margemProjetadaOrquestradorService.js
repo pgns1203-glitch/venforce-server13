@@ -305,21 +305,54 @@ function montarResumoRodada({ total, elegiveis, ignoradas, resultados, inicio, f
   return resumo;
 }
 
+// Fronteira de segurança do service — independente da CLI. `clientes:[]` ou
+// omitido NUNCA pode equivaler a "carteira inteira": só `null` autoriza ALL,
+// e só autoriza porque o CHAMADOR decidiu isso explicitamente (CLI com
+// --all, ou scheduler com resolverEscopoScheduler tipo "all"). Um array
+// vazio nunca chega até aqui vindo da CLI (validarEscopo já barra) nem do
+// scheduler (resolverEscopoScheduler só entrega array não vazio ou null),
+// mas esta checagem existe para qualquer chamador futuro/direto do service —
+// nenhum caminho operacional deve depender só da barreira de fora.
+function validarEscopoClientes(clientes) {
+  if (clientes === null) return; // carteira inteira — autorizada explicitamente
+  if (Array.isArray(clientes)) {
+    if (clientes.length > 0) return; // subset válido
+    throw Object.assign(
+      new Error("clientes: [] não é um escopo válido — use null para carteira inteira (autorizado explicitamente pelo chamador) ou uma lista não vazia de slugs."),
+      { codigo: "ESCOPO_OBRIGATORIO" }
+    );
+  }
+  if (clientes === undefined) {
+    throw Object.assign(
+      new Error("clientes é obrigatório: passe null para carteira inteira ou uma lista não vazia de slugs. Omitir a chave nunca significa 'toda a carteira'."),
+      { codigo: "ESCOPO_OBRIGATORIO" }
+    );
+  }
+  throw Object.assign(
+    new Error(`clientes deve ser null ou um array de slugs — recebido ${typeof clientes}.`),
+    { codigo: "ESCOPO_INVALIDO" }
+  );
+}
+
 /**
  * Executa uma rodada do orquestrador manual.
  *
  * @param {object} opts
- * @param {string[]|null} [opts.clientes]  filtro por slug (mesmo contrato de
- *   centralVendasNoturnoService.classificarContas) — null/omisso = TODA a
- *   carteira elegível (o chamador, nunca este service, decide se isso é
- *   seguro: ver a barreira --all na CLI).
+ * @param {string[]|null} opts.clientes  OBRIGATÓRIO e explícito: `null` =
+ *   TODA a carteira elegível (só o chamador — CLI com --all, scheduler com
+ *   ALL=true — decide isso, nunca um default implícito deste service); um
+ *   array com PELO MENOS 1 slug = subset. `[]` e `undefined` são inválidos
+ *   (ver validarEscopoClientes) — nunca equivalem a "sem filtro".
  * @param {boolean} [opts.plano]  true = só descoberta/classificação, NENHUM
  *   sync/Motor/persistência é executado — nem para as contas elegíveis.
  */
 async function executarRodada(opts = {}, depsOverride = {}) {
   const deps = { ...defaultDeps(), ...depsOverride };
   const inicio = deps.agora();
-  const { clientes = null, plano = false } = opts;
+  // SEM default para `clientes`: omitir a chave é undefined, tratado como
+  // escopo ausente — igual a [] — nunca "sem filtro" implícito.
+  const { clientes, plano = false } = opts;
+  validarEscopoClientes(clientes);
 
   deps.logger.log(
     `${LOG} início${clientes?.length ? ` clientes=${clientes.join(",")}` : " (sem filtro)"}${plano ? " PLANO" : ""}`
@@ -386,6 +419,7 @@ module.exports = {
   listarContasElegiveis,
   classificarContas,
   motivoInelegibilidade,
+  validarEscopoClientes,
   processarConta,
   executarRodada,
   montarResumoRodada,

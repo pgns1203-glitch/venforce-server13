@@ -12,7 +12,7 @@
 //   - "inserted" reflete xmax=0 do retorno (distingue create de update).
 
 const assert = require("assert");
-const { upsertSnapshot, valorEvidencia } = require("../services/motorMargem/margemProjetadaSnapshotRepository");
+const { upsertSnapshot, valorEvidencia, lerSnapshotPorItens } = require("../services/motorMargem/margemProjetadaSnapshotRepository");
 
 let checks = 0;
 function ok(label, cond) {
@@ -114,6 +114,55 @@ async function run() {
     ok("item não computável: profit/margin_percent gravados como null (nunca 0 inventado)", params[3] === null && params[4] === null);
     ok("item não computável: computable=false gravado", params[5] === false);
     ok("item não computável: faltantes_json reflete item.margin.projected.missing", params[9] === JSON.stringify(["cost"]));
+  }
+
+  // ── lerSnapshotPorItens: leitura em lote p/ ordenação global ────────────
+
+  {
+    // Array vazio: nem chama o banco.
+    const db = { async query() { throw new Error("não deveria ser chamado"); } };
+    const mapa = await lerSnapshotPorItens({ clienteId: 1, itemIds: [] }, db);
+    ok("lerSnapshotPorItens([]) devolve Map vazio sem tocar o banco", mapa instanceof Map && mapa.size === 0);
+  }
+
+  {
+    const capturas = [];
+    const db = {
+      async query(sql, params) {
+        capturas.push({ sql: String(sql), params });
+        return {
+          rows: [
+            { item_id: "MLB1", margin_percent: "23.45", profit: "12.30", computable: true, status: "HEALTHY", calculado_em: "2026-09-28T05:00:00Z", origem_job: "orquestrador_manual" },
+            { item_id: "MLB2", margin_percent: null, profit: null, computable: false, status: "UNVALIDATED", calculado_em: "2026-09-28T05:00:00Z", origem_job: "orquestrador_manual" },
+          ],
+        };
+      },
+    };
+    const mapa = await lerSnapshotPorItens({ clienteId: 16, itemIds: ["MLB1", "MLB2", "MLB1"] }, db);
+
+    ok("lerSnapshotPorItens dedupe itemIds antes de mandar pro SQL", capturas[0].params[1].length === 2);
+    ok("SQL filtra por cliente_id (params[0])", capturas[0].params[0] === 16);
+    ok("SQL usa item_id = ANY($2)", /item_id = ANY\(\$2::text\[\]\)/.test(capturas[0].sql));
+
+    ok("Map tem 1 entrada por item_id retornado pelo SQL", mapa.size === 2);
+    const mlb1 = mapa.get("MLB1");
+    ok("marginPercent vira Number (coluna NUMERIC chega como string do pg)", mlb1.marginPercent === 23.45);
+    ok("profit vira Number", mlb1.profit === 12.3);
+    ok("computable=true preservado", mlb1.computable === true);
+    ok("status preservado", mlb1.status === "HEALTHY");
+    ok("calculadoEm preservado", mlb1.calculadoEm === "2026-09-28T05:00:00Z");
+    ok("origemJob preservado", mlb1.origemJob === "orquestrador_manual");
+
+    const mlb2 = mapa.get("MLB2");
+    ok("item não computável: marginPercent/profit null preservados (nunca 0 inventado)", mlb2.marginPercent === null && mlb2.profit === null);
+    ok("item não computável: computable=false preservado", mlb2.computable === false);
+  }
+
+  {
+    // Item sem linha no snapshot simplesmente não entra no Map.
+    const db = { async query() { return { rows: [] }; } };
+    const mapa = await lerSnapshotPorItens({ clienteId: 1, itemIds: ["MLB-SEM-SNAPSHOT"] }, db);
+    ok("item sem snapshot: Map não tem a chave (nunca um valor inventado)", mapa.has("MLB-SEM-SNAPSHOT") === false);
   }
 
   console.log(`\nmargemProjetadaSnapshotRepository.test.js: ${checks} verificações passaram.`);

@@ -15,9 +15,11 @@
 //  3. contexto do Motor de Margem não-pronto (Base não vinculada etc.) vira
 //     `margemIndisponivel` com a MESMA mensagem do erro tipado — nunca 500,
 //     nunca texto inventado;
-//  4. margem por item escolhe `realized` quando computável, senão
-//     `projected` — mesma precedência que o próprio Motor já usa para
-//     ordenar;
+//  4. margem por item é SEMPRE `projected` — nunca `realized`, mesmo quando
+//     `item.margin.realized` está presente e computável (decisão de produto
+//     da missão "fechar integração funcional da tela": Anúncios ML mostra
+//     só Margem Projetada; `item.margin.realized` continua existindo no
+//     Motor, só não é mais LIDO por este endpoint);
 //  5. clienteContaId chega aos dois serviços de baixo — margem da conta
 //     ERRADA para cliente multi-conta seria pior que não mostrar margem;
 //  6. clienteSlug ausente é 400; lote de itemIds vazio não gasta chamada
@@ -245,8 +247,9 @@ let checks = 0;
 function ok(msg) { checks += 1; console.log(`  ✓ ${msg}`); }
 
 async function run() {
-  // 1. Caminho feliz: métricas e margem combinadas, margem prefere REALIZED
-  //    quando computável, PROJECTED quando não.
+  // 1. Caminho feliz: métricas e margem combinadas, margem é SEMPRE
+  //    projected — mesmo quando o item tem realized computável (decisão de
+  //    produto: Anúncios ML mostra só Margem Projetada, nunca Realizada).
   await withMockDb(UMA_CONTA, async () => {
     reset();
     metricasHandler = () => ({
@@ -255,6 +258,8 @@ async function run() {
     });
     margemHandler = () => ({
       itens: [
+        // MLB-A tem realized computável (25%) E projected (40%) — o
+        // endpoint precisa mostrar projected (40%), nunca realized (25%).
         itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.25, projectedMargin: 0.4, status: "HEALTHY", statusLabel: "Saudável" }),
         itemDeMargem({ itemId: "MLB-B", realizedComputable: false, projectedMargin: 0.05, status: "LOW_MARGIN", statusLabel: "Margem baixa", statusReasons: ["Margem de 5.00% abaixo da meta de 10.00%."] }),
       ],
@@ -265,13 +270,39 @@ async function run() {
 
     assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
     assert.strictEqual(res.corpo.metricas7d["MLB-A"].views, 100);
-    assert.strictEqual(res.corpo.margem["MLB-A"].origem, "realized", "MLB-A tem realized computável — precisa preferir realized");
-    assert.strictEqual(res.corpo.margem["MLB-A"].marginPercent, 25);
-    assert.strictEqual(res.corpo.margem["MLB-B"].origem, "projected", "MLB-B sem realized computável — cai para projected");
+    assert.strictEqual(res.corpo.margem["MLB-A"].origem, "projected", "MLB-A: origem é SEMPRE projected, mesmo com realized computável (25%) disponível");
+    assert.strictEqual(res.corpo.margem["MLB-A"].marginPercent, 40, "MLB-A: mostra projected (40%), nunca realized (25%) — realized computável não muda nada");
+    assert.strictEqual(res.corpo.margem["MLB-B"].origem, "projected", "MLB-B sem realized computável — projected de qualquer forma");
     assert.strictEqual(res.corpo.margem["MLB-B"].marginPercent, 5);
     assert.strictEqual(res.corpo.margem["MLB-B"].statusLabel, "Margem baixa");
     assert.strictEqual(res.corpo.margemIndisponivel, null);
-    ok("caminho feliz: métricas + margem combinadas, realized > projected na precedência de exibição");
+    ok("caminho feliz: métricas + margem combinadas, margem é SEMPRE projected — realized computável não tem nenhuma precedência");
+  });
+
+  // 1a. Item com realized COMPUTÁVEL mas projected NÃO computável: mostra
+  //     indisponível ("—" no front, via statusLabel) — NUNCA cai para
+  //     realized como fallback. Este é o teste que prova a garantia central
+  //     da missão: "sem margem projetada NUNCA usa margem realizada".
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    margemHandler = () => ({
+      itens: [
+        itemDeMargem({
+          itemId: "MLB-SOREAL", realizedComputable: true, realizedMargin: 0.5, realizedProfit: 100,
+          projectedComputable: false, projectedMargin: null,
+          status: "UNVALIDATED", statusLabel: "Não validado", statusReasons: ["Variáveis obrigatórias ausentes: custo."],
+        }),
+      ],
+    });
+
+    const res = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-SOREAL", incluirMetricas: "0" } }, res);
+
+    assert.strictEqual(res.corpo.margem["MLB-SOREAL"].origem, "projected", "origem continua projected mesmo não-computável — nunca vira realized");
+    assert.strictEqual(res.corpo.margem["MLB-SOREAL"].marginPercent, null, "marginPercent NUNCA usa os 50% de realized — fica null (indisponível)");
+    assert.strictEqual(res.corpo.margem["MLB-SOREAL"].profit, null, "profit NUNCA usa os 100 de realized");
+    assert.strictEqual(res.corpo.margem["MLB-SOREAL"].statusLabel, "Não validado", "front mostra o motivo REAL (não computável), nunca inventa um percentual a partir de realized");
+    ok("item com realized computável (50%) mas projected NÃO computável: margem indisponível — NUNCA cai para realized como fallback");
   });
 
   // 1b. precoAtual (obtido ao vivo) e precoAlvo (calculado p/ margem-alvo) do
@@ -364,7 +395,7 @@ async function run() {
     reset();
     metricasHandler = () => { throw new Error("Falha ao buscar visitas"); };
     margemHandler = () => ({
-      itens: [itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.3, status: "HEALTHY", statusLabel: "Saudável" })],
+      itens: [itemDeMargem({ itemId: "MLB-A", projectedMargin: 0.3, status: "HEALTHY", statusLabel: "Saudável" })],
     });
 
     const res = fakeRes();
@@ -470,7 +501,7 @@ async function run() {
   await withMockDb(UMA_CONTA, async () => {
     reset();
     metricasHandler = () => ({ "MLB-A": { views: 10, vendas: 1, conversao: 10 } });
-    margemHandler = () => ({ itens: [itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.3, status: "HEALTHY", statusLabel: "Saudável" })] });
+    margemHandler = () => ({ itens: [itemDeMargem({ itemId: "MLB-A", projectedMargin: 0.3, status: "HEALTHY", statusLabel: "Saudável" })] });
 
     const res = fakeRes();
     await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-A", incluirMetricas: "0" } }, res);
@@ -497,17 +528,25 @@ async function run() {
     ok("incluirMetricas=0 e incluirMargem=0 juntos: zero chamadas aos dois serviços, mesmo com itemIds preenchido");
   });
 
-  // 12. incluirComposicao=1 + margem REALIZADA computável: ladder completo,
-  //     taxa fixa ausente (realizada nunca tem, por desenho — ver
-  //     marginItem.js), imposto em R$ = venda × percentual (a ÚNICA conta
-  //     nova, sobre os MESMOS dois valores que o Motor já usou).
+  // 12. incluirComposicao=1 + item com realized E projected computáveis:
+  //     mesmo com realized presente/computável (e sua própria composição
+  //     realizada, ladder completo, taxa fixa ausente como sempre foi),
+  //     a resposta usa EXCLUSIVAMENTE o lado projected — margem, profit e
+  //     composição inteira. Prova que "realized computável" não muda mais
+  //     nada nesta rota (decisão de produto da missão).
   await withMockDb(UMA_CONTA, async () => {
     reset();
     metricasHandler = () => ({});
     margemHandler = () => ({
       itens: [itemDeMargem({
-        itemId: "MLB-R1", realizedComputable: true, realizedMargin: 0.32, realizedProfit: 64, status: "HEALTHY", statusLabel: "Saudável",
-        composicao: { vendaRealizada: 200, custoRealizado: 80, impostoRealizado: 0.05, comissaoRealizada: 25, freteRealizado: 15 },
+        itemId: "MLB-R1",
+        realizedComputable: true, realizedMargin: 0.32, realizedProfit: 64,
+        projectedMargin: 0.20, projectedProfit: 30,
+        status: "HEALTHY", statusLabel: "Saudável",
+        composicao: {
+          vendaRealizada: 200, custoRealizado: 80, impostoRealizado: 0.05, comissaoRealizada: 25, freteRealizado: 15,
+          vendaProjetada: 150, custoProjetado: 60, impostoProjetado: 0.04, comissaoProjetada: 18, freteProjetado: 12, taxaFixaProjetada: 3,
+        },
       })],
     });
 
@@ -515,14 +554,15 @@ async function run() {
     await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-R1", incluirComposicao: "1" } }, res);
 
     assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
-    assert.strictEqual(res.corpo.margem["MLB-R1"].origem, "realized");
-    assert.strictEqual(res.corpo.margem["MLB-R1"].profit, 64,
-      "profit (R$) precisa vir junto — a composição usa este número pronto do Motor, nunca soma as linhas pra chegar nele");
+    assert.strictEqual(res.corpo.margem["MLB-R1"].origem, "projected", "origem é sempre projected, mesmo com realized computável presente");
+    assert.strictEqual(res.corpo.margem["MLB-R1"].marginPercent, 20, "mostra 20% (projected), nunca 32% (realized) — realized computável não muda a precedência");
+    assert.strictEqual(res.corpo.margem["MLB-R1"].profit, 30,
+      "profit é o do lado projected (30), nunca o de realized (64), mesmo com os dois presentes e computáveis");
     assert.deepStrictEqual(res.corpo.composicao["MLB-R1"], {
-      venda: 200, custoProduto: 80, comissaoMl: 25, frete: 15, taxaFixa: null, impostoPercentual: 0.05, impostoValor: 10,
+      venda: 150, custoProduto: 60, comissaoMl: 18, frete: 12, taxaFixa: 3, impostoPercentual: 0.04, impostoValor: 6,
       precoPromocionalAtivo: false, rebate: null,
     }, JSON.stringify(res.corpo.composicao));
-    ok("incluirComposicao=1 + margem realizada: ladder completo, taxa fixa ausente (sem histórico), imposto R$ = venda × percentual");
+    ok("item com realized E projected computáveis: composição inteira vem do lado projected — a composição realizada (presente no item) nunca é lida por esta rota");
   });
 
   // 13. incluirComposicao=1 + margem PROJETADA (sem venda realizada): usa os
@@ -579,8 +619,8 @@ async function run() {
     metricasHandler = () => ({});
     margemHandler = () => ({
       itens: [itemDeMargem({
-        itemId: "MLB-R2", realizedComputable: true, realizedMargin: 0.30, status: "HEALTHY", statusLabel: "Saudável",
-        composicao: { vendaRealizada: 100, custoRealizado: 50, impostoRealizado: 0.05, comissaoRealizada: 10, freteRealizado: 5 },
+        itemId: "MLB-R2", projectedMargin: 0.30, status: "HEALTHY", statusLabel: "Saudável",
+        composicao: { vendaProjetada: 100, custoProjetado: 50, impostoProjetado: 0.05, comissaoProjetada: 10, freteProjetado: 5 },
       })],
     });
 
@@ -626,8 +666,8 @@ async function run() {
     metricasHandler = () => ({});
     margemHandler = () => ({
       itens: [itemDeMargem({
-        itemId: "MLB-REB1", realizedComputable: true, realizedMargin: 0.35, realizedProfit: 35, status: "HEALTHY", statusLabel: "Saudável",
-        composicao: { vendaRealizada: 100, custoRealizado: 40, impostoRealizado: 0.05, comissaoRealizada: 12, freteRealizado: 8 },
+        itemId: "MLB-REB1", projectedMargin: 0.35, projectedProfit: 35, status: "HEALTHY", statusLabel: "Saudável",
+        composicao: { vendaProjetada: 100, custoProjetado: 40, impostoProjetado: 0.05, comissaoProjetada: 12, freteProjetado: 8 },
       })],
     });
 
@@ -654,8 +694,8 @@ async function run() {
     metricasHandler = () => ({});
     margemHandler = () => ({
       itens: [itemDeMargem({
-        itemId: "MLB-REB2", realizedComputable: true, realizedMargin: 0.35, realizedProfit: 35, status: "HEALTHY", statusLabel: "Saudável",
-        composicao: { vendaRealizada: 100, custoRealizado: 40, impostoRealizado: 0.05, comissaoRealizada: 12, freteRealizado: 8 },
+        itemId: "MLB-REB2", projectedMargin: 0.35, projectedProfit: 35, status: "HEALTHY", statusLabel: "Saudável",
+        composicao: { vendaProjetada: 100, custoProjetado: 40, impostoProjetado: 0.05, comissaoProjetada: 12, freteProjetado: 8 },
       })],
     });
 
@@ -690,7 +730,7 @@ async function run() {
     reset();
     metricasHandler = () => ({});
     margemHandler = () => ({
-      itens: [itemDeMargem({ itemId: "MLB-A", realizedComputable: true, realizedMargin: 0.3, realizedProfit: 30, status: "HEALTHY", statusLabel: "Saudável" })],
+      itens: [itemDeMargem({ itemId: "MLB-A", projectedMargin: 0.3, projectedProfit: 30, status: "HEALTHY", statusLabel: "Saudável" })],
     });
 
     const res = fakeRes();
@@ -935,8 +975,8 @@ async function run() {
     familiaHandler = () => new Map([["FAM1", ["MLB-F1", "MLB-F2"]]]);
     margemHandler = () => ({
       itens: [
-        itemDeMargem({ itemId: "MLB-F1", realizedComputable: true, realizedMargin: 0.25, realizedProfit: 100, status: "HEALTHY", statusLabel: "Saudável" }),
-        itemDeMargem({ itemId: "MLB-F2", realizedComputable: true, realizedMargin: 0.10, realizedProfit: 50, status: "HEALTHY", statusLabel: "Saudável" }),
+        itemDeMargem({ itemId: "MLB-F1", projectedMargin: 0.25, projectedProfit: 100, status: "HEALTHY", statusLabel: "Saudável" }),
+        itemDeMargem({ itemId: "MLB-F2", projectedMargin: 0.10, projectedProfit: 50, status: "HEALTHY", statusLabel: "Saudável" }),
       ],
       porMlb: new Map(),
       periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },

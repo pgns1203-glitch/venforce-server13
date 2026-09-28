@@ -133,11 +133,16 @@ function casaSelecionado(whereMatch, linha, qTerm, statusParam) {
 }
 
 class MockDb {
-  constructor({ contas = [], grants = [], anuncios = [], userProducts = [] } = {}) {
+  constructor({ contas = [], grants = [], anuncios = [], userProducts = [], snapshots = [] } = {}) {
     this.contas = contas;
     this.grants = grants;
     this.anuncios = anuncios;
     this.userProducts = userProducts;
+    // Fixture do snapshot de margem projetada — item_id (chave) -> linha
+    // crua (mesmo shape de anuncios_margem_projetada_snapshot). Usado só
+    // pelo teste de detalheFamilia/margem projetada dos filhos expandidos
+    // (as demais consultas desta suíte não têm relação com margem).
+    this.snapshots = new Map(snapshots.map((s) => [s.item_id, s]));
   }
 
   async connect() {
@@ -578,6 +583,13 @@ class MockDb {
         if (!up || !familyIds.includes(up.family_id)) continue;
         rows.push({ item_id: a.item_id, family_id: up.family_id });
       }
+      return { rows };
+    }
+
+    // --- LER_SNAPSHOT_MARGEM_PROJETADA_POR_ITENS -----------------------------
+    if (q.includes("-- LER_SNAPSHOT_MARGEM_PROJETADA_POR_ITENS")) {
+      const itemIds = new Set(params[1]);
+      const rows = Array.from(this.snapshots.values()).filter((s) => itemIds.has(s.item_id));
       return { rows };
     }
 
@@ -1048,6 +1060,40 @@ async function run() {
     assert.strictEqual(item.revisado, true, "revisado precisa chegar ao front para o badge Revisado");
     assert.strictEqual(item.catalog_listing, true, "catalog_listing precisa chegar ao front para o badge Catálogo");
     console.log("  ✓ S2. detalhe da família traz pictures_count/is_full/revisado/catalog_listing (mesmos badges do card legado)");
+  });
+
+  // S3. Filhos expandidos usam os MESMOS campos de snapshot que a listagem
+  //     (fonte única da margem projetada — ver missão "migrar exibição de
+  //     margem projetada para o snapshot"). Nunca /performance/Motor para
+  //     esses percentuais — a rota GET /familias/:familyId é read-only no ML.
+  await withMockDb({
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-F1", user_product_id: "UP-F" }),
+      anuncioFixture({ item_id: "MLB-F2", user_product_id: "UP-F" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP-F", family_id: "FAM-F" })],
+    contas: [contaA],
+    grants: [grantFixture({ id: 1, cliente_id: 1, ml_user_id: "111" })],
+    snapshots: [
+      { item_id: "MLB-F1", margin_percent: "18.4", profit: "22.10", computable: true, status: "HEALTHY", calculado_em: "2026-09-28T09:00:00Z", origem_job: "manual_cli" },
+      // MLB-F2: sem linha no snapshot — ausente de propósito.
+    ],
+  }, async () => {
+    const res = fakeRes();
+    await ctrl.detalheFamilia({ params: { familyId: "FAM-F" }, query: { clienteSlug: "cliente-a", clienteContaId: "10" } }, res);
+    assert.strictEqual(res.statusCode, 200);
+    const itens = res.corpo.familia.user_products.flatMap((up) => up.itens);
+    const f1 = itens.find((i) => i.item_id === "MLB-F1");
+    const f2 = itens.find((i) => i.item_id === "MLB-F2");
+    assert.strictEqual(f1.margemProjetadaPercent, 18.4, "filho COM snapshot: campo preenchido direto do snapshot, nunca de /performance");
+    assert.strictEqual(f1.margemProjetadaProfit, 22.1);
+    assert.strictEqual(f1.margemProjetadaComputable, true);
+    assert.strictEqual(f1.margemProjetadaStatus, "HEALTHY");
+    assert.strictEqual(f1.margemProjetadaCalculadaEm, "2026-09-28T09:00:00Z");
+    assert.strictEqual(f1.margemProjetadaOrigemJob, "manual_cli");
+    assert.strictEqual(f2.margemProjetadaPercent, null, "filho SEM snapshot: null, nunca 0/inventado");
+    assert.strictEqual(f2.margemProjetadaComputable, false);
+    console.log("  ✓ S3. detalhe da família: filhos expandidos usam o snapshot (fonte única), nunca /performance");
   });
 
   // T. includeLegacy=true inclui linhas com cliente_conta_id NULL.

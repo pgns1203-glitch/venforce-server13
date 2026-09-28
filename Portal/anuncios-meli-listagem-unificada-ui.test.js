@@ -174,6 +174,9 @@ const LINHAS_CONTA_42 = [
     score_venforce: 40, revisado: false,
     total_itens: 1, total_user_products: 0, estoque_total: 3, vendidos_total: 1,
     cover: { thumbnail: null, user_product_id: null },
+    // Margem projetada — fonte ÚNICA da célula (ver testes 29/30).
+    margemProjetadaPercent: 25, margemProjetadaProfit: 12.5, margemProjetadaComputable: true,
+    margemProjetadaStatus: "HEALTHY", margemProjetadaCalculadaEm: "2026-09-20T10:00:00Z", margemProjetadaOrigemJob: "manual_cli",
   },
   // Item avulso SEM variações no ML (variations_count 0/ausente) — controle
   // negativo do 7b: sem isto, um teste que só olhasse MLB-SEMUP não provaria
@@ -250,6 +253,12 @@ function item(id, titulo, up, extra) {
     // Mesmos campos que o card avulso (LINHAS_CONTA_42) já usa para montar
     // badges — default "sem badge nenhum", como o item comum da família.
     pictures_count: 5, is_full: false, revisado: false, catalog_listing: false,
+    // Margem projetada — fonte ÚNICA da célula agora (ver
+    // GET /familias/:familyId, anuncios-meli.js margemCelulaHtml). Default
+    // "caminho feliz" (HEALTHY, 20%) — quem precisa de outro status
+    // (LOSS/UNVALIDATED/sem snapshot) sobrescreve via `extra`.
+    margemProjetadaPercent: 20, margemProjetadaProfit: 15, margemProjetadaComputable: true,
+    margemProjetadaStatus: "HEALTHY", margemProjetadaCalculadaEm: "2026-09-20T10:00:00Z", margemProjetadaOrigemJob: "manual_cli",
   }, extra || {});
 }
 
@@ -288,9 +297,16 @@ const DETALHE_CONTA_42 = {
                     // dentro da família monta os mesmos badges do card legado
                     // (ver "8d" mais abaixo).
                     pictures_count: 1, is_full: true, revisado: true, catalog_listing: true,
+                    // Margem negativa (prejuízo) — ver teste "37".
+                    margemProjetadaPercent: -5, margemProjetadaProfit: -10, margemProjetadaStatus: "LOSS",
                   }),
                 item("MLB-A2", NOME_FAM1 + " Azul P", "MLBU-100",
-                  { listing_type_id: "gold_special" })] },
+                  {
+                    listing_type_id: "gold_special",
+                    // Sem margem computável (Base sem custo) — ver teste "36".
+                    margemProjetadaPercent: null, margemProjetadaProfit: null, margemProjetadaComputable: false,
+                    margemProjetadaStatus: "UNVALIDATED", margemProjetadaCalculadaEm: null,
+                  })] },
       // As três formas de variação, de propósito: mista (acima), só Clássico
       // e só Premium. Nenhuma delas pode depender do padrão
       // Clássico + Premium para renderizar.
@@ -307,7 +323,14 @@ const DETALHE_CONTA_42 = {
     user_products: [
       { user_product_id: "MLBU-300C", site_id: "MLB", domain_id: "MLB-MUGS", total_itens: 1,
         itens: [item("MLB-B9", "Caneca Térmica Inox 500ml", "MLBU-300C",
-          { family_id: "FAM-2", estoque: 12, thumbnail: IMAGEM_DO_ITEM_DA_FAM2 })] },
+          {
+            family_id: "FAM-2", estoque: 12, thumbnail: IMAGEM_DO_ITEM_DA_FAM2,
+            // Sem snapshot (job de margem projetada nunca rodou pra este
+            // item) — mesmo contrato de ausência que o backend devolve
+            // (status null, nunca inventado) — ver teste "38".
+            margemProjetadaPercent: null, margemProjetadaProfit: null, margemProjetadaComputable: false,
+            margemProjetadaStatus: null, margemProjetadaCalculadaEm: null,
+          })] },
     ],
   },
 };
@@ -349,10 +372,11 @@ const chamadasPerformance = [];
 // GET /anuncios-meli/familias — `chamadasFamilias` registra page/ordenarPor
 // de CADA chamada (prova que a paginação reenvia o mesmo critério global —
 // ver testes 39d-h). `ordenarPorGlobalHandler`, quando setado, substitui a
-// resposta padrão inteira sempre que a query trouxer um `ordenarPor` (o
-// próprio backend só aplica esse campo quando o critério é global —
-// faturamento_*/curvaAbc_* — nunca para margem_*/unidades_*, que continuam
-// ordenação LOCAL de página, resolvida no frontend).
+// resposta padrão inteira sempre que a query trouxer um `ordenarPor` — todo
+// critério de ORDENACAO_FILTROS é GLOBAL agora (faturamento_*/curvaAbc_*/
+// unidades_*/margem_*, ver ORDENACOES_GLOBAIS em anuncios-meli.js). Margem
+// tem uma particularidade: a ORDEM vem daqui, mas a CÉLULA continua pintando
+// via GET /performance (chamada separada, sempre ativa) — ver testes 39a/39a2.
 let chamadasFamilias = [];
 let ordenarPorGlobalHandler = null; // (qs) => resposta completa de /anuncios-meli/familias
 
@@ -365,13 +389,15 @@ const METRICAS_FIXTURE = {
 };
 // MLB-A2 fica UNVALIDATED (sem custo na Base) de propósito — é o caso sem
 // número, só rótulo. MLB-A1 fica LOSS (prejuízo) — cor de risco. MLB-SEMUP
-// fica HEALTHY realizada — o caminho feliz.
+// fica HEALTHY — o caminho feliz. Todos "projected": Margem = Margem
+// Projetada, somente, nesta tela — origem nunca é "realized" no contrato
+// real (ver montarMapaMargem no controller).
 const MARGEM_FIXTURE = {
   // precoOriginal confirma AO VIVO a mesma promoção que o snapshot
   // (preco_original: 69.9 no fixture da linha) já sinalizava — item usado
   // em vários testes como "o caminho feliz com promoção".
-  "MLB-SEMUP": { origem: "realized", margin: 0.25, marginPercent: 25, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [], precoOriginal: 69.9 },
-  "MLB-A1": { origem: "realized", margin: -0.05, marginPercent: -5, status: "LOSS", statusLabel: "Prejuízo", statusReasons: ["Margem negativa (-5.00%)."] },
+  "MLB-SEMUP": { origem: "projected", margin: 0.25, marginPercent: 25, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [], precoOriginal: 69.9 },
+  "MLB-A1": { origem: "projected", margin: -0.05, marginPercent: -5, status: "LOSS", statusLabel: "Prejuízo", statusReasons: ["Margem negativa (-5.00%)."] },
   "MLB-A2": { origem: "projected", margin: null, marginPercent: null, status: "UNVALIDATED", statusLabel: "Não validado", statusReasons: ["Variáveis obrigatórias ausentes: custo."] },
 };
 
@@ -1852,7 +1878,11 @@ async function run() {
      *
      * Bloco isolado com reload próprio: as verificações de "antes/depois da
      * resposta" precisam de uma página recém-carregada, sem cache de
-     * performance de nenhuma verificação anterior.
+     * performance de nenhuma verificação anterior. Margem projetada NÃO
+     * passa mais por /performance (migrou pro snapshot, já vem PRONTA na
+     * própria resposta de /familias e /familias/:familyId — ver missão
+     * "migrar exibição de margem projetada para o snapshot") — só métricas
+     * 7d/faturamento/Curva ABC continuam assíncronos, com "carregando".
      */
 
     errosAcumulados = errosAcumulados.concat(await cdp.evaluate("window.__erros || []"));
@@ -1862,7 +1892,7 @@ async function run() {
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
     await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não voltou depois do reload");
 
-    await check("29 — a linha já está completa (título, preço) ANTES de /performance responder — inclusive a soma do agrupador", async () => {
+    await check("29 — a linha já está completa (título, preço, margem) ANTES de /performance responder — margem projetada nasce PRONTA (snapshot), nunca 'carregando'", async () => {
       const estado = await cdp.evaluate(`(function(){
         var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
         var fam1 = document.querySelector('${linhaFam("FAM-1")} .am-metricas7d');
@@ -1871,19 +1901,21 @@ async function run() {
           precoExiste: /49,90/.test(r.querySelector('.am-row__preco').textContent),
           metricasCarregando: r.querySelector('.am-metricas7d').classList.contains('am-metricas7d--carregando'),
           margemCarregando: r.querySelector('.am-margem').classList.contains('am-margem--carregando'),
+          margemValor: (r.querySelector('.am-margem__valor') || {}).textContent || null,
           agrupadorCarregando: fam1.classList.contains('am-metricas7d--carregando'),
           agrupadorMargemTexto: document.querySelector('${linhaFam("FAM-1")} .am-margem').textContent.trim(),
         }; })()`);
       assert.strictEqual(estado.tituloExiste, true, "a lista não pode esperar /performance para renderizar o resto da linha");
       assert.strictEqual(estado.precoExiste, true);
-      assert.strictEqual(estado.metricasCarregando, true, "a célula tem de nascer 'carregando', não vazia nem quebrada");
-      assert.strictEqual(estado.margemCarregando, true);
+      assert.strictEqual(estado.metricasCarregando, true, "a célula de métricas tem de nascer 'carregando', não vazia nem quebrada");
+      assert.strictEqual(estado.margemCarregando, false, "margem projetada NUNCA passa por 'carregando' — vem pronta na própria resposta da listagem");
+      assert.strictEqual(estado.margemValor, "25,0%", "o valor já está correto no PRIMEIRO frame, sem esperar nenhuma resposta assíncrona");
       assert.strictEqual(estado.agrupadorCarregando, true,
-        "a soma do agrupador também nasce 'carregando' — nunca uma soma parcial antes de todos os filhos responderem");
-      assert.strictEqual(estado.agrupadorMargemTexto, "—", "a margem do agrupador nunca aparece, nem durante o carregamento");
+        "a soma de métricas do agrupador ainda nasce 'carregando' — nunca uma soma parcial antes de todos os filhos responderem");
+      assert.strictEqual(estado.agrupadorMargemTexto, "—", "a margem do agrupador nunca aparece, mesmo com o snapshot pronto");
     });
 
-    await check("30 — depois que /performance responde, a célula do item avulso pinta os números reais", async () => {
+    await check("30 — depois que /performance responde, a célula do item avulso pinta as métricas reais (margem já estava certa desde o início)", async () => {
       atrasoPerformance = 0;
       await waitFor(cdp, `(function(){
         var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
@@ -1895,11 +1927,9 @@ async function run() {
         return {
           linhas: linhas,
           margemValor: (r.querySelector('.am-margem__valor') || {}).textContent || null,
-          margemOrigem: (r.querySelector('.am-margem__origem') || {}).textContent || null,
         }; })()`);
       assert.deepStrictEqual(dados.linhas, ["👁 259", "🛒 3 · 1,2%"], JSON.stringify(dados.linhas));
       assert.strictEqual(dados.margemValor, "25,0%");
-      assert.strictEqual(dados.margemOrigem, "Realizada");
     });
 
     await check("30b — o agrupador mostra a SOMA das métricas 7d dos filhos SOZINHO, sem precisar expandir", async () => {
@@ -1945,7 +1975,7 @@ async function run() {
       assert.ok(/preco-original/.test(preco.ordemDom[0]), `o preço cheio riscado precisa vir ANTES (acima) do vigente no DOM: ${JSON.stringify(preco.ordemDom)}`);
     });
 
-    await check("31 — régua do boot: 1 chamada com métricas+margem+faturamento (avulso) + 1 chamada só de métricas por agrupador visível + 1 chamada de faturamento consolidado das famílias", async () => {
+    await check("31 — régua do boot: 1 chamada com métricas+margem(preço ao vivo)+faturamento (avulso) + 1 chamada só de métricas por agrupador visível + 1 chamada de faturamento consolidado das famílias", async () => {
       assert.strictEqual(contar(/\/familias\/FAM-1/, 0), 1, "o pré-carregamento de FAM-1 devia ter gastado exatamente 1 chamada de detalhe");
       assert.strictEqual(contar(/\/familias\/FAM-2/, 0), 1, "o pré-carregamento de FAM-2 devia ter gastado exatamente 1 chamada de detalhe");
 
@@ -1957,9 +1987,14 @@ async function run() {
       assert.deepStrictEqual(doAvulso.itemIds.slice().sort(), ["MLB-SEMUP", "MLB-SEMVAR"],
         "os dois anúncios avulsos (com e sem variações legadas) estão visíveis como ITEM no boot");
       assert.strictEqual(doAvulso.incluirMetricas, true);
-      assert.strictEqual(doAvulso.incluirMargem, true, "o item avulso pede métricas E margem juntas, como sempre");
+      // incluirMargem continua true — a CÉLULA de margem não lê mais este
+      // resultado (vem do snapshot), mas a chamada continua pedindo margem
+      // porque margem[itemId] também carrega precoAtual/precoOriginal (preço
+      // AO VIVO do Motor, ver celulaPrecoHtml) — efeito colateral do mesmo
+      // lote, não removido por esta migração.
+      assert.strictEqual(doAvulso.incluirMargem, true, "o item avulso continua pedindo margem — é o preço ao vivo (precoAtual/precoOriginal) que precisa dela, não mais a célula de margem");
       assert.strictEqual(doAvulso.incluirFaturamento, true,
-        "o % faturamento do item avulso é bundlado na MESMA chamada de métricas+margem — não é uma chamada à parte");
+        "o % faturamento do item avulso continua bundlado na MESMA chamada de métricas+margem — não é uma chamada à parte");
 
       const doFam1 = chamadasPerformance.find((c) => c.itemIds.includes("MLB-A1"));
       assert.ok(doFam1, "não achei a chamada em background dos filhos de FAM-1");
@@ -1985,7 +2020,7 @@ async function run() {
         "a chamada de faturamento consolidado não pode gastar o Motor de Margem para mais nada além do faturamento");
     });
 
-    await check("32 — expandir a família pinta as métricas dos filhos NA HORA (já vinham do pré-carregamento) e busca só a margem que faltava", async () => {
+    await check("32 — expandir a família pinta as métricas E a margem dos filhos NA HORA (margem vem do detalhe da família, não de /performance) e busca só faturamento/Curva ABC que faltavam", async () => {
       const antesPerformance = chamadasPerformance.length;
       const antesPedidos = pedidos.length;
       await clicar(cdp, linhaFam("FAM-1"));
@@ -1993,26 +2028,36 @@ async function run() {
 
       // As métricas do filho já pintam no PRIMEIRO frame da expansão — nunca
       // passam por "carregando": o pré-carregamento em background já tinha
-      // trazido a resposta antes mesmo do clique.
-      const metricasNaAbertura = await cdp.evaluate(`(function(){
-        var c = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-metricas7d');
-        return { carregando: c.classList.contains('am-metricas7d--carregando'),
-                 linhas: Array.from(c.querySelectorAll('.am-metricas7d__linha')).map(function(e){ return e.textContent; }) }; })()`);
-      assert.strictEqual(metricasNaAbertura.carregando, false,
+      // trazido a resposta antes mesmo do clique. A margem NUNCA passa por
+      // "carregando" (não é mais assíncrona — vem no MESMO objeto do
+      // detalhe da família, já resolvido pelo pré-carregamento).
+      const naAbertura = await cdp.evaluate(`(function(){
+        var m = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-metricas7d');
+        var g = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-margem');
+        var g1 = document.querySelector('.am-mlb[data-item="MLB-A1"] .am-margem__valor');
+        return {
+          metricasCarregando: m.classList.contains('am-metricas7d--carregando'),
+          metricasLinhas: Array.from(m.querySelectorAll('.am-metricas7d__linha')).map(function(e){ return e.textContent; }),
+          margemCarregando: g.classList.contains('am-margem--carregando'),
+          margemA1: g1 ? g1.textContent : null,
+        }; })()`);
+      assert.strictEqual(naAbertura.metricasCarregando, false,
         "as métricas do filho não podiam nascer 'carregando' na expansão — já estavam no cache do pré-carregamento");
-      assert.deepStrictEqual(metricasNaAbertura.linhas, ["👁 100", "🛒 0 · 0,0%"]);
-
-      await waitFor(cdp, `(function(){
-        var c = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-margem');
-        return c && !c.classList.contains('am-margem--carregando'); })()`, "a margem dos filhos não resolveu");
+      assert.deepStrictEqual(naAbertura.metricasLinhas, ["👁 100", "🛒 0 · 0,0%"]);
+      assert.strictEqual(naAbertura.margemCarregando, false, "margem do filho nunca passa por 'carregando' — não é mais assíncrona");
+      assert.strictEqual(naAbertura.margemA1, "-5,0%", "margem do filho já está correta no PRIMEIRO frame da expansão");
 
       assert.strictEqual(contar(/\/familias\/FAM-1/, antesPedidos), 0,
         "a família já tinha sido pré-carregada em background — expandir não pode buscar o detalhe de novo");
-      assert.strictEqual(chamadasPerformance.length, antesPerformance + 1, "expandir devia disparar exatamente 1 chamada nova de performance");
+      assert.strictEqual(chamadasPerformance.length, antesPerformance + 1, "expandir devia disparar exatamente 1 chamada nova de performance (faturamento/Curva ABC)");
       const ultima = chamadasPerformance[chamadasPerformance.length - 1];
       assert.deepStrictEqual(ultima.itemIds.slice().sort(), ["MLB-A1", "MLB-A2", "MLB-A3", "MLB-A4"],
         "a chamada da expansão precisa ter exatamente os 4 filhos de FAM-1 — nem mais, nem menos");
-      assert.strictEqual(ultima.incluirMargem, true, "a expansão de verdade tem de pedir a margem");
+      // incluirMargem continua true na expansão de verdade — não por causa da
+      // CÉLULA (que já leu o snapshot, sem esperar isto), mas porque é o
+      // mesmo lote que traz precoAtual/precoOriginal ao vivo dos filhos.
+      assert.strictEqual(ultima.incluirMargem, true, "a expansão continua pedindo margem — é o preço ao vivo dos filhos que precisa dela");
+      assert.strictEqual(ultima.incluirFaturamento, true, "a expansão de verdade pede faturamento/Curva ABC individuais dos filhos");
       assert.strictEqual(ultima.incluirMetricas, false,
         "as métricas 7d já vieram do pré-carregamento em background — expandir não pode refazer essa chamada");
       // MLB-B9 (filho de FAM-2) já apareceu no histórico ANTES desta
@@ -2022,18 +2067,17 @@ async function run() {
       // asserção acima (o conteúdo exato de `ultima`) já garante isso.
     });
 
-    await check("33 — reabrir a MESMA família não refaz a chamada de performance (cache)", async () => {
+    await check("33 — reabrir a MESMA família não refaz a chamada de performance (cache) e a margem continua correta", async () => {
       const antes = chamadasPerformance.length;
       await clicar(cdp, linhaFam("FAM-1")); // colapsa
       await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")}').hidden === true`, "não colapsou");
       await clicar(cdp, linhaFam("FAM-1")); // reabre
       await waitFor(cdp, `document.querySelector('${painelFam("FAM-1")}').hidden === false`, "não reabriu");
 
-      const semCarregando = await cdp.evaluate(`(function(){
-        var c = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-margem');
-        return c ? c.classList.contains('am-margem--carregando') : true; })()`);
-      assert.strictEqual(semCarregando, false,
-        "reabrir precisa mostrar os dados já conhecidos de imediato, sem voltar a 'carregando'");
+      const margemA1 = await cdp.evaluate(`(function(){
+        var v = document.querySelector('.am-mlb[data-item="MLB-A1"] .am-margem__valor');
+        return v ? v.textContent : null; })()`);
+      assert.strictEqual(margemA1, "-5,0%", "reabrir precisa mostrar a margem já conhecida de imediato, sem perder o valor");
       assert.strictEqual(chamadasPerformance.length, antes,
         "reabrir a mesma família gastou uma chamada de performance nova — o cache não funcionou");
     });
@@ -2096,61 +2140,66 @@ async function run() {
       assert.strictEqual(semNan, true, "NaN/Infinity nunca pode vazar para a tela");
     });
 
-    await check("36 — margem sem número (UNVALIDATED): rótulo REAL do Motor, com a razão real como tooltip", async () => {
+    await check("36 — margem sem número (UNVALIDATED): rótulo REAL do Motor (mesmo vocabulário de marginStatus.js LABELS)", async () => {
+      // O snapshot só grava o CÓDIGO do status (margemProjetadaStatus), nunca
+      // o motivo detalhado (statusReasons não existe na tabela) — a razão
+      // específica ("Variáveis obrigatórias ausentes: custo.") não está mais
+      // disponível aqui, só a categoria (rótulo). Simplificação intencional
+      // (PASSO "não fazer redesign") — o texto real do Motor continua vindo
+      // da MESMA fonte canônica (LABELS), só sem o detalhe extra.
       const estado = await cdp.evaluate(`(function(){
         var c = document.querySelector('.am-mlb[data-item="MLB-A2"] .am-margem');
         var e = c.querySelector('.am-margem__estado');
-        return { texto: e ? e.textContent : null, title: e ? e.getAttribute('title') : null,
+        return { texto: e ? e.textContent : null,
                  temValor: Boolean(c.querySelector('.am-margem__valor')) }; })()`);
       assert.strictEqual(estado.texto, "Não validado", "o texto tem de ser o rótulo real do Motor (LABELS.UNVALIDATED)");
-      assert.match(estado.title || "", /custo/i, "a razão real (statusReasons) precisa estar acessível");
       assert.strictEqual(estado.temValor, false, "sem margem computável não pode inventar número");
     });
 
-    await check("37 — margem negativa usa cor de risco; o selo mostra a origem certa", async () => {
+    await check("37 — margem negativa usa cor de risco; o tooltip explica que é projetada", async () => {
       const estado = await cdp.evaluate(`(function(){
         var c = document.querySelector('.am-mlb[data-item="MLB-A1"] .am-margem');
         var v = c.querySelector('.am-margem__valor');
         return { texto: v ? v.textContent : null, classe: v ? v.className : null,
-                 origem: (c.querySelector('.am-margem__origem') || {}).textContent || null,
                  temDot: Boolean(c.querySelector('.vf-info-dot')),
                  tipTexto: (c.querySelector('.vf-info__tip') || {}).textContent || null }; })()`);
       assert.strictEqual(estado.texto, "-5,0%");
       assert.ok(/is-danger/.test(estado.classe), `prejuízo tem de usar a cor de risco: ${estado.classe}`);
-      assert.strictEqual(estado.origem, "Realizada");
       assert.strictEqual(estado.temDot, true, "precisa existir o selo discreto de explicação (vf-info-dot)");
-      assert.match(estado.tipTexto || "", /Calculada pelo Motor de Margem/,
-        "o tooltip discreto tem de dizer que a margem vem do Motor de Margem");
+      assert.match(estado.tipTexto || "", /projetada/i,
+        "o tooltip discreto tem de dizer que a margem é projetada — nunca alternar com 'realizada'");
     });
 
-    await check("38 — margem indisponível no nível de CONTEXTO: mensagem real do backend, em vez de número ou 'Não validado'", async () => {
-      performanceHandler = (ids) => {
-        const metricas7d = {};
-        ids.forEach((id) => { metricas7d[id] = { views: 5, vendas: 0, conversao: null }; });
+    await check("38 — filho SEM snapshot (job de margem projetada nunca rodou): '—' direto, nunca inventa margem, nunca chama /performance/Motor pra decidir isso", async () => {
+      // MLB-B9 (único filho de FAM-2) não tem margemProjetadaStatus/Percent
+      // no fixture (ver DETALHE_CONTA_42) — mesmo contrato de ausência real
+      // do backend (SEM linha no snapshot). O conceito antigo de
+      // "margemIndisponivel no nível de CONTEXTO" (Base MELI não vinculada,
+      // vindo de /performance) não existe mais para a célula da listagem —
+      // ela é 100% snapshot agora; esse cenário de contexto continua coberto
+      // no MODAL (Composição da margem, que segue usando /performance).
+      const antesPerformance = chamadasPerformance.length;
+      await clicar(cdp, linhaFam("FAM-2"));
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")} .am-mlb')`, "FAM-2 não expandiu");
+      const estado = await cdp.evaluate(`(function(){
+        var c = document.querySelector('.am-mlb[data-item="MLB-B9"] .am-margem');
         return {
-          ok: true, metricas7d, margem: {},
-          margemIndisponivel: { codigo: "BASE_MELI_NAO_VINCULADA", mensagem: "Base de custos MELI não vinculada para esta operação." },
-        };
-      };
-      try {
-        await clicar(cdp, linhaFam("FAM-2"));
-        await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")} .am-mlb')`, "FAM-2 não expandiu");
-        await waitFor(cdp, `(function(){
-          var c = document.querySelector('.am-mlb[data-item="MLB-B9"] .am-margem');
-          return c && !c.classList.contains('am-margem--carregando'); })()`, "a margem de FAM-2 não resolveu");
-        const estado = await cdp.evaluate(`(function(){
-          var c = document.querySelector('.am-mlb[data-item="MLB-B9"] .am-margem');
-          var e = c.querySelector('.am-margem__estado');
-          return { texto: e ? e.textContent : c.textContent.trim(), temValor: Boolean(c.querySelector('.am-margem__valor')) }; })()`);
-        assert.match(estado.texto, /Base de custos MELI não vinculada/,
-          "tem de mostrar a MESMA mensagem que o backend mandou — nunca uma tradução própria");
-        assert.strictEqual(estado.temValor, false);
-        // Fecha para não contaminar o próximo bloco.
-        await clicar(cdp, linhaFam("FAM-2"));
-        await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")}').hidden === true`, "FAM-2 não colapsou");
-      } finally {
-        performanceHandler = null;
-      }
+          texto: c.textContent.trim(),
+          carregando: c.classList.contains('am-margem--carregando'),
+          temValor: Boolean(c.querySelector('.am-margem__valor')),
+          temEstado: Boolean(c.querySelector('.am-margem__estado')),
+        }; })()`);
+      assert.strictEqual(estado.texto, "—", "sem snapshot: travessão simples, nunca 0%, nunca um rótulo inventado");
+      assert.strictEqual(estado.carregando, false, "nunca fica 'carregando' — não há nada assíncrono pra esperar");
+      assert.strictEqual(estado.temValor, false);
+      assert.strictEqual(estado.temEstado, false, "sem status algum (snapshot ausente) não usa nem o selo de estado — só o travessão simples");
+      // A chamada de expansão de sempre ainda acontece (faturamento/Curva
+      // ABC + preço ao vivo) — só a CÉLULA de margem é que nunca depende
+      // dela: MLB-B9 já mostrou "—" acima, ANTES desta chamada resolver.
+      assert.ok(chamadasPerformance.length > antesPerformance, "a expansão de verdade ainda pede faturamento/Curva ABC/preço ao vivo dos filhos");
+      // Fecha para não contaminar o próximo bloco.
+      await clicar(cdp, linhaFam("FAM-2"));
+      await waitFor(cdp, `document.querySelector('${painelFam("FAM-2")}').hidden === true`, "FAM-2 não colapsou");
     });
 
     await check("38b — precoAtual (ao vivo, do Motor) atualiza in-place o valor 'atual', sem apagar o preço riscado (agora também ao vivo)", async () => {
@@ -2462,22 +2511,50 @@ async function run() {
       }
     });
 
-    /* ── 39a-c: ordenação por performance (margem/unidades) ─────────────── */
-    // Ver auditoria "Anúncios ML — filtros de performance". Os 3 cenários
-    // pedidos: MLB individual, família agregada (não expandida) e família
-    // expandida (filhos já em cache).
-
-    await check("39a — ordenar por margem (MLB individual): marginPercent decide a ordem — o MESMO valor que a coluna Margem mostra, NUNCA profit (R$) — sem margem fica no fim", async () => {
+    /* ── 39a-c: ordenação GLOBAL por margem/unidades ─────────────────────── */
+    // Margem virou critério GLOBAL ("fechar integração funcional da tela" —
+    // leitura do snapshot de margem projetada, ver ORDENACOES_GLOBAIS em
+    // anuncios-meli.js). Migração seguinte ("migrar exibição de margem
+    // projetada para o snapshot"): a CÉLULA também passou a ler
+    // margemProjetadaPercent/Computable/Status DIRETO do `anuncio` da
+    // resposta de /familias — a MESMA fonte que decidiu a ORDEM — e NUNCA
+    // MAIS de /performance (que pode estar desatualizado/divergente; ver
+    // 39a abaixo, a prova explícita disso).
+    await check("39a — margem_desc (GLOBAL): célula E ordem vêm da MESMA fonte (margemProjetadaPercent do /familias) — NUNCA do live /performance, mesmo que ele divirja", async () => {
       pedidos.length = 0;
       chamadasPerformance.length = 0;
-      // profit é o OPOSTO de marginPercent de propósito: se o código ainda
-      // usasse profit (o bug relatado), SEMVAR (profit 999) venceria SEMUP
-      // (profit 1) e a ordem sairia invertida.
+      chamadasFamilias.length = 0;
+      // Itens NOVOS (nunca usados antes nesta suíte) de propósito — evita
+      // qualquer cache de teste anterior contaminar a leitura.
+      //
+      // PROVA CENTRAL: o snapshot (na resposta de /familias) diz 18,4% pra
+      // MLB-MARG-A — mas se o front ainda lesse a margem de /performance
+      // (live, Motor de Margem), o performanceHandler abaixo devolve valores
+      // BEM diferentes (projected 21,1%, e até um "realized" 25,7% que
+      // NUNCA pode vazar pra esta tela). A célula tem de mostrar
+      // EXATAMENTE 18,4% — nunca 21,1, nunca 25,7.
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "item", item_id: "MLB-MARG-A", key: "item:MLB-MARG-A", titulo: "Item A", status: "active",
+            margemProjetadaPercent: 18.4, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY",
+            margemProjetadaCalculadaEm: "2026-09-27T08:00:00Z", cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-MARG-B", key: "item:MLB-MARG-B", titulo: "Item B", status: "active",
+            margemProjetadaPercent: 9, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY",
+            margemProjetadaCalculadaEm: "2026-09-27T08:00:00Z", cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
+      });
+      // Live /performance DIVERGENTE de propósito (nunca deveria ser lido
+      // pela célula): projected 21,1% e um "realized" 25,7% que a tela
+      // nunca pode mostrar (Margem = Margem Projetada, somente — e agora
+      // nem projetada AO VIVO, só a do snapshot).
       performanceHandler = () => ({
         ok: true, metricas7d: {}, margemIndisponivel: null,
         margem: {
-          "MLB-SEMUP": { marginPercent: 30, profit: 1 },
-          "MLB-SEMVAR": { marginPercent: 20, profit: 999 },
+          "MLB-MARG-A": { origem: "projected", marginPercent: 21.1, profit: 1, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
+          "MLB-MARG-B": { origem: "projected", marginPercent: 5, profit: 2, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
         },
         faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
       });
@@ -2487,42 +2564,58 @@ async function run() {
         s.value = 'margem_desc';
         s.dispatchEvent(new Event('change'));
       })()`);
-      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
       await waitFor(cdp, `(function(){
         var r = document.querySelector('.am-listagem > .am-row');
-        return r && r.getAttribute('data-item') === 'MLB-SEMUP';
-      })()`, "MLB-SEMUP (marginPercent 30) deveria ir para o topo ao ordenar por margem decrescente");
+        return r && r.getAttribute('data-item') === 'MLB-MARG-A';
+      })()`, "MLB-MARG-A (18,4%) deveria vir primeiro — é o valor do snapshot que decidiu a ordem");
 
       const ordem = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-listagem > .am-row')).map(function(r){
         return r.getAttribute('data-item') || r.getAttribute('data-familia'); })`);
-      assert.deepStrictEqual(ordem.slice(0, 2), ["MLB-SEMUP", "MLB-SEMVAR"],
-        "maior marginPercent (30%) antes do menor (20%), mesmo com profit invertido — famílias sem margemPorFamilia (null) ficam no fim");
+      assert.deepStrictEqual(ordem, ["MLB-MARG-A", "MLB-MARG-B"], `ordem esperada pelo snapshot (18,4% > 9%): ${JSON.stringify(ordem)}`);
 
-      const margemTexto = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-margem__valor').textContent.trim()`);
-      assert.strictEqual(margemTexto, "30,0%", "a coluna Margem tem de mostrar o MESMO valor usado para decidir a ordem");
+      // A célula já nasce com o valor CORRETO — sem esperar /performance.
+      const margemA = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-MARG-A"] .am-margem__valor').textContent.trim()`);
+      const margemB = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-MARG-B"] .am-margem__valor').textContent.trim()`);
+      assert.strictEqual(margemA, "18,4%", "célula tem de mostrar o valor do SNAPSHOT (18,4%), nunca o live projected (21,1%) nem o realized (25,7%)");
+      assert.strictEqual(margemB, "9,0%");
 
-      assert.strictEqual(chamadasPerformance[0].incluirMargem, true);
-      assert.deepStrictEqual(chamadasPerformance[0].familias.sort(), ["FAM-1", "FAM-2"],
-        "as famílias da página inteira precisam ir junto — o backend resolve/agrega os filhos delas");
+      // Mesmo depois que /performance responde (preço ao vivo, efeito
+      // colateral do pré-carregamento automático), a célula CONTINUA
+      // mostrando o valor do snapshot — nunca é sobrescrita pelo live.
+      await waitFor(cdp, `(function(){
+        var r = document.querySelector('.am-row[data-item="MLB-MARG-A"]');
+        return r && !r.querySelector('.am-metricas7d').classList.contains('am-metricas7d--carregando'); })()`,
+        "a resposta de /performance não chegou");
+      const margemADepois = await cdp.evaluate(`document.querySelector('.am-row[data-item="MLB-MARG-A"] .am-margem__valor').textContent.trim()`);
+      assert.strictEqual(margemADepois, "18,4%", "depois de /performance responder, a célula CONTINUA no valor do snapshot — nunca é sobrescrita pelo live (21,1%)");
+
+      assert.ok(chamadasFamilias.some((c) => c.ordenarPor === "margem_desc"), "a chamada de listagem precisa levar ordenarPor=margem_desc");
+      ordenarPorGlobalHandler = null;
       performanceHandler = null;
+      console.log("  ✓ 39a");
     });
 
-    await check("39a2 — ordenar por margem (MLB com margem + família com margem + sem margem, juntos): maiores primeiro, sem margem sempre no fim", async () => {
-      // Cenário pedido na correção: MLB A 30%, MLB B 20%, "C" sem margem —
-      // aqui C é representado por FAM-2 (sem entrada em margemPorFamilia),
-      // e FAM-1 entra como a família COM margem, para provar que family e
-      // item competem pelo MESMO critério de ordenação (maior primeiro).
+    await check("39a2 — margem_desc: família SEMPRE mostra '—', em qualquer posição do ranking global, sem buscar detalhe/filhos", async () => {
+      // FAM-1 é reaproveitada de propósito (já usada e cacheada por dezenas
+      // de testes anteriores desta suíte, mesmo raciocínio de 39h/39d) — é o
+      // que prova que NENHUM detalhe de família é buscado por causa da
+      // ordenação por margem: se o front tentasse abrir/buscar a família só
+      // porque ela veio na resposta, haveria uma chamada NOVA a
+      // /anuncios-meli/familias/FAM-1, e não há. Item NOVO (MLB-MARG-C) —
+      // evita ler margem já cacheada de um teste anterior.
       pedidos.length = 0;
       chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null,
-        margem: {
-          "MLB-SEMUP": { marginPercent: 30 },   // "A"
-          "MLB-SEMVAR": { marginPercent: 20 },  // "B"
-        },
-        margemPorFamilia: { "FAM-1": 25 },      // família COM margem, entre A e B
-        // FAM-2 fica de fora de propósito — "C: sem margem".
-        faturamento: null, unidadesVendidas: null, curvaAbc: null,
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "familia", key: "fam:FAM-1", family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
+            titulo: "Camiseta Dry Fit Masculina", margemProjetadaPercent: null, margemProjetadaProfit: 999,
+            margemProjetadaComputable: false, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-MARG-C", key: "item:MLB-MARG-C", titulo: "Item C", status: "active",
+            margemProjetadaPercent: 30, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY", cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
       });
 
       await cdp.evaluate(`(function(){
@@ -2530,43 +2623,49 @@ async function run() {
         s.value = 'margem_desc';
         s.dispatchEvent(new Event('change'));
       })()`);
-      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
-      await waitFor(cdp, `(function(){
-        var r = document.querySelector('.am-listagem > .am-row');
-        return r && r.getAttribute('data-item') === 'MLB-SEMUP';
-      })()`, "MLB-SEMUP (30%) deveria ir para o topo");
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-1")}')`, "a linha da família não renderizou");
 
-      const ordem = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-listagem > .am-row')).map(function(r){
-        return r.getAttribute('data-item') || r.getAttribute('data-familia'); })`);
-      assert.deepStrictEqual(ordem, ["MLB-SEMUP", "FAM-1", "MLB-SEMVAR", "FAM-2"],
-        `esperado A(30%), família(25), B(20%), sem margem por último: ${JSON.stringify(ordem)}`);
-      performanceHandler = null;
-    });
-
-    await check("39b — ordenar por margem (família agregada, NÃO expandida): margemPorFamilia alta leva a família ao topo, sem buscar os filhos", async () => {
-      pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null,
-        margem: { "MLB-SEMUP": { profit: 5 }, "MLB-SEMVAR": { profit: 1 } },
-        margemPorFamilia: { "FAM-1": 999, "FAM-2": 0.5 },
-        faturamento: null, unidadesVendidas: null, curvaAbc: null,
-      });
-
-      await cdp.evaluate(`(function(){
-        var s = document.getElementById('am-ordenacao');
-        s.value = 'margem_desc';
-        s.dispatchEvent(new Event('change'));
-      })()`);
-      await waitForNode(() => chamadasPerformance.length >= 1, "a ordenação não disparou GET /performance");
-      await waitFor(cdp, `(function(){
-        var r = document.querySelector('.am-listagem > .am-row');
-        return r && r.getAttribute('data-familia') === 'FAM-1';
-      })()`, "FAM-1 (margemPorFamilia 999) deveria ir para o topo, acima dos itens avulsos");
+      const estado = await cdp.evaluate(`(function(){
+        var itemC = document.querySelector('.am-row[data-item="MLB-MARG-C"] .am-margem__valor');
+        return {
+          familiaTexto: document.querySelector('${linhaFam("FAM-1")} .am-margem').textContent.trim(),
+          itemCTexto: itemC ? itemC.textContent.trim() : null,
+        }; })()`);
+      assert.strictEqual(estado.familiaTexto, "—", "família NUNCA mostra número de margem, mesmo com margemProjetadaProfit=999 na resposta — regra 'Margem NUNCA agrega'");
+      assert.strictEqual(estado.itemCTexto, "30,0%", "item avulso ao lado continua mostrando o próprio valor do snapshot normalmente");
 
       assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
-        "margem por família já vem agregada do backend — ordenar por margem NUNCA busca o detalhe/filhos da família");
-      performanceHandler = null;
+        "ordenar por margem NUNCA busca o detalhe/filhos da família");
+      ordenarPorGlobalHandler = null;
+      console.log("  ✓ 39a2");
+    });
+
+    await check("39b — margem_asc: SNAPSHOT_INDISPONIVEL mostra aviso inline, não quebra a lista (mesmo contrato de ordenacaoIndisponivel de faturamento/curvaAbc)", async () => {
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: false,
+        ordenacaoIndisponivel: { codigo: "SNAPSHOT_INDISPONIVEL", mensagem: "Margem projetada ainda não foi calculada para este cliente." },
+        anuncios: [{ tipo: "item", item_id: "MLB-SEMUP", key: "item:MLB-SEMUP", titulo: "Item A", status: "active", cover: { thumbnail: null } }],
+        paginacao: { page: 1, limit: 20, total: 1, totalPaginas: 1 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'margem_asc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-SEMUP"]')`, "lista tem de continuar respondendo mesmo sem ordenação");
+      await waitFor(cdp, `(function(){
+        var el = document.getElementById('am-ordenacao-aviso');
+        return el && !el.hidden && el.textContent.includes('Margem projetada ainda não foi calculada');
+      })()`, "aviso de ordenacaoIndisponivel deveria aparecer com a mensagem do backend");
+      ordenarPorGlobalHandler = null;
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      console.log("  ✓ 39b");
     });
 
     await check("39c — unidades_desc (GLOBAL): família usa o valor consolidado que o backend manda, sem buscar detalhe nem reordenar localmente", async () => {
@@ -3127,7 +3226,7 @@ async function run() {
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
     await waitFor(cdp, "document.querySelector('.am-row[data-item]')", "a lista não voltou depois do reload");
 
-    await check("39 — falha total de /performance resolve para '—', a lista continua usável — inclusive a soma do agrupador", async () => {
+    await check("39 — falha total de /performance resolve métricas para '—', a lista continua usável — margem projetada NEM SENTE a falha (não depende mais de /performance)", async () => {
       await waitFor(cdp, `(function(){
         var c = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-metricas7d');
         return c && !c.classList.contains('am-metricas7d--carregando'); })()`,
@@ -3136,11 +3235,14 @@ async function run() {
         var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
         return {
           metricas: r.querySelector('.am-metricas7d').textContent.trim(),
-          margem: r.querySelector('.am-margem').textContent.trim(),
+          margemValor: (r.querySelector('.am-margem__valor') || {}).textContent || null,
           linhaAindaClicavel: r.getAttribute('role') === 'button',
         }; })()`);
       assert.strictEqual(estado.metricas, "—", "falha total tem de virar travessão, nunca ficar preso em 'carregando'");
-      assert.strictEqual(estado.margem, "—");
+      // Margem projetada NÃO depende de /performance — mesmo com ele falhando
+      // por completo, a célula continua mostrando o valor real do snapshot
+      // (25,0%, do próprio fixture da listagem), nunca "—" nem "carregando".
+      assert.strictEqual(estado.margemValor, "25,0%", "margem projetada vem da listagem — uma falha total de /performance não pode apagá-la");
       assert.strictEqual(estado.linhaAindaClicavel, true, "a falha de performance não pode quebrar a linha em si");
 
       // A falha alcança IGUALMENTE o pré-carregamento em background: a soma
@@ -3178,15 +3280,14 @@ async function run() {
     });
 
     await check("39m — escolher 'Margem' no menu aplica a direção padrão dela (maior → menor) no select oculto", async () => {
-      pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null,
-        margem: { "MLB-SEMUP": { marginPercent: 10 }, "MLB-SEMVAR": { marginPercent: 5 } },
-        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
-      });
+      // Margem virou critério GLOBAL nesta missão (ordenarPor em
+      // /anuncios-meli/familias) — não passa mais por GET /performance para
+      // decidir a ordem, então a espera é por chamadasFamilias (mesmo
+      // padrão de 39o/39p para Curva ABC), não mais pelo fingerprint de
+      // /performance.
+      const antes = chamadasFamilias.length;
       await selecionarOrdenacao(cdp, "margem");
-      await waitForNode(() => chamadasPerformance.length >= 1, "escolher Margem no combo não disparou a ordenação");
+      await waitForNode(() => chamadasFamilias.length > antes, "escolher Margem no combo não disparou a busca global (ordenarPor)");
       const estado = await cdp.evaluate(`(function(){
         var dir = document.getElementById('am-ordenacao-dir');
         var menu = document.getElementById('am-ordenacao-menu');
@@ -3202,19 +3303,16 @@ async function run() {
       assert.strictEqual(estado.dirRotulo, "Maior → menor");
       assert.strictEqual(estado.dirAtributo, "desc", "data-dir='desc' é o que acende a seta de baixo no ícone");
       assert.strictEqual(estado.menuFechado, true, "escolher um filtro tem de fechar o popover");
-      performanceHandler = null;
     });
 
     await check("39n — o botão de direção alterna sem trocar de filtro", async () => {
+      // Mesma migração de 39m: alternar a direção de um critério GLOBAL
+      // dispara carregarAnuncios (não mais GET /performance) — espera por
+      // chamadasFamilias, mesmo padrão de 39p para Curva ABC.
       pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null,
-        margem: { "MLB-SEMUP": { marginPercent: 10 }, "MLB-SEMVAR": { marginPercent: 5 } },
-        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
-      });
+      const antes = chamadasFamilias.length;
       await clicar(cdp, "#am-ordenacao-dir", "não achei o botão de direção");
-      await waitForNode(() => chamadasPerformance.length >= 1, "alternar a direção não disparou a ordenação");
+      await waitForNode(() => chamadasFamilias.length > antes, "alternar a direção não disparou a busca global");
       const estado = await cdp.evaluate(`(function(){
         var dir = document.getElementById('am-ordenacao-dir');
         return {
@@ -3227,7 +3325,6 @@ async function run() {
       assert.strictEqual(estado.rotulo, "Margem", "alternar a direção não pode trocar o filtro");
       assert.strictEqual(estado.dirRotulo, "Menor → maior");
       assert.strictEqual(estado.dirAtributo, "asc", "a seta de cima tem de acender depois do toggle");
-      performanceHandler = null;
     });
 
     await check("39o — trocar de filtro (Margem → Curva ABC) usa a direção padrão dele (A → C), não herda a direção anterior", async () => {
@@ -3335,14 +3432,9 @@ async function run() {
 
     await check("39s — uma nova busca reseta a ordenação: o combo volta a mostrar 'Padrão'", async () => {
       pedidos.length = 0;
-      chamadasPerformance.length = 0;
-      performanceHandler = () => ({
-        ok: true, metricas7d: {}, margemIndisponivel: null,
-        margem: { "MLB-SEMUP": { marginPercent: 10 }, "MLB-SEMVAR": { marginPercent: 5 } },
-        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null,
-      });
+      const antes = chamadasFamilias.length;
       await selecionarOrdenacao(cdp, "margem");
-      await waitForNode(() => chamadasPerformance.length >= 1, "escolher Margem não disparou a ordenação");
+      await waitForNode(() => chamadasFamilias.length > antes, "escolher Margem não disparou a busca global");
       assert.strictEqual(await cdp.evaluate(`document.getElementById('am-ordenacao').value`), "margem_desc");
 
       await cdp.evaluate(`(function(){

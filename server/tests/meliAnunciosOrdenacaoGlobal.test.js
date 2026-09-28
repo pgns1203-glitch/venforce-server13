@@ -1,20 +1,27 @@
 // server/tests/meliAnunciosOrdenacaoGlobal.test.js
 //
 // GET /anuncios-meli/familias?ordenarPor= — ordenação GLOBAL contra o
-// catálogo filtrado inteiro (Faturamento % e Curva ABC), corrigindo o bug em
-// que a ordenação por performance só valia dentro da página atual. Margem e
-// Unidades vendidas NÃO entram aqui — continuam locais (ver
-// Portal/anuncios-meli.js aplicarOrdenacaoPerformance).
+// catálogo filtrado inteiro (Faturamento %, Curva ABC, Unidades vendidas 7d e
+// Margem projetada), corrigindo o bug em que a ordenação por performance só
+// valia dentro da página atual. Margem projetada virou GLOBAL nesta missão
+// (ver docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_GLOBAL_PLANO_TECNICO.md) —
+// lê SOMENTE o snapshot já persistido (`anuncios_margem_projetada_snapshot`),
+// nunca o Motor de Margem/Mercado Livre durante a listagem.
 //
 // O que este teste protege:
 //   1. sequência monotônica cruzando a fronteira de página (o bug relatado:
 //      pág.1 10/9/8 -> pág.2 7/6/5, nunca 20/15/12);
-//   2. família usa SEMPRE o agregado porFamilia, nunca o filho mais forte;
-//   3. item sem receita no período fica no fim, nas duas direções;
-//   4. Motor indisponível cai no SQL padrão com ordenacaoAplicada:false;
-//   5. sem ordenarPor (ou valor inválido de margem/unidades), resposta
-//      idêntica ao path antigo — regressão zero;
-//   6. clienteContaId isola o ranking (nunca mistura receita de outra conta).
+//   2. família usa SEMPRE o agregado (porFamilia), nunca o filho mais forte;
+//   3. item sem receita/margem computável no período fica no fim, nas duas
+//      direções (NULLS LAST);
+//   4. Motor/snapshot indisponível cai no SQL padrão com
+//      ordenacaoAplicada:false, nunca 500;
+//   5. sem ordenarPor (ou valor inválido), resposta idêntica ao path antigo —
+//      regressão zero;
+//   6. clienteContaId isola o ranking (nunca mistura receita/margem de outra
+//      conta);
+//   7. margem_asc/margem_desc NUNCA chamam motorMargemService — só leem
+//      margemProjetadaSnapshotRepository.lerSnapshotPorItens.
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
 
@@ -37,6 +44,13 @@ let chamadasMontarItens = [];
 let vendasHandler = null; // ({ clienteId, mlUserId, itemIds }) => { ok, porItem } ou { ok:false }
 let chamadasVendas7d = [];
 
+// margem projetada (snapshot, NUNCA o Motor) — snapshotHandler simula
+// margemProjetadaSnapshotRepository.lerSnapshotPorItens, chamadasSnapshot
+// registra cada chamada (mesmo padrão de chamadasVendas7d) pro teste provar
+// que o lote pedido é o catálogo inteiro filtrado.
+let snapshotHandler = null; // ({ clienteId, itemIds }) => Map(item_id -> {...}) ou throw
+let chamadasSnapshot = [];
+
 const originalLoad = Module._load;
 Module._load = function loadWithStubs(request, parent, isMain) {
   if (request === "../services/motorMargem/motorMargemService") {
@@ -55,6 +69,15 @@ Module._load = function loadWithStubs(request, parent, isMain) {
         chamadasVendas7d.push(args);
         if (!vendasHandler) return { ok: true, porItem: {} };
         return vendasHandler(args);
+      },
+    };
+  }
+  if (request === "../services/motorMargem/margemProjetadaSnapshotRepository") {
+    return {
+      async lerSnapshotPorItens(args) {
+        chamadasSnapshot.push(args);
+        if (!snapshotHandler) return new Map();
+        return snapshotHandler(args);
       },
     };
   }
@@ -346,17 +369,27 @@ async function run() {
     console.log("  ✓ E. sem ordenarPor: resposta idêntica ao path antigo, sem campos novos");
   });
 
-  // F. valor inválido (ex.: 'margem_desc', que é ordenação LOCAL) é ignorado
-  //    pelo backend — cai no SQL padrão, nunca erro.
+  // F. margem_desc virou GLOBAL (lê o snapshot, nunca o Motor) — MUDA de
+  //    comportamento em relação ao contrato antigo (antes: ignorado
+  //    silenciosamente, ordenação LOCAL de página no frontend). Ver
+  //    docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_GLOBAL_PLANO_TECNICO.md §8.2/§10 FASE 4.
   await withMockDb({
     ...UMA_CONTA,
-    anuncios: [anuncioFixture({ item_id: "MLB1" })],
+    anuncios: [anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" })],
   }, async () => {
+    chamadasMontarItens.length = 0;
+    snapshotHandler = () => new Map([
+      ["MLB1", { marginPercent: 30, profit: 10, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "orquestrador_manual" }],
+      ["MLB2", { marginPercent: 10, profit: 2, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "orquestrador_manual" }],
+    ]);
     const res = fakeRes();
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
     assert.strictEqual(res.corpo.ok, true);
-    assert.strictEqual(res.corpo.ordenacaoAplicada, undefined);
-    console.log("  ✓ F. ordenarPor=margem_desc (local, não suportado no backend) é ignorado, sem erro");
+    assert.strictEqual(res.corpo.ordenacaoAplicada, true, "margem_desc agora É aplicado globalmente (mudança de contrato desta missão)");
+    assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB1", "MLB2"], "MLB1 (30%) > MLB2 (10%)");
+    assert.strictEqual(chamadasMontarItens.length, 0, "margem_desc NUNCA chama o Motor de Margem — só lê o snapshot persistido");
+    snapshotHandler = null;
+    console.log("  ✓ F. ordenarPor=margem_desc: MUDOU de contrato — agora GLOBAL, lê snapshot, nunca o Motor");
   });
 
   // G. clienteContaId isola o ranking — nunca mistura receita de outra conta.
@@ -630,6 +663,303 @@ async function run() {
     assert.strictEqual(res.corpo.ordenacaoIndisponivel.codigo, "CONTA_ML_INDISPONIVEL");
     console.log("  ✓ O. sem conta ML resolvível: fallback pro SQL padrão, ordenacaoAplicada:false, nunca 500");
   });
+
+  // ── P-Z: margem_asc/margem_desc — snapshot como ÚNICA fonte (nunca o
+  //    Motor), ver docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_GLOBAL_PLANO_TECNICO.md ──
+
+  // P. DESC: 30/20/10/null cruzando página 1 -> 2, null sempre no fim — mesma
+  //    prova ponta a ponta do teste A, agora para margem.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-30" }), anuncioFixture({ item_id: "MLB-20" }),
+      anuncioFixture({ item_id: "MLB-10" }), anuncioFixture({ item_id: "MLB-NULL" }),
+    ],
+  }, async () => {
+    chamadasMontarItens.length = 0;
+    snapshotHandler = () => new Map([
+      ["MLB-30", { marginPercent: 30, profit: 9, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "orquestrador_manual" }],
+      ["MLB-20", { marginPercent: 20, profit: 6, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "orquestrador_manual" }],
+      ["MLB-10", { marginPercent: 10, profit: 3, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "orquestrador_manual" }],
+      // MLB-NULL: computable=false — marginPercent chega null do repositório.
+      ["MLB-NULL", { marginPercent: null, profit: null, computable: false, status: "UNVALIDATED", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "orquestrador_manual" }],
+    ]);
+
+    const res1 = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "2", ordenarPor: "margem_desc" } }, res1);
+    assert.strictEqual(res1.corpo.ordenacaoAplicada, true);
+    assert.deepStrictEqual(res1.corpo.anuncios.map((a) => a.item_id), ["MLB-30", "MLB-20"]);
+    assert.deepStrictEqual(res1.corpo.anuncios.map((a) => a.margemProjetadaPercent), [30, 20]);
+    assert.strictEqual(res1.corpo.anuncios[0].margemProjetadaProfit, 9, "profit exposto, mas informativo — não decide posição");
+    assert.strictEqual(res1.corpo.anuncios[0].margemProjetadaComputable, true);
+    assert.strictEqual(res1.corpo.anuncios[0].margemProjetadaStatus, "HEALTHY");
+    assert.strictEqual(res1.corpo.anuncios[0].margemProjetadaCalculadaEm, "2026-09-28T05:00:00Z");
+    assert.strictEqual(res1.corpo.anuncios[0].margemProjetadaOrigemJob, "orquestrador_manual");
+
+    const res2 = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "2", limit: "2", ordenarPor: "margem_desc" } }, res2);
+    assert.deepStrictEqual(res2.corpo.anuncios.map((a) => a.item_id), ["MLB-10", "MLB-NULL"], "não computável fica no FIM mesmo em DESC");
+    assert.strictEqual(res2.corpo.anuncios[1].margemProjetadaPercent, null, "sem margem computável — null, nunca 0 inventado");
+    assert.strictEqual(res2.corpo.anuncios[1].margemProjetadaComputable, false);
+    assert.strictEqual(chamadasMontarItens.length, 0, "margem_desc nunca chama o Motor de Margem");
+    snapshotHandler = null;
+    console.log("  ✓ P. margem_desc: 30/20/10/null cruzando página 1 -> 2, não computável sempre no fim");
+  });
+
+  // Q. ASC: 10/20/30/null — não computável continua no fim (nunca vai para o
+  //    topo só porque a direção inverteu).
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-30" }), anuncioFixture({ item_id: "MLB-20" }),
+      anuncioFixture({ item_id: "MLB-10" }), anuncioFixture({ item_id: "MLB-NULL" }),
+    ],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-30", { marginPercent: 30, profit: 9, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-20", { marginPercent: 20, profit: 6, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-10", { marginPercent: 10, profit: 3, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-NULL", { marginPercent: null, profit: null, computable: false, status: "UNVALIDATED", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_asc" } }, res);
+    assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB-10", "MLB-20", "MLB-30", "MLB-NULL"],
+      "ASC: menor margem computável primeiro, não computável continua no fim");
+    snapshotHandler = null;
+    console.log("  ✓ Q. margem_asc: 10/20/30/null — NULLS LAST vale nas duas direções");
+  });
+
+  // R. família = MÉDIA dos filhos computáveis (decisão desta missão — nunca
+  //    soma de profit, unidade diferente do marginPercent do item avulso, ver
+  //    comentário de montarMargemProjetadaGlobal) — nunca herda do filho mais
+  //    forte isolado.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B", user_product_id: null }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    // FAM1: filhos 40% e 20% -> média 30%. MLB-B avulso: 25%.
+    // Média (30) > avulso (25) -> família vence, mas NÃO pelo filho mais
+    // forte isolado (40) nem pelo mais fraco isolado (20).
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 40, profit: 10, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T04:00:00Z", origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 20, profit: 4, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "manual_cli" }],
+      ["MLB-B", { marginPercent: 25, profit: 7, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:00:00Z", origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.ok(familia, "FAM1 precisa aparecer como família");
+    assert.strictEqual(res.corpo.anuncios[0].family_id, "FAM1", "FAM1 (média 30%) > MLB-B (25%)");
+    assert.strictEqual(familia.margemProjetadaPercent, 30, "família usa a MÉDIA dos filhos computáveis (40+20)/2=30, nunca o filho isolado");
+    assert.strictEqual(familia.margemProjetadaProfit, 14, "profit de família É a soma (10+4=14) — informativo, não decide posição");
+    assert.strictEqual(familia.margemProjetadaComputable, true);
+    assert.strictEqual(familia.margemProjetadaStatus, null, "status não agrega por família — nunca inventado");
+    assert.strictEqual(familia.margemProjetadaCalculadaEm, "2026-09-28T05:00:00Z", "calculadoEm de família é o MAIS RECENTE entre os filhos");
+    const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");
+    assert.strictEqual(itemAvulso.margemProjetadaPercent, 25, "MLB-B avulso: valor próprio, sem agregação de família");
+    snapshotHandler = null;
+    console.log("  ✓ R. margem_desc: família usa a MÉDIA dos filhos computáveis (nunca o filho isolado); profit soma, informativo");
+  });
+
+  // S. família sem NENHUM filho computável fica null (vai para o fim) — não
+  //    é tratada como 0% nem herda do avulso.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-B", { marginPercent: 5, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      // MLB-A1/MLB-A2: sem entrada no Map — snapshot ausente pros dois.
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaPercent, null, "família sem nenhum filho computável: null, nunca 0");
+    assert.strictEqual(familia.margemProjetadaComputable, false);
+    assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB-B", "FAM1"].map((k) => (k === "FAM1" ? familia.item_id : k)));
+    assert.strictEqual(res.corpo.anuncios[0].family_id, null, "MLB-B (5%, computável) vem antes de FAM1 (null)");
+    snapshotHandler = null;
+    console.log("  ✓ S. margem_desc: família sem nenhum filho computável fica null, no fim — nunca 0 nem herda do avulso");
+  });
+
+  // T. cobertura ZERO (job nunca rodou para este cliente): fallback pro SQL
+  //    padrão, ordenacaoAplicada:false, codigo SNAPSHOT_INDISPONIVEL — nunca
+  //    500 nem "ordenação" que é só o tie-break disfarçado.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" })],
+  }, async () => {
+    snapshotHandler = () => new Map(); // nenhuma linha — cobertura zero
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    assert.strictEqual(res.corpo.ok, true, "fallback nunca é 500");
+    assert.strictEqual(res.corpo.ordenacaoAplicada, false);
+    assert.deepStrictEqual(res.corpo.ordenacaoIndisponivel, { codigo: "SNAPSHOT_INDISPONIVEL", mensagem: "Margem projetada ainda não foi calculada para este cliente." });
+    assert.strictEqual(res.corpo.anuncios.length, 2, "SQL padrão continua respondendo a página normalmente");
+    snapshotHandler = null;
+    console.log("  ✓ T. cobertura zero do snapshot: fallback pro SQL padrão, ordenacaoAplicada:false, SNAPSHOT_INDISPONIVEL");
+  });
+
+  // U. cobertura PARCIAL (alguns itens têm snapshot, outros não) NÃO cai no
+  //    fallback — os sem snapshot só vão para o fim via NULLS LAST, mesma
+  //    regra de "sem receita no período" (teste C).
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [anuncioFixture({ item_id: "MLB-COM" }), anuncioFixture({ item_id: "MLB-SEM" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-COM", { marginPercent: 15, profit: 3, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    assert.strictEqual(res.corpo.ordenacaoAplicada, true, "cobertura parcial NÃO é fallback — pelo menos 1 item computável");
+    assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB-COM", "MLB-SEM"]);
+    const semSnapshot = res.corpo.anuncios.find((a) => a.item_id === "MLB-SEM");
+    assert.strictEqual(semSnapshot.margemProjetadaPercent, null, "snapshot ausente — null, nunca 0/erro");
+    assert.strictEqual(semSnapshot.margemProjetadaComputable, false);
+    snapshotHandler = null;
+    console.log("  ✓ U. cobertura parcial: item sem snapshot fica no fim (null), não dispara fallback");
+  });
+
+  // V. erro do repositório (ex.: falha de conexão) cai no fallback, nunca
+  //    500 — mesma garantia dos outros 3 critérios (testes D/K/N).
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [anuncioFixture({ item_id: "MLB1" }), anuncioFixture({ item_id: "MLB2" })],
+  }, async () => {
+    snapshotHandler = () => { throw new Error("ECONNRESET simulado"); };
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_asc" } }, res);
+    assert.strictEqual(res.corpo.ok, true, "fallback nunca é 500");
+    assert.strictEqual(res.corpo.ordenacaoAplicada, false);
+    assert.deepStrictEqual(res.corpo.ordenacaoIndisponivel, { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." });
+    assert.strictEqual(res.corpo.anuncios.length, 2, "SQL padrão continua respondendo a página normalmente");
+    snapshotHandler = null;
+    console.log("  ✓ V. erro do repositório de snapshot: fallback pro SQL padrão, ordenacaoAplicada:false, nunca 500");
+  });
+
+  // W. clienteContaId isola o catálogo pedido ao repositório — nunca mistura
+  //    item_id de outra conta no lote (mesmo cuidado do teste G).
+  await withMockDb({
+    contas: [
+      { id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", external_account_id: "111", is_primary: true, ativo: true },
+      { id: 20, cliente_id: 1, marketplace: "meli", nome: "ML 2", external_account_id: "222", is_primary: false, ativo: true },
+    ],
+    grants: [grantFixture({ id: 100, cliente_id: 1, ml_user_id: "111" }), grantFixture({ id: 200, cliente_id: 1, ml_user_id: "222" })],
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-C10", cliente_conta_id: 10 }),
+      anuncioFixture({ item_id: "MLB-C20", cliente_conta_id: 20 }),
+    ],
+  }, async () => {
+    chamadasSnapshot.length = 0;
+    snapshotHandler = () => new Map([
+      ["MLB-C10", { marginPercent: 10, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-C20", { marginPercent: 999, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", clienteContaId: "10", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB-C10"], "MLB-C20 é de outra conta — não pode nem chegar ao lote pedido ao repositório");
+    assert.strictEqual(chamadasSnapshot.length, 1);
+    assert.deepStrictEqual(chamadasSnapshot[0].itemIds, ["MLB-C10"], "lote pedido ao repositório já vem escopado pela conta — nunca item_id de outra conta");
+    snapshotHandler = null;
+    console.log("  ✓ W. clienteContaId isola o lote pedido ao repositório de snapshot — nunca mistura contas");
+  });
+
+  // X. tie-break determinístico quando margemProjetadaPercent EMPATA em valor
+  //    NÃO-nulo (teste J já cobre o empate all-null; aqui os valores são
+  //    iguais e reais, provando que o comparador não trata "cmp===0" como
+  //    "ordem qualquer").
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-D" }), anuncioFixture({ item_id: "MLB-B" }),
+      anuncioFixture({ item_id: "MLB-A" }), anuncioFixture({ item_id: "MLB-C" }),
+    ],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-D", { marginPercent: 15, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-B", { marginPercent: 15, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A", { marginPercent: 15, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-C", { marginPercent: 15, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB-A", "MLB-B", "MLB-C", "MLB-D"],
+      "todos empatados em 15% — desempate determinístico por grupo_key ASC");
+    snapshotHandler = null;
+    console.log("  ✓ X. margem_desc: tie-break por grupo_key quando margemProjetadaPercent empata em valor real (não só null)");
+  });
+
+  // Nota: "filtro aplicado ANTES do ranking" (q/status/filtro) é uma
+  // garantia do código COMPARTILHADO `familiaService.listarChavesFiltradas`
+  // (primeiro passo de `listarAgrupadoOrdenadoPorMotor`, idêntico para os 4
+  // critérios) — já coberta com matchSql real (não a versão simplificada do
+  // MockDb deste arquivo, que ignora status/q de propósito) em
+  // `meliAnunciosFamilias.test.js:919`. margem_desc não introduz nenhum
+  // caminho de filtro novo, então não duplicamos o teste aqui.
+
+  // Z. total da paginação é o total do universo FILTRADO, sem duplicar —
+  //    mesma garantia estrutural que os outros 3 critérios já têm (a família
+  //    conta como 1 grupo, não como N itens).
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 10, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 20, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-B", { marginPercent: 30, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    assert.strictEqual(res.corpo.paginacao.total, 2, "2 grupos (FAM1 + MLB-B avulso) — família conta 1 vez, nunca duplicada");
+    assert.strictEqual(res.corpo.anuncios.length, 2);
+    snapshotHandler = null;
+    console.log("  ✓ Z. margem_desc: total da paginação é o universo de GRUPOS filtrado, sem duplicar família");
+  });
+
+  // AA. Checagem ESTÁTICA (arquitetural, não só o spy em runtime dos testes
+  //     acima): o bloco `margemProjetada` do controller não pode nem
+  //     REFERENCIAR motorMargemService/meliApiEvidenceAdapter/
+  //     marketplaceCurrentQuoteService/mlFetch — nunca uma chamada externa ao
+  //     Mercado Livre durante a listagem. Isola só o texto do branch (entre o
+  //     `else if (config.campo === "margemProjetada")` e o próximo `} else {`
+  //     no mesmo nível), porque o ARQUIVO inteiro legitimamente importa
+  //     motorMargemService (usado por /performance, endpoint diferente).
+  {
+    const fs = require("fs");
+    const path = require("path");
+    const src = fs.readFileSync(
+      path.join(__dirname, "../controllers/meliAnunciosController.js"),
+      "utf8"
+    );
+    const inicio = src.indexOf('config.campo === "margemProjetada"');
+    assert.ok(inicio > -1, "branch margemProjetada precisa existir no controller");
+    const fim = src.indexOf("} else {", inicio);
+    assert.ok(fim > inicio, "precisa achar o fim do branch (próximo `} else {` no mesmo nível)");
+    const bloco = src.slice(inicio, fim);
+
+    for (const proibido of ["motorMargemService", "meliApiEvidenceAdapter", "marketplaceCurrentQuoteService", "mlFetch("]) {
+      assert.ok(!bloco.includes(proibido), `branch margemProjetada NÃO pode referenciar ${proibido}`);
+    }
+    assert.ok(bloco.includes("margemProjetadaSnapshotRepository"), "branch margemProjetada precisa usar o repositório de snapshot");
+    console.log("  ✓ AA. branch margemProjetada (checagem estática): sem referência a Motor/ML — só o repositório de snapshot");
+  }
 
   console.log("meliAnunciosOrdenacaoGlobal.test.js passed");
 }

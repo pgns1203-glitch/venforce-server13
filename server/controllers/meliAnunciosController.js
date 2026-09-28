@@ -17,6 +17,7 @@ const anunciosService = require("../services/meliAnuncios/meliAnunciosService");
 const familiaService = require("../services/meliAnuncios/meliFamiliaService");
 const syncService = require("../services/meliAnuncios/meliSyncService");
 const otimizadorService = require("../services/meliAnuncios/otimizadorMeliService");
+const margemProjetadaSnapshotRepository = require("../services/motorMargem/margemProjetadaSnapshotRepository");
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const conteudoService = require("../services/meliAnuncios/meliConteudoService");
 const estoqueService = require("../services/meliAnuncios/meliEstoqueService");
@@ -202,19 +203,21 @@ async function listar(req, res) {
 }
 
 // Critérios com ranking GLOBAL (contra o catálogo filtrado inteiro).
-// margem_* NÃO entra aqui de propósito — continua ordenação local de página
-// no frontend (aplicarOrdenacaoPerformance em Portal/anuncios-meli.js):
-// margem passa pelo `enrichBatch` do Motor (chamadas AO VIVO ao Mercado
-// Livre por página, ver motorMargemService.js), e rodar isso pro catálogo
-// inteiro a cada ordenação teria custo/risco de rate limit não aceito —
-// precisaria de uma camada de cache/pré-cálculo, que é um projeto à parte
-// (auditoria "globalizar Unidades vendidas 7d / manter Margem local").
 //
-// unidadesVendidas7d_* virou GLOBAL: `buscarVendas7dPorItens`
+// unidadesVendidas7d_* é GLOBAL: `buscarVendas7dPorItens`
 // (meliMetricas7dService.js) já busca os pedidos da CONTA INTEIRA no período
 // e só agrega por item em JS — mesmo truque de custo do `porMlb` do Motor
 // (faturamento/curvaAbc), então globalizar não adiciona chamada nenhuma além
 // da que já seria feita pro lote da página.
+//
+// margem_* virou GLOBAL (antes: ordenação local de página no frontend, via
+// ORDENACOES_PERFORMANCE/aplicarOrdenacaoPerformance em
+// Portal/anuncios-meli.js — NÃO alterado nesta missão). O que viabilizou isso
+// foi a tabela `anuncios_margem_projetada_snapshot` (persistência assíncrona,
+// fora do request): a leitura AQUI é só um SELECT contra o snapshot já
+// calculado — nunca `motorMargemService.montarItens`/`enrichBatch`, nunca
+// chamada ao Mercado Livre durante a listagem. Ver
+// docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_GLOBAL_PLANO_TECNICO.md.
 const ORDENACOES_GLOBAIS = {
   faturamento_asc: { campo: "faturamento", direcao: "asc" },
   faturamento_desc: { campo: "faturamento", direcao: "desc" },
@@ -222,6 +225,8 @@ const ORDENACOES_GLOBAIS = {
   curvaAbc_desc: { campo: "curvaAbc", direcao: "desc" },
   unidades_asc: { campo: "unidadesVendidas7d", direcao: "asc" },
   unidades_desc: { campo: "unidadesVendidas7d", direcao: "desc" },
+  margem_asc: { campo: "margemProjetada", direcao: "asc" },
+  margem_desc: { campo: "margemProjetada", direcao: "desc" },
 };
 const CURVA_ABC_ORDEM = { A: 1, B: 2, C: 3 };
 
@@ -283,6 +288,74 @@ function montarUnidadesVendidasGlobal(resultadoVendas, itemIds, porFamiliaItens)
   return { periodoDias: metricas7dService.JANELA_DIAS, porItem, porFamilia };
 }
 
+// margemProjetada é GLOBAL e NÃO passa pelo Motor de Margem — lê só o
+// snapshot já persistido (`margemProjetadaSnapshotRepository.lerSnapshotPorItens`,
+// ver comentário de ORDENACOES_GLOBAIS acima).
+//
+// `porItem`/`porFamilia` carregam o valor USADO PARA ORDENAR
+// (`margin_percent`, igual à unidade do item — nunca lucro em R$): mesma
+// unidade nos dois níveis é o que faz `x.valorOrdenacao - y.valorOrdenacao`
+// (comparador genérico de `listarAgrupadoOrdenadoPorMotor`) fazer sentido
+// numericamente, mesmo invariante que `montarFaturamento`/`montarCurvaAbc`
+// já mantêm (percentual/classe em ambos os níveis, nunca um R$ vs. outro %).
+//
+// Família = MÉDIA do `marginPercent` dos filhos COMPUTÁVEIS (nunca herda do
+// filho mais forte/mais fraco isolado, mesmo espírito de "agregado, não
+// filho isolado" que os outros 3 critérios já aplicam) — decisão desta
+// missão, não a nota tentativa do plano técnico (§8.2, "soma de profit"):
+// soma de profit e média de percentual são unidades DIFERENTES, e o profit
+// (R$) não pode ser comparado com o marginPercent (%) de um item avulso no
+// mesmo ORDER BY. `profit` continua exposto (soma dos filhos computáveis),
+// mas só como dado INFORMATIVO — nunca decide a posição.
+// Filho sem `marginPercent` computável não entra na média (nem no
+// denominador); família sem NENHUM filho computável fica null (vai para o
+// fim, mesma regra NULLS LAST dos itens avulsos).
+function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) {
+  const porItem = {};
+  const porItemProfit = {};
+  const porItemComputable = {};
+  const porItemStatus = {};
+  const porItemCalculadoEm = {};
+  const porItemOrigemJob = {};
+  for (const itemId of itemIds) {
+    const s = snapshotPorItem.get(String(itemId));
+    porItem[itemId] = s && s.computable && s.marginPercent != null ? s.marginPercent : null;
+    porItemProfit[itemId] = s && s.profit != null ? s.profit : null;
+    porItemComputable[itemId] = !!(s && s.computable);
+    porItemStatus[itemId] = (s && s.status) || null;
+    porItemCalculadoEm[itemId] = (s && s.calculadoEm) || null;
+    porItemOrigemJob[itemId] = (s && s.origemJob) || null;
+  }
+
+  const porFamilia = {};
+  const porFamiliaProfit = {};
+  const porFamiliaComputable = {};
+  const porFamiliaCalculadoEm = {};
+  for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
+    let somaPercent = 0;
+    let qtdComputavel = 0;
+    let somaProfit = 0;
+    let teveProfit = false;
+    let maisRecente = null;
+    for (const itemId of itensDaFamilia) {
+      const s = snapshotPorItem.get(String(itemId));
+      if (!s) continue;
+      if (s.computable && s.marginPercent != null) { somaPercent += s.marginPercent; qtdComputavel++; }
+      if (s.profit != null) { somaProfit += s.profit; teveProfit = true; }
+      if (s.calculadoEm && (!maisRecente || new Date(s.calculadoEm) > new Date(maisRecente))) maisRecente = s.calculadoEm;
+    }
+    porFamilia[familyId] = qtdComputavel > 0 ? Math.round((somaPercent / qtdComputavel) * 100) / 100 : null;
+    porFamiliaProfit[familyId] = teveProfit ? Math.round(somaProfit * 100) / 100 : null;
+    porFamiliaComputable[familyId] = qtdComputavel > 0;
+    porFamiliaCalculadoEm[familyId] = maisRecente;
+  }
+
+  return {
+    porItem, porItemProfit, porItemComputable, porItemStatus, porItemCalculadoEm, porItemOrigemJob,
+    porFamilia, porFamiliaProfit, porFamiliaComputable, porFamiliaCalculadoEm,
+  };
+}
+
 async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit, config }) {
   const chaves = await familiaService.listarChavesFiltradas({
     clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro,
@@ -340,6 +413,46 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
       });
     }
     ranking = montarUnidadesVendidasGlobal(resultadoVendas, todosItemIds, porFamiliaItens);
+  } else if (config.campo === "margemProjetada") {
+    campoResposta = "margemProjetadaPercent";
+
+    let snapshotPorItem;
+    try {
+      snapshotPorItem = await margemProjetadaSnapshotRepository.lerSnapshotPorItens({
+        clienteId: cliente.id, itemIds: todosItemIds,
+      });
+    } catch (err) {
+      // Mesma garantia dos outros 3 critérios: falha de leitura (erro de
+      // banco, timeout) nunca vira 500 — cai no SQL padrão, só avisa.
+      console.error(
+        "[anuncios-meli] listarAgrupadoOrdenadoPorMotor: erro ao ler snapshot de margem projetada, caindo para ordem padrão:",
+        err.message
+      );
+      return fallbackOrdenacaoIndisponivel({
+        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        indisponivel: { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." },
+      });
+    }
+
+    // Cobertura ZERO (job nunca rodou para este cliente/catálogo filtrado) é
+    // diferente de cobertura PARCIAL: com zero linha computável, "ordenar por
+    // margem" seria só o tie-break por grupo_key disfarçado de ordenação —
+    // cai no fallback (ordenacaoAplicada:false), igual a Motor indisponível.
+    // Cobertura PARCIAL não cai aqui: os itens sem snapshot só vão para o
+    // fim via NULLS LAST (mesma regra de "sem receita no período").
+    const temAlgumComputavel = Array.from(snapshotPorItem.values())
+      .some((s) => s.computable && s.marginPercent != null);
+    if (!temAlgumComputavel) {
+      return fallbackOrdenacaoIndisponivel({
+        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        indisponivel: {
+          codigo: "SNAPSHOT_INDISPONIVEL",
+          mensagem: "Margem projetada ainda não foi calculada para este cliente.",
+        },
+      });
+    }
+
+    ranking = montarMargemProjetadaGlobal(snapshotPorItem, todosItemIds, porFamiliaItens);
   } else {
     let motorResultado;
     try {
@@ -436,6 +549,36 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
       anuncio.faturamentoValor = anuncio.tipo === "familia"
         ? (ranking.porFamiliaValor[anuncio.family_id] != null ? ranking.porFamiliaValor[anuncio.family_id] : null)
         : (ranking.porItemValor[anuncio.item_id] != null ? ranking.porItemValor[anuncio.item_id] : null);
+    }
+  }
+  // Campos extras da margem projetada — `margemProjetadaPercent` (o valor
+  // usado pra ordenar) já foi atribuído acima via `campoResposta`; os demais
+  // são só informativos (nunca decidem posição). `profit` de família é a
+  // SOMA dos filhos computáveis (mesma regra de "agregado, não filho
+  // isolado" — unidade R$, comparável entre si, mas NUNCA usada como
+  // valorOrdenacao, ver comentário de montarMargemProjetadaGlobal).
+  // `status`/`origemJob` de família ficam null de propósito: são
+  // classificações POR ITEM (não existe "status agregado" sem inventar uma
+  // regra nova) — `calculadoEm` de família é o MAIS RECENTE entre os filhos
+  // computáveis (freshness do grupo, mesmo padrão de `MAX(b.updated_at)` já
+  // usado em LISTAR_AGRUPADO_PAGINA).
+  if (config.campo === "margemProjetada") {
+    for (const anuncio of anuncios) {
+      if (anuncio.tipo === "familia") {
+        anuncio.margemProjetadaProfit = ranking.porFamiliaProfit[anuncio.family_id] != null
+          ? ranking.porFamiliaProfit[anuncio.family_id] : null;
+        anuncio.margemProjetadaComputable = ranking.porFamiliaComputable[anuncio.family_id] || false;
+        anuncio.margemProjetadaStatus = null;
+        anuncio.margemProjetadaCalculadaEm = ranking.porFamiliaCalculadoEm[anuncio.family_id] || null;
+        anuncio.margemProjetadaOrigemJob = null;
+      } else {
+        anuncio.margemProjetadaProfit = ranking.porItemProfit[anuncio.item_id] != null
+          ? ranking.porItemProfit[anuncio.item_id] : null;
+        anuncio.margemProjetadaComputable = ranking.porItemComputable[anuncio.item_id] || false;
+        anuncio.margemProjetadaStatus = ranking.porItemStatus[anuncio.item_id] || null;
+        anuncio.margemProjetadaCalculadaEm = ranking.porItemCalculadoEm[anuncio.item_id] || null;
+        anuncio.margemProjetadaOrigemJob = ranking.porItemOrigemJob[anuncio.item_id] || null;
+      }
     }
   }
 

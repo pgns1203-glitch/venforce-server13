@@ -87,4 +87,45 @@ async function upsertSnapshot({ clienteId, clienteContaId, itemId, item, origemJ
   return { inserted: rows[0].inserted === true };
 }
 
-module.exports = { upsertSnapshot, valorEvidencia };
+/**
+ * Leitura em lote do snapshot para um conjunto de item_id, escopado por
+ * cliente_id — usada pela ordenação GLOBAL por margem projetada
+ * (`meliAnunciosController.listarAgrupadoOrdenadoPorMotor`). NÃO filtra por
+ * `cliente_conta_id`: a autoridade de account-scope é `meli_anuncios` (ver
+ * comentário de `meliFamiliaService.js` sobre `clausulaConta`) — quem chama
+ * já resolveu `itemIds` contra o catálogo da conta certa antes de pedir aqui,
+ * então um item_id de outra conta nunca aparece no array de entrada.
+ *
+ * Devolve `Map(item_id -> {marginPercent, profit, computable, status,
+ * calculadoEm, origemJob})`. Item sem linha no snapshot simplesmente não
+ * entra no Map (o chamador decide o que fazer com "ausente" — nunca 0/false
+ * inventado aqui).
+ */
+async function lerSnapshotPorItens({ clienteId, itemIds }, db = pool) {
+  const ids = Array.from(new Set((itemIds || []).map(String).filter(Boolean)));
+  if (!ids.length) return new Map();
+
+  const { rows } = await db.query(
+    `-- LER_SNAPSHOT_MARGEM_PROJETADA_POR_ITENS
+     SELECT item_id, margin_percent, profit, computable, status, calculado_em, origem_job
+       FROM anuncios_margem_projetada_snapshot
+      WHERE cliente_id = $1
+        AND item_id = ANY($2::text[]);`,
+    [clienteId, ids]
+  );
+
+  const porItem = new Map();
+  for (const r of rows) {
+    porItem.set(r.item_id, {
+      marginPercent: r.margin_percent != null ? Number(r.margin_percent) : null,
+      profit: r.profit != null ? Number(r.profit) : null,
+      computable: r.computable === true,
+      status: r.status || null,
+      calculadoEm: r.calculado_em || null,
+      origemJob: r.origem_job || null,
+    });
+  }
+  return porItem;
+}
+
+module.exports = { upsertSnapshot, valorEvidencia, lerSnapshotPorItens };

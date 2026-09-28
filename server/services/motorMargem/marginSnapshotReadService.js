@@ -254,7 +254,7 @@ function comporItem(row, realizada, deps = {}) {
   const agregado = realizada.porMlb.get(row.itemId) || null;
   const realizado = centralVendas.aplicarEvidenciasRealizadas(bag, { agregado, fallbackObservedAt: realizada.fallbackObservedAt });
   const reembolso = realizada.reembolsoPorMlb.get(row.itemId) || null;
-  centralVendas.aplicarEvidenciaReembolso(bag, { reembolso, fallbackObservedAt: realizada.fallbackObservedAt });
+  const reembolsoInfo = centralVendas.aplicarEvidenciaReembolso(bag, { reembolso, fallbackObservedAt: realizada.fallbackObservedAt });
 
   const fields = core.resolveAllFields(bag);
   const hasOrders = Boolean(realizado);
@@ -290,6 +290,31 @@ function comporItem(row, realizada, deps = {}) {
     missing: realized.missing,
     assumed: realized.assumed,
   };
+  const sales = {
+    hasOrders,
+    unidades: realizado?.unidades ?? null,
+    pedidos: realizado?.pedidos ?? null,
+    receita: realizado?.receita ?? null,
+    ultimaVendaEm: realizado?.ultimaVendaEm ?? null,
+    precoMedio: realizado?.precoUnitarioMedio ?? null,
+    // Contraprova (mesmo contrato do Motor ao vivo, marginItem.sales): o que
+    // a Central de Vendas persistiu × o que o núcleo recalcula.
+    resultadoPersistido: realizado?.resultadoPersistido ?? null,
+    resultadoRecalculado:
+      realized.profit === null || realized.profit === undefined || !realizado
+        ? null
+        : core.round2(realized.profit * (realizado.unidades || 0)),
+    cobertura: realizado?.cobertura ?? null,
+    // Reembolso é conciliação: fica visível, nunca entra na margem.
+    reembolso: reembolsoInfo ? { total: reembolsoInfo.reembolsoTotal, pedidos: reembolsoInfo.pedidos } : null,
+  };
+  const projectedVsRealized = core.buildProjectedVsRealized({
+    fields,
+    projected,
+    realized,
+    sales,
+    coverage: sales.cobertura,
+  });
 
   return {
     identity: {
@@ -301,7 +326,10 @@ function comporItem(row, realizada, deps = {}) {
       projected,
       realized: realizedContrato,
       target: { marginTarget: quality.targetMargin ?? null },
+      // Mesmo erro de projeção do Motor ao vivo (marginItem.margin.projectionError).
+      projectionError: core.compareMargins(projected.margin, realized.margin),
     },
+    projectedVsRealized,
     quality: {
       confidence: row.confidenceLevel,
       confidenceByField: quality.confidenceByField || {},
@@ -315,13 +343,7 @@ function comporItem(row, realizada, deps = {}) {
       statusReasons: quality.statusReasons || [],
     },
     statusBase: "projected",
-    sales: {
-      hasOrders,
-      unidades: realizado?.unidades ?? null,
-      pedidos: realizado?.pedidos ?? null,
-      receita: realizado?.receita ?? null,
-      ultimaVendaEm: realizado?.ultimaVendaEm ?? null,
-    },
+    sales,
     settlement: { available: conciliacao.available, motivo: conciliacao.motivo },
     snapshot: {
       refreshStatus: row.refreshStatus,

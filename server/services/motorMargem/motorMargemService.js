@@ -376,6 +376,7 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
         receita: realizado?.receita ?? null,
         ultimaVendaEm: realizado?.ultimaVendaEm ?? null,
         resultadoPersistido: realizado?.resultadoPersistido ?? null,
+        cobertura: realizado?.cobertura ?? null,
       },
       settlement: { available: conciliacao.available, motivo: conciliacao.motivo },
       targetMargin,

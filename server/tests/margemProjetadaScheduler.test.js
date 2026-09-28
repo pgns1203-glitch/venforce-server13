@@ -515,6 +515,14 @@ async function run() {
     ok("index: inicia só depois de ensureAnunciosMargemProjetadaSnapshotSchema", /ensureAnunciosMargemProjetadaSnapshotSchema\(\)\.then\(\s*\(\) => margemProjetadaScheduler\.iniciar\(\)/.test(index));
     const encerrar = index.slice(index.indexOf("function encerrarComGraca"), index.indexOf('process.on("SIGTERM"'));
     ok("index: encerrarComGraca para o scheduler", encerrar.includes("margemProjetadaScheduler.parar()"));
+    // PASSO 12 do hardening pós-merge com origin/main (PR #183): o shutdown
+    // do Central de Vendas passou a ser assíncrono com {aguardarMs}; a
+    // margem projetada entra no MESMO Promise.allSettled (nunca
+    // Promise.all) — falha em um parar() nunca impede o outro nem o resto
+    // do shutdown de rodar.
+    ok("index: margemProjetadaScheduler.parar() está dentro do MESMO Promise.allSettled de centralVendasNoturnoScheduler.parar() (isolamento de falha)",
+      /Promise\.allSettled\(\s*\[[\s\S]*?centralVendasNoturnoScheduler\.parar\([\s\S]*?margemProjetadaScheduler\.parar\(\)[\s\S]*?\]\)/.test(encerrar));
+    ok("index: shutdown usa Promise.allSettled (não Promise.all) — 1 scheduler falhando não derruba o processo", encerrar.includes("Promise.allSettled("));
     ok("index: boot não chama executarRodada nem processa carteira diretamente", !/margemProjetadaScheduler\.executarRodada/.test(index));
     // PASSO 14-A: ENABLED ausente → inerte.
     const hA = makeScheduler({ env: {} });

@@ -1991,10 +1991,17 @@ const server = app.listen(PORT, () => {
   console.log(`VenForce rodando em http://localhost:${PORT}`);
 
   // Scheduler noturno da Central de Vendas: só depois do schema da Central
-  // pronto, e só com CENTRAL_VENDAS_NOTURNO_ENABLED=true. Não roda no boot —
-  // apenas agenda o próximo horário (ver centralVendasNoturnoScheduler).
+  // pronto, e só com CENTRAL_VENDAS_NOTURNO_ENABLED=true. No boot apenas
+  // recupera runs pendentes de uma rodada interrompida e agenda o próximo
+  // horário; nunca cria uma rodada inédita fora da agenda.
   ensureCentralVendasTables().then(
-    () => centralVendasNoturnoScheduler.iniciar(),
+    () => {
+      if (centralVendasNoturnoScheduler.iniciar()) {
+        centralVendasNoturnoScheduler.recuperarPendencias().catch((err) => {
+          console.error("[sync-scheduler] erro ao recuperar rodada interrompida:", err.message);
+        });
+      }
+    },
     (err) => {
       console.error("[centralVendas] erro ao garantir tabelas no boot:", err.message);
       if (centralVendasNoturnoScheduler.habilitado()) {
@@ -2118,21 +2125,29 @@ const server = app.listen(PORT, () => {
 
 // Encerramento: tenta drenar a fila de observabilidade sem travar o processo.
 let encerrando = false;
-function encerrarComGraca(sinal) {
+async function encerrarComGraca(sinal) {
   if (encerrando) return;
   encerrando = true;
   console.log(`[server] ${sinal} recebido, encerrando…`);
-  centralVendasNoturnoScheduler.parar();
-  margemProjetadaScheduler.parar();
-  const prazo = setTimeout(() => process.exit(0), 5000);
+  const prazo = setTimeout(() => process.exit(0), 25000);
   if (typeof prazo.unref === "function") prazo.unref();
 
-  observabilityService.shutdown()
-    .catch(() => {})
-    .then(() => {
-      observabilityService.stopRetentionJob();
-      server.close(() => process.exit(0));
-    });
+  const servidorFechado = new Promise((resolve) => server.close(resolve));
+  await Promise.allSettled([
+    centralVendasNoturnoScheduler.parar({ aguardarMs: 20000 }),
+    // margemProjetadaScheduler.parar() é síncrona (só cancela o timer
+    // pendente, sem rodada em andamento para drenar — diferente do scheduler
+    // de Central de Vendas, que tem progresso/promessaAtiva) — nunca aceitou
+    // nem precisa de {aguardarMs}. Envolvida em Promise.resolve().then(...)
+    // só para entrar no allSettled: um erro nela vira rejeição isolada desta
+    // entrada, sem impedir os outros itens do shutdown.
+    Promise.resolve().then(() => margemProjetadaScheduler.parar()),
+    observabilityService.shutdown(),
+    servidorFechado,
+  ]);
+  observabilityService.stopRetentionJob();
+  clearTimeout(prazo);
+  process.exit(0);
 }
 
 process.on("SIGTERM", () => encerrarComGraca("SIGTERM"));

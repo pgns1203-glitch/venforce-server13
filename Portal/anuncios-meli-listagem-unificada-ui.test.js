@@ -2676,6 +2676,38 @@ async function run() {
       console.log("  ✓ 39a3");
     });
 
+    await check("39a4 — margem_desc: família com min===max (1 único filho computável) mostra o valor ÚNICO, nunca 'X% – X%'", async () => {
+      pedidos.length = 0;
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "familia", key: "fam:FAM-1", family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
+            titulo: "Camiseta Dry Fit Masculina", margemProjetadaPercent: null, margemProjetadaProfit: 2,
+            margemProjetadaComputable: false, margemProjetadaMinPercent: 18, margemProjetadaMaxPercent: 18,
+            margemProjetadaMediaPercent: 18, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-MARG-E", key: "item:MLB-MARG-E", titulo: "Item E", status: "active",
+            margemProjetadaPercent: 5, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY", cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'margem_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-1")}')`, "a linha da família não renderizou");
+
+      const texto = await cdp.evaluate(`(function(){
+        var v = document.querySelector('${linhaFam("FAM-1")} .am-margem__valor');
+        return v ? v.textContent.trim() : null;
+      })()`);
+      assert.strictEqual(texto, "18,0%", "min===max (18/18): mostra o valor único, NUNCA '18,0% – 18,0%'");
+      ordenarPorGlobalHandler = null;
+      console.log("  ✓ 39a4");
+    });
+
     await check("39b — margem_asc: SNAPSHOT_INDISPONIVEL mostra aviso inline, não quebra a lista (mesmo contrato de ordenacaoIndisponivel de faturamento/curvaAbc)", async () => {
       ordenarPorGlobalHandler = () => ({
         ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },

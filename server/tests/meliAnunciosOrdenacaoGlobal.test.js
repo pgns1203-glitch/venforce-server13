@@ -1278,15 +1278,15 @@ async function run() {
     console.log("  ✓ AK. família com todos os filhos noncomputable: visual '—' (min/max/média null), ranking NULLS LAST");
   });
 
-  // AL. "Realizada" nunca entra na conta — não por filtro em runtime, mas
-  //     estruturalmente: o snapshot (`anuncios_margem_projetada_snapshot`,
-  //     única fonte lida aqui) NUNCA armazena `item.margin.realized` (decisão
-  //     de produto da missão anterior, "Margem = SOMENTE Margem Projetada")
-  //     — `marginPercent` no Map devolvido pelo repositório JÁ É o valor
-  //     projetado, então não há "realizada" pra vazar neste nível. Fixture
-  //     usa os mesmos 2 filhos do exemplo do prompt (10%/20% projetados);
-  //     a checagem estática confirma que o bloco de agregação de família
-  //     nunca referencia nada de "realized".
+  // AL. "Realizada" nunca entra na conta — dupla prova. (1) Nível de DADO:
+  //     mesmo que a entrada do snapshot carregasse um campo `realized`
+  //     (aqui simulado deliberadamente com um valor ENORME, 80%, que
+  //     dominaria a média se fosse lido por engano), a agregação só lê
+  //     `marginPercent`/`computable` — o `realized` simulado é só ruído no
+  //     objeto, nunca alcançado pelo código. (2) Nível ESTRUTURAL: checagem
+  //     estática confirma que o bloco de agregação nunca REFERENCIA a
+  //     palavra "realized" no código-fonte, então não é coincidência do
+  //     fixture — é impossível de acontecer.
   await withMockDb({
     ...UMA_CONTA,
     anuncios: [
@@ -1296,15 +1296,17 @@ async function run() {
     userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
   }, async () => {
     snapshotHandler = () => new Map([
-      ["MLB-A1", { marginPercent: 10, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
-      ["MLB-A2", { marginPercent: 20, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      // `realized: 80` simulado de propósito — nunca deveria influenciar
+      // min/max/média (que ficam em 10/20/15, não perto de 80).
+      ["MLB-A1", { marginPercent: 10, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli", realized: 80 }],
+      ["MLB-A2", { marginPercent: 20, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli", realized: 80 }],
     ]);
     const res = fakeRes();
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
     const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
-    assert.strictEqual(familia.margemProjetadaMinPercent, 10);
-    assert.strictEqual(familia.margemProjetadaMaxPercent, 20);
-    assert.strictEqual(familia.margemProjetadaMediaPercent, 15, "(10+20)/2 = 15 — sempre projetada, nunca realizada");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 10, "mínimo é o marginPercent projetado (10), não o 'realized' simulado (80)");
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 20, "máximo é o marginPercent projetado (20), não o 'realized' simulado (80)");
+    assert.strictEqual(familia.margemProjetadaMediaPercent, 15, "(10+20)/2 = 15 — o 'realized' simulado (80) nunca entra na soma");
     snapshotHandler = null;
 
     const fs = require("fs");
@@ -1315,7 +1317,65 @@ async function run() {
     assert.ok(fimFn > inicioFn, "precisa achar o fim de montarMargemProjetadaGlobal");
     const blocoFn = src.slice(inicioFn, fimFn);
     assert.ok(!/realized/i.test(blocoFn), "montarMargemProjetadaGlobal (min/max/média de família) nunca referencia 'realized' — a agregação só lê marginPercent do snapshot, que já é sempre projetado");
-    console.log("  ✓ AL. faixa/média de família nunca usa margem realizada — nem por fixture (2 filhos projetados 10/20 -> 15), nem estruturalmente (checagem estática do bloco de agregação)");
+    console.log("  ✓ AL. faixa/média de família nunca usa margem realizada — nem por dado (campo 'realized' simulado no snapshot é ignorado), nem estruturalmente (checagem estática do bloco de agregação)");
+  });
+
+  // AM. Caso C: família com EXATAMENTE 1 filho computável (18%) — min===max,
+  //     visual deve mostrar o valor ÚNICO ("18,0%"), NUNCA "18,0% – 18,0%".
+  //     Ranking usa o mesmo valor (18%) como média de 1 elemento.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 18, profit: 2, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-B", { marginPercent: 5, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 18);
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 18, "min === max com 1 único filho computável — a faixa vira um ponto só");
+    assert.strictEqual(familia.margemProjetadaMediaPercent, 18, "média de 1 elemento é o próprio valor");
+    assert.strictEqual(res.corpo.anuncios[0].family_id, "FAM1", "família (18%) vem antes de MLB-B (5%) — ranking usa o valor único normalmente");
+    snapshotHandler = null;
+    console.log("  ✓ AM. família com 1 único filho computável (18%): min===max no backend (o front decide não repetir o valor — ver teste headless 39a4)");
+  });
+
+  // AN. Caso D (mistura EXATA do prompt): filho SEM snapshot + filho
+  //     UNVALIDATED + filho SEM snapshot — as DUAS razões de exclusão
+  //     (ausência e não-computável) juntas na MESMA família, nenhuma delas
+  //     contamina min/max/média.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A3", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      // MLB-A1: sem entrada no Map — snapshot ausente ("null" do prompt).
+      ["MLB-A2", { marginPercent: null, profit: null, computable: false, status: "UNVALIDATED", calculadoEm: null, origemJob: "manual_cli" }],
+      // MLB-A3: sem entrada no Map — snapshot ausente ("null" do prompt).
+      ["MLB-B", { marginPercent: 7, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaMinPercent, null, "null + UNVALIDATED + null: nenhum filho computável, sem faixa");
+    assert.strictEqual(familia.margemProjetadaMaxPercent, null);
+    assert.strictEqual(familia.margemProjetadaMediaPercent, null, "sem média — NULLS LAST");
+    assert.strictEqual(res.corpo.anuncios[0].item_id, "MLB-B", "MLB-B (7%, computável) vem antes da família (nenhum sinal)");
+    assert.strictEqual(res.corpo.anuncios[1].family_id, "FAM1", "família cai pro fim — NULLS LAST");
+    snapshotHandler = null;
+    console.log("  ✓ AN. família com null/UNVALIDATED/null (mistura exata do prompt): visual '—' (min/max/média null), ranking NULLS LAST");
   });
 
   // AC. Checagem ESTÁTICA (arquitetural, não só o spy em runtime dos testes

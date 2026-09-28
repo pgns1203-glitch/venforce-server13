@@ -528,6 +528,12 @@
         // SKU, MLBU ou nome da família) e devolve o GRUPO inteiro de quem
         // casou — um anúncio nunca aparece órfão do seu agrupador.
         AM.paginacao.page = 1;
+        // Uma busca nova é um contexto novo — nenhuma ordenação (local ou
+        // global) sobrevive a ela (comportamento de sempre, de quando os 4
+        // critérios eram locais). Zerar aqui garante que carregarAnuncios()
+        // caia no branch que reseta o combo pra "Padrão" (ver o `else` logo
+        // abaixo de `if (AM.ordenarPor)`).
+        AM.ordenarPor = null;
         carregarAnuncios();
       }, 350);
     });
@@ -1637,10 +1643,10 @@
     if (!m) return '<span class="am-margem__vazio">—</span>';
 
     var classe = MARGEM_CLASSE[m.status] || "is-neutral";
-    // Precedência REALIZADA > PROJETADA — mesma regra que o próprio Motor já
-    // usa para ordenar (motorMargemService.valorOrdenacao).
-    var origemRotulo = m.origem === "realized" ? "Realizada" : "Projetada";
-    var tip = "Calculada pelo Motor de Margem — margem " + origemRotulo.toLowerCase() + ".";
+    // Margem = Margem Projetada, SOMENTE, nesta tela (decisão de produto) —
+    // m.origem é sempre "projected" agora (ver montarMapaMargem no
+    // controller), então não há mais alternância de rótulo pra comunicar.
+    var tip = "Margem projetada com base no preço atual e custos configurados.";
     // Preço alvo é aditivo à explicação da margem (mesmo infoDot) — nunca um
     // segundo cálculo aqui, só o texto do que o Motor já resolveu em
     // item.margin.target (ver montarMapaMargem/computeTargetPrice).
@@ -1650,7 +1656,6 @@
 
     if (m.marginPercent != null) {
       return '<span class="am-margem__valor ' + classe + '">' + formatarPercentualCompacto(m.marginPercent) + "</span>" +
-        '<span class="am-margem__origem">' + origemRotulo + "</span>" +
         infoDotHtml(tip);
     }
     // Sem número (ex.: UNVALIDATED) — rótulo REAL do Motor, com a razão real
@@ -2107,20 +2112,36 @@
   // ordenarPor= na query de /anuncios-meli/familias — ver carregarAnuncios).
   // Unidades vendidas 7d entrou aqui porque buscarVendas7dPorItens já busca
   // a CONTA INTEIRA no período (globalizar não custa chamada extra — ver
-  // ORDENACOES_GLOBAIS no controller). Margem NÃO entra: continua ordenação
-  // LOCAL da página atual, via ORDENACOES_PERFORMANCE/aplicarOrdenacaoPerformance
-  // (passaria pelo enrichBatch do Motor — custo/rate-limit não aceito pro
-  // catálogo inteiro).
+  // ORDENACOES_GLOBAIS no controller).
+  //
+  // margem_asc/margem_desc entrou aqui (era ordenação LOCAL de página, via
+  // ORDENACOES_PERFORMANCE/aplicarOrdenacaoPerformance, abaixo) — a leitura
+  // do snapshot de margem projetada (`anuncios_margem_projetada_snapshot`,
+  // fora do request) tornou viável ordenar o catálogo FILTRADO inteiro sem
+  // passar pelo Motor/enrichBatch durante a listagem (ver
+  // meliAnunciosController.listarAgrupadoOrdenadoPorMotor, branch
+  // `margemProjetada`). O VALOR exibido na célula continua vindo de
+  // /performance (live, ver carregarPerformance) — o backend só decide a
+  // ORDEM aqui, nunca escreve no cache que a célula lê (mesma separação que
+  // já existia pros outros 3 critérios: a célula sempre foi pintada por
+  // /performance, o ordenarPor= só decide a posição da linha).
   var ORDENACOES_GLOBAIS = {
     faturamento_asc: 1, faturamento_desc: 1,
     curvaAbc_asc: 1, curvaAbc_desc: 1,
     unidades_asc: 1, unidades_desc: 1,
+    margem_asc: 1, margem_desc: 1,
   };
 
-  var ORDENACOES_PERFORMANCE = {
-    margem_asc: { campo: "margem", direcao: "asc" },
-    margem_desc: { campo: "margem", direcao: "desc" },
-  };
+  // Órfão: margem era o ÚLTIMO critério de ORDENACAO_FILTROS (linha ~1966)
+  // que ainda ordenava localmente — com a migração acima, todo critério não-
+  // vazio agora cai em ORDENACOES_GLOBAIS (ver o handler de "change" do
+  // <select id="am-ordenacao">), então este mapa fica vazio e
+  // aplicarOrdenacaoPerformance/valorOrdenacaoDaLinha/AM_ordemOriginalAnuncios
+  // nunca mais são chamados. Não removido nesta missão (não é o escopo pedido
+  // e mexer no fluxo de restauração de "Padrão" é risco desnecessário) — só
+  // documentado, mesmo padrão de dívida registrada usado pra rota /familias
+  // vencida (ver comentário de listarAgrupado no controller).
+  var ORDENACOES_PERFORMANCE = {};
 
   // Soma unidadesVendidas.porItem dos filhos já conhecidos da família — null
   // enquanto a família não tem detalhe em cache (chamador garante isso antes
@@ -4193,8 +4214,9 @@
   function margemComposicaoResumoHtml(itemId) {
     var cache = AM.state.performanceCache[itemId];
     if (!cache || !cache.temComposicao || !cache.margem || cache.margem.marginPercent == null) return "";
-    var origemRotulo = cache.margem.origem === "realized" ? "Realizada" : "Projetada";
-    return escapeHtml(formatarPercentualCompacto(cache.margem.marginPercent) + " · " + origemRotulo);
+    // Margem = Margem Projetada, SOMENTE, nesta tela — sem alternância de
+    // rótulo pra comunicar (cache.margem.origem é sempre "projected").
+    return escapeHtml(formatarPercentualCompacto(cache.margem.marginPercent));
   }
 
   // `aberta` preserva o estado do <details> entre re-renders do modal

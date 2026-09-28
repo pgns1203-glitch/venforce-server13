@@ -143,10 +143,10 @@ const corpos = [];                   // { url, body } de toda escrita
 // registra cada chamada com os flags exatos que vieram na query string.
 let performanceHandler = null;
 const chamadasPerformance = [];
-// MLB-A1 (item padrão desta suíte, conta 42): margem REALIZADA saudável,
-// com ladder completo — taxa fixa ausente de propósito (realizada nunca
-// tem, por desenho do Motor).
-const MARGEM_MLA1 = { origem: "realized", margin: 0.35, marginPercent: 35, profit: 70, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+// MLB-A1 (item padrão desta suíte, conta 42): margem PROJETADA saudável,
+// com ladder completo — Margem = Margem Projetada, somente, nesta tela (o
+// backend nunca manda "realized" para esta rota, ver montarMapaMargem).
+const MARGEM_MLA1 = { origem: "projected", margin: 0.35, marginPercent: 35, profit: 70, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
 const COMPOSICAO_MLA1 = { venda: 200, custoProduto: 80, comissaoMl: 25, frete: 15, taxaFixa: null, impostoPercentual: 0.05, impostoValor: 10 };
 
 // Fixtures do bloco "Promoções disponíveis" — já no formato normalizado que
@@ -607,7 +607,7 @@ function wireInterception(cdp) {
       simularMargemChamadas.push({ itemId: mSimular[1], body });
       if (simularMargemHandler) { await corpo(simularMargemHandler(mSimular[1], body)); return; }
       await corpo({
-        ok: true, simulado: true, origem: "realized",
+        ok: true, simulado: true, origem: "projected",
         resultado: { computable: true, profit: 99, margin: 0.33, marginPercent: 33, missing: [], assumed: [] },
       });
       return;
@@ -1190,7 +1190,7 @@ async function run() {
       assert.strictEqual(chamadasPerformance.length, 0, "abrir o modal não pode gastar chamada de /performance");
     });
 
-    await check("26 — abrir a seção busca a composição (1 chamada) e mostra o ladder certo (margem realizada)", async () => {
+    await check("26 — abrir a seção busca a composição (1 chamada) e mostra o ladder certo (margem projetada)", async () => {
       await clicar(cdp, "#am-det-margem summary");
       await waitFor(cdp, `(function(){
         var b = document.querySelector('#am-det-margem-body');
@@ -1213,7 +1213,8 @@ async function run() {
       ], JSON.stringify(linhas));
 
       const badge = await cdp.evaluate("document.querySelector('#am-det-margem-body .am-margem-comp__badge').textContent");
-      assert.match(badge, /Realizada/, `o badge tem de dizer que é margem realizada: ${badge}`);
+      assert.match(badge, /35,0%/, `o badge tem de mostrar o percentual — sem alternância Realizada/Projetada (Margem = Margem Projetada, somente): ${badge}`);
+      assert.ok(!/Realizada/.test(badge), `o badge NUNCA pode dizer "Realizada" — Margem = Margem Projetada, somente, nesta tela: ${badge}`);
     });
 
     await check("27 — colapsar e reabrir a MESMA seção reaproveita o cache (0 chamada nova)", async () => {
@@ -1340,7 +1341,7 @@ async function run() {
         const margem = {};
         const composicao = {};
         ids.forEach((id) => {
-          margem[id] = { origem: "realized", margin: -0.05, marginPercent: -5, profit: -10, status: "LOSS", statusLabel: "Prejuízo", statusReasons: ["Margem negativa (-5.00%)."] };
+          margem[id] = { origem: "projected", margin: -0.05, marginPercent: -5, profit: -10, status: "LOSS", statusLabel: "Prejuízo", statusReasons: ["Margem negativa (-5.00%)."] };
           composicao[id] = { venda: 200, custoProduto: 150, comissaoMl: 30, frete: 20, taxaFixa: null, impostoPercentual: 0.05, impostoValor: 10 };
         });
         return { ok: true, metricas7d: {}, margem, composicao, margemIndisponivel: null };
@@ -1535,7 +1536,7 @@ async function run() {
         return b && /Custo do produto/.test(b.textContent); })()`, "o ladder inicial não carregou");
 
       simularMargemHandler = () => ({
-        ok: true, simulado: true, origem: "realized",
+        ok: true, simulado: true, origem: "projected",
         resultado: { computable: true, profit: 55, margin: 0.275, marginPercent: 27.5, missing: [], assumed: [] },
       });
 

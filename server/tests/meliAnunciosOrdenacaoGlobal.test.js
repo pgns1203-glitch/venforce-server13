@@ -733,12 +733,15 @@ async function run() {
   //    escolhido de novo (ver comentário de montarMargemProjetadaGlobal):
   //    `montarMargemPorFamilia` (performance()) e o sort LOCAL do Portal
   //    (`valorOrdenacaoDaLinha`, anuncios-meli.js:2147) já usam SOMA de
-  //    profit como valorOrdenacao de família — NUNCA média/herança de
-  //    marginPercent. E o card da família nunca mostra número de margem
-  //    (sempre "—", anuncios-meli.js:987) — então `margemProjetadaPercent`
-  //    de família fica SEMPRE null (nunca a soma rotulada como "Percent",
-  //    que seria exatamente o erro "profit como se fosse margin_percent").
-  //    `margemProjetadaProfit` carrega a soma (rotulada corretamente).
+  //    profit como valor INFORMATIVO de família — NUNCA média/herança de
+  //    marginPercent, e NUNCA um valor que compete numericamente com o
+  //    marginPercent (%) de um item avulso na MESMA ordenação (gate do
+  //    prompt "fechar integração funcional da tela": "profit não compete
+  //    numericamente com marginPercent" + "família fica em NULLS LAST").
+  //    `margemProjetadaPercent` de família fica SEMPRE null (nunca a soma
+  //    rotulada como "Percent", que seria exatamente o erro "profit como se
+  //    fosse margin_percent"). `margemProjetadaProfit` carrega a soma
+  //    (rotulada corretamente, só informativo — nunca usado pra ordenar).
   await withMockDb({
     ...UMA_CONTA,
     anuncios: [
@@ -748,35 +751,39 @@ async function run() {
     ],
     userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
   }, async () => {
-    // FAM1: profit 10+4=14 (soma). MLB-B avulso: marginPercent 25 (%, unidade
-    // DIFERENTE — o mesmo "mistura de unidade" que já existe hoje no sort
-    // local, preservado aqui, não inventado).  14 > 25 é falso em unidade
-    // comum nenhuma — o teste só prova que FAM1 ranqueia pela SOMA (14), não
-    // por uma média (que seria 30) nem por herdar o filho mais forte (40).
+    // FAM1: profit 10+4=14 (soma) — DELIBERADAMENTE bem menor que o profit
+    // de MLB-B (999), mas MLB-B tem marginPercent BAIXO (5%). Sob o bug
+    // antigo (família ranqueada pela soma de profit, competindo direto com
+    // marginPercent do item), FAM1 venceria em margem_desc (14 > 5). Sob o
+    // contrato correto (família SEMPRE NULLS LAST, nunca no comparator),
+    // MLB-B (tem valor, 5%) vem ANTES de FAM1 (não tem valor de ranking
+    // nenhum) — prova que profit de família não compete com marginPercent
+    // de item em NENHUM sentido, nem "família ganha por ter number maior".
     snapshotHandler = () => new Map([
       ["MLB-A1", { marginPercent: 40, profit: 10, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T04:00:00Z", origemJob: "manual_cli" }],
       ["MLB-A2", { marginPercent: 20, profit: 4, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "manual_cli" }],
-      ["MLB-B", { marginPercent: 25, profit: 999, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:00:00Z", origemJob: "manual_cli" }],
+      ["MLB-B", { marginPercent: 5, profit: 999, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:00:00Z", origemJob: "manual_cli" }],
     ]);
     const res = fakeRes();
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
     const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
     const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");
     assert.ok(familia, "FAM1 precisa aparecer como família");
-    // MLB-B tem profit=999 (deliberadamente maior que a soma de FAM1) —
-    // prova que o ranking usa a MESMA fonte (profit) pros dois tipos de
-    // linha, e MLB-B vence por ter mais profit, não por ter mais % (a soma
-    // de FAM1 é 14, bem menor que 999).
-    assert.strictEqual(res.corpo.anuncios[0].item_id, "MLB-B", "MLB-B (profit 999) > FAM1 (profit somado 14)");
+    // MLB-B (marginPercent=5, computável) vem ANTES de FAM1 mesmo com
+    // marginPercent baixíssimo — porque família não tem valor de ranking
+    // NENHUM (nem o profit=999 dela entra na disputa), não porque "5 > 14"
+    // em alguma unidade comum (não existe unidade comum).
+    assert.strictEqual(res.corpo.anuncios[0].item_id, "MLB-B", "MLB-B (tem valor de ranking, 5%) sempre antes de FAM1 (sem valor de ranking, mesmo com profit=14 informativo)");
+    assert.strictEqual(res.corpo.anuncios[1].family_id, "FAM1", "FAM1 cai pro fim (NULLS LAST) mesmo tendo o MAIOR profit somado nominal (14) — profit de família nunca é comparado numericamente contra marginPercent de item");
     assert.strictEqual(familia.margemProjetadaPercent, null, "família NUNCA tem margemProjetadaPercent — nem a soma nem uma média rotuladas como percentual");
-    assert.strictEqual(familia.margemProjetadaProfit, 14, "família usa a SOMA de profit dos filhos (10+4=14) — mesma fonte do sort local já em produção");
+    assert.strictEqual(familia.margemProjetadaProfit, 14, "família usa a SOMA de profit dos filhos (10+4=14) — mesma fonte do sort local já em produção, só que agora puramente informativa");
     assert.strictEqual(familia.margemProjetadaComputable, false, "família nunca é 'computável' — não existe margem % de família, ponto");
     assert.strictEqual(familia.margemProjetadaStatus, null, "status não agrega por família — nunca inventado");
     assert.strictEqual(familia.margemProjetadaCalculadaEm, "2026-09-28T05:00:00Z", "calculadoEm de família é o MAIS RECENTE entre os filhos com profit conhecido");
-    assert.strictEqual(itemAvulso.margemProjetadaPercent, 25, "MLB-B avulso: continua usando marginPercent direto, sem agregação");
+    assert.strictEqual(itemAvulso.margemProjetadaPercent, 5, "MLB-B avulso: continua usando marginPercent direto, sem agregação");
     assert.strictEqual(itemAvulso.margemProjetadaProfit, 999, "MLB-B avulso: profit próprio, sem soma nenhuma");
     snapshotHandler = null;
-    console.log("  ✓ R. margem_desc: família ranqueia pela SOMA de profit (mesma fonte do sort local em produção), margemProjetadaPercent SEMPRE null");
+    console.log("  ✓ R. margem_desc: família é SEMPRE NULLS LAST (nunca ranqueada pela soma de profit), margemProjetadaPercent SEMPRE null, profit é só informativo");
   });
 
   // S. família sem NENHUM filho com profit conhecido fica null (vai para o
@@ -948,54 +955,55 @@ async function run() {
   });
 
   // AB. PROVA "valor usado no ranking === valor exposto na resposta"
-  //     (requisito explícito da missão de revisão) — mistura itens e uma
-  //     família com valores TODOS DIFERENTES entre si de propósito, para que
-  //     nenhum empate acidental disfarce um bug de "ordenou por X mas mostrou
-  //     Y". Item: o campo comparado é `margemProjetadaPercent` (mesmo valor
-  //     que decidiu a posição). Família: o campo comparado é
-  //     `margemProjetadaProfit` (a família nunca expõe `margemProjetadaPercent`
-  //     — ver teste R) — e a posição da família tem que bater com esse MESMO
-  //     profit somado, não com nenhuma média/percentual inventado.
+  //     (requisito explícito da missão de revisão) — 3 itens avulsos com
+  //     marginPercent TODOS DIFERENTES (mesma unidade entre si — comparação
+  //     válida) + 1 família, para provar dois invariantes distintos:
+  //     (1) entre ITENS, a ordem da resposta bate com o marginPercent
+  //         exposto, ordenado — nenhum valor interno invisível decidiu a
+  //         posição; (2) a família nunca entra nessa disputa (fica sempre
+  //         no fim, ver teste R) e nunca expõe margemProjetadaPercent — só
+  //         `margemProjetadaProfit`, que é o MESMO valor somado, nunca uma
+  //         média/percentual inventado.
   await withMockDb({
     ...UMA_CONTA,
     anuncios: [
       anuncioFixture({ item_id: "MLB-X" }),
+      anuncioFixture({ item_id: "MLB-Y" }),
+      anuncioFixture({ item_id: "MLB-Z" }),
       anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
       anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
     ],
     userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
   }, async () => {
     snapshotHandler = () => new Map([
-      ["MLB-X", { marginPercent: 17.4, profit: 55, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-X", { marginPercent: 40, profit: 55, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-Y", { marginPercent: 17.4, profit: 20, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-Z", { marginPercent: 3, profit: 2, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
       ["MLB-A1", { marginPercent: 8, profit: 12.5, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
-      ["MLB-A2", { marginPercent: 3, profit: 9.25, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 100, profit: 9.25, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
     ]);
     const res = fakeRes();
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
 
-    const item = res.corpo.anuncios.find((a) => a.tipo === "item");
     const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaProfit, 21.75, "família: valor exposto é a soma real (12.5+9.25=21.75), independente do marginPercent alto de um dos filhos (100%)");
+    assert.strictEqual(familia.margemProjetadaPercent, null, "família: margemProjetadaPercent nunca é preenchido, mesmo com filho de marginPercent=100");
 
-    // FAM1 (profit 12.5+9.25=21.75) < MLB-X (marginPercent 17.4). Unidades
-    // diferentes comparadas na mesma escala numérica — é o comportamento
-    // AUDITADO (teste R), não um bug: aqui só provamos que o valor que
-    // decidiu a ordem é EXATAMENTE o valor exposto, em cada linha.
-    assert.strictEqual(item.margemProjetadaPercent, 17.4, "item: valor exposto é 17.4 (mesmo do snapshot)");
-    assert.strictEqual(familia.margemProjetadaProfit, 21.75, "família: valor exposto é a soma real (12.5+9.25=21.75)");
-    assert.strictEqual(familia.margemProjetadaPercent, null, "família: margemProjetadaPercent nunca é preenchido");
+    // Invariante 1: entre ITENS (mesma unidade), a ordem da resposta já é a
+    // ordem decrescente do próprio margemProjetadaPercent exposto — o valor
+    // que decidiu a posição é EXATAMENTE o valor mostrado.
+    const itensNaOrdem = res.corpo.anuncios.filter((a) => a.tipo === "item");
+    const percentuaisExpostos = itensNaOrdem.map((a) => a.margemProjetadaPercent);
+    assert.deepStrictEqual(percentuaisExpostos, [40, 17.4, 3],
+      "itens vêm na ordem decrescente do PRÓPRIO margemProjetadaPercent exposto (40, 17.4, 3) — o mesmo valor que decidiu a posição");
 
-    // Reconstrói o ranking com as MESMAS regras do controller
-    // (montarMargemProjetadaGlobal) a partir só do que a API devolveu, e
-    // confirma que a ORDEM da resposta bate com esse ranking recalculado —
-    // ou seja, o valor que a API MOSTRA é o mesmo que decidiu a POSIÇÃO.
-    const valorExibidoUsadoNoSort = res.corpo.anuncios.map((a) =>
-      a.tipo === "familia" ? a.margemProjetadaProfit : a.margemProjetadaPercent
-    );
-    const ordenadoPeloValorExibido = valorExibidoUsadoNoSort.slice().sort((a, b) => b - a);
-    assert.deepStrictEqual(valorExibidoUsadoNoSort, ordenadoPeloValorExibido,
-      "a ordem da resposta já é a ordem decrescente dos valores que ela própria expõe — nenhum valor interno invisível decidiu a posição");
+    // Invariante 2: família nunca disputa posição com item nenhum, mesmo
+    // tendo um filho (MLB-A2) com marginPercent=100 (maior que qualquer
+    // item avulso) — profit continua só informativo, nunca vira ranking.
+    assert.strictEqual(res.corpo.anuncios[res.corpo.anuncios.length - 1].tipo, "familia",
+      "família fica na ÚLTIMA posição, mesmo com um filho de marginPercent=100 — profit de família nunca compete com marginPercent de item");
     snapshotHandler = null;
-    console.log("  ✓ AB. valor exposto na resposta === valor usado no ranking (item: margemProjetadaPercent; família: margemProjetadaProfit, nunca Percent)");
+    console.log("  ✓ AB. valor exposto na resposta === valor usado no ranking (item: margemProjetadaPercent, mesma unidade comparável; família: sempre última, margemProjetadaProfit só informativo)");
   });
 
   // AC. Checagem ESTÁTICA (arquitetural, não só o spy em runtime dos testes

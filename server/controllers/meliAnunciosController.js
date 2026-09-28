@@ -299,18 +299,29 @@ function montarUnidadesVendidasGlobal(resultadoVendas, itemIds, porFamiliaItens)
 // filhos, NUNCA média/herança de `marginPercent`. E o CARD da família nunca
 // mostra número nenhum de margem — sempre "—", com o comentário explícito
 // "Margem NUNCA agrega... margem enganosa é pior que margem ausente — regra
-// do usuário, sem exceção para soma" (`anuncios-meli.js:983-987`). Ou seja: a
-// soma de profit já é usada hoje como CHAVE DE ORDENAÇÃO interna, mas NUNCA
-// rotulada/exibida como percentual — exatamente o padrão que este branch
-// reproduz: `porFamilia` (valorOrdenacao, mesmo papel de `margemPorFamilia`)
-// é a soma de profit dos filhos com profit conhecido (mesma condição de
-// `montarMargemPorFamilia`: `profit != null`, independente de `computable` —
-// reaproveitado, não reinventado); `margemProjetadaPercent` da família fica
-// SEMPRE null (nunca a soma nem uma média rotulados como "Percent" — isso
-// seria "soma de profit como se fosse margin_percent", o erro que este
-// contrato existe pra evitar) e `margemProjetadaComputable` da família fica
-// SEMPRE false (não existe margem % de família, ponto — mesma frase do
-// comentário do card).
+// do usuário, sem exceção para soma" (`anuncios-meli.js:983-987`).
+//
+// CORREÇÃO (gate da missão "fechar integração funcional da tela"): a soma de
+// profit NÃO pode ser o `valorOrdenacao` genérico que o comparator de
+// `listarAgrupadoOrdenadoPorMotor` usa (`ranking.porFamilia[family_id]`) —
+// esse comparator faz `x.valorOrdenacao - y.valorOrdenacao` comparando
+// DIRETAMENTE contra `ranking.porItem[item_id]` (marginPercent, %). Profit
+// (R$) e marginPercent (%) são unidades diferentes — comparar os dois
+// numericamente (ex.: família com R$14 de lucro somado "perdendo" para um
+// item com 25% de margem, ou o inverso com números maiores) é a mistura de
+// unidade que o gate desta missão pede pra eliminar. Por isso `porFamilia`
+// (o campo que o comparator genérico lê) fica **vazio** para margemProjetada
+// — toda família cai no branch `valorOrdenacao == null` do comparator, ou
+// seja, NULLS LAST sempre, nas duas direções, nunca competindo numericamente
+// com nada. A soma de profit continua existindo, só que em `porFamiliaProfit`
+// — um campo GERADO informativo (vira `margemProjetadaProfit` na resposta),
+// nunca lido pelo comparator.
+//
+// `margemProjetadaPercent` da família fica SEMPRE null (nunca a soma nem uma
+// média rotulados como "Percent" — isso seria "soma de profit como se fosse
+// margin_percent", o erro que este contrato existe pra evitar) e
+// `margemProjetadaComputable` da família fica SEMPRE false (não existe
+// margem % de família, ponto — mesma frase do comentário do card).
 //
 // Item usa `marginPercent` direto (mesmo valor que `margemConteudoHtml` já
 // exibe hoje, `anuncios-meli.js:1651`) — sem mudança desta correção.
@@ -333,7 +344,10 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
 
   // Família: SOMA de profit dos filhos com profit conhecido — mesma condição
   // de montarMargemPorFamilia (`s.profit != null`, sem exigir `computable`).
-  const porFamilia = {};
+  // NUNCA em `porFamilia` (ver comentário acima) — só em `porFamiliaProfit`,
+  // campo informativo que não alimenta o comparator genérico.
+  const porFamilia = {}; // propositalmente vazio p/ margemProjetada — família é NULLS LAST sempre
+  const porFamiliaProfit = {};
   const porFamiliaCalculadoEm = {};
   for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
     let soma = null;
@@ -344,13 +358,13 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
       if (s.profit != null) soma = (soma == null ? 0 : soma) + s.profit;
       if (s.calculadoEm && (!maisRecente || new Date(s.calculadoEm) > new Date(maisRecente))) maisRecente = s.calculadoEm;
     }
-    porFamilia[familyId] = soma != null ? Math.round(soma * 100) / 100 : null;
+    porFamiliaProfit[familyId] = soma != null ? Math.round(soma * 100) / 100 : null;
     porFamiliaCalculadoEm[familyId] = maisRecente;
   }
 
   return {
     porItem, porItemProfit, porItemComputable, porItemStatus, porItemCalculadoEm, porItemOrigemJob,
-    porFamilia, porFamiliaCalculadoEm,
+    porFamilia, porFamiliaProfit, porFamiliaCalculadoEm,
   };
 }
 
@@ -555,14 +569,13 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
         : (ranking.porItemValor[anuncio.item_id] != null ? ranking.porItemValor[anuncio.item_id] : null);
     }
   }
-  // Campos extras da margem projetada. Para família, o valor genérico que
-  // `campoResposta` acabou de escrever em `margemProjetadaPercent` (linha
-  // ~503) é na verdade a SOMA de profit (R$) — é o `valorOrdenacao` real da
-  // família (ver montarMargemProjetadaGlobal), não um percentual. Sobrescrito
-  // aqui: `margemProjetadaProfit` recebe esse mesmo valor (rotulado
-  // corretamente como profit) e `margemProjetadaPercent`/`margemProjetadaComputable`
-  // voltam para null/false — família NUNCA tem margem % exibível, mesma regra
-  // do card do Portal ("Margem NUNCA agrega", `anuncios-meli.js:983-987`).
+  // Campos extras da margem projetada. `ranking.porFamilia` fica vazio de
+  // propósito para este critério (ver montarMargemProjetadaGlobal) — o valor
+  // genérico que `campoResposta` acabou de escrever em `margemProjetadaPercent`
+  // (linha ~503) é sempre `undefined`/null para família. `margemProjetadaProfit`
+  // vem de `ranking.porFamiliaProfit` (soma, campo informativo, nunca usado
+  // no comparator) — família NUNCA tem margem % exibível, mesma regra do
+  // card do Portal ("Margem NUNCA agrega", `anuncios-meli.js:983-987`).
   // `status`/`origemJob` de família ficam null de propósito: são
   // classificações POR ITEM (não existe "status agregado" sem inventar uma
   // regra nova) — `calculadoEm` de família é o MAIS RECENTE entre os filhos
@@ -571,7 +584,8 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
   if (config.campo === "margemProjetada") {
     for (const anuncio of anuncios) {
       if (anuncio.tipo === "familia") {
-        anuncio.margemProjetadaProfit = anuncio.margemProjetadaPercent;
+        anuncio.margemProjetadaProfit = ranking.porFamiliaProfit[anuncio.family_id] != null
+          ? ranking.porFamiliaProfit[anuncio.family_id] : null;
         anuncio.margemProjetadaPercent = null;
         anuncio.margemProjetadaComputable = false;
         anuncio.margemProjetadaStatus = null;
@@ -1006,15 +1020,25 @@ function montarUnidadesVendidas(itemIds, obterVendasDoItem) {
   return { periodoDias: metricas7dService.JANELA_DIAS, porItem };
 }
 
+// Página Anúncios ML: "Margem" = Margem Projetada, SOMENTE (decisão de
+// produto — ver missão "fechar integração funcional da tela"). Antes,
+// `exibida` preferia `item.margin.realized` sempre que computável, caindo
+// para `projected` só como fallback — a mesma precedência que o Motor usa
+// para ORDENAR (`motorMargemService.valorOrdenacao`), mas nunca deveria ter
+// decidido o que esta TELA exibe: dois anúncios idênticos em custo/preço
+// podiam mostrar percentuais diferentes só porque um tinha venda recente e
+// o outro não, e a variação de venda/período não tem nada a ver com o preço
+// e custo configurados AGORA. `item.margin.realized` continua existindo no
+// Motor — Financeiro, relatórios e outras telas usam — só não é mais LIDO
+// aqui. `extrairValoresBaseParaSimulacao`/`montarComposicaoDoItem`/
+// `calcularMargemComRebate` continuam genéricas (aceitam `origem` como
+// parâmetro) — só o valor que ESTE chamador passa é que ficou fixo.
 function montarMapaMargem(itens, incluirComposicao, rebateAlvo) {
   const margem = {};
   const composicao = {};
   for (const item of itens || []) {
-    const realized = item.margin && item.margin.realized;
-    const projected = item.margin && item.margin.projected;
-    const usaRealizada = !!(realized && realized.computable);
-    const exibida = usaRealizada ? realized : projected;
-    const origem = usaRealizada ? "realized" : "projected";
+    const exibida = item.margin && item.margin.projected;
+    const origem = "projected";
     const itemId = item.identity.itemId;
 
     const comRebate = calcularMargemComRebate(item, origem, exibida, rebateAlvo);

@@ -91,6 +91,21 @@
 .vf-page-central-margem .cm-coverage { font-weight: var(--vf-fw-semibold); }
 .vf-page-central-margem .cm-coverage.is-partial { color: var(--vf-warning-strong); }
 
+/* Leitura persistida — progresso do run de atualização (processados/total). */
+.vf-page-central-margem .cm-progress {
+  height: 6px;
+  margin: 6px 0 4px;
+  overflow: hidden;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-info-border);
+}
+.vf-page-central-margem .cm-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--vf-info);
+  transition: width 0.3s ease;
+}
+
 .vf-page-central-margem .cm-context__meta:empty { display: none; }
 .vf-page-central-margem #cm-page-state:empty { display: none; }
 

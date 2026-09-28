@@ -1619,6 +1619,136 @@
     });
   }
 
+  /* =========================================================================
+   * LEITURA PERSISTIDA (Margin Snapshot)
+   * A projetada vem do snapshot calculado em background pelo worker; a tela
+   * pagina/filtra/ordena NO SERVIDOR (nunca baixa o catálogo inteiro) e
+   * acompanha o run de atualização por polling leve.
+   * ========================================================================= */
+
+  var SNAPSHOT_RUN_TERMINAL = ["completed", "failed"];
+
+  function isRunTerminal(status) {
+    return SNAPSHOT_RUN_TERMINAL.indexOf(String(status || "")) !== -1;
+  }
+
+  // Filtros da planilha → status canônico do Motor (é por ele que o banco
+  // filtra e conta). Combinação impossível devolve [] (nenhum resultado).
+  var SNAPSHOT_FINANCIAL_STATUS = {
+    HEALTHY: ["HEALTHY"],
+    LOW_MARGIN: ["LOW_MARGIN"],
+    LOSS: ["LOSS"],
+    UNKNOWN: ["UNVALIDATED"],
+  };
+  var SNAPSHOT_INTEGRITY_STATUS = {
+    RELIABLE: ["HEALTHY", "LOW_MARGIN", "LOSS"],
+    SUSPECT: ["SUSPECT_DATA"],
+    MISSING: ["UNVALIDATED"],
+    RECONCILING: ["RECONCILING"],
+  };
+
+  function snapshotStatusFilter(financial, integrity) {
+    var sets = [];
+    if (financial) sets.push(SNAPSHOT_FINANCIAL_STATUS[financial] || []);
+    if (integrity) sets.push(SNAPSHOT_INTEGRITY_STATUS[integrity] || []);
+    if (!sets.length) return null;
+    return sets.reduce(function (acc, set) {
+      return acc.filter(function (status) { return set.indexOf(status) !== -1; });
+    });
+  }
+
+  function snapshotRun(raw) {
+    if (!raw) return null;
+    return {
+      runId: raw.runId,
+      status: raw.status,
+      reason: raw.reason || null,
+      totalItems: numberOrNull(raw.totalItems),
+      processedItems: numberOrNull(raw.processedItems) || 0,
+      successItems: numberOrNull(raw.successItems) || 0,
+      failedItems: numberOrNull(raw.failedItems) || 0,
+      startedAt: raw.startedAt || null,
+      heartbeatAt: raw.heartbeatAt || null,
+      finishedAt: raw.finishedAt || null,
+      errorCode: raw.errorCode || null,
+      errorMessage: raw.errorMessage || null,
+    };
+  }
+
+  function normalizeSnapshotResumo(payload) {
+    payload = payload || {};
+    if (payload.habilitado !== true) return { ok: true, enabled: false };
+    var refresh = payload.refresh || {};
+    var kpis = payload.kpis || null;
+    return {
+      ok: true,
+      enabled: true,
+      state: payload.estado === "ready" ? "ready" : "missing",
+      action: payload.acao || null,
+      message: payload.mensagem || null,
+      account: payload.conta || null,
+      totalItems: payload.snapshot ? numberOrNull(payload.snapshot.totalItens) : null,
+      outsideCatalog: payload.snapshot ? numberOrNull(payload.snapshot.foraDoCatalogo) : null,
+      lastCalculatedAt: payload.snapshot ? payload.snapshot.ultimoCalculoEm || null : null,
+      kpis: kpis ? {
+        total: numberOrNull(kpis.total) || 0,
+        counts: {
+          HEALTHY: numberOrNull(kpis.porStatus && kpis.porStatus.HEALTHY) || 0,
+          LOW_MARGIN: numberOrNull(kpis.porStatus && kpis.porStatus.LOW_MARGIN) || 0,
+          LOSS: numberOrNull(kpis.porStatus && kpis.porStatus.LOSS) || 0,
+          UNVALIDATED: numberOrNull(kpis.porStatus && kpis.porStatus.UNVALIDATED) || 0,
+          SUSPECT_DATA: numberOrNull(kpis.porStatus && kpis.porStatus.SUSPECT_DATA) || 0,
+          RECONCILING: numberOrNull(kpis.porStatus && kpis.porStatus.RECONCILING) || 0,
+        },
+        refresh: kpis.porRefreshStatus || {},
+        withMargin: numberOrNull(kpis.comMargem) || 0,
+      } : null,
+      activeRun: snapshotRun(refresh.runAtivo),
+      lastRun: snapshotRun(refresh.ultimoRun),
+    };
+  }
+
+  function normalizeSnapshotItens(payload, context) {
+    payload = payload || {};
+    context = context || {};
+    var rows = arrayOf(payload.itens);
+    var items = rows.map(function (row) {
+      var item = normalizeCanonicalItem(row, context);
+      item.snapshot = row.snapshot || null;
+      item.statusBase = row.statusBase || null;
+      return item;
+    });
+    var pagination = payload.paginacao || {};
+    var total = numberOrNull(pagination.total);
+    var periodo = payload.periodo || null;
+    return {
+      ok: true,
+      sourceMode: "snapshot",
+      sourceLabel: "Leitura persistida",
+      client: context.client,
+      marketplace: context.marketplace || "meli",
+      state: payload.estado === "ready" ? "ready" : "missing",
+      items: items,
+      partial: false,
+      coverage: { loaded: total === null ? 0 : total, total: total === null ? 0 : total, partial: false },
+      pagination: {
+        page: numberOrNull(pagination.page) || 1,
+        limit: numberOrNull(pagination.limit) || 50,
+        total: total,
+        totalPages: numberOrNull(pagination.totalPaginas) || 1,
+      },
+      summary: { counts: countStatuses(items), scope: "page" },
+      lastUpdated: payload.ultimoCalculoEm || null,
+      period: periodo ? { inicio: periodo.dateFrom, fim: periodo.dateTo, label: context.period && context.period.label || null } : (context.period || null),
+      refresh: {
+        activeRun: snapshotRun(payload.refresh && payload.refresh.runAtivo),
+        lastRun: snapshotRun(payload.refresh && payload.refresh.ultimoRun),
+      },
+      warnings: [],
+      gaps: [],
+    };
+  }
+
   function apiBase() {
     return String(root.VF_API_BASE || DEFAULT_API_BASE).replace(/\/$/, "");
   }
@@ -1827,7 +1957,87 @@
         });
     }
 
-    return { getClients: getClients, getCentral: getCentral, getWorkspace: getWorkspace, call: call };
+    function apiError(result, fallback) {
+      return { ok: false, status: result.status, error: result.error || fallback, code: result.code || null, type: result.type || "api", aborted: result.aborted === true };
+    }
+
+    function snapshotBase(slug) {
+      return "/operacao/central-margem/" + encodeURIComponent(slug) + "/snapshot";
+    }
+
+    /*
+     * Estado da leitura persistida da conta. `enabled:false` = a leitura por
+     * snapshot está desligada para este cliente (a tela segue o workspace ao
+     * vivo). Chamada ANTES de exigir conta: o backend responde a flag sem
+     * resolver conta.
+     */
+    function getSnapshotResumo(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      if (!slug) return Promise.resolve({ ok: false, status: 400, error: "Selecione um cliente.", type: "no-client" });
+      return call(snapshotBase(slug) + "/resumo" + buildQuery({ clienteContaId: params.clienteContaId }), { signal: signal })
+        .then(function (result) {
+          if (!result.ok) return apiError(result, "Não foi possível ler o estado da Central.");
+          return normalizeSnapshotResumo(result.data);
+        });
+    }
+
+    /* Uma PÁGINA do snapshot: filtro, busca, ordenação e paginação no servidor. */
+    function getSnapshotItens(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      if (!slug) return Promise.resolve({ ok: false, status: 400, error: "Selecione um cliente.", type: "no-client" });
+      var context = { client: { slug: slug, name: params.clientName || slug }, marketplace: params.marketplace || "meli" };
+      var range = dateRange(params);
+      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias" };
+      var query = buildQuery({
+        clienteContaId: params.clienteContaId,
+        page: params.page,
+        limit: params.limit,
+        status: Array.isArray(params.status) ? params.status.join(",") : params.status,
+        busca: params.search,
+        ordenacao: params.sort,
+        direcao: params.direction,
+        dateFrom: range.dateFrom,
+        dateTo: range.dateTo,
+      });
+      return call(snapshotBase(slug) + "/itens" + query, { signal: signal }).then(function (result) {
+        if (!result.ok) return apiError(result, "Não foi possível carregar os itens da leitura persistida.");
+        return normalizeSnapshotItens(result.data, context);
+      });
+    }
+
+    /* POST refresh: 202 com runId (reaproveita o run ativo da conta). */
+    function requestSnapshotRefresh(params) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      return call(snapshotBase(slug) + "/refresh", { method: "POST", body: { clienteContaId: params.clienteContaId } })
+        .then(function (result) {
+          if (!result.ok) return apiError(result, "Não foi possível iniciar a atualização.");
+          return { ok: true, runId: result.data.runId, reused: result.data.reaproveitado === true, run: snapshotRun(result.data.run) };
+        });
+    }
+
+    function getSnapshotRefreshStatus(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      return call(snapshotBase(slug) + "/refresh/" + encodeURIComponent(params.runId) + buildQuery({ clienteContaId: params.clienteContaId }), { signal: signal })
+        .then(function (result) {
+          if (!result.ok) return apiError(result, "Não foi possível consultar a atualização.");
+          return { ok: true, run: snapshotRun(result.data.run) };
+        });
+    }
+
+    return {
+      getClients: getClients,
+      getCentral: getCentral,
+      getWorkspace: getWorkspace,
+      getSnapshotResumo: getSnapshotResumo,
+      getSnapshotItens: getSnapshotItens,
+      requestSnapshotRefresh: requestSnapshotRefresh,
+      getSnapshotRefreshStatus: getSnapshotRefreshStatus,
+      call: call,
+    };
   }
 
   return {
@@ -1866,6 +2076,10 @@
     buildSalesIndex: buildSalesIndex,
     simulatePrice: simulatePrice,
     countStatuses: countStatuses,
+    isRunTerminal: isRunTerminal,
+    snapshotStatusFilter: snapshotStatusFilter,
+    normalizeSnapshotResumo: normalizeSnapshotResumo,
+    normalizeSnapshotItens: normalizeSnapshotItens,
     createClient: createClient,
     numberOrNull: numberOrNull,
     marginFraction: marginFraction,

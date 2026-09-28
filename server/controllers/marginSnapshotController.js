@@ -53,6 +53,7 @@ function createMarginSnapshotController({ service = defaultService, readService 
         dateFrom: req.query.dateFrom,
         dateTo: req.query.dateTo,
         status: req.query.status,
+        statusAnuncio: req.query.statusAnuncio,
         refreshStatus: req.query.refreshStatus,
         confianca: req.query.confianca,
         busca: req.query.busca ?? req.query.q,

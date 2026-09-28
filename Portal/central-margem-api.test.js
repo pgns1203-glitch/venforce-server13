@@ -699,12 +699,13 @@ async function run() {
   await test("snapshot: resumo 'ready' normaliza KPIs por status e o run ativo", () => {
     const r = api.normalizeSnapshotResumo({
       ok: true, habilitado: true, estado: "ready", snapshot: { totalItens: 10, ultimoCalculoEm: "2026-09-27T10:00:00Z", foraDoCatalogo: 2 },
-      kpis: { total: 10, porStatus: { HEALTHY: 6, LOSS: 4 }, porRefreshStatus: { fresh: 9, failed: 1 }, comMargem: 10 },
+      kpis: { total: 10, porStatus: { HEALTHY: 6, LOSS: 4 }, porRefreshStatus: { fresh: 9, failed: 1 }, anuncios: { total: 10, ativos: 7, pausados: 3 }, comMargem: 10 },
       refresh: { runAtivo: { runId: 7, status: "running", totalItems: 5000, processedItems: 820 }, ultimoRun: null },
     });
     assert.strictEqual(r.kpis.total, 10);
     assert.strictEqual(r.kpis.counts.HEALTHY, 6);
     assert.strictEqual(r.kpis.counts.LOW_MARGIN, 0);
+    assert.deepStrictEqual(r.kpis.listings, { total: 10, active: 7, paused: 3 });
     assert.strictEqual(r.outsideCatalog, 2);
     assert.strictEqual(r.activeRun.processedItems, 820);
     assert.strictEqual(r.activeRun.totalItems, 5000);
@@ -720,7 +721,7 @@ async function run() {
         itemId: "MLB1", titulo: "Produto 1", sku: "S1", status: "LOSS", confidence: "HIGH",
         fields: { price: field(evidence("MELI_API", 100)), cost: field(evidence("VENFORCE_BASE", 90)) },
         projected: { margin: -0.1, profit: -10 }, realized: { margin: null, profit: null, pending: true },
-        quality: { statusReasons: ["Margem negativa."] },
+        quality: { statusReasons: ["Margem negativa."] }, diagnostico: { statusAnuncio: "paused" },
         snapshot: { refreshStatus: "failed", lastError: "ML 503" }, statusBase: "projected",
       }],
       refresh: { runAtivo: null, ultimoRun: { runId: 3, status: "completed" } },
@@ -734,6 +735,7 @@ async function run() {
     assert.strictEqual(r.items[0].sources.price.entries.MELI_API.value, 100);
     assert.strictEqual(r.items[0].variables.cost.value, 90);
     assert.strictEqual(r.items[0].snapshot.refreshStatus, "failed");
+    assert.strictEqual(r.items[0].statusAnuncio, "paused");
     assert.strictEqual(r.refresh.lastRun.status, "completed");
   });
 
@@ -762,7 +764,7 @@ async function run() {
       },
     });
     await client.getSnapshotResumo({ clientSlug: "loja-teste", clienteContaId: 900 });
-    await client.getSnapshotItens({ clientSlug: "loja-teste", clienteContaId: 900, page: 2, limit: 50, status: ["LOSS", "LOW_MARGIN"], search: "kit" });
+    await client.getSnapshotItens({ clientSlug: "loja-teste", clienteContaId: 900, page: 2, limit: 50, status: ["LOSS", "LOW_MARGIN"], statusAnuncio: "paused", search: "kit" });
     const refresh = await client.requestSnapshotRefresh({ clientSlug: "loja-teste", clienteContaId: 900 });
     const status = await client.getSnapshotRefreshStatus({ clientSlug: "loja-teste", clienteContaId: 900, runId: 9 });
 
@@ -770,7 +772,7 @@ async function run() {
     assert.ok(calls[0].path.includes("clienteContaId=900"));
     const itensPath = calls[1].path;
     assert.ok(itensPath.startsWith("/operacao/central-margem/loja-teste/snapshot/itens?"));
-    for (const trecho of ["clienteContaId=900", "page=2", "limit=50", "status=LOSS%2CLOW_MARGIN", "busca=kit"]) {
+    for (const trecho of ["clienteContaId=900", "page=2", "limit=50", "status=LOSS%2CLOW_MARGIN", "statusAnuncio=paused", "busca=kit"]) {
       assert.ok(itensPath.includes(trecho), `falta ${trecho} em ${itensPath}`);
     }
     assert.strictEqual(calls[2].method, "POST");

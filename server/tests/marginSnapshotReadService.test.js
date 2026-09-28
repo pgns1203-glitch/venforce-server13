@@ -68,7 +68,11 @@ async function popularSnapshot(db, { clienteContaId = 5, anuncios = fixture.ANUN
     logger: SILENCIOSO,
     config: { ...resolveMarginSnapshotConfig({}), batchPauseMs: 0 },
     sleep: async () => {},
-    listarIdsCatalogo: async () => ({ ids: Object.keys(anuncios), totalAtivos: Object.keys(anuncios).length, totalPausados: 0 }),
+    listarIdsCatalogo: async () => ({
+      ids: Object.keys(anuncios),
+      totalAtivos: Object.values(anuncios).filter((a) => (a.status || "active") === "active").length,
+      totalPausados: Object.values(anuncios).filter((a) => a.status === "paused").length,
+    }),
   });
   await runRepository.updateRunStatus({ runId: run.id, status: "completed", db });
   return run;
@@ -163,6 +167,24 @@ cenario("feature ON + snapshot existente: lê do banco, sem Motor ao vivo nem ML
   for (const chamada of ["enrichBatch(", "prepareWorkspaceContext(", "mlFetch(", "buscarDetalhesItens(", "obterWorkspace("]) {
     assert.ok(!src.includes(chamada), `leitura por snapshot não chama ${chamada}`);
   }
+});
+
+cenario("processor persiste active/paused no quality_json e a leitura filtra sem nova chamada ao ML", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const anuncios = {
+    MLB1: { ...fixture.ANUNCIOS.MLB1, status: "active" },
+    MLB2: { ...fixture.ANUNCIOS.MLB2, status: "paused" },
+    MLB3: { ...fixture.ANUNCIOS.MLB3, status: "active" },
+  };
+  await popularSnapshot(db, { anuncios });
+  assert.strictEqual(db.snapshots.find((s) => s.item_id === "MLB2").quality_json.statusAnuncio, "paused");
+
+  const pausados = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, statusAnuncio: "paused" }, depsLeitura(db));
+  assert.deepStrictEqual(pausados.itens.map((i) => i.itemId), ["MLB2"]);
+  assert.strictEqual(pausados.itens[0].diagnostico.statusAnuncio, "paused");
+
+  const resumo = await read.obterResumo({ clienteSlug: "loja-a", clienteContaId: 5 }, depsLeitura(db));
+  assert.deepStrictEqual(resumo.kpis.anuncios, { total: 3, ativos: 2, pausados: 1 });
 });
 
 cenario("projetada vem da linha persistida — nunca recalculada na leitura", async () => {
@@ -291,10 +313,11 @@ cenario("controller: resumo/itens delegam ao read service e mapeiam erro de flag
   assert.deepStrictEqual(chamadas[0], ["resumo", { clienteSlug: "loja-a", clienteContaId: "5" }]);
 
   const res2 = { status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
-  await controller.listarItens({ params: { clienteSlug: "loja-a" }, query: { clienteContaId: "5", page: "2", limit: "20" } }, res2);
+  await controller.listarItens({ params: { clienteSlug: "loja-a" }, query: { clienteContaId: "5", page: "2", limit: "20", statusAnuncio: "paused" } }, res2);
   assert.strictEqual(res2.statusCode, 404);
   assert.strictEqual(res2.body.code, "MARGIN_SNAPSHOT_READ_DISABLED");
   assert.strictEqual(chamadas[1][1].page, "2");
+  assert.strictEqual(chamadas[1][1].statusAnuncio, "paused");
 });
 
 async function main() {

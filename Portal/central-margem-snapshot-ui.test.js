@@ -138,7 +138,7 @@ const MOCK_CLIENT = `
       var margin = MARGEM[i % 5];
       return {
         itemId: "C" + conta + "-MLB" + (100000 + i), title: "Produto " + i + " da conta " + conta, titulo: "Produto " + i + " da conta " + conta,
-        sku: "SKU-" + i, status: status, confidence: "HIGH", marketplace: "meli", targetMargin: 0.1,
+        sku: skuDe(i), status: status, confidence: "HIGH", marketplace: "meli", targetMargin: 0.1,
         fields: {
           price: field(ev("MELI_API", 100)), cost: field(status === "UNVALIDATED" ? null : ev("VENFORCE_BASE", 40, "DECLARED")),
           taxRate: field(ev("VENFORCE_BASE", 0.1, "DECLARED")), fixedFee: field(ev("VENFORCE_BASE", 0, "DECLARED")),
@@ -147,12 +147,19 @@ const MOCK_CLIENT = `
         projected: { margin: margin, profit: margin === null ? null : margin * 100, estimated: false },
         realized: { margin: null, profit: null, pending: true },
         quality: { confidence: "HIGH", confidenceByField: {}, reasons: [], divergences: [], statusReasons: ["status " + status] },
+        diagnostico: { statusAnuncio: statusAnuncioDe(i) },
         snapshot: { refreshStatus: i === 3 ? "failed" : "fresh", lastError: i === 3 ? "ML 503" : null, calculatedAt: "2026-09-27T10:00:00Z" },
         statusBase: "projected",
         sales: { hasOrders: false }, settlement: { available: false },
       };
     }
     function statusDe(i) { return STATUS[i % 5]; }
+    function skuDe(i) { return i === 3 ? "SKU-NULL-STATUS" : i === 4 ? "SKU-UNKNOWN-STATUS" : "SKU-" + i; }
+    function statusAnuncioDe(i) {
+      if (i === 3) return null;
+      if (i === 4) return "under_review";
+      return i % 4 === 0 ? "paused" : "active";
+    }
 
     window.__cmCalls = { workspace: 0, resumo: [], itens: [], refresh: [], status: [] };
     window.__cmItemsRecebidos = 0;
@@ -196,13 +203,18 @@ const MOCK_CLIENT = `
         var conta = String(params.clienteContaId);
         var missing = window.__cmMissing[conta] === true;
         var porStatus = { HEALTHY: 0, LOW_MARGIN: 0, LOSS: 0, UNVALIDATED: 0, SUSPECT_DATA: 0, RECONCILING: 0 };
-        for (var i = 0; i < TOTAL; i += 1) porStatus[statusDe(i)] += 1;
+        var anuncios = { total: TOTAL, ativos: 0, pausados: 0 };
+        for (var i = 0; i < TOTAL; i += 1) {
+          porStatus[statusDe(i)] += 1;
+          if (statusAnuncioDe(i) === "active") anuncios.ativos += 1;
+          if (statusAnuncioDe(i) === "paused") anuncios.pausados += 1;
+        }
         var payload = {
           habilitado: true, estado: missing ? "missing" : "ready", acao: missing && !ativo(conta) ? "refresh" : null,
           mensagem: missing ? "Esta conta ainda não tem leitura de margem calculada." : null,
           conta: { id: Number(conta), nome: "Conta " + conta },
           snapshot: { totalItens: missing ? null : TOTAL, ultimoCalculoEm: missing ? null : "2026-09-27T10:00:00Z", foraDoCatalogo: missing ? null : 0 },
-          kpis: missing ? null : { total: TOTAL, porStatus: porStatus, porRefreshStatus: { fresh: TOTAL - 1, stale: 0, failed: 1 }, comMargem: TOTAL - porStatus.UNVALIDATED },
+          kpis: missing ? null : { total: TOTAL, porStatus: porStatus, porRefreshStatus: { fresh: TOTAL - 1, stale: 0, failed: 1 }, anuncios: anuncios, comMargem: TOTAL - porStatus.UNVALIDATED },
           refresh: { runAtivo: runPublico(ativo(conta)), ultimoRun: runPublico(ultimo(conta)) },
         };
         var normalizado = window.VFCentralMargemApi.normalizeSnapshotResumo(payload);
@@ -228,7 +240,8 @@ const MOCK_CLIENT = `
         var termo = (params.search || "").toLowerCase();
         for (var i = 0; i < TOTAL; i += 1) {
           if (params.status && params.status.indexOf(statusDe(i)) === -1) continue;
-          if (termo && ("sku-" + i).indexOf(termo) === -1 && ("produto " + i).indexOf(termo) === -1) continue;
+          if (params.statusAnuncio && statusAnuncioDe(i) !== params.statusAnuncio) continue;
+          if (termo && skuDe(i).toLowerCase().indexOf(termo) === -1 && ("produto " + i).indexOf(termo) === -1) continue;
           idx.push(i);
         }
         var limit = params.limit || 50;
@@ -404,8 +417,42 @@ async function run() {
       assert.ok((await cdp.evaluate("document.getElementById('cm-pagination').innerText")).includes("Página 1 de 100"));
       const kpis = await cdp.evaluate("document.getElementById('cm-kpis-financial').innerText");
       assert.ok(kpis.includes("5000") && kpis.includes("1000"), "placar da conta inteira (5.000; 1.000 por status), não da página");
+      const anuncios = await cdp.evaluate("document.getElementById('cm-kpis-listing').innerText");
+      assert.ok(anuncios.includes("5000") && anuncios.includes("3749") && anuncios.includes("1249"), "KPIs de anúncios usam a conta inteira");
       assert.ok((await pageState()).includes("não puderam ser recalculados"), "aviso de itens com refresh falho");
       assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-cm-refresh-failed]'))"), "linha marcada com valor anterior");
+    });
+
+    await check("filtro de anúncio: active, paused e todos combinam com busca/status sem perder paginação", async () => {
+      await cdp.evaluate("(function(){var s=document.getElementById('cm-listing-status-filter');s.value='active';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "window.__cmCalls.itens[window.__cmCalls.itens.length-1].statusAnuncio === 'active' && !window.VFCentralMargemUi.getState().loading", "filtro active não foi ao servidor");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-result-count').innerText")).includes("3749"));
+      assert.ok(await cdp.evaluate("Array.from(document.querySelectorAll('.cm-listing-status')).every(function(e){return e.innerText.indexOf('Ativo') !== -1;})"));
+
+      await cdp.evaluate("(function(){var i=document.getElementById('cm-search');i.value='SKU-4997';i.dispatchEvent(new Event('input'));var s=document.getElementById('cm-financial-filter');s.value='LOSS';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "window.__cmCalls.itens.some(function(c){return c.statusAnuncio==='active' && c.search==='SKU-4997' && JSON.stringify(c.status)==='[\"LOSS\"]';}) && !window.VFCentralMargemUi.getState().loading", "combinação active + busca + status financeiro não chegou ao servidor");
+      assert.strictEqual(await rowCount(), 1);
+
+      await cdp.evaluate("(function(){var i=document.getElementById('cm-search');i.value='';i.dispatchEvent(new Event('input'));var f=document.getElementById('cm-financial-filter');f.value='';f.dispatchEvent(new Event('change'));var s=document.getElementById('cm-listing-status-filter');s.value='paused';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "window.__cmCalls.itens[window.__cmCalls.itens.length-1].statusAnuncio === 'paused' && !window.__cmCalls.itens[window.__cmCalls.itens.length-1].search && !window.VFCentralMargemUi.getState().loading", "filtro paused não foi ao servidor");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-result-count').innerText")).includes("1249"));
+      assert.ok((await cdp.evaluate("document.getElementById('cm-pagination').innerText")).includes("Página 1 de 25"));
+      assert.ok(await cdp.evaluate("Array.from(document.querySelectorAll('.cm-listing-status')).every(function(e){return e.innerText.indexOf('Pausado') !== -1;})"));
+
+      await cdp.evaluate("(function(){var s=document.getElementById('cm-listing-status-filter');s.value='';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "!window.__cmCalls.itens[window.__cmCalls.itens.length-1].statusAnuncio && !window.VFCentralMargemUi.getState().loading", "opção Todos não removeu o filtro");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-result-count').innerText")).includes("5000"));
+    });
+
+    await check("status de anúncio nulo ou desconhecido aparece neutro e não quebra a linha", async () => {
+      await cdp.evaluate("(function(){var i=document.getElementById('cm-search');i.value='SKU-NULL-STATUS';i.dispatchEvent(new Event('input'));})()");
+      await waitFor(cdp, "window.__cmCalls.itens[window.__cmCalls.itens.length-1].search === 'SKU-NULL-STATUS' && !window.VFCentralMargemUi.getState().loading");
+      assert.ok((await cdp.evaluate("document.querySelector('.cm-listing-status').innerText")).includes("não informado"));
+      await cdp.evaluate("(function(){var i=document.getElementById('cm-search');i.value='SKU-UNKNOWN-STATUS';i.dispatchEvent(new Event('input'));})()");
+      await waitFor(cdp, "window.__cmCalls.itens[window.__cmCalls.itens.length-1].search === 'SKU-UNKNOWN-STATUS' && !window.VFCentralMargemUi.getState().loading");
+      assert.ok((await cdp.evaluate("document.querySelector('.cm-listing-status').innerText")).includes("under_review"));
+      await cdp.evaluate("(function(){var i=document.getElementById('cm-search');i.value='';i.dispatchEvent(new Event('input'));})()");
+      await waitFor(cdp, "!window.__cmCalls.itens[window.__cmCalls.itens.length-1].search && !window.VFCentralMargemUi.getState().loading");
     });
 
     await check("troca 10 → 11 durante request: resposta antiga não substitui a conta nova", async () => {

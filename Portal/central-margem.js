@@ -56,6 +56,7 @@
     search: "",
     financial: "",
     integrity: "",
+    listingStatus: "",
     selection: contract.clonePreset("projected"),
     preset: "projected",
     criticalOnly: false,
@@ -237,10 +238,14 @@
     refs.sourcesBody = el("cm-sources-body");
     refs.kpisFinancial = el("cm-kpis-financial");
     refs.kpisIntegrity = el("cm-kpis-integrity");
+    refs.listingSummary = el("cm-listing-summary");
+    refs.kpisListing = el("cm-kpis-listing");
     refs.summaryScope = el("cm-summary-scope");
     refs.restoreSources = el("cm-restore-sources");
     refs.financialFilter = el("cm-financial-filter");
     refs.integrityFilter = el("cm-integrity-filter");
+    refs.listingStatusFilterWrap = el("cm-listing-status-filter-wrap");
+    refs.listingStatusFilter = el("cm-listing-status-filter");
     refs.activeFilters = el("cm-active-filters");
     refs.resultCount = el("cm-result-count");
     refs.tableHost = el("cm-table-host");
@@ -321,12 +326,18 @@
       onFiltersChanged();
     });
 
+    refs.listingStatusFilter.addEventListener("change", function () {
+      state.listingStatus = refs.listingStatusFilter.value;
+      onFiltersChanged();
+    });
+
     refs.activeFilters.addEventListener("click", function (event) {
       var button = event.target.closest("[data-clear-filter]");
       if (!button) return;
       var target = button.getAttribute("data-clear-filter");
       if (target === "financial") { state.financial = ""; refs.financialFilter.value = ""; }
       if (target === "integrity") { state.integrity = ""; refs.integrityFilter.value = ""; }
+      if (target === "listingStatus") { state.listingStatus = ""; refs.listingStatusFilter.value = ""; }
       onFiltersChanged();
     });
 
@@ -345,6 +356,15 @@
       var value = button.getAttribute("data-integrity-filter");
       state.integrity = state.integrity === value ? "" : value;
       refs.integrityFilter.value = state.integrity;
+      onFiltersChanged();
+    });
+
+    refs.kpisListing.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-listing-filter]");
+      if (!button || !state.data) return;
+      var value = button.getAttribute("data-listing-filter");
+      state.listingStatus = state.listingStatus === value ? "" : value;
+      refs.listingStatusFilter.value = state.listingStatus;
       onFiltersChanged();
     });
 
@@ -686,6 +706,7 @@
       page: state.serverPage,
       limit: state.serverLimit,
       status: statuses,
+      statusAnuncio: state.listingStatus || undefined,
       search: state.search || undefined,
     }, state.abortController && state.abortController.signal).then(function (result) {
       if (sequence !== state.requestSequence || result.aborted) return;
@@ -826,6 +847,7 @@
     refs.refresh.disabled = state.loading || !state.client || (isSnapshotMode() && (state.awaitingAccount || runEmAndamento()));
     refs.refresh.classList.toggle("is-loading", state.loading || (isSnapshotMode() && runEmAndamento()));
     refs.search.disabled = !state.client;
+    refs.listingStatusFilterWrap.hidden = !isSnapshotMode();
     renderContext();
     renderPageState();
     syncPresetButtons();
@@ -1072,6 +1094,15 @@
     ];
   }
 
+  function listingCards() {
+    var listings = state.snapshot && state.snapshot.kpis && state.snapshot.kpis.listings;
+    return [
+      { filter: null, label: "Anúncios", value: listings ? listings.total : "—", foot: "conta inteira", modifier: "" },
+      { filter: "active", label: "Ativos", value: listings ? listings.active : "—", foot: "em venda", modifier: "is-success" },
+      { filter: "paused", label: "Pausados", value: listings ? listings.paused : "—", foot: "fora de venda", modifier: "is-warning" },
+    ];
+  }
+
   function kpiHtml(card, attribute, activeValue) {
     var active = card.filter !== null && activeValue === card.filter;
     return '<button type="button" class="cm-kpi ' + card.modifier + (active ? " is-active" : "") + '"' +
@@ -1090,6 +1121,10 @@
     refs.kpisIntegrity.innerHTML = integrityCards().map(function (card) {
       return kpiHtml(card, "data-integrity-filter", state.integrity);
     }).join("");
+    refs.listingSummary.hidden = !isSnapshotMode();
+    refs.kpisListing.innerHTML = isSnapshotMode() ? listingCards().map(function (card) {
+      return kpiHtml(card, "data-listing-filter", state.listingStatus);
+    }).join("") : "";
 
     if (!state.client) refs.summaryScope.textContent = "Selecione um cliente para iniciar a análise.";
     else if (isSnapshotMode()) {
@@ -1115,6 +1150,10 @@
     if (state.integrity) {
       chips.push('<span class="vf-active-filter">Integridade: ' + escapeHtml(contract.INTEGRITY_STATES[state.integrity].label) +
         '<button type="button" class="vf-active-filter__remove" data-clear-filter="integrity" aria-label="Remover filtro de integridade">×</button></span>');
+    }
+    if (state.listingStatus) {
+      chips.push('<span class="vf-active-filter">Status do anúncio: ' + (state.listingStatus === "active" ? "Ativos" : "Pausados") +
+        '<button type="button" class="vf-active-filter__remove" data-clear-filter="listingStatus" aria-label="Remover filtro de status do anúncio">×</button></span>');
     }
     refs.activeFilters.innerHTML = chips.join("");
   }
@@ -1259,10 +1298,16 @@
   }
 
   function productCellHtml(item, stripeTone) {
+    var listingStatus = "";
+    if (isSnapshotMode()) {
+      if (item.statusAnuncio === "active") listingStatus = '<span class="cm-listing-status is-active">● Ativo</span>';
+      else if (item.statusAnuncio === "paused") listingStatus = '<span class="cm-listing-status is-paused">⏸ Pausado</span>';
+      else listingStatus = '<span class="cm-listing-status">' + escapeHtml(item.statusAnuncio ? "Status: " + item.statusAnuncio : "Status não informado") + "</span>";
+    }
     return '<td class="cm-product-cell' + (stripeTone ? " " + stripeTone : "") + '">' +
       '<div class="cm-product">' + productThumbHtml(item) +
       '<div class="cm-product__info"><span class="cm-prod-title">' + escapeHtml(item.title) + "</span>" +
-      '<span class="cm-prod-meta">' + escapeHtml(item.itemId || "—") + " · " + escapeHtml(item.sku || "sem SKU") + "</span></div>" +
+      '<span class="cm-prod-meta">' + escapeHtml(item.itemId || "—") + " · " + escapeHtml(item.sku || "sem SKU") + "</span>" + listingStatus + "</div>" +
       "</div></td>";
   }
 
@@ -1346,7 +1391,7 @@
     refs.resultCount.textContent = items.length + (items.length === 1 ? " resultado" : " resultados") +
       (coverage.loaded ? " de " + coverage.loaded + " carregados" : "");
     if (!items.length) {
-      var hasFilters = state.search || state.financial || state.integrity;
+      var hasFilters = state.search || state.financial || state.integrity || state.listingStatus;
       refs.tableHost.innerHTML = stateHtml("empty", hasFilters ? "Nenhum resultado" : "Nenhum item monitorado",
         hasFilters ? "Ajuste a busca ou remova os filtros operacionais." : "Sincronize o catálogo em Anúncios ML e atualize esta leitura.",
         hasFilters ? '<div class="vf-empty__actions"><button class="vf-btn vf-btn--secondary" type="button" id="cm-clear-all">Limpar filtros</button></div>' : "");
@@ -1383,7 +1428,7 @@
     var total = pagination.total === null || pagination.total === undefined ? items.length : pagination.total;
     refs.resultCount.textContent = total + (total === 1 ? " resultado" : " resultados");
     if (!items.length) {
-      var hasFilters = state.search || state.financial || state.integrity;
+      var hasFilters = state.search || state.financial || state.integrity || state.listingStatus;
       refs.tableHost.innerHTML = stateHtml("empty", hasFilters ? "Nenhum resultado" : "Nenhum item na leitura desta conta",
         hasFilters ? "Ajuste a busca ou remova os filtros operacionais." : "O último cálculo não encontrou anúncios ativos ou pausados nesta conta.",
         hasFilters ? '<div class="vf-empty__actions"><button class="vf-btn vf-btn--secondary" type="button" id="cm-clear-all">Limpar filtros</button></div>' : "");
@@ -1429,11 +1474,13 @@
   function clearAllFilters() {
     state.financial = "";
     state.integrity = "";
+    state.listingStatus = "";
     state.search = "";
     state.visiblePage = 1;
     refs.search.value = "";
     refs.financialFilter.value = "";
     refs.integrityFilter.value = "";
+    refs.listingStatusFilter.value = "";
     if (isSnapshotMode()) {
       onFiltersChanged();
       return;

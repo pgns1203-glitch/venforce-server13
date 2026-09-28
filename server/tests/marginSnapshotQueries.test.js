@@ -45,13 +45,13 @@ async function popular(db, { total = 120, conta6 = 30 } = {}) {
       profit: semMargem ? null : marginPercent, margin: semMargem ? null : marginPercent / 100, marginPercent,
       status, confidenceLevel: i % 4 === 0 ? "LOW" : "HIGH",
       refreshStatus: i % 11 === 0 ? "failed" : "fresh",
-      quality: { evidencias: {} },
+      quality: { evidencias: {}, statusAnuncio: i % 17 === 0 ? null : i % 13 === 0 ? "under_review" : i % 4 === 0 ? "paused" : "active" },
     }, db);
   }
   for (let i = 0; i < conta6; i += 1) {
     await repo.upsertProjectionSnapshot({
       clienteId: 1, clienteContaId: 6, itemId: `MLB${1000 + i}`, sku: `SKU-${i}`, titulo: `Conta seis ${i}`,
-      price: 100, profit: 99, margin: 0.99, marginPercent: 99, status: "LOSS", quality: { evidencias: {} },
+      price: 100, profit: 99, margin: 0.99, marginPercent: 99, status: "LOSS", quality: { evidencias: {}, statusAnuncio: "active" },
     }, db);
   }
 }
@@ -143,10 +143,47 @@ cenario("filtros combinados: status (lista) + refreshStatus + confiança + busca
   assert.deepStrictEqual(r.itens.map((i) => i.itemId).sort(), esperado.map((s) => s.item_id).sort());
 });
 
+cenario("status do anúncio: todos, active e paused preservam busca, status financeiro e paginação", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  await popular(db);
+  const conta5 = db.snapshots.filter((s) => s.cliente_conta_id === 5);
+
+  const todos = await listar(db, { limit: 200 });
+  assert.strictEqual(todos.paginacao.total, conta5.length, "sem filtro continua mostrando todos, inclusive nulo/desconhecido");
+
+  const ativosEsperados = conta5.filter((s) => s.quality_json.statusAnuncio === "active");
+  const ativos = await listar(db, { statusAnuncio: "active", limit: 200 });
+  assert.strictEqual(ativos.paginacao.total, ativosEsperados.length);
+  assert.ok(ativos.itens.every((i) => i.diagnostico.statusAnuncio === "active"));
+
+  const pausadosEsperados = conta5.filter((s) => s.quality_json.statusAnuncio === "paused");
+  const pausados = await listar(db, { statusAnuncio: "paused", page: 2, limit: 5 });
+  assert.strictEqual(pausados.paginacao.total, pausadosEsperados.length);
+  assert.strictEqual(pausados.paginacao.page, 2);
+  assert.ok(pausados.itens.length <= 5 && pausados.itens.every((i) => i.diagnostico.statusAnuncio === "paused"));
+
+  const combinadoEsperado = conta5.filter((s) => s.quality_json.statusAnuncio === "active"
+    && s.status === "LOSS" && /produto 1/i.test(s.titulo));
+  const combinado = await listar(db, { statusAnuncio: "active", status: "LOSS", busca: "Produto 1", limit: 200 });
+  assert.deepStrictEqual(combinado.itens.map((i) => i.itemId).sort(), combinadoEsperado.map((s) => s.item_id).sort());
+});
+
+cenario("status do anúncio nulo/desconhecido não quebra todos; conta sem pausados retorna filtro vazio", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  await popular(db, { total: 40, conta6: 12 });
+  const todos = await listar(db, { limit: 200 });
+  assert.ok(todos.itens.some((i) => i.diagnostico.statusAnuncio === null));
+  assert.ok(todos.itens.some((i) => i.diagnostico.statusAnuncio === "under_review"));
+
+  const semPausados = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 6, statusAnuncio: "paused" }, deps(db));
+  assert.strictEqual(semPausados.paginacao.total, 0);
+  assert.deepStrictEqual(semPausados.itens, []);
+});
+
 cenario("filtro com valor fora do enum é rejeitado (400), nunca interpolado", async () => {
   const db = makeMarginSnapshotFakeDb();
   await popular(db, { total: 5, conta6: 0 });
-  for (const params of [{ status: "HEALTHY' OR 1=1 --" }, { refreshStatus: "qualquer" }, { confianca: "ALTISSIMA" }]) {
+  for (const params of [{ status: "HEALTHY' OR 1=1 --" }, { statusAnuncio: "closed" }, { refreshStatus: "qualquer" }, { confianca: "ALTISSIMA" }]) {
     const err = await esperaErro(() => listar(db, params));
     assert.strictEqual(err.statusCode, 400);
     assert.strictEqual(err.payload.code, "FILTRO_INVALIDO");
@@ -228,7 +265,13 @@ cenario("KPIs vêm de uma agregação no banco e independem da página/filtro da
   assert.strictEqual(resumo.kpis.porRefreshStatus.failed, contar((s) => s.refresh_status === "failed"));
   assert.strictEqual(resumo.kpis.porRefreshStatus.fresh, contar((s) => s.refresh_status === "fresh"));
   assert.strictEqual(resumo.kpis.comMargem, contar((s) => s.margin !== null));
+  assert.deepStrictEqual(resumo.kpis.anuncios, {
+    total: conta5.length,
+    ativos: contar((s) => s.quality_json.statusAnuncio === "active"),
+    pausados: contar((s) => s.quality_json.statusAnuncio === "paused"),
+  });
   assert.ok(queries.some((q) => q.includes("/* ms:kpis */") && q.includes("FILTER (WHERE status = 'HEALTHY')")), "contagem via COUNT FILTER no SQL");
+  assert.ok(queries.some((q) => q.includes("quality_json->>'statusAnuncio' = 'paused'")), "status do anúncio agregado direto do JSONB");
 
   // Uma página filtrada não muda o placar.
   await listar(db, { status: "LOSS", page: 3, limit: 5 });
@@ -244,6 +287,7 @@ cenario("KPIs isolados por conta: a conta 6 não entra no placar da conta 5 e vi
   assert.strictEqual(r5.kpis.total, 20);
   assert.strictEqual(r6.kpis.total, 30);
   assert.strictEqual(r6.kpis.porStatus.LOSS, 30);
+  assert.deepStrictEqual(r6.kpis.anuncios, { total: 30, ativos: 30, pausados: 0 });
   const l6 = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 6, busca: "MLB1000" }, deps(db));
   assert.strictEqual(l6.itens.length, 1);
   assert.strictEqual(l6.itens[0].margin.projected.marginPercent, 99, "mesmo MLB, linha da conta 6");

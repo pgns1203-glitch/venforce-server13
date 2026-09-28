@@ -47,6 +47,8 @@ const { FIELDS } = require("./core/marginEvidence");
 const { resolveMarginSnapshotConfig } = require("./marginSnapshotConfig");
 const { executarComRetry, esperar, MarginSnapshotStopError } = require("./marginSnapshotRetry");
 const { redigirSegredos } = require("./marginSnapshotSanitize");
+const { obterLimiterDoProcesso } = require("./marginSnapshotRateLimiter");
+const { logEvento } = require("./marginSnapshotLog");
 
 // Mesmo teto do multiget /items?ids= que rege enrichBatch (PAGE_LIMIT_MAX).
 const BATCH_SIZE = motorMargem.PAGE_LIMIT_MAX;
@@ -227,12 +229,43 @@ async function processMarginSnapshotRun(run, deps = {}) {
   const updateRunProgress = deps.updateRunProgress || runRepository.updateRunProgress;
   const mergeRunMetadata = deps.mergeRunMetadata || runRepository.mergeRunMetadata;
 
+  // M8 — rate limit do PROCESSO (compartilhado por todos os runs): espaça os
+  // inícios de lote e aplica cooldown global depois de 429/Retry-After.
+  const limiter = deps.rateLimiter || obterLimiterDoProcesso(config);
+
   const inicio = clock();
-  const LOG = `[marginSnapshot] run #${run.id} conta=${run.clienteContaId}`;
   const stats = { retries: 0, rateLimitedRetries: 0, lotesFalhos: 0, itensNaoRetornados: 0, itensForaDoCatalogo: 0 };
+
+  // Log estruturado: ids e contadores, mensagens redigidas (marginSnapshotLog).
+  function evento(nivel, nome, campos = {}) {
+    logEvento(logger, nivel, nome, { run_id: run.id, cliente_id: run.clienteId, cliente_conta_id: run.clienteContaId, ...campos });
+  }
 
   function verificarParada() {
     if (signal?.aborted) throw new MarginSnapshotStopError();
+  }
+
+  // Toda chamada ao ML deste run passa pelo limiter; uma espera interrompida
+  // pelo stop nunca dispara a chamada.
+  async function comVez(fn) {
+    await limiter.aguardarVez(signal);
+    verificarParada();
+    return fn();
+  }
+
+  function aoRetentar(etapa, extra = {}) {
+    return ({ tentativa, delayMs, classificacao }) => {
+      stats.retries += 1;
+      if (classificacao.rateLimited) {
+        stats.rateLimitedRetries += 1;
+        // 429 é por aplicação: todos os runs do processo esperam.
+        limiter.penalizar(delayMs);
+      }
+      evento("warn", "margin_snapshot_retry", {
+        etapa, ...extra, tentativa: tentativa + 1, delay_ms: delayMs,
+        status: classificacao.status ?? null, rate_limited: classificacao.rateLimited,
+      });
+    };
   }
 
   // Um run que deixou de estar `running` (reconciliado como stale por outra
@@ -260,19 +293,13 @@ async function processMarginSnapshotRun(run, deps = {}) {
   const observedAt = isoOrNull(prepared.now);
 
   // ── 2. Catálogo inteiro (scan) com retry ────────────────────────────────
+  const inicioListagem = clock();
   const listagem = await executarComRetry(
-    () => listarIdsCatalogo(
+    () => comVez(() => listarIdsCatalogo(
       { clienteId: prepared.cliente.id, mlUserId: prepared.mlUserId, maxItens: config.maxCatalogItems },
       deps.mlFetchCatalogo
-    ),
-    {
-      config, sleep, signal,
-      onRetry: ({ tentativa, delayMs, classificacao }) => {
-        stats.retries += 1;
-        if (classificacao.rateLimited) stats.rateLimitedRetries += 1;
-        logger.warn?.(`${LOG} listagem do catálogo: nova tentativa ${tentativa + 1} em ${delayMs}ms (status=${classificacao.status ?? "rede"})`);
-      },
-    }
+    )),
+    { config, sleep, signal, onRetry: aoRetentar("catalogo") }
   );
   if (!listagem.ok) {
     // Sem catálogo não existe lote para processar: falha estrutural do run.
@@ -285,7 +312,13 @@ async function processMarginSnapshotRun(run, deps = {}) {
 
   const ids = listagem.value.ids;
   const total = ids.length;
-  logger.log?.(`${LOG} catálogo listado: ${total} item(ns) (ativos=${listagem.value.totalAtivos ?? "?"}, pausados=${listagem.value.totalPausados ?? "?"})`);
+  const totalLotes = Math.ceil(total / BATCH_SIZE);
+  // Progresso no log a cada ~5% (no máximo ~20 linhas por run), não a cada lote.
+  const passoLogLotes = Math.max(1, Math.ceil(totalLotes / 20));
+  evento("log", "margin_snapshot_catalog_listed", {
+    total, ativos: listagem.value.totalAtivos ?? null, pausados: listagem.value.totalPausados ?? null,
+    lotes: totalLotes, duracao_ms: clock() - inicioListagem,
+  });
 
   // Só contadores e ids — nunca payload do ML, token ou dado financeiro.
   function resumoMetadata() {
@@ -317,15 +350,8 @@ async function processMarginSnapshotRun(run, deps = {}) {
     const loteIds = ids.slice(offset, offset + BATCH_SIZE);
 
     const tentativa = await executarComRetry(
-      () => enrichBatch(prepared, { itemIds: loteIds }, { ...deps, db }),
-      {
-        config, sleep, signal,
-        onRetry: ({ tentativa: n, delayMs, classificacao }) => {
-          stats.retries += 1;
-          if (classificacao.rateLimited) stats.rateLimitedRetries += 1;
-          logger.warn?.(`${LOG} lote offset=${offset}: nova tentativa ${n + 1} em ${delayMs}ms (status=${classificacao.status ?? "rede"}${classificacao.rateLimited ? ", rate limit" : ""})`);
-        },
-      }
+      () => comVez(() => enrichBatch(prepared, { itemIds: loteIds }, { ...deps, db })),
+      { config, sleep, signal, onRetry: aoRetentar("lote", { offset }) }
     );
 
     if (tentativa.ok) {
@@ -345,7 +371,7 @@ async function processMarginSnapshotRun(run, deps = {}) {
           // Falha técnica isolada de persistência: a linha anterior (se
           // existir) fica intocada — o UPSERT simplesmente não aconteceu.
           failedItems += 1;
-          logger.error?.(`${LOG} item ${itemId} falhou ao persistir snapshot: ${mensagemCurta(err)}`);
+          evento("error", "margin_snapshot_item_persist_failed", { item_id: itemId, erro: mensagemCurta(err) });
         }
       }
 
@@ -367,7 +393,11 @@ async function processMarginSnapshotRun(run, deps = {}) {
       stats.lotesFalhos += 1;
       failedItems += loteIds.length;
       const motivo = `Lote não pôde ser recalculado (${tentativa.motivo}, ${tentativa.attempts} tentativa(s)): ${mensagemCurta(tentativa.error)}`;
-      logger.error?.(`${LOG} lote offset=${offset} falhou definitivamente: ${motivo}`);
+      evento("error", "margin_snapshot_batch_failed", {
+        offset, itens: loteIds.length, tentativas: tentativa.attempts, motivo: tentativa.motivo,
+        status: tentativa.classificacao?.status ?? null, erro: mensagemCurta(tentativa.error),
+        falhas_consecutivas: falhasConsecutivas,
+      });
       await markSnapshotsRefreshFailed({
         clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
         itemIds: loteIds, runId: run.id, lastError: motivo, db,
@@ -389,9 +419,14 @@ async function processMarginSnapshotRun(run, deps = {}) {
     // UPDATE renova heartbeat_at (é o heartbeat "por lote").
     await registrarProgresso({ processedItems, successItems, failedItems, cursorOffset: offset + loteIds.length, totalItems: total });
 
-    if (config.batchPauseMs > 0 && offset + BATCH_SIZE < total) {
-      await sleep(config.batchPauseMs, signal);
+    const loteNumero = offset / BATCH_SIZE + 1;
+    if (loteNumero % passoLogLotes === 0 || loteNumero === totalLotes) {
+      evento("log", "margin_snapshot_batch_progress", {
+        lote: loteNumero, lotes: totalLotes, processados: processedItems, total, sucesso: successItems, falhas: failedItems,
+      });
     }
+    // Espaçamento entre lotes: feito pelo limiter do processo (comVez), que
+    // vale para TODOS os runs — não há mais pausa própria por run aqui.
   }
 
   // ── 4. Itens fora do catálogo (listagem completa e bem-sucedida) ────────
@@ -412,7 +447,11 @@ async function processMarginSnapshotRun(run, deps = {}) {
     );
   }
 
-  logger.log?.(`${LOG} concluído: ${successItems}/${total} ok, ${failedItems} falha(s), ${stats.retries} retry(s), ${stats.itensForaDoCatalogo} fora do catálogo, ${clock() - inicio}ms`);
+  evento("log", "margin_snapshot_processed", {
+    total, sucesso: successItems, falhas: failedItems, retries: stats.retries,
+    retries_rate_limit: stats.rateLimitedRetries, lotes_falhos: stats.lotesFalhos,
+    fora_do_catalogo: stats.itensForaDoCatalogo, duracao_ms: clock() - inicio,
+  });
 
   return { processedItems, successItems, failedItems, totalItensMl: total, cursorOffset: total, stats };
 }

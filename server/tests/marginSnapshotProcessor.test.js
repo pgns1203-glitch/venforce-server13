@@ -18,6 +18,7 @@ const {
   BATCH_SIZE,
 } = require("../services/motorMargem/marginSnapshotProcessor");
 const { MarginSnapshotStopError } = require("../services/motorMargem/marginSnapshotRetry");
+const { createRateLimiter } = require("../services/motorMargem/marginSnapshotRateLimiter");
 const { resolveMarginSnapshotConfig } = require("../services/motorMargem/marginSnapshotConfig");
 const snapshotRepository = require("../services/motorMargem/marginSnapshotRepository");
 const runRepository = require("../services/motorMargem/marginSnapshotRunRepository");
@@ -145,13 +146,18 @@ async function criarRunRunning(db, overrides = {}) {
 }
 
 // Deps padrão de um run: fake db real + fakes de Motor/listagem + sleep que
-// só registra (nunca espera de verdade).
+// só registra e avança um relógio fake (nunca espera de verdade). O rate
+// limiter do processo é substituído por um limiter com o MESMO relógio.
 function depsRun(db, { ids = idsDe(1), prepared = criarPreparedFake(), sleeps = [], config = {}, ...resto } = {}) {
+  const cfg = configTeste(config);
+  const relogio = { t: 0 };
+  const sleep = async (ms) => { sleeps.push(ms); relogio.t += ms; };
   return {
     db,
     logger: SILENCIOSO,
-    config: configTeste(config),
-    sleep: async (ms) => { sleeps.push(ms); },
+    config: cfg,
+    sleep,
+    rateLimiter: createRateLimiter({ minIntervalMs: cfg.batchPauseMs, now: () => relogio.t, sleep }),
     prepareWorkspaceContext: fakePrepareWorkspaceContext(prepared),
     listarIdsCatalogo: fakeListagem(ids),
     enrichBatch: fakeEnrichBatch(),
@@ -454,12 +460,40 @@ cenario("13. cursor só avança depois de todos os itens do lote serem persistid
   ]);
 });
 
-cenario("14. pacing: pausa configurável ENTRE lotes (nunca depois do último)", async () => {
+cenario("14. pacing: inícios de chamada ao ML espaçados pelo limiter (listagem + 3 lotes = 3 esperas de 250ms)", async () => {
   const db = makeMarginSnapshotFakeDb();
   const run = await criarRunRunning(db);
   const sleeps = [];
   await processMarginSnapshotRun(run, depsRun(db, { ids: idsDe(50), sleeps, config: { batchPauseMs: 250 } }));
-  assert.deepStrictEqual(sleeps, [250, 250], "3 lotes = 2 pausas");
+  assert.deepStrictEqual(sleeps, [250, 250, 250], "listagem sai na hora; cada lote espera o intervalo mínimo");
+});
+
+cenario("14b. 429 com Retry-After penaliza o limiter do PROCESSO: o lote de OUTRA conta espera o mesmo tempo", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const relogio = { t: 0 };
+  const esperasB = [];
+  const limiter = createRateLimiter({ minIntervalMs: 0, now: () => relogio.t, sleep: async (ms) => { relogio.t += ms; } });
+
+  // Run A (conta 5): 1º lote recebe 429 + Retry-After 30s → penaliza o limiter.
+  const runA = await criarRunRunning(db, { clienteContaId: 5 });
+  let penalizou = 0;
+  const limiterEspiao = { ...limiter, penalizar: (ms) => { penalizou = ms; /* congela: B vai consumir */ } };
+  await processMarginSnapshotRun(runA, depsRun(db, {
+    ids: idsDe(5),
+    rateLimiter: limiterEspiao,
+    enrichBatch: fakeEnrichBatch({ falhar: ({ chamada }) => (chamada === 1 ? erroMl({ mlStatus: 429, retryAfter: 30 }) : null) }),
+  }));
+  assert.strictEqual(penalizou, 30000, "o 429 da conta 5 vira cooldown do processo pelo tempo do Retry-After");
+
+  // Run B (conta 6) começa com o limiter do processo penalizado por A.
+  limiter.penalizar(penalizou);
+  const runB = await criarRunRunning(db, { clienteContaId: 6 });
+  await processMarginSnapshotRun(runB, depsRun(db, {
+    ids: idsDe(5, 7000),
+    rateLimiter: { ...limiter, aguardarVez: async (signal) => { const espera = await limiter.aguardarVez(signal); esperasB.push(espera); return espera; } },
+  }));
+  assert.strictEqual(esperasB[0], 30000, "a 1ª chamada ao ML da conta 6 espera o cooldown inteiro");
+  assert.ok(esperasB.slice(1).every((ms) => ms === 0), "depois do cooldown, segue sem espera extra");
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

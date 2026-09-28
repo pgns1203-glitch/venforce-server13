@@ -269,8 +269,35 @@ async function mergeRunMetadata({ runId, patch, db = pool }) {
   return result.rows[0] ? sanitizeRun(result.rows[0]) : null;
 }
 
-// Heartbeat explícito (§17 do plano) — só a coluna/função; recovery
-// automático de run abandonado por staleness é M8 (não implementado aqui).
+// ---------------------------------------------------------------------------
+// Recovery (M8) — run `running` sem heartbeat além do teto é declarado morto
+// (processo reiniciado/travado). Só running -> failed (nunca reabre estado
+// terminal, nunca apaga linha); o histórico fica auditável pelo error_code.
+// Escopo opcional por conta (reconciliação preguiçosa no enqueue, mesmo
+// espírito de centralVendasSyncRunService.reconciliarRunsStale) ou global
+// (loop do worker). Um processo que ainda estivesse vivo com esse run para
+// de escrever no próximo lote (updateRunProgress devolve null).
+// ---------------------------------------------------------------------------
+async function reconcileStaleRunningRuns({ staleMinutes, clienteId = null, clienteContaId = null, db = pool }) {
+  const minutos = Number(staleMinutes);
+  if (!Number.isInteger(minutos) || minutos <= 0) throw new Error("reconcileStaleRunningRuns: staleMinutes inválido.");
+  const result = await db.query(
+    `UPDATE margin_snapshot_runs
+        SET status = 'failed', finished_at = NOW(), updated_at = NOW(),
+            error_code = 'MARGIN_SNAPSHOT_RUN_STALE_RUNNING',
+            error_message = 'Run sem heartbeat além do limite (processo reiniciado ou travado); marcado como falho para liberar um novo run.'
+      WHERE status = 'running'
+        AND COALESCE(heartbeat_at, started_at, created_at) < NOW() - make_interval(mins => $1::int)
+        AND ($2::bigint IS NULL OR cliente_id = $2)
+        AND ($3::bigint IS NULL OR cliente_conta_id = $3)
+      RETURNING *`,
+    [minutos, clienteId, clienteContaId]
+  );
+  return result.rows.map(sanitizeRun);
+}
+
+// Heartbeat explícito (§17 do plano) — o heartbeat "por lote" do processor
+// vem de updateRunProgress; esta função fica para marcos longos sem lote.
 async function touchHeartbeat(runId, db = pool) {
   const result = await db.query(
     `UPDATE margin_snapshot_runs
@@ -293,6 +320,7 @@ module.exports = {
   updateRunProgress,
   claimNextQueuedRun,
   touchHeartbeat,
+  reconcileStaleRunningRuns,
   mergeRunMetadata,
   assertNoSecrets,
   sanitizeRun,

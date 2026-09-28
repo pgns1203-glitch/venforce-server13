@@ -15,6 +15,7 @@ function createRealMarginSnapshotWorker(overrides = {}) {
     || ((run, ctx) => processMarginSnapshotRun(run, { ...ctx, config }));
   return createMarginSnapshotWorker({
     maxConcurrentRuns: config.workerConcurrency,
+    staleMinutes: config.runningStaleMinutes,
     ...overrides,
     processor,
   });

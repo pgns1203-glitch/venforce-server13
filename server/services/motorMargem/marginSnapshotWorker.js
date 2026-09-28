@@ -21,6 +21,7 @@
 const pool = require("../../config/database");
 const defaultRunService = require("./marginSnapshotRunService");
 const { redigirSegredos } = require("./marginSnapshotSanitize");
+const { logEvento } = require("./marginSnapshotLog");
 
 // Nunca persistir stack trace — só a mensagem, truncada e sem segredo.
 function sanitizeErrorMessage(err) {
@@ -34,12 +35,32 @@ function createMarginSnapshotWorker({
   db = pool,
   logger = console,
   maxConcurrentRuns = 1,
+  // M8 — recovery: a cada `reconcileIntervalMs`, o loop marca como failed
+  // os runs `running` sem heartbeat há mais de `staleMinutes` (qualquer
+  // conta, qualquer instância). null desliga (runOnce/testes antigos).
+  staleMinutes = null,
+  reconcileIntervalMs = 60000,
+  clock = () => Date.now(),
 } = {}) {
   if (typeof processor !== "function") {
     throw new Error("createMarginSnapshotWorker: processor é obrigatório (injetado).");
   }
 
   const limite = Math.max(1, Number(maxConcurrentRuns) || 1);
+  let ultimaReconciliacao = -Infinity;
+
+  async function reconciliarSeDevido() {
+    if (!staleMinutes || typeof runService.reconcileStaleRuns !== "function") return;
+    if (clock() - ultimaReconciliacao < reconcileIntervalMs) return;
+    ultimaReconciliacao = clock();
+    const mortos = await runService.reconcileStaleRuns({ staleMinutes, db });
+    if (mortos && mortos.length) {
+      logEvento(logger, "warn", "margin_snapshot_stale_reconciled", {
+        runs: mortos.map((r) => r.id), contas: mortos.map((r) => r.clienteContaId), stale_minutes: staleMinutes,
+      });
+    }
+  }
+
   let stopped = false;
   let controller = new AbortController();
   let timer = null;
@@ -75,14 +96,35 @@ function createMarginSnapshotWorker({
   async function processarRun(run) {
     const registro = { contaId: run.clienteContaId, promise: null };
     ativos.set(run.id, registro);
+    const inicio = clock();
+    const base = { run_id: run.id, cliente_id: run.clienteId, cliente_conta_id: run.clienteContaId, reason: run.reason };
+    logEvento(logger, "log", "margin_snapshot_run_started", base);
     try {
       await processor(run, { db, signal: controller.signal, logger });
       const completado = await runService.markRunCompleted(run.id, db);
+      if (!completado) {
+        // Corrida estreita: o run foi reconciliado (stale) por outra
+        // instância entre o último lote e a conclusão. Estado terminal no
+        // banco prevalece; nada é reaberto.
+        logEvento(logger, "warn", "margin_snapshot_run_not_completed", {
+          ...base, motivo: "o run não estava mais em execução no banco ao concluir", duracao_ms: clock() - inicio,
+        });
+        return { claimed: true, run: null, status: "lost" };
+      }
+      logEvento(logger, "log", "margin_snapshot_run_completed", {
+        ...base,
+        total: completado?.totalItems ?? null,
+        sucesso: completado?.successItems ?? null,
+        falhas: completado?.failedItems ?? null,
+        duracao_ms: clock() - inicio,
+      });
       await reenfileirarSeSolicitado(completado);
       return { claimed: true, run: completado, status: "completed" };
     } catch (err) {
       const errorMessage = sanitizeErrorMessage(err);
-      logger.error?.(`[marginSnapshot] run #${run.id} falhou no processor: ${errorMessage}`);
+      logEvento(logger, "error", "margin_snapshot_run_failed", {
+        ...base, error_code: err?.code || "MARGIN_SNAPSHOT_PROCESSOR_ERROR", error_message: errorMessage, duracao_ms: clock() - inicio,
+      });
       const falhado = await runService.markRunFailed(
         run.id,
         { code: err?.code || "MARGIN_SNAPSHOT_PROCESSOR_ERROR", message: errorMessage },
@@ -118,6 +160,7 @@ function createMarginSnapshotWorker({
     }
     tickEmAndamento = true;
     try {
+      await reconciliarSeDevido();
       while (!stopped && ativos.size < limite) {
         const run = await runService.claimNextQueuedRun(db, { excludeContaIds: contasAtivas() });
         if (!run) break;

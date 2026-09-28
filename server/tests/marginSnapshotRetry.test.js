@@ -123,6 +123,56 @@ cenario("esperar(): timer real curto resolve; abort resolve na hora e limpa o ti
   assert.ok(Date.now() - t1 < 1000, "abort não espera os 60s");
 });
 
+// ── Rate limiter do processo (M8) ─────────────────────────────────────────
+
+const { createRateLimiter } = require("../services/motorMargem/marginSnapshotRateLimiter");
+
+// `avancar`: o sleep fake avança o relógio (sequencial). Sem ele, o relógio
+// fica parado — simula chamadores que chegaram no mesmo instante.
+function limiterFake(minIntervalMs, { avancar = true } = {}) {
+  const relogio = { t: 0 };
+  const esperas = [];
+  const limiter = createRateLimiter({
+    minIntervalMs,
+    now: () => relogio.t,
+    sleep: async (ms) => { esperas.push(ms); if (avancar) relogio.t += ms; },
+  });
+  return { limiter, relogio, esperas };
+}
+
+cenario("limiter: inícios espaçados pelo intervalo mínimo, reservados em ordem (sem busy wait)", async () => {
+  const { limiter, esperas } = limiterFake(500, { avancar: false });
+  // 3 chamadores "ao mesmo tempo" (sem avançar o relógio entre as reservas).
+  await Promise.all([limiter.aguardarVez(), limiter.aguardarVez(), limiter.aguardarVez()]);
+  assert.deepStrictEqual(esperas, [500, 1000], "1º sai na hora; 2º e 3º reservam +500 e +1000");
+});
+
+cenario("limiter: cooldown após 429 segura TODOS até o fim da pausa, depois volta ao intervalo normal", async () => {
+  const { limiter, relogio, esperas } = limiterFake(0);
+  await limiter.aguardarVez();
+  limiter.penalizar(12000);
+  assert.strictEqual(limiter.estado().cooldownRestanteMs, 12000);
+  await limiter.aguardarVez();
+  assert.deepStrictEqual(esperas, [12000]);
+  assert.strictEqual(relogio.t, 12000);
+  await limiter.aguardarVez();
+  assert.deepStrictEqual(esperas, [12000], "sem espera extra depois do cooldown");
+  limiter.penalizar(-5);
+  limiter.penalizar(0);
+  assert.strictEqual(limiter.estado().cooldownRestanteMs, 0, "penalidade inválida é ignorada");
+});
+
+cenario("limiter: espera real é cancelável — stop do worker não fica preso no cooldown", async () => {
+  const limiter = createRateLimiter({ minIntervalMs: 0 });
+  limiter.penalizar(60000);
+  const controller = new AbortController();
+  const t0 = Date.now();
+  const p = limiter.aguardarVez(controller.signal);
+  controller.abort();
+  await p;
+  assert.ok(Date.now() - t0 < 1000);
+});
+
 // ── Listagem do catálogo por scan ─────────────────────────────────────────
 
 function fakeFetch(respostasPorStatus) {

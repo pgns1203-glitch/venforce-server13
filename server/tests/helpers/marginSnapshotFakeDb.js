@@ -247,6 +247,27 @@ function makeMarginSnapshotFakeDb() {
       return { rows: [{ ...row }] };
     }
 
+    // ── M8: reconciliação de run running sem heartbeat ────────────────────
+    if (sql.includes("UPDATE margin_snapshot_runs") && sql.includes("MARGIN_SNAPSHOT_RUN_STALE_RUNNING")) {
+      const [minutos, clienteId, clienteContaId] = params;
+      const limite = Date.now() - Number(minutos) * 60000;
+      const mortos = runs.filter((r) => {
+        if (r.status !== "running") return false;
+        const ref = r.heartbeat_at || r.started_at || r.created_at;
+        if (!(ref instanceof Date ? ref.getTime() < limite : new Date(ref).getTime() < limite)) return false;
+        if (clienteId !== null && clienteId !== undefined && r.cliente_id !== clienteId) return false;
+        if (clienteContaId !== null && clienteContaId !== undefined && r.cliente_conta_id !== clienteContaId) return false;
+        return true;
+      });
+      const now = new Date();
+      for (const r of mortos) {
+        r.status = "failed"; r.finished_at = now; r.updated_at = now;
+        r.error_code = "MARGIN_SNAPSHOT_RUN_STALE_RUNNING";
+        r.error_message = "Run sem heartbeat além do limite (processo reiniciado ou travado); marcado como falho para liberar um novo run.";
+      }
+      return { rows: mortos.map((r) => ({ ...r })) };
+    }
+
     // ── M3: metadata merge (jsonb ||) ────────────────────────────────────
     if (sql.includes("UPDATE margin_snapshot_runs") && sql.includes("SET metadata_json")) {
       const [runId, patchJson] = params;

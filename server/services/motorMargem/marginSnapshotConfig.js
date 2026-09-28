@@ -30,9 +30,15 @@ function resolveMarginSnapshotConfig(env = process.env) {
     // Circuit breaker: N lotes seguidos falhando definitivamente = falha
     // estrutural (ML fora, rate limit persistente) → o run termina failed.
     maxConsecutiveBatchFailures: inteiroEntre(env.MARGIN_SNAPSHOT_MAX_CONSECUTIVE_BATCH_FAILURES, { padrao: 3, min: 1, max: 50 }),
-    // Pausa entre lotes (pacing mínimo por conta). Não substitui o
-    // CONCURRENCY interno de enrichBatch — só espaça os lotes.
+    // Intervalo mínimo entre INÍCIOS de lote no processo inteiro (todos os
+    // runs/contas — marginSnapshotRateLimiter). Não substitui o CONCURRENCY
+    // interno de enrichBatch — só espaça os lotes.
     batchPauseMs: inteiroEntre(env.MARGIN_SNAPSHOT_BATCH_PAUSE_MS, { padrao: 250, min: 0, max: 60000 }),
+    // Recovery (M8): run `running` sem heartbeat há mais que isto é tratado
+    // como morto (processo reiniciado/travado) e vira failed. O heartbeat é
+    // renovado a cada lote; um lote nunca espera mais que o teto de
+    // Retry-After/backoff (minutos), então 10 min é folgado.
+    runningStaleMinutes: inteiroEntre(env.MARGIN_SNAPSHOT_RUNNING_STALE_MINUTES, { padrao: 10, min: 2, max: 1440 }),
     // Runs simultâneos por processo. Lotes de UMA conta nunca rodam em
     // paralelo (loop sequencial + no máximo 1 run ativo por conta).
     workerConcurrency: inteiroEntre(env.MARGIN_SNAPSHOT_WORKER_CONCURRENCY, { padrao: 1, min: 1, max: 3 }),

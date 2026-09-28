@@ -60,9 +60,9 @@ async function buscarItensPorStatus({ clienteId, mlUserId, status, offset = 0, l
     { mlUserId }
   );
   if (!resp.ok) {
-    const err = new Error(resp.data?.message || `Erro ao buscar itens (${status}) no Mercado Livre.`);
-    err.statusCode = resp.status === 401 || resp.status === 403 ? 422 : 502;
-    throw err;
+    // Mesmo statusCode/mensagem de sempre (rotas HTTP inalteradas) + o status
+    // real do ML e o Retry-After para o retry por lote do Margin Snapshot.
+    throw erroDeRespostaMl(resp, `Erro ao buscar itens (${status}) no Mercado Livre.`);
   }
   return {
     ids: Array.isArray(resp.data?.results) ? resp.data.results : [],
@@ -194,9 +194,7 @@ async function buscarDetalhesItens({ clienteId, ids }, fetchFn = mlFetch) {
   if (!ids || ids.length === 0) return [];
   const resp = await fetchFn(clienteId, `/items?ids=${ids.join(",")}`);
   if (!resp.ok) {
-    const err = new Error(resp.data?.message || "Erro ao buscar detalhes dos itens no Mercado Livre.");
-    err.statusCode = resp.status === 401 || resp.status === 403 ? 422 : 502;
-    throw err;
+    throw erroDeRespostaMl(resp, "Erro ao buscar detalhes dos itens no Mercado Livre.");
   }
   const entries = Array.isArray(resp.data) ? resp.data : [];
   return entries.map((entry) => entry?.body || null).filter(Boolean);

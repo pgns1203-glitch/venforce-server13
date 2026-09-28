@@ -103,6 +103,8 @@ async function executarComRetry(fn, { config, sleep = esperar, signal = null, on
       const value = await fn(tentativa);
       return { ok: true, value, attempts: tentativa, retries: tentativa - 1, rateLimitedRetries: ultima?.rateLimitedRetries || 0 };
     } catch (error) {
+      // Parada do worker nunca é "falha recuperável do lote".
+      if (error instanceof MarginSnapshotStopError) throw error;
       const classificacao = classificarErroDeLote(error);
       const rateLimitedRetries = (ultima?.rateLimitedRetries || 0) + (classificacao.rateLimited ? 1 : 0);
       ultima = { error, classificacao, rateLimitedRetries };

@@ -18,6 +18,7 @@
 
 const pool = require("../../config/database");
 const runRepo = require("./marginSnapshotRunRepository");
+const { resolveMarginSnapshotConfig } = require("./marginSnapshotConfig");
 
 function assertIdentidadeMinima({ clienteId, clienteContaId, reason }) {
   if (!clienteId) throw new Error("enqueueMarginSnapshotRun: clienteId é obrigatório.");
@@ -52,10 +53,19 @@ async function marcarRerunSeNecessario(runAtivo, reason, db) {
 // ---------------------------------------------------------------------------
 async function enqueueMarginSnapshotRun({
   clienteId, clienteSlug = null, clienteContaId, marketplace = "meli", baseId = null,
-  reason, requestedBy = null, db = pool,
+  reason, requestedBy = null, db = pool, staleMinutes = null,
 }) {
   assertIdentidadeMinima({ clienteId, clienteContaId, reason });
   const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
+
+  // M8 — reconciliação preguiçosa ANTES do dedupe (mesmo espírito de
+  // centralVendasSyncRunService.reconciliarRunsStale): um run `running`
+  // morto desta conta (sem heartbeat além do teto) vira failed, senão
+  // bloquearia todo refresh novo para sempre (reaproveitado:true).
+  await runRepo.reconcileStaleRunningRuns({
+    staleMinutes: staleMinutes || resolveMarginSnapshotConfig().runningStaleMinutes,
+    clienteId, clienteContaId, db,
+  });
 
   const ativoAntes = await runRepo.findActiveRunForAccount({
     clienteId, clienteContaId, marketplace: marketplaceNorm, db,
@@ -102,6 +112,11 @@ async function markRunFailed(runId, { code = null, message = null } = {}, db = p
   return runRepo.updateRunStatus({ runId, status: "failed", errorCode: code, errorMessage: message, db });
 }
 
+// Recovery global (loop do worker, M8).
+async function reconcileStaleRuns({ staleMinutes, db = pool } = {}) {
+  return runRepo.reconcileStaleRunningRuns({ staleMinutes, db });
+}
+
 module.exports = {
   REASONS_QUE_PEDEM_RERUN,
   enqueueMarginSnapshotRun,
@@ -109,4 +124,5 @@ module.exports = {
   claimNextQueuedRun,
   markRunCompleted,
   markRunFailed,
+  reconcileStaleRuns,
 };

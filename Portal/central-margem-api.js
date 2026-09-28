@@ -26,6 +26,7 @@
     MELI_ORDER: "Pedido do Mercado Livre",
     MERCADO_PAGO: "Mercado Pago",
     VENFORCE_BASE: "Base VenForce",
+    VENFORCE_BASE_HIST: "Base VenForce na venda (histórico)",
     EXTENSION_DOM: "Extensão VenForce",
     DERIVED: "Derivado pelo Motor",
     central_vendas_db: "Central de Vendas",
@@ -41,6 +42,7 @@
     MELI_ORDER: "Pedido ML",
     MERCADO_PAGO: "Mercado Pago",
     VENFORCE_BASE: "Base",
+    VENFORCE_BASE_HIST: "Base na venda",
     EXTENSION_DOM: "Extensão",
     DERIVED: "Derivado",
   };
@@ -52,6 +54,7 @@
     MELI_ORDER: "Pedido",
     MERCADO_PAGO: "Mercado Pago",
     VENFORCE_BASE: "Base",
+    VENFORCE_BASE_HIST: "Base venda",
     EXTENSION_DOM: "Extensão",
     DERIVED: "Derivado",
   };
@@ -65,10 +68,17 @@
    * não vira opção fantasma: ela aparece como "Indisponível" e o valor
    * permanece null.
    *
-   * custo, imposto e taxa fixa são variáveis DECLARADAS na Base: o Motor não
-   * possui "custo realizado" (marginItem.DECLARED_FIELDS). No preset Realizado
-   * elas continuam vindo da Base — exatamente o que `valueForKind` faz no
-   * backend —, e não uma segunda fonte inventada.
+   * SLOT = FONTE + MOMENTO. Uma mesma fonte pode observar os dois momentos:
+   * a Base VenForce declara o custo/imposto de HOJE (PROJECTED) e a Central
+   * de Vendas grava o custo/imposto que a Base tinha NO MOMENTO DA VENDA
+   * (VENFORCE_BASE, kind REALIZED — centralVendasEvidenceAdapter). Escolher
+   * só pela fonte misturaria os dois momentos (o mais recente venceria), então
+   * cada slot fixa fonte E momento:
+   *   VENFORCE_BASE       Base atual            (PROJECTED)
+   *   VENFORCE_BASE_HIST  Base na venda         (REALIZED) — o que `valueForKind`
+   *                       usa no realizado do backend
+   * Taxa fixa não tem histórico: no preset Realizado ela fica indisponível
+   * (o realizado do backend também não a desconta) — nunca a taxa fixa atual.
    */
   var VARIABLES = ["price", "cost", "tax", "commission", "freight", "fixedFee"];
 
@@ -81,13 +91,36 @@
     fixedFee: { label: "Taxa fixa", field: "fixedFee", format: "money" },
   };
 
+  var SLOT_DEFS = {
+    MELI_API: { source: "MELI_API", kind: "PROJECTED" },
+    EXTENSION_DOM: { source: "EXTENSION_DOM", kind: "PROJECTED" },
+    MELI_ORDER: { source: "MELI_ORDER", kind: "REALIZED" },
+    MERCADO_PAGO: { source: "MERCADO_PAGO", kind: "REALIZED" },
+    VENFORCE_BASE: { source: "VENFORCE_BASE", kind: "PROJECTED" },
+    VENFORCE_BASE_HIST: { source: "VENFORCE_BASE", kind: "REALIZED" },
+  };
+
+  function slotDef(slot) {
+    return SLOT_DEFS[slot] || { source: slot, kind: null };
+  }
+
+  /** Slot que representa uma observação (fonte + momento) do contrato. */
+  function slotOf(source, kind) {
+    var wanted = String(kind || "").toUpperCase();
+    var ids = Object.keys(SLOT_DEFS);
+    for (var i = 0; i < ids.length; i += 1) {
+      if (SLOT_DEFS[ids[i]].source === source && SLOT_DEFS[ids[i]].kind === wanted) return ids[i];
+    }
+    return source || null;
+  }
+
   var SOURCE_SLOTS = {
     price: ["MELI_API", "EXTENSION_DOM", "MELI_ORDER"],
-    cost: ["VENFORCE_BASE"],
-    tax: ["VENFORCE_BASE"],
+    cost: ["VENFORCE_BASE", "VENFORCE_BASE_HIST"],
+    tax: ["VENFORCE_BASE", "VENFORCE_BASE_HIST"],
     commission: ["MELI_API", "MELI_ORDER"],
     freight: ["MELI_API", "EXTENSION_DOM", "MELI_ORDER"],
-    fixedFee: ["VENFORCE_BASE"],
+    fixedFee: ["VENFORCE_BASE", "VENFORCE_BASE_HIST"],
   };
 
   var PRESETS = {
@@ -101,11 +134,11 @@
     },
     realized: {
       price: "MELI_ORDER",
-      cost: "VENFORCE_BASE",
-      tax: "VENFORCE_BASE",
+      cost: "VENFORCE_BASE_HIST",
+      tax: "VENFORCE_BASE_HIST",
       commission: "MELI_ORDER",
       freight: "MELI_ORDER",
-      fixedFee: "VENFORCE_BASE",
+      fixedFee: "VENFORCE_BASE_HIST",
     },
   };
 
@@ -260,12 +293,14 @@
     var opts = options || {};
     var value = raw ? numberOrNull(firstValue(raw.value, raw.valor)) : null;
     return {
+      // `source` é o SLOT (fonte + momento); `origin` é a fonte do contrato.
       source: source,
+      origin: slotDef(source).source,
       sourceLabel: sourceLabel(source),
       sourceShort: SOURCE_SHORT_LABELS[source] || sourceLabel(source),
       value: value,
       available: value !== null,
-      kind: raw ? firstValue(raw.kind, raw.tipo) : opts.kind || null,
+      kind: raw ? firstValue(raw.kind, raw.tipo) : opts.kind || slotDef(source).kind || null,
       quality: raw ? firstValue(raw.quality, raw.qualidade) : null,
       observedAt: raw ? firstValue(raw.observedAt, raw.observadoEm) : null,
       effectiveAt: null,
@@ -275,12 +310,15 @@
     };
   }
 
-  function strongestEvidenceOf(evidences, source) {
+  function strongestEvidenceOf(evidences, source, kind) {
     var chosen = null;
     (evidences || []).forEach(function (evidence) {
       if (!evidence) return;
       var evidenceSource = firstValue(evidence.source, evidence.fonte);
       if (evidenceSource !== source) return;
+      // Momento faz parte da identidade da observação: Base atual e Base na
+      // venda nunca competem entre si pelo "mais recente".
+      if (kind && String(firstValue(evidence.kind, evidence.tipo) || "").toUpperCase() !== kind) return;
       if (numberOrNull(firstValue(evidence.value, evidence.valor)) === null) return;
       if (!chosen) { chosen = evidence; return; }
       var current = String(firstValue(evidence.observedAt, evidence.observadoEm) || "");
@@ -303,16 +341,19 @@
       var evidences = arrayOf(field.evidences || field.evidencias);
       var entries = {};
       var order = SOURCE_SLOTS[variableKey].slice();
-      order.forEach(function (source) {
-        entries[source] = evidenceEntry(source, strongestEvidenceOf(evidences, source), {
-          declared: source === "VENFORCE_BASE",
+      order.forEach(function (slot) {
+        var def = slotDef(slot);
+        entries[slot] = evidenceEntry(slot, strongestEvidenceOf(evidences, def.source, def.kind), {
+          declared: def.source === "VENFORCE_BASE",
         });
       });
       evidences.forEach(function (evidence) {
         var source = firstValue(evidence && evidence.source, evidence && evidence.fonte);
-        if (!source || entries[source]) return;
-        order.push(source);
-        entries[source] = evidenceEntry(source, evidence, {});
+        if (!source) return;
+        var slot = slotOf(source, firstValue(evidence.kind, evidence.tipo));
+        if (entries[slot]) return;
+        order.push(slot);
+        entries[slot] = evidenceEntry(slot, evidence, {});
       });
       sources[variableKey] = { order: order, entries: entries };
     });
@@ -352,9 +393,17 @@
       // `selectedKind` é opcional no contrato: quando não vem, o momento sai
       // da própria evidência escolhida em vez de ficar nulo.
       if (!kind && source) {
-        var picked = sources[variableKey] && sources[variableKey].entries[source];
-        kind = picked ? picked.kind : null;
+        // Mesma regra do resolveField: havendo evidência realizada, é ela a
+        // escolhida. Só sem os blocos projected/realized cai na entrada da fonte.
+        if (field.realized && firstValue(field.realized.source, field.realized.fonte) === source) kind = "REALIZED";
+        else if (field.projected && firstValue(field.projected.source, field.projected.fonte) === source) kind = "PROJECTED";
+        else {
+          var picked = sources[variableKey] && sources[variableKey].entries[source];
+          kind = picked ? picked.kind : null;
+        }
       }
+      // A escolha do contrato vem como fonte crua; na planilha ela é um slot.
+      if (source && kind) source = slotOf(source, kind);
       choice[variableKey] = {
         source: source,
         sourceLabel: source ? sourceLabel(source) : null,
@@ -367,9 +416,9 @@
   }
 
   /**
-   * Fonte declarada (custo/imposto/taxa fixa) responde pelos dois momentos:
-   * é o mesmo `valueForKind` do backend, que devolve a evidência projetada
-   * quando o preset pede o realizado de uma variável declarada.
+   * Observação de UM slot (fonte + momento) de uma variável. O slot
+   * VENFORCE_BASE_HIST devolve o custo/imposto que a Base tinha na venda —
+   * o mesmo que `valueForKind(REALIZED)` usa no backend —, nunca a Base de hoje.
    */
   function sourceEntry(item, variableKey, source) {
     var bucket = item && item.sources && item.sources[variableKey];
@@ -574,13 +623,27 @@
     if (variables.tax.value !== null && Math.abs(variables.tax.value) > 1) variables.tax.value /= 100;
     if (variables.commission.rate !== null && Math.abs(variables.commission.rate) > 1) variables.commission.rate /= 100;
 
+    // Simulação de preço é PROSPECTIVA: usa sempre o momento projetado (Base
+    // de hoje). `variables.cost/tax` seguem a escolha do Motor (realizado tem
+    // precedência) e trariam o custo/imposto HISTÓRICO de quem vendeu.
+    function projectedValueOf(field) {
+      var evidence = pickEvidence(field, "PROJECTED");
+      return evidence ? numberOrNull(firstValue(evidence.value, evidence.valor)) : null;
+    }
+    var fixedFeeField = fields.fixedFee || fields.taxaFixa || null;
+    var projectedTax = projectedValueOf(taxField);
+    if (projectedTax !== null && Math.abs(projectedTax) > 1) projectedTax /= 100;
+    var projectedCost = projectedValueOf(costField);
+    var projectedFixedFee = fixedFeeField && typeof fixedFeeField === "object"
+      ? projectedValueOf(fixedFeeField)
+      : numberOrNull(fixedFeeField);
     var simulationInputs = {
-      cost: variables.cost.value,
-      taxRate: variables.tax.value,
+      cost: projectedCost,
+      taxRate: projectedTax,
       commissionRate: numberOrNull(firstValue(variables.commission.rate, commissionRateField.selectedValue)),
       freight: variables.freightExpected.value,
-      fixedFee: numberOrNull(firstValue(fields.fixedFee && fields.fixedFee.selectedValue, fields.taxaFixa && fields.taxaFixa.value, 0)),
-      complete: variables.cost.value !== null && variables.tax.value !== null &&
+      fixedFee: projectedFixedFee === null ? 0 : projectedFixedFee,
+      complete: projectedCost !== null && projectedTax !== null &&
         numberOrNull(firstValue(variables.commission.rate, commissionRateField.selectedValue)) !== null &&
         variables.freightExpected.value !== null,
       source: "Motor de Margem",
@@ -1529,8 +1592,10 @@
         var variableKey = variableOfField(divergence.field);
         if (!variableKey) return;
         var selectedSource = chosen[variableKey];
-        var sideA = { source: divergence.sourceAKey, value: divergence.valueA };
-        var sideB = { source: divergence.sourceBKey, value: divergence.valueB };
+        // Lados da divergência como SLOT (fonte + momento): um DRIFT da Base
+        // (atual × na venda) tem a mesma fonte nos dois lados.
+        var sideA = { source: slotOf(divergence.sourceAKey, divergence.kindA), value: divergence.valueA };
+        var sideB = { source: slotOf(divergence.sourceBKey, divergence.kindB), value: divergence.valueB };
         var alternative = sideA.source === selectedSource ? sideB : sideB.source === selectedSource ? sideA : sideB;
         var selectedValue = composition.values[variableKey];
         if (alternative.value === null || alternative.value === undefined) return;
@@ -2056,6 +2121,9 @@
     VARIABLES: VARIABLES,
     VARIABLE_META: VARIABLE_META,
     SOURCE_SLOTS: SOURCE_SLOTS,
+    SLOT_DEFS: SLOT_DEFS,
+    slotDef: slotDef,
+    slotOf: slotOf,
     PRESETS: PRESETS,
     FINANCIAL_RESULTS: FINANCIAL_RESULTS,
     INTEGRITY_STATES: INTEGRITY_STATES,

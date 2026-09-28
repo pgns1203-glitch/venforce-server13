@@ -75,8 +75,15 @@ function motorItem(options) {
         o.observedPrice === undefined ? null : evidence("EXTENSION_DOM", "PROJECTED", o.observedPrice, "2026-08-12T15:58:12Z", "leitura de DOM"),
         o.soldPrice === undefined ? null : evidence("MELI_ORDER", "REALIZED", o.soldPrice, "2026-08-10T15:42:08Z", "valor unitário do pedido"),
       ].filter(Boolean), o.priceDivergences),
-      cost: field([o.cost === null ? null : evidence("VENFORCE_BASE", "PROJECTED", o.cost, null, "custo declarado na Base", "DECLARED")].filter(Boolean)),
-      taxRate: field([evidence("VENFORCE_BASE", "PROJECTED", 0.06, null, "imposto declarado na Base", "DECLARED")]),
+      cost: field([
+        o.cost === null ? null : evidence("VENFORCE_BASE", "PROJECTED", o.cost, null, "custo declarado na Base", "DECLARED"),
+        // Quem vendeu tem o custo que a Base tinha NA VENDA (Central de Vendas).
+        o.soldPrice === undefined || o.cost === null ? null : evidence("VENFORCE_BASE", "REALIZED", o.costRealized ?? o.cost, "2026-08-10T15:42:08Z", "custo histórico da venda", "DECLARED"),
+      ].filter(Boolean)),
+      taxRate: field([
+        evidence("VENFORCE_BASE", "PROJECTED", 0.06, null, "imposto declarado na Base", "DECLARED"),
+        o.soldPrice === undefined ? null : evidence("VENFORCE_BASE", "REALIZED", 0.06, "2026-08-10T15:42:08Z", "imposto histórico da venda", "DECLARED"),
+      ].filter(Boolean)),
       fixedFee: field([evidence("VENFORCE_BASE", "PROJECTED", 0, null, "taxa fixa declarada na Base", "DECLARED")]),
       commission: field([
         evidence("MELI_API", "PROJECTED", o.commission, "2026-08-12T16:29:31Z", "listing_prices.sale_fee_amount"),
@@ -449,9 +456,11 @@ async function run() {
       const state = await cdp.evaluate("window.VFCentralMargemUi.getState().selection");
       assert.strictEqual(state.price, "MELI_ORDER");
       assert.strictEqual(state.freight, "MELI_ORDER");
-      // Custo/imposto/taxa fixa são declarados: continuam na Base mesmo no realizado.
-      assert.strictEqual(state.cost, "VENFORCE_BASE");
-      assert.strictEqual(state.tax, "VENFORCE_BASE");
+      // Custo/imposto do Realizado = Base NO MOMENTO DA VENDA (slot histórico),
+      // nunca a Base de hoje; taxa fixa não tem histórico.
+      assert.strictEqual(state.cost, "VENFORCE_BASE_HIST");
+      assert.strictEqual(state.tax, "VENFORCE_BASE_HIST");
+      assert.strictEqual(state.fixedFee, "VENFORCE_BASE_HIST");
       assert.ok((await sheetText()).includes("18,70"), "frete realizado não apareceu");
     });
 

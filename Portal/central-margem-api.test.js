@@ -328,9 +328,18 @@ async function run() {
           evidence("MELI_API", "PROJECTED", 100, "2026-08-12T10:00:00Z"),
           evidence("MELI_ORDER", "REALIZED", 96, "2026-08-10T10:00:00Z"),
         ]),
-        cost: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 40)]),
-        taxRate: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 0.06)]),
-        fixedFee: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 0)]),
+        // Base de HOJE (atualizada em junho) × Base NO MOMENTO DA VENDA
+        // (gravada pela Central de Vendas em agosto). A observação histórica é
+        // MAIS RECENTE — escolher só pela fonte faria o Projetado usá-la.
+        cost: canonicalField([
+          evidence("VENFORCE_BASE", "PROJECTED", 40, "2026-06-01T00:00:00Z"),
+          evidence("VENFORCE_BASE", "REALIZED", 38, "2026-08-10T10:00:00Z"),
+        ]),
+        taxRate: canonicalField([
+          evidence("VENFORCE_BASE", "PROJECTED", 0.06, "2026-06-01T00:00:00Z"),
+          evidence("VENFORCE_BASE", "REALIZED", 0.055, "2026-08-10T10:00:00Z"),
+        ]),
+        fixedFee: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 0, "2026-06-01T00:00:00Z")]),
         commission: canonicalField([
           evidence("MELI_API", "PROJECTED", 16.5, "2026-08-12T10:00:00Z"),
           evidence("MELI_ORDER", "REALIZED", 15.9, "2026-08-10T10:00:00Z"),
@@ -377,8 +386,11 @@ async function run() {
     assert.strictEqual(item.motorChoice.freight.kind, "REALIZED");
     // A planilha em modo Projetado usa a outra ponta — e as duas coexistem.
     assert.strictEqual(api.resolveComposition(item, api.PRESETS.projected).entries.freight.source, "MELI_API");
-    // Variável declarada só tem a Base.
-    assert.strictEqual(item.motorChoice.cost.source, "VENFORCE_BASE");
+    // Custo com venda: o Motor escolhe o valor da Base NO MOMENTO DA VENDA
+    // (realizado tem precedência), exposto como slot próprio.
+    assert.strictEqual(item.motorChoice.cost.source, "VENFORCE_BASE_HIST");
+    assert.strictEqual(item.motorChoice.cost.value, 38);
+    assert.strictEqual(item.motorChoice.cost.kind, "REALIZED");
     // Sem evidência, não há escolha inventada.
     const noCost = normalizedItem({ fields: Object.assign({}, canonicalItem().fields, { cost: canonicalField([]) }) });
     assert.strictEqual(noCost.motorChoice.cost.available, false);
@@ -395,13 +407,55 @@ async function run() {
     assert.strictEqual(realized.values.price, 96);
     assert.strictEqual(realized.values.freight, 18.7);
     assert.strictEqual(realized.values.commission, 15.9);
-    // custo/imposto/taxa fixa são declarados: o realizado usa a mesma Base,
-    // como `valueForKind` faz no backend. Não existe "custo realizado".
-    assert.strictEqual(realized.values.cost, 40);
-    assert.strictEqual(realized.values.tax, 0.06);
-    assert.strictEqual(realized.entries.cost.source, "VENFORCE_BASE");
+    // Custo/imposto têm DOIS momentos na mesma fonte: o Projetado usa a Base
+    // de hoje; o Realizado usa o valor que a Base tinha na venda (o mesmo que
+    // `valueForKind(REALIZED)` usa no backend).
+    assert.strictEqual(projected.values.cost, 40, "Base atual, mesmo com a venda mais recente");
+    assert.strictEqual(projected.values.tax, 0.06);
+    assert.strictEqual(realized.values.cost, 38, "Base no momento da venda");
+    assert.strictEqual(realized.values.tax, 0.055);
+    assert.strictEqual(realized.entries.cost.source, "VENFORCE_BASE_HIST");
+    assert.strictEqual(realized.entries.cost.origin, "VENFORCE_BASE");
+    assert.strictEqual(realized.entries.cost.kind, "REALIZED");
+    // Taxa fixa não tem histórico: indisponível no Realizado, nunca a atual.
+    assert.strictEqual(realized.values.fixedFee, null);
+    assert.ok(realized.unavailable.includes("fixedFee"));
     assert.strictEqual(projected.preset, "projected");
     assert.strictEqual(realized.preset, "realized");
+  });
+
+  await test("Base atualizada DEPOIS da venda: Realizado continua com o histórico, Projetado com a atual", () => {
+    const item = normalizedItem({
+      fields: Object.assign({}, canonicalItem().fields, {
+        cost: canonicalField([
+          evidence("VENFORCE_BASE", "PROJECTED", 55, "2026-08-11T00:00:00Z"),
+          evidence("VENFORCE_BASE", "REALIZED", 38, "2026-08-10T10:00:00Z"),
+        ]),
+      }),
+    });
+    assert.strictEqual(api.resolveComposition(item, api.PRESETS.realized).values.cost, 38);
+    assert.strictEqual(api.resolveComposition(item, api.PRESETS.projected).values.cost, 55);
+  });
+
+  await test("simulação de preço é prospectiva: usa custo/imposto da Base atual, não o histórico da venda", () => {
+    const item = normalizedItem();
+    assert.strictEqual(item.simulationInputs.cost, 40);
+    assert.strictEqual(item.simulationInputs.taxRate, 0.06);
+    assert.strictEqual(item.simulationInputs.fixedFee, 0);
+  });
+
+  await test("slot = fonte + momento: Base atual e Base na venda são entradas separadas no mapa de fontes", () => {
+    const item = normalizedItem();
+    assert.deepStrictEqual(item.sources.cost.order, ["VENFORCE_BASE", "VENFORCE_BASE_HIST"]);
+    assert.strictEqual(item.sources.cost.entries.VENFORCE_BASE.value, 40);
+    assert.strictEqual(item.sources.cost.entries.VENFORCE_BASE.kind, "PROJECTED");
+    assert.strictEqual(item.sources.cost.entries.VENFORCE_BASE_HIST.value, 38);
+    assert.strictEqual(item.sources.cost.entries.VENFORCE_BASE_HIST.kind, "REALIZED");
+    assert.strictEqual(api.slotOf("VENFORCE_BASE", "REALIZED"), "VENFORCE_BASE_HIST");
+    assert.strictEqual(api.slotOf("VENFORCE_BASE", "PROJECTED"), "VENFORCE_BASE");
+    assert.strictEqual(api.slotOf("MELI_ORDER", "REALIZED"), "MELI_ORDER");
+    // A escolha do Motor (realizado tem precedência) aponta para o slot histórico.
+    assert.strictEqual(item.motorChoice.cost.source, "VENFORCE_BASE_HIST");
   });
 
   await test("alterar uma fonte manualmente resulta em modo Personalizado", () => {

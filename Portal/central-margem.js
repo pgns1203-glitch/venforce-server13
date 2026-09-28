@@ -28,7 +28,7 @@
 
   var PRESET_COPY = {
     projected: "Preço, comissão e frete previstos do Mercado Livre + custo, imposto e taxa fixa da Base. Responde “qual é a margem do anúncio agora?”.",
-    realized: "Último preço vendido + comissão e frete realizados do pedido. Custo, imposto e taxa fixa continuam vindo da Base: o Motor não possui versão realizada dessas variáveis declaradas.",
+    realized: "Preço médio vendido + comissão e frete realizados dos pedidos do período. Custo e imposto são os que a Base tinha no momento de cada venda (gravados pela Central de Vendas), não a Base de hoje. Taxa fixa não tem histórico: fica indisponível e não é descontada.",
     custom: "Uma ou mais fontes foram alteradas manualmente no cabeçalho. A composição exibida não corresponde a nenhum preset.",
   };
 
@@ -170,6 +170,7 @@
     MELI_API: "Mercado Livre API",
     MELI_ORDER: "Pedido ML / shipment",
     VENFORCE_BASE: "Base VenForce",
+    VENFORCE_BASE_HIST: "Base VenForce no momento da venda (Central de Vendas)",
     MERCADO_PAGO: "Mercado Pago",
     EXTENSION_DOM: "Extensão VenForce",
   };
@@ -181,6 +182,12 @@
       linhas.push("Situação: integração ainda não disponível.");
     } else if (source === "EXTENSION_DOM") {
       linhas.push("Situação: canal de ingestão ainda não disponível.");
+    } else if (source === "VENFORCE_BASE_HIST" && variableKey === "fixedFee") {
+      linhas.push("Situação: a Central de Vendas não guarda taxa fixa histórica — o realizado não desconta taxa fixa.");
+      linhas.push("A taxa fixa atual nunca é usada no lugar do histórico.");
+    } else if (source === "VENFORCE_BASE_HIST") {
+      linhas.push("Situação: sem venda no período, ou as vendas não tinham " + variableLabel(variableKey) + " na Base quando foram sincronizadas.");
+      linhas.push("A Base de hoje nunca substitui o valor da venda.");
     } else if (source === "VENFORCE_BASE") {
       linhas.push("Situação: nenhum " + variableLabel(variableKey) + " encontrado para este MLB na Base.");
       linhas.push("Ação: Ver na Base.");
@@ -1976,8 +1983,14 @@
       MELI_ORDER: "A última venda representa o preço efetivamente praticado no pedido.",
       EXTENSION_DOM: "A extensão é evidência visual e funciona como verificação independente.",
     },
-    cost: { VENFORCE_BASE: "Custo declarado na Base vinculada. A Central apenas lê esse valor." },
-    tax: { VENFORCE_BASE: "Percentual de imposto declarado na Base vinculada." },
+    cost: {
+      VENFORCE_BASE: "Custo declarado HOJE na Base vinculada. A Central apenas lê esse valor.",
+      VENFORCE_BASE_HIST: "Custo que a Base tinha no momento da venda, gravado pela Central de Vendas. Mudar a Base hoje não altera este valor.",
+    },
+    tax: {
+      VENFORCE_BASE: "Percentual de imposto declarado HOJE na Base vinculada.",
+      VENFORCE_BASE_HIST: "Alíquota histórica: imposto gravado na venda ÷ receita das mesmas vendas.",
+    },
     commission: {
       MELI_API: "Tarifa prevista da API, usada para projetar a margem do anúncio.",
       MELI_ORDER: "Tarifa realizada do pedido: evidência do que foi efetivamente cobrado.",
@@ -1987,7 +2000,10 @@
       MELI_ORDER: "Frete realizado é evidência do que ocorreu no shipment.",
       EXTENSION_DOM: "Leitura visual do frete exibido na página do anúncio.",
     },
-    fixedFee: { VENFORCE_BASE: "Taxa fixa declarada na Base vinculada." },
+    fixedFee: {
+      VENFORCE_BASE: "Taxa fixa declarada na Base vinculada.",
+      VENFORCE_BASE_HIST: "Não existe taxa fixa histórica: o realizado não a desconta.",
+    },
   };
 
   function evidenceRole(item, variableKey, source, chosenSource) {

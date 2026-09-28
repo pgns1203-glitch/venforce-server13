@@ -224,7 +224,7 @@ cenario("listarIdsCatalogo: erro do ML carrega mlStatus e retryAfter (sem dormir
   });
   await assert.rejects(
     () => meliApi.listarIdsCatalogo({ clienteId: 1, mlUserId: "77" }, fn),
-    (err) => err.mlStatus === 429 && err.retryAfter === 30 && err.statusCode === 502
+    (err) => err.mlStatus === 429 && err.retryAfter === 30 && err.statusCode === 429 && err.codigo === "MELI_RATE_LIMIT"
   );
   assert.strictEqual(chamadas.length, 1, "o adapter não re-tenta: quem decide é o worker");
 });

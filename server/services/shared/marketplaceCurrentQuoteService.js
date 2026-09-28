@@ -32,6 +32,23 @@ function numOrNull(value) {
 /**
  * Comissão + frete previstos de UM item, no preço efetivo informado.
  * Qualquer falha vira `null` (ausente) — nunca 0.
+ *
+ * LIMITAÇÃO CONHECIDA (auditoria de observabilidade de 429, ver
+ * meliApiEvidenceAdapter.criarErroMeliApi): `mlFetch` NÃO lança em resposta
+ * HTTP não-2xx — devolve `{ok:false, status, retryAfter}` normalmente — então
+ * um 429 de listing_prices/shipping_options cai direto no `?.ok` abaixo e
+ * vira `null`, indistinguível de qualquer outro motivo de ausência (404,
+ * item sem categoria, timeout). Decisão desta auditoria: NÃO alterar este
+ * caminho para lançar em 429. Esta função é chamada 1x por ITEM (via
+ * `aplicarEvidenciasProjetadas` → `mapWithConcurrency`, sem try/catch por
+ * item) — fazer um único 429 de comissão/frete de 1 item virar exceção
+ * abortaria o `enrichBatch` inteiro (toda a conta) por uma falha que hoje só
+ * degrada a qualidade de 1 item. Diferente das chamadas abortivas de
+ * `buscarItensAtivos`/`buscarDetalhesItens` (2-3 chamadas por LOTE de 20,
+ * onde abortar já era o comportamento existente): aqui o raio de impacto de
+ * "passar a abortar" seria desproporcional ao problema. Fica documentado
+ * como gap conhecido, não escondido — ver ENTREGA da missão de observabilidade
+ * de 429 para o racional completo.
  */
 async function buscarComissaoEFrete(
   { clienteId, itemId, precoEfetivo, listingTypeId, categoryId, sellerId, logisticType, mlUserId = null },

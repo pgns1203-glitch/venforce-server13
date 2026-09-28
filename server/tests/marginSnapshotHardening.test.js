@@ -59,13 +59,14 @@ cenario("regressão do mlClient: parseRetryAfter continua lendo segundos e ignor
   assert.strictEqual(parseRetryAfter(null), null);
 });
 
-cenario("adapter do Motor: erro de lote carrega mlStatus/retryAfter sem mudar statusCode nem mensagem das rotas", async () => {
+cenario("adapter do Motor: 429 preserva contrato atual e carrega mlStatus/retryAfter", async () => {
   const fetch429 = async () => ({ ok: false, status: 429, retryAfter: 9, data: { message: "Too many requests" } });
   const fetch401 = async () => ({ ok: false, status: 401, retryAfter: null, data: { message: "invalid token" } });
 
   const e1 = await meliApi.buscarDetalhesItens({ clienteId: 1, ids: ["MLB1"] }, fetch429).catch((e) => e);
-  assert.strictEqual(e1.statusCode, 502, "rota HTTP da Central segue respondendo 502 como antes");
-  assert.strictEqual(e1.message, "Too many requests");
+  assert.strictEqual(e1.statusCode, 429, "rate limit preserva o status real formalizado pelo adapter");
+  assert.strictEqual(e1.codigo, "MELI_RATE_LIMIT");
+  assert.strictEqual(e1.message, "Rate limit do Mercado Livre (429): Too many requests");
   assert.strictEqual(e1.mlStatus, 429);
   assert.strictEqual(e1.retryAfter, 9);
 

@@ -2595,7 +2595,7 @@ async function run() {
       console.log("  ✓ 39a");
     });
 
-    await check("39a2 — margem_desc: família SEMPRE mostra '—', em qualquer posição do ranking global, sem buscar detalhe/filhos", async () => {
+    await check("39a2 — margem_desc: família mostra a FAIXA (mín–máx) de margem projetada dos filhos, sem buscar detalhe/filhos", async () => {
       // FAM-1 é reaproveitada de propósito (já usada e cacheada por dezenas
       // de testes anteriores desta suíte, mesmo raciocínio de 39h/39d) — é o
       // que prova que NENHUM detalhe de família é buscado por causa da
@@ -2603,6 +2603,11 @@ async function run() {
       // porque ela veio na resposta, haveria uma chamada NOVA a
       // /anuncios-meli/familias/FAM-1, e não há. Item NOVO (MLB-MARG-C) —
       // evita ler margem já cacheada de um teste anterior.
+      //
+      // margemProjetadaPercent continua SEMPRE null (não existe "a" margem
+      // única da família) e margemProjetadaProfit (999) continua nunca
+      // exibido como número — só a faixa (Min/Max) e a média (só ranking,
+      // não aparece na célula) são novas nesta missão.
       pedidos.length = 0;
       chamadasPerformance.length = 0;
       ordenarPorGlobalHandler = () => ({
@@ -2611,7 +2616,8 @@ async function run() {
         anuncios: [
           { tipo: "familia", key: "fam:FAM-1", family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
             titulo: "Camiseta Dry Fit Masculina", margemProjetadaPercent: null, margemProjetadaProfit: 999,
-            margemProjetadaComputable: false, cover: { thumbnail: null } },
+            margemProjetadaComputable: false, margemProjetadaMinPercent: 12.5, margemProjetadaMaxPercent: 34.8,
+            margemProjetadaMediaPercent: 23.65, cover: { thumbnail: null } },
           { tipo: "item", item_id: "MLB-MARG-C", key: "item:MLB-MARG-C", titulo: "Item C", status: "active",
             margemProjetadaPercent: 30, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY", cover: { thumbnail: null } },
         ],
@@ -2627,17 +2633,47 @@ async function run() {
 
       const estado = await cdp.evaluate(`(function(){
         var itemC = document.querySelector('.am-row[data-item="MLB-MARG-C"] .am-margem__valor');
+        var famValor = document.querySelector('${linhaFam("FAM-1")} .am-margem__valor');
         return {
-          familiaTexto: document.querySelector('${linhaFam("FAM-1")} .am-margem').textContent.trim(),
+          familiaTexto: famValor ? famValor.textContent.trim() : null,
           itemCTexto: itemC ? itemC.textContent.trim() : null,
         }; })()`);
-      assert.strictEqual(estado.familiaTexto, "—", "família NUNCA mostra número de margem, mesmo com margemProjetadaProfit=999 na resposta — regra 'Margem NUNCA agrega'");
+      assert.strictEqual(estado.familiaTexto, "12,5% – 34,8%", "família mostra a FAIXA mín–máx dos filhos computáveis — nunca margemProjetadaProfit (999) como se fosse número de margem");
       assert.strictEqual(estado.itemCTexto, "30,0%", "item avulso ao lado continua mostrando o próprio valor do snapshot normalmente");
 
       assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
-        "ordenar por margem NUNCA busca o detalhe/filhos da família");
+        "ordenar por margem NUNCA busca o detalhe/filhos da família — a faixa já vem pronta na resposta de /familias");
       ordenarPorGlobalHandler = null;
       console.log("  ✓ 39a2");
+    });
+
+    await check("39a3 — margem_desc: família sem NENHUM filho computável (min/max ausentes) continua '—', nunca inventa faixa", async () => {
+      pedidos.length = 0;
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "familia", key: "fam:FAM-1", family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
+            titulo: "Camiseta Dry Fit Masculina", margemProjetadaPercent: null, margemProjetadaProfit: null,
+            margemProjetadaComputable: false, margemProjetadaMinPercent: null, margemProjetadaMaxPercent: null,
+            margemProjetadaMediaPercent: null, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-MARG-D", key: "item:MLB-MARG-D", titulo: "Item D", status: "active",
+            margemProjetadaPercent: 9, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY", cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'margem_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-1")}')`, "a linha da família não renderizou");
+
+      const texto = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-margem').textContent.trim()`);
+      assert.strictEqual(texto, "—", "sem nenhum filho computável (min/max null) a família continua '—', nunca uma faixa inventada");
+      ordenarPorGlobalHandler = null;
+      console.log("  ✓ 39a3");
     });
 
     await check("39b — margem_asc: SNAPSHOT_INDISPONIVEL mostra aviso inline, não quebra a lista (mesmo contrato de ordenacaoIndisponivel de faturamento/curvaAbc)", async () => {

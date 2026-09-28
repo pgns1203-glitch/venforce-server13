@@ -990,11 +990,11 @@
       // Métricas 7d: soma dos filhos, buscada sozinha em BACKGROUND assim
       // que a família aparece na página — não depende de expandir (ver
       // carregarMetricasDosGruposVisiveis/metricas7dAgregadoCelulaHtml).
-      // Margem NUNCA agrega: fica "—" sempre, mesmo expandida (margem
-      // enganosa é pior que margem ausente — regra do usuário, sem exceção
-      // para soma, e sem gastar o Motor de Margem para um filho oculto).
+      // Margem NUNCA agrega num número único (regra do usuário mantida) —
+      // mas a família mostra a FAIXA (mínimo–máximo) de Margem Projetada dos
+      // filhos, quando disponível (ver margemFaixaFamiliaHtml).
       metricas7dAgregadoCelulaHtml(f.family_id) +
-      '<span class="am-margem am-margem--indisponivel" title="A margem é calculada só por anúncio (MLB) — não existe uma margem do agrupador">—</span>' +
+      margemFaixaFamiliaHtml(f) +
       scoreGaugeHtml(f.score_min) +
       '<div class="am-row__acao">' +
         '<span class="am-row__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
@@ -1749,6 +1749,31 @@
   function margemCelulaHtml(a) {
     return '<span class="am-margem" data-margem-item="' + escapeAttr(a.item_id) + '">' +
       margemProjetadaConteudoHtml(a) + "</span>";
+  }
+
+  // Célula de Margem do AGRUPADOR (linha da família na listagem, `rowGrupoHtml`)
+  // — família não tem margem % única (isso não mudou), mas passa a mostrar a
+  // FAIXA (mínimo–máximo) de Margem Projetada dos filhos computáveis, fonte
+  // `f.margemProjetadaMinPercent`/`MaxPercent` (mesmo snapshot da célula do
+  // item, ver controller `montarMargemProjetadaGlobal`). Só vem preenchido
+  // quando a família aparece via ordenarPor=margem_asc/margem_desc — nos
+  // demais sorts o backend não resolve os filhos (custo extra evitado de
+  // propósito, ver anexarMargemProjetadaNaPagina), então a célula cai no
+  // "—" de sempre. Min === Max (1 único filho computável) mostra o valor
+  // único, sem repetir. Mesmo componente/classe `.am-margem`, nenhum estilo
+  // novo — só o texto muda.
+  function margemFaixaFamiliaHtml(f) {
+    if (f.margemProjetadaMinPercent != null && f.margemProjetadaMaxPercent != null) {
+      var min = formatarPercentualCompacto(f.margemProjetadaMinPercent);
+      var max = formatarPercentualCompacto(f.margemProjetadaMaxPercent);
+      var texto = min === max ? min : (min + " – " + max);
+      return '<span class="am-margem" data-margem-familia="' + escapeAttr(f.family_id) + '">' +
+        '<span class="am-margem__valor is-neutral">' + texto + "</span>" +
+        infoDotHtml("Faixa de Margem Projetada dos anúncios desta família (mínimo–máximo). A ordenação por margem usa a média.") +
+      "</span>";
+    }
+    return '<span class="am-margem am-margem--indisponivel" ' +
+      'title="A margem é calculada só por anúncio (MLB) — ordene por Margem para ver a faixa desta família">—</span>';
   }
 
   // % do faturamento — coluna própria (ver auditoria "Ajuste visual —

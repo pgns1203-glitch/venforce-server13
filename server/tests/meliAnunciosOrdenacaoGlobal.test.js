@@ -420,6 +420,9 @@ async function run() {
     assert.strictEqual(familia.margemProjetadaPercent, null, "família NUNCA tem margemProjetadaPercent, mesmo com filho de 90%");
     assert.strictEqual(familia.margemProjetadaProfit, null, "path padrão não resolve soma de profit de família — não é exibida na listagem, nunca gastar essa leitura à toa");
     assert.strictEqual(familia.margemProjetadaComputable, false);
+    assert.strictEqual(familia.margemProjetadaMinPercent, null, "path padrão não resolve filhos — sem faixa, mesmo com um filho de 90%");
+    assert.strictEqual(familia.margemProjetadaMaxPercent, null);
+    assert.strictEqual(familia.margemProjetadaMediaPercent, null, "faixa/média só existem quando ordenarPor=margem_* (ponto onde os filhos já são resolvidos pra ranquear)");
     const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");
     assert.strictEqual(itemAvulso.margemProjetadaPercent, 15, "item avulso: batch funcionou normalmente");
     // A linha de família montada por montarAnunciosDeRows não tem `item_id`
@@ -791,19 +794,17 @@ async function run() {
     console.log("  ✓ Q. margem_asc: 10/20/30/null — NULLS LAST vale nas duas direções");
   });
 
-  // R. Contrato de família AUDITADO contra o que já está em produção — não
-  //    escolhido de novo (ver comentário de montarMargemProjetadaGlobal):
-  //    `montarMargemPorFamilia` (performance()) e o sort LOCAL do Portal
-  //    (`valorOrdenacaoDaLinha`, anuncios-meli.js:2147) já usam SOMA de
-  //    profit como valor INFORMATIVO de família — NUNCA média/herança de
-  //    marginPercent, e NUNCA um valor que compete numericamente com o
-  //    marginPercent (%) de um item avulso na MESMA ordenação (gate do
-  //    prompt "fechar integração funcional da tela": "profit não compete
-  //    numericamente com marginPercent" + "família fica em NULLS LAST").
-  //    `margemProjetadaPercent` de família fica SEMPRE null (nunca a soma
-  //    rotulada como "Percent", que seria exatamente o erro "profit como se
-  //    fosse margin_percent"). `margemProjetadaProfit` carrega a soma
-  //    (rotulada corretamente, só informativo — nunca usado pra ordenar).
+  // R. Contrato de família ATUALIZADO (missão "faixa de margem projetada nos
+  //    agrupadores"): família AGORA compete de verdade no ranking global de
+  //    margem — `porFamilia` deixou de ficar sempre vazio (NULLS LAST
+  //    incondicional); passa a ser a MÉDIA SIMPLES de `marginPercent` dos
+  //    filhos computáveis, mesma unidade (%) do item avulso, então comparar
+  //    os dois numericamente é válido (não é mais a mistura R$-vs-% da
+  //    correção anterior). `margemProjetadaPercent` da família continua
+  //    SEMPRE null (não existe "a" margem única da família) — o valor de
+  //    ranking mora em `margemProjetadaMediaPercent`, a faixa visual em
+  //    `margemProjetadaMinPercent`/`MaxPercent`, e a soma de profit continua
+  //    só informativa em `margemProjetadaProfit`.
   await withMockDb({
     ...UMA_CONTA,
     anuncios: [
@@ -813,43 +814,40 @@ async function run() {
     ],
     userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
   }, async () => {
-    // FAM1: profit 10+4=14 (soma) — DELIBERADAMENTE bem menor que o profit
-    // de MLB-B (999), mas MLB-B tem marginPercent BAIXO (5%). Sob o bug
-    // antigo (família ranqueada pela soma de profit, competindo direto com
-    // marginPercent do item), FAM1 venceria em margem_desc (14 > 5). Sob o
-    // contrato correto (família SEMPRE NULLS LAST, nunca no comparator),
-    // MLB-B (tem valor, 5%) vem ANTES de FAM1 (não tem valor de ranking
-    // nenhum) — prova que profit de família não compete com marginPercent
-    // de item em NENHUM sentido, nem "família ganha por ter number maior".
+    // FAM1: filhos 10% e 30% (ambos computáveis) -> média (10+30)/2 = 20%,
+    // faixa 10%-30%. MLB-B avulso: 15% — abaixo da MÉDIA da família (20%),
+    // então em margem_desc a família vem ANTES do avulso: prova que a média
+    // decide a posição de verdade, não é mais "família sempre por último".
     snapshotHandler = () => new Map([
-      ["MLB-A1", { marginPercent: 40, profit: 10, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T04:00:00Z", origemJob: "manual_cli" }],
-      ["MLB-A2", { marginPercent: 20, profit: 4, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "manual_cli" }],
-      ["MLB-B", { marginPercent: 5, profit: 999, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:00:00Z", origemJob: "manual_cli" }],
+      ["MLB-A1", { marginPercent: 10, profit: 4, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T04:00:00Z", origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 30, profit: 10, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T05:00:00Z", origemJob: "manual_cli" }],
+      ["MLB-B", { marginPercent: 15, profit: 999, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:00:00Z", origemJob: "manual_cli" }],
     ]);
     const res = fakeRes();
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
     const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
     const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");
     assert.ok(familia, "FAM1 precisa aparecer como família");
-    // MLB-B (marginPercent=5, computável) vem ANTES de FAM1 mesmo com
-    // marginPercent baixíssimo — porque família não tem valor de ranking
-    // NENHUM (nem o profit=999 dela entra na disputa), não porque "5 > 14"
-    // em alguma unidade comum (não existe unidade comum).
-    assert.strictEqual(res.corpo.anuncios[0].item_id, "MLB-B", "MLB-B (tem valor de ranking, 5%) sempre antes de FAM1 (sem valor de ranking, mesmo com profit=14 informativo)");
-    assert.strictEqual(res.corpo.anuncios[1].family_id, "FAM1", "FAM1 cai pro fim (NULLS LAST) mesmo tendo o MAIOR profit somado nominal (14) — profit de família nunca é comparado numericamente contra marginPercent de item");
-    assert.strictEqual(familia.margemProjetadaPercent, null, "família NUNCA tem margemProjetadaPercent — nem a soma nem uma média rotuladas como percentual");
-    assert.strictEqual(familia.margemProjetadaProfit, 14, "família usa a SOMA de profit dos filhos (10+4=14) — mesma fonte do sort local já em produção, só que agora puramente informativa");
-    assert.strictEqual(familia.margemProjetadaComputable, false, "família nunca é 'computável' — não existe margem % de família, ponto");
+    assert.strictEqual(res.corpo.anuncios[0].family_id, "FAM1", "FAM1 (média 20%) vem ANTES de MLB-B (15%) — família compete de verdade no ranking, não é mais NULLS LAST automático");
+    assert.strictEqual(res.corpo.anuncios[1].item_id, "MLB-B", "MLB-B (15%, computável) fica DEPOIS da família (20%)");
+    assert.strictEqual(familia.margemProjetadaPercent, null, "família NUNCA tem margemProjetadaPercent único — nem a média rotulada como 'Percent'");
+    assert.strictEqual(familia.margemProjetadaMediaPercent, 20, "média dos filhos computáveis: (10+30)/2 = 20 — o mesmo valor que decidiu a posição");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 10, "faixa visual: mínimo dos filhos computáveis");
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 30, "faixa visual: máximo dos filhos computáveis");
+    assert.strictEqual(familia.margemProjetadaProfit, 14, "profit continua a SOMA (4+10=14) — informativo, nunca usado no comparator");
+    assert.strictEqual(familia.margemProjetadaComputable, false, "família nunca é 'computável' — não existe margem % única de família, ponto");
     assert.strictEqual(familia.margemProjetadaStatus, null, "status não agrega por família — nunca inventado");
     assert.strictEqual(familia.margemProjetadaCalculadaEm, "2026-09-28T05:00:00Z", "calculadoEm de família é o MAIS RECENTE entre os filhos com profit conhecido");
-    assert.strictEqual(itemAvulso.margemProjetadaPercent, 5, "MLB-B avulso: continua usando marginPercent direto, sem agregação");
+    assert.strictEqual(itemAvulso.margemProjetadaPercent, 15, "MLB-B avulso: continua usando marginPercent direto, sem agregação");
     assert.strictEqual(itemAvulso.margemProjetadaProfit, 999, "MLB-B avulso: profit próprio, sem soma nenhuma");
     snapshotHandler = null;
-    console.log("  ✓ R. margem_desc: família é SEMPRE NULLS LAST (nunca ranqueada pela soma de profit), margemProjetadaPercent SEMPRE null, profit é só informativo");
+    console.log("  ✓ R. margem_desc: família compete pela MÉDIA de marginPercent dos filhos computáveis — mesma unidade do item, ranking real (não mais NULLS LAST automático)");
   });
 
-  // S. família sem NENHUM filho com profit conhecido fica null (vai para o
-  //    fim) — não é tratada como 0 nem herda do avulso.
+  // S. família sem NENHUM filho computável (nem snapshot) fica com
+  //    min/max/média/profit todos null — NULLS LAST por FALTA de sinal, não
+  //    mais por design perene (a diferença importa: uma família com filhos
+  //    computáveis agora ranqueia de verdade, ver R).
   await withMockDb({
     ...UMA_CONTA,
     anuncios: [
@@ -869,10 +867,13 @@ async function run() {
     assert.strictEqual(familia.margemProjetadaPercent, null, "família: sempre null (nunca teve percent, agora também sem profit)");
     assert.strictEqual(familia.margemProjetadaProfit, null, "família sem nenhum filho com profit: null, nunca 0");
     assert.strictEqual(familia.margemProjetadaComputable, false);
+    assert.strictEqual(familia.margemProjetadaMinPercent, null, "sem filho computável: sem faixa nenhuma, nunca 0");
+    assert.strictEqual(familia.margemProjetadaMaxPercent, null);
+    assert.strictEqual(familia.margemProjetadaMediaPercent, null, "sem filho computável: sem média — cai em NULLS LAST por falta de sinal");
     assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB-B", "FAM1"].map((k) => (k === "FAM1" ? familia.item_id : k)));
-    assert.strictEqual(res.corpo.anuncios[0].family_id, null, "MLB-B (profit=1, computável) vem antes de FAM1 (sem profit, null)");
+    assert.strictEqual(res.corpo.anuncios[0].family_id, null, "MLB-B (5%, computável) vem antes de FAM1 (sem nenhum filho computável)");
     snapshotHandler = null;
-    console.log("  ✓ S. margem_desc: família sem nenhum filho com profit conhecido fica null, no fim — nunca 0 nem herda do avulso");
+    console.log("  ✓ S. margem_desc: família sem nenhum filho computável fica com min/max/média null, no fim — nunca 0 nem herda do avulso");
   });
 
   // T. cobertura ZERO (job nunca rodou para este cliente): fallback pro SQL
@@ -1037,6 +1038,11 @@ async function run() {
     ],
     userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
   }, async () => {
+    // FAM1: filhos 8% e 100% -> média 54% (MAIOR que qualquer item avulso,
+    // inclusive MLB-X=40%) — família AGORA disputa e VENCE de verdade.
+    // profit da família (12.5+9.25=21.75) é DELIBERADAMENTE menor que o de
+    // MLB-X (55) — prova que quem decide a posição é a MÉDIA de
+    // marginPercent, nunca o profit somado.
     snapshotHandler = () => new Map([
       ["MLB-X", { marginPercent: 40, profit: 55, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
       ["MLB-Y", { marginPercent: 17.4, profit: 20, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
@@ -1048,8 +1054,11 @@ async function run() {
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
 
     const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
-    assert.strictEqual(familia.margemProjetadaProfit, 21.75, "família: valor exposto é a soma real (12.5+9.25=21.75), independente do marginPercent alto de um dos filhos (100%)");
+    assert.strictEqual(familia.margemProjetadaProfit, 21.75, "família: profit exposto é a soma real (12.5+9.25=21.75) — não é o que decide a posição");
     assert.strictEqual(familia.margemProjetadaPercent, null, "família: margemProjetadaPercent nunca é preenchido, mesmo com filho de marginPercent=100");
+    assert.strictEqual(familia.margemProjetadaMediaPercent, 54, "média dos filhos: (8+100)/2 = 54 — o valor que decidiu a posição");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 8);
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 100);
 
     // Invariante 1: entre ITENS (mesma unidade), a ordem da resposta já é a
     // ordem decrescente do próprio margemProjetadaPercent exposto — o valor
@@ -1059,13 +1068,14 @@ async function run() {
     assert.deepStrictEqual(percentuaisExpostos, [40, 17.4, 3],
       "itens vêm na ordem decrescente do PRÓPRIO margemProjetadaPercent exposto (40, 17.4, 3) — o mesmo valor que decidiu a posição");
 
-    // Invariante 2: família nunca disputa posição com item nenhum, mesmo
-    // tendo um filho (MLB-A2) com marginPercent=100 (maior que qualquer
-    // item avulso) — profit continua só informativo, nunca vira ranking.
-    assert.strictEqual(res.corpo.anuncios[res.corpo.anuncios.length - 1].tipo, "familia",
-      "família fica na ÚLTIMA posição, mesmo com um filho de marginPercent=100 — profit de família nunca compete com marginPercent de item");
+    // Invariante 2: família disputa e VENCE por média (54%), à frente do
+    // maior item avulso (MLB-X, 40%) — mesmo com profit somado (21.75) MENOR
+    // que o profit do próprio MLB-X (55): quem decide é a média de
+    // marginPercent, nunca o profit.
+    assert.strictEqual(res.corpo.anuncios[0].tipo, "familia", "família (média 54%) vem em PRIMEIRO lugar — à frente de MLB-X (40%), o maior item avulso");
+    assert.deepStrictEqual(res.corpo.anuncios.slice(1).map((a) => a.item_id), ["MLB-X", "MLB-Y", "MLB-Z"], "itens seguem na mesma ordem de sempre, logo depois da família");
     snapshotHandler = null;
-    console.log("  ✓ AB. valor exposto na resposta === valor usado no ranking (item: margemProjetadaPercent, mesma unidade comparável; família: sempre última, margemProjetadaProfit só informativo)");
+    console.log("  ✓ AB. valor exposto na resposta === valor usado no ranking (item: margemProjetadaPercent; família: margemProjetadaMediaPercent, compete de verdade contra item, profit nunca decide)");
   });
 
   // AD. faturamento_desc TAMBÉM anexa os campos de margem projetada — fonte
@@ -1161,6 +1171,151 @@ async function run() {
       "a ÚNICA leitura pede o catálogo FILTRADO inteiro (necessário pro ranking global) — não é 'só a página', é reaproveitamento, não coincidência");
     snapshotHandler = null;
     console.log("  ✓ AG. margem_desc: 1 única leitura de snapshot (reaproveitada do ranking), nunca uma 2ª pra anexar a página");
+  });
+
+  // AH-AL. Cenários OBRIGATÓRIOS da missão "faixa de margem projetada nos
+  //        agrupadores" — exemplos exatos do prompt, um por um.
+
+  // AH. Família com 3 filhos (10%/20%/30%): faixa 10%-30%, ranking = média 20%.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A3", user_product_id: "UP1" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 10, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 20, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A3", { marginPercent: 30, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 10);
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 30);
+    assert.strictEqual(familia.margemProjetadaMediaPercent, 20, "(10+20+30)/3 = 20");
+    snapshotHandler = null;
+    console.log("  ✓ AH. família com 3 filhos (10/20/30): visual 10%-30%, ranking (média) 20%");
+  });
+
+  // AI. Família com 2 filhos (5%/25%): faixa 5%-25%, ranking = média 15%.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 5, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 25, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 5);
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 25);
+    assert.strictEqual(familia.margemProjetadaMediaPercent, 15, "(5+25)/2 = 15");
+    snapshotHandler = null;
+    console.log("  ✓ AI. família com 2 filhos (5/25): visual 5%-25%, ranking (média) 15%");
+  });
+
+  // AJ. Filho sem snapshot (10%/null/30%): o filho sem snapshot é IGNORADO
+  //     na faixa/média — nunca vira 0, nunca estica o mínimo.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A3", user_product_id: "UP1" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 10, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      // MLB-A2: sem entrada no Map — snapshot ausente (equivale a "null" do prompt).
+      ["MLB-A3", { marginPercent: 30, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 10);
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 30);
+    assert.strictEqual(familia.margemProjetadaMediaPercent, 20, "(10+30)/2 = 20 — o filho sem snapshot NUNCA entra na conta (nem como 0)");
+    snapshotHandler = null;
+    console.log("  ✓ AJ. filho sem snapshot (10/null/30): ignorado — visual 10%-30%, ranking (média dos 2 válidos) 20%");
+  });
+
+  // AK. Todos os filhos noncomputable (UNVALIDATED): visual "—" (min/max/média
+  //     null), ranking NULLS LAST.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: null, profit: null, computable: false, status: "UNVALIDATED", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: null, profit: null, computable: false, status: "UNVALIDATED", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-B", { marginPercent: 12, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaMinPercent, null, "todos os filhos UNVALIDATED — sem faixa, nunca 0");
+    assert.strictEqual(familia.margemProjetadaMaxPercent, null);
+    assert.strictEqual(familia.margemProjetadaMediaPercent, null, "sem média — NULLS LAST");
+    assert.strictEqual(res.corpo.anuncios[0].item_id, "MLB-B", "MLB-B (12%, computável) vem ANTES da família (sem nenhum filho computável)");
+    assert.strictEqual(res.corpo.anuncios[1].family_id, "FAM1", "família cai pro fim — NULLS LAST por falta de sinal");
+    snapshotHandler = null;
+    console.log("  ✓ AK. família com todos os filhos noncomputable: visual '—' (min/max/média null), ranking NULLS LAST");
+  });
+
+  // AL. "Realizada" nunca entra na conta — não por filtro em runtime, mas
+  //     estruturalmente: o snapshot (`anuncios_margem_projetada_snapshot`,
+  //     única fonte lida aqui) NUNCA armazena `item.margin.realized` (decisão
+  //     de produto da missão anterior, "Margem = SOMENTE Margem Projetada")
+  //     — `marginPercent` no Map devolvido pelo repositório JÁ É o valor
+  //     projetado, então não há "realizada" pra vazar neste nível. Fixture
+  //     usa os mesmos 2 filhos do exemplo do prompt (10%/20% projetados);
+  //     a checagem estática confirma que o bloco de agregação de família
+  //     nunca referencia nada de "realized".
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 10, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 20, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 10);
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 20);
+    assert.strictEqual(familia.margemProjetadaMediaPercent, 15, "(10+20)/2 = 15 — sempre projetada, nunca realizada");
+    snapshotHandler = null;
+
+    const fs = require("fs");
+    const path = require("path");
+    const src = fs.readFileSync(path.join(__dirname, "../controllers/meliAnunciosController.js"), "utf8");
+    const inicioFn = src.indexOf("function montarMargemProjetadaGlobal(");
+    const fimFn = src.indexOf("\r\n}\r\n", inicioFn); // CRLF no repo — "\n}\n" nunca bate
+    assert.ok(fimFn > inicioFn, "precisa achar o fim de montarMargemProjetadaGlobal");
+    const blocoFn = src.slice(inicioFn, fimFn);
+    assert.ok(!/realized/i.test(blocoFn), "montarMargemProjetadaGlobal (min/max/média de família) nunca referencia 'realized' — a agregação só lê marginPercent do snapshot, que já é sempre projetado");
+    console.log("  ✓ AL. faixa/média de família nunca usa margem realizada — nem por fixture (2 filhos projetados 10/20 -> 15), nem estruturalmente (checagem estática do bloco de agregação)");
   });
 
   // AC. Checagem ESTÁTICA (arquitetural, não só o spy em runtime dos testes

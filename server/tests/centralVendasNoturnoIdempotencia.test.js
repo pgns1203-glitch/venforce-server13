@@ -269,6 +269,7 @@ async function run() {
         return [{ id: run.id }];
       },
       async listarContas() { return rows; },
+      async ensureCentralVendasTables() {},
       async criarSyncRun(p) {
         let run = estados.get(p.clienteContaId);
         if (run.status === "failed") {

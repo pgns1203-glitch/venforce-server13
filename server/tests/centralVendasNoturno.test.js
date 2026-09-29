@@ -97,6 +97,8 @@ function makeDeps({ rows, comportamento = {}, execDelayMs = 5, adaptador = null 
       },
     },
     async listarContas() { return rows; },
+    // Schema da Central (single-flight real coberto em centralVendasSchemaEnsureDeadlock.test.js).
+    async ensureCentralVendasTables() {},
     async criarSyncRun(p) {
       chamadas.criar.push(p);
       const c = comportamento[p.clienteContaId] || {};

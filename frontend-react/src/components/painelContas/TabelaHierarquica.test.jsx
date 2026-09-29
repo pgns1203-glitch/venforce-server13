@@ -166,7 +166,10 @@ describe("expansão: contas primeiro, histórico sob demanda", () => {
 
     const linhas = container.querySelectorAll(".vf-ph-row--conta");
     expect(linhas).toHaveLength(3);
-    expect(within(linhas[0]).getByText("Mercado Livre 1 · LOJA 1")).toBeInTheDocument();
+    // Rótulo inteiro do servidor, em dois pesos: canal forte, operação secundária.
+    expect(linhas[0].querySelector(".vf-ph-conta__rotulo")).toHaveTextContent("Mercado Livre 1 · LOJA 1");
+    expect(within(linhas[0]).getByText("Mercado Livre 1")).toHaveClass("vf-ph-conta__canal");
+    expect(within(linhas[0]).getByText("· LOJA 1")).toHaveClass("vf-ph-conta__operacao");
     expect(within(linhas[1]).getByText("R$ 200")).toBeInTheDocument();
     expect(carregarMeses).not.toHaveBeenCalled();
   });
@@ -241,6 +244,61 @@ describe("expansão: contas primeiro, histórico sob demanda", () => {
     expect(container.querySelectorAll(".vf-ph-row--conta")).toHaveLength(3);
     expect(container.querySelectorAll(".vf-ph-row--historico")).toHaveLength(1);
     expect(container.querySelectorAll(".vf-ph-row--mes")).toHaveLength(1);
+  });
+});
+
+describe("apresentação dos números (só classe — o valor exibido é o mesmo)", () => {
+  it("FAT marcado como a métrica principal; ausência e negativo têm classe própria", () => {
+    const { container } = render(<Casca clientes={[cliente({ resumo: resumo({ lc: -3100, mc: null }) })]} />);
+    const linha = container.querySelector(".vf-ph-row--cliente");
+    expect(linha.querySelector(".vf-ph-col--fat .vf-ph-valor")).toHaveTextContent("R$ 113.000");
+    const lc = linha.querySelector(".vf-ph-col--lc .vf-ph-valor");
+    expect(lc).toHaveTextContent("−R$ 3.100");
+    expect(lc).toHaveClass("is-negativo");
+    const mc = linha.querySelector(".vf-ph-col--mc .vf-ph-valor");
+    expect(mc).toHaveTextContent("—");
+    expect(mc).toHaveClass("is-ausente");
+    expect(linha.querySelector(".vf-ph-col--fat .vf-ph-valor")).not.toHaveClass("is-negativo");
+  });
+
+  it("o divisor de grupo começa na primeira métrica de Ads, não antes", () => {
+    const { container } = render(<Casca clientes={[cliente()]} />);
+    const linha = container.querySelector(".vf-ph-row--cliente");
+    const inicios = Array.from(linha.querySelectorAll("td.is-inicio-grupo")).map((td) => td.className);
+    expect(inicios).toHaveLength(1);
+    expect(inicios[0]).toContain("vf-ph-col--ads");
+  });
+
+  it("status manual é neutro (cinza), não uma cor a mais", () => {
+    render(<Casca clientes={[cliente({ status: { codigo: "manual", rotulo: "Manual", motivo: null, precisaAtencao: false } })]} />);
+    const status = screen.getByText("Manual");
+    expect(status).toHaveClass("vf-status");
+    expect(status.className).not.toMatch(/is-(info|success|warning|danger|empty)/);
+  });
+
+  it("sem dado: o motivo ganha linha própria, com o último mês ao lado", () => {
+    const { container } = render(<Casca clientes={[semDados()]} />);
+    const linhas = container.querySelectorAll(".vf-ph-cliente__meta--vazio .vf-ph-cliente__meta-linha");
+    expect(linhas).toHaveLength(2);
+    expect(linhas[0]).toHaveTextContent("Sem dados em set/2026");
+    expect(linhas[1]).toHaveTextContent("Marketplace sem integração automática");
+    expect(linhas[1]).toHaveTextContent("último dado: ago/2026");
+  });
+
+  it("conta mostra 'dados até' curto no ano da competência", async () => {
+    const { container } = render(<Casca clientes={[cliente()]} />);
+    await abrirCliente();
+    expect(within(container.querySelector(".vf-ph-row--conta")).getByText("· dados até 28/09")).toBeInTheDocument();
+  });
+
+  it("'Recolher tudo' mora no cabeçalho da tabela e só aparece com algo aberto", async () => {
+    const { container } = render(<Casca clientes={[cliente()]} />);
+    const cabecalho = container.querySelector(".vf-ph-th-ancora");
+    expect(within(cabecalho).queryByRole("button", { name: "Recolher tudo" })).toBeNull();
+    await abrirCliente();
+    await userEvent.click(within(cabecalho).getByRole("button", { name: "Recolher tudo" }));
+    expect(container.querySelectorAll(".vf-ph-row--conta")).toHaveLength(0);
+    expect(within(cabecalho).queryByRole("button", { name: "Recolher tudo" })).toBeNull();
   });
 });
 
@@ -407,8 +465,11 @@ describe("atualizar dados (admin)", () => {
 
   it("em curso: progresso escrito, contas pendentes marcadas como sincronizando", async () => {
     const { container } = render(<Casca2 clientes={[cliente()]} atualizacoes={{ 1: { competencia: "2026-09", job: job(), iniciando: false } }} />);
-    expect(screen.getByText("Atualizando até hoje · 0/3 contas")).toBeInTheDocument();
-    expect(screen.getByText("atualizando…")).toBeInTheDocument();
+    // O QUE acontece na âncora; QUANTO já foi, no botão — sem repetir.
+    expect(screen.getByText("Atualizando até hoje")).toBeInTheDocument();
+    const botao = screen.getByRole("button", { name: /atualizar dados de acme comércio — atualizando 0\/3/i });
+    expect(botao).toHaveTextContent("Atualizando 0/3");
+    expect(botao).toBeDisabled();
     await abrirCliente();
     const contas = container.querySelectorAll(".vf-ph-row--conta");
     expect(within(contas[0]).getByText("sincronizando…")).toBeInTheDocument();
@@ -426,8 +487,10 @@ describe("atualizar dados (admin)", () => {
 
   it("iniciando (antes da resposta do servidor): já trava o botão", () => {
     render(<Casca2 clientes={[cliente()]} atualizacoes={{ 1: { competencia: "2026-09", job: null, iniciando: true } }} />);
-    expect(screen.getByRole("button", { name: /atualizar dados/i })).toBeDisabled();
-    expect(screen.getByText("Atualizando até hoje…")).toBeInTheDocument();
+    const botao = screen.getByRole("button", { name: /atualizar dados/i });
+    expect(botao).toBeDisabled();
+    expect(botao).toHaveTextContent("Atualizando…");
+    expect(screen.getByText("Atualizando até hoje")).toBeInTheDocument();
   });
 
   it("concluída sem pendência: nenhuma faixa extra, frescor com ✓", () => {
@@ -456,6 +519,36 @@ describe("atualizar dados (admin)", () => {
     expect(within(container.querySelectorAll(".vf-ph-row--conta")[1]).getByText("· falhou na atualização")).toBeInTheDocument();
     await userEvent.click(within(faixa).getByRole("button", { name: "Dispensar" }));
     expect(onDispensar).toHaveBeenCalledWith(1);
+  });
+
+  it("o botão diz o próprio estado em texto: normal, concluído, falhou", async () => {
+    const onAtualizar = vi.fn();
+    const { unmount } = render(<Casca2 clientes={[cliente()]} onAtualizar={onAtualizar} />);
+    const normal = screen.getByRole("button", { name: "Atualizar dados de Acme Comércio" });
+    expect(normal).toHaveTextContent("Atualizar");
+    // Rótulo de hover presente (empilhado, sem deslocar) e fora da leitura de tela.
+    expect(within(normal).getByText("Atualizar até hoje")).toHaveAttribute("aria-hidden", "true");
+    unmount();
+
+    const r2 = render(<Casca2 clientes={[cliente()]} atualizacoes={{ 1: { competencia: "2026-09", job: job({ estado: "concluida", contas: [] }) } }} />);
+    expect(screen.getByRole("button", { name: /atualizar dados de acme comércio — atualizado/i })).toHaveTextContent("Atualizado");
+    r2.unmount();
+
+    render(<Casca2
+      clientes={[cliente()]}
+      onAtualizar={onAtualizar}
+      atualizacoes={{ 1: { competencia: "2026-09", job: null, erro: { mensagem: "Falha de rede.", status: 500 } } }}
+    />);
+    const falha = screen.getByRole("button", { name: /atualizar dados de acme comércio — falhou, tentar novamente/i });
+    expect(falha).toHaveTextContent("Falhou · tentar novamente");
+    expect(falha).toBeEnabled();
+    await userEvent.click(falha);
+    expect(onAtualizar).toHaveBeenCalledWith(1);
+  });
+
+  it("mês anterior: o rótulo de hover diz que reprocessa o mês", () => {
+    render(<Casca2 clientes={[cliente({ competencia: "2026-08" })]} competencia="2026-08" />);
+    expect(within(screen.getByRole("button", { name: /atualizar dados/i })).getByText("Reprocessar o mês")).toBeInTheDocument();
   });
 
   it("erro ao iniciar (ex.: 422): faixa de falha com a mensagem do servidor", () => {

@@ -47,6 +47,7 @@ const TODAS_TABELAS = [...TABELAS_POR_ID, ...TABELAS_POR_SLUG];
 function novoModelo() {
   const m = {
     clientes: [{ id: 1, nome: "Extra Máquinas", slug: "extra-maquinas" }],
+    tabelasExistentes: new Set(TODAS_TABELAS),
     // falhar a etapa final (DELETE FROM clientes) simula FK violation de
     // uma dependência CASCADE que o teste não está modelando diretamente
     // (ex.: migração não aplicada nesse ambiente) — deve dar ROLLBACK total.
@@ -91,8 +92,17 @@ function instalar(m) {
           return { rows: m.clientes.filter((c) => c.slug === params[0]) };
         }
 
+        if (sql === "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1") {
+          return { rows: m.tabelasExistentes.has(params[0]) ? [{ "?column?": 1 }] : [] };
+        }
+
         for (const tabela of TABELAS_POR_ID) {
           if (sql === `DELETE FROM ${tabela} WHERE cliente_id = $1`) {
+            if (!m.tabelasExistentes.has(tabela)) {
+              const e = new Error(`relation "${tabela}" does not exist`);
+              e.code = "42P01";
+              throw e;
+            }
             const total = deletarPorColuna(tabela, "cliente_id", Number(params[0]));
             return { rowCount: total };
           }
@@ -176,7 +186,18 @@ async function run() {
     );
     ok("apagados NÃO lista tabelas sem dado nenhum (ex.: promocoes_diagnosticos)", !r2.apagados.some((a) => a.tabela === "promocoes_diagnosticos"));
 
-    // 4. falha na etapa final (DELETE FROM clientes) -> ROLLBACK completo:
+    // 4. tabela opcional ausente -> pula apenas essa tabela e conclui o purge.
+    //    Se o serviço tentar executar o DELETE nela, o mock lança 42P01.
+    m.clientes.push({ id: 4, nome: "Cliente sem Publicações", slug: "cliente-sem-publicacoes" });
+    m.cliente_360_acoes.push({ id: 70, cliente_id: 4 });
+    m.tabelasExistentes.delete("meli_anuncio_publicacoes");
+    const r3 = await purgarClientePermanentemente("cliente-sem-publicacoes");
+    ok("tabela opcional ausente: purge conclui e apaga o cliente", !m.clientes.some((c) => c.id === 4));
+    ok("tabela opcional ausente: purge continua nas tabelas seguintes", !m.cliente_360_acoes.some((x) => x.cliente_id === 4));
+    ok("tabela opcional ausente: não aparece entre os apagados", !r3.apagados.some((a) => a.tabela === "meli_anuncio_publicacoes"));
+    m.tabelasExistentes.add("meli_anuncio_publicacoes");
+
+    // 5. falha na etapa final (DELETE FROM clientes) -> ROLLBACK completo:
     //    nenhuma das deleções explícitas anteriores fica persistida.
     m.clientes.push({ id: 3, nome: "Cliente Instável", slug: "cliente-instavel" });
     m.relatorios.push({ id: 60, cliente_id: 3 });

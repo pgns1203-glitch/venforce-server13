@@ -56,6 +56,59 @@ function falha(codigo, motivo) {
   return { ok: false, codigo, motivo };
 }
 
+// Fotografia do corpo de erro do ML, SEM interpretação — para a tela mostrar
+// o motivo real (e o código) e não só a primeira frase. O ML usa dois
+// formatos: o usual `{ message, error, status, cause: [{ code, message, ... }] }`
+// e o atípico do título `{ cause: 374, message, error }` (cause numérica).
+// Nenhum campo é inventado: o que o ML não mandou volta null.
+function texto(v) {
+  return v == null || v === "" ? null : String(v);
+}
+
+function detalhesDoErroMl(data, status) {
+  const d = data && typeof data === "object" ? data : {};
+  const causas = (Array.isArray(d.cause) ? d.cause : [])
+    .filter((c) => c && typeof c === "object")
+    .map((c) => ({
+      code: texto(c.code),
+      message: texto(c.message),
+      type: texto(c.type),
+      references: Array.isArray(c.references) ? c.references.map(String) : [],
+    }));
+  return {
+    status: status || (typeof d.status === "number" ? d.status : null),
+    message: texto(d.message),
+    error: texto(d.error),
+    causa: typeof d.cause === "number" || typeof d.cause === "string" ? String(d.cause) : null,
+    causas,
+  };
+}
+
+// Tradução AMIGÁVEL das recusas de título conhecidas. É só explicação: o
+// código e a mensagem originais do ML continuam indo junto, intactos.
+// "bids" é o termo da API do ML para compras/vendas do item (vide
+// `has_bids` nos erros de /items). A doc pública diz que item com vendas
+// não muda título via API, mas há relato operacional de títulos alterados
+// com vendas pela plataforma — então a regra NÃO é tratada como absoluta:
+// o texto só descreve o que ESTA resposta disse, sem afirmar regra fixa.
+// Quem decide é o ML — aqui nada bloqueia por vendas.
+const EXPLICACOES_TITULO = [
+  {
+    re: /\bbids?\b|has_bids|with sales|has sales|com vendas|possui vendas/i,
+    texto:
+      "O Mercado Livre recusou a alteração via API neste anúncio. A resposta cita vendas (bids) no anúncio.",
+  },
+];
+
+function explicacaoTitulo(detalhes) {
+  const fontes = [detalhes.message, detalhes.error]
+    .concat(detalhes.causas.map((c) => c.message), detalhes.causas.map((c) => c.code))
+    .filter(Boolean)
+    .join(" | ");
+  const achada = EXPLICACOES_TITULO.find((e) => e.re.test(fontes));
+  return achada ? achada.texto : null;
+}
+
 // Achado da investigação do BODY_INVALID_FIELDS: para título, o ML devolve um
 // formato atípico — `cause` é um número (não array), `message` é o código
 // genérico ("BODY_INVALID_FIELDS") e a explicação real vem em `error`:
@@ -102,6 +155,14 @@ async function enviarItem(clienteId, itemId, corpo, mlUserId) {
     motivoDoErroMl(resp && resp.data, resp && resp.status)
   );
   f.mlData = resp && resp.data; // corpo bruto, para checagens específicas do chamador (ex.: catálogo)
+  f.detalhesMl = detalhesDoErroMl(resp && resp.data, resp && resp.status);
+  // Registro do corpo REAL da recusa (erro do ML não carrega token nem dado
+  // pessoal) — é a única fonte para auditar a próxima recusa sem adivinhar.
+  console.warn(
+    `[anuncios-meli] ML recusou PUT /items/${itemId} (${Object.keys(corpo).join(",")}):`,
+    resp && resp.status,
+    JSON.stringify((resp && resp.data) || null).slice(0, 1000)
+  );
   return f;
 }
 
@@ -121,7 +182,12 @@ async function atualizarTitulo({ clienteId, itemId, titulo, mlUserId, catalogoTr
   const r = await enviarItem(clienteId, itemId, { title: valor }, mlUserId);
   if (r.ok) return { ok: true, valor };
   // Fallback: linha ainda não resincronizada, mas o ML confirma catálogo agora.
-  if (ehRecusaPorCatalogo(r.mlData)) return falhaCatalogo();
+  if (ehRecusaPorCatalogo(r.mlData)) {
+    const f = falhaCatalogo();
+    f.detalhesMl = r.detalhesMl;
+    return f;
+  }
+  r.explicacao = explicacaoTitulo(r.detalhesMl);
   return r;
 }
 
@@ -191,9 +257,15 @@ async function aplicarConteudo({ clienteId, itemId, mlUserId, campos, anuncio })
           : "Falha ao falar com o Mercado Livre."
       );
     }
-    resultados[campo] = r.ok
-      ? { ok: true }
-      : { ok: false, codigo: r.codigo, motivo: r.motivo };
+    if (r.ok) {
+      resultados[campo] = { ok: true };
+    } else {
+      resultados[campo] = { ok: false, codigo: r.codigo, motivo: r.motivo };
+      // Só presentes quando o ML respondeu — recusa local (título vazio,
+      // longo, catálogo pré-checado) não tem "resposta do ML" para mostrar.
+      if (r.explicacao) resultados[campo].explicacao = r.explicacao;
+      if (r.detalhesMl) resultados[campo].detalhesMl = r.detalhesMl;
+    }
     if (r.ok) aplicados[campo] = r.valor;
   }
 
@@ -212,4 +284,6 @@ module.exports = {
   // divergiriam na primeira vez que o ML mudasse o formato.
   motivoDoErroMl,
   codigoDoErroMl,
+  detalhesDoErroMl,
+  explicacaoTitulo,
 };

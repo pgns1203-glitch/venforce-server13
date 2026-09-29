@@ -3540,7 +3540,12 @@
             '<span class="am-det-title__count" id="am-det-count-titulo"></span>' +
             (tituloTravado
               ? '<span class="am-det-title__locknote">Gerenciado pelo Mercado Livre</span>'
-              : "") +
+              : (Number(a.vendidos) > 0
+                // Aviso, NÃO bloqueio: o ML é a autoridade final e decide no
+                // PUT. Só antecipa a regra dele (título muda até a 1ª venda).
+                ? '<span class="am-det-title__locknote" id="am-det-title-vendas" title="A API do Mercado Livre pode recusar a alteração de título em alguns anúncios com vendas. A alteração é enviada mesmo assim — se o ML recusar, o motivo aparece aqui.">' +
+                    "Anúncio com vendas — o Mercado Livre pode recusar a troca de título</span>"
+                : "")) +
           "</div>" +
         "</div>" +
         '<div class="am-det-head__meta">' +
@@ -5341,6 +5346,29 @@
     toast("Sugestão aplicada ao campo. Use “Salvar alterações” para publicar no Mercado Livre.");
   }
 
+  // Recusa de um campo, com o motivo REAL do Mercado Livre: explicação
+  // amigável (quando o backend reconhece a recusa) + a mensagem original e o
+  // código que o ML mandou. A mensagem crua do ML nunca é descartada — é ela
+  // que permite conferir o motivo sem adivinhar.
+  function mensagemFalhaCampo(c, res) {
+    var artigo = c.chave === "descricao" ? "da descrição" : (c.chave === "modelo" ? "do modelo" : "do título");
+    var det = res.detalhesMl || null;
+    var original = det ? (det.causas && det.causas.length && det.causas[0].message) || det.error || det.message : null;
+    // O formato atípico do título manda o código genérico em `message` e a
+    // frase em `error` — a frase é a que explica.
+    if (det && det.message && det.error && /^[A-Z0-9_]+$/.test(det.message)) original = det.error;
+    var partes = ["Não foi possível salvar a alteração " + artigo + " deste anúncio."];
+    if (res.explicacao) {
+      partes.push("Motivo informado pelo Mercado Livre: " + res.explicacao);
+      if (original) partes.push("Resposta original: “" + original + "”.");
+    } else {
+      partes.push("Motivo informado pelo Mercado Livre: " + (res.motivo || original || "o Mercado Livre recusou a alteração."));
+    }
+    if (res.codigo && !/^ML_HTTP_/.test(res.codigo)) partes.push("Código: " + res.codigo + ".");
+    else if (det && det.status) partes.push("HTTP " + det.status + ".");
+    return partes.join(" ");
+  }
+
   // ---------------------------------------------------------------------------
   // Salvar — Portal → backend → ClienteConta → grant → API do ML → confirmação
   // ---------------------------------------------------------------------------
@@ -5383,8 +5411,9 @@
         if (res.ok) {
           DET.original[c.chave] = DET.rascunho[c.chave];
         } else {
-          falhas.push(c.rotulo + ": " + (res.motivo || "recusado pelo Mercado Livre."));
-          DET.erros[c.chave] = c.rotulo + " não foi salvo — " + (res.motivo || "o Mercado Livre recusou a alteração.");
+          var msgFalha = mensagemFalhaCampo(c, res);
+          falhas.push(msgFalha);
+          DET.erros[c.chave] = msgFalha;
         }
       });
 

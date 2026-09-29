@@ -975,12 +975,41 @@ async function run() {
       await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
       await waitFor(cdp, "document.querySelector('#am-det-savebar.is-perigo')", "a barra não entrou em estado de erro");
       const barra = await cdp.evaluate("document.getElementById('am-det-savebar').innerText");
-      assert.ok(/não foi salvo/i.test(barra), `a barra deveria dizer que não salvou: ${barra}`);
-      assert.ok(/item com vendas/i.test(barra), `o motivo real do ML deveria aparecer: ${barra}`);
+      assert.ok(/Não foi possível salvar a alteração do título/i.test(barra), `a barra deveria dizer que não salvou: ${barra}`);
+      assert.ok(/Motivo informado pelo Mercado Livre: Não é possível alterar o título de um item com vendas/i.test(barra),
+        `o motivo real do ML deveria aparecer: ${barra}`);
+      assert.ok(/Código: item_has_sales/.test(barra), `o código do ML deveria aparecer: ${barra}`);
       assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-titulo').value"), "Título que o ML vai recusar",
         "o texto do usuário não pode ser jogado fora por causa da recusa");
       const t = await textoModal(cdp);
       assert.ok(!/salvas no anúncio/i.test(t), "não pode haver mensagem de sucesso depois de uma recusa");
+      conteudoResultado = null;
+    });
+
+    await check("12b — recusa por bids: explicação amigável + resposta original + código do ML", async () => {
+      const BIDS = "Cannot update title when item has bids";
+      conteudoResultado = {
+        status: 200,
+        corpo: {
+          ok: false,
+          resultados: { titulo: {
+            ok: false, codigo: "item.title.not_modifiable", motivo: BIDS,
+            explicacao: "O Mercado Livre recusou a alteração via API neste anúncio. A resposta cita vendas (bids) no anúncio.",
+            detalhesMl: { status: 400, message: BIDS, error: "validation_error", causa: null,
+              causas: [{ code: "item.title.not_modifiable", message: BIDS, type: "error", references: ["item.title"] }] },
+          } },
+          anuncio: anuncio("42"), descricao: DESC_A, descricaoEstado: "ok", descricaoErro: null,
+        },
+      };
+      await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
+      await waitFor(cdp, "((document.getElementById('am-det-savebar')||{}).innerText||'').indexOf('bids') >= 0",
+        "a barra não mostrou a recusa por bids");
+      const barra = await cdp.evaluate("document.getElementById('am-det-savebar').innerText");
+      assert.ok(/Motivo informado pelo Mercado Livre: O Mercado Livre recusou a alteração via API neste anúncio/.test(barra), barra);
+      assert.ok(!/não permite|depois da primeira venda/.test(barra), `sem afirmar regra fixa do ML: ${barra}`);
+      assert.ok(barra.includes("Resposta original: “" + BIDS + "”"), `a mensagem crua do ML não pode sumir: ${barra}`);
+      assert.ok(/Código: item\.title\.not_modifiable/.test(barra), barra);
+      assert.ok(!/salvas no anúncio/i.test(await textoModal(cdp)), "sem falso sucesso");
       conteudoResultado = null;
     });
 

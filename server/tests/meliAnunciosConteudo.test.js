@@ -519,6 +519,103 @@ async function run() {
     ok("fallback: linha desatualizada + ML recusa por family_name — mapeado pro código de domínio, não BODY_INVALID_FIELDS");
   });
 
+  // ── Título × vendas/bids: o ML é a autoridade, o VenForce não pré-bloqueia ──
+  const BIDS = "Cannot update title when item has bids";
+  async function salvarTitulo(anuncio, handler) {
+    let resultado;
+    await withMockDb({ ...UMA_CONTA, anuncios: [anuncio] }, async (db) => {
+      mlChamadas = [];
+      mlHandler = handler;
+      const res = fakeRes();
+      await ctrl.atualizarConteudo({
+        params: { itemId: "MLB123" },
+        body: { clienteSlug: "cliente-a", titulo: "Título novo" },
+      }, res);
+      resultado = { res, db, puts: mlChamadas.filter((c) => c.metodo === "PUT" && c.body && c.body.title) };
+    });
+    return resultado;
+  }
+  const aceita = () => ({ ok: true, status: 200, data: { id: "MLB123" } });
+
+  // 11. MLB simples, sem agrupador/família, sem vendas: vai ao ML e salva.
+  {
+    const { res, db, puts } = await salvarTitulo(
+      anuncioFixture({ vendidos: 0, family_name: null, catalog_listing: false, variations_count: 0 }), aceita);
+    assert.strictEqual(puts.length, 1);
+    assert.strictEqual(res.corpo.resultados.titulo.ok, true);
+    assert.strictEqual(db.anuncios[0].titulo, "Título novo");
+    ok("MLB simples sem agrupador: título vai ao ML e é salvo");
+  }
+
+  // 12. Com vendas (e com variações): NÃO há bloqueio local por vendas — o
+  //     PUT é enviado; se o ML aceitar, salva.
+  {
+    const { res, db, puts } = await salvarTitulo(
+      anuncioFixture({ vendidos: 37, family_name: null, catalog_listing: false, variations_count: 4 }), aceita);
+    assert.strictEqual(puts.length, 1, "anúncio com vendas/variações não pode ser barrado antes de perguntar ao ML");
+    assert.strictEqual(res.corpo.resultados.titulo.ok, true);
+    assert.strictEqual(db.anuncios[0].titulo, "Título novo");
+    ok("anúncio com vendas e variações: nenhum bloqueio local — o ML decide (aqui aceitou)");
+  }
+
+  // 13. ML recusa por bids no formato usual (cause[]): mensagem e código
+  //     ORIGINAIS preservados + explicação amigável + corpo estruturado.
+  {
+    const corpoMl = {
+      message: BIDS, error: "validation_error", status: 400,
+      cause: [{ code: "item.title.not_modifiable", message: BIDS, type: "error", references: ["item.title"] }],
+    };
+    const { res, db, puts } = await salvarTitulo(
+      anuncioFixture({ vendidos: 37, variations_count: 4 }), () => ({ ok: false, status: 400, data: corpoMl }));
+    const t = res.corpo.resultados.titulo;
+    assert.strictEqual(puts.length, 1);
+    assert.strictEqual(t.ok, false);
+    assert.strictEqual(t.codigo, "item.title.not_modifiable", "código do ML preservado");
+    assert.strictEqual(t.motivo, BIDS, "mensagem original do ML preservada");
+    assert.ok(/recusou a alteração via API neste anúncio/.test(t.explicacao), t.explicacao);
+    assert.deepStrictEqual(t.detalhesMl, {
+      status: 400, message: BIDS, error: "validation_error", causa: null,
+      causas: [{ code: "item.title.not_modifiable", message: BIDS, type: "error", references: ["item.title"] }],
+    });
+    assert.strictEqual(db.anuncios[0].titulo, "Título original", "recusa não pode virar salvo local");
+    ok("recusa por bids (formato cause[]): código + mensagem originais + explicação + detalhes estruturados");
+  }
+
+  // 14. Mesma recusa no formato atípico do título ({ cause: número,
+  //     message: código genérico, error: frase }) — a frase não se perde.
+  {
+    const { res } = await salvarTitulo(anuncioFixture({ vendidos: 5 }), () => ({
+      ok: false, status: 400, data: { cause: 374, message: "BODY_INVALID_FIELDS", error: BIDS },
+    }));
+    const t = res.corpo.resultados.titulo;
+    assert.strictEqual(t.detalhesMl.error, BIDS);
+    assert.strictEqual(t.detalhesMl.causa, "374");
+    assert.strictEqual(t.detalhesMl.message, "BODY_INVALID_FIELDS");
+    assert.ok(/recusou a alteração via API neste anúncio/.test(t.explicacao), t.explicacao);
+    ok("recusa por bids (formato atípico cause numérica): frase real preservada em detalhesMl.error");
+  }
+
+  // 15. Recusa desconhecida: sem explicação inventada, mas com o corpo real.
+  {
+    const { res } = await salvarTitulo(anuncioFixture({ vendidos: 0 }), () => ({
+      ok: false, status: 403, data: { message: "forbidden", error: "forbidden", status: 403, cause: [] },
+    }));
+    const t = res.corpo.resultados.titulo;
+    assert.strictEqual(t.explicacao, undefined, "sem regra conhecida, não inventa explicação");
+    assert.strictEqual(t.detalhesMl.status, 403);
+    assert.strictEqual(t.motivo, "forbidden");
+    ok("recusa desconhecida: motivo original + detalhes, sem explicação inventada");
+  }
+
+  // 16. Recusa LOCAL (validação antes do ML) não finge ter resposta do ML.
+  {
+    const { res, puts } = await salvarTitulo(anuncioFixture({ family_name: "Fone X" }), aceita);
+    assert.strictEqual(puts.length, 0);
+    assert.strictEqual(res.corpo.resultados.titulo.codigo, "TITLE_LOCKED_BY_CATALOG");
+    assert.strictEqual(res.corpo.resultados.titulo.detalhesMl, undefined);
+    ok("bloqueio por family_name continua (regra do ML) e não inventa detalhesMl");
+  }
+
   console.log(`\n✓ ${checks} verificações de edição de conteúdo de anúncio ML`);
 }
 

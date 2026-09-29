@@ -558,7 +558,13 @@ async function executarRodada(opts, depsOverride = {}) {
     const unidadeRotulo = `${rotuloConta(unidade.conta)} ${unidade.periodo.dateFrom}..${unidade.periodo.dateTo}`;
     deps.logger.log(`${LOG} progresso ${concluidas}/${unidades.length} ${unidadeRotulo} status=${resultado.status}`);
     if (typeof onProgresso === "function") {
-      onProgresso({ concluidas, total: unidades.length, unidade: unidadeRotulo, status: resultado.status, fase: "execucao" });
+      // `resultado` é aditivo: o scheduler só lê concluidas/total/unidade; a
+      // atualização sob demanda do Painel de Contas precisa do desfecho POR
+      // CONTA (o resumo final só lista as falhas).
+      onProgresso({
+        concluidas, total: unidades.length, unidade: unidadeRotulo, status: resultado.status, fase: "execucao",
+        resultado,
+      });
     }
     return resultado;
   });

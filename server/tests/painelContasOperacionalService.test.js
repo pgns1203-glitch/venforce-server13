@@ -381,6 +381,13 @@ async function run() {
     await rejeita("manual: conta inativa → 409", (() => { m.contas.find((c) => c.id === 41).ativo = false; return service.salvarLancamentoManual(U.ana, "4", "41", SET, { faturamento: 1 }); })(), 409, "CONTA_INATIVA");
     m.contas.find((c) => c.id === 41).ativo = true;
     ok("permissões: membro pode lançar", lista.permissoes.lancarManual === true);
+    // Atualizar sob demanda dispara sync no ML: mesmo gate do sync manual da
+    // Central (admin). Membro vê o frescor, não o botão.
+    ok("permissões: membro NÃO atualiza sob demanda", lista.permissoes.atualizarDados === false);
+    ok("membro: nenhuma linha carrega estado de atualização", lista.clientes.every((c) => c.atualizacao === null));
+    const listaAdmin = await service.listar(U.admin, { competencia: SET });
+    ok("permissões: admin atualiza sob demanda", listaAdmin.permissoes.atualizarDados === true);
+    ok("admin: sem atualização em curso → atualizacao null", listaAdmin.clientes.every((c) => c.atualizacao === null));
 
     const removido = await service.removerLancamentoManual(U.ana, "3", "31", SET);
     ok("remover: devolve a conta sem manual", removido.removido === true && removido.conta.manual === null);

@@ -35,6 +35,13 @@ ok('GET ":clienteId/meses" exige authMiddleware + requireAutomacoesAccess + naCa
 const linhaSemanas = rotas.match(/router\.get\("\/:clienteId\/meses\/:competencia\/semanas",[^)]*\)/)?.[0] || "";
 ok('GET "...semanas" exige authMiddleware + requireAutomacoesAccess + naCarteira', linhaSemanas.includes("authMiddleware") && linhaSemanas.includes("requireAutomacoesAccess") && linhaSemanas.includes("naCarteira"));
 
+// Lançamento manual: escrita com o MESMO gate das leituras de cliente.
+ok('PUT/DELETE do lançamento manual usam o path com :clienteId/:contaId/:competencia', rotas.includes('"/:clienteId/contas/:contaId/manual/:competencia"'));
+const linhaPut = rotas.match(/router\.put\(manual,[^)]*\)/)?.[0] || "";
+ok("PUT manual exige authMiddleware + requireAutomacoesAccess + naCarteira", linhaPut.includes("authMiddleware") && linhaPut.includes("requireAutomacoesAccess") && linhaPut.includes("naCarteira"));
+const linhaDelete = rotas.match(/router\.delete\(manual,[^)]*\)/)?.[0] || "";
+ok("DELETE manual exige authMiddleware + requireAutomacoesAccess + naCarteira", linhaDelete.includes("authMiddleware") && linhaDelete.includes("requireAutomacoesAccess") && linhaDelete.includes("naCarteira"));
+
 // naCarteira precisa ser requireClienteNaCarteira("clienteId") — o param real da rota.
 ok('naCarteira = requireClienteNaCarteira("clienteId") (bate com o :clienteId da rota)', /requireClienteNaCarteira\("clienteId"\)/.test(rotas));
 

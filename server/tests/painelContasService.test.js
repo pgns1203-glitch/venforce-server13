@@ -109,6 +109,12 @@ function resumoMaisRecente(m, ids, anoLike) {
     .filter(Boolean);
 }
 
+function resumosDaCompetencia(m, ids, competencia) {
+  return m.resumos
+    .filter((r) => ids.includes(r.cliente_id) && r.competencia === competencia)
+    .map((r) => ({ ...r, cliente_slug: m.clientes.find((c) => c.id === r.cliente_id).slug }));
+}
+
 function resumosDoAno(m, clienteId, ano) {
   const cliente = m.clientes.find((c) => c.id === clienteId);
   return m.resumos
@@ -197,11 +203,15 @@ function instalarMock(m) {
       };
     }
 
-    if (q.includes("painelContas:ULTIMO_RESUMO_POR_CLIENTE")) {
-      contar("painelContas:ULTIMO_RESUMO_POR_CLIENTE");
+    if (q.includes("painelContas:RESUMO_DA_COMPETENCIA")) {
+      contar("painelContas:RESUMO_DA_COMPETENCIA");
       const ids = params[0] || [];
-      const anoLike = params[1] || null;
-      return { rows: resumoMaisRecente(m, ids, anoLike) };
+      return { rows: resumosDaCompetencia(m, ids, params[1]) };
+    }
+    if (q.includes("painelContas:ULTIMA_COMPETENCIA")) {
+      contar("painelContas:ULTIMA_COMPETENCIA");
+      const ids = params[0] || [];
+      return { rows: resumoMaisRecente(m, ids, null).map((r) => ({ cliente_id: r.cliente_id, competencia: r.competencia })) };
     }
     if (q.includes("painelContas:RESUMOS_DO_ANO")) {
       contar("painelContas:RESUMOS_DO_ANO");
@@ -236,19 +246,22 @@ const U = {
   admin: { id: 1, role: "admin", nome: "Admin" },
 };
 
+// A lista representa UMA competência exata (contrato operacional).
+const FEV = "2026-02";
+
 async function run() {
   const m = novoModelo();
   const { restaurar, contagem } = instalarMock(m);
   try {
     // ── Autorização ──
-    const listaAdmin = await service.listar(U.admin, {});
+    const listaAdmin = await service.listar(U.admin, { competencia: FEV });
     ok("admin vê clientes de múltiplos Squads na lista inicial", new Set(listaAdmin.clientes.map((c) => c.id)).size >= 3);
 
-    const listaAlpha = await service.listar(U.alpha, {});
+    const listaAlpha = await service.listar(U.alpha, { competencia: FEV });
     ok("Alpha (Squad Alpha) NÃO vê Cliente C (Squad Beta)", !listaAlpha.clientes.some((c) => c.id === 3));
     ok("Alpha vê A, B e o cliente-nunca-sync (todos do seu Squad)", listaAlpha.clientes.map((c) => c.id).sort().join(",") === "1,2,4");
 
-    const listaBeta = await service.listar(U.beta, {});
+    const listaBeta = await service.listar(U.beta, { competencia: FEV });
     ok("Beta vê só Cliente C", listaBeta.clientes.map((c) => c.id).join(",") === "3");
 
     let err403;
@@ -260,12 +273,12 @@ async function run() {
     ok("GET meses de cliente inexistente -> 404 CLIENTE_NAO_ENCONTRADO", err404 && err404.statusCode === 404 && err404.code === "CLIENTE_NAO_ENCONTRADO");
 
     // filtro de squad enviado pelo cliente NUNCA amplia acesso além da carteira
-    const listaAlphaFiltroBeta = await service.listar(U.alpha, { squadId: 20 });
+    const listaAlphaFiltroBeta = await service.listar(U.alpha, { competencia: FEV, squadId: 20 });
     ok("squadId=Beta enviado por Alpha não retorna Cliente C (filtro nunca é autorização)", listaAlphaFiltroBeta.clientes.length === 0);
 
     // ── Dados ──
     const clienteNuncaSync = listaAlpha.clientes.find((c) => c.id === 4);
-    ok("cliente sem NENHUM snapshot -> resumo null, nunca erro/500", clienteNuncaSync.resumo === null && clienteNuncaSync.ultimoMesDisponivel === null);
+    ok("cliente sem NENHUM snapshot -> resumo null, nunca erro/500", clienteNuncaSync.resumo === null && clienteNuncaSync.ultimaCompetenciaComDado === null);
 
     const clienteB = listaAlpha.clientes.find((c) => c.id === 2);
     ok("cliente B: mc_media em escala percentual (22) normalizado para fração (0.22)", clienteB.resumo.mc === 0.22);
@@ -275,7 +288,10 @@ async function run() {
     ok("cliente C: gmv_ads ausente -> acos null", clienteC.resumo.acos === null);
 
     const clienteA = listaAlpha.clientes.find((c) => c.id === 1);
-    ok("cliente A: ultimoMesDisponivel é o mais recente (2026-02, não 2026-01)", clienteA.ultimoMesDisponivel === "2026-02");
+    const clienteAJan = (await service.listar(U.alpha, { competencia: "2026-01" })).clientes.find((c) => c.id === 1);
+    ok("cliente A: competência jan/2026 mostra jan (competência exata, nunca o mais recente)", clienteAJan.resumo.fat === 100000 && clienteAJan.competencia === "2026-01");
+    const clienteBJan = (await service.listar(U.alpha, { competencia: "2026-01" })).clientes.find((c) => c.id === 2);
+    ok("cliente B sem jan/2026: sem dados em jan, nunca fev no lugar", clienteBJan.resumo === null && clienteBJan.ultimaCompetenciaComDado === "2026-02");
     ok("cliente A: investimento/GMV do mesmo payload -> acos derivado", clienteA.resumo.acos !== null && Math.abs(clienteA.resumo.acos - 3900 / 100000) < 1e-9);
     ok("cliente A: LC real do payload vence FAT × MC", clienteA.resumo.lc === 15000);
 
@@ -302,10 +318,10 @@ async function run() {
     // ── Performance / N+1 ──
     contagem.total = 0;
     contagem.porTag.clear();
-    await service.listar(U.admin, {});
+    await service.listar(U.admin, { competencia: FEV });
     const totalListaAdmin = contagem.total;
-    ok("lista inicial (N clientes): contagem de queries fixa, não escala por cliente (<=5 queries)", totalListaAdmin <= 5);
-    ok("painelContas:ULTIMO_RESUMO_POR_CLIENTE chamado exatamente 1x (lote, nunca 1 por cliente)", contagem.porTag.get("painelContas:ULTIMO_RESUMO_POR_CLIENTE") === 1);
+    ok("lista inicial (N clientes): contagem de queries fixa, não escala por cliente (<=14 queries)", totalListaAdmin <= 14);
+    ok("painelContas:RESUMO_DA_COMPETENCIA chamado exatamente 1x (lote, nunca 1 por cliente)", contagem.porTag.get("painelContas:RESUMO_DA_COMPETENCIA") === 1);
 
     contagem.total = 0;
     contagem.porTag.clear();

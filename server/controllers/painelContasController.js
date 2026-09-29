@@ -31,13 +31,16 @@ function tratarErro(res, err, ctx) {
   return responder(res, status, { ok: false, code: err?.code, erro: err?.message || "Erro interno." });
 }
 
-// GET /painel-contas?ano=&squadId=&busca=
+// GET /painel-contas?competencia=&squadId=&busca=&status=&marketplace=&mostrarLegado=
 async function listar(req, res) {
   try {
     const data = await service.listar(req.user || {}, {
-      ano: req.query.ano,
+      competencia: req.query.competencia,
       squadId: req.query.squadId,
       busca: req.query.busca,
+      status: req.query.status,
+      marketplace: req.query.marketplace,
+      mostrarLegado: req.query.mostrarLegado,
     });
     return responder(res, 200, data);
   } catch (err) { return tratarErro(res, err, "listar"); }
@@ -59,4 +62,24 @@ async function listarSemanas(req, res) {
   } catch (err) { return tratarErro(res, err, "listarSemanas"); }
 }
 
-module.exports = { listar, listarMeses, listarSemanas, maskSensitiveData };
+// PUT /painel-contas/:clienteId/contas/:contaId/manual/:competencia
+async function salvarLancamentoManual(req, res) {
+  try {
+    const { clienteId, contaId, competencia } = req.params;
+    const data = await service.salvarLancamentoManual(req.user || {}, clienteId, contaId, competencia, req.body || {});
+    return responder(res, 200, data);
+  } catch (err) { return tratarErro(res, err, "salvarLancamentoManual"); }
+}
+
+// DELETE /painel-contas/:clienteId/contas/:contaId/manual/:competencia
+async function removerLancamentoManual(req, res) {
+  try {
+    const { clienteId, contaId, competencia } = req.params;
+    const data = await service.removerLancamentoManual(req.user || {}, clienteId, contaId, competencia);
+    return responder(res, 200, data);
+  } catch (err) { return tratarErro(res, err, "removerLancamentoManual"); }
+}
+
+module.exports = {
+  listar, listarMeses, listarSemanas, salvarLancamentoManual, removerLancamentoManual, maskSensitiveData,
+};

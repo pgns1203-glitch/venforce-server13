@@ -87,14 +87,16 @@ function detalhesDoErroMl(data, status) {
 // Tradução AMIGÁVEL das recusas de título conhecidas. É só explicação: o
 // código e a mensagem originais do ML continuam indo junto, intactos.
 // "bids" é o termo da API do ML para compras/vendas do item (vide
-// `has_bids` nos erros de /items): a regra documentada do ML é que título,
-// condição e modo de compra só mudam enquanto o item não tem vendas
-// (sold_quantity = 0). Quem decide é o ML — aqui nada bloqueia por vendas.
+// `has_bids` nos erros de /items). A doc pública diz que item com vendas
+// não muda título via API, mas há relato operacional de títulos alterados
+// com vendas pela plataforma — então a regra NÃO é tratada como absoluta:
+// o texto só descreve o que ESTA resposta disse, sem afirmar regra fixa.
+// Quem decide é o ML — aqui nada bloqueia por vendas.
 const EXPLICACOES_TITULO = [
   {
     re: /\bbids?\b|has_bids|with sales|has sales|com vendas|possui vendas/i,
     texto:
-      "Este anúncio já tem vendas. O Mercado Livre não permite alterar o título de um anúncio depois da primeira venda (modelo e descrição continuam editáveis).",
+      "O Mercado Livre recusou a alteração via API neste anúncio. A resposta cita vendas (bids) no anúncio.",
   },
 ];
 

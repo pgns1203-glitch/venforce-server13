@@ -3543,7 +3543,7 @@
               : (Number(a.vendidos) > 0
                 // Aviso, NÃO bloqueio: o ML é a autoridade final e decide no
                 // PUT. Só antecipa a regra dele (título muda até a 1ª venda).
-                ? '<span class="am-det-title__locknote" id="am-det-title-vendas" title="O Mercado Livre costuma recusar alteração de título de anúncio que já tem vendas. A alteração ainda é enviada — se o ML recusar, o motivo aparece aqui.">' +
+                ? '<span class="am-det-title__locknote" id="am-det-title-vendas" title="A API do Mercado Livre pode recusar a alteração de título em alguns anúncios com vendas. A alteração é enviada mesmo assim — se o ML recusar, o motivo aparece aqui.">' +
                     "Anúncio com vendas — o Mercado Livre pode recusar a troca de título</span>"
                 : "")) +
           "</div>" +

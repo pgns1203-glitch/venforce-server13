@@ -994,7 +994,7 @@ async function run() {
           ok: false,
           resultados: { titulo: {
             ok: false, codigo: "item.title.not_modifiable", motivo: BIDS,
-            explicacao: "Este anúncio já tem vendas. O Mercado Livre não permite alterar o título de um anúncio depois da primeira venda (modelo e descrição continuam editáveis).",
+            explicacao: "O Mercado Livre recusou a alteração via API neste anúncio. A resposta cita vendas (bids) no anúncio.",
             detalhesMl: { status: 400, message: BIDS, error: "validation_error", causa: null,
               causas: [{ code: "item.title.not_modifiable", message: BIDS, type: "error", references: ["item.title"] }] },
           } },
@@ -1005,7 +1005,8 @@ async function run() {
       await waitFor(cdp, "((document.getElementById('am-det-savebar')||{}).innerText||'').indexOf('bids') >= 0",
         "a barra não mostrou a recusa por bids");
       const barra = await cdp.evaluate("document.getElementById('am-det-savebar').innerText");
-      assert.ok(/Motivo informado pelo Mercado Livre: Este anúncio já tem vendas/.test(barra), barra);
+      assert.ok(/Motivo informado pelo Mercado Livre: O Mercado Livre recusou a alteração via API neste anúncio/.test(barra), barra);
+      assert.ok(!/não permite|depois da primeira venda/.test(barra), `sem afirmar regra fixa do ML: ${barra}`);
       assert.ok(barra.includes("Resposta original: “" + BIDS + "”"), `a mensagem crua do ML não pode sumir: ${barra}`);
       assert.ok(/Código: item\.title\.not_modifiable/.test(barra), barra);
       assert.ok(!/salvas no anúncio/i.test(await textoModal(cdp)), "sem falso sucesso");

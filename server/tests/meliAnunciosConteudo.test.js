@@ -572,7 +572,7 @@ async function run() {
     assert.strictEqual(t.ok, false);
     assert.strictEqual(t.codigo, "item.title.not_modifiable", "código do ML preservado");
     assert.strictEqual(t.motivo, BIDS, "mensagem original do ML preservada");
-    assert.ok(/já tem vendas/.test(t.explicacao), t.explicacao);
+    assert.ok(/recusou a alteração via API neste anúncio/.test(t.explicacao), t.explicacao);
     assert.deepStrictEqual(t.detalhesMl, {
       status: 400, message: BIDS, error: "validation_error", causa: null,
       causas: [{ code: "item.title.not_modifiable", message: BIDS, type: "error", references: ["item.title"] }],
@@ -591,7 +591,7 @@ async function run() {
     assert.strictEqual(t.detalhesMl.error, BIDS);
     assert.strictEqual(t.detalhesMl.causa, "374");
     assert.strictEqual(t.detalhesMl.message, "BODY_INVALID_FIELDS");
-    assert.ok(/já tem vendas/.test(t.explicacao), t.explicacao);
+    assert.ok(/recusou a alteração via API neste anúncio/.test(t.explicacao), t.explicacao);
     ok("recusa por bids (formato atípico cause numérica): frase real preservada em detalhesMl.error");
   }
 

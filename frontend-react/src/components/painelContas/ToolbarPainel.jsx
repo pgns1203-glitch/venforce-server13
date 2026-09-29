@@ -4,7 +4,7 @@
 // formulário: uma linha só, sem rótulo flutuante em cima de cada controle (o
 // próprio controle diz o que é), com rótulo acessível em `aria-label`.
 //
-//   Buscar · Competência · Squad · Status · Marketplace · [ ] Mostrar legado
+//   Buscar · Competência · Squad · Status · Marketplace      [ ] Mostrar legado · Colunas
 //
 // A COMPETÊNCIA é a peça central: a tabela inteira representa exatamente o
 // mês escolhido — nunca "o último mês que cada cliente tem".
@@ -60,7 +60,7 @@ function ItemResumo({ valor, rotulo, status, statusAtual, onStatus, tom = "", ch
       aria-pressed={ativo}
       onClick={() => onStatus(ativo ? "todos" : status)}
     >
-      {children || <>{formatarNumero(valor)} {rotulo}</>}
+      {children || <><span className="vf-ph-resumo__n">{formatarNumero(valor)}</span> {rotulo}</>}
     </button>
   );
 }
@@ -87,7 +87,6 @@ export function ToolbarPainel({
   temFiltroAtivo, onLimpar,
   grupos, onAlternarGrupo,
   resumoCarteira, atualizando,
-  temExpandido, onRecolherTudo,
   competenciaAtual = competenciaPadrao, podeAtualizar = false,
 }) {
   const competencias = useMemo(() => competenciasDisponiveis(competenciaPadrao, competencia), [competenciaPadrao, competencia]);
@@ -155,11 +154,6 @@ export function ToolbarPainel({
             </select>
           )}
 
-          <label className="vf-check vf-ph-legado">
-            <input type="checkbox" checked={mostrarLegado} onChange={(e) => onMostrarLegado(e.target.checked)} />
-            <span>Mostrar legado</span>
-          </label>
-
           {temFiltroAtivo && (
             <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={onLimpar}>
               Limpar filtros
@@ -167,12 +161,14 @@ export function ToolbarPainel({
           )}
         </div>
 
+        {/* À direita, o que muda a VISTA (não o recorte do mês): legado e
+            colunas — "Colunas" sempre no canto. "Recolher tudo" mora no
+            cabeçalho da tabela: aqui, aparecer/sumir deslocava a tabela. */}
         <div className="vf-toolbar__actions">
-          {temExpandido && (
-            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={onRecolherTudo}>
-              Recolher tudo
-            </button>
-          )}
+          <label className="vf-check vf-ph-legado">
+            <input type="checkbox" checked={mostrarLegado} onChange={(e) => onMostrarLegado(e.target.checked)} />
+            <span>Mostrar legado</span>
+          </label>
           <MenuColunas grupos={grupos} onAlternar={onAlternarGrupo} />
         </div>
       </div>
@@ -181,7 +177,9 @@ export function ToolbarPainel({
         <div className="vf-ph-resumo" data-testid="resumo-carteira">
           <p className="vf-ph-resumo__numeros" aria-live="polite">
             <ItemResumo status="com_dados" statusAtual={status} onStatus={onStatus} tom="is-principal">
-              <strong className="vf-ph-resumo__forte">{formatarNumero(r.comDados)} de {formatarNumero(r.operacionais)}</strong> clientes com dados
+              <span className="vf-ph-resumo__n">{formatarNumero(r.comDados)}</span>
+              {" de "}
+              <span className="vf-ph-resumo__n vf-ph-resumo__n--total">{formatarNumero(r.operacionais)}</span> clientes com dados
             </ItemResumo>
             {r.parciais > 0 && <ItemResumo valor={r.parciais} rotulo="parciais" status="parcial" statusAtual={status} onStatus={onStatus} />}
             {r.semDados > 0 && <ItemResumo valor={r.semDados} rotulo="sem dados" status="sem_dados" statusAtual={status} onStatus={onStatus} />}

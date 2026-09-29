@@ -31,69 +31,97 @@
 }
 
 /* ── Barra de controle ──────────────────────────────────────────────────
-   Duas faixas costuradas numa peça só: controles em cima, contagem embaixo.
-   Antes eram três campos de formulário soltos, com rótulo flutuante em cima
-   de cada um — numa tela administrativa o filtro é instrumento, não
-   formulário a preencher. */
+   Controle de dashboard, não formulário: uma linha de controles na MESMA
+   altura (control-h-sm), sem caixa em volta — a única moldura da tela é a da
+   tabela. Embaixo, o resumo da carteira como uma frase de números. */
 .vf-ph-barra {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--vf-border);
-  border-radius: var(--vf-radius);
-  background: var(--vf-surface);
+  gap: var(--vf-sp-2);
 }
 
-.vf-ph-barra__controles {
+/* Filtros e ações lado a lado, sem quebrar a barra em três linhas: se faltar
+   largura, só os filtros quebram — "Colunas" fica no canto direito. */
+.vf-ph-barra__controles.vf-toolbar {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: var(--vf-sp-3);
+  padding: 0;
   border: none;
-  border-radius: var(--vf-radius) var(--vf-radius) 0 0;
-  padding-bottom: var(--vf-sp-2);
+  border-radius: 0;
+  background: none;
 }
 
-/* A busca é o controle principal da tela: é por ela que se chega a um cliente
-   numa carteira de dezenas. Ganha a largura que sobra, ao contrário do
-   `flex: 0 0 150px` que a Fundação aplica a `.vf-search` solta na toolbar. */
-.vf-ph-barra .vf-toolbar__filters > .vf-search.vf-ph-busca {
-  flex: 1 1 260px;
-  max-width: 420px;
-  min-width: 180px;
+.vf-ph-barra .vf-toolbar__filters {
+  gap: 6px;
+}
+
+/* Todos os controles da barra na mesma altura e no mesmo corpo de texto. */
+.vf-ph-barra .vf-input,
+.vf-ph-barra .vf-select {
   height: var(--vf-control-h-sm);
   font-size: var(--vf-control-fs-sm);
+}
+
+/* A busca é por onde se chega a um cliente numa carteira de dezenas: a mais
+   larga da barra (a Fundação trava `.vf-search` solta em 150px). */
+.vf-ph-barra .vf-toolbar__filters > .vf-search.vf-ph-busca {
+  flex: 1 1 280px;
+  max-width: 340px;
+  min-width: 150px;
+}
+
+/* Notebook (1280px com sidebar): a busca cede primeiro, para os cinco
+   filtros continuarem numa linha só. */
+@media (max-width: 1499px) {
+  .vf-ph-barra .vf-toolbar__filters > .vf-search.vf-ph-busca {
+    flex-basis: 150px;
+  }
 }
 
 .vf-ph-filtro {
   flex: 0 0 auto;
   width: auto;
-  min-width: 132px;
-}
-
-/* Competência é o filtro que define a tela inteira: um pouco mais de peso. */
-.vf-ph-filtro--competencia {
-  min-width: 150px;
-  font-weight: var(--vf-fw-semibold);
-}
-
-.vf-ph-legado {
-  flex: 0 0 auto;
-  font-size: var(--vf-fs-xs);
+  min-width: 0;
   color: var(--vf-text-secondary);
+}
+
+/* Competência define a tela inteira: texto forte e borda um tom acima —
+   os demais filtros ficam em cinza, como refinamentos dela. */
+.vf-ph-barra .vf-ph-filtro--competencia {
+  min-width: 132px;
+  border-color: var(--vf-border-hover);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-ph-legado.vf-check {
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-right: var(--vf-sp-2);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
   white-space: nowrap;
 }
 
-/* ── Resumo da carteira (§24) ───────────────────────────────────────────
-   Linha de texto, não cards de KPI: dá a sensação administrativa sem roubar
-   altura da tabela. Tudo é DERIVADO do payload já carregado — nenhuma
-   requisição nova, nenhum indicador de saúde inventado. */
+.vf-ph-barra .vf-toolbar__actions {
+  gap: var(--vf-sp-1);
+  margin-left: auto;
+}
+
+/* ── Resumo da carteira ─────────────────────────────────────────────────
+   Uma frase de números, não cards de KPI:
+     31 de 42 clientes com dados │ 3 parciais │ 8 sem dados │ 5 precisam de ação
+   Número em peso, rótulo discreto, divisor fino. Cor só em "precisam de
+   ação" (âmbar = atenção). Tudo vem do servidor — nada é inventado aqui. */
 .vf-ph-resumo {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--vf-sp-1) var(--vf-sp-5);
-  padding: var(--vf-sp-2) var(--vf-toolbar-px);
-  border-top: 1px solid var(--vf-border);
-  background: var(--vf-surface-2);
-  border-radius: 0 0 var(--vf-radius) var(--vf-radius);
-  font-size: var(--vf-fs-2xs);
+  padding: 0 2px;
+  font-size: var(--vf-fs-xs);
   color: var(--vf-text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -102,45 +130,49 @@
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: var(--vf-sp-1) var(--vf-sp-3);
+  gap: var(--vf-sp-1) 0;
   margin: 0;
 }
 
+/* Divisor: traço vertical fino entre os itens (não um "·" de texto). */
 .vf-ph-resumo__numeros > * + *::before {
-  content: "·";
-  margin-right: var(--vf-sp-3);
-  color: var(--vf-border-strong);
+  content: "";
+  display: inline-block;
+  width: 1px;
+  height: 11px;
+  margin: 0 var(--vf-sp-3);
+  vertical-align: -1px;
+  background: var(--vf-border-strong);
 }
 
-/* Cobertura é a leitura executiva: "31 de 42 clientes com dados" em corpo
-   maior que o resto da faixa. */
-.vf-ph-resumo__item.is-principal {
-  font-size: var(--vf-fs-xs);
-  color: var(--vf-text-secondary);
-}
-
-.vf-ph-resumo__forte {
+.vf-ph-resumo__n {
   font-weight: var(--vf-fw-semibold);
   color: var(--vf-text);
 }
 
-/* Regra de frescor, fixa à direita: automático até ontem · agora inclui hoje. */
+.vf-ph-resumo__n--total {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-resumo__item.is-alerta,
+.vf-ph-resumo__item.is-alerta .vf-ph-resumo__n {
+  color: var(--vf-warning-strong);
+}
+
+/* Regra de frescor, à direita e em 11px: automático até ontem · agora inclui hoje. */
 .vf-ph-regra {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: var(--vf-sp-1) var(--vf-sp-3);
+  gap: var(--vf-sp-1) var(--vf-sp-2);
+  font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
 }
 
 .vf-ph-regra > * + *::before {
   content: "·";
-  margin-right: var(--vf-sp-3);
-  color: var(--vf-border-strong);
-}
-
-.vf-ph-resumo__alerta,
-.vf-ph-resumo__item.is-alerta {
-  color: var(--vf-warning-strong);
+  margin-right: var(--vf-sp-2);
+  color: var(--vf-text-muted);
 }
 
 /* Cada número do resumo é também atalho de filtro — texto primeiro, botão
@@ -152,10 +184,6 @@
   font: inherit;
   color: inherit;
   cursor: pointer;
-}
-
-.vf-ph-resumo__item::before {
-  margin-right: var(--vf-sp-3);
 }
 
 /* ── Estados vazios ─────────────────────────────────────────────────────── */
@@ -181,12 +209,14 @@
   outline-offset: 2px;
 }
 
-.vf-ph-resumo__item.is-ativo {
-  font-weight: var(--vf-fw-semibold);
+.vf-ph-resumo__item.is-ativo,
+.vf-ph-resumo__item.is-ativo .vf-ph-resumo__n {
   color: var(--vf-primary-strong);
 }
 
+/* Legado oculto: a nota mais baixa da frase — 11px, sem número em peso. */
 .vf-ph-resumo__nota {
+  font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
   cursor: help;
 }
@@ -305,7 +335,8 @@
     flex: 1 1 100%;
   }
 
-  .vf-ph-barra__controles {
+  .vf-ph-barra__controles.vf-toolbar {
+    flex-wrap: wrap;
     align-items: stretch;
   }
 

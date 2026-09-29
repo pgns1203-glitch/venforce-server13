@@ -6,13 +6,20 @@
 // mora em TabelaHierarquica.css.
 //
 // ── Os níveis ────────────────────────────────────────────────────────────
-// CLIENTE    → o número CONSOLIDADO da competência selecionada, com o escopo
-//              escrito na linha ("Consolidado · 3 contas", "Consolidado · 2 de
-//              3 contas", "Mercado Livre 1 · X"), status, fonte e frescor.
+// CLIENTE    → o número CONSOLIDADO da competência selecionada — a linha
+//              DOMINANTE. Escopo escrito ("Consolidado · 3 contas"), estado
+//              compacto e, quando alguma conta pede ação, UMA frase ("2 contas
+//              precisam de ação") em vez de repetir o botão de cada conta. Na
+//              coluna de contexto, sempre: dados até · fonte · atualizado em.
 //              Sem dado, a linha diz POR QUÊ — nunca mostra outro mês.
-// CONTA      → cada conta/operação com o próprio número (o mesmo escopo que a
-//              Central de Vendas mostra ao selecionar a conta). Já vem na
+// CONTA      → cada conta/operação, SECUNDÁRIA e recuada, com o próprio
+//              número (o mesmo escopo que a Central de Vendas mostra ao
+//              selecionar a conta). É nela que mora "Lançar dados". Já vem na
 //              lista: abrir um cliente não custa requisição.
+//
+// ATUALIZAR  → admin: ↻ na linha do cliente dispara a atualização sob demanda
+//              (servidor). Em curso, a linha diz o progresso ("Atualizando até hoje · 1/2"); terminada com
+//              pendência, uma linha logo abaixo diz QUAL conta falhou e por quê.
 // HISTÓRICO  → meses do consolidado (lazy) → semanas (lazy). A competência
 //              selecionada fica marcada.
 //
@@ -25,28 +32,29 @@ import { formatarPercentual, formatarVariacaoPercentual, formatarPontosPercentua
 import { AUSENTE, ehAusente, direcao } from "../../utils/numbers.js";
 import { rotularCompetenciaCurta, formatarData, formatarDataHora } from "../../utils/dates.js";
 import { colunasVisiveis, gruposVisiveis } from "./colunas.js";
+import { atualizacaoEmCurso } from "../../utils/painelContasAtualizacao.js";
 import "./TabelaHierarquica.css";
 
 // Squad usa UM tom só — o da marca (tons de status mentiriam num rótulo que é
-// só identidade).
+// só identidade). É a ÚNICA etiqueta da linha: estado vira `.vf-status`
+// (ponto + texto, forma codifica o tom) e fonte vira texto.
 const TOM_SQUAD = "is-primary";
 
-// Tom por status: cor é a segunda pista — o rótulo em texto é a primeira.
+// Tom por status: cor é a segunda pista — o rótulo em texto é a primeira, e a
+// FORMA do ponto (●/◇/○ da Fundação) a terceira.
 const TOM_STATUS = {
   sincronizado: "is-success",
   manual: "is-info",
   parcial: "is-warning",
-  sem_dados: "is-neutral",
+  sem_dados: "is-empty",
   sem_conta: "is-warning",
   sem_conexao: "is-warning",
-  sem_integracao: "is-neutral",
+  sem_integracao: "is-empty",
   sincronizando: "is-info",
   erro_sync: "is-danger",
   nao_publicado: "is-warning",
-  conta_inativa: "is-neutral",
+  conta_inativa: "is-empty",
 };
-
-const TOM_FONTE = { api: "is-neutral", manual: "is-info", misto: "is-info" };
 
 const NOTA_ADS_POR_CONTA = "Ads é medido por cliente (todas as contas juntas) — não existe valor por conta, e nada é rateado.";
 
@@ -102,32 +110,117 @@ function Celula({ coluna, valor, variacao, titulo }) {
   );
 }
 
-function TagStatus({ status }) {
+function StatusCompacto({ status, rotulo }) {
   if (!status) return null;
   return (
-    <span className={`vf-tag vf-ph-tag ${TOM_STATUS[status.codigo] || "is-neutral"}`} title={status.motivo || undefined}>
-      {status.rotulo}
+    <span className={`vf-status vf-ph-status ${TOM_STATUS[status.codigo] || "is-empty"}`} title={status.motivo || undefined}>
+      {rotulo || status.rotulo}
     </span>
   );
 }
 
-function TagFonte({ fonte }) {
-  if (!fonte) return null;
-  return (
-    <span className={`vf-tag vf-ph-tag ${TOM_FONTE[fonte.tipo] || "is-neutral"}`} title={`Fonte do dado: ${fonte.rotulo}`}>
-      {fonte.rotulo}
-    </span>
-  );
-}
-
-// "atualizado 29/09/2026 06:20 · dados até 28/09/2026" — frescor em uma linha.
-function Frescor({ atualizadoEm, dadosAte }) {
-  if (!atualizadoEm && !dadosAte) return null;
+// Frescor do CLIENTE, sempre as três peças — ausente vira "—", nunca some:
+//   dados até 28/09/2026 · API
+//   atualizado 29/09/2026 06:20
+function FrescorCliente({ cliente, emCurso, concluidaAgora }) {
   return (
     <>
-      {atualizadoEm && <span className="vf-ph-meta">atualizado {formatarDataHora(atualizadoEm)}</span>}
-      {dadosAte && <span className="vf-ph-meta">· dados até {formatarData(dadosAte)}</span>}
+      <span className="vf-ph-contexto__linha vf-ph-meta">
+        <span>dados até {cliente.dadosAte ? formatarData(cliente.dadosAte) : AUSENTE}</span>
+        <span title={cliente.fonte ? `Fonte do dado: ${cliente.fonte.rotulo}` : "Sem fonte na competência"}>
+          · {cliente.fonte?.rotulo || "sem fonte"}
+        </span>
+      </span>
+      <span className="vf-ph-contexto__linha vf-ph-meta">
+        {emCurso
+          ? <><span className="vf-spinner vf-spinner--sm vf-ph-spinner" aria-hidden="true" /> atualizando…</>
+          : (
+            <span className={concluidaAgora ? "vf-ph-frescor--ok" : undefined}>
+              {concluidaAgora && <span aria-hidden="true">✓ </span>}
+              atualizado {cliente.atualizadoEm ? formatarDataHora(cliente.atualizadoEm) : AUSENTE}
+            </span>
+          )}
+      </span>
     </>
+  );
+}
+
+// ── Atualizar dados ─────────────────────────────────────────────────────────
+// O texto de ajuda É a regra: automático até ontem; agora inclui hoje (mês
+// corrente) ou reprocessa o mês inteiro (mês anterior).
+export function explicarAtualizacao(competencia, competenciaAtual) {
+  const mes = rotularCompetenciaCurta(competencia);
+  return competencia === competenciaAtual
+    ? `Atualizar agora: ${mes} do dia 1 até hoje, incluindo dados parciais de hoje. A atualização automática (de madrugada) vai só até ontem.`
+    : `Atualizar agora: reprocessa ${mes} completo (mês encerrado).`;
+}
+
+function BotaoAtualizar({ cliente, competencia, competenciaAtual, emCurso, onAtualizar }) {
+  const sincronizavel = (cliente.contas || []).some((c) => c.ativa && c.marketplace === "meli" && c.conectada);
+  const ajuda = sincronizavel
+    ? explicarAtualizacao(competencia, competenciaAtual)
+    : "Nenhuma conta Mercado Livre ativa e conectada — não há o que sincronizar.";
+  return (
+    <button
+      type="button"
+      className="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon vf-ph-atualizar"
+      onClick={() => onAtualizar(cliente.id)}
+      disabled={emCurso || !sincronizavel}
+      aria-label={`Atualizar dados de ${cliente.nome}`}
+      title={emCurso ? "Atualização em andamento" : ajuda}
+    >
+      <span aria-hidden="true" className={emCurso ? "vf-ph-atualizar__icone is-girando" : "vf-ph-atualizar__icone"}>↻</span>
+    </button>
+  );
+}
+
+// Curto de propósito: cabe na âncora de 300px. O mês não se repete — a tela
+// inteira já é a competência selecionada.
+function progressoTexto(job, competencia, competenciaAtual) {
+  const mesCompleto = job ? job.periodo?.mesCompleto : competencia !== competenciaAtual;
+  const alvo = mesCompleto ? "Reprocessando o mês" : "Atualizando até hoje";
+  if (!job) return `${alvo}…`;
+  const { concluidas = 0, total = 0 } = job.progresso || {};
+  return total > 0 ? `${alvo} · ${concluidas}/${total} ${total === 1 ? "conta" : "contas"}` : `${alvo}…`;
+}
+
+// Desfecho da atualização com pendência ou falha: logo abaixo do cliente,
+// visível mesmo com a linha recolhida — diz QUAL conta e POR QUÊ.
+function LinhaAtualizacao({ cliente, atualizacao, colSpan, onAtualizar, onDispensar }) {
+  const { job, erro } = atualizacao;
+  const rotuloConta = (id) => cliente.contas?.find((c) => c.id === id)?.rotulo || `Conta #${id}`;
+  const pendentes = (job?.contas || []).filter((c) => c.estado !== "ok");
+  const falhou = Boolean(erro) || job?.estado === "falhou";
+  const titulo = erro
+    ? `Não foi possível atualizar: ${erro.mensagem}`
+    : `${falhou ? "Atualização falhou" : "Atualização concluída com pendências"}`
+      + `${job?.concluidaEm ? ` às ${formatarDataHora(job.concluidaEm).slice(-5)}` : ""} · ${job?.mensagem || ""}`;
+  const podeTentar = !erro || erro.status !== 403;
+  return (
+    <tr className={`vf-ph-row vf-ph-row--atualizacao ${falhou ? "is-falha" : "is-pendencia"}`}>
+      <td colSpan={colSpan}>
+        <div className="vf-ph-atualizacao" role="status">
+          <p className="vf-ph-atualizacao__titulo">{titulo}</p>
+          {pendentes.length > 0 && (
+            <ul className="vf-ph-atualizacao__contas">
+              {pendentes.map((c) => (
+                <li key={c.contaId} className={`vf-ph-atualizacao__conta is-${c.estado}`}>
+                  <span className="vf-ph-atualizacao__conta-rotulo">{rotuloConta(c.contaId)}</span>
+                  {" — "}
+                  {c.mensagem || (c.estado === "falha" ? "falhou" : "pendente")}
+                </li>
+              ))}
+            </ul>
+          )}
+          <span className="vf-ph-atualizacao__acoes">
+            {podeTentar && (
+              <button type="button" className="vf-btn vf-btn--sm" onClick={() => onAtualizar(cliente.id)}>Tentar de novo</button>
+            )}
+            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={() => onDispensar(cliente.id)}>Dispensar</button>
+          </span>
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -182,6 +275,10 @@ function LinhaErro({ colSpan, mensagem, onTentar }) {
       </td>
     </tr>
   );
+}
+
+function textoAcoes(n) {
+  return n === 1 ? "1 conta precisa de ação" : `${n} contas precisam de ação`;
 }
 
 function BotaoLancar({ rotulo, onClick, editar = false }) {
@@ -264,25 +361,47 @@ function LinhaMes({ clienteId, clienteNome, mes, selecionada, aberto, onAlternar
   );
 }
 
-function LinhaConta({ cliente, conta, colunas, onLancar }) {
+// Estado da conta DENTRO de uma atualização em curso/terminada: só aparece
+// quando diz algo (pendente = sincronizando agora; falha/parcial = por quê).
+function EstadoNaAtualizacao({ estadoConta, emCurso }) {
+  if (!estadoConta) return null;
+  if (estadoConta.estado === "pendente" && emCurso) {
+    return <span className="vf-ph-meta vf-ph-conta__sync"><span className="vf-spinner vf-spinner--sm vf-ph-spinner" aria-hidden="true" /> sincronizando…</span>;
+  }
+  if (estadoConta.estado === "falha") {
+    return <span className="vf-ph-conta__sync is-falha" title={estadoConta.mensagem || undefined}>· falhou na atualização</span>;
+  }
+  return null;
+}
+
+function LinhaConta({ cliente, conta, colunas, onLancar, atualizacao }) {
   const semDado = !conta.resumo;
   const manualSubstituido = conta.manual?.substituidoPorAutomatico;
   const adsPorCliente = conta.fonte?.tipo !== "manual";
+  const estadoConta = atualizacao?.job?.contas?.find((c) => c.contaId === conta.id) || null;
+  // Motivo só quando acrescenta: "Sem integração" já diz o que o motivo diria,
+  // e a conta sincronizando AGORA mostra isso, não o erro da rodada anterior.
+  const sincronizandoAgora = estadoConta?.estado === "pendente" && atualizacaoEmCurso(atualizacao);
+  const motivo = semDado && !sincronizandoAgora && conta.status?.motivo && conta.status.codigo !== "sem_integracao"
+    ? conta.status.motivo
+    : null;
   return (
-    <tr className={`vf-ph-row vf-ph-row--conta${semDado ? " is-sem-dado" : ""}${conta.ativa ? "" : " is-inativa"}`}>
+    <tr className={`vf-ph-row vf-ph-row--conta${semDado ? " is-sem-dado" : ""}${conta.ativa ? "" : " is-inativa"}${conta.precisaAcao ? " is-acao" : ""}`}>
       <th scope="row" className="vf-table__sticky-cell vf-ph-ancora vf-ph-conta">
         <span className="vf-ph-indent">
-          <span className="vf-ph-conta__rotulo">{conta.rotulo}</span>
-          <span className="vf-ph-cliente__meta">
-            <TagStatus status={conta.status} />
-            {semDado
-              ? conta.status?.motivo && conta.status.codigo !== "sem_integracao" && (
-                <span className="vf-ph-meta">{conta.status.motivo}</span>
-              )
-              : <Frescor atualizadoEm={conta.atualizadoEm} dadosAte={conta.dadosAte} />}
+          <span className="vf-ph-conta__rotulo" title={conta.rotulo}>{conta.rotulo}</span>
+          <span className="vf-ph-conta__meta">
+            <StatusCompacto status={conta.status} />
+            {motivo && <span className="vf-ph-meta">· {motivo}</span>}
+            {!semDado && conta.dadosAte && (
+              <span className="vf-ph-meta" title={conta.atualizadoEm ? `Atualizado ${formatarDataHora(conta.atualizadoEm)}` : undefined}>
+                · até {formatarData(conta.dadosAte)}
+              </span>
+            )}
             {conta.avisos?.length > 0 && (
               <span className="vf-ph-aviso" title={conta.avisos.join("\n")} aria-label={conta.avisos.join(". ")}>⚠</span>
             )}
+            <EstadoNaAtualizacao estadoConta={estadoConta} emCurso={atualizacaoEmCurso(atualizacao)} />
             {manualSubstituido && (
               <span
                 className="vf-ph-meta"
@@ -295,10 +414,10 @@ function LinhaConta({ cliente, conta, colunas, onLancar }) {
         </span>
       </th>
       <td className="vf-table__sticky-cell vf-ph-contexto">
-        <span className="vf-ph-contexto__linha"><TagFonte fonte={conta.fonte} /></span>
+        {conta.fonte && <span className="vf-ph-meta" title={`Fonte do dado: ${conta.fonte.rotulo}`}>{conta.fonte.rotulo}</span>}
         {conta.podeLancarManual && (
           <BotaoLancar
-            rotulo={`Lançar dados — ${conta.rotulo}`}
+            rotulo={`${conta.fonte?.tipo === "manual" ? "Editar manual" : "Lançar dados"} — ${conta.rotulo}`}
             editar={conta.fonte?.tipo === "manual"}
             onClick={() => onLancar(cliente, conta)}
           />
@@ -341,37 +460,59 @@ function LinhaHistorico({ cliente, aberto, onAlternar, colunas }) {
   );
 }
 
-function MetaCliente({ cliente, competencia }) {
-  if (cliente.resumo) {
-    return (
-      <span className="vf-ph-cliente__meta">
-        <TagStatus status={cliente.status} />
-        <Frescor atualizadoEm={cliente.atualizadoEm} dadosAte={cliente.dadosAte} />
-      </span>
-    );
-  }
-  const ultimo = cliente.ultimaCompetenciaComDado && cliente.ultimaCompetenciaComDado !== competencia
+// Segunda linha do cliente: estado compacto + UMA frase de ação/motivo.
+// Nunca repete o que o escopo (linha de cima) ou o contexto (ao lado) já diz.
+// Mora DENTRO do botão da âncora — por isso "N contas precisam de ação" é
+// texto, não outro botão: clicar nele já abre o cliente e mostra as contas.
+function MetaCliente({ cliente, competencia, competenciaAtual, atualizacao }) {
+  const emCurso = atualizacaoEmCurso(atualizacao);
+  const acoes = cliente.escopo?.contasPrecisamAcao
+    ?? (cliente.contas || []).filter((c) => c.precisaAcao).length;
+  const semDado = !cliente.resumo;
+  const ultimo = semDado && cliente.ultimaCompetenciaComDado && cliente.ultimaCompetenciaComDado !== competencia
     ? cliente.ultimaCompetenciaComDado
     : null;
+
+  let detalhe = null;
+  if (emCurso) {
+    detalhe = (
+      <span className="vf-ph-progresso">
+        <span className="vf-spinner vf-spinner--sm vf-ph-spinner" aria-hidden="true" />
+        {progressoTexto(atualizacao.job, competencia, competenciaAtual)}
+      </span>
+    );
+  } else if (acoes > 0) {
+    detalhe = <span className="vf-ph-acoes">{textoAcoes(acoes)}</span>;
+  } else if (semDado && cliente.status?.motivo) {
+    detalhe = <span className="vf-ph-motivo" title={cliente.status.motivo}>{cliente.status.motivo}</span>;
+  }
+
   return (
-    <span className="vf-ph-cliente__meta vf-ph-cliente__meta--vazio">
-      <span className="vf-ph-sem-dados">Sem dados em {rotularCompetenciaCurta(competencia)}</span>
-      {cliente.status?.motivo && <span className="vf-ph-motivo">{cliente.status.motivo}</span>}
+    <span className={`vf-ph-cliente__meta${semDado ? " vf-ph-cliente__meta--vazio" : ""}`}>
+      <StatusCompacto
+        status={cliente.status}
+        rotulo={semDado && cliente.status?.codigo === "sem_dados" ? `Sem dados em ${rotularCompetenciaCurta(competencia)}` : undefined}
+      />
+      {detalhe}
       {ultimo && <span className="vf-ph-meta">· último dado: {rotularCompetenciaCurta(ultimo)}</span>}
     </span>
   );
 }
 
 function LinhaCliente({
-  cliente, competencia, expansao,
+  cliente, competencia, competenciaAtual, expansao,
   mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
-  colunas, onLancar,
+  colunas, onLancar, atualizacao, podeAtualizar, onAtualizar, onDispensar,
 }) {
   const aberto = expansao.clientesAbertos.has(cliente.id);
   const historicoAberto = expansao.historicosAbertos.has(cliente.id);
   const estado = mesesPorCliente[cliente.id];
   const colSpan = colunas.length + 3;
   const semDado = !cliente.resumo;
+  const emCurso = atualizacaoEmCurso(atualizacao);
+  const job = atualizacao?.job;
+  const mostrarDesfecho = !emCurso && atualizacao
+    && (atualizacao.erro || job?.estado === "falhou" || job?.estado === "concluida_com_pendencias");
 
   // Lazy de verdade: o histórico nasce de a linha de HISTÓRICO estar aberta.
   useEffect(() => {
@@ -380,7 +521,7 @@ function LinhaCliente({
 
   return (
     <>
-      <tr className={`vf-ph-row vf-ph-row--cliente${semDado ? " is-sem-dado" : ""}${cliente.status?.precisaAtencao ? " is-atencao" : ""}`}>
+      <tr className={`vf-ph-row vf-ph-row--cliente${semDado ? " is-sem-dado" : ""}${cliente.status?.precisaAtencao ? " is-atencao" : ""}${emCurso ? " is-atualizando-linha" : ""}${aberto ? " is-aberto" : ""}`}>
         <CelulaExpansivel
           aberto={aberto}
           onClick={() => expansao.alternarCliente(cliente.id)}
@@ -392,32 +533,48 @@ function LinhaCliente({
               <span className="vf-ph-cliente__nome">{cliente.nome}</span>
               {cliente.escopo?.rotulo && <span className="vf-ph-escopo">{cliente.escopo.rotulo}</span>}
             </span>
-            <MetaCliente cliente={cliente} competencia={competencia} />
+            <MetaCliente cliente={cliente} competencia={competencia} competenciaAtual={competenciaAtual} atualizacao={atualizacao} />
           </span>
         </CelulaExpansivel>
 
         <td className="vf-table__sticky-cell vf-ph-contexto">
-          <span className="vf-ph-contexto__linha">
+          <span className="vf-ph-contexto__linha vf-ph-contexto__topo">
             {cliente.squad
               ? <span className={`vf-tag vf-ph-tag ${TOM_SQUAD}`}>{cliente.squad.nome}</span>
               : <span className="vf-ph-meta is-vazio">sem squad</span>}
-            <TagFonte fonte={cliente.fonte} />
+            {podeAtualizar && (
+              <BotaoAtualizar
+                cliente={cliente}
+                competencia={competencia}
+                competenciaAtual={competenciaAtual}
+                emCurso={emCurso}
+                onAtualizar={onAtualizar}
+              />
+            )}
           </span>
-          {cliente.podeLancarManual && (
-            <BotaoLancar rotulo={`Lançar dados — ${cliente.nome}`} onClick={() => onLancar(cliente, undefined)} />
-          )}
+          <FrescorCliente cliente={cliente} emCurso={emCurso} concluidaAgora={job?.estado === "concluida"} />
         </td>
 
         {colunas.map((c) => <Celula key={c.chave} coluna={c} valor={cliente.resumo?.[c.chave] ?? null} />)}
         <td className="vf-ph-folga" />
       </tr>
 
+      {mostrarDesfecho && (
+        <LinhaAtualizacao
+          cliente={cliente}
+          atualizacao={atualizacao}
+          colSpan={colSpan}
+          onAtualizar={onAtualizar}
+          onDispensar={onDispensar}
+        />
+      )}
+
       {aberto && cliente.contas?.map((conta) => (
-        <LinhaConta key={conta.id} cliente={cliente} conta={conta} colunas={colunas} onLancar={onLancar} />
+        <LinhaConta key={conta.id} cliente={cliente} conta={conta} colunas={colunas} onLancar={onLancar} atualizacao={atualizacao} />
       ))}
       {aberto && (!cliente.contas || cliente.contas.length === 0) && (
         <LinhaEstado colSpan={colSpan}>
-          Nenhuma conta/operação cadastrada para este cliente — cadastre a operação em Clientes para separar o número por conta.
+          Nenhuma conta/operação cadastrada — cadastre a operação em <a href="clientes.html">Clientes</a> para separar o número por conta.
         </LinhaEstado>
       )}
       {aberto && (
@@ -545,9 +702,10 @@ function BotaoOrdenar({ chave, label, titulo, ordem, onOrdenar }) {
 }
 
 export function TabelaHierarquica({
-  clientes, competencia, colunas: colunasProp, grupos, expansao,
+  clientes, competencia, competenciaAtual = competencia, colunas: colunasProp, grupos, expansao,
   mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
   atualizando, onLancar = () => {},
+  atualizacoes = {}, podeAtualizar = false, onAtualizar = () => {}, onDispensarAtualizacao = () => {},
 }) {
   const colunas = useMemo(() => colunasProp ?? colunasVisiveis(grupos), [colunasProp, grupos]);
   const cabecalhoGrupos = useMemo(() => gruposVisiveis(grupos), [grupos]);
@@ -653,6 +811,11 @@ export function TabelaHierarquica({
               carregarSemanas={carregarSemanas}
               colunas={colunas}
               onLancar={onLancar}
+              competenciaAtual={competenciaAtual}
+              atualizacao={atualizacoes[cliente.id]?.competencia === competencia ? atualizacoes[cliente.id] : null}
+              podeAtualizar={podeAtualizar}
+              onAtualizar={onAtualizar}
+              onDispensar={onDispensarAtualizacao}
             />
           ))}
         </tbody>

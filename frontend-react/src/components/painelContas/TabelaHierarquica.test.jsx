@@ -87,10 +87,25 @@ describe("linha do cliente: escopo, status, fonte e frescor sem abrir nada", () 
     const linha = screen.getByText("Acme Comércio").closest("tr");
     expect(within(linha).getByText("Consolidado · 3 contas")).toBeInTheDocument();
     expect(within(linha).getByText("Sincronizado")).toBeInTheDocument();
-    expect(within(linha).getByText("API")).toBeInTheDocument();
+    expect(within(linha).getByText(/· API/)).toBeInTheDocument();
     expect(within(linha).getByText(/atualizado 29\/09\/2026/)).toBeInTheDocument();
     expect(within(linha).getByText(/dados até 28\/09\/2026/)).toBeInTheDocument();
     expect(within(linha).getByText("Squad Alpha")).toBeInTheDocument();
+  });
+
+  it("estado é compacto (ponto + texto), e o Squad é a única etiqueta da linha", () => {
+    const { container } = render(<Casca clientes={[cliente()]} />);
+    const linha = container.querySelector(".vf-ph-row--cliente");
+    expect(within(linha).getByText("Sincronizado")).toHaveClass("vf-status", "is-success");
+    expect(linha.querySelectorAll(".vf-tag")).toHaveLength(1);
+  });
+
+  it("sem dado, o frescor continua escrito — ausência vira —, nunca some", () => {
+    render(<Casca clientes={[semDados()]} />);
+    const linha = screen.getByText("Acme Comércio").closest("tr");
+    expect(within(linha).getByText("dados até —")).toBeInTheDocument();
+    expect(within(linha).getByText("· sem fonte")).toBeInTheDocument();
+    expect(within(linha).getByText("atualizado —")).toBeInTheDocument();
   });
 
   it("consolidado parcial nunca parece completo", () => {
@@ -111,13 +126,35 @@ describe("linha do cliente: escopo, status, fonte e frescor sem abrir nada", () 
     expect(within(linha).queryByText(/R\$ 0/)).toBeNull();
   });
 
-  it('"Lançar dados" só aparece quando faz sentido, e abre para o cliente certo', async () => {
+  it('o consolidado não repete "Lançar dados" — diz quantas contas precisam de ação', async () => {
     const onLancar = vi.fn();
-    render(<Casca clientes={[semDados(), cliente({ id: 2, nome: "Bravo" })]} onLancar={onLancar} />);
+    const conta1 = conta(1, { status: { codigo: "sem_conexao", rotulo: "Sem conexão", motivo: "Mercado Livre não conectado" }, resumo: null, podeLancarManual: true, precisaAcao: true });
+    const conta2 = conta(2, { status: { codigo: "erro_sync", rotulo: "Erro de sync", motivo: "Última sincronização falhou" }, resumo: null, podeLancarManual: true, precisaAcao: true });
+    const c = cliente({
+      escopo: { tipo: "consolidado", rotulo: "Consolidado · 1 de 3 contas", contasOperacionais: 3, contasComDado: 1, contasPrecisamAcao: 2 },
+      status: { codigo: "parcial", rotulo: "Parcial", motivo: "1 de 3 contas com dados", precisaAtencao: true },
+      contas: [conta1, conta2, conta(3)],
+      podeLancarManual: true,
+    });
+    const { container } = render(<Casca clientes={[c]} onLancar={onLancar} />);
+    const linha = container.querySelector(".vf-ph-row--cliente");
+    expect(within(linha).getByText("2 contas precisam de ação")).toBeInTheDocument();
+    expect(within(linha).queryByRole("button", { name: /lançar dados/i })).toBeNull();
+    // O motivo "1 de 3 contas com dados" não se repete: o escopo já diz.
+    expect(within(linha).queryByText("1 de 3 contas com dados")).toBeNull();
+
+    // A frase mora no alvo da âncora: clicar nela abre as contas.
+    await userEvent.click(within(linha).getByText("2 contas precisam de ação"));
     const botoes = screen.getAllByRole("button", { name: /lançar dados/i });
-    expect(botoes).toHaveLength(1);
-    await userEvent.click(botoes[0]);
-    expect(onLancar).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), undefined);
+    expect(botoes).toHaveLength(2);
+    expect(container.querySelectorAll(".vf-ph-row--conta.is-acao")).toHaveLength(2);
+    await userEvent.click(botoes[1]);
+    expect(onLancar).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), expect.objectContaining({ id: 2 }));
+  });
+
+  it("uma conta só: singular", () => {
+    render(<Casca clientes={[semDados({ escopo: { tipo: "conta", rotulo: "Shopee 1 · COREMIX", contasOperacionais: 1, contasComDado: 0, contasPrecisamAcao: 1 } })]} />);
+    expect(screen.getByText("1 conta precisa de ação")).toBeInTheDocument();
   });
 });
 
@@ -318,5 +355,113 @@ describe("semântica de tabela e acessibilidade", () => {
     render(<Casca clientes={[cliente()]} />);
     const linha = screen.getByText("Acme Comércio").closest("tr");
     expect(linha.querySelectorAll(".vf-table__sticky-cell")).toHaveLength(2);
+  });
+});
+
+describe("atualizar dados (admin)", () => {
+  function Casca2({ clientes, atualizacoes = {}, podeAtualizar = true, onAtualizar = vi.fn(), onDispensar = vi.fn(), competencia = "2026-09" }) {
+    const expansao = useExpansao();
+    return (
+      <TabelaHierarquica
+        clientes={clientes}
+        competencia={competencia}
+        competenciaAtual="2026-09"
+        colunas={colunasVisiveis(GRUPOS_PADRAO)}
+        grupos={GRUPOS_PADRAO}
+        expansao={expansao}
+        mesesPorCliente={{}}
+        carregarMeses={vi.fn()}
+        semanasPorChave={{}}
+        carregarSemanas={vi.fn()}
+        atualizacoes={atualizacoes}
+        podeAtualizar={podeAtualizar}
+        onAtualizar={onAtualizar}
+        onDispensarAtualizacao={onDispensar}
+      />
+    );
+  }
+  const job = (over = {}) => ({
+    id: "j1", clienteId: 1, competencia: "2026-09", estado: "executando",
+    periodo: { dateFrom: "2026-09-01", dateTo: "2026-09-29", incluiHoje: true, mesCompleto: false },
+    progresso: { fase: "contas", concluidas: 0, total: 3 },
+    contas: [{ contaId: 1, estado: "pendente" }, { contaId: 2, estado: "ok" }, { contaId: 3, estado: "pendente" }],
+    ...over,
+  });
+
+  it("sem permissão, nenhum botão", () => {
+    render(<Casca2 clientes={[cliente()]} podeAtualizar={false} />);
+    expect(screen.queryByRole("button", { name: /atualizar dados/i })).toBeNull();
+  });
+
+  it("dispara pelo id do cliente", async () => {
+    const onAtualizar = vi.fn();
+    render(<Casca2 clientes={[cliente()]} onAtualizar={onAtualizar} />);
+    await userEvent.click(screen.getByRole("button", { name: "Atualizar dados de Acme Comércio" }));
+    expect(onAtualizar).toHaveBeenCalledWith(1);
+  });
+
+  it("mês anterior: o botão explica que reprocessa o mês completo", () => {
+    render(<Casca2 clientes={[cliente({ competencia: "2026-08" })]} competencia="2026-08" />);
+    expect(screen.getByRole("button", { name: /atualizar dados/i })).toHaveAttribute("title", "Atualizar agora: reprocessa ago/2026 completo (mês encerrado).");
+  });
+
+  it("em curso: progresso escrito, contas pendentes marcadas como sincronizando", async () => {
+    const { container } = render(<Casca2 clientes={[cliente()]} atualizacoes={{ 1: { competencia: "2026-09", job: job(), iniciando: false } }} />);
+    expect(screen.getByText("Atualizando até hoje · 0/3 contas")).toBeInTheDocument();
+    expect(screen.getByText("atualizando…")).toBeInTheDocument();
+    await abrirCliente();
+    const contas = container.querySelectorAll(".vf-ph-row--conta");
+    expect(within(contas[0]).getByText("sincronizando…")).toBeInTheDocument();
+    expect(within(contas[1]).queryByText("sincronizando…")).toBeNull();
+  });
+
+  it("conta com erro antigo sincronizando agora: mostra o agora, não o erro velho", async () => {
+    const c = cliente({ contas: [conta(1, { resumo: null, status: { codigo: "erro_sync", rotulo: "Erro de sync", motivo: "Última sincronização falhou" } })] });
+    const { container } = render(<Casca2 clientes={[c]} atualizacoes={{ 1: { competencia: "2026-09", job: job({ contas: [{ contaId: 1, estado: "pendente" }] }) } }} />);
+    await abrirCliente();
+    const linha = container.querySelector(".vf-ph-row--conta");
+    expect(within(linha).getByText("sincronizando…")).toBeInTheDocument();
+    expect(within(linha).queryByText(/Última sincronização falhou/)).toBeNull();
+  });
+
+  it("iniciando (antes da resposta do servidor): já trava o botão", () => {
+    render(<Casca2 clientes={[cliente()]} atualizacoes={{ 1: { competencia: "2026-09", job: null, iniciando: true } }} />);
+    expect(screen.getByRole("button", { name: /atualizar dados/i })).toBeDisabled();
+    expect(screen.getByText("Atualizando até hoje…")).toBeInTheDocument();
+  });
+
+  it("concluída sem pendência: nenhuma faixa extra, frescor com ✓", () => {
+    const { container } = render(<Casca2 clientes={[cliente()]} atualizacoes={{ 1: { competencia: "2026-09", job: job({ estado: "concluida", contas: [] }) } }} />);
+    expect(container.querySelector(".vf-ph-row--atualizacao")).toBeNull();
+    expect(container.querySelector(".vf-ph-frescor--ok")).toHaveTextContent("atualizado 29/09/2026");
+  });
+
+  it("falha de uma conta: faixa logo abaixo do cliente (mesmo recolhido) nomeando a conta", async () => {
+    const onDispensar = vi.fn();
+    const { container } = render(<Casca2
+      clientes={[cliente()]}
+      onDispensar={onDispensar}
+      atualizacoes={{ 1: { competencia: "2026-09", job: job({
+        estado: "concluida_com_pendencias", mensagem: "2 de 3 contas atualizadas.", concluidaEm: "2026-09-29T15:03:00.000Z",
+        contas: [{ contaId: 1, estado: "ok" }, { contaId: 2, estado: "falha", mensagem: "Mercado Livre sem autorização válida — reconecte a conta em Clientes." }, { contaId: 3, estado: "ok" }],
+      }) } }}
+    />);
+    const faixa = container.querySelector(".vf-ph-row--atualizacao");
+    expect(faixa).toHaveClass("is-pendencia");
+    expect(faixa.previousElementSibling).toHaveClass("vf-ph-row--cliente");
+    expect(faixa).toHaveTextContent("2 de 3 contas atualizadas.");
+    expect(faixa).toHaveTextContent("Mercado Livre 2 · LOJA 2 — Mercado Livre sem autorização válida");
+    expect(faixa).not.toHaveTextContent("LOJA 1");
+    await abrirCliente();
+    expect(within(container.querySelectorAll(".vf-ph-row--conta")[1]).getByText("· falhou na atualização")).toBeInTheDocument();
+    await userEvent.click(within(faixa).getByRole("button", { name: "Dispensar" }));
+    expect(onDispensar).toHaveBeenCalledWith(1);
+  });
+
+  it("erro ao iniciar (ex.: 422): faixa de falha com a mensagem do servidor", () => {
+    const { container } = render(<Casca2 clientes={[cliente()]} atualizacoes={{ 1: { competencia: "2026-09", job: null, erro: { mensagem: "Nenhuma conta Mercado Livre ativa e conectada.", status: 422 } } }} />);
+    const faixa = container.querySelector(".vf-ph-row--atualizacao");
+    expect(faixa).toHaveClass("is-falha");
+    expect(faixa).toHaveTextContent("Não foi possível atualizar: Nenhuma conta Mercado Livre ativa e conectada.");
   });
 });

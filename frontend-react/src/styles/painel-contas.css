@@ -86,9 +86,9 @@
 .vf-ph-resumo {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
-  gap: var(--vf-sp-1) var(--vf-sp-3);
-  margin: 0;
+  gap: var(--vf-sp-1) var(--vf-sp-5);
   padding: var(--vf-sp-2) var(--vf-toolbar-px);
   border-top: 1px solid var(--vf-border);
   background: var(--vf-surface-2);
@@ -98,15 +98,44 @@
   font-variant-numeric: tabular-nums;
 }
 
-.vf-ph-resumo > * + *::before {
+.vf-ph-resumo__numeros {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-1) var(--vf-sp-3);
+  margin: 0;
+}
+
+.vf-ph-resumo__numeros > * + *::before {
   content: "·";
   margin-right: var(--vf-sp-3);
   color: var(--vf-border-strong);
 }
 
+/* Cobertura é a leitura executiva: "31 de 42 clientes com dados" em corpo
+   maior que o resto da faixa. */
+.vf-ph-resumo__item.is-principal {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
 .vf-ph-resumo__forte {
   font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text-secondary);
+  color: var(--vf-text);
+}
+
+/* Regra de frescor, fixa à direita: automático até ontem · agora inclui hoje. */
+.vf-ph-regra {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-1) var(--vf-sp-3);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-regra > * + *::before {
+  content: "·";
+  margin-right: var(--vf-sp-3);
+  color: var(--vf-border-strong);
 }
 
 .vf-ph-resumo__alerta,
@@ -127,6 +156,17 @@
 
 .vf-ph-resumo__item::before {
   margin-right: var(--vf-sp-3);
+}
+
+/* ── Estados vazios ─────────────────────────────────────────────────────── */
+.vf-ph-vazio__icone {
+  font-size: var(--vf-fs-xl);
+  line-height: 1;
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-vazio.is-ok .vf-ph-vazio__icone {
+  color: var(--vf-success-strong);
 }
 
 .vf-ph-resumo__item:hover,

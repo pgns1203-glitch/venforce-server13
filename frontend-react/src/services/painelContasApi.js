@@ -5,6 +5,7 @@
 // (consolidado + contas vêm na mesma resposta, em lote). Histórico mensal e
 // semanas continuam lazy — só buscados quando a linha é aberta.
 // Lançamento manual: PUT/DELETE por conta × competência.
+// Atualização sob demanda: POST/GET por cliente × competência (admin).
 
 import { requisitar } from "./apiClient.js";
 
@@ -45,4 +46,19 @@ export function salvarLancamentoManual(clienteId, contaId, competencia, valores)
 
 export function removerLancamentoManual(clienteId, contaId, competencia) {
   return requisitar(caminhoManual(clienteId, contaId, competencia), { metodo: "DELETE" });
+}
+
+// Atualização sob demanda (admin): POST dispara em segundo plano e responde
+// 202 com o job; GET devolve o progresso/desfecho. Ver
+// server/services/painelContas/painelContasAtualizacao.js.
+function caminhoAtualizacao(clienteId, competencia) {
+  return `/painel-contas/${encodeURIComponent(clienteId)}/atualizar/${encodeURIComponent(competencia)}`;
+}
+
+export function iniciarAtualizacaoCliente(clienteId, competencia) {
+  return requisitar(caminhoAtualizacao(clienteId, competencia), { metodo: "POST" });
+}
+
+export function obterAtualizacaoCliente(clienteId, competencia, { signal } = {}) {
+  return requisitar(caminhoAtualizacao(clienteId, competencia), { signal });
 }

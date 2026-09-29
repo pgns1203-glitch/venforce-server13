@@ -21,7 +21,7 @@
    deixaria a segunda flutuando sobre a primeira no scroll horizontal. */
 .vf-ph-table {
   --vf-ph-col-cliente: 300px;
-  --vf-ph-col-contexto: 150px;
+  --vf-ph-col-contexto: 176px;
   width: 100%;
 }
 
@@ -259,6 +259,143 @@
   color: var(--vf-text-secondary);
 }
 
+/* Nome + escopo na mesma linha: "AMR ecommerce  Consolidado · 3 contas". O
+   escopo nunca some — é ele que impede ler um consolidado como se fosse uma
+   conta (o caso do FAT "errado" que era só a soma de três operações). */
+.vf-ph-cliente__linha {
+  display: flex;
+  align-items: baseline;
+  gap: var(--vf-sp-2);
+  min-width: 0;
+}
+
+.vf-ph-escopo {
+  flex: 0 0 auto;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+}
+
+.vf-ph-cliente__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sem dados: a competência e o motivo são a informação da linha. */
+.vf-ph-sem-dados {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-motivo {
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-motivo::before {
+  content: "·";
+  margin-right: 4px;
+}
+
+/* Tag compacta: a da Fundação, na altura de uma linha de metadado. */
+.vf-ph-tag {
+  padding: 0 6px;
+  font-size: var(--vf-fs-2xs);
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.vf-ph-contexto__linha {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.vf-ph-lancar {
+  margin-top: 2px;
+  padding-left: 0;
+  padding-right: 0;
+  height: auto;
+  min-height: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-primary-strong);
+}
+
+.vf-ph-aviso {
+  color: var(--vf-warning-strong);
+  cursor: help;
+}
+
+/* ── Nível 2 — CONTA/OPERAÇÃO ───────────────────────────────────────────
+   Mesmas colunas do cliente, recuo e fundo do bloco aberto: a soma do
+   consolidado é auditável lendo as linhas de baixo. */
+.vf-ph-row--conta > th,
+.vf-ph-row--conta > td {
+  --vf-table-cell-py: 3px;
+  background: var(--vf-surface-2);
+}
+
+.vf-ph-row--conta > .vf-ph-ancora {
+  padding: 3px var(--vf-table-cell-px) !important;
+}
+
+.vf-ph-conta__rotulo {
+  display: block;
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-ph-conta .vf-ph-indent {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.vf-ph-row--conta.is-sem-dado .vf-ph-conta__rotulo,
+.vf-ph-row--conta.is-inativa .vf-ph-conta__rotulo {
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-row--conta:hover > th,
+.vf-ph-row--conta:hover > td {
+  background: var(--vf-surface-hover);
+}
+
+/* Linha-gatilho do histórico mensal: discreta, é navegação, não dado. */
+.vf-ph-row--historico > th,
+.vf-ph-row--historico > td {
+  --vf-table-cell-py: 2px;
+  background: var(--vf-surface-2);
+  font-size: var(--vf-fs-2xs);
+}
+
+.vf-ph-row--historico .vf-ph-toggle {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.vf-ph-historico__rotulo {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+}
+
+/* A competência selecionada, dentro do histórico, é marcada por geometria e
+   peso — não só por cor. */
+.vf-ph-row--mes.is-selecionada > th,
+.vf-ph-row--mes.is-selecionada > td {
+  background: var(--vf-primary-soft);
+}
+
+.vf-ph-row--mes.is-selecionada .vf-ph-mes__rotulo {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary-strong);
+}
+
 /* ── Nível 2 — MÊS: análise histórica ───────────────────────────────────
    Recuo evidente, fundo distinto e altura menor que a do cliente. */
 .vf-ph-row--mes > th,
@@ -271,6 +408,8 @@
    real (visto na primeira passada). A régua vertical marca o bloco aberto
    sem escurecer a tabela inteira — e continua funcionando em alto contraste,
    porque é geometria, não tonalidade. */
+.vf-ph-row--conta > .vf-ph-ancora,
+.vf-ph-row--historico > .vf-ph-ancora,
 .vf-ph-row--mes > .vf-ph-ancora,
 .vf-ph-row--semana > .vf-ph-ancora,
 .vf-ph-row--estado > td,
@@ -429,4 +568,79 @@
 
 @media (prefers-reduced-motion: reduce) {
   .vf-ph-wrap.is-atualizando { transition: none; }
+}
+
+/* ── Drawer de lançamento manual ────────────────────────────────────────── */
+.vf-ph-drawer__form {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.vf-ph-drawer__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+}
+
+.vf-ph-drawer__escopo {
+  display: flex;
+  gap: var(--vf-sp-5);
+  margin: 0;
+}
+
+.vf-ph-drawer__escopo dt {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-drawer__escopo dd {
+  margin: 0;
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-ph-drawer__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--vf-sp-3);
+}
+
+.vf-ph-drawer__grid input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-drawer__previa {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-1) var(--vf-sp-3);
+  min-height: 1.2em;
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-drawer__obs {
+  height: auto;
+  resize: vertical;
+}
+
+.vf-ph-drawer__nota {
+  margin: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-drawer__remover {
+  margin-right: auto;
+  color: var(--vf-danger-strong);
+}
+
+@media (max-width: 520px) {
+  .vf-ph-drawer__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

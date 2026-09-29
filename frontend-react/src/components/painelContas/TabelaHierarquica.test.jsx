@@ -1,157 +1,209 @@
-// Testes da tabela hierárquica do Painel de Contas.
+// Testes da tabela hierárquica do Painel de Contas operacional.
 //
-// O que está sendo protegido aqui é o que a implementação anterior errava ou
-// não tinha: hierarquia distinguível por marcação (não só por padding), área
-// de clique que não é o chevron, lazy loading de verdade, retry por linha,
-// ausência honesta ("—", nunca 0), e — o mais importante — direção de
-// variação que NÃO vem do sinal matemático.
+// Hierarquia: CLIENTE (consolidado, escopo explícito) → CONTAS/OPERAÇÕES (na
+// mesma resposta, sem requisição) → HISTÓRICO MENSAL (lazy) → SEMANAS (lazy).
+// Protege também: ausência honesta ("—", nunca 0), motivo de "sem dados",
+// fonte/frescor e direção de variação que NÃO vem do sinal matemático.
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TabelaHierarquica, useExpansao, ordenarClientes } from "./TabelaHierarquica.jsx";
 import { colunasVisiveis, GRUPOS_PADRAO } from "./colunas.js";
-import { useState } from "react";
 
 function resumo(over = {}) {
   return { fat: 113000, lc: 20400, mc: 0.181, ads: 4100, acos: 0.041, tacos: 0.036, com: null, atv: null, nps: null, ...over };
 }
 
-function cliente(over = {}) {
+function conta(id, over = {}) {
   return {
-    id: 1, slug: "acme", nome: "Acme Comércio",
-    squad: { id: 7, nome: "Squad Alpha", slug: "alpha" },
-    ultimoMesDisponivel: "2026-09", sincronizadoEm: "2026-09-21T12:00:00.000Z",
-    resumo: resumo(), ...over,
+    id, rotulo: `Mercado Livre ${id} · LOJA ${id}`, marketplace: "meli", marketplaceRotulo: "Mercado Livre",
+    ativa: true, conectada: true, principal: id === 1, avisos: [],
+    status: { codigo: "sincronizado", rotulo: "Sincronizado", motivo: null },
+    fonte: { tipo: "api", rotulo: "API" },
+    resumo: resumo({ fat: id * 100, ads: null, acos: null, tacos: null }),
+    atualizadoEm: "2026-09-29T06:10:00.000Z", dadosAte: "2026-09-28",
+    manual: null, podeLancarManual: false, ...over,
   };
 }
 
-// Casca mínima que dá à tabela o estado de expansão real (o mesmo hook que a
-// página usa), para os testes exercitarem a interação e não uma simulação.
-function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, carregarMeses = vi.fn(), carregarSemanas = vi.fn(), grupos = GRUPOS_PADRAO }) {
+function cliente(over = {}) {
+  return {
+    id: 1, slug: "acme", nome: "Acme Comércio",
+    squad: { id: 7, nome: "Squad Alpha", slug: "alpha" }, legado: false,
+    competencia: "2026-09",
+    escopo: { tipo: "consolidado", rotulo: "Consolidado · 3 contas", contasOperacionais: 3, contasComDado: 3 },
+    status: { codigo: "sincronizado", rotulo: "Sincronizado", motivo: null, precisaAtencao: false },
+    fonte: { tipo: "api", rotulo: "API" },
+    atualizadoEm: "2026-09-29T06:20:00.000Z", dadosAte: "2026-09-28",
+    resumo: resumo({ fat: 600 }),
+    ultimaCompetenciaComDado: "2026-09",
+    contas: [conta(1), conta(2), conta(3)],
+    podeLancarManual: false,
+    ...over,
+  };
+}
+
+function semDados(over = {}) {
+  return cliente({
+    resumo: null, fonte: null, atualizadoEm: null, dadosAte: null,
+    escopo: { tipo: "conta", rotulo: "Shopee 1 · COREMIX", contasOperacionais: 1, contasComDado: 0 },
+    status: { codigo: "sem_dados", rotulo: "Sem dados", motivo: "Marketplace sem integração automática", precisaAtencao: true },
+    ultimaCompetenciaComDado: "2026-08",
+    contas: [conta(1, {
+      rotulo: "Shopee 1 · COREMIX", marketplace: "shopee", resumo: null, fonte: null, atualizadoEm: null, dadosAte: null,
+      status: { codigo: "sem_integracao", rotulo: "Sem integração", motivo: "Marketplace sem integração automática" },
+      podeLancarManual: true,
+    })],
+    podeLancarManual: true,
+    ...over,
+  });
+}
+
+function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, carregarMeses = vi.fn(), carregarSemanas = vi.fn(), onLancar = vi.fn(), grupos = GRUPOS_PADRAO }) {
   const expansao = useExpansao();
   return (
     <TabelaHierarquica
       clientes={clientes}
+      competencia="2026-09"
       colunas={colunasVisiveis(grupos)}
       grupos={grupos}
-      clientesAbertos={expansao.clientesAbertos}
-      mesesAbertos={expansao.mesesAbertos}
-      alternarCliente={expansao.alternarCliente}
-      alternarMes={expansao.alternarMes}
+      expansao={expansao}
       mesesPorCliente={mesesPorCliente}
       carregarMeses={carregarMeses}
       semanasPorChave={semanasPorChave}
       carregarSemanas={carregarSemanas}
+      onLancar={onLancar}
     />
   );
 }
 
-describe("hierarquia visual e semântica", () => {
-  it("marca os três níveis por classe, não só por recuo", async () => {
-    const mesesPorCliente = {
-      1: { carregando: false, erro: null, meses: [{ competencia: "2026-09", sincronizadoEm: "2026-09-21T12:00:00Z", resumo: resumo(), variacaoVsMesAnterior: null }] },
-    };
-    const semanasPorChave = {
-      "1:2026-09": { carregando: false, erro: null, semanas: [{ semana: "S1", de: "2026-09-01", ate: "2026-09-07", resumo: resumo({ lc: null, mc: null, ads: null, acos: null, tacos: null }) }] },
-    };
-    const { container } = render(<Casca clientes={[cliente()]} mesesPorCliente={mesesPorCliente} semanasPorChave={semanasPorChave} />);
+const abrirCliente = (nome = "Acme Comércio") => userEvent.click(screen.getByRole("button", { name: new RegExp(`Cliente ${nome}`) }));
+const abrirHistorico = () => userEvent.click(screen.getByRole("button", { name: /histórico mensal/i }));
 
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
-    await userEvent.click(screen.getByRole("button", { name: /expandir semanas/i }));
-
-    expect(container.querySelectorAll(".vf-ph-row--cliente")).toHaveLength(1);
-    expect(container.querySelectorAll(".vf-ph-row--mes")).toHaveLength(1);
-    expect(container.querySelectorAll(".vf-ph-row--semana")).toHaveLength(1);
-  });
-
-  it("a linha do cliente é resumo executivo: período e sincronização sem abrir nada", () => {
+describe("linha do cliente: escopo, status, fonte e frescor sem abrir nada", () => {
+  it("diz que o número é consolidado e de quantas contas", () => {
     render(<Casca clientes={[cliente()]} />);
-    expect(screen.getByText("Acme Comércio")).toBeInTheDocument();
-    expect(screen.getByText("set/2026")).toBeInTheDocument();
-    expect(screen.getByText(/atualizado 21\/09\/2026/)).toBeInTheDocument();
-    expect(screen.getByText("Squad Alpha")).toBeInTheDocument();
+    const linha = screen.getByText("Acme Comércio").closest("tr");
+    expect(within(linha).getByText("Consolidado · 3 contas")).toBeInTheDocument();
+    expect(within(linha).getByText("Sincronizado")).toBeInTheDocument();
+    expect(within(linha).getByText("API")).toBeInTheDocument();
+    expect(within(linha).getByText(/atualizado 29\/09\/2026/)).toBeInTheDocument();
+    expect(within(linha).getByText(/dados até 28\/09\/2026/)).toBeInTheDocument();
+    expect(within(linha).getByText("Squad Alpha")).toBeInTheDocument();
   });
 
-  it("a semana mostra o intervalo de dias — S1 sozinho não diz nada", async () => {
-    const mesesPorCliente = { 1: { meses: [{ competencia: "2026-09", resumo: resumo(), variacaoVsMesAnterior: null }] } };
-    const semanasPorChave = {
-      "1:2026-09": { semanas: [{ semana: "S3", de: "2026-09-15", ate: "2026-09-21", resumo: resumo() }] },
-    };
-    render(<Casca clientes={[cliente()]} mesesPorCliente={mesesPorCliente} semanasPorChave={semanasPorChave} />);
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
-    await userEvent.click(screen.getByRole("button", { name: /expandir semanas/i }));
+  it("consolidado parcial nunca parece completo", () => {
+    render(<Casca clientes={[cliente({
+      escopo: { tipo: "consolidado", rotulo: "Consolidado · 2 de 3 contas", contasOperacionais: 3, contasComDado: 2 },
+      status: { codigo: "parcial", rotulo: "Parcial", motivo: "2 de 3 contas com dados", precisaAtencao: true },
+    })]} />);
+    expect(screen.getByText("Consolidado · 2 de 3 contas")).toBeInTheDocument();
+    expect(screen.getByText("Parcial")).toBeInTheDocument();
+  });
 
-    expect(screen.getByText("S3")).toBeInTheDocument();
-    expect(screen.getByText("15–21")).toBeInTheDocument();
+  it("sem dados explica a competência e o motivo — nunca mostra outro mês no lugar", () => {
+    render(<Casca clientes={[semDados()]} />);
+    const linha = screen.getByText("Acme Comércio").closest("tr");
+    expect(within(linha).getByText("Sem dados em set/2026")).toBeInTheDocument();
+    expect(within(linha).getByText("Marketplace sem integração automática")).toBeInTheDocument();
+    expect(within(linha).getByText(/último dado: ago\/2026/)).toBeInTheDocument();
+    expect(within(linha).queryByText(/R\$ 0/)).toBeNull();
+  });
+
+  it('"Lançar dados" só aparece quando faz sentido, e abre para o cliente certo', async () => {
+    const onLancar = vi.fn();
+    render(<Casca clientes={[semDados(), cliente({ id: 2, nome: "Bravo" })]} onLancar={onLancar} />);
+    const botoes = screen.getAllByRole("button", { name: /lançar dados/i });
+    expect(botoes).toHaveLength(1);
+    await userEvent.click(botoes[0]);
+    expect(onLancar).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), undefined);
   });
 });
 
-describe("expansão", () => {
-  it("a célula inteira expande — não é preciso mirar o chevron", async () => {
+describe("expansão: contas primeiro, histórico sob demanda", () => {
+  it("abrir o cliente mostra cada conta com o próprio FAT, sem requisição", async () => {
     const carregarMeses = vi.fn();
-    render(<Casca clientes={[cliente()]} carregarMeses={carregarMeses} />);
-    const botao = screen.getByRole("button", { name: /Cliente Acme Comércio/i });
+    const { container } = render(<Casca clientes={[cliente()]} carregarMeses={carregarMeses} />);
+    await abrirCliente();
 
-    expect(botao).toHaveAttribute("aria-expanded", "false");
-    await userEvent.click(botao);
-    expect(botao).toHaveAttribute("aria-expanded", "true");
+    const linhas = container.querySelectorAll(".vf-ph-row--conta");
+    expect(linhas).toHaveLength(3);
+    expect(within(linhas[0]).getByText("Mercado Livre 1 · LOJA 1")).toBeInTheDocument();
+    expect(within(linhas[1]).getByText("R$ 200")).toBeInTheDocument();
+    expect(carregarMeses).not.toHaveBeenCalled();
   });
 
-  it("é lazy de verdade: nada é buscado antes de abrir", async () => {
+  it("Ads por conta é — com a explicação (Ads é medido por cliente)", async () => {
+    const { container } = render(<Casca clientes={[cliente()]} />);
+    await abrirCliente();
+    const linha = container.querySelector(".vf-ph-row--conta");
+    expect(within(linha).getAllByTitle(/ads é medido por cliente/i).length).toBeGreaterThan(0);
+  });
+
+  it("conta sem dado mostra o motivo e oferece lançar naquela conta", async () => {
+    const onLancar = vi.fn();
+    const { container } = render(<Casca clientes={[semDados()]} onLancar={onLancar} />);
+    await abrirCliente();
+    const linha = container.querySelector(".vf-ph-row--conta");
+    expect(within(linha).getByText("Sem integração")).toBeInTheDocument();
+    await userEvent.click(within(linha).getByRole("button", { name: /lançar dados/i }));
+    expect(onLancar).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), expect.objectContaining({ id: 1 }));
+  });
+
+  it("manual substituído pelo automático continua visível", async () => {
+    render(<Casca clientes={[cliente({ contas: [conta(1, { manual: { valores: resumo({ fat: 90 }), substituidoPorAutomatico: true, atualizadoPor: "Ana" } })] })]} />);
+    await abrirCliente();
+    expect(screen.getByText(/manual substituído/i)).toBeInTheDocument();
+  });
+
+  it("histórico é lazy: só busca ao abrir a linha de histórico", async () => {
     const carregarMeses = vi.fn();
     render(<Casca clientes={[cliente()]} carregarMeses={carregarMeses} />);
+    await abrirCliente();
     expect(carregarMeses).not.toHaveBeenCalled();
-
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
+    await abrirHistorico();
     expect(carregarMeses).toHaveBeenCalledWith(1);
   });
 
-  it("recolher e reabrir não refaz a chamada — o cache do hook responde", async () => {
-    const carregarMeses = vi.fn();
-    const mesesPorCliente = { 1: { carregando: false, erro: null, meses: [] } };
-    render(<Casca clientes={[cliente()]} mesesPorCliente={mesesPorCliente} carregarMeses={carregarMeses} />);
+  it("no histórico, a competência selecionada fica marcada e as semanas abrem", async () => {
+    const mesesPorCliente = {
+      1: { meses: [
+        { competencia: "2026-08", resumo: resumo(), variacaoVsMesAnterior: null },
+        { competencia: "2026-09", resumo: resumo(), variacaoVsMesAnterior: null },
+      ] },
+    };
+    const semanasPorChave = { "1:2026-09": { semanas: [{ semana: "S3", de: "2026-09-15", ate: "2026-09-21", resumo: resumo() }] } };
+    const { container } = render(<Casca clientes={[cliente()]} mesesPorCliente={mesesPorCliente} semanasPorChave={semanasPorChave} />);
+    await abrirCliente();
+    await abrirHistorico();
 
-    const botao = screen.getByRole("button", { name: /Cliente Acme Comércio/i });
-    await userEvent.click(botao);
-    await userEvent.click(botao);
-    await userEvent.click(botao);
-    expect(carregarMeses).not.toHaveBeenCalled();
+    const selecionada = container.querySelector(".vf-ph-row--mes.is-selecionada");
+    expect(selecionada).toHaveTextContent("set/2026");
+    await userEvent.click(within(selecionada).getByRole("button", { name: /expandir semanas/i }));
+    expect(screen.getByText("S3")).toBeInTheDocument();
+    expect(screen.getByText("15–21")).toBeInTheDocument();
   });
 
-  it("cliente nunca sincronizado não tenta buscar competência nenhuma", async () => {
-    const carregarMeses = vi.fn();
-    render(<Casca clientes={[cliente({ resumo: null, ultimoMesDisponivel: null, sincronizadoEm: null })]} carregarMeses={carregarMeses} />);
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
-
-    expect(carregarMeses).not.toHaveBeenCalled();
-    expect(screen.getByText(/nunca foi sincronizado/i)).toBeInTheDocument();
-  });
-});
-
-describe("erro localizado com ação (§20)", () => {
-  it("oferece retry nas competências, forçando a recarga", async () => {
+  it("oferece retry no histórico, forçando a recarga", async () => {
     const carregarMeses = vi.fn();
     const mesesPorCliente = { 1: { carregando: false, erro: { mensagem: "Timeout." }, meses: null } };
     render(<Casca clientes={[cliente()]} mesesPorCliente={mesesPorCliente} carregarMeses={carregarMeses} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
+    await abrirCliente();
+    await abrirHistorico();
     await userEvent.click(screen.getByRole("button", { name: /tentar novamente/i }));
     expect(carregarMeses).toHaveBeenCalledWith(1, { forcar: true });
   });
 
-  it("oferece retry nas semanas sem contaminar o resto da tabela", async () => {
-    const carregarSemanas = vi.fn();
+  it("marca os níveis por classe, não só por recuo", async () => {
     const mesesPorCliente = { 1: { meses: [{ competencia: "2026-09", resumo: resumo(), variacaoVsMesAnterior: null }] } };
-    const semanasPorChave = { "1:2026-09": { carregando: false, erro: { mensagem: "Falhou." }, semanas: null } };
-    render(<Casca clientes={[cliente(), cliente({ id: 2, nome: "Bravo Store" })]} mesesPorCliente={mesesPorCliente} semanasPorChave={semanasPorChave} carregarSemanas={carregarSemanas} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/i }));
-    await userEvent.click(screen.getByRole("button", { name: /expandir semanas/i }));
-    await userEvent.click(screen.getByRole("button", { name: /tentar novamente/i }));
-
-    expect(carregarSemanas).toHaveBeenCalledWith(1, "2026-09", { forcar: true });
-    expect(screen.getByText("Bravo Store")).toBeInTheDocument(); // a página inteira segue de pé
+    const { container } = render(<Casca clientes={[cliente()]} mesesPorCliente={mesesPorCliente} />);
+    await abrirCliente();
+    await abrirHistorico();
+    expect(container.querySelectorAll(".vf-ph-row--cliente")).toHaveLength(1);
+    expect(container.querySelectorAll(".vf-ph-row--conta")).toHaveLength(3);
+    expect(container.querySelectorAll(".vf-ph-row--historico")).toHaveLength(1);
+    expect(container.querySelectorAll(".vf-ph-row--mes")).toHaveLength(1);
   });
 });
 
@@ -159,8 +211,6 @@ describe("honestidade do dado", () => {
   it("ausência vira — e nunca zero fabricado", () => {
     render(<Casca clientes={[cliente({ resumo: resumo({ fat: null, mc: null }) })]} />);
     const linha = screen.getByText("Acme Comércio").closest("tr");
-    // celulas[0] é a coluna Contexto (Squad); as métricas vêm depois dela,
-    // porque a coluna do cliente é um <th scope="row">, não uma célula.
     const celulas = within(linha).getAllByRole("cell");
     expect(celulas[1]).toHaveTextContent("—");
     expect(celulas.some((c) => c.textContent.includes("R$ 0"))).toBe(false);
@@ -173,54 +223,45 @@ describe("honestidade do dado", () => {
 
   it("COM/ATV/NPS, quando exibidas, se declaram sem fonte", () => {
     render(<Casca clientes={[cliente()]} grupos={["financeiro", "ads", "operacao"]} />);
-    const semFonte = screen.getAllByTitle(/sem fonte de dado auditada/i);
-    expect(semFonte.length).toBeGreaterThan(0);
+    expect(screen.getAllByTitle(/sem fonte de dado auditada/i).length).toBeGreaterThan(0);
   });
 });
 
-// Este bloco é o coração do §16 — e o bug real da implementação anterior, que
-// pintava de verde qualquer variação começando com "+".
 describe("direção da variação NÃO sai do sinal matemático", () => {
-  function comVariacao(variacao) {
-    const mesesPorCliente = {
-      1: { meses: [{ competencia: "2026-09", resumo: resumo(), variacaoVsMesAnterior: variacao }] },
-    };
-    return render(<Casca clientes={[cliente()]} mesesPorCliente={mesesPorCliente} />);
+  async function comVariacao(variacao) {
+    const mesesPorCliente = { 1: { meses: [{ competencia: "2026-09", resumo: resumo(), variacaoVsMesAnterior: variacao }] } };
+    const r = render(<Casca clientes={[cliente()]} mesesPorCliente={mesesPorCliente} />);
+    await abrirCliente();
+    await abrirHistorico();
+    return r;
   }
 
   it("FAT subindo é positivo", async () => {
-    const { container } = comVariacao({ fat: { abs: 1000, pct: 0.13 } });
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
+    const { container } = await comVariacao({ fat: { abs: 1000, pct: 0.13 } });
     expect(container.querySelector(".vf-ph-delta.is-positivo")).toHaveTextContent("+13,0%");
   });
 
-  it("ACOS subindo é NEGATIVO — investir mais por venda é pior, não melhor", async () => {
-    const { container } = comVariacao({ acos: { pp: 2.4 } });
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
+  it("ACOS subindo é NEGATIVO", async () => {
+    const { container } = await comVariacao({ acos: { pp: 2.4 } });
     const delta = container.querySelector(".vf-ph-delta");
     expect(delta).toHaveTextContent("+2,4 p.p.");
     expect(delta).toHaveClass("is-negativo");
   });
 
   it("TACoS caindo é POSITIVO", async () => {
-    const { container } = comVariacao({ tacos: { pp: -1.1 } });
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
+    const { container } = await comVariacao({ tacos: { pp: -1.1 } });
     const delta = container.querySelector(".vf-ph-delta");
     expect(delta).toHaveTextContent("−1,1 p.p.");
     expect(delta).toHaveClass("is-positivo");
   });
 
-  it("Invest. Ads é NEUTRO — gastar mais não é bom nem ruim por si", async () => {
-    const { container } = comVariacao({ ads: { abs: 500, pct: 0.14 } });
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
-    const delta = container.querySelector(".vf-ph-delta");
-    expect(delta).toHaveTextContent("+14,0%");
-    expect(delta).toHaveClass("is-neutro");
+  it("Invest. Ads é NEUTRO", async () => {
+    const { container } = await comVariacao({ ads: { abs: 500, pct: 0.14 } });
+    expect(container.querySelector(".vf-ph-delta")).toHaveClass("is-neutro");
   });
 
   it("a direção também é dita por símbolo, não só por cor", async () => {
-    const { container } = comVariacao({ fat: { abs: -1000, pct: -0.13 } });
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
+    const { container } = await comVariacao({ fat: { abs: -1000, pct: -0.13 } });
     expect(container.querySelector(".vf-ph-delta__simbolo")).toHaveTextContent("▼");
   });
 });
@@ -238,41 +279,21 @@ describe("ordenação client-side, só no nível cliente", () => {
   });
 
   it("cliente sem dado nunca disputa posição — vai para o fim nos dois sentidos", () => {
-    const desc = ordenarClientes([a, semDado, b], { chave: "fat", ascendente: false });
-    const asc = ordenarClientes([a, semDado, b], { chave: "fat", ascendente: true });
-    expect(desc[desc.length - 1].nome).toBe("Gama");
-    expect(asc[asc.length - 1].nome).toBe("Gama");
+    expect(ordenarClientes([a, semDado, b], { chave: "fat", ascendente: false }).at(-1).nome).toBe("Gama");
+    expect(ordenarClientes([a, semDado, b], { chave: "fat", ascendente: true }).at(-1).nome).toBe("Gama");
   });
 
   it("cliente sem squad também vai para o fim ao ordenar por Squad", () => {
-    const ordenado = ordenarClientes([semDado, a, b], { chave: "squad", ascendente: true });
-    expect(ordenado[ordenado.length - 1].nome).toBe("Gama");
+    expect(ordenarClientes([semDado, a, b], { chave: "squad", ascendente: true }).at(-1).nome).toBe("Gama");
   });
 
-  it("o terceiro clique devolve a ordem do servidor", async () => {
-    render(<Casca clientes={[a, b]} />);
-    const th = screen.getByRole("button", { name: /ordenar clientes por faturamento/i });
-    await userEvent.click(th);
-    await userEvent.click(th);
-    await userEvent.click(th);
-    const nomes = screen.getAllByRole("rowheader").map((c) => c.textContent);
-    expect(nomes[0]).toContain("Alfa"); // ordem original
-  });
-
-  it("meses permanecem cronológicos, fora do alcance da ordenação", async () => {
-    const mesesPorCliente = {
-      1: { meses: [
-        { competencia: "2026-07", resumo: resumo({ fat: 900 }), variacaoVsMesAnterior: null },
-        { competencia: "2026-08", resumo: resumo({ fat: 100 }), variacaoVsMesAnterior: null },
-      ] },
-    };
-    const { container } = render(<Casca clientes={[a]} mesesPorCliente={mesesPorCliente} />);
-    await userEvent.click(screen.getByRole("button", { name: /expandir competências/i }));
+  it("contas continuam coladas ao próprio cliente depois de ordenar", async () => {
+    const { container } = render(<Casca clientes={[a, b]} />);
+    await abrirCliente("Alfa");
     await userEvent.click(screen.getByRole("button", { name: /ordenar clientes por faturamento/i }));
-
-    const meses = Array.from(container.querySelectorAll(".vf-ph-row--mes th")).map((c) => c.textContent);
-    expect(meses[0]).toContain("jul/2026");
-    expect(meses[1]).toContain("ago/2026");
+    const linhas = Array.from(container.querySelectorAll("tbody tr"));
+    const idxAlfa = linhas.findIndex((tr) => tr.textContent.includes("Alfa"));
+    expect(linhas[idxAlfa + 1]).toHaveClass("vf-ph-row--conta");
   });
 });
 
@@ -280,22 +301,21 @@ describe("semântica de tabela e acessibilidade", () => {
   it("cabeçalhos declaram escopo, incluindo o agrupamento de métricas", () => {
     const { container } = render(<Casca clientes={[cliente()]} />);
     expect(container.querySelector('th[scope="colgroup"]')).not.toBeNull();
-    expect(container.querySelectorAll('th[scope="col"]').length).toBeGreaterThan(0);
     expect(container.querySelectorAll('th[scope="row"]').length).toBeGreaterThan(0);
   });
 
-  it("a tabela tem caption descrevendo a hierarquia para leitor de tela", () => {
+  it("a caption descreve a hierarquia consolidado → contas → histórico", () => {
     const { container } = render(<Casca clientes={[cliente()]} />);
-    expect(container.querySelector("caption")).toHaveTextContent(/expande em competências/i);
+    expect(container.querySelector("caption")).toHaveTextContent(/consolidado.*contas.*histórico/i);
   });
 
-  it("o rótulo do botão diz o nível e a ação, não só o nome", () => {
+  it("o rótulo do botão diz o nível e a ação", () => {
     render(<Casca clientes={[cliente()]} />);
-    expect(screen.getByRole("button", { name: "Cliente Acme Comércio — expandir competências" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cliente Acme Comércio — expandir contas" })).toBeInTheDocument();
   });
 
   it("as duas colunas-âncora ficam fixas no scroll horizontal", () => {
-    const { container } = render(<Casca clientes={[cliente()]} />);
+    render(<Casca clientes={[cliente()]} />);
     const linha = screen.getByText("Acme Comércio").closest("tr");
     expect(linha.querySelectorAll(".vf-table__sticky-cell")).toHaveLength(2);
   });

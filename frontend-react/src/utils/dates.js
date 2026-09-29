@@ -40,6 +40,15 @@ export function competenciaAtual(agora = new Date()) {
   return `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, "0")}`;
 }
 
+// Competência corrente no fuso de NEGÓCIO (São Paulo), não no fuso do
+// navegador: às 22h do dia 30 em Lisboa ainda é o mês do servidor/sync.
+export function competenciaNoFuso(agora = new Date(), timeZone = "America/Sao_Paulo") {
+  const partes = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit" }).formatToParts(agora);
+  const ano = partes.find((p) => p.type === "year")?.value;
+  const mes = partes.find((p) => p.type === "month")?.value;
+  return ano && mes ? `${ano}-${mes}` : competenciaAtual(agora);
+}
+
 // Últimas N competências, da mais recente para a mais antiga, incluindo o mês
 // corrente (que a tela marca como "Período parcial").
 export function competenciasRecentes(quantidade = 13, agora = new Date()) {

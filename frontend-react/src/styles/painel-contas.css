@@ -66,8 +66,17 @@
   min-width: 132px;
 }
 
-.vf-ph-filtro--ano {
-  min-width: 88px;
+/* Competência é o filtro que define a tela inteira: um pouco mais de peso. */
+.vf-ph-filtro--competencia {
+  min-width: 150px;
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-ph-legado {
+  flex: 0 0 auto;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+  white-space: nowrap;
 }
 
 /* ── Resumo da carteira (§24) ───────────────────────────────────────────
@@ -89,7 +98,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-.vf-ph-resumo > span + span::before {
+.vf-ph-resumo > * + *::before {
   content: "·";
   margin-right: var(--vf-sp-3);
   color: var(--vf-border-strong);
@@ -100,8 +109,46 @@
   color: var(--vf-text-secondary);
 }
 
-.vf-ph-resumo__alerta {
+.vf-ph-resumo__alerta,
+.vf-ph-resumo__item.is-alerta {
   color: var(--vf-warning-strong);
+}
+
+/* Cada número do resumo é também atalho de filtro — texto primeiro, botão
+   depois: sem caixa, sublinhado só no hover/foco e quando está ativo. */
+.vf-ph-resumo__item {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.vf-ph-resumo__item::before {
+  margin-right: var(--vf-sp-3);
+}
+
+.vf-ph-resumo__item:hover,
+.vf-ph-resumo__item:focus-visible,
+.vf-ph-resumo__item.is-ativo {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.vf-ph-resumo__item:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 2px;
+}
+
+.vf-ph-resumo__item.is-ativo {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary-strong);
+}
+
+.vf-ph-resumo__nota {
+  color: var(--vf-text-muted);
+  cursor: help;
 }
 
 .vf-ph-resumo__atualizando {

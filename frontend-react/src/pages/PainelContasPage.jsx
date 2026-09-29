@@ -1,38 +1,35 @@
 // frontend-react/src/pages/PainelContasPage.jsx
 //
-// Painel de Controle de Contas por Squad — console administrativo da
-// carteira. Escopo GLOBAL (data-vf-scope="global", como Carteira/Clientes):
-// não depende de Cliente+Operação escolhidos no Shell — é a própria carteira
-// agrupada por Squad. Autorização inteira no servidor (GET /painel-contas);
-// o filtro de Squad aqui é preferência de exibição, nunca fonte de acesso
-// (Auditoria §15).
+// Painel de Contas — tela operacional da carteira. Escopo GLOBAL
+// (data-vf-scope="global", como Carteira/Clientes). Autorização inteira no
+// servidor (GET /painel-contas); todo filtro daqui é preferência de exibição.
 //
-// Layout: container WIDE + densidade compacta. A tela tem até onze colunas
-// numéricas e existe para varrer dezenas de clientes de uma vez — cabeçalho
-// e filtros ocupam o mínimo, a tabela fica com todo o resto. Header e
-// toolbar são fixos em altura; só a tabela cresce.
+// Contrato de leitura em 10 segundos:
+//   - QUAL competência estou vendo (cabeçalho + seletor);
+//   - quantos estão com dados / sem dados / parciais / manuais / pedem ação;
+//   - por cliente: o número é consolidado ou de uma conta, de quantas contas,
+//     de que fonte, atualizado quando e até que dia — ou, sem número, POR QUÊ.
 //
-// O texto sobre a natureza do dado (snapshot mensal, sincronização manual)
-// saiu do cabeçalho: é detalhe de sistema, não a mensagem principal de quem
-// abre a tela às 8h para achar um cliente. Continua disponível onde ajuda —
-// no rodapé de contexto e nos tooltips de cada métrica.
+// Layout: container WIDE + densidade compacta. Header e toolbar são fixos em
+// altura; só a tabela cresce.
 
+import { useCallback, useState } from "react";
 import { usePainelContas } from "../hooks/usePainelContas.js";
-import { ToolbarPainel } from "../components/painelContas/ToolbarPainel.jsx";
+import { ToolbarPainel, OPCOES_STATUS } from "../components/painelContas/ToolbarPainel.jsx";
 import { useGruposDeColunas } from "../components/painelContas/MenuColunas.jsx";
 import { TabelaHierarquica, useExpansao } from "../components/painelContas/TabelaHierarquica.jsx";
+import { LancamentoManualDrawer } from "../components/painelContas/LancamentoManualDrawer.jsx";
 import { colunasVisiveis } from "../components/painelContas/colunas.js";
+import { rotularCompetencia, rotularCompetenciaCurta } from "../utils/dates.js";
 
-// §23: cinco situações diferentes, cinco mensagens diferentes. "Nenhum
-// resultado" para tudo obriga a pessoa a descobrir sozinha o que aconteceu.
-function EstadoVazio({ busca, squadId, squadsDoUsuario, onLimpar }) {
+// Situações diferentes, mensagens diferentes. "Nenhum resultado" para tudo
+// obriga a pessoa a descobrir sozinha o que aconteceu.
+function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, onLimpar }) {
   if (busca.trim()) {
     return (
       <div className="vf-empty">
         <p className="vf-empty__title">Nenhum cliente para “{busca.trim()}”</p>
-        <p className="vf-empty__description">
-          A busca cobre nome e slug do cliente, dentro da sua carteira.
-        </p>
+        <p className="vf-empty__description">A busca cobre nome e slug do cliente, dentro da sua carteira.</p>
         <div className="vf-empty__actions">
           <button type="button" className="vf-btn vf-btn--sm" onClick={onLimpar}>Limpar filtros</button>
         </div>
@@ -41,17 +38,26 @@ function EstadoVazio({ busca, squadId, squadsDoUsuario, onLimpar }) {
   }
 
   if (squadId != null) {
-    const squad = squadsDoUsuario.find((s) => s.id === squadId);
+    const squad = squadsDisponiveis.find((s) => s.id === squadId);
     return (
       <div className="vf-empty">
-        <p className="vf-empty__title">
-          {squad ? `Nenhum cliente no squad ${squad.nome}` : "Nenhum cliente neste squad"}
-        </p>
-        <p className="vf-empty__description">
-          O squad existe e você tem acesso a ele, mas nenhum cliente da sua carteira está vinculado a ele agora.
-        </p>
+        <p className="vf-empty__title">{squad ? `Nenhum cliente no squad ${squad.nome}` : "Nenhum cliente neste squad"}</p>
+        <p className="vf-empty__description">Nenhum cliente da sua carteira está vinculado a este squad agora.</p>
         <div className="vf-empty__actions">
           <button type="button" className="vf-btn vf-btn--sm" onClick={onLimpar}>Ver todos os squads</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (status && status !== "todos") {
+    const rotulo = (OPCOES_STATUS.find((o) => o.valor === status)?.rotulo || status).toLowerCase();
+    return (
+      <div className="vf-empty">
+        <p className="vf-empty__title">Nenhum cliente {rotulo} em {rotularCompetenciaCurta(competencia)}</p>
+        <p className="vf-empty__description">O filtro de status vale só para a competência selecionada.</p>
+        <div className="vf-empty__actions">
+          <button type="button" className="vf-btn vf-btn--sm" onClick={onLimpar}>Limpar filtros</button>
         </div>
       </div>
     );
@@ -68,23 +74,30 @@ function EstadoVazio({ busca, squadId, squadsDoUsuario, onLimpar }) {
 }
 
 export default function PainelContasPage() {
+  const painel = usePainelContas();
   const {
-    ano, setAno, squadId, setSquadId, busca, setBusca,
-    anoPadrao, temFiltroAtivo, limparFiltros,
-    squadsDoUsuario, clientes, carregando, atualizando, erro, recarregar,
+    competencia, setCompetencia, competenciaPadrao,
+    squadId, setSquadId, busca, setBusca, status, setStatus,
+    marketplace, setMarketplace, mostrarLegado, setMostrarLegado,
+    temFiltroAtivo, limparFiltros,
+    clientes, resumoCarteira, squadsDisponiveis, marketplacesDisponiveis,
+    carregando, atualizando, erro, recarregar,
     mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
-  } = usePainelContas();
+    salvarManual, removerManual,
+  } = painel;
 
   const { grupos, alternar: alternarGrupo } = useGruposDeColunas();
   const expansao = useExpansao();
   const colunas = colunasVisiveis(grupos);
+  const [lancamento, setLancamento] = useState(null); // { cliente, conta }
+
+  const abrirLancamento = useCallback((cliente, conta) => setLancamento({ cliente, conta }), []);
+  const fecharLancamento = useCallback(() => setLancamento(null), []);
 
   const temClientes = Boolean(clientes && clientes.length > 0);
-  // Lista cheia mas nenhum resumo: não é carteira vazia nem filtro sem
-  // resultado — é o ANO escolhido que não tem snapshot. Isso é uma nota
-  // sobre a tabela, não um vazio no lugar dela: os clientes existem e
-  // continuam na tela.
-  const anoSemDado = temClientes && clientes.every((c) => !c.resumo);
+  // Lista cheia mas ninguém com número NA COMPETÊNCIA: nota sobre a tabela, não
+  // um vazio no lugar dela — os clientes existem e continuam na tela.
+  const competenciaSemDado = temClientes && clientes.every((c) => !c.resumo);
 
   return (
     <div className="vf-page-shell vf-ph-shell" data-vf-density="compact">
@@ -94,7 +107,7 @@ export default function PainelContasPage() {
             <p className="vf-page-header__eyebrow">Controle da carteira</p>
             <h1 className="vf-page-header__title">Painel de Contas</h1>
             <p className="vf-page-header__description">
-              Visão consolidada dos clientes por Squad, competência e semana.
+              {rotularCompetencia(competencia)} · dados operacionais da carteira
             </p>
           </div>
         </header>
@@ -114,11 +127,14 @@ export default function PainelContasPage() {
         {clientes && (
           <ToolbarPainel
             busca={busca} onBusca={setBusca}
-            ano={ano} onAno={setAno} anoPadrao={anoPadrao}
-            squadId={squadId} onSquad={setSquadId} squadsDoUsuario={squadsDoUsuario}
+            competencia={competencia} onCompetencia={setCompetencia} competenciaPadrao={competenciaPadrao}
+            squadId={squadId} onSquad={setSquadId} squadsDisponiveis={squadsDisponiveis}
+            status={status} onStatus={setStatus}
+            marketplace={marketplace} onMarketplace={setMarketplace} marketplacesDisponiveis={marketplacesDisponiveis}
+            mostrarLegado={mostrarLegado} onMostrarLegado={setMostrarLegado}
             temFiltroAtivo={temFiltroAtivo} onLimpar={limparFiltros}
             grupos={grupos} onAlternarGrupo={alternarGrupo}
-            clientes={clientes} atualizando={atualizando}
+            resumoCarteira={resumoCarteira} atualizando={atualizando}
             temExpandido={expansao.temExpandido} onRecolherTudo={expansao.recolherTudo}
           />
         )}
@@ -129,7 +145,6 @@ export default function PainelContasPage() {
             <div className="vf-skeleton vf-skeleton--row" />
             <div className="vf-skeleton vf-skeleton--row" />
             <div className="vf-skeleton vf-skeleton--row" />
-            <div className="vf-skeleton vf-skeleton--row" />
           </div>
         )}
 
@@ -137,19 +152,21 @@ export default function PainelContasPage() {
           <EstadoVazio
             busca={busca}
             squadId={squadId}
-            squadsDoUsuario={squadsDoUsuario}
+            status={status}
+            competencia={competencia}
+            squadsDisponiveis={squadsDisponiveis}
             onLimpar={limparFiltros}
           />
         )}
 
         {temClientes && (
           <>
-            {anoSemDado && (
+            {competenciaSemDado && (
               <div className="vf-banner is-info vf-banner--compact" role="status">
                 <div className="vf-banner__content">
                   <p className="vf-banner__description">
-                    Nenhum cliente da carteira tem snapshot sincronizado em {ano}. Os clientes continuam listados,
-                    sem dado — nada foi escondido.
+                    Nenhum cliente listado tem dados em {rotularCompetencia(competencia)}. Cada linha diz o motivo;
+                    para ver outro mês, troque a competência — nada é preenchido com um mês diferente.
                   </p>
                 </div>
               </div>
@@ -157,27 +174,37 @@ export default function PainelContasPage() {
 
             <TabelaHierarquica
               clientes={clientes}
+              competencia={competencia}
               colunas={colunas}
               grupos={grupos}
-              clientesAbertos={expansao.clientesAbertos}
-              mesesAbertos={expansao.mesesAbertos}
-              alternarCliente={expansao.alternarCliente}
-              alternarMes={expansao.alternarMes}
+              expansao={expansao}
               mesesPorCliente={mesesPorCliente}
               carregarMeses={carregarMeses}
               semanasPorChave={semanasPorChave}
               carregarSemanas={carregarSemanas}
               atualizando={atualizando}
+              onLancar={abrirLancamento}
             />
 
             <p className="vf-ph-rodape">
-              Os números vêm do snapshot mensal já sincronizado de cada cliente — a sincronização é disparada
-              manualmente, então a data ao lado do cliente é o que define a atualidade do dado. Semana tem apenas
-              FAT: nenhuma outra métrica tem série diária persistida, e nada é rateado a partir do mês.
+              Cada linha mostra a competência selecionada. O número do cliente é o consolidado das contas indicadas ao
+              lado do nome; ao expandir, cada conta aparece com o próprio número (o mesmo da Central de Vendas para
+              aquela conta). Ads é medido por cliente. Fonte API = sincronização automática; Manual = lançado pela equipe.
             </p>
           </>
         )}
       </div>
+
+      {lancamento && (
+        <LancamentoManualDrawer
+          cliente={lancamento.cliente}
+          contaInicial={lancamento.conta}
+          competencia={competencia}
+          onSalvar={salvarManual}
+          onRemover={removerManual}
+          onFechar={fecharLancamento}
+        />
+      )}
     </div>
   );
 }

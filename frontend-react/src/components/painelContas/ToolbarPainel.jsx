@@ -1,58 +1,81 @@
 // frontend-react/src/components/painelContas/ToolbarPainel.jsx
 //
-// Barra de controle do Painel de Contas. Substitui os três campos de
-// formulário soltos que existiam antes: numa tela de administração os
-// filtros são INSTRUMENTO, não um formulário a preencher — por isso busca,
-// Squad e Ano ficam numa linha só, sem rótulo flutuante em cima de cada um
-// (o próprio controle diz o que é: placeholder na busca, valor selecionado
-// nos selects), com rótulo acessível preservado em `aria-label`.
+// Barra de controle do Painel de Contas. Filtros são INSTRUMENTO, não
+// formulário: uma linha só, sem rótulo flutuante em cima de cada controle (o
+// próprio controle diz o que é), com rótulo acessível em `aria-label`.
 //
-// A faixa de baixo é o resumo administrativo (§24): contagens DERIVADAS do
-// payload que já está na tela — nenhuma requisição nova, nenhum "health
-// score" inventado. É uma linha de texto, não cards de KPI: a tabela
-// continua sendo o elemento dominante.
+//   Buscar · Competência · Squad · Status · Marketplace · [ ] Mostrar legado
+//
+// A COMPETÊNCIA é a peça central: a tabela inteira representa exatamente o
+// mês escolhido — nunca "o último mês que cada cliente tem".
+//
+// A faixa de baixo é o resumo da carteira NA COMPETÊNCIA, calculado pelo
+// servidor sobre a carteira filtrada (squad/busca/marketplace/legado), antes do
+// filtro de status — por isso cada número também funciona como atalho para
+// filtrar. É uma linha de texto, não cards de KPI: a tabela continua dominante.
 
 import { useMemo } from "react";
-import { plural } from "../../utils/numbers.js";
+import { formatarNumero } from "../../utils/numbers.js";
+import { rotularCompetencia, competenciaAnterior } from "../../utils/dates.js";
 import { MenuColunas } from "./MenuColunas.jsx";
 
-// Janela pequena e estática — não há endpoint de "anos com dado". O ano
-// vindo da URL entra na lista mesmo fora da janela, senão um link
+const JANELA_COMPETENCIAS = 24;
+
+export const OPCOES_STATUS = [
+  { valor: "todos", rotulo: "Todos os status" },
+  { valor: "com_dados", rotulo: "Com dados" },
+  { valor: "sem_dados", rotulo: "Sem dados" },
+  { valor: "parcial", rotulo: "Parcial" },
+  { valor: "manual", rotulo: "Manual" },
+  { valor: "automatico", rotulo: "Automático" },
+  { valor: "atencao", rotulo: "Precisa de atenção" },
+];
+
+// Últimos 24 meses a partir da competência corrente (São Paulo). Uma
+// competência vinda da URL entra na lista mesmo fora da janela — senão um link
 // compartilhado apontaria para um valor que o select não consegue exibir.
-export function anosDisponiveis(anoAtual, anoSelecionado) {
-  const base = [anoAtual, anoAtual - 1, anoAtual - 2, anoAtual - 3];
-  if (anoSelecionado != null && !base.includes(Number(anoSelecionado))) base.push(Number(anoSelecionado));
-  return base.sort((a, b) => b - a);
+export function competenciasDisponiveis(competenciaPadrao, selecionada) {
+  const lista = [];
+  let cursor = competenciaPadrao;
+  for (let i = 0; i < JANELA_COMPETENCIAS; i++) {
+    lista.push(cursor);
+    cursor = competenciaAnterior(cursor);
+  }
+  if (selecionada && !lista.includes(selecionada)) lista.push(selecionada);
+  return lista.sort().reverse();
 }
 
-// `resumo` nulo = cliente que nunca foi sincronizado (o backend devolve a
-// linha assim mesmo, de propósito: cliente sem dado nunca é escondido).
-export function resumirCarteira(clientes) {
-  const lista = Array.isArray(clientes) ? clientes : [];
-  const squads = new Set(lista.map((c) => c.squad?.id).filter((id) => id != null));
-  const comDados = lista.filter((c) => c.resumo).length;
-  return {
-    total: lista.length,
-    squads: squads.size,
-    comDados,
-    semSincronizacao: lista.length - comDados,
-  };
+function ItemResumo({ valor, rotulo, status, statusAtual, onStatus, tom = "" }) {
+  const ativo = statusAtual === status;
+  return (
+    <button
+      type="button"
+      className={`vf-ph-resumo__item ${tom}${ativo ? " is-ativo" : ""}`}
+      aria-pressed={ativo}
+      onClick={() => onStatus(ativo ? "todos" : status)}
+    >
+      {formatarNumero(valor)} {rotulo}
+    </button>
+  );
 }
 
 export function ToolbarPainel({
   busca, onBusca,
-  ano, onAno, anoPadrao,
-  squadId, onSquad, squadsDoUsuario,
+  competencia, onCompetencia, competenciaPadrao,
+  squadId, onSquad, squadsDisponiveis,
+  status, onStatus,
+  marketplace, onMarketplace, marketplacesDisponiveis,
+  mostrarLegado, onMostrarLegado,
   temFiltroAtivo, onLimpar,
   grupos, onAlternarGrupo,
-  clientes, atualizando,
+  resumoCarteira, atualizando,
   temExpandido, onRecolherTudo,
 }) {
-  const resumo = useMemo(() => resumirCarteira(clientes), [clientes]);
-  // Um Squad só: o filtro não filtra nada. Esconder é mais honesto que
-  // oferecer um controle sem efeito.
-  const mostrarFiltroSquad = squadsDoUsuario.length > 1;
-  const anos = useMemo(() => anosDisponiveis(anoPadrao, ano), [anoPadrao, ano]);
+  const competencias = useMemo(() => competenciasDisponiveis(competenciaPadrao, competencia), [competenciaPadrao, competencia]);
+  // Controle sem efeito não aparece: um squad só / um marketplace só.
+  const mostrarFiltroSquad = squadsDisponiveis.length > 1 || squadId != null;
+  const mostrarFiltroMarketplace = marketplacesDisponiveis.length > 1 || marketplace != null;
+  const r = resumoCarteira;
 
   return (
     <div className="vf-ph-barra">
@@ -67,6 +90,17 @@ export function ToolbarPainel({
             onChange={(e) => onBusca(e.target.value)}
           />
 
+          <select
+            className="vf-select vf-select--sm vf-ph-filtro vf-ph-filtro--competencia"
+            aria-label="Competência"
+            value={competencia}
+            onChange={(e) => onCompetencia(e.target.value)}
+          >
+            {competencias.map((c) => (
+              <option key={c} value={c}>{rotularCompetencia(c)}</option>
+            ))}
+          </select>
+
           {mostrarFiltroSquad && (
             <select
               className="vf-select vf-select--sm vf-ph-filtro"
@@ -75,22 +109,37 @@ export function ToolbarPainel({
               onChange={(e) => onSquad(e.target.value === "" ? null : Number(e.target.value))}
             >
               <option value="">Todos os squads</option>
-              {squadsDoUsuario.map((s) => (
+              {squadsDisponiveis.map((s) => (
                 <option key={s.id} value={s.id}>{s.nome}</option>
               ))}
             </select>
           )}
 
           <select
-            className="vf-select vf-select--sm vf-ph-filtro vf-ph-filtro--ano"
-            aria-label="Filtrar por ano"
-            value={ano}
-            onChange={(e) => onAno(Number(e.target.value))}
+            className="vf-select vf-select--sm vf-ph-filtro"
+            aria-label="Filtrar por status"
+            value={status}
+            onChange={(e) => onStatus(e.target.value)}
           >
-            {anos.map((a) => (
-              <option key={a} value={a}>{a}</option>
-            ))}
+            {OPCOES_STATUS.map((o) => <option key={o.valor} value={o.valor}>{o.rotulo}</option>)}
           </select>
+
+          {mostrarFiltroMarketplace && (
+            <select
+              className="vf-select vf-select--sm vf-ph-filtro"
+              aria-label="Filtrar por marketplace"
+              value={marketplace ?? ""}
+              onChange={(e) => onMarketplace(e.target.value === "" ? null : e.target.value)}
+            >
+              <option value="">Todos os marketplaces</option>
+              {marketplacesDisponiveis.map((m) => <option key={m.codigo} value={m.codigo}>{m.rotulo}</option>)}
+            </select>
+          )}
+
+          <label className="vf-check vf-ph-legado">
+            <input type="checkbox" checked={mostrarLegado} onChange={(e) => onMostrarLegado(e.target.checked)} />
+            <span>Mostrar legado</span>
+          </label>
 
           {temFiltroAtivo && (
             <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={onLimpar}>
@@ -109,15 +158,22 @@ export function ToolbarPainel({
         </div>
       </div>
 
-      <p className="vf-ph-resumo" aria-live="polite">
-        <span className="vf-ph-resumo__forte">{plural(resumo.total, "cliente", "clientes")}</span>
-        {resumo.squads > 0 && <span>{plural(resumo.squads, "squad", "squads")}</span>}
-        <span>{resumo.comDados} com dados</span>
-        {resumo.semSincronizacao > 0 && (
-          <span className="vf-ph-resumo__alerta">{resumo.semSincronizacao} sem sincronização</span>
-        )}
-        {atualizando && <span className="vf-ph-resumo__atualizando">Atualizando…</span>}
-      </p>
+      {r && (
+        <p className="vf-ph-resumo" aria-live="polite" data-testid="resumo-carteira">
+          <span className="vf-ph-resumo__forte">{formatarNumero(r.operacionais)} operacionais</span>
+          <ItemResumo valor={r.comDados} rotulo="com dados" status="com_dados" statusAtual={status} onStatus={onStatus} />
+          <ItemResumo valor={r.semDados} rotulo="sem dados" status="sem_dados" statusAtual={status} onStatus={onStatus} tom={r.semDados > 0 ? "is-alerta" : ""} />
+          {r.parciais > 0 && <ItemResumo valor={r.parciais} rotulo="parciais" status="parcial" statusAtual={status} onStatus={onStatus} />}
+          {r.manuais > 0 && <ItemResumo valor={r.manuais} rotulo="manuais" status="manual" statusAtual={status} onStatus={onStatus} />}
+          {r.atencao > 0 && <ItemResumo valor={r.atencao} rotulo="precisam de atenção" status="atencao" statusAtual={status} onStatus={onStatus} tom="is-alerta" />}
+          {!mostrarLegado && r.legadoOcultos > 0 && (
+            <span className="vf-ph-resumo__nota" title="Clientes do Squad 8 · Legado ficam fora da lista e das contagens. Marque “Mostrar legado” para consultá-los.">
+              {formatarNumero(r.legadoOcultos)} do legado ocultos
+            </span>
+          )}
+          {atualizando && <span className="vf-ph-resumo__atualizando">Atualizando…</span>}
+        </p>
+      )}
     </div>
   );
 }

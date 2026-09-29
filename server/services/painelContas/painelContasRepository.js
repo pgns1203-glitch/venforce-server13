@@ -1,25 +1,36 @@
 // server/services/painelContas/painelContasRepository.js
-// Leitura em LOTE (nunca 1 query por cliente) sobre os snapshots já
-// persistidos — cliente_360_resumos_mensais (Cliente 360). Investimento e GMV
-// Ads sao lidos da mesma versao gravada no payload do snapshot. Segue o padrão
-// de dashboardService.loadProductionData (Auditoria §13/§18/§19): uma query
-// cobre N clientes, sempre `WHERE c.id = ANY($1::int[])` ou equivalente.
+// Leitura em LOTE (nunca 1 query por cliente) sobre dados já persistidos:
+//   cliente_360_resumos_mensais   snapshot mensal do cliente (Central + Ads)
+//   central_vendas_imports        resultado oficial POR CONTA (resumo_json)
+//   central_vendas_sync_runs      evidência do último sync (só status/código)
+//   ads_resumos_mensais           Ads do cliente (loja "todas")
+//   painel_contas_lancamentos_manuais  lançamento manual por conta
+// Cada query cobre N clientes/contas (`= ANY($1)`), mesmo padrão de
+// dashboardService.loadProductionData (Auditoria §13/§18/§19).
 //
-// NENHUMA chamada aqui aciona cliente360ResultadoService.getResultado nem
-// qualquer motor ao vivo — só leitura do snapshot batch (Auditoria §18 riscos
-// 1/2, ETAPA 1 do checklist §27).
+// NENHUMA chamada aqui aciona motor ao vivo, Orders API ou Ads API — só
+// leitura do que o sync já gravou.
 
+const fs = require("fs");
+const path = require("path");
 const pool = require("../../config/database");
+
+const schemaPath = path.join(__dirname, "..", "..", "sql", "painel_contas_schema.sql");
 
 function toIso(value) {
   if (!value) return null;
   return value instanceof Date ? value.toISOString() : String(value);
 }
 
+function parsePayload(raw) {
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw); } catch (_) { return {}; }
+  }
+  return raw || {};
+}
+
 function mapRow(row) {
-  const payload = typeof row.payload_json === "string"
-    ? (() => { try { return JSON.parse(row.payload_json); } catch (_) { return {}; } })()
-    : (row.payload_json || {});
+  const payload = parsePayload(row.payload_json);
   const central = payload.centralVendas && typeof payload.centralVendas === "object" ? payload.centralVendas : {};
   const ads = payload.ads && typeof payload.ads === "object" ? payload.ads : null;
   return {
@@ -33,39 +44,151 @@ function mapRow(row) {
     lucroContribuicao: central.lucroContribuicao,
     lucroContribuicaoPresente: Object.prototype.hasOwnProperty.call(central, "lucroContribuicao"),
     sincronizadoEm: toIso(row.sincronizado_em),
+    // Proveniência do snapshot: permite provar que ele foi gerado com os
+    // mesmos imports que o Painel lê por conta (painelContasOperacional).
+    fonte: payload.fonte || null,
+    mcFonte: central.mcFonte || null,
+    centralDadosAte: central.dadosAte || null,
+    centralImportIds: Array.isArray(central.contas)
+      ? central.contas.map((c) => Number(c.importId)).filter(Number.isFinite)
+      : null,
   };
 }
 
-// Um resumo por cliente: o mais recente dentro do ano informado (ou o mais
-// recente de qualquer ano, se `ano` for null/undefined). Clientes sem NENHUM
-// snapshot simplesmente não aparecem no resultado — quem chama trata a
-// ausência como `resumo: null`, nunca erro.
-async function listarUltimosResumos(clienteIds, { ano = null } = {}) {
-  if (!Array.isArray(clienteIds) || !clienteIds.length) return [];
-  const anoLike = ano ? `${ano}-%` : null;
-  const { rows } = await pool.query(
-    `/* painelContas:ULTIMO_RESUMO_POR_CLIENTE */
-     SELECT c.id AS cliente_id, c.slug AS cliente_slug,
-            r.competencia, r.faturamento, r.mc_media, r.ads_investido,
-            r.payload_json, r.sincronizado_em
-       FROM clientes c
-       LEFT JOIN LATERAL (
-         SELECT competencia, faturamento, mc_media, ads_investido, payload_json, sincronizado_em
-           FROM cliente_360_resumos_mensais s
-          WHERE s.cliente_id = c.id
-            AND ($2::text IS NULL OR s.competencia LIKE $2)
-          ORDER BY s.competencia DESC
-          LIMIT 1
-       ) r ON true
-      WHERE c.id = ANY($1::int[])`,
-    [clienteIds, anoLike]
-  );
-  return rows.filter((row) => row.competencia !== null).map(mapRow);
+// ─── schema do lançamento manual (single-flight, uma vez por processo) ──────
+
+let ensurePromise = null;
+let ensureConcluido = false;
+
+async function ensurePainelContasTables() {
+  if (ensureConcluido) return;
+  if (!ensurePromise) {
+    ensurePromise = pool.query(fs.readFileSync(schemaPath, "utf8")).then(
+      () => { ensureConcluido = true; ensurePromise = null; },
+      (err) => { ensurePromise = null; throw err; }
+    );
+  }
+  await ensurePromise;
 }
 
-// Todas as competências de um cliente dentro de um ano, ordenadas do mais
-// antigo para o mais recente (para permitir variação mês-a-mês em sequência
-// no service, sem nova query por mês).
+// ─── lista principal (uma competência EXATA) ─────────────────────────────────
+
+// Snapshot DA competência — nunca "o mais recente": um cliente sem setembro
+// não aparece aqui quando a tela está em setembro.
+async function listarResumosDaCompetencia(clienteIds, competencia) {
+  if (!Array.isArray(clienteIds) || !clienteIds.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:RESUMO_DA_COMPETENCIA */
+     SELECT s.cliente_id, s.cliente_slug, s.competencia, s.faturamento, s.mc_media,
+            s.ads_investido, s.payload_json, s.sincronizado_em
+       FROM cliente_360_resumos_mensais s
+      WHERE s.cliente_id = ANY($1::int[])
+        AND s.competencia = $2`,
+    [clienteIds, competencia]
+  );
+  return rows.map(mapRow);
+}
+
+// Só informativo ("último dado: ago/2026") — nunca substitui a competência.
+async function listarUltimaCompetenciaComDado(clienteIds) {
+  if (!Array.isArray(clienteIds) || !clienteIds.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:ULTIMA_COMPETENCIA */
+     SELECT s.cliente_id, MAX(s.competencia) AS competencia
+       FROM cliente_360_resumos_mensais s
+      WHERE s.cliente_id = ANY($1::int[])
+      GROUP BY s.cliente_id`,
+    [clienteIds]
+  );
+  return rows.map((r) => ({ clienteId: Number(r.cliente_id), competencia: r.competencia }));
+}
+
+async function listarContasDeClientes(clienteIds) {
+  if (!Array.isArray(clienteIds) || !clienteIds.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:CONTAS_DOS_CLIENTES */
+     SELECT cc.id, cc.cliente_id, cc.marketplace, cc.nome, cc.slug,
+            cc.external_account_id, cc.is_primary, cc.ativo
+       FROM cliente_contas cc
+      WHERE cc.cliente_id = ANY($1::int[])
+      ORDER BY cc.cliente_id, cc.id`,
+    [clienteIds]
+  );
+  return rows;
+}
+
+// Imports da competência (published/legacy) de N contas. A ESCOLHA do import
+// por conta é feita no service com selecionarMelhorImportPorCompetencia — a
+// mesma regra M4 da leitura da Central de Vendas, nunca uma segunda. Só os
+// campos do resumo oficial saem do JSON (nada de payload/pedidos).
+async function listarImportsDaCompetencia(contaIds, competencia) {
+  if (!Array.isArray(contaIds) || !contaIds.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:IMPORTS_DA_COMPETENCIA */
+     SELECT i.id, i.cliente_conta_id, i.competencia, i.publication_status,
+            i.coverage_date_from, i.coverage_date_to, i.published_at, i.created_at, i.sync_run_id,
+            (i.resumo_json->>'faturamento')::numeric AS faturamento,
+            (i.resumo_json->>'faturamentoComCusto')::numeric AS faturamento_com_custo,
+            (i.resumo_json->>'lucroContribuicao')::numeric AS lucro_contribuicao,
+            (i.resumo_json->>'margemContribuicaoPercentual')::numeric AS margem_contribuicao_percentual,
+            i.resumo_json->>'completenessStatus' AS completeness_status
+       FROM central_vendas_imports i
+      WHERE i.cliente_conta_id = ANY($1::int[])
+        AND i.competencia = $2
+        AND i.publication_status IN ('published', 'legacy')`,
+    [contaIds, competencia]
+  );
+  return rows;
+}
+
+// Último sync_run de cada conta que toca a competência. Só status/código/data
+// — error_message pode carregar texto de terceiros e não sai daqui.
+async function listarUltimoRunPorConta(contaIds, { inicio, fim }) {
+  if (!Array.isArray(contaIds) || !contaIds.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:ULTIMO_RUN_POR_CONTA */
+     SELECT DISTINCT ON (r.cliente_conta_id)
+            r.id, r.cliente_conta_id, r.status, r.error_code, r.created_at
+       FROM central_vendas_sync_runs r
+      WHERE r.cliente_conta_id = ANY($1::int[])
+        AND r.date_from <= $3::date
+        AND r.date_to >= $2::date
+      ORDER BY r.cliente_conta_id, r.created_at DESC, r.id DESC`,
+    [contaIds, inicio, fim]
+  );
+  return rows;
+}
+
+async function listarAdsDaCompetencia(clienteSlugs, competencia) {
+  if (!Array.isArray(clienteSlugs) || !clienteSlugs.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:ADS_DA_COMPETENCIA */
+     SELECT a.cliente_slug, a.investimento_ads, a.gmv_ads, a.updated_at
+       FROM ads_resumos_mensais a
+      WHERE a.cliente_slug = ANY($1::text[])
+        AND a.mes_ref = $2
+        AND a.loja_campanha = 'todas'`,
+    [clienteSlugs, competencia]
+  );
+  return rows;
+}
+
+async function listarManuaisDaCompetencia(contaIds, competencia) {
+  if (!Array.isArray(contaIds) || !contaIds.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:MANUAIS_DA_COMPETENCIA */
+     SELECT m.*, u.nome AS updated_by_nome
+       FROM painel_contas_lancamentos_manuais m
+       LEFT JOIN users u ON u.id = m.updated_by
+      WHERE m.cliente_conta_id = ANY($1::int[])
+        AND m.competencia = $2`,
+    [contaIds, competencia]
+  );
+  return rows;
+}
+
+// ─── histórico do cliente (expansão lazy) ────────────────────────────────────
+
 async function listarResumosDoAno(clienteId, clienteSlug, ano) {
   const { rows } = await pool.query(
     `/* painelContas:RESUMOS_DO_ANO */
@@ -79,4 +202,118 @@ async function listarResumosDoAno(clienteId, clienteSlug, ano) {
   return rows.map(mapRow);
 }
 
-module.exports = { listarUltimosResumos, listarResumosDoAno };
+// ─── lançamento manual (escrita) ─────────────────────────────────────────────
+
+async function obterContaDoCliente(contaId, clienteId) {
+  const { rows } = await pool.query(
+    `/* painelContas:CONTA_DO_CLIENTE */
+     SELECT id, cliente_id, marketplace, nome, slug, external_account_id, is_primary, ativo
+       FROM cliente_contas
+      WHERE id = $1 AND cliente_id = $2`,
+    [contaId, clienteId]
+  );
+  return rows[0] || null;
+}
+
+function valoresParaHistorico(valores) {
+  return {
+    faturamento: valores.faturamento,
+    lucroContribuicao: valores.lucroContribuicao,
+    margemContribuicao: valores.margemContribuicao,
+    investimentoAds: valores.investimentoAds,
+    gmvAds: valores.gmvAds,
+    observacao: valores.observacao,
+  };
+}
+
+async function comTransacao(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const r = await fn(client);
+    await client.query("COMMIT");
+    return r;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Upsert + trilha de auditoria na MESMA transação: não existe alteração
+// manual sem registro de quem fez e com quais valores.
+async function salvarLancamentoManual({ clienteId, contaId, competencia, valores, userId }) {
+  return comTransacao(async (db) => {
+    const { rows } = await db.query(
+      `/* painelContas:UPSERT_MANUAL */
+       INSERT INTO painel_contas_lancamentos_manuais
+         (cliente_id, cliente_conta_id, competencia, faturamento, lucro_contribuicao, margem_contribuicao,
+          investimento_ads, gmv_ads, observacao, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+       ON CONFLICT (cliente_conta_id, competencia) DO UPDATE SET
+         faturamento = EXCLUDED.faturamento,
+         lucro_contribuicao = EXCLUDED.lucro_contribuicao,
+         margem_contribuicao = EXCLUDED.margem_contribuicao,
+         investimento_ads = EXCLUDED.investimento_ads,
+         gmv_ads = EXCLUDED.gmv_ads,
+         observacao = EXCLUDED.observacao,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = NOW()
+       RETURNING *, (xmax = 0) AS inserido`,
+      [clienteId, contaId, competencia, valores.faturamento, valores.lucroContribuicao, valores.margemContribuicao,
+        valores.investimentoAds, valores.gmvAds, valores.observacao, userId ?? null]
+    );
+    const row = rows[0];
+    await db.query(
+      `/* painelContas:HISTORICO_MANUAL */
+       INSERT INTO painel_contas_lancamentos_manuais_historico
+         (lancamento_id, cliente_id, cliente_conta_id, competencia, acao, valores_json, user_id)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)`,
+      [row.id, clienteId, contaId, competencia, row.inserido ? "criado" : "alterado", JSON.stringify(valoresParaHistorico(valores)), userId ?? null]
+    );
+    return row;
+  });
+}
+
+async function removerLancamentoManual({ clienteId, contaId, competencia, userId }) {
+  return comTransacao(async (db) => {
+    const { rows } = await db.query(
+      `/* painelContas:DELETE_MANUAL */
+       DELETE FROM painel_contas_lancamentos_manuais
+        WHERE cliente_conta_id = $1 AND competencia = $2 AND cliente_id = $3
+        RETURNING *`,
+      [contaId, competencia, clienteId]
+    );
+    const row = rows[0];
+    if (!row) return null;
+    await db.query(
+      `/* painelContas:HISTORICO_MANUAL */
+       INSERT INTO painel_contas_lancamentos_manuais_historico
+         (lancamento_id, cliente_id, cliente_conta_id, competencia, acao, valores_json, user_id)
+       VALUES ($1,$2,$3,$4,'removido',$5::jsonb,$6)`,
+      [row.id, clienteId, contaId, competencia, JSON.stringify({
+        faturamento: row.faturamento, lucroContribuicao: row.lucro_contribuicao,
+        margemContribuicao: row.margem_contribuicao, investimentoAds: row.investimento_ads,
+        gmvAds: row.gmv_ads, observacao: row.observacao,
+      }), userId ?? null]
+    );
+    return row;
+  });
+}
+
+module.exports = {
+  ensurePainelContasTables,
+  listarResumosDaCompetencia,
+  listarUltimaCompetenciaComDado,
+  listarContasDeClientes,
+  listarImportsDaCompetencia,
+  listarUltimoRunPorConta,
+  listarAdsDaCompetencia,
+  listarManuaisDaCompetencia,
+  listarResumosDoAno,
+  obterContaDoCliente,
+  salvarLancamentoManual,
+  removerLancamentoManual,
+  mapRow,
+};

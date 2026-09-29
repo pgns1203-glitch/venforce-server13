@@ -1,32 +1,31 @@
 // frontend-react/src/hooks/usePainelContas.js
 //
-// Estado do Painel de Controle de Contas por Squad: filtros de nível 1
-// (ano/squadId/busca) + expansão lazy dos níveis 2 (meses de um cliente) e 3
-// (semanas de um mês) — cada um só busca quando a linha é aberta pela
-// primeira vez (Auditoria §14). Guarda de corrida (mesmo padrão de
-// useVisao.js) só no nível 1, onde a MESMA chave (ano/squadId/busca) muda de
-// valor ao longo do tempo — nos níveis 2/3 cada chave (clienteId / clienteId+
-// competencia) é imutável, então uma resposta tardia nunca é dado errado
-// para a linha, só um fetch duplicado inofensivo; por isso o cache evita
+// Estado do Painel de Contas: filtros (competência/squad/busca/status/
+// marketplace/legado) + expansão lazy do histórico mensal de um cliente e das
+// semanas de um mês. As CONTAS de cada cliente já vêm na lista (lote no
+// servidor), então abrir um cliente não custa requisição; só o histórico e as
+// semanas são buscados sob demanda. Guarda de corrida (mesmo padrão de
+// useVisao.js) só na lista, onde a MESMA chave de filtros muda de valor ao
+// longo do tempo — nos níveis lazy cada chave é imutável, então o cache evita
 // refetch em vez de guardar contra corrida.
 //
-// ── Busca com debounce ───────────────────────────────────────────────────
-// `busca` é o que está NO CAMPO (controlado, responde a cada tecla) e
-// `buscaAplicada` é o que foi PARA O SERVIDOR. Só o segundo entra nas
-// dependências de carregarLista, então digitar "mercado" dispara uma
-// requisição e não sete. A guarda de corrida continua sendo a defesa real:
-// debounce reduz o volume, não garante ordem de chegada — as duas coisas
-// convivem, uma não substitui a outra.
+// ── Competência ─────────────────────────────────────────────────────────
+// A tela inteira representa UMA competência (padrão: mês corrente em São
+// Paulo). Nunca "o último mês que cada cliente tem" — isso misturava junho
+// com setembro na mesma coluna.
 //
-// ── Filtros na URL ───────────────────────────────────────────────────────
-// Estado inicial lido de ?ano=&squadId=&busca= e reescrito a cada mudança
-// (utils/painelContasUrl.js). Preferência de exibição, nunca autorização: o
-// servidor resolve a carteira antes de olhar qualquer filtro.
+// ── Busca com debounce ───────────────────────────────────────────────────
+// `busca` é o que está NO CAMPO e `buscaAplicada` é o que foi PARA O
+// SERVIDOR. Só o segundo entra nas dependências da lista.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listarPainelContas, listarMesesCliente, listarSemanasMes } from "../services/painelContasApi.js";
+import {
+  listarPainelContas, listarMesesCliente, listarSemanasMes,
+  salvarLancamentoManual, removerLancamentoManual,
+} from "../services/painelContasApi.js";
 import { ApiError } from "../services/apiClient.js";
 import { lerFiltrosDaUrl, escreverFiltrosNaUrl } from "../utils/painelContasUrl.js";
+import { competenciaNoFuso } from "../utils/dates.js";
 
 const DEBOUNCE_BUSCA_MS = 300;
 
@@ -35,20 +34,19 @@ function normalizarErro(err) {
   return { codigo: "desconhecido", mensagem: err?.message || "Erro inesperado.", status: 0 };
 }
 
-function anoAtual() {
-  return new Date().getFullYear();
-}
-
 export function usePainelContas() {
-  const anoPadrao = useMemo(anoAtual, []);
-  const iniciais = useMemo(() => lerFiltrosDaUrl(undefined, anoPadrao), [anoPadrao]);
+  const competenciaPadrao = useMemo(() => competenciaNoFuso(), []);
+  const iniciais = useMemo(() => lerFiltrosDaUrl(undefined, competenciaPadrao), [competenciaPadrao]);
 
-  const [ano, setAno] = useState(iniciais.ano);
+  const [competencia, setCompetencia] = useState(iniciais.competencia);
   const [squadId, setSquadId] = useState(iniciais.squadId);
   const [busca, setBusca] = useState(iniciais.busca);
   const [buscaAplicada, setBuscaAplicada] = useState(iniciais.busca);
-  const [squadsDoUsuario, setSquadsDoUsuario] = useState([]);
-  const [clientes, setClientes] = useState(null);
+  const [status, setStatus] = useState(iniciais.status);
+  const [marketplace, setMarketplace] = useState(iniciais.marketplace);
+  const [mostrarLegado, setMostrarLegado] = useState(iniciais.mostrarLegado);
+
+  const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState(null);
 
@@ -60,19 +58,15 @@ export function usePainelContas() {
   const seqRef = useRef(0);
   const abortRef = useRef(null);
 
-  // ── Debounce da busca ──
   useEffect(() => {
     if (busca === buscaAplicada) return undefined;
     const id = setTimeout(() => setBuscaAplicada(busca), DEBOUNCE_BUSCA_MS);
     return () => clearTimeout(id);
   }, [busca, buscaAplicada]);
 
-  // ── Espelho na URL ──
-  // Usa `busca` (o campo), não `buscaAplicada`: a URL acompanha o que a
-  // pessoa vê digitado; replaceState não custa requisição nenhuma.
   useEffect(() => {
-    escreverFiltrosNaUrl({ ano, squadId, busca }, anoPadrao);
-  }, [ano, squadId, busca, anoPadrao]);
+    escreverFiltrosNaUrl({ competencia, squadId, busca, status, marketplace, mostrarLegado }, competenciaPadrao);
+  }, [competencia, squadId, busca, status, marketplace, mostrarLegado, competenciaPadrao]);
 
   const carregarLista = useCallback(() => {
     const seq = ++seqRef.current;
@@ -83,15 +77,16 @@ export function usePainelContas() {
     setCarregando(true);
     setErro(null);
 
-    listarPainelContas({ ano, squadId, busca: buscaAplicada, signal: controlador.signal })
+    listarPainelContas({
+      competencia, squadId, busca: buscaAplicada, status, marketplace, mostrarLegado, signal: controlador.signal,
+    })
       .then((payload) => {
         if (seq !== seqRef.current) return;
-        setClientes(payload.clientes || []);
-        setSquadsDoUsuario(payload.squadsDoUsuario || []);
+        setDados(payload);
       })
       .catch((err) => {
         if (err?.name === "AbortError" || seq !== seqRef.current) return;
-        setClientes(null);
+        setDados(null);
         setErro(normalizarErro(err));
       })
       .finally(() => {
@@ -99,12 +94,11 @@ export function usePainelContas() {
       });
 
     return () => controlador.abort();
-  }, [ano, squadId, buscaAplicada]);
+  }, [competencia, squadId, buscaAplicada, status, marketplace, mostrarLegado]);
 
   useEffect(() => {
-    // Troca de ano/squadId/busca invalida qualquer expansão em aberto — os
-    // meses/semanas já carregados podiam ser de um ano diferente do filtro
-    // novo (meses lê `ano` como parâmetro próprio, não herda do cliente).
+    // Trocar filtro invalida o histórico/semanas já abertos: o histórico usa o
+    // ANO da competência selecionada.
     setMesesPorCliente({});
     setSemanasPorChave({});
     return carregarLista();
@@ -112,11 +106,12 @@ export function usePainelContas() {
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  // ── Nível 2: meses de UM cliente (lazy) ──
+  const ano = Number(String(competencia).slice(0, 4));
+
   const carregarMeses = useCallback((clienteId, { forcar = false } = {}) => {
     setMesesPorCliente((prev) => {
       const atual = prev[clienteId];
-      if (!forcar && atual && (atual.carregando || atual.meses)) return prev; // já carregado/em voo — cache
+      if (!forcar && atual && (atual.carregando || atual.meses)) return prev;
       return { ...prev, [clienteId]: { carregando: true, erro: null, meses: atual?.meses ?? null } };
     });
 
@@ -135,16 +130,15 @@ export function usePainelContas() {
       });
   }, [ano]);
 
-  // ── Nível 3: semanas de UM mês (lazy) ──
-  const carregarSemanas = useCallback((clienteId, competencia, { forcar = false } = {}) => {
-    const chave = `${clienteId}:${competencia}`;
+  const carregarSemanas = useCallback((clienteId, comp, { forcar = false } = {}) => {
+    const chave = `${clienteId}:${comp}`;
     setSemanasPorChave((prev) => {
       const atual = prev[chave];
       if (!forcar && atual && (atual.carregando || atual.semanas)) return prev;
       return { ...prev, [chave]: { carregando: true, erro: null, semanas: atual?.semanas ?? null } };
     });
 
-    listarSemanasMes(clienteId, competencia)
+    listarSemanasMes(clienteId, comp)
       .then((payload) => {
         setSemanasPorChave((prev) => ({
           ...prev,
@@ -159,24 +153,57 @@ export function usePainelContas() {
       });
   }, []);
 
+  // Lançamento manual: o servidor é a autoridade (validação, precedência do
+  // automático, auditoria). Depois de gravar, a lista é recarregada inteira —
+  // consolidado, status e contagens do topo mudam juntos, nunca remendados
+  // no cliente.
+  const salvarManual = useCallback(async (clienteId, contaId, valores) => {
+    const resposta = await salvarLancamentoManual(clienteId, contaId, competencia, valores);
+    carregarLista();
+    return resposta;
+  }, [competencia, carregarLista]);
+
+  const removerManual = useCallback(async (clienteId, contaId) => {
+    const resposta = await removerLancamentoManual(clienteId, contaId, competencia);
+    carregarLista();
+    return resposta;
+  }, [competencia, carregarLista]);
+
   const limparFiltros = useCallback(() => {
-    setAno(anoPadrao);
+    setCompetencia(competenciaPadrao);
     setSquadId(null);
     setBusca("");
     setBuscaAplicada("");
-  }, [anoPadrao]);
+    setStatus("todos");
+    setMarketplace(null);
+    setMostrarLegado(false);
+  }, [competenciaPadrao]);
 
-  const temFiltroAtivo = Number(ano) !== Number(anoPadrao) || squadId != null || busca.trim() !== "";
+  const temFiltroAtivo = competencia !== competenciaPadrao || squadId != null || busca.trim() !== ""
+    || status !== "todos" || marketplace != null || mostrarLegado;
+
+  const clientes = dados ? dados.clientes || [] : null;
 
   return {
-    ano, setAno, squadId, setSquadId, busca, setBusca,
-    buscaAplicada, anoPadrao, temFiltroAtivo, limparFiltros,
-    squadsDoUsuario, clientes, carregando, erro, recarregar: carregarLista,
-    // §22: a tabela continua na tela durante a troca de filtro; `atualizando`
-    // é o que autoriza o tratamento visual de "esses dados ainda são os
-    // anteriores" — sem isso, ou a tela pisca, ou mente.
+    competencia, setCompetencia, competenciaPadrao,
+    squadId, setSquadId,
+    busca, setBusca, buscaAplicada,
+    status, setStatus,
+    marketplace, setMarketplace,
+    mostrarLegado, setMostrarLegado,
+    temFiltroAtivo, limparFiltros,
+    clientes,
+    resumoCarteira: dados?.resumoCarteira || null,
+    squadsDisponiveis: dados?.squadsDisponiveis || [],
+    squadsDoUsuario: dados?.squadsDoUsuario || [],
+    marketplacesDisponiveis: dados?.marketplacesDisponiveis || [],
+    permissoes: dados?.permissoes || { lancarManual: false },
+    carregando, erro, recarregar: carregarLista,
+    // A tabela continua na tela durante a troca de filtro; `atualizando` é o
+    // que autoriza o tratamento visual de "esses dados ainda são os anteriores".
     atualizando: carregando && clientes !== null,
     mesesPorCliente, carregarMeses,
     semanasPorChave, carregarSemanas,
+    salvarManual, removerManual,
   };
 }

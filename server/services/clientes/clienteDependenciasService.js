@@ -47,6 +47,7 @@ const TABELAS_DEPENDENTES = [
   ["Histórico de frete do Cliente 360", "cliente_360_frete_historico", "cliente_id", "id"],
   ["Ações registradas (Placar de Impacto)", "cliente_360_acoes", "cliente_id", "id"],
   ["Diagnósticos de promoções", "promocoes_diagnosticos", "cliente_id", "id"],
+  ["Lançamentos manuais do Painel de Contas", "painel_contas_lancamentos_manuais", "cliente_id", "id"],
   ["Acompanhamento de Ads", "ads_acompanhamentos", "cliente_slug", "slug"],
   ["Resumos mensais de Ads", "ads_resumos_mensais", "cliente_slug", "slug"],
 ];

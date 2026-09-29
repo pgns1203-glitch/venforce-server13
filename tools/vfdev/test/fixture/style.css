@@ -1,0 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter&display=swap");
+body { margin: 0; font-family: system-ui, sans-serif; background: #f7f8fb; }
+.vf-page h2 { margin: 0 0 12px; font-size: 15px; }
+.legacy-x { color: red !important; }

@@ -1,0 +1,21 @@
+{
+  "name": "vfdev",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VF Visual DevTools — servidor local de desenvolvimento que injeta o editor visual no Portal e grava patches mínimos no CSS. Nunca vai para produção.",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "postcss": "8.5.28"
+  },
+  "optionalDependencies": {
+    "playwright-core": "1.58.2"
+  }
+}

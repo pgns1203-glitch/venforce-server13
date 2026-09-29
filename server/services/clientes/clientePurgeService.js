@@ -57,6 +57,14 @@ function erro(status, code, mensagem) {
   return e;
 }
 
+async function tabelaExiste(client, tabela) {
+  const r = await client.query(
+    `SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1`,
+    [tabela]
+  );
+  return r.rows.length > 0;
+}
+
 async function purgarClientePermanentemente(slug) {
   const client = await pool.connect();
   try {
@@ -79,10 +87,14 @@ async function purgarClientePermanentemente(slug) {
 
     for (const tabela of TABELAS_SEM_FK_POR_ID) {
       // eslint-disable-next-line no-await-in-loop
+      if (!(await tabelaExiste(client, tabela))) continue;
+      // eslint-disable-next-line no-await-in-loop
       const r = await client.query(`DELETE FROM ${tabela} WHERE cliente_id = $1`, [cliente.id]);
       if (r.rowCount) apagados.push({ tabela, total: r.rowCount });
     }
     for (const tabela of TABELAS_SEM_FK_POR_SLUG) {
+      // eslint-disable-next-line no-await-in-loop
+      if (!(await tabelaExiste(client, tabela))) continue;
       // eslint-disable-next-line no-await-in-loop
       const r = await client.query(`DELETE FROM ${tabela} WHERE cliente_slug = $1`, [cliente.slug]);
       if (r.rowCount) apagados.push({ tabela, total: r.rowCount });

@@ -1,0 +1,19 @@
+/* tokens */
+:root {
+  --vf-primary: #5a2a8f;
+  --vf-sp-1: 4px;
+  --vf-sp-2: 8px;
+  --vf-sp-3: 12px;
+  --vf-sp-4: 16px;
+  --vf-sp-5: 20px;
+  --vf-sp-6: 24px;
+  --vf-sp-8: 32px;
+  --vf-radius-sm: 6px;
+  --vf-radius: 10px;
+  --vf-radius-lg: 12px;
+  --vf-radius-pill: 999px;
+  --vf-fs-xs: 0.75rem;
+  --vf-fs-sm: 0.875rem;
+  --vf-fs-lg: 1.125rem;
+  --vf-card-pad-x: var(--vf-sp-5);
+}

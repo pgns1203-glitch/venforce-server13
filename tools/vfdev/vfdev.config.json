@@ -1,0 +1,63 @@
+{
+  "portalDir": "Portal",
+  "port": 5190,
+  "backend": null,
+  "protectedFiles": [
+    "style.css",
+    "layout.js"
+  ],
+  "globalFiles": [
+    "css/vf-tokens-v2.css",
+    "css/vf-components-v2.css",
+    "css/vf-shell.css",
+    "venforce-ui-v2.css"
+  ],
+  "builtDirs": [
+    "assets/"
+  ],
+  "viteSources": {
+    "assets/cliente-360-react/": [
+      "frontend-react/src/styles/cliente360.css"
+    ],
+    "assets/full-gestao/": [
+      "frontend-react/src/styles/fullGestao.css"
+    ],
+    "assets/visao/": [
+      "frontend-react/src/styles/visao.css",
+      "frontend-react/src/components/ui/VFMonthYearSelector/VFMonthYearSelector.css"
+    ],
+    "assets/financeiro-v3/": [
+      "frontend-react/src/styles/financeiro.css",
+      "frontend-react/src/components/ui/VFMonthYearSelector/VFMonthYearSelector.css"
+    ],
+    "assets/cliente-360-v3/": [
+      "frontend-react/src/styles/cliente360.css",
+      "frontend-react/src/styles/cliente360V3.css"
+    ],
+    "assets/painel-contas/": [
+      "frontend-react/src/styles/painel-contas.css"
+    ],
+    "assets/cliente-360-v2/": []
+  },
+  "tokens": {
+    "space": "--vf-sp-",
+    "radius": "--vf-radius",
+    "fontSize": "--vf-fs-"
+  },
+  "tokensFile": "css/vf-tokens-v2.css",
+  "minFontPx": 11,
+  "reactWritableDir": "frontend-react/src/styles/",
+  "reactDir": "frontend-react",
+  "ilhas": {
+    "cliente-360-react": "build:cliente-360",
+    "full-gestao": "build:full",
+    "visao": "build:visao",
+    "financeiro-v3": "build:financeiro",
+    "cliente-360-v3": "build:cliente-360-v3",
+    "painel-contas": "build:painel-contas",
+    "cliente-360-v2": null
+  },
+  "ilhasSemScript": {
+    "cliente-360-v2": "fonte Vue não versionada — não há como reconstruir"
+  }
+}

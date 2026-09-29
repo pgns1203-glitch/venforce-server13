@@ -1,0 +1,10 @@
+.vf-card { background: #fff; border: 1px solid #e7e9f0; border-radius: var(--vf-radius-lg); padding: var(--vf-card-pad-x); }
+.vf-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  min-height: 132px;
+}
+.vf-kpi__label { font-size: var(--vf-fs-xs); color: #6b7285; text-transform: uppercase; }
+.vf-kpi__value { font-size: 1.5rem; font-weight: 700; }
+.vf-btn { display: inline-flex; padding: 7px 14px; border-radius: var(--vf-radius-sm); background: var(--vf-primary); color: #fff; }

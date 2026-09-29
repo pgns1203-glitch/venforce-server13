@@ -20,6 +20,7 @@
 // é outro processo; a fila in-process do worker web não existe aqui (§6).
 
 const pool = require("../../config/database");
+const { comRetryTransitorio } = require("./centralVendasTransientRetry");
 
 const TIMEZONE = "America/Sao_Paulo";
 const MARKETPLACE = "meli";
@@ -198,9 +199,11 @@ function defaultDeps() {
   const worker = require("./centralVendasSyncWorker");
   const adapter = require("./centralVendasCliente360Adapter");
   const adsSync = require("./centralVendasAdsSyncService");
+  const repository = require("./centralVendasRepository");
   return {
     db: pool,
     listarContas,
+    ensureCentralVendasTables: repository.ensureCentralVendasTables,
     criarSyncRun: runService.criarSyncRun,
     obterSyncRun: runService.obterSyncRun,
     executarSyncRun: worker.executarSyncRun,
@@ -209,6 +212,7 @@ function defaultDeps() {
     listarPeriodosNoturnosPendentes: runService.listarPeriodosNoturnosPendentes,
     reconciliarRunsNoturnosInterrompidos: runService.reconciliarRunsNoturnosInterrompidos,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    random: Math.random,
     agora: () => Date.now(),
     observarIntervaloMs: OBSERVAR_INTERVALO_MS,
     observarTimeoutMs: OBSERVAR_TIMEOUT_MS,
@@ -253,6 +257,36 @@ async function aguardarRunFinal({ runId, clienteSlug }, deps) {
   }
 }
 
+// Preparação/criação/reuso do sync_run de UMA unidade. Repete SÓ 40P01/40001
+// (deadlock/serialização do PostgreSQL), no máximo 3 tentativas totais, com
+// backoff curto + jitter. É seguro repetir: criarSyncRun deduplica pelo run
+// ativo/publicado equivalente e pelo índice único, então a 2ª tentativa acha o
+// run da 1ª (se ela chegou a inserir) em vez de criar outro. Não envolve nenhuma
+// chamada à API do Mercado Livre — só o trabalho de banco da preparação.
+function criarSyncRunDaUnidade(conta, periodo, deps) {
+  return comRetryTransitorio(
+    () => deps.criarSyncRun({
+      clienteSlug: conta.clienteSlug,
+      clienteContaId: conta.clienteContaId,
+      marketplace: MARKETPLACE,
+      dateFrom: periodo.dateFrom,
+      dateTo: periodo.dateTo,
+      requestedBy: null,
+      reutilizarCompletedPublicado: true,
+      db: deps.db,
+    }),
+    {
+      sleep: deps.sleep,
+      random: deps.random,
+      onRetry: ({ tentativa, maxTentativas, err }) => {
+        deps.logger.warn(
+          `${LOG} preparação retry ${tentativa}/${maxTentativas} cliente=${conta.clienteSlug} conta=${conta.clienteContaId} erro=${err.code}`
+        );
+      },
+    }
+  );
+}
+
 async function processarUnidade(unidade, deps) {
   const { conta, periodo } = unidade;
   const rotulo = `${rotuloConta(conta)} ${periodo.dateFrom}..${periodo.dateTo}`;
@@ -273,16 +307,7 @@ async function processarUnidade(unidade, deps) {
   let criado = unidade.criado || null;
   try {
     if (unidade.preparacaoErro) throw unidade.preparacaoErro;
-    if (!criado) criado = await deps.criarSyncRun({
-      clienteSlug: conta.clienteSlug,
-      clienteContaId: conta.clienteContaId,
-      marketplace: MARKETPLACE,
-      dateFrom: periodo.dateFrom,
-      dateTo: periodo.dateTo,
-      requestedBy: null,
-      reutilizarCompletedPublicado: true,
-      db: deps.db,
-    });
+    if (!criado) criado = await criarSyncRunDaUnidade(conta, periodo, deps);
   } catch (err) {
     const erro = resumirErro(err);
     deps.logger.error(`${LOG} conta ${rotulo} erro: ${erro.code ? `${erro.code} ` : ""}${erro.message}`);
@@ -426,6 +451,16 @@ async function executarRodada(opts, depsOverride = {}) {
     return resumo;
   }
 
+  // Schema da Central garantido UMA vez, ANTES de qualquer pool de
+  // concorrência. O DDL do schema (ALTER/DROP INDEX/CREATE INDEX nas tabelas
+  // globais) executado por várias contas em paralelo fechava um ciclo de locks
+  // com o reuso de run (sync_runs → imports) e o PostgreSQL abortava contas
+  // elegíveis com 40P01. Aqui o ensure é single-flight por processo e
+  // serializado por advisory lock entre processos; falha dele é estrutural
+  // (sem schema nenhuma unidade funcionaria), então sobe. Fora do dry-run, que
+  // continua sem tocar o banco além da listagem.
+  await deps.ensureCentralVendasTables(deps.db);
+
   if (typeof onProgresso === "function") {
     onProgresso({ concluidas: 0, total: unidades.length, unidade: null, fase: "preparacao" });
   }
@@ -438,16 +473,7 @@ async function executarRodada(opts, depsOverride = {}) {
     let criado = null;
     let preparacaoErro = null;
     try {
-      criado = await deps.criarSyncRun({
-        clienteSlug: unidade.conta.clienteSlug,
-        clienteContaId: unidade.conta.clienteContaId,
-        marketplace: MARKETPLACE,
-        dateFrom: unidade.periodo.dateFrom,
-        dateTo: unidade.periodo.dateTo,
-        requestedBy: null,
-        reutilizarCompletedPublicado: true,
-        db: deps.db,
-      });
+      criado = await criarSyncRunDaUnidade(unidade.conta, unidade.periodo, deps);
     } catch (err) {
       preparacaoErro = err;
     }

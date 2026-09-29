@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
 const { classificarComponenteFinanceiro } = require("./centralVendasComponenteLedger");
+const { comRetryTransitorio } = require("./centralVendasTransientRetry");
 
 const schemaPath = path.join(__dirname, "..", "..", "sql", "central_vendas_schema.sql");
 
@@ -24,9 +25,80 @@ function normalizeSlug(slug) {
   return String(slug || "").trim().toLowerCase();
 }
 
-async function ensureCentralVendasTables(db = pool) {
+// O schema da Central contém ALTER/UPDATE/DROP INDEX/CREATE INDEX sobre as
+// tabelas globais (imports, sync_runs, ...): ALTER TABLE ... IF NOT EXISTS
+// pede ACCESS EXCLUSIVE mesmo quando nada muda. Várias execuções simultâneas
+// (uma por conta no sync noturno) travavam em ordem oposta à do reuso de run
+// (sync_runs → imports) e o PostgreSQL derrubava uma delas com 40P01.
+//
+// Duas proteções:
+//   1. single-flight por processo (e por `db`): chamadas simultâneas esperam a
+//      MESMA promise; depois do sucesso o schema não roda de novo; se falhar,
+//      o estado é limpo e uma chamada futura tenta outra vez.
+//   2. advisory lock transacional na MESMA conexão dedicada durante todo o
+//      schema — serializa também contra outro processo/instância/restart.
+//      (pool.query(lock) + pool.query(schema) usariam conexões diferentes e o
+//      lock já teria terminado quando o schema rodasse.)
+const SCHEMA_ADVISORY_LOCK_KEY = "venforce:central-vendas:schema";
+
+// Estado por `db` (na prática, o pool único do processo). WeakMap para que um
+// db injetado em teste tenha o seu próprio ciclo, sem vazar entre casos.
+const ensurePorDb = new WeakMap();
+
+// Pool = tem connect() e não é um client já emprestado (que tem release()).
+// Um queryable sem connect() (client emprestado, fake simples) executa o
+// schema direto — sem BEGIN próprio, para não interferir numa transação alheia.
+function isPoolLike(db) {
+  return typeof db?.connect === "function" && typeof db?.release !== "function";
+}
+
+async function executarSchemaComLock(db) {
   const sql = fs.readFileSync(schemaPath, "utf8");
-  await db.query(sql);
+  if (!isPoolLike(db)) {
+    await db.query(sql);
+    return;
+  }
+  const client = await db.connect();
+  let descartar;
+  try {
+    await client.query("BEGIN");
+    // hashtextextended → bigint estável; a forma de chave única (bigint) não
+    // colide com as chaves (int,int) usadas por outros domínios.
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [SCHEMA_ADVISORY_LOCK_KEY]);
+    await client.query(sql);
+    await client.query("COMMIT");
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackErr) {
+      descartar = rollbackErr; // conexão em estado desconhecido: não volta ao pool
+    }
+    throw err;
+  } finally {
+    client.release(descartar);
+  }
+}
+
+async function ensureCentralVendasTables(db = pool) {
+  let estado = ensurePorDb.get(db);
+  if (!estado) {
+    estado = { concluido: false, promise: null };
+    ensurePorDb.set(db, estado);
+  }
+  if (estado.concluido) return;
+  if (!estado.promise) {
+    estado.promise = executarSchemaComLock(db).then(
+      () => {
+        estado.concluido = true;
+        estado.promise = null;
+      },
+      (err) => {
+        estado.promise = null;
+        throw err;
+      }
+    );
+  }
+  await estado.promise;
 }
 
 async function getClienteBySlug(clienteSlug, db = pool) {
@@ -42,19 +114,43 @@ async function getClienteBySlug(clienteSlug, db = pool) {
   return result.rows[0] || null;
 }
 
-async function withTransaction(callback) {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const result = await callback(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-  }
+// retryTransient: opt-in EXPLÍCITO. Com true, 40P01/40001 (vítima de deadlock /
+// falha de serialização) reexecutam a transação INTEIRA — ROLLBACK, client
+// devolvido, client novo, BEGIN de novo — até 3 tentativas totais. Só habilitar
+// com callback 100% banco e idempotente (nada de HTTP/efeito externo dentro):
+// ele roda de novo do zero. Uma transação abortada nunca é reaproveitada.
+// `pool: pg`, `sleep`, `random` existem para injeção em teste.
+async function withTransaction(callback, {
+  retryTransient = false, pool: pg = pool, sleep, random, baseMs,
+} = {}) {
+  const umaTentativa = async () => {
+    const client = await pg.connect();
+    let descartar;
+    try {
+      await client.query("BEGIN");
+      const result = await callback(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackErr) {
+        descartar = rollbackErr; // não devolve ao pool uma conexão quebrada
+      }
+      throw err;
+    } finally {
+      client.release(descartar);
+    }
+  };
+  if (!retryTransient) return umaTentativa();
+  return comRetryTransitorio(umaTentativa, {
+    sleep,
+    random,
+    baseMs,
+    onRetry: ({ tentativa, maxTentativas, err }) => {
+      console.warn(`[central-vendas] persistência retry ${tentativa}/${maxTentativas} erro=${err.code}`);
+    },
+  });
 }
 
 async function createImport({
@@ -286,7 +382,10 @@ async function persistCentralVendasImport({
       itensPersistidos: itemRowsById.size,
       componentesPersistidos: (motorPayload.componentes || []).length,
     };
-  });
+    // Só INSERTs a partir de motorPayload já em memória (a coleta HTTP acontece
+    // ANTES): reexecutar do zero depois de 40P01/40001 é seguro e idempotente,
+    // porque a tentativa abortada foi revertida por inteiro.
+  }, { retryTransient: true });
 }
 
 // clienteContaId + includeLegacy implementam a política de escopo de conta
@@ -750,6 +849,7 @@ async function promoverCandidatesDoRun(syncRunId, db = pool) {
 
 module.exports = {
   ensureCentralVendasTables,
+  withTransaction,
   getClienteBySlug,
   persistCentralVendasImport,
   getLatestCentralVendasImport,

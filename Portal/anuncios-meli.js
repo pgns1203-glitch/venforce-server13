@@ -1696,22 +1696,22 @@
     UNVALIDATED: "Não validado",
   };
 
-  // "há 2 h", "há 3 dias" — mesmo vocabulário de vf-format.js `desde()`
-  // (Shell V3/Carteira), reimplementado pontualmente aqui porque esta
-  // página não carrega o módulo ES (vf-format.js só é importado onde já há
-  // bundler) — só a MENOR versão necessária para a freshness da margem
-  // projetada (PASSO 12: "não criar UI chamativa").
-  function margemFreshnessTexto(calculadoEm) {
+  // Quando o SNAPSHOT de margem projetada foi calculado — data/hora
+  // ABSOLUTA ("28/09 às 03:34", fuso do navegador), nunca relativa: "Calculada
+  // ontem" soava como se o ANÚNCIO tivesse sido atualizado ontem / a margem
+  // estivesse velha, quando é só o horário do último cálculo do snapshot
+  // (job fora do request). Timestamp exibido como veio, sem ajuste.
+  function margemCalculadaEmTexto(calculadoEm) {
     if (!calculadoEm) return null;
-    var t = new Date(calculadoEm).getTime();
-    if (isNaN(t)) return null;
-    var min = Math.floor((Date.now() - t) / 60000);
-    if (min < 1) return "agora";
-    if (min < 60) return "há " + min + " min";
-    var h = Math.floor(min / 60);
-    if (h < 24) return "há " + h + " h";
-    var dias = Math.floor(h / 24);
-    return dias === 1 ? "ontem" : "há " + dias + " dias";
+    var d = new Date(calculadoEm);
+    if (isNaN(d.getTime())) return null;
+    function dois(n) { return (n < 10 ? "0" : "") + n; }
+    return dois(d.getDate()) + "/" + dois(d.getMonth() + 1) + " às " + dois(d.getHours()) + ":" + dois(d.getMinutes());
+  }
+
+  function margemCalculadaEmFrase(calculadoEm) {
+    var quando = margemCalculadaEmTexto(calculadoEm);
+    return quando ? " Margem projetada calculada em " + quando + "." : "";
   }
 
   // Célula de Margem da LISTAGEM (linha avulsa e filho expandido de
@@ -1730,9 +1730,8 @@
   function margemProjetadaConteudoHtml(a) {
     var classe = MARGEM_CLASSE[a.margemProjetadaStatus] || "is-neutral";
     if (a.margemProjetadaComputable === true && a.margemProjetadaPercent != null) {
-      var tip = "Margem projetada com base no preço atual e custos configurados.";
-      var fresh = margemFreshnessTexto(a.margemProjetadaCalculadaEm);
-      if (fresh) tip += " Calculada " + fresh + ".";
+      var tip = "Margem projetada com base no preço atual e custos configurados." +
+        margemCalculadaEmFrase(a.margemProjetadaCalculadaEm);
       return '<span class="am-margem__valor ' + classe + '">' + formatarPercentualCompacto(a.margemProjetadaPercent) + "</span>" +
         infoDotHtml(tip);
     }
@@ -1752,42 +1751,34 @@
   }
 
   // Célula de Margem do AGRUPADOR (linha da família na listagem, `rowGrupoHtml`)
-  // — família não tem margem % única (isso não mudou), mas passa a mostrar a
-  // FAIXA (mínimo–máximo) de Margem Projetada dos filhos computáveis, fonte
+  // — família não tem margem % única, mas mostra a FAIXA (mínimo/máximo) de
+  // Margem Projetada dos filhos computáveis, fonte
   // `f.margemProjetadaMinPercent`/`MaxPercent` (mesmo snapshot da célula do
-  // item, ver controller `montarMargemProjetadaGlobal`). Só vem preenchido
-  // quando a família aparece via ordenarPor=margem_asc/margem_desc — nos
-  // demais sorts o backend não resolve os filhos (custo extra evitado de
-  // propósito, ver anexarMargemProjetadaNaPagina), então a célula cai no
-  // "—" de sempre.
+  // item, ver controller `anexarMargemProjetadaNaPagina`). Vem preenchido em
+  // QUALQUER ordenação (Padrão, faturamento, Curva ABC, unidades, margem).
   //
-  // Empilhado em DUAS linhas (mínimo discreto em cima, máximo em destaque
-  // embaixo) em vez de "min – max" numa linha só — mesmo espírito visual do
-  // preço em promoção (`.am-mlb__preco-original`/`-atual`, ver
-  // celulaPrecoHtml): valor secundário pequeno/apagado acima, valor
-  // principal no tamanho/peso normal da coluna abaixo. `.am-margem__min` é
-  // uma classe NOVA, deliberadamente inspirada em `.am-mlb__preco-original`
-  // (mesmo fs-2xs/peso médio/cor apagada), mas SEM risco (`text-decoration:
-  // line-through` não faz sentido aqui — não é um preço "de antes", é só o
-  // extremo inferior da faixa). O valor de baixo reaproveita
-  // `.am-margem__valor` (mesma classe do item avulso) — sem CSS novo pra
-  // ele. Min === Max (1 único filho computável) mostra só UM valor, nunca
-  // duas linhas iguais.
+  // Empilhado em DUAS linhas — mínimo em cima, máximo embaixo — com a MESMA
+  // classe (`.am-margem__valor`): os dois são margens válidas, nenhum é
+  // "secundário". Antes o mínimo usava um estilo apagado/menor inspirado no
+  // preço riscado e parecia um valor antigo/desabilitado. `data-faixa`
+  // (min/max) só identifica a linha, sem estilo próprio. Min === Max (1 único
+  // filho computável) mostra só UM valor, nunca duas linhas iguais.
   function margemFaixaFamiliaHtml(f) {
     if (f.margemProjetadaMinPercent != null && f.margemProjetadaMaxPercent != null) {
       var min = formatarPercentualCompacto(f.margemProjetadaMinPercent);
       var max = formatarPercentualCompacto(f.margemProjetadaMaxPercent);
-      var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo–máximo). A ordenação por margem usa a média.";
+      var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo em cima, máximo embaixo). A ordenação por margem usa a média." +
+        margemCalculadaEmFrase(f.margemProjetadaCalculadaEm);
       var linhas = min === max
-        ? '<span class="am-margem__valor is-neutral">' + max + "</span>"
-        : '<span class="am-margem__min">' + min + "</span>" +
-          '<span class="am-margem__valor is-neutral">' + max + "</span>";
-      return '<span class="am-margem" data-margem-familia="' + escapeAttr(f.family_id) + '">' +
+        ? '<span class="am-margem__valor is-neutral" data-faixa="unico">' + max + "</span>"
+        : '<span class="am-margem__valor is-neutral" data-faixa="min">' + min + "</span>" +
+          '<span class="am-margem__valor is-neutral" data-faixa="max">' + max + "</span>";
+      return '<span class="am-margem am-margem--faixa" data-margem-familia="' + escapeAttr(f.family_id) + '">' +
         linhas + infoDotHtml(tip) +
       "</span>";
     }
     return '<span class="am-margem am-margem--indisponivel" ' +
-      'title="A margem é calculada só por anúncio (MLB) — ordene por Margem para ver a faixa desta família">—</span>';
+      'title="Nenhum anúncio desta família tem margem projetada calculada">—</span>';
   }
 
   // % do faturamento — coluna própria (ver auditoria "Ajuste visual —

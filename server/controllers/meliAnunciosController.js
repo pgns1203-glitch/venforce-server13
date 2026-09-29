@@ -386,38 +386,46 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
 
 // Anexa os campos de Margem Projetada a uma página JÁ MONTADA de `anuncios`
 // (tipo "item"/"familia", ver montarAnunciosDeRows) — fonte ÚNICA da CÉLULA
-// visual da listagem, independente do `ordenarPor` ativo (decisão "célula e
-// sort usam a MESMA fonte" — ver missão "migrar exibição de margem projetada
-// para o snapshot"). Lê SÓ os item_id desta página (nunca o catálogo
-// filtrado inteiro) — o mesmo `lerSnapshotPorItens` batch que o ranking
-// global de margem já usa, só que aqui limitado ao lote pequeno da página
-// (tipicamente ≤100 itens, teto de `limit`), então o custo extra sobre
-// qualquer sort (padrão/faturamento/curvaAbc/unidades) é o de UM SELECT
-// pequeno — nunca a leitura do catálogo inteiro que só o ranking por margem
-// precisa (ver lerSnapshotPorItens/EXPLAIN ANALYZE, índice
+// visual da listagem, independente do `ordenarPor` ativo (Padrão,
+// faturamento, Curva ABC, unidades, e o fallback de qualquer ordenação
+// global indisponível). Mesmo `lerSnapshotPorItens` batch que o ranking
+// global de margem usa, só que limitado à PÁGINA (tipicamente ≤100 linhas,
+// teto de `limit`) — nunca o catálogo filtrado inteiro, que só o ranking por
+// margem precisa (ver lerSnapshotPorItens/EXPLAIN ANALYZE, índice
 // anuncios_margem_projetada_snapshot_cliente_id_item_id_key).
 //
-// Família NUNCA tem margem % ÚNICA exibível (`margemProjetadaPercent`/
-// `Computable` continuam null/false aqui) — a faixa MIN/MAX e a média de
-// ranking (`margemProjetadaMinPercent`/`MaxPercent`/`MediaPercent`) exigiriam
-// resolver os filhos da família (`familiaService.resolverItensDeFamilias`) e
-// ler o snapshot deles, uma leitura que esta função deliberadamente NÃO faz
-// (ao contrário do ranking global de margem, que já paga esse custo pra
-// ordenar) — manter esse ponto sem consulta extra é o motivo de
-// `anexarMargemProjetadaNaPagina` existir separado de
-// `montarMargemProjetadaGlobal`. Por isso, fora do sort margem_asc/margem_desc
-// (Padrão/faturamento/Curva ABC/unidades), a família fica com os 9 campos
-// (6 de sempre + Min/Max/Média) todos null/false, e a célula mostra "—" —
-// mesmo resultado visual de antes desta missão. Só ganha a faixa real quando
-// `ordenarPor=margem_*` (ver `listarAgrupadoOrdenadoPorMotor`, que já resolve
-// os filhos pra ordenar e reaproveita esse cálculo pra também anexar a faixa).
+// Família: resolve os filhos SÓ das famílias desta página
+// (`familiaService.resolverItensDeFamilias`, 1 query bulk) e lê o snapshot
+// dos itens avulsos + filhos num ÚNICO batch. Faixa Min/Max/Média sai de
+// `montarMargemProjetadaGlobal` — a MESMA função do ranking por margem, então
+// célula e sort nunca divergem. Família continua sem margem % única
+// (`margemProjetadaPercent` null / `Computable` false).
 //
 // Falha de leitura (erro de banco, timeout) nunca derruba a listagem: os
-// campos ficam ausentes/null (mesma filosofia de fallback dos outros
-// critérios) — nunca um 500 só porque a célula de margem não conseguiu
-// carregar.
-async function anexarMargemProjetadaNaPagina(anuncios, clienteId) {
-  const itemIds = anuncios.filter((a) => a.tipo === "item").map((a) => a.item_id);
+// campos ficam null (mesma filosofia de fallback dos outros critérios) —
+// nunca um 500 só porque a célula de margem não conseguiu carregar.
+async function anexarMargemProjetadaNaPagina(anuncios, { clienteId, clienteContaId = null, includeLegacy = true }) {
+  const familyIds = Array.from(new Set(
+    anuncios.filter((a) => a.tipo === "familia" && a.family_id != null).map((a) => a.family_id)
+  ));
+
+  let porFamiliaItens = new Map();
+  if (familyIds.length) {
+    try {
+      porFamiliaItens = await familiaService.resolverItensDeFamilias({
+        clienteId, clienteContaId, includeLegacy, familyIds,
+      });
+    } catch (err) {
+      console.error(
+        "[anuncios-meli] anexarMargemProjetadaNaPagina: erro ao resolver filhos das famílias, faixa fica ausente:",
+        err.message
+      );
+    }
+  }
+
+  const uniao = new Set(anuncios.filter((a) => a.tipo === "item").map((a) => a.item_id));
+  for (const filhos of porFamiliaItens.values()) for (const id of filhos) uniao.add(id);
+  const itemIds = Array.from(uniao);
 
   let snapshotPorItem = new Map();
   if (itemIds.length) {
@@ -431,17 +439,21 @@ async function anexarMargemProjetadaNaPagina(anuncios, clienteId) {
     }
   }
 
+  const faixa = montarMargemProjetadaGlobal(snapshotPorItem, [], porFamiliaItens);
+  const ouNull = (v) => (v != null ? v : null);
+
   for (const anuncio of anuncios) {
     if (anuncio.tipo === "familia") {
+      const fid = anuncio.family_id;
       anuncio.margemProjetadaPercent = null;
-      anuncio.margemProjetadaProfit = null;
+      anuncio.margemProjetadaProfit = ouNull(faixa.porFamiliaProfit[fid]);
       anuncio.margemProjetadaComputable = false;
       anuncio.margemProjetadaStatus = null;
-      anuncio.margemProjetadaCalculadaEm = null;
+      anuncio.margemProjetadaCalculadaEm = faixa.porFamiliaCalculadoEm[fid] || null;
       anuncio.margemProjetadaOrigemJob = null;
-      anuncio.margemProjetadaMinPercent = null;
-      anuncio.margemProjetadaMaxPercent = null;
-      anuncio.margemProjetadaMediaPercent = null;
+      anuncio.margemProjetadaMinPercent = ouNull(faixa.porFamiliaMinPercent[fid]);
+      anuncio.margemProjetadaMaxPercent = ouNull(faixa.porFamiliaMaxPercent[fid]);
+      anuncio.margemProjetadaMediaPercent = ouNull(faixa.porFamiliaMediaPercent[fid]);
     } else {
       const s = snapshotPorItem.get(String(anuncio.item_id));
       anuncio.margemProjetadaPercent = s && s.computable && s.marginPercent != null ? s.marginPercent : null;
@@ -704,7 +716,7 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
     // precisa dos campos de qualquer forma (fonte única, independente do
     // ordenarPor ativo) — batch NOVO, mas só dos item_id desta PÁGINA
     // (nunca `todosItemIds`, o catálogo inteiro), ver anexarMargemProjetadaNaPagina.
-    await anexarMargemProjetadaNaPagina(anuncios, cliente.id);
+    await anexarMargemProjetadaNaPagina(anuncios, { clienteId: cliente.id, clienteContaId, includeLegacy });
   }
 
   return {
@@ -770,13 +782,16 @@ async function listarAgrupado(req, res) {
           clienteId: cliente.id, clienteContaId: contaId, includeLegacy, q, status, filtro, page, limit,
         });
 
-    // Ordenação "Padrão" (sem ordenarPor) não passa por
-    // listarAgrupadoOrdenadoPorMotor — ainda assim a célula de margem
-    // precisa dos campos de snapshot (fonte única, independente do sort
-    // ativo). listarAgrupadoOrdenadoPorMotor já anexa isso sozinho para os
-    // 4 critérios globais (ver anexarMargemProjetadaNaPagina).
-    if (!configGlobal) {
-      await anexarMargemProjetadaNaPagina(resultado.anuncios, cliente.id);
+    // A célula de margem precisa dos campos de snapshot em QUALQUER resposta
+    // (fonte única, independente do sort ativo). Padrão (sem ordenarPor) e o
+    // FALLBACK de uma ordenação global indisponível (ordenacaoAplicada:false,
+    // ver fallbackOrdenacaoIndisponivel) não passam pelo anexo de
+    // listarAgrupadoOrdenadoPorMotor — anexa aqui. Quando a ordenação global
+    // foi aplicada, ela já anexou sozinha (sem 2ª leitura).
+    if (!configGlobal || resultado.ordenacaoAplicada === false) {
+      await anexarMargemProjetadaNaPagina(resultado.anuncios, {
+        clienteId: cliente.id, clienteContaId: contaId, includeLegacy,
+      });
     }
 
     const resposta = {

@@ -396,42 +396,111 @@ async function run() {
     console.log("  ✓ E. sem ordenarPor: path antigo intacto + campos de margem projetada da página (fonte única da célula)");
   });
 
-  // E2. sem ordenarPor: família NUNCA tem margemProjetadaPercent (mesma
-  //     regra de sempre) — e SEM nenhuma leitura extra de filhos/soma de
-  //     profit (a listagem nunca mostra profit de família, só "—").
+  // E2. sem ordenarPor: família ganha a FAIXA min/max (+ média) de margem
+  //     projetada dos filhos já no path padrão — a coluna Margem não pode
+  //     depender de ordenarPor=margem_*. Continua sem margemProjetadaPercent
+  //     único. Filhos resolvidos SÓ das famílias da página e lidos no MESMO
+  //     batch dos itens avulsos (1 leitura de snapshot, nunca 2).
   await withMockDb({
     ...UMA_CONTA,
     anuncios: [
       anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
       anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
-      anuncioFixture({ item_id: "MLB-B", user_product_id: null }), // avulso, força o batch a existir
+      anuncioFixture({ item_id: "MLB-A3", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B", user_product_id: null }),
     ],
     userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
   }, async () => {
     chamadasSnapshot.length = 0;
+    chamadasMontarItens.length = 0;
     snapshotHandler = () => new Map([
-      ["MLB-A1", { marginPercent: 90, profit: 999, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A1", { marginPercent: 35.5, profit: 20, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:34:00Z", origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 24.4, profit: 10, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:30:00Z", origemJob: "manual_cli" }],
+      ["MLB-A3", { marginPercent: 80, profit: 1, computable: false, status: "UNVALIDATED", calculadoEm: null, origemJob: "manual_cli" }],
       ["MLB-B", { marginPercent: 15, profit: 3, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
     ]);
     const res = fakeRes();
     await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10" } }, res);
     const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
     assert.ok(familia, "FAM1 precisa aparecer como família");
-    assert.strictEqual(familia.margemProjetadaPercent, null, "família NUNCA tem margemProjetadaPercent, mesmo com filho de 90%");
-    assert.strictEqual(familia.margemProjetadaProfit, null, "path padrão não resolve soma de profit de família — não é exibida na listagem, nunca gastar essa leitura à toa");
+    assert.strictEqual(familia.margemProjetadaPercent, null, "família NUNCA tem margemProjetadaPercent único");
     assert.strictEqual(familia.margemProjetadaComputable, false);
-    assert.strictEqual(familia.margemProjetadaMinPercent, null, "path padrão não resolve filhos — sem faixa, mesmo com um filho de 90%");
-    assert.strictEqual(familia.margemProjetadaMaxPercent, null);
-    assert.strictEqual(familia.margemProjetadaMediaPercent, null, "faixa/média só existem quando ordenarPor=margem_* (ponto onde os filhos já são resolvidos pra ranquear)");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 24.4, "sem ordenarPor: faixa já vem — mínimo dos filhos computáveis");
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 35.5, "máximo dos filhos computáveis (UNVALIDATED de 80% nunca entra)");
+    assert.strictEqual(familia.margemProjetadaMediaPercent, 29.95, "média simples dos computáveis — mesma regra do ranking");
+    assert.strictEqual(familia.margemProjetadaProfit, 31, "soma de profit dos filhos com snapshot (informativo)");
+    assert.strictEqual(familia.margemProjetadaCalculadaEm, "2026-09-28T03:34:00Z", "calculadaEm da família = snapshot mais recente dos filhos");
     const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");
-    assert.strictEqual(itemAvulso.margemProjetadaPercent, 15, "item avulso: batch funcionou normalmente");
-    // A linha de família montada por montarAnunciosDeRows não tem `item_id`
-    // (só tipo/family_id/...) — anexarMargemProjetadaNaPagina filtra por
-    // `tipo === "item"` antes de montar o batch, então a família nunca entra
-    // nele, e nenhum filho (MLB-A1/MLB-A2) é resolvido/pedido à toa.
-    assert.deepStrictEqual(chamadasSnapshot[0].itemIds, ["MLB-B"], "família não resolve filhos — o batch só pede o item_id do avulso, nunca os filhos da família");
+    assert.strictEqual(itemAvulso.margemProjetadaPercent, 15, "item avulso: mesmo batch");
+    assert.strictEqual(chamadasSnapshot.length, 1, "UMA leitura de snapshot para a página inteira (avulsos + filhos)");
+    assert.deepStrictEqual(chamadasSnapshot[0].itemIds.slice().sort(), ["MLB-A1", "MLB-A2", "MLB-A3", "MLB-B"],
+      "batch = avulsos da página + filhos das famílias da página, nunca o catálogo inteiro");
+    assert.strictEqual(chamadasMontarItens.length, 0, "nunca chama o Motor de Margem");
     snapshotHandler = null;
-    console.log("  ✓ E2. sem ordenarPor: família margemProjetadaPercent SEMPRE null, sem resolver filhos/soma de profit");
+    console.log("  ✓ E2. sem ordenarPor: família já recebe faixa min/max/média do snapshot (1 batch só)");
+  });
+
+  // E3. ordenação global INDISPONÍVEL (fallback pro SQL padrão) também
+  //     anexa margem — antes o fallback devolvia a página sem nenhum campo
+  //     margemProjetada*, e a coluna ficava "—" inteira.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-B", user_product_id: null }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    motorHandler = () => {
+      const err = new Error("Base não vinculada");
+      err.statusCode = 409;
+      err.payload = { codigo: "BASE_NAO_VINCULADA", erro: "Base não vinculada" };
+      throw err;
+    };
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 10, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 20, profit: 2, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-B", { marginPercent: 5, profit: 1, computable: true, status: "LOW_MARGIN", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "faturamento_desc" } }, res);
+    assert.strictEqual(res.corpo.ordenacaoAplicada, false, "pré-condição: caiu no fallback");
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    const item = res.corpo.anuncios.find((a) => a.tipo === "item");
+    assert.strictEqual(item.margemProjetadaPercent, 5, "fallback: item avulso recebe margem");
+    assert.strictEqual(item.margemProjetadaStatus, "LOW_MARGIN");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 10, "fallback: família recebe faixa");
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 20);
+    motorHandler = null; snapshotHandler = null;
+    console.log("  ✓ E3. fallback de ordenação indisponível: página continua recebendo margem (item + faixa da família)");
+  });
+
+  // E4. curvaAbc_desc (ordenação aplicada, critério ≠ margem): família
+  //     também recebe a faixa — não só em margem_*.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-A1", user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-A2", user_product_id: "UP1" }),
+    ],
+    userProducts: [upFixture({ user_product_id: "UP1", family_id: "FAM1" })],
+  }, async () => {
+    chamadasSnapshot.length = 0;
+    motorHandler = () => ({ porMlb: new Map([["MLB-A1", { receita: 100 }], ["MLB-A2", { receita: 50 }]]), periodo: {} });
+    snapshotHandler = () => new Map([
+      ["MLB-A1", { marginPercent: 12, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 18, profit: 1, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
+    ]);
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10", ordenarPor: "curvaAbc_desc" } }, res);
+    assert.strictEqual(res.corpo.ordenacaoAplicada, true);
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 12);
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 18);
+    assert.strictEqual(chamadasSnapshot.length, 1, "1 leitura de snapshot só para a página");
+    motorHandler = null; snapshotHandler = null;
+    console.log("  ✓ E4. curvaAbc_desc: família recebe faixa de margem (independente do critério)");
   });
 
   // F. margem_desc virou GLOBAL (lê o snapshot, nunca o Motor) — MUDA de

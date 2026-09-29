@@ -379,6 +379,9 @@ const chamadasPerformance = [];
 // via GET /performance (chamada separada, sempre ativa) — ver testes 39a/39a2.
 let chamadasFamilias = [];
 let ordenarPorGlobalHandler = null; // (qs) => resposta completa de /anuncios-meli/familias
+// Mesma ideia para a ordenação PADRÃO (sem ordenarPor) — testes 39a5+: a
+// coluna Margem tem de vir preenchida sem depender de ordenar por margem.
+let listagemPadraoHandler = null; // (qs) => resposta completa de /anuncios-meli/familias
 
 // Views nulo em MLB-A1 (sem dado) e vendas=0 real em MLB-A2 (fato, não
 // ausência de dado) são o par que prova a régua de "—" vs "0" vs NaN.
@@ -594,6 +597,7 @@ function wireInterception(cdp) {
       const ordenarPor = qs.get("ordenarPor");
       chamadasFamilias.push({ page: qs.get("page"), ordenarPor });
       if (ordenarPorGlobalHandler && ordenarPor) { await corpo(ordenarPorGlobalHandler(qs)); return; }
+      if (listagemPadraoHandler && !ordenarPor) { await corpo(listagemPadraoHandler(qs)); return; }
       let anuncios;
       if (conta === "43") anuncios = LINHAS_CONTA_43;
       else if (filtro) anuncios = LINHAS_CONTA_42_FILTRO;
@@ -2633,19 +2637,31 @@ async function run() {
 
       const estado = await cdp.evaluate(`(function(){
         var itemC = document.querySelector('.am-row[data-item="MLB-MARG-C"] .am-margem__valor');
-        var famMin = document.querySelector('${linhaFam("FAM-1")} .am-margem__min');
-        var famMax = document.querySelector('${linhaFam("FAM-1")} .am-margem__valor');
+        var famMin = document.querySelector('${linhaFam("FAM-1")} .am-margem__valor[data-faixa="min"]');
+        var famMax = document.querySelector('${linhaFam("FAM-1")} .am-margem__valor[data-faixa="max"]');
         var famCelula = document.querySelector('${linhaFam("FAM-1")} .am-margem');
+        var csMin = famMin ? getComputedStyle(famMin) : null;
+        var csMax = famMax ? getComputedStyle(famMax) : null;
         return {
           minTexto: famMin ? famMin.textContent.trim() : null,
           maxTexto: famMax ? famMax.textContent.trim() : null,
           // ordem no DOM: min precisa vir ANTES de max (linha de cima), nunca o contrário.
           minAntesDeMax: !!(famMin && famMax && (famMin.compareDocumentPosition(famMax) & Node.DOCUMENT_POSITION_FOLLOWING)),
-          duasLinhas: famCelula.querySelectorAll('.am-margem__min, .am-margem__valor').length === 2,
+          duasLinhas: famCelula.querySelectorAll('.am-margem__valor').length === 2,
+          mesmaClasse: !!(famMin && famMax && famMin.className === famMax.className),
+          mesmoTamanho: !!(csMin && csMax && csMin.fontSize === csMax.fontSize),
+          mesmoPeso: !!(csMin && csMax && csMin.fontWeight === csMax.fontWeight),
+          mesmaCor: !!(csMin && csMax && csMin.color === csMax.color),
+          semLegado: !famCelula.querySelector('.am-margem__min'),
           itemCTexto: itemC ? itemC.textContent.trim() : null,
         }; })()`);
-      assert.strictEqual(estado.minTexto, "12,5%", "linha de CIMA (discreta) é o MÍNIMO — nunca o máximo");
-      assert.strictEqual(estado.maxTexto, "34,8%", "linha de BAIXO (destacada) é o MÁXIMO — nunca o mínimo");
+      assert.strictEqual(estado.minTexto, "12,5%", "linha de CIMA é o MÍNIMO — nunca o máximo");
+      assert.strictEqual(estado.maxTexto, "34,8%", "linha de BAIXO é o MÁXIMO — nunca o mínimo");
+      assert.ok(estado.mesmaClasse, "mínimo e máximo usam a MESMA classe visual — nenhum é valor secundário");
+      assert.ok(estado.mesmoTamanho, "mínimo e máximo com o MESMO tamanho de fonte");
+      assert.ok(estado.mesmoPeso, "mínimo e máximo com o MESMO peso");
+      assert.ok(estado.mesmaCor, "mínimo não pode ficar apagado (cor diferente) como preço riscado");
+      assert.ok(estado.semLegado, "o estilo antigo .am-margem__min (menor/apagado) não pode voltar");
       assert.ok(estado.minAntesDeMax, "mínimo precisa estar ANTES do máximo no DOM (linha de cima)");
       assert.ok(estado.duasLinhas, "faixa real renderiza DUAS linhas empilhadas, nunca 'min – max' numa string só");
       assert.strictEqual(estado.itemCTexto, "30,0%", "item avulso ao lado continua mostrando o próprio valor do snapshot normalmente");
@@ -2709,14 +2725,105 @@ async function run() {
       await waitFor(cdp, `document.querySelector('${linhaFam("FAM-1")}')`, "a linha da família não renderizou");
 
       const estado = await cdp.evaluate(`(function(){
-        var v = document.querySelector('${linhaFam("FAM-1")} .am-margem__valor');
-        var min = document.querySelector('${linhaFam("FAM-1")} .am-margem__min');
-        return { texto: v ? v.textContent.trim() : null, temLinhaMin: !!min };
+        var vs = document.querySelectorAll('${linhaFam("FAM-1")} .am-margem__valor');
+        return { texto: vs.length ? vs[0].textContent.trim() : null, temLinhaMin: vs.length !== 1 };
       })()`);
       assert.strictEqual(estado.texto, "18,0%", "min===max (18/18): mostra o valor único, NUNCA '18,0% – 18,0%'");
-      assert.strictEqual(estado.temLinhaMin, false, "min===max: NÃO duplica em duas linhas iguais — só a linha de baixo (.am-margem__valor) existe");
+      assert.strictEqual(estado.temLinhaMin, false, "min===max: NÃO duplica em duas linhas iguais — só UMA linha .am-margem__valor existe");
       ordenarPorGlobalHandler = null;
       console.log("  ✓ 39a4");
+    });
+
+    await check("39a5 — ordenação PADRÃO (sem ordenarPor): coluna Margem já renderiza item E faixa da família, sem depender de ordenar por margem; tooltip deixa explícito que é o horário do cálculo do snapshot", async () => {
+      chamadasFamilias.length = 0;
+      pedidos.length = 0;
+      const calcFam = "2026-09-28T06:34:00Z";
+      const calcItem = "2026-09-28T06:30:00Z";
+      listagemPadraoHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        anuncios: [
+          { tipo: "familia", key: "fam:FAM-1", family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
+            titulo: "Camiseta Dry Fit Masculina", margemProjetadaPercent: null, margemProjetadaProfit: 31,
+            margemProjetadaComputable: false, margemProjetadaMinPercent: 24.4, margemProjetadaMaxPercent: 35.5,
+            margemProjetadaMediaPercent: 29.95, margemProjetadaCalculadaEm: calcFam, cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-PAD-1", key: "item:MLB-PAD-1", titulo: "Item Padrão", status: "active",
+            margemProjetadaPercent: 17.2, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY",
+            margemProjetadaCalculadaEm: calcItem, cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
+      });
+
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-PAD-1"]')`, "a listagem padrão não renderizou");
+
+      const estado = await cdp.evaluate(`(function(){
+        var item = document.querySelector('.am-row[data-item="MLB-PAD-1"] .am-margem');
+        var fam = document.querySelector('${linhaFam("FAM-1")} .am-margem');
+        var vs = fam.querySelectorAll('.am-margem__valor');
+        return {
+          itemValor: (item.querySelector('.am-margem__valor') || {}).textContent || null,
+          itemTip: (item.querySelector('.vf-info__tip') || {}).textContent || null,
+          famValores: Array.prototype.map.call(vs, function(v){ return v.textContent.trim(); }),
+          famTip: (fam.querySelector('.vf-info__tip') || {}).textContent || null,
+        }; })()`);
+
+      // Mesmo fuso da máquina (Chrome headless e Node rodam no mesmo host).
+      function quando(iso) {
+        const d = new Date(iso); const z = (n) => String(n).padStart(2, "0");
+        return z(d.getDate()) + "/" + z(d.getMonth() + 1) + " às " + z(d.getHours()) + ":" + z(d.getMinutes());
+      }
+      assert.ok(chamadasFamilias.some((c) => !c.ordenarPor), "pré-condição: listagem padrão, sem ordenarPor");
+      assert.strictEqual(estado.itemValor, "17,2%", "item: margem do snapshot já na ordenação padrão");
+      assert.deepStrictEqual(estado.famValores, ["24,4%", "35,5%"], "família: faixa (mín em cima, máx embaixo) já na ordenação padrão");
+      assert.ok((estado.itemTip || "").includes("Margem projetada calculada em " + quando(calcItem) + "."),
+        "tooltip do item diz QUANDO a margem projetada (snapshot) foi calculada, com data e hora: " + estado.itemTip);
+      assert.ok((estado.famTip || "").includes("Margem projetada calculada em " + quando(calcFam) + "."),
+        "tooltip da família também informa o horário do cálculo: " + estado.famTip);
+      for (const tip of [estado.itemTip, estado.famTip]) {
+        assert.ok(!/ontem|\bhá \d|Calculada /.test(tip),
+          "tooltip não pode usar texto relativo que pareça 'o anúncio foi atualizado ontem': " + tip);
+      }
+      assert.ok(!pedidos.some((p) => p.startsWith("/anuncios-meli/familias/FAM-1")),
+        "a faixa vem pronta na listagem — nunca busca o detalhe da família pra pintar a margem");
+      listagemPadraoHandler = null;
+      console.log("  ✓ 39a5");
+    });
+
+    await check("39a6 — faturamento_desc (ordenação ≠ margem): família também renderiza a faixa de margem", async () => {
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "familia", key: "fam:FAM-1", family_id: "FAM-1", family_name: "Camiseta Dry Fit Masculina",
+            titulo: "Camiseta Dry Fit Masculina", faturamentoPercentual: 0.6, margemProjetadaPercent: null,
+            margemProjetadaComputable: false, margemProjetadaMinPercent: 8, margemProjetadaMaxPercent: 21.5,
+            cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-FAT-1", key: "item:MLB-FAT-1", titulo: "Item F", status: "active",
+            faturamentoPercentual: 0.4, margemProjetadaPercent: 11, margemProjetadaComputable: true,
+            margemProjetadaStatus: "HEALTHY", cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 2, totalPaginas: 1 },
+      });
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'faturamento_desc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('.am-row[data-item="MLB-FAT-1"]')`, "a listagem por faturamento não renderizou");
+      const estado = await cdp.evaluate(`(function(){
+        var vs = document.querySelectorAll('${linhaFam("FAM-1")} .am-margem .am-margem__valor');
+        return {
+          fam: Array.prototype.map.call(vs, function(v){ return v.textContent.trim(); }),
+          item: (document.querySelector('.am-row[data-item="MLB-FAT-1"] .am-margem__valor') || {}).textContent || null,
+        }; })()`);
+      assert.deepStrictEqual(estado.fam, ["8,0%", "21,5%"], "família com faixa também fora da ordenação por margem");
+      assert.strictEqual(estado.item, "11,0%");
+      ordenarPorGlobalHandler = null;
+      console.log("  ✓ 39a6");
     });
 
     await check("39b — margem_asc: SNAPSHOT_INDISPONIVEL mostra aviso inline, não quebra a lista (mesmo contrato de ordenacaoIndisponivel de faturamento/curvaAbc)", async () => {

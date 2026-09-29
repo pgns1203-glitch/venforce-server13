@@ -9,7 +9,7 @@
 // o público deste painel interno de carteira por Squad).
 
 const express = require("express");
-const { authMiddleware } = require("../middlewares/authMiddleware");
+const { authMiddleware, requireAdmin } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
 const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 const controller = require("../controllers/painelContasController");
@@ -27,5 +27,11 @@ router.get("/:clienteId/meses/:competencia/semanas", authMiddleware, requireAuto
 const manual = "/:clienteId/contas/:contaId/manual/:competencia";
 router.put(manual, authMiddleware, requireAutomacoesAccess, naCarteira, controller.salvarLancamentoManual);
 router.delete(manual, authMiddleware, requireAutomacoesAccess, naCarteira, controller.removerLancamentoManual);
+// Atualização sob demanda (cliente × competência). Dispara sync no Mercado
+// Livre: MESMO gate de POST /central-vendas/:slug/sync-runs (admin + carteira)
+// — nenhuma regra de autorização nova.
+const atualizar = "/:clienteId/atualizar/:competencia";
+router.post(atualizar, authMiddleware, requireAdmin, naCarteira, controller.iniciarAtualizacao);
+router.get(atualizar, authMiddleware, requireAdmin, naCarteira, controller.obterAtualizacao);
 
 module.exports = router;

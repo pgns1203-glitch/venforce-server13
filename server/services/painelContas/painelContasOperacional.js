@@ -146,7 +146,16 @@ function statusSemDado(row, run) {
  * @param {Array} rows  cliente_contas do cliente
  * @param {{importPorConta:Map, manualPorConta:Map, runPorConta:Map}} fontes
  */
-function resolverContas(rows, { importPorConta = new Map(), manualPorConta = new Map(), runPorConta = new Map() } = {}) {
+function resolverContas(rows, fontes = {}) {
+  // `precisaAcao` sai do MESMO conjunto que liga o `precisaAtencao` do cliente:
+  // a tela diz "N contas precisam de ação" sem reclassificar status.
+  return resolverContasSemAcao(rows, fontes).map((conta) => ({
+    ...conta,
+    precisaAcao: conta.ativa && CAUSAS_ACIONAVEIS.has(conta.status.codigo),
+  }));
+}
+
+function resolverContasSemAcao(rows, { importPorConta = new Map(), manualPorConta = new Map(), runPorConta = new Map() } = {}) {
   const ordinais = new Map();
   return ordenarContas(rows || []).map((row) => {
     const id = Number(row.id);
@@ -259,13 +268,14 @@ function consolidarCliente({ contas = [], snapshot = null, adsCliente = null }) 
   const comDado = operacionais.filter((c) => c.resumo && c.resumo.fat !== null);
   const n = operacionais.length;
   const k = comDado.length;
-  const precisaAtencaoContas = operacionais.some((c) => CAUSAS_ACIONAVEIS.has(c.status.codigo));
+  const contasPrecisamAcao = operacionais.filter((c) => CAUSAS_ACIONAVEIS.has(c.status.codigo)).length;
+  const precisaAtencaoContas = contasPrecisamAcao > 0;
 
   let escopo;
   if (n === 0) escopo = { tipo: "nenhum", rotulo: "Nenhuma conta ativa" };
   else if (n === 1) escopo = { tipo: "conta", rotulo: operacionais[0].rotulo };
   else escopo = { tipo: "consolidado", rotulo: k > 0 && k < n ? `Consolidado · ${k} de ${n} contas` : `Consolidado · ${n} contas` };
-  escopo = { ...escopo, contasOperacionais: n, contasComDado: k };
+  escopo = { ...escopo, contasOperacionais: n, contasComDado: k, contasPrecisamAcao };
 
   const vazio = {
     resumo: null, fonte: null, atualizadoEm: null, dadosAte: null, origem: null,

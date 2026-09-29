@@ -42,6 +42,14 @@ ok("PUT manual exige authMiddleware + requireAutomacoesAccess + naCarteira", lin
 const linhaDelete = rotas.match(/router\.delete\(manual,[^)]*\)/)?.[0] || "";
 ok("DELETE manual exige authMiddleware + requireAutomacoesAccess + naCarteira", linhaDelete.includes("authMiddleware") && linhaDelete.includes("requireAutomacoesAccess") && linhaDelete.includes("naCarteira"));
 
+// Atualização sob demanda dispara sync no Mercado Livre: mesmo gate de
+// POST /central-vendas/:slug/sync-runs (requireAdmin + carteira).
+ok('atualização usa o path "/:clienteId/atualizar/:competencia"', rotas.includes('"/:clienteId/atualizar/:competencia"'));
+const linhaAtualizarPost = rotas.match(/router\.post\(atualizar,[^)]*\)/)?.[0] || "";
+ok("POST atualizar exige authMiddleware + requireAdmin + naCarteira", linhaAtualizarPost.includes("authMiddleware") && linhaAtualizarPost.includes("requireAdmin") && linhaAtualizarPost.includes("naCarteira"));
+const linhaAtualizarGet = rotas.match(/router\.get\(atualizar,[^)]*\)/)?.[0] || "";
+ok("GET atualizar exige authMiddleware + requireAdmin + naCarteira", linhaAtualizarGet.includes("authMiddleware") && linhaAtualizarGet.includes("requireAdmin") && linhaAtualizarGet.includes("naCarteira"));
+
 // naCarteira precisa ser requireClienteNaCarteira("clienteId") — o param real da rota.
 ok('naCarteira = requireClienteNaCarteira("clienteId") (bate com o :clienteId da rota)', /requireClienteNaCarteira\("clienteId"\)/.test(rotas));
 

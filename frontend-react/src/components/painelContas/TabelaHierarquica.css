@@ -21,7 +21,9 @@
    deixaria a segunda flutuando sobre a primeira no scroll horizontal. */
 .vf-ph-table {
   --vf-ph-col-cliente: 300px;
-  --vf-ph-col-contexto: 176px;
+  /* 208px: squad + ↻ na 1ª linha; "dados até dd/mm/aaaa · API" e
+     "atualizado dd/mm/aaaa, hh:mm" cabem numa linha cada, sem cortar. */
+  --vf-ph-col-contexto: 208px;
   width: 100%;
 }
 
@@ -211,15 +213,37 @@
   .vf-ph-chevron { transition: none; }
 }
 
-/* ── Nível 1 — CLIENTE: resumo executivo ────────────────────────────────
-   Linha mais alta, nome em peso forte, metadados de período e sincronização
-   logo abaixo do nome. Recolhida, esta linha sozinha já responde "como este
-   cliente está" — é o que o §18 pede e o que a versão anterior não tinha,
-   porque período e sincronização só apareciam um nível abaixo. */
+/* ── Nível 1 — CLIENTE: o consolidado, linha DOMINANTE ──────────────────
+   Linha mais alta, nome maior e em peso forte, números em semibold e régua
+   superior mais marcada que a de qualquer outro nível: o olho lê a tabela de
+   cliente em cliente. Recolhida, esta linha sozinha responde "como este
+   cliente está" — estado, ação pendente e frescor (§18). */
 .vf-ph-row--cliente > th,
 .vf-ph-row--cliente > td {
   --vf-table-cell-py: var(--vf-sp-2);
-  border-top: 1px solid var(--vf-border);
+  border-top: 1px solid var(--vf-border-strong);
+  background: var(--vf-surface);
+}
+
+.vf-ph-row--cliente .vf-ph-valor {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-ph-row--cliente.is-sem-dado .vf-ph-valor {
+  font-weight: var(--vf-fw-regular);
+}
+
+/* Cliente aberto: o bloco (cliente + contas) ganha a mesma régua lateral das
+   filhas, então o consolidado e suas contas leem como UMA peça. */
+.vf-ph-row--cliente.is-aberto > .vf-ph-ancora {
+  box-shadow: inset 3px 0 0 var(--vf-primary);
+}
+
+/* Atualização em curso: régua lateral na cor da marca — o estado também está
+   escrito na linha ("Atualizando set/2026 até hoje · 1 de 2 contas"). */
+.vf-ph-row--cliente.is-atualizando-linha > .vf-ph-ancora {
+  box-shadow: inset 3px 0 0 var(--vf-info);
 }
 
 .vf-ph-row--cliente .vf-ph-toggle {
@@ -235,6 +259,7 @@
 }
 
 .vf-ph-cliente__nome {
+  font-size: var(--vf-fs-sm);
   font-weight: var(--vf-fw-semibold);
   color: var(--vf-text);
   overflow: hidden;
@@ -282,22 +307,62 @@
   text-overflow: ellipsis;
 }
 
-/* Sem dados: a competência e o motivo são a informação da linha. */
-.vf-ph-sem-dados {
-  font-weight: var(--vf-fw-medium);
-  color: var(--vf-text-secondary);
+/* Estado compacto: o `.vf-status` da Fundação (ponto + texto, a forma do
+   ponto codifica o tom), na altura de uma linha de metadado. */
+.vf-ph-status {
+  gap: 4px;
+  font-size: var(--vf-fs-2xs);
+}
+
+.vf-ph-status::before {
+  width: 6px;
+  height: 6px;
 }
 
 .vf-ph-motivo {
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--vf-text-muted);
 }
 
-.vf-ph-motivo::before {
+.vf-ph-motivo::before,
+.vf-ph-acoes::before,
+.vf-ph-progresso::before {
   content: "·";
   margin-right: 4px;
+  color: var(--vf-text-muted);
+  font-weight: var(--vf-fw-regular);
 }
 
-/* Tag compacta: a da Fundação, na altura de uma linha de metadado. */
+/* "2 contas precisam de ação": a ÚNICA chamada do consolidado. Não é botão
+   próprio — mora no alvo da âncora, que já abre as contas. */
+.vf-ph-acoes {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-warning-strong);
+}
+
+.vf-ph-row--cliente:hover .vf-ph-acoes {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.vf-ph-progresso {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-info-strong);
+}
+
+.vf-ph-spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+  vertical-align: -1px;
+}
+
+/* Tag compacta: a da Fundação, na altura de uma linha de metadado. Só o
+   Squad usa tag — estado e fonte são texto (menos caixas por linha). */
 .vf-ph-tag {
   padding: 0 6px;
   font-size: var(--vf-fs-2xs);
@@ -310,6 +375,49 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
+}
+
+/* Squad à esquerda, ↻ encostado à direita da coluna. */
+.vf-ph-contexto__topo {
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  min-height: 20px;
+}
+
+.vf-ph-contexto > .vf-ph-meta {
+  display: flex;
+  white-space: nowrap;
+}
+
+.vf-ph-frescor--ok {
+  color: var(--vf-success-strong);
+}
+
+/* ↻ Atualizar dados: ícone discreto; o texto da regra está no `title` e na
+   legenda fixa da barra ("Atualização automática: até ontem"). */
+.vf-ph-atualizar {
+  width: 22px;
+  height: 20px;
+  min-height: 0;
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-atualizar:hover:not(:disabled) {
+  color: var(--vf-primary-strong);
+}
+
+.vf-ph-atualizar__icone {
+  display: inline-block;
+  font-size: var(--vf-fs-sm);
+  line-height: 1;
+}
+
+.vf-ph-atualizar__icone.is-girando {
+  animation: vf-spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vf-ph-atualizar__icone.is-girando { animation: none; }
 }
 
 .vf-ph-lancar {
@@ -327,26 +435,59 @@
   cursor: help;
 }
 
-/* ── Nível 2 — CONTA/OPERAÇÃO ───────────────────────────────────────────
-   Mesmas colunas do cliente, recuo e fundo do bloco aberto: a soma do
-   consolidado é auditável lendo as linhas de baixo. */
+/* ── Nível 2 — CONTA/OPERAÇÃO: SECUNDÁRIA ───────────────────────────────
+   Mesmas colunas do cliente, mas um degrau abaixo em tudo: recuo maior,
+   fundo do bloco aberto, rótulo e números menores e sem peso. A soma do
+   consolidado continua auditável lendo as linhas de baixo — só não compete
+   com ela. */
 .vf-ph-row--conta > th,
 .vf-ph-row--conta > td {
   --vf-table-cell-py: 3px;
   background: var(--vf-surface-2);
+  font-size: var(--vf-fs-xs);
 }
 
 .vf-ph-row--conta > .vf-ph-ancora {
   padding: 3px var(--vf-table-cell-px) !important;
 }
 
+.vf-ph-row--conta .vf-ph-valor {
+  color: var(--vf-text-secondary);
+}
+
 .vf-ph-conta__rotulo {
   display: block;
-  font-weight: var(--vf-fw-medium);
-  color: var(--vf-text);
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.vf-ph-conta__meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+}
+
+.vf-ph-conta__sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vf-ph-conta__sync.is-falha {
+  color: var(--vf-danger-strong);
+  cursor: help;
+}
+
+/* Conta que pede ação: a régua lateral do bloco vira âmbar nela. */
+.vf-ph-row--conta.is-acao > .vf-ph-ancora {
+  box-shadow: inset 3px 0 0 var(--vf-warning), inset -1px 0 0 var(--vf-border);
 }
 
 .vf-ph-conta .vf-ph-indent {
@@ -356,9 +497,8 @@
   min-width: 0;
 }
 
-.vf-ph-row--conta.is-sem-dado .vf-ph-conta__rotulo,
 .vf-ph-row--conta.is-inativa .vf-ph-conta__rotulo {
-  color: var(--vf-text-secondary);
+  color: var(--vf-text-muted);
 }
 
 .vf-ph-row--conta:hover > th,
@@ -459,10 +599,14 @@
 }
 
 /* Recuo por nível — o degrau é grande o bastante para ser lido de relance,
-   não um detalhe de 4px. */
+   não um detalhe de 4px. A conta recua além do chevron do cliente. */
 .vf-ph-indent {
   display: inline-block;
   padding-left: var(--vf-sp-5);
+}
+
+.vf-ph-conta .vf-ph-indent {
+  padding-left: calc(var(--vf-sp-5) + var(--vf-sp-2));
 }
 
 .vf-ph-indent--3 {
@@ -541,6 +685,75 @@
 .vf-ph-erro__texto {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* Desfecho de "Atualizar dados" com pendência/falha: logo abaixo do cliente.
+   O conteúdo fica preso à esquerda no scroll horizontal (a célula ocupa a
+   largura toda da tabela; o texto não deve fugir junto com as métricas). */
+.vf-ph-row--atualizacao > td {
+  padding: var(--vf-sp-2) var(--vf-table-cell-px);
+  border-top: none;
+  font-size: var(--vf-fs-2xs);
+}
+
+.vf-ph-row--atualizacao.is-pendencia > td {
+  background: var(--vf-warning-bg);
+  box-shadow: inset 3px 0 0 var(--vf-warning);
+  color: var(--vf-warning-strong);
+}
+
+.vf-ph-row--atualizacao.is-falha > td {
+  background: var(--vf-danger-bg);
+  box-shadow: inset 3px 0 0 var(--vf-danger);
+  color: var(--vf-danger-strong);
+}
+
+.vf-ph-atualizacao {
+  position: sticky;
+  left: var(--vf-table-cell-px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--vf-sp-1) var(--vf-sp-3);
+  max-width: min(960px, 90vw);
+  padding-left: var(--vf-sp-5);
+}
+
+.vf-ph-atualizacao__titulo {
+  margin: 0;
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-ph-atualizacao__contas {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-atualizacao__conta-rotulo {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+}
+
+.vf-ph-atualizacao__conta.is-falha .vf-ph-atualizacao__conta-rotulo::before {
+  content: "✕ ";
+  color: var(--vf-danger-strong);
+}
+
+.vf-ph-atualizacao__conta.is-parcial .vf-ph-atualizacao__conta-rotulo::before,
+.vf-ph-atualizacao__conta.is-ignorada .vf-ph-atualizacao__conta-rotulo::before {
+  content: "◇ ";
+  color: var(--vf-warning-strong);
+}
+
+.vf-ph-atualizacao__acoes {
+  display: inline-flex;
+  gap: var(--vf-sp-2);
 }
 
 /* Esqueleto de expansão: ocupa a altura que as linhas reais vão ocupar, para

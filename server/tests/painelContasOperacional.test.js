@@ -111,7 +111,7 @@ function run() {
     eq("B: consolidado = 600", cli.resumo.fat, 600);
     eq("B: LC consolidado = soma", cli.resumo.lc, 110);
     ok("B: MC consolidado = ΣLC / Σfat com custo (mesma definição da Central)", perto(cli.resumo.mc, 110 / 600, 1e-4));
-    eq("B: escopo explícito", cli.escopo, { tipo: "consolidado", rotulo: "Consolidado · 3 contas", contasOperacionais: 3, contasComDado: 3 });
+    eq("B: escopo explícito", cli.escopo, { tipo: "consolidado", rotulo: "Consolidado · 3 contas", contasOperacionais: 3, contasComDado: 3, contasPrecisamAcao: 0 });
     eq("B: status sincronizado", cli.status.codigo, "sincronizado");
     eq("B: dadosAte = menor cobertura entre as contas", cli.dadosAte, "2026-09-28");
     ok("B: soma das contas bate com o consolidado", contas.reduce((s, c) => s + c.resumo.fat, 0) === cli.resumo.fat);
@@ -204,6 +204,11 @@ function run() {
     eq("conta inativa não entra no esperado", cli.escopo.contasOperacionais, 5);
     ok("sem dados + causa acionável → precisa de atenção", cli.status.precisaAtencao === true);
     ok("motivo agregado lista as causas", /1 sem conexão/.test(cli.status.motivo) && /1 sem integração/.test(cli.status.motivo) && /1 com erro de sync/.test(cli.status.motivo));
+    // "N contas precisam de ação" = o MESMO conjunto que liga precisaAtencao:
+    // sem conexão, sem integração, erro de sync, não publicado. Sincronizando
+    // e inativa não pedem ação.
+    eq("precisaAcao por conta", contas.map((c) => [c.id, c.precisaAcao]), [[1, true], [3, true], [4, false], [5, true], [6, false], [2, true]]);
+    eq("consolidado conta quantas contas precisam de ação", cli.escopo.contasPrecisamAcao, 4);
 
     const semNada = op.consolidarCliente({ contas: resolverTodas([conta(1)]), snapshot: null, adsCliente: null });
     eq("uma conta sem dado e sem evidência → motivo da conta, sem acusar API", semNada.status.motivo, "Ainda não sincronizada nesta competência");

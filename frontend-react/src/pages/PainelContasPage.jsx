@@ -23,53 +23,71 @@ import { colunasVisiveis } from "../components/painelContas/colunas.js";
 import { rotularCompetencia, rotularCompetenciaCurta } from "../utils/dates.js";
 
 // Situações diferentes, mensagens diferentes. "Nenhum resultado" para tudo
-// obriga a pessoa a descobrir sozinha o que aconteceu.
-function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, onLimpar }) {
+// obriga a pessoa a descobrir sozinha o que aconteceu. Cada vazio diz O QUE
+// foi filtrado e oferece a saída que desfaz exatamente aquilo.
+function Vazio({ titulo, descricao, acao, onAcao, icone = "∅", tom = "" }) {
+  return (
+    <div className={`vf-empty vf-ph-vazio ${tom}`}>
+      <span className="vf-empty__icon vf-ph-vazio__icone" aria-hidden="true">{icone}</span>
+      <p className="vf-empty__title">{titulo}</p>
+      <p className="vf-empty__description">{descricao}</p>
+      {acao && (
+        <div className="vf-empty__actions">
+          <button type="button" className="vf-btn vf-btn--sm" onClick={onAcao}>{acao}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, onLimpar, onStatus }) {
   if (busca.trim()) {
     return (
-      <div className="vf-empty">
-        <p className="vf-empty__title">Nenhum cliente para “{busca.trim()}”</p>
-        <p className="vf-empty__description">A busca cobre nome e slug do cliente, dentro da sua carteira.</p>
-        <div className="vf-empty__actions">
-          <button type="button" className="vf-btn vf-btn--sm" onClick={onLimpar}>Limpar filtros</button>
-        </div>
-      </div>
+      <Vazio
+        icone="⌕"
+        titulo={`Nenhum cliente para “${busca.trim()}”`}
+        descricao="A busca cobre nome e slug do cliente, dentro da sua carteira. Confira a grafia ou limpe os filtros."
+        acao="Limpar filtros"
+        onAcao={onLimpar}
+      />
     );
   }
 
   if (squadId != null) {
     const squad = squadsDisponiveis.find((s) => s.id === squadId);
     return (
-      <div className="vf-empty">
-        <p className="vf-empty__title">{squad ? `Nenhum cliente no squad ${squad.nome}` : "Nenhum cliente neste squad"}</p>
-        <p className="vf-empty__description">Nenhum cliente da sua carteira está vinculado a este squad agora.</p>
-        <div className="vf-empty__actions">
-          <button type="button" className="vf-btn vf-btn--sm" onClick={onLimpar}>Ver todos os squads</button>
-        </div>
-      </div>
+      <Vazio
+        titulo={squad ? `Nenhum cliente no squad ${squad.nome}` : "Nenhum cliente neste squad"}
+        descricao="Nenhum cliente da sua carteira está vinculado a este squad agora."
+        acao="Ver todos os squads"
+        onAcao={onLimpar}
+      />
     );
   }
 
   if (status && status !== "todos") {
     const rotulo = (OPCOES_STATUS.find((o) => o.valor === status)?.rotulo || status).toLowerCase();
+    // "Ninguém precisa de ação" é boa notícia, não um beco sem saída.
+    const boaNoticia = status === "atencao" || status === "sem_dados" || status === "parcial";
     return (
-      <div className="vf-empty">
-        <p className="vf-empty__title">Nenhum cliente {rotulo} em {rotularCompetenciaCurta(competencia)}</p>
-        <p className="vf-empty__description">O filtro de status vale só para a competência selecionada.</p>
-        <div className="vf-empty__actions">
-          <button type="button" className="vf-btn vf-btn--sm" onClick={onLimpar}>Limpar filtros</button>
-        </div>
-      </div>
+      <Vazio
+        icone={boaNoticia ? "✓" : "∅"}
+        tom={boaNoticia ? "is-ok" : ""}
+        titulo={`Nenhum cliente ${rotulo} em ${rotularCompetenciaCurta(competencia)}`}
+        descricao={boaNoticia
+          ? "Nada pendente neste recorte. O filtro de status vale só para a competência selecionada."
+          : "O filtro de status vale só para a competência selecionada."}
+        acao="Ver todos os status"
+        onAcao={() => onStatus("todos")}
+      />
     );
   }
 
   return (
-    <div className="vf-empty">
-      <p className="vf-empty__title">Sua carteira está vazia</p>
-      <p className="vf-empty__description">
-        Nenhum cliente ativo está atribuído a você no momento. Fale com o coordenador do seu squad se isso for inesperado.
-      </p>
-    </div>
+    <Vazio
+      titulo="Sua carteira está vazia"
+      descricao="Nenhum cliente ativo está atribuído a você no momento. Fale com o coordenador do seu squad se isso for inesperado."
+    />
   );
 }
 
@@ -84,6 +102,7 @@ export default function PainelContasPage() {
     carregando, atualizando, erro, recarregar,
     mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
     salvarManual, removerManual,
+    permissoes, competenciaAtual, atualizacoes, atualizarCliente, dispensarAtualizacao,
   } = painel;
 
   const { grupos, alternar: alternarGrupo } = useGruposDeColunas();
@@ -136,6 +155,7 @@ export default function PainelContasPage() {
             grupos={grupos} onAlternarGrupo={alternarGrupo}
             resumoCarteira={resumoCarteira} atualizando={atualizando}
             temExpandido={expansao.temExpandido} onRecolherTudo={expansao.recolherTudo}
+            competenciaAtual={competenciaAtual} podeAtualizar={permissoes.atualizarDados === true}
           />
         )}
 
@@ -156,6 +176,7 @@ export default function PainelContasPage() {
             competencia={competencia}
             squadsDisponiveis={squadsDisponiveis}
             onLimpar={limparFiltros}
+            onStatus={setStatus}
           />
         )}
 
@@ -164,9 +185,10 @@ export default function PainelContasPage() {
             {competenciaSemDado && (
               <div className="vf-banner is-info vf-banner--compact" role="status">
                 <div className="vf-banner__content">
+                  <p className="vf-banner__title">Nenhum cliente listado tem dados em {rotularCompetencia(competencia)}</p>
                   <p className="vf-banner__description">
-                    Nenhum cliente listado tem dados em {rotularCompetencia(competencia)}. Cada linha diz o motivo;
-                    para ver outro mês, troque a competência — nada é preenchido com um mês diferente.
+                    Cada linha diz o motivo. Para ver outro mês, troque a competência — nada é preenchido com um mês
+                    diferente.{competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
                   </p>
                 </div>
               </div>
@@ -184,12 +206,17 @@ export default function PainelContasPage() {
               carregarSemanas={carregarSemanas}
               atualizando={atualizando}
               onLancar={abrirLancamento}
+              competenciaAtual={competenciaAtual}
+              atualizacoes={atualizacoes}
+              podeAtualizar={permissoes.atualizarDados === true}
+              onAtualizar={atualizarCliente}
+              onDispensarAtualizacao={dispensarAtualizacao}
             />
 
             <p className="vf-ph-rodape">
-              Cada linha mostra a competência selecionada. O número do cliente é o consolidado das contas indicadas ao
-              lado do nome; ao expandir, cada conta aparece com o próprio número (o mesmo da Central de Vendas para
-              aquela conta). Ads é medido por cliente. Fonte API = sincronização automática; Manual = lançado pela equipe.
+              O número do cliente é o consolidado das contas indicadas ao lado do nome; ao expandir, cada conta mostra o
+              próprio número (o mesmo da Central de Vendas). Ads é medido por cliente. API = sincronização; Manual =
+              lançado pela equipe.
             </p>
           </>
         )}

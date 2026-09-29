@@ -13,6 +13,12 @@
 // servidor sobre a carteira filtrada (squad/busca/marketplace/legado), antes do
 // filtro de status — por isso cada número também funciona como atalho para
 // filtrar. É uma linha de texto, não cards de KPI: a tabela continua dominante.
+// Leitura executiva: cobertura primeiro ("31 de 42 clientes com dados"), depois
+// o que falta e o que pede ação. Manual/automático são FONTE, não situação —
+// ficam no filtro de status, fora da frase.
+//
+// À direita, a regra de frescor, sempre visível: a automática vai até ontem;
+// "Atualizar agora" (admin) inclui o dia parcial de hoje.
 
 import { useMemo } from "react";
 import { formatarNumero } from "../../utils/numbers.js";
@@ -28,7 +34,7 @@ export const OPCOES_STATUS = [
   { valor: "parcial", rotulo: "Parcial" },
   { valor: "manual", rotulo: "Manual" },
   { valor: "automatico", rotulo: "Automático" },
-  { valor: "atencao", rotulo: "Precisa de atenção" },
+  { valor: "atencao", rotulo: "Precisa de ação" },
 ];
 
 // Últimos 24 meses a partir da competência corrente (São Paulo). Uma
@@ -45,7 +51,7 @@ export function competenciasDisponiveis(competenciaPadrao, selecionada) {
   return lista.sort().reverse();
 }
 
-function ItemResumo({ valor, rotulo, status, statusAtual, onStatus, tom = "" }) {
+function ItemResumo({ valor, rotulo, status, statusAtual, onStatus, tom = "", children }) {
   const ativo = statusAtual === status;
   return (
     <button
@@ -54,8 +60,20 @@ function ItemResumo({ valor, rotulo, status, statusAtual, onStatus, tom = "" }) 
       aria-pressed={ativo}
       onClick={() => onStatus(ativo ? "todos" : status)}
     >
-      {formatarNumero(valor)} {rotulo}
+      {children || <>{formatarNumero(valor)} {rotulo}</>}
     </button>
+  );
+}
+
+export function RegraAtualizacao({ competencia, competenciaAtual, podeAtualizar }) {
+  const corrente = competencia === competenciaAtual;
+  return (
+    <span className="vf-ph-regra" data-testid="regra-atualizacao">
+      <span>Atualização automática: {corrente ? "até ontem" : "mês encerrado"}</span>
+      {podeAtualizar && (
+        <span>Atualizar agora: {corrente ? "inclui dados parciais de hoje" : "reprocessa o mês completo"}</span>
+      )}
+    </span>
   );
 }
 
@@ -70,6 +88,7 @@ export function ToolbarPainel({
   grupos, onAlternarGrupo,
   resumoCarteira, atualizando,
   temExpandido, onRecolherTudo,
+  competenciaAtual = competenciaPadrao, podeAtualizar = false,
 }) {
   const competencias = useMemo(() => competenciasDisponiveis(competenciaPadrao, competencia), [competenciaPadrao, competencia]);
   // Controle sem efeito não aparece: um squad só / um marketplace só.
@@ -159,20 +178,29 @@ export function ToolbarPainel({
       </div>
 
       {r && (
-        <p className="vf-ph-resumo" aria-live="polite" data-testid="resumo-carteira">
-          <span className="vf-ph-resumo__forte">{formatarNumero(r.operacionais)} operacionais</span>
-          <ItemResumo valor={r.comDados} rotulo="com dados" status="com_dados" statusAtual={status} onStatus={onStatus} />
-          <ItemResumo valor={r.semDados} rotulo="sem dados" status="sem_dados" statusAtual={status} onStatus={onStatus} tom={r.semDados > 0 ? "is-alerta" : ""} />
-          {r.parciais > 0 && <ItemResumo valor={r.parciais} rotulo="parciais" status="parcial" statusAtual={status} onStatus={onStatus} />}
-          {r.manuais > 0 && <ItemResumo valor={r.manuais} rotulo="manuais" status="manual" statusAtual={status} onStatus={onStatus} />}
-          {r.atencao > 0 && <ItemResumo valor={r.atencao} rotulo="precisam de atenção" status="atencao" statusAtual={status} onStatus={onStatus} tom="is-alerta" />}
-          {!mostrarLegado && r.legadoOcultos > 0 && (
-            <span className="vf-ph-resumo__nota" title="Clientes do Squad 8 · Legado ficam fora da lista e das contagens. Marque “Mostrar legado” para consultá-los.">
-              {formatarNumero(r.legadoOcultos)} do legado ocultos
-            </span>
-          )}
-          {atualizando && <span className="vf-ph-resumo__atualizando">Atualizando…</span>}
-        </p>
+        <div className="vf-ph-resumo" data-testid="resumo-carteira">
+          <p className="vf-ph-resumo__numeros" aria-live="polite">
+            <ItemResumo status="com_dados" statusAtual={status} onStatus={onStatus} tom="is-principal">
+              <strong className="vf-ph-resumo__forte">{formatarNumero(r.comDados)} de {formatarNumero(r.operacionais)}</strong> clientes com dados
+            </ItemResumo>
+            {r.parciais > 0 && <ItemResumo valor={r.parciais} rotulo="parciais" status="parcial" statusAtual={status} onStatus={onStatus} />}
+            {r.semDados > 0 && <ItemResumo valor={r.semDados} rotulo="sem dados" status="sem_dados" statusAtual={status} onStatus={onStatus} />}
+            {r.atencao > 0 && (
+              <ItemResumo
+                valor={r.atencao}
+                rotulo={r.atencao === 1 ? "precisa de ação" : "precisam de ação"}
+                status="atencao" statusAtual={status} onStatus={onStatus} tom="is-alerta"
+              />
+            )}
+            {!mostrarLegado && r.legadoOcultos > 0 && (
+              <span className="vf-ph-resumo__nota" title="Clientes do Squad 8 · Legado ficam fora da lista e das contagens. Marque “Mostrar legado” para consultá-los.">
+                {formatarNumero(r.legadoOcultos)} do legado ocultos
+              </span>
+            )}
+            {atualizando && <span className="vf-ph-resumo__atualizando">Atualizando…</span>}
+          </p>
+          <RegraAtualizacao competencia={competencia} competenciaAtual={competenciaAtual} podeAtualizar={podeAtualizar} />
+        </div>
       )}
     </div>
   );

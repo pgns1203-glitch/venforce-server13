@@ -5,6 +5,7 @@
 // máscara de dados sensíveis).
 
 const service = require("../services/painelContas/painelContasService");
+const atualizacaoService = require("../services/painelContas/painelContasAtualizacao");
 
 const CAMPOS_SENSIVEIS = new Set([
   "access_token", "refresh_token", "api_key", "apikey", "password",
@@ -28,7 +29,10 @@ function responder(res, code, body) {
 function tratarErro(res, err, ctx) {
   const status = Number.isFinite(Number(err?.statusCode)) ? Number(err.statusCode) : 500;
   if (status >= 500) console.error(`[painelContas] ${ctx}:`, err?.message);
-  return responder(res, status, { ok: false, code: err?.code, erro: err?.message || "Erro interno." });
+  return responder(res, status, {
+    ok: false, code: err?.code, erro: err?.message || "Erro interno.",
+    ...(err?.atualizacao ? { atualizacao: err.atualizacao } : {}),
+  });
 }
 
 // GET /painel-contas?competencia=&squadId=&busca=&status=&marketplace=&mostrarLegado=
@@ -80,6 +84,26 @@ async function removerLancamentoManual(req, res) {
   } catch (err) { return tratarErro(res, err, "removerLancamentoManual"); }
 }
 
+// POST /painel-contas/:clienteId/atualizar/:competencia — 202: a execução
+// segue em segundo plano; o progresso é lido pelo GET abaixo.
+async function iniciarAtualizacao(req, res) {
+  try {
+    const { clienteId, competencia } = req.params;
+    const { atualizacao } = await atualizacaoService.iniciarAtualizacao(req.user || {}, clienteId, competencia);
+    return responder(res, 202, { ok: true, atualizacao });
+  } catch (err) { return tratarErro(res, err, "iniciarAtualizacao"); }
+}
+
+// GET /painel-contas/:clienteId/atualizar/:competencia
+async function obterAtualizacao(req, res) {
+  try {
+    const { clienteId, competencia } = req.params;
+    const atualizacao = await atualizacaoService.obterAtualizacao(req.user || {}, clienteId, competencia);
+    return responder(res, 200, { ok: true, atualizacao });
+  } catch (err) { return tratarErro(res, err, "obterAtualizacao"); }
+}
+
 module.exports = {
-  listar, listarMeses, listarSemanas, salvarLancamentoManual, removerLancamentoManual, maskSensitiveData,
+  listar, listarMeses, listarSemanas, salvarLancamentoManual, removerLancamentoManual,
+  iniciarAtualizacao, obterAtualizacao, maskSensitiveData,
 };

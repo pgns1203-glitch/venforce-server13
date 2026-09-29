@@ -27,6 +27,7 @@ const { variacaoResumo, sanitizarParaJson } = require("./painelContasVariacao");
 const { DEFINICAO: DEFINICAO_SEMANA, agruparEmSemanas } = require("./painelContasSemanas");
 const { resolverContas, consolidarCliente, ehSquadLegado, rotuloMarketplace } = require("./painelContasOperacional");
 const { validarLancamento, competenciaValida } = require("./painelContasManual");
+const atualizacao = require("./painelContasAtualizacao");
 
 const TIMEZONE = "America/Sao_Paulo";
 const FILTROS_STATUS = new Set(["todos", "com_dados", "sem_dados", "parcial", "manual", "automatico", "atencao"]);
@@ -149,6 +150,7 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
   const buscaNorm = normalizarBusca(filtros.busca);
   const marketplace = filtros.marketplace ? String(filtros.marketplace).toLowerCase() : null;
   const permitido = podeLancar(user);
+  const podeAtualizar = atualizacao.ehAdmin(user);
 
   const autorizados = await resolvePortfolioClientes(user, pool);
   await squadsRepo.ensureSquadsTables();
@@ -225,6 +227,10 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
       ultimaCompetenciaComDado: ultimaPorCliente.get(c.id) || null,
       contas: contas.map((conta) => contaPublica(conta, permitido)),
       podeLancarManual: permitido && contas.some((conta) => conta.podeLancarManual),
+      // Atualização sob demanda em curso (ou recém-terminada) deste cliente
+      // nesta competência — lida do registro em memória, sem query. Deixa a
+      // tela retomar o progresso depois de um F5.
+      atualizacao: podeAtualizar ? atualizacao.atualizacaoDoCliente(c.id, competencia, { agoraMs: agora.getTime() }) : null,
     };
   });
 
@@ -241,7 +247,8 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
     })),
     squadsDisponiveis,
     marketplacesDisponiveis,
-    permissoes: { lancarManual: permitido },
+    // atualizarDados = mesmo gate do sync manual da Central (admin).
+    permissoes: { lancarManual: permitido, atualizarDados: podeAtualizar },
     resumoCarteira: resumirCarteira(noMarketplace, legadoOcultos),
     clientes: noMarketplace.filter((c) => passaFiltroStatus(c, status)),
   });

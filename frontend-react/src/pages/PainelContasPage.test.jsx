@@ -264,8 +264,10 @@ describe("atualizar dados", () => {
     }));
     render(<PainelContasPage />);
     const linha = screen.getByText("Acme Comércio").closest("tr");
-    expect(within(linha).getByText("Atualizando até hoje · 1/2 contas")).toBeInTheDocument();
-    expect(within(linha).getByRole("button", { name: /atualizar dados de/i })).toBeDisabled();
+    expect(within(linha).getByText("Atualizando até hoje")).toBeInTheDocument();
+    const botao = within(linha).getByRole("button", { name: /atualizar dados de/i });
+    expect(botao).toHaveTextContent("Atualizando 1/2");
+    expect(botao).toBeDisabled();
     expect(within(linha).getByText("R$ 600")).toBeInTheDocument();
   });
 

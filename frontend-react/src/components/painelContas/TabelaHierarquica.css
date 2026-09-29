@@ -1,29 +1,43 @@
 /* frontend-react/src/components/painelContas/TabelaHierarquica.css
-   Tabela hierárquica Cliente → Mês → Semana. Sobre `.vf-table` +
-   `.vf-table--compact` (Fundação Global V2, Portal/css/vf-components-v2.css)
-   — aqui só o que é específico deste padrão. Só var(--vf-*), nenhum token
-   novo, nenhum hex solto. Prefixo .vf-ph- (Painel de Contas — Hierarquia). */
+   Tabela hierárquica Cliente → Contas → Histórico (mês → semana). Sobre
+   `.vf-table` + `.vf-table--compact` (Fundação Global V2,
+   Portal/css/vf-components-v2.css) — aqui só o que é específico deste padrão.
+   Só var(--vf-*), nenhum token novo, nenhum hex solto. Prefixo .vf-ph-
+   (Painel de Contas — Hierarquia).
+
+   Ordem de leitura que o CSS inteiro serve (3ª passada, só acabamento):
+     1. o número  2. o cliente  3. o estado  4. o contexto
+   A diferença entre níveis vem de peso, tamanho, recuo e fundo — não de cor.
+   Cor só onde há semântica: estado (verde/âmbar/cinza/vermelho) e negativo. */
 
 .vf-ph-wrap {
   /* A tabela é o elemento dominante da tela: ocupa o que sobrar da altura da
      janela e rola DENTRO do próprio wrapper, com o cabeçalho preso no topo.
-     Sem uma altura máxima o thead sticky não tem contra o que grudar e a
-     página inteira rola, levando o cabeçalho embora.
      O valor real é MEDIDO no componente (ver "Altura do corpo rolável" em
      TabelaHierarquica.jsx); este aqui é só o que vale antes do primeiro
-     layout — uma conta fixa em CSS não enxerga o rodapé e o cortava. */
+     layout. */
   max-height: 70vh;
   overscroll-behavior: contain;
+  /* Moldura mínima: uma borda fina, raio pequeno, nenhuma sombra. */
+  border-radius: var(--vf-radius-sm);
 }
 
 /* Larguras das duas colunas-âncora. São fixas porque o deslocamento sticky da
    segunda coluna depende da largura exata da primeira — uma coluna elástica
-   deixaria a segunda flutuando sobre a primeira no scroll horizontal. */
+   deixaria a segunda flutuando sobre a primeira no scroll horizontal.
+   Base = notebook (1280px com a sidebar do Shell): as duas âncoras + seis
+   métricas cabem sem rolar; acima disso a sobra vai para o nome do cliente e
+   para o piso das métricas. */
 .vf-ph-table {
-  --vf-ph-col-cliente: 300px;
-  /* 208px: squad + ↻ na 1ª linha; "dados até dd/mm/aaaa · API" e
+  --vf-ph-col-cliente: 256px;
+  /* Squad + "↻ Atualizar" na 1ª linha; "dados até dd/mm/aaaa · API" e
      "atualizado dd/mm/aaaa, hh:mm" cabem numa linha cada, sem cortar. */
-  --vf-ph-col-contexto: 208px;
+  --vf-ph-col-contexto: 196px;
+  /* Onde fica o eixo do cliente (centro do chevron): as contas e o histórico
+     penduram numa linha fina que desce exatamente daqui. */
+  --vf-ph-eixo: calc(var(--vf-table-cell-px) + 6px);
+  /* Onde começa o texto das filhas: um degrau inteiro depois do nome do pai. */
+  --vf-ph-recuo-filha: calc(var(--vf-table-cell-px) + 34px);
   width: 100%;
 }
 
@@ -41,60 +55,107 @@
   max-width: var(--vf-ph-col-contexto);
 }
 
-/* Coluna de folga: recolhe toda a largura excedente num lugar só. Sem ela, a
-   tabela em `width: 100%` reparte a sobra entre as colunas numéricas e, num
-   monitor de 1920px, cada métrica fica com ~170px — o número acaba longe do
-   próprio cabeçalho e a linha vira uma ponte longa demais para o olho. */
+/* Coluna de folga: recolhe toda a largura excedente num lugar só, para as
+   métricas não se espalharem pela tela e o número ficar perto do cabeçalho. */
 .vf-ph-table .vf-ph-folga {
   width: 100%;
   padding: 0;
   border-left: none;
 }
 
-/* A folga sozinha resolvia demais: em 1920px ela virava ~630px de vazio à
-   direita e a tabela passava a parecer inacabada. A sobra é repartida antes
-   de chegar nela — a coluna do cliente cresce (nome longo é o conteúdo que
-   mais se beneficia de espaço) e as métricas ganham um piso maior. O que
-   resta na folga vira uma canaleta normal de tabela administrativa. */
 .vf-ph-th-metrica,
 .vf-ph-table td.num {
-  min-width: 96px;
+  min-width: 84px;
+}
+
+@media (max-width: 1499px) {
+  .vf-ph-table td.num,
+  .vf-ph-table th.vf-ph-th-metrica {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
 }
 
 @media (min-width: 1500px) {
   .vf-ph-table {
-    --vf-ph-col-cliente: 380px;
+    --vf-ph-col-cliente: 360px;
+    --vf-ph-col-contexto: 216px;
   }
 
   .vf-ph-th-metrica,
   .vf-ph-table td.num {
-    min-width: 118px;
+    min-width: 112px;
   }
 }
 
 @media (min-width: 1800px) {
   .vf-ph-table {
-    --vf-ph-col-cliente: 440px;
+    --vf-ph-col-cliente: 420px;
   }
 
   .vf-ph-th-metrica,
   .vf-ph-table td.num {
-    min-width: 132px;
+    min-width: 128px;
   }
 }
 
 /* ── Cabeçalho em dois níveis ───────────────────────────────────────────
-   A primeira linha agrupa (FINANCEIRO / ADS / OPERAÇÃO) e a segunda nomeia a
-   métrica. As duas ficam presas no topo: `--vf-ph-head-2` é a altura REAL da
-   primeira linha, medida no componente — densidade, zoom e fonte do sistema
-   mudam esse valor, e um número fixo aqui descolaria as duas no scroll. */
+   Linha 1: rótulo do GRUPO (Financeiro / Ads), pequeno e baixo, à esquerda do
+   bloco que ele nomeia. Linha 2: a métrica, à direita, colada no número.
+   `--vf-ph-head-2` é a altura REAL da linha 1, medida no componente. */
 .vf-ph-table thead .vf-ph-thead-metricas th {
-  top: var(--vf-ph-head-2, 26px);
+  top: var(--vf-ph-head-2, 22px);
+}
+
+.vf-ph-table thead th {
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-th-ancora,
+.vf-ph-th-contexto {
+  vertical-align: bottom;
+}
+
+.vf-ph-th-ancora__conteudo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2);
+}
+
+.vf-ph-recolher {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: var(--vf-fw-medium);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--vf-text-secondary);
+  cursor: pointer;
+}
+
+.vf-ph-recolher:hover {
+  color: var(--vf-primary-strong);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.vf-ph-recolher:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 .vf-ph-th-grupo {
-  text-align: center !important;
+  padding-top: 5px !important;
+  padding-bottom: 3px !important;
+  text-align: left !important;
   border-left: 1px solid var(--vf-border);
+  border-bottom-color: transparent !important;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  letter-spacing: var(--vf-ls-caps);
   color: var(--vf-text-muted);
 }
 
@@ -111,11 +172,13 @@
 }
 
 .vf-ph-th-metrica {
+  padding-top: 2px !important;
   border-left: 1px solid transparent;
+  color: var(--vf-text-secondary) !important;
 }
 
-/* A borda do grupo continua descendo pela primeira métrica de cada grupo,
-   para o olho não perder onde um bloco termina e o outro começa. */
+/* O divisor do grupo desce pela primeira métrica de cada grupo — e continua
+   no corpo (`td.is-inicio-grupo`) com o mesmo traço fino. */
 .vf-ph-thead-metricas th:nth-child(1),
 .vf-ph-thead-metricas th.is-primeira-do-grupo {
   border-left-color: var(--vf-border);
@@ -123,7 +186,7 @@
 
 .vf-ph-th-grupo.is-indisponivel,
 .vf-ph-th-metrica.is-indisponivel {
-  color: var(--vf-text-disabled);
+  color: var(--vf-text-disabled) !important;
 }
 
 .vf-ph-th-metrica abbr {
@@ -136,33 +199,46 @@
   cursor: pointer;
 }
 
-/* O cabeçalho ordenável da coluna numérica encosta à direita, junto do
-   número que ele descreve. */
 .vf-ph-th-metrica .vf-table__sort {
   flex-direction: row;
 }
 
 /* ── Colunas-âncora fixas no scroll horizontal ──────────────────────────
-   Com onze colunas o scroll lateral é rotina; perder de vista de QUEM é a
-   linha torna a tabela ilegível. As duas primeiras colunas ficam. A sombra
-   marca a divisão só quando há conteúdo rolando sob elas. */
+   A sombra marca a divisão só quando há conteúdo rolando sob elas. As
+   camadas do cabeçalho (3 / 2 / 1) já vêm certas da Fundação V2. */
 .vf-ph-table .vf-ph-contexto,
 .vf-ph-table .vf-ph-th-contexto {
   left: var(--vf-ph-col-cliente);
-  box-shadow: inset -1px 0 0 var(--vf-border), 6px 0 6px -6px rgb(0 0 0 / 0.12);
+  box-shadow: inset -1px 0 0 var(--vf-border), 6px 0 6px -6px rgb(0 0 0 / 0.1);
 }
 
-/* A camada das âncoras do cabeçalho já vem certa da Fundação V2
-   (`.vf-table thead th.vf-table__sticky-cell` = z-index 3, contra 2 do thead
-   comum e 1 da coluna fixa do corpo). Havia aqui um `z-index: 4` que nunca
-   chegava a valer — a regra da V2 é mais específica — e que só daria a
-   impressão de estar sustentando um empilhamento que na verdade é dela.
-   Conferido com scroll real nos dois eixos: 1 / 2 / 3, nessa ordem. */
+/* ── Réguas do corpo ────────────────────────────────────────────────────
+   Uma régua só por CLIENTE (em cima da linha dele). Dentro do bloco aberto,
+   contas e histórico não levam régua: o bloco se lê como uma peça, e o olho
+   salta de cliente em cliente. A Fundação põe `border-bottom` em todo `td`
+   (mas não no `th` da âncora) — aqui as duas colunas passam a seguir a MESMA
+   regra, sem linha pela metade. */
+.vf-ph-table tbody td,
+.vf-ph-table tbody th {
+  border-bottom: none;
+}
 
-/* ── Âncora: a célula inteira é o alvo de clique ────────────────────────
-   Mirar um chevron de 10px era o pedágio de toda interação da tela. O botão
-   preenche a célula; o padding vem do próprio botão para que a área clicável
-   inclua a borda da célula, não só o texto. */
+.vf-ph-row--cliente > th,
+.vf-ph-row--cliente > td {
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-ph-table tbody > tr:first-child > th,
+.vf-ph-table tbody > tr:first-child > td {
+  border-top: none;
+}
+
+/* Divisor vertical entre Financeiro e Ads, do cabeçalho ao fim do corpo. */
+.vf-ph-table td.is-inicio-grupo {
+  box-shadow: inset 1px 0 0 var(--vf-border);
+}
+
+/* ── Âncora: a célula inteira é o alvo de clique ────────────────────────── */
 .vf-ph-ancora {
   padding: 0 !important;
   font-weight: inherit;
@@ -181,7 +257,7 @@
   font: inherit;
   color: inherit;
   text-align: left;
-  border-radius: var(--vf-radius-sm);
+  border-radius: 0;
 }
 
 .vf-ph-toggle:focus-visible {
@@ -194,123 +270,160 @@
   flex: 1 1 auto;
 }
 
+/* Seta de expansão: traço, não glifo — nítida em qualquer fonte, e gira. */
 .vf-ph-chevron {
   flex: 0 0 auto;
-  display: inline-block;
   width: 12px;
-  margin-top: 1px;
-  transition: transform var(--vf-duration-fast) var(--vf-ease);
+  height: 12px;
+  margin-top: 3px;
   color: var(--vf-text-muted);
-  font-size: var(--vf-fs-xs);
+  transition: transform var(--vf-duration-fast) var(--vf-ease), color var(--vf-duration-fast) var(--vf-ease);
+}
+
+.vf-ph-toggle:hover .vf-ph-chevron {
+  color: var(--vf-text);
 }
 
 .vf-ph-chevron[data-aberto="true"] {
   transform: rotate(90deg);
-  color: var(--vf-primary);
+  color: var(--vf-text);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .vf-ph-chevron { transition: none; }
 }
 
-/* ── Nível 1 — CLIENTE: o consolidado, linha DOMINANTE ──────────────────
-   Linha mais alta, nome maior e em peso forte, números em semibold e régua
-   superior mais marcada que a de qualquer outro nível: o olho lê a tabela de
-   cliente em cliente. Recolhida, esta linha sozinha responde "como este
-   cliente está" — estado, ação pendente e frescor (§18). */
-.vf-ph-row--cliente > th,
-.vf-ph-row--cliente > td {
-  --vf-table-cell-py: var(--vf-sp-2);
-  border-top: 1px solid var(--vf-border-strong);
+/* ══ Nível 1 — CLIENTE (consolidado): a linha DOMINANTE ══════════════════
+   Mais alta, nome em 14px semibold, métricas no corpo 13px e FAT em
+   semibold. Tudo alinhado ao TOPO: o número fica na mesma linha de base do
+   nome, e a leitura horizontal "cliente → FAT → LC → …" não depende da
+   altura da coluna de contexto. */
+.vf-ph-table .vf-ph-row--cliente > th,
+.vf-ph-table .vf-ph-row--cliente > td {
+  --vf-table-cell-py: 9px;
+  vertical-align: top;
   background: var(--vf-surface);
 }
 
-.vf-ph-row--cliente .vf-ph-valor {
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text);
-}
-
-.vf-ph-row--cliente.is-sem-dado .vf-ph-valor {
-  font-weight: var(--vf-fw-regular);
-}
-
-/* Cliente aberto: o bloco (cliente + contas) ganha a mesma régua lateral das
-   filhas, então o consolidado e suas contas leem como UMA peça. */
-.vf-ph-row--cliente.is-aberto > .vf-ph-ancora {
-  box-shadow: inset 3px 0 0 var(--vf-primary);
-}
-
-/* Atualização em curso: régua lateral na cor da marca — o estado também está
-   escrito na linha ("Atualizando set/2026 até hoje · 1 de 2 contas"). */
-.vf-ph-row--cliente.is-atualizando-linha > .vf-ph-ancora {
-  box-shadow: inset 3px 0 0 var(--vf-info);
-}
-
 .vf-ph-row--cliente .vf-ph-toggle {
-  padding-top: var(--vf-sp-2);
-  padding-bottom: var(--vf-sp-2);
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
+.vf-ph-row--cliente > td.num {
+  padding-top: 10px;
+  font-size: var(--vf-control-fs);
 }
 
 .vf-ph-cliente {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* Nome + escopo na mesma linha: "AMR ecommerce  Consolidado · 3 contas". O
+   escopo nunca some — é ele que impede ler um consolidado como conta. */
+.vf-ph-cliente__linha {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1px var(--vf-sp-2);
   min-width: 0;
 }
 
 .vf-ph-cliente__nome {
+  min-width: 0;
   font-size: var(--vf-fs-sm);
   font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-tight);
   color: var(--vf-text);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-ph-escopo {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
   white-space: nowrap;
 }
 
 .vf-ph-cliente__meta {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
   white-space: nowrap;
-}
-
-.vf-ph-row--cliente:hover .vf-ph-cliente__nome {
-  color: var(--vf-primary-strong);
 }
 
 .vf-ph-row--cliente.is-sem-dado .vf-ph-cliente__nome {
   color: var(--vf-text-secondary);
 }
 
-/* Nome + escopo na mesma linha: "AMR ecommerce  Consolidado · 3 contas". O
-   escopo nunca some — é ele que impede ler um consolidado como se fosse uma
-   conta (o caso do FAT "errado" que era só a soma de três operações). */
-.vf-ph-cliente__linha {
+/* Sem dado: o motivo (ou "N contas precisam de ação") ganha linha própria;
+   ele encolhe com reticências, "último dado" nunca. */
+.vf-ph-cliente__meta--vazio {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.vf-ph-cliente__meta-linha {
   display: flex;
-  align-items: baseline;
-  gap: var(--vf-sp-2);
+  align-items: center;
+  gap: 5px;
   min-width: 0;
 }
 
-.vf-ph-escopo {
-  flex: 0 0 auto;
-  font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-medium);
-  color: var(--vf-text-muted);
-  white-space: nowrap;
-}
-
-.vf-ph-cliente__meta {
+.vf-ph-cliente__meta-linha > .vf-ph-motivo,
+.vf-ph-cliente__meta-linha > .vf-ph-acoes {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.vf-ph-cliente__meta-linha > .vf-ph-ultimo {
+  flex: 0 0 auto;
+}
+
+.vf-ph-cliente__meta-linha > .vf-ph-motivo::before,
+.vf-ph-cliente__meta-linha > .vf-ph-acoes::before,
+.vf-ph-cliente__meta-linha > .vf-ph-ultimo:first-child::before {
+  content: none;
+}
+
+/* Cliente aberto: um traço fino desce do chevron até a borda da linha — e
+   segue pelas filhas (ver "Eixo" abaixo). Pai e filhas leem como UMA peça. */
+.vf-ph-row--cliente.is-aberto > .vf-ph-ancora::after {
+  content: "";
+  position: absolute;
+  top: 26px;
+  bottom: 0;
+  left: var(--vf-ph-eixo);
+  width: 1px;
+  background: var(--vf-border-strong);
+}
+
+/* Atualização em curso: régua lateral fina — o estado também está escrito
+   na linha ("Atualizando até hoje") e no botão ("Atualizando 1/3"). */
+.vf-ph-row--cliente.is-atualizando-linha > .vf-ph-ancora {
+  box-shadow: inset 2px 0 0 var(--vf-primary), inset -1px 0 0 var(--vf-border);
 }
 
 /* Estado compacto: o `.vf-status` da Fundação (ponto + texto, a forma do
    ponto codifica o tom), na altura de uma linha de metadado. */
 .vf-ph-status {
-  gap: 4px;
+  gap: 5px;
   font-size: var(--vf-fs-2xs);
 }
 
@@ -322,14 +435,15 @@
 .vf-ph-motivo {
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--vf-text-muted);
+  color: var(--vf-text-secondary);
 }
 
 .vf-ph-motivo::before,
 .vf-ph-acoes::before,
-.vf-ph-progresso::before {
+.vf-ph-progresso::before,
+.vf-ph-ultimo::before {
   content: "·";
-  margin-right: 4px;
+  margin-right: 5px;
   color: var(--vf-text-muted);
   font-weight: var(--vf-fw-regular);
 }
@@ -347,11 +461,8 @@
 }
 
 .vf-ph-progresso {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
   font-weight: var(--vf-fw-medium);
-  color: var(--vf-info-strong);
+  color: var(--vf-text-secondary);
 }
 
 .vf-ph-spinner {
@@ -361,12 +472,21 @@
   vertical-align: -1px;
 }
 
-/* Tag compacta: a da Fundação, na altura de uma linha de metadado. Só o
-   Squad usa tag — estado e fonte são texto (menos caixas por linha). */
+/* ── Contexto (4ª prioridade) ───────────────────────────────────────────
+   Squad (tag neutra) + ↻ na 1ª linha; frescor em 11px cinza embaixo. */
+.vf-ph-table .vf-ph-contexto {
+  vertical-align: top;
+}
+
 .vf-ph-tag {
+  min-width: 0;
+  height: 18px;
   padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--vf-fs-2xs);
-  line-height: 16px;
+  font-weight: var(--vf-fw-medium);
+  line-height: 18px;
   white-space: nowrap;
 }
 
@@ -377,11 +497,17 @@
   gap: 4px;
 }
 
-/* Squad à esquerda, ↻ encostado à direita da coluna. */
 .vf-ph-contexto__topo {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   justify-content: space-between;
+  gap: 2px var(--vf-sp-2);
   min-height: 20px;
+  margin-bottom: 2px;
+}
+
+.vf-ph-contexto__topo > .vf-tag {
+  flex: 0 1 auto;
+  max-width: 100%;
 }
 
 .vf-ph-contexto > .vf-ph-meta {
@@ -389,26 +515,47 @@
   white-space: nowrap;
 }
 
+.vf-ph-meta {
+  font-size: var(--vf-fs-2xs);
+  line-height: var(--vf-lh-snug);
+  color: var(--vf-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-meta.is-vazio {
+  color: var(--vf-text-muted);
+  font-style: italic;
+}
+
 .vf-ph-frescor--ok {
   color: var(--vf-success-strong);
 }
 
-/* ↻ Atualizar dados: ícone discreto; o texto da regra está no `title` e na
-   legenda fixa da barra ("Atualização automática: até ontem"). */
-.vf-ph-atualizar {
-  width: 22px;
+/* ── ↻ Atualizar ────────────────────────────────────────────────────────
+   Botão de TEXTO pequeno (descobrível sem hover), alinhado à direita da
+   coluna. Os dois rótulos (normal e hover) ficam empilhados na mesma célula
+   de grid: a largura é a do maior, e trocar o texto não desloca nada. */
+.vf-ph-atualizar.vf-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  gap: 4px;
   height: 20px;
   min-height: 0;
+  margin-right: -6px;
+  padding: 0 6px;
+  justify-content: flex-end;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
   color: var(--vf-text-secondary);
 }
 
-.vf-ph-atualizar:hover:not(:disabled) {
+.vf-ph-atualizar.vf-btn:hover:not(:disabled) {
   color: var(--vf-primary-strong);
 }
 
 .vf-ph-atualizar__icone {
   display: inline-block;
-  font-size: var(--vf-fs-sm);
+  font-size: var(--vf-fs-xs);
   line-height: 1;
 }
 
@@ -416,18 +563,68 @@
   animation: vf-spin 0.9s linear infinite;
 }
 
+.vf-ph-atualizar__rotulos {
+  display: inline-grid;
+  justify-items: end;
+}
+
+.vf-ph-atualizar__rotulo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  grid-area: 1 / 1;
+  white-space: nowrap;
+}
+
+.vf-ph-atualizar__rotulo--hover {
+  visibility: hidden;
+}
+
+.vf-ph-atualizar.tem-hover:is(:hover, :focus-visible) .vf-ph-atualizar__rotulo {
+  visibility: hidden;
+}
+
+.vf-ph-atualizar.tem-hover:is(:hover, :focus-visible) .vf-ph-atualizar__rotulo--hover {
+  visibility: visible;
+}
+
+.vf-ph-atualizar.is-andamento.vf-btn:disabled {
+  opacity: 1;
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-atualizar.is-ok {
+  color: var(--vf-success-strong);
+}
+
+.vf-ph-atualizar.is-falha {
+  color: var(--vf-danger-strong);
+}
+
+.vf-ph-atualizar.is-pendencia {
+  color: var(--vf-warning-strong);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .vf-ph-atualizar__icone.is-girando { animation: none; }
 }
 
-.vf-ph-lancar {
-  margin-top: 2px;
-  padding-left: 0;
-  padding-right: 0;
+/* "Lançar dados": ação SECUNDÁRIA da conta — texto-link, não botão cheio. */
+.vf-ph-lancar.vf-btn {
   height: auto;
   min-height: 0;
+  margin-top: 1px;
+  padding: 0;
   font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
   color: var(--vf-primary-strong);
+  background: none;
+}
+
+.vf-ph-lancar.vf-btn:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .vf-ph-aviso {
@@ -435,43 +632,60 @@
   cursor: help;
 }
 
-/* ── Nível 2 — CONTA/OPERAÇÃO: SECUNDÁRIA ───────────────────────────────
-   Mesmas colunas do cliente, mas um degrau abaixo em tudo: recuo maior,
-   fundo do bloco aberto, rótulo e números menores e sem peso. A soma do
-   consolidado continua auditável lendo as linhas de baixo — só não compete
-   com ela. */
-.vf-ph-row--conta > th,
-.vf-ph-row--conta > td {
-  --vf-table-cell-py: 3px;
-  background: var(--vf-surface-2);
+/* ══ Nível 2 — CONTA/OPERAÇÃO: secundária e pendurada no cliente ═════════
+   Um degrau abaixo em tudo: fundo neutro, recuo grande, 12px, peso regular,
+   números em cinza. Continua somando visualmente para o consolidado, sem
+   parecer uma nova linha de cliente. */
+.vf-ph-table .vf-ph-row--conta > th,
+.vf-ph-table .vf-ph-row--conta > td {
+  --vf-table-cell-py: 5px;
+  vertical-align: top;
+  background: var(--vf-bg);
   font-size: var(--vf-fs-xs);
 }
 
 .vf-ph-row--conta > .vf-ph-ancora {
-  padding: 3px var(--vf-table-cell-px) !important;
+  padding: 5px var(--vf-table-cell-px) !important;
+}
+
+.vf-ph-row--conta > td.num {
+  padding-top: 6px;
 }
 
 .vf-ph-row--conta .vf-ph-valor {
+  font-weight: var(--vf-fw-regular);
   color: var(--vf-text-secondary);
 }
 
 .vf-ph-conta__rotulo {
   display: block;
-  font-weight: var(--vf-fw-regular);
-  color: var(--vf-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.vf-ph-conta__canal {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-conta__operacao {
+  color: var(--vf-text-muted);
+}
+
 .vf-ph-conta__meta {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   overflow: hidden;
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
   white-space: nowrap;
+}
+
+.vf-ph-conta__motivo {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .vf-ph-conta__sync {
@@ -485,19 +699,15 @@
   cursor: help;
 }
 
-/* Conta que pede ação: a régua lateral do bloco vira âmbar nela. */
-.vf-ph-row--conta.is-acao > .vf-ph-ancora {
-  box-shadow: inset 3px 0 0 var(--vf-warning), inset -1px 0 0 var(--vf-border);
-}
-
 .vf-ph-conta .vf-ph-indent {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   min-width: 0;
+  padding-left: calc(var(--vf-ph-recuo-filha) - var(--vf-table-cell-px));
 }
 
-.vf-ph-row--conta.is-inativa .vf-ph-conta__rotulo {
+.vf-ph-row--conta.is-inativa .vf-ph-conta__canal {
   color: var(--vf-text-muted);
 }
 
@@ -506,60 +716,99 @@
   background: var(--vf-surface-hover);
 }
 
-/* Linha-gatilho do histórico mensal: discreta, é navegação, não dado. */
+/* Conta que pede ação: o eixo vira âmbar só no trecho dela — geometria +
+   cor, e a razão está escrita ("Sem conexão", "Erro de sync"). */
+.vf-ph-row--conta.is-acao > .vf-ph-ancora::before {
+  width: 2px;
+  background: var(--vf-warning);
+}
+
+/* ── Eixo do bloco aberto ───────────────────────────────────────────────
+   Uma linha de 1px, no x do chevron do cliente, atravessa todas as filhas
+   (contas, histórico, meses, semanas, estados). É a única "árvore" da tela:
+   sem cotovelos nem traços horizontais. Em alto contraste continua valendo,
+   porque é geometria, não tonalidade. */
+.vf-ph-row--conta > .vf-ph-ancora::before,
+.vf-ph-row--historico > .vf-ph-ancora::before,
+.vf-ph-row--mes > .vf-ph-ancora::before,
+.vf-ph-row--semana > .vf-ph-ancora::before,
+.vf-ph-row--estado > td::before,
+.vf-ph-row--esqueleto > td::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--vf-ph-eixo);
+  width: 1px;
+  background: var(--vf-border-strong);
+}
+
+.vf-ph-row--estado > td,
+.vf-ph-row--esqueleto > td {
+  position: relative;
+}
+
+/* ══ Histórico mensal: navegação, ainda mais discreta que as contas ══════ */
 .vf-ph-row--historico > th,
 .vf-ph-row--historico > td {
-  --vf-table-cell-py: 2px;
-  background: var(--vf-surface-2);
+  background: var(--vf-bg);
   font-size: var(--vf-fs-2xs);
 }
 
-.vf-ph-row--historico .vf-ph-toggle {
-  padding-top: 2px;
-  padding-bottom: 2px;
+.vf-ph-toggle--historico,
+.vf-ph-toggle--mes {
+  align-items: center;
+  gap: 6px;
+  padding-top: 5px;
+  padding-bottom: 6px;
+}
+
+.vf-ph-toggle--historico {
+  padding-left: calc(var(--vf-ph-recuo-filha) - 16px);
+}
+
+.vf-ph-toggle--historico .vf-ph-indent,
+.vf-ph-toggle--mes .vf-ph-indent {
+  display: block;
+  min-width: 0;
+  padding-left: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-ph-toggle--historico .vf-ph-chevron,
+.vf-ph-toggle--mes .vf-ph-chevron {
+  width: 10px;
+  height: 10px;
+  margin-top: 0;
 }
 
 .vf-ph-historico__rotulo {
   font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-row--historico .vf-ph-toggle:hover .vf-ph-historico__rotulo {
   color: var(--vf-text-secondary);
 }
 
-/* A competência selecionada, dentro do histórico, é marcada por geometria e
-   peso — não só por cor. */
-.vf-ph-row--mes.is-selecionada > th,
-.vf-ph-row--mes.is-selecionada > td {
-  background: var(--vf-primary-soft);
-}
-
-.vf-ph-row--mes.is-selecionada .vf-ph-mes__rotulo {
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-primary-strong);
-}
-
-/* ── Nível 2 — MÊS: análise histórica ───────────────────────────────────
-   Recuo evidente, fundo distinto e altura menor que a do cliente. */
+/* ── Mês (dentro do histórico) ──────────────────────────────────────────── */
 .vf-ph-row--mes > th,
 .vf-ph-row--mes > td {
-  --vf-table-cell-py: 3px;
-  background: var(--vf-surface-2);
+  --vf-table-cell-py: 4px;
+  background: var(--vf-bg);
+  font-size: var(--vf-fs-xs);
 }
 
-/* `--vf-surface-2` sozinho quase não separava o nível 2 do nível 1 na tela
-   real (visto na primeira passada). A régua vertical marca o bloco aberto
-   sem escurecer a tabela inteira — e continua funcionando em alto contraste,
-   porque é geometria, não tonalidade. */
-.vf-ph-row--conta > .vf-ph-ancora,
-.vf-ph-row--historico > .vf-ph-ancora,
-.vf-ph-row--mes > .vf-ph-ancora,
-.vf-ph-row--semana > .vf-ph-ancora,
-.vf-ph-row--estado > td,
-.vf-ph-row--esqueleto > td {
-  box-shadow: inset 3px 0 0 var(--vf-primary-border), inset -1px 0 0 var(--vf-border);
+.vf-ph-toggle--mes {
+  padding-left: var(--vf-ph-recuo-filha);
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 
-.vf-ph-row--mes .vf-ph-toggle {
-  padding-top: 3px;
-  padding-bottom: 3px;
+.vf-ph-row--mes .vf-ph-valor {
+  color: var(--vf-text-secondary);
 }
 
 .vf-ph-row--mes:hover > th,
@@ -572,15 +821,29 @@
   color: var(--vf-text-secondary);
 }
 
-/* ── Nível 3 — SEMANA: drilldown ────────────────────────────────────────
-   O mais compacto e o mais discreto dos três; o intervalo de dias fica
-   explícito ao lado do rótulo (S3 não significa nada sozinho). */
+/* A competência selecionada, dentro do histórico, é marcada por peso e
+   fundo — e pela palavra "selecionada" ao lado. */
+.vf-ph-row--mes.is-selecionada > th,
+.vf-ph-row--mes.is-selecionada > td {
+  background: var(--vf-primary-soft);
+}
+
+.vf-ph-row--mes.is-selecionada .vf-ph-mes__rotulo {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary-strong);
+}
+
+/* ── Semana: drilldown, o mais compacto ─────────────────────────────────── */
 .vf-ph-row--semana > th,
 .vf-ph-row--semana > td {
-  --vf-table-cell-py: 2px;
+  --vf-table-cell-py: 3px;
   background: var(--vf-surface);
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-secondary);
+}
+
+.vf-ph-row--semana > .vf-ph-ancora {
+  padding: 3px var(--vf-table-cell-px) !important;
 }
 
 .vf-ph-row--semana:hover > th,
@@ -598,47 +861,51 @@
   color: var(--vf-text-muted);
 }
 
-/* Recuo por nível — o degrau é grande o bastante para ser lido de relance,
-   não um detalhe de 4px. A conta recua além do chevron do cliente. */
 .vf-ph-indent {
   display: inline-block;
   padding-left: var(--vf-sp-5);
 }
 
-.vf-ph-conta .vf-ph-indent {
-  padding-left: calc(var(--vf-sp-5) + var(--vf-sp-2));
-}
-
 .vf-ph-indent--3 {
-  padding-left: calc(var(--vf-sp-5) * 2);
+  padding-left: calc(var(--vf-ph-recuo-filha) + var(--vf-sp-4) - var(--vf-table-cell-px));
 }
 
-/* A semana não tem botão, então o padding horizontal que o botão daria
-   precisa vir da própria célula. */
-.vf-ph-row--semana > .vf-ph-ancora {
-  padding: 2px var(--vf-table-cell-px) !important;
-}
-
-/* ── Contexto (Squad / sincronização do mês) ────────────────────────────── */
-.vf-ph-contexto {
-  vertical-align: middle;
-}
-
-.vf-ph-meta {
-  font-size: var(--vf-fs-2xs);
-  color: var(--vf-text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.vf-ph-meta.is-vazio {
-  color: var(--vf-text-disabled);
-  font-style: italic;
-}
-
-/* ── Valor + variação ───────────────────────────────────────────────────── */
+/* ── Números ────────────────────────────────────────────────────────────
+   À direita, algarismos tabulares, e um peso por papel:
+     cliente → FAT semibold · LC/MC medium · Ads medium em cinza-escuro
+     conta   → tudo regular em cinza (FAT em medium)
+   "—" em tom secundário; negativo em vermelho escuro (o "−" já vem escrito). */
 .vf-ph-valor {
   display: block;
   font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-row--cliente .vf-ph-valor {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+}
+
+.vf-ph-row--cliente .vf-ph-col--fat .vf-ph-valor {
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-ph-row--cliente .vf-ph-col--ads .vf-ph-valor,
+.vf-ph-row--cliente .vf-ph-col--acos .vf-ph-valor,
+.vf-ph-row--cliente .vf-ph-col--tacos .vf-ph-valor {
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-row--conta .vf-ph-col--fat .vf-ph-valor {
+  font-weight: var(--vf-fw-medium);
+}
+
+.vf-ph-table .vf-ph-valor.is-ausente {
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-table .vf-ph-valor.is-negativo {
+  color: var(--vf-danger-strong);
 }
 
 .vf-ph-delta {
@@ -668,10 +935,10 @@
 
 /* ── Linhas de estado (erro/vazio/esqueleto) ────────────────────────────── */
 .vf-ph-row--estado > td {
-  padding-left: calc(var(--vf-table-cell-px) + var(--vf-sp-5));
+  padding-left: var(--vf-ph-recuo-filha);
   color: var(--vf-text-secondary);
   font-size: var(--vf-fs-2xs);
-  background: var(--vf-surface-2);
+  background: var(--vf-bg);
 }
 
 .vf-ph-row--estado.is-erro > td {
@@ -688,23 +955,23 @@
 }
 
 /* Desfecho de "Atualizar dados" com pendência/falha: logo abaixo do cliente.
-   O conteúdo fica preso à esquerda no scroll horizontal (a célula ocupa a
-   largura toda da tabela; o texto não deve fugir junto com as métricas). */
+   Faixa de fundo suave + filete à esquerda; o conteúdo fica preso à esquerda
+   no scroll horizontal. */
 .vf-ph-row--atualizacao > td {
-  padding: var(--vf-sp-2) var(--vf-table-cell-px);
+  padding: 6px var(--vf-table-cell-px) 7px;
   border-top: none;
   font-size: var(--vf-fs-2xs);
 }
 
 .vf-ph-row--atualizacao.is-pendencia > td {
   background: var(--vf-warning-bg);
-  box-shadow: inset 3px 0 0 var(--vf-warning);
+  box-shadow: inset 2px 0 0 var(--vf-warning);
   color: var(--vf-warning-strong);
 }
 
 .vf-ph-row--atualizacao.is-falha > td {
   background: var(--vf-danger-bg);
-  box-shadow: inset 3px 0 0 var(--vf-danger);
+  box-shadow: inset 2px 0 0 var(--vf-danger);
   color: var(--vf-danger-strong);
 }
 
@@ -716,7 +983,7 @@
   align-items: baseline;
   gap: var(--vf-sp-1) var(--vf-sp-3);
   max-width: min(960px, 90vw);
-  padding-left: var(--vf-sp-5);
+  padding-left: calc(var(--vf-ph-recuo-filha) - var(--vf-table-cell-px) - 14px);
 }
 
 .vf-ph-atualizacao__titulo {
@@ -759,20 +1026,18 @@
 /* Esqueleto de expansão: ocupa a altura que as linhas reais vão ocupar, para
    a tabela não saltar quando a resposta chega. */
 .vf-ph-row--esqueleto > td {
-  padding: 3px calc(var(--vf-table-cell-px) + var(--vf-sp-5));
-  background: var(--vf-surface-2);
+  padding: 5px var(--vf-table-cell-px) 5px var(--vf-ph-recuo-filha);
+  background: var(--vf-bg);
 }
 
 .vf-ph-row--esqueleto .vf-skeleton--row {
-  height: 14px;
+  height: 12px;
   max-width: 420px;
 }
 
-/* ── Atualização de filtro sem piscar (§22) ─────────────────────────────
+/* ── Atualização de filtro sem piscar ───────────────────────────────────
    Os dados anteriores continuam na tela enquanto a resposta nova não chega,
-   mas atenuados e inertes — nunca dá para clicar num dado velho achando que
-   é o novo. A toolbar diz "Atualizando…" ao mesmo tempo, então o estado é
-   afirmado em texto, não só em opacidade. */
+   mas atenuados e inertes. A barra diz "Atualizando…" ao mesmo tempo. */
 .vf-ph-wrap.is-atualizando {
   opacity: 0.55;
   pointer-events: none;

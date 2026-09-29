@@ -154,7 +154,6 @@ export default function PainelContasPage() {
             temFiltroAtivo={temFiltroAtivo} onLimpar={limparFiltros}
             grupos={grupos} onAlternarGrupo={alternarGrupo}
             resumoCarteira={resumoCarteira} atualizando={atualizando}
-            temExpandido={expansao.temExpandido} onRecolherTudo={expansao.recolherTudo}
             competenciaAtual={competenciaAtual} podeAtualizar={permissoes.atualizarDados === true}
           />
         )}

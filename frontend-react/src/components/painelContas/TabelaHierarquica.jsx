@@ -17,9 +17,11 @@
 //              selecionar a conta). É nela que mora "Lançar dados". Já vem na
 //              lista: abrir um cliente não custa requisição.
 //
-// ATUALIZAR  → admin: ↻ na linha do cliente dispara a atualização sob demanda
-//              (servidor). Em curso, a linha diz o progresso ("Atualizando até hoje · 1/2"); terminada com
-//              pendência, uma linha logo abaixo diz QUAL conta falhou e por quê.
+// ATUALIZAR  → admin: "↻ Atualizar" na linha do cliente dispara a atualização
+//              sob demanda (servidor). Em curso, a âncora diz o período
+//              ("Atualizando até hoje") e o botão, a contagem ("Atualizando
+//              1/2"); terminada com pendência, uma linha logo abaixo diz QUAL
+//              conta falhou e por quê.
 // HISTÓRICO  → meses do consolidado (lazy) → semanas (lazy). A competência
 //              selecionada fica marcada.
 //
@@ -35,22 +37,25 @@ import { colunasVisiveis, gruposVisiveis } from "./colunas.js";
 import { atualizacaoEmCurso } from "../../utils/painelContasAtualizacao.js";
 import "./TabelaHierarquica.css";
 
-// Squad usa UM tom só — o da marca (tons de status mentiriam num rótulo que é
-// só identidade). É a ÚNICA etiqueta da linha: estado vira `.vf-status`
+// Squad é identidade, não estado: tag NEUTRA (cor fica reservada para o que
+// tem semântica). É a ÚNICA etiqueta da linha: estado vira `.vf-status`
 // (ponto + texto, forma codifica o tom) e fonte vira texto.
-const TOM_SQUAD = "is-primary";
+const TOM_SQUAD = "is-neutral";
 
 // Tom por status: cor é a segunda pista — o rótulo em texto é a primeira, e a
-// FORMA do ponto (●/◇/○ da Fundação) a terceira.
+// FORMA do ponto (●/◇/○ da Fundação) a terceira. Quatro tons só:
+// verde = sincronizado · âmbar = parcial/atenção · cinza = ausência ou fonte
+// neutra (manual, sincronizando) · vermelho = erro real. "" = `.vf-status`
+// base (ponto cheio cinza), distinto do ○ vazado de ausência.
 const TOM_STATUS = {
   sincronizado: "is-success",
-  manual: "is-info",
+  manual: "",
   parcial: "is-warning",
   sem_dados: "is-empty",
   sem_conta: "is-warning",
   sem_conexao: "is-warning",
   sem_integracao: "is-empty",
-  sincronizando: "is-info",
+  sincronizando: "",
   erro_sync: "is-danger",
   nao_publicado: "is-warning",
   conta_inativa: "is-empty",
@@ -95,16 +100,30 @@ function Delta({ sentido, valor, texto }) {
   );
 }
 
+// Classes de apresentação do número — nenhuma muda o valor exibido:
+//   vf-ph-col--<chave>  peso por métrica (FAT domina a linha; ver CSS)
+//   is-inicio-grupo     divisor vertical discreto entre Financeiro e Ads
+//   is-ausente          "—" em tom secundário (ausência não compete com dado)
+//   is-negativo         negativo diferenciado sem depender só da cor (o "−"
+//                       já vem do formatador)
 function Celula({ coluna, valor, variacao, titulo }) {
   const texto = formatarValor(coluna.tipo, valor);
   const delta = lerVariacao(coluna.tipo, variacao);
   const indisponivel = coluna.tipo === "indisponivel";
+  const ausente = indisponivel || ehAusente(valor);
+  const negativo = !ausente && Number(valor) < 0;
+  const classes = [
+    "num",
+    `vf-ph-col--${coluna.chave}`,
+    coluna.inicioGrupo ? "is-inicio-grupo" : "",
+    indisponivel ? "vf-ph-indisponivel" : "",
+  ].filter(Boolean).join(" ");
   return (
     <td
-      className={`num${indisponivel ? " vf-ph-indisponivel" : ""}`}
+      className={classes}
       title={titulo || (indisponivel ? "Sem fonte de dado auditada nesta versão" : valorExato(coluna.tipo, valor))}
     >
-      <span className="vf-ph-valor">{texto}</span>
+      <span className={`vf-ph-valor${ausente ? " is-ausente" : ""}${negativo ? " is-negativo" : ""}`}>{texto}</span>
       {delta && <Delta sentido={coluna.sentido} valor={delta.valor} texto={delta.texto} />}
     </td>
   );
@@ -113,16 +132,27 @@ function Celula({ coluna, valor, variacao, titulo }) {
 function StatusCompacto({ status, rotulo }) {
   if (!status) return null;
   return (
-    <span className={`vf-status vf-ph-status ${TOM_STATUS[status.codigo] || "is-empty"}`} title={status.motivo || undefined}>
+    <span className={`vf-status vf-ph-status ${TOM_STATUS[status.codigo] ?? "is-empty"}`} title={status.motivo || undefined}>
       {rotulo || status.rotulo}
     </span>
   );
 }
 
+// "28/09" quando o ano é o da competência (a tela inteira já diz o ano);
+// data completa quando não é — nunca uma data ambígua.
+function dataCurta(iso, competencia) {
+  const completa = formatarData(iso);
+  return String(iso).slice(0, 4) === String(competencia).slice(0, 4) ? completa.slice(0, 5) : completa;
+}
+
 // Frescor do CLIENTE, sempre as três peças — ausente vira "—", nunca some:
 //   dados até 28/09/2026 · API
 //   atualizado 29/09/2026 06:20
-function FrescorCliente({ cliente, emCurso, concluidaAgora }) {
+// É contexto (4ª prioridade da linha): tipografia menor e cinza, no tom
+// `text-muted` (AA) — mais baixo que isso deixaria de ser legível. Em
+// andamento, quem fala é o botão ↻ — esta linha continua mostrando a última
+// atualização concluída, que ainda é verdade.
+function FrescorCliente({ cliente, concluidaAgora }) {
   return (
     <>
       <span className="vf-ph-contexto__linha vf-ph-meta">
@@ -132,14 +162,10 @@ function FrescorCliente({ cliente, emCurso, concluidaAgora }) {
         </span>
       </span>
       <span className="vf-ph-contexto__linha vf-ph-meta">
-        {emCurso
-          ? <><span className="vf-spinner vf-spinner--sm vf-ph-spinner" aria-hidden="true" /> atualizando…</>
-          : (
-            <span className={concluidaAgora ? "vf-ph-frescor--ok" : undefined}>
-              {concluidaAgora && <span aria-hidden="true">✓ </span>}
-              atualizado {cliente.atualizadoEm ? formatarDataHora(cliente.atualizadoEm) : AUSENTE}
-            </span>
-          )}
+        <span className={concluidaAgora ? "vf-ph-frescor--ok" : undefined}>
+          {concluidaAgora && <span aria-hidden="true">✓ </span>}
+          atualizado {cliente.atualizadoEm ? formatarDataHora(cliente.atualizadoEm) : AUSENTE}
+        </span>
       </span>
     </>
   );
@@ -155,33 +181,88 @@ export function explicarAtualizacao(competencia, competenciaAtual) {
     : `Atualizar agora: reprocessa ${mes} completo (mês encerrado).`;
 }
 
-function BotaoAtualizar({ cliente, competencia, competenciaAtual, emCurso, onAtualizar }) {
+// Fase visível do botão. Só LÊ o estado que o hook já mantém — nenhuma regra
+// nova: em curso = `atualizacaoEmCurso`; o resto sai do `estado` do job.
+function faseAtualizacao(atualizacao) {
+  if (!atualizacao) return "normal";
+  if (atualizacaoEmCurso(atualizacao)) return "andamento";
+  const estadoJob = atualizacao.job?.estado;
+  if (atualizacao.erro || estadoJob === "falhou") return "falha";
+  if (estadoJob === "concluida_com_pendencias") return "pendencia";
+  if (estadoJob === "concluida") return "ok";
+  return "normal";
+}
+
+function progressoBotao(job) {
+  const { concluidas = 0, total = 0 } = job?.progresso || {};
+  return total > 0 ? `Atualizando ${concluidas}/${total}` : "Atualizando…";
+}
+
+// ↻ Atualizar — rótulo em texto (descobrível sem hover), estados escritos:
+//   normal     ↻ Atualizar            (hover/foco: "Atualizar até hoje")
+//   andamento  ↻ Atualizando 1/3      (travado; ícone gira)
+//   ok         ✓ Atualizado           (hover/foco: "Atualizar até hoje")
+//   falha      Falhou · tentar novamente
+// O rótulo de hover é empilhado na MESMA célula de grid do normal: a largura
+// do botão é a do maior dos dois, então trocar o texto não desloca nada.
+// O nome acessível continua "Atualizar dados de <cliente>" (+ o estado, quando
+// não é o normal) e o `title` segue explicando a regra de período.
+function BotaoAtualizar({ cliente, competencia, competenciaAtual, atualizacao, onAtualizar }) {
   const sincronizavel = (cliente.contas || []).some((c) => c.ativa && c.marketplace === "meli" && c.conectada);
+  const fase = faseAtualizacao(atualizacao);
+  const emCurso = fase === "andamento";
   const ajuda = sincronizavel
     ? explicarAtualizacao(competencia, competenciaAtual)
     : "Nenhuma conta Mercado Livre ativa e conectada — não há o que sincronizar.";
+  const rotuloHover = competencia === competenciaAtual ? "Atualizar até hoje" : "Reprocessar o mês";
+
+  let icone = "↻";
+  let rotulo = "Atualizar";
+  let estadoAcessivel = "";
+  if (emCurso) {
+    rotulo = progressoBotao(atualizacao.job);
+    estadoAcessivel = ` — ${rotulo.toLowerCase()}`;
+  } else if (fase === "ok") {
+    icone = "✓";
+    rotulo = "Atualizado";
+    estadoAcessivel = " — atualizado";
+  } else if (fase === "falha" || fase === "pendencia") {
+    icone = null;
+    rotulo = `${fase === "falha" ? "Falhou" : "Pendências"} · tentar novamente`;
+    estadoAcessivel = ` — ${fase === "falha" ? "falhou" : "concluída com pendências"}, tentar novamente`;
+  }
+  const trocaNoHover = sincronizavel && (fase === "normal" || fase === "ok");
+
   return (
     <button
       type="button"
-      className="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon vf-ph-atualizar"
+      className={`vf-btn vf-btn--ghost vf-btn--sm vf-ph-atualizar is-${fase}${trocaNoHover ? " tem-hover" : ""}`}
       onClick={() => onAtualizar(cliente.id)}
       disabled={emCurso || !sincronizavel}
-      aria-label={`Atualizar dados de ${cliente.nome}`}
+      aria-label={`Atualizar dados de ${cliente.nome}${estadoAcessivel}`}
       title={emCurso ? "Atualização em andamento" : ajuda}
     >
-      <span aria-hidden="true" className={emCurso ? "vf-ph-atualizar__icone is-girando" : "vf-ph-atualizar__icone"}>↻</span>
+      <span className="vf-ph-atualizar__rotulos">
+        <span className="vf-ph-atualizar__rotulo">
+          {icone && <span aria-hidden="true" className={`vf-ph-atualizar__icone${emCurso ? " is-girando" : ""}`}>{icone}</span>}
+          {rotulo}
+        </span>
+        {trocaNoHover && (
+          <span className="vf-ph-atualizar__rotulo vf-ph-atualizar__rotulo--hover" aria-hidden="true">
+            <span className="vf-ph-atualizar__icone">↻</span>
+            {rotuloHover}
+          </span>
+        )}
+      </span>
     </button>
   );
 }
 
-// Curto de propósito: cabe na âncora de 300px. O mês não se repete — a tela
-// inteira já é a competência selecionada.
+// Na âncora, só O QUE está acontecendo (período); a contagem de contas mora
+// no botão ↻ — as duas peças juntas, sem repetir nenhuma.
 function progressoTexto(job, competencia, competenciaAtual) {
   const mesCompleto = job ? job.periodo?.mesCompleto : competencia !== competenciaAtual;
-  const alvo = mesCompleto ? "Reprocessando o mês" : "Atualizando até hoje";
-  if (!job) return `${alvo}…`;
-  const { concluidas = 0, total = 0 } = job.progresso || {};
-  return total > 0 ? `${alvo} · ${concluidas}/${total} ${total === 1 ? "conta" : "contas"}` : `${alvo}…`;
+  return mesCompleto ? "Reprocessando o mês" : "Atualizando até hoje";
 }
 
 // Desfecho da atualização com pendência ou falha: logo abaixo do cliente,
@@ -235,7 +316,9 @@ function CelulaExpansivel({ aberto, onClick, rotuloAcessivel, nivel, children })
         aria-expanded={aberto}
         aria-label={rotuloAcessivel}
       >
-        <span className="vf-ph-chevron" data-aberto={aberto ? "true" : "false"} aria-hidden="true">▸</span>
+        <svg className="vf-ph-chevron" data-aberto={aberto ? "true" : "false"} aria-hidden="true" viewBox="0 0 12 12" focusable="false">
+          <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
         <span className="vf-ph-ancora__conteudo">{children}</span>
       </button>
     </th>
@@ -374,7 +457,21 @@ function EstadoNaAtualizacao({ estadoConta, emCurso }) {
   return null;
 }
 
-function LinhaConta({ cliente, conta, colunas, onLancar, atualizacao }) {
+// "Mercado Livre 1 · AMARO SOLUÇÕES" → canal em primeiro plano, operação em
+// tom secundário. O texto é o mesmo rótulo do servidor, só em dois pesos.
+function RotuloConta({ rotulo }) {
+  const texto = String(rotulo ?? "");
+  const i = texto.indexOf(" · ");
+  if (i < 0) return <span className="vf-ph-conta__canal">{texto}</span>;
+  return (
+    <>
+      <span className="vf-ph-conta__canal">{texto.slice(0, i)}</span>
+      <span className="vf-ph-conta__operacao"> · {texto.slice(i + 3)}</span>
+    </>
+  );
+}
+
+function LinhaConta({ cliente, competencia, conta, colunas, onLancar, atualizacao }) {
   const semDado = !conta.resumo;
   const manualSubstituido = conta.manual?.substituidoPorAutomatico;
   const adsPorCliente = conta.fonte?.tipo !== "manual";
@@ -389,13 +486,16 @@ function LinhaConta({ cliente, conta, colunas, onLancar, atualizacao }) {
     <tr className={`vf-ph-row vf-ph-row--conta${semDado ? " is-sem-dado" : ""}${conta.ativa ? "" : " is-inativa"}${conta.precisaAcao ? " is-acao" : ""}`}>
       <th scope="row" className="vf-table__sticky-cell vf-ph-ancora vf-ph-conta">
         <span className="vf-ph-indent">
-          <span className="vf-ph-conta__rotulo" title={conta.rotulo}>{conta.rotulo}</span>
+          <span className="vf-ph-conta__rotulo" title={conta.rotulo}><RotuloConta rotulo={conta.rotulo} /></span>
           <span className="vf-ph-conta__meta">
             <StatusCompacto status={conta.status} />
-            {motivo && <span className="vf-ph-meta">· {motivo}</span>}
+            {motivo && <span className="vf-ph-meta vf-ph-conta__motivo">· {motivo}</span>}
             {!semDado && conta.dadosAte && (
-              <span className="vf-ph-meta" title={conta.atualizadoEm ? `Atualizado ${formatarDataHora(conta.atualizadoEm)}` : undefined}>
-                · até {formatarData(conta.dadosAte)}
+              <span
+                className="vf-ph-meta"
+                title={`Dados até ${formatarData(conta.dadosAte)}${conta.atualizadoEm ? ` · atualizado ${formatarDataHora(conta.atualizadoEm)}` : ""}`}
+              >
+                · dados até {dataCurta(conta.dadosAte, competencia)}
               </span>
             )}
             {conta.avisos?.length > 0 && (
@@ -464,6 +564,11 @@ function LinhaHistorico({ cliente, aberto, onAlternar, colunas }) {
 // Nunca repete o que o escopo (linha de cima) ou o contexto (ao lado) já diz.
 // Mora DENTRO do botão da âncora — por isso "N contas precisam de ação" é
 // texto, não outro botão: clicar nele já abre o cliente e mostra as contas.
+// Sem dado, o motivo/ação desce para uma linha própria — ele é a informação
+// da linha, então não pode ser o primeiro a ser cortado:
+//   Cliente X            Mercado Livre 1 · LOJA
+//   ○ Sem dados em set/2026
+//   Mercado Livre não conectado · último dado: ago/2026
 function MetaCliente({ cliente, competencia, competenciaAtual, atualizacao }) {
   const emCurso = atualizacaoEmCurso(atualizacao);
   const acoes = cliente.escopo?.contasPrecisamAcao
@@ -475,26 +580,34 @@ function MetaCliente({ cliente, competencia, competenciaAtual, atualizacao }) {
 
   let detalhe = null;
   if (emCurso) {
-    detalhe = (
-      <span className="vf-ph-progresso">
-        <span className="vf-spinner vf-spinner--sm vf-ph-spinner" aria-hidden="true" />
-        {progressoTexto(atualizacao.job, competencia, competenciaAtual)}
-      </span>
-    );
+    detalhe = <span className="vf-ph-progresso">{progressoTexto(atualizacao.job, competencia, competenciaAtual)}</span>;
   } else if (acoes > 0) {
     detalhe = <span className="vf-ph-acoes">{textoAcoes(acoes)}</span>;
   } else if (semDado && cliente.status?.motivo) {
     detalhe = <span className="vf-ph-motivo" title={cliente.status.motivo}>{cliente.status.motivo}</span>;
   }
 
+  const status = (
+    <StatusCompacto
+      status={cliente.status}
+      rotulo={semDado && cliente.status?.codigo === "sem_dados" ? `Sem dados em ${rotularCompetenciaCurta(competencia)}` : undefined}
+    />
+  );
+  const ultimoDado = ultimo && <span className="vf-ph-meta vf-ph-ultimo">último dado: {rotularCompetenciaCurta(ultimo)}</span>;
+
+  if (semDado) {
+    return (
+      <span className="vf-ph-cliente__meta vf-ph-cliente__meta--vazio">
+        <span className="vf-ph-cliente__meta-linha">{status}</span>
+        {(detalhe || ultimoDado) && <span className="vf-ph-cliente__meta-linha">{detalhe}{ultimoDado}</span>}
+      </span>
+    );
+  }
   return (
-    <span className={`vf-ph-cliente__meta${semDado ? " vf-ph-cliente__meta--vazio" : ""}`}>
-      <StatusCompacto
-        status={cliente.status}
-        rotulo={semDado && cliente.status?.codigo === "sem_dados" ? `Sem dados em ${rotularCompetenciaCurta(competencia)}` : undefined}
-      />
+    <span className="vf-ph-cliente__meta">
+      {status}
       {detalhe}
-      {ultimo && <span className="vf-ph-meta">· último dado: {rotularCompetenciaCurta(ultimo)}</span>}
+      {ultimoDado}
     </span>
   );
 }
@@ -540,19 +653,19 @@ function LinhaCliente({
         <td className="vf-table__sticky-cell vf-ph-contexto">
           <span className="vf-ph-contexto__linha vf-ph-contexto__topo">
             {cliente.squad
-              ? <span className={`vf-tag vf-ph-tag ${TOM_SQUAD}`}>{cliente.squad.nome}</span>
+              ? <span className={`vf-tag vf-ph-tag ${TOM_SQUAD}`} title={`Squad: ${cliente.squad.nome}`}>{cliente.squad.nome}</span>
               : <span className="vf-ph-meta is-vazio">sem squad</span>}
             {podeAtualizar && (
               <BotaoAtualizar
                 cliente={cliente}
                 competencia={competencia}
                 competenciaAtual={competenciaAtual}
-                emCurso={emCurso}
+                atualizacao={atualizacao}
                 onAtualizar={onAtualizar}
               />
             )}
           </span>
-          <FrescorCliente cliente={cliente} emCurso={emCurso} concluidaAgora={job?.estado === "concluida"} />
+          <FrescorCliente cliente={cliente} concluidaAgora={job?.estado === "concluida"} />
         </td>
 
         {colunas.map((c) => <Celula key={c.chave} coluna={c} valor={cliente.resumo?.[c.chave] ?? null} />)}
@@ -570,7 +683,7 @@ function LinhaCliente({
       )}
 
       {aberto && cliente.contas?.map((conta) => (
-        <LinhaConta key={conta.id} cliente={cliente} conta={conta} colunas={colunas} onLancar={onLancar} atualizacao={atualizacao} />
+        <LinhaConta key={conta.id} cliente={cliente} competencia={competencia} conta={conta} colunas={colunas} onLancar={onLancar} atualizacao={atualizacao} />
       ))}
       {aberto && (!cliente.contas || cliente.contas.length === 0) && (
         <LinhaEstado colSpan={colSpan}>
@@ -707,7 +820,15 @@ export function TabelaHierarquica({
   atualizando, onLancar = () => {},
   atualizacoes = {}, podeAtualizar = false, onAtualizar = () => {}, onDispensarAtualizacao = () => {},
 }) {
-  const colunas = useMemo(() => colunasProp ?? colunasVisiveis(grupos), [colunasProp, grupos]);
+  // `inicioGrupo` é só apresentação (divisor vertical entre grupos, do
+  // cabeçalho ao corpo); a lista e a ordem das colunas não mudam.
+  const colunas = useMemo(
+    () => (colunasProp ?? colunasVisiveis(grupos)).map((c, i, todas) => ({
+      ...c,
+      inicioGrupo: i > 0 && todas[i - 1].grupo !== c.grupo,
+    })),
+    [colunasProp, grupos],
+  );
   const cabecalhoGrupos = useMemo(() => gruposVisiveis(grupos), [grupos]);
   const [ordem, setOrdem] = useState(null);
 
@@ -767,7 +888,14 @@ export function TabelaHierarquica({
         <thead>
           <tr className="vf-ph-thead-grupos" ref={linhaGrupoRef}>
             <th scope="col" rowSpan={2} className="vf-table__sticky-cell vf-ph-th-ancora">
-              <BotaoOrdenar chave="nome" label="Cliente / Conta" titulo="nome do cliente" ordem={ordem} onOrdenar={ordenar} />
+              {/* "Recolher tudo" no cabeçalho preso: sempre à mão durante o
+                  scroll, e aparecer/sumir não desloca a tabela. */}
+              <span className="vf-ph-th-ancora__conteudo">
+                <BotaoOrdenar chave="nome" label="Cliente / Conta" titulo="nome do cliente" ordem={ordem} onOrdenar={ordenar} />
+                {expansao.temExpandido && (
+                  <button type="button" className="vf-ph-recolher" onClick={expansao.recolherTudo}>Recolher tudo</button>
+                )}
+              </span>
             </th>
             <th scope="col" rowSpan={2} className="vf-table__sticky-cell vf-ph-th-contexto">
               <BotaoOrdenar chave="squad" label="Contexto" titulo="Squad" ordem={ordem} onOrdenar={ordenar} />

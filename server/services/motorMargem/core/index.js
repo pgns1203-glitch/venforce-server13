@@ -11,6 +11,7 @@ const engine = require("./marginEngine");
 const confidence = require("./marginConfidence");
 const status = require("./marginStatus");
 const item = require("./marginItem");
+const comparison = require("./marginComparison");
 
 module.exports = {
   ...sources,
@@ -19,6 +20,7 @@ module.exports = {
   ...confidence,
   ...status,
   ...item,
+  ...comparison,
   // Namespaces explícitos para quem preferir importar por área.
   sources,
   evidence,
@@ -26,4 +28,5 @@ module.exports = {
   confidence,
   status,
   item,
+  comparison,
 };

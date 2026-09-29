@@ -47,6 +47,14 @@
                 <label class="vf-field__label" for="cm-search">Buscar produto</label>
                 <input class="vf-input vf-input--sm vf-search" id="cm-search" type="search" placeholder="Título, MLB ou SKU" autocomplete="off">
               </div>
+              <!-- Período do REALIZADO (leitura persistida). Reusa o parâmetro
+                   global ?periodo=YYYY-MM do Shell (vf-context), sem store
+                   novo. Trocar o período relê só o realizado — o projetado
+                   (snapshot) não é recalculado. -->
+              <div class="vf-field cm-context__period" id="cm-period-wrap" hidden>
+                <label class="vf-field__label" for="cm-period">Período do realizado</label>
+                <select class="vf-select vf-select--sm" id="cm-period"></select>
+              </div>
               <div class="cm-updated" id="cm-updated" aria-live="polite">
                 <span class="cm-updated__label">Última atualização</span>
                 <strong>—</strong>
@@ -100,6 +108,18 @@
             </div>
           </section>
           <p class="cm-summary-scope" id="cm-summary-scope">Selecione um cliente para iniciar a análise.</p>
+
+          <!-- Realizado da CONTA no período (Central de Vendas publicada):
+               KPIs ponderados, cobertura e freshness. Só na leitura persistida. -->
+          <section class="vf-card cm-realized" id="cm-realized" aria-labelledby="cm-realized-title" hidden>
+            <div class="cm-summary-head cm-realized__head">
+              <strong id="cm-realized-title">Realizado no período</strong>
+              <span id="cm-realized-period">—</span>
+            </div>
+            <div class="cm-realized__fresh" id="cm-realized-fresh" aria-live="polite"></div>
+            <div class="cm-kpi-grid cm-kpi-grid--realized" id="cm-kpis-realized"></div>
+            <div class="cm-realized__notes" id="cm-realized-notes"></div>
+          </section>
 
           <section class="cm-section" aria-labelledby="cm-sheet-title">
             <div class="cm-section__head">

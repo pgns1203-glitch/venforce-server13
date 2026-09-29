@@ -48,6 +48,14 @@ function resolveMarginSnapshotConfig(env = process.env) {
     // run (nunca truncamento silencioso, que deixaria itens fora do snapshot
     // sem ninguém saber).
     maxCatalogItems: inteiroEntre(env.MARGIN_SNAPSHOT_MAX_CATALOG_ITEMS, { padrao: 20000, min: 1, max: 200000 }),
+    // Cadência do gatilho "sync da Central de Vendas concluído": se a conta
+    // já tem um refresh COMPLETADO há menos que isto, o sync não enfileira
+    // outra varredura completa do catálogo (o snapshot é projeção pura — a
+    // venda nova não muda nada nele). Evita a varredura ML duplicada quando
+    // o noturno roda 2 janelas seguidas (dias 2..5) ou há syncs manuais em
+    // sequência. 0 = sem cooldown (comportamento anterior). Não afeta o
+    // refresh manual nem o gatilho de Base.
+    syncTriggerCooldownMinutes: inteiroEntre(env.MARGIN_SNAPSHOT_SYNC_TRIGGER_COOLDOWN_MINUTES, { padrao: 360, min: 0, max: 2880 }),
     workerEnabled: flagLigada(env.MARGIN_SNAPSHOT_WORKER_ENABLED),
   };
 }

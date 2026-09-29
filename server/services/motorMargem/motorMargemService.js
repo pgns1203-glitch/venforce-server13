@@ -29,6 +29,7 @@ const meliApi = require("./adapters/meliApiEvidenceAdapter");
 const centralVendas = require("./adapters/centralVendasEvidenceAdapter");
 const settlement = require("./adapters/settlementEvidenceAdapter");
 const extensao = require("./adapters/extensionEvidenceAdapter");
+const { resolverPeriodoRealizado } = require("./marginRealizadoPeriodo");
 
 const MARKETPLACE = "meli";
 const PAGE_LIMIT_DEFAULT = 20;
@@ -48,17 +49,21 @@ function isValidIsoDate(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
-// Período padrão: últimos 30 dias encerrando hoje. A Central pode sobrescrever.
+// Período padrão: últimos 30 dias encerrando ONTEM no fuso da operação
+// (America/Sao_Paulo). O sync noturno da Central de Vendas publica o mês
+// corrente só até ontem e a seleção M4 recusa um import que não cobre o
+// trecho pedido inteiro — um padrão "até hoje" fazia o mês corrente sumir do
+// realizado (e do % faturamento/Curva ABC de Anúncios ML, que usa este mesmo
+// padrão). Ver marginRealizadoPeriodo e AUDITORIA_REALIZADO_MARGIN_SYNC R-01.
+// A Central pode sobrescrever com datas explícitas.
 function resolverPeriodo({ dateFrom, dateTo, now = new Date() }) {
   if (isValidIsoDate(dateFrom) && isValidIsoDate(dateTo)) {
     return dateFrom <= dateTo
       ? { dateFrom, dateTo }
       : { dateFrom: dateTo, dateTo: dateFrom };
   }
-  const fim = new Date(now);
-  const inicio = new Date(now);
-  inicio.setDate(inicio.getDate() - 29);
-  return { dateFrom: inicio.toISOString().slice(0, 10), dateTo: fim.toISOString().slice(0, 10) };
+  const padrao = resolverPeriodoRealizado({ now });
+  return { dateFrom: padrao.dateFrom, dateTo: padrao.dateTo };
 }
 
 function parseTargetMargin(raw) {
@@ -376,6 +381,7 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
         receita: realizado?.receita ?? null,
         ultimaVendaEm: realizado?.ultimaVendaEm ?? null,
         resultadoPersistido: realizado?.resultadoPersistido ?? null,
+        cobertura: realizado?.cobertura ?? null,
       },
       settlement: { available: conciliacao.available, motivo: conciliacao.motivo },
       targetMargin,

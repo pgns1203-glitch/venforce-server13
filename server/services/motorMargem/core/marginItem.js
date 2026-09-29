@@ -19,6 +19,7 @@ const {
 } = require("./marginEngine");
 const { buildConfidenceReport, LEVELS } = require("./marginConfidence");
 const { classifyStatus, DEFAULT_TARGET_MARGIN } = require("./marginStatus");
+const { buildProjectedVsRealized } = require("./marginComparison");
 
 // REQUISITO FINANCEIRO CRÍTICO: o realizado NUNCA cai para o projetado/Base
 // atual. Uma alteração de custo hoje não pode mudar retroativamente a margem
@@ -57,7 +58,8 @@ function fieldContract(field) {
  * @param {object} params
  *  - identity  { clienteSlug, marketplace, itemId, sku, titulo }
  *  - bag       evidence bag (marginEvidence.createEvidenceBag)
- *  - sales     { hasOrders, unidades, pedidos, ultimaVendaEm }
+ *  - sales     { hasOrders, unidades, pedidos, receita, ultimaVendaEm,
+ *                resultadoPersistido, cobertura }
  *  - settlement{ available: boolean, motivo: string|null }
  *  - targetMargin  fração (default 0.10)
  *  - now       Date (injetável para teste)
@@ -166,6 +168,13 @@ function buildMarginItem(params = {}) {
   });
 
   const projectionError = compareMargins(projected.margin, realized.margin);
+  const projectedVsRealized = buildProjectedVsRealized({
+    fields,
+    projected,
+    realized,
+    sales: { ...sales, hasOrders },
+    coverage: sales.cobertura || null,
+  });
 
   return {
     identity: {
@@ -225,7 +234,12 @@ function buildMarginItem(params = {}) {
       resultadoPersistido: sales.resultadoPersistido ?? null,
       resultadoRecalculado:
         realized.profit === null ? null : round2(realized.profit * (sales.unidades || 0)),
+      cobertura: hasOrders ? sales.cobertura || null : null,
     },
+
+    // Projetado × Realizado lado a lado + desvio por componente
+    // (marginComparison). Aditivo: `margin.projected/realized` continuam iguais.
+    projectedVsRealized,
 
     margin: {
       projected: {

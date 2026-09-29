@@ -278,6 +278,40 @@ async function buscarRunAtivoEquivalente({ clienteId, clienteContaId, marketplac
   return result.rows[0] || null;
 }
 
+// Sync run em andamento da CONTA (qualquer período) — só leitura, para a
+// Central de Margem dizer "sincronização em andamento". Mesmos limites de
+// abandono de reconciliarRunsStale aplicados no filtro: um run preso por
+// restart NÃO aparece como "em sincronização" (nada é transicionado aqui).
+async function buscarRunAtivoDaConta({ clienteId, clienteContaId, marketplace = "meli", db = pool }) {
+  if (!clienteId || !clienteContaId) return null;
+  const result = await db.query(
+    `/* cv:sync-ativo-conta */ SELECT id, status, date_from, date_to, created_at, started_at
+       FROM central_vendas_sync_runs
+      WHERE cliente_id = $1
+        AND cliente_conta_id = $2
+        AND marketplace = $3
+        AND (
+          (status = 'queued' AND created_at >= NOW() - make_interval(mins => $4::int))
+          OR (status = 'running' AND started_at >= NOW() - make_interval(mins => $5::int))
+        )
+      ORDER BY id DESC
+      LIMIT 1`,
+    [clienteId, clienteContaId, marketplace, QUEUED_STALE_MINUTES, RUNNING_STALE_MINUTES]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const iso = (v) => (v ? (v instanceof Date ? v.toISOString() : String(v)) : null);
+  const dia = (v) => (v ? (v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10)) : null);
+  return {
+    runId: Number(row.id),
+    status: row.status,
+    dateFrom: dia(row.date_from),
+    dateTo: dia(row.date_to),
+    createdAt: iso(row.created_at),
+    startedAt: iso(row.started_at),
+  };
+}
+
 async function buscarRunCompletedPublicadoEquivalente({ clienteId, clienteContaId, marketplace, dateFrom, dateTo, db = pool }) {
   const result = await db.query(
     `SELECT r.* FROM central_vendas_sync_runs r
@@ -491,4 +525,5 @@ module.exports = {
   ESTADOS_FINAIS,
   QUEUED_STALE_MINUTES,
   RUNNING_STALE_MINUTES,
+  buscarRunAtivoDaConta,
 };

@@ -53,7 +53,8 @@
 
 .vf-page-central-margem .cm-context__grid {
   display: grid;
-  grid-template-columns: minmax(190px, 220px) minmax(150px, 170px) minmax(240px, 1fr) auto;
+  /* Busca · período do realizado · última atualização. */
+  grid-template-columns: minmax(190px, 220px) minmax(215px, 240px) minmax(240px, 1fr) auto;
   align-items: end;
   gap: var(--vf-sp-3);
 }
@@ -1546,6 +1547,121 @@
 
 .cm-sources-actions { display: flex; justify-content: flex-end; }
 
+/* ── Projetado × Realizado (leitura persistida) ──────────────────────── */
+
+.vf-page-central-margem .cm-context__period { min-width: 0; }
+.vf-page-central-margem .cm-context__period .vf-select { width: 100%; }
+
+.vf-page-central-margem .cm-realized {
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+}
+
+.vf-page-central-margem .cm-realized__fresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-2) var(--vf-sp-3);
+  margin-bottom: var(--vf-sp-3);
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-page-central-margem .cm-realized__fact strong { color: var(--vf-text); }
+
+.vf-page-central-margem .cm-realized__muted,
+.vf-page-central-margem .cm-realized__error {
+  margin: 0;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-page-central-margem .cm-realized__error { color: var(--vf-danger); }
+
+.vf-page-central-margem .cm-kpi-grid--realized {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* KPI só de leitura (não é filtro): sem affordance de clique. */
+.vf-page-central-margem .cm-kpi--static,
+.vf-page-central-margem .cm-kpi--static:hover {
+  cursor: default;
+  box-shadow: none;
+}
+
+.vf-page-central-margem .cm-realized__list {
+  display: grid;
+  gap: 4px;
+  margin: var(--vf-sp-3) 0 0;
+  padding-left: 1.1rem;
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-xs);
+  line-height: var(--vf-lh-snug);
+}
+
+/* Vendas do período na célula do produto. */
+.vf-page-central-margem .cm-prod-sales {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 5px;
+  margin-top: 3px;
+  color: var(--vf-text-secondary);
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--vf-lh-snug);
+}
+
+.vf-page-central-margem .cm-prod-sales > span { white-space: nowrap; }
+
+.vf-page-central-margem .cm-prod-sales.is-empty {
+  color: var(--vf-text-muted);
+  font-family: inherit;
+  font-style: italic;
+}
+
+/* Linha compacta Projetado × Realizado dentro da célula de Margem. */
+.vf-page-central-margem .cm-cmp-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 4px;
+  margin-top: 3px;
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--vf-lh-snug);
+}
+
+.vf-page-central-margem .cm-cmp-line > span { white-space: nowrap; }
+
+.vf-page-central-margem .cm-cmp-line.is-negative { color: var(--vf-danger); }
+.vf-page-central-margem .cm-cmp-line.is-positive { color: var(--vf-success); }
+.vf-page-central-margem .cm-cmp-line.is-muted { color: var(--vf-text-muted); font-style: italic; }
+
+/* Painel Projetado × Realizado do drawer. */
+.cm-drawer .cm-cmp-table td.num,
+.cm-drawer .cm-cmp-table th.num {
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.cm-drawer .cm-cmp-total td {
+  border-top: 1px solid var(--vf-border);
+  font-weight: var(--vf-fw-bold);
+}
+
+.cm-drawer .cm-cmp-facts {
+  display: grid;
+  gap: 4px;
+  margin: var(--vf-sp-3) 0 0;
+  padding-left: 1.1rem;
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-xs);
+  line-height: var(--vf-lh-snug);
+}
+
 @media (max-width: 1280px) {
   .vf-page-central-margem .cm-source-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .vf-page-central-margem .cm-summary-groups { grid-template-columns: 1fr; }
@@ -1562,7 +1678,8 @@
     border-left: 0;
     border-top: 1px solid var(--vf-border);
   }
-  .vf-page-central-margem .cm-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vf-page-central-margem .cm-kpi-grid,
+  .vf-page-central-margem .cm-kpi-grid--realized { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cm-drawer .cm-summary-grid,
   .cm-drawer .cm-scenario-grid,
   .cm-drawer .cm-evidence-layout { grid-template-columns: 1fr; }
@@ -1574,7 +1691,8 @@
   .vf-page-central-margem .cm-context__grid,
   .vf-page-central-margem .cm-source-strip,
   .vf-page-central-margem .cm-kpi-grid,
-  .vf-page-central-margem .cm-kpi-grid--data { grid-template-columns: 1fr; }
+  .vf-page-central-margem .cm-kpi-grid--data,
+  .vf-page-central-margem .cm-kpi-grid--realized { grid-template-columns: 1fr; }
   .vf-page-central-margem .cm-sheet__toolbar { align-items: stretch; flex-direction: column; }
   .cm-drawer .cm-kpis5,
   .cm-drawer .cm-receipt-grid,

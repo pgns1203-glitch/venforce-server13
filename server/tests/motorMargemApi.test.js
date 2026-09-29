@@ -299,10 +299,13 @@ cenario("margem alvo aceita fração e percentual e muda a classificação", asy
 
 // ── Período ──────────────────────────────────────────────────────────────────
 
-cenario("período padrão é de 30 dias e datas invertidas são corrigidas", () => {
+cenario("período padrão é de 30 dias até ONTEM (fuso SP) e datas invertidas são corrigidas", () => {
+  // 2026-08-12T00:00Z = 11/08 21h em São Paulo → "ontem" = 10/08. O sync
+  // noturno publica o mês corrente só até ontem: um padrão até hoje fazia a
+  // seleção M4 recusar o import do mês (AUDITORIA_REALIZADO_MARGIN_SYNC R-01).
   const padrao = service.resolverPeriodo({ now: new Date("2026-08-12T00:00:00Z") });
-  assert.strictEqual(padrao.dateTo, "2026-08-12");
-  assert.strictEqual(padrao.dateFrom, "2026-07-14");
+  assert.strictEqual(padrao.dateTo, "2026-08-10");
+  assert.strictEqual(padrao.dateFrom, "2026-07-12");
 
   const invertido = service.resolverPeriodo({ dateFrom: "2026-08-31", dateTo: "2026-08-01" });
   assert.deepStrictEqual(invertido, { dateFrom: "2026-08-01", dateTo: "2026-08-31" });
@@ -997,6 +1000,7 @@ cenario("rotas da Central são GET — a única exceção é o refresh do snapsh
       "get /:clienteSlug/itens/:itemId/evidencias",
       "get /:clienteSlug/resumo",
       "get /:clienteSlug/snapshot/itens",
+      "get /:clienteSlug/snapshot/realizado",
       "get /:clienteSlug/snapshot/refresh/:runId",
       "get /:clienteSlug/snapshot/resumo",
       "get /:clienteSlug/workspace",

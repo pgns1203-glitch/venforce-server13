@@ -150,8 +150,47 @@ const MOCK_CLIENT = `
         diagnostico: { statusAnuncio: statusAnuncioDe(i) },
         snapshot: { refreshStatus: i === 3 ? "failed" : "fresh", lastError: i === 3 ? "ML 503" : null, calculatedAt: "2026-09-27T10:00:00Z" },
         statusBase: "projected",
-        sales: { hasOrders: false }, settlement: { available: false },
+        sales: vendasDe(i), settlement: { available: false },
+        projectedVsRealized: comparacaoDe(i, margin),
       };
+    }
+    // i%5===0 vendeu (comparável), i%5===2 vendeu sem custo histórico,
+    // demais sem venda no período — o backend manda o bloco pronto.
+    function vendasDe(i) {
+      if (i % 5 === 0) return { hasOrders: true, unidades: 73, pedidos: 62, receita: 7037.2, precoMedio: 96.4,
+        cobertura: { frete: { linhas: 20, linhasComValor: 17, unidades: 73, unidadesComValor: 61, fracao: 0.8356, completa: false, linhasRateadas: 1 } },
+        reembolso: null, resultadoPersistido: 800, resultadoRecalculado: 796.43 };
+      if (i % 5 === 2) return { hasOrders: true, unidades: 2, pedidos: 2, receita: 180, precoMedio: 90, cobertura: null, reembolso: null, resultadoPersistido: null, resultadoRecalculado: null };
+      return { hasOrders: false };
+    }
+    function comparacaoDe(i, margin) {
+      var projetado = { price: 100, commission: 12, freight: 20, cost: 40, taxRate: 0.1, fixedFee: 0, profit: margin === null ? null : margin * 100, margin: margin, marginPercent: margin === null ? null : margin * 100, computable: margin !== null, assumed: [] };
+      if (i % 5 === 0) {
+        return { status: "COMPARABLE", projected: projetado,
+          realized: { available: true, price: 96.4, commission: 12.5, freight: 23.3, cost: 40, taxRate: 0.1, fixedFee: null, profit: 16.2, margin: 0.168, marginPercent: 16.8, computable: true, assumed: ["fixedFee"], missing: [], units: 73, orders: 62, revenue: 7037.2, lastSaleAt: "2026-09-20", totalProfit: 1182.6, coverage: vendasDe(i).cobertura },
+          drift: { price: -3.6, commission: 0.5, freight: 3.3, cost: 0, taxRate: 0, taxRatePp: 0, fixedFee: null, profit: -3.8, marginPercentagePoints: -3.2 },
+          notComparable: [{ field: "fixedFee", reason: "SEM_HISTORICO", projectedValue: 0 }] };
+      }
+      if (i % 5 === 2) {
+        return { status: "REALIZED_NOT_COMPUTABLE", projected: projetado,
+          realized: { available: true, price: 90, commission: null, freight: null, cost: null, taxRate: null, fixedFee: null, profit: null, margin: null, marginPercent: null, computable: false, assumed: [], missing: ["cost"], units: 2, orders: 2, revenue: 180, lastSaleAt: "2026-09-10", totalProfit: null, coverage: null },
+          drift: { price: -10, commission: null, freight: null, cost: null, taxRate: null, taxRatePp: null, fixedFee: null, profit: null, marginPercentagePoints: null }, notComparable: [] };
+      }
+      return { status: "NO_SALES", projected: projetado, realized: { available: false, units: null }, drift: null, notComparable: [] };
+    }
+    function realizadoDe(conta, periodo) {
+      return window.VFCentralMargemApi.normalizeSnapshotRealizado({
+        ok: true, habilitado: true,
+        periodo: periodo
+          ? { dateFrom: periodo + "-01", dateTo: periodo + "-27", modo: "mes", periodo: periodo, rotulo: "mês " + periodo }
+          : { dateFrom: "2026-08-29", dateTo: "2026-09-27", modo: "ultimos30", periodo: null, rotulo: "Últimos 30 dias (até 27/09/2026)" },
+        cobertura: { estado: "PARCIAL", origem: "published", sincronizadoAte: "2026-09-27", ultimaPublicacaoEm: "2026-09-28T06:10:00.000Z", meses: 2, mesesComImport: 1,
+          lacunas: [{ competencia: "2026-09", segmento: { dateFrom: "2026-09-01", dateTo: "2026-09-28" }, motivo: "COBERTURA_INSUFICIENTE", publicadoDe: "2026-09-01", publicadoAte: "2026-09-27", publicadoEm: "2026-09-28T06:10:00.000Z" }] },
+        freshness: { estado: "PARCIAL", sincronizadoAte: "2026-09-27", ultimaPublicacaoEm: "2026-09-28T06:10:00.000Z", syncEmAndamento: false, syncAtivo: null },
+        kpis: { receita: Number(conta) * 1000, receitaSemMlb: 0, unidades: 14, pedidos: 4, produtosComVenda: 3, lucro: { valor: 410, produtos: 2 },
+          margem: { percent: 37.27, estado: "parcial", coberturaReceita: 0.9016, produtosCalculaveis: 2, produtosSemMargem: 1, produtosEstimados: 1, semMargemPorMotivo: { cost: 1 } },
+          drift: { disponivel: true, pp: -4.55, margemRealizadaMixPercent: 37.27, margemProjetadaMixPercent: 41.82, produtosComparados: 2, limitePp: 2, produtosNegativos: 1, piores: [{ itemId: "MLB1", titulo: "Produto 0", driftPp: -5 }] } },
+      });
     }
     function statusDe(i) { return STATUS[i % 5]; }
     function skuDe(i) { return i === 3 ? "SKU-NULL-STATUS" : i === 4 ? "SKU-UNKNOWN-STATUS" : "SKU-" + i; }
@@ -161,7 +200,9 @@ const MOCK_CLIENT = `
       return i % 4 === 0 ? "paused" : "active";
     }
 
-    window.__cmCalls = { workspace: 0, resumo: [], itens: [], refresh: [], status: [] };
+    window.__cmCalls = { workspace: 0, resumo: [], itens: [], refresh: [], status: [], realizado: [] };
+    window.__cmHoldRealizado = null;
+    window.__cmResolveRealizado = null;
     window.__cmItemsRecebidos = 0;
     window.__cmMissing = { "901": true };
     window.__cmRuns = {};            // conta -> run
@@ -257,6 +298,21 @@ const MOCK_CLIENT = `
           refresh: { runAtivo: runPublico(ativo(conta)), ultimoRun: runPublico(ultimo(conta)) },
         };
         return Promise.resolve(window.VFCentralMargemApi.normalizeSnapshotItens(payload, context));
+      },
+      getSnapshotRealizado: function (params) {
+        window.__cmCalls.realizado.push(JSON.parse(JSON.stringify(params)));
+        var conta = String(params.clienteContaId);
+        var resposta = realizadoDe(conta, params.periodo || null);
+        if (window.__cmHoldRealizado === conta) {
+          return new Promise(function (resolve) {
+            window.__cmResolveRealizado = function () {
+              window.__cmHoldRealizado = null;
+              window.__cmResolveRealizado = null;
+              resolve(resposta);
+            };
+          });
+        }
+        return Promise.resolve(resposta);
       },
       requestSnapshotRefresh: function (params) {
         window.__cmCalls.refresh.push(params);
@@ -423,6 +479,55 @@ async function run() {
       assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-cm-refresh-failed]'))"), "linha marcada com valor anterior");
     });
 
+    await check("realizado da conta: KPIs ponderados, freshness e lacuna explícita no período padrão (até ontem)", async () => {
+      await waitFor(cdp, "!document.getElementById('cm-realized').hidden && window.VFCentralMargemUi.getState().realizado", "bloco do realizado não apareceu");
+      const ultima = await cdp.evaluate("window.__cmCalls.realizado[window.__cmCalls.realizado.length-1]");
+      assert.strictEqual(ultima.clienteContaId, 900);
+      assert.ok(!ultima.periodo, "período padrão é resolvido no servidor");
+      const texto = await cdp.evaluate("document.getElementById('cm-realized').innerText");
+      for (const trecho of ["Receita realizada", "Margem realizada", "37,27%", "Parcial", "27/09/2026", "publicadas só até", "Desvio de margem"]) {
+        assert.ok(texto.toLowerCase().includes(trecho.toLowerCase()), `falta "${trecho}" no bloco do realizado: ${texto}`);
+      }
+      assert.ok((await cdp.evaluate("document.getElementById('cm-context-meta').innerText")).includes("sincronizado até 27/09/2026"));
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-period-wrap').hidden"), false, "seletor de período visível no modo persistido");
+    });
+
+    await check("linha mostra vendas e Projetado × Realizado do Motor; sem venda e realizado indisponível são explícitos", async () => {
+      const vendido = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"]').innerText");
+      assert.ok(vendido.includes("73 un") && vendido.includes("62 ped."), vendido);
+      const linhaCmp = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-cmp]').textContent");
+      assert.ok(/real\. 16,8%/.test(linhaCmp) && /-3,2 pp/.test(linhaCmp), `linha comparativa ausente: ${linhaCmp}`);
+      assert.ok(await cdp.evaluate("Boolean(document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-coverage-partial]'))"), "cobertura parcial sinalizada");
+      const semVenda = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100001\"]').innerText");
+      assert.ok(semVenda.includes("sem venda no período"), semVenda);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100001\"] [data-cm-cmp]').textContent"), "sem venda");
+      const semCusto = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100002\"] [data-cm-cmp]').innerText");
+      assert.strictEqual(semCusto, "realizado indisponível");
+
+      await cdp.evaluate("window.VFCentralMargemUi.openDrawer('C900-MLB100000')");
+      await waitFor(cdp, "document.querySelector('[data-cm-cmp-panel=\"COMPARABLE\"]')", "painel Projetado × Realizado não apareceu no drawer");
+      const painel = await cdp.evaluate("document.querySelector('[data-cm-cmp-panel=\"COMPARABLE\"]').closest('section').innerText");
+      for (const trecho of ["Projetado", "Realizado", "Desvio", "sem histórico", "-3,2 pp", "rateado", "Contraprova"]) {
+        assert.ok(painel.toLowerCase().includes(trecho.toLowerCase()), `falta "${trecho}" no painel: ${painel}`);
+      }
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+    });
+
+    await check("trocar o período relê itens e realizado com periodo=YYYY-MM (Shell) e NÃO pede refresh do snapshot", async () => {
+      const refreshAntes = await cdp.evaluate("window.__cmCalls.refresh.length");
+      const valor = await cdp.evaluate("document.getElementById('cm-period').options[2].value");
+      assert.ok(/^\d{4}-\d{2}$/.test(valor), valor);
+      await cdp.evaluate(`(function(){var s=document.getElementById('cm-period');s.value='${valor}';s.dispatchEvent(new Event('change'));})()`);
+      await waitFor(cdp, `window.__cmCalls.realizado[window.__cmCalls.realizado.length-1].periodo === '${valor}' && window.__cmCalls.itens[window.__cmCalls.itens.length-1].periodo === '${valor}' && !window.VFCentralMargemUi.getState().loading && !window.VFCentralMargemUi.getState().realizadoLoading`, "troca de período não releu itens e realizado");
+      assert.strictEqual(await cdp.evaluate("window.VF.context.getPeriodoParam()"), valor, "período vive no parâmetro global do Shell");
+      assert.strictEqual(await cdp.evaluate("window.__cmCalls.refresh.length"), refreshAntes, "trocar período nunca recalcula o projetado");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-realized-period').innerText")).includes(valor));
+
+      await cdp.evaluate("(function(){var s=document.getElementById('cm-period');s.value='';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "!window.__cmCalls.realizado[window.__cmCalls.realizado.length-1].periodo && !window.VFCentralMargemUi.getState().realizadoLoading", "volta ao padrão não releu o realizado");
+      assert.strictEqual(await cdp.evaluate("window.VF.context.getPeriodoParam()"), null);
+    });
+
     await check("filtro de anúncio: active, paused e todos combinam com busca/status sem perder paginação", async () => {
       await cdp.evaluate("(function(){var s=document.getElementById('cm-listing-status-filter');s.value='active';s.dispatchEvent(new Event('change'));})()");
       await waitFor(cdp, "window.__cmCalls.itens[window.__cmCalls.itens.length-1].statusAnuncio === 'active' && !window.VFCentralMargemUi.getState().loading", "filtro active não foi ao servidor");
@@ -469,6 +574,20 @@ async function run() {
 
       await cdp.evaluate("window.VF.context.setConta(900)");
       await esperarCarregado("conta 900 não foi restaurada depois do teste stale");
+    });
+
+    await check("realizado stale: resposta da conta 10 que chega depois da troca para 11 é descartada", async () => {
+      await cdp.evaluate("window.__cmHoldRealizado='10';window.VF.context.setConta(10);void 0");
+      await waitFor(cdp, "typeof window.__cmResolveRealizado === 'function'", "realizado da conta 10 não ficou pendente");
+      await cdp.evaluate("window.VF.context.setConta(11)");
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 11 && window.VFCentralMargemUi.getState().realizado && !window.VFCentralMargemUi.getState().realizadoLoading", "realizado da conta 11 não carregou");
+      await cdp.evaluate("window.__cmResolveRealizado()");
+      await sleep(150);
+      const receita = await cdp.evaluate("document.getElementById('cm-kpis-realized').innerText");
+      assert.ok(receita.includes("11.000"), `KPIs devem ser da conta 11: ${receita}`);
+      assert.ok(!receita.includes("10.000"), "resposta da conta 10 nunca sobrescreve a 11");
+      await cdp.evaluate("window.VF.context.setConta(900)");
+      await esperarCarregado("conta 900 não foi restaurada depois do teste stale do realizado");
     });
 
     await check("5.000 itens navegados sem carregar tudo: próxima página, 200 por página, nunca > 1 página no DOM", async () => {

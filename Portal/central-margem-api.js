@@ -26,6 +26,7 @@
     MELI_ORDER: "Pedido do Mercado Livre",
     MERCADO_PAGO: "Mercado Pago",
     VENFORCE_BASE: "Base VenForce",
+    VENFORCE_BASE_HIST: "Base VenForce na venda (histórico)",
     EXTENSION_DOM: "Extensão VenForce",
     DERIVED: "Derivado pelo Motor",
     central_vendas_db: "Central de Vendas",
@@ -41,6 +42,7 @@
     MELI_ORDER: "Pedido ML",
     MERCADO_PAGO: "Mercado Pago",
     VENFORCE_BASE: "Base",
+    VENFORCE_BASE_HIST: "Base na venda",
     EXTENSION_DOM: "Extensão",
     DERIVED: "Derivado",
   };
@@ -52,6 +54,7 @@
     MELI_ORDER: "Pedido",
     MERCADO_PAGO: "Mercado Pago",
     VENFORCE_BASE: "Base",
+    VENFORCE_BASE_HIST: "Base venda",
     EXTENSION_DOM: "Extensão",
     DERIVED: "Derivado",
   };
@@ -65,10 +68,17 @@
    * não vira opção fantasma: ela aparece como "Indisponível" e o valor
    * permanece null.
    *
-   * custo, imposto e taxa fixa são variáveis DECLARADAS na Base: o Motor não
-   * possui "custo realizado" (marginItem.DECLARED_FIELDS). No preset Realizado
-   * elas continuam vindo da Base — exatamente o que `valueForKind` faz no
-   * backend —, e não uma segunda fonte inventada.
+   * SLOT = FONTE + MOMENTO. Uma mesma fonte pode observar os dois momentos:
+   * a Base VenForce declara o custo/imposto de HOJE (PROJECTED) e a Central
+   * de Vendas grava o custo/imposto que a Base tinha NO MOMENTO DA VENDA
+   * (VENFORCE_BASE, kind REALIZED — centralVendasEvidenceAdapter). Escolher
+   * só pela fonte misturaria os dois momentos (o mais recente venceria), então
+   * cada slot fixa fonte E momento:
+   *   VENFORCE_BASE       Base atual            (PROJECTED)
+   *   VENFORCE_BASE_HIST  Base na venda         (REALIZED) — o que `valueForKind`
+   *                       usa no realizado do backend
+   * Taxa fixa não tem histórico: no preset Realizado ela fica indisponível
+   * (o realizado do backend também não a desconta) — nunca a taxa fixa atual.
    */
   var VARIABLES = ["price", "cost", "tax", "commission", "freight", "fixedFee"];
 
@@ -81,13 +91,36 @@
     fixedFee: { label: "Taxa fixa", field: "fixedFee", format: "money" },
   };
 
+  var SLOT_DEFS = {
+    MELI_API: { source: "MELI_API", kind: "PROJECTED" },
+    EXTENSION_DOM: { source: "EXTENSION_DOM", kind: "PROJECTED" },
+    MELI_ORDER: { source: "MELI_ORDER", kind: "REALIZED" },
+    MERCADO_PAGO: { source: "MERCADO_PAGO", kind: "REALIZED" },
+    VENFORCE_BASE: { source: "VENFORCE_BASE", kind: "PROJECTED" },
+    VENFORCE_BASE_HIST: { source: "VENFORCE_BASE", kind: "REALIZED" },
+  };
+
+  function slotDef(slot) {
+    return SLOT_DEFS[slot] || { source: slot, kind: null };
+  }
+
+  /** Slot que representa uma observação (fonte + momento) do contrato. */
+  function slotOf(source, kind) {
+    var wanted = String(kind || "").toUpperCase();
+    var ids = Object.keys(SLOT_DEFS);
+    for (var i = 0; i < ids.length; i += 1) {
+      if (SLOT_DEFS[ids[i]].source === source && SLOT_DEFS[ids[i]].kind === wanted) return ids[i];
+    }
+    return source || null;
+  }
+
   var SOURCE_SLOTS = {
     price: ["MELI_API", "EXTENSION_DOM", "MELI_ORDER"],
-    cost: ["VENFORCE_BASE"],
-    tax: ["VENFORCE_BASE"],
+    cost: ["VENFORCE_BASE", "VENFORCE_BASE_HIST"],
+    tax: ["VENFORCE_BASE", "VENFORCE_BASE_HIST"],
     commission: ["MELI_API", "MELI_ORDER"],
     freight: ["MELI_API", "EXTENSION_DOM", "MELI_ORDER"],
-    fixedFee: ["VENFORCE_BASE"],
+    fixedFee: ["VENFORCE_BASE", "VENFORCE_BASE_HIST"],
   };
 
   var PRESETS = {
@@ -101,11 +134,11 @@
     },
     realized: {
       price: "MELI_ORDER",
-      cost: "VENFORCE_BASE",
-      tax: "VENFORCE_BASE",
+      cost: "VENFORCE_BASE_HIST",
+      tax: "VENFORCE_BASE_HIST",
       commission: "MELI_ORDER",
       freight: "MELI_ORDER",
-      fixedFee: "VENFORCE_BASE",
+      fixedFee: "VENFORCE_BASE_HIST",
     },
   };
 
@@ -260,12 +293,14 @@
     var opts = options || {};
     var value = raw ? numberOrNull(firstValue(raw.value, raw.valor)) : null;
     return {
+      // `source` é o SLOT (fonte + momento); `origin` é a fonte do contrato.
       source: source,
+      origin: slotDef(source).source,
       sourceLabel: sourceLabel(source),
       sourceShort: SOURCE_SHORT_LABELS[source] || sourceLabel(source),
       value: value,
       available: value !== null,
-      kind: raw ? firstValue(raw.kind, raw.tipo) : opts.kind || null,
+      kind: raw ? firstValue(raw.kind, raw.tipo) : opts.kind || slotDef(source).kind || null,
       quality: raw ? firstValue(raw.quality, raw.qualidade) : null,
       observedAt: raw ? firstValue(raw.observedAt, raw.observadoEm) : null,
       effectiveAt: null,
@@ -275,12 +310,15 @@
     };
   }
 
-  function strongestEvidenceOf(evidences, source) {
+  function strongestEvidenceOf(evidences, source, kind) {
     var chosen = null;
     (evidences || []).forEach(function (evidence) {
       if (!evidence) return;
       var evidenceSource = firstValue(evidence.source, evidence.fonte);
       if (evidenceSource !== source) return;
+      // Momento faz parte da identidade da observação: Base atual e Base na
+      // venda nunca competem entre si pelo "mais recente".
+      if (kind && String(firstValue(evidence.kind, evidence.tipo) || "").toUpperCase() !== kind) return;
       if (numberOrNull(firstValue(evidence.value, evidence.valor)) === null) return;
       if (!chosen) { chosen = evidence; return; }
       var current = String(firstValue(evidence.observedAt, evidence.observadoEm) || "");
@@ -303,16 +341,19 @@
       var evidences = arrayOf(field.evidences || field.evidencias);
       var entries = {};
       var order = SOURCE_SLOTS[variableKey].slice();
-      order.forEach(function (source) {
-        entries[source] = evidenceEntry(source, strongestEvidenceOf(evidences, source), {
-          declared: source === "VENFORCE_BASE",
+      order.forEach(function (slot) {
+        var def = slotDef(slot);
+        entries[slot] = evidenceEntry(slot, strongestEvidenceOf(evidences, def.source, def.kind), {
+          declared: def.source === "VENFORCE_BASE",
         });
       });
       evidences.forEach(function (evidence) {
         var source = firstValue(evidence && evidence.source, evidence && evidence.fonte);
-        if (!source || entries[source]) return;
-        order.push(source);
-        entries[source] = evidenceEntry(source, evidence, {});
+        if (!source) return;
+        var slot = slotOf(source, firstValue(evidence.kind, evidence.tipo));
+        if (entries[slot]) return;
+        order.push(slot);
+        entries[slot] = evidenceEntry(slot, evidence, {});
       });
       sources[variableKey] = { order: order, entries: entries };
     });
@@ -352,9 +393,17 @@
       // `selectedKind` é opcional no contrato: quando não vem, o momento sai
       // da própria evidência escolhida em vez de ficar nulo.
       if (!kind && source) {
-        var picked = sources[variableKey] && sources[variableKey].entries[source];
-        kind = picked ? picked.kind : null;
+        // Mesma regra do resolveField: havendo evidência realizada, é ela a
+        // escolhida. Só sem os blocos projected/realized cai na entrada da fonte.
+        if (field.realized && firstValue(field.realized.source, field.realized.fonte) === source) kind = "REALIZED";
+        else if (field.projected && firstValue(field.projected.source, field.projected.fonte) === source) kind = "PROJECTED";
+        else {
+          var picked = sources[variableKey] && sources[variableKey].entries[source];
+          kind = picked ? picked.kind : null;
+        }
       }
+      // A escolha do contrato vem como fonte crua; na planilha ela é um slot.
+      if (source && kind) source = slotOf(source, kind);
       choice[variableKey] = {
         source: source,
         sourceLabel: source ? sourceLabel(source) : null,
@@ -367,9 +416,9 @@
   }
 
   /**
-   * Fonte declarada (custo/imposto/taxa fixa) responde pelos dois momentos:
-   * é o mesmo `valueForKind` do backend, que devolve a evidência projetada
-   * quando o preset pede o realizado de uma variável declarada.
+   * Observação de UM slot (fonte + momento) de uma variável. O slot
+   * VENFORCE_BASE_HIST devolve o custo/imposto que a Base tinha na venda —
+   * o mesmo que `valueForKind(REALIZED)` usa no backend —, nunca a Base de hoje.
    */
   function sourceEntry(item, variableKey, source) {
     var bucket = item && item.sources && item.sources[variableKey];
@@ -574,13 +623,27 @@
     if (variables.tax.value !== null && Math.abs(variables.tax.value) > 1) variables.tax.value /= 100;
     if (variables.commission.rate !== null && Math.abs(variables.commission.rate) > 1) variables.commission.rate /= 100;
 
+    // Simulação de preço é PROSPECTIVA: usa sempre o momento projetado (Base
+    // de hoje). `variables.cost/tax` seguem a escolha do Motor (realizado tem
+    // precedência) e trariam o custo/imposto HISTÓRICO de quem vendeu.
+    function projectedValueOf(field) {
+      var evidence = pickEvidence(field, "PROJECTED");
+      return evidence ? numberOrNull(firstValue(evidence.value, evidence.valor)) : null;
+    }
+    var fixedFeeField = fields.fixedFee || fields.taxaFixa || null;
+    var projectedTax = projectedValueOf(taxField);
+    if (projectedTax !== null && Math.abs(projectedTax) > 1) projectedTax /= 100;
+    var projectedCost = projectedValueOf(costField);
+    var projectedFixedFee = fixedFeeField && typeof fixedFeeField === "object"
+      ? projectedValueOf(fixedFeeField)
+      : numberOrNull(fixedFeeField);
     var simulationInputs = {
-      cost: variables.cost.value,
-      taxRate: variables.tax.value,
+      cost: projectedCost,
+      taxRate: projectedTax,
       commissionRate: numberOrNull(firstValue(variables.commission.rate, commissionRateField.selectedValue)),
       freight: variables.freightExpected.value,
-      fixedFee: numberOrNull(firstValue(fields.fixedFee && fields.fixedFee.selectedValue, fields.taxaFixa && fields.taxaFixa.value, 0)),
-      complete: variables.cost.value !== null && variables.tax.value !== null &&
+      fixedFee: projectedFixedFee === null ? 0 : projectedFixedFee,
+      complete: projectedCost !== null && projectedTax !== null &&
         numberOrNull(firstValue(variables.commission.rate, commissionRateField.selectedValue)) !== null &&
         variables.freightExpected.value !== null,
       source: "Motor de Margem",
@@ -616,6 +679,7 @@
     var salesBlock = raw.sales || raw.vendas || {};
     var settlementBlock = raw.settlement || raw.conciliacaoFinanceira || {};
     var marginBlock = raw.margin || {};
+    var comparison = normalizeComparison(raw.projectedVsRealized);
 
     return {
       id: itemId,
@@ -648,6 +712,21 @@
       confidenceByVariable: confidenceByVariable,
       divergences: divergences,
       hasOrders: salesBlock.hasOrders === true || numberOrNull(salesBlock.pedidos) > 0,
+      // Projetado × Realizado calculado pelo núcleo do Motor
+      // (core/marginComparison). A tela só EXIBE — nenhum desvio é
+      // recalculado aqui. null quando o backend ainda não envia o bloco.
+      comparison: comparison,
+      sales: {
+        units: numberOrNull(salesBlock.unidades),
+        orders: numberOrNull(salesBlock.pedidos),
+        revenue: numberOrNull(salesBlock.receita),
+        avgPrice: numberOrNull(salesBlock.precoMedio),
+        lastSaleAt: firstValue(salesBlock.ultimaVendaEm, salesBlock.lastSoldAt),
+        coverage: salesBlock.cobertura || null,
+        refund: salesBlock.reembolso || null,
+        persistedResult: numberOrNull(salesBlock.resultadoPersistido),
+        recalculatedResult: numberOrNull(salesBlock.resultadoRecalculado),
+      },
       settlementAvailable: settlementBlock.available === true,
       settlementReason: firstValue(settlementBlock.motivo, settlementBlock.reason),
       reconciliation: firstValue(raw.reconciliation, raw.conciliacao, realizedMargin === null ? "Pendente" : "Disponível"),
@@ -675,6 +754,52 @@
         units: numberOrNull(salesBlock.unidades),
       },
       raw: raw,
+    };
+  }
+
+  /*
+   * Bloco `projectedVsRealized` do Motor (core/marginComparison) no formato
+   * da tela. Nenhuma conta nova: só normaliza nomes e preserva null.
+   */
+  var COMPARISON_FIELDS = ["price", "commission", "freight", "cost", "taxRate", "fixedFee"];
+
+  function normalizeComparison(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    function lado(block) {
+      block = block || {};
+      var out = {};
+      COMPARISON_FIELDS.forEach(function (key) { out[key] = numberOrNull(block[key]); });
+      out.profit = numberOrNull(block.profit);
+      out.margin = numberOrNull(block.margin);
+      out.marginPercent = numberOrNull(block.marginPercent);
+      out.computable = block.computable === true;
+      out.assumed = arrayOf(block.assumed);
+      return out;
+    }
+    var realized = lado(raw.realized);
+    var r = raw.realized || {};
+    realized.available = r.available === true;
+    realized.missing = arrayOf(r.missing);
+    realized.units = numberOrNull(r.units);
+    realized.orders = numberOrNull(r.orders);
+    realized.revenue = numberOrNull(r.revenue);
+    realized.lastSaleAt = r.lastSaleAt || null;
+    realized.totalProfit = numberOrNull(r.totalProfit);
+    realized.coverage = r.coverage || null;
+    var drift = null;
+    if (raw.drift && typeof raw.drift === "object") {
+      drift = {};
+      COMPARISON_FIELDS.forEach(function (key) { drift[key] = numberOrNull(raw.drift[key]); });
+      drift.taxRatePp = numberOrNull(raw.drift.taxRatePp);
+      drift.profit = numberOrNull(raw.drift.profit);
+      drift.marginPp = numberOrNull(raw.drift.marginPercentagePoints);
+    }
+    return {
+      status: String(raw.status || "NO_SALES"),
+      projected: lado(raw.projected),
+      realized: realized,
+      drift: drift,
+      notComparable: arrayOf(raw.notComparable),
     };
   }
 
@@ -1529,8 +1654,10 @@
         var variableKey = variableOfField(divergence.field);
         if (!variableKey) return;
         var selectedSource = chosen[variableKey];
-        var sideA = { source: divergence.sourceAKey, value: divergence.valueA };
-        var sideB = { source: divergence.sourceBKey, value: divergence.valueB };
+        // Lados da divergência como SLOT (fonte + momento): um DRIFT da Base
+        // (atual × na venda) tem a mesma fonte nos dois lados.
+        var sideA = { source: slotOf(divergence.sourceAKey, divergence.kindA), value: divergence.valueA };
+        var sideB = { source: slotOf(divergence.sourceBKey, divergence.kindB), value: divergence.valueB };
         var alternative = sideA.source === selectedSource ? sideB : sideB.source === selectedSource ? sideA : sideB;
         var selectedValue = composition.values[variableKey];
         if (alternative.value === null || alternative.value === undefined) return;
@@ -1745,13 +1872,98 @@
       },
       summary: { counts: countStatuses(items), scope: "page" },
       lastUpdated: payload.ultimoCalculoEm || null,
-      period: periodo ? { inicio: periodo.dateFrom, fim: periodo.dateTo, label: context.period && context.period.label || null } : (context.period || null),
+      // Período resolvido pelo SERVIDOR (fuso da operação, padrão até ontem).
+      period: periodo
+        ? { inicio: periodo.dateFrom, fim: periodo.dateTo, mode: periodo.modo || null, value: periodo.periodo || null, label: periodo.rotulo || (context.period && context.period.label) || null }
+        : (context.period || null),
+      salesCoverage: normalizeSalesCoverage(payload.vendas && payload.vendas.cobertura),
       refresh: {
         activeRun: snapshotRun(payload.refresh && payload.refresh.runAtivo),
         lastRun: snapshotRun(payload.refresh && payload.refresh.ultimoRun),
       },
       warnings: [],
       gaps: [],
+    };
+  }
+
+  function normalizeSalesCoverage(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    return {
+      state: raw.estado || null,
+      origin: raw.origem || null,
+      syncedUntil: raw.sincronizadoAte || null,
+      lastPublishedAt: raw.ultimaPublicacaoEm || null,
+      lastImportAt: raw.ultimoImportEm || null,
+      months: numberOrNull(raw.meses),
+      monthsWithImport: numberOrNull(raw.mesesComImport),
+      gaps: arrayOf(raw.lacunas).map(function (gap) {
+        return {
+          month: gap.competencia,
+          from: gap.segmento && gap.segmento.dateFrom,
+          to: gap.segmento && gap.segmento.dateTo,
+          reason: gap.motivo,
+          publishedFrom: gap.publicadoDe || null,
+          publishedUntil: gap.publicadoAte || null,
+          publishedAt: gap.publicadoEm || null,
+        };
+      }),
+    };
+  }
+
+  /* Realizado da CONTA no período (GET .../snapshot/realizado). */
+  function normalizeSnapshotRealizado(payload) {
+    payload = payload || {};
+    if (payload.habilitado === false) return { ok: true, enabled: false };
+    var periodo = payload.periodo || {};
+    var fresh = payload.freshness || {};
+    var k = payload.kpis || {};
+    var margem = k.margem || {};
+    var drift = k.drift || {};
+    var lucro = k.lucro || {};
+    return {
+      ok: true,
+      enabled: true,
+      period: { inicio: periodo.dateFrom || null, fim: periodo.dateTo || null, mode: periodo.modo || null, value: periodo.periodo || null, label: periodo.rotulo || null, reference: periodo.referencia || null },
+      coverage: normalizeSalesCoverage(payload.cobertura),
+      freshness: {
+        state: fresh.estado || null,
+        syncedUntil: fresh.sincronizadoAte || null,
+        lastPublishedAt: fresh.ultimaPublicacaoEm || null,
+        lastImportAt: fresh.ultimoImportEm || null,
+        syncInProgress: fresh.syncEmAndamento === true,
+        activeSync: fresh.syncAtivo || null,
+      },
+      kpis: {
+        revenue: numberOrNull(k.receita),
+        revenueWithoutListing: numberOrNull(k.receitaSemMlb),
+        units: numberOrNull(k.unidades),
+        orders: numberOrNull(k.pedidos),
+        productsWithSales: numberOrNull(k.produtosComVenda),
+        profit: numberOrNull(lucro.valor),
+        margin: {
+          percent: numberOrNull(margem.percent),
+          state: margem.estado || "indisponivel",
+          revenueCoverage: numberOrNull(margem.coberturaReceita),
+          computableProducts: numberOrNull(margem.produtosCalculaveis),
+          productsWithoutMargin: numberOrNull(margem.produtosSemMargem),
+          estimatedProducts: numberOrNull(margem.produtosEstimados),
+          reasons: margem.semMargemPorMotivo || {},
+          formula: margem.formula || null,
+          fixedFeeNote: margem.taxaFixa || null,
+        },
+        drift: {
+          available: drift.disponivel === true,
+          pp: numberOrNull(drift.pp),
+          realizedMixPercent: numberOrNull(drift.margemRealizadaMixPercent),
+          projectedMixPercent: numberOrNull(drift.margemProjetadaMixPercent),
+          compared: numberOrNull(drift.produtosComparados),
+          withoutProjection: numberOrNull(drift.produtosSemProjecao),
+          thresholdPp: numberOrNull(drift.limitePp),
+          negative: numberOrNull(drift.produtosNegativos),
+          worst: arrayOf(drift.piores),
+          formula: drift.formula || null,
+        },
+      },
     };
   }
 
@@ -1826,9 +2038,15 @@
       });
     }
 
+    // Leitura AO VIVO (workspace legado): últimos 30 dias ATÉ ONTEM. O sync
+    // noturno da Central de Vendas publica o mês corrente só até ontem e um
+    // período até hoje faria o backend recusar o import do mês (ver
+    // server/services/motorMargem/marginRealizadoPeriodo.js). No modo
+    // persistido o período é resolvido pelo SERVIDOR (fuso da operação).
     function dateRange(params) {
       if (params.dateFrom && params.dateTo) return { dateFrom: params.dateFrom, dateTo: params.dateTo };
       var end = new Date();
+      end.setDate(end.getDate() - 1);
       var start = new Date(end.getTime());
       start.setDate(start.getDate() - 29);
       function iso(date) {
@@ -1851,7 +2069,7 @@
         limit: params.limit || 20,
       };
       var range = dateRange(params);
-      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias" };
+      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias (até ontem)" };
       var canonicalQuery = buildQuery({
         marketplace: context.marketplace,
         q: params.search,
@@ -1909,7 +2127,7 @@
         marketplace: params.marketplace || "meli",
       };
       var range = dateRange(params);
-      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias" };
+      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias (até ontem)" };
       var workspaceQuery = buildQuery({
         marketplace: context.marketplace,
         dateFrom: range.dateFrom,
@@ -1994,8 +2212,6 @@
       var slug = String(params.clientSlug || "").trim();
       if (!slug) return Promise.resolve({ ok: false, status: 400, error: "Selecione um cliente.", type: "no-client" });
       var context = { client: { slug: slug, name: params.clientName || slug }, marketplace: params.marketplace || "meli" };
-      var range = dateRange(params);
-      context.period = { inicio: range.dateFrom, fim: range.dateTo, label: "Últimos 30 dias" };
       var query = buildQuery({
         clienteContaId: params.clienteContaId,
         page: params.page,
@@ -2005,12 +2221,27 @@
         busca: params.search,
         ordenacao: params.sort,
         direcao: params.direction,
-        dateFrom: range.dateFrom,
-        dateTo: range.dateTo,
+        // Período do REALIZADO: `periodo=YYYY-MM` (parâmetro global do Shell)
+        // ou datas explícitas; sem nada, o servidor usa "30 dias até ontem".
+        periodo: params.periodo,
+        dateFrom: params.dateFrom,
+        dateTo: params.dateTo,
       });
       return call(snapshotBase(slug) + "/itens" + query, { signal: signal }).then(function (result) {
         if (!result.ok) return apiError(result, "Não foi possível carregar os itens da leitura persistida.");
         return normalizeSnapshotItens(result.data, context);
+      });
+    }
+
+    /* Realizado da CONTA no período: KPIs, cobertura e freshness. */
+    function getSnapshotRealizado(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      if (!slug) return Promise.resolve({ ok: false, status: 400, error: "Selecione um cliente.", type: "no-client" });
+      var query = buildQuery({ clienteContaId: params.clienteContaId, periodo: params.periodo, dateFrom: params.dateFrom, dateTo: params.dateTo });
+      return call(snapshotBase(slug) + "/realizado" + query, { signal: signal }).then(function (result) {
+        if (!result.ok) return apiError(result, "Não foi possível carregar o realizado do período.");
+        return normalizeSnapshotRealizado(result.data);
       });
     }
 
@@ -2041,6 +2272,7 @@
       getWorkspace: getWorkspace,
       getSnapshotResumo: getSnapshotResumo,
       getSnapshotItens: getSnapshotItens,
+      getSnapshotRealizado: getSnapshotRealizado,
       requestSnapshotRefresh: requestSnapshotRefresh,
       getSnapshotRefreshStatus: getSnapshotRefreshStatus,
       call: call,
@@ -2056,6 +2288,9 @@
     VARIABLES: VARIABLES,
     VARIABLE_META: VARIABLE_META,
     SOURCE_SLOTS: SOURCE_SLOTS,
+    SLOT_DEFS: SLOT_DEFS,
+    slotDef: slotDef,
+    slotOf: slotOf,
     PRESETS: PRESETS,
     FINANCIAL_RESULTS: FINANCIAL_RESULTS,
     INTEGRITY_STATES: INTEGRITY_STATES,
@@ -2087,6 +2322,9 @@
     snapshotStatusFilter: snapshotStatusFilter,
     normalizeSnapshotResumo: normalizeSnapshotResumo,
     normalizeSnapshotItens: normalizeSnapshotItens,
+    normalizeSnapshotRealizado: normalizeSnapshotRealizado,
+    normalizeSalesCoverage: normalizeSalesCoverage,
+    normalizeComparison: normalizeComparison,
     createClient: createClient,
     numberOrNull: numberOrNull,
     marginFraction: marginFraction,

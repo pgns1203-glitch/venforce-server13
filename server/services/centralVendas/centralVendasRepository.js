@@ -460,6 +460,65 @@ const COMPONENTE_READ_COLUMNS = `id, import_id, pedido_row_id, item_row_id, clie
 // range sem uma segunda query: a conciliação Mercado Pago é escopada por
 // sync_run_id (central_vendas_mp_payments/settlement_movements), nunca por
 // import_id — ver centralVendasMp3ReadService.
+// Diagnóstico da seleção por competência — SÓ LEITURA do que a seleção M4
+// acima já decidiu (nenhuma regra nova de escolha). Para cada mês tocado pelo
+// intervalo: qual import foi escolhido e, quando nenhum serviu, o published
+// mais recente que existia e até onde ele cobre. É o que permite a quem lê
+// dizer "o mês corrente foi sincronizado até 27/09" em vez de mostrar o mês
+// como se não tivesse venda (ver docs/AUDITORIA_REALIZADO_MARGIN_SYNC.md R-01).
+function competenciasDoIntervalo(dateFrom, dateTo) {
+  const [yIni, mIni] = String(dateFrom).slice(0, 7).split("-").map(Number);
+  const [yFim, mFim] = String(dateTo).slice(0, 7).split("-").map(Number);
+  const out = [];
+  let y = yIni;
+  let m = mIni;
+  while (y < yFim || (y === yFim && m <= mFim)) {
+    out.push(`${y}-${String(m).padStart(2, "0")}`);
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+    if (out.length > 240) break; // defesa: intervalo absurdo nunca vira loop longo
+  }
+  return out;
+}
+
+function toIsoOrNull(value) {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function resumoDoImport(row) {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    publicationStatus: row.publication_status || null,
+    coverageFrom: asDate(row.coverage_date_from),
+    coverageTo: asDate(row.coverage_date_to),
+    publishedAt: toIsoOrNull(row.published_at),
+    createdAt: toIsoOrNull(row.created_at),
+  };
+}
+
+function diagnosticarCompetencias({ dateFrom, dateTo, porCompetencia, imports }) {
+  return competenciasDoIntervalo(dateFrom, dateTo).map((competencia) => {
+    const { inicio, fim } = monthBounds(competencia);
+    const segmento = { dateFrom: inicio > dateFrom ? inicio : dateFrom, dateTo: fim < dateTo ? fim : dateTo };
+    const escolhido = imports.find((row) => String(row.competencia) === competencia) || null;
+    let publicadoMaisRecente = null;
+    if (!escolhido) {
+      const publicados = (porCompetencia.get(competencia) || [])
+        .filter((row) => row.publication_status === "published")
+        .sort((a, b) => {
+          const pubA = a.published_at ? new Date(a.published_at).getTime() : 0;
+          const pubB = b.published_at ? new Date(b.published_at).getTime() : 0;
+          return pubB !== pubA ? pubB - pubA : Number(b.id) - Number(a.id);
+        });
+      publicadoMaisRecente = resumoDoImport(publicados[0] || null);
+    }
+    return { competencia, segmento, selecionado: resumoDoImport(escolhido), publicadoMaisRecente };
+  });
+}
+
 async function resolveImportsForRange(
   { clienteSlug, dateFrom, dateTo, marketplace = "meli", clienteContaId = null, includeLegacy = false },
   db = pool
@@ -504,7 +563,12 @@ async function resolveImportsForRange(
   }
   imports.sort((a, b) => String(a.competencia).localeCompare(String(b.competencia)));
 
-  return { imports, importIds: imports.map((row) => row.id) };
+  return {
+    imports,
+    importIds: imports.map((row) => row.id),
+    // Aditivo (Central de Margem): diagnóstico da MESMA seleção acima.
+    competencias: diagnosticarCompetencias({ dateFrom, dateTo, porCompetencia, imports }),
+  };
 }
 
 // M10 — extraído de getCentralVendasByRange: carga pesada (pedidos + itens +
@@ -546,6 +610,55 @@ async function loadPedidosByImportIds({ importIds, dateFrom, dateTo }, db = pool
         WHERE pedido_row_id = ANY($1::bigint[])
         ORDER BY pedido_id ASC, item_id ASC NULLS LAST, id ASC`,
       [pedidoRowIds]
+    ),
+  ]);
+
+  return { pedidos, itens: itensResult.rows, componentes: componentesResult.rows };
+}
+
+// Leitura ENXUTA para o REALIZADO do Motor de Margem
+// (centralVendasEvidenceAdapter.agregarPorMlb). Mesmos imports (já
+// resolvidos por resolveImportsForRange — seleção M4 única), mesmo filtro de
+// data e a MESMA ordem de itens de loadPedidosByImportIds (a ordem decide
+// qual sku/título "primeiro" o agregado guarda) — só lê as colunas que a
+// agregação usa e só os 3 tipos de componente que entram nela. Sem isso,
+// cada página/filtro da Central de Margem transferia `payload_json` de todos
+// os pedidos do período e 4 tipos de componente que a agregação descarta.
+const TIPOS_COMPONENTE_REALIZADO = ["tarifa_venda", "frete_seller", "cancelamento_reembolso"];
+
+async function loadRealizadoByImportIds({ importIds, dateFrom, dateTo }, db = pool) {
+  if (!Array.isArray(importIds) || !importIds.length) {
+    return { pedidos: [], itens: [], componentes: [] };
+  }
+
+  const pedidosResult = await db.query(
+    `/* cv:realizado-pedidos */ SELECT id, pedido_id, data_pedido, status
+       FROM central_vendas_pedidos
+      WHERE import_id = ANY($1::bigint[])
+        AND data_pedido BETWEEN $2 AND $3
+      ORDER BY data_pedido ASC NULLS LAST, pedido_id ASC, id ASC`,
+    [importIds, dateFrom, dateTo]
+  );
+  const pedidos = pedidosResult.rows;
+  const pedidoRowIds = pedidos.map((row) => row.id);
+  if (!pedidoRowIds.length) return { pedidos: [], itens: [], componentes: [] };
+
+  const [itensResult, componentesResult] = await Promise.all([
+    db.query(
+      `/* cv:realizado-itens */ SELECT id, pedido_row_id, pedido_id, mlb, sku, titulo, quantidade, valor_unitario,
+              receita_produto, custo_produto, imposto_interno, resultado
+         FROM central_vendas_pedido_itens
+        WHERE pedido_row_id = ANY($1::bigint[])
+        ORDER BY pedido_id ASC, id ASC`,
+      [pedidoRowIds]
+    ),
+    db.query(
+      `/* cv:realizado-componentes */ SELECT item_row_id, pedido_row_id, tipo, valor
+         FROM central_vendas_componentes
+        WHERE pedido_row_id = ANY($1::bigint[])
+          AND tipo = ANY($2::text[])
+        ORDER BY pedido_id ASC, item_id ASC NULLS LAST, id ASC`,
+      [pedidoRowIds, TIPOS_COMPONENTE_REALIZADO]
     ),
   ]);
 
@@ -644,10 +757,14 @@ module.exports = {
   // M10 — leitura otimizada (ver comentários acima das funções).
   resolveImportsForRange,
   loadPedidosByImportIds,
+  loadRealizadoByImportIds,
+  TIPOS_COMPONENTE_REALIZADO,
   getPedidoDetailByRowId,
   promoverCandidatesDoRun,
   selecionarMelhorImportPorCompetencia,
   monthBounds,
+  competenciasDoIntervalo,
+  diagnosticarCompetencias,
   // M6 — expostas para teste direto do ledger (insertComponente em
   // particular) contra uma fake db, sem depender de withTransaction/pool
   // real (persistCentralVendasImport não aceita db injetado — ver

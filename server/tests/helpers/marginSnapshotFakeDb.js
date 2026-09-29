@@ -136,6 +136,9 @@ function makeMarginSnapshotFakeDb() {
       row.ultimo_calculo = linhas.reduce((max, r) => (!max || r.calculated_at > max ? r.calculated_at : max), null);
       return { rows: [row] };
     }
+    if (sql.includes("/* ms:projecoes */")) {
+      return { rows: filtrarPorWhere(sql, snapshots, params).map((r) => ({ ...r })) };
+    }
     if (sql.includes("/* ms:count */")) {
       const linhas = filtrarPorWhere(sql, snapshots, params);
       const ultimo = linhas.reduce((max, r) => (!max || r.calculated_at > max ? r.calculated_at : max), null);

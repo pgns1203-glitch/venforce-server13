@@ -328,9 +328,18 @@ async function run() {
           evidence("MELI_API", "PROJECTED", 100, "2026-08-12T10:00:00Z"),
           evidence("MELI_ORDER", "REALIZED", 96, "2026-08-10T10:00:00Z"),
         ]),
-        cost: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 40)]),
-        taxRate: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 0.06)]),
-        fixedFee: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 0)]),
+        // Base de HOJE (atualizada em junho) × Base NO MOMENTO DA VENDA
+        // (gravada pela Central de Vendas em agosto). A observação histórica é
+        // MAIS RECENTE — escolher só pela fonte faria o Projetado usá-la.
+        cost: canonicalField([
+          evidence("VENFORCE_BASE", "PROJECTED", 40, "2026-06-01T00:00:00Z"),
+          evidence("VENFORCE_BASE", "REALIZED", 38, "2026-08-10T10:00:00Z"),
+        ]),
+        taxRate: canonicalField([
+          evidence("VENFORCE_BASE", "PROJECTED", 0.06, "2026-06-01T00:00:00Z"),
+          evidence("VENFORCE_BASE", "REALIZED", 0.055, "2026-08-10T10:00:00Z"),
+        ]),
+        fixedFee: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 0, "2026-06-01T00:00:00Z")]),
         commission: canonicalField([
           evidence("MELI_API", "PROJECTED", 16.5, "2026-08-12T10:00:00Z"),
           evidence("MELI_ORDER", "REALIZED", 15.9, "2026-08-10T10:00:00Z"),
@@ -377,8 +386,11 @@ async function run() {
     assert.strictEqual(item.motorChoice.freight.kind, "REALIZED");
     // A planilha em modo Projetado usa a outra ponta — e as duas coexistem.
     assert.strictEqual(api.resolveComposition(item, api.PRESETS.projected).entries.freight.source, "MELI_API");
-    // Variável declarada só tem a Base.
-    assert.strictEqual(item.motorChoice.cost.source, "VENFORCE_BASE");
+    // Custo com venda: o Motor escolhe o valor da Base NO MOMENTO DA VENDA
+    // (realizado tem precedência), exposto como slot próprio.
+    assert.strictEqual(item.motorChoice.cost.source, "VENFORCE_BASE_HIST");
+    assert.strictEqual(item.motorChoice.cost.value, 38);
+    assert.strictEqual(item.motorChoice.cost.kind, "REALIZED");
     // Sem evidência, não há escolha inventada.
     const noCost = normalizedItem({ fields: Object.assign({}, canonicalItem().fields, { cost: canonicalField([]) }) });
     assert.strictEqual(noCost.motorChoice.cost.available, false);
@@ -395,13 +407,55 @@ async function run() {
     assert.strictEqual(realized.values.price, 96);
     assert.strictEqual(realized.values.freight, 18.7);
     assert.strictEqual(realized.values.commission, 15.9);
-    // custo/imposto/taxa fixa são declarados: o realizado usa a mesma Base,
-    // como `valueForKind` faz no backend. Não existe "custo realizado".
-    assert.strictEqual(realized.values.cost, 40);
-    assert.strictEqual(realized.values.tax, 0.06);
-    assert.strictEqual(realized.entries.cost.source, "VENFORCE_BASE");
+    // Custo/imposto têm DOIS momentos na mesma fonte: o Projetado usa a Base
+    // de hoje; o Realizado usa o valor que a Base tinha na venda (o mesmo que
+    // `valueForKind(REALIZED)` usa no backend).
+    assert.strictEqual(projected.values.cost, 40, "Base atual, mesmo com a venda mais recente");
+    assert.strictEqual(projected.values.tax, 0.06);
+    assert.strictEqual(realized.values.cost, 38, "Base no momento da venda");
+    assert.strictEqual(realized.values.tax, 0.055);
+    assert.strictEqual(realized.entries.cost.source, "VENFORCE_BASE_HIST");
+    assert.strictEqual(realized.entries.cost.origin, "VENFORCE_BASE");
+    assert.strictEqual(realized.entries.cost.kind, "REALIZED");
+    // Taxa fixa não tem histórico: indisponível no Realizado, nunca a atual.
+    assert.strictEqual(realized.values.fixedFee, null);
+    assert.ok(realized.unavailable.includes("fixedFee"));
     assert.strictEqual(projected.preset, "projected");
     assert.strictEqual(realized.preset, "realized");
+  });
+
+  await test("Base atualizada DEPOIS da venda: Realizado continua com o histórico, Projetado com a atual", () => {
+    const item = normalizedItem({
+      fields: Object.assign({}, canonicalItem().fields, {
+        cost: canonicalField([
+          evidence("VENFORCE_BASE", "PROJECTED", 55, "2026-08-11T00:00:00Z"),
+          evidence("VENFORCE_BASE", "REALIZED", 38, "2026-08-10T10:00:00Z"),
+        ]),
+      }),
+    });
+    assert.strictEqual(api.resolveComposition(item, api.PRESETS.realized).values.cost, 38);
+    assert.strictEqual(api.resolveComposition(item, api.PRESETS.projected).values.cost, 55);
+  });
+
+  await test("simulação de preço é prospectiva: usa custo/imposto da Base atual, não o histórico da venda", () => {
+    const item = normalizedItem();
+    assert.strictEqual(item.simulationInputs.cost, 40);
+    assert.strictEqual(item.simulationInputs.taxRate, 0.06);
+    assert.strictEqual(item.simulationInputs.fixedFee, 0);
+  });
+
+  await test("slot = fonte + momento: Base atual e Base na venda são entradas separadas no mapa de fontes", () => {
+    const item = normalizedItem();
+    assert.deepStrictEqual(item.sources.cost.order, ["VENFORCE_BASE", "VENFORCE_BASE_HIST"]);
+    assert.strictEqual(item.sources.cost.entries.VENFORCE_BASE.value, 40);
+    assert.strictEqual(item.sources.cost.entries.VENFORCE_BASE.kind, "PROJECTED");
+    assert.strictEqual(item.sources.cost.entries.VENFORCE_BASE_HIST.value, 38);
+    assert.strictEqual(item.sources.cost.entries.VENFORCE_BASE_HIST.kind, "REALIZED");
+    assert.strictEqual(api.slotOf("VENFORCE_BASE", "REALIZED"), "VENFORCE_BASE_HIST");
+    assert.strictEqual(api.slotOf("VENFORCE_BASE", "PROJECTED"), "VENFORCE_BASE");
+    assert.strictEqual(api.slotOf("MELI_ORDER", "REALIZED"), "MELI_ORDER");
+    // A escolha do Motor (realizado tem precedência) aponta para o slot histórico.
+    assert.strictEqual(item.motorChoice.cost.source, "VENFORCE_BASE_HIST");
   });
 
   await test("alterar uma fonte manualmente resulta em modo Personalizado", () => {
@@ -781,6 +835,104 @@ async function run() {
     assert.ok(calls[3].path.includes("/snapshot/refresh/9?clienteContaId=900"));
     assert.strictEqual(status.run.status, "completed");
     assert.ok(!calls.some((c) => c.path.includes("/workspace")), "modo persistido nunca pede o workspace ao vivo");
+  });
+
+  // =========================================================================
+  // Projetado × Realizado, período e realizado da conta
+  // =========================================================================
+
+  await test("comparação do Motor é normalizada sem recalcular (null preservado, taxa fixa não comparável)", () => {
+    const item = normalizedItem({
+      projectedVsRealized: {
+        status: "COMPARABLE",
+        projected: { price: 100, commission: 16, freight: 18, cost: 45, taxRate: 0.03, fixedFee: 2, profit: 16, margin: 0.16, marginPercent: 16, computable: true, assumed: [] },
+        realized: { available: true, price: 96.4, commission: 16.8, freight: 21.3, cost: 44.5, taxRate: 0.03, fixedFee: null, profit: 10.91, margin: 0.113154, marginPercent: 11.32, computable: true, assumed: ["fixedFee"], missing: [], units: 73, orders: 62, revenue: 7037.2, lastSaleAt: "2026-09-20", totalProfit: 796.43, coverage: { frete: { linhas: 3, linhasComValor: 2, fracao: 0.6667, completa: false } } },
+        drift: { price: -3.6, commission: 0.8, freight: 3.3, cost: -0.5, taxRate: 0, taxRatePp: 0, fixedFee: null, profit: -5.09, marginPercentagePoints: -4.68 },
+        notComparable: [{ field: "fixedFee", reason: "SEM_HISTORICO", projectedValue: 2 }],
+      },
+      sales: { hasOrders: true, unidades: 73, pedidos: 62, receita: 7037.2, precoMedio: 96.4, cobertura: { frete: { completa: false } }, reembolso: { total: 5, pedidos: 1 }, resultadoPersistido: 800, resultadoRecalculado: 796.43 },
+    });
+    const cmp = item.comparison;
+    assert.strictEqual(cmp.status, "COMPARABLE");
+    assert.strictEqual(cmp.drift.marginPp, -4.68);
+    assert.strictEqual(cmp.drift.freight, 3.3);
+    assert.strictEqual(cmp.drift.fixedFee, null);
+    assert.strictEqual(cmp.realized.fixedFee, null, "sem histórico continua null");
+    assert.strictEqual(cmp.realized.units, 73);
+    assert.strictEqual(cmp.realized.coverage.frete.fracao, 0.6667);
+    assert.deepStrictEqual(cmp.notComparable, [{ field: "fixedFee", reason: "SEM_HISTORICO", projectedValue: 2 }]);
+    assert.strictEqual(item.sales.avgPrice, 96.4);
+    assert.deepStrictEqual(item.sales.refund, { total: 5, pedidos: 1 });
+    assert.strictEqual(item.sales.persistedResult, 800);
+    // Sem o bloco (backend antigo): null, nunca uma comparação inventada.
+    assert.strictEqual(normalizedItem().comparison, null);
+  });
+
+  await test("realizado da conta: KPIs, cobertura e freshness normalizados; flag desligada = enabled false", () => {
+    const r = api.normalizeSnapshotRealizado({
+      ok: true, habilitado: true,
+      periodo: { dateFrom: "2026-08-29", dateTo: "2026-09-27", modo: "ultimos30", periodo: null, rotulo: "Últimos 30 dias (até 27/09/2026)" },
+      cobertura: { estado: "PARCIAL", origem: "published", sincronizadoAte: "2026-09-27", ultimaPublicacaoEm: "2026-09-28T06:10:00.000Z", meses: 2, mesesComImport: 1,
+        lacunas: [{ competencia: "2026-09", segmento: { dateFrom: "2026-09-01", dateTo: "2026-09-28" }, motivo: "COBERTURA_INSUFICIENTE", publicadoDe: "2026-09-01", publicadoAte: "2026-09-27", publicadoEm: "x" }] },
+      freshness: { estado: "PARCIAL", sincronizadoAte: "2026-09-27", ultimaPublicacaoEm: "2026-09-28T06:10:00.000Z", syncEmAndamento: true, syncAtivo: { runId: 7 } },
+      kpis: { receita: 1220, receitaSemMlb: 20, unidades: 14, pedidos: 4, produtosComVenda: 3, lucro: { valor: 410, produtos: 2 },
+        margem: { percent: 37.27, estado: "parcial", coberturaReceita: 0.9016, produtosCalculaveis: 2, produtosSemMargem: 1, produtosEstimados: 0, semMargemPorMotivo: { cost: 1 } },
+        drift: { disponivel: true, pp: -4.55, margemRealizadaMixPercent: 37.27, margemProjetadaMixPercent: 41.82, produtosComparados: 2, limitePp: 2, produtosNegativos: 1, piores: [{ itemId: "MLB1", driftPp: -5 }] } },
+    });
+    assert.strictEqual(r.enabled, true);
+    assert.strictEqual(r.period.label, "Últimos 30 dias (até 27/09/2026)");
+    assert.strictEqual(r.coverage.state, "PARCIAL");
+    assert.strictEqual(r.coverage.gaps[0].publishedUntil, "2026-09-27");
+    assert.strictEqual(r.freshness.syncInProgress, true);
+    assert.strictEqual(r.kpis.orders, 4);
+    assert.strictEqual(r.kpis.margin.percent, 37.27);
+    assert.strictEqual(r.kpis.margin.state, "parcial");
+    assert.strictEqual(r.kpis.drift.pp, -4.55);
+    assert.strictEqual(r.kpis.drift.worst[0].itemId, "MLB1");
+    assert.deepStrictEqual(api.normalizeSnapshotRealizado({ ok: true, habilitado: false }), { ok: true, enabled: false });
+  });
+
+  await test("snapshot: período vem do SERVIDOR; client manda periodo=YYYY-MM e nunca inventa datas", async () => {
+    const calls = [];
+    const client = api.createClient({
+      request(pathQuery) {
+        calls.push(pathQuery);
+        if (pathQuery.includes("/snapshot/itens")) {
+          return { ok: true, status: 200, data: { ok: true, estado: "ready", itens: [], paginacao: { page: 1, limit: 50, total: 0 },
+            periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-31", modo: "mes", periodo: "2026-08", rotulo: "agosto/2026" },
+            vendas: { sincronizado: true, pedidosNoPeriodo: 0, cobertura: { estado: "ATUAL", sincronizadoAte: "2026-08-31", lacunas: [] } } } };
+        }
+        if (pathQuery.includes("/snapshot/realizado")) return { ok: true, status: 200, data: { ok: true, habilitado: true, kpis: {} } };
+        throw new Error(`rota inesperada: ${pathQuery}`);
+      },
+    });
+    const page = await client.getSnapshotItens({ clientSlug: "loja-teste", clienteContaId: 900, periodo: "2026-08" });
+    assert.ok(calls[0].includes("periodo=2026-08"), calls[0]);
+    assert.ok(!calls[0].includes("dateFrom"), "sem período personalizado, o browser não calcula datas");
+    assert.deepStrictEqual([page.period.inicio, page.period.fim, page.period.mode, page.period.label], ["2026-08-01", "2026-08-31", "mes", "agosto/2026"]);
+    assert.strictEqual(page.salesCoverage.state, "ATUAL");
+
+    await client.getSnapshotItens({ clientSlug: "loja-teste", clienteContaId: 900 });
+    assert.ok(!calls[1].includes("periodo=") && !calls[1].includes("dateTo="), "padrão resolvido no servidor: " + calls[1]);
+
+    await client.getSnapshotRealizado({ clientSlug: "loja-teste", clienteContaId: 900, periodo: "2026-08" });
+    assert.ok(calls[2].startsWith("/operacao/central-margem/loja-teste/snapshot/realizado?"), calls[2]);
+    assert.ok(calls[2].includes("clienteContaId=900") && calls[2].includes("periodo=2026-08"), calls[2]);
+  });
+
+  await test("workspace ao vivo (legado): período padrão termina ONTEM (o que o sync publica)", async () => {
+    const calls = [];
+    const client = api.createClient({
+      request(pathQuery) {
+        calls.push(pathQuery);
+        return { ok: true, status: 200, data: { ok: true, itens: [], resumo: {}, cobertura: {} } };
+      },
+    });
+    await client.getWorkspace({ clientSlug: "loja-teste" });
+    const ontem = new Date();
+    ontem.setDate(ontem.getDate() - 1);
+    const iso = ontem.getFullYear() + "-" + String(ontem.getMonth() + 1).padStart(2, "0") + "-" + String(ontem.getDate()).padStart(2, "0");
+    assert.ok(calls[0].includes("dateTo=" + iso), `${calls[0]} deveria terminar em ${iso}`);
   });
 
   console.log(`# ${passed} testes concluídos`);

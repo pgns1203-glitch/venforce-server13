@@ -30,6 +30,8 @@ const centralVendas = require("./adapters/centralVendasEvidenceAdapter");
 const settlement = require("./adapters/settlementEvidenceAdapter");
 const { flagLigada } = require("./marginSnapshotConfig");
 const { redigirSegredos } = require("./marginSnapshotSanitize");
+const periodoRealizado = require("./marginRealizadoPeriodo");
+const { agregarKpisRealizados } = require("./marginRealizadoKpis");
 
 const MARKETPLACE = "meli";
 const LIMIT_PADRAO = 50;
@@ -184,18 +186,20 @@ async function obterResumo({ clienteSlug, clienteContaId }, deps = {}) {
 // Composição do item: projetada (snapshot) + realizada (Central de Vendas)
 // ---------------------------------------------------------------------------
 
-async function carregarRealizadaDoPeriodo({ cliente, conta, dateFrom, dateTo }, deps = {}) {
+async function carregarRealizadaDoPeriodo({ cliente, conta, dateFrom, dateTo, periodo = null }, deps = {}) {
   const db = deps.db || pool;
-  // Lazy: motorMargemService carrega adapters do ML — só as funções de
-  // período/política de legado são usadas aqui.
+  // Lazy: motorMargemService carrega adapters do ML — só a política de
+  // legado é usada aqui.
   const motor = require("./motorMargemService");
-  const periodo = motor.resolverPeriodo({ dateFrom, dateTo, now: deps.now || new Date() });
+  // Período do REALIZADO: explícito, `periodo=YYYY-MM` (parâmetro global do
+  // Shell) ou o padrão "últimos 30 dias até ontem" (marginRealizadoPeriodo).
+  const periodoResolvido = periodoRealizado.resolverPeriodoRealizado({ dateFrom, dateTo, periodo, now: deps.now || new Date() });
   const includeLegacy = await motor.resolverIncludeLegacy({ clienteId: cliente.id, contaId: conta.id }, deps);
   const vendasRaw = await (deps.carregarVendas || centralVendas.carregarVendasDoPeriodo)(
     {
       clienteSlug: cliente.slug,
-      dateFrom: periodo.dateFrom,
-      dateTo: periodo.dateTo,
+      dateFrom: periodoResolvido.dateFrom,
+      dateTo: periodoResolvido.dateTo,
       marketplace: MARKETPLACE,
       clienteContaId: conta.id,
       includeLegacy,
@@ -209,13 +213,37 @@ async function carregarRealizadaDoPeriodo({ cliente, conta, dateFrom, dateTo }, 
     componentes: vendasRaw.componentes,
   });
   return {
-    periodo,
+    periodo: periodoResolvido,
     sincronizado: vendasRaw.sincronizado === true,
     pedidosNoPeriodo: Array.isArray(vendasRaw.pedidos) ? vendasRaw.pedidos.length : 0,
     porMlb: agregado.porMlb,
     reembolsoPorMlb: agregado.reembolsoPorMlb,
+    semMlb: agregado.semMlb || null,
+    reembolsos: agregado.reembolsos || null,
+    // Cobertura do período por competência (qual import respondeu cada mês e
+    // o que ficou de fora) — nunca "sem venda" quando o mês não foi coberto.
+    cobertura: periodoRealizado.resumirCobertura({ competencias: vendasRaw.competencias || [] }),
     fallbackObservedAt: vendasRaw.importSnapshotAt || null,
   };
+}
+
+// Contrato público do período (o mesmo em /itens e /realizado).
+function periodoPublico(realizada) {
+  const p = realizada.periodo;
+  return {
+    dateFrom: p.dateFrom,
+    dateTo: p.dateTo,
+    modo: p.modo,
+    periodo: p.periodo,
+    rotulo: p.rotulo,
+    referencia: p.referencia,
+  };
+}
+
+function coberturaPublica(cobertura) {
+  if (!cobertura) return null;
+  const { competencias, ...resto } = cobertura;
+  return resto;
 }
 
 const CAMPOS_MARGEM = [
@@ -254,7 +282,7 @@ function comporItem(row, realizada, deps = {}) {
   const agregado = realizada.porMlb.get(row.itemId) || null;
   const realizado = centralVendas.aplicarEvidenciasRealizadas(bag, { agregado, fallbackObservedAt: realizada.fallbackObservedAt });
   const reembolso = realizada.reembolsoPorMlb.get(row.itemId) || null;
-  centralVendas.aplicarEvidenciaReembolso(bag, { reembolso, fallbackObservedAt: realizada.fallbackObservedAt });
+  const reembolsoInfo = centralVendas.aplicarEvidenciaReembolso(bag, { reembolso, fallbackObservedAt: realizada.fallbackObservedAt });
 
   const fields = core.resolveAllFields(bag);
   const hasOrders = Boolean(realizado);
@@ -290,6 +318,31 @@ function comporItem(row, realizada, deps = {}) {
     missing: realized.missing,
     assumed: realized.assumed,
   };
+  const sales = {
+    hasOrders,
+    unidades: realizado?.unidades ?? null,
+    pedidos: realizado?.pedidos ?? null,
+    receita: realizado?.receita ?? null,
+    ultimaVendaEm: realizado?.ultimaVendaEm ?? null,
+    precoMedio: realizado?.precoUnitarioMedio ?? null,
+    // Contraprova (mesmo contrato do Motor ao vivo, marginItem.sales): o que
+    // a Central de Vendas persistiu × o que o núcleo recalcula.
+    resultadoPersistido: realizado?.resultadoPersistido ?? null,
+    resultadoRecalculado:
+      realized.profit === null || realized.profit === undefined || !realizado
+        ? null
+        : core.round2(realized.profit * (realizado.unidades || 0)),
+    cobertura: realizado?.cobertura ?? null,
+    // Reembolso é conciliação: fica visível, nunca entra na margem.
+    reembolso: reembolsoInfo ? { total: reembolsoInfo.reembolsoTotal, pedidos: reembolsoInfo.pedidos } : null,
+  };
+  const projectedVsRealized = core.buildProjectedVsRealized({
+    fields,
+    projected,
+    realized,
+    sales,
+    coverage: sales.cobertura,
+  });
 
   return {
     identity: {
@@ -301,7 +354,10 @@ function comporItem(row, realizada, deps = {}) {
       projected,
       realized: realizedContrato,
       target: { marginTarget: quality.targetMargin ?? null },
+      // Mesmo erro de projeção do Motor ao vivo (marginItem.margin.projectionError).
+      projectionError: core.compareMargins(projected.margin, realized.margin),
     },
+    projectedVsRealized,
     quality: {
       confidence: row.confidenceLevel,
       confidenceByField: quality.confidenceByField || {},
@@ -315,13 +371,7 @@ function comporItem(row, realizada, deps = {}) {
       statusReasons: quality.statusReasons || [],
     },
     statusBase: "projected",
-    sales: {
-      hasOrders,
-      unidades: realizado?.unidades ?? null,
-      pedidos: realizado?.pedidos ?? null,
-      receita: realizado?.receita ?? null,
-      ultimaVendaEm: realizado?.ultimaVendaEm ?? null,
-    },
+    sales,
     settlement: { available: conciliacao.available, motivo: conciliacao.motivo },
     snapshot: {
       refreshStatus: row.refreshStatus,
@@ -413,12 +463,19 @@ async function listarItens(params = {}, deps = {}) {
     repo.queryProjectionSnapshotsPage({ filtro, orderBy: ordem.orderBy, limit: pag.limit, offset: pag.offset, db }),
     repo.countProjectionSnapshotsFiltrado({ filtro, db }),
   ]);
-  const realizada = await carregarRealizadaDoPeriodo({ cliente, conta, dateFrom: params.dateFrom, dateTo: params.dateTo }, deps);
+  const realizada = await carregarRealizadaDoPeriodo(
+    { cliente, conta, dateFrom: params.dateFrom, dateTo: params.dateTo, periodo: params.periodo },
+    deps
+  );
 
   return {
     ...base,
-    periodo: realizada.periodo,
-    vendas: { sincronizado: realizada.sincronizado, pedidosNoPeriodo: realizada.pedidosNoPeriodo },
+    periodo: periodoPublico(realizada),
+    vendas: {
+      sincronizado: realizada.sincronizado,
+      pedidosNoPeriodo: realizada.pedidosNoPeriodo,
+      cobertura: coberturaPublica(realizada.cobertura),
+    },
     paginacao: {
       page: pag.page,
       limit: pag.limit,
@@ -430,7 +487,72 @@ async function listarItens(params = {}, deps = {}) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Realizado da CONTA no período (KPIs + cobertura + freshness)
+// ---------------------------------------------------------------------------
+//
+// Independe de página/filtro da lista. Lê a Central de Vendas UMA vez para o
+// período, aplica o mesmo núcleo por anúncio (marginRealizadoKpis) e lê a
+// projeção persistida só dos anúncios que venderam, em UMA query
+// (mapProjectionsForItems) — nenhum N+1, nenhuma chamada ao ML.
+async function obterRealizado(params = {}, deps = {}) {
+  const env = deps.env || process.env;
+  const { clienteSlug, clienteContaId } = params;
+  if (!leituraHabilitada({ clienteSlug }, env)) {
+    return { ok: true, habilitado: false, modo: "legacy" };
+  }
+  const db = deps.db || pool;
+  const repo = deps.snapshotRepository || snapshotRepository;
+  const { cliente, conta } = await api.resolverContaDoCliente({ clienteSlug, clienteContaId }, deps);
+
+  const realizada = await carregarRealizadaDoPeriodo(
+    { cliente, conta, dateFrom: params.dateFrom, dateTo: params.dateTo, periodo: params.periodo },
+    deps
+  );
+  const projecoes = await (repo.mapProjectionsForItems
+    ? repo.mapProjectionsForItems({ clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, itemIds: Array.from(realizada.porMlb.keys()), db })
+    : new Map());
+  const kpis = agregarKpisRealizados({
+    porMlb: realizada.porMlb,
+    semMlb: realizada.semMlb,
+    pedidosNoPeriodo: realizada.pedidosNoPeriodo,
+    projecoes,
+  });
+
+  let syncAtivo = null;
+  try {
+    const buscar = deps.buscarSyncAtivo || require("../centralVendas/centralVendasSyncRunService").buscarRunAtivoDaConta;
+    syncAtivo = await buscar({ clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, db });
+  } catch (err) {
+    // Freshness é informativo: falhar aqui nunca derruba a leitura.
+    syncAtivo = null;
+  }
+
+  const cobertura = coberturaPublica(realizada.cobertura);
+  return {
+    ok: true,
+    habilitado: true,
+    modo: "snapshot",
+    cliente,
+    conta,
+    marketplace: MARKETPLACE,
+    periodo: periodoPublico(realizada),
+    cobertura: { ...cobertura, competencias: realizada.cobertura.competencias },
+    freshness: {
+      estado: cobertura.estado,
+      sincronizadoAte: cobertura.sincronizadoAte,
+      ultimaPublicacaoEm: cobertura.ultimaPublicacaoEm,
+      ultimoImportEm: cobertura.ultimoImportEm,
+      syncEmAndamento: Boolean(syncAtivo),
+      syncAtivo,
+    },
+    kpis,
+    reembolsos: realizada.reembolsos,
+  };
+}
+
 module.exports = {
+  obterRealizado,
   LIMIT_PADRAO,
   LIMIT_MAX,
   leituraHabilitada,

@@ -159,6 +159,77 @@ cenario("gatilho real: worker ligado → run 'central_vendas_sync_completed' da 
   assert.strictEqual(kicks, 2);
 });
 
+// ── Cooldown do gatilho de sync (R-08 da AUDITORIA_REALIZADO_MARGIN_SYNC) ──
+async function runTerminadoHa(marginDb, { minutos, status = "completed", clienteContaId = 5 }) {
+  const repo = require("../services/motorMargem/marginSnapshotRunRepository");
+  const { run } = await runService.enqueueMarginSnapshotRun({ clienteId: 1, clienteSlug: "loja", clienteContaId, reason: "manual_refresh", db: marginDb });
+  await repo.updateRunStatus({ runId: run.id, status: "running", db: marginDb });
+  await repo.updateRunStatus({ runId: run.id, status, db: marginDb });
+  const row = marginDb.runs.find((r) => r.id === run.id);
+  row.finished_at = new Date(AGORA.getTime() - minutos * 60000);
+  return run;
+}
+const AGORA = new Date("2026-09-28T06:30:00Z");
+const SYNC_RUN = { id: 70, clienteId: 1, clienteSlug: "loja", clienteContaId: 5, marketplace: "meli" };
+
+cenario("cooldown: refresh COMPLETADO há 30 min → 2º sync (janela seguinte do noturno) não varre o catálogo de novo", async () => {
+  const marginDb = makeMarginSnapshotFakeDb();
+  const anterior = await runTerminadoHa(marginDb, { minutos: 30 });
+  let kicks = 0;
+  const r = await triggers.enfileirarAposSyncCentralVendas({ run: SYNC_RUN }, { db: marginDb, env: ENV_LIGADO, kick: () => { kicks += 1; }, now: () => AGORA });
+  assert.strictEqual(r.enfileirado, false);
+  assert.strictEqual(r.motivo, "REFRESH_RECENTE");
+  assert.strictEqual(r.ultimoRunId, anterior.id);
+  assert.strictEqual(r.cooldownMinutos, 360);
+  assert.strictEqual(marginDb.runs.length, 1, "nenhum run novo");
+  assert.strictEqual(kicks, 0);
+});
+
+cenario("cooldown: refresh completado há 7h (fora da janela padrão de 6h) → enfileira normalmente", async () => {
+  const marginDb = makeMarginSnapshotFakeDb();
+  await runTerminadoHa(marginDb, { minutos: 7 * 60 });
+  const r = await triggers.enfileirarAposSyncCentralVendas({ run: SYNC_RUN }, { db: marginDb, env: ENV_LIGADO, kick: () => {}, now: () => AGORA });
+  assert.strictEqual(r.enfileirado, true);
+  assert.strictEqual(marginDb.runs.length, 2);
+});
+
+cenario("cooldown: run que FALHOU nunca bloqueia; outra conta não é afetada; 0 desliga o cooldown", async () => {
+  const marginDb = makeMarginSnapshotFakeDb();
+  await runTerminadoHa(marginDb, { minutos: 5, status: "failed" });
+  const aposFalha = await triggers.enfileirarAposSyncCentralVendas({ run: SYNC_RUN }, { db: marginDb, env: ENV_LIGADO, kick: () => {}, now: () => AGORA });
+  assert.strictEqual(aposFalha.enfileirado, true, "falha recente não impede nova tentativa");
+
+  const outroDb = makeMarginSnapshotFakeDb();
+  await runTerminadoHa(outroDb, { minutos: 10, clienteContaId: 6 });
+  const outraConta = await triggers.enfileirarAposSyncCentralVendas({ run: SYNC_RUN }, { db: outroDb, env: ENV_LIGADO, kick: () => {}, now: () => AGORA });
+  assert.strictEqual(outraConta.enfileirado, true, "refresh recente da conta 6 não segura a conta 5");
+
+  const semCooldownDb = makeMarginSnapshotFakeDb();
+  await runTerminadoHa(semCooldownDb, { minutos: 10 });
+  const semCooldown = await triggers.enfileirarAposSyncCentralVendas(
+    { run: SYNC_RUN },
+    { db: semCooldownDb, env: { ...ENV_LIGADO, MARGIN_SNAPSHOT_SYNC_TRIGGER_COOLDOWN_MINUTES: "0" }, kick: () => {}, now: () => AGORA }
+  );
+  assert.strictEqual(semCooldown.enfileirado, true, "cooldown 0 = comportamento anterior");
+});
+
+cenario("cooldown não afeta o refresh MANUAL (API) nem o gatilho de Base", async () => {
+  const marginDb = makeMarginSnapshotFakeDb();
+  await runTerminadoHa(marginDb, { minutos: 10 });
+  const r = await triggers.enfileirarPorMudancaDeBase(
+    { contas: [{ clienteId: 1, clienteSlug: "loja", clienteContaId: 5 }] },
+    { db: marginDb, env: ENV_BASE_LIGADO, kick: () => {} }
+  );
+  assert.strictEqual(r.enfileirados.length, 1, "mudança de Base sempre recalcula");
+  assert.strictEqual(r.enfileirados[0].reaproveitado, false);
+
+  const manualDb = makeMarginSnapshotFakeDb();
+  await runTerminadoHa(manualDb, { minutos: 10 });
+  const manual = await runService.enqueueMarginSnapshotRun({ clienteId: 1, clienteSlug: "loja", clienteContaId: 5, reason: "manual_refresh", db: manualDb });
+  assert.strictEqual(manual.reaproveitado, false, "refresh manual cria run novo mesmo 10 min depois de outro");
+  assert.strictEqual(manualDb.runs.length, 2);
+});
+
 cenario("gatilho real: sync legado sem conta ou de outro marketplace não enfileira", async () => {
   const marginDb = makeMarginSnapshotFakeDb();
   const semConta = await triggers.enfileirarAposSyncCentralVendas(

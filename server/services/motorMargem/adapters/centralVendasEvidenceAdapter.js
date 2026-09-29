@@ -7,10 +7,14 @@
 // simplesmente não existe.
 //
 // REÚSO: a leitura em si (último import por competência, intervalo de datas,
-// pedidos/itens/componentes) é `centralVendasRepository.getCentralVendasByRange`
+// pedidos/itens/componentes) é a de `centralVendasRepository.getCentralVendasByRange`
 // — a MESMA consulta que o Cliente 360 já usa via `cliente360FechamentoAdapter`.
-// Este adapter NÃO tem SQL próprio; ele só traduz o resultado para o contrato
-// de evidências do Motor.
+// Aqui ela é chamada pelas metades que a compõem: resolveImportsForRange (a
+// MESMA seleção M4, que também devolve o diagnóstico de cobertura por
+// competência) + loadRealizadoByImportIds (a carga de loadPedidosByImportIds
+// só com as colunas/tipos de componente que agregarPorMlb lê — mesmos
+// pedidos, mesma ordem). Este adapter NÃO tem SQL próprio; ele só traduz o
+// resultado para o contrato de evidências do Motor.
 //
 // ── AGREGAÇÃO POR ANÚNCIO ───────────────────────────────────────────────────
 // A Central de Vendas raciocina por PEDIDO; a Central de Margem raciocina por
@@ -27,6 +31,17 @@
 // fica ausente no realizado (ver AUDITORIA_ARQUITETURAL_CENTRAL_MARGEM
 // §Taxa fixa histórica); não é preenchida com a taxa fixa atual.
 //
+// ── COBERTURA PARCIAL NÃO VIRA LUCRO ────────────────────────────────────────
+// Valor por unidade de cada componente = soma ÷ unidades DAS LINHAS QUE TÊM O
+// VALOR (preço: receita ÷ unidades com receita; alíquota: imposto ÷ receita
+// das linhas com imposto). Dividir pela unidade total faria o componente
+// ausente contar como zero dentro da média — margem realizada inflada em
+// silêncio. Cobertura parcial devolve a média das vendas cobertas como
+// ESTIMATED (rebaixa a confiança) e a cobertura (linhas e unidades) fica
+// explícita no resumo (`cobertura.<componente>`), para a Central distinguir
+// "sem venda" de "venda sem o componente importado". Frete de pedido
+// multi-item é rateio da Central de Vendas (allocateFrete) → ESTIMATED.
+//
 // ── REEMBOLSO NUNCA SOME ────────────────────────────────────────────────────
 // Pedidos cancelados/com problema saem do CÁLCULO PRINCIPAL (mesmo predicado
 // do Fechamento e do Cliente 360, `pedidoEntraNoResultado`), mas um reembolso
@@ -41,7 +56,7 @@
 
 const pool = require("../../../config/database");
 const { normalizeId } = require("../../../utils/textUtils");
-const { getCentralVendasByRange } = require("../../centralVendas/centralVendasRepository");
+const { resolveImportsForRange, loadRealizadoByImportIds } = require("../../centralVendas/centralVendasRepository");
 const { pedidoEntraNoResultado } = require("../../centralVendas/centralVendasService");
 const { SOURCES, EVIDENCE_KINDS, EVIDENCE_QUALITY } = require("../core/marginSources");
 const { FIELDS } = require("../core/marginEvidence");
@@ -89,9 +104,10 @@ function toIso(value) {
 // encontrado — o realizado inteiro (receita/% faturamento/margem "realized")
 // fica vazio em silêncio (ver motorMargemService.prepareWorkspaceContext).
 async function carregarVendasDoPeriodo({ clienteSlug, dateFrom, dateTo, marketplace = "meli", clienteContaId = null, includeLegacy = false }, db = pool) {
-  const bruto = await getCentralVendasByRange({ clienteSlug, dateFrom, dateTo, marketplace, clienteContaId, includeLegacy }, db);
+  const selecao = await resolveImportsForRange({ clienteSlug, dateFrom, dateTo, marketplace, clienteContaId, includeLegacy }, db);
+  const competencias = selecao.competencias || [];
 
-  if (!bruto) {
+  if (!selecao.imports.length) {
     return {
       imports: [],
       pedidos: [],
@@ -100,8 +116,12 @@ async function carregarVendasDoPeriodo({ clienteSlug, dateFrom, dateTo, marketpl
       componentes: [],
       sincronizado: false,
       importSnapshotAt: null,
+      competencias,
     };
   }
+
+  const carga = await loadRealizadoByImportIds({ importIds: selecao.importIds, dateFrom, dateTo }, db);
+  const bruto = { imports: selecao.imports, ...carga };
 
   const pedidosTodos = bruto.pedidos || [];
   const pedidos = pedidosTodos.filter(pedidoEntraNoResultado);
@@ -122,7 +142,26 @@ async function carregarVendasDoPeriodo({ clienteSlug, dateFrom, dateTo, marketpl
     componentes: bruto.componentes || [],
     sincronizado: true,
     importSnapshotAt,
+    competencias,
   };
+}
+
+// Cobertura de UM componente. `soma` é dinheiro; `itensComValor`/
+// `unidadesComValor` dizem QUANTO do volume vendido tinha o valor (linhas e
+// unidades distintas — um componente duplicado para o mesmo item nunca conta
+// cobertura duas vezes). `receitaComValor` só é usado pelo imposto: a
+// alíquota histórica é imposto ÷ receita DAS MESMAS linhas que têm imposto.
+function novaCobertura() {
+  return { soma: 0, itensComValor: 0, unidadesComValor: 0, receitaComValor: 0, itens: new Set() };
+}
+
+function registrarCobertura(cobertura, { itemKey, valor, unidades, receita = null }) {
+  cobertura.soma += valor;
+  if (cobertura.itens.has(itemKey)) return; // mesma linha: soma o valor, não a cobertura
+  cobertura.itens.add(itemKey);
+  cobertura.itensComValor += 1;
+  cobertura.unidadesComValor += unidades;
+  if (receita !== null) cobertura.receitaComValor += receita;
 }
 
 function novoAgregado(mlb) {
@@ -135,14 +174,21 @@ function novoAgregado(mlb) {
     itensContados: 0,
     pedidos: new Set(),
     ultimaVendaEm: null,
-    // Somatórios por componente + cobertura (quantos itens tinham o valor).
-    comissao: { soma: 0, itensComValor: 0 },
-    frete: { soma: 0, itensComValor: 0 },
+    // Receita também tem cobertura: uma linha sem `receita_produto` (preço
+    // ausente na Orders API) conta unidade mas não receita — o preço médio
+    // é receita ÷ unidades DAS LINHAS COM RECEITA, nunca ÷ todas as unidades.
+    receitaCobertura: novaCobertura(),
+    // Somatórios por componente + cobertura (quantas linhas/unidades tinham o valor).
+    comissao: novaCobertura(),
+    frete: novaCobertura(),
+    // Linhas cujo frete é RATEIO do frete do pedido multi-item feito pela
+    // Central de Vendas (allocateFrete) — não é medição por item.
+    freteLinhasRateadas: 0,
     // Histórico persistido pela Central de Vendas no momento da venda — NUNCA
     // recalculado com a Base atual (ver cabeçalho do arquivo).
-    custo: { soma: 0, itensComValor: 0 },
-    imposto: { soma: 0, itensComValor: 0 },
-    resultadoPersistido: { soma: 0, itensComValor: 0 },
+    custo: novaCobertura(),
+    imposto: novaCobertura(),
+    resultadoPersistido: novaCobertura(),
     precoUnitarioMin: null,
     precoUnitarioMax: null,
   };
@@ -181,21 +227,34 @@ function agregarPorMlb({ pedidosTodos = [], pedidosResultado = [], itens = [], c
     return porMlb.get(mlb);
   }
 
+  // Venda computável SEM MLB (linha financeira sem anúncio identificável):
+  // nunca some — vira um total próprio, fora de qualquer anúncio.
+  const semMlb = { linhas: 0, unidades: 0, receita: 0 };
+
   // ── Cálculo principal: só itens de pedidos que entram no resultado ───────
   for (const item of itens) {
     if (!resultadoIds.has(String(item.pedido_row_id))) continue;
     const mlb = normalizeId(item.mlb);
-    if (!mlb) continue;
-    const agg = bucket(mlb);
-
     const quantidade = numOrNull(item.quantidade) || 0;
     const receita = numOrNull(item.receita_produto);
+    if (!mlb) {
+      semMlb.linhas += 1;
+      semMlb.unidades += quantidade;
+      if (receita !== null) semMlb.receita += receita;
+      continue;
+    }
+    const agg = bucket(mlb);
+    const itemKey = String(item.id);
+
     const unitario = numOrNull(item.valor_unitario);
     const custoProduto = numOrNull(item.custo_produto);
     const impostoInterno = numOrNull(item.imposto_interno);
 
     agg.unidades += quantidade;
-    if (receita !== null) agg.receita += receita;
+    if (receita !== null) {
+      agg.receita += receita;
+      registrarCobertura(agg.receitaCobertura, { itemKey, valor: receita, unidades: quantidade });
+    }
     agg.itensContados += 1;
     agg.pedidos.add(String(item.pedido_row_id));
     if (!agg.sku && item.sku) agg.sku = item.sku;
@@ -208,18 +267,15 @@ function agregarPorMlb({ pedidosTodos = [], pedidosResultado = [], itens = [], c
 
     // custo/imposto ausentes ficam ausentes — nunca 0, nunca a Base atual.
     if (custoProduto !== null) {
-      agg.custo.soma += custoProduto;
-      agg.custo.itensComValor += 1;
+      registrarCobertura(agg.custo, { itemKey, valor: custoProduto, unidades: quantidade });
     }
     if (impostoInterno !== null) {
-      agg.imposto.soma += impostoInterno;
-      agg.imposto.itensComValor += 1;
+      registrarCobertura(agg.imposto, { itemKey, valor: impostoInterno, unidades: quantidade, receita });
     }
 
     const resultado = numOrNull(item.resultado);
     if (resultado !== null) {
-      agg.resultadoPersistido.soma += resultado;
-      agg.resultadoPersistido.itensComValor += 1;
+      registrarCobertura(agg.resultadoPersistido, { itemKey, valor: resultado, unidades: quantidade });
     }
 
     const pedido = pedidoById.get(String(item.pedido_row_id));
@@ -237,12 +293,15 @@ function agregarPorMlb({ pedidosTodos = [], pedidosResultado = [], itens = [], c
     if (valor === null) continue; // ausente ≠ zero: não conta como cobertura
 
     const agg = bucket(mlb);
+    const itemKey = String(item.id);
+    const quantidade = numOrNull(item.quantidade) || 0;
     if (componente.tipo === "tarifa_venda") {
-      agg.comissao.soma += Math.abs(valor);
-      agg.comissao.itensComValor += 1;
+      registrarCobertura(agg.comissao, { itemKey, valor: Math.abs(valor), unidades: quantidade });
     } else if (componente.tipo === "frete_seller") {
-      agg.frete.soma += Math.abs(valor);
-      agg.frete.itensComValor += 1;
+      const jaCoberto = agg.frete.itens.has(itemKey);
+      registrarCobertura(agg.frete, { itemKey, valor: Math.abs(valor), unidades: quantidade });
+      const doPedido = itensPorPedido.get(String(item.pedido_row_id)) || [];
+      if (!jaCoberto && doPedido.length > 1) agg.freteLinhasRateadas += 1;
     }
   }
 
@@ -284,6 +343,7 @@ function agregarPorMlb({ pedidosTodos = [], pedidosResultado = [], itens = [], c
   return {
     porMlb,
     reembolsoPorMlb,
+    semMlb: { linhas: semMlb.linhas, unidades: round2(semMlb.unidades), receita: round2(semMlb.receita) },
     naoAtribuido: { reembolso: round2(reembolsos.atribuidoPedido + reembolsos.naoAtribuivel) },
     reembolsos: {
       atribuidoMlb: round2(reembolsos.atribuidoMlb),
@@ -293,15 +353,84 @@ function agregarPorMlb({ pedidosTodos = [], pedidosResultado = [], itens = [], c
   };
 }
 
+function round4(value) {
+  return value === null ? null : Math.round((value + Number.EPSILON) * 10000) / 10000;
+}
+
+/**
+ * Cobertura de um componente no agregado do anúncio — o que o contrato expõe
+ * para a Central dizer "vendas existem, mas este componente não foi
+ * importado" em vez de fingir completude.
+ *   fracao   = unidades COM o valor ÷ unidades vendidas (pondera por volume)
+ *   completa = TODAS as linhas de venda tinham o valor
+ */
+function resumoCobertura(cobertura, agregado, extra = {}) {
+  return {
+    linhas: agregado.itensContados,
+    linhasComValor: cobertura.itensComValor,
+    unidades: round2(agregado.unidades),
+    unidadesComValor: round2(cobertura.unidadesComValor || 0),
+    fracao: agregado.unidades > 0 ? round4((cobertura.unidadesComValor || 0) / agregado.unidades) : null,
+    completa: agregado.itensContados > 0 && cobertura.itensComValor >= agregado.itensContados,
+    ...extra,
+  };
+}
+
+// Agregado no formato anterior (montado à mão, sem unidades/receita por
+// componente): só é seguro inferir as unidades cobertas quando TODAS as
+// linhas tinham o valor. Cobertura parcial sem unidades conhecidas fica sem
+// valor por unidade — nunca uma proporção inventada.
+function comUnidadesCobertas(cobertura, agregado) {
+  if (!cobertura) return novaCobertura();
+  if (cobertura.unidadesComValor !== undefined) return cobertura;
+  const completa = cobertura.itensComValor > 0 && cobertura.itensComValor >= agregado.itensContados;
+  return {
+    ...cobertura,
+    unidadesComValor: completa ? agregado.unidades : 0,
+    receitaComValor: completa ? agregado.receita : 0,
+  };
+}
+
+// Valor POR UNIDADE de um componente: soma ÷ unidades DAS LINHAS QUE TÊM O
+// VALOR. Dividir pela unidade total faria a linha sem valor contar como zero
+// dentro da média — comissão/frete/custo "ausentes" virariam lucro
+// artificial. Com cobertura parcial o número é uma média extrapolada e a
+// evidência sai ESTIMATED (rebaixa a confiança); a cobertura fica exposta.
+function porUnidadeCoberta(cobertura) {
+  return cobertura.unidadesComValor > 0 ? cobertura.soma / cobertura.unidadesComValor : null;
+}
+
+function notaCobertura(nome, cobertura, agregado) {
+  const base = `${nome} em ${cobertura.itensComValor}/${agregado.itensContados} linha(s)`;
+  if (cobertura.itensComValor >= agregado.itensContados) return base;
+  return `${base} — média das ${round2(cobertura.unidadesComValor)}/${round2(agregado.unidades)} unidade(s) com valor, estimada para as demais`;
+}
+
 /**
  * Registra no bag as evidências realizadas de UM anúncio (venda computável).
  * @returns {object|null} resumo do realizado, ou null se não houve venda
  */
-function aplicarEvidenciasRealizadas(bag, { agregado, fallbackObservedAt = null }) {
-  if (!agregado || agregado.unidades <= 0) return null;
+function aplicarEvidenciasRealizadas(bag, { agregado: agregadoBruto, fallbackObservedAt = null }) {
+  if (!agregadoBruto || agregadoBruto.unidades <= 0) return null;
+  const agregado = {
+    ...agregadoBruto,
+    comissao: comUnidadesCobertas(agregadoBruto.comissao, agregadoBruto),
+    frete: comUnidadesCobertas(agregadoBruto.frete, agregadoBruto),
+    custo: comUnidadesCobertas(agregadoBruto.custo, agregadoBruto),
+    imposto: comUnidadesCobertas(agregadoBruto.imposto, agregadoBruto),
+    resultadoPersistido: comUnidadesCobertas(agregadoBruto.resultadoPersistido, agregadoBruto),
+  };
 
   const unidades = agregado.unidades;
-  const precoUnitario = agregado.receita > 0 ? agregado.receita / unidades : null;
+  // Agregados montados fora de agregarPorMlb (fixtures antigas) não têm
+  // `receitaCobertura`: nesse caso toda receita conta como coberta.
+  const receitaCob = agregado.receitaCobertura || {
+    soma: agregado.receita, itensComValor: agregado.itensContados, unidadesComValor: unidades,
+  };
+  const precoUnitario = receitaCob.soma > 0 && receitaCob.unidadesComValor > 0
+    ? receitaCob.soma / receitaCob.unidadesComValor
+    : null;
+  const receitaCompleta = receitaCob.itensComValor >= agregado.itensContados;
   const umaObservacaoSo = agregado.itensContados === 1;
 
   // Timestamp do FATO econômico: data da venda. Nunca o instante em que a
@@ -315,37 +444,40 @@ function aplicarEvidenciasRealizadas(bag, { agregado, fallbackObservedAt = null 
     observedAt,
   };
 
-  // Preço: média ponderada quando houve mais de uma linha de venda. Continua
-  // sendo dinheiro real, mas deixa de ser uma observação única.
+  // Preço: receita ÷ unidades (média PONDERADA por quantidade, nunca média
+  // simples de preços unitários). Uma linha só = MEASURED; várias = DERIVED;
+  // alguma linha sem receita = ESTIMATED.
   bag.add(FIELDS.PRICE, {
     ...comumMedido,
     value: precoUnitario,
-    quality: umaObservacaoSo ? EVIDENCE_QUALITY.MEASURED : EVIDENCE_QUALITY.DERIVED,
-    note: `receita/unidades em ${agregado.itensContados} linha(s) de venda`,
+    quality: !receitaCompleta
+      ? EVIDENCE_QUALITY.ESTIMATED
+      : umaObservacaoSo ? EVIDENCE_QUALITY.MEASURED : EVIDENCE_QUALITY.DERIVED,
+    note: `receita/unidades em ${receitaCob.itensComValor}/${agregado.itensContados} linha(s) de venda`,
   });
 
-  // Comissão e frete: só viram evidência se TODAS as linhas informaram o valor.
-  // Cobertura parcial vira ESTIMATED — a média de "algumas" linhas subestima o
-  // custo real e precisa rebaixar a confiança, não passar despercebida.
-  const comissaoCobertura = agregado.comissao.itensComValor / agregado.itensContados;
-  if (agregado.comissao.itensComValor > 0) {
-    bag.add(FIELDS.COMMISSION, {
-      ...comumMedido,
-      value: agregado.comissao.soma / unidades,
-      quality: comissaoCobertura >= 1 ? EVIDENCE_QUALITY.DERIVED : EVIDENCE_QUALITY.ESTIMATED,
-      note: `tarifa_venda em ${agregado.comissao.itensComValor}/${agregado.itensContados} linhas`,
-    });
-  }
+  // Comissão e frete: cobertura total = DERIVED; parcial = ESTIMATED (média
+  // das unidades cobertas). Frete de pedido multi-item é RATEIO por unidades
+  // feito pela Central de Vendas (allocateFrete) — pelo vocabulário do núcleo
+  // (marginSources: "ESTIMATED = aproximação assumida (média, rateio)") ele
+  // também sai ESTIMATED.
+  const comissaoCompleta = agregado.comissao.itensComValor >= agregado.itensContados;
+  bag.add(FIELDS.COMMISSION, {
+    ...comumMedido,
+    value: porUnidadeCoberta(agregado.comissao),
+    quality: comissaoCompleta ? EVIDENCE_QUALITY.DERIVED : EVIDENCE_QUALITY.ESTIMATED,
+    note: notaCobertura("tarifa_venda", agregado.comissao, agregado),
+  });
 
-  const freteCobertura = agregado.frete.itensComValor / agregado.itensContados;
-  if (agregado.frete.itensComValor > 0) {
-    bag.add(FIELDS.FREIGHT, {
-      ...comumMedido,
-      value: agregado.frete.soma / unidades,
-      quality: freteCobertura >= 1 ? EVIDENCE_QUALITY.DERIVED : EVIDENCE_QUALITY.ESTIMATED,
-      note: `frete_seller (shipments) em ${agregado.frete.itensComValor}/${agregado.itensContados} linhas`,
-    });
-  }
+  const freteRateadas = agregado.freteLinhasRateadas || 0;
+  const freteCompleta = agregado.frete.itensComValor >= agregado.itensContados;
+  bag.add(FIELDS.FREIGHT, {
+    ...comumMedido,
+    value: porUnidadeCoberta(agregado.frete),
+    quality: freteCompleta && freteRateadas === 0 ? EVIDENCE_QUALITY.DERIVED : EVIDENCE_QUALITY.ESTIMATED,
+    note: notaCobertura("frete_seller (shipments)", agregado.frete, agregado) +
+      (freteRateadas ? ` · ${freteRateadas} linha(s) com frete rateado do pedido multi-item` : ""),
+  });
 
   // Custo e imposto: valor HISTÓRICO persistido pela Central de Vendas — a
   // Base em vigor no momento da venda, não a de hoje. Fonte VENFORCE_BASE
@@ -357,30 +489,33 @@ function aplicarEvidenciasRealizadas(bag, { agregado, fallbackObservedAt = null 
     observedAt,
   };
 
-  const custoCobertura = agregado.custo.itensComValor / agregado.itensContados;
-  if (agregado.custo.itensComValor > 0) {
-    bag.add(FIELDS.COST, {
-      ...comumDeclarado,
-      value: agregado.custo.soma / unidades,
-      quality: custoCobertura >= 1 ? EVIDENCE_QUALITY.DECLARED : EVIDENCE_QUALITY.ESTIMATED,
-      note: `custo_produto histórico (Base no momento da venda) em ${agregado.custo.itensComValor}/${agregado.itensContados} linhas`,
-    });
-  }
+  const custoCompleto = agregado.custo.itensComValor >= agregado.itensContados;
+  bag.add(FIELDS.COST, {
+    ...comumDeclarado,
+    value: porUnidadeCoberta(agregado.custo),
+    quality: custoCompleto ? EVIDENCE_QUALITY.DECLARED : EVIDENCE_QUALITY.ESTIMATED,
+    note: notaCobertura("custo_produto histórico (Base no momento da venda)", agregado.custo, agregado),
+  });
 
-  const impostoCobertura = agregado.imposto.itensComValor / agregado.itensContados;
-  if (agregado.imposto.itensComValor > 0 && agregado.receita > 0) {
-    bag.add(FIELDS.TAX_RATE, {
-      ...comumDeclarado,
-      // Imposto persistido é dinheiro; o núcleo trabalha com ALÍQUOTA (fração
-      // da receita). imposto/receita reconstrói a alíquota histórica.
-      value: agregado.imposto.soma / agregado.receita,
-      quality: impostoCobertura >= 1 ? EVIDENCE_QUALITY.DECLARED : EVIDENCE_QUALITY.ESTIMATED,
-      note: `imposto_interno histórico (Base no momento da venda) em ${agregado.imposto.itensComValor}/${agregado.itensContados} linhas`,
-    });
-  }
+  // Imposto persistido é dinheiro; o núcleo trabalha com ALÍQUOTA (fração da
+  // receita). imposto ÷ receita DAS MESMAS LINHAS reconstrói a alíquota
+  // histórica — a receita de linhas sem imposto nunca entra no denominador.
+  const receitaComImposto = agregado.imposto.receitaComValor || 0;
+  const impostoCompleto = agregado.imposto.itensComValor >= agregado.itensContados;
+  bag.add(FIELDS.TAX_RATE, {
+    ...comumDeclarado,
+    value: agregado.imposto.itensComValor > 0 && receitaComImposto > 0 ? agregado.imposto.soma / receitaComImposto : null,
+    quality: impostoCompleto ? EVIDENCE_QUALITY.DECLARED : EVIDENCE_QUALITY.ESTIMATED,
+    note: notaCobertura("imposto_interno histórico (Base no momento da venda)", agregado.imposto, agregado),
+  });
   // Taxa fixa: SEM contrapartida histórica na Central de Vendas hoje — não
   // registrar nada aqui. Fica ausente no realizado por desenho (ver cabeçalho
   // do arquivo), nunca preenchida com a taxa fixa atual.
+
+  const comissaoPorUnidade = porUnidadeCoberta(agregado.comissao);
+  const fretePorUnidade = porUnidadeCoberta(agregado.frete);
+  const custoPorUnidade = porUnidadeCoberta(agregado.custo);
+  const aliquota = agregado.imposto.itensComValor > 0 && receitaComImposto > 0 ? agregado.imposto.soma / receitaComImposto : null;
 
   return {
     unidades: round2(unidades),
@@ -390,14 +525,30 @@ function aplicarEvidenciasRealizadas(bag, { agregado, fallbackObservedAt = null 
     precoUnitarioMin: round2(agregado.precoUnitarioMin),
     precoUnitarioMax: round2(agregado.precoUnitarioMax),
     comissaoTotal: round2(agregado.comissao.soma),
-    comissaoCobertura: round2(comissaoCobertura),
+    comissaoPorUnidade: round2(comissaoPorUnidade),
+    // *Cobertura (compat): fração de LINHAS com o valor. A cobertura
+    // ponderada por unidade (a que pesa no valor por unidade) está em
+    // `cobertura.<componente>.fracao`.
+    comissaoCobertura: round2(agregado.comissao.itensComValor / agregado.itensContados),
     freteTotal: round2(agregado.frete.soma),
-    freteCobertura: round2(freteCobertura),
+    fretePorUnidade: round2(fretePorUnidade),
+    freteCobertura: round2(agregado.frete.itensComValor / agregado.itensContados),
     custoTotal: round2(agregado.custo.soma),
-    custoCobertura: round2(custoCobertura),
+    custoPorUnidade: round2(custoPorUnidade),
+    custoCobertura: round2(agregado.custo.itensComValor / agregado.itensContados),
     impostoTotal: round2(agregado.imposto.soma),
-    impostoCobertura: round2(impostoCobertura),
+    aliquotaImposto: aliquota === null ? null : Math.round(aliquota * 1e6) / 1e6,
+    impostoCobertura: round2(agregado.imposto.itensComValor / agregado.itensContados),
     ultimaVendaEm: agregado.ultimaVendaEm,
+    cobertura: {
+      preco: resumoCobertura(receitaCob, agregado),
+      comissao: resumoCobertura(agregado.comissao, agregado),
+      frete: resumoCobertura(agregado.frete, agregado, { linhasRateadas: freteRateadas }),
+      custo: resumoCobertura(agregado.custo, agregado),
+      imposto: resumoCobertura(agregado.imposto, agregado),
+      // Taxa fixa não tem contrapartida histórica: nunca "coberta".
+      taxaFixa: { disponivel: false, motivo: "SEM_HISTORICO" },
+    },
     // Resultado que a Central de Vendas persistiu. Serve de contraprova: o
     // Motor recalcula pelo núcleo e a diferença fica visível no contrato.
     resultadoPersistido:

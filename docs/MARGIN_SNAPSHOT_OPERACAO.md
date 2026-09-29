@@ -1,9 +1,33 @@
-# Margin Snapshot — operação, rollout e pendências (M1–M8)
+# Margin Snapshot — operação, rollout e pendências (M1–M8 + Realizado/Sincronia)
 
 Complementa `docs/AUDITORIA_WORKERS_E_PLANO_MARGIN_SNAPSHOT.md` (o plano) com o
 que foi de fato implementado e como ligar com segurança. Tudo nasce
 **desligado**: sem as flags abaixo, nenhum worker sobe, nenhuma DDL roda e a
 Central de Margem continua no caminho ao vivo de sempre (`/workspace`).
+
+## Arquitetura: três peças, uma tela
+
+```
+Margin Snapshot        = PROJETADO atual persistido   (margin_projection_snapshots — worker, sem vendas)
+Central de Vendas      = REALIZADO histórico persistido (central_vendas_* publicados — sync/noturno)
+Central de Margem      = COMPOSIÇÃO dos dois na leitura (marginSnapshotReadService — nenhuma chamada ao ML)
+```
+
+- O projetado não depende de venda: trocar o período do realizado nunca
+  recalcula o snapshot.
+- O realizado é lido da Central de Vendas **publicada** na hora da leitura
+  (seleção M4: published com cobertura, senão legado; candidate nunca) e
+  passa pelo MESMO núcleo (`computeMargin`) — desvio por componente em
+  `core/marginComparison` (`projectedVsRealized`).
+- Período do realizado: padrão **últimos 30 dias até ontem** no fuso
+  America/Sao_Paulo (o noturno publica o mês corrente até ontem); aceita
+  `?periodo=YYYY-MM` (parâmetro global do Shell) e datas explícitas. Quando
+  um trecho não é coberto, a leitura diz qual mês e "publicado até" — nunca
+  "sem venda" (`marginRealizadoPeriodo`).
+- `GET .../snapshot/realizado` — KPIs da conta no período (receita, unidades,
+  pedidos distintos, lucro, margem ponderada Σlucro/Σreceita só dos
+  calculáveis, desvio do mix projetado × realizado), cobertura e freshness
+  (sincronizado até, última publicação, sync em andamento).
 
 ## Fluxo implementado
 
@@ -23,6 +47,17 @@ Central de Margem (leitura)                            ▼
 
 Chave canônica: `(cliente_id, cliente_conta_id, marketplace, item_id)`. Toda
 leitura/escrita é por conta explícita, validada contra o cliente.
+
+## Matriz de flags (env) — valores reais NÃO alterados nesta rodada
+
+| Flag | Efeito | Chama o ML? | Afeta a leitura da Central? | Risco ao ligar |
+|---|---|---|---|---|
+| `MARGIN_SNAPSHOT_WORKER_ENABLED` | Schema no boot + worker + gatilho pós-sync da Central de Vendas | **Sim** (varredura do catálogo por conta, em background, com limiter/retry) | Indireto: é o que popula o projetado | Carga no rate limit do ML por conta; mitigado por limiter, dedupe 1 run/conta e cooldown do gatilho |
+| `MARGIN_SNAPSHOT_READ_ENABLED` | Tela lê o snapshot para todos | Não | **Sim**: troca `/workspace` ao vivo pela leitura persistida + realizado | Conta sem snapshot mostra `missing` (não zero) até o 1º refresh |
+| `MARGIN_SNAPSHOT_READ_CLIENTES` | Mesmo que acima, só para os slugs | Não | Sim, por cliente | Baixo — é o caminho de rollout gradual |
+| `MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED` | Mudança de Base enfileira as contas afetadas (exige worker) | Sim (refresh das contas afetadas) | Indireto | Tempestade de mudanças vira 1 run/conta (+1 rerun), mas cada run é uma varredura |
+| `MARGIN_SNAPSHOT_SYNC_TRIGGER_COOLDOWN_MINUTES` | Janela em que um refresh COMPLETADO dispensa o gatilho pós-sync (padrão 360; `0` = sem cooldown) | Reduz chamadas | Não | Projetado até 6 h mais velho após syncs seguidos; o botão manual ignora o cooldown |
+| `MARGEM_PROJETADA_SCHEDULER_ENABLED` (+ `_CLIENTES`/`_ALL`) | Pipeline paralela de Anúncios ML (05:30 SP) → `anuncios_margem_projetada_snapshot` | **Sim** (sync do catálogo + varredura completa) | Não afeta a Central de Margem (só Anúncios) | Ligada junto com o worker = duas varreduras por conta por noite. Ver `docs/PLANO_FONTE_CANONICA_MARGEM.md` |
 
 ## Flags (env) — todas opt-in
 
@@ -54,6 +89,15 @@ lote no processo), `MARGIN_SNAPSHOT_BATCH_MAX_ATTEMPTS` (3), `MARGIN_SNAPSHOT_BA
 Reverter é desligar a flag: a tela volta ao `/workspace` ao vivo (intacto) e os runs em
 curso param no próximo lote no shutdown.
 
+### Rollback por peça
+| Sintoma | Ação | Efeito |
+|---|---|---|
+| Leitura persistida com problema para um cliente | remover o slug de `MARGIN_SNAPSHOT_READ_CLIENTES` (ou desligar `_READ_ENABLED`) | tela volta ao workspace ao vivo; snapshot fica intacto no banco |
+| Worker pressionando o ML | desligar `MARGIN_SNAPSHOT_WORKER_ENABLED` | nenhum run novo; leitura persistida continua mostrando o último snapshot (com "Último cálculo") |
+| Refresh pós-sync frequente demais | aumentar `MARGIN_SNAPSHOT_SYNC_TRIGGER_COOLDOWN_MINUTES` | menos varreduras; manual continua livre |
+| Precisa do comportamento pré-cooldown | `MARGIN_SNAPSHOT_SYNC_TRIGGER_COOLDOWN_MINUTES=0` | todo sync concluído enfileira (dedupe de run ativo continua) |
+| Realizado estranho | não há flag: é leitura da Central de Vendas publicada. Conferir `GET .../snapshot/realizado` (`cobertura.competencias` diz qual import respondeu cada mês) | — |
+
 ## Semântica que importa
 
 - **Projetada pura**: o worker prepara o Motor sem a fonte de vendas; o status gravado é
@@ -78,11 +122,17 @@ Mensagens passam por `marginSnapshotSanitize.redigirSegredos` (Bearer, APP_USR-,
 
 ## Decisões ainda humanas
 
-- **TTL/freshness**: não implementado de propósito. Falta decidir o TTL (e se é por
+- **TTL/freshness do PROJETADO**: continua sem TTL (decisão humana: valor e se é por
   cliente). Com a decisão: um cron que enfileira `reason='freshness_cron'` para contas com
   `MAX(calculated_at)` acima do TTL e/ou marca `refresh_status='stale'`. Até lá, a cadência é
-  o gatilho pós-sync da Central de Vendas (noturno, se `CENTRAL_VENDAS_NOTURNO_ENABLED`) +
-  o botão manual, e a tela mostra "Último cálculo".
+  o gatilho pós-sync da Central de Vendas (noturno, se `CENTRAL_VENDAS_NOTURNO_ENABLED`, com
+  cooldown) + o botão manual, e a tela mostra "Projetado calculado em".
+- **Freshness do REALIZADO**: implementado sem inventar precisão — `ATUAL` (período todo
+  coberto por publicação com cobertura declarada), `PARCIAL` (mês não coberto, com "publicado
+  até"), `NAO_DECLARADA` (legado sem cobertura declarada), `SEM_SINCRONIZACAO`, e "sync em
+  andamento" como sinal separado (run ativo da conta, ignorando run abandonado). Não existe
+  rótulo "Desatualizado": sem regra factual para ele (uma publicação que cobre o período
+  inteiro está, por definição, atualizada para aquele período).
 - Habilitação das flags e ordem do rollout por cliente/conta.
 
 ## Limitações conhecidas
@@ -93,8 +143,16 @@ Mensagens passam por `marginSnapshotSanitize.redigirSegredos` (Bearer, APP_USR-,
 - `Retry-After` em formato HTTP-date não é interpretado pelo `mlClient` (vira `null`): o
   worker cai no backoff exponencial.
 - `source_updated_at` segue `null` (o adapter não repassa `last_updated` do ML).
-- A leitura da realizada carrega as vendas do período da conta inteira (1 consulta ao banco
-  por página, sem ML) — mesma leitura que o Motor ao vivo já faz.
+- A leitura da realizada carrega as vendas do período da conta inteira a cada página (sem ML)
+  — agora ENXUTA (`loadRealizadoByImportIds`: sem `payload_json`, só 3 tipos de componente).
+  Custo em memória medido por `scripts/benchRealizadoMargem.js` (5k pedidos/4k anúncios:
+  agregação ~30 ms, KPIs ~40 ms, ~7 MB). Próximo passo se o volume crescer: carregar só os
+  pedidos que contêm os MLBs da página (2 etapas, preservando a normalização de MLB em JS) e/ou
+  cache em processo por (imports publicados + período).
+- Regra M4 intacta: um período personalizado que termina hoje continua sem o mês corrente
+  (o noturno publica até ontem) — agora com a lacuna declarada na tela.
+- Taxa fixa não tem histórico: o realizado não a desconta; o desvio de margem de itens com
+  taxa fixa declarada fica superestimado pelo valor dela (declarado em `notComparable`).
 
 ## Validação sem banco de produção
 
@@ -103,3 +161,7 @@ Mensagens passam por `marginSnapshotSanitize.redigirSegredos` (Bearer, APP_USR-,
   `node Portal/central-margem-snapshot-ui.test.js` (Chrome headless, rede interceptada).
 - SQL em Postgres real **em memória** (nunca lê `DATABASE_URL`):
   `cd server && npm install --no-save @electric-sql/pglite@0.3 && node scripts/marginSnapshotSqlCheck.js`
+  e `node scripts/marginRealizadoSqlCheck.js` (seleção M4 + cobertura, leitura enxuta com
+  agregado idêntico, projeções em lote, sync ativo).
+- Realizado/comparação: `tests/motorMargemRealizadoCobertura.test.js`,
+  `tests/motorMargemProjetadoRealizado.test.js`, `tests/marginRealizadoPeriodoKpis.test.js`.

@@ -25,6 +25,8 @@ function defaults(deps = {}) {
     logger: deps.logger || console,
     enqueue: deps.enqueue || require("./marginSnapshotRunService").enqueueMarginSnapshotRun,
     kick: deps.kick || require("./marginSnapshotRuntime").kick,
+    ultimoCompleto: deps.ultimoCompleto || require("./marginSnapshotRunRepository").findLatestCompletedRunForAccount,
+    now: deps.now || (() => new Date()),
   };
 }
 
@@ -35,10 +37,16 @@ function defaults(deps = {}) {
 // Chamado por centralVendasSyncWorker.executarSyncRun DEPOIS de o run estar
 // completed e da tentativa de publicação, em try/catch próprio. O snapshot é
 // projeção pura (não depende das vendas), então o sync funciona aqui como a
-// cadência natural de refresh da conta — nunca como cálculo.
+// cadência natural de refresh da conta — nunca como cálculo. O REALIZADO não
+// precisa deste gatilho: ele é lido da Central de Vendas na hora da leitura.
+//
+// Cooldown (syncTriggerCooldownMinutes): um refresh COMPLETADO recente da
+// conta dispensa outra varredura do catálogo. Só runs completed contam — um
+// run que falhou nunca bloqueia a próxima tentativa.
 async function enfileirarAposSyncCentralVendas({ run } = {}, deps = {}) {
-  const { db, env, enqueue, kick } = defaults(deps);
-  if (!resolveMarginSnapshotConfig(env).workerEnabled) {
+  const { db, env, enqueue, kick, ultimoCompleto, now } = defaults(deps);
+  const config = resolveMarginSnapshotConfig(env);
+  if (!config.workerEnabled) {
     return { enfileirado: false, motivo: "WORKER_DESABILITADO" };
   }
   const marketplace = String(run?.marketplace || "").trim().toLowerCase();
@@ -49,6 +57,21 @@ async function enfileirarAposSyncCentralVendas({ run } = {}, deps = {}) {
   // Snapshot exige conta explícita (chave canônica). Run legado sem conta
   // (cliente 100% legado) não tem snapshot — não enfileira.
   if (!clienteContaId || !clienteId) return { enfileirado: false, motivo: "SEM_CONTA" };
+
+  if (config.syncTriggerCooldownMinutes > 0) {
+    const ultimo = await ultimoCompleto({ clienteId, clienteContaId, marketplace: "meli", db });
+    const fim = ultimo && ultimo.finishedAt ? new Date(ultimo.finishedAt).getTime() : NaN;
+    const agora = now().getTime();
+    if (Number.isFinite(fim) && agora - fim >= 0 && agora - fim < config.syncTriggerCooldownMinutes * 60000) {
+      return {
+        enfileirado: false,
+        motivo: "REFRESH_RECENTE",
+        ultimoRunId: ultimo.id,
+        ultimoRunConcluidoEm: new Date(fim).toISOString(),
+        cooldownMinutos: config.syncTriggerCooldownMinutes,
+      };
+    }
+  }
 
   const { run: marginRun, reaproveitado } = await enqueue({
     clienteId,

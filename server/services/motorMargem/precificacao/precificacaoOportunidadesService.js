@@ -22,11 +22,17 @@
 //
 // Ordenação simples e explicável (sem elasticidade/forecast/score):
 //   com retorno ML  >  mais unidades vendidas  >  maior margem pós-promoção.
+//
+// Filtro, 1 linha por anúncio, ordenação e PÁGINA acontecem NO BANCO
+// (precificacaoOportunidadesSql): só `limit` linhas chegam ao Node, com o
+// total da mesma consulta. montarCandidata monta cada linha da página com a
+// mesma régua (computeMargin) e ordenarDeduplicarPaginar fica como a
+// referência JS com que a consulta é conferida (promoSnapshotSqlCheck).
 
 const pool = require("../../../config/database");
 const { computeMargin } = require("../core/marginEngine");
+const { sqlOportunidadesPaginadas, lerPagina } = require("./precificacaoOportunidadesSql");
 
-const STATUS_DISPONIVEIS = new Set(["candidate", "started", "active", "pending"]);
 const FRESCO_MIN = 360; // 6h — mesmos limiares de promocoesDiagnosticoService
 const ANTIGO_MIN = 1440; // 24h
 const LIMITE_PADRAO = 20;
@@ -62,8 +68,8 @@ function defaults(deps = {}) {
       estadoComAutoTrigger: (identidade, opts) =>
         require("../../promoSnapshot/promoSnapshotReadService").estadoComAutoTrigger(identidade, opts, deps),
       syncPublico: (e, g) => require("../../promoSnapshot/promoSnapshotReadService").syncPublico(e, g),
-      listarBase: (args) =>
-        (deps.repo || require("../../promoSnapshot/promoSnapshotRepository")).listarBaseOportunidades(args, deps.db || pool),
+      listarPagina: (args) =>
+        (deps.repo || require("../../promoSnapshot/promoSnapshotRepository")).listarOportunidadesPaginadas(args, deps.db || pool),
     },
   };
 }
@@ -120,8 +126,8 @@ function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo
   return linha;
 }
 
-// Ordena, deixa 1 linha por anúncio (a melhor dele pela mesma régua) e pagina
-// no servidor.
+// REFERÊNCIA JS da régua de ordenação/dedupe/página (a produção faz isso no
+// banco). Usada para conferir a consulta contra Postgres real.
 function ordenarDeduplicarPaginar(candidatas, { page, limit }) {
   candidatas.sort((a, b) =>
     (b.retornoMl ? 1 : 0) - (a.retornoMl ? 1 : 0) ||
@@ -158,36 +164,42 @@ function periodoPublico(periodo) {
 
 const CRITERIO = "Promoção disponível com margem pós-promoção positiva; ordem: com retorno ML, mais unidades vendidas, maior margem.";
 
+// Linha da página (já filtrada/ordenada no banco) → oportunidade, com a
+// mesma régua de montarCandidata.
+function linhaDaPagina(r, promocao, vendasPorMlb) {
+  return montarCandidata({
+    itemId: String(r.item_id),
+    promocao,
+    precoPromo: num(r.preco_promo),
+    retornoMl: num(r.retorno) || 0,
+    snap: {
+      titulo: r.snap_titulo, image_url: r.image_url, price: r.price, cost: r.cost, tax_rate: r.tax_rate,
+      fixed_fee: r.fixed_fee, commission_rate: r.commission_rate, freight: r.freight, margin: r.margin,
+    },
+    titulo: r.fonte_titulo || null,
+    vendasPorMlb,
+  });
+}
+
 // ─── Fonte principal: Promo Snapshot ─────────────────────────────────────────
-async function oportunidadesDoSnapshot({ d, cliente, conta, estado, sync, params, deps, pag }) {
-  const rows = await d.promo.listarBase({ clienteContaId: conta.id, runId: estado.snapshotRunId });
+async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sync, params, deps, pag }) {
   const { vendasPorMlb, periodo } = await carregarVendas(d, cliente, conta, params, deps);
-  const candidatas = [];
-  for (const r of rows) {
-    const status = String(r.status || "").toLowerCase() || null;
-    if (status && !STATUS_DISPONIVEIS.has(status)) continue;
-    const precoPromo = num(r.preco_final);
-    if (precoPromo === null || precoPromo <= 0) continue;
-    const c = montarCandidata({
-      itemId: String(r.item_id),
-      promocao: {
-        id: r.promotion_id || null,
-        nome: r.nome || null,
-        tipo: r.promotion_type || null,
-        status,
-        statusExibicao: r.status_exibicao || null,
-        precoFonte: r.preco_final_fonte || null,
-        fim: r.data_fim || null,
-      },
-      precoPromo,
-      retornoMl: num(r.subsidio_ml) || 0,
-      snap: r,
-      titulo: null,
-      vendasPorMlb,
-    });
-    if (c) candidatas.push(c);
-  }
-  const { total, pagina, hasNext } = ordenarDeduplicarPaginar(candidatas, pag);
+  const { total, rows } = await d.promo.listarPagina({
+    clienteContaId: conta.id, sellerId, runId: estado.snapshotRunId, vendasPorMlb, page: pag.page, limit: pag.limit,
+  });
+  const pagina = rows.map((r) => linhaDaPagina(r, {
+    id: r.promo_id || null,
+    nome: r.promo_nome || null,
+    tipo: r.promo_tipo || null,
+    status: String(r.promo_status || "").toLowerCase() || null,
+    statusExibicao: r.promo_status_exibicao || null,
+    precoFonte: r.promo_preco_fonte || null,
+    fim: r.promo_fim || null,
+    // Leitura desta promoção falhou no último run: é a última leitura boa.
+    herdada: r.promo_herdado === true,
+    observadaEm: r.promo_observado_em || null,
+  }, vendasPorMlb)).filter(Boolean);
+  const hasNext = pag.page * pag.limit < total;
   return {
     ok: true,
     disponivel: true,
@@ -198,6 +210,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, estado, sync, params
       parcial: estado.partial === true,
       itensVarridos: num(estado.total),
       itensSemLeitura: estado.itemsWithoutRead || 0,
+      itensHerdados: estado.itemsInherited || 0,
       ...frescor(estado.snapshotAt, d.now().getTime()),
     },
     sync,
@@ -224,16 +237,6 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
   );
   if (!head || !head.length) return null;
   const diag = head[0];
-
-  const itens = await d.db.query(
-    `SELECT item_id, titulo, campanha, campanha_id, tipo_promocao, preco_original, preco_promocao,
-            desconto_total, seller_percentage, meli_percentage, retorno_ml, payload_raw
-       FROM promocoes_diagnostico_itens
-      WHERE diagnostico_id = $1 AND preco_promocao IS NOT NULL AND preco_promocao > 0`,
-    [diag.id]
-  );
-  const linhasDiag = itens.rows || [];
-  const ids = [...new Set(linhasDiag.map((r) => String(r.item_id || "")).filter(Boolean))];
   const base = {
     ok: true,
     disponivel: true,
@@ -250,38 +253,30 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
     page: pag.page,
     limit: pag.limit,
   };
-  if (!ids.length) return { ...base, periodo: null, total: 0, hasNext: false, oportunidades: [] };
-
-  const snaps = await d.db.query(
-    `SELECT item_id, titulo, image_url, price, cost, tax_rate, fixed_fee, commission_rate, freight, margin, status, quality_json
-       FROM margin_projection_snapshots
-      WHERE cliente_conta_id = $1 AND marketplace = 'meli' AND item_id = ANY($2::text[]) AND catalog_missing_since IS NULL`,
-    [conta.id, ids]
-  );
-  const porItem = new Map((snaps.rows || []).map((r) => [String(r.item_id), r]));
   const { vendasPorMlb, periodo } = await carregarVendas(d, cliente, conta, params, deps);
-
-  const candidatas = [];
-  for (const r of linhasDiag) {
-    const itemId = String(r.item_id || "");
-    const snap = porItem.get(itemId);
-    if (!snap) continue;
-    const raw = r.payload_raw && typeof r.payload_raw === "object" ? r.payload_raw : {};
-    const status = String(raw.status || raw.statusPromocao || "").toLowerCase() || null;
-    if (status && !STATUS_DISPONIVEIS.has(status)) continue;
-    const c = montarCandidata({
-      itemId,
-      promocao: { id: r.campanha_id || null, nome: r.campanha || null, tipo: r.tipo_promocao || null, status },
-      precoPromo: num(r.preco_promocao),
-      retornoMl: num(r.retorno_ml) || 0,
-      snap,
-      titulo: r.titulo,
-      vendasPorMlb,
-    });
-    if (c) candidatas.push(c);
-  }
-  const { total, pagina, hasNext } = ordenarDeduplicarPaginar(candidatas, pag);
-  return { ...base, periodo: periodoPublico(periodo), total, hasNext, oportunidades: pagina };
+  // Mesma consulta paginada no banco; status vem do payload da linha
+  // (status || statusPromocao), vazio = aceito, como na tela antiga.
+  const statusSql = `LOWER(COALESCE(NULLIF(i.payload_raw->>'status', ''), i.payload_raw->>'statusPromocao', ''))`;
+  const { sql, params: valores } = sqlOportunidadesPaginadas({
+    fonteSql: `
+      SELECT i.item_id::text AS item_id, i.id::text AS chave, i.preco_promocao AS preco_promo, i.retorno_ml AS retorno,
+             i.titulo AS fonte_titulo, i.campanha AS promo_nome, i.campanha_id AS promo_id,
+             i.tipo_promocao AS promo_tipo, NULLIF(${statusSql}, '') AS promo_status
+        FROM promocoes_diagnostico_itens i
+       WHERE i.diagnostico_id = $1 AND i.item_id IS NOT NULL AND i.item_id <> ''
+         AND i.preco_promocao IS NOT NULL AND i.preco_promocao > 0
+         AND (${statusSql} = '' OR ${statusSql} IN ('candidate','started','active','pending'))`,
+    paramsFonte: [diag.id],
+    clienteContaId: conta.id,
+    vendasPorMlb,
+    page: pag.page,
+    limit: pag.limit,
+  });
+  const { total, rows } = lerPagina(await d.db.query(sql, valores));
+  const pagina = rows.map((r) => linhaDaPagina(r, {
+    id: r.promo_id || null, nome: r.promo_nome || null, tipo: r.promo_tipo || null, status: r.promo_status || null,
+  }, vendasPorMlb)).filter(Boolean);
+  return { ...base, periodo: periodoPublico(periodo), total, hasNext: pag.page * pag.limit < total, oportunidades: pagina };
 }
 
 function mensagemSemFonte(estado) {

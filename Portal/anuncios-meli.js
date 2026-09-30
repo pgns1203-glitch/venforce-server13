@@ -3370,6 +3370,9 @@
       // controla QUAL linha mostra "Você recebe" — nunca decide o valor em
       // si, que continua vindo inteiro de simulacaoMargem.resultado.
       promoLinhaSelecionada: null,
+      // Adicionar imagem (seção Fotos): arquivo escolhido, preview local e
+      // estado do envio — ver bloco "Fotos: adicionar imagem".
+      imagem: imagemEstadoVazio(),
     };
     chipUsadaAtual = null;
 
@@ -3458,6 +3461,7 @@
     if (!forcar && camposSujos().length) { pedirConfirmacaoSaida(); return; }
 
     detalheToken++; // invalida qualquer resposta em voo da abertura que morreu
+    liberarPreviewImagem();
     var overlay = el("am-det-overlay");
     if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
     document.body.classList.remove("vf-no-scroll");
@@ -3505,7 +3509,7 @@
     var html =
       headHtml(a) +
       top2Html(a, pics, attrs) +
-      fotosHtml(pics) +
+      fotosHtml(pics, a) +
       tituloEModeloHtml(a) +
       descricaoHtml() +
       fichaHtml(attrs) +
@@ -3517,6 +3521,7 @@
     var scroll = el("am-det-scroll");
     scroll.innerHTML = html;
     bindCamposEditaveis();
+    bindFotos();
     aplicarEstadosEdicao(); // já redesenha a barra de alterações
     bindMargemComposicao();
     bindMargemEditavel(el("am-det-margem-body"));
@@ -3723,24 +3728,303 @@
   }
 
   // ----- Fotos ---------------------------------------------------------------
-  function fotosHtml(pics) {
+  function fotosHtml(pics, a) {
     var alerta = pics.length < 3
       ? '<span class="am-det-alert">' + icAlerta(12) + "Recomendado ter pelo menos 3 fotos</span>"
       : "";
-    var grade = pics.length
-      ? '<div class="am-det-photos">' + pics.map(function (u, i) {
-          return '<div class="am-det-photo"><img src="' + escapeHtml(u) + '" alt="Foto ' + (i + 1) +
-            ' do anúncio" loading="lazy" /></div>';
-        }).join("") + "</div>"
-      : '<div class="am-det-photos"><div class="am-det-photo am-det-photo--vazia">' + icImagem(20) +
-        "</div></div><p class=\"am-det-vazio\">Nenhuma imagem foi retornada para este anúncio.</p>";
+    var bloqueio = imagemBloqueio(a);
+    var ocupado = DET.imagem.estado === "enviando" || DET.imagem.estado === "processando";
+    var adicionar =
+      '<button type="button" class="am-det-photo am-det-photo--add" id="am-det-img-add" data-acao="img-escolher"' +
+        (bloqueio || ocupado ? " disabled" : "") +
+        (bloqueio ? ' title="' + escapeAttr(bloqueio) + '"' : "") + ">" +
+        '<span class="am-det-photo__add-plus" aria-hidden="true">+</span>' +
+        '<span class="am-det-photo__add-label">Adicionar imagem</span>' +
+      "</button>";
+    var grade = '<div class="am-det-photos">' + pics.map(function (u, i) {
+        return '<div class="am-det-photo"><img src="' + escapeHtml(u) + '" alt="Foto ' + (i + 1) +
+          ' do anúncio" loading="lazy" /></div>';
+      }).join("") + adicionar + "</div>" +
+      (pics.length ? "" : '<p class="am-det-vazio">Nenhuma imagem foi retornada para este anúncio.</p>');
 
     return '<div class="am-det-section">' +
       '<div class="am-det-section__head">' +
         '<h3 class="am-det-section__title">Fotos <span class="am-det-section__meta">(' + pics.length + ")</span></h3>" +
         alerta +
       "</div>" + grade +
+      (bloqueio ? '<p class="am-det-img-bloqueio" id="am-det-img-bloqueio">' + escapeHtml(bloqueio) + "</p>" : "") +
+      '<input type="file" id="am-det-img-input" class="am-hidden" accept="' + IMAGEM_ACCEPT + '" />' +
+      '<div id="am-det-img-envio">' + imagemEnvioHtml() + "</div>" +
     "</div>";
+  }
+
+  // ----- Fotos: adicionar imagem ---------------------------------------------
+  // POST /anuncios-meli/:itemId/imagens (multipart) — o backend normaliza para
+  // JPG, sobe ao CDN do ML e vincula ao anúncio (meliImagensService). Nesta
+  // versão só ADICIONA: remover, trocar capa e reordenar ficam para depois.
+  //
+  // Bloqueios espelham meliImagensService.bloqueioDoAnuncio (o backend checa
+  // de novo, inclusive ao vivo no ML — aqui é só para não oferecer o que vai
+  // ser recusado).
+  var IMAGEM_ACCEPT = "image/jpeg,image/png,image/webp";
+  var IMAGEM_TIPOS = { "image/jpeg": "JPG", "image/jpg": "JPG", "image/png": "PNG", "image/webp": "WebP" };
+  var IMAGEM_MAX_BYTES = 10 * 1024 * 1024;   // mesmo limite do multer no backend
+  var IMAGEM_MIN_LADO_ML = 500;              // mínimo documentado pelo ML (só aviso)
+
+  function imagemBloqueio(a) {
+    if (!a) return null;
+    if (a.catalog_listing === true) {
+      return "Este anúncio é de catálogo: as fotos exibidas são do produto de catálogo do Mercado Livre e não podem ser alteradas por aqui.";
+    }
+    if (Number(a.variations_count) > 0) {
+      return "Este anúncio tem variações. Adicionar imagens em anúncios com variações ainda não está disponível no VenForce — use o Mercado Livre.";
+    }
+    return null;
+  }
+
+  function imagemEstadoVazio() {
+    return { estado: null, arquivo: null, previewUrl: null, nome: "", tipo: "", bytes: 0,
+             width: null, height: null, progresso: null, erroLocal: null, erro: null, sucesso: null };
+  }
+
+  function fmtTamanhoArquivo(bytes) {
+    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1).replace(".", ",") + " MB";
+    return Math.max(1, Math.round(bytes / 1024)) + " KB";
+  }
+
+  function liberarPreviewImagem() {
+    if (DET && DET.imagem && DET.imagem.previewUrl) {
+      try { URL.revokeObjectURL(DET.imagem.previewUrl); } catch (_) { /* nada a liberar */ }
+      DET.imagem.previewUrl = null;
+    }
+  }
+
+  function imagemEnvioHtml() {
+    var im = DET.imagem;
+    if (!im.estado) return "";
+
+    if (im.estado === "concluido") {
+      return '<div class="am-det-img-envio is-success" role="status">' +
+        '<p class="am-det-img-envio__status">' + icCheck(13) + " Concluído</p>" +
+        '<p class="am-det-img-envio__msg">' + escapeHtml(im.sucesso || "") + "</p>" +
+        '<div class="am-det-img-envio__acoes">' +
+          '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="img-cancelar">Fechar aviso</button>' +
+        "</div>" +
+      "</div>";
+    }
+
+    var tipo = IMAGEM_TIPOS[im.tipo] || (im.tipo ? im.tipo : "Formato desconhecido");
+    var dims = im.width && im.height ? " · " + im.width + "×" + im.height + " px" : "";
+    var aviso = im.width && im.height && Math.min(im.width, im.height) < IMAGEM_MIN_LADO_ML
+      ? '<p class="am-det-img-envio__aviso">' + icAlerta(12) + " Abaixo de " + IMAGEM_MIN_LADO_ML + "×" +
+        IMAGEM_MIN_LADO_ML + " px, o mínimo documentado pelo Mercado Livre — ele pode recusar a imagem.</p>"
+      : "";
+    var ocupado = im.estado === "enviando" || im.estado === "processando";
+
+    var status = "";
+    if (im.estado === "enviando") {
+      status = '<p class="am-det-img-envio__status" role="status">Enviando…' +
+        (im.progresso != null ? " " + im.progresso + "%" : "") + "</p>";
+    } else if (im.estado === "processando") {
+      status = '<p class="am-det-img-envio__status" role="status">Processando no Mercado Livre…</p>';
+    } else if (im.estado === "erro" && im.erro) {
+      status = '<div class="am-det-img-envio__erro" role="alert">' +
+        '<p class="am-det-img-envio__status">' + escapeHtml(im.erro.titulo) + "</p>" +
+        im.erro.linhas.map(function (l) { return "<p>" + escapeHtml(l) + "</p>"; }).join("") +
+      "</div>";
+    }
+
+    return '<div class="am-det-img-envio' + (im.estado === "erro" ? " is-danger" : "") + '">' +
+      '<div class="am-det-img-envio__preview">' +
+        (im.previewUrl ? '<img src="' + escapeAttr(im.previewUrl) + '" alt="Pré-visualização da imagem selecionada" />' : icImagem(20)) +
+      "</div>" +
+      '<div class="am-det-img-envio__info">' +
+        '<p class="am-det-img-envio__nome">' + escapeHtml(im.nome || "imagem") + "</p>" +
+        '<p class="am-det-img-envio__meta">' + escapeHtml(tipo + " · " + fmtTamanhoArquivo(im.bytes) + dims) + "</p>" +
+        (im.erroLocal ? '<p class="am-det-img-envio__erro-local" role="alert">' + escapeHtml(im.erroLocal) + "</p>" : "") +
+        aviso +
+        status +
+        (ocupado ? "" :
+          '<div class="am-det-img-envio__acoes">' +
+            (im.erroLocal ? "" :
+              '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="img-enviar">' +
+                (im.estado === "erro" ? "Tentar novamente" : "Enviar ao Mercado Livre") + "</button>") +
+            '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="img-cancelar">Cancelar</button>' +
+          "</div>") +
+      "</div>" +
+    "</div>";
+  }
+
+  // Redesenha só o painel e o botão "+" — sem renderDetalhe, para não
+  // recriar a seção de margem/promoções a cada % de progresso.
+  function renderImagemEnvio() {
+    if (!DET) return;
+    var slot = el("am-det-img-envio");
+    if (slot) slot.innerHTML = imagemEnvioHtml();
+    var add = el("am-det-img-add");
+    if (add) {
+      var ocupado = DET.imagem.estado === "enviando" || DET.imagem.estado === "processando";
+      add.disabled = !!(imagemBloqueio(DET.anuncio) || ocupado);
+    }
+  }
+
+  function bindFotos() {
+    var input = el("am-det-img-input");
+    if (!input) return;
+    input.addEventListener("change", function () {
+      var f = input.files && input.files[0];
+      input.value = ""; // escolher o MESMO arquivo de novo precisa disparar change
+      if (f) selecionarImagem(f);
+    });
+  }
+
+  function selecionarImagem(f) {
+    if (!DET || imagemBloqueio(DET.anuncio)) return;
+    liberarPreviewImagem();
+    var im = imagemEstadoVazio();
+    im.estado = "selecionada";
+    im.arquivo = f;
+    im.nome = f.name || "imagem";
+    im.tipo = String(f.type || "").toLowerCase();
+    im.bytes = f.size || 0;
+    // Validação LOCAL (do VenForce, não do ML): as mesmas regras do backend.
+    if (!IMAGEM_TIPOS[im.tipo]) im.erroLocal = "Formato não aceito. Envie uma imagem JPG, PNG ou WebP.";
+    else if (im.bytes > IMAGEM_MAX_BYTES) im.erroLocal = "Arquivo com " + fmtTamanhoArquivo(im.bytes) + " — o limite é 10 MB.";
+    if (!im.erroLocal) {
+      try { im.previewUrl = URL.createObjectURL(f); } catch (_) { im.previewUrl = null; }
+    }
+    DET.imagem = im;
+    renderImagemEnvio();
+
+    if (im.previewUrl) {
+      var meuToken = DET.token;
+      var probe = new Image();
+      probe.onload = function () {
+        if (!DET || DET.token !== meuToken || DET.imagem !== im) return;
+        im.width = probe.naturalWidth;
+        im.height = probe.naturalHeight;
+        renderImagemEnvio();
+      };
+      probe.onerror = function () {
+        if (!DET || DET.token !== meuToken || DET.imagem !== im) return;
+        im.erroLocal = "Não foi possível ler este arquivo como imagem.";
+        renderImagemEnvio();
+      };
+      probe.src = im.previewUrl;
+    }
+  }
+
+  function cancelarImagem() {
+    if (!DET) return;
+    var st = DET.imagem.estado;
+    if (st === "enviando" || st === "processando") return;
+    liberarPreviewImagem();
+    DET.imagem = imagemEstadoVazio();
+    renderImagemEnvio();
+  }
+
+  // Erro exibido como o backend o recebeu. Com `detalhesMl` a recusa é DO
+  // MERCADO LIVRE (mensagem, código e causa originais); sem ele é recusa do
+  // VenForce (arquivo inválido, bloqueio, conexão) — e o título não finge
+  // que foi o ML.
+  function erroImagemDe(status, d) {
+    d = d || {};
+    var det = d.detalhesMl || null;
+    if (!det) {
+      var linhasLocal = [d.motivo || (status === 0 ? "Falha de conexão." : "Não foi possível enviar a imagem.")];
+      if (d.codigo) linhasLocal.push("Código: " + d.codigo);
+      return { titulo: "Não foi possível enviar a imagem", linhas: linhasLocal };
+    }
+    var etapas = {
+      leitura: "Ao consultar o anúncio no Mercado Livre.",
+      upload: "No envio do arquivo ao Mercado Livre.",
+      vinculo: "Ao vincular a imagem ao anúncio — o arquivo chegou ao Mercado Livre" +
+        (d.pictureId ? " (id " + d.pictureId + ")" : "") + ", mas não entrou no anúncio.",
+    };
+    var linhas = [];
+    if (etapas[d.etapa]) linhas.push(etapas[d.etapa]);
+    var original = det.message || det.error || d.motivo;
+    if (original) linhas.push("Mensagem: “" + original + "”");
+    if (d.codigo) linhas.push("Código: " + d.codigo + (det.status ? " (HTTP " + det.status + ")" : ""));
+    else if (det.status) linhas.push("HTTP " + det.status);
+    var causas = (det.causas || []).map(function (c) {
+      return [c.code, c.message].filter(Boolean).join(" — ");
+    }).filter(Boolean);
+    if (!causas.length && det.causa) causas.push(det.causa);
+    if (!causas.length && det.error && det.error !== original) causas.push(det.error);
+    if (causas.length) linhas.push("Causa: " + causas.join("; "));
+    return { titulo: "Erro do Mercado Livre", linhas: linhas };
+  }
+
+  function enviarImagem() {
+    if (!DET || !DET.anuncio) return;
+    var im = DET.imagem;
+    if (!im.arquivo || im.erroLocal || im.estado === "enviando" || im.estado === "processando") return;
+    if (imagemBloqueio(DET.anuncio)) return;
+
+    var meuToken = DET.token;
+    var itemId = DET.anuncio.item_id;
+    var url = API_BASE + "/anuncios-meli/" + encodeURIComponent(itemId) + "/imagens" +
+      "?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+      (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
+
+    var form = new FormData();
+    form.append("imagem", im.arquivo, im.nome || "imagem");
+
+    im.estado = "enviando";
+    im.progresso = 0;
+    im.erro = null;
+    renderImagemEnvio();
+
+    // XHR (e não fetch) só para ter o progresso do upload: "Enviando" enquanto
+    // os bytes sobem, "Processando" quando o backend já tem o arquivo e está
+    // falando com o ML.
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Authorization", "Bearer " + (AM.token || ""));
+    function vivo() { return DET && DET.token === meuToken && DET.imagem === im; }
+    xhr.upload.onprogress = function (e) {
+      if (!vivo() || im.estado !== "enviando" || !e.lengthComputable) return;
+      im.progresso = Math.min(100, Math.round((e.loaded / e.total) * 100));
+      renderImagemEnvio();
+    };
+    xhr.upload.onload = function () {
+      if (!vivo() || im.estado !== "enviando") return;
+      im.estado = "processando";
+      renderImagemEnvio();
+    };
+    xhr.onload = function () {
+      if (!vivo()) return;
+      var d = {};
+      try { d = JSON.parse(xhr.responseText || "{}"); } catch (_) { d = {}; }
+      if (xhr.status >= 200 && xhr.status < 300 && d.ok) {
+        liberarPreviewImagem();
+        var fim = imagemEstadoVazio();
+        fim.estado = "concluido";
+        fim.sucesso = d.confirmacaoPendente
+          ? "A imagem foi adicionada no Mercado Livre. A lista de fotos daqui atualiza na próxima sincronização."
+          : "Imagem adicionada ao anúncio no Mercado Livre.";
+        DET.imagem = fim;
+        if (d.anuncio) {
+          DET.anuncio = d.anuncio;
+          AM.detalheAtual = { anuncio: d.anuncio, descricao: DET.descricao };
+        }
+        renderDetalhe();
+        toast("Imagem adicionada ao anúncio do Mercado Livre.", "is-success");
+        carregarAnuncios(); // contagem/capa de fotos da listagem atrás
+        return;
+      }
+      im.estado = "erro";
+      im.erro = erroImagemDe(xhr.status, d);
+      renderImagemEnvio();
+    };
+    xhr.onerror = function () {
+      if (!vivo()) return;
+      im.estado = "erro";
+      im.erro = erroImagemDe(0, {});
+      renderImagemEnvio();
+    };
+    xhr.send(form);
   }
 
   // ----- Título e Modelo: comparação com a IA ------------------------------
@@ -5507,6 +5791,9 @@
     if (acao === "descartar-e-fechar") { fecharDetalhe(true); return; }
     if (acao === "descartar") { descartarTudo(); return; }
     if (acao === "salvar") { salvarAlteracoes(); return; }
+    if (acao === "img-escolher") { var inp = el("am-det-img-input"); if (inp && !alvo.disabled) inp.click(); return; }
+    if (acao === "img-enviar") { enviarImagem(); return; }
+    if (acao === "img-cancelar") { cancelarImagem(); return; }
     if (acao === "reverter") { reverterCampo(alvo.getAttribute("data-campo")); return; }
     if (acao === "focar") {
       var campo = el("am-det-" + alvo.getAttribute("data-campo"));

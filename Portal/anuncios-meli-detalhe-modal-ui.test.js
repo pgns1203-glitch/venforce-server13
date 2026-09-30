@@ -146,6 +146,18 @@ const corpos = [];                   // { url, body } de toda escrita
 // quando setado, substitui a resposta padrão inteira; `chamadasPerformance`
 // registra cada chamada com os flags exatos que vieram na query string.
 let performanceHandler = null;
+// POST /anuncios-meli/:itemId/imagens — null = sucesso (anúncio volta com 3
+// fotos); { status, corpo } = resposta forçada (erro do ML, bloqueio...).
+let imagemResultado = null;
+let imagemAtrasoMs = 0;              // segura a resposta para o teste ver "Processando"
+// true = o POST /imagens é desviado para o servidor LOCAL do teste (rede de
+// verdade) em vez de respondido pelo Fetch do CDP. Motivo: com o pedido
+// pausado no CDP o corpo nunca é transmitido, então xhr.upload não dispara
+// progress/load — e é esse evento que leva a tela de "Enviando" a
+// "Processando". Só com rede real dá para ver a transição.
+let imagemViaRede = false;
+let portaLocal = 0;
+const imagemChamadas = [];           // { url, metodo, contentType } de todo POST /imagens
 const chamadasPerformance = [];
 // MLB-A1 (item padrão desta suíte, conta 42): margem PROJETADA saudável,
 // com ladder completo — Margem = Margem Projetada, somente, nesta tela (o
@@ -243,6 +255,7 @@ const SEMENTE = `
 function startServer() {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, "http://localhost");
+    if (u.pathname === "/__imagens") { servirImagemLocal(req, res, u); return; }
     const target = path.resolve(PORTAL_DIR, u.pathname.replace(/^\/+/, ""));
     if (!target.startsWith(path.resolve(PORTAL_DIR) + path.sep)) { res.writeHead(403).end("forbidden"); return; }
     fs.readFile(target, (err, contents) => {
@@ -256,6 +269,31 @@ function startServer() {
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// Destino do POST /imagens quando imagemViaRede=true (ver acima). Lê o corpo
+// multipart inteiro — é isso que faz o navegador concluir o upload — e só
+// então responde, depois de imagemAtrasoMs.
+function servirImagemLocal(req, res, u) {
+  const cors = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": "authorization,content-type",
+    "access-control-allow-methods": "POST,OPTIONS",
+  };
+  if (req.method === "OPTIONS") { res.writeHead(204, cors).end(); return; }
+  let bytes = 0;
+  req.on("data", (c) => { bytes += c.length; });
+  req.on("end", async () => {
+    imagemBytesRecebidos = bytes;
+    if (imagemAtrasoMs) await sleep(imagemAtrasoMs);
+    const base = anuncio(u.searchParams.get("clienteContaId") || "42");
+    base.pictures_json = base.pictures_json.concat(["https://img.example/nova.jpg"]);
+    base.pictures_count = base.pictures_json.length;
+    res.writeHead(200, Object.assign({ "content-type": "application/json" }, cors));
+    res.end(JSON.stringify({ ok: true, pictureId: "999-MLB", anuncio: base, confirmacaoPendente: false,
+      imagem: { width: 800, height: 800, bytes, abaixoDoMinimoMl: false } }));
+  });
+}
+let imagemBytesRecebidos = 0;
 async function waitChrome(port) {
   for (let i = 0; i < 200; i++) {
     try { const r = await fetch(`http://127.0.0.1:${port}/json/version`); if (r.ok) return; } catch (_) { /* aguardando */ }
@@ -577,6 +615,33 @@ function wireInterception(cdp) {
       return;
     }
 
+    // POST /anuncios-meli/:itemId/imagens — adicionar imagem (multipart).
+    // O corpo binário não interessa aqui (o backend tem teste próprio:
+    // server/tests/meliAnunciosImagens.test.js); só a rota, o método, a query
+    // e o tipo multipart.
+    const mImagem = caminho.match(/^\/anuncios-meli\/([^/?]+)\/imagens(\?|$)/);
+    if (mImagem) {
+      const hs = params.request.headers || {};
+      imagemChamadas.push({
+        url: caminho, metodo: params.request.method,
+        contentType: hs["Content-Type"] || hs["content-type"] || "",
+      });
+      if (imagemViaRede) {
+        const qs = caminho.slice(caminho.indexOf("/imagens") + "/imagens".length);
+        await respond("Fetch.continueRequest", { requestId: params.requestId, url: `http://127.0.0.1:${portaLocal}/__imagens${qs}` });
+        return;
+      }
+      if (imagemAtrasoMs) await sleep(imagemAtrasoMs);
+      if (imagemResultado) { await corpo(imagemResultado.corpo, imagemResultado.status); return; }
+      const conta = new URL(url).searchParams.get("clienteContaId") || "42";
+      const base = anuncio(conta);
+      base.pictures_json = base.pictures_json.concat(["https://img.example/nova.jpg"]);
+      base.pictures_count = base.pictures_json.length;
+      await corpo({ ok: true, pictureId: "999-MLB", anuncio: base, confirmacaoPendente: false,
+        imagem: { width: 600, height: 400, bytes: 1234, abaixoDoMinimoMl: true } });
+      return;
+    }
+
     if (/\/anuncios-meli\/[^/?]+\/revisao/.test(caminho)) { await corpo({ ok: true, revisado: !!(body && body.revisado) }); return; }
 
     if (/\/anuncios-meli\/[^/?]+\/otimizacoes/.test(caminho)) {
@@ -686,6 +751,7 @@ function wireInterception(cdp) {
 async function run() {
   const server = await startServer();
   const porta = server.address().port;
+  portaLocal = porta;
   const debugPort = 22000 + Math.floor(Math.random() * 900);
   const chrome = childProcess.spawn("google-chrome", [
     "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
@@ -970,6 +1036,178 @@ async function run() {
         semModeloComVariacoes = false;
       }
       // Volta ao estado que o 8 espera (anúncio tradicional aberto, igual ao fim do 7c).
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+    });
+
+    /* ── 7e a 7h: adicionar imagem (seção Fotos) ─────────────────────────── */
+
+    // Coloca um arquivo no <input type=file> como o seletor do SO faria. Com
+    // `png`, desenha uma imagem real (o preview mede as dimensões de verdade).
+    async function escolherArquivo({ png, largura, altura, nome, tipo, texto }) {
+      await cdp.evaluate(`(async function(){
+        var f;
+        if (${JSON.stringify(!!png)}) {
+          var c = document.createElement('canvas'); c.width = ${largura || 0}; c.height = ${altura || 0};
+          var g = c.getContext('2d'); g.fillStyle = '#c03'; g.fillRect(0, 0, c.width, c.height);
+          var blob = await new Promise(function (r) { c.toBlob(r, 'image/png'); });
+          f = new File([blob], ${JSON.stringify(nome || "foto.png")}, { type: 'image/png' });
+        } else {
+          f = new File([${JSON.stringify(texto || "")}], ${JSON.stringify(nome || "x.txt")}, { type: ${JSON.stringify(tipo || "text/plain")} });
+        }
+        var dt = new DataTransfer(); dt.items.add(f);
+        var inp = document.getElementById('am-det-img-input');
+        inp.files = dt.files;
+        inp.dispatchEvent(new Event('change'));
+        return true;
+      })()`);
+    }
+
+    function infoFotos() {
+      return cdp.evaluate(`(function(){
+        var add = document.getElementById('am-det-img-add');
+        var bloq = document.getElementById('am-det-img-bloqueio');
+        var envio = document.getElementById('am-det-img-envio');
+        return {
+          existe: !!add, disabled: add ? add.disabled : null, rotulo: add ? add.innerText.replace(/\\s+/g, ' ').trim() : '',
+          bloqueio: bloq ? bloq.innerText : '',
+          fotos: document.querySelectorAll('.am-det-photos .am-det-photo img').length,
+          envio: envio ? envio.innerText : '',
+          previewSrc: (document.querySelector('.am-det-img-envio__preview img') || {}).src || '',
+          temEnviar: !!document.querySelector('[data-acao="img-enviar"]'),
+        }; })()`);
+    }
+
+    const textoEnvio = "((document.getElementById('am-det-img-envio') || {}).innerText || '')";
+
+    await check("7e — '+ Adicionar imagem' aparece no anúncio tradicional; catálogo e variações ficam bloqueados com o motivo", async () => {
+      const normal = await infoFotos();
+      assert.ok(normal.existe, "o botão de adicionar imagem não apareceu");
+      assert.ok(/\+\s*Adicionar imagem/.test(normal.rotulo), `rótulo inesperado: ${normal.rotulo}`);
+      assert.strictEqual(normal.disabled, false, "no anúncio tradicional sem variações o botão fica habilitado");
+      assert.strictEqual(normal.bloqueio, "", "sem bloqueio não há aviso");
+
+      await abrirComModo("catalog_listing");
+      await abrirPrimeiroAnuncio(cdp);
+      const cat = await infoFotos();
+      assert.strictEqual(cat.disabled, true, "catálogo: o botão existe mas fica desabilitado");
+      assert.ok(/catálogo/i.test(cat.bloqueio) && /Mercado Livre/.test(cat.bloqueio), `catálogo precisa dizer o motivo: ${cat.bloqueio}`);
+
+      // O detalhe lê variations_count de variationsCountAtivo (ver mDetalhe).
+      variationsCountAtivo = 3;
+      try {
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        const vari = await infoFotos();
+        assert.strictEqual(vari.disabled, true, "com variações o botão fica desabilitado nesta versão");
+        assert.ok(/variações/i.test(vari.bloqueio), `variações precisa dizer o motivo: ${vari.bloqueio}`);
+      } finally {
+        variationsCountAtivo = 0;
+      }
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+    });
+
+    await check("7f — escolher arquivo mostra preview local, formato, tamanho e dimensões; formato inválido é recusado sem enviar", async () => {
+      const antes = imagemChamadas.length;
+      await escolherArquivo({ png: true, largura: 600, altura: 400, nome: "foto-nova.png" });
+      await waitFor(cdp, `/600×400 px/.test(${textoEnvio})`, "as dimensões da imagem não apareceram");
+      const f = await infoFotos();
+      assert.ok(/^blob:/.test(f.previewSrc), `o preview precisa ser local (blob:), não um upload: ${f.previewSrc}`);
+      assert.ok(/foto-nova\.png/.test(f.envio), "o nome do arquivo aparece");
+      assert.ok(/PNG · \d+ KB · 600×400 px/.test(f.envio), `formato · tamanho · dimensões: ${f.envio}`);
+      assert.ok(/Abaixo de 500×500 px/.test(f.envio), "400 px de altura fica abaixo do mínimo documentado pelo ML — avisa");
+      assert.ok(f.temEnviar, "com arquivo válido o botão de enviar aparece");
+      assert.strictEqual(imagemChamadas.length, antes, "escolher o arquivo NÃO pode enviar nada sozinho");
+
+      await escolherArquivo({ nome: "planilha.txt", tipo: "text/plain", texto: "não é imagem" });
+      await waitFor(cdp, `/Formato não aceito/.test(${textoEnvio})`, "formato inválido não foi recusado");
+      const inval = await infoFotos();
+      assert.ok(!inval.temEnviar, "arquivo inválido não pode ser enviado");
+      assert.ok(!/Erro do Mercado Livre/.test(inval.envio), "recusa local não pode se passar por erro do ML");
+
+      await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
+      await waitFor(cdp, "!document.querySelector('.am-det-img-envio')", "cancelar não limpou a seleção");
+      assert.strictEqual(imagemChamadas.length, antes);
+    });
+
+    await check("7g — enviar: POST multipart com cliente/conta na query, estados até 'Concluído' e a grade ganha a foto", async () => {
+      const antes = imagemChamadas.length;
+      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "capa.png" });
+      await waitFor(cdp, "document.querySelector('[data-acao=\"img-enviar\"]')", "o botão de enviar não apareceu");
+      imagemAtrasoMs = 1500;
+      imagemViaRede = true;
+      try {
+        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
+        // O arquivo já subiu e o backend ainda fala com o ML: "Processando",
+        // sem botões de ação e sem permitir um segundo envio.
+        await waitFor(cdp, `/Processando no Mercado Livre/.test(${textoEnvio})`, "o estado 'Processando' não apareceu");
+        const durante = await infoFotos();
+        assert.ok(!durante.temEnviar, "durante o envio não há botão de enviar de novo");
+        assert.strictEqual(durante.disabled, true, "durante o envio o '+ Adicionar imagem' fica desabilitado");
+        await waitFor(cdp, `/Concluído/.test(${textoEnvio})`, "o envio não chegou a 'Concluído'");
+        assert.ok(imagemBytesRecebidos > 1000, `o arquivo inteiro precisa chegar no corpo (${imagemBytesRecebidos} bytes)`);
+      } finally {
+        imagemAtrasoMs = 0;
+        imagemViaRede = false;
+      }
+      const chamada = imagemChamadas[antes];
+      assert.ok(chamada, "nenhum POST /imagens saiu");
+      assert.strictEqual(chamada.metodo, "POST");
+      assert.ok(/^\/anuncios-meli\/MLB-A1\/imagens\?/.test(chamada.url), chamada.url);
+      assert.ok(/clienteSlug=n97/.test(chamada.url) && /clienteContaId=42/.test(chamada.url), `cliente/conta vão na query: ${chamada.url}`);
+      assert.ok(/^multipart\/form-data; boundary=/.test(chamada.contentType), `precisa ser multipart: ${chamada.contentType}`);
+      const f = await infoFotos();
+      assert.strictEqual(f.fotos, 3, "a grade mostra a lista que o backend devolveu (2 + 1)");
+      assert.ok(/Imagem adicionada ao anúncio no Mercado Livre/.test(f.envio), f.envio);
+      const titulo = await cdp.evaluate("document.querySelector('.am-det-photos').closest('.am-det-section').querySelector('.am-det-section__title').innerText");
+      assert.ok(/\(3\)/.test(titulo), `a contagem acompanha: ${titulo}`);
+      await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
+      await waitFor(cdp, "!document.querySelector('.am-det-img-envio')", "'Fechar aviso' não limpou o painel");
+    });
+
+    await check("7h — erro do Mercado Livre aparece com mensagem, código e causa originais; recusa local não se passa por ML", async () => {
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+      imagemResultado = {
+        status: 422,
+        corpo: {
+          ok: false, codigo: "509", etapa: "upload",
+          motivo: "Picture id 650349-MLA10B is below the minimum allowed size.",
+          detalhesMl: {
+            status: 400, message: "Picture is below the minimum allowed size.", error: "validation_error", causa: null,
+            causas: [{ code: "509", message: "Picture id 650349-MLA10B is below the minimum allowed size.", type: "error", references: [] }],
+          },
+        },
+      };
+      try {
+        await escolherArquivo({ png: true, largura: 300, altura: 300, nome: "pequena.png" });
+        await waitFor(cdp, "document.querySelector('[data-acao=\"img-enviar\"]')", "o botão de enviar não apareceu");
+        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
+        await waitFor(cdp, `/Erro do Mercado Livre/.test(${textoEnvio})`, "o erro do ML não apareceu");
+        const f = await infoFotos();
+        assert.ok(/No envio do arquivo ao Mercado Livre/.test(f.envio), `diz em que etapa parou: ${f.envio}`);
+        assert.ok(/Mensagem: “Picture is below the minimum allowed size\.”/.test(f.envio), `mensagem original: ${f.envio}`);
+        assert.ok(/Código: 509 \(HTTP 400\)/.test(f.envio), `código do ML: ${f.envio}`);
+        assert.ok(/Causa: 509 — Picture id 650349-MLA10B is below the minimum allowed size\./.test(f.envio), `causa do ML: ${f.envio}`);
+        assert.strictEqual(f.fotos, 2, "erro não pode acrescentar foto na grade");
+        assert.ok(/Tentar novamente/.test(f.envio), "depois do erro dá para tentar de novo");
+        assert.ok(/^blob:/.test(f.previewSrc), "o preview do arquivo escolhido continua lá");
+
+        // Bloqueio do backend (sem detalhesMl) — não é "Erro do Mercado Livre".
+        imagemResultado = {
+          status: 409,
+          corpo: { ok: false, codigo: "IMAGENS_BLOQUEADAS_CATALOGO", etapa: "bloqueio",
+            motivo: "Este anúncio é de catálogo: as fotos exibidas são do produto de catálogo do Mercado Livre e não podem ser alteradas por aqui." },
+        };
+        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
+        await waitFor(cdp, `/Não foi possível enviar a imagem/.test(${textoEnvio})`, "a recusa do backend não apareceu");
+        const b = await infoFotos();
+        assert.ok(!/Erro do Mercado Livre/.test(b.envio), `recusa do VenForce não pode ser atribuída ao ML: ${b.envio}`);
+        assert.ok(/IMAGENS_BLOQUEADAS_CATALOGO/.test(b.envio), "o código da recusa aparece");
+      } finally {
+        imagemResultado = null;
+      }
       await abrirComModo("nenhum");
       await abrirPrimeiroAnuncio(cdp);
     });

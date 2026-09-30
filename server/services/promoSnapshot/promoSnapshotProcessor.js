@@ -220,6 +220,8 @@ async function processPromoSnapshotRun(run, deps = {}) {
   // cursor falha o run ANTES de ler promoções (o snapshot bom anterior fica
   // intacto — falha não mexe no ponteiro), com motivo seguro (sem scroll_id
   // nem token na mensagem):
+  //   - página não vazia sem scroll_id e SEM paging.total nela (malformada:
+  //     não prova que o catálogo acabou);
   //   - página não vazia sem scroll_id com paging.total > anúncios lidos;
   //   - scroll_id repetido (mesma regra de services/full/fullPagination);
   //   - página repetida / cursor sem progresso (página só com ids já vistos);
@@ -294,8 +296,18 @@ async function processPromoSnapshotRun(run, deps = {}) {
     assinaturaAnterior = assinatura;
     const proximo = String(data.scroll_id || "").trim();
     if (!proximo) {
-      if (totalAnunciado !== null && ids.length < totalAnunciado) {
-        throw falhaCatalogo("SCROLL_AUSENTE", `o ML não mandou cursor com ${ids.length} de ${totalAnunciado} anúncio(s) lidos`);
+      // Página NÃO vazia sem cursor só encerra o scan se ELA MESMA trouxer
+      // paging.total e ele confirmar que tudo foi lido. Sem paging nesta
+      // página não há como distinguir "fim" de "resposta truncada" — nunca
+      // é conclusão segura (o fim normal do scan é a página vazia).
+      if (pagingTotal === null) {
+        throw falhaCatalogo(
+          "SEM_METADADOS_CONTINUIDADE",
+          `a página ${pagina} trouxe ${idsPagina.length} anúncio(s) sem scroll_id e sem paging.total (${ids.length} lidos até aqui)`
+        );
+      }
+      if (ids.length < pagingTotal) {
+        throw falhaCatalogo("SCROLL_AUSENTE", `o ML não mandou cursor com ${ids.length} de ${pagingTotal} anúncio(s) lidos`);
       }
       break;
     }

@@ -1,0 +1,351 @@
+// server/services/promoSnapshot/promoSnapshotProcessor.js
+// Promo Snapshot — processor de UM run (chamado pelo worker depois do claim).
+//
+//   run (conta + seller explícitos, nunca auto-resolvidos)
+//     → valida conta (do cliente, MELI, ativa, seller igual ao do run) e grant
+//       utilizável DESTA conta
+//     → lista o catálogo ativo por scan (token da conta, retry por página)
+//     → retomada: reaproveita os lotes concluídos de um run interrompido
+//     → lotes sequenciais: GET /seller-promotions/items/{MLB} por item
+//       (concorrência limitada, retry por requisição, 429/Retry-After pausa o
+//       processo inteiro), sale_price só para itens com promoção iniciada,
+//       vigência por campanha com cache no run
+//     → grava lote (linhas + progresso + heartbeat) só se o run ainda estiver
+//       `running` (fencing)
+//   → devolve o resultado; quem decide completed/partial e promove o snapshot
+//     é o run service (markRunCompleted).
+//
+// SOMENTE LEITURA: todo acesso ao ML passa por promoSnapshotMlLeitor (GET,
+// lista fechada de caminhos). Nenhuma escrita comercial é possível daqui.
+
+const pool = require("../../config/database");
+const repoPadrao = require("./promoSnapshotRepository");
+const { resolvePromoSnapshotConfig } = require("./promoSnapshotConfig");
+const { criarLeitorMl, PromoSnapshotLeituraError } = require("./promoSnapshotMlLeitor");
+const normalize = require("./promoSnapshotNormalize");
+const { executarComRetry, esperar, MarginSnapshotStopError } = require("../motorMargem/marginSnapshotRetry");
+const { createRateLimiter } = require("../motorMargem/marginSnapshotRateLimiter");
+const { redigirSegredos } = require("../motorMargem/marginSnapshotSanitize");
+const { logEvento } = require("../motorMargem/marginSnapshotLog");
+const { pLimit, chunk } = require("../automacoes/promocoesRetornoService");
+
+const SCAN_LIMIT = 100;
+
+function erroTipado(code, message, extra = {}) {
+  const err = new Error(message);
+  err.code = code;
+  Object.assign(err, extra);
+  return err;
+}
+
+function mensagemCurta(err) {
+  return redigirSegredos(err?.message || "Erro desconhecido.", 500);
+}
+
+// Um limiter por processo para o Promo Snapshot (espaçamento entre
+// requisições + pausa global depois de 429).
+let limiterDoProcesso = null;
+function obterLimiterDoProcesso(config) {
+  if (!limiterDoProcesso) limiterDoProcesso = createRateLimiter({ minIntervalMs: config.requestIntervalMs });
+  return limiterDoProcesso;
+}
+
+// Conta do run: pertence ao cliente, é MELI, está ativa e o seller vinculado
+// é o MESMO do run (conta reconectada a outro ML nunca herda o run). Grant
+// utilizável resolvido pelo seller da conta — nunca o principal do cliente.
+async function validarContaPadrao(run, { db }) {
+  const { obterConta } = require("../clienteContas/clienteContaService");
+  const { createMlTokenService } = require("../mlTokenService");
+  let conta;
+  try {
+    conta = await obterConta(run.clienteContaId, db);
+  } catch (err) {
+    throw erroTipado("PROMO_SNAPSHOT_CONTA_NAO_ENCONTRADA", "Conta do run não encontrada.");
+  }
+  if (Number(conta.cliente_id) !== Number(run.clienteId)) {
+    throw erroTipado("PROMO_SNAPSHOT_CONTA_DE_OUTRO_CLIENTE", "A conta do run não pertence ao cliente do run.");
+  }
+  if (String(conta.marketplace || "").toLowerCase() !== "meli") {
+    throw erroTipado("PROMO_SNAPSHOT_MARKETPLACE_INCOMPATIVEL", "A conta do run não é Mercado Livre.");
+  }
+  if (conta.ativo === false) throw erroTipado("PROMO_SNAPSHOT_CONTA_INATIVA", "A conta foi desativada.");
+  if (!conta.external_account_id || String(conta.external_account_id) !== run.sellerId) {
+    throw erroTipado("PROMO_SNAPSHOT_SELLER_DIVERGENTE", "O seller vinculado à conta mudou desde que o run foi criado.");
+  }
+  try {
+    await createMlTokenService({ db }).resolveMlGrant({ clienteId: run.clienteId, mlUserId: run.sellerId, requireUsable: true });
+  } catch (err) {
+    throw erroTipado(err?.code || "PROMO_SNAPSHOT_GRANT_INDISPONIVEL", mensagemCurta(err));
+  }
+  return { conta };
+}
+
+async function processPromoSnapshotRun(run, deps = {}) {
+  if (!run || !run.id) throw new Error("processPromoSnapshotRun: run é obrigatório.");
+  if (!run.clienteContaId || !run.sellerId) {
+    throw new Error("processPromoSnapshotRun: run.clienteContaId e run.sellerId são obrigatórios (nunca auto-resolver).");
+  }
+  if (String(run.marketplace || "").toLowerCase() !== "meli") {
+    throw erroTipado("PROMO_SNAPSHOT_MARKETPLACE_NAO_SUPORTADO", `Marketplace "${run.marketplace}" não suportado.`);
+  }
+
+  const db = deps.db || pool;
+  const logger = deps.logger || console;
+  const signal = deps.signal || null;
+  const config = deps.config || resolvePromoSnapshotConfig(deps.env);
+  const sleep = deps.sleep || esperar;
+  const clock = deps.clock || (() => Date.now());
+  const repo = deps.repo || repoPadrao;
+  const limiter = deps.rateLimiter || obterLimiterDoProcesso(config);
+  const validarConta = deps.validarConta || validarContaPadrao;
+  const agoraIso = deps.agoraIso || (() => new Date().toISOString());
+
+  const inicio = clock();
+  const stats = { retries: 0, rateLimits: 0, lotes: 0, lotesFalhos: 0, itensReaproveitados: 0, vigenciasConsultadas: 0, salePriceConsultados: 0 };
+
+  function evento(nivel, nome, campos = {}) {
+    logEvento(logger, nivel, nome, {
+      run_id: run.id, cliente_id: run.clienteId, cliente_conta_id: run.clienteContaId, seller_id: run.sellerId, ...campos,
+    });
+  }
+  function verificarParada() {
+    if (signal?.aborted) throw new MarginSnapshotStopError();
+  }
+  function fencing() {
+    return erroTipado(
+      "PROMO_SNAPSHOT_RUN_NAO_ESTA_MAIS_RUNNING",
+      "O run deixou de estar em execução (provável reconciliação por heartbeat); processamento interrompido."
+    );
+  }
+
+  // Contadores do lote corrente (zerados a cada lote gravado).
+  let contadoresLote = { retries: 0, rateLimits: 0 };
+  function aoRetentar(etapa, extra = {}) {
+    return ({ tentativa, delayMs, classificacao }) => {
+      stats.retries += 1;
+      contadoresLote.retries += 1;
+      if (classificacao.rateLimited) {
+        stats.rateLimits += 1;
+        contadoresLote.rateLimits += 1;
+        // 429 é por aplicação: todas as leituras do processo esperam.
+        limiter.penalizar(delayMs);
+        evento("warn", "promo_snapshot_rate_limited", {
+          etapa, ...extra, tentativa: tentativa + 1, delay_ms: delayMs, status: classificacao.status ?? null,
+        });
+      }
+    };
+  }
+
+  // ── 1. Conta + grant ────────────────────────────────────────────────────
+  await validarConta(run, { db, deps });
+  verificarParada();
+
+  const leitor = deps.leitor || criarLeitorMl({
+    clienteId: run.clienteId, sellerId: run.sellerId, timeoutMs: config.requestTimeoutMs, mlFetch: deps.mlFetch,
+  });
+
+  async function comVez(fn) {
+    await limiter.aguardarVez(signal);
+    verificarParada();
+    return fn();
+  }
+  function comRetry(fn, etapa, extra) {
+    return executarComRetry(() => comVez(fn), { config, sleep, signal, onRetry: aoRetentar(etapa, extra) });
+  }
+
+  // ── 2. Catálogo ativo (scan) ────────────────────────────────────────────
+  const ids = [];
+  const vistos = new Set();
+  let scrollId = null;
+  let pagina = 0;
+  for (;;) {
+    verificarParada();
+    const params = new URLSearchParams({ search_type: "scan", limit: String(SCAN_LIMIT), status: "active" });
+    if (scrollId) params.set("scroll_id", scrollId);
+    const caminho = `/users/${encodeURIComponent(run.sellerId)}/items/search?${params.toString()}`;
+    // Página ok mas sem `results` é resposta parcial/malformada: retenta e,
+    // se persistir, o run falha — nunca vira "fim do catálogo" (isso
+    // apagaria promoções dos itens não listados).
+    const tentativa = await comRetry(async () => {
+      const resp = await leitor.getOuErro(caminho);
+      if (!resp.data || !Array.isArray(resp.data.results)) {
+        throw new PromoSnapshotLeituraError("Página do catálogo sem `results` (resposta parcial).", {
+          code: "PROMO_SNAPSHOT_RESPOSTA_PARCIAL", statusCode: 502,
+        });
+      }
+      return resp;
+    }, "catalogo", { pagina });
+    if (!tentativa.ok) {
+      throw erroTipado(
+        "PROMO_SNAPSHOT_CATALOGO_FALHOU",
+        `Falha ao listar o catálogo (página ${pagina + 1}, ${tentativa.attempts} tentativa(s)): ${mensagemCurta(tentativa.error)}`
+      );
+    }
+    const data = tentativa.value.data;
+    const resultados = data.results;
+    for (const id of resultados) {
+      const s = String(id || "").trim();
+      if (s && !vistos.has(s)) { vistos.add(s); ids.push(s); }
+    }
+    if (ids.length > config.maxCatalogItems) {
+      throw erroTipado(
+        "PROMO_SNAPSHOT_CATALOGO_EXCEDE_LIMITE",
+        `O catálogo passou de ${config.maxCatalogItems} anúncios ativos (PROMO_SNAPSHOT_MAX_CATALOG_ITEMS); nada foi truncado.`
+      );
+    }
+    pagina += 1;
+    if (!(await repo.touchHeartbeat(run.id, db))) throw fencing();
+    evento("log", "promo_snapshot_page_processed", { etapa: "catalogo", pagina, processed_count: ids.length });
+    if (!resultados.length || !data.scroll_id) break;
+    scrollId = data.scroll_id;
+  }
+  const total = ids.length;
+  if (!(await repo.registrarTotal({ runId: run.id, itensTotal: total }, db))) throw fencing();
+
+  // ── 3. Retomada ─────────────────────────────────────────────────────────
+  let feitos = new Set();
+  let snapshotAt = null;
+  if (run.resumedFromRunId) {
+    const copia = await repo.copiarLotesRetomados({ run, fromRunId: run.resumedFromRunId, catalogItemIds: ids }, db);
+    if (copia === null) throw fencing();
+    if (copia.itens.length) {
+      feitos = new Set(copia.itens);
+      stats.itensReaproveitados = copia.itens.length;
+      // O snapshot é tão velho quanto a leitura mais antiga que o compõe.
+      snapshotAt = copia.startedAt ? new Date(copia.startedAt).toISOString() : null;
+      evento("log", "promo_snapshot_run_resumed", {
+        retomado_de: run.resumedFromRunId, processed_count: copia.itens.length, promocoes: copia.promocoes,
+      });
+    }
+  }
+
+  // ── 4. Lotes ────────────────────────────────────────────────────────────
+  const pendentes = ids.filter((id) => !feitos.has(id));
+  const lotes = chunk(pendentes, config.batchSize);
+  const limitar = pLimit(config.itemConcurrency);
+  const vigencias = new Map(); // "id::tipo" → Promise<{inicio,fim}|null> (cache do run)
+  const passoLog = Math.max(1, Math.ceil(lotes.length / 20));
+  let processados = feitos.size;
+  let falhas = 0;
+  let falhasConsecutivas = 0;
+
+  async function lerPromocoes(itemId) {
+    const caminho = `/seller-promotions/items/${encodeURIComponent(itemId)}?app_version=v2`;
+    // 404 = item sem promoções (não é falha de leitura).
+    const t = await comRetry(async () => {
+      const resp = await leitor.getOuErro(caminho, { vazioEm: [404] });
+      if (resp.vazio) return [];
+      const lista = normalize.extrairLista(resp.data);
+      if (lista === null) {
+        throw new PromoSnapshotLeituraError("Promoções do item fora do formato documentado.", {
+          code: "PROMO_SNAPSHOT_RESPOSTA_PARCIAL", statusCode: 502,
+        });
+      }
+      return lista;
+    }, "promocoes_item", { item_id: itemId });
+    if (!t.ok) return { ok: false, erro: t.error };
+    return { ok: true, lista: t.value };
+  }
+
+  async function lerSalePrice(itemId) {
+    stats.salePriceConsultados += 1;
+    const caminho = `/items/${encodeURIComponent(itemId)}/sale_price?context=channel_marketplace`;
+    const t = await comRetry(() => leitor.getOuErro(caminho), "sale_price", { item_id: itemId });
+    if (!t.ok) return null; // ativa/nao_aplicada ficam null — nunca chute
+    const d = t.value.data || {};
+    const promotionId = d.metadata && d.metadata.promotion_id != null ? String(d.metadata.promotion_id) : null;
+    const amount = Number.isFinite(Number(d.amount)) ? Number(d.amount) : null;
+    return { promotionId, amount };
+  }
+
+  function vigencia(chave, { promotionId, tipo }) {
+    if (!vigencias.has(chave)) {
+      stats.vigenciasConsultadas += 1;
+      const caminho = `/seller-promotions/promotions/${encodeURIComponent(promotionId)}?promotion_type=${encodeURIComponent(tipo)}&app_version=v2`;
+      vigencias.set(chave, comRetry(() => leitor.getOuErro(caminho), "vigencia", { promotion_id: promotionId }).then((t) => {
+        if (!t.ok) return null;
+        const d = t.value.data || {};
+        return d.start_date || d.finish_date ? { inicio: d.start_date || null, fim: d.finish_date || null } : null;
+      }));
+    }
+    return vigencias.get(chave);
+  }
+
+  for (let i = 0; i < lotes.length; i += 1) {
+    verificarParada();
+    const lote = lotes[i];
+    const seq = i + 1;
+    const observedAt = agoraIso();
+
+    const leituras = await Promise.all(lote.map((itemId) => limitar(async () => {
+      const r = await lerPromocoes(itemId);
+      if (!r.ok) return { itemId, ok: false, erro: r.erro };
+      let saleInfo = null;
+      if (config.resolveActive && normalize.temPromocaoIniciada(r.lista)) saleInfo = await lerSalePrice(itemId);
+      const mapaVig = new Map();
+      if (config.resolveVigencia) {
+        for (const [chave, alvo] of normalize.chavesSemVigencia(r.lista)) {
+          // eslint-disable-next-line no-await-in-loop
+          const v = await vigencia(chave, alvo);
+          if (v) mapaVig.set(chave, v);
+        }
+      }
+      return { itemId, ok: true, lista: r.lista, saleInfo, vigencias: mapaVig };
+    })));
+
+    const linhas = [];
+    const itensFalhos = [];
+    for (const l of leituras) {
+      if (!l.ok) { itensFalhos.push(l.itemId); continue; }
+      linhas.push(...normalize.normalizarPromocoesDoItem({
+        itemId: l.itemId, lista: l.lista, saleInfo: l.saleInfo, vigencias: l.vigencias, observedAt,
+      }));
+    }
+
+    const atualizado = await repo.registrarLote({ run, seq, itemIds: lote, itensFalhos, linhas, contadores: contadoresLote }, db);
+    if (!atualizado) throw fencing();
+    contadoresLote = { retries: 0, rateLimits: 0 };
+    stats.lotes += 1;
+    processados += lote.length;
+    falhas += itensFalhos.length;
+
+    if (itensFalhos.length === lote.length) {
+      falhasConsecutivas += 1;
+      stats.lotesFalhos += 1;
+      const ultimoErro = leituras.find((l) => !l.ok)?.erro;
+      evento("error", "promo_snapshot_batch_failed", {
+        seq, itens: lote.length, falhas_consecutivas: falhasConsecutivas, erro: mensagemCurta(ultimoErro),
+      });
+      if (falhasConsecutivas >= config.maxConsecutiveBatchFailures) {
+        throw erroTipado(
+          "PROMO_SNAPSHOT_LOTES_FALHANDO",
+          `${falhasConsecutivas} lote(s) seguidos sem nenhuma leitura; run interrompido. Último erro: ${mensagemCurta(ultimoErro)}`
+        );
+      }
+    } else {
+      falhasConsecutivas = 0;
+    }
+
+    if (seq % passoLog === 0 || seq === lotes.length) {
+      evento("log", "promo_snapshot_page_processed", {
+        etapa: "promocoes", lote: seq, lotes: lotes.length, processed_count: processados, total, falhas,
+      });
+    }
+  }
+
+  if (total > 0 && falhas === pendentes.length && pendentes.length > 0 && feitos.size === 0) {
+    throw erroTipado("PROMO_SNAPSHOT_NENHUM_ITEM_LIDO", `Nenhum dos ${total} anúncio(s) teve as promoções lidas neste run.`);
+  }
+
+  const resultado = {
+    total,
+    processados,
+    falhas,
+    snapshotAt,
+    stats: { ...stats, duracaoMs: clock() - inicio },
+  };
+  await repo.mergeRunMetadata({ runId: run.id, patch: { processor: resultado.stats } }, db);
+  return resultado;
+}
+
+module.exports = { processPromoSnapshotRun, validarContaPadrao, SCAN_LIMIT };

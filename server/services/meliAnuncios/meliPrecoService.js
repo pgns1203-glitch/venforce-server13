@@ -69,11 +69,11 @@ const MOTIVO_PROMOCAO =
 // Falha de rede/token na CHECAGEM de variação não pode travar a tela inteira
 // por um motivo que não é o dela: se algo estiver errado com a conta, a
 // tentativa de escrita adiante vai falhar do mesmo jeito, com o erro real.
-async function temVariacao(clienteId, itemId, mlUserId) {
+async function temVariacao(clienteId, itemId, mlUserId, limite = {}) {
   const resp = await mlFetch(
     clienteId,
     `/items/${encodeURIComponent(itemId)}?attributes=id,variations`,
-    { mlUserId }
+    { mlUserId, ...limite }
   );
   if (!resp || !resp.ok) return false;
   return Array.isArray(resp.data && resp.data.variations) && resp.data.variations.length > 0;
@@ -87,26 +87,106 @@ async function temPromocaoAtiva(clienteId, itemId, mlUserId) {
   return cotacao.precoPromocional != null;
 }
 
-async function atualizarPreco({ clienteId, itemId, novoPreco, mlUserId }) {
+// Leitura com prazo: resolverPrecosItem não recebe opções de fetch, então o
+// prazo é aplicado por fora. Uma leitura abortada nunca escreve nada.
+function comPrazo(promessa, ms) {
+  if (!ms) return promessa;
+  let timer;
+  return Promise.race([
+    promessa,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`Leitura do Mercado Livre sem resposta em ${ms} ms.`);
+        err.name = "MlTimeoutError";
+        err.code = "ML_TIMEOUT";
+        err.enviado = false;
+        reject(err);
+      }, ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function ehTimeout(err) {
+  return Boolean(err && err.name === "MlTimeoutError");
+}
+
+const TOLERANCIA_PRECO = 0.005;
+
+/**
+ * Parâmetros OPCIONAIS (usados pela camada segura da Central de Margem; sem
+ * eles o fluxo é exatamente o de antes, que /anuncios usa):
+ *  - timeoutMs        prazo real de cada chamada ao ML (leituras e o PUT)
+ *  - precoEsperado    compare-and-set do lado do Portal: o preço EFETIVO lido
+ *                     imediatamente antes do PUT tem de ser este; senão
+ *                     PRECO_ALTERADO e nada é escrito (o ML não oferece CAS)
+ *  - antesDeEscrever  gancho chamado depois da última leitura e ANTES do PUT;
+ *                     devolve { ok:true, deadlineAt } ou uma falha. É onde a
+ *                     Central confirma que ainda é dona do claim (fencing).
+ * Timeout no PUT volta como falha com `incerto:true` (o ML pode ter gravado).
+ */
+async function atualizarPreco({ clienteId, itemId, novoPreco, mlUserId, timeoutMs = null, precoEsperado = null, antesDeEscrever = null }) {
   const v = normalizarPreco(novoPreco);
   if (!v.ok) return falha(v.codigo, v.motivo);
 
   const id = String(itemId || "").trim();
   if (!id) return falha("ITEM_ID_AUSENTE", "Item sem identificador do Mercado Livre.");
 
-  if (await temVariacao(clienteId, id, mlUserId)) {
-    return falha("PRECO_ITEM_COM_VARIACAO", MOTIVO_VARIACAO);
+  const limite = timeoutMs ? { timeoutMs } : {};
+  let deadlineAt = null;
+  try {
+    if (await temVariacao(clienteId, id, mlUserId, limite)) {
+      return falha("PRECO_ITEM_COM_VARIACAO", MOTIVO_VARIACAO);
+    }
+
+    if (precoEsperado === null || precoEsperado === undefined) {
+      if (await temPromocaoAtiva(clienteId, id, mlUserId)) {
+        return falha("PRECO_ITEM_COM_PROMOCAO", MOTIVO_PROMOCAO);
+      }
+    } else {
+      // Uma só leitura serve aos dois bloqueios: promoção ativa e preço atual.
+      const cotacao = await comPrazo(resolverPrecosItem({ clienteId, itemId: id, mlUserId }), timeoutMs);
+      if (cotacao.precoPromocional != null) return falha("PRECO_ITEM_COM_PROMOCAO", MOTIVO_PROMOCAO);
+      const atual = Number(cotacao.precoEfetivo);
+      if (!Number.isFinite(atual)) {
+        return falha("PRECO_ATUAL_INDISPONIVEL", "Não foi possível confirmar o preço atual no Mercado Livre imediatamente antes da escrita.");
+      }
+      if (Math.abs(atual - Number(precoEsperado)) >= TOLERANCIA_PRECO) {
+        return { ...falha("PRECO_ALTERADO", "Preço alterado desde o preview. Atualize e tente novamente."), precoAtual: atual };
+      }
+    }
+
+    if (antesDeEscrever) {
+      const liberado = await antesDeEscrever({ itemId: id });
+      if (!liberado || liberado.ok !== true) {
+        return falha((liberado && liberado.codigo) || "ESCRITA_NAO_LIBERADA", (liberado && liberado.motivo) || "A escrita não foi liberada.");
+      }
+      deadlineAt = liberado.deadlineAt ?? null;
+    }
+  } catch (err) {
+    if (ehTimeout(err)) return { ...falha("ML_TIMEOUT_LEITURA", "O Mercado Livre não respondeu a tempo antes da escrita. Nada foi enviado."), enviado: false };
+    throw err;
   }
 
-  if (await temPromocaoAtiva(clienteId, id, mlUserId)) {
-    return falha("PRECO_ITEM_COM_PROMOCAO", MOTIVO_PROMOCAO);
+  let writeResp;
+  try {
+    writeResp = await mlFetch(clienteId, `/items/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify({ price: v.valor }),
+      mlUserId,
+      ...limite,
+      ...(deadlineAt != null ? { deadlineAt } : {}),
+    });
+  } catch (err) {
+    if (!ehTimeout(err)) throw err;
+    if (!err.enviado) {
+      return { ...falha(err.code || "ML_DEADLINE_EXCEEDED", "O prazo da escrita esgotou antes do envio. Nada foi enviado ao Mercado Livre."), enviado: false };
+    }
+    return {
+      ...falha("ML_TIMEOUT", "O Mercado Livre não respondeu a tempo. A alteração pode ter sido aplicada — confira o anúncio antes de tentar de novo."),
+      enviado: true,
+      incerto: true,
+    };
   }
-
-  const writeResp = await mlFetch(clienteId, `/items/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    body: JSON.stringify({ price: v.valor }),
-    mlUserId,
-  });
   if (!writeResp || !writeResp.ok) {
     const codigo = codigoDoErroMl(writeResp && writeResp.data, writeResp && writeResp.status);
     if (/not_modifiable/i.test(codigo)) return falha(codigo, MOTIVO_AUTOMACAO);

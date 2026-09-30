@@ -87,6 +87,7 @@ const cliente360ResultadoRoutes = require("./routes/cliente360ResultadoRoutes");
 const cliente360V3Routes = require("./routes/cliente360V3Routes");
 const centralVendasRoutes = require("./routes/centralVendasRoutes");
 const motorMargemRoutes = require("./routes/motorMargemRoutes");
+const margemPrecificacaoRoutes = require("./routes/margemPrecificacaoRoutes");
 const diagnosticoInicialRoutes = require("./routes/diagnosticoInicialRoutes");
 const adsRoutes = require("./routes/adsRoutes");
 const designImageRoutes = require("./routes/designImageRoutes");
@@ -120,6 +121,7 @@ const squadService = require("./services/squads/squadService");
 const {
   ensureEntregasClienteSchema,
   ensureAnunciosMargemProjetadaSnapshotSchema,
+  ensureMargemPrecificacaoSchema,
 } = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
@@ -821,6 +823,9 @@ app.use("/operacao/cliente-360", cliente360Routes);
 app.use("/operacao/central-vendas", centralVendasRoutes);
 // Central de Margem — API read-only do Motor de Margem (somente GET).
 app.use("/operacao/central-margem", motorMargemRoutes);
+// Central de Margem — camada SEGURA de precificação (preview + gates +
+// idempotência + auditoria). Escrita no ML só com MARGIN_PRICING_WRITE_*.
+app.use("/operacao/central-margem", margemPrecificacaoRoutes);
 // V3: Visão (composicao read-only de fontes existentes) e leitura do
 // Financeiro por periodo/conta — nao confundir com /fechamentos (upload).
 app.use("/operacao/visao", visaoRoutes);
@@ -2053,6 +2058,14 @@ const server = app.listen(PORT, () => {
       }
     }
   );
+
+  // Central de Margem — trilha de precificação (preview → aplicação). A
+  // migration versionada é aplicada aqui, serializada por advisory lock (duas
+  // instâncias subindo juntas não disputam o CREATE TABLE). O repositório
+  // chama o mesmo runner como proteção, nunca como mecanismo principal.
+  ensureMargemPrecificacaoSchema().catch((err) => {
+    console.error("[schema] erro ao garantir schema de margem_precificacao_aplicacoes no boot:", err.message);
+  });
 
   // /setup é desabilitado em produção — as colunas novas de `custos`
   // (produto_nome, variacao_nome, updated_at) são garantidas aqui.

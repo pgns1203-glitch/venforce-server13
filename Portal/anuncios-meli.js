@@ -3373,6 +3373,9 @@
       // Adicionar imagem (seção Fotos): arquivo escolhido, preview local e
       // estado do envio — ver bloco "Fotos: adicionar imagem".
       imagem: imagemEstadoVazio(),
+      // Anúncio com variações: grupos de foto lidos do ML sob demanda
+      // (GET .../imagens/variacoes). null = ainda não pedido.
+      imagemVar: null,
     };
     chipUsadaAtual = null;
 
@@ -3745,7 +3748,8 @@
         return '<div class="am-det-photo"><img src="' + escapeHtml(u) + '" alt="Foto ' + (i + 1) +
           ' do anúncio" loading="lazy" /></div>';
       }).join("") + adicionar + "</div>" +
-      (pics.length ? "" : '<p class="am-det-vazio">Nenhuma imagem foi retornada para este anúncio.</p>');
+      (pics.length ? "" : '<p class="am-det-vazio">Nenhuma imagem foi retornada para este anúncio.</p>') +
+      imagemVariacoesHtml();
 
     return '<div class="am-det-section">' +
       '<div class="am-det-section__head">' +
@@ -3776,10 +3780,83 @@
     if (a.catalog_listing === true) {
       return "Este anúncio é de catálogo: as fotos exibidas são do produto de catálogo do Mercado Livre e não podem ser alteradas por aqui.";
     }
-    if (Number(a.variations_count) > 0) {
-      return "Este anúncio tem variações. Adicionar imagens em anúncios com variações ainda não está disponível no VenForce — use o Mercado Livre.";
+    // Com variações a imagem vai para um grupo (atributo defines_picture) —
+    // só libera depois que os grupos chegam do ML; se o ML/backend recusar
+    // (User Product, categoria sem defines_picture…), o motivo é o dele.
+    if (imagemTemVariacoes(a)) {
+      var iv = DET && DET.imagemVar;
+      if (!iv || iv.estado === "carregando") return "Carregando as variações do anúncio no Mercado Livre…";
+      if (iv.estado === "erro") return iv.motivo || "Não foi possível carregar as variações do anúncio.";
     }
     return null;
+  }
+
+  function imagemTemVariacoes(a) {
+    return !!(a && Number(a.variations_count) > 0);
+  }
+
+  // ----- Fotos: variações ----------------------------------------------------
+  // GET /anuncios-meli/:itemId/imagens/variacoes — grupos pelo atributo que
+  // define a foto (ex.: Cor). A imagem nova entra em TODAS as variações do
+  // grupo escolhido (regra do ML: mesmo valor = mesmas fotos).
+  function carregarGruposImagem() {
+    if (!DET || !DET.anuncio || !imagemTemVariacoes(DET.anuncio) || DET.anuncio.catalog_listing === true) return;
+    if (DET.imagemVar) return;
+    var meuToken = DET.token;
+    DET.imagemVar = { estado: "carregando" };
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+      (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
+    api("/anuncios-meli/" + encodeURIComponent(DET.anuncio.item_id) + "/imagens/variacoes?" + qs).then(function (r) {
+      if (!DET || DET.token !== meuToken) return;
+      var d = r.data || {};
+      DET.imagemVar = d.ok && Array.isArray(d.grupos)
+        ? { estado: "ok", atributo: d.atributo || null, grupos: d.grupos }
+        : { estado: "erro", motivo: d.motivo || (r.status === 0 ? "Falha de conexão ao carregar as variações." : null) };
+      renderFotosVariacoes();
+    });
+  }
+
+  function grupoImagemRotulo(g, comAtributo) {
+    var iv = DET && DET.imagemVar;
+    var nomeAttr = iv && iv.atributo && iv.atributo.nome ? iv.atributo.nome : "";
+    var combos = (g.variacoes || []).map(function (v) { return v.rotulo; }).filter(Boolean);
+    return (comAtributo && nomeAttr ? nomeAttr + ": " : "") + g.valor +
+      (combos.length ? " (" + combos.join(", ") + ")" : "");
+  }
+
+  function imagemVariacoesHtml() {
+    var iv = DET && DET.imagemVar;
+    if (!iv || iv.estado !== "ok") return '<div id="am-det-img-var"></div>';
+    var nomeAttr = iv.atributo && iv.atributo.nome ? iv.atributo.nome : "variação";
+    return '<div id="am-det-img-var" class="am-det-img-var">' +
+      '<p class="am-det-img-var__titulo">Fotos por ' + escapeHtml(nomeAttr.toLowerCase()) + "</p>" +
+      iv.grupos.map(function (g) {
+        return '<div class="am-det-img-var__grupo" data-grupo="' + escapeAttr(g.chave) + '">' +
+          '<span class="am-det-img-var__nome">' + escapeHtml(grupoImagemRotulo(g, false)) +
+            ' <span class="am-det-section__meta">· ' + (g.fotos || []).length + " foto" + ((g.fotos || []).length === 1 ? "" : "s") + "</span></span>" +
+          '<span class="am-det-img-var__fotos">' + (g.fotos || []).map(function (u) {
+            return '<img src="' + escapeHtml(u) + '" alt="" loading="lazy" />';
+          }).join("") + "</span>" +
+        "</div>";
+      }).join("") +
+    "</div>";
+  }
+
+  // Grupos chegaram (ou falharam): atualiza bloqueio, lista por variação e o
+  // painel de envio, sem recriar o resto do modal.
+  function renderFotosVariacoes() {
+    if (!DET) return;
+    var slot = el("am-det-img-var");
+    if (slot) slot.outerHTML = imagemVariacoesHtml();
+    var bloq = el("am-det-img-bloqueio");
+    var motivo = imagemBloqueio(DET.anuncio);
+    if (bloq && !motivo) bloq.parentNode.removeChild(bloq);
+    else if (bloq) bloq.textContent = motivo;
+    var add = el("am-det-img-add");
+    if (add) {
+      if (motivo) add.setAttribute("title", motivo); else add.removeAttribute("title");
+    }
+    renderImagemEnvio();
   }
 
   // Sinais de User Product que o sync grava: family_name (modelo novo) ou
@@ -3790,7 +3867,8 @@
 
   function imagemEstadoVazio() {
     return { estado: null, arquivo: null, previewUrl: null, nome: "", tipo: "", bytes: 0,
-             width: null, height: null, progresso: null, erroLocal: null, erro: null, sucesso: null };
+             width: null, height: null, progresso: null, erroLocal: null, erro: null, sucesso: null,
+             grupo: "" };
   }
 
   function fmtTamanhoArquivo(bytes) {
@@ -3835,6 +3913,28 @@
         " Este anúncio pertence a um produto do Mercado Livre. A alteração de imagem pode ser replicada para outros anúncios relacionados.</p>"
       : "";
 
+    // Com variações: escolha OBRIGATÓRIA do grupo (sem padrão — a foto errada
+    // numa cor errada é pior que um clique a mais).
+    var iv = DET.imagemVar;
+    var comVariacao = imagemTemVariacoes(DET.anuncio) && iv && iv.estado === "ok";
+    var nomeAttr = comVariacao && iv.atributo && iv.atributo.nome ? iv.atributo.nome : "variação";
+    var seletor = comVariacao
+      ? '<label class="am-det-img-envio__var" for="am-det-img-grupo">Adicionar às variações de ' +
+          escapeHtml(nomeAttr.toLowerCase()) +
+          '<select class="vf-select vf-select--sm" id="am-det-img-grupo"' + (ocupado ? " disabled" : "") + ">" +
+            '<option value="">Escolha…</option>' +
+            iv.grupos.map(function (g) {
+              return '<option value="' + escapeAttr(g.chave) + '"' + (g.chave === im.grupo ? " selected" : "") + ">" +
+                escapeHtml(grupoImagemRotulo(g, true)) + "</option>";
+            }).join("") +
+          "</select>" +
+        "</label>" +
+        '<p class="am-det-img-envio__aviso">' + icAlerta(12) +
+          " A imagem entra em todas as variações da " + escapeHtml(nomeAttr.toLowerCase()) +
+          " escolhida — é a regra do Mercado Livre para variações com o mesmo valor.</p>"
+      : "";
+    var faltaGrupo = comVariacao && !im.grupo;
+
     var status = "";
     if (im.estado === "enviando") {
       status = '<p class="am-det-img-envio__status" role="status">Enviando…' +
@@ -3858,11 +3958,13 @@
         (im.erroLocal ? '<p class="am-det-img-envio__erro-local" role="alert">' + escapeHtml(im.erroLocal) + "</p>" : "") +
         aviso +
         avisoProduto +
+        (im.erroLocal ? "" : seletor) +
         status +
         (ocupado ? "" :
           '<div class="am-det-img-envio__acoes">' +
-            (im.erroLocal ? "" :
-              '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="img-enviar">' +
+            (im.erroLocal || (im.erro && im.erro.semRetry) ? "" :
+              '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="img-enviar"' +
+                (faltaGrupo ? ' disabled title="Escolha a variação"' : "") + ">" +
                 (im.estado === "erro" ? "Tentar novamente" : "Enviar ao Mercado Livre") + "</button>") +
             '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="img-cancelar">Cancelar</button>' +
           "</div>") +
@@ -3884,6 +3986,15 @@
   }
 
   function bindFotos() {
+    carregarGruposImagem();
+    var slot = el("am-det-img-envio");
+    if (slot) {
+      slot.addEventListener("change", function (e) {
+        if (!e.target || e.target.id !== "am-det-img-grupo" || !DET) return;
+        DET.imagem.grupo = e.target.value || "";
+        renderImagemEnvio();
+      });
+    }
     var input = el("am-det-img-input");
     if (!input) return;
     input.addEventListener("change", function () {
@@ -3945,10 +4056,18 @@
   function erroImagemDe(status, d) {
     d = d || {};
     var det = d.detalhesMl || null;
+    // Estado do anúncio incerto (conexão caiu no vínculo, confirmação
+    // divergente, perda detectada): reenviar pode duplicar a foto — a tela
+    // não oferece "Tentar novamente", pede conferência no ML.
+    var semRetry = !!(d.critico || d.codigo === "VINCULO_INCERTO" || d.codigo === "CONFIRMACAO_DIVERGENTE");
     if (!det) {
       var linhasLocal = [d.motivo || (status === 0 ? "Falha de conexão." : "Não foi possível enviar a imagem.")];
       if (d.codigo) linhasLocal.push("Código: " + d.codigo);
-      return { titulo: "Não foi possível enviar a imagem", linhas: linhasLocal };
+      return {
+        titulo: d.critico ? "Atenção: confira o anúncio no Mercado Livre" : "Não foi possível enviar a imagem",
+        linhas: linhasLocal,
+        semRetry: semRetry,
+      };
     }
     var etapas = {
       leitura: "Ao consultar o anúncio no Mercado Livre.",
@@ -3976,12 +4095,15 @@
     var im = DET.imagem;
     if (!im.arquivo || im.erroLocal || im.estado === "enviando" || im.estado === "processando") return;
     if (imagemBloqueio(DET.anuncio)) return;
+    var variacao = imagemTemVariacoes(DET.anuncio);
+    if (variacao && !im.grupo) return;
 
     var meuToken = DET.token;
     var itemId = DET.anuncio.item_id;
     var url = API_BASE + "/anuncios-meli/" + encodeURIComponent(itemId) + "/imagens" +
       "?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
-      (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
+      (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "") +
+      (variacao ? "&grupoVariacao=" + encodeURIComponent(im.grupo) : "");
 
     var form = new FormData();
     form.append("imagem", im.arquivo, im.nome || "imagem");
@@ -4016,10 +4138,15 @@
         liberarPreviewImagem();
         var fim = imagemEstadoVazio();
         fim.estado = "concluido";
+        var destino = d.grupo
+          ? " (variações " + (d.grupo.atributo ? d.grupo.atributo + ": " : "") + d.grupo.valor + ")"
+          : "";
         fim.sucesso = d.confirmacaoPendente
-          ? "A imagem foi adicionada no Mercado Livre. A lista de fotos daqui atualiza na próxima sincronização."
-          : "Imagem adicionada ao anúncio no Mercado Livre.";
+          ? "A imagem foi adicionada no Mercado Livre" + destino + ". A lista de fotos daqui atualiza na próxima sincronização."
+          : "Imagem adicionada ao anúncio no Mercado Livre" + destino + ".";
         DET.imagem = fim;
+        // As fotos por variação mudaram no ML: relê no próximo render.
+        if (d.grupo) DET.imagemVar = null;
         if (d.anuncio) {
           DET.anuncio = d.anuncio;
           AM.detalheAtual = { anuncio: d.anuncio, descricao: DET.descricao };

@@ -158,6 +158,20 @@ let imagemAtrasoMs = 0;              // segura a resposta para o teste ver "Proc
 let imagemViaRede = false;
 let portaLocal = 0;
 const imagemChamadas = [];           // { url, metodo, contentType } de todo POST /imagens
+// GET /anuncios-meli/:itemId/imagens/variacoes — null = dois grupos de Cor
+// (Azul: P, M; Preto: P); { status, corpo } = resposta forçada.
+let imagemGruposResultado = null;
+let imagemGruposChamadas = 0;
+const GRUPOS_IMAGEM = {
+  ok: true,
+  atributo: { id: "COLOR", nome: "Cor" },
+  grupos: [
+    { chave: "id:52049", valor: "Azul", variacoes: [{ id: "101", rotulo: "P" }, { id: "102", rotulo: "M" }],
+      pictureIds: ["AZ1"], fotos: ["https://img.example/azul.jpg"] },
+    { chave: "id:52028", valor: "Preto", variacoes: [{ id: "103", rotulo: "P" }],
+      pictureIds: ["PR1"], fotos: ["https://img.example/preto.jpg"] },
+  ],
+};
 const chamadasPerformance = [];
 // MLB-A1 (item padrão desta suíte, conta 42): margem PROJETADA saudável,
 // com ladder completo — Margem = Margem Projetada, somente, nesta tela (o
@@ -619,6 +633,15 @@ function wireInterception(cdp) {
     // O corpo binário não interessa aqui (o backend tem teste próprio:
     // server/tests/meliAnunciosImagens.test.js); só a rota, o método, a query
     // e o tipo multipart.
+    // GET /anuncios-meli/:itemId/imagens/variacoes — grupos de foto (anúncio
+    // com variações). Contrato: server/tests/meliAnunciosImagensVariacoes.test.js.
+    if (/^\/anuncios-meli\/[^/?]+\/imagens\/variacoes(\?|$)/.test(caminho)) {
+      imagemGruposChamadas += 1;
+      if (imagemGruposResultado) { await corpo(imagemGruposResultado.corpo, imagemGruposResultado.status); return; }
+      await corpo(GRUPOS_IMAGEM);
+      return;
+    }
+
     const mImagem = caminho.match(/^\/anuncios-meli\/([^/?]+)\/imagens(\?|$)/);
     if (mImagem) {
       const hs = params.request.headers || {};
@@ -635,10 +658,14 @@ function wireInterception(cdp) {
       if (imagemResultado) { await corpo(imagemResultado.corpo, imagemResultado.status); return; }
       const conta = new URL(url).searchParams.get("clienteContaId") || "42";
       const base = anuncio(conta);
+      base.variations_count = variationsCountAtivo; // a linha real volta com a coluna do sync
       base.pictures_json = base.pictures_json.concat(["https://img.example/nova.jpg"]);
       base.pictures_count = base.pictures_json.length;
+      const grupoQs = new URL(url).searchParams.get("grupoVariacao");
+      const grupoEnv = grupoQs ? GRUPOS_IMAGEM.grupos.find((g) => g.chave === grupoQs) : null;
       await corpo({ ok: true, pictureId: "999-MLB", anuncio: base, confirmacaoPendente: false,
-        imagem: { width: 600, height: 400, bytes: 1234, abaixoDoMinimoMl: true } });
+        imagem: { width: 600, height: 400, bytes: 1234, abaixoDoMinimoMl: true },
+        grupo: grupoEnv ? { chave: grupoEnv.chave, valor: grupoEnv.valor, atributo: "Cor", variacoes: grupoEnv.variacoes.length } : null });
       return;
     }
 
@@ -1080,7 +1107,7 @@ async function run() {
 
     const textoEnvio = "((document.getElementById('am-det-img-envio') || {}).innerText || '')";
 
-    await check("7e — '+ Adicionar imagem' aparece no anúncio tradicional; catálogo e variações ficam bloqueados com o motivo", async () => {
+    await check("7e — '+ Adicionar imagem' aparece no anúncio tradicional; catálogo fica bloqueado; variações liberam com os grupos do ML ou mostram o motivo da recusa", async () => {
       const normal = await infoFotos();
       assert.ok(normal.existe, "o botão de adicionar imagem não apareceu");
       assert.ok(/\+\s*Adicionar imagem/.test(normal.rotulo), `rótulo inesperado: ${normal.rotulo}`);
@@ -1098,11 +1125,25 @@ async function run() {
       try {
         await abrirComModo("nenhum");
         await abrirPrimeiroAnuncio(cdp);
+        // Com variações o botão só libera quando os grupos de foto chegam do ML.
+        await waitFor(cdp, "document.getElementById('am-det-img-add') && !document.getElementById('am-det-img-add').disabled",
+          "com os grupos carregados o '+ Adicionar imagem' deveria liberar");
         const vari = await infoFotos();
-        assert.strictEqual(vari.disabled, true, "com variações o botão fica desabilitado nesta versão");
-        assert.ok(/variações/i.test(vari.bloqueio), `variações precisa dizer o motivo: ${vari.bloqueio}`);
+        assert.strictEqual(vari.bloqueio, "", "grupos carregados: sem aviso de bloqueio");
+        const lista = await cdp.evaluate("((document.getElementById('am-det-img-var') || {}).innerText || '')");
+        assert.ok(/Fotos por cor/.test(lista) && /Azul \(P, M\)/.test(lista) && /Preto \(P\)/.test(lista), `fotos por variação: ${lista}`);
+
+        // Recusa do backend (ex.: categoria sem defines_picture): bloqueia com o motivo dele.
+        imagemGruposResultado = { status: 409, corpo: { ok: false, codigo: "ATRIBUTO_FOTO_INDEFINIDO", etapa: "bloqueio",
+          motivo: "O Mercado Livre não indica, para a categoria deste anúncio, qual atributo das variações define a foto (defines_picture)." } };
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "/defines_picture/.test((document.getElementById('am-det-img-bloqueio') || {}).innerText || '')",
+          "a recusa do backend precisa aparecer como motivo do bloqueio");
+        assert.strictEqual((await infoFotos()).disabled, true, "sem grupos o botão fica desabilitado");
       } finally {
         variationsCountAtivo = 0;
+        imagemGruposResultado = null;
       }
       await abrirComModo("nenhum");
       await abrirPrimeiroAnuncio(cdp);
@@ -1231,6 +1272,51 @@ async function run() {
       assert.ok(f.envio.includes(AVISO), `o aviso de replicação precisa aparecer antes do envio: ${f.envio}`);
       assert.ok(f.temEnviar, "o aviso não bloqueia: o botão de enviar continua lá");
       await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+    });
+
+    await check("7j — variações: escolher o grupo é obrigatório; o envio leva grupoVariacao e o sucesso diz qual variação recebeu", async () => {
+      variationsCountAtivo = 3;
+      try {
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, "document.getElementById('am-det-img-add') && !document.getElementById('am-det-img-add').disabled",
+          "os grupos não carregaram");
+        const antes = imagemChamadas.length;
+        await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "azul.png" });
+        await waitFor(cdp, "document.getElementById('am-det-img-grupo')", "o seletor de variação não apareceu");
+        const opcoes = await cdp.evaluate("Array.from(document.querySelectorAll('#am-det-img-grupo option')).map(function(o){return o.textContent;})");
+        assert.deepStrictEqual(opcoes, ["Escolha…", "Cor: Azul (P, M)", "Cor: Preto (P)"]);
+        assert.ok(/todas as variações da cor escolhida/.test(await cdp.evaluate(textoEnvio)), "explica que a foto vai para o grupo inteiro");
+        assert.strictEqual(await cdp.evaluate("document.querySelector('[data-acao=\"img-enviar\"]').disabled"), true,
+          "sem variação escolhida não dá para enviar");
+
+        await cdp.evaluate(`(function(){ var s = document.getElementById('am-det-img-grupo'); s.value = 'id:52049';
+          s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+        await waitFor(cdp, "!document.querySelector('[data-acao=\"img-enviar\"]').disabled", "escolher o grupo não liberou o envio");
+        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
+        await waitFor(cdp, `/Concluído/.test(${textoEnvio})`, "o envio não chegou a 'Concluído'");
+        const chamada = imagemChamadas[antes];
+        assert.ok(chamada && /grupoVariacao=id%3A52049/.test(chamada.url), `o grupo vai na query: ${chamada && chamada.url}`);
+        assert.ok(/variações Cor: Azul/.test(await cdp.evaluate(textoEnvio)), "o sucesso diz qual variação recebeu");
+        await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
+
+        // Estado incerto (conexão caiu no vínculo): sem "Tentar novamente".
+        imagemResultado = { status: 422, corpo: { ok: false, codigo: "VINCULO_INCERTO", etapa: "vinculo", pictureId: "999-MLB",
+          motivo: "Não foi possível confirmar se a imagem entrou no anúncio (falha de conexão com o Mercado Livre). Confira o anúncio no Mercado Livre antes de tentar de novo, para não duplicar a foto." } };
+        await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "azul2.png" });
+        await waitFor(cdp, "document.getElementById('am-det-img-grupo')", "o seletor não apareceu");
+        await cdp.evaluate(`(function(){ var s = document.getElementById('am-det-img-grupo'); s.value = 'id:52028';
+          s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+        await waitFor(cdp, "!document.querySelector('[data-acao=\"img-enviar\"]').disabled", "o envio não liberou");
+        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
+        await waitFor(cdp, `/VINCULO_INCERTO/.test(${textoEnvio})`, "o estado incerto não apareceu");
+        assert.ok(!(await infoFotos()).temEnviar, "estado incerto não pode oferecer reenvio (duplicaria a foto)");
+      } finally {
+        variationsCountAtivo = 0;
+        imagemResultado = null;
+      }
       await abrirComModo("nenhum");
       await abrirPrimeiroAnuncio(cdp);
     });

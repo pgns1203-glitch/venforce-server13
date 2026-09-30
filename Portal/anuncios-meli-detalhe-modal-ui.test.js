@@ -2304,6 +2304,18 @@ async function run() {
       assert.ok(editaveis.n >= 3, "Preço, Custo do produto e Custos adicionais são editáveis");
       assert.strictEqual(editaveis.lapis, true, "todo campo editável mostra o lápis sem precisar de hover");
       assert.strictEqual(editaveis.borda, true, "todo campo editável tem moldura visível sem hover");
+
+      // Valor + lápis nunca quebram linha — nem na composição, nem na coluna
+      // "Preço final" de Promoções disponíveis (coluna estreita).
+      // A célula é espremida a 40px (como numa coluna estreita) só durante a medição.
+      const quebrados = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-det-margem-grid .am-margem-edit__btn')).filter(function(b){
+        var cel = b.parentElement, antes = cel.style.cssText;
+        cel.style.width = '40px'; cel.style.maxWidth = '40px'; cel.style.display = 'block';
+        var r = document.createRange(); r.selectNodeContents(b.firstChild); // só o texto do valor
+        var tops = {}; Array.from(r.getClientRects()).forEach(function(q){ if (q.width > 0) tops[Math.round(q.top)] = 1; });
+        cel.style.cssText = antes;
+        return Object.keys(tops).length > 1; }).map(function(b){ return b.textContent; })`);
+      assert.deepStrictEqual(quebrados, [], "nenhum valor editável pode ocupar 2 linhas");
     });
 
     await check("27 — um re-render do modal (digitar no título) reaproveita o cache (0 chamada nova, ladder continua na tela)", async () => {

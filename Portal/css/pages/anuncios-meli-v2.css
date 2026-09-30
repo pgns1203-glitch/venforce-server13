@@ -1066,6 +1066,7 @@
   align-items: center;
   gap: 6px;
   padding: 2px var(--vf-sp-2);
+  white-space: nowrap; /* valor + lápis sempre numa linha só */
   font: inherit;
   font-variant-numeric: tabular-nums;
   color: var(--vf-text);

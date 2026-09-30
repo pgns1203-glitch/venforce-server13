@@ -135,6 +135,7 @@ function criarCenario(overrides = {}) {
     registrarLog: async (l) => { chamadas.logs.push(l); },
     atualizarSnapshotDoItem: async (p) => { chamadas.snapshot.push(p); return { ok: true }; },
     agendar: (fn) => fn(),
+    leituraSnapshotHabilitada: () => estado.snapshotLigado !== false,
     env: { MARGIN_PRICING_SIMULACAO_CACHE_MS: "0", ...(overrides.env || {}) },
   };
   return { estado, chamadas, deps };

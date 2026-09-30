@@ -274,6 +274,17 @@ cenario("sucesso: reavalia ao vivo, escreve 1x com a conta certa, audita, loga e
   assert.strictEqual(r.aplicacao.usuario.nome, "Pedro");
 });
 
+cenario("sem leitura persistida ligada: aplica, mas não dispara refresh de snapshot (status nao_aplicavel)", async () => {
+  const c = criarCenario({ env: ESCRITA_ON, snapshotLigado: false });
+  const repo = criarRepoMemoria();
+  const p = await previewPreco(c, repo);
+  const r = await aplicar(c, repo, p.preview.id);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(c.chamadas.snapshot.length, 0);
+  assert.strictEqual(repo.linhas[0].snapshotStatus, "nao_aplicavel");
+  assert.strictEqual(r.aplicacao.snapshotStatus, "nao_aplicavel");
+});
+
 cenario("o valor confirmado é o da RESPOSTA do ML, nunca o enviado", async () => {
   const c = criarCenario({ env: ESCRITA_ON, respostaPreco: () => ({ ok: true, preco: 114.89 }) });
   const repo = criarRepoMemoria();

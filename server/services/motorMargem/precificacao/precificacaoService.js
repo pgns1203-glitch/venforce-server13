@@ -45,6 +45,8 @@ function defaults(deps = {}) {
     listarPromocoesDoItem:
       deps.listarPromocoesDoItem || require("../../meliAnuncios/meliPromocoesService").listarPromocoesDoItem,
     agendar: deps.agendar || ((fn, ms) => setTimeout(fn, ms)),
+    leituraSnapshotHabilitada:
+      deps.leituraSnapshotHabilitada || require("../marginSnapshotReadService").leituraHabilitada,
     env: deps.env || process.env,
     now: deps.now || (() => new Date()),
   };
@@ -474,7 +476,14 @@ async function aplicar(params = {}, deps = {}) {
     }
   }
 
-  // Pós-escrita: snapshot do ITEM (não do catálogo), em background.
+  // Pós-escrita: snapshot do ITEM (não do catálogo), em background — só
+  // quando o snapshot é de fato a leitura desta Central (leitura persistida
+  // ligada). No modo ao vivo não há snapshot a atualizar.
+  if (!d.leituraSnapshotHabilitada({ clienteSlug: cliente.slug }, d.env)) {
+    await d.repo.atualizarSnapshotStatus({ id: claim.id, status: "nao_aplicavel" }, deps.db);
+    const semSnapshot = await d.repo.obterPorId({ id: claim.id, clienteContaId: conta.id }, deps.db);
+    return { ok: true, aplicacao: aplicacaoPublica(semSnapshot || row), divergente: !mesmoPreco(precoConfirmado, claim.precoSolicitado) };
+  }
   d.agendar(() => {
     Promise.resolve()
       .then(() => d.atualizarSnapshotDoItem(

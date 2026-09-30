@@ -2486,6 +2486,7 @@
     var confirmado = aplicacao.precoConfirmado !== null && aplicacao.precoConfirmado !== undefined ? formatMoney(aplicacao.precoConfirmado) : "—";
     if (aplicacao.snapshotStatus === "atualizado") return "Aplicado no Mercado Livre (" + confirmado + ") · margem atualizada.";
     if (aplicacao.snapshotStatus === "falhou") return "Aplicado no Mercado Livre (" + confirmado + ") · a margem não pôde ser recalculada agora; use Atualizar leitura.";
+    if (aplicacao.snapshotStatus === "nao_aplicavel") return "Aplicado no Mercado Livre (" + confirmado + ") · use Atualizar leitura para recalcular a margem.";
     return "Aplicado no Mercado Livre (" + confirmado + ") · atualizando margem…";
   }
 
@@ -3064,7 +3065,7 @@
             state.pricing.precoAoVivo = aplicacao.precoConfirmado;
           }
           state.history = null;
-          trackPostWrite(aplicacao.id, seq);
+          if (aplicacao.snapshotStatus !== "nao_aplicavel") trackPostWrite(aplicacao.id, seq);
           renderDrawer();
         }
       } else {
@@ -3093,7 +3094,7 @@
         if (!state.pricing || seq !== state.drawerSeq) return;
         if (result.ok && result.aplicacao) {
           state.pricing.aplicacao = result.aplicacao;
-          if (result.aplicacao.snapshotStatus === "atualizado" || result.aplicacao.snapshotStatus === "falhou") {
+          if (["atualizado", "falhou", "nao_aplicavel"].indexOf(result.aplicacao.snapshotStatus) !== -1) {
             renderDrawerHeader(findSelectedItem());
             if (result.aplicacao.snapshotStatus === "atualizado" && isSnapshotMode()) {
               toast("Margem recalculada com o preço confirmado.", "is-success");

@@ -312,7 +312,16 @@ const MOCK_CLIENT = `
       },
       getOpportunities: function (params) {
         window.__pc.calls.opps.push(params.clienteContaId);
-        return Promise.resolve({ ok: true, disponivel: true, fonte: { geradoEm: "2026-09-29T08:00:00Z", frescor: "atual" },
+        // Promo Snapshot: primeira leitura em andamento (sem snapshot ainda).
+        if (window.__pc.oppsModo === "syncing") {
+          return Promise.resolve({ ok: true, disponivel: false, motivo: "SEM_SNAPSHOT_PROMOCOES",
+            mensagem: "Primeira leitura das promoções desta conta em andamento (10 de 100 anúncios). A lista aparece sozinha quando terminar.",
+            sync: { state: "syncing", processed: 10, total: 100, autoTrigger: "reutilizado" }, oportunidades: [] });
+        }
+        var stale = window.__pc.oppsModo === "stale";
+        return Promise.resolve({ ok: true, disponivel: true,
+          fonte: { tipo: stale ? "promo_snapshot" : undefined, geradoEm: "2026-09-29T08:00:00Z", frescor: stale ? "atencao" : "atual" },
+          sync: stale ? { state: "stale", autoTrigger: "enfileirado" } : undefined,
           criterio: "Promoção disponível com margem pós-promoção positiva; ordem: com retorno ML, mais unidades vendidas, maior margem.",
           oportunidades: [
             { itemId: "MLB1002", titulo: "Produto Y", precoAtual: 149.9, margemAtual: 0.248, promocao: { nome: "Oferta Y", tipo: "DEAL" }, precoPromocao: 129.9, retornoMl: 5.2, margemDepois: 0.197, unidades: 84, receita: 12000, motivo: "retorno ML de R$ 5,20 · 84 un. vendidas no período", estimado: true },
@@ -734,6 +743,19 @@ async function run() {
       await sleep(150);
       assert.strictEqual(await st("s.promos"), null, "resposta da conta anterior não reidrata o estado");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer-body').innerHTML"), "");
+    });
+
+    await check("oportunidades pelo Promo Snapshot: sincronizando mostra o estado (sem mandar para a tela antiga); stale serve a lista e avisa", async () => {
+      await cdp.evaluate("window.__pc.oppsModo = 'syncing'; window.VF.context.setConta(10)");
+      await waitFor(cdp, "document.querySelector('[data-cm-opps=\"indisponivel\"][data-cm-opps-sync=\"syncing\"]')", "estado de sincronização não apareceu");
+      const host = await cdp.evaluate("document.getElementById('cm-opportunities').innerText");
+      assert.ok(host.includes("Primeira leitura das promoções") && host.includes("atualizando (10/100)"), host);
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('#cm-opps-host a[href=\"promocoes-retorno.html\"]'))"), false, "não depende mais da tela Promoções ML");
+      assert.ok(await cdp.evaluate("Boolean(window.VFCentralMargemUi.getState().oppsPollTimer)"), "relê a lista enquanto sincroniza");
+      await cdp.evaluate("window.__pc.oppsModo = 'stale'; window.VF.context.setConta(11)");
+      await waitFor(cdp, "document.querySelector('#cm-opps-host tr[data-opp]')", "lista do snapshot stale não apareceu");
+      const meta = await cdp.evaluate("document.getElementById('cm-opportunities').innerText");
+      assert.ok(meta.includes("promoções de") && meta.includes("desatualizado, atualizando"), meta);
     });
 
     console.log(`# ${checks} smoke tests de UI (precificação) concluídos`);

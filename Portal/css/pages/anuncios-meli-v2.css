@@ -957,8 +957,29 @@
 /* Faixa de margem do agrupador (família): mínimo em cima, máximo embaixo,
    os DOIS com .am-margem__valor (mesmo tamanho/peso) — são margens válidas,
    nenhum é valor secundário/antigo. Só abre um respiro vertical entre eles. */
+/* Margem: valor(es) numa coluna e o (i) AO LADO, centralizado na altura
+   dos valores (1 linha no MLB, 2 na faixa mín/máx da família) — o (i)
+   embaixo empurrava o conteúdo e descentralizava a linha. */
+.vf-page-anuncios-meli .am-margem {
+  display: grid;
+  grid-template-columns: max-content auto;
+  justify-content: start;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 1px;
+}
+
+.vf-page-anuncios-meli .am-margem > * {
+  grid-column: 1;
+}
+
+.vf-page-anuncios-meli .am-margem > .am-margem__info {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
 .vf-page-anuncios-meli .am-margem--faixa {
-  gap: var(--vf-sp-1);
+  row-gap: var(--vf-sp-1);
 }
 
 /* "Realizada"/"Projetada" — o selo que diz qual margem é essa. Legenda de

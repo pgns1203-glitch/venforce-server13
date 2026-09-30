@@ -133,7 +133,7 @@ async function carregarContexto({ clienteSlug, clienteContaId, itemId }, deps = 
   const resp = await d.mlFetch(
     cliente.id,
     `/items/${encodeURIComponent(id)}?attributes=id,title,seller_id,status,variations,listing_type_id,category_id,shipping,seller_custom_field`,
-    { mlUserId }
+    { mlUserId, ...(deps.mlTimeoutMs ? { timeoutMs: deps.mlTimeoutMs } : {}) }
   );
   if (!resp || !resp.ok || !resp.data) throw erroDeRespostaMl(resp, "o anúncio");
   const body = resp.data;
@@ -194,7 +194,10 @@ async function carregarContexto({ clienteSlug, clienteContaId, itemId }, deps = 
  * Comissão e frete NO NOVO PREÇO. A comissão do ML tem faixas (custo fixo
  * abaixo de um valor) e o frete grátis muda ao cruzar o limiar — reusar os
  * números do preço atual subestimaria o impacto. Falha na recotação nunca
- * vira zero: cai para a taxa do Motor (comissão) ou o frete atual, marcado.
+ * vira zero: cai para a taxa do Motor (comissão) ou o frete atual, MARCADO
+ * pela fonte. Esses fallbacks só servem à SIMULAÇÃO: no modo escrita
+ * (preview/aplicar) `avaliar` bloqueia qualquer fonte que não seja uma
+ * cotação real (RECOTACAO_INDISPONIVEL).
  */
 async function recotar(base, preco, deps = {}) {
   const d = defaults(deps);
@@ -203,6 +206,10 @@ async function recotar(base, preco, deps = {}) {
     return { comissao: m.comissao, comissaoFonte: "motor", frete: m.frete, freteFonte: "motor" };
   }
   let cotacao = { comissaoValor: null, fretePrevisto: null };
+  // Prazo real também nas cotações (listing_prices / shipping_options).
+  const fetchComPrazo = deps.mlTimeoutMs && !deps.buscarComissaoEFrete
+    ? (clienteId, caminho, opts = {}) => require("../../../utils/mlClient").mlFetch(clienteId, caminho, { ...opts, timeoutMs: deps.mlTimeoutMs })
+    : undefined;
   try {
     cotacao = await d.buscarComissaoEFrete({
       clienteId: base.cliente.id,
@@ -213,7 +220,7 @@ async function recotar(base, preco, deps = {}) {
       sellerId: base.anuncio.sellerId,
       logisticType: base.anuncio.logisticType,
       mlUserId: base.conta.mlUserId,
-    });
+    }, ...(fetchComPrazo ? [fetchComPrazo] : []));
   } catch (_) {
     cotacao = { comissaoValor: null, fretePrevisto: null };
   }
@@ -291,7 +298,8 @@ function brl(v) {
  *  - promocao    promoção normalizada (releitura ao vivo) ou null
  *  - promocaoEncontrada  false quando a promoção pedida sumiu da releitura
  */
-function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, promocaoEncontrada = true }, deps = {}) {
+function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, promocaoEncontrada = true, modo = "simulacao" }, deps = {}) {
+  const escritaReal = modo === "escrita";
   const d = defaults(deps);
   const gates = [];
 
@@ -332,21 +340,33 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
       ? gate("motor", "DADOS", "ok", "Motor computável")
       : gate("motor", "DADOS", "block", "Motor não calcula a margem atual", `Falta: ${(antes.missing || []).join(", ")}.`)
   );
-  if (recote.comissaoFonte === "recotada" || recote.comissaoFonte === "motor") {
+  // Cotação REAL: recotada no novo preço, ou a do Motor quando o preço não
+  // muda (é a mesma consulta, feita pelo Motor no preço atual) — com valor.
+  const comissaoConfirmada = recote.comissao !== null && recote.comissao !== undefined &&
+    (recote.comissaoFonte === "recotada" || recote.comissaoFonte === "motor");
+  const freteConfirmado = recote.freteFonte === "nao_aplicavel" ||
+    (recote.frete !== null && recote.frete !== undefined && (recote.freteFonte === "recotado" || recote.freteFonte === "motor"));
+  if (comissaoConfirmada) {
     gates.push(gate("comissao", "DADOS", "ok", "Comissão do Mercado Livre no novo preço", brl(recote.comissao)));
+  } else if (escritaReal) {
+    gates.push(gate("comissao", "DADOS", "block", "Comissão não recotada — escrita bloqueada",
+      "O Mercado Livre não confirmou a tarifa neste preço. Estimativa não é aceita para escrita real; tente de novo em instantes."));
   } else if (recote.comissaoFonte === "taxa") {
-    gates.push(gate("comissao", "DADOS", "warn", "Comissão estimada pela taxa", "O Mercado Livre não recotou a tarifa neste preço; usada a taxa atual do anúncio."));
+    gates.push(gate("comissao", "DADOS", "warn", "Comissão estimada pela taxa", "O Mercado Livre não recotou a tarifa neste preço; usada a taxa atual do anúncio (só simulação)."));
   } else {
     gates.push(gate("comissao", "DADOS", "block", "Comissão indisponível", "Sem a tarifa do Mercado Livre a margem nova não é confiável."));
   }
-  if (recote.freteFonte === "recotado" || recote.freteFonte === "motor") {
-    gates.push(gate("frete", "DADOS", "ok", "Frete previsto no novo preço", brl(recote.frete)));
+  if (freteConfirmado) {
+    gates.push(recote.freteFonte === "nao_aplicavel"
+      ? gate("frete", "DADOS", "ok", "Frete combinável", "Sem custo de frete previsto pelo Mercado Livre.")
+      : gate("frete", "DADOS", "ok", "Frete previsto no novo preço", brl(recote.frete)));
+  } else if (escritaReal) {
+    gates.push(gate("frete", "DADOS", "block", "Frete não recotado — escrita bloqueada",
+      "O Mercado Livre não confirmou o frete para o novo preço. Frete do preço anterior ou zero não são aceitos para escrita real."));
   } else if (recote.freteFonte === "atual") {
-    gates.push(gate("frete", "DADOS", "warn", "Frete não recotado", "Usado o frete do preço atual — cruzar o limiar de frete grátis pode mudar o custo."));
-  } else if (recote.freteFonte === "nao_aplicavel") {
-    gates.push(gate("frete", "DADOS", "ok", "Frete combinável", "Sem custo de frete previsto pelo Mercado Livre."));
+    gates.push(gate("frete", "DADOS", "warn", "Frete não recotado", "Usado o frete do preço atual — cruzar o limiar de frete grátis pode mudar o custo (só simulação)."));
   } else {
-    gates.push(gate("frete", "DADOS", "warn", "Frete indisponível", "Entrou como zero declarado no cálculo."));
+    gates.push(gate("frete", "DADOS", "warn", "Frete indisponível", "Entrou como zero declarado no cálculo (só simulação)."));
   }
 
   // ── PREÇO ────────────────────────────────────────────────────────────────
@@ -451,6 +471,7 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
   const variacaoPercentual = variacaoReais !== null && m.precoAtual ? round2((variacaoReais / m.precoAtual) * 100) : null;
 
   return {
+    modo: escritaReal ? "escrita" : "simulacao",
     gates,
     bloqueado: gates.some((g) => g.tom === "block"),
     atual: {
@@ -484,8 +505,17 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
   };
 }
 
+// Gate bloqueante → código de recusa do aplicar.
+function codigoDoGate(g) {
+  if (!g) return "GATE_BLOQUEADO";
+  if (g.id === "preco_confirmado") return "PRECO_ALTERADO";
+  if (g.id === "comissao" || g.id === "frete") return "RECOTACAO_INDISPONIVEL";
+  return `GATE_${String(g.id).toUpperCase()}`;
+}
+
 module.exports = {
   TOLERANCIA_PRECO,
+  codigoDoGate,
   erroHttp,
   validarPreco,
   carregarContexto,

@@ -3756,7 +3756,7 @@
         "<h4>Título</h4>" +
         '<span id="am-det-status-seo">' + chipOtimizacao("seo", "titulo") + "</span>" +
       "</div>" +
-      '<div class="am-det-compare" id="am-det-compare-titulo">' +
+      '<div class="am-det-compare am-det-compare--compacto" id="am-det-compare-titulo">' +
         '<div class="am-det-compare__col">' +
           '<div class="am-det-compare__label"><span>' +
             (tituloTravado ? "Atual · gerenciado pelo Mercado Livre" : "Atual · editável aqui ou no cabeçalho") +
@@ -3765,6 +3765,8 @@
             (tituloTravado ? 'readonly aria-readonly="true" ' : "") +
             'aria-label="Título do anúncio (comparação com a IA)" placeholder="(sem título)" ' +
             'data-campo="titulo" value="' + escapeAttr(DET.rascunho.titulo) + '" />' +
+          '<span class="am-det-compare__count" id="am-det-count-espelho-titulo">' +
+            DET.rascunho.titulo.length + "/60 caracteres</span>" +
         "</div>" +
         '<div class="am-det-compare__col" id="am-det-sug-titulo">' + sugestaoTituloHtml(AM.otimizacoes.seo) + "</div>" +
         '<div class="am-det-compare__foot" id="am-det-foot-seo">' + footSeoHtml(AM.otimizacoes.seo) + "</div>" +
@@ -3774,7 +3776,7 @@
         "<h4>Modelo</h4>" +
         '<span id="am-det-status-modelo">' + chipOtimizacao("seo", "modelo") + "</span>" +
       "</div>" +
-      '<div class="am-det-compare" id="am-det-compare-modelo">' +
+      '<div class="am-det-compare am-det-compare--compacto" id="am-det-compare-modelo">' +
         '<div class="am-det-compare__col">' +
           '<div class="am-det-compare__label"><span>Atual · editável aqui ou no Catálogo</span></div>' +
           '<input class="vf-input vf-input--sm am-det-compare__input" id="am-det-espelho-modelo" ' +
@@ -3868,7 +3870,9 @@
   }
 
   function footSeoHtml(otim) {
-    if (!otim) return '<span class="am-det-compare__scoreline">Score SEO ainda não calculado.</span>';
+    // Sem otimização ainda: rodapé vazio (e escondido via :empty) — a coluna
+    // da IA já diz que não há sugestão, o aviso só repetia isso.
+    if (!otim) return "";
     var score = otim.score_seo != null ? otim.score_seo : 0;
     return '<span class="am-det-compare__scoreline">Score SEO ' + score + "/100" +
       (otim.motivo ? " — " + escapeHtml(otim.motivo) : "") + "</span>";
@@ -5280,6 +5284,8 @@
 
     var cTitulo = el("am-det-count-titulo");
     if (cTitulo) cTitulo.textContent = DET.rascunho.titulo.length + "/60 caracteres";
+    var cEspelho = el("am-det-count-espelho-titulo");
+    if (cEspelho) cEspelho.textContent = DET.rascunho.titulo.length + "/60 caracteres";
     var cDesc = el("am-det-count-descricao");
     if (cDesc) cDesc.textContent = String(DET.rascunho.descricao.length);
 

@@ -2097,13 +2097,26 @@ async function adicionarImagem(req, res) {
       mlUserId = contexto.mlUserId;
     }
 
-    const r = await imagensService.adicionarImagem({
-      clienteId: cliente.id,
-      itemId,
-      mlUserId,
-      anuncio,
-      arquivo: req.file,
-    });
+    // grupoVariacao presente = anúncio com variações: fluxo próprio (PUT com
+    // pictures + variations inteiros). Ausente = fluxo simples, que continua
+    // bloqueando anúncio com variações.
+    const grupoVariacao = typeof query.grupoVariacao === "string" ? query.grupoVariacao : "";
+    const r = grupoVariacao
+      ? await imagensService.adicionarImagemVariacao({
+        clienteId: cliente.id,
+        itemId,
+        mlUserId,
+        anuncio,
+        arquivo: req.file,
+        grupoChave: grupoVariacao,
+      })
+      : await imagensService.adicionarImagem({
+        clienteId: cliente.id,
+        itemId,
+        mlUserId,
+        anuncio,
+        arquivo: req.file,
+      });
 
     if (!r.ok) {
       const status = r.etapa === "validacao"
@@ -2112,6 +2125,7 @@ async function adicionarImagem(req, res) {
       const corpo = { ok: false, codigo: r.codigo, motivo: r.motivo, etapa: r.etapa };
       if (r.detalhesMl) corpo.detalhesMl = r.detalhesMl;
       if (r.pictureId) corpo.pictureId = r.pictureId;
+      if (r.critico) corpo.critico = true;
       return res.status(status).json(corpo);
     }
 
@@ -2140,6 +2154,7 @@ async function adicionarImagem(req, res) {
       anuncio: atualizado,
       confirmacaoPendente,
       imagem: r.imagem,
+      grupo: r.grupo || null,
     });
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
@@ -2148,6 +2163,58 @@ async function adicionarImagem(req, res) {
       ok: false,
       motivo: "Erro interno ao enviar a imagem para o anúncio.",
     });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/:itemId/imagens/variacoes?clienteSlug=…
+//
+// Só leitura, AO VIVO no ML: agrupa as variações pelo atributo defines_picture
+// da categoria e devolve as fotos de cada grupo, para a tela escolher onde a
+// imagem nova entra. Ver meliImagensService (bloco VARIAÇÕES).
+// ----------------------------------------------------------------------------
+async function gruposImagemVariacoes(req, res) {
+  try {
+    const { itemId } = req.params;
+    const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const r = await imagensService.listarGruposDeFotoVariacoes({ clienteId: cliente.id, itemId, mlUserId });
+    if (!r.ok) {
+      const corpo = { ok: false, codigo: r.codigo, motivo: r.motivo, etapa: r.etapa };
+      if (r.detalhesMl) corpo.detalhesMl = r.detalhesMl;
+      return res.status(r.etapa === "bloqueio" ? 409 : 422).json(corpo);
+    }
+    return res.json({ ok: true, atributo: r.atributo, grupos: r.grupos });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] gruposImagemVariacoes:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao carregar as variações do anúncio." });
   }
 }
 
@@ -2925,6 +2992,7 @@ module.exports = {
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
   adicionarImagem,
+  gruposImagemVariacoes,
   atualizarEstoque,
   atualizarPreco,
   simularMargem,

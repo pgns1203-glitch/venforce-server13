@@ -181,6 +181,9 @@ router.post(
   tratarErroUploadImagem,
   ctrl.adicionarImagem
 );
+// Anúncio com variações: grupos de foto (atributo defines_picture) lidos ao
+// vivo do ML. O envio usa a MESMA rota acima com ?grupoVariacao=<chave>.
+router.get("/:itemId/imagens/variacoes", ctrl.gruposImagemVariacoes);
 
 // Edição de ESTOQUE do anúncio NO MERCADO LIVRE (PUT /items { available_quantity }).
 // Mesmo acesso de /conteudo, pelo mesmo motivo: é escrita no anúncio, não

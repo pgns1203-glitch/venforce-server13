@@ -114,8 +114,8 @@ Repetir o passo 2 com:
       Anotar código e mensagem reais.
 - [ ] **Catálogo** — abrir um anúncio com `catalog_listing = true`: o
       "+ Adicionar imagem" fica **desabilitado** com o motivo. Nada é enviado.
-- [ ] **Variações** — abrir um anúncio com variações: botão desabilitado com o
-      motivo. Nada é enviado.
+- [ ] **Variações** — o fluxo de anúncio com variações tem roteiro próprio:
+      ver seção 7A.
 
 ## 7. Anúncio de produto (User Product / family_name)
 
@@ -132,6 +132,97 @@ Só depois dos passos 1–6 passarem.
       isso não está documentado.
 - [ ] Anotar se o snapshot dos outros anúncios só se corrige no próximo sync
       (esperado: sim — o upload só grava o anúncio editado).
+
+## 7A. Anúncio COM VARIAÇÕES (modelo legado)
+
+Fluxo diferente do anúncio simples: `GET /items/{id}` + `GET
+/categories/{cat}/attributes` (atributo com tag `defines_picture`) → upload →
+`GET /items/{id}` → **`PUT /items/{id}` com `pictures` e `variations`
+inteiros** → `GET /items/{id}` de conferência. A imagem entra em TODAS as
+variações que têm o mesmo valor do atributo que define a foto (ex.: todas as
+"Azul"). Testes simulados: `server/tests/meliAnunciosImagensVariacoes.test.js`
+e check 7j do modal.
+
+**Este é o passo de maior risco do roteiro**: o PUT reenvia a lista inteira, e
+o ML documenta que variação ou foto omitida é APAGADA. Fazer primeiro numa
+conta/anúncio de teste.
+
+Escolher o anúncio:
+
+- [ ] `variations` com **2+ valores diferentes** do atributo de foto e **2+
+      variações no mesmo valor** (ex.: Azul P, Azul M, Preto P);
+- [ ] sem `catalog_listing`, sem `user_product_id`;
+- [ ] **antes de tudo**, salvar o JSON de `GET /items/{id}` (pictures +
+      variations com `picture_ids`) — é o que permite restaurar se algo sair
+      errado.
+
+Na tela:
+
+- [ ] Ao abrir o modal, "+ Adicionar imagem" mostra "Carregando as variações…"
+      e depois libera; aparece "Fotos por cor" (ou o atributo real) com cada
+      grupo, suas combinações e miniaturas. **Conferir** que os grupos batem
+      com o que o ML mostra na página do anúncio.
+- [ ] Escolher o arquivo: aparece o seletor "Adicionar às variações de …" sem
+      opção pré-selecionada; "Enviar" fica desabilitado até escolher.
+- [ ] Escolher um grupo (ex.: Azul) e enviar. Estados até "Concluído", com a
+      mensagem "(variações Cor: Azul)".
+
+No Mercado Livre:
+
+- [ ] A foto nova aparece ao selecionar **cada** variação do grupo escolhido
+      (Azul P **e** Azul M).
+- [ ] A foto **não** aparece nas variações de outros valores (Preto P).
+- [ ] Nenhuma variação sumiu; estoque e preço de cada variação iguais aos do
+      JSON salvo.
+- [ ] Nenhuma foto antiga sumiu (comparar `pictures` com o JSON salvo); a capa
+      de cada grupo continua a mesma.
+- [ ] `GET /items/{id}`: o `pictureId` devolvido está em `pictures` e no
+      `picture_ids` de cada variação do grupo, no fim da lista.
+- [ ] No log, nenhum `meli_imagem_variacao_perda_critica`.
+
+Sync:
+
+- [ ] Rodar o sync do cliente: `pictures_json` e `variations_count` iguais aos
+      de depois do envio; o modal reaberto mostra os mesmos grupos e fotos.
+
+Erros reais a registrar:
+
+- [ ] Grupo já no limite de fotos por variação (`max_pictures_per_item_var`
+      da categoria): anotar código/mensagem do ML (etapa `vinculo`) e conferir
+      que **nada mudou** no anúncio.
+- [ ] Categoria sem `defines_picture` entre os atributos das variações (se
+      achar uma): a tela bloqueia com o motivo, nenhum upload.
+- [ ] Anúncio com `user_product_id`: bloqueado com o motivo.
+
+### Resultado 7A — 2026-09-30 (commit 6e81855)
+
+Evidência gerada com `server/scripts/validacaoImagemVariacao.js` (somente
+leitura: `antes` / `comparar` / `snapshot`).
+
+- Anúncio: cliente Red Fish, MLB5929315274 (ativo, categoria MLB123891),
+  35 variações = 7 cores × 5 tamanhos, 7 fotos por cor, 49 fotos no total.
+  Sem catálogo, sem `user_product_id`. Cores são valores personalizados (sem
+  `value_id`): o agrupamento por nome funcionou.
+- Execução: pelo mesmo controller do endpoint (`adicionarImagem` com
+  `grupoVariacao=nome:robalo`), sem HTTP/multer/login do Portal. Imagem: cópia
+  da última foto do próprio grupo Robalo (500×500). Uma única execução,
+  HTTP 200 em ~6,7 s, `confirmacaoPendente=false`, picture_id
+  `997902-MLB118515217453_092026`.
+- Teste 1: as 5 variações Robalo passaram de 7 para 8 `picture_ids` (antigos na
+  mesma ordem + nova no fim). **OK**
+- Teste 2: as 30 variações das outras 6 cores com `picture_ids` idênticos;
+  preço, estoque e `attribute_combinations` de todas as 35 idênticos. **OK**
+- Teste 3: galeria 49 → 50, as 49 antigas na mesma ordem, nova na posição 50,
+  capa e `thumbnail` iguais, status `active`, tags iguais. Fora de fotos, só
+  `last_updated` e `expiration_time` mudaram. **OK**
+- Teste 4: snapshot pós-envio igual à galeria do ML (50 fotos, 35 variações);
+  sync completo do cliente (175 anúncios) deixou a linha idêntica. **OK**
+- Achado: a categoria informa `max_pictures_per_item = 12` e
+  `max_pictures_per_item_var = 10`; o anúncio já tinha 49 fotos e o ML aceitou
+  a 50ª. Na prática o limite que vale é o por variação.
+- Não coberto nesta rodada: clique pelo Portal (HTTP, multer, auth),
+  recusa real por limite por variação, caminhos de falha
+  (`VINCULO_INCERTO`, `CONFIRMACAO_DIVERGENTE`, perda crítica).
 
 ## 8. Limpeza
 
@@ -154,6 +245,9 @@ Só depois dos passos 1–6 passarem.
 | Erro real de limite de fotos (código/mensagem, etapa) | |
 | Catálogo e variações bloqueados na tela | |
 | Replicação em User Product ocorre? | |
+| Variações: foto só no grupo escolhido, todas as variações do grupo | |
+| Variações: nenhuma variação/foto antiga perdida no PUT | |
+| Variações: erro real de limite por variação | |
 | Snapshot e sync concordam | |
 | Moderação posterior (pausa/tag) | |
 

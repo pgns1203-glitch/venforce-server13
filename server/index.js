@@ -104,6 +104,7 @@ const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 const centralVendasNoturnoScheduler = require("./services/centralVendas/centralVendasNoturnoScheduler");
 const marginSnapshotRuntime = require("./services/motorMargem/marginSnapshotRuntime");
+const promoSnapshotRuntime = require("./services/promoSnapshot/promoSnapshotRuntime");
 const margemProjetadaScheduler = require("./services/motorMargem/margemProjetadaScheduler");
 const { ensureDiagnosticoInicialTables } = require("./services/diagnosticoInicial/diagnosticoInicialRepository");
 const observabilityRoutes = require("./routes/observabilityRoutes");
@@ -122,6 +123,7 @@ const {
   ensureEntregasClienteSchema,
   ensureAnunciosMargemProjetadaSnapshotSchema,
   ensureMargemPrecificacaoSchema,
+  ensurePromoSnapshotSchema,
 } = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
@@ -2153,6 +2155,17 @@ const server = app.listen(PORT, () => {
   marginSnapshotRuntime.iniciarSeHabilitado().catch((err) => {
     console.error("[marginSnapshot] worker não iniciado:", err.message);
   });
+
+  // Promo Snapshot por conta (promoções do ML mantidas pelo backend, SOMENTE
+  // LEITURA no ML). A migration versionada é aditiva e aplicada sempre,
+  // serializada por advisory lock. Worker + orquestrador só com
+  // PROMO_SNAPSHOT_WORKER_ENABLED=true EXPLÍCITO; sem a flag nenhum timer
+  // existe e a Central continua lendo o último snapshot (ou o legado).
+  ensurePromoSnapshotSchema()
+    .then(() => promoSnapshotRuntime.iniciarSeHabilitado())
+    .catch((err) => {
+      console.error("[promoSnapshot] schema/worker não iniciado:", err.message);
+    });
 });
 
 // Encerramento: tenta drenar a fila de observabilidade sem travar o processo.
@@ -2177,6 +2190,9 @@ async function encerrarComGraca(sinal) {
     // Aborta runs de Margin Snapshot no próximo ponto seguro e aguarda a
     // drenagem dentro do mesmo prazo único usado pelos demais componentes.
     Promise.resolve().then(() => marginSnapshotRuntime.parar()),
+    // Promo Snapshot: mesma parada cooperativa (o run interrompido fica
+    // retomável pelo próximo run da conta).
+    Promise.resolve().then(() => promoSnapshotRuntime.parar()),
     observabilityService.shutdown(),
     servidorFechado,
   ]);

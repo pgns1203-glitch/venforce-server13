@@ -3811,6 +3811,26 @@ async function run() {
       await waitFor(cdp, "!document.querySelector('.am-det-modal')", "o modal não fechou");
       const depois = await lerCelulasPreco();
       idsPreco.forEach((id) => assert.strictEqual(depois[id].html, antes[id].html, `${id}: fechar o modal mudou a célula de preço da lista`));
+    });
+
+    await check("41c — recarregar a MESMA página de 24 usa o cache: nenhum lote novo de margem, preço continua ao vivo", async () => {
+      const antes = await lerCelulasPreco();
+      chamadasPerformance.length = 0;
+      await cdp.evaluate(`document.querySelector('#am-catalogo-container').innerHTML = ''`);
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelectorAll('.am-row[data-item^="MLB-PRC-"]').length === 24`, "a página não recarregou");
+      await sleep(400);
+      const pediuMargemDeNovo = chamadasPerformance.filter((c) => c.incluirMargem && c.itemIds.some((id) => id.startsWith("MLB-PRC-")));
+      assert.deepStrictEqual(pediuMargemDeNovo, [], "itens já resolvidos (inclusive os do 2º lote) não podem ser pedidos de novo");
+      const depois = await lerCelulasPreco();
+      idsPreco.forEach((id) => {
+        assert.strictEqual(depois[id].original, antes[id].original, `${id}: riscado mudou ao recarregar`);
+        assert.strictEqual(depois[id].atual, antes[id].atual, `${id}: preço vigente mudou ao recarregar (render inicial já deve ler o cache)`);
+      });
       listagemPadraoHandler = null;
       performanceHandler = null;
     });

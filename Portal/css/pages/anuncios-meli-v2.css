@@ -2086,12 +2086,14 @@
 
 /* ----- Fotos ----- */
 
+/* Ocupa a largura inteira do modal: auto-fill cria tantas colunas quantas
+   couberem (≈8 no desktop, menos em telas estreitas). Sem max-width — antes
+   a grade parava em 520px (4 colunas) e deixava o resto do modal vazio. */
 .vf-page-anuncios-meli .am-det-photos {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
   gap: 10px;
   margin-top: 12px;
-  max-width: 520px;
 }
 
 .vf-page-anuncios-meli .am-det-photo {
@@ -2327,6 +2329,10 @@
 }
 
 @media (max-width: 640px) {
+  .vf-page-anuncios-meli .am-det-photos {
+    grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  }
+
   .vf-page-anuncios-meli .am-det-overlay {
     padding: 0;
     align-items: stretch;

@@ -66,6 +66,14 @@ async function listarSemanas(req, res) {
   } catch (err) { return tratarErro(res, err, "listarSemanas"); }
 }
 
+// GET /painel-contas/:clienteId/contas/semanas?competencia=
+async function listarSemanasDasContas(req, res) {
+  try {
+    const data = await service.listarSemanasDasContas(req.user || {}, req.params.clienteId, req.query.competencia);
+    return responder(res, 200, data);
+  } catch (err) { return tratarErro(res, err, "listarSemanasDasContas"); }
+}
+
 // PUT /painel-contas/:clienteId/contas/:contaId/manual/:competencia
 async function salvarLancamentoManual(req, res) {
   try {
@@ -104,6 +112,6 @@ async function obterAtualizacao(req, res) {
 }
 
 module.exports = {
-  listar, listarMeses, listarSemanas, salvarLancamentoManual, removerLancamentoManual,
+  listar, listarMeses, listarSemanas, listarSemanasDasContas, salvarLancamentoManual, removerLancamentoManual,
   iniciarAtualizacao, obterAtualizacao, maskSensitiveData,
 };

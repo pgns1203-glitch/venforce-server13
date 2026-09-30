@@ -6,9 +6,9 @@
 // de mês, incompatível com toda fonte financeira existente, que é 100%
 // ancorada em competência YYYY-MM).
 //
-// Só FAT tem série diária persistida (payload_json.porDia) — todo o resto
-// (LC/MC/ADS/ACOS/TACOS/COM/ATV/NPS) é `null` em granularidade semanal,
-// NUNCA o valor mensal rateado (Auditoria §11, regra dura).
+// No consolidado legado, só FAT tem série diária em payload_json.porDia.
+// Na conta, FAT/LC/MC podem vir dos pedidos canônicos do próprio import;
+// Ads/ACOS/TACOS/COM/ATV/NPS continuam null. Nenhuma métrica é rateada.
 const DEFINICAO = "dias_fixos_01_07_08_14_15_21_22_28_29_fim";
 
 function ultimoDiaDoMes(competencia) {
@@ -61,4 +61,70 @@ function agruparEmSemanas(competencia, porDia) {
   });
 }
 
-module.exports = { DEFINICAO, blocosDaSemana, agruparEmSemanas };
+function dataIso(valor) {
+  if (!valor) return null;
+  return valor instanceof Date ? valor.toISOString().slice(0, 10) : String(valor).slice(0, 10);
+}
+
+function numeroOuNull(valor) {
+  if (valor === null || valor === undefined || valor === "") return null;
+  const n = Number(valor);
+  return Number.isFinite(n) ? n : null;
+}
+
+function round2(valor) {
+  return Math.round(Number(valor) * 100) / 100;
+}
+
+// Quebra semanal POR CONTA usando as linhas do MESMO import que alimenta o
+// FAT mensal da conta. O chamador só invoca esta função quando há import
+// selecionado; ausência de import é representada por [] (nenhuma semana
+// inventada). Cancelados/mediações seguem o predicado oficial da Central.
+//
+// A cobertura publicada distingue zero real de ausência: bloco inteiramente
+// coberto e sem pedido válido tem FAT 0; fora da cobertura fica null. Em
+// imports legacy, sem cobertura auditável, só um bloco com pedido pode afirmar
+// valor. LC soma `resultado` real; MC usa a mesma base oficial do import
+// (faturamento dos pedidos não bloqueados). Sem resultado/base, ambos são null.
+function agruparPedidosEmSemanas(
+  competencia,
+  pedidos,
+  { coberturaInicio = null, coberturaFim = null, pedidoValido = () => true } = {}
+) {
+  if (!Array.isArray(pedidos)) return [];
+  const inicio = dataIso(coberturaInicio);
+  const fim = dataIso(coberturaFim);
+  const validos = pedidos
+    .filter((p) => dataIso(p?.data_pedido)?.startsWith(`${competencia}-`))
+    .filter(pedidoValido);
+
+  return blocosDaSemana(competencia).map(({ semana, de, ate }) => {
+    const deIso = `${competencia}-${pad2(de)}`;
+    const ateIso = `${competencia}-${pad2(ate)}`;
+    const doBloco = validos.filter((p) => {
+      const data = dataIso(p.data_pedido);
+      return data >= deIso && data <= ateIso;
+    });
+    // Zero só é afirmado quando o bloco inteiro está coberto. Uma publicação
+    // parcial que alcança apenas parte da semana não autoriza completar os
+    // dias restantes com zero; se houver pedidos, a soma parcial real aparece,
+    // caso contrário o bloco permanece ausente.
+    const coberto = Boolean(inicio && fim && inicio <= deIso && fim >= ateIso);
+    const temDado = coberto || doBloco.length > 0;
+    const fat = temDado ? round2(doBloco.reduce((soma, p) => soma + (numeroOuNull(p.faturamento) || 0), 0)) : null;
+    const comResultado = doBloco.map((p) => numeroOuNull(p.resultado)).filter((v) => v !== null);
+    const lc = comResultado.length ? round2(comResultado.reduce((soma, v) => soma + v, 0)) : null;
+    const baseMc = doBloco
+      .filter((p) => String(p.confianca || "").toLowerCase() !== "bloqueado")
+      .reduce((soma, p) => soma + (numeroOuNull(p.faturamento) || 0), 0);
+    const mc = lc !== null && baseMc > 0 ? Math.round((lc / baseMc) * 1e6) / 1e6 : null;
+    return {
+      semana,
+      de: deIso,
+      ate: ateIso,
+      resumo: { fat, lc, mc, ads: null, acos: null, tacos: null, com: null, atv: null, nps: null },
+    };
+  });
+}
+
+module.exports = { DEFINICAO, blocosDaSemana, agruparEmSemanas, agruparPedidosEmSemanas };

@@ -20,6 +20,7 @@ const naCarteira = requireClienteNaCarteira("clienteId");
 router.get("/", authMiddleware, requireAutomacoesAccess, controller.listar);
 router.get("/:clienteId/meses", authMiddleware, requireAutomacoesAccess, naCarteira, controller.listarMeses);
 router.get("/:clienteId/meses/:competencia/semanas", authMiddleware, requireAutomacoesAccess, naCarteira, controller.listarSemanas);
+router.get("/:clienteId/contas/semanas", authMiddleware, requireAutomacoesAccess, naCarteira, controller.listarSemanasDasContas);
 // Lançamento manual por conta × competência. Mesmo gate de PUT
 // /ads/resumo-mensal (o outro lançamento gerencial manual): papel de
 // automações + cliente na carteira; o service ainda exige que a conta

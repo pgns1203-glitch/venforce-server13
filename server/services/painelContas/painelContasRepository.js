@@ -141,6 +141,25 @@ async function listarImportsDaCompetencia(contaIds, competencia) {
   return rows;
 }
 
+// Pedidos dos imports JÁ escolhidos pelo service. Uma consulta cobre todas as
+// contas do cliente e traz só os campos canônicos necessários à quebra
+// semanal; o intervalo impede que uma linha de borda de outra competência
+// contamine o mês selecionado.
+async function listarPedidosDosImports(importIds, { inicio, fim }) {
+  if (!Array.isArray(importIds) || !importIds.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:PEDIDOS_DOS_IMPORTS */
+     SELECT p.import_id, p.data_pedido, p.status, p.confianca,
+            p.faturamento, p.resultado
+       FROM central_vendas_pedidos p
+      WHERE p.import_id = ANY($1::bigint[])
+        AND p.data_pedido BETWEEN $2::date AND $3::date
+      ORDER BY p.import_id, p.data_pedido, p.id`,
+    [importIds, inicio, fim]
+  );
+  return rows;
+}
+
 // Último sync_run de cada conta que toca a competência. Só status/código/data
 // — error_message pode carregar texto de terceiros e não sai daqui.
 async function listarUltimoRunPorConta(contaIds, { inicio, fim }) {
@@ -308,6 +327,7 @@ module.exports = {
   listarUltimaCompetenciaComDado,
   listarContasDeClientes,
   listarImportsDaCompetencia,
+  listarPedidosDosImports,
   listarUltimoRunPorConta,
   listarAdsDaCompetencia,
   listarManuaisDaCompetencia,

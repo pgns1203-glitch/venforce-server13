@@ -1172,6 +1172,146 @@ cenario("heartbeat perdido durante a espera (run reconciliado de verdade): o pro
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 2ª auditoria — catálogo malformado (página não vazia sem paging e sem cursor)
+// ─────────────────────────────────────────────────────────────────────────────
+
+cenario("catálogo malformado: 100 results SEM paging e SEM scroll_id → falha (SEM_METADADOS_CONTINUIDADE); snapshot NÃO é promovido", async () => {
+  const { r, amb } = await cenarioCatalogo({ pagina: (s, ids) => ({ results: ids.slice(0, 100) }) });
+  assert.ok(/SEM_METADADOS_CONTINUIDADE/.test(r.run.errorMessage), r.run.errorMessage);
+  assert.ok(/100 anúncio\(s\) sem scroll_id e sem paging.total/.test(r.run.errorMessage));
+  assert.notStrictEqual(r.run.status, "completed");
+  assert.strictEqual(r.run.promovido, false);
+  assert.strictEqual(amb.repo._st.runs.filter((x) => x.promovido).length, 1, "só o snapshot bom anterior foi promovido");
+});
+
+cenario("catálogo malformado no fim: páginas boas e a última (não vazia) sem paging e sem scroll_id → falha, mesmo com a contagem batendo", async () => {
+  const { r } = await cenarioCatalogo({
+    pagina: (s, ids) => {
+      const inicio = s ? Number(s.replace("s-", "")) : 0;
+      const results = ids.slice(inicio, inicio + 100);
+      return inicio >= 200 ? { results } : { results, paging: { total: 250 }, scroll_id: `s-${inicio + 100}` };
+    },
+  });
+  assert.ok(/SEM_METADADOS_CONTINUIDADE/.test(r.run.errorMessage), r.run.errorMessage);
+});
+
+cenario("fim legítimo continua aceito: página não vazia sem scroll_id COM paging.total igual ao lido → completed", async () => {
+  const amb = ambiente({
+    sellers: { 555: { itens: catalogo("A", 50) } },
+    roteiro: (p) => (p.startsWith("/users/") ? { ok: true, status: 200, data: { results: Object.keys(catalogo("A", 50)), paging: { total: 50 } } } : undefined),
+  });
+  const r = await amb.rodar(7);
+  assert.strictEqual(r.status, "completed");
+  assert.strictEqual(r.run.itensTotal, 50);
+  assert.strictEqual(amb.ml.contar(/^\/users\//), 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2ª auditoria — heartbeat × request individual longa (invariante de config)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const cfgMod = require("../services/promoSnapshot/promoSnapshotConfig");
+
+cenario("config: timeout e heartbeat acima de 1/4 da janela de stale são LIMITADOS e registrados em ajustes", async () => {
+  const padrao = resolvePromoSnapshotConfig({});
+  assert.deepStrictEqual(padrao.ajustes, [], "defaults já são seguros");
+  assert.strictEqual(padrao.requestTimeoutMs, 15000);
+  const c = resolvePromoSnapshotConfig({ PROMO_SNAPSHOT_RUNNING_STALE_MINUTES: "2", PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS: "120000", PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS: "600000" });
+  assert.strictEqual(c.runningStaleMinutes, 2);
+  assert.strictEqual(c.requestTimeoutMs, 30000, "120 s viraria ≥ janela de 2 min: limitado a 30 s");
+  assert.strictEqual(c.heartbeatIntervalMs, 30000);
+  assert.deepStrictEqual(c.ajustes.map((a) => [a.variavel, a.configurado, a.efetivo]), [
+    ["PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS", 120000, 30000],
+    ["PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS", 600000, 30000],
+  ]);
+  assert.ok(cfgMod.piorIntervaloSemHeartbeatMs(c) < 2 * 60000);
+});
+
+cenario("config: nenhuma combinação de env produz requestTimeoutMs ≥ janela de stale (varredura)", async () => {
+  let combinacoes = 0;
+  for (const stale of ["1", "2", "3", "5", "10", "60", "1440", "99999", "lixo"]) {
+    for (const timeout of ["1", "1000", "15000", "60000", "120000", "9999999", ""]) {
+      for (const hb of ["1", "60000", "600000", "9999999"]) {
+        for (const intervalo of ["0", "100", "10000", "999999"]) {
+          const c = resolvePromoSnapshotConfig({
+            PROMO_SNAPSHOT_RUNNING_STALE_MINUTES: stale, PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS: timeout,
+            PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS: hb, PROMO_SNAPSHOT_REQUEST_INTERVAL_MS: intervalo,
+          });
+          const janela = c.runningStaleMinutes * 60000;
+          assert.ok(c.requestTimeoutMs > 0 && c.requestTimeoutMs <= janela / 4, `timeout ${c.requestTimeoutMs} p/ janela ${janela}`);
+          assert.ok(c.heartbeatIntervalMs <= janela / 4);
+          assert.ok(cfgMod.piorIntervaloSemHeartbeatMs(c) < janela, `pior intervalo ${cfgMod.piorIntervaloSemHeartbeatMs(c)} < ${janela}`);
+          combinacoes += 1;
+        }
+      }
+    }
+  }
+  assert.strictEqual(combinacoes, 9 * 7 * 4 * 4);
+});
+
+cenario("config montada à mão insegura: validação explícita recusa; o processor falha o run ANTES de qualquer chamada ao ML", async () => {
+  const insegura = { ...resolvePromoSnapshotConfig({ PROMO_SNAPSHOT_RUNNING_STALE_MINUTES: "2" }), requestTimeoutMs: 120000 };
+  assert.throws(() => cfgMod.validarInvariantesHeartbeat(insegura), (e) => e.code === "PROMO_SNAPSHOT_CONFIG_INSEGURA" && /requestTimeoutMs 120000 > 30000/.test(e.message));
+  assert.throws(() => cfgMod.validarInvariantesHeartbeat({ ...insegura, requestTimeoutMs: null }), (e) => e.code === "PROMO_SNAPSHOT_CONFIG_INSEGURA");
+  const amb = ambiente();
+  amb.procDeps.config = insegura;
+  const r = await amb.rodar(7);
+  assert.strictEqual(r.status, "failed");
+  assert.strictEqual(r.run.errorCode, "PROMO_SNAPSHOT_CONFIG_INSEGURA");
+  assert.strictEqual(amb.ml.chamadas.length, 0, "nenhuma chamada ao ML com config insegura");
+});
+
+cenario("startup: env inseguro sobe com os valores LIMITADOS e loga o ajuste explicitamente", async () => {
+  const avisos = [];
+  let configDoWorker = null;
+  const logger = { log() {}, warn: (m) => avisos.push(String(m)), error() {} };
+  await runtime.iniciarSeHabilitado({
+    env: { PROMO_SNAPSHOT_WORKER_ENABLED: "true", PROMO_SNAPSHOT_RUNNING_STALE_MINUTES: "2", PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS: "120000" },
+    logger,
+    ensureTables: async () => {},
+    orquestrar: async () => ({ enfileirados: [] }),
+    createWorker: ({ config }) => { configDoWorker = config; return { start() {}, stop: async () => {}, kick() {}, status: () => ({}) }; },
+  });
+  await runtime.parar();
+  assert.strictEqual(configDoWorker.requestTimeoutMs, 30000);
+  assert.ok(avisos.some((a) => /PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS=120000 excede 1\/4 da janela de stale/.test(a) && /usando 30000/.test(a)), avisos.join("\n"));
+});
+
+cenario("request longa com relógio fake: cada GET preso até o timeout (limitado a 30 s na janela de 2 min) e outra instância reconciliando → run sobrevive", async () => {
+  const ref = {};
+  const env = { PROMO_SNAPSHOT_RUNNING_STALE_MINUTES: "2", PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS: "120000", PROMO_SNAPSHOT_MAX_ATTEMPTS: "4" };
+  const amb = ambiente({
+    env,
+    // A request fica em voo até o timeout que o leitor passou ao mlFetch e
+    // estoura; logo depois a "outra instância" reconcilia (stale = 2 min).
+    roteiro: async (p, o, n) => {
+      if (p.includes("seller-promotions/items/MLBA0002") && n <= 3) {
+        ref.amb.relogio.avancarMs(o.timeoutMs);
+        await ref.amb.repo.reconcileStaleRunningRuns({ staleMinutes: 2 });
+        return F.erroTimeout(p);
+      }
+      return undefined;
+    },
+    sleepHook: async (ms, relogio, repo) => { relogio.avancarMs(ms); await repo.reconcileStaleRunningRuns({ staleMinutes: 2 }); },
+  });
+  ref.amb = amb;
+  const batidas = [];
+  const touch = amb.repo.touchHeartbeat;
+  amb.repo.touchHeartbeat = async (id) => { batidas.push(amb.relogio.agora()); return touch(id); };
+  const inicio = amb.relogio.agora();
+  const r = await amb.rodar(7);
+  assert.ok(amb.ml.chamadas.every((c) => c.timeoutMs === 30000), "o mlFetch sempre recebe o timeout efetivo (30 s)");
+  assert.ok(amb.relogio.agora() - inicio >= 90000, "3 requests presas até o timeout");
+  assert.strictEqual(r.status, "completed");
+  assert.strictEqual(r.run.retries, 3);
+  assert.ok(amb.repo._st.runs.every((x) => x.error_code !== "PROMO_SNAPSHOT_RUN_STALE"));
+  const gaps = batidas.slice(1).map((t, i) => t - batidas[i]);
+  assert.ok(Math.max(...gaps) <= 30000 + 30000 + 1000, `maior intervalo sem heartbeat ${Math.max(...gaps)} ms (≤ timeout + heartbeat)`);
+  // Sem o limite, 120 s de request sozinha já igualaria a janela de 2 min.
+  assert.throws(() => cfgMod.validarInvariantesHeartbeat({ ...amb.config, requestTimeoutMs: 120000 }), (e) => e.code === "PROMO_SNAPSHOT_CONFIG_INSEGURA");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Auditoria — achado 5: oportunidades paginadas no banco
 // ─────────────────────────────────────────────────────────────────────────────
 

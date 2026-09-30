@@ -21,7 +21,7 @@
 
 const pool = require("../../config/database");
 const repoPadrao = require("./promoSnapshotRepository");
-const { resolvePromoSnapshotConfig } = require("./promoSnapshotConfig");
+const { resolvePromoSnapshotConfig, validarInvariantesHeartbeat } = require("./promoSnapshotConfig");
 const { criarLeitorMl, PromoSnapshotLeituraError } = require("./promoSnapshotMlLeitor");
 const normalize = require("./promoSnapshotNormalize");
 const { executarComRetry, esperar, MarginSnapshotStopError } = require("../motorMargem/marginSnapshotRetry");
@@ -106,6 +106,11 @@ async function processPromoSnapshotRun(run, deps = {}) {
   const logger = deps.logger || console;
   const signal = deps.signal || null;
   const config = deps.config || resolvePromoSnapshotConfig(deps.env);
+  // Uma request em voo não renova heartbeat: timeout + heartbeat precisam
+  // caber folgados na janela de stale. Config montada à mão que viole isso
+  // falha o run AQUI, antes de qualquer chamada ao ML (a do env já vem
+  // limitada por resolvePromoSnapshotConfig).
+  validarInvariantesHeartbeat(config);
   const sleep = deps.sleep || esperar;
   const clock = deps.clock || (() => Date.now());
   const repo = deps.repo || repoPadrao;
@@ -134,14 +139,12 @@ async function processPromoSnapshotRun(run, deps = {}) {
   // ── Heartbeat cooperativo ───────────────────────────────────────────────
   // Renovado antes de cada chamada ao ML e entre fatias de toda espera
   // (backoff, Retry-After, cooldown do rate limiter), com intervalo de no
-  // máximo 1/3 do teto de stale: uma leitura legítima que demora (retry +
-  // backoff) nunca faz outra instância reconciliar o run como morto. Não há
-  // timer solto: se o processo travar de verdade, o heartbeat para — e o
-  // run é recuperado como deve.
-  const intervaloBatimento = Math.max(1, Math.min(
-    Number(config.heartbeatIntervalMs) || 60000,
-    Math.floor((Number(config.runningStaleMinutes) || 10) * 60000 / 3)
-  ));
+  // máximo 1/4 da janela de stale; uma request individual dura no máximo
+  // requestTimeoutMs, também ≤ 1/4 da janela. Uma leitura legítima que
+  // demora (retry + backoff ou uma request lenta) nunca faz outra instância
+  // reconciliar o run como morto. Não há timer solto: se o processo travar
+  // de verdade, o heartbeat para — e o run é recuperado como deve.
+  const intervaloBatimento = Math.max(1, Number(config.heartbeatIntervalMs)); // já ≤ stale/4 (validado acima)
   let ultimoBatimento = clock();
   let batimentoEmVoo = null;
   let runPerdido = false;

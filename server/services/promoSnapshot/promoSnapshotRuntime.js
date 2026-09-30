@@ -54,6 +54,14 @@ async function iniciarSeHabilitado({
     return null;
   }
   if (workerAtual) return workerAtual;
+  // Invariante heartbeat × request (promoSnapshotConfig): valor de env
+  // acima do teto foi LIMITADO — registrado aqui, nunca em silêncio.
+  for (const a of config.ajustes || []) {
+    logger.warn?.(
+      `${LOG} ${a.variavel}=${a.configurado} excede 1/4 da janela de stale ` +
+      `(PROMO_SNAPSHOT_RUNNING_STALE_MINUTES=${config.runningStaleMinutes}); usando ${a.efetivo}`
+    );
+  }
 
   const garantir = ensureTables || require("../schema/schemaEnsure").ensurePromoSnapshotSchema;
   await garantir(db);

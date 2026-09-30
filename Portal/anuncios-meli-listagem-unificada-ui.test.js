@@ -2822,6 +2822,21 @@ async function run() {
         }; })()`);
       assert.deepStrictEqual(estado.fam, ["8,0%", "21,5%"], "família com faixa também fora da ordenação por margem");
       assert.strictEqual(estado.item, "11,0%");
+
+      // (i) AO LADO dos valores e centralizado na altura deles — nunca embaixo.
+      const geo = await cdp.evaluate(`(function(){
+        function medir(cel){
+          var vs = cel.querySelectorAll('.am-margem__valor'), i = cel.querySelector('.am-margem__info').getBoundingClientRect();
+          var topo = vs[0].getBoundingClientRect().top, base = vs[vs.length - 1].getBoundingClientRect().bottom;
+          var direita = Math.max.apply(null, Array.prototype.map.call(vs, function(v){ return v.getBoundingClientRect().right; }));
+          return { aoLado: i.left >= direita, desvio: Math.abs((i.top + i.bottom) / 2 - (topo + base) / 2) };
+        }
+        return { fam: medir(document.querySelector('${linhaFam("FAM-1")} .am-margem')),
+                 item: medir(document.querySelector('.am-row[data-item="MLB-FAT-1"] .am-margem')) }; })()`);
+      for (const [onde, g] of Object.entries(geo)) {
+        assert.strictEqual(g.aoLado, true, `${onde}: o (i) fica à direita da margem`);
+        assert.ok(g.desvio <= 3, `${onde}: o (i) fica centralizado na altura dos valores (desvio ${g.desvio}px)`);
+      }
       ordenarPorGlobalHandler = null;
       console.log("  ✓ 39a6");
     });

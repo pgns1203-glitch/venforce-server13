@@ -154,7 +154,8 @@ const MOCK_CLIENT = `
       holdPromos: {}, resolvePromos: {},
       holdSim: false, resolveSim: [],
       previewBloqueado: false, escritaHabilitada: false,
-      applyMode: "ok",           // ok | network-then-ok
+      applyMode: "ok",           // ok | network-then-ok | desatualizado-then-ok | divergente | desconhecido
+      holdPreview: false, resolvePreview: [], previewSignals: [],
       appCalls: 0,
     };
 
@@ -260,14 +261,34 @@ const MOCK_CLIENT = `
         }
         return Promise.resolve(resposta);
       },
-      previewPricing: function (params) {
+      previewPricing: function (params, signal) {
         window.__pc.calls.preview.push(JSON.parse(JSON.stringify(params)));
-        return Promise.resolve(avaliacao(params, { preview: { id: 500 + window.__pc.calls.preview.length, expiraEm: "2026-09-29T12:10:00Z" } }));
+        window.__pc.previewSignals.push(signal || null);
+        var n = window.__pc.calls.preview.length;
+        var fp = ("0000000000000000000000000000000000000000000000000000000000000000" + n.toString(16)).slice(-64);
+        var resposta = avaliacao(params, { preview: { id: 500 + n, expiraEm: "2026-09-29T12:10:00Z", fingerprint: fp } });
+        if (window.__pc.holdPreview) {
+          return new Promise(function (resolve) { window.__pc.resolvePreview.push({ id: 500 + n, tipo: params.tipo, go: function () { resolve(resposta); } }); });
+        }
+        return Promise.resolve(resposta);
       },
       applyPricing: function (params) {
         window.__pc.calls.apply.push(JSON.parse(JSON.stringify(params)));
         if (window.__pc.applyMode === "network-then-ok" && window.__pc.calls.apply.length === 1) {
           return Promise.resolve({ ok: false, status: 0, type: "network", error: "Falha de rede.", data: null });
+        }
+        if (window.__pc.applyMode === "desatualizado-then-ok" && window.__pc.calls.apply.length === 1) {
+          return Promise.resolve({ ok: false, codigo: "PREVIEW_DESATUALIZADO", motivo: "O cenário mudou desde o preview.", novoPreviewNecessario: true,
+            diferencas: [{ campo: "frete", antes: "20.00", agora: "24.90" }], aplicacao: { id: 901, status: "recusado" } });
+        }
+        if (window.__pc.applyMode === "divergente") {
+          return Promise.resolve({ ok: true, divergente: true, atencao: "PRECO_CONFIRMADO_ABAIXO_BREAK_EVEN",
+            aplicacao: { id: 902, status: "divergente", precoSolicitado: 114.9, precoConfirmado: 79.9, margemDepois: -0.02, lucroDepois: -1.6,
+              atencaoCodigo: "PRECO_CONFIRMADO_ABAIXO_BREAK_EVEN", snapshotStatus: "nao_aplicavel", usuario: { nome: "Pedro" } } });
+        }
+        if (window.__pc.applyMode === "desconhecido") {
+          return Promise.resolve({ ok: false, codigo: "ML_TIMEOUT", motivo: "O Mercado Livre não respondeu a tempo.",
+            aplicacao: { id: 903, status: "resultado_desconhecido", execucao: "resultado_desconhecido" } });
         }
         return new Promise(function (resolve) {
           setTimeout(function () {
@@ -537,6 +558,9 @@ async function run() {
       assert.ok(/^cm-/.test(ap.idempotencyKey) && ap.idempotencyKey.length >= 8, ap.idempotencyKey);
       assert.strictEqual(ap.clienteContaId, 10);
       assert.ok(ap.previewId > 500);
+      const pvMostrado = await st("s.confirm.preview.preview");
+      assert.strictEqual(ap.previewId, pvMostrado.id);
+      assert.strictEqual(ap.fingerprint, pvMostrado.fingerprint, "o aplicar devolve o fingerprint do preview EXIBIDO");
       assert.ok((await cdp.evaluate("document.getElementById('cm-confirm-body').textContent")).replace(/ /g, " ").includes("R$ 114,90"));
       await shot("13-aplicado");
       await cdp.evaluate("document.getElementById('cm-confirm-cancel').click()");
@@ -557,6 +581,93 @@ async function run() {
       const keys = await cdp.evaluate("window.__pc.calls.apply.map(function(c){return c.idempotencyKey})");
       assert.strictEqual(keys.length, 2);
       assert.strictEqual(keys[0], keys[1], "retry de rede usa a mesma chave de idempotência");
+      await cdp.evaluate("window.__pc.applyMode = 'ok'; document.getElementById('cm-confirm-cancel').click()");
+    });
+
+
+    const abrirRevisaoPreco = async (valor) => {
+      await typePrice(valor);
+      await waitFor(cdp, `document.getElementById('cm-pp-result').textContent.indexOf('${valor}') !== -1 && document.getElementById('cm-pp-review').disabled === false`, "simulação não habilitou revisar");
+      await cdp.evaluate("document.getElementById('cm-pp-review').click()");
+    };
+
+    await check("20. preview A responde DEPOIS do preview B: a resposta de A nunca preenche B (e o pedido de A é abortado)", async () => {
+      await cdp.evaluate("window.__pc.holdPreview = true; window.__pc.resolvePreview = []; window.__pc.previewSignals = []");
+      await abrirRevisaoPreco("116,90");
+      await waitFor(cdp, "window.__pc.resolvePreview.length === 1", "preview A não foi pedido");
+      await cdp.evaluate("document.getElementById('cm-confirm-cancel').click()");
+      assert.strictEqual(await cdp.evaluate("window.__pc.previewSignals[0] && window.__pc.previewSignals[0].aborted"), true, "fechar aborta o preview em voo");
+      await cdp.evaluate("document.querySelector('[data-promo-apply=\"P-DEAL\"]').click()");
+      await waitFor(cdp, "window.__pc.resolvePreview.length === 2", "preview B não foi pedido");
+      // B responde primeiro, A por último.
+      await cdp.evaluate("window.__pc.resolvePreview[1].go()");
+      await waitFor(cdp, "document.querySelector('#cm-confirm-body .cm-confirm__table')", "preview B não renderizou");
+      await cdp.evaluate("window.__pc.resolvePreview[0].go()");
+      await sleep(150);
+      assert.strictEqual(await st("s.confirm.kind"), "PROMOTION");
+      assert.strictEqual(await st("s.confirm.preview.preview.id"), await cdp.evaluate("window.__pc.resolvePreview[1].id"));
+      assert.ok((await cdp.evaluate("document.getElementById('cm-confirm-body').textContent")).includes("Participar de:"));
+      await cdp.evaluate("document.getElementById('cm-confirm-cancel').click()");
+      // Variante sem fechar: B substitui A enquanto A ainda carrega.
+      await cdp.evaluate("window.__pc.resolvePreview = []; window.__pc.previewSignals = []");
+      await abrirRevisaoPreco("117,90");
+      await waitFor(cdp, "window.__pc.resolvePreview.length === 1");
+      await cdp.evaluate("window.VFCentralMargemUi.getState().confirm.status = 'loading'");
+      await cdp.evaluate("document.querySelector('[data-promo-apply=\"P-DEAL\"]').click()");
+      await waitFor(cdp, "window.__pc.resolvePreview.length === 2");
+      await cdp.evaluate("window.__pc.resolvePreview[0].go()");
+      await sleep(150);
+      assert.strictEqual(await st("s.confirm.status"), "loading", "A não pode preencher a confirmação B");
+      await cdp.evaluate("window.__pc.resolvePreview[1].go()");
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().confirm.status === 'ready'");
+      assert.strictEqual(await st("s.confirm.kind"), "PROMOTION");
+      await cdp.evaluate("window.__pc.holdPreview = false; document.getElementById('cm-confirm-cancel').click()");
+    });
+
+    await check("PREVIEW_DESATUALIZADO no aplicar: pede NOVO preview, avisa o que mudou, troca a chave e exige nova confirmação", async () => {
+      await cdp.evaluate("window.__pc.applyMode = 'desatualizado-then-ok'; window.__pc.calls.apply = []");
+      const previewsAntes = await calls("preview");
+      await abrirRevisaoPreco("118,90");
+      await waitFor(cdp, "document.getElementById('cm-confirm-apply').disabled === false");
+      const chave1 = await st("s.confirm.idempotencyKey");
+      await cdp.evaluate("document.getElementById('cm-confirm-apply').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-preview-novo]')", "aviso de novo preview não apareceu");
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().confirm.status === 'ready'");
+      assert.strictEqual(await calls("preview"), previewsAntes + 2, "um preview NOVO foi pedido automaticamente");
+      assert.strictEqual(await calls("apply"), 1, "nada foi reaplicado sem nova confirmação");
+      assert.ok((await cdp.evaluate("document.querySelector('[data-cm-preview-novo]').textContent")).includes("frete"));
+      const chave2 = await st("s.confirm.idempotencyKey");
+      assert.notStrictEqual(chave1, chave2, "preview novo = chave nova");
+      await cdp.evaluate("document.getElementById('cm-confirm-apply').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-apply-result=\"aplicado\"]')");
+      const aps = await cdp.evaluate("window.__pc.calls.apply");
+      assert.strictEqual(aps.length, 2);
+      assert.notStrictEqual(aps[0].previewId, aps[1].previewId);
+      assert.notStrictEqual(aps[0].fingerprint, aps[1].fingerprint);
+      await cdp.evaluate("window.__pc.applyMode = 'ok'; document.getElementById('cm-confirm-cancel').click()");
+    });
+
+    await check("preço confirmado divergente: banner de atenção com solicitado × confirmado e margem no confirmado", async () => {
+      await cdp.evaluate("window.__pc.applyMode = 'divergente'");
+      await abrirRevisaoPreco("119,90");
+      await waitFor(cdp, "document.getElementById('cm-confirm-apply').disabled === false");
+      await cdp.evaluate("document.getElementById('cm-confirm-apply').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-apply-result=\"divergente\"]')", "banner de divergência ausente");
+      const txt = (await cdp.evaluate("document.querySelector('[data-cm-apply-result=\"divergente\"]').textContent")).replace(/\u00a0/g, " ");
+      assert.ok(txt.includes("R$ 114,90") && txt.includes("R$ 79,90"), txt);
+      assert.ok(/break-even/.test(txt), txt);
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('[data-cm-apply-result=\"aplicado\"]'))"), false, "nunca como sucesso normal");
+      await cdp.evaluate("window.__pc.applyMode = 'ok'; document.getElementById('cm-confirm-cancel').click()");
+    });
+
+    await check("resultado desconhecido (timeout do ML): alerta para conferir o anúncio e NÃO oferece retry", async () => {
+      await cdp.evaluate("window.__pc.applyMode = 'desconhecido'");
+      await abrirRevisaoPreco("121,90");
+      await waitFor(cdp, "document.getElementById('cm-confirm-apply').disabled === false");
+      await cdp.evaluate("document.getElementById('cm-confirm-apply').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-apply-result=\"resultado_desconhecido\"]')", "estado desconhecido não apareceu");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-confirm-body').textContent")).includes("Confira o anúncio"));
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-apply').disabled"), true);
       await cdp.evaluate("window.__pc.applyMode = 'ok'; document.getElementById('cm-confirm-cancel').click()");
     });
 

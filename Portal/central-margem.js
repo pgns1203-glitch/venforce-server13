@@ -2487,6 +2487,8 @@
     if (aplicacao.snapshotStatus === "atualizado") return "Aplicado no Mercado Livre (" + confirmado + ") · margem atualizada.";
     if (aplicacao.snapshotStatus === "falhou") return "Aplicado no Mercado Livre (" + confirmado + ") · a margem não pôde ser recalculada agora; use Atualizar leitura.";
     if (aplicacao.snapshotStatus === "nao_aplicavel") return "Aplicado no Mercado Livre (" + confirmado + ") · use Atualizar leitura para recalcular a margem.";
+    if (aplicacao.snapshotStatus === "aguardando_propagacao") return "Aplicado no Mercado Livre (" + confirmado + ") · aguardando o Mercado Livre propagar o novo preço…";
+    if (aplicacao.snapshotStatus === "propagacao_pendente") return "Aplicado no Mercado Livre (" + confirmado + ") · o Mercado Livre ainda não mostra o novo preço; a margem não foi recalculada. Use Atualizar leitura mais tarde.";
     return "Aplicado no Mercado Livre (" + confirmado + ") · atualizando margem…";
   }
 
@@ -2934,6 +2936,8 @@
     return "cm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12);
   }
 
+  var confirmRequestSeq = 0;
+
   function reviewPricing(kind, promo) {
     var p = state.pricing;
     if (!p || !pricingAvailability().ok) return;
@@ -2946,15 +2950,45 @@
       var parsedPromo = parsePriceInput(p.promoSim.preco);
       novoPreco = parsedPromo.ok ? parsedPromo.value : null;
     }
+    if (state.confirm && state.confirm.status === "applying") return;
+    abortConfirmRequest();
+    state.confirm = { kind: kind, promo: promo, novoPreco: novoPreco, status: "loading", preview: null, error: null, idempotencyKey: newIdempotencyKey(), result: null };
+    openConfirm();
+    requestPreview(state.confirm);
+  }
+
+  function abortConfirmRequest() {
+    if (state.confirm && state.confirm.abort) {
+      state.confirm.abort.abort();
+      state.confirm.abort = null;
+    }
+  }
+
+  /**
+   * Pede o preview de UMA confirmação. A resposta só é aceita se ainda for
+   * EXATAMENTE esta confirmação (mesmo objeto + mesmo requestId + mesmo
+   * drawer): preview A que responde depois de fechado/substituído por B
+   * nunca preenche B.
+   */
+  function requestPreview(c, aviso) {
     var seq = state.drawerSeq;
     var key = drawerKey();
-    state.confirm = { kind: kind, promo: promo, status: "loading", preview: null, error: null, idempotencyKey: newIdempotencyKey(), result: null };
-    openConfirm();
-    api.previewPricing(pricingParams({ tipo: kind, promotionId: promo ? promo.id : undefined, novoPreco: novoPreco })).then(function (result) {
-      if (seq !== state.drawerSeq || key !== drawerKey() || !state.confirm) return;
-      state.confirm.status = result.ok ? "ready" : "error";
-      state.confirm.preview = result.ok ? result : null;
-      state.confirm.error = result.ok ? null : result.error;
+    confirmRequestSeq += 1;
+    var requestId = confirmRequestSeq;
+    c.requestId = requestId;
+    c.status = "loading";
+    c.preview = null;
+    c.idempotencyKey = newIdempotencyKey(); // preview novo = intenção nova = chave nova
+    c.staleNotice = aviso || null;
+    c.abort = typeof root.AbortController === "function" ? new root.AbortController() : null;
+    var params = pricingParams({ tipo: c.kind, promotionId: c.promo ? c.promo.id : undefined, novoPreco: c.novoPreco });
+    api.previewPricing(params, c.abort ? c.abort.signal : undefined).then(function (result) {
+      if (state.confirm !== c || c.requestId !== requestId || seq !== state.drawerSeq || key !== drawerKey()) return;
+      c.abort = null;
+      if (result && result.aborted) return;
+      c.status = result.ok ? "ready" : "error";
+      c.preview = result.ok ? result : null;
+      c.error = result.ok ? null : result.error;
       renderConfirm();
     });
   }
@@ -2967,6 +3001,7 @@
 
   function closeConfirm() {
     if (state.confirm && state.confirm.status === "applying") return; // nunca fechar no meio da escrita
+    abortConfirmRequest();
     state.confirm = null;
     if (refs.confirmOverlay) refs.confirmOverlay.classList.remove("is-open");
   }
@@ -3010,8 +3045,12 @@
       confirmRow("Vendas " + periodShortLabel(), escapeHtml(pv.vendas && pv.vendas.unidades !== null && pv.vendas.unidades !== undefined ? formatInt(pv.vendas.unidades) + " un." : "—"));
     var escrita = pv.escrita || {};
     var status = "";
+    var aviso = c.staleNotice
+      ? '<div class="vf-banner is-warning" role="status" data-cm-preview-novo="1"><div class="vf-banner__content"><p class="vf-banner__title">O cenário mudou desde o preview anterior</p><p class="vf-banner__description">' + escapeHtml(c.staleNotice) + " Revise os números abaixo — nada foi enviado ao Mercado Livre.</p></div></div>"
+      : "";
+    var apl = c.result && c.result.aplicacao;
     if (c.status === "applying") status = '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Aplicando no Mercado Livre… não feche esta janela.</span></div>';
-    else if (c.status === "done") status = '<div class="vf-banner is-success" role="status" data-cm-apply-result="aplicado"><div class="vf-banner__content"><p class="vf-banner__title">Aplicado no Mercado Livre</p><p class="vf-banner__description">Preço confirmado pelo Mercado Livre: <strong>' + escapeHtml(formatMoney(c.result.aplicacao.precoConfirmado) || "—") + "</strong>. A margem está sendo recalculada.</p></div></div>";
+    else if (c.status === "done" && !(apl && apl.status === "divergente")) status = '<div class="vf-banner is-success" role="status" data-cm-apply-result="aplicado"><div class="vf-banner__content"><p class="vf-banner__title">Aplicado no Mercado Livre</p><p class="vf-banner__description">Preço confirmado pelo Mercado Livre: <strong>' + escapeHtml(formatMoney(c.result.aplicacao.precoConfirmado) || "—") + "</strong>. A margem está sendo recalculada.</p></div></div>";
     else if (c.status === "failed") status = '<div class="vf-banner is-danger" role="alert" data-cm-apply-result="' + escapeHtml(c.result && c.result.aplicacao ? c.result.aplicacao.status : "erro") + '"><div class="vf-banner__content"><p class="vf-banner__title">' + escapeHtml(c.result && c.result.aplicacao && c.result.aplicacao.status === "recusado" ? "Alteração recusada — nada foi alterado" : "A alteração não foi confirmada") + '</p><p class="vf-banner__description">' + escapeHtml(c.error || "") + (c.retryable ? " Você pode tentar de novo com segurança (mesma chave, sem escrita dupla)." : " Gere um novo preview para tentar de novo.") + "</p></div></div>";
     refs.confirmBody.innerHTML =
       '<div class="cm-confirm__who"><strong>' + escapeHtml(pv.item && pv.item.titulo || (item && item.title) || "Produto") + "</strong>" +
@@ -3019,13 +3058,37 @@
       "<span>" + escapeHtml("Conta " + (pv.conta && pv.conta.nome || "—") + " · Mercado Livre " + (pv.conta && pv.conta.mlUserId || "")) + "</span></div>" +
       '<p class="cm-confirm__what">' + escapeHtml(titulo) + "</p>" +
       '<table class="cm-confirm__table">' + rows + "</table>" +
+      aviso +
       '<p class="cm-block-label">Gates</p>' + gatesListHtml((c.result && c.result.gates) || pv.gates, false) +
       (escrita.habilitada ? "" : '<p class="cm-rollout-note" data-cm-rollout="off">' + escapeHtml(escrita.motivo || "Escrita desligada.") + "</p>") +
-      status;
-    var podeAplicar = c.status === "ready" && !pv.bloqueado && escrita.habilitada && pv.preview && pv.preview.id;
+      status + (c.status === "done" && apl && apl.status === "divergente" ? divergenteHtml(apl) : "");
+    var podeAplicar = c.status === "ready" && !pv.bloqueado && escrita.habilitada && pv.preview && pv.preview.id && pv.preview.fingerprint;
     var podeRetentar = c.status === "failed" && c.retryable;
     refs.confirmApply.disabled = !(podeAplicar || podeRetentar);
     refs.confirmApply.textContent = podeRetentar ? "Tentar de novo" : c.status === "done" ? "Aplicado" : "Confirmar alteração no Mercado Livre";
+  }
+
+  var ATENCAO_TEXTO = {
+    PRECO_CONFIRMADO_DIVERGENTE: "margem recalculada sobre o preço confirmado.",
+    PRECO_CONFIRMADO_ABAIXO_BREAK_EVEN: "ATENÇÃO: no preço confirmado o LC fica negativo (abaixo do break-even). Revise o anúncio.",
+    PRECO_CONFIRMADO_SEM_RECOTACAO: "não foi possível recotar comissão/frete no preço confirmado; margem indisponível até a próxima leitura.",
+  };
+
+  function divergenteHtml(apl) {
+    var abaixo = apl.atencaoCodigo === "PRECO_CONFIRMADO_ABAIXO_BREAK_EVEN";
+    return '<div class="vf-banner ' + (abaixo ? "is-danger" : "is-warning") + '" role="alert" data-cm-apply-result="divergente"><div class="vf-banner__content"><p class="vf-banner__title">O Mercado Livre confirmou um preço diferente do solicitado</p><p class="vf-banner__description">Solicitado ' +
+      escapeHtml(formatMoney(apl.precoSolicitado) || "—") + " · confirmado <strong>" + escapeHtml(formatMoney(apl.precoConfirmado) || "—") + "</strong>. " +
+      (apl.margemDepois !== null && apl.margemDepois !== undefined ? "Margem no confirmado: <strong>" + escapeHtml(formatPercent(apl.margemDepois)) + "</strong> · LC " + escapeHtml(formatMoney(apl.lucroDepois) || "—") + ". " : "") +
+      escapeHtml(ATENCAO_TEXTO[apl.atencaoCodigo] || "") + "</p></div></div>";
+  }
+
+  // Recusas que exigem um NOVO preview (o operador precisa ver os números de novo).
+  var CODIGOS_NOVO_PREVIEW = ["PREVIEW_DESATUALIZADO", "PREVIEW_SUPERADO", "PRECO_ALTERADO", "PROMOCAO_MUDOU", "PROMOCAO_INTENCAO_MUDOU"];
+
+  function descreverDiferencas(lista) {
+    if (!lista || !lista.length) return "";
+    var nomes = { custo: "custo", imposto: "imposto", taxaFixa: "taxa fixa", comissao: "comissão", frete: "frete", precoAtual: "preço atual", rebate: "subsídio ML" };
+    return "Mudou: " + lista.slice(0, 5).map(function (d) { return nomes[d.campo] || d.campo; }).join(", ") + ".";
   }
 
   /** Aplicar: 1 clique = 1 chave; clique repetido/retry reusa a MESMA chave. */
@@ -3043,15 +3106,28 @@
       clientSlug: state.client.slug,
       clienteContaId: state.contaId,
       previewId: c.preview.preview.id,
+      fingerprint: c.preview.preview.fingerprint,
       idempotencyKey: c.idempotencyKey,
       promotionId: promoId,
     }).then(function (result) {
-      var data = result.ok ? result : (result.data || {});
+      if (state.confirm !== c) return;
+      // 200 ok:false (recusa) chega "achatado"; 4xx traz o payload em .data.
+      var data = result.aplicacao || result.codigo ? result : (result.data || result || {});
       var aplicacao = data.aplicacao || null;
-      if (result.ok && aplicacao && aplicacao.status === "aplicado") {
+      var codigo = data.codigo || result.code || null;
+      if (!result.ok && (data.novoPreviewNecessario || CODIGOS_NOVO_PREVIEW.indexOf(codigo) !== -1)) {
+        // Nunca aplicar outra coisa em silêncio: novo preview, nova confirmação.
+        toast("O cenário mudou desde o preview. Revise o novo preview antes de confirmar.", "is-warning");
+        if (seq === state.drawerSeq) state.history = null;
+        requestPreview(c, (data.motivo || result.error || "") + " " + descreverDiferencas(data.diferencas));
+        renderConfirm();
+        return;
+      }
+      if (result.ok && aplicacao && (aplicacao.status === "aplicado" || aplicacao.status === "divergente")) {
         c.status = "done";
         c.result = data;
-        toast("Aplicado no Mercado Livre: " + (formatMoney(aplicacao.precoConfirmado) || "") + " (valor confirmado pelo ML).", "is-success");
+        if (aplicacao.status === "divergente") toast("O Mercado Livre confirmou " + (formatMoney(aplicacao.precoConfirmado) || "") + " (diferente do solicitado). Confira a margem.", "is-warning");
+        else toast("Aplicado no Mercado Livre: " + (formatMoney(aplicacao.precoConfirmado) || "") + " (valor confirmado pelo ML).", "is-success");
         if (seq === state.drawerSeq && state.pricing) {
           state.pricing.aplicacao = aplicacao;
           // A simulação era do preço anterior: nunca continuar exibindo-a
@@ -3071,7 +3147,10 @@
       } else {
         c.status = "failed";
         c.result = data;
-        c.error = result.error || data.motivo || "A alteração não foi aplicada.";
+        c.error = data.motivo || result.error || "A alteração não foi aplicada.";
+        if (aplicacao && aplicacao.status === "resultado_desconhecido") {
+          c.error = "Resultado desconhecido: a alteração pode ter sido aplicada no Mercado Livre sem confirmação. Confira o anúncio antes de tentar de novo. " + (data.motivo || "");
+        }
         // Só erro de rede (sem resposta) é retentável com a mesma chave.
         c.retryable = result.type === "network";
         toast(c.error, "is-danger");
@@ -3094,7 +3173,7 @@
         if (!state.pricing || seq !== state.drawerSeq) return;
         if (result.ok && result.aplicacao) {
           state.pricing.aplicacao = result.aplicacao;
-          if (["atualizado", "falhou", "nao_aplicavel"].indexOf(result.aplicacao.snapshotStatus) !== -1) {
+          if (["atualizado", "falhou", "nao_aplicavel", "propagacao_pendente"].indexOf(result.aplicacao.snapshotStatus) !== -1) {
             renderDrawerHeader(findSelectedItem());
             if (result.aplicacao.snapshotStatus === "atualizado" && isSnapshotMode()) {
               toast("Margem recalculada com o preço confirmado.", "is-success");
@@ -3104,7 +3183,7 @@
           }
         }
         renderDrawerHeader(findSelectedItem());
-        if (tentativas < 15) state.pricing.pollTimer = root.setTimeout(tick, POST_WRITE_POLL_MS);
+        if (tentativas < 40) state.pricing.pollTimer = root.setTimeout(tick, POST_WRITE_POLL_MS);
       });
     }
     if (typeof api.getPricingApplication === "function") state.pricing.pollTimer = root.setTimeout(tick, POST_WRITE_POLL_MS);

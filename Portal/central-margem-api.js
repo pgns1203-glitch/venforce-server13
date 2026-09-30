@@ -2304,11 +2304,11 @@
         .then(function (result) { return pricingResult(result, "Não foi possível simular este preço agora."); });
     }
 
-    /* Preview confirmável: tudo relido ao vivo + intenção registrada. */
-    function previewPricing(params) {
+    /* Preview confirmável: tudo relido ao vivo + intenção registrada + fingerprint. */
+    function previewPricing(params, signal) {
       params = params || {};
       var slug = String(params.clientSlug || "").trim();
-      return call(precificacaoBase(slug) + "/preview", { method: "POST", body: pricingBody(params) })
+      return call(precificacaoBase(slug) + "/preview", { method: "POST", body: pricingBody(params), signal: signal })
         .then(function (result) { return pricingResult(result, "Não foi possível gerar o preview."); });
     }
 
@@ -2323,7 +2323,9 @@
       // lista global de cabeçalhos CORS do servidor.
       return call(path, {
         method: "POST",
-        body: { clienteContaId: params.clienteContaId, previewId: params.previewId, idempotencyKey: params.idempotencyKey },
+        // fingerprint: o do preview que a tela mostrou — o backend recusa se
+        // não for exatamente o preview gerado (o id sozinho nunca basta).
+        body: { clienteContaId: params.clienteContaId, previewId: params.previewId, idempotencyKey: params.idempotencyKey, fingerprint: params.fingerprint },
       }).then(function (result) { return pricingResult(result, "Não foi possível aplicar a alteração."); });
     }
 

@@ -77,7 +77,8 @@ function anuncio(conta) {
     revisado: false, cliente_conta_id: a.cliente_conta_id, ml_user_id: a.ml_user_id,
     last_synced_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
     catalog_listing: catalogoModo === "catalog_listing" || catalogoModo === "ambos",
-    family_name: (catalogoModo === "family_name" || catalogoModo === "ambos") ? "Serum Ácido Salicílico" : null,
+    family_name: (catalogoModo === "family_name" || catalogoModo === "ambos" || catalogoModo === "produto") ? "Serum Ácido Salicílico" : null,
+    user_product_id: catalogoModo === "produto" ? "MLBU77" : null,
   };
 }
 
@@ -1823,6 +1824,46 @@ async function run() {
       variationsCountAtivo = 0;
       await abrirComModo("nenhum");
       await abrirPrimeiroAnuncio(cdp);
+    });
+
+    await check("7zf — anúncio de produto (family_name + user_product_id) sem variação: aviso de replicação junto da alteração, antes de salvar; anúncio comum não avisa; nenhum PUT/upload", async () => {
+      const AVISO = /pertence a um produto do Mercado Livre\. A alteração de imagem pode ser replicada para outros anúncios relacionados/;
+      const textoModal = "((document.querySelector('.am-det-modal') || {}).innerText || '')";
+      const escritas = () => ({ put: fotosEscritas.length, multipart: fotosChamadas.length, imagens: imagemChamadas.length });
+      const inicio = escritas();
+      async function moverPrimeira() {
+        await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="A"] [data-acao="foto-mover"][data-dir="1"]');
+        await waitFor(cdp, "!!document.querySelector('#am-det-fotos-corpo .am-det-fotos__barra')", "a barra de alterações não apareceu");
+      }
+      try {
+        // Controle: anúncio comum (sem family_name/user_product_id), mesma alteração, sem aviso.
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, `/Fotos do anúncio/.test(${textoFotos})`, "o modo simples não carregou");
+        await moverPrimeira();
+        assert.ok(!AVISO.test(await cdp.evaluate(textoModal)), "anúncio comum não recebe o aviso de replicação");
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+
+        // Anúncio de produto sem variação.
+        await abrirComModo("produto");
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, `/Fotos do anúncio/.test(${textoFotos})`, "o modo simples não carregou no anúncio de produto");
+        let e = await editor();
+        assert.deepStrictEqual(e.ids, ["A", "B"]);
+        assert.strictEqual(e.adicionar, true, "anúncio de produto sem variação continua editável (só avisa)");
+        assert.ok(!AVISO.test(await cdp.evaluate(textoModal)), "sem alteração pendente ainda não há o que avisar");
+        await moverPrimeira();
+        assert.ok(AVISO.test(await cdp.evaluate(textoModal)), "com alteração pendente o aviso de replicação aparece antes do salvar");
+        e = await editor();
+        assert.ok(/Salvar no Mercado Livre/.test(e.barra), "o aviso não tira o Salvar");
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+        await waitFor(cdp, "!document.querySelector('#am-det-fotos-corpo .am-det-fotos__barra')", "descartar não limpou a barra");
+        assert.ok(!AVISO.test(await cdp.evaluate(textoModal)), "descartado o rascunho, o aviso some");
+        assert.deepStrictEqual(escritas(), inicio, "nenhum PUT /fotos, multipart ou POST /imagens no cenário");
+      } finally {
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+      }
     });
 
     await check("8 — alterações pendentes são detectadas e nomeadas", async () => {

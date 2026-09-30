@@ -457,6 +457,7 @@ async function executarDiagnosticoPromocoes(diagnosticoId) {
               const snapMatch = matchSnapshot(body.id, sku);
               return await enriquecerItem({
                 clienteId: cliente.id,
+                mlUserId,
                 body,
                 baseRow: match.row,
                 matchedBy: match.matchedBy,
@@ -552,12 +553,16 @@ async function buscarUltimoSnapshotPromocoes({ clienteSlugRaw, baseSlugRaw, clie
   const clienteSlug = contexto.cliente.slug;
   const baseSlug = contexto.base.slug;
 
+  // Filtra pelo seller da conta resolvida: duas contas do mesmo cliente na
+  // mesma base não podem ver o diagnóstico uma da outra.
+  const sellerId = contexto.mlUserId != null ? String(contexto.mlUserId) : null;
   const head = await pool.query(
     `SELECT * FROM promocoes_diagnosticos
       WHERE cliente_slug = $1 AND base_slug = $2 AND status = 'concluido'
+        AND ($3::text IS NULL OR seller_id = $3)
       ORDER BY created_at DESC, id DESC
       LIMIT 1`,
-    [clienteSlug, baseSlug]
+    [clienteSlug, baseSlug, sellerId]
   );
   if (!head.rows.length) return { ok: true, existe: false, snapshot: null };
   const snap = head.rows[0];

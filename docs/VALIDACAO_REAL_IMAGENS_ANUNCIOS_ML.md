@@ -194,6 +194,36 @@ Erros reais a registrar:
       achar uma): a tela bloqueia com o motivo, nenhum upload.
 - [ ] Anúncio com `user_product_id`: bloqueado com o motivo.
 
+### Resultado 7A — 2026-09-30 (commit 6e81855)
+
+Evidência gerada com `server/scripts/validacaoImagemVariacao.js` (somente
+leitura: `antes` / `comparar` / `snapshot`).
+
+- Anúncio: cliente Red Fish, MLB5929315274 (ativo, categoria MLB123891),
+  35 variações = 7 cores × 5 tamanhos, 7 fotos por cor, 49 fotos no total.
+  Sem catálogo, sem `user_product_id`. Cores são valores personalizados (sem
+  `value_id`): o agrupamento por nome funcionou.
+- Execução: pelo mesmo controller do endpoint (`adicionarImagem` com
+  `grupoVariacao=nome:robalo`), sem HTTP/multer/login do Portal. Imagem: cópia
+  da última foto do próprio grupo Robalo (500×500). Uma única execução,
+  HTTP 200 em ~6,7 s, `confirmacaoPendente=false`, picture_id
+  `997902-MLB118515217453_092026`.
+- Teste 1: as 5 variações Robalo passaram de 7 para 8 `picture_ids` (antigos na
+  mesma ordem + nova no fim). **OK**
+- Teste 2: as 30 variações das outras 6 cores com `picture_ids` idênticos;
+  preço, estoque e `attribute_combinations` de todas as 35 idênticos. **OK**
+- Teste 3: galeria 49 → 50, as 49 antigas na mesma ordem, nova na posição 50,
+  capa e `thumbnail` iguais, status `active`, tags iguais. Fora de fotos, só
+  `last_updated` e `expiration_time` mudaram. **OK**
+- Teste 4: snapshot pós-envio igual à galeria do ML (50 fotos, 35 variações);
+  sync completo do cliente (175 anúncios) deixou a linha idêntica. **OK**
+- Achado: a categoria informa `max_pictures_per_item = 12` e
+  `max_pictures_per_item_var = 10`; o anúncio já tinha 49 fotos e o ML aceitou
+  a 50ª. Na prática o limite que vale é o por variação.
+- Não coberto nesta rodada: clique pelo Portal (HTTP, multer, auth),
+  recusa real por limite por variação, caminhos de falha
+  (`VINCULO_INCERTO`, `CONFIRMACAO_DIVERGENTE`, perda crítica).
+
 ## 8. Limpeza
 
 - [ ] Remover, pelo painel do Mercado Livre, todas as fotos de teste

@@ -3691,6 +3691,150 @@ async function run() {
       assert.deepStrictEqual(rotulos, ["Padrão", "Margem", "% Faturamento", "Unidades vendidas 7d", "Curva ABC"]);
     });
 
+    /* ── 41: preço promocional ao vivo já na PRIMEIRA renderização ──────── */
+
+    // Bug reportado: com a página cheia (24 anúncios avulsos — o `limit` da
+    // listagem), alguns anúncios com promoção ativa mostravam na lista só o
+    // par do SNAPSHOT (original_price/price da última sincronização) e só
+    // passavam a mostrar o preço promocional real depois de abrir o modal e
+    // expandir "Composição da margem". Causa: o Motor de Margem processa no
+    // máximo 20 itens por chamada (PAGE_LIMIT_MAX, teto do multiget
+    // /items?ids= do ML — motorMargemService.enrichBatch corta em silêncio),
+    // e o front mandava os 24 numa chamada só. Os 4 últimos voltavam sem
+    // `margem[itemId]` e ficavam marcados como resolvidos, sem preço ao vivo;
+    // a composição, que pede de novo 1 item só, era quem "consertava".
+    // O handler abaixo imita o backend real: só os 20 primeiros ids de CADA
+    // chamada ganham `margem` (e com ela precoAtual/precoOriginal).
+    const MOTOR_TETO = 20;
+    const idsPreco = Array.from({ length: 24 }, (_, i) => "MLB-PRC-" + String(i + 1).padStart(2, "0"));
+    // Sem promoção ao vivo: índices 3, 7, 11... (a cada 4) — incluindo o
+    // PRC-24, que era cortado. PRC-23 tem snapshot SEM promoção mas o Motor
+    // traz promoção ao vivo (deve nascer riscado). PRC-20 tinha promoção no
+    // snapshot que já acabou (deve voltar a preço único — fallback).
+    function precoAoVivo(id) {
+      const n = Number(id.slice(-2));
+      if (n === 20) return { precoAtual: 99.9, precoOriginal: null };
+      if (n % 4 === 0) return { precoAtual: 94.9, precoOriginal: 94.9 };
+      return { precoAtual: 84.9, precoOriginal: 99.9 };
+    }
+    function linhaPreco(id) {
+      const n = Number(id.slice(-2));
+      return {
+        tipo: "item", key: "item:" + id, item_id: id, family_id: null, titulo: "Produto " + id,
+        sku: "SKU-" + id, status: "active", moeda: "BRL", estoque: 10, vendidos: 1,
+        preco: 94.9, preco_original: n === 23 ? null : 99.9,
+        permalink: null, thumbnail: null, pictures_count: 1, is_full: false, catalog_listing: false,
+        listing_type_id: "gold_special", score_venforce: 60, revisado: false,
+        cover: { thumbnail: null, user_product_id: null },
+        margemProjetadaPercent: 20, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY",
+        margemProjetadaCalculadaEm: "2026-09-20T10:00:00Z",
+      };
+    }
+    function performancePrecoComTeto(ids) {
+      const margem = {};
+      ids.slice(0, MOTOR_TETO).forEach((id) => {
+        margem[id] = Object.assign(
+          { origem: "projected", margin: 0.2, marginPercent: 20, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] },
+          idsPreco.indexOf(id) !== -1 ? precoAoVivo(id) : {}
+        );
+      });
+      return { ok: true, metricas7d: {}, margem, margemIndisponivel: null, composicao: {},
+        faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null };
+    }
+    function lerCelulasPreco() {
+      return cdp.evaluate(`(function(){
+        var r = {};
+        document.querySelectorAll('.am-row[data-item^="MLB-PRC-"]').forEach(function(row){
+          var cel = row.querySelector('.am-row__preco');
+          var o = cel.querySelector('.am-row__preco-original');
+          var a = cel.querySelector('.am-row__preco-atual');
+          r[row.getAttribute('data-item')] = {
+            original: o ? o.textContent.trim() : null,
+            atual: a ? a.textContent.trim() : cel.textContent.trim(),
+            html: cel.outerHTML,
+          };
+        });
+        return r; })()`);
+    }
+    function esperadoPreco(id) {
+      const v = precoAoVivo(id);
+      const promo = v.precoOriginal != null && v.precoOriginal > v.precoAtual;
+      const fmt = (n) => "R$ " + n.toFixed(2).replace(".", ",");
+      return { original: promo ? fmt(v.precoOriginal) : null, atual: fmt(v.precoAtual) };
+    }
+
+    await check("41a — página cheia (24 avulsos): TODOS os anúncios já mostram o preço ao vivo na primeira renderização, sem abrir modal nem composição", async () => {
+      listagemPadraoHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        anuncios: idsPreco.map(linhaPreco),
+        paginacao: { page: 1, limit: 24, total: 24, totalPaginas: 1 },
+      });
+      performanceHandler = performancePrecoComTeto;
+      pedidos.length = 0;
+      chamadasPerformance.length = 0;
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await waitFor(cdp, `document.querySelectorAll('.am-row[data-item^="MLB-PRC-"]').length === 24`, "a página de 24 anúncios não renderizou");
+      await waitFor(cdp, `(function(){
+        var c = document.querySelector('.am-row[data-item="MLB-PRC-24"] .am-row__preco');
+        var d = document.querySelector('.am-row[data-item="MLB-PRC-01"] .am-row__preco-atual');
+        var e = document.querySelector('.am-row[data-item="MLB-PRC-21"] .am-row__preco-atual');
+        return c && /94,90/.test(c.textContent) && !c.querySelector('.am-row__preco-original') &&
+          d && /84,90/.test(d.textContent) && e && /84,90/.test(e.textContent);
+      })()`, "o preço ao vivo não chegou a todos os anúncios da página (os que passam do teto do Motor ficaram no snapshot)");
+
+      const celulas = await lerCelulasPreco();
+      idsPreco.forEach((id) => {
+        const esp = esperadoPreco(id);
+        assert.strictEqual(celulas[id].original, esp.original, `${id}: preço riscado errado (${celulas[id].original})`);
+        assert.strictEqual(celulas[id].atual, esp.atual, `${id}: preço vigente errado (${celulas[id].atual})`);
+      });
+      const comMargem = chamadasPerformance.filter((c) => c.incluirMargem && c.itemIds.some((id) => id.startsWith("MLB-PRC-")));
+      assert.ok(comMargem.length >= 2, "24 anúncios precisam ser divididos em mais de um lote");
+      comMargem.forEach((c) => assert.ok(c.itemIds.length <= MOTOR_TETO,
+        `nenhum lote com margem pode passar do teto do Motor (${MOTOR_TETO}): veio ${c.itemIds.length}`));
+      const pedidosUnicos = new Set();
+      comMargem.forEach((c) => c.itemIds.forEach((id) => {
+        assert.ok(!pedidosUnicos.has(id), `${id} foi pedido em dois lotes`);
+        pedidosUnicos.add(id);
+      }));
+      assert.strictEqual(pedidosUnicos.size, 24, "todos os 24 anúncios precisam ser pedidos, uma vez só");
+    });
+
+    await check("41b — abrir o modal NÃO muda o visual da listagem (o preço já estava certo) e não é pré-requisito do preço", async () => {
+      const antes = await lerCelulasPreco();
+      await clicar(cdp, '.am-row[data-item="MLB-PRC-22"]');
+      await waitFor(cdp, "document.getElementById('am-det-titulo')", "o modal não abriu");
+      await sleep(300);
+      const comModal = await lerCelulasPreco();
+      idsPreco.forEach((id) => assert.strictEqual(comModal[id].html, antes[id].html, `${id}: abrir o modal mudou a célula de preço da lista`));
+      await clicar(cdp, '.am-det-modal [data-acao="fechar"]');
+      await waitFor(cdp, "!document.querySelector('.am-det-modal')", "o modal não fechou");
+      const depois = await lerCelulasPreco();
+      idsPreco.forEach((id) => assert.strictEqual(depois[id].html, antes[id].html, `${id}: fechar o modal mudou a célula de preço da lista`));
+    });
+
+    await check("41c — recarregar a MESMA página de 24 usa o cache: nenhum lote novo de margem, preço continua ao vivo", async () => {
+      const antes = await lerCelulasPreco();
+      chamadasPerformance.length = 0;
+      await cdp.evaluate(`document.querySelector('#am-catalogo-container').innerHTML = ''`);
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = '';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelectorAll('.am-row[data-item^="MLB-PRC-"]').length === 24`, "a página não recarregou");
+      await sleep(400);
+      const pediuMargemDeNovo = chamadasPerformance.filter((c) => c.incluirMargem && c.itemIds.some((id) => id.startsWith("MLB-PRC-")));
+      assert.deepStrictEqual(pediuMargemDeNovo, [], "itens já resolvidos (inclusive os do 2º lote) não podem ser pedidos de novo");
+      const depois = await lerCelulasPreco();
+      idsPreco.forEach((id) => {
+        assert.strictEqual(depois[id].original, antes[id].original, `${id}: riscado mudou ao recarregar`);
+        assert.strictEqual(depois[id].atual, antes[id].atual, `${id}: preço vigente mudou ao recarregar (render inicial já deve ler o cache)`);
+      });
+      listagemPadraoHandler = null;
+      performanceHandler = null;
+    });
+
     /* ── 40: nenhum erro de JS na página (sempre a última) ──────────────── */
 
     await check("40 — nenhum erro de JavaScript durante os fluxos", async () => {

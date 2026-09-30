@@ -1847,8 +1847,33 @@
   // quem precisa saber "os filhos desta família já são conhecidos" (ver
   // repintarLinhaDoGrupo) ou "a composição já chegou" (ver
   // garantirComposicaoDoItem) encadeia nela em vez de reimplementar a espera.
+  //
+  // Lotes de no máximo PERFORMANCE_LOTE_MAX (20) itens: o Motor de Margem processa
+  // até 20 itens por chamada (motorMargemService PAGE_LIMIT_MAX, teto do
+  // multiget /items?ids= do ML) e CORTA o excedente em silêncio. Mandar a
+  // página inteira (24) numa chamada só deixava os últimos sem
+  // `margem[itemId]` — e com ela sem precoAtual/precoOriginal — mas marcados
+  // como resolvidos: a lista ficava no preço do snapshot até o modal pedir a
+  // composição daquele item sozinho (bug "preço promocional só aparece depois
+  // de abrir a composição da margem").
+  var PERFORMANCE_LOTE_MAX = 20;
+
   function carregarPerformance(itemIds, opcoes) {
     if (!AM.clienteAtual) return Promise.resolve();
+    var unicos = [];
+    var vistosLote = {};
+    (itemIds || []).forEach(function (id) {
+      if (!id || vistosLote[id]) return;
+      vistosLote[id] = true;
+      unicos.push(id);
+    });
+    if (unicos.length > PERFORMANCE_LOTE_MAX) {
+      var lotes = [];
+      for (var i = 0; i < unicos.length; i += PERFORMANCE_LOTE_MAX) {
+        lotes.push(carregarPerformance(unicos.slice(i, i + PERFORMANCE_LOTE_MAX), opcoes));
+      }
+      return Promise.all(lotes).then(function () {});
+    }
     var incluirMargem = !opcoes || opcoes.incluirMargem !== false;
     // Composição é OPT-IN (ao contrário de métricas/margem): só o modal de
     // detalhe pede, explicitamente, ao abrir a seção "Composição da margem".

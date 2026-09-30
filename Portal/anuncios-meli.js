@@ -3467,6 +3467,7 @@
 
     detalheToken++; // invalida qualquer resposta em voo da abertura que morreu
     liberarPreviewImagem();
+    liberarPreviewsFotos();
     var overlay = el("am-det-overlay");
     if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
     document.body.classList.remove("vf-no-scroll");
@@ -3732,29 +3733,103 @@
     return itens;
   }
 
-  // ----- Fotos: editor por grupo de variação (LEITURA) -----------------------
+  // ----- Fotos: editor por grupo de variação ---------------------------------
   // GET /anuncios-meli/:itemId/fotos/variacoes (meliFotosService, ao vivo no
   // ML). Com variações: um chip por grupo (valor do atributo que define a foto,
   // ex.: Cor Robalo) e só as fotos do grupo selecionado; a primeira é a imagem
   // principal da variação. Sem variação: o mesmo componente com um grupo só (a
-  // galeria), e a primeira foto é a capa do anúncio. Esta etapa só LÊ: editar,
-  // adicionar e salvar entram nas próximas (ver docs/superpowers/plans/
-  // 2026-09-30-fotos-por-variacao.md, Tasks 5 e 6).
+  // galeria), e a primeira foto é a capa do anúncio.
+  //
+  // Dois estados, separados de propósito:
+  //   F.original — a resposta do GET, CONGELADA (Object.freeze em
+  //                profundidade): nada na tela consegue alterá-la;
+  //   F.rascunho — { sel, itens }: o grupo aberto e a lista em edição, cada
+  //                item "existente" (pode estar marcado como removida) ou
+  //                "nova" (arquivo + preview, só no navegador).
+  // As pendências são sempre CALCULADAS da diferença entre os dois.
+  //
+  // Nesta etapa tudo fica em memória: nenhum upload, nenhum PUT. O salvar
+  // entra na próxima (docs/superpowers/plans/2026-09-30-fotos-por-variacao.md,
+  // Task 6).
   var MOTIVO_FOTOS_CATALOGO =
     "Este anúncio é de catálogo: as fotos exibidas são do produto de catálogo do Mercado Livre e não podem ser alteradas por aqui.";
+  var FOTOS_MAX_NOVAS = 10;                  // mesmo limite do multer no PUT /fotos
+  var FOTOS_SALVAR_EM_BREVE = "O envio ao Mercado Livre entra na próxima etapa.";
+
+  function congelar(o) {
+    if (o && typeof o === "object" && !Object.isFrozen(o)) {
+      Object.freeze(o);
+      Object.keys(o).forEach(function (k) { congelar(o[k]); });
+    }
+    return o;
+  }
 
   function fotosEstadoVazio() {
-    return { estado: null, erro: null, leitura: null, sel: 0 };
+    return { estado: null, erro: null, original: null, rascunho: null, pendente: null, avisoLocal: null, arrastando: null };
   }
 
   function fotosVariacoes() {
     var F = DET && DET.fotos;
-    return !!(F && F.leitura && F.leitura.modo === "variacoes");
+    return !!(F && F.original && F.original.modo === "variacoes");
   }
 
-  function grupoSelecionado() {
+  function grupoOriginal() {
     var F = DET.fotos;
-    return F.leitura ? F.leitura.grupos[F.sel] || null : null;
+    return F.original && F.rascunho ? F.original.grupos[F.rascunho.sel] || null : null;
+  }
+
+  function liberarPreviewsFotos() {
+    var F = DET && DET.fotos;
+    if (!F || !F.rascunho) return;
+    F.rascunho.itens.forEach(function (it) {
+      if (it.tipo === "nova" && it.previewUrl) {
+        try { URL.revokeObjectURL(it.previewUrl); } catch (_) { /* nada a liberar */ }
+        it.previewUrl = null;
+      }
+    });
+  }
+
+  // Rascunho novo = cópia do grupo original; libera os previews do anterior.
+  function novoRascunho(sel) {
+    liberarPreviewsFotos();
+    var g = DET.fotos.original.grupos[sel];
+    DET.fotos.rascunho = {
+      sel: sel,
+      seq: 0,
+      itens: g.fotos.map(function (f) { return { tipo: "existente", id: f.id, url: f.url, removida: false }; }),
+    };
+    DET.fotos.pendente = null;
+    DET.fotos.avisoLocal = null;
+  }
+
+  function fotosAtivas() {
+    return DET.fotos.rascunho.itens.filter(function (it) { return !it.removida; });
+  }
+
+  function pendenciasFotos() {
+    var F = DET && DET.fotos;
+    if (!F || F.estado !== "ok" || !F.rascunho) return { removidas: 0, novas: 0, reordenou: false, total: 0 };
+    var itens = F.rascunho.itens;
+    var removidas = itens.filter(function (it) { return it.tipo === "existente" && it.removida; }).length;
+    var novas = itens.filter(function (it) { return it.tipo === "nova"; }).length;
+    var ficam = itens.filter(function (it) { return it.tipo === "existente" && !it.removida; }).map(function (it) { return it.id; });
+    var baseFicam = grupoOriginal().fotos.map(function (f) { return f.id; })
+      .filter(function (id) { return ficam.indexOf(id) >= 0; });
+    var reordenou = JSON.stringify(ficam) !== JSON.stringify(baseFicam);
+    return { removidas: removidas, novas: novas, reordenou: reordenou, total: removidas + novas + (reordenou ? 1 : 0) };
+  }
+
+  function fotosSujas() {
+    return pendenciasFotos().total > 0;
+  }
+
+  function limiteFotos() {
+    var F = DET.fotos;
+    return F.original && F.original.limite && F.original.limite.porGrupo ? F.original.limite.porGrupo : null;
+  }
+
+  function nomeGrupoFotos() {
+    return fotosVariacoes() ? "A variação " + grupoOriginal().rotulo : "O anúncio";
   }
 
   function carregarFotos(forcar) {
@@ -3767,8 +3842,11 @@
       return;
     }
     var meuToken = DET.token;
+    liberarPreviewsFotos();
     F.estado = "carregando";
     F.erro = null;
+    F.original = null;
+    F.rascunho = null;
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
       (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
     api("/anuncios-meli/" + encodeURIComponent(DET.anuncio.item_id) + "/fotos/variacoes?" + qs).then(function (r) {
@@ -3776,8 +3854,8 @@
       var d = r.data || {};
       if (d.ok && Array.isArray(d.grupos) && d.grupos.length) {
         F.estado = "ok";
-        F.leitura = d;
-        F.sel = 0;
+        F.original = congelar(d);
+        novoRascunho(0);
       } else {
         F.estado = "erro";
         F.erro = { status: r.status, dados: d };
@@ -3799,15 +3877,39 @@
     "</div>";
   }
 
-  function fotoTileHtml(foto, i) {
-    var selo = i === 0
+  function fotoTileHtml(it, i, principal, podeRemover, n) {
+    var chave = it.tipo === "nova" ? it.chave : it.id;
+    var src = it.tipo === "nova" ? it.previewUrl : it.url;
+    var selo = principal
       ? '<span class="am-det-fotos__selo">' + (fotosVariacoes() ? "Imagem principal da variação" : "Capa do anúncio") + "</span>"
       : "";
-    return '<div class="am-det-photo am-det-fotos__item" data-foto="' + escapeAttr(foto.id) + '">' +
-      (foto.url
-        ? '<img src="' + escapeAttr(foto.url) + '" alt="Foto ' + (i + 1) + '" loading="lazy" />'
+    var aviso = it.tipo === "nova" && it.width && it.height && Math.min(it.width, it.height) < IMAGEM_MIN_LADO_ML
+      ? '<span class="am-det-fotos__pequena">' + icAlerta(10) + " abaixo de " + IMAGEM_MIN_LADO_ML + " px</span>"
+      : "";
+    var acoes = it.removida
+      ? '<span class="am-det-fotos__acoes">' +
+          '<button type="button" class="am-det-fotos__btn am-det-fotos__btn--texto" data-acao="foto-desfazer" data-idx="' + i + '">Desfazer</button>' +
+        "</span>"
+      : '<span class="am-det-fotos__acoes">' +
+          '<button type="button" class="am-det-fotos__btn" data-acao="foto-mover" data-dir="-1" data-idx="' + i + '"' +
+            ' aria-label="Mover a foto ' + n + ' para a esquerda">←</button>' +
+          '<button type="button" class="am-det-fotos__btn" data-acao="foto-mover" data-dir="1" data-idx="' + i + '"' +
+            ' aria-label="Mover a foto ' + n + ' para a direita">→</button>' +
+          (podeRemover
+            ? '<button type="button" class="am-det-fotos__btn am-det-fotos__btn--remover" data-acao="foto-remover" data-idx="' + i + '"' +
+                ' aria-label="Remover a foto ' + n + '">×</button>'
+            : "") +
+        "</span>";
+    return '<div class="am-det-photo am-det-fotos__item' + (it.removida ? " is-removida" : "") + (it.tipo === "nova" ? " is-nova" : "") + '"' +
+        ' data-foto="' + escapeAttr(chave) + '" data-idx="' + i + '"' + (it.removida ? "" : ' draggable="true"') + ">" +
+      (src
+        ? '<img src="' + escapeAttr(src) + '" alt="' + (it.removida ? "Foto marcada para remoção" : "Foto " + n) +
+          '" loading="lazy" draggable="false" />'
         : icImagem(20)) +
       selo +
+      (it.removida ? '<span class="am-det-fotos__marca am-det-fotos__marca--removida">Será removida</span>' : "") +
+      (it.tipo === "nova" ? '<span class="am-det-fotos__marca am-det-fotos__nova">Nova</span>' : "") +
+      aviso + acoes +
     "</div>";
   }
 
@@ -3825,6 +3927,34 @@
     "</div>";
   }
 
+  function fotosRodapeHtml() {
+    var F = DET.fotos;
+    var partes = [];
+    if (F.avisoLocal) partes.push('<p class="am-det-fotos__aviso-local" role="alert">' + escapeHtml(F.avisoLocal) + "</p>");
+    if (F.pendente) {
+      partes.push('<div class="am-det-fotos__pendente" role="alertdialog" aria-label="Alterações pendentes nas fotos">' +
+        '<span class="am-det-fotos__barra-texto">Existem alterações pendentes neste grupo.</span>' +
+        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="foto-pendente-salvar" disabled title="' +
+          escapeAttr(FOTOS_SALVAR_EM_BREVE) + '">Salvar</button>' +
+        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="foto-pendente-descartar">Descartar</button>' +
+        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="foto-pendente-cancelar">Cancelar</button>' +
+      "</div>");
+    } else {
+      var p = pendenciasFotos();
+      if (p.total > 0) {
+        var onde = fotosVariacoes() ? grupoOriginal().rotulo : "anúncio";
+        partes.push('<div class="am-det-fotos__barra" role="status">' +
+          '<span class="am-det-fotos__barra-texto">' + p.total + (p.total === 1 ? " alteração" : " alterações") +
+            " nas fotos de " + escapeHtml(onde) + "</span>" +
+          '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="foto-descartar">Descartar</button>' +
+          '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="foto-salvar" disabled title="' +
+            escapeAttr(FOTOS_SALVAR_EM_BREVE) + '">Salvar no Mercado Livre</button>' +
+        "</div>");
+      }
+    }
+    return partes.join("");
+  }
+
   function fotosCorpoHtml() {
     var F = DET && DET.fotos;
     if (F && F.estado === "catalogo") {
@@ -3837,14 +3967,17 @@
         '<div class="am-det-photos"></div>';
     }
 
-    var g = grupoSelecionado();
+    var g = grupoOriginal();
+    var R = F.rascunho;
+    var ativos = fotosAtivas().length;
     var chips = "";
     var titulo;
     if (fotosVariacoes()) {
       chips = '<div class="am-det-fotos__chips" role="group" aria-label="Grupos de variação">' +
-        F.leitura.grupos.map(function (gr, i) {
+        F.original.grupos.map(function (gr, i) {
+          var n = i === R.sel ? ativos : gr.quantidade;
           return '<button type="button" class="am-det-fotos__chip" data-acao="foto-grupo" data-idx="' + i + '"' +
-            ' aria-pressed="' + (i === F.sel) + '">' + escapeHtml(gr.rotulo) + " · " + gr.quantidade + "</button>";
+            ' aria-pressed="' + (i === R.sel) + '">' + escapeHtml(gr.rotulo) + " · " + n + "</button>";
         }).join("") +
       "</div>";
       titulo = '<p class="am-det-fotos__titulo">Fotos da variação: ' + escapeHtml(g.rotulo) +
@@ -3855,15 +3988,30 @@
     } else {
       titulo = '<p class="am-det-fotos__titulo">Fotos do anúncio</p>';
     }
-    var fotos = g.fotos || [];
-    var vazio = fotos.length
+
+    var primeiro = R.itens.findIndex(function (it) { return !it.removida; });
+    var n = 0;
+    var tiles = R.itens.map(function (it, i) {
+      if (!it.removida) n += 1;
+      return fotoTileHtml(it, i, i === primeiro, ativos > 1, n);
+    }).join("");
+    var lim = limiteFotos();
+    var cheio = lim !== null && ativos >= lim;
+    var adicionar = '<button type="button" class="am-det-photo am-det-photo--add" data-acao="foto-escolher"' +
+      (cheio ? ' disabled title="' + escapeAttr(nomeGrupoFotos() + " pode ter no máximo " + lim + " imagens.") + '"' : "") + ">" +
+        '<span class="am-det-photo__add-plus" aria-hidden="true">+</span>' +
+        '<span class="am-det-photo__add-label">Adicionar imagem</span>' +
+      "</button>";
+    var vazio = R.itens.length
       ? ""
       : '<p class="am-det-vazio">' + (fotosVariacoes()
         ? "Nenhuma foto nesta variação no Mercado Livre."
         : "Este anúncio não tem fotos no Mercado Livre.") + "</p>";
     return chips + titulo +
-      '<div class="am-det-photos">' + fotos.map(fotoTileHtml).join("") + "</div>" +
-      vazio;
+      '<div class="am-det-photos" id="am-det-fotos-grade">' + tiles + adicionar + "</div>" +
+      vazio +
+      '<input type="file" id="am-det-img-input" class="am-hidden" accept="' + IMAGEM_ACCEPT + '" multiple />' +
+      fotosRodapeHtml();
   }
 
   function renderFotos() {
@@ -3872,15 +4020,210 @@
     if (slot) slot.innerHTML = fotosCorpoHtml();
   }
 
-  function selecionarGrupoFotos(i) {
+  function editorPronto() {
     var F = DET && DET.fotos;
-    if (!F || F.estado !== "ok" || !F.leitura.grupos[i] || i === F.sel) return;
-    F.sel = i;
+    return !!(F && F.estado === "ok" && F.rascunho && !F.pendente);
+  }
+
+  // ----- Fotos: edição do rascunho (só memória) -------------------------------
+  function moverFoto(de, para) {
+    var itens = DET.fotos.rascunho.itens;
+    if (!editorPronto() || de === para || de < 0 || para < 0 || de >= itens.length || para >= itens.length) return;
+    if (itens[de].removida || itens[para].removida) return;
+    itens.splice(para, 0, itens.splice(de, 1)[0]);
+    DET.fotos.avisoLocal = null;
     renderFotos();
   }
 
+  // Seta: vai para a próxima foto ATIVA na direção (as removidas não contam).
+  function moverFotoSeta(i, dir) {
+    var itens = DET.fotos.rascunho.itens;
+    var j = i + dir;
+    while (j >= 0 && j < itens.length && itens[j].removida) j += dir;
+    if (j < 0 || j >= itens.length) return;
+    moverFoto(i, j);
+    var btn = document.querySelector('#am-det-fotos-corpo [data-acao="foto-mover"][data-dir="' + dir + '"][data-idx="' + j + '"]');
+    if (btn) btn.focus(); // o foco acompanha a foto movida
+  }
+
+  function removerFoto(i) {
+    var F = DET.fotos;
+    var it = editorPronto() ? F.rascunho.itens[i] : null;
+    if (!it || it.removida || fotosAtivas().length <= 1) return; // a última foto nunca sai
+    if (it.tipo === "nova") {
+      // Nunca existiu no ML: sai do rascunho na hora.
+      if (it.previewUrl) { try { URL.revokeObjectURL(it.previewUrl); } catch (_) { /* nada */ } }
+      F.rascunho.itens.splice(i, 1);
+    } else {
+      it.removida = true; // só sai de verdade no salvar
+    }
+    F.avisoLocal = null;
+    renderFotos();
+  }
+
+  function desfazerFoto(i) {
+    var F = DET.fotos;
+    var it = editorPronto() ? F.rascunho.itens[i] : null;
+    if (!it || !it.removida) return;
+    var lim = limiteFotos();
+    if (lim !== null && fotosAtivas().length >= lim) {
+      F.avisoLocal = "Não é possível desfazer. " + nomeGrupoFotos() + " pode ter no máximo " + lim + " imagens.";
+      renderFotos();
+      return;
+    }
+    it.removida = false;
+    F.avisoLocal = null;
+    renderFotos();
+  }
+
+  function descartarFotos() {
+    var F = DET && DET.fotos;
+    if (!F || F.estado !== "ok" || !F.rascunho) return;
+    novoRascunho(F.rascunho.sel);
+    renderFotos();
+  }
+
+  function selecionarGrupoFotos(i) {
+    var F = DET && DET.fotos;
+    if (!F || F.estado !== "ok" || !F.original.grupos[i] || i === F.rascunho.sel) return;
+    if (fotosSujas()) {
+      F.pendente = { destino: i };
+      renderFotos();
+      return;
+    }
+    novoRascunho(i);
+    renderFotos();
+  }
+
+  // Assinatura do CONTEÚDO do arquivo (SHA-256): a mesma imagem com outro
+  // nome também é duplicata. Sem crypto.subtle, cai para nome+tamanho+data.
+  function assinaturaArquivo(f) {
+    var alternativa = [f.name, f.size, f.lastModified].join("|");
+    try {
+      if (!window.crypto || !window.crypto.subtle || typeof f.arrayBuffer !== "function") return Promise.resolve(alternativa);
+      return f.arrayBuffer()
+        .then(function (buf) { return window.crypto.subtle.digest("SHA-256", buf); })
+        .then(function (h) {
+          return Array.prototype.map.call(new Uint8Array(h), function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+        })
+        .catch(function () { return alternativa; });
+    } catch (_) {
+      return Promise.resolve(alternativa);
+    }
+  }
+
+  // Validação LOCAL, antes de o arquivo entrar no rascunho. Devolve o motivo
+  // da recusa ou null.
+  function recusaLocal(f, assinatura) {
+    var mime = String(f.type || "").toLowerCase();
+    if (!IMAGEM_TIPOS[mime]) return "Formato não aceito. Envie uma imagem JPG, PNG ou WebP.";
+    if ((f.size || 0) > IMAGEM_MAX_BYTES) return "Arquivo com " + fmtTamanhoArquivo(f.size) + " — o limite é 10 MB.";
+    var lim = limiteFotos();
+    if (lim !== null && fotosAtivas().length >= lim) {
+      return "Não é possível adicionar. " + nomeGrupoFotos() + " pode ter no máximo " + lim + " imagens.";
+    }
+    var novas = DET.fotos.rascunho.itens.filter(function (it) { return it.tipo === "nova"; });
+    if (novas.length >= FOTOS_MAX_NOVAS) return "Adicione até " + FOTOS_MAX_NOVAS + " imagens novas por vez.";
+    if (assinatura && novas.some(function (it) { return it.assinatura === assinatura; })) {
+      return "Esta imagem já foi adicionada a esta variação.";
+    }
+    return null;
+  }
+
+  function adicionarArquivosFotos(files) {
+    var F = DET && DET.fotos;
+    if (!editorPronto()) return;
+    var meuToken = DET.token;
+    var R = F.rascunho;
+    F.avisoLocal = null;
+    // Um arquivo por vez, na ordem escolhida: cada um enxerga o limite e as
+    // duplicatas deixadas pelo anterior.
+    Array.prototype.slice.call(files || []).reduce(function (fila, f) {
+      return fila.then(function () {
+        if (!DET || DET.token !== meuToken || DET.fotos !== F || F.rascunho !== R) return null;
+        var antes = recusaLocal(f, null);
+        if (antes) { F.avisoLocal = antes; return null; }
+        return assinaturaArquivo(f).then(function (assinatura) {
+          if (!DET || DET.token !== meuToken || DET.fotos !== F || F.rascunho !== R) return;
+          var motivo = recusaLocal(f, assinatura);
+          if (motivo) { F.avisoLocal = motivo; return; }
+          R.seq += 1;
+          var it = { tipo: "nova", chave: "nova-" + R.seq, arquivo: f, assinatura: assinatura, nome: f.name || "imagem",
+                     bytes: f.size || 0, width: null, height: null, removida: false, previewUrl: null };
+          try { it.previewUrl = URL.createObjectURL(f); } catch (_) { it.previewUrl = null; }
+          R.itens.push(it);
+          if (it.previewUrl) medirFotoNova(it, meuToken);
+        });
+      });
+    }, Promise.resolve()).then(function () {
+      if (DET && DET.token === meuToken && DET.fotos === F) renderFotos();
+    });
+  }
+
+  function medirFotoNova(it, meuToken) {
+    var probe = new Image();
+    probe.onload = function () {
+      if (!DET || DET.token !== meuToken) return;
+      it.width = probe.naturalWidth;
+      it.height = probe.naturalHeight;
+      renderFotos();
+    };
+    probe.onerror = function () {
+      if (!DET || DET.token !== meuToken || !DET.fotos.rascunho) return;
+      var idx = DET.fotos.rascunho.itens.indexOf(it);
+      if (idx >= 0) DET.fotos.rascunho.itens.splice(idx, 1);
+      try { URL.revokeObjectURL(it.previewUrl); } catch (_) { /* nada */ }
+      DET.fotos.avisoLocal = "Não foi possível ler este arquivo como imagem.";
+      renderFotos();
+    };
+    probe.src = it.previewUrl;
+  }
+
+  // Eventos delegados no contêiner (#am-det-fotos-corpo sobrevive ao
+  // renderFotos; só o renderDetalhe o recria, e ele chama bindFotos de novo).
   function bindFotos() {
     carregarFotos(false);
+    var corpo = el("am-det-fotos-corpo");
+    if (!corpo) return;
+    // Captura: pega o change do <input type=file> mesmo quando ele não
+    // borbulha, e o input é recriado a cada renderFotos.
+    corpo.addEventListener("change", function (e) {
+      if (!e.target || e.target.id !== "am-det-img-input") return;
+      var files = Array.prototype.slice.call(e.target.files || []);
+      e.target.value = ""; // escolher o MESMO arquivo de novo precisa disparar change
+      if (files.length) adicionarArquivosFotos(files);
+    }, true);
+    function itemDe(e) {
+      return e.target && e.target.closest ? e.target.closest(".am-det-fotos__item[draggable='true']") : null;
+    }
+    corpo.addEventListener("dragstart", function (e) {
+      var it = itemDe(e);
+      if (!it || !editorPronto()) return;
+      DET.fotos.arrastando = Number(it.getAttribute("data-idx"));
+      it.classList.add("is-arrastando");
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        try { e.dataTransfer.setData("text/plain", String(DET.fotos.arrastando)); } catch (_) { /* Firefox exige; ok */ }
+      }
+    });
+    corpo.addEventListener("dragover", function (e) {
+      if (!itemDe(e) || !DET.fotos || DET.fotos.arrastando === null) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    });
+    corpo.addEventListener("drop", function (e) {
+      var alvo = itemDe(e);
+      if (!alvo || !DET.fotos || DET.fotos.arrastando === null) return;
+      e.preventDefault();
+      var de = DET.fotos.arrastando;
+      DET.fotos.arrastando = null;
+      moverFoto(de, Number(alvo.getAttribute("data-idx")));
+    });
+    corpo.addEventListener("dragend", function () {
+      if (DET && DET.fotos) DET.fotos.arrastando = null;
+      var a = corpo.querySelector(".is-arrastando");
+      if (a) a.classList.remove("is-arrastando");
+    });
   }
 
   // ----- Fotos: LEGADO ----------------------------------------------------------
@@ -6092,6 +6435,20 @@
     if (acao === "salvar") { salvarAlteracoes(); return; }
     if (acao === "foto-grupo") { selecionarGrupoFotos(Number(alvo.getAttribute("data-idx"))); return; }
     if (acao === "foto-recarregar") { carregarFotos(true); renderFotos(); return; }
+    if (acao === "foto-escolher") { var inpFoto = el("am-det-img-input"); if (inpFoto && !alvo.disabled) inpFoto.click(); return; }
+    if (acao === "foto-mover") { moverFotoSeta(Number(alvo.getAttribute("data-idx")), Number(alvo.getAttribute("data-dir"))); return; }
+    if (acao === "foto-remover") { removerFoto(Number(alvo.getAttribute("data-idx"))); return; }
+    if (acao === "foto-desfazer") { desfazerFoto(Number(alvo.getAttribute("data-idx"))); return; }
+    if (acao === "foto-descartar") { descartarFotos(); return; }
+    if (acao === "foto-salvar" || acao === "foto-pendente-salvar") return; // salvar: próxima etapa
+    if (acao === "foto-pendente-descartar") {
+      if (DET && DET.fotos && DET.fotos.pendente) { novoRascunho(DET.fotos.pendente.destino); renderFotos(); }
+      return;
+    }
+    if (acao === "foto-pendente-cancelar") {
+      if (DET && DET.fotos) { DET.fotos.pendente = null; renderFotos(); }
+      return;
+    }
     if (acao === "img-escolher") { var inp = el("am-det-img-input"); if (inp && !alvo.disabled) inp.click(); return; }
     if (acao === "img-enviar") { enviarImagem(); return; }
     if (acao === "img-cancelar") { cancelarImagem(); return; }

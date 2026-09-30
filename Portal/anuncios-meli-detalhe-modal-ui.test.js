@@ -1275,11 +1275,233 @@ async function run() {
       await abrirPrimeiroAnuncio(cdp);
     });
 
-    await check("7j — só leitura: nenhum PUT /fotos nem upload aconteceu em 7e–7i", async () => {
+    await check("7j — só leitura: nenhum PUT /fotos nem upload aconteceu em 7e–7i; sem rascunho não há Salvar", async () => {
       assert.strictEqual(fotosEscritas.length, escritasAntes.fotos, `PUT /fotos não esperado: ${JSON.stringify(fotosEscritas)}`);
       assert.strictEqual(imagemChamadas.length, escritasAntes.imagens, "nenhum POST /imagens");
-      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-fotos-corpo [data-acao=\"foto-escolher\"], #am-det-fotos-corpo [data-acao=\"foto-salvar\"]').length"), 0,
-        "nenhum controle de escrita na leitura");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-fotos-corpo [data-acao=\"foto-salvar\"]').length"), 0,
+        "sem alteração não existe botão de salvar");
+    });
+
+    /* ── 7k a 7t: editor de fotos — RASCUNHO EM MEMÓRIA ───────────────────
+       Tudo acontece no navegador: nenhuma chamada de escrita, nenhum upload.
+       `rede()` fotografa o que já saiu, para comparar depois. */
+
+    function rede() {
+      return {
+        escrita: pedidos.filter((p) => /\/fotos(\?|$)|\/imagens(\?|$)|\/pictures/.test(p)).length,
+        comCorpo: corpos.length,
+        putFotos: fotosEscritas.length,
+        postImagens: imagemChamadas.length,
+      };
+    }
+    function semRede(antes, oQue) {
+      assert.deepStrictEqual(rede(), antes, `${oQue} não pode gerar nenhuma requisição de escrita/upload`);
+    }
+
+    // Arrastar nativo com eventos sintéticos (o CDP não arrasta de verdade).
+    async function arrastar(de, para) {
+      await cdp.evaluate(`(function(){
+        var itens = document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__item');
+        var a = itens[${de}], b = itens[${para}], dt = new DataTransfer();
+        a.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+        b.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        b.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        a.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+        return true; })()`);
+    }
+
+    function editor() {
+      return cdp.evaluate(`(function(){
+        var corpo = document.getElementById('am-det-fotos-corpo');
+        var tiles = Array.from(corpo.querySelectorAll('.am-det-fotos__item'));
+        var barra = corpo.querySelector('.am-det-fotos__barra');
+        var pend = corpo.querySelector('.am-det-fotos__pendente');
+        var salvar = corpo.querySelector('[data-acao="foto-salvar"]');
+        return {
+          ids: tiles.map(function(t){ return t.getAttribute('data-foto'); }),
+          removidas: tiles.filter(function(t){ return t.classList.contains('is-removida'); }).map(function(t){ return t.getAttribute('data-foto'); }),
+          novas: tiles.filter(function(t){ return t.classList.contains('is-nova'); }).map(function(t){
+            return { id: t.getAttribute('data-foto'), src: (t.querySelector('img') || {}).src || '', marca: (t.querySelector('.am-det-fotos__nova') || {}).innerText || '' }; }),
+          selo: ((corpo.querySelector('.am-det-fotos__selo') || {}).innerText || '').trim(),
+          seloEm: (corpo.querySelector('.am-det-fotos__selo') || { closest: function(){ return null; } }).closest('[data-foto]') ? corpo.querySelector('.am-det-fotos__selo').closest('[data-foto]').getAttribute('data-foto') : null,
+          chips: Array.from(corpo.querySelectorAll('.am-det-fotos__chip')).map(function(c){ return c.innerText.replace(/\\s+/g,' ').trim(); }),
+          titulo: ((corpo.querySelector('.am-det-fotos__titulo') || {}).innerText || '').replace(/\\s+/g,' ').trim(),
+          barra: barra ? barra.innerText.replace(/\\s+/g,' ').trim() : '',
+          salvarDesabilitado: salvar ? salvar.disabled : null,
+          pendente: pend ? pend.innerText.replace(/\\s+/g,' ').trim() : '',
+          lixeiras: corpo.querySelectorAll('.am-det-fotos__item:not(.is-removida) [data-acao="foto-remover"]').length,
+          aviso: ((corpo.querySelector('.am-det-fotos__aviso-local') || {}).innerText || '').trim(),
+          adicionar: !!corpo.querySelector('[data-acao="foto-escolher"]'),
+          adicionarDesabilitado: (corpo.querySelector('[data-acao="foto-escolher"]') || {}).disabled,
+        }; })()`);
+    }
+
+    async function abrirComVariacoes() {
+      variationsCountAtivo = 3;
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+      await waitFor(cdp, `/Fotos da variação: Robalo/.test(${textoFotos})`, "o editor não carregou");
+    }
+
+    await check("7k — '+ Adicionar imagem' volta: o arquivo vira foto nova só no navegador (preview blob:, marcada 'Nova'), sem nenhuma requisição", async () => {
+      await abrirComVariacoes();
+      let e = await editor();
+      assert.strictEqual(e.adicionar, true, "o '+ Adicionar imagem' voltou");
+      assert.strictEqual(e.adicionarDesabilitado, false);
+      const antes = rede();
+      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "nova-robalo.png" });
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__item.is-nova img')", "a foto nova não apareceu");
+      e = await editor();
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R1", "R2", "R3"]);
+      assert.strictEqual(e.novas.length, 1, "uma foto nova no fim do grupo");
+      assert.ok(/^blob:/.test(e.novas[0].src), `preview local (blob:): ${e.novas[0].src}`);
+      assert.strictEqual(e.novas[0].marca, "Nova");
+      assert.strictEqual(e.ids[3], e.novas[0].id, "entra no fim");
+      semRede(antes, "adicionar imagem");
+    });
+
+    await check("7l — arrastar e setas ← → reordenam só o rascunho; a primeira ganha o selo; nenhuma requisição", async () => {
+      const antes = rede();
+      await arrastar(2, 0);                                         // R3 R1 R2 nova
+      let e = await editor();
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R3", "R1", "R2"], "arrastar R3 para o início");
+      assert.strictEqual(e.seloEm, "R3", "a primeira foto leva o selo de imagem principal");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R1"] [data-acao="foto-mover"][data-dir="1"]');
+      e = await editor();
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R3", "R2", "R1"], "→ move uma posição");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R2"] [data-acao="foto-mover"][data-dir="-1"]');
+      e = await editor();
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R2", "R3", "R1"], "← move uma posição");
+      assert.strictEqual(e.seloEm, "R2");
+      const rotulos = await cdp.evaluate(`Array.from(document.querySelectorAll('#am-det-fotos-corpo [data-acao="foto-mover"]')).every(function(b){ return !!b.getAttribute('aria-label'); })`);
+      assert.strictEqual(rotulos, true, "as setas têm rótulo acessível");
+      semRede(antes, "reordenar");
+    });
+
+    await check("7m — remover marca 'Será removida' (esmaecida) e 'Desfazer' restaura; foto nova removida some; nenhuma requisição", async () => {
+      const antes = rede();
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] [data-acao="foto-remover"]');
+      let e = await editor();
+      assert.deepStrictEqual(e.removidas, ["R3"]);
+      assert.ok(/Será removida/.test(await cdp.evaluate(textoFotos)));
+      const opacidade = await cdp.evaluate(`Number(getComputedStyle(document.querySelector('#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] img')).opacity)`);
+      assert.ok(opacidade < 0.6, `foto marcada fica esmaecida (opacidade ${opacidade})`);
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] [data-acao="foto-desfazer"]');
+      e = await editor();
+      assert.deepStrictEqual(e.removidas, [], "desfazer restaura");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] [data-acao="foto-remover"]');
+
+      const nova = (await editor()).novas[0].id;
+      await clicar(cdp, `#am-det-fotos-corpo .am-det-fotos__item[data-foto="${nova}"] [data-acao="foto-remover"]`);
+      e = await editor();
+      assert.strictEqual(e.novas.length, 0, "foto nova removida sai do rascunho (nunca existiu no ML)");
+      assert.deepStrictEqual(e.ids, ["R2", "R3", "R1"]);
+      semRede(antes, "remover/desfazer");
+    });
+
+    await check("7n — barra de alterações conta as pendências e oferece Descartar e Salvar (Salvar ainda sem backend)", async () => {
+      let e = await editor();
+      // Pendências: R3 removida + ordem mudou = 2.
+      assert.ok(/^2 alterações nas fotos de Robalo/.test(e.barra), `barra: ${e.barra}`);
+      assert.ok(/Descartar/.test(e.barra) && /Salvar no Mercado Livre/.test(e.barra), e.barra);
+      assert.strictEqual(e.salvarDesabilitado, true, "nesta etapa o salvar existe mas não chama o backend");
+      assert.deepStrictEqual(e.chips, ["Robalo · 2", "Preto · 1", "Verde · 0"], "o chip do grupo acompanha o rascunho");
+      const antes = rede();
+      await cdp.evaluate(`(function(){ var b = document.querySelector('#am-det-fotos-corpo [data-acao="foto-salvar"]'); if (b) b.click(); return true; })()`);
+      semRede(antes, "clicar em Salvar");
+    });
+
+    await check("7o — trocar de grupo com pendência não troca: 'Existem alterações pendentes neste grupo.' com Salvar / Descartar / Cancelar", async () => {
+      const antes = rede();
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="1"]');
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__pendente')", "o aviso de pendência não apareceu");
+      let e = await editor();
+      assert.ok(/Existem alterações pendentes neste grupo\./.test(e.pendente), e.pendente);
+      assert.ok(/Salvar/.test(e.pendente) && /Descartar/.test(e.pendente) && /Cancelar/.test(e.pendente), e.pendente);
+      assert.ok(/Fotos da variação: Robalo/.test(e.titulo), "o grupo não trocou");
+
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-pendente-cancelar"]');
+      e = await editor();
+      assert.strictEqual(e.pendente, "");
+      assert.deepStrictEqual(e.ids, ["R2", "R3", "R1"], "cancelar mantém o rascunho");
+      assert.deepStrictEqual(e.removidas, ["R3"]);
+
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="1"]');
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__pendente')", "o aviso não voltou");
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-pendente-descartar"]');
+      await waitFor(cdp, `/Fotos da variação: Preto/.test(${textoFotos})`, "descartar não trocou de grupo");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="0"]');
+      await waitFor(cdp, `/Fotos da variação: Robalo/.test(${textoFotos})`, "sem pendência a troca é direta");
+      e = await editor();
+      assert.deepStrictEqual(e.ids, ["R1", "R2", "R3"], "o rascunho descartado não volta");
+      assert.deepStrictEqual(e.chips, ["Robalo · 3", "Preto · 1", "Verde · 0"]);
+      semRede(antes, "trocar de grupo");
+    });
+
+    await check("7p — Descartar volta exatamente ao estado original (ordem, remoções e novas)", async () => {
+      await arrastar(1, 0);
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] [data-acao="foto-remover"]');
+      await escolherArquivo({ png: true, largura: 700, altura: 700, nome: "descartar.png" });
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__item.is-nova img')", "a nova não entrou");
+      assert.ok((await editor()).barra.length > 0);
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+      const e = await editor();
+      assert.deepStrictEqual(e.ids, ["R1", "R2", "R3"]);
+      assert.deepStrictEqual(e.removidas, []);
+      assert.deepStrictEqual(e.novas, []);
+      assert.strictEqual(e.barra, "", "sem diferença, sem barra");
+      assert.strictEqual(e.seloEm, "R1");
+    });
+
+    await check("7q — não deixa remover a última foto de uma variação", async () => {
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="1"]');
+      await waitFor(cdp, `/Fotos da variação: Preto/.test(${textoFotos})`, "não trocou para Preto");
+      let e = await editor();
+      assert.strictEqual(e.lixeiras, 0, "a única foto do grupo não tem lixeira");
+      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "preto-2.png" });
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__item.is-nova')", "a nova não entrou");
+      assert.strictEqual((await editor()).lixeiras, 2, "com duas fotos, as duas podem sair");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="P1"] [data-acao="foto-remover"]');
+      e = await editor();
+      assert.strictEqual(e.lixeiras, 0, "a única foto que sobrou perde a lixeira");
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+    });
+
+    await check("7r — não deixa adicionar a mesma imagem duas vezes no rascunho", async () => {
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="0"]');
+      await waitFor(cdp, `/Fotos da variação: Robalo/.test(${textoFotos})`, "não voltou para Robalo");
+      await escolherArquivo({ png: true, largura: 640, altura: 640, nome: "igual.png" });
+      await waitFor(cdp, "document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__item.is-nova').length === 1", "a primeira não entrou");
+      await escolherArquivo({ png: true, largura: 640, altura: 640, nome: "igual-outro-nome.png" });
+      await waitFor(cdp, `/Esta imagem já foi adicionada/.test(${textoFotos})`, "duplicata não foi recusada");
+      assert.strictEqual((await editor()).novas.length, 1, "a duplicata não entra");
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+    });
+
+    await check("7s — respeita o limite do GET: no limite, adicionar é recusado localmente", async () => {
+      fotosLeituraResultado = { status: 200, corpo: { ...leituraFotos(), limite: { porGrupo: 4, origem: "categoria" } } };
+      try {
+        await abrirComVariacoes();
+        await escolherArquivo({ png: true, largura: 600, altura: 600, nome: "quarta.png" });
+        await waitFor(cdp, "document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__item.is-nova').length === 1", "a quarta não entrou");
+        let e = await editor();
+        assert.strictEqual(e.adicionarDesabilitado, true, "no limite o adicionar fica desabilitado");
+        await escolherArquivo({ png: true, largura: 610, altura: 610, nome: "quinta.png" });
+        await waitFor(cdp, `/no máximo 4 imagens/.test(${textoFotos})`, "passar do limite precisa ser recusado com o limite do GET");
+        e = await editor();
+        assert.strictEqual(e.novas.length, 1);
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+      } finally {
+        fotosLeituraResultado = null;
+      }
+    });
+
+    await check("7t — nenhum PUT /fotos nem upload em toda a edição (7k–7s)", async () => {
+      assert.strictEqual(fotosEscritas.length, escritasAntes.fotos, `PUT /fotos não esperado: ${JSON.stringify(fotosEscritas)}`);
+      assert.strictEqual(imagemChamadas.length, escritasAntes.imagens, "nenhum POST /imagens");
+      variationsCountAtivo = 0;
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
     });
 
     await check("8 — alterações pendentes são detectadas e nomeadas", async () => {

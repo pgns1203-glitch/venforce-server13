@@ -15,6 +15,7 @@
 // Uso:
 //   node server/scripts/validacaoImagemVariacao.js antes    --clienteSlug=<s> --itemId=<MLB> --arquivo=<f.json>
 //   node server/scripts/validacaoImagemVariacao.js comparar --clienteSlug=<s> --itemId=<MLB> --arquivo=<f.json> --atributo=COLOR --valor=<value_name>
+//   node server/scripts/validacaoImagemVariacao.js comparar ... --ordem=<id,id,NOVA,…>   (editor de fotos: grupo exatamente nessa ordem)
 //   node server/scripts/validacaoImagemVariacao.js snapshot --clienteSlug=<s> --itemId=<MLB>
 // -----------------------------------------------------------------------------
 
@@ -76,6 +77,45 @@ function compararItens(antes, depois, atributo, valor) {
   return { ok: falhas.length === 0, novaFoto: nova || null, achados, falhas };
 }
 
+// Editor de fotos: o grupo alvo precisa ficar EXATAMENTE em `ordemEsperada`
+// (ids; "NOVA" casa com qualquer id que não existia antes). Fotos do grupo
+// fora da ordem precisam sumir da galeria se nenhum outro grupo as usa.
+function compararOrdem(antes, depois, atributo, valor, ordemEsperada) {
+  const achados = [];
+  const falhas = [];
+  const fotosAntes = (antes.pictures || []).map((p) => String(p.id));
+  const fotosDepois = (depois.pictures || []).map((p) => String(p.id));
+  const vDepois = Object.fromEntries((depois.variations || []).map((v) => [String(v.id), v]));
+  const alvoAntes = (antes.variations || []).filter((v) => valorDe(v, atributo) === valor);
+  const idsGrupoAntes = alvoAntes.length ? idsDe(alvoAntes[0]) : fotosAntes;
+  const usadasFora = new Set();
+  (antes.variations || []).filter((v) => valorDe(v, atributo) !== valor).forEach((v) => idsDe(v).forEach((id) => usadasFora.add(id)));
+  const removidas = idsGrupoAntes.filter((id) => !ordemEsperada.includes(id) && !usadasFora.has(id));
+
+  const casa = (veio) => veio.length === ordemEsperada.length &&
+    veio.every((id, i) => (ordemEsperada[i] === "NOVA" ? !fotosAntes.includes(id) : id === ordemEsperada[i]));
+
+  for (const v of antes.variations || []) {
+    const id = String(v.id);
+    const d = vDepois[id];
+    if (!d) { falhas.push(`variação ${id} SUMIU`); continue; }
+    const alvo = valorDe(v, atributo) === valor;
+    const veio = idsDe(d);
+    const certo = alvo ? casa(veio) : JSON.stringify(veio) === JSON.stringify(idsDe(v));
+    achados.push(`variação ${id} [${valorDe(v, atributo)}${alvo ? " · ALVO" : ""}]: ${idsDe(v).join(",")} → ${veio.join(",")} ${certo ? "OK" : "DIVERGENTE"}`);
+    if (!certo) falhas.push(`variação ${id}: veio ${veio.join(",")}`);
+    for (const campo of ["price", "available_quantity"]) if (v[campo] !== d[campo]) falhas.push(`variação ${id}: ${campo} mudou`);
+  }
+  if (!(antes.variations || []).length && !casa(fotosDepois)) falhas.push(`galeria: veio ${fotosDepois.join(",")}`);
+  for (const id of removidas) if (fotosDepois.includes(id)) falhas.push(`foto ${id} devia ter saído da galeria`);
+  for (const id of fotosAntes) if (!removidas.includes(id) && !fotosDepois.includes(id)) falhas.push(`foto ${id} sumiu sem ter sido excluída`);
+  if ((antes.variations || []).length && fotosAntes[0] !== fotosDepois[0] && !removidas.includes(fotosAntes[0])) {
+    falhas.push(`capa do anúncio mudou: ${fotosAntes[0]} → ${fotosDepois[0]}`);
+  }
+  achados.push(`galeria: ${fotosAntes.length} → ${fotosDepois.length}; removidas esperadas: ${removidas.join(",") || "-"}`);
+  return { ok: falhas.length === 0, achados, falhas };
+}
+
 async function main() {
   const a = args();
   const modo = a._[0];
@@ -119,7 +159,9 @@ async function main() {
 
   if (!a.arquivo || !a.atributo || !a.valor) throw new Error("informe --arquivo, --atributo e --valor");
   const antes = JSON.parse(fs.readFileSync(a.arquivo, "utf8"));
-  const r = compararItens(antes, item, a.atributo, a.valor);
+  const r = a.ordem
+    ? compararOrdem(antes, item, a.atributo, a.valor, a.ordem.split(",").map((s) => s.trim()).filter(Boolean))
+    : compararItens(antes, item, a.atributo, a.valor);
   const saida = a.arquivo.replace(/\.json$/, "") + ".depois.json";
   if (!fs.existsSync(saida)) fs.writeFileSync(saida, JSON.stringify(item, null, 2));
   r.achados.forEach((l) => console.log("  " + l));
@@ -133,4 +175,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { compararItens };
+module.exports = { compararItens, compararOrdem };

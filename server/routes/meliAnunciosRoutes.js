@@ -32,6 +32,9 @@
 //   GET    /anuncios-meli/:itemId/promocoes    (promoções oficiais do item, read-only)
 //   POST   /anuncios-meli/:itemId/promocoes/:promotionId/aplicar (escrita real, DEAL/SELLER_CAMPAIGN)
 //   PATCH  /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque (escrita real)
+//   POST   /anuncios-meli/:itemId/imagens       (adiciona uma imagem, anúncio sem variação)
+//   GET    /anuncios-meli/:itemId/fotos/variacoes (editor de fotos: leitura ao vivo)
+//   PUT    /anuncios-meli/:itemId/fotos         (editor de fotos: escrita real no ML)
 //   PATCH  /anuncios-meli/:itemId/revisao
 //   PATCH  /anuncios-meli/:itemId/conteudo      (edição real no Mercado Livre)
 //   PATCH  /anuncios-meli/:itemId/estoque       (edição real no Mercado Livre)
@@ -56,6 +59,13 @@ const uploadImagem = multer({
   limits: { fileSize: imagemValidator.MAX_UPLOAD_BYTES, files: 1 },
 });
 
+// Editor de fotos: várias imagens novas num único salvar.
+const MAX_FOTOS_POR_SALVAR = 10;
+const uploadFotos = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: imagemValidator.MAX_UPLOAD_BYTES, files: MAX_FOTOS_POR_SALVAR },
+});
+
 // Erros do Multer no mesmo formato de recusa da rota (codigo/motivo/etapa),
 // em vez de estourar como 500 no handler global.
 function tratarErroUploadImagem(err, req, res, next) {
@@ -68,9 +78,12 @@ function tratarErroUploadImagem(err, req, res, next) {
     });
   }
   if (err.code === "LIMIT_UNEXPECTED_FILE" || err.code === "LIMIT_FILE_COUNT") {
+    const editor = req.method === "PUT";
     return res.status(400).json({
       ok: false, codigo: "CAMPO_INVALIDO", etapa: "validacao",
-      motivo: 'Envie exatamente um arquivo no campo "imagem".',
+      motivo: editor
+        ? `Envie as imagens no campo "novas", até ${MAX_FOTOS_POR_SALVAR} por vez.`
+        : 'Envie exatamente um arquivo no campo "imagem".',
     });
   }
   return next(err);
@@ -181,9 +194,16 @@ router.post(
   tratarErroUploadImagem,
   ctrl.adicionarImagem
 );
-// Anúncio com variações: grupos de foto (atributo defines_picture) lidos ao
-// vivo do ML. O envio usa a MESMA rota acima com ?grupoVariacao=<chave>.
-router.get("/:itemId/imagens/variacoes", ctrl.gruposImagemVariacoes);
+// Editor de fotos por grupo de variação (adicionar / excluir / ordenar num
+// único salvar). GET lê ao vivo; PUT vira UM PUT /items completo no ML — ver
+// meliFotosService. clienteSlug na QUERY, pelo mesmo motivo do POST /imagens.
+router.get("/:itemId/fotos/variacoes", ctrl.lerFotosAnuncio);
+router.put(
+  "/:itemId/fotos",
+  uploadFotos.array("novas", MAX_FOTOS_POR_SALVAR),
+  tratarErroUploadImagem,
+  ctrl.salvarFotosAnuncio
+);
 
 // Edição de ESTOQUE do anúncio NO MERCADO LIVRE (PUT /items { available_quantity }).
 // Mesmo acesso de /conteudo, pelo mesmo motivo: é escrita no anúncio, não

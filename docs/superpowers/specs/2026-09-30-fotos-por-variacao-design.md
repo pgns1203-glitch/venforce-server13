@@ -93,7 +93,9 @@ oferecem "Tentar novamente".
 
 ### 4.1 Leitura
 
-`GET /anuncios-meli/:itemId/fotos?clienteSlug=…` — ao vivo no ML.
+`GET /anuncios-meli/:itemId/fotos/variacoes?clienteSlug=…` — ao vivo no ML.
+Serve também o anúncio sem variação (`modo: "simples"`). Devolve só o que a
+tela usa:
 
 ```json
 {
@@ -104,7 +106,10 @@ oferecem "Tentar novamente".
   "grupos": [
     {
       "grupoVariacao": { "attribute_id": "COLOR", "value_id": null, "value_name": "Robalo" },
-      "variacoes": [{ "id": "206028890295", "rotulo": "P" }],
+      "rotulo": "Robalo",
+      "combinacoes": ["P", "M"],
+      "quantidade": 7,
+      "principal": { "id": "779119-MLB…", "url": "https://…" },
       "fotos": [{ "id": "779119-MLB…", "url": "https://…" }]
     }
   ]
@@ -112,7 +117,8 @@ oferecem "Tentar novamente".
 ```
 
 Em `modo: "simples"` há um grupo só, com `grupoVariacao: null` e as fotos
-da galeria geral. Substitui o `GET /imagens/variacoes` do PR #205.
+da galeria geral. Ids internos de variação não saem. Substitui o
+`GET /imagens/variacoes` do PR #205.
 
 ### 4.2 Escrita
 
@@ -204,6 +210,13 @@ personalizados vêm sem `value_id` (caso real da Red Fish).
 | catálogo, User Product, `ATRIBUTO_FOTO_INDEFINIDO`, `VARIACAO_GRUPO_INEXISTENTE` | bloqueio | 409 |
 | erro do ML (leitura, upload, PUT) com `detalhesMl` | leitura/upload/vinculo | 422 |
 | `VINCULO_INCERTO`, `CONFIRMACAO_DIVERGENTE`, `PERDA_DE_*` (`critico`) | vinculo/confirmacao | 422 |
+
+Todo erro tem `ok:false`, `codigo`, `motivo`, `etapa` e `incerto` (boolean).
+`incerto: true` (estado do anúncio desconhecido ou divergente) diz à tela para
+não oferecer "tentar de novo". Erro do ML traz `detalhesMl` (mensagem, código,
+causas originais); recusa do VenForce nunca traz. `pictureIds` aparece quando
+imagens já subiram ao CDN. Sucesso do PUT: `{ ok, anuncio, fotos (formato do
+GET), confirmacaoPendente, novas }`.
 
 ## 5. Código
 

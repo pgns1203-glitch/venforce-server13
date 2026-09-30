@@ -21,6 +21,7 @@ const margemProjetadaSnapshotRepository = require("../services/motorMargem/marge
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const conteudoService = require("../services/meliAnuncios/meliConteudoService");
 const imagensService = require("../services/meliAnuncios/meliImagensService");
+const fotosService = require("../services/meliAnuncios/meliFotosService");
 const estoqueService = require("../services/meliAnuncios/meliEstoqueService");
 const variacoesLegadoService = require("../services/meliAnuncios/meliVariacoesLegadoService");
 const variacoesLegadoEstoqueService = require("../services/meliAnuncios/meliVariacoesLegadoEstoqueService");
@@ -2097,26 +2098,13 @@ async function adicionarImagem(req, res) {
       mlUserId = contexto.mlUserId;
     }
 
-    // grupoVariacao presente = anúncio com variações: fluxo próprio (PUT com
-    // pictures + variations inteiros). Ausente = fluxo simples, que continua
-    // bloqueando anúncio com variações.
-    const grupoVariacao = typeof query.grupoVariacao === "string" ? query.grupoVariacao : "";
-    const r = grupoVariacao
-      ? await imagensService.adicionarImagemVariacao({
-        clienteId: cliente.id,
-        itemId,
-        mlUserId,
-        anuncio,
-        arquivo: req.file,
-        grupoChave: grupoVariacao,
-      })
-      : await imagensService.adicionarImagem({
-        clienteId: cliente.id,
-        itemId,
-        mlUserId,
-        anuncio,
-        arquivo: req.file,
-      });
+    const r = await imagensService.adicionarImagem({
+      clienteId: cliente.id,
+      itemId,
+      mlUserId,
+      anuncio,
+      arquivo: req.file,
+    });
 
     if (!r.ok) {
       const status = r.etapa === "validacao"
@@ -2154,7 +2142,6 @@ async function adicionarImagem(req, res) {
       anuncio: atualizado,
       confirmacaoPendente,
       imagem: r.imagem,
-      grupo: r.grupo || null,
     });
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
@@ -2167,54 +2154,147 @@ async function adicionarImagem(req, res) {
 }
 
 // ----------------------------------------------------------------------------
-// GET /anuncios-meli/:itemId/imagens/variacoes?clienteSlug=…
+// Editor de fotos por grupo de variação — ver meliFotosService e
+// docs/superpowers/specs/2026-09-30-fotos-por-variacao-design.md.
 //
-// Só leitura, AO VIVO no ML: agrupa as variações pelo atributo defines_picture
-// da categoria e devolve as fotos de cada grupo, para a tela escolher onde a
-// imagem nova entra. Ver meliImagensService (bloco VARIAÇÕES).
+//   GET /anuncios-meli/:itemId/fotos/variacoes   leitura AO VIVO para a tela
+//                                                 (também serve o anúncio sem
+//                                                 variação: modo "simples")
+//   PUT /anuncios-meli/:itemId/fotos             multipart: plano (JSON) + novas[]
+//
+// Autenticação, papel e carteira ficam no router; aqui só: contexto do
+// anúncio, leitura do multipart e repasse ao serviço. Nenhuma regra de fotos
+// mora no controller. clienteSlug só pela QUERY (o guard de carteira roda
+// antes do multer).
 // ----------------------------------------------------------------------------
-async function gruposImagemVariacoes(req, res) {
+
+// Resolve cliente, anúncio e conta ML. Responde e devolve null quando não dá.
+async function contextoFotos(req, res) {
+  const { itemId } = req.params;
+  const query = req.query || {};
+  if (!query.clienteSlug) {
+    res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    return null;
+  }
+  const cliente = await anunciosService.resolverCliente(query.clienteSlug);
+  if (!cliente) {
+    res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    return null;
+  }
+  const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+  if (!anuncio) {
+    res.status(404).json({ ok: false, motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente." });
+    return null;
+  }
+  let mlUserId = anuncio.ml_user_id || null;
+  if (!mlUserId) {
+    const contexto = await anunciosService.resolverContextoConta({
+      clienteId: cliente.id,
+      clienteContaId: extrairClienteContaId(query.clienteContaId),
+      requireUsableGrant: true,
+    });
+    mlUserId = contexto.mlUserId;
+  }
+  return { itemId, cliente, anuncio, mlUserId };
+}
+
+// Leitura do serviço → só o que a tela usa (sem ids de variação nem nada
+// interno). `principal` é a primeira foto: a imagem principal da variação ou,
+// sem variação, a capa do anúncio.
+function fotosParaTela(leitura) {
+  if (!leitura || !leitura.ok) return null;
+  return {
+    ok: true,
+    modo: leitura.modo,
+    atributo: leitura.atributo ? { id: leitura.atributo.id, nome: leitura.atributo.nome } : null,
+    limite: leitura.limite ? { porGrupo: leitura.limite.porGrupo, origem: leitura.limite.origem } : null,
+    grupos: (leitura.grupos || []).map((g) => {
+      const fotos = (g.fotos || []).map((f) => ({ id: f.id, url: f.url }));
+      return {
+        grupoVariacao: g.grupoVariacao,
+        rotulo: g.rotulo,
+        combinacoes: (g.variacoes || []).map((v) => v.rotulo).filter(Boolean),
+        quantidade: fotos.length,
+        principal: fotos[0] || null,
+        fotos,
+      };
+    }),
+  };
+}
+
+// Contrato de erro único do editor. `incerto` = o estado do anúncio no ML não
+// é conhecido (ou diverge do enviado): a tela NÃO oferece tentar de novo.
+const CODIGOS_INCERTOS = new Set(["VINCULO_INCERTO", "CONFIRMACAO_DIVERGENTE"]);
+
+function responderFalhaFotos(res, r) {
+  const status = r.etapa === "validacao" ? r.statusHttp || 400 : r.etapa === "bloqueio" ? 409 : 422;
+  const corpo = {
+    ok: false,
+    codigo: r.codigo,
+    motivo: r.motivo,
+    etapa: r.etapa,
+    incerto: !!(r.critico || CODIGOS_INCERTOS.has(r.codigo)),
+  };
+  if (r.detalhesMl) corpo.detalhesMl = r.detalhesMl;
+  if (r.pictureIds) corpo.pictureIds = r.pictureIds;
+  if (r.critico) corpo.critico = true;
+  return res.status(status).json(corpo);
+}
+
+async function lerFotosAnuncio(req, res) {
   try {
-    const { itemId } = req.params;
-    const { clienteSlug } = req.query || {};
-    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
-
-    if (!clienteSlug) {
-      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
-    }
-
-    const cliente = await anunciosService.resolverCliente(clienteSlug);
-    if (!cliente) {
-      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
-    }
-
-    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
-    if (!anuncio) {
-      return res.status(404).json({
-        ok: false,
-        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
-      });
-    }
-
-    let mlUserId = anuncio.ml_user_id || null;
-    if (!mlUserId) {
-      const contexto = await anunciosService.resolverContextoConta({
-        clienteId: cliente.id, clienteContaId, requireUsableGrant: false,
-      });
-      mlUserId = contexto.mlUserId;
-    }
-
-    const r = await imagensService.listarGruposDeFotoVariacoes({ clienteId: cliente.id, itemId, mlUserId });
-    if (!r.ok) {
-      const corpo = { ok: false, codigo: r.codigo, motivo: r.motivo, etapa: r.etapa };
-      if (r.detalhesMl) corpo.detalhesMl = r.detalhesMl;
-      return res.status(r.etapa === "bloqueio" ? 409 : 422).json(corpo);
-    }
-    return res.json({ ok: true, atributo: r.atributo, grupos: r.grupos });
+    const ctx = await contextoFotos(req, res);
+    if (!ctx) return undefined;
+    const r = await fotosService.lerFotos({ clienteId: ctx.cliente.id, itemId: ctx.itemId, mlUserId: ctx.mlUserId });
+    if (!r.ok) return responderFalhaFotos(res, r);
+    return res.json(fotosParaTela(r));
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
-    console.error("[anuncios-meli] gruposImagemVariacoes:", err.message);
-    return res.status(500).json({ ok: false, motivo: "Erro ao carregar as variações do anúncio." });
+    console.error("[anuncios-meli] lerFotosAnuncio:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao carregar as fotos do anúncio." });
+  }
+}
+
+async function salvarFotosAnuncio(req, res) {
+  try {
+    let plano = null;
+    try {
+      plano = JSON.parse((req.body && req.body.plano) || "");
+    } catch (_) {
+      plano = null;
+    }
+    if (!plano || typeof plano !== "object") {
+      return res.status(400).json({
+        ok: false, codigo: "PLANO_INVALIDO", etapa: "validacao", incerto: false,
+        motivo: "Plano de fotos ausente ou inválido.",
+      });
+    }
+    const ctx = await contextoFotos(req, res);
+    if (!ctx) return undefined;
+
+    // O snapshot é gravado pelo serviço, e só depois de o ML confirmar.
+    const r = await fotosService.salvarFotos({
+      clienteId: ctx.cliente.id,
+      itemId: ctx.itemId,
+      mlUserId: ctx.mlUserId,
+      anuncio: ctx.anuncio,
+      plano,
+      arquivos: req.files || [],
+      gravarSnapshot: (fotos) => anunciosService.atualizarFotosConfirmadas(ctx.cliente.id, ctx.itemId, fotos),
+    });
+    if (!r.ok) return responderFalhaFotos(res, r);
+
+    return res.json({
+      ok: true,
+      anuncio: r.snapshot || ctx.anuncio,
+      fotos: fotosParaTela(r.leitura),
+      confirmacaoPendente: !!r.confirmacaoPendente,
+      novas: r.novas || [],
+    });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] salvarFotosAnuncio:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro interno ao salvar as fotos do anúncio." });
   }
 }
 
@@ -2992,7 +3072,8 @@ module.exports = {
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
   adicionarImagem,
-  gruposImagemVariacoes,
+  lerFotosAnuncio,
+  salvarFotosAnuncio,
   atualizarEstoque,
   atualizarPreco,
   simularMargem,

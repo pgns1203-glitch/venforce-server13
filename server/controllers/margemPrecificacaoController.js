@@ -75,7 +75,7 @@ function createMargemPrecificacaoController({ service = defaultService, oportuni
       clienteSlug,
       clienteContaId: b.clienteContaId ?? b.cliente_conta_id,
       previewId: b.previewId,
-      idempotencyKey: b.idempotencyKey || req.get?.("Idempotency-Key"),
+      idempotencyKey: b.idempotencyKey,
       promotionId: req.params.promotionId,
       user: usuario(req),
       ip: extrairIp(req),

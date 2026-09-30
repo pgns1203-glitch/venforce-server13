@@ -2010,6 +2010,21 @@
   line-height: 1.55;
 }
 
+/* Coluna "Atual" editável da comparação com a IA (título/modelo) — mesmo
+   rascunho do cabeçalho/Catálogo, ver tituloEModeloHtml. */
+.vf-page-anuncios-meli .am-det-compare__input {
+  width: 100%;
+}
+
+.vf-page-anuncios-meli .am-det-compare__input.is-dirty {
+  border-color: var(--vf-primary-border);
+}
+
+.vf-page-anuncios-meli .am-det-compare__input[readonly] {
+  background: var(--vf-surface-hover);
+  color: var(--vf-text-secondary);
+}
+
 .vf-page-anuncios-meli .am-det-readtext--sug {
   margin-bottom: 10px;
 }

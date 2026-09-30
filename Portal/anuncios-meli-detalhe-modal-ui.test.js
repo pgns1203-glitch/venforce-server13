@@ -54,9 +54,11 @@ function anuncio(conta) {
   const a = conta === "43"
     ? { item_id: "MLB-B1", titulo: TITULO_B, sku: "CF-B300", marca: "BrewCo", modelo: "B300", preco: 399.9, cliente_conta_id: 43, ml_user_id: "9002" }
     : { item_id: "MLB-A1", titulo: TITULO_A, sku: "FN-X200-PRT", marca: "Prime Audio", modelo: "X200", preco: 189.9, cliente_conta_id: 42, ml_user_id: "9001" };
+  if (semModeloComVariacoes) a.modelo = null;
   return {
     id: 1, cliente_id: 87, cliente_slug: "n97",
     item_id: a.item_id, titulo: a.titulo, sku: a.sku, marca: a.marca, modelo: a.modelo,
+    variations_count: semModeloComVariacoes ? 4 : 0,
     preco: a.preco, preco_original: precoOriginalAtivo ? 249.9 : null, moeda: "BRL", estoque: 42, vendidos: 187,
     status: "active", sub_status: null,
     listing_type_id: "gold_special", category_id: "MLB1055",
@@ -66,7 +68,7 @@ function anuncio(conta) {
     logistic_type: "fulfillment", is_full: true,
     attributes_json: [
       { id: "BRAND", name: "Marca", value: a.marca },
-      { id: "MODEL", name: "Modelo", value: a.modelo },
+      ...(a.modelo == null ? [] : [{ id: "MODEL", name: "Modelo", value: a.modelo }]),
       { id: "COLOR", name: "Cor", value: "Preto" },
       { id: "WEIGHT", name: "Peso", value: null },
       { id: "WARRANTY_TIME", name: "Garantia do fabricante", value: null },
@@ -117,6 +119,8 @@ let variationsCountAtivo = 0;        // > 0 = item legado com variations[] reais
 // testados em separado porque a causa raiz da tag divergente era exatamente
 // um lugar olhar só catalog_listing e o outro olhar catalog_listing||family_name.
 let catalogoModo = "nenhum";
+// Anúncio SEM modelo (MODEL ausente na ficha) e COM variações legadas — ver 7d.
+let semModeloComVariacoes = false;
 let detalheAtrasoPorItem = {};       // itemId -> ms
 let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
 let precoResultado = null;           // resposta forçada do PATCH /preco
@@ -318,8 +322,16 @@ async function check(name, fn) {
   console.log(`ok ${checks} - ${name}`);
 }
 
+// Texto visível do modal + o VALOR atual dos campos editáveis: título e
+// modelo moram em inputs (inclusive na coluna "Atual" da comparação com a
+// IA), cujo valor não entra no innerText.
 function textoModal(cdp) {
-  return cdp.evaluate("document.querySelector('.am-det-modal') ? document.querySelector('.am-det-modal').innerText : ''");
+  return cdp.evaluate(`(function(){
+    var m = document.querySelector('.am-det-modal');
+    if (!m) return '';
+    var valores = Array.prototype.map.call(m.querySelectorAll('input, textarea'), function (e) { return e.value; });
+    return m.innerText + ' | ' + valores.join(' | ');
+  })()`);
 }
 
 async function clicar(cdp, seletor, mensagem) {
@@ -881,6 +893,11 @@ async function run() {
 
       const modeloInfo = await cdp.evaluate("document.getElementById('am-det-modelo').readOnly");
       assert.ok(!modeloInfo, "modelo deveria continuar editável");
+      const colunaAtual = await cdp.evaluate(`({
+        titulo: document.getElementById('am-det-espelho-titulo').readOnly,
+        modelo: document.getElementById('am-det-espelho-modelo').readOnly })`);
+      assert.ok(colunaAtual.titulo, "a coluna 'Atual' da comparação com a IA obedece à MESMA trava do título");
+      assert.ok(!colunaAtual.modelo, "o modelo continua editável também na comparação com a IA");
     });
 
     await check("7b — family_name sem catalog_listing: NÃO mostra tag Catálogo, mas título continua protegido", async () => {
@@ -898,6 +915,11 @@ async function run() {
 
       const modeloInfo = await cdp.evaluate("document.getElementById('am-det-modelo').readOnly");
       assert.ok(!modeloInfo, "modelo deveria continuar editável");
+      const colunaAtual = await cdp.evaluate(`({
+        titulo: document.getElementById('am-det-espelho-titulo').readOnly,
+        modelo: document.getElementById('am-det-espelho-modelo').readOnly })`);
+      assert.ok(colunaAtual.titulo, "a coluna 'Atual' da comparação com a IA obedece à MESMA trava do título");
+      assert.ok(!colunaAtual.modelo, "o modelo continua editável também na comparação com a IA");
     });
 
     await check("7c — sem catalog_listing e sem family_name: anúncio tradicional, nada travado", async () => {
@@ -910,6 +932,31 @@ async function run() {
       assert.ok(!tituloNormal, "anúncio tradicional não deveria ter o título travado");
       const texto = await textoModal(cdp);
       assert.ok(!/Catálogo/.test(texto), `não deveria sobrar menção a catálogo: ${texto}`);
+    });
+
+    await check("7d — anúncio SEM modelo e COM variações: campo Modelo vazio, editável, e entra no salvar", async () => {
+      semModeloComVariacoes = true;
+      try {
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        const info = await cdp.evaluate(`(function(){ var e = document.getElementById('am-det-modelo');
+          return { tag: e.tagName, readonly: e.readOnly, disabled: e.disabled, valor: e.value, ph: e.getAttribute('placeholder') }; })()`);
+        assert.strictEqual(info.tag, "INPUT");
+        assert.ok(!info.readonly && !info.disabled, "sem modelo (e com variações) o campo continua editável — nenhum bloqueio próprio");
+        assert.strictEqual(info.valor, "", "sem MODEL na ficha, o input nasce vazio (nunca 'null')");
+        assert.strictEqual(info.ph, "—");
+        await digitar(cdp, "#am-det-modelo", "Z10");
+        await waitFor(cdp, "document.getElementById('am-det-savebar')", "preencher o modelo não gerou pendência");
+        const barra = await cdp.evaluate("document.getElementById('am-det-savebar').innerText");
+        assert.ok(/Modelo/.test(barra), `a barra deveria nomear o Modelo: ${barra}`);
+        await clicar(cdp, '.am-det-modal [data-acao="descartar"]');
+        await waitFor(cdp, "!document.getElementById('am-det-savebar')", "descartar não limpou a pendência");
+      } finally {
+        semModeloComVariacoes = false;
+      }
+      // Volta ao estado que o 8 espera (anúncio tradicional aberto, igual ao fim do 7c).
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
     });
 
     await check("8 — alterações pendentes são detectadas e nomeadas", async () => {
@@ -930,6 +977,58 @@ async function run() {
       await waitFor(cdp, "!document.getElementById('am-det-savebar')", "a barra de alterações não sumiu ao descartar");
       assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-titulo').value"), TITULO_A);
       assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-descricao').value"), DESC_A);
+    });
+
+    await check("9b — comparação com a IA: coluna 'Atual' de Título e Modelo é editável, é o MESMO rascunho do cabeçalho/Catálogo e vai no MESMO salvar", async () => {
+      const info = await cdp.evaluate(`(function(){
+        var t = document.getElementById('am-det-espelho-titulo'), m = document.getElementById('am-det-espelho-modelo');
+        return { tt: t.tagName, tro: t.readOnly, tmax: t.getAttribute('maxlength'), tv: t.value,
+                 mt: m.tagName, mro: m.readOnly, mv: m.value }; })()`);
+      assert.deepStrictEqual(info, { tt: "INPUT", tro: false, tmax: "60", tv: TITULO_A, mt: "INPUT", mro: false, mv: "X200" });
+
+      // Digitar na comparação espelha no cabeçalho/Catálogo (e vice-versa).
+      await digitar(cdp, "#am-det-espelho-titulo", "Título editado na comparação com a IA");
+      await digitar(cdp, "#am-det-modelo", "X200 Mini");
+      await waitFor(cdp, "document.getElementById('am-det-savebar')", "editar na comparação não gerou pendência");
+      const sync = await cdp.evaluate(`({
+        cab: document.getElementById('am-det-titulo').value,
+        espM: document.getElementById('am-det-espelho-modelo').value,
+        sujoT: document.getElementById('am-det-espelho-titulo').classList.contains('is-dirty'),
+        barra: document.getElementById('am-det-savebar').innerText })`);
+      assert.strictEqual(sync.cab, "Título editado na comparação com a IA", "o título do cabeçalho não acompanhou a comparação");
+      assert.strictEqual(sync.espM, "X200 Mini", "a coluna 'Atual' do modelo não acompanhou o campo do Catálogo");
+      assert.ok(sync.sujoT, "o campo da comparação precisa marcar a alteração pendente");
+      assert.ok(/2 altera/.test(sync.barra) && /Título/.test(sync.barra) && /Modelo/.test(sync.barra),
+        `um valor, duas vistas: são 2 alterações (Título, Modelo), nunca 4: ${sync.barra}`);
+
+      // "Usar sugestão" continua caindo no mesmo rascunho — e aparece nas duas vistas.
+      await clicar(cdp, '.am-det-modal [data-acao="usar-sugestao"][data-campo="titulo"]');
+      const sug = await cdp.evaluate(`[document.getElementById('am-det-titulo').value, document.getElementById('am-det-espelho-titulo').value]`);
+      assert.deepStrictEqual(sug, [SUG_TITULO_A, SUG_TITULO_A]);
+
+      // Salvar: o MESMO PATCH /conteudo de sempre, um campo por chave. A
+      // resposta forçada não confirma nada, para o estado seguir intacto.
+      corpos.length = 0;
+      const antesPedidos = pedidos.length;
+      conteudoResultado = { status: 200, corpo: { ok: false, motivo: "Resposta de teste (9b)." } };
+      await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/conteudo/, antesPedidos, "não saiu PATCH de conteúdo");
+      const envio = corpos.find((c) => /\/conteudo/.test(c.url));
+      assert.strictEqual(envio.metodo, "PATCH");
+      assert.strictEqual(envio.body.titulo, SUG_TITULO_A);
+      assert.strictEqual(envio.body.modelo, "X200 Mini");
+      assert.strictEqual(envio.body.descricao, undefined);
+      conteudoResultado = null;
+
+      // Descartar volta as DUAS vistas ao original.
+      await clicar(cdp, '.am-det-modal [data-acao="descartar"]');
+      await waitFor(cdp, "!document.getElementById('am-det-savebar')", "descartar não limpou a pendência");
+      const volta = await cdp.evaluate(`[document.getElementById('am-det-titulo').value, document.getElementById('am-det-espelho-titulo').value,
+        document.getElementById('am-det-modelo').value, document.getElementById('am-det-espelho-modelo').value]`);
+      assert.deepStrictEqual(volta, [TITULO_A, TITULO_A, "X200", "X200"]);
+      // O 10 procura o PATCH desde o início do log: não deixa o deste check lá.
+      pedidos.splice(antesPedidos);
+      corpos.length = 0;
     });
 
     /* ── 10 a 12: salvar de verdade ───────────────────────────────────── */
@@ -957,7 +1056,7 @@ async function run() {
       assert.ok(t.includes("X200 Pro"), `o modelo salvo deveria aparecer no detalhe: ${t.slice(0, 400)}`);
       assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-titulo').value"),
         "Fone TWS Prime X200 ANC 30h Bateria Preto");
-      const espelho = await cdp.evaluate("document.getElementById('am-det-espelho-titulo').innerText");
+      const espelho = await cdp.evaluate("document.getElementById('am-det-espelho-titulo').value");
       assert.strictEqual(espelho, "Fone TWS Prime X200 ANC 30h Bateria Preto",
         "a coluna 'Atual' da comparação com a IA precisa refletir o título salvo");
     });
@@ -1009,6 +1108,37 @@ async function run() {
       assert.ok(!/não permite|depois da primeira venda/.test(barra), `sem afirmar regra fixa do ML: ${barra}`);
       assert.ok(barra.includes("Resposta original: “" + BIDS + "”"), `a mensagem crua do ML não pode sumir: ${barra}`);
       assert.ok(/Código: item\.title\.not_modifiable/.test(barra), barra);
+      assert.ok(!/salvas no anúncio/i.test(await textoModal(cdp)), "sem falso sucesso");
+      conteudoResultado = null;
+    });
+
+    await check("12c — ML recusa o MODELO: motivo real + código na barra, valor digitado preservado, sem falso sucesso", async () => {
+      corpos.length = 0;
+      const RECUSA = "Attribute [MODEL] is not modifiable.";
+      conteudoResultado = {
+        status: 200,
+        corpo: {
+          ok: false,
+          resultados: { modelo: {
+            ok: false, codigo: "item.attribute.not_modifiable", motivo: RECUSA,
+            detalhesMl: { status: 400, message: "Validation error", error: "validation_error", causa: null,
+              causas: [{ code: "item.attribute.not_modifiable", message: RECUSA, type: "error", references: ["item.attributes"] }] },
+          } },
+          anuncio: anuncio("42"), descricao: DESC_A, descricaoEstado: "ok", descricaoErro: null,
+        },
+      };
+      await digitar(cdp, "#am-det-modelo", "X999");
+      await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
+      await waitFor(cdp, "((document.getElementById('am-det-savebar')||{}).innerText||'').indexOf('do modelo') >= 0",
+        "a barra não mostrou a recusa do modelo");
+      const envio = corpos.find((c) => /\/conteudo/.test(c.url));
+      assert.strictEqual(envio.body.modelo, "X999", "o modelo alterado vai no MESMO PATCH /conteudo");
+      const barra = await cdp.evaluate("document.getElementById('am-det-savebar').innerText");
+      assert.ok(/Não foi possível salvar a alteração do modelo deste anúncio/.test(barra), barra);
+      assert.ok(barra.includes("Motivo informado pelo Mercado Livre: " + RECUSA), `o motivo real do ML deveria aparecer: ${barra}`);
+      assert.ok(/Código: item\.attribute\.not_modifiable/.test(barra), barra);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-modelo').value"), "X999",
+        "o texto do usuário não pode ser jogado fora por causa da recusa");
       assert.ok(!/salvas no anúncio/i.test(await textoModal(cdp)), "sem falso sucesso");
       conteudoResultado = null;
     });

@@ -3743,8 +3743,14 @@
     "</div>";
   }
 
-  // ----- Título e Modelo: comparação com a IA (o campo editável é único) -----
+  // ----- Título e Modelo: comparação com a IA ------------------------------
+  // A coluna "Atual" também é editável, mas NÃO é um segundo estado: os dois
+  // inputs (este e o do cabeçalho/Catálogo) escrevem no MESMO
+  // DET.rascunho[chave] e aplicarEstadosEdicao sincroniza o outro. Um valor,
+  // duas vistas — salvar/descartar/reverter/usar sugestão continuam únicos.
+  // O título aqui obedece à MESMA trava de catálogo/família do cabeçalho.
   function tituloEModeloHtml(a) {
+    var tituloTravado = tituloTravadoPorCatalogo(a);
     return '<div class="am-det-section">' +
       '<div class="am-det-subhead">' +
         "<h4>Título</h4>" +
@@ -3752,8 +3758,13 @@
       "</div>" +
       '<div class="am-det-compare" id="am-det-compare-titulo">' +
         '<div class="am-det-compare__col">' +
-          '<div class="am-det-compare__label"><span>Atual · editável no cabeçalho, acima ↑</span></div>' +
-          '<p class="am-det-readtext" id="am-det-espelho-titulo">' + escapeHtml(DET.rascunho.titulo || "(sem título)") + "</p>" +
+          '<div class="am-det-compare__label"><span>' +
+            (tituloTravado ? "Atual · gerenciado pelo Mercado Livre" : "Atual · editável aqui ou no cabeçalho") +
+          "</span></div>" +
+          '<input class="vf-input vf-input--sm am-det-compare__input" id="am-det-espelho-titulo" maxlength="60" ' +
+            (tituloTravado ? 'readonly aria-readonly="true" ' : "") +
+            'aria-label="Título do anúncio (comparação com a IA)" placeholder="(sem título)" ' +
+            'data-campo="titulo" value="' + escapeAttr(DET.rascunho.titulo) + '" />' +
         "</div>" +
         '<div class="am-det-compare__col" id="am-det-sug-titulo">' + sugestaoTituloHtml(AM.otimizacoes.seo) + "</div>" +
         '<div class="am-det-compare__foot" id="am-det-foot-seo">' + footSeoHtml(AM.otimizacoes.seo) + "</div>" +
@@ -3765,8 +3776,10 @@
       "</div>" +
       '<div class="am-det-compare" id="am-det-compare-modelo">' +
         '<div class="am-det-compare__col">' +
-          '<div class="am-det-compare__label"><span>Atual · editável no Catálogo, acima ↑</span></div>' +
-          '<p class="am-det-readtext" id="am-det-espelho-modelo">' + escapeHtml(DET.rascunho.modelo || "—") + "</p>" +
+          '<div class="am-det-compare__label"><span>Atual · editável aqui ou no Catálogo</span></div>' +
+          '<input class="vf-input vf-input--sm am-det-compare__input" id="am-det-espelho-modelo" ' +
+            'aria-label="Modelo do anúncio (comparação com a IA)" placeholder="—" ' +
+            'data-campo="modelo" value="' + escapeAttr(DET.rascunho.modelo) + '" />' +
         "</div>" +
         '<div class="am-det-compare__col" id="am-det-sug-modelo">' + sugestaoModeloHtml(AM.otimizacoes.seo) + "</div>" +
       "</div>" +
@@ -5270,10 +5283,18 @@
     var cDesc = el("am-det-count-descricao");
     if (cDesc) cDesc.textContent = String(DET.rascunho.descricao.length);
 
-    var espTitulo = el("am-det-espelho-titulo");
-    if (espTitulo) espTitulo.textContent = DET.rascunho.titulo || "(sem título)";
-    var espModelo = el("am-det-espelho-modelo");
-    if (espModelo) espModelo.textContent = DET.rascunho.modelo || "—";
+    // Título e Modelo têm DOIS inputs cada (cabeçalho/Catálogo + coluna
+    // "Atual" da comparação com a IA) sobre o MESMO rascunho: quem não está
+    // sendo digitado acompanha. Só escreve quando difere — nunca mexe no
+    // cursor de quem está com o foco.
+    ["am-det-titulo", "am-det-espelho-titulo"].forEach(function (id) {
+      var e = el(id);
+      if (e && e.value !== DET.rascunho.titulo) e.value = DET.rascunho.titulo;
+    });
+    ["am-det-modelo", "am-det-espelho-modelo"].forEach(function (id) {
+      var e = el(id);
+      if (e && e.value !== DET.rascunho.modelo) e.value = DET.rascunho.modelo;
+    });
 
     ["titulo", "modelo", "descricao"].forEach(function (chave) {
       var sujo = campoSujo(chave);
@@ -5287,6 +5308,10 @@
     if (wrapT) wrapT.classList.toggle("is-dirty", campoSujo("titulo"));
     var wrapM = el("am-det-modelo-wrap");
     if (wrapM) wrapM.classList.toggle("is-dirty", campoSujo("modelo"));
+    var espT = el("am-det-espelho-titulo");
+    if (espT) espT.classList.toggle("is-dirty", campoSujo("titulo"));
+    var espM = el("am-det-espelho-modelo");
+    if (espM) espM.classList.toggle("is-dirty", campoSujo("modelo"));
     var wrapD = el("am-det-editable-descricao");
     if (wrapD) wrapD.classList.toggle("is-dirty", campoSujo("descricao"));
 
@@ -5294,17 +5319,17 @@
   }
 
   function bindCamposEditaveis() {
-    var titulo = el("am-det-titulo");
-    if (titulo) titulo.addEventListener("input", function () {
-      DET.rascunho.titulo = this.value;
-      DET.erros = {};
-      aplicarEstadosEdicao();
-    });
-    var modelo = el("am-det-modelo");
-    if (modelo) modelo.addEventListener("input", function () {
-      DET.rascunho.modelo = this.value;
-      DET.erros = {};
-      aplicarEstadosEdicao();
+    // Cabeçalho/Catálogo e coluna "Atual" da comparação com a IA: mesmo
+    // handler, mesmo rascunho (ver tituloEModeloHtml).
+    [["am-det-titulo", "titulo"], ["am-det-espelho-titulo", "titulo"],
+     ["am-det-modelo", "modelo"], ["am-det-espelho-modelo", "modelo"]].forEach(function (par) {
+      var campo = el(par[0]);
+      if (!campo) return;
+      campo.addEventListener("input", function () {
+        DET.rascunho[par[1]] = this.value;
+        DET.erros = {};
+        aplicarEstadosEdicao();
+      });
     });
     var desc = el("am-det-descricao");
     if (desc) desc.addEventListener("input", function () {

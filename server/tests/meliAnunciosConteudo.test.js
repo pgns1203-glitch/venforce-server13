@@ -616,6 +616,84 @@ async function run() {
     ok("bloqueio por family_name continua (regra do ML) e não inventa detalhesMl");
   }
 
+  // ── Modelo: MESMO fluxo do título (PUT /items/{id}), sem bloqueio próprio ──
+  async function salvarCampos(anuncio, body, handler) {
+    let resultado;
+    await withMockDb({ ...UMA_CONTA, anuncios: [anuncio] }, async (db) => {
+      mlChamadas = [];
+      mlHandler = handler;
+      const res = fakeRes();
+      await ctrl.atualizarConteudo({
+        params: { itemId: "MLB123" },
+        body: { clienteSlug: "cliente-a", ...body },
+      }, res);
+      resultado = {
+        res, db,
+        putsModelo: mlChamadas.filter((c) => c.metodo === "PUT" && c.body && c.body.attributes),
+        putsTitulo: mlChamadas.filter((c) => c.metodo === "PUT" && c.body && c.body.title),
+      };
+    });
+    return resultado;
+  }
+
+  // 17. Anúncio SEM modelo (MODEL ausente na ficha): preencher envia o
+  //     atributo MODEL e, confirmado, passa a existir no snapshot local.
+  {
+    const semModelo = anuncioFixture({
+      modelo: null,
+      attributes_json: [{ id: "BRAND", name: "Marca", value: "Prime Audio" }],
+    });
+    const { res, db, putsModelo } = await salvarCampos(semModelo, { modelo: "  Z10  " }, aceita);
+    assert.strictEqual(putsModelo.length, 1);
+    assert.strictEqual(putsModelo[0].path, "/items/MLB123");
+    assert.deepStrictEqual(putsModelo[0].body, { attributes: [{ id: "MODEL", value_name: "Z10" }] },
+      "só o atributo MODEL vai no corpo (aparado), nada de título/preço junto");
+    assert.strictEqual(res.corpo.resultados.modelo.ok, true);
+    assert.strictEqual(db.anuncios[0].modelo, "Z10");
+    ok("anúncio sem modelo: preencher envia attributes[MODEL] ao ML e grava depois de confirmado");
+  }
+
+  // 18. Com vendas, variações e family_name: NENHUM bloqueio local para o
+  //     modelo (family_name só trava o título) — o PUT sai e o ML decide.
+  {
+    const { res, db, putsModelo } = await salvarCampos(
+      anuncioFixture({ vendidos: 37, variations_count: 4, family_name: "Fone X", catalog_listing: true }),
+      { modelo: "X300" }, aceita);
+    assert.strictEqual(putsModelo.length, 1, "vendas/variações/catálogo não podem barrar o modelo antes do ML");
+    assert.strictEqual(res.corpo.resultados.modelo.ok, true);
+    assert.strictEqual(db.anuncios[0].modelo, "X300");
+    ok("modelo com vendas + variações + family_name/catálogo: nenhum bloqueio próprio, vai ao ML");
+  }
+
+  // 19. ML RECUSA o modelo: código, mensagem e corpo originais preservados;
+  //     snapshot local intocado; o título do mesmo salvar continua passando.
+  {
+    const RECUSA = "Attribute [MODEL] is not modifiable.";
+    const corpoMl = {
+      message: "Validation error", error: "validation_error", status: 400,
+      cause: [{ code: "item.attribute.not_modifiable", message: RECUSA, type: "error", references: ["item.attributes"] }],
+    };
+    const { res, db, putsModelo, putsTitulo } = await salvarCampos(
+      anuncioFixture({ vendidos: 12, variations_count: 3 }),
+      { titulo: "Título novo", modelo: "X999" },
+      (chamada) => (chamada.body && chamada.body.attributes
+        ? { ok: false, status: 400, data: corpoMl }
+        : { ok: true, status: 200, data: { id: "MLB123" } }));
+    const m = res.corpo.resultados.modelo;
+    assert.strictEqual(putsModelo.length, 1);
+    assert.strictEqual(putsTitulo.length, 1);
+    assert.strictEqual(m.ok, false);
+    assert.strictEqual(m.codigo, "item.attribute.not_modifiable", "código do ML preservado");
+    assert.strictEqual(m.motivo, RECUSA, "mensagem original do ML preservada");
+    assert.strictEqual(m.detalhesMl.status, 400);
+    assert.deepStrictEqual(m.detalhesMl.causas, corpoMl.cause);
+    assert.strictEqual(m.explicacao, undefined, "sem regra conhecida para o modelo, não inventa explicação");
+    assert.strictEqual(db.anuncios[0].modelo, "X200", "recusa não pode virar salvo local");
+    assert.strictEqual(res.corpo.resultados.titulo.ok, true, "a recusa do modelo não derruba o título");
+    assert.strictEqual(db.anuncios[0].titulo, "Título novo");
+    ok("recusa do ML no modelo: código/mensagem/corpo reais preservados, título do mesmo salvar segue");
+  }
+
   console.log(`\n✓ ${checks} verificações de edição de conteúdo de anúncio ML`);
 }
 

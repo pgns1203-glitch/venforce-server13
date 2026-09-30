@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node/Express, multer (memory), Sharp, native `fetch`/`FormData`; vanilla JS Portal with native HTML5 drag and drop; plain-Node test files (`assert`) and the CDP headless suite.
 
-**Status:** Task 1 done (18 pure checks; the test file and service in the repo are the source of truth — they extend Task 1's listing below with `validarPlano` and extra detection checks).
+**Status:** Tasks 1-2 done (18 pure + 21 orchestration checks; Task 2 validates files after the ML read, takes a `gravarSnapshot` callback called only after confirmation, and returns VINCULO_INCERTO when a lost PUT leaves an impossible state; the test file and service in the repo are the source of truth — they extend Task 1's listing below with `validarPlano` and extra detection checks).
 
 **Spec:** `docs/superpowers/specs/2026-09-30-fotos-por-variacao-design.md` (amended in Task 1: the new logic lives in `meliFotosService.js`, not inside `meliImagensService.js`).
 

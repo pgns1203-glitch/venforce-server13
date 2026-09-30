@@ -21,9 +21,11 @@
 // variacoes.md, trabalhar-com-imagens.md, atributos.md. Contrato:
 // docs/superpowers/specs/2026-09-30-fotos-por-variacao-design.md.
 //
-// Esta primeira parte é só de funções PURAS (sem ML, sem banco).
+// O arquivo tem duas partes: funções PURAS (sem ML, sem banco) e, no fim, a
+// orquestração (lerFotos / salvarFotos), que fala com o ML.
 // -----------------------------------------------------------------------------
 
+const { mlFetch } = require("../../utils/mlClient");
 const img = require("./meliImagensService");
 const { falha } = img;
 
@@ -303,8 +305,245 @@ function conferirFotos(itemBase, itemDepois, grupo, ordemIds, removidas) {
   return { ok: true };
 }
 
+// =============================================================================
+// ORQUESTRAÇÃO
+// =============================================================================
+
+const MOTIVO_INCERTO =
+  "Não foi possível confirmar se as fotos foram salvas (falha de conexão com o Mercado Livre). Confira o anúncio no Mercado Livre antes de salvar de novo.";
+
+// Limites da categoria (GET /categories/{id} → settings). Nunca falha: sem
+// leitura ou sem o campo, vale o limite operacional do VenForce.
+async function limitesDaCategoria(clienteId, categoryId, mlUserId) {
+  const r = {
+    porVariacao: LIMITE_OPERACIONAL.porVariacao, origemVariacao: "operacional",
+    porItem: LIMITE_OPERACIONAL.porItem, origemItem: "operacional",
+  };
+  if (!categoryId) return r;
+  try {
+    const resp = await mlFetch(clienteId, `/categories/${encodeURIComponent(categoryId)}`, { method: "GET", mlUserId });
+    const s = resp && resp.ok && resp.data && resp.data.settings;
+    if (s && Number.isInteger(s.max_pictures_per_item_var) && s.max_pictures_per_item_var > 0) {
+      r.porVariacao = s.max_pictures_per_item_var;
+      r.origemVariacao = "categoria";
+    }
+    if (s && Number.isInteger(s.max_pictures_per_item) && s.max_pictures_per_item > 0) {
+      r.porItem = s.max_pictures_per_item;
+      r.origemItem = "categoria";
+    }
+  } catch (_) { /* fica o operacional */ }
+  return r;
+}
+
+function temVariacoes(item) {
+  return Array.isArray(item && item.variations) && item.variations.length > 0;
+}
+
+// Grupos de um item JÁ lido. `atributo` vem preenchido quando já se sabe qual
+// define a foto (evita reler os atributos da categoria no meio do salvar).
+async function gruposDoItem(clienteId, item, mlUserId, atributo) {
+  if (item.catalog_listing === true) return falha("IMAGENS_BLOQUEADAS_CATALOGO", img.MOTIVO_CATALOGO, "bloqueio");
+  if (!temVariacoes(item)) return { ok: true, modo: "simples", atributo: null, grupos: [grupoSimples(item)] };
+  const eleg = img.elegibilidadeVariacoes(item);
+  if (!eleg.ok) return eleg;
+  let attr = atributo;
+  if (!attr) {
+    const attrs = await img.atributosQueDefinemFoto(clienteId, item.category_id, mlUserId);
+    if (!attrs.ok) return attrs;
+    const idsNasCombinacoes = new Set();
+    item.variations.forEach((v) => (v.attribute_combinations || [])
+      .forEach((ac) => ac && ac.id && idsNasCombinacoes.add(String(ac.id))));
+    const candidatos = attrs.atributos.filter((a) => idsNasCombinacoes.has(a.id));
+    if (candidatos.length !== 1) {
+      return falha(
+        "ATRIBUTO_FOTO_INDEFINIDO",
+        "O Mercado Livre não indica, para a categoria deste anúncio, qual atributo das variações define a foto (defines_picture). Sem isso não dá para saber quais variações dividem as fotos — use o Mercado Livre.",
+        "bloqueio"
+      );
+    }
+    attr = candidatos[0];
+  }
+  const g = montarGrupos(item, attr);
+  if (!g.ok) return g;
+  return { ok: true, modo: "variacoes", atributo: attr, grupos: g.grupos };
+}
+
+function leituraDe(agrupado, limites) {
+  const variacoes = agrupado.modo === "variacoes";
+  return {
+    ok: true,
+    modo: agrupado.modo,
+    atributo: agrupado.atributo,
+    limite: variacoes
+      ? { porGrupo: limites.porVariacao, origem: limites.origemVariacao }
+      : { porGrupo: limites.porItem, origem: limites.origemItem },
+    grupos: agrupado.grupos,
+  };
+}
+
+async function lerFotos({ clienteId, itemId, mlUserId }) {
+  const lido = await img.lerItemComVariacoes(clienteId, itemId, mlUserId, "leitura");
+  if (!lido.ok) return lido;
+  const agrupado = await gruposDoItem(clienteId, lido.item, mlUserId, null);
+  if (!agrupado.ok) return agrupado;
+  const limites = await limitesDaCategoria(clienteId, lido.item.category_id, mlUserId);
+  return leituraDe(agrupado, limites);
+}
+
+function fotosConfirmadas(item) {
+  const urls = img.urlsDasFotos(item);
+  return { pictures_json: urls, pictures_count: urls.length, thumbnail: item.secure_thumbnail || item.thumbnail || null };
+}
+
+// Falha depois de imagens já enviadas ao CDN: o id delas vai junto (e ao log).
+function comIds(r, ids) {
+  if (ids.length) r.pictureIds = ids.slice();
+  return r;
+}
+
+async function enviarPut(clienteId, itemId, mlUserId, payload) {
+  try {
+    const resp = await mlFetch(clienteId, `/items/${encodeURIComponent(itemId)}`, {
+      method: "PUT", body: JSON.stringify(payload), mlUserId,
+    });
+    if (resp && resp.ok) return { ok: true };
+    return img.falhaMl(resp, "vinculo");
+  } catch (err) {
+    return img.falhaConexao(err, "vinculo");
+  }
+}
+
+// O anúncio está exatamente como estava antes do PUT (nada foi aplicado)?
+function estadoIntacto(itemBase, itemDepois) {
+  const galeria = (i) => (i.pictures || []).map((p) => String(p.id));
+  if (JSON.stringify(galeria(itemBase)) !== JSON.stringify(galeria(itemDepois))) return false;
+  const ids = (i) => (i.variations || []).map((v) => [String(v.id), (v.picture_ids || []).map(String)]);
+  return JSON.stringify(ids(itemBase)) === JSON.stringify(ids(itemDepois));
+}
+
+// ---------------------------------------------------------------------------
+// salvarFotos — um único salvar do editor:
+//
+//   forma do plano (sem ML)
+//   → estado atual do ML → plano contra o estado (grupo, base, limite)
+//   → arquivos (bytes reais, JPG) → upload das novas, uma por vez
+//   → estado atual DE NOVO → payload = estado atual + ordem pedida → PUT
+//   → releitura → conferência → gravarSnapshot(fotos) SÓ depois disso
+//
+// Nunca repete upload nem PUT sozinho. Resposta de PUT perdida é decidida
+// pela releitura: aplicado = sucesso; intacto = erro original; qualquer outra
+// coisa (ou sem releitura) = VINCULO_INCERTO.
+// ---------------------------------------------------------------------------
+async function salvarFotos({ clienteId, itemId, mlUserId, anuncio, plano, arquivos, gravarSnapshot }) {
+  if (anuncio && anuncio.catalog_listing === true) {
+    return falha("IMAGENS_BLOQUEADAS_CATALOGO", img.MOTIVO_CATALOGO, "bloqueio");
+  }
+  const lista = Array.isArray(arquivos) ? arquivos : [];
+  const forma = validarForma(plano, lista.length);
+  if (!forma.ok) return forma;
+
+  // 1) Estado atual do ML e o plano contra ele.
+  const lido = await img.lerItemComVariacoes(clienteId, itemId, mlUserId, "leitura");
+  if (!lido.ok) { img.registrarRecusa(itemId, lido); return lido; }
+  const agrupado = await gruposDoItem(clienteId, lido.item, mlUserId, null);
+  if (!agrupado.ok) return agrupado;
+  const valido = validarPlano(plano, agrupado.grupos, lista.length);
+  if (!valido.ok) return valido;
+  const limites = await limitesDaCategoria(clienteId, lido.item.category_id, mlUserId);
+  const lim = validarLimite(plano, agrupado.modo === "variacoes" ? limites.porVariacao : limites.porItem);
+  if (!lim.ok) return lim;
+
+  // 2) Arquivos: todos validados antes de subir qualquer um.
+  const jpgs = [];
+  for (const a of lista) {
+    try {
+      jpgs.push(await img.normalizarParaJpg(a));
+    } catch (err) {
+      if (err && err.codigo) return falha(err.codigo, err.message, "validacao", { statusHttp: err.statusCode || 400 });
+      throw err;
+    }
+  }
+
+  // 3) Upload das novas, uma por vez. Falha: para aqui, sem PUT.
+  const novas = [];
+  for (const jpg of jpgs) {
+    const up = await img.uploadImagemAnuncio(clienteId, itemId, mlUserId, jpg);
+    if (!up.ok) {
+      img.registrarRecusa(itemId, up, novas.join(",") || null);
+      return comIds(up, novas);
+    }
+    novas.push(up.pictureId);
+  }
+
+  // 4) Estado atual DE NOVO (o upload leva tempo) → payload completo.
+  const agora = await img.lerItemComVariacoes(clienteId, itemId, mlUserId, "leitura");
+  if (!agora.ok) { img.registrarRecusa(itemId, agora, novas.join(",") || null); return comIds(agora, novas); }
+  const agrupadoAgora = await gruposDoItem(clienteId, agora.item, mlUserId, agrupado.atributo);
+  if (!agrupadoAgora.ok) return comIds(agrupadoAgora, novas);
+  const validoAgora = validarPlano(plano, agrupadoAgora.grupos, lista.length);
+  if (!validoAgora.ok) {
+    img.registrarRecusa(itemId, validoAgora, novas.join(",") || null);
+    return comIds(validoAgora, novas);
+  }
+  const grupo = validoAgora.grupo;
+  const ordemIds = resolverOrdem(plano.ordem, novas);
+  const { payload, removidas } = reconstruirPayload(agora.item, grupo, ordemIds);
+
+  // 5) Sucesso confirmado → snapshot (só aqui).
+  const concluir = async (item) => {
+    const g = agrupadoAgora.modo === "variacoes"
+      ? montarGrupos(item, agrupadoAgora.atributo)
+      : { ok: true, grupos: [grupoSimples(item)] };
+    const r = {
+      ok: true,
+      fotos: fotosConfirmadas(item),
+      leitura: g.ok ? leituraDe({ modo: agrupadoAgora.modo, atributo: agrupadoAgora.atributo, grupos: g.grupos }, limites) : null,
+      confirmacaoPendente: false,
+      novas,
+      snapshot: null,
+    };
+    if (typeof gravarSnapshot === "function") {
+      try {
+        r.snapshot = await gravarSnapshot(r.fotos);
+      } catch (err) {
+        console.error(`[anuncios-meli] salvarFotos: fotos de ${itemId} confirmadas no ML, mas o snapshot local falhou:`, err.message);
+        r.confirmacaoPendente = true;
+      }
+    }
+    return r;
+  };
+
+  // 6) PUT.
+  const put = await enviarPut(clienteId, itemId, mlUserId, payload);
+  if (!put.ok) {
+    img.registrarRecusa(itemId, put, novas.join(",") || null);
+    const incerto = put.codigo === "ML_INDISPONIVEL" || (put.detalhesMl && Number(put.detalhesMl.status) >= 500);
+    if (!incerto) return comIds(put, novas);
+    const conferido = await img.lerItemComVariacoes(clienteId, itemId, mlUserId, "confirmacao");
+    if (!conferido.ok) return comIds(falha("VINCULO_INCERTO", MOTIVO_INCERTO, "vinculo"), novas);
+    const conf = conferirFotos(agora.item, conferido.item, grupo, ordemIds, removidas);
+    if (conf.ok) return concluir(conferido.item);
+    if (conf.critico) return comIds(conf, novas);
+    if (estadoIntacto(agora.item, conferido.item)) return comIds(put, novas);
+    return comIds(falha("VINCULO_INCERTO", MOTIVO_INCERTO, "vinculo"), novas);
+  }
+
+  // 7) Releitura e conferência.
+  const confirmado = await img.lerItemComVariacoes(clienteId, itemId, mlUserId, "confirmacao");
+  if (!confirmado.ok) {
+    img.registrarRecusa(itemId, confirmado, novas.join(",") || null);
+    return { ok: true, fotos: null, leitura: null, confirmacaoPendente: true, novas, snapshot: null };
+  }
+  const conf = conferirFotos(agora.item, confirmado.item, grupo, ordemIds, removidas);
+  if (!conf.ok) return comIds(conf, novas);
+  return concluir(confirmado.item);
+}
+
 module.exports = {
   LIMITE_OPERACIONAL,
+  limitesDaCategoria,
+  lerFotos,
+  salvarFotos,
   mesmoValor,
   montarGrupos,
   grupoSimples,

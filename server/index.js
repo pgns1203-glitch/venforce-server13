@@ -88,6 +88,7 @@ const cliente360V3Routes = require("./routes/cliente360V3Routes");
 const centralVendasRoutes = require("./routes/centralVendasRoutes");
 const motorMargemRoutes = require("./routes/motorMargemRoutes");
 const margemPrecificacaoRoutes = require("./routes/margemPrecificacaoRoutes");
+const promoSnapshotRoutes = require("./routes/promoSnapshotRoutes");
 const diagnosticoInicialRoutes = require("./routes/diagnosticoInicialRoutes");
 const adsRoutes = require("./routes/adsRoutes");
 const designImageRoutes = require("./routes/designImageRoutes");
@@ -828,6 +829,9 @@ app.use("/operacao/central-margem", motorMargemRoutes);
 // Central de Margem — camada SEGURA de precificação (preview + gates +
 // idempotência + auditoria). Escrita no ML só com MARGIN_PRICING_WRITE_*.
 app.use("/operacao/central-margem", margemPrecificacaoRoutes);
+// Central de Margem — Promo Snapshot por conta (lê o banco; POST /sync só
+// enfileira leitura no ML, nunca aplica promoção).
+app.use("/operacao/central-margem", promoSnapshotRoutes);
 // V3: Visão (composicao read-only de fontes existentes) e leitura do
 // Financeiro por periodo/conta — nao confundir com /fechamentos (upload).
 app.use("/operacao/visao", visaoRoutes);

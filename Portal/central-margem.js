@@ -121,6 +121,8 @@
     // Oportunidades da conta (uma leitura por conta/período).
     opps: null,
     oppsSequence: 0,
+    oppsPollTimer: null,
+    oppsPolls: 0,
   };
 
   // Intervalo moderado de polling do run. O override existe só para o
@@ -672,6 +674,7 @@
     state.realizadoError = null;
     state.realizadoLoading = false;
     state.oppsSequence += 1;
+    if (state.oppsPollTimer) { root.clearTimeout(state.oppsPollTimer); state.oppsPollTimer = null; }
     state.opps = null;
     state.periodParam = lerPeriodoDoShell();
     if (clienteMudou) {
@@ -1612,23 +1615,55 @@
   // Oportunidades (fonte bulk persistida; uma leitura por conta/período)
   // ---------------------------------------------------------------------------
 
-  function loadOpportunities() {
+  // Promoções vêm do Promo Snapshot da conta, mantido pelo backend. Enquanto
+  // a conta sincroniza (primeira leitura ou revalidação em background), a
+  // lista é relida de tempos em tempos — sem nenhuma chamada ao ML daqui.
+  var OPPS_POLL_MS = 20000;
+  var OPPS_POLL_MAX = 30;
+
+  function oppsSincronizando(o) {
+    var sync = o && o.sync;
+    return Boolean(sync && (sync.state === "syncing" || sync.autoTrigger === "enfileirado" || sync.autoTrigger === "reutilizado"));
+  }
+
+  function loadOpportunities(poll) {
+    if (state.oppsPollTimer) { root.clearTimeout(state.oppsPollTimer); state.oppsPollTimer = null; }
     if (!isSnapshotMode() || !state.client || !state.contaId || typeof api.getOpportunities !== "function") {
       state.opps = null;
       renderOpportunities();
       return;
     }
+    if (!poll) state.oppsPolls = 0;
     state.oppsSequence += 1;
     var seq = state.oppsSequence;
     var slug = state.client.slug;
     var conta = state.contaId;
-    state.opps = { status: "loading" };
-    renderOpportunities();
+    // Releitura silenciosa: mantém a lista atual na tela enquanto busca.
+    if (!poll || !state.opps || state.opps.status !== "ok") {
+      state.opps = { status: "loading" };
+      renderOpportunities();
+    }
     api.getOpportunities({ clientSlug: slug, clienteContaId: conta, periodo: state.periodParam || undefined }).then(function (result) {
       if (seq !== state.oppsSequence || !state.client || state.client.slug !== slug || state.contaId !== conta) return;
       state.opps = result.ok ? Object.assign({ status: "ok" }, result) : { status: "error", error: result.error };
       renderOpportunities();
+      if (result.ok && oppsSincronizando(result) && (state.oppsPolls || 0) < OPPS_POLL_MAX) {
+        state.oppsPolls = (state.oppsPolls || 0) + 1;
+        state.oppsPollTimer = root.setTimeout(function () {
+          state.oppsPollTimer = null;
+          if (seq !== state.oppsSequence || !state.client || state.client.slug !== slug || state.contaId !== conta) return;
+          loadOpportunities(true);
+        }, OPPS_POLL_MS);
+      }
     });
+  }
+
+  function oppsSyncTexto(o) {
+    var sync = o.sync || {};
+    if (sync.state === "syncing") return sync.total ? "atualizando (" + formatInt(sync.processed || 0) + "/" + formatInt(sync.total) + ")" : "atualizando";
+    if (sync.state === "failed") return "última atualização falhou";
+    if (sync.state === "stale") return "desatualizado, atualizando";
+    return "";
   }
 
   function renderOpportunities() {
@@ -1647,13 +1682,20 @@
       return;
     }
     if (!o.disponivel) {
-      refs.oppsMeta.textContent = "depende de uma fonte bulk";
-      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="indisponivel">' + escapeHtml(o.mensagem || "Sem fonte bulk de promoções para esta conta.") +
-        ' <a class="cm-link" href="promocoes-retorno.html">Abrir Promoções ML</a></p>';
+      refs.oppsMeta.textContent = oppsSyncTexto(o) || "promoções da conta";
+      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="indisponivel" data-cm-opps-sync="' + escapeHtml((o.sync && o.sync.state) || "") + '">' +
+        escapeHtml(o.mensagem || "Nenhuma promoção sincronizada para esta conta ainda.") + "</p>";
       return;
     }
     var fonte = o.fonte || {};
-    refs.oppsMeta.textContent = "diagnóstico de " + (formatShortDateTime(fonte.geradoEm) || "—") + (fonte.frescor === "antigo" ? " · antigo (>24h)" : fonte.frescor === "atencao" ? " · mais de 6h" : "") + " · estimativa";
+    var origem = fonte.tipo === "diagnostico_legado" ? "diagnóstico legado de " : "promoções de ";
+    var extra = [];
+    if (fonte.frescor === "antigo") extra.push("antigo (>24h)");
+    else if (fonte.frescor === "atencao") extra.push("mais de 6h");
+    if (fonte.parcial) extra.push("parcial");
+    var syncTxt = oppsSyncTexto(o);
+    if (syncTxt) extra.push(syncTxt);
+    refs.oppsMeta.textContent = origem + (formatShortDateTime(fonte.geradoEm) || "—") + (extra.length ? " · " + extra.join(" · ") : "") + " · estimativa";
     if (!o.oportunidades || !o.oportunidades.length) {
       refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="vazio">Nenhuma promoção disponível com margem pós-promoção positiva nesta conta.</p>';
       return;

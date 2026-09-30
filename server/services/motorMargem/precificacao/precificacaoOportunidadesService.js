@@ -1,22 +1,26 @@
 // server/services/motorMargem/precificacao/precificacaoOportunidadesService.js
 // "Oportunidades de preço e promoção" da Central de Margem — SEM N+1.
 //
-// Nenhuma chamada ao Mercado Livre. Três fontes persistidas, uma consulta
-// cada, para a conta inteira:
-//   1. último diagnóstico de promoções CONCLUÍDO da conta
-//      (promocoes_diagnosticos.seller_id = conta ML — job assíncrono da tela
-//      Promoções ML; é a única fonte bulk confiável de promoções por item);
-//   2. Margin Snapshot da conta (custo, imposto, taxa fixa, taxa de comissão
-//      e frete projetados);
-//   3. realizado da Central de Vendas no período (unidades/receita por MLB).
+// Nenhuma chamada ao Mercado Livre. Fontes persistidas, uma consulta cada,
+// para a conta inteira:
+//   1. PROMO SNAPSHOT da conta (promo_snapshot_itens do run atual, mantido
+//      pelo Promo Snapshot Worker — docs/PROMO_SNAPSHOT_ACCOUNT_SYNC.md), já
+//      casado numa única consulta com o Margin Snapshot DA MESMA CONTA
+//      (custo, imposto, taxa fixa, taxa de comissão e frete projetados);
+//   2. realizado da Central de Vendas no período (unidades/receita por MLB).
+// Enquanto a conta nunca teve Promo Snapshot, cai no último diagnóstico
+// concluído da tela antiga Promoções ML (compatibilidade, marcado como
+// `diagnostico_legado`) — a Central não depende mais dessa tela.
 //
-// A margem gravada no diagnóstico (fórmula "de planilha" da tela de
-// Promoções) NÃO é usada: a margem pós-promoção é recalculada com
-// core/marginEngine.computeMargin e os insumos do snapshot. Comissão vem da
-// TAXA (listing_prices não é recotado aqui) e o frete é o atual — por isso
-// toda linha sai marcada `estimado:true`; o drawer recota exato.
+// Abrir/paginar dispara o auto-trigger (ensureFreshPromoSnapshot): só
+// enfileira em background, nunca espera o scan.
 //
-// Ordenação simples e explicável (sem elasticidade/forecast):
+// A margem pós-promoção é recalculada com core/marginEngine.computeMargin e
+// os insumos do snapshot de margem. Comissão vem da TAXA (listing_prices não
+// é recotado aqui) e o frete é o atual — por isso toda linha sai marcada
+// `estimado:true`; o drawer recota exato, ao vivo, só aquele MLB.
+//
+// Ordenação simples e explicável (sem elasticidade/forecast/score):
 //   com retorno ML  >  mais unidades vendidas  >  maior margem pós-promoção.
 
 const pool = require("../../../config/database");
@@ -26,6 +30,7 @@ const STATUS_DISPONIVEIS = new Set(["candidate", "started", "active", "pending"]
 const FRESCO_MIN = 360; // 6h — mesmos limiares de promocoesDiagnosticoService
 const ANTIGO_MIN = 1440; // 24h
 const LIMITE_PADRAO = 20;
+const LIMITE_MAX = 50;
 
 function num(v) {
   if (v === null || v === undefined || v === "") return null;
@@ -52,6 +57,14 @@ function defaults(deps = {}) {
     carregarRealizada:
       deps.carregarRealizada || require("../marginSnapshotReadService").carregarRealizadaDoPeriodo,
     now: deps.now || (() => new Date()),
+    // Promo Snapshot (injetável nos testes).
+    promo: deps.promo || {
+      estadoComAutoTrigger: (identidade, opts) =>
+        require("../../promoSnapshot/promoSnapshotReadService").estadoComAutoTrigger(identidade, opts, deps),
+      syncPublico: (e, g) => require("../../promoSnapshot/promoSnapshotReadService").syncPublico(e, g),
+      listarBase: (args) =>
+        (deps.repo || require("../../promoSnapshot/promoSnapshotRepository")).listarBaseOportunidades(args, deps.db || pool),
+    },
   };
 }
 
@@ -73,20 +86,133 @@ function motivoDa(linha) {
   return partes.join(" · ");
 }
 
-async function listarOportunidades(params = {}, deps = {}) {
-  const d = defaults(deps);
-  const { cliente, conta } = await d.resolverContaDoCliente(
-    { clienteSlug: params.clienteSlug, clienteContaId: params.clienteContaId },
-    deps
+// Uma candidata a partir de (promoção, snapshot de margem) — mesma régua para
+// as duas fontes. null = fora (sem margem calculável/positiva).
+function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo, vendasPorMlb }) {
+  const taxa = num(snap.commission_rate);
+  const calc = computeMargin({
+    price: precoPromo,
+    cost: num(snap.cost),
+    taxRate: num(snap.tax_rate),
+    fixedFee: num(snap.fixed_fee),
+    commission: taxa === null ? null : round2(precoPromo * taxa),
+    freight: num(snap.freight),
+    rebate: retornoMl,
+  });
+  if (!calc.computable || calc.margin === null || calc.margin <= 0 || taxa === null || num(snap.tax_rate) === null) return null;
+  const vendas = vendasPorMlb.get(itemId) || null;
+  const linha = {
+    itemId,
+    titulo: snap.titulo || titulo || itemId,
+    imagem: snap.image_url || null,
+    precoAtual: num(snap.price),
+    margemAtual: num(snap.margin),
+    promocao,
+    precoPromocao: precoPromo,
+    retornoMl: retornoMl || null,
+    margemDepois: calc.margin,
+    lucroDepois: calc.profit,
+    unidades: vendas ? num(vendas.unidades) || 0 : 0,
+    receita: vendas ? num(vendas.receita) : null,
+    estimado: true,
+  };
+  linha.motivo = motivoDa(linha);
+  return linha;
+}
+
+// Ordena, deixa 1 linha por anúncio (a melhor dele pela mesma régua) e pagina
+// no servidor.
+function ordenarDeduplicarPaginar(candidatas, { page, limit }) {
+  candidatas.sort((a, b) =>
+    (b.retornoMl ? 1 : 0) - (a.retornoMl ? 1 : 0) ||
+    b.unidades - a.unidades ||
+    b.margemDepois - a.margemDepois ||
+    (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0)
   );
-  const contaCompleta = await d.obterConta(conta.id, d.db);
-  const sellerId = contaCompleta && contaCompleta.external_account_id ? String(contaCompleta.external_account_id) : null;
-  const limite = Math.min(Math.max(Number(params.limit) || LIMITE_PADRAO, 1), 50);
-
-  if (!sellerId) {
-    return { ok: true, disponivel: false, motivo: "CONTA_SEM_GRANT_ML", mensagem: "A conta não tem conexão do Mercado Livre vinculada.", oportunidades: [] };
+  const vistos = new Set();
+  const unicas = [];
+  for (const c of candidatas) {
+    if (vistos.has(c.itemId)) continue;
+    vistos.add(c.itemId);
+    unicas.push(c);
   }
+  const inicio = (page - 1) * limit;
+  return { total: unicas.length, pagina: unicas.slice(inicio, inicio + limit), hasNext: inicio + limit < unicas.length };
+}
 
+async function carregarVendas(d, cliente, conta, params, deps) {
+  try {
+    const realizada = await d.carregarRealizada(
+      { cliente: { id: cliente.id, slug: cliente.slug }, conta: { id: conta.id }, periodo: params.periodo || null },
+      { ...deps, db: d.db }
+    );
+    return { vendasPorMlb: realizada.porMlb || new Map(), periodo: realizada.periodo || null };
+  } catch (_) {
+    return { vendasPorMlb: new Map(), periodo: null };
+  }
+}
+
+function periodoPublico(periodo) {
+  return periodo ? { dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, rotulo: periodo.rotulo || null } : null;
+}
+
+const CRITERIO = "Promoção disponível com margem pós-promoção positiva; ordem: com retorno ML, mais unidades vendidas, maior margem.";
+
+// ─── Fonte principal: Promo Snapshot ─────────────────────────────────────────
+async function oportunidadesDoSnapshot({ d, cliente, conta, estado, sync, params, deps, pag }) {
+  const rows = await d.promo.listarBase({ clienteContaId: conta.id, runId: estado.snapshotRunId });
+  const { vendasPorMlb, periodo } = await carregarVendas(d, cliente, conta, params, deps);
+  const candidatas = [];
+  for (const r of rows) {
+    const status = String(r.status || "").toLowerCase() || null;
+    if (status && !STATUS_DISPONIVEIS.has(status)) continue;
+    const precoPromo = num(r.preco_final);
+    if (precoPromo === null || precoPromo <= 0) continue;
+    const c = montarCandidata({
+      itemId: String(r.item_id),
+      promocao: {
+        id: r.promotion_id || null,
+        nome: r.nome || null,
+        tipo: r.promotion_type || null,
+        status,
+        statusExibicao: r.status_exibicao || null,
+        precoFonte: r.preco_final_fonte || null,
+        fim: r.data_fim || null,
+      },
+      precoPromo,
+      retornoMl: num(r.subsidio_ml) || 0,
+      snap: r,
+      titulo: null,
+      vendasPorMlb,
+    });
+    if (c) candidatas.push(c);
+  }
+  const { total, pagina, hasNext } = ordenarDeduplicarPaginar(candidatas, pag);
+  return {
+    ok: true,
+    disponivel: true,
+    fonte: {
+      tipo: "promo_snapshot",
+      runId: estado.snapshotRunId,
+      geradoEm: estado.snapshotAt,
+      parcial: estado.partial === true,
+      itensVarridos: num(estado.total),
+      itensSemLeitura: estado.itemsWithoutRead || 0,
+      ...frescor(estado.snapshotAt, d.now().getTime()),
+    },
+    sync,
+    criterio: CRITERIO,
+    periodo: periodoPublico(periodo),
+    page: pag.page,
+    limit: pag.limit,
+    total,
+    hasNext,
+    oportunidades: pagina,
+  };
+}
+
+// ─── Compatibilidade: diagnóstico da tela antiga ─────────────────────────────
+async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params, deps, pag }) {
   const head = await consultaOuVazio(
     d.db,
     `SELECT id, created_at, parcial, itens_scaneados
@@ -96,15 +222,7 @@ async function listarOportunidades(params = {}, deps = {}) {
       LIMIT 1`,
     [cliente.id, sellerId]
   );
-  if (!head || !head.length) {
-    return {
-      ok: true,
-      disponivel: false,
-      motivo: "SEM_DIAGNOSTICO_PROMOCOES",
-      mensagem: "Nenhum diagnóstico de promoções concluído para esta conta. A lista global depende dessa varredura (tela Promoções ML); a Central não consulta promoções anúncio a anúncio.",
-      oportunidades: [],
-    };
-  }
+  if (!head || !head.length) return null;
   const diag = head[0];
 
   const itens = await d.db.query(
@@ -120,15 +238,19 @@ async function listarOportunidades(params = {}, deps = {}) {
     ok: true,
     disponivel: true,
     fonte: {
+      tipo: "diagnostico_legado",
       diagnosticoId: Number(diag.id),
       geradoEm: diag.created_at,
       parcial: diag.parcial === true,
       itensVarridos: num(diag.itens_scaneados),
       ...frescor(diag.created_at, d.now().getTime()),
     },
-    criterio: "Promoção disponível com margem pós-promoção positiva; ordem: com retorno ML, mais unidades vendidas, maior margem.",
+    sync,
+    criterio: CRITERIO,
+    page: pag.page,
+    limit: pag.limit,
   };
-  if (!ids.length) return { ...base, oportunidades: [] };
+  if (!ids.length) return { ...base, periodo: null, total: 0, hasNext: false, oportunidades: [] };
 
   const snaps = await d.db.query(
     `SELECT item_id, titulo, image_url, price, cost, tax_rate, fixed_fee, commission_rate, freight, margin, status, quality_json
@@ -137,19 +259,7 @@ async function listarOportunidades(params = {}, deps = {}) {
     [conta.id, ids]
   );
   const porItem = new Map((snaps.rows || []).map((r) => [String(r.item_id), r]));
-
-  let vendasPorMlb = new Map();
-  let periodo = null;
-  try {
-    const realizada = await d.carregarRealizada(
-      { cliente: { id: cliente.id, slug: cliente.slug }, conta: { id: conta.id }, periodo: params.periodo || null },
-      { ...deps, db: d.db }
-    );
-    vendasPorMlb = realizada.porMlb || new Map();
-    periodo = realizada.periodo || null;
-  } catch (_) {
-    vendasPorMlb = new Map();
-  }
+  const { vendasPorMlb, periodo } = await carregarVendas(d, cliente, conta, params, deps);
 
   const candidatas = [];
   for (const r of linhasDiag) {
@@ -159,68 +269,86 @@ async function listarOportunidades(params = {}, deps = {}) {
     const raw = r.payload_raw && typeof r.payload_raw === "object" ? r.payload_raw : {};
     const status = String(raw.status || raw.statusPromocao || "").toLowerCase() || null;
     if (status && !STATUS_DISPONIVEIS.has(status)) continue;
-
-    const precoPromo = num(r.preco_promocao);
-    const taxa = num(snap.commission_rate);
-    const retornoMl = num(r.retorno_ml) || 0;
-    const calc = computeMargin({
-      price: precoPromo,
-      cost: num(snap.cost),
-      taxRate: num(snap.tax_rate),
-      fixedFee: num(snap.fixed_fee),
-      commission: taxa === null ? null : round2(precoPromo * taxa),
-      freight: num(snap.freight),
-      rebate: retornoMl,
-    });
-    if (!calc.computable || calc.margin === null || calc.margin <= 0 || taxa === null || num(snap.tax_rate) === null) continue;
-
-    const vendas = vendasPorMlb.get(itemId) || null;
-    const linha = {
+    const c = montarCandidata({
       itemId,
-      titulo: snap.titulo || r.titulo || itemId,
-      imagem: snap.image_url || null,
-      precoAtual: num(snap.price),
-      margemAtual: num(snap.margin),
-      promocao: {
-        id: r.campanha_id || null,
-        nome: r.campanha || null,
-        tipo: r.tipo_promocao || null,
-        status,
-      },
-      precoPromocao: precoPromo,
-      retornoMl: retornoMl || null,
-      margemDepois: calc.margin,
-      lucroDepois: calc.profit,
-      unidades: vendas ? num(vendas.unidades) || 0 : 0,
-      receita: vendas ? num(vendas.receita) : null,
-      estimado: true,
-    };
-    linha.motivo = motivoDa(linha);
-    candidatas.push(linha);
+      promocao: { id: r.campanha_id || null, nome: r.campanha || null, tipo: r.tipo_promocao || null, status },
+      precoPromo: num(r.preco_promocao),
+      retornoMl: num(r.retorno_ml) || 0,
+      snap,
+      titulo: r.titulo,
+      vendasPorMlb,
+    });
+    if (c) candidatas.push(c);
   }
+  const { total, pagina, hasNext } = ordenarDeduplicarPaginar(candidatas, pag);
+  return { ...base, periodo: periodoPublico(periodo), total, hasNext, oportunidades: pagina };
+}
 
-  candidatas.sort((a, b) =>
-    (b.retornoMl ? 1 : 0) - (a.retornoMl ? 1 : 0) ||
-    b.unidades - a.unidades ||
-    b.margemDepois - a.margemDepois
+function mensagemSemFonte(estado) {
+  if (!estado) return "Nenhuma promoção sincronizada para esta conta ainda.";
+  if (estado.state === "syncing") {
+    const prog = estado.total ? ` (${estado.processed || 0} de ${estado.total} anúncios)` : "";
+    return `Primeira leitura das promoções desta conta em andamento${prog}. A lista aparece sozinha quando terminar.`;
+  }
+  if (estado.state === "failed") {
+    return `A última leitura das promoções desta conta falhou${estado.errorCode ? ` (${estado.errorCode})` : ""}. O backend tenta de novo automaticamente.`;
+  }
+  if (!estado.workerEnabled) {
+    return "A sincronização automática de promoções ainda não está ligada neste ambiente; nenhuma promoção foi lida para esta conta.";
+  }
+  return "Primeira leitura das promoções desta conta enfileirada. A lista aparece sozinha quando terminar.";
+}
+
+async function listarOportunidades(params = {}, deps = {}) {
+  const d = defaults(deps);
+  const { cliente, conta } = await d.resolverContaDoCliente(
+    { clienteSlug: params.clienteSlug, clienteContaId: params.clienteContaId },
+    deps
   );
+  const contaCompleta = await d.obterConta(conta.id, d.db);
+  const sellerId = contaCompleta && contaCompleta.external_account_id ? String(contaCompleta.external_account_id) : null;
+  const pag = {
+    page: Math.max(1, Math.trunc(Number(params.page)) || 1),
+    limit: Math.min(Math.max(Math.trunc(Number(params.limit)) || LIMITE_PADRAO, 1), LIMITE_MAX),
+  };
 
-  // Uma linha por anúncio (a melhor promoção dele pela mesma régua).
-  const vistos = new Set();
-  const oportunidades = [];
-  for (const c of candidatas) {
-    if (vistos.has(c.itemId)) continue;
-    vistos.add(c.itemId);
-    oportunidades.push(c);
-    if (oportunidades.length >= limite) break;
+  if (!sellerId) {
+    return { ok: true, disponivel: false, motivo: "CONTA_SEM_GRANT_ML", mensagem: "A conta não tem conexão do Mercado Livre vinculada.", page: pag.page, limit: pag.limit, total: 0, hasNext: false, oportunidades: [] };
   }
+
+  // Estado do Promo Snapshot + auto-trigger (nunca bloqueia; falha aqui não
+  // derruba a lista — cai no legado/indisponível).
+  let estado = null;
+  let sync = null;
+  try {
+    const r = await d.promo.estadoComAutoTrigger(
+      { clienteId: cliente.id, clienteSlug: cliente.slug, clienteContaId: conta.id, marketplace: "meli", sellerId },
+      { autoTrigger: params.autoTrigger !== false }
+    );
+    estado = r.estado;
+    sync = d.promo.syncPublico(r.estado, r.gatilho);
+  } catch (err) {
+    if (!(err && err.code === "42P01")) throw err;
+  }
+
+  const ctx = { d, cliente, conta, sellerId, estado, sync, params, deps, pag };
+  if (estado && estado.hasSnapshot) return oportunidadesDoSnapshot(ctx);
+
+  const legado = await oportunidadesDoLegado(ctx);
+  if (legado) return legado;
 
   return {
-    ...base,
-    periodo: periodo ? { dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, rotulo: periodo.rotulo || null } : null,
-    total: candidatas.length,
-    oportunidades,
+    ok: true,
+    disponivel: false,
+    motivo: "SEM_SNAPSHOT_PROMOCOES",
+    mensagem: mensagemSemFonte(estado),
+    sync,
+    page: pag.page,
+    limit: pag.limit,
+    total: 0,
+    hasNext: false,
+    oportunidades: [],
   };
 }
 
-module.exports = { listarOportunidades };
+module.exports = { listarOportunidades, montarCandidata, ordenarDeduplicarPaginar };

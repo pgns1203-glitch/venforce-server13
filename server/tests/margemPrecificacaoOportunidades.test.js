@@ -54,13 +54,22 @@ function deps(db, vendas = new Map()) {
     obterConta: async () => ({ id: 7, external_account_id: "555" }),
     carregarRealizada: async () => ({ porMlb: vendas, periodo: { dateFrom: "2026-08-31", dateTo: "2026-09-29" } }),
     now: () => new Date(),
+    // Conta sem Promo Snapshot ainda: a Central cai no diagnóstico legado.
+    promo: {
+      estadoComAutoTrigger: async () => ({ estado: { state: "never_synced", hasSnapshot: false, workerEnabled: false }, gatilho: { acao: "worker_desabilitado" } }),
+      syncPublico: (e, g) => ({ ...e, autoTrigger: g.acao }),
+      listarBase: async () => { throw new Error("não deveria ler o snapshot"); },
+    },
   };
 }
 
 cenario("sem diagnóstico concluído (ou tabela inexistente): indisponível, com a explicação da dependência bulk", async () => {
   const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps(fakeDb({ head: [] })));
   assert.strictEqual(r.disponivel, false);
-  assert.strictEqual(r.motivo, "SEM_DIAGNOSTICO_PROMOCOES");
+  // Sem Promo Snapshot e sem diagnóstico legado: indisponível, explicando o
+  // estado da sincronização (não manda mais o operador para a tela antiga).
+  assert.strictEqual(r.motivo, "SEM_SNAPSHOT_PROMOCOES");
+  assert.ok(!/Promoções ML/.test(r.mensagem));
   const r2 = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps(fakeDb({ head: "sem-tabela" })));
   assert.strictEqual(r2.disponivel, false);
 });

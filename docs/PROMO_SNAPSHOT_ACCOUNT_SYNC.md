@@ -97,7 +97,8 @@ drawer e o diagnóstico já usam em produção. Enriquecimentos opcionais:
 
    | Motivo | Situação |
    |---|---|
-   | `SCROLL_AUSENTE` | página não vazia sem `scroll_id` com `paging.total` maior que o lido |
+   | `SEM_METADADOS_CONTINUIDADE` | página não vazia sem `scroll_id` **e** sem `paging.total` nela: não prova que o catálogo acabou (o fim normal do scan é a página vazia) — vale mesmo que páginas anteriores tenham mandado `paging` |
+   | `SCROLL_AUSENTE` | página não vazia sem `scroll_id` com `paging.total` (dela) maior que o lido |
    | `SCROLL_REPETIDO` | cursor devolvido já usado (mesma regra de `services/full/fullPagination`) |
    | `PAGINA_REPETIDA` | a página repete exatamente a anterior |
    | `CURSOR_SEM_PROGRESSO` | a página só traz anúncios já lidos |
@@ -165,8 +166,15 @@ Precedência: syncing > failed (tentativa mais nova que o snapshot) > partial > 
   instância.
 - **Heartbeat:** renovado a cada página do catálogo, a cada lote gravado e, **dentro do lote**, de
   forma cooperativa: antes de cada chamada ao ML e entre fatias de toda espera (backoff,
-  `Retry-After`, cooldown do rate limiter), com intervalo de no máximo
-  `min(PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS, stale/3)`. Um lote legítimo que demora mais que o teto
+  `Retry-After`, cooldown do rate limiter), com intervalo `PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS`.
+- **Invariante heartbeat × request individual:** uma chamada em voo não renova heartbeat, e o
+  timeout do `mlFetch` cobre a chamada inteira (inclusive obter/renovar o token). O maior
+  intervalo sem heartbeat é `requestTimeoutMs + heartbeatIntervalMs + requestIntervalMs`. Por
+  isso `PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS` e `PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS` ficam
+  limitados, cada um, a **1/4 da janela de stale**: o pior caso fica ≤ stale/2 + 10 s, sempre
+  abaixo da janela (stale ≥ 2 min). Valor de env acima do teto é limitado automaticamente e
+  logado no startup (`… excede 1/4 da janela de stale …; usando N`). Config montada à mão que
+  viole a regra é recusada (`PROMO_SNAPSHOT_CONFIG_INSEGURA`) antes de qualquer chamada ao ML. Um lote legítimo que demora mais que o teto
   de stale (retry + backoff) não é reconciliado por outra instância. Não há timer solto: se o
   processo travar de verdade, o heartbeat para e o run é recuperado. Se o heartbeat descobrir que
   o run deixou de ser `running`, o processo para na hora (erro de fencing que atravessa o retry),
@@ -264,13 +272,13 @@ ganhou `page`, `total` e `hasNext`.
 | `PROMO_SNAPSHOT_WORKER_POLL_MS` | 15000 | polling de runs de outra instância |
 | `PROMO_SNAPSHOT_ITEM_CONCURRENCY` | 3 (≤8) | leituras paralelas por lote |
 | `PROMO_SNAPSHOT_REQUEST_INTERVAL_MS` | 100 | espaçamento mínimo entre requisições no processo |
-| `PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS` | 15000 | timeout real por requisição |
+| `PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS` | 15000 | timeout real por requisição (limitado a 1/4 da janela de stale) |
 | `PROMO_SNAPSHOT_BATCH_SIZE` | 20 | anúncios por lote |
 | `PROMO_SNAPSHOT_MAX_ATTEMPTS` / `_BACKOFF_BASE_MS` / `_BACKOFF_MAX_MS` / `_RETRY_AFTER_MAX_MS` | 3 / 2000 / 30000 / 120000 | retry |
 | `PROMO_SNAPSHOT_MAX_CONSECUTIVE_BATCH_FAILURES` | 3 | circuit breaker |
 | `PROMO_SNAPSHOT_MAX_CATALOG_ITEMS` | 20000 | teto do catálogo (falha explícita) |
 | `PROMO_SNAPSHOT_RUNNING_STALE_MINUTES` | 10 | recovery por heartbeat |
-| `PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS` | 60000 | heartbeat cooperativo dentro do lote (usa no máximo stale/3) |
+| `PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS` | 60000 | heartbeat cooperativo dentro do lote (limitado a 1/4 da janela de stale) |
 | `PROMO_SNAPSHOT_RESUME_MAX_MINUTES` | 60 | janela de retomada |
 | `PROMO_SNAPSHOT_PARTIAL_MAX_FAIL_RATIO` | 0.05 | partial aceitável como snapshot atual |
 | `PROMO_SNAPSHOT_INHERIT_MAX_MINUTES` | 4320 | idade máxima da leitura boa herdada por item que falhou (0 desliga) |
@@ -314,12 +322,14 @@ Todos carregam `cliente_id`, `cliente_conta_id`, `seller_id` e `run_id`; os de c
 
 ## 14. Testes e validação
 
-- `server/tests/promoSnapshot.test.js`: 59 cenários + a prova final de zero
-  `POST/PUT/PATCH/DELETE` sobre todas as chamadas. Inclui os cenários da auditoria independente:
-  seller reconectado (antes e no meio do run), parcial com herança (e herança expirada), as seis
-  anomalias de paginação do catálogo + progresso inconsistente, heartbeat no lote longo com
-  relógio fake (backoff de 17 min e Retry-After de 18 min com outra instância reconciliando; e o
-  heartbeat perdido parando o processo), Oportunidades paginadas no banco e replay de lote.
+- `server/tests/promoSnapshot.test.js`: 67 cenários + a prova final de zero
+  `POST/PUT/PATCH/DELETE` sobre todas as chamadas. Inclui os cenários das auditorias
+  independentes: seller reconectado (antes e no meio do run), parcial com herança (e herança
+  expirada), as anomalias de paginação do catálogo (inclusive página não vazia sem `paging` e sem
+  `scroll_id`) + progresso inconsistente, heartbeat no lote longo com relógio fake (backoff de
+  17 min e Retry-After de 18 min com outra instância reconciliando; request individual presa até
+  o timeout; heartbeat perdido parando o processo), invariante timeout × stale na config,
+  Oportunidades paginadas no banco e replay de lote.
 - `server/scripts/promoSnapshotSqlCheck.js`: SQL real no PGlite (14 checks, incluindo o pipeline
   worker → processor → repositório, seller reconectado, herança, replay de lote e a consulta das
   Oportunidades conferida página a página contra a régua JS em 5.000 anúncios).
@@ -350,4 +360,6 @@ A migration foi editada no lugar (nunca foi aplicada em banco real; só em PGlit
 | 3 | Paginação do catálogo aceitava truncamento/loop | 6 guardas do cursor falham o run antes de ler promoções; progresso inconsistente vira partial não promovido; snapshot bom preservado | 7 cenários, um por caso |
 | 4 | Heartbeat só no fim da página/lote | Heartbeat cooperativo antes de cada GET e entre fatias de toda espera (≤ stale/3); fencing atravessa o retry | 3 cenários com relógio fake (backoff 17 min, Retry-After 18 min, heartbeat perdido) + controle negativo (sem a renovação os dois primeiros falham) |
 | 5 | Oportunidades carregavam tudo para o JS e fatiavam | Filtro, 1/anúncio, ordem e `LIMIT/OFFSET` no banco (também no legado); Central envia `page`/`limit` e usa `total`/`hasNext` | cenário com 2.000 anúncios (só `limit` linhas do repositório), check SQL real com 5.000 conferido página a página, check de UI 21, benchmark |
+| 2ª-1 | Página não vazia sem `paging` e sem `scroll_id` podia encerrar o scan como catálogo completo | Página não vazia sem cursor só encerra o scan se ela mesma trouxer `paging.total` confirmando tudo lido; senão `SEM_METADADOS_CONTINUIDADE` (run falha antes de ler promoções, snapshot bom preservado) | 3 cenários (malformada na 1ª página, na última, e fim legítimo com `paging` ainda aceito) + controle negativo |
+| 2ª-2 | Uma request individual longa podia passar da janela de stale | Timeout e heartbeat limitados a 1/4 da janela na config (ajuste logado no startup); validação explícita recusa config insegura antes de chamar o ML | varredura de 1.008 combinações de env, validação, startup, processor com config insegura (zero chamadas) e request presa até o timeout com relógio fake |
 | 6 | Replay do mesmo `(run_id, seq)` somava contadores de novo | Registro do lote inserido primeiro; replay não grava nem soma nada; `seq` com outros itens recusado; retomada idempotente | cenário de replay (processor reenviando cada lote) + check SQL real |

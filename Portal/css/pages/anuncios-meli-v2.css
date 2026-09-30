@@ -2199,6 +2199,14 @@
   color: var(--vf-danger-strong);
 }
 
+.vf-page-anuncios-meli .am-det-fotos__estado.is-success {
+  flex-direction: row;
+  align-items: center;
+  border-color: var(--vf-success-border);
+  background: var(--vf-success-bg);
+  color: var(--vf-success-strong);
+}
+
 .vf-page-anuncios-meli .am-det-fotos__estado :where(p) {
   margin: 0;
 }

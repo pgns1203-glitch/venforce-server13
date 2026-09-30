@@ -3463,7 +3463,19 @@
 
   function fecharDetalhe(forcar) {
     if (!DET || !DET.aberto) return;
+    // Salvar de fotos em curso: o modal só fecha quando o ML responder.
+    if (DET.fotos && DET.fotos.salvando) {
+      toast("Aguarde: as fotos estão sendo salvas no Mercado Livre.", "");
+      return;
+    }
     if (!forcar && camposSujos().length) { pedirConfirmacaoSaida(); return; }
+    if (!forcar && fotosSujas() && !fotosTravadas()) {
+      DET.fotos.pendente = { tipo: "fechar" };
+      renderFotos();
+      var pendFotos = document.querySelector("#am-det-fotos-corpo .am-det-fotos__pendente");
+      if (pendFotos && pendFotos.scrollIntoView) pendFotos.scrollIntoView({ block: "center" });
+      return;
+    }
 
     detalheToken++; // invalida qualquer resposta em voo da abertura que morreu
     liberarPreviewImagem();
@@ -3748,13 +3760,15 @@
   //                "nova" (arquivo + preview, só no navegador).
   // As pendências são sempre CALCULADAS da diferença entre os dois.
   //
-  // Nesta etapa tudo fica em memória: nenhum upload, nenhum PUT. O salvar
-  // entra na próxima (docs/superpowers/plans/2026-09-30-fotos-por-variacao.md,
-  // Task 6).
+  // Tudo fica em memória até "Salvar no Mercado Livre", que manda o rascunho
+  // num único PUT /anuncios-meli/:itemId/fotos (multipart: plano + novas[]).
+  // Depois do sucesso a tela RELÊ o GET — o estado final é o que o ML
+  // devolve, nunca o payload enviado.
   var MOTIVO_FOTOS_CATALOGO =
     "Este anúncio é de catálogo: as fotos exibidas são do produto de catálogo do Mercado Livre e não podem ser alteradas por aqui.";
   var FOTOS_MAX_NOVAS = 10;                  // mesmo limite do multer no PUT /fotos
-  var FOTOS_SALVAR_EM_BREVE = "O envio ao Mercado Livre entra na próxima etapa.";
+  var MOTIVO_FOTOS_INCERTO =
+    "Não foi possível confirmar se o Mercado Livre aplicou a alteração. Confira o anúncio antes de tentar novamente.";
 
   function congelar(o) {
     if (o && typeof o === "object" && !Object.isFrozen(o)) {
@@ -3765,7 +3779,10 @@
   }
 
   function fotosEstadoVazio() {
-    return { estado: null, erro: null, original: null, rascunho: null, pendente: null, avisoLocal: null, arrastando: null };
+    // salvando: null | "enviando" | "processando"; falhaSalvar: { tipo, titulo,
+    // linhas } com tipo validacao | ml | conflito | incerto; sucesso: texto.
+    return { estado: null, erro: null, original: null, rascunho: null, pendente: null, avisoLocal: null, arrastando: null,
+             salvando: null, falhaSalvar: null, sucesso: null };
   }
 
   function fotosVariacoes() {
@@ -3800,6 +3817,22 @@
     };
     DET.fotos.pendente = null;
     DET.fotos.avisoLocal = null;
+    DET.fotos.falhaSalvar = null;
+    DET.fotos.sucesso = null;
+  }
+
+  // Estado incerto: o ML pode ou não ter aplicado o salvar. Nada é editável
+  // nem reenviável até reler as fotos (foto-recarregar).
+  function fotosTravadas() {
+    var F = DET && DET.fotos;
+    return !!(F && F.falhaSalvar && F.falhaSalvar.tipo === "incerto");
+  }
+
+  function limparMensagensFotos() {
+    var F = DET.fotos;
+    F.avisoLocal = null;
+    F.sucesso = null;
+    if (F.falhaSalvar && F.falhaSalvar.tipo !== "incerto") F.falhaSalvar = null;
   }
 
   function fotosAtivas() {
@@ -3832,10 +3865,22 @@
     return fotosVariacoes() ? "A variação " + grupoOriginal().rotulo : "O anúncio";
   }
 
-  function carregarFotos(forcar) {
+  function mesmoGrupoVariacao(a, b) {
+    if (!a || !b) return !a && !b;
+    if (a.attribute_id !== b.attribute_id) return false;
+    if (a.value_id !== null && a.value_id !== undefined && b.value_id !== null && b.value_id !== undefined) {
+      return String(a.value_id) === String(b.value_id);
+    }
+    return String(a.value_name || "").trim().toLowerCase() === String(b.value_name || "").trim().toLowerCase();
+  }
+
+  // opcoes.selecionar (grupoVariacao) reabre no mesmo grupo depois de reler;
+  // opcoes.sucesso é a mensagem a mostrar sobre a leitura nova.
+  function carregarFotos(forcar, opcoes) {
     if (!DET || !DET.anuncio || !DET.fotos) return;
     var F = DET.fotos;
     if (F.estado && !forcar) return;
+    opcoes = opcoes || {};
     if (DET.anuncio.catalog_listing === true) {
       F.estado = "catalogo";
       renderFotos();
@@ -3847,6 +3892,11 @@
     F.erro = null;
     F.original = null;
     F.rascunho = null;
+    F.pendente = null;
+    F.salvando = null;
+    F.falhaSalvar = null;
+    F.sucesso = null;
+    F.avisoLocal = null;
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
       (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
     api("/anuncios-meli/" + encodeURIComponent(DET.anuncio.item_id) + "/fotos/variacoes?" + qs).then(function (r) {
@@ -3855,7 +3905,12 @@
       if (d.ok && Array.isArray(d.grupos) && d.grupos.length) {
         F.estado = "ok";
         F.original = congelar(d);
-        novoRascunho(0);
+        var idx = 0;
+        if (opcoes.selecionar !== undefined) {
+          d.grupos.forEach(function (g, i) { if (mesmoGrupoVariacao(g.grupoVariacao, opcoes.selecionar)) idx = i; });
+        }
+        novoRascunho(idx);
+        if (opcoes.sucesso) F.sucesso = opcoes.sucesso;
       } else {
         F.estado = "erro";
         F.erro = { status: r.status, dados: d };
@@ -3877,7 +3932,7 @@
     "</div>";
   }
 
-  function fotoTileHtml(it, i, principal, podeRemover, n) {
+  function fotoTileHtml(it, i, principal, podeRemover, n, editavel) {
     var chave = it.tipo === "nova" ? it.chave : it.id;
     var src = it.tipo === "nova" ? it.previewUrl : it.url;
     var selo = principal
@@ -3886,7 +3941,7 @@
     var aviso = it.tipo === "nova" && it.width && it.height && Math.min(it.width, it.height) < IMAGEM_MIN_LADO_ML
       ? '<span class="am-det-fotos__pequena">' + icAlerta(10) + " abaixo de " + IMAGEM_MIN_LADO_ML + " px</span>"
       : "";
-    var acoes = it.removida
+    var acoes = !editavel ? "" : it.removida
       ? '<span class="am-det-fotos__acoes">' +
           '<button type="button" class="am-det-fotos__btn am-det-fotos__btn--texto" data-acao="foto-desfazer" data-idx="' + i + '">Desfazer</button>' +
         "</span>"
@@ -3901,7 +3956,7 @@
             : "") +
         "</span>";
     return '<div class="am-det-photo am-det-fotos__item' + (it.removida ? " is-removida" : "") + (it.tipo === "nova" ? " is-nova" : "") + '"' +
-        ' data-foto="' + escapeAttr(chave) + '" data-idx="' + i + '"' + (it.removida ? "" : ' draggable="true"') + ">" +
+        ' data-foto="' + escapeAttr(chave) + '" data-idx="' + i + '"' + (it.removida || !editavel ? "" : ' draggable="true"') + ">" +
       (src
         ? '<img src="' + escapeAttr(src) + '" alt="' + (it.removida ? "Foto marcada para remoção" : "Foto " + n) +
           '" loading="lazy" draggable="false" />'
@@ -3931,26 +3986,54 @@
     var F = DET.fotos;
     var partes = [];
     if (F.avisoLocal) partes.push('<p class="am-det-fotos__aviso-local" role="alert">' + escapeHtml(F.avisoLocal) + "</p>");
+
+    if (F.salvando) {
+      partes.push('<div class="am-det-fotos__estado" role="status">' +
+        (F.salvando === "enviando" ? "Enviando imagens…" : "Salvando no Mercado Livre…") + "</div>");
+      return partes.join("");
+    }
+    if (F.falhaSalvar) {
+      var f = F.falhaSalvar;
+      var reler = f.tipo === "incerto" || f.tipo === "conflito";
+      partes.push('<div class="am-det-fotos__estado is-danger" role="alert">' +
+        "<p><strong>" + escapeHtml(f.titulo) + "</strong></p>" +
+        f.linhas.map(function (l) { return "<p>" + escapeHtml(l) + "</p>"; }).join("") +
+        (reler ? '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="foto-recarregar">Recarregar fotos do Mercado Livre</button>' : "") +
+      "</div>");
+      if (f.tipo === "incerto") return partes.join(""); // nada de salvar/reenviar
+    }
+    if (F.sucesso) {
+      partes.push('<div class="am-det-fotos__estado is-success" role="status">' + icCheck(13) + " Concluído — " + escapeHtml(F.sucesso) + "</div>");
+    }
+
     if (F.pendente) {
+      var texto = F.pendente.tipo === "fechar"
+        ? "Existem alterações pendentes nas fotos."
+        : "Existem alterações pendentes neste grupo.";
       partes.push('<div class="am-det-fotos__pendente" role="alertdialog" aria-label="Alterações pendentes nas fotos">' +
-        '<span class="am-det-fotos__barra-texto">Existem alterações pendentes neste grupo.</span>' +
-        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="foto-pendente-salvar" disabled title="' +
-          escapeAttr(FOTOS_SALVAR_EM_BREVE) + '">Salvar</button>' +
+        '<span class="am-det-fotos__barra-texto">' + texto + "</span>" +
+        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="foto-pendente-salvar">Salvar</button>' +
         '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="foto-pendente-descartar">Descartar</button>' +
         '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="foto-pendente-cancelar">Cancelar</button>' +
       "</div>");
-    } else {
-      var p = pendenciasFotos();
-      if (p.total > 0) {
-        var onde = fotosVariacoes() ? grupoOriginal().rotulo : "anúncio";
-        partes.push('<div class="am-det-fotos__barra" role="status">' +
-          '<span class="am-det-fotos__barra-texto">' + p.total + (p.total === 1 ? " alteração" : " alterações") +
-            " nas fotos de " + escapeHtml(onde) + "</span>" +
-          '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="foto-descartar">Descartar</button>' +
-          '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="foto-salvar" disabled title="' +
-            escapeAttr(FOTOS_SALVAR_EM_BREVE) + '">Salvar no Mercado Livre</button>' +
-        "</div>");
+      return partes.join("");
+    }
+
+    var p = pendenciasFotos();
+    if (p.total > 0) {
+      var onde = fotosVariacoes() ? grupoOriginal().rotulo : "anúncio";
+      // Anúncio de produto sem variação: o PUT /items replica as fotos aos
+      // anúncios do mesmo produto (doc do ML, user-products item 17).
+      if (!fotosVariacoes() && imagemReplicaEmProduto(DET.anuncio)) {
+        partes.push('<p class="am-det-fotos__bloqueio">' + icAlerta(12) +
+          " Este anúncio pertence a um produto do Mercado Livre. A alteração de imagem pode ser replicada para outros anúncios relacionados.</p>");
       }
+      partes.push('<div class="am-det-fotos__barra" role="status">' +
+        '<span class="am-det-fotos__barra-texto">' + p.total + (p.total === 1 ? " alteração" : " alterações") +
+          " nas fotos de " + escapeHtml(onde) + "</span>" +
+        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="foto-descartar">Descartar</button>' +
+        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="foto-salvar">Salvar no Mercado Livre</button>' +
+      "</div>");
     }
     return partes.join("");
   }
@@ -3970,6 +4053,7 @@
     var g = grupoOriginal();
     var R = F.rascunho;
     var ativos = fotosAtivas().length;
+    var editavel = !F.salvando && !fotosTravadas();
     var chips = "";
     var titulo;
     if (fotosVariacoes()) {
@@ -3977,7 +4061,8 @@
         F.original.grupos.map(function (gr, i) {
           var n = i === R.sel ? ativos : gr.quantidade;
           return '<button type="button" class="am-det-fotos__chip" data-acao="foto-grupo" data-idx="' + i + '"' +
-            ' aria-pressed="' + (i === R.sel) + '">' + escapeHtml(gr.rotulo) + " · " + n + "</button>";
+            ' aria-pressed="' + (i === R.sel) + '"' + (editavel ? "" : " disabled") + ">" +
+            escapeHtml(gr.rotulo) + " · " + n + "</button>";
         }).join("") +
       "</div>";
       titulo = '<p class="am-det-fotos__titulo">Fotos da variação: ' + escapeHtml(g.rotulo) +
@@ -3993,12 +4078,13 @@
     var n = 0;
     var tiles = R.itens.map(function (it, i) {
       if (!it.removida) n += 1;
-      return fotoTileHtml(it, i, i === primeiro, ativos > 1, n);
+      return fotoTileHtml(it, i, i === primeiro, ativos > 1, n, editavel);
     }).join("");
     var lim = limiteFotos();
     var cheio = lim !== null && ativos >= lim;
     var adicionar = '<button type="button" class="am-det-photo am-det-photo--add" data-acao="foto-escolher"' +
-      (cheio ? ' disabled title="' + escapeAttr(nomeGrupoFotos() + " pode ter no máximo " + lim + " imagens.") + '"' : "") + ">" +
+      (cheio ? ' disabled title="' + escapeAttr(nomeGrupoFotos() + " pode ter no máximo " + lim + " imagens.") + '"'
+        : editavel ? "" : " disabled") + ">" +
         '<span class="am-det-photo__add-plus" aria-hidden="true">+</span>' +
         '<span class="am-det-photo__add-label">Adicionar imagem</span>' +
       "</button>";
@@ -4022,7 +4108,7 @@
 
   function editorPronto() {
     var F = DET && DET.fotos;
-    return !!(F && F.estado === "ok" && F.rascunho && !F.pendente);
+    return !!(F && F.estado === "ok" && F.rascunho && !F.pendente && !F.salvando && !fotosTravadas());
   }
 
   // ----- Fotos: edição do rascunho (só memória) -------------------------------
@@ -4031,7 +4117,7 @@
     if (!editorPronto() || de === para || de < 0 || para < 0 || de >= itens.length || para >= itens.length) return;
     if (itens[de].removida || itens[para].removida) return;
     itens.splice(para, 0, itens.splice(de, 1)[0]);
-    DET.fotos.avisoLocal = null;
+    limparMensagensFotos();
     renderFotos();
   }
 
@@ -4057,7 +4143,7 @@
     } else {
       it.removida = true; // só sai de verdade no salvar
     }
-    F.avisoLocal = null;
+    limparMensagensFotos();
     renderFotos();
   }
 
@@ -4072,7 +4158,7 @@
       return;
     }
     it.removida = false;
-    F.avisoLocal = null;
+    limparMensagensFotos();
     renderFotos();
   }
 
@@ -4086,12 +4172,160 @@
   function selecionarGrupoFotos(i) {
     var F = DET && DET.fotos;
     if (!F || F.estado !== "ok" || !F.original.grupos[i] || i === F.rascunho.sel) return;
+    if (F.salvando || fotosTravadas()) return;
     if (fotosSujas()) {
-      F.pendente = { destino: i };
+      F.pendente = { tipo: "grupo", destino: i };
       renderFotos();
       return;
     }
     novoRascunho(i);
+    renderFotos();
+  }
+
+  // ----- Fotos: salvar no Mercado Livre -----------------------------------------
+  // Validação local antes do PUT (o backend valida de novo).
+  function validarRascunhoFotos() {
+    var n = fotosAtivas().length;
+    if (n === 0) return "Não é possível salvar. " + nomeGrupoFotos() + " precisa ter pelo menos uma imagem.";
+    var lim = limiteFotos();
+    if (lim !== null && n > lim) return "Não é possível salvar. " + nomeGrupoFotos() + " pode ter no máximo " + lim + " imagens.";
+    return null;
+  }
+
+  // Rascunho → plano do PUT /fotos:
+  //   grupoVariacao: o do GET ({ attribute_id, value_id, value_name } ou null);
+  //   base: ids das fotos do grupo EXATAMENTE como vieram no GET;
+  //   ordem: { existente: id } | { nova: i }, i = posição do arquivo em novas[];
+  //   arquivos: só as novas ativas, na ordem em que aparecem.
+  function planoFotos() {
+    var arquivos = [];
+    var ordem = [];
+    DET.fotos.rascunho.itens.forEach(function (it) {
+      if (it.removida) return;
+      if (it.tipo === "nova") { ordem.push({ nova: arquivos.length }); arquivos.push(it); }
+      else ordem.push({ existente: it.id });
+    });
+    var g = grupoOriginal();
+    return {
+      plano: { grupoVariacao: g.grupoVariacao, base: g.fotos.map(function (f) { return f.id; }), ordem: ordem },
+      arquivos: arquivos,
+    };
+  }
+
+  // Resposta de erro → o que a tela mostra. `incerto` (do backend) ou falha
+  // sem resposta útil (conexão, 5xx sem código): o ML pode ter aplicado.
+  function classificarFalhaFotos(status, d) {
+    d = d || {};
+    if (d.incerto || status === 0 || (status >= 500 && !d.codigo)) {
+      var linhas = [];
+      if (d.motivo) linhas.push(d.motivo);
+      if (d.codigo) linhas.push("Código: " + d.codigo);
+      return { tipo: "incerto", titulo: MOTIVO_FOTOS_INCERTO, linhas: linhas };
+    }
+    if (d.codigo === "FOTOS_DESATUALIZADAS" || d.codigo === "VARIACAO_GRUPO_INEXISTENTE") {
+      return { tipo: "conflito", titulo: "O anúncio mudou no Mercado Livre", linhas: [d.motivo || "Recarregue as fotos."] };
+    }
+    if (d.detalhesMl) {
+      var etapas = {
+        leitura: "Ao consultar o anúncio no Mercado Livre.",
+        upload: "No envio de uma imagem nova ao Mercado Livre — o anúncio não foi alterado.",
+        vinculo: "Ao salvar as fotos no anúncio — o Mercado Livre recusou a alteração.",
+      };
+      var e = erroImagemDe(status, Object.assign({}, d, { etapa: null }));
+      return { tipo: "ml", titulo: e.titulo, linhas: (etapas[d.etapa] ? [etapas[d.etapa]] : []).concat(e.linhas) };
+    }
+    var l = [d.motivo || "Não foi possível salvar as fotos."];
+    if (d.codigo) l.push("Código: " + d.codigo);
+    return { tipo: "validacao", titulo: "Não foi possível salvar", linhas: l };
+  }
+
+  // depois: null | { tipo: "grupo", destino } | { tipo: "fechar" } — o que
+  // fazer quando o salvar terminar com sucesso.
+  function salvarFotosNoMl(depois) {
+    var F = DET && DET.fotos;
+    if (!F || F.estado !== "ok" || !F.rascunho || F.salvando || fotosTravadas()) return;
+    if (!fotosSujas()) {
+      F.pendente = null;
+      seguirDepoisDeSalvarFotos(depois, null);
+      return;
+    }
+    var msg = validarRascunhoFotos();
+    if (msg) { F.pendente = null; F.avisoLocal = msg; renderFotos(); return; }
+
+    var meuToken = DET.token;
+    var montado = planoFotos();
+    var grupoAtual = grupoOriginal().grupoVariacao;
+    var url = API_BASE + "/anuncios-meli/" + encodeURIComponent(DET.anuncio.item_id) + "/fotos" +
+      "?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+      (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
+    var form = new FormData();
+    form.append("plano", JSON.stringify(montado.plano));
+    montado.arquivos.forEach(function (it) { form.append("novas", it.arquivo, it.nome || "imagem"); });
+
+    F.pendente = null;
+    F.avisoLocal = null;
+    F.falhaSalvar = null;
+    F.sucesso = null;
+    F.salvando = montado.arquivos.length ? "enviando" : "processando";
+    renderFotos();
+
+    // XHR (não fetch) para separar "Enviando imagens" (bytes subindo) de
+    // "Salvando no Mercado Livre" (o backend já tem tudo e fala com o ML).
+    var xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Authorization", "Bearer " + (AM.token || ""));
+    function vivo() { return DET && DET.token === meuToken && DET.fotos === F; }
+    xhr.upload.onload = function () {
+      if (!vivo() || F.salvando !== "enviando") return;
+      F.salvando = "processando";
+      renderFotos();
+    };
+    xhr.onload = function () {
+      if (!vivo()) return;
+      var d = {};
+      try { d = JSON.parse(xhr.responseText || "{}"); } catch (_) { d = {}; }
+      F.salvando = null;
+      if (xhr.status >= 200 && xhr.status < 300 && d.ok) {
+        if (d.anuncio) {
+          DET.anuncio = d.anuncio;
+          AM.detalheAtual = { anuncio: d.anuncio, descricao: DET.descricao };
+        }
+        toast("Fotos salvas no Mercado Livre.", "is-success");
+        carregarAnuncios(); // contagem/capa de fotos da listagem atrás
+        var sucesso = d.confirmacaoPendente
+          ? "Fotos salvas no Mercado Livre. A lista local atualiza na próxima sincronização."
+          : "Fotos salvas no Mercado Livre.";
+        seguirDepoisDeSalvarFotos(depois, { grupo: grupoAtual, sucesso: sucesso });
+        return;
+      }
+      F.falhaSalvar = classificarFalhaFotos(xhr.status, d);
+      renderFotos();
+    };
+    xhr.onerror = function () {
+      if (!vivo()) return;
+      F.salvando = null;
+      F.falhaSalvar = classificarFalhaFotos(0, {});
+      renderFotos();
+    };
+    xhr.send(form);
+  }
+
+  // Depois do sucesso: fecha o modal ou RELÊ o GET (nunca assume que o
+  // payload virou o estado final) e reabre no grupo certo.
+  function seguirDepoisDeSalvarFotos(depois, salvo) {
+    var F = DET && DET.fotos;
+    if (!F) return;
+    if (depois && depois.tipo === "fechar") { fecharDetalhe(true); return; }
+    var selecionar = depois && depois.tipo === "grupo"
+      ? F.original.grupos[depois.destino].grupoVariacao
+      : salvo ? salvo.grupo : grupoOriginal().grupoVariacao;
+    if (!salvo) {
+      novoRascunho(depois && depois.tipo === "grupo" ? depois.destino : F.rascunho.sel);
+      renderFotos();
+      return;
+    }
+    renderDetalhe(); // cabeçalho "Fotos (N)" com a linha nova
+    carregarFotos(true, { selecionar: selecionar, sucesso: salvo.sucesso });
     renderFotos();
   }
 
@@ -4135,7 +4369,7 @@
     if (!editorPronto()) return;
     var meuToken = DET.token;
     var R = F.rascunho;
-    F.avisoLocal = null;
+    limparMensagensFotos();
     // Um arquivo por vez, na ordem escolhida: cada um enxerga o limite e as
     // duplicatas deixadas pelo anterior.
     Array.prototype.slice.call(files || []).reduce(function (fila, f) {
@@ -6440,9 +6674,14 @@
     if (acao === "foto-remover") { removerFoto(Number(alvo.getAttribute("data-idx"))); return; }
     if (acao === "foto-desfazer") { desfazerFoto(Number(alvo.getAttribute("data-idx"))); return; }
     if (acao === "foto-descartar") { descartarFotos(); return; }
-    if (acao === "foto-salvar" || acao === "foto-pendente-salvar") return; // salvar: próxima etapa
+    if (acao === "foto-salvar") { salvarFotosNoMl(null); return; }
+    if (acao === "foto-pendente-salvar") { if (DET && DET.fotos) salvarFotosNoMl(DET.fotos.pendente); return; }
     if (acao === "foto-pendente-descartar") {
-      if (DET && DET.fotos && DET.fotos.pendente) { novoRascunho(DET.fotos.pendente.destino); renderFotos(); }
+      var pendFoto = DET && DET.fotos && DET.fotos.pendente;
+      if (!pendFoto) return;
+      if (pendFoto.tipo === "fechar") { fecharDetalhe(true); return; }
+      novoRascunho(pendFoto.destino);
+      renderFotos();
       return;
     }
     if (acao === "foto-pendente-cancelar") {

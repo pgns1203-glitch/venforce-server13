@@ -3376,6 +3376,8 @@
       // Anúncio com variações: grupos de foto lidos do ML sob demanda
       // (GET .../imagens/variacoes). null = ainda não pedido.
       imagemVar: null,
+      // Editor de fotos por grupo — ver bloco "Fotos: editor por grupo".
+      fotos: fotosEstadoVazio(),
     };
     chipUsadaAtual = null;
 
@@ -3730,8 +3732,163 @@
     return itens;
   }
 
-  // ----- Fotos ---------------------------------------------------------------
-  function fotosHtml(pics, a) {
+  // ----- Fotos: editor por grupo de variação (LEITURA) -----------------------
+  // GET /anuncios-meli/:itemId/fotos/variacoes (meliFotosService, ao vivo no
+  // ML). Com variações: um chip por grupo (valor do atributo que define a foto,
+  // ex.: Cor Robalo) e só as fotos do grupo selecionado; a primeira é a imagem
+  // principal da variação. Sem variação: o mesmo componente com um grupo só (a
+  // galeria), e a primeira foto é a capa do anúncio. Esta etapa só LÊ: editar,
+  // adicionar e salvar entram nas próximas (ver docs/superpowers/plans/
+  // 2026-09-30-fotos-por-variacao.md, Tasks 5 e 6).
+  var MOTIVO_FOTOS_CATALOGO =
+    "Este anúncio é de catálogo: as fotos exibidas são do produto de catálogo do Mercado Livre e não podem ser alteradas por aqui.";
+
+  function fotosEstadoVazio() {
+    return { estado: null, erro: null, leitura: null, sel: 0 };
+  }
+
+  function fotosVariacoes() {
+    var F = DET && DET.fotos;
+    return !!(F && F.leitura && F.leitura.modo === "variacoes");
+  }
+
+  function grupoSelecionado() {
+    var F = DET.fotos;
+    return F.leitura ? F.leitura.grupos[F.sel] || null : null;
+  }
+
+  function carregarFotos(forcar) {
+    if (!DET || !DET.anuncio || !DET.fotos) return;
+    var F = DET.fotos;
+    if (F.estado && !forcar) return;
+    if (DET.anuncio.catalog_listing === true) {
+      F.estado = "catalogo";
+      renderFotos();
+      return;
+    }
+    var meuToken = DET.token;
+    F.estado = "carregando";
+    F.erro = null;
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+      (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
+    api("/anuncios-meli/" + encodeURIComponent(DET.anuncio.item_id) + "/fotos/variacoes?" + qs).then(function (r) {
+      if (!DET || DET.token !== meuToken || DET.fotos !== F) return;
+      var d = r.data || {};
+      if (d.ok && Array.isArray(d.grupos) && d.grupos.length) {
+        F.estado = "ok";
+        F.leitura = d;
+        F.sel = 0;
+      } else {
+        F.estado = "erro";
+        F.erro = { status: r.status, dados: d };
+      }
+      renderFotos();
+    });
+  }
+
+  function fotosHtml(pics) {
+    var alerta = pics.length < 3
+      ? '<span class="am-det-alert">' + icAlerta(12) + "Recomendado ter pelo menos 3 fotos</span>"
+      : "";
+    return '<div class="am-det-section">' +
+      '<div class="am-det-section__head">' +
+        '<h3 class="am-det-section__title">Fotos <span class="am-det-section__meta">(' + pics.length + ")</span></h3>" +
+        alerta +
+      "</div>" +
+      '<div id="am-det-fotos-corpo" class="am-det-fotos">' + fotosCorpoHtml() + "</div>" +
+    "</div>";
+  }
+
+  function fotoTileHtml(foto, i) {
+    var selo = i === 0
+      ? '<span class="am-det-fotos__selo">' + (fotosVariacoes() ? "Imagem principal da variação" : "Capa do anúncio") + "</span>"
+      : "";
+    return '<div class="am-det-photo am-det-fotos__item" data-foto="' + escapeAttr(foto.id) + '">' +
+      (foto.url
+        ? '<img src="' + escapeAttr(foto.url) + '" alt="Foto ' + (i + 1) + '" loading="lazy" />'
+        : icImagem(20)) +
+      selo +
+    "</div>";
+  }
+
+  function fotosErroHtml(erro) {
+    var d = (erro && erro.dados) || {};
+    // Erro do ML (com detalhesMl): mensagem, código e causa originais, pelo
+    // mesmo formatador do envio. Recusa do VenForce: só o motivo.
+    var e = d.detalhesMl
+      ? erroImagemDe(erro.status, d)
+      : { titulo: "", linhas: [d.motivo || (erro && erro.status === 0 ? "Falha de conexão ao carregar as fotos." : "Não foi possível carregar as fotos do anúncio.")] };
+    return '<div class="am-det-fotos__estado is-danger" role="alert">' +
+      (e.titulo ? "<p><strong>" + escapeHtml(e.titulo) + "</strong></p>" : "") +
+      e.linhas.map(function (l) { return "<p>" + escapeHtml(l) + "</p>"; }).join("") +
+      '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="foto-recarregar">Tentar de novo</button>' +
+    "</div>";
+  }
+
+  function fotosCorpoHtml() {
+    var F = DET && DET.fotos;
+    if (F && F.estado === "catalogo") {
+      return '<p class="am-det-fotos__bloqueio" role="status">' + escapeHtml(MOTIVO_FOTOS_CATALOGO) + "</p>";
+    }
+    if (F && F.estado === "erro") return fotosErroHtml(F.erro);
+    if (!F || F.estado !== "ok") {
+      // A grade existe desde o carregamento: a seção não muda de largura.
+      return '<p class="am-det-fotos__info" role="status">Carregando as fotos do anúncio no Mercado Livre…</p>' +
+        '<div class="am-det-photos"></div>';
+    }
+
+    var g = grupoSelecionado();
+    var chips = "";
+    var titulo;
+    if (fotosVariacoes()) {
+      chips = '<div class="am-det-fotos__chips" role="group" aria-label="Grupos de variação">' +
+        F.leitura.grupos.map(function (gr, i) {
+          return '<button type="button" class="am-det-fotos__chip" data-acao="foto-grupo" data-idx="' + i + '"' +
+            ' aria-pressed="' + (i === F.sel) + '">' + escapeHtml(gr.rotulo) + " · " + gr.quantidade + "</button>";
+        }).join("") +
+      "</div>";
+      titulo = '<p class="am-det-fotos__titulo">Fotos da variação: ' + escapeHtml(g.rotulo) +
+        (g.combinacoes && g.combinacoes.length
+          ? ' <span class="am-det-section__meta">(' + escapeHtml(g.combinacoes.join(", ")) + ")</span>"
+          : "") +
+        "</p>";
+    } else {
+      titulo = '<p class="am-det-fotos__titulo">Fotos do anúncio</p>';
+    }
+    var fotos = g.fotos || [];
+    var vazio = fotos.length
+      ? ""
+      : '<p class="am-det-vazio">' + (fotosVariacoes()
+        ? "Nenhuma foto nesta variação no Mercado Livre."
+        : "Este anúncio não tem fotos no Mercado Livre.") + "</p>";
+    return chips + titulo +
+      '<div class="am-det-photos">' + fotos.map(fotoTileHtml).join("") + "</div>" +
+      vazio;
+  }
+
+  function renderFotos() {
+    if (!DET) return;
+    var slot = el("am-det-fotos-corpo");
+    if (slot) slot.innerHTML = fotosCorpoHtml();
+  }
+
+  function selecionarGrupoFotos(i) {
+    var F = DET && DET.fotos;
+    if (!F || F.estado !== "ok" || !F.leitura.grupos[i] || i === F.sel) return;
+    F.sel = i;
+    renderFotos();
+  }
+
+  function bindFotos() {
+    carregarFotos(false);
+  }
+
+  // ----- Fotos: LEGADO ----------------------------------------------------------
+  // Seção de fotos anterior (grade da lista local + "+ Adicionar imagem" via
+  // POST /imagens + lista "Fotos por cor" do PR #205). Fora da tela desde a
+  // leitura por grupo; fica no arquivo até a etapa de edição substituir o
+  // adicionar (plano, Tasks 5–6), quando sai de vez.
+  function fotosHtmlLegado(pics, a) {
     var alerta = pics.length < 3
       ? '<span class="am-det-alert">' + icAlerta(12) + "Recomendado ter pelo menos 3 fotos</span>"
       : "";
@@ -3985,7 +4142,7 @@
     }
   }
 
-  function bindFotos() {
+  function bindFotosLegado() {
     carregarGruposImagem();
     var slot = el("am-det-img-envio");
     if (slot) {
@@ -5933,6 +6090,8 @@
     if (acao === "descartar-e-fechar") { fecharDetalhe(true); return; }
     if (acao === "descartar") { descartarTudo(); return; }
     if (acao === "salvar") { salvarAlteracoes(); return; }
+    if (acao === "foto-grupo") { selecionarGrupoFotos(Number(alvo.getAttribute("data-idx"))); return; }
+    if (acao === "foto-recarregar") { carregarFotos(true); renderFotos(); return; }
     if (acao === "img-escolher") { var inp = el("am-det-img-input"); if (inp && !alvo.disabled) inp.click(); return; }
     if (acao === "img-enviar") { enviarImagem(); return; }
     if (acao === "img-cancelar") { cancelarImagem(); return; }

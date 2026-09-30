@@ -2012,6 +2012,34 @@
 
 /* Coluna "Atual" editável da comparação com a IA (título/modelo) — mesmo
    rascunho do cabeçalho/Catálogo, ver tituloEModeloHtml. */
+.vf-page-anuncios-meli .am-det-compare--compacto .am-det-compare__col {
+  padding: 12px 18px;
+}
+
+.vf-page-anuncios-meli .am-det-compare--compacto .am-det-compare__label {
+  margin-bottom: 6px;
+}
+
+.vf-page-anuncios-meli .am-det-compare--compacto .am-det-compare__actions {
+  margin-top: 6px;
+}
+
+.vf-page-anuncios-meli .am-det-compare--compacto .am-det-readtext--sug,
+.vf-page-anuncios-meli .am-det-compare--compacto .am-det-compare__list {
+  margin-bottom: 6px;
+}
+
+.vf-page-anuncios-meli .am-det-compare--compacto .am-det-compare__foot {
+  padding: 8px 18px;
+}
+
+.vf-page-anuncios-meli .am-det-compare__count {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
 .vf-page-anuncios-meli .am-det-compare__input {
   width: 100%;
 }
@@ -2178,6 +2206,10 @@
   padding: 12px 24px;
   border-top: 1px solid var(--vf-border);
   background: var(--vf-surface-2);
+}
+
+.vf-page-anuncios-meli .am-det-compare__foot:empty {
+  display: none;
 }
 
 .vf-page-anuncios-meli .am-det-compare__scoreline {

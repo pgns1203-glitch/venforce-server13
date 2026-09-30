@@ -985,6 +985,8 @@ async function run() {
         return { tt: t.tagName, tro: t.readOnly, tmax: t.getAttribute('maxlength'), tv: t.value,
                  mt: m.tagName, mro: m.readOnly, mv: m.value }; })()`);
       assert.deepStrictEqual(info, { tt: "INPUT", tro: false, tmax: "60", tv: TITULO_A, mt: "INPUT", mro: false, mv: "X200" });
+      const contador = () => cdp.evaluate("document.getElementById('am-det-count-espelho-titulo').textContent");
+      assert.strictEqual(await contador(), TITULO_A.length + "/60 caracteres", "o título da comparação mostra quantos caracteres tem");
 
       // Digitar na comparação espelha no cabeçalho/Catálogo (e vice-versa).
       await digitar(cdp, "#am-det-espelho-titulo", "Título editado na comparação com a IA");
@@ -996,6 +998,8 @@ async function run() {
         sujoT: document.getElementById('am-det-espelho-titulo').classList.contains('is-dirty'),
         barra: document.getElementById('am-det-savebar').innerText })`);
       assert.strictEqual(sync.cab, "Título editado na comparação com a IA", "o título do cabeçalho não acompanhou a comparação");
+      assert.strictEqual(await contador(), "Título editado na comparação com a IA".length + "/60 caracteres",
+        "o contador acompanha a digitação");
       assert.strictEqual(sync.espM, "X200 Mini", "a coluna 'Atual' do modelo não acompanhou o campo do Catálogo");
       assert.ok(sync.sujoT, "o campo da comparação precisa marcar a alteração pendente");
       assert.ok(/2 altera/.test(sync.barra) && /Título/.test(sync.barra) && /Modelo/.test(sync.barra),
@@ -1271,6 +1275,9 @@ async function run() {
         "o modal não pode parecer quebrado por causa do 403");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar\"]').length"), 0,
         "sem permissão de IA não faz sentido oferecer os botões de gerar");
+      assert.ok(!/Score SEO ainda não calculado/.test(t), "sem otimização, o aviso de Score SEO não aparece");
+      assert.strictEqual(await cdp.evaluate("getComputedStyle(document.getElementById('am-det-foot-seo')).display"), "none",
+        "o rodapé vazio do Score SEO não pode ocupar espaço");
       // E o que é editável continua editável.
       await digitar(cdp, "#am-det-titulo", TITULO_A + " X");
       await waitFor(cdp, "document.getElementById('am-det-savebar')", "a edição parou de funcionar para quem não tem IA");

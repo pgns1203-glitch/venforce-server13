@@ -2351,11 +2351,14 @@
         .then(function (result) { return pricingResult(result, "Não foi possível carregar as promoções do Mercado Livre."); });
     }
 
-    /* Oportunidades da conta: fonte bulk persistida, zero chamadas ao ML. */
+    /* Oportunidades da conta: fonte bulk persistida, zero chamadas ao ML.
+       Paginada NO SERVIDOR (page/limit → page, limit, total, hasNext). */
     function getOpportunities(params, signal) {
       params = params || {};
       var slug = String(params.clientSlug || "").trim();
-      return call(precificacaoBase(slug) + "/oportunidades" + buildQuery({ clienteContaId: params.clienteContaId, periodo: params.periodo }), { signal: signal })
+      return call(precificacaoBase(slug) + "/oportunidades" + buildQuery({
+        clienteContaId: params.clienteContaId, periodo: params.periodo, page: params.page, limit: params.limit,
+      }), { signal: signal })
         .then(function (result) { return pricingResult(result, "Não foi possível carregar as oportunidades."); });
     }
 

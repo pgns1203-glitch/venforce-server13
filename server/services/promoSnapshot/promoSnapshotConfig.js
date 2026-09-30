@@ -57,12 +57,21 @@ function resolvePromoSnapshotConfig(env = process.env) {
 
     // Recovery: running sem heartbeat há mais que isto → failed (STALE).
     runningStaleMinutes: inteiroEntre(env.PROMO_SNAPSHOT_RUNNING_STALE_MINUTES, { padrao: 10, min: 2, max: 1440 }),
+    // Heartbeat cooperativo DURANTE o lote (antes de cada chamada ao ML e
+    // entre fatias das esperas de retry/backoff/rate limit). O processor usa
+    // no máximo 1/3 do teto de stale, então nenhuma espera legítima deixa o
+    // run parecer morto para outra instância.
+    heartbeatIntervalMs: inteiroEntre(env.PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS, { padrao: 60000, min: 1000, max: 600000 }),
     // Retomada: um run interrompido há menos que isto tem os lotes concluídos
     // reaproveitados pelo próximo run da conta.
     resumeMaxMinutes: inteiroEntre(env.PROMO_SNAPSHOT_RESUME_MAX_MINUTES, { padrao: 60, min: 0, max: 1440 }),
 
     // partial vira snapshot atual só se falhas/total <= isto.
     partialMaxFailRatio: fracaoEntre(env.PROMO_SNAPSHOT_PARTIAL_MAX_FAIL_RATIO, { padrao: 0.05, min: 0, max: 0.5 }),
+    // Parcial promovido: item cuja leitura falhou herda a última leitura boa
+    // (marcada herdada, com a data original) se ela tiver até isto de idade.
+    // 0 desliga a herança (o item fica só contado como sem leitura).
+    inheritMaxMinutes: inteiroEntre(env.PROMO_SNAPSHOT_INHERIT_MAX_MINUTES, { padrao: 4320, min: 0, max: 43200 }),
 
     // Cooldown do gatilho manual (reusa PROMO_SAME_CLIENT_COOLDOWN_MINUTES da
     // tela antiga, agora por CONTA) e espera depois de uma falha antes de o

@@ -6,7 +6,8 @@
 //   usuário autenticado (rota) → cliente na carteira (rota) → conta do
 //   cliente, MELI e ativa (resolverContaDoCliente) → seller da conta.
 // Nenhuma resposta mistura contas: toda consulta filtra por cliente_conta_id
-// e pelo run apontado como snapshot atual DAQUELA conta.
+// + seller vinculado HOJE à conta e pelo run apontado como snapshot atual
+// dessa conta + seller (conta reconectada a outro seller não vê o anterior).
 //
 // Abrir a tela dispara o auto-trigger (ensureFreshPromoSnapshot), que só
 // enfileira e devolve na hora — nunca espera o scan.
@@ -57,7 +58,10 @@ async function resolverContaPromo({ clienteSlug, clienteContaId }, deps = {}) {
  */
 async function estadoComAutoTrigger(identidade, { autoTrigger = true } = {}, deps = {}) {
   const d = defaults(deps);
-  const estado = await service.estadoSincronizacao({ clienteContaId: identidade.clienteContaId }, { ...deps, db: d.db, repo: d.repo });
+  const estado = await service.estadoSincronizacao(
+    { clienteContaId: identidade.clienteContaId, marketplace: "meli", sellerId: identidade.sellerId },
+    { ...deps, db: d.db, repo: d.repo }
+  );
   let gatilho = { acao: "nenhuma" };
   if (autoTrigger && identidade.sellerId) {
     try {
@@ -98,6 +102,7 @@ async function obterSnapshot(params = {}, deps = {}) {
   const texto = (v) => (v === undefined || v === null || String(v).trim() === "" ? null : String(v).trim());
   const { total, linhas } = await d.repo.listarLinhasSnapshot({
     clienteContaId: conta.id,
+    sellerId: identidade.sellerId,
     runId: estado.snapshotRunId,
     page,
     limit,
@@ -108,7 +113,10 @@ async function obterSnapshot(params = {}, deps = {}) {
   return {
     ...base,
     disponivel: true,
-    snapshot: { runId: estado.snapshotRunId, snapshotAt: estado.snapshotAt, freshUntil: estado.freshUntil, partial: estado.partial },
+    snapshot: {
+      runId: estado.snapshotRunId, snapshotAt: estado.snapshotAt, freshUntil: estado.freshUntil, partial: estado.partial,
+      itensSemLeitura: estado.itemsWithoutRead, itensHerdados: estado.itemsInherited,
+    },
     total,
     hasNext: page * limit < total,
     promocoes: linhas,
@@ -126,7 +134,10 @@ async function solicitarSync(params = {}, deps = {}) {
   if (!identidade.sellerId) {
     throw criarErroHttp(422, "A conta não tem conexão do Mercado Livre vinculada.", "CONTA_SEM_GRANT_ML");
   }
-  const estado = await service.estadoSincronizacao({ clienteContaId: conta.id }, { ...deps, db: d.db, repo: d.repo });
+  const estado = await service.estadoSincronizacao(
+    { clienteContaId: conta.id, marketplace: "meli", sellerId: identidade.sellerId },
+    { ...deps, db: d.db, repo: d.repo }
+  );
   if (estado.activeRun) {
     return { ok: true, enfileirado: false, reaproveitado: true, runId: estado.activeRun.runId, sync: syncPublico(estado, { acao: "reutilizado" }) };
   }

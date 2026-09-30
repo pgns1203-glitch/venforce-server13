@@ -65,14 +65,25 @@ async function enqueuePromoSnapshotRun(conta, { reason, requestedBy = null } = {
 
   // Run `running` morto desta conta não pode bloquear o refresh para sempre.
   await d.repo.reconcileStaleRunningRuns({ staleMinutes: config.runningStaleMinutes, clienteContaId: id.clienteContaId }, d.db);
+  // Conta reconectada a outro seller: run ativo do seller anterior nunca é
+  // reaproveitado como run do seller atual — é encerrado.
+  const substituidos = await d.repo.encerrarRunsDeOutroSeller({
+    clienteContaId: id.clienteContaId, marketplace: id.marketplace, sellerId: id.sellerId,
+  }, d.db);
+  for (const velho of substituidos) {
+    logEvento(d.logger, "warn", "promo_snapshot_run_superseded", {
+      ...base, run_id: velho.id, seller_anterior: velho.sellerId, error_code: velho.errorCode,
+    });
+  }
 
   const reusar = (run) => {
     logEvento(d.logger, "log", "promo_snapshot_run_reused", { ...base, run_id: run.id, status: run.status });
     return { run, reaproveitado: true };
   };
+  const doSeller = (run) => Boolean(run && run.sellerId === id.sellerId);
 
   const ativo = await d.repo.findActiveRun({ clienteContaId: id.clienteContaId, marketplace: id.marketplace }, d.db);
-  if (ativo) return reusar(ativo);
+  if (doSeller(ativo)) return reusar(ativo);
 
   const retomavel = await d.repo.findResumableRun({
     clienteContaId: id.clienteContaId, marketplace: id.marketplace, sellerId: id.sellerId,
@@ -92,7 +103,7 @@ async function enqueuePromoSnapshotRun(conta, { reason, requestedBy = null } = {
     // INSERT): o índice único devolve 23505 — reaproveita o vencedor.
     if (err && err.code === "23505") {
       const vencedor = await d.repo.findActiveRun({ clienteContaId: id.clienteContaId, marketplace: id.marketplace }, d.db);
-      if (vencedor) return reusar(vencedor);
+      if (doSeller(vencedor)) return reusar(vencedor);
     }
     throw err;
   }
@@ -104,14 +115,21 @@ async function enqueuePromoSnapshotRun(conta, { reason, requestedBy = null } = {
  * Precedência: syncing > failed (última tentativa falhou depois do snapshot)
  * > partial (snapshot atual é parcial) > stale > fresh; sem snapshot:
  * syncing | failed | never_synced.
+ *
+ * Sempre por conta + SELLER: com a conta reconectada a outro seller, o
+ * ponteiro e o run ativo do seller anterior são invisíveis (never_synced até
+ * o primeiro snapshot do seller atual).
  */
-async function estadoSincronizacao({ clienteContaId, marketplace = "meli" }, deps = {}) {
+async function estadoSincronizacao({ clienteContaId, marketplace = "meli", sellerId }, deps = {}) {
   const d = defaults(deps);
   const config = resolvePromoSnapshotConfig(d.env);
-  const [conta, ativo] = await Promise.all([
-    d.repo.obterConta({ clienteContaId }, d.db),
+  if (!sellerId) throw new Error("estadoSincronizacao: sellerId é obrigatório (identidade = conta + seller).");
+  const seller = String(sellerId);
+  const [conta, ativoDaConta] = await Promise.all([
+    d.repo.obterConta({ clienteContaId, marketplace, sellerId: seller }, d.db),
     d.repo.findActiveRun({ clienteContaId, marketplace }, d.db),
   ]);
+  const ativo = ativoDaConta && ativoDaConta.sellerId === seller ? ativoDaConta : null;
   const agora = d.now().getTime();
   const temSnapshot = Boolean(conta && conta.currentRunId);
   const snapshotAtMs = temSnapshot ? ms(conta.snapshotAt) : NaN;
@@ -137,6 +155,8 @@ async function estadoSincronizacao({ clienteContaId, marketplace = "meli" }, dep
     freshUntil: temSnapshot ? conta.freshUntil : null,
     partial: temSnapshot ? conta.parcial : false,
     itemsWithoutRead: temSnapshot ? conta.itensSemLeitura : 0,
+    // Dos sem leitura, quantos seguem com a última leitura boa (herdada).
+    itemsInherited: temSnapshot ? conta.itensHerdados : 0,
     lastSuccessAt: conta ? conta.lastSuccessAt : null,
     lastAttemptAt: conta ? conta.lastAttemptAt : null,
     lastAttemptStatus: conta ? conta.lastAttemptStatus : null,
@@ -168,7 +188,7 @@ async function ensureFreshPromoSnapshot(conta, { reason = "auto_refresh", estado
   const d = defaults(deps);
   const config = resolvePromoSnapshotConfig(d.env);
   const id = identidade(conta);
-  const atual = estado || (await estadoSincronizacao({ clienteContaId: id.clienteContaId, marketplace: id.marketplace }, deps));
+  const atual = estado || (await estadoSincronizacao({ clienteContaId: id.clienteContaId, marketplace: id.marketplace, sellerId: id.sellerId }, deps));
 
   if (atual.activeRun) return { acao: "reutilizado", runId: atual.activeRun.runId, estado: atual };
   if (atual.snapshotState === "fresh" && atual.state !== "failed") return { acao: "nenhuma", estado: atual };
@@ -209,26 +229,42 @@ function criarRunService(deps = {}) {
     /**
      * Sem falhas → completed e promove. Com falhas → partial; promove só se
      * a fração de itens sem leitura couber em partialMaxFailRatio (e fica
-     * marcado como parcial). Catálogo vazio lido com sucesso é um snapshot
-     * verdadeiro (vazio).
+     * marcado como parcial; os itens que falharam herdam a última leitura
+     * boa, marcada como herdada). Progresso inconsistente (processados ≠
+     * catálogo) → partial NUNCA promovido. Catálogo vazio lido com sucesso
+     * é um snapshot verdadeiro (vazio).
      */
     async markRunCompleted(runId, db = d.db, resultado = {}) {
       const cfg = config();
       const total = Number(resultado.total || 0);
       const falhas = Number(resultado.falhas || 0);
-      const status = falhas > 0 ? "partial" : "completed";
-      const promover = status === "completed" || (total > 0 && falhas / total <= cfg.partialMaxFailRatio);
+      const processados = Number(resultado.processados || 0);
+      const inconsistente = processados !== total;
+      const status = falhas > 0 || inconsistente ? "partial" : "completed";
+      const promover = !inconsistente &&
+        (status === "completed" || (total > 0 && falhas / total <= cfg.partialMaxFailRatio));
+      let errorCode = null;
+      let errorMessage = null;
+      if (inconsistente) {
+        errorCode = "PROMO_SNAPSHOT_PROGRESSO_INCONSISTENTE";
+        errorMessage = `Progresso inconsistente: ${processados} anúncio(s) processados para um catálogo de ${total}; último snapshot bom preservado.`;
+      } else if (status === "partial") {
+        errorCode = promover ? null : "PROMO_SNAPSHOT_PARCIAL_NAO_PROMOVIDO";
+        errorMessage = `${falhas} de ${total} anúncio(s) sem leitura das promoções${promover ? " (dentro do limite; snapshot promovido e marcado como parcial; a última leitura boa desses anúncios é mantida como herdada)" : " (acima do limite; último snapshot bom preservado)"}.`;
+      }
       const run = await d.repo.finalizarRun({
         runId, status, promover, snapshotAt: resultado.snapshotAt || null, freshMinutes: cfg.freshMinutes,
-        metadata: { resultado: { total, falhas, processados: Number(resultado.processados || 0) } },
-        errorCode: status === "partial" && !promover ? "PROMO_SNAPSHOT_PARCIAL_NAO_PROMOVIDO" : null,
-        errorMessage: status === "partial"
-          ? `${falhas} de ${total} anúncio(s) sem leitura das promoções${promover ? " (dentro do limite; snapshot promovido e marcado como parcial)" : " (acima do limite; último snapshot bom preservado)"}.`
-          : null,
+        inheritMaxMinutes: cfg.inheritMaxMinutes,
+        metadata: { resultado: { total, falhas, processados } },
+        errorCode, errorMessage,
       }, db);
-      if (run) {
+      if (run && run.status === "failed") {
+        // Conta reconectada a outro seller durante o run: nada promovido.
+        evento("error", "promo_snapshot_failed", run, { error_code: run.errorCode, error_message: redigirSegredos(run.errorMessage || "", 300) });
+      } else if (run) {
         evento(status === "completed" ? "log" : "warn", status === "completed" ? "promo_snapshot_completed" : "promo_snapshot_partial", run, {
           total, falhas, promovido: run.promovido, promocoes: run.promocoesEncontradas,
+          itens_herdados: run.itensHerdados, error_code: run.errorCode,
         });
       }
       return run;

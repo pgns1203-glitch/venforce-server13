@@ -5,7 +5,9 @@
 --
 -- Identidade canônica: cliente_id + cliente_conta_id + marketplace + seller_id.
 -- Nunca só cliente_id: duas contas ML do mesmo cliente têm runs, linhas e
--- ponteiro de snapshot atual separados.
+-- ponteiro de snapshot atual separados. E nunca só cliente_conta_id: a mesma
+-- conta reconectada a OUTRO seller do ML começa do zero (o snapshot, os runs
+-- e as linhas do seller anterior nunca são servidos para o seller atual).
 --
 -- ADITIVA: só cria tabelas/índices novos; nenhuma tabela existente é alterada.
 -- FONTE do DDL (lida por schemaEnsure.ensurePromoSnapshotSchema no boot, numa
@@ -48,6 +50,10 @@ CREATE TABLE IF NOT EXISTS promo_snapshot_runs (
   rate_limits           INTEGER NOT NULL DEFAULT 0,
   retries               INTEGER NOT NULL DEFAULT 0,
   promovido             BOOLEAN NOT NULL DEFAULT false,
+  -- Run parcial promovido: itens que falharam neste run e ganharam a última
+  -- leitura boa do snapshot anterior (linhas com herdado = true).
+  itens_herdados        INTEGER NOT NULL DEFAULT 0,
+  promocoes_herdadas    INTEGER NOT NULL DEFAULT 0,
   -- snapshot_at = instante da leitura mais antiga que compõe o snapshot
   -- (início deste run, ou do run retomado quando houve reaproveitamento).
   snapshot_at           TIMESTAMPTZ,
@@ -66,9 +72,11 @@ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
--- Dedupe distribuído: no máximo UM run ativo por conta + tipo. Duas
--- instâncias que tentarem enfileirar ao mesmo tempo esbarram em 23505 e
--- reaproveitam o run que venceu.
+-- Dedupe distribuído: no máximo UM run ativo por conta + tipo (qualquer
+-- seller: protege o rate limit da conta). Duas instâncias que tentarem
+-- enfileirar ao mesmo tempo esbarram em 23505 e reaproveitam o run que
+-- venceu. Run ativo de um seller ANTERIOR da conta é encerrado
+-- (PROMO_SNAPSHOT_SELLER_SUBSTITUIDO) antes do enqueue do seller atual.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_promo_snapshot_runs_ativo
   ON promo_snapshot_runs (cliente_conta_id, marketplace, tipo)
   WHERE status IN ('queued','running');
@@ -94,7 +102,11 @@ CREATE INDEX IF NOT EXISTS idx_promo_snapshot_runs_seller
 -- ─── Linhas do snapshot ──────────────────────────────────────────────────────
 -- Uma linha por (run, item, promoção). O snapshot ATUAL da conta são as linhas
 -- do run apontado por promo_snapshot_contas.current_run_id — nunca uma mistura
--- de runs. Nenhum token/Authorization é gravado aqui.
+-- de runs lida em tempo de consulta. Nenhum token/Authorization é gravado aqui.
+-- Linhas copiadas para dentro do run (origem_run_id preenchido):
+--   herdado = false → retomada de um run interrompido da mesma sincronização;
+--   herdado = true  → item cuja leitura FALHOU neste run (parcial promovido):
+--                     mantém a última leitura boa, com o observed_at antigo.
 CREATE TABLE IF NOT EXISTS promo_snapshot_itens (
   id                    BIGSERIAL PRIMARY KEY,
   run_id                BIGINT NOT NULL REFERENCES promo_snapshot_runs(id) ON DELETE CASCADE,
@@ -131,8 +143,9 @@ CREATE TABLE IF NOT EXISTS promo_snapshot_itens (
   programada            BOOLEAN NOT NULL DEFAULT false,
   nao_aplicada          BOOLEAN,
   observed_at           TIMESTAMPTZ NOT NULL,
-  -- Preenchido quando a linha foi reaproveitada de um run interrompido.
+  -- Preenchido quando a linha foi copiada de outro run (retomada ou herança).
   origem_run_id         BIGINT,
+  herdado               BOOLEAN NOT NULL DEFAULT false,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -140,7 +153,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_promo_snapshot_itens_run_item_promo
   ON promo_snapshot_itens (run_id, item_id, promocao_chave);
 
 CREATE INDEX IF NOT EXISTS idx_promo_snapshot_itens_conta_item
-  ON promo_snapshot_itens (cliente_conta_id, item_id);
+  ON promo_snapshot_itens (cliente_conta_id, seller_id, item_id);
 
 -- Oportunidades: só promoções com preço utilizável e status disponível.
 CREATE INDEX IF NOT EXISTS idx_promo_snapshot_itens_oportunidades
@@ -150,26 +163,32 @@ CREATE INDEX IF NOT EXISTS idx_promo_snapshot_itens_oportunidades
 -- ─── Progresso por lote ──────────────────────────────────────────────────────
 -- Lote concluído = itens lidos (com ou sem promoção) e gravados. Um run
 -- retomado copia os lotes concluídos do run interrompido e não relê esses
--- itens do ML.
+-- itens do ML. IDEMPOTENTE: os contadores do run só avançam na transação que
+-- INSERE o lote; repetir o mesmo (run_id, seq) não muda nenhum progresso.
 CREATE TABLE IF NOT EXISTS promo_snapshot_run_lotes (
   run_id                BIGINT NOT NULL REFERENCES promo_snapshot_runs(id) ON DELETE CASCADE,
   seq                   INTEGER NOT NULL,
   item_ids              TEXT[] NOT NULL,
   itens_falhos          TEXT[] NOT NULL DEFAULT '{}',
   promocoes             INTEGER NOT NULL DEFAULT 0,
+  itens_com_promocao    INTEGER NOT NULL DEFAULT 0,
+  retries               INTEGER NOT NULL DEFAULT 0,
+  rate_limits           INTEGER NOT NULL DEFAULT 0,
   concluido_em          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (run_id, seq)
 );
 
--- ─── Snapshot atual por conta ────────────────────────────────────────────────
+-- ─── Snapshot atual por conta + seller ───────────────────────────────────────
 -- Ponteiro promovido na MESMA transação que conclui o run: a leitura nunca vê
 -- metade nova/metade antiga. Um run que falha não mexe no ponteiro (o último
--- snapshot bom é preservado); só atualiza last_attempt_*.
+-- snapshot bom é preservado); só atualiza last_attempt_*. Chave inclui o
+-- seller: a leitura do seller atual nunca encontra o ponteiro do anterior
+-- (e a promoção de um snapshot do seller atual apaga os do anterior).
 CREATE TABLE IF NOT EXISTS promo_snapshot_contas (
-  cliente_conta_id      BIGINT PRIMARY KEY,
+  cliente_conta_id      BIGINT NOT NULL,
   cliente_id            BIGINT NOT NULL,
   marketplace           TEXT NOT NULL DEFAULT 'meli',
-  seller_id             TEXT,
+  seller_id             TEXT NOT NULL,
   current_run_id        BIGINT,
   previous_run_id       BIGINT,
   snapshot_at           TIMESTAMPTZ,
@@ -179,12 +198,14 @@ CREATE TABLE IF NOT EXISTS promo_snapshot_contas (
   itens_com_promocao    INTEGER,
   promocoes_total       INTEGER,
   itens_sem_leitura     INTEGER NOT NULL DEFAULT 0,
+  itens_herdados        INTEGER NOT NULL DEFAULT 0,
   last_attempt_run_id   BIGINT,
   last_attempt_status   TEXT,
   last_attempt_at       TIMESTAMPTZ,
   last_success_at       TIMESTAMPTZ,
   last_error_code       TEXT,
-  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (cliente_conta_id, marketplace, seller_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_promo_snapshot_contas_cliente

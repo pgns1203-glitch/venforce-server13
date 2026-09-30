@@ -9,7 +9,12 @@
 //   - toda escrita de um run exige que ele AINDA esteja `running` (a linha do
 //     run é travada com FOR UPDATE na mesma transação): um worker zumbi cujo
 //     run foi reconciliado como parado não grava mais nada;
-//   - o ponteiro do snapshot atual muda na MESMA transação que conclui o run.
+//   - o ponteiro do snapshot atual muda na MESMA transação que conclui o run;
+//   - identidade efetiva = cliente_conta_id + marketplace + seller_id: a mesma
+//     conta reconectada a outro seller nunca lê/reaproveita o que foi do
+//     seller anterior (ponteiro, runs, linhas);
+//   - lote idempotente: contadores só avançam quando o (run_id, seq) é
+//     inserido; replay do mesmo lote não muda progresso nenhum.
 //
 // SQL validado contra Postgres real (PGlite) em
 // server/scripts/promoSnapshotSqlCheck.js.
@@ -21,6 +26,8 @@ const TIPO = "PROMO_SNAPSHOT";
 const ESTADOS_ATIVOS = ["queued", "running"];
 const ERRO_STALE = "PROMO_SNAPSHOT_RUN_STALE";
 const ERRO_WORKER_PARADO = "PROMO_SNAPSHOT_WORKER_STOPPED";
+const ERRO_SELLER_SUBSTITUIDO = "PROMO_SNAPSHOT_SELLER_SUBSTITUIDO";
+const ERRO_SELLER_DIVERGENTE = "PROMO_SNAPSHOT_SELLER_DIVERGENTE";
 // Runs interrompidos (não por erro do ML/conta) — seus lotes podem ser retomados.
 const ERROS_RETOMAVEIS = [ERRO_STALE, ERRO_WORKER_PARADO];
 
@@ -74,6 +81,8 @@ function sanitizeRun(row) {
     rateLimits: Number(row.rate_limits || 0),
     retries: Number(row.retries || 0),
     promovido: row.promovido === true,
+    itensHerdados: Number(row.itens_herdados || 0),
+    promocoesHerdadas: Number(row.promocoes_herdadas || 0),
     snapshotAt: row.snapshot_at || null,
     freshUntil: row.fresh_until || null,
     errorCode: row.error_code || null,
@@ -103,6 +112,7 @@ function sanitizeConta(row) {
     itensComPromocao: numOrNull(row.itens_com_promocao),
     promocoesTotal: numOrNull(row.promocoes_total),
     itensSemLeitura: Number(row.itens_sem_leitura || 0),
+    itensHerdados: Number(row.itens_herdados || 0),
     lastAttemptRunId: row.last_attempt_run_id != null ? Number(row.last_attempt_run_id) : null,
     lastAttemptStatus: row.last_attempt_status || null,
     lastAttemptAt: row.last_attempt_at || null,
@@ -162,6 +172,8 @@ async function createRun({
   return sanitizeRun(r.rows[0]);
 }
 
+// Run ativo da CONTA (qualquer seller — o índice único é por conta). Quem
+// chama compara run.sellerId com o seller atual da conta.
 async function findActiveRun({ clienteContaId, marketplace = "meli" }, db = pool) {
   if (!clienteContaId) throw new Error("findActiveRun: clienteContaId é obrigatório.");
   await ensureTables(db);
@@ -214,11 +226,34 @@ async function findResumableRun({ clienteContaId, marketplace = "meli", sellerId
         AND EXISTS (SELECT 1 FROM promo_snapshot_run_lotes l WHERE l.run_id = r.id)
         AND NOT EXISTS (
           SELECT 1 FROM promo_snapshot_contas c
-           WHERE c.cliente_conta_id = r.cliente_conta_id AND c.snapshot_at >= r.started_at)
+           WHERE c.cliente_conta_id = r.cliente_conta_id AND c.marketplace = r.marketplace
+             AND c.seller_id = r.seller_id AND c.snapshot_at >= r.started_at)
       ORDER BY r.finished_at DESC, r.id DESC LIMIT 1`,
     [clienteContaId, marketplace, TIPO, String(sellerId), ERROS_RETOMAVEIS, minutos]
   );
   return sanitizeRun(r.rows[0]);
+}
+
+/**
+ * Conta reconectada a outro seller: encerra (failed, SELLER_SUBSTITUIDO) o
+ * run ativo que ainda é do seller ANTERIOR, liberando o índice único para o
+ * seller atual. Um worker que ainda esteja processando esse run é barrado
+ * pelo fencing na próxima escrita.
+ */
+async function encerrarRunsDeOutroSeller({ clienteContaId, marketplace = "meli", sellerId }, db = pool) {
+  if (!clienteContaId || !sellerId) throw new Error("encerrarRunsDeOutroSeller: conta e seller são obrigatórios.");
+  await ensureTables(db);
+  const r = await db.query(
+    `UPDATE promo_snapshot_runs
+        SET status = 'failed', finished_at = NOW(), updated_at = NOW(), promovido = false,
+            error_code = '${ERRO_SELLER_SUBSTITUIDO}',
+            error_message = 'A conta foi reconectada a outro seller do Mercado Livre; este run era do seller anterior.'
+      WHERE cliente_conta_id = $1 AND marketplace = $2 AND tipo = $3
+        AND status IN ('queued','running') AND seller_id <> $4
+      RETURNING *`,
+    [clienteContaId, marketplace, TIPO, String(sellerId)]
+  );
+  return r.rows.map(sanitizeRun);
 }
 
 // ─── Claim / progresso / heartbeat ───────────────────────────────────────────
@@ -268,7 +303,7 @@ const COLUNAS_ITEM = [
   "promotion_id", "ref_id", "promotion_type", "tipo_conhecido", "nome", "status", "status_exibicao",
   "data_inicio", "data_fim", "preco_original", "preco_final", "preco_final_fonte", "desconto_valor",
   "desconto_percentual", "seller_percentage", "meli_percentage", "subsidio_ml", "elegivel", "ativa",
-  "programada", "nao_aplicada", "observed_at", "origem_run_id",
+  "programada", "nao_aplicada", "observed_at", "origem_run_id", "herdado",
 ];
 const LINHAS_POR_INSERT = 300;
 
@@ -281,11 +316,14 @@ function valoresLinha(run, l) {
     numOrNull(l.descontoPercentual), numOrNull(l.sellerPercentage), numOrNull(l.meliPercentage),
     numOrNull(l.subsidioMl), l.elegivel === true, typeof l.ativa === "boolean" ? l.ativa : null,
     l.programada === true, typeof l.naoAplicada === "boolean" ? l.naoAplicada : null,
-    l.observedAt, l.origemRunId ?? null,
+    l.observedAt, l.origemRunId ?? null, l.herdado === true,
   ];
 }
 
+// Devolve as linhas EFETIVAMENTE gravadas (a mesma promoção repetida no
+// mesmo item conta uma vez só).
 async function inserirLinhas(client, run, linhas) {
+  const gravadas = [];
   for (let i = 0; i < linhas.length; i += LINHAS_POR_INSERT) {
     const parte = linhas.slice(i, i + LINHAS_POR_INSERT);
     const valores = [];
@@ -294,30 +332,70 @@ async function inserirLinhas(client, run, linhas) {
       valores.push(...valoresLinha(run, l));
       return `(${COLUNAS_ITEM.map((_, j) => `$${base + j + 1}`).join(",")})`;
     });
-    await client.query(
+    // eslint-disable-next-line no-await-in-loop
+    const r = await client.query(
       `INSERT INTO promo_snapshot_itens (${COLUNAS_ITEM.join(",")}) VALUES ${tuplas.join(",")}
-       ON CONFLICT (run_id, item_id, promocao_chave) DO NOTHING`,
+       ON CONFLICT (run_id, item_id, promocao_chave) DO NOTHING
+       RETURNING item_id`,
       valores
     );
+    gravadas.push(...r.rows);
   }
+  return gravadas;
+}
+
+function mesmosItens(a, b) {
+  const x = [...(a || [])].map(String).sort();
+  const y = [...(b || [])].map(String).sort();
+  return x.length === y.length && x.every((v, i) => v === y[i]);
 }
 
 /**
- * Grava um lote concluído: linhas + registro do lote + contadores + heartbeat,
+ * Grava um lote concluído: registro do lote + linhas + contadores + heartbeat,
  * numa transação, e só se o run ainda estiver `running`. Devolve o run
  * atualizado, ou null quando o run deixou de estar em execução (fencing).
+ *
+ * IDEMPOTENTE por (run_id, seq): o registro do lote é inserido PRIMEIRO; se
+ * ele já existia (replay — ex.: o COMMIT aconteceu mas a resposta se perdeu
+ * e o lote foi reenviado), nada mais é gravado e nenhum contador
+ * (itens_processados, itens_com_promocao, promocoes_encontradas, erros,
+ * retries, rate_limits) muda. O mesmo seq com OUTROS itens é recusado
+ * (PROMO_SNAPSHOT_LOTE_CONFLITANTE) — nunca sobrescreve progresso.
  */
 async function registrarLote({ run, seq, itemIds, itensFalhos = [], linhas = [], contadores = {} }, db = pool) {
   assertNoSecrets(contadores, "contadores");
   return transacao(db, async (client) => {
     if (!(await travarRunEmExecucao(client, run.id))) return null;
-    if (linhas.length) await inserirLinhas(client, run, linhas);
-    const itensComPromocao = new Set(linhas.map((l) => l.itemId)).size;
+    const retries = Number(contadores.retries || 0);
+    const rateLimits = Number(contadores.rateLimits || 0);
+    const novo = await client.query(
+      `INSERT INTO promo_snapshot_run_lotes (run_id, seq, item_ids, itens_falhos, retries, rate_limits)
+       VALUES ($1,$2,$3::text[],$4::text[],$5,$6)
+       ON CONFLICT (run_id, seq) DO NOTHING
+       RETURNING seq`,
+      [run.id, seq, itemIds, itensFalhos, retries, rateLimits]
+    );
+    if (!novo.rows.length) {
+      const existente = await client.query(
+        `SELECT item_ids FROM promo_snapshot_run_lotes WHERE run_id = $1 AND seq = $2`, [run.id, seq]
+      );
+      if (!mesmosItens(existente.rows[0] && existente.rows[0].item_ids, itemIds)) {
+        const err = new Error(`Lote ${seq} do run ${run.id} já foi gravado com outros itens; replay recusado.`);
+        err.code = "PROMO_SNAPSHOT_LOTE_CONFLITANTE";
+        throw err;
+      }
+      const atual = await client.query(
+        `UPDATE promo_snapshot_runs SET heartbeat_at = NOW(), updated_at = NOW()
+          WHERE id = $1 AND status = 'running' RETURNING *`,
+        [run.id]
+      );
+      return sanitizeRun(atual.rows[0]);
+    }
+    const gravadas = linhas.length ? await inserirLinhas(client, run, linhas) : [];
+    const itensComPromocao = new Set(gravadas.map((l) => l.item_id)).size;
     await client.query(
-      `INSERT INTO promo_snapshot_run_lotes (run_id, seq, item_ids, itens_falhos, promocoes)
-       VALUES ($1,$2,$3::text[],$4::text[],$5)
-       ON CONFLICT (run_id, seq) DO NOTHING`,
-      [run.id, seq, itemIds, itensFalhos, linhas.length]
+      `UPDATE promo_snapshot_run_lotes SET promocoes = $3, itens_com_promocao = $4 WHERE run_id = $1 AND seq = $2`,
+      [run.id, seq, gravadas.length, itensComPromocao]
     );
     const r = await client.query(
       `UPDATE promo_snapshot_runs
@@ -330,10 +408,7 @@ async function registrarLote({ run, seq, itemIds, itensFalhos = [], linhas = [],
               heartbeat_at = NOW(), updated_at = NOW()
         WHERE id = $1 AND status = 'running'
         RETURNING *`,
-      [
-        run.id, itemIds.length, itensComPromocao, linhas.length, itensFalhos.length,
-        Number(contadores.rateLimits || 0), Number(contadores.retries || 0),
-      ]
+      [run.id, itemIds.length, itensComPromocao, gravadas.length, itensFalhos.length, rateLimits, retries]
     );
     return sanitizeRun(r.rows[0]);
   });
@@ -368,6 +443,20 @@ async function copiarLotesRetomados({ run, fromRunId, catalogItemIds }, db = poo
     }
     const itens = [...feitos];
     if (!itens.length) return { itens: [], promocoes: 0, startedAt: null };
+    // Idempotente: o lote 0 (retomada) é registrado PRIMEIRO; se já existia,
+    // devolve o que foi copiado da primeira vez sem mexer em contador.
+    const novo = await client.query(
+      `INSERT INTO promo_snapshot_run_lotes (run_id, seq, item_ids, itens_falhos)
+       VALUES ($1, 0, $2::text[], '{}') ON CONFLICT (run_id, seq) DO NOTHING RETURNING seq`,
+      [run.id, itens]
+    );
+    if (!novo.rows.length) {
+      const ja = await client.query(
+        `SELECT item_ids, promocoes FROM promo_snapshot_run_lotes WHERE run_id = $1 AND seq = 0`, [run.id]
+      );
+      const l0 = ja.rows[0] || {};
+      return { itens: l0.item_ids || [], promocoes: Number(l0.promocoes || 0), startedAt: o.started_at };
+    }
     const cols = COLUNAS_ITEM.filter((c) => c !== "run_id" && c !== "origem_run_id");
     const copia = await client.query(
       `INSERT INTO promo_snapshot_itens (run_id, ${cols.join(",")}, origem_run_id)
@@ -381,9 +470,8 @@ async function copiarLotesRetomados({ run, fromRunId, catalogItemIds }, db = poo
     const promocoes = copia.rows.length;
     const itensComPromocao = new Set(copia.rows.map((x) => x.item_id)).size;
     await client.query(
-      `INSERT INTO promo_snapshot_run_lotes (run_id, seq, item_ids, itens_falhos, promocoes)
-       VALUES ($1, 0, $2::text[], '{}', $3) ON CONFLICT (run_id, seq) DO NOTHING`,
-      [run.id, itens, promocoes]
+      `UPDATE promo_snapshot_run_lotes SET promocoes = $2, itens_com_promocao = $3 WHERE run_id = $1 AND seq = 0`,
+      [run.id, promocoes, itensComPromocao]
     );
     await client.query(
       `UPDATE promo_snapshot_runs
@@ -400,12 +488,14 @@ async function copiarLotesRetomados({ run, fromRunId, catalogItemIds }, db = poo
 
 // ─── Conclusão / falha / recovery ────────────────────────────────────────────
 
+const CONFLITO_CONTA = "ON CONFLICT (cliente_conta_id, marketplace, seller_id)";
+
 const SQL_TENTATIVA = `
   INSERT INTO promo_snapshot_contas
     (cliente_conta_id, cliente_id, marketplace, seller_id, last_attempt_run_id, last_attempt_status,
      last_attempt_at, last_error_code, updated_at)
   VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,NOW())
-  ON CONFLICT (cliente_conta_id) DO UPDATE SET
+  ${CONFLITO_CONTA} DO UPDATE SET
     last_attempt_run_id = EXCLUDED.last_attempt_run_id,
     last_attempt_status = EXCLUDED.last_attempt_status,
     last_attempt_at = EXCLUDED.last_attempt_at,
@@ -418,44 +508,122 @@ async function registrarTentativa(client, run, status, errorCode) {
   ]);
 }
 
+// Seller vinculado HOJE à conta. undefined = instalação sem cliente_contas
+// (nada a comparar); null = conta sem seller/apagada.
+async function sellerAtualDaConta(client, clienteContaId) {
+  const t = await client.query(`SELECT to_regclass('public.cliente_contas') IS NOT NULL AS existe`);
+  if (!t.rows[0] || !t.rows[0].existe) return undefined;
+  const r = await client.query(`SELECT external_account_id FROM cliente_contas WHERE id = $1`, [clienteContaId]);
+  if (!r.rows.length || r.rows[0].external_account_id == null) return null;
+  return String(r.rows[0].external_account_id);
+}
+
+/**
+ * Parcial promovido: os itens cuja leitura FALHOU neste run herdam as linhas
+ * do snapshot atual (mesma conta + seller), com herdado = true, o
+ * observed_at da leitura original e origem_run_id — nunca somem em
+ * silêncio. Só herda leitura com até `inheritMaxMinutes` de idade.
+ */
+async function herdarDoSnapshotAnterior(client, run, inheritMaxMinutes) {
+  const minutos = Number(inheritMaxMinutes);
+  if (!(minutos > 0)) return { itens: 0, promocoes: 0 };
+  const cols = COLUNAS_ITEM.filter((c) => c !== "run_id" && c !== "origem_run_id" && c !== "herdado");
+  const r = await client.query(
+    `WITH anterior AS (
+       SELECT current_run_id FROM promo_snapshot_contas
+        WHERE cliente_conta_id = $2 AND marketplace = $3 AND seller_id = $4
+          AND current_run_id IS NOT NULL AND current_run_id <> $1
+     ), falhos AS (
+       SELECT DISTINCT unnest(itens_falhos) AS item_id FROM promo_snapshot_run_lotes WHERE run_id = $1
+     )
+     INSERT INTO promo_snapshot_itens (run_id, ${cols.join(",")}, origem_run_id, herdado)
+     SELECT $1, ${cols.map((c) => `i.${c}`).join(",")}, COALESCE(i.origem_run_id, i.run_id), true
+       FROM promo_snapshot_itens i
+      WHERE i.run_id = (SELECT current_run_id FROM anterior)
+        AND i.cliente_conta_id = $2 AND i.seller_id = $4
+        AND i.item_id IN (SELECT item_id FROM falhos)
+        AND i.observed_at > NOW() - make_interval(mins => $5::int)
+     ON CONFLICT (run_id, item_id, promocao_chave) DO NOTHING
+     RETURNING item_id`,
+    [run.id, run.clienteContaId, run.marketplace, run.sellerId, Math.trunc(minutos)]
+  );
+  return { itens: new Set(r.rows.map((x) => x.item_id)).size, promocoes: r.rows.length };
+}
+
 /**
  * Conclui o run (running → completed | partial) e, se `promover`, troca o
- * ponteiro do snapshot atual NA MESMA TRANSAÇÃO. O snapshot anterior vira
- * `previous_run_id`; linhas de runs mais velhos da conta são podadas.
+ * ponteiro do snapshot atual DA CONTA + SELLER NA MESMA TRANSAÇÃO. O
+ * snapshot anterior vira `previous_run_id`; linhas de runs mais velhos da
+ * conta (e tudo do seller anterior da conta) são podadas.
+ *
+ *   - Seller: se a conta já não está vinculada ao seller do run
+ *     (reconectada no meio do run), o run vira failed SELLER_DIVERGENTE e
+ *     nada é promovido.
+ *   - Parcial promovido: itens que falharam herdam a última leitura boa
+ *     (herdarDoSnapshotAnterior).
+ *
  * Devolve null se o run já não estava em execução (nada é alterado).
  */
 async function finalizarRun({
-  runId, status, promover, snapshotAt = null, freshMinutes, metadata = {}, errorCode = null, errorMessage = null,
+  runId, status, promover, snapshotAt = null, freshMinutes, inheritMaxMinutes = 0, metadata = {},
+  errorCode = null, errorMessage = null,
 }, db = pool) {
   if (status !== "completed" && status !== "partial") throw new Error(`finalizarRun: status inválido "${status}".`);
   assertNoSecrets(metadata);
   return transacao(db, async (client) => {
+    const travado = await client.query(
+      `SELECT * FROM promo_snapshot_runs WHERE id = $1 AND status = 'running' FOR UPDATE`, [runId]
+    );
+    const emExecucao = sanitizeRun(travado.rows[0]);
+    if (!emExecucao) return null;
+
+    const sellerConta = await sellerAtualDaConta(client, emExecucao.clienteContaId);
+    if (sellerConta !== undefined && sellerConta !== emExecucao.sellerId) {
+      const f = await client.query(
+        `UPDATE promo_snapshot_runs
+            SET status = 'failed', finished_at = NOW(), updated_at = NOW(), promovido = false,
+                error_code = $2, error_message = $3
+          WHERE id = $1 AND status = 'running'
+          RETURNING *`,
+        [runId, ERRO_SELLER_DIVERGENTE, "A conta foi reconectada a outro seller durante o run; nada foi promovido."]
+      );
+      const falho = sanitizeRun(f.rows[0]);
+      await registrarTentativa(client, falho, "failed", ERRO_SELLER_DIVERGENTE);
+      return falho;
+    }
+
+    const herdadas = promover && status === "partial"
+      ? await herdarDoSnapshotAnterior(client, emExecucao, inheritMaxMinutes)
+      : { itens: 0, promocoes: 0 };
+
     const r = await client.query(
       `UPDATE promo_snapshot_runs
           SET status = $2, finished_at = NOW(), updated_at = NOW(), promovido = $3,
               snapshot_at = COALESCE($4::timestamptz, started_at),
               fresh_until = COALESCE($4::timestamptz, started_at) + make_interval(mins => $5::int),
               metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $6::jsonb,
-              error_code = $7, error_message = $8
+              error_code = $7, error_message = $8,
+              itens_herdados = $9, promocoes_herdadas = $10
         WHERE id = $1 AND status = 'running'
         RETURNING *`,
-      [runId, status, promover === true, snapshotAt, freshMinutes, JSON.stringify(metadata || {}), errorCode, errorMessage]
+      [
+        runId, status, promover === true, snapshotAt, freshMinutes, JSON.stringify(metadata || {}), errorCode,
+        errorMessage, herdadas.itens, herdadas.promocoes,
+      ]
     );
     const run = sanitizeRun(r.rows[0]);
     if (!run) return null;
 
     if (promover) {
-      const itensSemLeitura = run.erros;
       await client.query(
         `INSERT INTO promo_snapshot_contas
            (cliente_conta_id, cliente_id, marketplace, seller_id, current_run_id, previous_run_id,
             snapshot_at, fresh_until, parcial, itens_total, itens_com_promocao, promocoes_total,
-            itens_sem_leitura, last_attempt_run_id, last_attempt_status, last_attempt_at, last_success_at,
-            last_error_code, updated_at)
-         VALUES ($1,$2,$3,$4,$5,NULL,$6,$7,$8,$9,$10,$11,$12,$5,$13,NOW(),NOW(),NULL,NOW())
-         ON CONFLICT (cliente_conta_id) DO UPDATE SET
+            itens_sem_leitura, itens_herdados, last_attempt_run_id, last_attempt_status, last_attempt_at,
+            last_success_at, last_error_code, updated_at)
+         VALUES ($1,$2,$3,$4,$5,NULL,$6,$7,$8,$9,$10,$11,$12,$13,$5,$14,NOW(),NOW(),NULL,NOW())
+         ${CONFLITO_CONTA} DO UPDATE SET
            cliente_id = EXCLUDED.cliente_id,
-           seller_id = EXCLUDED.seller_id,
            previous_run_id = CASE WHEN promo_snapshot_contas.current_run_id IS DISTINCT FROM EXCLUDED.current_run_id
                                   THEN promo_snapshot_contas.current_run_id ELSE promo_snapshot_contas.previous_run_id END,
            current_run_id = EXCLUDED.current_run_id,
@@ -466,6 +634,7 @@ async function finalizarRun({
            itens_com_promocao = EXCLUDED.itens_com_promocao,
            promocoes_total = EXCLUDED.promocoes_total,
            itens_sem_leitura = EXCLUDED.itens_sem_leitura,
+           itens_herdados = EXCLUDED.itens_herdados,
            last_attempt_run_id = EXCLUDED.last_attempt_run_id,
            last_attempt_status = EXCLUDED.last_attempt_status,
            last_attempt_at = EXCLUDED.last_attempt_at,
@@ -475,20 +644,29 @@ async function finalizarRun({
          WHERE promo_snapshot_contas.snapshot_at IS NULL OR promo_snapshot_contas.snapshot_at <= EXCLUDED.snapshot_at`,
         [
           run.clienteContaId, run.clienteId, run.marketplace, run.sellerId, run.id,
-          run.snapshotAt, run.freshUntil, status === "partial", run.itensTotal, run.itensComPromocao,
-          run.promocoesEncontradas, itensSemLeitura, status,
+          run.snapshotAt, run.freshUntil, status === "partial", run.itensTotal,
+          run.itensComPromocao + herdadas.itens, run.promocoesEncontradas + herdadas.promocoes,
+          run.erros, herdadas.itens, status,
         ]
       );
-      // Poda: mantém só o snapshot atual e o anterior (e runs ainda ativos).
+      // Seller anterior da conta: ponteiro e linhas nunca mais servem.
+      await client.query(
+        `DELETE FROM promo_snapshot_contas WHERE cliente_conta_id = $1 AND marketplace = $2 AND seller_id <> $3`,
+        [run.clienteContaId, run.marketplace, run.sellerId]
+      );
+      // Poda: da conta, mantém só o snapshot atual e o anterior DESTE seller
+      // (e runs ainda ativos dele).
       await client.query(
         `DELETE FROM promo_snapshot_itens i
           USING promo_snapshot_contas c
-          WHERE c.cliente_conta_id = $1
+          WHERE c.cliente_conta_id = $1 AND c.marketplace = $2 AND c.seller_id = $3
             AND i.cliente_conta_id = $1
-            AND i.run_id IS DISTINCT FROM c.current_run_id
-            AND i.run_id IS DISTINCT FROM c.previous_run_id
-            AND i.run_id NOT IN (SELECT id FROM promo_snapshot_runs WHERE cliente_conta_id = $1 AND status IN ('queued','running'))`,
-        [run.clienteContaId]
+            AND (i.seller_id <> $3
+                 OR (i.run_id IS DISTINCT FROM c.current_run_id AND i.run_id IS DISTINCT FROM c.previous_run_id))
+            AND NOT EXISTS (
+              SELECT 1 FROM promo_snapshot_runs a
+               WHERE a.id = i.run_id AND a.seller_id = $3 AND a.status IN ('queued','running'))`,
+        [run.clienteContaId, run.marketplace, run.sellerId]
       );
     } else {
       await registrarTentativa(client, run, status, errorCode || "PROMO_SNAPSHOT_PARCIAL_NAO_PROMOVIDO");
@@ -546,7 +724,7 @@ async function reconcileStaleRunningRuns({ staleMinutes, clienteContaId = null }
           last_attempt_at, last_error_code, updated_at)
        SELECT cliente_conta_id, cliente_id, marketplace, seller_id, id, 'failed', NOW(), '${ERRO_STALE}', NOW()
          FROM mortos
-       ON CONFLICT (cliente_conta_id) DO UPDATE SET
+       ${CONFLITO_CONTA} DO UPDATE SET
          last_attempt_run_id = EXCLUDED.last_attempt_run_id,
          last_attempt_status = EXCLUDED.last_attempt_status,
          last_attempt_at = EXCLUDED.last_attempt_at,
@@ -561,9 +739,15 @@ async function reconcileStaleRunningRuns({ staleMinutes, clienteContaId = null }
 
 // ─── Leitura do estado / snapshot ────────────────────────────────────────────
 
-async function obterConta({ clienteContaId }, db = pool) {
+/** Ponteiro do snapshot da conta PARA ESTE SELLER (nunca o de outro seller). */
+async function obterConta({ clienteContaId, marketplace = "meli", sellerId }, db = pool) {
+  if (!clienteContaId) throw new Error("obterConta: clienteContaId é obrigatório.");
+  if (!sellerId) throw new Error("obterConta: sellerId é obrigatório (identidade = conta + seller).");
   await ensureTables(db);
-  const r = await db.query(`SELECT * FROM promo_snapshot_contas WHERE cliente_conta_id = $1`, [clienteContaId]);
+  const r = await db.query(
+    `SELECT * FROM promo_snapshot_contas WHERE cliente_conta_id = $1 AND marketplace = $2 AND seller_id = $3`,
+    [clienteContaId, marketplace, String(sellerId)]
+  );
   return sanitizeConta(r.rows[0]);
 }
 
@@ -593,15 +777,18 @@ function linhaPublica(row) {
     programada: row.programada === true,
     naoAplicada: typeof row.nao_aplicada === "boolean" ? row.nao_aplicada : null,
     observedAt: row.observed_at || null,
+    // Leitura que falhou neste run: é a última leitura boa (observedAt antigo).
+    herdada: row.herdado === true,
     reaproveitadaDoRun: row.origem_run_id != null ? Number(row.origem_run_id) : null,
   };
 }
 
-/** Linhas do snapshot ATUAL da conta, paginadas no servidor. */
-async function listarLinhasSnapshot({ clienteContaId, runId, page, limit, itemId = null, status = null, tipo = null }, db = pool) {
+/** Linhas do snapshot ATUAL da conta + seller, paginadas no servidor. */
+async function listarLinhasSnapshot({ clienteContaId, sellerId, runId, page, limit, itemId = null, status = null, tipo = null }, db = pool) {
+  if (!sellerId) throw new Error("listarLinhasSnapshot: sellerId é obrigatório.");
   const offset = (page - 1) * limit;
-  const filtros = [clienteContaId, runId, itemId, status, tipo];
-  const where = `run_id = $2 AND cliente_conta_id = $1
+  const filtros = [clienteContaId, runId, itemId, status, tipo, String(sellerId)];
+  const where = `run_id = $2 AND cliente_conta_id = $1 AND seller_id = $6
       AND ($3::text IS NULL OR item_id = $3)
       AND ($4::text IS NULL OR status = $4)
       AND ($5::text IS NULL OR promotion_type = $5)`;
@@ -609,41 +796,46 @@ async function listarLinhasSnapshot({ clienteContaId, runId, page, limit, itemId
   const rows = await db.query(
     `SELECT * FROM promo_snapshot_itens WHERE ${where}
       ORDER BY item_id ASC, promocao_chave ASC
-      LIMIT $6 OFFSET $7`,
+      LIMIT $7 OFFSET $8`,
     [...filtros, limit, offset]
   );
   return { total: Number(total.rows[0]?.total || 0), linhas: rows.rows.map(linhaPublica) };
 }
 
 /**
- * Base das Oportunidades: promoções disponíveis do snapshot atual já
- * casadas com o Margin Snapshot da MESMA conta, numa consulta só (nada de
- * consulta por item).
+ * Oportunidades do snapshot atual — UMA consulta, paginada NO BANCO: casa as
+ * promoções disponíveis com o Margin Snapshot da MESMA conta e as vendas do
+ * período, filtra margem pós-promoção positiva, deixa 1 linha por anúncio,
+ * ordena e devolve só `limit` linhas + o total (precificacaoOportunidadesSql).
  */
-async function listarBaseOportunidades({ clienteContaId, runId }, db = pool) {
-  const r = await db.query(
-    `SELECT p.item_id, p.promocao_chave, p.promotion_id, p.promotion_type, p.nome, p.status, p.status_exibicao,
-            p.preco_original, p.preco_final, p.preco_final_fonte, p.meli_percentage, p.seller_percentage,
-            p.subsidio_ml, p.data_fim,
-            s.titulo, s.image_url, s.price, s.cost, s.tax_rate, s.fixed_fee, s.commission_rate, s.freight, s.margin
-       FROM promo_snapshot_itens p
-       JOIN margin_projection_snapshots s
-         ON s.cliente_conta_id = p.cliente_conta_id
-        AND s.marketplace = 'meli'
-        AND s.item_id = p.item_id
-        AND s.catalog_missing_since IS NULL
-      WHERE p.run_id = $2 AND p.cliente_conta_id = $1
-        AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,
-    [clienteContaId, runId]
-  );
-  return r.rows;
+async function listarOportunidadesPaginadas({ clienteContaId, sellerId, runId, vendasPorMlb, page, limit }, db = pool) {
+  if (!sellerId) throw new Error("listarOportunidadesPaginadas: sellerId é obrigatório.");
+  const { sqlOportunidadesPaginadas, lerPagina } = require("../motorMargem/precificacao/precificacaoOportunidadesSql");
+  const { sql, params } = sqlOportunidadesPaginadas({
+    fonteSql: `
+      SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno,
+             NULL::text AS fonte_titulo, p.nome AS promo_nome, p.promotion_id AS promo_id,
+             p.promotion_type AS promo_tipo, p.status AS promo_status, p.status_exibicao AS promo_status_exibicao,
+             p.preco_final_fonte AS promo_preco_fonte, p.data_fim AS promo_fim, p.herdado AS promo_herdado,
+             p.observed_at AS promo_observado_em
+        FROM promo_snapshot_itens p
+       WHERE p.run_id = $1 AND p.cliente_conta_id = $2 AND p.seller_id = $3
+         AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,
+    paramsFonte: [runId, clienteContaId, String(sellerId)],
+    clienteContaId,
+    vendasPorMlb,
+    page,
+    limit,
+  });
+  return lerPagina(await db.query(sql, params));
 }
 
 /**
  * Contas elegíveis para sincronização automática: MELI, ativas, cliente
  * ativo, com seller vinculado e grant utilizável (credenciais presentes e
- * status não permanente), sem run ativo, com snapshot vencido ou inexistente
- * e fora da espera pós-falha. Vencidas primeiro.
+ * status não permanente), sem run ativo DO SELLER ATUAL, com snapshot do
+ * seller atual vencido ou inexistente e fora da espera pós-falha. Vencidas
+ * primeiro. (Run ativo de um seller anterior é encerrado no enqueue.)
  */
 async function listarContasElegiveis({ limit, failedRetryMinutes }, db = pool) {
   await ensureTables(db);
@@ -652,7 +844,8 @@ async function listarContasElegiveis({ limit, failedRetryMinutes }, db = pool) {
             s.fresh_until
        FROM cliente_contas c
        JOIN clientes cl ON cl.id = c.cliente_id
-       LEFT JOIN promo_snapshot_contas s ON s.cliente_conta_id = c.id
+       LEFT JOIN promo_snapshot_contas s
+         ON s.cliente_conta_id = c.id AND s.marketplace = 'meli' AND s.seller_id = c.external_account_id::text
       WHERE c.marketplace = 'meli' AND c.ativo = true AND COALESCE(cl.ativo, true) = true
         AND c.external_account_id IS NOT NULL AND c.external_account_id <> ''
         AND EXISTS (
@@ -662,7 +855,8 @@ async function listarContasElegiveis({ limit, failedRetryMinutes }, db = pool) {
              AND LOWER(COALESCE(t.token_status, 'valid')) NOT IN ('revoked','blocked','invalid'))
         AND NOT EXISTS (
           SELECT 1 FROM promo_snapshot_runs r
-           WHERE r.cliente_conta_id = c.id AND r.tipo = $2 AND r.status IN ('queued','running'))
+           WHERE r.cliente_conta_id = c.id AND r.tipo = $2 AND r.status IN ('queued','running')
+             AND r.seller_id = c.external_account_id::text)
         AND (s.fresh_until IS NULL OR s.fresh_until < NOW())
         AND NOT (COALESCE(s.last_attempt_status, '') IN ('failed','partial')
                  AND s.last_attempt_at > NOW() - make_interval(mins => $3::int))
@@ -683,6 +877,8 @@ module.exports = {
   ESTADOS_ATIVOS,
   ERRO_STALE,
   ERRO_WORKER_PARADO,
+  ERRO_SELLER_SUBSTITUIDO,
+  ERRO_SELLER_DIVERGENTE,
   ERROS_RETOMAVEIS,
   ensureTables,
   sanitizeRun,
@@ -693,6 +889,7 @@ module.exports = {
   getRunById,
   findLatestFinishedRun,
   findResumableRun,
+  encerrarRunsDeOutroSeller,
   claimNextQueuedRun,
   touchHeartbeat,
   registrarTotal,
@@ -704,7 +901,7 @@ module.exports = {
   reconcileStaleRunningRuns,
   obterConta,
   listarLinhasSnapshot,
-  listarBaseOportunidades,
+  listarOportunidadesPaginadas,
   listarContasElegiveis,
   linhaPublica,
   COLUNAS_ITEM,

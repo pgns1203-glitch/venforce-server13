@@ -21,10 +21,11 @@ const { resolvePortfolioClientes, assertClienteNaCarteira } = require("../squads
 const squadsRepo = require("../squads/squadsRepository");
 const cliente360Repo = require("../cliente360/cliente360Repository");
 const { selecionarMelhorImportPorCompetencia } = require("../centralVendas/centralVendasRepository");
+const { pedidoEntraNoResultado } = require("../centralVendas/centralVendasService");
 const repo = require("./painelContasRepository");
 const { deriveResumo } = require("./painelContasMetricas");
 const { variacaoResumo, sanitizarParaJson } = require("./painelContasVariacao");
-const { DEFINICAO: DEFINICAO_SEMANA, agruparEmSemanas } = require("./painelContasSemanas");
+const { DEFINICAO: DEFINICAO_SEMANA, agruparEmSemanas, agruparPedidosEmSemanas } = require("./painelContasSemanas");
 const { resolverContas, consolidarCliente, ehSquadLegado, rotuloMarketplace } = require("./painelContasOperacional");
 const { validarLancamento, competenciaValida } = require("./painelContasManual");
 const atualizacao = require("./painelContasAtualizacao");
@@ -304,6 +305,48 @@ async function listarSemanas(user, clienteRef, competencia) {
   });
 }
 
+// GET /painel-contas/:clienteId/contas/semanas?competencia=
+// Uma expansão de conta carrega TODAS as contas do cliente em lote. O import
+// escolhido é exatamente o mesmo da lista/FAT mensal; nenhum dado externo é
+// chamado e não existe query por conta nem por semana.
+async function listarSemanasDasContas(user, clienteRef, competencia) {
+  const cliente = await assertClienteNaCarteira(user, clienteRef, pool);
+  if (!competenciaValida(competencia)) {
+    throw erro(400, "COMPETENCIA_INVALIDA", "competencia inválida (esperado YYYY-MM).");
+  }
+  const contas = await repo.listarContasDeClientes([cliente.id]);
+  const contaIds = contas.map((c) => Number(c.id));
+  const imports = await repo.listarImportsDaCompetencia(contaIds, competencia);
+  const importPorConta = escolherImportPorConta(imports, competencia);
+  const escolhidos = [...importPorConta.values()];
+  const pedidos = await repo.listarPedidosDosImports(
+    escolhidos.map((i) => Number(i.id)),
+    limitesDaCompetencia(competencia)
+  );
+  const pedidosPorImport = agruparPor(pedidos, "import_id");
+
+  return sanitizarParaJson({
+    ok: true,
+    competencia,
+    definicaoSemana: DEFINICAO_SEMANA,
+    contas: contas.map((conta) => {
+      const contaId = Number(conta.id);
+      const imp = importPorConta.get(contaId) || null;
+      return {
+        contaId,
+        importId: imp ? Number(imp.id) : null,
+        semanas: imp
+          ? agruparPedidosEmSemanas(competencia, pedidosPorImport.get(Number(imp.id)) || [], {
+              coberturaInicio: imp.coverage_date_from,
+              coberturaFim: imp.coverage_date_to,
+              pedidoValido: pedidoEntraNoResultado,
+            })
+          : [],
+      };
+    }),
+  });
+}
+
 // ─── Lançamento manual ────────────────────────────────────────────────────────
 
 // Guardas comuns a salvar/remover: papel → competência → carteira → a conta
@@ -365,6 +408,7 @@ module.exports = {
   listar,
   listarMeses,
   listarSemanas,
+  listarSemanasDasContas,
   salvarLancamentoManual,
   removerLancamentoManual,
   competenciaAtual,

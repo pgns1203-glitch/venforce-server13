@@ -101,6 +101,7 @@ export default function PainelContasPage() {
     clientes, resumoCarteira, squadsDisponiveis, marketplacesDisponiveis,
     carregando, atualizando, erro, recarregar,
     mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
+    semanasContasPorCliente, carregarSemanasContas,
     salvarManual, removerManual,
     permissoes, competenciaAtual, atualizacoes, atualizarCliente, dispensarAtualizacao,
   } = painel;
@@ -203,6 +204,8 @@ export default function PainelContasPage() {
               carregarMeses={carregarMeses}
               semanasPorChave={semanasPorChave}
               carregarSemanas={carregarSemanas}
+              semanasContasPorCliente={semanasContasPorCliente}
+              carregarSemanasContas={carregarSemanasContas}
               atualizando={atualizando}
               onLancar={abrirLancamento}
               competenciaAtual={competenciaAtual}
@@ -214,8 +217,8 @@ export default function PainelContasPage() {
 
             <p className="vf-ph-rodape">
               O número do cliente é o consolidado das contas indicadas ao lado do nome; ao expandir, cada conta mostra o
-              próprio número (o mesmo da Central de Vendas). Ads é medido por cliente. API = sincronização; Manual =
-              lançado pela equipe.
+              próprio número (o mesmo da Central de Vendas) e pode abrir suas semanas reais. Ads é medido por cliente.
+              API = sincronização; Manual = lançado pela equipe.
             </p>
           </>
         )}

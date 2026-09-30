@@ -3782,6 +3782,12 @@
     return null;
   }
 
+  // Sinais de User Product que o sync grava: family_name (modelo novo) ou
+  // user_product_id. Só decide o AVISO de replicação, nunca bloqueia.
+  function imagemReplicaEmProduto(a) {
+    return !!(a && (a.family_name || a.user_product_id));
+  }
+
   function imagemEstadoVazio() {
     return { estado: null, arquivo: null, previewUrl: null, nome: "", tipo: "", bytes: 0,
              width: null, height: null, progresso: null, erroLocal: null, erro: null, sucesso: null };
@@ -3820,6 +3826,14 @@
         IMAGEM_MIN_LADO_ML + " px, o mínimo documentado pelo Mercado Livre — ele pode recusar a imagem.</p>"
       : "";
     var ocupado = im.estado === "enviando" || im.estado === "processando";
+    // User Product: a doc do ML (user-products, item 17) diz que pictures
+    // alteradas por PUT /items são replicadas, de forma assíncrona, a todos os
+    // anúncios do mesmo produto. Se o POST /items/{id}/pictures usado aqui
+    // replica igual NÃO está documentado — daí o "pode". Não bloqueia.
+    var avisoProduto = imagemReplicaEmProduto(DET.anuncio)
+      ? '<p class="am-det-img-envio__aviso am-det-img-envio__aviso--produto">' + icAlerta(12) +
+        " Este anúncio pertence a um produto do Mercado Livre. A alteração de imagem pode ser replicada para outros anúncios relacionados.</p>"
+      : "";
 
     var status = "";
     if (im.estado === "enviando") {
@@ -3843,6 +3857,7 @@
         '<p class="am-det-img-envio__meta">' + escapeHtml(tipo + " · " + fmtTamanhoArquivo(im.bytes) + dims) + "</p>" +
         (im.erroLocal ? '<p class="am-det-img-envio__erro-local" role="alert">' + escapeHtml(im.erroLocal) + "</p>" : "") +
         aviso +
+        avisoProduto +
         status +
         (ocupado ? "" :
           '<div class="am-det-img-envio__acoes">' +

@@ -2115,18 +2115,30 @@ async function adicionarImagem(req, res) {
       return res.status(status).json(corpo);
     }
 
-    // Snapshot só com a lista que o ML devolveu na releitura.
+    // Snapshot só com a lista que o ML devolveu na releitura. Daqui para
+    // baixo a imagem JÁ está no anúncio real: uma falha do banco não pode
+    // virar "erro ao enviar" (o usuário reenviaria e duplicaria a foto).
+    // Vira confirmacaoPendente — o próximo sync alinha o snapshot.
     let atualizado = anuncio;
+    let confirmacaoPendente = r.confirmacaoPendente;
     if (r.fotos) {
-      atualizado =
-        (await anunciosService.atualizarFotosConfirmadas(cliente.id, itemId, r.fotos)) || anuncio;
+      try {
+        atualizado =
+          (await anunciosService.atualizarFotosConfirmadas(cliente.id, itemId, r.fotos)) || anuncio;
+      } catch (errSnapshot) {
+        console.error(
+          `[anuncios-meli] adicionarImagem: imagem ${r.pictureId} vinculada a ${itemId} no ML, mas o snapshot local falhou:`,
+          errSnapshot.message
+        );
+        confirmacaoPendente = true;
+      }
     }
 
     return res.json({
       ok: true,
       pictureId: r.pictureId,
       anuncio: atualizado,
-      confirmacaoPendente: r.confirmacaoPendente,
+      confirmacaoPendente,
       imagem: r.imagem,
     });
   } catch (err) {

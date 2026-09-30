@@ -80,7 +80,7 @@ function itemMl(over = {}) {
 }
 
 class MockDb {
-  constructor({ anuncios = [] } = {}) { this.anuncios = anuncios; this.updates = 0; }
+  constructor({ anuncios = [], falharFotos = false } = {}) { this.anuncios = anuncios; this.updates = 0; this.falharFotos = falharFotos; }
   async connect() { return { query: (sql, params) => this.query(sql, params), release() {} }; }
   async query(sql, params = []) {
     const q = String(sql).replace(/\s+/g, " ").trim();
@@ -95,6 +95,7 @@ class MockDb {
       return { rows: row ? [row] : [] };
     }
     if (q.startsWith("UPDATE meli_anuncios SET pictures_json")) {
+      if (this.falharFotos) throw new Error("connection terminated unexpectedly");
       this.updates += 1;
       const row = this.anuncios.find((a) => a.cliente_id === params[0] && a.item_id === String(params[1]));
       if (!row) return { rows: [] };
@@ -138,9 +139,9 @@ function arquivo(buffer, mimetype, originalname) {
 let PNG_ALFA; // PNG 800x600 com transparência — tem que sair JPG opaco
 let PNG_GRANDE; // 2400x1200 — tem que sair limitado a 1920 no maior lado
 
-async function enviar(anuncioLinha, file, handler, query) {
+async function enviar(anuncioLinha, file, handler, query, dbOpts) {
   let resultado;
-  await withMockDb({ anuncios: [anuncioLinha] }, async (db) => {
+  await withMockDb({ anuncios: [anuncioLinha], ...(dbOpts || {}) }, async (db) => {
     mlChamadas = [];
     mlHandler = handler;
     const res = fakeRes();
@@ -347,6 +348,89 @@ async function run() {
     assert.strictEqual(res.statusCode, 400);
     assert.strictEqual(mlChamadas.length, 0);
     ok("clienteSlug só é aceito pela query (a que passou pelo guard de carteira)");
+  }
+
+  // 12. Vínculo com falha de CONEXÃO, mas a releitura mostra a foto no item:
+  //     o ML aplicou e só a resposta se perdeu — é sucesso, não "tente de
+  //     novo" (que duplicaria a foto).
+  {
+    const feliz = handlerFeliz();
+    let vinculoTentado = false;
+    const { res, db } = await enviar(anuncioFixture(), arquivo(PNG_ALFA, "image/png"), async (c) => {
+      if (c.path === "/items/MLB123/pictures") {
+        vinculoTentado = true;
+        feliz(c); // o ML aplicou de fato…
+        throw new Error("socket hang up"); // …mas a resposta não voltou
+      }
+      return feliz(c);
+    });
+    assert.ok(vinculoTentado);
+    assert.strictEqual(res.statusCode, 200, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.ok, true);
+    assert.strictEqual(res.corpo.confirmacaoPendente, false);
+    assert.strictEqual(db.anuncios[0].pictures_count, 3, "a releitura prova o vínculo: snapshot recebe a lista do ML");
+    ok("vínculo com falha de conexão mas foto presente na releitura: sucesso, sem induzir reenvio duplicado");
+  }
+
+  // 13. Vínculo com falha de conexão E releitura falha: não afirma nem
+  //     sucesso nem falha — VINCULO_INCERTO, com o picture_id, snapshot intocado.
+  {
+    const feliz = handlerFeliz();
+    let depoisDoVinculo = false;
+    const { res, db } = await enviar(anuncioFixture(), arquivo(PNG_ALFA, "image/png"), async (c) => {
+      if (c.path === "/items/MLB123/pictures") { depoisDoVinculo = true; throw new Error("socket hang up"); }
+      if (depoisDoVinculo && c.metodo === "GET") throw new Error("ECONNRESET");
+      return feliz(c);
+    });
+    assert.strictEqual(res.corpo.ok, false);
+    assert.strictEqual(res.corpo.codigo, "VINCULO_INCERTO");
+    assert.strictEqual(res.corpo.etapa, "vinculo");
+    assert.strictEqual(res.corpo.pictureId, "999-MLB");
+    assert.ok(/Confira o anúncio no Mercado Livre antes de tentar de novo/.test(res.corpo.motivo), res.corpo.motivo);
+    assert.strictEqual(res.corpo.detalhesMl, undefined, "incerteza de conexão não é resposta do ML");
+    assert.strictEqual(db.updates, 0);
+    ok("vínculo incerto (conexão caiu e a releitura também): diz que não sabe, pede conferência, snapshot intocado");
+  }
+
+  // 14. Vínculo com 5xx do ML e releitura SEM a foto: aí é recusa de fato —
+  //     volta o erro real do ML.
+  {
+    const corpoMl = { message: "Gateway Timeout", error: "gateway_timeout", status: 504, cause: [] };
+    const { res, db } = await enviar(anuncioFixture(), arquivo(PNG_ALFA, "image/png"), (c) => {
+      if (c.path === "/items/MLB123/pictures") return { ok: false, status: 504, data: corpoMl };
+      return handlerFeliz()(c); // releitura sem a foto nova
+    });
+    assert.strictEqual(res.corpo.ok, false);
+    assert.strictEqual(res.corpo.codigo, "gateway_timeout");
+    assert.strictEqual(res.corpo.detalhesMl.status, 504);
+    assert.strictEqual(res.corpo.pictureId, "999-MLB");
+    const gets = mlChamadas.filter((c) => c.metodo === "GET").length;
+    assert.strictEqual(gets, 2, "5xx no vínculo dispara a releitura de conferência");
+    assert.strictEqual(db.updates, 0);
+    ok("vínculo com 5xx e foto ausente na releitura: erro real do ML, snapshot intocado");
+  }
+
+  // 15. ML confirmou tudo, mas o BANCO falhou ao gravar o snapshot: a imagem
+  //     já está no anúncio real — a resposta não pode ser "erro ao enviar".
+  {
+    const { res } = await enviar(anuncioFixture(), arquivo(PNG_ALFA, "image/png"), handlerFeliz(), undefined, { falharFotos: true });
+    assert.strictEqual(res.statusCode, 200, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.ok, true);
+    assert.strictEqual(res.corpo.confirmacaoPendente, true, "o snapshot fica para o próximo sync, e a tela diz isso");
+    assert.strictEqual(res.corpo.pictureId, "999-MLB");
+    ok("falha do banco depois do ML confirmar: sucesso com confirmacaoPendente, nunca 500 induzindo reenvio");
+  }
+
+  // 16. family_name / user_product_id NÃO bloqueiam (só catálogo e variações).
+  {
+    const { res } = await enviar(
+      anuncioFixture({ family_name: "Fone Prime X200", user_product_id: "MLBU123" }),
+      arquivo(PNG_ALFA, "image/png"),
+      handlerFeliz()
+    );
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.ok(mlChamadas.some((c) => c.path === "/items/MLB123/pictures"));
+    ok("anúncio de User Product (family_name/user_product_id) segue permitido — o aviso de replicação é da tela");
   }
 
   // 11. mlClient: corpo FormData não recebe Content-Type JSON (o fetch põe o

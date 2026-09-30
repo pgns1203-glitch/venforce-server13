@@ -1212,6 +1212,29 @@ async function run() {
       await abrirPrimeiroAnuncio(cdp);
     });
 
+    await check("7i — anúncio de produto (family_name): aviso de replicação ANTES do envio, sem bloquear; anúncio comum não avisa", async () => {
+      const AVISO = "Este anúncio pertence a um produto do Mercado Livre. A alteração de imagem pode ser replicada para outros anúncios relacionados.";
+      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "comum.png" });
+      await waitFor(cdp, `/800×800 px/.test(${textoEnvio})`, "o preview não apareceu");
+      const comum = await infoFotos();
+      assert.ok(!comum.envio.includes(AVISO), "anúncio sem family_name/user_product_id não recebe o aviso");
+      await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
+
+      await abrirComModo("family_name");
+      await abrirPrimeiroAnuncio(cdp);
+      const antes = await infoFotos();
+      assert.strictEqual(antes.disabled, false, "family_name não bloqueia a adição de imagem");
+      assert.ok(!antes.envio.includes(AVISO), "o aviso é do envio: só aparece depois de escolher o arquivo");
+      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "produto.png" });
+      await waitFor(cdp, `/800×800 px/.test(${textoEnvio})`, "o preview não apareceu");
+      const f = await infoFotos();
+      assert.ok(f.envio.includes(AVISO), `o aviso de replicação precisa aparecer antes do envio: ${f.envio}`);
+      assert.ok(f.temEnviar, "o aviso não bloqueia: o botão de enviar continua lá");
+      await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+    });
+
     await check("8 — alterações pendentes são detectadas e nomeadas", async () => {
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-savebar').length"), 0,
         "não deveria haver barra de alterações sem alteração nenhuma");

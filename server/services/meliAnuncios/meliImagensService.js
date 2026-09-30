@@ -225,16 +225,42 @@ async function vincularAoItem(clienteId, itemId, mlUserId, pictureId) {
   return falhaMl(resp, "vinculo");
 }
 
-function registrarRecusa(itemId, r) {
-  if (!r.detalhesMl) return;
+// `pictureId` entra no log quando a imagem JÁ existe no CDN do ML (falha no
+// vínculo ou na releitura): é o único rastro para achá-la depois — o ML não
+// documenta como apagar uma imagem enviada e o VenForce não a guarda.
+function registrarRecusa(itemId, r, pictureId) {
+  if (!r.detalhesMl && !pictureId) return;
   // Mesmo espírito do conteúdo: o corpo real da recusa é a única fonte para
   // auditar a próxima sem adivinhar (não carrega token nem dado pessoal).
   console.warn(
-    `[anuncios-meli] ML recusou imagem de ${itemId} (etapa ${r.etapa}):`,
-    r.detalhesMl.status,
-    JSON.stringify(r.detalhesMl).slice(0, 1000)
+    `[anuncios-meli] ML recusou imagem de ${itemId} (etapa ${r.etapa}${pictureId ? `, picture_id ${pictureId}` : ""}):`,
+    r.detalhesMl ? r.detalhesMl.status : r.codigo,
+    JSON.stringify(r.detalhesMl || { codigo: r.codigo, motivo: r.motivo }).slice(0, 1000)
   );
 }
+
+function temFoto(item, pictureId) {
+  return (Array.isArray(item && item.pictures) ? item.pictures : [])
+    .some((p) => p && String(p.id) === String(pictureId));
+}
+
+function respostaSucesso(pictureId, item, imagem) {
+  const urls = urlsDasFotos(item);
+  return {
+    ok: true,
+    pictureId,
+    fotos: {
+      pictures_json: urls,
+      pictures_count: urls.length,
+      thumbnail: item.secure_thumbnail || item.thumbnail || null,
+    },
+    confirmacaoPendente: false,
+    imagem,
+  };
+}
+
+const MOTIVO_VINCULO_INCERTO =
+  "Não foi possível confirmar se a imagem entrou no anúncio (falha de conexão com o Mercado Livre). Confira o anúncio no Mercado Livre antes de tentar de novo, para não duplicar a foto.";
 
 // ---------------------------------------------------------------------------
 // Orquestração. Devolve:
@@ -269,15 +295,6 @@ async function adicionarImagem({ clienteId, itemId, mlUserId, anuncio, arquivo }
   const upload = await enviarArquivo(clienteId, mlUserId, jpg, nome);
   if (!upload.ok) { registrarRecusa(itemId, upload); return upload; }
 
-  const vinculo = await vincularAoItem(clienteId, itemId, mlUserId, upload.pictureId);
-  if (!vinculo.ok) {
-    registrarRecusa(itemId, vinculo);
-    // A imagem subiu para o CDN do ML mas não entrou no anúncio: dizer isso,
-    // com o id, em vez de fingir que nada aconteceu.
-    vinculo.pictureId = upload.pictureId;
-    return vinculo;
-  }
-
   const imagem = {
     width: jpg.width,
     height: jpg.height,
@@ -286,24 +303,40 @@ async function adicionarImagem({ clienteId, itemId, mlUserId, anuncio, arquivo }
     original: jpg.original,
   };
 
+  const vinculo = await vincularAoItem(clienteId, itemId, mlUserId, upload.pictureId);
+  if (!vinculo.ok) {
+    registrarRecusa(itemId, vinculo, upload.pictureId);
+    // Falha de CONEXÃO no vínculo não diz se o ML aplicou ou não (o pedido
+    // pode ter chegado e só a resposta se perdeu). Em vez de afirmar
+    // "falhou" — e induzir um novo envio que duplicaria a foto —, relê o
+    // item e decide pelo que o ML mostra.
+    // O mesmo vale para 5xx (ex.: 504 do gateway do ML).
+    const incerto = vinculo.codigo === "ML_INDISPONIVEL" ||
+      (vinculo.detalhesMl && Number(vinculo.detalhesMl.status) >= 500);
+    if (incerto) {
+      const conferido = await lerItem(clienteId, itemId, mlUserId, "confirmacao");
+      if (conferido.ok && temFoto(conferido.item, upload.pictureId)) {
+        return respostaSucesso(upload.pictureId, conferido.item, imagem);
+      }
+      if (!conferido.ok) {
+        // Sem detalhesMl de propósito: o que a tela precisa dizer é "confira
+        // antes de reenviar", e não a resposta do 5xx (que já foi para o log).
+        return falha("VINCULO_INCERTO", MOTIVO_VINCULO_INCERTO, "vinculo", { pictureId: upload.pictureId });
+      }
+    }
+    // A imagem subiu para o CDN do ML mas não entrou no anúncio: dizer isso,
+    // com o id, em vez de fingir que nada aconteceu.
+    vinculo.pictureId = upload.pictureId;
+    return vinculo;
+  }
+
   const confirmado = await lerItem(clienteId, itemId, mlUserId, "confirmacao");
   if (!confirmado.ok) {
-    registrarRecusa(itemId, confirmado);
+    registrarRecusa(itemId, confirmado, upload.pictureId);
     return { ok: true, pictureId: upload.pictureId, fotos: null, confirmacaoPendente: true, imagem };
   }
 
-  const urls = urlsDasFotos(confirmado.item);
-  return {
-    ok: true,
-    pictureId: upload.pictureId,
-    fotos: {
-      pictures_json: urls,
-      pictures_count: urls.length,
-      thumbnail: confirmado.item.secure_thumbnail || confirmado.item.thumbnail || null,
-    },
-    confirmacaoPendente: false,
-    imagem,
-  };
+  return respostaSucesso(upload.pictureId, confirmado.item, imagem);
 }
 
 module.exports = {

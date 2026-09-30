@@ -27,7 +27,7 @@ async function esperaErro(fn) {
   throw new Error("era esperado um erro");
 }
 
-const ESCRITA_ON = { MARGIN_PRICING_WRITE_CLIENTES: "loja-a", MARGIN_PRICING_SIMULACAO_CACHE_MS: "0" };
+const ESCRITA_ON = { MARGIN_PRICING_WRITE_CLIENTES: "loja-a", MARGIN_PRICING_SIMULACAO_CACHE_MS: "0", MARGIN_PRICING_SNAPSHOT_DELAY_MS: "0" };
 
 function comRepo(c, repo) {
   return { ...c.deps, repo };
@@ -142,14 +142,25 @@ cenario("frete grátis: cruzar o limiar muda o frete recotado (nunca reusa o fre
   assert.strictEqual(r.proposta.freteFonte, "recotado");
 });
 
-cenario("recotação falhou: comissão cai para a TAXA do Motor (aviso) e frete para o atual (aviso)", async () => {
+cenario("recotação falhou na SIMULAÇÃO: comissão cai para a TAXA (aviso) e frete para o atual (aviso), marcados", async () => {
   const c = criarCenario({ cotacao: () => ({ comissaoValor: null, fretePrevisto: null }) });
-  const r = await previewPreco(c, criarRepoMemoria());
+  const r = await service.simular({ clienteSlug: "loja-a", clienteContaId: 7, itemId: "MLB100", tipo: "PRICE", novoPreco: "114.90", precoVisto: 110.48 }, comRepo(c, criarRepoMemoria()));
+  assert.strictEqual(r.modo, "simulacao");
   assert.strictEqual(r.proposta.comissao, 13.79);
   assert.strictEqual(r.proposta.comissaoFonte, "taxa");
   assert.strictEqual(gate(r, "comissao").tom, "warn");
   assert.strictEqual(r.proposta.frete, 20);
+  assert.strictEqual(r.proposta.freteFonte, "atual");
   assert.strictEqual(gate(r, "frete").tom, "warn");
+});
+
+cenario("recotação falhou no PREVIEW (escrita real): comissão e frete estimados BLOQUEIAM", async () => {
+  const c = criarCenario({ cotacao: () => ({ comissaoValor: null, fretePrevisto: null }) });
+  const r = await previewPreco(c, criarRepoMemoria());
+  assert.strictEqual(r.modo, "escrita");
+  assert.strictEqual(gate(r, "comissao").tom, "block");
+  assert.strictEqual(gate(r, "frete").tom, "block");
+  assert.strictEqual(r.bloqueado, true);
 });
 
 cenario("sem comissão nem taxa: gate bloqueia (margem nova não confiável)", async () => {
@@ -231,9 +242,11 @@ cenario("preview persiste a intenção com preço visto/solicitado/margens/gates
 
 // ── Aplicar: preço ─────────────────────────────────────────────────────────
 
+// A tela devolve o fingerprint que o preview mostrou (lido da linha aqui).
 async function aplicar(c, repo, previewId, key = "chave-idem-0001", extra = {}) {
+  const linha = repo.linhas.find((r) => r.id === previewId);
   return service.aplicar(
-    { clienteSlug: "loja-a", clienteContaId: 7, previewId, idempotencyKey: key, user: { id: 9, nome: "Pedro", email: "p@x" }, ...extra },
+    { clienteSlug: "loja-a", clienteContaId: 7, previewId, idempotencyKey: key, fingerprint: linha ? linha.previewFingerprint : undefined, user: { id: 9, nome: "Pedro", email: "p@x" }, ...extra },
     comRepo(c, repo)
   );
 }
@@ -250,7 +263,7 @@ cenario("rollout OFF: aplicar responde 403 e NÃO toca o ML nem a linha", async 
 });
 
 cenario("sucesso: reavalia ao vivo, escreve 1x com a conta certa, audita, loga e agenda snapshot do item", async () => {
-  const c = criarCenario({ env: ESCRITA_ON });
+  const c = criarCenario({ env: ESCRITA_ON, mlAplica: true });
   const repo = criarRepoMemoria();
   const p = await previewPreco(c, repo);
   const montarAntes = c.chamadas.montarItens;
@@ -259,7 +272,14 @@ cenario("sucesso: reavalia ao vivo, escreve 1x com a conta certa, audita, loga e
   assert.strictEqual(r.ok, true);
   assert.strictEqual(c.chamadas.montarItens, montarAntes + 1, "o aplicar relê o Motor ao vivo");
   assert.strictEqual(c.chamadas.atualizarPreco.length, 1);
-  assert.deepStrictEqual(c.chamadas.atualizarPreco[0], { clienteId: 3, itemId: "MLB100", novoPreco: 114.9, mlUserId: "555" });
+  const chamada = c.chamadas.atualizarPreco[0];
+  assert.deepStrictEqual(
+    { clienteId: chamada.clienteId, itemId: chamada.itemId, novoPreco: chamada.novoPreco, mlUserId: chamada.mlUserId, precoEsperado: chamada.precoEsperado, timeoutMs: chamada.timeoutMs },
+    { clienteId: 3, itemId: "MLB100", novoPreco: 114.9, mlUserId: "555", precoEsperado: 110.48, timeoutMs: 15000 }
+  );
+  assert.strictEqual(typeof chamada.antesDeEscrever, "function", "fencing antes do envio");
+  assert.strictEqual(c.chamadas.enviosMl.length, 1);
+  assert.ok(c.chamadas.enviosMl[0].deadlineAt > 0, "envio com prazo local dentro do lease");
   const row = repo.linhas[0];
   assert.strictEqual(row.status, "aplicado");
   assert.strictEqual(row.precoConfirmado, 114.9);
@@ -269,7 +289,7 @@ cenario("sucesso: reavalia ao vivo, escreve 1x com a conta certa, audita, loga e
   assert.strictEqual(c.chamadas.logs[0].status, "sucesso");
   assert.strictEqual(c.chamadas.logs[0].detalhes.clienteContaId, 7);
   assert.strictEqual(c.chamadas.snapshot.length, 1);
-  assert.deepStrictEqual(c.chamadas.snapshot[0], { clienteSlug: "loja-a", clienteId: 3, clienteContaId: 7, itemId: "MLB100" });
+  assert.deepStrictEqual(c.chamadas.snapshot[0], { clienteSlug: "loja-a", clienteId: 3, clienteContaId: 7, itemId: "MLB100", precoEsperado: 114.9 });
   assert.strictEqual(c.chamadas.camposConfirmados.length, 1);
   assert.strictEqual(r.aplicacao.usuario.nome, "Pedro");
 });
@@ -285,13 +305,14 @@ cenario("sem leitura persistida ligada: aplica, mas não dispara refresh de snap
   assert.strictEqual(r.aplicacao.snapshotStatus, "nao_aplicavel");
 });
 
-cenario("o valor confirmado é o da RESPOSTA do ML, nunca o enviado", async () => {
+cenario("o valor confirmado é o da RESPOSTA do ML, nunca o enviado (divergente, margem sobre o confirmado)", async () => {
   const c = criarCenario({ env: ESCRITA_ON, respostaPreco: () => ({ ok: true, preco: 114.89 }) });
   const repo = criarRepoMemoria();
   const p = await previewPreco(c, repo);
   const r = await aplicar(c, repo, p.preview.id);
   assert.strictEqual(r.aplicacao.precoConfirmado, 114.89);
   assert.strictEqual(r.divergente, true);
+  assert.strictEqual(r.aplicacao.status, "divergente");
 });
 
 cenario("idempotência: mesma chave 2x = 1 escrita; a 2ª resposta é replay", async () => {
@@ -324,16 +345,21 @@ cenario("concorrência: 2 pessoas, 2 previews do MESMO item — enquanto um apli
   const p2 = await previewPreco(c, repo, { novoPreco: "115.90" });
   let liberar;
   const trava = new Promise((resolve) => { liberar = resolve; });
-  c.estado.respostaPreco = async (p) => { await trava; return { ok: true, preco: p.novoPreco }; };
+  c.estado.antesDoEnvio = async () => { await trava; };
   const primeiro = aplicar(c, repo, p1.preview.id, "pessoa-a-0001");
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
   const err = await esperaErro(() => aplicar(c, repo, p2.preview.id, "pessoa-b-0002"));
   assert.strictEqual(err.code, "APLICACAO_EM_ANDAMENTO");
+  c.estado.antesDoEnvio = null;
   liberar();
   const r1 = await primeiro;
   assert.strictEqual(r1.ok, true);
-  assert.strictEqual(c.chamadas.atualizarPreco.length, 1);
+  assert.strictEqual(c.chamadas.enviosMl.length, 1);
+  // Depois da escrita de A, o preview de B (anterior a ela) ficou superado —
+  // mesmo que o ML ainda não tenha propagado o preço novo.
+  const errDepois = await esperaErro(() => aplicar(c, repo, p2.preview.id, "pessoa-b-0003"));
+  assert.strictEqual(errDepois.code, "PREVIEW_SUPERADO");
+  assert.strictEqual(c.chamadas.enviosMl.length, 1);
 });
 
 cenario("stale no aplicar: preço mudou no ML depois do preview → recusado PRECO_ALTERADO, zero escrita", async () => {
@@ -353,9 +379,9 @@ cenario("gate bloqueado no preview nunca vira escrita (break-even)", async () =>
   const c = criarCenario({ env: ESCRITA_ON });
   const repo = criarRepoMemoria();
   const p = await previewPreco(c, repo, { novoPreco: "80.00" });
-  const r = await aplicar(c, repo, p.preview.id);
-  assert.strictEqual(r.ok, false);
-  assert.strictEqual(r.codigo, "GATE_BREAK_EVEN");
+  const err = await esperaErro(() => aplicar(c, repo, p.preview.id));
+  assert.strictEqual(err.code, "PREVIEW_BLOQUEADO");
+  assert.strictEqual(repo.linhas[0].status, "recusado");
   assert.strictEqual(c.chamadas.atualizarPreco.length, 0);
 });
 
@@ -412,13 +438,24 @@ cenario("preview de outra conta não é aplicável (404) e chave inválida é 40
   assert.strictEqual(c.chamadas.atualizarPreco.length, 0);
 });
 
-cenario("exceção durante a escrita → falhou (incerto) e o item é liberado", async () => {
+cenario("exceção DEPOIS de liberado o envio → resultado_desconhecido (pode ter gravado) e o item é liberado", async () => {
   const c = criarCenario({ env: ESCRITA_ON, respostaPreco: () => { throw new Error("socket hang up"); } });
   const repo = criarRepoMemoria();
   const p = await previewPreco(c, repo);
   const r = await aplicar(c, repo, p.preview.id);
   assert.strictEqual(r.codigo, "ESCRITA_EXCECAO");
+  assert.strictEqual(repo.linhas[0].status, "resultado_desconhecido");
+  assert.ok(repo.linhas[0].escritaEnviadaEm, "o ponto sem volta foi registrado");
+});
+
+cenario("exceção ANTES do envio → falhou (comprovadamente nada enviado)", async () => {
+  const c = criarCenario({ env: ESCRITA_ON, antesDoEnvio: () => { throw new Error("erro local"); } });
+  const repo = criarRepoMemoria();
+  const p = await previewPreco(c, repo);
+  const r = await aplicar(c, repo, p.preview.id);
+  assert.strictEqual(r.codigo, "ESCRITA_EXCECAO_ANTES_DO_ENVIO");
   assert.strictEqual(repo.linhas[0].status, "falhou");
+  assert.strictEqual(c.chamadas.enviosMl.length, 0);
 });
 
 // ── Promoções ──────────────────────────────────────────────────────────────
@@ -429,7 +466,7 @@ function cenarioPromo(extra = {}) {
 
 async function previewPromo(c, repo, promotionId = "P-DEAL-1", extra = {}) {
   return service.preview(
-    { clienteSlug: "loja-a", clienteContaId: 7, itemId: "MLB100", tipo: "PROMOTION", promotionId, precoVisto: 149.9, ...extra },
+    { clienteSlug: "loja-a", clienteContaId: 7, itemId: "MLB100", tipo: "PROMOTION", promotionId, precoVisto: 149.9, user: { id: 9, nome: "Pedro", email: "p@x" }, ...extra },
     comRepo(c, repo)
   );
 }
@@ -499,7 +536,13 @@ cenario("promoção DEAL: aplicar chama o serviço de escrita existente 1x com a
   const p = await previewPromo(c, repo);
   const r = await aplicar(c, repo, p.preview.id, "promo-ok-0001", { promotionId: "P-DEAL-1" });
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(c.chamadas.aplicarPromocao[0], { clienteId: 3, itemId: "MLB100", mlUserId: "555", promotionId: "P-DEAL-1", precoNovo: 129.9 });
+  const ch = c.chamadas.aplicarPromocao[0];
+  assert.deepStrictEqual(
+    { clienteId: ch.clienteId, itemId: ch.itemId, mlUserId: ch.mlUserId, promotionId: ch.promotionId, precoNovo: ch.precoNovo, timeoutMs: ch.timeoutMs },
+    { clienteId: 3, itemId: "MLB100", mlUserId: "555", promotionId: "P-DEAL-1", precoNovo: 129.9, timeoutMs: 15000 }
+  );
+  assert.strictEqual(c.chamadas.enviosMl[0].metodo, "POST");
+  assert.strictEqual(c.chamadas.leiturasPreco, 1, "preço do anúncio relido imediatamente antes do POST");
   assert.strictEqual(repo.linhas[0].promotionAcao, "PARTICIPAR");
   assert.strictEqual(c.chamadas.camposConfirmados.length, 0, "promoção não mexe no preço base local");
 });
@@ -512,13 +555,13 @@ cenario("promoção: aplicar por rota de OUTRA promoção é recusado", async ()
   assert.strictEqual(err.code, "PREVIEW_DE_OUTRA_PROMOCAO");
 });
 
-cenario("promoção: resposta sem preço → falhou PROMOCAO_CONFIRMACAO_FALHOU", async () => {
+cenario("promoção: resposta 200 sem preço → resultado_desconhecido PROMOCAO_CONFIRMACAO_FALHOU (nunca 'aplicado')", async () => {
   const c = cenarioPromo({ env: ESCRITA_ON, respostaPromocao: () => ({ ok: true, metodo: "POST", precoConfirmado: null }) });
   const repo = criarRepoMemoria();
   const p = await previewPromo(c, repo);
   const r = await aplicar(c, repo, p.preview.id, "promo-semp-01");
   assert.strictEqual(r.codigo, "PROMOCAO_CONFIRMACAO_FALHOU");
-  assert.strictEqual(repo.linhas[0].status, "falhou");
+  assert.strictEqual(repo.linhas[0].status, "resultado_desconhecido");
 });
 
 cenario("lista de promoções do drawer: margem/LC por promoção, escrita suportada só p/ DEAL/SELLER_CAMPAIGN", async () => {

@@ -8,6 +8,14 @@
 //   PROCESSO (o mesmo dos runs), e um refresh do mesmo (conta, item) já em
 //   voo é reaproveitado (single-flight) — nunca duas leituras simultâneas.
 // run_id fica NULL (a coluna é nullable): não é um run de catálogo.
+//
+// PROVA DE PROPAGAÇÃO: com `precoEsperado` (o preço CONFIRMADO pelo ML na
+// escrita), o snapshot só é gravado se a leitura ao vivo já devolver esse
+// preço. Enquanto o ML ainda devolve o antigo, NADA é gravado e a resposta é
+// { ok:false, motivo:'PRECO_NAO_PROPAGADO', preco } — quem chama agenda nova
+// tentativa (fila durável em margem_precificacao_aplicacoes).
+
+const TOLERANCIA_PRECO = 0.005;
 
 const processor = require("../marginSnapshotProcessor");
 const { resolveMarginSnapshotConfig } = require("../marginSnapshotConfig");
@@ -26,7 +34,7 @@ function defaults(deps = {}) {
   };
 }
 
-async function executar({ clienteSlug, clienteId, clienteContaId, itemId }, deps) {
+async function executar({ clienteSlug, clienteId, clienteContaId, itemId, precoEsperado = null }, deps) {
   const d = defaults(deps);
   await d.limiter.aguardarVez(null);
   const prepared = await d.prepareWorkspaceContext(
@@ -43,6 +51,12 @@ async function executar({ clienteSlug, clienteId, clienteContaId, itemId }, deps
     base: prepared.base,
     observedAt: prepared.now ? new Date(prepared.now).toISOString() : null,
   });
+  if (precoEsperado !== null && precoEsperado !== undefined) {
+    const lido = dados.price === null || dados.price === undefined ? null : Number(dados.price);
+    if (lido === null || !Number.isFinite(lido) || Math.abs(lido - Number(precoEsperado)) >= TOLERANCIA_PRECO) {
+      return { ok: false, motivo: "PRECO_NAO_PROPAGADO", preco: Number.isFinite(lido) ? lido : null };
+    }
+  }
   await d.upsertProjectionSnapshot(dados, deps.db);
   return { ok: true, preco: dados.price, margem: dados.margin, status: dados.status };
 }

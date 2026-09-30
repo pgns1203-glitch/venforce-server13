@@ -76,6 +76,9 @@ function createMargemPrecificacaoController({ service = defaultService, oportuni
       clienteContaId: b.clienteContaId ?? b.cliente_conta_id,
       previewId: b.previewId,
       idempotencyKey: b.idempotencyKey,
+      // O fingerprint do preview que a tela mostrou: sem ele (ou divergente)
+      // a confirmação não vale — o id sequencial nunca basta.
+      fingerprint: b.fingerprint,
       promotionId: req.params.promotionId,
       user: usuario(req),
       ip: extrairIp(req),

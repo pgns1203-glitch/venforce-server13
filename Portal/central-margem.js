@@ -1,14 +1,15 @@
 /*
- * Central de Margem — experiência operacional em JavaScript puro.
+ * Central de Margem — cockpit de precificação em JavaScript puro.
  *
- * A tela tem quatro camadas, nesta ordem de leitura:
- *   PLANILHA    trabalhar com muitos produtos
- *   RESUMO      entender o problema de um produto
- *   CENÁRIO     testar uma hipótese
- *   EVIDÊNCIAS  entender por que o Motor escolheu cada dado
- *   AUDITORIA   descobrir de onde os dados vieram
+ * Ordem de leitura da tela:
+ *   RESUMO       compacto (margem, receita, lucro, prejuízo…) + saúde dos dados recolhida
+ *   TABELA       o centro da operação (visão Operacional × Composição)
+ *   DIVERGÊNCIAS resumo recolhido; a fila técnica completa abre sob demanda
+ *   OPORTUNIDADES fonte bulk persistida (nunca promoções por linha)
+ *   DRAWER       resumo fixo + PRECIFICAR · EVIDÊNCIAS · HISTÓRICO
  *
- * Todo número vem de `central-margem-api.js`, que é o contrato único.
+ * Todo número vem de `central-margem-api.js`, que é o contrato único; o
+ * cálculo de preço/promoção é do BACKEND (camada segura /precificacao).
  * Nenhuma fórmula financeira mora aqui.
  */
 (function (root) {
@@ -41,7 +42,9 @@
 
   var PRESET_LABELS = { projected: "Projetado", realized: "Realizado", custom: "Personalizado" };
 
-  var DRAWER_TABS = ["summary", "scenario", "evidence", "audit"];
+  var DRAWER_TABS = ["pricing", "evidence", "history"];
+  // Nomes antigos das abas (atalhos/links antigos) caem na aba nova equivalente.
+  var DRAWER_TAB_ALIASES = { summary: "pricing", scenario: "pricing", audit: "history" };
 
   var state = {
     token: null,
@@ -72,7 +75,7 @@
     requestSequence: 0,
     abortController: null,
     selectedItemId: null,
-    drawerTab: "summary",
+    drawerTab: "pricing",
     evidenceVariable: "price",
     scenario: null,
     scenarioItemId: null,
@@ -101,11 +104,30 @@
     realizadoError: null,
     realizadoLoading: false,
     realizadoSequence: 0,
+
+    // Visão da tabela: "operational" (decisão) × "composition" (fontes).
+    view: "operational",
+    healthOpen: false,
+    divergencesOpen: false,
+
+    // Drawer / precificação. `drawerSeq` muda a cada abertura/troca de item
+    // ou de contexto: resposta assíncrona de outro item/conta é descartada.
+    drawerSeq: 0,
+    pricing: null,
+    promos: null,
+    history: null,
+    confirm: null,
+
+    // Oportunidades da conta (uma leitura por conta/período).
+    opps: null,
+    oppsSequence: 0,
   };
 
   // Intervalo moderado de polling do run. O override existe só para o
   // smoke test de UI (mesmo padrão de __VF_CENTRAL_MARGEM_API_CLIENT__).
   var SNAPSHOT_POLL_MS = Number(root.__VF_CENTRAL_MARGEM_POLL_MS__) || 4000;
+  // Pós-escrita: acompanha o refresh do snapshot do item aplicado.
+  var POST_WRITE_POLL_MS = Number(root.__VF_CENTRAL_MARGEM_POST_WRITE_POLL_MS__) || 2500;
 
   var refs = {};
 
@@ -278,9 +300,26 @@
     refs.drawerPrev = el("cm-drawer-prev");
     refs.drawerNext = el("cm-drawer-next");
     refs.drawerPosition = el("cm-drawer-position");
-    refs.scenarioReset = el("cm-scenario-reset");
-    refs.applyScenario = el("cm-apply-scenario");
     refs.toasts = el("cm-toasts");
+    refs.topContext = el("cm-top-context");
+    refs.kpisTop = el("cm-kpis-top");
+    refs.summaryLine = el("cm-summary-line");
+    refs.healthToggle = el("cm-health-toggle");
+    refs.health = el("cm-health");
+    refs.healthDot = el("cm-health-dot");
+    refs.healthCount = el("cm-health-count");
+    refs.view = el("cm-view");
+    refs.compbar = el("cm-compbar");
+    refs.divergencesToggle = el("cm-divergences-toggle");
+    refs.divergencesBody = el("cm-divergences-body");
+    refs.opportunities = el("cm-opportunities");
+    refs.oppsHost = el("cm-opps-host");
+    refs.oppsMeta = el("cm-opps-meta");
+    refs.drawerSummary = el("cm-drawer-summary");
+    refs.healthIssues = el("cm-health-issues");
+    refs.confirmOverlay = el("cm-confirm-overlay");
+    refs.confirmBody = el("cm-confirm-body");
+    refs.confirmApply = el("cm-confirm-apply");
     refs.periodWrap = el("cm-period-wrap");
     refs.period = el("cm-period");
     refs.realized = el("cm-realized");
@@ -312,6 +351,7 @@
         state.serverPage = 1;
         loadSnapshotPage();
         loadRealizado();
+        loadOpportunities();
       });
     }
 
@@ -431,23 +471,59 @@
 
     refs.tableHost.addEventListener("click", function (event) {
       if (event.target.closest("select, option")) return;
+      var evidence = event.target.closest("[data-open-evidence]");
       var trigger = event.target.closest("[data-open-item]");
       var row = event.target.closest("tr[data-item-id]");
-      if (trigger) {
+      if (evidence) {
         event.preventDefault();
         event.stopPropagation();
-        openDrawer(trigger.getAttribute("data-open-item"), "summary", null, trigger);
+        openDrawer(evidence.getAttribute("data-open-evidence"), "evidence", evidence.getAttribute("data-evidence-variable"), evidence);
+      } else if (trigger) {
+        event.preventDefault();
+        event.stopPropagation();
+        openDrawer(trigger.getAttribute("data-open-item"), "pricing", null, trigger);
       } else if (row && !event.target.closest("a, button, input, select")) {
-        openDrawer(row.getAttribute("data-item-id"), "summary", null, row);
+        openDrawer(row.getAttribute("data-item-id"), "pricing", null, row);
       }
     });
 
     refs.tableHost.addEventListener("keydown", function (event) {
       var row = event.target.closest("tr[data-item-id]");
-      if (row && (event.key === "Enter" || event.key === " ")) {
+      if (row && event.target === row && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault();
-        openDrawer(row.getAttribute("data-item-id"), "summary", null, row);
+        openDrawer(row.getAttribute("data-item-id"), "pricing", null, row);
       }
+    });
+
+    refs.view.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-view]");
+      if (!button) return;
+      setView(button.getAttribute("data-view"));
+    });
+
+    refs.healthToggle.addEventListener("click", function () {
+      state.healthOpen = !state.healthOpen;
+      renderHealth();
+    });
+
+    refs.divergencesToggle.addEventListener("click", function () {
+      state.divergencesOpen = !state.divergencesOpen;
+      renderDivergences();
+    });
+
+    refs.kpisTop.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-financial-filter]");
+      if (!button || !state.data) return;
+      var value = button.getAttribute("data-financial-filter");
+      state.financial = state.financial === value ? "" : value;
+      refs.financialFilter.value = state.financial;
+      onFiltersChanged();
+    });
+
+    refs.oppsHost.addEventListener("click", function (event) {
+      var button = event.target.closest("[data-opp-item]");
+      if (!button) return;
+      openDrawer(button.getAttribute("data-opp-item"), "pricing", null, button, { fromOpportunity: true });
     });
 
     refs.divergences.addEventListener("click", function (event) {
@@ -467,15 +543,15 @@
     el("cm-drawer-close-footer").addEventListener("click", closeDrawer);
     refs.drawerPrev.addEventListener("click", function () { moveDrawer(-1); });
     refs.drawerNext.addEventListener("click", function () { moveDrawer(1); });
-    refs.scenarioReset.addEventListener("click", function () {
-      var item = findSelectedItem();
-      if (!item) return;
-      initScenario(item);
-      renderDrawer();
-      toast("Cenário restaurado para a composição da planilha.");
+    el("cm-confirm-close").addEventListener("click", closeConfirm);
+    el("cm-confirm-cancel").addEventListener("click", closeConfirm);
+    refs.confirmApply.addEventListener("click", confirmApply);
+    refs.confirmOverlay.addEventListener("click", function (event) {
+      if (event.target === refs.confirmOverlay) closeConfirm();
     });
 
     document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && refs.confirmOverlay.classList.contains("is-open")) { closeConfirm(); return; }
       if (event.key === "Escape" && refs.sourcesOverlay.classList.contains("is-open")) { closeSourcesPanel(); return; }
       if (event.key === "Escape" && refs.drawer.classList.contains("is-open")) closeDrawer();
       if (event.key === "Tab" && refs.drawer.classList.contains("is-open")) trapFocus(event);
@@ -498,13 +574,14 @@
     renderActiveFilters();
   }
 
-  /** O drawer é modal: o Tab não pode escapar para a página atrás dele. */
+  /** O drawer (e o preview por cima dele) é modal: o Tab não escapa. */
   function trapFocus(event) {
-    var focusable = refs.drawer.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    var container = refs.confirmOverlay && refs.confirmOverlay.classList.contains("is-open") ? refs.confirmOverlay : refs.drawer;
+    var focusable = container.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
     if (!focusable.length) return;
     var first = focusable[0];
     var last = focusable[focusable.length - 1];
-    if (!refs.drawer.contains(document.activeElement)) {
+    if (!container.contains(document.activeElement)) {
       event.preventDefault();
       first.focus();
       return;
@@ -574,6 +651,9 @@
     var clienteMudou = chave !== ultimoClienteAplicado;
     var contaMudou = contaId !== state.contaId;
     state.contaId = contaId;
+    // Precificação é SEMPRE por conta: trocar a conta fecha o drawer (e
+    // invalida promoções/simulações em voo) mesmo no modo legado.
+    if (contaMudou) closeDrawer();
     // O workspace legado é client-level: trocar/resolver a conta NÃO relê
     // (evita uma 2ª varredura ao vivo do Motor). Só a leitura persistida é
     // por conta — nela, trocar de conta troca o dataset.
@@ -591,6 +671,8 @@
     state.realizado = null;
     state.realizadoError = null;
     state.realizadoLoading = false;
+    state.oppsSequence += 1;
+    state.opps = null;
     state.periodParam = lerPeriodoDoShell();
     if (clienteMudou) {
       state.mode = null;
@@ -647,6 +729,8 @@
       }
       renderRealized();
       renderContext();
+      renderTop();
+      renderHealth();
     }).catch(function (error) {
       if (sequence !== state.realizadoSequence) return;
       state.realizadoLoading = false;
@@ -720,6 +804,7 @@
       state.awaitingAccount = false;
       applySnapshotResumo(resumo);
       loadRealizado();
+      loadOpportunities();
       return loadSnapshotPage();
     }).catch(function (error) {
       if (sequence !== state.requestSequence) return;
@@ -767,6 +852,7 @@
       state.awaitingAccount = false;
       applySnapshotResumo(resumo);
       loadRealizado();
+      loadOpportunities();
       return loadSnapshotPage();
     });
   }
@@ -950,9 +1036,13 @@
     renderSourceStrip();
     renderSummary();
     renderRealized();
+    renderTop();
+    renderHealth();
+    renderViewToggle();
     renderActiveFilters();
     renderSheet();
     renderDivergences();
+    renderOpportunities();
   }
 
   var MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
@@ -1376,6 +1466,215 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Topo compacto + Saúde dos dados
+  // ---------------------------------------------------------------------------
+
+  function formatMoneyShort(value) {
+    var number = contract.numberOrNull(value);
+    if (number === null) return null;
+    return number.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+  }
+
+  /** Rótulo curto do período do realizado: "30d" (padrão) ou o mês escolhido. */
+  function periodShortLabel() {
+    if (!state.periodParam) return "30d";
+    var parts = state.periodParam.split("-");
+    return MESES_CURTOS[Number(parts[1]) - 1] + "/" + parts[0].slice(2);
+  }
+
+  function topMetric(label, valueHtml, opts) {
+    var o = opts || {};
+    var tag = o.filter ? "button" : "div";
+    var active = o.filter && state.financial === o.filter;
+    return "<" + tag + ' class="cm-topk' + (o.tone ? " " + o.tone : "") + (active ? " is-active" : "") + '"' +
+      (o.filter ? ' type="button" data-financial-filter="' + o.filter + '" aria-pressed="' + (active ? "true" : "false") + '"' + (!state.data || state.loading ? " disabled" : "") : "") +
+      (o.title ? ' title="' + escapeHtml(o.title) + '"' : "") + ">" +
+      '<span class="cm-topk__label">' + escapeHtml(label) + "</span>" +
+      '<strong class="cm-topk__value">' + valueHtml + "</strong>" +
+      (o.foot ? '<span class="cm-topk__foot">' + escapeHtml(o.foot) + "</span>" : "") + "</" + tag + ">";
+  }
+
+  function renderTop() {
+    if (!refs.kpisTop) return;
+    var contaMeta = root.VF && root.VF.context && root.VF.context.getAccountMeta ? root.VF.context.getAccountMeta() : null;
+    refs.topContext.textContent = state.client
+      ? state.client.name + (contaMeta ? " · " + (contaMeta.nome || contaMeta.externalAccountLabel || state.contaId) : "")
+      : "";
+    if (!state.client) {
+      refs.kpisTop.innerHTML = "";
+      refs.summaryLine.textContent = "Selecione um cliente na barra lateral para iniciar.";
+      return;
+    }
+    var per = periodShortLabel();
+    var r = isSnapshotMode() ? state.realizado : null;
+    var k = r && r.kpis ? r.kpis : null;
+    var semRealizado = isSnapshotMode()
+      ? (state.realizadoLoading ? "carregando…" : "sem realizado do período")
+      : "disponível na leitura persistida por conta";
+    var m = k ? k.margin || {} : {};
+    var counts;
+    if (isSnapshotMode()) counts = state.snapshot && state.snapshot.kpis ? state.snapshot.kpis.counts : null;
+    else counts = state.data ? contract.summarizeItems(state.data.items).financial : null;
+    var dash = unavailable("—");
+    refs.kpisTop.innerHTML = [
+      topMetric("Margem realizada", k && m.percent !== null && m.percent !== undefined ? escapeHtml(formatPercent(m.percent / 100)) : dash,
+        { foot: k ? (m.state === "parcial" ? "parcial · " + per : per) : semRealizado, tone: m.state === "parcial" ? "is-warning" : "", title: k ? "Σ lucro ÷ Σ receita dos produtos com margem realizada calculável" : null }),
+      topMetric("Receita " + per, k && k.revenue !== null ? escapeHtml(formatMoneyShort(k.revenue)) : dash),
+      topMetric("Lucro " + per, k && k.profit !== null ? escapeHtml(formatMoneyShort(k.profit)) : dash, { tone: k && k.profit !== null && k.profit < 0 ? "is-danger" : "" }),
+      topMetric("Produtos com venda", k && k.productsWithSales !== null ? escapeHtml(formatInt(k.productsWithSales)) : dash),
+      topMetric("Prejuízo", counts ? escapeHtml(String(counts.LOSS || 0)) : dash, { filter: "LOSS", tone: counts && counts.LOSS ? "is-danger" : "", title: "Filtrar produtos em prejuízo (projetado)" }),
+      topMetric("Margem baixa", counts ? escapeHtml(String(counts.LOW_MARGIN || 0)) : dash, { filter: "LOW_MARGIN", tone: counts && counts.LOW_MARGIN ? "is-warning" : "", title: "Filtrar produtos abaixo da meta de referência" }),
+    ].join("");
+
+    var partes = [];
+    if (isSnapshotMode()) {
+      var listings = state.snapshot && state.snapshot.kpis && state.snapshot.kpis.listings;
+      if (listings) partes.push(listings.total + " anúncios · " + listings.active + " ativos · " + listings.paused + " pausados");
+      var calc = state.snapshot && state.snapshot.lastCalculatedAt;
+      if (calc) partes.push("Atualizado " + formatShortDateTime(calc));
+    } else if (state.data) {
+      partes.push(coverageLabel(state.data.coverage));
+      if (state.data.lastUpdated) partes.push("Atualizado " + formatShortDateTime(state.data.lastUpdated));
+    } else if (state.loading) {
+      partes.push("Carregando leitura…");
+    }
+    refs.summaryLine.textContent = partes.join(" · ");
+  }
+
+  function formatShortDateTime(value) {
+    var d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }) + " " + d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  /** Problemas reais de dado (não o que é pendência permanente como Mercado Pago). */
+  function healthIssues() {
+    var issues = [];
+    if (!state.client) return issues;
+    if (isSnapshotMode()) {
+      var snap = state.snapshot || {};
+      if (state.awaitingAccount) issues.push({ tone: "warn", text: "Escolha a operação (conta) para ler a margem persistida." });
+      if (snap.state === "missing") issues.push({ tone: "danger", text: "Leitura ainda não calculada para esta conta." });
+      var ultimo = state.refreshRun && contract.isRunTerminal(state.refreshRun.status) ? state.refreshRun : snap.lastRun;
+      if (ultimo && ultimo.status === "failed" && !runEmAndamento()) issues.push({ tone: "danger", text: "A última atualização falhou (valores do último snapshot válido)." });
+      if (snap.kpis && snap.kpis.refresh && snap.kpis.refresh.failed > 0) issues.push({ tone: "warn", text: snap.kpis.refresh.failed + " item(ns) não recalculados na última atualização." });
+      var fresh = state.realizado && state.realizado.freshness;
+      if (fresh && fresh.state === "PARCIAL") issues.push({ tone: "warn", text: "Realizado parcial: vendas sincronizadas até " + (formatDateBr(fresh.syncedUntil) || "—") + "." });
+      if (fresh && fresh.state === "SEM_SINCRONIZACAO") issues.push({ tone: "warn", text: "Nenhuma venda sincronizada no período." });
+      if (state.realizadoError) issues.push({ tone: "warn", text: state.realizadoError });
+      var counts = snap.kpis && snap.kpis.counts;
+      if (counts && (counts.UNVALIDATED || counts.SUSPECT_DATA)) {
+        issues.push({ tone: "warn", text: (counts.UNVALIDATED || 0) + " não validados · " + (counts.SUSPECT_DATA || 0) + " com dados suspeitos." });
+      }
+    } else if (state.data) {
+      if (state.data.partial) issues.push({ tone: "warn", text: "Cobertura parcial: " + coverageLabel(state.data.coverage) + "." });
+      var integ = contract.summarizeItems(state.data.items).integrity;
+      if (integ.MISSING || integ.SUSPECT) issues.push({ tone: "warn", text: (integ.MISSING || 0) + " não validados · " + (integ.SUSPECT || 0) + " com dados suspeitos." });
+    }
+    if (state.error) issues.push({ tone: "danger", text: state.error });
+    return issues;
+  }
+
+  function renderHealth() {
+    if (!refs.health) return;
+    var issues = healthIssues();
+    var tone = issues.some(function (i) { return i.tone === "danger"; }) ? "danger" : issues.length ? "warn" : state.data ? "ok" : "off";
+    refs.healthDot.className = "cm-health-dot is-" + tone;
+    refs.healthCount.textContent = issues.length ? String(issues.length) : "";
+    refs.healthToggle.setAttribute("aria-expanded", state.healthOpen ? "true" : "false");
+    refs.healthToggle.title = issues.length ? issues.map(function (i) { return i.text; }).join("\n") : "Fontes, cobertura, integridade e freshness sem problemas.";
+    refs.health.hidden = !state.healthOpen;
+    refs.healthIssues.innerHTML = issues.length
+      ? issues.map(function (i) { return '<li class="cm-health__issue is-' + i.tone + '">' + escapeHtml(i.text) + "</li>"; }).join("")
+      : (state.data ? '<li class="cm-health__issue is-ok">Tudo certo com as fontes desta leitura.</li>' : "");
+  }
+
+  function renderViewToggle() {
+    if (!refs.view) return;
+    Array.prototype.forEach.call(refs.view.querySelectorAll("[data-view]"), function (button) {
+      var active = button.getAttribute("data-view") === state.view;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    refs.compbar.hidden = state.view !== "composition";
+  }
+
+  function setView(view) {
+    if (view !== "operational" && view !== "composition") return;
+    state.view = view;
+    renderViewToggle();
+    renderSheet();
+    if (state.selectedItemId) markSelectedRow();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Oportunidades (fonte bulk persistida; uma leitura por conta/período)
+  // ---------------------------------------------------------------------------
+
+  function loadOpportunities() {
+    if (!isSnapshotMode() || !state.client || !state.contaId || typeof api.getOpportunities !== "function") {
+      state.opps = null;
+      renderOpportunities();
+      return;
+    }
+    state.oppsSequence += 1;
+    var seq = state.oppsSequence;
+    var slug = state.client.slug;
+    var conta = state.contaId;
+    state.opps = { status: "loading" };
+    renderOpportunities();
+    api.getOpportunities({ clientSlug: slug, clienteContaId: conta, periodo: state.periodParam || undefined }).then(function (result) {
+      if (seq !== state.oppsSequence || !state.client || state.client.slug !== slug || state.contaId !== conta) return;
+      state.opps = result.ok ? Object.assign({ status: "ok" }, result) : { status: "error", error: result.error };
+      renderOpportunities();
+    });
+  }
+
+  function renderOpportunities() {
+    if (!refs.opportunities) return;
+    var o = state.opps;
+    refs.opportunities.hidden = !o;
+    if (!o) return;
+    if (o.status === "loading") {
+      refs.oppsMeta.textContent = "";
+      refs.oppsHost.innerHTML = stateHtml("loading", "Carregando oportunidades…");
+      return;
+    }
+    if (o.status === "error") {
+      refs.oppsMeta.textContent = "";
+      refs.oppsHost.innerHTML = '<p class="cm-empty-note" role="alert">' + escapeHtml(o.error || "Não foi possível carregar as oportunidades.") + "</p>";
+      return;
+    }
+    if (!o.disponivel) {
+      refs.oppsMeta.textContent = "depende de uma fonte bulk";
+      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="indisponivel">' + escapeHtml(o.mensagem || "Sem fonte bulk de promoções para esta conta.") +
+        ' <a class="cm-link" href="promocoes-retorno.html">Abrir Promoções ML</a></p>';
+      return;
+    }
+    var fonte = o.fonte || {};
+    refs.oppsMeta.textContent = "diagnóstico de " + (formatShortDateTime(fonte.geradoEm) || "—") + (fonte.frescor === "antigo" ? " · antigo (>24h)" : fonte.frescor === "atencao" ? " · mais de 6h" : "") + " · estimativa";
+    if (!o.oportunidades || !o.oportunidades.length) {
+      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="vazio">Nenhuma promoção disponível com margem pós-promoção positiva nesta conta.</p>';
+      return;
+    }
+    refs.oppsHost.innerHTML = '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-opps-table"><thead><tr>' +
+      '<th>Produto</th><th class="num">Atual</th><th>Promoção</th><th class="num">Preço promo</th><th class="num">Margem pós</th><th class="num">Vendas</th><th class="num">Retorno ML</th><th>Motivo</th><th><span class="vf-visually-hidden">Ação</span></th>' +
+      "</tr></thead><tbody>" + o.oportunidades.map(function (op) {
+        return "<tr data-opp=\"" + escapeHtml(op.itemId) + "\">" +
+          "<td><strong>" + escapeHtml(op.titulo) + '</strong><span class="cm-prod-meta">' + escapeHtml(op.itemId) + "</span></td>" +
+          '<td class="num">' + escapeHtml(formatMoney(op.precoAtual) || "—") + '<span class="cm-prod-meta">' + escapeHtml(op.margemAtual === null ? "—" : formatPercent(op.margemAtual)) + "</span></td>" +
+          "<td>" + escapeHtml(op.promocao.nome || op.promocao.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(op.promocao.tipo || "") + "</span></td>" +
+          '<td class="num">' + escapeHtml(formatMoney(op.precoPromocao) || "—") + "</td>" +
+          '<td class="num"><strong class="' + marginClass(op.margemDepois, {}) + '">' + escapeHtml(formatPercent(op.margemDepois) || "—") + "</strong></td>" +
+          '<td class="num">' + escapeHtml(formatInt(op.unidades) || "0") + " un.</td>" +
+          '<td class="num">' + escapeHtml(op.retornoMl ? formatMoney(op.retornoMl) : "—") + "</td>" +
+          '<td class="cm-opps-why">' + escapeHtml(op.motivo || "") + "</td>" +
+          '<td class="vf-table__actions"><button class="vf-btn vf-btn--sm" type="button" data-opp-item="' + escapeHtml(op.itemId) + '">Precificar</button></td></tr>';
+      }).join("") + "</tbody></table></div>" +
+      '<p class="cm-opps-foot">' + escapeHtml(o.criterio || "") + " Margem estimada com a taxa de comissão e o frete atuais; o drawer recota exato.</p>";
+  }
+
   function renderActiveFilters() {
     var chips = [];
     if (state.financial) {
@@ -1532,7 +1831,7 @@
     return '<span class="cm-product__thumb cm-product__thumb--empty" aria-hidden="true"></span>';
   }
 
-  function productCellHtml(item, stripeTone) {
+  function productCellHtml(item, stripeTone, withSales) {
     var listingStatus = "";
     if (isSnapshotMode()) {
       if (item.statusAnuncio === "active") listingStatus = '<span class="cm-listing-status is-active">● Ativo</span>';
@@ -1543,7 +1842,7 @@
       '<div class="cm-product">' + productThumbHtml(item) +
       '<div class="cm-product__info"><span class="cm-prod-title">' + escapeHtml(item.title) + "</span>" +
       '<span class="cm-prod-meta">' + escapeHtml(item.itemId || "—") + " · " + escapeHtml(item.sku || "sem SKU") + "</span>" + listingStatus +
-      salesLineHtml(item) + "</div>" +
+      (withSales === false ? "" : salesLineHtml(item)) + "</div>" +
       "</div></td>";
   }
 
@@ -1653,6 +1952,89 @@
       "</tr>";
   }
 
+  // --- Visão operacional: decisão primeiro ------------------------------------
+
+  function opHead() {
+    return "<tr>" +
+      '<th class="cm-product-head"><span class="cm-head-label">Produto</span></th>' +
+      '<th class="num cm-op-head"><span class="cm-head-label">Preço</span></th>' +
+      '<th class="num cm-op-head"><span class="cm-head-label">Margem proj.</span></th>' +
+      '<th class="num cm-op-head"><span class="cm-head-label">Margem real.</span></th>' +
+      '<th class="num cm-op-head"><span class="cm-head-label">Δ margem</span></th>' +
+      '<th class="num cm-op-head cm-op-head--sales"><span class="cm-head-label">Vendas / receita</span></th>' +
+      '<th class="cm-state-head"><span class="cm-head-label">Status</span></th>' +
+      '<th class="cm-act-head"><span class="vf-visually-hidden">Ação</span></th>' +
+      "</tr>";
+  }
+
+  function realizedCellHtml(item) {
+    var cmp = item.comparison;
+    if (cmp && (cmp.status === "NO_SALES" || cmp.status === "REALIZED_NOT_COMPUTABLE")) {
+      var titulo = cmp.status === "REALIZED_NOT_COMPUTABLE"
+        ? "Houve venda, mas falta " + (cmp.realized.missing || []).map(variableLabel).join(", ") + " histórico para calcular a margem realizada."
+        : "Nenhuma venda deste anúncio no período do realizado.";
+      return '<span class="cm-cmp-line is-muted" data-cm-cmp="' + escapeHtml(cmp.status) + '" title="' + escapeHtml(titulo) + '">' + escapeHtml(COMPARISON_COPY[cmp.status]) + "</span>";
+    }
+    var margin = cmp ? cmp.realized.margin : item.realized && item.realized.margin;
+    if (margin === null || margin === undefined) {
+      return item.hasOrders ? unavailable("Indisponível") : '<span class="cm-cmp-line is-muted" data-cm-cmp="NO_SALES">sem venda</span>';
+    }
+    return '<span class="cm-cell-value ' + marginClass(margin, item) + '" data-cm-cmp="' + escapeHtml(cmp ? cmp.status : "REALIZED") + '">' + escapeHtml(formatPercent(margin)) + "</span>";
+  }
+
+  function driftCellHtml(item) {
+    var drift = item.comparison && item.comparison.drift ? item.comparison.drift.marginPp : null;
+    if (drift === null || drift === undefined) return '<span class="cm-muted">—</span>';
+    var tone = drift < 0 ? "is-negative" : drift > 0 ? "is-positive" : "";
+    return '<span class="cm-drift ' + tone + '" data-cm-drift title="Realizado − projetado, em pontos percentuais">' + escapeHtml(formatPp(drift)) + "</span>";
+  }
+
+  function opSalesCellHtml(item) {
+    var sales = item.sales || {};
+    if (!item.hasOrders) return '<span class="cm-prod-sales is-empty" data-cm-sales="none">sem venda no período</span>';
+    if (sales.units === null || sales.units === undefined) return '<span class="cm-muted">—</span>';
+    var parcial = partialCoverage(sales.coverage);
+    return '<span class="cm-op-sales" data-cm-sales="' + escapeHtml(String(sales.units)) + '">' +
+      "<strong>" + escapeHtml(formatInt(sales.units) + " un · " + formatInt(sales.orders || 0) + " ped.") + "</strong>" +
+      "<span>" + escapeHtml(formatMoney(sales.revenue) || "—") + "</span>" +
+      (parcial.length ? '<span class="cm-cell-diff" data-cm-coverage-partial title="' + escapeHtml("Cobertura parcial: " + parcial.join("; ")) + '"></span>' : "") +
+      "</span>";
+  }
+
+  function opRowHtml(item) {
+    var financial = contract.financialResult(item);
+    var integrity = contract.dataIntegrity(item);
+    var stripeTone = rowStripeTone(financial, integrity);
+    var price = contract.sourceEntry(item, "price", "MELI_API");
+    var projected = item.projected ? item.projected.margin : null;
+    var divs = item.divergences || [];
+    var firstVar = divs.length ? (contract.VARIABLE_META[divs[0].variableKey] ? divs[0].variableKey : "price") : null;
+    var refreshFailed = item.snapshot && item.snapshot.refreshStatus === "failed"
+      ? '<span class="cm-refresh-failed" data-cm-refresh-failed title="' + escapeHtml("Valor da leitura anterior: a última atualização não recalculou este item. " + (item.snapshot.lastError || "")) + '">valor anterior</span>'
+      : "";
+    return '<tr class="cm-op-row' + (state.selectedItemId === item.id ? " is-selected" : "") + '" data-item-id="' + escapeHtml(item.id) + '" tabindex="0">' +
+      productCellHtml(item, stripeTone, false) +
+      '<td class="num">' + (price && price.available ? '<span class="cm-cell-value">' + escapeHtml(formatMoney(price.value)) + "</span>" : unavailable("Indisponível", explainUnavailable("price", "MELI_API"))) + "</td>" +
+      '<td class="num">' + (projected === null || projected === undefined
+        ? unavailable("Indisponível", item.problem || "Margem projetada não calculável.")
+        : '<span class="cm-cell-value cm-mc-value ' + marginClass(projected, item) + '">' + escapeHtml(formatPercent(projected)) + "</span>" +
+          (item.projected.profit !== null && item.projected.profit !== undefined ? '<span class="cm-cell-sub"><span class="cm-cell-meta">LC ' + escapeHtml(formatMoney(item.projected.profit)) + "</span></span>" : "")) + "</td>" +
+      '<td class="num">' + realizedCellHtml(item) + "</td>" +
+      '<td class="num">' + driftCellHtml(item) + "</td>" +
+      '<td class="num">' + opSalesCellHtml(item) + "</td>" +
+      '<td class="cm-state-cell"><div class="cm-state-stack">' + statusTag(financial) + (integrity.key === "RELIABLE" ? "" : statusTag(integrity)) + refreshFailed + "</div></td>" +
+      '<td class="cm-act-cell"><button class="vf-btn vf-btn--sm cm-price-btn" type="button" data-open-item="' + escapeHtml(item.id) + '">Precificar</button>' +
+      (divs.length ? '<button class="cm-div-link" type="button" data-open-evidence="' + escapeHtml(item.id) + '" data-evidence-variable="' + escapeHtml(firstVar) + '">' + divs.length + (divs.length === 1 ? " divergência" : " divergências") + "</button>" : "") +
+      "</td></tr>";
+  }
+
+  /** Tabela da visão atual: Operacional (decisão) ou Composição (fontes). */
+  function tableHtml(items) {
+    var operational = state.view !== "composition";
+    return '<div class="vf-table-wrap cm-table-wrap"><table class="cm-table' + (operational ? " cm-table--op" : " cm-table--comp") + '"><thead>' +
+      (operational ? opHead() : sheetHead()) + "</thead><tbody>" + items.map(operational ? opRowHtml : rowHtml).join("") + "</tbody></table></div>";
+  }
+
   function loadingTable() {
     var rows = "";
     for (var i = 0; i < 6; i += 1) {
@@ -1703,8 +2085,7 @@
     }
     // Paginação VISUAL: fatia o array já filtrado. Não dispara nova leitura.
     var page = visibleSlice(items);
-    refs.tableHost.innerHTML = '<div class="vf-table-wrap cm-table-wrap"><table class="cm-table"><thead>' +
-      sheetHead() + "</thead><tbody>" + page.map(rowHtml).join("") + "</tbody></table></div>";
+    refs.tableHost.innerHTML = tableHtml(page);
     renderPagination(items.length);
   }
 
@@ -1738,8 +2119,7 @@
       refs.pagination.hidden = true;
       return;
     }
-    refs.tableHost.innerHTML = '<div class="vf-table-wrap cm-table-wrap"><table class="cm-table"><thead>' +
-      sheetHead() + "</thead><tbody>" + items.map(rowHtml).join("") + "</tbody></table></div>";
+    refs.tableHost.innerHTML = tableHtml(items);
     renderServerPagination(pagination, total);
   }
 
@@ -1833,25 +2213,44 @@
   // Fila de divergências
   // ---------------------------------------------------------------------------
 
+  function allDivergenceRows() {
+    return contract.divergenceQueue(filteredItems(), state.selection);
+  }
+
   function divergenceRows() {
-    var rows = contract.divergenceQueue(filteredItems(), state.selection);
+    var rows = allDivergenceRows();
     return state.criticalOnly ? rows.filter(function (row) { return row.severity === "CRITICA"; }) : rows;
   }
 
+  /**
+   * Divergências são informação técnica valiosa, mas não uma 2ª planilha:
+   * a página mostra só o resumo (total · críticas · revisar) e a fila completa
+   * abre sob demanda. A fila continua renderizada (e navegável) por inteiro.
+   */
   function renderDivergences() {
+    refs.divergencesToggle.setAttribute("aria-expanded", state.divergencesOpen ? "true" : "false");
+    refs.divergencesToggle.textContent = state.divergencesOpen ? "Ocultar divergências" : "Ver divergências";
+    refs.divergencesBody.hidden = !state.divergencesOpen;
     if (!state.data || state.loading) {
-      refs.divergenceCount.textContent = "";
+      refs.divergenceCount.textContent = state.loading ? "comparando fontes…" : "";
+      refs.divergencesToggle.disabled = !state.data;
       refs.divergences.innerHTML = state.loading
         ? stateHtml("loading", "Comparando fontes…")
-        : stateHtml("empty", "Sem leitura carregada", "A fila de divergências acompanha todo o workspace carregado, não a página visual da planilha.");
+        : stateHtml("empty", "Sem leitura carregada", "A fila de divergências acompanha a leitura carregada.");
       return;
     }
-    var rows = divergenceRows();
+    var todas = allDivergenceRows();
+    var criticas = todas.filter(function (row) { return row.severity === "CRITICA"; }).length;
     var coverage = (state.data && state.data.coverage) || {};
-    refs.divergenceCount.textContent = rows.length + (rows.length === 1 ? " divergência" : " divergências") +
-      (isSnapshotMode() ? " nesta página" : coverage.loaded ? " nos " + coverage.loaded + " carregados" : "");
+    refs.divergencesToggle.disabled = !todas.length;
+    refs.divergenceCount.innerHTML = todas.length
+      ? "<strong>" + todas.length + (todas.length === 1 ? " divergência" : " divergências") + "</strong>" +
+        ' <span class="cm-divs__crit">' + criticas + (criticas === 1 ? " crítica" : " críticas") + "</span> · " + (todas.length - criticas) + " revisar" +
+        '<span class="cm-divs__scope">' + escapeHtml(isSnapshotMode() ? " nesta página" : coverage.loaded ? " nos " + coverage.loaded + " carregados" : "") + "</span>"
+      : "Nenhuma divergência" + (isSnapshotMode() ? " nesta página" : " na leitura carregada");
+    var rows = divergenceRows();
     if (!rows.length) {
-      refs.divergences.innerHTML = stateHtml("empty", "Nenhuma divergência no workspace carregado",
+      refs.divergences.innerHTML = stateHtml("empty", "Nenhuma divergência no recorte",
         state.criticalOnly ? "Nenhuma divergência crítica no recorte atual." : "As fontes disponíveis concordam dentro da tolerância do Motor.");
       return;
     }
@@ -1879,7 +2278,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Drawer
+  // Drawer — resumo fixo + PRECIFICAR · EVIDÊNCIAS · HISTÓRICO
   // ---------------------------------------------------------------------------
 
   /**
@@ -1892,7 +2291,21 @@
     });
   }
 
+  /** Item de Oportunidades fora da página atual: só o essencial para precificar. */
+  function stubFromOpportunity(itemId) {
+    var list = (state.opps && state.opps.oportunidades) || [];
+    var o = list.find(function (entry) { return entry.itemId === itemId; });
+    if (!o) return null;
+    return {
+      id: o.itemId, itemId: o.itemId, title: o.titulo, image: o.imagem || null, sku: null, stub: true,
+      stubPrice: o.precoAtual, status: null, statusAnuncio: null, divergences: [], variables: {}, sources: null,
+      projected: { margin: o.margemAtual, profit: null }, realized: { margin: null, profit: null, pending: true },
+      sales: { units: o.unidades, orders: null, revenue: o.receita }, hasOrders: Boolean(o.unidades), comparison: null,
+    };
+  }
+
   function findSelectedItem() {
+    if (state.stubItem && state.stubItem.id === state.selectedItemId) return state.stubItem;
     var items = state.data ? state.data.items || [] : [];
     return items.find(function (item) { return item.id === state.selectedItemId; }) || null;
   }
@@ -1905,15 +2318,61 @@
     });
   }
 
-  function openDrawer(itemId, tab, variableKey, trigger) {
+  /** Preço atual mostrado ao operador — é o `precoVisto` do stale check. */
+  function currentPriceOf(item) {
+    if (!item) return null;
+    if (item.stub) return contract.numberOrNull(item.stubPrice);
+    var entry = contract.sourceEntry(item, "price", "MELI_API");
+    return entry && entry.available ? entry.value : null;
+  }
+
+  function pricingAvailability() {
+    if (!state.client) return { ok: false, reason: "Selecione um cliente." };
+    if (!state.contaId) return { ok: false, reason: "Escolha a operação (conta Mercado Livre) no topo para precificar: a escrita é sempre por conta." };
+    if (typeof api.simulatePricing !== "function" || typeof api.previewPricing !== "function") {
+      return { ok: false, reason: "Precificação indisponível nesta leitura." };
+    }
+    return { ok: true };
+  }
+
+  function drawerKey() {
+    return [state.client && state.client.slug, state.contaId, state.selectedItemId].join("::");
+  }
+
+  /** Novo item (ou novo contexto): tudo que é assíncrono do item anterior morre aqui. */
+  function resetItemState(item) {
+    state.drawerSeq += 1;
+    if (state.pricing && state.pricing.abort) state.pricing.abort.abort();
+    if (state.pricing && state.pricing.timer) root.clearTimeout(state.pricing.timer);
+    if (state.pricing && state.pricing.pollTimer) root.clearTimeout(state.pricing.pollTimer);
+    state.pricing = { novoPreco: "", status: "idle", sim: null, error: null, localError: null, abort: null, timer: null, promoSim: null, aplicacao: null, pollTimer: null };
+    state.promos = null;
+    state.history = null;
+    state.evidenceVariable = state.evidenceVariable || "price";
+    if (item) initScenario(item);
+    closeConfirm();
+  }
+
+  function openDrawer(itemId, tab, variableKey, trigger, opts) {
     var items = filteredItems();
-    var item = items.find(function (entry) { return entry.id === itemId; });
+    var item = items.find(function (entry) { return entry.id === itemId; }) || null;
+    if (!item && opts && opts.fromOpportunity) {
+      item = stubFromOpportunity(itemId);
+      state.stubItem = item;
+    } else {
+      state.stubItem = null;
+    }
     if (!item) return;
     if (!refs.drawer.classList.contains("is-open")) state.previousFocus = trigger || document.activeElement;
+    var mesmoItem = state.selectedItemId === item.id && refs.drawer.classList.contains("is-open");
     state.selectedItemId = item.id;
-    if (DRAWER_TABS.indexOf(tab) !== -1) state.drawerTab = tab;
+    var tabName = DRAWER_TAB_ALIASES[tab] || tab;
+    state.drawerTab = DRAWER_TABS.indexOf(tabName) !== -1 ? tabName : "pricing";
     if (variableKey && contract.VARIABLE_META[variableKey]) state.evidenceVariable = variableKey;
-    if (state.scenarioItemId !== item.id) initScenario(item);
+    if (!mesmoItem) {
+      resetItemState(item);
+      loadPromotions();
+    }
     refs.drawerBackdrop.classList.add("is-open");
     refs.drawer.classList.add("is-open");
     document.body.classList.add("vf-no-scroll");
@@ -1927,7 +2386,13 @@
     refs.drawer.classList.remove("is-open");
     refs.drawerBackdrop.classList.remove("is-open");
     document.body.classList.remove("vf-no-scroll");
+    resetItemState(null);
+    // Nada do produto anterior fica no DOM do drawer fechado.
+    refs.drawerMeta.innerHTML = "";
+    refs.drawerSummary.innerHTML = "";
+    refs.drawerBody.innerHTML = "";
     state.selectedItemId = null;
+    state.stubItem = null;
     state.scenario = null;
     state.scenarioItemId = null;
     markSelectedRow();
@@ -1941,28 +2406,84 @@
     var next = index + direction;
     if (next < 0 || next >= items.length) return;
     state.selectedItemId = items[next].id;
-    initScenario(items[next]);
+    state.stubItem = null;
+    resetItemState(items[next]);
+    loadPromotions();
     renderDrawer();
     markSelectedRow();
     refs.drawerBody.scrollTop = 0;
   }
 
   function setDrawerTab(tab) {
-    if (DRAWER_TABS.indexOf(tab) === -1) return;
-    state.drawerTab = tab;
+    var name = DRAWER_TAB_ALIASES[tab] || tab;
+    if (DRAWER_TABS.indexOf(name) === -1) return;
+    state.drawerTab = name;
+    if (name === "history") loadHistory();
     renderDrawer();
   }
 
-  function miniKpi(label, valueHtml, foot) {
-    return '<div class="cm-mini-kpi"><span class="cm-mini-kpi__label">' + escapeHtml(label) + "</span>" +
-      '<span class="cm-mini-kpi__value">' + valueHtml + "</span>" +
-      (foot ? '<span class="cm-mini-kpi__foot">' + escapeHtml(foot) + "</span>" : "") + "</div>";
-  }
-
-  function panel(title, note, body) {
-    return '<section class="cm-panel"><header class="cm-panel__head"><h3>' + escapeHtml(title) + "</h3>" +
+  function panel(title, note, body, extraClass) {
+    return '<section class="cm-panel' + (extraClass ? " " + extraClass : "") + '"><header class="cm-panel__head"><h3>' + escapeHtml(title) + "</h3>" +
       (note ? "<span>" + escapeHtml(note) + "</span>" : "") + "</header>" +
       '<div class="cm-panel__body">' + body + "</div></section>";
+  }
+
+  function dsumCell(label, valueHtml, foot, tone) {
+    return '<div class="cm-dsum__cell' + (tone ? " " + tone : "") + '"><span class="cm-dsum__label">' + escapeHtml(label) + "</span>" +
+      '<strong class="cm-dsum__value">' + valueHtml + "</strong>" +
+      (foot ? '<span class="cm-dsum__foot">' + escapeHtml(foot) + "</span>" : "") + "</div>";
+  }
+
+  function listingStatusHtml(item) {
+    if (item.statusAnuncio === "active") return '<span class="cm-listing-status is-active">● Ativo</span>';
+    if (item.statusAnuncio === "paused") return '<span class="cm-listing-status is-paused">⏸ Pausado</span>';
+    return item.statusAnuncio ? '<span class="cm-listing-status">' + escapeHtml("Status: " + item.statusAnuncio) + "</span>" : "";
+  }
+
+  function renderDrawerHeader(item) {
+    var financial = contract.financialResult(item);
+    var integrity = contract.dataIntegrity(item);
+    refs.drawerTitle.textContent = item.title;
+    var baseHref = "bases.html?busca=" + encodeURIComponent(item.itemId || item.sku || "");
+    refs.drawerMeta.innerHTML = '<span class="vf-mono">' + escapeHtml(item.itemId || "—") + "</span>" +
+      '<span>SKU <span class="vf-mono">' + escapeHtml(item.sku || "—") + "</span></span>" +
+      listingStatusHtml(item) +
+      (item.stub ? "" : statusTag(financial) + statusTag(integrity)) +
+      (item.permalink ? '<a class="cm-link" href="' + escapeHtml(item.permalink) + '" target="_blank" rel="noopener">Abrir anúncio</a>' : "") +
+      '<a class="cm-link" href="' + escapeHtml(baseHref) + '">Ver na Base</a>';
+
+    // Resumo essencial, sempre visível: pouco texto, números grandes.
+    var sim = state.pricing && state.pricing.sim;
+    var aplicada = state.pricing && state.pricing.aplicacao;
+    var precoAtual = currentPriceOf(item);
+    var precoFoot = "leitura da tabela";
+    if (aplicada && aplicada.precoConfirmado !== null && aplicada.precoConfirmado !== undefined) {
+      precoAtual = aplicada.precoConfirmado;
+      precoFoot = "confirmado pelo Mercado Livre";
+    } else if (sim && sim.atual && sim.atual.preco !== null && sim.atual.preco !== undefined) {
+      precoAtual = sim.atual.preco;
+      precoFoot = "confirmado ao vivo";
+    }
+    var sales = item.sales || {};
+    var realized = item.realized && item.realized.margin !== null && item.realized.margin !== undefined
+      ? escapeHtml(formatPercent(item.realized.margin))
+      : unavailable(item.hasOrders ? "Indisponível" : "Sem venda");
+    var aplicacao = state.pricing && state.pricing.aplicacao;
+    refs.drawerSummary.innerHTML =
+      dsumCell("Preço atual", precoAtual === null ? unavailable("Indisponível") : escapeHtml(formatMoney(precoAtual)), precoFoot) +
+      dsumCell("Margem projetada", item.projected && item.projected.margin !== null && item.projected.margin !== undefined
+        ? escapeHtml(formatPercent(item.projected.margin)) : unavailable("Indisponível"), null, marginClass(item.projected ? item.projected.margin : null, item)) +
+      dsumCell("Margem realizada", realized, null) +
+      dsumCell("Vendas", sales.units === null || sales.units === undefined ? unavailable("—") : escapeHtml(formatInt(sales.units) + " un."), periodShortLabel()) +
+      dsumCell("Receita", sales.revenue === null || sales.revenue === undefined ? unavailable("—") : escapeHtml(formatMoney(sales.revenue)), periodShortLabel()) +
+      (aplicacao ? '<p class="cm-dsum__status" data-cm-pos-escrita="' + escapeHtml(aplicacao.snapshotStatus || "") + '">' + escapeHtml(posEscritaTexto(aplicacao)) + "</p>" : "");
+  }
+
+  function posEscritaTexto(aplicacao) {
+    var confirmado = aplicacao.precoConfirmado !== null && aplicacao.precoConfirmado !== undefined ? formatMoney(aplicacao.precoConfirmado) : "—";
+    if (aplicacao.snapshotStatus === "atualizado") return "Aplicado no Mercado Livre (" + confirmado + ") · margem atualizada.";
+    if (aplicacao.snapshotStatus === "falhou") return "Aplicado no Mercado Livre (" + confirmado + ") · a margem não pôde ser recalculada agora; use Atualizar leitura.";
+    return "Aplicado no Mercado Livre (" + confirmado + ") · atualizando margem…";
   }
 
   function renderDrawer() {
@@ -1970,13 +2491,7 @@
     if (!item) return;
     var items = filteredItems();
     var index = items.findIndex(function (entry) { return entry.id === item.id; });
-    var financial = contract.financialResult(item);
-    var integrity = contract.dataIntegrity(item);
-
-    refs.drawerTitle.textContent = item.title;
-    refs.drawerMeta.innerHTML = '<span class="vf-mono">' + escapeHtml(item.itemId || "—") + "</span>" +
-      '<span>SKU <span class="vf-mono">' + escapeHtml(item.sku || "—") + "</span></span>" +
-      statusTag(financial) + statusTag(integrity);
+    renderDrawerHeader(item);
     refs.drawerPrev.disabled = index <= 0;
     refs.drawerNext.disabled = index < 0 || index >= items.length - 1;
     refs.drawerPosition.textContent = index >= 0 ? (index + 1) + " de " + items.length + " produtos neste recorte" : "";
@@ -1987,110 +2502,752 @@
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
 
-    if (state.drawerTab === "scenario") renderScenarioTab(item);
-    else if (state.drawerTab === "evidence") renderEvidenceTab(item);
-    else if (state.drawerTab === "audit") renderAuditTab(item);
-    else renderSummaryTab(item, financial, integrity);
-
-    updateFooter(item);
+    if (state.drawerTab === "evidence") renderEvidenceTab(item);
+    else if (state.drawerTab === "history") renderHistoryTab(item);
+    else renderPricingTab(item);
   }
 
-  /**
-   * Leitura do Motor: a primeira coisa que o operador deve ler. Deriva do
-   * estado real do item, com a mesma prioridade do backend — qualidade do dado
-   * antes do resultado financeiro.
-   */
-  function motorDecision(item, financial, integrity, composition) {
-    if (integrity.key === "MISSING") {
-      return { title: "Completar dado antes de validar margem", copy: "Falta variável obrigatória. O cálculo pode até ter outras variáveis disponíveis, mas sem ela nenhuma decisão financeira é defensável.", tag: "Bloqueado por dado" };
-    }
-    if (integrity.key === "SUSPECT") {
-      return { title: "Investigar a variável divergente antes de agir", copy: (item.problem ? item.problem + " " : "") + "O Motor mantém a margem calculável, mas separa cálculo de confiança.", tag: "Revisão necessária" };
-    }
-    if (integrity.key === "RECONCILING") {
-      return { title: "Não tratar o realizado como fechado", copy: "Há evidências de venda, mas a conciliação financeira ainda está incompleta. Projeção e realizado permanecem separados.", tag: "Em conciliação" };
-    }
-    if (!composition.computable) {
-      return { title: "Completar a composição selecionada", copy: "A fonte escolhida não observou " + composition.missing.map(variableLabel).join(", ") + ". Troque a fonte no cabeçalho ou complete o dado na origem.", tag: "Composição incompleta" };
-    }
-    if (financial.key === "LOSS") {
-      return { title: "Revisar preço e composição", copy: (item.problem ? item.problem + " " : "") + "Os dados disponíveis permitem simular alternativas sem alterar o marketplace.", tag: "Ação prioritária" };
-    }
-    if (financial.key === "LOW_MARGIN") {
-      return { title: "Testar cenário para recuperar margem", copy: (item.problem ? item.problem + " " : "") + "O cenário mede o impacto antes de qualquer escrita.", tag: "Simulação recomendada" };
-    }
-    return { title: "Produto sem exceção crítica", copy: "O item permanece monitorado. O drawer serve para auditar composição, fontes e rastro da leitura.", tag: "Monitoramento" };
+  // --- Precificar ------------------------------------------------------------
+
+  var PRICE_RE = /^\d+([.,]\d{1,2})?$/;
+
+  /** Validação local só para não chamar o backend com lixo; o backend revalida tudo. */
+  function parsePriceInput(raw) {
+    var text = String(raw || "").trim().replace(/^R\$\s*/, "");
+    if (!text) return { ok: false, empty: true };
+    if (!PRICE_RE.test(text)) return { ok: false, error: "Use um número com até duas casas decimais." };
+    var value = Number(text.replace(",", "."));
+    if (!(value > 0)) return { ok: false, error: "O preço precisa ser maior que zero." };
+    return { ok: true, value: Math.round(value * 100) / 100 };
   }
 
-  function gatesHtml(item, composition, scenarioMode) {
-    var complete = composition.computable;
-    var conflicts = (item.divergences || []).length;
-    var gates = [
-      {
-        tone: complete ? "is-ok" : "is-block",
-        icon: complete ? "✓" : "!",
-        text: complete
-          ? "Variáveis obrigatórias completas" + (composition.assumed.length ? " (assumido 0: " + composition.assumed.map(variableLabel).join(", ") + ")" : "")
-          : "Há variável obrigatória ausente: " + composition.missing.map(variableLabel).join(", "),
-      },
-      {
-        tone: conflicts ? "is-warn" : "is-ok",
-        icon: conflicts ? "!" : "✓",
-        text: conflicts ? "Existem " + conflicts + " evidência(s) divergente(s)" : "Sem divergência material entre as fontes",
-      },
-      {
-        tone: integrityTone(item),
-        icon: contract.dataIntegrity(item).key === "RELIABLE" ? "✓" : "!",
-        text: "Integridade: " + contract.dataIntegrity(item).label.toLowerCase(),
-      },
-    ];
-    if (scenarioMode) {
-      var changed = composition.changed && composition.changed.length;
-      gates.push({ tone: changed ? "is-ok" : "is-warn", icon: changed ? "✓" : "•", text: changed ? "Cenário difere da composição da planilha" : "Nenhuma alteração no cenário" });
+  var GATE_ICON = { ok: "✓", warn: "!", block: "×", info: "•" };
+  var GATE_TONE = { ok: "is-ok", warn: "is-warn", block: "is-block", info: "is-info" };
+
+  function gatesListHtml(gates, compact) {
+    if (!gates || !gates.length) return "";
+    var list = compact ? gates.filter(function (g) { return g.tom !== "ok"; }) : gates;
+    var okCount = gates.filter(function (g) { return g.tom === "ok"; }).length;
+    return '<ul class="cm-gates' + (compact ? " cm-gates--compact" : "") + '">' +
+      (compact && okCount ? '<li class="cm-gate is-ok"><span class="cm-gate__icon" aria-hidden="true">✓</span><span>' + okCount + " verificação(ões) ok</span></li>" : "") +
+      list.map(function (g) {
+        return '<li class="cm-gate ' + (GATE_TONE[g.tom] || "is-info") + '" data-gate="' + escapeHtml(g.id) + '"><span class="cm-gate__icon" aria-hidden="true">' + (GATE_ICON[g.tom] || "•") + "</span>" +
+          "<span><strong>" + escapeHtml(g.titulo) + "</strong>" + (g.detalhe ? '<small>' + escapeHtml(g.detalhe) + "</small>" : "") + "</span></li>";
+      }).join("") + "</ul>";
+  }
+
+  /** Antes → depois. Cor só para resultado (margem/LC); preço é neutro: subir ou descer não é bom nem ruim por si. */
+  function deltaRow(label, before, after, fmt, neutral) {
+    var b = before === null || before === undefined ? "—" : fmt(before);
+    var a = after === null || after === undefined ? "—" : fmt(after);
+    var tone = !neutral && before !== null && before !== undefined && after !== null && after !== undefined
+      ? (after > before ? " is-up" : after < before ? " is-down" : "") : "";
+    return '<div class="cm-delta' + tone + '"><span class="cm-delta__label">' + escapeHtml(label) + "</span>" +
+      '<span class="cm-delta__values"><span>' + escapeHtml(b) + '</span><span class="cm-arrow" aria-hidden="true">→</span><strong>' + escapeHtml(a) + "</strong></span></div>";
+  }
+
+  var FONTE_COPY = { recotada: "recotada", recotado: "recotado", motor: "do Motor", taxa: "estimada pela taxa", atual: "do preço atual", nao_aplicavel: "combinável", indisponivel: "indisponível" };
+
+  function simResultHtml(sim, kind) {
+    var a = sim.atual || {};
+    var p = sim.proposta || {};
+    var promo = sim.promocao;
+    var linhas = deltaRow("Preço", a.preco, p.preco, function (v) { return formatMoney(v); }, true) +
+      (kind === "PROMOTION" && promo
+        ? '<div class="cm-delta"><span class="cm-delta__label">Desconto</span><span class="cm-delta__values"><strong>' +
+          escapeHtml((formatMoney(promo.descontoReais) || "—") + (promo.descontoPercentual !== null && promo.descontoPercentual !== undefined ? " (" + promo.descontoPercentual.toLocaleString("pt-BR") + "%)" : "")) + "</strong></span></div>" +
+          '<div class="cm-delta"><span class="cm-delta__label">ML banca</span><span class="cm-delta__values"><strong>' + escapeHtml(formatMoney(promo.mlBanca) || "R$ 0,00") + "</strong></span></div>" +
+          '<div class="cm-delta"><span class="cm-delta__label">Seller banca</span><span class="cm-delta__values"><strong>' + escapeHtml(formatMoney(promo.sellerBanca) || "—") + "</strong></span></div>"
+        : "") +
+      deltaRow("Margem", a.margem, p.margem, function (v) { return formatPercent(v); }) +
+      deltaRow("LC / un.", a.lucro, p.lucro, function (v) { return formatMoney(v); }) +
+      (p.variacaoPercentual !== null && p.variacaoPercentual !== undefined
+        ? '<div class="cm-delta"><span class="cm-delta__label">Variação</span><span class="cm-delta__values"><strong>' + escapeHtml((p.variacaoPercentual > 0 ? "+" : "") + p.variacaoPercentual.toLocaleString("pt-BR", { maximumFractionDigits: 2 }) + "%") + "</strong></span></div>"
+        : "");
+    var rodape = "Comissão " + (formatMoney(p.comissao) || "—") + " (" + (FONTE_COPY[p.comissaoFonte] || "—") + ") · Frete " +
+      (formatMoney(p.frete) || "—") + " (" + (FONTE_COPY[p.freteFonte] || "—") + ")" + (p.rebate ? " · Retorno ML " + formatMoney(p.rebate) : "") + ". Calculado no backend (Motor).";
+    return '<div class="cm-sim" data-cm-sim="' + escapeHtml(kind) + '">' + linhas + '<p class="cm-sim__foot">' + escapeHtml(rodape) + "</p></div>" +
+      gatesListHtml(sim.gates, true);
+  }
+
+  function manualPricingHtml(item) {
+    var availability = pricingAvailability();
+    var p = state.pricing;
+    var sim = p.sim;
+    var chips = "";
+    if (sim && sim.atual) {
+      if (sim.atual.precoAlvo) chips += '<button class="cm-chip" type="button" data-price-chip="' + sim.atual.precoAlvo + '" title="Preço que atinge a meta de referência do Motor">Meta ' + escapeHtml(formatMoney(sim.atual.precoAlvo)) + "</button>";
+      if (sim.atual.breakEven) chips += '<button class="cm-chip" type="button" data-price-chip="' + sim.atual.breakEven + '" title="Preço de equilíbrio (LC zero) de referência">Break-even ' + escapeHtml(formatMoney(sim.atual.breakEven)) + "</button>";
     }
-    gates.push({ tone: "is-block", icon: "×", text: "Escrita real indisponível: não existe endpoint autorizado e auditável para aplicar preço" });
-    return '<ul class="cm-gates">' + gates.map(function (gate) {
-      return '<li class="cm-gate ' + gate.tone + '"><span class="cm-gate__icon" aria-hidden="true">' + gate.icon + "</span><span>" + escapeHtml(gate.text) + "</span></li>";
-    }).join("") + "</ul>";
+    var resultado = "";
+    if (!availability.ok) resultado = '<p class="cm-empty-note">' + escapeHtml(availability.reason) + "</p>";
+    else if (p.localError) resultado = '<p class="cm-field-error" role="alert">' + escapeHtml(p.localError) + "</p>";
+    else if (p.status === "loading") resultado = '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Calculando no backend…</span></div>';
+    else if (p.status === "error") resultado = '<p class="cm-field-error" role="alert">' + escapeHtml(p.error || "Não foi possível simular.") + "</p>";
+    else if (p.status === "ok" && sim) resultado = simResultHtml(sim, "PRICE");
+    else resultado = '<p class="cm-empty-note">Digite o novo preço para ver margem, LC e os gates antes de qualquer alteração.</p>';
+
+    var podeRevisar = availability.ok && p.status === "ok" && sim && !sim.bloqueado;
+    return '<section class="cm-pp" aria-labelledby="cm-pp-title">' +
+      '<header class="cm-pp__head"><h3 id="cm-pp-title">Ajuste manual</h3><span>só o preço vira escrita real</span></header>' +
+      '<div class="cm-pp__row">' +
+      '<div class="cm-pp__field"><span class="cm-pp__label">Preço atual</span><strong class="cm-pp__current">' + escapeHtml(formatMoney(currentPriceOf(item)) || "—") + "</strong></div>" +
+      '<label class="cm-pp__field"><span class="cm-pp__label">Novo preço</span><input class="vf-input vf-input--sm cm-pp__input" id="cm-new-price" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + escapeHtml(p.novoPreco) + '"' + (availability.ok ? "" : " disabled") + "></label>" +
+      (chips ? '<div class="cm-pp__chips">' + chips + "</div>" : "") +
+      "</div>" +
+      '<div class="cm-pp__result" id="cm-pp-result" aria-live="polite">' + resultado + "</div>" +
+      '<div class="cm-pp__actions"><button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-pp-review"' + (podeRevisar ? "" : " disabled") + ">Revisar alteração</button></div>" +
+      "</section>";
   }
 
-  function integrityTone(item) {
-    var key = contract.dataIntegrity(item).key;
-    if (key === "RELIABLE") return "is-ok";
-    if (key === "MISSING") return "is-block";
-    return "is-warn";
+  var PROMO_STATUS_TONE = { "ATIVA": "is-success", "ELEGÍVEL": "is-info", "PROGRAMADA": "is-neutral", "NÃO APLICADA": "is-warning" };
+
+  function formatShortDate(value) {
+    if (!value) return null;
+    var d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
   }
 
-  function attentionRows(item, composition) {
-    var rows = [];
-    composition.missing.forEach(function (variableKey) {
-      rows.push({ name: contract.VARIABLE_META[variableKey].label, copy: "Valor obrigatório ausente na fonte selecionada.", status: "Bloqueia", tone: "is-neutral" });
-    });
-    composition.assumed.forEach(function (variableKey) {
-      rows.push({ name: contract.VARIABLE_META[variableKey].label, copy: "Sem observação: entrou no cálculo como zero declarado.", status: "Assumido", tone: "is-neutral" });
-    });
-    (item.divergences || []).forEach(function (divergence) {
-      rows.push({
-        name: divergence.variable,
-        copy: divergence.sourceA + " × " + divergence.sourceB + ": " +
-          (formatByVariable(divergence.variableKey, divergence.valueA) || "—") + " × " +
-          (formatByVariable(divergence.variableKey, divergence.valueB) || "—") + ".",
-        status: divergence.type === "CONFLICT" ? "Conflito" : "Desvio",
-        tone: divergence.type === "CONFLICT" ? "is-danger" : "is-warning",
+  function promoCardHtml(promo, atual) {
+    var status = promo.statusExibicao || promo.status || "—";
+    var periodo = [formatShortDate(promo.inicio), formatShortDate(promo.fim)].filter(Boolean).join(" – ");
+    var escrita = promo.escrita || {};
+    var p = state.pricing;
+    var simAberta = p.promoSim && p.promoSim.id === String(promo.id);
+    var acao = escrita.suportada
+      ? '<button class="vf-btn vf-btn--primary vf-btn--sm" type="button" data-promo-apply="' + escapeHtml(promo.id) + '">' + (escrita.acao === "ALTERAR" ? "Alterar" : "Participar") + "</button>"
+      : '<span class="cm-sim-only" title="' + escapeHtml(escrita.motivo || "Somente simulação") + '">Somente simulação</span>';
+    var metric = function (label, value) { return '<div class="cm-promo__m"><span>' + escapeHtml(label) + "</span><strong>" + value + "</strong></div>"; };
+    var margemAtual = atual && atual.margem !== null && atual.margem !== undefined ? formatPercent(atual.margem) : "—";
+    var lcAtual = atual && atual.lucro !== null && atual.lucro !== undefined ? formatMoney(atual.lucro) : "—";
+    var simHtml = "";
+    if (simAberta) {
+      var ps = p.promoSim;
+      var editable = escrita.suportada;
+      simHtml = '<div class="cm-promo__sim">' +
+        (editable ? '<label class="cm-pp__field cm-pp__field--inline"><span class="cm-pp__label">Preço da oferta</span><input class="vf-input vf-input--sm cm-pp__input" data-promo-price="' + escapeHtml(promo.id) + '" inputmode="decimal" value="' + escapeHtml(ps.preco) + '"></label>' : "") +
+        (ps.localError ? '<p class="cm-field-error">' + escapeHtml(ps.localError) + "</p>"
+          : ps.status === "loading" ? '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Calculando no backend…</span></div>'
+            : ps.status === "error" ? '<p class="cm-field-error" role="alert">' + escapeHtml(ps.error || "Não foi possível simular.") + "</p>"
+              : ps.sim ? simResultHtml(ps.sim, "PROMOTION") : "") +
+        "</div>";
+    }
+    return '<article class="cm-promo" data-promo-id="' + escapeHtml(promo.id) + '">' +
+      '<header class="cm-promo__head"><div><strong>' + escapeHtml(promo.nome || promo.tipoLabel || promo.tipo || "Promoção") + "</strong>" +
+      '<span class="cm-promo__sub">' + escapeHtml([promo.tipoLabel || promo.tipo, periodo].filter(Boolean).join(" · ")) + "</span></div>" +
+      '<span class="vf-status ' + (PROMO_STATUS_TONE[status] || "is-neutral") + '" data-promo-status="' + escapeHtml(status) + '">' + escapeHtml(status) + "</span></header>" +
+      '<div class="cm-promo__grid">' +
+      metric("Preço", escapeHtml((formatMoney(promo.precoOriginal) || "—") + " → " + (formatMoney(promo.precoFinal) || "sem sugestão do ML"))) +
+      metric("Desconto", escapeHtml(promo.descontoReais === null || promo.descontoReais === undefined ? "—" : formatMoney(promo.descontoReais) + (promo.descontoPercentual !== null && promo.descontoPercentual !== undefined ? " (" + promo.descontoPercentual.toLocaleString("pt-BR") + "%)" : ""))) +
+      metric("Seller banca", escapeHtml(formatMoney(promo.sellerBanca) || "—")) +
+      metric("ML banca · retorno", escapeHtml(formatMoney(promo.mlBanca) || "R$ 0,00") + (promo.meliPercentage ? ' <small>' + escapeHtml(promo.meliPercentage.toLocaleString("pt-BR") + "%") + "</small>" : "")) +
+      metric("Margem", escapeHtml(margemAtual + " → " + (promo.margem === null || promo.margem === undefined ? "—" : formatPercent(promo.margem)))) +
+      metric("LC / un.", escapeHtml(lcAtual + " → " + (promo.lucro === null || promo.lucro === undefined ? "—" : formatMoney(promo.lucro)))) +
+      "</div>" +
+      '<div class="cm-promo__actions"><button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" data-promo-sim="' + escapeHtml(promo.id) + '"' + (promo.precoFinal === null || promo.precoFinal === undefined ? (escrita.suportada ? "" : " disabled") : "") + ">" + (simAberta ? "Recalcular" : "Simular") + "</button>" + acao + "</div>" +
+      simHtml + "</article>";
+  }
+
+  function promotionsHtml(item) {
+    var availability = pricingAvailability();
+    var body;
+    var promos = state.promos;
+    if (!availability.ok || typeof api.getItemPromotions !== "function") {
+      body = '<p class="cm-empty-note">' + escapeHtml(availability.ok ? "Promoções indisponíveis nesta leitura." : availability.reason) + "</p>";
+    } else if (!promos || promos.status === "loading") {
+      body = '<div class="vf-loading-state" role="status" data-cm-promos="loading"><span class="vf-spinner" aria-hidden="true"></span><span>Consultando promoções no Mercado Livre…</span></div>';
+    } else if (promos.status === "error") {
+      body = '<p class="cm-field-error" role="alert" data-cm-promos="error">' + escapeHtml(promos.error) + ' <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-promos-retry">Tentar de novo</button></p>';
+    } else if (promos.contaCorreta === false) {
+      body = gatesListHtml(promos.gates || [], false);
+    } else if (!promos.list.length) {
+      body = '<p class="cm-empty-note" data-cm-promos="empty">Nenhuma promoção disponível para este anúncio no Mercado Livre.</p>';
+    } else {
+      body = '<div class="cm-promos__list" data-cm-promos="list">' + promos.list.map(function (promo) { return promoCardHtml(promo, promos.atual); }).join("") + "</div>" +
+        (promos.escritaHabilitada ? "" : '<p class="cm-rollout-note">Escrita no Mercado Livre desligada para este cliente (rollout): simulação e preview funcionam; nada é enviado.</p>');
+    }
+    return '<section class="cm-promos" aria-labelledby="cm-promos-title"><header class="cm-pp__head"><h3 id="cm-promos-title">Promoções do Mercado Livre</h3><span>margem e LC em cada oferta</span></header>' + body + "</section>";
+  }
+
+  function advancedSimulationHtml(item) {
+    if (item.stub || !state.scenario) return "";
+    var simulation = contract.simulateScenario(item, state.scenario, state.selection);
+    var rows = contract.VARIABLES.map(function (variableKey) {
+      var changed = simulation.changed.indexOf(variableKey) !== -1;
+      var inputValue = simulation.values[variableKey] === null ? "" : String(simulation.values[variableKey]);
+      return "<tr><td>" + escapeHtml(contract.VARIABLE_META[variableKey].label) + (changed ? ' <span class="cm-changed">alterada</span>' : "") + "</td>" +
+        '<td><input class="cm-scenario-input" type="number" step="0.0001" value="' + escapeHtml(inputValue) + '" data-scenario-value="' + variableKey +
+        '" aria-label="Valor hipotético de ' + escapeHtml(contract.VARIABLE_META[variableKey].label) + '"></td>' +
+        '<td class="cm-scenario-base">' + escapeHtml(formatByVariable(variableKey, simulation.baseline.values[variableKey]) || "Indisponível") + "</td></tr>";
+    }).join("");
+    return '<details class="cm-adv"' + (state.advancedOpen ? " open" : "") + ' id="cm-adv"><summary>Simulação avançada <small>hipótese local — não é decisão</small></summary>' +
+      '<p class="cm-adv__warn"><strong>Somente simulação.</strong> Não grava na Base, não muda comissão, não muda o custo real e não altera nada no Mercado Livre. Só o <strong>preço</strong> pode virar escrita real.</p>' +
+      '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-scenario-table"><thead><tr><th>Variável</th><th>Hipótese</th><th>Fonte atual</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
+      '<p class="cm-adv__result">Resultado hipotético: LC ' + escapeHtml(simulation.computable ? formatMoney(simulation.profit) : "—") + " · MC " +
+      escapeHtml(simulation.computable ? formatPercent(simulation.margin) : "—") +
+      (simulation.computable ? "" : " · cenário incompleto: falta " + escapeHtml(simulation.missing.map(variableLabel).join(", "))) + "</p>" +
+      '<button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-scenario-reset"' + (simulation.changed.length ? "" : " disabled") + ">Restaurar hipótese</button>" +
+      "</details>";
+  }
+
+  function renderPricingTab(item) {
+    refs.drawerBody.innerHTML = manualPricingHtml(item) + advancedSimulationHtml(item) + promotionsHtml(item);
+    bindPricingControls(item);
+  }
+
+  function bindPricingControls(item) {
+    var input = el("cm-new-price");
+    if (input) {
+      input.addEventListener("input", function () {
+        state.pricing.novoPreco = input.value;
+        schedulePriceSimulation();
+      });
+    }
+    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-price-chip]"), function (chip) {
+      chip.addEventListener("click", function () {
+        state.pricing.novoPreco = Number(chip.getAttribute("data-price-chip")).toFixed(2).replace(".", ",");
+        schedulePriceSimulation(0);
+        renderDrawer();
       });
     });
-    contract.VARIABLES.forEach(function (variableKey) {
-      var entry = composition.entries[variableKey];
-      if (!entry || !entry.available) return;
-      var level = variableConfidence(item, variableKey).level;
-      if (level === "LOW") {
-        rows.push({ name: contract.VARIABLE_META[variableKey].label, copy: "Confiança baixa informada pelo Motor para esta variável.", status: "Baixa confiança", tone: "is-warning" });
-      }
+    var review = el("cm-pp-review");
+    if (review) review.addEventListener("click", function () { reviewPricing("PRICE", null); });
+    var adv = el("cm-adv");
+    if (adv) adv.addEventListener("toggle", function () { state.advancedOpen = adv.open; });
+    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-scenario-value]"), function (field) {
+      field.addEventListener("change", function () {
+        var key = field.getAttribute("data-scenario-value");
+        var raw = field.value.trim();
+        var parsed = raw === "" ? null : Number(raw.replace(",", "."));
+        state.scenario[key] = { source: state.scenario[key].source, value: raw === "" || !Number.isFinite(parsed) ? null : parsed, manual: true };
+        state.advancedOpen = true;
+        renderDrawer();
+      });
     });
-    if (!rows.length) {
-      rows.push({ name: "Nenhuma", copy: "As fontes disponíveis não apresentam exceção material.", status: "OK", tone: "is-success" });
+    var reset = el("cm-scenario-reset");
+    if (reset) reset.addEventListener("click", function () { initScenario(item); state.advancedOpen = true; renderDrawer(); });
+    var retry = el("cm-promos-retry");
+    if (retry) retry.addEventListener("click", function () { loadPromotions(true); });
+    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-promo-sim]"), function (button) {
+      button.addEventListener("click", function () { simulatePromotion(button.getAttribute("data-promo-sim")); });
+    });
+    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-promo-price]"), function (field) {
+      field.addEventListener("change", function () {
+        var ps = state.pricing.promoSim;
+        if (!ps) return;
+        ps.preco = field.value;
+        simulatePromotion(field.getAttribute("data-promo-price"), true);
+      });
+    });
+    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-promo-apply]"), function (button) {
+      button.addEventListener("click", function () {
+        var id = button.getAttribute("data-promo-apply");
+        var promo = promoById(id);
+        if (promo) reviewPricing("PROMOTION", promo);
+      });
+    });
+  }
+
+  function promoById(id) {
+    var list = (state.promos && state.promos.list) || [];
+    return list.find(function (promo) { return String(promo.id) === String(id); }) || null;
+  }
+
+  function pricingParams(extra) {
+    var item = findSelectedItem();
+    return Object.assign({
+      clientSlug: state.client && state.client.slug,
+      clienteContaId: state.contaId,
+      itemId: item && item.itemId,
+      precoVisto: currentPriceOf(item),
+    }, extra || {});
+  }
+
+  /** Simulação ao vivo com debounce; resposta de outro item/conta ou digitação antiga é descartada. */
+  function schedulePriceSimulation(delay) {
+    var p = state.pricing;
+    if (!p) return;
+    if (p.timer) root.clearTimeout(p.timer);
+    if (p.abort) p.abort.abort();
+    var parsed = parsePriceInput(p.novoPreco);
+    p.localError = parsed.ok || parsed.empty ? null : parsed.error;
+    if (!parsed.ok) {
+      p.simSeq = (p.simSeq || 0) + 1; // resposta pendente de um preço válido anterior não volta
+      p.status = "idle";
+      p.sim = parsed.empty ? p.sim : null;
+      if (parsed.empty) p.sim = null;
+      updatePricingResult();
+      return;
     }
-    return rows;
+    if (!pricingAvailability().ok) return;
+    p.status = "loading";
+    updatePricingResult();
+    var seq = state.drawerSeq;
+    var key = drawerKey();
+    // Sequência própria da simulação: o abort nem sempre chega antes da
+    // resposta — a digitação mais recente é sempre a única que renderiza.
+    p.simSeq = (p.simSeq || 0) + 1;
+    var simSeq = p.simSeq;
+    p.timer = root.setTimeout(function () {
+      p.timer = null;
+      p.abort = typeof AbortController !== "undefined" ? new AbortController() : null;
+      api.simulatePricing(pricingParams({ tipo: "PRICE", novoPreco: parsed.value }), p.abort && p.abort.signal).then(function (result) {
+        if (seq !== state.drawerSeq || key !== drawerKey() || result.aborted || simSeq !== p.simSeq) return;
+        if (!result.ok) {
+          p.status = "error";
+          p.error = result.error;
+          p.sim = null;
+        } else {
+          p.status = "ok";
+          p.sim = result;
+          p.error = null;
+        }
+        renderDrawerHeader(findSelectedItem());
+        updatePricingResult();
+      });
+    }, delay === undefined ? 400 : delay);
+  }
+
+  /** Re-renderiza só o resultado (não o input, para não perder o foco/cursor). */
+  function updatePricingResult() {
+    if (state.drawerTab !== "pricing") return;
+    var host = el("cm-pp-result");
+    var item = findSelectedItem();
+    if (!host || !item) return;
+    var temp = document.createElement("div");
+    temp.innerHTML = manualPricingHtml(item);
+    var fresh = temp.querySelector("#cm-pp-result");
+    host.innerHTML = fresh ? fresh.innerHTML : "";
+    var review = el("cm-pp-review");
+    var freshReview = temp.querySelector("#cm-pp-review");
+    if (review && freshReview) review.disabled = freshReview.disabled;
+    var chipsNow = temp.querySelector(".cm-pp__chips");
+    var chipsHost = refs.drawerBody.querySelector(".cm-pp__chips");
+    if (chipsNow && !chipsHost) {
+      refs.drawerBody.querySelector(".cm-pp__row").appendChild(chipsNow);
+      Array.prototype.forEach.call(chipsNow.querySelectorAll("[data-price-chip]"), function (chip) {
+        chip.addEventListener("click", function () {
+          state.pricing.novoPreco = Number(chip.getAttribute("data-price-chip")).toFixed(2).replace(".", ",");
+          schedulePriceSimulation(0);
+          renderDrawer();
+        });
+      });
+    }
+  }
+
+  function simulatePromotion(promotionId, keepPrice) {
+    var promo = promoById(promotionId);
+    var p = state.pricing;
+    if (!promo || !p) return;
+    if (!p.promoSim || p.promoSim.id !== String(promo.id)) {
+      p.promoSim = { id: String(promo.id), preco: promo.precoFinal === null || promo.precoFinal === undefined ? "" : String(promo.precoFinal).replace(".", ","), status: "idle", sim: null, error: null, localError: null };
+    }
+    var ps = p.promoSim;
+    var parsed = parsePriceInput(ps.preco);
+    ps.localError = parsed.ok ? null : parsed.empty ? "Informe o preço da oferta para simular." : parsed.error;
+    if (!parsed.ok || !pricingAvailability().ok) { renderDrawer(); return; }
+    ps.status = "loading";
+    ps.seq = (ps.seq || 0) + 1;
+    var promoSeq = ps.seq;
+    renderDrawer();
+    var seq = state.drawerSeq;
+    var key = drawerKey();
+    api.simulatePricing(pricingParams({ tipo: "PROMOTION", promotionId: promo.id, novoPreco: parsed.value })).then(function (result) {
+      if (seq !== state.drawerSeq || key !== drawerKey() || !state.pricing.promoSim || state.pricing.promoSim !== ps || promoSeq !== ps.seq) return;
+      ps.status = result.ok ? "ok" : "error";
+      ps.sim = result.ok ? result : null;
+      ps.error = result.ok ? null : result.error;
+      renderDrawer();
+    });
+  }
+
+  /** Promoções do ITEM ABERTO, em paralelo: o drawer abre antes do ML responder. */
+  function loadPromotions(force) {
+    if (!pricingAvailability().ok || typeof api.getItemPromotions !== "function") return;
+    var item = findSelectedItem();
+    if (!item) return;
+    if (state.promos && state.promos.status === "ok" && !force) return;
+    var seq = state.drawerSeq;
+    var key = drawerKey();
+    state.promos = { status: "loading" };
+    api.getItemPromotions({ clientSlug: state.client.slug, clienteContaId: state.contaId, itemId: item.itemId }).then(function (result) {
+      if (seq !== state.drawerSeq || key !== drawerKey()) return;
+      state.promos = result.ok
+        ? { status: "ok", list: result.promocoes || [], atual: result.atual || null, contaCorreta: result.contaCorreta !== false, gates: result.gates || [], escritaHabilitada: result.escritaHabilitada === true }
+        : { status: "error", error: result.error || "Não foi possível carregar as promoções." };
+      if (state.drawerTab === "pricing") renderDrawer();
+    });
+    if (state.drawerTab === "pricing" && refs.drawer.classList.contains("is-open")) renderDrawer();
+  }
+
+  // --- Preview da alteração (confirmação humana) ------------------------------
+
+  function newIdempotencyKey() {
+    if (root.crypto && typeof root.crypto.randomUUID === "function") return "cm-" + root.crypto.randomUUID();
+    return "cm-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12);
+  }
+
+  function reviewPricing(kind, promo) {
+    var p = state.pricing;
+    if (!p || !pricingAvailability().ok) return;
+    var novoPreco = null;
+    if (kind === "PRICE") {
+      var parsed = parsePriceInput(p.novoPreco);
+      if (!parsed.ok) return;
+      novoPreco = parsed.value;
+    } else if (p.promoSim && p.promoSim.id === String(promo.id)) {
+      var parsedPromo = parsePriceInput(p.promoSim.preco);
+      novoPreco = parsedPromo.ok ? parsedPromo.value : null;
+    }
+    var seq = state.drawerSeq;
+    var key = drawerKey();
+    state.confirm = { kind: kind, promo: promo, status: "loading", preview: null, error: null, idempotencyKey: newIdempotencyKey(), result: null };
+    openConfirm();
+    api.previewPricing(pricingParams({ tipo: kind, promotionId: promo ? promo.id : undefined, novoPreco: novoPreco })).then(function (result) {
+      if (seq !== state.drawerSeq || key !== drawerKey() || !state.confirm) return;
+      state.confirm.status = result.ok ? "ready" : "error";
+      state.confirm.preview = result.ok ? result : null;
+      state.confirm.error = result.ok ? null : result.error;
+      renderConfirm();
+    });
+  }
+
+  function openConfirm() {
+    refs.confirmOverlay.classList.add("is-open");
+    renderConfirm();
+    root.setTimeout(function () { var c = el("cm-confirm-cancel"); if (c) c.focus(); }, 0);
+  }
+
+  function closeConfirm() {
+    if (state.confirm && state.confirm.status === "applying") return; // nunca fechar no meio da escrita
+    state.confirm = null;
+    if (refs.confirmOverlay) refs.confirmOverlay.classList.remove("is-open");
+  }
+
+  function confirmRow(label, value) {
+    return "<tr><th>" + escapeHtml(label) + "</th><td>" + value + "</td></tr>";
+  }
+
+  function renderConfirm() {
+    var c = state.confirm;
+    if (!c) return;
+    var item = findSelectedItem();
+    if (c.status === "loading") {
+      refs.confirmBody.innerHTML = '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Relendo o anúncio ao vivo e avaliando os gates…</span></div>';
+      refs.confirmApply.disabled = true;
+      return;
+    }
+    if (c.status === "error" && !c.preview) {
+      refs.confirmBody.innerHTML = '<div class="vf-banner is-danger" role="alert"><div class="vf-banner__content"><p class="vf-banner__title">Não foi possível gerar o preview</p><p class="vf-banner__description">' + escapeHtml(c.error || "Erro desconhecido.") + "</p></div></div>";
+      refs.confirmApply.disabled = true;
+      return;
+    }
+    var pv = c.preview;
+    var a = pv.atual || {};
+    var p = pv.proposta || {};
+    var promo = pv.promocao;
+    var arrow = function (b, x, fmt) {
+      return escapeHtml((b === null || b === undefined ? "—" : fmt(b)) + " → ") + "<strong>" + escapeHtml(x === null || x === undefined ? "—" : fmt(x)) + "</strong>";
+    };
+    var titulo = c.kind === "PROMOTION"
+      ? (promo && promo.escrita && promo.escrita.acao === "ALTERAR" ? "Alterar oferta: " : "Participar de: ") + (promo ? (promo.nome || promo.tipoLabel || promo.tipo) : "promoção")
+      : "Alterar preço";
+    var rows = confirmRow("Preço", arrow(a.preco, p.preco, formatMoney)) +
+      (c.kind === "PROMOTION" && promo
+        ? confirmRow("Desconto total", escapeHtml(formatMoney(promo.descontoReais) || "—")) +
+          confirmRow("ML banca", escapeHtml(formatMoney(promo.mlBanca) || "R$ 0,00")) +
+          confirmRow("Seller banca", escapeHtml(formatMoney(promo.sellerBanca) || "—"))
+        : "") +
+      confirmRow("Margem", arrow(a.margem, p.margem, formatPercent)) +
+      confirmRow("LC / un.", arrow(a.lucro, p.lucro, formatMoney)) +
+      confirmRow("Vendas " + periodShortLabel(), escapeHtml(pv.vendas && pv.vendas.unidades !== null && pv.vendas.unidades !== undefined ? formatInt(pv.vendas.unidades) + " un." : "—"));
+    var escrita = pv.escrita || {};
+    var status = "";
+    if (c.status === "applying") status = '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Aplicando no Mercado Livre… não feche esta janela.</span></div>';
+    else if (c.status === "done") status = '<div class="vf-banner is-success" role="status" data-cm-apply-result="aplicado"><div class="vf-banner__content"><p class="vf-banner__title">Aplicado no Mercado Livre</p><p class="vf-banner__description">Preço confirmado pelo Mercado Livre: <strong>' + escapeHtml(formatMoney(c.result.aplicacao.precoConfirmado) || "—") + "</strong>. A margem está sendo recalculada.</p></div></div>";
+    else if (c.status === "failed") status = '<div class="vf-banner is-danger" role="alert" data-cm-apply-result="' + escapeHtml(c.result && c.result.aplicacao ? c.result.aplicacao.status : "erro") + '"><div class="vf-banner__content"><p class="vf-banner__title">' + escapeHtml(c.result && c.result.aplicacao && c.result.aplicacao.status === "recusado" ? "Alteração recusada — nada foi alterado" : "A alteração não foi confirmada") + '</p><p class="vf-banner__description">' + escapeHtml(c.error || "") + (c.retryable ? " Você pode tentar de novo com segurança (mesma chave, sem escrita dupla)." : " Gere um novo preview para tentar de novo.") + "</p></div></div>";
+    refs.confirmBody.innerHTML =
+      '<div class="cm-confirm__who"><strong>' + escapeHtml(pv.item && pv.item.titulo || (item && item.title) || "Produto") + "</strong>" +
+      '<span class="vf-mono">' + escapeHtml(pv.item ? pv.item.itemId : "") + "</span>" +
+      "<span>" + escapeHtml("Conta " + (pv.conta && pv.conta.nome || "—") + " · Mercado Livre " + (pv.conta && pv.conta.mlUserId || "")) + "</span></div>" +
+      '<p class="cm-confirm__what">' + escapeHtml(titulo) + "</p>" +
+      '<table class="cm-confirm__table">' + rows + "</table>" +
+      '<p class="cm-block-label">Gates</p>' + gatesListHtml((c.result && c.result.gates) || pv.gates, false) +
+      (escrita.habilitada ? "" : '<p class="cm-rollout-note" data-cm-rollout="off">' + escapeHtml(escrita.motivo || "Escrita desligada.") + "</p>") +
+      status;
+    var podeAplicar = c.status === "ready" && !pv.bloqueado && escrita.habilitada && pv.preview && pv.preview.id;
+    var podeRetentar = c.status === "failed" && c.retryable;
+    refs.confirmApply.disabled = !(podeAplicar || podeRetentar);
+    refs.confirmApply.textContent = podeRetentar ? "Tentar de novo" : c.status === "done" ? "Aplicado" : "Confirmar alteração no Mercado Livre";
+  }
+
+  /** Aplicar: 1 clique = 1 chave; clique repetido/retry reusa a MESMA chave. */
+  function confirmApply() {
+    var c = state.confirm;
+    if (!c || !c.preview || c.status === "applying" || c.status === "done") return;
+    if (c.status !== "ready" && !(c.status === "failed" && c.retryable)) return;
+    if (c.preview.bloqueado || !(c.preview.escrita && c.preview.escrita.habilitada)) return;
+    c.status = "applying";
+    renderConfirm();
+    var seq = state.drawerSeq;
+    var item = findSelectedItem();
+    var promoId = c.kind === "PROMOTION" && c.promo ? c.promo.id : undefined;
+    api.applyPricing({
+      clientSlug: state.client.slug,
+      clienteContaId: state.contaId,
+      previewId: c.preview.preview.id,
+      idempotencyKey: c.idempotencyKey,
+      promotionId: promoId,
+    }).then(function (result) {
+      var data = result.ok ? result : (result.data || {});
+      var aplicacao = data.aplicacao || null;
+      if (result.ok && aplicacao && aplicacao.status === "aplicado") {
+        c.status = "done";
+        c.result = data;
+        toast("Aplicado no Mercado Livre: " + (formatMoney(aplicacao.precoConfirmado) || "") + " (valor confirmado pelo ML).", "is-success");
+        if (seq === state.drawerSeq && state.pricing) {
+          state.pricing.aplicacao = aplicacao;
+          // A simulação era do preço anterior: nunca continuar exibindo-a
+          // como "confirmada ao vivo" depois da escrita.
+          state.pricing.sim = null;
+          state.pricing.status = "idle";
+          state.pricing.novoPreco = "";
+          state.pricing.promoSim = null;
+          state.history = null;
+          trackPostWrite(aplicacao.id, seq);
+          renderDrawer();
+        }
+      } else {
+        c.status = "failed";
+        c.result = data;
+        c.error = result.error || data.motivo || "A alteração não foi aplicada.";
+        // Só erro de rede (sem resposta) é retentável com a mesma chave.
+        c.retryable = result.type === "network";
+        toast(c.error, "is-danger");
+        if (seq === state.drawerSeq) state.history = null;
+      }
+      if (state.confirm === c) renderConfirm();
+      if (item && seq === state.drawerSeq && state.drawerTab === "history") loadHistory(true);
+    });
+  }
+
+  /** Pós-escrita: acompanha o refresh do snapshot do ITEM e relê a página quando chegar. */
+  function trackPostWrite(aplicacaoId, seq) {
+    var tentativas = 0;
+    var slug = state.client.slug;
+    var conta = state.contaId;
+    function tick() {
+      if (!state.pricing || seq !== state.drawerSeq) return;
+      tentativas += 1;
+      api.getPricingApplication({ clientSlug: slug, clienteContaId: conta, id: aplicacaoId }).then(function (result) {
+        if (!state.pricing || seq !== state.drawerSeq) return;
+        if (result.ok && result.aplicacao) {
+          state.pricing.aplicacao = result.aplicacao;
+          if (result.aplicacao.snapshotStatus === "atualizado" || result.aplicacao.snapshotStatus === "falhou") {
+            renderDrawerHeader(findSelectedItem());
+            if (result.aplicacao.snapshotStatus === "atualizado" && isSnapshotMode()) {
+              toast("Margem recalculada com o preço confirmado.", "is-success");
+              loadSnapshotPage();
+            }
+            return;
+          }
+        }
+        renderDrawerHeader(findSelectedItem());
+        if (tentativas < 15) state.pricing.pollTimer = root.setTimeout(tick, POST_WRITE_POLL_MS);
+      });
+    }
+    if (typeof api.getPricingApplication === "function") state.pricing.pollTimer = root.setTimeout(tick, POST_WRITE_POLL_MS);
+  }
+
+  // --- Histórico ---------------------------------------------------------------
+
+  function loadHistory(force) {
+    var item = findSelectedItem();
+    if (!item || typeof api.getPricingHistory !== "function" || !state.client || !state.contaId) return;
+    if (state.history && state.history.status !== "error" && !force) return;
+    var seq = state.drawerSeq;
+    var key = drawerKey();
+    state.history = { status: "loading" };
+    api.getPricingHistory({ clientSlug: state.client.slug, clienteContaId: state.contaId, itemId: item.itemId }).then(function (result) {
+      if (seq !== state.drawerSeq || key !== drawerKey()) return;
+      state.history = result.ok ? { status: "ok", list: result.historico || [] } : { status: "error", error: result.error };
+      if (state.drawerTab === "history") renderDrawer();
+    });
+  }
+
+  var HISTORY_STATUS = {
+    aplicado: { label: "Aplicado no Mercado Livre", tone: "is-success" },
+    recusado: { label: "Recusado — nada foi alterado", tone: "is-warning" },
+    falhou: { label: "Não confirmado", tone: "is-danger" },
+    aplicando: { label: "Aplicando…", tone: "is-info" },
+  };
+
+  function historyEntryHtml(entry) {
+    var meta = HISTORY_STATUS[entry.status] || { label: entry.status, tone: "is-neutral" };
+    var quando = entry.aplicadoEm || entry.criadoEm;
+    var d = quando ? new Date(quando) : null;
+    var data = d && !Number.isNaN(d.getTime())
+      ? d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }) + " · " + d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+      : "—";
+    var quem = entry.usuario && (entry.usuario.nome || entry.usuario.email) || "usuário não identificado";
+    var depois = entry.precoConfirmado !== null && entry.precoConfirmado !== undefined ? entry.precoConfirmado : entry.precoSolicitado;
+    var oque = entry.tipoAcao === "PROMOTION"
+      ? (entry.promotionAcao === "ALTERAR" ? "Alterou oferta: " : "Participou de: ") + (entry.promotionNome || entry.promotionType || entry.promotionId || "promoção")
+      : "Preço";
+    return '<li class="cm-hist" data-cm-hist="' + escapeHtml(entry.status) + '">' +
+      '<div class="cm-hist__head"><span>' + escapeHtml(data + " · " + quem) + '</span><span class="vf-status ' + meta.tone + '">' + escapeHtml(meta.label) + "</span></div>" +
+      '<p class="cm-hist__what">' + escapeHtml(oque) + "</p>" +
+      '<div class="cm-hist__nums">' +
+      deltaRow("Preço", entry.precoAnterior !== null && entry.precoAnterior !== undefined ? entry.precoAnterior : entry.precoVisto, depois, function (v) { return formatMoney(v); }, true) +
+      deltaRow("Margem", entry.margemAntes, entry.margemDepois, function (v) { return formatPercent(v); }) +
+      "</div>" +
+      (entry.status !== "aplicado" && (entry.erroMensagem || entry.erroCodigo)
+        ? '<p class="cm-hist__err">' + escapeHtml((entry.erroMensagem || "") + (entry.erroCodigo ? " (" + entry.erroCodigo + ")" : "")) + "</p>"
+        : "") +
+      "</li>";
+  }
+
+  function renderHistoryTab(item) {
+    var h = state.history;
+    var body;
+    if (item.stub || !state.contaId || typeof api.getPricingHistory !== "function") {
+      body = '<p class="cm-empty-note">Histórico disponível quando uma conta está selecionada.</p>';
+    } else if (!h || h.status === "loading") {
+      body = stateHtml("loading", "Carregando histórico…");
+    } else if (h.status === "error") {
+      body = '<p class="cm-field-error" role="alert">' + escapeHtml(h.error || "Não foi possível carregar o histórico.") + "</p>";
+    } else if (!h.list.length) {
+      body = '<div class="cm-hist-empty" data-cm-hist-empty><p class="vf-empty__title">Nenhuma alteração feita pela Central</p><p class="vf-empty__description">Quando um preço ou promoção for aplicado por aqui, fica registrado quem, quando, o preço visto, o pedido e o confirmado pelo Mercado Livre.</p></div>';
+    } else {
+      body = '<ol class="cm-hist-list">' + h.list.map(historyEntryHtml).join("") + "</ol>";
+    }
+    refs.drawerBody.innerHTML = panel("Histórico de precificação", "auditoria persistida", body) + readTrailHtml(item);
+  }
+
+  /** Rastro desta LEITURA (não é histórico): observações que vieram na resposta. */
+  function readTrailHtml(item) {
+    if (item.stub) return "";
+    var audit = item.audit || {};
+    var trail = [];
+    contract.VARIABLES.forEach(function (variableKey) {
+      var bucket = item.sources[variableKey];
+      bucket.order.forEach(function (source) {
+        var entry = bucket.entries[source];
+        if (!entry.available) return;
+        trail.push({
+          time: entry.observedAt,
+          title: contract.sourceLabel(source) + " · " + contract.VARIABLE_META[variableKey].label,
+          copy: (entry.kind === "REALIZED" ? "Observação realizada" : "Observação projetada") + " de " + (formatByVariable(variableKey, entry.value) || "—") + (entry.note ? " — " + entry.note : "."),
+        });
+      });
+    });
+    trail.sort(function (a, b) { return String(a.time || "") < String(b.time || "") ? -1 : 1; });
+    var reasons = (audit.statusReasons || []).concat(audit.qualityReasons || []);
+    return '<details class="cm-trail"><summary>Rastro desta leitura <small>metadado da resposta atual, não um log de eventos gravado</small></summary>' +
+      (trail.length
+        ? '<ol class="cm-audit">' + trail.map(function (entry) {
+            return '<li class="cm-audit-row"><span class="cm-audit-time">' + escapeHtml(formatDateTime(entry.time) || "sem horário") + "</span>" +
+              '<span class="cm-audit-dot" aria-hidden="true"></span><span class="cm-audit-copy"><strong>' + escapeHtml(entry.title) + "</strong><span>" + escapeHtml(entry.copy) + "</span></span></li>";
+          }).join("") + "</ol>"
+        : '<p class="cm-empty-note">Nenhuma observação com valor chegou para este produto.</p>') +
+      '<p class="cm-empty-note">Status canônico: <strong>' + escapeHtml(item.status) + "</strong>" + (reasons.length ? " · " + escapeHtml(reasons.join(" · ")) : "") + "</p>" +
+      '<div class="cm-technical-grid">' +
+      techCard("identity.itemId", audit.itemId || item.itemId) +
+      techCard("marketplace", (audit.marketplace || item.marketplace || "").toUpperCase()) +
+      techCard("sourceMode", state.data && state.data.sourceMode) +
+      techCard("última atualização", state.data && formatDateTime(state.data.lastUpdated)) +
+      techCard("última venda", formatDateTime(audit.lastSoldAt)) +
+      techCard("pedido mais recente", item.latestOrderId) +
+      techCard("snapshot calculado em", item.snapshot ? formatDateTime(item.snapshot.calculatedAt) : null) +
+      "</div></details>";
+  }
+
+  // --- Evidências (enxuta) ----------------------------------------------------
+
+  var EVIDENCE_ORDER = ["price", "cost", "tax", "commission", "freight", "fixedFee"];
+
+  /** Uma linha por variável: selecionada × alternativa × diferença × confiança × horário. */
+  function evidenceSummaryRow(item, variableKey) {
+    var bucket = item.sources[variableKey];
+    var chosenSource = state.selection[variableKey];
+    var chosen = bucket.entries[chosenSource];
+    var alternative = null;
+    bucket.order.forEach(function (source) {
+      if (alternative || source === chosenSource) return;
+      var entry = bucket.entries[source];
+      if (entry && entry.available) alternative = entry;
+    });
+    var diff = chosen && chosen.available && alternative ? alternative.value - chosen.value : null;
+    var flagged = contract.hasSourceDisagreement(item, variableKey, chosenSource);
+    var level = variableConfidence(item, variableKey).level;
+    var meta = CONFIDENCE_META[level] || CONFIDENCE_META.UNKNOWN;
+    return '<tr class="' + (variableKey === state.evidenceVariable ? "is-active" : "") + (flagged ? " is-flagged" : "") + '" data-evidence-var="' + variableKey + '" tabindex="0">' +
+      "<th>" + escapeHtml(contract.VARIABLE_META[variableKey].label) + (flagged ? ' <span class="cm-cell-diff" title="Outra fonte diverge"></span>' : "") + "</th>" +
+      "<td>" + escapeHtml(contract.SOURCE_SHORT_LABELS[chosenSource] || chosenSource) + '</td><td class="num">' +
+      (chosen && chosen.available ? escapeHtml(formatByVariable(variableKey, chosen.value)) : unavailable("—")) + "</td>" +
+      "<td>" + escapeHtml(alternative ? alternative.sourceShort : "—") + '</td><td class="num">' + escapeHtml(alternative ? formatByVariable(variableKey, alternative.value) : "—") + "</td>" +
+      '<td class="num">' + escapeHtml(diff === null ? "—" : (contract.VARIABLE_META[variableKey].format === "percent" ? formatPp(diff * 100) : formatMoney(diff, true))) + "</td>" +
+      '<td><span class="vf-status ' + meta.className + '">' + escapeHtml(meta.label) + "</span></td>" +
+      '<td class="cm-ev-time">' + escapeHtml(formatDateTime(chosen && chosen.observedAt) || "—") + "</td></tr>";
+  }
+
+  function renderEvidenceTab(item) {
+    if (item.stub) {
+      refs.drawerBody.innerHTML = '<p class="cm-empty-note">Evidências completas ficam disponíveis quando o produto é aberto pela tabela (esta linha veio de Oportunidades, fora da página atual).</p>';
+      return;
+    }
+    var variableKey = contract.VARIABLE_META[state.evidenceVariable] ? state.evidenceVariable : "price";
+    var bucket = item.sources[variableKey];
+    var chosenSource = state.selection[variableKey];
+    var chosen = bucket.entries[chosenSource];
+    var motor = (item.motorChoice && item.motorChoice[variableKey]) || { available: false, source: null, value: null, sourceLabel: null };
+    var disagreement = contract.hasSourceDisagreement(item, variableKey, chosenSource);
+
+    var summary = '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-ev-table" role="grid"><thead><tr>' +
+      "<th>Variável</th><th>Fonte selecionada</th><th class=\"num\">Valor</th><th>Alternativa</th><th class=\"num\">Valor</th><th class=\"num\">Diferença</th><th>Confiança</th><th>Observado</th>" +
+      "</tr></thead><tbody>" + EVIDENCE_ORDER.map(function (key) { return evidenceSummaryRow(item, key); }).join("") + "</tbody></table></div>";
+
+    var cards = bucket.order.map(function (source) {
+      var entry = bucket.entries[source];
+      var role = evidenceRole(item, variableKey, source, chosenSource);
+      return '<article class="cm-evidence-card ' + role.className + '">' +
+        '<p class="cm-evidence-card__source">' + escapeHtml(entry.sourceLabel) + ' <span class="cm-evidence-role">' + escapeHtml(role.label) + "</span></p>" +
+        '<p class="cm-evidence-card__value">' + (entry.available ? escapeHtml(formatByVariable(variableKey, entry.value)) : unavailable("Sem observação")) + "</p>" +
+        '<dl class="cm-evidence-card__meta"><dt>observedAt</dt><dd>' + escapeHtml(formatDateTime(entry.observedAt) || "Não informado") + "</dd>" +
+        "<dt>effectiveAt</dt><dd>Não informado</dd>" +
+        "<dt>Momento</dt><dd>" + escapeHtml(entry.kind === "REALIZED" ? "Realizado" : entry.kind === "PROJECTED" ? "Projetado" : "Não informado") + "</dd>" +
+        "<dt>Qualidade</dt><dd>" + escapeHtml(entry.quality || "Não informada") + "</dd>" +
+        (entry.note ? "<dt>Detalhe</dt><dd>" + escapeHtml(entry.note) + "</dd>" : "") + "</dl></article>";
+    }).join("");
+
+    var why = (EVIDENCE_WHY[variableKey] && EVIDENCE_WHY[variableKey][chosenSource]) || "Fonte selecionada para esta variável.";
+    if (!chosen || !chosen.available) why = "Esta fonte não observou a variável nesta leitura: o valor fica indisponível — não é zero.";
+    else if (disagreement) why += " Outra fonte informa valor diferente além da tolerância do Motor.";
+
+    var detail = '<div class="cm-ev-detail"><div class="cm-evidence-cards">' + cards + "</div>" +
+      '<aside class="cm-motor-decision"><span>Evidências de ' + escapeHtml(contract.VARIABLE_META[variableKey].label) + "</span>" +
+      "<strong>" + (chosen && chosen.available ? escapeHtml(formatByVariable(variableKey, chosen.value)) : unavailable("Indisponível")) + "</strong>" +
+      "<p>" + escapeHtml(why) + "</p>" +
+      "<dl><dt>Selecionada</dt><dd>" + escapeHtml(contract.sourceLabel(chosenSource)) + "</dd>" +
+      "<dt>Conflito</dt><dd>" + (disagreement ? "Sim" : "Não") + "</dd>" +
+      (motor.available && motor.source !== chosenSource
+        ? "<dt>Escolha do Motor</dt><dd>" + escapeHtml(formatByVariable(variableKey, motor.value)) + " · " + escapeHtml(motor.sourceLabel) + "</dd>"
+        : "<dt>Escolha do Motor</dt><dd>" + (motor.available ? "mesma fonte" : "sem valor selecionado") + "</dd>") +
+      "</dl></aside></div>";
+
+    var receipt = '<div class="cm-receipt-line"><span>Recebimento líquido: ' + unavailable("Não integrado", "Mercado Pago não integrado ao backend.") + "</span>" +
+      "<span>Conciliação: " + escapeHtml(item.reconciliation || "Pendente") + "</span>" +
+      '<button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" disabled title="Integração de recebimentos indisponível no backend.">Mercado Pago</button></div>';
+
+    refs.drawerBody.innerHTML = panel("Evidências por variável", "clique numa linha para o detalhe", summary + detail) +
+      comparisonPanelHtml(item) + receipt;
+
+    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-evidence-var]"), function (row) {
+      function choose() { state.evidenceVariable = row.getAttribute("data-evidence-var"); renderDrawer(); }
+      row.addEventListener("click", choose);
+      row.addEventListener("keydown", function (event) { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } });
+    });
   }
 
   var COMPARISON_ROWS = [
@@ -2166,186 +3323,6 @@
       '<ul class="cm-cmp-facts">' + fatos.join("") + "</ul>");
   }
 
-  function renderSummaryTab(item, financial, integrity) {
-    var composition = contract.resolveComposition(item, state.selection);
-    var decision = motorDecision(item, financial, integrity, composition);
-    var baseHref = "bases.html?busca=" + encodeURIComponent(item.itemId || item.sku || "");
-    var orderHref = "fechamentos-api.html?cliente=" + encodeURIComponent(state.client.slug) + (item.latestOrderId ? "&search=" + encodeURIComponent(item.latestOrderId) : "");
-
-    refs.drawerBody.innerHTML =
-      '<section class="cm-decision"><div class="cm-decision__top"><div>' +
-      '<p class="cm-decision__label">Leitura do Motor</p>' +
-      '<p class="cm-decision__title">' + escapeHtml(decision.title) + "</p>" +
-      '<p class="cm-decision__copy">' + escapeHtml(decision.copy) + "</p></div>" +
-      '<div class="cm-decision__tags"><span class="cm-mini-tag">' + escapeHtml(decision.tag) + "</span>" +
-      '<span class="cm-mini-tag">' + (item.divergences || []).length + " divergência(s)</span></div></div></section>" +
-
-      '<div class="cm-kpis5">' +
-      miniKpi("LC atual", composition.computable ? escapeHtml(formatMoney(composition.profit)) : unavailable("Indisponível"), "composição da planilha") +
-      miniKpi("MC atual", composition.computable ? escapeHtml(formatPercent(composition.margin)) : unavailable("Indisponível"), "modo " + (PRESET_LABELS[state.preset] || state.preset)) +
-      miniKpi("Meta", item.targetMargin === null || item.targetMargin === undefined ? unavailable("Não informada") : escapeHtml(formatPercent(item.targetMargin)), "referência do Motor") +
-      miniKpi("Resultado", statusTag(financial), financial.origin === "backend" ? "status do Motor" : "derivado das margens") +
-      miniKpi("Integridade", statusTag(integrity), integrity.origin === "backend" ? "status do Motor" : "derivado das evidências") +
-      "</div>" +
-
-      '<div class="cm-summary-grid">' +
-      panel("Variáveis que merecem atenção", "priorizadas pelo estado real", '<div class="cm-critical-list">' +
-        attentionRows(item, composition).map(function (row) {
-          return '<div class="cm-critical"><strong>' + escapeHtml(row.name) + "</strong>" +
-            "<p>" + escapeHtml(row.copy) + "</p>" +
-            '<span class="vf-status ' + row.tone + '">' + escapeHtml(row.status) + "</span></div>";
-        }).join("") + "</div>") +
-      panel("Gates de segurança", "antes de qualquer ação", gatesHtml(item, composition, false)) +
-      "</div>" +
-
-      comparisonPanelHtml(item) +
-
-      panel("Recebimento e conciliação", "o que a venda entregou", '<div class="cm-receipt-grid">' +
-        miniKpi("Valor vendido", item.variables.soldValue.value === null ? unavailable("Sem venda") : escapeHtml(formatMoney(item.variables.soldValue.value))) +
-        miniKpi("Margem realizada", item.realized.margin === null ? unavailable("Pendente") : escapeHtml(formatPercent(item.realized.margin))) +
-        miniKpi("Recebimento líquido", item.variables.netReceipt.value === null ? unavailable("Indisponível", "Mercado Pago não integrado ao backend.") : escapeHtml(formatMoney(item.variables.netReceipt.value))) +
-        miniKpi("Mercado Pago", unavailable("Não integrado", "Nenhum client, rota ou token de Mercado Pago existe no backend.")) +
-        miniKpi("Conciliação", escapeHtml(item.reconciliation || "Pendente")) +
-        "</div>") +
-
-      panel("Próxima ação", "atalhos operacionais", '<div class="cm-links">' +
-        '<a class="vf-btn vf-btn--sm" href="' + escapeHtml(baseHref) + '">Ver na Base</a>' +
-        (item.latestOrderId
-          ? '<a class="vf-btn vf-btn--sm" href="' + escapeHtml(orderHref) + '">Ver pedido</a>'
-          : '<button class="vf-btn vf-btn--sm" type="button" disabled title="Nenhum pedido do período foi associado a este produto.">Ver pedido</button>') +
-        '<button class="vf-btn vf-btn--sm" type="button" data-goto-tab="scenario">Simular cenário</button>' +
-        '<button class="vf-btn vf-btn--sm" type="button" data-goto-tab="evidence">Investigar evidências</button>' +
-        '<button class="vf-btn vf-btn--sm" type="button" disabled title="Integração de recebimentos indisponível no backend.">Mercado Pago</button>' +
-        (item.permalink ? '<a class="vf-btn vf-btn--sm" href="' + escapeHtml(item.permalink) + '" target="_blank" rel="noopener">Abrir anúncio</a>' : "") +
-        "</div>");
-
-    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-goto-tab]"), function (button) {
-      button.addEventListener("click", function () { setDrawerTab(button.getAttribute("data-goto-tab")); });
-    });
-  }
-
-  // --- Cenário ---------------------------------------------------------------
-
-  function scenarioConfidence(item, variableKey, entry, override) {
-    if (override.manual) return { label: "CENÁRIO", tone: "is-warning" };
-    if (!entry || !entry.available) return { label: "UNKNOWN", tone: "is-neutral" };
-    var level = variableConfidence(item, variableKey).level;
-    var meta = CONFIDENCE_META[level] || CONFIDENCE_META.UNKNOWN;
-    return { label: level, tone: meta.className };
-  }
-
-  function renderScenarioTab(item) {
-    var simulation = contract.simulateScenario(item, state.scenario, state.selection);
-    var values = simulation.values;
-    var taxAmount = values.price !== null && values.tax !== null ? values.price * values.tax : null;
-
-    var rows = contract.VARIABLES.map(function (variableKey) {
-      var override = state.scenario[variableKey];
-      var entry = simulation.entries[variableKey];
-      var baseValue = simulation.baseline.values[variableKey];
-      var changed = simulation.changed.indexOf(variableKey) !== -1;
-      var confidence = scenarioConfidence(item, variableKey, entry, override);
-      var options = contract.SOURCE_SLOTS[variableKey].map(function (source) {
-        var candidate = contract.sourceEntry(item, variableKey, source);
-        return '<option value="' + source + '"' + (source === override.source ? " selected" : "") + ">" +
-          escapeHtml(contract.SOURCE_SHORT_LABELS[source] || source) + (candidate && candidate.available ? "" : " · indisponível") + "</option>";
-      }).join("");
-      var inputValue = values[variableKey] === null ? "" : String(values[variableKey]);
-      return "<tr>" +
-        '<td class="cm-scenario-name"><strong>' + escapeHtml(contract.VARIABLE_META[variableKey].label) +
-        (changed ? '<span class="cm-changed">alterada</span>' : "") + "</strong>" +
-        "<small>planilha: " + escapeHtml(formatByVariable(variableKey, baseValue) || "Indisponível") + "</small></td>" +
-        '<td><input class="cm-scenario-input" type="number" step="0.0001" value="' + escapeHtml(inputValue) +
-        '" data-scenario-value="' + variableKey + '" aria-label="Valor de ' + escapeHtml(contract.VARIABLE_META[variableKey].label) + ' no cenário"></td>' +
-        '<td><select class="cm-scenario-source" data-scenario-source="' + variableKey +
-        '" aria-label="Fonte de ' + escapeHtml(contract.VARIABLE_META[variableKey].label) + ' no cenário">' + options + "</select></td>" +
-        '<td><span class="vf-status ' + confidence.tone + ' cm-confidence">' + escapeHtml(confidence.label) + "</span></td>" +
-        '<td><button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" data-scenario-reset="' + variableKey +
-        '" aria-label="Restaurar ' + escapeHtml(contract.VARIABLE_META[variableKey].label) + '">↺</button></td>' +
-        "</tr>";
-    }).join("");
-
-    function line(label, operator, value) {
-      return "<tr><td>" + escapeHtml(label) + '</td><td class="cm-formula__op">' + operator +
-        '</td><td class="cm-formula__amount">' + escapeHtml(formatMoney(value) || "—") + "</td></tr>";
-    }
-
-    refs.drawerBody.innerHTML =
-      '<div class="cm-scenario-grid"><div>' +
-      panel("Composição do cenário", "não persistido · apenas simulação",
-        '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-scenario-table"><thead><tr><th>Variável</th><th>Valor</th><th>Fonte</th><th>Confiança</th><th><span class="vf-visually-hidden">Restaurar</span></th></tr></thead><tbody>' +
-        rows + "</tbody></table></div>") +
-      panel("Gates do cenário", "o backend revalidaria tudo", gatesHtml(item, {
-        computable: simulation.computable,
-        missing: simulation.missing,
-        assumed: simulation.assumed,
-        changed: simulation.changed,
-      }, true)) +
-      "</div>" +
-
-      '<aside class="cm-scenario-side">' +
-      '<div class="cm-scenario-result"><p class="cm-scenario-result__label">Resultado do cenário</p>' +
-      '<div class="cm-scenario-result__main">' +
-      '<div class="cm-scenario-result__metric"><span>LC</span><strong>' + (simulation.computable ? escapeHtml(formatMoney(simulation.profit)) : "—") + "</strong></div>" +
-      '<div class="cm-scenario-result__metric"><span>MC</span><strong>' + (simulation.computable ? escapeHtml(formatPercent(simulation.margin)) : "—") + "</strong></div>" +
-      "</div>" +
-      '<p class="cm-delta-line">Vs. planilha: ' +
-      escapeHtml(simulation.deltaProfit === null ? "—" : formatMoney(simulation.deltaProfit, true)) + " · " +
-      escapeHtml(simulation.deltaMarginPp === null ? "—" : formatPp(simulation.deltaMarginPp)) + "</p>" +
-      '<p class="cm-delta-line">Vs. meta: ' + escapeHtml(simulation.deltaTargetPp === null ? "meta não informada" : formatPp(simulation.deltaTargetPp)) + "</p>" +
-      (simulation.computable
-        ? ""
-        : '<p class="cm-delta-line">Cenário incompleto: falta ' + escapeHtml(simulation.missing.map(variableLabel).join(", ")) + ".</p>") +
-      "</div>" +
-
-      '<div class="cm-formula"><table>' +
-      line("Preço", "+", values.price) +
-      line("Custo", "−", values.cost) +
-      line("Imposto (" + (formatPercent(values.tax) || "—") + ")", "−", taxAmount) +
-      line("Comissão", "−", values.commission) +
-      line("Frete", "−", values.freight) +
-      line("Taxa fixa", "−", values.fixedFee) +
-      '<tr class="cm-formula__total"><td>LC</td><td class="cm-formula__op">=</td><td class="cm-formula__amount">' +
-      escapeHtml(simulation.computable ? formatMoney(simulation.profit) : "—") + "</td></tr>" +
-      "</table></div>" +
-      '<p class="cm-scenario-note"><strong>Override manual — apenas cenário.</strong> Valores digitados aqui não viram evidência, não são gravados em Bases, não alteram o produto e não alteram o marketplace. Na escrita real, o backend recalcularia tudo antes de aceitar qualquer valor.</p>' +
-      "</aside></div>";
-
-    bindScenarioControls();
-  }
-
-  function bindScenarioControls() {
-    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-scenario-source]"), function (select) {
-      select.addEventListener("change", function () {
-        var key = select.getAttribute("data-scenario-source");
-        state.scenario[key] = { source: select.value, value: null, manual: false };
-        renderDrawer();
-      });
-    });
-    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-scenario-value]"), function (input) {
-      input.addEventListener("change", function () {
-        var key = input.getAttribute("data-scenario-value");
-        var raw = input.value.trim();
-        var parsed = raw === "" ? null : Number(raw.replace(",", "."));
-        state.scenario[key] = {
-          source: state.scenario[key].source,
-          value: raw === "" || !Number.isFinite(parsed) ? null : parsed,
-          manual: true,
-        };
-        renderDrawer();
-      });
-    });
-    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-scenario-reset]"), function (button) {
-      button.addEventListener("click", function () {
-        var key = button.getAttribute("data-scenario-reset");
-        state.scenario[key] = { source: state.selection[key], value: null, manual: false };
-        renderDrawer();
-      });
-    });
-  }
-
-  // --- Evidências ------------------------------------------------------------
-
   var EVIDENCE_WHY = {
     price: {
       MELI_API: "O preço da API representa o anúncio neste momento.",
@@ -2388,146 +3365,11 @@
       : { label: "Confirma", className: "" };
   }
 
-  function renderEvidenceTab(item) {
-    var variableKey = contract.VARIABLE_META[state.evidenceVariable] ? state.evidenceVariable : "price";
-    var bucket = item.sources[variableKey];
-    var chosenSource = state.selection[variableKey];
-    var chosen = bucket.entries[chosenSource];
-    var motor = (item.motorChoice && item.motorChoice[variableKey]) || { available: false, source: null, value: null, sourceLabel: null };
-    var disagreement = contract.hasSourceDisagreement(item, variableKey, chosenSource);
-
-    var selector = '<div class="cm-evidence-vars" role="group" aria-label="Variável investigada">' +
-      contract.VARIABLES.map(function (key) {
-        var flagged = contract.hasSourceDisagreement(item, key, state.selection[key]);
-        return '<button class="cm-evidence-var' + (key === variableKey ? " is-active" : "") + '" type="button" data-evidence-var="' + key +
-          '" aria-pressed="' + (key === variableKey ? "true" : "false") + '">' + escapeHtml(contract.VARIABLE_META[key].label) +
-          (flagged ? " ·&nbsp;!" : "") + "</button>";
-      }).join("") + "</div>";
-
-    var cards = bucket.order.map(function (source) {
-      var entry = bucket.entries[source];
-      var role = evidenceRole(item, variableKey, source, chosenSource);
-      var observed = formatDateTime(entry.observedAt);
-      return '<article class="cm-evidence-card ' + role.className + '">' +
-        '<p class="cm-evidence-card__source">' + escapeHtml(entry.sourceLabel) + "</p>" +
-        '<p class="cm-evidence-card__value">' + (entry.available ? escapeHtml(formatByVariable(variableKey, entry.value)) : unavailable("Sem observação")) + "</p>" +
-        '<dl class="cm-evidence-card__meta">' +
-        "<dt>observedAt</dt><dd>" + escapeHtml(observed || "Não informado") + "</dd>" +
-        "<dt>effectiveAt</dt><dd>Não informado</dd>" +
-        "<dt>Momento</dt><dd>" + escapeHtml(entry.kind === "REALIZED" ? "Realizado" : entry.kind === "PROJECTED" ? "Projetado" : "Não informado") + "</dd>" +
-        "<dt>Qualidade</dt><dd>" + escapeHtml(entry.quality || "Não informada") + "</dd>" +
-        (entry.note ? "<dt>Detalhe</dt><dd>" + escapeHtml(entry.note) + "</dd>" : "") +
-        "</dl>" +
-        '<span class="cm-evidence-role">' + escapeHtml(role.label) + "</span></article>";
-    }).join("");
-
-    var why = (EVIDENCE_WHY[variableKey] && EVIDENCE_WHY[variableKey][chosenSource]) ||
-      "Fonte selecionada no cabeçalho da planilha para esta variável.";
-    if (!chosen || !chosen.available) {
-      why = "Esta fonte não observou a variável nesta leitura, então o valor permanece indisponível — não é zero.";
-    } else if (disagreement) {
-      why += " Outra fonte disponível informa valor diferente além da tolerância do Motor, por isso a divergência continua visível.";
-    }
-
-    var confidenceLevel = variableConfidence(item, variableKey).level;
-
-    refs.drawerBody.innerHTML = selector +
-      '<div class="cm-evidence-layout">' +
-      panel("Evidências de " + contract.VARIABLE_META[variableKey].label, "fonte × valor × tempo × papel",
-        '<div class="cm-evidence-cards">' + cards + "</div>") +
-      '<aside class="cm-motor-decision">' +
-      "<span>Valor escolhido pela composição</span>" +
-      "<strong>" + (chosen && chosen.available ? escapeHtml(formatByVariable(variableKey, chosen.value)) : unavailable("Indisponível")) + "</strong>" +
-      "<p>" + escapeHtml(why) + "</p><hr>" +
-      "<dl><dt>Fonte</dt><dd>" + escapeHtml(contract.sourceLabel(chosenSource)) + "</dd>" +
-      "<dt>Confiança</dt><dd>" + escapeHtml(confidenceLevel) + "</dd>" +
-      "<dt>Conflito</dt><dd>" + (disagreement ? "Sim" : "Não") + "</dd>" +
-      "<dt>Uso</dt><dd>" + escapeHtml(state.preset === "realized" ? "Realizado / histórico" : state.preset === "custom" ? "Composição personalizada" : "Projeção / leitura") + "</dd>" +
-      // O Motor tem a própria escolha (realizado tem precedência sobre
-      // projetado). Quando ela difere da composição da planilha, mostrar as
-      // duas evita confundir "o que o Motor concluiu" com "o que estou vendo".
-      (motor.available && motor.source !== chosenSource
-        ? "<dt>Escolha do Motor</dt><dd>" + escapeHtml(formatByVariable(variableKey, motor.value)) + " · " + escapeHtml(motor.sourceLabel) + "</dd>"
-        : "<dt>Escolha do Motor</dt><dd>" + (motor.available ? "mesma fonte" : "sem valor selecionado") + "</dd>") +
-      "</dl></aside></div>";
-
-    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-evidence-var]"), function (button) {
-      button.addEventListener("click", function () {
-        state.evidenceVariable = button.getAttribute("data-evidence-var");
-        renderDrawer();
-      });
-    });
-  }
-
-  // --- Auditoria -------------------------------------------------------------
-
   function techCard(label, value) {
     return '<div class="cm-tech"><span>' + escapeHtml(label) + "</span><strong>" +
       (value === null || value === undefined || value === "" ? "Não informado" : escapeHtml(value)) + "</strong></div>";
   }
 
-  function renderAuditTab(item) {
-    var audit = item.audit || {};
-    var trail = [];
-    contract.VARIABLES.forEach(function (variableKey) {
-      var bucket = item.sources[variableKey];
-      bucket.order.forEach(function (source) {
-        var entry = bucket.entries[source];
-        if (!entry.available) return;
-        trail.push({
-          time: entry.observedAt,
-          title: contract.sourceLabel(source) + " · " + contract.VARIABLE_META[variableKey].label,
-          copy: (entry.kind === "REALIZED" ? "Observação realizada" : "Observação projetada") +
-            " de " + (formatByVariable(variableKey, entry.value) || "—") +
-            (entry.note ? " — " + entry.note : "."),
-        });
-      });
-    });
-    trail.sort(function (a, b) { return String(a.time || "") < String(b.time || "") ? -1 : 1; });
-
-    var reasons = (audit.statusReasons || []).concat(audit.qualityReasons || []);
-
-    refs.drawerBody.innerHTML =
-      '<div class="vf-banner is-info"><div class="vf-banner__content"><p class="vf-banner__title">Rastro da leitura disponível nesta resposta</p>' +
-      '<p class="vf-banner__description">O backend não persiste histórico de auditoria da Central. O que aparece abaixo é o metadado da leitura atual — observações reais que vieram nesta resposta —, não um log de eventos gravado.</p></div></div>' +
-
-      panel("Observações desta leitura", trail.length + " evidência(s) com valor", trail.length
-        ? '<ol class="cm-audit">' + trail.map(function (entry) {
-            return '<li class="cm-audit-row"><span class="cm-audit-time">' + escapeHtml(formatDateTime(entry.time) || "sem horário") + "</span>" +
-              '<span class="cm-audit-dot" aria-hidden="true"></span>' +
-              '<span class="cm-audit-copy"><strong>' + escapeHtml(entry.title) + "</strong><span>" + escapeHtml(entry.copy) + "</span></span></li>";
-          }).join("") + "</ol>"
-        : '<p class="cm-empty-note">Nenhuma observação com valor chegou para este produto.</p>') +
-
-      panel("Decisão e classificação do Motor", "por que este item está neste estado", reasons.length
-        ? "<ul class=\"cm-reason-list\">" + reasons.map(function (reason) { return "<li>" + escapeHtml(reason) + "</li>"; }).join("") + "</ul>" +
-          '<p class="cm-empty-note">Status canônico: <strong>' + escapeHtml(item.status) + "</strong>. " +
-          "Projetada — faltando: " + escapeHtml((audit.projectedMissing || []).join(", ") || "nada") +
-          "; assumido 0: " + escapeHtml((audit.projectedAssumed || []).join(", ") || "nada") + ".</p>"
-        : '<p class="cm-empty-note">Status canônico: <strong>' + escapeHtml(item.status) + "</strong>. O Motor não informou motivos adicionais nesta resposta.</p>") +
-
-      panel("Metadados da leitura", "identidade e contexto", '<div class="cm-technical-grid">' +
-        techCard("identity.itemId", audit.itemId || item.itemId) +
-        techCard("identity.sku", audit.sku || item.sku) +
-        techCard("marketplace", (audit.marketplace || item.marketplace || "").toUpperCase()) +
-        techCard("cliente", audit.clientSlug || (state.client && state.client.slug)) +
-        techCard("sourceMode", state.data.sourceMode) +
-        techCard("última atualização", formatDateTime(state.data.lastUpdated)) +
-        techCard("última venda", formatDateTime(audit.lastSoldAt)) +
-        techCard("pedido mais recente", item.latestOrderId) +
-        techCard("snapshot persistido", null) +
-        "</div>") +
-
-      panel("Regra de segurança", "não negociável", gatesHtml(item, contract.resolveComposition(item, state.selection), false));
-  }
-
-  function updateFooter(item) {
-    var simulation = state.scenario ? contract.simulateScenario(item, state.scenario, state.selection) : null;
-    refs.scenarioReset.disabled = !simulation || !simulation.changed.length;
-    // Aplicação real permanece desabilitada nesta fase: não existe endpoint de
-    // escrita, e nenhum endpoint antigo de precificação é reaproveitado aqui.
-    refs.applyScenario.disabled = true;
-  }
 
   // ---------------------------------------------------------------------------
 

@@ -19,122 +19,102 @@
      Margin Snapshot — quando o backend liga a leitura persistida para o
      cliente, a tela usa a conta resolvida pelo Shell (clienteContaId) e,
      com 2+ contas sem escolha, pede a operação em vez de bloquear a página
-     inteira; o modo legado continua funcionando sem conta. -->
+     inteira; o modo legado continua funcionando sem conta.
+     Cockpit de precificação — ordem de leitura: resumo compacto → tabela
+     (operação) → divergências (recolhidas) → oportunidades. Saúde dos dados
+     é secundária e só vira banner quando há problema. -->
 <body class="vf-page vf-page-central-margem" data-vf-density="compact" data-vf-scope="client" data-vf-module="margem">
   <div>
     <main class="vf-content" id="cm-main" aria-label="Central de Margem">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
-          <header class="vf-page-header">
-            <div class="vf-page-header__main">
-              <p class="vf-page-header__eyebrow">Análises · Exceções operacionais</p>
-              <h1 class="vf-page-header__title">Central de Margem</h1>
-              <p class="vf-page-header__description">Uma planilha operacional para escolher a origem de cada variável, comparar previsto × realizado e entender por que o Motor aceita, questiona ou bloqueia um resultado.</p>
-            </div>
-            <div class="vf-page-header__actions">
-              <span class="vf-tag is-neutral" id="cm-monitored-tag">—</span>
-              <span class="vf-tag is-info" id="cm-source-tag">Motor · leitura</span>
-              <button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-refresh">Atualizar leitura</button>
-            </div>
-          </header>
 
-          <!-- F2.3 — Cliente/Marketplace saíram daqui: o Shell V3 (barra
-               lateral) resolve o Cliente; Marketplace continua fixo em
-               Mercado Livre (o Motor de Margem nunca resolveu outro). -->
-          <section class="cm-context vf-card" aria-label="Contexto da análise">
-            <div class="cm-context__grid">
-              <div class="vf-field cm-context__search">
-                <label class="vf-field__label" for="cm-search">Buscar produto</label>
-                <input class="vf-input vf-input--sm vf-search" id="cm-search" type="search" placeholder="Título, MLB ou SKU" autocomplete="off">
+          <!-- ── Topo compacto ─────────────────────────────────────────── -->
+          <section class="cm-top" aria-label="Resumo da conta">
+            <div class="cm-top__bar">
+              <div class="cm-top__title">
+                <h1 class="cm-top__h1">Central de Margem</h1>
+                <span class="cm-top__context" id="cm-top-context"></span>
               </div>
-              <!-- Período do REALIZADO (leitura persistida). Reusa o parâmetro
-                   global ?periodo=YYYY-MM do Shell (vf-context), sem store
-                   novo. Trocar o período relê só o realizado — o projetado
-                   (snapshot) não é recalculado. -->
-              <div class="vf-field cm-context__period" id="cm-period-wrap" hidden>
-                <label class="vf-field__label" for="cm-period">Período do realizado</label>
-                <select class="vf-select vf-select--sm" id="cm-period"></select>
-              </div>
-              <div class="cm-updated" id="cm-updated" aria-live="polite">
-                <span class="cm-updated__label">Última atualização</span>
-                <strong>—</strong>
+              <div class="cm-top__actions">
+                <div class="vf-field cm-context__period" id="cm-period-wrap" hidden>
+                  <label class="vf-visually-hidden" for="cm-period">Período do realizado</label>
+                  <select class="vf-select vf-select--sm" id="cm-period" title="Período do realizado (o projetado não é recalculado)"></select>
+                </div>
+                <button class="vf-btn vf-btn--ghost vf-btn--sm cm-health-btn" type="button" id="cm-health-toggle" aria-expanded="false" aria-controls="cm-health">
+                  <span class="cm-health-dot" id="cm-health-dot" aria-hidden="true"></span>
+                  <span>Saúde dos dados</span>
+                  <span class="cm-health-count" id="cm-health-count"></span>
+                </button>
+                <button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-refresh">Atualizar leitura</button>
               </div>
             </div>
-            <div class="cm-context__meta" id="cm-context-meta" aria-live="polite"></div>
+            <div class="cm-top__kpis" id="cm-kpis-top" aria-live="polite"></div>
+            <p class="cm-top__line" id="cm-summary-line" aria-live="polite"></p>
           </section>
 
           <div id="cm-page-state" aria-live="polite"></div>
 
-          <section class="vf-card cm-modebar" aria-label="Modo da planilha e saúde das fontes">
-            <div class="cm-modebar__block">
-              <p class="cm-block-label" id="cm-mode-label">Modo da planilha</p>
-              <div class="cm-mode-row">
-                <div class="vf-segmented" id="cm-presets" role="group" aria-labelledby="cm-mode-label">
-                  <button class="vf-segmented__item is-active" type="button" data-preset="projected" aria-pressed="true">Projetado</button>
-                  <button class="vf-segmented__item" type="button" data-preset="realized" aria-pressed="false">Realizado</button>
-                  <button class="vf-segmented__item" type="button" data-preset="custom" aria-pressed="false">Personalizado</button>
-                </div>
+          <!-- ── Saúde dos dados (secundária, recolhida por padrão) ─────── -->
+          <section class="vf-card cm-health" id="cm-health" aria-label="Saúde dos dados" hidden>
+            <div class="cm-health__head">
+              <strong>Saúde dos dados</strong>
+              <div class="cm-health__tags">
+                <span class="vf-tag is-neutral" id="cm-monitored-tag">—</span>
+                <span class="vf-tag is-info" id="cm-source-tag">Motor · leitura</span>
                 <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-open-sources">Fontes e cobertura</button>
               </div>
-              <p class="cm-mode-copy" id="cm-mode-copy" aria-live="polite"></p>
             </div>
-            <div class="cm-modebar__block">
-              <p class="cm-block-label" id="cm-sources-label">Saúde das fontes</p>
-              <div class="cm-source-strip" id="cm-source-strip" aria-labelledby="cm-sources-label"></div>
+            <ul class="cm-health__issues" id="cm-health-issues" aria-live="polite"></ul>
+            <div class="cm-context__meta" id="cm-context-meta" aria-live="polite"></div>
+            <div class="cm-updated" id="cm-updated" aria-live="polite">
+              <span class="cm-updated__label">Última atualização</span>
+              <strong>—</strong>
             </div>
+
+            <div class="cm-health__grid">
+              <div class="cm-health__block">
+                <p class="cm-block-label" id="cm-sources-label">Fontes</p>
+                <div class="cm-source-strip" id="cm-source-strip" aria-labelledby="cm-sources-label"></div>
+              </div>
+              <div class="cm-health__block">
+                <p class="cm-block-label">Resultado financeiro</p>
+                <div class="cm-kpi-grid" id="cm-kpis-financial"></div>
+              </div>
+              <div class="cm-health__block">
+                <p class="cm-block-label">Integridade do dado</p>
+                <div class="cm-kpi-grid cm-kpi-grid--data" id="cm-kpis-integrity"></div>
+              </div>
+              <div class="cm-health__block" id="cm-listing-summary" hidden>
+                <p class="cm-block-label">Status do anúncio</p>
+                <div class="cm-kpi-grid cm-kpi-grid--listing" id="cm-kpis-listing"></div>
+              </div>
+            </div>
+            <p class="cm-summary-scope" id="cm-summary-scope">Selecione um cliente para iniciar a análise.</p>
+
+            <!-- Realizado da CONTA no período (Central de Vendas publicada):
+                 KPIs ponderados, cobertura e freshness. Só na leitura persistida. -->
+            <section class="cm-realized" id="cm-realized" aria-labelledby="cm-realized-title" hidden>
+              <div class="cm-summary-head cm-realized__head">
+                <strong id="cm-realized-title">Realizado no período</strong>
+                <span id="cm-realized-period">—</span>
+              </div>
+              <div class="cm-realized__fresh" id="cm-realized-fresh" aria-live="polite"></div>
+              <div class="cm-kpi-grid cm-kpi-grid--realized" id="cm-kpis-realized"></div>
+              <div class="cm-realized__notes" id="cm-realized-notes"></div>
+            </section>
           </section>
 
-          <section class="cm-summary-groups" aria-label="Resumo operacional">
-            <div class="vf-card cm-summary-panel">
-              <div class="cm-summary-head">
-                <strong>Resultado financeiro</strong>
-                <span>o que aconteceu com a margem</span>
-              </div>
-              <div class="cm-kpi-grid" id="cm-kpis-financial"></div>
-            </div>
-            <div class="vf-card cm-summary-panel">
-              <div class="cm-summary-head">
-                <strong>Integridade do dado</strong>
-                <span>o quanto podemos confiar</span>
-              </div>
-              <div class="cm-kpi-grid cm-kpi-grid--data" id="cm-kpis-integrity"></div>
-            </div>
-            <div class="vf-card cm-summary-panel cm-summary-panel--listing" id="cm-listing-summary" hidden>
-              <div class="cm-summary-head">
-                <strong>Status do anúncio</strong>
-                <span>situação atual no Mercado Livre</span>
-              </div>
-              <div class="cm-kpi-grid cm-kpi-grid--listing" id="cm-kpis-listing"></div>
-            </div>
-          </section>
-          <p class="cm-summary-scope" id="cm-summary-scope">Selecione um cliente para iniciar a análise.</p>
-
-          <!-- Realizado da CONTA no período (Central de Vendas publicada):
-               KPIs ponderados, cobertura e freshness. Só na leitura persistida. -->
-          <section class="vf-card cm-realized" id="cm-realized" aria-labelledby="cm-realized-title" hidden>
-            <div class="cm-summary-head cm-realized__head">
-              <strong id="cm-realized-title">Realizado no período</strong>
-              <span id="cm-realized-period">—</span>
-            </div>
-            <div class="cm-realized__fresh" id="cm-realized-fresh" aria-live="polite"></div>
-            <div class="cm-kpi-grid cm-kpi-grid--realized" id="cm-kpis-realized"></div>
-            <div class="cm-realized__notes" id="cm-realized-notes"></div>
-          </section>
-
-          <section class="cm-section" aria-labelledby="cm-sheet-title">
-            <div class="cm-section__head">
-              <div>
-                <h2 class="cm-section__title" id="cm-sheet-title">Planilha principal</h2>
-                <p class="cm-section__description">O cabeçalho mostra a fonte ativa de cada variável. Presets mudam todas as fontes de uma vez; qualquer ajuste manual vira modo Personalizado.</p>
-              </div>
-              <div class="cm-section__actions">
-                <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-restore-sources">Restaurar Projetado</button>
-              </div>
-            </div>
-
+          <!-- ── Tabela: centro da operação ─────────────────────────────── -->
+          <section class="cm-section cm-section--sheet" aria-labelledby="cm-sheet-title">
+            <h2 class="vf-visually-hidden" id="cm-sheet-title">Produtos</h2>
             <div class="vf-card cm-sheet">
               <div class="cm-sheet__toolbar">
                 <div class="cm-sheet__filters">
+                  <div class="vf-field cm-context__search">
+                    <label class="vf-visually-hidden" for="cm-search">Buscar produto</label>
+                    <input class="vf-input vf-input--sm vf-search" id="cm-search" type="search" placeholder="Buscar por título, MLB ou SKU" autocomplete="off">
+                  </div>
                   <label class="vf-filter-group">
                     <span class="vf-visually-hidden">Filtrar por resultado financeiro</span>
                     <select class="vf-select vf-select--sm" id="cm-financial-filter">
@@ -158,7 +138,7 @@
                   <label class="vf-filter-group" id="cm-listing-status-filter-wrap" hidden>
                     <span class="vf-visually-hidden">Filtrar por status do anúncio</span>
                     <select class="vf-select vf-select--sm" id="cm-listing-status-filter">
-                      <option value="">Status do anúncio: todos</option>
+                      <option value="">Anúncio: todos</option>
                       <option value="active">Ativos</option>
                       <option value="paused">Pausados</option>
                     </select>
@@ -167,37 +147,54 @@
                 </div>
                 <div class="cm-sheet__meta">
                   <span class="vf-tag is-neutral" id="cm-result-count">0 produtos</span>
+                  <div class="vf-segmented cm-view" id="cm-view" role="group" aria-label="Visão da tabela">
+                    <button class="vf-segmented__item is-active" type="button" data-view="operational" aria-pressed="true">Operacional</button>
+                    <button class="vf-segmented__item" type="button" data-view="composition" aria-pressed="false">Composição</button>
+                  </div>
                 </div>
               </div>
 
-              <div id="cm-table-host" class="cm-table-host" aria-live="polite"></div>
-
-              <div class="cm-sheet__footer">
-                <span>Somente leitura · nenhuma escrita de preço, promoção ou Base</span>
-                <span>Clique em uma linha para abrir a leitura do Motor</span>
+              <!-- Composição: fontes por variável + presets. Só na visão
+                   Composição — a visão operacional prioriza a decisão. -->
+              <div class="cm-compbar" id="cm-compbar" hidden>
+                <div class="vf-segmented" id="cm-presets" role="group" aria-label="Modo da composição">
+                  <button class="vf-segmented__item is-active" type="button" data-preset="projected" aria-pressed="true">Projetado</button>
+                  <button class="vf-segmented__item" type="button" data-preset="realized" aria-pressed="false">Realizado</button>
+                  <button class="vf-segmented__item" type="button" data-preset="custom" aria-pressed="false">Personalizado</button>
+                </div>
+                <p class="cm-mode-copy" id="cm-mode-copy" aria-live="polite"></p>
+                <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-restore-sources">Restaurar Projetado</button>
               </div>
+
+              <div id="cm-table-host" class="cm-table-host" aria-live="polite"></div>
             </div>
 
             <nav class="vf-pagination" id="cm-pagination" aria-label="Paginação dos produtos" hidden></nav>
           </section>
 
-          <section class="cm-section" aria-labelledby="cm-divergences-title">
-            <div class="cm-section__head">
-              <div>
-                <h2 class="cm-section__title" id="cm-divergences-title">Fila de divergências</h2>
-                <p class="cm-section__description">Em vez de repetir a planilha inteira, esta fila mostra somente o conflito, a alternativa e o impacto aproximado no resultado.</p>
-              </div>
-              <div class="cm-section__actions">
-                <button class="vf-btn vf-btn--sm" type="button" id="cm-critical-only" aria-pressed="false">Somente críticas</button>
-              </div>
+          <!-- ── Divergências: resumo recolhido, capacidade técnica preservada ── -->
+          <section class="cm-section cm-divs" id="cm-divergences" aria-labelledby="cm-divergences-title">
+            <div class="cm-divs__bar">
+              <h2 class="cm-divs__title" id="cm-divergences-title">Divergências</h2>
+              <span class="cm-divs__summary" id="cm-divergence-count"></span>
+              <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-divergences-toggle" aria-expanded="false" aria-controls="cm-divergences-body">Ver divergências</button>
             </div>
-            <div class="vf-card cm-div-card">
+            <div class="vf-card cm-div-card" id="cm-divergences-body" hidden>
               <div class="cm-div-banner">
-                <span><strong>Selecionada × alternativa:</strong> abra “Evidências” para investigar a variável já selecionada no drawer.</span>
-                <span id="cm-divergence-count"></span>
+                <span>Selecionada × alternativa. “Evidências” abre o produto já na variável.</span>
+                <button class="vf-btn vf-btn--sm" type="button" id="cm-critical-only" aria-pressed="false">Somente críticas</button>
               </div>
               <div id="cm-divergences-host"></div>
             </div>
+          </section>
+
+          <!-- ── Oportunidades (fonte bulk persistida; sem N+1) ─────────── -->
+          <section class="cm-section cm-opps" id="cm-opportunities" aria-labelledby="cm-opps-title" hidden>
+            <div class="cm-divs__bar">
+              <h2 class="cm-divs__title" id="cm-opps-title">Oportunidades de preço e promoção</h2>
+              <span class="cm-divs__summary" id="cm-opps-meta"></span>
+            </div>
+            <div class="vf-card cm-opps__card" id="cm-opps-host"></div>
           </section>
         </div>
       </div>
@@ -218,7 +215,6 @@
   <aside class="vf-drawer vf-drawer--lg cm-drawer" id="cm-drawer" role="dialog" aria-modal="true" aria-labelledby="cm-drawer-title" tabindex="-1">
     <header class="vf-drawer__header">
       <div class="cm-drawer__heading">
-        <p class="vf-page-header__eyebrow">Produto · Motor de Margem</p>
         <h2 class="vf-drawer__title" id="cm-drawer-title">Produto</h2>
         <div class="cm-drawer__meta" id="cm-drawer-meta"></div>
       </div>
@@ -229,11 +225,13 @@
       </div>
     </header>
 
+    <!-- Resumo essencial, fixo no topo (não é aba). -->
+    <div class="cm-dsum" id="cm-drawer-summary"></div>
+
     <nav class="vf-tabs cm-drawer__tabs" id="cm-drawer-tabs" aria-label="Seções do produto">
-      <button class="vf-tab is-active" type="button" data-tab="summary" aria-pressed="true">Resumo</button>
-      <button class="vf-tab" type="button" data-tab="scenario" aria-pressed="false">Cenário</button>
+      <button class="vf-tab is-active" type="button" data-tab="pricing" aria-pressed="true">Precificar</button>
       <button class="vf-tab" type="button" data-tab="evidence" aria-pressed="false">Evidências</button>
-      <button class="vf-tab" type="button" data-tab="audit" aria-pressed="false">Auditoria</button>
+      <button class="vf-tab" type="button" data-tab="history" aria-pressed="false">Histórico</button>
     </nav>
 
     <div class="vf-drawer__body" id="cm-drawer-body"></div>
@@ -241,13 +239,25 @@
     <footer class="vf-drawer__footer">
       <span class="cm-drawer__position" id="cm-drawer-position"></span>
       <div class="cm-drawer__footer-actions">
-        <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-scenario-reset">Restaurar cenário</button>
         <button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-drawer-close-footer">Fechar</button>
-        <button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-apply-scenario" disabled
-                title="Escrita real desabilitada: não existe endpoint autorizado e auditável para aplicar preço.">Aplicar cenário</button>
       </div>
     </footer>
   </aside>
+
+  <!-- Preview da alteração: confirmação humana antes de qualquer escrita. -->
+  <div class="vf-overlay cm-confirm-overlay" id="cm-confirm-overlay">
+    <div class="vf-modal vf-modal--lg cm-confirm" role="dialog" aria-modal="true" aria-labelledby="cm-confirm-title">
+      <div class="vf-modal__header">
+        <h2 class="vf-modal__title" id="cm-confirm-title">Preview da alteração</h2>
+        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" type="button" id="cm-confirm-close" aria-label="Cancelar">✕</button>
+      </div>
+      <div class="vf-modal__body" id="cm-confirm-body"></div>
+      <div class="vf-modal__footer cm-confirm__footer">
+        <button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-confirm-cancel">Cancelar</button>
+        <button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-confirm-apply" disabled>Confirmar alteração no Mercado Livre</button>
+      </div>
+    </div>
+  </div>
 
   <div class="vf-toast-stack" id="cm-toasts" aria-live="polite"></div>
 

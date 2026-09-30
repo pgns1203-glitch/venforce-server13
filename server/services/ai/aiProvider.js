@@ -62,7 +62,11 @@ function limparJson(texto) {
 //   sucesso -> { ok:true,  data, provider, model, usage }
 //   erro    -> { ok:false, erro, codigo, provider, model, raw? }
 //
-// Códigos extras em relação ao client: JSON_INVALIDO
+// Códigos extras em relação ao client:
+//   AI_RESPONSE_TRUNCATED — a IA parou no limite de tokens (stop_reason
+//                           "max_tokens"). O JSON viria cortado; antes isso
+//                           aparecia como JSON_INVALIDO e escondia a causa.
+//   JSON_INVALIDO         — resposta completa, mas não é JSON válido.
 // ---------------------------------------------------------------------------
 async function gerarJSON(opts) {
   const resp = await gerarTexto(opts || {});
@@ -70,6 +74,18 @@ async function gerarJSON(opts) {
   if (!resp.ok) {
     // erro já vem padronizado do client (NO_API_KEY, HTTP_*, TIMEOUT...)
     return resp;
+  }
+
+  if (resp.stopReason === "max_tokens") {
+    return {
+      ok: false,
+      codigo: "AI_RESPONSE_TRUNCATED",
+      erro: "A resposta da IA foi cortada no limite de tamanho. Tente gerar novamente.",
+      provider: resp.provider,
+      model: resp.model,
+      usage: resp.usage || null,
+      raw: resp.texto, // só para debug; o service decide se persiste
+    };
   }
 
   const limpo = limparJson(resp.texto);

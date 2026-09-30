@@ -6723,7 +6723,8 @@
   // ===========================================================================
   function carregarHistoricoOtimizacoes(itemId, meuToken) {
     var url = "/anuncios-meli/" + encodeURIComponent(itemId) +
-              "/otimizacoes?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
+              "/otimizacoes?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+              (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
     api(url).then(function (r) {
       if (!DET || DET.token !== meuToken) return;
       // 403 = otimizador ainda é admin-only. Não é o modal quebrado: o resto
@@ -6779,9 +6780,13 @@
     }
     marcarChipsIa(tipo, '<span class="vf-status is-info">Consultando IA…</span>');
 
+    // A sugestão é da operação selecionada: o backend confere que o anúncio
+    // é desta conta (ClienteConta) antes de chamar a IA.
+    var corpoGerar = { clienteSlug: AM.clienteAtual.slug, tipo: tipo };
+    if (AM.contaMlId) corpoGerar.clienteContaId = AM.contaMlId;
     api("/anuncios-meli/" + encodeURIComponent(a.item_id) + "/otimizar", {
       method: "POST",
-      body: { clienteSlug: AM.clienteAtual.slug, tipo: tipo },
+      body: corpoGerar,
     }).then(function (r) {
       if (!DET || DET.token !== meuToken) return;
       if (!r.data || !r.data.ok) {
@@ -6846,9 +6851,13 @@
 
   function aprovar(otimId, dados, msgOk) {
     var meuToken = DET ? DET.token : 0;
+    // Cliente/conta vão junto: o backend não aprova só pelo id.
+    var corpoAprovar = Object.assign({}, dados);
+    if (AM.clienteAtual) corpoAprovar.clienteSlug = AM.clienteAtual.slug;
+    if (AM.contaMlId) corpoAprovar.clienteContaId = AM.contaMlId;
     api("/anuncios-meli/otimizacoes/" + otimId + "/aprovar", {
       method: "PATCH",
-      body: dados,
+      body: corpoAprovar,
     }).then(function (r) {
       if (!DET || DET.token !== meuToken) return;
       if (r.data && r.data.ok) {

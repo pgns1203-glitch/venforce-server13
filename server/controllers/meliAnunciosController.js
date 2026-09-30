@@ -33,6 +33,7 @@ const motorMargemService = require("../services/motorMargem/motorMargemService")
 const cliente360ProdutosEngine = require("../services/cliente360/cliente360ProdutosEngine");
 const marginEngine = require("../services/motorMargem/core/marginEngine");
 const { mlFetch } = require("../utils/mlClient");
+const { assertClienteNaCarteira } = require("../services/squads/authorizationService");
 
 function extrairClienteContaId(valor) {
   return /^\d+$/.test(String(valor || "")) ? Number(valor) : null;
@@ -2664,8 +2665,10 @@ async function marcarRevisado(req, res) {
 
 // ----------------------------------------------------------------------------
 // POST /anuncios-meli/:itemId/otimizar
-// body: { clienteSlug, tipo }   tipo = seo | descricao | ficha_tecnica
+// body: { clienteSlug, clienteContaId?, tipo }   tipo = seo | descricao | ficha_tecnica
 // Gera sugestão textual com IA e salva no banco. NÃO atualiza o Mercado Livre.
+// clienteContaId: a operação selecionada — o anúncio tem que ser dela (409
+// ANUNCIO_DE_OUTRA_CONTA). Sem ele, só segue quando a conta é inequívoca.
 // ----------------------------------------------------------------------------
 async function otimizar(req, res) {
   try {
@@ -2674,6 +2677,7 @@ async function otimizar(req, res) {
 
     const resultado = await otimizadorService.otimizar({
       clienteSlug: clienteSlug,
+      clienteContaId: extrairClienteContaId(req.body && req.body.clienteContaId),
       itemId: itemId,
       tipo: tipo,
       userId: req.user && req.user.id,
@@ -2688,11 +2692,13 @@ async function otimizar(req, res) {
         otimizacao: resultado.otimizacao,
       });
     }
-    return res.status(http).json({
+    const corpo = {
       ok: false,
       codigo: resultado.codigo,
       motivo: resultado.motivo,
-    });
+    };
+    if (resultado.contas) corpo.contas = resultado.contas;
+    return res.status(http).json(corpo);
   } catch (err) {
     console.error("[anuncios-meli] otimizar:", err.message);
     return res.status(500).json({
@@ -2704,7 +2710,7 @@ async function otimizar(req, res) {
 }
 
 // ----------------------------------------------------------------------------
-// GET /anuncios-meli/:itemId/otimizacoes?clienteSlug=&tipo=
+// GET /anuncios-meli/:itemId/otimizacoes?clienteSlug=&clienteContaId=&tipo=
 // Histórico de sugestões já geradas para um anúncio.
 // ----------------------------------------------------------------------------
 async function listarOtimizacoes(req, res) {
@@ -2720,14 +2726,15 @@ async function listarOtimizacoes(req, res) {
 
     const resultado = await otimizadorService.listarOtimizacoes({
       clienteSlug: clienteSlug,
+      clienteContaId: extrairClienteContaId(req.query && req.query.clienteContaId),
       itemId: itemId,
       tipo: tipo,
     });
 
     if (!resultado.ok) {
-      return res
-        .status(resultado.http || 400)
-        .json({ ok: false, motivo: resultado.motivo });
+      const corpo = { ok: false, motivo: resultado.motivo };
+      if (resultado.codigo) corpo.codigo = resultado.codigo;
+      return res.status(resultado.http || 400).json(corpo);
     }
     return res.json({ ok: true, otimizacoes: resultado.otimizacoes });
   } catch (err) {
@@ -2741,21 +2748,30 @@ async function listarOtimizacoes(req, res) {
 // ----------------------------------------------------------------------------
 // PATCH /anuncios-meli/otimizacoes/:id/aprovar
 // body: { tituloAprovado?, modeloAprovado?, descricaoAprovada?,
-//         fichaAprovadaJson?, observacao? }
+//         fichaAprovadaJson?, observacao?, clienteSlug?, clienteContaId? }
 // Registra escolha humana sobre a sugestão. NÃO envia nada ao Mercado Livre.
+//
+// O id sozinho não autoriza: com clienteSlug (já checado pelo guard de
+// carteira do router) a otimização tem que ser desse cliente; sem ele, o
+// cliente DA otimização passa pela mesma checagem de carteira
+// (assertClienteNaCarteira — o seam do guard, não uma regra nova).
 // ----------------------------------------------------------------------------
 async function aprovarOtimizacao(req, res) {
   try {
     const { id } = req.params;
+    const body = req.body || {};
     const resultado = await otimizadorService.aprovar({
       id: parseInt(id, 10),
-      dados: req.body || {},
+      dados: body,
       userId: req.user && req.user.id,
+      clienteSlug: body.clienteSlug || null,
+      clienteContaId: extrairClienteContaId(body.clienteContaId),
+      autorizarCliente: (clienteId) => assertClienteNaCarteira(req.user || {}, clienteId),
     });
     if (!resultado.ok) {
-      return res
-        .status(resultado.http || 400)
-        .json({ ok: false, motivo: resultado.motivo });
+      const corpo = { ok: false, motivo: resultado.motivo };
+      if (resultado.codigo) corpo.codigo = resultado.codigo;
+      return res.status(resultado.http || 400).json(corpo);
     }
     return res.json({ ok: true, otimizacao: resultado.otimizacao });
   } catch (err) {

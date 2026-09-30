@@ -60,8 +60,31 @@ function blocoDadosEnxuto(anuncio) {
 // Bloco de dados — versão completa (para descrição e ficha técnica).
 // Inclui descrição atual (truncada) e TODOS os atributos (vazios indicam
 // lacuna a preencher na ficha técnica).
+//
+// A descrição vem do PARÂMETRO — lida ao vivo do Mercado Livre pelo service.
+// `meli_anuncios` não guarda descrição: ler `anuncio.descricao_atual` (como
+// era feito) sempre dava vazio e o prompt dizia "(sem descrição)" mesmo com
+// texto real no anúncio.
+//
+// descricaoEstado === "erro" = a leitura falhou. Não é o mesmo que "o anúncio
+// não tem descrição" — a IA não pode escrever como se partisse do zero.
 // -----------------------------------------------------------------------------
-function blocoDadosCompleto(anuncio, descricaoAtual) {
+const DESCRICAO_MAX_PROMPT = 350;
+
+function textoDescricaoParaPrompt(descricaoAtual, descricaoEstado) {
+  const bruta = descricaoAtual == null ? "" : String(descricaoAtual).trim();
+  if (bruta) {
+    return bruta.length > DESCRICAO_MAX_PROMPT
+      ? bruta.slice(0, DESCRICAO_MAX_PROMPT) + "..."
+      : bruta;
+  }
+  if (descricaoEstado === "erro") {
+    return "(não foi possível ler a descrição atual no Mercado Livre — não a trate como vazia)";
+  }
+  return "(sem descrição)";
+}
+
+function blocoDadosCompleto(anuncio, descricaoAtual, descricaoEstado) {
   let attrs = [];
   try {
     attrs = Array.isArray(anuncio.attributes_json)
@@ -80,7 +103,6 @@ function blocoDadosCompleto(anuncio, descricaoAtual) {
         .join("\n")
     : "  (nenhum atributo informado)";
 
-  const descricao = (anuncio.descricao_atual || "").trim().slice(0, 350);
 
   return [
     "Dados do anúncio:",
@@ -93,7 +115,7 @@ function blocoDadosCompleto(anuncio, descricaoAtual) {
     "Atributos (atuais):",
     attrsTxt,
     "Descrição atual:",
-    descricao ? (anuncio.descricao_atual.length > 350 ? descricao + "..." : descricao) : "(sem descrição)",
+    textoDescricaoParaPrompt(descricaoAtual, descricaoEstado),
   ].join("\n");
 }
 
@@ -168,7 +190,7 @@ function promptSeo(anuncio) {
 // =============================================================================
 // Descrição — blocos padronizados.
 // =============================================================================
-function promptDescricao(anuncio, descricaoAtual) {
+function promptDescricao(anuncio, descricaoAtual, descricaoEstado) {
   return [
     "Tarefa: gerar uma DESCRIÇÃO completa para o anúncio Mercado Livre,",
     "dividida em blocos padronizados.",
@@ -225,7 +247,7 @@ function promptDescricao(anuncio, descricaoAtual) {
     "- Liste lacunas que impediram texto melhor (ex.: 'marca não informada',",
     "  'sem dimensões cadastradas', 'descrição atual genérica').",
     "",
-    blocoDadosCompleto(anuncio, descricaoAtual),
+    blocoDadosCompleto(anuncio, descricaoAtual, descricaoEstado),
     "",
     "Responda SOMENTE com este JSON, sem nada antes ou depois:",
     "{",
@@ -276,7 +298,7 @@ function montarPrompt(tipo, anuncio, extras) {
     case "seo":
       return promptSeo(anuncio);
     case "descricao":
-      return promptDescricao(anuncio, extras.descricaoAtual);
+      return promptDescricao(anuncio, extras.descricaoAtual, extras.descricaoEstado);
     case "ficha_tecnica":
       return promptFichaTecnica(anuncio, extras.descricaoAtual);
     default:

@@ -372,12 +372,12 @@ function BotaoLancar({ rotulo, onClick, editar = false }) {
   );
 }
 
-function LinhaSemana({ semana, colunas }) {
+function LinhaSemana({ semana, colunas, origem = "consolidado" }) {
   const intervalo = `${String(semana.de).slice(8)}–${String(semana.ate).slice(8)}`;
   return (
-    <tr className="vf-ph-row vf-ph-row--semana">
+    <tr className={`vf-ph-row vf-ph-row--semana vf-ph-row--semana-${origem}`}>
       <th scope="row" className="vf-table__sticky-cell vf-ph-ancora">
-        <span className="vf-ph-indent vf-ph-indent--3">
+        <span className={`vf-ph-indent ${origem === "conta" ? "vf-ph-indent--2" : "vf-ph-indent--3"}`}>
           <span className="vf-ph-semana__rotulo">{semana.semana}</span>
           <span className="vf-ph-semana__dias">{intervalo}</span>
         </span>
@@ -471,7 +471,10 @@ function RotuloConta({ rotulo }) {
   );
 }
 
-function LinhaConta({ cliente, competencia, conta, colunas, onLancar, atualizacao }) {
+function LinhaConta({
+  cliente, competencia, conta, colunas, onLancar, atualizacao,
+  aberto, onAlternar, estadoSemanas, carregarSemanasContas,
+}) {
   const semDado = !conta.resumo;
   const manualSubstituido = conta.manual?.substituidoPorAutomatico;
   const adsPorCliente = conta.fonte?.tipo !== "manual";
@@ -482,60 +485,88 @@ function LinhaConta({ cliente, competencia, conta, colunas, onLancar, atualizaca
   const motivo = semDado && !sincronizandoAgora && conta.status?.motivo && conta.status.codigo !== "sem_integracao"
     ? conta.status.motivo
     : null;
+  const colSpan = colunas.length + 3;
+  const semanasConta = estadoSemanas?.contas?.find((item) => Number(item.contaId) === Number(conta.id))?.semanas;
+
+  useEffect(() => {
+    if (aberto && !estadoSemanas) carregarSemanasContas(cliente.id, competencia);
+  }, [aberto, estadoSemanas, carregarSemanasContas, cliente.id, competencia]);
+
   return (
-    <tr className={`vf-ph-row vf-ph-row--conta${semDado ? " is-sem-dado" : ""}${conta.ativa ? "" : " is-inativa"}${conta.precisaAcao ? " is-acao" : ""}`}>
-      <th scope="row" className="vf-table__sticky-cell vf-ph-ancora vf-ph-conta">
-        <span className="vf-ph-indent">
-          <span className="vf-ph-conta__rotulo" title={conta.rotulo}><RotuloConta rotulo={conta.rotulo} /></span>
-          <span className="vf-ph-conta__meta">
-            <StatusCompacto status={conta.status} />
-            {motivo && <span className="vf-ph-meta vf-ph-conta__motivo">· {motivo}</span>}
-            {!semDado && conta.dadosAte && (
-              <span
-                className="vf-ph-meta"
-                title={`Dados até ${formatarData(conta.dadosAte)}${conta.atualizadoEm ? ` · atualizado ${formatarDataHora(conta.atualizadoEm)}` : ""}`}
-              >
-                · dados até {dataCurta(conta.dadosAte, competencia)}
-              </span>
-            )}
-            {conta.avisos?.length > 0 && (
-              <span className="vf-ph-aviso" title={conta.avisos.join("\n")} aria-label={conta.avisos.join(". ")}>⚠</span>
-            )}
-            <EstadoNaAtualizacao estadoConta={estadoConta} emCurso={atualizacaoEmCurso(atualizacao)} />
-            {manualSubstituido && (
-              <span
-                className="vf-ph-meta"
-                title={`Lançamento manual guardado (FAT ${formatarMoeda(conta.manual.valores?.fat, { casas: 0 })}${conta.manual.atualizadoPor ? `, por ${conta.manual.atualizadoPor}` : ""}) — o dado automático é o exibido.`}
-              >
-                · manual substituído pelo automático
-              </span>
-            )}
+    <>
+      <tr className={`vf-ph-row vf-ph-row--conta${semDado ? " is-sem-dado" : ""}${conta.ativa ? "" : " is-inativa"}${conta.precisaAcao ? " is-acao" : ""}${aberto ? " is-aberta" : ""}`}>
+        <CelulaExpansivel
+          aberto={aberto}
+          onClick={onAlternar}
+          nivel="conta"
+          rotuloAcessivel={`Conta ${conta.rotulo} — ${aberto ? "recolher" : "expandir"} semanas`}
+        >
+          <span className="vf-ph-indent">
+            <span className="vf-ph-conta__rotulo" title={conta.rotulo}><RotuloConta rotulo={conta.rotulo} /></span>
+            <span className="vf-ph-conta__meta">
+              <StatusCompacto status={conta.status} />
+              {motivo && <span className="vf-ph-meta vf-ph-conta__motivo">· {motivo}</span>}
+              {!semDado && conta.dadosAte && (
+                <span
+                  className="vf-ph-meta"
+                  title={`Dados até ${formatarData(conta.dadosAte)}${conta.atualizadoEm ? ` · atualizado ${formatarDataHora(conta.atualizadoEm)}` : ""}`}
+                >
+                  · dados até {dataCurta(conta.dadosAte, competencia)}
+                </span>
+              )}
+              {conta.avisos?.length > 0 && (
+                <span className="vf-ph-aviso" title={conta.avisos.join("\n")} aria-label={conta.avisos.join(". ")}>⚠</span>
+              )}
+              <EstadoNaAtualizacao estadoConta={estadoConta} emCurso={atualizacaoEmCurso(atualizacao)} />
+              {manualSubstituido && (
+                <span
+                  className="vf-ph-meta"
+                  title={`Lançamento manual guardado (FAT ${formatarMoeda(conta.manual.valores?.fat, { casas: 0 })}${conta.manual.atualizadoPor ? `, por ${conta.manual.atualizadoPor}` : ""}) — o dado automático é o exibido.`}
+                >
+                  · manual substituído pelo automático
+                </span>
+              )}
+            </span>
           </span>
-        </span>
-      </th>
-      <td className="vf-table__sticky-cell vf-ph-contexto">
-        {conta.fonte && <span className="vf-ph-meta" title={`Fonte do dado: ${conta.fonte.rotulo}`}>{conta.fonte.rotulo}</span>}
-        {conta.podeLancarManual && (
-          <BotaoLancar
-            rotulo={`${conta.fonte?.tipo === "manual" ? "Editar manual" : "Lançar dados"} — ${conta.rotulo}`}
-            editar={conta.fonte?.tipo === "manual"}
-            onClick={() => onLancar(cliente, conta)}
-          />
-        )}
-      </td>
-      {colunas.map((c) => {
-        const semAdsPorConta = c.grupo === "ads" && adsPorCliente;
-        return (
-          <Celula
-            key={c.chave}
-            coluna={c}
-            valor={semAdsPorConta ? null : conta.resumo?.[c.chave] ?? null}
-            titulo={semAdsPorConta ? NOTA_ADS_POR_CONTA : undefined}
-          />
-        );
-      })}
-      <td className="vf-ph-folga" />
-    </tr>
+        </CelulaExpansivel>
+        <td className="vf-table__sticky-cell vf-ph-contexto">
+          {conta.fonte && <span className="vf-ph-meta" title={`Fonte do dado: ${conta.fonte.rotulo}`}>{conta.fonte.rotulo}</span>}
+          {conta.podeLancarManual && (
+            <BotaoLancar
+              rotulo={`${conta.fonte?.tipo === "manual" ? "Editar manual" : "Lançar dados"} — ${conta.rotulo}`}
+              editar={conta.fonte?.tipo === "manual"}
+              onClick={() => onLancar(cliente, conta)}
+            />
+          )}
+        </td>
+        {colunas.map((c) => {
+          const semAdsPorConta = c.grupo === "ads" && adsPorCliente;
+          return (
+            <Celula
+              key={c.chave}
+              coluna={c}
+              valor={semAdsPorConta ? null : conta.resumo?.[c.chave] ?? null}
+              titulo={semAdsPorConta ? NOTA_ADS_POR_CONTA : undefined}
+            />
+          );
+        })}
+        <td className="vf-ph-folga" />
+      </tr>
+      {aberto && estadoSemanas?.carregando && <LinhasEsqueleto colSpan={colSpan} linhas={2} rotulo="Carregando semanas da conta" />}
+      {aberto && estadoSemanas?.erro && !estadoSemanas.carregando && (
+        <LinhaErro
+          colSpan={colSpan}
+          mensagem={`Não foi possível carregar as semanas da conta. ${estadoSemanas.erro.mensagem}`}
+          onTentar={() => carregarSemanasContas(cliente.id, competencia, { forcar: true })}
+        />
+      )}
+      {aberto && Array.isArray(semanasConta) && semanasConta.length === 0 && (
+        <LinhaEstado colSpan={colSpan}>Sem dados semanais reais para esta conta na competência.</LinhaEstado>
+      )}
+      {aberto && semanasConta?.map((semana) => (
+        <LinhaSemana key={semana.semana} semana={semana} colunas={colunas} origem="conta" />
+      ))}
+    </>
   );
 }
 
@@ -546,11 +577,11 @@ function LinhaHistorico({ cliente, aberto, onAlternar, colunas }) {
         aberto={aberto}
         onClick={onAlternar}
         nivel="historico"
-        rotuloAcessivel={`Histórico mensal de ${cliente.nome} — ${aberto ? "recolher" : "expandir"} competências`}
+        rotuloAcessivel={`Consolidado semanal do cliente ${cliente.nome} — ${aberto ? "recolher" : "expandir"} histórico`}
       >
         <span className="vf-ph-indent">
-          <span className="vf-ph-historico__rotulo">Histórico mensal</span>
-          <span className="vf-ph-meta"> · consolidado do cliente</span>
+          <span className="vf-ph-historico__rotulo">Consolidado semanal do cliente</span>
+          <span className="vf-ph-meta"> · histórico mensal</span>
         </span>
       </CelulaExpansivel>
       <td className="vf-table__sticky-cell vf-ph-contexto" />
@@ -615,11 +646,13 @@ function MetaCliente({ cliente, competencia, competenciaAtual, atualizacao }) {
 function LinhaCliente({
   cliente, competencia, competenciaAtual, expansao,
   mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
+  semanasContasPorCliente, carregarSemanasContas,
   colunas, onLancar, atualizacao, podeAtualizar, onAtualizar, onDispensar,
 }) {
   const aberto = expansao.clientesAbertos.has(cliente.id);
   const historicoAberto = expansao.historicosAbertos.has(cliente.id);
   const estado = mesesPorCliente[cliente.id];
+  const estadoSemanasContas = semanasContasPorCliente[`${cliente.id}:${competencia}`];
   const colSpan = colunas.length + 3;
   const semDado = !cliente.resumo;
   const emCurso = atualizacaoEmCurso(atualizacao);
@@ -683,7 +716,19 @@ function LinhaCliente({
       )}
 
       {aberto && cliente.contas?.map((conta) => (
-        <LinhaConta key={conta.id} cliente={cliente} competencia={competencia} conta={conta} colunas={colunas} onLancar={onLancar} atualizacao={atualizacao} />
+        <LinhaConta
+          key={conta.id}
+          cliente={cliente}
+          competencia={competencia}
+          conta={conta}
+          colunas={colunas}
+          onLancar={onLancar}
+          atualizacao={atualizacao}
+          aberto={expansao.contasAbertas.has(`${cliente.id}:${conta.id}`)}
+          onAlternar={() => expansao.alternarConta(cliente.id, conta.id)}
+          estadoSemanas={estadoSemanasContas}
+          carregarSemanasContas={carregarSemanasContas}
+        />
       ))}
       {aberto && (!cliente.contas || cliente.contas.length === 0) && (
         <LinhaEstado colSpan={colSpan}>
@@ -744,22 +789,25 @@ function alternarEm(setter, chave) {
 
 export function useExpansao() {
   const [clientesAbertos, setClientesAbertos] = useState(() => new Set());
+  const [contasAbertas, setContasAbertas] = useState(() => new Set());
   const [historicosAbertos, setHistoricosAbertos] = useState(() => new Set());
   const [mesesAbertos, setMesesAbertos] = useState(() => new Set());
 
   const alternarCliente = useCallback((id) => alternarEm(setClientesAbertos, id), []);
+  const alternarConta = useCallback((clienteId, contaId) => alternarEm(setContasAbertas, `${clienteId}:${contaId}`), []);
   const alternarHistorico = useCallback((id) => alternarEm(setHistoricosAbertos, id), []);
   const alternarMes = useCallback((clienteId, competencia) => alternarEm(setMesesAbertos, `${clienteId}:${competencia}`), []);
 
   const recolherTudo = useCallback(() => {
     setClientesAbertos(new Set());
+    setContasAbertas(new Set());
     setHistoricosAbertos(new Set());
     setMesesAbertos(new Set());
   }, []);
 
   return {
-    clientesAbertos, historicosAbertos, mesesAbertos,
-    alternarCliente, alternarHistorico, alternarMes, recolherTudo,
+    clientesAbertos, contasAbertas, historicosAbertos, mesesAbertos,
+    alternarCliente, alternarConta, alternarHistorico, alternarMes, recolherTudo,
     temExpandido: clientesAbertos.size > 0,
   };
 }
@@ -817,6 +865,7 @@ function BotaoOrdenar({ chave, label, titulo, ordem, onOrdenar }) {
 export function TabelaHierarquica({
   clientes, competencia, competenciaAtual = competencia, colunas: colunasProp, grupos, expansao,
   mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
+  semanasContasPorCliente = {}, carregarSemanasContas = () => {},
   atualizando, onLancar = () => {},
   atualizacoes = {}, podeAtualizar = false, onAtualizar = () => {}, onDispensarAtualizacao = () => {},
 }) {
@@ -883,7 +932,7 @@ export function TabelaHierarquica({
       <table className="vf-table vf-table--compact vf-ph-table" style={{ "--vf-ph-head-2": `${alturaGrupo}px` }}>
         <caption className="vf-visually-hidden">
           Clientes da carteira na competência selecionada. Cada linha é o número consolidado do cliente; ao expandir,
-          aparecem as contas/operações e o histórico mensal.
+          aparecem as contas/operações expansíveis por semana e o histórico do consolidado semanal do cliente.
         </caption>
         <thead>
           <tr className="vf-ph-thead-grupos" ref={linhaGrupoRef}>
@@ -937,6 +986,8 @@ export function TabelaHierarquica({
               carregarMeses={carregarMeses}
               semanasPorChave={semanasPorChave}
               carregarSemanas={carregarSemanas}
+              semanasContasPorCliente={semanasContasPorCliente}
+              carregarSemanasContas={carregarSemanasContas}
               colunas={colunas}
               onLancar={onLancar}
               competenciaAtual={competenciaAtual}

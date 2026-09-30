@@ -27,7 +27,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  listarPainelContas, listarMesesCliente, listarSemanasMes,
+  listarPainelContas, listarMesesCliente, listarSemanasMes, listarSemanasContas,
   salvarLancamentoManual, removerLancamentoManual,
   iniciarAtualizacaoCliente, obterAtualizacaoCliente,
 } from "../services/painelContasApi.js";
@@ -84,6 +84,11 @@ export function usePainelContas() {
   const [mesesPorCliente, setMesesPorCliente] = useState({});
   // { [`${clienteId}:${competencia}`]: { carregando, erro, semanas, definicaoSemana } }
   const [semanasPorChave, setSemanasPorChave] = useState({});
+  // { [`${clienteId}:${competencia}`]: { carregando, erro, contas } }
+  // `contas` é o batch semanal de TODAS as contas daquele cliente.
+  const [semanasContasPorCliente, setSemanasContasPorCliente] = useState({});
+  const semanasContasEmCursoRef = useRef(new Set());
+  const semanasContasCarregadasRef = useRef(new Set());
   // { [clienteId]: { competencia, job, erro, iniciando } }
   const [atualizacoes, setAtualizacoes] = useState({});
   const dispensadosRef = useRef(new Set());
@@ -140,6 +145,9 @@ export function usePainelContas() {
     // ANO da competência selecionada.
     setMesesPorCliente({});
     setSemanasPorChave({});
+    setSemanasContasPorCliente({});
+    semanasContasEmCursoRef.current.clear();
+    semanasContasCarregadasRef.current.clear();
     return carregarLista();
   }, [carregarLista]);
 
@@ -192,6 +200,39 @@ export function usePainelContas() {
           [chave]: { carregando: false, erro: normalizarErro(err), semanas: null },
         }));
       });
+  }, []);
+
+  const carregarSemanasContas = useCallback((clienteId, comp, { forcar = false } = {}) => {
+    const chave = `${clienteId}:${comp}`;
+    if (!forcar && (semanasContasEmCursoRef.current.has(chave) || semanasContasCarregadasRef.current.has(chave))) return;
+    semanasContasEmCursoRef.current.add(chave);
+    setSemanasContasPorCliente((prev) => {
+      const atual = prev[chave];
+      if (!forcar && atual && (atual.carregando || atual.contas)) return prev;
+      return { ...prev, [chave]: { carregando: true, erro: null, contas: atual?.contas ?? null } };
+    });
+
+    listarSemanasContas(clienteId, comp)
+      .then((payload) => {
+        semanasContasCarregadasRef.current.add(chave);
+        setSemanasContasPorCliente((prev) => ({
+          ...prev,
+          [chave]: {
+            carregando: false,
+            erro: null,
+            contas: payload.contas || [],
+            definicaoSemana: payload.definicaoSemana,
+          },
+        }));
+      })
+      .catch((err) => {
+        semanasContasCarregadasRef.current.delete(chave);
+        setSemanasContasPorCliente((prev) => ({
+          ...prev,
+          [chave]: { carregando: false, erro: normalizarErro(err), contas: null },
+        }));
+      })
+      .finally(() => semanasContasEmCursoRef.current.delete(chave));
   }, []);
 
   // Lançamento manual: o servidor é a autoridade (validação, precedência do
@@ -302,6 +343,12 @@ export function usePainelContas() {
     setSemanasPorChave((prev) => Object.fromEntries(
       Object.entries(prev).filter(([k]) => !terminaram.some((id) => k.startsWith(`${id}:`)))
     ));
+    setSemanasContasPorCliente((prev) => Object.fromEntries(
+      Object.entries(prev).filter(([k]) => !terminaram.some((id) => k.startsWith(`${id}:`)))
+    ));
+    for (const chave of semanasContasCarregadasRef.current) {
+      if (terminaram.some((id) => chave.startsWith(`${id}:`))) semanasContasCarregadasRef.current.delete(chave);
+    }
     carregarLista({ silencioso: true });
   }, [atualizacoes, carregarLista]);
 
@@ -341,6 +388,7 @@ export function usePainelContas() {
     atualizando: carregando && clientes !== null,
     mesesPorCliente, carregarMeses,
     semanasPorChave, carregarSemanas,
+    semanasContasPorCliente, carregarSemanasContas,
     salvarManual, removerManual,
     atualizacoes, atualizarCliente, dispensarAtualizacao,
   };

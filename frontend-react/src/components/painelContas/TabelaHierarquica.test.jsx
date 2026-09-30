@@ -60,7 +60,7 @@ function semDados(over = {}) {
   });
 }
 
-function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, carregarMeses = vi.fn(), carregarSemanas = vi.fn(), onLancar = vi.fn(), grupos = GRUPOS_PADRAO }) {
+function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, semanasContasPorCliente = {}, carregarMeses = vi.fn(), carregarSemanas = vi.fn(), carregarSemanasContas = vi.fn(), onLancar = vi.fn(), grupos = GRUPOS_PADRAO }) {
   const expansao = useExpansao();
   return (
     <TabelaHierarquica
@@ -73,13 +73,15 @@ function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, carregarM
       carregarMeses={carregarMeses}
       semanasPorChave={semanasPorChave}
       carregarSemanas={carregarSemanas}
+      semanasContasPorCliente={semanasContasPorCliente}
+      carregarSemanasContas={carregarSemanasContas}
       onLancar={onLancar}
     />
   );
 }
 
 const abrirCliente = (nome = "Acme Comércio") => userEvent.click(screen.getByRole("button", { name: new RegExp(`Cliente ${nome}`) }));
-const abrirHistorico = () => userEvent.click(screen.getByRole("button", { name: /histórico mensal/i }));
+const abrirHistorico = () => userEvent.click(screen.getByRole("button", { name: /consolidado semanal do cliente/i }));
 
 describe("linha do cliente: escopo, status, fonte e frescor sem abrir nada", () => {
   it("diz que o número é consolidado e de quantas contas", () => {
@@ -172,6 +174,45 @@ describe("expansão: contas primeiro, histórico sob demanda", () => {
     expect(within(linhas[0]).getByText("· LOJA 1")).toHaveClass("vf-ph-conta__operacao");
     expect(within(linhas[1]).getByText("R$ 200")).toBeInTheDocument();
     expect(carregarMeses).not.toHaveBeenCalled();
+  });
+
+  it("cliente abre contas; só a conta escolhida abre suas semanas e fechá-la mantém o cliente aberto", async () => {
+    const semanasContasPorCliente = {
+      "1:2026-09": {
+        contas: [
+          { contaId: 1, semanas: [{ semana: "S1", de: "2026-09-01", ate: "2026-09-07", resumo: resumo({ fat: 40, ads: null, acos: null, tacos: null }) }] },
+          { contaId: 2, semanas: [{ semana: "S1", de: "2026-09-01", ate: "2026-09-07", resumo: resumo({ fat: 80, ads: null, acos: null, tacos: null }) }] },
+          { contaId: 3, semanas: [] },
+        ],
+      },
+    };
+    const { container } = render(<Casca clientes={[cliente()]} semanasContasPorCliente={semanasContasPorCliente} />);
+
+    await abrirCliente();
+    expect(container.querySelectorAll(".vf-ph-row--conta")).toHaveLength(3);
+    expect(container.querySelectorAll(".vf-ph-row--semana-conta")).toHaveLength(0);
+    expect(screen.getByText("Consolidado semanal do cliente")).toBeInTheDocument();
+
+    const conta1 = screen.getByRole("button", { name: /conta mercado livre 1.*expandir semanas/i });
+    await userEvent.click(conta1);
+    expect(container.querySelectorAll(".vf-ph-row--semana-conta")).toHaveLength(1);
+    expect(container.querySelector(".vf-ph-row--semana-conta")).toHaveTextContent("S1");
+    expect(container.querySelector(".vf-ph-row--semana-conta")).toHaveTextContent("R$ 40");
+    expect(screen.getByRole("button", { name: /conta mercado livre 2.*expandir semanas/i })).toHaveAttribute("aria-expanded", "false");
+
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 1.*recolher semanas/i }));
+    expect(container.querySelectorAll(".vf-ph-row--semana-conta")).toHaveLength(0);
+    expect(container.querySelectorAll(".vf-ph-row--conta")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: /cliente acme comércio.*recolher contas/i })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("ao abrir a primeira conta, solicita um único batch semanal do cliente", async () => {
+    const carregarSemanasContas = vi.fn();
+    render(<Casca clientes={[cliente()]} carregarSemanasContas={carregarSemanasContas} />);
+    await abrirCliente();
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 2.*expandir semanas/i }));
+    expect(carregarSemanasContas).toHaveBeenCalledTimes(1);
+    expect(carregarSemanasContas).toHaveBeenCalledWith(1, "2026-09");
   });
 
   it("Ads por conta é — com a explicação (Ads é medido por cliente)", async () => {

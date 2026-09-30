@@ -645,7 +645,12 @@
 }
 
 .vf-ph-row--conta > .vf-ph-ancora {
-  padding: 5px var(--vf-table-cell-px) !important;
+  padding: 0 !important;
+}
+
+.vf-ph-toggle--conta {
+  align-items: flex-start;
+  padding: 5px var(--vf-table-cell-px);
 }
 
 .vf-ph-row--conta > td.num {
@@ -699,12 +704,12 @@
   cursor: help;
 }
 
-.vf-ph-conta .vf-ph-indent {
+.vf-ph-toggle--conta .vf-ph-indent {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  padding-left: calc(var(--vf-ph-recuo-filha) - var(--vf-table-cell-px));
+  padding-left: calc(var(--vf-ph-recuo-filha) - var(--vf-table-cell-px) - 20px);
 }
 
 .vf-ph-row--conta.is-inativa .vf-ph-conta__canal {
@@ -868,6 +873,10 @@
 
 .vf-ph-indent--3 {
   padding-left: calc(var(--vf-ph-recuo-filha) + var(--vf-sp-4) - var(--vf-table-cell-px));
+}
+
+.vf-ph-indent--2 {
+  padding-left: calc(var(--vf-ph-recuo-filha) + var(--vf-sp-2) - var(--vf-table-cell-px));
 }
 
 /* ── Números ────────────────────────────────────────────────────────────

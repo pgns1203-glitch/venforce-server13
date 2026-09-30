@@ -36,6 +36,13 @@ export function listarSemanasMes(clienteId, competencia, { signal } = {}) {
   });
 }
 
+export function listarSemanasContas(clienteId, competencia, { signal } = {}) {
+  return requisitar(`/painel-contas/${encodeURIComponent(clienteId)}/contas/semanas`, {
+    params: { competencia },
+    signal,
+  });
+}
+
 function caminhoManual(clienteId, contaId, competencia) {
   return `/painel-contas/${encodeURIComponent(clienteId)}/contas/${encodeURIComponent(contaId)}/manual/${encodeURIComponent(competencia)}`;
 }

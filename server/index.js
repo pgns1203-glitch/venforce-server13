@@ -121,6 +121,7 @@ const squadService = require("./services/squads/squadService");
 const {
   ensureEntregasClienteSchema,
   ensureAnunciosMargemProjetadaSnapshotSchema,
+  ensureMargemPrecificacaoSchema,
 } = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
@@ -2057,6 +2058,14 @@ const server = app.listen(PORT, () => {
       }
     }
   );
+
+  // Central de Margem — trilha de precificação (preview → aplicação). A
+  // migration versionada é aplicada aqui, serializada por advisory lock (duas
+  // instâncias subindo juntas não disputam o CREATE TABLE). O repositório
+  // chama o mesmo runner como proteção, nunca como mecanismo principal.
+  ensureMargemPrecificacaoSchema().catch((err) => {
+    console.error("[schema] erro ao garantir schema de margem_precificacao_aplicacoes no boot:", err.message);
+  });
 
   // /setup é desabilitado em produção — as colunas novas de `custos`
   // (produto_nome, variacao_nome, updated_at) são garantidas aqui.

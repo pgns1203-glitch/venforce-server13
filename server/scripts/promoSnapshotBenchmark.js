@@ -71,6 +71,8 @@ async function ambiente(n) {
         return { rows: r[r.length - 1]?.rows || [], rowCount: r[r.length - 1]?.affectedRows };
       }
       const r = await pg.query(sql, params);
+      // Linhas que a consulta paginada das Oportunidades devolve ao Node.
+      if (/WITH promos AS/.test(sql)) contador.linhasOportunidades = r.rows.filter((x) => x.item_id != null).length;
       return { rows: r.rows, rowCount: r.affectedRows };
     },
   };
@@ -136,13 +138,13 @@ async function lerOportunidades(amb, page = 1) {
     obterConta: async () => ({ id: 7, external_account_id: "555" }),
     carregarRealizada: async () => ({ porMlb: new Map(), periodo: null }),
   });
-  return { r, ms: Number(process.hrtime.bigint() - t0) / 1e6, queries: amb.contador.total - q0 };
+  return { r, ms: Number(process.hrtime.bigint() - t0) / 1e6, queries: amb.contador.total - q0, linhasDoBanco: amb.contador.linhasOportunidades };
 }
 
 async function lerSnapshot(amb, runId) {
   const q0 = amb.contador.total;
   const t0 = process.hrtime.bigint();
-  const r = await repo.listarLinhasSnapshot({ clienteContaId: 7, runId, page: 10, limit: 100 }, amb.db);
+  const r = await repo.listarLinhasSnapshot({ clienteContaId: 7, sellerId: "555", runId, page: 10, limit: 100 }, amb.db);
   return { r, ms: Number(process.hrtime.bigint() - t0) / 1e6, queries: amb.contador.total - q0 };
 }
 
@@ -154,10 +156,17 @@ async function main() {
   await amb.pg.query("ANALYZE");
   const op1 = await lerOportunidades(amb, 1);
   const op2 = await lerOportunidades(amb, 50);
+  const ultimaPag = Math.max(1, Math.ceil(op1.r.total / 20));
+  const opU = await lerOportunidades(amb, ultimaPag);
   const sn = await lerSnapshot(amb, run.id);
-  const plano = await amb.pg.query(`EXPLAIN ANALYZE SELECT p.item_id FROM promo_snapshot_itens p
-     JOIN margin_projection_snapshots s ON s.cliente_conta_id = p.cliente_conta_id AND s.marketplace = 'meli' AND s.item_id = p.item_id AND s.catalog_missing_since IS NULL
-    WHERE p.run_id = $1 AND p.cliente_conta_id = 7 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`, [run.id]);
+  // Plano da consulta REAL das Oportunidades (filtro + 1/anúncio + ordem + LIMIT no banco).
+  const { sqlOportunidadesPaginadas } = require("../services/motorMargem/precificacao/precificacaoOportunidadesSql");
+  const q = sqlOportunidadesPaginadas({
+    fonteSql: `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno FROM promo_snapshot_itens p
+                WHERE p.run_id = $1 AND p.cliente_conta_id = $2 AND p.seller_id = $3 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,
+    paramsFonte: [run.id, 7, "555"], clienteContaId: 7, vendasPorMlb: new Map(), page: 50, limit: 20,
+  });
+  const plano = await amb.pg.query(`EXPLAIN ANALYZE ${q.sql}`, q.params);
 
   // Mesma leitura com um catálogo 10x menor: o número de consultas não muda.
   const pequeno = await ambiente(Math.max(10, Math.floor(N / 10)));
@@ -185,14 +194,16 @@ async function main() {
   console.log(`  escritas no ML ............................ ${amb.ml.escritas().length}`);
   console.log(`  heap: antes ${mb(s.heapAntes)} MB · pico ${mb(s.pico)} MB · Δ pico ${mb(s.pico - s.heapAntes)} MB`);
   console.log(`\nLeitura (Central)`);
-  console.log(`  Oportunidades página 1 .................... ${op1.ms.toFixed(1)} ms · ${op1.queries} consultas · total=${op1.r.total} hasNext=${op1.r.hasNext}`);
-  console.log(`  Oportunidades página 50 ................... ${op2.ms.toFixed(1)} ms · ${op2.queries} consultas`);
+  console.log(`  Oportunidades página 1 .................... ${op1.ms.toFixed(1)} ms · ${op1.queries} consultas · ${op1.linhasDoBanco} linhas do banco · total=${op1.r.total} hasNext=${op1.r.hasNext}`);
+  console.log(`  Oportunidades página 50 ................... ${op2.ms.toFixed(1)} ms · ${op2.queries} consultas · ${op2.linhasDoBanco} linhas do banco`);
+  console.log(`  Oportunidades última página (${ultimaPag}) ........ ${opU.ms.toFixed(1)} ms · ${opU.linhasDoBanco} linhas do banco · hasNext=${opU.r.hasNext}`);
   console.log(`  Oportunidades com ${Math.floor(N / 10)} anúncios ........... ${opP.ms.toFixed(1)} ms · ${opP.queries} consultas  ← mesmo nº de consultas (sem N+1)`);
   console.log(`  Snapshot (página 10, 100 linhas) .......... ${sn.ms.toFixed(1)} ms · ${sn.queries} consultas · total=${sn.r.total}`);
   console.log(`\nPlano da consulta das Oportunidades:\n  ${plano.rows.map((x) => x["QUERY PLAN"]).join("\n  ")}`);
   console.log(`\nEstimativa com ML real: ${chamadasMl} GETs espaçados em ≥${intervalo} ms (PROMO_SNAPSHOT_REQUEST_INTERVAL_MS) ≈ ${Math.ceil((chamadasMl * intervalo) / 60000)} min por conta, fora a latência de cada GET com ${resolvePromoSnapshotConfig({}).itemConcurrency} em paralelo.`);
 
   if (op1.queries !== opP.queries) { console.error("FALHOU: consultas das Oportunidades cresceram com o catálogo"); process.exitCode = 1; }
+  if (op1.linhasDoBanco > 20 || op2.linhasDoBanco > 20) { console.error("FALHOU: Oportunidades trouxeram mais que a página do banco"); process.exitCode = 1; }
   if (amb.ml.escritas().length) { console.error("FALHOU: houve escrita no ML"); process.exitCode = 1; }
   await amb.pg.close();
   await pequeno.pg.close();

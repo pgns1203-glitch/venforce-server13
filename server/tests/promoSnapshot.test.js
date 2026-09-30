@@ -62,13 +62,15 @@ function catalogo(prefixo, n, promosDe = () => [F.promo({ id: `P-${prefixo}`, st
   return itens;
 }
 
-function ambiente({ sellers = null, roteiro = null, env = {}, marginSnaps = new Map(), contasCliente = [], grants = [], validarConta = null } = {}) {
+function ambiente({ sellers = null, roteiro = null, env = {}, marginSnaps = new Map(), contasCliente = [], grants = [], validarConta = null, sleepHook = null } = {}) {
   const relogio = new F.Relogio();
-  const repo = F.criarRepoFake({ relogio, marginSnaps, contasCliente, grants });
+  // Contas "vivas" deste ambiente (reconectar seller muda external_account_id).
+  const contas = JSON.parse(JSON.stringify(CONTAS));
+  const repo = F.criarRepoFake({ relogio, marginSnaps, contasCliente, grants, sellerDaConta: (id) => (contas[id] ? contas[id].external_account_id : null) });
   const ml = F.criarMlFake({ sellers: sellers || { 555: { itens: catalogo("A", 3) }, 666: { itens: catalogo("B", 2) }, 777: { itens: catalogo("C", 1) } }, roteiro });
   const logger = F.loggerMemoria();
   const esperas = [];
-  const sleep = async (ms) => { esperas.push(ms); };
+  const sleep = async (ms) => { esperas.push(ms); if (sleepHook) await sleepHook(ms, relogio, repo); };
   const envFinal = { ...ENV, ...env };
   const config = resolvePromoSnapshotConfig(envFinal);
   const limiter = createRateLimiter({ minIntervalMs: 0, now: () => relogio.agora(), sleep });
@@ -76,7 +78,7 @@ function ambiente({ sellers = null, roteiro = null, env = {}, marginSnaps = new 
   const kicks = [];
   const base = { repo, env: envFinal, logger, now, kick: () => kicks.push(1), db: { query: async () => ({ rows: [] }) } };
   const procDeps = {
-    ...base, config, sleep, rateLimiter: limiter, mlFetch: ml.mlFetch, agoraIso: () => relogio.iso(),
+    ...base, config, sleep, rateLimiter: limiter, mlFetch: ml.mlFetch, agoraIso: () => relogio.iso(), clock: () => relogio.agora(),
     validarConta: validarConta || (async () => ({})),
   };
   const runService = service.criarRunService(base);
@@ -84,35 +86,43 @@ function ambiente({ sellers = null, roteiro = null, env = {}, marginSnaps = new 
     db: base.db, logger, config, runService,
     processor: (run, ctx) => processPromoSnapshotRun(run, { ...procDeps, signal: ctx.signal }),
   });
-  const amb = { relogio, repo, ml, logger, esperas, config, limiter, base, procDeps, runService, worker, kicks, env: envFinal };
-  amb.enfileirar = (contaId, reason = "manual_sync") => service.enqueuePromoSnapshotRun(idConta(contaId), { reason }, base);
+  const amb = { relogio, repo, ml, logger, esperas, config, limiter, base, procDeps, runService, worker, kicks, env: envFinal, contas };
+  amb.id = (contaId) => {
+    const c = contas[contaId];
+    return { clienteId: c.cliente_id, clienteSlug: c.cliente_slug, clienteContaId: c.id, marketplace: "meli", sellerId: c.external_account_id };
+  };
+  amb.enfileirar = (contaId, reason = "manual_sync") => service.enqueuePromoSnapshotRun(amb.id(contaId), { reason }, base);
   amb.rodar = async (contaId, reason) => { await amb.enfileirar(contaId, reason); return worker.runOnce(); };
-  amb.conta = (contaId) => repo._st.contas.get(contaId);
+  amb.estado = (contaId) => service.estadoSincronizacao({ clienteContaId: contaId, sellerId: contas[contaId].external_account_id }, base);
+  amb.conta = (contaId, seller = contas[contaId].external_account_id) => repo._st.contas.get(F.chaveConta(contaId, "meli", seller));
   amb.linhasAtuais = (contaId) => { const c = amb.conta(contaId); return c ? repo._st.itens.filter((i) => i.run_id === c.current_run_id) : []; };
   TODAS_CHAMADAS_ML.push(ml.chamadas);
   return amb;
 }
 
 // Serviço de contas falso para a validação REAL de conta (resolverContaDoCliente).
-const contasServiceFake = {
-  async resolverClientePorIdOuSlug({ clienteSlug }) {
-    const c = CLIENTES[clienteSlug];
-    if (!c) { const e = new Error("Cliente não encontrado."); e.statusCode = 404; throw e; }
-    return c;
-  },
-  async obterConta(id) {
-    const c = CONTAS[Number(id)];
-    if (!c) { const e = new Error("Conta não encontrada."); e.statusCode = 404; throw e; }
-    return c;
-  },
-};
+function contasServiceFake(contas = CONTAS) {
+  return {
+    async resolverClientePorIdOuSlug({ clienteSlug }) {
+      const c = CLIENTES[clienteSlug];
+      if (!c) { const e = new Error("Cliente não encontrado."); e.statusCode = 404; throw e; }
+      return c;
+    },
+    async obterConta(id) {
+      const c = contas[Number(id)];
+      if (!c) { const e = new Error("Conta não encontrada."); e.statusCode = 404; throw e; }
+      return c;
+    },
+  };
+}
 
 function depsLeitura(amb, extra = {}) {
+  const svc = contasServiceFake(amb.contas);
   return {
     ...amb.base,
-    clienteContaService: contasServiceFake,
+    clienteContaService: svc,
     resolverContaDoCliente,
-    obterConta: (id) => contasServiceFake.obterConta(id),
+    obterConta: (id) => svc.obterConta(id),
     ...extra,
   };
 }
@@ -424,7 +434,7 @@ cenario("partial dentro do limite: promovido e marcado como parcial; acima do li
   assert.strictEqual(r.run.promovido, true);
   assert.strictEqual(amb.conta(7).parcial, true);
   assert.strictEqual(amb.conta(7).itens_sem_leitura, 1);
-  const estado = await service.estadoSincronizacao({ clienteContaId: 7 }, amb.base);
+  const estado = await amb.estado(7);
   assert.strictEqual(estado.state, "partial");
 
   // Próximo run com 50% de falhas → partial NÃO promovido; o ponteiro fica.
@@ -439,7 +449,7 @@ cenario("partial dentro do limite: promovido e marcado como parcial; acima do li
   assert.strictEqual(r2.run.promovido, false);
   assert.strictEqual(amb.conta(7).current_run_id, bom);
   assert.strictEqual(amb.conta(7).last_attempt_status, "partial");
-  const e2 = await service.estadoSincronizacao({ clienteContaId: 7 }, amb.base);
+  const e2 = await amb.estado(7);
   assert.strictEqual(e2.state, "failed", "tentativa mais nova que o snapshot não foi aceita");
   assert.strictEqual(e2.hasSnapshot, true);
 });
@@ -456,7 +466,7 @@ cenario("failed: falha estrutural (catálogo) não toca o snapshot atual; estado
   assert.strictEqual(r.run.errorCode, "PROMO_SNAPSHOT_CATALOGO_FALHOU");
   assert.strictEqual(amb.conta(7).current_run_id, bom);
   assert.strictEqual(amb.linhasAtuais(7).length, linhasBoas);
-  const e = await service.estadoSincronizacao({ clienteContaId: 7 }, amb.base);
+  const e = await amb.estado(7);
   assert.strictEqual(e.state, "failed");
   assert.strictEqual(e.errorCode, "PROMO_SNAPSHOT_CATALOGO_FALHOU");
   assert.strictEqual(e.hasSnapshot, true);
@@ -464,21 +474,21 @@ cenario("failed: falha estrutural (catálogo) não toca o snapshot atual; estado
 
 cenario("estados de UI: never_synced → syncing → fresh → stale (com idade, progresso e last_success_at)", async () => {
   const amb = ambiente();
-  const e0 = await service.estadoSincronizacao({ clienteContaId: 7 }, amb.base);
+  const e0 = await amb.estado(7);
   assert.strictEqual(e0.state, "never_synced");
   assert.strictEqual(e0.hasSnapshot, false);
   await amb.enfileirar(7);
-  const e1 = await service.estadoSincronizacao({ clienteContaId: 7 }, amb.base);
+  const e1 = await amb.estado(7);
   assert.strictEqual(e1.state, "syncing");
   await amb.worker.runOnce();
-  const e2 = await service.estadoSincronizacao({ clienteContaId: 7 }, amb.base);
+  const e2 = await amb.estado(7);
   assert.strictEqual(e2.state, "fresh");
   assert.strictEqual(e2.ageMinutes, 0);
   assert.strictEqual(e2.processed, 3);
   assert.strictEqual(e2.total, 3);
   assert.ok(e2.lastSuccessAt);
   amb.relogio.avancar(361);
-  const e3 = await service.estadoSincronizacao({ clienteContaId: 7 }, amb.base);
+  const e3 = await amb.estado(7);
   assert.strictEqual(e3.state, "stale");
   assert.strictEqual(e3.ageMinutes, 361);
   assert.strictEqual(e3.snapshotState, "stale");
@@ -849,6 +859,372 @@ cenario("nenhum segredo persistido: metadados/contadores com chave sensível sã
   assert.throws(() => assertNoSecrets({ processor: { access_token: "x" } }));
   assert.throws(() => assertNoSecrets({ Authorization: "Bearer x" }));
   assert.doesNotThrow(() => assertNoSecrets({ processor: { retries: 1 } }));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auditoria — achado 1: seller reconectado (identidade = conta + seller)
+// ─────────────────────────────────────────────────────────────────────────────
+
+cenario("seller reconectado: conta 7 passa de 555 para 666 — snapshot, run e oportunidades do 555 nunca servem ao 666", async () => {
+  const sellers = { 555: { itens: catalogo("A", 3) }, 666: { itens: catalogo("N", 2) } };
+  const amb = ambiente({ sellers, marginSnaps: new Map([...snapsPara(7, "A", 3), ...snapsPara(7, "N", 2)]) });
+  // 1. Snapshot do seller 555.
+  assert.strictEqual((await amb.rodar(7)).status, "completed");
+  const run555 = amb.conta(7).current_run_id;
+  const deps = depsCentral(amb);
+  const op555 = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps);
+  assert.deepStrictEqual(op555.oportunidades.map((o) => o.itemId), ["MLBA0001", "MLBA0002", "MLBA0003"]);
+  // 2. Snapshot vence e um run do 555 fica na fila.
+  amb.relogio.avancar(400);
+  const { run: velho } = await amb.enfileirar(7);
+  assert.strictEqual(velho.sellerId, "555");
+  // 3. A MESMA cliente_conta_id é reconectada ao seller 666.
+  amb.contas[7].external_account_id = "666";
+  const st = await read.obterStatus({ clienteSlug: "loja-a", clienteContaId: 7, autoTrigger: false }, depsLeitura(amb));
+  assert.strictEqual(st.sellerId, "666");
+  assert.strictEqual(st.sync.state, "never_synced", "leitura para 666 não retorna o snapshot 555");
+  assert.strictEqual(st.sync.hasSnapshot, false);
+  assert.strictEqual(st.sync.snapshotRunId, null);
+  assert.strictEqual(st.sync.activeRun, null, "o run do 555 não aparece como sincronização do 666");
+  const snap = await read.obterSnapshot({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(snap.disponivel, false);
+  assert.deepStrictEqual(snap.promocoes, []);
+  // Run antigo NÃO é reaproveitado como run atual: encerrado; o novo é do 666.
+  const vRow = amb.repo._st.runs.find((r) => r.id === velho.id);
+  assert.strictEqual(vRow.status, "failed");
+  assert.strictEqual(vRow.error_code, "PROMO_SNAPSHOT_SELLER_SUBSTITUIDO");
+  const fila = amb.repo._st.runs.filter((r) => r.status === "queued");
+  assert.strictEqual(fila.length, 1);
+  assert.strictEqual(fila[0].seller_id, "666");
+  assert.ok(amb.logger.eventos.some((e) => e.event === "promo_snapshot_run_superseded" && e.run_id === velho.id));
+  // Oportunidades antigas não aparecem.
+  const opAntes = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps);
+  assert.strictEqual(opAntes.disponivel, false);
+  assert.deepStrictEqual(opAntes.oportunidades, []);
+  // 4. Primeiro snapshot do 666: ponteiro e linhas do 555 apagados.
+  const r666 = await amb.worker.runOnce();
+  assert.strictEqual(r666.status, "completed");
+  assert.strictEqual(r666.run.sellerId, "666");
+  assert.strictEqual(amb.conta(7, "555"), undefined);
+  assert.strictEqual(amb.repo._st.itens.filter((i) => i.cliente_conta_id === 7 && i.seller_id === "555").length, 0);
+  const op666 = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps);
+  assert.deepStrictEqual(op666.oportunidades.map((o) => o.itemId), ["MLBN0001", "MLBN0002"]);
+  assert.notStrictEqual(op666.fonte.runId, run555);
+  assert.ok(amb.ml.chamadas.filter((c) => /MLBN/.test(c.path)).every((c) => c.mlUserId === "666"));
+});
+
+cenario("seller reconectado NO MEIO do run: o run do seller anterior termina failed (SELLER_DIVERGENTE) e não promove nada", async () => {
+  const amb = ambiente({ sellers: { 555: { itens: catalogo("A", 3) }, 666: { itens: catalogo("N", 2) } } });
+  await amb.enfileirar(7);
+  const run = await amb.repo.claimNextQueuedRun();
+  amb.contas[7].external_account_id = "666";
+  const resultado = await processPromoSnapshotRun(run, amb.procDeps);
+  const fim = await amb.runService.markRunCompleted(run.id, amb.base.db, resultado);
+  assert.strictEqual(fim.status, "failed");
+  assert.strictEqual(fim.errorCode, "PROMO_SNAPSHOT_SELLER_DIVERGENTE");
+  assert.strictEqual(fim.promovido, false);
+  assert.strictEqual(amb.conta(7, "666"), undefined, "nada vira snapshot do 666");
+  assert.strictEqual((amb.conta(7, "555") || {}).current_run_id, undefined, "nem do 555");
+  assert.strictEqual((await amb.estado(7)).state, "never_synced");
+  assert.ok(amb.logger.eventos.some((e) => e.event === "promo_snapshot_failed" && e.error_code === "PROMO_SNAPSHOT_SELLER_DIVERGENTE"));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auditoria — achado 2: parcial não apaga dado bom
+// ─────────────────────────────────────────────────────────────────────────────
+
+cenario("parcial aceito: 40 no snapshot anterior, 39 lidos + 1 falha → o que falhou continua, marcado como herdado (não some)", async () => {
+  const sellers = { 555: { itens: catalogo("A", 40) } };
+  const amb = ambiente({ sellers, marginSnaps: snapsPara(7, "A", 40) });
+  const r1 = await amb.rodar(7);
+  assert.strictEqual(r1.status, "completed");
+  assert.strictEqual(amb.linhasAtuais(7).length, 40);
+  const lido1 = amb.linhasAtuais(7).find((l) => l.item_id === "MLBA0007");
+  amb.relogio.avancar(400);
+  const falhando = F.criarMlFake({ sellers, roteiro: (p) => (p.includes("seller-promotions/items/MLBA0007") ? F.erro500() : undefined) });
+  TODAS_CHAMADAS_ML.push(falhando.chamadas);
+  amb.procDeps.mlFetch = falhando.mlFetch;
+  const r2 = await amb.rodar(7);
+  assert.strictEqual(r2.run.status, "partial");
+  assert.strictEqual(r2.run.promovido, true, "1/40 = 2,5% ≤ 5%: aceito");
+  assert.strictEqual(r2.run.erros, 1);
+  assert.strictEqual(r2.run.itensHerdados, 1);
+  const c = amb.conta(7);
+  assert.strictEqual(c.current_run_id, r2.run.id);
+  const linhas = amb.linhasAtuais(7);
+  assert.strictEqual(linhas.length, 40, "39 lidas agora + 1 herdada");
+  const herdada = linhas.find((l) => l.item_id === "MLBA0007");
+  assert.strictEqual(herdada.herdado, true);
+  assert.strictEqual(herdada.observed_at, lido1.observed_at, "mantém a data da leitura boa original");
+  assert.strictEqual(herdada.origem_run_id, r1.run.id);
+  assert.ok(linhas.filter((l) => l.item_id !== "MLBA0007").every((l) => l.herdado === false && l.observed_at !== lido1.observed_at));
+  assert.strictEqual(c.itens_sem_leitura, 1);
+  assert.strictEqual(c.itens_herdados, 1);
+  const e = await amb.estado(7);
+  assert.strictEqual(e.state, "partial");
+  assert.strictEqual(e.itemsWithoutRead, 1);
+  assert.strictEqual(e.itemsInherited, 1);
+  // Snapshot e Oportunidades identificam a linha como herdada/stale.
+  const s = await read.obterSnapshot({ clienteSlug: "loja-a", clienteContaId: 7, itemId: "MLBA0007" }, depsLeitura(amb));
+  assert.strictEqual(s.promocoes[0].herdada, true);
+  assert.strictEqual(s.promocoes[0].observedAt, lido1.observed_at);
+  assert.strictEqual(s.snapshot.itensHerdados, 1);
+  const op = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, limit: 50 }, depsCentral(amb));
+  const o7 = op.oportunidades.find((o) => o.itemId === "MLBA0007");
+  assert.ok(o7, "a oportunidade do item que falhou não sumiu");
+  assert.strictEqual(o7.promocao.herdada, true);
+  assert.strictEqual(o7.promocao.observadaEm, lido1.observed_at);
+  assert.strictEqual(op.fonte.itensHerdados, 1);
+  assert.ok(amb.logger.eventos.some((ev) => ev.event === "promo_snapshot_partial" && ev.itens_herdados === 1));
+});
+
+cenario("parcial aceito com leitura boa velha demais (PROMO_SNAPSHOT_INHERIT_MAX_MINUTES): não herda, mas fica contado como sem leitura", async () => {
+  const sellers = { 555: { itens: catalogo("A", 40) } };
+  const amb = ambiente({ sellers, env: { PROMO_SNAPSHOT_INHERIT_MAX_MINUTES: "60" } });
+  await amb.rodar(7);
+  amb.relogio.avancar(400);
+  amb.procDeps.mlFetch = async (cl, p, o) => (p.includes("seller-promotions/items/MLBA0007") ? F.erro500() : amb.ml.mlFetch(cl, p, o));
+  const r2 = await amb.rodar(7);
+  assert.strictEqual(r2.run.promovido, true);
+  assert.strictEqual(r2.run.itensHerdados, 0);
+  assert.strictEqual(amb.linhasAtuais(7).length, 39);
+  const e = await amb.estado(7);
+  assert.deepStrictEqual([e.state, e.itemsWithoutRead, e.itemsInherited], ["partial", 1, 0]);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auditoria — achado 3: paginação do catálogo (sem truncamento, sem loop)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Primeiro um snapshot bom; depois o scan do catálogo passa a responder com
+// a anomalia. O run falha ANTES de ler promoções e o snapshot bom fica.
+async function cenarioCatalogo({ n = 250, env = {}, pagina }) {
+  let anomalia = false;
+  const ids = Object.keys(catalogo("A", n));
+  const amb = ambiente({
+    sellers: { 555: { itens: catalogo("A", n) } },
+    env,
+    roteiro: (p) => {
+      if (!anomalia || !p.startsWith("/users/")) return undefined;
+      const scroll = new URLSearchParams(p.split("?")[1]).get("scroll_id");
+      return { ok: true, status: 200, data: pagina(scroll, ids) };
+    },
+  });
+  assert.strictEqual((await amb.rodar(7)).status, "completed");
+  const bom = amb.conta(7).current_run_id;
+  const linhasBoas = amb.linhasAtuais(7).length;
+  amb.relogio.avancar(400);
+  anomalia = true;
+  const leiturasAntes = amb.ml.contar(/seller-promotions\/items/);
+  const catalogoAntes = amb.ml.contar(/^\/users\//);
+  const r = await amb.rodar(7);
+  assert.strictEqual(r.status, "failed");
+  assert.strictEqual(r.run.errorCode, "PROMO_SNAPSHOT_CATALOGO_INCONSISTENTE");
+  assert.ok(!/scroll-|s-\d/.test(r.run.errorMessage), "motivo seguro: sem cursor na mensagem");
+  assert.strictEqual(r.run.promovido, false);
+  assert.strictEqual(amb.conta(7).current_run_id, bom, "snapshot bom preservado");
+  assert.strictEqual(amb.linhasAtuais(7).length, linhasBoas);
+  assert.strictEqual(amb.ml.contar(/seller-promotions\/items/), leiturasAntes, "nenhuma promoção lida com catálogo incerto");
+  const e = await amb.estado(7);
+  assert.strictEqual(e.state, "failed");
+  assert.strictEqual(e.hasSnapshot, true);
+  return { r, amb, paginasLidas: amb.ml.contar(/^\/users\//) - catalogoAntes };
+}
+
+cenario("catálogo: página não vazia SEM scroll_id com paging.total maior que o lido → falha (SCROLL_AUSENTE), nunca truncado", async () => {
+  const { r } = await cenarioCatalogo({ pagina: (s, ids) => ({ results: ids.slice(0, 100), paging: { total: 250 }, scroll_id: null }) });
+  assert.ok(/SCROLL_AUSENTE/.test(r.run.errorMessage) && /100 de 250/.test(r.run.errorMessage));
+});
+
+cenario("catálogo: scroll_id repetido → falha (SCROLL_REPETIDO), sem loop", async () => {
+  const { r, paginasLidas } = await cenarioCatalogo({
+    pagina: (s, ids) => (!s ? { results: ids.slice(0, 100), paging: { total: 250 }, scroll_id: "fixo" } : { results: ids.slice(100, 200), paging: { total: 250 }, scroll_id: "fixo" }),
+  });
+  assert.ok(/SCROLL_REPETIDO/.test(r.run.errorMessage));
+  assert.strictEqual(paginasLidas, 2);
+});
+
+cenario("catálogo: página repetida (mesmos resultados de novo) → falha (PAGINA_REPETIDA)", async () => {
+  let n = 0;
+  const { r } = await cenarioCatalogo({ pagina: (s, ids) => ({ results: ids.slice(0, 100), paging: { total: 250 }, scroll_id: `s-${++n}` }) });
+  assert.ok(/PAGINA_REPETIDA/.test(r.run.errorMessage));
+});
+
+cenario("catálogo: cursor sem progresso (página só com anúncios já lidos) → falha (CURSOR_SEM_PROGRESSO)", async () => {
+  const { r } = await cenarioCatalogo({
+    pagina: (s, ids) => (!s ? { results: ids.slice(0, 100), paging: { total: 250 }, scroll_id: "s-1" } : { results: ids.slice(40, 90), paging: { total: 250 }, scroll_id: "s-2" }),
+  });
+  assert.ok(/CURSOR_SEM_PROGRESSO/.test(r.run.errorMessage));
+});
+
+cenario("catálogo: scan termina com menos anúncios que paging.total → falha (TOTAL_INCOMPATIVEL)", async () => {
+  const { r } = await cenarioCatalogo({
+    pagina: (s, ids) => {
+      const inicio = s ? Number(s.replace("s-", "")) : 0;
+      const results = ids.slice(inicio, inicio + 100);
+      return { results, paging: { total: 300 }, scroll_id: results.length ? `s-${inicio + 100}` : null };
+    },
+  });
+  assert.ok(/TOTAL_INCOMPATIVEL/.test(r.run.errorMessage) && /250 anúncio\(s\) lidos para paging.total 300/.test(r.run.errorMessage));
+});
+
+cenario("catálogo: cursor que nunca acaba (1 anúncio novo por página) para no teto de páginas (PAGINAS_EXCEDIDAS)", async () => {
+  const { r, paginasLidas } = await cenarioCatalogo({
+    n: 50,
+    env: { PROMO_SNAPSHOT_MAX_CATALOG_ITEMS: "100" },
+    pagina: (s) => {
+      const k = s ? Number(s.replace("s-", "")) : 0;
+      return { results: [`MLBZ${k}`], scroll_id: `s-${k + 1}` };
+    },
+  });
+  assert.ok(/PAGINAS_EXCEDIDAS/.test(r.run.errorMessage));
+  assert.strictEqual(paginasLidas, 6, "teto = 100/100 + 5 páginas");
+});
+
+cenario("progresso inconsistente (processados ≠ catálogo) → partial NUNCA promovido; snapshot bom preservado", async () => {
+  const amb = ambiente();
+  await amb.rodar(7);
+  const bom = amb.conta(7).current_run_id;
+  amb.relogio.avancar(400);
+  await amb.enfileirar(7);
+  const run = await amb.repo.claimNextQueuedRun();
+  const fim = await amb.runService.markRunCompleted(run.id, amb.base.db, { total: 10, processados: 9, falhas: 0 });
+  assert.strictEqual(fim.status, "partial");
+  assert.strictEqual(fim.promovido, false);
+  assert.strictEqual(fim.errorCode, "PROMO_SNAPSHOT_PROGRESSO_INCONSISTENTE");
+  assert.strictEqual(amb.conta(7).current_run_id, bom);
+  assert.strictEqual((await amb.estado(7)).state, "failed");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auditoria — achado 4: heartbeat durante lote longo (relógio fake)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ENV_LOTE_LONGO = {
+  PROMO_SNAPSHOT_RUNNING_STALE_MINUTES: "10",
+  PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS: "60000",
+  PROMO_SNAPSHOT_MAX_ATTEMPTS: "6",
+  PROMO_SNAPSHOT_BACKOFF_BASE_MS: "60000",
+  PROMO_SNAPSHOT_BACKOFF_MAX_MS: "300000",
+};
+
+cenario("heartbeat no lote longo: retry + backoff somam 17 min (> stale de 10) e outra instância reconciliando NÃO mata o run", async () => {
+  let reconciliacoes = 0;
+  const amb = ambiente({
+    env: ENV_LOTE_LONGO,
+    roteiro: (p, o, n) => (p.includes("seller-promotions/items/MLBA0002") && n <= 5 ? F.erro500() : undefined),
+    // Relógio fake: toda espera avança o tempo; logo em seguida a "outra
+    // instância" roda a reconciliação de heartbeat (stale = 10 min).
+    sleepHook: async (ms, relogio, repo) => {
+      relogio.avancarMs(ms);
+      reconciliacoes += 1;
+      await repo.reconcileStaleRunningRuns({ staleMinutes: 10 });
+    },
+  });
+  const batidas = [];
+  const touch = amb.repo.touchHeartbeat;
+  amb.repo.touchHeartbeat = async (id) => { batidas.push(amb.relogio.agora()); return touch(id); };
+  const inicio = amb.relogio.agora();
+  const r = await amb.rodar(7);
+  const duracaoMin = (amb.relogio.agora() - inicio) / 60000;
+  assert.strictEqual(duracaoMin, 17, "60+120+240+300+300 s de backoff num único lote");
+  assert.strictEqual(r.status, "completed");
+  assert.strictEqual(r.run.errorCode, null);
+  assert.strictEqual(r.run.retries, 5);
+  assert.ok(reconciliacoes >= 17, `a outra instância reconciliou ${reconciliacoes} vezes durante o lote`);
+  assert.ok(amb.repo._st.runs.every((x) => x.error_code !== "PROMO_SNAPSHOT_RUN_STALE"));
+  const gaps = batidas.slice(1).map((t, i) => t - batidas[i]);
+  assert.ok(gaps.length >= 17 && Math.max(...gaps) <= 60000, `maior intervalo entre heartbeats: ${Math.max(...gaps)} ms`);
+});
+
+cenario("heartbeat no cooldown do rate limit: Retry-After de 9 min duas vezes (18 min) também renova o heartbeat", async () => {
+  const amb = ambiente({
+    env: { ...ENV_LOTE_LONGO, PROMO_SNAPSHOT_RETRY_AFTER_MAX_MS: "600000" },
+    roteiro: (p, o, n) => (p.includes("seller-promotions/items/MLBA0001") && n <= 2 ? F.erro429(540) : undefined),
+    sleepHook: async (ms, relogio, repo) => { relogio.avancarMs(ms); await repo.reconcileStaleRunningRuns({ staleMinutes: 10 }); },
+  });
+  const r = await amb.rodar(7);
+  assert.strictEqual(r.status, "completed");
+  assert.strictEqual(r.run.rateLimits, 2);
+  assert.ok(amb.esperas.every((ms) => ms <= 60000), "esperas longas fatiadas no intervalo do heartbeat");
+});
+
+cenario("heartbeat perdido durante a espera (run reconciliado de verdade): o processo para na hora, sem retry e sem nova chamada ao ML", async () => {
+  let chamadasNoAbate = null;
+  const amb = ambiente({
+    env: ENV_LOTE_LONGO,
+    roteiro: (p) => (p.includes("seller-promotions/items/MLBA0002") ? F.erro500() : undefined),
+    sleepHook: async (ms, relogio, repo) => {
+      relogio.avancarMs(ms);
+      if (chamadasNoAbate === null) {
+        // Outra instância decide que o run morreu (ex.: pausa longa do processo).
+        const vivo = repo._st.runs.find((x) => x.status === "running");
+        Object.assign(vivo, { status: "failed", error_code: "PROMO_SNAPSHOT_RUN_STALE" });
+        chamadasNoAbate = amb.ml.chamadas.length;
+      }
+    },
+  });
+  await amb.enfileirar(7);
+  const run = await amb.repo.claimNextQueuedRun();
+  await assert.rejects(() => processPromoSnapshotRun(run, amb.procDeps), (e) => e.code === "PROMO_SNAPSHOT_RUN_NAO_ESTA_MAIS_RUNNING");
+  assert.strictEqual(amb.ml.chamadas.length, chamadasNoAbate, "nenhuma chamada ao ML depois do fencing");
+  assert.strictEqual(amb.repo._st.lotes.length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auditoria — achado 5: oportunidades paginadas no banco
+// ─────────────────────────────────────────────────────────────────────────────
+
+cenario("oportunidades paginadas no banco: catálogo de 2.000 → só `limit` linhas saem do repositório; total/hasNext corretos", async () => {
+  const n = 2000;
+  const amb = ambiente({ sellers: { 555: { itens: catalogo("A", n) } }, marginSnaps: snapsPara(7, "A", n), env: { PROMO_SNAPSHOT_BATCH_SIZE: "100" } });
+  await amb.rodar(7);
+  amb.repo._chamadas.length = 0;
+  const deps = depsCentral(amb);
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 7, limit: 25 }, deps);
+  assert.strictEqual(amb.repo._linhasOportunidadesDevolvidas, 25, "só a página volta do banco");
+  assert.deepStrictEqual([r.page, r.limit, r.total, r.hasNext, r.oportunidades.length], [7, 25, n, true, 25]);
+  assert.strictEqual(amb.repo._chamadas.filter((c) => c === "listarOportunidadesPaginadas").length, 1, "UMA consulta paginada");
+  assert.strictEqual(deps.db.consultasDb.length, 0, "nenhuma consulta avulsa por item");
+  const ultima = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 80, limit: 25 }, deps);
+  assert.deepStrictEqual([ultima.hasNext, ultima.oportunidades.length, ultima.total], [false, 25, n]);
+  const alem = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 81, limit: 25 }, deps);
+  assert.deepStrictEqual([alem.hasNext, alem.oportunidades.length, alem.total], [false, 0, n]);
+  const teto = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, limit: 5000 }, deps);
+  assert.strictEqual(teto.limit, 50, "limit tem teto no servidor");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auditoria — achado 6: persistência idempotente dos lotes
+// ─────────────────────────────────────────────────────────────────────────────
+
+cenario("replay de lote: reenviar o mesmo (run, seq) não altera itens_processados, promoções, erros, retries, rate_limits nem linhas", async () => {
+  const amb = ambiente({ sellers: { 555: { itens: catalogo("A", 45) } } });
+  await amb.enfileirar(7);
+  const run = await amb.repo.claimNextQueuedRun();
+  // Cada lote é gravado e REENVIADO (resposta do COMMIT "perdida").
+  let replays = 0;
+  const registrar = amb.repo.registrarLote;
+  const deps = { ...amb.procDeps, repo: { ...amb.repo, registrarLote: async (a) => { await registrar(a); replays += 1; return registrar(a); } } };
+  const res = await processPromoSnapshotRun(run, deps);
+  const r = amb.repo._st.runs[0];
+  assert.strictEqual(replays, 3);
+  assert.deepStrictEqual([r.itens_processados, r.promocoes_encontradas, r.itens_com_promocao, r.erros], [45, 45, 45, 0]);
+  assert.strictEqual(amb.repo._st.itens.filter((i) => i.run_id === r.id).length, 45);
+  // Replay explícito, com contadores de retry/rate limit e falhas diferentes.
+  const campos = (x) => [x.itens_processados, x.itens_com_promocao, x.promocoes_encontradas, x.erros, x.retries, x.rate_limits];
+  const antes = campos(r);
+  const lote1 = amb.repo._st.lotes.find((l) => l.run_id === r.id && l.seq === 1);
+  const devolvido = await amb.repo.registrarLote({ run, seq: 1, itemIds: [...lote1.item_ids].reverse(), itensFalhos: [lote1.item_ids[0]], linhas: [], contadores: { retries: 9, rateLimits: 4 } });
+  assert.ok(devolvido, "replay devolve o run (não é fencing)");
+  assert.deepStrictEqual(campos(r), antes);
+  assert.strictEqual(amb.repo._st.lotes.filter((l) => l.run_id === r.id).length, 3);
+  // Mesmo seq com OUTROS itens: recusado.
+  await assert.rejects(() => amb.repo.registrarLote({ run, seq: 1, itemIds: ["MLBX1"], linhas: [] }), (e) => e.code === "PROMO_SNAPSHOT_LOTE_CONFLITANTE");
+  assert.deepStrictEqual(campos(r), antes);
+  const fim = await amb.runService.markRunCompleted(run.id, amb.base.db, res);
+  assert.strictEqual(fim.status, "completed");
+  assert.strictEqual(fim.itensProcessados, 45);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

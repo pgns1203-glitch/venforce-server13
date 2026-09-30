@@ -1,22 +1,32 @@
 // server/tests/helpers/promoSnapshotFakes.js
 // Fakes do Promo Snapshot: repositório em memória que ESPELHA a semântica do
 // SQL de promoSnapshotRepository (guardas de status, índice único de run
-// ativo, fencing por run `running`, promoção do ponteiro na conclusão, poda),
-// e um Mercado Livre falso que registra CADA chamada (método, caminho, token
-// da conta) e responde por seller — token de outra conta recebe 403, como no
-// ML real. O SQL real é validado à parte em scripts/promoSnapshotSqlCheck.js.
+// ativo por conta, fencing por run `running`, identidade conta + seller,
+// lote idempotente, herança no parcial promovido, promoção do ponteiro na
+// conclusão, poda), e um Mercado Livre falso que registra CADA chamada
+// (método, caminho, token da conta) e responde por seller — token de outra
+// conta recebe 403, como no ML real. O SQL real é validado à parte em
+// scripts/promoSnapshotSqlCheck.js.
 
 const real = require("../../services/promoSnapshot/promoSnapshotRepository");
 const { MlTimeoutError } = require("../../utils/mlClient");
+const { paginaReferencia } = require("./oportunidadesReferencia");
 
 class Relogio {
   constructor(inicio = Date.parse("2026-10-01T12:00:00Z")) { this.t = inicio; }
   agora() { return this.t; }
   iso() { return new Date(this.t).toISOString(); }
   avancar(minutos) { this.t += minutos * 60000; }
+  avancarMs(ms) { this.t += ms; }
 }
 
-function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), contasCliente = [], grants = [] } = {}) {
+const chaveConta = (contaId, marketplace, seller) => `${Number(contaId)}:${marketplace || "meli"}:${String(seller)}`;
+
+/**
+ * sellerDaConta(contaId) → seller vinculado HOJE à conta (espelha a leitura
+ * de cliente_contas no finalizarRun). Omitido = instalação sem cliente_contas.
+ */
+function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), contasCliente = [], grants = [], sellerDaConta = null } = {}) {
   const st = { runs: [], itens: [], lotes: [], contas: new Map(), seq: 0, itemSeq: 0 };
   const chamadas = [];
   const iso = () => relogio.iso();
@@ -26,15 +36,22 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
   function run(id) { return st.runs.find((r) => r.id === Number(id)) || null; }
   function running(id) { const r = run(id); return r && r.status === "running" ? r : null; }
   function tentativa(r, status, code) {
-    const c = st.contas.get(r.cliente_conta_id) || { cliente_conta_id: r.cliente_conta_id, cliente_id: r.cliente_id, marketplace: r.marketplace, seller_id: r.seller_id };
+    const k = chaveConta(r.cliente_conta_id, r.marketplace, r.seller_id);
+    const c = st.contas.get(k) || { cliente_conta_id: r.cliente_conta_id, cliente_id: r.cliente_id, marketplace: r.marketplace, seller_id: r.seller_id };
     Object.assign(c, { last_attempt_run_id: r.id, last_attempt_status: status, last_attempt_at: iso(), last_error_code: code || null, updated_at: iso() });
-    st.contas.set(r.cliente_conta_id, c);
+    st.contas.set(k, c);
+  }
+  function incluirLinha(r, l, extra = {}) {
+    if (st.itens.some((i) => i.run_id === r.id && i.item_id === l.item_id && i.promocao_chave === l.promocao_chave)) return false;
+    st.itens.push({ ...l, ...extra, id: ++st.itemSeq, run_id: r.id });
+    return true;
   }
 
   const repo = {
     ...real,
     _st: st,
     _chamadas: chamadas,
+    _linhasOportunidadesDevolvidas: 0,
     async ensureTables() {},
 
     async createRun({ clienteId, clienteSlug = null, clienteContaId, marketplace = "meli", sellerId, reason, requestedBy = null, resumedFromRunId = null }) {
@@ -52,8 +69,8 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
         seller_id: String(sellerId), tipo: real.TIPO, reason, status: "queued", requested_by: requestedBy,
         resumed_from_run_id: resumedFromRunId, created_at: iso(), started_at: null, heartbeat_at: null, finished_at: null,
         itens_total: null, itens_processados: 0, itens_com_promocao: 0, promocoes_encontradas: 0, erros: 0, rate_limits: 0,
-        retries: 0, promovido: false, snapshot_at: null, fresh_until: null, error_code: null, error_message: null,
-        metadata_json: {}, updated_at: iso(),
+        retries: 0, promovido: false, itens_herdados: 0, promocoes_herdadas: 0, snapshot_at: null, fresh_until: null,
+        error_code: null, error_message: null, metadata_json: {}, updated_at: iso(),
       };
       st.runs.push(r);
       return real.sanitizeRun(r);
@@ -77,14 +94,24 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
       return real.sanitizeRun(r);
     },
 
-    async findResumableRun({ clienteContaId, sellerId, resumeMaxMinutes }) {
+    async findResumableRun({ clienteContaId, marketplace = "meli", sellerId, resumeMaxMinutes }) {
       if (!(resumeMaxMinutes > 0)) return null;
-      const c = st.contas.get(clienteContaId);
+      const c = st.contas.get(chaveConta(clienteContaId, marketplace, sellerId));
       const r = st.runs.filter((x) => x.cliente_conta_id === clienteContaId && x.seller_id === String(sellerId) && x.status === "failed" &&
         real.ERROS_RETOMAVEIS.includes(x.error_code) && x.started_at && ms(x.finished_at) > relogio.agora() - resumeMaxMinutes * 60000 &&
         st.lotes.some((l) => l.run_id === x.id) && !(c && c.snapshot_at && ms(c.snapshot_at) >= ms(x.started_at)))
         .sort((a, b) => ms(b.finished_at) - ms(a.finished_at) || b.id - a.id)[0];
       return real.sanitizeRun(r);
+    },
+
+    async encerrarRunsDeOutroSeller({ clienteContaId, marketplace = "meli", sellerId }) {
+      reg("encerrarRunsDeOutroSeller");
+      const alvo = st.runs.filter((r) => r.cliente_conta_id === clienteContaId && r.marketplace === marketplace &&
+        ["queued", "running"].includes(r.status) && r.seller_id !== String(sellerId));
+      for (const r of alvo) {
+        Object.assign(r, { status: "failed", finished_at: iso(), promovido: false, error_code: real.ERRO_SELLER_SUBSTITUIDO, error_message: "seller substituído", updated_at: iso() });
+      }
+      return alvo.map(real.sanitizeRun);
     },
 
     async claimNextQueuedRun({ excludeContaIds = [] } = {}) {
@@ -110,21 +137,29 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
       return real.sanitizeRun(r);
     },
 
+    // Idempotente por (run_id, seq), como o SQL.
     async registrarLote({ run: rr, seq, itemIds, itensFalhos = [], linhas = [], contadores = {} }) {
       reg("registrarLote");
       real.assertNoSecrets(contadores, "contadores");
       const r = running(rr.id);
       if (!r) return null;
-      for (const l of linhas) {
-        if (st.itens.some((i) => i.run_id === r.id && i.item_id === l.itemId && i.promocao_chave === l.promocaoChave)) continue;
-        st.itens.push(linhaParaRow(r, l, ++st.itemSeq));
+      const existente = st.lotes.find((l) => l.run_id === r.id && l.seq === seq);
+      if (existente) {
+        const mesmos = [...existente.item_ids].sort().join(",") === [...itemIds].map(String).sort().join(",");
+        if (!mesmos) { const e = new Error("lote conflitante"); e.code = "PROMO_SNAPSHOT_LOTE_CONFLITANTE"; throw e; }
+        r.heartbeat_at = iso();
+        return real.sanitizeRun(r);
       }
-      if (!st.lotes.some((l) => l.run_id === r.id && l.seq === seq)) {
-        st.lotes.push({ run_id: r.id, seq, item_ids: [...itemIds], itens_falhos: [...itensFalhos], promocoes: linhas.length });
-      }
+      const gravadas = [];
+      for (const l of linhas) if (incluirLinha(r, linhaParaRow(r, l))) gravadas.push(l);
+      const itensComPromocao = new Set(gravadas.map((l) => l.itemId)).size;
+      st.lotes.push({
+        run_id: r.id, seq, item_ids: [...itemIds], itens_falhos: [...itensFalhos], promocoes: gravadas.length,
+        itens_com_promocao: itensComPromocao, retries: Number(contadores.retries || 0), rate_limits: Number(contadores.rateLimits || 0),
+      });
       r.itens_processados += itemIds.length;
-      r.itens_com_promocao += new Set(linhas.map((l) => l.itemId)).size;
-      r.promocoes_encontradas += linhas.length;
+      r.itens_com_promocao += itensComPromocao;
+      r.promocoes_encontradas += gravadas.length;
       r.erros += itensFalhos.length;
       r.rate_limits += Number(contadores.rateLimits || 0);
       r.retries += Number(contadores.retries || 0);
@@ -145,45 +180,80 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
       }
       const itens = [...feitos];
       if (!itens.length) return { itens: [], promocoes: 0, startedAt: null };
-      const copiadas = st.itens.filter((i) => i.run_id === o.id && feitos.has(i.item_id))
-        .map((i) => ({ ...i, id: ++st.itemSeq, run_id: r.id, origem_run_id: i.origem_run_id ?? i.run_id }));
-      st.itens.push(...copiadas);
-      st.lotes.push({ run_id: r.id, seq: 0, item_ids: itens, itens_falhos: [], promocoes: copiadas.length });
+      const l0 = st.lotes.find((x) => x.run_id === r.id && x.seq === 0);
+      if (l0) return { itens: l0.item_ids, promocoes: l0.promocoes, startedAt: o.started_at };
+      let copiadas = 0;
+      const comPromo = new Set();
+      for (const i of st.itens.filter((x) => x.run_id === o.id && feitos.has(x.item_id))) {
+        const { id, run_id: _r, ...resto } = i;
+        if (incluirLinha(r, { ...resto, origem_run_id: i.origem_run_id ?? i.run_id })) { copiadas += 1; comPromo.add(i.item_id); }
+      }
+      st.lotes.push({ run_id: r.id, seq: 0, item_ids: itens, itens_falhos: [], promocoes: copiadas, itens_com_promocao: comPromo.size, retries: 0, rate_limits: 0 });
       r.itens_processados += itens.length;
-      r.itens_com_promocao += new Set(copiadas.map((x) => x.item_id)).size;
-      r.promocoes_encontradas += copiadas.length;
+      r.itens_com_promocao += comPromo.size;
+      r.promocoes_encontradas += copiadas;
       r.heartbeat_at = iso();
-      return { itens, promocoes: copiadas.length, startedAt: o.started_at };
+      return { itens, promocoes: copiadas, startedAt: o.started_at };
     },
 
-    async finalizarRun({ runId, status, promover, snapshotAt = null, freshMinutes, metadata = {}, errorCode = null, errorMessage = null }) {
+    async finalizarRun({ runId, status, promover, snapshotAt = null, freshMinutes, inheritMaxMinutes = 0, metadata = {}, errorCode = null, errorMessage = null }) {
       reg("finalizarRun");
       real.assertNoSecrets(metadata);
       const r = running(runId);
       if (!r) return null;
+      if (sellerDaConta) {
+        const atual = sellerDaConta(r.cliente_conta_id);
+        if (atual !== undefined && (atual == null ? null : String(atual)) !== r.seller_id) {
+          Object.assign(r, { status: "failed", finished_at: iso(), promovido: false, error_code: real.ERRO_SELLER_DIVERGENTE, error_message: "seller divergente", updated_at: iso() });
+          tentativa(r, "failed", real.ERRO_SELLER_DIVERGENTE);
+          return real.sanitizeRun(r);
+        }
+      }
+      const k = chaveConta(r.cliente_conta_id, r.marketplace, r.seller_id);
+      // Herança: itens que falharam neste run ganham a última leitura boa.
+      let herdItens = new Set();
+      let herdPromos = 0;
+      if (promover && status === "partial" && inheritMaxMinutes > 0) {
+        const c = st.contas.get(k);
+        const anterior = c && c.current_run_id && c.current_run_id !== r.id ? c.current_run_id : null;
+        const falhos = new Set(st.lotes.filter((l) => l.run_id === r.id).flatMap((l) => l.itens_falhos));
+        if (anterior) {
+          for (const i of st.itens.filter((x) => x.run_id === anterior && x.cliente_conta_id === r.cliente_conta_id && x.seller_id === r.seller_id &&
+            falhos.has(x.item_id) && ms(x.observed_at) > relogio.agora() - inheritMaxMinutes * 60000)) {
+            const { id, run_id: _r, ...resto } = i;
+            if (incluirLinha(r, { ...resto, origem_run_id: i.origem_run_id ?? i.run_id, herdado: true })) { herdPromos += 1; herdItens.add(i.item_id); }
+          }
+        }
+      }
       const snap = snapshotAt || r.started_at;
       Object.assign(r, {
         status, finished_at: iso(), promovido: promover === true, snapshot_at: snap,
         fresh_until: new Date(ms(snap) + freshMinutes * 60000).toISOString(),
         metadata_json: { ...r.metadata_json, ...metadata }, error_code: errorCode, error_message: errorMessage, updated_at: iso(),
+        itens_herdados: herdItens.size, promocoes_herdadas: herdPromos,
       });
       if (promover) {
-        const c = st.contas.get(r.cliente_conta_id);
+        const c = st.contas.get(k);
         if (!c || !c.snapshot_at || ms(c.snapshot_at) <= ms(r.snapshot_at)) {
           const anterior = c ? c.current_run_id : null;
-          st.contas.set(r.cliente_conta_id, {
+          st.contas.set(k, {
             ...(c || {}), cliente_conta_id: r.cliente_conta_id, cliente_id: r.cliente_id, marketplace: r.marketplace, seller_id: r.seller_id,
             current_run_id: r.id, previous_run_id: anterior !== r.id ? anterior : c.previous_run_id,
             snapshot_at: r.snapshot_at, fresh_until: r.fresh_until, parcial: status === "partial", itens_total: r.itens_total,
-            itens_com_promocao: r.itens_com_promocao, promocoes_total: r.promocoes_encontradas, itens_sem_leitura: r.erros,
+            itens_com_promocao: r.itens_com_promocao + herdItens.size, promocoes_total: r.promocoes_encontradas + herdPromos,
+            itens_sem_leitura: r.erros, itens_herdados: herdItens.size,
             last_attempt_run_id: r.id, last_attempt_status: status, last_attempt_at: iso(), last_success_at: iso(),
             last_error_code: null, updated_at: iso(),
           });
-          const atual = st.contas.get(r.cliente_conta_id);
-          const ativos = new Set(st.runs.filter((x) => x.cliente_conta_id === r.cliente_conta_id && ["queued", "running"].includes(x.status)).map((x) => x.id));
-          st.itens = st.itens.filter((i) => i.cliente_conta_id !== r.cliente_conta_id ||
-            i.run_id === atual.current_run_id || i.run_id === atual.previous_run_id || ativos.has(i.run_id));
         }
+        // Seller anterior da conta: ponteiro e linhas nunca mais servem.
+        for (const [kk, v] of [...st.contas]) {
+          if (v.cliente_conta_id === r.cliente_conta_id && v.marketplace === r.marketplace && v.seller_id !== r.seller_id) st.contas.delete(kk);
+        }
+        const atual = st.contas.get(k);
+        const ativos = new Set(st.runs.filter((x) => x.cliente_conta_id === r.cliente_conta_id && x.seller_id === r.seller_id && ["queued", "running"].includes(x.status)).map((x) => x.id));
+        st.itens = st.itens.filter((i) => i.cliente_conta_id !== r.cliente_conta_id || ativos.has(i.run_id) ||
+          (i.seller_id === r.seller_id && (i.run_id === atual.current_run_id || i.run_id === atual.previous_run_id)));
       } else {
         tentativa(r, status, errorCode || "PROMO_SNAPSHOT_PARCIAL_NAO_PROMOVIDO");
       }
@@ -219,38 +289,55 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
       return mortos.map(real.sanitizeRun);
     },
 
-    async obterConta({ clienteContaId }) {
+    async obterConta({ clienteContaId, marketplace = "meli", sellerId }) {
       reg("obterConta");
-      return real.sanitizeConta(st.contas.get(Number(clienteContaId)));
+      if (!sellerId) throw new Error("obterConta: sellerId é obrigatório");
+      return real.sanitizeConta(st.contas.get(chaveConta(clienteContaId, marketplace, sellerId)));
     },
 
-    async listarLinhasSnapshot({ clienteContaId, runId, page, limit, itemId = null, status = null, tipo = null }) {
+    async listarLinhasSnapshot({ clienteContaId, sellerId, runId, page, limit, itemId = null, status = null, tipo = null }) {
       reg("listarLinhasSnapshot");
-      const todas = st.itens.filter((i) => i.run_id === runId && i.cliente_conta_id === clienteContaId &&
+      if (!sellerId) throw new Error("listarLinhasSnapshot: sellerId é obrigatório");
+      const todas = st.itens.filter((i) => i.run_id === runId && i.cliente_conta_id === clienteContaId && i.seller_id === String(sellerId) &&
         (itemId == null || i.item_id === itemId) && (status == null || i.status === status) && (tipo == null || i.promotion_type === tipo))
         .sort((a, b) => (a.item_id < b.item_id ? -1 : a.item_id > b.item_id ? 1 : a.promocao_chave < b.promocao_chave ? -1 : 1));
       return { total: todas.length, linhas: todas.slice((page - 1) * limit, page * limit).map(real.linhaPublica) };
     },
 
-    async listarBaseOportunidades({ clienteContaId, runId }) {
-      reg("listarBaseOportunidades");
-      return st.itens.filter((i) => i.run_id === runId && i.cliente_conta_id === clienteContaId && Number(i.preco_final) > 0 &&
-        ["candidate", "started", "active", "pending"].includes(i.status))
-        .map((i) => {
-          const s = marginSnaps.get(`${clienteContaId}:${i.item_id}`);
-          return s ? { ...i, ...s } : null;
-        }).filter(Boolean);
+    // Mesma régua/ordem/página da consulta real (referência JS).
+    async listarOportunidadesPaginadas({ clienteContaId, sellerId, runId, vendasPorMlb, page, limit }) {
+      reg("listarOportunidadesPaginadas");
+      if (!sellerId) throw new Error("listarOportunidadesPaginadas: sellerId é obrigatório");
+      const promos = st.itens.filter((i) => i.run_id === runId && i.cliente_conta_id === clienteContaId && i.seller_id === String(sellerId) &&
+        Number(i.preco_final) > 0 && ["candidate", "started", "active", "pending"].includes(i.status))
+        .map((i) => ({
+          item_id: i.item_id, chave: i.promocao_chave, preco_promo: i.preco_final, retorno: i.subsidio_ml, fonte_titulo: null,
+          promo_nome: i.nome, promo_id: i.promotion_id, promo_tipo: i.promotion_type, promo_status: i.status,
+          promo_status_exibicao: i.status_exibicao, promo_preco_fonte: i.preco_final_fonte, promo_fim: i.data_fim,
+          promo_herdado: i.herdado === true, promo_observado_em: i.observed_at,
+        }));
+      const snapPorItem = new Map();
+      for (const p of promos) {
+        const s = marginSnaps.get(`${clienteContaId}:${p.item_id}`);
+        if (s) snapPorItem.set(p.item_id, s);
+      }
+      const { rows } = paginaReferencia({ promos, snapPorItem, vendasPorMlb, page, limit });
+      const total = rows.length ? Number(rows[0].total_oportunidades || 0) : 0;
+      const pagina = rows.filter((r) => r.item_id);
+      repo._linhasOportunidadesDevolvidas = pagina.length;
+      return { total, rows: pagina };
     },
 
     async listarContasElegiveis({ limit, failedRetryMinutes }) {
       reg("listarContasElegiveis");
       const agora = relogio.agora();
+      const ponteiro = (c) => st.contas.get(chaveConta(c.id, "meli", c.external_account_id));
       return contasCliente.filter((c) => c.marketplace === "meli" && c.ativo !== false && c.cliente_ativo !== false && c.external_account_id)
         .filter((c) => grants.some((g) => g.cliente_id === c.cliente_id && String(g.ml_user_id) === String(c.external_account_id) &&
           g.access_token && g.refresh_token && !["revoked", "blocked", "invalid"].includes(String(g.token_status || "valid").toLowerCase())))
-        .filter((c) => !st.runs.some((r) => r.cliente_conta_id === c.id && ["queued", "running"].includes(r.status)))
-        .filter((c) => { const s = st.contas.get(c.id); return !s || !s.fresh_until || ms(s.fresh_until) < agora; })
-        .filter((c) => { const s = st.contas.get(c.id); return !(s && ["failed", "partial"].includes(s.last_attempt_status) && ms(s.last_attempt_at) > agora - failedRetryMinutes * 60000); })
+        .filter((c) => !st.runs.some((r) => r.cliente_conta_id === c.id && r.seller_id === String(c.external_account_id) && ["queued", "running"].includes(r.status)))
+        .filter((c) => { const s = ponteiro(c); return !s || !s.fresh_until || ms(s.fresh_until) < agora; })
+        .filter((c) => { const s = ponteiro(c); return !(s && ["failed", "partial"].includes(s.last_attempt_status) && ms(s.last_attempt_at) > agora - failedRetryMinutes * 60000); })
         .slice(0, limit)
         .map((c) => ({ clienteContaId: c.id, clienteId: c.cliente_id, clienteSlug: c.cliente_slug, sellerId: String(c.external_account_id) }));
     },
@@ -258,9 +345,9 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
   return repo;
 }
 
-function linhaParaRow(r, l, id) {
+function linhaParaRow(r, l) {
   return {
-    id, run_id: r.id, cliente_id: r.cliente_id, cliente_conta_id: r.cliente_conta_id, marketplace: r.marketplace, seller_id: r.seller_id,
+    cliente_id: r.cliente_id, cliente_conta_id: r.cliente_conta_id, marketplace: r.marketplace, seller_id: r.seller_id,
     item_id: l.itemId, promocao_chave: l.promocaoChave, promotion_id: l.promotionId ?? null, ref_id: l.refId ?? null,
     promotion_type: l.promotionType ?? null, tipo_conhecido: l.tipoConhecido === true, nome: l.nome ?? null, status: l.status ?? null,
     status_exibicao: l.statusExibicao ?? null, data_inicio: l.dataInicio ?? null, data_fim: l.dataFim ?? null,
@@ -269,6 +356,7 @@ function linhaParaRow(r, l, id) {
     seller_percentage: l.sellerPercentage ?? null, meli_percentage: l.meliPercentage ?? null, subsidio_ml: l.subsidioMl ?? null,
     elegivel: l.elegivel === true, ativa: typeof l.ativa === "boolean" ? l.ativa : null, programada: l.programada === true,
     nao_aplicada: typeof l.naoAplicada === "boolean" ? l.naoAplicada : null, observed_at: l.observedAt, origem_run_id: l.origemRunId ?? null,
+    herdado: l.herdado === true,
   };
 }
 
@@ -352,4 +440,4 @@ function loggerMemoria() {
   return { eventos, log: registrar("log"), warn: registrar("warn"), error: registrar("error") };
 }
 
-module.exports = { Relogio, criarRepoFake, criarMlFake, erro429, erro500, erroTimeout, promo, loggerMemoria };
+module.exports = { Relogio, criarRepoFake, criarMlFake, erro429, erro500, erroTimeout, promo, loggerMemoria, chaveConta };

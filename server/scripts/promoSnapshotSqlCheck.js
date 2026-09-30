@@ -37,6 +37,7 @@ const { resolvePromoSnapshotConfig } = require("../services/promoSnapshot/promoS
 const { createRateLimiter } = require("../services/motorMargem/marginSnapshotRateLimiter");
 const { listarOportunidades } = require("../services/motorMargem/precificacao/precificacaoOportunidadesService");
 const F = require("../tests/helpers/promoSnapshotFakes");
+const { paginaReferencia } = require("../tests/helpers/oportunidadesReferencia");
 
 const BASE_DDL = `
   CREATE TABLE clientes (id SERIAL PRIMARY KEY, slug TEXT UNIQUE, nome TEXT, ativo BOOLEAN NOT NULL DEFAULT true);
@@ -147,16 +148,16 @@ check("fencing: lote só grava com o run running; depois da reconciliação (STA
   const claimed = await repo.claimNextQueuedRun({}, db);
   const ok = await repo.registrarLote({ run: claimed, seq: 1, itemIds: ["MLB1", "MLB2"], linhas: [linha("MLB1"), linha("MLB1"), linha("MLB2")], contadores: { retries: 2, rateLimits: 1 } }, db);
   assert.strictEqual(ok.itensProcessados, 2);
-  assert.strictEqual(ok.promocoesEncontradas, 3, "contador conta as linhas enviadas");
   const gravadas = await pg.query(`SELECT COUNT(*)::int n FROM promo_snapshot_itens WHERE run_id = $1`, [run.id]);
   assert.strictEqual(gravadas.rows[0].n, 2, "ON CONFLICT deduplica a mesma promoção do item");
+  assert.strictEqual(ok.promocoesEncontradas, 2, "contador = linhas efetivamente gravadas");
   assert.strictEqual(ok.retries, 2);
   assert.strictEqual(ok.rateLimits, 1);
   await pg.query(`UPDATE promo_snapshot_runs SET heartbeat_at = NOW() - INTERVAL '30 minutes' WHERE id = $1`, [run.id]);
   const mortos = await repo.reconcileStaleRunningRuns({ staleMinutes: 10 }, db);
   assert.deepStrictEqual(mortos.map((m) => m.id), [run.id]);
   assert.strictEqual(mortos[0].errorCode, "PROMO_SNAPSHOT_RUN_STALE");
-  const conta = await repo.obterConta({ clienteContaId: 7 }, db);
+  const conta = await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db);
   assert.strictEqual(conta.lastAttemptStatus, "failed");
   assert.strictEqual(conta.currentRunId, null);
   assert.strictEqual(await repo.registrarLote({ run: claimed, seq: 2, itemIds: ["MLB3"], linhas: [linha("MLB3")] }, db), null);
@@ -168,14 +169,14 @@ check("fencing: lote só grava com o run running; depois da reconciliação (STA
 
 check("promoção do ponteiro na mesma transação: atual/anterior, poda do mais velho, partial não promovido preserva o bom", async ({ db, pg }) => {
   const r1 = await rodarRunManual(db, ID7, [["MLB1", "MLB2"]]);
-  let c = await repo.obterConta({ clienteContaId: 7 }, db);
+  let c = await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db);
   assert.strictEqual(c.currentRunId, r1.id);
   assert.ok(c.freshUntil && c.snapshotAt);
   await pg.query(`UPDATE promo_snapshot_contas SET snapshot_at = snapshot_at - INTERVAL '2 hours'`);
   const r2 = await rodarRunManual(db, ID7, [["MLB1"]]);
   await pg.query(`UPDATE promo_snapshot_contas SET snapshot_at = snapshot_at - INTERVAL '2 hours'`);
   const r3 = await rodarRunManual(db, ID7, [["MLB9"]]);
-  c = await repo.obterConta({ clienteContaId: 7 }, db);
+  c = await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db);
   assert.strictEqual(c.currentRunId, r3.id);
   assert.strictEqual(c.previousRunId, r2.id);
   const porRun = await pg.query(`SELECT run_id, COUNT(*)::int n FROM promo_snapshot_itens WHERE cliente_conta_id = 7 GROUP BY run_id ORDER BY run_id`);
@@ -183,13 +184,13 @@ check("promoção do ponteiro na mesma transação: atual/anterior, poda do mais
   // partial acima do limite: não promovido.
   const r4 = await rodarRunManual(db, ID7, [["MLB1", "MLB2"]], { status: "partial", promover: false, falhas: 1 });
   assert.strictEqual(r4.promovido, false);
-  c = await repo.obterConta({ clienteContaId: 7 }, db);
+  c = await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db);
   assert.strictEqual(c.currentRunId, r3.id);
   assert.strictEqual(c.lastAttemptStatus, "partial");
   assert.strictEqual(c.lastErrorCode, "PROMO_SNAPSHOT_PARCIAL_NAO_PROMOVIDO");
   // partial dentro do limite: promovido e marcado parcial.
   const r5 = await rodarRunManual(db, ID7, [["MLB1", "MLB2", "MLB3"]], { status: "partial", promover: true, falhas: 1 });
-  c = await repo.obterConta({ clienteContaId: 7 }, db);
+  c = await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db);
   assert.strictEqual(c.currentRunId, r5.id);
   assert.strictEqual(c.parcial, true);
   assert.strictEqual(c.itensSemLeitura, 1);
@@ -201,14 +202,14 @@ check("falha não toca o snapshot atual; conta B intocada pela conta A", async (
   const { run } = await service.enqueuePromoSnapshotRun(ID7, { reason: "x" }, { db, repo, logger: silencioso });
   await repo.claimNextQueuedRun({ excludeContaIds: [8] }, db);
   await repo.marcarFalhou({ runId: run.id, code: "PROMO_SNAPSHOT_CATALOGO_FALHOU", message: "x" }, db);
-  const a = await repo.obterConta({ clienteContaId: 7 }, db);
-  const b = await repo.obterConta({ clienteContaId: 8 }, db);
+  const a = await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db);
+  const b = await repo.obterConta({ clienteContaId: 8, sellerId: "666" }, db);
   assert.strictEqual(a.currentRunId, bom.id);
   assert.strictEqual(a.lastAttemptStatus, "failed");
   assert.strictEqual(b.lastAttemptStatus, "completed");
-  const la = await repo.listarLinhasSnapshot({ clienteContaId: 7, runId: a.currentRunId, page: 1, limit: 50 }, db);
+  const la = await repo.listarLinhasSnapshot({ clienteContaId: 7, sellerId: "555", runId: a.currentRunId, page: 1, limit: 50 }, db);
   assert.ok(la.linhas.every((l) => l.itemId === "MLB1"));
-  const cruzado = await repo.listarLinhasSnapshot({ clienteContaId: 7, runId: b.currentRunId, page: 1, limit: 50 }, db);
+  const cruzado = await repo.listarLinhasSnapshot({ clienteContaId: 7, sellerId: "555", runId: b.currentRunId, page: 1, limit: 50 }, db);
   assert.strictEqual(cruzado.total, 0, "run de outra conta nunca é lido com a conta A");
 });
 
@@ -234,33 +235,194 @@ check("retomada: run STALE com lotes vira fonte do próximo; copia só itens con
 check("paginação e filtros do snapshot no servidor", async ({ db }) => {
   const itens = Array.from({ length: 30 }, (_, i) => `MLB${String(i + 1).padStart(3, "0")}`);
   const r = await rodarRunManual(db, ID7, [itens.slice(0, 20), itens.slice(20)]);
-  const p2 = await repo.listarLinhasSnapshot({ clienteContaId: 7, runId: r.id, page: 2, limit: 25 }, db);
+  const p2 = await repo.listarLinhasSnapshot({ clienteContaId: 7, sellerId: "555", runId: r.id, page: 2, limit: 25 }, db);
   assert.strictEqual(p2.total, 30);
   assert.deepStrictEqual(p2.linhas.map((l) => l.itemId), itens.slice(25));
-  const f = await repo.listarLinhasSnapshot({ clienteContaId: 7, runId: r.id, page: 1, limit: 25, itemId: "MLB007" }, db);
+  const f = await repo.listarLinhasSnapshot({ clienteContaId: 7, sellerId: "555", runId: r.id, page: 1, limit: 25, itemId: "MLB007" }, db);
   assert.strictEqual(f.total, 1);
-  const t = await repo.listarLinhasSnapshot({ clienteContaId: 7, runId: r.id, page: 1, limit: 25, tipo: "SMART" }, db);
+  const t = await repo.listarLinhasSnapshot({ clienteContaId: 7, sellerId: "555", runId: r.id, page: 1, limit: 25, tipo: "SMART" }, db);
   assert.strictEqual(t.total, 0);
 });
 
-check("Oportunidades: UMA consulta casa promoções do run atual com o Margin Snapshot da MESMA conta; EXPLAIN usa índice", async ({ db, pg }) => {
-  const itens = Array.from({ length: 3000 }, (_, i) => `MLB${i + 1}`);
-  const lotes = [];
-  for (let i = 0; i < itens.length; i += 500) lotes.push(itens.slice(i, i + 500));
-  const r = await rodarRunManual(db, ID7, lotes);
+// Linhas variadas: preços, retorno ML, 2 promoções no mesmo item, sem preço,
+// margem negativa, status indisponível, snapshot sem taxa — para a régua do
+// SQL ser comparada com a referência JS em todos os ramos.
+function linhaVariada(i) {
+  const itemId = `MLB${i}`;
+  const base = linha(itemId, { id: `P-${i}`, preco: 60 + (i * 7) % 45, status: i % 17 === 0 ? "finished" : "candidate" });
+  base.subsidioMl = i % 5 === 0 ? (i % 3) + 1.5 : null;
+  if (i % 23 === 0) base.precoFinal = null;
+  const extra = i % 4 === 0 ? [{ ...linha(itemId, { id: `Q-${i}`, tipo: "SMART", preco: 70 + (i % 30) }), subsidioMl: i % 8 === 0 ? 2 : null }] : [];
+  return [base, ...extra];
+}
+
+async function montarCatalogoOportunidades(db, pg, n) {
+  const { run } = await service.enqueuePromoSnapshotRun(ID7, { reason: "manual_sync" }, { db, repo, logger: silencioso });
+  const claimed = await repo.claimNextQueuedRun({}, db);
+  await repo.registrarTotal({ runId: run.id, itensTotal: n }, db);
+  let seq = 0;
+  for (let i = 1; i <= n; i += 500) {
+    seq += 1;
+    const ids = [];
+    const linhas = [];
+    for (let k = i; k < i + 500 && k <= n; k += 1) { ids.push(`MLB${k}`); linhas.push(...linhaVariada(k)); }
+    await repo.registrarLote({ run: claimed, seq, itemIds: ids, linhas }, db);
+  }
+  await repo.finalizarRun({ runId: run.id, status: "completed", promover: true, freshMinutes: 360 }, db);
   await pg.query(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, freight, margin)
-                  SELECT 7, 'meli', 'MLB' || g, 'T', 100, 40, 0.1, 0, 0.12, 10, 0.2 FROM generate_series(1, 3000) g`);
+                  SELECT 7, 'meli', 'MLB' || g, 'T' || g, 100, 30 + (g % 40), CASE WHEN g % 29 = 0 THEN NULL ELSE 0.08 + (g % 5) / 100.0 END,
+                         g % 3, 0.12 + (g % 4) / 100.0, CASE WHEN g % 11 = 0 THEN NULL ELSE 8 + g % 9 END, 0.2
+                    FROM generate_series(1, $1::int) g`, [n]);
   await pg.query(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, freight, margin)
                   VALUES (8, 'meli', 'MLB1', 'outra conta', 1, 1, 0, 0, 0, 0, 0)`);
-  await pg.query(`UPDATE promo_snapshot_itens SET preco_final = NULL WHERE run_id = $1 AND item_id = 'MLB2'`, [r.id]);
   await pg.query("ANALYZE");
-  const rows = await repo.listarBaseOportunidades({ clienteContaId: 7, runId: r.id }, db);
-  assert.strictEqual(rows.length, 2999, "sem preço fica fora");
-  assert.ok(rows.every((x) => x.titulo === "T"), "nunca casa com o snapshot de margem de outra conta");
-  const plano = await pg.query(`EXPLAIN SELECT p.item_id FROM promo_snapshot_itens p WHERE p.run_id = $1 AND p.cliente_conta_id = 7
-                                  AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`, [r.id]);
-  const texto = plano.rows.map((x) => x["QUERY PLAN"]).join("\n");
-  assert.ok(/Index|Bitmap/.test(texto), texto);
+  return run.id;
+}
+
+check("Oportunidades paginadas NO BANCO: 5.000 anúncios → a consulta devolve só `limit` linhas; ordem/filtro/total idênticos à régua JS em todas as páginas", async ({ db, pg }) => {
+  const n = 5000;
+  const runId = await montarCatalogoOportunidades(db, pg, n);
+  const vendas = new Map();
+  for (let i = 1; i <= n; i += 13) vendas.set(`MLB${i}`, { unidades: (i % 7) + 1 });
+
+  // Referência JS: todas as promoções disponíveis + snapshots, régua de montarCandidata.
+  const todas = await pg.query(
+    `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno, p.herdado AS promo_herdado
+       FROM promo_snapshot_itens p
+      WHERE p.run_id = $1 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`, [runId]);
+  const snaps = await pg.query(`SELECT * FROM margin_projection_snapshots WHERE cliente_conta_id = 7`);
+  const snapPorItem = new Map(snaps.rows.map((s) => [s.item_id, s]));
+  const limit = 50;
+  const ref1 = paginaReferencia({ promos: todas.rows, snapPorItem, vendasPorMlb: vendas, page: 1, limit });
+  const totalRef = Number(ref1.rows[0].total_oportunidades);
+  assert.ok(totalRef > 2000 && totalRef < n, `total de referência plausível (${totalRef})`);
+
+  const paginas = Math.ceil(totalRef / limit);
+  const vistos = new Set();
+  for (let page = 1; page <= paginas + 1; page += 1) {
+    const sqlPg = await repo.listarOportunidadesPaginadas({ clienteContaId: 7, sellerId: "555", runId, vendasPorMlb: vendas, page, limit }, db);
+    const ref = paginaReferencia({ promos: todas.rows, snapPorItem, vendasPorMlb: vendas, page, limit });
+    assert.strictEqual(sqlPg.total, totalRef, `total na página ${page}`);
+    assert.ok(sqlPg.rows.length <= limit, "nunca mais que `limit` linhas saem do banco");
+    const esperado = ref.rows.filter((r) => r.item_id).map((r) => `${r.item_id}|${r.chave}|${Number(r.margem_depois)}`);
+    const obtido = sqlPg.rows.map((r) => `${r.item_id}|${r.chave}|${Number(r.margem_depois)}`);
+    assert.deepStrictEqual(obtido, esperado, `página ${page} idêntica à régua JS`);
+    for (const r of sqlPg.rows) { assert.ok(!vistos.has(r.item_id), "1 linha por anúncio em todo o conjunto"); vistos.add(r.item_id); }
+  }
+  assert.strictEqual(vistos.size, totalRef);
+
+  // Plano: LIMIT aplicado na consulta; nada de outra conta.
+  const { sqlOportunidadesPaginadas } = require("../services/motorMargem/precificacao/precificacaoOportunidadesSql");
+  const pg3 = await repo.listarOportunidadesPaginadas({ clienteContaId: 7, sellerId: "555", runId, vendasPorMlb: vendas, page: 3, limit: 20 }, db);
+  assert.strictEqual(pg3.rows.length, 20);
+  assert.ok(pg3.rows.every((r) => r.snap_titulo !== "outra conta"));
+  const q = sqlOportunidadesPaginadas({
+    fonteSql: `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno FROM promo_snapshot_itens p
+                WHERE p.run_id = $1 AND p.cliente_conta_id = $2 AND p.seller_id = $3 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,
+    paramsFonte: [runId, 7, "555"], clienteContaId: 7, vendasPorMlb: vendas, page: 3, limit: 20,
+  });
+  const plano = (await pg.query(`EXPLAIN ${q.sql}`, q.params)).rows.map((x) => x["QUERY PLAN"]).join("\n");
+  assert.ok(/Limit/.test(plano), plano);
+  assert.ok(/idx_promo_snapshot_itens_oportunidades|uq_promo_snapshot_itens_run_item_promo|Index|Bitmap/.test(plano), plano);
+});
+
+// ─── Auditoria: achados 1, 2 e 6 contra Postgres real ───────────────────────
+
+check("seller reconectado (SQL real): ponteiro por conta+seller; run do seller anterior encerrado; run zumbi não promove; 1º snapshot do novo seller apaga o anterior", async ({ db, pg }) => {
+  const bom = await rodarRunManual(db, ID7, [["MLB1", "MLB2"]]);
+  assert.strictEqual((await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db)).currentRunId, bom.id);
+  await pg.query(`UPDATE promo_snapshot_contas SET snapshot_at = snapshot_at - INTERVAL '8 hours', fresh_until = NOW() - INTERVAL '1 hour'`);
+  // Run do 555 na fila e outro "zumbi" já em execução seriam do seller antigo.
+  const { run: velho } = await service.enqueuePromoSnapshotRun(ID7, { reason: "x" }, { db, repo, logger: silencioso });
+  await pg.query(`UPDATE cliente_contas SET external_account_id = '999' WHERE id = 7`);
+  await pg.query(`INSERT INTO ml_tokens (cliente_id, ml_user_id, access_token, refresh_token, token_status) VALUES (3, '999', 'a', 'r', 'valid')`);
+  const ID7N = { ...ID7, sellerId: "999" };
+  assert.strictEqual(await repo.obterConta({ clienteContaId: 7, sellerId: "999" }, db), null, "leitura do 999 não acha o ponteiro do 555");
+  const e = await service.estadoSincronizacao({ clienteContaId: 7, sellerId: "999" }, { db, repo, env: {} });
+  assert.deepStrictEqual([e.state, e.hasSnapshot, e.activeRun], ["never_synced", false, null]);
+  const elegiveis = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30 }, db);
+  assert.ok(elegiveis.some((x) => x.clienteContaId === 7 && x.sellerId === "999"), "conta elegível pelo seller atual");
+  const { run: novo, reaproveitado } = await service.enqueuePromoSnapshotRun(ID7N, { reason: "y" }, { db, repo, logger: silencioso });
+  assert.strictEqual(reaproveitado, false, "run do 555 nunca é reaproveitado para o 999");
+  const v = await pg.query(`SELECT status, error_code FROM promo_snapshot_runs WHERE id = $1`, [velho.id]);
+  assert.deepStrictEqual([v.rows[0].status, v.rows[0].error_code], ["failed", "PROMO_SNAPSHOT_SELLER_SUBSTITUIDO"]);
+  assert.strictEqual(novo.sellerId, "999");
+  // Um run do seller antigo que chegue ao fim (zumbi) é barrado na conclusão.
+  await pg.query(`UPDATE promo_snapshot_runs SET status = 'failed' WHERE id = $1`, [novo.id]);
+  const zumbi = await repo.createRun({ ...ID7, reason: "zumbi" }, db);
+  await repo.claimNextQueuedRun({}, db);
+  await repo.registrarLote({ run: { ...zumbi, status: "running" }, seq: 1, itemIds: ["MLB1"], linhas: [linha("MLB1")] }, db);
+  const fimZumbi = await repo.finalizarRun({ runId: zumbi.id, status: "completed", promover: true, freshMinutes: 360 }, db);
+  assert.deepStrictEqual([fimZumbi.status, fimZumbi.errorCode, fimZumbi.promovido], ["failed", "PROMO_SNAPSHOT_SELLER_DIVERGENTE", false]);
+  assert.strictEqual((await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db)).currentRunId, bom.id, "ponteiro do 555 não mudou");
+  // Primeiro snapshot do 999.
+  const r999 = await rodarRunManual(db, ID7N, [["MLB9"]]);
+  const c999 = await repo.obterConta({ clienteContaId: 7, sellerId: "999" }, db);
+  assert.strictEqual(c999.currentRunId, r999.id);
+  assert.strictEqual(await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db), null, "ponteiro do seller anterior apagado");
+  const sobra = await pg.query(`SELECT COUNT(*)::int n FROM promo_snapshot_itens WHERE cliente_conta_id = 7 AND seller_id = '555'`);
+  assert.strictEqual(sobra.rows[0].n, 0, "linhas do seller anterior apagadas");
+  const l = await repo.listarLinhasSnapshot({ clienteContaId: 7, sellerId: "999", runId: bom.id, page: 1, limit: 50 }, db);
+  assert.strictEqual(l.total, 0, "run antigo nunca é lido com o seller novo");
+});
+
+check("parcial promovido (SQL real): item que falhou herda a última leitura boa (herdado, observed_at e origem originais); os outros são novos", async ({ db, pg }) => {
+  const itens = Array.from({ length: 40 }, (_, i) => `MLB${i + 1}`);
+  const r1 = await rodarRunManual(db, ID7, [itens]);
+  await pg.query(`UPDATE promo_snapshot_itens SET observed_at = NOW() - INTERVAL '2 hours' WHERE run_id = $1`, [r1.id]);
+  await pg.query(`UPDATE promo_snapshot_contas SET snapshot_at = snapshot_at - INTERVAL '8 hours'`);
+  // Run 2: MLB7 falha (39 lidos). Linhas novas com observed_at de agora.
+  const { run } = await service.enqueuePromoSnapshotRun(ID7, { reason: "p" }, { db, repo, logger: silencioso });
+  const c = await repo.claimNextQueuedRun({}, db);
+  const lidas = itens.filter((x) => x !== "MLB7").map((x) => ({ ...linha(x), observedAt: new Date().toISOString() }));
+  await repo.registrarLote({ run: c, seq: 1, itemIds: itens, itensFalhos: ["MLB7"], linhas: lidas }, db);
+  const fim = await repo.finalizarRun({ runId: run.id, status: "partial", promover: true, freshMinutes: 360, inheritMaxMinutes: 4320 }, db);
+  assert.deepStrictEqual([fim.itensHerdados, fim.promocoesHerdadas], [1, 1]);
+  const conta = await repo.obterConta({ clienteContaId: 7, sellerId: "555" }, db);
+  assert.deepStrictEqual([conta.currentRunId, conta.parcial, conta.itensSemLeitura, conta.itensHerdados, conta.promocoesTotal], [run.id, true, 1, 1, 40]);
+  const rows = await pg.query(`SELECT item_id, herdado, origem_run_id, observed_at < NOW() - INTERVAL '1 hour' AS velha FROM promo_snapshot_itens WHERE run_id = $1 ORDER BY item_id`, [run.id]);
+  assert.strictEqual(rows.rows.length, 40, "39 + 1 herdada: nada sumiu");
+  const h = rows.rows.find((x) => x.item_id === "MLB7");
+  assert.deepStrictEqual([h.herdado, Number(h.origem_run_id), h.velha], [true, r1.id, true]);
+  assert.ok(rows.rows.filter((x) => x.item_id !== "MLB7").every((x) => x.herdado === false && !x.velha));
+  const pub = await repo.listarLinhasSnapshot({ clienteContaId: 7, sellerId: "555", runId: run.id, page: 1, limit: 5, itemId: "MLB7" }, db);
+  assert.strictEqual(pub.linhas[0].herdada, true);
+  // Leitura boa velha demais: não herda.
+  await pg.query(`UPDATE promo_snapshot_itens SET observed_at = NOW() - INTERVAL '10 days' WHERE run_id = $1`, [run.id]);
+  await pg.query(`UPDATE promo_snapshot_contas SET snapshot_at = snapshot_at - INTERVAL '8 hours'`);
+  const { run: r3 } = await service.enqueuePromoSnapshotRun(ID7, { reason: "p3" }, { db, repo, logger: silencioso });
+  const c3 = await repo.claimNextQueuedRun({}, db);
+  await repo.registrarLote({ run: c3, seq: 1, itemIds: itens, itensFalhos: ["MLB8"], linhas: itens.filter((x) => x !== "MLB8").map((x) => linha(x)) }, db);
+  const fim3 = await repo.finalizarRun({ runId: r3.id, status: "partial", promover: true, freshMinutes: 360, inheritMaxMinutes: 4320 }, db);
+  assert.strictEqual(fim3.itensHerdados, 0);
+});
+
+check("lote idempotente (SQL real): replay do mesmo (run, seq) não muda contador nem linha; seq com outros itens é recusado; retomada idempotente", async ({ db, pg }) => {
+  const run = await repo.createRun({ ...ID7, reason: "a" }, db);
+  const c = await repo.claimNextQueuedRun({}, db);
+  const args = { run: c, seq: 1, itemIds: ["MLB1", "MLB2", "MLB3"], itensFalhos: ["MLB3"], linhas: [linha("MLB1"), linha("MLB2")], contadores: { retries: 2, rateLimits: 1 } };
+  const r1 = await repo.registrarLote(args, db);
+  const campos = (x) => [x.itensProcessados, x.itensComPromocao, x.promocoesEncontradas, x.erros, x.retries, x.rateLimits];
+  assert.deepStrictEqual(campos(r1), [3, 2, 2, 1, 2, 1]);
+  const r2 = await repo.registrarLote(args, db);
+  assert.deepStrictEqual(campos(r2), campos(r1), "replay idêntico");
+  const r3 = await repo.registrarLote({ ...args, itemIds: ["MLB3", "MLB1", "MLB2"], itensFalhos: [], linhas: [linha("MLB3")], contadores: { retries: 9, rateLimits: 9 } }, db);
+  assert.deepStrictEqual(campos(r3), campos(r1), "replay com contadores diferentes também não soma");
+  await assert.rejects(() => repo.registrarLote({ ...args, itemIds: ["MLB9"] }, db), (e) => e.code === "PROMO_SNAPSHOT_LOTE_CONFLITANTE");
+  const n = await pg.query(`SELECT COUNT(*)::int n FROM promo_snapshot_itens WHERE run_id = $1`, [run.id]);
+  assert.strictEqual(n.rows[0].n, 2);
+  const lotes = await pg.query(`SELECT COUNT(*)::int n FROM promo_snapshot_run_lotes WHERE run_id = $1`, [run.id]);
+  assert.strictEqual(lotes.rows[0].n, 1);
+  // Retomada (lote 0) repetida também não soma.
+  await pg.query(`UPDATE promo_snapshot_runs SET heartbeat_at = NOW() - INTERVAL '30 minutes' WHERE id = $1`, [run.id]);
+  await repo.reconcileStaleRunningRuns({ staleMinutes: 10 }, db);
+  const { run: novo } = await service.enqueuePromoSnapshotRun(ID7, { reason: "b" }, { db, repo, logger: silencioso, env: { PROMO_SNAPSHOT_RESUME_MAX_MINUTES: "60" } });
+  const cn = await repo.claimNextQueuedRun({}, db);
+  const k1 = await repo.copiarLotesRetomados({ run: cn, fromRunId: run.id, catalogItemIds: ["MLB1", "MLB2", "MLB3"] }, db);
+  const k2 = await repo.copiarLotesRetomados({ run: cn, fromRunId: run.id, catalogItemIds: ["MLB1", "MLB2", "MLB3"] }, db);
+  assert.deepStrictEqual(k2.itens.slice().sort(), k1.itens.slice().sort());
+  const rn = await pg.query(`SELECT itens_processados, promocoes_encontradas FROM promo_snapshot_runs WHERE id = $1`, [novo.id]);
+  assert.deepStrictEqual([rn.rows[0].itens_processados, rn.rows[0].promocoes_encontradas], [2, 2]);
 });
 
 check("orquestrador (SQL real): só MELI ativa com grant utilizável, sem run ativo, vencida, fora da espera pós-falha", async ({ db, pg }) => {
@@ -299,7 +461,7 @@ check("pipeline completo com SQL real: worker + processor + repositório; 2 cont
   await service.ensureFreshPromoSnapshot(ID8, {}, base);
   assert.strictEqual((await worker.runOnce()).status, "completed");
   assert.strictEqual((await worker.runOnce()).status, "completed");
-  const e7 = await service.estadoSincronizacao({ clienteContaId: 7 }, base);
+  const e7 = await service.estadoSincronizacao({ clienteContaId: 7, sellerId: "555" }, base);
   assert.strictEqual(e7.state, "fresh");
   const linhas = await pg.query(`SELECT item_id, status, ativa, preco_final_fonte, seller_id FROM promo_snapshot_itens WHERE run_id = $1 ORDER BY item_id`, [e7.snapshotRunId]);
   assert.deepStrictEqual(linhas.rows.map((r) => [r.item_id, r.status, r.ativa, r.preco_final_fonte, r.seller_id]), [

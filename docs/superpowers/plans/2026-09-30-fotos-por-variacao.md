@@ -8,6 +8,8 @@
 
 **Tech Stack:** Node/Express, multer (memory), Sharp, native `fetch`/`FormData`; vanilla JS Portal with native HTML5 drag and drop; plain-Node test files (`assert`) and the CDP headless suite.
 
+**Status:** Task 1 done (18 pure checks; the test file and service in the repo are the source of truth — they extend Task 1's listing below with `validarPlano` and extra detection checks).
+
 **Spec:** `docs/superpowers/specs/2026-09-30-fotos-por-variacao-design.md` (amended in Task 1: the new logic lives in `meliFotosService.js`, not inside `meliImagensService.js`).
 
 ## Global Constraints
@@ -63,6 +65,8 @@
   - `grupoSimples(item) -> Grupo`
   - `localizarGrupo(grupos, grupoVariacao) -> Grupo|null`
   - `validarForma(plano, qtdNovas) -> { ok:true, plano } | Falha`
+  - `validarPlano(plano, grupos, qtdNovas) -> { ok:true, grupo } | Falha` (forma → grupo existe → base confere; added during execution to meet the acceptance criteria)
+  - `validarLimite(plano, limite) -> { ok:true } | Falha`
   - `conferirBase(grupo, plano) -> { ok:true } | Falha`
   - `resolverOrdem(ordem, idsNovos) -> string[]`
   - `reconstruirPayload(item, grupo, ordemIds) -> { payload:{pictures, variations?}, removidas:string[] }`
@@ -944,7 +948,7 @@ async function run() {
 - [ ] **Step 2: Run to confirm failure**
 
 Run: `node server/tests/meliAnunciosFotos.test.js`
-Expected: the 10 pure checks pass, then FAIL with `fotos.lerFotos is not a function`.
+Expected: the 18 pure checks pass, then FAIL with `fotos.lerFotos is not a function`.
 
 - [ ] **Step 3: Implement the orchestration**
 
@@ -1153,7 +1157,7 @@ Note on `MOTIVO_VINCULO_INCERTO`: its text says "se a imagem entrou no anúncio"
 - [ ] **Step 4: Run the tests**
 
 Run: `node server/tests/meliAnunciosFotos.test.js`
-Expected: `✓ 26 verificações do editor de fotos` (10 pure + 16 orchestration). Warning/error log lines from `registrarRecusa` and the critical event are expected.
+Expected: `✓ 34 verificações do editor de fotos` (18 pure + 16 orchestration). Warning/error log lines from `registrarRecusa` and the critical event are expected.
 
 - [ ] **Step 5: Commit**
 
@@ -1452,7 +1456,7 @@ Delete the file: `git rm server/tests/meliAnunciosImagensVariacoes.test.js`.
 
 - [ ] **Step 6: Run the tests**
 
-Run: `node server/tests/meliAnunciosFotos.test.js` → `✓ 29 verificações do editor de fotos`
+Run: `node server/tests/meliAnunciosFotos.test.js` → `✓ 37 verificações do editor de fotos`
 Run: `node server/tests/meliAnunciosImagens.test.js` → `✓ 16 verificações de imagem de anúncio ML`
 Run the backend suite (Global Constraints) → last line `✓ 280 arquivos de teste concluídos` (280 before Task 1, +1 new file in Task 1, −1 deleted here) with exit 0. If `jwtSecretBoot.test.js` times out, rerun it alone (known flake).
 Check line endings: `python -c "b=open('server/controllers/meliAnunciosController.js','rb').read();print(b.count(b'\r\n')==b.count(b'\n'))"` → `True` (same for the routes file).

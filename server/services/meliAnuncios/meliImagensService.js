@@ -759,8 +759,18 @@ module.exports = {
   bloqueioDoItemMl,
   normalizarParaJpg,
   urlsDasFotos,
+  // Usados por meliFotosService (editor de fotos por grupo):
+  falha,
+  falhaMl,
+  falhaConexao,
+  registrarRecusa,
+  lerItemComVariacoes,
+  atributosQueDefinemFoto,
+  elegibilidadeVariacoes,
+  rotuloDaVariacao,
   MAX_DIMENSAO_ML,
   MIN_DIMENSAO_ML,
   MOTIVO_CATALOGO,
   MOTIVO_VARIACOES,
+  MOTIVO_VINCULO_INCERTO,
 };

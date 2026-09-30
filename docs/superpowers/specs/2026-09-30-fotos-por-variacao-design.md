@@ -208,11 +208,12 @@ personalizados vêm sem `value_id` (caso real da Red Fish).
 ## 5. Código
 
 - `server/services/meliAnuncios/meliImagensService.js`: mantém normalização,
-  upload, leitura com variações, grupos e conferência; ganha
-  `lerFotos()`, `validarPlano()`, `reconstruirPayload()` (pura),
-  `conferirFotos()` (pura) e `salvarFotos()` (orquestração). As funções do
-  PR #205 que ficam sem uso (`adicionarImagemVariacao`, `listarGruposDe
-  FotoVariacoes`, `montarPayloadVariacao`) saem.
+  upload e leitura com variações, e exporta os helpers usados pelo editor.
+  As funções do PR #205 que ficam sem uso (`adicionarImagemVariacao`,
+  `listarGruposDeFotoVariacoes`, `montarPayloadVariacao` e afins) saem.
+- `server/services/meliAnuncios/meliFotosService.js` (novo): funções puras
+  `montarGrupos()`, `validarPlano()`, `reconstruirPayload()`,
+  `conferirFotos()` e a orquestração `lerFotos()` / `salvarFotos()`.
 - Controller: `lerFotosAnuncio`, `salvarFotosAnuncio`. Rotas
   `GET/PUT /:itemId/fotos` (multer `array("novas", 10)`).
 - `POST /:itemId/imagens` fica no backend, sem uso pela tela, até a

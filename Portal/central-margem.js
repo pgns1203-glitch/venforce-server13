@@ -2345,7 +2345,7 @@
     if (state.pricing && state.pricing.abort) state.pricing.abort.abort();
     if (state.pricing && state.pricing.timer) root.clearTimeout(state.pricing.timer);
     if (state.pricing && state.pricing.pollTimer) root.clearTimeout(state.pricing.pollTimer);
-    state.pricing = { novoPreco: "", status: "idle", sim: null, error: null, localError: null, abort: null, timer: null, promoSim: null, aplicacao: null, pollTimer: null };
+    state.pricing = { novoPreco: "", status: "idle", sim: null, error: null, localError: null, abort: null, timer: null, promoSim: null, aplicacao: null, pollTimer: null, precoAoVivo: null, precoTabela: null };
     state.promos = null;
     state.history = null;
     state.evidenceVariable = state.evidenceVariable || "price";
@@ -2462,6 +2462,9 @@
       precoFoot = "confirmado pelo Mercado Livre";
     } else if (sim && sim.atual && sim.atual.preco !== null && sim.atual.preco !== undefined) {
       precoAtual = sim.atual.preco;
+      precoFoot = "confirmado ao vivo";
+    } else if (state.pricing && state.pricing.precoAoVivo !== null && state.pricing.precoAoVivo !== undefined) {
+      precoAtual = state.pricing.precoAoVivo;
       precoFoot = "confirmado ao vivo";
     }
     var sales = item.sales || {};
@@ -2591,10 +2594,13 @@
     return '<section class="cm-pp" aria-labelledby="cm-pp-title">' +
       '<header class="cm-pp__head"><h3 id="cm-pp-title">Ajuste manual</h3><span>só o preço vira escrita real</span></header>' +
       '<div class="cm-pp__row">' +
-      '<div class="cm-pp__field"><span class="cm-pp__label">Preço atual</span><strong class="cm-pp__current">' + escapeHtml(formatMoney(currentPriceOf(item)) || "—") + "</strong></div>" +
+      '<div class="cm-pp__field"><span class="cm-pp__label">Preço atual</span><strong class="cm-pp__current">' + escapeHtml(formatMoney(shownPrice(item)) || "—") + "</strong></div>" +
       '<label class="cm-pp__field"><span class="cm-pp__label">Novo preço</span><input class="vf-input vf-input--sm cm-pp__input" id="cm-new-price" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + escapeHtml(p.novoPreco) + '"' + (availability.ok ? "" : " disabled") + "></label>" +
       (chips ? '<div class="cm-pp__chips">' + chips + "</div>" : "") +
       "</div>" +
+      (p.precoAoVivo !== null && p.precoAoVivo !== undefined && p.precoTabela !== null && p.precoTabela !== undefined && Math.abs(p.precoAoVivo - p.precoTabela) >= 0.005
+        ? '<p class="cm-live-note" data-cm-live-price>O preço no Mercado Livre mudou desde a última leitura da tabela: ' + escapeHtml(formatMoney(p.precoTabela)) + " → <strong>" + escapeHtml(formatMoney(p.precoAoVivo)) + "</strong> agora. A simulação e o preview usam o preço atual do ML.</p>"
+        : "") +
       '<div class="cm-pp__result" id="cm-pp-result" aria-live="polite">' + resultado + "</div>" +
       '<div class="cm-pp__actions"><button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-pp-review"' + (podeRevisar ? "" : " disabled") + ">Revisar alteração</button></div>" +
       "</section>";
@@ -2754,13 +2760,35 @@
     return list.find(function (promo) { return String(promo.id) === String(id); }) || null;
   }
 
+  /**
+   * `precoVisto` = o preço que a tela está MOSTRANDO ao operador. Começa com
+   * o da tabela; quando o backend informa o preço vivo do ML e ele difere, a
+   * tela passa a exibir o vivo (com aviso) e é ele que vai no preview — o
+   * compare-and-set entre preview e aplicar continua valendo.
+   */
+  function shownPrice(item) {
+    var p = state.pricing;
+    return p && p.precoAoVivo !== null && p.precoAoVivo !== undefined ? p.precoAoVivo : currentPriceOf(item);
+  }
+
+  function adoptLivePrice(livePrice) {
+    var p = state.pricing;
+    var item = findSelectedItem();
+    if (!p || !item || livePrice === null || livePrice === undefined) return false;
+    var mostrado = shownPrice(item);
+    if (mostrado !== null && Math.abs(Number(livePrice) - mostrado) < 0.005) return false;
+    p.precoTabela = currentPriceOf(item);
+    p.precoAoVivo = Number(livePrice);
+    return true;
+  }
+
   function pricingParams(extra) {
     var item = findSelectedItem();
     return Object.assign({
       clientSlug: state.client && state.client.slug,
       clienteContaId: state.contaId,
       itemId: item && item.itemId,
-      precoVisto: currentPriceOf(item),
+      precoVisto: shownPrice(item),
     }, extra || {});
   }
 
@@ -2802,6 +2830,13 @@
           p.status = "ok";
           p.sim = result;
           p.error = null;
+          // Preço do ML mudou desde a leitura da tabela: mostra o vivo e
+          // recalcula com ele (os gates passam a comparar com o que a tela exibe).
+          if (result.atual && adoptLivePrice(result.atual.preco)) {
+            renderDrawer();
+            schedulePriceSimulation(0);
+            return;
+          }
         }
         renderDrawerHeader(findSelectedItem());
         updatePricingResult();
@@ -2876,6 +2911,7 @@
       state.promos = result.ok
         ? { status: "ok", list: result.promocoes || [], atual: result.atual || null, contaCorreta: result.contaCorreta !== false, gates: result.gates || [], escritaHabilitada: result.escritaHabilitada === true }
         : { status: "error", error: result.error || "Não foi possível carregar as promoções." };
+      if (result.ok && result.atual) adoptLivePrice(result.atual.preco);
       if (state.drawerTab === "pricing") renderDrawer();
     });
     if (state.drawerTab === "pricing" && refs.drawer.classList.contains("is-open")) renderDrawer();
@@ -3014,6 +3050,10 @@
           state.pricing.status = "idle";
           state.pricing.novoPreco = "";
           state.pricing.promoSim = null;
+          if (c.kind === "PRICE" && aplicacao.precoConfirmado !== null && aplicacao.precoConfirmado !== undefined) {
+            state.pricing.precoTabela = null;
+            state.pricing.precoAoVivo = aplicacao.precoConfirmado;
+          }
           state.history = null;
           trackPostWrite(aplicacao.id, seq);
           renderDrawer();

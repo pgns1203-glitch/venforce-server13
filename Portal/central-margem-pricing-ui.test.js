@@ -146,7 +146,10 @@ const MOCK_CLIENT = `
       };
     }
 
+    var PRECO_TABELA = { MLB1001: 110.48, MLB1002: 149.9, MLB1003: 59.9, MLB9999: 99.9 };
+    function precoVivo(itemId) { return window.__pc.livePrice[itemId] != null ? window.__pc.livePrice[itemId] : PRECO_TABELA[itemId]; }
     window.__pc = {
+      livePrice: {},
       calls: { itens: 0, promos: [], sim: [], preview: [], apply: [], app: [], hist: [], opps: [] },
       holdPromos: {}, resolvePromos: {},
       holdSim: false, resolveSim: [],
@@ -197,7 +200,7 @@ const MOCK_CLIENT = `
         ok: true, tipo: params.tipo,
         item: { itemId: params.itemId, titulo: "Produto X", sku: "SKU-1", statusAnuncio: "active" },
         conta: { id: 10, nome: "Loja piloto", mlUserId: "10000" },
-        atual: { preco: 110.48, margem: 0.1916, lucro: 21.17, precoAlvo: 102.56, breakEven: 89.66, metaMargem: 0.1 },
+        atual: { preco: precoVivo(params.itemId), margem: 0.1916, lucro: 21.17, precoAlvo: 102.56, breakEven: 89.66, metaMargem: 0.1 },
         proposta: { preco: novo, margem: bloqueado ? -0.04 : 0.2204, lucro: bloqueado ? -3.2 : 25.33, comissao: 13.79, comissaoFonte: "recotada", frete: 20, freteFonte: "recotado",
           rebate: promo ? 5.2 : 0, variacaoPercentual: Math.round((novo / 110.48 - 1) * 10000) / 100 },
         vendas: { unidades: 84, pedidos: 80, receita: 9000 },
@@ -243,7 +246,7 @@ const MOCK_CLIENT = `
 
       getItemPromotions: function (params) {
         window.__pc.calls.promos.push(params.itemId);
-        var resposta = { ok: true, itemId: params.itemId, contaCorreta: true, atual: { preco: 149.9, margem: 0.248, lucro: 37.18 }, promocoes: promosDe(params.itemId), escritaHabilitada: window.__pc.escritaHabilitada };
+        var resposta = { ok: true, itemId: params.itemId, contaCorreta: true, atual: { preco: precoVivo(params.itemId), margem: 0.248, lucro: 37.18 }, promocoes: promosDe(params.itemId), escritaHabilitada: window.__pc.escritaHabilitada };
         if (window.__pc.holdPromos[params.itemId]) {
           return new Promise(function (resolve) { window.__pc.resolvePromos[params.itemId] = function () { delete window.__pc.holdPromos[params.itemId]; resolve(resposta); }; });
         }
@@ -397,6 +400,15 @@ async function run() {
       assert.ok(top.includes("45"), top);
       assert.ok((await cdp.evaluate("document.getElementById('cm-summary-line').innerText")).includes("3 anúncios · 3 ativos · 0 pausados"));
       assert.strictEqual(await calls("promos"), 0, "a tabela nunca consulta promoções por linha");
+      assert.strictEqual(await calls("sim"), 0);
+      // Filtrar, buscar e trocar de visão também não chamam o ML por linha.
+      const itensAntes = await cdp.evaluate("window.__pc.calls.itens");
+      await cdp.evaluate("(function(){var s=document.getElementById('cm-financial-filter');s.value='LOSS';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, `window.__pc.calls.itens > ${itensAntes} && !window.VFCentralMargemUi.getState().loading`);
+      await cdp.evaluate("(function(){var s=document.getElementById('cm-financial-filter');s.value='';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "!window.VFCentralMargemUi.getState().loading && document.querySelectorAll('#cm-table-host tbody tr[data-item-id]').length === 3");
+      await cdp.evaluate("document.querySelector('[data-view=composition]').click(); document.querySelector('[data-view=operational]').click();");
+      assert.strictEqual(await calls("promos"), 0, "filtrar/paginar/trocar visão: 0 chamadas de promoção");
       assert.strictEqual(await calls("sim"), 0);
       await shot("10-pricing-page");
     });
@@ -586,9 +598,23 @@ async function run() {
       assert.ok(txt.includes("Oferta MLB1002") && !txt.includes("Oferta MLB1001"), "promoção do item anterior vazou para o novo");
     });
 
+    await check("preço mudou no ML desde a leitura da tabela: a tela mostra o vivo, avisa e usa-o como precoVisto", async () => {
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.livePrice['MLB1003'] = 62");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"] [data-open-item]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-live-price]')", "aviso de preço vivo diferente ausente");
+      const aviso = (await cdp.evaluate("document.querySelector('[data-cm-live-price]').textContent")).replace(/\u00a0/g, " ");
+      assert.ok(aviso.includes("R$ 59,90") && aviso.includes("R$ 62,00"), aviso);
+      await typePrice("65,00");
+      await waitFor(cdp, "document.querySelector('[data-cm-sim=\"PRICE\"]')", "simulação não voltou");
+      const ultima = await cdp.evaluate("window.__pc.calls.sim[window.__pc.calls.sim.length-1]");
+      assert.strictEqual(ultima.precoVisto, 62, "o preço exibido (vivo) é o precoVisto — nunca o da tabela defasada");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-drawer-summary').textContent")).replace(/\u00a0/g, " ").includes("R$ 62,00"));
+      await cdp.evaluate("delete window.__pc.livePrice['MLB1003']");
+    });
+
     await check("troca de conta fecha o drawer e descarta promoções em voo da conta anterior", async () => {
-      await cdp.evaluate("window.__pc.holdPromos['MLB1003'] = true");
-      await cdp.evaluate("document.getElementById('cm-drawer-next').click()");
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.holdPromos['MLB1003'] = true");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"] [data-open-item]').click()");
       await waitFor(cdp, "typeof window.__pc.resolvePromos['MLB1003'] === 'function'");
       await cdp.evaluate("window.VF.context.setConta(11)");
       await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 11", "conta 11 não entrou");

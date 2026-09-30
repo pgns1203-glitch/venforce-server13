@@ -2438,3 +2438,13 @@
   .cm-drawer .cm-hist__nums { grid-template-columns: 1fr; }
   .vf-page-central-margem .cm-context__search .vf-input { min-width: 0; width: 100%; }
 }
+
+.cm-drawer .cm-live-note {
+  margin: 0 var(--vf-sp-3) var(--vf-sp-3);
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  border: 1px solid var(--vf-warning-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-warning-bg);
+  color: var(--vf-warning-strong);
+  font-size: var(--vf-fs-2xs);
+}

@@ -293,10 +293,20 @@ limites da categoria, resposta da tela, snapshot do VenForce, chamadas ML).
 - **Erros reais do ML:** nenhum nesta rodada (sem moderação, sem recusa de
   categoria, de vínculo ou de variação). A recusa por limite foi a do
   VenForce, antes de qualquer escrita.
-- **Sem variação: NÃO executado.** Os 151 anúncios sem variação da Red Fish
-  são todos User Product (nenhum tradicional), e escrever fotos num User
-  Product pode replicar para os outros anúncios da família (item em aberto
-  na tabela abaixo). Precisa de um anúncio simples autorizado.
+- **Sem variação: PENDENTE.** Não foi possível validar anúncio sem variação
+  isolado porque todos os candidatos possuem vínculo de produto.
+  Auditoria (somente leitura, 2026-09-30) com os critérios obrigatórios:
+  `catalog_listing = false`, `family_name` nulo, `user_product_id` nulo, sem
+  variações, sem risco de replicação para irmãos.
+  - Banco (após sync completo): 175 anúncios; 151 sem variação, todos com
+    `user_product_id` e `family_name`; 24 sem vínculo de produto, todos com
+    variações; nenhum de catálogo. Candidatos: 0.
+  - ML ao vivo (`GET /items?ids=` em lotes de 20, 175 de 175 lidos, 0 erro):
+    mesmo resultado — 151 "sem variação + user_product_id + family_name",
+    24 "com variação, sem vínculo". Candidatos: 0.
+  - Decisão: não usar anúncio de produto (nem pausado) só para completar o
+    checklist. O teste fica pendente até existir um anúncio simples
+    autorizado.
 - Não coberto: clique pelo Portal (HTTP, multer, auth), `VINCULO_INCERTO`,
   `CONFIRMACAO_DIVERGENTE` e perda crítica (só simulados).
 

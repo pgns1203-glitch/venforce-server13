@@ -467,6 +467,31 @@ async function atualizarCamposConfirmados(clienteId, itemId, campos = {}) {
   return rows.length ? rows[0] : null;
 }
 
+// Snapshot local das FOTOS depois que o Mercado Livre confirmou a lista
+// (releitura de GET /items/{id} em meliImagensService). Mesmo formato do sync:
+// pictures_json = URLs, pictures_count = tamanho, thumbnail = capa do ML.
+// score_venforce/score_motivo (que contam fotos) NÃO são recalculados aqui —
+// dependem do item inteiro e continuam sendo trabalho do sync.
+async function atualizarFotosConfirmadas(clienteId, itemId, fotos) {
+  await ensureSchema();
+  if (!fotos || !Array.isArray(fotos.pictures_json)) return null;
+  const { rows } = await db.query(
+    `UPDATE meli_anuncios
+        SET pictures_json = $3::jsonb, pictures_count = $4,
+            thumbnail = COALESCE($5, thumbnail), updated_at = NOW()
+      WHERE cliente_id = $1 AND item_id = $2
+      RETURNING *;`,
+    [
+      clienteId,
+      String(itemId),
+      JSON.stringify(fotos.pictures_json),
+      fotos.pictures_json.length,
+      fotos.thumbnail || null,
+    ]
+  );
+  return rows.length ? rows[0] : null;
+}
+
 // Snapshot local do estoque JÁ CONFIRMADO pelo Mercado Livre.
 //
 // Duas escritas, porque são duas afirmações diferentes:
@@ -685,6 +710,7 @@ module.exports = {
   obterResumo,
   obterAnuncio,
   atualizarCamposConfirmados,
+  atualizarFotosConfirmadas,
   aplicarEstoqueConfirmado,
   marcarRevisado,
   upsertAnuncios,

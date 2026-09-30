@@ -20,6 +20,7 @@ const otimizadorService = require("../services/meliAnuncios/otimizadorMeliServic
 const margemProjetadaSnapshotRepository = require("../services/motorMargem/margemProjetadaSnapshotRepository");
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const conteudoService = require("../services/meliAnuncios/meliConteudoService");
+const imagensService = require("../services/meliAnuncios/meliImagensService");
 const estoqueService = require("../services/meliAnuncios/meliEstoqueService");
 const variacoesLegadoService = require("../services/meliAnuncios/meliVariacoesLegadoService");
 const variacoesLegadoEstoqueService = require("../services/meliAnuncios/meliVariacoesLegadoEstoqueService");
@@ -2043,6 +2044,114 @@ async function atualizarConteudo(req, res) {
 }
 
 // ----------------------------------------------------------------------------
+// POST /anuncios-meli/:itemId/imagens?clienteSlug=...&clienteContaId=...
+//   multipart: campo "imagem" (um arquivo PNG/JPG/WebP, até 10 MB)
+//
+// Fluxo separado do /conteudo (ver meliImagensService). O cliente vem SÓ da
+// query: o guard de carteira do router roda antes do multer, quando o corpo
+// multipart ainda não foi lido — um clienteSlug no corpo passaria sem checagem.
+//
+// Resposta:
+//   200 { ok:true, pictureId, anuncio, confirmacaoPendente, imagem }
+//   4xx { ok:false, codigo, motivo, etapa, detalhesMl? }
+//     etapa: validacao | bloqueio | leitura | upload | vinculo
+//     detalhesMl só existe quando o ML respondeu — recusa local não tem.
+// ----------------------------------------------------------------------------
+async function adicionarImagem(req, res) {
+  try {
+    const { itemId } = req.params;
+    const query = req.query || {};
+    const clienteSlug = query.clienteSlug;
+    const clienteContaId = extrairClienteContaId(query.clienteContaId);
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+    if (!req.file) {
+      return res.status(400).json({
+        ok: false, codigo: "ARQUIVO_AUSENTE", etapa: "validacao",
+        motivo: "Nenhuma imagem foi enviada.",
+      });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id,
+        clienteContaId,
+        requireUsableGrant: true,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const r = await imagensService.adicionarImagem({
+      clienteId: cliente.id,
+      itemId,
+      mlUserId,
+      anuncio,
+      arquivo: req.file,
+    });
+
+    if (!r.ok) {
+      const status = r.etapa === "validacao"
+        ? r.statusHttp || 400
+        : r.etapa === "bloqueio" ? 409 : 422;
+      const corpo = { ok: false, codigo: r.codigo, motivo: r.motivo, etapa: r.etapa };
+      if (r.detalhesMl) corpo.detalhesMl = r.detalhesMl;
+      if (r.pictureId) corpo.pictureId = r.pictureId;
+      return res.status(status).json(corpo);
+    }
+
+    // Snapshot só com a lista que o ML devolveu na releitura. Daqui para
+    // baixo a imagem JÁ está no anúncio real: uma falha do banco não pode
+    // virar "erro ao enviar" (o usuário reenviaria e duplicaria a foto).
+    // Vira confirmacaoPendente — o próximo sync alinha o snapshot.
+    let atualizado = anuncio;
+    let confirmacaoPendente = r.confirmacaoPendente;
+    if (r.fotos) {
+      try {
+        atualizado =
+          (await anunciosService.atualizarFotosConfirmadas(cliente.id, itemId, r.fotos)) || anuncio;
+      } catch (errSnapshot) {
+        console.error(
+          `[anuncios-meli] adicionarImagem: imagem ${r.pictureId} vinculada a ${itemId} no ML, mas o snapshot local falhou:`,
+          errSnapshot.message
+        );
+        confirmacaoPendente = true;
+      }
+    }
+
+    return res.json({
+      ok: true,
+      pictureId: r.pictureId,
+      anuncio: atualizado,
+      confirmacaoPendente,
+      imagem: r.imagem,
+    });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] adicionarImagem:", err.message);
+    return res.status(500).json({
+      ok: false,
+      motivo: "Erro interno ao enviar a imagem para o anúncio.",
+    });
+  }
+}
+
+// ----------------------------------------------------------------------------
 // PATCH /anuncios-meli/:itemId/estoque
 //   body: { clienteSlug, clienteContaId?, estoque }
 //
@@ -2815,6 +2924,7 @@ module.exports = {
   aplicarPromocao,
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
+  adicionarImagem,
   atualizarEstoque,
   atualizarPreco,
   simularMargem,

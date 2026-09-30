@@ -2114,6 +2114,144 @@
   object-fit: cover;
 }
 
+/* "+ Adicionar imagem": última célula da grade, mesmo tamanho das fotos. */
+.vf-page-anuncios-meli .am-det-photo--add {
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border-style: dashed;
+  background: transparent;
+  color: var(--vf-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.vf-page-anuncios-meli .am-det-photo--add:hover:not(:disabled),
+.vf-page-anuncios-meli .am-det-photo--add:focus-visible {
+  border-color: var(--vf-primary-border);
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+}
+
+.vf-page-anuncios-meli .am-det-photo--add:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.vf-page-anuncios-meli .am-det-photo__add-plus {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.vf-page-anuncios-meli .am-det-photo__add-label {
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  text-align: center;
+}
+
+.vf-page-anuncios-meli .am-det-img-bloqueio {
+  margin: 8px 0 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+/* Painel da imagem escolhida: preview + dados + estado do envio. */
+.vf-page-anuncios-meli .am-det-img-envio {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-bg-2);
+}
+
+.vf-page-anuncios-meli .am-det-img-envio.is-danger {
+  border-color: var(--vf-danger-border);
+}
+
+.vf-page-anuncios-meli .am-det-img-envio.is-success {
+  display: block;
+  border-color: var(--vf-success-border);
+  background: var(--vf-success-bg);
+}
+
+.vf-page-anuncios-meli .am-det-img-envio__preview {
+  flex: 0 0 96px;
+  width: 96px;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  color: var(--vf-text-placeholder);
+}
+
+.vf-page-anuncios-meli .am-det-img-envio__preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.vf-page-anuncios-meli .am-det-img-envio__info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* :where() mantém a especificidade baixa: as margens abaixo vencem por ordem. */
+.vf-page-anuncios-meli .am-det-img-envio :where(p) {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  line-height: 1.5;
+}
+
+.vf-page-anuncios-meli .am-det-img-envio__nome {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+  overflow-wrap: anywhere;
+}
+
+.vf-page-anuncios-meli .am-det-img-envio__meta {
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-det-img-envio__aviso {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+  color: var(--vf-warning-strong);
+}
+
+.vf-page-anuncios-meli .am-det-img-envio__erro-local,
+.vf-page-anuncios-meli .am-det-img-envio__erro {
+  margin-top: 6px;
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-anuncios-meli .am-det-img-envio__status {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-anuncios-meli .am-det-img-envio.is-success .am-det-img-envio__status {
+  margin-top: 0;
+  color: var(--vf-success-strong);
+}
+
+.vf-page-anuncios-meli .am-det-img-envio__acoes {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 /* ----- Comparação Atual × Sugestão da IA ----- */
 
 .vf-page-anuncios-meli .am-det-compare {

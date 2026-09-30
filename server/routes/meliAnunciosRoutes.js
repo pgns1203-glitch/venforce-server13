@@ -40,12 +40,41 @@
 // -----------------------------------------------------------------------------
 
 const express = require("express");
+const multer = require("multer");
 const router = express.Router();
 
 const { authMiddleware, requireAdmin } = require("../middlewares/authMiddleware");
 const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
 const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
 const ctrl = require("../controllers/meliAnunciosController");
+const imagemValidator = require("../services/designImage/designImageValidator");
+
+// Upload de imagem do anúncio: memória, como o resto do servidor (o disco do
+// Render é efêmero) — o arquivo só existe até ser repassado ao CDN do ML.
+const uploadImagem = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: imagemValidator.MAX_UPLOAD_BYTES, files: 1 },
+});
+
+// Erros do Multer no mesmo formato de recusa da rota (codigo/motivo/etapa),
+// em vez de estourar como 500 no handler global.
+function tratarErroUploadImagem(err, req, res, next) {
+  if (!err) return next();
+  if (err.code === "LIMIT_FILE_SIZE") {
+    const limite = Math.round(imagemValidator.MAX_UPLOAD_BYTES / (1024 * 1024));
+    return res.status(413).json({
+      ok: false, codigo: "ARQUIVO_GRANDE", etapa: "validacao",
+      motivo: `Imagem muito grande. O limite é de ${limite} MB.`,
+    });
+  }
+  if (err.code === "LIMIT_UNEXPECTED_FILE" || err.code === "LIMIT_FILE_COUNT") {
+    return res.status(400).json({
+      ok: false, codigo: "CAMPO_INVALIDO", etapa: "validacao",
+      motivo: 'Envie exatamente um arquivo no campo "imagem".',
+    });
+  }
+  return next(err);
+}
 
 // Todas as rotas exigem usuário autenticado com acesso a automações.
 router.use(authMiddleware, requireAutomacoesAccess);
@@ -140,6 +169,18 @@ router.patch("/:itemId/revisao", ctrl.marcarRevisado);
 // requireAdmin do otimizador existe porque a IA está em validação, não porque
 // escrever no anúncio seja privilégio de admin.
 router.patch("/:itemId/conteudo", ctrl.atualizarConteudo);
+
+// ADICIONAR imagem ao anúncio NO MERCADO LIVRE (upload ao CDN do ML +
+// POST /items/{id}/pictures). Fluxo próprio, separado do /conteudo: é
+// multipart. O clienteSlug vai na QUERY — o guard de carteira acima roda
+// antes do multer, então só a query está disponível para ele checar. Mesmo
+// acesso de /conteudo. Ver meliImagensService.
+router.post(
+  "/:itemId/imagens",
+  uploadImagem.single("imagem"),
+  tratarErroUploadImagem,
+  ctrl.adicionarImagem
+);
 
 // Edição de ESTOQUE do anúncio NO MERCADO LIVRE (PUT /items { available_quantity }).
 // Mesmo acesso de /conteudo, pelo mesmo motivo: é escrita no anúncio, não

@@ -45,11 +45,15 @@ function parseJsonPreservingIds(texto, campos) {
 async function mlFetch(clienteId, path, options = {}) {
   const { mlUserId, noRefresh = false, bigIntFields = null, ...fetchOptions } = options;
 
+  // Corpo multipart (upload de imagem): o fetch monta o Content-Type com o
+  // boundary sozinho — forçar "application/json" aqui quebraria o envio.
+  const multipart = typeof FormData !== "undefined" && fetchOptions.body instanceof FormData;
+
   async function doRequest(token) {
     return fetch(`${ML_API}${path}`, {
       ...fetchOptions,
       headers: {
-        "Content-Type": "application/json",
+        ...(multipart ? {} : { "Content-Type": "application/json" }),
         ...(fetchOptions.headers || {}),
         Authorization: `Bearer ${token}`,
       },

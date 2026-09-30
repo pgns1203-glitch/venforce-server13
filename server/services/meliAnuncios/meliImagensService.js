@@ -24,7 +24,7 @@
 //  - anúncio COM VARIAÇÕES (modelo legado, variations[]) NÃO usa este fluxo:
 //    POST /items/{id}/pictures não documenta efeito em variations[].picture_ids
 //    (a foto ficaria só na lista geral, sem variação que a exiba). Ele usa o
-//    fluxo próprio de adicionarImagemVariacao (mais abaixo), o único que a doc
+//    editor de fotos por grupo (meliFotosService), o único caminho que a doc
 //    descreve: PUT /items/{id} com pictures + variations inteiros.
 //
 // Regras herdadas de meliConteudoService:
@@ -352,35 +352,18 @@ async function adicionarImagem({ clienteId, itemId, mlUserId, anuncio, arquivo }
 }
 
 // =============================================================================
-// VARIAÇÕES (modelo legado, item_id -> variations[])
+// VARIAÇÕES (modelo legado, item_id -> variations[]) — helpers de LEITURA
 //
 // Como o ML representa (documentacao_api_meli/variacoes.md, "Trabalhar com
-// imagens em variações" e "Modificar imagens"; trabalhar-com-imagens.md,
-// "Substituir imagens"):
+// imagens em variações" e "Modificar imagens"; atributos.md, "Comportamentos
+// especiais"):
 //   - as imagens moram na lista GERAL do anúncio (item.pictures[]);
 //   - cada variação aponta para um subconjunto dela (variations[].picture_ids);
-//   - quem decide quais variações dividem imagens é o atributo da categoria
-//     com a tag `defines_picture` (ex.: Cor). Variações com o mesmo valor nesse
-//     atributo DEVEM ter as mesmas imagens; valores diferentes, imagens
-//     diferentes (atributos.md, "Comportamentos especiais").
+//   - o atributo da categoria com a tag `defines_picture` (ex.: Cor) decide
+//     quais variações dividem imagens: mesmo valor = mesmas imagens.
 //
-// Adicionar a uma variação = PUT /items/{id} com:
-//   pictures   → TODAS as imagens atuais (ids) + a nova. Imagem omitida é
-//                APAGADA ("Caso não quer conservar as imagens anteriores, não
-//                devem ser enviadas").
-//   variations → TODAS as variações (id + picture_ids). Variação omitida é
-//                REMOVIDA do anúncio.
-// Por isso a imagem vai para o GRUPO (valor do atributo defines_picture), não
-// para uma combinação isolada — mandar só para "Azul M" deixaria "Azul P" com
-// imagens diferentes, contra a regra do ML.
-//
-// Segurança do PUT inteiro (mesmo padrão de meliVariacoesLegadoEstoqueService):
-//   1. o payload é montado de um GET feito IMEDIATAMENTE antes do PUT (depois
-//      do upload), nunca do snapshot nem da leitura que abriu a tela;
-//   2. depois do PUT, outro GET confere: nenhuma variação sumiu, nenhuma foto
-//      antiga sumiu, a nova está em todas as variações do grupo e em nenhuma
-//      outra. Perda de variação/foto é falha CRÍTICA (log estruturado), nunca
-//      sucesso e nunca retry automático.
+// A ESCRITA (adicionar, excluir, reordenar por grupo, num PUT /items completo)
+// mora em meliFotosService.js, que usa os helpers abaixo.
 // =============================================================================
 
 const ATRIBUTOS_ITEM_VARIACAO =
@@ -390,8 +373,6 @@ const MOTIVO_SEM_VARIACOES =
   "Este anúncio não tem variações no Mercado Livre. Use o envio normal de imagem.";
 const MOTIVO_USER_PRODUCT =
   "Este anúncio está no modelo novo do Mercado Livre (User Product), que não usa a lista de variações. A imagem por variação não se aplica.";
-const MOTIVO_SEM_ATRIBUTO_FOTO =
-  "O Mercado Livre não indica, para a categoria deste anúncio, qual atributo das variações define a foto (defines_picture). Sem isso não dá para saber quais variações devem receber a imagem — use o Mercado Livre.";
 
 async function lerItemComVariacoes(clienteId, itemId, mlUserId, etapa) {
   let resp;
@@ -428,19 +409,6 @@ async function atributosQueDefinemFoto(clienteId, categoryId, mlUserId) {
     .filter((a) => a && a.id && a.tags && a.tags.defines_picture === true)
     .map((a) => ({ id: String(a.id), nome: a.name ? String(a.name) : String(a.id) }));
   return { ok: true, atributos: ids };
-}
-
-// Chave estável de um valor de atributo: value_id quando existe (valores da
-// lista do ML); value_name normalizado para característica personalizada,
-// que pode vir sem value_id.
-function chaveDoValor(ac) {
-  if (!ac) return null;
-  if (ac.value_id !== null && ac.value_id !== undefined && ac.value_id !== "" && String(ac.value_id) !== "-1") {
-    return `id:${ac.value_id}`;
-  }
-  if (ac.value_name === null || ac.value_name === undefined) return null;
-  const nome = String(ac.value_name).trim().toLowerCase();
-  return nome ? `nome:${nome}` : null;
 }
 
 function rotuloDaVariacao(v, atributoFotoId) {
@@ -487,280 +455,25 @@ function elegibilidadeVariacoes(item) {
   return { ok: true, variacoes };
 }
 
-// Agrupa as variações pelo valor do atributo defines_picture. Função PURA
-// (testável sem ML): recebe o item e os atributos da categoria com a tag.
-function gruposDeFotoDasVariacoes(item, atributosFoto) {
-  const eleg = elegibilidadeVariacoes(item);
-  if (!eleg.ok) return eleg;
-  const variacoes = eleg.variacoes;
-
-  const idsNasCombinacoes = new Set();
-  for (const v of variacoes) {
-    for (const ac of Array.isArray(v.attribute_combinations) ? v.attribute_combinations : []) {
-      if (ac && ac.id) idsNasCombinacoes.add(String(ac.id));
-    }
-  }
-  const candidatos = (atributosFoto || []).filter((a) => idsNasCombinacoes.has(a.id));
-  if (candidatos.length !== 1) {
-    return falha("ATRIBUTO_FOTO_INDEFINIDO", MOTIVO_SEM_ATRIBUTO_FOTO, "bloqueio");
-  }
-  const atributo = candidatos[0];
-
-  const urlPorId = {};
-  for (const p of item.pictures) urlPorId[String(p.id)] = p.secure_url || p.url || null;
-
-  const grupos = [];
-  const porChave = {};
-  for (const v of variacoes) {
-    const ac = (v.attribute_combinations || []).find((x) => x && String(x.id) === atributo.id);
-    const chave = chaveDoValor(ac);
-    if (!chave) {
-      return falha(
-        "VARIACAO_SEM_VALOR_FOTO",
-        `Uma variação não tem valor para "${atributo.nome}", o atributo que define a foto. A imagem não pode ser associada com segurança — ajuste no Mercado Livre.`,
-        "bloqueio"
-      );
-    }
-    let g = porChave[chave];
-    if (!g) {
-      const pictureIds = (Array.isArray(v.picture_ids) ? v.picture_ids : []).map(String);
-      g = {
-        chave,
-        valor: String(ac.value_name != null ? ac.value_name : ac.value_id),
-        variacoes: [],
-        pictureIds,
-        fotos: pictureIds.map((pid) => urlPorId[pid]).filter(Boolean),
-      };
-      porChave[chave] = g;
-      grupos.push(g);
-    }
-    g.variacoes.push({ id: String(v.id), rotulo: rotuloDaVariacao(v, atributo.id) });
-  }
-  return { ok: true, atributo, grupos };
-}
-
-// Leitura para a tela: quais grupos existem e as fotos de cada um.
-async function listarGruposDeFotoVariacoes({ clienteId, itemId, mlUserId }) {
-  const lido = await lerItemComVariacoes(clienteId, itemId, mlUserId, "leitura");
-  if (!lido.ok) return lido;
-  const eleg = elegibilidadeVariacoes(lido.item);
-  if (!eleg.ok) return eleg;
-  const attrs = await atributosQueDefinemFoto(clienteId, lido.item.category_id, mlUserId);
-  if (!attrs.ok) return attrs;
-  return gruposDeFotoDasVariacoes(lido.item, attrs.atributos);
-}
-
-// Payload do PUT a partir de um item lido AGORA. Nada é reconstruído além de
-// ids: pictures só com {id}, variations só com {id, picture_ids} — o mínimo
-// que a doc mostra em "Modificar imagens".
-function montarPayloadVariacao(item, grupo, pictureId) {
-  const noGrupo = new Set(grupo.variacoes.map((v) => v.id));
-  return {
-    pictures: [...item.pictures.map((p) => ({ id: String(p.id) })), { id: pictureId }],
-    variations: item.variations.map((v) => {
-      const atuais = (Array.isArray(v.picture_ids) ? v.picture_ids : []).map(String);
-      return { id: v.id, picture_ids: noGrupo.has(String(v.id)) ? [...atuais, pictureId] : atuais };
-    }),
-  };
-}
-
-async function vincularImagemVariacao({ clienteId, itemId, mlUserId, item, grupo, pictureId }) {
-  const payload = montarPayloadVariacao(item, grupo, pictureId);
-  let resp;
-  try {
-    resp = await mlFetch(clienteId, `/items/${encodeURIComponent(itemId)}`, {
-      method: "PUT",
-      body: JSON.stringify(payload),
-      mlUserId,
-    });
-  } catch (err) {
-    return falhaConexao(err, "vinculo");
-  }
-  if (resp && resp.ok) return { ok: true };
-  return falhaMl(resp, "vinculo");
-}
-
-function falhaCriticaVariacao(codigo, motivo, contexto) {
-  console.error(JSON.stringify({ event: "meli_imagem_variacao_perda_critica", codigo, ...contexto }));
-  return falha(codigo, motivo, "confirmacao", { critico: true, pictureId: contexto.pictureId });
-}
-
-// Compara o antes (item usado no PUT) com o depois (GET de confirmação).
-function conferirVinculoVariacao(antes, depois, grupo, pictureId) {
-  const ctx = { itemId: antes.id, pictureId };
-  const varsDepois = Array.isArray(depois.variations) ? depois.variations : [];
-  const porId = {};
-  for (const v of varsDepois) if (v && v.id != null) porId[String(v.id)] = v;
-
-  const sumiuVariacao = antes.variations.some((v) => !porId[String(v.id)]);
-  if (sumiuVariacao || varsDepois.length < antes.variations.length) {
-    return falhaCriticaVariacao(
-      "PERDA_DE_VARIACAO",
-      "ATENÇÃO: uma ou mais variações deste anúncio podem ter sido removidas pelo Mercado Livre durante esta operação. Confira no Mercado Livre antes de repetir qualquer edição.",
-      { ...ctx, nAntes: antes.variations.length, nDepois: varsDepois.length }
-    );
-  }
-  const fotosDepois = new Set((Array.isArray(depois.pictures) ? depois.pictures : []).map((p) => p && String(p.id)));
-  if (antes.pictures.some((p) => !fotosDepois.has(String(p.id)))) {
-    return falhaCriticaVariacao(
-      "PERDA_DE_FOTO",
-      "ATENÇÃO: uma ou mais fotos antigas deste anúncio não aparecem mais no Mercado Livre depois desta operação. Confira no Mercado Livre antes de repetir qualquer edição.",
-      ctx
-    );
-  }
-
-  const noGrupo = new Set(grupo.variacoes.map((v) => v.id));
-  const idsDe = (v) => (Array.isArray(v && v.picture_ids) ? v.picture_ids : []).map(String);
-  const faltando = [...noGrupo].filter((id) => !idsDe(porId[id]).includes(pictureId));
-  const vazou = varsDepois.filter((v) => !noGrupo.has(String(v.id)) && idsDe(v).includes(pictureId));
-  if (faltando.length || vazou.length) {
-    console.warn(
-      `[anuncios-meli] imagem ${pictureId} de ${antes.id}: confirmação divergente (faltando em ${faltando.join(",") || "-"}; fora do grupo em ${vazou.map((v) => v.id).join(",") || "-"})`
-    );
-    return falha(
-      "CONFIRMACAO_DIVERGENTE",
-      "O Mercado Livre aceitou a alteração, mas as variações não ficaram como enviado. Confira as fotos das variações no Mercado Livre antes de tentar de novo.",
-      "confirmacao",
-      { pictureId }
-    );
-  }
-  return { ok: true };
-}
-
-function grupoNoItem(item, atributo, chave) {
-  const g = gruposDeFotoDasVariacoes(item, [atributo]);
-  if (!g.ok) return g;
-  const grupo = g.grupos.find((x) => x.chave === chave);
-  if (!grupo) {
-    return falha(
-      "VARIACAO_GRUPO_INEXISTENTE",
-      `Não existe mais variação com esse valor de "${atributo.nome}" no Mercado Livre. Reabra o anúncio e escolha de novo.`,
-      "bloqueio"
-    );
-  }
-  return { ok: true, grupo };
-}
-
-// ---------------------------------------------------------------------------
-// Orquestração do fluxo de variação. Mesmo contrato de adicionarImagem, mais
-// `grupo` { chave, valor, atributo, variacoes } no sucesso.
-//
-//   validação/JPG → GET item + atributos da categoria (elegibilidade, grupo)
-//     → upload ao CDN → GET item de novo (base do PUT) → PUT pictures+variations
-//     → GET de confirmação (nada sumiu, nova só no grupo) → snapshot (controller)
-// ---------------------------------------------------------------------------
-async function adicionarImagemVariacao({ clienteId, itemId, mlUserId, anuncio, arquivo, grupoChave }) {
-  if (anuncio && anuncio.catalog_listing === true) {
-    return falha("IMAGENS_BLOQUEADAS_CATALOGO", MOTIVO_CATALOGO, "bloqueio");
-  }
-  const chave = typeof grupoChave === "string" ? grupoChave.trim() : "";
-  if (!chave) {
-    return falha("VARIACAO_NAO_INFORMADA", "Escolha a variação que vai receber a imagem.", "validacao", {
-      statusHttp: 400,
-    });
-  }
-
-  let jpg;
-  try {
-    jpg = await normalizarParaJpg(arquivo);
-  } catch (err) {
-    if (err && err.codigo) {
-      return falha(err.codigo, err.message, "validacao", { statusHttp: err.statusCode || 400 });
-    }
-    throw err;
-  }
-
-  const inicial = await lerItemComVariacoes(clienteId, itemId, mlUserId, "leitura");
-  if (!inicial.ok) { registrarRecusa(itemId, inicial); return inicial; }
-  const eleg = elegibilidadeVariacoes(inicial.item);
-  if (!eleg.ok) return eleg;
-  const attrs = await atributosQueDefinemFoto(clienteId, inicial.item.category_id, mlUserId);
-  if (!attrs.ok) { registrarRecusa(itemId, attrs); return attrs; }
-  const agrupado = gruposDeFotoDasVariacoes(inicial.item, attrs.atributos);
-  if (!agrupado.ok) return agrupado;
-  const atributo = agrupado.atributo;
-  const alvoInicial = grupoNoItem(inicial.item, atributo, chave);
-  if (!alvoInicial.ok) return alvoInicial;
-
-  const upload = await uploadImagemAnuncio(clienteId, itemId, mlUserId, jpg);
-  if (!upload.ok) { registrarRecusa(itemId, upload); return upload; }
-  const imagem = resumoImagem(jpg);
-  const pictureId = upload.pictureId;
-
-  // Base do PUT: lida AGORA (o upload leva tempo; o anúncio pode ter mudado).
-  const base = await lerItemComVariacoes(clienteId, itemId, mlUserId, "leitura");
-  if (!base.ok) {
-    registrarRecusa(itemId, base, pictureId);
-    base.pictureId = pictureId;
-    return base;
-  }
-  const alvo = grupoNoItem(base.item, atributo, chave);
-  if (!alvo.ok) {
-    registrarRecusa(itemId, alvo, pictureId);
-    alvo.pictureId = pictureId;
-    return alvo;
-  }
-  const grupo = alvo.grupo;
-  const resumoGrupo = {
-    chave: grupo.chave,
-    valor: grupo.valor,
-    atributo: atributo.nome,
-    variacoes: grupo.variacoes.length,
-  };
-  const noGrupoInteiro = (item) => {
-    const porId = {};
-    for (const v of Array.isArray(item.variations) ? item.variations : []) porId[String(v.id)] = v;
-    return grupo.variacoes.every((gv) =>
-      (porId[gv.id] && Array.isArray(porId[gv.id].picture_ids) ? porId[gv.id].picture_ids : [])
-        .map(String).includes(pictureId)
-    );
-  };
-
-  const vinculo = await vincularImagemVariacao({ clienteId, itemId, mlUserId, item: base.item, grupo, pictureId });
-  if (!vinculo.ok) {
-    registrarRecusa(itemId, vinculo, pictureId);
-    const incerto = vinculo.codigo === "ML_INDISPONIVEL" ||
-      (vinculo.detalhesMl && Number(vinculo.detalhesMl.status) >= 500);
-    if (incerto) {
-      const conferido = await lerItemComVariacoes(clienteId, itemId, mlUserId, "confirmacao");
-      if (!conferido.ok) {
-        return falha("VINCULO_INCERTO", MOTIVO_VINCULO_INCERTO, "vinculo", { pictureId });
-      }
-      if (temFoto(conferido.item, pictureId) || noGrupoInteiro(conferido.item)) {
-        // O PUT chegou: mesma conferência completa do caminho feliz.
-        const conf = conferirVinculoVariacao(base.item, conferido.item, grupo, pictureId);
-        if (!conf.ok) return conf;
-        return Object.assign(respostaSucesso(pictureId, conferido.item, imagem), { grupo: resumoGrupo });
-      }
-    }
-    vinculo.pictureId = pictureId;
-    return vinculo;
-  }
-
-  const confirmado = await lerItemComVariacoes(clienteId, itemId, mlUserId, "confirmacao");
-  if (!confirmado.ok) {
-    registrarRecusa(itemId, confirmado, pictureId);
-    return { ok: true, pictureId, fotos: null, confirmacaoPendente: true, imagem, grupo: resumoGrupo };
-  }
-  const conf = conferirVinculoVariacao(base.item, confirmado.item, grupo, pictureId);
-  if (!conf.ok) return conf;
-  return Object.assign(respostaSucesso(pictureId, confirmado.item, imagem), { grupo: resumoGrupo });
-}
-
 module.exports = {
   adicionarImagem,
-  adicionarImagemVariacao,
-  listarGruposDeFotoVariacoes,
-  gruposDeFotoDasVariacoes,
-  montarPayloadVariacao,
   uploadImagemAnuncio,
-  vincularImagemVariacao,
   bloqueioDoAnuncio,
   bloqueioDoItemMl,
   normalizarParaJpg,
   urlsDasFotos,
+  // Usados por meliFotosService (editor de fotos por grupo):
+  falha,
+  falhaMl,
+  falhaConexao,
+  registrarRecusa,
+  lerItemComVariacoes,
+  atributosQueDefinemFoto,
+  elegibilidadeVariacoes,
+  rotuloDaVariacao,
   MAX_DIMENSAO_ML,
   MIN_DIMENSAO_ML,
   MOTIVO_CATALOGO,
   MOTIVO_VARIACOES,
+  MOTIVO_VINCULO_INCERTO,
 };

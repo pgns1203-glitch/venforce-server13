@@ -77,7 +77,8 @@ function anuncio(conta) {
     revisado: false, cliente_conta_id: a.cliente_conta_id, ml_user_id: a.ml_user_id,
     last_synced_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
     catalog_listing: catalogoModo === "catalog_listing" || catalogoModo === "ambos",
-    family_name: (catalogoModo === "family_name" || catalogoModo === "ambos") ? "Serum Ácido Salicílico" : null,
+    family_name: (catalogoModo === "family_name" || catalogoModo === "ambos" || catalogoModo === "produto") ? "Serum Ácido Salicílico" : null,
+    user_product_id: catalogoModo === "produto" ? "MLBU77" : null,
   };
 }
 
@@ -158,6 +159,38 @@ let imagemAtrasoMs = 0;              // segura a resposta para o teste ver "Proc
 let imagemViaRede = false;
 let portaLocal = 0;
 const imagemChamadas = [];           // { url, metodo, contentType } de todo POST /imagens
+// GET /anuncios-meli/:itemId/fotos/variacoes — leitura do editor de fotos.
+// variationsCountAtivo > 0 → três grupos (Robalo P/M com 3 fotos, Preto P com
+// 1, Verde P sem fotos); senão a galeria simples (A, B).
+// fotosLeituraResultado = { status, corpo } força a resposta (erro, vazio…).
+let fotosLeituraResultado = null;
+let fotosLeituraAtrasoMs = 0;
+let fotosLeituraChamadas = 0;
+const fotosEscritas = [];            // todo PUT /fotos visto pelo interceptador
+// PUT /fotos vai pela rede real até o servidor local (/__fotos), que lê o
+// multipart. fotosResultado = { status, corpo } força a resposta; senão, ok.
+const fotosChamadas = [];            // { url, plano, arquivos: [{ campo, nome, tipo, bytes }] }
+let fotosResultado = null;
+let fotosAtrasoMs = 0;
+const FOTO = (id) => ({ id, url: `https://img.example/${id}.jpg` });
+function grupoFotos(valor, valueId, combinacoes, ids) {
+  const fotos = ids.map(FOTO);
+  return { grupoVariacao: { attribute_id: "COLOR", value_id: valueId, value_name: valor }, rotulo: valor,
+    combinacoes, quantidade: fotos.length, principal: fotos[0] || null, fotos };
+}
+function leituraFotos() {
+  if (variationsCountAtivo > 0) {
+    return { ok: true, modo: "variacoes", atributo: { id: "COLOR", nome: "Cor" }, limite: { porGrupo: 10, origem: "categoria" },
+      grupos: [
+        grupoFotos("Robalo", null, ["P", "M"], ["R1", "R2", "R3"]),
+        grupoFotos("Preto", "52028", ["P"], ["P1"]),
+        grupoFotos("Verde", "52030", ["P"], []),
+      ] };
+  }
+  const fotos = ["A", "B"].map(FOTO);
+  return { ok: true, modo: "simples", atributo: null, limite: { porGrupo: 12, origem: "categoria" },
+    grupos: [{ grupoVariacao: null, rotulo: "", combinacoes: [], quantidade: 2, principal: fotos[0], fotos }] };
+}
 // GET /anuncios-meli/:itemId/imagens/variacoes — null = dois grupos de Cor
 // (Azul: P, M; Preto: P); { status, corpo } = resposta forçada.
 let imagemGruposResultado = null;
@@ -270,6 +303,7 @@ function startServer() {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, "http://localhost");
     if (u.pathname === "/__imagens") { servirImagemLocal(req, res, u); return; }
+    if (u.pathname === "/__fotos") { servirFotosLocal(req, res, u); return; }
     const target = path.resolve(PORTAL_DIR, u.pathname.replace(/^\/+/, ""));
     if (!target.startsWith(path.resolve(PORTAL_DIR) + path.sep)) { res.writeHead(403).end("forbidden"); return; }
     fs.readFile(target, (err, contents) => {
@@ -308,6 +342,54 @@ function servirImagemLocal(req, res, u) {
   });
 }
 let imagemBytesRecebidos = 0;
+
+// Destino do PUT /fotos (editor de fotos). Lê o multipart inteiro: o campo
+// `plano` (JSON) e cada arquivo (campo, nome, tipo, tamanho), na ordem.
+function servirFotosLocal(req, res, u) {
+  const cors = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": "authorization,content-type",
+    "access-control-allow-methods": "PUT,OPTIONS",
+  };
+  if (req.method === "OPTIONS") { res.writeHead(204, cors).end(); return; }
+  const partes = [];
+  req.on("data", (c) => partes.push(c));
+  req.on("end", async () => {
+    const corpoBin = Buffer.concat(partes);
+    const m = String(req.headers["content-type"] || "").match(/boundary=(?:"([^"]+)"|([^;]+))/);
+    const fronteira = Buffer.from("--" + (m ? (m[1] || m[2]) : ""));
+    let plano = null;
+    const arquivos = [];
+    let pos = corpoBin.indexOf(fronteira);
+    while (pos >= 0) {
+      const ini = pos + fronteira.length + 2;
+      const fim = corpoBin.indexOf(fronteira, ini);
+      if (fim < 0) break;
+      const parte = corpoBin.slice(ini, fim - 2);
+      const sep = parte.indexOf("\r\n\r\n");
+      if (sep > 0) {
+        const cab = parte.slice(0, sep).toString("utf8");
+        const conteudo = parte.slice(sep + 4);
+        const nome = (cab.match(/name="([^"]*)"/) || [])[1];
+        const arquivo = (cab.match(/filename="([^"]*)"/) || [])[1];
+        if (arquivo !== undefined) {
+          arquivos.push({ campo: nome, nome: arquivo, tipo: ((cab.match(/Content-Type:\s*([^\r\n]+)/i) || [])[1] || "").trim(), bytes: conteudo.length });
+        } else if (nome === "plano") {
+          plano = JSON.parse(conteudo.toString("utf8"));
+        }
+      }
+      pos = fim;
+    }
+    fotosChamadas.push({ url: u.pathname + u.search, plano, arquivos });
+    if (fotosAtrasoMs) await sleep(fotosAtrasoMs);
+    const resposta = fotosResultado || { status: 200, corpo: null };
+    res.writeHead(resposta.status, Object.assign({ "content-type": "application/json" }, cors));
+    if (resposta.corpo) { res.end(JSON.stringify(resposta.corpo)); return; }
+    const base = anuncio(u.searchParams.get("clienteContaId") || "42");
+    base.variations_count = variationsCountAtivo;
+    res.end(JSON.stringify({ ok: true, anuncio: base, fotos: null, confirmacaoPendente: false, novas: [] }));
+  });
+}
 async function waitChrome(port) {
   for (let i = 0; i < 200; i++) {
     try { const r = await fetch(`http://127.0.0.1:${port}/json/version`); if (r.ok) return; } catch (_) { /* aguardando */ }
@@ -508,6 +590,8 @@ async function fecharModal(cdp) {
     if (b) { b.click(); return; }
     var f = document.querySelector('.am-det-close'); if (f) f.click();
     var d = document.querySelector('.am-det-modal [data-acao="descartar-e-fechar"]'); if (d) d.click();
+    // Rascunho de fotos pendente: o fechar pede decisão — descarta.
+    var pf = document.querySelector('.am-det-modal [data-acao="foto-pendente-descartar"]'); if (pf) pf.click();
   })()`);
   await waitFor(cdp, "!document.querySelector('.am-det-modal')", "o modal não fechou");
 }
@@ -527,7 +611,7 @@ function wireInterception(cdp) {
     const cors = [
       { name: "access-control-allow-origin", value: "*" },
       { name: "access-control-allow-headers", value: "authorization,content-type" },
-      { name: "access-control-allow-methods", value: "GET,POST,PATCH,OPTIONS" },
+      { name: "access-control-allow-methods", value: "GET,POST,PATCH,PUT,OPTIONS" },
     ];
     if (params.request.method === "OPTIONS") { await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 204, responseHeaders: cors }); return; }
     const corpo = (obj, code) => respond("Fetch.fulfillRequest", {
@@ -639,6 +723,24 @@ function wireInterception(cdp) {
       imagemGruposChamadas += 1;
       if (imagemGruposResultado) { await corpo(imagemGruposResultado.corpo, imagemGruposResultado.status); return; }
       await corpo(GRUPOS_IMAGEM);
+      return;
+    }
+
+    // GET /anuncios-meli/:itemId/fotos/variacoes — leitura do editor de fotos.
+    // Contrato: server/tests/meliAnunciosFotosHttp.test.js.
+    if (/^\/anuncios-meli\/[^/?]+\/fotos\/variacoes(\?|$)/.test(caminho)) {
+      fotosLeituraChamadas += 1;
+      if (fotosLeituraAtrasoMs) await sleep(fotosLeituraAtrasoMs);
+      if (fotosLeituraResultado) { await corpo(fotosLeituraResultado.corpo, fotosLeituraResultado.status); return; }
+      await corpo(leituraFotos());
+      return;
+    }
+    // PUT /anuncios-meli/:itemId/fotos — escrita do editor. Nesta etapa (só
+    // leitura) nenhuma chamada pode chegar aqui.
+    if (/^\/anuncios-meli\/[^/?]+\/fotos(\?|$)/.test(caminho)) {
+      fotosEscritas.push({ url: caminho, metodo: params.request.method });
+      const qs = caminho.slice(caminho.indexOf("/fotos") + "/fotos".length);
+      await respond("Fetch.continueRequest", { requestId: params.requestId, url: `http://127.0.0.1:${portaLocal}/__fotos${qs}` });
       return;
     }
 
@@ -1067,10 +1169,12 @@ async function run() {
       await abrirPrimeiroAnuncio(cdp);
     });
 
-    /* ── 7e a 7h: adicionar imagem (seção Fotos) ─────────────────────────── */
+    /* ── 7e a 7j: editor de fotos por grupo — LEITURA ───────────────────────
+       GET /fotos/variacoes. Nesta etapa a tela só lê: nenhuma escrita
+       (PUT /fotos) nem upload (POST /imagens) pode acontecer. */
 
-    // Coloca um arquivo no <input type=file> como o seletor do SO faria. Com
-    // `png`, desenha uma imagem real (o preview mede as dimensões de verdade).
+    // Coloca um arquivo no <input type=file> como o seletor do SO faria (usado
+    // pelas etapas de edição; mantido aqui para os próximos checks).
     async function escolherArquivo({ png, largura, altura, nome, tipo, texto }) {
       await cdp.evaluate(`(async function(){
         var f;
@@ -1089,236 +1193,677 @@ async function run() {
         return true;
       })()`);
     }
+    void escolherArquivo;
 
     function infoFotos() {
       return cdp.evaluate(`(function(){
-        var add = document.getElementById('am-det-img-add');
-        var bloq = document.getElementById('am-det-img-bloqueio');
-        var envio = document.getElementById('am-det-img-envio');
+        var corpo = document.getElementById('am-det-fotos-corpo');
+        var chips = Array.from(document.querySelectorAll('.am-det-fotos__chip'));
+        var tiles = Array.from(document.querySelectorAll('#am-det-fotos-corpo .am-det-photo[data-foto]'));
         return {
-          existe: !!add, disabled: add ? add.disabled : null, rotulo: add ? add.innerText.replace(/\\s+/g, ' ').trim() : '',
-          bloqueio: bloq ? bloq.innerText : '',
-          fotos: document.querySelectorAll('.am-det-photos .am-det-photo img').length,
-          envio: envio ? envio.innerText : '',
-          previewSrc: (document.querySelector('.am-det-img-envio__preview img') || {}).src || '',
-          temEnviar: !!document.querySelector('[data-acao="img-enviar"]'),
+          existe: !!corpo,
+          texto: corpo ? corpo.innerText : '',
+          chips: chips.map(function(c){ return c.innerText.replace(/\\s+/g,' ').trim(); }),
+          chipAtivo: (chips.find(function(c){ return c.getAttribute('aria-pressed') === 'true'; }) || {}).innerText || '',
+          titulo: ((document.querySelector('.am-det-fotos__titulo') || {}).innerText || '').replace(/\\s+/g,' ').trim(),
+          ids: tiles.map(function(t){ return t.getAttribute('data-foto'); }),
+          srcs: tiles.map(function(t){ return (t.querySelector('img') || {}).src || ''; }),
+          selos: Array.from(document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__selo')).map(function(s){
+            return { texto: s.innerText.trim(), foto: s.closest('[data-foto]').getAttribute('data-foto') }; }),
+          grade: !!document.querySelector('#am-det-fotos-corpo .am-det-photos'),
+          antigoPorCor: !!document.getElementById('am-det-img-var'),
+          antigoAdicionar: !!document.getElementById('am-det-img-add'),
+        }; })()`);
+    }
+    const textoFotos = "((document.getElementById('am-det-fotos-corpo') || {}).innerText || '')";
+    const escritasAntes = { fotos: fotosEscritas.length, imagens: imagemChamadas.length };
+
+    await check("7e — com variações: 'Carregando', chips por grupo com quantidade, grupo selecionado e só as fotos dele, com a imagem principal marcada", async () => {
+      variationsCountAtivo = 3;
+      fotosLeituraAtrasoMs = 900;
+      try {
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, `/Carregando as fotos do anúncio no Mercado Livre/.test(${textoFotos})`, "o estado de carregamento não apareceu");
+        assert.ok((await infoFotos()).grade, "a grade existe desde o carregamento (a largura da seção não salta)");
+        await waitFor(cdp, `/Fotos da variação: Robalo/.test(${textoFotos})`, "os grupos não carregaram");
+        const f = await infoFotos();
+        assert.deepStrictEqual(f.chips, ["Robalo · 3", "Preto · 1", "Verde · 0"], "um chip por grupo, com a quantidade");
+        assert.strictEqual(f.chipAtivo.replace(/\s+/g, " ").trim(), "Robalo · 3", "o primeiro grupo vem selecionado");
+        assert.strictEqual(f.titulo, "Fotos da variação: Robalo (P, M)");
+        assert.deepStrictEqual(f.ids, ["R1", "R2", "R3"], "só as fotos do grupo selecionado, nunca todas misturadas");
+        assert.deepStrictEqual(f.srcs, ["R1", "R2", "R3"].map((id) => `https://img.example/${id}.jpg`));
+        assert.deepStrictEqual(f.selos, [{ texto: "Imagem principal da variação", foto: "R1" }], "selo só na primeira foto");
+        assert.strictEqual(f.antigoPorCor, false, "a lista antiga 'Fotos por cor' saiu");
+        assert.strictEqual(f.antigoAdicionar, false, "nesta etapa não há adicionar");
+      } finally {
+        fotosLeituraAtrasoMs = 0;
+      }
+    });
+
+    await check("7f — trocar de grupo mostra só as fotos dele; grupo sem fotos tem estado próprio", async () => {
+      await clicar(cdp, '.am-det-fotos__chip[data-idx="1"]');
+      await waitFor(cdp, `/Fotos da variação: Preto/.test(${textoFotos})`, "clicar no chip não trocou o grupo");
+      let f = await infoFotos();
+      assert.strictEqual(f.chipAtivo.replace(/\s+/g, " ").trim(), "Preto · 1");
+      assert.deepStrictEqual(f.ids, ["P1"]);
+      assert.deepStrictEqual(f.selos, [{ texto: "Imagem principal da variação", foto: "P1" }]);
+
+      await clicar(cdp, '.am-det-fotos__chip[data-idx="2"]');
+      await waitFor(cdp, `/Fotos da variação: Verde/.test(${textoFotos})`, "não trocou para Verde");
+      f = await infoFotos();
+      assert.deepStrictEqual(f.ids, []);
+      assert.ok(/Nenhuma foto nesta variação/.test(f.texto), `grupo vazio precisa dizer isso: ${f.texto}`);
+
+      await clicar(cdp, '.am-det-fotos__chip[data-idx="0"]');
+      await waitFor(cdp, `/Fotos da variação: Robalo/.test(${textoFotos})`, "não voltou para Robalo");
+      assert.deepStrictEqual((await infoFotos()).ids, ["R1", "R2", "R3"]);
+      assert.strictEqual(fotosLeituraChamadas > 0, true);
+      variationsCountAtivo = 0;
+    });
+
+    await check("7g — anúncio sem variação: mesmo componente, 'Fotos do anúncio', sem chips e 'Capa do anúncio' na primeira; sem fotos tem estado próprio", async () => {
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+      await waitFor(cdp, `/Fotos do anúncio/.test(${textoFotos})`, "o modo simples não carregou");
+      let f = await infoFotos();
+      assert.deepStrictEqual(f.chips, [], "sem variação não há chips");
+      assert.strictEqual(f.titulo, "Fotos do anúncio");
+      assert.deepStrictEqual(f.ids, ["A", "B"]);
+      assert.deepStrictEqual(f.selos, [{ texto: "Capa do anúncio", foto: "A" }]);
+
+      fotosLeituraResultado = { status: 200, corpo: { ok: true, modo: "simples", atributo: null, limite: { porGrupo: 12, origem: "operacional" },
+        grupos: [{ grupoVariacao: null, rotulo: "", combinacoes: [], quantidade: 0, principal: null, fotos: [] }] } };
+      try {
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, `/Este anúncio não tem fotos no Mercado Livre/.test(${textoFotos})`, "anúncio sem fotos precisa dizer isso");
+        f = await infoFotos();
+        assert.deepStrictEqual(f.ids, []);
+        assert.deepStrictEqual(f.selos, []);
+      } finally {
+        fotosLeituraResultado = null;
+      }
+    });
+
+    await check("7h — erro de carregamento: recusa do VenForce mostra o motivo; erro do ML mostra mensagem, código e causa; 'Tentar de novo' relê", async () => {
+      fotosLeituraResultado = { status: 409, corpo: { ok: false, codigo: "ATRIBUTO_FOTO_INDEFINIDO", etapa: "bloqueio", incerto: false,
+        motivo: "O Mercado Livre não indica, para a categoria deste anúncio, qual atributo das variações define a foto (defines_picture)." } };
+      try {
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, `/defines_picture/.test(${textoFotos})`, "o motivo do bloqueio não apareceu");
+        let f = await infoFotos();
+        assert.ok(!/Erro do Mercado Livre/.test(f.texto), "recusa do VenForce não se passa por erro do ML");
+        assert.deepStrictEqual(f.chips, []);
+        assert.deepStrictEqual(f.ids, []);
+
+        fotosLeituraResultado = { status: 422, corpo: { ok: false, codigo: "forbidden", etapa: "leitura", incerto: false, motivo: "Access denied",
+          detalhesMl: { status: 403, message: "Access denied", error: "forbidden", causa: null,
+            causas: [{ code: "PA_UNAUTHORIZED", message: "Caller is not authorized", type: "error", references: [] }] } } };
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, `/Erro do Mercado Livre/.test(${textoFotos})`, "o erro do ML não apareceu");
+        f = await infoFotos();
+        assert.ok(/Mensagem: “Access denied”/.test(f.texto), f.texto);
+        assert.ok(/Código: forbidden \(HTTP 403\)/.test(f.texto), f.texto);
+        assert.ok(/Causa: PA_UNAUTHORIZED — Caller is not authorized/.test(f.texto), f.texto);
+
+        const antes = fotosLeituraChamadas;
+        fotosLeituraResultado = null;
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-recarregar"]');
+        await waitFor(cdp, `/Fotos do anúncio/.test(${textoFotos})`, "'Tentar de novo' não recarregou");
+        assert.strictEqual(fotosLeituraChamadas, antes + 1, "uma nova leitura");
+      } finally {
+        fotosLeituraResultado = null;
+      }
+    });
+
+    await check("7i — anúncio de catálogo: bloqueado com o motivo, sem nem ler as fotos", async () => {
+      const antes = fotosLeituraChamadas;
+      await abrirComModo("catalog_listing");
+      await abrirPrimeiroAnuncio(cdp);
+      await waitFor(cdp, `/catálogo/i.test(${textoFotos})`, "catálogo precisa dizer o motivo");
+      const f = await infoFotos();
+      assert.ok(/Mercado Livre/.test(f.texto), f.texto);
+      assert.deepStrictEqual(f.chips, []);
+      assert.deepStrictEqual(f.ids, []);
+      assert.strictEqual(fotosLeituraChamadas, antes, "catálogo não chama a leitura");
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+    });
+
+    await check("7j — só leitura: nenhum PUT /fotos nem upload aconteceu em 7e–7i; sem rascunho não há Salvar", async () => {
+      assert.strictEqual(fotosEscritas.length, escritasAntes.fotos, `PUT /fotos não esperado: ${JSON.stringify(fotosEscritas)}`);
+      assert.strictEqual(imagemChamadas.length, escritasAntes.imagens, "nenhum POST /imagens");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-fotos-corpo [data-acao=\"foto-salvar\"]').length"), 0,
+        "sem alteração não existe botão de salvar");
+    });
+
+    /* ── 7k a 7t: editor de fotos — RASCUNHO EM MEMÓRIA ───────────────────
+       Tudo acontece no navegador: nenhuma chamada de escrita, nenhum upload.
+       `rede()` fotografa o que já saiu, para comparar depois. */
+
+    function rede() {
+      return {
+        escrita: pedidos.filter((p) => /\/fotos(\?|$)|\/imagens(\?|$)|\/pictures/.test(p)).length,
+        comCorpo: corpos.length,
+        putFotos: fotosEscritas.length,
+        postImagens: imagemChamadas.length,
+      };
+    }
+    function semRede(antes, oQue) {
+      assert.deepStrictEqual(rede(), antes, `${oQue} não pode gerar nenhuma requisição de escrita/upload`);
+    }
+
+    // Arrastar nativo com eventos sintéticos (o CDP não arrasta de verdade).
+    async function arrastar(de, para) {
+      await cdp.evaluate(`(function(){
+        var itens = document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__item');
+        var a = itens[${de}], b = itens[${para}], dt = new DataTransfer();
+        a.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+        b.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        b.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+        a.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+        return true; })()`);
+    }
+
+    function editor() {
+      return cdp.evaluate(`(function(){
+        var corpo = document.getElementById('am-det-fotos-corpo');
+        var tiles = Array.from(corpo.querySelectorAll('.am-det-fotos__item'));
+        var barra = corpo.querySelector('.am-det-fotos__barra');
+        var pend = corpo.querySelector('.am-det-fotos__pendente');
+        var salvar = corpo.querySelector('[data-acao="foto-salvar"]');
+        return {
+          ids: tiles.map(function(t){ return t.getAttribute('data-foto'); }),
+          removidas: tiles.filter(function(t){ return t.classList.contains('is-removida'); }).map(function(t){ return t.getAttribute('data-foto'); }),
+          novas: tiles.filter(function(t){ return t.classList.contains('is-nova'); }).map(function(t){
+            return { id: t.getAttribute('data-foto'), src: (t.querySelector('img') || {}).src || '', marca: (t.querySelector('.am-det-fotos__nova') || {}).innerText || '' }; }),
+          selo: ((corpo.querySelector('.am-det-fotos__selo') || {}).innerText || '').trim(),
+          seloEm: (corpo.querySelector('.am-det-fotos__selo') || { closest: function(){ return null; } }).closest('[data-foto]') ? corpo.querySelector('.am-det-fotos__selo').closest('[data-foto]').getAttribute('data-foto') : null,
+          chips: Array.from(corpo.querySelectorAll('.am-det-fotos__chip')).map(function(c){ return c.innerText.replace(/\\s+/g,' ').trim(); }),
+          titulo: ((corpo.querySelector('.am-det-fotos__titulo') || {}).innerText || '').replace(/\\s+/g,' ').trim(),
+          barra: barra ? barra.innerText.replace(/\\s+/g,' ').trim() : '',
+          salvarDesabilitado: salvar ? salvar.disabled : null,
+          pendente: pend ? pend.innerText.replace(/\\s+/g,' ').trim() : '',
+          lixeiras: corpo.querySelectorAll('.am-det-fotos__item:not(.is-removida) [data-acao="foto-remover"]').length,
+          aviso: ((corpo.querySelector('.am-det-fotos__aviso-local') || {}).innerText || '').trim(),
+          adicionar: !!corpo.querySelector('[data-acao="foto-escolher"]'),
+          adicionarDesabilitado: (corpo.querySelector('[data-acao="foto-escolher"]') || {}).disabled,
         }; })()`);
     }
 
-    const textoEnvio = "((document.getElementById('am-det-img-envio') || {}).innerText || '')";
-
-    await check("7e — '+ Adicionar imagem' aparece no anúncio tradicional; catálogo fica bloqueado; variações liberam com os grupos do ML ou mostram o motivo da recusa", async () => {
-      const normal = await infoFotos();
-      assert.ok(normal.existe, "o botão de adicionar imagem não apareceu");
-      assert.ok(/\+\s*Adicionar imagem/.test(normal.rotulo), `rótulo inesperado: ${normal.rotulo}`);
-      assert.strictEqual(normal.disabled, false, "no anúncio tradicional sem variações o botão fica habilitado");
-      assert.strictEqual(normal.bloqueio, "", "sem bloqueio não há aviso");
-
-      await abrirComModo("catalog_listing");
-      await abrirPrimeiroAnuncio(cdp);
-      const cat = await infoFotos();
-      assert.strictEqual(cat.disabled, true, "catálogo: o botão existe mas fica desabilitado");
-      assert.ok(/catálogo/i.test(cat.bloqueio) && /Mercado Livre/.test(cat.bloqueio), `catálogo precisa dizer o motivo: ${cat.bloqueio}`);
-
-      // O detalhe lê variations_count de variationsCountAtivo (ver mDetalhe).
+    async function abrirComVariacoes() {
       variationsCountAtivo = 3;
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+      await waitFor(cdp, `/Fotos da variação: Robalo/.test(${textoFotos})`, "o editor não carregou");
+    }
+
+    await check("7k — '+ Adicionar imagem' volta: o arquivo vira foto nova só no navegador (preview blob:, marcada 'Nova'), sem nenhuma requisição", async () => {
+      await abrirComVariacoes();
+      let e = await editor();
+      assert.strictEqual(e.adicionar, true, "o '+ Adicionar imagem' voltou");
+      assert.strictEqual(e.adicionarDesabilitado, false);
+      const antes = rede();
+      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "nova-robalo.png" });
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__item.is-nova img')", "a foto nova não apareceu");
+      e = await editor();
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R1", "R2", "R3"]);
+      assert.strictEqual(e.novas.length, 1, "uma foto nova no fim do grupo");
+      assert.ok(/^blob:/.test(e.novas[0].src), `preview local (blob:): ${e.novas[0].src}`);
+      assert.strictEqual(e.novas[0].marca, "Nova");
+      assert.strictEqual(e.ids[3], e.novas[0].id, "entra no fim");
+      semRede(antes, "adicionar imagem");
+    });
+
+    await check("7l — arrastar e setas ← → reordenam só o rascunho; a primeira ganha o selo; nenhuma requisição", async () => {
+      const antes = rede();
+      await arrastar(2, 0);                                         // R3 R1 R2 nova
+      let e = await editor();
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R3", "R1", "R2"], "arrastar R3 para o início");
+      assert.strictEqual(e.seloEm, "R3", "a primeira foto leva o selo de imagem principal");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R1"] [data-acao="foto-mover"][data-dir="1"]');
+      e = await editor();
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R3", "R2", "R1"], "→ move uma posição");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R2"] [data-acao="foto-mover"][data-dir="-1"]');
+      e = await editor();
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R2", "R3", "R1"], "← move uma posição");
+      assert.strictEqual(e.seloEm, "R2");
+      const rotulos = await cdp.evaluate(`Array.from(document.querySelectorAll('#am-det-fotos-corpo [data-acao="foto-mover"]')).every(function(b){ return !!b.getAttribute('aria-label'); })`);
+      assert.strictEqual(rotulos, true, "as setas têm rótulo acessível");
+      semRede(antes, "reordenar");
+    });
+
+    await check("7m — remover marca 'Será removida' (esmaecida) e 'Desfazer' restaura; foto nova removida some; nenhuma requisição", async () => {
+      const antes = rede();
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] [data-acao="foto-remover"]');
+      let e = await editor();
+      assert.deepStrictEqual(e.removidas, ["R3"]);
+      assert.ok(/Será removida/.test(await cdp.evaluate(textoFotos)));
+      const opacidade = await cdp.evaluate(`Number(getComputedStyle(document.querySelector('#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] img')).opacity)`);
+      assert.ok(opacidade < 0.6, `foto marcada fica esmaecida (opacidade ${opacidade})`);
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] [data-acao="foto-desfazer"]');
+      e = await editor();
+      assert.deepStrictEqual(e.removidas, [], "desfazer restaura");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] [data-acao="foto-remover"]');
+
+      const nova = (await editor()).novas[0].id;
+      await clicar(cdp, `#am-det-fotos-corpo .am-det-fotos__item[data-foto="${nova}"] [data-acao="foto-remover"]`);
+      e = await editor();
+      assert.strictEqual(e.novas.length, 0, "foto nova removida sai do rascunho (nunca existiu no ML)");
+      assert.deepStrictEqual(e.ids, ["R2", "R3", "R1"]);
+      semRede(antes, "remover/desfazer");
+    });
+
+    await check("7n — barra de alterações conta as pendências e oferece Descartar e Salvar", async () => {
+      const e = await editor();
+      // Pendências: R3 removida + ordem mudou = 2.
+      assert.ok(/^2 alterações nas fotos de Robalo/.test(e.barra), `barra: ${e.barra}`);
+      assert.ok(/Descartar/.test(e.barra) && /Salvar no Mercado Livre/.test(e.barra), e.barra);
+      assert.strictEqual(e.salvarDesabilitado, false, "o salvar está disponível (o envio é testado em 7u–7zd)");
+      assert.deepStrictEqual(e.chips, ["Robalo · 2", "Preto · 1", "Verde · 0"], "o chip do grupo acompanha o rascunho");
+    });
+
+    await check("7o — trocar de grupo com pendência não troca: 'Existem alterações pendentes neste grupo.' com Salvar / Descartar / Cancelar", async () => {
+      const antes = rede();
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="1"]');
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__pendente')", "o aviso de pendência não apareceu");
+      let e = await editor();
+      assert.ok(/Existem alterações pendentes neste grupo\./.test(e.pendente), e.pendente);
+      assert.ok(/Salvar/.test(e.pendente) && /Descartar/.test(e.pendente) && /Cancelar/.test(e.pendente), e.pendente);
+      assert.ok(/Fotos da variação: Robalo/.test(e.titulo), "o grupo não trocou");
+
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-pendente-cancelar"]');
+      e = await editor();
+      assert.strictEqual(e.pendente, "");
+      assert.deepStrictEqual(e.ids, ["R2", "R3", "R1"], "cancelar mantém o rascunho");
+      assert.deepStrictEqual(e.removidas, ["R3"]);
+
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="1"]');
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__pendente')", "o aviso não voltou");
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-pendente-descartar"]');
+      await waitFor(cdp, `/Fotos da variação: Preto/.test(${textoFotos})`, "descartar não trocou de grupo");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="0"]');
+      await waitFor(cdp, `/Fotos da variação: Robalo/.test(${textoFotos})`, "sem pendência a troca é direta");
+      e = await editor();
+      assert.deepStrictEqual(e.ids, ["R1", "R2", "R3"], "o rascunho descartado não volta");
+      assert.deepStrictEqual(e.chips, ["Robalo · 3", "Preto · 1", "Verde · 0"]);
+      semRede(antes, "trocar de grupo");
+    });
+
+    await check("7p — Descartar volta exatamente ao estado original (ordem, remoções e novas)", async () => {
+      await arrastar(1, 0);
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] [data-acao="foto-remover"]');
+      await escolherArquivo({ png: true, largura: 700, altura: 700, nome: "descartar.png" });
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__item.is-nova img')", "a nova não entrou");
+      assert.ok((await editor()).barra.length > 0);
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+      const e = await editor();
+      assert.deepStrictEqual(e.ids, ["R1", "R2", "R3"]);
+      assert.deepStrictEqual(e.removidas, []);
+      assert.deepStrictEqual(e.novas, []);
+      assert.strictEqual(e.barra, "", "sem diferença, sem barra");
+      assert.strictEqual(e.seloEm, "R1");
+    });
+
+    await check("7q — não deixa remover a última foto de uma variação", async () => {
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="1"]');
+      await waitFor(cdp, `/Fotos da variação: Preto/.test(${textoFotos})`, "não trocou para Preto");
+      let e = await editor();
+      assert.strictEqual(e.lixeiras, 0, "a única foto do grupo não tem lixeira");
+      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "preto-2.png" });
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__item.is-nova')", "a nova não entrou");
+      assert.strictEqual((await editor()).lixeiras, 2, "com duas fotos, as duas podem sair");
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="P1"] [data-acao="foto-remover"]');
+      e = await editor();
+      assert.strictEqual(e.lixeiras, 0, "a única foto que sobrou perde a lixeira");
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+    });
+
+    await check("7r — não deixa adicionar a mesma imagem duas vezes no rascunho", async () => {
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="0"]');
+      await waitFor(cdp, `/Fotos da variação: Robalo/.test(${textoFotos})`, "não voltou para Robalo");
+      await escolherArquivo({ png: true, largura: 640, altura: 640, nome: "igual.png" });
+      await waitFor(cdp, "document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__item.is-nova').length === 1", "a primeira não entrou");
+      await escolherArquivo({ png: true, largura: 640, altura: 640, nome: "igual-outro-nome.png" });
+      await waitFor(cdp, `/Esta imagem já foi adicionada/.test(${textoFotos})`, "duplicata não foi recusada");
+      assert.strictEqual((await editor()).novas.length, 1, "a duplicata não entra");
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+    });
+
+    await check("7s — respeita o limite do GET: no limite, adicionar é recusado localmente", async () => {
+      fotosLeituraResultado = { status: 200, corpo: { ...leituraFotos(), limite: { porGrupo: 4, origem: "categoria" } } };
       try {
+        await abrirComVariacoes();
+        await escolherArquivo({ png: true, largura: 600, altura: 600, nome: "quarta.png" });
+        await waitFor(cdp, "document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__item.is-nova').length === 1", "a quarta não entrou");
+        let e = await editor();
+        assert.strictEqual(e.adicionarDesabilitado, true, "no limite o adicionar fica desabilitado");
+        await escolherArquivo({ png: true, largura: 610, altura: 610, nome: "quinta.png" });
+        await waitFor(cdp, `/no máximo 4 imagens/.test(${textoFotos})`, "passar do limite precisa ser recusado com o limite do GET");
+        e = await editor();
+        assert.strictEqual(e.novas.length, 1);
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+      } finally {
+        fotosLeituraResultado = null;
+      }
+    });
+
+    await check("7t — nenhum PUT /fotos nem upload em toda a edição (7k–7s)", async () => {
+      assert.strictEqual(fotosEscritas.length, escritasAntes.fotos, `PUT /fotos não esperado: ${JSON.stringify(fotosEscritas)}`);
+      assert.strictEqual(imagemChamadas.length, escritasAntes.imagens, "nenhum POST /imagens");
+      variationsCountAtivo = 0;
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+    });
+
+    /* ── 7u a 7zf: editor de fotos — SALVAR (PUT /fotos) ───────────────────
+       O PUT vai pela rede de verdade até o servidor local (/__fotos), que lê
+       o multipart. Depois do sucesso a tela RELÊ o GET — o teste troca a
+       leitura (fotosLeituraResultado) para provar que o estado final vem do
+       GET, não do payload enviado. */
+
+    // Imagem de ruído (não comprime): arquivo grande o bastante para o
+    // "Enviando imagens…" ser visível com o upload limitado.
+    async function escolherRuido(nome, lado) {
+      await cdp.evaluate(`(async function(){
+        var c = document.createElement('canvas'); c.width = ${lado}; c.height = ${lado};
+        var g = c.getContext('2d'); var d = g.createImageData(c.width, c.height);
+        for (var i = 0; i < d.data.length; i++) d.data[i] = (Math.random() * 256) | 0;
+        g.putImageData(d, 0, 0);
+        var blob = await new Promise(function (r) { c.toBlob(r, 'image/png'); });
+        var f = new File([blob], ${JSON.stringify(nome)}, { type: 'image/png' });
+        var dt = new DataTransfer(); dt.items.add(f);
+        var inp = document.getElementById('am-det-img-input');
+        inp.files = dt.files; inp.dispatchEvent(new Event('change'));
+        return true; })()`);
+    }
+
+    function leituraDepois(fotosRobalo) {
+      const l = leituraFotos();
+      l.grupos[0] = grupoFotos("Robalo", null, ["P", "M"], fotosRobalo);
+      return { status: 200, corpo: l };
+    }
+
+    const ultimoPut = () => fotosChamadas[fotosChamadas.length - 1];
+    const planoRobalo = (ordem) => ({
+      grupoVariacao: { attribute_id: "COLOR", value_id: null, value_name: "Robalo" },
+      base: ["R1", "R2", "R3"],
+      ordem,
+    });
+
+    await check("7u — salvar foto nova: 'Enviando imagens…' → 'Salvando no Mercado Livre…' → 'Concluído', tudo travado no meio; multipart certo; o GET é refeito", async () => {
+      await abrirComVariacoes();
+      await escolherRuido("ruido.png", 900);
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__item.is-nova img')", "a nova não entrou");
+      const antes = fotosChamadas.length;
+      const leiturasAntes = fotosLeituraChamadas;
+      fotosLeituraResultado = leituraDepois(["R1", "R2", "R3", "ML9"]);   // o que o ML devolve depois
+      fotosAtrasoMs = 1200;
+      await cdp.send("Network.enable");
+      await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: 700 * 1024 });
+      try {
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-salvar"]');
+        await waitFor(cdp, `/Enviando imagens/.test(${textoFotos})`, "o estado 'Enviando imagens' não apareceu");
+        const travado = await cdp.evaluate(`(function(){
+          var c = document.getElementById('am-det-fotos-corpo');
+          return {
+            chips: Array.from(c.querySelectorAll('.am-det-fotos__chip')).every(function(b){ return b.disabled; }),
+            acoes: c.querySelectorAll('[data-acao="foto-mover"], [data-acao="foto-remover"]').length,
+            arrastaveis: c.querySelectorAll('[draggable="true"]').length,
+            adicionar: (c.querySelector('[data-acao="foto-escolher"]') || {}).disabled,
+            barra: !!c.querySelector('.am-det-fotos__barra'),
+          }; })()`);
+        assert.deepStrictEqual(travado, { chips: true, acoes: 0, arrastaveis: 0, adicionar: true, barra: false }, "durante o salvar nada é editável");
+        await clicar(cdp, ".am-det-close");
+        assert.ok(await cdp.evaluate("!!document.querySelector('.am-det-modal')"), "fechar durante o salvar é bloqueado");
+        await waitFor(cdp, `/Salvando no Mercado Livre/.test(${textoFotos})`, "o estado 'Salvando no Mercado Livre' não apareceu");
+        await waitFor(cdp, `/Concluído/.test(${textoFotos})`, "não chegou a 'Concluído'");
+      } finally {
+        await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+        fotosAtrasoMs = 0;
+      }
+      const put = fotosChamadas[antes];
+      assert.ok(put, "nenhum PUT /fotos saiu");
+      assert.strictEqual(fotosChamadas.length, antes + 1, "um único PUT");
+      assert.ok(/clienteSlug=n97/.test(put.url) && /clienteContaId=42/.test(put.url), put.url);
+      assert.deepStrictEqual(put.plano, planoRobalo([{ existente: "R1" }, { existente: "R2" }, { existente: "R3" }, { nova: 0 }]));
+      assert.deepStrictEqual(put.arquivos.map((a) => [a.campo, a.nome, a.tipo]), [["novas", "ruido.png", "image/png"]]);
+      assert.ok(put.arquivos[0].bytes > 100000, `o arquivo inteiro chega (${put.arquivos[0].bytes} bytes)`);
+      assert.strictEqual(fotosLeituraChamadas, leiturasAntes + 1, "depois do sucesso o GET é refeito");
+      const e = await editor();
+      assert.deepStrictEqual(e.ids, ["R1", "R2", "R3", "ML9"], "a grade mostra o que o GET devolveu (id do ML), não o rascunho");
+      assert.deepStrictEqual(e.novas, [], "o rascunho foi recriado");
+      assert.strictEqual(e.barra, "", "sem pendências");
+      assert.deepStrictEqual(e.chips, ["Robalo · 4", "Preto · 1", "Verde · 0"]);
+      fotosLeituraResultado = null;
+    });
+
+    await check("7v — salvar só reordenação: ordem só de existentes, nenhum arquivo, direto em 'Salvando'", async () => {
+      await abrirComVariacoes();
+      await arrastar(2, 0);
+      fotosAtrasoMs = 700;
+      try {
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-salvar"]');
+        await waitFor(cdp, `/Salvando no Mercado Livre/.test(${textoFotos})`, "'Salvando' não apareceu");
+        await waitFor(cdp, `/Concluído/.test(${textoFotos})`, "não concluiu");
+      } finally {
+        fotosAtrasoMs = 0;
+      }
+      assert.deepStrictEqual(ultimoPut().plano, planoRobalo([{ existente: "R3" }, { existente: "R1" }, { existente: "R2" }]));
+      assert.deepStrictEqual(ultimoPut().arquivos, []);
+    });
+
+    await check("7w — salvar exclusão: a foto marcada sai da ordem, a base continua a do GET", async () => {
+      await abrirComVariacoes();
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R2"] [data-acao="foto-remover"]');
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-salvar"]');
+      await waitFor(cdp, `/Concluído/.test(${textoFotos})`, "não concluiu");
+      assert.deepStrictEqual(ultimoPut().plano, planoRobalo([{ existente: "R1" }, { existente: "R3" }]));
+    });
+
+    await check("7x — salvar combinação (nova + excluir + reordenar): índices de 'nova' seguem a ordem dos arquivos; nova removida no rascunho não vai", async () => {
+      await abrirComVariacoes();
+      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "primeira.png" });
+      await waitFor(cdp, "document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__item.is-nova').length === 1", "primeira não entrou");
+      await escolherArquivo({ png: true, largura: 820, altura: 820, nome: "segunda.png" });
+      await waitFor(cdp, "document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__item.is-nova').length === 2", "segunda não entrou");
+      await escolherArquivo({ png: true, largura: 840, altura: 840, nome: "descartada.png" });
+      await waitFor(cdp, "document.querySelectorAll('#am-det-fotos-corpo .am-det-fotos__item.is-nova').length === 3", "terceira não entrou");
+      // R1 R2 R3 primeira segunda descartada → segunda para o início, R2 fora, descartada sai.
+      await arrastar(4, 0);                                                      // segunda R1 R2 R3 primeira descartada
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R2"] [data-acao="foto-remover"]');
+      const idsNovas = (await editor()).novas.map((n) => n.id);
+      await clicar(cdp, `#am-det-fotos-corpo .am-det-fotos__item[data-foto="${idsNovas[idsNovas.length - 1]}"] [data-acao="foto-remover"]`);
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-salvar"]');
+      await waitFor(cdp, `/Concluído/.test(${textoFotos})`, "não concluiu");
+      const put = ultimoPut();
+      assert.deepStrictEqual(put.plano, planoRobalo([{ nova: 0 }, { existente: "R1" }, { existente: "R3" }, { nova: 1 }]));
+      assert.deepStrictEqual(put.arquivos.map((a) => a.nome), ["segunda.png", "primeira.png"], "novas[] na ordem dos índices");
+    });
+
+    await check("7y — erro de validação do VenForce: motivo aparece, o rascunho continua editável e dá para corrigir e salvar", async () => {
+      await abrirComVariacoes();
+      await arrastar(1, 0);
+      fotosResultado = { status: 400, corpo: { ok: false, codigo: "LIMITE_IMAGENS", etapa: "validacao", incerto: false,
+        motivo: "Não é possível salvar. A variação Robalo pode ter no máximo 2 imagens." } };
+      try {
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-salvar"]');
+        await waitFor(cdp, `/pode ter no máximo 2 imagens/.test(${textoFotos})`, "o motivo não apareceu");
+        const t = await cdp.evaluate(textoFotos);
+        assert.ok(!/Erro do Mercado Livre/.test(t), "recusa do VenForce não se passa por ML");
+        let e = await editor();
+        assert.ok(/Salvar no Mercado Livre/.test(e.barra), "o rascunho continua com a barra");
+        assert.ok(e.lixeiras > 0, "continua editável");
+        fotosResultado = null;
+        await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R3"] [data-acao="foto-remover"]');
+        e = await editor();
+        assert.ok(!/pode ter no máximo 2 imagens/.test(await cdp.evaluate(textoFotos)), "editar limpa o erro anterior");
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-salvar"]');
+        await waitFor(cdp, `/Concluído/.test(${textoFotos})`, "depois de corrigir, salvar funciona");
+      } finally {
+        fotosResultado = null;
+      }
+    });
+
+    await check("7z — erro do ML: mensagem, código e causa originais; o rascunho fica e nada é reenviado sozinho", async () => {
+      await abrirComVariacoes();
+      await arrastar(1, 0);
+      const antes = fotosChamadas.length;
+      fotosResultado = { status: 422, corpo: { ok: false, codigo: "item.pictures.max", etapa: "vinculo", incerto: false, motivo: "Too many pictures",
+        detalhesMl: { status: 400, message: "Validation error", error: "validation_error", causa: null,
+          causas: [{ code: "item.pictures.max", message: "Too many pictures", type: "error", references: [] }] } } };
+      try {
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-salvar"]');
+        await waitFor(cdp, `/Erro do Mercado Livre/.test(${textoFotos})`, "o erro do ML não apareceu");
+        const t = await cdp.evaluate(textoFotos);
+        assert.ok(/Mensagem: “Validation error”/.test(t), t);
+        assert.ok(/Código: item\.pictures\.max \(HTTP 400\)/.test(t), t);
+        assert.ok(/Causa: item\.pictures\.max — Too many pictures/.test(t), t);
+        await sleep(1500);
+        assert.strictEqual(fotosChamadas.length, antes + 1, "nenhum reenvio automático");
+        assert.deepStrictEqual((await editor()).ids, ["R2", "R1", "R3"], "o rascunho continua como estava");
+      } finally {
+        fotosResultado = null;
+      }
+    });
+
+    await check("7za — estado incerto: mensagem de conferência, sem Salvar/reenviar, edição travada; 'Recarregar' só relê", async () => {
+      await abrirComVariacoes();
+      await arrastar(1, 0);
+      const antes = fotosChamadas.length;
+      fotosResultado = { status: 422, corpo: { ok: false, codigo: "VINCULO_INCERTO", etapa: "vinculo", incerto: true,
+        motivo: "Não foi possível confirmar se as fotos foram salvas (falha de conexão com o Mercado Livre). Confira o anúncio no Mercado Livre antes de salvar de novo." } };
+      try {
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-salvar"]');
+        await waitFor(cdp, `/Não foi possível confirmar se o Mercado Livre aplicou a alteração\\. Confira o anúncio antes de tentar novamente\\./.test(${textoFotos})`,
+          "a mensagem de estado incerto não apareceu");
+        const e = await editor();
+        assert.strictEqual(e.barra, "", "sem barra de salvar");
+        assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-fotos-corpo [data-acao=\"foto-salvar\"], #am-det-fotos-corpo [data-acao=\"foto-pendente-salvar\"]').length"), 0,
+          "nenhum botão de salvar/reenviar");
+        assert.strictEqual(e.lixeiras, 0, "edição travada");
+        assert.strictEqual(e.adicionarDesabilitado, true);
+        await sleep(1200);
+        assert.strictEqual(fotosChamadas.length, antes + 1, "nenhum reenvio automático");
+        fotosResultado = null;
+        const leituras = fotosLeituraChamadas;
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-recarregar"]');
+        await waitFor(cdp, `/Fotos da variação: Robalo/.test(${textoFotos}) && !/aplicou a alteração/.test(${textoFotos})`, "recarregar não releu");
+        assert.strictEqual(fotosLeituraChamadas, leituras + 1);
+        assert.strictEqual(fotosChamadas.length, antes + 1, "recarregar não escreve");
+        assert.deepStrictEqual((await editor()).ids, ["R1", "R2", "R3"], "o rascunho foi descartado pela leitura nova");
+      } finally {
+        fotosResultado = null;
+      }
+    });
+
+    await check("7zb — conflito (anúncio mudou no ML): motivo e 'Recarregar fotos do Mercado Livre'", async () => {
+      await abrirComVariacoes();
+      await arrastar(1, 0);
+      fotosResultado = { status: 409, corpo: { ok: false, codigo: "FOTOS_DESATUALIZADAS", etapa: "bloqueio", incerto: false,
+        motivo: "O anúncio mudou no Mercado Livre desde que você abriu. Recarregue as fotos." } };
+      try {
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-salvar"]');
+        await waitFor(cdp, `/O anúncio mudou no Mercado Livre desde que você abriu/.test(${textoFotos})`, "o conflito não apareceu");
+        assert.ok(await cdp.evaluate("!!document.querySelector('#am-det-fotos-corpo [data-acao=\"foto-recarregar\"]')"), "oferece recarregar");
+      } finally {
+        fotosResultado = null;
+      }
+    });
+
+    await check("7zc — fechar o modal com pendência: 'Existem alterações pendentes nas fotos.' com Salvar / Descartar / Cancelar", async () => {
+      await abrirComVariacoes();
+      await arrastar(1, 0);
+      await clicar(cdp, ".am-det-close");
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__pendente')", "fechar com pendência não pediu decisão");
+      let e = await editor();
+      assert.ok(/Existem alterações pendentes nas fotos\./.test(e.pendente), e.pendente);
+      assert.ok(/Salvar/.test(e.pendente) && /Descartar/.test(e.pendente) && /Cancelar/.test(e.pendente), e.pendente);
+      assert.ok(await cdp.evaluate("!!document.querySelector('.am-det-modal')"), "o modal continua aberto");
+
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-pendente-cancelar"]');
+      e = await editor();
+      assert.strictEqual(e.pendente, "");
+      assert.deepStrictEqual(e.ids, ["R2", "R1", "R3"], "cancelar mantém o rascunho e o modal");
+
+      await clicar(cdp, ".am-det-close");
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__pendente')", "o aviso não voltou");
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-pendente-descartar"]');
+      await waitFor(cdp, "!document.querySelector('.am-det-modal')", "descartar não fechou o modal");
+
+      await abrirComVariacoes();
+      await arrastar(1, 0);
+      const antes = fotosChamadas.length;
+      await clicar(cdp, ".am-det-close");
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__pendente')", "o aviso não apareceu");
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-pendente-salvar"]');
+      await waitFor(cdp, "!document.querySelector('.am-det-modal')", "salvar não fechou o modal depois do sucesso");
+      assert.strictEqual(fotosChamadas.length, antes + 1, "salvou antes de fechar");
+      assert.deepStrictEqual(ultimoPut().plano.ordem, [{ existente: "R2" }, { existente: "R1" }, { existente: "R3" }]);
+    });
+
+    await check("7zd — trocar de grupo com pendência: Salvar grava e segue para o grupo escolhido (relido do GET)", async () => {
+      await abrirComVariacoes();
+      await arrastar(1, 0);
+      const antes = fotosChamadas.length;
+      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__chip[data-idx="1"]');
+      await waitFor(cdp, "document.querySelector('#am-det-fotos-corpo .am-det-fotos__pendente')", "o aviso não apareceu");
+      assert.ok(/Existem alterações pendentes neste grupo\./.test((await editor()).pendente));
+      await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-pendente-salvar"]');
+      await waitFor(cdp, `/Fotos da variação: Preto/.test(${textoFotos})`, "não seguiu para Preto depois de salvar");
+      assert.strictEqual(fotosChamadas.length, antes + 1);
+      assert.strictEqual(ultimoPut().plano.grupoVariacao.value_name, "Robalo", "salvou o grupo de onde saiu");
+      assert.deepStrictEqual((await editor()).ids, ["P1"]);
+    });
+
+    await check("7ze — o fluxo novo nunca usa o POST /imagens antigo", async () => {
+      assert.strictEqual(imagemChamadas.length, escritasAntes.imagens, "nenhum POST /imagens em todo o editor");
+      variationsCountAtivo = 0;
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+    });
+
+    await check("7zf — anúncio de produto (family_name + user_product_id) sem variação: aviso de replicação junto da alteração, antes de salvar; anúncio comum não avisa; nenhum PUT/upload", async () => {
+      const AVISO = /pertence a um produto do Mercado Livre\. A alteração de imagem pode ser replicada para outros anúncios relacionados/;
+      const textoModal = "((document.querySelector('.am-det-modal') || {}).innerText || '')";
+      const escritas = () => ({ put: fotosEscritas.length, multipart: fotosChamadas.length, imagens: imagemChamadas.length });
+      const inicio = escritas();
+      async function moverPrimeira() {
+        await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="A"] [data-acao="foto-mover"][data-dir="1"]');
+        await waitFor(cdp, "!!document.querySelector('#am-det-fotos-corpo .am-det-fotos__barra')", "a barra de alterações não apareceu");
+      }
+      try {
+        // Controle: anúncio comum (sem family_name/user_product_id), mesma alteração, sem aviso.
         await abrirComModo("nenhum");
         await abrirPrimeiroAnuncio(cdp);
-        // Com variações o botão só libera quando os grupos de foto chegam do ML.
-        await waitFor(cdp, "document.getElementById('am-det-img-add') && !document.getElementById('am-det-img-add').disabled",
-          "com os grupos carregados o '+ Adicionar imagem' deveria liberar");
-        const vari = await infoFotos();
-        assert.strictEqual(vari.bloqueio, "", "grupos carregados: sem aviso de bloqueio");
-        const lista = await cdp.evaluate("((document.getElementById('am-det-img-var') || {}).innerText || '')");
-        assert.ok(/Fotos por cor/.test(lista) && /Azul \(P, M\)/.test(lista) && /Preto \(P\)/.test(lista), `fotos por variação: ${lista}`);
+        await waitFor(cdp, `/Fotos do anúncio/.test(${textoFotos})`, "o modo simples não carregou");
+        await moverPrimeira();
+        assert.ok(!AVISO.test(await cdp.evaluate(textoModal)), "anúncio comum não recebe o aviso de replicação");
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
 
-        // Recusa do backend (ex.: categoria sem defines_picture): bloqueia com o motivo dele.
-        imagemGruposResultado = { status: 409, corpo: { ok: false, codigo: "ATRIBUTO_FOTO_INDEFINIDO", etapa: "bloqueio",
-          motivo: "O Mercado Livre não indica, para a categoria deste anúncio, qual atributo das variações define a foto (defines_picture)." } };
+        // Anúncio de produto sem variação.
+        await abrirComModo("produto");
+        await abrirPrimeiroAnuncio(cdp);
+        await waitFor(cdp, `/Fotos do anúncio/.test(${textoFotos})`, "o modo simples não carregou no anúncio de produto");
+        let e = await editor();
+        assert.deepStrictEqual(e.ids, ["A", "B"]);
+        assert.strictEqual(e.adicionar, true, "anúncio de produto sem variação continua editável (só avisa)");
+        assert.ok(!AVISO.test(await cdp.evaluate(textoModal)), "sem alteração pendente ainda não há o que avisar");
+        await moverPrimeira();
+        assert.ok(AVISO.test(await cdp.evaluate(textoModal)), "com alteração pendente o aviso de replicação aparece antes do salvar");
+        e = await editor();
+        assert.ok(/Salvar no Mercado Livre/.test(e.barra), "o aviso não tira o Salvar");
+        await clicar(cdp, '#am-det-fotos-corpo [data-acao="foto-descartar"]');
+        await waitFor(cdp, "!document.querySelector('#am-det-fotos-corpo .am-det-fotos__barra')", "descartar não limpou a barra");
+        assert.ok(!AVISO.test(await cdp.evaluate(textoModal)), "descartado o rascunho, o aviso some");
+        assert.deepStrictEqual(escritas(), inicio, "nenhum PUT /fotos, multipart ou POST /imagens no cenário");
+      } finally {
         await abrirComModo("nenhum");
         await abrirPrimeiroAnuncio(cdp);
-        await waitFor(cdp, "/defines_picture/.test((document.getElementById('am-det-img-bloqueio') || {}).innerText || '')",
-          "a recusa do backend precisa aparecer como motivo do bloqueio");
-        assert.strictEqual((await infoFotos()).disabled, true, "sem grupos o botão fica desabilitado");
-      } finally {
-        variationsCountAtivo = 0;
-        imagemGruposResultado = null;
       }
-      await abrirComModo("nenhum");
-      await abrirPrimeiroAnuncio(cdp);
-    });
-
-    await check("7f — escolher arquivo mostra preview local, formato, tamanho e dimensões; formato inválido é recusado sem enviar", async () => {
-      const antes = imagemChamadas.length;
-      await escolherArquivo({ png: true, largura: 600, altura: 400, nome: "foto-nova.png" });
-      await waitFor(cdp, `/600×400 px/.test(${textoEnvio})`, "as dimensões da imagem não apareceram");
-      const f = await infoFotos();
-      assert.ok(/^blob:/.test(f.previewSrc), `o preview precisa ser local (blob:), não um upload: ${f.previewSrc}`);
-      assert.ok(/foto-nova\.png/.test(f.envio), "o nome do arquivo aparece");
-      assert.ok(/PNG · \d+ KB · 600×400 px/.test(f.envio), `formato · tamanho · dimensões: ${f.envio}`);
-      assert.ok(/Abaixo de 500×500 px/.test(f.envio), "400 px de altura fica abaixo do mínimo documentado pelo ML — avisa");
-      assert.ok(f.temEnviar, "com arquivo válido o botão de enviar aparece");
-      assert.strictEqual(imagemChamadas.length, antes, "escolher o arquivo NÃO pode enviar nada sozinho");
-
-      await escolherArquivo({ nome: "planilha.txt", tipo: "text/plain", texto: "não é imagem" });
-      await waitFor(cdp, `/Formato não aceito/.test(${textoEnvio})`, "formato inválido não foi recusado");
-      const inval = await infoFotos();
-      assert.ok(!inval.temEnviar, "arquivo inválido não pode ser enviado");
-      assert.ok(!/Erro do Mercado Livre/.test(inval.envio), "recusa local não pode se passar por erro do ML");
-
-      await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
-      await waitFor(cdp, "!document.querySelector('.am-det-img-envio')", "cancelar não limpou a seleção");
-      assert.strictEqual(imagemChamadas.length, antes);
-    });
-
-    await check("7g — enviar: POST multipart com cliente/conta na query, estados até 'Concluído' e a grade ganha a foto", async () => {
-      const antes = imagemChamadas.length;
-      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "capa.png" });
-      await waitFor(cdp, "document.querySelector('[data-acao=\"img-enviar\"]')", "o botão de enviar não apareceu");
-      imagemAtrasoMs = 1500;
-      imagemViaRede = true;
-      try {
-        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
-        // O arquivo já subiu e o backend ainda fala com o ML: "Processando",
-        // sem botões de ação e sem permitir um segundo envio.
-        await waitFor(cdp, `/Processando no Mercado Livre/.test(${textoEnvio})`, "o estado 'Processando' não apareceu");
-        const durante = await infoFotos();
-        assert.ok(!durante.temEnviar, "durante o envio não há botão de enviar de novo");
-        assert.strictEqual(durante.disabled, true, "durante o envio o '+ Adicionar imagem' fica desabilitado");
-        await waitFor(cdp, `/Concluído/.test(${textoEnvio})`, "o envio não chegou a 'Concluído'");
-        assert.ok(imagemBytesRecebidos > 1000, `o arquivo inteiro precisa chegar no corpo (${imagemBytesRecebidos} bytes)`);
-      } finally {
-        imagemAtrasoMs = 0;
-        imagemViaRede = false;
-      }
-      const chamada = imagemChamadas[antes];
-      assert.ok(chamada, "nenhum POST /imagens saiu");
-      assert.strictEqual(chamada.metodo, "POST");
-      assert.ok(/^\/anuncios-meli\/MLB-A1\/imagens\?/.test(chamada.url), chamada.url);
-      assert.ok(/clienteSlug=n97/.test(chamada.url) && /clienteContaId=42/.test(chamada.url), `cliente/conta vão na query: ${chamada.url}`);
-      assert.ok(/^multipart\/form-data; boundary=/.test(chamada.contentType), `precisa ser multipart: ${chamada.contentType}`);
-      const f = await infoFotos();
-      assert.strictEqual(f.fotos, 3, "a grade mostra a lista que o backend devolveu (2 + 1)");
-      assert.ok(/Imagem adicionada ao anúncio no Mercado Livre/.test(f.envio), f.envio);
-      const titulo = await cdp.evaluate("document.querySelector('.am-det-photos').closest('.am-det-section').querySelector('.am-det-section__title').innerText");
-      assert.ok(/\(3\)/.test(titulo), `a contagem acompanha: ${titulo}`);
-      await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
-      await waitFor(cdp, "!document.querySelector('.am-det-img-envio')", "'Fechar aviso' não limpou o painel");
-    });
-
-    await check("7h — erro do Mercado Livre aparece com mensagem, código e causa originais; recusa local não se passa por ML", async () => {
-      await abrirComModo("nenhum");
-      await abrirPrimeiroAnuncio(cdp);
-      imagemResultado = {
-        status: 422,
-        corpo: {
-          ok: false, codigo: "509", etapa: "upload",
-          motivo: "Picture id 650349-MLA10B is below the minimum allowed size.",
-          detalhesMl: {
-            status: 400, message: "Picture is below the minimum allowed size.", error: "validation_error", causa: null,
-            causas: [{ code: "509", message: "Picture id 650349-MLA10B is below the minimum allowed size.", type: "error", references: [] }],
-          },
-        },
-      };
-      try {
-        await escolherArquivo({ png: true, largura: 300, altura: 300, nome: "pequena.png" });
-        await waitFor(cdp, "document.querySelector('[data-acao=\"img-enviar\"]')", "o botão de enviar não apareceu");
-        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
-        await waitFor(cdp, `/Erro do Mercado Livre/.test(${textoEnvio})`, "o erro do ML não apareceu");
-        const f = await infoFotos();
-        assert.ok(/No envio do arquivo ao Mercado Livre/.test(f.envio), `diz em que etapa parou: ${f.envio}`);
-        assert.ok(/Mensagem: “Picture is below the minimum allowed size\.”/.test(f.envio), `mensagem original: ${f.envio}`);
-        assert.ok(/Código: 509 \(HTTP 400\)/.test(f.envio), `código do ML: ${f.envio}`);
-        assert.ok(/Causa: 509 — Picture id 650349-MLA10B is below the minimum allowed size\./.test(f.envio), `causa do ML: ${f.envio}`);
-        assert.strictEqual(f.fotos, 2, "erro não pode acrescentar foto na grade");
-        assert.ok(/Tentar novamente/.test(f.envio), "depois do erro dá para tentar de novo");
-        assert.ok(/^blob:/.test(f.previewSrc), "o preview do arquivo escolhido continua lá");
-
-        // Bloqueio do backend (sem detalhesMl) — não é "Erro do Mercado Livre".
-        imagemResultado = {
-          status: 409,
-          corpo: { ok: false, codigo: "IMAGENS_BLOQUEADAS_CATALOGO", etapa: "bloqueio",
-            motivo: "Este anúncio é de catálogo: as fotos exibidas são do produto de catálogo do Mercado Livre e não podem ser alteradas por aqui." },
-        };
-        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
-        await waitFor(cdp, `/Não foi possível enviar a imagem/.test(${textoEnvio})`, "a recusa do backend não apareceu");
-        const b = await infoFotos();
-        assert.ok(!/Erro do Mercado Livre/.test(b.envio), `recusa do VenForce não pode ser atribuída ao ML: ${b.envio}`);
-        assert.ok(/IMAGENS_BLOQUEADAS_CATALOGO/.test(b.envio), "o código da recusa aparece");
-      } finally {
-        imagemResultado = null;
-      }
-      await abrirComModo("nenhum");
-      await abrirPrimeiroAnuncio(cdp);
-    });
-
-    await check("7i — anúncio de produto (family_name): aviso de replicação ANTES do envio, sem bloquear; anúncio comum não avisa", async () => {
-      const AVISO = "Este anúncio pertence a um produto do Mercado Livre. A alteração de imagem pode ser replicada para outros anúncios relacionados.";
-      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "comum.png" });
-      await waitFor(cdp, `/800×800 px/.test(${textoEnvio})`, "o preview não apareceu");
-      const comum = await infoFotos();
-      assert.ok(!comum.envio.includes(AVISO), "anúncio sem family_name/user_product_id não recebe o aviso");
-      await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
-
-      await abrirComModo("family_name");
-      await abrirPrimeiroAnuncio(cdp);
-      const antes = await infoFotos();
-      assert.strictEqual(antes.disabled, false, "family_name não bloqueia a adição de imagem");
-      assert.ok(!antes.envio.includes(AVISO), "o aviso é do envio: só aparece depois de escolher o arquivo");
-      await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "produto.png" });
-      await waitFor(cdp, `/800×800 px/.test(${textoEnvio})`, "o preview não apareceu");
-      const f = await infoFotos();
-      assert.ok(f.envio.includes(AVISO), `o aviso de replicação precisa aparecer antes do envio: ${f.envio}`);
-      assert.ok(f.temEnviar, "o aviso não bloqueia: o botão de enviar continua lá");
-      await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
-      await abrirComModo("nenhum");
-      await abrirPrimeiroAnuncio(cdp);
-    });
-
-    await check("7j — variações: escolher o grupo é obrigatório; o envio leva grupoVariacao e o sucesso diz qual variação recebeu", async () => {
-      variationsCountAtivo = 3;
-      try {
-        await abrirComModo("nenhum");
-        await abrirPrimeiroAnuncio(cdp);
-        await waitFor(cdp, "document.getElementById('am-det-img-add') && !document.getElementById('am-det-img-add').disabled",
-          "os grupos não carregaram");
-        const antes = imagemChamadas.length;
-        await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "azul.png" });
-        await waitFor(cdp, "document.getElementById('am-det-img-grupo')", "o seletor de variação não apareceu");
-        const opcoes = await cdp.evaluate("Array.from(document.querySelectorAll('#am-det-img-grupo option')).map(function(o){return o.textContent;})");
-        assert.deepStrictEqual(opcoes, ["Escolha…", "Cor: Azul (P, M)", "Cor: Preto (P)"]);
-        assert.ok(/todas as variações da cor escolhida/.test(await cdp.evaluate(textoEnvio)), "explica que a foto vai para o grupo inteiro");
-        assert.strictEqual(await cdp.evaluate("document.querySelector('[data-acao=\"img-enviar\"]').disabled"), true,
-          "sem variação escolhida não dá para enviar");
-
-        await cdp.evaluate(`(function(){ var s = document.getElementById('am-det-img-grupo'); s.value = 'id:52049';
-          s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
-        await waitFor(cdp, "!document.querySelector('[data-acao=\"img-enviar\"]').disabled", "escolher o grupo não liberou o envio");
-        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
-        await waitFor(cdp, `/Concluído/.test(${textoEnvio})`, "o envio não chegou a 'Concluído'");
-        const chamada = imagemChamadas[antes];
-        assert.ok(chamada && /grupoVariacao=id%3A52049/.test(chamada.url), `o grupo vai na query: ${chamada && chamada.url}`);
-        assert.ok(/variações Cor: Azul/.test(await cdp.evaluate(textoEnvio)), "o sucesso diz qual variação recebeu");
-        await clicar(cdp, '.am-det-modal [data-acao="img-cancelar"]');
-
-        // Estado incerto (conexão caiu no vínculo): sem "Tentar novamente".
-        imagemResultado = { status: 422, corpo: { ok: false, codigo: "VINCULO_INCERTO", etapa: "vinculo", pictureId: "999-MLB",
-          motivo: "Não foi possível confirmar se a imagem entrou no anúncio (falha de conexão com o Mercado Livre). Confira o anúncio no Mercado Livre antes de tentar de novo, para não duplicar a foto." } };
-        await escolherArquivo({ png: true, largura: 800, altura: 800, nome: "azul2.png" });
-        await waitFor(cdp, "document.getElementById('am-det-img-grupo')", "o seletor não apareceu");
-        await cdp.evaluate(`(function(){ var s = document.getElementById('am-det-img-grupo'); s.value = 'id:52028';
-          s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
-        await waitFor(cdp, "!document.querySelector('[data-acao=\"img-enviar\"]').disabled", "o envio não liberou");
-        await clicar(cdp, '.am-det-modal [data-acao="img-enviar"]');
-        await waitFor(cdp, `/VINCULO_INCERTO/.test(${textoEnvio})`, "o estado incerto não apareceu");
-        assert.ok(!(await infoFotos()).temEnviar, "estado incerto não pode oferecer reenvio (duplicaria a foto)");
-      } finally {
-        variationsCountAtivo = 0;
-        imagemResultado = null;
-      }
-      await abrirComModo("nenhum");
-      await abrirPrimeiroAnuncio(cdp);
     });
 
     await check("8 — alterações pendentes são detectadas e nomeadas", async () => {

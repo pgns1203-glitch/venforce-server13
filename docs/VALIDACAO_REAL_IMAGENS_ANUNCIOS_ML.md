@@ -224,6 +224,92 @@ leitura: `antes` / `comparar` / `snapshot`).
   recusa real por limite por variação, caminhos de falha
   (`VINCULO_INCERTO`, `CONFIRMACAO_DIVERGENTE`, perda crítica).
 
+## 7B. Editor de fotos por variação (GET/PUT /fotos)
+
+Pré-requisito: seção 7A aprovada. Anúncio de teste: Red Fish MLB5929315274
+(autorizado). Toda escrita precisa de autorização explícita antes de rodar.
+
+1. [ ] `antes`: `node server/scripts/validacaoImagemVariacao.js antes --clienteSlug=red_fish --itemId=MLB5929315274 --arquivo=<novo>.json`.
+2. [ ] Grupo Robalo: adicionar uma foto e mudar a ordem (outra foto vira a
+       imagem principal da variação). Salvar.
+3. [ ] `comparar ... --atributo=COLOR --valor=Robalo --ordem=<ids na ordem final, NOVA para a foto nova>`:
+       RESULTADO OK; outras cores intactas; capa do anúncio igual.
+4. [ ] Segurança: ler o estado (rascunho), mudar a ordem do Robalo por fora
+       do editor, salvar o rascunho antigo → 409 `FOTOS_DESATUALIZADAS`, sem
+       upload e sem PUT; o ML fica como a mudança externa deixou.
+5. [ ] Limite: com o grupo no limite por variação, adicionar mais uma →
+       400 `LIMITE_IMAGENS`, sem upload e sem PUT.
+6. [ ] Limpeza pelo editor: excluir as fotos de teste e voltar a ordem
+       original; `comparar --ordem=<ordem original>`; galeria igual à do
+       `antes`.
+7. [ ] Sync completo do cliente; `pictures_json` igual à galeria do ML.
+
+Anúncio sem variação: repetir 2, 3, 6 e 7 num anúncio simples autorizado (a
+capa do anúncio passa a ser a primeira foto).
+
+### Resultado 7B — 2026-09-30 (commit 21f2053)
+
+Execução pelo mesmo controller dos endpoints (`lerFotosAnuncio` e
+`salvarFotosAnuncio`), sem HTTP/multer/login do Portal; toda chamada ao ML
+registrada (método, caminho, status). Foto nova: cópia 500×500 da 2ª foto do
+Robalo. Evidência: JSON de cada passo (item completo, `defines_picture`,
+limites da categoria, resposta da tela, snapshot do VenForce, chamadas ML).
+
+- **Antes:** 50 fotos, 35 variações (7 cores × 5 tamanhos); `defines_picture`
+  = COLOR; categoria `max_pictures_per_item=12`, `max_pictures_per_item_var=10`;
+  Robalo com 8 fotos (7 originais + a de teste da 7A). O GET da tela devolveu
+  os 7 grupos iguais ao ML.
+- **Com variação (Robalo, adicionar + reordenar):** HTTP 200 em 7,1 s;
+  chamadas: 3 GET, 1 upload, 1 GET, **1 PUT**, 1 GET de conferência;
+  `confirmacaoPendente=false`. `comparar --ordem`: as 5 variações Robalo
+  exatamente na ordem pedida (906510 como imagem principal, nova no fim), as
+  30 das outras cores idênticas, preço/estoque iguais, galeria 50 → 51 com as
+  50 antigas na mesma ordem, capa/thumbnail/status do anúncio iguais. Fora de
+  fotos, só `last_updated`/`expiration_time` mudaram. Snapshot do VenForce já
+  atualizado (51) sem sync. **OK**
+- **Escrita não planejada:** por erro no roteiro de teste (a mudança externa
+  falhou por bug do script e o passo seguinte rodou mesmo assim), um segundo
+  salvar válido foi aplicado: 906510 para o fim e mais uma foto de teste.
+  Base atual → aceito, 200, `comparar` OK (51 → 52, só Robalo). Removido na
+  limpeza.
+- **Segurança:** estado lido (Robalo com 10), mudança externa (PUT direto
+  trocando as duas primeiras do Robalo, 200), salvar do rascunho antigo
+  (excluía uma foto e adicionava outra) → **409 `FOTOS_DESATUALIZADAS`**
+  "O anúncio mudou no Mercado Livre desde que você abriu. Recarregue as
+  fotos.", `incerto=false`; chamadas: só 2 GET (sem upload, sem PUT). O ML
+  ficou exatamente como a mudança externa deixou. **OK**
+- **Limite (VenForce):** Robalo com 10, adicionar uma → **400
+  `LIMITE_IMAGENS`** "Não é possível salvar. A variação Robalo pode ter no
+  máximo 10 imagens.", etapa `validacao`; chamadas: só 3 GET. **OK**
+- **Limpeza (pelo editor):** excluídas as 3 fotos de teste (997902 da 7A,
+  995104 e 889824 desta rodada) e ordem original do Robalo restaurada. HTTP
+  200, sem upload, 1 PUT. Galeria 52 → 49, as 3 removidas saíram. Comparado
+  com o JSON de ANTES da 7A: galeria idêntica e na mesma ordem, as 35
+  variações com `picture_ids` idênticos, preço/estoque/capa/status iguais.
+  **OK**
+- **Sync:** snapshot do VenForce já igual ao ML antes do sync (gravado pelo
+  editor após a confirmação). Sync completo do cliente (175 anúncios, 76 s):
+  `pictures_json` continua igual à galeria do ML (49). **OK**
+- **Erros reais do ML:** nenhum nesta rodada (sem moderação, sem recusa de
+  categoria, de vínculo ou de variação). A recusa por limite foi a do
+  VenForce, antes de qualquer escrita.
+- **Sem variação: PENDENTE.** Não foi possível validar anúncio sem variação
+  isolado porque todos os candidatos possuem vínculo de produto.
+  Auditoria (somente leitura, 2026-09-30) com os critérios obrigatórios:
+  `catalog_listing = false`, `family_name` nulo, `user_product_id` nulo, sem
+  variações, sem risco de replicação para irmãos.
+  - Banco (após sync completo): 175 anúncios; 151 sem variação, todos com
+    `user_product_id` e `family_name`; 24 sem vínculo de produto, todos com
+    variações; nenhum de catálogo. Candidatos: 0.
+  - ML ao vivo (`GET /items?ids=` em lotes de 20, 175 de 175 lidos, 0 erro):
+    mesmo resultado — 151 "sem variação + user_product_id + family_name",
+    24 "com variação, sem vínculo". Candidatos: 0.
+  - Decisão: não usar anúncio de produto (nem pausado) só para completar o
+    checklist. O teste fica pendente até existir um anúncio simples
+    autorizado.
+- Não coberto: clique pelo Portal (HTTP, multer, auth), `VINCULO_INCERTO`,
+  `CONFIRMACAO_DIVERGENTE` e perda crítica (só simulados).
+
 ## 8. Limpeza
 
 - [ ] Remover, pelo painel do Mercado Livre, todas as fotos de teste

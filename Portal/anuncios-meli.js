@@ -1876,7 +1876,7 @@
     }
     var incluirMargem = !opcoes || opcoes.incluirMargem !== false;
     // Composição é OPT-IN (ao contrário de métricas/margem): só o modal de
-    // detalhe pede, explicitamente, ao abrir a seção "Composição da margem".
+    // detalhe pede, explicitamente, ao abrir o modal (seção "Composição da margem").
     var incluirComposicao = !!(opcoes && opcoes.incluirComposicao);
     // % faturamento também é OPT-IN aqui: só quem pede (o carregamento
     // automático da lista, ver renderCatalogo) liga a flag — o
@@ -2065,7 +2065,7 @@
     var opcoes = { incluirMargem: true, incluirComposicao: true };
     // Rebate ML da promoção ATIVA (ver promocaoAtivaComSubsidioDoItem) — só
     // existe se garantirPromocoesDoItem já resolveu (ver DET.promocoesPronto
-    // em bindMargemComposicao); sem isso, composição segue sem rebate, exata-
+    // em carregarComposicaoDoDetalhe); sem isso, composição segue sem rebate, exata-
     // mente como antes.
     var ativa = promocaoAtivaComSubsidioDoItem(itemId);
     if (ativa) opcoes.subsidioMl = { itemId: itemId, valor: ativa.subsidioMl };
@@ -3450,14 +3450,14 @@
       // (que já pintou acima). A seção nasce com "Carregando…" e se repinta
       // sozinha quando a resposta chega (ver promocoesSecaoHtml/repintarPromocoesDoItem).
       // Guardada em DET.promocoesPronto: é o que permite à composição da
-      // margem (ver bindMargemComposicao) saber se existe uma promoção ATIVA
-      // com subsidioMl ANTES de pedir a margem — sem esperar por ela, a
-      // composição poderia nascer sem o rebate quando o operador abre a
-      // seção rápido demais.
+      // margem (ver carregarComposicaoDoDetalhe) saber se existe uma promoção
+      // ATIVA com subsidioMl ANTES de pedir a margem — sem esperar por ela, a
+      // composição poderia nascer sem o rebate.
       DET.promocoesPronto = garantirPromocoesDoItem(a.item_id).then(function () {
         if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB no meio do caminho
         repintarPromocoesDoItem(a.item_id);
       });
+      carregarComposicaoDoDetalhe(a.item_id, meuToken);
     });
   }
 
@@ -3521,27 +3521,23 @@
     var pics = tryParseJSON(a.pictures_json, []) || [];
     var attrs = tryParseJSON(a.attributes_json, []) || [];
 
-    var margemSecaoAtual = el("am-det-margem");
-    var margemAberta = !!(margemSecaoAtual && margemSecaoAtual.open);
-
     var html =
       headHtml(a) +
       top2Html(a, pics, attrs) +
       fotosHtml(pics, a) +
+      '<div class="am-det-margem-grid">' +
+        margemComposicaoSecaoHtml(a) +
+        promocoesSecaoHtml(a.item_id, a.moeda) +
+      "</div>" +
       tituloEModeloHtml(a) +
       descricaoHtml() +
-      fichaHtml(attrs) +
-      '<div class="am-det-margem-grid">' +
-        margemComposicaoSecaoHtml(a, margemAberta) +
-        promocoesSecaoHtml(a.item_id, a.moeda) +
-      "</div>";
+      fichaHtml(attrs);
 
     var scroll = el("am-det-scroll");
     scroll.innerHTML = html;
     bindCamposEditaveis();
     bindFotos();
     aplicarEstadosEdicao(); // já redesenha a barra de alterações
-    bindMargemComposicao();
     bindMargemEditavel(el("am-det-margem-body"));
     bindAplicarPreco(el("am-det-margem-body"), a.item_id);
     bindRestaurarSimulacaoMargem(el("am-det-margem-body"), a.item_id);
@@ -3628,8 +3624,8 @@
   // composição (`precoPromocionalAtivo`): margem[itemId].precoAtual/
   // precoOriginal (item.pricing.current/list, sale_price via
   // resolverPrecosItem) sobre o snapshot sincronizado (a.preco/
-  // a.preco_original) enquanto a margem deste item não foi buscada — a
-  // composição é OPT-IN, só busca ao abrir a seção (ver bindMargemComposicao).
+  // a.preco_original) enquanto a margem deste item não chegou — a composição
+  // é pedida ao abrir o modal (ver carregarComposicaoDoDetalhe).
   // `id="am-det-price"` é o que permite repintarComposicaoDoItem atualizar
   // este valor junto do resto quando a margem chega depois do modal já aberto.
   function precoDetalheHtml(a) {
@@ -3945,16 +3941,12 @@
       ? '<span class="am-det-fotos__acoes">' +
           '<button type="button" class="am-det-fotos__btn am-det-fotos__btn--texto" data-acao="foto-desfazer" data-idx="' + i + '">Desfazer</button>' +
         "</span>"
-      : '<span class="am-det-fotos__acoes">' +
-          '<button type="button" class="am-det-fotos__btn" data-acao="foto-mover" data-dir="-1" data-idx="' + i + '"' +
-            ' aria-label="Mover a foto ' + n + ' para a esquerda">←</button>' +
-          '<button type="button" class="am-det-fotos__btn" data-acao="foto-mover" data-dir="1" data-idx="' + i + '"' +
-            ' aria-label="Mover a foto ' + n + ' para a direita">→</button>' +
-          (podeRemover
-            ? '<button type="button" class="am-det-fotos__btn am-det-fotos__btn--remover" data-acao="foto-remover" data-idx="' + i + '"' +
-                ' aria-label="Remover a foto ' + n + '">×</button>'
-            : "") +
-        "</span>";
+      : podeRemover
+        ? '<span class="am-det-fotos__acoes">' +
+            '<button type="button" class="am-det-fotos__btn am-det-fotos__btn--remover" data-acao="foto-remover" data-idx="' + i + '"' +
+              ' aria-label="Remover a foto ' + n + '">×</button>' +
+          "</span>"
+        : "";
     return '<div class="am-det-photo am-det-fotos__item' + (it.removida ? " is-removida" : "") + (it.tipo === "nova" ? " is-nova" : "") + '"' +
         ' data-foto="' + escapeAttr(chave) + '" data-idx="' + i + '"' + (it.removida || !editavel ? "" : ' draggable="true"') + ">" +
       (src
@@ -4119,17 +4111,6 @@
     itens.splice(para, 0, itens.splice(de, 1)[0]);
     limparMensagensFotos();
     renderFotos();
-  }
-
-  // Seta: vai para a próxima foto ATIVA na direção (as removidas não contam).
-  function moverFotoSeta(i, dir) {
-    var itens = DET.fotos.rascunho.itens;
-    var j = i + dir;
-    while (j >= 0 && j < itens.length && itens[j].removida) j += dir;
-    if (j < 0 || j >= itens.length) return;
-    moverFoto(i, j);
-    var btn = document.querySelector('#am-det-fotos-corpo [data-acao="foto-mover"][data-dir="' + dir + '"][data-idx="' + j + '"]');
-    if (btn) btn.focus(); // o foco acompanha a foto movida
   }
 
   function removerFoto(i) {
@@ -5310,17 +5291,11 @@
   // item.margin.<origem>.margin/profit, o número pronto do Motor, nunca uma
   // soma das linhas desta tela.
   //
-  // Nasce FECHADA (<details> nativo, sem `open`) e SEM nenhuma chamada de
-  // rede — só busca ao ser aberta pela primeira vez (ver
-  // bindMargemComposicao). Reabrir o MESMO MLB (mesma seção, ou reabrir o
-  // modal do mesmo item_id) lê do cache; fechar o modal e abrir OUTRO MLB
-  // nunca herda a composição do anterior — a seção nasce muda de novo,
-  // porque o cache é indexado por item_id, não por sessão de modal.
+  // Sempre aberta: a busca sai junto com a abertura do modal (ver
+  // carregarComposicaoDoDetalhe). Reabrir o modal do MESMO item_id lê do
+  // cache; abrir OUTRO MLB nunca herda a composição do anterior, porque o
+  // cache é indexado por item_id, não por sessão de modal.
   // ===========================================================================
-
-  function margemComposicaoDicaHtml() {
-    return '<p class="am-margem-comp__dica">Toque para ver como a margem foi calculada.</p>';
-  }
 
   function margemComposicaoCarregandoHtml() {
     return '<p class="am-margem-comp__dica">Carregando composição…</p>';
@@ -5341,8 +5316,9 @@
   }
 
   function botaoMargemEditHtml(rotulo, tituloBotao) {
+    // Lápis sempre visível: o campo se anuncia editável sem depender do hover.
     return '<button type="button" class="am-margem-edit__btn" title="' + escapeAttr(tituloBotao) + '">' +
-      escapeHtml(rotulo) + "</button>";
+      escapeHtml(rotulo) + '<span class="am-margem-edit__lapis" aria-hidden="true">' + icLapis(11) + "</span></button>";
   }
 
   // Uma linha de SIMULAÇÃO (Custo do produto/Custos adicionais) — ao
@@ -5500,7 +5476,7 @@
   // a busca sob demanda resolve (ver repintarComposicaoDoItem).
   function margemComposicaoConteudoHtml(itemId, moeda) {
     var cache = AM.state.performanceCache[itemId];
-    if (!cache || !cache.temMargem) return margemComposicaoDicaHtml();
+    if (!cache || !cache.temMargem) return margemComposicaoCarregandoHtml();
 
     // Badge de estado — a MESMA função que já pinta a célula de margem da
     // lista (mesmo rótulo, mesma cor, mesmo vocabulário real do Motor).
@@ -5517,8 +5493,8 @@
     return badge + margemComposicaoLadderHtml(cache.composicao, cache.margem, moeda, itemId);
   }
 
-  // Resumo compacto no <summary>, à direita do título — só aparece quando a
-  // composição JÁ foi carregada (a seção fica muda até ser aberta).
+  // Resumo compacto à direita do título — só aparece quando a composição
+  // já chegou.
   function margemComposicaoResumoHtml(itemId) {
     var cache = AM.state.performanceCache[itemId];
     if (!cache || !cache.temComposicao || !cache.margem || cache.margem.marginPercent == null) return "";
@@ -5527,61 +5503,40 @@
     return escapeHtml(formatarPercentualCompacto(cache.margem.marginPercent));
   }
 
-  // `aberta` preserva o estado do <details> entre re-renders do modal
-  // inteiro (salvar, descartar, aprovar sugestão de IA todos chamam
-  // renderDetalhe() de novo) — sem isso, o operador que tinha a seção
-  // aberta a veria fechar sozinha a cada ação no resto do modal.
-  function margemComposicaoSecaoHtml(a, aberta) {
+  // Seção sempre aberta: a composição é pedida ao abrir o modal (ver
+  // carregarComposicaoDoDetalhe) e, enquanto não chega, o corpo mostra
+  // "Carregando composição…". Re-renders do modal reaproveitam o cache.
+  function margemComposicaoSecaoHtml(a) {
     var itemId = a.item_id;
     var cache = AM.state.performanceCache[itemId];
-    var corpo;
-    if (cache && cache.temComposicao) corpo = margemComposicaoConteudoHtml(itemId, a.moeda);
-    else if (aberta) corpo = margemComposicaoCarregandoHtml(); // reaberta enquanto a busca ainda estava em voo
-    else corpo = margemComposicaoDicaHtml();
+    var corpo = cache && cache.temComposicao
+      ? margemComposicaoConteudoHtml(itemId, a.moeda)
+      : margemComposicaoCarregandoHtml();
 
-    return '<details class="am-det-section am-margem-comp" id="am-det-margem"' + (aberta ? " open" : "") +
-      ' data-item="' + escapeAttr(itemId) + '">' +
-      '<summary class="am-det-section__head am-margem-comp__summary">' +
-        '<h3 class="am-det-section__title">' +
-          '<span class="am-margem-comp__chevron" aria-hidden="true">' + iconeChevronSvg() + "</span>" +
-          "Composição da margem" +
-        "</h3>" +
+    return '<div class="am-det-section am-margem-comp" id="am-det-margem" data-item="' + escapeAttr(itemId) + '">' +
+      '<div class="am-det-section__head">' +
+        '<h3 class="am-det-section__title">Composição da margem</h3>' +
         '<span class="am-det-section__meta" id="am-det-margem-resumo">' + margemComposicaoResumoHtml(itemId) + "</span>" +
-      "</summary>" +
+      "</div>" +
       '<div class="am-margem-comp__body" id="am-det-margem-body">' + corpo + "</div>" +
-    "</details>";
+    "</div>";
   }
 
-  // Busca a composição só na PRIMEIRA vez que a seção é aberta — nunca ao
-  // abrir o modal. Guardado por DET.token, mesmo padrão de
-  // carregarHistoricoOtimizacoes: uma resposta tardia depois de fechar o
-  // modal (ou abrir o de outro MLB) nunca escreve na tela errada.
-  function bindMargemComposicao() {
-    var secao = el("am-det-margem");
-    if (!secao) return;
-    secao.addEventListener("toggle", function () {
-      if (!secao.open) return;
-      var itemId = secao.getAttribute("data-item");
-      var cache = AM.state.performanceCache[itemId];
-      if (cache && cache.temComposicao) return; // já pronta — nada a buscar
-
-      var corpo = el("am-det-margem-body");
-      if (corpo) corpo.innerHTML = margemComposicaoCarregandoHtml();
-
-      var meuToken = DET.token;
-      // Espera promoções (já em voo desde a abertura do modal — ver
-      // DET.promocoesPronto em abrirDetalhe) ANTES de pedir a composição:
-      // garante que, se houver promoção ATIVA com subsidioMl, a margem
-      // inicial já nasce com o rebate — sem depender de qual dos dois
-      // pedidos volta primeiro. `promocoesPronto` nunca rejeita (ver
-      // garantirPromocoesDoItem), então não precisa de tratamento de erro.
-      var promocoesProntas = (DET && DET.promocoesPronto) || Promise.resolve();
-      promocoesProntas.then(function () {
-        if (!DET || DET.token !== meuToken) return;
-        garantirComposicaoDoItem(itemId).then(function () {
-          if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB aberto no meio do caminho
-          repintarComposicaoDoItem(itemId);
-        });
+  // Pedida uma vez por abertura do modal. Guardado por DET.token, mesmo
+  // padrão de carregarHistoricoOtimizacoes: uma resposta tardia depois de
+  // fechar o modal (ou abrir o de outro MLB) nunca escreve na tela errada.
+  function carregarComposicaoDoDetalhe(itemId, meuToken) {
+    // Espera promoções (em voo desde a abertura, ver DET.promocoesPronto)
+    // ANTES de pedir a composição: se houver promoção ATIVA com subsidioMl,
+    // a margem inicial já nasce com o rebate — sem depender de qual dos dois
+    // pedidos volta primeiro. `promocoesPronto` nunca rejeita (ver
+    // garantirPromocoesDoItem), então não precisa de tratamento de erro.
+    var promocoesProntas = (DET && DET.promocoesPronto) || Promise.resolve();
+    promocoesProntas.then(function () {
+      if (!DET || DET.token !== meuToken) return;
+      garantirComposicaoDoItem(itemId).then(function () {
+        if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB aberto no meio do caminho
+        repintarComposicaoDoItem(itemId);
       });
     });
   }
@@ -6670,7 +6625,6 @@
     if (acao === "foto-grupo") { selecionarGrupoFotos(Number(alvo.getAttribute("data-idx"))); return; }
     if (acao === "foto-recarregar") { carregarFotos(true); renderFotos(); return; }
     if (acao === "foto-escolher") { var inpFoto = el("am-det-img-input"); if (inpFoto && !alvo.disabled) inpFoto.click(); return; }
-    if (acao === "foto-mover") { moverFotoSeta(Number(alvo.getAttribute("data-idx")), Number(alvo.getAttribute("data-dir"))); return; }
     if (acao === "foto-remover") { removerFoto(Number(alvo.getAttribute("data-idx"))); return; }
     if (acao === "foto-desfazer") { desfazerFoto(Number(alvo.getAttribute("data-idx"))); return; }
     if (acao === "foto-descartar") { descartarFotos(); return; }

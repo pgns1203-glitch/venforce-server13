@@ -1418,21 +1418,21 @@ async function run() {
       semRede(antes, "adicionar imagem");
     });
 
-    await check("7l — arrastar e setas ← → reordenam só o rascunho; a primeira ganha o selo; nenhuma requisição", async () => {
+    await check("7l — arrastar reordena só o rascunho; a primeira ganha o selo; sem setas ← →; nenhuma requisição", async () => {
       const antes = rede();
+      assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('#am-det-fotos-corpo [data-acao="foto-mover"]').length`), 0,
+        "as setas ← → saíram: a reordenação é por arrastar");
       await arrastar(2, 0);                                         // R3 R1 R2 nova
       let e = await editor();
       assert.deepStrictEqual(e.ids.slice(0, 3), ["R3", "R1", "R2"], "arrastar R3 para o início");
       assert.strictEqual(e.seloEm, "R3", "a primeira foto leva o selo de imagem principal");
-      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R1"] [data-acao="foto-mover"][data-dir="1"]');
+      await arrastar(2, 1);
       e = await editor();
-      assert.deepStrictEqual(e.ids.slice(0, 3), ["R3", "R2", "R1"], "→ move uma posição");
-      await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="R2"] [data-acao="foto-mover"][data-dir="-1"]');
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R3", "R2", "R1"], "arrastar para o meio");
+      await arrastar(1, 0);
       e = await editor();
-      assert.deepStrictEqual(e.ids.slice(0, 3), ["R2", "R3", "R1"], "← move uma posição");
+      assert.deepStrictEqual(e.ids.slice(0, 3), ["R2", "R3", "R1"], "arrastar para o início de novo");
       assert.strictEqual(e.seloEm, "R2");
-      const rotulos = await cdp.evaluate(`Array.from(document.querySelectorAll('#am-det-fotos-corpo [data-acao="foto-mover"]')).every(function(b){ return !!b.getAttribute('aria-label'); })`);
-      assert.strictEqual(rotulos, true, "as setas têm rótulo acessível");
       semRede(antes, "reordenar");
     });
 
@@ -1611,7 +1611,7 @@ async function run() {
           var c = document.getElementById('am-det-fotos-corpo');
           return {
             chips: Array.from(c.querySelectorAll('.am-det-fotos__chip')).every(function(b){ return b.disabled; }),
-            acoes: c.querySelectorAll('[data-acao="foto-mover"], [data-acao="foto-remover"]').length,
+            acoes: c.querySelectorAll('[data-acao="foto-remover"]').length,
             arrastaveis: c.querySelectorAll('[draggable="true"]').length,
             adicionar: (c.querySelector('[data-acao="foto-escolher"]') || {}).disabled,
             barra: !!c.querySelector('.am-det-fotos__barra'),
@@ -1832,7 +1832,7 @@ async function run() {
       const escritas = () => ({ put: fotosEscritas.length, multipart: fotosChamadas.length, imagens: imagemChamadas.length });
       const inicio = escritas();
       async function moverPrimeira() {
-        await clicar(cdp, '#am-det-fotos-corpo .am-det-fotos__item[data-foto="A"] [data-acao="foto-mover"][data-dir="1"]');
+        await arrastar(1, 0);
         await waitFor(cdp, "!!document.querySelector('#am-det-fotos-corpo .am-det-fotos__barra')", "a barra de alterações não apareceu");
       }
       try {
@@ -2244,32 +2244,39 @@ async function run() {
         "o anúncio B abriu já 'sujo' com a pendência do anúncio A");
     });
 
-    /* ── 25 a 31: "Composição da margem" — seção secundária do modal ────── */
+    /* ── 25 a 31: "Composição da margem" — sempre aberta, carrega com o modal ── */
 
-    await check("25 — a seção 'Composição da margem' nasce fechada, sem chamada de rede", async () => {
+    await check("25 — a seção 'Composição da margem' fica entre Fotos e Título, sem recolher, e já busca a composição ao abrir o modal (1 chamada)", async () => {
+      // Página nova: os checks anteriores já abriram MLB-A1 e aqueceram o cache.
       await fecharModal(cdp);
-      await cdp.evaluate("window.VF.context.setConta(42)");
-      await waitFor(cdp, "document.querySelector('.am-row')", "o catálogo da conta 42 não voltou");
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+      await esperarLista(cdp);
       pedidos.length = 0;
       chamadasPerformance.length = 0;
       await abrirPrimeiroAnuncio(cdp);
       const estado = await cdp.evaluate(`(function(){
         var d = document.getElementById('am-det-margem');
-        return { existe: Boolean(d), aberta: d ? d.open : null,
-                 texto: d ? d.querySelector('.am-margem-comp__body').textContent.trim() : null }; })()`);
+        var fotos = document.getElementById('am-det-fotos-corpo');
+        var titulo = document.getElementById('am-det-titulo-ia') || document.querySelector('.am-det-scroll h4');
+        var ordem = function(a, b){ return !!(a && b && (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)); };
+        var h4 = Array.from(document.querySelectorAll('#am-det-scroll h4')).find(function(h){ return /^Título$/.test(h.textContent.trim()); });
+        return { existe: Boolean(d), details: d ? d.tagName === 'DETAILS' : null,
+                 summary: d ? !!d.querySelector('summary') : null,
+                 depoisDasFotos: ordem(fotos, d), antesDoTitulo: ordem(d, h4),
+                 promoAoLado: !!(d && d.parentElement.querySelector('#am-det-promo')) }; })()`);
       assert.ok(estado.existe, "a seção de composição da margem não foi renderizada");
-      assert.strictEqual(estado.aberta, false, "a seção não pode nascer aberta");
-      assert.match(estado.texto || "", /Toque para ver/, "o corpo fechado devia mostrar a dica, não carregar nada sozinho");
-      assert.strictEqual(chamadasPerformance.length, 0, "abrir o modal não pode gastar chamada de /performance");
-    });
-
-    await check("26 — abrir a seção busca a composição (1 chamada) e mostra o ladder certo (margem projetada)", async () => {
-      await clicar(cdp, "#am-det-margem summary");
+      assert.strictEqual(estado.details, false, "a seção não é mais recolhível (<details>)");
+      assert.strictEqual(estado.summary, false, "sem <summary> para clicar");
+      assert.strictEqual(estado.depoisDasFotos, true, "a composição vem depois das fotos");
+      assert.strictEqual(estado.antesDoTitulo, true, "a composição vem antes do título");
+      assert.strictEqual(estado.promoAoLado, true, "Promoções disponíveis continua ao lado da composição");
       await waitFor(cdp, `(function(){
         var b = document.querySelector('#am-det-margem-body');
-        return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou depois de abrir a seção");
+        return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou sozinho ao abrir o modal");
+    });
 
-      assert.strictEqual(chamadasPerformance.length, 1, "abrir a seção devia disparar exatamente 1 chamada");
+    await check("26 — a busca automática faz exatamente 1 chamada e mostra o ladder certo (margem projetada); campos editáveis têm lápis visível", async () => {
+      assert.strictEqual(chamadasPerformance.length, 1, "abrir o modal devia disparar exatamente 1 chamada");
       assert.deepStrictEqual(chamadasPerformance[0].itemIds, ["MLB-A1"]);
       assert.strictEqual(chamadasPerformance[0].incluirComposicao, true);
       assert.strictEqual(chamadasPerformance[0].incluirMargem, true, "composição sempre pede margem junto");
@@ -2288,20 +2295,27 @@ async function run() {
       const badge = await cdp.evaluate("document.querySelector('#am-det-margem-body .am-margem-comp__badge').textContent");
       assert.match(badge, /35,0%/, `o badge tem de mostrar o percentual — sem alternância Realizada/Projetada (Margem = Margem Projetada, somente): ${badge}`);
       assert.ok(!/Realizada/.test(badge), `o badge NUNCA pode dizer "Realizada" — Margem = Margem Projetada, somente, nesta tela: ${badge}`);
+
+      const editaveis = await cdp.evaluate(`(function(){
+        var bs = Array.from(document.querySelectorAll('#am-det-margem-body .am-margem-edit__btn'));
+        return { n: bs.length,
+                 lapis: bs.every(function(b){ return !!b.querySelector('.am-margem-edit__lapis svg'); }),
+                 borda: bs.every(function(b){ var c = getComputedStyle(b); return c.borderTopStyle !== 'none' && c.borderTopColor !== 'rgba(0, 0, 0, 0)'; }) }; })()`);
+      assert.ok(editaveis.n >= 3, "Preço, Custo do produto e Custos adicionais são editáveis");
+      assert.strictEqual(editaveis.lapis, true, "todo campo editável mostra o lápis sem precisar de hover");
+      assert.strictEqual(editaveis.borda, true, "todo campo editável tem moldura visível sem hover");
     });
 
-    await check("27 — colapsar e reabrir a MESMA seção reaproveita o cache (0 chamada nova)", async () => {
+    await check("27 — um re-render do modal (digitar no título) reaproveita o cache (0 chamada nova, ladder continua na tela)", async () => {
       const antes = chamadasPerformance.length;
-      await clicar(cdp, "#am-det-margem summary"); // colapsa
-      await waitFor(cdp, "document.getElementById('am-det-margem').open === false", "não colapsou");
-      await clicar(cdp, "#am-det-margem summary"); // reabre
-      await waitFor(cdp, "document.getElementById('am-det-margem').open === true", "não reabriu");
+      await cdp.evaluate(`(function(){ var t = document.getElementById('am-det-titulo'); t.value = t.value + ' x'; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
       const temLadder = await cdp.evaluate("/Custo do produto/.test(document.getElementById('am-det-margem-body').textContent)");
-      assert.strictEqual(temLadder, true, "reabrir devia mostrar o ladder na hora, sem 'carregando'");
-      assert.strictEqual(chamadasPerformance.length, antes, "colapsar/reabrir a mesma seção gastou uma chamada nova — cache não funcionou");
+      assert.strictEqual(temLadder, true, "o ladder continua na tela, sem 'carregando'");
+      assert.strictEqual(chamadasPerformance.length, antes, "nenhuma chamada nova de /performance");
+      await cdp.evaluate(`(function(){ var t = document.getElementById('am-det-titulo'); t.value = t.value.replace(/ x$/, ''); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     });
 
-    await check("28 — fechar o modal e reabrir o do MESMO MLB reaproveita o cache (0 chamada nova, mesmo sem clicar)", async () => {
+    await check("28 — fechar o modal e reabrir o do MESMO MLB reaproveita o cache (0 chamada nova)", async () => {
       const antes = chamadasPerformance.length;
       await fecharModal(cdp);
       await abrirPrimeiroAnuncio(cdp); // ainda conta 42 -> MLB-A1
@@ -2309,7 +2323,7 @@ async function run() {
         var b = document.getElementById('am-det-margem-body');
         return b ? b.textContent.replace(/\\s+/g, ' ').trim() : null; })()`);
       assert.match(corpoAntesDeClicar || "", /Custo do produtoR\$ 80,00/,
-        "reabrir o modal do MESMO item_id devia mostrar o ladder JÁ PRONTO (cache), mesmo com a seção ainda fechada");
+        "reabrir o modal do MESMO item_id devia mostrar o ladder JÁ PRONTO (cache)");
       assert.strictEqual(chamadasPerformance.length, antes,
         "reabrir o modal do mesmo MLB gastou uma chamada nova de /performance — o cache não é por item_id");
     });
@@ -2325,10 +2339,9 @@ async function run() {
       const corpoFechado = await cdp.evaluate(`(function(){
         var b = document.getElementById('am-det-margem-body');
         return b ? b.textContent.trim() : null; })()`);
-      assert.match(corpoFechado || "", /Toque para ver/,
-        "o modal de OUTRO MLB não pode abrir já mostrando uma composição — a de MLB-A1 vazou");
+      assert.ok(!/R\$ 80,00/.test(corpoFechado || ""),
+        "o modal de OUTRO MLB não pode abrir mostrando a composição de MLB-A1");
 
-      await clicar(cdp, "#am-det-margem summary");
       await waitFor(cdp, `(function(){
         var b = document.querySelector('#am-det-margem-body');
         return b && /Custo do produto/.test(b.textContent); })()`, "o ladder de MLB-B1 não carregou");
@@ -2375,7 +2388,6 @@ async function run() {
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await esperarLista(cdp);
         await abrirPrimeiroAnuncio(cdp);
-        await clicar(cdp, "#am-det-margem summary");
         await waitFor(cdp, `(function(){
           var b = document.querySelector('#am-det-margem-body');
           return b && /Base de custos MELI não vinculada/.test(b.textContent); })()`, "a mensagem de contexto não apareceu");
@@ -2398,7 +2410,6 @@ async function run() {
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await esperarLista(cdp);
         await abrirPrimeiroAnuncio(cdp);
-        await clicar(cdp, "#am-det-margem summary");
         await waitFor(cdp, `(function(){
           var b = document.querySelector('#am-det-margem-body');
           return b && /Não validado/.test(b.textContent); })()`, "o rótulo real do Motor não apareceu");
@@ -2425,7 +2436,6 @@ async function run() {
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await esperarLista(cdp);
         await abrirPrimeiroAnuncio(cdp);
-        await clicar(cdp, "#am-det-margem summary");
         await waitFor(cdp, `(function(){
           var b = document.querySelector('#am-det-margem-body');
           return b && /Custo do produto/.test(b.textContent); })()`, "o ladder do prejuízo não carregou");
@@ -2467,7 +2477,6 @@ async function run() {
       await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
       await esperarLista(cdp);
       await abrirPrimeiroAnuncio(cdp);
-      await clicar(cdp, "#am-det-margem summary");
       await waitFor(cdp, `(function(){
         var b = document.querySelector('#am-det-margem-body');
         return b && /Custo do produto/.test(b.textContent); })()`, "o ladder inicial não carregou");
@@ -2557,7 +2566,6 @@ async function run() {
       await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
       await esperarLista(cdp);
       await abrirPrimeiroAnuncio(cdp);
-      await clicar(cdp, "#am-det-margem summary");
       await waitFor(cdp, `(function(){
         var b = document.querySelector('#am-det-margem-body');
         return b && /Custo do produto/.test(b.textContent); })()`, "o ladder inicial não carregou");
@@ -2603,7 +2611,6 @@ async function run() {
       await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
       await esperarLista(cdp);
       await abrirPrimeiroAnuncio(cdp);
-      await clicar(cdp, "#am-det-margem summary");
       await waitFor(cdp, `(function(){
         var b = document.querySelector('#am-det-margem-body');
         return b && /Custo do produto/.test(b.textContent); })()`, "o ladder inicial não carregou");
@@ -2658,7 +2665,6 @@ async function run() {
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await esperarLista(cdp);
         await abrirPrimeiroAnuncio(cdp);
-        await clicar(cdp, "#am-det-margem summary");
         await waitFor(cdp, `(function(){
           var b = document.querySelector('#am-det-margem-body');
           return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
@@ -2699,7 +2705,6 @@ async function run() {
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await esperarLista(cdp);
         await abrirPrimeiroAnuncio(cdp);
-        await clicar(cdp, "#am-det-margem summary");
         await waitFor(cdp, `(function(){
           var b = document.querySelector('#am-det-margem-body');
           return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
@@ -2735,7 +2740,6 @@ async function run() {
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await esperarLista(cdp);
         await abrirPrimeiroAnuncio(cdp);
-        await clicar(cdp, "#am-det-margem summary");
         await waitFor(cdp, `(function(){
           var b = document.querySelector('#am-det-margem-body');
           return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
@@ -2775,7 +2779,6 @@ async function run() {
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await esperarLista(cdp);
         await abrirPrimeiroAnuncio(cdp);
-        await clicar(cdp, "#am-det-margem summary");
         await waitFor(cdp, `(function(){
           var b = document.querySelector('#am-det-margem-body');
           return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
@@ -2812,7 +2815,6 @@ async function run() {
         await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
         await esperarLista(cdp);
         await abrirPrimeiroAnuncio(cdp);
-        await clicar(cdp, "#am-det-margem summary");
         await waitFor(cdp, `(function(){
           var b = document.querySelector('#am-det-margem-body');
           return b && /Custo do produto/.test(b.textContent); })()`, "o ladder não carregou");
@@ -2977,7 +2979,6 @@ async function run() {
           return el && el.textContent.trim() === 'R$ 180,00';
         })()`, "o preço final simulado não foi exibido");
 
-        await clicar(cdp, "#am-det-margem summary");
         await waitFor(cdp, "document.querySelector('[data-acao=\"restaurar-simulacao-margem\"]')",
           "o botão '↺ real' não apareceu na composição");
         await clicar(cdp, '[data-acao="restaurar-simulacao-margem"]');

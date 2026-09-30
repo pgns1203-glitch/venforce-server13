@@ -54,9 +54,11 @@ function anuncio(conta) {
   const a = conta === "43"
     ? { item_id: "MLB-B1", titulo: TITULO_B, sku: "CF-B300", marca: "BrewCo", modelo: "B300", preco: 399.9, cliente_conta_id: 43, ml_user_id: "9002" }
     : { item_id: "MLB-A1", titulo: TITULO_A, sku: "FN-X200-PRT", marca: "Prime Audio", modelo: "X200", preco: 189.9, cliente_conta_id: 42, ml_user_id: "9001" };
+  if (semModeloComVariacoes) a.modelo = null;
   return {
     id: 1, cliente_id: 87, cliente_slug: "n97",
     item_id: a.item_id, titulo: a.titulo, sku: a.sku, marca: a.marca, modelo: a.modelo,
+    variations_count: semModeloComVariacoes ? 4 : 0,
     preco: a.preco, preco_original: precoOriginalAtivo ? 249.9 : null, moeda: "BRL", estoque: 42, vendidos: 187,
     status: "active", sub_status: null,
     listing_type_id: "gold_special", category_id: "MLB1055",
@@ -66,7 +68,7 @@ function anuncio(conta) {
     logistic_type: "fulfillment", is_full: true,
     attributes_json: [
       { id: "BRAND", name: "Marca", value: a.marca },
-      { id: "MODEL", name: "Modelo", value: a.modelo },
+      ...(a.modelo == null ? [] : [{ id: "MODEL", name: "Modelo", value: a.modelo }]),
       { id: "COLOR", name: "Cor", value: "Preto" },
       { id: "WEIGHT", name: "Peso", value: null },
       { id: "WARRANTY_TIME", name: "Garantia do fabricante", value: null },
@@ -117,6 +119,8 @@ let variationsCountAtivo = 0;        // > 0 = item legado com variations[] reais
 // testados em separado porque a causa raiz da tag divergente era exatamente
 // um lugar olhar só catalog_listing e o outro olhar catalog_listing||family_name.
 let catalogoModo = "nenhum";
+// Anúncio SEM modelo (MODEL ausente na ficha) e COM variações legadas — ver 7d.
+let semModeloComVariacoes = false;
 let detalheAtrasoPorItem = {};       // itemId -> ms
 let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
 let precoResultado = null;           // resposta forçada do PATCH /preco
@@ -912,6 +916,31 @@ async function run() {
       assert.ok(!/Catálogo/.test(texto), `não deveria sobrar menção a catálogo: ${texto}`);
     });
 
+    await check("7d — anúncio SEM modelo e COM variações: campo Modelo vazio, editável, e entra no salvar", async () => {
+      semModeloComVariacoes = true;
+      try {
+        await abrirComModo("nenhum");
+        await abrirPrimeiroAnuncio(cdp);
+        const info = await cdp.evaluate(`(function(){ var e = document.getElementById('am-det-modelo');
+          return { tag: e.tagName, readonly: e.readOnly, disabled: e.disabled, valor: e.value, ph: e.getAttribute('placeholder') }; })()`);
+        assert.strictEqual(info.tag, "INPUT");
+        assert.ok(!info.readonly && !info.disabled, "sem modelo (e com variações) o campo continua editável — nenhum bloqueio próprio");
+        assert.strictEqual(info.valor, "", "sem MODEL na ficha, o input nasce vazio (nunca 'null')");
+        assert.strictEqual(info.ph, "—");
+        await digitar(cdp, "#am-det-modelo", "Z10");
+        await waitFor(cdp, "document.getElementById('am-det-savebar')", "preencher o modelo não gerou pendência");
+        const barra = await cdp.evaluate("document.getElementById('am-det-savebar').innerText");
+        assert.ok(/Modelo/.test(barra), `a barra deveria nomear o Modelo: ${barra}`);
+        await clicar(cdp, '.am-det-modal [data-acao="descartar"]');
+        await waitFor(cdp, "!document.getElementById('am-det-savebar')", "descartar não limpou a pendência");
+      } finally {
+        semModeloComVariacoes = false;
+      }
+      // Volta ao estado que o 8 espera (anúncio tradicional aberto, igual ao fim do 7c).
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+    });
+
     await check("8 — alterações pendentes são detectadas e nomeadas", async () => {
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-savebar').length"), 0,
         "não deveria haver barra de alterações sem alteração nenhuma");
@@ -1009,6 +1038,37 @@ async function run() {
       assert.ok(!/não permite|depois da primeira venda/.test(barra), `sem afirmar regra fixa do ML: ${barra}`);
       assert.ok(barra.includes("Resposta original: “" + BIDS + "”"), `a mensagem crua do ML não pode sumir: ${barra}`);
       assert.ok(/Código: item\.title\.not_modifiable/.test(barra), barra);
+      assert.ok(!/salvas no anúncio/i.test(await textoModal(cdp)), "sem falso sucesso");
+      conteudoResultado = null;
+    });
+
+    await check("12c — ML recusa o MODELO: motivo real + código na barra, valor digitado preservado, sem falso sucesso", async () => {
+      corpos.length = 0;
+      const RECUSA = "Attribute [MODEL] is not modifiable.";
+      conteudoResultado = {
+        status: 200,
+        corpo: {
+          ok: false,
+          resultados: { modelo: {
+            ok: false, codigo: "item.attribute.not_modifiable", motivo: RECUSA,
+            detalhesMl: { status: 400, message: "Validation error", error: "validation_error", causa: null,
+              causas: [{ code: "item.attribute.not_modifiable", message: RECUSA, type: "error", references: ["item.attributes"] }] },
+          } },
+          anuncio: anuncio("42"), descricao: DESC_A, descricaoEstado: "ok", descricaoErro: null,
+        },
+      };
+      await digitar(cdp, "#am-det-modelo", "X999");
+      await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
+      await waitFor(cdp, "((document.getElementById('am-det-savebar')||{}).innerText||'').indexOf('do modelo') >= 0",
+        "a barra não mostrou a recusa do modelo");
+      const envio = corpos.find((c) => /\/conteudo/.test(c.url));
+      assert.strictEqual(envio.body.modelo, "X999", "o modelo alterado vai no MESMO PATCH /conteudo");
+      const barra = await cdp.evaluate("document.getElementById('am-det-savebar').innerText");
+      assert.ok(/Não foi possível salvar a alteração do modelo deste anúncio/.test(barra), barra);
+      assert.ok(barra.includes("Motivo informado pelo Mercado Livre: " + RECUSA), `o motivo real do ML deveria aparecer: ${barra}`);
+      assert.ok(/Código: item\.attribute\.not_modifiable/.test(barra), barra);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-modelo').value"), "X999",
+        "o texto do usuário não pode ser jogado fora por causa da recusa");
       assert.ok(!/salvas no anúncio/i.test(await textoModal(cdp)), "sem falso sucesso");
       conteudoResultado = null;
     });

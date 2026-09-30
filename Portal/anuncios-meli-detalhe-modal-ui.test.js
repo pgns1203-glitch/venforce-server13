@@ -322,8 +322,16 @@ async function check(name, fn) {
   console.log(`ok ${checks} - ${name}`);
 }
 
+// Texto visível do modal + o VALOR atual dos campos editáveis: título e
+// modelo moram em inputs (inclusive na coluna "Atual" da comparação com a
+// IA), cujo valor não entra no innerText.
 function textoModal(cdp) {
-  return cdp.evaluate("document.querySelector('.am-det-modal') ? document.querySelector('.am-det-modal').innerText : ''");
+  return cdp.evaluate(`(function(){
+    var m = document.querySelector('.am-det-modal');
+    if (!m) return '';
+    var valores = Array.prototype.map.call(m.querySelectorAll('input, textarea'), function (e) { return e.value; });
+    return m.innerText + ' | ' + valores.join(' | ');
+  })()`);
 }
 
 async function clicar(cdp, seletor, mensagem) {
@@ -885,6 +893,11 @@ async function run() {
 
       const modeloInfo = await cdp.evaluate("document.getElementById('am-det-modelo').readOnly");
       assert.ok(!modeloInfo, "modelo deveria continuar editável");
+      const colunaAtual = await cdp.evaluate(`({
+        titulo: document.getElementById('am-det-espelho-titulo').readOnly,
+        modelo: document.getElementById('am-det-espelho-modelo').readOnly })`);
+      assert.ok(colunaAtual.titulo, "a coluna 'Atual' da comparação com a IA obedece à MESMA trava do título");
+      assert.ok(!colunaAtual.modelo, "o modelo continua editável também na comparação com a IA");
     });
 
     await check("7b — family_name sem catalog_listing: NÃO mostra tag Catálogo, mas título continua protegido", async () => {
@@ -902,6 +915,11 @@ async function run() {
 
       const modeloInfo = await cdp.evaluate("document.getElementById('am-det-modelo').readOnly");
       assert.ok(!modeloInfo, "modelo deveria continuar editável");
+      const colunaAtual = await cdp.evaluate(`({
+        titulo: document.getElementById('am-det-espelho-titulo').readOnly,
+        modelo: document.getElementById('am-det-espelho-modelo').readOnly })`);
+      assert.ok(colunaAtual.titulo, "a coluna 'Atual' da comparação com a IA obedece à MESMA trava do título");
+      assert.ok(!colunaAtual.modelo, "o modelo continua editável também na comparação com a IA");
     });
 
     await check("7c — sem catalog_listing e sem family_name: anúncio tradicional, nada travado", async () => {
@@ -961,6 +979,58 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-descricao').value"), DESC_A);
     });
 
+    await check("9b — comparação com a IA: coluna 'Atual' de Título e Modelo é editável, é o MESMO rascunho do cabeçalho/Catálogo e vai no MESMO salvar", async () => {
+      const info = await cdp.evaluate(`(function(){
+        var t = document.getElementById('am-det-espelho-titulo'), m = document.getElementById('am-det-espelho-modelo');
+        return { tt: t.tagName, tro: t.readOnly, tmax: t.getAttribute('maxlength'), tv: t.value,
+                 mt: m.tagName, mro: m.readOnly, mv: m.value }; })()`);
+      assert.deepStrictEqual(info, { tt: "INPUT", tro: false, tmax: "60", tv: TITULO_A, mt: "INPUT", mro: false, mv: "X200" });
+
+      // Digitar na comparação espelha no cabeçalho/Catálogo (e vice-versa).
+      await digitar(cdp, "#am-det-espelho-titulo", "Título editado na comparação com a IA");
+      await digitar(cdp, "#am-det-modelo", "X200 Mini");
+      await waitFor(cdp, "document.getElementById('am-det-savebar')", "editar na comparação não gerou pendência");
+      const sync = await cdp.evaluate(`({
+        cab: document.getElementById('am-det-titulo').value,
+        espM: document.getElementById('am-det-espelho-modelo').value,
+        sujoT: document.getElementById('am-det-espelho-titulo').classList.contains('is-dirty'),
+        barra: document.getElementById('am-det-savebar').innerText })`);
+      assert.strictEqual(sync.cab, "Título editado na comparação com a IA", "o título do cabeçalho não acompanhou a comparação");
+      assert.strictEqual(sync.espM, "X200 Mini", "a coluna 'Atual' do modelo não acompanhou o campo do Catálogo");
+      assert.ok(sync.sujoT, "o campo da comparação precisa marcar a alteração pendente");
+      assert.ok(/2 altera/.test(sync.barra) && /Título/.test(sync.barra) && /Modelo/.test(sync.barra),
+        `um valor, duas vistas: são 2 alterações (Título, Modelo), nunca 4: ${sync.barra}`);
+
+      // "Usar sugestão" continua caindo no mesmo rascunho — e aparece nas duas vistas.
+      await clicar(cdp, '.am-det-modal [data-acao="usar-sugestao"][data-campo="titulo"]');
+      const sug = await cdp.evaluate(`[document.getElementById('am-det-titulo').value, document.getElementById('am-det-espelho-titulo').value]`);
+      assert.deepStrictEqual(sug, [SUG_TITULO_A, SUG_TITULO_A]);
+
+      // Salvar: o MESMO PATCH /conteudo de sempre, um campo por chave. A
+      // resposta forçada não confirma nada, para o estado seguir intacto.
+      corpos.length = 0;
+      const antesPedidos = pedidos.length;
+      conteudoResultado = { status: 200, corpo: { ok: false, motivo: "Resposta de teste (9b)." } };
+      await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/conteudo/, antesPedidos, "não saiu PATCH de conteúdo");
+      const envio = corpos.find((c) => /\/conteudo/.test(c.url));
+      assert.strictEqual(envio.metodo, "PATCH");
+      assert.strictEqual(envio.body.titulo, SUG_TITULO_A);
+      assert.strictEqual(envio.body.modelo, "X200 Mini");
+      assert.strictEqual(envio.body.descricao, undefined);
+      conteudoResultado = null;
+
+      // Descartar volta as DUAS vistas ao original.
+      await clicar(cdp, '.am-det-modal [data-acao="descartar"]');
+      await waitFor(cdp, "!document.getElementById('am-det-savebar')", "descartar não limpou a pendência");
+      const volta = await cdp.evaluate(`[document.getElementById('am-det-titulo').value, document.getElementById('am-det-espelho-titulo').value,
+        document.getElementById('am-det-modelo').value, document.getElementById('am-det-espelho-modelo').value]`);
+      assert.deepStrictEqual(volta, [TITULO_A, TITULO_A, "X200", "X200"]);
+      // O 10 procura o PATCH desde o início do log: não deixa o deste check lá.
+      pedidos.splice(antesPedidos);
+      corpos.length = 0;
+    });
+
     /* ── 10 a 12: salvar de verdade ───────────────────────────────────── */
 
     await check("10 — salvar usa o clienteSlug e a ClienteConta do contexto", async () => {
@@ -986,7 +1056,7 @@ async function run() {
       assert.ok(t.includes("X200 Pro"), `o modelo salvo deveria aparecer no detalhe: ${t.slice(0, 400)}`);
       assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-titulo').value"),
         "Fone TWS Prime X200 ANC 30h Bateria Preto");
-      const espelho = await cdp.evaluate("document.getElementById('am-det-espelho-titulo').innerText");
+      const espelho = await cdp.evaluate("document.getElementById('am-det-espelho-titulo').value");
       assert.strictEqual(espelho, "Fone TWS Prime X200 ANC 30h Bateria Preto",
         "a coluna 'Atual' da comparação com a IA precisa refletir o título salvo");
     });

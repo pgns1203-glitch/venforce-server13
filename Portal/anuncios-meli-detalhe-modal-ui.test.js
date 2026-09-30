@@ -770,6 +770,21 @@ async function run() {
       esperado.forEach((frag) => assert.ok(alvo.includes(frag.toLowerCase()), `sumiu do detalhe: "${frag}"`));
     });
 
+    await check("4f — Fotos ocupam a largura do modal: a grade não fica presa a 4 colunas estreitas", async () => {
+      const g = await cdp.evaluate(`(function(){
+        var grade = document.querySelector('.am-det-photos');
+        var secao = grade.closest('.am-det-section');
+        return {
+          colunas: getComputedStyle(grade).gridTemplateColumns.split(' ').length,
+          larguraGrade: grade.getBoundingClientRect().width,
+          larguraSecao: secao.getBoundingClientRect().width,
+          maxWidth: getComputedStyle(grade).maxWidth,
+        }; })()`);
+      assert.strictEqual(g.maxWidth, "none", "a grade de fotos não pode ter teto de largura");
+      assert.ok(g.larguraGrade >= g.larguraSecao - 1, `a grade (${g.larguraGrade}px) precisa ocupar a seção (${g.larguraSecao}px)`);
+      assert.ok(g.colunas >= 6, `na janela de 1440px cabem pelo menos 6 colunas de fotos (achei ${g.colunas})`);
+    });
+
     await check("4a — preço original aparece riscado quando há promoção; some quando não há", async () => {
       const comPromo = await cdp.evaluate("document.querySelector('.am-det-price small')");
       assert.ok(comPromo, "com preco_original truthy, o preço original deveria aparecer riscado");

@@ -2750,7 +2750,16 @@
       button.addEventListener("click", function () {
         var id = button.getAttribute("data-promo-apply");
         var promo = promoById(id);
-        if (promo) reviewPricing("PROMOTION", promo);
+        if (!promo) return;
+        // Alterar uma oferta ativa exige escolher o novo preço antes: abre o
+        // editor da oferta em vez de pré-visualizar o preço que já está lá.
+        var ps = state.pricing && state.pricing.promoSim;
+        var alterar = promo.escrita && promo.escrita.acao === "ALTERAR";
+        if (alterar && !(ps && ps.id === String(promo.id) && ps.status === "ok")) {
+          simulatePromotion(id);
+          return;
+        }
+        reviewPricing("PROMOTION", promo);
       });
     });
   }

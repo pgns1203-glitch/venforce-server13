@@ -417,6 +417,9 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
         gates.push(gate("promocao_preco", "PROMOCAO", "block", "Promoção sem preço sugerido", "Informe o preço promocional para simular."));
       } else if (promocao.precoOriginal !== null && promocao.precoOriginal !== undefined && novoPreco >= Number(promocao.precoOriginal)) {
         gates.push(gate("promocao_preco", "PROMOCAO", "block", "Preço promocional precisa ser menor que o original", `Original ${brl(promocao.precoOriginal)}.`));
+      } else if (escrita.acao === "ALTERAR" && mesmoPreco(novoPreco, m.precoAtual)) {
+        // Alterar a oferta ativa para o MESMO preço seria um PUT inócuo.
+        gates.push(gate("promocao_preco", "PROMOCAO", "block", "Novo preço da oferta igual ao atual", "Informe um preço diferente para alterar a oferta."));
       } else {
         gates.push(gate("promocao_preco", "PROMOCAO", "ok", "Preço promocional válido", "O Mercado Livre ainda valida a faixa permitida ao confirmar."));
       }

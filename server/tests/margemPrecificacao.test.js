@@ -449,6 +449,14 @@ cenario("SELLER_CAMPAIGN ativa (aplicada) → ALTERAR; NÃO APLICADA e PROGRAMAD
   assert.strictEqual(programada.promocao.escrita.suportada, false);
 });
 
+cenario("ALTERAR oferta ativa para o MESMO preço é bloqueado (PUT inócuo); preço diferente passa", async () => {
+  const promos = [promo({ id: "S1", tipo: "SELLER_CAMPAIGN", status: "started", statusExibicao: "ATIVA", precoFinal: 149.9 })];
+  const igual = await previewPromo(cenarioPromo({ promocoes: promos }), criarRepoMemoria(), "S1");
+  assert.strictEqual(gate(igual, "promocao_preco").tom, "block");
+  const diferente = await previewPromo(cenarioPromo({ promocoes: promos }), criarRepoMemoria(), "S1", { novoPreco: "139.90" });
+  assert.strictEqual(gate(diferente, "promocao_preco").tom, "ok");
+});
+
 cenario("tipo sem escrita (SMART): simula com retorno ML, mas bloqueia 'Somente simulação'", async () => {
   const c = cenarioPromo({ promocoes: [promo({ id: "SM1", tipo: "SMART", precoFinal: 139.9, subsidioMl: 7.5, meliPercentage: 5, sellerPercentage: 1.67 })] });
   const r = await previewPromo(c, criarRepoMemoria(), "SM1");

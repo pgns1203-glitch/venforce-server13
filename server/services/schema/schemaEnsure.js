@@ -214,6 +214,58 @@ async function ensureAnunciosMargemProjetadaSnapshotSchema(db = pool) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Central de Margem — trilha de precificação (margem_precificacao_aplicacoes).
+//
+// Diferente dos DDLs inline acima, a FONTE é o arquivo versionado
+// sql/migrations/20260930_margem_precificacao_aplicacoes.sql (lido daqui).
+//
+// SERIALIZADO entre instâncias: `CREATE TABLE IF NOT EXISTS` NÃO é seguro sob
+// concorrência no Postgres (duas sessões podem passar pelo "não existe" e a
+// segunda falha com 23505 em pg_type). Duas instâncias subindo juntas (deploy
+// com sobreposição) executariam exatamente isso. Por isso o DDL roda numa
+// transação que primeiro pega pg_advisory_xact_lock: a 2ª instância espera a
+// 1ª terminar e então encontra tudo criado (IF NOT EXISTS → no-op). O lock é
+// de transação (liberado no COMMIT/ROLLBACK), então não vaza em conexão do
+// pool. Dentro do processo, chamadas concorrentes compartilham a mesma
+// promessa (single-flight); falha não fica memorizada.
+const MARGEM_PRECIFICACAO_MIGRATION = "20260930_margem_precificacao_aplicacoes.sql";
+const MARGEM_PRECIFICACAO_LOCK_KEY = "vf:schema:margem_precificacao_aplicacoes";
+const margemPrecificacaoEmCurso = new WeakMap();
+
+function margemPrecificacaoDdl() {
+  return fs.readFileSync(path.join(migrationsDir, MARGEM_PRECIFICACAO_MIGRATION), "utf8");
+}
+
+async function aplicarMargemPrecificacaoSerializado(db) {
+  const ddl = margemPrecificacaoDdl();
+  // Pool real: uma conexão dedicada para a transação inteira. Client/fake de
+  // teste (sem connect): a própria `db` é a sessão.
+  const usaPool = typeof db.connect === "function" && typeof db.release !== "function";
+  const client = usaPool ? await db.connect() : db;
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [MARGEM_PRECIFICACAO_LOCK_KEY]);
+    await client.query(ddl);
+    await client.query("COMMIT");
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch (_) { /* conexão já pode ter caído */ }
+    throw err;
+  } finally {
+    if (usaPool && typeof client.release === "function") client.release();
+  }
+}
+
+async function ensureMargemPrecificacaoSchema(db = pool) {
+  const chave = db && typeof db === "object" ? db : pool;
+  const atual = margemPrecificacaoEmCurso.get(chave);
+  if (atual) return atual;
+  const promessa = aplicarMargemPrecificacaoSerializado(chave);
+  margemPrecificacaoEmCurso.set(chave, promessa);
+  promessa.catch(() => margemPrecificacaoEmCurso.delete(chave));
+  return promessa;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // BLOCO 18 — GOVERNANÇA DE MIGRATIONS (inventário legível por máquina)
 // ───────────────────────────────────────────────────────────────────────────
 // `auto: true`  → aplicada por um `ensure*` no boot (idempotente, aditiva).
@@ -301,6 +353,25 @@ const MIGRATIONS_INVENTARIO = [
     prerequisito: "nenhum (FKs para meli_anuncios/cliente_contas são guardadas por to_regclass)",
     rollback: "DROP TABLE anuncios_margem_projetada_snapshot (nenhum consumidor depende dela ainda)",
   },
+  {
+    arquivo: MARGEM_PRECIFICACAO_MIGRATION,
+    descricao:
+      "cria margem_precificacao_aplicacoes (trilha preview→aplicação da Central de Margem: " +
+      "fingerprint, claim/lease/fencing, auditoria, refresh durável) + índice parcial " +
+      "idx_promo_diag_conta_concluido em promocoes_diagnosticos (Oportunidades)",
+    tipo: "estrutural-aditiva",
+    auto: true,
+    runner: "schemaEnsure.ensureMargemPrecificacaoSchema",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito:
+      "nenhum (índice de promocoes_diagnosticos guardado por to_regclass). Serializado por " +
+      "pg_advisory_xact_lock: seguro com duas instâncias subindo ao mesmo tempo",
+    rollback:
+      "DROP TABLE margem_precificacao_aplicacoes; DROP INDEX idx_promo_diag_conta_concluido " +
+      "(nenhuma tabela existente é alterada)",
+    nota: "O .sql É a fonte do DDL (lido pelo runner), não uma cópia de documentação.",
+  },
 ];
 
 // Arquivos que QUALQUER runner automático tem permissão de aplicar. Usado por
@@ -312,6 +383,10 @@ module.exports = {
   ENTREGAS_CLIENTE_DDL,
   ensureAnunciosMargemProjetadaSnapshotSchema,
   ANUNCIOS_MARGEM_PROJETADA_SNAPSHOT_DDL,
+  ensureMargemPrecificacaoSchema,
+  margemPrecificacaoDdl,
+  MARGEM_PRECIFICACAO_MIGRATION,
+  MARGEM_PRECIFICACAO_LOCK_KEY,
   MIGRATIONS_INVENTARIO,
   MIGRATIONS_AUTO,
   migrationsDir,

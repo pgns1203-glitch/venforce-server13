@@ -92,3 +92,12 @@ CREATE TABLE IF NOT EXISTS promocoes_diagnostico_itens (
 
 CREATE INDEX IF NOT EXISTS idx_promo_diag_itens_diag
   ON promocoes_diagnostico_itens (diagnostico_id);
+
+-- Central de Margem / Oportunidades: "último diagnóstico concluído da conta"
+-- (WHERE cliente_id AND seller_id AND status='concluido' ORDER BY created_at
+-- DESC, id DESC LIMIT 1). O índice acima é por slug e não serve a ela. Mesmo
+-- índice que 20260930_margem_precificacao_aplicacoes.sql cria (guardado)
+-- quando esta tabela já existe no boot.
+CREATE INDEX IF NOT EXISTS idx_promo_diag_conta_concluido
+  ON promocoes_diagnosticos (cliente_id, seller_id, created_at DESC, id DESC)
+  WHERE status = 'concluido';

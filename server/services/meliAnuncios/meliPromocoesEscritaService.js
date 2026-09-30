@@ -67,7 +67,40 @@ function normalizarPrecoPromocao(bruto) {
   return { ok: true, valor: Math.round((n + Number.EPSILON) * 100) / 100 };
 }
 
-async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, precoNovo }) {
+function comPrazo(promessa, ms) {
+  if (!ms) return promessa;
+  let timer;
+  return Promise.race([
+    promessa,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`Leitura do Mercado Livre sem resposta em ${ms} ms.`);
+        err.name = "MlTimeoutError";
+        err.code = "ML_TIMEOUT";
+        err.enviado = false;
+        reject(err);
+      }, ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function ehTimeout(err) {
+  return Boolean(err && err.name === "MlTimeoutError");
+}
+
+/**
+ * Parâmetros OPCIONAIS (camada segura da Central de Margem; sem eles o fluxo
+ * é exatamente o de antes, que /anuncios usa):
+ *  - timeoutMs        prazo real da releitura e do POST/PUT
+ *  - antesDeEscrever  gancho chamado com a promoção RELIDA e a ação decidida
+ *                     (PARTICIPAR/ALTERAR) ANTES do POST/PUT; devolve
+ *                     { ok:true, deadlineAt } ou uma falha. É onde a Central
+ *                     exige que a promoção e a intenção sejam as do preview e
+ *                     confirma que ainda é dona do claim (fencing) — nunca
+ *                     transforma Participar em Alterar em silêncio.
+ * Timeout no POST/PUT volta como falha com `incerto:true`.
+ */
+async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, precoNovo, timeoutMs = null, antesDeEscrever = null }) {
   const v = normalizarPrecoPromocao(precoNovo);
   if (!v.ok) return falha(v.codigo, v.motivo);
 
@@ -75,7 +108,13 @@ async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, preco
   if (!id) return falha("ITEM_ID_AUSENTE", "Item sem identificador do Mercado Livre.");
 
   // Releitura ao vivo — nunca confia no status/tipo que o frontend guardou.
-  const lista = await listarPromocoesDoItem({ clienteId, itemId: id, mlUserId });
+  let lista;
+  try {
+    lista = await comPrazo(listarPromocoesDoItem({ clienteId, itemId: id, mlUserId }), timeoutMs);
+  } catch (err) {
+    if (ehTimeout(err)) return { ...falha("ML_TIMEOUT_LEITURA", "O Mercado Livre não respondeu a tempo antes da escrita. Nada foi enviado."), enviado: false };
+    throw err;
+  }
   const promo = lista.find((p) => String(p.id) === String(promotionId));
   if (!promo) {
     return falha(
@@ -117,19 +156,49 @@ async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, preco
 
   const metodo = podeAlterar ? "PUT" : "POST";
 
-  const writeResp = await mlFetch(
-    clienteId,
-    `/seller-promotions/items/${encodeURIComponent(id)}?app_version=v2`,
-    {
-      method: metodo,
-      body: JSON.stringify({
-        promotion_id: promotionId,
-        promotion_type: promo.tipo,
-        deal_price: v.valor,
-      }),
-      mlUserId,
+  let deadlineAt = null;
+  if (antesDeEscrever) {
+    let liberado;
+    try {
+      liberado = await antesDeEscrever({ promo, metodo, acao: podeAlterar ? "ALTERAR" : "PARTICIPAR" });
+    } catch (err) {
+      if (ehTimeout(err)) return { ...falha("ML_TIMEOUT_LEITURA", "O Mercado Livre não respondeu a tempo antes da escrita. Nada foi enviado."), enviado: false };
+      throw err;
     }
-  );
+    if (!liberado || liberado.ok !== true) {
+      return falha((liberado && liberado.codigo) || "ESCRITA_NAO_LIBERADA", (liberado && liberado.motivo) || "A escrita não foi liberada.");
+    }
+    deadlineAt = liberado.deadlineAt ?? null;
+  }
+
+  let writeResp;
+  try {
+    writeResp = await mlFetch(
+      clienteId,
+      `/seller-promotions/items/${encodeURIComponent(id)}?app_version=v2`,
+      {
+        method: metodo,
+        body: JSON.stringify({
+          promotion_id: promotionId,
+          promotion_type: promo.tipo,
+          deal_price: v.valor,
+        }),
+        mlUserId,
+        ...(timeoutMs ? { timeoutMs } : {}),
+        ...(deadlineAt != null ? { deadlineAt } : {}),
+      }
+    );
+  } catch (err) {
+    if (!ehTimeout(err)) throw err;
+    if (!err.enviado) {
+      return { ...falha(err.code || "ML_DEADLINE_EXCEEDED", "O prazo da escrita esgotou antes do envio. Nada foi enviado ao Mercado Livre."), enviado: false };
+    }
+    return {
+      ...falha("ML_TIMEOUT", "O Mercado Livre não respondeu a tempo. A promoção pode ter sido aplicada — confira o anúncio antes de tentar de novo."),
+      enviado: true,
+      incerto: true,
+    };
+  }
 
   if (!writeResp || !writeResp.ok) {
     return falha(

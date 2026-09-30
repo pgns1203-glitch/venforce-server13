@@ -411,19 +411,62 @@ async function run() {
       };
     `;
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: injection });
+    // Viewport de notebook comum (o padrão headless é 800×600).
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/central-margem.html?cliente=loja-teste` });
     await waitFor(cdp, "window.VFCentralMargemUi && window.VFCentralMargemUi.getState().data && !window.VFCentralMargemUi.getState().loading", "A Central não carregou");
+    // Evidência visual opcional (CM_SHOT_DIR=/caminho): nunca obrigatória no CI.
+    const shot = async (name) => {
+      if (!process.env.CM_SHOT_DIR) return;
+      await sleep(200);
+      const r = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(path.join(process.env.CM_SHOT_DIR, name + ".png"), Buffer.from(r.data, "base64"));
+    };
+    await shot("01-operacional");
 
     const sheetText = () => cdp.evaluate("document.getElementById('cm-table-host').innerText");
     const drawerText = () => cdp.evaluate("document.getElementById('cm-drawer-body').innerText");
     const rowCount = () => cdp.evaluate("document.querySelectorAll('#cm-table-host tbody tr[data-item-id]').length");
     const callCount = () => cdp.evaluate("window.__cmCalls.length");
 
-    await check("workspace carrega os 51 itens; página visual 1 mostra 50", async () => {
+    await check("workspace carrega os 51 itens; página visual 1 mostra 50 na visão OPERACIONAL (padrão)", async () => {
       assert.strictEqual(await rowCount(), 50);
       assert.ok((await cdp.evaluate("document.getElementById('cm-page-state').innerText")).includes("Leitura parcial"));
+      assert.strictEqual(await cdp.evaluate("window.VFCentralMargemUi.getState().view"), "operational");
+      const heads = await cdp.evaluate("Array.from(document.querySelectorAll('#cm-table-host thead th')).map(function(th){return th.textContent.trim().toLowerCase()})");
+      assert.strictEqual(heads.length, 8, "8 colunas operacionais: " + heads.join(" | "));
+      for (const h of ["produto", "preço", "margem proj.", "margem real.", "δ margem", "vendas / receita", "status"]) {
+        assert.ok(heads.includes(h), "falta coluna " + h + ": " + heads.join(" | "));
+      }
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host thead [data-source-select]').length"), 0, "composição técnica não domina a visão cotidiana");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host tbody [data-open-item]').length"), 50, "cada linha tem a affordance Precificar");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-compbar').hidden"), true);
+    });
+
+    await check("visão Composição preserva a planilha técnica (6 fontes + Margem + Estado + Diagnóstico)", async () => {
+      await cdp.evaluate("document.querySelector('[data-view=composition]').click()");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host thead [data-source-select]').length"), 6);
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host thead th').length"), 10, "10 colunas: Produto + 6 variáveis + Margem + Estado + Diagnóstico");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-compbar').hidden"), false, "presets aparecem só na Composição");
+    });
+
+    await check("topo compacto: margem/receita/lucro + prejuízo/margem baixa clicáveis; saúde dos dados recolhida", async () => {
+      const top = (await cdp.evaluate("document.getElementById('cm-kpis-top').innerText")).toLowerCase();
+      for (const t of ["margem realizada", "receita", "lucro", "produtos com venda", "prejuízo", "margem baixa"]) assert.ok(top.includes(t), top);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('#cm-kpis-top [data-financial-filter=LOSS] .cm-topk__value').textContent"), "1");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-summary-line').innerText")).includes("51 de 51 carregados"));
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-health').hidden"), true, "saúde é secundária: fechada por padrão");
+      assert.ok(await cdp.evaluate("document.getElementById('cm-health-dot').classList.contains('is-warn')"), "há não validados/suspeitos: ponto de atenção");
+      await cdp.evaluate("document.getElementById('cm-health-toggle').click()");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-health').hidden"), false);
+      assert.ok((await cdp.evaluate("document.getElementById('cm-health-issues').innerText")).includes("não validados"));
+      await cdp.evaluate("document.getElementById('cm-health-toggle').click()");
+      // O resumo inteiro (título, KPIs e linha de contexto) cabe numa faixa baixa;
+      // entre ele e a tabela só entram banners de problema (aqui: leitura parcial).
+      const alturaTopo = await cdp.evaluate("document.querySelector('.cm-top').getBoundingClientRect().height");
+      assert.ok(alturaTopo < 200, "resumo compacto (" + alturaTopo + "px)");
+      const entre = await cdp.evaluate("(function(){var top=document.querySelector('.cm-top').getBoundingClientRect().bottom;var sheet=document.querySelector('.cm-sheet').getBoundingClientRect().top;var banner=document.getElementById('cm-page-state').getBoundingClientRect().height;return sheet-top-banner;})()");
+      assert.ok(entre < 80, "sem blocos extras entre o resumo e a tabela (" + entre + "px)");
     });
 
     await check("cobertura aparece no contexto e no contador de resultados", async () => {
@@ -436,7 +479,7 @@ async function run() {
       const calls = await callCount();
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-LOSS\"]').click()");
       await cdp.evaluate("document.querySelector('[data-tab=evidence]').click()");
-      await cdp.evaluate("document.querySelector('[data-tab=audit]').click()");
+      await cdp.evaluate("document.querySelector('[data-tab=history]').click()");
       await cdp.evaluate("document.getElementById('cm-drawer-next').click()");
       assert.strictEqual(await callCount(), calls, "abrir o drawer disparou nova leitura");
       await cdp.evaluate("document.getElementById('cm-drawer-close').click()");
@@ -558,6 +601,16 @@ async function run() {
       await waitFor(cdp, "document.querySelectorAll('#cm-table-host tbody tr[data-item-id]').length === 50", "Busca não foi limpa");
     });
 
+    await check("divergências: resumo recolhido (total · críticas · revisar) e fila completa sob demanda", async () => {
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-divergences-body').hidden"), true, "fechada por padrão");
+      const resumo = await cdp.evaluate("document.getElementById('cm-divergence-count').innerText");
+      assert.ok(/\d+ divergênc/.test(resumo) && resumo.includes("crítica") && resumo.includes("revisar"), resumo);
+      await cdp.evaluate("document.getElementById('cm-divergences-toggle').click()");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-divergences-body').hidden"), false);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-divergences-toggle').getAttribute('aria-expanded')"), "true");
+      await cdp.evaluate("document.getElementById('cm-divergences-toggle').click()");
+    });
+
     await check("fila de divergências não repete a planilha e abre Evidências na variável certa", async () => {
       const head = (await cdp.evaluate("document.querySelector('#cm-divergences-host thead').innerText")).toLowerCase();
       assert.ok(head.includes("variável") && head.includes("impacto"), head);
@@ -602,51 +655,59 @@ async function run() {
       assert.strictEqual(await callCount(), calls, "trocar o tamanho da página visual não pode chamar o backend");
     });
 
-    await check("drawer tem Resumo, Cenário, Evidências e Auditoria", async () => {
-      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"]').click()");
+    await check("linha operacional: link de divergências abre o produto já em Evidências na variável", async () => {
+      await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
+      const link = await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"] [data-open-evidence]').textContent");
+      assert.ok(/1 divergência/.test(link), link);
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"] [data-open-evidence]').click()");
+      const state = await cdp.evaluate("({tab:window.VFCentralMargemUi.getState().drawerTab,variable:window.VFCentralMargemUi.getState().evidenceVariable,item:window.VFCentralMargemUi.getState().selectedItemId})");
+      assert.deepStrictEqual(state, { tab: "evidence", variable: "freight", item: "MLB-SUSPECT" });
+      await cdp.evaluate("document.getElementById('cm-drawer-close').click()");
+    });
+
+    await check("drawer abre em PRECIFICAR com resumo fixo e 3 abas (Precificar · Evidências · Histórico)", async () => {
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"] [data-open-item]').click()");
       await sleep(150);
-      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-drawer-tabs [data-tab]').length"), 4);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-drawer-tabs [data-tab]').length"), 3);
+      assert.strictEqual(await cdp.evaluate("window.VFCentralMargemUi.getState().drawerTab"), "pricing");
+      const resumo = (await cdp.evaluate("document.getElementById('cm-drawer-summary').innerText")).toLowerCase();
+      for (const t of ["preço atual", "margem projetada", "margem realizada", "vendas", "receita"]) assert.ok(resumo.includes(t), resumo);
+      assert.ok(/r\$\s99,90/.test(resumo), resumo);
 
-      // innerText já vem com o text-transform da Fundação aplicado.
       const lower = async () => (await drawerText()).toLowerCase();
-
       let body = await lower();
-      assert.ok(body.includes("leitura do motor"), body);
-      assert.ok(body.includes("variáveis que merecem atenção"), body);
-      assert.ok(body.includes("gates de segurança"), body);
-      assert.ok(body.includes("escrita real indisponível"), body);
-
-      await cdp.evaluate("document.querySelector('[data-tab=scenario]').click()");
-      body = await lower();
-      assert.ok(body.includes("composição do cenário"), body);
-      assert.ok(body.includes("override manual — apenas cenário."), body);
-      assert.ok(body.includes("resultado do cenário"), body);
+      assert.ok(body.includes("ajuste manual") && body.includes("novo preço"), body);
+      assert.ok(body.includes("promoções do mercado livre"), body);
+      assert.ok(body.includes("simulação avançada"), body);
+      // Sem API de precificação/conta no mock: degrada com explicação, nunca quebra.
+      assert.ok(body.includes("precificação indisponível nesta leitura"), body);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-pp-review').disabled"), true);
 
       await cdp.evaluate("document.querySelector('[data-tab=evidence]').click()");
       body = await lower();
-      assert.ok(body.includes("observedat"), body);
-      assert.ok(body.includes("effectiveat"), body);
+      assert.ok(body.includes("evidências por variável"), body);
+      for (const t of ["fonte selecionada", "alternativa", "diferença", "confiança"]) assert.ok(body.includes(t), body);
+      assert.ok(body.includes("observedat") && body.includes("effectiveat"), body);
       assert.ok(body.includes("não informado"), "effectiveAt inexistente deve aparecer como Não informado");
-      // A escolha do Motor (realizado) coexiste com a composição da planilha (projetado).
       assert.ok(body.includes("escolha do motor"), body);
 
-      await cdp.evaluate("document.querySelector('[data-tab=audit]').click()");
+      await cdp.evaluate("document.querySelector('[data-tab=history]').click()");
       body = await lower();
-      assert.ok(body.includes("rastro da leitura disponível nesta resposta"), body);
+      assert.ok(body.includes("histórico de precificação"), body);
+      assert.ok(body.includes("rastro desta leitura"), body);
       assert.ok(body.includes("não um log de eventos gravado"), body);
-      assert.ok(body.includes("snapshot persistido") && body.includes("não informado"), body);
-      await cdp.evaluate("document.querySelector('[data-tab=summary]').click()");
+      await cdp.evaluate("document.querySelector('[data-tab=pricing]').click()");
     });
 
-    await check("cenário recalcula com override local e sinaliza cenário incompleto", async () => {
-      await cdp.evaluate("document.querySelector('[data-tab=scenario]').click()");
-      await cdp.evaluate(`(function(){var i=document.querySelector('[data-scenario-value=price]');i.value='150';i.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await check("simulação avançada: override local recolhível, claramente hipotético, e cenário incompleto sem inventar zero", async () => {
       let body = (await drawerText()).toLowerCase();
+      assert.ok(await cdp.evaluate("!document.getElementById('cm-adv').open"), "recolhida por padrão");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-adv').textContent")).toLowerCase().includes("não grava na base"), "aviso de somente simulação");
+      await cdp.evaluate(`(function(){var i=document.querySelector('[data-scenario-value=price]');i.value='150';i.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+      body = (await drawerText()).toLowerCase();
       assert.ok(body.includes("alterada"), body);
-      assert.ok(/r\$\s150,00/.test(body), body);
+      assert.ok(await cdp.evaluate("document.getElementById('cm-adv').open"), "permanece aberta após editar");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-scenario-reset').disabled"), false);
-
-      // Sem custo o cenário não calcula — e não inventa zero.
       await cdp.evaluate(`(function(){var i=document.querySelector('[data-scenario-value=cost]');i.value='';i.dispatchEvent(new Event('change',{bubbles:true}));})()`);
       body = (await drawerText()).toLowerCase();
       assert.ok(body.includes("cenário incompleto"), body);
@@ -654,17 +715,18 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("window.VFCentralMargemUi.getState().scenario.price.manual"), false);
     });
 
-    await check("aplicação real de preço permanece desabilitada", async () => {
-      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-apply-scenario').disabled"), true);
+    await check("sem camada de precificação disponível, nenhum caminho de escrita é habilitado", async () => {
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-overlay').classList.contains('is-open')"), false);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-apply').disabled"), true);
       const html = await cdp.evaluate("document.documentElement.innerHTML");
-      assert.ok(!/method\s*:\s*["'](POST|PUT|PATCH)/i.test(html), "a página não pode conter verbo de escrita");
+      assert.ok(!/method\s*:\s*["'](POST|PUT|PATCH)/i.test(html), "a página não pode conter verbo de escrita inline");
     });
 
     await check("Mercado Pago e Extensão continuam explicitamente indisponíveis", async () => {
-      const strip = await cdp.evaluate("document.getElementById('cm-source-strip').innerText");
+      const strip = await cdp.evaluate("document.getElementById('cm-source-strip').textContent");
       assert.ok(strip.includes("Mercado Pago") && strip.includes("integração pendente"), strip);
       assert.ok(strip.includes("Extensão") && strip.includes("ingestão pendente"), strip);
-      await cdp.evaluate("document.querySelector('[data-tab=summary]').click()");
+      await cdp.evaluate("document.querySelector('[data-tab=evidence]').click()");
       const body = (await drawerText()).toLowerCase();
       assert.ok(body.includes("não integrado"), body);
       assert.ok(body.includes("recebimento líquido"), body);

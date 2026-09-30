@@ -492,11 +492,13 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-period-wrap').hidden"), false, "seletor de período visível no modo persistido");
     });
 
-    await check("linha mostra vendas e Projetado × Realizado do Motor; sem venda e realizado indisponível são explícitos", async () => {
+    await check("linha operacional mostra vendas, margem projetada × realizada e Δ do Motor; sem venda e realizado indisponível são explícitos", async () => {
       const vendido = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"]').innerText");
       assert.ok(vendido.includes("73 un") && vendido.includes("62 ped."), vendido);
-      const linhaCmp = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-cmp]').textContent");
-      assert.ok(/real\. 16,8%/.test(linhaCmp) && /-3,2 pp/.test(linhaCmp), `linha comparativa ausente: ${linhaCmp}`);
+      const real = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-cmp]').textContent");
+      assert.ok(/16,8%/.test(real), `margem realizada ausente: ${real}`);
+      const delta = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-drift]').textContent");
+      assert.ok(/-3,2 pp/.test(delta), `Δ margem ausente: ${delta}`);
       assert.ok(await cdp.evaluate("Boolean(document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-coverage-partial]'))"), "cobertura parcial sinalizada");
       const semVenda = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100001\"]').innerText");
       assert.ok(semVenda.includes("sem venda no período"), semVenda);
@@ -504,9 +506,10 @@ async function run() {
       const semCusto = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100002\"] [data-cm-cmp]').innerText");
       assert.strictEqual(semCusto, "realizado indisponível");
 
-      await cdp.evaluate("window.VFCentralMargemUi.openDrawer('C900-MLB100000')");
+      // O painel Projetado × Realizado mora em Evidências (Resumo virou o topo fixo do drawer).
+      await cdp.evaluate("window.VFCentralMargemUi.openDrawer('C900-MLB100000', 'evidence')");
       await waitFor(cdp, "document.querySelector('[data-cm-cmp-panel=\"COMPARABLE\"]')", "painel Projetado × Realizado não apareceu no drawer");
-      const painel = await cdp.evaluate("document.querySelector('[data-cm-cmp-panel=\"COMPARABLE\"]').closest('section').innerText");
+      const painel = await cdp.evaluate("document.querySelector('[data-cm-cmp-panel=\"COMPARABLE\"]').closest('section').textContent");
       for (const trecho of ["Projetado", "Realizado", "Desvio", "sem histórico", "-3,2 pp", "rateado", "Contraprova"]) {
         assert.ok(painel.toLowerCase().includes(trecho.toLowerCase()), `falta "${trecho}" no painel: ${painel}`);
       }
@@ -532,7 +535,7 @@ async function run() {
       await cdp.evaluate("(function(){var s=document.getElementById('cm-listing-status-filter');s.value='active';s.dispatchEvent(new Event('change'));})()");
       await waitFor(cdp, "window.__cmCalls.itens[window.__cmCalls.itens.length-1].statusAnuncio === 'active' && !window.VFCentralMargemUi.getState().loading", "filtro active não foi ao servidor");
       assert.ok((await cdp.evaluate("document.getElementById('cm-result-count').innerText")).includes("3749"));
-      assert.ok(await cdp.evaluate("Array.from(document.querySelectorAll('.cm-listing-status')).every(function(e){return e.innerText.indexOf('Ativo') !== -1;})"));
+      assert.ok(await cdp.evaluate("Array.from(document.querySelectorAll('#cm-table-host .cm-listing-status')).every(function(e){return e.innerText.indexOf('Ativo') !== -1;})"));
 
       await cdp.evaluate("(function(){var i=document.getElementById('cm-search');i.value='SKU-4997';i.dispatchEvent(new Event('input'));var s=document.getElementById('cm-financial-filter');s.value='LOSS';s.dispatchEvent(new Event('change'));})()");
       await waitFor(cdp, "window.__cmCalls.itens.some(function(c){return c.statusAnuncio==='active' && c.search==='SKU-4997' && JSON.stringify(c.status)==='[\"LOSS\"]';}) && !window.VFCentralMargemUi.getState().loading", "combinação active + busca + status financeiro não chegou ao servidor");
@@ -542,7 +545,7 @@ async function run() {
       await waitFor(cdp, "window.__cmCalls.itens[window.__cmCalls.itens.length-1].statusAnuncio === 'paused' && !window.__cmCalls.itens[window.__cmCalls.itens.length-1].search && !window.VFCentralMargemUi.getState().loading", "filtro paused não foi ao servidor");
       assert.ok((await cdp.evaluate("document.getElementById('cm-result-count').innerText")).includes("1249"));
       assert.ok((await cdp.evaluate("document.getElementById('cm-pagination').innerText")).includes("Página 1 de 25"));
-      assert.ok(await cdp.evaluate("Array.from(document.querySelectorAll('.cm-listing-status')).every(function(e){return e.innerText.indexOf('Pausado') !== -1;})"));
+      assert.ok(await cdp.evaluate("Array.from(document.querySelectorAll('#cm-table-host .cm-listing-status')).every(function(e){return e.innerText.indexOf('Pausado') !== -1;})"));
 
       await cdp.evaluate("(function(){var s=document.getElementById('cm-listing-status-filter');s.value='';s.dispatchEvent(new Event('change'));})()");
       await waitFor(cdp, "!window.__cmCalls.itens[window.__cmCalls.itens.length-1].statusAnuncio && !window.VFCentralMargemUi.getState().loading", "opção Todos não removeu o filtro");
@@ -552,10 +555,10 @@ async function run() {
     await check("status de anúncio nulo ou desconhecido aparece neutro e não quebra a linha", async () => {
       await cdp.evaluate("(function(){var i=document.getElementById('cm-search');i.value='SKU-NULL-STATUS';i.dispatchEvent(new Event('input'));})()");
       await waitFor(cdp, "window.__cmCalls.itens[window.__cmCalls.itens.length-1].search === 'SKU-NULL-STATUS' && !window.VFCentralMargemUi.getState().loading");
-      assert.ok((await cdp.evaluate("document.querySelector('.cm-listing-status').innerText")).includes("não informado"));
+      assert.ok((await cdp.evaluate("document.querySelector('#cm-table-host .cm-listing-status').innerText")).includes("não informado"));
       await cdp.evaluate("(function(){var i=document.getElementById('cm-search');i.value='SKU-UNKNOWN-STATUS';i.dispatchEvent(new Event('input'));})()");
       await waitFor(cdp, "window.__cmCalls.itens[window.__cmCalls.itens.length-1].search === 'SKU-UNKNOWN-STATUS' && !window.VFCentralMargemUi.getState().loading");
-      assert.ok((await cdp.evaluate("document.querySelector('.cm-listing-status').innerText")).includes("under_review"));
+      assert.ok((await cdp.evaluate("document.querySelector('#cm-table-host .cm-listing-status').innerText")).includes("under_review"));
       await cdp.evaluate("(function(){var i=document.getElementById('cm-search');i.value='';i.dispatchEvent(new Event('input'));})()");
       await waitFor(cdp, "!window.__cmCalls.itens[window.__cmCalls.itens.length-1].search && !window.VFCentralMargemUi.getState().loading");
     });

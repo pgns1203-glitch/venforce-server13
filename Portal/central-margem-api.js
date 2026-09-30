@@ -2266,6 +2266,99 @@
         });
     }
 
+    /* =====================================================================
+     * PRECIFICAÇÃO (camada segura da Central — /precificacao/*)
+     * O backend é a autoridade do cálculo: a tela só envia o preço proposto
+     * e o preço que MOSTROU ao operador (precoVisto, stale check). Nenhuma
+     * fórmula nova aqui. Recusa esperada chega como ok:false + `data`.
+     * ===================================================================== */
+    function precificacaoBase(slug) {
+      return "/operacao/central-margem/" + encodeURIComponent(slug) + "/precificacao";
+    }
+
+    function pricingResult(result, fallback) {
+      if (!result.ok) {
+        var erro = apiError(result, fallback);
+        erro.data = result.data || null;
+        return erro;
+      }
+      return Object.assign({ ok: true }, result.data);
+    }
+
+    function pricingBody(params) {
+      return {
+        clienteContaId: params.clienteContaId,
+        itemId: params.itemId,
+        tipo: params.tipo || "PRICE",
+        novoPreco: params.novoPreco === undefined ? null : params.novoPreco,
+        precoVisto: params.precoVisto === undefined ? null : params.precoVisto,
+        promotionId: params.promotionId || undefined,
+      };
+    }
+
+    /* Simulação ao vivo (digitação): não persiste nada, não escreve nada. */
+    function simulatePricing(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      return call(precificacaoBase(slug) + "/simular", { method: "POST", body: pricingBody(params), signal: signal })
+        .then(function (result) { return pricingResult(result, "Não foi possível simular este preço agora."); });
+    }
+
+    /* Preview confirmável: tudo relido ao vivo + intenção registrada + fingerprint. */
+    function previewPricing(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      return call(precificacaoBase(slug) + "/preview", { method: "POST", body: pricingBody(params), signal: signal })
+        .then(function (result) { return pricingResult(result, "Não foi possível gerar o preview."); });
+    }
+
+    /* Aplicar UM preview. A mesma chave de idempotência em retries nunca gera 2ª escrita. */
+    function applyPricing(params) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      var path = params.promotionId
+        ? "/operacao/central-margem/" + encodeURIComponent(slug) + "/promocoes/" + encodeURIComponent(params.promotionId) + "/aplicar"
+        : precificacaoBase(slug) + "/aplicar";
+      // A chave vai no CORPO (não em cabeçalho custom): não exige mudar a
+      // lista global de cabeçalhos CORS do servidor.
+      return call(path, {
+        method: "POST",
+        // fingerprint: o do preview que a tela mostrou — o backend recusa se
+        // não for exatamente o preview gerado (o id sozinho nunca basta).
+        body: { clienteContaId: params.clienteContaId, previewId: params.previewId, idempotencyKey: params.idempotencyKey, fingerprint: params.fingerprint },
+      }).then(function (result) { return pricingResult(result, "Não foi possível aplicar a alteração."); });
+    }
+
+    function getPricingApplication(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      return call(precificacaoBase(slug) + "/aplicacoes/" + encodeURIComponent(params.id) + buildQuery({ clienteContaId: params.clienteContaId }), { signal: signal })
+        .then(function (result) { return pricingResult(result, "Não foi possível consultar a aplicação."); });
+    }
+
+    function getPricingHistory(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      return call(precificacaoBase(slug) + "/historico" + buildQuery({ clienteContaId: params.clienteContaId, itemId: params.itemId }), { signal: signal })
+        .then(function (result) { return pricingResult(result, "Não foi possível carregar o histórico."); });
+    }
+
+    /* Promoções do ITEM ABERTO (nunca por linha da tabela). */
+    function getItemPromotions(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      return call(precificacaoBase(slug) + "/promocoes" + buildQuery({ clienteContaId: params.clienteContaId, itemId: params.itemId }), { signal: signal })
+        .then(function (result) { return pricingResult(result, "Não foi possível carregar as promoções do Mercado Livre."); });
+    }
+
+    /* Oportunidades da conta: fonte bulk persistida, zero chamadas ao ML. */
+    function getOpportunities(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      return call(precificacaoBase(slug) + "/oportunidades" + buildQuery({ clienteContaId: params.clienteContaId, periodo: params.periodo }), { signal: signal })
+        .then(function (result) { return pricingResult(result, "Não foi possível carregar as oportunidades."); });
+    }
+
     return {
       getClients: getClients,
       getCentral: getCentral,
@@ -2275,6 +2368,13 @@
       getSnapshotRealizado: getSnapshotRealizado,
       requestSnapshotRefresh: requestSnapshotRefresh,
       getSnapshotRefreshStatus: getSnapshotRefreshStatus,
+      simulatePricing: simulatePricing,
+      previewPricing: previewPricing,
+      applyPricing: applyPricing,
+      getPricingApplication: getPricingApplication,
+      getPricingHistory: getPricingHistory,
+      getItemPromotions: getItemPromotions,
+      getOpportunities: getOpportunities,
       call: call,
     };
   }

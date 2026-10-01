@@ -281,6 +281,7 @@ async function run() {
       assert.strictEqual(r.status, 200, JSON.stringify(r.corpo));
       assert.strictEqual(r.corpo.ok, true);
       assert.strictEqual(iaChamadas.length, 1);
+      assert.strictEqual(iaChamadas[0].task, "legacy_optimizer", "F6 — task do otimizador legado");
       assert.ok(iaChamadas[0].prompt.includes("Solado de borracha. Fechamento em cadarço."), "descrição real não chegou ao prompt");
       assert.ok(!iaChamadas[0].prompt.includes("(sem descrição)"));
       const leitura = mlChamadas.find((c) => c.path === "/items/MLB-A/description");

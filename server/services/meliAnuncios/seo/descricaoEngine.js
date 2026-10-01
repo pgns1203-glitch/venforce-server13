@@ -30,6 +30,7 @@
 
 const seo = require("./seoText");
 const fatosProduto = require("./fatosProduto");
+const { AI_TASKS } = require("../../ai/aiTasks");
 
 const {
   ATRIBUTOS_ESTRUTURAIS,
@@ -676,6 +677,7 @@ async function gerarDescricao({ ficha, aiProvider }) {
   let ia;
   try {
     ia = await aiProvider.gerarJSON({
+      task: AI_TASKS.SEO_DESCRIPTION,
       system: SYSTEM,
       prompt: montarPrompt(ficha),
       maxTokens: 1800,

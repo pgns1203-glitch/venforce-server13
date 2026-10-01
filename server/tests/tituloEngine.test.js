@@ -309,6 +309,12 @@ const okIa = (titulos, extra = {}) => ({ ok: true, provider: "anthropic", model:
     assert.strictEqual(p.chamadas.length, 1, "uma chamada ao LLM por clique");
   });
 
+  await check("F6 — a chamada ao aiProvider informa a task seo_title", async () => {
+    const p = providerCom(okIa(BONS));
+    await engine.gerarTitulos({ fatos: FATOS, aiProvider: p });
+    assert.strictEqual(p.chamadas[0].task, "seo_title");
+  });
+
   await check("o prompt traz só fatos (sem SKU), pede 8 títulos e NÃO pede nota", async () => {
     const p = providerCom(okIa(BONS));
     await engine.gerarTitulos({ fatos: FATOS, aiProvider: p });

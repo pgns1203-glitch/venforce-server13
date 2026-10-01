@@ -24,6 +24,7 @@
 
 const seo = require("./seoText");
 const fatosProduto = require("./fatosProduto");
+const { AI_TASKS } = require("../../ai/aiTasks");
 
 const LIMITE_PADRAO = 60;
 const CANDIDATOS_PEDIDOS = 8;
@@ -421,6 +422,7 @@ async function gerarTitulos({ fatos, aiProvider }) {
   let ia;
   try {
     ia = await aiProvider.gerarJSON({
+      task: AI_TASKS.SEO_TITLE,
       system: SYSTEM,
       prompt: montarPrompt(fatos),
       maxTokens: 1200,

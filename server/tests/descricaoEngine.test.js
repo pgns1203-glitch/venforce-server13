@@ -389,6 +389,7 @@ async function run() {
     assert.deepStrictEqual(r.fatosUsados.map((x) => x.id), USADOS, "IDs deduplicados, na ordem");
     assert.deepStrictEqual(r.fatosUsados[0], { id: "brand", label: "Marca", value: "Molekinho" });
     assert.strictEqual(prov.chamadas.length, 1, "uma chamada por geração");
+    assert.strictEqual(prov.chamadas[0].task, "seo_description", "F6 — task informada ao aiProvider");
     assert.ok(prov.chamadas[0].system.includes("NÃO INVENTE") && prov.chamadas[0].prompt.includes("[brand]"));
     ok("20. validação determinística e sem efeito colateral; caminho feliz = 1 chamada, sem score, fatos rastreáveis");
   }

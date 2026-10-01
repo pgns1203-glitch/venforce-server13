@@ -26,6 +26,7 @@ const db =
     : _dbModule.pool || _dbModule.default || _dbModule;
 
 const aiProvider = require("../ai/aiProvider");
+const { AI_TASKS } = require("../ai/aiTasks");
 const prompts = require("./otimizadorMeliPrompts");
 const anunciosService = require("./meliAnunciosService");
 const { mlFetch } = require("../../utils/mlClient");
@@ -416,6 +417,7 @@ async function otimizar({ clienteSlug, clienteContaId = null, itemId, tipo, user
   else if (tipo === "ficha_tecnica") maxTokens = 1800;
 
   const ia = await aiProvider.gerarJSON({
+    task: AI_TASKS.LEGACY_OPTIMIZER,
     system: prompts.SYSTEM_BASE,
     prompt: promptTexto,
     maxTokens,

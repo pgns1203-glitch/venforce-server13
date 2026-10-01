@@ -35,6 +35,13 @@ function getModel() {
   return process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
 }
 
+// Modelo padrão do provedor + de onde ele veio (para diagnóstico/log).
+function resolverModeloPadrao() {
+  return process.env.ANTHROPIC_MODEL
+    ? { model: process.env.ANTHROPIC_MODEL, origem: "ANTHROPIC_MODEL" }
+    : { model: DEFAULT_MODEL, origem: "DEFAULT_MODEL" };
+}
+
 // ---------------------------------------------------------------------------
 // aceitaTemperature — o modelo aceita o parâmetro `temperature`?
 //
@@ -102,7 +109,10 @@ function atrasoRetry(resultado) {
 // gerarTexto — chamada bruta ao Claude.
 //
 // Parâmetros:
-//   { system, prompt, maxTokens?, temperature? }
+//   { system, prompt, maxTokens?, temperature?, model? }
+//
+// `model` vem resolvido pelo aiProvider (modelo da task); ausente = getModel().
+// A regra de temperature (aceitaTemperature) vale para o modelo efetivo.
 //
 // Retorno padronizado (NUNCA lança — sempre devolve objeto):
 //   sucesso -> { ok:true,  texto, provider, model, usage, stopReason, tentativas }
@@ -119,7 +129,8 @@ function atrasoRetry(resultado) {
 async function gerarTexto(opts) {
   const { system, prompt, maxTokens, temperature } = opts || {};
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  const model = getModel();
+  const pedido = opts && typeof opts.model === "string" ? opts.model.trim() : "";
+  const model = pedido || getModel();
 
   if (!apiKey) {
     return {
@@ -256,6 +267,7 @@ async function chamarUmaVez({ apiKey, model, body }) {
 module.exports = {
   gerarTexto,
   getModel,
+  resolverModeloPadrao,
   aceitaTemperature,
   montarCorpo,
   PROVIDER,

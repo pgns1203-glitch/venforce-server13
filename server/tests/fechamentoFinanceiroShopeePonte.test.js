@@ -394,7 +394,9 @@ console.log("\n▸ Casos A–E — Model ID define o custo; SKU é apenas auxili
   eq("D: informação insuficiente mantém custo vazio", resultD.detailedRows[0].CMV, null);
   ok("D: candidatos mostram os dois Model IDs", resultD.unmatchedCosts[0].candidates.includes("MODEL-D1") && resultD.unmatchedCosts[0].candidates.includes("MODEL-D2"));
 
-  // E) Encontrado o Model ID, o item pai não pode virar fallback de custo.
+  // E) Encontrado o Model ID, o item pai não pode virar fallback de custo
+  // quando o anúncio tem OUTRAS variações (a Performance lista inclusive as
+  // sem venda): 127V e 220V podem custar diferente (ver caso B).
   const orderE = [linhaOrderAll({
     "ID do pedido": "CASE-E",
     "Nome do Produto": "Produto E",
@@ -403,18 +405,41 @@ console.log("\n▸ Casos A–E — Model ID define o custo; SKU é apenas auxili
     "Subtotal do produto": 100,
     "Preço acordado": 100,
   })];
-  const performanceE = [linhaPerformance({
-    "ID do Item": "ITEM-E",
-    "ID da Variação": "MODEL-E",
-    "Nome da Variação": "220V",
-    "SKU Principle": "SKU-E",
-    Produto: "Produto E",
-  })];
+  const performanceE = [
+    linhaPerformance({
+      "ID do Item": "ITEM-E",
+      "ID da Variação": "MODEL-E",
+      "Nome da Variação": "220V",
+      "SKU Principle": "SKU-E",
+      Produto: "Produto E",
+    }),
+    linhaPerformance({
+      "ID do Item": "ITEM-E",
+      "ID da Variação": "MODEL-E-127",
+      "Nome da Variação": "127V",
+      "SKU Principle": "SKU-E",
+      Produto: "Produto E",
+    }),
+  ];
   const resultE = processShopee(performanceE, [
     { id: "ITEM-E", Custo: 999, imposto: 0 },
   ], 0, 0, 0, orderE);
   eq("E: Model ID ausente na base não cai no custo do item pai", resultE.detailedRows[0].CMV, null);
   eq("E: pendência informa o Model ID exato", resultE.unmatchedCosts[0].value, "MODEL-E");
+  eq("E: pendência diz que o custo está só no pai", resultE.unmatchedCosts[0].reason, "cost_only_on_parent_item");
+
+  // E-bis) Única exceção: o anúncio tem UMA só variação na Performance — o
+  // pai É essa variação (regras completas em
+  // fechamentoFinanceiroShopeeParentItemCost.test.js).
+  const resultEUnica = processShopee([performanceE[0]], [
+    { id: "ITEM-E", Custo: 999, imposto: 0 },
+  ], 0, 0, 0, orderE);
+  eq("E-bis: variação única usa o custo do pai", resultEUnica.detailedRows[0].CMV, 999);
+  eq(
+    "E-bis: origem explícita do fallback",
+    resultEUnica.detailedRows[0]["Match de custo"],
+    "bridge_parent_item_single_model"
+  );
 
   const directE = processShopeeFinancialOrders({
     salesRowsRaw: [

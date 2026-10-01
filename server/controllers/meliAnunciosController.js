@@ -35,6 +35,7 @@ const marginEngine = require("../services/motorMargem/core/marginEngine");
 const { mlFetch } = require("../utils/mlClient");
 const { assertClienteNaCarteira } = require("../services/squads/authorizationService");
 const tituloEngine = require("../services/meliAnuncios/seo/tituloEngine");
+const termosComplementaresEngine = require("../services/meliAnuncios/seo/termosComplementaresEngine");
 const aiProvider = require("../services/ai/aiProvider");
 
 function extrairClienteContaId(valor) {
@@ -2809,6 +2810,83 @@ async function gerarTitulosSeo(req, res) {
 }
 
 // ----------------------------------------------------------------------------
+// POST /anuncios-meli/:itemId/seo/termos-complementares
+// body: { clienteSlug, clienteContaId?, tituloReferencia }
+//
+// Termos Complementares (SEO · F4R): termos factualizados do produto que o
+// título de referência (o RASCUNHO do título, não o persistido) ainda não
+// representa bem. Determinístico — não chama IA. ANÁLISE só leitura: não
+// escreve no Mercado Livre, não persiste nada e não tem relação com o MODEL
+// (que é dado factual do produto; as regras de escrita dele seguem no
+// PATCH /conteudo). Por isso catálogo/família/PARENT_PK não bloqueiam aqui.
+//
+// Ordem: tituloReferencia → cliente → anúncio → conta (resolverContaDoAnuncio,
+// F1) → nome da categoria (cache do /seo/titulos; falha = analisa sem ele).
+//
+// Respostas:
+//   200 { ok:true, termos:[…], excluidos:[…] }   (termos:[] = nada a complementar)
+//   400 SEM_CLIENTE / TITULO_REFERENCIA_INVALIDO · 404 cliente/anúncio
+//   403/409 de conta (mesmos códigos do /seo/titulos)
+// ----------------------------------------------------------------------------
+const TITULO_REFERENCIA_MAX = 200;
+
+async function gerarTermosComplementaresSeo(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    if (!body.clienteSlug) {
+      return res.status(400).json({ ok: false, codigo: "SEM_CLIENTE", motivo: "Informe o clienteSlug." });
+    }
+    // Os termos complementam o título que o usuário pretende salvar — sem ele
+    // não há referência. Nunca cai em silêncio para o título persistido.
+    const tituloReferencia = typeof body.tituloReferencia === "string" ? body.tituloReferencia.trim() : "";
+    if (!tituloReferencia || tituloReferencia.length > TITULO_REFERENCIA_MAX) {
+      return res.status(400).json({
+        ok: false, codigo: "TITULO_REFERENCIA_INVALIDO",
+        motivo: "Informe o título de referência (o título atual do rascunho).",
+      });
+    }
+
+    const cliente = await anunciosService.resolverCliente(body.clienteSlug);
+    if (!cliente) return res.status(404).json({ ok: false, codigo: "NO_CLIENT", motivo: "Cliente não encontrado." });
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false, codigo: "NO_ITEM",
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let conta;
+    try {
+      conta = await anunciosService.resolverContaDoAnuncio({
+        clienteId: cliente.id,
+        anuncio,
+        clienteContaId: extrairClienteContaId(body.clienteContaId),
+        requireUsableGrant: false,
+      });
+    } catch (err) {
+      if (!err.statusCode) throw err;
+      const corpo = { ok: false, codigo: err.code || "ERRO_CONTA", motivo: err.message };
+      if (Array.isArray(err.contas)) corpo.contas = err.contas;
+      return res.status(err.statusCode).json(corpo);
+    }
+
+    const categoria = await carregarCategoria(cliente.id, anuncio.category_id, conta.mlUserId);
+    const resultado = termosComplementaresEngine.gerarTermosComplementares({
+      anuncio,
+      tituloReferencia,
+      categoriaNome: categoria ? categoria.nome : null,
+    });
+    return res.json(resultado);
+  } catch (err) {
+    console.error("[anuncios-meli] gerarTermosComplementaresSeo:", err.message);
+    return res.status(500).json({ ok: false, codigo: "ERRO_INTERNO", motivo: "Erro interno ao analisar os termos complementares." });
+  }
+}
+
+// ----------------------------------------------------------------------------
 // GET /anuncios-meli/:itemId/otimizacoes?clienteSlug=&clienteContaId=&tipo=
 // Histórico de sugestões já geradas para um anúncio.
 // ----------------------------------------------------------------------------
@@ -3195,6 +3273,7 @@ module.exports = {
   marcarRevisado,
   otimizar,
   gerarTitulosSeo,
+  gerarTermosComplementaresSeo,
   listarOtimizacoes,
   aprovarOtimizacao,
   criacaoStatus,

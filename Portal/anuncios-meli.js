@@ -4886,12 +4886,16 @@
     xhr.send(form);
   }
 
-  // ----- Título e Modelo: comparação com a IA ------------------------------
+  // ----- Título (comparação com a IA) e Modelo (dado factual) ---------------
   // A coluna "Atual" também é editável, mas NÃO é um segundo estado: os dois
   // inputs (este e o do cabeçalho/Catálogo) escrevem no MESMO
   // DET.rascunho[chave] e aplicarEstadosEdicao sincroniza o outro. Um valor,
   // duas vistas — salvar/descartar/reverter/usar sugestão continuam únicos.
   // O título aqui obedece à MESMA trava de catálogo/família do cabeçalho.
+  //
+  // O Modelo NÃO tem sugestão, geração nem IA (F4R): é dado factual/estrutural
+  // do produto (PARENT_PK em todas as categorias reais — auditoria F4.1), não
+  // superfície de SEO. Só edição manual, salva pelo mesmo PATCH /conteudo.
   function tituloEModeloHtml(a) {
     var tituloTravado = tituloTravadoPorCatalogo(a);
     return '<div class="am-det-section">' +
@@ -4916,16 +4920,14 @@
 
       '<div class="am-det-subhead">' +
         "<h4>Modelo</h4>" +
-        '<span id="am-det-status-modelo">' + chipOtimizacao("seo", "modelo") + "</span>" +
       "</div>" +
-      '<div class="am-det-compare am-det-compare--compacto" id="am-det-compare-modelo">' +
+      '<div class="am-det-compare am-det-compare--compacto am-det-compare--unico" id="am-det-compare-modelo">' +
         '<div class="am-det-compare__col">' +
-          '<div class="am-det-compare__label"><span>Atual · editável aqui ou no Catálogo</span></div>' +
+          '<div class="am-det-compare__label"><span>Dado do produto · editável aqui ou no Catálogo</span></div>' +
           '<input class="vf-input vf-input--sm am-det-compare__input" id="am-det-espelho-modelo" ' +
-            'aria-label="Modelo do anúncio (comparação com a IA)" placeholder="—" ' +
+            'aria-label="Modelo do anúncio" placeholder="—" ' +
             'data-campo="modelo" value="' + escapeAttr(DET.rascunho.modelo) + '" />' +
         "</div>" +
-        '<div class="am-det-compare__col" id="am-det-sug-modelo">' + sugestaoModeloHtml(AM.otimizacoes.seo) + "</div>" +
       "</div>" +
     "</div>";
   }
@@ -5073,21 +5075,6 @@
     var sug = DET && DET.titulosSeo.sugestoes[idx];
     if (!sug || tituloTravadoPorCatalogo(DET.anuncio)) return;
     usarSugestao("titulo", sug.titulo);
-  }
-
-  function sugestaoModeloHtml(otim) {
-    var cabeca = '<div class="am-det-compare__label">' + rotuloIa() + "</div>";
-    if (!otim || !otim.modelo_sugerido) {
-      return cabeca + vazioIaHtml("Gerar SEO", "seo");
-    }
-    return cabeca +
-      '<p class="am-det-readtext am-det-readtext--sug"><strong>' + escapeHtml(otim.modelo_sugerido) + "</strong></p>" +
-      acoesIaHtml([
-        btnGhost("usar-sugestao", "Usar sugestão", ' data-campo="modelo" data-fonte="modelo-sugerido"'),
-        btnGhost("copiar", "Copiar", ' data-fonte="modelo-sugerido"'),
-        btnGhost("aprovar-modelo", "Aprovar", ""),
-        btnGhost("gerar", "Gerar novamente", ' data-tipo="seo"'),
-      ]);
   }
 
   // Lista de melhorias (✓) e alertas (⚠) — mesmo desenho do canva.
@@ -6732,7 +6719,6 @@
       usarSugestao(alvo.getAttribute("data-campo"), textoDaFonte(alvo));
       return;
     }
-    if (acao === "aprovar-modelo") { aprovarModelo(); return; }
     if (acao === "aprovar-descricao") { aprovarDescricao(); return; }
     if (acao === "aprovar-ficha") { aprovarFicha(); return; }
   }
@@ -6741,9 +6727,7 @@
   // da descrição não precisam sobreviver a uma viagem pelo HTML.
   function textoDaFonte(botao) {
     var fonte = botao.getAttribute("data-fonte");
-    var seo = AM.otimizacoes.seo;
     var desc = AM.otimizacoes.descricao;
-    if (fonte === "modelo-sugerido") return seo ? seo.modelo_sugerido : "";
     if (fonte === "descricao-sugerida") return desc ? desc.descricao_sugerida : "";
     if (fonte === "descricao-atual") return DET.rascunho.descricao;
     if (fonte === "titulo-atual") return DET.rascunho.titulo;
@@ -6811,12 +6795,10 @@
     var attrs = tryParseJSON(DET.anuncio.attributes_json, []) || [];
     var alvos = [
       ["am-det-sug-titulo", function () { return sugestaoTitulosHtml(); }],
-      ["am-det-sug-modelo", function () { return sugestaoModeloHtml(AM.otimizacoes.seo); }],
       ["am-det-sug-descricao", function () { return sugestaoDescricaoHtml(AM.otimizacoes.descricao); }],
       ["am-det-sug-ficha", function () { return sugestaoFichaHtml(AM.otimizacoes.ficha_tecnica, attrs); }],
       ["am-det-foot-ficha", function () { return footFichaHtml(AM.otimizacoes.ficha_tecnica, attrs); }],
       ["am-det-status-seo", function () { return chipTitulos(); }],
-      ["am-det-status-modelo", function () { return chipOtimizacao("seo", "modelo"); }],
       ["am-det-status-ficha", function () { return chipOtimizacao("ficha_tecnica", "ficha"); }],
     ];
     alvos.forEach(function (par) {
@@ -6866,9 +6848,7 @@
   }
 
   function marcarChipsIa(tipo, html) {
-    var ids = tipo === "ficha_tecnica"
-      ? ["am-det-status-ficha"]
-      : tipo === "descricao" ? [] : ["am-det-status-modelo"];
+    var ids = tipo === "ficha_tecnica" ? ["am-det-status-ficha"] : [];
     ids.forEach(function (id) {
       var no = el(id);
       if (no) no.innerHTML = html;
@@ -6878,14 +6858,6 @@
   // ===========================================================================
   // Aprovação — decisão INTERNA. Não publica nada no Mercado Livre.
   // ===========================================================================
-  function aprovarModelo() {
-    var otim = AM.otimizacoes.seo;
-    if (!otim) { toast("Gere a sugestão primeiro."); return; }
-    var modelo = String((otim.modelo_sugerido || "")).trim();
-    if (!modelo) { toast("Modelo vazio."); return; }
-    aprovar(otim.id, { modeloAprovado: modelo }, "Modelo aprovado (decisão interna).");
-  }
-
   function aprovarDescricao() {
     var otim = AM.otimizacoes.descricao;
     if (!otim) { toast("Gere a sugestão primeiro."); return; }

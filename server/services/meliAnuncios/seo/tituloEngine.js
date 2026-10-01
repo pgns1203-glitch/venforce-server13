@@ -23,6 +23,7 @@
 // -----------------------------------------------------------------------------
 
 const seo = require("./seoText");
+const fatosProduto = require("./fatosProduto");
 
 const LIMITE_PADRAO = 60;
 const CANDIDATOS_PEDIDOS = 8;
@@ -33,47 +34,19 @@ const MIN_SUGESTOES = 4;
 const FORCA_ESTRUTURADO = 1;   // categoria, marca, modelo, valor de atributo, gênero do atributo
 const FORCA_FRACA = 0.6;       // título atual do vendedor, nome de atributo
 
-// Atributos que não descrevem o produto para um título (identificadores,
-// logística, garantia, condição). Prefixos valem para famílias inteiras.
-const ATRIBUTOS_IGNORADOS = new Set([
-  "SELLER_SKU", "GTIN", "EAN", "UPC", "ITEM_CONDITION", "PRODUCT_DATA_SOURCE", "EXCLUSIVE_CHANNEL",
-]);
-const PREFIXOS_IGNORADOS = ["PACKAGE_", "SHIPMENT_", "WARRANTY_"];
-
-// Atributos que costumam definir o produto (peso "alta" na cobertura).
-// Os demais atributos preenchidos entram com peso "média".
-const ATRIBUTOS_ESTRUTURAIS = new Set([
-  "LINE", "GENDER", "AGE_GROUP", "MATERIAL", "MAIN_MATERIAL", "VOLTAGE", "POWER",
-  "CAPACITY", "STYLE", "SPORT",
-]);
-
-const MARCAS_GENERICAS = new Set(["generica", "generico", "sem marca", "outra", "outras", "outros", "nenhuma"]);
-
-// Gênero: o atributo estruturado GENDER é evidência do público — mas só do
-// público que ele DIZ. Cada valor sustenta apenas as palavras que preservam
-// sexo E faixa etária: "Meninos" sustenta menino/masculino, nunca "homem"
-// (seria um claim etário falso); "Homens" sustenta homem/masculino, nunca
-// "menino". Valor sem idade ("Masculino") sustenta só "masculino".
-//
-// `proibe` = palavras que CONTRADIZEM o valor (sexo oposto, ou outra faixa
-// quando o valor tem faixa). Proibido vence até o título atual do vendedor.
-// Nada de sinônimo manual (garoto/garota ficaram de fora de propósito) e
-// nada de idade inferida (criança, infantil, adulto, juvenil) a partir de
-// GENDER. Lista explícita e pequena — não é ontologia.
-// Chaves já reduzidas pelo seoText (Meninos → menino, Mulheres → mulher).
-const GENERO_POR_VALOR = new Map([
-  ["menino", { sustenta: ["menino", "masculino"], proibe: ["menina", "feminino", "homem", "mulher"] }],
-  ["menina", { sustenta: ["menina", "feminino"], proibe: ["menino", "masculino", "homem", "mulher"] }],
-  ["homem", { sustenta: ["homem", "masculino"], proibe: ["mulher", "feminino", "menino", "menina"] }],
-  ["mulher", { sustenta: ["mulher", "feminino"], proibe: ["homem", "masculino", "menino", "menina"] }],
-  ["masculino", { sustenta: ["masculino"], proibe: ["feminino", "menina", "mulher"] }],
-  ["feminino", { sustenta: ["feminino"], proibe: ["masculino", "menino", "homem"] }],
-  ["unissex", { sustenta: ["unissex"], proibe: ["masculino", "feminino", "menino", "menina", "homem", "mulher"] }],
-]);
-
-// Palavras de nome de atributo que não carregam a característica em si
-// ("Com bolsos" → a característica é "bolsos", não "com").
-const PALAVRAS_DE_NOME_GENERICAS = new Set(["com", "sem", "tipo", "possui", "tem", "inclui", "e"]);
+// Regras factuais compartilhadas com os Termos Complementares (F4R): atributos
+// ignorados, atributos estruturais, marca genérica, booleano Sim/Não e a
+// tabela de GÊNERO. Ver fatosProduto.js.
+const {
+  ATRIBUTOS_ESTRUTURAIS,
+  PALAVRAS_DE_NOME_GENERICAS,
+  texto,
+  lerAtributos,
+  atributoIgnorado,
+  marcaGenerica,
+  valorBooleano,
+  regrasGenero,
+} = fatosProduto;
 
 // Conectivo permitido mesmo sem evidência ("Tênis com Cadarço").
 const NEUTROS = new Set(["com"]);
@@ -88,30 +61,6 @@ const PROMOCIONAIS = new Set([
 // Caracteres aceitos num título. Fora disso (★, |, !, emoji) é estrutura
 // inválida — o ML também desaconselha pontuação decorativa.
 const CARACTERES_VALIDOS = /^[\p{L}\p{N}\s\-.,/+&()'%°ºª"]+$/u;
-
-function texto(v) {
-  return v == null ? "" : String(v).trim();
-}
-
-function lerAtributos(anuncio) {
-  let attrs = anuncio && anuncio.attributes_json;
-  if (typeof attrs === "string") {
-    try { attrs = JSON.parse(attrs); } catch (e) { attrs = []; }
-  }
-  return Array.isArray(attrs) ? attrs.filter((a) => a && typeof a === "object") : [];
-}
-
-function atributoIgnorado(id) {
-  const s = String(id || "");
-  return ATRIBUTOS_IGNORADOS.has(s) || PREFIXOS_IGNORADOS.some((p) => s.startsWith(p));
-}
-
-function valorBooleano(valor) {
-  const n = seo.normalizeText(valor);
-  if (n === "sim") return true;
-  if (n === "nao") return false;
-  return null;
-}
 
 // Palavras de conteúdo de um texto, com a forma original (para o prompt).
 function palavras(textoFonte) {
@@ -162,7 +111,7 @@ function montarFatos(anuncio, opts = {}) {
 
   // Categoria (o "tipo de produto" mais confiável que temos sem chamada extra).
   const categoria = texto(opts.categoriaNome);
-  const categoriaUtil = categoria && !MARCAS_GENERICAS.has(seo.normalizeText(categoria));
+  const categoriaUtil = categoria && !marcaGenerica(categoria);
   if (categoriaUtil) {
     sustentar(categoria, FORCA_ESTRUTURADO);
     conceito("categoria", categoria, 3);
@@ -170,7 +119,7 @@ function montarFatos(anuncio, opts = {}) {
 
   // Marca — só quando é uma marca de verdade.
   const marca = texto((porId.get("BRAND") || {}).value || a.marca);
-  const marcaUtil = marca && !MARCAS_GENERICAS.has(seo.normalizeText(marca));
+  const marcaUtil = marca && !marcaGenerica(marca);
   if (marcaUtil) {
     sustentar(marca, FORCA_ESTRUTURADO);
     conceito("marca", marca, 3);
@@ -223,17 +172,14 @@ function montarFatos(anuncio, opts = {}) {
     if (id === "GENDER") {
       // "Meninos e Meninas": une o que cada valor sustenta; só é proibido o
       // que NENHUM deles sustenta (ali, homem/mulher).
-      const regras = seo.contentKeys(valor).map((k) => GENERO_POR_VALOR.get(k)).filter(Boolean);
-      if (regras.length) {
-        const sustentadas = new Set(regras.flatMap((r) => r.sustenta));
-        for (const k of sustentadas) {
+      const genero = regrasGenero(valor);
+      if (genero) {
+        for (const k of genero.sustentadas) {
           vocabulario.set(k, FORCA_ESTRUTURADO);
           estruturadas.add(k);
         }
-        for (const k of regras.flatMap((r) => r.proibe)) {
-          if (!sustentadas.has(k)) proibidosBrutos.set(k, k);
-        }
-        conceito("atributo", valor, 2, { familia: Array.from(sustentadas) });
+        for (const k of genero.proibidas) proibidosBrutos.set(k, k);
+        conceito("atributo", valor, 2, { familia: Array.from(genero.sustentadas) });
         continue;
       }
     }

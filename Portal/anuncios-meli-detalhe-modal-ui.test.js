@@ -134,6 +134,9 @@ let catalogoModo = "nenhum";
 let semModeloComVariacoes = false;
 let detalheAtrasoPorItem = {};       // itemId -> ms
 let titulosHandler = null;           // (itemId, body) => { status, corpo } do POST /seo/titulos
+// Todo POST /seo/modelo (removido na F4R) ou /seo/termos-complementares
+// (sem UI nesta fase). O front não pode chamar nenhum dos dois — ver 45e.
+const seoModeloOuTermosChamadas = []; // { caminho, body }
 let titulosAtrasoMs = 0;             // segura a resposta para o teste ver "Gerando…"
 const titulosChamadas = [];          // { itemId, body } de todo POST /seo/titulos
 let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
@@ -797,6 +800,15 @@ function wireInterception(cdp) {
         ? titulosHandler(itemId, body)
         : { status: 200, corpo: { ok: true, limite: 60, sugestoes: SUG_TITULOS, recebidos: 8, descartadas: 2, motivosDescarte: { NAO_COMPROVADO: 2 } } };
       await corpo(r.corpo, r.status);
+      return;
+    }
+
+    // Sentinela F4R: o Modelo não tem mais geração (POST /seo/modelo saiu) e os
+    // Termos Complementares ainda não têm UI. Qualquer chamada fica registrada
+    // e o teste 45e exige zero.
+    if (/^\/anuncios-meli\/[^/?]+\/seo\/(modelo|termos-complementares)(\?|$)/.test(caminho)) {
+      seoModeloOuTermosChamadas.push({ caminho, body });
+      await corpo({ ok: false, motivo: "Rota fora do contrato do front." }, 404);
       return;
     }
 
@@ -2120,13 +2132,11 @@ async function run() {
       assert.strictEqual(link.target, "_blank");
     });
 
-    await check("16 — gerar SEO continua funcionando", async () => {
-      const desde = pedidos.length;
-      await clicar(cdp, '.am-det-modal [data-acao="gerar"][data-tipo="seo"]');
-      await esperarPedido(/\/anuncios-meli\/MLB-A1\/otimizar/, desde, "o Gerar SEO não chamou o backend");
-      const envio = corpos.filter((c) => /\/otimizar/.test(c.url)).pop();
-      assert.strictEqual(envio.body.tipo, "seo");
-      assert.strictEqual(envio.body.clienteSlug, "n97");
+    await check("16 — o Modelo não tem geração: nem o 'Gerar SEO' legado nem o 'Gerar modelo' da F4", async () => {
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar\"][data-tipo=\"seo\"]').length"), 0,
+        "o 'Gerar SEO' legado saiu da tela");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar-modelo\"]').length"), 0,
+        "o 'Gerar modelo' saiu com a F4R");
     });
 
     await check("17 — gerar descrição continua funcionando", async () => {
@@ -2143,18 +2153,20 @@ async function run() {
       assert.strictEqual(corpos.filter((c) => /\/otimizar/.test(c.url)).pop().body.tipo, "ficha_tecnica");
     });
 
-    await check("19 — as aprovações internas de modelo/descrição/ficha continuam funcionando (e não publicam no ML)", async () => {
+    await check("19 — as aprovações internas de descrição/ficha continuam funcionando (e não publicam no ML)", async () => {
       const antesConteudo = pedidos.filter((u) => /\/conteudo/.test(u)).length;
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"aprovar-titulo\"]').length"), 0,
         "o título não tem mais 'Aprovar': as sugestões do Title Engine não são registro do otimizador legado");
-      for (const acao of ["aprovar-modelo", "aprovar-descricao", "aprovar-ficha"]) {
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"aprovar-modelo\"]').length"), 0,
+        "o Modelo não tem mais 'Aprovar': a sugestão do Model Engine não é registro do otimizador legado");
+      for (const acao of ["aprovar-descricao", "aprovar-ficha"]) {
         const desde = pedidos.length;
         await clicar(cdp, `.am-det-modal [data-acao="${acao}"]`, `botão ${acao} não existe`);
         await esperarPedido(/\/anuncios-meli\/otimizacoes\/\d+\/aprovar/, desde, `${acao} não chamou o endpoint de aprovação`);
       }
-      const corpoModelo = corpos.filter((c) => /\/aprovar/.test(c.url))[0];
-      assert.strictEqual(corpoModelo.body.modeloAprovado, "X200 Pro", "aprovar modelo precisa enviar o modelo sugerido");
-      assert.strictEqual(corpoModelo.body.clienteSlug, "n97", "aprovar leva o cliente (F1)");
+      const corpoDescricao = corpos.filter((c) => /\/aprovar/.test(c.url))[0];
+      assert.strictEqual(corpoDescricao.body.descricaoAprovada, SUG_DESC_A, "aprovar descrição precisa enviar a descrição sugerida");
+      assert.strictEqual(corpoDescricao.body.clienteSlug, "n97", "aprovar leva o cliente (F1)");
       assert.strictEqual(pedidos.filter((u) => /\/conteudo/.test(u)).length, antesConteudo,
         "APROVAR é decisão interna — não pode virar escrita no Mercado Livre");
     });
@@ -2164,12 +2176,13 @@ async function run() {
         Object.defineProperty(navigator, 'clipboard', { configurable: true,
           value: { writeText: function (t) { window.__copiado.push(t); return Promise.resolve(); } } }); })()`);
       const alvos = await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"copiar\"], .am-det-modal [data-acao=\"copiar-ficha\"]').length");
-      assert.ok(alvos >= 4, `esperava vários pontos de cópia, achei ${alvos}`);
+      // 3 desde a F4: o "Copiar" do modelo_sugerido legado saiu com o Model Engine.
+      assert.ok(alvos >= 3, `esperava vários pontos de cópia, achei ${alvos}`);
       await cdp.evaluate(`(function(){ document.querySelectorAll('.am-det-modal [data-acao="copiar"], .am-det-modal [data-acao="copiar-ficha"]')
         .forEach(function (b) { b.click(); }); })()`);
       await sleep(200);
       const copiado = await cdp.evaluate("window.__copiado");
-      assert.ok(copiado.length >= 4, `nenhuma cópia registrada: ${JSON.stringify(copiado)}`);
+      assert.ok(copiado.length >= 3, `nenhuma cópia registrada: ${JSON.stringify(copiado)}`);
       assert.ok(copiado.some((t) => t && t.includes(SUG_DESC_A)), "copiar a descrição sugerida parou de funcionar");
       assert.ok(copiado.some((t) => t && /Peso: 38 g/.test(t)), "copiar a ficha como lista parou de funcionar");
     });
@@ -3470,19 +3483,19 @@ async function run() {
       titulosAtrasoMs = 0;
       await abrirComModo("nenhum");
       await abrirPrimeiroAnuncio(cdp);
-      await waitFor(cdp, "document.querySelector('#am-det-sug-modelo') && document.querySelector('#am-det-sug-modelo').innerText.indexOf('X200 Pro') >= 0",
-        "o histórico legado (Modelo) não carregou");
+      await waitFor(cdp, "document.querySelector('#am-det-sug-descricao') && document.querySelector('#am-det-sug-descricao').innerText.indexOf('ANC, 30h') >= 0",
+        "o histórico legado (Descrição) não carregou");
     }
     const colunaTitulo = () => cdp.evaluate("document.getElementById('am-det-sug-titulo').innerText");
 
-    await check("44a — Título oferece 'Gerar títulos'; Modelo continua no fluxo legado", async () => {
+    await check("44a — Título oferece 'Gerar títulos'; Modelo não tem coluna de sugestão", async () => {
       await abrirLimpo();
       const col = await colunaTitulo();
       assert.ok(/Nenhuma sugestão gerada ainda/.test(col), col);
       assert.ok(!col.includes(SUG_TITULO_A), "a sugestão legada de título não pode reaparecer na coluna nova");
       assert.ok(await cdp.evaluate("!!document.querySelector('#am-det-sug-titulo [data-acao=\"gerar-titulos\"]')"));
-      assert.ok(await cdp.evaluate("!!document.querySelector('#am-det-sug-modelo [data-acao=\"gerar\"][data-tipo=\"seo\"]')"),
-        "o Modelo segue com o 'Gerar' legado nesta fase");
+      assert.ok(await cdp.evaluate("!document.getElementById('am-det-sug-modelo')"),
+        "o Modelo é dado factual — sem coluna de sugestão (F4R)");
       assert.ok(/Aguardando geração/.test(await cdp.evaluate("document.getElementById('am-det-status-seo').innerText")));
     });
 
@@ -3572,6 +3585,70 @@ async function run() {
         assert.strictEqual(titulosChamadas.length, desde);
       }
       await abrirComModo("nenhum");
+    });
+
+    /* ── 45: Modelo = dado factual (SEO · F4R) ────────────────────────── */
+    // O Modelo saiu da superfície de SEO: sem geração, sem sugestão, sem IA.
+    // Continua editável (cabeçalho/Catálogo e espelho) e é salvo pelo MESMO
+    // PATCH /conteudo de sempre. Os Termos Complementares não têm UI ainda.
+
+    const valoresModelo = () => cdp.evaluate("[document.getElementById('am-det-modelo').value, document.getElementById('am-det-espelho-modelo').value]");
+
+    await check("45a — Modelo sem botão de geração, sem sugestão, sem 'Usar', sem chip de IA — mesmo com histórico legado de modelo_sugerido", async () => {
+      await abrirLimpo();
+      const bloco = await cdp.evaluate("document.getElementById('am-det-compare-modelo').innerText");
+      assert.ok(!bloco.includes("X200 Pro"), "o modelo_sugerido do histórico legado não pode aparecer: " + bloco);
+      assert.ok(!/Sugestão da IA|Gerar|Usar|termos?/i.test(bloco), bloco);
+      for (const sel of ["#am-det-sug-modelo", "#am-det-status-modelo", '[data-acao="gerar-modelo"]', '[data-acao="usar-modelo"]',
+        '[data-acao="aprovar-modelo"]', '[data-fonte="modelo-sugerido"]', '[data-campo="modelo"][data-acao="usar-sugestao"]']) {
+        assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('.am-det-modal ${sel.replace(/'/g, "\\'")}').length`), 0, sel);
+      }
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-compare-modelo .am-det-compare__col').length"), 1,
+        "uma coluna só: o dado do produto");
+      assert.ok(await cdp.evaluate("document.getElementById('am-det-compare-modelo').classList.contains('am-det-compare--unico')"));
+    });
+
+    await check("45b — Modelo continua editável pelo espelho e sincroniza com o cabeçalho", async () => {
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-espelho-modelo').readOnly"), false);
+      assert.deepStrictEqual(await valoresModelo(), ["X200", "X200"]);
+      await digitar(cdp, "#am-det-espelho-modelo", "X200 Lite");
+      assert.deepStrictEqual(await valoresModelo(), ["X200 Lite", "X200 Lite"]);
+      await waitFor(cdp, "document.getElementById('am-det-savebar')", "editar o Modelo precisa virar alteração pendente");
+    });
+
+    await check("45c — salvar o Modelo manual usa o PATCH /conteudo existente (só o modelo vai)", async () => {
+      const antes = pedidos.length;
+      conteudoResultado = { status: 200, corpo: { ok: false, motivo: "Resposta de teste (45c)." } };
+      await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/conteudo/, antes, "Salvar alterações não saiu");
+      const envio = corpos.filter((c) => /\/conteudo/.test(c.url)).pop();
+      assert.strictEqual(envio.body.modelo, "X200 Lite", "o salvar leva o modelo digitado");
+      assert.strictEqual(envio.body.titulo, undefined, "o título não mudou e não vai junto");
+      assert.deepStrictEqual(pedidos.slice(antes).filter((u) => /\/seo\/|\/otimizar|\/aprovar/.test(u)), [],
+        "salvar o Modelo não passa por SEO, otimizador ou aprovação");
+      conteudoResultado = null;
+      await clicar(cdp, '.am-det-modal [data-acao="descartar"]');
+      await waitFor(cdp, "!document.getElementById('am-det-savebar')", "descartar não limpou a pendência");
+      assert.deepStrictEqual(await valoresModelo(), ["X200", "X200"]);
+    });
+
+    await check("45d — mudar o título não mexe no Modelo nem chama nada de Modelo/termos", async () => {
+      const desde = pedidos.length;
+      await digitar(cdp, "#am-det-titulo", TITULO_A + " Preto");
+      await sleep(250);
+      assert.deepStrictEqual(await valoresModelo(), ["X200", "X200"]);
+      assert.deepStrictEqual(pedidos.slice(desde).filter((u) => /\/seo\/|\/otimizar|\/conteudo/.test(u)), []);
+      await clicar(cdp, '.am-det-modal [data-acao="descartar"]');
+      await waitFor(cdp, "!document.getElementById('am-det-savebar')", "descartar não limpou a pendência");
+    });
+
+    await check("45e — em todo o percurso, nenhum POST /seo/modelo ou /seo/termos-complementares; nenhum PATCH /conteudo levou termos ao Modelo", async () => {
+      assert.deepStrictEqual(seoModeloOuTermosChamadas, []);
+      const modelosEnviados = corpos.filter((c) => /\/conteudo/.test(c.url) && c.body && c.body.modelo !== undefined)
+        .map((c) => c.body.modelo);
+      const digitadosNoTeste = ["X200 Mini", "X200 Pro", "X999", "Z10", "X200 Lite", "X200"];
+      assert.deepStrictEqual(modelosEnviados.filter((m) => !digitadosNoTeste.includes(m)), [],
+        "todo modelo enviado foi digitado à mão por um teste: " + JSON.stringify(modelosEnviados));
     });
 
     await check("— nenhuma exceção de JS não tratada durante todo o percurso", async () => {

@@ -1131,3 +1131,120 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ── Rastreabilidade do lançamento (drawer) ─────────────────────────────
+   Registro = ficha do que está gravado; trilha e competências são leitura
+   sob demanda. Mesma escala tipográfica discreta do resto do drawer. */
+.vf-ph-drawer__data {
+  max-width: 12rem;
+}
+
+.vf-ph-registro,
+.vf-ph-competencias {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-3);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface-2);
+}
+
+.vf-ph-registro__titulo {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-ph-registro__lista {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--vf-sp-2) var(--vf-sp-4);
+  margin: 0;
+}
+
+.vf-ph-registro__lista dt {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-registro__lista dd {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text);
+}
+
+.vf-ph-trilha summary {
+  cursor: pointer;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-trilha__lista {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  margin: var(--vf-sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text);
+}
+
+.vf-ph-trilha__acao {
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-ph-trilha__valores,
+.vf-ph-trilha__nota {
+  display: block;
+  margin: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-competencias__lista {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vf-ph-competencias__lista li {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  min-height: 28px;
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-ph-competencias__lista li.is-atual {
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-ph-competencias__mes {
+  min-width: 4.5rem;
+  text-transform: capitalize;
+}
+
+.vf-ph-competencias__valor {
+  flex: 1;
+  color: var(--vf-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-competencias__atual {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+@media (max-width: 520px) {
+  .vf-ph-registro__lista {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

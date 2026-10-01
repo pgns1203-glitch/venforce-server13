@@ -648,9 +648,12 @@ function LinhaCliente({
   mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
   semanasContasPorCliente, carregarSemanasContas,
   colunas, onLancar, atualizacao, podeAtualizar, onAtualizar, onDispensar,
+  mostrarHistoricoCliente = true,
 }) {
   const aberto = expansao.clientesAbertos.has(cliente.id);
-  const historicoAberto = expansao.historicosAbertos.has(cliente.id);
+  // O histórico mensal é o snapshot CONSOLIDADO do cliente (Central/ML): numa
+  // seção Shopee/TikTok ele mostraria número de outro marketplace.
+  const historicoAberto = mostrarHistoricoCliente && expansao.historicosAbertos.has(cliente.id);
   const estado = mesesPorCliente[cliente.id];
   const estadoSemanasContas = semanasContasPorCliente[`${cliente.id}:${competencia}`];
   const colSpan = colunas.length + 3;
@@ -735,7 +738,7 @@ function LinhaCliente({
           Nenhuma conta/operação cadastrada — cadastre a operação em <a href="clientes.html">Clientes</a> para separar o número por conta.
         </LinhaEstado>
       )}
-      {aberto && (
+      {aberto && mostrarHistoricoCliente && (
         <LinhaHistorico
           cliente={cliente}
           aberto={historicoAberto}
@@ -868,6 +871,7 @@ export function TabelaHierarquica({
   semanasContasPorCliente = {}, carregarSemanasContas = () => {},
   atualizando, onLancar = () => {},
   atualizacoes = {}, podeAtualizar = false, onAtualizar = () => {}, onDispensarAtualizacao = () => {},
+  mostrarHistoricoCliente = true,
 }) {
   // `inicioGrupo` é só apresentação (divisor vertical entre grupos, do
   // cabeçalho ao corpo); a lista e a ordem das colunas não mudam.
@@ -995,6 +999,7 @@ export function TabelaHierarquica({
               podeAtualizar={podeAtualizar}
               onAtualizar={onAtualizar}
               onDispensar={onDispensarAtualizacao}
+              mostrarHistoricoCliente={mostrarHistoricoCliente}
             />
           ))}
         </tbody>

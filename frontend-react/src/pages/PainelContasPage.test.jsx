@@ -66,6 +66,12 @@ function estado(over = {}) {
     squadsDisponiveis: [{ id: 7, nome: "Squad Alpha" }, { id: 9, nome: "Squad Beta" }],
     squadsDoUsuario: [],
     marketplacesDisponiveis: [{ codigo: "meli", rotulo: "Mercado Livre" }, { codigo: "shopee", rotulo: "Shopee" }],
+    secoesMarketplace: [
+      { codigo: "meli", rotulo: "Mercado Livre", fonte: "api", descricao: "Dados automáticos da API", clientes: 1 },
+      { codigo: "shopee", rotulo: "Shopee", fonte: "manual", descricao: "Lançamentos manuais e histórico", clientes: 1 },
+      { codigo: "tiktok", rotulo: "TikTok Shop", fonte: "manual", descricao: "Lançamentos manuais e histórico", clientes: 0 },
+    ],
+    visao: { codigo: null, rotulo: "Consolidado" },
     permissoes: { lancarManual: true, atualizarDados: false },
     competenciaAtual: "2026-09",
     atualizacoes: {}, atualizarCliente: vi.fn(), dispensarAtualizacao: vi.fn(),
@@ -97,13 +103,13 @@ describe("cabeçalho: a competência está escrita", () => {
 });
 
 describe("barra de filtros", () => {
-  it("expõe busca, competência, squad, status, marketplace e legado", () => {
+  it("expõe busca, competência, squad, status e legado (marketplace virou seção)", () => {
     render(<PainelContasPage />);
     expect(screen.getByRole("searchbox", { name: /buscar cliente/i })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /competência/i })).toHaveValue("2026-09");
     expect(screen.getByRole("combobox", { name: /filtrar por squad/i })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /filtrar por status/i })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: /filtrar por marketplace/i })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /filtrar por marketplace/i })).toBeNull();
     expect(screen.getByRole("checkbox", { name: /mostrar legado/i })).not.toBeChecked();
   });
 
@@ -123,21 +129,19 @@ describe("barra de filtros", () => {
     expect(e.setCompetencia).toHaveBeenCalledWith("2026-08");
     await userEvent.selectOptions(screen.getByRole("combobox", { name: /filtrar por status/i }), "sem_dados");
     expect(e.setStatus).toHaveBeenCalledWith("sem_dados");
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /filtrar por marketplace/i }), "shopee");
-    expect(e.setMarketplace).toHaveBeenCalledWith("shopee");
     await userEvent.click(screen.getByRole("checkbox", { name: /mostrar legado/i }));
     expect(e.setMostrarLegado).toHaveBeenCalledWith(true);
   });
 
-  it("esconde filtros sem efeito (um squad só, um marketplace só)", () => {
+  it("esconde filtros sem efeito (um squad só)", () => {
     mocks.usePainelContas.mockReturnValue(estado({
       squadsDisponiveis: [{ id: 7, nome: "Squad Alpha" }],
       marketplacesDisponiveis: [{ codigo: "meli", rotulo: "Mercado Livre" }],
     }));
     render(<PainelContasPage />);
     expect(screen.queryByRole("combobox", { name: /filtrar por squad/i })).toBeNull();
-    expect(screen.queryByRole("combobox", { name: /filtrar por marketplace/i })).toBeNull();
   });
+
 
   it('só oferece "Limpar filtros" quando há filtro aplicado', async () => {
     const limparFiltros = vi.fn();
@@ -399,5 +403,50 @@ describe("proteção de performance", () => {
     await userEvent.click(screen.getByRole("button", { name: /recolher tudo/i }));
     expect(carregarMeses).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /recolher tudo/i })).toBeNull();
+  });
+});
+
+describe("seções por marketplace", () => {
+  it("Consolidado é a aba padrão e ML/Shopee/TikTok aparecem com a contagem", () => {
+    render(<PainelContasPage />);
+    const abas = screen.getAllByRole("tab");
+    expect(abas.map((a) => a.textContent)).toEqual(["Consolidado", "Mercado Livre1", "Shopee1", "TikTok Shop0"]);
+    expect(screen.getByRole("tab", { name: /consolidado/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("secao-descricao")).toHaveTextContent(/soma de todas as contas/i);
+  });
+
+  it("clicar numa seção pede ao hook aquele marketplace; setas navegam", async () => {
+    const e = estado();
+    mocks.usePainelContas.mockReturnValue(e);
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("tab", { name: /^shopee/i }));
+    expect(e.setMarketplace).toHaveBeenCalledWith("shopee");
+    screen.getByRole("tab", { name: /consolidado/i }).focus();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(e.setMarketplace).toHaveBeenLastCalledWith("tiktok");
+  });
+
+  it("seção ativa explica a fonte e o rodapé diz que só aquelas contas somam", () => {
+    mocks.usePainelContas.mockReturnValue(estado({
+      marketplace: "shopee",
+      visao: { codigo: "shopee", rotulo: "Shopee", fonte: "manual", descricao: "Lançamentos manuais e histórico" },
+      clientes: [semDadosShopee()],
+    }));
+    render(<PainelContasPage />);
+    expect(screen.getByRole("tab", { name: /^shopee/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("secao-descricao")).toHaveTextContent(/lançamentos manuais e histórico/i);
+    expect(screen.getByText(/soma só as contas Shopee/i)).toBeInTheDocument();
+  });
+
+  it("seção vazia diz que não há operação daquele marketplace e oferece voltar ao consolidado", async () => {
+    const e = estado({
+      marketplace: "tiktok", clientes: [],
+      visao: { codigo: "tiktok", rotulo: "TikTok Shop", fonte: "manual", descricao: "Lançamentos manuais e histórico" },
+    });
+    mocks.usePainelContas.mockReturnValue(e);
+    render(<PainelContasPage />);
+    expect(screen.getByText(/nenhum cliente com operação TikTok Shop/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /ver consolidado/i }));
+    expect(e.setMarketplace).toHaveBeenCalledWith(null);
   });
 });

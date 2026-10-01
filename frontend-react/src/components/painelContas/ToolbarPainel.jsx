@@ -4,13 +4,16 @@
 // formulário: uma linha só, sem rótulo flutuante em cima de cada controle (o
 // próprio controle diz o que é), com rótulo acessível em `aria-label`.
 //
-//   Buscar · Competência · Squad · Status · Marketplace      [ ] Mostrar legado · Colunas
+//   Buscar · Competência · Squad · Status      [ ] Mostrar legado · Colunas
+//
+// Marketplace NÃO mora aqui: virou a SEÇÃO da tela (abas acima da barra,
+// SecoesMarketplace.jsx), porque muda o número, não só a lista.
 //
 // A COMPETÊNCIA é a peça central: a tabela inteira representa exatamente o
 // mês escolhido — nunca "o último mês que cada cliente tem".
 //
 // A faixa de baixo é o resumo da carteira NA COMPETÊNCIA, calculado pelo
-// servidor sobre a carteira filtrada (squad/busca/marketplace/legado), antes do
+// servidor sobre a carteira filtrada (seção/squad/busca/legado), antes do
 // filtro de status — por isso cada número também funciona como atalho para
 // filtrar. É uma linha de texto, não cards de KPI: a tabela continua dominante.
 // Leitura executiva: cobertura primeiro ("31 de 42 clientes com dados"), depois
@@ -82,7 +85,6 @@ export function ToolbarPainel({
   competencia, onCompetencia, competenciaPadrao,
   squadId, onSquad, squadsDisponiveis,
   status, onStatus,
-  marketplace, onMarketplace, marketplacesDisponiveis,
   mostrarLegado, onMostrarLegado,
   temFiltroAtivo, onLimpar,
   grupos, onAlternarGrupo,
@@ -90,9 +92,8 @@ export function ToolbarPainel({
   competenciaAtual = competenciaPadrao, podeAtualizar = false,
 }) {
   const competencias = useMemo(() => competenciasDisponiveis(competenciaPadrao, competencia), [competenciaPadrao, competencia]);
-  // Controle sem efeito não aparece: um squad só / um marketplace só.
+  // Controle sem efeito não aparece: um squad só.
   const mostrarFiltroSquad = squadsDisponiveis.length > 1 || squadId != null;
-  const mostrarFiltroMarketplace = marketplacesDisponiveis.length > 1 || marketplace != null;
   const r = resumoCarteira;
 
   return (
@@ -141,18 +142,6 @@ export function ToolbarPainel({
           >
             {OPCOES_STATUS.map((o) => <option key={o.valor} value={o.valor}>{o.rotulo}</option>)}
           </select>
-
-          {mostrarFiltroMarketplace && (
-            <select
-              className="vf-select vf-select--sm vf-ph-filtro"
-              aria-label="Filtrar por marketplace"
-              value={marketplace ?? ""}
-              onChange={(e) => onMarketplace(e.target.value === "" ? null : e.target.value)}
-            >
-              <option value="">Todos os marketplaces</option>
-              {marketplacesDisponiveis.map((m) => <option key={m.codigo} value={m.codigo}>{m.rotulo}</option>)}
-            </select>
-          )}
 
           {temFiltroAtivo && (
             <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={onLimpar}>

@@ -55,6 +55,16 @@ export function removerLancamentoManual(clienteId, contaId, competencia) {
   return requisitar(caminhoManual(clienteId, contaId, competencia), { metodo: "DELETE" });
 }
 
+// Rastreabilidade (só leitura): competências lançadas da conta e a trilha de
+// alterações de uma competência (criado/alterado/removido).
+export function listarLancamentosDaConta(clienteId, contaId, { signal } = {}) {
+  return requisitar(`/painel-contas/${encodeURIComponent(clienteId)}/contas/${encodeURIComponent(contaId)}/manual`, { signal });
+}
+
+export function listarHistoricoLancamento(clienteId, contaId, competencia, { signal } = {}) {
+  return requisitar(`${caminhoManual(clienteId, contaId, competencia)}/historico`, { signal });
+}
+
 // Atualização sob demanda (admin): POST dispara em segundo plano e responde
 // 202 com o job; GET devolve o progresso/desfecho. Ver
 // server/services/painelContas/painelContasAtualizacao.js.

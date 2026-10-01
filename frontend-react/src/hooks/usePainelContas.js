@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   listarPainelContas, listarMesesCliente, listarSemanasMes, listarSemanasContas,
   salvarLancamentoManual, removerLancamentoManual,
+  listarLancamentosDaConta, listarHistoricoLancamento,
   iniciarAtualizacaoCliente, obterAtualizacaoCliente,
 } from "../services/painelContasApi.js";
 import { ApiError } from "../services/apiClient.js";
@@ -358,12 +359,20 @@ export function usePainelContas() {
     setBusca("");
     setBuscaAplicada("");
     setStatus("todos");
-    setMarketplace(null);
     setMostrarLegado(false);
   }, [competenciaPadrao]);
 
+  // A seção de marketplace é VISTA (aba), não filtro: "Limpar filtros" não
+  // tira a pessoa da aba em que está.
   const temFiltroAtivo = competencia !== competenciaPadrao || squadId != null || busca.trim() !== ""
-    || status !== "todos" || marketplace != null || mostrarLegado;
+    || status !== "todos" || mostrarLegado;
+
+  // Leituras do drawer: sem cache — a trilha muda a cada salvar.
+  const lancamentosDaConta = useCallback((clienteId, contaId) => listarLancamentosDaConta(clienteId, contaId), []);
+  const historicoLancamento = useCallback(
+    (clienteId, contaId, comp) => listarHistoricoLancamento(clienteId, contaId, comp ?? competencia),
+    [competencia]
+  );
 
   const clientes = dados ? dados.clientes || [] : null;
 
@@ -380,6 +389,8 @@ export function usePainelContas() {
     squadsDisponiveis: dados?.squadsDisponiveis || [],
     squadsDoUsuario: dados?.squadsDoUsuario || [],
     marketplacesDisponiveis: dados?.marketplacesDisponiveis || [],
+    secoesMarketplace: dados?.secoesMarketplace || [],
+    visao: dados?.visao || null,
     permissoes: dados?.permissoes || { lancarManual: false, atualizarDados: false },
     competenciaAtual: dados?.competenciaAtual || competenciaPadrao,
     carregando, erro, recarregar,
@@ -389,7 +400,7 @@ export function usePainelContas() {
     mesesPorCliente, carregarMeses,
     semanasPorChave, carregarSemanas,
     semanasContasPorCliente, carregarSemanasContas,
-    salvarManual, removerManual,
+    salvarManual, removerManual, lancamentosDaConta, historicoLancamento,
     atualizacoes, atualizarCliente, dispensarAtualizacao,
   };
 }

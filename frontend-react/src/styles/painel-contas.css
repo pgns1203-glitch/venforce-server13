@@ -345,3 +345,30 @@
     width: 100%;
   }
 }
+
+/* ── Seções por marketplace ─────────────────────────────────────────────
+   Abas (vf-tabs da Fundação) acima da barra: a seção muda o NÚMERO, não só
+   a lista. A frase embaixo diz de onde vem o dado da seção. */
+.vf-ph-secoes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-1);
+}
+
+.vf-ph-secoes__n {
+  min-width: 1.5em;
+  padding: 0 6px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-surface-2);
+  border: 1px solid var(--vf-border);
+  font-size: var(--vf-fs-2xs);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-secoes__descricao {
+  margin: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}

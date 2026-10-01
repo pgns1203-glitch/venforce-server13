@@ -41,6 +41,7 @@
 }
 .vf-page-clientes .vf-clientes-mp-dot--meli { background: var(--vf-warning); }
 .vf-page-clientes .vf-clientes-mp-dot--shopee { background: var(--vf-danger); }
+.vf-page-clientes .vf-clientes-mp-dot--tiktok { background: var(--vf-text); }
 
 /* Coluna "Contas" da tabela — duas linhas compactas (ML / Shopee). A cor
    representa ESTADO (saudável/pendência/problema/inexistente), nunca o

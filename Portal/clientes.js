@@ -329,14 +329,36 @@ function linhaResumoHtml(marketplace, label, contas) {
     </div>`;
 }
 
+// TikTok Shop não tem integração (nem grant nem base definem a saúde): a
+// linha só aparece quando o cliente TEM operação TikTok, e diz o que ela é —
+// lançamento manual no Painel de Contas.
+function linhaResumoTiktokHtml(contas) {
+  const ativas = contas.filter((c) => c.ativo !== false).length;
+  if (!contas.length) return "";
+  const texto = ativas ? `${ativas} manual${ativas > 1 ? "is" : ""}` : "inativa";
+  return `
+    <div class="vf-clientes-resumo-linha ${ativas ? "is-ok" : "is-muted"}">
+      <span class="vf-clientes-resumo-label">TikTok</span>
+      <span class="vf-clientes-resumo-dot">${ativas ? "●" : "○"}</span>
+      <span class="vf-clientes-resumo-texto">${escapeHTML(texto)}</span>
+    </div>`;
+}
+
 function renderResumoContasCelula(el, contas) {
   const ml = contas.filter((c) => c.marketplace === "meli");
   const shopee = contas.filter((c) => c.marketplace === "shopee");
+  const tiktok = contas.filter((c) => c.marketplace === "tiktok");
   el.innerHTML = `
     <div class="vf-clientes-resumo">
       ${linhaResumoHtml("meli", "ML", ml)}
       ${linhaResumoHtml("shopee", "Shopee", shopee)}
+      ${linhaResumoTiktokHtml(tiktok)}
     </div>`;
+}
+
+const ROTULO_MARKETPLACE_CONTA = { meli: "Mercado Livre", shopee: "Shopee", tiktok: "TikTok Shop" };
+function rotuloMarketplaceConta(marketplace) {
+  return ROTULO_MARKETPLACE_CONTA[marketplace] || marketplace;
 }
 
 // Remoção de cliente (admin): o que o modal oferece é decidido ANTES,
@@ -632,6 +654,25 @@ function expansaoTemplate(slug) {
       <div class="vf-clientes-conta-list" data-list="shopee"></div>
       <p class="vf-clientes-mp-empty" data-empty="shopee" style="display:none;">Nenhuma conta Shopee cadastrada.</p>
     </section>
+
+    <section class="vf-clientes-mp-section" data-mp="tiktok">
+      <div class="vf-clientes-mp-section__header">
+        <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--tiktok"></span>TikTok Shop</h4>
+        <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="add-conta" data-mp="tiktok">+ Conta TikTok Shop</button>
+      </div>
+      <div class="vf-clientes-new-conta-form" data-form="tiktok" style="display:none;">
+        <div class="vf-field">
+          <label class="vf-field__label">Nome da conta</label>
+          <input type="text" class="vf-input" data-input="nome" placeholder="ex: TikTok 1">
+        </div>
+        <div class="vf-clientes-new-conta-actions">
+          <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="cancelar-conta" data-mp="tiktok">Cancelar</button>
+          <button type="button" class="vf-btn vf-btn--sm vf-btn--primary" data-action="salvar-conta" data-mp="tiktok">Criar conta</button>
+        </div>
+      </div>
+      <div class="vf-clientes-conta-list" data-list="tiktok"></div>
+      <p class="vf-clientes-mp-empty" data-empty="tiktok" style="display:none;">Nenhuma conta TikTok Shop cadastrada. Sem integração: os números entram como lançamento manual no Painel de Contas.</p>
+    </section>
   `;
 }
 
@@ -718,7 +759,7 @@ async function criarContaNaExpansao(slug, marketplace) {
   const form = container.querySelector(`[data-form="${marketplace}"]`);
   const input = form.querySelector('[data-input="nome"]');
   const nome = input.value.trim();
-  const label = marketplace === "meli" ? "Mercado Livre" : "Shopee";
+  const label = rotuloMarketplaceConta(marketplace);
   if (!nome) { setClientesFeedback(`Informe o nome da conta ${label}.`, "danger"); return; }
 
   try {
@@ -748,6 +789,7 @@ async function carregarContasExpandidas(slug) {
     if (stateEl) stateEl.textContent = "";
     renderContasMarketplace(container, "meli", contas.filter((c) => c.marketplace === "meli"));
     renderContasMarketplace(container, "shopee", contas.filter((c) => c.marketplace === "shopee"));
+    renderContasMarketplace(container, "tiktok", contas.filter((c) => c.marketplace === "tiktok"));
   } catch (err) {
     if (stateEl) stateEl.textContent = `Não foi possível carregar as contas: ${err.message}`;
   }
@@ -799,6 +841,13 @@ function renderContasMarketplace(container, marketplace, contas) {
       if (linhasMeta.length) {
         metaHtml = `<div class="vf-clientes-conta-card__meta">${linhasMeta.join(" · ")}</div>`;
       }
+    } else if (marketplace === "tiktok") {
+      if (conta.ativo !== false) {
+        statusHtml = `
+        <div class="vf-clientes-conta-card__status">
+          <span class="vf-status">● LANÇAMENTO MANUAL</span>
+        </div>`;
+      }
     } else if (conta.ativo !== false) {
       const semBase = !conta.base?.base_id;
       statusHtml = `
@@ -818,7 +867,7 @@ function renderContasMarketplace(container, marketplace, contas) {
       </div>
       ${statusHtml}
       ${metaHtml}
-      <div class="vf-clientes-conta-card__base">${baseHtml}</div>
+      ${marketplace === "tiktok" ? "" : `<div class="vf-clientes-conta-card__base">${baseHtml}</div>`}
       <div class="vf-clientes-conta-card__actions"></div>
     `;
 
@@ -851,7 +900,9 @@ function renderContasMarketplace(container, marketplace, contas) {
       }
     }
 
-    if (conta.ativo !== false) {
+    // Base por conta é contrato de meli/shopee (vincularBaseNaConta); TikTok
+    // segue no vínculo legado de base, fora deste card.
+    if (conta.ativo !== false && marketplace !== "tiktok") {
       const btnBase = document.createElement("button");
       btnBase.className = "vf-btn vf-btn--sm vf-btn--secondary";
       btnBase.textContent = conta.base?.base_id ? "Trocar base" : "Definir base";
@@ -944,7 +995,7 @@ async function abrirBasePicker(slug, conta) {
   const okBtn = document.getElementById("vf-base-picker-ok");
 
   document.getElementById("vf-base-picker-title").textContent = conta.base?.base_id ? "Trocar base" : "Definir base";
-  subtitle.textContent = `${conta.nome} · ${conta.marketplace === "meli" ? "Mercado Livre" : "Shopee"}`;
+  subtitle.textContent = `${conta.nome} · ${rotuloMarketplaceConta(conta.marketplace)}`;
   loading.style.display = "block";
   field.style.display = "none";
   empty.style.display = "none";

@@ -664,10 +664,25 @@ function buildShopeeStatusSummary(orderAllItems, perfBridge, costMap) {
 
 
 
-function parseCostRows(rows) {
-  const parsed = [];
+// "2.28812E+11": ID que o Excel converteu para notação científica. Os dígitos
+// finais foram perdidos — não há como reconstruir o ID com segurança.
+const SCIENTIFIC_NOTATION_ID = /^\d+(?:[.,]\d+)?e[+-]?\d+$/i;
 
-  for (const row of rows) {
+function parseCostRows(rows) {
+  return parseCostRowsDetailed(rows).parsed;
+}
+
+// Mesmo parse de sempre, mais o que ele descarta em silêncio: linhas sem
+// nenhum identificador (e o ID do item logo acima delas na planilha) e IDs
+// destruídos pela notação científica. Só diagnóstico/evidência — nenhuma
+// linha descartada vira custo.
+function parseCostRowsDetailed(rows) {
+  const parsed = [];
+  const unidentifiedRows = [];
+  const scientificNotationIds = [];
+  let lastIdentifiedItemId = null;
+
+  for (const [rowIndex, row] of (Array.isArray(rows) ? rows : []).entries()) {
     const itemIdRaw = findField(row, [
       "id",
       "id do item",
@@ -719,7 +734,24 @@ function parseCostRows(rows) {
     const modelId = normalizeShopeeId(modelIdRaw);
     const skuKey = normalizeMatchKey(skuRaw);
 
-    if (!id && !modelId && !skuKey) continue;
+    for (const rawId of [itemIdRaw, modelIdRaw]) {
+      const text = String(rawId ?? "").trim();
+      if (SCIENTIFIC_NOTATION_ID.test(text) && !scientificNotationIds.includes(text)) {
+        scientificNotationIds.push(text);
+      }
+    }
+
+    if (!id && !modelId && !skuKey) {
+      const hasContent =
+        !!row &&
+        typeof row === "object" &&
+        Object.values(row).some((value) => String(value ?? "").trim() !== "");
+      if (hasContent) {
+        unidentifiedRows.push({ rowIndex, belowItemId: lastIdentifiedItemId });
+      }
+      continue;
+    }
+    lastIdentifiedItemId = id || null;
 
     const costFieldRaw = findField(row, [
       "preco custo",
@@ -783,7 +815,7 @@ function parseCostRows(rows) {
     });
   }
 
-  return parsed;
+  return { parsed, unidentifiedRows, scientificNotationIds };
 }
 
 function isShopeeCostValueValid(rawValue) {
@@ -853,12 +885,18 @@ function calculateShopeeItem(sale, costRow) {
 
 
 function buildShopeeCostMap(costRowsRaw) {
-  const costRows = parseCostRows(costRowsRaw);
+  const { parsed: costRows, unidentifiedRows, scientificNotationIds } =
+    parseCostRowsDetailed(costRowsRaw);
   if (!costRows.length) {
     throw createBadRequestError("Não consegui identificar linhas válidas na planilha de custos.");
   }
 
   const costMap = new Map();
+  // Todas as linhas da base por ID do ITEM (nunca por SKU): o Map acima só
+  // guarda a primeira linha de cada chave, e o fallback do item pai no motor
+  // real precisa ver TODAS para recusar pai duplicado/conflitante ou item
+  // que já tem custo por variação.
+  const rowsByItemId = new Map();
   for (const row of costRows) {
     const keys = Array.isArray(row.matchKeys) ? row.matchKeys : [];
     for (const key of keys) {
@@ -866,7 +904,27 @@ function buildShopeeCostMap(costRowsRaw) {
       if (!normalized) continue;
       if (!costMap.has(normalized)) costMap.set(normalized, row);
     }
+    if (row.id) {
+      if (!rowsByItemId.has(row.id)) rowsByItemId.set(row.id, []);
+      rowsByItemId.get(row.id).push(row);
+    }
   }
+
+  const itemsWithUnidentifiedRowsBelow = new Set(
+    unidentifiedRows.map((entry) => entry.belowItemId).filter(Boolean)
+  );
+  // Não enumerável, como os índices da ponte: quem itera o Map continua
+  // vendo exatamente as mesmas chaves de antes.
+  Object.defineProperty(costMap, "costBaseIndex", {
+    value: Object.freeze({
+      rowsByItemId,
+      itemsWithUnidentifiedRowsBelow,
+      unidentifiedRowsCount: unidentifiedRows.length,
+      scientificNotationIds,
+    }),
+    enumerable: false,
+    writable: false,
+  });
 
   return costMap;
 }

@@ -55,9 +55,10 @@ os candidatos do SKU da variação.
 Ordem de resolução por linha (`resolveShopeeLineCost`):
 
 1. **Match direto** — se `variationId`/`modelId` existir no `Order.all`, somente
-   essa identidade é consultada; sua ausência na base não permite cair para item
-   pai, SKU ou ponte. Sem Model ID direto, seguem `itemId → productId →
-   skuVariation → skuPrinciple → skuMainRef → skuRefNumber → sku`.
+   essa identidade é consultada; sua ausência na base não permite cair para SKU
+   ou ponte, e só cai no item pai pelas regras do item 3. Sem Model ID direto,
+   seguem `itemId → productId → skuVariation → skuPrinciple → skuMainRef →
+   skuRefNumber → sku`.
 2. **Ponte** (só em MISS, e só quando a performance foi enviada):
    - `Número de referência SKU` consulta primeiro e exclusivamente o índice
      `SKU da Variação`;
@@ -69,8 +70,28 @@ Ordem de resolução por linha (`resolveShopeeLineCost`):
    - se o SKU exato não existir, o fallback histórico aceita somente adição ou
      remoção dos sufixos `-V` e `-0`; os nomes de produto/variação continuam
      sendo usados quando houver mais de um candidato.
-3. Encontrado um Model ID, o custo vem **exclusivamente** desse Model ID. Se ele
-   não existir na base, não há fallback para o ID do Item pai.
+3. Encontrado um Model ID, o custo vem desse Model ID. Se ele não existir na
+   base, o custo do ID do Item pai só é usado com **evidência** de que ele
+   representa a variação vendida (`bridge_parent_item_single_model`), e todas
+   estas condições são obrigatórias:
+   - o anúncio tem **um único** Model ID na performance (a exportação lista
+     inclusive as variações sem venda) e é o Model ID resolvido;
+   - o pai está na base pelo ID do item (nunca por SKU), com custo válido e
+     maior que zero;
+   - todas as linhas da base com esse ID concordam em custo e imposto, e
+     nenhuma delas é linha de variação (`model id` preenchido);
+   - não há linhas **sem ID** logo abaixo do pai na planilha (custo por
+     variação com o ID apagado, que o sistema não consegue endereçar);
+   - a quantidade explícita da variação não contradiz o kit do título
+     (`2 ...` num título sem kit, `Kit 2` num `Kit 4`).
+   Sem a performance não há como provar a variação única, então o pai nunca é
+   usado. Faltando qualquer evidência, a linha fica sem custo e a pendência sai
+   como `cost_only_on_parent_item`, com `parentItemId`, `parentCost` e
+   `blockedBy` (`multiple_variations_in_performance`,
+   `unidentified_rows_below_parent`, `pack_conflict`, `conflicting_parent_rows`,
+   `cost_base_has_variation_rows_for_item`, `parent_cost_invalid`,
+   `model_not_in_performance`). A correção é cadastrar o custo por ID da
+   Variação.
 4. Se ainda restarem vários Model IDs, o cálculo só prossegue quando **todos**
    existirem na base e tiverem custo e imposto numericamente idênticos. A
    identidade permanece informativamente ambígua, mas o resultado financeiro é
@@ -79,7 +100,13 @@ Ordem de resolução por linha (`resolveShopeeLineCost`):
 `summary.detailedRows["Match de custo"]` registra qual caminho resolveu:
 `direct_variation_id`, `direct_model_id`, `direct_item_id`, `direct_product_id`,
 `direct_sku`, `bridge_variation_id`, `bridge_item_id`,
-`bridge_equivalent_cost`, `miss`, `ambiguous`.
+`bridge_equivalent_cost`, `bridge_parent_item_single_model`, `miss`, `ambiguous`.
+
+Pendência com custo zero/vazio/inválido continua com o motivo
+`zero_cost_in_base`, agora com `costIssue` (`zero`, `empty` ou `invalid`).
+`summary.costBaseDiagnostics` lista o que a base perde no parse: linhas sem
+identificador (e os itens logo acima delas) e IDs em notação científica
+(`2.28812E+11`, dígitos perdidos pelo Excel — formatar a coluna como texto).
 
 **A ponte é SÓ identidade.** Nenhum número da performance (vendas, unidades,
 ticket, comissão estimada, taxa fixa) entra no motor real: receita, taxas,

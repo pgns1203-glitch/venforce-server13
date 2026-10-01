@@ -1886,20 +1886,51 @@ const SHOPEE_COST_GAP_REASON_LABEL = {
   ambiguous_bridge_candidates: "custos diferentes na base",
   zero_cost_in_base: "encontrado na base, mas sem custo cadastrado (0)",
   not_found_direct: "não encontrado na base de custos",
+  cost_only_on_parent_item: "custo só no item pai",
 };
+
+// zero_cost_in_base agora diz QUAL problema o custo tem.
+const SHOPEE_COST_ISSUE_LABEL = {
+  zero: "encontrado na base, mas com custo 0",
+  empty: "encontrado na base, mas com custo vazio",
+  invalid: "encontrado na base, mas com custo inválido (ex.: #N/A)",
+};
+
+// Por que o custo do item pai não pôde ser usado para a variação vendida.
+const SHOPEE_PARENT_BLOCK_LABEL = {
+  multiple_variations_in_performance: "o anúncio tem várias variações",
+  unidentified_rows_below_parent: "há linhas sem ID abaixo do pai na base",
+  pack_conflict: "a quantidade da variação não bate com o kit do título",
+  conflicting_parent_rows: "o pai aparece com custos diferentes na base",
+  cost_base_has_variation_rows_for_item: "a base já tem custo por variação neste anúncio",
+  parent_cost_invalid: "o custo do pai é 0, vazio ou inválido",
+  model_not_in_performance: "a variação não aparece na performance",
+};
+
+function shopeeCostGapReasonLabel(item) {
+  if (item?.reason === "zero_cost_in_base" && SHOPEE_COST_ISSUE_LABEL[item?.costIssue]) {
+    return SHOPEE_COST_ISSUE_LABEL[item.costIssue];
+  }
+  if (item?.reason === "cost_only_on_parent_item") {
+    const parent = item.parentItemId ? ` (ID Item ${item.parentItemId})` : "";
+    const why = SHOPEE_PARENT_BLOCK_LABEL[item.blockedBy];
+    return `custo só no item pai${parent}${why ? `; ${why}` : ""} — cadastre o custo desta variação`;
+  }
+  return SHOPEE_COST_GAP_REASON_LABEL[item?.reason] || "não encontrado";
+}
 
 // Mesmo diagnóstico tipado, em texto puro (para bullets/relatório sem HTML).
 // A tela mostra só IDs — nunca SKU ao lado de um ID já resolvido.
 function shopeeCostGapToPlainText(item) {
   const typeLabel = SHOPEE_COST_GAP_TYPE_LABEL[item?.type] || "ID";
-  const reasonLabel = SHOPEE_COST_GAP_REASON_LABEL[item?.reason] || "não encontrado";
+  const reasonLabel = shopeeCostGapReasonLabel(item);
   const value = String(item?.value ?? "—");
   return `${typeLabel}: ${value} — ${reasonLabel}`;
 }
 
 function renderShopeeCostGapItem(item) {
   const typeLabel = SHOPEE_COST_GAP_TYPE_LABEL[item?.type] || "ID";
-  const reasonLabel = SHOPEE_COST_GAP_REASON_LABEL[item?.reason] || "não encontrado";
+  const reasonLabel = shopeeCostGapReasonLabel(item);
   const value = escapeHTML(String(item?.value ?? "—"));
   return `<span class="vf-fin-idlist__item vf-mono" title="${escapeHTML(reasonLabel)}">${escapeHTML(typeLabel)}: ${value} — ${escapeHTML(reasonLabel)}</span>`;
 }

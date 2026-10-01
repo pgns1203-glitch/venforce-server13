@@ -1390,6 +1390,156 @@ function selectShopeeBridgeItemFinancialEquivalence(line, costBridge, costMap) {
   };
 }
 
+// ── Custo cadastrado só no ITEM PAI ─────────────────────────────────────────
+//
+// Bases de custo comuns têm uma linha por ID do item (anúncio), sem ID da
+// Variação. O Order.all identifica a venda pelo Model ID (direto ou pela
+// ponte), e o Model ID não está na base. Copiar o custo do pai para qualquer
+// variação é inseguro (um anúncio pode vender "1 gel", "2 gel" e "3 gel" com
+// custos 6,50 / 13 / 19,50). Esta função só aceita o pai quando há EVIDÊNCIA
+// de que ele representa a variação vendida — todas obrigatórias:
+//   1. a base tem o pai por ID do ITEM (rowsByItemId — nunca por SKU);
+//   2. nenhuma linha da base com esse ID é de variação (ID Model preenchido):
+//      quem cadastra por variação não cadastrou ESTA, e o pai não a cobre;
+//   3. todas as linhas do pai concordam em custo e imposto;
+//   4. custo do pai válido e > 0 (vazio, #N/A e 0 nunca viram custo);
+//   5. nenhuma linha SEM identificador logo abaixo do pai na planilha — é
+//      o formato de "custo por variação com o ID apagado", que o sistema não
+//      consegue endereçar;
+//   6. o anúncio tem UM ÚNICO Model ID na Performance (que lista inclusive
+//      variações sem venda) e ele é o Model ID resolvido;
+//   7. a quantidade explícita da variação não contradiz o pack do título
+//      (variação "2 ..." num título sem kit, ou "Kit 2" num "Kit 4").
+// Sem a Performance não há como provar o item 6: nunca usa o pai.
+//
+// Retorna null quando não há o que avaliar; senão { costRow, blockedBy, ... }
+// — costRow só é preenchido quando TODAS as evidências passam.
+function getShopeeCostBaseIndex(costMap) {
+  const index = costMap && costMap.costBaseIndex;
+  return index && index.rowsByItemId instanceof Map ? index : null;
+}
+
+// Qual problema o custo de uma linha da base tem — só diagnóstico.
+function shopeeCostIssue(row) {
+  if (!row) return null;
+  if (typeof row.rawCost === "string" && row.rawCost.trim() === "") return "empty";
+  if (row.costValid === false) return "invalid";
+  if (!(Number(row.cost) > 0)) return "zero";
+  return null;
+}
+
+function shopeeVariationPackConflict(record) {
+  const decomp = decomposeShopeeVariationAttributes(record.variationName);
+  const variationPack =
+    decomp.quantityHint !== null
+      ? decomp.quantityHint
+      : extractShopeePackSizeFromTitle(record.variationName);
+  if (variationPack === null) return false;
+  const titlePack = extractShopeePackSizeFromTitle(record.productName);
+  return variationPack !== (titlePack !== null ? titlePack : 1);
+}
+
+function resolveShopeeParentItemCost(costMap, costBridge, itemId, modelId) {
+  const parentItemId = normalizeShopeeId(itemId);
+  const model = normalizeShopeeId(modelId);
+  const index = getShopeeCostBaseIndex(costMap);
+  if (!parentItemId || !model || !index) return null;
+
+  const blocked = (blockedBy, extra) => ({
+    costRow: null,
+    parentItemId,
+    modelId: model,
+    blockedBy,
+    ...extra,
+  });
+
+  const parentRows = index.rowsByItemId.get(parentItemId) || [];
+  if (parentRows.length === 0) {
+    return blocked("parent_not_in_cost_base", { parentInCostBase: false });
+  }
+
+  const first = parentRows[0];
+  const parentInfo = {
+    parentInCostBase: true,
+    parentCost: round2(Number(first.cost || 0)),
+    parentCostIssue: shopeeCostIssue(first),
+  };
+
+  if (parentRows.some((row) => normalizeShopeeId(row.modelId))) {
+    return blocked("cost_base_has_variation_rows_for_item", parentInfo);
+  }
+
+  const sameFinancials = parentRows.every(
+    (row) =>
+      round2(Number(row.cost || 0)) === round2(Number(first.cost || 0)) &&
+      round2(Number(row.taxPercent || 0)) === round2(Number(first.taxPercent || 0)) &&
+      shopeeCostIssue(row) === shopeeCostIssue(first)
+  );
+  if (!sameFinancials) {
+    return blocked("conflicting_parent_rows", { ...parentInfo, parentCost: null });
+  }
+
+  if (shopeeCostIssue(first)) return blocked("parent_cost_invalid", parentInfo);
+
+  if (index.itemsWithUnidentifiedRowsBelow.has(parentItemId)) {
+    return blocked("unidentified_rows_below_parent", parentInfo);
+  }
+
+  const itemRecords = uniqueBridgeRecords(
+    getShopeeCostBridgeRecords(costBridge).filter(
+      (record) => normalizeShopeeId(record.itemId) === parentItemId
+    )
+  );
+  const modelIds = Array.from(
+    new Set(
+      itemRecords
+        .map((record) => normalizeShopeeId(record.modelId || record.variationId))
+        .filter(Boolean)
+    )
+  );
+  if (!modelIds.includes(model)) return blocked("model_not_in_performance", parentInfo);
+  if (modelIds.length > 1) {
+    return blocked("multiple_variations_in_performance", {
+      ...parentInfo,
+      variationCount: modelIds.length,
+    });
+  }
+
+  const record = itemRecords.find(
+    (entry) => normalizeShopeeId(entry.modelId || entry.variationId) === model
+  );
+  if (shopeeVariationPackConflict(record)) return blocked("pack_conflict", parentInfo);
+
+  return { costRow: first, parentItemId, modelId: model, blockedBy: null, ...parentInfo };
+}
+
+function shopeeParentItemMatch(parent, identitySource, bridgeSku, debugCollector, line) {
+  if (debugCollector) {
+    debugCollector.recordMatchAttempt({
+      engine: "shopee_real",
+      stage: "cost_bridge_parent_item",
+      orderId: line.id,
+      field: parent.blockedBy || "bridge_parent_item_single_model",
+      rawValue: parent.modelId,
+      normalizedKey: parent.parentItemId,
+      result: parent.costRow ? "hit" : "miss",
+    });
+  }
+  if (!parent.costRow) return null;
+  return {
+    costRow: parent.costRow,
+    source: "bridge_parent_item_single_model",
+    bridgeUsed: true,
+    bridgeIds: { variationIds: [parent.modelId], itemIds: [parent.parentItemId] },
+    bridgeSku,
+    identitySource,
+    matchedId: parent.parentItemId,
+    matchedValue: parent.parentItemId,
+    parentItemFallback: true,
+    ambiguous: false,
+  };
+}
+
 // Conciliação de custo de UMA linha do Order.all.
 //
 //   1. match DIRETO (comportamento de sempre, prioridade intacta);
@@ -1413,7 +1563,29 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
     };
   }
 
+  const hasBridge = hasShopeeCostBridge(costBridge);
+
   if (direct.authoritativeField) {
+    // O Model ID do próprio Order.all continua autoritativo: o pai só entra
+    // pelas evidências de resolveShopeeParentItemCost, e só com Performance.
+    const parent = hasBridge
+      ? resolveShopeeParentItemCost(
+          costMap,
+          costBridge,
+          line.itemId || line.productId,
+          line[direct.authoritativeField]
+        )
+      : null;
+    if (parent) {
+      const parentMatch = shopeeParentItemMatch(
+        parent,
+        SHOPEE_DIRECT_MATCH_SOURCE[direct.authoritativeField],
+        null,
+        debugCollector,
+        line
+      );
+      if (parentMatch) return parentMatch;
+    }
     return {
       costRow: null,
       source: "miss",
@@ -1421,10 +1593,11 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
       bridgeUsed: false,
       bridgeIds: null,
       ambiguous: false,
+      parentItemDiagnostic: parent,
+      parentDiagnosticType: direct.authoritativeField === "modelId" ? "model_id" : "variation_id",
     };
   }
 
-  const hasBridge = hasShopeeCostBridge(costBridge);
   if (!hasBridge || !costMap || typeof costMap.get !== "function") {
     return { costRow: null, source: "miss", bridgeUsed: false, bridgeIds: null, ambiguous: false };
   }
@@ -1554,6 +1727,21 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
     };
   }
 
+  // Model ID resolvido e ausente da base: o pai só entra com evidência.
+  const parent = modelId
+    ? resolveShopeeParentItemCost(costMap, costBridge, itemId, modelId)
+    : null;
+  if (parent) {
+    const parentMatch = shopeeParentItemMatch(
+      parent,
+      identity.source,
+      identity.bridgeSku,
+      debugCollector,
+      line
+    );
+    if (parentMatch) return parentMatch;
+  }
+
   return {
     costRow: null,
     source: "miss",
@@ -1563,6 +1751,8 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
     identitySource: identity.source,
     skuTried: identity.bridgeSku || skuTried,
     ambiguous: false,
+    parentItemDiagnostic: parent,
+    parentDiagnosticType: "variation_id",
   };
 }
 
@@ -1612,8 +1802,33 @@ function describeShopeeCostGap(line, costMatch, orderId) {
       rawCost: costMatch.costRow.rawCost ?? null,
       costValid:
         typeof costMatch.costRow.costValid === "boolean" ? costMatch.costRow.costValid : null,
+      // "zero" | "empty" | "invalid" — o mesmo motivo de sempre, só que dizendo
+      // QUAL problema o custo tem (0, vazio ou texto como #N/A).
+      costIssue: shopeeCostIssue(costMatch.costRow) || "zero",
     };
   }
+
+  // A variação não tem custo, mas o PAI está na base: o sistema só não pôde
+  // provar que o custo do pai vale para esta variação (blockedBy diz qual
+  // evidência faltou). É ajuste de base: cadastrar o custo por ID da Variação.
+  const parentDiag = costMatch.parentItemDiagnostic;
+  if (parentDiag && parentDiag.parentInCostBase) {
+    return {
+      type: costMatch.parentDiagnosticType || "variation_id",
+      value: String(parentDiag.modelId),
+      sku: costMatch.bridgeSku || null,
+      reason: "cost_only_on_parent_item",
+      parentItemId: parentDiag.parentItemId,
+      parentCost: parentDiag.parentCost,
+      parentCostIssue: parentDiag.parentCostIssue,
+      blockedBy: parentDiag.blockedBy,
+      ...(parentDiag.variationCount ? { variationCount: parentDiag.variationCount } : {}),
+    };
+  }
+  const parentAbsent =
+    parentDiag && parentDiag.parentInCostBase === false
+      ? { parentItemId: parentDiag.parentItemId, parentInCostBase: false }
+      : {};
 
   if (costMatch.bridgeUsed) {
     if (costMatch.bridgeIds) {
@@ -1622,7 +1837,13 @@ function describeShopeeCostGap(line, costMatch, orderId) {
       const variationId = (costMatch.bridgeIds.variationIds || [])[0];
       const itemId = (costMatch.bridgeIds.itemIds || [])[0];
       if (variationId) {
-        return { type: "variation_id", value: variationId, sku: costMatch.bridgeSku, reason: "not_found_in_cost_base" };
+        return {
+          type: "variation_id",
+          value: variationId,
+          sku: costMatch.bridgeSku,
+          reason: "not_found_in_cost_base",
+          ...parentAbsent,
+        };
       }
       if (itemId) {
         return { type: "item_id", value: itemId, sku: costMatch.bridgeSku, reason: "not_found_in_cost_base" };
@@ -1631,6 +1852,18 @@ function describeShopeeCostGap(line, costMatch, orderId) {
     // O SKU do Order.all não foi encontrado na planilha de performance.
     const sku = costMatch.skuTried || "";
     return { type: "sku", value: sku, sku: sku || null, reason: "not_found_in_performance_bridge" };
+  }
+
+  // Model ID do próprio Order.all, avaliado contra o pai e o pai também
+  // não está na base.
+  if (parentDiag) {
+    return {
+      type: costMatch.parentDiagnosticType || "variation_id",
+      value: String(parentDiag.modelId),
+      sku: null,
+      reason: "not_found_in_cost_base",
+      ...parentAbsent,
+    };
   }
 
   // Sem ponte disponível (performance não enviada): mesmo fallback de
@@ -1724,6 +1957,12 @@ function processShopeeFinancialOrders({
   let bridgeSkuTokenSetMatchCount = 0;
   let bridgeSkuTokenFuzzyMatchCount = 0;
   let bridgeItemFinancialEquivalentMatchCount = 0;
+  let bridgeParentItemSingleModelMatchCount = 0;
+  let revenueParentItemFallback = 0;
+  // Pendências com custo SÓ no pai e sem evidência para usá-lo.
+  let parentOnlyCostPendingCount = 0;
+  let parentOnlyCostPendingRevenue = 0;
+  const parentOnlyCostBlockedBy = {};
   let bridgeMissCount = 0;
   let bridgeAmbiguousCount = 0;
   let zeroCostRowsCount = 0;
@@ -1926,6 +2165,10 @@ function processShopeeFinancialOrders({
           if (costMatch.identitySource === "item_financial_equivalent") {
             bridgeItemFinancialEquivalentMatchCount += 1;
           }
+          if (costMatch.parentItemFallback) {
+            bridgeParentItemSingleModelMatchCount += 1;
+            revenueParentItemFallback = round2(revenueParentItemFallback + lineGross);
+          }
           revenueBridgeMatched = round2(revenueBridgeMatched + lineGross);
         } else {
           costSource = "base_custos";
@@ -1965,6 +2208,11 @@ function processShopeeFinancialOrders({
         const gap = describeShopeeCostGap(line, costMatch, orderId);
         const gapKey = `${gap.type}|${gap.value}|${gap.sku || ""}|${gap.reason}`;
         if (!unmatchedCostsMap.has(gapKey)) unmatchedCostsMap.set(gapKey, gap);
+        if (gap.reason === "cost_only_on_parent_item") {
+          parentOnlyCostPendingCount += 1;
+          parentOnlyCostPendingRevenue = round2(parentOnlyCostPendingRevenue + lineGross);
+          parentOnlyCostBlockedBy[gap.blockedBy] = (parentOnlyCostBlockedBy[gap.blockedBy] || 0) + 1;
+        }
       }
 
       detailedRows.push({
@@ -2069,6 +2317,49 @@ function processShopeeFinancialOrders({
       "variação exata não altera o resultado financeiro."
     );
   }
+  if (bridgeParentItemSingleModelMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_PARENT_ITEM_SINGLE_MODEL: ${bridgeParentItemSingleModelMatchCount} linha(s) usaram o custo ` +
+      "cadastrado no ID do item (pai), porque o anúncio tem uma única variação na Performance, o pai está na base " +
+      "por ID com custo válido e sem linhas conflitantes, e a quantidade da variação não contradiz o kit do título."
+    );
+  }
+  if (parentOnlyCostPendingCount > 0) {
+    executiveNotes.push(
+      `COST_PARENT_ONLY_PENDING: ${parentOnlyCostPendingCount} linha(s) (R$ ${parentOnlyCostPendingRevenue.toFixed(2)}) ` +
+      "têm custo cadastrado só no item pai, sem evidência de que ele vale para a variação vendida (anúncio com várias " +
+      "variações, kit divergente, linhas sem ID abaixo do pai ou pai conflitante). Cadastre o custo por ID da Variação."
+    );
+  }
+  const costBaseIndex = getShopeeCostBaseIndex(costMap);
+  const costBaseDiagnostics = costBaseIndex
+    ? {
+        unidentifiedRowsCount: costBaseIndex.unidentifiedRowsCount,
+        itemsWithUnidentifiedRowsBelow: Array.from(costBaseIndex.itemsWithUnidentifiedRowsBelow),
+        scientificNotationIds: costBaseIndex.scientificNotationIds.slice(),
+      }
+    : null;
+  if (
+    costBaseDiagnostics &&
+    (costBaseDiagnostics.unidentifiedRowsCount > 0 || costBaseDiagnostics.scientificNotationIds.length > 0)
+  ) {
+    const parts = [];
+    if (costBaseDiagnostics.unidentifiedRowsCount > 0) {
+      parts.push(
+        `${costBaseDiagnostics.unidentifiedRowsCount} linha(s) sem ID foram ignoradas` +
+        (costBaseDiagnostics.itemsWithUnidentifiedRowsBelow.length
+          ? ` (abaixo dos itens ${costBaseDiagnostics.itemsWithUnidentifiedRowsBelow.join(", ")})`
+          : "")
+      );
+    }
+    if (costBaseDiagnostics.scientificNotationIds.length > 0) {
+      parts.push(
+        `ID(s) em notação científica, com dígitos perdidos pelo Excel: ${costBaseDiagnostics.scientificNotationIds.join(", ")} ` +
+        "(formate a coluna de ID como texto)"
+      );
+    }
+    executiveNotes.push(`COST_BASE_QUALITY: na base de custos, ${parts.join("; ")}.`);
+  }
   if (coverage.financialConfidence !== "confiavel") {
     executiveNotes.push(
       "Fechamento parcial: existem vendas sem custo cadastrado. O faturamento total está completo; LC e MC cobrem apenas a receita com custo identificado."
@@ -2160,6 +2451,12 @@ function processShopeeFinancialOrders({
       bridgeSkuTokenSetMatchCount,
       bridgeSkuTokenFuzzyMatchCount,
       bridgeItemFinancialEquivalentMatchCount,
+      bridgeParentItemSingleModelMatchCount,
+      parentItemFallbackCoverage: coveragePercent(revenueParentItemFallback),
+      parentOnlyCostPendingCount,
+      parentOnlyCostPendingRevenue,
+      parentOnlyCostBlockedBy,
+      costBaseDiagnostics,
       bridgeMissCount,
       bridgeAmbiguousCount,
       bridgeAmbiguousKeys,
@@ -2213,4 +2510,5 @@ module.exports = {
   shopeeSkuTokenSetKey,
   shopeeSkuTokensFuzzyCompatible,
   selectShopeeBridgeIdentity,
+  resolveShopeeParentItemCost,
 };

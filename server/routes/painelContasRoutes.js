@@ -25,6 +25,7 @@ router.get("/", authMiddleware, requireAutomacoesAccess, controller.listar);
 router.get("/:clienteId/meses", authMiddleware, requireAutomacoesAccess, noPainel, controller.listarMeses);
 router.get("/:clienteId/meses/:competencia/semanas", authMiddleware, requireAutomacoesAccess, noPainel, controller.listarSemanas);
 router.get("/:clienteId/contas/semanas", authMiddleware, requireAutomacoesAccess, noPainel, controller.listarSemanasDasContas);
+router.get("/:clienteId/contas/composicao", authMiddleware, requireAutomacoesAccess, noPainel, controller.listarComposicaoDasContas);
 // Lançamento manual por conta × competência. Mesmo gate de PUT
 // /ads/resumo-mensal (o outro lançamento gerencial manual): papel de
 // automações + cliente na carteira; o service ainda exige o escopo de leitura

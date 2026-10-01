@@ -39,6 +39,9 @@ ok('GET "...semanas" exige authMiddleware + requireAutomacoesAccess + noPainel',
 const linhaSemanasContas = rotas.match(/router\.get\("\/:clienteId\/contas\/semanas",[^)]*\)/)?.[0] || "";
 ok('GET "...contas/semanas" exige authMiddleware + requireAutomacoesAccess + noPainel', linhaSemanasContas.includes("authMiddleware") && linhaSemanasContas.includes("requireAutomacoesAccess") && linhaSemanasContas.includes("noPainel"));
 
+const linhaComposicao = rotas.match(/router\.get\("\/:clienteId\/contas\/composicao",[^)]*\)/)?.[0] || "";
+ok('GET "...contas/composicao" exige authMiddleware + requireAutomacoesAccess + noPainel', linhaComposicao.includes("authMiddleware") && linhaComposicao.includes("requireAutomacoesAccess") && linhaComposicao.includes("noPainel"));
+
 // Lançamento manual: escrita com o MESMO gate das leituras de cliente.
 ok('PUT/DELETE do lançamento manual usam o path com :clienteId/:contaId/:competencia', rotas.includes('"/:clienteId/contas/:contaId/manual/:competencia"'));
 const linhaPut = rotas.match(/router\.put\(manual,[^)]*\)/)?.[0] || "";

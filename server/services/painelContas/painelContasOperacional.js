@@ -25,6 +25,7 @@
 
 const { round2, deriveResumo, calcularAcos, asFiniteOrNull } = require("./painelContasMetricas");
 const { calcularTacos } = require("../cliente360/cliente360AdsService");
+const { coberturaCustos } = require("./painelContasComposicao");
 
 const MARKETPLACES = { meli: "Mercado Livre", shopee: "Shopee", tiktok: "TikTok Shop" };
 const ORDEM_MARKETPLACE = ["meli", "shopee", "tiktok"];
@@ -215,6 +216,7 @@ function resolverContasSemAcao(rows, { importPorConta = new Map(), manualPorCont
       avisos: [],
       resumo: null,
       baseMc: null,
+      custos: null,
       fonte: null,
       atualizadoEm: null,
       dadosAte: null,
@@ -242,14 +244,17 @@ function resolverContasSemAcao(rows, { importPorConta = new Map(), manualPorCont
       if (run?.status === "failed" && new Date(run.created_at).getTime() > publicadoEm) {
         avisos.push(`Última sincronização falhou${run.error_code ? ` (${run.error_code})` : ""}; exibindo a última publicação`);
       }
+      const lc = asFiniteOrNull(imp.lucro_contribuicao);
+      const baseMc = asFiniteOrNull(imp.faturamento_com_custo);
       return {
         ...base,
         status: status("sincronizado"),
         avisos,
         // Ads é medido por cliente (ads_resumos_mensais, loja "todas"): não
         // existe investimento por conta — null, nunca rateio.
-        resumo: montarResumo({ fat, lc: asFiniteOrNull(imp.lucro_contribuicao), mc: mcPct === null ? null : mcPct / 100 }),
-        baseMc: asFiniteOrNull(imp.faturamento_com_custo),
+        resumo: montarResumo({ fat, lc, mc: mcPct === null ? null : mcPct / 100 }),
+        baseMc,
+        custos: coberturaCustos({ fat, lc, baseLc: baseMc }),
         fonte: { tipo: "api", rotulo: imp.publication_status === "legacy" ? "Planilha (Central)" : "API" },
         atualizadoEm: iso(imp.published_at || imp.created_at),
         dadosAte: dia(imp.coverage_date_to),
@@ -265,6 +270,8 @@ function resolverContasSemAcao(rows, { importPorConta = new Map(), manualPorCont
         status: status("manual", "Lançado manualmente"),
         resumo: view.valores,
         baseMc: view.valores.fat,
+        // O LC manual é informado sobre o FAT inteiro da conta.
+        custos: coberturaCustos({ fat: view.valores.fat, lc: view.valores.lc, baseLc: view.valores.fat }),
         fonte: { tipo: "manual", rotulo: "Manual" },
         atualizadoEm: view.atualizadoEm,
         dadosAte: view.dataReferencia,
@@ -322,7 +329,7 @@ function consolidarCliente({ contas = [], snapshot = null, adsCliente = null, sn
   escopo = { ...escopo, contasOperacionais: n, contasComDado: k, contasPrecisamAcao };
 
   const vazio = {
-    resumo: null, fonte: null, atualizadoEm: null, dadosAte: null, origem: null,
+    resumo: null, custos: null, fonte: null, atualizadoEm: null, dadosAte: null, origem: null,
   };
 
   // Nenhuma conta com dado: o snapshot do cliente (fluxo manual do Cliente 360
@@ -334,6 +341,8 @@ function consolidarCliente({ contas = [], snapshot = null, adsCliente = null, sn
         escopo: { ...escopo, tipo: "cliente", rotulo: "Cliente · sem detalhamento por conta" },
         status: status("sincronizado", "Snapshot do cliente sem detalhamento por conta", { precisaAtencao: false }),
         resumo: deriveResumo(snapshot),
+        // Sem as contas não há como medir a base do LC: nada é afirmado.
+        custos: null,
         fonte: { tipo: "api", rotulo: "API (snapshot do cliente)" },
         atualizadoEm: snapshot.sincronizadoEm || null,
         dadosAte: snapshot.centralDadosAte || null,
@@ -363,11 +372,20 @@ function consolidarCliente({ contas = [], snapshot = null, adsCliente = null, sn
   // precedência de MC do fechamento e o Ads daquela versão.
   const snapshotCasa = snapshot && k === n && !temManual
     && mesmoConjunto(snapshot.centralImportIds, comDado.map((c) => c.importId));
+  // Base do LC consolidado = faturamento com custo das contas que têm LC (o
+  // mesmo denominador da MC consolidada abaixo).
+  const comLc = comDado.filter((c) => c.resumo.lc !== null);
+  const base = comLc.reduce((s, c) => s + (Number(c.baseMc) || 0), 0);
+
   if (snapshotCasa) {
+    const resumo = deriveResumo(snapshot);
+    const custos = coberturaCustos({ fat: resumo.fat, lc: resumo.lc, baseLc: base });
     return {
       escopo,
       status: statusCliente,
-      resumo: deriveResumo(snapshot),
+      resumo,
+      // MC do fechamento oficial não usa a base da Central: só o LC herda o aviso.
+      custos: custos && { ...custos, indicadores: snapshot.mcFonte === "fechamento_oficial" ? ["lc"] : ["lc", "mc"] },
       fonte: snapshot.mcFonte === "fechamento_oficial" ? { tipo: "api", rotulo: "API · MC do fechamento oficial" } : fonte,
       atualizadoEm: snapshot.sincronizadoEm || atualizacoes[atualizacoes.length - 1] || null,
       dadosAte: snapshot.centralDadosAte || datasAte[0] || null,
@@ -376,9 +394,7 @@ function consolidarCliente({ contas = [], snapshot = null, adsCliente = null, sn
   }
 
   const fat = somar(comDado.map((c) => c.resumo.fat));
-  const comLc = comDado.filter((c) => c.resumo.lc !== null);
   const lc = somar(comLc.map((c) => c.resumo.lc));
-  const base = comLc.reduce((s, c) => s + (Number(c.baseMc) || 0), 0);
   const mc = lc !== null && base > 0 ? round2((lc / base) * 100) / 100 : null;
 
   // Ads: o resumo mensal de Ads do cliente (automático) vence; sem ele, a soma
@@ -398,6 +414,7 @@ function consolidarCliente({ contas = [], snapshot = null, adsCliente = null, sn
     escopo,
     status: statusCliente,
     resumo: montarResumo({ fat, lc, mc, ads, gmvAds }),
+    custos: coberturaCustos({ fat, lc, baseLc: base }),
     fonte,
     atualizadoEm: atualizacoes[atualizacoes.length - 1] || null,
     dadosAte: datasAte[0] || null,

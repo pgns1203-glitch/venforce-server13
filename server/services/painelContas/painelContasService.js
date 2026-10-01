@@ -35,6 +35,7 @@ const {
 } = require("./painelContasOperacional");
 const { validarLancamento, competenciaValida } = require("./painelContasManual");
 const atualizacao = require("./painelContasAtualizacao");
+const { montarComposicaoConta, somarComposicoes } = require("./painelContasComposicao");
 
 const TIMEZONE = "America/Sao_Paulo";
 const FILTROS_STATUS = new Set(["todos", "com_dados", "sem_dados", "parcial", "manual", "automatico", "atencao"]);
@@ -383,6 +384,49 @@ async function listarSemanasDasContas(user, clienteRef, competencia) {
   });
 }
 
+// GET /painel-contas/:clienteId/contas/composicao?competencia=
+// Demonstrativo do faturamento POR CONTA: bruto (regra V1) → exclusões → FAT.
+// Mesmo import da lista (escolherImportPorConta), todos os pedidos dele, duas
+// queries em lote para o cliente inteiro. O FAT de cada conta é o do import;
+// a soma dos pedidos válidos só o confere. Só contas ATIVAS entram — as
+// mesmas que compõem o FAT consolidado da lista.
+async function listarComposicaoDasContas(user, clienteRef, competencia) {
+  const cliente = await assertClienteNoPainel(user, clienteRef, pool);
+  if (!competenciaValida(competencia)) {
+    throw erro(400, "COMPETENCIA_INVALIDA", "competencia inválida (esperado YYYY-MM).");
+  }
+  const rows = await repo.listarContasDeClientes([cliente.id]);
+  // Rótulo resolvido sobre TODAS as contas: o ordinal ("Mercado Livre 2") é o mesmo da lista.
+  const ativas = resolverContas(rows).filter((c) => c.ativa);
+  const imports = await repo.listarImportsDaCompetencia(ativas.map((c) => c.id), competencia);
+  const importPorConta = escolherImportPorConta(imports, competencia);
+  const importIds = [...importPorConta.values()].map((i) => Number(i.id));
+  const [linhas, sobreposicao] = await Promise.all([
+    repo.listarComposicaoDosImports(importIds),
+    repo.medirSobreposicaoDosImports(importIds),
+  ]);
+  const linhasPorImport = agruparPor(linhas, "import_id");
+
+  const contas = ativas.map((conta) => {
+    const imp = importPorConta.get(conta.id) || null;
+    return {
+      contaId: conta.id,
+      rotulo: conta.rotulo,
+      marketplace: conta.marketplace,
+      composicao: imp ? montarComposicaoConta(imp, linhasPorImport.get(Number(imp.id)) || []) : null,
+      // Sem import não há pedido para compor: conta manual ou sem dados.
+      motivo: imp ? null : "Sem pedidos importados nesta competência",
+    };
+  });
+
+  return sanitizarParaJson({
+    ok: true,
+    competencia,
+    contas,
+    somaDasContas: somarComposicoes(contas.map((c) => c.composicao), sobreposicao),
+  });
+}
+
 // ─── Lançamento manual ────────────────────────────────────────────────────────
 
 // Guardas comuns a salvar/remover: papel → competência → carteira → a conta
@@ -524,6 +568,7 @@ module.exports = {
   listarMeses,
   listarSemanas,
   listarSemanasDasContas,
+  listarComposicaoDasContas,
   salvarLancamentoManual,
   removerLancamentoManual,
   competenciaAtual,

@@ -4,7 +4,8 @@
 // (PGlite). Não é teste da suíte (a suíte usa fake db): prova a semântica que o
 // fake não prova — a migration manual da CHECK de TikTok (idempotente), a
 // coluna data_referencia do ensure lazy, as queries de escopo do Painel
-// (coordenador/gestor) e a trilha do lançamento manual.
+// (coordenador/gestor), a trilha do lançamento manual e a composição do
+// faturamento por conta.
 //
 // SEGURANÇA: nunca lê DATABASE_URL e nunca abre conexão de rede.
 //
@@ -103,6 +104,41 @@ let n = 0; const ok = (l, c) => { assert.ok(c, "FALHOU: " + l); n++; console.log
   ok("HISTORICO_DA_CONTA: removido, alterado, criado (mais recente primeiro) com autor", hist.map((h) => `${h.acao}:${h.user_nome}`).join() === "removido:Admin,alterado:Carla,criado:Ana");
   ok("trilha guarda a data de referência", hist[1].valores_json.dataReferencia === "2026-09-29" && hist[0].valores_json.dataReferencia === "2026-09-29");
   ok("trilha de agosto separada", (await repo.listarHistoricoManual(2, 1, "2026-08")).length === 1);
+
+  // Composição do faturamento por conta: agregado por status × pós-venda e
+  // sobreposição de pedido entre imports — DDL real da Central.
+  const ddlCentral = fs.readFileSync(path.join(W, "server/sql/central_vendas_schema.sql"), "utf8");
+  // Só as duas tabelas que a composição lê (o arquivo inteiro depende de outras).
+  const tabela = (nome) => ddlCentral.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${nome} \\([\\s\\S]*?\\n\\);`))[0];
+  await db.exec(tabela("central_vendas_imports"));
+  await db.exec(tabela("central_vendas_pedidos"));
+  await db.exec(`
+    INSERT INTO central_vendas_imports (id, cliente_slug, competencia, fonte, status, confianca, resumo_json)
+    VALUES (901, 'a', '2026-09', 'api', 'ok', 'parcial', '{"faturamento": 150.50}'),
+           (902, 'a', '2026-09', 'api', 'ok', 'parcial', '{"faturamento": 70}');
+    INSERT INTO central_vendas_pedidos (import_id, cliente_slug, competencia, pedido_id, status, confianca, faturamento, payload_json) VALUES
+      (901,'a','2026-09','p1','paid','confiavel',100.25,'{}'),
+      (901,'a','2026-09','p2','partially_refunded','bloqueado',50.25,'{}'),
+      (901,'a','2026-09','p3','cancelled','confiavel',40,'{}'),
+      (901,'a','2026-09','p4','cancelado','confiavel',30,'{"posVendaTipo":"devolucao"}'),
+      (901,'a','2026-09','p5','com_problema','confiavel',20,'{"posVendaTipo":"mediacao"}'),
+      (901,'a','2026-09','p6','com_problema','confiavel',10,'{"posVendaTipo":"devolucao"}'),
+      (901,'a','2026-09','p7','paid','confiavel',NULL,'{}'),
+      (902,'a','2026-09','p1','paid','confiavel',70,'{}');
+  `);
+  const comp = require(path.join(W, "server/services/painelContas/painelContasComposicao.js"));
+  const linhas = await repo.listarComposicaoDosImports([901, 902]);
+  const de901 = linhas.filter((l) => Number(l.import_id) === 901);
+  const c901 = comp.montarComposicaoConta({ id: 901, faturamento: 150.5 }, de901);
+  ok("COMPOSICAO_DOS_IMPORTS: posVendaTipo lido do payload, grupos disjuntos",
+    c901.exclusoes.cancelamentos.valor === 40 && c901.exclusoes.devolucoes.valor === 30
+    && c901.exclusoes.mediacoes.valor === 20 && c901.exclusoes.devolucoesEmAndamento.valor === 10);
+  ok("COMPOSICAO_DOS_IMPORTS: bruto 7 pedidos − exclusões = FAT do import (fecha), pedido sem valor contado",
+    c901.bruto.pedidos === 7 && c901.bruto.valor === 250.5 && c901.validos.valor === 150.5
+    && c901.reconciliacao.fecha === true && c901.pedidosSemValor === 1);
+  const sob = await repo.medirSobreposicaoDosImports([901, 902]);
+  ok("COMPOSICAO_SOBREPOSICAO: mesmo pedido em dois imports é medido (1 pedido, excedente 70)", sob.pedidos === 1 && sob.valor === 70);
+  ok("COMPOSICAO_SOBREPOSICAO: um import só não consulta", (await repo.medirSobreposicaoDosImports([901])).pedidos === 0);
 
   console.log(`painelContasV3SqlCheck.js: ${n} verificações em PostgreSQL (PGlite) passaram.`);
 })().catch((e) => { console.error(e); process.exit(1); });

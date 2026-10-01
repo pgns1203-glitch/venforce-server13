@@ -160,6 +160,45 @@ async function listarPedidosDosImports(importIds, { inicio, fim }) {
   return rows;
 }
 
+// Composição do faturamento: TODOS os pedidos dos imports escolhidos (o mesmo
+// conjunto sobre o qual o FAT do import foi calculado — sem recorte de data),
+// agregados por status × tipo de pós-venda. Poucas linhas por import; a
+// classificação em grupos fica no service (painelContasComposicao), com o
+// mesmo predicado da Central.
+async function listarComposicaoDosImports(importIds) {
+  if (!Array.isArray(importIds) || !importIds.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:COMPOSICAO_DOS_IMPORTS */
+     SELECT p.import_id, p.status, p.payload_json->>'posVendaTipo' AS pos_venda_tipo,
+            COUNT(*)::int AS pedidos,
+            (COUNT(*) - COUNT(p.faturamento))::int AS sem_valor,
+            COALESCE(SUM(p.faturamento), 0) AS faturamento
+       FROM central_vendas_pedidos p
+      WHERE p.import_id = ANY($1::bigint[])
+      GROUP BY p.import_id, p.status, p.payload_json->>'posVendaTipo'`,
+    [importIds]
+  );
+  return rows;
+}
+
+// Pedido presente em mais de um dos imports escolhidos (duas contas apontando
+// para a mesma loja, p.ex.). A soma das contas contaria a venda duas vezes;
+// isso é medido, nunca deduplicado em silêncio.
+async function medirSobreposicaoDosImports(importIds) {
+  if (!Array.isArray(importIds) || importIds.length < 2) return { pedidos: 0, valor: 0 };
+  const { rows } = await pool.query(
+    `/* painelContas:COMPOSICAO_SOBREPOSICAO */
+     SELECT COUNT(*)::int AS pedidos, COALESCE(SUM(d.excedente), 0) AS valor
+       FROM (SELECT p.pedido_id, SUM(p.faturamento) - MAX(p.faturamento) AS excedente
+               FROM central_vendas_pedidos p
+              WHERE p.import_id = ANY($1::bigint[])
+              GROUP BY p.pedido_id
+             HAVING COUNT(*) > 1) d`,
+    [importIds]
+  );
+  return { pedidos: Number(rows[0]?.pedidos) || 0, valor: Number(rows[0]?.valor) || 0 };
+}
+
 // Último sync_run de cada conta que toca a competência. Só status/código/data
 // — error_message pode carregar texto de terceiros e não sai daqui.
 async function listarUltimoRunPorConta(contaIds, { inicio, fim }) {
@@ -363,6 +402,8 @@ module.exports = {
   listarUltimaCompetenciaComDado,
   listarContasDeClientes,
   listarImportsDaCompetencia,
+  listarComposicaoDosImports,
+  medirSobreposicaoDosImports,
   listarPedidosDosImports,
   listarUltimoRunPorConta,
   listarAdsDaCompetencia,

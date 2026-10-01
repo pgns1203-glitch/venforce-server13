@@ -1534,6 +1534,98 @@ async function run() {
     ok("49. F9.1: função técnica sem fato bloqueia em qualquer bloco (antiembaçante, tratamento eletrostático, poeiras/névoas/fumos, filtra); BRAND × marca declarada → conflito; 'você recebe/receber tudo' → logística HARD");
   }
 
+  // 50 ─ F10: polimento editorial do texto aprovado (só forma; cada regra revalidada)
+  {
+    const mk = (titulo, attrs, cat) => engine.montarFicha({ item_id: "MLB-P", titulo, attributes_json: attrs },
+      { categoriaNome: cat, limiteCategoria: 50000, descricaoAtual: "", descricaoEstado: "sem_descricao" });
+    const f = mk("Lixeira Lumi Com Pedal 60 Litros Branco", [
+      { id: "BRAND", name: "Marca", value: "Lumi Casa" }, { id: "MODEL", name: "Modelo", value: "Lixeira Lumi" },
+      { id: "COLOR", name: "Cor", value: "Branco" }, { id: "CAPACITY", name: "Capacidade", value: "60 L" },
+      { id: "MATERIAL", name: "Material", value: "Plástico" }, { id: "GENDER", name: "Gênero", value: "Sem gênero" },
+      { id: "PRODUCT_FEATURES", name: "Características do produto", value: "Sem validade" },
+      { id: "OPENING_TYPE", name: "Tipo de abertura", value: "Pedal" },
+    ], "Lixeiras");
+    const texto = [
+      "DESCRICAO PRINCIPAL",
+      "A Lixeira Lumi, modelo Lixeira Lumi, é feita em material Plástico na cor branco, com gênero sem gênero. Tem capacidade de 60 litros e abertura por pedal. Produto sem validade.",
+      "DESTAQUES DO PRODUTO",
+      "* Abertura por pedal",
+      "* Capacidade de 60 litros e abertura por pedal",
+      "* Capacidade de 60 litros",
+      "* Características do produto: Sem validade",
+      "COMO USAR",
+      "* Use na cozinha ou na area de serviço para manter o ambiente organizado",
+      "ESPECIFICACOES",
+      "* Marca: Lumi Casa",
+      "* Cor: Branco",
+      "* Capacidade: 60 L",
+      "* Material: Plástico",
+      "BENEFICIOS",
+      "* Uma opcao versatil para a rotina da casa",
+      "* Medidas objetivas para ajudar na escolha do modelo adequado",
+      "EXPERIENCIA DE COMPRA",
+      "Escolha a sua lixeira Lumi Casa com tranquilidade. Com informações claras, você decide com confiança.",
+    ].join("\n");
+    assert.ok(engine.validarDescricao(texto, [], f).valida, "o texto de partida é aprovado");
+    const p = engine.polirDescricao(texto, [], f);
+    assert.deepStrictEqual(p.ajustes, ["ACENTUACAO", "VALOR_SEM_INFORMACAO", "ROTULO_ECOADO", "QUALIFICADOR_REDUNDANTE", "METATEXTO",
+      "CONCORDANCIA_DE_COR", "MATERIAL_MINUSCULO", "ITEM_CONTIDO", "SECAO_POBRE"]);
+    assert.strictEqual(p.descricao, [
+      "DESCRIÇÃO PRINCIPAL",
+      "A Lixeira Lumi é feita em material plástico na cor branca. Tem capacidade de 60 litros e abertura por pedal.",
+      "COMO USAR",
+      "* Use na cozinha ou na área de serviço para manter o ambiente organizado",
+      "ESPECIFICAÇÕES",
+      "* Marca: Lumi Casa",
+      "* Cor: Branco",
+      "* Capacidade: 60 L",
+      "* Material: Plástico",
+      "BENEFÍCIOS",
+      "* Uma opção versátil para a rotina da casa",
+      "EXPERIÊNCIA DE COMPRA",
+      "Escolha a sua lixeira Lumi Casa com tranquilidade.",
+    ].join("\n"));
+    assert.ok(engine.validarDescricao(p.descricao, [], f).valida, "o texto polido continua aprovado");
+    assert.strictEqual(p.chars, p.descricao.length);
+    assert.deepStrictEqual(engine.polirDescricao(p.descricao, [], f).ajustes, [], "idempotente");
+
+    // nome próprio/marca e valor da ficha não são reescritos; repetição imediata sai;
+    // regra que faria a validação falhar é descartada (a frase de metatexto é a única
+    // que cita o kit: tirá-la daria KIT_OMITIDO)
+    const fk = mk("Kit 2 Toalha Influencia Branca", [{ id: "BRAND", name: "Marca", value: "Influencia" }, { id: "COLOR", name: "Cor", value: "Branco" },
+      { id: "UNITS_PER_PACK", name: "Unidades por kit", value: "2" }, { id: "MAIN_MATERIAL", name: "Material principal", value: "Algodão" }], "Toalhas");
+    const tk = [
+      "DESCRIÇÃO PRINCIPAL",
+      "Toalha Influencia em algodão, na cor branca. Peça para para o banho do dia a dia.",
+      "DESTAQUES DO PRODUTO",
+      "* Toalha em algodão",
+      "* Cor branca",
+      "ESPECIFICAÇÕES",
+      "* Marca: Influencia",
+      "* Material principal: Algodão",
+      "* Cor: Branco",
+      "EXPERIÊNCIA DE COMPRA",
+      "Escolha a sua toalha com tranquilidade. Kit com 2 unidades e informações claras para decidir.",
+    ].join("\n");
+    const pk = engine.polirDescricao(tk, [], fk);
+    assert.deepStrictEqual(pk.ajustes, ["REPETICAO_IMEDIATA"]);
+    assert.strictEqual(pk.descricao, tk.replace("para para", "para"));
+    const tc = tk.replace("* Cor branca", "* Cor branco").replace("para para", "para").replace(" e informações claras para decidir.", ".")
+      .replace("Escolha a sua toalha com tranquilidade.", "Escolha a sua toalha com tranquilidade. Confira as características e finalize a compra.");
+    const pc = engine.polirDescricao(tc, [], fk);
+    assert.deepStrictEqual(pc.ajustes, ["METATEXTO", "CONCORDANCIA_DE_COR"]);
+    assert.ok(pc.descricao.includes("* Cor branca\n") && !/Confira as caracter/.test(pc.descricao), pc.descricao);
+
+    // item "Rótulo: valor" é fato próprio: não sai por estar contido em outro; texto inválido não é polido
+    const fsh = mk("Short Saia Lumi", [{ id: "BRAND", name: "Marca", value: "Lumi" }, { id: "SHORT_TYPE", name: "Tipo de short", value: "Short saia" },
+      { id: "SKIRT_TYPE", name: "Tipo de saia", value: "Short saia cargo" }], "Shorts");
+    const ts = ["DESCRIÇÃO PRINCIPAL", "Short saia Lumi.", "ESPECIFICAÇÕES", "* Tipo de short: Short saia", "* Tipo de saia: Short saia cargo"].join("\n");
+    assert.deepStrictEqual(engine.polirDescricao(ts, [], fsh).ajustes, []);
+    const invalido = engine.polirDescricao(ts + "\n* Frete grátis", [], fsh);
+    assert.deepStrictEqual(invalido.ajustes, []);
+    ok("50. F10: polimento editorial — acentos, valor sem informação, rótulo ecoado, qualificador redundante, metatexto, concordância de cor, item contido, seção pobre; marca intacta; regra que quebra a validação é descartada");
+  }
+
   console.log(`\n✓ ${checks} verificações do Description Engine`);
 }
 

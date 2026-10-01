@@ -2461,6 +2461,273 @@ function validarComCorrecoes(descricaoBruta, fatosUsados, ficha) {
 }
 
 // -----------------------------------------------------------------------------
+// F10 — polimento editorial do texto JÁ APROVADO. Só forma: nenhuma regra
+// acrescenta palavra de conteúdo; cada uma tira ruído ou corrige grafia e
+// concordância. Cada regra roda sozinha e o texto é revalidado: se a
+// validação deixar de passar, a regra é descartada — o texto aprovado nunca
+// piora nem perde trava.
+// -----------------------------------------------------------------------------
+const ehItemDeLista = (t) => /^[-•*–]\s*\S/.test(t);
+const ehItemRotulado = (t) => /^[-•*–]\s*[^:]{2,40}:\s*\S/.test(t);
+const frasesDe = (t) => t.split(/(?<=[.!?])\s+/).filter((f) => f.trim());
+
+// Linhas com a seção a que pertencem; o nome (1ª linha fora do formato
+// operacional) e os títulos de seção nunca são reescritos.
+function linhasEditaveis(descricao) {
+  const { nome } = partesDaDescricao(descricao);
+  return linhasPorSecao(descricao).map((x) => ({ ...x, fixa: x.titulo || !x.linha.trim() || (x.i === 0 && nome && x.linha.trim() === nome) }));
+}
+
+// Aplica fn ao texto de cada linha editável (o marcador "* " fica).
+function reescreverLinhas(descricao, fn) {
+  return linhasEditaveis(descricao).map((x) => {
+    if (x.fixa) return x.linha;
+    const m = /^(\s*[-•*–]\s*)?([\s\S]*)$/.exec(x.linha);
+    const novo = fn(m[2], { item: !!m[1], rotulado: ehItemRotulado(x.linha.trim()), tipo: x.tipo, secao: x.secao });
+    return novo == null ? null : (m[1] || "") + novo;
+  }).filter((l) => l !== null).join("\n");
+}
+
+// Pontuação que sobra de um trecho tirado do meio da frase.
+const arrumarPontuacao = (t) => t.replace(/\s+([,.;:!?])/g, "$1").replace(/,\s*([.;!?])/g, "$1").replace(/([,;])\1+/g, "$1")
+  .replace(/^\s*[,;]\s*/, "").replace(/\s{2,}/g, " ").trim();
+
+// Remove frases/itens que casam com pred. Seção que ficaria sem conteúdo:
+// com esvaziar, sai junto com o título; sem, fica como estava. A DESCRIÇÃO
+// PRINCIPAL nunca é esvaziada.
+function removerSegmentos(descricao, pred, { esvaziar = false } = {}) {
+  const linhas = linhasEditaveis(descricao);
+  const porSecao = new Map();
+  for (const x of linhas) {
+    if (x.fixa) continue;
+    const t = x.linha.trim();
+    const novo = ehItemDeLista(t) ? (pred(t.replace(/^[-•*–]\s*/, ""), x) ? null : x.linha)
+      : (() => { const fs = frasesDe(t); const ficam = fs.filter((f) => !pred(f, x)); return ficam.length === fs.length ? x.linha : (ficam.join(" ") || null); })();
+    const k = x.secao || "";
+    if (!porSecao.has(k)) porSecao.set(k, []);
+    porSecao.get(k).push({ x, novo });
+  }
+  const resultado = new Map(linhas.map((x) => [x.i, x.linha]));
+  const tirarTitulo = new Set();
+  for (const [secao, lista] of porSecao) {
+    if (lista.every((e) => e.novo === e.x.linha)) continue;
+    const vazia = lista.every((e) => e.novo == null);
+    if (vazia && (!esvaziar || !secao || secao === "descricao principal")) continue;
+    for (const e of lista) resultado.set(e.x.i, e.novo);
+    if (vazia) tirarTitulo.add(secao);
+  }
+  for (const x of linhas) if (x.titulo && tirarTitulo.has(x.secao)) resultado.set(x.i, null);
+  return linhas.map((x) => resultado.get(x.i)).filter((l) => l != null).join("\n");
+}
+
+// 1. Grafia sem acento (a IA às vezes devolve "versatil", "padrao", "opcao").
+// Só palavra toda em minúscula — ou maiúscula no início da frase/item —, para
+// não tocar nome próprio ou marca. Lista fechada + terminações sem ambiguidade.
+const ACENTOS = new Map(Object.entries({
+  nao: "não", voce: "você", voces: "vocês", tambem: "também", ja: "já", ate: "até", alem: "além", porem: "porém", apos: "após",
+  padrao: "padrão", padroes: "padrões", botao: "botão", botoes: "botões", algodao: "algodão", mao: "mão", maos: "mãos",
+  classico: "clássico", classica: "clássica", classicos: "clássicos", classicas: "clássicas",
+  basico: "básico", basica: "básica", basicos: "básicos", basicas: "básicas", versatil: "versátil", versateis: "versáteis",
+  numerico: "numérico", numerica: "numérica", numericos: "numéricos", numericas: "numéricas", pratico: "prático", praticos: "práticos",
+  otimo: "ótimo", otima: "ótima", otimos: "ótimos", otimas: "ótimas", facil: "fácil", faceis: "fáceis", util: "útil", uteis: "úteis",
+  unico: "único", unica: "única", unicos: "únicos", unicas: "únicas", agil: "ágil", espaco: "espaço", espacos: "espaços",
+  mantem: "mantém", contem: "contém", area: "área", areas: "áreas", agua: "água", rapido: "rápido", rapida: "rápida",
+  rapidos: "rápidos", rapidas: "rápidas", solido: "sólido", solida: "sólida", liquido: "líquido", liquida: "líquida",
+  proprio: "próprio", propria: "própria", tecnico: "técnico", tecnica: "técnica", tecnicos: "técnicos", tecnicas: "técnicas",
+  eletrico: "elétrico", eletrica: "elétrica", eletricos: "elétricos", eletricas: "elétricas", termico: "térmico", termica: "térmica",
+  plastico: "plástico", plastica: "plástica", plasticos: "plásticos", metalico: "metálico", metalica: "metálica",
+  automatico: "automático", automatica: "automática", acessorio: "acessório", acessorios: "acessórios", estetica: "estética",
+  ceramica: "cerâmica", aluminio: "alumínio", poliester: "poliéster", conteudo: "conteúdo", video: "vídeo", videos: "vídeos",
+  audio: "áudio", codigo: "código", genero: "gênero", generos: "gêneros", lancamento: "lançamento", lancamentos: "lançamentos",
+  harmonico: "harmônico", ergonomico: "ergonômico", ergonomica: "ergonômica", cafe: "café", numero: "número", numeros: "números",
+  contemporaneo: "contemporâneo", contemporanea: "contemporânea", contemporaneos: "contemporâneos", contemporaneas: "contemporâneas",
+  movel: "móvel", moveis: "móveis", eletronico: "eletrônico", eletronica: "eletrônica", eletronicos: "eletrônicos", eletronicas: "eletrônicas",
+}));
+const TERMINACOES_SEM_ACENTO = [[/cao$/, "ção"], [/coes$/, "ções"], [/sao$/, "são"], [/soes$/, "sões"], [/xao$/, "xão"], [/xoes$/, "xões"],
+  [/encia$/, "ência"], [/encias$/, "ências"], [/ancia$/, "ância"], [/ancias$/, "âncias"], [/avel$/, "ável"], [/aveis$/, "áveis"],
+  [/ivel$/, "ível"], [/iveis$/, "íveis"]];
+const TITULOS_ACENTUADOS = new Map([["descricao principal", "DESCRIÇÃO PRINCIPAL"], ["especificacoes", "ESPECIFICAÇÕES"],
+  ["dimensoes", "DIMENSÕES"], ["conteudo da embalagem", "CONTEÚDO DA EMBALAGEM"], ["informacoes adicionais", "INFORMAÇÕES ADICIONAIS"],
+  ["beneficios", "BENEFÍCIOS"], ["observacoes", "OBSERVAÇÕES"], ["experiencia de compra", "EXPERIÊNCIA DE COMPRA"]]);
+function acentuar(w) {
+  if (ACENTOS.has(w)) return ACENTOS.get(w);
+  if (w.length < 5 || !/^[a-z]+$/.test(w)) return null;
+  const t = TERMINACOES_SEM_ACENTO.find(([re]) => re.test(w));
+  return t ? w.replace(t[0], t[1]) : null;
+}
+function corrigirAcentos(descricao) {
+  const corpo = reescreverLinhas(descricao, (t) => t.replace(/(?<![\p{L}\d])\p{L}+(?![\p{L}\d])/gu, (w, ini, s) => {
+    // depois de "Rótulo:" vem valor da ficha (marca, nome): não conta como início
+    const inicio = /^\s*$|[.!?]\s*$/.test(s.slice(0, ini));
+    const minuscula = w === w.toLowerCase();
+    if (!minuscula && !(inicio && w === w[0] + w.slice(1).toLowerCase())) return w;
+    const a = acentuar(w.toLowerCase());
+    return !a ? w : minuscula ? a : a[0].toUpperCase() + a.slice(1);
+  }));
+  // título de seção do formato operacional escrito sem acento ("ESPECIFICACOES")
+  return corpo.split("\n").map((l) => {
+    const t = l.trim();
+    const canon = TITULOS_ACENTUADOS.get(chaveDeSecao(t));
+    return canon && t === t.toUpperCase() && t.replace(/:$/, "") !== canon && semAcento(t.replace(/:$/, "")) === semAcento(canon) ? canon + (/:$/.test(t) ? ":" : "") : l;
+  }).join("\n");
+}
+
+// 2. Valor sem informação vindo da ficha ("Características do produto: Sem
+// validade", "Produto sem validade", "Não se aplica"): frase/item sai; num
+// trecho de frase ("…, sem validade."), só o trecho sai.
+const RE_SEM_INFORMACAO = /(^|[^a-z])(sem validade|nao se aplica|nao aplicavel|nao informad[oa]|nao especificad[oa])(?=[^a-z]|$)/;
+const PALAVRAS_DE_VALOR_VAZIO = new Set(["produto", "item", "caracteristica", "sem", "validade", "aplica", "aplicavel", "informado",
+  "informada", "especificado", "especificada", "nao", "possui", "tem", "e"].map((w) => seo.reduceMorphology(w)));
+function tirarValoresSemInformacao(descricao) {
+  const trecho = reescreverLinhas(descricao, (t, x) => {
+    if (x.item || !RE_SEM_INFORMACAO.test(semAcento(t))) return t;
+    return frasesDe(t).map((f) => {
+      const sem = f.replace(/(,\s*|\s+e\s+)(?:(?:é|e|o produto é)\s+)?(sem validade|n[ãa]o se aplica)(?=\s*[.;!?]?\s*$)/i, "")
+        .replace(/^((?:o\s+)?produto|item)\s+sem validade,\s*/i, "$1 "); // "Produto sem validade, indicado…" → "Produto indicado…"
+      return sem === f ? f : arrumarPontuacao(sem);
+    }).join(" ");
+  });
+  return removerSegmentos(trecho, (seg) => {
+    if (!RE_SEM_INFORMACAO.test(semAcento(seg))) return false;
+    const resto = seo.extractTokens(seg).filter((tk) => !tk.stopword && !PALAVRAS_DE_VALOR_VAZIO.has(tk.key));
+    // item/frase que é só o valor vazio, ou que gira em torno dele ("Sem validade, oferecem…")
+    return !resto.length || /^\s*[-•*–]?\s*(sem validade|n[ãa]o se aplica)/i.test(seg) || /^[^:]{2,40}:\s*(sem validade|n[ãa]o se aplica)/i.test(seg);
+  }, { esvaziar: true });
+}
+
+// 3. Rótulo ecoado no valor: "e com gênero sem gênero", "de cor sem cor".
+function tirarRotuloEcoado(descricao) {
+  return reescreverLinhas(descricao, (t, x) => {
+    if (x.rotulado) return t;
+    const novo = t.replace(/(,\s*|\s+)(?:e\s+)?(?:com|de|do|da)\s+(\p{L}+)\s+sem\s+(\p{L}+)(?!\p{L})/giu,
+      (m, a, w1, w2) => (semAcento(w1.toLowerCase()) === semAcento(w2.toLowerCase()) ? "" : m));
+    return novo === t ? t : arrumarPontuacao(novo);
+  });
+}
+
+// 4. Qualificador que só repete o que a frase já disse: "O Trator BS Toys,
+// modelo Trator Bs Toys, é…" → "O Trator BS Toys é…"; "O SSD NTC, da linha
+// SSD, é…" → "O SSD NTC é…".
+const CONTINUA_SEM_VIRGULA = /^\s*(?:é|são|tem|têm|possui|possuem|traz|trazem|conta|contam|oferece|oferecem|foi|vem|vêm|chega|chegam|apresenta|em|de|com|na|no|nas|nos|para|da|do)(?!\p{L})/u;
+function tirarQualificadorRedundante(descricao) {
+  return reescreverLinhas(descricao, (t, x) => {
+    if (x.rotulado) return t;
+    return frasesDe(t).map((f) => f.replace(/,\s*(?:d[ao]\s+)?(?:modelo|linha)\s+([^,.;:!?]+?)\s*(,|(?=[.;!?]\s*$)|$)/giu, (m, valor, fim, ini) => {
+      const chaves = seo.contentKeys(valor);
+      const antes = new Set(seo.contentKeys(f.slice(0, ini)));
+      if (!chaves.length || !chaves.every((k) => antes.has(k))) return m;
+      if (fim !== ",") return "";
+      // aposto entre vírgulas antes do verbo/complemento: as duas vírgulas saem
+      return CONTINUA_SEM_VIRGULA.test(f.slice(ini + m.length)) ? " " : ", ";
+    }).replace(/\s{2,}/g, " ").replace(/\s+([.;!?])/g, "$1")).join(" ");
+  });
+}
+
+// 5. Palavra (ou sequência de até 3) repetida em seguida: "para para",
+// "de alta qualidade de alta qualidade". Só minúsculas: nome próprio e
+// marca ("Bora Bora") ficam.
+function tirarRepeticaoImediata(descricao) {
+  return reescreverLinhas(descricao, (t) => t.replace(/(?<!\p{L})(\p{Ll}{2,}(?:\s+\p{Ll}{2,}){0,2})\s+\1(?!\p{L})/gu, "$1"));
+}
+
+// 6. Metatexto: frase que fala da própria descrição ou das informações em vez
+// do produto ("quando as informações estão claras", "confira as
+// especificações", "medidas objetivas para ajudar na escolha").
+const RE_METATEXTO = /(^|[^a-z])(informacoes (?:estao )?(?:claras|essenciais|completas|detalhadas|objetivas|corretas)|com as informacoes|medidas objetivas|confira as (?:especificacoes|informacoes|caracteristicas)|veja as especificacoes|(?:para )?ajuda(?:m|r)? na escolha|(?:nesta|esta|desta) descricao|(?:neste|este|deste) anuncio|consulte a (?:ficha|tabela))(?=[^a-z]|$)/;
+function tirarMetatexto(descricao) {
+  return removerSegmentos(descricao, (seg, x) => x.tipo === "copy" && RE_METATEXTO.test(semAcento(seg)));
+}
+
+// 7. Concordância de cor fora do item "Rótulo: valor": "na cor branco" →
+// "na cor branca", "* Cor amarelo" → "* Cor amarela", "cor principal
+// multicolorido" → "multicolorida". O valor fica se vier com maiúscula ou
+// combinado ("Cor: Branco" e "Preto + Branco" vêm da ficha e ficam).
+const RE_COR_MASCULINA = /(?<!\p{L})([Cc]or(?:\s+principal|\s+predominante)?)\s+(branc|pret|amarel|vermelh|rox|dourad|prated|cromad|multicolorid|variad|escur|clar)o(?!\p{L}|\s*[+/]|\s+e\s+\p{Ll}+o(?!\p{L}))/gu;
+function concordarCor(descricao) {
+  return reescreverLinhas(descricao, (t, x) => (x.rotulado ? t : t.replace(RE_COR_MASCULINA, "$1 $2a")));
+}
+
+// 8. Material com maiúscula no meio da frase ("em material Plástico",
+// "Fabricada em Alumínio"): vira minúscula. Só nomes da lista de materiais.
+const PALAVRAS_DE_MATERIAL = new Set(Object.values(MATERIAIS).flat(2));
+function minusculaDeMaterial(descricao) {
+  return reescreverLinhas(descricao, (t, x) => (x.rotulado ? t : t.replace(/(?<!\p{L})(material|materiais|em|de|feit[oa]s?|fabricad[oa]s?)\s+(\p{Lu}\p{Ll}+)(?!\p{L}|\s*[+/]|\s+\p{Lu})/gu,
+    (m, antes, w) => (PALAVRAS_DE_MATERIAL.has(semAcento(w.toLowerCase())) ? antes + " " + w.toLowerCase() : m))));
+}
+
+// 9. Item que repete outro da MESMA seção: todas as palavras de conteúdo dele
+// já estão num item mais completo ("Cor branca" ao lado de "Cor branca, de
+// visual delicado"). O mais curto sai; idênticos, fica o primeiro.
+function tirarItensContidos(descricao) {
+  const linhas = linhasEditaveis(descricao);
+  const itens = linhas.filter((x) => !x.fixa && ehItemDeLista(x.linha.trim()))
+    .map((x) => ({ x, rotulado: ehItemRotulado(x.linha.trim()), chaves: new Set(seo.contentKeys(x.linha.trim().replace(/^[-•*–]\s*/, ""))) }));
+  const sai = new Set();
+  for (const a of itens) {
+    if (!a.chaves.size) continue;
+    for (const b of itens) {
+      if (a === b || a.x.secao !== b.x.secao || sai.has(b.x.i)) continue;
+      const contido = Array.from(a.chaves).every((k) => b.chaves.has(k));
+      const igual = contido && a.chaves.size === b.chaves.size;
+      // item "Rótulo: valor" é um fato próprio ("Tipo de short" ≠ "Tipo de saia"):
+      // só sai se for idêntico a outro
+      if (!igual && (a.rotulado || b.rotulado)) continue;
+      if (contido && (!igual || b.x.i < a.x.i)) { sai.add(a.x.i); break; }
+    }
+  }
+  return linhas.filter((x) => !sai.has(x.i)).map((x) => x.linha).join("\n");
+}
+
+// 10. Seção pobre: bloco de fato que ficou com um único item, e esse item já
+// está dito no resto do texto — o bloco não acrescenta nada e sai inteiro.
+function tirarSecaoPobre(descricao) {
+  const linhas = linhasEditaveis(descricao);
+  const sai = new Set();
+  const secoes = new Set(linhas.filter((x) => x.titulo && x.tipo === "fato" && x.secao).map((x) => x.secao));
+  for (const secao of secoes) {
+    const conteudo = linhas.filter((x) => x.secao === secao && !x.fixa);
+    if (conteudo.length !== 1 || !ehItemDeLista(conteudo[0].linha.trim())) continue;
+    const fora = new Set(seo.contentKeys(linhas.filter((x) => x.secao !== secao && !x.titulo).map((x) => x.linha).join("\n")));
+    const chaves = seo.contentKeys(conteudo[0].linha.replace(/^\s*[-•*–]\s*/, ""));
+    if (chaves.length && chaves.every((k) => fora.has(k))) for (const x of linhas) if (x.secao === secao) sai.add(x.i);
+  }
+  return linhas.filter((x) => !sai.has(x.i)).map((x) => x.linha).join("\n");
+}
+
+const REGRAS_EDITORIAIS = [
+  ["ACENTUACAO", corrigirAcentos],
+  ["VALOR_SEM_INFORMACAO", tirarValoresSemInformacao],
+  ["ROTULO_ECOADO", tirarRotuloEcoado],
+  ["QUALIFICADOR_REDUNDANTE", tirarQualificadorRedundante],
+  ["REPETICAO_IMEDIATA", tirarRepeticaoImediata],
+  ["METATEXTO", tirarMetatexto],
+  ["CONCORDANCIA_DE_COR", concordarCor],
+  ["MATERIAL_MINUSCULO", minusculaDeMaterial],
+  ["ITEM_CONTIDO", tirarItensContidos],
+  ["SECAO_POBRE", tirarSecaoPobre],
+];
+
+//   { descricao, chars, fatosUsados, ajustes: [codigo] }
+// Entrada: texto que JÁ passou em validarDescricao. Regra que faria a
+// validação falhar é ignorada.
+function polirDescricao(descricaoValida, fatosUsados, ficha) {
+  let atual = normalizarTexto(descricaoValida);
+  let v = validarDescricao(atual, fatosUsados, ficha);
+  if (!v.valida) return { descricao: atual, chars: atual.length, fatosUsados, ajustes: [] };
+  const ajustes = [];
+  for (const [codigo, regra] of REGRAS_EDITORIAIS) {
+    const novo = normalizarTexto(regra(atual, ficha));
+    if (novo === atual) continue;
+    const rv = validarDescricao(novo, fatosUsados, ficha);
+    if (!rv.valida) continue;
+    ajustes.push(codigo);
+    atual = novo;
+    v = rv;
+  }
+  return { descricao: v.descricao, chars: v.chars, fatosUsados: v.fatosUsados, ajustes };
+}
+
+// -----------------------------------------------------------------------------
 // Prompt — fatos com ID, proibidos, contexto fraco e regras de estilo.
 // Nada de score, ranking, keywords ou volume de busca.
 // -----------------------------------------------------------------------------
@@ -2693,16 +2960,19 @@ async function gerarDescricao({ ficha, aiProvider }) {
     };
   }
 
+  // F10 — polimento editorial (só forma; cada regra revalidada).
+  const polida = polirDescricao(v.descricao, v.fatosUsados, ficha);
   const porId = new Map(ficha.fatos.map((f) => [f.id, f]));
   return {
     ...conflitos,
     ...podados,
     ...avisos,
+    ...(polida.ajustes.length ? { ajustesEditoriais: polida.ajustes } : {}),
     ok: true,
-    descricao: v.descricao,
-    chars: v.chars,
+    descricao: polida.descricao,
+    chars: polida.chars,
     limite: ficha.limite,
-    fatosUsados: v.fatosUsados.map((id) => {
+    fatosUsados: polida.fatosUsados.map((id) => {
       const f = porId.get(id);
       if (f) return { id, label: f.label, value: f.value };
       if (id === "categoria") return { id, label: "Categoria", value: ficha.categoria };
@@ -2719,6 +2989,7 @@ module.exports = {
   montarPrompt,
   validarDescricao,
   validarComCorrecoes,
+  polirDescricao,
   severidade,
   podarItens,
   limparNomeConflitante,

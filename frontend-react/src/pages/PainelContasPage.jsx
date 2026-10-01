@@ -103,6 +103,19 @@ function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, o
   );
 }
 
+// De onde vem a carteira (regra do Painel: admin · coordenador · gestor).
+export function descreverAcesso(acesso) {
+  if (!acesso) return null;
+  if (acesso.tipo === "admin") return "todos os Squads";
+  const partes = [];
+  const squads = (acesso.squadsCoordenados || []).map((s) => s.nome);
+  if (squads.length) partes.push(`${squads.length === 1 ? "Squad que você coordena" : "Squads que você coordena"}: ${squads.join(", ")}`);
+  if (acesso.clientesComoGestor > 0) {
+    partes.push(`gestor de ${acesso.clientesComoGestor} ${acesso.clientesComoGestor === 1 ? "cliente" : "clientes"}`);
+  }
+  return partes.join(" · ") || null;
+}
+
 export default function PainelContasPage() {
   const painel = usePainelContas();
   const {
@@ -110,7 +123,7 @@ export default function PainelContasPage() {
     squadId, setSquadId, busca, setBusca, status, setStatus,
     marketplace, setMarketplace, mostrarLegado, setMostrarLegado,
     temFiltroAtivo, limparFiltros,
-    clientes, resumoCarteira, squadsDisponiveis, secoesMarketplace, visao,
+    clientes, resumoCarteira, squadsDisponiveis, secoesMarketplace, visao, acesso,
     carregando, atualizando, erro, recarregar,
     mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
     semanasContasPorCliente, carregarSemanasContas,
@@ -159,6 +172,7 @@ export default function PainelContasPage() {
             <h1 className="vf-page-header__title">Painel de Contas</h1>
             <p className="vf-page-header__description">
               {rotularCompetencia(competencia)} · dados operacionais da carteira
+              {descreverAcesso(acesso) && <span data-testid="escopo-acesso"> · {descreverAcesso(acesso)}</span>}
             </p>
           </div>
         </header>
@@ -167,7 +181,15 @@ export default function PainelContasPage() {
           <SecoesMarketplace secoes={secoesMarketplace} ativa={marketplace} onSelecionar={setMarketplace} />
         )}
 
-        {erro && !clientes && (
+        {erro && !clientes && erro.status === 403 && (
+          <Vazio
+            icone="⊘"
+            titulo="O Painel de Contas não está liberado para você"
+            descricao="O Painel mostra a carteira de quem coordena um Squad ou é gestor de um cliente. Se você deveria ver esta carteira, fale com o administrador."
+          />
+        )}
+
+        {erro && !clientes && erro.status !== 403 && (
           <div className="vf-banner is-danger" role="alert">
             <div className="vf-banner__content">
               <p className="vf-banner__title">Não foi possível carregar o Painel de Contas</p>

@@ -390,6 +390,7 @@ export function usePainelContas() {
     squadsDoUsuario: dados?.squadsDoUsuario || [],
     marketplacesDisponiveis: dados?.marketplacesDisponiveis || [],
     secoesMarketplace: dados?.secoesMarketplace || [],
+    acesso: dados?.acesso || null,
     visao: dados?.visao || null,
     permissoes: dados?.permissoes || { lancarManual: false, atualizarDados: false },
     competenciaAtual: dados?.competenciaAtual || competenciaPadrao,

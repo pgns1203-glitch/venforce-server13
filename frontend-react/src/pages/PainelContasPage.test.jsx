@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import PainelContasPage from "./PainelContasPage.jsx";
+import PainelContasPage, { descreverAcesso } from "./PainelContasPage.jsx";
 
 const mocks = vi.hoisted(() => ({ usePainelContas: vi.fn() }));
 vi.mock("../hooks/usePainelContas.js", () => ({ usePainelContas: mocks.usePainelContas }));
@@ -448,5 +448,33 @@ describe("seções por marketplace", () => {
     expect(screen.getByText(/nenhum cliente com operação TikTok Shop/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /ver consolidado/i }));
     expect(e.setMarketplace).toHaveBeenCalledWith(null);
+  });
+});
+
+describe("acesso por Squad", () => {
+  it("sem vínculo (403) mostra estado de acesso, não erro técnico", () => {
+    mocks.usePainelContas.mockReturnValue(estado({
+      clientes: null, erro: { codigo: "sem_permissao", status: 403, mensagem: "Você não tem permissão." },
+    }));
+    render(<PainelContasPage />);
+    expect(screen.getByText(/não está liberado para você/i)).toBeInTheDocument();
+    expect(screen.getByText(/coordena um Squad ou é gestor de um cliente/i)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: /tentar de novo/i })).toBeNull();
+  });
+
+  it("cabeçalho diz de onde vem a carteira", () => {
+    mocks.usePainelContas.mockReturnValue(estado({
+      acesso: { tipo: "carteira", squadsCoordenados: [{ id: 2, nome: "Squad 2" }], clientesComoGestor: 1 },
+    }));
+    render(<PainelContasPage />);
+    expect(screen.getByTestId("escopo-acesso")).toHaveTextContent("Squad que você coordena: Squad 2 · gestor de 1 cliente");
+  });
+
+  it("descreverAcesso cobre admin, coordenador, gestor e ausência", () => {
+    expect(descreverAcesso({ tipo: "admin" })).toBe("todos os Squads");
+    expect(descreverAcesso({ tipo: "carteira", squadsCoordenados: [{ nome: "A" }, { nome: "B" }], clientesComoGestor: 0 })).toBe("Squads que você coordena: A, B");
+    expect(descreverAcesso({ tipo: "carteira", squadsCoordenados: [], clientesComoGestor: 3 })).toBe("gestor de 3 clientes");
+    expect(descreverAcesso(null)).toBeNull();
   });
 });

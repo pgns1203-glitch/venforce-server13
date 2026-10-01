@@ -1,10 +1,13 @@
 // server/services/painelContas/painelContasService.js
 // Orquestrador do Painel de Contas (Auditoria §13) — versão operacional.
 //
-// `resolvePortfolioClientes`/`assertClienteNaCarteira` são SEMPRE o primeiro
-// passo — squad/busca/status/marketplace/legado são filtros aplicados DEPOIS,
-// sobre o conjunto já autorizado pelo servidor. Filtro enviado pelo frontend é
-// preferência de exibição, nunca fonte de autorização (Auditoria §15).
+// O escopo do Painel (painelContasAcesso: admin · coordenador do Squad ·
+// gestor do cliente) é SEMPRE o primeiro passo — squad/busca/status/
+// marketplace/legado são filtros aplicados DEPOIS, sobre o conjunto já
+// autorizado pelo servidor. Filtro enviado pelo frontend é preferência de
+// exibição, nunca fonte de autorização (Auditoria §15). Escrita (lançamento
+// manual) exige o escopo do Painel E a carteira global — interseção, nunca
+// ampliação.
 //
 // ── Contrato da competência ────────────────────────────────────────────────
 // A lista representa EXATAMENTE uma competência (YYYY-MM; padrão = mês
@@ -17,7 +20,8 @@
 // chamada a API externa (Orders/Ads) — só dado persistido.
 
 const pool = require("../../config/database");
-const { resolvePortfolioClientes, assertClienteNaCarteira } = require("../squads/authorizationService");
+const { assertClienteNaCarteira, clientesAutorizadosSet } = require("../squads/authorizationService");
+const { resolverEscopoPainel, assertClienteNoPainel } = require("./painelContasAcesso");
 const squadsRepo = require("../squads/squadsRepository");
 const cliente360Repo = require("../cliente360/cliente360Repository");
 const { selecionarMelhorImportPorCompetencia } = require("../centralVendas/centralVendasRepository");
@@ -163,8 +167,15 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
   const permitido = podeLancar(user);
   const podeAtualizar = atualizacao.ehAdmin(user);
 
-  const autorizados = await resolvePortfolioClientes(user, pool);
   await squadsRepo.ensureSquadsTables();
+  const acesso = await resolverEscopoPainel(user, pool);
+  if (acesso.tipo === "nenhum") {
+    throw erro(403, "PAINEL_SEM_ACESSO",
+      "O Painel de Contas é liberado para quem coordena um Squad ou é gestor de um cliente. Fale com o administrador se precisar de acesso.");
+  }
+  const autorizados = acesso.clientes;
+  // Lançar exige também a carteira global (o gate de escrita de sempre).
+  const carteiraEscrita = permitido ? await clientesAutorizadosSet(user, pool) : new Set();
   const [squadsUsuario, squadPorCliente] = await Promise.all([
     squadsRepo.membershipsDoUsuario(user.id),
     squadsRepo.squadsAtivosDeClientes(autorizados.map((c) => c.id)),
@@ -243,8 +254,8 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
       competencia,
       ...consolidado,
       ultimaCompetenciaComDado: ultimaPorCliente.get(c.id) || null,
-      contas: contas.map((conta) => contaPublica(conta, permitido)),
-      podeLancarManual: permitido && contas.some((conta) => conta.podeLancarManual),
+      contas: contas.map((conta) => contaPublica(conta, permitido && carteiraEscrita.has(c.id))),
+      podeLancarManual: permitido && carteiraEscrita.has(c.id) && contas.some((conta) => conta.podeLancarManual),
       // Atualização sob demanda em curso (ou recém-terminada) deste cliente
       // nesta competência — lida do registro em memória, sem query. Deixa a
       // tela retomar o progresso depois de um F5.
@@ -269,6 +280,12 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
     secoesMarketplace: secoesMarketplace(contasRows),
     // atualizarDados = mesmo gate do sync manual da Central (admin).
     permissoes: { lancarManual: permitido, atualizarDados: podeAtualizar },
+    // De onde vem a carteira deste usuário no Painel (só leitura).
+    acesso: {
+      tipo: acesso.tipo,
+      squadsCoordenados: acesso.squadsCoordenados,
+      clientesComoGestor: acesso.clientesComoGestor,
+    },
     resumoCarteira: resumirCarteira(noMarketplace, legadoOcultos),
     clientes: noMarketplace.filter((c) => passaFiltroStatus(c, status)),
   });
@@ -277,7 +294,7 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
 // GET /painel-contas/:clienteId/meses?ano= (§13/§25) — histórico CONSOLIDADO
 // do cliente (snapshot mensal), aberto sob demanda.
 async function listarMeses(user, clienteRef, { ano } = {}) {
-  const cliente = await assertClienteNaCarteira(user, clienteRef, pool);
+  const cliente = await assertClienteNoPainel(user, clienteRef, pool);
   const anoNum = anoValido(ano) || anoAtualUTC();
   const linhas = await repo.listarResumosDoAno(cliente.id, cliente.slug, anoNum);
 
@@ -308,7 +325,7 @@ async function listarMeses(user, clienteRef, { ano } = {}) {
 
 // GET /painel-contas/:clienteId/meses/:competencia/semanas (§11/§13/§25).
 async function listarSemanas(user, clienteRef, competencia) {
-  const cliente = await assertClienteNaCarteira(user, clienteRef, pool);
+  const cliente = await assertClienteNoPainel(user, clienteRef, pool);
   if (!/^\d{4}-\d{2}$/.test(String(competencia || ""))) {
     throw erro(400, "COMPETENCIA_INVALIDA", "competencia inválida (esperado YYYY-MM).");
   }
@@ -329,7 +346,7 @@ async function listarSemanas(user, clienteRef, competencia) {
 // escolhido é exatamente o mesmo da lista/FAT mensal; nenhum dado externo é
 // chamado e não existe query por conta nem por semana.
 async function listarSemanasDasContas(user, clienteRef, competencia) {
-  const cliente = await assertClienteNaCarteira(user, clienteRef, pool);
+  const cliente = await assertClienteNoPainel(user, clienteRef, pool);
   if (!competenciaValida(competencia)) {
     throw erro(400, "COMPETENCIA_INVALIDA", "competencia inválida (esperado YYYY-MM).");
   }
@@ -375,7 +392,9 @@ async function resolverContaParaLancamento(user, clienteRef, contaIdRaw, compete
   if (!podeLancar(user)) throw erro(403, "SEM_PERMISSAO", "Seu papel não permite lançar dados manuais.");
   if (!competenciaValida(competencia)) throw erro(400, "COMPETENCIA_INVALIDA", "competencia inválida (esperado YYYY-MM).");
   if (competencia > competenciaAtual(agora)) throw erro(400, "COMPETENCIA_FUTURA", "Não é possível lançar dados de uma competência futura.");
-  const cliente = await assertClienteNaCarteira(user, clienteRef, pool);
+  // Interseção: escopo de leitura do Painel E a carteira global de escrita.
+  const cliente = await assertClienteNoPainel(user, clienteRef, pool);
+  await assertClienteNaCarteira(user, clienteRef, pool);
   const contaId = Number(contaIdRaw);
   const conta = Number.isInteger(contaId) && contaId > 0 ? await repo.obterContaDoCliente(contaId, cliente.id) : null;
   if (!conta) throw erro(404, "CONTA_NAO_ENCONTRADA", "Conta não encontrada neste cliente.");
@@ -445,7 +464,7 @@ function valoresDoHistorico(raw) {
 }
 
 async function resolverContaParaLeitura(user, clienteRef, contaIdRaw) {
-  const cliente = await assertClienteNaCarteira(user, clienteRef, pool);
+  const cliente = await assertClienteNoPainel(user, clienteRef, pool);
   const contaId = Number(contaIdRaw);
   const conta = Number.isInteger(contaId) && contaId > 0 ? await repo.obterContaDoCliente(contaId, cliente.id) : null;
   if (!conta) throw erro(404, "CONTA_NAO_ENCONTRADA", "Conta não encontrada neste cliente.");

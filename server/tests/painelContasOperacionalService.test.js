@@ -12,6 +12,10 @@
 //   F  automático vence manual; manual continua registrado
 //   G  filtros (competência/squad/status/marketplace/busca/legado) nunca furam a carteira
 //   I  query param nunca alcança cliente/conta fora da carteira (lista e escrita)
+//   J  seções por marketplace (ML / Shopee / TikTok Shop)
+//   K  competências independentes + rastreabilidade do lançamento
+//   L  acesso por Squad no Painel: admin · coordenador · gestor · demais
+//      (independente de SQUADS_ENFORCEMENT; escrita = interseção)
 //   -  performance: número FIXO de queries, independente do nº de clientes
 
 process.env.DATABASE_URL = "postgres://nobody@127.0.0.1:1/teste-sem-banco";
@@ -71,11 +75,18 @@ function novoModelo() {
       { id: 20, nome: "Squad 2", slug: "squad-2", ativo: true },
       { id: 80, nome: "Squad 8 - Legado", slug: "squad-8-legado", ativo: true },
     ],
+    // Ana coordena o Squad 6 e o legado; Beto coordena o Squad 2. Carla e
+    // Dani são membros comuns do Squad 2 (sem coordenação).
     members: [
-      { squad_id: 10, user_id: 100, is_primary: true, funcao: "membro", ativo: true },
-      { squad_id: 80, user_id: 100, is_primary: false, funcao: "membro", ativo: true },
-      { squad_id: 20, user_id: 200, is_primary: true, funcao: "membro", ativo: true },
+      { squad_id: 10, user_id: 100, is_primary: true, funcao: "coordenador", ativo: true },
+      { squad_id: 80, user_id: 100, is_primary: false, funcao: "coordenador", ativo: true },
+      { squad_id: 20, user_id: 200, is_primary: true, funcao: "coordenador", ativo: true },
+      { squad_id: 20, user_id: 400, is_primary: true, funcao: "membro", ativo: true },
+      { squad_id: 20, user_id: 500, is_primary: true, funcao: "membro", ativo: true },
     ],
+    // Responsabilidades por cliente (cliente_responsaveis). Começa vazio,
+    // como em produção; o bloco L cria os vínculos.
+    responsaveis: [],
     history: [
       { cliente_id: 1, squad_id: 10, fim_em: null },
       { cliente_id: 2, squad_id: 10, fim_em: null },
@@ -115,7 +126,7 @@ function novoModelo() {
     ],
     manuais: [],
     historico: [],
-    users: [{ id: 100, nome: "Ana" }, { id: 200, nome: "Beto" }, { id: 1, nome: "Admin" }],
+    users: [{ id: 100, nome: "Ana" }, { id: 200, nome: "Beto" }, { id: 1, nome: "Admin" }, { id: 400, nome: "Carla" }, { id: 500, nome: "Dani" }],
   };
 }
 
@@ -124,6 +135,18 @@ function portfolioInterno(m, userId) {
   return m.clientes
     .filter((c) => c.ativo && m.history.some((h) => h.cliente_id === c.id && h.fim_em === null && squadsDoUser.has(h.squad_id)))
     .map(({ id, slug, nome }) => ({ id, slug, nome }));
+}
+
+// Espelho em memória das queries de painelContasAcesso.
+function coordenadosDe(m, userId) {
+  return m.members.filter((x) => x.user_id === userId && x.ativo && x.funcao === "coordenador"
+    && m.squads.some((sq) => sq.id === x.squad_id && sq.ativo)).map((x) => x.squad_id);
+}
+function clientesPainel(m, userId) {
+  const sqs = new Set(coordenadosDe(m, userId));
+  const porSquad = m.clientes.filter((c) => c.ativo && m.history.some((h) => h.cliente_id === c.id && h.fim_em === null && sqs.has(h.squad_id)));
+  const porGestor = m.clientes.filter((c) => c.ativo && m.responsaveis.some((r) => r.cliente_id === c.id && r.user_id === userId && r.ativo && r.papel === "gestor"));
+  return { porSquad, porGestor };
 }
 
 function nomeDe(m, userId) {
@@ -142,6 +165,20 @@ function instalarMock(m) {
     // DDL dos ensures (Squads roda arquivos de migration, que começam com comentário).
     if (/^(--|CREATE|ALTER|DROP|BEGIN|COMMIT|ROLLBACK|DO )/i.test(q) || q.includes("pg_advisory")) return { rows: [] };
 
+    if (q.includes("painelAcesso:ADMIN_TODOS")) { contar("authz"); return { rows: m.clientes.filter((c) => c.ativo).map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
+    if (q.includes("painelAcesso:SQUADS_COORDENADOS")) {
+      contar("authz");
+      return { rows: coordenadosDe(m, params[0]).map((id) => m.squads.find((sq) => sq.id === id)).map(({ id, nome, slug }) => ({ id, nome, slug })) };
+    }
+    if (q.includes("painelAcesso:CLIENTES_COORDENADOS")) { contar("authz"); return { rows: clientesPainel(m, params[0]).porSquad.map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
+    if (q.includes("painelAcesso:CLIENTES_GESTOR")) { contar("authz"); return { rows: clientesPainel(m, params[0]).porGestor.map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
+    if (q.includes("painelAcesso:PODE_VER_CLIENTE")) {
+      contar("authz");
+      const { porSquad, porGestor } = clientesPainel(m, params[0]);
+      return { rows: [...porSquad, ...porGestor].some((c) => c.id === Number(params[1])) ? [{ x: 1 }] : [] };
+    }
+    if (q.includes("authz:PORTFOLIO_INTERNAL_ENFORCEMENT_OFF")) { contar("authz"); return { rows: m.clientes.filter((c) => c.ativo).map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
+    if (q.includes("authz:CAN_ACCESS_ENFORCEMENT_OFF")) { contar("authz"); return { rows: m.clientes.some((c) => c.id === Number(params[0])) ? [{ x: 1 }] : [] }; }
     if (q.includes("authz:PORTFOLIO_ADMIN_ALL")) { contar("authz"); return { rows: m.clientes.filter((c) => c.ativo).map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
     if (q.includes("authz:PORTFOLIO_SELLER")) { contar("authz"); return { rows: [] }; }
     if (q.includes("authz:PORTFOLIO_INTERNAL_BY_SQUAD")) { contar("authz"); return { rows: portfolioInterno(m, params[0]) }; }
@@ -185,6 +222,10 @@ function instalarMock(m) {
       const out = new Map();
       for (const r of m.resumos) if (ids.includes(r.cliente_id) && (!out.has(r.cliente_id) || r.competencia > out.get(r.cliente_id))) out.set(r.cliente_id, r.competencia);
       return { rows: [...out.entries()].map(([cliente_id, competencia]) => ({ cliente_id, competencia })) };
+    }
+    if (q.includes("painelContas:RESUMOS_DO_ANO")) {
+      contar("painel:resumosAno");
+      return { rows: m.resumos.filter((r) => r.cliente_id === params[0] && String(r.competencia).startsWith(String(params[1]).slice(0, 4))) };
     }
     if (q.includes("painelContas:CONTAS_DOS_CLIENTES")) { contar("painel:contas"); return { rows: m.contas.filter((c) => ids.includes(c.cliente_id)) }; }
     if (q.includes("painelContas:IMPORTS_DA_COMPETENCIA")) { contar("painel:imports"); return { rows: m.imports.filter((i) => ids.includes(i.cliente_conta_id) && i.competencia === params[1]) }; }
@@ -260,8 +301,10 @@ function instalarMock(m) {
 const service = require("../services/painelContas/painelContasService");
 
 const U = {
-  ana: { id: 100, role: "membro" },   // Squad 6 + Squad 8 (legado)
-  beto: { id: 200, role: "membro" },  // Squad 2
+  ana: { id: 100, role: "membro" },   // coordena Squad 6 + Squad 8 (legado)
+  beto: { id: 200, role: "membro" },  // coordena Squad 2
+  carla: { id: 400, role: "user" },   // membro comum do Squad 2
+  dani: { id: 500, role: "membro" },  // membro comum do Squad 2
   admin: { id: 1, role: "admin" },
   seller: { id: 300, role: "seller" },
 };
@@ -398,7 +441,7 @@ async function run() {
     ok("I: Ana nunca vê cliente de outro squad", !lista.clientes.some((c) => c.slug === "fora-da-carteira"));
     eq("I: squadId de outro squad não amplia a carteira", (await service.listar(U.ana, { competencia: SET, squadId: 20 })).clientes.length, 0);
     eq("I: legado + busca pelo cliente de fora continua vazio", (await service.listar(U.ana, { competencia: SET, busca: "fora", mostrarLegado: "true" })).clientes.length, 0);
-    eq("I: seller não tem carteira no Painel", (await service.listar(U.seller, { competencia: SET })).clientes.length, 0);
+    await rejeita("I: seller não tem carteira no Painel", service.listar(U.seller, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
     await rejeita("I: lançar em cliente fora da carteira → 403", service.salvarLancamentoManual(U.ana, "6", "61", SET, { faturamento: 1 }), 403, "CLIENTE_FORA_DA_CARTEIRA");
     await rejeita("I: conta de OUTRO cliente pelo path → 404", service.salvarLancamentoManual(U.ana, "3", "61", SET, { faturamento: 1 }), 404, "CONTA_NAO_ENCONTRADA");
     await rejeita("I: remover lançamento de cliente fora da carteira → 403", service.removerLancamentoManual(U.ana, "6", "61", SET), 403);
@@ -490,6 +533,59 @@ async function run() {
 
     m.contas = m.contas.filter((c) => c.id !== 32);
     m.manuais = m.manuais.filter((x) => x.cliente_conta_id !== 32 && x.cliente_conta_id !== 31);
+
+    // =======================================================================
+    // L — acesso por Squad no Painel
+    // =======================================================================
+    const slugs = (r) => r.clientes.map((c) => c.slug).sort();
+    eq("L: admin vê todos os Squads", slugs(await service.listar(U.admin, { competencia: SET, mostrarLegado: "true" })),
+      ["amr-ecommerce", "carpei", "coremix", "fora-da-carteira", "red-fish", "velho-legado"]);
+    eq("L: coordenador vê só os clientes dos Squads que coordena", slugs(await service.listar(U.beto, { competencia: SET })), ["fora-da-carteira"]);
+    const acessoAna = (await service.listar(U.ana, { competencia: SET })).acesso;
+    eq("L: a resposta diz de onde vem a carteira", [acessoAna.tipo, acessoAna.squadsCoordenados.map((x) => x.nome)], ["carteira", ["Squad 6", "Squad 8 - Legado"]]);
+
+    await rejeita("L: membro comum (sem coordenação nem gestão) não recebe acesso", service.listar(U.carla, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+    await rejeita("L: membro comum não lê histórico de cliente do próprio Squad", service.listarMeses(U.carla, "6"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    await rejeita("L: membro comum não lê semanas das contas", service.listarSemanasDasContas(U.carla, "6", SET), 403);
+    await rejeita("L: membro comum não lança, mesmo com o cliente na carteira global", service.salvarLancamentoManual(U.carla, "6", "61", SET, { faturamento: 1 }), 403);
+
+    process.env.SQUADS_ENFORCEMENT = "off";
+    await rejeita("L: flag global desligada não abre o Painel para membro comum", service.listar(U.carla, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+    eq("L: flag global desligada não amplia a carteira do coordenador", slugs(await service.listar(U.beto, { competencia: SET })), ["fora-da-carteira"]);
+    process.env.SQUADS_ENFORCEMENT = "on";
+
+    // Auxiliar/designer não dão acesso; gestor dá, só ao próprio cliente.
+    m.responsaveis.push({ cliente_id: 6, user_id: 400, papel: "auxiliar", ativo: true });
+    await rejeita("L: auxiliar do cliente não recebe acesso", service.listar(U.carla, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+    m.responsaveis.push({ cliente_id: 6, user_id: 400, papel: "gestor", ativo: true });
+    const listaGestora = await service.listar(U.carla, { competencia: SET });
+    eq("L: gestor vê só a carteira a que está vinculado", [slugs(listaGestora), listaGestora.acesso.tipo, listaGestora.acesso.clientesComoGestor], [["fora-da-carteira"], "carteira", 1]);
+    ok("L: gestor lê o histórico do próprio cliente", (await service.listarMeses(U.carla, "6")).ok === true);
+    await rejeita("L: gestor não lê cliente de que não é gestor", service.listarMeses(U.carla, "1"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    m.responsaveis.find((r) => r.papel === "gestor" && r.user_id === 400).ativo = false;
+    await rejeita("L: gestão encerrada (ativo=false) tira o acesso", service.listar(U.carla, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+
+    // Gestor de cliente FORA da carteira global de escrita: lê, não lança.
+    m.responsaveis.push({ cliente_id: 3, user_id: 500, papel: "gestor", ativo: true });
+    const listaDani = await service.listar(U.dani, { competencia: SET });
+    const coreDani = listaDani.clientes.find((c) => c.slug === "coremix");
+    ok("L: gestor vê o cliente que gere", Boolean(coreDani));
+    ok("L: escrita não é ampliada — sem a carteira global, não oferece lançar", coreDani.podeLancarManual === false && coreDani.contas.every((c) => c.podeLancarManual === false));
+    await rejeita("L: e o servidor recusa o lançamento", service.salvarLancamentoManual(U.dani, "3", "31", SET, { faturamento: 1 }), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    m.responsaveis = [];
+
+    // Squad inativo e membership inativa não dão acesso.
+    m.squads.find((sq) => sq.id === 20).ativo = false;
+    await rejeita("L: coordenador de Squad inativo perde o acesso", service.listar(U.beto, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+    m.squads.find((sq) => sq.id === 20).ativo = true;
+    m.members.find((x) => x.user_id === 200).ativo = false;
+    await rejeita("L: coordenação encerrada (membership inativa) tira o acesso", service.listar(U.beto, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+    m.members.find((x) => x.user_id === 200).ativo = true;
+
+    // Isolamento entre carteiras pelo path.
+    await rejeita("L: coordenador não lê cliente de outro Squad pelo path", service.listarSemanas(U.beto, "1", SET), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    await rejeita("L: histórico de lançamento de outro Squad → 403", service.listarHistoricoLancamento(U.beto, "3", "31", SET), 403);
+    await rejeita("L: cliente inexistente → 404", service.listarMeses(U.beto, "9999"), 404, "CLIENTE_NAO_ENCONTRADO");
 
     // =======================================================================
     // Performance: número fixo de queries, sem N+1

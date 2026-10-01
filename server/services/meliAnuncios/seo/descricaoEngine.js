@@ -442,6 +442,44 @@ function conflitosDeQuantidade(atributos, titulo, descricao) {
   return out;
 }
 
+// -----------------------------------------------------------------------------
+// F9.1 — MARCA entre fontes. Só marca DECLARADA ("marca JSN", "Marca: JSN",
+// "Fabricante: JSN"); nome solto no título não é declaração. Se a declarada
+// não bate com a BRAND estruturada, nenhuma das duas é fato: a marca sai da
+// ficha e citar qualquer uma vira CONFLITO_DE_FONTES. Bate quando uma contém a
+// outra, sem espaço/pontuação, ou contém uma palavra da outra ("LIFE PRO
+// IMPORT" × "LongLifePro").
+// -----------------------------------------------------------------------------
+const RE_MARCA_DECLARADA = /(^|[^a-z])(?:marca|fabricante)\s*:?\s+([a-z0-9][a-z0-9&'-]*)/g;
+// palavra depois de "marca" que não é nome ("marca registrada", "marca d'água",
+// "da marca que…", "sem marca")
+const NAO_E_NOME_DE_MARCA = new Set(["registrada", "registradas", "propria", "d", "dagua", "do", "da", "de", "dos", "das", "e",
+  "que", "lider", "nacional", "brasileira", "original", "originais", "renomada", "famosa", "generica", "generico", "sem", "no",
+  "na", "mais", "com", "para", "a", "o", "um", "uma", "sua", "seu", "nossa", "nosso", "preferida", "consagrada",
+  "reconhecida", "contra", "conhecida", "parceira", "oficial", "importada", "exclusiva"]);
+function conflitosDeMarca(brand, fontes) {
+  if (!brand) return [];
+  const junta = (s) => semAcento(s).replace(/[^a-z0-9]/g, "");
+  const b = junta(brand.value);
+  const palavrasDaMarca = semAcento(brand.value).split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+  const out = [];
+  for (const [fonte, t] of fontes) {
+    if (!t) continue;
+    for (const m of semAcento(t).matchAll(RE_MARCA_DECLARADA)) {
+      const decl = junta(m[2]);
+      if (decl.length < 2 || NAO_E_NOME_DE_MARCA.has(m[2])) continue;
+      if (b.includes(decl) || decl.includes(b) || palavrasDaMarca.some((w) => decl.includes(w))) continue;
+      const chaveMarca = seo.contentKeys(brand.value)[0];
+      out.push({
+        id: "brand", label: "Marca", value: brand.value, tipo: "MARCA", fonte, trecho: m[0].slice(m[1].length).trim(),
+        chaves: Array.from(new Set([chaveMarca, seo.contentKeys(m[2])[0]].filter(Boolean))),
+      });
+      break;
+    }
+  }
+  return out;
+}
+
 // Quantidade confiável do kit (N ≥ 2), para a descrição não falar de uma peça
 // como se fosse o produto inteiro. Sem conflito de quantidade:
 //   atributo de unidades por kit ≥ 2; ou, sem atributo, UMA quantidade no
@@ -565,6 +603,8 @@ function detectarConflitos(fatos, fontes, categoria) {
     if (!conflitos.some((x) => x.id === c.id)) conflitos.push(c);
   }
   conflitos.push(...conflitosDeQuantidade(atributos, titulo, descricao));
+  // F9.1 — MARCA: BRAND estruturada × marca DECLARADA no título/descrição atual
+  conflitos.push(...conflitosDeMarca(fatos.find((f) => f.id === "brand"), fontes));
   // NEGACAO: "sem <assunto>" no contexto × atributo que afirma o assunto
   const doProdutoNeg = new Set(seo.contentKeys(categoria || ""));
   const tipoNeg = seo.contentKeys(titulo || "").find((k) => !/^\d/.test(k) && !PALAVRAS_DE_KIT.has(k));
@@ -828,7 +868,8 @@ function montarFicha(anuncio, opts = {}) {
     alvo,
     categoria: categoriaUtil,
     tituloAtual,
-    marca: marcaUtil,
+    // F9.1 — marca em conflito entre fontes não é fato confiável
+    marca: conflitos.some((c) => c.tipo === "MARCA") ? null : marcaUtil,
     modelo: modeloUtil,
     descricaoAtual,
     fatos,
@@ -992,6 +1033,21 @@ const DIMENSOES_DE_DESEMPENHO = [/^(eficien|eficaz|eficac)/, /^(rapid|veloz|velo
 const RE_DESEMPENHO = /(^|[^a-z])(eficientes?|eficiencia|eficaz(?:es)?|eficacia|rapid[oa]s?|rapidamente|rapidez|velozes|veloz|potentes?|potencia|estave(?:l|is)|estabilidade|firmes?|firmeza|robust[oa]s?|robustez|silencios[oa]s?|silencio|dura(?:vel|veis)|durabilidade|resistentes?|resistencia|precisao|desempenho|performance)(?=[^a-z]|$)/g;
 const RE_USO = /(^|[^a-z])(uso (?:prolongado|continuo|intenso|pesado|constante|severo)|longa (?:duracao|vida)|vida util|(?:por|durante) (?:muito|mais|longo) tempo|por (?:varias |muitas )?horas|horas de uso|em (?:pouco|menos) tempo|em (?:poucos )?(?:segundos|minutos)|tempo indeterminado|sem esforco|com (?:agilidade|rapidez|eficiencia|precisao|firmeza)|nao (?:desbotam?|amassam?|enrolam?|deformam?|quebram?|enferrujam?|descascam?|mancham?|vazam?|escorregam?|esquentam?|encolhem?|desfiam?|perdem? a (?:cor|forma)))(?=[^a-z]|$)/g;
 
+// F9.1 — formas de FUNÇÃO técnica (ver claimsObjetivosSemFonte). Classes de
+// forma, não lista de produto:
+//   prefixo de propriedade — anti-/hipo- + radical ("antigo/antiguidade" não);
+//   tratamento/filtragem nomeado — "tratamento X", "revestimento X",
+//     "filtragem X", "filtro X", "camada X", "barreira X", "membrana X";
+//   ação sobre agente — filtra, retém, bloqueia, repele, isola, veda,
+//     neutraliza, elimina (3ª pessoa/infinitivo: instrução "evite" fica fora);
+//   agente físico-químico — poeira, névoa, fumo, gás, vapor, respingo,
+//     umidade, corrosão, ferrugem, mofo, bactéria, germe, ácaro, alérgeno,
+//     radiação, chama, faísca, produto químico.
+const RE_FUNCAO_PREFIXO = /(^|[^a-z])((?:anti(?!g)|hipo)[a-z]{5,})(?=[^a-z]|$)/g;
+const RE_FUNCAO_TRATAMENTO = /(^|[^a-z])((?:tratamento|revestimento|filtragem|filtro|camada|barreira|membrana)\s+(?:de\s+)?([a-z]{5,}))(?=[^a-z]|$)/g;
+const RE_FUNCAO_ACAO = /(^|[^a-z])(filtra(?:m|r)?|filtragem|ret[eé]m|reter|bloqueia(?:m)?|repele(?:m)?|repelir|isola(?:m|r)?|veda(?:m|r)?|vedacao|neutraliza(?:m|r)?|elimina(?:m|r)?)(?=[^a-z]|$)/g;
+const RE_AGENTE = /(^|[^a-z])(poeiras?|nevoas?|fumos?|gases|vapor(?:es)?|respingos?|umidade|corrosao|ferrugem|mofo|bacterias?|germes?|acaros?|alergenos?|radiacao|chamas|faiscas?|produtos? quimicos?|agentes? quimicos?)(?=[^a-z]|$)/g;
+
 // F8.3 — a exceção de compra só vale quando a palavra modifica o ATO de
 // comprar: entre a âncora (comprar, finalizar, concluir, adquirir, compra,
 // pedido) e a palavra só pode haver artigo/possessivo, o objeto da compra,
@@ -1051,6 +1107,16 @@ function claimsObjetivosSemFonte(texto, ficha) {
     add(m[2]);
   }
   for (const m of s.matchAll(RE_USO)) if (!temFrase(m[2])) add(m[2]);
+  // F9.1 — FUNÇÃO técnica, também em COMO USAR: propriedade por prefixo
+  // ("antiembaçante", "hipoalergênico"), tratamento/filtragem nomeados
+  // ("tratamento eletrostático"), ação sobre um agente ("filtra", "repele",
+  // "veda") e exposição a agente físico-químico ("ambientes com poeiras,
+  // névoas e fumos"). Mesma evidência: fato estruturado ou título.
+  const temRaiz = (w, n = 6) => tokensFortes.some((x) => x.startsWith(w.slice(0, n)));
+  for (const m of s.matchAll(RE_FUNCAO_PREFIXO)) if (!temRaiz(m[2], Math.min(m[2].length, 9))) add(m[2]);
+  for (const m of s.matchAll(RE_FUNCAO_TRATAMENTO)) if (!temFrase(m[2]) && !temRaiz(m[3])) add(m[2]);
+  for (const m of s.matchAll(RE_FUNCAO_ACAO)) if (!temRaiz(m[2], 5)) add(m[2]);
+  for (const m of s.matchAll(RE_AGENTE)) if (!temRaiz(m[2], 5)) add(m[2]);
   return out;
 }
 
@@ -1087,6 +1153,25 @@ function fatosObjetivosDaCopy(texto, ficha) {
     if (!(MATERIAL_POR_CHAVE.has(t.key) || CHAVES_DE_COR.has(t.key) || CHAVES_DE_COMPONENTE.has(t.key)) || out.includes(t.original.toLowerCase())) continue;
     if (ficha.vocabularioAutorizado.has(t.key) || autorizadaPorMorfologia(t.key, ficha)) continue;
     out.push(t.original.toLowerCase());
+  }
+  return out;
+}
+
+// F9.1 — RECEBER com o comprador como sujeito ("você recebe tudo o que
+// precisa", "receber o produto", "recebe uma peça estilosa") promete entrega:
+// logística HARD. Fica de fora a FUNÇÃO do produto — "recebe chamadas /
+// mensagens / notificações / até 3 lâmpadas", "receber visitas" — e o verbo
+// que um fato estruturado ou o título já tem.
+const RE_RECEBER = /(^|[^a-z])(receb(?:e|em|era|erao|er|endo|ido|ida|imento)|receba|recebam)(?=[^a-z]|$)/g;
+const OBJETOS_DE_FUNCAO_DE_RECEBER = /^\s+(?:(?:a|as|o|os|ate|ate\s+\d+)\s+)?(?:\d+\s+)?(chamadas?|ligacoes?|mensagens?|notificacoes?|sinal|sinais|dados|arquivos|carga|energia|agua|luz|lampadas?|visitas?|convidados?|hospedes?|amigos?|cartoes?|moedas?|pagamentos?|pecas?|cabos?|parafusos?)(?=[^a-z]|$)/;
+function recebimentosSemFonte(normalizado, ficha) {
+  const fortes = semAcento([ficha.tituloAtual, ...ficha.fatos.filter((f) => f.id !== "brand" && f.id !== "model").map((f) => f.label + " " + f.value)].join(" \n "));
+  if (/(^|[^a-z])receb/.test(fortes)) return [];
+  const out = [];
+  for (const m of normalizado.matchAll(RE_RECEBER)) {
+    const depois = normalizado.slice(m.index + m[0].length, m.index + m[0].length + 40);
+    if (OBJETOS_DE_FUNCAO_DE_RECEBER.test(depois)) continue;
+    if (!out.includes(m[2])) out.push(m[2]);
   }
   return out;
 }
@@ -2036,6 +2121,8 @@ function validarDescricao(descricaoBruta, fatosUsados, ficha) {
   const copyNormalizada = semAcento(textoCopy);
   const proibida = LINGUAGEM_PROIBIDA.filter((f) => !contemFrase(valoresDosFatos, f) &&
     (contemFrase(semRotulos, f) || (!COPY_LIBERADA.has(f) && contemFrase(copyNormalizada, f))));
+  // F9.1 — "você recebe…", "receber tudo o que precisa": promessa de entrega
+  proibida.push(...recebimentosSemFonte(normalizado, ficha).filter((t) => !proibida.includes(t)));
   const exclamacoes = (descricao.match(/!/g) || []).length;
   if (exclamacoes > 1) proibida.push("excesso de exclamações");
   if (proibida.length) {
@@ -2215,7 +2302,8 @@ const CODIGOS_QUE_CONTAM = new Set([...CODIGOS_REMOVER_TRECHO, "ROTULO_INVENTADO
 function severidade(p, ficha) {
   if (CODIGOS_HARD.has(p.codigo)) return "hard";
   // logística/garantia/política é promessa operacional: HARD
-  if (p.codigo === "LINGUAGEM_PROIBIDA" && (p.termos || []).some((t) => LINGUAGEM_LOGISTICA.has(t) || LINGUAGEM_PRECO_ESTOQUE.has(t))) return "hard";
+  if (p.codigo === "LINGUAGEM_PROIBIDA" && (p.termos || []).some((t) => LINGUAGEM_LOGISTICA.has(t) || LINGUAGEM_PRECO_ESTOQUE.has(t) ||
+    /^receb/.test(t))) return "hard"; // F9.1 — receber (recebimentosSemFonte)
   // nome sem origem em fonte NENHUMA é invenção; com origem no título ou na
   // descrição atual (contexto fraco), é só nome que não pode ser afirmado
   if (p.codigo === "NOME_NAO_COMPROVADO" &&

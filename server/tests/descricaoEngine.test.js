@@ -1481,6 +1481,59 @@ async function run() {
     ok("48. F8.2: compra 'de forma rápida', 'ótima adição', resistência-peça, restaurantes, hidratação-atividade, 127/220V na faixa 100-240V, 'dispositivos sem entrada', Dry Fit/Lockout/NR-12 → sem bloqueio; claims e marcas reais seguem HARD");
   }
 
+  // 49 ─ F9.1: função técnica em qualquer bloco (inclusive COMO USAR), marca entre fontes, "receber"
+  {
+    const mk = (titulo, attrs, desc) => engine.montarFicha({ item_id: "MLB-G", titulo, attributes_json: attrs },
+      { categoriaNome: "Utilidades", limiteCategoria: 50000, descricaoAtual: desc, descricaoEstado: desc ? "ok" : "sem_descricao" });
+    const hard = (ff, secao, frase) => (engine.validarDescricao(["DESCRIÇÃO PRINCIPAL", "Produto Lumi.", "", secao, frase].join("\n"), [], ff).problemas || [])
+      .filter((p) => engine.severidade(p, ff) === "hard");
+    const termos = (ff, secao, frase, cod) => (hard(ff, secao, frase).find((p) => p.codigo === cod) || {}).termos || [];
+    const f = mk("Máscara Lumi Dobrável", [{ id: "BRAND", name: "Marca", value: "Lumi" }],
+      "Sistema antiembaçante. Filtro com tratamento eletrostático. Para poeiras, névoas e fumos. Filtra partículas.");
+    // a descrição atual do vendedor não sustenta função técnica — nem em COMO USAR
+    for (const [secao, frase, termo] of [
+      ["DESCRIÇÃO PRINCIPAL", "Conta com sistema antiembaçante.", "antiembacante"],
+      ["DESTAQUES DO PRODUTO", "* Filtro com tratamento eletrostático", "tratamento eletrostatico"],
+      ["COMO USAR", "* Use em ambientes com poeiras, névoas e fumos", "poeiras"],
+      ["COMO USAR", "* Filtra partículas finas durante o trabalho", "filtra"],
+      ["BENEFÍCIOS", "* Repele insetos no quintal", "repele"],
+    ]) assert.ok(termos(f, secao, frase, "CLAIM_OBJETIVO_SEM_FONTE").includes(termo), frase + " → " + JSON.stringify(hard(f, secao, frase)));
+    // sugestão de baixo risco em COMO USAR continua livre; instrução "evite" e "antigo" não são função
+    for (const frase of ["* Indicada para carpintaria, limpeza e montagem", "* Evite dobrar a peça ao guardar", "* Combine com móveis de estilo antigo"]) {
+      assert.deepStrictEqual(hard(f, "COMO USAR", frase).map((p) => p.codigo), [], frase);
+    }
+    // fato estruturado sustenta
+    const fFato = mk("Ponteira Lumi", [{ id: "BRAND", name: "Marca", value: "Lumi" }, { id: "PRODUCT_TYPE", name: "Tipo de produto", value: "Ponteira antiderrapante" }]);
+    assert.deepStrictEqual(hard(fFato, "COMO USAR", "* Ponteira antiderrapante para cadeiras").map((p) => p.codigo), []);
+
+    // marca: BRAND × marca DECLARADA → conflito, nenhuma é fato; nome solto não é declaração
+    const attrsMarca = [{ id: "BRAND", name: "Marca", value: "Dy Fragrancias" }, { id: "COLOR", name: "Cor", value: "Branco" }];
+    const sab = mk("Saboneteira Dispenser 1000ml", attrsMarca, "Saboneteira da marca JSN, linha Elite.");
+    assert.deepStrictEqual(sab.conflitos.map((c) => [c.id, c.tipo, c.fonte]), [["brand", "MARCA", "descricao_atual"]]);
+    assert.strictEqual(sab.marca, null);
+    assert.ok(!sab.fatos.some((x) => x.id === "brand"));
+    const cod = (t) => (engine.validarDescricao(t, [], sab).problemas || []).map((p) => p.codigo);
+    assert.ok(cod("Saboneteira JSN branca.").includes("CONFLITO_DE_FONTES") && cod("Saboneteira Dy Fragrancias branca.").includes("CONFLITO_DE_FONTES"));
+    assert.ok(!cod("Saboneteira branca de parede.").includes("CONFLITO_DE_FONTES"));
+    for (const desc of ["Saboneteira Jsn Elite de parede.", "Marca: Dy Fragrancias.", "Produto sem marca registrada.", "Fabricante: Dy Fragrancias Ltda"]) {
+      assert.deepStrictEqual(mk("Saboneteira Dispenser 1000ml", attrsMarca, desc).conflitos, [], desc);
+    }
+    assert.deepStrictEqual(mk("Kit Faixa Elástica", [{ id: "BRAND", name: "Marca", value: "LIFE PRO IMPORT" }], "Da marca LongLifePro.").conflitos, [],
+      "uma contém palavra da outra: mesma marca");
+
+    // receber com o comprador como sujeito = promessa de entrega (HARD); função do produto não
+    const fr = mk("Patch Panel Lumi 24 Portas", [{ id: "BRAND", name: "Marca", value: "Lumi" }]);
+    for (const frase of ["Compre em poucos passos e receba tudo o que precisa.", "Comprar em poucos passos e receber tudo o que precisa.",
+      "Com uma compra simples, você recebe tudo o que precisa.", "Você decide com confiança e recebe uma peça estilosa."]) {
+      const p = hard(fr, "EXPERIÊNCIA DE COMPRA", frase);
+      assert.ok(p.some((x) => x.codigo === "LINGUAGEM_PROIBIDA"), frase + " → " + JSON.stringify(p));
+    }
+    for (const frase of ["O suporte recebe até 3 lâmpadas.", "Recebe notificações do celular.", "Ideal para receber visitas."]) {
+      assert.ok(!hard(fr, "DESCRIÇÃO PRINCIPAL", frase).some((p) => p.codigo === "LINGUAGEM_PROIBIDA"), frase);
+    }
+    ok("49. F9.1: função técnica sem fato bloqueia em qualquer bloco (antiembaçante, tratamento eletrostático, poeiras/névoas/fumos, filtra); BRAND × marca declarada → conflito; 'você recebe/receber tudo' → logística HARD");
+  }
+
   console.log(`\n✓ ${checks} verificações do Description Engine`);
 }
 

@@ -25,6 +25,7 @@
 //   GET    /anuncios-meli/criacao/listing-types
 //   POST   /anuncios-meli/criacao/publicar
 //   POST   /anuncios-meli/:itemId/otimizar        (Otimizador IA — admin-only)
+//   POST   /anuncios-meli/:itemId/seo/titulos     (Title Engine SEO — admin-only, sem escrita)
 //   GET    /anuncios-meli/:itemId/otimizacoes     (histórico — admin-only)
 //   PATCH  /anuncios-meli/otimizacoes/:id/aprovar (aprovação — admin-only)
 //   GET    /anuncios-meli/:itemId
@@ -172,6 +173,9 @@ router.patch("/otimizacoes/:id/aprovar", requireAdmin, ctrl.aprovarOtimizacao);
 // remover o requireAdmin destas linhas para voltar ao acesso
 // padrão do módulo (automações: admin | user | membro).
 router.post("/:itemId/otimizar", requireAdmin, ctrl.otimizar);
+// Title Engine (SEO · F3): sugestões de título com score do código. Mesma
+// trava admin-only do otimizador (a IA segue em validação). Não escreve no ML.
+router.post("/:itemId/seo/titulos", requireAdmin, ctrl.gerarTitulosSeo);
 router.get("/:itemId/otimizacoes", requireAdmin, ctrl.listarOtimizacoes);
 
 router.patch("/:itemId/revisao", ctrl.marcarRevisado);

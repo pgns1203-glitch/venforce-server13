@@ -278,6 +278,9 @@ module.exports = {
   atualizarModelo,
   atualizarDescricao,
   TITULO_MAX,
+  // Regra real de bloqueio de título (catálogo/família). Exportada para o
+  // Title Engine (SEO) recusar gerar título para quem não pode tê-lo trocado.
+  tituloTravadoPorCatalogo,
   // Leitores do corpo de erro do ML. Exportados para que outro service que
   // escreve no MESMO ML (meliEstoqueService) leia a recusa exatamente igual —
   // o formato de erro é da API, não deste módulo, e duas cópias da leitura

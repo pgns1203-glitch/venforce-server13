@@ -3352,7 +3352,9 @@
       salvando: false,
       confirmandoSaida: false,
       iaBloqueada: false,
-      alternativasAbertas: false,
+      // Title Engine (SEO): sugestões de título geradas sob demanda. Vivem só
+      // no modal (não são persistidas); "Usar" muda o rascunho, nunca o ML.
+      titulosSeo: novoEstadoTitulos(),
       carregado: false,
       // Preço: escrita REAL no Mercado Livre (PATCH .../preco). `salvando`
       // trava contra clique duplo/Enter duplo e contra o campo virar
@@ -4895,7 +4897,7 @@
     return '<div class="am-det-section">' +
       '<div class="am-det-subhead">' +
         "<h4>Título</h4>" +
-        '<span id="am-det-status-seo">' + chipOtimizacao("seo", "titulo") + "</span>" +
+        '<span id="am-det-status-seo">' + chipTitulos() + "</span>" +
       "</div>" +
       '<div class="am-det-compare am-det-compare--compacto" id="am-det-compare-titulo">' +
         '<div class="am-det-compare__col">' +
@@ -4909,8 +4911,7 @@
           '<span class="am-det-compare__count" id="am-det-count-espelho-titulo">' +
             DET.rascunho.titulo.length + "/60 caracteres</span>" +
         "</div>" +
-        '<div class="am-det-compare__col" id="am-det-sug-titulo">' + sugestaoTituloHtml(AM.otimizacoes.seo) + "</div>" +
-        '<div class="am-det-compare__foot" id="am-det-foot-seo">' + footSeoHtml(AM.otimizacoes.seo) + "</div>" +
+        '<div class="am-det-compare__col" id="am-det-sug-titulo">' + sugestaoTitulosHtml() + "</div>" +
       "</div>" +
 
       '<div class="am-det-subhead">' +
@@ -4955,44 +4956,123 @@
       (extras || "") + ">" + escapeHtml(rotulo) + "</button>";
   }
 
-  function sugestaoTituloHtml(otim) {
-    var cabeca = '<div class="am-det-compare__label">' + rotuloIa() + "</div>";
-    if (!otim || !otim.titulo_sugerido) {
-      return cabeca + vazioIaHtml("Gerar SEO", "seo");
-    }
-    var alts = ((tryParseJSON(otim.melhorias_json, {}) || {}).titulos_alternativos) || [];
-    var alertas = tryParseJSON(otim.alertas_json, []) || [];
-    var chars = otim.titulo_sugerido_chars || String(otim.titulo_sugerido).length;
+  // ----- Título: sugestões do Title Engine (SEO) ----------------------------
+  // POST /:itemId/seo/titulos devolve até 6 títulos com score CALCULADO pelo
+  // backend (fatos do anúncio, nunca nota da IA). A tela lista todos como
+  // "Sugestões" — sem destacar vencedor —, e "Usar" só muda o rascunho; quem
+  // escreve no Mercado Livre continua sendo "Salvar alterações".
+  function novoEstadoTitulos() {
+    return { estado: null, sugestoes: [], limite: 60, aviso: null, erro: null, codigo: null, descartadas: 0, seq: 0 };
+  }
 
-    var alternativas = "";
-    if (alts.length) {
-      alternativas = '<p class="am-det-compare__hint">+' + alts.length +
-        (alts.length === 1 ? " alternativa " : " alternativas ") +
-        '<a href="#" data-acao="ver-alternativas">' +
-        (DET.alternativasAbertas ? "ocultar" : "ver todas") + "</a></p>";
-      if (DET.alternativasAbertas) {
-        alternativas += '<ul class="am-det-alts">' + alts.map(function (t, i) {
-          return "<li><span>" + escapeHtml(t) + " <b>(" + String(t || "").length + "/60)</b></span>" +
-            '<span class="am-det-alts__btns">' +
-              btnGhost("copiar", "Copiar", ' data-fonte="titulo-alt" data-idx="' + i + '"') +
-              btnGhost("usar-sugestao", "Usar", ' data-campo="titulo" data-fonte="titulo-alt" data-idx="' + i + '"') +
-              btnGhost("aprovar-titulo", "Aprovar", ' data-fonte="titulo-alt" data-idx="' + i + '"') +
-            "</span></li>";
-        }).join("") + "</ul>";
+  function sugestaoTitulosHtml() {
+    var cabeca = '<div class="am-det-compare__label"><span>' + icIa() + "Sugestões da IA</span></div>";
+    if (DET.iaBloqueada) return cabeca + vazioIaHtml("Gerar títulos", "titulos");
+    if (tituloTravadoPorCatalogo(DET.anuncio)) {
+      return cabeca + '<p class="am-det-vazio">O título é gerenciado pelo Mercado Livre — não há sugestões de título para este anúncio.</p>';
+    }
+    var T = DET.titulosSeo;
+    var gerando = T.estado === "carregando";
+    var botaoGerar = function (rotulo) {
+      return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="gerar-titulos"' +
+        (gerando ? " disabled" : "") + ">" + escapeHtml(gerando ? "Gerando…" : rotulo) + "</button>";
+    };
+
+    if (T.estado === "ok" && T.sugestoes.length) {
+      var itens = T.sugestoes.map(function (sug, i) {
+        return "<li><span>" +
+            '<span class="vf-status is-info" title="Score calculado pelos fatos do anúncio">' + escapeHtml(String(sug.score)) + "</span> " +
+            escapeHtml(sug.titulo) + " <b>(" + sug.chars + "/" + T.limite + ")</b>" +
+          "</span>" +
+          '<span class="am-det-alts__btns">' + btnGhost("usar-titulo", "Usar", ' data-idx="' + i + '"') + "</span></li>";
+      }).join("");
+      var notas = [];
+      if (T.aviso) notas.push(escapeHtml(T.aviso));
+      if (T.descartadas) {
+        notas.push(T.descartadas + (T.descartadas === 1 ? " sugestão descartada" : " sugestões descartadas") +
+          " por não se apoiar nos dados do anúncio.");
       }
+      return cabeca + '<ul class="am-det-alts">' + itens + "</ul>" +
+        (notas.length ? '<p class="am-det-compare__hint">' + notas.join(" ") + "</p>" : "") +
+        acoesIaHtml([botaoGerar("Gerar novamente")]);
     }
 
-    return cabeca +
-      '<p class="am-det-readtext am-det-readtext--sug"><strong>' + escapeHtml(otim.titulo_sugerido) +
-        "</strong> (" + chars + "/60)</p>" +
-      alternativas +
-      listaIaHtml([], alertas) +
-      acoesIaHtml([
-        btnGhost("usar-sugestao", "Usar sugestão", ' data-campo="titulo" data-fonte="titulo-sugerido"'),
-        btnGhost("copiar", "Copiar", ' data-fonte="titulo-sugerido"'),
-        btnGhost("aprovar-titulo", "Aprovar", ' data-fonte="titulo-sugerido"'),
-        btnGhost("gerar", "Gerar novamente", ' data-tipo="seo"'),
-      ]);
+    if (T.estado === "erro") {
+      return cabeca + '<p class="am-det-vazio">' + escapeHtml(T.erro || "Não foi possível gerar títulos.") + "</p>" +
+        (T.codigo === "TITULO_NAO_EDITAVEL" ? "" : acoesIaHtml([botaoGerar("Tentar novamente")]));
+    }
+
+    return cabeca + '<p class="am-det-vazio">' + (gerando ? "Gerando sugestões de título…" : "Nenhuma sugestão gerada ainda.") + "</p>" +
+      acoesIaHtml([botaoGerar("Gerar títulos")]);
+  }
+
+  function chipTitulos() {
+    if (DET.iaBloqueada) return '<span class="vf-status is-empty">IA restrita a administradores</span>';
+    if (tituloTravadoPorCatalogo(DET.anuncio)) return '<span class="vf-status is-empty">Gerenciado pelo Mercado Livre</span>';
+    var T = DET.titulosSeo;
+    if (T.estado === "carregando") return '<span class="vf-status is-info">Gerando títulos…</span>';
+    if (T.estado === "erro") return '<span class="vf-status is-danger">Não foi possível gerar</span>';
+    if (T.estado === "ok") {
+      return '<span class="vf-status is-info">' + T.sugestoes.length +
+        (T.sugestoes.length === 1 ? " sugestão" : " sugestões") + "</span>";
+    }
+    return '<span class="vf-status is-empty">Aguardando geração</span>';
+  }
+
+  function repintarTitulos() {
+    var col = el("am-det-sug-titulo");
+    if (col) col.innerHTML = sugestaoTitulosHtml();
+    var chip = el("am-det-status-seo");
+    if (chip) chip.innerHTML = chipTitulos();
+  }
+
+  function gerarTitulos() {
+    if (!DET || !DET.anuncio || DET.titulosSeo.estado === "carregando") return;
+    if (tituloTravadoPorCatalogo(DET.anuncio)) return;
+    var meuToken = DET.token;
+    var T = DET.titulosSeo;
+    var minhaSeq = ++T.seq;
+    T.estado = "carregando";
+    T.erro = null;
+    T.codigo = null;
+    repintarTitulos();
+
+    var corpo = { clienteSlug: AM.clienteAtual.slug };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    api("/anuncios-meli/" + encodeURIComponent(DET.anuncio.item_id) + "/seo/titulos", {
+      method: "POST",
+      body: corpo,
+    }).then(function (r) {
+      // Modal fechado, outro anúncio/conta, ou um "Gerar" mais novo no meio.
+      if (!DET || DET.token !== meuToken || DET.titulosSeo !== T || T.seq !== minhaSeq) return;
+      if (r.status === 403 && !(r.data && r.data.codigo)) {
+        DET.iaBloqueada = true;
+        renderDetalhe();
+        return;
+      }
+      var d = r.data || {};
+      if (!d.ok || !Array.isArray(d.sugestoes) || !d.sugestoes.length) {
+        T.estado = "erro";
+        T.erro = d.motivo || "Não foi possível gerar títulos.";
+        T.codigo = d.codigo || null;
+        T.sugestoes = [];
+        repintarTitulos();
+        toast(T.erro, "is-danger");
+        return;
+      }
+      T.estado = "ok";
+      T.sugestoes = d.sugestoes;
+      T.limite = d.limite || 60;
+      T.aviso = d.aviso || null;
+      T.descartadas = d.descartadas || 0;
+      repintarTitulos();
+    });
+  }
+
+  function usarTitulo(idx) {
+    var sug = DET && DET.titulosSeo.sugestoes[idx];
+    if (!sug || tituloTravadoPorCatalogo(DET.anuncio)) return;
+    usarSugestao("titulo", sug.titulo);
   }
 
   function sugestaoModeloHtml(otim) {
@@ -5008,15 +5088,6 @@
         btnGhost("aprovar-modelo", "Aprovar", ""),
         btnGhost("gerar", "Gerar novamente", ' data-tipo="seo"'),
       ]);
-  }
-
-  function footSeoHtml(otim) {
-    // Sem otimização ainda: rodapé vazio (e escondido via :empty) — a coluna
-    // da IA já diz que não há sugestão, o aviso só repetia isso.
-    if (!otim) return "";
-    var score = otim.score_seo != null ? otim.score_seo : 0;
-    return '<span class="am-det-compare__scoreline">Score SEO ' + score + "/100" +
-      (otim.motivo ? " — " + escapeHtml(otim.motivo) : "") + "</span>";
   }
 
   // Lista de melhorias (✓) e alertas (⚠) — mesmo desenho do canva.
@@ -6652,13 +6723,8 @@
       return;
     }
     if (acao === "revisar") { alternarRevisao(alvo); return; }
-    if (acao === "ver-alternativas") {
-      e.preventDefault();
-      DET.alternativasAbertas = !DET.alternativasAbertas;
-      var col = el("am-det-sug-titulo");
-      if (col) col.innerHTML = sugestaoTituloHtml(AM.otimizacoes.seo);
-      return;
-    }
+    if (acao === "gerar-titulos") { gerarTitulos(); return; }
+    if (acao === "usar-titulo") { usarTitulo(Number(alvo.getAttribute("data-idx"))); return; }
     if (acao === "gerar") { gerar(alvo.getAttribute("data-tipo")); return; }
     if (acao === "copiar") { copiarTexto(textoDaFonte(alvo)); return; }
     if (acao === "copiar-ficha") { copiarFichaSugerida(); return; }
@@ -6666,7 +6732,6 @@
       usarSugestao(alvo.getAttribute("data-campo"), textoDaFonte(alvo));
       return;
     }
-    if (acao === "aprovar-titulo") { aprovarTitulo(textoDaFonte(alvo)); return; }
     if (acao === "aprovar-modelo") { aprovarModelo(); return; }
     if (acao === "aprovar-descricao") { aprovarDescricao(); return; }
     if (acao === "aprovar-ficha") { aprovarFicha(); return; }
@@ -6678,16 +6743,11 @@
     var fonte = botao.getAttribute("data-fonte");
     var seo = AM.otimizacoes.seo;
     var desc = AM.otimizacoes.descricao;
-    if (fonte === "titulo-sugerido") return seo ? seo.titulo_sugerido : "";
     if (fonte === "modelo-sugerido") return seo ? seo.modelo_sugerido : "";
     if (fonte === "descricao-sugerida") return desc ? desc.descricao_sugerida : "";
     if (fonte === "descricao-atual") return DET.rascunho.descricao;
     if (fonte === "titulo-atual") return DET.rascunho.titulo;
     if (fonte === "modelo-atual") return DET.rascunho.modelo;
-    if (fonte === "titulo-alt") {
-      var alts = (seo && (tryParseJSON(seo.melhorias_json, {}) || {}).titulos_alternativos) || [];
-      return alts[Number(botao.getAttribute("data-idx"))] || "";
-    }
     return "";
   }
 
@@ -6750,13 +6810,12 @@
     if (!DET || !DET.carregado) return;
     var attrs = tryParseJSON(DET.anuncio.attributes_json, []) || [];
     var alvos = [
-      ["am-det-sug-titulo", function () { return sugestaoTituloHtml(AM.otimizacoes.seo); }],
+      ["am-det-sug-titulo", function () { return sugestaoTitulosHtml(); }],
       ["am-det-sug-modelo", function () { return sugestaoModeloHtml(AM.otimizacoes.seo); }],
       ["am-det-sug-descricao", function () { return sugestaoDescricaoHtml(AM.otimizacoes.descricao); }],
       ["am-det-sug-ficha", function () { return sugestaoFichaHtml(AM.otimizacoes.ficha_tecnica, attrs); }],
-      ["am-det-foot-seo", function () { return footSeoHtml(AM.otimizacoes.seo); }],
       ["am-det-foot-ficha", function () { return footFichaHtml(AM.otimizacoes.ficha_tecnica, attrs); }],
-      ["am-det-status-seo", function () { return chipOtimizacao("seo", "titulo"); }],
+      ["am-det-status-seo", function () { return chipTitulos(); }],
       ["am-det-status-modelo", function () { return chipOtimizacao("seo", "modelo"); }],
       ["am-det-status-ficha", function () { return chipOtimizacao("ficha_tecnica", "ficha"); }],
     ];
@@ -6809,7 +6868,7 @@
   function marcarChipsIa(tipo, html) {
     var ids = tipo === "ficha_tecnica"
       ? ["am-det-status-ficha"]
-      : tipo === "descricao" ? [] : ["am-det-status-seo", "am-det-status-modelo"];
+      : tipo === "descricao" ? [] : ["am-det-status-modelo"];
     ids.forEach(function (id) {
       var no = el(id);
       if (no) no.innerHTML = html;
@@ -6819,13 +6878,6 @@
   // ===========================================================================
   // Aprovação — decisão INTERNA. Não publica nada no Mercado Livre.
   // ===========================================================================
-  function aprovarTitulo(titulo) {
-    var otim = AM.otimizacoes.seo;
-    if (!otim) { toast("Gere a sugestão primeiro."); return; }
-    if (!titulo || titulo.length > 60) { toast("Título inválido."); return; }
-    aprovar(otim.id, { tituloAprovado: titulo }, "Título aprovado (decisão interna).");
-  }
-
   function aprovarModelo() {
     var otim = AM.otimizacoes.seo;
     if (!otim) { toast("Gere a sugestão primeiro."); return; }

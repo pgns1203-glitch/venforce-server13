@@ -49,6 +49,16 @@ const TITULO_B = "Cafeteira Expressa B300 Inox 220V Compacta";
 const DESC_A = "Fone Bluetooth TWS Prime X200 com cancelamento ativo de ruído (ANC) e bateria de até 30 horas.";
 const SUG_DESC_A = "Fone Bluetooth TWS Prime X200 com ANC, 30h de bateria, Bluetooth 5.3 e estojo USB-C.";
 const SUG_TITULO_A = "Fone Bluetooth TWS Prime X200 Cancelamento Ruído 30h";
+// POST /:itemId/seo/titulos — sugestões do Title Engine (score do backend).
+const SUG_TITULOS = [
+  "Fone Bluetooth TWS Prime Audio X200 ANC 30h Bateria Preto",
+  "Fone de Ouvido Bluetooth Prime Audio X200 ANC Preto 30h",
+  "Fone TWS Prime Audio X200 Bluetooth ANC Bateria 30h",
+  "Fone Bluetooth Prime Audio X200 Preto ANC",
+].map((titulo, i) => ({
+  titulo, chars: titulo.length, score: 94 - i * 7,
+  breakdown: { cobertura: 33 - i * 3, relevancia: 24, eficiencia: 15 - i * 2, especificidade: 10, clareza: 10 - i, redundancia: 2 + i },
+}));
 
 function anuncio(conta) {
   const a = conta === "43"
@@ -123,6 +133,9 @@ let catalogoModo = "nenhum";
 // Anúncio SEM modelo (MODEL ausente na ficha) e COM variações legadas — ver 7d.
 let semModeloComVariacoes = false;
 let detalheAtrasoPorItem = {};       // itemId -> ms
+let titulosHandler = null;           // (itemId, body) => { status, corpo } do POST /seo/titulos
+let titulosAtrasoMs = 0;             // segura a resposta para o teste ver "Gerando…"
+const titulosChamadas = [];          // { itemId, body } de todo POST /seo/titulos
 let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
 let precoResultado = null;           // resposta forçada do PATCH /preco
 const precoChamadas = [];            // { itemId, body } de todo PATCH /preco
@@ -773,6 +786,20 @@ function wireInterception(cdp) {
 
     if (/\/anuncios-meli\/[^/?]+\/revisao/.test(caminho)) { await corpo({ ok: true, revisado: !!(body && body.revisado) }); return; }
 
+    // POST /anuncios-meli/:itemId/seo/titulos — Title Engine. Contrato:
+    // server/tests/tituloSeoHttp.test.js e server/tests/tituloEngine.test.js.
+    if (/^\/anuncios-meli\/[^/?]+\/seo\/titulos(\?|$)/.test(caminho)) {
+      const itemId = caminho.match(/^\/anuncios-meli\/([^/?]+)\/seo/)[1];
+      titulosChamadas.push({ itemId, body });
+      if (iaProibida) { await corpo({ ok: false, motivo: "Acesso restrito." }, 403); return; }
+      if (titulosAtrasoMs) await sleep(titulosAtrasoMs);
+      const r = titulosHandler
+        ? titulosHandler(itemId, body)
+        : { status: 200, corpo: { ok: true, limite: 60, sugestoes: SUG_TITULOS, recebidos: 8, descartadas: 2, motivosDescarte: { NAO_COMPROVADO: 2 } } };
+      await corpo(r.corpo, r.status);
+      return;
+    }
+
     if (/\/anuncios-meli\/[^/?]+\/otimizacoes/.test(caminho)) {
       if (iaProibida) { await corpo({ ok: false, motivo: "Acesso restrito." }, 403); return; }
       const itemId = caminho.match(/\/anuncios-meli\/([^/?]+)\/otimizacoes/)[1];
@@ -956,7 +983,7 @@ async function run() {
         "Score VenForce", "61", "Principal ponto",             // qualidade
         "Fotos", "Recomendado ter pelo menos 3 fotos",         // fotos
         "Descrição", "Ficha técnica", "Garantia do fabricante", "Vazio",
-        "Sugestão da IA", "Score SEO 78/100",                  // otimização IA
+        "Sugestão da IA", "Sugestões da IA", "Gerar títulos",  // otimização IA
         "Abrir no Mercado Livre", "Marcar como revisado",      // ações
       ];
       // innerText já vem com o text-transform aplicado (os rótulos do canva
@@ -1912,10 +1939,12 @@ async function run() {
       assert.ok(/2 altera/.test(sync.barra) && /Título/.test(sync.barra) && /Modelo/.test(sync.barra),
         `um valor, duas vistas: são 2 alterações (Título, Modelo), nunca 4: ${sync.barra}`);
 
-      // "Usar sugestão" continua caindo no mesmo rascunho — e aparece nas duas vistas.
-      await clicar(cdp, '.am-det-modal [data-acao="usar-sugestao"][data-campo="titulo"]');
+      // "Usar" numa sugestão de título continua caindo no mesmo rascunho — e aparece nas duas vistas.
+      await clicar(cdp, '.am-det-modal [data-acao="gerar-titulos"]');
+      await waitFor(cdp, "document.querySelector('.am-det-modal [data-acao=\"usar-titulo\"]')", "as sugestões de título não apareceram");
+      await clicar(cdp, '.am-det-modal [data-acao="usar-titulo"][data-idx="0"]');
       const sug = await cdp.evaluate(`[document.getElementById('am-det-titulo').value, document.getElementById('am-det-espelho-titulo').value]`);
-      assert.deepStrictEqual(sug, [SUG_TITULO_A, SUG_TITULO_A]);
+      assert.deepStrictEqual(sug, [SUG_TITULOS[0].titulo, SUG_TITULOS[0].titulo]);
 
       // Salvar: o MESMO PATCH /conteudo de sempre, um campo por chave. A
       // resposta forçada não confirma nada, para o estado seguir intacto.
@@ -1926,7 +1955,7 @@ async function run() {
       await esperarPedido(/\/anuncios-meli\/MLB-A1\/conteudo/, antesPedidos, "não saiu PATCH de conteúdo");
       const envio = corpos.find((c) => /\/conteudo/.test(c.url));
       assert.strictEqual(envio.metodo, "PATCH");
-      assert.strictEqual(envio.body.titulo, SUG_TITULO_A);
+      assert.strictEqual(envio.body.titulo, SUG_TITULOS[0].titulo);
       assert.strictEqual(envio.body.modelo, "X200 Mini");
       assert.strictEqual(envio.body.descricao, undefined);
       conteudoResultado = null;
@@ -2114,15 +2143,18 @@ async function run() {
       assert.strictEqual(corpos.filter((c) => /\/otimizar/.test(c.url)).pop().body.tipo, "ficha_tecnica");
     });
 
-    await check("19 — as 4 aprovações internas continuam funcionando (e não publicam no ML)", async () => {
+    await check("19 — as aprovações internas de modelo/descrição/ficha continuam funcionando (e não publicam no ML)", async () => {
       const antesConteudo = pedidos.filter((u) => /\/conteudo/.test(u)).length;
-      for (const acao of ["aprovar-titulo", "aprovar-modelo", "aprovar-descricao", "aprovar-ficha"]) {
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"aprovar-titulo\"]').length"), 0,
+        "o título não tem mais 'Aprovar': as sugestões do Title Engine não são registro do otimizador legado");
+      for (const acao of ["aprovar-modelo", "aprovar-descricao", "aprovar-ficha"]) {
         const desde = pedidos.length;
         await clicar(cdp, `.am-det-modal [data-acao="${acao}"]`, `botão ${acao} não existe`);
         await esperarPedido(/\/anuncios-meli\/otimizacoes\/\d+\/aprovar/, desde, `${acao} não chamou o endpoint de aprovação`);
       }
-      const corpoTitulo = corpos.filter((c) => /\/aprovar/.test(c.url))[0];
-      assert.strictEqual(corpoTitulo.body.tituloAprovado, SUG_TITULO_A, "aprovar título precisa enviar o título sugerido");
+      const corpoModelo = corpos.filter((c) => /\/aprovar/.test(c.url))[0];
+      assert.strictEqual(corpoModelo.body.modeloAprovado, "X200 Pro", "aprovar modelo precisa enviar o modelo sugerido");
+      assert.strictEqual(corpoModelo.body.clienteSlug, "n97", "aprovar leva o cliente (F1)");
       assert.strictEqual(pedidos.filter((u) => /\/conteudo/.test(u)).length, antesConteudo,
         "APROVAR é decisão interna — não pode virar escrita no Mercado Livre");
     });
@@ -2138,7 +2170,7 @@ async function run() {
       await sleep(200);
       const copiado = await cdp.evaluate("window.__copiado");
       assert.ok(copiado.length >= 4, `nenhuma cópia registrada: ${JSON.stringify(copiado)}`);
-      assert.ok(copiado.some((t) => t && t.includes(SUG_TITULO_A)), "copiar o título sugerido parou de funcionar");
+      assert.ok(copiado.some((t) => t && t.includes(SUG_DESC_A)), "copiar a descrição sugerida parou de funcionar");
       assert.ok(copiado.some((t) => t && /Peso: 38 g/.test(t)), "copiar a ficha como lista parou de funcionar");
     });
 
@@ -2182,9 +2214,9 @@ async function run() {
         "o modal não pode parecer quebrado por causa do 403");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar\"]').length"), 0,
         "sem permissão de IA não faz sentido oferecer os botões de gerar");
-      assert.ok(!/Score SEO ainda não calculado/.test(t), "sem otimização, o aviso de Score SEO não aparece");
-      assert.strictEqual(await cdp.evaluate("getComputedStyle(document.getElementById('am-det-foot-seo')).display"), "none",
-        "o rodapé vazio do Score SEO não pode ocupar espaço");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar-titulos\"]').length"), 0,
+        "sem permissão de IA não há 'Gerar títulos'");
+      assert.ok(!/Score SEO/.test(t), "a nota do otimizador legado não aparece mais");
       // E o que é editável continua editável.
       await digitar(cdp, "#am-det-titulo", TITULO_A + " X");
       await waitFor(cdp, "document.getElementById('am-det-savebar')", "a edição parou de funcionar para quem não tem IA");
@@ -2227,8 +2259,11 @@ async function run() {
       await cdp.evaluate("window.VF.context.setConta(42)");
       await waitFor(cdp, "document.querySelector('.am-row')", "o catálogo da conta 42 não voltou");
       await abrirPrimeiroAnuncio(cdp);
-      await waitFor(cdp, `document.querySelector('.am-det-modal').innerText.indexOf(${JSON.stringify(SUG_TITULO_A)}) >= 0`,
+      await waitFor(cdp, `document.querySelector('.am-det-modal').innerText.indexOf(${JSON.stringify(SUG_DESC_A)}) >= 0`,
         "as sugestões do anúncio A não carregaram");
+      // Títulos gerados em A (Title Engine) também não podem sobreviver.
+      await clicar(cdp, '.am-det-modal [data-acao="gerar-titulos"]');
+      await waitFor(cdp, "document.querySelectorAll('#am-det-sug-titulo [data-acao=\"usar-titulo\"]').length > 0", "os títulos de A não apareceram");
       await digitar(cdp, "#am-det-modelo", "RASCUNHO-A");
       await waitFor(cdp, "document.getElementById('am-det-savebar')", "a alteração pendente em A não foi detectada");
       await fecharModal(cdp); // descarta explicitamente
@@ -2238,6 +2273,8 @@ async function run() {
       await abrirPrimeiroAnuncio(cdp);
       t = await textoModal(cdp);
       assert.ok(!t.includes(SUG_TITULO_A), "a sugestão de IA de A sobreviveu à troca de anúncio");
+      assert.ok(!t.includes(SUG_DESC_A), "a descrição sugerida de A sobreviveu à troca de anúncio");
+      assert.ok(!SUG_TITULOS.some((sg) => t.includes(sg.titulo)), "os títulos gerados em A sobreviveram à troca de anúncio");
       assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-modelo').value"), "B300",
         "o rascunho de modelo do anúncio A vazou para o anúncio B");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-savebar').length"), 0,
@@ -3423,6 +3460,118 @@ async function run() {
       } finally {
         promocoesRespostaPadrao = [];
       }
+    });
+
+    /* ── 44: Title Engine (SEO · F3) ──────────────────────────────────── */
+
+    async function abrirLimpo() {
+      iaProibida = false;
+      titulosHandler = null;
+      titulosAtrasoMs = 0;
+      await abrirComModo("nenhum");
+      await abrirPrimeiroAnuncio(cdp);
+      await waitFor(cdp, "document.querySelector('#am-det-sug-modelo') && document.querySelector('#am-det-sug-modelo').innerText.indexOf('X200 Pro') >= 0",
+        "o histórico legado (Modelo) não carregou");
+    }
+    const colunaTitulo = () => cdp.evaluate("document.getElementById('am-det-sug-titulo').innerText");
+
+    await check("44a — Título oferece 'Gerar títulos'; Modelo continua no fluxo legado", async () => {
+      await abrirLimpo();
+      const col = await colunaTitulo();
+      assert.ok(/Nenhuma sugestão gerada ainda/.test(col), col);
+      assert.ok(!col.includes(SUG_TITULO_A), "a sugestão legada de título não pode reaparecer na coluna nova");
+      assert.ok(await cdp.evaluate("!!document.querySelector('#am-det-sug-titulo [data-acao=\"gerar-titulos\"]')"));
+      assert.ok(await cdp.evaluate("!!document.querySelector('#am-det-sug-modelo [data-acao=\"gerar\"][data-tipo=\"seo\"]')"),
+        "o Modelo segue com o 'Gerar' legado nesta fase");
+      assert.ok(/Aguardando geração/.test(await cdp.evaluate("document.getElementById('am-det-status-seo').innerText")));
+    });
+
+    await check("44b — Gerar títulos: estado de carregamento, depois 4 sugestões com score, caracteres e 'Usar'", async () => {
+      const desde = titulosChamadas.length;
+      titulosAtrasoMs = 500;
+      await clicar(cdp, '.am-det-modal [data-acao="gerar-titulos"]');
+      await waitFor(cdp, "document.querySelector('#am-det-sug-titulo [data-acao=\"gerar-titulos\"]').disabled", "o botão não entrou em carregamento");
+      assert.ok(/Gerando/.test(await colunaTitulo()));
+      assert.ok(/Gerando títulos/.test(await cdp.evaluate("document.getElementById('am-det-status-seo').innerText")));
+      await waitFor(cdp, "document.querySelectorAll('#am-det-sug-titulo [data-acao=\"usar-titulo\"]').length === 4", "as 4 sugestões não apareceram");
+      titulosAtrasoMs = 0;
+
+      const envio = titulosChamadas[desde];
+      assert.strictEqual(envio.itemId, "MLB-A1");
+      assert.strictEqual(envio.body.clienteSlug, "n97");
+      assert.strictEqual(String(envio.body.clienteContaId), "42", "a geração leva a ClienteConta da operação");
+
+      const col = await colunaTitulo();
+      SUG_TITULOS.forEach((sg) => {
+        assert.ok(col.includes(sg.titulo), "faltou: " + sg.titulo);
+        assert.ok(col.includes(String(sg.score)), "faltou o score " + sg.score);
+        assert.ok(col.includes("(" + sg.chars + "/60)"), "faltou o contador de " + sg.titulo);
+      });
+      assert.ok(!/recomendad|melhor|vencedor/i.test(col), "sugestões não destacam vencedor");
+      assert.ok(/2 sugestões descartadas/.test(col), "o descarte por falta de fato precisa ser dito");
+      assert.ok(/4 sugestões/.test(await cdp.evaluate("document.getElementById('am-det-status-seo').innerText")));
+    });
+
+    await check("44c — 'Usar' muda só o rascunho (sem PATCH /conteudo); 'Salvar alterações' continua o único caminho de escrita", async () => {
+      const antes = pedidos.length;
+      await clicar(cdp, '.am-det-modal [data-acao="usar-titulo"][data-idx="2"]');
+      const valores = await cdp.evaluate(`[document.getElementById('am-det-titulo').value, document.getElementById('am-det-espelho-titulo').value]`);
+      assert.deepStrictEqual(valores, [SUG_TITULOS[2].titulo, SUG_TITULOS[2].titulo]);
+      await waitFor(cdp, "document.getElementById('am-det-savebar')", "usar uma sugestão precisa virar alteração pendente");
+      await sleep(250);
+      assert.deepStrictEqual(pedidos.slice(antes).filter((u) => /\/conteudo|\/preco|\/fotos|\/imagens/.test(u)), [],
+        "'Usar' não pode escrever nada");
+
+      conteudoResultado = { status: 200, corpo: { ok: false, motivo: "Resposta de teste (44c)." } };
+      await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/conteudo/, antes, "Salvar alterações não saiu");
+      const envio = corpos.filter((c) => /\/conteudo/.test(c.url)).pop();
+      assert.strictEqual(envio.body.titulo, SUG_TITULOS[2].titulo, "o salvar leva o título escolhido");
+      conteudoResultado = null;
+      await clicar(cdp, '.am-det-modal [data-acao="descartar"]');
+      await waitFor(cdp, "!document.getElementById('am-det-savebar')", "descartar não limpou a pendência");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-titulo').value"), TITULO_A);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-sug-titulo [data-acao=\"usar-titulo\"]').length"), 4,
+        "descartar o rascunho não apaga as sugestões");
+    });
+
+    await check("44d — backend sem sugestão válida: o motivo aparece e dá para tentar de novo", async () => {
+      titulosHandler = () => ({ status: 200, corpo: { ok: false, codigo: "SEM_SUGESTOES_VALIDAS",
+        motivo: "Nenhum título gerado passou na validação dos fatos do anúncio. Tente gerar novamente.", descartadas: 8 } });
+      await clicar(cdp, '#am-det-sug-titulo [data-acao="gerar-titulos"]');
+      await waitFor(cdp, "document.getElementById('am-det-sug-titulo').innerText.indexOf('validação dos fatos') >= 0", "o motivo não apareceu");
+      assert.ok(await cdp.evaluate("!!document.querySelector('#am-det-sug-titulo [data-acao=\"gerar-titulos\"]')"), "sem 'Tentar novamente'");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-sug-titulo [data-acao=\"usar-titulo\"]').length"), 0);
+      titulosHandler = null;
+    });
+
+    await check("44e — resposta atrasada de um modal fechado é descartada", async () => {
+      titulosAtrasoMs = 700;
+      const desde = titulosChamadas.length;
+      await clicar(cdp, '#am-det-sug-titulo [data-acao="gerar-titulos"]');
+      await sleep(150); // a requisição sai; a resposta fica presa por 700ms
+      await fecharModal(cdp);
+      titulosAtrasoMs = 0;
+      await abrirPrimeiroAnuncio(cdp);
+      await sleep(1000);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-sug-titulo [data-acao=\"usar-titulo\"]').length"), 0,
+        "a resposta do modal antigo vazou para o novo");
+      assert.ok(/Nenhuma sugestão gerada ainda/.test(await colunaTitulo()));
+      assert.ok(titulosChamadas.length > desde, "a geração do modal antigo nem saiu");
+    });
+
+    await check("44f — título travado (catálogo/família) não oferece geração nem chama o backend", async () => {
+      for (const modo of ["catalog_listing", "family_name"]) {
+        const desde = titulosChamadas.length;
+        await abrirComModo(modo);
+        await abrirPrimeiroAnuncio(cdp);
+        const col = await colunaTitulo();
+        assert.ok(/gerenciado pelo Mercado Livre/i.test(col), modo + ": " + col);
+        assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar-titulos\"]').length"), 0,
+          modo + ": título travado não pode oferecer 'Gerar títulos'");
+        assert.strictEqual(titulosChamadas.length, desde);
+      }
+      await abrirComModo("nenhum");
     });
 
     await check("— nenhuma exceção de JS não tratada durante todo o percurso", async () => {

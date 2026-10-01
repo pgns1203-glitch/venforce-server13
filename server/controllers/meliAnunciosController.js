@@ -34,6 +34,8 @@ const cliente360ProdutosEngine = require("../services/cliente360/cliente360Produ
 const marginEngine = require("../services/motorMargem/core/marginEngine");
 const { mlFetch } = require("../utils/mlClient");
 const { assertClienteNaCarteira } = require("../services/squads/authorizationService");
+const tituloEngine = require("../services/meliAnuncios/seo/tituloEngine");
+const aiProvider = require("../services/ai/aiProvider");
 
 function extrairClienteContaId(valor) {
   return /^\d+$/.test(String(valor || "")) ? Number(valor) : null;
@@ -1512,15 +1514,19 @@ async function carregarDescricao(clienteId, itemId, mlUserId) {
 // Nome de categoria não muda: um cache em memória por processo evita bater
 // na API do ML de novo a cada abertura do mesmo anúncio (ou de outro anúncio
 // da mesma categoria).
+//
+// A MESMA resposta traz `settings.max_title_length` (limite de título da
+// categoria, doc oficial de Categorias e Atributos), usado pelo Title Engine
+// (SEO). Guardar os dois juntos evita uma segunda chamada por clique.
 // ----------------------------------------------------------------------------
-const _cacheCategoria = new Map(); // category_id -> { nome, expiraEm }
+const _cacheCategoria = new Map(); // category_id -> { nome, maxTitleLength, expiraEm }
 const CATEGORIA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-async function carregarNomeCategoria(clienteId, categoryId, mlUserId) {
+async function carregarCategoria(clienteId, categoryId, mlUserId) {
   if (!categoryId) return null;
 
   const emCache = _cacheCategoria.get(categoryId);
-  if (emCache && emCache.expiraEm > Date.now()) return emCache.nome;
+  if (emCache && emCache.expiraEm > Date.now()) return emCache;
 
   try {
     const resp = await mlFetch(
@@ -1529,14 +1535,24 @@ async function carregarNomeCategoria(clienteId, categoryId, mlUserId) {
       { mlUserId }
     );
     if (resp && resp.ok && resp.data && resp.data.name) {
-      const nome = String(resp.data.name);
-      _cacheCategoria.set(categoryId, { nome, expiraEm: Date.now() + CATEGORIA_CACHE_TTL_MS });
-      return nome;
+      const max = resp.data.settings && resp.data.settings.max_title_length;
+      const entrada = {
+        nome: String(resp.data.name),
+        maxTitleLength: Number.isInteger(max) && max > 0 ? max : null,
+        expiraEm: Date.now() + CATEGORIA_CACHE_TTL_MS,
+      };
+      _cacheCategoria.set(categoryId, entrada);
+      return entrada;
     }
   } catch (e) {
     // categoria é cosmético — o front cai para o category_id cru, nunca quebra
   }
   return null;
+}
+
+async function carregarNomeCategoria(clienteId, categoryId, mlUserId) {
+  const categoria = await carregarCategoria(clienteId, categoryId, mlUserId);
+  return categoria ? categoria.nome : null;
 }
 
 // ----------------------------------------------------------------------------
@@ -2710,6 +2726,89 @@ async function otimizar(req, res) {
 }
 
 // ----------------------------------------------------------------------------
+// POST /anuncios-meli/:itemId/seo/titulos
+// body: { clienteSlug, clienteContaId? }
+//
+// Title Engine (SEO · F3): gera candidatos com a IA, valida cada um contra os
+// fatos do anúncio, pontua no CÓDIGO e devolve até 6 sugestões. NÃO escreve
+// no Mercado Livre nem persiste nada — "Usar" no front só muda o rascunho; a
+// escrita continua sendo o PATCH /conteudo do "Salvar alterações".
+//
+// Ordem: cliente → anúncio → conta (resolverContaDoAnuncio, F1) → trava de
+// título (mesma regra do PATCH /conteudo) → categoria (cache) → IA.
+//
+// Respostas:
+//   200 { ok:true, limite, sugestoes:[{ titulo, chars, score, breakdown }],
+//         recebidos, descartadas, motivosDescarte, aviso? }
+//   200 { ok:false, codigo, motivo }  — falha da IA / nenhum candidato válido
+//                                       (mesmo padrão do /otimizar)
+//   400 sem clienteSlug · 404 cliente/anúncio · 409 TITULO_NAO_EDITAVEL
+//   403/409 de conta (CONTA_NAO_PERTENCE_AO_CLIENTE, ANUNCIO_DE_OUTRA_CONTA,
+//   ANUNCIO_SEM_CONTA, MULTIPLE_MARKETPLACE_ACCOUNTS — com `contas`)
+// ----------------------------------------------------------------------------
+async function gerarTitulosSeo(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    if (!body.clienteSlug) {
+      return res.status(400).json({ ok: false, codigo: "SEM_CLIENTE", motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(body.clienteSlug);
+    if (!cliente) return res.status(404).json({ ok: false, codigo: "NO_CLIENT", motivo: "Cliente não encontrado." });
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false, codigo: "NO_ITEM",
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let conta;
+    try {
+      conta = await anunciosService.resolverContaDoAnuncio({
+        clienteId: cliente.id,
+        anuncio,
+        clienteContaId: extrairClienteContaId(body.clienteContaId),
+        requireUsableGrant: false,
+      });
+    } catch (err) {
+      if (!err.statusCode) throw err;
+      const corpo = { ok: false, codigo: err.code || "ERRO_CONTA", motivo: err.message };
+      if (Array.isArray(err.contas)) corpo.contas = err.contas;
+      return res.status(err.statusCode).json(corpo);
+    }
+
+    if (conteudoService.tituloTravadoPorCatalogo(anuncio)) {
+      return res.status(409).json({
+        ok: false, codigo: "TITULO_NAO_EDITAVEL",
+        motivo: "O título deste anúncio é definido pelo catálogo do Mercado Livre e não pode ser alterado por aqui.",
+      });
+    }
+
+    // Limite real: o da categoria, nunca acima do que o "Salvar alterações"
+    // aceita (meliConteudoService.TITULO_MAX). Sem a categoria, o mesmo 60
+    // do campo de título da tela.
+    const categoria = await carregarCategoria(cliente.id, anuncio.category_id, conta.mlUserId);
+    const limite = Math.min(
+      (categoria && categoria.maxTitleLength) || conteudoService.TITULO_MAX,
+      conteudoService.TITULO_MAX
+    );
+
+    const fatos = tituloEngine.montarFatos(anuncio, {
+      categoriaNome: categoria ? categoria.nome : null,
+      limite,
+    });
+    const resultado = await tituloEngine.gerarTitulos({ fatos, aiProvider });
+    return res.json(resultado);
+  } catch (err) {
+    console.error("[anuncios-meli] gerarTitulosSeo:", err.message);
+    return res.status(500).json({ ok: false, codigo: "ERRO_INTERNO", motivo: "Erro interno ao gerar títulos." });
+  }
+}
+
+// ----------------------------------------------------------------------------
 // GET /anuncios-meli/:itemId/otimizacoes?clienteSlug=&clienteContaId=&tipo=
 // Histórico de sugestões já geradas para um anúncio.
 // ----------------------------------------------------------------------------
@@ -3095,6 +3194,7 @@ module.exports = {
   simularMargem,
   marcarRevisado,
   otimizar,
+  gerarTitulosSeo,
   listarOtimizacoes,
   aprovarOtimizacao,
   criacaoStatus,

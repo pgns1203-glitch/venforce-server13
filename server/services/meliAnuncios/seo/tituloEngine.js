@@ -1,0 +1,566 @@
+// server/services/meliAnuncios/seo/tituloEngine.js
+// -----------------------------------------------------------------------------
+// Title Engine (SEO ML · F3) — sugestões de TÍTULO com score calculado pelo
+// código.
+//
+// Fluxo (gerarTitulos):
+//   ficha de fatos (montarFatos) → LLM gera candidatos (só texto) →
+//   cada candidato é validado contra os fatos (avaliarTitulo) → inválidos são
+//   DESCARTADOS → os válidos recebem score determinístico → duplicados saem →
+//   ordena por score e devolve até 6. O LLM nunca dá nota nem escolhe.
+//
+// Este módulo é puro em relação a infraestrutura: não lê banco, não chama o
+// Mercado Livre, não lê env. O aiProvider entra como parâmetro (e é simulado
+// nos testes). Conta, carteira e trava de título são do controller.
+//
+// Regra central: um título só é aceito se CADA palavra de conteúdo dele for
+// sustentada por um fato do anúncio (categoria, marca, modelo, atributos
+// estruturados) ou pelo título atual do próprio vendedor. Palavra sem
+// evidência ("confortável", uma marca que não é a do produto) descarta o
+// candidato — não vira só um desconto. Palavra que CONTRADIZ um atributo
+// ("feminino" com Gênero = Meninos, "impermeável" com É impermeável = Não)
+// também descarta, mesmo que esteja no título atual.
+// -----------------------------------------------------------------------------
+
+const seo = require("./seoText");
+
+const LIMITE_PADRAO = 60;
+const CANDIDATOS_PEDIDOS = 8;
+const MAX_SUGESTOES = 6;
+const MIN_SUGESTOES = 4;
+
+// Força da evidência de cada palavra (componente RELEVÂNCIA).
+const FORCA_ESTRUTURADO = 1;   // categoria, marca, modelo, valor de atributo, gênero do atributo
+const FORCA_FRACA = 0.6;       // título atual do vendedor, nome de atributo
+
+// Atributos que não descrevem o produto para um título (identificadores,
+// logística, garantia, condição). Prefixos valem para famílias inteiras.
+const ATRIBUTOS_IGNORADOS = new Set([
+  "SELLER_SKU", "GTIN", "EAN", "UPC", "ITEM_CONDITION", "PRODUCT_DATA_SOURCE", "EXCLUSIVE_CHANNEL",
+]);
+const PREFIXOS_IGNORADOS = ["PACKAGE_", "SHIPMENT_", "WARRANTY_"];
+
+// Atributos que costumam definir o produto (peso "alta" na cobertura).
+// Os demais atributos preenchidos entram com peso "média".
+const ATRIBUTOS_ESTRUTURAIS = new Set([
+  "LINE", "GENDER", "AGE_GROUP", "MATERIAL", "MAIN_MATERIAL", "VOLTAGE", "POWER",
+  "CAPACITY", "STYLE", "SPORT",
+]);
+
+const MARCAS_GENERICAS = new Set(["generica", "generico", "sem marca", "outra", "outras", "outros", "nenhuma"]);
+
+// Gênero: o atributo estruturado GENDER é evidência do público — mas só do
+// público que ele DIZ. Cada valor sustenta apenas as palavras que preservam
+// sexo E faixa etária: "Meninos" sustenta menino/masculino, nunca "homem"
+// (seria um claim etário falso); "Homens" sustenta homem/masculino, nunca
+// "menino". Valor sem idade ("Masculino") sustenta só "masculino".
+//
+// `proibe` = palavras que CONTRADIZEM o valor (sexo oposto, ou outra faixa
+// quando o valor tem faixa). Proibido vence até o título atual do vendedor.
+// Nada de sinônimo manual (garoto/garota ficaram de fora de propósito) e
+// nada de idade inferida (criança, infantil, adulto, juvenil) a partir de
+// GENDER. Lista explícita e pequena — não é ontologia.
+// Chaves já reduzidas pelo seoText (Meninos → menino, Mulheres → mulher).
+const GENERO_POR_VALOR = new Map([
+  ["menino", { sustenta: ["menino", "masculino"], proibe: ["menina", "feminino", "homem", "mulher"] }],
+  ["menina", { sustenta: ["menina", "feminino"], proibe: ["menino", "masculino", "homem", "mulher"] }],
+  ["homem", { sustenta: ["homem", "masculino"], proibe: ["mulher", "feminino", "menino", "menina"] }],
+  ["mulher", { sustenta: ["mulher", "feminino"], proibe: ["homem", "masculino", "menino", "menina"] }],
+  ["masculino", { sustenta: ["masculino"], proibe: ["feminino", "menina", "mulher"] }],
+  ["feminino", { sustenta: ["feminino"], proibe: ["masculino", "menino", "homem"] }],
+  ["unissex", { sustenta: ["unissex"], proibe: ["masculino", "feminino", "menino", "menina", "homem", "mulher"] }],
+]);
+
+// Palavras de nome de atributo que não carregam a característica em si
+// ("Com bolsos" → a característica é "bolsos", não "com").
+const PALAVRAS_DE_NOME_GENERICAS = new Set(["com", "sem", "tipo", "possui", "tem", "inclui", "e"]);
+
+// Conectivo permitido mesmo sem evidência ("Tênis com Cadarço").
+const NEUTROS = new Set(["com"]);
+
+// Linguagem promocional: se não estiver no título atual, já é descartada como
+// "não comprovada"; se estiver (o vendedor usou), custa pontos de clareza.
+const PROMOCIONAIS = new Set([
+  "imperdivel", "melhor", "premium", "promocao", "oferta", "barato", "top", "incrivel",
+  "perfeito", "exclusivo", "liquidacao", "desconto", "gratis", "frete", "lancamento", "sucesso",
+]);
+
+// Caracteres aceitos num título. Fora disso (★, |, !, emoji) é estrutura
+// inválida — o ML também desaconselha pontuação decorativa.
+const CARACTERES_VALIDOS = /^[\p{L}\p{N}\s\-.,/+&()'%°ºª"]+$/u;
+
+function texto(v) {
+  return v == null ? "" : String(v).trim();
+}
+
+function lerAtributos(anuncio) {
+  let attrs = anuncio && anuncio.attributes_json;
+  if (typeof attrs === "string") {
+    try { attrs = JSON.parse(attrs); } catch (e) { attrs = []; }
+  }
+  return Array.isArray(attrs) ? attrs.filter((a) => a && typeof a === "object") : [];
+}
+
+function atributoIgnorado(id) {
+  const s = String(id || "");
+  return ATRIBUTOS_IGNORADOS.has(s) || PREFIXOS_IGNORADOS.some((p) => s.startsWith(p));
+}
+
+function valorBooleano(valor) {
+  const n = seo.normalizeText(valor);
+  if (n === "sim") return true;
+  if (n === "nao") return false;
+  return null;
+}
+
+// Palavras de conteúdo de um texto, com a forma original (para o prompt).
+function palavras(textoFonte) {
+  return seo.extractTokens(textoFonte).filter((t) => !t.stopword);
+}
+
+// -----------------------------------------------------------------------------
+// montarFatos — a ficha do que é VERDADE sobre o anúncio.
+//
+//   {
+//     limite,
+//     tituloAtual, categoria, marca, modelo,
+//     atributos:  [{ id, nome, valor }]          (para o prompt)
+//     conceitos:  [{ tipo, termo, peso, familia? }]
+//                 tipo: categoria | marca | modelo | atributo
+//                 peso: 3 muito alta · 2 alta · 1 média
+//     vocabulario: Map(chave → força)            palavras sustentadas
+//     proibidos:   Set(chave)                     palavras que contradizem atributo
+//     proibidosExibicao: [string]                 as mesmas, para o prompt
+//   }
+//
+// opts: { categoriaNome, limite }
+// -----------------------------------------------------------------------------
+function montarFatos(anuncio, opts = {}) {
+  const a = anuncio || {};
+  const limite = Number.isInteger(opts.limite) && opts.limite > 0 ? opts.limite : LIMITE_PADRAO;
+  const attrs = lerAtributos(a);
+  const porId = new Map(attrs.map((x) => [x.id, x]));
+
+  const vocabulario = new Map();
+  const estruturadas = new Set();
+  const conceitos = [];
+  const chavesConceito = new Set();
+  const proibidosBrutos = new Map(); // chave → forma original
+
+  function sustentar(textoFonte, forca) {
+    for (const t of palavras(textoFonte)) {
+      if ((vocabulario.get(t.key) || 0) < forca) vocabulario.set(t.key, forca);
+      if (forca === FORCA_ESTRUTURADO) estruturadas.add(t.key);
+    }
+  }
+  function conceito(tipo, termo, peso, extra = {}) {
+    const chave = seo.contentKeys(termo).join(" ");
+    if (!chave || chavesConceito.has(chave)) return;
+    chavesConceito.add(chave);
+    conceitos.push({ tipo, termo, peso, ...extra });
+  }
+
+  // Categoria (o "tipo de produto" mais confiável que temos sem chamada extra).
+  const categoria = texto(opts.categoriaNome);
+  const categoriaUtil = categoria && !MARCAS_GENERICAS.has(seo.normalizeText(categoria));
+  if (categoriaUtil) {
+    sustentar(categoria, FORCA_ESTRUTURADO);
+    conceito("categoria", categoria, 3);
+  }
+
+  // Marca — só quando é uma marca de verdade.
+  const marca = texto((porId.get("BRAND") || {}).value || a.marca);
+  const marcaUtil = marca && !MARCAS_GENERICAS.has(seo.normalizeText(marca));
+  if (marcaUtil) {
+    sustentar(marca, FORCA_ESTRUTURADO);
+    conceito("marca", marca, 3);
+  }
+
+  // Modelo — só quando parece um modelo (até 4 palavras). MODEL com uma
+  // lista de palavras-chave (o otimizador legado escrevia isso nele) não é
+  // fato: não sustenta claim nenhum.
+  const modelo = texto((porId.get("MODEL") || {}).value || a.modelo);
+  const nModelo = seo.contentKeys(modelo).length;
+  const modeloUtil = modelo && nModelo >= 1 && nModelo <= 4;
+  if (modeloUtil) {
+    sustentar(modelo, FORCA_ESTRUTURADO);
+    conceito("modelo", modelo, 2);
+  }
+
+  // Atributos estruturados.
+  const atributos = [];
+  for (const at of attrs) {
+    const id = String(at.id || "");
+    const valor = texto(at.value != null ? at.value : at.value_name);
+    if (!valor || id === "BRAND" || id === "MODEL" || atributoIgnorado(id)) continue;
+    const nome = texto(at.name) || id;
+    atributos.push({ id, nome, valor });
+
+    const bool = valorBooleano(valor);
+    const palavrasNome = palavras(nome).filter((t) => !PALAVRAS_DE_NOME_GENERICAS.has(t.key));
+    if (bool === true) {
+      // "Com bolsos: Sim" — a característica é o próprio nome.
+      for (const t of palavrasNome) {
+        vocabulario.set(t.key, FORCA_ESTRUTURADO);
+        estruturadas.add(t.key);
+      }
+      if (palavrasNome.length) conceito("atributo", palavrasNome.map((t) => t.original).join(" "), 1);
+      continue;
+    }
+    if (bool === false) {
+      // "É impermeável: Não" — dizer "impermeável" no título é falso.
+      for (const t of palavrasNome) proibidosBrutos.set(t.key, t.original);
+      continue;
+    }
+
+    sustentar(valor, FORCA_ESTRUTURADO);
+    // O nome do atributo sustenta a palavra da dimensão ("Sola", "Cor"), mas
+    // é evidência mais fraca que o valor.
+    for (const t of palavrasNome) {
+      if (!vocabulario.has(t.key)) vocabulario.set(t.key, FORCA_FRACA);
+    }
+
+    if (id === "GENDER") {
+      // "Meninos e Meninas": une o que cada valor sustenta; só é proibido o
+      // que NENHUM deles sustenta (ali, homem/mulher).
+      const regras = seo.contentKeys(valor).map((k) => GENERO_POR_VALOR.get(k)).filter(Boolean);
+      if (regras.length) {
+        const sustentadas = new Set(regras.flatMap((r) => r.sustenta));
+        for (const k of sustentadas) {
+          vocabulario.set(k, FORCA_ESTRUTURADO);
+          estruturadas.add(k);
+        }
+        for (const k of regras.flatMap((r) => r.proibe)) {
+          if (!sustentadas.has(k)) proibidosBrutos.set(k, k);
+        }
+        conceito("atributo", valor, 2, { familia: Array.from(sustentadas) });
+        continue;
+      }
+    }
+    conceito("atributo", valor, ATRIBUTOS_ESTRUTURAIS.has(id) ? 2 : 1);
+  }
+
+  // Um proibido que também é fato estruturado (dado contraditório na ficha)
+  // não é proibido: na dúvida, vale o fato.
+  const proibidos = new Set();
+  const proibidosExibicao = [];
+  for (const [k, original] of proibidosBrutos) {
+    if (estruturadas.has(k)) continue;
+    proibidos.add(k);
+    proibidosExibicao.push(original);
+  }
+
+  // Título atual: evidência fraca e nunca de algo que contradiga um atributo.
+  const tituloAtual = texto(a.titulo);
+  for (const t of palavras(tituloAtual)) {
+    if (proibidos.has(t.key) || vocabulario.has(t.key)) continue;
+    vocabulario.set(t.key, FORCA_FRACA);
+  }
+
+  return {
+    limite,
+    tituloAtual,
+    categoria: categoriaUtil ? categoria : null,
+    marca: marcaUtil ? marca : null,
+    modelo: modeloUtil ? modelo : null,
+    atributos,
+    conceitos,
+    vocabulario,
+    proibidos,
+    proibidosExibicao,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Componentes do score
+// -----------------------------------------------------------------------------
+
+// EFICIÊNCIA (15) — faixa ótima perto do limite, sem premiar "maior = melhor"
+// linearmente. Acima do limite o candidato nem chega aqui (é descartado).
+function pontuarEficiencia(chars, limite) {
+  if (!limite || chars > limite) return 0;
+  const r = chars / limite;
+  if (r >= 0.9) return 15;
+  if (r >= 0.8) return 12;
+  if (r >= 0.65) return 8;
+  if (r >= 0.5) return 4;
+  return 0;
+}
+
+function coberturaConceito(c, chavesTitulo) {
+  if (c.familia) return c.familia.some((k) => chavesTitulo.has(k)) ? 1 : 0;
+  return seo.termCoverage(c.termo, chavesTitulo).coverage;
+}
+
+// COBERTURA (35) — quanto dos fatos importantes (peso ≥ 2) o título
+// representa, ponderado pelo peso. Sem nenhum fato, 0: não há o que medir.
+function pontuarCobertura(fatos, chavesTitulo) {
+  let alvo = fatos.conceitos.filter((c) => c.peso >= 2);
+  if (!alvo.length) alvo = fatos.conceitos;
+  if (!alvo.length) return 0;
+  let soma = 0;
+  let pesos = 0;
+  for (const c of alvo) {
+    soma += c.peso * coberturaConceito(c, chavesTitulo);
+    pesos += c.peso;
+  }
+  return Math.round(35 * (soma / pesos));
+}
+
+// RELEVÂNCIA (25) — média da força da evidência das palavras usadas.
+function pontuarRelevancia(fatos, chavesConteudo) {
+  const usadas = chavesConteudo.filter((k) => !NEUTROS.has(k));
+  if (!usadas.length) return 0;
+  const soma = usadas.reduce((acc, k) => acc + (fatos.vocabulario.get(k) || 0), 0);
+  return Math.round(25 * (soma / usadas.length));
+}
+
+// ESPECIFICIDADE (10) — fatos concretos (marca, modelo, atributos) cobertos
+// por inteiro, contra até 3 disponíveis. Sem fato específico na ficha, 5
+// (neutro — igual para todos os candidatos do anúncio).
+function pontuarEspecificidade(fatos, chavesTitulo) {
+  const especificos = fatos.conceitos.filter((c) => c.tipo !== "categoria");
+  if (!especificos.length) return 5;
+  const cobertos = especificos.filter((c) => coberturaConceito(c, chavesTitulo) === 1).length;
+  const alvo = Math.min(3, especificos.length);
+  return Math.round(10 * Math.min(1, cobertos / alvo));
+}
+
+// CLAREZA (10) — heurísticas estruturais simples, sem gramática nem LLM.
+function pontuarClareza(titulo, fatos, tokens) {
+  let pontos = 10;
+  const promocionais = tokens.filter((t) => !t.stopword && PROMOCIONAIS.has(t.key)).length;
+  pontos -= Math.min(6, 3 * promocionais);
+
+  const separadores = (titulo.match(/[-/,+&]/g) || []).length;
+  if (separadores > 2) pontos -= 2;
+
+  const conectivo = (t) => t && (t.stopword || NEUTROS.has(t.key) || t.key === "sem");
+  if (conectivo(tokens[0])) pontos -= 2;
+  if (tokens.length > 1 && conectivo(tokens[tokens.length - 1])) pontos -= 3;
+
+  const marcaModelo = (fatos.marca || "") + " " + (fatos.modelo || "");
+  const gritado = titulo.split(/\s+/).some((w) =>
+    /\p{L}{4,}/u.test(w) && w === w.toUpperCase() && w !== w.toLowerCase() && !marcaModelo.includes(w)
+  );
+  if (gritado) pontos -= 2;
+
+  return Math.max(0, pontos);
+}
+
+// REDUNDÂNCIA (5) — palavra repetida, inclusive via plural/gênero/acento
+// (seoText). Duas palavras distintas repetidas, ou uma 3 vezes, já é
+// repetição artificial e o candidato é descartado antes daqui.
+function pontuarRedundancia(repetidas) {
+  return Math.max(0, 5 - 3 * repetidas);
+}
+
+function contarChaves(chaves) {
+  const contagem = new Map();
+  for (const k of chaves) contagem.set(k, (contagem.get(k) || 0) + 1);
+  return contagem;
+}
+
+// -----------------------------------------------------------------------------
+// avaliarTitulo — valida e, se válido, pontua.
+//   inválido → { valido:false, titulo, motivo, termos? }
+//     motivo: VAZIO | EXCEDE_LIMITE | ESTRUTURA_INVALIDA | CONFLITO_ATRIBUTO
+//             | NAO_COMPROVADO | REPETICAO
+//   válido   → { valido:true, titulo, chars, score, breakdown }
+// -----------------------------------------------------------------------------
+function avaliarTitulo(tituloBruto, fatos) {
+  const titulo = texto(tituloBruto).replace(/\s+/g, " ");
+  if (!titulo) return { valido: false, titulo, motivo: "VAZIO" };
+  if (titulo.length > fatos.limite) return { valido: false, titulo, motivo: "EXCEDE_LIMITE" };
+  if (!CARACTERES_VALIDOS.test(titulo)) return { valido: false, titulo, motivo: "ESTRUTURA_INVALIDA" };
+
+  const tokens = seo.extractTokens(titulo);
+  const conteudo = tokens.filter((t) => !t.stopword);
+  if (conteudo.length < 2) return { valido: false, titulo, motivo: "ESTRUTURA_INVALIDA" };
+
+  const conflitos = conteudo.filter((t) => fatos.proibidos.has(t.key)).map((t) => t.key);
+  if (conflitos.length) return { valido: false, titulo, motivo: "CONFLITO_ATRIBUTO", termos: conflitos };
+
+  const semEvidencia = conteudo
+    .filter((t) => !NEUTROS.has(t.key) && !fatos.vocabulario.has(t.key))
+    .map((t) => t.key);
+  if (semEvidencia.length) return { valido: false, titulo, motivo: "NAO_COMPROVADO", termos: semEvidencia };
+
+  const chavesConteudo = conteudo.map((t) => t.key);
+  const contagem = contarChaves(chavesConteudo);
+  const repetidas = Array.from(contagem.values()).filter((n) => n > 1);
+  if (repetidas.length >= 2 || repetidas.some((n) => n >= 3)) {
+    return { valido: false, titulo, motivo: "REPETICAO" };
+  }
+
+  const chavesTitulo = new Set(chavesConteudo);
+  const breakdown = {
+    cobertura: pontuarCobertura(fatos, chavesTitulo),
+    relevancia: pontuarRelevancia(fatos, chavesConteudo),
+    eficiencia: pontuarEficiencia(titulo.length, fatos.limite),
+    especificidade: pontuarEspecificidade(fatos, chavesTitulo),
+    clareza: pontuarClareza(titulo, fatos, tokens),
+    redundancia: pontuarRedundancia(repetidas.length),
+  };
+  const score = breakdown.cobertura + breakdown.relevancia + breakdown.eficiencia +
+    breakdown.especificidade + breakdown.clareza + breakdown.redundancia;
+  return { valido: true, titulo, chars: titulo.length, score, breakdown };
+}
+
+// Duas sugestões com as mesmas palavras de conteúdo (só reordenadas, ou com
+// outro acento/caixa/plural) são a mesma sugestão.
+function assinatura(titulo) {
+  return Array.from(new Set(seo.contentKeys(titulo))).sort().join(" ");
+}
+
+// -----------------------------------------------------------------------------
+// Prompt — o LLM recebe os fatos e só pode REESCREVER com eles. Nada de nota.
+// -----------------------------------------------------------------------------
+const SYSTEM = [
+  "Você escreve títulos de anúncios do Mercado Livre Brasil.",
+  "Usa somente fatos fornecidos sobre o produto. Não inventa características, marcas, medidas, materiais, usos ou benefícios.",
+  "Responda SOMENTE com JSON válido, sem markdown e sem texto fora do JSON.",
+].join("\n");
+
+function montarPrompt(fatos) {
+  const linhas = [
+    "Tarefa: escrever " + CANDIDATOS_PEDIDOS + " títulos diferentes para este anúncio.",
+    "",
+    "Fatos comprovados do produto:",
+  ];
+  if (fatos.categoria) linhas.push("- Categoria: " + fatos.categoria);
+  if (fatos.marca) linhas.push("- Marca: " + fatos.marca);
+  if (fatos.modelo) linhas.push("- Modelo: " + fatos.modelo);
+  for (const at of fatos.atributos) {
+    const bool = valorBooleano(at.valor);
+    if (bool === false) continue;
+    linhas.push("- " + at.nome + ": " + at.valor);
+  }
+  linhas.push("- Título atual do vendedor: " + (fatos.tituloAtual || "(sem título)"));
+  if (fatos.proibidosExibicao.length) {
+    linhas.push("", "NÃO é verdade sobre este produto (nunca use): " + fatos.proibidosExibicao.join(", ") + ".");
+  }
+  linhas.push(
+    "",
+    "Regras:",
+    "- No máximo " + fatos.limite + " caracteres por título. Aproveite o espaço, sem ultrapassar.",
+    "- Use apenas palavras que aparecem nos fatos acima ou no título atual. Pode flexionar singular/plural e masculino/feminino.",
+    "- Conectivos permitidos: de, da, do, para, com, e, em.",
+    "- Comece pelo que o produto é. Leitura natural, sem lista solta de palavras.",
+    "- Não repita palavras. Não use palavras promocionais (imperdível, melhor, premium, oferta, promoção, top).",
+    "- Sem emojis, sem símbolos decorativos (|, ★, !), sem CAIXA ALTA.",
+    "- Os " + CANDIDATOS_PEDIDOS + " títulos precisam ser realmente diferentes entre si.",
+    "",
+    "Responda SOMENTE com este JSON:",
+    '{ "titulos": ["...", "..."] }'
+  );
+  return linhas.join("\n");
+}
+
+function textoDoCandidato(c) {
+  if (typeof c === "string") return c;
+  if (c && typeof c === "object" && typeof c.titulo === "string") return c.titulo;
+  return null;
+}
+
+// -----------------------------------------------------------------------------
+// gerarTitulos — uma chamada ao LLM, validação, score, dedupe, ordenação.
+//
+// Retorno (nunca lança):
+//   { ok:true, limite, sugestoes:[{ titulo, chars, score, breakdown }],
+//     recebidos, descartadas, motivosDescarte:{ MOTIVO: n }, aviso? }
+//   { ok:false, codigo, motivo, recebidos?, descartadas?, motivosDescarte? }
+// -----------------------------------------------------------------------------
+async function gerarTitulos({ fatos, aiProvider }) {
+  let ia;
+  try {
+    ia = await aiProvider.gerarJSON({
+      system: SYSTEM,
+      prompt: montarPrompt(fatos),
+      maxTokens: 1200,
+      temperature: 0.7,
+    });
+  } catch (err) {
+    return { ok: false, codigo: "IA_ERRO", motivo: "Falha ao consultar a IA." };
+  }
+  if (!ia || !ia.ok) {
+    return {
+      ok: false,
+      codigo: (ia && ia.codigo) || "IA_ERRO",
+      motivo: (ia && ia.erro) || "Falha ao gerar títulos com a IA.",
+    };
+  }
+  const brutos = ia.data && Array.isArray(ia.data.titulos) ? ia.data.titulos : null;
+  if (!brutos) {
+    return { ok: false, codigo: "RESPOSTA_INVALIDA", motivo: "A IA não devolveu a lista de títulos." };
+  }
+
+  const motivosDescarte = {};
+  const descartar = (motivo) => { motivosDescarte[motivo] = (motivosDescarte[motivo] || 0) + 1; };
+
+  const validos = [];
+  for (const bruto of brutos) {
+    const t = textoDoCandidato(bruto);
+    if (t == null) { descartar("ESTRUTURA_INVALIDA"); continue; }
+    const r = avaliarTitulo(t, fatos);
+    if (!r.valido) { descartar(r.motivo); continue; }
+    validos.push(r);
+  }
+
+  // Ordena por score (empate: mais curto, depois ordem do LLM) e só então
+  // tira duplicados — fica a versão de maior score de cada um.
+  const ordenados = validos
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.score - a.r.score || a.r.chars - b.r.chars || a.i - b.i)
+    .map((x) => x.r);
+  const vistos = new Set();
+  const unicos = [];
+  for (const r of ordenados) {
+    const sig = assinatura(r.titulo);
+    if (vistos.has(sig)) { descartar("DUPLICADO"); continue; }
+    vistos.add(sig);
+    unicos.push(r);
+  }
+
+  const sugestoes = unicos.slice(0, MAX_SUGESTOES).map((r) => ({
+    titulo: r.titulo, chars: r.chars, score: r.score, breakdown: r.breakdown,
+  }));
+  const descartadas = Object.values(motivosDescarte).reduce((a, n) => a + n, 0);
+
+  if (!sugestoes.length) {
+    return {
+      ok: false,
+      codigo: "SEM_SUGESTOES_VALIDAS",
+      motivo: "Nenhum título gerado passou na validação dos fatos do anúncio. Tente gerar novamente.",
+      recebidos: brutos.length,
+      descartadas,
+      motivosDescarte,
+    };
+  }
+
+  const resultado = {
+    ok: true,
+    limite: fatos.limite,
+    sugestoes,
+    recebidos: brutos.length,
+    descartadas,
+    motivosDescarte,
+  };
+  if (sugestoes.length < MIN_SUGESTOES) {
+    resultado.aviso = "Só " + sugestoes.length + (sugestoes.length === 1 ? " sugestão passou" : " sugestões passaram") +
+      " na validação dos fatos do anúncio.";
+  }
+  return resultado;
+}
+
+module.exports = {
+  montarFatos,
+  avaliarTitulo,
+  pontuarEficiencia,
+  montarPrompt,
+  gerarTitulos,
+  SYSTEM,
+  LIMITE_PADRAO,
+  CANDIDATOS_PEDIDOS,
+  MAX_SUGESTOES,
+};

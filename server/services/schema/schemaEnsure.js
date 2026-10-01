@@ -354,6 +354,23 @@ const MIGRATIONS_INVENTARIO = [
     rollback: "DROP TABLE anuncios_margem_projetada_snapshot (nenhum consumidor depende dela ainda)",
   },
   {
+    arquivo: "20261001_cliente_contas_marketplace_tiktok.sql",
+    descricao:
+      "amplia a CHECK de cliente_contas.marketplace para aceitar 'tiktok' (operação TikTok " +
+      "Shop no Painel de Contas, lançamento manual). Não cria nem altera linhas.",
+    tipo: "aditiva (constraint)",
+    auto: false,
+    runner: null,
+    idempotente: true,
+    risco: "baixo",
+    prerequisito: "20260817_cliente_contas_foundation.sql",
+    rollback:
+      "recriar a CHECK com ('meli','shopee') — só possível enquanto não existir conta 'tiktok'",
+    nota:
+      "Até rodar, criar conta TikTok responde 409 MARKETPLACE_PENDENTE_MIGRACAO; " +
+      "a seção TikTok do Painel aparece vazia.",
+  },
+  {
     arquivo: MARGEM_PRECIFICACAO_MIGRATION,
     descricao:
       "cria margem_precificacao_aplicacoes (trilha preview→aplicação da Central de Margem: " +

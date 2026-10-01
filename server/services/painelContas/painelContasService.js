@@ -26,7 +26,9 @@ const repo = require("./painelContasRepository");
 const { deriveResumo } = require("./painelContasMetricas");
 const { variacaoResumo, sanitizarParaJson } = require("./painelContasVariacao");
 const { DEFINICAO: DEFINICAO_SEMANA, agruparEmSemanas, agruparPedidosEmSemanas } = require("./painelContasSemanas");
-const { resolverContas, consolidarCliente, ehSquadLegado, rotuloMarketplace } = require("./painelContasOperacional");
+const {
+  resolverContas, consolidarCliente, ehSquadLegado, rotuloMarketplace, secoesMarketplace, descreverSecao,
+} = require("./painelContasOperacional");
 const { validarLancamento, competenciaValida } = require("./painelContasManual");
 const atualizacao = require("./painelContasAtualizacao");
 
@@ -65,6 +67,10 @@ function competenciaAtual(agora = new Date()) {
   const ano = partes.find((p) => p.type === "year").value;
   const mes = partes.find((p) => p.type === "month").value;
   return `${ano}-${mes}`;
+}
+
+function hojeNoFuso(agora = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(agora);
 }
 
 function limitesDaCompetencia(competencia) {
@@ -149,7 +155,11 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
   const mostrarLegado = flag(filtros.mostrarLegado);
   const squadIdNum = filtros.squadId != null && filtros.squadId !== "" ? Number(filtros.squadId) : null;
   const buscaNorm = normalizarBusca(filtros.busca);
-  const marketplace = filtros.marketplace ? String(filtros.marketplace).toLowerCase() : null;
+  // Seção por marketplace: com `marketplace`, cada cliente é recalculado SÓ
+  // com as contas daquele marketplace (não é um filtro de clientes sobre o
+  // número consolidado). Sem ele, a visão consolidada de sempre.
+  const marketplace = filtros.marketplace ? String(filtros.marketplace).trim().toLowerCase() : null;
+  if (marketplace && !/^[a-z0-9_-]{1,40}$/.test(marketplace)) throw erro(400, "MARKETPLACE_INVALIDO", "Marketplace inválido.");
   const permitido = podeLancar(user);
   const podeAtualizar = atualizacao.ehAdmin(user);
 
@@ -209,12 +219,19 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
     .sort()
     .map((codigo) => ({ codigo, rotulo: rotuloMarketplace(codigo) }));
 
+  // Snapshot do cliente e Ads (ads_resumos_mensais) vêm da Central/Ads do
+  // Mercado Livre: valem no consolidado e na seção ML; Shopee/TikTok somam só
+  // os próprios lançamentos.
+  const usaFontesMl = !marketplace || marketplace === "meli";
   const todos = escopo.map((c) => {
-    const contas = resolverContas(contasPorCliente.get(c.id) || [], fontes);
+    const doCliente = contasPorCliente.get(c.id) || [];
+    const naVisao = marketplace ? doCliente.filter((r) => String(r.marketplace).toLowerCase() === marketplace) : doCliente;
+    const contas = resolverContas(naVisao, fontes);
     const consolidado = consolidarCliente({
       contas,
-      snapshot: snapshotPorCliente.get(c.id) || null,
-      adsCliente: adsPorSlug.get(c.slug) || null,
+      snapshot: usaFontesMl ? snapshotPorCliente.get(c.id) || null : null,
+      adsCliente: usaFontesMl ? adsPorSlug.get(c.slug) || null : null,
+      snapshotSemDetalhamento: !marketplace,
     });
     const squad = squadDoCliente.get(c.id) || null;
     return {
@@ -248,6 +265,8 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
     })),
     squadsDisponiveis,
     marketplacesDisponiveis,
+    visao: marketplace ? descreverSecao(marketplace) : { codigo: null, rotulo: "Consolidado", fonte: "misto", descricao: "Todas as contas do cliente" },
+    secoesMarketplace: secoesMarketplace(contasRows),
     // atualizarDados = mesmo gate do sync manual da Central (admin).
     permissoes: { lancarManual: permitido, atualizarDados: podeAtualizar },
     resumoCarteira: resumirCarteira(noMarketplace, legadoOcultos),
@@ -368,7 +387,7 @@ async function salvarLancamentoManual(user, clienteRef, contaIdRaw, competencia,
   const { cliente, conta } = await resolverContaParaLancamento(user, clienteRef, contaIdRaw, competencia, agora);
   if (conta.ativo === false) throw erro(409, "CONTA_INATIVA", "Conta inativa: reative a conta antes de lançar dados.");
 
-  const validacao = validarLancamento(body);
+  const validacao = validarLancamento(body, { competencia, hoje: hojeNoFuso(agora) });
   if (!validacao.ok) throw erro(422, validacao.codigo, validacao.mensagem);
 
   // Automático disponível vence: gravar um manual que nunca seria exibido só
@@ -386,8 +405,13 @@ async function salvarLancamentoManual(user, clienteRef, contaIdRaw, competencia,
     valores: validacao.valores,
     userId: user.id ?? null,
   });
+  const autor = user.nome || null;
   const [view] = resolverContas([conta], {
-    manualPorConta: new Map([[Number(conta.id), { ...row, updated_by_nome: user.nome || null }]]),
+    manualPorConta: new Map([[Number(conta.id), {
+      ...row,
+      updated_by_nome: autor,
+      created_by_nome: row.inserido ? autor : row.created_by_nome ?? null,
+    }]]),
   });
   return sanitizarParaJson({ ok: true, competencia, derivados: validacao.derivados, conta: contaPublica(view, true) });
 }
@@ -404,8 +428,80 @@ async function removerLancamentoManual(user, clienteRef, contaIdRaw, competencia
   return sanitizarParaJson({ ok: true, competencia, removido: true, conta: contaPublica(view, true) });
 }
 
+// ─── Rastreabilidade do lançamento manual (só leitura) ───────────────────────
+
+function valoresDoHistorico(raw) {
+  const v = typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch (_) { return {}; } })() : raw || {};
+  const num = (x) => (x === null || x === undefined || x === "" ? null : Number.isFinite(Number(x)) ? Number(x) : null);
+  return {
+    faturamento: num(v.faturamento),
+    lucroContribuicao: num(v.lucroContribuicao),
+    margemContribuicao: num(v.margemContribuicao),
+    investimentoAds: num(v.investimentoAds),
+    gmvAds: num(v.gmvAds),
+    observacao: v.observacao ?? null,
+    dataReferencia: v.dataReferencia ?? null,
+  };
+}
+
+async function resolverContaParaLeitura(user, clienteRef, contaIdRaw) {
+  const cliente = await assertClienteNaCarteira(user, clienteRef, pool);
+  const contaId = Number(contaIdRaw);
+  const conta = Number.isInteger(contaId) && contaId > 0 ? await repo.obterContaDoCliente(contaId, cliente.id) : null;
+  if (!conta) throw erro(404, "CONTA_NAO_ENCONTRADA", "Conta não encontrada neste cliente.");
+  return { cliente, conta };
+}
+
+function contaResumida(conta) {
+  return {
+    id: Number(conta.id), nome: conta.nome || null, marketplace: String(conta.marketplace || "").toLowerCase(),
+    marketplaceRotulo: rotuloMarketplace(conta.marketplace), ativa: conta.ativo !== false,
+  };
+}
+
+// GET /painel-contas/:clienteId/contas/:contaId/manual — todas as competências
+// lançadas desta conta (Ago, Set, Out…). Cada uma é um registro próprio: salvar
+// um mês nunca toca outro (UNIQUE conta × competência).
+async function listarLancamentosDaConta(user, clienteRef, contaIdRaw) {
+  const { cliente, conta } = await resolverContaParaLeitura(user, clienteRef, contaIdRaw);
+  await repo.ensurePainelContasTables();
+  const rows = await repo.listarManuaisDaConta(Number(conta.id), cliente.id);
+  return sanitizarParaJson({
+    ok: true,
+    conta: contaResumida(conta),
+    lancamentos: rows.map((row) => {
+      const [view] = resolverContas([{ ...conta, ativo: true }], { manualPorConta: new Map([[Number(conta.id), row]]) });
+      return { competencia: row.competencia, fonte: { tipo: "manual", rotulo: "Manual" }, ...view.manual };
+    }),
+  });
+}
+
+// GET /painel-contas/:clienteId/contas/:contaId/manual/:competencia/historico
+// Trilha completa (criado/alterado/removido), mais recente primeiro.
+async function listarHistoricoLancamento(user, clienteRef, contaIdRaw, competencia) {
+  if (!competenciaValida(competencia)) throw erro(400, "COMPETENCIA_INVALIDA", "competencia inválida (esperado YYYY-MM).");
+  const { cliente, conta } = await resolverContaParaLeitura(user, clienteRef, contaIdRaw);
+  await repo.ensurePainelContasTables();
+  const rows = await repo.listarHistoricoManual(Number(conta.id), cliente.id, competencia);
+  return sanitizarParaJson({
+    ok: true,
+    competencia,
+    conta: contaResumida(conta),
+    historico: rows.map((h) => ({
+      id: Number(h.id),
+      acao: h.acao,
+      em: h.created_at instanceof Date ? h.created_at.toISOString() : h.created_at,
+      por: h.user_nome || null,
+      porId: h.user_id != null ? Number(h.user_id) : null,
+      valores: valoresDoHistorico(h.valores_json),
+    })),
+  });
+}
+
 module.exports = {
   listar,
+  listarLancamentosDaConta,
+  listarHistoricoLancamento,
   listarMeses,
   listarSemanas,
   listarSemanasDasContas,

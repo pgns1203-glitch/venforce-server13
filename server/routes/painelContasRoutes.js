@@ -26,6 +26,10 @@ router.get("/:clienteId/contas/semanas", authMiddleware, requireAutomacoesAccess
 // automações + cliente na carteira; o service ainda exige que a conta
 // pertença ao cliente do path.
 const manual = "/:clienteId/contas/:contaId/manual/:competencia";
+// Rastreabilidade (só leitura): competências lançadas da conta e a trilha de
+// alterações de uma competência.
+router.get("/:clienteId/contas/:contaId/manual", authMiddleware, requireAutomacoesAccess, naCarteira, controller.listarLancamentosDaConta);
+router.get(`${manual}/historico`, authMiddleware, requireAutomacoesAccess, naCarteira, controller.listarHistoricoLancamento);
 router.put(manual, authMiddleware, requireAutomacoesAccess, naCarteira, controller.salvarLancamentoManual);
 router.delete(manual, authMiddleware, requireAutomacoesAccess, naCarteira, controller.removerLancamentoManual);
 // Atualização sob demanda (cliente × competência). Dispara sync no Mercado

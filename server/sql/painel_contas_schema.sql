@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS painel_contas_lancamentos_manuais (
 CREATE INDEX IF NOT EXISTS idx_painel_contas_manual_cliente_comp
   ON painel_contas_lancamentos_manuais (cliente_id, competencia);
 
+-- V3: "dados até" declarado no lançamento (opcional; NULL = não informado).
+-- Aditiva e idempotente: linhas existentes ficam NULL, nada é presumido.
+ALTER TABLE painel_contas_lancamentos_manuais ADD COLUMN IF NOT EXISTS data_referencia DATE;
+
 -- Trilha de auditoria: cada criação/alteração/remoção guarda os valores e
 -- quem fez. Sem FK para o lançamento de propósito — a remoção precisa
 -- continuar registrada depois que a linha principal some.

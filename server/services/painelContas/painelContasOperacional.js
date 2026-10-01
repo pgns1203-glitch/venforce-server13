@@ -26,11 +26,43 @@
 const { round2, deriveResumo, calcularAcos, asFiniteOrNull } = require("./painelContasMetricas");
 const { calcularTacos } = require("../cliente360/cliente360AdsService");
 
-const MARKETPLACES = { meli: "Mercado Livre", shopee: "Shopee" };
-const ORDEM_MARKETPLACE = ["meli", "shopee"];
+const MARKETPLACES = { meli: "Mercado Livre", shopee: "Shopee", tiktok: "TikTok Shop" };
+const ORDEM_MARKETPLACE = ["meli", "shopee", "tiktok"];
 // Só o Mercado Livre tem sincronização automática da Central de Vendas (é o
 // contrato de centralVendasSyncRunService.criarSyncRun, não uma escolha daqui).
 const MARKETPLACES_COM_SYNC = new Set(["meli"]);
+
+// Seções da tela, uma por marketplace. A fonte sai de MARKETPLACES_COM_SYNC
+// (não é escrita à mão por seção): um marketplace novo entra em MARKETPLACES
+// e ganha a seção manual de graça; quando ganhar sync, muda de fonte sozinho.
+// As três primeiras aparecem sempre, mesmo sem conta cadastrada — a ausência
+// também é informação.
+const SECOES_FIXAS = ["meli", "shopee", "tiktok"];
+
+function descreverSecao(codigo) {
+  const automatica = MARKETPLACES_COM_SYNC.has(codigo);
+  return {
+    codigo,
+    rotulo: rotuloMarketplace(codigo),
+    fonte: automatica ? "api" : "manual",
+    descricao: automatica ? "Dados automáticos da API" : "Lançamentos manuais e histórico",
+  };
+}
+
+// `contasRows`: cliente_contas da carteira já autorizada. Cada seção conta
+// clientes com ao menos uma conta ATIVA daquele marketplace.
+function secoesMarketplace(contasRows = []) {
+  const clientesPorMp = new Map();
+  for (const row of contasRows) {
+    if (row.ativo === false) continue;
+    const mp = String(row.marketplace || "").toLowerCase();
+    if (!mp) continue;
+    if (!clientesPorMp.has(mp)) clientesPorMp.set(mp, new Set());
+    clientesPorMp.get(mp).add(Number(row.cliente_id));
+  }
+  const codigos = [...SECOES_FIXAS, ...[...clientesPorMp.keys()].filter((c) => !SECOES_FIXAS.includes(c)).sort()];
+  return codigos.map((codigo) => ({ ...descreverSecao(codigo), clientes: clientesPorMp.get(codigo)?.size || 0 }));
+}
 // Causas que pedem ação humana (conectar, lançar, investigar o sync).
 const CAUSAS_ACIONAVEIS = new Set(["sem_conexao", "sem_integracao", "erro_sync", "nao_publicado"]);
 
@@ -95,6 +127,8 @@ function status(codigo, motivo = null, extra = {}) {
 
 function manualView(row, { substituidoPorAutomatico = false } = {}) {
   if (!row) return null;
+  // Registro: vigente (é o número exibido) ou guardado sob um automático.
+  // Removido não chega aqui — só existe na trilha de auditoria.
   const fat = asFiniteOrNull(row.faturamento);
   const ads = asFiniteOrNull(row.investimento_ads);
   return {
@@ -108,11 +142,17 @@ function manualView(row, { substituidoPorAutomatico = false } = {}) {
     }),
     gmvAds: asFiniteOrNull(row.gmv_ads),
     observacao: row.observacao || null,
+    // "Dados até" declarado por quem lançou; null = não informado (nunca
+    // presumido como o fim do mês).
+    dataReferencia: dia(row.data_referencia),
     criadoEm: iso(row.created_at),
+    criadoPor: row.created_by_nome || null,
+    criadoPorId: row.created_by != null ? Number(row.created_by) : null,
     atualizadoEm: iso(row.updated_at),
     atualizadoPor: row.updated_by_nome || null,
     atualizadoPorId: row.updated_by != null ? Number(row.updated_by) : null,
     substituidoPorAutomatico,
+    statusRegistro: substituidoPorAutomatico ? "substituido_por_automatico" : "vigente",
   };
 }
 
@@ -227,6 +267,7 @@ function resolverContasSemAcao(rows, { importPorConta = new Map(), manualPorCont
         baseMc: view.valores.fat,
         fonte: { tipo: "manual", rotulo: "Manual" },
         atualizadoEm: view.atualizadoEm,
+        dadosAte: view.dataReferencia,
         manual: view,
         gmvAds: view.gmvAds,
         podeLancarManual: true,
@@ -262,8 +303,11 @@ function motivoSemDados(operacionais) {
  * @param {Array} p.contas       saída de resolverContas
  * @param {object|null} p.snapshot  linha mapeada de cliente_360_resumos_mensais DA competência
  * @param {object|null} p.adsCliente  {investimentoAds, gmvAds, atualizadoEm} de ads_resumos_mensais
+ * @param {boolean} p.snapshotSemDetalhamento  false numa seção de marketplace:
+ *   o snapshot é do CLIENTE e só pode valer quando prova ter sido gerado com
+ *   os mesmos imports das contas da seção — nunca como "sem detalhamento".
  */
-function consolidarCliente({ contas = [], snapshot = null, adsCliente = null }) {
+function consolidarCliente({ contas = [], snapshot = null, adsCliente = null, snapshotSemDetalhamento = true }) {
   const operacionais = contas.filter((c) => c.ativa);
   const comDado = operacionais.filter((c) => c.resumo && c.resumo.fat !== null);
   const n = operacionais.length;
@@ -285,7 +329,7 @@ function consolidarCliente({ contas = [], snapshot = null, adsCliente = null }) 
   // ou snapshot sem detalhamento) ainda é dado DA competência — mostrado com
   // escopo "cliente" para ninguém confundi-lo com a soma das contas.
   if (k === 0) {
-    if (snapshot) {
+    if (snapshot && snapshotSemDetalhamento) {
       return {
         escopo: { ...escopo, tipo: "cliente", rotulo: "Cliente · sem detalhamento por conta" },
         status: status("sincronizado", "Snapshot do cliente sem detalhamento por conta", { precisaAtencao: false }),
@@ -366,6 +410,8 @@ module.exports = {
   consolidarCliente,
   ehSquadLegado,
   rotuloMarketplace,
+  secoesMarketplace,
+  descreverSecao,
   montarResumo,
   MARKETPLACES_COM_SYNC,
   CAUSAS_ACIONAVEIS,

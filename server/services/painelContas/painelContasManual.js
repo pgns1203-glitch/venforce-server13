@@ -14,6 +14,10 @@
 // (calcularAcos / calcularTacos), como para o dado automático.
 //
 // Ausência é null, zero é zero: campo vazio nunca vira 0.
+//
+// dataReferencia ("dados até", YYYY-MM-DD) é opcional: quando informada, tem
+// de cair dentro da competência e não pode ser futura. Ausente = null — nunca
+// presumida como o último dia do mês.
 
 const { asFiniteOrNull, round2 } = require("./painelContasMetricas");
 
@@ -43,7 +47,24 @@ function lerNumero(valor) {
   return n === null ? { invalido: true } : { ausente: false, valor: n };
 }
 
-function validarLancamento(entrada = {}) {
+// `hoje` em YYYY-MM-DD (America/Sao_Paulo), injetado pelo service.
+function lerDataReferencia(valor, { competencia, hoje } = {}) {
+  if (valor === null || valor === undefined || valor === "") return { valor: null };
+  const texto = String(valor).trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(texto);
+  if (!m) return { erro: "Data de referência inválida (esperado AAAA-MM-DD)." };
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  if (d.getUTCFullYear() !== Number(m[1]) || d.getUTCMonth() !== Number(m[2]) - 1 || d.getUTCDate() !== Number(m[3])) {
+    return { erro: "Data de referência inválida." };
+  }
+  if (competencia && texto.slice(0, 7) !== competencia) {
+    return { erro: "A data de referência precisa estar dentro da competência do lançamento." };
+  }
+  if (hoje && texto > hoje) return { erro: "A data de referência não pode ser futura." };
+  return { valor: texto };
+}
+
+function validarLancamento(entrada = {}, contexto = {}) {
   const v = {};
   for (const campo of CAMPOS) {
     const lido = lerNumero(entrada[campo]);
@@ -80,6 +101,8 @@ function validarLancamento(entrada = {}) {
   }
 
   const observacao = String(entrada.observacao ?? "").trim().slice(0, OBSERVACAO_MAX) || null;
+  const data = lerDataReferencia(entrada.dataReferencia, contexto);
+  if (data.erro) return falha("MANUAL_INVALIDO", data.erro, "dataReferencia");
 
   return {
     ok: true,
@@ -91,8 +114,9 @@ function validarLancamento(entrada = {}) {
       investimentoAds: round2(v.investimentoAds),
       gmvAds: round2(v.gmvAds),
       observacao,
+      dataReferencia: data.valor,
     },
   };
 }
 
-module.exports = { validarLancamento, competenciaValida, TOLERANCIA_MC, OBSERVACAO_MAX };
+module.exports = { validarLancamento, lerDataReferencia, competenciaValida, TOLERANCIA_MC, OBSERVACAO_MAX };

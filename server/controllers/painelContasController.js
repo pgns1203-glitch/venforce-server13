@@ -92,6 +92,22 @@ async function removerLancamentoManual(req, res) {
   } catch (err) { return tratarErro(res, err, "removerLancamentoManual"); }
 }
 
+// GET /painel-contas/:clienteId/contas/:contaId/manual
+async function listarLancamentosDaConta(req, res) {
+  try {
+    const { clienteId, contaId } = req.params;
+    return responder(res, 200, await service.listarLancamentosDaConta(req.user || {}, clienteId, contaId));
+  } catch (err) { return tratarErro(res, err, "listarLancamentosDaConta"); }
+}
+
+// GET /painel-contas/:clienteId/contas/:contaId/manual/:competencia/historico
+async function listarHistoricoLancamento(req, res) {
+  try {
+    const { clienteId, contaId, competencia } = req.params;
+    return responder(res, 200, await service.listarHistoricoLancamento(req.user || {}, clienteId, contaId, competencia));
+  } catch (err) { return tratarErro(res, err, "listarHistoricoLancamento"); }
+}
+
 // POST /painel-contas/:clienteId/atualizar/:competencia — 202: a execução
 // segue em segundo plano; o progresso é lido pelo GET abaixo.
 async function iniciarAtualizacao(req, res) {
@@ -113,5 +129,6 @@ async function obterAtualizacao(req, res) {
 
 module.exports = {
   listar, listarMeses, listarSemanas, listarSemanasDasContas, salvarLancamentoManual, removerLancamentoManual,
+  listarLancamentosDaConta, listarHistoricoLancamento,
   iniciarAtualizacao, obterAtualizacao, maskSensitiveData,
 };

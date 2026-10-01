@@ -126,6 +126,10 @@ function portfolioInterno(m, userId) {
     .map(({ id, slug, nome }) => ({ id, slug, nome }));
 }
 
+function nomeDe(m, userId) {
+  return (m.users.find((u) => u.id === userId) || {}).nome || null;
+}
+
 function instalarMock(m) {
   const originalQuery = pool.query;
   const originalConnect = pool.connect;
@@ -190,7 +194,23 @@ function instalarMock(m) {
       contar("painel:manuais");
       return {
         rows: m.manuais.filter((x) => ids.includes(x.cliente_conta_id) && x.competencia === params[1])
-          .map((x) => ({ ...x, updated_by_nome: (m.users.find((u) => u.id === x.updated_by) || {}).nome || null })),
+          .map((x) => ({ ...x, updated_by_nome: nomeDe(m, x.updated_by), created_by_nome: nomeDe(m, x.created_by) })),
+      };
+    }
+    if (q.includes("painelContas:MANUAIS_DA_CONTA")) {
+      contar("painel:manuaisConta");
+      return {
+        rows: m.manuais.filter((x) => x.cliente_conta_id === params[0] && x.cliente_id === params[1])
+          .sort((a, b) => b.competencia.localeCompare(a.competencia))
+          .map((x) => ({ ...x, updated_by_nome: nomeDe(m, x.updated_by), created_by_nome: nomeDe(m, x.created_by) })),
+      };
+    }
+    if (q.includes("painelContas:HISTORICO_DA_CONTA")) {
+      contar("painel:historicoConta");
+      return {
+        rows: m.historico.filter((h) => h.conta === params[0] && h.cliente_id === params[1] && h.competencia === params[2])
+          .map((h) => ({ ...h, valores_json: h.valores, user_nome: nomeDe(m, h.user_id) }))
+          .reverse(),
       };
     }
     if (q.includes("painelContas:CONTA_DO_CLIENTE")) {
@@ -199,14 +219,14 @@ function instalarMock(m) {
     }
     if (q.includes("painelContas:UPSERT_MANUAL")) {
       contar("painel:upsert");
-      const [clienteId, contaId, competencia, fat, lc, mc, ads, gmv, obs, uid] = params;
+      const [clienteId, contaId, competencia, fat, lc, mc, ads, gmv, obs, uid, dataRef] = params;
       let row = m.manuais.find((x) => x.cliente_conta_id === contaId && x.competencia === competencia);
       const inserido = !row;
       if (!row) {
         row = { id: m.manuais.length + 1, cliente_id: clienteId, cliente_conta_id: contaId, competencia, created_by: uid, created_at: "2026-09-29T12:00:00.000Z" };
         m.manuais.push(row);
       }
-      Object.assign(row, { faturamento: fat, lucro_contribuicao: lc, margem_contribuicao: mc, investimento_ads: ads, gmv_ads: gmv, observacao: obs, updated_by: uid, updated_at: "2026-09-29T12:00:00.000Z" });
+      Object.assign(row, { faturamento: fat, lucro_contribuicao: lc, margem_contribuicao: mc, investimento_ads: ads, gmv_ads: gmv, observacao: obs, data_referencia: dataRef, updated_by: uid, updated_at: "2026-09-29T12:00:00.000Z" });
       return { rows: [{ ...row, inserido }] };
     }
     if (q.includes("painelContas:DELETE_MANUAL")) {
@@ -218,7 +238,14 @@ function instalarMock(m) {
     }
     if (q.includes("painelContas:HISTORICO_MANUAL")) {
       contar("painel:historico");
-      m.historico.push({ lancamento_id: params[0], cliente_id: params[1], conta: params[2], competencia: params[3], acao: q.includes("'removido'") ? "removido" : params[4], user_id: q.includes("'removido'") ? params[5] : params[6] });
+      const removido = q.includes("'removido'");
+      m.historico.push({
+        id: m.historico.length + 1, created_at: `2026-09-29T12:00:${String(m.historico.length).padStart(2, "0")}.000Z`,
+        lancamento_id: params[0], cliente_id: params[1], conta: params[2], competencia: params[3],
+        acao: removido ? "removido" : params[4],
+        valores: JSON.parse(removido ? params[4] : params[5]),
+        user_id: removido ? params[5] : params[6],
+      });
       return { rows: [] };
     }
 
@@ -393,6 +420,76 @@ async function run() {
     ok("remover: devolve a conta sem manual", removido.removido === true && removido.conta.manual === null);
     eq("remover: fica na trilha de auditoria", m.historico[m.historico.length - 1].acao, "removido");
     await rejeita("remover inexistente → 404", service.removerLancamentoManual(U.ana, "3", "31", SET), 404, "LANCAMENTO_NAO_ENCONTRADO");
+
+    // =======================================================================
+    // J — seções por marketplace (ML / Shopee / TikTok Shop)
+    // =======================================================================
+    m.contas.push({ id: 32, cliente_id: 3, marketplace: "tiktok", nome: "COREMIX TT", slug: "core-tt", external_account_id: null, is_primary: true, ativo: true });
+    let consol = await service.listar(U.ana, { competencia: SET });
+    let coreJ = consol.clientes.find((c) => c.slug === "coremix");
+    const tt = coreJ.contas.find((c) => c.id === 32);
+    eq("J: conta TikTok sem dado → sem integração (não 'API falhou')", [tt.status.codigo, tt.rotulo], ["sem_integracao", "TikTok Shop 1 · COREMIX TT"]);
+    ok("J: TikTok aceita lançamento manual", tt.podeLancarManual === true);
+    eq("J: seções fixas na ordem, com fonte e contagem", consol.secoesMarketplace.map((x) => [x.codigo, x.fonte, x.clientes]), [
+      ["meli", "api", 3], ["shopee", "manual", 1], ["tiktok", "manual", 1],
+    ]);
+    eq("J: visão padrão = consolidado", consol.visao.codigo, null);
+
+    await service.salvarLancamentoManual(U.ana, "3", "31", SET, { faturamento: 50000, lucroContribuicao: 7500, dataReferencia: "2026-09-28" });
+    await service.salvarLancamentoManual(U.ana, "3", "32", SET, { faturamento: 20000 });
+    consol = await service.listar(U.ana, { competencia: SET });
+    coreJ = consol.clientes.find((c) => c.slug === "coremix");
+    eq("J: consolidado do cliente soma Shopee + TikTok", [coreJ.resumo.fat, coreJ.fonte.tipo, coreJ.contas.length], [70000, "manual", 2]);
+
+    const secShopee = await service.listar(U.ana, { competencia: SET, marketplace: "shopee" });
+    const coreS = secShopee.clientes.find((c) => c.slug === "coremix");
+    eq("J: seção Shopee recalcula só com a conta Shopee", [coreS.resumo.fat, coreS.contas.map((c) => c.id)], [50000, [31]]);
+    eq("J: seção declara a fonte", [secShopee.visao.codigo, secShopee.visao.fonte], ["shopee", "manual"]);
+    eq("J: 'dados até' do manual vem da data de referência", coreS.contas[0].dadosAte, "2026-09-28");
+
+    const secTiktok = await service.listar(U.ana, { competencia: SET, marketplace: "tiktok" });
+    eq("J: seção TikTok só com a conta TikTok", secTiktok.clientes.map((c) => [c.slug, c.resumo.fat, c.status.codigo]), [["coremix", 20000, "manual"]]);
+    ok("J: Ads do ML não entra na seção TikTok", secTiktok.clientes[0].resumo.ads === null);
+
+    const secMl = await service.listar(U.ana, { competencia: SET, marketplace: "meli" });
+    const amrMl = secMl.clientes.find((c) => c.slug === "amr-ecommerce");
+    ok("J: seção ML não lista cliente só-Shopee/TikTok", !secMl.clientes.some((c) => c.slug === "coremix"));
+    eq("J: seção ML mantém o número da conta e o Ads do cliente", [amrMl.resumo.fat, amrMl.resumo.ads], [2833602 + 800000 + 420512, 120000]);
+    eq("J: marketplace sem conta → lista vazia, não erro", (await service.listar(U.ana, { competencia: SET, marketplace: "magalu" })).clientes.length, 0);
+    await rejeita("J: marketplace malformado → 400", service.listar(U.ana, { competencia: SET, marketplace: "x y" }), 400, "MARKETPLACE_INVALIDO");
+
+    // =======================================================================
+    // K — competências independentes + rastreabilidade
+    // =======================================================================
+    await service.salvarLancamentoManual(U.ana, "3", "31", "2026-08", { faturamento: 40000, dataReferencia: "2026-08-31" });
+    await service.salvarLancamentoManual(U.ana, "3", "31", SET, { faturamento: 52000, dataReferencia: "2026-09-29" });
+    const ago = (await service.listar(U.ana, { competencia: "2026-08", marketplace: "shopee" })).clientes.find((c) => c.slug === "coremix");
+    const set = (await service.listar(U.ana, { competencia: SET, marketplace: "shopee" })).clientes.find((c) => c.slug === "coremix");
+    eq("K: salvar setembro não sobrescreve agosto", [ago.resumo.fat, set.resumo.fat], [40000, 52000]);
+    eq("K: cada competência guarda a própria data de referência", [ago.contas[0].dadosAte, set.contas[0].dadosAte], ["2026-08-31", "2026-09-29"]);
+    eq("K: campo ausente continua ausente (LC não vira 0)", set.contas[0].resumo.lc, null);
+
+    const lancs = await service.listarLancamentosDaConta(U.ana, "3", "31");
+    eq("K: competências lançadas da conta, mais recente primeiro", lancs.lancamentos.map((l) => [l.competencia, l.valores.fat, l.dataReferencia]), [
+      [SET, 52000, "2026-09-29"], ["2026-08", 40000, "2026-08-31"],
+    ]);
+    eq("K: responsável e fonte em cada registro", [lancs.lancamentos[0].criadoPor, lancs.lancamentos[0].atualizadoPor, lancs.lancamentos[0].fonte.tipo, lancs.lancamentos[0].statusRegistro], ["Ana", "Ana", "manual", "vigente"]);
+
+    const hist = await service.listarHistoricoLancamento(U.ana, "3", "31", SET);
+    ok("K: trilha preserva criação, remoção e alterações (mais recente primeiro)", hist.historico.length >= 3 && hist.historico[0].acao === "alterado" && hist.historico.some((h) => h.acao === "removido") && hist.historico[hist.historico.length - 1].acao === "criado");
+    eq("K: trilha guarda valores e data de referência de cada versão", [hist.historico[0].valores.faturamento, hist.historico[0].valores.dataReferencia, hist.historico[0].por], [52000, "2026-09-29", "Ana"]);
+    eq("K: trilha de agosto é separada", (await service.listarHistoricoLancamento(U.ana, "3", "31", "2026-08")).historico.map((h) => h.acao), ["criado"]);
+
+    await rejeita("K: data de referência fora da competência → 422", service.salvarLancamentoManual(U.ana, "3", "31", SET, { faturamento: 1, dataReferencia: "2026-08-31" }), 422, "MANUAL_INVALIDO");
+    await rejeita("K: data de referência futura → 422", service.salvarLancamentoManual(U.ana, "3", "31", SET, { faturamento: 1, dataReferencia: "2026-09-30" }, { agora: new Date("2026-09-29T12:00:00-03:00") }), 422, "MANUAL_INVALIDO");
+    await rejeita("K: data de referência inexistente → 422", service.salvarLancamentoManual(U.ana, "3", "31", SET, { faturamento: 1, dataReferencia: "2026-09-31" }), 422, "MANUAL_INVALIDO");
+    await rejeita("K: histórico de conta de outro cliente pelo path → 404", service.listarHistoricoLancamento(U.ana, "3", "61", SET), 404, "CONTA_NAO_ENCONTRADA");
+    await rejeita("K: histórico de cliente fora da carteira → 403", service.listarHistoricoLancamento(U.ana, "6", "61", SET), 403);
+    await rejeita("K: lançamentos de cliente fora da carteira → 403", service.listarLancamentosDaConta(U.ana, "6", "61"), 403);
+    await rejeita("K: competência inválida no histórico → 400", service.listarHistoricoLancamento(U.ana, "3", "31", "2026-9"), 400);
+
+    m.contas = m.contas.filter((c) => c.id !== 32);
+    m.manuais = m.manuais.filter((x) => x.cliente_conta_id !== 32 && x.cliente_conta_id !== 31);
 
     // =======================================================================
     // Performance: número fixo de queries, sem N+1

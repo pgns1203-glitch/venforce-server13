@@ -41,12 +41,29 @@ function createMarginSnapshotWorker({
   staleMinutes = null,
   reconcileIntervalMs = 60000,
   clock = () => Date.now(),
+  // Nomes dos eventos de log — o Promo Snapshot reutiliza este worker com os
+  // próprios nomes. `concluido` pode ser função do run final (ex.: completed
+  // vs partial). Default = eventos do Margin Snapshot (inalterados).
+  eventos = {},
+  // Prefixo das mensagens de erro inesperado no log.
+  rotuloLog = "[marginSnapshot]",
+  // Campos extras (ids) em todos os eventos do run — ex.: seller_id.
+  camposExtras = null,
 } = {}) {
   if (typeof processor !== "function") {
     throw new Error("createMarginSnapshotWorker: processor é obrigatório (injetado).");
   }
 
   const limite = Math.max(1, Number(maxConcurrentRuns) || 1);
+  const nomes = {
+    iniciado: "margin_snapshot_run_started",
+    concluido: "margin_snapshot_run_completed",
+    naoConcluido: "margin_snapshot_run_not_completed",
+    falhou: "margin_snapshot_run_failed",
+    reconciliado: "margin_snapshot_stale_reconciled",
+    ...eventos,
+  };
+  const nomeConcluido = (run) => (typeof nomes.concluido === "function" ? nomes.concluido(run) : nomes.concluido);
   let ultimaReconciliacao = -Infinity;
 
   async function reconciliarSeDevido() {
@@ -55,7 +72,7 @@ function createMarginSnapshotWorker({
     ultimaReconciliacao = clock();
     const mortos = await runService.reconcileStaleRuns({ staleMinutes, db });
     if (mortos && mortos.length) {
-      logEvento(logger, "warn", "margin_snapshot_stale_reconciled", {
+      logEvento(logger, "warn", nomes.reconciliado, {
         runs: mortos.map((r) => r.id), contas: mortos.map((r) => r.clienteContaId), stale_minutes: staleMinutes,
       });
     }
@@ -89,7 +106,7 @@ function createMarginSnapshotWorker({
         db,
       });
     } catch (err) {
-      logger.error?.(`[marginSnapshot] run #${runFinal.id}: falha ao re-enfileirar após mudança de Base: ${sanitizeErrorMessage(err)}`);
+      logger.error?.(`${rotuloLog} run #${runFinal.id}: falha ao re-enfileirar após mudança de Base: ${sanitizeErrorMessage(err)}`);
     }
   }
 
@@ -97,21 +114,26 @@ function createMarginSnapshotWorker({
     const registro = { contaId: run.clienteContaId, promise: null };
     ativos.set(run.id, registro);
     const inicio = clock();
-    const base = { run_id: run.id, cliente_id: run.clienteId, cliente_conta_id: run.clienteContaId, reason: run.reason };
-    logEvento(logger, "log", "margin_snapshot_run_started", base);
+    const base = {
+      run_id: run.id, cliente_id: run.clienteId, cliente_conta_id: run.clienteContaId, reason: run.reason,
+      ...(typeof camposExtras === "function" ? camposExtras(run) : {}),
+    };
+    logEvento(logger, "log", nomes.iniciado, base);
     try {
-      await processor(run, { db, signal: controller.signal, logger });
-      const completado = await runService.markRunCompleted(run.id, db);
+      const resultado = await processor(run, { db, signal: controller.signal, logger });
+      // O resultado do processor é repassado (o Margin Snapshot o ignora; o
+      // Promo Snapshot decide completed/partial e a promoção com ele).
+      const completado = await runService.markRunCompleted(run.id, db, resultado);
       if (!completado) {
         // Corrida estreita: o run foi reconciliado (stale) por outra
         // instância entre o último lote e a conclusão. Estado terminal no
         // banco prevalece; nada é reaberto.
-        logEvento(logger, "warn", "margin_snapshot_run_not_completed", {
+        logEvento(logger, "warn", nomes.naoConcluido, {
           ...base, motivo: "o run não estava mais em execução no banco ao concluir", duracao_ms: clock() - inicio,
         });
         return { claimed: true, run: null, status: "lost" };
       }
-      logEvento(logger, "log", "margin_snapshot_run_completed", {
+      logEvento(logger, "log", nomeConcluido(completado), {
         ...base,
         total: completado?.totalItems ?? null,
         sucesso: completado?.successItems ?? null,
@@ -122,7 +144,7 @@ function createMarginSnapshotWorker({
       return { claimed: true, run: completado, status: "completed" };
     } catch (err) {
       const errorMessage = sanitizeErrorMessage(err);
-      logEvento(logger, "error", "margin_snapshot_run_failed", {
+      logEvento(logger, "error", nomes.falhou, {
         ...base, error_code: err?.code || "MARGIN_SNAPSHOT_PROCESSOR_ERROR", error_message: errorMessage, duracao_ms: clock() - inicio,
       });
       const falhado = await runService.markRunFailed(
@@ -166,7 +188,7 @@ function createMarginSnapshotWorker({
         if (!run) break;
         const promise = processarRun(run)
           .catch((err) => {
-            logger.error?.(`[marginSnapshot] erro inesperado no run #${run.id}: ${sanitizeErrorMessage(err)}`);
+            logger.error?.(`${rotuloLog} erro inesperado no run #${run.id}: ${sanitizeErrorMessage(err)}`);
           })
           .finally(() => {
             // Slot liberado: tenta pegar o próximo run sem esperar o timer.
@@ -176,7 +198,7 @@ function createMarginSnapshotWorker({
         if (registro) registro.promise = promise;
       }
     } catch (err) {
-      logger.error?.(`[marginSnapshot] worker loop erro inesperado: ${sanitizeErrorMessage(err)}`);
+      logger.error?.(`${rotuloLog} worker loop erro inesperado: ${sanitizeErrorMessage(err)}`);
     } finally {
       tickEmAndamento = false;
       if (tickPendente && !stopped) {

@@ -88,6 +88,7 @@ const cliente360V3Routes = require("./routes/cliente360V3Routes");
 const centralVendasRoutes = require("./routes/centralVendasRoutes");
 const motorMargemRoutes = require("./routes/motorMargemRoutes");
 const margemPrecificacaoRoutes = require("./routes/margemPrecificacaoRoutes");
+const promoSnapshotRoutes = require("./routes/promoSnapshotRoutes");
 const diagnosticoInicialRoutes = require("./routes/diagnosticoInicialRoutes");
 const adsRoutes = require("./routes/adsRoutes");
 const designImageRoutes = require("./routes/designImageRoutes");
@@ -104,6 +105,7 @@ const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 const centralVendasNoturnoScheduler = require("./services/centralVendas/centralVendasNoturnoScheduler");
 const marginSnapshotRuntime = require("./services/motorMargem/marginSnapshotRuntime");
+const promoSnapshotRuntime = require("./services/promoSnapshot/promoSnapshotRuntime");
 const margemProjetadaScheduler = require("./services/motorMargem/margemProjetadaScheduler");
 const { ensureDiagnosticoInicialTables } = require("./services/diagnosticoInicial/diagnosticoInicialRepository");
 const observabilityRoutes = require("./routes/observabilityRoutes");
@@ -122,6 +124,7 @@ const {
   ensureEntregasClienteSchema,
   ensureAnunciosMargemProjetadaSnapshotSchema,
   ensureMargemPrecificacaoSchema,
+  ensurePromoSnapshotSchema,
 } = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
@@ -826,6 +829,9 @@ app.use("/operacao/central-margem", motorMargemRoutes);
 // Central de Margem — camada SEGURA de precificação (preview + gates +
 // idempotência + auditoria). Escrita no ML só com MARGIN_PRICING_WRITE_*.
 app.use("/operacao/central-margem", margemPrecificacaoRoutes);
+// Central de Margem — Promo Snapshot por conta (lê o banco; POST /sync só
+// enfileira leitura no ML, nunca aplica promoção).
+app.use("/operacao/central-margem", promoSnapshotRoutes);
 // V3: Visão (composicao read-only de fontes existentes) e leitura do
 // Financeiro por periodo/conta — nao confundir com /fechamentos (upload).
 app.use("/operacao/visao", visaoRoutes);
@@ -2153,6 +2159,17 @@ const server = app.listen(PORT, () => {
   marginSnapshotRuntime.iniciarSeHabilitado().catch((err) => {
     console.error("[marginSnapshot] worker não iniciado:", err.message);
   });
+
+  // Promo Snapshot por conta (promoções do ML mantidas pelo backend, SOMENTE
+  // LEITURA no ML). A migration versionada é aditiva e aplicada sempre,
+  // serializada por advisory lock. Worker + orquestrador só com
+  // PROMO_SNAPSHOT_WORKER_ENABLED=true EXPLÍCITO; sem a flag nenhum timer
+  // existe e a Central continua lendo o último snapshot (ou o legado).
+  ensurePromoSnapshotSchema()
+    .then(() => promoSnapshotRuntime.iniciarSeHabilitado())
+    .catch((err) => {
+      console.error("[promoSnapshot] schema/worker não iniciado:", err.message);
+    });
 });
 
 // Encerramento: tenta drenar a fila de observabilidade sem travar o processo.
@@ -2177,6 +2194,9 @@ async function encerrarComGraca(sinal) {
     // Aborta runs de Margin Snapshot no próximo ponto seguro e aguarda a
     // drenagem dentro do mesmo prazo único usado pelos demais componentes.
     Promise.resolve().then(() => marginSnapshotRuntime.parar()),
+    // Promo Snapshot: mesma parada cooperativa (o run interrompido fica
+    // retomável pelo próximo run da conta).
+    Promise.resolve().then(() => promoSnapshotRuntime.parar()),
     observabilityService.shutdown(),
     servidorFechado,
   ]);

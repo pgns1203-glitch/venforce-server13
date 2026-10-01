@@ -425,6 +425,7 @@ async function listarPromocoesDoItem({ clienteId, itemId, mlUserId }) {
 }
 
 module.exports = {
+  ROTULO_TIPO,
   listarPromocoesDoItem,
   normalizarPromocao,
   ordenarPorPrioridade,

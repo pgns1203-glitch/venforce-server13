@@ -8,6 +8,7 @@ const assert = require("assert");
 const { listarOportunidades } = require("../services/motorMargem/precificacao/precificacaoOportunidadesService");
 const { atualizarSnapshotDoItem } = require("../services/motorMargem/precificacao/precificacaoSnapshotItem");
 const { computeMargin } = require("../services/motorMargem/core/marginEngine");
+const { paginaReferencia, lerParametrosPagina } = require("./helpers/oportunidadesReferencia");
 
 const casos = [];
 function cenario(nome, fn) {
@@ -30,18 +31,36 @@ function diagRow(itemId, o = {}) {
   };
 }
 
+const STATUS_OK = ["candidate", "started", "active", "pending"];
+
+// A página das Oportunidades é UMA consulta (filtro + ordem + LIMIT no
+// banco); aqui ela é respondida pela referência JS da mesma régua. O SQL
+// real é conferido contra essa referência em scripts/promoSnapshotSqlCheck.js.
 function fakeDb({ head = [{ id: 11, created_at: new Date().toISOString(), parcial: false, itens_scaneados: 120 }], itens = [], snaps = [] } = {}) {
   const queries = [];
   return {
     queries,
+    linhasDevolvidas: 0,
     async query(sql, params) {
       queries.push({ sql, params });
       if (/FROM promocoes_diagnosticos/.test(sql)) {
         if (head === "sem-tabela") { const e = new Error("relation does not exist"); e.code = "42P01"; throw e; }
         return { rows: head };
       }
-      if (/FROM promocoes_diagnostico_itens/.test(sql)) return { rows: itens };
-      if (/FROM margin_projection_snapshots/.test(sql)) return { rows: snaps };
+      if (/WITH promos AS/.test(sql) && /FROM promocoes_diagnostico_itens/.test(sql)) {
+        const { vendasPorMlb, page, limit } = lerParametrosPagina(params, 1);
+        const promos = itens
+          .map((r, i) => ({ ...r, _status: String((r.payload_raw && (r.payload_raw.status || r.payload_raw.statusPromocao)) || "").toLowerCase(), _id: i + 1 }))
+          .filter((r) => r.item_id && Number(r.preco_promocao) > 0 && (!r._status || STATUS_OK.includes(r._status)))
+          .map((r) => ({
+            item_id: r.item_id, chave: String(r._id).padStart(6, "0"), preco_promo: r.preco_promocao, retorno: r.retorno_ml,
+            fonte_titulo: r.titulo, promo_nome: r.campanha, promo_id: r.campanha_id, promo_tipo: r.tipo_promocao, promo_status: r._status || null,
+          }));
+        const snapPorItem = new Map(snaps.map((s) => [s.item_id, s]));
+        const res = paginaReferencia({ promos, snapPorItem, vendasPorMlb, page, limit });
+        this.linhasDevolvidas = res.rows.filter((r) => r.item_id).length;
+        return res;
+      }
       throw new Error("SQL inesperado: " + sql);
     },
   };
@@ -54,13 +73,22 @@ function deps(db, vendas = new Map()) {
     obterConta: async () => ({ id: 7, external_account_id: "555" }),
     carregarRealizada: async () => ({ porMlb: vendas, periodo: { dateFrom: "2026-08-31", dateTo: "2026-09-29" } }),
     now: () => new Date(),
+    // Conta sem Promo Snapshot ainda: a Central cai no diagnóstico legado.
+    promo: {
+      estadoComAutoTrigger: async () => ({ estado: { state: "never_synced", hasSnapshot: false, workerEnabled: false }, gatilho: { acao: "worker_desabilitado" } }),
+      syncPublico: (e, g) => ({ ...e, autoTrigger: g.acao }),
+      listarPagina: async () => { throw new Error("não deveria ler o snapshot"); },
+    },
   };
 }
 
 cenario("sem diagnóstico concluído (ou tabela inexistente): indisponível, com a explicação da dependência bulk", async () => {
   const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps(fakeDb({ head: [] })));
   assert.strictEqual(r.disponivel, false);
-  assert.strictEqual(r.motivo, "SEM_DIAGNOSTICO_PROMOCOES");
+  // Sem Promo Snapshot e sem diagnóstico legado: indisponível, explicando o
+  // estado da sincronização (não manda mais o operador para a tela antiga).
+  assert.strictEqual(r.motivo, "SEM_SNAPSHOT_PROMOCOES");
+  assert.ok(!/Promoções ML/.test(r.mensagem));
   const r2 = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps(fakeDb({ head: "sem-tabela" })));
   assert.strictEqual(r2.disponivel, false);
 });
@@ -104,13 +132,17 @@ cenario("sem taxa de comissão ou imposto no snapshot: fica fora (nunca assume z
   assert.strictEqual(r.oportunidades.length, 0);
 });
 
-cenario("performance: exatamente 3 consultas ao banco para a conta inteira, zero ML", async () => {
+cenario("performance: 2 consultas ao banco para a conta inteira, página com LIMIT/OFFSET no banco, zero ML", async () => {
   const itens = Array.from({ length: 300 }, (_, i) => diagRow(`MLB${i + 1}`));
   const snaps = itens.map((r) => snapRow(r.item_id));
   const db = fakeDb({ itens, snaps });
-  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, limit: 20 }, deps(db));
-  assert.strictEqual(db.queries.length, 3);
-  assert.strictEqual(r.oportunidades.length, 20);
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 3, limit: 20 }, deps(db));
+  assert.strictEqual(db.queries.length, 2, "cabeçalho do diagnóstico + UMA consulta paginada");
+  const pagina = db.queries[1];
+  assert.ok(/LIMIT \$\d+ OFFSET \$\d+/.test(pagina.sql), "LIMIT/OFFSET na consulta");
+  assert.deepStrictEqual(pagina.params.slice(-2), [20, 40], "limit 20, offset da página 3");
+  assert.strictEqual(db.linhasDevolvidas, 20, "só a página volta do banco");
+  assert.deepStrictEqual([r.page, r.limit, r.total, r.hasNext, r.oportunidades.length], [3, 20, 300, true, 20]);
 });
 
 // ── Refresh pontual do snapshot ────────────────────────────────────────────

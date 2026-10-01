@@ -121,6 +121,10 @@
     // Oportunidades da conta (uma leitura por conta/período).
     opps: null,
     oppsSequence: 0,
+    oppsPollTimer: null,
+    oppsPolls: 0,
+    // Página pedida ao servidor (a paginação acontece no banco).
+    oppsPage: 1,
   };
 
   // Intervalo moderado de polling do run. O override existe só para o
@@ -349,6 +353,7 @@
         if (ctx && typeof ctx.setPeriodoParam === "function") ctx.setPeriodoParam(valor);
         if (!isSnapshotMode()) return;
         state.serverPage = 1;
+        state.oppsPage = 1;
         loadSnapshotPage();
         loadRealizado();
         loadOpportunities();
@@ -521,6 +526,13 @@
     });
 
     refs.oppsHost.addEventListener("click", function (event) {
+      var pager = event.target.closest("[data-opps-page]");
+      if (pager) {
+        if (pager.disabled) return;
+        state.oppsPage = Math.max(1, Number(pager.getAttribute("data-opps-page")) || 1);
+        loadOpportunities();
+        return;
+      }
       var button = event.target.closest("[data-opp-item]");
       if (!button) return;
       openDrawer(button.getAttribute("data-opp-item"), "pricing", null, button, { fromOpportunity: true });
@@ -672,7 +684,9 @@
     state.realizadoError = null;
     state.realizadoLoading = false;
     state.oppsSequence += 1;
+    if (state.oppsPollTimer) { root.clearTimeout(state.oppsPollTimer); state.oppsPollTimer = null; }
     state.opps = null;
+    state.oppsPage = 1;
     state.periodParam = lerPeriodoDoShell();
     if (clienteMudou) {
       state.mode = null;
@@ -1612,23 +1626,66 @@
   // Oportunidades (fonte bulk persistida; uma leitura por conta/período)
   // ---------------------------------------------------------------------------
 
-  function loadOpportunities() {
+  // Promoções vêm do Promo Snapshot da conta, mantido pelo backend. Enquanto
+  // a conta sincroniza (primeira leitura ou revalidação em background), a
+  // lista é relida de tempos em tempos — sem nenhuma chamada ao ML daqui.
+  var OPPS_POLL_MS = 20000;
+  var OPPS_POLL_MAX = 30;
+  // Página pedida ao servidor: filtro, ordem e LIMIT/OFFSET no banco — a
+  // Central nunca recebe a lista inteira para fatiar aqui.
+  var OPPS_LIMIT = 20;
+
+  function oppsSincronizando(o) {
+    var sync = o && o.sync;
+    return Boolean(sync && (sync.state === "syncing" || sync.autoTrigger === "enfileirado" || sync.autoTrigger === "reutilizado"));
+  }
+
+  function loadOpportunities(poll) {
+    if (state.oppsPollTimer) { root.clearTimeout(state.oppsPollTimer); state.oppsPollTimer = null; }
     if (!isSnapshotMode() || !state.client || !state.contaId || typeof api.getOpportunities !== "function") {
       state.opps = null;
       renderOpportunities();
       return;
     }
+    if (!poll) state.oppsPolls = 0;
     state.oppsSequence += 1;
     var seq = state.oppsSequence;
     var slug = state.client.slug;
     var conta = state.contaId;
-    state.opps = { status: "loading" };
-    renderOpportunities();
-    api.getOpportunities({ clientSlug: slug, clienteContaId: conta, periodo: state.periodParam || undefined }).then(function (result) {
+    // Releitura silenciosa: mantém a lista atual na tela enquanto busca.
+    if (!poll || !state.opps || state.opps.status !== "ok") {
+      state.opps = { status: "loading" };
+      renderOpportunities();
+    }
+    var page = Math.max(1, Number(state.oppsPage) || 1);
+    api.getOpportunities({ clientSlug: slug, clienteContaId: conta, periodo: state.periodParam || undefined, page: page, limit: OPPS_LIMIT }).then(function (result) {
       if (seq !== state.oppsSequence || !state.client || state.client.slug !== slug || state.contaId !== conta) return;
+      // Página que deixou de existir (lista encolheu entre releituras): vai
+      // para a última página real.
+      if (result.ok && page > 1 && Number(result.total) >= 0 && (!result.oportunidades || !result.oportunidades.length)) {
+        var ultima = Math.max(1, Math.ceil(Number(result.total || 0) / (Number(result.limit) || OPPS_LIMIT)));
+        if (ultima < page) { state.oppsPage = ultima; loadOpportunities(poll); return; }
+      }
+      if (result.ok && Number(result.page) >= 1) state.oppsPage = Number(result.page);
       state.opps = result.ok ? Object.assign({ status: "ok" }, result) : { status: "error", error: result.error };
       renderOpportunities();
+      if (result.ok && oppsSincronizando(result) && (state.oppsPolls || 0) < OPPS_POLL_MAX) {
+        state.oppsPolls = (state.oppsPolls || 0) + 1;
+        state.oppsPollTimer = root.setTimeout(function () {
+          state.oppsPollTimer = null;
+          if (seq !== state.oppsSequence || !state.client || state.client.slug !== slug || state.contaId !== conta) return;
+          loadOpportunities(true);
+        }, OPPS_POLL_MS);
+      }
     });
+  }
+
+  function oppsSyncTexto(o) {
+    var sync = o.sync || {};
+    if (sync.state === "syncing") return sync.total ? "atualizando (" + formatInt(sync.processed || 0) + "/" + formatInt(sync.total) + ")" : "atualizando";
+    if (sync.state === "failed") return "última atualização falhou";
+    if (sync.state === "stale") return "desatualizado, atualizando";
+    return "";
   }
 
   function renderOpportunities() {
@@ -1647,32 +1704,64 @@
       return;
     }
     if (!o.disponivel) {
-      refs.oppsMeta.textContent = "depende de uma fonte bulk";
-      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="indisponivel">' + escapeHtml(o.mensagem || "Sem fonte bulk de promoções para esta conta.") +
-        ' <a class="cm-link" href="promocoes-retorno.html">Abrir Promoções ML</a></p>';
+      refs.oppsMeta.textContent = oppsSyncTexto(o) || "promoções da conta";
+      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="indisponivel" data-cm-opps-sync="' + escapeHtml((o.sync && o.sync.state) || "") + '">' +
+        escapeHtml(o.mensagem || "Nenhuma promoção sincronizada para esta conta ainda.") + "</p>";
       return;
     }
     var fonte = o.fonte || {};
-    refs.oppsMeta.textContent = "diagnóstico de " + (formatShortDateTime(fonte.geradoEm) || "—") + (fonte.frescor === "antigo" ? " · antigo (>24h)" : fonte.frescor === "atencao" ? " · mais de 6h" : "") + " · estimativa";
+    var origem = fonte.tipo === "diagnostico_legado" ? "diagnóstico legado de " : "promoções de ";
+    var extra = [];
+    if (fonte.frescor === "antigo") extra.push("antigo (>24h)");
+    else if (fonte.frescor === "atencao") extra.push("mais de 6h");
+    if (fonte.parcial) extra.push("parcial");
+    if (fonte.itensHerdados) extra.push(formatInt(fonte.itensHerdados) + " com leitura anterior");
+    var syncTxt = oppsSyncTexto(o);
+    if (syncTxt) extra.push(syncTxt);
+    refs.oppsMeta.textContent = origem + (formatShortDateTime(fonte.geradoEm) || "—") + (extra.length ? " · " + extra.join(" · ") : "") + " · estimativa";
     if (!o.oportunidades || !o.oportunidades.length) {
       refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="vazio">Nenhuma promoção disponível com margem pós-promoção positiva nesta conta.</p>';
       return;
     }
+    // Promoção cuja leitura falhou no último run: é a última leitura boa.
+    var herdadaMeta = function (promo) {
+      if (!promo.herdada) return "";
+      var quando = formatShortDateTime(promo.observadaEm);
+      return '<span class="cm-prod-meta cm-opps-herdada" title="A leitura desta promoção falhou na última atualização; mostrando a leitura anterior' +
+        (quando ? " (" + escapeHtml(quando) + ")" : "") + '.">leitura anterior' + (quando ? " · " + escapeHtml(quando) : "") + "</span>";
+    };
     refs.oppsHost.innerHTML = '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-opps-table"><thead><tr>' +
       '<th>Produto</th><th class="num">Atual</th><th>Promoção</th><th class="num">Preço promo</th><th class="num">Margem pós</th><th class="num">Vendas</th><th class="num">Retorno ML</th><th>Motivo</th><th><span class="vf-visually-hidden">Ação</span></th>' +
       "</tr></thead><tbody>" + o.oportunidades.map(function (op) {
         return "<tr data-opp=\"" + escapeHtml(op.itemId) + "\">" +
           "<td><strong>" + escapeHtml(op.titulo) + '</strong><span class="cm-prod-meta">' + escapeHtml(op.itemId) + "</span></td>" +
           '<td class="num">' + escapeHtml(formatMoney(op.precoAtual) || "—") + '<span class="cm-prod-meta">' + escapeHtml(op.margemAtual === null ? "—" : formatPercent(op.margemAtual)) + "</span></td>" +
-          "<td>" + escapeHtml(op.promocao.nome || op.promocao.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(op.promocao.tipo || "") + "</span></td>" +
+          "<td>" + escapeHtml(op.promocao.nome || op.promocao.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(op.promocao.tipo || "") + "</span>" + herdadaMeta(op.promocao) + "</td>" +
           '<td class="num">' + escapeHtml(formatMoney(op.precoPromocao) || "—") + "</td>" +
           '<td class="num"><strong class="' + marginClass(op.margemDepois, {}) + '">' + escapeHtml(formatPercent(op.margemDepois) || "—") + "</strong></td>" +
           '<td class="num">' + escapeHtml(formatInt(op.unidades) || "0") + " un.</td>" +
           '<td class="num">' + escapeHtml(op.retornoMl ? formatMoney(op.retornoMl) : "—") + "</td>" +
           '<td class="cm-opps-why">' + escapeHtml(op.motivo || "") + "</td>" +
           '<td class="vf-table__actions"><button class="vf-btn vf-btn--sm" type="button" data-opp-item="' + escapeHtml(op.itemId) + '">Precificar</button></td></tr>';
-      }).join("") + "</tbody></table></div>" +
+      }).join("") + "</tbody></table></div>" + oppsPagerHtml(o) +
       '<p class="cm-opps-foot">' + escapeHtml(o.criterio || "") + " Margem estimada com a taxa de comissão e o frete atuais; o drawer recota exato.</p>";
+  }
+
+  // Paginação do SERVIDOR: page/limit/total/hasNext vêm da resposta.
+  function oppsPagerHtml(o) {
+    var page = Number(o.page) || 1;
+    var limit = Number(o.limit) || OPPS_LIMIT;
+    var total = Number(o.total);
+    if (!Number.isFinite(total)) total = (o.oportunidades || []).length;
+    var hasNext = o.hasNext === true;
+    if (page <= 1 && !hasNext) return "";
+    var ini = (page - 1) * limit + 1;
+    var fim = ini + (o.oportunidades || []).length - 1;
+    return '<div class="cm-opps-pager" data-cm-opps-pager="' + page + '">' +
+      '<span class="cm-opps-pager__range">' + escapeHtml(formatInt(ini) + "–" + formatInt(fim) + " de " + formatInt(total)) + "</span>" +
+      '<button class="vf-btn vf-btn--sm vf-btn--ghost" type="button" data-opps-page="' + (page - 1) + '"' + (page <= 1 ? " disabled" : "") + ">Anterior</button>" +
+      '<button class="vf-btn vf-btn--sm vf-btn--ghost" type="button" data-opps-page="' + (page + 1) + '"' + (hasNext ? "" : " disabled") + ">Próxima</button>" +
+      "</div>";
   }
 
   function renderActiveFilters() {

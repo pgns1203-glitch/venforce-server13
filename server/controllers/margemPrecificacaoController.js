@@ -117,6 +117,7 @@ function createMargemPrecificacaoController({ service = defaultService, oportuni
       clienteSlug,
       clienteContaId: req.query.clienteContaId,
       periodo: req.query.periodo,
+      page: req.query.page,
       limit: req.query.limit,
     }));
   }, "oportunidades");

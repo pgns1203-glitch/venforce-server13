@@ -209,6 +209,10 @@ function escolherPromocao(lista, { campanha, status }) {
 
 async function enriquecerItem({
   clienteId,
+  // Conta ML DONA do item: sem ela o mlFetch cai no token principal do
+  // cliente e, com 2 contas, a leitura dos itens da outra conta falha em
+  // silêncio (vira "sem promoção").
+  mlUserId = null,
   body,
   baseRow,
   matchedBy = null,
@@ -232,7 +236,8 @@ async function enriquecerItem({
     if (itemId) {
       const resp = await mlFetch(
         clienteId,
-        `/seller-promotions/items/${encodeURIComponent(itemId)}?app_version=v2`
+        `/seller-promotions/items/${encodeURIComponent(itemId)}?app_version=v2`,
+        mlUserId ? { mlUserId: String(mlUserId) } : {}
       );
       if (resp?.ok) {
         lista = Array.isArray(resp.data)
@@ -699,7 +704,7 @@ async function gerarPreviewPromocoesRetorno({
   if (ids.length > 0) {
     for (const lote of chunk(ids, 20)) {
       try {
-        const batch = await mlFetch(cliente.id, `/items?ids=${lote.join(",")}`);
+        const batch = await mlFetch(cliente.id, `/items?ids=${lote.join(",")}`, { mlUserId });
         if (batch.ok && Array.isArray(batch.data)) details.push(...batch.data);
       } catch (err) {
         console.warn(`[promocoes-retorno] falha ao buscar lote de detalhes: ${err.message}`);
@@ -719,6 +724,7 @@ async function gerarPreviewPromocoesRetorno({
         const snapMatch = matchSnapshot(body.id, sku);
         return await enriquecerItem({
           clienteId: cliente.id,
+          mlUserId,
           body,
           baseRow: match.row,
           matchedBy: match.matchedBy,

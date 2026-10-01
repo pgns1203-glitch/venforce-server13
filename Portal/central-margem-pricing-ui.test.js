@@ -312,7 +312,29 @@ const MOCK_CLIENT = `
       },
       getOpportunities: function (params) {
         window.__pc.calls.opps.push(params.clienteContaId);
-        return Promise.resolve({ ok: true, disponivel: true, fonte: { geradoEm: "2026-09-29T08:00:00Z", frescor: "atual" },
+        (window.__pc.calls.oppsParams = window.__pc.calls.oppsParams || []).push({ conta: params.clienteContaId, page: params.page, limit: params.limit });
+        // Paginação do SERVIDOR: 45 oportunidades, a página vem pronta.
+        if (window.__pc.oppsModo === "paginado") {
+          var total = 45;
+          var ini = (params.page - 1) * params.limit;
+          var itens = [];
+          for (var k = ini; k < Math.min(ini + params.limit, total); k += 1) {
+            itens.push({ itemId: "MLBP" + (k + 1), titulo: "Pag " + (k + 1), precoAtual: 100, margemAtual: 0.2, promocao: { nome: "Oferta", tipo: "DEAL", herdada: k === 0, observadaEm: "2026-09-29T06:00:00Z" },
+              precoPromocao: 90, retornoMl: null, margemDepois: 0.1, unidades: 1, receita: 90, motivo: "", estimado: true });
+          }
+          return Promise.resolve({ ok: true, disponivel: true, fonte: { tipo: "promo_snapshot", geradoEm: "2026-09-29T08:00:00Z", frescor: "atual", parcial: true, itensHerdados: 1 },
+            sync: { state: "partial", autoTrigger: "nenhuma" }, criterio: "c.", page: params.page, limit: params.limit, total: total, hasNext: ini + params.limit < total, oportunidades: itens });
+        }
+        // Promo Snapshot: primeira leitura em andamento (sem snapshot ainda).
+        if (window.__pc.oppsModo === "syncing") {
+          return Promise.resolve({ ok: true, disponivel: false, motivo: "SEM_SNAPSHOT_PROMOCOES",
+            mensagem: "Primeira leitura das promoções desta conta em andamento (10 de 100 anúncios). A lista aparece sozinha quando terminar.",
+            sync: { state: "syncing", processed: 10, total: 100, autoTrigger: "reutilizado" }, oportunidades: [] });
+        }
+        var stale = window.__pc.oppsModo === "stale";
+        return Promise.resolve({ ok: true, disponivel: true,
+          fonte: { tipo: stale ? "promo_snapshot" : undefined, geradoEm: "2026-09-29T08:00:00Z", frescor: stale ? "atencao" : "atual" },
+          sync: stale ? { state: "stale", autoTrigger: "enfileirado" } : undefined,
           criterio: "Promoção disponível com margem pós-promoção positiva; ordem: com retorno ML, mais unidades vendidas, maior margem.",
           oportunidades: [
             { itemId: "MLB1002", titulo: "Produto Y", precoAtual: 149.9, margemAtual: 0.248, promocao: { nome: "Oferta Y", tipo: "DEAL" }, precoPromocao: 129.9, retornoMl: 5.2, margemDepois: 0.197, unidades: 84, receita: 12000, motivo: "retorno ML de R$ 5,20 · 84 un. vendidas no período", estimado: true },
@@ -734,6 +756,46 @@ async function run() {
       await sleep(150);
       assert.strictEqual(await st("s.promos"), null, "resposta da conta anterior não reidrata o estado");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer-body').innerHTML"), "");
+    });
+
+    await check("oportunidades pelo Promo Snapshot: sincronizando mostra o estado (sem mandar para a tela antiga); stale serve a lista e avisa", async () => {
+      await cdp.evaluate("window.__pc.oppsModo = 'syncing'; window.VF.context.setConta(10)");
+      await waitFor(cdp, "document.querySelector('[data-cm-opps=\"indisponivel\"][data-cm-opps-sync=\"syncing\"]')", "estado de sincronização não apareceu");
+      const host = await cdp.evaluate("document.getElementById('cm-opportunities').innerText");
+      assert.ok(host.includes("Primeira leitura das promoções") && host.includes("atualizando (10/100)"), host);
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('#cm-opps-host a[href=\"promocoes-retorno.html\"]'))"), false, "não depende mais da tela Promoções ML");
+      assert.ok(await cdp.evaluate("Boolean(window.VFCentralMargemUi.getState().oppsPollTimer)"), "relê a lista enquanto sincroniza");
+      await cdp.evaluate("window.__pc.oppsModo = 'stale'; window.VF.context.setConta(11)");
+      await waitFor(cdp, "document.querySelector('#cm-opps-host tr[data-opp]')", "lista do snapshot stale não apareceu");
+      const meta = await cdp.evaluate("document.getElementById('cm-opportunities').innerText");
+      assert.ok(meta.includes("promoções de") && meta.includes("desatualizado, atualizando"), meta);
+    });
+
+    await check("oportunidades paginadas no SERVIDOR: a Central envia page/limit, mostra total e navega por hasNext; leitura herdada identificada", async () => {
+      await cdp.evaluate("window.__pc.calls.oppsParams = []; window.__pc.oppsModo = 'paginado'; window.VF.context.setConta(10)");
+      await waitFor(cdp, "document.querySelector('[data-cm-opps-pager=\"1\"]')", "paginador da página 1 não apareceu");
+      const p1 = await cdp.evaluate("JSON.stringify(window.__pc.calls.oppsParams[window.__pc.calls.oppsParams.length - 1])");
+      assert.deepStrictEqual(JSON.parse(p1), { conta: 10, page: 1, limit: 20 }, "pede a página 1 com limit ao servidor");
+      const txt1 = await cdp.evaluate("document.getElementById('cm-opps-host').innerText");
+      assert.ok(txt1.includes("1–20 de 45"), txt1);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-opps-host tr[data-opp]').length"), 20);
+      assert.ok(await cdp.evaluate("document.querySelector('[data-opps-page=\"0\"]').disabled"), "Anterior desabilitado na página 1");
+      assert.ok(txt1.includes("leitura anterior"), "promoção herdada identificada");
+      const metaP = await cdp.evaluate("document.getElementById('cm-opps-meta').textContent");
+      assert.ok(metaP.includes("parcial") && metaP.includes("1 com leitura anterior"), metaP);
+      await cdp.evaluate("document.querySelector('[data-opps-page=\"2\"]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-opps-pager=\"2\"]')", "página 2 não carregou");
+      await cdp.evaluate("document.querySelector('[data-opps-page=\"3\"]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-opps-pager=\"3\"]')", "página 3 não carregou");
+      const txt3 = await cdp.evaluate("document.getElementById('cm-opps-host').innerText");
+      assert.ok(txt3.includes("41–45 de 45"), txt3);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-opps-host tr[data-opp]').length"), 5);
+      assert.ok(await cdp.evaluate("document.querySelector('[data-opps-page=\"4\"]').disabled"), "Próxima desabilitada sem hasNext");
+      const pedidos = JSON.parse(await cdp.evaluate("JSON.stringify(window.__pc.calls.oppsParams.map(function (x) { return x.page; }))"));
+      assert.deepStrictEqual(pedidos.slice(-3), [1, 2, 3], "cada página é um pedido ao servidor");
+      // Trocar de conta volta para a página 1.
+      await cdp.evaluate("window.VF.context.setConta(11)");
+      await waitFor(cdp, "document.querySelector('[data-cm-opps-pager=\"1\"]') && window.VFCentralMargemUi.getState().contaId === 11", "troca de conta não voltou à página 1");
     });
 
     console.log(`# ${checks} smoke tests de UI (precificação) concluídos`);

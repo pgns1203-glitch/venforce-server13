@@ -236,15 +236,16 @@ function margemPrecificacaoDdl() {
   return fs.readFileSync(path.join(migrationsDir, MARGEM_PRECIFICACAO_MIGRATION), "utf8");
 }
 
-async function aplicarMargemPrecificacaoSerializado(db) {
-  const ddl = margemPrecificacaoDdl();
+// Runner comum das migrations versionadas aplicadas no boot: BEGIN → advisory
+// lock de transação → DDL do arquivo → COMMIT.
+async function aplicarMigrationSerializada(db, ddl, lockKey) {
   // Pool real: uma conexão dedicada para a transação inteira. Client/fake de
   // teste (sem connect): a própria `db` é a sessão.
   const usaPool = typeof db.connect === "function" && typeof db.release !== "function";
   const client = usaPool ? await db.connect() : db;
   try {
     await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [MARGEM_PRECIFICACAO_LOCK_KEY]);
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [lockKey]);
     await client.query(ddl);
     await client.query("COMMIT");
   } catch (err) {
@@ -255,14 +256,39 @@ async function aplicarMargemPrecificacaoSerializado(db) {
   }
 }
 
-async function ensureMargemPrecificacaoSchema(db = pool) {
+// Single-flight por db: chamadas concorrentes no processo compartilham a
+// mesma promessa; falha não fica memorizada.
+function singleFlight(emCurso, db, aplicar) {
   const chave = db && typeof db === "object" ? db : pool;
-  const atual = margemPrecificacaoEmCurso.get(chave);
+  const atual = emCurso.get(chave);
   if (atual) return atual;
-  const promessa = aplicarMargemPrecificacaoSerializado(chave);
-  margemPrecificacaoEmCurso.set(chave, promessa);
-  promessa.catch(() => margemPrecificacaoEmCurso.delete(chave));
+  const promessa = aplicar(chave);
+  emCurso.set(chave, promessa);
+  promessa.catch(() => emCurso.delete(chave));
   return promessa;
+}
+
+async function ensureMargemPrecificacaoSchema(db = pool) {
+  return singleFlight(margemPrecificacaoEmCurso, db, (chave) =>
+    aplicarMigrationSerializada(chave, margemPrecificacaoDdl(), MARGEM_PRECIFICACAO_LOCK_KEY));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Promo Snapshot por conta (promo_snapshot_runs/itens/run_lotes/contas).
+// Mesmo desenho da trilha de precificação: o .sql versionado é a fonte, o
+// boot aplica serializado por advisory lock e os repositórios chamam o mesmo
+// runner como proteção.
+const PROMO_SNAPSHOT_MIGRATION = "20261001_promo_snapshot_account_sync.sql";
+const PROMO_SNAPSHOT_LOCK_KEY = "vf:schema:promo_snapshot_account_sync";
+const promoSnapshotEmCurso = new WeakMap();
+
+function promoSnapshotDdl() {
+  return fs.readFileSync(path.join(migrationsDir, PROMO_SNAPSHOT_MIGRATION), "utf8");
+}
+
+async function ensurePromoSnapshotSchema(db = pool) {
+  return singleFlight(promoSnapshotEmCurso, db, (chave) =>
+    aplicarMigrationSerializada(chave, promoSnapshotDdl(), PROMO_SNAPSHOT_LOCK_KEY));
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -389,6 +415,26 @@ const MIGRATIONS_INVENTARIO = [
       "(nenhuma tabela existente é alterada)",
     nota: "O .sql É a fonte do DDL (lido pelo runner), não uma cópia de documentação.",
   },
+  {
+    arquivo: PROMO_SNAPSHOT_MIGRATION,
+    descricao:
+      "cria promo_snapshot_runs / promo_snapshot_itens / promo_snapshot_run_lotes / " +
+      "promo_snapshot_contas — promoções do ML lidas por conta pelo Promo Snapshot Worker " +
+      "(somente leitura no ML), com run ativo único por conta e ponteiro de snapshot atual",
+    tipo: "estrutural-aditiva",
+    auto: true,
+    runner: "schemaEnsure.ensurePromoSnapshotSchema",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito:
+      "nenhum (FKs para clientes/cliente_contas guardadas por to_regclass). Serializado por " +
+      "pg_advisory_xact_lock: seguro com duas instâncias subindo ao mesmo tempo",
+    rollback:
+      "DROP TABLE promo_snapshot_itens, promo_snapshot_run_lotes, promo_snapshot_contas, " +
+      "promo_snapshot_runs (nenhuma tabela existente é alterada; a Central volta a ler o " +
+      "diagnóstico legado)",
+    nota: "Sem backfill: promocoes_diagnosticos não tem cliente_conta_id. Cada conta nasce vazia.",
+  },
 ];
 
 // Arquivos que QUALQUER runner automático tem permissão de aplicar. Usado por
@@ -404,6 +450,10 @@ module.exports = {
   margemPrecificacaoDdl,
   MARGEM_PRECIFICACAO_MIGRATION,
   MARGEM_PRECIFICACAO_LOCK_KEY,
+  ensurePromoSnapshotSchema,
+  promoSnapshotDdl,
+  PROMO_SNAPSHOT_MIGRATION,
+  PROMO_SNAPSHOT_LOCK_KEY,
   MIGRATIONS_INVENTARIO,
   MIGRATIONS_AUTO,
   migrationsDir,

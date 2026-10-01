@@ -2031,6 +2031,9 @@
 .vf-page-central-margem .cm-opps__card { overflow: hidden; }
 .vf-page-central-margem .cm-opps-table { min-width: 880px; }
 .vf-page-central-margem .cm-opps-why { max-width: 280px; color: var(--vf-text-secondary); font-size: var(--vf-fs-2xs); }
+.vf-page-central-margem .cm-opps-herdada { color: var(--vf-warning-text, var(--vf-text-secondary)); }
+.vf-page-central-margem .cm-opps-pager { display: flex; align-items: center; justify-content: flex-end; gap: var(--vf-sp-2); padding: var(--vf-sp-2) var(--vf-sp-3); border-top: 1px solid var(--vf-border); }
+.vf-page-central-margem .cm-opps-pager__range { margin-right: auto; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
 .vf-page-central-margem .cm-opps-foot { margin: 0; padding: var(--vf-sp-2) var(--vf-sp-3); color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); border-top: 1px solid var(--vf-border); }
 .vf-page-central-margem .cm-opps__card > .cm-empty-note { margin: 0; padding: var(--vf-sp-3); }
 

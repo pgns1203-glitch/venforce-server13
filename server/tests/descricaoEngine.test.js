@@ -656,7 +656,7 @@ async function run() {
     const cod = (t) => codigos(engine.validarDescricao(t, ["brand"], regata));
     assert.ok(cod("Regata infantil Lumi com manga curta.").includes("CONFLITO_DE_FONTES"));
     assert.ok(cod("Regata infantil Lumi sem manga.").includes("CONFLITO_DE_FONTES"), "negar também é escolher vencedor");
-    assert.deepStrictEqual(cod("Regata infantil Lumi de algodão."), []);
+    assert.deepStrictEqual(cod("Kit com 2 regatas infantis Lumi de algodão."), []);
 
     const lixeira = engine.montarFicha({ titulo: "Kit 2 Lixeira Lumi 120 Litros", attributes_json: [
       { id: "BRAND", name: "Marca", value: "Lumi" },
@@ -668,7 +668,7 @@ async function run() {
     for (const t of ["Lixeira Lumi de 240 litros.", "Lixeira Lumi de 120 litros."]) {
       assert.ok(codigos(engine.validarDescricao(t, [], lixeira)).includes("CONFLITO_DE_FONTES"), t);
     }
-    assert.deepStrictEqual(codigos(engine.validarDescricao("Lixeira Lumi com 98 cm de altura.", [], lixeira)), []);
+    assert.deepStrictEqual(codigos(engine.validarDescricao("Kit com 2 lixeiras Lumi com 98 cm de altura.", [], lixeira)), []);
     // caso real: atributo de TEXTO citando "240 Litros" não tira a unicidade;
     // "58 Kg (lixo)" na descrição não é o Peso; "Capacidade: 120 L" é a capacidade
     const lixeiraReal = engine.montarFicha({ titulo: "Kit 2 Lixeira Lumi Com Rodas 120 Litros", attributes_json: [
@@ -702,7 +702,7 @@ async function run() {
     const antes = JSON.stringify(an);
     const fr = engine.montarFicha(an, { descricaoEstado: "sem_descricao" });
     assert.strictEqual(JSON.stringify(an), antes, "dado original intacto");
-    const r = await engine.gerarDescricao({ ficha: fr, aiProvider: provider({ ok: true, data: { descricao: "Regata infantil Lumi, de algodão.", fatosUsados: ["brand", "attr:FABRIC_TYPE"] } }) });
+    const r = await engine.gerarDescricao({ ficha: fr, aiProvider: provider({ ok: true, data: { descricao: "Kit com 2 regatas infantis Lumi, de algodão.", fatosUsados: ["brand", "attr:FABRIC_TYPE"] } }) });
     assert.strictEqual(r.ok, true, JSON.stringify(r));
     assert.deepStrictEqual(r.conflitos, [{ id: "attr:SLEEVE_TYPE", label: "Tipo de manga", value: "Curta", fonte: "titulo", trecho: "Sem Manga" }]);
     ok("28. conflito explícito (sem <assunto> × atributo; medida única × contexto) → fato omitido, prompt avisa, CONFLITO_DE_FONTES, resposta sinaliza");
@@ -1320,6 +1320,165 @@ async function run() {
     { categoriaNome: "Leitores", limiteCategoria: 50000, descricaoAtual: null, descricaoEstado: "sem_descricao" });
     assert.ok(!(v("Um leitor da marca Amazon, na cor preto.", fa).hard || []).some((p) => p.codigo === "CONTATO_EXTERNO"));
     ok("44. F7C.2: 'Mercado Livre'/'Mercado Pago' não viram marca em pedaços; outro marketplace → CONTATO_EXTERNO (salvo BRAND); marca real segue conflitando");
+  }
+
+  // 45 ─ F8.1: afirmação objetiva de desempenho/propriedade exige fato
+  {
+    const mk = (titulo, attrs) => engine.montarFicha({ item_id: "MLB-O", titulo, attributes_json: attrs },
+      { categoriaNome: "Utilidades", limiteCategoria: 50000, descricaoAtual: "Ferve rapidamente. Baixo consumo de energia.", descricaoEstado: "ok" });
+    const f = mk("Spot Lumi Preto 10w", [{ id: "BRAND", name: "Marca", value: "Lumi" }, { id: "COLOR", name: "Cor", value: "Preto" },
+      { id: "POWER", name: "Potência", value: "10 W" }, { id: "IS_WATER_RESISTANT", name: "É resistente à água", value: "Sim" }]);
+    const texto = (b) => ["DESCRIÇÃO PRINCIPAL", "Spot Lumi na cor preto.", "", "BENEFÍCIOS", "* " + b].join("\n");
+    const obj = (b, ff = f) => ((engine.validarDescricao(texto(b), [], ff).problemas || []).find((p) => p.codigo === "CLAIM_OBJETIVO_SEM_FONTE") || {}).termos || [];
+    // objetivo sem fato estruturado nem título → bloqueia (a descrição atual do vendedor não basta)
+    for (const [b, termo] of [
+      ["A fonte LED contribui com o baixo consumo de energia.", "baixo consumo"],
+      ["O aço oferece boa resistência ao uso contínuo.", "boa resistencia"],
+      ["Aquece a água rapidamente.", "rapidamente"],
+      ["Prepara a água em pouco tempo.", "em pouco tempo"],
+      ["Mais estabilidade e firmeza durante o treino.", "mais estabilidade"],
+      ["Ajuste confortável para uso prolongado.", "uso prolongado"],
+      ["Aquecimento eficiente no buffet.", "eficiente"],
+      ["Estampa que não desbota.", "nao desbota"],
+    ]) assert.ok(obj(b).includes(termo), b + " → " + JSON.stringify(obj(b)));
+    // experiência/estilo é copy livre
+    for (const b of ["Mais praticidade no dia a dia.", "Maior flexibilidade no uso.", "Visual elegante e moderno.",
+      "Uma boa escolha para decorar.", "Mais conforto e mais estilo para a rotina.", "Deixa o ambiente mais aconchegante."]) {
+      assert.deepStrictEqual(obj(b), [], b);
+    }
+    // com evidência estruturada ou no título passa: Potência (rótulo), "É resistente à água: Sim"
+    assert.deepStrictEqual(obj("Maior potência para o dia a dia."), []);
+    assert.deepStrictEqual(obj("É resistente à água."), []);
+    const fTitulo = mk("Lâmpada Lumi Baixo Consumo 10w", [{ id: "BRAND", name: "Marca", value: "Lumi" }]);
+    assert.deepStrictEqual(obj("Lâmpada de baixo consumo.", fTitulo), [], "mesma expressão no título");
+    // a marca não sustenta desempenho ("Resistencia" como marca)
+    const fMarca = mk("Resistência Para Buffet 2500w", [{ id: "BRAND", name: "Marca", value: "Resistencia" }]);
+    assert.ok(obj("Boa resistência ao uso contínuo.", fMarca).includes("boa resistencia"));
+    assert.strictEqual(engine.severidade({ codigo: "CLAIM_OBJETIVO_SEM_FONTE", termos: [] }, f), "hard");
+    ok("45. F8.1: desempenho objetivo (consumo, resistência ao uso, rapidez, estabilidade, uso prolongado…) exige fato/título; experiência é livre");
+  }
+
+  // 46 ─ F8.1: conflitos além de atributo × título (comparação segura com a descrição atual)
+  {
+    const mk = (titulo, attrs, desc, categoria = "Utilidades") => engine.montarFicha({ item_id: "MLB-C", titulo, attributes_json: attrs },
+      { categoriaNome: categoria, limiteCategoria: 50000, descricaoAtual: desc, descricaoEstado: desc ? "ok" : "sem_descricao" });
+    const tipos = (ff) => ff.conflitos.map((c) => [c.id, c.tipo, c.fonte]);
+    // quantidade: atributo 5 × "kit … com 3 peças" na descrição
+    const faixas = mk("Kit 5 Faixa Elástica Mini Band", [{ id: "BRAND", name: "Marca", value: "Lumi" }, { id: "UNITS_PER_PACK", name: "Unidades por kit", value: "5" }],
+      "KIT DE MINI BANDS DE TECIDO COM 3 PEÇAS. Kit com 3 mini bands.");
+    assert.deepStrictEqual(tipos(faixas), [["attr:UNITS_PER_PACK", "QUANTIDADE", "descricao_atual"]]);
+    assert.strictEqual(faixas.kit, null, "quantidade em conflito não vira kit");
+    const cf = (t, ff) => codigos(engine.validarDescricao(t, [], ff)).includes("CONFLITO_DE_FONTES");
+    assert.ok(cf("Kit com 5 faixas elásticas Lumi.", faixas) && cf("São 3 unidades.", faixas));
+    assert.ok(!cf("Faixas elásticas Lumi de 5 cm de largura.", faixas), "5 cm não é quantidade");
+    // material: só a declaração ROTULADA na descrição; texto livre não; marca com a palavra não conta
+    const attrsShort = [{ id: "BRAND", name: "Marca", value: "Influencia Jeans" }, { id: "MAIN_MATERIAL", name: "Material principal", value: "Jeans" }];
+    const short = mk("Short Saia Cargo Branco", attrsShort, "Características: * Material: Sarja de alta qualidade * Composição: 98% Algodão / 2% Elastano", "Saias");
+    assert.deepStrictEqual(tipos(short), [["attr:MAIN_MATERIAL", "MATERIAL", "descricao_atual"]]);
+    assert.ok(!cf("Short saia cargo da Influencia Jeans, na cor branca.", short), "nome da marca não é o material");
+    assert.ok(cf("Short saia em jeans.", short));
+    assert.deepStrictEqual(mk("Short Saia Cargo Branco", attrsShort, "O tecido de sarja não fica transparente.", "Saias").conflitos, [], "texto livre não compara");
+    // medida com vários atributos: amarrada ao rótulo ("140 cm de comprimento"); a que bate não conflita
+    const esteira = mk("Esteira Elétrica Lumi", [{ id: "TOTAL_LENGTH", name: "Comprimento total", value: "1.215 m" },
+      { id: "TOTAL_WIDTH", name: "Largura total", value: "54.5 cm" }, { id: "TOTAL_HEIGHT", name: "Altura total", value: "1.355 m" },
+      { id: "WEIGHT", name: "Peso", value: "32.5 kg" }, { id: "MAX_WEIGHT_SUPPORTED", name: "Peso máximo suportado", value: "100 kg" }],
+    "Dimensões de 140 cm de comprimento, 54,5 cm de largura e 135,5 cm de altura. Com peso de 32,5 kg, para até 100 kg.");
+    assert.deepStrictEqual(tipos(esteira), [["attr:TOTAL_LENGTH", "MEDIDA", "descricao_atual"]]);
+    // faixa (mínima/máxima) × título
+    const bastao = mk("Bastão De Luz Rgb 3500k 5500k", [{ id: "MIN_COLOR_TEMPERATURE", name: "Temperatura mínima da cor", value: "3000 K" },
+      { id: "MAX_COLOR_TEMPERATURE", name: "Temperatura máxima da cor", value: "6000 K" }]);
+    assert.deepStrictEqual(tipos(bastao).map((x) => x[0]).sort(), ["attr:MAX_COLOR_TEMPERATURE", "attr:MIN_COLOR_TEMPERATURE"]);
+    assert.ok(cf("Temperatura de cor de 3000 K a 6000 K.", bastao));
+    assert.deepStrictEqual(mk("Bastão 3000k 6000k", [{ id: "MIN_COLOR_TEMPERATURE", name: "Temperatura mínima da cor", value: "3000 K" },
+      { id: "MAX_COLOR_TEMPERATURE", name: "Temperatura máxima da cor", value: "6000 K" }]).conflitos, []);
+    assert.deepStrictEqual(mk("Monitor 4k 27", [{ id: "MIN_COLOR_TEMPERATURE", name: "Temperatura mínima da cor", value: "3000 K" }]).conflitos, [], "4k não é kelvin");
+    // lista de tensão × "Tensão: …" (nome da grandeza amarra quando o atributo é único).
+    // F8.2 — 127/220V cabe na faixa 100 - 240V: compatível; fora da faixa, conflito
+    const voltagem = [{ id: "VOLTAGE", name: "Voltagem", value: "127/220V" }];
+    assert.deepStrictEqual(mk("Kit 3 Mini Spot 127/220v", voltagem, "Especificações: Potência: 10W Tensão: 100 - 240V IP20").conflitos, []);
+    const spot = mk("Kit 3 Mini Spot 127/220v", voltagem, "Especificações: Potência: 10W Tensão: 12V IP20");
+    assert.deepStrictEqual(tipos(spot), [["attr:VOLTAGE", "MEDIDA", "descricao_atual"]]);
+    assert.ok(cf("Opera em 127/220V.", spot));
+    assert.deepStrictEqual(tipos(mk("Spot 127/220v", voltagem, "Tensão: 100 a 120 V")).map((x) => x[1]), ["MEDIDA"], "faixa que não cobre 220");
+    // sem amarração segura, nada: dimensão que a ficha não tem, embalagem, parte com o valor do atributo na mesma fonte
+    for (const [titulo, attrs, desc] of [
+      ["Mesa Lumi 100 cm", [{ id: "WIDTH", name: "Largura", value: "60 cm" }, { id: "LENGTH", name: "Comprimento", value: "120 cm" }], null],
+      ["Bicicleta Lumi", [{ id: "MAX_WEIGHT_SUPPORTED", name: "Peso máximo suportado", value: "130 kg" }], "Embalagem de 92 cm de altura, com peso de 34 kg."],
+      ["Cortina Lumi 4,00 X 2,80", [{ id: "WIDTH", name: "Largura", value: "4 m" }], "Cortina 4,00x2,80 dividida em duas partes de 2,00m de largura."],
+    ]) assert.deepStrictEqual(mk(titulo, attrs, desc).conflitos, [], titulo);
+    ok("46. F8.1: quantidade (5 × kit 3), material rotulado (Jeans × Sarja), medida amarrada (1,215 m × 140 cm), faixa K × título, 127/220V × 100-240V; sem amarração segura não compara");
+  }
+
+  // 47 ─ F8.1: "Kit N" confiável não pode virar descrição de uma peça só
+  {
+    const mk = (titulo, attrs) => engine.montarFicha({ item_id: "MLB-K", titulo, attributes_json: attrs },
+      { categoriaNome: "Iluminação", limiteCategoria: 50000, descricaoAtual: null, descricaoEstado: "sem_descricao" });
+    const spot = mk("Kit 3 Mini Spot De Embutir Lumi Preto", [{ id: "BRAND", name: "Marca", value: "Lumi" }, { id: "COLOR", name: "Cor", value: "Preto" }]);
+    assert.deepStrictEqual(spot.kit, { n: 3, fonte: "contexto:titulo" });
+    assert.deepStrictEqual(mk("Pacote Com 50 Unidade Ilhós Lumi", [{ id: "BRAND", name: "Marca", value: "Lumi" },
+      { id: "UNITS_PER_PACK", name: "Unidades por kit", value: "50" }]).kit, { n: 50, fonte: "attr:UNITS_PER_PACK" });
+    assert.strictEqual(mk("Spot Lumi Preto 3 cm", [{ id: "BRAND", name: "Marca", value: "Lumi" }]).kit, null, "medida não é kit");
+    assert.strictEqual(mk("Kit 2 Regata Lumi", [{ id: "BRAND", name: "Marca", value: "Lumi" }, { id: "UNITS_PER_PACK", name: "Unidades por kit", value: "1" }]).kit, null,
+      "título × atributo divergentes: sem kit confiável");
+    const kitOmitido = (t) => codigos(engine.validarDescricao(t, [], spot)).includes("KIT_OMITIDO");
+    assert.ok(kitOmitido("Mini spot de embutir Lumi na cor preto."));
+    assert.ok(kitOmitido("Mini spot Lumi preto com 3 cm de recuo."), "3 cm não é quantidade");
+    for (const t of ["Kit com 3 mini spots de embutir Lumi.", "São 3 unidades na cor preto.", "Três mini spots Lumi na cor preto.",
+      "Mini spots Lumi.\n* Unidades por kit: 3"]) assert.ok(!kitOmitido(t), t);
+    assert.ok(engine.montarPrompt(spot).includes("kit com 3 unidades"));
+    assert.strictEqual(engine.severidade({ codigo: "KIT_OMITIDO", termos: [] }, spot), "hard");
+    ok("47. F8.1: Kit N confiável (atributo ≥ 2 ou título sem divergência) → descrição tem de citar a quantidade (KIT_OMITIDO HARD); prompt avisa");
+  }
+
+  // 48 ─ F8.2: falsos positivos da amostra de 50, corrigidos por regra genérica
+  {
+    const mk = (titulo, attrs, desc, categoria = "Utilidades") => engine.montarFicha({ item_id: "MLB-F", titulo, attributes_json: attrs },
+      { categoriaNome: categoria, limiteCategoria: 50000, descricaoAtual: desc, descricaoEstado: desc ? "ok" : "sem_descricao" });
+    const hard = (ff, secao, frase) => (engine.validarDescricao(["DESCRIÇÃO PRINCIPAL", "Produto.", "", secao, frase].join("\n"), [], ff).problemas || [])
+      .filter((p) => engine.severidade(p, ff) === "hard").map((p) => p.codigo);
+    const f = mk("Ebulidor Mergulhão 2000w", [{ id: "BRAND", name: "Marca", value: "Lumi" }, { id: "COLOR", name: "Cor", value: "Preto" }]);
+    // claim objetivo: compra (advérbio de modo), papel do item, resistência-peça
+    assert.deepStrictEqual(hard(f, "EXPERIÊNCIA DE COMPRA", "Compre com confiança e praticidade, de forma rápida e segura."), []);
+    // F8.3 — "rápido" só é da compra quando modifica o ATO de comprar
+    for (const fr of ["Compre de forma rápida e segura.", "Finalize sua compra rapidamente.", "Uma compra simples e rápida.",
+      "Comprar é simples, rápido e seguro."]) assert.deepStrictEqual(hard(f, "EXPERIÊNCIA DE COMPRA", fr), [], fr);
+    for (const fr of ["Compre e tenha aquecimento rápido.", "Compre já e tenha aquecimento rápido.", "Compre um produto de instalação rápida.",
+      "Adquira com secagem rápida.", "Finalize a compra e aproveite o carregamento rápido."]) {
+      assert.ok(hard(f, "EXPERIÊNCIA DE COMPRA", fr).includes("CLAIM_OBJETIVO_SEM_FONTE"), fr);
+    }
+    assert.deepStrictEqual(hard(f, "EXPERIÊNCIA DE COMPRA", "Esta peça é uma ótima adição à sua cozinha."), []);
+    assert.deepStrictEqual(hard(f, "DESCRIÇÃO PRINCIPAL", "Ebulidor com resistência de imersão, na cor preto."), []);
+    // …e o claim real continua
+    assert.ok(hard(f, "BENEFÍCIOS", "* Tenha aquecimento de forma rápida e eficiente.").includes("CLAIM_OBJETIVO_SEM_FONTE"));
+    assert.ok(hard(f, "BENEFÍCIOS", "* Oferece boa resistência ao uso contínuo.").includes("CLAIM_OBJETIVO_SEM_FONTE"));
+    assert.ok(hard(f, "BENEFÍCIOS", "* Tecido com resistência à água.").includes("CLAIM_TECNICO_HERDADO"));
+    // efeito: homógrafo e substantivo da atividade não são claim; promessa de efeito é
+    const beb = mk("Bebedouro Industrial 100 Litros", [{ id: "BRAND", name: "Marca", value: "Lumi" }],
+      "Bebedouro para as necessidades de hidratação de escolas. Indicado para restaurantes.");
+    for (const fr of ["* Atende às necessidades de hidratação coletiva em escolas.", "* Para restaurantes, hotéis e residências."]) {
+      assert.deepStrictEqual(hard(beb, "BENEFÍCIOS", fr), [], fr);
+    }
+    for (const fr of ["* Hidrata a pele.", "* Proporciona hidratação intensa da pele.", "* Restaura os fios danificados.", "* Hidratação profunda."]) {
+      assert.ok(hard(beb, "BENEFÍCIOS", fr).includes("CLAIM_NAO_SUSTENTADO"), fr);
+    }
+    // conflito: valor dentro da faixa é compatível; "sem" de outro objeto não nega o produto
+    assert.deepStrictEqual(mk("Spot 127/220v", [{ id: "VOLTAGE", name: "Voltagem", value: "127/220V" }], "Tensão: 100 - 240V").conflitos, []);
+    const adaptador = [{ id: "INPUT_CONNECTOR", name: "Conector de entrada", value: "USB" }];
+    assert.deepStrictEqual(mk("Adaptador De Rede Usb Rj45", adaptador, "Solução para adicionar uma porta RJ45 em dispositivos sem entrada de rede integrada.",
+      "Adaptadores de Cabos de Rede").conflitos, []);
+    assert.deepStrictEqual(mk("Adaptador De Rede Usb Rj45", adaptador, "Adaptador sem entrada USB.", "Adaptadores de Cabos de Rede").conflitos.map((c) => c.tipo), ["NEGACAO"],
+      "o próprio produto 'sem entrada' continua conflito");
+    // nome: termo técnico/norma com origem numa fonte não é marca; marca real e nome inventado continuam
+    const camisa = mk("Camiseta Pesca Uv Proteção", [{ id: "BRAND", name: "Marca", value: "RedFishBrasil" }],
+      "Camisa de pesca. Tecido Dry Fit Sport leve. Função Lockout/Tagout. Uso em procedimentos de NR-10 e NR-12.");
+    for (const fr of ["* Tecido: Dry Fit Sport", "* O tecido Dry Fit leve.", "* Função: Lockout/Tagout com cadeado",
+      "* Procedimentos de bloqueio e etiquetagem (Lockout/Tagout)", "* A aplicação em procedimentos de NR-10 e NR-12 traz organização."]) {
+      assert.deepStrictEqual(hard(camisa, "DESTAQUES DO PRODUTO", fr), [], fr);
+    }
+    assert.ok(hard(camisa, "DESCRIÇÃO PRINCIPAL", "Mesma qualidade da Nike.").includes("MARCA_CONFLITANTE"));
+    assert.ok(hard(camisa, "DESTAQUES DO PRODUTO", "* Tecido: Nike Dri-FIT").includes("MARCA_CONFLITANTE"), "termo sem fonte não vira técnico");
+    assert.ok(hard(camisa, "DESCRIÇÃO PRINCIPAL", "Atende à NR-35.").includes("NOME_NAO_COMPROVADO"), "norma sem fonte continua HARD");
+    ok("48. F8.2: compra 'de forma rápida', 'ótima adição', resistência-peça, restaurantes, hidratação-atividade, 127/220V na faixa 100-240V, 'dispositivos sem entrada', Dry Fit/Lockout/NR-12 → sem bloqueio; claims e marcas reais seguem HARD");
   }
 
   console.log(`\n✓ ${checks} verificações do Description Engine`);

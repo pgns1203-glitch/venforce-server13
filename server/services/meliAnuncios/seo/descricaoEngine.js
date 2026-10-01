@@ -179,27 +179,82 @@ const UNIDADES = new Map([
 const RE_MEDIDA = /((?:\d+(?:[.,]\d+)?\/)*\d+(?:[.,]\d+)?)\s*(litros|litro|lts|lt|ml|kg|kw|kbps|mbps|gbps|mhz|ghz|gramas|gr|g|watts|watt|w|volts|v|cm|mm|metros|m|l)(?![a-z0-9])/g;
 // Nomes de padrão que SÃO uma medida, sem número escrito.
 const MEDIDAS_POR_NOME = [[/(^|[^a-z])gigabit([^a-z]|$)/, "gigabit", "taxa", 1000], [/(^|[^a-z])fast ethernet([^a-z]|$)/, "fast ethernet", "taxa", 100]];
+// F8.1 — temperatura de cor ("3000 K", "5500k", "3.000k"). Só com 4–5
+// dígitos: "4k" é resolução, não kelvin.
+const RE_KELVIN = /(^|[^\d.,])(\d{1,2}\.?\d{3})\s*k(?![a-z0-9])/g;
 
-function medidas(t) {
+// `antes`/`depois`: o que vem colado à medida ("Capacidade: 120 L", "140 cm
+// de comprimento"). `pontoDecimal`: valor de atributo do ML usa ponto como
+// decimal ("1.215 m", "54.5 cm"); em texto livre "1.215" é milhar.
+// trecho da frase até a medida (ponto seguido de espaço, ; ! ? quebra ou marcador)
+const fraseAte = (s, i) => s.slice(0, i).split(/[;!?\n•*]|\.\s/).pop();
+function medidas(t, { pontoDecimal = false } = {}) {
   const out = [];
-  const s = semAcento(t);
+  let s = semAcento(t);
+  if (pontoDecimal) s = s.replace(/(\d)\.(\d)/g, "$1,$2");
   for (const m of s.matchAll(RE_MEDIDA)) {
     const [grandeza, fator] = UNIDADES.get(m[2]);
-    // `antes`: o que vem logo antes da medida ("Capacidade: 120 L")
     const antes = s.slice(Math.max(0, m.index - 40), m.index);
+    const depois = s.slice(m.index + m[0].length, m.index + m[0].length + 30);
+    // F8.2 — faixa "100 - 240V" / "100 a 240 V" / "100~240V": o limite de
+    // baixo vem sem unidade (ou com a mesma) colado antes
+    const fx = new RegExp("(\\d+(?:[.,]\\d+)?)\\s*(?:" + m[2] + ")?\\s*(?:-|–|~|a|ate)\\s*$").exec(antes);
+    const baixo = fx ? normalizarNumero(fx[1]) : null;
     for (const parte of m[1].split("/")) {
       const numero = normalizarNumero(parte);
-      if (numero != null) out.push({ numero, grandeza, base: Number(numero) * fator, trecho: m[0], antes });
+      if (numero == null) continue;
+      const x = { numero, grandeza, base: Number(numero) * fator, trecho: m[0], antes, depois, frase: fraseAte(s, m.index) };
+      if (baixo != null && Number(baixo) < Number(numero)) x.faixa = [Number(baixo) * fator, x.base];
+      out.push(x);
+    }
+  }
+  for (const m of s.matchAll(RE_KELVIN)) {
+    const numero = normalizarNumero(m[2].replace(",", "."));
+    const ini = m.index + m[1].length;
+    if (numero != null) {
+      out.push({ numero, grandeza: "temperatura_cor", base: Number(numero), trecho: m[0].slice(m[1].length),
+        antes: s.slice(Math.max(0, ini - 40), ini), depois: s.slice(m.index + m[0].length, m.index + m[0].length + 30), frase: fraseAte(s, ini) });
     }
   }
   for (const [re, nome, grandeza, base] of MEDIDAS_POR_NOME) {
     const m = re.exec(s);
-    if (m) out.push({ numero: null, grandeza, base, trecho: nome, antes: s.slice(Math.max(0, m.index - 40), m.index), palavra: nome });
+    if (m) out.push({ numero: null, grandeza, base, trecho: nome, antes: s.slice(Math.max(0, m.index - 40), m.index), depois: "", palavra: nome });
   }
   return out;
 }
 
+// F8.2 — preposição de DESTINO/LUGAR antes de outro substantivo ("para
+// dispositivos sem…", "em notebooks sem…"). "de" fica fora: "camiseta de
+// algodão sem manga" ainda fala do produto.
+const PREPOSICOES_DE_OUTRO_OBJETO = new Set(["para", "em", "nos", "nas", "aos", "pros", "pras"]);
 const mesmaMedida = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+
+// F8.1 — nome da própria grandeza: amarra a medida quando a grandeza tem um
+// atributo só ("Tensão: 100 - 240V" × "Voltagem: 127/220V").
+const NOMES_DE_GRANDEZA = {
+  tensao: ["tensao", "voltagem"], potencia: ["potencia"], volume: ["capacidade", "volume"], massa: ["peso"],
+  temperatura_cor: ["temperatura"], frequencia: ["frequencia"], taxa: ["velocidade", "taxa"],
+};
+// Palavra de rótulo colada à medida, na ordem de confiança: "de <palavra>"
+// logo depois ("140 cm de comprimento"), depois a palavra logo antes
+// ("Comprimento total: 140 cm", "Tensão: 100 - 240V", "peso de 32 kg").
+const RE_ROTULO_DEPOIS = /^\s*de\s+([a-z]+)/;
+const RE_ROTULO_ANTES = /([a-z]+)(?:\s+(?:total|maxim[oa]|minim[oa]|nominal|aproximad[oa]))?\s*(?::|=|-|de)?\s*(?:\d+(?:[.,]\d+)?\s*(?:-|~|a|ate)\s*)?$/;
+// Rótulos que são a mesma propriedade em faixa: "Temperatura mínima da cor" e
+// "Temperatura máxima da cor" (tirando mínima/máxima, sobra o mesmo rótulo).
+const PALAVRAS_DE_FAIXA = new Set(["minima", "maxima", "minimo", "maximo", "min", "max"]);
+function ehFaixa(rotulos) {
+  const resto = rotulos.map((r) => seo.contentKeys(r).filter((k) => !PALAVRAS_DE_FAIXA.has(k)).sort().join(" "));
+  return rotulos.some((r) => seo.contentKeys(r).some((k) => PALAVRAS_DE_FAIXA.has(k))) && resto.every((x) => x === resto[0]);
+}
+function palavrasDeRotulo(x) {
+  const out = [];
+  for (const m of [RE_ROTULO_DEPOIS.exec(x.depois || ""), RE_ROTULO_ANTES.exec(x.antes || "")]) {
+    const t = m && seo.extractTokens(m[1])[0];
+    if (t && !t.stopword) out.push(t.key);
+  }
+  return out;
+}
 
 // -----------------------------------------------------------------------------
 // F7B.1 — conflito de MATERIAL, genérico (sem caso por produto).
@@ -264,28 +319,140 @@ function conflitosDeMaterial(atributos, titulo, categoria) {
   const frase = frases[0];
   const prep = tokens[frase.ini - 1] && PREPOSICOES_DE_MATERIAL.has(tokens[frase.ini - 1].normalized) ? tokens[frase.ini - 1] : null;
   const trecho = (prep ? prep.original + " " : "") + frase.itens.map((x) => x.t.original).join(" ");
+  return compararMateriais(atributosDeMaterialPrincipal(atributos, titulo, categoria), frase.itens, "titulo", trecho);
+}
+
+// Atributos de papel "material principal" (rótulo de PARTE fica de fora).
+function atributosDeMaterialPrincipal(atributos, titulo, categoria) {
   const doProduto = new Set(seo.contentKeys(categoria || ""));
-  const tipo = seo.contentKeys(titulo).find((k) => !/^\d/.test(k) && !PALAVRAS_DE_KIT.has(k));
+  const tipo = seo.contentKeys(titulo || "").find((k) => !/^\d/.test(k) && !PALAVRAS_DE_KIT.has(k));
   if (tipo) doProduto.add(tipo);
-  const out = [];
-  for (const f of atributos) {
+  return atributos.filter((f) => {
     const resto = seo.contentKeys(f.label).filter((k) => !PALAVRAS_DE_PAPEL_PRINCIPAL.has(k) && !PALAVRAS_DE_NOME_GENERICAS.has(k));
-    if (!seo.contentKeys(f.label).some((k) => PALAVRAS_DE_PAPEL_PRINCIPAL.has(k))) continue; // não é atributo de material
-    if (resto.some((k) => !doProduto.has(k))) continue; // material de uma PARTE
+    if (!seo.contentKeys(f.label).some((k) => PALAVRAS_DE_PAPEL_PRINCIPAL.has(k))) return false; // não é atributo de material
+    return !resto.some((k) => !doProduto.has(k)); // material de uma PARTE
+  });
+}
+
+// Mesma dimensão, nenhuma família em comum → conflito.
+function compararMateriais(principais, itensDaFonte, fonte, trecho) {
+  const out = [];
+  for (const f of principais) {
     const doAtributo = materiaisDe(f.value);
     for (const dimensao of Object.keys(MATERIAIS)) {
-      const noTitulo = frase.itens.filter((x) => x.m.dimensao === dimensao);
+      const naFonte = itensDaFonte.filter((x) => x.m.dimensao === dimensao);
       const noValor = doAtributo.filter((x) => x.m.dimensao === dimensao);
-      if (!noTitulo.length || !noValor.length) continue;
-      if (noValor.some((v) => noTitulo.some((t) => t.m.familia === v.m.familia))) continue;
+      if (!naFonte.length || !noValor.length) continue;
+      if (noValor.some((v) => naFonte.some((t) => t.m.familia === v.m.familia))) continue;
       out.push({
-        id: f.id, label: f.label, value: f.value, tipo: "MATERIAL", fonte: "titulo", trecho,
-        chaves: Array.from(new Set(noTitulo.map((x) => x.t.key).concat(noValor.map((x) => x.t.key)))),
+        id: f.id, label: f.label, value: f.value, tipo: "MATERIAL", fonte, trecho,
+        chaves: Array.from(new Set(naFonte.map((x) => x.t.key).concat(noValor.map((x) => x.t.key)))),
       });
       break;
     }
   }
   return out;
+}
+
+// F8.1 — material na descrição atual: só a declaração ROTULADA
+// ("Material: Sarja de alta qualidade", "Tecido: Jeans"). Texto livre ("o
+// tecido de sarja…", "estrutura de aço") não entra: a descrição fala de várias
+// partes. Por dimensão (fibra/tecido/rígido), só compara se UMA declaração
+// rotulada cita aquela dimensão — duas ("Material: MDF" e "Material: Aço")
+// costumam ser partes diferentes.
+const RE_MATERIAL_ROTULADO = /(^|[^a-z])(?:tipo de )?(?:material|materiais|tecido|composicao|materia[ -]prima)(?: (?:principal|predominante))?\s*:\s*([^\n:•*|;]{1,60})/g;
+function conflitosDeMaterialRotulado(atributos, descricao, titulo, categoria) {
+  if (!descricao) return [];
+  const declaracoes = Array.from(semAcento(descricao).matchAll(RE_MATERIAL_ROTULADO))
+    .map((m) => ({ trecho: m[0].slice(m[1].length).trim(), itens: materiaisDe(m[2]) })).filter((d) => d.itens.length);
+  const principais = atributosDeMaterialPrincipal(atributos, titulo, categoria);
+  const out = [];
+  for (const dimensao of Object.keys(MATERIAIS)) {
+    const comDimensao = declaracoes.filter((d) => d.itens.some((x) => x.m.dimensao === dimensao));
+    if (comDimensao.length !== 1) continue;
+    const d = comDimensao[0];
+    for (const c of compararMateriais(principais, d.itens.filter((x) => x.m.dimensao === dimensao), "descricao_atual", d.trecho)) {
+      if (!out.some((x) => x.id === c.id)) out.push(c);
+    }
+  }
+  return out;
+}
+
+// -----------------------------------------------------------------------------
+// F8.1 — QUANTIDADE do kit. Só expressão de quantidade do PRODUTO:
+//   "Kit 5", "Kit com 3", "Pacote com 50", "50 unidades" (título) e, na
+//   descrição atual, "kit … com 3 peças" (palavra de kit até 6 palavras antes).
+// "5 palhetas" ou "2 bolsos" não contam: falam de partes. O atributo de
+// unidades por kit/pacote é a referência; sem ele, título × descrição.
+// -----------------------------------------------------------------------------
+const QTD_POR_EXTENSO = "dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez|doze";
+const PALAVRAS_KIT_RE = "kit|kits|pacote|conjunto|combo|pack|lote";
+const NAO_E_UNIDADE = "(?![\\d.,]|\\s*(?:x|cm|mm|m|kg|g|ml|l|w|v|k|hp|gb|mb|%|\")(?![a-z]))";
+const RE_KIT_N = new RegExp("(^|[^a-z])(?:" + PALAVRAS_KIT_RE + ")\\s+(?:c\\/\\s*|com\\s+|de\\s+)?(\\d{1,3}|" + QTD_POR_EXTENSO + ")" + NAO_E_UNIDADE, "g");
+const RE_KIT_PERTO = new RegExp("(^|[^a-z])(?:" + PALAVRAS_KIT_RE + ")(?:\\s+[a-z]+){0,6}?\\s+(?:com\\s+|c\\/\\s*)?(\\d{1,3}|" + QTD_POR_EXTENSO + ")\\s*(?:unidades?|pecas?|pares?|itens|un|pcs)(?![a-z])", "g");
+const RE_N_UNIDADES = new RegExp("(^|[^\\d.,a-z])(\\d{1,3}|" + QTD_POR_EXTENSO + ")\\s*(?:unidades?|pecas?|pcs)(?![a-z])", "g");
+const RE_ROTULO_QTD = /(^|[^a-z])(?:unidades por (?:kit|pacote|embalagem)|quantidade de unidades|quantidade)\s*:\s*(\d{1,3})(?![\d.,])/g;
+const ATRIBUTOS_DE_QUANTIDADE = new Set(["attr:UNITS_PER_PACK", "attr:UNITS_PER_KIT", "attr:PACK_UNITS"]);
+
+function numeroDeQuantidade(bruto) {
+  const n = NUMEROS_POR_EXTENSO.get(bruto);
+  return n != null ? n : Number(bruto);
+}
+function quantidadesDoTexto(t, padroes) {
+  const s = semAcento(t || "");
+  const out = new Set();
+  for (const re of padroes) for (const m of s.matchAll(re)) out.add(numeroDeQuantidade(m[2]));
+  return out;
+}
+const quantidadesDoTitulo = (t) => quantidadesDoTexto(t, [RE_KIT_N, RE_N_UNIDADES]);
+const quantidadesDaDescricaoAtual = (t) => quantidadesDoTexto(t, [RE_KIT_N, RE_KIT_PERTO]);
+// No texto gerado: as mesmas formas + o item "Unidades por kit: 5".
+const quantidadesCitadas = (t) => quantidadesDoTexto(t, [RE_KIT_N, RE_KIT_PERTO, RE_N_UNIDADES, RE_ROTULO_QTD]);
+
+function atributoDeQuantidade(atributos) {
+  const f = atributos.find((x) => ATRIBUTOS_DE_QUANTIDADE.has(x.id) ||
+    /^unidades por (kit|pacote|embalagem)$/.test(semAcento(x.label).trim()));
+  const n = f && /^\s*\d{1,4}\s*$/.test(f.value) ? Number(f.value) : null;
+  return n != null ? { f, n } : null;
+}
+
+function conflitosDeQuantidade(atributos, titulo, descricao) {
+  const out = [];
+  const doAtributo = atributoDeQuantidade(atributos);
+  const qTitulo = quantidadesDoTitulo(titulo);
+  const qDesc = quantidadesDaDescricaoAtual(descricao);
+  const numeros = (xs) => Array.from(new Set(xs.map(String)));
+  if (doAtributo) {
+    for (const [fonte, qs] of [["titulo", qTitulo], ["descricao_atual", qDesc]]) {
+      if (!qs.size || qs.has(doAtributo.n)) continue;
+      out.push({
+        id: doAtributo.f.id, label: doAtributo.f.label, value: doAtributo.f.value, tipo: "QUANTIDADE", fonte,
+        trecho: Array.from(qs).join(", "), numeros: numeros([doAtributo.n, ...qs]), chaves: [],
+      });
+    }
+    return out;
+  }
+  // sem atributo: título e descrição atual citam quantidades sem nenhuma em comum
+  if (qTitulo.size && qDesc.size && ![...qTitulo].some((n) => qDesc.has(n))) {
+    out.push({
+      id: "contexto:quantidade", label: "Quantidade do kit", value: Array.from(qTitulo).join(", "), tipo: "QUANTIDADE",
+      fonte: "descricao_atual", trecho: Array.from(qDesc).join(", "), numeros: numeros([...qTitulo, ...qDesc]), chaves: [],
+    });
+  }
+  return out;
+}
+
+// Quantidade confiável do kit (N ≥ 2), para a descrição não falar de uma peça
+// como se fosse o produto inteiro. Sem conflito de quantidade:
+//   atributo de unidades por kit ≥ 2; ou, sem atributo, UMA quantidade no
+//   título (a descrição atual, se citar quantidade, tem de concordar).
+function quantidadeDoKit(atributos, titulo, descricao, conflitos) {
+  if (conflitos.some((c) => c.tipo === "QUANTIDADE")) return null;
+  const doAtributo = atributoDeQuantidade(atributos);
+  if (doAtributo) return doAtributo.n >= 2 ? { n: doAtributo.n, fonte: doAtributo.f.id } : null;
+  const qTitulo = Array.from(quantidadesDoTitulo(titulo));
+  if (qTitulo.length !== 1 || qTitulo[0] < 2) return null;
+  return { n: qTitulo[0], fonte: "contexto:titulo" };
 }
 
 function detectarConflitos(fatos, fontes, categoria) {
@@ -297,29 +464,73 @@ function detectarConflitos(fatos, fontes, categoria) {
   // (curto) qualquer medida da grandeza vale; na descrição atual, que
   // costuma trazer outras grandezas ("58 kg de lixo"), só a medida precedida
   // por palavra do rótulo do atributo ("Capacidade: 120 L").
+  //
+  // F8.1 — também grandeza com VÁRIOS atributos (comprimento/largura/altura;
+  // temperatura mínima/máxima) e valor em lista ("127/220V"):
+  //   título — conflito se NENHUM valor do título bate com NENHUM atributo da
+  //            grandeza ("3500k 5500k" × 3000 K e 6000 K): todos saem.
+  //   descrição atual — só medida AMARRADA a um rótulo: "de <palavra>" logo
+  //            depois ("140 cm de comprimento") ou palavra colada antes
+  //            ("Comprimento: 140 cm", "Tensão: 100 - 240V"). A palavra tem de
+  //            estar no rótulo do atributo — ou, se a grandeza tem atributo
+  //            único, ser o nome da grandeza (tensão/voltagem, potência…).
+  //            Conflito se nenhuma medida amarrada ao atributo bate com ele.
   const porGrandeza = new Map();
   for (const f of atributos) {
-    if (!/^\s*\d+(?:[.,]\d+)?\s*[a-z]+\s*$/.test(semAcento(f.value))) continue;
-    const ms = medidas(f.value);
-    if (ms.length !== 1) continue;
+    if (!/^\s*\d+(?:[.,]\d+)?(?:\s*\/\s*\d+(?:[.,]\d+)?)*\s*[a-z]+\s*$/.test(semAcento(f.value))) continue;
+    const ms = medidas(f.value, { pontoDecimal: true });
+    if (!ms.length || ms.some((x) => x.grandeza !== ms[0].grandeza)) continue;
     const lista = porGrandeza.get(ms[0].grandeza) || [];
-    lista.push({ f, m: ms[0] });
+    // número como o valor está escrito (o validador compara com o texto gerado)
+    const escritos = extrairNumeros(f.value).map((n) => n.numero);
+    lista.push({ f, ms, numeros: Array.from(new Set(ms.map((x) => x.numero).concat(escritos))) });
     porGrandeza.set(ms[0].grandeza, lista);
   }
+  // F8.2 — valor do atributo DENTRO de uma faixa do contexto é compatível
+  // ("127/220V" × "100 - 240V")
+  const dentro = (x, y) => y.faixa && x.base >= y.faixa[0] - 1e-9 && x.base <= y.faixa[1] + 1e-9;
+  const bate = (xs, ys) => xs.some((x) => ys.some((y) => mesmaMedida(x.base, y.base) || dentro(x, y)));
   for (const [grandeza, lista] of porGrandeza) {
-    if (lista.length !== 1) continue;
-    const { f, m } = lista[0];
-    const chavesRotulo = palavrasDeConteudo(f.label).map((t) => t.key).filter((k) => !PALAVRAS_DE_NOME_GENERICAS.has(k));
+    const rotulos = lista.map(({ f }) => new Set(palavrasDeConteudo(f.label).map((t) => t.key).filter((k) => !PALAVRAS_DE_NOME_GENERICAS.has(k))));
     for (const [fonte, t] of fontes) {
       if (!t) continue;
-      const doContexto = medidas(t).filter((x) => x.grandeza === grandeza &&
-        (fonte === "titulo" || seo.contentKeys(x.antes).some((k) => chavesRotulo.includes(k))));
-      if (!doContexto.length || doContexto.some((x) => mesmaMedida(x.base, m.base))) continue;
-      conflitos.push({
-        id: f.id, label: f.label, value: f.value, tipo: "MEDIDA", fonte, trecho: doContexto[0].trecho,
-        numeros: Array.from(new Set([m.numero, ...doContexto.map((x) => x.numero).filter((n) => n != null)])),
-        chaves: Array.from(new Set(doContexto.filter((x) => x.palavra).map((x) => seo.contentKeys(x.palavra)[0]))),
+      const doContexto = medidas(t).filter((x) => x.grandeza === grandeza);
+      if (!doContexto.length) continue;
+      const empurrar = (alvo, ctx) => conflitos.push({
+        id: alvo.f.id, label: alvo.f.label, value: alvo.f.value, tipo: "MEDIDA", fonte, trecho: ctx[0].trecho,
+        numeros: Array.from(new Set(alvo.numeros.concat(ctx.map((x) => x.numero).filter((n) => n != null)))),
+        chaves: Array.from(new Set(ctx.filter((x) => x.palavra).map((x) => seo.contentKeys(x.palavra)[0]))),
       });
+      if (fonte === "titulo") {
+        // vários atributos: só se forem a MESMA propriedade em faixa
+        // (mínima/máxima); "Mesa 100 cm" com largura e comprimento pode ser a
+        // altura, que a ficha não tem
+        if (lista.length > 1 && !ehFaixa(lista.map((a) => a.f.label))) continue;
+        if (lista.some((a) => bate(a.ms, doContexto))) continue;
+        for (const a of lista) empurrar(a, doContexto);
+        continue;
+      }
+      // cada medida → atributos a que está amarrada ("peso" amarra a "Peso" e
+      // a "Peso máximo suportado": a medida é explicada se bater com qualquer um).
+      // Medida da embalagem não é do produto ("embalagem de 92 cm…, com peso
+      // de 34 kg"); e se a mesma fonte também cita o valor do atributo (mesmo
+      // sem unidade: "Cortina 4,00x2,80… partes de 2,00m de largura"), a outra
+      // medida é de uma parte, não contradição.
+      const numerosDaFonte = new Set(extrairNumeros(t).map((n) => n.numero));
+      const amarras = doContexto.filter((x) => !/embalage/.test((x.frase || x.antes) + " " + x.depois)).map((x) => {
+        for (const k of palavrasDeRotulo(x)) {
+          const alvo = lista.filter((a, i) => rotulos[i].has(k) || (lista.length === 1 && (NOMES_DE_GRANDEZA[grandeza] || []).includes(k)));
+          if (alvo.length) return { x, alvo };
+        }
+        // regra anterior (atributo único): palavra do rótulo nos 40 caracteres antes
+        if (lista.length === 1 && seo.contentKeys(x.antes).some((k) => rotulos[0].has(k))) return { x, alvo: lista };
+        return null;
+      }).filter(Boolean);
+      for (const a of lista) {
+        if (a.numeros.some((n) => numerosDaFonte.has(n))) continue;
+        const minhas = amarras.filter((m) => m.alvo.includes(a));
+        if (minhas.length && !minhas.some((m) => m.alvo.some((b) => bate(b.ms, [m.x])))) empurrar(a, minhas.map((m) => m.x));
+      }
     }
   }
   // ALTERNATIVA (F7A.5): a categoria nomeia alternativas ("Camisetas e
@@ -347,7 +558,17 @@ function detectarConflitos(fatos, fontes, categoria) {
   // MATERIAL (F7B.1): o título cita UM material e um atributo de papel
   // "material principal" diz outro, incompatível, na MESMA dimensão.
   conflitos.push(...conflitosDeMaterial(atributos, titulo, categoria));
+  // F8.1 — MATERIAL também contra a descrição atual, mas só a declaração
+  // ROTULADA ("Material: Sarja…"); QUANTIDADE do kit contra título/descrição.
+  const descricao = (fontes.find(([nome]) => nome === "descricao_atual") || [])[1];
+  for (const c of conflitosDeMaterialRotulado(atributos, descricao, titulo, categoria)) {
+    if (!conflitos.some((x) => x.id === c.id)) conflitos.push(c);
+  }
+  conflitos.push(...conflitosDeQuantidade(atributos, titulo, descricao));
   // NEGACAO: "sem <assunto>" no contexto × atributo que afirma o assunto
+  const doProdutoNeg = new Set(seo.contentKeys(categoria || ""));
+  const tipoNeg = seo.contentKeys(titulo || "").find((k) => !/^\d/.test(k) && !PALAVRAS_DE_KIT.has(k));
+  if (tipoNeg) doProdutoNeg.add(tipoNeg);
   for (const f of atributos) {
     if (conflitos.some((c) => c.id === f.id)) continue;
     const valorNega = valorBooleano(f.value) === false || seo.extractTokens(f.value).some((t) => t.normalized === "sem" || t.normalized === "nao");
@@ -357,7 +578,11 @@ function detectarConflitos(fatos, fontes, categoria) {
     for (const [fonte, t] of fontes) {
       if (!t) continue;
       const tokens = seo.extractTokens(t);
-      const i = tokens.findIndex((x, j) => x.normalized === "sem" && tokens[j + 1] && chaves.includes(tokens[j + 1].key));
+      // F8.2 — "sem" que qualifica OUTRO objeto, introduzido por preposição
+      // ("para/em dispositivos sem entrada de rede"), não nega o produto
+      const deOutroObjeto = (j) => j >= 2 && !tokens[j - 1].stopword && !doProdutoNeg.has(tokens[j - 1].key) &&
+        PREPOSICOES_DE_OUTRO_OBJETO.has(tokens[j - 2].normalized);
+      const i = tokens.findIndex((x, j) => x.normalized === "sem" && tokens[j + 1] && chaves.includes(tokens[j + 1].key) && !deOutroObjeto(j));
       if (i < 0) continue;
       conflitos.push({
         id: f.id, label: f.label, value: f.value, tipo: "NEGACAO", fonte,
@@ -533,6 +758,8 @@ function montarFicha(anuncio, opts = {}) {
   const idsEmConflito = new Set(conflitos.map((c) => c.id));
   for (let i = fatos.length - 1; i >= 0; i -= 1) if (idsEmConflito.has(fatos[i].id)) fatos.splice(i, 1);
   marcarListaveis(fatos);
+  // F8.1 — "Kit N" confiável: a descrição tem de dizer a quantidade.
+  const kit = quantidadeDoKit(fatos.filter((f) => f.id.startsWith("attr:")), tituloAtual, descricaoAtual.texto, conflitos);
 
   // IDs que o LLM pode citar em fatosUsados.
   const idsConhecidos = new Set(fatos.map((f) => f.id));
@@ -615,6 +842,7 @@ function montarFicha(anuncio, opts = {}) {
     numerosPermitidos,
     vocabularioDoTitulo: new Set(seo.extractTokens(tituloAtual || "").map((t) => t.key)),
     conflitos,
+    kit,
     nFatosProduto,
     suficiente,
   };
@@ -674,10 +902,27 @@ const COPY_PROPAGANDA_VIGIADA = new Set(["qualidade"].map((w) => seo.reduceMorph
 const RAIZES_CLAIM_DA_COPY = ["original", "autentic", "oficial", "hidrat", "nutri", "restaur", "revitaliz", "rejuvenesc",
   "regener", "compativ", "garantid", "comprovad", "clinicament", "dermatologic"];
 const RE_CLAIM_DA_COPY = new RegExp("(^|[^a-z])((?:" + RAIZES_CLAIM_DA_COPY.join("|") + ")[a-z]*)", "g");
+// F8.2 — palavra que só compartilha a GRAFIA da raiz, com outro sentido
+// ("restaurante" não é "restaurar"). Lista fechada de homógrafos.
+const HOMOGRAFOS_DE_CLAIM = new Set(["restaurante", "restaurantes"]);
+// F8.2 — o substantivo do efeito ("hidratação", "nutrição", "restauração")
+// pode nomear só a ATIVIDADE ("necessidades de hidratação", "hidratação
+// coletiva" num bebedouro). É promessa de efeito quando vem com alvo ("da
+// pele", "dos fios"), intensidade ("intensa", "profunda") ou verbo de
+// promessa antes ("proporciona", "garante"). Verbo/adjetivo ("hidrata",
+// "hidratante", "restaura") continua sempre claim.
+const RE_EFEITO_NOMINAL = /(cao|coes|mento|mentos)$/;
+const RE_ALVO_OU_INTENSIDADE = /^\s+(?:[a-z]+\s+){0,1}(?:intens|profund|prolongad|imediat|extra|total|duradour|d[aoe]s?\s+(?:pele|fios?|cabelos?|labios|unhas|rosto|corpo|maos|barba|couro|cuticulas?|madeira|superficies?))/;
+const RE_PROMESSA_ANTES = /(promove|promover|garante|garantir|proporciona|proporcionar|oferece|oferecer|traz|trazer|entrega|assegura|potencializa|potencializar)(?:\s+[a-z]+){0,2}\s*$/;
 function claimsDaCopy(texto, ficha) {
   const fortes = Array.from(ficha.nomesAutorizados).concat(Array.from(ficha.vocabularioDoTitulo || []));
   const out = [];
-  for (const m of semAcento(texto).matchAll(RE_CLAIM_DA_COPY)) {
+  const s = semAcento(texto);
+  for (const m of s.matchAll(RE_CLAIM_DA_COPY)) {
+    if (HOMOGRAFOS_DE_CLAIM.has(m[2])) continue;
+    const ini = m.index + m[1].length;
+    if (RE_EFEITO_NOMINAL.test(m[2]) && !RE_ALVO_OU_INTENSIDADE.test(s.slice(ini + m[2].length, ini + m[2].length + 40)) &&
+      !RE_PROMESSA_ANTES.test(s.slice(Math.max(0, ini - 40), ini))) continue;
     const raiz = RAIZES_CLAIM_DA_COPY.find((r) => m[2].startsWith(r));
     if (!fortes.some((k) => k.startsWith(raiz)) && !out.includes(m[2])) out.push(m[2]);
   }
@@ -700,6 +945,124 @@ function claimsComerciaisSemFonte(texto, ficha) {
     for (const m of s.matchAll(re)) if (!fontes.includes(m[2]) && !out.includes(m[2])) out.push(m[2]);
   }
   return out;
+}
+
+// -----------------------------------------------------------------------------
+// F8.1 — afirmação OBJETIVA de desempenho/propriedade, em QUALQUER bloco. A
+// copy é livre para estilo e experiência de uso, não para desempenho. Regra
+// por FORMA da frase, não por produto:
+//   AVALIAÇÃO  — avaliação + propriedade ("baixo consumo", "boa resistência",
+//                "mais estabilidade", "maior durabilidade"). A forma inteira é
+//                suspeita; só qualidade de EXPERIÊNCIA (lista fechada abaixo:
+//                praticidade, conforto, estilo, versatilidade…) é copy livre —
+//                propriedade nova cai no bloqueio sem precisar entrar em lista.
+//                Com "mais/menos", só substantivo de propriedade (-ção, -dade,
+//                -ência, -eza, -mento…): "mais prático" é adjetivo de estilo.
+//   DESEMPENHO — as dimensões de desempenho em si: eficiência, rapidez,
+//                potência, estabilidade, firmeza, robustez, silêncio,
+//                durabilidade, resistência, precisão, desempenho.
+//   USO        — duração e comportamento sob uso ("uso prolongado", "longa
+//                duração", "em pouco tempo", "com agilidade", "não desbota").
+// Evidência: a propriedade num fato ESTRUTURADO (rótulo ou valor, fora marca e
+// modelo) ou a MESMA expressão no título. A descrição atual do vendedor não
+// sustenta desempenho (F7A.12); o nome da marca também não ("Resistencia").
+// -----------------------------------------------------------------------------
+const EXPERIENCIA = new Set([
+  "praticidade", "conforto", "estilo", "elegancia", "versatilidade", "charme", "beleza", "sofisticacao",
+  "personalidade", "identidade", "liberdade", "flexibilidade", "leveza", "variedade", "diversao", "organizacao",
+  "espaco", "possibilidade", "opcao", "combinacao", "tranquilidade", "confianca", "facilidade", "harmonia", "frescor",
+  "aconchego", "destaque", "presenca", "movimento", "comodidade", "criatividade", "delicadeza", "descontracao",
+  "escolha", "compra", "pedida", "presente", "ideia", "aliado", "aliada", "companhia", "gosto", "aparencia",
+  "caimento", "ajuste", "look", "alegria", "emocao", "momento", "conveniencia", "motivacao", "constancia",
+  "naturalidade", "simplicidade", "requinte", "modernidade", "autoestima", "vida", "cor", "encanto", "graca",
+  "agilidade",
+  // F8.2 — papel do item na vida do comprador ("ótima adição ao guarda-roupa")
+  "adicao", "aquisicao", "complemento", "acrescimo",
+]);
+// + os adjetivos subjetivos leves (VOCABULARIO_SUBJETIVO, declarado adiante)
+const ehExperiencia = (w) => EXPERIENCIA.has(w) || VOCABULARIO_SUBJETIVO.includes(w) || EXPERIENCIA.has(w.replace(/s$/, "")) ||
+  (w.endsWith("oes") && EXPERIENCIA.has(w.slice(0, -3) + "ao")) || (w.endsWith("es") && EXPERIENCIA.has(w.slice(0, -2)));
+const RE_AVALIACAO = /(^|[^a-z-])(baix[oa]s?|alt[oa]s?|bo[ma]|bons|boas|otim[oa]s?|excelentes?|maior(?:es)?|menor(?:es)?|maxim[oa]|superior(?:es)?|elevad[oa]|reduzid[oa]|mais|menos)\s+([a-z]+)/g;
+// A palavra depois da avaliação tem de ser SUBSTANTIVO de propriedade — pelo
+// sufixo, ou um dos poucos sem sufixo. Assim "cintura alta valoriza" (adjetivo
+// do nome anterior + verbo) e "ficou ótimo pendurado" não são claim.
+const RE_SUBSTANTIVO_DE_PROPRIEDADE = /(cao|coes|dade|dades|encia|encias|ancia|ancias|anca|ancas|eza|ezas|mento|mentos|ura|uras|agem)$|^(consumo|ruido|impacto|atrito|alcance|brilho|contraste|fluxo|rendimento|desempenho)$/;
+const DIMENSOES_DE_DESEMPENHO = [/^(eficien|eficaz|eficac)/, /^(rapid|veloz|velocid)/, /^(potent|potenc)/, /^(estavel|estaveis|estabil)/,
+  /^firme(s|za)?$/, /^robust/, /^silenc/, /^(durav|durab)/, /^resist/, /^precisao$/, /^(desempenh|performance)/];
+const RE_DESEMPENHO = /(^|[^a-z])(eficientes?|eficiencia|eficaz(?:es)?|eficacia|rapid[oa]s?|rapidamente|rapidez|velozes|veloz|potentes?|potencia|estave(?:l|is)|estabilidade|firmes?|firmeza|robust[oa]s?|robustez|silencios[oa]s?|silencio|dura(?:vel|veis)|durabilidade|resistentes?|resistencia|precisao|desempenho|performance)(?=[^a-z]|$)/g;
+const RE_USO = /(^|[^a-z])(uso (?:prolongado|continuo|intenso|pesado|constante|severo)|longa (?:duracao|vida)|vida util|(?:por|durante) (?:muito|mais|longo) tempo|por (?:varias |muitas )?horas|horas de uso|em (?:pouco|menos) tempo|em (?:poucos )?(?:segundos|minutos)|tempo indeterminado|sem esforco|com (?:agilidade|rapidez|eficiencia|precisao|firmeza)|nao (?:desbotam?|amassam?|enrolam?|deformam?|quebram?|enferrujam?|descascam?|mancham?|vazam?|escorregam?|esquentam?|encolhem?|desfiam?|perdem? a (?:cor|forma)))(?=[^a-z]|$)/g;
+
+// F8.3 — a exceção de compra só vale quando a palavra modifica o ATO de
+// comprar: entre a âncora (comprar, finalizar, concluir, adquirir, compra,
+// pedido) e a palavra só pode haver artigo/possessivo, o objeto da compra,
+// moldura de modo ("de forma", "com confiança") e qualidade da própria compra
+// ("simples", "segura"). Qualquer outra palavra ("tenha aquecimento",
+// "um produto de instalação", "com secagem", "aproveite o carregamento")
+// muda o assunto para o produto: continua claim.
+//   "Compre de forma rápida e segura"   · "Finalize sua compra rapidamente"
+//   "Uma compra simples e rápida"       · "Comprar é simples e rápido"
+const RE_ANCORA_DE_COMPRA = /(^|[^a-z])(compr(?:a|as|ar|e|em|ando)|finaliz[a-z]*|conclu(?:a|ir|i|indo|ido)|adquir(?:a|ir|e|indo)|pedido|aquisicao)(?=[^a-z]|$)/g;
+const LIGAM_A_COMPRA = new Set(["a", "o", "as", "os", "um", "uma", "sua", "seu", "suas", "seus", "e", "de", "forma", "maneira",
+  "modo", "jeito", "com", "compra", "pedido", "confianca", "praticidade", "seguranca", "tranquilidade", "facilidade",
+  "simples", "segura", "seguro", "pratica", "pratico", "facil", "tranquila", "tranquilo", "muito", "mais", "bem", "ja",
+  "agora", "foi", "fica", "ficou", "sera", "totalmente",
+  "pelo", "pela", "no", "na", "mercado", "livre"]); // "Comprar pelo Mercado Livre é rápido"
+function modificaACompra(fraseAntes) {
+  for (const m of fraseAntes.matchAll(RE_ANCORA_DE_COMPRA)) {
+    const meio = fraseAntes.slice(m.index + m[0].length).split(/[^a-z]+/).filter(Boolean);
+    if (meio.every((w) => LIGAM_A_COMPRA.has(w))) return true;
+  }
+  return false;
+}
+
+function claimsObjetivosSemFonte(texto, ficha) {
+  const fatosFortes = ficha.fatos.filter((f) => f.id !== "brand" && f.id !== "model");
+  const fortes = semAcento(fatosFortes.map((f) => f.label + " : " + f.value).join(" \n "));
+  const titulo = semAcento(ficha.tituloAtual || "");
+  const tokensFortes = (fortes + " \n " + titulo).split(/[^a-z0-9]+/).filter(Boolean);
+  const chavesRotulos = new Set(fatosFortes.flatMap((f) => seo.contentKeys(f.label)));
+  const temFrase = (frase) => contemFrase(fortes, frase) || contemFrase(titulo, frase);
+  const s = semAcento(texto);
+  const out = [];
+  const add = (w) => { if (!out.includes(w)) out.push(w); };
+  for (const m of s.matchAll(RE_AVALIACAO)) {
+    const [, , aval, prop] = m;
+    const t = seo.extractTokens(prop)[0];
+    if (!t || t.stopword || /^\d/.test(prop) || ehExperiencia(prop) || !RE_SUBSTANTIVO_DE_PROPRIEDADE.test(prop)) continue;
+    if (temFrase(aval + " " + prop) || chavesRotulos.has(t.key)) continue;
+    add(aval + " " + prop);
+  }
+  // o que vem antes na mesma frase
+  const antesNaFrase = (i) => s.slice(Math.max(0, i - 40), i).split(/[.;!?\n•*]/).pop();
+  for (const m of s.matchAll(RE_DESEMPENHO)) {
+    // nome da dimensão + medida ("potência de 2500w", "velocidade: 12 km/h") é
+    // fato medido — o número passa pela checagem de números, não é avaliação
+    if (/^\s*(?:de|:)?\s*(?:ate\s+)?\d/.test(s.slice(m.index + m[0].length, m.index + m[0].length + 12))) continue;
+    const antes = antesNaFrase(m.index);
+    // rapidez da COMPRA ("comprar é simples e rápido") não é desempenho do
+    // produto; adjetivo do VISUAL ("design robusto") é estilo
+    if (modificaACompra(fraseAte(s, m.index))) continue;
+    // F8.2 — "resistência elétrica/de imersão/de aquecimento" é a PEÇA que
+    // aquece, não resistência a uso/impacto
+    if (ehResistenciaComponente(s, m.index + m[1].length, m[2])) continue;
+    if (/(^|[^a-z])(design|visual|estilo|aparencia|look|linhas)\s+$/.test(antes)) continue;
+    const dim = DIMENSOES_DE_DESEMPENHO.find((re) => re.test(m[2]));
+    if (dim && tokensFortes.some((w) => dim.test(w))) continue;
+    add(m[2]);
+  }
+  for (const m of s.matchAll(RE_USO)) if (!temFrase(m[2])) add(m[2]);
+  return out;
+}
+
+// F8.1 — kit de N (ficha.kit) tem de aparecer como quantidade: "Kit com 3",
+// "3 unidades", "3 mini spots", "Unidades por kit: 3". "3 cm"/"2 hp" não.
+const NAO_SAO_ITENS = new Set([...UNIDADES.keys(), "x", "hp", "k", "gb", "mb", "tb", "mah", "mpx", "fps", "dpi", "pol",
+  "polegadas", "vezes", "hora", "horas", "ano", "anos", "mes", "meses", "dia", "dias", "minutos", "segundos", "graus"]);
+function kitCitado(texto, n) {
+  if (quantidadesCitadas(texto).has(n)) return true;
+  const formas = [String(n), ...Array.from(NUMEROS_POR_EXTENSO).filter(([, v]) => v === n).map(([k]) => k)];
+  const re = new RegExp("(^|[^\\d.,a-z])(" + formas.join("|") + ")\\s+([a-z]+)", "g");
+  return Array.from(semAcento(texto).matchAll(re)).some((m) => !NAO_SAO_ITENS.has(m[3]));
 }
 
 // Fato objetivo na copy: material (léxico da F7B.1) ou cor que não está nos dados.
@@ -853,16 +1216,23 @@ function palavrasDaDescricao(textoDesc) {
     const re = /([.!?:;,()"“”])|([\p{L}\p{N}][\p{L}\p{N}'’&-]*)/gu;
     let inicioDeFrase = true;
     let colado = false; // só espaço entre esta palavra e a anterior
+    let sinal = null;   // F8.2 — pontuação logo antes (":" de rótulo, "(" de glosa)
+    let ultima = null;
     let m;
     while ((m = re.exec(semMarcador))) {
       if (m[1]) {
         if (/[.!?:;]/.test(m[1])) inicioDeFrase = true;
         colado = false;
+        sinal = m[1];
         continue;
       }
-      palavras.push({ palavra: m[2], inicio: inicioDeFrase, coladaNaAnterior: colado });
+      const p = { palavra: m[2], inicio: inicioDeFrase, coladaNaAnterior: colado };
+      if (sinal && ultima) { p.sinalAntes = sinal; p.antesDoSinal = ultima; }
+      palavras.push(p);
       inicioDeFrase = false;
       colado = true;
+      sinal = null;
+      ultima = p;
     }
     // quebra de linha separa palavras
     if (palavras.length) palavras[palavras.length - 1].fimDeLinha = true;
@@ -951,6 +1321,29 @@ function outrosMarketplacesCitados(normalizado, ficha) {
     !seo.extractTokens(n).every((t) => ficha.nomesAutorizados.has(t.key)));
 }
 
+// F8.2 — termo técnico/norma, nunca marca (só quando tem origem em alguma
+// fonte; inventado continua NOME_NAO_COMPROVADO sem origem = HARD):
+//   norma/código — sigla + número: "NR-12", "NBR 14136", "ISO 9001", "IP67";
+//   qualificador de substantivo de TIPO — "tecido Dry Fit", "Tecido: Dry
+//     Fit", "Função: Lockout/Tagout", "padrão Lockout";
+//   glosa entre parênteses logo depois de palavra comum — "etiquetagem
+//     (Lockout/Tagout)";
+//   continuação colada de um termo técnico — "Dry Fit Sport".
+// Posição explícita de marca ("da marca X", "da X") não entra aqui: a regra
+// de marca segue igual.
+const SUBSTANTIVOS_DE_TIPO = new Set(["tecido", "tecnologia", "padrao", "sistema", "norma", "funcao", "procedimento",
+  "tratamento", "acabamento", "fibra", "metodo", "protocolo", "modo", "tipo"].map((w) => seo.extractTokens(w)[0].key));
+function termoTecnico(p) {
+  const w = p.palavra;
+  if (/^\p{Lu}{2,5}-?\d/u.test(w)) return true;
+  if (/^\p{Lu}{2,5}$/u.test(w) && p.proxima && /^\d/.test(p.proxima.palavra)) return true;
+  const chaveDe = (q) => (q && q.chaves.length === 1 ? q.chaves[0].key : null);
+  if (p.anterior && (SUBSTANTIVOS_DE_TIPO.has(chaveDe(p.anterior)) || p.anterior.tecnico)) return true;
+  if (p.sinalAntes === ":" && SUBSTANTIVOS_DE_TIPO.has(chaveDe(p.antesDoSinal))) return true;
+  if (p.sinalAntes === "(" && p.antesDoSinal && /^\p{Ll}/u.test(p.antesDoSinal.palavra)) return true;
+  return false;
+}
+
 function analisarNomes(textoDesc, ficha) {
   const conflitantes = [];
   const naoComprovados = [];
@@ -979,6 +1372,8 @@ function analisarNomes(textoDesc, ficha) {
     const estrangeira = pareceEstrangeira(w);
     const candidata = posicaoDeMarca || (maiuscula && !p.inicio) || caixaAlta || (maiuscula && p.inicio && estrangeira);
     if (!candidata || autorizadaForte(p)) continue;
+    // F8.2 — termo técnico ou norma COM origem numa fonte não é marca
+    if (naFraca(p) && termoTecnico(p)) { p.tecnico = true; continue; }
 
     // Contexto fraco: sem BRAND, autoriza o que está no título/descrição atual.
     // Com BRAND, nunca autoriza marca explícita, caixa alta ou grafia
@@ -1402,11 +1797,20 @@ const RAIZES_DE_CLAIM_TECNICO = [
 ];
 const RE_CLAIM_TECNICO = new RegExp("(^|[^a-z])((?:" + RAIZES_DE_CLAIM_TECNICO.join("|") + ")[a-z]*)", "g");
 
+// F8.2 — "resistência" seguida de qualificador de PEÇA (elétrica, de imersão,
+// de aquecimento, blindada, tubular, aletada) é o componente que aquece.
+const RE_RESISTENCIA_COMPONENTE = /^\s+(?:eletricas?|de imersao|de aquecimento|blindadas?|tubular(?:es)?|aletadas?)(?=[^a-z]|$)/;
+function ehResistenciaComponente(s, ini, w) {
+  return /^resistencias?$/.test(w) && RE_RESISTENCIA_COMPONENTE.test(s.slice(ini + w.length, ini + w.length + 25));
+}
+
 function claimsTecnicosHerdados(textoDesc, ficha) {
   const fortes = Array.from(ficha.nomesAutorizados).concat(Array.from(ficha.vocabularioDoTitulo || []));
   const out = [];
-  for (const m of semAcento(textoDesc).matchAll(RE_CLAIM_TECNICO)) {
+  const s = semAcento(textoDesc);
+  for (const m of s.matchAll(RE_CLAIM_TECNICO)) {
     const w = m[2];
+    if (ehResistenciaComponente(s, m.index + m[1].length, w)) continue; // F8.2
     const raiz = RAIZES_DE_CLAIM_TECNICO.find((r) => w.startsWith(r));
     if (fortes.some((k) => k.startsWith(raiz))) continue;
     if (!out.includes(w)) out.push(w);
@@ -1672,6 +2076,17 @@ function validarDescricao(descricaoBruta, fatosUsados, ficha) {
   if (comerciais.length) {
     add("CLAIM_COMERCIAL_SEM_FONTE", "Preço/custo ou facilidade técnica afirmados sem fonte (fatos, título ou descrição atual).", comerciais);
   }
+  // F8.1 — desempenho/propriedade objetiva sem fato estruturado ou título
+  const objetivos = claimsObjetivosSemFonte(semTitulos, ficha);
+  if (objetivos.length) {
+    add("CLAIM_OBJETIVO_SEM_FONTE", "Afirmação objetiva de desempenho ou propriedade (consumo, resistência, estabilidade, " +
+      "duração…) sem fato estruturado ou título que a sustente.", objetivos);
+  }
+  // F8.1 — kit de N descrito como se fosse uma peça só
+  if (ficha.kit && !kitCitado(semTitulos, ficha.kit.n)) {
+    add("KIT_OMITIDO", "O produto é um kit com " + ficha.kit.n + " unidades e a descrição não diz a quantidade.",
+      [String(ficha.kit.n)]);
+  }
   const inventadosCopy = fatosObjetivosDaCopy(juntar((x) => x.tipo === "copy" && !x.titulo && x.secao !== "como usar"), ficha);
   if (inventadosCopy.length) {
     add("FATO_INVENTADO", "Texto comercial cita material, cor ou componente que não está nos dados do anúncio.", inventadosCopy);
@@ -1707,15 +2122,23 @@ function validarDescricao(descricaoBruta, fatosUsados, ficha) {
     // F7A.11 — vale para o texto inteiro, inclusive a 1ª linha: gerarDescricao
     // limpa o trecho em conflito do nome (limparNomeConflitante) antes daqui.
     const corpo = descricao;
-    const chavesDesc = new Set(seo.contentKeys(corpo));
+    // F8.1 — o nome da marca não é afirmação sobre o assunto em conflito
+    // ("Influencia Jeans" com Jeans × Sarja em conflito)
+    let semMarca = semAcento(corpo);
+    if (ficha.marca) semMarca = semMarca.split(semAcento(ficha.marca)).join(" ");
+    const chavesDesc = new Set(seo.contentKeys(semMarca));
+    const qtdCitadas = quantidadesCitadas(corpo);
     // Número colado em letra antes dele é código, não medida ("C240p").
     const numerosDesc = new Set();
     for (const m of corpo.matchAll(/(?<![\p{L}\d.,])\d+(?:[.,]\d+)*/gu)) {
       const n = normalizarNumero(m[0]);
       if (n != null) numerosDesc.add(n);
     }
-    const tocados = ficha.conflitos.filter((c) =>
-      (c.chaves || []).some((k) => chavesDesc.has(k)) || (c.numeros || []).some((n) => numerosDesc.has(n)));
+    // QUANTIDADE: só conta número citado COMO quantidade ("kit com 5", "3
+    // unidades"); "5 cm" não fala do tamanho do kit.
+    const tocados = ficha.conflitos.filter((c) => (c.tipo === "QUANTIDADE"
+      ? (c.numeros || []).some((n) => qtdCitadas.has(Number(n)))
+      : (c.chaves || []).some((k) => chavesDesc.has(k)) || (c.numeros || []).some((n) => numerosDesc.has(n))));
     if (tocados.length) {
       add("CONFLITO_DE_FONTES", "A descrição fala de um dado em que a ficha e o título/descrição atual se contradizem.",
         Array.from(new Set(tocados.map((c) => c.label))));
@@ -1776,6 +2199,7 @@ const CODIGOS_HARD = new Set([
   "CORRECAO_EXCESSIVA",
   "CLAIM_NAO_SUSTENTADO", "FATO_INVENTADO", // F7C — fato/claim objetivo na copy
   "CLAIM_COMERCIAL_SEM_FONTE", // F7C.1 — preço/custo ou facilidade técnica sem fonte
+  "CLAIM_OBJETIVO_SEM_FONTE", "KIT_OMITIDO", // F8.1 — desempenho sem fonte; kit descrito como unidade
 ]);
 // SOFT por remoção da frase/item onde o termo aparece.
 // F7C — benefício deduzido virou SOFT: é linguagem, não fato novo (sai do bloco de FATO).
@@ -2005,6 +2429,12 @@ function montarPrompt(ficha) {
     }
   }
 
+  // F8.1 — kit confiável: a quantidade tem de aparecer
+  if (ficha.kit) {
+    linhas.push("", "QUANTIDADE: o produto é um kit com " + ficha.kit.n + " unidades. Diga isso na DESCRIÇÃO PRINCIPAL " +
+      "(\"Kit com " + ficha.kit.n + " …\"); nunca descreva como se fosse uma peça só.");
+  }
+
   linhas.push("", "CONTEXTO (mais fraco que os fatos; se contradizer um fato, siga o fato):");
   if (ficha.categoria) {
     linhas.push("- [categoria] Categoria do Mercado Livre (só para entender o produto; não vira item nem frase): " + ficha.categoria);
@@ -2052,6 +2482,9 @@ function montarPrompt(ficha) {
     "- PROIBIDO em qualquer bloco, se não houver fato que comprove: impermeável, resistente, durável, hipoalergênico, " +
       "proteção UV, antiderrapante, original/originalidade, compatível, efeito garantido (\"hidrata\", \"restaura\"), " +
       "\"alta qualidade\", \"o melhor\", \"premium\", \"exclusivo\".",
+    "- COPY fala de experiência (praticidade, conforto, estilo, organização, versatilidade), nunca de DESEMPENHO sem " +
+      "fato: consumo, aquecimento, rapidez, eficiência, potência, resistência ao uso, estabilidade, firmeza, " +
+      "durabilidade, uso prolongado, proteção, isolamento.",
     "- EXPERIÊNCIA DE COMPRA: NUNCA afirme envio rápido, frete, prazo, garantia, devolução, troca, originalidade, " +
       "qualidade garantida, atendimento, estoque, oferta, promoção ou desconto. Nada de \"nós\"/\"nossa loja\".",
     "- Afirmação técnica que só a descrição atual faz NÃO é fato: não escreva \"antioxidante\", \"reforçado\", " +

@@ -39,7 +39,7 @@ const CARTEIRA = { 1: [1, 2], 2: [1, 2], 99: [] };
 
 const DESC_ATUAL = "Tênis confortável para o dia a dia escolar. Solado de borracha antiderrapante com 2 cm de altura.";
 const BOA = "Tênis infantil Molekinho para meninos, pensado para o dia a dia escolar.\n\n" +
-  "O fechamento por cadarço permite ajustar o calçado ao pé. O solado de borracha antiderrapante tem 2 cm de altura.";
+  "O fechamento é por cadarço e o material principal é sintético. O solado de borracha tem 2 cm de altura.";
 
 // ── stubs ───────────────────────────────────────────────────────────────────
 let mlChamadas = [];
@@ -236,7 +236,7 @@ async function run() {
       assert.strictEqual(iaChamadas.length, 1);
       const prompt = iaChamadas[0].prompt;
       assert.ok(prompt.includes(DESC_ATUAL), "descrição atual lida do ML chega ao prompt");
-      assert.ok(prompt.includes("[brand] Marca: Molekinho") && prompt.includes("[categoria] Categoria: Tênis"));
+      assert.ok(prompt.includes("[brand] Marca: Molekinho") && prompt.includes("[categoria] Categoria do Mercado Livre (só para entender o produto; não vira item nem frase): Tênis"));
       assert.ok(prompt.includes("nunca escreva: impermeável") && !prompt.includes("MK-1"));
       assert.deepStrictEqual(escritasBanco, [], "a rota não persiste nada");
       guardar();
@@ -329,9 +329,11 @@ async function run() {
       assert.strictEqual(r.status, 200);
       assert.deepStrictEqual([r.corpo.ok, r.corpo.codigo], [false, "DESCRICAO_INVALIDA"]);
       const cods = r.corpo.problemas.map((p) => p.codigo);
-      for (const c of ["NOME_NAO_COMPROVADO", "ATRIBUTO_PROIBIDO", "NUMERO_NAO_COMPROVADO", "LINGUAGEM_PROIBIDA", "FATO_DESCONHECIDO"]) {
+      // F7B: problemas = só os HARD que bloquearam (FATO_DESCONHECIDO é SOFT)
+      for (const c of ["NOME_NAO_COMPROVADO", "ATRIBUTO_PROIBIDO", "NUMERO_NAO_COMPROVADO", "LINGUAGEM_PROIBIDA"]) {
         assert.ok(cods.includes(c), c + " ∉ " + cods);
       }
+      assert.ok(!cods.includes("FATO_DESCONHECIDO"));
       assert.ok(!("descricao" in r.corpo), "texto inválido não chega ao front");
       guardar();
       ok("geração inválida → 200 { ok:false, DESCRICAO_INVALIDA, problemas } sem devolver o texto");

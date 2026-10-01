@@ -36,6 +36,7 @@ const { mlFetch } = require("../utils/mlClient");
 const { assertClienteNaCarteira } = require("../services/squads/authorizationService");
 const tituloEngine = require("../services/meliAnuncios/seo/tituloEngine");
 const termosComplementaresEngine = require("../services/meliAnuncios/seo/termosComplementaresEngine");
+const descricaoEngine = require("../services/meliAnuncios/seo/descricaoEngine");
 const aiProvider = require("../services/ai/aiProvider");
 
 function extrairClienteContaId(valor) {
@@ -1518,9 +1519,10 @@ async function carregarDescricao(clienteId, itemId, mlUserId) {
 //
 // A MESMA resposta traz `settings.max_title_length` (limite de título da
 // categoria, doc oficial de Categorias e Atributos), usado pelo Title Engine
-// (SEO). Guardar os dois juntos evita uma segunda chamada por clique.
+// (SEO). Guardar os dois juntos evita uma segunda chamada por clique. O mesmo
+// vale para `settings.max_description_length` (Description Engine · F5).
 // ----------------------------------------------------------------------------
-const _cacheCategoria = new Map(); // category_id -> { nome, maxTitleLength, expiraEm }
+const _cacheCategoria = new Map(); // category_id -> { nome, maxTitleLength, maxDescriptionLength, expiraEm }
 const CATEGORIA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 async function carregarCategoria(clienteId, categoryId, mlUserId) {
@@ -1537,9 +1539,11 @@ async function carregarCategoria(clienteId, categoryId, mlUserId) {
     );
     if (resp && resp.ok && resp.data && resp.data.name) {
       const max = resp.data.settings && resp.data.settings.max_title_length;
+      const maxDesc = resp.data.settings && resp.data.settings.max_description_length;
       const entrada = {
         nome: String(resp.data.name),
         maxTitleLength: Number.isInteger(max) && max > 0 ? max : null,
+        maxDescriptionLength: Number.isInteger(maxDesc) && maxDesc > 0 ? maxDesc : null,
         expiraEm: Date.now() + CATEGORIA_CACHE_TTL_MS,
       };
       _cacheCategoria.set(categoryId, entrada);
@@ -2887,6 +2891,84 @@ async function gerarTermosComplementaresSeo(req, res) {
 }
 
 // ----------------------------------------------------------------------------
+// POST /anuncios-meli/:itemId/seo/descricao
+// body: { clienteSlug, clienteContaId? }
+//
+// Description Engine (SEO · F5): monta a ficha factual do anúncio, pede UMA
+// descrição à IA e valida deterministicamente (sem score). NÃO escreve no
+// Mercado Livre nem persiste nada — "Usar" no front só muda o rascunho; a
+// escrita continua sendo o PATCH /conteudo do "Salvar alterações".
+//
+// O contrato não recebe o rascunho: os fatos e a descrição atual vêm do
+// backend (snapshot do anúncio + leitura ao vivo do ML, a mesma do detalhe —
+// carregarDescricao, com "erro" distinto de "sem_descricao").
+//
+// Ordem: cliente → anúncio → conta (resolverContaDoAnuncio, F1) → descrição
+// atual + categoria (cache do /seo/titulos; falha = limite padrão 50.000,
+// sempre sob o teto operacional do engine) → IA → validação.
+//
+// Respostas:
+//   200 { ok:true, descricao, chars, limite, fatosUsados:[{ id, label, value }] }
+//   200 { ok:false, codigo, motivo, problemas? } — FATOS_INSUFICIENTES,
+//       DESCRICAO_ATUAL_INDISPONIVEL, erro da IA (código do provider, ex.
+//       AI_RESPONSE_TRUNCATED), DESCRICAO_INVALIDA (mesmo padrão do /seo/titulos)
+//   400 sem clienteSlug · 404 cliente/anúncio
+//   403/409 de conta (mesmos códigos do /seo/titulos)
+// ----------------------------------------------------------------------------
+async function gerarDescricaoSeo(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    if (!body.clienteSlug) {
+      return res.status(400).json({ ok: false, codigo: "SEM_CLIENTE", motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(body.clienteSlug);
+    if (!cliente) return res.status(404).json({ ok: false, codigo: "NO_CLIENT", motivo: "Cliente não encontrado." });
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false, codigo: "NO_ITEM",
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let conta;
+    try {
+      conta = await anunciosService.resolverContaDoAnuncio({
+        clienteId: cliente.id,
+        anuncio,
+        clienteContaId: extrairClienteContaId(body.clienteContaId),
+        requireUsableGrant: false,
+      });
+    } catch (err) {
+      if (!err.statusCode) throw err;
+      const corpo = { ok: false, codigo: err.code || "ERRO_CONTA", motivo: err.message };
+      if (Array.isArray(err.contas)) corpo.contas = err.contas;
+      return res.status(err.statusCode).json(corpo);
+    }
+
+    const [desc, categoria] = await Promise.all([
+      carregarDescricao(cliente.id, anuncio.item_id, conta.mlUserId),
+      carregarCategoria(cliente.id, anuncio.category_id, conta.mlUserId),
+    ]);
+
+    const ficha = descricaoEngine.montarFicha(anuncio, {
+      categoriaNome: categoria ? categoria.nome : null,
+      limiteCategoria: categoria ? categoria.maxDescriptionLength : null,
+      descricaoAtual: desc.descricao,
+      descricaoEstado: desc.estado,
+    });
+    const resultado = await descricaoEngine.gerarDescricao({ ficha, aiProvider });
+    return res.json(resultado);
+  } catch (err) {
+    console.error("[anuncios-meli] gerarDescricaoSeo:", err.message);
+    return res.status(500).json({ ok: false, codigo: "ERRO_INTERNO", motivo: "Erro interno ao gerar a descrição." });
+  }
+}
+
+// ----------------------------------------------------------------------------
 // GET /anuncios-meli/:itemId/otimizacoes?clienteSlug=&clienteContaId=&tipo=
 // Histórico de sugestões já geradas para um anúncio.
 // ----------------------------------------------------------------------------
@@ -3274,6 +3356,7 @@ module.exports = {
   otimizar,
   gerarTitulosSeo,
   gerarTermosComplementaresSeo,
+  gerarDescricaoSeo,
   listarOtimizacoes,
   aprovarOtimizacao,
   criacaoStatus,

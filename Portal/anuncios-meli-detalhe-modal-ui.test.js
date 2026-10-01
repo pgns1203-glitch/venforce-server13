@@ -139,6 +139,9 @@ let titulosHandler = null;           // (itemId, body) => { status, corpo } do P
 const seoModeloOuTermosChamadas = []; // { caminho, body }
 let titulosAtrasoMs = 0;             // segura a resposta para o teste ver "Gerando…"
 const titulosChamadas = [];          // { itemId, body } de todo POST /seo/titulos
+let descricaoSeoHandler = null;      // (itemId, body) => { status, corpo } do POST /seo/descricao
+let descricaoSeoAtrasoMs = 0;        // segura a resposta para o teste ver "Gerando…"
+const descricaoSeoChamadas = [];     // { itemId, body } de todo POST /seo/descricao
 let conteudoResultado = null;        // resposta forçada do PATCH /conteudo
 let precoResultado = null;           // resposta forçada do PATCH /preco
 const precoChamadas = [];            // { itemId, body } de todo PATCH /preco
@@ -799,6 +802,21 @@ function wireInterception(cdp) {
       const r = titulosHandler
         ? titulosHandler(itemId, body)
         : { status: 200, corpo: { ok: true, limite: 60, sugestoes: SUG_TITULOS, recebidos: 8, descartadas: 2, motivosDescarte: { NAO_COMPROVADO: 2 } } };
+      await corpo(r.corpo, r.status);
+      return;
+    }
+
+    // POST /anuncios-meli/:itemId/seo/descricao — Description Engine. Contrato:
+    // server/tests/descricaoSeoHttp.test.js e server/tests/descricaoEngine.test.js.
+    if (/^\/anuncios-meli\/[^/?]+\/seo\/descricao(\?|$)/.test(caminho)) {
+      const itemId = caminho.match(/^\/anuncios-meli\/([^/?]+)\/seo/)[1];
+      descricaoSeoChamadas.push({ itemId, body });
+      if (iaProibida) { await corpo({ ok: false, motivo: "Acesso restrito." }, 403); return; }
+      if (descricaoSeoAtrasoMs) await sleep(descricaoSeoAtrasoMs);
+      const r = descricaoSeoHandler
+        ? descricaoSeoHandler(itemId, body)
+        : { status: 200, corpo: { ok: true, descricao: SUG_DESC_A, chars: SUG_DESC_A.length, limite: 2500,
+          fatosUsados: [{ id: "brand", label: "Marca", value: "Prime" }, { id: "attr:BATTERY", label: "Duração da bateria", value: "30 h" }] } };
       await corpo(r.corpo, r.status);
       return;
     }
@@ -2139,11 +2157,15 @@ async function run() {
         "o 'Gerar modelo' saiu com a F4R");
     });
 
-    await check("17 — gerar descrição continua funcionando", async () => {
+    await check("17 — gerar descrição continua funcionando (agora pelo Description Engine, não pelo /otimizar)", async () => {
       const desde = pedidos.length;
-      await clicar(cdp, '.am-det-modal [data-acao="gerar"][data-tipo="descricao"]');
-      await esperarPedido(/\/anuncios-meli\/MLB-A1\/otimizar/, desde, "o Gerar descrição não chamou o backend");
-      assert.strictEqual(corpos.filter((c) => /\/otimizar/.test(c.url)).pop().body.tipo, "descricao");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar\"][data-tipo=\"descricao\"]').length"), 0,
+        "o 'Gerar descrição' legado (/otimizar tipo descricao) saiu da tela na F5");
+      await clicar(cdp, '.am-det-modal [data-acao="gerar-descricao"]');
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/seo\/descricao/, desde, "o Gerar descrição não chamou o backend");
+      await waitFor(cdp, `document.getElementById('am-det-sug-descricao').innerText.indexOf(${JSON.stringify(SUG_DESC_A)}) >= 0`,
+        "a descrição gerada não apareceu");
+      assert.deepStrictEqual(pedidos.slice(desde).filter((u) => /\/otimizar/.test(u)), [], "a descrição não passa mais pelo /otimizar");
     });
 
     await check("18 — sugerir ficha técnica continua funcionando", async () => {
@@ -2153,20 +2175,21 @@ async function run() {
       assert.strictEqual(corpos.filter((c) => /\/otimizar/.test(c.url)).pop().body.tipo, "ficha_tecnica");
     });
 
-    await check("19 — as aprovações internas de descrição/ficha continuam funcionando (e não publicam no ML)", async () => {
+    await check("19 — a aprovação interna da ficha continua funcionando (e não publica no ML); descrição não tem mais 'Aprovar'", async () => {
       const antesConteudo = pedidos.filter((u) => /\/conteudo/.test(u)).length;
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"aprovar-titulo\"]').length"), 0,
         "o título não tem mais 'Aprovar': as sugestões do Title Engine não são registro do otimizador legado");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"aprovar-modelo\"]').length"), 0,
         "o Modelo não tem mais 'Aprovar': a sugestão do Model Engine não é registro do otimizador legado");
-      for (const acao of ["aprovar-descricao", "aprovar-ficha"]) {
-        const desde = pedidos.length;
-        await clicar(cdp, `.am-det-modal [data-acao="${acao}"]`, `botão ${acao} não existe`);
-        await esperarPedido(/\/anuncios-meli\/otimizacoes\/\d+\/aprovar/, desde, `${acao} não chamou o endpoint de aprovação`);
-      }
-      const corpoDescricao = corpos.filter((c) => /\/aprovar/.test(c.url))[0];
-      assert.strictEqual(corpoDescricao.body.descricaoAprovada, SUG_DESC_A, "aprovar descrição precisa enviar a descrição sugerida");
-      assert.strictEqual(corpoDescricao.body.clienteSlug, "n97", "aprovar leva o cliente (F1)");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"aprovar-descricao\"]').length"), 0,
+        "a descrição não tem mais 'Aprovar': a sugestão do Description Engine não é registro do otimizador legado");
+      const desde = pedidos.length;
+      await clicar(cdp, '.am-det-modal [data-acao="aprovar-ficha"]', "botão aprovar-ficha não existe");
+      await esperarPedido(/\/anuncios-meli\/otimizacoes\/\d+\/aprovar/, desde, "aprovar-ficha não chamou o endpoint de aprovação");
+      const corpoFicha = corpos.filter((c) => /\/aprovar/.test(c.url)).pop();
+      assert.ok(Array.isArray(corpoFicha.body.fichaAprovadaJson), "aprovar ficha envia a ficha sugerida");
+      assert.strictEqual(corpoFicha.body.descricaoAprovada, undefined);
+      assert.strictEqual(corpoFicha.body.clienteSlug, "n97", "aprovar leva o cliente (F1)");
       assert.strictEqual(pedidos.filter((u) => /\/conteudo/.test(u)).length, antesConteudo,
         "APROVAR é decisão interna — não pode virar escrita no Mercado Livre");
     });
@@ -2207,6 +2230,8 @@ async function run() {
       assert.ok(!/não tem descrição/i.test(t), "erro de carregamento não pode afirmar que o anúncio não tem descrição");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-descricao').length"), 0,
         "com erro de leitura o campo precisa ficar bloqueado — editar sobrescreveria o que não conhecemos");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar-descricao\"]').length"), 0,
+        "com erro de leitura também não há geração: a sugestão substituiria um texto que não conhecemos");
       descricaoEstado = "ok";
     });
 
@@ -2229,6 +2254,8 @@ async function run() {
         "sem permissão de IA não faz sentido oferecer os botões de gerar");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar-titulos\"]').length"), 0,
         "sem permissão de IA não há 'Gerar títulos'");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao=\"gerar-descricao\"]').length"), 0,
+        "sem permissão de IA não há 'Gerar descrição'");
       assert.ok(!/Score SEO/.test(t), "a nota do otimizador legado não aparece mais");
       // E o que é editável continua editável.
       await digitar(cdp, "#am-det-titulo", TITULO_A + " X");
@@ -2272,8 +2299,10 @@ async function run() {
       await cdp.evaluate("window.VF.context.setConta(42)");
       await waitFor(cdp, "document.querySelector('.am-row')", "o catálogo da conta 42 não voltou");
       await abrirPrimeiroAnuncio(cdp);
+      // Descrição gerada em A (Description Engine) não pode sobreviver.
+      await clicar(cdp, '.am-det-modal [data-acao="gerar-descricao"]');
       await waitFor(cdp, `document.querySelector('.am-det-modal').innerText.indexOf(${JSON.stringify(SUG_DESC_A)}) >= 0`,
-        "as sugestões do anúncio A não carregaram");
+        "a descrição gerada em A não apareceu");
       // Títulos gerados em A (Title Engine) também não podem sobreviver.
       await clicar(cdp, '.am-det-modal [data-acao="gerar-titulos"]');
       await waitFor(cdp, "document.querySelectorAll('#am-det-sug-titulo [data-acao=\"usar-titulo\"]').length > 0", "os títulos de A não apareceram");
@@ -3481,10 +3510,14 @@ async function run() {
       iaProibida = false;
       titulosHandler = null;
       titulosAtrasoMs = 0;
+      descricaoSeoHandler = null;
+      descricaoSeoAtrasoMs = 0;
       await abrirComModo("nenhum");
       await abrirPrimeiroAnuncio(cdp);
-      await waitFor(cdp, "document.querySelector('#am-det-sug-descricao') && document.querySelector('#am-det-sug-descricao').innerText.indexOf('ANC, 30h') >= 0",
-        "o histórico legado (Descrição) não carregou");
+      // O histórico legado ainda alimenta a Ficha; esperar por ela garante que
+      // o histórico (que traz também descricao_sugerida/modelo_sugerido) chegou.
+      await waitFor(cdp, "document.querySelector('#am-det-sug-ficha') && document.querySelector('#am-det-sug-ficha').innerText.indexOf('38 g') >= 0",
+        "o histórico legado (Ficha) não carregou");
     }
     const colunaTitulo = () => cdp.evaluate("document.getElementById('am-det-sug-titulo').innerText");
 
@@ -3649,6 +3682,167 @@ async function run() {
       const digitadosNoTeste = ["X200 Mini", "X200 Pro", "X999", "Z10", "X200 Lite", "X200"];
       assert.deepStrictEqual(modelosEnviados.filter((m) => !digitadosNoTeste.includes(m)), [],
         "todo modelo enviado foi digitado à mão por um teste: " + JSON.stringify(modelosEnviados));
+    });
+
+    /* ── 46: Description Engine (SEO · F5) ───────────────────────────── */
+    // UMA descrição por clique, validada no backend, sem score. "Usar" só muda
+    // o rascunho; "Salvar alterações" (PATCH /conteudo) é a única escrita.
+
+    const SUG_DESC_A2 = "Fone Prime X200 sem fio com ANC e até 30h de bateria, para uso no dia a dia.";
+    const colunaDescricao = () => cdp.evaluate("document.getElementById('am-det-sug-descricao').innerText");
+    const botaoGerarDescricao = () => cdp.evaluate(`(function(){ var b = document.querySelector('#am-det-sug-descricao [data-acao="gerar-descricao"]');
+      return b ? { texto: b.textContent.trim(), disabled: b.disabled } : null; })()`);
+    const nUsarDescricao = () => cdp.evaluate("document.querySelectorAll('#am-det-sug-descricao [data-acao=\"usar-descricao\"]').length");
+
+    await check("46a — estado inicial: 'Gerar descrição', nenhuma sugestão — nem a do histórico legado, nem 'Aprovar'", async () => {
+      await abrirLimpo();
+      const col = await colunaDescricao();
+      assert.ok(/Nenhuma sugestão gerada ainda/.test(col), col);
+      assert.ok(!col.includes(SUG_DESC_A), "a descricao_sugerida do histórico legado não alimenta mais a coluna");
+      assert.deepStrictEqual(await botaoGerarDescricao(), { texto: "Gerar descrição", disabled: false });
+      for (const sel of ['[data-acao="gerar"][data-tipo="descricao"]', '[data-acao="aprovar-descricao"]', '[data-acao="usar-descricao"]',
+        '[data-campo="descricao"][data-acao="usar-sugestao"]']) {
+        assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('.am-det-modal ${sel.replace(/'/g, "\\'")}').length`), 0, sel);
+      }
+      assert.ok(!/score/i.test(col), "descrição não tem score");
+    });
+
+    await check("46b — Gerar descrição: POST /seo/descricao com cliente + conta da operação, sem /otimizar", async () => {
+      const desde = descricaoSeoChamadas.length;
+      const desdePedidos = pedidos.length;
+      descricaoSeoAtrasoMs = 600;
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/seo\/descricao$/, desdePedidos, "o POST /seo/descricao não saiu");
+      const envio = descricaoSeoChamadas[desde];
+      assert.ok(envio, "o interceptor não registrou o pedido");
+      assert.strictEqual(envio.itemId, "MLB-A1");
+      assert.deepStrictEqual(Object.keys(envio.body).sort(), ["clienteContaId", "clienteSlug"], "contrato mínimo: só cliente e conta");
+      assert.strictEqual(envio.body.clienteSlug, "n97");
+      assert.strictEqual(String(envio.body.clienteContaId), "42");
+      assert.deepStrictEqual(pedidos.slice(desdePedidos).filter((u) => /\/otimizar|\/aprovar/.test(u)), []);
+    });
+
+    await check("46c — carregando: botão desabilitado em 'Gerando…' e aviso na coluna", async () => {
+      assert.deepStrictEqual(await botaoGerarDescricao(), { texto: "Gerando…", disabled: true });
+      assert.ok(/Gerando descrição/.test(await colunaDescricao()));
+      const antes = descricaoSeoChamadas.length;
+      await cdp.evaluate(`(function(){ var b = document.querySelector('#am-det-sug-descricao [data-acao="gerar-descricao"]'); if (b) b.click(); })()`);
+      await sleep(100);
+      assert.strictEqual(descricaoSeoChamadas.length, antes, "clique durante o carregamento não gera outra chamada");
+    });
+
+    await check("46d — sucesso: mostra o texto, caracteres, fatos usados, 'Usar' e 'Gerar novamente'", async () => {
+      await waitFor(cdp, "document.querySelectorAll('#am-det-sug-descricao [data-acao=\"usar-descricao\"]').length === 1", "a sugestão não apareceu");
+      descricaoSeoAtrasoMs = 0;
+      const col = await colunaDescricao();
+      assert.ok(col.includes(SUG_DESC_A), col);
+      assert.ok(col.includes(SUG_DESC_A.length + "/2500 caracteres"), col);
+      assert.ok(/com base em: Marca, Duração da bateria/.test(col), col);
+      assert.deepStrictEqual(await botaoGerarDescricao(), { texto: "Gerar novamente", disabled: false });
+      assert.ok(!/score/i.test(col));
+    });
+
+    await check("46e — 'Usar' muda só o rascunho da descrição e não chama PATCH /conteudo", async () => {
+      const antes = pedidos.length;
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="usar-descricao"]');
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-descricao').value"), SUG_DESC_A);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-titulo').value"), TITULO_A, "o título não muda");
+      assert.deepStrictEqual(await valoresModelo(), ["X200", "X200"], "o modelo não muda");
+      await waitFor(cdp, "document.getElementById('am-det-savebar')", "usar a descrição precisa virar alteração pendente");
+      await waitFor(cdp, "document.getElementById('am-det-sug-descricao').innerText.indexOf('Usada nesta edição') >= 0", "o chip 'Usada' não apareceu");
+      assert.ok(/preenchida a partir da sugestão da IA/.test(await cdp.evaluate("document.getElementById('am-det-desc-origem').innerText")));
+      await sleep(250);
+      assert.deepStrictEqual(pedidos.slice(antes).filter((u) => /\/conteudo|\/preco|\/fotos|\/imagens|\/aprovar|\/otimizar/.test(u)), [],
+        "'Usar' não pode escrever nada");
+    });
+
+    await check("46f — 'Salvar alterações' continua o único caminho de escrita (PATCH /conteudo só com a descrição)", async () => {
+      const antes = pedidos.length;
+      conteudoResultado = { status: 200, corpo: { ok: false, motivo: "Resposta de teste (46f)." } };
+      await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/conteudo/, antes, "Salvar alterações não saiu");
+      const envio = corpos.filter((c) => /\/conteudo/.test(c.url)).pop();
+      assert.strictEqual(envio.metodo, "PATCH");
+      assert.strictEqual(envio.body.descricao, SUG_DESC_A, "o salvar leva a descrição usada");
+      assert.strictEqual(envio.body.titulo, undefined);
+      assert.strictEqual(envio.body.modelo, undefined);
+      conteudoResultado = null;
+      await clicar(cdp, '.am-det-modal [data-acao="descartar"]');
+      await waitFor(cdp, "!document.getElementById('am-det-savebar')", "descartar não limpou a pendência");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-descricao').value"), DESC_A);
+      assert.strictEqual(await nUsarDescricao(), 1, "descartar o rascunho não apaga a sugestão");
+    });
+
+    await check("46g — 'Gerar novamente' pede outra descrição e troca a sugestão", async () => {
+      const desde = descricaoSeoChamadas.length;
+      descricaoSeoHandler = () => ({ status: 200, corpo: { ok: true, descricao: SUG_DESC_A2, chars: SUG_DESC_A2.length, limite: 2500, fatosUsados: [] } });
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
+      await waitFor(cdp, `document.getElementById('am-det-sug-descricao').innerText.indexOf(${JSON.stringify(SUG_DESC_A2)}) >= 0`, "a nova sugestão não apareceu");
+      assert.strictEqual(descricaoSeoChamadas.length, desde + 1);
+      assert.ok(!(await colunaDescricao()).includes(SUG_DESC_A), "uma sugestão por vez");
+      descricaoSeoHandler = null;
+    });
+
+    await check("46h — erro: mostra o motivo, sem 'Usar', e 'Tentar novamente' volta a gerar", async () => {
+      descricaoSeoHandler = () => ({ status: 200, corpo: { ok: false, codigo: "DESCRICAO_INVALIDA",
+        motivo: "A descrição gerada não passou na validação: Número ou medida que não está nos dados do anúncio. Tente gerar novamente." } });
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
+      await waitFor(cdp, "document.getElementById('am-det-sug-descricao').innerText.indexOf('não passou na validação') >= 0", "o motivo não apareceu");
+      assert.strictEqual(await nUsarDescricao(), 0);
+      assert.deepStrictEqual(await botaoGerarDescricao(), { texto: "Tentar novamente", disabled: false });
+      descricaoSeoHandler = () => ({ status: 200, corpo: { ok: false, codigo: "AI_RESPONSE_TRUNCATED", motivo: "A resposta da IA veio cortada. Tente gerar novamente." } });
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
+      await waitFor(cdp, "document.getElementById('am-det-sug-descricao').innerText.indexOf('veio cortada') >= 0", "o erro da IA não apareceu");
+      descricaoSeoHandler = null;
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
+      await waitFor(cdp, "document.querySelectorAll('#am-det-sug-descricao [data-acao=\"usar-descricao\"]').length === 1", "'Tentar novamente' não gerou");
+    });
+
+    await check("46i — resposta atrasada de um modal fechado é descartada (DET.token)", async () => {
+      await fecharModal(cdp);
+      await abrirPrimeiroAnuncio(cdp);
+      descricaoSeoAtrasoMs = 700;
+      const desde = descricaoSeoChamadas.length;
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
+      await sleep(150); // a requisição sai; a resposta fica presa por 700ms
+      await fecharModal(cdp);
+      descricaoSeoAtrasoMs = 0;
+      await abrirPrimeiroAnuncio(cdp);
+      await sleep(1000);
+      assert.strictEqual(await nUsarDescricao(), 0, "a resposta do modal antigo vazou para o novo");
+      assert.ok(/Nenhuma sugestão gerada ainda/.test(await colunaDescricao()));
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-descricao').value"), DESC_A, "o rascunho do novo modal não muda");
+      assert.ok(descricaoSeoChamadas.length > desde, "a geração do modal antigo nem saiu");
+    });
+
+    await check("46j — Title Engine segue funcionando ao lado da descrição", async () => {
+      await clicar(cdp, '.am-det-modal [data-acao="gerar-titulos"]');
+      await waitFor(cdp, "document.querySelectorAll('#am-det-sug-titulo [data-acao=\"usar-titulo\"]').length === 4", "os títulos não apareceram");
+      assert.ok(/Nenhuma sugestão gerada ainda/.test(await colunaDescricao()), "gerar títulos não mexe na coluna da descrição");
+      await clicar(cdp, '.am-det-modal [data-acao="gerar-descricao"]');
+      await waitFor(cdp, "document.querySelectorAll('#am-det-sug-descricao [data-acao=\"usar-descricao\"]').length === 1", "a descrição não apareceu");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-sug-titulo [data-acao=\"usar-titulo\"]').length"), 4,
+        "gerar descrição não apaga os títulos");
+    });
+
+    await check("46k — Modelo continua sem geração", async () => {
+      for (const sel of ["#am-det-sug-modelo", '[data-acao="gerar-modelo"]', '[data-acao="usar-modelo"]', '[data-acao="gerar"][data-tipo="seo"]']) {
+        assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('.am-det-modal ${sel.replace(/'/g, "\\'")}').length`), 0, sel);
+      }
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-compare-modelo .am-det-compare__col').length"), 1);
+    });
+
+    await check("46l — Termos Complementares continuam sem UI (nenhuma chamada, nenhum elemento)", async () => {
+      assert.deepStrictEqual(seoModeloOuTermosChamadas, []);
+      assert.ok(!/termos complementares/i.test(await textoModal(cdp)));
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.am-det-modal [data-acao*=\"termo\"]').length"), 0);
+    });
+
+    await check("46m — em todo o percurso, nenhum PATCH /conteudo levou descrição que não veio de 'Usar'/digitação", async () => {
+      const descricoesEnviadas = corpos.filter((c) => /\/conteudo/.test(c.url) && c.body && c.body.descricao !== undefined)
+        .map((c) => c.body.descricao);
+      assert.ok(descricoesEnviadas.every((d) => d === SUG_DESC_A || d.startsWith(DESC_A)),
+        "descrições enviadas: " + JSON.stringify(descricoesEnviadas));
     });
 
     await check("— nenhuma exceção de JS não tratada durante todo o percurso", async () => {

@@ -3355,6 +3355,9 @@
       // Title Engine (SEO): sugestões de título geradas sob demanda. Vivem só
       // no modal (não são persistidas); "Usar" muda o rascunho, nunca o ML.
       titulosSeo: novoEstadoTitulos(),
+      // Description Engine (SEO): UMA descrição por clique, validada no
+      // backend. Mesma regra: só o rascunho muda, nunca o ML.
+      descricaoSeo: novoEstadoDescricao(),
       carregado: false,
       // Preço: escrita REAL no Mercado Livre (PATCH .../preco). `salvando`
       // trava contra clique duplo/Enter duplo e contra o campo virar
@@ -5163,7 +5166,7 @@
       '<div class="am-det-compare">' +
         '<div class="am-det-compare__col">' + esquerda + "</div>" +
         '<div class="am-det-compare__col" id="am-det-sug-descricao">' +
-          sugestaoDescricaoHtml(AM.otimizacoes.descricao) + "</div>" +
+          sugestaoDescricaoHtml() + "</div>" +
       "</div>" +
     "</div>";
   }
@@ -5177,29 +5180,115 @@
     return "descrição atual do anúncio no Mercado Livre";
   }
 
-  function sugestaoDescricaoHtml(otim) {
-    var usada = !!(otim && otim.descricao_sugerida &&
-      DET.rascunho.descricao === otim.descricao_sugerida);
+  // ----- Descrição: sugestão do Description Engine (SEO) --------------------
+  // POST /:itemId/seo/descricao devolve UMA descrição, já validada pelo
+  // backend contra os fatos do anúncio (sem score). "Usar" só muda o rascunho;
+  // quem escreve no Mercado Livre continua sendo "Salvar alterações". O
+  // histórico/aprovação do otimizador legado não alimenta mais esta coluna.
+  function novoEstadoDescricao() {
+    return { estado: null, texto: "", chars: 0, limite: 0, fatosUsados: [], erro: null, codigo: null, seq: 0 };
+  }
+
+  function descricaoSugeridaUsada() {
+    var S = DET && DET.descricaoSeo;
+    return !!(S && S.estado === "ok" && S.texto && DET.rascunho.descricao === S.texto);
+  }
+
+  function sugestaoDescricaoHtml() {
+    var usada = descricaoSugeridaUsada();
     chipUsadaAtual = usada;
     var cabeca = '<div class="am-det-compare__label">' + rotuloIa() +
       (usada ? '<span class="vf-status is-success">Usada nesta edição</span>' : "") + "</div>";
-
-    if (!otim || !otim.descricao_sugerida) {
-      return cabeca + vazioIaHtml("Gerar descrição", "descricao");
+    if (DET.iaBloqueada) {
+      return cabeca + '<p class="am-det-vazio">Otimização por IA disponível para administradores.</p>';
     }
-    var melh = ((tryParseJSON(otim.melhorias_json, {}) || {}).itens) || [];
-    var alertas = tryParseJSON(otim.alertas_json, []) || [];
+    // Sem saber o que o anúncio tem hoje, uma sugestão poderia apagar conteúdo
+    // real — e o campo da esquerda está bloqueado pelo mesmo motivo.
+    if (DET.descricaoEstado === "erro") {
+      return cabeca + '<p class="am-det-vazio">A sugestão fica disponível quando a descrição atual puder ser lida.</p>';
+    }
 
-    return cabeca +
-      listaIaHtml(melh, alertas) +
-      '<p class="am-det-readtext am-det-readtext--sug am-det-readtext--bloco">' +
-        escapeHtml(otim.descricao_sugerida) + "</p>" +
-      acoesIaHtml([
-        btnGhost("usar-sugestao", "Usar sugestão", ' data-campo="descricao" data-fonte="descricao-sugerida"'),
-        btnGhost("copiar", "Copiar", ' data-fonte="descricao-sugerida"'),
-        btnGhost("aprovar-descricao", "Aprovar", ""),
-        btnGhost("gerar", "Gerar novamente", ' data-tipo="descricao"'),
-      ]);
+    var S = DET.descricaoSeo;
+    var gerando = S.estado === "carregando";
+    var botaoGerar = function (rotulo) {
+      return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="gerar-descricao"' +
+        (gerando ? " disabled" : "") + ">" + escapeHtml(gerando ? "Gerando…" : rotulo) + "</button>";
+    };
+
+    if (S.estado === "ok" && S.texto) {
+      var base = (S.fatosUsados || []).map(function (f) { return f && f.label; }).filter(Boolean);
+      return cabeca +
+        '<p class="am-det-readtext am-det-readtext--sug am-det-readtext--bloco">' + escapeHtml(S.texto) + "</p>" +
+        '<p class="am-det-compare__hint">' + S.chars + (S.limite ? "/" + S.limite : "") + " caracteres" +
+          (base.length ? " · com base em: " + escapeHtml(base.join(", ")) : "") + "</p>" +
+        acoesIaHtml([
+          btnGhost("usar-descricao", "Usar", ""),
+          btnGhost("copiar", "Copiar", ' data-fonte="descricao-sugerida"'),
+          botaoGerar("Gerar novamente"),
+        ]);
+    }
+
+    if (S.estado === "erro") {
+      return cabeca + '<p class="am-det-vazio">' + escapeHtml(S.erro || "Não foi possível gerar a descrição.") + "</p>" +
+        acoesIaHtml([botaoGerar("Tentar novamente")]);
+    }
+
+    return cabeca + '<p class="am-det-vazio">' + (gerando ? "Gerando descrição…" : "Nenhuma sugestão gerada ainda.") + "</p>" +
+      acoesIaHtml([botaoGerar("Gerar descrição")]);
+  }
+
+  function repintarDescricao() {
+    var col = el("am-det-sug-descricao");
+    if (col) col.innerHTML = sugestaoDescricaoHtml();
+  }
+
+  function gerarDescricao() {
+    if (!DET || !DET.anuncio || DET.descricaoSeo.estado === "carregando") return;
+    if (DET.descricaoEstado === "erro") return;
+    var meuToken = DET.token;
+    var S = DET.descricaoSeo;
+    var minhaSeq = ++S.seq;
+    S.estado = "carregando";
+    S.erro = null;
+    S.codigo = null;
+    repintarDescricao();
+
+    var corpo = { clienteSlug: AM.clienteAtual.slug };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    api("/anuncios-meli/" + encodeURIComponent(DET.anuncio.item_id) + "/seo/descricao", {
+      method: "POST",
+      body: corpo,
+    }).then(function (r) {
+      // Modal fechado, outro anúncio/conta, ou um "Gerar" mais novo no meio.
+      if (!DET || DET.token !== meuToken || DET.descricaoSeo !== S || S.seq !== minhaSeq) return;
+      if (r.status === 403 && !(r.data && r.data.codigo)) {
+        DET.iaBloqueada = true;
+        renderDetalhe();
+        return;
+      }
+      var d = r.data || {};
+      if (!d.ok || typeof d.descricao !== "string" || !d.descricao) {
+        S.estado = "erro";
+        S.erro = d.motivo || "Não foi possível gerar a descrição.";
+        S.codigo = d.codigo || null;
+        S.texto = "";
+        repintarDescricao();
+        toast(S.erro, "is-danger");
+        return;
+      }
+      S.estado = "ok";
+      S.texto = d.descricao;
+      S.chars = d.chars || d.descricao.length;
+      S.limite = d.limite || 0;
+      S.fatosUsados = Array.isArray(d.fatosUsados) ? d.fatosUsados : [];
+      repintarDescricao();
+    });
+  }
+
+  function usarDescricao() {
+    var S = DET && DET.descricaoSeo;
+    if (!S || S.estado !== "ok" || !S.texto || DET.descricaoEstado === "erro") return;
+    usarSugestao("descricao", S.texto);
   }
 
   // ----- Ficha técnica: atual × sugerida ------------------------------------
@@ -6526,12 +6615,12 @@
   // inteira; com ela, a coluna só é redesenhada quando o chip realmente vira.
   var chipUsadaAtual = null;
   function atualizarChipUsada() {
-    var otim = AM.otimizacoes.descricao;
-    var usada = !!(otim && otim.descricao_sugerida &&
-      DET.rascunho.descricao === otim.descricao_sugerida);
-    if (usada === chipUsadaAtual) return;
-    var alvo = el("am-det-sug-descricao");
-    if (alvo) alvo.innerHTML = sugestaoDescricaoHtml(otim);
+    // A origem ("preenchida a partir da sugestão da IA às …") muda nos mesmos
+    // momentos (usar, digitar, reverter) e só era desenhada no render inteiro.
+    var origem = el("am-det-desc-origem");
+    if (origem) origem.textContent = origemDescricao();
+    if (descricaoSugeridaUsada() === chipUsadaAtual) return;
+    repintarDescricao();
   }
 
   function descartarTudo() {
@@ -6712,6 +6801,8 @@
     if (acao === "revisar") { alternarRevisao(alvo); return; }
     if (acao === "gerar-titulos") { gerarTitulos(); return; }
     if (acao === "usar-titulo") { usarTitulo(Number(alvo.getAttribute("data-idx"))); return; }
+    if (acao === "gerar-descricao") { gerarDescricao(); return; }
+    if (acao === "usar-descricao") { usarDescricao(); return; }
     if (acao === "gerar") { gerar(alvo.getAttribute("data-tipo")); return; }
     if (acao === "copiar") { copiarTexto(textoDaFonte(alvo)); return; }
     if (acao === "copiar-ficha") { copiarFichaSugerida(); return; }
@@ -6719,7 +6810,6 @@
       usarSugestao(alvo.getAttribute("data-campo"), textoDaFonte(alvo));
       return;
     }
-    if (acao === "aprovar-descricao") { aprovarDescricao(); return; }
     if (acao === "aprovar-ficha") { aprovarFicha(); return; }
   }
 
@@ -6727,8 +6817,7 @@
   // da descrição não precisam sobreviver a uma viagem pelo HTML.
   function textoDaFonte(botao) {
     var fonte = botao.getAttribute("data-fonte");
-    var desc = AM.otimizacoes.descricao;
-    if (fonte === "descricao-sugerida") return desc ? desc.descricao_sugerida : "";
+    if (fonte === "descricao-sugerida") return DET.descricaoSeo.estado === "ok" ? DET.descricaoSeo.texto : "";
     if (fonte === "descricao-atual") return DET.rascunho.descricao;
     if (fonte === "titulo-atual") return DET.rascunho.titulo;
     if (fonte === "modelo-atual") return DET.rascunho.modelo;
@@ -6795,7 +6884,7 @@
     var attrs = tryParseJSON(DET.anuncio.attributes_json, []) || [];
     var alvos = [
       ["am-det-sug-titulo", function () { return sugestaoTitulosHtml(); }],
-      ["am-det-sug-descricao", function () { return sugestaoDescricaoHtml(AM.otimizacoes.descricao); }],
+      ["am-det-sug-descricao", function () { return sugestaoDescricaoHtml(); }],
       ["am-det-sug-ficha", function () { return sugestaoFichaHtml(AM.otimizacoes.ficha_tecnica, attrs); }],
       ["am-det-foot-ficha", function () { return footFichaHtml(AM.otimizacoes.ficha_tecnica, attrs); }],
       ["am-det-status-seo", function () { return chipTitulos(); }],
@@ -6858,14 +6947,10 @@
   // ===========================================================================
   // Aprovação — decisão INTERNA. Não publica nada no Mercado Livre.
   // ===========================================================================
-  function aprovarDescricao() {
-    var otim = AM.otimizacoes.descricao;
-    if (!otim) { toast("Gere a sugestão primeiro."); return; }
-    var desc = otim.descricao_sugerida || "";
-    if (!desc.trim()) { toast("Descrição vazia."); return; }
-    aprovar(otim.id, { descricaoAprovada: desc }, "Descrição aprovada (decisão interna).");
-  }
-
+  // A descrição não tem mais "Aprovar" na tela: a sugestão vem do Description
+  // Engine (POST /seo/descricao), que não gera registro no otimizador legado.
+  // O PATCH /aprovar com descricaoAprovada segue aceito no backend (dívida em
+  // CODIGO_LEGADO_AUDITORIA.md).
   function aprovarFicha() {
     var otim = AM.otimizacoes.ficha_tecnica;
     if (!otim) { toast("Gere a sugestão primeiro."); return; }

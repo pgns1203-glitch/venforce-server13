@@ -246,7 +246,9 @@ export default function PainelContasPage() {
                   <p className="vf-banner__title">Nenhum cliente listado tem dados em {rotularCompetencia(competencia)}</p>
                   <p className="vf-banner__description">
                     Cada linha diz o motivo. Para ver outro mês, troque a competência — nada é preenchido com um mês
-                    diferente.{competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
+                    diferente.{visao?.fonte === "manual"
+                      ? ` ${visao.rotulo} não tem integração automática: os números entram por lançamento manual em cada conta.`
+                      : competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
                   </p>
                 </div>
               </div>

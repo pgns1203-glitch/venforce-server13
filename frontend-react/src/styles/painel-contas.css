@@ -355,6 +355,23 @@
   gap: var(--vf-sp-1);
 }
 
+/* Portal/style.css (legado) também define .vf-tabs/.vf-tab como pílula
+   esticada (flex:1, caixa com borda, margin-bottom). Aqui vale o padrão de
+   abas da Fundação V2 — neutralizado SÓ dentro do Painel, sem tocar no CSS
+   global. */
+.vf-ph-secoes .vf-tabs {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--vf-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.vf-ph-secoes .vf-tab {
+  flex: 0 0 auto;
+}
+
 .vf-ph-secoes__n {
   min-width: 1.5em;
   padding: 0 6px;

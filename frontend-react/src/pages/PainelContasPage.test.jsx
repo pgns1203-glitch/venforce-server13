@@ -438,6 +438,16 @@ describe("seções por marketplace", () => {
     expect(screen.getByText(/soma só as contas Shopee/i)).toBeInTheDocument();
   });
 
+  it("seção manual sem dados não promete atualização automática", () => {
+    mocks.usePainelContas.mockReturnValue(estado({
+      marketplace: "tiktok", clientes: [semDadosShopee()],
+      visao: { codigo: "tiktok", rotulo: "TikTok Shop", fonte: "manual", descricao: "Lançamentos manuais e histórico" },
+    }));
+    render(<PainelContasPage />);
+    expect(screen.getByText(/TikTok Shop não tem integração automática/i)).toBeInTheDocument();
+    expect(screen.queryByText(/roda de madrugada/i)).toBeNull();
+  });
+
   it("seção vazia diz que não há operação daquele marketplace e oferece voltar ao consolidado", async () => {
     const e = estado({
       marketplace: "tiktok", clientes: [],

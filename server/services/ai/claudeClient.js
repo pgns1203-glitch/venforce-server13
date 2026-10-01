@@ -20,7 +20,7 @@ const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 
 const PROVIDER = "anthropic";
 
-// Timeout defensivo por tentativa.
+// Timeout defensivo por tentativa — cobre conexão, headers e leitura do body.
 const TIMEOUT_MS = 45000;
 
 // Retry: no máximo UMA nova tentativa, só para falha transitória que
@@ -92,9 +92,10 @@ function erroTransitorio(resultado) {
   return status === 429 || status >= 500;
 }
 
-// Dependências trocáveis em teste (espera entre tentativas).
+// Dependências trocáveis em teste (espera entre tentativas e teto por tentativa).
 const _deps = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  timeoutMs: TIMEOUT_MS,
 };
 
 function atrasoRetry(resultado) {
@@ -156,10 +157,51 @@ async function gerarTexto(opts) {
   return resultado;
 }
 
-async function chamarUmaVez({ apiKey, model, body }) {
+// F6.2: o timeout cobre a requisição INTEIRA — headers e leitura do body.
+// Antes o timer era cancelado assim que os headers chegavam, e um body lento
+// ficava sem teto.
+async function chamarUmaVez(args) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), _deps.timeoutMs);
+  try {
+    return await executarChamada(args, controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
+function erroAbort() {
+  const e = new Error("aborted");
+  e.name = "AbortError";
+  return e;
+}
+
+// resp.json() respeitando o AbortSignal. O fetch nativo já aborta o body
+// quando o sinal dispara; a corrida garante o mesmo para qualquer Response
+// (inclusive uma que ignore o sinal).
+function lerJson(resp, signal) {
+  if (signal.aborted) return Promise.reject(erroAbort());
+  return new Promise((resolve, reject) => {
+    const aoAbortar = () => reject(erroAbort());
+    signal.addEventListener("abort", aoAbortar, { once: true });
+    Promise.resolve()
+      .then(() => resp.json())
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", aoAbortar));
+  });
+}
+
+function resultadoTimeout(model) {
+  return {
+    ok: false,
+    codigo: "TIMEOUT",
+    erro: "A chamada à IA excedeu o tempo limite.",
+    provider: PROVIDER,
+    model,
+  };
+}
+
+async function executarChamada({ apiKey, model, body }, signal) {
   let resp;
   try {
     resp = await fetch(ANTHROPIC_URL, {
@@ -170,28 +212,26 @@ async function chamarUmaVez({ apiKey, model, body }) {
         "anthropic-version": ANTHROPIC_VERSION,
       },
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal,
     });
   } catch (err) {
-    clearTimeout(timer);
-    const abortado = err && err.name === "AbortError";
+    if ((err && err.name === "AbortError") || signal.aborted) return resultadoTimeout(model);
     return {
       ok: false,
-      codigo: abortado ? "TIMEOUT" : "NETWORK",
-      erro: abortado
-        ? "A chamada à IA excedeu o tempo limite."
-        : "Falha de rede ao contatar a IA.",
+      codigo: "NETWORK",
+      erro: "Falha de rede ao contatar a IA.",
       provider: PROVIDER,
       model,
     };
   }
-  clearTimeout(timer);
 
   if (!resp.ok) {
-    // não loga corpo de erro inteiro para não vazar nada sensível
+    // não loga corpo de erro inteiro para não vazar nada sensível.
+    // Body de erro lento: o timeout corta a leitura, mas o status já é
+    // conhecido — fica HTTP_<status> (e a política de retry dele).
     let detalhe = "";
     try {
-      const j = await resp.json();
+      const j = await lerJson(resp, signal);
       detalhe =
         (j && j.error && j.error.message) ||
         (j && j.error && j.error.type) ||
@@ -221,8 +261,9 @@ async function chamarUmaVez({ apiKey, model, body }) {
 
   let data;
   try {
-    data = await resp.json();
+    data = await lerJson(resp, signal);
   } catch (e) {
+    if ((e && e.name === "AbortError") || signal.aborted) return resultadoTimeout(model);
     return {
       ok: false,
       codigo: "EMPTY_RESPONSE",

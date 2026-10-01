@@ -25,6 +25,9 @@ mimoClient._deps.sleep = async (ms) => { esperas.push(ms); };
 let logs = [];
 aiProvider._deps.log = (l) => logs.push(l);
 
+const http = require("http");
+const fetchNativo = global.fetch;
+
 let chamadas = [];
 let roteiro = [];
 global.fetch = async (url, init) => {
@@ -46,6 +49,20 @@ const textoIa = (texto, stop_reason = "end_turn", extra = {}) => respostaOk({
 });
 const timeout = () => async () => { const e = new Error("aborted"); e.name = "AbortError"; throw e; };
 const falhaRede = () => async () => { throw new TypeError("fetch failed"); };
+// F6.2: headers chegam na hora, o body demora `ms`. `respeitaSinal` imita o
+// fetch nativo (abortar rejeita o json()); sem ele, o json() ignora o sinal.
+const bodyLento = (ms, data, { status = 200, respeitaSinal = false } = {}) => async (init) => ({
+  ok: status >= 200 && status < 300, status, headers: { get: () => null },
+  json: () => new Promise((resolve, reject) => {
+    const t = setTimeout(() => resolve(data), ms);
+    if (respeitaSinal) init.signal.addEventListener("abort", () => {
+      clearTimeout(t);
+      const e = new Error("This operation was aborted"); e.name = "AbortError"; reject(e);
+    }, { once: true });
+  }),
+});
+const DADOS_OK = { content: [{ type: "text", text: '{"a":1}' }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function reset(passos, env = {}) {
   for (const k of ENVS) delete process.env[k];
@@ -221,6 +238,91 @@ async function check(nome, fn) {
     assert.deepStrictEqual([r.codigo, chamadas.length], ["TIMEOUT", 1]);
     assert.ok(chamadas[0].init.signal, "fetch recebe AbortSignal");
     assert.deepStrictEqual([mimoClient.TIMEOUT_MS, mimoClient.MAX_TENTATIVAS], [45000, 2]);
+  });
+
+  // ── F6.2: o timeout cobre a leitura do body ───────────────────────────────
+  const TETO = 60;
+  await check("F6.2 — body lento após headers (json ignora o sinal) → TIMEOUT no teto, sem retry", async () => {
+    mimoClient._deps.timeoutMs = TETO;
+    try {
+      reset([bodyLento(2000, DADOS_OK)], MIMO);
+      const t0 = Date.now();
+      const r = await json();
+      const dt = Date.now() - t0;
+      assert.deepStrictEqual([r.ok, r.codigo, r.tentativas, chamadas.length], [false, "TIMEOUT", 1, 1]);
+      assert.ok(dt < 1000, "esperou o body inteiro (" + dt + " ms)");
+      assert.ok(chamadas[0].init.signal.aborted, "sinal abortado no teto");
+      assert.deepStrictEqual([r.provider, r.model], ["mimo", "mimo-v2.6-pro"]);
+    } finally { mimoClient._deps.timeoutMs = mimoClient.TIMEOUT_MS; }
+  });
+
+  await check("F6.2 — body lento com json que respeita o sinal (fetch nativo) → TIMEOUT", async () => {
+    mimoClient._deps.timeoutMs = TETO;
+    try {
+      reset([bodyLento(2000, DADOS_OK, { respeitaSinal: true })], MIMO);
+      const r = await mimoClient.gerarTexto({ prompt: "P" });
+      assert.deepStrictEqual([r.ok, r.codigo, r.tentativas, r.provider], [false, "TIMEOUT", 1, "mimo"]);
+    } finally { mimoClient._deps.timeoutMs = mimoClient.TIMEOUT_MS; }
+  });
+
+  await check("F6.2 — body dentro do prazo → ok, e o timer é desligado depois", async () => {
+    mimoClient._deps.timeoutMs = TETO;
+    try {
+      reset([bodyLento(10, DADOS_OK)], MIMO);
+      const r = await mimoClient.gerarTexto({ prompt: "P" });
+      assert.deepStrictEqual([r.ok, r.tentativas, r.provider, r.model], [true, 1, "mimo", "mimo-v2.6-pro"]);
+      await esperar(TETO * 2);
+      assert.strictEqual(chamadas[0].init.signal.aborted, false, "timer sobrou ligado após o sucesso");
+    } finally { mimoClient._deps.timeoutMs = mimoClient.TIMEOUT_MS; }
+  });
+
+  await check("F6.2 — body de erro lento (503) → HTTP_503 no teto, retry preservado com teto novo", async () => {
+    mimoClient._deps.timeoutMs = TETO;
+    try {
+      reset([bodyLento(2000, { error: { message: "x" } }, { status: 503 }), bodyLento(10, DADOS_OK)], MIMO);
+      const t0 = Date.now();
+      const r = await mimoClient.gerarTexto({ prompt: "P" });
+      assert.deepStrictEqual([r.ok, r.tentativas, chamadas.length, esperas], [true, 2, 2, [1000]]);
+      assert.ok(Date.now() - t0 < 1000);
+      assert.strictEqual(chamadas[1].init.signal.aborted, false, "2ª tentativa tem timer próprio");
+      reset([bodyLento(2000, {}, { status: 400 })], MIMO);
+      const r2 = await json();
+      assert.deepStrictEqual([r2.codigo, chamadas.length], ["HTTP_400", 1]);
+    } finally { mimoClient._deps.timeoutMs = mimoClient.TIMEOUT_MS; }
+  });
+
+  await check("F6.2 — fetch nativo real: servidor manda headers e segura o body → TIMEOUT", async () => {
+    const sockets = new Set();
+    const srv = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write('{"content":[');
+      res.flushHeaders();
+      // o resto do body nunca chega dentro do teto
+    });
+    srv.on("connection", (s) => { sockets.add(s); s.on("close", () => sockets.delete(s)); });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    const porta = srv.address().port;
+    const fetchStub = global.fetch;
+    let headersRecebidos = false;
+    global.fetch = async (url, init) => {
+      const resp = await fetchNativo("http://127.0.0.1:" + porta + "/", init);
+      headersRecebidos = true;
+      return resp;
+    };
+    mimoClient._deps.timeoutMs = 300;
+    try {
+      const t0 = Date.now();
+      const r = await mimoClient.gerarTexto({ prompt: "P" });
+      const dt = Date.now() - t0;
+      assert.ok(headersRecebidos, "headers deveriam ter chegado antes do teto");
+      assert.deepStrictEqual([r.ok, r.codigo, r.tentativas], [false, "TIMEOUT", 1]);
+      assert.ok(dt >= 250 && dt < 2000, "tempo fora do teto: " + dt + " ms");
+    } finally {
+      mimoClient._deps.timeoutMs = mimoClient.TIMEOUT_MS;
+      global.fetch = fetchStub;
+      for (const s of sockets) s.destroy();
+      await new Promise((r) => srv.close(r));
+    }
   });
 
   await check("segredo nunca aparece em erro, retorno nem log", async () => {

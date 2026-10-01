@@ -26,12 +26,15 @@ const aiProvider = require("../services/ai/aiProvider");
 const esperas = [];
 claudeClient._deps.sleep = async (ms) => { esperas.push(ms); };
 
+const http = require("http");
+const fetchNativo = global.fetch;
+
 let chamadas = [];
 let roteiro = []; // uma função por chamada esperada
 
 global.fetch = async (url, init) => {
   const body = JSON.parse(init.body);
-  chamadas.push({ url, body, headers: init.headers });
+  chamadas.push({ url, body, headers: init.headers, init });
   const passo = roteiro.shift();
   if (!passo) throw new Error("fetch chamado mais vezes que o roteiro previa");
   return passo(init);
@@ -66,6 +69,24 @@ function timeout() {
 function falhaRede() {
   return async () => { throw new TypeError("fetch failed"); };
 }
+// F6.2: headers chegam na hora, o body demora `ms`. `respeitaSinal` imita o
+// fetch nativo (abortar rejeita o json()); sem ele, o json() ignora o sinal.
+function bodyLento(ms, data, { status = 200, respeitaSinal = false } = {}) {
+  return async (init) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: () => null },
+    json: () => new Promise((resolve, reject) => {
+      const t = setTimeout(() => resolve(data), ms);
+      if (respeitaSinal) init.signal.addEventListener("abort", () => {
+        clearTimeout(t);
+        const e = new Error("This operation was aborted"); e.name = "AbortError"; reject(e);
+      }, { once: true });
+    }),
+  });
+}
+const DADOS_OK = { content: [{ type: "text", text: '{"a":1}' }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function reset(passos) {
   chamadas = [];
@@ -172,6 +193,91 @@ async function check(nome, fn) {
     assert.strictEqual(r.codigo, "TIMEOUT");
     assert.strictEqual(chamadas.length, 1, "timeout não pode ser repetido (dobraria a espera)");
     assert.strictEqual(r.tentativas, 1);
+  });
+
+  // ── F6.2: o timeout cobre a leitura do body ───────────────────────────────
+  const TETO = 60;
+  await check("12b — body lento após headers (json ignora o sinal) → TIMEOUT no teto, sem retry", async () => {
+    claudeClient._deps.timeoutMs = TETO;
+    try {
+      reset([bodyLento(2000, DADOS_OK)]);
+      const t0 = Date.now();
+      const r = await aiProvider.gerarJSON({ prompt: "P" });
+      const dt = Date.now() - t0;
+      assert.deepStrictEqual([r.ok, r.codigo, r.tentativas, chamadas.length], [false, "TIMEOUT", 1, 1]);
+      assert.ok(dt < 1000, "esperou o body inteiro (" + dt + " ms)");
+      assert.ok(chamadas[0].init.signal.aborted, "sinal abortado no teto");
+      assert.strictEqual(r.provider, "anthropic");
+    } finally { claudeClient._deps.timeoutMs = claudeClient.TIMEOUT_MS; }
+  });
+
+  await check("12c — body lento com json que respeita o sinal (fetch nativo) → TIMEOUT", async () => {
+    claudeClient._deps.timeoutMs = TETO;
+    try {
+      reset([bodyLento(2000, DADOS_OK, { respeitaSinal: true })]);
+      const r = await claudeClient.gerarTexto({ prompt: "P" });
+      assert.deepStrictEqual([r.ok, r.codigo, r.tentativas, r.provider], [false, "TIMEOUT", 1, "anthropic"]);
+    } finally { claudeClient._deps.timeoutMs = claudeClient.TIMEOUT_MS; }
+  });
+
+  await check("12d — body dentro do prazo → ok, e o timer é desligado depois", async () => {
+    claudeClient._deps.timeoutMs = TETO;
+    try {
+      reset([bodyLento(10, DADOS_OK)]);
+      const r = await claudeClient.gerarTexto({ prompt: "P" });
+      assert.deepStrictEqual([r.ok, r.tentativas], [true, 1]);
+      await esperar(TETO * 2);
+      assert.strictEqual(chamadas[0].init.signal.aborted, false, "timer sobrou ligado após o sucesso");
+    } finally { claudeClient._deps.timeoutMs = claudeClient.TIMEOUT_MS; }
+  });
+
+  await check("12e — body de erro lento (529) → HTTP_529 no teto, retry preservado com teto novo", async () => {
+    claudeClient._deps.timeoutMs = TETO;
+    try {
+      reset([bodyLento(2000, { error: { message: "x" } }, { status: 529 }), bodyLento(10, DADOS_OK)]);
+      const t0 = Date.now();
+      const r = await claudeClient.gerarTexto({ prompt: "P" });
+      assert.deepStrictEqual([r.ok, r.tentativas, chamadas.length, esperas], [true, 2, 2, [1000]]);
+      assert.ok(Date.now() - t0 < 1000);
+      assert.strictEqual(chamadas[1].init.signal.aborted, false, "2ª tentativa tem timer próprio");
+      reset([bodyLento(2000, {}, { status: 400 })]);
+      const r2 = await aiProvider.gerarJSON({ prompt: "P" });
+      assert.deepStrictEqual([r2.codigo, chamadas.length], ["HTTP_400", 1]);
+    } finally { claudeClient._deps.timeoutMs = claudeClient.TIMEOUT_MS; }
+  });
+
+  await check("12f — fetch nativo real: servidor manda headers e segura o body → TIMEOUT", async () => {
+    const sockets = new Set();
+    const srv = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write('{"content":[');
+      res.flushHeaders();
+      // o resto do body nunca chega dentro do teto
+    });
+    srv.on("connection", (s) => { sockets.add(s); s.on("close", () => sockets.delete(s)); });
+    await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+    const porta = srv.address().port;
+    const fetchStub = global.fetch;
+    let headersRecebidos = false;
+    global.fetch = async (url, init) => {
+      const resp = await fetchNativo("http://127.0.0.1:" + porta + "/", init);
+      headersRecebidos = true;
+      return resp;
+    };
+    claudeClient._deps.timeoutMs = 300;
+    try {
+      const t0 = Date.now();
+      const r = await claudeClient.gerarTexto({ prompt: "P" });
+      const dt = Date.now() - t0;
+      assert.ok(headersRecebidos, "headers deveriam ter chegado antes do teto");
+      assert.deepStrictEqual([r.ok, r.codigo, r.tentativas], [false, "TIMEOUT", 1]);
+      assert.ok(dt >= 250 && dt < 2000, "tempo fora do teto: " + dt + " ms");
+    } finally {
+      claudeClient._deps.timeoutMs = claudeClient.TIMEOUT_MS;
+      global.fetch = fetchStub;
+      for (const s of sockets) s.destroy();
+      await new Promise((r) => srv.close(r));
+    }
   });
 
   await check("13 — 4xx funcional (400/401/404) → HTTP_<status>, sem retry", async () => {

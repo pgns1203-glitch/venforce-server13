@@ -22,12 +22,15 @@ function createRateLimiter({ minIntervalMs = 0, now = () => Date.now(), sleep = 
   let proximoInicio = 0;
   let pausaAte = 0;
 
-  async function aguardarVez(signal) {
+  // `sleepOverride` permite que um consumidor mantenha seu lease/heartbeat
+  // enquanto aguarda uma reserva longa. O default preserva integralmente o
+  // comportamento dos demais consumidores.
+  async function aguardarVez(signal, sleepOverride = sleep) {
     const agora = now();
     const inicio = Math.max(agora, proximoInicio, pausaAte);
     proximoInicio = inicio + minIntervalMs;
     const espera = inicio - agora;
-    if (espera > 0) await sleep(espera, signal);
+    if (espera > 0) await sleepOverride(espera, signal);
     return espera;
   }
 

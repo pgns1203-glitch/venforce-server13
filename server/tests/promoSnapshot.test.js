@@ -1311,6 +1311,74 @@ cenario("request longa com relógio fake: cada GET preso até o timeout (limitad
   assert.throws(() => cfgMod.validarInvariantesHeartbeat({ ...amb.config, requestTimeoutMs: 120000 }), (e) => e.code === "PROMO_SNAPSHOT_CONFIG_INSEGURA");
 });
 
+cenario("limiter compartilhado: 3 runs × 8 chamadas renovam heartbeat durante fila maior que o intervalo", async () => {
+  const heartbeatIntervalMs = 30000;
+  const requestIntervalMs = 10000;
+  const esperas = [];
+  const batidasPorChamada = [];
+  let sleepPadraoUsado = false;
+  // Todas as 24 chamadas concorrem no mesmo instante. As reservas ficam em
+  // 0, 10, 20, ... 230 s — bem além do heartbeat de 30 s.
+  const limiter = createRateLimiter({
+    minIntervalMs: requestIntervalMs,
+    now: () => 0,
+    sleep: async () => { sleepPadraoUsado = true; },
+  });
+
+  const chamadas = [];
+  for (let run = 1; run <= 3; run += 1) {
+    for (let item = 1; item <= 8; item += 1) {
+      const batidas = [];
+      batidasPorChamada.push(batidas);
+      chamadas.push(limiter.aguardarVez(null, async (ms) => {
+        esperas.push({ run, item, ms });
+        let transcorrido = 0;
+        while (transcorrido < ms) {
+          transcorrido += Math.min(heartbeatIntervalMs, ms - transcorrido);
+          batidas.push(transcorrido);
+        }
+      }));
+    }
+  }
+  await Promise.all(chamadas);
+
+  assert.strictEqual(sleepPadraoUsado, false, "a fila do limiter deve usar o sleep com heartbeat fornecido pelo run");
+  assert.strictEqual(Math.max(...esperas.map((e) => e.ms)), 230000, "24 reservas de 10 s acumulam 230 s de fila");
+  assert.ok(esperas.some((e) => e.ms > heartbeatIntervalMs), "o cenário reproduz espera maior que o heartbeat");
+  for (const batidas of batidasPorChamada) {
+    if (!batidas.length) continue;
+    const intervalos = batidas.map((t, i) => t - (i ? batidas[i - 1] : 0));
+    assert.ok(Math.max(...intervalos) <= heartbeatIntervalMs, `intervalo sem heartbeat ${Math.max(...intervalos)} ms`);
+  }
+});
+
+cenario("processor entrega ao limiter o sleep que renova heartbeat durante a reserva", async () => {
+  const amb = ambiente({
+    sellers: { 555: { itens: catalogo("A", 1) } },
+    env: { PROMO_SNAPSHOT_RUNNING_STALE_MINUTES: "2", PROMO_SNAPSHOT_HEARTBEAT_INTERVAL_MS: "30000" },
+    sleepHook: async (ms, relogio, repo) => {
+      relogio.avancarMs(ms);
+      await repo.reconcileStaleRunningRuns({ staleMinutes: 2 });
+    },
+  });
+  let chamadasLimiter = 0;
+  amb.procDeps.rateLimiter = {
+    estado: () => ({ cooldownRestanteMs: 0, proximoInicioEmMs: 0 }),
+    penalizar() {},
+    async aguardarVez(signal, sleepComHeartbeat) {
+      assert.strictEqual(typeof sleepComHeartbeat, "function", "processor deve fornecer o sleep do run ao limiter");
+      chamadasLimiter += 1;
+      if (chamadasLimiter === 1) await sleepComHeartbeat(70000, signal);
+      return chamadasLimiter === 1 ? 70000 : 0;
+    },
+  };
+
+  const r = await amb.rodar(7);
+  assert.strictEqual(r.status, "completed");
+  assert.ok(amb.esperas.length >= 3 && Math.max(...amb.esperas) <= 30000, "70 s de fila foram fatiados pelo heartbeat");
+  assert.ok(amb.repo._st.runs.every((x) => x.error_code !== "PROMO_SNAPSHOT_RUN_STALE"));
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Auditoria — achado 5: oportunidades paginadas no banco
 // ─────────────────────────────────────────────────────────────────────────────

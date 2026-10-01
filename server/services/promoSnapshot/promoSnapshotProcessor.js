@@ -209,7 +209,10 @@ async function processPromoSnapshotRun(run, deps = {}) {
     // com heartbeat; o resíduo fica com o próprio limiter.
     const cooldown = typeof limiter.estado === "function" ? Number(limiter.estado().cooldownRestanteMs) || 0 : 0;
     if (cooldown > intervaloBatimento) await dormirComBatimento(cooldown, signal);
-    await limiter.aguardarVez(signal);
+    // A fila do limiter é compartilhada por todos os runs deste processo. Com
+    // várias reservas, a espera pode ser muito maior que requestIntervalMs;
+    // use o sleep deste run para renovar o heartbeat durante toda ela.
+    await limiter.aguardarVez(signal, dormirComBatimento);
     verificarParada();
     await bater();
     return fn();

@@ -16,6 +16,12 @@ const pool = require("../../config/database");
 const mlTokenService = require("../mlTokenService");
 
 const MARKETPLACES_SUPORTADOS = new Set(["meli", "shopee"]);
+// Cadastro de conta aceita também TikTok Shop (operação de lançamento manual
+// no Painel de Contas). A RESOLUÇÃO de contexto das integrações
+// (resolveMarketplaceAccountContext, vínculo legado de base) continua só
+// meli/shopee: TikTok não tem integração e nenhum consumidor muda de rota.
+// O banco só aceita 'tiktok' depois de 20261001_cliente_contas_marketplace_tiktok.sql.
+const MARKETPLACES_CADASTRO = new Set([...MARKETPLACES_SUPORTADOS, "tiktok"]);
 
 function criarErroHttp(statusCode, mensagem, extra = {}) {
   const err = new Error(mensagem);
@@ -38,6 +44,11 @@ function normalizarSlug(nome) {
 function normalizarMarketplaceConta(valor) {
   const texto = String(valor || "").trim().toLowerCase();
   return MARKETPLACES_SUPORTADOS.has(texto) ? texto : null;
+}
+
+function normalizarMarketplaceCadastro(valor) {
+  const texto = String(valor || "").trim().toLowerCase();
+  return MARKETPLACES_CADASTRO.has(texto) ? texto : null;
 }
 
 // externalAccountLabel: o desambiguador humano entre 2+ contas do mesmo
@@ -101,7 +112,7 @@ async function gerarSlugContaUnico(clienteSlug, marketplace, nome, queryable = p
 
 async function listarContasDoCliente({ clienteId, clienteSlug, marketplace, incluirInativas = true }) {
   const cliente = await resolverClientePorIdOuSlug({ clienteId, clienteSlug });
-  const marketplaceNorm = marketplace ? normalizarMarketplaceConta(marketplace) : null;
+  const marketplaceNorm = marketplace ? normalizarMarketplaceCadastro(marketplace) : null;
   if (marketplace && !marketplaceNorm) throw criarErroHttp(400, "marketplace inválido.");
 
   const params = [cliente.id];
@@ -299,8 +310,8 @@ async function obterConta(contaId, queryable = pool) {
 
 async function criarConta({ clienteId, clienteSlug, marketplace, nome, externalAccountId = null, isPrimary = false, metadata = {} }) {
   const cliente = await resolverClientePorIdOuSlug({ clienteId, clienteSlug });
-  const marketplaceNorm = normalizarMarketplaceConta(marketplace);
-  if (!marketplaceNorm) throw criarErroHttp(400, "marketplace deve ser 'meli' ou 'shopee'.");
+  const marketplaceNorm = normalizarMarketplaceCadastro(marketplace);
+  if (!marketplaceNorm) throw criarErroHttp(400, "marketplace deve ser 'meli', 'shopee' ou 'tiktok'.");
 
   const nomeFinal = String(nome || "").trim();
   if (!nomeFinal) throw criarErroHttp(400, "nome é obrigatório.");
@@ -343,6 +354,12 @@ async function criarConta({ clienteId, clienteSlug, marketplace, nome, externalA
   } catch (error) {
     await client.query("ROLLBACK");
     if (error.code === "23505") throw criarErroHttp(409, "Já existe uma conta com esse identificador.");
+    // Banco ainda com a CHECK antiga (sem 'tiktok'): migration manual pendente.
+    if (error.code === "23514" && error.constraint === "cliente_contas_marketplace_check") {
+      throw criarErroHttp(409, "Contas TikTok Shop ainda não estão habilitadas neste banco (migração pendente).", {
+        code: "MARKETPLACE_PENDENTE_MIGRACAO",
+      });
+    }
     throw error;
   } finally {
     client.release();
@@ -789,6 +806,8 @@ async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, market
 
 module.exports = {
   normalizarMarketplaceConta,
+  normalizarMarketplaceCadastro,
+  MARKETPLACES_CADASTRO,
   resolverClientePorIdOuSlug,
   listarContasDoCliente,
   listarContasDeClientesAtivos,

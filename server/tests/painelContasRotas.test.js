@@ -5,9 +5,10 @@
 // clienteCriarComSquadRota.test.js — não sobe servidor nem banco.
 //
 // Confirma exatamente o que a Auditoria (§4/§15) exige: toda rota passa por
-// authMiddleware + requireAutomacoesAccess, e as duas rotas com :clienteId
-// passam por requireClienteNaCarteira ANTES do controller (nunca "o cliente
-// existe, logo acessa").
+// authMiddleware + requireAutomacoesAccess; as LEITURAS com :clienteId passam
+// pelo escopo do Painel (requireClienteNoPainel) e as ESCRITAS pela carteira
+// (requireClienteNaCarteira) ANTES do controller — nunca "o cliente existe,
+// logo acessa".
 
 const assert = require("assert");
 const fs = require("fs");
@@ -30,13 +31,16 @@ const linhaLista = rotas.match(/router\.get\("\/",[^)]*\)/)?.[0] || "";
 ok('GET "/" (lista) exige authMiddleware + requireAutomacoesAccess', linhaLista.includes("authMiddleware") && linhaLista.includes("requireAutomacoesAccess"));
 
 const linhaMeses = rotas.match(/router\.get\("\/:clienteId\/meses",[^)]*\)/)?.[0] || "";
-ok('GET ":clienteId/meses" exige authMiddleware + requireAutomacoesAccess + naCarteira', linhaMeses.includes("authMiddleware") && linhaMeses.includes("requireAutomacoesAccess") && linhaMeses.includes("naCarteira"));
+ok('GET ":clienteId/meses" exige authMiddleware + requireAutomacoesAccess + noPainel', linhaMeses.includes("authMiddleware") && linhaMeses.includes("requireAutomacoesAccess") && linhaMeses.includes("noPainel"));
 
 const linhaSemanas = rotas.match(/router\.get\("\/:clienteId\/meses\/:competencia\/semanas",[^)]*\)/)?.[0] || "";
-ok('GET "...semanas" exige authMiddleware + requireAutomacoesAccess + naCarteira', linhaSemanas.includes("authMiddleware") && linhaSemanas.includes("requireAutomacoesAccess") && linhaSemanas.includes("naCarteira"));
+ok('GET "...semanas" exige authMiddleware + requireAutomacoesAccess + noPainel', linhaSemanas.includes("authMiddleware") && linhaSemanas.includes("requireAutomacoesAccess") && linhaSemanas.includes("noPainel"));
 
 const linhaSemanasContas = rotas.match(/router\.get\("\/:clienteId\/contas\/semanas",[^)]*\)/)?.[0] || "";
-ok('GET "...contas/semanas" exige authMiddleware + requireAutomacoesAccess + naCarteira', linhaSemanasContas.includes("authMiddleware") && linhaSemanasContas.includes("requireAutomacoesAccess") && linhaSemanasContas.includes("naCarteira"));
+ok('GET "...contas/semanas" exige authMiddleware + requireAutomacoesAccess + noPainel', linhaSemanasContas.includes("authMiddleware") && linhaSemanasContas.includes("requireAutomacoesAccess") && linhaSemanasContas.includes("noPainel"));
+
+const linhaComposicao = rotas.match(/router\.get\("\/:clienteId\/contas\/composicao",[^)]*\)/)?.[0] || "";
+ok('GET "...contas/composicao" exige authMiddleware + requireAutomacoesAccess + noPainel', linhaComposicao.includes("authMiddleware") && linhaComposicao.includes("requireAutomacoesAccess") && linhaComposicao.includes("noPainel"));
 
 // Lançamento manual: escrita com o MESMO gate das leituras de cliente.
 ok('PUT/DELETE do lançamento manual usam o path com :clienteId/:contaId/:competencia', rotas.includes('"/:clienteId/contas/:contaId/manual/:competencia"'));
@@ -52,6 +56,14 @@ const linhaAtualizarPost = rotas.match(/router\.post\(atualizar,[^)]*\)/)?.[0] |
 ok("POST atualizar exige authMiddleware + requireAdmin + naCarteira", linhaAtualizarPost.includes("authMiddleware") && linhaAtualizarPost.includes("requireAdmin") && linhaAtualizarPost.includes("naCarteira"));
 const linhaAtualizarGet = rotas.match(/router\.get\(atualizar,[^)]*\)/)?.[0] || "";
 ok("GET atualizar exige authMiddleware + requireAdmin + naCarteira", linhaAtualizarGet.includes("authMiddleware") && linhaAtualizarGet.includes("requireAdmin") && linhaAtualizarGet.includes("naCarteira"));
+
+// Rastreabilidade (leitura) do lançamento manual: escopo do Painel.
+const linhaLancamentos = rotas.match(/router\.get\("\/:clienteId\/contas\/:contaId\/manual",[^)]*\)/)?.[0] || "";
+ok('GET "...contas/:contaId/manual" exige authMiddleware + requireAutomacoesAccess + noPainel', linhaLancamentos.includes("authMiddleware") && linhaLancamentos.includes("requireAutomacoesAccess") && linhaLancamentos.includes("noPainel"));
+const linhaHistorico = rotas.match(/router\.get\(`\$\{manual\}\/historico`,[^)]*\)/)?.[0] || "";
+ok('GET "...manual/:competencia/historico" exige authMiddleware + requireAutomacoesAccess + noPainel', linhaHistorico.includes("authMiddleware") && linhaHistorico.includes("requireAutomacoesAccess") && linhaHistorico.includes("noPainel"));
+ok('noPainel = requireClienteNoPainel("clienteId")', /requireClienteNoPainel\("clienteId"\)/.test(rotas));
+ok("nenhuma leitura por cliente usa só a carteira global", !/router\.get\("\/:clienteId[^)]*naCarteira/.test(rotas));
 
 // naCarteira precisa ser requireClienteNaCarteira("clienteId") — o param real da rota.
 ok('naCarteira = requireClienteNaCarteira("clienteId") (bate com o :clienteId da rota)', /requireClienteNaCarteira\("clienteId"\)/.test(rotas));

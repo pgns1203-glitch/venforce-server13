@@ -160,6 +160,45 @@ async function listarPedidosDosImports(importIds, { inicio, fim }) {
   return rows;
 }
 
+// Composição do faturamento: TODOS os pedidos dos imports escolhidos (o mesmo
+// conjunto sobre o qual o FAT do import foi calculado — sem recorte de data),
+// agregados por status × tipo de pós-venda. Poucas linhas por import; a
+// classificação em grupos fica no service (painelContasComposicao), com o
+// mesmo predicado da Central.
+async function listarComposicaoDosImports(importIds) {
+  if (!Array.isArray(importIds) || !importIds.length) return [];
+  const { rows } = await pool.query(
+    `/* painelContas:COMPOSICAO_DOS_IMPORTS */
+     SELECT p.import_id, p.status, p.payload_json->>'posVendaTipo' AS pos_venda_tipo,
+            COUNT(*)::int AS pedidos,
+            (COUNT(*) - COUNT(p.faturamento))::int AS sem_valor,
+            COALESCE(SUM(p.faturamento), 0) AS faturamento
+       FROM central_vendas_pedidos p
+      WHERE p.import_id = ANY($1::bigint[])
+      GROUP BY p.import_id, p.status, p.payload_json->>'posVendaTipo'`,
+    [importIds]
+  );
+  return rows;
+}
+
+// Pedido presente em mais de um dos imports escolhidos (duas contas apontando
+// para a mesma loja, p.ex.). A soma das contas contaria a venda duas vezes;
+// isso é medido, nunca deduplicado em silêncio.
+async function medirSobreposicaoDosImports(importIds) {
+  if (!Array.isArray(importIds) || importIds.length < 2) return { pedidos: 0, valor: 0 };
+  const { rows } = await pool.query(
+    `/* painelContas:COMPOSICAO_SOBREPOSICAO */
+     SELECT COUNT(*)::int AS pedidos, COALESCE(SUM(d.excedente), 0) AS valor
+       FROM (SELECT p.pedido_id, SUM(p.faturamento) - MAX(p.faturamento) AS excedente
+               FROM central_vendas_pedidos p
+              WHERE p.import_id = ANY($1::bigint[])
+              GROUP BY p.pedido_id
+             HAVING COUNT(*) > 1) d`,
+    [importIds]
+  );
+  return { pedidos: Number(rows[0]?.pedidos) || 0, valor: Number(rows[0]?.valor) || 0 };
+}
+
 // Último sync_run de cada conta que toca a competência. Só status/código/data
 // — error_message pode carregar texto de terceiros e não sai daqui.
 async function listarUltimoRunPorConta(contaIds, { inicio, fim }) {
@@ -196,12 +235,45 @@ async function listarManuaisDaCompetencia(contaIds, competencia) {
   if (!Array.isArray(contaIds) || !contaIds.length) return [];
   const { rows } = await pool.query(
     `/* painelContas:MANUAIS_DA_COMPETENCIA */
-     SELECT m.*, u.nome AS updated_by_nome
+     SELECT m.*, u.nome AS updated_by_nome, uc.nome AS created_by_nome
        FROM painel_contas_lancamentos_manuais m
        LEFT JOIN users u ON u.id = m.updated_by
+       LEFT JOIN users uc ON uc.id = m.created_by
       WHERE m.cliente_conta_id = ANY($1::int[])
         AND m.competencia = $2`,
     [contaIds, competencia]
+  );
+  return rows;
+}
+
+// Todas as competências lançadas de UMA conta (mais recente primeiro) — o
+// histórico mês a mês do lançamento manual. Linha removida não aparece aqui
+// (está só na trilha).
+async function listarManuaisDaConta(contaId, clienteId) {
+  const { rows } = await pool.query(
+    `/* painelContas:MANUAIS_DA_CONTA */
+     SELECT m.*, u.nome AS updated_by_nome, uc.nome AS created_by_nome
+       FROM painel_contas_lancamentos_manuais m
+       LEFT JOIN users u ON u.id = m.updated_by
+       LEFT JOIN users uc ON uc.id = m.created_by
+      WHERE m.cliente_conta_id = $1 AND m.cliente_id = $2
+      ORDER BY m.competencia DESC`,
+    [contaId, clienteId]
+  );
+  return rows;
+}
+
+// Trilha de auditoria de uma conta × competência, inclusive remoções (a
+// trilha não tem FK para o lançamento justamente para sobreviver a elas).
+async function listarHistoricoManual(contaId, clienteId, competencia) {
+  const { rows } = await pool.query(
+    `/* painelContas:HISTORICO_DA_CONTA */
+     SELECT h.id, h.acao, h.valores_json, h.user_id, h.created_at, u.nome AS user_nome
+       FROM painel_contas_lancamentos_manuais_historico h
+       LEFT JOIN users u ON u.id = h.user_id
+      WHERE h.cliente_conta_id = $1 AND h.cliente_id = $2 AND h.competencia = $3
+      ORDER BY h.created_at DESC, h.id DESC`,
+    [contaId, clienteId, competencia]
   );
   return rows;
 }
@@ -242,6 +314,7 @@ function valoresParaHistorico(valores) {
     investimentoAds: valores.investimentoAds,
     gmvAds: valores.gmvAds,
     observacao: valores.observacao,
+    dataReferencia: valores.dataReferencia ?? null,
   };
 }
 
@@ -268,8 +341,8 @@ async function salvarLancamentoManual({ clienteId, contaId, competencia, valores
       `/* painelContas:UPSERT_MANUAL */
        INSERT INTO painel_contas_lancamentos_manuais
          (cliente_id, cliente_conta_id, competencia, faturamento, lucro_contribuicao, margem_contribuicao,
-          investimento_ads, gmv_ads, observacao, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+          investimento_ads, gmv_ads, observacao, created_by, updated_by, data_referencia)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11::date)
        ON CONFLICT (cliente_conta_id, competencia) DO UPDATE SET
          faturamento = EXCLUDED.faturamento,
          lucro_contribuicao = EXCLUDED.lucro_contribuicao,
@@ -277,11 +350,12 @@ async function salvarLancamentoManual({ clienteId, contaId, competencia, valores
          investimento_ads = EXCLUDED.investimento_ads,
          gmv_ads = EXCLUDED.gmv_ads,
          observacao = EXCLUDED.observacao,
+         data_referencia = EXCLUDED.data_referencia,
          updated_by = EXCLUDED.updated_by,
          updated_at = NOW()
        RETURNING *, (xmax = 0) AS inserido`,
       [clienteId, contaId, competencia, valores.faturamento, valores.lucroContribuicao, valores.margemContribuicao,
-        valores.investimentoAds, valores.gmvAds, valores.observacao, userId ?? null]
+        valores.investimentoAds, valores.gmvAds, valores.observacao, userId ?? null, valores.dataReferencia ?? null]
     );
     const row = rows[0];
     await db.query(
@@ -315,6 +389,7 @@ async function removerLancamentoManual({ clienteId, contaId, competencia, userId
         faturamento: row.faturamento, lucroContribuicao: row.lucro_contribuicao,
         margemContribuicao: row.margem_contribuicao, investimentoAds: row.investimento_ads,
         gmvAds: row.gmv_ads, observacao: row.observacao,
+        dataReferencia: row.data_referencia instanceof Date ? row.data_referencia.toISOString().slice(0, 10) : row.data_referencia ?? null,
       }), userId ?? null]
     );
     return row;
@@ -327,10 +402,14 @@ module.exports = {
   listarUltimaCompetenciaComDado,
   listarContasDeClientes,
   listarImportsDaCompetencia,
+  listarComposicaoDosImports,
+  medirSobreposicaoDosImports,
   listarPedidosDosImports,
   listarUltimoRunPorConta,
   listarAdsDaCompetencia,
   listarManuaisDaCompetencia,
+  listarManuaisDaConta,
+  listarHistoricoManual,
   listarResumosDoAno,
   obterContaDoCliente,
   salvarLancamentoManual,

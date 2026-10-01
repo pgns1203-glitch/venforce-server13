@@ -60,7 +60,7 @@ function semDados(over = {}) {
   });
 }
 
-function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, semanasContasPorCliente = {}, carregarMeses = vi.fn(), carregarSemanas = vi.fn(), carregarSemanasContas = vi.fn(), onLancar = vi.fn(), grupos = GRUPOS_PADRAO }) {
+function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, semanasContasPorCliente = {}, carregarMeses = vi.fn(), carregarSemanas = vi.fn(), carregarSemanasContas = vi.fn(), onLancar = vi.fn(), grupos = GRUPOS_PADRAO, mostrarHistoricoCliente = true }) {
   const expansao = useExpansao();
   return (
     <TabelaHierarquica
@@ -76,6 +76,7 @@ function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, semanasCo
       semanasContasPorCliente={semanasContasPorCliente}
       carregarSemanasContas={carregarSemanasContas}
       onLancar={onLancar}
+      mostrarHistoricoCliente={mostrarHistoricoCliente}
     />
   );
 }
@@ -245,6 +246,14 @@ describe("expansão: contas primeiro, histórico sob demanda", () => {
     expect(carregarMeses).not.toHaveBeenCalled();
     await abrirHistorico();
     expect(carregarMeses).toHaveBeenCalledWith(1);
+  });
+
+  it("seção Shopee/TikTok não oferece o consolidado do cliente (é número do ML)", async () => {
+    const carregarMeses = vi.fn();
+    render(<Casca clientes={[cliente()]} carregarMeses={carregarMeses} mostrarHistoricoCliente={false} />);
+    await abrirCliente();
+    expect(screen.queryByRole("button", { name: /consolidado semanal do cliente/i })).toBeNull();
+    expect(carregarMeses).not.toHaveBeenCalled();
   });
 
   it("no histórico, a competência selecionada fica marcada e as semanas abrem", async () => {

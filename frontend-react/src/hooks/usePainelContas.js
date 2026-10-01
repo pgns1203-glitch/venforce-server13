@@ -27,8 +27,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  listarPainelContas, listarMesesCliente, listarSemanasMes, listarSemanasContas,
+  listarPainelContas, listarMesesCliente, listarSemanasMes, listarSemanasContas, listarComposicaoContas,
   salvarLancamentoManual, removerLancamentoManual,
+  listarLancamentosDaConta, listarHistoricoLancamento,
   iniciarAtualizacaoCliente, obterAtualizacaoCliente,
 } from "../services/painelContasApi.js";
 import { ApiError } from "../services/apiClient.js";
@@ -87,6 +88,10 @@ export function usePainelContas() {
   // { [`${clienteId}:${competencia}`]: { carregando, erro, contas } }
   // `contas` é o batch semanal de TODAS as contas daquele cliente.
   const [semanasContasPorCliente, setSemanasContasPorCliente] = useState({});
+  // { [`${clienteId}:${competencia}`]: { carregando, erro, contas, somaDasContas } }
+  const [composicaoPorCliente, setComposicaoPorCliente] = useState({});
+  const composicaoEmCursoRef = useRef(new Set());
+  const composicaoCarregadaRef = useRef(new Set());
   const semanasContasEmCursoRef = useRef(new Set());
   const semanasContasCarregadasRef = useRef(new Set());
   // { [clienteId]: { competencia, job, erro, iniciando } }
@@ -148,6 +153,9 @@ export function usePainelContas() {
     setSemanasContasPorCliente({});
     semanasContasEmCursoRef.current.clear();
     semanasContasCarregadasRef.current.clear();
+    setComposicaoPorCliente({});
+    composicaoEmCursoRef.current.clear();
+    composicaoCarregadaRef.current.clear();
     return carregarLista();
   }, [carregarLista]);
 
@@ -233,6 +241,31 @@ export function usePainelContas() {
         }));
       })
       .finally(() => semanasContasEmCursoRef.current.delete(chave));
+  }, []);
+
+  const carregarComposicao = useCallback((clienteId, comp, { forcar = false } = {}) => {
+    const chave = `${clienteId}:${comp}`;
+    if (composicaoEmCursoRef.current.has(chave) || (!forcar && composicaoCarregadaRef.current.has(chave))) return;
+    composicaoEmCursoRef.current.add(chave);
+    setComposicaoPorCliente((prev) => ({
+      ...prev,
+      [chave]: { carregando: true, erro: null, contas: prev[chave]?.contas ?? null, somaDasContas: prev[chave]?.somaDasContas ?? null },
+    }));
+    listarComposicaoContas(clienteId, comp)
+      .then((payload) => {
+        composicaoCarregadaRef.current.add(chave);
+        setComposicaoPorCliente((prev) => ({
+          ...prev,
+          [chave]: { carregando: false, erro: null, contas: payload.contas || [], somaDasContas: payload.somaDasContas || null },
+        }));
+      })
+      .catch((err) => {
+        setComposicaoPorCliente((prev) => ({
+          ...prev,
+          [chave]: { carregando: false, erro: normalizarErro(err), contas: null, somaDasContas: null },
+        }));
+      })
+      .finally(() => composicaoEmCursoRef.current.delete(chave));
   }, []);
 
   // Lançamento manual: o servidor é a autoridade (validação, precedência do
@@ -349,6 +382,12 @@ export function usePainelContas() {
     for (const chave of semanasContasCarregadasRef.current) {
       if (terminaram.some((id) => chave.startsWith(`${id}:`))) semanasContasCarregadasRef.current.delete(chave);
     }
+    setComposicaoPorCliente((prev) => Object.fromEntries(
+      Object.entries(prev).filter(([k]) => !terminaram.some((id) => k.startsWith(`${id}:`)))
+    ));
+    for (const chave of composicaoCarregadaRef.current) {
+      if (terminaram.some((id) => chave.startsWith(`${id}:`))) composicaoCarregadaRef.current.delete(chave);
+    }
     carregarLista({ silencioso: true });
   }, [atualizacoes, carregarLista]);
 
@@ -358,12 +397,20 @@ export function usePainelContas() {
     setBusca("");
     setBuscaAplicada("");
     setStatus("todos");
-    setMarketplace(null);
     setMostrarLegado(false);
   }, [competenciaPadrao]);
 
+  // A seção de marketplace é VISTA (aba), não filtro: "Limpar filtros" não
+  // tira a pessoa da aba em que está.
   const temFiltroAtivo = competencia !== competenciaPadrao || squadId != null || busca.trim() !== ""
-    || status !== "todos" || marketplace != null || mostrarLegado;
+    || status !== "todos" || mostrarLegado;
+
+  // Leituras do drawer: sem cache — a trilha muda a cada salvar.
+  const lancamentosDaConta = useCallback((clienteId, contaId) => listarLancamentosDaConta(clienteId, contaId), []);
+  const historicoLancamento = useCallback(
+    (clienteId, contaId, comp) => listarHistoricoLancamento(clienteId, contaId, comp ?? competencia),
+    [competencia]
+  );
 
   const clientes = dados ? dados.clientes || [] : null;
 
@@ -380,6 +427,9 @@ export function usePainelContas() {
     squadsDisponiveis: dados?.squadsDisponiveis || [],
     squadsDoUsuario: dados?.squadsDoUsuario || [],
     marketplacesDisponiveis: dados?.marketplacesDisponiveis || [],
+    secoesMarketplace: dados?.secoesMarketplace || [],
+    acesso: dados?.acesso || null,
+    visao: dados?.visao || null,
     permissoes: dados?.permissoes || { lancarManual: false, atualizarDados: false },
     competenciaAtual: dados?.competenciaAtual || competenciaPadrao,
     carregando, erro, recarregar,
@@ -389,7 +439,8 @@ export function usePainelContas() {
     mesesPorCliente, carregarMeses,
     semanasPorChave, carregarSemanas,
     semanasContasPorCliente, carregarSemanasContas,
-    salvarManual, removerManual,
+    composicaoPorCliente, carregarComposicao,
+    salvarManual, removerManual, lancamentosDaConta, historicoLancamento,
     atualizacoes, atualizarCliente, dispensarAtualizacao,
   };
 }

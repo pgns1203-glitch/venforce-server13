@@ -43,6 +43,15 @@ export function listarSemanasContas(clienteId, competencia, { signal } = {}) {
   });
 }
 
+// Demonstrativo do faturamento POR CONTA (bruto V1 → exclusões → FAT) e a
+// soma das contas. Lazy: só quando a linha "Composição do faturamento" abre.
+export function listarComposicaoContas(clienteId, competencia, { signal } = {}) {
+  return requisitar(`/painel-contas/${encodeURIComponent(clienteId)}/contas/composicao`, {
+    params: { competencia },
+    signal,
+  });
+}
+
 function caminhoManual(clienteId, contaId, competencia) {
   return `/painel-contas/${encodeURIComponent(clienteId)}/contas/${encodeURIComponent(contaId)}/manual/${encodeURIComponent(competencia)}`;
 }
@@ -53,6 +62,16 @@ export function salvarLancamentoManual(clienteId, contaId, competencia, valores)
 
 export function removerLancamentoManual(clienteId, contaId, competencia) {
   return requisitar(caminhoManual(clienteId, contaId, competencia), { metodo: "DELETE" });
+}
+
+// Rastreabilidade (só leitura): competências lançadas da conta e a trilha de
+// alterações de uma competência (criado/alterado/removido).
+export function listarLancamentosDaConta(clienteId, contaId, { signal } = {}) {
+  return requisitar(`/painel-contas/${encodeURIComponent(clienteId)}/contas/${encodeURIComponent(contaId)}/manual`, { signal });
+}
+
+export function listarHistoricoLancamento(clienteId, contaId, competencia, { signal } = {}) {
+  return requisitar(`${caminhoManual(clienteId, contaId, competencia)}/historico`, { signal });
 }
 
 // Atualização sob demanda (admin): POST dispara em segundo plano e responde

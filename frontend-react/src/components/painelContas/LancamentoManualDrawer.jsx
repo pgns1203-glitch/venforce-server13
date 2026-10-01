@@ -12,13 +12,18 @@
 // bloqueio de envio quando FAT, LC e MC não batem.
 //
 // A competência NÃO é editável aqui: é a da tela. Trocar de mês é trocar a
-// competência no topo — assim o formulário nunca mistura o lançamento de um
-// mês com a tela de outro.
+// competência no topo (ou "Abrir" numa competência do histórico, que troca a
+// tela e reabre o drawer) — o formulário nunca mistura o lançamento de um mês
+// com a tela de outro.
+//
+// Rastreabilidade: o bloco "Registro" diz dados até · atualizado em ·
+// responsável · fonte · competência · status, e a trilha (criado/alterado/
+// removido) é lida sob demanda do servidor. Nada aqui é inferido no cliente.
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatarMoeda } from "../../utils/currency.js";
 import { formatarPercentual } from "../../utils/percentage.js";
-import { rotularCompetencia, formatarDataHora } from "../../utils/dates.js";
+import { rotularCompetencia, rotularCompetenciaCurta, formatarData, formatarDataHora } from "../../utils/dates.js";
 
 const TOLERANCIA_MC = 0.005;
 
@@ -36,6 +41,125 @@ function paraCampo(valor, escala = 1) {
   return String(Math.round(Number(valor) * escala * 10000) / 10000);
 }
 
+// Limites do campo "dados até": dentro da competência e nunca depois de hoje
+// (São Paulo) — a mesma regra que o servidor aplica.
+export function limitesDataReferencia(competencia, hoje = hojeEmSaoPaulo()) {
+  const [ano, mes] = String(competencia).split("-").map(Number);
+  const ultimo = new Date(Date.UTC(ano, mes, 0)).getUTCDate();
+  const fimMes = `${competencia}-${String(ultimo).padStart(2, "0")}`;
+  return { min: `${competencia}-01`, max: fimMes < hoje ? fimMes : hoje };
+}
+
+function hojeEmSaoPaulo(agora = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).format(agora);
+}
+
+const ROTULO_ACAO = { criado: "Criado", alterado: "Alterado", removido: "Removido" };
+
+function resumoValores(v) {
+  const partes = [];
+  if (v?.faturamento != null) partes.push(`FAT ${formatarMoeda(v.faturamento, { casas: 0 })}`);
+  if (v?.lucroContribuicao != null) partes.push(`LC ${formatarMoeda(v.lucroContribuicao, { casas: 0 })}`);
+  if (v?.margemContribuicao != null) partes.push(`MC ${formatarPercentual(v.margemContribuicao)}`);
+  if (v?.investimentoAds != null) partes.push(`Ads ${formatarMoeda(v.investimentoAds, { casas: 0 })}`);
+  if (v?.dataReferencia) partes.push(`dados até ${formatarData(v.dataReferencia)}`);
+  return partes.join(" · ") || "sem valores";
+}
+
+function Registro({ conta, competencia }) {
+  const m = conta?.manual;
+  if (!m) return null;
+  const substituido = m.statusRegistro === "substituido_por_automatico";
+  return (
+    <section className="vf-ph-registro" aria-label="Registro do lançamento">
+      <p className="vf-ph-registro__titulo">{conta.rotulo} · {rotularCompetencia(competencia)}</p>
+      <dl className="vf-ph-registro__lista">
+        <div><dt>Dados até</dt><dd>{m.dataReferencia ? formatarData(m.dataReferencia) : "não informado"}</dd></div>
+        <div><dt>Atualizado em</dt><dd>{m.atualizadoEm ? formatarDataHora(m.atualizadoEm) : "—"}</dd></div>
+        <div><dt>Responsável</dt><dd>{m.atualizadoPor || "—"}</dd></div>
+        <div><dt>Fonte</dt><dd>Manual</dd></div>
+        <div><dt>Status</dt><dd>{substituido ? "Guardado — o automático é o exibido" : "Vigente"}</dd></div>
+        {m.criadoEm && (
+          <div><dt>Criado</dt><dd>{formatarDataHora(m.criadoEm)}{m.criadoPor ? ` por ${m.criadoPor}` : ""}</dd></div>
+        )}
+      </dl>
+    </section>
+  );
+}
+
+// Trilha de alterações da conta × competência, lida ao abrir.
+function Trilha({ carregar }) {
+  const [estado, setEstado] = useState({ carregando: false, erro: null, itens: null });
+  async function abrir(evento) {
+    if (!evento.currentTarget.open || estado.itens || estado.carregando) return;
+    setEstado({ carregando: true, erro: null, itens: null });
+    try {
+      const r = await carregar();
+      setEstado({ carregando: false, erro: null, itens: r?.historico || [] });
+    } catch (err) {
+      setEstado({ carregando: false, erro: err?.message || "Não foi possível carregar o histórico.", itens: null });
+    }
+  }
+  return (
+    <details className="vf-ph-trilha" onToggle={abrir}>
+      <summary>Histórico de alterações</summary>
+      {estado.carregando && <p className="vf-ph-trilha__nota">Carregando…</p>}
+      {estado.erro && <p className="vf-field__error">{estado.erro}</p>}
+      {estado.itens && estado.itens.length === 0 && <p className="vf-ph-trilha__nota">Nenhuma alteração registrada nesta competência.</p>}
+      {estado.itens && estado.itens.length > 0 && (
+        <ol className="vf-ph-trilha__lista">
+          {estado.itens.map((h) => (
+            <li key={h.id}>
+              <span className="vf-ph-trilha__acao">{ROTULO_ACAO[h.acao] || h.acao}</span>
+              {" "}{formatarDataHora(h.em)}{h.por ? ` · ${h.por}` : ""}
+              <span className="vf-ph-trilha__valores">{resumoValores(h.valores)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </details>
+  );
+}
+
+// Competências já lançadas desta conta (Ago, Set, Out…): cada uma é um
+// registro próprio. "Abrir" leva a tela inteira para aquele mês.
+function CompetenciasDaConta({ carregar, competencia, onAbrir }) {
+  const [estado, setEstado] = useState({ itens: null, erro: null });
+  useEffect(() => {
+    let vivo = true;
+    carregar()
+      .then((r) => { if (vivo) setEstado({ itens: r?.lancamentos || [], erro: null }); })
+      .catch((err) => { if (vivo) setEstado({ itens: null, erro: err?.message || "Não foi possível carregar." }); });
+    return () => { vivo = false; };
+  }, [carregar]);
+  if (estado.erro) return <p className="vf-field__error">{estado.erro}</p>;
+  if (!estado.itens || estado.itens.length === 0) return null;
+  return (
+    <section className="vf-ph-competencias" aria-label="Competências lançadas desta conta">
+      <p className="vf-ph-registro__titulo">Competências lançadas</p>
+      <ul className="vf-ph-competencias__lista">
+        {estado.itens.map((l) => (
+          <li key={l.competencia} className={l.competencia === competencia ? "is-atual" : ""}>
+            <span className="vf-ph-competencias__mes">{rotularCompetenciaCurta(l.competencia)}</span>
+            <span className="vf-ph-competencias__valor">
+              {l.valores?.fat != null ? formatarMoeda(l.valores.fat, { casas: 0 }) : "FAT não informado"}
+              {l.dataReferencia ? ` · até ${formatarData(l.dataReferencia)}` : ""}
+            </span>
+            {l.competencia === competencia
+              ? <span className="vf-ph-competencias__atual">esta tela</span>
+              : onAbrir && (
+                <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={() => onAbrir(l.competencia)}
+                  aria-label={`Abrir ${rotularCompetencia(l.competencia)}`}>
+                  Abrir
+                </button>
+              )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function valoresIniciais(conta) {
   const m = conta?.fonte?.tipo === "manual" ? conta.manual : null;
   return {
@@ -44,6 +168,7 @@ function valoresIniciais(conta) {
     margemPct: paraCampo(m?.valores?.mc, 100),
     investimentoAds: paraCampo(m?.valores?.ads),
     gmvAds: paraCampo(m?.gmvAds),
+    dataReferencia: m?.dataReferencia || "",
     observacao: m?.observacao || "",
   };
 }
@@ -56,7 +181,10 @@ const CAMPOS = [
   { chave: "gmvAds", rotulo: "GMV Ads (R$)" },
 ];
 
-export function LancamentoManualDrawer({ cliente, contaInicial, competencia, onSalvar, onRemover, onFechar }) {
+export function LancamentoManualDrawer({
+  cliente, contaInicial, competencia, onSalvar, onRemover, onFechar,
+  onCarregarLancamentos, onCarregarHistorico, onIrParaCompetencia,
+}) {
   const idTitulo = useId();
   const contas = useMemo(() => (cliente?.contas || []).filter((c) => c.podeLancarManual), [cliente]);
   const [contaId, setContaId] = useState(() => (contaInicial && contaInicial.podeLancarManual ? contaInicial.id : contas[0]?.id ?? null));
@@ -104,10 +232,21 @@ export function LancamentoManualDrawer({ cliente, contaInicial, competencia, onS
   const acos = !invalido && ads !== null && gmv > 0 ? ads / gmv : null;
   const tacos = !invalido && ads !== null && fat > 0 ? ads / fat : null;
   const temManual = conta?.fonte?.tipo === "manual";
+  const limites = useMemo(() => limitesDataReferencia(competencia), [competencia]);
+  const dataRef = campos.dataReferencia;
+  const dataRefInvalida = Boolean(dataRef) && (dataRef < limites.min || dataRef > limites.max);
+  const carregarLancamentos = useMemo(
+    () => (onCarregarLancamentos && conta ? () => onCarregarLancamentos(cliente.id, conta.id) : null),
+    [onCarregarLancamentos, cliente, conta]
+  );
+  const carregarHistorico = useMemo(
+    () => (onCarregarHistorico && conta ? () => onCarregarHistorico(cliente.id, conta.id, competencia) : null),
+    [onCarregarHistorico, cliente, conta, competencia]
+  );
 
   async function salvar(evento) {
     evento.preventDefault();
-    if (!conta || invalido || vazio || inconsistente) return;
+    if (!conta || invalido || vazio || inconsistente || dataRefInvalida) return;
     setEnviando(true);
     setErroServidor(null);
     try {
@@ -117,6 +256,7 @@ export function LancamentoManualDrawer({ cliente, contaInicial, competencia, onS
         margemContribuicao: mc,
         investimentoAds: ads,
         gmvAds: gmv,
+        dataReferencia: campos.dataReferencia || null,
         observacao: campos.observacao.trim() || null,
       });
       onFechar();
@@ -198,6 +338,24 @@ export function LancamentoManualDrawer({ cliente, contaInicial, competencia, onS
                   ))}
                 </div>
 
+                <div className="vf-field">
+                  <label className="vf-field__label" htmlFor={`${idTitulo}-data`}>Dados até</label>
+                  <input
+                    id={`${idTitulo}-data`}
+                    type="date"
+                    className="vf-input vf-input--sm vf-ph-drawer__data"
+                    min={limites.min}
+                    max={limites.max}
+                    value={campos.dataReferencia}
+                    onChange={(e) => setCampos((prev) => ({ ...prev, dataReferencia: e.target.value }))}
+                    aria-describedby={`${idTitulo}-data-dica`}
+                    aria-invalid={dataRefInvalida || undefined}
+                  />
+                  <span className="vf-field__hint" id={`${idTitulo}-data-dica`}>
+                    Último dia coberto pelos números (opcional). Em branco = não informado.
+                  </span>
+                </div>
+
                 <p className="vf-ph-drawer__previa" aria-live="polite">
                   {mcDerivada !== null && <span>MC calculada: {formatarPercentual(mcDerivada)}</span>}
                   {lcDerivado !== null && <span>LC calculado: {formatarMoeda(lcDerivado, { casas: 0 })}</span>}
@@ -219,6 +377,11 @@ export function LancamentoManualDrawer({ cliente, contaInicial, competencia, onS
                 </div>
 
                 {invalido && <p className="vf-field__error">Use só números (ex.: 1.234,56).</p>}
+                {dataRefInvalida && (
+                  <p className="vf-field__error" role="alert">
+                    "Dados até" precisa estar em {rotularCompetencia(competencia)} e não pode ser depois de hoje.
+                  </p>
+                )}
                 {inconsistente && (
                   <p className="vf-field__error" role="alert">
                     FAT, LC e MC não batem: MC deve ser LC ÷ FAT. Informe só dois deles para o terceiro ser calculado.
@@ -228,12 +391,20 @@ export function LancamentoManualDrawer({ cliente, contaInicial, competencia, onS
 
                 <p className="vf-ph-drawer__nota">
                   O dado fica marcado como <strong>MANUAL</strong>. Se a integração publicar esta competência, o automático
-                  passa a ser o exibido e este lançamento continua guardado.
-                  {temManual && conta.manual?.atualizadoPor && (
-                    <> Última alteração por {conta.manual.atualizadoPor}
-                      {conta.manual.atualizadoEm ? ` em ${formatarDataHora(conta.manual.atualizadoEm)}` : ""}.</>
-                  )}
+                  passa a ser o exibido e este lançamento continua guardado. Cada competência é um registro próprio:
+                  salvar este mês não altera os outros.
                 </p>
+
+                {temManual && <Registro conta={conta} competencia={competencia} />}
+                {temManual && carregarHistorico && <Trilha key={`${conta.id}:${competencia}`} carregar={carregarHistorico} />}
+                {carregarLancamentos && (
+                  <CompetenciasDaConta
+                    key={conta.id}
+                    carregar={carregarLancamentos}
+                    competencia={competencia}
+                    onAbrir={onIrParaCompetencia ? (comp) => onIrParaCompetencia(cliente.id, conta.id, comp) : null}
+                  />
+                )}
               </>
             )}
           </div>
@@ -248,7 +419,7 @@ export function LancamentoManualDrawer({ cliente, contaInicial, competencia, onS
             <button
               type="submit"
               className="vf-btn vf-btn--primary vf-btn--sm"
-              disabled={!conta || invalido || vazio || inconsistente || enviando}
+              disabled={!conta || invalido || vazio || inconsistente || dataRefInvalida || enviando}
             >
               {enviando ? "Salvando…" : "Salvar lançamento"}
             </button>

@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   listarPainelContas: vi.fn(),
   listarMesesCliente: vi.fn(),
   listarSemanasMes: vi.fn(),
+  listarComposicaoContas: vi.fn(),
   salvarLancamentoManual: vi.fn(),
   removerLancamentoManual: vi.fn(),
   iniciarAtualizacaoCliente: vi.fn(),
@@ -136,5 +137,31 @@ describe("usePainelContas · atualizar dados", () => {
     await passarPolling();
     await waitFor(() => expect(result.current.atualizacoes[1].erro?.mensagem).toMatch(/se perdeu/));
     await waitFor(() => expect(api.listarPainelContas).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("usePainelContas · composição do faturamento", () => {
+  it("busca uma vez por cliente × competência, guarda contas + soma e repete só com forcar", async () => {
+    api.listarComposicaoContas.mockResolvedValue({ ok: true, contas: [{ contaId: 11, composicao: null }], somaDasContas: null });
+    const hook = await montar();
+    act(() => hook.result.current.carregarComposicao(1, COMP));
+    act(() => hook.result.current.carregarComposicao(1, COMP));
+    await waitFor(() => expect(hook.result.current.composicaoPorCliente[`1:${COMP}`]?.contas).toHaveLength(1));
+    expect(api.listarComposicaoContas).toHaveBeenCalledTimes(1);
+    expect(api.listarComposicaoContas).toHaveBeenCalledWith(1, COMP);
+    act(() => hook.result.current.carregarComposicao(1, COMP));
+    expect(api.listarComposicaoContas).toHaveBeenCalledTimes(1);
+    act(() => hook.result.current.carregarComposicao(1, COMP, { forcar: true }));
+    await waitFor(() => expect(api.listarComposicaoContas).toHaveBeenCalledTimes(2));
+  });
+
+  it("erro fica na chave e permite tentar de novo", async () => {
+    api.listarComposicaoContas.mockRejectedValueOnce(new ApiError("Falhou", { status: 500, codigo: "X" }));
+    const hook = await montar();
+    act(() => hook.result.current.carregarComposicao(1, COMP));
+    await waitFor(() => expect(hook.result.current.composicaoPorCliente[`1:${COMP}`]?.erro).toBeTruthy());
+    api.listarComposicaoContas.mockResolvedValueOnce({ ok: true, contas: [], somaDasContas: null });
+    act(() => hook.result.current.carregarComposicao(1, COMP, { forcar: true }));
+    await waitFor(() => expect(hook.result.current.composicaoPorCliente[`1:${COMP}`]?.contas).toEqual([]));
   });
 });

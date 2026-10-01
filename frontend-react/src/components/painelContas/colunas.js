@@ -44,7 +44,7 @@ export const COLUNAS = [
     grupo: "financeiro",
     tipo: "moeda",
     sentido: "positivo-bom",
-    definicao: "Faturamento — venda total do período.",
+    definicao: "Faturamento — venda dos pedidos válidos do período (sem cancelamentos, devoluções e mediações; ver Composição do faturamento).",
   },
   {
     chave: "lc",
@@ -52,7 +52,7 @@ export const COLUNAS = [
     grupo: "financeiro",
     tipo: "moeda",
     sentido: "positivo-bom",
-    definicao: "Lucro de contribuição — venda total menos imposto, tarifas, frete e custo.",
+    definicao: "Lucro de contribuição — venda menos imposto, tarifas, frete e custo, somado nos pedidos com custo cadastrado. ◐ = parte do FAT sem custo.",
   },
   {
     chave: "mc",
@@ -60,7 +60,7 @@ export const COLUNAS = [
     grupo: "financeiro",
     tipo: "fracao",
     sentido: "positivo-bom",
-    definicao: "Margem de contribuição — LC dividido pela venda total.",
+    definicao: "Margem de contribuição — LC dividido pelo faturamento dos pedidos com custo cadastrado. ◐ = parte do FAT sem custo.",
   },
   {
     chave: "ads",

@@ -1131,3 +1131,265 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ── Rastreabilidade do lançamento (drawer) ─────────────────────────────
+   Registro = ficha do que está gravado; trilha e competências são leitura
+   sob demanda. Mesma escala tipográfica discreta do resto do drawer. */
+.vf-ph-drawer__data {
+  max-width: 12rem;
+}
+
+.vf-ph-registro,
+.vf-ph-competencias {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-3);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface-2);
+}
+
+.vf-ph-registro__titulo {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-ph-registro__lista {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--vf-sp-2) var(--vf-sp-4);
+  margin: 0;
+}
+
+.vf-ph-registro__lista dt {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-registro__lista dd {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text);
+}
+
+.vf-ph-trilha summary {
+  cursor: pointer;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-trilha__lista {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  margin: var(--vf-sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text);
+}
+
+.vf-ph-trilha__acao {
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-ph-trilha__valores,
+.vf-ph-trilha__nota {
+  display: block;
+  margin: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-competencias__lista {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vf-ph-competencias__lista li {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  min-height: 28px;
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-ph-competencias__lista li.is-atual {
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-ph-competencias__mes {
+  min-width: 4.5rem;
+  text-transform: capitalize;
+}
+
+.vf-ph-competencias__valor {
+  flex: 1;
+  color: var(--vf-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-competencias__atual {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+@media (max-width: 520px) {
+  .vf-ph-registro__lista {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── Cobertura de custos (LC/MC parciais) ───────────────────────────────────
+   Só sinal: o número continua o calculado. Discreto (2xs, tom muted), abaixo
+   do valor como o delta — não compete com o número nem usa cor de alerta. */
+.vf-ph-parcial {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--vf-fs-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* ── Composição do faturamento (demonstrativo por conta) ────────────────── */
+.vf-ph-row--composicao > td {
+  padding: var(--vf-sp-2) var(--vf-table-cell-px) var(--vf-sp-3);
+  background: var(--vf-bg);
+  border-top: none;
+}
+
+.vf-ph-comp {
+  position: sticky;
+  left: var(--vf-table-cell-px);
+  width: max-content;
+  max-width: min(1100px, 92vw);
+  padding-left: calc(var(--vf-ph-recuo-filha) - var(--vf-table-cell-px) - 14px);
+  overflow-x: auto;
+}
+
+.vf-ph-table .vf-ph-comp__tabela {
+  border-collapse: collapse;
+  font-size: var(--vf-fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-table .vf-ph-comp__tabela th,
+.vf-ph-table .vf-ph-comp__tabela td {
+  /* Tabela aninhada: anula o que a tabela-mãe (.vf-table/.vf-ph-table)
+     aplica a todo th/td descendente — caixa alta, fundo, régua, sticky. */
+  position: static;
+  height: auto;
+  padding: 5px var(--vf-sp-3);
+  border-top: none;
+  border-bottom: 1px solid var(--vf-border);
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  vertical-align: top;
+  background: var(--vf-surface);
+}
+
+.vf-ph-table .vf-ph-comp__tabela .num {
+  text-align: right;
+}
+
+.vf-ph-table .vf-ph-comp__tabela thead th {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+  border-bottom-color: var(--vf-border-strong);
+  white-space: nowrap;
+}
+
+.vf-ph-table .vf-ph-comp__tabela .is-soma {
+  box-shadow: inset 1px 0 0 var(--vf-border-strong);
+}
+
+.vf-ph-comp__conta,
+.vf-ph-comp__periodo {
+  display: block;
+}
+
+.vf-ph-comp__periodo,
+.vf-ph-comp__pedidos,
+.vf-ph-comp__ajuda {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-comp__ajuda {
+  display: block;
+}
+
+.vf-ph-table .vf-ph-comp__tabela tbody th {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+  min-width: 15rem;
+}
+
+.vf-ph-comp__linha.is-exclusao th {
+  padding-left: var(--vf-sp-5);
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-comp__moeda {
+  display: block;
+  white-space: nowrap;
+}
+
+.vf-ph-comp__pedidos {
+  display: block;
+  white-space: nowrap;
+}
+
+.vf-ph-comp__valor.is-forte .vf-ph-comp__moeda {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-ph-comp__linha.is-exclusao .vf-ph-comp__moeda {
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-comp__valor.is-zero .vf-ph-comp__moeda {
+  color: var(--vf-text-disabled);
+}
+
+.vf-ph-comp__linha.is-total th,
+.vf-ph-comp__linha.is-total td {
+  border-top: 1px solid var(--vf-border-strong);
+}
+
+.vf-ph-comp__linha.is-conferencia th,
+.vf-ph-comp__linha.is-conferencia td {
+  border-bottom: none;
+  font-size: var(--vf-fs-2xs);
+}
+
+.vf-ph-comp__notas {
+  margin: var(--vf-sp-2) 0 0;
+  padding-left: 1.1em;
+  max-width: 72ch;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  white-space: normal;
+}
+
+.vf-ph-comp__vazio {
+  margin: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-secondary);
+  white-space: normal;
+}

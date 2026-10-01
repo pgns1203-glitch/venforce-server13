@@ -13,9 +13,10 @@
 // Layout: container WIDE + densidade compacta. Header e toolbar são fixos em
 // altura; só a tabela cresce.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { usePainelContas } from "../hooks/usePainelContas.js";
 import { ToolbarPainel, OPCOES_STATUS } from "../components/painelContas/ToolbarPainel.jsx";
+import { SecoesMarketplace } from "../components/painelContas/SecoesMarketplace.jsx";
 import { useGruposDeColunas } from "../components/painelContas/MenuColunas.jsx";
 import { TabelaHierarquica, useExpansao } from "../components/painelContas/TabelaHierarquica.jsx";
 import { LancamentoManualDrawer } from "../components/painelContas/LancamentoManualDrawer.jsx";
@@ -40,7 +41,7 @@ function Vazio({ titulo, descricao, acao, onAcao, icone = "∅", tom = "" }) {
   );
 }
 
-function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, onLimpar, onStatus }) {
+function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, onLimpar, onStatus, visao, onConsolidado }) {
   if (busca.trim()) {
     return (
       <Vazio
@@ -83,12 +84,36 @@ function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, o
     );
   }
 
+  if (visao?.codigo) {
+    return (
+      <Vazio
+        titulo={`Nenhum cliente com operação ${visao.rotulo} na sua carteira`}
+        descricao={`Uma operação ${visao.rotulo} aparece aqui quando a conta é cadastrada no cliente (Clientes e Contas). ${visao.fonte === "manual" ? "Os números entram por lançamento manual." : ""}`.trim()}
+        acao="Ver consolidado"
+        onAcao={onConsolidado}
+      />
+    );
+  }
+
   return (
     <Vazio
       titulo="Sua carteira está vazia"
       descricao="Nenhum cliente ativo está atribuído a você no momento. Fale com o coordenador do seu squad se isso for inesperado."
     />
   );
+}
+
+// De onde vem a carteira (regra do Painel: admin · coordenador · gestor).
+export function descreverAcesso(acesso) {
+  if (!acesso) return null;
+  if (acesso.tipo === "admin") return "todos os Squads";
+  const partes = [];
+  const squads = (acesso.squadsCoordenados || []).map((s) => s.nome);
+  if (squads.length) partes.push(`${squads.length === 1 ? "Squad que você coordena" : "Squads que você coordena"}: ${squads.join(", ")}`);
+  if (acesso.clientesComoGestor > 0) {
+    partes.push(`gestor de ${acesso.clientesComoGestor} ${acesso.clientesComoGestor === 1 ? "cliente" : "clientes"}`);
+  }
+  return partes.join(" · ") || null;
 }
 
 export default function PainelContasPage() {
@@ -98,11 +123,12 @@ export default function PainelContasPage() {
     squadId, setSquadId, busca, setBusca, status, setStatus,
     marketplace, setMarketplace, mostrarLegado, setMostrarLegado,
     temFiltroAtivo, limparFiltros,
-    clientes, resumoCarteira, squadsDisponiveis, marketplacesDisponiveis,
+    clientes, resumoCarteira, squadsDisponiveis, secoesMarketplace, visao, acesso,
     carregando, atualizando, erro, recarregar,
     mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
     semanasContasPorCliente, carregarSemanasContas,
-    salvarManual, removerManual,
+    composicaoPorCliente, carregarComposicao,
+    salvarManual, removerManual, lancamentosDaConta, historicoLancamento,
     permissoes, competenciaAtual, atualizacoes, atualizarCliente, dispensarAtualizacao,
   } = painel;
 
@@ -113,6 +139,25 @@ export default function PainelContasPage() {
 
   const abrirLancamento = useCallback((cliente, conta) => setLancamento({ cliente, conta }), []);
   const fecharLancamento = useCallback(() => setLancamento(null), []);
+
+  // Do histórico do drawer para outra competência: a tela troca de mês e o
+  // drawer reabre na MESMA conta quando a lista daquele mês chega — nunca
+  // com o cliente/valores do mês anterior.
+  const [reabrir, setReabrir] = useState(null); // { clienteId, contaId, competencia }
+  const irParaCompetencia = useCallback((clienteId, contaId, comp) => {
+    setLancamento(null);
+    setReabrir({ clienteId, contaId, competencia: comp });
+    setCompetencia(comp);
+  }, [setCompetencia]);
+  useEffect(() => {
+    if (!reabrir || carregando || !clientes) return;
+    // Cada linha diz a própria competência: só reabre com a lista DO mês novo.
+    const daNova = clientes.length > 0 && clientes.every((c) => c.competencia === reabrir.competencia);
+    if (!daNova) return;
+    const cliente = clientes.find((c) => c.id === reabrir.clienteId);
+    setReabrir(null);
+    if (cliente) setLancamento({ cliente, conta: cliente.contas?.find((c) => c.id === reabrir.contaId) });
+  }, [reabrir, carregando, clientes]);
 
   const temClientes = Boolean(clientes && clientes.length > 0);
   // Lista cheia mas ninguém com número NA COMPETÊNCIA: nota sobre a tabela, não
@@ -128,11 +173,24 @@ export default function PainelContasPage() {
             <h1 className="vf-page-header__title">Painel de Contas</h1>
             <p className="vf-page-header__description">
               {rotularCompetencia(competencia)} · dados operacionais da carteira
+              {descreverAcesso(acesso) && <span data-testid="escopo-acesso"> · {descreverAcesso(acesso)}</span>}
             </p>
           </div>
         </header>
 
-        {erro && !clientes && (
+        {clientes && (
+          <SecoesMarketplace secoes={secoesMarketplace} ativa={marketplace} onSelecionar={setMarketplace} />
+        )}
+
+        {erro && !clientes && erro.status === 403 && (
+          <Vazio
+            icone="⊘"
+            titulo="O Painel de Contas não está liberado para você"
+            descricao="O Painel mostra a carteira de quem coordena um Squad ou é gestor de um cliente. Se você deveria ver esta carteira, fale com o administrador."
+          />
+        )}
+
+        {erro && !clientes && erro.status !== 403 && (
           <div className="vf-banner is-danger" role="alert">
             <div className="vf-banner__content">
               <p className="vf-banner__title">Não foi possível carregar o Painel de Contas</p>
@@ -150,7 +208,6 @@ export default function PainelContasPage() {
             competencia={competencia} onCompetencia={setCompetencia} competenciaPadrao={competenciaPadrao}
             squadId={squadId} onSquad={setSquadId} squadsDisponiveis={squadsDisponiveis}
             status={status} onStatus={setStatus}
-            marketplace={marketplace} onMarketplace={setMarketplace} marketplacesDisponiveis={marketplacesDisponiveis}
             mostrarLegado={mostrarLegado} onMostrarLegado={setMostrarLegado}
             temFiltroAtivo={temFiltroAtivo} onLimpar={limparFiltros}
             grupos={grupos} onAlternarGrupo={alternarGrupo}
@@ -177,6 +234,8 @@ export default function PainelContasPage() {
             squadsDisponiveis={squadsDisponiveis}
             onLimpar={limparFiltros}
             onStatus={setStatus}
+            visao={visao}
+            onConsolidado={() => setMarketplace(null)}
           />
         )}
 
@@ -188,7 +247,9 @@ export default function PainelContasPage() {
                   <p className="vf-banner__title">Nenhum cliente listado tem dados em {rotularCompetencia(competencia)}</p>
                   <p className="vf-banner__description">
                     Cada linha diz o motivo. Para ver outro mês, troque a competência — nada é preenchido com um mês
-                    diferente.{competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
+                    diferente.{visao?.fonte === "manual"
+                      ? ` ${visao.rotulo} não tem integração automática: os números entram por lançamento manual em cada conta.`
+                      : competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
                   </p>
                 </div>
               </div>
@@ -206,6 +267,8 @@ export default function PainelContasPage() {
               carregarSemanas={carregarSemanas}
               semanasContasPorCliente={semanasContasPorCliente}
               carregarSemanasContas={carregarSemanasContas}
+              composicaoPorCliente={composicaoPorCliente}
+              carregarComposicao={carregarComposicao}
               atualizando={atualizando}
               onLancar={abrirLancamento}
               competenciaAtual={competenciaAtual}
@@ -213,12 +276,18 @@ export default function PainelContasPage() {
               podeAtualizar={permissoes.atualizarDados === true}
               onAtualizar={atualizarCliente}
               onDispensarAtualizacao={dispensarAtualizacao}
+              mostrarHistoricoCliente={!marketplace || marketplace === "meli"}
             />
 
             <p className="vf-ph-rodape">
-              O número do cliente é o consolidado das contas indicadas ao lado do nome; ao expandir, cada conta mostra o
-              próprio número (o mesmo da Central de Vendas) e pode abrir suas semanas reais. Ads é medido por cliente.
-              API = sincronização; Manual = lançado pela equipe.
+              {marketplace
+                ? <>Seção {visao?.rotulo || marketplace}: o número de cada cliente soma só as contas {visao?.rotulo || marketplace}; as
+                    demais operações ficam no Consolidado. {marketplace === "meli"
+                    ? "Ads é medido por cliente (Mercado Livre)."
+                    : "Ads aqui é só o lançado manualmente nestas contas."}</>
+                : <>O número do cliente é o consolidado das contas indicadas ao lado do nome; ao expandir, cada conta mostra o
+                    próprio número (o mesmo da Central de Vendas) e pode abrir suas semanas reais. Ads é medido por cliente.</>}
+              {" "}API = sincronização; Manual = lançado pela equipe.
             </p>
           </>
         )}
@@ -232,6 +301,9 @@ export default function PainelContasPage() {
           onSalvar={salvarManual}
           onRemover={removerManual}
           onFechar={fecharLancamento}
+          onCarregarLancamentos={lancamentosDaConta}
+          onCarregarHistorico={historicoLancamento}
+          onIrParaCompetencia={irParaCompetencia}
         />
       )}
     </div>

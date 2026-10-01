@@ -74,6 +74,14 @@ async function listarSemanasDasContas(req, res) {
   } catch (err) { return tratarErro(res, err, "listarSemanasDasContas"); }
 }
 
+// GET /painel-contas/:clienteId/contas/composicao?competencia=
+async function listarComposicaoDasContas(req, res) {
+  try {
+    const data = await service.listarComposicaoDasContas(req.user || {}, req.params.clienteId, req.query.competencia);
+    return responder(res, 200, data);
+  } catch (err) { return tratarErro(res, err, "listarComposicaoDasContas"); }
+}
+
 // PUT /painel-contas/:clienteId/contas/:contaId/manual/:competencia
 async function salvarLancamentoManual(req, res) {
   try {
@@ -90,6 +98,22 @@ async function removerLancamentoManual(req, res) {
     const data = await service.removerLancamentoManual(req.user || {}, clienteId, contaId, competencia);
     return responder(res, 200, data);
   } catch (err) { return tratarErro(res, err, "removerLancamentoManual"); }
+}
+
+// GET /painel-contas/:clienteId/contas/:contaId/manual
+async function listarLancamentosDaConta(req, res) {
+  try {
+    const { clienteId, contaId } = req.params;
+    return responder(res, 200, await service.listarLancamentosDaConta(req.user || {}, clienteId, contaId));
+  } catch (err) { return tratarErro(res, err, "listarLancamentosDaConta"); }
+}
+
+// GET /painel-contas/:clienteId/contas/:contaId/manual/:competencia/historico
+async function listarHistoricoLancamento(req, res) {
+  try {
+    const { clienteId, contaId, competencia } = req.params;
+    return responder(res, 200, await service.listarHistoricoLancamento(req.user || {}, clienteId, contaId, competencia));
+  } catch (err) { return tratarErro(res, err, "listarHistoricoLancamento"); }
 }
 
 // POST /painel-contas/:clienteId/atualizar/:competencia — 202: a execução
@@ -112,6 +136,7 @@ async function obterAtualizacao(req, res) {
 }
 
 module.exports = {
-  listar, listarMeses, listarSemanas, listarSemanasDasContas, salvarLancamentoManual, removerLancamentoManual,
+  listar, listarMeses, listarSemanas, listarSemanasDasContas, listarComposicaoDasContas, salvarLancamentoManual, removerLancamentoManual,
+  listarLancamentosDaConta, listarHistoricoLancamento,
   iniciarAtualizacao, obterAtualizacao, maskSensitiveData,
 };

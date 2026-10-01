@@ -36,9 +36,11 @@ function novoModelo() {
       { id: 10, nome: "Squad Alpha", slug: "alpha", ativo: true },
       { id: 20, nome: "Squad Beta", slug: "beta", ativo: true },
     ],
+    // Painel de Contas V3: o escopo do Painel é de quem COORDENA o Squad (ou
+    // é gestor do cliente) — Alpha e Beta coordenam os seus.
     members: [
-      { squad_id: 10, user_id: 100, is_primary: true, funcao: "membro", ativo: true },
-      { squad_id: 20, user_id: 200, is_primary: true, funcao: "membro", ativo: true },
+      { squad_id: 10, user_id: 100, is_primary: true, funcao: "coordenador", ativo: true },
+      { squad_id: 20, user_id: 200, is_primary: true, funcao: "coordenador", ativo: true },
     ],
     history: [
       { cliente_id: 1, squad_id: 10, fim_em: null },
@@ -146,6 +148,30 @@ function instalarMock(m) {
       return { rows: [] };
     }
 
+    if (q.includes("painelAcesso:ADMIN_TODOS")) {
+      contar("painelAcesso:ADMIN_TODOS");
+      return { rows: m.clientes.filter((c) => c.ativo).map(({ id, slug, nome }) => ({ id, slug, nome })) };
+    }
+    if (q.includes("painelAcesso:SQUADS_COORDENADOS")) {
+      contar("painelAcesso:SQUADS_COORDENADOS");
+      return {
+        rows: m.members.filter((x) => x.user_id === params[0] && x.ativo && x.funcao === "coordenador")
+          .map((x) => m.squads.find((sq) => sq.id === x.squad_id && sq.ativo)).filter(Boolean)
+          .map(({ id, nome, slug }) => ({ id, nome, slug })),
+      };
+    }
+    if (q.includes("painelAcesso:CLIENTES_COORDENADOS")) {
+      contar("painelAcesso:CLIENTES_COORDENADOS");
+      return { rows: portfolioInterno(m, params[0]) };
+    }
+    if (q.includes("painelAcesso:CLIENTES_GESTOR")) {
+      contar("painelAcesso:CLIENTES_GESTOR");
+      return { rows: [] };
+    }
+    if (q.includes("painelAcesso:PODE_VER_CLIENTE")) {
+      contar("painelAcesso:PODE_VER_CLIENTE");
+      return { rows: portfolioInterno(m, params[0]).some((c) => c.id === Number(params[1])) ? [{ "?column?": 1 }] : [] };
+    }
     if (q.includes("authz:PORTFOLIO_ADMIN_ALL")) {
       contar("authz:PORTFOLIO_ADMIN_ALL");
       return { rows: m.clientes.filter((c) => c.ativo).map(({ id, slug, nome }) => ({ id, slug, nome })) };

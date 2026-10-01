@@ -10,41 +10,76 @@
 //   gerarJSON({ task, system, prompt, maxTokens?, temperature? })
 //   gerarTexto({ task, system, prompt, maxTokens?, temperature? })
 //
-// Hoje só existe o provedor "anthropic" (Claude, modelo padrão Haiku). Para
-// adicionar OpenAI ou Gemini no futuro: criar um client com a mesma interface
-// do claudeClient (gerarTexto, getModel, resolverModeloPadrao, PROVIDER) e
+// Provedores: "anthropic" (Claude, padrão Haiku) e "mimo" (Xiaomi MiMo, padrão
+// mimo-v2.6-pro). Para adicionar outro no futuro: criar um client com a mesma
+// interface (gerarTexto, getModel, resolverModeloPadrao, PROVIDER) e
 // registrá-lo no mapa PROVIDERS abaixo. Engines não mudam.
 //
-// Provedor ativo: env AI_PROVIDER. Ausente/vazia = "anthropic". Qualquer
-// valor fora do mapa PROVIDERS é erro explícito (AI_PROVIDER_INVALID), nunca
-// fallback silencioso. Ver docs/AI_PROVIDER.md.
+// Provedor da task: AI_SEO_*_PROVIDER → AI_PROVIDER → "anthropic" (ver
+// aiTasks.js). Env vazia = não configurada. Qualquer valor fora do mapa
+// PROVIDERS é erro explícito (AI_PROVIDER_INVALID), nunca fallback
+// silencioso. Ver docs/AI_PROVIDER.md.
 // -----------------------------------------------------------------------------
 
 const claudeClient = require("./claudeClient");
-const { taskConhecida, modeloDaTask } = require("./aiTasks");
+const mimoClient = require("./mimoClient");
+const {
+  taskConhecida, modeloDaTask, ENV_PROVIDER_POR_TASK, PROVIDER_FIXO_POR_TASK,
+} = require("./aiTasks");
 
 // Mapa de provedores disponíveis. Cada um precisa expor:
 //   gerarTexto({ system, prompt, maxTokens, temperature, model }) -> { ok, texto, ... }
 //   getModel(), resolverModeloPadrao(), PROVIDER
 const PROVIDERS = {
   anthropic: claudeClient,
+  mimo: mimoClient,
 };
 
 const PROVIDER_PADRAO = "anthropic";
 
-// Provedor configurado, ou null se AI_PROVIDER tem valor que não existe aqui.
-function getProvider() {
-  const nome = String(process.env.AI_PROVIDER || "").trim().toLowerCase() || PROVIDER_PADRAO;
-  return Object.prototype.hasOwnProperty.call(PROVIDERS, nome) ? PROVIDERS[nome] : null;
+function existeProvider(nome) {
+  return Object.prototype.hasOwnProperty.call(PROVIDERS, nome);
 }
 
-// Não ecoa o valor configurado: pode ser qualquer coisa colada por engano.
-const MSG_PROVIDER_INVALIDO = 'AI_PROVIDER inválido: use "anthropic" ou deixe vazio.';
+function lerEnvProvider(nomeEnv) {
+  return String(process.env[nomeEnv] || "").trim().toLowerCase();
+}
 
-function providerOuErro() {
-  const provider = getProvider();
-  if (provider) return provider;
-  const e = new Error(MSG_PROVIDER_INVALIDO);
+// ---------------------------------------------------------------------------
+// resolverProvedor — qual provedor atende a task, e de onde veio.
+//   task fixa (legacy_optimizer → anthropic) → AI_SEO_*_PROVIDER →
+//   AI_PROVIDER → "anthropic".
+// AI_PROVIDER é validado SEMPRE, mesmo quando a task tem env própria: config
+// quebrada aparece cedo em vez de ficar escondida até alguém tirar o override.
+// Devolve { ok:true, provider, origem } ou { ok:false, envInvalida }.
+// ---------------------------------------------------------------------------
+function resolverProvedor(task) {
+  const global = lerEnvProvider("AI_PROVIDER");
+  if (global && !existeProvider(global)) return { ok: false, envInvalida: "AI_PROVIDER" };
+  if (taskConhecida(task)) {
+    const fixo = PROVIDER_FIXO_POR_TASK[task];
+    if (fixo) return { ok: true, provider: fixo, origem: "fixo" };
+    const envTask = ENV_PROVIDER_POR_TASK[task];
+    const valor = envTask ? lerEnvProvider(envTask) : "";
+    if (valor) {
+      return existeProvider(valor)
+        ? { ok: true, provider: valor, origem: envTask }
+        : { ok: false, envInvalida: envTask };
+    }
+  }
+  if (global) return { ok: true, provider: global, origem: "AI_PROVIDER" };
+  return { ok: true, provider: PROVIDER_PADRAO, origem: "padrao" };
+}
+
+// Nomeia a env, mas não ecoa o valor: pode ser qualquer coisa colada por engano.
+function mensagemProviderInvalido(envInvalida) {
+  return envInvalida + ' inválido: use "anthropic" ou "mimo", ou deixe vazio.';
+}
+
+function clientOuErro(task) {
+  const r = resolverProvedor(task);
+  if (r.ok) return PROVIDERS[r.provider];
+  const e = new Error(mensagemProviderInvalido(r.envInvalida));
   e.codigo = "AI_PROVIDER_INVALID";
   throw e;
 }
@@ -56,12 +91,13 @@ const _deps = {
 };
 
 // ---------------------------------------------------------------------------
-// resolverModelo — qual provedor/modelo atende a task, e de onde veio.
+// resolverModelo — qual provedor/modelo atende a task, e de onde veio o modelo.
 //   modelo específico da task (AI_SEO_*_MODEL) → padrão do provedor
-//   (ANTHROPIC_MODEL → DEFAULT_MODEL). Task ausente/desconhecida = padrão.
+//   (ANTHROPIC_MODEL → Haiku | MIMO_MODEL → mimo-v2.6-pro).
+//   Task ausente/desconhecida = padrão do provedor.
 // ---------------------------------------------------------------------------
 function resolverModelo(task) {
-  const provider = providerOuErro();
+  const provider = clientOuErro(task);
   const daTask = modeloDaTask(task);
   const escolhido = daTask || provider.resolverModeloPadrao();
   return { provider: provider.PROVIDER, model: escolhido.model, origem: escolhido.origem };
@@ -118,19 +154,20 @@ async function executar(opts) {
   const o = opts || {};
   const task = taskConhecida(o.task) ? o.task : null;
   // Configuração inválida falha cedo: nenhuma chamada sai para o provedor.
-  if (!getProvider()) {
+  const prov = resolverProvedor(task);
+  if (!prov.ok) {
     return {
       task,
       latencyMs: null,
       resp: {
-        ok: false, codigo: "AI_PROVIDER_INVALID", erro: MSG_PROVIDER_INVALIDO,
+        ok: false, codigo: "AI_PROVIDER_INVALID", erro: mensagemProviderInvalido(prov.envInvalida),
         provider: null, model: null, tentativas: 0,
       },
     };
   }
   const { model } = resolverModelo(task);
   const inicio = _deps.agora();
-  const resp = await getProvider().gerarTexto({
+  const resp = await PROVIDERS[prov.provider].gerarTexto({
     system: o.system,
     prompt: o.prompt,
     maxTokens: o.maxTokens,
@@ -188,10 +225,16 @@ function limparJson(texto) {
 //   AI_PROVIDER_INVALID   — AI_PROVIDER com valor que não é provedor daqui;
 //                           nenhuma chamada sai (tentativas 0).
 //   AI_RESPONSE_TRUNCATED — a IA parou no limite de tokens (stop_reason
-//                           "max_tokens"). O JSON viria cortado; antes isso
+//                           "max_tokens") ou, na MiMo, por repetição
+//                           ("repetition_truncation"). O JSON viria cortado; antes isso
 //                           aparecia como JSON_INVALIDO e escondia a causa.
 //   JSON_INVALIDO         — resposta completa, mas não é JSON válido.
 // ---------------------------------------------------------------------------
+// stop_reason que significa "saída cortada": max_tokens (Anthropic e MiMo) e
+// repetition_truncation (MiMo corta quando detecta repetição). Em ambos o JSON
+// viria incompleto.
+const STOP_TRUNCADO = new Set(["max_tokens", "repetition_truncation"]);
+
 async function gerarJSON(opts) {
   const { task, resp, latencyMs } = await executar(opts);
   const comMeta = (resultado) => {
@@ -205,7 +248,7 @@ async function gerarJSON(opts) {
     return comMeta(resp);
   }
 
-  if (resp.stopReason === "max_tokens") {
+  if (STOP_TRUNCADO.has(resp.stopReason)) {
     return comMeta({
       ok: false,
       codigo: "AI_RESPONSE_TRUNCATED",
@@ -245,8 +288,8 @@ function modeloAtual(task) {
   return resolverModelo(task).model;
 }
 
-function provedorAtual() {
-  return providerOuErro().PROVIDER;
+function provedorAtual(task) {
+  return clientOuErro(task).PROVIDER;
 }
 
 module.exports = {
@@ -254,6 +297,7 @@ module.exports = {
   gerarJSON,
   limparJson,
   resolverModelo,
+  resolverProvedor,
   modeloAtual,
   provedorAtual,
   _deps,

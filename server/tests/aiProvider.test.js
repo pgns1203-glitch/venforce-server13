@@ -8,7 +8,11 @@
 // Rodar: node tests/aiProvider.test.js
 // -----------------------------------------------------------------------------
 
-const ENVS = ["ANTHROPIC_MODEL", "AI_SEO_TITLE_MODEL", "AI_SEO_DESCRIPTION_MODEL", "AI_PROVIDER"];
+const ENVS = [
+  "ANTHROPIC_MODEL", "AI_SEO_TITLE_MODEL", "AI_SEO_DESCRIPTION_MODEL", "AI_PROVIDER",
+  "AI_SEO_TITLE_PROVIDER", "AI_SEO_DESCRIPTION_PROVIDER", "MIMO_MODEL",
+];
+delete process.env.MIMO_API_KEY;
 for (const k of ENVS) delete process.env[k];
 process.env.ANTHROPIC_API_KEY = "sk-teste-secreta";
 
@@ -151,6 +155,76 @@ async function check(nome, fn) {
     assert.ok(!("raw" in r));
     assert.strictEqual(logs.length, 1);
     assert.ok(logs[0].includes("codigo=AI_PROVIDER_INVALID") && logs[0].includes("provider=-"));
+  });
+
+  // ── F6.1: provedor por task (anthropic | mimo) ─────────────────────────
+  const prov = (t) => { const r = aiProvider.resolverProvedor(t); return r.ok ? [r.provider, r.origem] : ["INVALIDO", r.envInvalida]; };
+  const modelo = (t) => aiProvider.resolverModelo(t).model;
+
+  await check("F6.1 — AI_PROVIDER ausente → anthropic/Haiku para todas as tasks", () => {
+    reset([]);
+    for (const t of Object.values(AI_TASKS)) assert.deepStrictEqual([prov(t)[0], modelo(t)], ["anthropic", "claude-haiku-4-5-20251001"], t);
+  });
+
+  await check("F6.1 — AI_PROVIDER=mimo → títulos e descrição na MiMo (mimo-v2.6-pro); legado segue Anthropic", () => {
+    reset([], { AI_PROVIDER: "mimo" });
+    assert.deepStrictEqual(prov(AI_TASKS.SEO_TITLE), ["mimo", "AI_PROVIDER"]);
+    assert.deepStrictEqual(prov(AI_TASKS.SEO_DESCRIPTION), ["mimo", "AI_PROVIDER"]);
+    assert.deepStrictEqual([modelo(AI_TASKS.SEO_TITLE), aiProvider.resolverModelo(AI_TASKS.SEO_TITLE).origem], ["mimo-v2.6-pro", "DEFAULT_MODEL"]);
+    assert.deepStrictEqual(prov(AI_TASKS.LEGACY_OPTIMIZER), ["anthropic", "fixo"]);
+    assert.strictEqual(modelo(AI_TASKS.LEGACY_OPTIMIZER), "claude-haiku-4-5-20251001");
+    assert.strictEqual(aiProvider.provedorAtual(AI_TASKS.SEO_TITLE), "mimo");
+  });
+
+  await check("F6.1 — AI_SEO_TITLE_PROVIDER=mimo → só o título vai para a MiMo", () => {
+    reset([], { AI_SEO_TITLE_PROVIDER: "mimo" });
+    assert.deepStrictEqual(prov(AI_TASKS.SEO_TITLE), ["mimo", "AI_SEO_TITLE_PROVIDER"]);
+    assert.deepStrictEqual(prov(AI_TASKS.SEO_DESCRIPTION), ["anthropic", "padrao"]);
+  });
+
+  await check("F6.1 — AI_SEO_DESCRIPTION_PROVIDER=mimo → só a descrição vai para a MiMo", () => {
+    reset([], { AI_SEO_DESCRIPTION_PROVIDER: "  MIMO " });
+    assert.deepStrictEqual(prov(AI_TASKS.SEO_DESCRIPTION), ["mimo", "AI_SEO_DESCRIPTION_PROVIDER"]);
+    assert.deepStrictEqual(prov(AI_TASKS.SEO_TITLE), ["anthropic", "padrao"]);
+  });
+
+  await check("F6.1 — título MiMo + descrição Anthropic, de ponta a ponta", async () => {
+    process.env.MIMO_API_KEY = "mimo-teste";
+    try {
+      reset([ok('{"a":1}'), ok('{"a":1}')], { AI_SEO_TITLE_PROVIDER: "mimo", AI_SEO_DESCRIPTION_PROVIDER: "anthropic" });
+      const t = await aiProvider.gerarJSON({ task: AI_TASKS.SEO_TITLE, prompt: "P" });
+      const d = await aiProvider.gerarJSON({ task: AI_TASKS.SEO_DESCRIPTION, prompt: "P" });
+      assert.deepStrictEqual([t.provider, t.model, d.provider, d.model], ["mimo", "mimo-v2.6-pro", "anthropic", "claude-haiku-4-5-20251001"]);
+      assert.deepStrictEqual(chamadas.map((c) => c.url), ["https://api.xiaomimimo.com/anthropic/v1/messages", "https://api.anthropic.com/v1/messages"]);
+    } finally { delete process.env.MIMO_API_KEY; }
+  });
+
+  await check("F6.1 — título Anthropic + descrição MiMo (override da task vence AI_PROVIDER)", () => {
+    reset([], { AI_PROVIDER: "mimo", AI_SEO_TITLE_PROVIDER: "anthropic" });
+    assert.deepStrictEqual(prov(AI_TASKS.SEO_TITLE), ["anthropic", "AI_SEO_TITLE_PROVIDER"]);
+    assert.deepStrictEqual(prov(AI_TASKS.SEO_DESCRIPTION), ["mimo", "AI_PROVIDER"]);
+    assert.strictEqual(modelo(AI_TASKS.SEO_TITLE), "claude-haiku-4-5-20251001");
+  });
+
+  await check("F6.1 — modelo por provedor: MIMO_MODEL só vale na MiMo, ANTHROPIC_MODEL só no Anthropic", () => {
+    reset([], { AI_SEO_TITLE_PROVIDER: "mimo", MIMO_MODEL: "mimo-v2.6-flash", ANTHROPIC_MODEL: "claude-haiku-4-5" });
+    assert.deepStrictEqual(aiProvider.resolverModelo(AI_TASKS.SEO_TITLE), { provider: "mimo", model: "mimo-v2.6-flash", origem: "MIMO_MODEL" });
+    assert.deepStrictEqual(aiProvider.resolverModelo(AI_TASKS.SEO_DESCRIPTION), { provider: "anthropic", model: "claude-haiku-4-5", origem: "ANTHROPIC_MODEL" });
+  });
+
+  await check("F6.1 — provider inválido (global ou da task) → AI_PROVIDER_INVALID, nenhuma chamada", async () => {
+    for (const env of [{ AI_SEO_TITLE_PROVIDER: "openai" }, { AI_SEO_TITLE_PROVIDER: "mim0" }, { AI_PROVIDER: "gemini", AI_SEO_TITLE_PROVIDER: "mimo" }]) {
+      reset([], env);
+      const r = await aiProvider.gerarJSON({ task: AI_TASKS.SEO_TITLE, prompt: "P" });
+      assert.deepStrictEqual([r.codigo, chamadas.length], ["AI_PROVIDER_INVALID", 0], JSON.stringify(env));
+      const nomeEnv = Object.keys(env).find((k) => !["mimo", "anthropic"].includes(env[k]));
+      assert.ok(r.erro.startsWith(nomeEnv + " inválido"), r.erro);
+      assert.ok(!r.erro.includes(env[nomeEnv]), "não ecoa o valor");
+    }
+    reset([], { AI_SEO_DESCRIPTION_PROVIDER: "openai" });
+    assert.deepStrictEqual(prov(AI_TASKS.SEO_TITLE), ["anthropic", "padrao"], "env inválida de outra task não afeta o título");
+    reset([], { AI_PROVIDER: "openai" });
+    assert.deepStrictEqual(prov(AI_TASKS.LEGACY_OPTIMIZER), ["INVALIDO", "AI_PROVIDER"], "AI_PROVIDER inválido falha até no legado");
   });
 
   // ── O modelo resolvido chega ao request ────────────────────────────────
